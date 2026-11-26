@@ -17,6 +17,7 @@ impl Game<'_> {
         a: &Projectile,
         alpha: f64,
         at: [f64; 3],
+        camera: glam::DVec3,
         c: glam::Vec3,
         packed: u32,
         out: &mut Vec<Vertex>,
@@ -25,12 +26,22 @@ impl Game<'_> {
             && let Some(resolved) = super::native_entity_renderers::thrown_renderer(t)
         {
             let partial = alpha as f32;
+            let [width, height, eye_height] = a
+                .size_answer
+                .filter(|s| s.vanilla == a.kind.dimensions())
+                .and_then(|s| s.size)
+                .unwrap_or_else(|| a.kind.dimensions());
+            let pos = glam::DVec3::from_array(at);
             let entity: mod_api::EntityRenderState = mod_api::__private::built::EntityRenderState {
                 id: a.id,
                 partial,
                 age: a.age as f32 + partial,
                 yaw: a.previous_yaw + partial * (a.yaw - a.previous_yaw),
                 pitch: a.previous_pitch + partial * (a.pitch - a.previous_pitch),
+                position: at,
+                size: [width, height],
+                eye_height,
+                distance_to_camera_sq: (pos - camera).length_squared(),
                 living: None,
                 tnt_fuse: None,
                 orb_value: None,
@@ -44,8 +55,8 @@ impl Game<'_> {
                 &resolved,
                 &entity,
                 t.id,
-                c.as_dvec3(),
-                Some(glam::DVec3::from_array(at)),
+                pos - camera,
+                Some(pos),
                 block,
                 packed,
                 out,

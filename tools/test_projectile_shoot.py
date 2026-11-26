@@ -11,8 +11,11 @@ import os
 from pathlib import Path
 import tempfile
 
-import integration_env
-import lab
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import integration_env, lab
 
 
 def main():

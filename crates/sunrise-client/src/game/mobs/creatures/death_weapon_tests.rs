@@ -49,7 +49,7 @@ impl mod_api::Hooks for WeaponProbe {
     fn loot_drops(
         &self,
         host: &mut dyn mod_api::ServerHost,
-        event: &mut mod_api::LootDropsEvent<'_>,
+        event: &mut mod_api::LootDropsEvent<'_, '_>,
     ) {
         assert!(event.context.tool.is_none());
         if let Some(expected) = self.expected_source {

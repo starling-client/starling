@@ -5,14 +5,35 @@ use super::{Aabb, ItemEntity, ItemStack, Vec3};
 #[derive(Default)]
 pub struct ItemCells {
     cells: crate::fast_hash::FxHashMap<(i32, i32, i32), Vec<u32>>,
+    near: Vec<u32>,
 }
 impl ItemCells {
     pub fn new(items: &[ItemEntity]) -> Self {
         let mut cells = Self::default();
-        for (i, item) in items.iter().enumerate() {
-            cells.add(i, item.position);
-        }
+        cells.rebuild(items);
         cells
+    }
+    /// Refill the grid from `items`, reusing the map and cell vector capacities.
+    pub fn rebuild(&mut self, items: &[ItemEntity]) {
+        for list in self.cells.values_mut() {
+            list.clear();
+        }
+        for (i, item) in items.iter().enumerate() {
+            self.add(i, item.position);
+        }
+        self.cells.retain(|_, list| !list.is_empty());
+    }
+    /// Refill the grid from live (non-`removed`) entries of `items`, reusing capacities.
+    pub fn rebuild_live(&mut self, items: &[ItemEntity], removed: &[bool]) {
+        for list in self.cells.values_mut() {
+            list.clear();
+        }
+        for (i, item) in items.iter().enumerate() {
+            if !removed[i] {
+                self.add(i, item.position);
+            }
+        }
+        self.cells.retain(|_, list| !list.is_empty());
     }
     fn cell(p: Vec3) -> (i32, i32, i32) {
         (p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32)
@@ -72,6 +93,31 @@ pub fn merge_with_neighbours<I>(
 where
     I: AsRef<[ItemEntity]> + std::ops::IndexMut<usize, Output = ItemEntity> + ?Sized,
 {
+    merge_with_neighbours_recording(
+        items,
+        removed,
+        cells,
+        i,
+        age_is_ticked,
+        max_stack,
+        &mut |_| {},
+    )
+}
+
+/// [`merge_with_neighbours`], also invoking `on_removed` with each emptied
+/// item's id so callers can record departures without scanning `removed`.
+pub fn merge_with_neighbours_recording<I>(
+    items: &mut I,
+    removed: &mut [bool],
+    cells: &mut ItemCells,
+    i: usize,
+    age_is_ticked: bool,
+    max_stack: &dyn Fn(&ItemStack) -> u32,
+    on_removed: &mut dyn FnMut(u32),
+) -> bool
+where
+    I: AsRef<[ItemEntity]> + std::ops::IndexMut<usize, Output = ItemEntity> + ?Sized,
+{
     let age = |items: &[ItemEntity], j: usize| {
         if age_is_ticked && j == i && items[j].age != i16::MIN as i32 {
             items[j].age.wrapping_sub(1)
@@ -84,9 +130,9 @@ where
     }
     let mut merged = false;
     let area = items[i].bounds().inflate(Vec3::new(0.5, 0.0, 0.5));
-    let mut near = Vec::new();
+    let mut near = std::mem::take(&mut cells.near);
     cells.near(area, &mut near);
-    for j in near {
+    for &j in &near {
         let j = j as usize;
         if j == i
             || removed[j]
@@ -131,10 +177,12 @@ where
         if items[from].stack.count == 0 {
             removed[from] = true;
             cells.remove(from, items[from].position);
+            on_removed(items[from].id);
         }
         if removed[i] {
-            return true;
+            break;
         }
     }
+    cells.near = near;
     merged
 }

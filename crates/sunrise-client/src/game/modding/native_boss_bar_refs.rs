@@ -298,7 +298,7 @@ mod tests {
                 seed: 0,
                 max_players: 10,
                 integrated: true,
-                levels: game.level_shapes,
+                levels: game.level_shapes.clone(),
                 level_seeds: game.levels.runtime.seeds(),
             };
             let mut net = NetConfig::lan(0, "test".into(), 10);

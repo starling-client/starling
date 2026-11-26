@@ -13,6 +13,19 @@ impl Game<'_> {
         ability: &str,
         can_perform: &mut bool,
     ) {
-        self.fire_can_perform_action(stack, ability, can_perform);
+        let Ok(metadata) = crate::game::api_values::stack_read_metadata(stack) else {
+            return;
+        };
+        let project = |metadata| crate::game::api_values::project_stack(stack, metadata).ok();
+        let host: &dyn mod_api::Host = self;
+        let context = mod_api::ItemAbilityContext::new(host.tags());
+        Self::fire_can_perform_action(
+            &context,
+            mod_api::__private::CanPerformActionCall {
+                stack: mod_api::ItemStackView::resident(metadata, &project),
+                ability,
+                can_perform,
+            },
+        );
     }
 }

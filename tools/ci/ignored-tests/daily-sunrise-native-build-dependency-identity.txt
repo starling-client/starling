@@ -1,0 +1,2 @@
+# A native mod library refused when built against another build of its dependency.
+sunrise-native-build registry_inventory::tests::a_graph_digest_follows_resolved_versions_and_per_unit_features_only lib daily child-process

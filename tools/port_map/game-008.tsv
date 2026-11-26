@@ -31,7 +31,7 @@ LongJumpToRandomPos.pickCandidate	inline	crates/sunrise-client/src/mobs/frog.rs:
 LongJumpToRandomPos.getJumpCandidate	inline	crates/sunrise-client/src/mobs/frog.rs::LongJump::draw	goal stand-in for the frog and goat brains (#3946; no tick parity: the probe has no frog or goat brain)
 LongJumpToRandomPos.isAcceptableLandingPosition	inline	crates/sunrise-client/src/mobs/frog.rs::acceptable_landing	goal stand-in for the frog and goat brains (#3946; no tick parity: the probe has no frog or goat brain)
 LongJumpToRandomPos.calculateOptimalJumpVector	inline	crates/sunrise-client/src/mobs/frog.rs::optimal_jump_vector	goal stand-in for the frog and goat brains (#3946; no tick parity: the probe has no frog or goat brain)
-LookAndFollowTradingPlayerSink.followPlayer	port	crates/sunrise-client/src/mobs/villager_brain.rs::follow_trading_player
+LookAndFollowTradingPlayerSink.followPlayer	port	crates/sunrise-client/src/mobs/villager_brain/tasks.rs::follow_trading_player
 LookAtTargetSink.canStillUse	inline	crates/sunrise-client/src/mobs/villager_brain.rs::B::tick_or_stop	the look target must still be visible; the sniffer, warden and breeze brains have the same arm
 LookAtTargetSink.tick	inline	crates/sunrise-client/src/mobs/villager_brain.rs::B::tick_or_stop	look_at the target position
 MeleeAttack.create	inline	crates/sunrise-client/src/mobs/monster_brain.rs::B::try_start	creaking arm (target in reach and visible, attack cooldown); the warden and axolotl brains have their own; gap: minor: piglins, piglin brutes, hoglins and zoglins attack through the MeleeAttack goal in goals.rs, whose chase and cooldown rhythm differ from the brain behaviour
@@ -104,7 +104,7 @@ StopAttackingIfTargetInvalid.isTiredOfTryingToReachTarget	inline	crates/sunrise-
 StrollAroundPoi.create	inline	crates/sunrise-client/src/mobs/villager_brain.rs::B::try_start	StrollAroundPoi arm: stays within max_dist of the POI, strolls (8, 6) every 180 ticks
 StrollToPoi.create	inline	crates/sunrise-client/src/mobs/villager_brain.rs::B::try_start	StrollToPoi arm: job site within 10 blocks, every 80 ticks
 StrollToPoiList.create	inline	crates/sunrise-client/src/mobs/villager_brain.rs::B::try_start	StrollToPoiList arm: random secondary job site every 100 ticks while near the job site
-Swim.checkExtraStartConditions	port	crates/sunrise-client/src/mobs/villager_brain.rs::swim_condition	water deeper than the jump threshold, or lava; the sniffer, warden, breeze and creaking brains have copies
+Swim.checkExtraStartConditions	port	crates/sunrise-client/src/mobs/villager_brain/tasks.rs::swim_condition	water deeper than the jump threshold, or lava; the sniffer, warden, breeze and creaking brains have copies
 Swim.tick	inline	crates/sunrise-client/src/mobs/villager_brain.rs::B::tick_or_stop	jumps with chance 0.8 each tick
 TradeWithVillager.start	inline	crates/sunrise-client/src/mobs/villager_brain.rs::B::try_start	lock_gaze: look at and walk to the other villager
 TradeWithVillager.figureOutWhatIAmWillingToTrade	inline	crates/sunrise-client/src/mobs/villager.rs::meet	wares the neighbour's profession requests and mine does not; worked out on every meeting tick, not once at start

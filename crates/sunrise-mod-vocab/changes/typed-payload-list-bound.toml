@@ -1,0 +1,3 @@
+ids = ["behaviour:typed_payload_list_bound"]
+why = "sunrise#5804: typed payloads refused any list over 4,096 entries (`PAYLOAD_MAX_LIST_ENTRIES`), a limit stricter than vanilla, whose collection codecs have none of their own (`ByteBufCodecs.collection`). A list's count is now refused only when the rest of the body could not hold its entries at `Wire::MIN` bytes each, at least one. `PAYLOAD_MAX_LIST_ENTRIES` is removed."
+migrate = "Remove uses of `PAYLOAD_MAX_LIST_ENTRIES`. A mod that relied on the 4,096-entry cap to refuse larger lists checks the length in its handler. A non-empty list of zero-width values (such as `Vec<()>`) needs at least as many bytes after it in the body as it has entries."

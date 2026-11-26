@@ -16,8 +16,12 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
-import lab, anvil_dump
-from agent_control_e2e import Cli
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, anvil_dump
+from tools.agent_control_e2e import Cli
 def text(v):
  b=v.encode();return struct.pack('>H',len(b))+b
 def tag(t,n,b):return bytes([t])+text(n)+b

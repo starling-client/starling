@@ -344,7 +344,11 @@ mod hot_call_key_tests {
     fn hot_call_signatures_and_unknown_slots_are_typed() {
         let _: fn(&dyn Host, ItemKey) -> Option<i32> = |h, k| h.item_burn_time(k);
         let _: fn(&dyn Host, ItemKey) -> Option<f32> = |h, k| h.item_compost_chance(k);
-        let _: fn(&mut dyn ClientHost, ItemKey, u32) -> Result<(), String> = |h, k, n| h.give(k, n);
+        let _: fn(
+            PlayerRef,
+            &mut dyn ClientHost,
+            &ItemStack,
+        ) -> Result<Option<ItemStack>, CreativeGiveError> = |p, h, s| p.give_creative(h, s);
         let _: fn(&dyn ClientHost, &str, ItemKey) -> bool = |h, e, k| h.enchantment_supports(e, k);
         crate::testing::with_mods(Vec::new().into(), || {
             assert!(mod_vocab::__private::parts_installation::validate_item_key(u32::MAX).is_err());

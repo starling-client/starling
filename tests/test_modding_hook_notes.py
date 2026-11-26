@@ -1,12 +1,10 @@
 """Generated chapter navigation and links must work without a source Markdown page."""
 from pathlib import Path
 import subprocess
-import sys
 import unittest
 from unittest.mock import patch
 
-with patch.object(sys, "path", [*sys.path, str(Path(__file__).resolve().parents[1] / "tools")]):
-    import modding_hook_notes as notes
+from tools import modding_hook_notes as notes
 
 
 class HookNotes(unittest.TestCase):

@@ -129,7 +129,9 @@ fn entity_vertex(position: vec3<f32>, uv: vec2<f32>,
     out.clip = globals.view_proj * vec4(position, 1.0);
     out.proj = vec4(out.clip.xy * 0.5 + out.clip.w * 0.5, out.clip.zw);
     out.uv = uv;
-    let l = vec2(max(f32(light.y), dynamic_block_light(position)), f32(light.x));
+    let exact_light = light.z != 0u && overlay != 6u && overlay != 11u && overlay != 12u;
+    let block_light = select(max(f32(light.y), dynamic_block_light(position)), f32(light.y), exact_light);
+    let l = vec2(block_light, f32(light.x));
     let lm = textureSampleLevel(lightmap, lightmap_sampler,
         clamp(l / 256.0 + 0.5 / 16.0, vec2(0.5 / 16.0), vec2(15.5 / 16.0)), 0.0);
     // Celestial bodies, clouds, beacon beams, End portals and breaking cracks are unlit.
@@ -283,7 +285,7 @@ fn crumbling_uv(uv: vec2<f32>, packed_origin: vec2<f32>, sprite_size: vec2<f32>,
 }
 // CRUMBLING_UV_END
 @fragment fn fs_entity(in: Out, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
-    return entity_written_color(in, entity_color(in, front));
+    return entity_written_color(in, entity_color(in, front, true));
 }
 // Takes entity_color's result rather than calling it: FXC (DX12) fails with "argument pulled into
 // unrelated predicate" when entity_color's discards sit a function call below the entry point.
@@ -305,14 +307,54 @@ struct ClippedEntity {
     @location(0) color: vec4<f32>,
     @builtin(frag_depth) depth: f32,
 }
-@fragment fn fs_entity_clipped(in: Out, @builtin(front_facing) front: bool) -> ClippedEntity {
-    let color = entity_written_color(in, entity_color(in, front));
+fn clipped_entity(in: Out, color: vec4<f32>) -> ClippedEntity {
     return ClippedEntity(color, min(in.clip.z + globals.world_view.y / in.proj.w, 1.0));
 }
-@fragment fn fs_entity_unmarked(in: Out, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
-    return frame_stored(entity_color(in, front));
+@fragment fn fs_entity_clipped(in: Out, @builtin(front_facing) front: bool) -> ClippedEntity {
+    return clipped_entity(in, entity_written_color(in, entity_color(in, front, true)));
 }
-fn entity_color(in: Out, front: bool) -> vec4<f32> {
+@fragment fn fs_entity_unmarked(in: Out, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    return frame_stored(entity_color(in, front, true));
+}
+// Sign glyphs retain their glow tier in both the NORMAL and POLYGON_OFFSET text paths.
+@fragment fn fs_entity_text(in: Out, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    let color = entity_color(in, front, true);
+    if in.tier != 0u { return entity_written_color(in, color); }
+    return frame_stored(color);
+}
+@fragment fn fs_text_hdr_mark(in: Out) -> @location(0) vec4<f32> {
+    if in.tier == 0u || textureSample(atlas, atlas_sampler, in.uv).a * in.color.a < 0.1 { discard; }
+    return vec4(0.0, 0.0, 0.0, hdr_entity_mark(in));
+}
+// core/glint.fsh (`RenderPipelines.GLINT`, e.g. `RenderTypes.patternedShieldGlint`):
+// samples the glint texture alone, fades by fog and `GlintAlpha`, and squares RGB
+// to match `BlendFunction.GLINT` (`SRC_COLOR, ONE, ZERO, ONE`) under additive colour blend.
+@fragment fn fs_glint(in: Out) -> @location(0) vec4<f32> {
+    let color = tinted_glint(
+        textureSample(glint_tex, glint_sampler, in.glint_uv),
+        globals.colored_count.z,
+    );
+    if color.a < 0.1 { discard; }
+    let f = max(linear_fog(in.fog_distance.x, globals.fog.x, globals.fog.y),
+                linear_fog(in.fog_distance.y, globals.fog.z, globals.fog.w));
+    let fade = (1.0 - f * globals.fog_color.a) * globals.fog_ends.w;
+    let rgb = color.rgb * fade;
+    return frame_stored(vec4(rgb * rgb, 0.0));
+}
+// core/entity.fsh (`RenderPipelines.BANNER_PATTERN`): NO_OVERLAY and no ALPHA_CUTOUT,
+// alpha-blended without depth writes over the shield or banner base model.
+@fragment fn fs_banner_pattern(in: Out, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    let texel = textureSample(atlas, atlas_sampler, in.uv);
+    var color = texel * select(in.back_color, in.color, front);
+    color *= in.light_color;
+    let f = max(linear_fog(in.fog_distance.x, globals.fog.x, globals.fog.y),
+                linear_fog(in.fog_distance.y, globals.fog.z, globals.fog.w));
+    color = vec4(mix(color.rgb, globals.fog_color.rgb, f * globals.fog_color.a), color.a);
+    let written = entity_written_color(in, color);
+    if in.cull != 0u && !front { discard; }
+    return written;
+}
+fn entity_color(in: Out, front: bool, apply_glint: bool) -> vec4<f32> {
     var uv = in.uv;
     if in.overlay == 6u { uv.y = in.wrap.x + fract(in.uv.y) * in.wrap.y; }
     if in.overlay == 11u || in.overlay == 12u {
@@ -346,17 +388,19 @@ fn entity_color(in: Out, front: bool) -> vec4<f32> {
     // lit texture, then the lightmap, then the glint and fog.
     color = vec4(mix(in.overlay_color.rgb, color.rgb, in.overlay_color.a), color.a);
     color *= in.light_color;
-    if in.overlay == 7u || in.overlay == 8u || in.overlay == 33u {
-        // 33: a translucent item with the glint.
-        // Enchantment glint: item.fsh's GLINT path, sampled from
-        // enchanted_glint_item at the `GLINT_TEXTURING` UV.
-        color = glint_over(color, textureSample(glint_tex, glint_sampler, in.glint_uv));
-    } else if in.overlay == 36u {
-        // Enchanted armour (mobs::render::ARMOR_GLINT): enchanted_glint_armor at the scrolling model UV.
-        color = glint_over(
-            color,
-            textureSample(glint_armor_tex, glint_sampler, armor_glint_uv(in.glint_uv)),
-        );
+    if apply_glint {
+        if in.overlay == 7u || in.overlay == 8u || in.overlay == 33u {
+            // 33: a translucent item with the glint.
+            // Enchantment glint: item.fsh's GLINT path, sampled from
+            // enchanted_glint_item at the `GLINT_TEXTURING` UV.
+            color = glint_over(color, textureSample(glint_tex, glint_sampler, in.glint_uv));
+        } else if in.overlay == 36u {
+            // Enchanted armour (mobs::render::ARMOR_GLINT): enchanted_glint_armor at the scrolling model UV.
+            color = glint_over(
+                color,
+                textureSample(glint_armor_tex, glint_sampler, armor_glint_uv(in.glint_uv)),
+            );
+        }
     }
     let f = max(linear_fog(in.fog_distance.x, globals.fog.x, globals.fog.y),
                 linear_fog(in.fog_distance.y, globals.fog.z, globals.fog.w));
@@ -524,6 +568,13 @@ fn sun_weight(in: Out, added: vec3<f32>) -> f32 {
 // it to the frame. The light bytes carry the sprite's origin and the colour bytes its size, both
 // as breaking::stage_light packs them.
 fn energy_swirl_base(in: Out) -> vec4<f32> {
+    if in.overlay == ARMOR_GLINT_ONLY_OVERLAY {
+        // The armor's texture still supplies its cutout, never its color. Draw only the
+        // additive contribution of the foil; a hidden material must not occlude the body.
+        if textureSample(atlas, atlas_sampler, in.uv).a * in.color.a < 0.1 { discard; }
+        let glint = textureSample(glint_armor_tex, glint_sampler, armor_glint_uv(in.glint_uv));
+        return vec4(glint_over(vec4(0.0), glint).rgb, 1.0);
+    }
     let bytes = round(in.color * 255.0);
     let size = vec2(bytes.x + bytes.y * 256.0, bytes.z + bytes.w * 256.0) / 65535.0;
     let color = textureSample(atlas, atlas_sampler, crumbling_uv(in.uv, in.wrap, size, textureDimensions(atlas)));
@@ -535,9 +586,17 @@ fn energy_swirl_fog(in: Out) -> f32 {
                 linear_fog(in.fog_distance.y, globals.fog.z, globals.fog.w));
     return f * globals.fog_color.a;
 }
-@fragment fn fs_energy_swirl(in: Out) -> @location(0) vec4<f32> {
+fn energy_swirl_color(in: Out) -> vec4<f32> {
     let color = energy_swirl_base(in);
-    return frame_stored(vec4(mix(color.rgb, globals.fog_color.rgb, energy_swirl_fog(in)), color.a));
+    let fog = energy_swirl_fog(in);
+    if in.overlay == ARMOR_GLINT_ONLY_OVERLAY { return frame_stored(vec4(color.rgb * (1.0 - fog), 0.0)); }
+    return frame_stored(vec4(mix(color.rgb, globals.fog_color.rgb, fog), color.a));
+}
+@fragment fn fs_energy_swirl(in: Out) -> @location(0) vec4<f32> {
+    return energy_swirl_color(in);
+}
+@fragment fn fs_foil_clipped(in: Out) -> ClippedEntity {
+    return clipped_entity(in, energy_swirl_color(in));
 }
 
 // RenderPipelines.WATER_MASK: depth only (the pipeline masks the colour off).

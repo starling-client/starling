@@ -84,7 +84,7 @@ fn drawn_texture(game: &mut super::Game<'_>) -> [u8; 16 * 16 * 4] {
     game.debug = true;
     game.debug_charts.lightmap = true;
     for _ in 0..32 {
-        game.render_with(|renderer, frame| renderer.render(frame))
+        game.render_with(|renderer, frame| renderer.render(frame, None))
             .unwrap();
         let renderer = game.renderer.as_ref().unwrap();
         renderer
@@ -171,7 +171,7 @@ fn a_packs_lightmap_draws_its_expression_uniform() {
                 assert_eq!(texel, [51, 0, 0, 255]);
             }
             for _ in 0..3 {
-                game.render_with(|renderer, frame| renderer.render(frame))
+                game.render_with(|renderer, frame| renderer.render(frame, None))
                     .unwrap();
             }
             assert_eq!(buffers(game), before);
@@ -206,7 +206,7 @@ fn the_particles_frame_keeps_its_strings() {
         };
         let before = buffers();
         for _ in 0..3 {
-            game.render_with(|renderer, frame| renderer.render(frame))
+            game.render_with(|renderer, frame| renderer.render(frame, None))
                 .unwrap();
         }
         assert_eq!(buffers(), before);
@@ -261,7 +261,7 @@ fn corner(game: &mut super::Game<'_>) -> [u8; 3] {
 
 /// A game frame.
 pub(super) fn frame(game: &mut super::Game<'_>) -> sunrise_client::Result<bool> {
-    game.render_with(|renderer, frame| renderer.render(frame))
+    game.render_with(|renderer, frame| renderer.render(frame, None))
 }
 
 /// The colour of the pixel two in from the top left corner of the frame `draw` draws (a game

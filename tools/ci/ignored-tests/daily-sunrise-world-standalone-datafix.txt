@@ -1,0 +1,1 @@
+sunrise-world datafix::tables::tests::standalone_upgrade_only_refuses_at_a_failed_table_lookup lib daily resources

@@ -9,25 +9,7 @@ Streams use a pool separate from vanilla's streaming slots. They are not sound i
 Implement `AudioStream` to generate, decode or supply PCM as the mixer needs it. For example, this source plays an owned clip of mono samples at 48 kHz:
 
 ```rust
-use mod_api::{AudioRefusal, AudioStream, AudioStreamRef, ClientHost, SoundSource, StreamSpec};
-
-struct Clip(std::vec::IntoIter<i16>);
-
-impl AudioStream for Clip {
-    fn read(&mut self, pcm: &mut [i16]) -> usize {
-        let mut frames = 0;
-        for (out, sample) in pcm.iter_mut().zip(self.0.by_ref()) {
-            *out = sample;
-            frames += 1; // Mono: one sample per frame.
-        }
-        frames // 0 signals EOF.
-    }
-}
-
-fn play_clip(host: &dyn ClientHost, mono_pcm: Vec<i16>) -> Result<AudioStreamRef, AudioRefusal> {
-    let spec = StreamSpec::new(SoundSource::Music, 1, 48_000);
-    host.open_audio_stream(&spec, Box::new(Clip(mono_pcm.into_iter())))
-}
+{{#include ../../../examples/src/audio_streams.rs:play_clip}}
 ```
 
 The mixer owns the `Send + 'static` source. Keep `read` bounded and nonblocking: all pull streams on the output share a worker, so one slow source delays the others. Do not wait on I/O, locks, another thread or a tick. A source has no `Host` or world borrow and must not call back into the game. Use the preallocated buffer it lends you.
@@ -84,11 +66,7 @@ not [Wire](../../concepts/wire-types.md) types. For network audio, send a separa
 server-assigned network entity ID and the encoded audio:
 
 ```rust
-#[derive(mod_api::Wire)]
-struct VoiceFrame {
-    emitter_id: u32,
-    encoded_audio: Vec<u8>,
-}
+{{#include ../../../examples/src/audio_streams.rs:voice_frame}}
 ```
 
 Put the emitter's `entity.id()` in the clientbound frame, not its `EntityRef`: the handle belongs to
@@ -134,21 +112,7 @@ not undo that placement.
 List available input devices with `host.microphone_devices()` and open live PCM capture on a `ClientHost` from client setup onward with `host.open_microphone(&spec)`:
 
 ```rust
-use mod_api::{ClientHost, MicDevice, MicRef, MicRefusal, MicSpec};
-
-fn open_mic(host: &dyn ClientHost, preferred: Option<&MicDevice>) -> Result<MicRef, MicRefusal> {
-    let mut spec = MicSpec::new(1, 48_000); // 1 or 2 channels, 8000 to 48000 Hz.
-    if let Some(device) = preferred {
-        spec = spec.with_device(&device.id);
-    }
-    host.open_microphone(&spec)
-}
-
-// On any thread: read whole interleaved signed 16-bit PCM frames without waiting on a tick.
-fn read_mono<'a>(mic: &MicRef, pcm: &'a mut [i16]) -> &'a [i16] {
-    let frames = mic.read(pcm) as usize;
-    &pcm[..frames]
-}
+{{#include ../../../examples/src/audio_streams.rs:open_mic}}
 ```
 
 Each entry returned by `host.microphone_devices()` is a `MicDevice { id, label }`. Show `device.label` in UI and pass `device.id` to `MicSpec::with_device` to target that endpoint. If it vanishes, opening its ID returns `MicRefusal::NoDevice`; refresh the list rather than substituting a device with the same label. Treat the ID as opaque: pass it through unchanged. To intentionally select by display label, use `MicSpec::with_label`. A label shared by multiple available inputs returns `MicRefusal::AmbiguousDevice`. If discovery fails before it can establish a unique match, opening by label returns that discovery error instead of choosing the first input it found. Use an ID to target a specific input. An inaccessible endpoint does not hide other available inputs when listing.

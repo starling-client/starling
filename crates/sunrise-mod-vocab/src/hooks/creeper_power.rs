@@ -1,5 +1,4 @@
 //! The `creeper_power` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0191
 
 pub trait Hooks {
     /// Lightning charged a creeper.

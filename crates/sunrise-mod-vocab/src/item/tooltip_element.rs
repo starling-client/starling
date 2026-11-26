@@ -1,46 +1,22 @@
-use crate::{ItemStack, Text};
+use crate::{Text, TooltipComponent};
 
 /// One element of an item's tooltip as `render_tooltip_gather_components`
-/// hands it over, before any wrapping
+/// hands it over, before any wrapping or component preparation
 /// (`Either<FormattedText, TooltipComponent>`). Text deeper than 512 nodes
-/// refuses tooltip conversion before any changed element is drawn. Built-in bundle
-/// images share this list with text and item-part images. Gather may reorder or
-/// remove them; pre sees the resulting list. The built-in image starts after
-/// the name, or at index zero when there is no text.
-#[derive(Clone, PartialEq)]
+/// is skipped during preparation. Built-in bundle components share this list
+/// with text lines and custom components from `ItemPart::tooltip_image` or
+/// gather listeners. Gather may add, reorder or remove them; each element is
+/// then prepared into a [`crate::PreparedTooltipComponent`] before
+/// `render_tooltip_pre` runs.
+#[derive(Clone, Debug, PartialEq)]
 // exhaustive: a closed set the game matches without a wildcard
-#[derive(sunrise_mod_api_macros::Wire)]
+// no wire: carries in-process custom tooltip component data.
 pub enum TooltipElement {
     /// A line (`FormattedText`) with its colour as `rgba` packs it
     /// (`u32::MAX` keeps the text's own).
     Text(Text, u32),
-    /// An image component (`TooltipComponent`).
-    Image(TooltipImage),
-}
-
-/// The renderer and stack supplying an image in the ordered tooltip list.
-/// Both sources reserve their measured height and draw in the image pass,
-/// after all text, at their position in the list.
-#[derive(Clone, PartialEq)]
-// exhaustive: the game dispatches each supported image source
-#[derive(sunrise_mod_api_macros::Wire)]
-pub enum TooltipImageSource {
-    /// Drawn by the stack item's `tooltip_component_draw` part.
-    ItemPart(ItemStack),
-    /// The game's built-in bundle contents grid.
-    Bundle(ItemStack),
-}
-
-/// An image component measured in GUI pixels, in the ordered tooltip list.
-#[derive(Clone, PartialEq)]
-// exhaustive: the game builds it with a literal; mods only read it
-#[derive(sunrise_mod_api_macros::Wire)]
-pub struct TooltipImage {
-    /// The renderer and its stack data.
-    pub source: TooltipImageSource,
-    /// This component's measurement in GUI pixels. The draw callback receives
-    /// the whole tooltip content box size, not this measurement.
-    pub size: [f32; 2],
+    /// A tooltip component (`TooltipComponent`), built-in or custom.
+    Component(TooltipComponent),
 }
 
 /// Where a tooltip hangs from, in GUI pixels: what `render_tooltip_pre` lets a mod move.

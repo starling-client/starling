@@ -22,7 +22,8 @@ pub trait Hooks {
         out = "seen",
         scope = "block",
         key = "state",
-        neoforge = "IBlockExtension.getStateAtViewpoint, IBlockStateExtension.getStateAtViewpoint"
+        neoforge = "IBlockExtension.getStateAtViewpoint, IBlockStateExtension.getStateAtViewpoint",
+        version = 2
     )]
     fn state_at_viewpoint(
         state: BlockState,

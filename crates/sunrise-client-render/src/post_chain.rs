@@ -41,6 +41,14 @@ fn normalise(id: &str) -> String {
     }
 }
 
+fn normalise_cow(id: &str) -> std::borrow::Cow<'_, str> {
+    if id.contains(':') {
+        std::borrow::Cow::Borrowed(id)
+    } else {
+        std::borrow::Cow::Owned(format!("minecraft:{id}"))
+    }
+}
+
 /// One uniform of a block (`UniformValue`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Uniform {
@@ -416,8 +424,12 @@ pub(crate) enum PassRefusal {
         count: usize,
         limit: usize,
     },
-    /// A `PolyGlobals` declaration the one rule refuses (`expression_blocks::check_poly_globals`).
-    Globals(crate::gfx::expression_blocks::GlobalsRefusal),
+    /// A `PolyGlobals` declaration the one rule refuses (`expression_blocks::check_poly_globals`),
+    /// at that declaration.
+    Globals(
+        sunrise_glsl::Location,
+        crate::gfx::expression_blocks::GlobalsRefusal,
+    ),
     /// Its `uniforms` give `PolyGlobals`, the game's block.
     GlobalsGiven,
     /// The shader translator's refusal or fault.
@@ -467,7 +479,7 @@ impl std::fmt::Display for PassRefusal {
                 f,
                 "its {stage:?} stage reads {count} {what}, past the device's {limit}"
             ),
-            Self::Globals(refusal) => refusal.fmt(f),
+            Self::Globals(at, refusal) => at.error(refusal).fmt(f),
             Self::GlobalsGiven => write!(
                 f,
                 "its uniforms give {}, which the game fills",
@@ -628,6 +640,16 @@ struct Pass {
 }
 
 impl Chain {
+    /// `PostChain.closePersistentTargets`: drop persistent target buffers while keeping
+    /// the compiled chain cached.
+    fn close_persistent_targets(&mut self) {
+        if self.targets.iter().skip(1).any(|(_, t)| t.persistent) {
+            self.textures.clear();
+            self.depths.clear();
+            self.size = [0, 0];
+        }
+    }
+
     /// Each translated pass's pipeline for `format`. A pass whose pipeline the device refuses
     /// is replaced by its built-in stand-in when it has one; else the refusal, named.
     fn ensure_pipelines(
@@ -759,6 +781,11 @@ impl<'a> Request<'a> {
     }
 }
 
+struct ChainSlot {
+    id: String,
+    chain: Option<Chain>,
+}
+
 /// Every chain, the pipelines and the frame copy they work on.
 pub struct PostEffects {
     layout: wgpu::BindGroupLayout,
@@ -766,10 +793,18 @@ pub struct PostEffects {
     pipelines: HashMap<(&'static str, &'static str, wgpu::TextureFormat), wgpu::RenderPipeline>,
     nearest: wgpu::Sampler,
     bilinear: wgpu::Sampler,
-    /// `ShaderManager`'s chains by id; `None` when the file is missing.
-    chains: HashMap<String, Option<Chain>>,
+    /// `ShaderManager`'s chains in dense slots; `None` when the file is missing or failed.
+    chains: Vec<ChainSlot>,
+    /// Lookup from normalised chain id to its dense slot in `chains`.
+    chain_ids: HashMap<String, usize>,
     /// `GameRenderer.failedPostEffects`.
     failed: HashSet<String>,
+    /// Reused execution-order slot list for this frame's applied chains (preserves repeats).
+    applied: Vec<usize>,
+    /// Parallel flags for `chains`: whether each slot ran on the current frame.
+    active_chains: Vec<bool>,
+    /// Parallel flags for `chains`: whether each slot ran on the previous frame.
+    prev_active_chains: Vec<bool>,
     root: ResourceSource,
     /// The frame as the chains see `minecraft:main`.
     work: Option<(wgpu::Texture, wgpu::TextureView)>,
@@ -925,8 +960,12 @@ impl PostEffects {
             pipelines: HashMap::new(),
             nearest: make(wgpu::FilterMode::Nearest),
             bilinear: make(wgpu::FilterMode::Linear),
-            chains: HashMap::new(),
+            chains: Vec::new(),
+            chain_ids: HashMap::new(),
             failed: HashSet::new(),
+            applied: Vec::new(),
+            active_chains: Vec::new(),
+            prev_active_chains: Vec::new(),
             preloading: None,
             #[cfg(test)]
             test_workers: Vec::new(),
@@ -948,15 +987,71 @@ impl PostEffects {
         }
     }
 
+    fn store_chain(&mut self, id: String, chain: Option<Chain>) -> usize {
+        if let Some(&slot) = self.chain_ids.get(&id) {
+            self.chains[slot].chain = chain;
+            return slot;
+        }
+        let slot = self.chains.len();
+        self.chain_ids.insert(id.clone(), slot);
+        self.chains.push(ChainSlot { id, chain });
+        self.active_chains.push(false);
+        self.prev_active_chains.push(false);
+        slot
+    }
+
+    #[cfg(test)]
+    fn chain(&self, id: &str) -> Option<&Chain> {
+        self.chain_ids
+            .get(id)
+            .and_then(|&slot| self.chains[slot].chain.as_ref())
+    }
+
     /// `GameRenderer.reloadPostEffects`-alike: forget chains loaded from another
     /// root, and the failures with them (`shouldResetFailedPostEffects`).
     fn use_root(&mut self, root: &ResourceSource) {
         if !self.root.same_generation(root) {
             self.root = root.to_owned();
             self.chains.clear();
+            self.chain_ids.clear();
             self.failed.clear();
+            self.active_chains.clear();
+            self.prev_active_chains.clear();
             self.preloading = None;
             self.pending.clear();
+        }
+    }
+
+    /// `GameRenderer.preparePostEffects(Collections.emptyList())`: reload on pack generation
+    /// change and retire persistent targets of chains active on the previous frame.
+    pub fn clear_active(&mut self, root: &ResourceSource) {
+        self.use_root(root);
+        for (slot, active) in self.active_chains.iter_mut().enumerate() {
+            if *active {
+                *active = false;
+                if let Some(chain) = self.chains[slot].chain.as_mut() {
+                    chain.close_persistent_targets();
+                }
+            }
+        }
+    }
+
+    /// Retire persistent targets of chains active last frame that did not apply this frame.
+    fn retire_inactive_persistent_targets(&mut self) {
+        std::mem::swap(&mut self.prev_active_chains, &mut self.active_chains);
+        self.active_chains.fill(false);
+        for &slot in &self.applied {
+            self.active_chains[slot] = true;
+        }
+        for (slot, was_active) in self.prev_active_chains.iter_mut().enumerate() {
+            if *was_active {
+                *was_active = false;
+                if !self.active_chains[slot]
+                    && let Some(chain) = self.chains[slot].chain.as_mut()
+                {
+                    chain.close_persistent_targets();
+                }
+            }
         }
     }
 
@@ -977,7 +1072,7 @@ impl PostEffects {
         }
         let ids: Vec<String> = ids
             .into_iter()
-            .filter(|id| !self.chains.contains_key(*id) && !self.failed.contains(*id))
+            .filter(|id| !self.chain_ids.contains_key(*id) && !self.failed.contains(*id))
             .map(normalise)
             .collect();
         if ids.is_empty() {
@@ -1016,7 +1111,7 @@ impl PostEffects {
 
     /// Takes the chains `preload` has finished.
     fn collect_preloaded(&mut self) {
-        let Some((root, rx)) = &self.preloading else {
+        let Some((root, _)) = &self.preloading else {
             return;
         };
         if !root.same_generation(&self.root) {
@@ -1025,6 +1120,9 @@ impl PostEffects {
             return;
         }
         loop {
+            let Some((_, rx)) = &self.preloading else {
+                return;
+            };
             match rx.try_recv() {
                 Ok((id, loaded)) => {
                     self.pending.remove(&id);
@@ -1033,7 +1131,7 @@ impl PostEffects {
                         self.failed.insert(id.clone());
                         None
                     });
-                    self.chains.insert(id, loaded);
+                    self.store_chain(id, loaded);
                 }
                 Err(mpsc::TryRecvError::Empty) => return,
                 Err(mpsc::TryRecvError::Disconnected) => {
@@ -1225,11 +1323,11 @@ impl PostEffects {
         for (name, binding) in &program.blocks {
             if name == globals {
                 crate::gfx::expression_blocks::check_poly_globals(modules, *binding)
-                    .map_err(PassRefusal::Globals)?;
+                    .map_err(|e| PassRefusal::Globals(program.declared_at(*binding), e))?;
             }
             // Bound only to the stages that read it: one only declared (an imported block the
             // shader doesn't use) binds nothing.
-            let stages = crate::core_shader::stages_reading(read, *binding);
+            let stages = sunrise_glsl::stages_reading(read, *binding);
             if stages.is_empty() {
                 continue;
             }
@@ -1256,8 +1354,10 @@ impl PostEffects {
                     Block::Dynamic(other.to_owned(), buffer)
                 }
                 other => {
-                    let values = (p.uniforms.get(other))
-                        .ok_or_else(|| config(format!("the uniform block {other} is missing")))?;
+                    let values = (p.uniforms.get(other)).ok_or_else(|| {
+                        let missing = format!("the uniform block {other} is missing");
+                        config(program.declared_at(*binding).error(missing).to_string())
+                    })?;
                     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
                         label: Some("Post effect uniforms"),
                         size: UNIFORM_BYTES,
@@ -1285,8 +1385,11 @@ impl PostEffects {
             let input = name.strip_suffix("Sampler").unwrap_or(name);
             let slot = (p.inputs.iter())
                 .position(|i| i.sampler == input)
-                .ok_or_else(|| config(format!("no input for the sampler {name}")))?;
-            let stages = crate::core_shader::stages_reading(read, *texture);
+                .ok_or_else(|| {
+                    let missing = format!("no input for the sampler {name}");
+                    config(program.declared_at(*texture).error(missing).to_string())
+                })?;
+            let stages = sunrise_glsl::stages_reading(read, *texture);
             if stages.is_empty() {
                 continue;
             }
@@ -1525,45 +1628,52 @@ impl PostEffects {
         self.collect_preloaded();
         self.extra_blocks = req.extras.map(|e| e.blocks.clone()).unwrap_or_default();
         self.poly_globals = None;
-        let mut applied = Vec::new();
+        self.applied.clear();
         for effect in req.effects {
-            let id = normalise(effect);
+            let id = normalise_cow(effect);
             // A chain still compiling on `preload`'s thread waits for it.
-            if self.failed.contains(&id) || applied.contains(&id) || self.pending.contains(&id) {
+            if self.failed.contains(id.as_ref()) || self.pending.contains(id.as_ref()) {
                 continue;
             }
-            if !self.chains.contains_key(&id) {
+            let slot = if let Some(&slot) = self.chain_ids.get(id.as_ref()) {
+                slot
+            } else {
+                let owned = id.into_owned();
                 let empty = Extras::default();
                 let extras = req.extras.unwrap_or(&empty);
-                let loaded = match Self::load(&self.root, device, queue, &id, extras) {
+                let loaded = match Self::load(&self.root, device, queue, &owned, extras) {
                     Ok(chain) => chain,
                     Err(e) => {
-                        log::warn!("Failed to load post effect {id}: {e}");
-                        self.failed.insert(id.clone());
+                        log::warn!("Failed to load post effect {owned}: {e}");
+                        self.failed.insert(owned.clone());
                         None
                     }
                 };
-                self.chains.insert(id.clone(), loaded);
-            }
-            if matches!(self.chains.get(&id), Some(Some(_))) {
-                applied.push(id);
+                self.store_chain(owned, loaded)
+            };
+            if self.chains[slot].chain.is_some() {
+                self.applied.push(slot);
             }
         }
         let format = frame.format().remove_srgb_suffix();
         // A pass whose pipeline the device refuses refuses its effect, named, which is skipped.
-        applied.retain(|id| {
-            let Some(Some(chain)) = self.chains.get_mut(id) else {
+        let mut applied = std::mem::take(&mut self.applied);
+        applied.retain(|&slot| {
+            let Some(chain) = self.chains[slot].chain.as_mut() else {
                 return false;
             };
             let Err(e) = chain.ensure_pipelines(device, format) else {
                 return true;
             };
+            let id = self.chains[slot].id.clone();
             log::warn!("Failed to load post effect {id}: {e}");
-            self.failed.insert(id.clone());
-            self.chains.insert(id.clone(), None);
+            self.failed.insert(id);
+            self.chains[slot].chain = None;
             false
         });
-        if applied.is_empty() {
+        self.applied = applied;
+        self.retire_inactive_persistent_targets();
+        if self.applied.is_empty() {
             return false;
         }
         let reads_globals = |chain: &Chain| {
@@ -1573,9 +1683,10 @@ impl PostEffects {
                     .any(|(_, b)| matches!(b, Block::PolyGlobals(_)))
             })
         };
-        if applied
+        if self
+            .applied
             .iter()
-            .any(|id| matches!(self.chains.get(id), Some(Some(c)) if reads_globals(c)))
+            .any(|&slot| self.chains[slot].chain.as_ref().is_some_and(reads_globals))
         {
             self.poly_globals = req.poly_globals.map(|build| build());
         }
@@ -1635,8 +1746,9 @@ impl PostEffects {
         }
         let gl_depth = self.gl_depth_target.take();
         let depth = depth.and(gl_depth.as_ref().map(|(_, v)| v));
-        for id in &applied {
-            let mut chain = self.chains.remove(id).flatten().expect("loaded above");
+        let applied = std::mem::take(&mut self.applied);
+        for &slot in &applied {
+            let mut chain = self.chains[slot].chain.take().expect("loaded above");
             self.run_chain(
                 device,
                 queue,
@@ -1649,8 +1761,9 @@ impl PostEffects {
                 format,
                 timing.as_deref_mut(),
             );
-            self.chains.insert(id.clone(), Some(chain));
+            self.chains[slot].chain = Some(chain);
         }
+        self.applied = applied;
         // The frame, as the chains left it.
         self.run_pass(
             device,
@@ -2492,6 +2605,182 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    #[test]
+    #[ignore = "daily"]
+    fn repeated_effects_run_in_order() {
+        let _gpu = crate::gfx::test_gpu::lock();
+        let Some((device, queue)) = device() else {
+            return;
+        };
+        const INVERT: &str = r#"{
+            "targets": { "swap": {} },
+            "passes": [
+                { "vertex_shader": "minecraft:core/screenquad",
+                  "fragment_shader": "minecraft:post/invert",
+                  "inputs": [ { "sampler_name": "In", "target": "minecraft:main" } ],
+                  "output": "swap",
+                  "uniforms": { "InvertConfig": [ { "name": "InverseAmount", "type": "float", "value": 1.0 } ] } },
+                { "vertex_shader": "minecraft:core/screenquad",
+                  "fragment_shader": "minecraft:post/blit",
+                  "inputs": [ { "sampler_name": "In", "target": "swap" } ],
+                  "output": "minecraft:main",
+                  "uniforms": { "BlitConfig": [ { "name": "ColorModulate", "type": "vec4", "value": [1.0, 1.0, 1.0, 1.0] } ] } }
+            ]
+        }"#;
+        let root = scratch("repeated_invert", INVERT);
+        let source = ResourceSource::directory(root.clone());
+        let mut effects = PostEffects::new(&device);
+        let near = |a: u8, b: u8| a.abs_diff(b) <= 2;
+
+        let once = ["minecraft:repeated_invert".to_owned()];
+        let (ran, px_once) = run(&device, &queue, &mut effects, &source, &once);
+        assert!(ran);
+        assert!(
+            near(px_once[0], 204) && near(px_once[1], 153) && near(px_once[2], 102),
+            "single invert: {px_once:?}"
+        );
+
+        let twice = [
+            "minecraft:repeated_invert".to_owned(),
+            "minecraft:repeated_invert".to_owned(),
+        ];
+        let id_ptr_before = effects.chains[0].id.as_ptr();
+        let (ran, px_twice) = run(&device, &queue, &mut effects, &source, &twice);
+        assert!(ran);
+        assert!(
+            near(px_twice[0], 51) && near(px_twice[1], 102) && near(px_twice[2], 153),
+            "double invert must restore original colour: {px_twice:?}"
+        );
+        assert_eq!(effects.chains.len(), 1);
+        assert_eq!(effects.applied, [0, 0]);
+        assert_eq!(effects.chains[0].id.as_ptr(), id_ptr_before);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn inactive_persistent_targets_retire_without_dropping_compiled_chain() {
+        let _gpu = crate::gfx::test_gpu::lock();
+        let Some((device, queue)) = device() else {
+            return;
+        };
+        const PERSIST: &str = r#"{
+            "targets": {
+                "prev": { "persistent": true, "clear_color": 4278255360 },
+                "saved": {}
+            },
+            "passes": [
+                { "vertex_shader": "minecraft:core/screenquad",
+                  "fragment_shader": "minecraft:post/blit",
+                  "inputs": [ { "sampler_name": "In", "target": "minecraft:main" } ],
+                  "output": "saved",
+                  "uniforms": { "BlitConfig": [ { "name": "ColorModulate", "type": "vec4", "value": [1.0, 0.0, 0.0, 1.0] } ] } },
+                { "vertex_shader": "minecraft:core/screenquad",
+                  "fragment_shader": "minecraft:post/blit",
+                  "inputs": [ { "sampler_name": "In", "target": "prev" } ],
+                  "output": "minecraft:main",
+                  "uniforms": { "BlitConfig": [ { "name": "ColorModulate", "type": "vec4", "value": [1.0, 1.0, 1.0, 1.0] } ] } },
+                { "vertex_shader": "minecraft:core/screenquad",
+                  "fragment_shader": "minecraft:post/blit",
+                  "inputs": [ { "sampler_name": "In", "target": "saved" } ],
+                  "output": "prev",
+                  "uniforms": { "BlitConfig": [ { "name": "ColorModulate", "type": "vec4", "value": [1.0, 1.0, 1.0, 1.0] } ] } }
+            ]
+        }"#;
+        let root = scratch("persist_retire", PERSIST);
+        let source = ResourceSource::directory(root.clone());
+        let mut effects = PostEffects::new(&device);
+        let names = ["minecraft:persist_retire".to_owned()];
+        let near = |a: u8, b: u8| a.abs_diff(b) <= 2;
+
+        // Frame 1: fresh persistent target starts at green clear colour.
+        let (ran, px1) = run(&device, &queue, &mut effects, &source, &names);
+        assert!(ran);
+        assert!(
+            near(px1[0], 0) && near(px1[1], 255) && near(px1[2], 0),
+            "{px1:?}"
+        );
+
+        // Frame 2: stays active, resumes the red pixels written on frame 1.
+        let (_, px2) = run(&device, &queue, &mut effects, &source, &names);
+        assert!(
+            near(px2[0], 51) && near(px2[1], 0) && near(px2[2], 0),
+            "{px2:?}"
+        );
+
+        // Frame 3: removed (empty list) retires persistent targets while keeping the compiled chain.
+        let (ran, _) = run(&device, &queue, &mut effects, &source, &[]);
+        assert!(!ran);
+        let chain = effects
+            .chain("minecraft:persist_retire")
+            .expect("compiled chain stays cached");
+        assert!(chain.textures.is_empty(), "persistent target must retire");
+
+        // Frame 4: re-added at the same size starts freshly cleared to green.
+        let (ran, px4) = run(&device, &queue, &mut effects, &source, &names);
+        assert!(ran);
+        assert!(
+            near(px4[0], 0) && near(px4[1], 255) && near(px4[2], 0),
+            "{px4:?}"
+        );
+
+        // Frame 5: active again, then a no-world/title frame calls clear_active.
+        let (_, px5) = run(&device, &queue, &mut effects, &source, &names);
+        assert!(
+            near(px5[0], 51) && near(px5[1], 0) && near(px5[2], 0),
+            "{px5:?}"
+        );
+        effects.clear_active(&source);
+        assert!(
+            effects
+                .chain("minecraft:persist_retire")
+                .expect("compiled chain stays cached across clear_active")
+                .textures
+                .is_empty()
+        );
+        let (_, px7) = run(&device, &queue, &mut effects, &source, &names);
+        assert!(
+            near(px7[0], 0) && near(px7[1], 255) && near(px7[2], 0),
+            "{px7:?}"
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn failed_effect_recovers_on_resource_reload() {
+        let _gpu = crate::gfx::test_gpu::lock();
+        let Some((device, queue)) = device() else {
+            return;
+        };
+        let root = scratch("reload_recover", "{not valid json");
+        let source1 = ResourceSource::directory(root.clone());
+        let mut effects = PostEffects::new(&device);
+        let names = ["minecraft:reload_recover".to_owned()];
+
+        let (ran, _) = run(&device, &queue, &mut effects, &source1, &names);
+        assert!(!ran);
+        assert!(effects.failed.contains("minecraft:reload_recover"));
+
+        // Resource reload with valid JSON clears failedPostEffects without resending PostEffects.
+        std::fs::write(
+            root.join("assets/minecraft/post_effect/reload_recover.json"),
+            INVERT_THEN_BLIT,
+        )
+        .unwrap();
+        let source2 = ResourceSource::directory(root.clone());
+        let (ran, px) = run(&device, &queue, &mut effects, &source2, &names);
+        assert!(ran);
+        assert!(effects.failed.is_empty());
+        let near = |a: u8, b: u8| a.abs_diff(b) <= 2;
+        assert!(
+            near(px[0], 204) && px[1] == 0 && near(px[2], 51) && px[3] == 255,
+            "{px:?}"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     /// A scratch root with one single-pass chain per `(name, fragment shader)`, each drawing its
     /// fragment shader over the frame (`pass uniforms` given as JSON), and a full-screen vertex
     /// shader.
@@ -2729,11 +3018,14 @@ mod tests {
             load("short"),
             Err(LoadError::Pass(
                 0,
-                PassRefusal::Globals(crate::gfx::expression_blocks::GlobalsRefusal::Member {
+                PassRefusal::Globals(at, crate::gfx::expression_blocks::GlobalsRefusal::Member {
                     index: 0,
                     ..
                 })
-            ))
+            )) if at == sunrise_glsl::Location {
+                file: "minecraft:shaders/post/short.fsh".into(),
+                line: 2,
+            }
         ));
         assert!(matches!(
             load("unmatched"),
@@ -3210,9 +3502,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(1));
             effects.collect_preloaded();
         }
-        let chain = effects.chains["minecraft:preloaded"]
-            .as_ref()
-            .expect("loaded");
+        let chain = effects.chain("minecraft:preloaded").expect("loaded");
         assert!(chain.passes.iter().all(|pass| {
             pass.translated
                 .as_ref()
@@ -3229,10 +3519,11 @@ mod tests {
         assert!(near(top[0], 32) && top[1] == 0 && top[3] == 255, "{top:?}");
         assert!(bottom[0] == 0 && near(bottom[1], 128), "{bottom:?}");
         effects.use_root(&source.clone());
-        assert!(effects.chains.contains_key("minecraft:preloaded"));
+        assert!(effects.chain_ids.contains_key("minecraft:preloaded"));
         // Reopening the same pack creates a new generation, even at the same path.
         effects.use_root(&ResourceSource::archive(&jar).unwrap());
         assert!(effects.chains.is_empty());
+        assert!(effects.chain_ids.is_empty());
         assert!(effects.pending.is_empty());
         assert!(!root.join("assets").exists());
         std::fs::remove_dir_all(root).unwrap();
@@ -3277,9 +3568,7 @@ mod tests {
             );
             assert!(effects.failed.is_empty(), "{name}");
             // The chain ran on the resources' own GLSL, not the stand-ins.
-            let chain = effects.chains[&format!("minecraft:{name}")]
-                .as_ref()
-                .unwrap();
+            let chain = effects.chain(&format!("minecraft:{name}")).unwrap();
             assert!(
                 chain.passes.iter().all(|p| p.translated.is_some()),
                 "{name}"

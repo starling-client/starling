@@ -1,0 +1,1 @@
+sunrise-client game::lan::tests::player_handshake_dispatch_before_login lib daily child-process

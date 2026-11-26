@@ -1,6 +1,11 @@
 //! Passenger reads over the mob tick's disjoint live entity loan.
 use super::GoalCx;
-use mod_api::{EntityRef, LivingRef};
+use crate::{
+    game::{boarding::next_boarded_rider, native_entity_riding::visit_passenger_tree},
+    mobs::{LiveMobs, Mob, part_goals::GoalHost},
+};
+use mod_api::{EntityReadError, EntityRef, LivingRef};
+use std::ops::ControlFlow;
 
 impl GoalCx<'_, '_> {
     pub(super) fn r_entity_dismount_location(
@@ -54,62 +59,109 @@ impl GoalCx<'_, '_> {
         Some(self.scoped_root_vehicle(entity)? == self.scoped_root_vehicle(other)?)
     }
 
-    pub(super) fn r_entity_passengers(&self, entity: EntityRef) -> Option<Vec<EntityRef>> {
-        self.entity_mob(entity)?;
-        let live = self.w.live_mobs?;
-        let host = self.w.goal_host?;
-        let mut seats = host.player_passenger_seats(entity.id());
-        let mut add_mob = |mob: &crate::mobs::Mob| {
-            if mob.extra.mount == Some(entity.id()) && !mob.removed && mob.alive() {
-                seats.push((mob.extra.vehicle_order, mob.id));
+    fn passenger_loan(
+        &self,
+        entity: EntityRef,
+    ) -> Result<(&Mob, &dyn GoalHost, &dyn LiveMobs), EntityReadError> {
+        let host = self.w.goal_host.ok_or(EntityReadError::Unavailable)?;
+        let vehicle = self.live_entity_for_read(entity)?;
+        Ok((
+            vehicle,
+            host,
+            self.w.live_mobs.ok_or(EntityReadError::Unavailable)?,
+        ))
+    }
+
+    fn next_scoped_rider(
+        &self,
+        host: &dyn GoalHost,
+        live: &dyn LiveMobs,
+        vehicle: u32,
+        after: Option<u32>,
+    ) -> Option<u32> {
+        if vehicle != self.m.id && live.find(vehicle).is_none() {
+            return host.next_passenger_seat(vehicle, after);
+        }
+        next_boarded_rider(after, |visit| {
+            if host.visit_player_passenger_seats(vehicle, &mut *visit) {
+                return;
             }
-        };
-        add_mob(self.m);
-        live.for_each(&mut add_mob);
-        seats.sort_by_key(|&(order, _)| order);
-        Some(
-            seats
-                .into_iter()
-                .filter_map(|(_, id)| self.lookup_entity(id))
-                .collect(),
-        )
+            let mut found = false;
+            let mut seat = |mob: &Mob| {
+                if !found && mob.extra.mount == Some(vehicle) && !mob.removed && mob.alive() {
+                    found = visit(mob.extra.vehicle_order, mob.id);
+                }
+            };
+            seat(self.m);
+            live.for_each(&mut seat);
+        })
+    }
+
+    fn scoped_passengers<'a>(
+        &'a self,
+        vehicle: u32,
+        host: &'a dyn GoalHost,
+        live: &'a dyn LiveMobs,
+    ) -> impl Iterator<Item = EntityRef> + 'a {
+        let mut after = None;
+        std::iter::from_fn(move || {
+            let id = self.next_scoped_rider(host, live, vehicle, after)?;
+            after = Some(id);
+            Some(id)
+        })
+        .filter_map(move |id| self.lookup_entity(id))
+    }
+
+    pub(super) fn r_entity_visit_passengers(
+        &self,
+        entity: EntityRef,
+        visit: &mut dyn FnMut(EntityRef) -> ControlFlow<()>,
+    ) -> Result<ControlFlow<()>, EntityReadError> {
+        let (vehicle, host, live) = self.passenger_loan(entity)?;
+        Ok(self
+            .scoped_passengers(vehicle.id, host, live)
+            .try_for_each(visit))
     }
 
     pub(super) fn r_entity_is_vehicle(&self, entity: EntityRef) -> Option<bool> {
-        Some(!self.r_entity_passengers(entity)?.is_empty())
+        self.r_entity_visit_passengers(entity, &mut |_| ControlFlow::Break(()))
+            .ok()
+            .map(|result| result.is_break())
     }
 
-    pub(super) fn r_entity_indirect_passengers(&self, entity: EntityRef) -> Option<Vec<EntityRef>> {
-        let mut all = Vec::new();
-        let mut next = self.r_entity_passengers(entity)?;
-        next.reverse();
-        while let Some(passenger) = next.pop() {
-            if passenger == entity || all.contains(&passenger) {
-                continue;
-            }
-            all.push(passenger);
-            let children = if self.entity_mob(passenger).is_some() {
-                self.r_entity_passengers(passenger)
-            } else {
-                mod_api::__private::backend_read(self.host, |backend| {
-                    backend.entity_passengers(passenger)
-                })
-                .flatten()
-            };
-            if let Some(riders) = children {
-                next.extend(riders.into_iter().rev());
-            }
-        }
-        Some(all)
+    pub(super) fn r_entity_visit_indirect_passengers(
+        &self,
+        entity: EntityRef,
+        visit: &mut dyn FnMut(EntityRef) -> ControlFlow<()>,
+    ) -> Result<ControlFlow<()>, EntityReadError> {
+        let (vehicle, host, live) = self.passenger_loan(entity)?;
+        Ok(visit_passenger_tree(
+            vehicle.id,
+            |vehicle, after| self.next_scoped_rider(host, live, vehicle, after),
+            |rider| {
+                if rider == self.m.id {
+                    self.m.extra.mount
+                } else if let Some(mob) = live.find(rider) {
+                    mob.extra.mount
+                } else {
+                    host.passenger_vehicle(rider)
+                }
+            },
+            |rider| {
+                self.lookup_entity(rider)
+                    .map_or(ControlFlow::Continue(()), &mut *visit)
+            },
+        ))
     }
 
     pub(super) fn r_entity_controlling_passenger(&self, entity: EntityRef) -> Option<LivingRef> {
-        let vehicle = self.entity_mob(entity)?;
-        let first = *self.r_entity_passengers(entity)?.first()?;
+        let (vehicle, host, live) = self.passenger_loan(entity).ok()?;
+        let first = self.scoped_passengers(vehicle.id, host, live).next()?;
         if let Some(rider) = self.entity_mob(first) {
-            let tagged = self
-                .w
-                .entity_has("minecraft:non_controlling_rider", &rider.kind.id);
+            let tagged = self.w.entity_tag_bit(
+                &rider.kind,
+                sunrise_client::items::EntityTypeTags::NON_CONTROLLING_RIDER,
+            );
             return (!vehicle.no_ai && !tagged).then(|| LivingRef::new(first));
         }
         // The game only lets a player control this kind when the relevant
@@ -117,9 +169,7 @@ impl GoalCx<'_, '_> {
         if self.host.mob(first).is_some() || self.host.living(first).is_none() {
             return None;
         }
-        self.w
-            .goal_host?
-            .mob_player_controls(vehicle, first.id())
+        host.mob_player_controls(vehicle, first.id())
             .then(|| LivingRef::new(first))
     }
 }

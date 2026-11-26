@@ -1,0 +1,22 @@
+ids = [
+    "handle:RegisterRenderPipelinesEvent::register_render_type",
+    "method:RenderAssets::render_type",
+    "type:RenderSetup",
+    "type:RenderTypeRef",
+    "type:RenderTypeError",
+    "type:RenderTypeTexture",
+    "type:RenderTypeTextureSource",
+    "type:LayeringTransform",
+    "type:TextureTransform",
+    "type:OutlineProperty",
+    "handle:SpecialModelCollector::submit_geometry",
+    "handle:SpecialModelCollector::submit_model",
+    "type:SpecialModelSubmitOptions",
+    "type:SpecialModelRenderType",
+    "type:SpecialModelLighting",
+]
+why = """Add custom RenderType / RenderSetup registration on register_render_pipelines matching vanilla 26.3 RenderSetup, LayeringTransform (None, ViewOffsetZ, ViewOffsetZForward), TextureTransform (Default, Glint, EntityGlint, ArmorEntityGlint, Offset), and OutlineProperty (None, IsOutline, AffectsOutline), resolved via RenderAssets::render_type into generational RenderTypeRef handles (covering both BUILTIN_RENDER_TYPE_IDS and custom setups). Replace SpecialModelCollector::submit_geometry with SpecialModelCollector::submit_model(geometry, tints, options) so special item renderers can choose per-submission packed_light (vanilla LightCoordsUtil layout), render_type (Baked, ItemCutout, ItemTranslucent, Custom(RenderTypeRef)), and lighting (Diffuse, LightmapOnly) in both world and GUI draws."""
+migrate = """
+- `Hooks::register_render_pipelines` now takes `render_types: &mut Vec<RenderSetup>` after `pipelines` (`event.register(pipeline)` is unchanged; call `event.register_render_type(RenderSetup::new(id, pipeline_id)...)` for custom render types, and resolve handles via `host.render_assets().render_type(&id)` in `client_setup` and `client_resources_reloaded`).
+- Replace `collector.submit_geometry(&lease, tints)` with `collector.submit_model(&lease, tints, SpecialModelSubmitOptions::default())`, or configure `.with_packed_light(...)`, `.with_render_type(...)`, and `.with_lighting(...)` per submission.
+"""

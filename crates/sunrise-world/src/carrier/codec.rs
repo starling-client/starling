@@ -1,10 +1,6 @@
-//! Bounded NBT codec for the carrier data model.
-//!
-//! Slice 1 of the moving structures design (board issue 1, "Carrier data
-//! model and bounded codec", in
-//! `docs/design/mod-api/moving-structures.md`): versioned
+//! Bounded NBT codec for the carrier data model: versioned
 //! persistence of [`Carrier`] using the crate's existing Java Edition
-//! NBT (`sunrise_core::nbt`), with no gameplay integration. The design's
+//! NBT (`sunrise_core::nbt`), with no gameplay integration. Its
 //! save contract applies: "Persist versioned cells, canonical registry
 //! names, block-entity data ... UUID, transform and simulation revision
 //! ... Unsupported schema fails load explicitly."

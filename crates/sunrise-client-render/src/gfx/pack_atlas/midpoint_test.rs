@@ -311,7 +311,7 @@ fn compact_records_feed_a_pack_the_vertices_they_hold() {
         3,
         "whole faces pack, the slab doesn't"
     );
-    let page = bytemuck::cast_slice(&records);
+    let page = Page::vertices(bytemuck::cast_slice(&records));
     let packed_range = packed::PACKED_BASE..packed::PACKED_BASE + 16;
     let origin = f32::from_bits((1. / UV_STEPS).to_bits());
     let mut failures = Vec::new();
@@ -362,7 +362,7 @@ fn compact_records_feed_a_pack_the_vertices_they_hold() {
     for expression in ["vec4(gl_Normal, 0.0)", "at_tangent", "at_midBlock"] {
         let flags = [true, false];
         let wide = sample_probe(&device, &queue, &atlas, &water, origin, flags, expression);
-        let page = bytemuck::cast_slice(&page);
+        let page = Page::vertices(bytemuck::cast_slice(&page));
         let after = sample_page(
             &device,
             &queue,
@@ -409,28 +409,45 @@ fn sample_probe(
     flags: [bool; 2],
     expression: &str,
 ) -> Vec<[f32; 4]> {
-    let page = bytemuck::cast_slice(vertices);
+    let page = Page::vertices(bytemuck::cast_slice(vertices));
     let drawn = 0..vertices.len() as u32;
     sample_page(device, queue, atlas, page, drawn, scale, flags, expression)
 }
 
+/// An arena page as flat draws bind it: its slots' bytes, its sources' (`Arena::write_sources`),
+/// and the ids each state's model and fluid map to (`terrain_tables`).
+#[derive(Clone, Copy)]
+pub(super) struct Page<'a> {
+    pub slots: &'a [u8],
+    pub sources: &'a [u8],
+    pub ids: &'a [i32],
+}
+
+impl<'a> Page<'a> {
+    /// `slots` with every source unknown.
+    fn vertices(slots: &'a [u8]) -> Self {
+        Self {
+            slots,
+            sources: &[0; 8],
+            ids: &[],
+        }
+    }
+}
+
 /// `sample_probe` of the vertex indices `drawn` of an arena page holding `page`.
 #[allow(clippy::too_many_arguments)]
-fn sample_page(
+pub(super) fn sample_page(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     atlas: &PackAtlas,
-    page: &[u8],
+    page: Page<'_>,
     drawn: std::ops::Range<u32>,
     scale: f32,
     [flat, shadow]: [bool; 2],
     expression: &str,
 ) -> Vec<[f32; 4]> {
     let count = drawn.len() as u32;
-    let pp = |code| sunrise_shaders::Preprocessed {
-        code,
-        ..Default::default()
-    };
+    let pp = |code: String| sunrise_shaders::Preprocessed::from_source("", &code);
     let vertex = pp(format!(
         "attribute vec2 mc_midTexCoord;\nattribute vec4 at_tangent;\n\
          attribute vec4 at_midBlock;\nattribute vec4 mc_Entity;\nvarying vec4 probe;\nvoid main() {{\n\
@@ -448,13 +465,19 @@ fn sample_page(
     );
     let inputs = atlas.terrain_inputs(flat);
     let program = if shadow {
-        sunrise_shaders::translate_shadow(&vertex, &fragment, &inputs)
+        sunrise_shaders::translate_shadow(
+            &vertex,
+            &fragment,
+            &inputs,
+            naga::front::glsl::InterfaceLimits::WGPU_DEFAULT,
+        )
     } else {
         sunrise_shaders::translate_gbuffers(
             &vertex,
             &fragment,
             sunrise_shaders::Target::Buffers,
             &inputs,
+            naga::front::glsl::InterfaceLimits::WGPU_DEFAULT,
         )
     }
     .unwrap();
@@ -557,18 +580,20 @@ fn sample_page(
         &vec![0; program.interface.uniform_size.max(16) as usize],
         wgpu::BufferUsages::UNIFORM,
     );
-    let slots = buffer(bytemuck::bytes_of(&0u32), wgpu::BufferUsages::STORAGE);
+    // Every 256-slot block of the page names the one origin.
+    let blocks = vec![0u32; page.slots.len() / 24 / 256 + 1];
+    let slots = buffer(bytemuck::cast_slice(&blocks), wgpu::BufferUsages::STORAGE);
     let origin = buffer(
         bytemuck::bytes_of(&[0., 0., 0., scale]),
         wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::VERTEX,
     );
-    let ids = buffer(bytemuck::bytes_of(&[0u32; 2]), wgpu::BufferUsages::STORAGE);
+    let ids = buffer(page.sources, wgpu::BufferUsages::STORAGE);
     let data = buffer(
-        page,
+        page.slots,
         wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::VERTEX,
     );
     let rects = buffer(
-        bytemuck::cast_slice(&terrain_tables(&[], &atlas.rects_table())),
+        bytemuck::cast_slice(&terrain_tables(page.ids, &atlas.rects_table())),
         wgpu::BufferUsages::STORAGE,
     );
     let bindings = [

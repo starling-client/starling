@@ -12,9 +12,10 @@ import threading
 import time
 from pathlib import Path
 
-import lab
-import state_digest_scene as base
-from state_digest_compare import compare_coverage
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, state_digest_scene as base
+from tools.state_digest_compare import compare_coverage
 
 STATE_PATHS = ('Pos', 'Health', 'foodLevel', 'XpLevel', 'XpTotal', 'Inventory', 'active_effects[0].id', 'active_effects[1].id', 'Dimension')
 PLAYERS = ['Alice0', 'Bob0']  # dedicated: two scripted bots; integrated: Alice0 joins the host's LAN

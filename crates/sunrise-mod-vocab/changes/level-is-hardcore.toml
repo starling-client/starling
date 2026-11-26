@@ -1,0 +1,2 @@
+ids = ["handle:LevelRef::is_hardcore"]
+why = "LevelRef::is_hardcore reads LevelData.isHardcore on both sides: the world's flag on a server, the login packet's on a client."

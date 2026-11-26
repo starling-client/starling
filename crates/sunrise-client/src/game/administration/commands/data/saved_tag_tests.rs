@@ -49,7 +49,7 @@ fn with_command_game(name: &str, test: impl FnOnce(&mut Game<'_>)) {
     game.player = Some(PlayerMotion::new(game.motion, Vec3::new(10.5, 200.0, 0.5)).unwrap());
     game.reset_entity_residency();
     game.native_lifecycle
-        .begin_open(mod_api::Authority::IntegratedServer);
+        .begin_open(Some(mod_api::Authority::IntegratedServer));
     crate::game::native_entity_refs::tests::bind_local_player(&mut game, 1, 1);
     game.build_registries();
     game.set_allow_commands(true);
@@ -199,6 +199,8 @@ fn tag_list_is_not_repeated_to_the_operators() {
         assert!(game.run_command(
             "summon pig 4.5 200 4.5 {UUID:[I;329,0,0,4],NoAI:1b,Silent:1b,NoGravity:1b}"
         ));
+        // The summon's own line (a player informs the operators), sent on a tick.
+        game.admin_feedback.clear();
         // A source that informs the operators (`shouldInformAdmins`).
         game.console_broadcast = Some(true);
         assert!(game.run_command("tag 00000149-0000-0000-0000-000000000004 add audit"));

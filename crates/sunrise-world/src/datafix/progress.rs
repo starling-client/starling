@@ -117,7 +117,7 @@ impl UpgradeProgress {
     pub fn running_file_fixer_stats(&self) -> &FileFixStats {
         &self.running_fixer
     }
-    pub fn add_total_file_fix_operations(&self, additional: i32) {
+    pub(crate) fn add_total_file_fix_operations(&self, additional: i32) {
         self.total
             .total_operations
             .fetch_add(additional, Ordering::Relaxed);
@@ -125,10 +125,10 @@ impl UpgradeProgress {
             .total_operations
             .fetch_add(additional, Ordering::Relaxed);
     }
-    pub fn increment_finished_operations(&self) {
+    pub(crate) fn increment_finished_operations(&self) {
         self.increment_finished_operations_by(1);
     }
-    pub fn increment_finished_operations_by(&self, count: i32) {
+    pub(crate) fn increment_finished_operations_by(&self, count: i32) {
         self.total
             .finished_operations
             .fetch_add(count, Ordering::Relaxed);
@@ -143,7 +143,7 @@ impl UpgradeProgress {
         self.canceled.load(Ordering::Relaxed)
     }
     /// `setType`: the type's own stats start over.
-    pub fn set_type(&self, ty: UpgradeType) {
+    pub(crate) fn set_type(&self, ty: UpgradeType) {
         self.ty.store(ty.code(), Ordering::Relaxed);
         self.of_type.reset();
     }
@@ -155,12 +155,12 @@ impl UpgradeProgress {
             _ => None,
         }
     }
-    pub fn set_applicable_fixer_amount(&self, amount: i32) {
+    pub(crate) fn set_applicable_fixer_amount(&self, amount: i32) {
         self.running_fixer
             .total_operations
             .store(amount, Ordering::Relaxed);
     }
-    pub fn increment_running_file_fixer(&self) {
+    pub(crate) fn increment_running_file_fixer(&self) {
         self.running_fixer
             .finished_operations
             .fetch_add(1, Ordering::Relaxed);
@@ -168,35 +168,35 @@ impl UpgradeProgress {
     pub fn is_finished(&self) -> bool {
         self.finished.load(Ordering::Relaxed)
     }
-    pub fn set_finished(&self, finished: bool) {
+    pub(crate) fn set_finished(&self, finished: bool) {
         self.finished.store(finished, Ordering::Relaxed);
     }
     pub fn total_progress(&self) -> f32 {
         f32::from_bits(self.total_progress.load(Ordering::Relaxed))
     }
-    pub fn set_total_progress(&self, progress: f32) {
+    pub(crate) fn set_total_progress(&self, progress: f32) {
         self.total_progress
             .store(progress.to_bits(), Ordering::Relaxed);
     }
     pub fn total_chunks(&self) -> i32 {
         self.total_chunks.load(Ordering::Relaxed)
     }
-    pub fn add_total_chunks(&self, additional: i32) {
+    pub(crate) fn add_total_chunks(&self, additional: i32) {
         self.total_chunks.fetch_add(additional, Ordering::Relaxed);
     }
     pub fn converted(&self) -> i32 {
         self.converted.load(Ordering::Relaxed)
     }
-    pub fn increment_converted(&self) {
+    pub(crate) fn increment_converted(&self) {
         self.converted.fetch_add(1, Ordering::Relaxed);
     }
     pub fn skipped(&self) -> i32 {
         self.skipped.load(Ordering::Relaxed)
     }
-    pub fn increment_skipped(&self) {
+    pub(crate) fn increment_skipped(&self) {
         self.skipped.fetch_add(1, Ordering::Relaxed);
     }
-    pub fn set_dimension_progress(&self, dimension: &str, progress: f32) {
+    pub(crate) fn set_dimension_progress(&self, dimension: &str, progress: f32) {
         if let Ok(mut map) = self.dimension_progress.lock() {
             map.insert(dimension.to_owned(), progress);
         }
@@ -226,7 +226,7 @@ impl UpgradeProgress {
         };
         self.status.store(code, Ordering::Relaxed);
     }
-    pub fn data_fix_type(&self) -> Option<UpgradeDataFixType> {
+    pub(crate) fn data_fix_type(&self) -> Option<UpgradeDataFixType> {
         match self.data_fix_type.load(Ordering::Relaxed) {
             1 => Some(UpgradeDataFixType::Chunk),
             2 => Some(UpgradeDataFixType::EntityChunk),
@@ -248,7 +248,7 @@ impl UpgradeProgress {
         };
         self.data_fix_type.store(code, Ordering::Relaxed);
     }
-    pub fn set_file_fixing(&self) {
+    pub(crate) fn set_file_fixing(&self) {
         self.file_fixing.store(true, Ordering::Relaxed);
     }
     pub fn is_file_fixing(&self) -> bool {

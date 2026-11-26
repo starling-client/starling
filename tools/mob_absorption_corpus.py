@@ -5,7 +5,12 @@ is 0, on every tick (shouldApplyEffectTickThisTick is always true), so
 MobEffectInstance.tickServer returns false before the duration counts down
 and LivingEntity.tickEffects removes the effect on the mob's next tick.
 """
-from command_exec_corpus import cmd
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools.command_exec_corpus import cmd
 
 PIG = 'PersistenceRequired:1b,Silent:1b,Health:10f'
 

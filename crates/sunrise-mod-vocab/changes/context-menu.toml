@@ -1,0 +1,3 @@
+ids = ["method:prelude::ScreensClientHost::open_context_menu", "method:prelude::ScreensClientHost::close_context_menu", "type:client::widgets::ContextMenuEntry", "type:client::widgets::ContextMenuAction"]
+why = "Adds ClientHost::open_context_menu(at, entries) and close_context_menu(): a right-click menu over the open screen, with actions, nested menus, separators, item icons and disabled rows, drawn above every widget and tooltip, kept inside the window, taking the mouse and keys until it closes (arrow keys, Enter and Escape), closing with its screen, and running the picked action under the mod's panic isolation after it closes."
+migrate = "Nothing to migrate. A mod that drew its own menu with a ScreenWidget can open a ContextMenuEntry list instead."

@@ -1,5 +1,4 @@
 //! The `blocks` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0152
 
 pub trait Hooks {
     /// Declare blocks in code once at startup on each side, before resources load.
@@ -21,6 +20,7 @@ Untagged items and tagged items without a block are skipped. Crop maturity follo
 beetroots mature at age 3, ordinary crops at 7; torchflower crops never reach their maximum age 2 while
 still crops. Pitcher crops are not `CropBlock`s and are not harvested by this behavior. Farming still
 requires a farmer at work and `mob_griefing` enabled."#]
+    /// Bare block IDs use the submitting mod ID; valid explicit names retain their namespace.
     #[hook(
         target = "sunrise_client::game::native_hooks::base::Game<'_>::native_blocks",
         receiver = "associated",
@@ -30,7 +30,7 @@ requires a farmer at work and `mob_griefing` enabled."#]
         out = "blocks",
         context = "registration",
         neoforge = "RegisterEvent",
-        version = 4
+        version = 5
     )]
     fn blocks(
         blocks: &mut dyn FnMut(

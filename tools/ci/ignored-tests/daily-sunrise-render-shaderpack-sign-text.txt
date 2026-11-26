@@ -1,0 +1,2 @@
+sunrise-client-render gfx::pack_post::sign_text_target_tests::sign_text_shows_in_the_buffer_final_shows lib daily gpu
+sunrise-render-shaderpack pack_entities::gpu_span_tests::sign_text_draws_in_the_block_program_in_order lib daily gpu

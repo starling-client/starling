@@ -1004,7 +1004,7 @@ mod tests {
             )
             .unwrap();
             let (_, count) =
-                crate::extract_client_resources(&jar, &target, Some(&mut assets)).unwrap();
+                crate::extract_resources(&jar, &target, Some(&mut assets), false).unwrap();
             assert_eq!(count, 5);
             optional_imports(Ok(&mut assets), &|_| {});
             assert_eq!(fs::read(&face).unwrap(), PANORAMA[0].as_bytes());

@@ -1,5 +1,12 @@
 //! Client tutorial progression (`net.minecraft.client.tutorial`).
 
+#[cfg(test)]
+#[path = "tutorial/toast_tests.rs"]
+mod toast_tests;
+
+use super::toast_manager::Toast;
+use sunrise_client::hud::{HudAtlas, HudBatch};
+use sunrise_client::toasts::ToastClock;
 use sunrise_client_gameplay::tutorial::social_hint_progress;
 pub(super) use sunrise_client_gameplay::tutorial::{Hint, Previous, Step, Tutorial};
 
@@ -17,7 +24,12 @@ impl super::Game<'_> {
 impl super::Game<'_> {
     pub(super) fn reset_tutorial(&mut self) {
         self.tutorial = Tutorial::new(Step::from_option(self.settings.file.int("tutorialStep")));
-        self.tutorial_toasts.clear();
+        self.toast_manager
+            .queued
+            .retain(|entry| !matches!(entry, Toast::Tutorial(_)));
+        self.toast_manager
+            .visible
+            .retain(|entry| !matches!(entry.toast, Toast::Tutorial(_)));
     }
 
     fn tutorial_tagged(&self, item: bool, tag: &str, id: &str) -> bool {
@@ -73,6 +85,7 @@ impl super::Game<'_> {
         }
     }
 
+    /// Tick the current step and queue `Gui.addSocialInteractionsToast` on the first server.
     pub(super) fn tick_tutorial(&mut self) {
         use sunrise_client::actions::Action;
         if self.title.is_some()
@@ -88,7 +101,8 @@ impl super::Game<'_> {
             && (!self.has_singleplayer_server() || self.is_published())
         {
             if let Some(toast) = self.tutorial_toast(Hint::SocialInteractions, Some(0.0)) {
-                self.tutorial_toasts.push(toast);
+                self.toast_manager
+                    .post(ToastClock::of(self.clock.still()), Toast::Tutorial(toast));
             }
             self.settings.file.set(
                 "joinedFirstServer",
@@ -176,31 +190,25 @@ pub(super) struct HintToast {
     smooth: f32,
     last_smooth: i64,
     wanted: bool,
-    slot: Option<usize>,
     slots: usize,
     slide: sunrise_client::toasts::Slide,
 }
 
 impl super::Game<'_> {
     pub(super) fn hide_social_tutorial(&mut self) {
-        for toast in &mut self.tutorial_toasts {
-            if toast.hint == Hint::SocialInteractions {
-                toast.wanted = false;
-            }
+        if let Some(toast) = self.toast_manager.find_mut(|entry| match entry {
+            Toast::Tutorial(t) if t.hint == Hint::SocialInteractions => Some(t),
+            _ => None,
+        }) {
+            toast.wanted = false;
         }
     }
 
-    pub(super) fn tutorial_toast_slots(&self) -> u32 {
-        self.tutorial_toasts
-            .iter()
-            .filter_map(|t| t.slot.map(|s| ((1u32 << t.slots) - 1) << s))
-            .fold(0, |a, b| a | b)
-    }
-
+    /// `Tutorial.key`: bold belongs to the bound key, not the translation using it.
     fn tutorial_toast(&self, hint: Hint, progress: Option<f32>) -> Option<HintToast> {
         use sunrise_client::{keybinds, text::Text};
-        let key = |mapping: &str| keybinds::display_name(self.settings.keys.get(mapping)).plain();
-        let (title_key, fallback, description_key, description, icon_args) = match hint {
+        let key = |mapping: &str| keybinds::display_name(self.settings.keys.get(mapping)).bold();
+        let (title_key, fallback, description_key, description, title_args) = match hint {
             Hint::Move => (
                 "tutorial.move.title",
                 "Move with %1$s, %2$s, %3$s, %4$s",
@@ -256,17 +264,7 @@ impl super::Game<'_> {
                 vec![],
             ),
         };
-        let substitute = |mut text: String, values: &[String]| {
-            for (i, value) in values.iter().enumerate() {
-                text = text.replace(&format!("%{}$s", i + 1), value);
-                text = text.replacen("%s", value, 1);
-            }
-            text
-        };
-        let mut title = Text::literal(substitute(
-            self.translate_with_fallback(title_key, fallback),
-            &icon_args,
-        ));
+        let mut title = Text::translate_with_fallback(title_key, fallback, &title_args);
         let desc_args = match hint {
             Hint::Move => vec![key("key.jump")],
             Hint::PunchTree => vec![key("key.attack")],
@@ -274,11 +272,12 @@ impl super::Game<'_> {
             Hint::SocialInteractions => vec![key("key.socialInteractions")],
             _ => vec![],
         };
-        let mut description = Some(Text::literal(substitute(
-            self.translate_with_fallback(description_key, description),
+        let mut description = Some(Text::translate_with_fallback(
+            description_key,
+            description,
             &desc_args,
-        )));
-        if !self.add_toast(mod_api::ToastKind::Tutorial, &mut title, &mut description) {
+        ));
+        if !self.admit_toast(mod_api::ToastKind::Tutorial, &mut title, &mut description) {
             return None;
         }
         let font = &self.gui.atlas.font;
@@ -297,152 +296,131 @@ impl super::Game<'_> {
             smooth: 0.0,
             last_smooth: 0,
             wanted: true,
-            slot: None,
             slots,
             slide: Default::default(),
         })
     }
 
-    pub(super) fn draw_tutorial_toasts(
-        &mut self,
-        batch: &mut sunrise_client::hud::HudBatch,
-        hidden: bool,
-    ) {
+    pub(super) fn update_tutorial_toasts(&mut self) {
+        // Under `SUNRISE_STILL` no toast is ever up (`ToastManager::post`): no hint toast to keep, and
+        // none to build again every draw.
+        if self.clock.still() {
+            return;
+        }
         let wanted = self.tutorial.hint();
         if wanted.map(|(hint, _)| hint) != self.tutorial.cancelled_hint() {
             self.tutorial.set_cancelled_hint(None);
         }
-        for t in &mut self.tutorial_toasts {
+        let mut has_current_hint = false;
+        for entry in self.toast_manager.all_mut() {
+            let Toast::Tutorial(t) = entry else { continue };
             if t.hint == Hint::SocialInteractions {
                 continue;
             }
             t.wanted = wanted.is_some_and(|(hint, _)| hint == t.hint);
             if t.wanted {
                 t.progress = wanted.and_then(|(_, progress)| progress);
+                has_current_hint = true;
             }
         }
         if let Some((hint, progress)) = wanted
             && self.tutorial.cancelled_hint() != Some(hint)
-            && !self
-                .tutorial_toasts
-                .iter()
-                .any(|t| t.wanted && t.hint == hint)
+            && !has_current_hint
         {
             if let Some(toast) = self.tutorial_toast(hint, progress) {
-                self.tutorial_toasts.push(toast);
+                self.toast_manager
+                    .post(ToastClock::Real, Toast::Tutorial(toast));
             } else {
                 self.tutorial.set_cancelled_hint(Some(hint));
             }
         }
-        let mut used = self.toast_slots_used();
-        for t in &mut self.tutorial_toasts {
-            if t.slot.is_none() && t.wanted && t.slots <= Self::TOAST_SLOTS {
-                let mask = (1u32 << t.slots) - 1;
-                if let Some(slot) =
-                    (0..=Self::TOAST_SLOTS - t.slots).find(|s| used & (mask << s) == 0)
-                {
-                    t.slot = Some(slot);
-                    used |= mask << slot;
-                }
-            }
+        self.toast_manager
+            .queued
+            .retain(|entry| !matches!(entry, Toast::Tutorial(t) if !t.wanted));
+    }
+}
+
+impl HintToast {
+    pub(super) fn slots(&self) -> usize {
+        self.slots
+    }
+
+    pub(super) fn update(&mut self, clock: ToastClock) -> (Option<bool>, bool) {
+        let (sound, finished) = self.slide.update_on(clock, |fully| {
+            self.wanted && (self.hint != Hint::SocialInteractions || social_hint_progress(fully).0)
+        });
+        if self.hint == Hint::SocialInteractions {
+            let (_, progress) = social_hint_progress(self.slide.fully_for);
+            self.progress = Some(progress);
+            self.smooth = progress;
+        } else if let Some(progress) = self.progress {
+            let delta = ((self.slide.fully_for - self.last_smooth) as f32 / 100.0).clamp(0.0, 1.0);
+            self.smooth += (progress - self.smooth) * delta;
+            self.last_smooth = self.slide.fully_for;
         }
-        let atlas = &self.gui.atlas;
-        let mut i = 0;
-        while i < self.tutorial_toasts.len() {
-            let t = &mut self.tutorial_toasts[i];
-            if t.slot.is_none() {
-                if !t.wanted {
-                    self.tutorial_toasts.remove(i);
+        (sound, finished)
+    }
+
+    pub(super) fn draw(&self, atlas: &HudAtlas, batch: &mut HudBatch, y: f32) {
+        let height = (10 + 11 * self.lines.len().max(2)) as f32;
+        let x = batch.width - 160.0 * self.slide.portion;
+        sunrise_client::ui::nine_slice(
+            batch,
+            atlas,
+            "toast/tutorial",
+            x,
+            y,
+            160.0,
+            height,
+            u32::MAX,
+        );
+        let icon = match self.hint {
+            Hint::Move => "movement_keys",
+            Hint::Look => "mouse",
+            Hint::FindTree | Hint::PunchTree => "tree",
+            Hint::OpenInventory => "recipe_book",
+            Hint::CraftPlanks => "wooden_planks",
+            Hint::SocialInteractions => "social_interactions",
+        };
+        batch.sprite_scaled(
+            atlas,
+            &format!("toast/{icon}"),
+            x + 6.0,
+            y + 6.0,
+            20.0,
+            20.0,
+            u32::MAX,
+        );
+        let text_y = y + 7.0 + ((self.lines.len().max(2) - self.lines.len()) * 11) as f32 / 2.0;
+        for (n, (line, _)) in self.lines.iter().enumerate() {
+            batch.text_styled(
+                atlas,
+                line,
+                x + 30.0,
+                text_y + 11.0 * n as f32,
+                if n < self.title_lines {
+                    0xFF50_0050
                 } else {
-                    i += 1;
-                }
-                continue;
-            }
-            let (sound, finished) = t.slide.update_now(|fully| {
-                t.wanted && (t.hint != Hint::SocialInteractions || social_hint_progress(fully).0)
-            });
-            if let Some(show) = sound {
-                let event = if show { "ui.toast.in" } else { "ui.toast.out" };
-                self.audio
-                    .play(&format!("minecraft:{event}"), None, 1.0, 1.0);
-            }
-            if finished {
-                self.tutorial_toasts.remove(i);
-                continue;
-            }
-            if t.hint == Hint::SocialInteractions {
-                let (_, progress) = social_hint_progress(t.slide.fully_for);
-                t.progress = Some(progress);
-                t.smooth = progress;
-            } else if let Some(progress) = t.progress {
-                let delta = ((t.slide.fully_for - t.last_smooth) as f32 / 100.0).clamp(0.0, 1.0);
-                t.smooth += (progress - t.smooth) * delta;
-                t.last_smooth = t.slide.fully_for;
-            }
-            if !hidden {
-                let height = (10 + 11 * t.lines.len().max(2)) as f32;
-                let x = batch.width - 160.0 * t.slide.portion;
-                let y = 32.0 * t.slot.unwrap_or_default() as f32;
-                sunrise_client::ui::nine_slice(
-                    batch,
-                    atlas,
-                    "toast/tutorial",
-                    x,
-                    y,
-                    160.0,
-                    height,
-                    u32::MAX,
-                );
-                let icon = match t.hint {
-                    Hint::Move => "movement_keys",
-                    Hint::Look => "mouse",
-                    Hint::FindTree | Hint::PunchTree => "tree",
-                    Hint::OpenInventory => "recipe_book",
-                    Hint::CraftPlanks => "wooden_planks",
-                    Hint::SocialInteractions => "social_interactions",
-                };
-                batch.sprite_scaled(
-                    atlas,
-                    &format!("toast/{icon}"),
-                    x + 6.0,
-                    y + 6.0,
-                    20.0,
-                    20.0,
-                    u32::MAX,
-                );
-                let text_y = y + 7.0 + ((t.lines.len().max(2) - t.lines.len()) * 11) as f32 / 2.0;
-                for (n, (line, _)) in t.lines.iter().enumerate() {
-                    batch.text_styled(
-                        atlas,
-                        line,
-                        x + 30.0,
-                        text_y + 11.0 * n as f32,
-                        if n < t.title_lines {
-                            0xFF50_0050
-                        } else {
-                            0xFF00_0000
-                        },
-                        false,
-                    );
-                }
-                if let Some(progress) = t.progress {
-                    batch.fill(atlas, x + 3.0, y + height - 4.0, 154.0, 1.0, u32::MAX);
-                    let color = if progress >= t.smooth {
-                        0xFF00_5500
-                    } else {
-                        0xFF55_0000
-                    };
-                    batch.fill(
-                        atlas,
-                        x + 3.0,
-                        y + height - 4.0,
-                        154.0 * t.smooth.clamp(0.0, 1.0),
-                        1.0,
-                        color,
-                    );
-                }
-            }
-            i += 1;
+                    0xFF00_0000
+                },
+                false,
+            );
+        }
+        if let Some(progress) = self.progress {
+            batch.fill(atlas, x + 3.0, y + height - 4.0, 154.0, 1.0, u32::MAX);
+            let color = if progress >= self.smooth {
+                0xFF00_5500
+            } else {
+                0xFF55_0000
+            };
+            batch.fill(
+                atlas,
+                x + 3.0,
+                y + height - 4.0,
+                154.0 * self.smooth.clamp(0.0, 1.0),
+                1.0,
+                color,
+            );
         }
     }
 }

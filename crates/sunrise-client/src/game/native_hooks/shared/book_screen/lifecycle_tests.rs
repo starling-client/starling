@@ -1,6 +1,8 @@
 use super::*;
 use std::sync::{Mutex, OnceLock};
-use sunrise_client::recipe_book::{BookFlags, settings_codec, settings_sync::Message};
+use sunrise_client::recipe_book::{
+    BookFlags, placement_sync::ResourceId, settings_codec, settings_sync::Message,
+};
 
 static KEY: OnceLock<mod_api::RecipeBookTypeKey> = OnceLock::new();
 struct BookMod;
@@ -175,7 +177,8 @@ fn entering_inventory_requests_catalogue_for_preinstalled_bound_screen() {
                     .expect("catalogue requested on opening");
                 assert_eq!(window.menu.as_str(), "bound:menu");
                 assert_eq!(window.nonce, nonce);
-                assert!(game.native_net.placement.deadline.is_some());
+                game.set_screen(Screen::Playing);
+                assert!(game.native_net.placement.client.window().is_none());
             });
         });
     });
@@ -380,6 +383,7 @@ fn authoritative_custom_book_rebuilds_cached_geometry_without_observe_screen() {
                     window: 1,
                     generation,
                     name: "geometry:menu".into(),
+                    title: None,
                     block: Some("minecraft:stone".into()),
                     pos: None,
                     mod_type: None,
@@ -388,6 +392,7 @@ fn authoritative_custom_book_rebuilds_cached_geometry_without_observe_screen() {
                 slot_moves: Default::default(),
                 layout_revision: 0,
                 shown: true,
+                detached: false,
                 screen: mod_api::__private::OwnedMenuScreen::new(
                     "geometry",
                     0,
@@ -432,7 +437,7 @@ fn authoritative_custom_book_rebuilds_cached_geometry_without_observe_screen() {
                     epoch: 6,
                     revision: 0,
                     entries: vec![(
-                        key.as_str().into(),
+                        ResourceId::from_registered_book(&key),
                         BookFlags {
                             open: true,
                             filtering: false,
@@ -458,7 +463,7 @@ fn authoritative_custom_book_rebuilds_cached_geometry_without_observe_screen() {
                     epoch: 7,
                     revision: 0,
                     entries: vec![(
-                        key.as_str().into(),
+                        ResourceId::from_registered_book(&key),
                         BookFlags {
                             open: false,
                             filtering: false,
@@ -485,7 +490,7 @@ fn authoritative_custom_book_rebuilds_cached_geometry_without_observe_screen() {
                 Message::Update {
                     epoch: 7,
                     revision: 1,
-                    key: key.as_str().into(),
+                    key: ResourceId::from_registered_book(&key),
                     flags: BookFlags {
                         open: true,
                         filtering: true,
@@ -508,7 +513,7 @@ fn authoritative_custom_book_rebuilds_cached_geometry_without_observe_screen() {
                 Message::Update {
                     epoch: 7,
                     revision: 2,
-                    key: key.as_str().into(),
+                    key: ResourceId::from_registered_book(&key),
                     flags: BookFlags {
                         open: false,
                         filtering: false,
@@ -521,7 +526,7 @@ fn authoritative_custom_book_rebuilds_cached_geometry_without_observe_screen() {
                 Message::Update {
                     epoch: 7,
                     revision: 3,
-                    key: key.as_str().into(),
+                    key: ResourceId::from_registered_book(&key),
                     flags: BookFlags {
                         open: true,
                         filtering: false,
@@ -529,15 +534,44 @@ fn authoritative_custom_book_rebuilds_cached_geometry_without_observe_screen() {
                 },
             );
             assert_eq!(geometry(game), opened);
-            receive(game, Message::Busy);
+            // Removed retry/busy tags and stale/gap updates leave established
+            // good authority and presentation alone without latching later valid input out.
+            game.remote_book_settings(&[4]);
+            game.remote_book_settings(&[7]);
+            receive(
+                game,
+                Message::Update {
+                    epoch: 7,
+                    revision: 9,
+                    key: ResourceId::from_registered_book(&key),
+                    flags: BookFlags {
+                        open: false,
+                        filtering: false,
+                    },
+                },
+            );
+            assert!(game.native_net.book_view.ready);
+            assert_eq!(geometry(game), opened);
+            receive(
+                game,
+                Message::Update {
+                    epoch: 7,
+                    revision: 4,
+                    key: ResourceId::from_registered_book(&key),
+                    flags: BookFlags {
+                        open: false,
+                        filtering: true,
+                    },
+                },
+            );
             assert_eq!(geometry(game), closed);
             receive(
                 game,
                 Message::Snapshot {
                     epoch: 7,
-                    revision: 4,
+                    revision: 5,
                     entries: vec![(
-                        key.as_str().into(),
+                        ResourceId::from_registered_book(&key),
                         BookFlags {
                             open: true,
                             filtering: false,
@@ -570,6 +604,7 @@ fn a_moved_slot_takes_its_place_for_drawing_and_input_from_the_next_frame() {
                     window: 1,
                     generation,
                     name: MENU.into(),
+                    title: None,
                     block: Some(STONE.into()),
                     pos: None,
                     mod_type: None,
@@ -578,6 +613,7 @@ fn a_moved_slot_takes_its_place_for_drawing_and_input_from_the_next_frame() {
                 slot_moves: Default::default(),
                 layout_revision: 0,
                 shown: true,
+                detached: false,
                 screen: mod_api::__private::OwnedMenuScreen::new(
                     "geometry",
                     0,
@@ -648,7 +684,7 @@ fn a_moved_slot_takes_its_place_for_drawing_and_input_from_the_next_frame() {
                 builds
             );
             assert_eq!(
-                game.set_screen_slot(MENU, 9, Some([1.0, 1.0])),
+                game.set_screen_slot(MENU, 39, Some([1.0, 1.0])),
                 Err(mod_api::ScreenSlotRefusal::NoSuchSlot)
             );
             assert_eq!(geometry(game), after);
@@ -695,6 +731,7 @@ fn a_hidden_slot_leaves_the_screen_and_comes_back_where_put() {
                     window: 1,
                     generation,
                     name: MENU.into(),
+                    title: None,
                     block: Some(STONE.into()),
                     pos: None,
                     mod_type: None,
@@ -703,6 +740,7 @@ fn a_hidden_slot_leaves_the_screen_and_comes_back_where_put() {
                 slot_moves: Default::default(),
                 layout_revision: 0,
                 shown: true,
+                detached: false,
                 screen: mod_api::__private::OwnedMenuScreen::new(
                     "geometry",
                     0,
@@ -766,7 +804,8 @@ fn a_hidden_slot_leaves_the_screen_and_comes_back_where_put() {
 
             // Refusals, each by name, and nothing changes.
             let before = geometry(game);
-            assert_eq!(game.set_screen_slot(MENU, 3, None), Err(NoSuchSlot));
+            // Three container slots and the 36 player slots: 39 is the first past the menu.
+            assert_eq!(game.set_screen_slot(MENU, 39, None), Err(NoSuchSlot));
             assert_eq!(
                 game.set_screen_slot(MENU, 0, Some([f32::NAN, 0.0])),
                 Err(BadPosition)
@@ -780,6 +819,132 @@ fn a_hidden_slot_leaves_the_screen_and_comes_back_where_put() {
             game.screen = Screen::Playing;
             assert_eq!(game.set_screen_slot(MENU, 0, None), Err(NoScreen));
             assert_eq!(game.screen_slot(MENU, 0), None);
+        });
+    });
+}
+
+/// The player's slots take hides and moves like the container slots, in menu order after them
+/// (the main inventory's rows, then the hotbar): a hidden one is not hovered, listed, drawn or
+/// reached by the pointer, so a drag does not pick it up and a number key over it finds no slot,
+/// and a screen opened again has every slot back. What the server does with a shift-click is not
+/// decided here: nothing on the client filters it.
+#[test]
+#[ignore = "daily"]
+fn hidden_player_slots_are_no_target_and_come_back_on_reopen() {
+    use mod_api::prelude::ScreensClientHost;
+    let mods: mod_api::Mods = Vec::<mod_api::ModEntry>::new().into();
+    mod_platform::testing::with_mods(mods, || {
+        crate::game::native_entity_refs::tests::with_client_game(|game| {
+            let generation = seed_native_menu(game, 1, MENU);
+            game.settings.gui_scale = 1;
+            game.recipe_ui.test_viewport = Some([1280, 720]);
+            game.screen = Screen::Inventory;
+            game.title = None;
+            game.container = Some((i32::MIN, 0, 0));
+            let open = || OpenNativeScreen {
+                menu: OpenNativeMenu {
+                    key: (i32::MIN, 0, 0),
+                    window: 1,
+                    generation,
+                    name: MENU.into(),
+                    title: None,
+                    block: Some(STONE.into()),
+                    pos: None,
+                    mod_type: None,
+                    data: Vec::new(),
+                },
+                slot_moves: Default::default(),
+                layout_revision: 0,
+                shown: true,
+                detached: false,
+                screen: mod_api::__private::OwnedMenuScreen::new(
+                    "geometry",
+                    0,
+                    mod_api::MenuScreen::new(mod_api::MenuScreenLayout {
+                        width: 176.0,
+                        height: 166.0,
+                        slots: vec![
+                            Some(mod_api::ScreenSlot {
+                                position: [8.0, 18.0],
+                                ..Default::default()
+                            }),
+                            Some(mod_api::ScreenSlot {
+                                position: [26.0, 18.0],
+                                ..Default::default()
+                            }),
+                        ],
+                        inventory_y: 84.0,
+                        inventory_x: 8.0,
+                        ..Default::default()
+                    }),
+                ),
+            };
+            game.mod_screen = Some(open());
+            game.build_screen();
+            let batch =
+                sunrise_client::hud::HudBatch::new([1280, 720], game.settings.gui_scale_inputs());
+            // Origin (552, 277): the main inventory's first slot (inventory slot 9) is at (8, 84)
+            // and the hotbar's first (inventory slot 0) at (8, 142).
+            assert_eq!(game.slot_at(&batch, 561.0, 362.0), Some(9));
+            assert_eq!(game.slot_at(&batch, 561.0, 420.0), Some(0));
+            assert_eq!(game.slot_count(), 38);
+
+            // Two container slots, so menu slot 2 is the main inventory's first and 29 the hotbar's.
+            assert_eq!(game.screen_slot(MENU, 2), Some([8.0, 84.0]));
+            assert_eq!(game.screen_slot(MENU, 29), Some([8.0, 142.0]));
+            assert_eq!(game.set_screen_slot(MENU, 2, None), Ok(()));
+            assert_eq!(game.set_screen_slot(MENU, 29, None), Ok(()));
+            assert_eq!(ScreensClientHost::screen_slot(game, MENU, 2), None);
+            // Still there this frame, gone from the next build.
+            assert_eq!(game.slot_at(&batch, 561.0, 362.0), Some(9));
+            game.build_screen();
+            // Hover, and with it the hit test of a click, of a drag across it (which adds the slot
+            // under the pointer) and of a number key over it (which swaps the slot under it).
+            assert_eq!(game.slot_at(&batch, 561.0, 362.0), None);
+            assert_eq!(game.slot_at(&batch, 561.0, 420.0), None);
+            assert_eq!(game.slot_at(&batch, 579.0, 362.0), Some(10));
+            assert_eq!(game.slot_at(&batch, 579.0, 420.0), Some(1));
+            assert!(!geometry(game).1.iter().any(|(id, _)| *id == 9 || *id == 0));
+            assert!(!game.slots().contains(&9) && !game.slots().contains(&0));
+            assert_eq!(game.slot_count(), 36);
+            let pad: Vec<[f32; 4]> = game
+                .pad_slot_targets(&batch)
+                .iter()
+                .map(|t| t.rect)
+                .collect();
+            assert!(!pad.contains(&[560.0, 361.0, 16.0, 16.0]));
+            assert!(!pad.contains(&[560.0, 419.0, 16.0, 16.0]));
+            // The container slots are untouched.
+            assert_eq!(game.slot_at(&batch, 560.0, 295.0), Some(300));
+
+            // The hotbar's first slot shown elsewhere, the main inventory's where it was.
+            assert_eq!(game.set_screen_slot(MENU, 29, Some([100.0, 20.0])), Ok(()));
+            assert_eq!(game.set_screen_slot(MENU, 2, Some([8.0, 84.0])), Ok(()));
+            game.build_screen();
+            assert_eq!(game.slot_position(0), (100.0, 20.0));
+            assert_eq!(game.slot_at(&batch, 653.0, 298.0), Some(0));
+            assert_eq!(game.slot_at(&batch, 561.0, 420.0), None);
+            assert_eq!(game.slot_at(&batch, 561.0, 362.0), Some(9));
+
+            // Past the menu's slots there is nothing to move.
+            assert_eq!(
+                game.set_screen_slot(MENU, 38, None),
+                Err(mod_api::ScreenSlotRefusal::NoSuchSlot)
+            );
+
+            // Hidden again, then the screen is closed and opened again: every slot is back.
+            assert_eq!(game.set_screen_slot(MENU, 2, None), Ok(()));
+            assert_eq!(game.set_screen_slot(MENU, 29, None), Ok(()));
+            game.build_screen();
+            assert_eq!(game.slot_at(&batch, 561.0, 362.0), None);
+            game.mod_screen = Some(open());
+            game.build_screen();
+            assert_eq!(game.slot_count(), 38);
+            assert_eq!(game.slot_position(0), (8.0, 142.0));
+            assert_eq!(game.slot_at(&batch, 561.0, 362.0), Some(9));
+            assert_eq!(game.slot_at(&batch, 561.0, 420.0), Some(0));
+            assert_eq!(game.screen_slot(MENU, 2), Some([8.0, 84.0]));
+            assert_eq!(game.screen_slot(MENU, 29), Some([8.0, 142.0]));
         });
     });
 }
@@ -834,7 +999,10 @@ fn a_bound_books_catalogue_survives_slot_moves_and_hides() {
                 assert_eq!(window.window, 1);
 
                 // The server's catalogue answers the client's first request.
-                let client = &mut game.native_net.placement.client;
+                use sunrise_client::recipe_book::{
+                    menu_layout::MenuLayoutMetadata,
+                    placement_sync::{DisplayId, Frame, encode_catalogue},
+                };
                 let identity = CatalogIdentity {
                     epoch: 6,
                     number: 1,
@@ -846,9 +1014,22 @@ fn a_bound_books_catalogue_survives_slot_moves_and_hides() {
                     book: window.book.clone(),
                 };
                 let (_, _, layout) = mod_api::RecipeBookLayout::registered("bound:menu").unwrap();
-                client.start(identity.clone(), layout, 1).unwrap();
-                assert!(client.part(6, 1, 0, vec![0]).unwrap().is_some());
-                assert!(client.accept_catalog(identity.clone()));
+                let bytes = encode_catalogue(&[]).unwrap();
+                game.remote_mod_book_placement(Frame::Start {
+                    identity: identity.clone(),
+                    layout,
+                    storage: MenuLayoutMetadata {
+                        slots: 3,
+                        crafting: None,
+                    },
+                    total: bytes.len() as u32,
+                });
+                game.remote_mod_book_placement(Frame::Part {
+                    epoch: 6,
+                    number: 1,
+                    offset: 0,
+                    bytes,
+                });
                 let kept = |game: &Game<'_>| {
                     game.native_net.placement.client.catalog() == Some(&identity)
                         && game.native_net.placement.client.window() == Some(&window)
@@ -874,7 +1055,6 @@ fn a_bound_books_catalogue_survives_slot_moves_and_hides() {
                     assert_eq!(game.set_screen_slot("bound:menu", 1, None), Ok(()));
                 }
                 game.build_screen();
-                game.check_mod_book_placement_timeout();
                 game.ensure_mod_book_catalog();
                 assert!(kept(game));
                 assert_eq!(game.native_screen_slot(0), Some((30.0, 40.0)));
@@ -889,9 +1069,71 @@ fn a_bound_books_catalogue_survives_slot_moves_and_hides() {
                     Some(MOD_MENU_SLOT_BASE + 1)
                 );
 
+                // Placements do not wait on a server reply; only a current server ghost
+                // installs ghost slots, and a new recipe click or menu replacement clears it.
+                let recipe = ResourceId::try_from("bound:recipe".to_owned()).unwrap();
+                assert!(matches!(
+                    game.native_net.placement.client.place(
+                        DisplayId {
+                            recipe: recipe.clone(),
+                            source: 0,
+                        },
+                        false,
+                    ),
+                    Some(Frame::Place {
+                        catalog,
+                        use_max: false,
+                        ..
+                    }) if catalog == identity
+                ));
+                assert!(matches!(
+                    game.native_net.placement.client.place(
+                        DisplayId {
+                            recipe: recipe.clone(),
+                            source: 0,
+                        },
+                        true,
+                    ),
+                    Some(Frame::Place {
+                        catalog,
+                        use_max: true,
+                        ..
+                    }) if catalog == identity
+                ));
+                let ghost_display = mod_api::RecipeBookDisplay::Shapeless {
+                    ingredients: vec![mod_api::RecipeSlotDisplay::Item("minecraft:stick".into())],
+                    result: mod_api::RecipeSlotDisplay::Item("minecraft:stone".into()),
+                    station: mod_api::RecipeSlotDisplay::Item("minecraft:crafting_table".into()),
+                };
+                game.remote_mod_book_placement(Frame::Ghost {
+                    catalog: identity.clone(),
+                    recipe: recipe.clone(),
+                    display: ghost_display.clone(),
+                });
+                // Slot 0 is visible; slot 1 was hidden above and receives no ghost.
+                assert_eq!(
+                    game.ghost_slots(),
+                    vec![(MOD_MENU_SLOT_BASE, "minecraft:stick".to_owned(), false)]
+                );
+                assert!(kept(game));
+                game.request_mod_book_recipe("bound:recipe".to_owned(), 0);
+                assert!(game.ghost_slots().is_empty());
+                assert!(kept(game));
+
+                game.remote_mod_book_placement(Frame::Ghost {
+                    catalog: identity.clone(),
+                    recipe: recipe.clone(),
+                    display: ghost_display.clone(),
+                });
+                assert_eq!(
+                    game.ghost_slots(),
+                    vec![(MOD_MENU_SLOT_BASE, "minecraft:stick".to_owned(), false)]
+                );
+
                 // The server replaces the menu in place, with no close packet.
                 open(game);
                 assert_eq!(game.screen, Screen::Inventory);
+                assert!(game.ghost_slots().is_empty());
                 assert_ne!(game.remote.as_ref().unwrap().menu.generation, first);
                 let replacement = game.native_net.placement.client.window().unwrap();
                 assert_eq!(replacement.window, 1);
@@ -899,6 +1141,13 @@ fn a_bound_books_catalogue_survives_slot_moves_and_hides() {
                 assert!(!game.native_book_placement_window_matches(&window));
                 assert!(!game.native_book_placement_catalog_matches(&identity));
                 assert_eq!(game.native_net.placement.client.catalog(), None);
+                // A late ghost for the replaced opening cannot populate the new opening.
+                game.remote_mod_book_placement(Frame::Ghost {
+                    catalog: identity.clone(),
+                    recipe,
+                    display: ghost_display,
+                });
+                assert!(game.ghost_slots().is_empty());
                 assert_eq!(game.native_screen_slot(0), Some((8.0, 18.0)));
                 assert_eq!(game.native_screen_slot(1), Some((80.0, 18.0)));
                 assert!(
@@ -1113,6 +1362,7 @@ fn open_native_screen_set_data_accepts_full_signed_and_mod_data_ranges() {
             window: 7,
             generation: 1,
             name: "minecraft:hopper".into(),
+            title: None,
             block: None,
             pos: None,
             mod_type: None,
@@ -1121,6 +1371,7 @@ fn open_native_screen_set_data_accepts_full_signed_and_mod_data_ranges() {
         slot_moves: Default::default(),
         layout_revision: 0,
         shown: true,
+        detached: false,
         screen: mod_api::__private::OwnedMenuScreen::new(
             "data-range",
             0,
@@ -1144,4 +1395,349 @@ fn open_native_screen_set_data_accepts_full_signed_and_mod_data_ranges() {
     assert_eq!(stock.menu.data.len(), 32_768);
     assert!(stock.set_data(7, 32_768, 33));
     assert_eq!(stock.menu.data.len(), 32_768);
+}
+
+#[test]
+#[ignore = "daily"]
+fn non_sunrise_brand_connection_negotiates_and_brand_only_connection_cannot_place() {
+    use sunrise_client::{
+        lan::{Out, PlayerSender},
+        recipe_book::{
+            placement_sync::{Frame, Refusal, schema},
+            settings_sync::CHANNEL,
+        },
+    };
+    use sunrise_protocol::packets::play::Clientbound as C;
+
+    let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
+        "bound",
+        Box::new(BoundBookMod::default()),
+    )]
+    .into();
+    mod_platform::testing::with_mods(mods, || {
+        crate::game::native_guest_turn_tests::with_guests(|game| {
+            let (tx12, rx12) = std::sync::mpsc::channel();
+            let (tx13, rx13) = std::sync::mpsc::channel();
+            game.lan.as_mut().unwrap().hub.update_guest(12, |guest| {
+                guest.brand = "other-client".into();
+                guest.sender = PlayerSender::new(tx12, Arc::default());
+            });
+            game.lan.as_mut().unwrap().hub.update_guest(13, |guest| {
+                guest.brand = "sunrise".into();
+                guest.sender = PlayerSender::new(tx13, Arc::default());
+            });
+            let drain = |rx: &std::sync::mpsc::Receiver<Out>| -> Vec<Message> {
+                let mut messages = Vec::new();
+                for out in rx.try_iter() {
+                    let bodies = match out {
+                        Out::Packet(body) => vec![body],
+                        Out::Packets(bodies) => bodies,
+                        Out::Disconnect(_) => panic!("unexpected disconnect"),
+                    };
+                    for body in bodies {
+                        let mut reader = sunrise_protocol::buf::Reader::new(&body);
+                        let id = reader.varint().unwrap();
+                        if let Ok(C::CustomPayload(p)) = C::decode(id, reader.rest())
+                            && p.channel == CHANNEL
+                        {
+                            messages.push(settings_codec::decode(&p.data).unwrap());
+                        }
+                    }
+                }
+                messages
+            };
+            let send = |game: &mut Game<'_>, conn: u32, message: &Message| {
+                game.guest_book_settings(conn, &settings_codec::encode(message).unwrap());
+            };
+            let book = ResourceId::try_from("bound:book".to_owned()).unwrap();
+
+            // Guest 13 has brand "sunrise" only, with no book-channel capability or offer:
+            // placement frames are dropped and never install server placement state.
+            send(
+                game,
+                13,
+                &Message::Placement(Frame::Hello {
+                    epoch: 1,
+                    schema: schema(),
+                }),
+            );
+            assert!(drain(&rx13).is_empty());
+            assert!(!game.native_net.placement.servers.contains_key(&13));
+
+            // Guest 12 has a non-Sunrise brand, yet negotiates capability, offer and placement.
+            send(game, 12, &Message::Hello);
+            assert_eq!(drain(&rx12), vec![Message::Ready]);
+            send(game, 12, &Message::Offer(vec![book.clone()]));
+            let replies = drain(&rx12);
+            let [
+                Message::Snapshot {
+                    epoch,
+                    revision,
+                    entries,
+                },
+            ] = replies.as_slice()
+            else {
+                panic!("expected initial snapshot for negotiated non-Sunrise guest");
+            };
+            let epoch = *epoch;
+            assert_eq!(*revision, 0);
+            assert_eq!(entries, &[(book.clone(), BookFlags::default())]);
+
+            // Refused settings leave the connection usable for later valid intent.
+            send(
+                game,
+                12,
+                &Message::Request {
+                    epoch: epoch + 99,
+                    number: 1,
+                    key: book.clone(),
+                    flags: BookFlags {
+                        open: true,
+                        filtering: false,
+                    },
+                },
+            );
+            assert!(matches!(
+                drain(&rx12).as_slice(),
+                [Message::Snapshot {
+                    epoch: snap_epoch,
+                    revision: 0,
+                    ..
+                }] if *snap_epoch == epoch
+            ));
+            send(
+                game,
+                12,
+                &Message::Request {
+                    epoch,
+                    number: 1,
+                    key: book.clone(),
+                    flags: BookFlags {
+                        open: true,
+                        filtering: true,
+                    },
+                },
+            );
+            assert_eq!(
+                drain(&rx12),
+                vec![Message::Update {
+                    epoch,
+                    revision: 1,
+                    key: book.clone(),
+                    flags: BookFlags {
+                        open: true,
+                        filtering: true,
+                    },
+                }]
+            );
+
+            // Placement schema refusal followed by valid negotiation works without retries.
+            send(
+                game,
+                12,
+                &Message::Placement(Frame::Hello {
+                    epoch,
+                    schema: schema() ^ 1,
+                }),
+            );
+            assert_eq!(
+                drain(&rx12),
+                vec![Message::Placement(Frame::Refused {
+                    epoch,
+                    number: 0,
+                    window: 0,
+                    nonce: 0,
+                    reason: Refusal::Unsupported,
+                })]
+            );
+            send(
+                game,
+                12,
+                &Message::Placement(Frame::Hello {
+                    epoch,
+                    schema: schema(),
+                }),
+            );
+            assert_eq!(
+                drain(&rx12),
+                vec![Message::Placement(Frame::Ready {
+                    epoch,
+                    schema: schema(),
+                })]
+            );
+            assert!(game.native_net.placement.servers.contains_key(&12));
+
+            // An unplaced guest cannot negotiate regardless of brand.
+            game.lan.as_mut().unwrap().hub.update_guest(13, |guest| {
+                guest.placed = false;
+            });
+            send(game, 13, &Message::Hello);
+            assert!(drain(&rx13).is_empty());
+        });
+    });
+}
+
+/// Room beside a mod menu with a recipe book moves its toggle with the window only while the
+/// toggle stays on the screen, and the toggle is painted, clicked and focused where it is. In
+/// its own process: the game it opens publishes process-wide tables.
+#[test]
+#[ignore = "daily"]
+fn screen_room_keeps_a_mod_menus_book_toggle_painted_and_reachable() {
+    crate::game::in_own_process(
+        "game::native_hooks::book_screen::lifecycle_tests::screen_room_keeps_a_mod_menus_book_toggle_painted_and_reachable",
+        || {
+            use std::sync::atomic::{AtomicU32, Ordering};
+            struct Room([Arc<AtomicU32>; 2]);
+            #[mod_api::__subscriptions]
+            impl mod_api::Hooks for Room {
+                fn screen_room(
+                    &self,
+                    _: &dyn mod_api::ClientHost,
+                    event: &mut mod_api::ScreenRoomEvent<'_>,
+                ) {
+                    event.left = f32::from_bits(self.0[0].load(Ordering::Relaxed));
+                    event.right = f32::from_bits(self.0[1].load(Ordering::Relaxed));
+                }
+            }
+            let rooms = [Arc::new(AtomicU32::new(0)), Arc::new(AtomicU32::new(0))];
+            let mods: mod_api::Mods = vec![
+                mod_api::ModEntry::new("geometry", Box::new(BookMod)),
+                mod_api::ModEntry::new("room", Box::new(Room(rooms.clone()))),
+            ]
+            .into();
+            mod_platform::testing::with_mods(mods, || {
+                crate::game::native_entity_refs::tests::with_client_game(|game| {
+                    let key = KEY.get().unwrap().clone();
+                    mod_api::__private::resolve_menus(["geometry:menu"]).unwrap();
+                    let (pipe, _server) = sunrise_protocol::connection::Pipe::pair();
+                    game.connect_local(pipe, "Geometry").unwrap();
+                    game.remote.as_mut().unwrap().joined = true;
+                    let generation = seed_native_menu(game, 1, "geometry:menu");
+                    game.remote.as_mut().unwrap().custom_books = true;
+                    game.settings.gui_scale = 1;
+                    game.screen = Screen::Inventory;
+                    game.title = None;
+                    game.container = Some((i32::MIN, 0, 0));
+                    let recipes = sunrise_client::crafting::Recipes::from_sources(
+                        &game.options.resources,
+                        game.items(),
+                        &sunrise_world::loot::PackOverlay::NONE,
+                        vec![(
+                            "geometry:recipe".into(),
+                            serde_json::json!({"type": "geometry:crafting"}),
+                        )],
+                        game.res.core.item_data.context(),
+                    )
+                    .unwrap();
+                    game.recipe_tables.install_test_recipes(recipes);
+                    game.recipe_tables.books = None;
+                    // (screen, menu width, [left, right]) -> the window's left edge, and the
+                    // toggle's top-left corner, painted, clicked and focused there.
+                    let cases = [
+                        // The closed book's toggle in the right gutter, 4 right of the window.
+                        ([427, 240], 176.0, [0.0, 0.0], 125.0, (305.0, 42.0)),
+                        // 50 right: the toggle at 355..375 stays on the screen.
+                        ([427, 240], 176.0, [100.0, 0.0], 175.0, (355.0, 42.0)),
+                        // The window would fit at 249..425, the toggle not at 429..449: no move.
+                        ([427, 240], 176.0, [248.0, 0.0], 125.0, (305.0, 42.0)),
+                        // Right room still moves the toggle left with the window.
+                        ([427, 240], 176.0, [0.0, 149.0], 51.0, (231.0, 42.0)),
+                        // #6198: on a narrow screen the toggle is in the left gutter at 57; 154
+                        // right would fit the window at 4..142 but put the toggle at -20..0.
+                        ([301, 240], 138.0, [0.0, 0.0], 81.0, (57.0, 42.0)),
+                        ([301, 240], 138.0, [0.0, 154.0], 81.0, (57.0, 42.0)),
+                        // 40 right keeps it at 37..57.
+                        ([301, 240], 138.0, [0.0, 40.0], 61.0, (37.0, 42.0)),
+                    ];
+                    for (epoch, (size, width, [left, right], x, toggle)) in (1..).zip(cases) {
+                        game.recipe_ui.test_viewport = Some(size);
+                        game.mod_screen = Some(OpenNativeScreen {
+                            menu: OpenNativeMenu {
+                                key: (i32::MIN, 0, 0),
+                                window: 1,
+                                generation,
+                                name: "geometry:menu".into(),
+                                title: None,
+                                block: Some(STONE.into()),
+                                pos: None,
+                                mod_type: None,
+                                data: Vec::new(),
+                            },
+                            slot_moves: Default::default(),
+                            layout_revision: 0,
+                            shown: true,
+                            detached: false,
+                            screen: mod_api::__private::OwnedMenuScreen::new(
+                                "geometry",
+                                0,
+                                mod_api::MenuScreen::new(mod_api::MenuScreenLayout {
+                                    width,
+                                    height: 166.0,
+                                    slots: vec![Some(mod_api::ScreenSlot {
+                                        position: [8.0, 18.0],
+                                        ..Default::default()
+                                    })],
+                                    inventory_y: 84.0,
+                                    inventory_x: 8.0,
+                                    recipe_book: Some(key.clone()),
+                                    ..Default::default()
+                                }),
+                            ),
+                        });
+                        receive(game, Message::Ready);
+                        receive(
+                            game,
+                            Message::Snapshot {
+                                epoch,
+                                revision: 0,
+                                entries: vec![(
+                                    ResourceId::from_registered_book(&key),
+                                    BookFlags {
+                                        open: false,
+                                        filtering: false,
+                                    },
+                                )],
+                            },
+                        );
+                        rooms[0].store(f32::to_bits(left), Ordering::Relaxed);
+                        rooms[1].store(f32::to_bits(right), Ordering::Relaxed);
+                        game.frames += 1;
+                        game.build_screen();
+                        let case = format!("{size:?} {width} [{left}, {right}]");
+                        let batch = sunrise_client::hud::HudBatch::new(
+                            size,
+                            game.settings.gui_scale_inputs(),
+                        );
+                        assert_eq!(game.inventory_origin(&batch), (x, 37.0), "{case}");
+                        let mut painted = sunrise_client::hud::HudBatch::new(
+                            size,
+                            game.settings.gui_scale_inputs(),
+                        );
+                        game.draw_recipe_book(&mut painted);
+                        let button = &painted.vertices[..6];
+                        let corner = |pick: fn(f32, f32) -> f32, i: usize| {
+                            button.iter().map(|v| v.pos[i]).reduce(pick).unwrap()
+                        };
+                        assert_eq!(
+                            [corner(f32::min, 0), corner(f32::min, 1)],
+                            [toggle.0, toggle.1],
+                            "painted {case}"
+                        );
+                        assert_eq!(
+                            [corner(f32::max, 0), corner(f32::max, 1)],
+                            [toggle.0 + 20.0, toggle.1 + 18.0],
+                            "painted {case}"
+                        );
+                        assert_eq!(
+                            game.recipe_book_targets()[0].rect,
+                            [toggle.0, toggle.1, 20.0, 18.0],
+                            "focused {case}"
+                        );
+                        game.cursor = (toggle.0 + 1.0, toggle.1 + 1.0);
+                        assert!(game.recipe_book_click(false), "clicked {case}");
+                    }
+                });
+            });
+        },
+    );
 }

@@ -1,0 +1,2 @@
+ids = ["method:prelude::PayloadsClientHost::has_channel"]
+why = "Adds PayloadsClientHost::has_channel (#4677), NeoForge's ICommonPacketListener.hasChannel: the test send_payload_to_server makes for the connection's current phase, before any bytes, so true means that send won't return UnsupportedPeer. False with no connection."

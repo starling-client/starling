@@ -46,6 +46,8 @@ pub struct LootLevel {
     pub raining: bool,
     /// `Level.isThundering`.
     pub thundering: bool,
+    /// `ClockManager.getInstance(clock).totalTicks` of each world clock the level has, by id.
+    pub clocks: std::collections::BTreeMap<String, i64>,
 }
 
 thread_local! {

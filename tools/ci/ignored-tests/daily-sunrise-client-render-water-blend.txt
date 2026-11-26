@@ -1,0 +1,3 @@
+# The daily GPU test of gbuffers_water's default and per-buffer blending (README.md).
+# Rows: PACKAGE TEST TARGET daily gpu, sorted.
+sunrise-client-render gfx::pack_post::water_blend_tests::water_blends_each_buffer_unless_that_buffer_is_off lib daily gpu

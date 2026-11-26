@@ -8,17 +8,12 @@ import sys
 import tempfile
 import time
 
-try:
-    from . import anvil_dump, lab
-    from .integration_env import game_environment, require_server_reports
-    from .test_dedicated_crash_save import PLAYER, offline_uuid
-    from .test_dedicated_server_parity import Server, free_port, write_server_dir
-except ImportError:
-    import anvil_dump
-    import lab
-    from integration_env import game_environment, require_server_reports
-    from test_dedicated_crash_save import PLAYER, offline_uuid
-    from test_dedicated_server_parity import Server, free_port, write_server_dir
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import anvil_dump, lab
+from tools.integration_env import game_environment, require_server_reports
+from tools.test_dedicated_crash_save import PLAYER, offline_uuid
+from tools.test_dedicated_server_parity import Server, free_port, write_server_dir
 
 CHUNK = (32, 32)
 TARGET = '512 100 512'

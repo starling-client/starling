@@ -7,16 +7,14 @@ blasts, plus the sulfur-cube regression. This is scoped contract coverage, not a
 full cross-dimension vanilla server transcript.
 """
 import os
-import json
 from pathlib import Path
 import subprocess
-import sys
 import tempfile
-try:
-    from . import lab, test_rust_parity as base
-except ImportError:
-    import lab
-    import test_rust_parity as base
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_rust_parity as base
 
 RUST_SOURCES = sorted((lab.ROOT / "crates/sunrise-client/src").rglob("*.rs"))
 
@@ -35,28 +33,6 @@ def child_env(scratch, resources=None):
     if resources is not None:
         env["SUNRISE_TEST_RESOURCES"] = str(resources)
     return env
-
-
-def compile_tests(build, scratch):
-    """Keep build artifacts and expose compiler diagnostics in the CI harness log."""
-    command = ["cargo", "test", "--locked", "--manifest-path", str(lab.ROOT / "Cargo.toml"),
-               "-p", "sunrise-client", "--lib", "--no-run", "--message-format=json"]
-    with (build / "compile.jsonl").open("w", encoding="utf-8") as output, \
-            (build / "compile.log").open("w", encoding="utf-8") as errors:
-        result = subprocess.run(command, cwd=lab.ROOT, env=child_env(scratch),
-                                stdout=output, stderr=errors)
-    if result.returncode:
-        print((build / "compile.log").read_text(encoding="utf-8"), file=sys.stderr, end="")
-        for line in (build / "compile.jsonl").read_text(encoding="utf-8").splitlines():
-            try:
-                row = json.loads(line)
-            except ValueError:
-                continue
-            if row.get("reason") == "compiler-message":
-                diagnostic = row.get("message", {}).get("rendered")
-                if diagnostic:
-                    print(diagnostic, file=sys.stderr, end="")
-        result.check_returncode()
 
 
 def main(rust_filters=("portal_blast_sulfur_cube_", "portal_arrival_effects_"), rust_tests=8):
@@ -89,22 +65,7 @@ def main(rust_filters=("portal_blast_sulfur_cube_", "portal_arrival_effects_"), 
                            stdout=log, stderr=subprocess.STDOUT)
     if (build / "vanilla.log").read_text(encoding="utf-8").count("Block{minecraft:") != 6:
         raise AssertionError("Expected six actual vanilla calculator queries")
-    with tempfile.TemporaryDirectory(prefix="sunrise-portal-compile-") as directory:
-        scratch = Path(directory)
-        compile_tests(build, scratch)
-    artifacts = []
-    for line in (build / "compile.jsonl").read_text(encoding="utf-8").splitlines():
-        try:
-            row = json.loads(line)
-        except ValueError:
-            continue
-        if row.get("reason") == "compiler-artifact" and row.get("executable") \
-                and row.get("target", {}).get("name") == "sunrise_client" \
-                and row.get("profile", {}).get("test"):
-            artifacts.append(Path(row["executable"]))
-    if len(artifacts) != 1:
-        raise AssertionError("Expected one actual gameplay library test executable")
-    binary = artifacts[0]
+    binary = lab.parity_fixtures()
     binary_hash = lab.digest(binary, "sha256")
     with tempfile.TemporaryDirectory(prefix="sunrise-portal-game-dir-") as directory:
         scratch = Path(directory)

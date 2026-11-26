@@ -6,14 +6,21 @@ use sunrise_world::worldgen::generator::{GeneratorData, OverworldGenerator};
 fn assert_preset_unavailable(game: &super::Game<'_>, data: &GeneratorData) {
     let host: &dyn mod_api::Host = game;
     assert_eq!(
-        host.registry_entries("minecraft:worldgen/world_preset"),
-        None
+        host.visit_registry_entries("minecraft:worldgen/world_preset", &mut |_| panic!(
+            "unavailable registry visited"
+        )),
+        Err(mod_api::RegistryReadError::UnknownRegistry)
     );
     assert_eq!(
         host.registry_entry("minecraft:worldgen/world_preset", "minecraft:normal"),
         None
     );
-    assert_eq!(data.registry_ids("minecraft:worldgen/world_preset"), None);
+    assert_eq!(
+        data.visit_registry_ids("minecraft:worldgen/world_preset", &mut |_| panic!(
+            "unavailable registry visited"
+        )),
+        None
+    );
     assert_eq!(
         data.registry_contains("minecraft:worldgen/world_preset", "minecraft:normal"),
         None

@@ -20,11 +20,21 @@ pub const EXIT_USAGE: u8 = 2;
 
 /// Runs `engine-command` for the folder `dir`, as this program's own supervisor would see it.
 pub fn command(dir: &Path, args: &[String]) -> ExitCode {
-    ExitCode::from(run(dir, args, &mut std::io::stdout().lock()))
+    ExitCode::from(run(
+        dir,
+        args,
+        &mut std::io::stdout().lock(),
+        std::env::current_exe,
+    ))
 }
 
 /// [`command`], writing its stdout to `out`: the exit code.
-fn run(dir: &Path, args: &[String], out: &mut impl Write) -> u8 {
+fn run(
+    dir: &Path,
+    args: &[String],
+    out: &mut impl Write,
+    supervisor: impl FnOnce() -> std::io::Result<std::path::PathBuf>,
+) -> u8 {
     let json = match args {
         [] => false,
         [flag] if flag == "--json" => true,
@@ -33,7 +43,7 @@ fn run(dir: &Path, args: &[String], out: &mut impl Write) -> u8 {
             return EXIT_USAGE;
         }
     };
-    let described = std::env::current_exe()
+    let described = supervisor()
         .map_err(|source| EngineCommandError::Io {
             path: "sunrise-server".into(),
             source,
@@ -102,6 +112,7 @@ fn describe(engine: &Engine) -> Result<Value, String> {
         "cwd": text(cwd.as_os_str())?,
         "env": env,
         "resources": text(engine.resources.as_os_str())?,
+        "resources_pending": engine.resources_pending,
     }))
 }
 
@@ -116,6 +127,9 @@ fn human(reply: &Value) -> String {
         words.join(" "),
         reply["cwd"].as_str().unwrap_or_default()
     );
+    if reply["resources_pending"] == true {
+        out.push_str("Game files are not ready. Prepare them with `sunrise-server --dir DIR init --yes` before starting.\n");
+    }
     for (key, value) in reply["env"].as_object().into_iter().flatten() {
         match value.as_str() {
             Some(value) => out.push_str(&format!("{key}={value}\n")),
@@ -129,6 +143,10 @@ fn human(reply: &Value) -> String {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use sunrise_server_launch::{
+        GAME_VERSION,
+        prepared_profile::{MANIFEST, Profile, SCHEMA, STAMP},
+    };
 
     fn folder(name: &str) -> PathBuf {
         // Canonical like the supervisor's own path: a temporary folder may be a link or a short name.
@@ -150,13 +168,62 @@ mod tests {
         root
     }
 
+    fn prepared_server(dir: &Path) {
+        std::fs::create_dir_all(dir).unwrap();
+        for file in [
+            "facts.json",
+            "block-tags.json",
+            "commands.json",
+            "registries.json",
+        ] {
+            std::fs::write(dir.join(file), "{}").unwrap();
+        }
+        std::fs::write(
+            dir.join(MANIFEST),
+            json!({
+                "schema": SCHEMA,
+                "minecraft": GAME_VERSION,
+                "profile": "server",
+                "server_files": ["facts.json"],
+            })
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join(STAMP),
+            json!({"output_version": Profile::Server.output_version()}).to_string(),
+        )
+        .unwrap();
+    }
+
+    fn managed_install(root: &Path) -> (PathBuf, PathBuf) {
+        let release = root.join("install/releases/test-release");
+        let current = root.join("install/current");
+        std::fs::create_dir_all(&release).unwrap();
+        std::fs::create_dir_all(&current).unwrap();
+        let supervisor = release.join(format!("sunrise-server{}", std::env::consts::EXE_SUFFIX));
+        let engine = current.join(format!("sunrise-engine{}", std::env::consts::EXE_SUFFIX));
+        for path in [&supervisor, &engine] {
+            std::fs::write(path, "not executable").unwrap();
+        }
+        let resources = root.join(format!(
+            "install/game-files/sunrise-client/{GAME_VERSION}-server"
+        ));
+        (supervisor, resources)
+    }
+
+    fn cli_json(server: &Path, supervisor: PathBuf) -> (u8, Value) {
+        let mut out = Vec::new();
+        let code = run(server, &["--json".into()], &mut out, || Ok(supervisor));
+        (code, serde_json::from_slice(&out).unwrap())
+    }
+
     #[test]
     fn the_reply_names_the_program_its_arguments_folder_and_environment() {
         let root = folder("ok");
         let server = root.join("server");
         std::fs::write(server.join("server.toml"), "[engine]\nlow_memory = true\n").unwrap();
-        std::fs::create_dir_all(server.join("resources")).unwrap();
-        std::fs::write(server.join("resources/sunrise-resources.json"), "{}").unwrap();
+        prepared_server(&server.join("resources"));
         let supervisor = root.join(format!(
             "bin/sunrise-server{}",
             std::env::consts::EXE_SUFFIX
@@ -181,21 +248,65 @@ mod tests {
                 "cwd": path(server.clone()),
                 "env": { "SUNRISE_NO_AUDIO": "1", "MIMALLOC_ALLOW_THP": "0" },
                 "resources": path(server.join("resources")),
+                "resources_pending": false,
             })
         );
         std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn missing_game_files_exit_3_with_the_resources_kind() {
-        let root = folder("unprepared");
+    fn the_command_skips_stale_full_resources_for_the_current_server_slot() {
+        let root = folder("stale-full");
         let server = root.join("server");
         std::fs::write(server.join("server.toml"), "").unwrap();
+        let (supervisor, slot) = managed_install(&root);
+        prepared_server(&slot);
+        let full = server.join("resources");
+        std::fs::create_dir_all(&full).unwrap();
+        for file in [
+            "facts.json",
+            "block-tags.json",
+            "commands.json",
+            "registries.json",
+            "assets/minecraft/font/default.json",
+            "assets/minecraft/textures/file",
+        ] {
+            let path = full.join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "{}").unwrap();
+        }
+        std::fs::write(
+            full.join(MANIFEST),
+            json!({"schema": SCHEMA, "minecraft": GAME_VERSION}).to_string(),
+        )
+        .unwrap();
+        std::fs::write(full.join(STAMP), r#"{"output_version":7}"#).unwrap();
+        let (code, reply) = cli_json(&server, supervisor);
+        assert_eq!(code, 0, "{reply}");
+        assert_eq!(reply["resources"], slot.to_str().unwrap());
+        assert_eq!(reply["args"][1], slot.to_str().unwrap());
+        assert_eq!(reply["resources_pending"], false);
+        assert_eq!(
+            std::fs::read_to_string(full.join(STAMP)).unwrap(),
+            r#"{"output_version":7}"#
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_missing_explicit_folder_exits_3_with_the_resources_kind() {
+        let root = folder("unprepared");
+        let server = root.join("server");
+        std::fs::write(
+            server.join("server.toml"),
+            "[engine]\nresources = 'absent'\n",
+        )
+        .unwrap();
         let supervisor = root.join(format!(
             "bin/sunrise-server{}",
             std::env::consts::EXE_SUFFIX
         ));
-        let (code, reply) = reply(sunrise_server_launch::engine(&supervisor, &server));
+        let (code, reply) = cli_json(&server, supervisor.clone());
         assert_eq!(code, 3);
         assert_eq!(reply["format"], 1);
         assert_eq!(reply["error"]["kind"], "resources");
@@ -203,7 +314,7 @@ mod tests {
             reply["error"]["message"]
                 .as_str()
                 .unwrap()
-                .contains("no prepared game files")
+                .contains("--output NEW_FOLDER")
         );
         std::fs::write(server.join("server.toml"), "not TOML").unwrap();
         let (code, reply) = super::reply(sunrise_server_launch::engine(&supervisor, &server));
@@ -245,7 +356,13 @@ mod tests {
         for args in [vec!["--yaml"], vec!["--json", "--json"]] {
             let args: Vec<String> = args.into_iter().map(String::from).collect();
             let mut out = Vec::new();
-            assert_eq!(run(&root.join("server"), &args, &mut out), 2, "{args:?}");
+            assert_eq!(
+                run(&root.join("server"), &args, &mut out, || panic!(
+                    "refused before discovery"
+                )),
+                2,
+                "{args:?}"
+            );
             assert!(out.is_empty(), "{args:?}");
         }
         std::fs::remove_dir_all(root).unwrap();

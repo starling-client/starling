@@ -84,7 +84,8 @@ pub struct ModelInstance {
 }
 
 impl ModelInstance {
-    /// One copy. The draw call checks finiteness, light range and the view budget.
+    /// One copy. Group writes validate finiteness and light range atomically;
+    /// `draw_model_instances` culls first and skips any individual invalid visible copy.
     #[inline]
     pub fn new(
         origin: [f64; 3],
@@ -133,7 +134,12 @@ impl ModelInstance {
     }
 }
 
-/// Why a whole instance batch was refused. Nothing from that batch is drawn.
+/// Why a model instance submission or validation was refused.
+///
+/// `WorldDrawContext::draw_model_instances` refuses stale or unknown models with
+/// [`InstanceError::Model`]; after resolving the model, it culls each copy against the
+/// view frustum first and skips individual visible copies that are non-finite or have
+/// light channels outside `0..=15` without rolling back valid copies.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 #[derive(sunrise_mod_api_macros::Wire)]
@@ -144,12 +150,33 @@ pub enum InstanceError {
     NonFinite,
     /// A light channel is outside `0..=15`.
     InvalidLight,
-    /// The batch would exceed this view's 16,384 instance budget.
-    CapacityExceeded,
 }
 
-/// Persistent copies of one resolved model, retired on reload, world close, mod disable or destroy.
-/// Only the creating mod may access or submit the group; others receive [`GroupError::Stale`].
+/// A live client, setup, or published reload context that can operate on retained render groups.
+pub trait InstanceGroupContext {
+    /// The scoped engine access used by [`InstanceGroupRef`] methods.
+    // hidden: internal trait method opening the retained-group backend for InstanceGroupRef.
+    #[doc(hidden)]
+    fn instance_group_backend(&self) -> Option<InstanceGroupBackendRef<'_>> {
+        None
+    }
+}
+
+/// Opaque access to the retained-group operations, not to the world or other client services.
+// hidden: only the handle can open the group backend.
+// exhaustive: private field; only constructed inside this crate.
+// no wire: scoped backend borrow.
+#[doc(hidden)]
+pub struct InstanceGroupBackendRef<'a>(&'a dyn crate::prelude::ClientRenderClientBackend);
+
+impl<H: crate::ClientHost + ?Sized> InstanceGroupContext for H {
+    fn instance_group_backend(&self) -> Option<InstanceGroupBackendRef<'_>> {
+        self.backend()
+            .map(|backend| InstanceGroupBackendRef(backend.open()))
+    }
+}
+
+/// Persistent copies of one resolved model, retired on reload, world close, owner mod disable or destroy.
 /// Retired handles never become valid again, even when their storage slot is reused.
 /// Static groups cache CPU conversion; all visible GPU-routed copies still upload every frame.
 /// Frequent group pose changes rebuild the live cache and can cost more than transient copies.
@@ -167,24 +194,34 @@ impl InstanceGroupRef {
     }
     /// Atomically overwrite a range, extending length up to reserved capacity.
     /// Newly exposed unwritten slots are identity, white, full-bright copies at world origin.
-    /// Invalid coordinates/light or an out-of-capacity range change nothing; a retired or
-    /// foreign handle returns [`GroupError::Stale`] before inspecting the range or values.
+    /// Invalid coordinates/light or an out-of-capacity range change nothing; a retired
+    /// handle returns [`GroupError::Stale`] before inspecting the range or values.
     /// That range and any newly exposed gap are converted again. Visible copies still
     /// enter the shared per-view GPU upload on every frame.
     pub fn write(
         self,
-        host: &dyn crate::ClientHost,
+        host: &(impl InstanceGroupContext + ?Sized),
         first: u32,
         instances: &[ModelInstance],
     ) -> Result<(), GroupError> {
-        host.instance_group_write(self, first, instances)
+        host.instance_group_backend()
+            .ok_or(GroupError::Stale)?
+            .0
+            .instance_group_write(self, first, instances)
     }
     /// Atomically change the drawn length. Unwritten slots contain identity, full-bright copies.
     /// Zero draws nothing and does not release capacity. Shrinking preserves hidden copies;
     /// growing exposes them again. A length above capacity returns [`GroupError::OutOfRange`].
     /// Growth converts the newly exposed range using the current group pose.
-    pub fn set_len(self, host: &dyn crate::ClientHost, len: u32) -> Result<(), GroupError> {
-        host.instance_group_set_len(self, len)
+    pub fn set_len(
+        self,
+        host: &(impl InstanceGroupContext + ?Sized),
+        len: u32,
+    ) -> Result<(), GroupError> {
+        host.instance_group_backend()
+            .ok_or(GroupError::Stale)?
+            .0
+            .instance_group_set_len(self, len)
     }
     /// Atomically replace the row-major 3x4 group pose (identity by default).
     /// World position = origin + group_transform * (copy_transform * local).
@@ -193,16 +230,67 @@ impl InstanceGroupRef {
     /// copies' cached render records; it does not allocate or rewrite the API copies.
     pub fn set_group_transform(
         self,
-        host: &dyn crate::ClientHost,
+        host: &(impl InstanceGroupContext + ?Sized),
         transform: [f32; 12],
     ) -> Result<(), GroupError> {
-        host.instance_group_set_transform(self, transform)
+        host.instance_group_backend()
+            .ok_or(GroupError::Stale)?
+            .0
+            .instance_group_set_transform(self, transform)
     }
     /// Retire this handle and release its reserved copies and CPU caches immediately.
     /// Already accepted copies remain in the current view. Later operations, including another
     /// destroy, return [`GroupError::Stale`]; a new group cannot revive this handle.
-    pub fn destroy(self, host: &dyn crate::ClientHost) -> Result<(), GroupError> {
-        host.instance_group_destroy(self)
+    pub fn destroy(self, host: &(impl InstanceGroupContext + ?Sized)) -> Result<(), GroupError> {
+        host.instance_group_backend()
+            .ok_or(GroupError::Stale)?
+            .0
+            .instance_group_destroy(self)
+    }
+}
+
+/// A prepared item render state resolved through
+/// [`ClientRenderClientHost::prepare_item`](crate::prelude::ClientRenderClientHost::prepare_item)
+/// (vanilla's `ItemStackRenderState`).
+///
+/// Retain it between frames and draw it under a pose with
+/// [`BlockEntityDrawContext::prepared_item`](crate::BlockEntityDrawContext::prepared_item).
+/// Retired on a successful resource reload, world close, owner mod disable, or [`Self::destroy`];
+/// a stale handle draws nothing and returns [`ModelError::StaleModel`](crate::ModelError::StaleModel).
+// no wire: local in-process client render-state handle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+// exhaustive: private fields; only the engine creates prepared-item handles
+pub struct PreparedItemRef(pub(crate) u64, pub(crate) u32);
+
+impl PreparedItemRef {
+    pub(crate) fn from_parts(generation: u64, slot: u32) -> Result<Self, &'static str> {
+        if generation == 0 {
+            return Err("unpublished prepared item generation");
+        }
+        Ok(Self(generation, slot))
+    }
+
+    /// Retire this handle and release its cached item render state immediately.
+    /// Later draws or another destroy return [`ModelError::StaleModel`](crate::ModelError::StaleModel);
+    /// slot reuse never revives a retired handle.
+    pub fn destroy(
+        self,
+        host: &(impl InstanceGroupContext + ?Sized),
+    ) -> Result<(), crate::ModelError> {
+        host.instance_group_backend()
+            .ok_or(crate::ModelError::StaleModel)?
+            .0
+            .prepared_item_destroy(self)
+    }
+}
+
+impl crate::__private::game::Fields for PreparedItemRef {
+    type Fields<'a> = crate::__private::game::ModelRefFields;
+    fn fields(&self) -> Self::Fields<'_> {
+        crate::__private::game::ModelRefFields {
+            generation: self.0,
+            slot: self.1,
+        }
     }
 }
 
@@ -211,8 +299,8 @@ impl InstanceGroupRef {
 #[non_exhaustive]
 #[derive(sunrise_mod_api_macros::Wire)]
 pub enum GroupError {
-    /// The group belongs to another mod, was destroyed, its owner was disabled,
-    /// or its world/resources retired. Re-enabling or slot reuse cannot revive it.
+    /// The group was destroyed, its owner was disabled, or its world/resources retired.
+    /// Re-enabling or slot reuse cannot revive it.
     Stale,
     /// The model could not be resolved.
     Model(crate::ModelError),
@@ -222,8 +310,12 @@ pub enum GroupError {
     InvalidLight,
     /// The range exceeds reserved capacity.
     OutOfRange,
-    /// The mod's reserved capacity or the view budget would be exceeded.
-    CapacityExceeded,
+}
+
+impl crate::NoBackend for GroupError {
+    fn no_backend() -> Self {
+        Self::Stale
+    }
 }
 
 impl From<InstanceError> for GroupError {
@@ -232,7 +324,6 @@ impl From<InstanceError> for GroupError {
             InstanceError::Model(error) => Self::Model(error),
             InstanceError::NonFinite => Self::NonFinite,
             InstanceError::InvalidLight => Self::InvalidLight,
-            InstanceError::CapacityExceeded => Self::CapacityExceeded,
         }
     }
 }
@@ -258,6 +349,98 @@ mod tests {
         assert_eq!(
             ModelInstance::at([1.0, 2.0, 3.0], 0xFF80_C040).tint,
             0xFF80_C040
+        );
+    }
+
+    #[test]
+    fn instance_group_ref_routes_through_backend_and_refuses_without_one() {
+        struct Bare;
+        impl crate::Host for Bare {}
+        crate::impl_host_areas!(Bare);
+        impl crate::ClientHost for Bare {}
+        crate::impl_client_host_areas!(Bare);
+
+        let group = InstanceGroupRef::from_parts(1, 0).unwrap();
+        let copy = ModelInstance::at([0.0; 3], 0xFFFF_FFFF);
+        assert_eq!(group.write(&Bare, 0, &[copy]), Err(GroupError::Stale));
+        assert_eq!(group.set_len(&Bare, 1), Err(GroupError::Stale));
+        assert_eq!(
+            group.set_group_transform(&Bare, IDENTITY_TRANSFORM),
+            Err(GroupError::Stale)
+        );
+        assert_eq!(group.destroy(&Bare), Err(GroupError::Stale));
+
+        struct Recording {
+            calls: std::cell::RefCell<Vec<&'static str>>,
+        }
+        impl crate::Host for Recording {
+            fn backend(&self) -> Option<crate::BackendRef<'_>> {
+                Some(crate::BackendRef::of(self))
+            }
+        }
+        crate::impl_host_areas!(Recording);
+        impl crate::ClientHost for Recording {}
+        crate::impl_client_host_areas!(Recording);
+        impl crate::Backend for Recording {}
+        crate::impl_backend_areas!(Recording, except(client_render));
+        impl crate::prelude::ClientRenderClientBackend for Recording {
+            fn instance_group_write(
+                &self,
+                _: InstanceGroupRef,
+                _: u32,
+                _: &[ModelInstance],
+            ) -> Result<(), GroupError> {
+                self.calls.borrow_mut().push("write");
+                Ok(())
+            }
+            fn instance_group_set_len(
+                &self,
+                _: InstanceGroupRef,
+                _: u32,
+            ) -> Result<(), GroupError> {
+                self.calls.borrow_mut().push("set_len");
+                Ok(())
+            }
+            fn instance_group_set_transform(
+                &self,
+                _: InstanceGroupRef,
+                _: [f32; 12],
+            ) -> Result<(), GroupError> {
+                self.calls.borrow_mut().push("set_transform");
+                Ok(())
+            }
+            fn instance_group_destroy(&self, _: InstanceGroupRef) -> Result<(), GroupError> {
+                self.calls.borrow_mut().push("destroy");
+                Ok(())
+            }
+            fn prepared_item_destroy(&self, _: PreparedItemRef) -> Result<(), crate::ModelError> {
+                self.calls.borrow_mut().push("prepared_item_destroy");
+                Ok(())
+            }
+        }
+
+        let item = PreparedItemRef::from_parts(2, 0).unwrap();
+        assert_eq!(item.destroy(&Bare), Err(crate::ModelError::StaleModel));
+
+        let host = Recording {
+            calls: std::cell::RefCell::new(Vec::new()),
+        };
+        group.write(&host, 0, &[copy]).unwrap();
+        group.set_len(&host, 1).unwrap();
+        group
+            .set_group_transform(&host, IDENTITY_TRANSFORM)
+            .unwrap();
+        group.destroy(&host).unwrap();
+        item.destroy(&host).unwrap();
+        assert_eq!(
+            *host.calls.borrow(),
+            vec![
+                "write",
+                "set_len",
+                "set_transform",
+                "destroy",
+                "prepared_item_destroy"
+            ]
         );
     }
 }

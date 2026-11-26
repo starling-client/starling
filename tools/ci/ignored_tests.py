@@ -79,6 +79,9 @@ from tools.ci import ignored_shards
 
 ROOT = Path(__file__).resolve().parents[2]
 
+# The environment variable through which a test executable finds the shared libraries beside it.
+LIBRARY_PATH = "PATH" if os.name == "nt" else "DYLD_LIBRARY_PATH" if sys.platform == "darwin" else "LD_LIBRARY_PATH"
+
 # One file per topic, read in file-name order (README.md there gives the row format).
 POLICY = Path(__file__).with_name("ignored-tests")
 POLICY_PATH = "tools/ci/ignored-tests"  # as messages name it
@@ -937,9 +940,11 @@ def run_binaries(package, executables, arguments, env):
     does (in its folder, with the variables cargo sets), printing cargo's own lines around each, which run() reads."""
     folder = ROOT / ignored_shards.workspace_members()[package][0]
     deps = Path(next(iter(executables.values()))).parent
+    # The variable the platform's loader reads (Windows' environment names are case-insensitive: keep the spelling in env).
+    library_path = next((key for key in env if key.upper() == LIBRARY_PATH.upper()), LIBRARY_PATH)
     env = dict(env, CARGO=shutil.which("cargo") or "cargo", CARGO_MANIFEST_DIR=str(folder),
                CARGO_MANIFEST_PATH=str(folder / "Cargo.toml"), CARGO_PKG_NAME=package,
-               LD_LIBRARY_PATH=os.pathsep.join(filter(None, [str(deps), str(deps.parent), env.get("LD_LIBRARY_PATH")])))
+               **{library_path: os.pathsep.join(filter(None, [str(deps), str(deps.parent), env.get(library_path)]))})
     output, status = [], 0
     for target, executable in executables.items():
         output.append(f"     Running {executable} ({executable})")
@@ -961,7 +966,31 @@ def run_binaries(package, executables, arguments, env):
     return subprocess.CompletedProcess(list(executables.values()), status, "\n".join(output) + "\n")
 
 
+# What the current run's commands printed, by stage (build, list, test): kept privately when the run fails.
+_captured = {}
+
+
 def run(package, skip, number=None, count=None, only=None, binaries=None):
+    """Run one leg (run_leg) and, when it fails in any way, keep everything its commands printed.
+
+    The public log withholds free-form panic payloads and compiler text (they can carry vanilla data). With
+    IGNORED_TESTS_PRIVATE_LOGS set, a run that stopped (None) or has a failed test keeps each stage's whole output
+    there as `<leg>.<stage>.log`, which ignored-tests.yml copies into the CI host's private keep; the public log
+    names the files only."""
+    _captured.clear()
+    results = run_leg(package, skip, number, count, only, binaries)
+    private = os.environ.get("IGNORED_TESTS_PRIVATE_LOGS")
+    if private and (results is None or not all(results.values())):
+        leg = package if number is None else f"{package}#{number}of{count}"
+        for stage, text in _captured.items():
+            kept = Path(private) / f"{leg}.{stage}.log"
+            kept.parent.mkdir(parents=True, exist_ok=True)
+            kept.write_text(text, errors="replace")
+            print(f"{package}: kept privately on the runner: {kept.name}")
+    return results
+
+
+def run_leg(package, skip, number=None, count=None, only=None, binaries=None):
     """Each test's result in `package`'s ignored library tests but `skip` (and, with a leg, the other legs'), or None if they didn't build.
 
     `only=(targets, tests)` runs just those ignored tests of those targets (`lib`, `bin:NAME`, `test:NAME`) instead;
@@ -1004,10 +1033,11 @@ def run(package, skip, number=None, count=None, only=None, binaries=None):
         if client_half:
             # The runner's own cap (tools/ci/cargo_jobs.py --cap) when set, else the old fixed one.
             command.append(f"--jobs={os.environ.get('CI_JOBS', '8')}")
-        # What the package's tests need built first (ignored_shards.PREPARE: the command verify runs too).
+        # What the package's tests need built first (ignored_shards.PREPARE).
         if prepare := ignored_shards.PREPARE.get(package):
             built = subprocess.run(prepare, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                                    errors="replace", env=env, cwd=ROOT / workspace)
+            _captured["build"] = built.stdout
             if built.returncode:
                 print(f"{package}: building what its tests need failed (cargo exit {built.returncode})")
                 compile_diagnostics(built.stdout)
@@ -1025,6 +1055,7 @@ def run(package, skip, number=None, count=None, only=None, binaries=None):
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="replace", env=env,
                 cwd=ROOT / workspace,
             )
+            _captured["list"] = (listing.stdout or "") + (listing.stderr or "")
             names = {found[1] for line in listing.stdout.splitlines() if (found := LISTED.match(line))}
             if listing.returncode or not names:
                 print(f"{package}: could not list the tests to split into legs (cargo exit {listing.returncode})")
@@ -1055,6 +1086,7 @@ def run(package, skip, number=None, count=None, only=None, binaries=None):
             )
         if timing:
             print(f"data-leg phase={phase} test-command-end utc={time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} execution_seconds={time.monotonic() - execution_started:.3f}", flush=True)
+    _captured["test"] = process.stdout
     results = {}
     summaries = []
     print(f"{package}: cargo exit {process.returncode}")
@@ -1110,17 +1142,16 @@ def run(package, skip, number=None, count=None, only=None, binaries=None):
         elif SUMMARY.match(line):
             if target_count is not None:
                 last_summary = line
-        elif status := re.search(r"\((signal|exit status): (\d+)", line):
+        elif status := re.search(r"\((signal|exit status): (\d+)(?:, (SIG\w+))?", line):
             # Emit only the numeric status, never adjacent test output.
-            print(f"{package}: {status[0]})")
+            print(f"{package}: ({status[1]}: {status[2]})")
             # Cargo's own line for a test process that ended: 101 is libtest's "tests failed"; a signal or any
             # other status is a crash, whatever summaries came before it.
             if cargo_failure and "process didn't exit successfully" in line:
                 crash = status[1] == "signal" or status[2] != "101"
                 if crash and ended_by is None:
-                    number = int(status[2])
-                    name = signal.Signals(number).name if status[1] == "signal" and number in signal.valid_signals() else None
-                    ended_by = f"{status[1]} {number}" + (f" ({name})" if name else "")
+                    # The name is the one cargo printed: this machine's signal table may not know the signal.
+                    ended_by = f"{status[1]} {status[2]}" + (f" ({status[3]})" if status[3] else "")
                 crashed |= crash
                 cargo_failure = False
         if line.startswith("error: test failed, to rerun pass "):

@@ -1,8 +1,8 @@
 import hashlib,json,sys,uuid
 from pathlib import Path
-sys.path.insert(0,str(Path.cwd()/'tools'))
-import test_command_exec_parity as driver
-import harness_args
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_command_exec_parity as driver, harness_args
 CASES=[('ai-chain',0,False),('noai-chain',1,False),('loaded-flags',1,True),('strong-only',1,False)]
 def program():
  ops=[]

@@ -7,7 +7,10 @@ pub use self::starling::*;
 /// entity.wgsl after the OverlayTexture constants and the particle overlay marker it reads.
 pub(super) fn entity_shader() -> String {
     crate::overlay::wgsl_constants()
-        + &format!("const EXPLICIT_PARTICLE_OVERLAY: u32 = {EXPLICIT_PARTICLE_OVERLAY}u;\n")
+        + &format!(
+            "const EXPLICIT_PARTICLE_OVERLAY: u32 = {EXPLICIT_PARTICLE_OVERLAY}u;\n\
+             const ARMOR_GLINT_ONLY_OVERLAY: u32 = {ARMOR_GLINT_ONLY_OVERLAY}u;\n"
+        )
         + include_str!("../hdr_light.wgsl")
         + include_str!("../entity.wgsl")
 }
@@ -99,6 +102,39 @@ pub(crate) struct EntityPipelineOptions<'a> {
     pub(super) vertex: &'a str,
     pub(super) fragment: &'a str,
     pub(super) write_mask: wgpu::ColorWrites,
+}
+
+/// The additive, depth-tested pipeline for `RenderPipelines.ENERGY_SWIRL` and foil without
+/// its armor color pass. Clipped secondary views give the foil the same bias as their entities.
+pub(super) fn energy_swirl_options(clipped: bool) -> EntityPipelineOptions<'static> {
+    let one_one = wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::One,
+        dst_factor: wgpu::BlendFactor::One,
+        operation: wgpu::BlendOperation::Add,
+    };
+    EntityPipelineOptions {
+        label: if clipped {
+            "Foil (clipped world view)"
+        } else {
+            "Energy swirls"
+        },
+        cull_mode: None,
+        depth_write: false,
+        compare: wgpu::CompareFunction::GreaterEqual,
+        bias: Default::default(),
+        blend: wgpu::BlendState {
+            color: one_one,
+            alpha: one_one,
+        },
+        clouds: false,
+        vertex: "vs_entity",
+        fragment: if clipped {
+            "fs_foil_clipped"
+        } else {
+            "fs_energy_swirl"
+        },
+        write_mask: wgpu::ColorWrites::ALL,
+    }
 }
 
 /// Constructs the entity shader pipelines shared by the renderer and its pixel tests.
@@ -228,18 +264,50 @@ impl Renderer {
         )
     }
 
+    /// Device-derived vertex and index byte capacities for the combined entity batch.
+    pub fn entity_quad_capacity(&self) -> EntityQuadCapacity {
+        EntityQuadCapacity::from_limits(&self.device.limits(), self.entity_skin.is_some())
+    }
+
+    /// Whether frame generation is enabled (duplicating first-person hand geometry in the batch).
+    pub fn frame_generation_on(&self) -> bool {
+        self.frame_gen.on
+    }
+
     pub(super) fn finish_prepared_frame(&mut self) {
         prepared_model::finish_staged(&mut self.prepared_draws);
         self.prepared_cuts.clear();
         self.prepared_ranges.clear();
     }
 
-    pub(super) fn draw_hand(&self, pass: &mut wgpu::RenderPass<'_>, quads: u32, first: u32) {
-        pass.set_pipeline(&self.entity_pipeline);
+    pub(super) fn draw_hand(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        hand: &[Vertex],
+        quads: u32,
+        first: u32,
+    ) {
         pass.set_bind_group(0, &self.hand_group, &[]);
         pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
         pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
-        pass.draw_indexed(0..quads * 6, (first * 4) as i32, 0..1);
+        let hand_kind = |layer: u32| match layer & 0xffff {
+            BANNER_PATTERN_OVERLAY => 1u8,
+            GLINT_ONLY_OVERLAY => 2u8,
+            _ => 0u8,
+        };
+        let mut at = 0;
+        for run in hand.as_chunks::<4>().0[..quads as usize]
+            .chunk_by(|a, b| hand_kind(a[0].layer) == hand_kind(b[0].layer))
+        {
+            let end = at + run.len() as u32;
+            pass.set_pipeline(match hand_kind(run[0][0].layer) {
+                1 => &self.banner_pattern_pipeline,
+                2 => &self.glint_only_pipeline,
+                _ => &self.entity_pipeline,
+            });
+            pass.draw_indexed(at * 6..end * 6, (first * 4) as i32, 0..1);
+            at = end;
+        }
         if light_marks(self.output.frame.format, self.hdr.is_some()) {
             // Drawn into the world: the light sources it holds are marked as the world's are.
             pass.set_pipeline(&self.hdr_entity_mark_pipeline);

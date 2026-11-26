@@ -1,0 +1,3 @@
+ids = ["handle:PlayerRef::virtual_host", "type:VirtualHost"]
+why = "Server mods can read the host and port a player's client sent in its login handshake (ClientIntentionPacket), after any player_handshake rewrite: the host text before the first NUL and the unsigned port. A transfer reports its new connection's handshake, a memory connection the address and port 0 its handshake names; a fake player has none."
+migrate = "Nothing to migrate: the method and type are new."

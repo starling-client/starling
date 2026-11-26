@@ -22,7 +22,9 @@ import json
 from pathlib import Path
 import sys
 
-import test_command_exec_parity as driver
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_command_exec_parity as driver
 
 N = 3583  # UUID [I;3583,0,0,k]
 OBJ = 'h3583'

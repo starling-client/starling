@@ -1,0 +1,2 @@
+cargo-sunrise-mod a_library_built_against_another_build_of_a_native_dependency_is_refused test:dependency_identity daily own-sdk # Builds and starts the daily head's game; book-quickstart.yml supplies its SDK.
+cargo-sunrise-mod a_library_whose_crates_another_mod_changed_is_refused_beside_its_dependent test:dependency_identity daily own-sdk # Builds and starts the daily head's game; book-quickstart.yml supplies its SDK.

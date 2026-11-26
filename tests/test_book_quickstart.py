@@ -4,6 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
+from tests.os_support import needs_runner_shell
 from tools import book_quickstart
 
 PAGE = """# A page
@@ -40,6 +41,7 @@ class BookQuickstart(unittest.TestCase):
             [(line, skip) for line, _, skip, _ in book_quickstart.blocks(PAGE)],
             [(3, None), (13, "needs the game"), (17, None), (23, None)])
 
+    @needs_runner_shell
     def test_blocks_share_one_shell_and_the_first_failing_block_is_named(self):
         with tempfile.TemporaryDirectory() as folder:
             page = Path(folder, "page.md")
@@ -52,6 +54,7 @@ class BookQuickstart(unittest.TestCase):
             self.assertTrue(Path(folder, "one.txt").exists())
             self.assertEqual(list(Path(folder).rglob("never.txt")), [])
 
+    @needs_runner_shell
     def test_a_shell_that_ends_early_with_success_names_the_block_it_skipped(self):
         with tempfile.TemporaryDirectory() as folder:
             page = Path(folder, "page.md")
@@ -60,6 +63,7 @@ class BookQuickstart(unittest.TestCase):
                 problem = book_quickstart.run_page(page, folder, dict(os.environ), log)
             self.assertTrue(problem.startswith(f"{page}:5: this block never started"), problem)
 
+    @needs_runner_shell
     def test_a_block_marked_in_a_folder_runs_in_that_folder_of_the_run(self):
         with tempfile.TemporaryDirectory() as scratch:
             Path(scratch, "earlier/project").mkdir(parents=True)

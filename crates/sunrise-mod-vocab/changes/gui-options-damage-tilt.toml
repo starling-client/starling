@@ -1,0 +1,3 @@
+ids = ["type:ClientGuiOptions", "type:ClientGuiOptions.damage_tilt_strength"]
+why = "ClientGuiOptions gains damage_tilt_strength, the Damage Tilt accessibility option (Options.damageTiltStrength), 0 to 1."
+migrate = "Add `damage_tilt_strength` to full `ClientGuiOptions` literals. Exhaustive patterns must bind or ignore the field, or use `..`."

@@ -15,7 +15,7 @@ static VALUE: AttachmentType<i32> = AttachmentType {
     default: || 0,
     codec: None,
     copy_on_death: false,
-    sync: false,
+    sync_codec: None,
 };
 
 // All cases use one resource graph. Keep both the external map and the old
@@ -56,6 +56,10 @@ macro_rules! check_list {
 #[ignore = "daily"]
 fn resident_new_family_lifetimes_bind_move_and_retire() {
     with_game(|game| {
+        crate::game::native_entity_refs::tests::prepare_entity_ticking_neighborhood(
+            game,
+            sunrise_core::position::ChunkPos::new(0, 0),
+        );
         game.summon_with_nbt("minecraft:marker", [0.5, 70.0, 0.5], "{}")
             .unwrap();
         game.lan_assign_ids();
@@ -80,6 +84,11 @@ fn resident_new_family_lifetimes_bind_move_and_retire() {
             id: game.next_entity,
             join: Default::default(),
             fence: [0, 70, 0],
+            fire_ticks: 0,
+            invulnerable: false,
+            no_gravity: false,
+            silent: false,
+            glowing: false,
         });
         check_list!(game, resident_entities.knots);
 

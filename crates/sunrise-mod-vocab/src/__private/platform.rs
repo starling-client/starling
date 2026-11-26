@@ -14,6 +14,8 @@ pub struct Platform {
     pub install_registration_data: fn(RegistrationData),
     pub install_parts:
         fn(&[ModEntry], &RuleSchema<'_>, fn(&DimensionSettings) -> bool) -> Result<(), Vec<String>>,
+    /// Runs the engine's startup declaration hooks with registration open on this thread.
+    pub with_registration_open: fn(&mut dyn FnMut()),
     pub profiler_is_enabled: fn() -> bool,
     pub profiler_start: fn() -> bool,
     pub profiler_stop: fn(),
@@ -63,6 +65,7 @@ mod tests {
             install_packages: |_, _| {},
             install_registration_data: |_| {},
             install_parts: |_, _, _| Ok(()),
+            with_registration_open: |declare| declare(),
             profiler_is_enabled: || false,
             profiler_start: || true,
             profiler_stop: || {},

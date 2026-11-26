@@ -23,17 +23,17 @@ impl Game<'_> {
         let mut attack = match shot.owner {
             Some(Who::Player) => self
                 .player_entity_id_by_connection(shot.guest)
+                .or(self.combat.enchantment_projectile_attacker)
                 .map_or_else(Attack::default, |entity| self.attack_of(entity)),
             Some(Who::Mob(entity)) => self.attack_of(entity as i32),
             None => Attack::default(),
         };
-        Self::set_projectile_attack(&mut attack, shot);
+        self.set_projectile_attack(&mut attack, shot);
         attack
     }
     /// The actual direct projectile's family and saved weapon, also for explicit damage sources.
-    pub(in crate::game) fn set_projectile_attack(attack: &mut Attack, shot: &Projectile) {
-        attack.projectile = Some(shot.id as i32);
-        attack.projectile_kind = Self::projectile_direct_entity(&shot.kind);
+    pub(in crate::game) fn set_projectile_attack(&self, attack: &mut Attack, shot: &Projectile) {
+        Self::set_projectile_source(attack, shot);
         let weapon = shot.arrow.as_ref().and_then(|arrow| {
             if matches!(shot.kind, ProjectileKind::Trident) {
                 Some(&arrow.pickup_item)
@@ -41,7 +41,18 @@ impl Game<'_> {
                 arrow.fired_from_weapon.as_ref()
             }
         });
-        Self::set_projectile_weapon(attack, weapon);
+        self.set_projectile_weapon(attack, weapon);
+    }
+    /// Classify the actual direct entity independently of the world's weapon rules.
+    pub(in crate::game) fn set_projectile_source(attack: &mut Attack, shot: &Projectile) {
+        attack.projectile = Some(shot.id as i32);
+        attack.enchantment_direct = Some(sunrise_client::health::EnchantmentActor {
+            id: shot.id as i32,
+            kind: shot.entity_type().into(),
+            motion: None,
+        });
+        attack.projectile_kind = Self::projectile_direct_entity(&shot.kind);
+        attack.projectile_type = Some(shot.entity_type());
     }
     /// Classify a projectile's vanilla `DamageSource.getDirectEntity()` family.
     pub(in crate::game) fn projectile_direct_entity(
@@ -57,11 +68,20 @@ impl Game<'_> {
             _ => sunrise_client::health::DirectEntity::Projectile,
         }
     }
-    /// Only listeners need a saved weapon copy; physical family classification never does.
-    pub(in crate::game) fn set_projectile_weapon(attack: &mut Attack, weapon: Option<&ItemStack>) {
+    /// Preserve a projectile weapon for armor effectiveness and the hooks that expose it.
+    pub(in crate::game) fn set_projectile_weapon(
+        &self,
+        attack: &mut Attack,
+        weapon: Option<&ItemStack>,
+    ) {
         if mod_api::__private::listened(mod_api::HookId::LivingIncomingDamage)
             || mod_api::__private::listened(mod_api::HookId::LivingDeath)
             || mod_api::__private::listened(mod_api::HookId::LootDrops)
+            || weapon.is_some_and(|stack| {
+                world_stations!(self)
+                    .enchantments
+                    .has_component(stack, "minecraft:armor_effectiveness")
+            })
         {
             attack.projectile_weapon = weapon.cloned();
         }
@@ -90,17 +110,75 @@ impl Game<'_> {
             return false;
         };
         let plan = self.prepare_knockback_credit(id as i32, source.attacker, self.combat.attack());
+        // The projectile's shooter, the hit's causing entity.
+        let shooter = self.combat.attack().attacker;
+        let decision = crate::game::entity::causer_decision!(self, shooter);
         let mut credit = plan.lend(&mut self.last_hurt_by_player);
-        let hurt = self.mobs[index].damage_projectile(
-            crate::game::entity::damage_level_of!(self, self.combat.attack(), &mut credit, None),
+        let (victim, lend) =
+            crate::game::entity::victim_and_causer!(self, index, shooter, decision);
+        let hurt = victim.damage_projectile(
+            crate::game::entity::damage_level_of!(self, self.combat.attack(), &mut credit, lend),
             amount,
             source,
             aim,
             [projectile.velocity.x, projectile.velocity.z],
         );
+        let Some((index, hurt)) = self.complete_mob_hurt(index, hurt) else {
+            return false;
+        };
         self.finish_mob_damage_at(index);
         self.settle_creaking_hurt(id);
         hurt
+    }
+    /// Evaluate weapon `minecraft:damage` modifier for `shot` without drawing crit RNG.
+    pub(in crate::game) fn shot_damage_base(
+        &mut self,
+        shot: &Projectile,
+        victim: Option<&str>,
+        who: Who,
+    ) -> f64 {
+        let trident = matches!(shot.kind, ProjectileKind::Trident);
+        let base_f64 = match shot.kind {
+            ProjectileKind::Arrow { base_damage, .. } => base_damage,
+            _ => 8.0,
+        };
+        let weapon = shot.arrow.as_ref().and_then(|a| {
+            if trident {
+                Some(&a.pickup_item)
+            } else {
+                a.fired_from_weapon.as_ref()
+            }
+        });
+        let Some(weapon) = weapon else {
+            return base_f64;
+        };
+        let player = self.own_entity_id() as u32;
+        let attack = self.projectile_attack(shot);
+        let causing = if attack.attacker != 0 {
+            attack.attacker
+        } else {
+            shot.id as i32
+        };
+        let source = attack.player_source(
+            if trident {
+                "minecraft:trident"
+            } else {
+                "minecraft:arrow"
+            },
+            causing,
+        );
+        let mut ctx = attack.enchantment_context(source, victim.unwrap_or(""));
+        ctx.this = victim;
+        let victim = match who {
+            Who::Player => player,
+            Who::Mob(id) => id,
+        };
+        let victim = if victim >= crate::game::dragon::SPECIAL {
+            self.dragon.as_ref().map_or(victim, |dragon| dragon.id)
+        } else {
+            victim
+        };
+        f64::from(self.evaluate_weapon_damage(weapon, Some(victim), ctx, base_f64 as f32))
     }
     /// What an arrow or a thrown trident hits an entity of type `victim`
     /// for (`AbstractArrow.onHitEntity`, `ThrownTrident.onHitEntity`): a
@@ -112,80 +190,11 @@ impl Game<'_> {
         victim: Option<&str>,
         who: Who,
     ) -> f32 {
-        let trident = matches!(shot.kind, ProjectileKind::Trident);
-        let base = match shot.kind {
-            ProjectileKind::Arrow { base_damage, .. } => base_damage as f32,
-            _ => 8.0,
-        };
-        let weapon = shot.arrow.as_ref().and_then(|a| {
-            if trident {
-                Some(&a.pickup_item)
-            } else {
-                a.fired_from_weapon.as_ref()
-            }
-        });
-        let Some(weapon) = weapon else {
-            return if trident {
-                base
-            } else {
-                shot.arrow_damage() + shot.bonus.damage
-            };
-        };
-        let attacker_kind = match shot.owner {
-            Some(Who::Player) => Some("minecraft:player".to_owned()),
-            Some(Who::Mob(id)) => self
-                .mobs
-                .iter()
-                .find(|m| m.id == id)
-                .map(|m| m.kind.id.clone()),
-            None => None,
-        };
-        let ctx = sunrise_client::enchant::EffectContext {
-            this: victim,
-            attacker: attacker_kind.as_deref(),
-            direct_attacker: Some(if trident {
-                "minecraft:trident"
-            } else if shot.is_spectral_arrow() {
-                "minecraft:spectral_arrow"
-            } else {
-                "minecraft:arrow"
-            }),
-            damage_type: Some(if trident {
-                "minecraft:trident"
-            } else {
-                "minecraft:arrow"
-            }),
-            ..Default::default()
-        };
-        let player = self.own_entity_id() as u32;
-        let attacker = shot.owner.map(|owner| match owner {
-            Who::Player => self
-                .combat
-                .enchantment_projectile_attacker
-                .or_else(|| self.player_attacker(shot.guest).map(|s| s.0))
-                .unwrap_or(player),
-            Who::Mob(id) => id,
-        });
-        let victim = match who {
-            Who::Player => player,
-            Who::Mob(id) => id,
-        };
-        let victim =
-            if (crate::game::dragon::SPECIAL..crate::game::dragon::CRYSTAL_IDS).contains(&victim) {
-                self.dragon.as_ref().map_or(victim, |dragon| dragon.id)
-            } else if victim >= crate::game::dragon::CRYSTAL_IDS {
-                self.crystals
-                    .get((victim - crate::game::dragon::CRYSTAL_IDS) as usize)
-                    .map_or(victim, |crystal| crystal.id)
-            } else {
-                victim
-            };
-        let enchanted =
-            self.evaluate_weapon_damage(weapon, attacker.map(|id| (id, victim)), ctx, base);
-        if trident {
-            enchanted
+        let base = self.shot_damage_base(shot, victim, who);
+        if matches!(shot.kind, ProjectileKind::Trident) {
+            base as f32
         } else {
-            shot.arrow_damage_with_base(f64::from(enchanted)) + shot.bonus.damage
+            shot.arrow_damage_with_base(base) + shot.bonus.damage
         }
     }
     pub(super) fn drop_death_loot(
@@ -198,32 +207,137 @@ impl Game<'_> {
         pos: [f64; 3],
         source: Option<(&'static str, u32)>,
     ) {
-        let mob_drops = self
-            .ui
-            .rules
-            .bool_at(sunrise_client::gamerules::vanilla::MOB_DROPS);
-        self.drop_death_loot_items(m, player_uuid, player_killed, killer, pos, source);
-        let experience =
-            sunrise_client::mobs::drops::experience_reward(m, player_killed, mob_drops);
-        if let Some(reward) = experience.filter(|_| !consumed) {
-            let kind = crate::game::native_hooks::mob_kind(m);
-            let amount = self.living_experience_drop(m.id, &kind, player_uuid, reward);
+        let orbs = self.drop_death_loot_items(
+            m,
+            player_uuid,
+            player_killed,
+            killer,
+            consumed,
+            pos,
+            source,
+        );
+        if let Some(amount) = orbs {
             self.spawn_orbs(pos, amount as u32);
         }
     }
 
-    /// The snapshot-dependent item half of a death; experience is handled by the caller.
+    /// `EnchantmentHelper.processMobExperience`: the killer's equipment, the killed mob's random.
+    pub(super) fn mob_kill_experience(&mut self, killed: &mut Mob, amount: i32) -> i32 {
+        let killer = self.mob_damage_source(killed).1;
+        let ctx = sunrise_items::enchant::EffectContext {
+            this: Some(&killed.kind.id),
+            this_motion: Some((killed.fall_distance, killed.extra.fall_flying)),
+            ..Default::default()
+        };
+        self.kill_experience(killer, ctx, &mut killed.random, amount)
+    }
+
+    pub(in crate::game) fn kill_experience(
+        &mut self,
+        killer: u32,
+        ctx: sunrise_items::enchant::EffectContext<'_>,
+        killed_random: &mut sunrise_core::random::LegacyRandom,
+        amount: i32,
+    ) -> i32 {
+        use crate::game::{commands::Target, lan_actions::CombatPlayer};
+        use sunrise_client::mobs::finalize::EquipmentRead;
+
+        if killer == 0 {
+            return amount;
+        }
+        let (target, displaced) = match self.combat_player(killer) {
+            Some(CombatPlayer::InPlace) => (Some(Target::Player), None),
+            Some(CombatPlayer::Parked(guest)) => (Some(Target::Guest(guest.conn)), None),
+            Some(CombatPlayer::Displaced(depth, _)) => (None, Some(depth)),
+            None => (self.level_entity(killer as i32), None),
+        };
+        if target.is_none() && displaced.is_none() {
+            return amount;
+        }
+        const COMPONENT: &str = "minecraft:mob_experience";
+        let enchantments = self.stations().enchantments.clone();
+        let mut value = amount as f32;
+        for slot in mod_api::EquipmentSlot::ALL {
+            let stack = if let Some(depth) = displaced {
+                let frame = &self.lan_displaced_players[depth];
+                self.command_guest(frame.record_conn).and_then(|guest| {
+                    crate::game::native_living_refs::player_slot(
+                        &guest.inventory,
+                        frame.selected,
+                        &guest.armor,
+                        &guest.offhand,
+                        &guest.equipment,
+                        slot,
+                    )
+                    .map(EquipmentRead::resident)
+                })
+            } else {
+                target.and_then(|target| self.equipment_stack_for(target, slot))
+            };
+            let Some(stack) = stack else { continue };
+            let stack = stack.project();
+            let slot = sunrise_items::equipment::SLOT_NAMES[slot as usize];
+            let mut levels = stack.all_enchantments().into_owned();
+            levels.retain(|(id, _)| {
+                enchantments.get(id).is_some_and(|enchantment| {
+                    enchantment.effects.get(COMPONENT).is_some() && enchantment.matches_slot(slot)
+                })
+            });
+            if levels.is_empty() {
+                continue;
+            }
+            value = enchantments.modify_entity_value(
+                &levels,
+                COMPONENT,
+                &ctx,
+                &mut self.world.random,
+                killed_random,
+                value,
+            );
+        }
+        value as i32
+    }
+
+    /// `LivingEntity.dropExperience` for a dying mob: the reward (drawn from
+    /// the mob's random after its loot rolls), heard by the mods
+    /// (`living_experience_drop`). The orbs to spawn; none when the mob drops
+    /// no experience or a sculk catalyst took it.
+    fn death_experience(
+        &mut self,
+        m: &mut Mob,
+        player_uuid: Option<u128>,
+        player_killed: bool,
+        consumed: bool,
+    ) -> Option<i32> {
+        let mob_drops = self
+            .ui
+            .rules
+            .bool_at(sunrise_client::gamerules::vanilla::MOB_DROPS);
+        let experience =
+            sunrise_client::mobs::drops::experience_reward(m, player_killed, mob_drops);
+        let reward = experience.filter(|_| !consumed)?;
+        let reward = self.mob_kill_experience(m, reward);
+        let kind = crate::game::native_hooks::mob_kind(m);
+        Some(self.living_experience_drop(m.id, &kind, player_uuid, reward))
+    }
+
+    /// The snapshot-dependent item half of a death. As NeoForge's
+    /// `dropAllDeathLoot`, the experience is heard (`death_experience`) after
+    /// the loot rolls and before the mods hear the item list
+    /// (`living_drops`); the item entities still join the level before the
+    /// orbs, which the caller spawns from the returned amount.
     fn drop_death_loot_items(
         &mut self,
         m: &mut Mob,
         player_uuid: Option<u128>,
         player_killed: bool,
         killer: sunrise_world::loot::LootEntity,
+        consumed: bool,
         pos: [f64; 3],
         source: Option<(&'static str, u32)>,
-    ) {
-        use sunrise_client::mobs::{DamageKind, Who, drops};
-        use sunrise_world::loot::{LootDamage, LootEntity};
+    ) -> Option<i32> {
+        use sunrise_client::mobs::{Who, drops};
+        use sunrise_world::loot::LootEntity;
         let accepted = m
             .accepted_hit
             .take()
@@ -234,7 +348,7 @@ impl Game<'_> {
         let weapon = accepted.as_ref().and_then(|hit| hit.weapon.as_ref());
         let weapon = weapon.and_then(|stack| stack.try_into_api().ok());
         let Some(loot) = self.server_loot.get() else {
-            return;
+            return self.death_experience(m, player_uuid, player_killed, consumed);
         };
         let player = || killer.clone();
         let damage = m.last_damage.map(|(d, _)| {
@@ -257,30 +371,7 @@ impl Game<'_> {
                     }),
                 None => None,
             };
-            let direct = match d.kind {
-                DamageKind::Arrow => Some(LootEntity {
-                    kind: "minecraft:arrow".into(),
-                    ..LootEntity::default()
-                }),
-                DamageKind::Fireball => Some(LootEntity {
-                    kind: "minecraft:fireball".into(),
-                    ..LootEntity::default()
-                }),
-                DamageKind::WitherSkull => Some(LootEntity {
-                    kind: "minecraft:wither_skull".into(),
-                    ..LootEntity::default()
-                }),
-                DamageKind::Fireworks => Some(LootEntity {
-                    kind: "minecraft:firework_rocket".into(),
-                    ..LootEntity::default()
-                }),
-                _ => source.clone(),
-            };
-            LootDamage {
-                kind: source_damage_type(d).into(),
-                source,
-                direct,
-            }
+            loot_damage(d, source)
         });
         let vehicle = m
             .extra
@@ -288,6 +379,8 @@ impl Game<'_> {
             .and_then(|id| self.mobs.iter().find(|o| o.id == id))
             .map(|o| LootEntity::new(&o.kind.id));
         let kind = crate::game::native_hooks::mob_kind(m);
+        let death_variants = matches!(m.species(), Species::Chicken | Species::Frog)
+            .then(|| self.world_variants().clone());
         let death = drops::Death {
             this_nbt: if loot.copies_entity_nbt() {
                 self.command_target_nbt(crate::game::commands::Target::Mob(m.id))
@@ -306,6 +399,7 @@ impl Game<'_> {
                 .rules
                 .bool_at(sunrise_client::gamerules::vanilla::MOB_DROPS),
             world_seed: self.level.seed,
+            variants: death_variants.as_ref(),
         };
         let raider = sunrise_client::mobs::raider::is_raider(m.species());
         let to_stack = |stack: &sunrise_world::loot::LootStack| {
@@ -424,10 +518,16 @@ impl Game<'_> {
             match d {
                 drops::Drop::CarriedBlock(state) => {
                     // Enderman.dropCustomDeathLoot: spawnAtLocation for each
-                    // of the carried block's silk-touch drops.
+                    // of the carried block's drops using `enderman_loot_drop`.
                     use sunrise_client::mobs::enderman;
-                    let tool = enderman::carried_block_tool();
                     let at = [m.position.x, m.position.y, m.position.z];
+                    let special = self.local_difficulty(at).special();
+                    let tool = enderman::carried_block_tool(
+                        &world_stations!(self).enchantments,
+                        world_items!(self),
+                        &mut m.random,
+                        special,
+                    );
                     let drops = self.roll_block_loot(
                         at.map(|c| c.floor() as i32),
                         state,
@@ -474,7 +574,54 @@ impl Game<'_> {
             source: hurt,
             recently_hit: player_killed,
         };
+        let orbs = self.death_experience(m, player_uuid, player_killed, consumed);
         self.drop_death_items(&dying, stacks, 10, |_| None);
+        orbs
+    }
+}
+
+/// The projectiles that name themselves as the causing entity when they have no owner; other
+/// ownerless projectiles (TNT, potions, snowballs, rockets...) name none, so their blow is not
+/// direct.
+const OWN_CAUSE: [&str; 5] = [
+    "minecraft:arrow",
+    "minecraft:spectral_arrow",
+    "minecraft:trident",
+    "minecraft:fireball",
+    "minecraft:small_fireball",
+];
+
+/// A dying mob's last damage as its loot sees it (`DamageSource`): the type,
+/// the attacker `source` (`getEntity`) and the entity that dealt the blow
+/// (`getDirectEntity`), the attacker itself unless the damage recorded
+/// another, such as a thrown trident or a splash potion.
+fn loot_damage(
+    d: Damage,
+    source: Option<sunrise_world::loot::LootEntity>,
+) -> sunrise_world::loot::LootDamage {
+    // The entity that landed the blow when it was not the attacker, as the hit recorded it. A
+    // blow with no recorded one (a `/damage` of an arrow's type) has none: the damage source's
+    // direct entity is its causing entity, or no entity at all.
+    let projectile = d.direct.map(|kind| sunrise_world::loot::LootEntity {
+        kind: kind.into(),
+        ..Default::default()
+    });
+    // An arrow, a thrown trident or a fireball with no owner is its own causing entity
+    // (`damageSources().arrow(this, owner == null ? this : owner)`, and the trident's and
+    // fireballs' alike): both `source` and `direct`, so the blow is direct.
+    let own_cause = d.attacker.is_none() && d.direct.is_some_and(|kind| OWN_CAUSE.contains(&kind));
+    let source = if own_cause {
+        projectile.clone()
+    } else {
+        source
+    };
+    let is_direct = projectile.is_none() || own_cause;
+    let direct = projectile.or_else(|| source.clone());
+    sunrise_world::loot::LootDamage {
+        kind: source_damage_type(d).into(),
+        source,
+        direct,
+        is_direct,
     }
 }
 
@@ -485,3 +632,7 @@ mod tests;
 #[cfg(test)]
 #[path = "death_weapon_review_tests.rs"]
 mod review_tests;
+
+#[cfg(test)]
+#[path = "death_loot_direct_tests.rs"]
+mod direct_tests;

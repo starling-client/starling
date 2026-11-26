@@ -1,5 +1,4 @@
 //! The `is_bonemeal_success` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0083
 
 pub trait Hooks {
     /// `BonemealableBlock.isBonemealSuccess` for a block that answered

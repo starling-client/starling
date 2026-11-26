@@ -58,12 +58,17 @@ impl Game<'_> {
     /// alpha kept (`OutlineBufferSource`'s team-coloured copy of each draw).
     pub(super) fn mark_outline(&self, vertices: &[Vertex], rgb: u32) {
         let color = sunrise_client::mobs::render::abgr(rgb);
-        self.glowing_vertices
-            .borrow_mut()
-            .extend(vertices.iter().map(|v| Vertex {
-                color,
-                normal: [0; 4],
-                ..*v
-            }));
+        self.glowing_vertices.borrow_mut().extend(
+            vertices
+                .iter()
+                .filter(|v| {
+                    v.layer & 0xffff != sunrise_client_render::gfx::ARMOR_GLINT_ONLY_OVERLAY
+                })
+                .map(|v| Vertex {
+                    color,
+                    normal: [0; 4],
+                    ..*v
+                }),
+        );
     }
 }

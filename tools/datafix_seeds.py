@@ -13,7 +13,10 @@ still upgrade and compare every world fresh inside each job's private root. When
 SUNRISE_DATAFIX_SEED_KEEP is unset, callers take the existing local generation path unchanged.
 """
 import argparse
+import ast
 import hashlib
+import importlib
+import inspect
 import json
 import os
 from pathlib import Path
@@ -24,13 +27,10 @@ import tempfile
 import time
 import urllib.request
 
-try:
-    from . import datafix_paths, file_lock
-except ImportError:
-    import datafix_paths
-    import file_lock
-
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+from tools import datafix_paths, file_lock
+
 KEEP_VARIABLE = 'SUNRISE_DATAFIX_SEED_KEEP'
 MANIFEST_VARIABLE = 'SUNRISE_DATAFIX_MANIFEST'
 OUTCOME_VARIABLE = 'SUNRISE_DATAFIX_SEEDS_OUTCOME'
@@ -51,33 +51,51 @@ SEED_KEEP_DAYS = 14
 STALE_STAGING_SECONDS = 86400
 _FICLONE = 0x40049409  # Linux ioctl(2) FICLONE
 
-# Every tracked source file that participates in seed world generation or snapshot layout.
-SOURCE_FILES = (
-    'tools/anvil_dump.py',
-    'tools/datafix_paths.py',
-    'tools/datafix_scene.py',
-    'tools/datafix_scene_12.py',
-    'tools/datafix_scene_old.py',
-    'tools/datafix_seeds.py',
-    'tools/datafix_worlds.py',
-    'tools/lab.py',
-)
+# tools/lab.py is shared by every harness and changes for reasons unrelated to seed worlds, so the key reads the text
+# of only the lab functions the seed tools import (lab_functions), not the whole file.
+LAB = 'tools/lab.py'
 
 
-def _worlds_module():
-    try:
-        from . import datafix_worlds
-    except ImportError:
-        import datafix_worlds
-    return datafix_worlds
+def _sibling(name):
+    """A module of tools/, imported when first needed."""
+    return importlib.import_module(f'tools.{name}')
 
 
-def _parity_shim_module():
-    try:
-        from . import parity_shim
-    except ImportError:
-        import parity_shim
-    return parity_shim
+def seed_modules():
+    """The tools/ modules that generate the seed worlds: datafix_worlds.py (the generator `_run_generator` runs) and the
+    tools/ modules it imports, transitively. lab is keyed by function (lab_functions), not as a module."""
+    lab = _sibling('lab')
+    tools = Path(__file__).resolve().parent
+    modules, pending = {}, [_sibling('datafix_worlds')]
+    while pending:
+        module = pending.pop()
+        path = Path(module.__file__).resolve()
+        if path in modules:
+            continue
+        modules[path] = module
+        pending.extend(value for value in vars(module).values()
+                       if inspect.ismodule(value) and value is not lab
+                       and Path(getattr(value, '__file__', None) or '/').resolve().parent == tools)
+    return modules
+
+
+def source_files():
+    """Sorted repo paths of every file whose text keys the seed cache: the seed modules and this file (snapshot layout)."""
+    paths = {*seed_modules(), Path(__file__).resolve()}
+    return sorted(path.relative_to(ROOT).as_posix() for path in paths)
+
+
+def lab_functions():
+    """Sorted names of the lab functions the seed modules import (`from lab import name`).
+    A seed module that holds the lab module itself could call functions this cannot see, so it is refused."""
+    lab = _sibling('lab')
+    names = set()
+    for path, module in seed_modules().items():
+        if lab in vars(module).values():
+            raise ValueError(f'{path.relative_to(ROOT).as_posix()} imports the lab module; import the functions it calls by name')
+        names.update(value.__name__ for value in vars(module).values()
+                     if inspect.isfunction(value) and value.__module__ == lab.__name__)
+    return sorted(names)
 
 
 def keep_root(path):
@@ -92,13 +110,13 @@ def keep_root(path):
 
 
 def world_subdir(name):
-    worlds = _worlds_module()
+    worlds = _sibling('datafix_worlds')
     return 'worlds-pre-1.17' if name.split('-')[0] in worlds.LEGACY else 'worlds'
 
 
 def expected_worlds():
     """Ordered (subdir, world_name) pairs for every world datafix_worlds.py produces."""
-    worlds = _worlds_module()
+    worlds = _sibling('datafix_worlds')
     names = []
     for version in worlds.VERSIONS:
         names.append(version)
@@ -109,16 +127,24 @@ def expected_worlds():
 
 
 def required_versions():
-    worlds = _worlds_module()
+    worlds = _sibling('datafix_worlds')
     return sorted({*worlds.VERSIONS, *(version for version, _ in worlds.VARIANTS.values())})
 
 
-def source_digests(root=ROOT, files=SOURCE_FILES):
-    return {rel: hashlib.sha256((Path(root) / rel).read_bytes()).hexdigest() for rel in sorted(files)}
+def source_digests(root=ROOT):
+    digests = {rel: hashlib.sha256((Path(root) / rel).read_bytes()).hexdigest() for rel in source_files()}
+    source = (Path(root) / LAB).read_text(encoding='utf-8')
+    names = lab_functions()
+    functions = {node.name: ast.get_source_segment(source, node) for node in ast.parse(source).body
+                 if isinstance(node, ast.FunctionDef) and node.name in names}
+    if missing := sorted(set(names) - functions.keys()):
+        raise ValueError(f'{LAB} no longer defines {", ".join(missing)}, which the seed tools call')
+    digests[LAB] = hashlib.sha256(json.dumps([functions[name] for name in names]).encode('utf-8')).hexdigest()
+    return digests
 
 
 def fetch_manifest(url=None):
-    worlds = _worlds_module()
+    worlds = _sibling('datafix_worlds')
     with urllib.request.urlopen(url or worlds.MANIFEST) as response:
         return json.load(response)
 
@@ -141,7 +167,7 @@ def resolve_version_pins(versions=None, manifest=None):
 def default_java_identity():
     """Content identity of the default `java` JDK used for 1.20.5+ servers, reusing
     tools/parity_shim.py's direct-JDK check and JDK content hashing."""
-    shim = _parity_shim_module()
+    shim = _sibling('parity_shim')
     program = shim.real('java') if os.environ.get('PARITY_SHIM_REAL_PATH') else shutil.which('java')
     if not program:
         raise RuntimeError('java not found on PATH')
@@ -149,13 +175,8 @@ def default_java_identity():
         raise RuntimeError(f'java ({program}) is not JAVA_HOME direct launcher; cannot key JDK by content')
     resolved = os.path.realpath(program)
 
-    class _FileHasher:
-        @staticmethod
-        def file(path):
-            with open(path, 'rb') as stream:
-                return hashlib.file_digest(stream, 'sha256').hexdigest()
-
-    identity = shim.toolchain(resolved, _FileHasher())
+    lab = _sibling('lab')
+    identity = shim.toolchain(resolved, argparse.Namespace(file=lambda path: lab.digest(Path(path), 'sha256')))
     if len(identity) <= 1:
         raise RuntimeError(f'java ({resolved}) lacks JDK runtime files ({", ".join(shim.JDK_FILES)})')
     return identity
@@ -163,7 +184,7 @@ def default_java_identity():
 
 def seed_key(root=ROOT, *, version_pins=None, platform_name=None, runtime_pins=None, default_java=None, expected=None):
     """Content key for a complete datafix seed snapshot."""
-    worlds = _worlds_module()
+    worlds = _sibling('datafix_worlds')
     plat = worlds.platform() if platform_name is None else platform_name
     payload = {
         'format': CACHE_FORMAT,
@@ -171,7 +192,7 @@ def seed_key(root=ROOT, *, version_pins=None, platform_name=None, runtime_pins=N
         'expected_worlds': sorted([subdir, name] for subdir, name in (expected_worlds() if expected is None else expected)),
         'versions': dict(sorted((resolve_version_pins() if version_pins is None else version_pins).items())),
         'platform': plat,
-        'java_runtimes': worlds.LOCK[plat] if runtime_pins is None else runtime_pins,
+        'java_runtimes': worlds.pinned_runtimes(plat) if runtime_pins is None else runtime_pins,
         'default_java': default_java_identity() if default_java is None else default_java,
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(',', ':')).encode('utf-8')).hexdigest()
@@ -205,10 +226,7 @@ def snapshot_complete(root, expected=None, *, strict_top=False):
             meta = world / 'datafix-source.json'
             if not meta.is_file() or meta.is_symlink():
                 return False
-            try:
-                info = json.loads(meta.read_text(encoding='utf-8'))
-            except (OSError, ValueError):
-                return False
+            info = json.loads(meta.read_text(encoding='utf-8'))
             if (not isinstance(info, dict) or not isinstance(info.get('version'), str)
                     or type(info.get('data_version')) is not int):
                 return False
@@ -261,9 +279,8 @@ def copy_snapshot(snapshot_dir, dest_root):
             shutil.copytree(src, partial, symlinks=False, copy_function=copy_or_reflink)
             shutil.rmtree(dst, ignore_errors=True)
             partial.rename(dst)
-        except Exception:
+        finally:
             shutil.rmtree(partial, ignore_errors=True)
-            raise
 
 
 def stage_snapshot(src_root, staging_dir, expected):
@@ -336,7 +353,7 @@ def prepare(dest_root, keep_dir, *, key=None, manifest=None, expected=None, gene
     started = time.monotonic()
     keep.mkdir(parents=True, exist_ok=True)
     dest.mkdir(parents=True, exist_ok=True)
-    with open(keep / LOCK_NAME, 'w') as handle:
+    with open(keep / LOCK_NAME, 'a') as handle:
         file_lock.lock(handle)
         snapshot_dir = keep / key
         if snapshot_dir.exists() and snapshot_complete(snapshot_dir, expected, strict_top=True):
@@ -362,10 +379,8 @@ def prepare(dest_root, keep_dir, *, key=None, manifest=None, expected=None, gene
             os.rename(staging, snapshot_dir)
             copy_snapshot(snapshot_dir, dest)
             prune_seed_keep(keep)
-        except Exception:
-            shutil.rmtree(staging, ignore_errors=True)
-            raise
         finally:
+            shutil.rmtree(staging, ignore_errors=True)  # already renamed away on success
             shutil.rmtree(scratch, ignore_errors=True)
     return {'key': key, 'status': 'miss', 'worlds': len(expected), 'elapsed': time.monotonic() - started}
 

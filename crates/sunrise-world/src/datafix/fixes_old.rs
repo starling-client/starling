@@ -307,7 +307,7 @@ fn filtered_signs(cx: &mut Cx) {
         for i in 1..=4 {
             remove(be, &format!("FilteredText{i}"));
         }
-        reread_as(Ty::BlockEntity, k, be);
+        reread_as(Ty::BlockEntity, k, be)
     });
 }
 
@@ -633,7 +633,7 @@ fn sign_double_sided(cx: &mut Cx, id: &str) {
         for field in super::fixes_a::SIGN_FIELDS_TO_DROP {
             remove(be, field);
         }
-        reread_as(Ty::BlockEntity, k, be);
+        reread_as(Ty::BlockEntity, k, be)
     });
 }
 

@@ -24,9 +24,10 @@ import sys
 import tempfile
 import time
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import lab  # noqa: E402
-from server_sunrise_only_e2e import Failed, server  # noqa: E402
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab
+from tools.server_sunrise_only_e2e import Failed, server  # noqa: E402
 
 EXE = '.exe' if os.name == 'nt' else ''
 CHEST = (2, -60, 0)

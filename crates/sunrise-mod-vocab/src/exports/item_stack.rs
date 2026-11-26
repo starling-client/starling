@@ -1,6 +1,6 @@
 pub use item::item_stack::{
-    Component, Components, CraftedByError, InventoryView, ItemComponentEditor, ItemStack,
-    ItemStackView, StackError, StackSplit, StackWriteError,
+    Component, Components, CraftedByError, InventoryView, ItemComponentEditor, ItemJsonError,
+    ItemStack, ItemStackView, StackError, StackSplit, StackWriteError,
 };
 mod __private {
     mod game {

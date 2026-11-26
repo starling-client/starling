@@ -1,0 +1,106 @@
+# The removed engine cursor operations below lived on doc-hidden CapabilityProviders
+# traits that no supported surface signature referenced, so they have no SDK surface IDs.
+ids = [
+    "type:BlockProviderOf",
+    "type:ItemProviderOf",
+    "type:EntityProviderOf",
+    "type:OwnProvider",
+    "type:NativeCapabilityProvider",
+    "method:BlocksRegistrar::provide_block_capability",
+    "method:BlockEntitiesRegistrar::provide_block_entity_capability",
+    "method:ItemsRegistrar::provide_item_capability",
+    "method:EntitiesRegistrar::provide_entity_capability",
+    "method:CapabilityRegistrationRegistrar::block_capability_registered",
+    "method:CapabilityRegistrationRegistrar::entity_capability_registered",
+    "method:CapabilityRegistrationRegistrar::item_capability_registered",
+    "method:CapabilityRegistrationRegistrar::set_block_capability_proxyable",
+]
+why = """
+Built-in and mod-defined capability keys bind typed native callbacks instead of carrying the
+closed provider enums inherited from the guest runtime. As in NeoForge 26.3's
+`CapabilityRegistry.create`, a name in each domain has one handler and context type identity.
+The exported built-in keys establish their identities before mod registration; providers,
+registration-time coverage queries and typed proxy declarations must agree with them. Conflicts
+refuse registration and name both owners. A typed key cannot inherit a different binding's
+proxyability. Names follow vanilla 26.3's `Identifier.isValidNamespace` and `Identifier.isValidPath`.
+
+NeoForge's `RegisterCapabilitiesEvent.registerItem` and `registerEntity` take registry objects.
+Sunrise resolves the named targets against the completed registries, so forward references work
+and a missing target refuses load, naming the requesting mod and the missing ID. As in
+`RegisterCapabilitiesEvent.registerBlockEntity`, a block-entity provider runs only for a
+resident entity of the registered type. The scoped read-only level resolves that site before
+dispatch; a previously selected site must still match when it is borrowed. The same provider
+can select an offer without constructing a handler during presence checks.
+
+`BlockCapability`/`ItemCapability`/`EntityCapability.getCapability` visit providers until one
+answers. Sunrise walks borrowed lists directly in its existing precedence order (`_before_game`,
+game default, then other providers, each in registration order), without the 65,535-provider
+cap or per-step cloning. A panicking provider is reported and disabled for the session without
+stopping later providers. `HopperBlockEntity.getBlockContainer`'s vanilla fallback and the
+registration-time coverage queries are preserved.
+
+Stock mod block storage validates its shape at registration instead of clipping it. A stock
+container keeps at most 256 slots, since it saves through vanilla's
+`ContainerHelper.saveAllItems`/`loadAllItems` and `ItemStackWithSlot.CODEC`, whose `Slot` is an
+unsigned byte; a larger store is a capability provider of the mod's own. Generated structure block entities load against their declared block's storage
+shape, as `StructureTemplate.placeInWorld` loads data into the placed block's entity.
+`FluidStacksResourceHandler` and `SimpleEnergyHandler` anchor the declared tanks and nonnegative
+energy settings: zero capacities and rates greater than the energy capacity are not rewritten.
+"""
+migrate = """
+Register through the typed `dyn Registrar` helpers:
+- `type:BlockProviderOf` -> call `block_capability` or `block_entity_capability` with the scoped callback below.
+- `type:ItemProviderOf` -> call `item_capability` with the typed callback below.
+- `type:EntityProviderOf` -> call `entity_capability` with the typed callback below.
+- `type:OwnProvider` -> pass the defining mod's typed key and a callback to the same helper as for a built-in key.
+- `type:NativeCapabilityProvider` -> raw registrar implementations accept and forward this opaque value unchanged; do not construct it.
+- `method:BlocksRegistrar::provide_block_capability` -> `r.block_capability(&key, &block, |level, at, state, entity, offer| ...)`,
+  where `block: BlockKey` comes from `r.block_key("mymod:press")`.
+- `method:BlockEntitiesRegistrar::provide_block_entity_capability` -> `r.block_entity_capability(&key, &kind, |level, at, state, entity, offer| ...)`,
+  where `kind: BlockEntityTypeKey` comes from the type builder or `r.block_entity_type_key("mymod:press")`.
+- `method:ItemsRegistrar::provide_item_capability` -> `r.item_capability(&key, "mymod:backpack", |host, place| ...)`.
+  The target argument is a fully qualified item `&str`, not an `ItemKey`.
+- `method:EntitiesRegistrar::provide_entity_capability` -> `r.entity_capability(&key, "mymod:robot", |host, entity, context| ...)`.
+  The target argument is a fully qualified entity type `&str`, not an `EntityTypeKey`.
+Block callbacks receive a read-only `LevelHost`; leave the offer untouched to decline, or call
+`offer.offer(|| Box::new(handler))` to answer. Use the corresponding `*_before_game` helper when
+the old `before_game` flag was `true`. All four raw methods replace their provider parameter
+with `NativeCapabilityProvider`.
+
+Import the defining mod's typed key. If you made your own `EntityCapabilityKey` with the name
+of `ENTITY_AUTOMATION`, use `&ENTITY_AUTOMATION` and take `Option<Direction>` as the callback's
+third argument, not `()`. Correct unknown target IDs or ensure the corresponding item or entity
+type is declared by the end of registration. For coverage, keep passing registry keys:
+`r.is_block_capability_registered(&key, &block)`, `r.is_item_capability_registered(&key, &item)`
+and `r.is_entity_capability_registered(&key, &kind)`. For typed forwarding use
+`r.set_capability_proxyable(&key, value)` and `key.is_proxyable(host)` with the canonical key.
+Forwarding `CapabilityRegistrationRegistrar` implementations migrate these raw methods:
+- `method:CapabilityRegistrationRegistrar::block_capability_registered` -> take and forward `binding: (TypeId, &'static str)` in place of `handler`.
+- `method:CapabilityRegistrationRegistrar::entity_capability_registered` -> take `&mut self`, `name: &'static str`, then `binding: (TypeId, &'static str)`, then the unchanged target key reference.
+- `method:CapabilityRegistrationRegistrar::item_capability_registered` -> take `&mut self`, `name: &'static str`, then `binding: (TypeId, &'static str)`, then the unchanged target key reference.
+- `method:CapabilityRegistrationRegistrar::set_block_capability_proxyable` -> take and forward `binding: (TypeId, &'static str)` in place of `handler`.
+
+The removed `CapabilityProviders` operations were engine cursor and presence helpers:
+- `provided(ProvidedBy::Entity, name)` -> `has_entity_providers(&key)` for a typed, domain-wide
+  entity fast path. Block/block-entity and item domain-wide presence checks have no replacement;
+  use per-target registration coverage or perform the typed lookup below.
+- `block_provider(..., &mut index)` -> `level.capability(host, &key, pos, side)`;
+  engine callers with a separate game default use
+  `block_providers(&key, host, at).and_then(|p| p.ask(host, game_answered))`.
+- `entity_provider(..., &mut index)` -> `entity.capability(host, &key, context)`;
+  engine callers with a separate game default use
+  `entity_providers(&key, host, entity, context).and_then(|p| p.ask(host, game_answered))`.
+- `item_provider(..., &mut index)` -> `place.capability(host, &key)` on the actual `ItemPlace`.
+  There is no provider-by-provider traversal API.
+- `item_container_provider(item, &mut index)` plus invoking each callback ->
+  `mod_api::__private::parts_installation::item_container_slots(host, item_id)` in the engine.
+  Mods still register with `r.item_container(&item, callback)` and query the stack through
+  `place.capability(host, &ITEM_ITEMS)`.
+
+For `block_container`, pass `slots` in `0..=256`, keep `faces`/`inputs`/`outputs` indices
+below `slots` and `insert_rules.len()` at most `slots`; a declared menu must match `slots` to
+open. For `block_fluids`, keep indices below `tanks.len()` and pass the capacity you intend
+rather than relying on clipping or promoting zero. For `block_energy`, pass nonnegative
+`capacity`, `max_insert` and `max_extract`; set your desired rates explicitly rather than
+relying on them being lowered to `capacity`.
+"""

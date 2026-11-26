@@ -16,10 +16,11 @@ reached by the box (0.125 wider than the ray) before the ray, on some throws, so
 import json
 import sys
 
-try:
-    from . import test_locator_bar_parity as locator
-except ImportError:
-    import test_locator_bar_parity as locator
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_locator_bar_parity as locator
 
 NAME = 'fishing-hook-blocks-parity'
 locator.PROPERTIES = dict(locator.PROPERTIES, gamemode='survival')

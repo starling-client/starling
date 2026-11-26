@@ -6,8 +6,11 @@ and Sunrise's recipe placement and recipe-book sync. A typed body is one bounded
 Wire value with no extra envelope; raw channels carry caller-supplied bytes.
 Derive `mod_api::Wire` explicitly on a type that needs this encoding. The build
 never adds the derive. Every field of a derived type must also implement `Wire`.
+The derive uses standard Rust types and macros even if your module shadows their
+names or has no implicit prelude. Field types and the type in `#[wire(via = Type)]`
+resolve in your own scope.
 
-[Native recipe serializers](../crafting-recipe-kinds.md) do not use Wire for their
+[Native recipe serializers](../how-to/items/crafting-recipe-kinds.md) do not use Wire for their
 values. Both `CraftingRecipeKind` and `RecipeSerializer` decode and write JSON;
 the loader retains each typed value with its owner for the resource generation.
 Recipe content still syncs as bounded JSON, and raw recipe JSON keeps its size
@@ -21,9 +24,12 @@ implement `Wire`.
 Hook events are native callback records, not binary messages. If you need to send data from
 an event, copy the fields you intend to send into your own `Wire` payload type. The same applies to
 [loader metadata](load-phases.md) such as `PackageInfo`, `DataLoadOrigin` and `LoopSide`: read it locally,
-then select the facts you need for your protocol. Keep issued packet-hold and chunk-ticket controller
-handles in the process that issued them; use a ticket controller's namespaced `id()` when you need to
-record its name.
+then select the facts you need for your protocol. Local client drawing, render-pipeline, input, audio,
+screen, options, recipe-panel, and pose/model/animation values are likewise in-process only rather than
+`Wire`; load model and animation assets through JSON and copy only the fields you intend to synchronize
+into your own `Wire` payload struct. Keep issued packet-hold, chunk-ticket controller, and watered-area
+(`WaterTicket`) handles in the process that issued them; use a ticket controller's namespaced `id()`
+when you need to record its name, and re-add transient watered areas when a level or block entity loads.
 Likewise, keep [attachment queries and write tokens](attachments/querying.md) in process; an
 attachment's own codec handles saving and syncing its value.
 
@@ -36,7 +42,7 @@ convert to `ItemStack` or `FluidStack`, or copy the fields you need into your ow
 ```rust,ignore
 #[derive(mod_api::Wire)]
 pub struct ChemicalAmount {
-    pub chemical: String,
+    pub chemical: mod_api::Identifier,
     pub amount: u64,
 }
 ```
@@ -44,7 +50,9 @@ pub struct ChemicalAmount {
 Records encode fields in declaration order. Enums encode a case index followed by
 its fields. Lengths and numbers are little-endian; collections are length-prefixed.
 Decoding returns `WireError` for invalid data rather than accepting an unknown tag,
-invalid UTF-8 or an unsupported length.
+invalid UTF-8 or an unsupported length. An `Identifier` writes the namespace and path
+as two length-prefixed UTF-8 strings in both ordinary Wire and typed payloads. The reader
+validates the pair as an owned resource name; it does not resolve or intern a registry key.
 
 ## Nesting and stacks
 
@@ -53,25 +61,34 @@ variants and `Box`/`Arc` values (`MAX_DEPTH`). Collection iteration, `Option`
 and tuples do not consume a level. The reader returns `WireError::Depth` before
 entering level 33; the writer records the same error. Always check `Writer::error`
 before sending its bytes. This is a transport budget for unbounded mod-defined
-trees, including ingredients, loot vehicles and recipe slot displays.
+trees, including ingredients and recipe slot displays.
 
 Typed payloads use the same encoding with their own limits. They count lists, present
 options, boxes, shared pointers, NBT containers and explicit recursion, not derived record
-frames, against `PAYLOAD_MAX_DEPTH`. String and list lengths are bounded by
-`PAYLOAD_MAX_STRING_BYTES` and `PAYLOAD_MAX_LIST_ENTRIES`. The reader and writer both
+frames, against `PAYLOAD_MAX_DEPTH`. String lengths are bounded by `PAYLOAD_MAX_STRING_BYTES`.
+A list has no count limit of its own, as in vanilla (`ByteBufCodecs.collection`): its count is
+refused when its entries, at `Wire::MIN` bytes each and never less than one, could not fit in
+the rest of the body, so a hostile count never forces a large allocation. The reader and writer both
 charge `PAYLOAD_DECODE_BUDGET` for decoded storage, separately from the 8 MiB body cap.
 A failed encode is never queued.
+
+A typed payload is a registered payload, so like vanilla's registered payloads it is bounded by
+the connection's frames: 2,097,151 bytes per frame (`Varint21FrameDecoder`) and 8,388,608
+bytes uncompressed (`CompressionDecoder.MAXIMUM_UNCOMPRESSED_LENGTH`), with its body within the
+8 MiB `PAYLOAD_DECODE_BUDGET`. A raw channel keeps vanilla's limit for a channel the receiver
+does not know, the `MAX_PAYLOAD_SIZE` that `DiscardedPayload.codec` is given: 1,048,576 bytes
+clientbound (`ClientboundCustomPayloadPacket`) and 32,767 bytes serverbound
+(`ServerboundCustomPayloadPacket`).
 
 Ordinary Wire keeps the NBT `Tag` limit of **512** containers and the `Text` limit of
 **512** nested components. Both use stack-independent iterative codecs directly over
 their fields and are admitted to typed payloads, where they share `PAYLOAD_MAX_DEPTH`
 and `PAYLOAD_DECODE_BUDGET`.
 
-JSON-backed `serde_json::Value`, JSON maps and `ModelPart` also refuse beyond
+JSON-backed `serde_json::Value` and JSON maps also refuse beyond
 32 JSON containers. Their encoders preflight the in-memory tree iteratively
 before serde recursion; their decoders scan the JSON's nesting outside quoted
-strings before parsing. A model part's JSON includes object, children-list and
-named-child-tuple containers, so one part can consume several JSON levels.
+strings before parsing.
 
 Hand-written recursive `Wire` implementations must enforce their own stack contract; the
 reader cannot police code outside its codec.

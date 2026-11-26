@@ -1,5 +1,0 @@
-manifest:
-refused: native: unsupported package path
-
-icon:
-unavailable

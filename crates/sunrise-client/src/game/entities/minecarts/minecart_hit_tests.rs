@@ -160,6 +160,10 @@ fn a_chest_cart_broken_by_a_player_angers_the_piglins_that_see_them() {
         m.extra.piglin.guarded_angry_at.is_some(),
         "the piglin saw it"
     );
-    assert_eq!(m.extra.anger, 600, "PiglinAi.setAngerTarget's 600 ticks");
+    assert_eq!(
+        sunrise_client::mobs::piglin::angry_at(m),
+        Some(600),
+        "PiglinAi.setAngerTarget's 600 ticks"
+    );
     assert_eq!(m.ai.target, Some(Who::Player));
 }

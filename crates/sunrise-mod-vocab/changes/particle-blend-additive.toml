@@ -1,0 +1,3 @@
+ids = ["type:ParticleBlend", "type:ParticleBlend.Additive"]
+why = "Add ParticleBlend::Additive so mods can register additive particle groups and emit additive quads drawn after the translucent layer with depth testing on, depth writes off, and src-alpha / one additive blending (#4982). ParticleBlend is now #[non_exhaustive] because SingleQuadParticle.Layer can carry any pipeline."
+migrate = "Add a wildcard arm to exhaustive matches on ParticleBlend outside sunrise-mod-vocab; existing Opaque and Translucent variants and discriminants are unchanged."

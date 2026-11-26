@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The picture a change leaves alone stays the same, pixel for pixel (docs/design/hdr-linear-light.md, Tests 1 and 2).
+"""The picture a change leaves alone stays the same, pixel for pixel.
 
 Pictures of the game hold Minecraft's textures and can't be committed, so this test is differential: it builds the base
 (BASE_SHA on the parity runner, else the merge-base with origin/main) and the change, draws the same fixed scenes with
@@ -15,30 +15,24 @@ Sessions, each a fresh game and world (seed 7) per build:
   a banner, a framed item),
   and the HUD over light: chat over the sun, chat and the crosshair over lava, the pause
   menu over it.
-- golden_hour: the Golden Hour example pack (shader API 0.1) in SDR, the same scenes.
-- golden_hour_hdr: Golden Hour with offscreen HDR output on (SUNRISE_HDR_OUTPUT=pq): each screenshot and its -hdr.png.
 - hdr_toggle: vanilla started with HDR on (the 16-bit frame), shot, HDR turned off from its settings page, shot.
-- golden_hour_0_2, golden_hour_0_2_hdr: the Golden Hour 0.2 pack (shader API 0.2) on SUNRISE_HDR_FRAME=float, in SDR
-  and with HDR on; entities in SDR.
 - oit, hdr_oit: Improved Transparency with HDR off, and with HDR on the 16-bit frame.
 - visbuffer, hdr_visbuffer: the visibility buffer (SUNRISE_VISBUFFER=1) with HDR off, and with HDR on the 16-bit frame.
 - float_hdr, float_oit, float_visbuffer: the float frame (SUNRISE_HDR_FRAME=float) with HDR on, drawn forward, with
   Improved Transparency and with the visibility buffer, the last on a 300-nit display with the HUD at half brightness.
 - float_unlit: the float frame with HDR on and HDR Lighting off, on that display.
-- terrain_pack, terrain_pack_hdr: a shader API 0.2 test pack with a material stage, a shadow map and displacement
+- terrain_pack, terrain_pack_hdr: a shader pack in the `shaders/` format whose gbuffers_terrain writes a known value
   (tools/fixtures/shaderpacks/frame_identity_terrain) over a resource pack of LabPBR heights the harness writes
   (relief_pack), on the float frame in SDR and with HDR on: day over water, night with light sources, and relief, a
-  stone floor near the camera with pillars casting long morning shadows over it; entities in SDR; and in SDR rain by
-  day and the night sky, the renderer's own under a pack with neither a sky nor a weather stage.
+  stone floor near the camera with pillars; entities in SDR; and in SDR rain by day and the night sky, the
+  renderer's own under a pack with neither a sky nor a weather program.
 - world_plain: the float frame without a pack: rain by day and by night, the night sky and the End's sky.
-- world_pack, world_pack_timed: a shader API 0.2 test pack with its own sky (clouds, stars and sun its own), weather,
-  a material stage reading the water mirror and the copies of the opaque world, and a post pass reading the surface
-  target the material writes (tools/fixtures/shaderpacks/frame_identity_world), on the float frame in SDR: day over
-  water, the sun, the night sky, rain by day and by night, and the End's sky; and with GPU pass timing on
-  (sunrise-ctl gpu-passes on), which draws the sky in a pass of its own, the sun and the night sky.
+- world_pack: a shader pack in the `shaders/` format with its own sky, sun and moon, weather and terrain programs and a
+  composite pass (tools/fixtures/shaderpacks/frame_identity_world), on the float frame in SDR: day over water, the
+  sun, the night sky, rain by day and by night, and the End's sky.
 
-Shader packs are read from the change's tree for both builds (tools/fixtures/shaderpacks, else the SDK's
-crates/sunrise-shader-api/packs), so a base from before a fixture was added draws it too.
+Shader packs are read from the change's tree for both builds (tools/fixtures/shaderpacks), so a base from before a
+fixture was added draws it too.
 
 The float frame's HDR shots are also held to their SDR ones in each build (hdr_gates, Tests 3 and 4): with HDR
 Lighting off the picture is HDR off's, and with it on the SDR screenshot is the HDR shot through its shoulder, white
@@ -48,7 +42,7 @@ Both builds draw on the same adapter: Mesa's lavapipe where its Vulkan driver is
 default. When the base and the change differ only in files no game binary is built from (tools/, tests/, .github/,
 Markdown outside crates/), the base reuses the change's binaries: the comparison is then of two runs of one build.
 Each session also checks, in each build, that it drew what it is for (the pack changes the picture, HDR shots have
-their -hdr.png, the visibility buffer's line is in the session's whole log, timed passes were timed), so a pack that
+their -hdr.png, the visibility buffer's line is in the session's whole log), so a pack that
 fails to load, or HDR that stays off, in both builds doesn't pass as identical, and a change that stops one doesn't
 either.
 --build-base builds it anyway. The base builds in a worktree and target folder of its own under .local/frame-identity/,
@@ -62,22 +56,20 @@ import argparse
 import json
 import math
 import os
+import re
 import shutil
 import struct
 import subprocess
 import sys
 import tempfile
 import time
-import tomllib
 import zlib
 from pathlib import Path
 
-try:
-    from . import lab
-except ImportError:
-    import lab
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab
 
-ROOT = lab.ROOT
 RUN = lab.LOCAL / 'frame-identity'
 BASE_SRC = RUN / 'base-src'
 BASE_TARGET = RUN / 'target-base'
@@ -487,14 +479,7 @@ SESSIONS = {
     'vanilla': ('', {}, WORLD + list(HUD) + ['sun'], False),
     # 🤖 Agent: An offered HDR output without a system report must leave Auto in SDR.
     'auto_unknown': ('hdr:auto\n', {'SUNRISE_HDR_OUTPUT': 'pq'}, ['day_water', 'night_lights'], False),
-    'golden_hour': ('', {'SUNRISE_SHADER_PACK': 'golden_hour'}, WORLD, False),
-    'golden_hour_hdr': ('hdr:true\n', {'SUNRISE_SHADER_PACK': 'golden_hour', 'SUNRISE_HDR_OUTPUT': 'pq'},
-                        ['day_water', 'night_lights'], False),
     'hdr_toggle': ('hdr:true\n', {'SUNRISE_HDR_OUTPUT': 'pq'}, ['day_water', 'night_lights'], True),
-    'golden_hour_0_2': ('', {'SUNRISE_SHADER_PACK': 'golden_hour_0_2', 'SUNRISE_HDR_FRAME': 'float'},
-                        ['day_water', 'night_lights', 'entities'], False),
-    'golden_hour_0_2_hdr': ('hdr:true\n', {'SUNRISE_SHADER_PACK': 'golden_hour_0_2',
-                        'SUNRISE_HDR_FRAME': 'float', 'SUNRISE_HDR_OUTPUT': 'pq'}, ['day_water', 'night_lights'], False),
     'oit': ('', {}, ['day_water', 'night_lights'], False),
     'hdr_oit': ('hdr:true\n', {'SUNRISE_HDR_OUTPUT': 'pq'},
                         ['day_water', 'night_lights'], False),
@@ -522,24 +507,16 @@ SESSIONS = {
     'world_plain': ('', {'SUNRISE_HDR_FRAME': 'float'}, ['night_sky', 'end_sky', 'rain_day', 'rain_night'], False),
     'world_pack': ('', {'SUNRISE_SHADER_PACK': 'frame_identity_world', 'SUNRISE_HDR_FRAME': 'float'},
                    ['day_water', 'sun', 'night_sky', 'end_sky', 'rain_day', 'rain_night'], False),
-    'world_pack_timed': ('', {'SUNRISE_SHADER_PACK': 'frame_identity_world', 'SUNRISE_HDR_FRAME': 'float'},
-                         ['sun', 'night_sky'], False),
 }
-# 🤖 Agent: The sessions drawn with GPU pass timing on, which draws the sky in a timed pass of its own.
-TIMED = ('world_pack_timed',)
 # 🤖 Agent: The session a pack's pictures are held against in scenes the usual one (session_checks) doesn't shoot.
 PLAIN = 'world_plain'
-# 🤖 Agent: Where shader packs are found: the harness's fixtures, then the SDK's packs.
-PACK_DIRS = (ROOT / 'tools/fixtures/shaderpacks', ROOT / 'crates/sunrise-shader-api/packs')
-# 🤖 Agent: The shader packs drawn over relief_pack, whose heights their [displacement] needs.
+# 🤖 Agent: Where shader packs are found: the harness's fixtures.
+PACK_DIR = ROOT / 'tools/fixtures/shaderpacks'
+# 🤖 Agent: The shader packs drawn over relief_pack, whose heights their normal-map reads need.
 RELIEF_PACKS = ('frame_identity_terrain',)
 # 🤖 Agent: Auto paper white and peak are 203 and 1000 offscreen; written out so a change of Auto doesn't move the
 # pictures. TAA and frame generation build on earlier frames, which SUNRISE_STILL doesn't cover: off, as by default.
 GRAPHICS = 'hdrPaperWhite:203\nhdrPeak:1000\ntaa:false\nfxaa:false\nframeGeneration:off\n'
-
-
-def pack_dir(pack):
-    return next(d / pack for d in PACK_DIRS if (d / pack).is_dir())
 
 
 # 🤖 Agent: relief_pack's heights, 0..1 at texel (x, y) of a 16-texel block texture: round bumps on stone, ripples
@@ -588,7 +565,7 @@ def run_session(name, label, bin_dir, out, env_base, args):
         options += 'resourcePacks:["vanilla","file/relief"]\n'
     (folder / 'options.txt').write_text(options)
     if pack:
-        shutil.copytree(pack_dir(pack), folder / 'shaderpacks' / pack)
+        shutil.copytree(PACK_DIR / pack, folder / 'shaderpacks' / pack)
     env = lab.game_env(env_base, SUNRISE_STILL='1', **extra)
     out.mkdir(parents=True, exist_ok=True)
     game = Game(bin_dir, folder, env, args)
@@ -605,12 +582,8 @@ def run_session(name, label, bin_dir, out, env_base, args):
         prepare(game)
         if 'end_sky' in scenes:
             prepare_end(game)
-        if name in TIMED:
-            game.ctl('gpu-passes', 'on')
         for scene in scenes:
             shoot_named(game, out, name, scene)
-        if name in TIMED:
-            lab.write_json(out / f'{name}.stats.json', game.ctl('stats'))
         if toggle:
             set_hdr(game, False)
             for scene in scenes:
@@ -660,22 +633,15 @@ def session_checks(shots, sessions):
                                  if (shots / f'{plain}.{s}{x}').exists() and (shots / f'{name}.{s}{x}').exists()):
                     same.append(s)
             problems += [f'{name}.{s}: the same as without the pack: it didn\'t run' for s in same]
-        # 🤖 Agent: a pack's passes aren't in the stats, but the renderer's are while timing is on.
-        stats = shots / f'{name}.stats.json'
-        if name in TIMED and not (stats.exists() and json.loads(stats.read_text(encoding='utf-8')).get('gpu_passes')):
-            problems.append(f'{name}: no GPU pass was timed')
         # 🤖 Agent: the log says whether the visibility buffer was built; with SUNRISE_FLAT_DRAWS=1 it draws every frame.
         log = shots / f'{name}.log'
         text = log.read_text(encoding='utf-8') if log.exists() else ''
         built = 'through a visibility buffer' in text
         # 🤖 Agent: and whether the pack loaded (scenes no session without it shoots have nothing to compare with),
-        # and the LabPBR maps its displacement needs.
+        # and the LabPBR maps its normal-map reads need.
         pack = extra.get('SUNRISE_SHADER_PACK')
-        manifest = pack_dir(pack) / 'sunrise-shaders.toml' if pack else None
-        if manifest and manifest.exists():
-            meta = tomllib.loads(manifest.read_text(encoding='utf-8'))
-            if f'shader pack {meta["id"]} {meta["version"]}: ' not in text:
-                problems.append(f'{name}: the log has no load line of shader pack {meta["id"]}')
+        if pack and not re.search(rf'shader pack {re.escape(pack)}: \d+ programs', text):
+            problems.append(f'{name}: the log has no load line of shader pack {pack}')
         if pack in RELIEF_PACKS and 'Sunrise: LabPBR maps at ' not in text:
             problems.append(f'{name}: no LabPBR maps were loaded')
         if 'SUNRISE_VISBUFFER' in extra and not built:
@@ -691,7 +657,7 @@ def session_checks(shots, sessions):
     return problems
 
 
-# 🤖 Agent: HDR's gates (docs/design/hdr-linear-light.md, Tests 3 and 4): what a build's HDR shots must be against
+# 🤖 Agent: HDR's gates: what a build's HDR shots must be against
 # its SDR ones, whatever the base drew. The HDR shot is HDR10: BT.2020 primaries, SMPTE ST 2084 (PQ), 10 bits a
 # channel.
 
@@ -806,7 +772,7 @@ def hdr_gates(shots, sessions):
 
     for name in sessions:
         graphics, extra = GRAPHICS + SESSIONS[name][0], SESSIONS[name][1]
-        # 🤖 Agent: Without a pack: a 0.2 pack's [tonemap] maps its own picture for each output.
+        # 🤖 Agent: Without a pack: HDR Lighting is off under any pack, so a pack's picture isn't held to these gates.
         if 'SUNRISE_HDR_FRAME' not in extra or 'SUNRISE_SHADER_PACK' in extra or 'hdr:true' not in graphics:
             continue
         paper, peak, ui = setting(name, 'hdrPaperWhite'), setting(name, 'hdrPeak'), setting(name, 'hdrUiBrightness', 100)

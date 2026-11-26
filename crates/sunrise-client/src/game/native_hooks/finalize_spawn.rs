@@ -6,8 +6,8 @@ impl Game<'_> {
     /// finalized (`Mob.finalizeSpawn`) for `reason`. `cancel` skips the
     /// finalization (the mob still spawns, uninitialised); `spawn_cancelled`
     /// stops the spawn. `difficulty` is what finalization will read; `mob` is
-    /// the lent mob, changed through `edits`, and `group` the pack's group
-    /// data finalization reads. Server-side.
+    /// the scoped [`mod_api::UnspawnedMobEditor`] for the mob, and `group` the
+    /// pack's group data finalization reads. Server-side.
     pub(in crate::game) fn native_finalize_spawn(
         &self,
         call: mod_api::__private::FinalizeSpawnCall<'_>,

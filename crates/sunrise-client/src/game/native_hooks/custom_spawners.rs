@@ -1,24 +1,16 @@
 use super::*;
 
-/// The hook points. Each does nothing in Sunrise.
+/// The hook point. Does nothing in Sunrise without a listener.
 impl Game<'_> {
-    /// `ModifyCustomSpawnersEvent`: the level `dimension` builds its custom spawners. `spawners`
-    /// starts as vanilla's list; a mod takes spawners out or adds its own by key.
+    /// `ModifyCustomSpawnersEvent`: the logical server `level` builds its custom spawner list
+    /// once when it opens. `spawners` edits the ordered list, which starts with vanilla's
+    /// built-ins for the Overworld and empty for other dimensions; a mod inserts, removes and
+    /// moves built-ins and owned `CustomSpawner` objects.
     pub(in crate::game) fn native_modify_custom_spawners(
         &self,
-        dimension: &str,
-        spawners: &mut mod_api::CustomSpawners,
+        level: mod_api::LevelRef,
+        spawners: &mut mod_api::CustomSpawnersEditor,
     ) {
-        self.fire_modify_custom_spawners(dimension, spawners);
-    }
-    /// `CustomSpawner.tick` for a mod's spawner `key` in the level `dimension`, with
-    /// `spawn_enemies` as `ServerLevel.isSpawningMonsters`.
-    pub(in crate::game) fn native_custom_spawner_tick(
-        &mut self,
-        dimension: &str,
-        key: mod_api::SpawnerKey,
-        spawn_enemies: bool,
-    ) {
-        self.fire_custom_spawner_tick(dimension, key, spawn_enemies);
+        self.fire_modify_custom_spawners(level, spawners);
     }
 }

@@ -1,13 +1,248 @@
-//! Host-owned container packet construction; the protocol owns stack codecs and hashes.
-use mod_api::{ContainerClickRequest, PacketBuildError, ServerboundPlayPacket};
+//! Host-owned play and container packet construction; the protocol owns codecs and hashes.
+use mod_api::{ContainerClickRequest, PacketBuildError, PlayPacketRequest, ServerboundPlayPacket};
 use std::cell::RefCell;
-use sunrise_core::vanilla_bytes::Writer;
 use sunrise_protocol::{
-    buf::Codec,
+    ids,
     item::{Hashed, Stack},
-    packets::play::ContainerClick,
+    packets::play::{self, ContainerClick, Serverbound, pack_move_player_flags},
     registry::{Builtin, Dynamic, SyncedNames},
 };
+
+fn encode_serverbound(packet: Serverbound) -> Result<ServerboundPlayPacket, PacketBuildError> {
+    let name = usize::try_from(packet.id())
+        .ok()
+        .and_then(|id| ids::play::serverbound::NAMES.get(id).copied())
+        .ok_or_else(|| out_of_range(packet.name(), "id"))?;
+    let id =
+        mod_api::Identifier::from_parts("minecraft", name).map_err(|_| out_of_range(name, "id"))?;
+    let body = packet
+        .try_encode_payload()
+        .map_err(|_| out_of_range(name, "payload"))?;
+    Ok(ServerboundPlayPacket::new(id, body))
+}
+
+fn out_of_range(packet: &str, field: impl Into<String>) -> PacketBuildError {
+    PacketBuildError::OutOfRange {
+        packet: packet.into(),
+        field: field.into(),
+    }
+}
+
+fn non_finite(packet: &str, field: &str) -> PacketBuildError {
+    PacketBuildError::NonFinite {
+        packet: packet.into(),
+        field: field.into(),
+    }
+}
+
+fn check_ordinal(packet: &str, field: &str, value: i32, max: i32) -> Result<(), PacketBuildError> {
+    if (0..=max).contains(&value) {
+        Ok(())
+    } else {
+        Err(PacketBuildError::UnknownAction {
+            packet: packet.into(),
+            field: field.into(),
+        })
+    }
+}
+
+/// Vanilla `BlockPos.asLong`: signed 26-bit X/Z and signed 12-bit Y.
+fn check_block_pos(packet: &str, [x, y, z]: [i32; 3]) -> Result<(), PacketBuildError> {
+    if !(-33_554_432..=33_554_431).contains(&x)
+        || !(-33_554_432..=33_554_431).contains(&z)
+        || !(-2048..=2047).contains(&y)
+    {
+        return Err(out_of_range(packet, "position"));
+    }
+    Ok(())
+}
+
+/// Vanilla `ServerGamePacketListenerImpl.containsInvalidValues`: rejects NaN coordinates;
+/// position infinities are written unchanged and clamped by the server.
+fn check_move_pos(packet: &str, pos: [f64; 3]) -> Result<(), PacketBuildError> {
+    if pos.iter().any(|v| v.is_nan()) {
+        return Err(non_finite(packet, "position"));
+    }
+    Ok(())
+}
+
+fn check_finite_angle(packet: &str, field: &str, value: f32) -> Result<(), PacketBuildError> {
+    if !value.is_finite() {
+        return Err(non_finite(packet, field));
+    }
+    Ok(())
+}
+
+/// Encode a typed client play-packet request with the protocol's vanilla serverbound encoder.
+pub fn encode_play_packet(
+    request: &PlayPacketRequest,
+) -> Result<ServerboundPlayPacket, PacketBuildError> {
+    let packet = match request {
+        PlayPacketRequest::UseItem {
+            hand,
+            sequence,
+            yaw,
+            pitch,
+        } => {
+            check_ordinal("use_item", "hand", *hand, 1)?;
+            Serverbound::UseItem(play::UseItem {
+                hand: *hand,
+                sequence: *sequence,
+                yaw: *yaw,
+                pitch: *pitch,
+            })
+        }
+        PlayPacketRequest::UseItemOn {
+            hand,
+            pos,
+            face,
+            cursor,
+            inside,
+            world_border,
+            sequence,
+        } => {
+            let p = "use_item_on";
+            check_ordinal(p, "hand", *hand, 1)?;
+            check_block_pos(p, *pos)?;
+            check_ordinal(p, "face", *face, 5)?;
+            if !cursor.iter().all(|v| v.is_finite()) {
+                return Err(non_finite(p, "cursor"));
+            }
+            Serverbound::UseItemOn(play::UseItemOn {
+                hand: *hand,
+                pos: *pos,
+                face: *face,
+                cursor: *cursor,
+                inside: *inside,
+                world_border: *world_border,
+                sequence: *sequence,
+            })
+        }
+        PlayPacketRequest::PlayerAction {
+            action,
+            pos,
+            direction,
+            sequence,
+        } => {
+            let p = "player_action";
+            check_ordinal(p, "action", *action, 8)?;
+            check_block_pos(p, *pos)?;
+            check_ordinal(p, "direction", *direction, 5)?;
+            Serverbound::PlayerAction(play::PlayerAction {
+                action: *action,
+                pos: *pos,
+                direction: *direction as u8,
+                sequence: *sequence,
+            })
+        }
+        PlayPacketRequest::Interact {
+            entity,
+            hand,
+            location,
+            sneaking,
+        } => {
+            check_ordinal("interact", "hand", *hand, 1)?;
+            Serverbound::Interact(play::Interact {
+                id: *entity,
+                hand: *hand,
+                location: *location,
+                secondary: *sneaking,
+            })
+        }
+        PlayPacketRequest::Attack { entity } => Serverbound::Attack(play::Attack { id: *entity }),
+        PlayPacketRequest::PickItemFromBlock { pos, include_data } => {
+            check_block_pos("pick_item_from_block", *pos)?;
+            Serverbound::PickItemFromBlock(play::PickItemFromBlock {
+                pos: *pos,
+                include_data: *include_data,
+            })
+        }
+        PlayPacketRequest::PickItemFromEntity {
+            entity,
+            include_data,
+        } => Serverbound::PickItemFromEntity(play::PickItemFromEntity {
+            id: *entity,
+            include_data: *include_data,
+        }),
+        PlayPacketRequest::SignUpdate { pos, front, lines } => {
+            let p = "sign_update";
+            check_block_pos(p, *pos)?;
+            let packet = Serverbound::SignUpdate(play::SignUpdate {
+                pos: *pos,
+                lines: lines.clone(),
+                front: *front,
+            });
+            // The protocol's own validation finds the oversize line, once; no other field of
+            // this packet can fail it.
+            if let Some(i) = packet
+                .validate()
+                .err()
+                .and_then(|error| error.oversize_sign_line())
+            {
+                return Err(PacketBuildError::SignLineTooLong {
+                    packet: p.into(),
+                    field: format!("lines[{i}]"),
+                });
+            }
+            packet
+        }
+        PlayPacketRequest::MovePlayerPos {
+            pos,
+            on_ground,
+            horizontal_collision,
+        } => {
+            check_move_pos("move_player_pos", *pos)?;
+            Serverbound::MovePlayerPos(play::MovePlayerPos {
+                x: pos[0],
+                y: pos[1],
+                z: pos[2],
+                flags: pack_move_player_flags(*on_ground, *horizontal_collision),
+            })
+        }
+        PlayPacketRequest::MovePlayerPosRot {
+            pos,
+            yaw,
+            pitch,
+            on_ground,
+            horizontal_collision,
+        } => {
+            let p = "move_player_pos_rot";
+            check_move_pos(p, *pos)?;
+            check_finite_angle(p, "yaw", *yaw)?;
+            check_finite_angle(p, "pitch", *pitch)?;
+            Serverbound::MovePlayerPosRot(play::MovePlayerPosRot {
+                x: pos[0],
+                y: pos[1],
+                z: pos[2],
+                yaw: *yaw,
+                pitch: *pitch,
+                flags: pack_move_player_flags(*on_ground, *horizontal_collision),
+            })
+        }
+        PlayPacketRequest::MovePlayerRot {
+            yaw,
+            pitch,
+            on_ground,
+            horizontal_collision,
+        } => {
+            let p = "move_player_rot";
+            check_finite_angle(p, "yaw", *yaw)?;
+            check_finite_angle(p, "pitch", *pitch)?;
+            Serverbound::MovePlayerRot(play::MovePlayerRot {
+                yaw: *yaw,
+                pitch: *pitch,
+                flags: pack_move_player_flags(*on_ground, *horizontal_collision),
+            })
+        }
+        PlayPacketRequest::MovePlayerStatusOnly {
+            on_ground,
+            horizontal_collision,
+        } => Serverbound::MovePlayerStatus(play::MovePlayerStatus {
+            flags: pack_move_player_flags(*on_ground, *horizontal_collision),
+        }),
+    };
+    encode_serverbound(packet)
+}
 
 fn component_error(field: impl Into<String>) -> PacketBuildError {
     PacketBuildError::ComponentCannotEncode {
@@ -16,10 +251,7 @@ fn component_error(field: impl Into<String>) -> PacketBuildError {
     }
 }
 fn range(field: impl Into<String>) -> PacketBuildError {
-    PacketBuildError::OutOfRange {
-        packet: "container_click".into(),
-        field: field.into(),
-    }
+    out_of_range("container_click", field)
 }
 
 fn validate(request: &ContainerClickRequest) -> Result<(), PacketBuildError> {
@@ -157,11 +389,7 @@ pub fn encode_container_click(
         changed,
         carried: stack(&request.carried, "carried")?,
     };
-    let mut writer = Writer::new();
-    ContainerClick::write(&packet, &mut writer);
-    let id =
-        mod_api::Identifier::from_parts("minecraft", "container_click").map_err(|_| range("id"))?;
-    Ok(ServerboundPlayPacket::new(id, writer.data))
+    encode_serverbound(Serverbound::ContainerClick(packet))
 }
 
 fn checked_hash(

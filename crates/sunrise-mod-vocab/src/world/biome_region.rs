@@ -14,7 +14,7 @@ const DIMENSIONS: [&str; 2] = ["minecraft:overworld", "minecraft:nether"];
 pub struct BiomeRegion {
     /// `minecraft:overworld` or `minecraft:nether`.
     pub dimension: String,
-    /// How common the region is, 1 to 1000, against vanilla's 10. This is the default a new
+    /// How common the region is, 1 to `i32::MAX`, against vanilla's 10. This is the default a new
     /// world records; the world's saved weight wins from then on.
     pub weight: u32,
     /// The region's biomes by climate, as a points biome source's: the nearest point to the
@@ -33,15 +33,12 @@ impl BiomeRegion {
         }
     }
 
-    /// The highest weight a region may declare.
-    pub const MAX_WEIGHT: u32 = 1000;
-
     /// What the declaration refuses in the region itself, if anything.
     pub fn check(&self) -> Result<(), BiomeRegionError> {
         if !DIMENSIONS.contains(&self.dimension.as_str()) {
             return Err(BiomeRegionError::UnknownDimension);
         }
-        if !(1..=Self::MAX_WEIGHT).contains(&self.weight) {
+        if !(1..=i32::MAX as u32).contains(&self.weight) {
             return Err(BiomeRegionError::InvalidWeight);
         }
         if self.points.is_empty() {
@@ -60,13 +57,13 @@ impl BiomeRegion {
 #[non_exhaustive]
 #[derive(sunrise_mod_api_macros::Wire)]
 pub enum BiomeRegionError {
-    /// The region's id is malformed or in a namespace the declaring mod does not own.
+    /// The region's id is malformed.
     InvalidId,
     /// A region with the id was already declared.
     Duplicate,
     /// The dimension is not `minecraft:overworld` or `minecraft:nether`.
     UnknownDimension,
-    /// The weight is 0 or above [`BiomeRegion::MAX_WEIGHT`].
+    /// The weight is 0 or above `i32::MAX`.
     InvalidWeight,
     /// The region has no points.
     NoPoints,
@@ -119,7 +116,9 @@ mod tests {
             (0, Err(BiomeRegionError::InvalidWeight)),
             (1, Ok(())),
             (1000, Ok(())),
-            (1001, Err(BiomeRegionError::InvalidWeight)),
+            (1001, Ok(())),
+            (i32::MAX as u32, Ok(())),
+            (i32::MAX as u32 + 1, Err(BiomeRegionError::InvalidWeight)),
             (u32::MAX, Err(BiomeRegionError::InvalidWeight)),
         ] {
             assert_eq!(

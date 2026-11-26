@@ -84,8 +84,8 @@ impl Game<'_> {
         Some(())
     }
 
-    /// Why a write to this player's inventory, ender chest or hands is refused
-    /// before it starts: a client, a handle with no online player, a dead player.
+    /// Why a `give_stack` action is refused before it starts: a client, a handle
+    /// with no online player, or a dead player.
     pub(super) fn player_write_gate(&self, player: PlayerRef) -> Result<(), PlayerWriteRefusal> {
         if self.remote.is_some() {
             return Err(PlayerWriteRefusal::Client);
@@ -104,19 +104,19 @@ impl Game<'_> {
         slot: u32,
         stack: Option<ItemStack>,
     ) -> Result<(), PlayerDataRefusal> {
-        self.player_write_gate(player)?;
+        let turn = self.native_resident_player_turn(player)?;
         let target = inventory_slot(slot).ok_or(PlayerDataRefusal::SlotOutOfRange {
             slot,
             last: SLOTS - 1,
         })?;
-        let mut set = false;
-        let ran = self.native_as_player_handle(player, |game| {
-            set = game.slot_set(&target, stack.filter(|s| s.count > 0));
+        let set = turn.run(self, |game| {
+            let set = game.slot_set(&target, stack.filter(|s| s.count > 0));
             if set && game.player.is_some() {
                 game.after_commit(super::transactions::After::InventoryTrigger(player.uuid()));
             }
+            set
         });
-        if ran && set {
+        if set == Some(true) {
             Ok(())
         } else {
             Err(PlayerDataRefusal::Stale)

@@ -27,7 +27,7 @@ fn highlight_tip_parts_are_asked_in_turn() {
         count: 3,
     };
     let mut name = Text;
-    dispatch_highlight_tip(&TestHost, &stack, &mut name);
+    dispatch_highlight_tip(&TestHost, &stack, &mut name, &mut |_| Ok(()));
     assert_eq!(*heard.lock().unwrap(), [1, 2]);
     install_parts(Parts::default());
 }

@@ -1,9 +1,8 @@
 //! `register_entity_renderers` for paintings (#1296): a renderer registered for
 //! `minecraft:painting` draws in place of the painting's quads, reading the facing and size; with no
-//! renderer the family's own geometry is unchanged; a failing renderer leaves those quads until a
-//! resource reload resolves it again.
+//! renderer the family's own geometry is unchanged; an `Err` leaves its quads for just that draw.
 use super::Game;
-use super::native_entity_renderers::EntityRendererTable;
+use super::native_entity_renderers::{EntityRendererTable, RegisteredEntityRenderer};
 use mod_api::{
     BlockEntityDrawContext, Direction, EntityRenderState, EntityRenderer, Hooks,
     RegisterEntityRenderersEvent, RegistrationContext,
@@ -103,6 +102,7 @@ fn hanging(id: u32) -> Painting {
         pos: [0, 64, 0],
         facing: FACING,
         variant: Arc::from("minecraft:kebab"),
+        asset: None,
         width: WIDTH,
         height: HEIGHT,
         check_interval: 0,
@@ -126,7 +126,7 @@ fn expected_quads(game: &Game<'_>, p: &Painting, camera: glam::DVec3) -> Vec<Ver
     let Some(back) = sprites.get("painting/back").copied() else {
         return Vec::new();
     };
-    let Some(v) = game.painting_variants.get(&p.variant) else {
+    let Some(v) = world_paintings!(game).get(&p.variant) else {
         return Vec::new();
     };
     let Some(front) = sprites.get(&format!("painting/{}", v.asset)).copied() else {
@@ -268,7 +268,7 @@ fn a_painting_registration_resolves_to_the_painting_slot() {
     }
     let registered = std::collections::BTreeMap::from([(
         "minecraft:painting".to_owned(),
-        Arc::new(Mark) as Arc<dyn EntityRenderer>,
+        RegisteredEntityRenderer::new(Arc::new(Mark), None),
     )]);
     let (table, unknown) = EntityRendererTable::resolve(
         &registered,
@@ -443,26 +443,30 @@ fn an_unregistered_painting_is_byte_identical_to_the_vanilla_route() {
     });
 }
 
-/// A failing renderer falls back to the quads and is asked no more; only a reload's fresh table
-/// asks it again.
+/// A renderer returning `Err` falls back to the quads for that frame only and stays active for
+/// later frames and after a resource reload.
 #[test]
 #[ignore = "daily"]
-fn a_failed_painting_renderer_draws_the_quads_until_a_resource_reload() {
+fn a_failed_painting_renderer_falls_back_to_the_quads_for_that_frame_only() {
     in_scene(
-        "a_failed_painting_renderer_draws_the_quads_until_a_resource_reload",
+        "a_failed_painting_renderer_falls_back_to_the_quads_for_that_frame_only",
         |game, _, flaky| {
-            for frame_name in ["the failing frame", "the next frame"] {
-                let drawn = painting_frame(game, 93);
-                assert!(!drawn.is_empty(), "{frame_name}: its own quads");
-                assert!(
-                    drawn.iter().all(|v| above(v) < 2.0),
-                    "{frame_name}: no quad kept: {drawn:?}"
-                );
-                assert_eq!(flaky.calls(), 1, "{frame_name}: asked once, then no more");
-            }
+            let drawn = painting_frame(game, 93);
+            assert!(!drawn.is_empty(), "the failing frame: its own quads");
+            assert!(
+                drawn.iter().all(|v| above(v) < 2.0),
+                "the failing frame: no quad kept: {drawn:?}"
+            );
+            assert_eq!(flaky.calls(), 1);
+
+            let drawn = painting_frame(game, 93);
+            assert_eq!(flaky.calls(), 2, "asked again on the next frame");
+            assert_eq!(drawn.len(), 4, "one quad and no painting: {drawn:?}");
+            assert!(drawn.iter().all(|v| (400.0..=401.0).contains(&above(v))));
+
             super::model_baking_completed_tests::reload(game);
             let drawn = painting_frame(game, 93);
-            assert_eq!(flaky.calls(), 2, "the reload resolved it again");
+            assert_eq!(flaky.calls(), 3, "the reload resolved it again");
             assert_eq!(drawn.len(), 4, "one quad and no painting: {drawn:?}");
             assert!(drawn.iter().all(|v| (400.0..=401.0).contains(&above(v))));
         },

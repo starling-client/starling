@@ -534,8 +534,8 @@ pub mod pack {
     /// fails the load (`hud::RequiredShaderRefused`).
     #[derive(Debug)]
     pub struct Programs {
-        pub classic: crate::core_shader::CoreProgram,
-        pub oit: Box<[crate::core_shader::CoreProgram; 3]>,
+        pub classic: sunrise_glsl::Translated,
+        pub oit: Box<[sunrise_glsl::Translated; 3]>,
     }
 
     /// What [`faces`] depends on: the camera's cell and side of the layer, the range and the

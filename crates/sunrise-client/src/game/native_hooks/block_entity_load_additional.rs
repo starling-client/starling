@@ -68,7 +68,7 @@ impl Game<'_> {
             && let Some(level) = self.level(self.dim.id())
             && let Some((id, subject, tag)) = loaded_payload(&self.world, level, pos)
         {
-            let host = ReadLevel { game: self, level };
+            let host = ReadLevel::new(self, level, &self.world);
             let access = LevelReadBlockEntityAccess {
                 world: &self.world,
                 host: &host,

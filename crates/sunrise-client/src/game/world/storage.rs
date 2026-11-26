@@ -148,8 +148,7 @@ impl Game<'_> {
             ],
             _ => [0.0; 3],
         };
-        self.audio
-            .play("minecraft:block.chest.locked", Some(at), 1.0, 1.0);
+        self.play_audio("minecraft:block.chest.locked", Some(at), 1.0, 1.0);
         true
     }
     /// ShulkerBoxSlot.mayPlace: no shulker box inside a shulker box.
@@ -302,7 +301,7 @@ impl Game<'_> {
         // `Audio::play` captures the sound while the world is open to the
         // network and `lan_broadcast_effects` sends that tick to every guest,
         // so nothing is queued separately (a second queue played it twice).
-        self.audio.play(sound, Some(at), 0.5, pitch);
+        self.play_audio(sound, Some(at), 0.5, pitch);
     }
     /// Play the current block's sound when its opener count crosses zero
     /// (`ContainerOpenersCounter.onOpen` / `onClose`).
@@ -363,13 +362,50 @@ impl Game<'_> {
         }
         let range = self.reach() + 4.0;
         let near = self.container_parts().iter().all(|&((x, y, z), _)| {
-            sunrise_client::lan::guest::within_block_range(eye, range, [x, y, z])
+            let within = sunrise_client::lan::guest::within_block_range(eye, range, [x, y, z]);
+            self.host_within_interaction_range([x, y, z], within)
         });
         if !near {
             self.close_container();
             self.set_screen(super::Screen::Playing);
             self.capture(true);
         }
+    }
+    /// A menu's `stillValid` reach (`isWithinBlockInteractionRange(pos, 4)`) for the
+    /// world's own player: `within` is the game's answer, then a mod's
+    /// `block_interaction_range`.
+    pub(in crate::game) fn host_within_interaction_range(
+        &self,
+        pos: [i32; 3],
+        within: bool,
+    ) -> bool {
+        let player = self
+            .level
+            .player_uuid
+            .map(sunrise_client::lan::playerdata::ints_uuid);
+        self.within_interaction_range_of(player, pos, 4.0, within)
+    }
+    /// `Player.isWithinBlockInteractionRange(pos, buffer)` for the player `player`: `within` is
+    /// the game's answer, then a mod's `block_interaction_range`. No player keeps `within`.
+    pub(in crate::game) fn within_interaction_range_of(
+        &self,
+        player: Option<u128>,
+        pos: [i32; 3],
+        buffer: f64,
+        within: bool,
+    ) -> bool {
+        let Some(player) = player else {
+            return within;
+        };
+        let mut within = within;
+        sunrise_client::lan::guest::native_block_interaction_range(
+            &self.loop_context,
+            player,
+            sunrise_core::position::BlockPos::new(pos[0], pos[1], pos[2]),
+            buffer,
+            &mut within,
+        );
+        within
     }
     /// `CraftingMenu.stillValid`: the open crafting table closes once its
     /// block is no longer a crafting table or the player's eyes are out of
@@ -385,7 +421,8 @@ impl Game<'_> {
         let state = self.world.block(pos[0], pos[1], pos[2]);
         let table = &*self.res.facts().get(state).name == "minecraft:crafting_table";
         let range = self.reach() + 4.0;
-        if !(table && sunrise_client::lan::guest::within_block_range(eye, range, pos)) {
+        let within = sunrise_client::lan::guest::within_block_range(eye, range, pos);
+        if !(table && self.host_within_interaction_range(pos, within)) {
             self.close_container();
             self.set_screen(super::Screen::Playing);
             self.capture(true);

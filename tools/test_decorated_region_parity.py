@@ -30,11 +30,11 @@ import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 
-try:
-    from . import lab, test_chunk_generation_parity as cg
-except ImportError:
-    import lab
-    import test_chunk_generation_parity as cg
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_chunk_generation_parity as cg
 
 REPORTS = 1891623539983467248
 # (seed, label, chunk x, chunk z). Biome sites are /locate biome results.

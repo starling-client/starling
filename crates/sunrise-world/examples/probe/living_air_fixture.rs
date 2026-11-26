@@ -8,6 +8,7 @@ use std::{
 use sunrise_core::{geometry::Vec3, position::BlockPos};
 use sunrise_world::living_air::*;
 use sunrise_world::move_gate::MoveGate;
+use sunrise_world::travel::TravelMode;
 fn number(v: &Value) -> f64 {
     f64::from_bits(u64::from_str_radix(v.as_str().unwrap(), 16).unwrap())
 }
@@ -123,12 +124,18 @@ impl LivingAirWorld for World<'_> {
     fn is_player_class(&self) -> bool {
         self.flag("player")
     }
-    fn move_self(&mut self, _gate: &mut MoveGate, v: Vec3) -> io::Result<()> {
+    fn move_self(&mut self, _gate: &mut MoveGate, v: Vec3) -> io::Result<SelfMove> {
         self.query(format!("move {}", vector(v)))?;
         self.moved = true;
         if self.flag("move_mutate") {
             self.velocity = vec(&self.f["after_velocity"]);
         }
+        Ok(SelfMove {
+            moved: Vec3::ZERO,
+            on_ground_before: false,
+        })
+    }
+    fn travel_moved(&mut self, _mode: TravelMode, _made: SelfMove) -> io::Result<()> {
         Ok(())
     }
     fn horizontal_collision(&self) -> bool {
@@ -212,9 +219,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         let input = vec(&f["input"]);
         let friction = single(&f["friction"]);
         let result: io::Result<()> = match f["mode"].as_str().unwrap() {
-            "air" => travel_in_air(&mut w, &mut MoveGate::new(), input),
-            "relative" => relative_friction_movement(&mut w, &mut MoveGate::new(), input, friction)
-                .and_then(|v| writeln!(w.out, "vector {}", vector(v))),
+            "air" => travel_in_air(&mut w, &mut MoveGate::new(), input.into()).map(|_| ()),
+            "relative" => {
+                relative_friction_movement(&mut w, &mut MoveGate::new(), input.into(), friction)
+                    .and_then(|(v, _)| writeln!(w.out, "vector {}", vector(v)))
+            }
             "climb" => handle_on_climbable(&mut w, input)
                 .and_then(|v| writeln!(w.out, "vector {}", vector(v))),
             "speed" => friction_influenced_speed(&mut w, friction)

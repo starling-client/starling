@@ -37,7 +37,7 @@ pub enum PoiType {
 
 impl PoiType {
     /// Every vanilla type, in registration order.
-    const ALL: [Self; 21] = [
+    pub const ALL: [Self; 21] = [
         Self::Armorer,
         Self::Butcher,
         Self::Cartographer,

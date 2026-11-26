@@ -13,9 +13,10 @@ import net.minecraft.sounds.SoundEvent;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.util.ProblemReporter;
 import net.minecraft.util.RandomSource;
-import net.minecraft.world.level.storage.TagValueInput;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityDimensions;
 import net.minecraft.world.entity.HumanoidArm;
+import net.minecraft.world.entity.MoverType;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
@@ -23,23 +24,36 @@ import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.GameType;
 import net.minecraft.world.level.levelgen.LegacyRandomSource;
 import net.minecraft.world.level.block.EntityBlock;
+import net.minecraft.world.level.block.entity.BeaconBlockEntity;
+import net.minecraft.world.level.block.entity.BellBlockEntity;
 import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.level.block.entity.BlockEntityType;
+import net.minecraft.world.level.block.entity.BlockEntityTypes;
+import net.minecraft.world.level.block.entity.CampfireBlockEntity;
+import net.minecraft.world.level.block.entity.ChestBlockEntity;
+import net.minecraft.world.level.block.entity.ConduitBlockEntity;
+import net.minecraft.world.level.block.entity.EnchantingTableBlockEntity;
+import net.minecraft.world.level.block.entity.PotentSulfurBlockEntity;
+import net.minecraft.world.level.block.entity.ShulkerBoxBlockEntity;
 import net.minecraft.world.level.block.entity.SpawnerBlockEntity;
 import net.minecraft.world.level.block.entity.TrialSpawnerBlockEntity;
 import net.minecraft.world.level.block.entity.vault.VaultBlockEntity;
 import net.minecraft.world.level.block.entity.vault.VaultSharedData;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
+import net.minecraft.world.level.entity.EntityInLevelCallback;
+import net.minecraft.world.level.storage.TagValueInput;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.player.AbstractClientPlayer;
 import net.minecraft.client.renderer.LevelEventHandler;
 
 /**
- * Original oracle for the client ticks of spawners, trial spawners and vaults
- * (BaseSpawner.clientTick, TrialSpawner.tickClient, VaultBlockEntity.Client.tick) as
- * ClientLevel.tickBlockEntities runs them: every loaded one, each client tick, in the level's
- * ticker order, all drawing from the one level random. A case's columns arrive as chunk packets:
+ * Original oracle for spawners, trial spawners, vaults, campfires, beacons, potent sulfur
+ * and animated block entities as ClientLevel.tickBlockEntities runs them: every loaded one,
+ * each client tick, in the level's ticker order, all drawing from the one level random.
+ * A case's columns arrive as chunk packets:
  * LevelChunk.replaceWithPacketData drops the column's block entities and makes those the packet
  * lists, each loading the update tag the server's copy gives, in its order (forEachBlockEntityTag, getBlockEntity(IMMEDIATE), addAndRegisterBlockEntity),
  * so their tickers join the level's list in packet order; a forgotten column's tickers go.
@@ -50,7 +64,7 @@ import net.minecraft.client.renderer.LevelEventHandler;
  * display entity first, as SpawnerRenderer makes one (BaseSpawner.clientTick does nothing
  * without it).
  *
- * Input lines: case JSON. Output lines: {ticks: [{events, random, spins}]} or {error}. Doubles,
+ * Input lines: case JSON. Output lines: {ticks: [{events, random, spins, states}]} or {error}. Doubles,
  * floats and sound seeds are their raw bits, as hex strings.
  */
 public final class VanillaBlockEntityClientTickOracle {
@@ -79,6 +93,8 @@ public final class VanillaBlockEntityClientTickOracle {
         @Override public HumanoidArm getMainArm() { return HumanoidArm.RIGHT; }
         @Override public boolean isSpectator() { return spectator; }
         @Override public boolean isAlive() { return !dead; }
+        // There are no obstacles along the lid's push: use its displacement directly.
+        @Override public void move(MoverType type, Vec3 delta) { setPos(position().add(delta)); }
     }
 
     /** The client level as these ticks see it. */
@@ -87,6 +103,7 @@ public final class VanillaBlockEntityClientTickOracle {
         long gameTime;
         List<AbstractClientPlayer> casePlayers;
         Map<BlockPos, BlockEntity> loaded;
+        Map<BlockPos, BlockState> blocks;
         JsonArray events;
         CaseLevel() { super(null, null, null, null, 0, 0, null, false, 0L, 0); }
         @Override public RandomSource getRandom() { return random; }
@@ -97,6 +114,36 @@ public final class VanillaBlockEntityClientTickOracle {
             return null;
         }
         @Override public BlockEntity getBlockEntity(BlockPos pos) { return loaded.get(pos); }
+        // The shulker lid asks its neighbours to update their shapes; the allocated level has no updater and the animation state does not depend on it.
+        @Override public void neighborShapeChanged(net.minecraft.core.Direction direction, BlockPos pos, BlockPos neighborPos, BlockState neighborState, int updateFlags, int updateLimit) {}
+        // The blocks the case fills, air elsewhere: what the conduit, beacon and geyser ticks read.
+        @Override public BlockState getBlockState(BlockPos pos) {
+            return blocks.getOrDefault(pos, net.minecraft.world.level.block.Blocks.AIR.defaultBlockState());
+        }
+        @Override public net.minecraft.world.level.material.FluidState getFluidState(BlockPos pos) { return getBlockState(pos).getFluidState(); }
+        // WORLD_SURFACE: one above the highest block that is not air (the build floor when the column is empty).
+        @Override public int getHeight(net.minecraft.world.level.levelgen.Heightmap.Types type, int x, int z) {
+            int top = getMinY();
+            for (var e : blocks.entrySet()) {
+                var p = e.getKey();
+                if (p.getX() == x && p.getZ() == z && !e.getValue().isAir()) top = Math.max(top, p.getY() + 1);
+            }
+            return top;
+        }
+        @Override public int getMinY() { return -64; }
+        @Override public boolean isClientSide() { return true; }
+        @Override public <T extends net.minecraft.world.entity.Entity> List<T> getEntitiesOfClass(Class<T> type, net.minecraft.world.phys.AABB box, java.util.function.Predicate<? super T> selector) { return List.of(); }
+        // The shulker's lid queries the entities in its swept box.
+        @Override public List<Entity> getEntities(Entity except, AABB box, java.util.function.Predicate<? super Entity> selector) {
+            List<Entity> found = new ArrayList<>();
+            for (var player : casePlayers) {
+                if (player != except && box.intersects(player.getBoundingBox()) && selector.test(player)) found.add(player);
+            }
+            return found;
+        }
+        // A client plays no sound for `except == null` (ClientLevel.playSeededSound: only the local player's).
+        @Override public void playSound(net.minecraft.world.entity.Entity except, double x, double y, double z, SoundEvent sound, SoundSource source, float volume, float pitch) { }
+        @Override public void playSound(net.minecraft.world.entity.Entity except, double x, double y, double z, net.minecraft.core.Holder<SoundEvent> sound, SoundSource source, float volume, float pitch) { }
         void particle(ParticleOptions options, double x, double y, double z, double vx, double vy, double vz) {
             var e = new JsonArray();
             e.add("particle");
@@ -131,6 +178,15 @@ public final class VanillaBlockEntityClientTickOracle {
                 + ",ominous=" + e.get("ominous").getAsBoolean() + "]";
             case "vault" -> "minecraft:vault[facing=" + e.get("facing").getAsString() + ",ominous="
                 + e.get("ominous").getAsBoolean() + ",vault_state=" + e.get("state").getAsString() + "]";
+            case "campfire" -> "minecraft:campfire[facing=" + e.get("facing").getAsString() + ",lit=" + e.get("lit").getAsBoolean()
+                + ",signal_fire=" + e.get("signal").getAsBoolean() + "]";
+            case "conduit" -> "minecraft:conduit[waterlogged=true]";
+            case "beacon" -> "minecraft:beacon";
+            case "chest" -> "minecraft:chest[facing=" + e.get("facing").getAsString() + "]";
+            case "shulker" -> "minecraft:shulker_box[facing=" + e.get("facing").getAsString() + "]";
+            case "bell" -> "minecraft:bell[facing=" + e.get("facing").getAsString() + ",attachment=floor]";
+            case "enchanting_table" -> "minecraft:enchanting_table";
+            case "potent_sulfur" -> "minecraft:potent_sulfur[potent_sulfur_state=" + e.get("state").getAsString() + "]";
             default -> throw new IllegalArgumentException(e.get("kind").getAsString());
         };
         return BlockStateParser.parseForBlock(BuiltInRegistries.BLOCK, spec, false).blockState();
@@ -160,6 +216,11 @@ public final class VanillaBlockEntityClientTickOracle {
                 set(VaultSharedData.class, shared, "connectedPlayers", connected);
                 set(VaultSharedData.class, shared, "connectedParticlesRange", e.get("particlesRange").getAsDouble());
             }
+            case "campfire" -> {
+                var items = ((net.minecraft.world.level.block.entity.CampfireBlockEntity) be).getItems();
+                for (int i = 0; i < 4; i++) if (e.getAsJsonArray("items").get(i).getAsBoolean()) items.set(i, new ItemStack(Items.PORKCHOP));
+            }
+            case "conduit", "beacon", "potent_sulfur", "chest", "shulker", "bell", "enchanting_table" -> { }
             default -> throw new IllegalArgumentException();
         }
         return be;
@@ -180,6 +241,8 @@ public final class VanillaBlockEntityClientTickOracle {
             set(net.minecraft.world.level.BaseSpawner.class, s.getSpawner(), "displayEntity",
                 allocate(net.minecraft.world.entity.animal.pig.Pig.class));
         }
+        // addAndRegisterBlockEntity: setLevel (a geyser stamps its eruption from it).
+        be.setLevel(level);
         return be;
     }
 
@@ -192,7 +255,29 @@ public final class VanillaBlockEntityClientTickOracle {
             t.getTrialSpawner().tickClient(level, p, state.getValue(BlockStateProperties.OMINOUS));
         } else if (be instanceof VaultBlockEntity v) {
             VaultBlockEntity.Client.tick(level, p, state, v.getClientData(), v.getSharedData());
+        } else {
+            switch (be) {
+                case CampfireBlockEntity c -> tickRegistered(level, BlockEntityTypes.CAMPFIRE, c);
+                case ConduitBlockEntity c -> tickRegistered(level, BlockEntityTypes.CONDUIT, c);
+                case BeaconBlockEntity b -> tickRegistered(level, BlockEntityTypes.BEACON, b);
+                case PotentSulfurBlockEntity s -> tickRegistered(level, BlockEntityTypes.POTENT_SULFUR, s);
+                case BellBlockEntity b -> tickRegistered(level, BlockEntityTypes.BELL, b);
+                case ChestBlockEntity c -> tickRegistered(level, BlockEntityTypes.CHEST, c);
+                case EnchantingTableBlockEntity e -> tickRegistered(level, BlockEntityTypes.ENCHANTING_TABLE, e);
+                case ShulkerBoxBlockEntity s -> tickRegistered(level, BlockEntityTypes.SHULKER_BOX, s);
+                default -> throw new IllegalArgumentException("No ticker fixture for " + be.getType());
+            }
         }
+    }
+
+    private static <T extends BlockEntity> void tickRegistered(CaseLevel level, BlockEntityType<T> type, T entity) {
+        BlockState state = entity.getBlockState();
+        var ticker = ((EntityBlock) state.getBlock()).getTicker(level, state, type);
+        if (ticker != null) ticker.tick(level, entity.getBlockPos(), state, entity);
+    }
+
+    static boolean spins(BlockEntity be) {
+        return be instanceof SpawnerBlockEntity || be instanceof TrialSpawnerBlockEntity || be instanceof VaultBlockEntity;
     }
 
     static JsonArray spin(BlockEntity be) {
@@ -206,6 +291,62 @@ public final class VanillaBlockEntityClientTickOracle {
             a.add(bits(data.getSpin())); a.add(bits(data.getOSpin()));
         } else if (be instanceof VaultBlockEntity v) {
             a.add(bits(v.getClientData().currentSpin())); a.add(bits(v.getClientData().previousSpin()));
+        }
+        return a;
+    }
+
+    static Object field(Class<?> owner, Object target, String name) throws Exception {
+        Field field = owner.getDeclaredField(name);
+        field.setAccessible(true);
+        return field.get(target);
+    }
+
+    /** Whether a block entity's animation state is logged (the ones without spins). */
+    static boolean animates(BlockEntity be) {
+        return be instanceof net.minecraft.world.level.block.entity.BeaconBlockEntity
+            || be instanceof net.minecraft.world.level.block.entity.ChestBlockEntity
+            || be instanceof net.minecraft.world.level.block.entity.ShulkerBoxBlockEntity
+            || be instanceof net.minecraft.world.level.block.entity.BellBlockEntity
+            || be instanceof net.minecraft.world.level.block.entity.EnchantingTableBlockEntity
+            || be instanceof net.minecraft.world.level.block.entity.ConduitBlockEntity;
+    }
+
+    /** What a client tick left of one animated block entity: ints as numbers, floats as raw bits. */
+    static JsonArray animation(BlockEntity be) throws Exception {
+        var a = new JsonArray();
+        BlockPos p = be.getBlockPos();
+        a.add(p.getX()); a.add(p.getY()); a.add(p.getZ());
+        if (be instanceof net.minecraft.world.level.block.entity.BeaconBlockEntity b) {
+            var cls = net.minecraft.world.level.block.entity.BeaconBlockEntity.class;
+            a.add("beacon"); a.add((Integer) field(cls, b, "levels")); a.add((Integer) field(cls, b, "lastCheckY"));
+            for (var name : new String[] {"beamSections", "checkingBeamSections"}) {
+                var sections = new JsonArray();
+                // Vanilla aliases the finished scan as the beam until the next tick starts a fresh list; Sunrise moves it, so that alias is not compared.
+                var list = (List<?>) field(cls, b, name);
+                if (name.equals("checkingBeamSections") && list == field(cls, b, "beamSections")) list = List.of();
+                for (var section : list) {
+                    var one = (net.minecraft.world.level.block.entity.BeaconBeamOwner.Section) section;
+                    var row = new JsonArray();
+                    // Rust keeps the RGB of the ARGB colour.
+                    row.add(one.getColor() & 0xFFFFFF); row.add(one.getHeight());
+                    sections.add(row);
+                }
+                a.add(sections);
+            }
+        } else if (be instanceof net.minecraft.world.level.block.entity.ChestBlockEntity c) {
+            a.add("chest"); a.add(bits(c.getOpenNess(1.0F))); a.add(bits(c.getOpenNess(0.0F)));
+        } else if (be instanceof net.minecraft.world.level.block.entity.ShulkerBoxBlockEntity sh) {
+            var cls = net.minecraft.world.level.block.entity.ShulkerBoxBlockEntity.class;
+            a.add("shulker"); a.add(bits((Float) field(cls, sh, "progress"))); a.add(bits((Float) field(cls, sh, "progressOld")));
+        } else if (be instanceof net.minecraft.world.level.block.entity.BellBlockEntity bell) {
+            a.add("bell"); a.add(bell.ticks); a.add(bell.shaking ? 1 : 0);
+        } else if (be instanceof net.minecraft.world.level.block.entity.EnchantingTableBlockEntity t) {
+            a.add("book"); a.add(t.time);
+            for (float f : new float[] {t.flip, t.oFlip, t.flipT, t.flipA, t.open, t.oOpen, t.rot, t.oRot, t.tRot}) a.add(bits(f));
+        } else if (be instanceof net.minecraft.world.level.block.entity.ConduitBlockEntity c) {
+            var cls = net.minecraft.world.level.block.entity.ConduitBlockEntity.class;
+            a.add("conduit"); a.add(c.tickCount); a.add(bits((Float) field(cls, c, "activeRotation")));
+            a.add((Boolean) field(cls, c, "isActive") ? 1 : 0); a.add((Boolean) field(cls, c, "isHunting") ? 1 : 0);
         }
         return a;
     }
@@ -248,6 +389,8 @@ public final class VanillaBlockEntityClientTickOracle {
             try {
                 var level = allocate(CaseLevel.class);
                 level.random = new LegacyRandomSource(c.get("seed").getAsLong());
+                // EnchantingTableBlockEntity.RANDOM is shared by every table: one stream per case.
+                ((RandomSource) field(net.minecraft.world.level.block.entity.EnchantingTableBlockEntity.class, null, "RANDOM")).setSeed(c.get("seed").getAsLong());
                 level.gameTime = c.get("gameTime").getAsLong();
                 var pc = c.getAsJsonObject("player");
                 var player = allocate(CasePlayer.class);
@@ -256,12 +399,25 @@ public final class VanillaBlockEntityClientTickOracle {
                 var entity = net.minecraft.world.entity.Entity.class;
                 set(entity, player, "position", position);
                 set(entity, player, "blockPosition", BlockPos.containing(position));
-                set(entity, player, "dimensions", EntityDimensions.scalable(0.6F, 1.8F));
+                var dimensions = EntityDimensions.scalable(0.6F, 1.8F);
+                set(entity, player, "dimensions", dimensions);
+                set(entity, player, "levelCallback", EntityInLevelCallback.NULL);
+                player.setBoundingBox(dimensions.makeBoundingBox(position));
                 set(entity, player, "uuid", new UUID(0x5355_4e52_4953_45L, 1L));
                 player.dead = pc.get("dead").getAsBoolean();
                 player.spectator = pc.get("spectator").getAsBoolean();
                 level.casePlayers = List.of(player);
                 level.loaded = new HashMap<>();
+                level.blocks = new HashMap<>();
+                // The blocks around: each fill's block over its box, then the block entities' own states.
+                if (c.has("fills")) for (var f : c.getAsJsonArray("fills")) {
+                    var fill = f.getAsJsonObject();
+                    var lo = pos(fill.getAsJsonArray("from"));
+                    var hi = pos(fill.getAsJsonArray("to"));
+                    var block = BlockStateParser.parseForBlock(BuiltInRegistries.BLOCK, fill.get("block").getAsString(), false).blockState();
+                    for (BlockPos q : BlockPos.betweenClosed(lo, hi)) level.blocks.put(q.immutable(), block);
+                }
+                for (var e : c.getAsJsonArray("entities")) level.blocks.put(pos(e.getAsJsonObject().getAsJsonArray("pos")), state(e.getAsJsonObject()));
                 var handler = allocate(LevelEventHandler.class);
                 set(LevelEventHandler.class, handler, "level", level);
                 // The level's tickers, and the case's block entities with the column of each.
@@ -292,6 +448,12 @@ public final class VanillaBlockEntityClientTickOracle {
                                     for (var i : o.get(3).getAsJsonArray()) order.add(i.getAsInt());
                                     send(level, tickers, entities, ChunkPos.pack(o.get(1).getAsInt(), o.get(2).getAsInt()), order, player);
                                 }
+                                case "blockEvent" -> {
+                                    // Level.blockEvent on the client: the block's triggerEvent, which reaches the block entity.
+                                    var eventAt = pos(o.get(1).getAsJsonArray());
+                                    var target = level.loaded.get(eventAt);
+                                    if (target != null) target.triggerEvent(o.get(2).getAsInt(), o.get(3).getAsInt());
+                                }
                                 case "event" -> handler.levelEvent(o.get(1).getAsInt(), pos(o.get(2).getAsJsonArray()), o.get(3).getAsInt());
                                 default -> throw new IllegalArgumentException(o.get(0).getAsString());
                             }
@@ -299,8 +461,15 @@ public final class VanillaBlockEntityClientTickOracle {
                     }
                     for (var be : tickers) tick(be, level);
                     var spins = new JsonArray();
-                    tickers.stream().sorted(Comparator.comparing(BlockEntity::getBlockPos)).forEach(be -> spins.add(spin(be)));
+                    tickers.stream().filter(VanillaBlockEntityClientTickOracle::spins).sorted(Comparator.comparing(BlockEntity::getBlockPos)).forEach(be -> spins.add(spin(be)));
+                    var states = new JsonArray();
+                    // Vec3i.compareTo, as the spins are.
+                    var animated = new ArrayList<BlockEntity>(tickers);
+                    animated.removeIf(be -> !animates(be));
+                    animated.sort(Comparator.comparing(BlockEntity::getBlockPos));
+                    for (var be : animated) states.add(animation(be));
                     var row = new JsonObject();
+                    row.add("states", states);
                     row.add("events", level.events);
                     // The level random's 48-bit state after the tick: every draw, sounds' seeds too.
                     row.addProperty("random", Long.toHexString(((java.util.concurrent.atomic.AtomicLong) seedField.get(level.random)).get()));

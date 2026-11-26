@@ -72,7 +72,11 @@ impl MobType {
     /// the catalog's bounds, so the records cannot diverge. Bases stay raw
     /// for base-value reads; spawn fields use the catalog's computed-value
     /// sanitizer before narrowing.
-    pub fn take_attribute_row(&mut self, attributes: Arc<HashMap<String, f64>>, catalog: &Catalog) {
+    pub fn take_attribute_row(
+        &mut self,
+        attributes: Arc<HashMap<String, f64>>,
+        catalog: &Arc<Catalog>,
+    ) {
         let fields = Self::catalog_fields(&attributes, catalog);
         self.attributes = attributes;
         self.attribute_bounds = AttrBounds::of(catalog);
@@ -100,7 +104,7 @@ mod tests {
 
     /// A vanilla-bounded catalog for `max_health` (here 1..10) and
     /// `armor_toughness` (0..20).
-    fn catalog() -> Catalog {
+    fn catalog() -> Arc<Catalog> {
         let bits = |v: f64| format!("{:016x}", v.to_bits());
         Catalog::from_json(&serde_json::json!({
             "data_version": sunrise_world::DATA_VERSION,
@@ -110,6 +114,7 @@ mod tests {
             ],
             "entities": {},
         }))
+        .map(Arc::new)
         .unwrap()
     }
 

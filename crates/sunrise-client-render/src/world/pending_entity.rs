@@ -4,6 +4,7 @@ use sunrise_core::nbt::Tag;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EntityLoadReason {
     Ordinary,
+    DiskSection,
     TeleportedTnt,
 }
 
@@ -23,6 +24,14 @@ impl From<Tag> for PendingEntity {
 }
 
 impl PendingEntity {
+    /// A record from the independent entity region, not an addition from terrain.
+    pub fn from_disk_section(tag: Tag) -> Self {
+        Self {
+            tag,
+            reason: EntityLoadReason::DiskSection,
+        }
+    }
+
     /// Only an in-memory TNT transfer supplies this context, never saved NBT.
     pub fn after_tnt_portal(tag: Tag) -> Self {
         Self {

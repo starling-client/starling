@@ -150,14 +150,15 @@ fn item_ids(cx: &mut Cx) {
         let new = match s.get("id") {
             Some(Tag::String(id)) => namespaced(&id.to_string_lossy()),
             Some(other) => match as_number(other) {
-                Some(n) => lookup_int(t::tables().item_ids, n.int_value())
+                Some(n) => lookup_int(t::item_ids()?, n.int_value())
                     .unwrap_or("minecraft:air")
                     .to_owned(),
-                None => return,
+                None => return Ok(()),
             },
-            None => return,
+            None => return Ok(()),
         };
         set(s, "id", string(&new));
+        Ok(())
     });
 }
 
@@ -167,14 +168,14 @@ fn item_potions(cx: &mut Cx) {
         |id| id == "minecraft:potion",
         |s| {
             if !matches!(s.get("tag"), Some(Tag::Compound(_))) {
-                return;
+                return Ok(());
             }
             let damage = i32::from(as_short(s.get("Damage"), 0));
             if let Some(tag) = s.get_mut("tag")
                 && !matches!(tag.get("Potion"), Some(Tag::String(_)))
             {
                 let potion =
-                    lookup_int(t::tables().item_potions, damage & 127).unwrap_or("minecraft:water");
+                    lookup_int(t::item_potions()?, damage & 127).unwrap_or("minecraft:water");
                 set(tag, "Potion", string(potion));
                 if damage & 16384 == 16384 {
                     set(s, "id", string("minecraft:splash_potion"));
@@ -183,6 +184,7 @@ fn item_potions(cx: &mut Cx) {
             if damage != 0 {
                 set(s, "Damage", Tag::Short(0));
             }
+            Ok(())
         },
     );
 }
@@ -196,13 +198,13 @@ fn spawn_egg_entities(cx: &mut Cx) {
         |id| id == "minecraft:spawn_egg",
         |s| {
             let damage = i32::from(as_short(s.get("Damage"), 0));
-            if let Some(entity) = lookup_int(t::tables().spawn_egg_entities, damage & 0xFF) {
+            if let Some(entity) = lookup_int(t::spawn_egg_entities()?, damage & 0xFF) {
                 // The entity tree is typed only if its id is one of the schema's.
-                let typed = s
-                    .get("tag")
-                    .and_then(|tag| tag.get("EntityTag"))
-                    .filter(|e| entity_tree_known(e, input))
-                    .cloned();
+                let typed = s.get("tag").and_then(|tag| tag.get("EntityTag"));
+                let typed = match typed {
+                    Some(entity) if entity_tree_known(entity, input)? => Some(entity.clone()),
+                    _ => None,
+                };
                 let old_id = typed.as_ref().and_then(|e| as_str(e.get("id")));
                 if old_id.as_deref() != Some(entity) {
                     if !matches!(s.get("tag"), Some(Tag::Compound(_))) {
@@ -210,7 +212,7 @@ fn spawn_egg_entities(cx: &mut Cx) {
                     }
                     let mut entity_tag = typed.unwrap_or_else(empty_map);
                     set(&mut entity_tag, "id", string(entity));
-                    reread_as(Ty::EntityTree, k, &mut entity_tag);
+                    reread_as(Ty::EntityTree, k, &mut entity_tag)?;
                     if let Some(tag) = s.get_mut("tag") {
                         set(tag, "EntityTag", entity_tag);
                     }
@@ -219,6 +221,7 @@ fn spawn_egg_entities(cx: &mut Cx) {
             if damage != 0 {
                 set(s, "Damage", Tag::Short(0));
             }
+            Ok(())
         },
     );
 }
@@ -230,7 +233,7 @@ fn spawner_entity_identifiers(cx: &mut Cx) {
     let k = cx.k;
     cx.each(Ty::UntaggedSpawner, |sp| {
         if !matches!(sp, Tag::Compound(_)) {
-            return;
+            return Ok(());
         }
         if let Some(Tag::String(entity)) = sp.get("EntityId") {
             let id = if entity.0.is_empty() {
@@ -262,7 +265,7 @@ fn spawner_entity_identifiers(cx: &mut Cx) {
                 }
             }
         }
-        reread_as(Ty::UntaggedSpawner, k, sp);
+        reread_as(Ty::UntaggedSpawner, k, sp)
     });
 }
 
@@ -279,7 +282,7 @@ fn minecart_identifiers(cx: &mut Cx) {
         };
         set(e, "id", string(name));
         remove(e, "Type");
-        reread(k, e);
+        reread(k, e)
     });
 }
 
@@ -418,19 +421,23 @@ fn redundant_chance_tags(cx: &mut Cx) {
 fn riding_to_passengers(cx: &mut Cx) {
     let (k, input) = (cx.k, cx.k - 1);
     cx.each(Ty::EntityTree, |tree| {
-        if !entity_tree_known(tree, input) {
-            return;
+        if !entity_tree_known(tree, input)? {
+            return Ok(());
         }
         // The vehicle was fixed first: it has its passengers already.
-        let Some(vehicle) = tree.get("Riding").filter(|v| entity_tree_known(v, input)) else {
-            return;
+        let Some(vehicle) = tree.get("Riding") else {
+            return Ok(());
         };
+        if !entity_tree_known(vehicle, input)? {
+            return Ok(());
+        }
         let vehicle = vehicle.clone();
         let mut rider = tree.clone();
         remove(&mut rider, "Riding");
         // `Riding` is no field of the new type: the map the rider was read from gives it back.
         drop_typed(&mut rider, "Riding");
         *tree = add_passenger_to_top(vehicle, rider);
+        Ok(())
     });
     cx.each(Ty::Player, |p| reread_as(Ty::Player, k, p));
 }
@@ -577,12 +584,13 @@ fn zombie_split(cx: &mut Cx) {
             1..=5 => {
                 set(e, "id", string("ZombieVillager"));
                 set(e, "Profession", Tag::Int(zombie_type - 1));
-                reread(k, e);
+                reread(k, e)?;
             }
             6 => set(e, "id", string("Husk")),
             _ => {}
         }
         remove(e, "ZombieType");
+        Ok(())
     });
 }
 
@@ -599,7 +607,7 @@ fn horse_split(cx: &mut Cx) {
         };
         set(e, "id", string(name));
         remove(e, "Type");
-        reread(k, e);
+        reread(k, e)
     });
 }
 
@@ -612,10 +620,11 @@ fn block_entity_ids(cx: &mut Cx) {
     cx.each(Ty::ItemStack, |s| items::add_names_at(s, k));
     cx.each(Ty::BlockEntity, |be| {
         if let Some(id) = as_str(be.get("id"))
-            && let Some(new) = lookup_str(t::tables().block_entity_ids, &id)
+            && let Some(new) = lookup_str(t::block_entity_ids()?, &id)
         {
             set(be, "id", string(new));
         }
+        Ok(())
     });
 }
 
@@ -625,10 +634,11 @@ fn entity_ids(cx: &mut Cx) {
     cx.each(Ty::ItemStack, |s| items::add_names_at(s, k));
     cx.each(Ty::Entity, |e| {
         if let Some(id) = as_str(e.get("id"))
-            && let Some(new) = lookup_str(t::tables().entity_ids, &id)
+            && let Some(new) = lookup_str(t::entity_ids()?, &id)
         {
             set(e, "id", string(new));
         }
+        Ok(())
     });
 }
 
@@ -640,14 +650,14 @@ fn item_banner_color(cx: &mut Cx) {
     cx.item(
         |id| id == "minecraft:banner",
         |s| {
-            let Some(base) = s
-                .get("tag")
-                .and_then(|tag| tag.get("BlockEntityTag"))
-                .filter(|be| block_entity_known(be, input))
-                .and_then(|be| be.get("Base"))
-                .and_then(as_number)
-            else {
-                return;
+            let Some(be) = s.get("tag").and_then(|tag| tag.get("BlockEntityTag")) else {
+                return Ok(());
+            };
+            if !block_entity_known(be, input)? {
+                return Ok(());
+            }
+            let Some(base) = be.get("Base").and_then(as_number) else {
+                return Ok(());
             };
             set(s, "Damage", Tag::Short((base.int_value() & 15) as i16));
             let pick_marker = Tag::compound([("Lore", Tag::List(vec![string("(+NBT")]))]);
@@ -655,7 +665,7 @@ fn item_banner_color(cx: &mut Cx) {
                 .and_then(|tag| tag.get("display"))
                 .is_some_and(|display| *display == pick_marker)
             {
-                return;
+                return Ok(());
             }
             if let Some(be) = s
                 .get_mut("tag")
@@ -663,6 +673,7 @@ fn item_banner_color(cx: &mut Cx) {
             {
                 remove(be, "Base");
             }
+            Ok(())
         },
     );
 }
@@ -726,17 +737,17 @@ fn item_shulker_box_color(cx: &mut Cx) {
     cx.item(
         |id| id == "minecraft:shulker_box",
         |s| {
-            let Some(be) = s
-                .get("tag")
-                .and_then(|tag| tag.get("BlockEntityTag"))
-                .filter(|be| block_entity_known(be, input))
-            else {
-                return;
+            let Some(be) = s.get("tag").and_then(|tag| tag.get("BlockEntityTag")) else {
+                return Ok(());
             };
+            if !block_entity_known(be, input)? {
+                return Ok(());
+            }
             // `Color` stays in the block entity: the fix does not keep `Dynamic.remove`.
             let color = as_int(be.get("Color"), 0);
             let name = SHULKER_BOX_COLORS[color.rem_euclid(16) as usize];
             set(s, "id", string(name));
+            Ok(())
         },
     );
 }

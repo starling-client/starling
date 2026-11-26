@@ -141,10 +141,20 @@ impl UserCache {
     }
 
     /// The player with this name (any case) while their entry hasn't expired: `get(String)` without
-    /// the lookup, the offline player and any change to the cache.
-    pub fn find_by_name(&self, name: &str) -> Option<NameAndId> {
-        let info = &self.infos[*self.by_name.get(&name.to_lowercase())?];
-        (now_millis() < info.expires).then(|| info.user.clone())
+    /// the lookup, the offline player or any change to the cache.
+    pub fn find_by_name(&self, name: &str) -> Option<&NameAndId> {
+        self.unexpired(*self.by_name.get(&name.to_lowercase())?)
+    }
+
+    /// The player with this UUID while their entry hasn't expired, without changing the cache.
+    /// Unlike `get_by_id`, this is only a read of current profiles, not a previous name for a join.
+    pub fn find_by_id(&self, id: u128) -> Option<&NameAndId> {
+        self.unexpired(*self.by_uuid.get(&id)?)
+    }
+
+    fn unexpired(&self, index: usize) -> Option<&NameAndId> {
+        let info = &self.infos[index];
+        (now_millis() < info.expires).then_some(&info.user)
     }
 
     /// `get(String)`: the player with this name (any case). An expired entry is
@@ -295,26 +305,31 @@ mod tests {
         let (c, warnings) = UserCache::load(&file);
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(
-            c.find_by_name("Caf\u{fffd}").map(|u| u.name),
-            Some("Caf\u{fffd}".into())
+            c.find_by_name("Caf\u{fffd}").map(|u| u.name.as_str()),
+            Some("Caf\u{fffd}")
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn find_by_name_only_reads() {
+    fn current_profile_lookups_only_read_unexpired_entries() {
         let (c, _) = cache(
             r#"[{"uuid":"069a79f4-44e9-4726-a5be-fca90e38aaf5","name":"Notch","expiresOn":"2099-01-01 00:00:00 +0000"},
                 {"uuid":"61699b2e-d327-4a01-9f1e-0ea8c3f06bc6","name":"Expired","expiresOn":"2000-01-01 00:00:00 +0000"}]"#,
         );
         let before = c.to_json();
         assert_eq!(
-            c.find_by_name("nOtCh").map(|u| u.name),
-            Some("Notch".into())
+            c.find_by_name("nOtCh").map(|u| u.name.as_str()),
+            Some("Notch")
         );
-        // An expired entry, an unknown name: nothing, and no offline player made up.
+        let notch = 0x069a79f4_44e9_4726_a5be_fca90e38aaf5;
+        let expired = 0x61699b2e_d327_4a01_9f1e_0ea8c3f06bc6;
+        assert_eq!(c.find_by_id(notch).map(|u| u.name.as_str()), Some("Notch"));
+        // An expired entry, an unknown name or UUID: nothing, and no offline player made up.
         assert_eq!(c.find_by_name("Expired"), None);
         assert_eq!(c.find_by_name("Nobody"), None);
+        assert_eq!(c.find_by_id(expired), None);
+        assert_eq!(c.find_by_id(0), None);
         assert_eq!(c.to_json(), before);
     }
 

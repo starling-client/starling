@@ -199,12 +199,13 @@ class Budgets(unittest.TestCase):
         # over 256 KB: its failure's location was withheld (#4028) while smaller sunrise-client files were shown.
         ci.tracked_rust_paths.cache_clear()
         ci.source_lines.cache_clear()
-        for location in ('crates/sunrise-client/src/motion.rs:6115:9',
-                         'crates/sunrise-client-lib/../sunrise-client/src/motion.rs:6115:9'):
+        # The integration split leaves motion.rs at 5,793 lines; 5000 is still inside it.
+        for location in ('crates/sunrise-client/src/motion.rs:5000:9',
+                         'crates/sunrise-client-lib/../sunrise-client/src/motion.rs:5000:9'):
             log = self.render("test motion::tests::resident_fluid_heights_are_measured_from_the_feet ... FAILED\n"
                               "thread 'motion::tests::resident_fluid_heights_are_measured_from_the_feet' panicked at "
                               f"{location}:\nassertion `left == right` failed\n left: 1\n right: 2\n")
-            self.assertIn('  panicked at crates/sunrise-client/src/motion.rs:6115:9', log)
+            self.assertIn('  panicked at crates/sunrise-client/src/motion.rs:5000:9', log)
             self.assertIn('0 locations withheld', log)
         # Past the read bound a tracked source still stays withheld.
         ci.tracked_rust_paths.cache_clear()

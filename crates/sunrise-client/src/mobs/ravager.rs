@@ -256,7 +256,7 @@ fn roar(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
         && p.alive
         && p.bounds.intersects(area)
     {
-        events.push(w.route_player_event(MobEvent::AttackPlayer(6.0, from)));
+        events.push(w.route_player_event(MobEvent::AttackPlayer(6.0, from, None)));
         events.push(w.route_player_event(MobEvent::Push {
             target: Who::Player,
             velocity: fling(p.position),

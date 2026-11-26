@@ -1,7 +1,7 @@
 use super::Game;
 use mod_api::{Answered, HookId, InlineImageReplacement};
 use std::collections::BTreeMap;
-use sunrise_client::hud::HudAtlas;
+use sunrise_client::hud::{HudAtlas, dynamic_textures::DynamicTextures};
 use sunrise_client::text::{InlineObject, Text};
 
 impl Game<'_> {
@@ -19,13 +19,18 @@ impl Game<'_> {
         })
     }
 
+    /// Chat, screens and signs all name a dynamic texture or an atlas sprite by the same rule.
     pub(in crate::game) fn substitute_inline_images(&self, text: &Text) -> Option<Text> {
-        substitute(&self.gui.atlas, text, |run, images| {
-            self.native_substitute_inline_images(mod_api::__private::SubstituteInlineImagesCall {
-                run,
-                images,
-            });
-        })
+        substitute(
+            &self.gui.atlas,
+            &self.dynamic_textures,
+            text,
+            |run, images| {
+                self.native_substitute_inline_images(
+                    mod_api::__private::SubstituteInlineImagesCall { run, images },
+                );
+            },
+        )
     }
 
     /// Ask client mods for replacement atlas images before laying out this text run.
@@ -37,8 +42,15 @@ impl Game<'_> {
     }
 }
 
+/// What an accepted replacement names.
+enum Found {
+    Atlas,
+    Dynamic { handle: u64, size: [u32; 2] },
+}
+
 fn substitute(
     atlas: &HudAtlas,
+    dynamic: &DynamicTextures,
     text: &Text,
     ask: impl Fn(&str, &mut Vec<Answered<InlineImageReplacement>>),
 ) -> Option<Text> {
@@ -49,7 +61,7 @@ fn substitute(
         if !span.text.is_empty() && span.style.inline_object.is_none() {
             ask(&span.text, &mut images);
         }
-        let mut accepted = BTreeMap::new();
+        let mut accepted: BTreeMap<usize, (usize, String, Found)> = BTreeMap::new();
         for entry in images.drain(..) {
             let answer = entry.answer;
             let (start, end) = (answer.start as usize, answer.end as usize);
@@ -58,13 +70,19 @@ fn substitute(
                 || accepted
                     .range(..end)
                     .next_back()
-                    .is_some_and(|(_, (last_end, _))| start < *last_end)
+                    .is_some_and(|(_, (last_end, ..))| start < *last_end)
             {
                 continue;
             }
-            let sprite = answer.sprite.to_string();
-            if atlas.find_inline_sprite("minecraft:gui", &sprite).is_some() {
-                accepted.insert(start, (end, sprite));
+            // One lookup rule for an id: a live dynamic texture, then the GUI atlas.
+            let found = match dynamic.get(&answer.sprite) {
+                Some((handle, size)) => Some(Found::Dynamic { handle, size }),
+                None => atlas
+                    .find_inline_sprite("minecraft:gui", &answer.sprite.to_string())
+                    .map(|_| Found::Atlas),
+            };
+            if let Some(found) = found {
+                accepted.insert(start, (end, answer.sprite.to_string(), found));
             }
         }
         if accepted.is_empty() {
@@ -75,15 +93,24 @@ fn substitute(
         }
         let spans = replacement.get_or_insert_with(|| text.spans[..i].to_vec());
         let mut from = 0;
-        for (start, (end, sprite)) in accepted {
+        for (start, (end, sprite, found)) in accepted {
             if from < start {
                 spans.push(span.with_text(&span.text[from..start]));
             }
             let mut image = span.with_text("\u{fffc}");
-            image.style.inline_object = Some(InlineObject::Atlas {
-                atlas: "minecraft:gui".into(),
-                sprite,
-                fallback: span.text[start..end].into(),
+            let fallback = span.text[start..end].into();
+            image.style.inline_object = Some(match found {
+                Found::Atlas => InlineObject::Atlas {
+                    atlas: "minecraft:gui".into(),
+                    sprite,
+                    fallback,
+                },
+                Found::Dynamic { handle, size } => InlineObject::Dynamic {
+                    id: sprite,
+                    handle,
+                    size,
+                    fallback,
+                },
             });
             spans.push(image);
             from = end;
@@ -166,12 +193,17 @@ mod tests {
         ];
         with_mods(mods.into(), || {
             let host = mod_api::testing::FakeHost::default();
-            let result = substitute(&atlas, &source, |run, images| {
-                mod_api::dispatch_substitute_inline_images(
-                    &host,
-                    mod_api::__private::SubstituteInlineImagesCall { run, images },
-                );
-            })
+            let result = substitute(
+                &atlas,
+                &DynamicTextures::default(),
+                &source,
+                |run, images| {
+                    mod_api::dispatch_substitute_inline_images(
+                        &host,
+                        mod_api::__private::SubstituteInlineImagesCall { run, images },
+                    );
+                },
+            )
             .unwrap();
             assert_eq!(result.plain(), "é:ok: !");
             assert_eq!(result.spans.len(), 3);
@@ -192,6 +224,42 @@ mod tests {
             }
             assert_eq!(result.spans[2].text, " !");
             assert_eq!(source.plain(), "§aé:ok: !");
+        });
+    }
+
+    #[test]
+    fn a_live_dynamic_texture_is_an_inline_dynamic_object_until_it_is_released() {
+        let atlas = HudAtlas::fonts(&ResourceSource::default()).unwrap();
+        let mut dynamic = DynamicTextures::default();
+        dynamic.bind(1, 128);
+        let id = Identifier::parse("demo:star").unwrap();
+        dynamic.create("demo", &id, [2, 2], 1, &[0; 16]).unwrap();
+        let (handle, size) = dynamic.get(&id).unwrap();
+        let source = Text::literal("é:ok: !");
+        let mods = vec![ModEntry::new(
+            "a",
+            Box::new(Propose(&[(2, 6, "demo:star")])),
+        )];
+        with_mods(mods.into(), || {
+            let host = mod_api::testing::FakeHost::default();
+            let ask = |run: &str, images: &mut Vec<_>| {
+                mod_api::dispatch_substitute_inline_images(
+                    &host,
+                    mod_api::__private::SubstituteInlineImagesCall { run, images },
+                );
+            };
+            let result = substitute(&atlas, &dynamic, &source, ask).unwrap();
+            assert_eq!(
+                result.spans[1].style.inline_object,
+                Some(InlineObject::Dynamic {
+                    id: "demo:star".into(),
+                    handle,
+                    size,
+                    fallback: ":ok:".into(),
+                })
+            );
+            dynamic.release("demo", &id).unwrap();
+            assert_eq!(substitute(&atlas, &dynamic, &source, ask), None);
         });
     }
 }

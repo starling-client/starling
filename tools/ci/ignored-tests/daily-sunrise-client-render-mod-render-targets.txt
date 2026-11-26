@@ -1,0 +1,1 @@
+sunrise-client-render gfx::mod_pipelines::tests::offscreen_render_target_draw_sample_persist_and_resize lib daily gpu

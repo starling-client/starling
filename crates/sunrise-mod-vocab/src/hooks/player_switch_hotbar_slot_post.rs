@@ -1,5 +1,4 @@
 //! The `player_switch_hotbar_slot_post` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0292
 
 pub trait Hooks {
     /// `PlayerSwitchHotbarSlotEvent.Post`: a server player switched from hotbar slot

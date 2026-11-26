@@ -1,10 +1,11 @@
 //! Play state packets: world, entities, player state, inventory and chat.
+pub use super::configuration::PostEffects;
 use crate::{
     Error, Result,
     buf::{
         Bool, Byte, BytesN, ChunkPos, Codec, Double, Float, Ident, Int, List, Long, Longs, LpVec3,
-        Nbt, Opt, OptVarInt, Pos, Reader, SectionPos, Short, Str, StrN, UByte, Uuid, VarInt,
-        VarLong, VarVec3i, Vec3d,
+        Nbt, Opt, OptVarInt, Pos, Reader, SectionPos, Short, Str, StrN, TrustedComponent,
+        TrustedCompound, TrustedNbt, UByte, Uuid, VarInt, VarLong, VarVec3i, Vec3d,
     },
     chunk::{ChunkData, LightData},
     entity_data::{EntityData, Particle, Value},
@@ -31,7 +32,10 @@ mod players;
 mod waypoints;
 pub use advancements::{Advancement, AdvancementDisplay, SeenAdvancements, UpdateAdvancements};
 pub use advancements::{AwardStats, StatList};
-pub use commands::{ARGUMENT_TYPES, ArgumentProperties, CommandNode, Commands};
+pub use commands::{
+    ARGUMENT_TYPES, ArgumentProperties, CommandNode, CommandSuggestion, CommandSuggestions,
+    Commands,
+};
 pub use hud::{
     BossAction, BossEvent, NumberFormat, ResetScore, SetDisplayObjective, SetObjective,
     SetPlayerTeam, SetScore, TeamParameters,
@@ -102,7 +106,7 @@ packet!(
     SelectAdvancementsTab { tab: Option<String> => Opt<Ident> }
 );
 packet!(BlockDestruction { id: i32 => VarInt, pos: [i32; 3] => Pos, progress: u8 => UByte });
-packet!(BlockEntityData { pos: [i32; 3] => Pos, kind: i32 => VarInt, tag: Tag => Nbt });
+packet!(BlockEntityData { pos: [i32; 3] => Pos, kind: i32 => VarInt, tag: Tag => TrustedCompound });
 packet!(BlockUpdate { pos: [i32; 3] => Pos, state: i32 => VarInt });
 // ClientboundAddTransientBlockPacket: a block the client shows for a moment
 // while its section mesh catches up (a falling block that landed).
@@ -210,7 +214,7 @@ pub enum DialogHolder {
 impl Codec<DialogHolder> for DialogHolder {
     fn read(r: &mut Reader) -> Result<Self> {
         Ok(match r.varint()? {
-            0 => Self::Direct(r.nbt()?),
+            0 => Self::Direct(TrustedNbt::read(r)?),
             id => Self::Registry(id - 1),
         })
     }
@@ -230,9 +234,9 @@ packet!(
 );
 packet!(
     /// ChatType.Bound.
-    ChatTypeBound { chat_type: i32 => HolderId, name: Tag => Nbt, target: Option<Tag> => Opt<Nbt> }
+    ChatTypeBound { chat_type: i32 => HolderId, name: Tag => TrustedComponent, target: Option<Tag> => Opt<TrustedComponent> }
 );
-packet!(DisguisedChat { message: Tag => Nbt, chat_type: ChatTypeBound => ChatTypeBound });
+packet!(DisguisedChat { message: Tag => TrustedComponent, chat_type: ChatTypeBound => ChatTypeBound });
 packet!(EntityEvent { id: i32 => Int, event: i8 => Byte });
 /// PositionPath: Linear(end position) or Stepped(list of (position, tick offset)).
 #[derive(Clone, Debug, PartialEq)]
@@ -483,7 +487,7 @@ macro_rules! move_entity {
 move_entity!(MoveEntityPos, pos: true, rot: false);
 move_entity!(MoveEntityPosRot, pos: true, rot: true);
 move_entity!(MoveEntityRot, pos: false, rot: true);
-packet!(OpenScreen { container: i32 => VarInt, menu: i32 => VarInt, title: Tag => Nbt });
+packet!(OpenScreen { container: i32 => VarInt, menu: i32 => VarInt, title: Tag => TrustedComponent });
 // ClientboundMountScreenOpenPacket: a horse's or llama's inventory, with its
 // chest's columns (`getInventoryColumns`).
 packet!(MountScreenOpen { container: i32 => VarInt, columns: i32 => VarInt, entity: i32 => Int });
@@ -497,7 +501,7 @@ packet!(
     OpenBook { hand: i32 => VarInt }
 );
 packet!(PlayerAbilities { flags: i8 => Byte, flying_speed: f32 => Float, walking_speed: f32 => Float });
-packet!(PlayerCombatKill { id: i32 => VarInt, message: Tag => Nbt });
+packet!(PlayerCombatKill { id: i32 => VarInt, message: Tag => TrustedComponent });
 packet!(PlayerPosition {
     teleport: i32 => VarInt,
     position: [f64; 3] => Vec3d,
@@ -524,11 +528,6 @@ packet!(
         entity: Option<LookAtEntity> => Opt<LookAtEntity>,
     }
 );
-packet!(
-    /// ClientboundPostEffectsPacket: the `post_effect` chains (ids) the player's
-    /// screen runs, in order (`ServerPlayer.postEffects`).
-    PostEffects { effects: Vec<String> => List<Ident> }
-);
 packet!(PlayerRotation { yaw: f32 => Float, relative_yaw: bool => Bool, pitch: f32 => Float, relative_pitch: bool => Bool });
 packet!(RemoveEntities { ids: Vec<i32> => List<VarInt> });
 packet!(Respawn { spawn: SpawnInfo => SpawnInfo, keep: i8 => Byte });
@@ -537,7 +536,7 @@ packet!(
     /// Each change is `state << 12 | x << 8 | z << 4 | y` within the section.
     SectionBlocksUpdate { section: [i32; 3] => SectionPos, changes: Vec<i64> => List<VarLong> }
 );
-packet!(Text { text: Tag => Nbt });
+packet!(Text { text: Tag => TrustedComponent });
 packet!(SetChunkCacheCenter { x: i32 => VarInt, z: i32 => VarInt });
 packet!(
     /// ClientboundTickingStatePacket: the tick rate and whether the level is frozen.
@@ -659,7 +658,7 @@ packet!(Sound {
     pitch: f32 => Float,
     seed: i64 => Long,
 });
-packet!(SystemChat { content: Tag => Nbt, overlay: bool => Bool });
+packet!(SystemChat { content: Tag => TrustedComponent, overlay: bool => Bool });
 packet!(
     /// ClientboundTagQueryPacket: the answer to a debug NBT query (F3+I), with
     /// the transaction it answers; `Tag::End` when there was no block entity.
@@ -690,7 +689,7 @@ packet!(
         warning_time: i32 => VarInt,
     }
 );
-packet!(TabList { header: Tag => Nbt, footer: Tag => Nbt });
+packet!(TabList { header: Tag => TrustedComponent, footer: Tag => TrustedComponent });
 packet!(
     /// ClientboundSetBorderCenterPacket.
     SetBorderCenter { x: f64 => Double, z: f64 => Double }
@@ -822,7 +821,7 @@ impl Codec<Explode> for Explode {
         w.bool(v.play_sound);
     }
 }
-packet!(ServerData { motd: Tag => Nbt, icon: Option<Vec<u8>> => Opt<crate::buf::Bytes> });
+packet!(ServerData { motd: Tag => TrustedComponent, icon: Option<Vec<u8>> => Opt<crate::buf::Bytes> });
 packet!(
     /// ClientboundUpdateMobEffectPacket; flags: 1 ambient, 2 visible, 4 icon, 8 blend.
     UpdateMobEffect { id: i32 => VarInt, effect: i32 => VarInt, amplifier: i32 => VarInt, duration: i32 => VarInt, flags: i8 => Byte }
@@ -912,6 +911,7 @@ packet_enum!(Clientbound, crate::ids::play::clientbound {
     ChunkBatchStart(Empty) = CHUNK_BATCH_START,
     ClearTitles(Bool1) = CLEAR_TITLES,
     LowDiskSpaceWarning(Empty) = LOW_DISK_SPACE_WARNING,
+    CommandSuggestions(CommandSuggestions) = COMMAND_SUGGESTIONS,
     Commands(Commands) = COMMANDS,
     UpdateRecipes(super::recipes::UpdateRecipes) = UPDATE_RECIPES,
     RecipeBookAdd(super::recipes::RecipeBookAdd) = RECIPE_BOOK_ADD,
@@ -1320,14 +1320,33 @@ impl Codec<bool> for SignSide {
 }
 /// `stringUtf8(384)` in `fixedSizeList(4)`: four lines, no count.
 pub struct SignLines;
+impl SignLines {
+    /// `ServerboundSignUpdatePacket.MAX_STRING_LENGTH`: maximum UTF-16 code units per line
+    /// across the four fixed sign lines.
+    pub const MAX_UTF16: usize = 384;
+
+    /// First line index exceeding [`Self::MAX_UTF16`] UTF-16 code units, matching
+    /// vanilla `Utf8String.write(buf, line, 384)` and `Utf8String.read(buf, 384)`.
+    pub fn first_oversize_line(lines: &[String; 4]) -> Option<usize> {
+        lines.iter().position(|line| {
+            line.encode_utf16().take(Self::MAX_UTF16 + 1).count() > Self::MAX_UTF16
+        })
+    }
+}
 impl Codec<[String; 4]> for SignLines {
     fn read(r: &mut Reader) -> Result<[String; 4]> {
         Ok([
-            r.string(384)?,
-            r.string(384)?,
-            r.string(384)?,
-            r.string(384)?,
+            r.string(Self::MAX_UTF16)?,
+            r.string(Self::MAX_UTF16)?,
+            r.string(Self::MAX_UTF16)?,
+            r.string(Self::MAX_UTF16)?,
         ])
+    }
+    fn validate(v: &[String; 4]) -> Result<()> {
+        if let Some(i) = Self::first_oversize_line(v) {
+            return Err(Error::sign_line_too_long(i, Self::MAX_UTF16));
+        }
+        Ok(())
     }
     fn write(v: &[String; 4], w: &mut Writer) {
         for line in v {
@@ -1341,6 +1360,17 @@ packet!(
     SetBeacon { primary: Option<i32> => Opt<VarInt>, secondary: Option<i32> => Opt<VarInt> }
 );
 packet!(Interact { id: i32 => VarInt, hand: i32 => VarInt, location: [f64; 3] => LpVec3, secondary: bool => Bool });
+/// `ServerboundMovePlayerPacket.packFlags`: 1 on ground, 2 horizontal collision.
+pub const fn pack_move_player_flags(on_ground: bool, horizontal_collision: bool) -> u8 {
+    let mut flags = 0;
+    if on_ground {
+        flags |= 1;
+    }
+    if horizontal_collision {
+        flags |= 2;
+    }
+    flags
+}
 packet!(
     /// ServerboundMovePlayerPacket flags: 1 on ground, 2 horizontal collision.
     MovePlayerPos { x: f64 => Double, y: f64 => Double, z: f64 => Double, flags: u8 => UByte }
@@ -1472,6 +1502,16 @@ packet_enum!(Serverbound, crate::ids::play::serverbound {
     UseItem(UseItem) = USE_ITEM,
     UseItemOn(UseItemOn) = USE_ITEM_ON,
 });
+
+impl Serverbound {
+    /// The post-ID payload bytes, validated with the packet's protocol codec.
+    pub fn try_encode_payload(&self) -> Result<Vec<u8>> {
+        self.validate()?;
+        let mut w = Writer::new();
+        self.write_payload(&mut w);
+        Ok(w.data)
+    }
+}
 
 // Generated retained-allocation traversals; regenerate with protocol-retained-gen.
 impl crate::retained::OwnedHeap for NetCost {
@@ -2053,3 +2093,5 @@ impl crate::retained::OwnedHeap for Cursor {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod trusted_nbt_tests;

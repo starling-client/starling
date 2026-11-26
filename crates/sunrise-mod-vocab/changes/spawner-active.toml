@@ -1,0 +1,3 @@
+ids = ["hook:spawner_active", "method:Hooks::spawner_active", "type:SpawnerActiveEvent", "type:HookId.SpawnerActive"]
+why = "Adds the both-sided hook spawner_active, asked where BaseSpawner.isNearPlayer decides whether a monster spawner (block or minecart) is active this tick, starting from vanilla's answer: a mod can keep a spawner going with no player near or idle with one beside it without rewriting its saved RequiredPlayerRange. New hook: no existing hook version changes."
+migrate = "Additive. A mod that matches HookId exhaustively adds the SpawnerActive arm."

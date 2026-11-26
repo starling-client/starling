@@ -1,7 +1,7 @@
 //! `RegistryAccess.lookup` and `HolderLookup.listElements` on the current side's actual tables.
 use super::Game;
-use mod_api::RegistryEntry;
-use std::{collections::BTreeMap, sync::Arc};
+use mod_api::{RegistryEntry, RegistryReadError};
+use std::{collections::BTreeMap, ops::ControlFlow, sync::Arc};
 use sunrise_client::{command::args::normalized, lan::data::SyncData};
 use sunrise_core::identifier::Identifier;
 use sunrise_protocol::registry::{Builtin, Dynamic};
@@ -11,7 +11,6 @@ enum LocalRegistry<'a> {
     Advancements(&'a sunrise_client::advancements::Tree),
     Rules(&'a sunrise_client::gamerules::RuleRegistry),
     Json(&'a BTreeMap<String, serde_json::Value>),
-    HashJson(&'a std::collections::HashMap<String, serde_json::Value>),
     Loot(&'a sunrise_client::items::Items),
     Recipes(&'a sunrise_client::crafting::Recipes),
     Professions(&'a sunrise_client::mobs::villager::ResolvedProfessions),
@@ -23,41 +22,21 @@ impl LocalRegistry<'_> {
             Self::Rules(table) => table.position(id).is_some(),
             Self::Advancements(table) => table.by_id.contains_key(id),
             Self::Json(table) => table.contains_key(id),
-            Self::HashJson(table) => table.contains_key(id),
             Self::Loot(table) => table.has_loot_table(id),
             Self::Professions(table) => table.registry_contains(id),
-            // RecipeSnapshot is the accepted recipe table, including custom recipe types.
-            // Unlike the other owners it has no global name index.
-            Self::Recipes(table) => table
-                .by_type
-                .values()
-                .flat_map(|entries| entries.iter())
-                .any(|entry| entry.id == id),
+            Self::Recipes(table) => table.registry_contains(id),
         }
     }
-    fn ids(&self) -> Vec<&str> {
-        let mut ids: Vec<_> = match self {
-            Self::Enchantments(table) => table.list.iter().map(|entry| entry.id.as_ref()).collect(),
-            Self::Advancements(table) => table.list.iter().map(|entry| entry.id.as_str()).collect(),
-            Self::Rules(table) => table
-                .available_rules(true)
-                .map(|rule| rule.name.as_str())
-                .collect(),
-            Self::Json(table) => table.keys().map(String::as_str).collect(),
-            Self::HashJson(table) => table.keys().map(String::as_str).collect(),
-            Self::Loot(table) => table.loot_table_ids().collect(),
-            Self::Professions(table) => table.registry_ids().collect(),
-            Self::Recipes(table) => table
-                .by_type
-                .values()
-                .flat_map(|entries| entries.iter())
-                .map(|entry| entry.id.as_str())
-                .collect(),
-        };
-        // Registry-wide reads promise each identity once, including aliases between recipe types.
-        ids.sort_unstable();
-        ids.dedup();
-        ids
+    fn visit_ids(&self, visit: &mut dyn FnMut(&str) -> ControlFlow<()>) -> ControlFlow<()> {
+        match self {
+            Self::Enchantments(table) => table.registry_ids().try_for_each(visit),
+            Self::Advancements(table) => table.by_id.keys().map(String::as_str).try_for_each(visit),
+            Self::Rules(table) => table.registry_ids().try_for_each(visit),
+            Self::Json(table) => table.keys().map(String::as_str).try_for_each(visit),
+            Self::Loot(table) => table.loot_table_ids().try_for_each(visit),
+            Self::Professions(table) => table.registry_ids().try_for_each(visit),
+            Self::Recipes(table) => table.registry_ids().try_for_each(visit),
+        }
     }
 }
 
@@ -66,7 +45,7 @@ impl Game<'_> {
     pub(in crate::game) fn context_registry(
         &self,
         registry: &str,
-    ) -> Option<&std::collections::HashMap<String, serde_json::Value>> {
+    ) -> Option<&BTreeMap<String, serde_json::Value>> {
         self.active_providers().registry(registry)
     }
     fn local_registry(&self, registry: &str) -> Option<LocalRegistry<'_>> {
@@ -81,23 +60,26 @@ impl Game<'_> {
             "minecraft:slot_source" => LocalRegistry::Json(&self.fns.store.slot_sources),
             "minecraft:loot_table" => LocalRegistry::Loot(self.items()),
             "minecraft:recipe" => LocalRegistry::Recipes(self.recipes()),
-            "minecraft:trade_set" => LocalRegistry::HashJson(&self.stations().trades.sets),
-            "minecraft:villager_trade" => LocalRegistry::HashJson(&self.stations().trades.trades),
+            "minecraft:trade_set" => LocalRegistry::Json(&self.stations().trades.sets),
+            "minecraft:villager_trade" => LocalRegistry::Json(&self.stations().trades.trades),
             "minecraft:villager_profession" => {
                 LocalRegistry::Professions(&self.stations().professions)
             }
-            _ => LocalRegistry::HashJson(self.context_registry(registry)?),
+            _ => LocalRegistry::Json(self.context_registry(registry)?),
         })
     }
 
     fn registry_datapacks(&self, registry: &str) -> Option<Arc<mod_api::DatapackRegistrySet>> {
         if self.is_logical_server() {
             self.mods.datapack_registries.clone()
-        } else if self.remote.is_some() {
-            // This set has already been filtered by the offer, sync policy and accepted schema.
-            sunrise_client::datapack_net::received().filter(|set| set.registry_available(registry))
         } else {
-            None
+            // This set has already been filtered by the offer, sync policy and accepted schema.
+            self.remote
+                .as_ref()?
+                .datapacks
+                .received()
+                .filter(|set| set.registry_available(registry))
+                .cloned()
         }
     }
 
@@ -122,7 +104,7 @@ impl Game<'_> {
             })
     }
 
-    fn registry_generator_data(
+    pub(super) fn registry_generator_data(
         &self,
     ) -> Option<Arc<sunrise_world::worldgen::generator::GeneratorData>> {
         self.end
@@ -194,52 +176,55 @@ impl Game<'_> {
     }
 
     /// `HolderLookup.listElements`, from the same owners used by `registry_entry`.
-    pub(super) fn registry_entries(&self, registry: &str) -> Option<Vec<Identifier>> {
-        let registry = normalized(registry);
-        if !self.is_logical_server() && self.remote.is_none() {
-            return None;
-        }
-        if self.remote.is_none() {
-            self.native_lifecycle.epoch()?;
-        }
-        if let Some(set) = self.registry_datapacks(&registry)
-            && let Ok(entries) = set.entries(&registry)
+    pub(super) fn visit_registry_entries(
+        &self,
+        registry: &str,
+        visit: &mut dyn FnMut(&str) -> ControlFlow<()>,
+    ) -> Result<ControlFlow<()>, RegistryReadError> {
+        if self.remote.is_none()
+            && (!self.is_logical_server() || self.native_lifecycle.epoch().is_none())
         {
-            return identifiers(entries);
+            return Err(RegistryReadError::Unavailable);
+        }
+        let registry = normalized(registry);
+        if let Some(set) = self.registry_datapacks(&registry)
+            && let Ok(mut entries) = set.entries(&registry)
+        {
+            return Ok(entries.try_for_each(visit));
         }
         if let Some(remote) = &self.remote {
             if registry == "minecraft:game_rule" {
-                return identifiers(LocalRegistry::Rules(self.ui.rules.registry()).ids());
+                return Ok(self.ui.rules.registry().registry_ids().try_for_each(visit));
             }
-            return network_entries(&remote.builtin, &remote.registries, &registry);
+            return visit_network_entries(&remote.builtin, &remote.registries, &registry, visit);
         }
         if let Some(table) = self.local_registry(&registry) {
-            return identifiers(table.ids());
+            return Ok(table.visit_ids(visit));
         }
         if registry == "minecraft:dimension" {
-            return identifiers(
-                std::iter::once(self.dim.id())
-                    .chain(self.levels.parked.keys().map(|dimension| dimension.id())),
-            );
+            return Ok(std::iter::once(self.dim.id())
+                .chain(self.levels.parked.keys().map(|dimension| dimension.id()))
+                .try_for_each(visit));
         }
         if registry == "minecraft:trial_spawner" {
-            return identifiers(sunrise_client::mobs::trial_spawner::registry_ids()?);
+            return Ok(sunrise_client::mobs::trial_spawner::registry_ids()
+                .ok_or(RegistryReadError::UnknownRegistry)?
+                .iter()
+                .map(String::as_str)
+                .try_for_each(visit));
         }
-        if let Some(entries) = self.res.behaviours().live_features().and_then(|features| {
-            features
-                .registry_ids(&registry)
-                .map(|entries| identifiers(entries.iter().map(String::as_str)))
-        }) {
-            return entries;
-        }
-        if let Some(entries) = self
-            .registry_generator_data()
-            .and_then(|data| data.registry_ids(&registry).map(identifiers))
+        if let Some(features) = self.res.behaviours().live_features()
+            && let Some(entries) = features.registry_ids(&registry)
         {
-            return entries;
+            return Ok(entries.iter().map(String::as_str).try_for_each(visit));
         }
-        let sync = self.registry_sync()?;
-        network_entries(&sync.builtin, &sync.dynamic, &registry)
+        if let Some(data) = self.registry_generator_data()
+            && let Some(outcome) = data.visit_registry_ids(&registry, visit)
+        {
+            return Ok(outcome);
+        }
+        let sync = self.registry_sync().ok_or(RegistryReadError::Unavailable)?;
+        visit_network_entries(&sync.builtin, &sync.dynamic, &registry, visit)
     }
 
     /// `Holder.is(TagKey)`: plain values are resolved again against the current table.
@@ -358,14 +343,6 @@ impl Game<'_> {
     }
 }
 
-fn identifiers<'a>(entries: impl IntoIterator<Item = &'a str>) -> Option<Vec<Identifier>> {
-    Some(
-        entries
-            .into_iter()
-            .filter_map(|name| Identifier::parse(name).ok())
-            .collect(),
-    )
-}
 fn network_id(builtin: &Builtin, dynamic: &Dynamic, registry: &str, id: &str) -> Option<i32> {
     builtin
         .get(registry)
@@ -377,63 +354,42 @@ fn network_id(builtin: &Builtin, dynamic: &Dynamic, registry: &str, id: &str) ->
                 .flatten()
         })
 }
-fn network_entries(
+fn visit_network_entries(
     builtin: &Builtin,
     dynamic: &Dynamic,
     registry: &str,
-) -> Option<Vec<Identifier>> {
+    visit: &mut dyn FnMut(&str) -> ControlFlow<()>,
+) -> Result<ControlFlow<()>, RegistryReadError> {
     if let Some(ids) = builtin.get(registry) {
-        let mut entries = identifiers(
-            ids.names
-                .iter()
-                .filter(|name| !name.is_empty())
-                .map(String::as_str),
-        )?;
-        if dynamic.custom_components && registry == "minecraft:data_component_type" {
-            entries.extend(
-                sunrise_protocol::item::custom::entries()
-                    .filter(|(_, name)| ids.id(name).is_none())
-                    .filter_map(|(_, name)| Identifier::parse(name).ok()),
-            );
-        }
-        return Some(entries);
-    }
-    identifiers(
-        dynamic
-            .registries
-            .get(registry)?
+        let flow = ids
+            .names
             .iter()
-            .map(|(name, _)| name.as_str()),
-    )
-}
-
-/// TagLoader binds mod-registry tags against the already decoded candidate, before publication.
-/// No file's name can create an entry: required missing members invalidate that tag only.
-pub(super) fn bind_datapack_tags(
-    root: &std::path::Path,
-    overlay: &sunrise_world::loot::PackOverlay<'_>,
-    candidate: &mut mod_api::DatapackCandidate,
-) -> Result<(), String> {
-    for declaration in mod_api::__private::datapack_registry_declarations() {
-        let (namespace, path) = declaration
-            .key
-            .split_once(':')
-            .ok_or("invalid mod registry key")?;
-        let folder = format!("{namespace}/{path}");
-        let known: std::collections::BTreeSet<_> = candidate
-            .entries(&declaration.key)
-            .map_err(|error| format!("mod registry tags: {error:?}"))?
-            .into_iter()
-            .collect();
-        let tags = load_registry_tags(root, overlay, &folder, |id| known.contains(id))?;
-        candidate
-            .bind_tags(&declaration.key, tags)
-            .map_err(|error| format!("mod registry tags: {error:?}"))?;
+            .map(String::as_str)
+            .filter(|name| !name.is_empty())
+            .try_for_each(&mut *visit);
+        if flow.is_break()
+            || !dynamic.custom_components
+            || registry != "minecraft:data_component_type"
+        {
+            return Ok(flow);
+        }
+        return Ok(sunrise_protocol::item::custom::entries()
+            .filter(|(_, name)| ids.id(name).is_none())
+            .map(|(_, name)| name)
+            .try_for_each(visit));
     }
-    Ok(())
+    Ok(dynamic
+        .registries
+        .get(registry)
+        .ok_or(RegistryReadError::UnknownRegistry)?
+        .iter()
+        .map(|(name, _)| name.as_str())
+        .try_for_each(visit))
 }
 
-fn load_registry_tags(
+/// Bind a mod registry's tags against the entries it just admitted. A missing
+/// required member prevents that tag from binding, not the other tags.
+pub(super) fn load_registry_tags(
     root: &std::path::Path,
     overlay: &sunrise_world::loot::PackOverlay<'_>,
     folder: &str,
@@ -466,10 +422,9 @@ fn load_registry_tags(
             }
         }
     }
-    definitions
-        .build(|id, _| known(id).then(|| id.to_owned()))
-        .map(|built| built.tags)
-        .map_err(|error| error.to_string())
+    Ok(definitions
+        .bind(|id, _| known(id).then(|| id.to_owned()))
+        .tags)
 }
 
 #[cfg(test)]
@@ -495,5 +450,35 @@ mod condition_tests {
         )
         .unwrap();
         assert_eq!(tags["test:hot"], ["test:fire"]);
+    }
+}
+
+#[cfg(test)]
+mod network_entry_tests {
+    use super::*;
+
+    #[test]
+    fn builtin_entries_visit_only_canonical_ids_in_numeric_order() {
+        let builtin = Builtin::parse(
+            r#"{"minecraft:item":{"entries":{
+                "minecraft:Bad":{"protocol_id":2},
+                "minecraft:apple":{"protocol_id":5},
+                "stick":{"protocol_id":1}
+            }}}"#,
+        )
+        .unwrap();
+        let mut seen = Vec::new();
+        assert_eq!(
+            visit_network_entries(&builtin, &Dynamic::default(), "minecraft:item", &mut |id| {
+                seen.push(id.to_owned());
+                ControlFlow::Continue(())
+            }),
+            Ok(ControlFlow::Continue(()))
+        );
+        assert_eq!(seen, ["minecraft:stick", "minecraft:apple"]);
+        let items = builtin.get("minecraft:item").unwrap();
+        assert_eq!(items.id("minecraft:stick"), Some(1));
+        assert_eq!(items.id("minecraft:Bad"), None);
+        assert_eq!(items.id("minecraft:apple"), Some(5));
     }
 }

@@ -62,6 +62,7 @@ macro_rules! resident_owners {
             Trident => Trident: tridents,
             Spawner => Spawner: ominous_spawners,
             Cloud => Cloud: breath_clouds,
+            Bolt => Bolt: bolts,
             General => General: $($general).+,
         }
     };
@@ -224,7 +225,7 @@ macro_rules! define_resident_access {
                     let dragon = $this.dragon.as_ref()?;
                     if dragon.id == 0 { return None; }
                     dragon.parts.get(usize::from(offset))?;
-                    let id = dragon.id.checked_add(u32::from(offset) + 1)?;
+                    let id = crate::game::dragon::dragon_part_id(dragon.id, usize::from(offset));
                     let visible = true;
                     Some(SourceEntity { id, value: (Target::DragonPart(id), visible) })
                 }
@@ -271,7 +272,7 @@ mod lifetime_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::game::native_entity_refs::tests::with_game;
+    use crate::game::native_entity_refs::tests::{fixture_resident_column, with_game};
     use sunrise_client::{
         join_seq::{RestoreOrder, residency::table::EntityLookup},
         mobs::Mob,
@@ -368,6 +369,10 @@ mod tests {
             Attachments, HasAttachmentLifetime, index::AttachmentIndex,
         };
         with_game(|game| {
+            crate::game::native_entity_refs::tests::prepare_entity_ticking_neighborhood(
+                game,
+                sunrise_core::position::ChunkPos::new(0, 0),
+            );
             game.reset_entity_residency();
             game.summon_with_nbt("minecraft:cushion", [0.5, 70.0, 0.5], "{}")
                 .unwrap();
@@ -476,11 +481,40 @@ mod tests {
     #[ignore = "daily"]
     fn parked_owners_rebind_and_route_without_trial_dimension_swaps() {
         use crate::game::Dim;
+        use mod_api::EntityReadError;
         with_game(|game| {
+            fixture_resident_column(&mut game.world, (0, 0));
             game.reset_entity_residency();
             let kind = game.res.mob_types().get("minecraft:pig").unwrap().clone();
             game.mobs.push(Mob::new(410, kind.clone(), Vec3::ZERO, 0.0));
+            let entity = game.entity(410).unwrap();
+            let living = game.living(entity).unwrap();
+            let assert_refused_visits = |game: &Game<'_>, error| {
+                assert_eq!(
+                    entity.visit_parts(game, &mut |_| panic!("visited parts")),
+                    Err(error)
+                );
+                assert_eq!(
+                    entity.visit_passengers(game, &mut |_| panic!("visited passengers")),
+                    Err(error)
+                );
+                assert_eq!(
+                    entity.visit_indirect_passengers(game, &mut |_| panic!(
+                        "visited indirect passengers"
+                    )),
+                    Err(error)
+                );
+                assert_eq!(
+                    entity.visit_fluid_heights(game, &mut |_, _| panic!("visited fluids")),
+                    Err(error)
+                );
+                assert_eq!(
+                    living.visit_effects(game, &mut |_| panic!("visited effects")),
+                    Err(error)
+                );
+            };
             game.enter_level(Dim::Nether).unwrap();
+            assert_refused_visits(game, EntityReadError::Unavailable);
             game.mobs.push(Mob::new(411, kind, Vec3::ZERO, 0.0));
             assert!(
                 matches!(game.server_resident_entity(410), EntityLookup::Found { location, .. } if location.owner.dimension == DimensionKey::OVERWORLD)
@@ -501,6 +535,7 @@ mod tests {
             );
             assert_eq!(game.dim, Dim::Nether);
             game.levels.clear();
+            assert_refused_visits(game, EntityReadError::Stale);
             assert_eq!(game.server_resident_entity(410), EntityLookup::Missing);
             assert!(matches!(
                 game.server_resident_entity(411),

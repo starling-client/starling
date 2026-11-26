@@ -149,6 +149,11 @@ fn enabled(required: Option<&Vec<String>>, features: &[String]) -> bool {
 }
 
 impl Catalog {
+    /// `ItemStack.isItemEnabled`: the item's required feature flags from the prepared registry.
+    pub fn item_enabled(&self, stack: &ItemStack, features: &[String]) -> bool {
+        enabled(self.item_features.get(&*stack.item), features)
+    }
+
     pub fn parse(json: &serde_json::Value) -> Result<Self, String> {
         let mut catalog = Self::deserialize(json).map_err(|e| e.to_string())?;
         if catalog.schema != 4 {
@@ -219,8 +224,7 @@ impl Catalog {
             let width = u16::from(p.width.get());
             (width * u16::from(p.height.get()), width)
         });
-        let admits =
-            |stack: &ItemStack| enabled(self.item_features.get(&*stack.item), params.features);
+        let admits = |stack: &ItemStack| self.item_enabled(stack, params.features);
         for category in [true, false] {
             for (i, tab) in self.tabs.iter().enumerate() {
                 if category != (tab.kind == Kind::Category) {

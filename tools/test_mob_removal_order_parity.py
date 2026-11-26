@@ -5,11 +5,11 @@ import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-try:
-    from . import lab, test_rust_parity as parity
-except ImportError:
-    import lab
-    import test_rust_parity as parity
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_rust_parity as parity
 
 
 SOURCES = [
@@ -43,8 +43,8 @@ def main():
         if args.java_only:
             print('Vanilla removal trace recorded')
             return
-        parity.run(['cargo', 'test', '-p', 'sunrise-client', '--lib',
-                    'game::vehicle_removal_tests::mob_removal_order_witness', '--', '--exact', '--ignored'],
+        parity.run([lab.parity_fixtures(),
+                    'game::vehicle_removal_tests::mob_removal_order_witness', '--exact', '--ignored'],
                    env=lab.game_env(SUNRISE_TEST_RESOURCES=str(args.resources.resolve()),
                                     SUNRISE_VEHICLE_REMOVAL_TRACE=str(sunrise)))
         count = parity.compare(vanilla, sunrise)

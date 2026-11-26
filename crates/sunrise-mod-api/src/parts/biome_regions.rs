@@ -9,7 +9,7 @@ impl BiomeRegionsRegistrar for PartRegistrar {
     ) -> Result<(), crate::BiomeRegionError> {
         let result = (|| {
             let id = self
-                .owned_declaration_id(path)
+                .declaration_id(path)
                 .map_err(|_| crate::BiomeRegionError::InvalidId)?;
             if self.biome_regions.iter().any(|d| d.id == id) {
                 return Err(crate::BiomeRegionError::Duplicate);
@@ -67,22 +67,35 @@ pub mod tests {
             registrar.declare_biome_region("ruby:highlands", region(5)),
             Err(BiomeRegionError::Duplicate)
         );
-        // The id stays in the declaring mod's namespace and is well formed.
-        assert_eq!(
-            registrar.declare_biome_region("foreign:highlands", region(5)),
-            Err(BiomeRegionError::InvalidId)
-        );
+        // Explicit valid namespaces, including `minecraft:`, are kept under the declaring mod.
+        registrar
+            .declare_biome_region("foreign:highlands", region(1001))
+            .unwrap();
+        registrar
+            .declare_biome_region("minecraft:highlands", region(i32::MAX as u32))
+            .unwrap();
+        assert_eq!(registrar.biome_regions[1].mod_id, "ruby");
+        assert_eq!(registrar.biome_regions[1].id, "foreign:highlands");
+        assert_eq!(registrar.biome_regions[1].region.weight, 1001);
+        assert_eq!(registrar.biome_regions[2].mod_id, "ruby");
+        assert_eq!(registrar.biome_regions[2].id, "minecraft:highlands");
+        assert_eq!(registrar.biome_regions[2].region.weight, i32::MAX as u32);
+        // Malformed ids refuse.
         assert_eq!(
             registrar.declare_biome_region("High Lands", region(5)),
             Err(BiomeRegionError::InvalidId)
         );
-        // The region itself is checked.
+        // The region itself is checked: 0 and weights above i32::MAX refuse.
         assert_eq!(
             registrar.declare_biome_region("light", region(0)),
             Err(BiomeRegionError::InvalidWeight)
         );
-        // The refusals name the mod; the good declaration stands.
-        assert_eq!(registrar.biome_regions.len(), 1);
+        assert_eq!(
+            registrar.declare_biome_region("heavy", region(i32::MAX as u32 + 1)),
+            Err(BiomeRegionError::InvalidWeight)
+        );
+        // The refusals name the mod; the good declarations stand.
+        assert_eq!(registrar.biome_regions.len(), 3);
         assert_eq!(registrar.refused.len(), 4);
         assert!(
             registrar

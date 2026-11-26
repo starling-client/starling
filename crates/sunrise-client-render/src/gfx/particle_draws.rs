@@ -8,6 +8,7 @@ pub(crate) const EXPLICIT_PARTICLE_OVERLAY: u32 = 47;
 pub(super) struct ParticlePipelines {
     pub opaque: wgpu::RenderPipeline,
     pub translucent: wgpu::RenderPipeline,
+    pub additive: wgpu::RenderPipeline,
     pub mark: wgpu::RenderPipeline,
 }
 
@@ -32,6 +33,25 @@ impl ParticlePipelines {
             translucent: build(EntityPipelineOptions {
                 label: "Translucent provider particles",
                 blend: wgpu::BlendState::ALPHA_BLENDING,
+                ..options
+            }),
+            // Drawn after the translucent particle layer: depth test on, depth write off,
+            // src-alpha / one on colour and alpha (BlendFunction.LIGHTNING).
+            additive: build(EntityPipelineOptions {
+                label: "Additive provider particles",
+                depth_write: false,
+                blend: wgpu::BlendState {
+                    color: wgpu::BlendComponent {
+                        src_factor: wgpu::BlendFactor::SrcAlpha,
+                        dst_factor: wgpu::BlendFactor::One,
+                        operation: wgpu::BlendOperation::Add,
+                    },
+                    alpha: wgpu::BlendComponent {
+                        src_factor: wgpu::BlendFactor::SrcAlpha,
+                        dst_factor: wgpu::BlendFactor::One,
+                        operation: wgpu::BlendOperation::Add,
+                    },
+                },
                 ..options
             }),
             mark: build(EntityPipelineOptions {

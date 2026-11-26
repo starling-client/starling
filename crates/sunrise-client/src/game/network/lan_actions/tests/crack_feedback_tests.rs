@@ -59,6 +59,10 @@ fn cracks(rx: &mpsc::Receiver<Out>) -> Vec<(i32, [i32; 3], u8)> {
 #[test]
 #[ignore = "daily"]
 fn crack_packets_follow_start_clock_and_strict_observer_radius() {
+    run_crack_packets_follow_start_clock_and_strict_observer_radius();
+}
+
+pub(in crate::game) fn run_crack_packets_follow_start_clock_and_strict_observer_radius() {
     let root = std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
     let settings = Settings::default();
     let loaded = load_resources(

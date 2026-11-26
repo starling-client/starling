@@ -5,11 +5,15 @@ use sunrise_world::{
     worldgen::{
         anchor::WorldGenerationContext,
         feature::{FeatureBlocks, FeatureWorld},
-        feature_graph::{FeatureDefinition, FeatureExecutionError, PlacedFeatureDefinition},
-        placement::{PlacementContext, PlacementQueryError},
+        feature_graph::{FeatureDefinition, PlacedFeatureDefinition},
+        placement::{PlacementContext, PlacementModifier, PlacementQueryError},
+        value_provider::IntProvider,
     },
 };
-struct World;
+
+struct World {
+    height_queries: usize,
+}
 impl PlacementContext for World {
     fn generation(&self) -> WorldGenerationContext {
         WorldGenerationContext::new(0, 16, 8)
@@ -18,7 +22,8 @@ impl PlacementContext for World {
         Ok(0)
     }
     fn height(&mut self, _: HeightmapType, _: i32, _: i32) -> Result<i32, PlacementQueryError> {
-        panic!("no-op graph queried height")
+        self.height_queries += 1;
+        Ok(8)
     }
 }
 impl FeatureWorld for World {
@@ -39,25 +44,36 @@ fn blocks() -> FeatureBlocks {
         obsidian: BlockStateId(4),
     }
 }
+
 #[test]
-fn large_graphs_fail_at_a_shared_visit_bound_without_drawing_randomness() {
-    let leaf = PlacedFeatureDefinition {
+fn nested_count_chain_exceeds_former_graph_quota_without_drawing_randomness() {
+    let probe = PlacedFeatureDefinition {
         feature: Box::new(FeatureDefinition::NoOp),
-        placement: vec![],
+        placement: vec![PlacementModifier::Heightmap(HeightmapType::WorldSurface)],
     };
-    let branch = PlacedFeatureDefinition {
-        feature: Box::new(FeatureDefinition::Sequence(vec![leaf; 8192])),
-        placement: vec![],
+    let inner = PlacedFeatureDefinition {
+        feature: Box::new(FeatureDefinition::Sequence(vec![probe])),
+        placement: vec![PlacementModifier::Count(IntProvider::Constant(41))],
     };
-    let tree = FeatureDefinition::Sequence(vec![branch; 9]);
+    let middle = PlacedFeatureDefinition {
+        feature: Box::new(FeatureDefinition::Sequence(vec![inner])),
+        placement: vec![PlacementModifier::Count(IntProvider::Constant(41))],
+    };
+    let root = PlacedFeatureDefinition {
+        feature: Box::new(FeatureDefinition::Sequence(vec![middle])),
+        placement: vec![PlacementModifier::Count(IntProvider::Constant(41))],
+    };
+    let mut world = World { height_queries: 0 };
     let mut random = LegacyRandom::new(5);
     let mut expected = random.clone();
-    assert!(matches!(
-        tree.place(&mut World, &mut random, [0; 3], blocks()),
-        Err(FeatureExecutionError::WorkLimit)
-    ));
+    assert!(
+        root.place(&mut world, &mut random, [0; 3], blocks())
+            .unwrap()
+    );
+    assert_eq!(world.height_queries, 68_921);
     assert_eq!(random.next_long(), expected.next_long());
 }
+
 #[test]
 fn nested_inline_decoding_rejects_excessive_depth() {
     let mut value = String::from(r#"{"type":"no_op"}"#);
@@ -66,24 +82,4 @@ fn nested_inline_decoding_rejects_excessive_depth() {
             format!(r#"{{"type":"sequence","features":[{{"feature":{value},"placement":[]}}]}}"#);
     }
     assert!(FeatureDefinition::from_json(&value).is_err());
-}
-
-#[test]
-fn modifier_expansion_without_leaf_calls_uses_the_shared_graph_budget() {
-    use sunrise_world::worldgen::{placement::PlacementModifier, value_provider::IntProvider};
-    let feature = PlacedFeatureDefinition {
-        feature: Box::new(FeatureDefinition::NoOp),
-        placement: vec![
-            PlacementModifier::Count(IntProvider::Constant(4096)),
-            PlacementModifier::Count(IntProvider::Constant(4096)),
-            PlacementModifier::Count(IntProvider::Constant(0)),
-        ],
-    };
-    let mut random = LegacyRandom::new(5);
-    let mut expected = random.clone();
-    assert!(matches!(
-        feature.place(&mut World, &mut random, [0; 3], blocks()),
-        Err(FeatureExecutionError::WorkLimit)
-    ));
-    assert_eq!(random.next_long(), expected.next_long());
 }

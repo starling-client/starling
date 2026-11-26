@@ -12,10 +12,11 @@ blocks away (ServerboundUseItemPacket) and reels it in. `Projectile.canHitEntity
 import re
 import sys
 
-try:
-    from . import test_locator_bar_parity as locator
-except ImportError:
-    import test_locator_bar_parity as locator
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_locator_bar_parity as locator
 
 NAME = 'fishing-hook-entities-parity'
 # server_dir and generate_world write these server.properties. Peaceful: the flat world lies below y 40 and seed

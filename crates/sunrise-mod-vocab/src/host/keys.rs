@@ -5,9 +5,12 @@ use crate::*;
 /// and reached through [`Host`].
 #[sunrise_mod_api_macros::host_area]
 pub trait KeysHost {
-    /// Side: server. The biome in the installed world registry, or None on a client,
-    /// before world data is installed, or for an unknown id. Reacquire after reload.
-    fn biome_key(&self, id: &str) -> Option<BiomeKey>;
+    /// Side: server. Resolve a biome by canonical namespaced id (`minecraft:plains`) in the
+    /// installed world-data generation as a scoped [`BiomeView`]. Returns
+    /// [`BiomeKeyError::Unavailable`] on a client or before world data is installed,
+    /// [`BiomeKeyError::InvalidIdentifier`] for an invalid id, and
+    /// [`BiomeKeyError::UnknownBiome`] for an id absent from the installed generation.
+    fn biome(&self, id: &str) -> Result<BiomeView<'_>, BiomeKeyError>;
 
     /// Side: both. Exact startup game-event id; None before registry completion or for an unknown id.
     fn game_event_key(&self, id: &str) -> Option<GameEventKey>;
@@ -25,11 +28,24 @@ pub trait KeysHost {
     /// Side: both.
     /// Resolve a canonical entry in the current side's live registry. None for an
     /// unknown registry or entry, or before that registry is available.
+    ///
+    /// `minecraft:worldgen/world_preset` has no published complete registry owner, so this
+    /// returns `None` for it even when prepared preset files exist or a world selected that
+    /// preset.
     fn registry_entry(&self, registry: &str, id: &str) -> Option<RegistryEntry>;
     /// Side: both.
-    /// Entry identifiers in the current table, each once. None for an unavailable or unknown
-    /// registry; an available empty registry returns an empty list.
-    fn registry_entries(&self, registry: &str) -> Option<Vec<Identifier>>;
+    /// Visit the canonical entry IDs in the current side's registry, in the table's existing
+    /// order: numeric IDs for protocol tables, lexical order for name-keyed local tables.
+    /// IDs are borrowed for each call; use [`Identifier::parse`] if you need to retain a typed ID.
+    /// Return `ControlFlow::Break(())` to stop, or `ControlFlow::Continue(())` to keep visiting.
+    /// Returns `Ok(Continue(()))` on completion, including for an empty registry, or
+    /// `Ok(Break(()))` on early stop. An unknown registry or one not exposed on this side
+    /// returns [`RegistryReadError::UnknownRegistry`]. Without a live session, returns [`RegistryReadError::Unavailable`]. Neither calls `visit`.
+    fn visit_registry_entries(
+        &self,
+        registry: &str,
+        visit: &mut dyn FnMut(&str) -> core::ops::ControlFlow<()>,
+    ) -> Result<core::ops::ControlFlow<()>, RegistryReadError>;
     /// Side: both.
     /// Membership in the current side's merged tags. None for an unavailable registry or
     /// entry; an absent tag, or a tag not containing the entry, returns false.
@@ -75,9 +91,12 @@ pub trait KeysHost {
 #[doc(hidden)]
 #[sunrise_mod_api_macros::host_area]
 pub trait KeysBackend {
-    /// Side: server. Borrows the canonical biome id from the installed world generation.
-    /// A token from another world or reload returns `BiomeKeyError::WrongGeneration`.
-    fn biome_key_id(&self, key: BiomeKey) -> Result<&str, BiomeKeyError>;
+    /// Side: server. Resolve a persistent [`BiomeKey`] in the installed world-data generation
+    /// as a scoped [`BiomeView`].
+    fn biome_view(&self, key: &BiomeKey) -> Result<BiomeView<'_>, BiomeKeyError>;
+    /// Side: server. Validate a scoped [`BiomeView`] against this host's installed world-data
+    /// generation and borrow its canonical id.
+    fn biome_view_id(&self, view: BiomeView<'_>) -> Result<&str, BiomeKeyError>;
 
     /// Side: both.
     /// Resolve a live typed key's load-owned slot, never its protocol numeric id.
@@ -113,6 +132,12 @@ pub trait KeysBackend {
     /// Pins the canonical entity type id without borrowing the host.
     /// Returns `None` if the host has no backend or no name for the slot.
     fn entity_type_key_id(&self, key: EntityTypeKey) -> Option<RegistryName>;
+    /// Side: both.
+    /// The category of a registered entity type with no entity spawned
+    /// (`EntityType.getCategory`): a mob type's declared category, a mod mob's included,
+    /// `Monster` for the ender dragon and `Misc` for every other type. `None` if the host has
+    /// no backend or no name for the slot.
+    fn entity_type_category(&self, key: EntityTypeKey) -> Option<MobCategory>;
     /// Side: both.
     /// Pins the canonical menu type id without borrowing the host.
     /// Returns `None` if the host has no backend or no name for the slot.

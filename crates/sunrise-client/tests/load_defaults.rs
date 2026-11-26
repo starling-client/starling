@@ -70,7 +70,7 @@ fn default_components_reader_baseline() -> client::Result<()> {
     assert!(
         native_load_hooks::install(NativeLoadHooks {
             item_ability_default: |_, _, _| false,
-            loot_ability: |_, _, _| {},
+            loot_ability: |_, _, _, _| {},
             loot_table_load: |_, _, _| {},
             modify_default_components: |context, item, _| {
                 assert_eq!(context.origin(), DataLoadOrigin::ClientPreload);
@@ -159,6 +159,7 @@ fn default_components_reader_baseline() -> client::Result<()> {
                     client::item_render::Foil::None => "none",
                     client::item_render::Foil::Standard => "standard",
                     client::item_render::Foil::Special => "special",
+                    client::item_render::Foil::GlintOnly => "glint_only",
                 },
                 "light_emission": q.light_emission,
                 "cull_back": q.cull_back,

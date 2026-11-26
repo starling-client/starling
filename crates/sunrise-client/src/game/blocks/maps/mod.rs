@@ -4,6 +4,7 @@
 //! shading, the dithered edge), the player marker, `data/minecraft/maps/<id>.dat` and
 //! `maps/last_id.dat`, the 128x128 texture in an atlas slot, the two-handed
 //! first-person view and maps in item frames.
+mod part_color;
 use super::Game;
 use std::collections::HashMap;
 use sunrise_client::{
@@ -12,7 +13,10 @@ use sunrise_client::{
     items::ItemStack,
     mesher::Vertex,
 };
-use sunrise_core::nbt::{JavaString, Tag};
+use sunrise_core::{
+    nbt::{JavaString, Tag},
+    position::BlockPos,
+};
 
 /// What a decoration is filed under in `MapItemSavedData.decorations` (a
 /// `LinkedHashMap<String, MapDecoration>`): a player's marker by their
@@ -1298,8 +1302,7 @@ impl Game<'_> {
         }
         let at = [x, y, z].map(|v| f64::from(v) + 0.5);
         self.trigger_block("minecraft:item_used_on_block", hit.pos, before);
-        self.audio
-            .play("minecraft:item.lodestone_compass.lock", Some(at), 1.0, 1.0);
+        self.play_audio("minecraft:item.lodestone_compass.lock", Some(at), 1.0, 1.0);
         let target = Tag::compound([
             (
                 "target",
@@ -1596,9 +1599,15 @@ impl Game<'_> {
                         .wrapping_add(noise.wrapping_mul(11));
                     // Dirt (10) or stone (11) noise under a ceiling.
                     if noise >> 20 & 1 == 0 {
-                        add(10, 10);
+                        add(
+                            self.default_map_color("minecraft:dirt", 10, BlockPos::new(0, 0, 0)),
+                            10,
+                        );
                     } else {
-                        add(11, 100);
+                        add(
+                            self.default_map_color("minecraft:stone", 11, BlockPos::new(0, 0, 0)),
+                            100,
+                        );
                     }
                     height = 100.0;
                 } else {
@@ -1607,19 +1616,24 @@ impl Game<'_> {
                             let (x, z) = (min_x + dx, min_z + dz);
                             let mut y = self.world_surface(x, z);
                             let min_y = self.world.bottom_y();
-                            let mut color;
-                            if y <= min_y {
-                                color = 11;
+                            let color = if y <= min_y {
+                                self.default_map_color(
+                                    "minecraft:bedrock",
+                                    11,
+                                    BlockPos::new(x, 0, z),
+                                )
                             } else {
+                                let mut state;
                                 loop {
                                     y -= 1;
-                                    color =
-                                        self.res.facts().get(self.world.block(x, y, z)).map_color;
-                                    if color != 0 || y <= min_y {
+                                    state = self.world.block(x, y, z);
+                                    if self.map_color_at(BlockPos::new(x, y, z), state) != 0
+                                        || y <= min_y
+                                    {
                                         break;
                                     }
                                 }
-                                let f = self.res.facts().get(self.world.block(x, y, z));
+                                let f = self.res.facts().get(state);
                                 if y > min_y && f.fluid != Fluid::None {
                                     let mut solid = y - 1;
                                     loop {
@@ -1633,10 +1647,12 @@ impl Game<'_> {
                                     }
                                     // getCorrectStateForFluidBlock: the fluid unless sturdy on top.
                                     if f.sturdy_full >> 1 & 1 == 0 {
-                                        color = if f.fluid == Fluid::Lava { 4 } else { 12 };
+                                        let b = self.res.behaviours();
+                                        state = b.legacy_block(b.fluid(state));
                                     }
                                 }
-                            }
+                                self.map_color_at(BlockPos::new(x, y, z), state)
+                            };
                             self.check_banners(id, x, z);
                             height += f64::from(y) / f64::from(scale * scale);
                             add(color, 1);
@@ -1974,7 +1990,7 @@ mod live_frame_tests;
 #[cfg(test)]
 mod native_read_tests;
 #[cfg(test)]
-mod save_tests;
+pub(in crate::game) mod save_tests;
 
 #[cfg(test)]
 mod tests {

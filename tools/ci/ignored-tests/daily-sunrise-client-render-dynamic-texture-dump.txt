@@ -1,0 +1,3 @@
+# The daily GPU test of sunrise-client-render's dump of client mods' dynamic textures (F3+S, #5755).
+# Rows: PACKAGE TEST TARGET daily gpu, sorted; tools/ci/move_to_daily.py writes them.
+sunrise-client-render hud::dynamic_textures::tests::a_dump_writes_each_live_texture_from_the_gpu lib daily gpu

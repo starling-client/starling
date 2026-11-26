@@ -1,5 +1,4 @@
 //! The `vehicle_moved` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0272
 
 pub trait Hooks {
     /// A boat or minecart (`kind`, `minecraft:oak_boat`) moved since the last

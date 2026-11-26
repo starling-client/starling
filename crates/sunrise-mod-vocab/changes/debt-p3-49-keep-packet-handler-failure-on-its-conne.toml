@@ -1,0 +1,3 @@
+ids = ["behaviour:payload_work_disposal"]
+why = "NeoForge ClientPayloadContext.enqueueWork and ServerPayloadContext.enqueueWork use NetworkRegistry.guard to report scheduled payload work failures. Sunrise uses its shared callback boundary for the Rust-specific release of call-owned PayloadWork, including completion, refusal, and cancellation. A panicking destructor is attributed to the receiving registration and follows the existing session quarantine, not a connection failure."
+migrate = "No source change: keep the same IPayloadHandler and PayloadWork implementations. Handle recoverable work errors in PayloadWork::run or return Err; a panic in run or in the destructor quarantines the receiving registration for the mod session."

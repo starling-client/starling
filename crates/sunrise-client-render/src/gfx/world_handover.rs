@@ -61,8 +61,6 @@ impl Renderer {
             section_uploaded,
             newest_upload,
             newest_lod_fade,
-            light_blocks,
-            light_revision,
             ray_scene,
             capture_copies,
         );

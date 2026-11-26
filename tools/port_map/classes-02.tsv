@@ -119,19 +119,19 @@ AllOf.LocationBasedEffects.onDeactivated	inline	crates/sunrise-client/src/game/i
 AllOf.ValueEffects.process	port	crates/sunrise-items/src/enchant.rs::Enchantments::modify_value_with	each value effect in turn
 ApplyEntityImpulse.apply	port	crates/sunrise-client/src/game/items/enchant_effects.rs::look_impulse	impulse along the look direction, for the post-piercing hook and a new projectile
 ApplyExhaustion.apply	port	crates/sunrise-client/src/game/items/enchant_effects.rs::Game::apply_piercing_effect	food exhaustion on the post-piercing hook
-DamageEntity.apply	port	crates/sunrise-client/src/game/items/enchant_effects.rs::Game::thorns_damage	thorns damage, random between min and max
-ExplodeEffect.apply	port	crates/sunrise-client/src/game/items/enchant_effects.rs::Game::post_attack_bursts	wind burst at the player's feet
-ExplodeEffect.getDamageSource	inline	crates/sunrise-client/src/game/items/enchant_effects.rs::Game::post_attack_bursts	gap: minor: the burst builds no damage source; it knocks back and triggers blocks only
+DamageEntity.apply	port	crates/sunrise-client/src/game/items/enchant_effects.rs::Game::apply_post_attack	thorns damage, random between min and max
+ExplodeEffect.apply	port	crates/sunrise-client/src/game/items/enchant_effects.rs::Game::apply_post_attack	wind burst at the player's feet
+ExplodeEffect.getDamageSource	inline	crates/sunrise-client/src/game/items/enchant_effects.rs::Game::apply_post_attack	gap: minor: the burst builds no damage source; it knocks back and triggers blocks only
 PlaySoundEffect.apply	port	crates/sunrise-client/src/game/items/enchant_effects.rs::Game::apply_piercing_effect	sound by level, heard by all
 RemoveBinomial.process	port	crates/sunrise-items/src/enchant.rs::apply_value_effect	the binomial drop count for unbreaking
 ReplaceBlock.apply	missing		minor: no enchantment in the pinned data uses replace_block
 RunFunction.apply	missing		minor: no enchantment in the pinned data uses run_function
 ScaleExponentially.process	missing		minor: no enchantment in the pinned data uses the exponential value effect
 SetBlockProperties.apply	missing		minor: no enchantment in the pinned data uses set_block_properties
-SpawnParticlesEffect.apply	port	crates/sunrise-client/src/game/items/enchant_effects.rs::Game::tick_soul_speed	gap: minor: soul speed's particles are hardcoded, not read from the effect data
-SpawnParticlesEffect.PositionSource.getCoordinate	inline	crates/sunrise-client/src/game/items/enchant_effects.rs::Game::tick_soul_speed	gap: minor: the particle position is hardcoded
-SpawnParticlesEffect.VelocitySource.getVelocity	inline	crates/sunrise-client/src/game/items/enchant_effects.rs::Game::tick_soul_speed	gap: minor: the particle velocity is hardcoded
-SummonEntityEffect.apply	port	crates/sunrise-client/src/game/items/trident.rs::Game::channel_lightning	gap: minor: only the lightning bolt of channeling; other summon_entity types are not ported
+SpawnParticlesEffect.apply	port	crates/sunrise-client/src/game/items/enchant_effects.rs::Game::tick_equipment_enchantments	gap: minor: soul speed's particles are hardcoded, not read from the effect data
+SpawnParticlesEffect.PositionSource.getCoordinate	inline	crates/sunrise-client/src/game/items/enchant_effects.rs::Game::tick_equipment_enchantments	gap: minor: the particle position is hardcoded
+SpawnParticlesEffect.VelocitySource.getVelocity	inline	crates/sunrise-client/src/game/items/enchant_effects.rs::Game::tick_equipment_enchantments	gap: minor: the particle velocity is hardcoded
+SummonEntityEffect.apply	port	crates/sunrise-client/src/game/items/enchant_effects.rs::Game::summon_enchantment_entity	gap: minor: only the lightning bolt of channeling; other summon_entity types are not ported
 EnchantmentProviderTypes.bootstrap	skip:data		registry bootstrap
 EnchantmentsByCost.enchant	port	crates/sunrise-world/src/loot.rs::LootData::select_enchantments	EnchantmentHelper.selectEnchantment with a cost budget
 SingleEnchantment.enchant	port	crates/sunrise-world/src/loot.rs::enchant	one enchantment at a level

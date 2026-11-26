@@ -43,7 +43,7 @@ fn every_vanilla_animation_samples_as_before_the_move() {
     let root = std::path::PathBuf::from(
         std::env::var_os("SUNRISE_TEST_RESOURCES").expect("set SUNRISE_TEST_RESOURCES"),
     );
-    let animations = super::super::data::MobData::load_animations(&root);
+    let animations = super::super::data::MobData::load_animations(&root).unwrap();
     assert!(animations.len() >= 70, "{} definitions", animations.len());
     let mut samples = 0;
     for (name, animation) in &animations {

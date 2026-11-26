@@ -16,8 +16,10 @@ fn load() -> (&'static BlockRegistry, BlockFacts, MobData) {
     let facts = BlockFacts::load(&root, registry).unwrap();
     let data = MobData::load(
         &sunrise_assets::resource_source::ResourceRoot::directory(root),
-        &facts,
-    );
+        facts.states.len(),
+        false,
+    )
+    .unwrap();
     (registry, facts, data)
 }
 

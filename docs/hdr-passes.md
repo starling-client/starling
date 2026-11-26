@@ -4,8 +4,7 @@ Read this before adding or changing anything that reads, filters or redraws the 
 DLSS in a native mod), anti-aliasing and TAA, sharpening, frame generation, post effects and screen-space effects,
 and anything that captures the picture (screenshots, recordings, streams). With HDR the frame holds light above
 white, and a pass written for SDR alone breaks it, mostly without any test failing. HDR's work is tracked in
-[#12989](https://github.com/horizon-rust/horizon/issues/12989); the design behind it is
-[design/hdr-linear-light.md](design/hdr-linear-light.md), and what players see is in [graphics.md](graphics.md).
+[#12989](https://github.com/horizon-rust/horizon/issues/12989), and what players see is in [graphics.md](graphics.md).
 
 ## The frame
 

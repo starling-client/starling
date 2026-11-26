@@ -46,15 +46,18 @@ import sys
 import threading
 import time
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import client_packet_routes as routes  # noqa: E402
-import input_recording  # noqa: E402
-import lab  # noqa: E402
-import net_capture  # noqa: E402
-import packet_parity_runs  # noqa: E402
-import test_rust_parity as base  # noqa: E402
-from test_dedicated_server_parity import Server  # noqa: E402
-from test_wire_stream_parity import ClientCounts, settle  # noqa: E402
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import (
+    client_packet_routes as routes,
+    input_recording,
+    lab,
+    net_capture,
+    packet_parity_runs,
+    test_rust_parity as base,
+)
+from tools.test_dedicated_server_parity import Server
+from tools.test_wire_stream_parity import ClientCounts, settle  # noqa: E402
 
 WORK = lab.LOCAL / "packet-parity"
 SNAPSHOT = WORK / "world-snapshot"
@@ -83,6 +86,7 @@ GAMERULES = ["advance_time false", "advance_weather false", "spawn_mobs false", 
              "random_tick_speed 0", "respawn_radius 0"]
 TERRAIN_CANDIDATES = [(-40, 20), (-40, 60), (-40, 100), (-44, -8), (96, 20), (96, 100)]
 LVP = Path("/usr/share/vulkan/icd.d/lvp_icd.json")
+MIN_XVFB_DISPLAY = 130
 # Console answers that say a command did nothing it was meant to (a parse error, an unloaded or too large area).
 COMMAND_ERRORS = re.compile(r"<--\[HERE\]|Unknown or incomplete command|Incorrect argument|That position is not "
                             r"loaded|out of the world|Too many blocks in the specified area|Too many chunks")
@@ -201,20 +205,48 @@ def build_world():
 
 
 class Display:
-    """A fresh Xvfb display with GLX, never the desktop's."""
+    """A fresh Xvfb display (:130 or higher) with GLX, never the desktop's."""
 
-    def __init__(self, log):
-        read, write = os.pipe()
-        self.process = subprocess.Popen(
-            ["Xvfb", "-displayfd", str(write), "-screen", "0", "1280x800x24", "-nolisten", "tcp", "+extension",
-             "GLX", "-noreset"], pass_fds=[write], stdout=log, stderr=subprocess.STDOUT)
-        os.close(write)
-        with os.fdopen(read) as f:
-            self.name = f":{f.readline().strip()}"
+    def __init__(self, log, min_display=MIN_XVFB_DISPLAY):
+        from Xlib import display as xdisplay
+        start = max(MIN_XVFB_DISPLAY, int(os.environ.get("SUNRISE_XVFB_MIN_DISPLAY", min_display)))
+        for number in range(start, start + 200):
+            if Path(f"/tmp/.X{number}-lock").exists() or Path(f"/tmp/.X11-unix/X{number}").exists():
+                continue
+            name = f":{number}"
+            process = subprocess.Popen(
+                ["Xvfb", name, "-screen", "0", "1280x800x24", "-nolisten", "tcp", "+extension",
+                 "GLX", "-noreset"], stdout=log, stderr=subprocess.STDOUT)
+            deadline = time.time() + 10
+            ready = False
+            while time.time() < deadline:
+                if process.poll() is not None:
+                    break
+                if Path(f"/tmp/.X11-unix/X{number}").exists():
+                    try:
+                        conn = xdisplay.Display(name)
+                        conn.close()
+                        ready = True
+                        break
+                    except Exception:
+                        pass
+                time.sleep(0.05)
+            if ready:
+                self.process = process
+                self.name = name
+                return
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+        raise RuntimeError(f"could not start Xvfb on any display >= :{start}")
 
     def env(self, env):
         env = dict(env)
-        env.pop("WAYLAND_DISPLAY", None)
+        for key in ("WAYLAND_DISPLAY", "WAYLAND_SOCKET", "EGL_PLATFORM"):
+            env.pop(key, None)
         env["DISPLAY"] = self.name
         env["XDG_SESSION_TYPE"] = "x11"
         env["__GLX_VENDOR_LIBRARY_NAME"] = "mesa"
@@ -267,7 +299,7 @@ def options_file(folder):
 
 
 def start_vanilla(run, address, display, log):
-    import vanilla_client
+    from tools import vanilla_client
     args = argparse.Namespace(name=PLAYER, join=address, world=None, game_dir=run / "client", assets=None,
                               heap="2G", width=routes.WIDTH, height=routes.HEIGHT, lan_port=None, backend=None)
     options_file(args.game_dir)
@@ -432,6 +464,14 @@ def run_once(client, index, recording, bins, label=None, mouse_scale=1.0, replac
     return run
 
 
+def course_current():
+    """Whether the saved world snapshot matches client_packet_routes.course_commands()."""
+    path = WORK / "course.json"
+    if not path.exists() or not SNAPSHOT.exists():
+        return False
+    return json.loads(path.read_text()).get("commands") == routes.course_commands()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -454,6 +494,9 @@ def main():
     d.add_argument("--out", type=Path, default=WORK / "report.json")
     d.add_argument("--label", help="compare the set made with this --label")
     d.add_argument("--strict", action="store_true", help="exit 1 unless every packet of every route matches")
+    d.add_argument("--look", action="store_true",
+                   help="26.3 exact float-bits rotation and look-dependent action comparison; exits 1 on mismatch")
+    d.add_argument("--look-route", action="append", help="route to include with --look (default: 4 mouse-look routes)")
     args = parser.parse_args()
     if args.command == "world":
         build_world()
@@ -473,7 +516,7 @@ def main():
             parser.error("--runs and --first count from 1")
         if not args.mouse_scale > 0:
             parser.error("--mouse-scale must be above 0")
-        if args.command == "all" or not (WORK / "course.json").exists():
+        if args.command == "all" or not course_current():
             build_world()
         clients = [args.client] if args.command == "run" else ["vanilla", "sunrise"]
         indices = set(range(args.first, args.first + args.runs))
@@ -488,7 +531,18 @@ def main():
             names = [packet_parity_runs.prefix(c, args.label) for c in ("vanilla", "sunrise")]
         except ValueError as error:
             parser.error(f"{error}")
-    import client_packet_diff
+    from tools import client_packet_diff
+    if getattr(args, "look", False):
+        look_routes = args.look_route or list(routes.MOUSE_LOOK)
+        report = client_packet_diff.compare_look_runs(
+            client_packet_diff.runs_of(WORK / "runs", names[0], indices),
+            client_packet_diff.runs_of(WORK / "runs", names[1], indices),
+            look_routes, tuple(names))
+        (args.out if args.command == "diff" else WORK / "report.json").write_text(json.dumps(report, indent=1))
+        print(client_packet_diff.describe_look(report))
+        if not report["bit_exact"]:
+            sys.exit(1)
+        return
     report = client_packet_diff.report_runs(WORK / "runs", tuple(names), indices)
     (args.out if args.command == "diff" else WORK / "report.json").write_text(json.dumps(report, indent=1))
     print(client_packet_diff.describe(report))

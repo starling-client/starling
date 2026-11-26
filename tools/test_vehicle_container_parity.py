@@ -17,10 +17,12 @@ custom name a renamed vehicle would show (Sunrise's vehicles keep no custom
 name).
 """
 import argparse
-try:
-    from . import interaction_lab as lib
-except ImportError:
-    import interaction_lab as lib
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import interaction_lab as lib
 
 WOODS = ['oak', 'spruce', 'birch', 'jungle', 'acacia', 'dark_oak', 'mangrove',
          'cherry', 'pale_oak', 'poplar']

@@ -3,7 +3,9 @@
 use super::mod_api_host::FireOddsLevel;
 use super::*;
 use crate::game::{native_level_signals::ReadLevel, native_surface::FrictionView};
-use mod_api::BlockFace;
-use mod_api::RandomSource;
+use mod_api::{
+    BlockEntityDataView, BlockFace, BlockRemovalEffects, BlockSoundCause, BlockSoundType,
+    EmissiveSpriteRegistration, GuiCanvas, RandomSource, SettingValue, SoundPlay, Spawner,
+};
 
 include!(concat!(env!("OUT_DIR"), "/mod_api_fire_generated.rs"));

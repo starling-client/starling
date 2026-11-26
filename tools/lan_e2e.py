@@ -382,12 +382,12 @@ import zlib
 import zipfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from agent_control_e2e import Cli, Failed, game_env  # noqa: E402
-import lab  # noqa: E402
-from integration_env import game_environment, require_server_reports  # noqa: E402
-
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools.agent_control_e2e import Cli, Failed, game_env
+from tools import lab
+from tools.integration_env import game_environment, require_server_reports  # noqa: E402
+
 GUEST_NAME = 'Guest'
 CHECKS = ['tab', 'self', 'armour', 'nametags', 'walls', 'placement', 'chest', 'menu-transfer', 'crafting', 'spawned', 'sign', 'damage', 'mobs', 'hazards', 'pvp', 'deaths',
           'flow-push', 'bubble-column', 'arrows', 'projectile-vehicles', 'flame-arrows', 'kills', 'looting', 'leave', 'hurt', 'looks', 'leads', 'entity-tags', 'respawn', 'containers', 'names', 'feedback', 'titles', 'chat', 'styles',
@@ -3021,7 +3021,7 @@ def wheel_fast(game, slot, steps):
 
 
 def set_mouse_tweaks(game, on):
-    """The Extras page's switch, as a player flips it."""
+    """The switch on Sunrise Settings' Gameplay page, as a player flips it."""
     game('options', page='extras')
     switch = next(w for w in game.raw('ui')['widgets'] if w.get('label', '').startswith('Mouse Tweaks controls'))
     if switch['label'].endswith('On') != on:
@@ -4882,30 +4882,85 @@ def check_fireworks(host, guest, out):
         return {(y, i) for y, row in enumerate(rows[:len(rows) * 3 // 4]) for i in range(0, len(row), bpp)
                 if row[i] > 80 and row[i] > 2 * row[i + 1] and row[i] > 2 * row[i + 2]}
 
+    rocket = 'minecraft:firework_rocket'
+
+    def simulation():
+        return host.raw('simulation')
+
+    def has_rocket(state):
+        return any(p['kind'] == rocket for p in state['projectiles'])
+
+    def held():
+        return host('state')['held']
+
+    def step(state):
+        target = state['game_time'] + 1
+        reply = host('command', command='tick step 1')
+        assert reply['success'], reply
+        return host.until(simulation, lambda s: s['game_time'] == target)
+
+    def settle_clients(state):
+        # A stop for an unused sound marks delivery of the step and any explosion event.
+        # Give each client one tick to spend the step, then one to reach the frozen state.
+        marker = f'sunrise:lan_fireworks_{state["game_time"]}'
+        reply = host('command', command=f'stopsound @a * {marker}')
+        assert reply['success'], reply
+        for game in (host, guest):
+            game.until(lambda: game('status')['stopped_sounds'].get(f'* {marker}', 0), bool)
+            game.wait(2)
+
     # Red where the view had none: the setup's own red chat lines (a fill that changed nothing) are in the
     # baseline, and fade out before the later shots, which a plain count difference would take as missing sparks.
     baseline = {g.name: reds(g.shot(out, 'fireworks-before')) for g in (host, guest)}
     before = {g.name: made(g, 'flash') for g in (host, guest)}
-    host('command', command='item replace entity @s weapon.mainhand with minecraft:firework_rocket'
-         '[fireworks={flight_duration:0,explosions:[{shape:"large_ball",colors:[I;16711680],has_trail:true}]}]')
-    host.raw('interact', *at)
-    # The held item's red texture must not count as a burst or a later spark.
-    host('command', command='item replace entity @s weapon.mainhand with minecraft:air')
-    for _ in range(30):
-        host.wait(2)
-        if all(made(g, 'flash') > before[g.name] for g in (host, guest)):
-            break
-    flashes = {g.name: made(g, 'flash') - before[g.name] for g in (host, guest)}
+    try:
+        host('command', command='tick freeze')
+        host('command', command=f'item replace entity @s weapon.mainhand with {rocket}'
+             '[fireworks={flight_duration:0,explosions:[{shape:"large_ball",colors:[I;16711680],has_trail:true}]}]')
+        host.until(held, lambda item: item is not None and item['item'] == rocket)
+        host.raw('interact', *at)
+        state = host.until(simulation, has_rocket)
+        # The held item's red texture must not count as a burst or a later spark.
+        host('command', command='item replace entity @s weapon.mainhand with minecraft:air')
+        host.until(held, lambda item: item is None)
+        # Stop on the explosion tick. Flight 0 expires by tick 22 (FireworkRocketEntity's
+        # constructor and tick), even if the rocket misses the ceiling.
+        for _ in range(22):
+            state = step(state)
+            if not has_rocket(state):
+                break
+        else:
+            raise AssertionError('the clicked rocket did not explode')
+        # FireworkParticles' overlay lasts four ticks. Capture halfway through it,
+        # and again four ticks later, after the overlay has gone but Sparks remain.
+        burst_age, trail_age = 2, 6
+        flash_tick, burst_shots, trail_shots = {}, {}, {}
+        # The event can miss the exploding step on either client. ParticleEngine
+        # takes one tick to admit the starter and then Starter.tick emits the flash.
+        # Allow those two steps, then advance to the last client's trail phase.
+        for tick in range(2 + trail_age + 1):
+            if tick:
+                state = step(state)
+            settle_clients(state)
+            flashes = {g.name: made(g, 'flash') - before[g.name] for g in (host, guest)}
+            for game in (host, guest):
+                name = game.name
+                if flashes[name] == 0:
+                    continue
+                age = tick - flash_tick.setdefault(name, tick)
+                if age == burst_age:
+                    burst_shots[name] = game.shot(out, 'fireworks-burst')
+                elif age == trail_age:
+                    trail_shots[name] = game.shot(out, 'fireworks-trail-fade')
+            if len(trail_shots) == 2:
+                break
+        rockets = {g.name: g('status')['rockets'] for g in (host, guest)}
+    finally:
+        host('command', command='tick unfreeze')
     assert all(n == 1 for n in flashes.values()), f'configured burst missing or duplicated: {flashes}'
-    # Capture both views before decoding PNGs: decoding must not consume the sparks' lifetime (48-59 ticks). A
-    # screenshot takes ~0.6 s where the frame is drawn on the CPU (lavapipe), so the later shots come 4 ticks after
-    # the burst's, not more: by then the tracked rocket is gone.
-    burst_shots = {g.name: g.shot(out, 'fireworks-burst') for g in (host, guest)}
-    host.wait(4)
-    trail_shots = {g.name: g.shot(out, 'fireworks-trail-fade') for g in (host, guest)}
+    assert len(burst_shots) == len(trail_shots) == 2, f'missing particle phase: {flash_tick}'
     burst = {name: len(reds(path) - baseline[name]) for name, path in burst_shots.items()}
     trails = {name: len(reds(path) - baseline[name]) for name, path in trail_shots.items()}
-    rockets = {g.name: g('status')['rockets'] for g in (host, guest)}
     assert not any(rockets.values()), f'exploded rocket remains: {rockets}'
     assert all(n > 20 for n in burst.values()), f'no red burst: {burst}'
     assert all(n > 20 for n in trails.values()), f'no later red trail/fade: {trails}'

@@ -70,3 +70,70 @@ fn a_mod_keeps_one_stared_at_enderman_calm() {
         });
     });
 }
+
+/// Says the gaze is never disguised from mob `self.0`, and always from mob `self.1`.
+struct Mask(u32, u32);
+#[mod_api::__subscriptions]
+impl mod_api::Hooks for Mask {
+    fn gaze_disguise(&self, _: &dyn mod_api::Host, event: &mut mod_api::GazeDisguiseEvent) {
+        if event.observer.id() == self.0 {
+            event.disguised = false;
+        } else if event.observer.id() == self.1 {
+            event.disguised = true;
+        }
+    }
+}
+
+/// `gaze_disguise` (#5948): under a carved pumpkin, the mod lets one enderman count the
+/// stare and leaves another to vanilla's mask; bare-headed, the mod masks a third.
+#[test]
+#[ignore = "daily"]
+fn a_mod_says_whether_a_worn_head_item_masks_the_stare() {
+    let (seen, masked) = (900, 902);
+    let mods = vec![mod_api::ModEntry::new("mask", Box::new(Mask(seen, masked)))].into();
+    mod_platform::testing::with_mods(mods, || {
+        with_game(|game| {
+            open_to_lan(game);
+            game.world
+                .chunks
+                .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+            let mut staring = guest(5);
+            staring.loaded = true;
+            staring.position = [8.0, 64.0, 2.0];
+            game.lan.as_mut().unwrap().hub.guests.push(staring);
+            let views = game.lan_guest_views();
+            let mut view = views[0].1.clone();
+            let kind = game
+                .res
+                .mob_types()
+                .get("minecraft:enderman")
+                .unwrap()
+                .clone();
+            let endermen = [seen, 901, masked]
+                .map(|id| Mob::new(id, kind.clone(), Vec3::new(8.0, 64.0, 10.0), 0.0));
+            let eye = endermen[0].eye_y();
+            view.position = Vec3::new(8.0, 64.0, 2.0);
+            view.eye = [8.0, eye, 2.0];
+            view.look = [0.0, 0.0, 1.0];
+            view.head = Some("minecraft:carved_pumpkin".into());
+            let mut world = game.mob_world_base(&[]);
+            assert!(world.mob_hooks.is_some(), "asked only while a mod listens");
+            world.player = Some(view.clone());
+            assert!(
+                stared_at(&endermen[0], &world),
+                "the mod unmasks the pumpkin"
+            );
+            assert!(!stared_at(&endermen[1], &world), "vanilla's pumpkin masks");
+            view.head = None;
+            world.player = Some(view);
+            assert!(
+                stared_at(&endermen[1], &world),
+                "bare-headed, vanilla counts it"
+            );
+            assert!(
+                !stared_at(&endermen[2], &world),
+                "the mod masks a bare head"
+            );
+        });
+    });
+}

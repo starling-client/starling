@@ -1033,9 +1033,7 @@ pub fn carry(
     let mut block_loot = BTreeSet::new();
     let mut biome_conventions = BTreeSet::new();
     let set_tags = crate::worldgen::structure_set_tags(&mut zip);
-    let piece_counts = crate::worldgen::piece_counts(&mut zip);
-    let mut processor_data = crate::processors::ProcessorData::read(&mut zip);
-    processor_data.mark_loaded(loaded);
+    let processor_data = crate::processors::ProcessorData::read(&mut zip);
     report.namespaces = extra_namespaces(&mut zip, id, pack.mods);
     let owned: Vec<&str> = std::iter::once(id.as_str())
         .chain(report.namespaces.iter().map(String::as_str))
@@ -1152,19 +1150,9 @@ pub fn carry(
                         &mut v,
                         &processor_data,
                         &mut types.processors_carried,
-                    ) | crate::processors::rule_tests(
-                        kind,
-                        &mut v,
-                        &mut types.rule_tests_carried,
                     );
-                    let mut changed =
+                    let changed =
                         crate::worldgen::upgrade(kind, &mut v, types, &set_tags) || carried;
-                    if kind == "structure" {
-                        let path = rel.trim_start_matches("worldgen/structure/");
-                        let structure = format!("{ns}:{}", path.trim_end_matches(".json"));
-                        changed |=
-                            crate::worldgen::add_piece_counts(&structure, &mut v, &piece_counts);
-                    }
                     if changed {
                         bytes = serde_json::to_vec_pretty(&v).unwrap_or(bytes);
                     }
@@ -1191,7 +1179,6 @@ pub fn carry(
                         &processor_data,
                         &mut types.processors_carried,
                     );
-                    crate::processors::rule_tests(kind, &mut added, &mut types.rule_tests_carried);
                     crate::worldgen::upgrade(kind, &mut added, types, &set_tags);
                     let to = format!(
                         "data/{id}/worldgen/{kind}/{}/{path}",
@@ -2113,7 +2100,10 @@ mod tests {
                     br#"{"type":"minecraft:block","pools":[]}"#,
                 ),
                 ("data/example/structures/hut.nbt", b"\x0a\0\0\0"),
-                ("data/example/advancements/root.json", br#"{"criteria":{}}"#),
+                (
+                    "data/example/advancements/root.json",
+                    br#"{"criteria":{"never":{"trigger":"minecraft:impossible"}}}"#,
+                ),
                 ("data/minecraft/tags/blocks/mineable/pickaxe.json", tag_1_20),
                 // The same tag under 1.21's name too: that copy is the one the game reads.
                 ("data/minecraft/tags/block/mineable/pickaxe.json", tag_1_21),

@@ -2,26 +2,20 @@
 use super::*;
 
 impl Game<'_> {
-    pub(super) fn visit_dragon_query_ids(
+    pub(super) fn visit_dragon_query_parts(
         &self,
         bounds: Aabb,
-        parts: bool,
         visit_id: &mut impl FnMut(u32) -> ControlFlow<()>,
     ) -> ControlFlow<()> {
         let Some(dragon) = self.dragon.as_ref().filter(|d| d.id != 0) else {
             return ControlFlow::Continue(());
         };
-        if parts {
-            let mut cursor = None;
-            while let Some(id) = self.dragon.next_part(&mut cursor) {
-                if bounds.intersects(dragon.part_geometry((id - dragon.id - 1) as usize).1) {
-                    visit_id(id)?;
-                }
-            }
-        } else {
-            let body = dragon.body_bounds();
-            if bounds.intersects(body) {
-                visit_id(dragon.id)?;
+        let mut cursor = None;
+        while let Some(id) = self.dragon.next_part(&mut cursor) {
+            if let Some(part) = crate::game::dragon::dragon_part_index(dragon.id, id)
+                && bounds.intersects(dragon.part_geometry(part).1)
+            {
+                visit_id(id)?;
             }
         }
         ControlFlow::Continue(())
@@ -57,18 +51,19 @@ mod tests {
             // A part can also have saved UUID metadata when it holds attachments.
             game.persist.uuids.insert(part.id(), uuid_ints(part_uuid));
 
+            let level = game.native_current_level().unwrap();
             let host: &dyn ServerHost = game;
             let dragon_uuid = EntityUuid(0x0000_0013_0000_0017_0000_001d_0000_001f);
             let part_uuid = EntityUuid(part_uuid);
-            assert_eq!(host.entity_by_uuid(dragon_uuid), Some(dragon));
-            assert_eq!(host.entity_by_uuid(part_uuid), None);
+            assert_eq!(level.entity_by_uuid(host, dragon_uuid), Some(dragon));
+            assert_eq!(level.entity_by_uuid(host, part_uuid), None);
 
             #[cfg(not(any(feature = "system-allocator", feature = "alloc-census")))]
             {
                 let (found, allocations) = sunrise_threads::allocation_count::measure(|| {
                     (
-                        host.entity_by_uuid(dragon_uuid),
-                        host.entity_by_uuid(part_uuid),
+                        level.entity_by_uuid(host, dragon_uuid),
+                        level.entity_by_uuid(host, part_uuid),
                     )
                 });
                 assert_eq!(found, (Some(dragon), None));
@@ -433,6 +428,13 @@ mod tests {
     #[test]
     #[ignore = "daily"]
     fn a_client_lists_the_dragon_and_its_parts_in_a_box() {
+        if super::super::tests::run_fresh_cases(
+            "game::native_entity_refs::dragon_query::tests::a_client_lists_the_dragon_and_its_parts_in_a_box",
+            "SUNRISE_CLIENT_ENTITY_BOX_QUERY_CHILD",
+            &["client"],
+        ) {
+            return;
+        }
         use crate::game::execution_role::ExecutionRole;
         use mod_api::Host;
         use sunrise_protocol::connection::Pipe;
@@ -445,25 +447,30 @@ mod tests {
             remote.logged_in = true;
             remote.entity_id = 7;
             remote.profile = 42;
-            game.player =
-                Some(sunrise_client::motion::PlayerMotion::new(game.motion, Vec3::ZERO).unwrap());
+            let mut local =
+                sunrise_client::motion::PlayerMotion::new(game.motion, Vec3::ZERO).unwrap();
+            local.entity_id = 7;
+            game.player = Some(local);
             game.spawn_entity(15, "minecraft:pig", [2.0, 0.0, 0.0], [0.0; 3]);
+            game.pick_section_sync_id(15);
+            game.bind_local_player_residency();
             // The server tracks the dragon alone; the client places its parts around it.
             game.spawn_entity(20, "minecraft:ender_dragon", [0.0, 80.0, 0.0], [0.0; 3]);
             // The dragon's own box moves to y 200 (a move whose part placement has not run
             // yet), so a box near y 80 holds only parts.
             game.dragon.as_mut().unwrap().position = Vec3::new(0.0, 200.0, 0.0);
+            game.pick_section_sync_id(20);
             let level = game.level("minecraft:overworld").unwrap();
             let ids = |host: &dyn Host, min, max| {
                 collect_entities_in(host, level, min, max)
                     .map(|found| found.into_iter().map(|e| e.id()).collect::<Vec<_>>())
             };
-            // Order: the tracked pig, the dragon once, the window's own player, then the
-            // eight parts in the parts table's order.
+            // Order: the pig and the local player in the same section, the dragon in
+            // its higher section, then the eight parts in the parts table's order.
             let parts = [25, 27, 28, 24, 26, 23, 22, 21];
             assert_eq!(
                 ids(game, [-100.0, -10.0, -100.0], [100.0, 300.0, 100.0]),
-                Ok([vec![15, 20, 7], parts.to_vec()].concat())
+                Ok([vec![15, 7, 20], parts.to_vec()].concat())
             );
             // Only the dragon's own 16x8 box: the dragon alone, with no part.
             assert_eq!(
@@ -476,7 +483,7 @@ mod tests {
                 Ok(parts.to_vec())
             );
             // A spectating window leaves only its own player out.
-            game.set_mode_id(3);
+            game.set_local_mode(sunrise_client::command::args::GameMode::Spectator);
             assert_eq!(
                 ids(game, [-100.0, -10.0, -100.0], [100.0, 300.0, 100.0]),
                 Ok([vec![15, 20], parts.to_vec()].concat())

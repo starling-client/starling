@@ -3,9 +3,9 @@ Enchantment.matchingSlot	inline	crates/sunrise-world/src/loot.rs::LootData::ench
 Enchantment.isImmuneToDamage	inline	crates/sunrise-items/src/enchant.rs::Enchantments::is_damage_immune	conditional damage immunity reads the level's source tags
 Enchantment.modifyDamageProtection	port	crates/sunrise-items/src/enchant.rs::Enchantments::modify_value_with	armor protection is summed per damage type in apply_effect_status (potions.rs)
 Enchantment.doPostPiercingAttack	port	crates/sunrise-client/src/game/items/enchant_effects.rs::Game::post_piercing_attack	gap: minor: the effect's own requirements are not read; Lunge's checks are hard-coded
-Enchantment.tick	port	crates/sunrise-client/src/game/items/enchant_effects.rs::Game::tick_soul_speed	gap: minor: only Soul Speed's tick effects; it is the only tick effect in the data
+Enchantment.tick	port	crates/sunrise-client/src/game/items/enchant_effects.rs::Game::tick_equipment_enchantments	gap: minor: only Soul Speed's tick effects; it is the only tick effect in the data
 Enchantment.onProjectileSpawned	port	crates/sunrise-client/src/game/items/projectile_spawned.rs::Game::on_projectile_spawned	each effect's requirements with the level random just before it applies. gap: minor: ignite, apply_impulse, play_sound and all_of apply; block, damage, explode, particle, summon, run_function and change_item_damage effects are skipped (the mod host refuses such a stack)
-Enchantment.onHitBlock	port	crates/sunrise-client/src/game/items/trident.rs::Game::channel_rod_hit	Channeling's lightning rod hit; the only hit_block effect in the data
+Enchantment.onHitBlock	port	crates/sunrise-client/src/game/items/enchant_effects.rs::Game::hit_block_enchantment_effects	Channeling's lightning rod hit; the only hit_block effect in the data
 Enchantment.modifyItemFilteredCount	port	crates/sunrise-items/src/enchant.rs::Enchantments::modify_value_with	one enchantment's effects for one component, item context
 Enchantment.modifyEntityFilteredValue	port	crates/sunrise-items/src/enchant.rs::Enchantments::modify_value_with	one enchantment's effects for one component, entity context
 Enchantment.modifyDamageFilteredValue	port	crates/sunrise-items/src/enchant.rs::Enchantments::modify_value_with	one enchantment's effects for one component, damage context
@@ -13,7 +13,7 @@ Enchantment.locationContext	skip:java		LootParams builder; Sunrise passes plain 
 Enchantment.entityContext	skip:java		LootParams builder; Sunrise passes an EffectContext struct
 Enchantment.blockHitContext	skip:java		LootParams builder; Sunrise passes an EffectContext struct
 Enchantment.applyEffects	inline	crates/sunrise-items/src/enchant.rs::Enchantments::modify_value_with	condition check and apply loop folded into modify_value_with
-Enchantment.stopLocationBasedEffects	inline	crates/sunrise-client/src/game/items/enchant_effects.rs::Game::tick_soul_speed	gap: minor: only Soul Speed; the boots-changed branch removes its modifiers
+Enchantment.stopLocationBasedEffects	inline	crates/sunrise-client/src/game/items/enchant_effects.rs::Game::update_soul_speed_location	gap: minor: only Soul Speed; the boots-changed branch removes its modifiers
 Enchantment.FloatAction.asGeneric	skip:java		lambda adapter for float effects
 Enchantment.Builder	skip:data		datagen builder; Sunrise reads enchantment JSON
 LevelBasedValue.Exponent.calculate	port	crates/sunrise-items/src/enchant.rs::level_value	minecraft:exponent: base to the power
@@ -22,11 +22,11 @@ LevelBasedValue.Linear.calculate	port	crates/sunrise-items/src/enchant.rs::level
 LevelBasedValue.Lookup.calculate	port	crates/sunrise-items/src/enchant.rs::level_value	minecraft:lookup with fallback
 ChangeItemDamage.apply	port	crates/sunrise-client/src/game.rs::Game::damage_held	gap: minor: the held item only; Soul Speed's boots use wear_boots and Thorns its own path
 EnchantmentAttributeEffect.getModifier	port	crates/sunrise-items/src/enchant.rs::Enchantments::attributes	slot suffix on the id is added in apply_enchantment_attributes
-EnchantmentAttributeEffect.onChangedBlock	inline	crates/sunrise-client/src/game/items/enchant_effects.rs::Game::tick_soul_speed	modifiers switch on there (Soul Speed only)
-EnchantmentAttributeEffect.onDeactivated	inline	crates/sunrise-client/src/game/items/enchant_effects.rs::Game::tick_soul_speed	modifiers switch off there (Soul Speed only)
+EnchantmentAttributeEffect.onChangedBlock	inline	crates/sunrise-client/src/game/items/enchant_effects.rs::Game::update_soul_speed_location	modifiers switch on there (Soul Speed only)
+EnchantmentAttributeEffect.onDeactivated	inline	crates/sunrise-client/src/game/items/enchant_effects.rs::Game::update_soul_speed_location	modifiers switch off there (Soul Speed only)
 EnchantmentAttributeEffect.makeAttributeMap	skip:java		multimap builder for one modifier
 EnchantmentHelper.updateEnchantments	port	crates/sunrise-items/src/item_data.rs::ItemStack::enchant	gap: minor: sets one enchantment; no bulk consumer form
-EnchantmentHelper.processAmmoUse	port	crates/sunrise-client/src/game/items/enchant_effects.rs::Game::bow_enchantments	Infinity as a flag; the ammo count change is decided by the caller
+EnchantmentHelper.processAmmoUse	port	crates/sunrise-client/src/game/items/enchant_effects.rs::Game::draw_weapon_ammo	Infinity as a flag; the ammo count change is decided by the caller
 EnchantmentHelper.processBlockExperience	inline	crates/sunrise-client/src/game.rs::Game::break_block_as_player	Silk Touch zeroes the XP at the call site; spawners keep it
 EnchantmentHelper.processMobExperience	skip:other		no enchantment in the data uses mob_experience, so the amount never changes
 EnchantmentHelper.createBook	inline	crates/sunrise-client/src/creative.rs::from_json	the search tab comes from creative-inventory.json, whose export carries the 171 enchanted book stacks (vanilla CreativeModeTabs generates them)
@@ -36,12 +36,12 @@ EnchantmentHelper.isImmuneToDamage	port	crates/sunrise-items/src/enchant.rs::Enc
 EnchantmentHelper.modifyKnockback	port	crates/sunrise-client/src/game/items/enchant_effects.rs::Game::extra_knockback	gap: minor: the player's held weapon; mob weapons are read in mobs/gear.rs
 EnchantmentHelper.doPostAttackEffects	port	crates/sunrise-client/src/game/items/enchant_effects.rs::Game::post_attack	gap: minor: wind burst, thorns and Channeling's victim effect are separate fns
 EnchantmentHelper.doPostAttackEffectsWithItemSourceOnBreak	port	crates/sunrise-client/src/game/items/enchant_effects.rs::Game::post_attack	gap: minor: melee hits with the held item only; projectile and attacker-less hits are not here
-EnchantmentHelper.stopLocationBasedEffects	inline	crates/sunrise-client/src/game/items/enchant_effects.rs::Game::tick_soul_speed	gap: minor: only Soul Speed; the boots-changed branch stops it
-EnchantmentHelper.tickEffects	inline	crates/sunrise-client/src/game/items/enchant_effects.rs::Game::tick_soul_speed	gap: minor: only Soul Speed's tick effect; it is the only one in the data
+EnchantmentHelper.stopLocationBasedEffects	inline	crates/sunrise-client/src/game/items/enchant_effects.rs::Game::update_soul_speed_location	gap: minor: only Soul Speed; the boots-changed branch stops it
+EnchantmentHelper.tickEffects	inline	crates/sunrise-client/src/game/items/enchant_effects.rs::Game::tick_equipment_enchantments	gap: minor: only Soul Speed's tick effect; it is the only one in the data
 EnchantmentHelper.processProjectileCount	port	crates/sunrise-client/src/game/items/crossbow.rs::Game::tick_crossbow	gap: minor: Multishot's three shots are hard-coded, not read from projectile_count
 EnchantmentHelper.processProjectileSpread	port	crates/sunrise-client/src/game/items/crossbow.rs::Game::shoot_crossbow	gap: minor: 10 degrees hard-coded, not read from projectile_spread (same value)
 EnchantmentHelper.getPiercingCount	inline	crates/sunrise-client/src/game/items/crossbow.rs::Game::shoot_crossbow	projectile_piercing read for the arrow's pierce level there
-EnchantmentHelper.onHitBlock	port	crates/sunrise-client/src/game/items/trident.rs::Game::channel_rod_hit	Channeling's lightning rod hit; the only hit_block effect in the data
+EnchantmentHelper.onHitBlock	port	crates/sunrise-client/src/game/items/enchant_effects.rs::Game::hit_block_enchantment_effects	Channeling's lightning rod hit; the only hit_block effect in the data
 EnchantmentHelper.modifyDurabilityToRepairFromXp	port	crates/sunrise-client/src/game/items/enchant_effects.rs::Game::mending	Mending's repair with XP
 EnchantmentHelper.getFishingLuckBonus	port	crates/sunrise-client/src/game/items/fishing.rs::Game::use_fishing_rod	Luck of the Sea read when the rod is cast
 EnchantmentHelper.getFishingTimeReduction	port	crates/sunrise-client/src/game/items/fishing.rs::Game::use_fishing_rod	Lure ticks read at cast; used by catching_fish
@@ -90,7 +90,7 @@ Level.guardEntityTick	skip:debug		crash-report wrapper around an entity tick
 Level.getBlockEntity	skip:other		bare block_entities map lookup at each caller; no port of its own
 Level.setBlockEntity	port	crates/sunrise-client/src/game/blocks/level_access.rs::GameLevel::load_block_entity
 Level.loadedAndEntityCanStandOnFace	inline	crates/sunrise-client/src/mobs/shulker.rs::can_stay_at	the supporting block's face toward the shell is tested for sturdiness (`BlockState.entityCanStandOnFace`) before the opened shell's box; the chunk is loaded by construction where the sim asks
-Level.getWorldBorderAdjustedRespawnData	missing		unsure: respawn clamp to the world border not found
+Level.getWorldBorderAdjustedRespawnData	port	crates/sunrise-client/src/game/network/remote/packets_world.rs::Game::apply_set_default_spawn_position_packet	client respawn-data adjustment; server respawn is separate
 Level.hasEntities	missing		unsure: no entity-in-box test found for this use
 Level.getClockTimeTicks	port	crates/sunrise-client/src/game/blocks/level_access.rs::GameLevel::day_time	day time; no separate clock time
 Level.getThunderLevel	port	crates/sunrise-client-render/src/world.rs::World::levels	thunder scaled by rain

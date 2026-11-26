@@ -2,10 +2,12 @@
 """Compare origin placement and exactly-one-neighbor spread behavior."""
 import itertools
 import json
-try:
-    from . import test_simple_block_parity as harness
-except ImportError:
-    import test_simple_block_parity as harness
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_simple_block_parity as harness
 
 
 def corpus(facts,placement):

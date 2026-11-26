@@ -33,6 +33,7 @@ fn fragment(source: &str) -> Result<Program, Vec<sunrise_shaders::Error>> {
         &preprocess(&pack, "composite.vsh", &macros),
         &preprocess(&pack, "composite.fsh", &macros),
         Target::Window,
+        naga::front::glsl::InterfaceLimits::WGPU_DEFAULT,
     )
 }
 
@@ -63,9 +64,28 @@ fn a_shared_helper_is_live_only_in_the_vertex_stage() {
     assert!(notes.is_empty(), "{notes:?}");
     let v = preprocess(&pack, "composite.vsh", &macros);
     let f = preprocess(&pack, "composite.fsh", &macros);
-    translate_composite(&v, &f, Target::Window).unwrap();
-    translate_gbuffers(&v, &f, Target::Buffers, &GbuffersInputs::default()).unwrap();
-    translate_shadow(&v, &f, &GbuffersInputs::default()).unwrap();
+    translate_composite(
+        &v,
+        &f,
+        Target::Window,
+        naga::front::glsl::InterfaceLimits::WGPU_DEFAULT,
+    )
+    .unwrap();
+    translate_gbuffers(
+        &v,
+        &f,
+        Target::Buffers,
+        &GbuffersInputs::default(),
+        naga::front::glsl::InterfaceLimits::WGPU_DEFAULT,
+    )
+    .unwrap();
+    translate_shadow(
+        &v,
+        &f,
+        &GbuffersInputs::default(),
+        naga::front::glsl::InterfaceLimits::WGPU_DEFAULT,
+    )
+    .unwrap();
     let post = load_post(&pack, "", &properties, &macros, &GameInputs::default());
     assert!(post.notes.is_empty(), "{:?}", post.notes);
     assert_eq!(post.programs.len(), 1);
@@ -140,6 +160,7 @@ fn errors_after_removed_helpers_keep_the_include_file_and_line() {
         &preprocess(&pack, "composite.vsh", &macros),
         &preprocess(&pack, "composite.fsh", &macros),
         Target::Window,
+        naga::front::glsl::InterfaceLimits::WGPU_DEFAULT,
     )
     .err()
     .expect("the live error must remain");

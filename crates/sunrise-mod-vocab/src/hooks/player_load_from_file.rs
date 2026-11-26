@@ -1,5 +1,4 @@
 //! The `player_load_from_file` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0258
 
 pub trait Hooks {
     /// A player was loaded from the world's save (NeoForge's

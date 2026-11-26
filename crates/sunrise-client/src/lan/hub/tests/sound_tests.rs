@@ -616,7 +616,7 @@ fn a_global_level_event_keeps_its_level_when_another_level_is_in_place() {
 fn a_late_spawn_pairs_with_the_only_held_viewer_before_the_next_pass() {
     use crate::raw_payloads::{Side, Transport};
     use sunrise_core::nbt::Tag;
-    use sunrise_mod_runtime::attachments::{AttachmentSync, Attachments};
+    use sunrise_mod_runtime::attachments::AttachmentSync;
     use sunrise_protocol::attachment_sync;
 
     let mut sync = SyncData::empty();
@@ -625,7 +625,7 @@ fn a_late_spawn_pairs_with_the_only_held_viewer_before_the_next_pass() {
         sunrise_protocol::registry::Ids::from_names(vec!["minecraft:trident".into()]),
     );
     let (mut hub, _rx) = hub_with_sync(sync);
-    let transport = Transport::capture(Side::Server).unwrap();
+    let transport = Transport::capture(Side::Server, crate::lan::PAYLOAD_RECORD_OVERHEAD).unwrap();
     transport
         .accept(transport.local.manifest.entries())
         .unwrap();
@@ -653,11 +653,20 @@ fn a_late_spawn_pairs_with_the_only_held_viewer_before_the_next_pass() {
         name: "flight".into(),
         value: Some([("n".into(), Tag::Int(9))].into()),
     };
-    let mut map = Attachments::default();
-    map.apply_sync(change.clone());
-    let maps = [(37, map)].into_iter().collect();
     let ticks = hub.tracking_ticks().unwrap_or_default();
-    hub.note_joined(&[trident], Some(&maps));
+    crate::lan::entity::with_synced_tags(&["test:flight", "test:bad"], || {
+        let mut store = mod_api::testing::FakeHost::default();
+        mod_api::testing::attachment_key("test", "flight")
+            .set(&mut store, Holder::Level, change.value.clone().unwrap())
+            .unwrap();
+        mod_api::testing::attachment_key::<mod_api::Compound>("test", "bad")
+            .set(&mut store, Holder::Level, [("bad".into(), Tag::End)].into())
+            .unwrap();
+        hub.note_joined(
+            &[trident],
+            Some(&[(37, store.attachments)].into_iter().collect()),
+        );
+    });
 
     assert_eq!(hub.tracking_ticks(), Some(ticks));
     let queued: Vec<_> = inspect().iter().map(|body| decode_packet(body)).collect();
@@ -696,7 +705,7 @@ fn late_pairing_is_one_publication_amid_concurrent_reliable_replies() {
         sunrise_protocol::registry::Ids::from_names(vec!["minecraft:trident".into()]),
     );
     let (mut hub, _rx) = hub_with_sync(sync);
-    let transport = Transport::capture(Side::Server).unwrap();
+    let transport = Transport::capture(Side::Server, crate::lan::PAYLOAD_RECORD_OVERHEAD).unwrap();
     transport
         .accept(transport.local.manifest.entries())
         .unwrap();
@@ -737,7 +746,9 @@ fn late_pairing_is_one_publication_amid_concurrent_reliable_replies() {
             }
         });
         ready.wait();
-        hub.note_joined(&[trident], Some(&maps)); // No Holding guard.
+        crate::lan::entity::with_synced_tags(&["test:flight"], || {
+            hub.note_joined(&[trident], Some(&maps)); // No Holding guard.
+        });
     });
     let queued: Vec<_> = inspect().iter().map(|body| decode_packet(body)).collect();
     let start = queued

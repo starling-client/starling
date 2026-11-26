@@ -28,8 +28,7 @@ A world's enabled data packs (`<world>/datapacks`, in `datapacks.json`'s order) 
 conditions, carvers, configured and placed features, structures, structure sets, template pools, processor lists, biomes, level stems), a
 higher pack's file for an id replacing a lower one's, and its block, fluid and biome tag files to the tag bundles in pack order.
 `GeneratorData::load_with` reads the bundles with them; the client caches the result per set of pack entries
-(`vanillagen::shared_data_with`). What Sunrise leaves out is logged: a pack's new biomes (the game has no id, colours or sounds for them;
-their tag entries and climate points go with them) and folders the generator does not read. A pack's dimension types set each level's
+(`vanillagen::shared_data_with`). A pack's new biomes join the game's after the built-in ones, as `RegistryDataLoader` loads every pack biome. What Sunrise leaves out is logged: tag folders under `tags/worldgen/` the generator does not read (every `worldgen/` registry folder is read, world presets, flat presets and multi-noise parameter lists included: a parameter list file names one of the two built-in presets, as `MultiNoiseBiomeSourceParameterList.Preset.CODEC` does). A pack's dimension types set each level's
 height ([world-height.md](world-height.md)); noise settings taller than the level generate only inside it, as `clampToHeightAccessor`. Sapling growth and bone
 meal still place vanilla's features.
 

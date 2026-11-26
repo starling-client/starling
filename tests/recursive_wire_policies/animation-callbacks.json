@@ -1,0 +1,6 @@
+{
+  "AnimationInterpolationFn": "no Wire; process-local callback borrows keyframes",
+  "BoundInterpolation": "no Wire; retained interpolation callback",
+  "Interpolation": "no Wire; may hold a retained interpolation callback",
+  "Keyframe": "no Wire; its interpolation may hold a retained callback"
+}

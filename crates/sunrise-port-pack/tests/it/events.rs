@@ -93,7 +93,6 @@ const LABELS: &str = r#"{"hooks": [
     {"name": "chunk_load", "neoforge": "ChunkEvent.Load / .Unload"},
     {"name": "arrow_nock", "neoforge": "net.neoforged.neoforge.event.entity.player.ArrowNockEvent (NeoForge.EVENT_BUS, ICancellableEvent)"},
     {"name": "level_tick_post", "neoforge": "LevelTickEvent.Post"},
-    {"name": "config_loading", "neoforge": "ModConfigEvent.Loading"},
     {"name": "container_opened", "neoforge": "none (not NeoForge's PlayerContainerEvent.Open: this hook can cancel the opening)"},
     {"name": "open_menu", "neoforge": "IPlayerExtension.openMenu(MenuProvider)"},
     {"name": "block_entity_tick", "neoforge": "Capabilities.Item.BLOCK"},
@@ -134,7 +133,7 @@ fn labels_give_counterparts_phases_notes_and_new_names() {
     assert_eq!(c.status("ArrowNockEvent"), hooked(&["arrow_nock"]));
     let phase = |h: &[&str]| (Status::Phase(hooks(h)), None);
     assert_eq!(c.status("LevelTickEvent.Pre"), phase(&["level_tick_post"]));
-    assert_eq!(c.status("ModConfigEvent"), phase(&["config_loading"]));
+    assert_eq!(c.status("ChunkEvent"), phase(&["chunk_load"]));
     assert_eq!(
         c.status("PlayerContainerEvent.Open"),
         (Status::Noted(hooks(&["container_opened"])), None)
@@ -177,11 +176,7 @@ fn labels_give_counterparts_phases_notes_and_new_names() {
     // A label names each event of a comma-separated list.
     assert_eq!(c.status("OneEvent"), hooked(&["two_events"]));
     assert_eq!(c.status("TwoEvent"), hooked(&["two_events"]));
-    for missing in [
-        "ModConfigEvent.Unloading",
-        "RegisterPayloadHandlersEvent",
-        "IPlayerExtension.openMenu",
-    ] {
+    for missing in ["RegisterPayloadHandlersEvent", "IPlayerExtension.openMenu"] {
         assert_eq!(c.status(missing), (Status::Missing, None), "{missing}");
     }
 }
@@ -481,34 +476,61 @@ fn the_built_in_catalog_has_the_hooks_of_names_changed_since_1_21_1() {
 }
 
 #[test]
-fn a_parent_is_hooked_when_each_of_its_events_is() {
-    let all = r#"{"hooks": [
-        {"name": "config_loading", "neoforge": "ModConfigEvent.Loading"},
-        {"name": "config_reloading", "neoforge": "ModConfigEvent.Reloading"},
-        {"name": "config_unloading", "neoforge": "ModConfigEvent.Unloading"}
-    ]}"#;
-    let c = Catalog::parse(all).unwrap();
-    assert_eq!(
-        c.status("ModConfigEvent"),
+fn mod_config_events_are_answered_by_registrar_and_config_event() {
+    let empty = Catalog::parse(r#"{"hooks": []}"#).unwrap();
+    for (name, target) in [
+        ("ModContainer.registerConfig", "Registrar::register_config"),
+        ("ModConfigEvent", "Registrar::register_config (ConfigEvent)"),
         (
-            Status::Hooked(hooks(&[
-                "config_loading",
-                "config_reloading",
-                "config_unloading"
-            ])),
-            None
-        )
-    );
+            "ModConfigEvent.Loading",
+            "Registrar::register_config (ConfigEvent::Loading)",
+        ),
+        (
+            "ModConfigEvent.Reloading",
+            "Registrar::register_config (ConfigEvent::Reloading)",
+        ),
+        (
+            "ModConfigEvent.Unloading",
+            "Registrar::register_config (ConfigEvent::Unloading)",
+        ),
+    ] {
+        assert_eq!(
+            empty.status(name),
+            (Status::Api(target.to_owned()), None),
+            "{name}"
+        );
+    }
+    // Even with a hook in the catalog claiming a child event (such as `setting_changed`
+    // claiming `ModConfigEvent.Reloading`), the parent `ModConfigEvent` and the other
+    // lifecycle names still resolve to `Status::Api`.
+    let built_in = Catalog::parse(events::CATALOG).unwrap();
+    for (name, target) in [
+        ("ModContainer.registerConfig", "Registrar::register_config"),
+        ("ModConfigEvent", "Registrar::register_config (ConfigEvent)"),
+        (
+            "ModConfigEvent.Loading",
+            "Registrar::register_config (ConfigEvent::Loading)",
+        ),
+        (
+            "ModConfigEvent.Unloading",
+            "Registrar::register_config (ConfigEvent::Unloading)",
+        ),
+    ] {
+        assert_eq!(
+            built_in.status(name),
+            (Status::Api(target.to_owned()), None),
+            "{name}"
+        );
+    }
 }
 
 #[test]
 fn the_built_in_catalog_parses() {
     let c = Catalog::parse(events::CATALOG).unwrap();
-    let (Status::Hooked(hooks), None) = c.status("LivingDeathEvent") else {
-        panic!("LivingDeathEvent has no hook");
-    };
-    assert!(hooks.contains(&"living_death".to_owned()), "{hooks:?}");
     for (counterpart, hook) in [
+        ("LivingDeathEvent", "living_death"),
+        ("EntityJoinLevelEvent", "entity_join_level"),
+        ("ArrowLooseEvent", "arrow_loose"),
         ("AnvilUpdateEvent", "anvil_update"),
         ("RenderTooltipEvent.Pre", "render_tooltip_pre"),
         // The system subclass is a name of its own to a tool reading listeners.
@@ -520,12 +542,6 @@ fn the_built_in_catalog_parses() {
         };
         assert_eq!(hooks, [hook]);
     }
-    // A label that names two events with a comma, as `mob_spawned` does:
-    // a tool listening to the name finds it beside the other hooks of the event.
-    let (Status::Hooked(hooks), None) = c.status("EntityJoinLevelEvent") else {
-        panic!("EntityJoinLevelEvent has no hook");
-    };
-    assert!(hooks.contains(&"mob_spawned".to_owned()), "{hooks:?}");
     // A 1.21.1 mod's core shaders: answered by the hook of the event that replaced theirs.
     assert_eq!(
         c.status("RegisterShadersEvent"),
@@ -586,6 +602,12 @@ fn all_api_mapping_targets_compile() {
         <dyn mod_api::Registrar as mod_api::EntityAttributesRegistrar>::modify_entity_attributes;
     let _ = <dyn mod_api::Registrar as mod_api::SpawnPlacementsRegistrar>::register_spawn_placement;
     let _ = <dyn mod_api::Registrar as mod_api::TicketsRegistrar>::register_ticket_controller;
+    let _ = <dyn mod_api::Registrar as mod_api::ConfigSpecsRegistrar>::register_config;
+    let _ = (
+        mod_api::ConfigEvent::Loading,
+        mod_api::ConfigEvent::Reloading,
+        mod_api::ConfigEvent::Unloading,
+    );
     let _ = (
         mod_api::ITEMS,
         mod_api::ENTITY_ITEMS,
@@ -623,6 +645,20 @@ fn every_api_mapping_has_the_expected_target() {
         (
             "RegisterTicketControllersEvent",
             "Registrar::register_ticket_controller",
+        ),
+        ("ModContainer.registerConfig", "Registrar::register_config"),
+        ("ModConfigEvent", "Registrar::register_config (ConfigEvent)"),
+        (
+            "ModConfigEvent.Loading",
+            "Registrar::register_config (ConfigEvent::Loading)",
+        ),
+        (
+            "ModConfigEvent.Reloading",
+            "Registrar::register_config (ConfigEvent::Reloading)",
+        ),
+        (
+            "ModConfigEvent.Unloading",
+            "Registrar::register_config (ConfigEvent::Unloading)",
         ),
         ("Capabilities.Item.BLOCK", "mod_api::ITEMS"),
         ("Capabilities.Item.ENTITY", "mod_api::ENTITY_ITEMS"),

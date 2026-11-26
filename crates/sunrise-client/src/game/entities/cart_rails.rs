@@ -6,23 +6,32 @@ use super::minecarts::{Rail, Shape};
 use super::native_level_signals::ReadLevel;
 use mod_api::RailShape;
 use sunrise_core::position::BlockPos;
-use sunrise_world::level::classes::Class;
+use sunrise_world::{level::classes::Class, registry::BlockStateId};
 
 impl Game<'_> {
+    /// The candidate selected by `getCurrentBlockPosOrRailBelow` only needs the tag.
+    pub(super) fn tagged_rail(&self, state: BlockStateId) -> bool {
+        let name = self.res.facts().get(state).name.as_ref();
+        self.items()
+            .block_tags
+            .get("minecraft:rails")
+            .is_some_and(|rails| rails.contains(name))
+    }
+
+    /// `BaseRailBlock.isRail`: the rail tag and the base rail block class.
+    pub(super) fn is_rail(&self, state: BlockStateId) -> bool {
+        self.tagged_rail(state) && self.res.behaviours().data(state).is(Class::BaseRail)
+    }
+
     /// The rail at (x, y, z) as `cart` (none when the rail is read for itself) sees it: a block
     /// in `#minecraft:rails` built on `BaseRailBlock` (`BaseRailBlock.isRail`), with the shape
     /// its parts answer (`IBaseRailBlockExtension.getRailDirection`).
     pub(super) fn rail(&self, cart: Option<u32>, x: i32, y: i32, z: i32) -> Option<Rail> {
         let state = self.world.block(x, y, z);
-        let name = self.res.facts().get(state).name.clone();
-        let tagged = self
-            .items()
-            .block_tags
-            .get("minecraft:rails")
-            .is_some_and(|rails| rails.contains(&*name));
-        if !tagged || !self.res.behaviours().data(state).is(Class::BaseRail) {
+        if !self.is_rail(state) {
             return None;
         }
+        let name = self.res.facts().get(state).name.clone();
         let s = self.pack.assets.registry.state(state)?;
         let text = s.properties.get("shape").map_or("", String::as_str);
         let powered = s.properties.get("powered").is_some_and(|v| v == "true");
@@ -53,7 +62,7 @@ impl Game<'_> {
         ) else {
             return vanilla;
         };
-        let read = ReadLevel { game: self, level };
+        let read = ReadLevel::new(self, level, &self.world);
         let side = if self.is_logical_server() {
             mod_api::LevelSide::Server(&read)
         } else {

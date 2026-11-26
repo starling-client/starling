@@ -35,7 +35,7 @@ impl World {
             SectionMask::EMPTY,
             |support, near| {
                 support
-                    | self.chunks.get(&near).map_or_else(
+                    | self.chunks.resident_get(&near).map_or_else(
                         || {
                             self.proto_light_support
                                 .get(&near)
@@ -188,7 +188,7 @@ impl World {
         }
         self.publish_saved_neighbour_support(key, current & !before);
         self.expire_saved_neighbour_support(key, before & !current);
-        for near in neighbours(key).filter(|near| !self.chunks.contains_key(near)) {
+        for near in neighbours(key).filter(|near| self.chunks.resident_get(near).is_none()) {
             let other = self.border_support(near, Some(key));
             let added = current & !before;
             let supported = current | other;

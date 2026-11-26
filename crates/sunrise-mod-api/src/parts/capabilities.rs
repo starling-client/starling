@@ -1,76 +1,80 @@
-//! Concrete authoring extracted verbatim from the vocabulary layer.
+//! Registration of typed native capability providers.
 use super::*;
+use mod_vocab::__private::parts_installation::{
+    block_entity_type_key_slot, block_key_slot, capability_provider_binding,
+};
+
+pub(crate) enum ProviderTarget<'a> {
+    Block(crate::BlockKey),
+    BlockEntity(crate::BlockEntityTypeKey),
+    Item(&'a str),
+    Entity(&'a str),
+}
 
 impl PartRegistrar {
-    /// Adds `provider` for capability `name` and `id` to `table`. Refused for a capability name
-    /// or an id with no namespace, and for a capability name another provider answers with
-    /// another handler type (two mods each declaring their own key under one name, rather than
-    /// sharing the one the defining mod's `[api]` crate publishes): asked by one type, the other's
-    /// providers would never answer.
-    /// `shares_names` is the table whose capability names are the same capabilities as
-    /// `table`'s (a block's and a block entity type's, asked together at a position), so one
-    /// name has one handler type across both.
-    pub(crate) fn capability<P>(
+    /// Register one native provider after validating its name, target and handler/context binding.
+    pub(crate) fn capability(
         &mut self,
-        table: fn(&mut Parts) -> &mut Capabilities<P>,
-        shares_names: Option<fn(&Parts) -> &Capabilities<P>>,
         name: &'static str,
         target: ProviderTarget<'_>,
         before_game: bool,
-        (provider, handler): (P, impl Into<Arc<str>>),
+        provider: NativeCapabilityProvider,
     ) {
-        let handler = handler.into();
         let me = self.mod_id;
-        if !namespaced(name) {
-            self.refused.push(format!(
-                "{me} answered capability {name:?}, which is not a namespaced name"
-            ));
-            return;
-        }
-        let block_entity_id;
-        let id = match target {
-            ProviderTarget::BlockEntity(kind) => {
-                block_entity_id = self
-                    .registry_keys
-                    .borrow()
-                    .block_entity_types
-                    .id(mod_vocab::__private::parts_installation::block_entity_type_key_slot(*kind))
-                    .map(str::to_owned);
-                let Some(id) = block_entity_id.as_deref() else {
-                    return;
+        let registry_keys = Rc::clone(&self.registry_keys);
+        let mut keys = registry_keys.borrow_mut();
+        let (by, id) = match target {
+            ProviderTarget::Block(block) => (
+                ProvidedBy::Block,
+                self.capability_key_target(name, "block", &keys.blocks, block_key_slot(block)),
+            ),
+            ProviderTarget::BlockEntity(kind) => (
+                ProvidedBy::BlockEntity,
+                self.capability_key_target(
+                    name,
+                    "block entity type",
+                    &keys.block_entity_types,
+                    block_entity_type_key_slot(kind),
+                ),
+            ),
+            ProviderTarget::Item(id) | ProviderTarget::Entity(id) => {
+                let (by, kind, registry) = if matches!(target, ProviderTarget::Item(_)) {
+                    (ProvidedBy::Item, "item", &mut keys.items)
+                } else {
+                    (ProvidedBy::Entity, "entity type", &mut keys.entity_types)
                 };
-                id
-            }
-            ProviderTarget::Id(id) => {
-                if !namespaced(id) {
+                let Some(identifier) = crate::Identifier::parse_namespaced(id) else {
                     self.refused.push(format!(
-                        "{me} answered {name} for {id:?}, which is not a namespaced id"
+                        "mod {me} answered capability {name} for invalid {kind} id {id:?}: expected a namespaced identifier"
                     ));
                     return;
-                }
-                id
+                };
+                let slot = match registry.request_identifier(me, &identifier) {
+                    Ok(slot) => slot,
+                    Err(error) => {
+                        self.refused.push(error);
+                        return;
+                    }
+                };
+                (by, Some(registry.entries[slot as usize].id.as_str()))
             }
         };
-        let answered = |table: &Capabilities<P>| {
-            let other = table.get(name)?.values().flatten().next()?;
-            (other.type_name != handler).then(|| format!("{} by {}", other.type_name, other.mod_id))
+        let Some(id) = id else {
+            return;
         };
-        let other = answered(table(&mut self.parts))
-            .or_else(|| shares_names.and_then(|shares| answered(shares(&self.parts))));
-        if let Some(other) = other {
-            self.refused.push(format!(
-                "capability {name} is answered with two handler types, {other} and {handler} by {me}",
-            ));
+        if self
+            .note_capability(by, name, capability_provider_binding(&provider))
+            .is_none()
+        {
             return;
         }
-        if shares_names.is_some() && !self.note_block_capability(name, handler.clone()) {
-            return;
-        }
-        let providers = table(&mut self.parts)
-            .entry(name)
-            .or_default()
-            .entry(id.into())
-            .or_default();
+        let table = match by {
+            ProvidedBy::Block => &mut self.parts.block_capabilities,
+            ProvidedBy::BlockEntity => &mut self.parts.capabilities,
+            ProvidedBy::Item => &mut self.parts.item_capabilities,
+            ProvidedBy::Entity => &mut self.parts.entity_capabilities,
+        };
+        let providers = table.entry(name).or_default().entry(id.into()).or_default();
         self.registered += 1;
         let order = self.registered;
         // Those asked ahead of the game first, each kind in registration order.
@@ -84,10 +88,9 @@ impl PartRegistrar {
             CapabilityPart {
                 mod_id: me,
                 mod_index: self.mod_index,
-                type_name: handler,
                 before_game,
                 order,
-                poisoned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                poisoned: Default::default(),
                 provider,
             },
         );
@@ -192,13 +195,13 @@ pub mod tests {
         fn insert_at(
             &self,
             host: &mut dyn ServerHost,
-            _: &Transaction,
+            _: &TransactionContext,
             _: usize,
             chemical: &Chemical,
             amount: u32,
-        ) -> u32 {
+        ) -> Result<u32, TransactionError<Overanswered>> {
             let held = match self.held(host) {
-                Some((other, _)) if other != *chemical => return 0,
+                Some((other, _)) if other != *chemical => return Ok(0),
                 Some((_, held)) => held,
                 None => 0,
             };
@@ -206,45 +209,32 @@ pub mod tests {
             if went > 0 {
                 self.set(host, chemical, held + went);
             }
-            went
+            Ok(went)
         }
         fn extract_at(
             &self,
             host: &mut dyn ServerHost,
-            _: &Transaction,
+            _: &TransactionContext,
             _: usize,
             chemical: &Chemical,
             amount: u32,
-        ) -> u32 {
+        ) -> Result<u32, TransactionError<Overanswered>> {
             let Some((held_chemical, held)) = self.held(host).filter(|(c, _)| c == chemical) else {
-                return 0;
+                return Ok(0);
             };
             let came = amount.min(held);
             self.set(host, &held_chemical, held - came);
-            came
+            Ok(came)
         }
     }
 
-    pub(crate) const ROBOT_ENERGY: AttachmentType<u32> = AttachmentType {
-        namespace: "test",
-        name: "energy",
-        default: || 0,
-        codec: None,
-        copy_on_death: false,
-        sync: false,
-    };
-    /// A fluid attachment type for the tests.
-    pub const ROBOT_FLUID: AttachmentType<u32> = AttachmentType {
-        namespace: "test",
-        name: "fluid",
-        default: || 0,
-        codec: None,
-        copy_on_death: false,
-        sync: false,
-    };
+    /// Attachment stored by the active Doubler fixture.
+    pub fn robot_fluid_key() -> AttachmentKey<u32> {
+        crate::testing::attachment_key("doubler", "fluid")
+    }
 
     /// A second test mod, sharing `CHEMICALS` and `Chemical` with the first, as a mod depending
-    /// on another's `[api]` crate does: its vats answer the same capability.
+    /// on another's root crate does: its vats answer the same capability.
     pub(crate) struct Chemist;
     #[mod_api::__subscriptions]
     impl Hooks for Chemist {
@@ -314,23 +304,21 @@ pub mod tests {
         let stick_ = ItemResource::of(&stick());
         // The pipe calls the chest's capability, the game's own, with the host it was given:
         // in an aborted transaction the stick goes in, and comes back out.
-        let aborted: Result<(), u32> =
-            host.transaction(|host, tx| Err(pipe.insert_at(host, tx, 0, &stick_, 1)));
-        assert_eq!(aborted, Err(1));
-        assert!(
-            backend_of(&*host)
-                .and_then(|backend| backend.container_stack(on(CHEST, None), 0))
-                .is_none()
-        );
-        let went =
-            host.transaction(|host, tx| Ok::<_, ()>(pipe.insert_at(host, tx, 0, &stick_, 1)));
+        let aborted: Result<(), crate::TransactionError<u32>> =
+            host.transaction(|host, tx| Err(pipe.insert_at(host, tx, 0, &stick_, 1).unwrap()));
+        assert_eq!(aborted, Err(crate::TransactionError::Aborted(1)));
+        let backend = backend_of(&*host).unwrap();
+        backend.lend_container_stack(on(CHEST, None), 0, &mut |_| {
+            panic!("empty slot must not be lent");
+        });
+        let went = host.transaction(|host, tx| pipe.insert_at(host, tx, 0, &stick_, 1));
         assert_eq!(went, Ok(1));
-        assert_eq!(
-            backend_of(&*host).and_then(|backend| backend.container_stack(on(CHEST, None), 0)),
-            Some(stick())
-        );
-        let went =
-            host.transaction(|host, tx| Ok::<_, ()>(pipe.insert_at(host, tx, 0, &stick_, 1)));
+        let mut stack = None;
+        backend_of(&*host)
+            .unwrap()
+            .lend_container_stack(on(CHEST, None), 0, &mut |view| stack = view.project());
+        assert_eq!(stack, Some(stick()));
+        let went = host.transaction(|host, tx| pipe.insert_at(host, tx, 0, &stick_, 1));
         assert_eq!(went, Ok(0));
         // No block entity with slots: no answer. A mod's own capability has no game answer.
         assert!(here().capability(host, &ITEMS, [5, 64, 0], None).is_none());
@@ -355,11 +343,19 @@ pub mod tests {
         let went =
             host.transaction(
                 |host, tx| match handler.insert_at(host, tx, 0, &resource, amount) {
-                    went if went == amount => Ok(went),
-                    went => Err(went),
+                    Ok(went) if went == amount => Ok(went),
+                    Ok(went) => Err(went),
+                    Err(_) => Err(0),
                 },
             );
-        went.unwrap_or_else(|went| went)
+        match went {
+            Ok(went) | Err(crate::TransactionError::Aborted(went)) => went,
+            Err(
+                crate::TransactionError::InvalidContext
+                | crate::TransactionError::Unavailable
+                | crate::TransactionError::CommitRefused,
+            ) => 0,
+        }
     }
 
     /// A mod declaring its own key under a name another mod's providers answer with another
@@ -371,6 +367,8 @@ pub mod tests {
             CapabilityKey::new("test:chemical");
         const UNNAMESPACED: CapabilityKey<dyn ResourceHandler<Chemical>> =
             CapabilityKey::new("chemical");
+        const MALFORMED: CapabilityKey<dyn ResourceHandler<Chemical>> =
+            CapabilityKey::new("test:Chemical");
         let mut r = super::PartRegistrar::new("first");
         let chem_tank = r.block_entity_type_key("test:chem_tank");
         (&mut r as &mut dyn Registrar).block_entity_capability(
@@ -396,7 +394,12 @@ pub mod tests {
             &chem_vat,
             |_, at, _, _, offer| offer.offer(|| Box::new(ChemTank(at))),
         );
-        assert_eq!(r.refused.len(), 2, "{:?}", r.refused);
+        (&mut r as &mut dyn Registrar).block_entity_capability(
+            &MALFORMED,
+            &chem_vat,
+            |_, at, _, _, offer| offer.offer(|| Box::new(ChemTank(at))),
+        );
+        assert_eq!(r.refused.len(), 3, "{:?}", r.refused);
         let two_types = &r.refused[0];
         assert!(
             two_types.starts_with("capability test:chemical is answered with two handler types")
@@ -412,6 +415,153 @@ pub mod tests {
             "{two_types}"
         );
         assert!(r.refused[1].contains("capability \"chemical\", which is not a namespaced name"));
+        assert!(
+            r.refused[2].contains("capability \"test:Chemical\", which is not a namespaced name")
+        );
+    }
+
+    #[test]
+    fn an_entity_capability_name_with_two_context_types_is_refused() {
+        const UNSIDED: EntityCapabilityKey<dyn ResourceHandler<ItemResource>> =
+            EntityCapabilityKey::new("test:pig_items");
+        const SIDED: EntityCapabilityKey<dyn ResourceHandler<ItemResource>, Option<Direction>> =
+            EntityCapabilityKey::new("test:pig_items");
+
+        struct Empty;
+        #[mod_api::__subscriptions]
+        impl Hooks for Empty {}
+
+        crate::testing::with_mods(
+            vec![
+                ModEntry::new("first", Box::new(Empty)),
+                ModEntry::new("second", Box::new(Empty)),
+            ]
+            .into(),
+            || {
+                let mut registrar = PartRegistrar::new("first");
+                (&mut registrar as &mut dyn Registrar).entity_capability(
+                    &UNSIDED,
+                    "minecraft:pig",
+                    |_, _, ()| Some(Box::new(Marked(3))),
+                );
+                assert!(registrar.refused.is_empty());
+                registrar.mod_id = "second";
+                registrar.mod_index = 1;
+                (&mut registrar as &mut dyn Registrar).entity_capability(
+                    &SIDED,
+                    "minecraft:pig",
+                    |_, _, _| Some(Box::new(Marked(99))),
+                );
+                // A refusal fails loading. Install only the accepted registrations to check
+                // that refusing the second callback did not change what the first one answers.
+                let refused = std::mem::take(&mut registrar.refused);
+                let [refusal] = refused.as_slice() else {
+                    panic!("expected one refusal, got {refused:?}");
+                };
+                for detail in ["test:pig_items", "context types", "by first", "by second"] {
+                    assert!(refusal.contains(detail), "{refusal}");
+                }
+                install_registrar(registrar, &rule_schema()).unwrap();
+                assert!(has_entity_providers(&UNSIDED));
+                assert!(!has_entity_providers(&SIDED));
+                let mut host = player_world(None);
+                let pig = EntityRef::new(WorldEpoch::new(1), 2);
+                let found = pig.capability(&mut host, &UNSIDED, ()).unwrap();
+                assert_eq!(found.owner(), "first");
+                assert_eq!(found.size(&mut host), 3);
+                assert!(
+                    pig.capability(&mut host, &SIDED, Some(Direction::North))
+                        .is_none()
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn builtin_keys_reject_incompatible_first_providers_and_coverage_queries() {
+        const WRONG_BLOCK: CapabilityKey<dyn EnergyHandler> = CapabilityKey::new(ITEMS.name);
+        const WRONG_ITEM: ItemCapabilityKey<dyn EnergyHandler> =
+            ItemCapabilityKey::new(ITEM_ITEMS.name);
+        const UNSIDED: EntityCapabilityKey<dyn ResourceHandler<ItemResource>> =
+            EntityCapabilityKey::new(ENTITY_AUTOMATION.name);
+
+        let mut registrar = PartRegistrar::new("wrong");
+        let registration = &mut registrar as &mut dyn Registrar;
+        let block = registration.block_key("test:container");
+        registration.block_capability(&WRONG_BLOCK, &block, |_, _, _, _, _| {});
+        registration.item_capability(&WRONG_ITEM, "test:backpack", |_, _| None);
+        registration.entity_capability(&UNSIDED, "minecraft:pig", |_, _, ()| None);
+        assert_eq!(registrar.refused.len(), 3);
+        assert!(
+            registrar
+                .refused
+                .iter()
+                .all(|error| error.contains("by the game"))
+        );
+        assert!(registrar.refused[2].contains("context types"));
+
+        registrar.mod_id = "right";
+        let registration = &mut registrar as &mut dyn Registrar;
+        registration.block_capability(&ITEMS, &block, |_, _, _, _, _| {});
+        registration.item_capability(&ITEM_ITEMS, "test:backpack", |_, _| None);
+        registration.entity_capability(&ENTITY_AUTOMATION, "minecraft:pig", |_, _, _| None);
+        let item = registration.item_key("test:backpack");
+        let pig = registration.entity_type_key("minecraft:pig");
+        assert!(registration.is_block_capability_registered(&ITEMS, &block));
+        assert!(registration.is_item_capability_registered(&ITEM_ITEMS, &item));
+        assert!(registration.is_entity_capability_registered(&ENTITY_AUTOMATION, &pig));
+        assert!(!registration.is_block_capability_registered(&WRONG_BLOCK, &block));
+        assert!(!registration.is_item_capability_registered(&WRONG_ITEM, &item));
+        assert!(!registration.is_entity_capability_registered(&UNSIDED, &pig));
+        assert_eq!(registrar.refused.len(), 6);
+    }
+
+    #[test]
+    fn a_different_block_binding_cannot_mark_or_inherit_proxyability() {
+        const WRONG: CapabilityKey<dyn EnergyHandler> = CapabilityKey::new(ITEMS.name);
+        let mut registrar = PartRegistrar::new("forwarder");
+        let registration = &mut registrar as &mut dyn Registrar;
+        registration.set_capability_proxyable(&WRONG, true);
+        assert!(!registration.block_capability_proxyable(ITEMS.name));
+        registration.set_capability_proxyable(&ITEMS, true);
+        assert_eq!(std::mem::take(&mut registrar.refused).len(), 1);
+        install_registrar(registrar, &rule_schema()).unwrap();
+
+        let host = FakeHost::new();
+        assert!(ITEMS.is_proxyable(&host));
+        assert!(!WRONG.is_proxyable(&host));
+        assert!(block_capability_proxyable(&host, ITEMS.name));
+    }
+
+    #[test]
+    fn item_and_entity_provider_ids_are_startup_registry_requests() {
+        let mut registrar = PartRegistrar::new("provider");
+        let registration = &mut registrar as &mut dyn Registrar;
+        registration.item_capability(&ITEM_ITEMS, "test:later_item", |_, _| None);
+        registration.item_capability_before_game(&ITEM_ITEMS, "test:typo_item", |_, _| None);
+        registration.entity_capability_before_game(
+            &ENTITY_ITEMS,
+            "test:later_entity",
+            |_, _, ()| None,
+        );
+        registration.entity_capability(&ENTITY_ITEMS, "minecraft:pigg", |_, _, ()| None);
+        install_registrar(registrar, &rule_schema()).unwrap();
+
+        let errors = mod_vocab::__private::resolve_items(["test:later_item"]).unwrap_err();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].mod_id, "provider");
+        assert_eq!(errors[0].id, "test:typo_item");
+        let errors = mod_vocab::__private::resolve_entity_types(["test:later_entity"], |_| None)
+            .unwrap_err();
+        assert_eq!(
+            errors,
+            ["mod provider requested unknown entity type minecraft:pigg"]
+        );
+        mod_vocab::__private::resolve_items(["test:later_item", "test:typo_item"]).unwrap();
+        mod_vocab::__private::resolve_entity_types(["test:later_entity", "minecraft:pigg"], |_| {
+            None
+        })
+        .unwrap();
     }
 
     /// A handler that only tells which provider made it, by its slot count.
@@ -432,22 +582,22 @@ pub mod tests {
         fn insert_at(
             &self,
             _: &mut dyn ServerHost,
-            _: &Transaction,
+            _: &TransactionContext,
             _: usize,
             _: &ItemResource,
             _: u32,
-        ) -> u32 {
-            0
+        ) -> Result<u32, TransactionError<Overanswered>> {
+            Ok(0)
         }
         fn extract_at(
             &self,
             _: &mut dyn ServerHost,
-            _: &Transaction,
+            _: &TransactionContext,
             _: usize,
             _: &ItemResource,
             _: u32,
-        ) -> u32 {
-            0
+        ) -> Result<u32, TransactionError<Overanswered>> {
+            Ok(0)
         }
     }
 
@@ -469,22 +619,22 @@ pub mod tests {
         fn insert_at(
             &self,
             _: &mut dyn ServerHost,
-            _: &Transaction,
+            _: &TransactionContext,
             _: usize,
             _: &ItemResource,
             amount: u32,
-        ) -> u32 {
-            amount
+        ) -> Result<u32, TransactionError<Overanswered>> {
+            Ok(amount)
         }
         fn extract_at(
             &self,
             _: &mut dyn ServerHost,
-            _: &Transaction,
+            _: &TransactionContext,
             _: usize,
             _: &ItemResource,
             _: u32,
-        ) -> u32 {
-            0
+        ) -> Result<u32, TransactionError<Overanswered>> {
+            Ok(0)
         }
     }
 
@@ -501,8 +651,7 @@ pub mod tests {
             .expect("the bin's provider");
         assert_eq!(voids.owner(), "doubler");
         let stick_ = ItemResource::of(&stick());
-        let went: Result<u32, ()> =
-            host.transaction(|host, tx| Ok(voids.insert_at(host, tx, 0, &stick_, 64)));
+        let went = host.transaction(|host, tx| voids.insert_at(host, tx, 0, &stick_, 64));
         assert_eq!(went, Ok(64));
         assert_eq!(voids.amount(host, 0), 0);
         // A block no provider is registered for has none, as before.
@@ -631,6 +780,194 @@ pub mod tests {
     }
 
     #[test]
+    fn block_and_block_entity_providers_walk_past_65535_in_merged_precedence_order() {
+        use std::sync::{
+            Mutex,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        struct Empty;
+        #[mod_api::__subscriptions]
+        impl Hooks for Empty {}
+
+        const BULK_AFTER_GAME: usize = u16::MAX as usize - 2;
+
+        crate::testing::with_mods(
+            vec![
+                ModEntry::new("enabled", Box::new(Empty)),
+                ModEntry::new("disabled", Box::new(Empty)),
+            ]
+            .into(),
+            || {
+                assert!(crate::__private::set_mod_enabled("disabled", false));
+                let block_calls = Arc::new(AtomicUsize::new(0));
+                let entity_calls = Arc::new(AtomicUsize::new(0));
+                let boundary_order = Arc::new(Mutex::new(Vec::<&'static str>::new()));
+
+                let mut registrar = PartRegistrar::new("enabled");
+                let block = registrar.block_key("test:target");
+                let entity = registrar.block_entity_type_key("test:target");
+
+                {
+                    let calls = Arc::clone(&block_calls);
+                    let order = Arc::clone(&boundary_order);
+                    (&mut registrar as &mut dyn Registrar).block_capability_before_game(
+                        &ITEMS,
+                        &block,
+                        move |_, _, _, _, _| {
+                            calls.fetch_add(1, Ordering::Relaxed);
+                            order.lock().unwrap().push("block:before_game");
+                        },
+                    );
+                }
+                {
+                    let calls = Arc::clone(&entity_calls);
+                    let order = Arc::clone(&boundary_order);
+                    (&mut registrar as &mut dyn Registrar).block_entity_capability_before_game(
+                        &ITEMS,
+                        &entity,
+                        move |_, _, _, _, _| {
+                            calls.fetch_add(1, Ordering::Relaxed);
+                            order.lock().unwrap().push("be:before_game");
+                        },
+                    );
+                }
+
+                for _ in 0..BULK_AFTER_GAME {
+                    let b_calls = Arc::clone(&block_calls);
+                    let e_calls = Arc::clone(&entity_calls);
+                    let r = &mut registrar as &mut dyn Registrar;
+                    r.block_entity_capability(&ITEMS, &entity, move |_, _, _, _, _| {
+                        e_calls.fetch_add(1, Ordering::Relaxed);
+                    });
+                    r.block_capability(&ITEMS, &block, move |_, _, _, _, _| {
+                        b_calls.fetch_add(1, Ordering::Relaxed);
+                    });
+                }
+
+                registrar.mod_id = "disabled";
+                registrar.mod_index = 1;
+                (&mut registrar as &mut dyn Registrar).block_capability(
+                    &ITEMS,
+                    &block,
+                    |_, _, _, _, _| panic!("disabled block provider must not run"),
+                );
+
+                registrar.mod_id = "enabled";
+                registrar.mod_index = 0;
+                {
+                    let calls = Arc::clone(&entity_calls);
+                    let order = Arc::clone(&boundary_order);
+                    (&mut registrar as &mut dyn Registrar).block_entity_capability(
+                        &ITEMS,
+                        &entity,
+                        move |_, _, _, _, _| {
+                            calls.fetch_add(1, Ordering::Relaxed);
+                            order.lock().unwrap().push("be:65534");
+                        },
+                    );
+                }
+                {
+                    let calls = Arc::clone(&block_calls);
+                    let order = Arc::clone(&boundary_order);
+                    (&mut registrar as &mut dyn Registrar).block_capability(
+                        &ITEMS,
+                        &block,
+                        move |_, _, _, _, _| {
+                            calls.fetch_add(1, Ordering::Relaxed);
+                            order.lock().unwrap().push("block:65535");
+                        },
+                    );
+                }
+
+                registrar.mod_id = "disabled";
+                registrar.mod_index = 1;
+                (&mut registrar as &mut dyn Registrar).block_entity_capability(
+                    &ITEMS,
+                    &entity,
+                    |_, _, _, _, _| panic!("disabled block-entity provider must not run"),
+                );
+
+                registrar.mod_id = "enabled";
+                registrar.mod_index = 0;
+                {
+                    let calls = Arc::clone(&block_calls);
+                    let order = Arc::clone(&boundary_order);
+                    (&mut registrar as &mut dyn Registrar).block_capability(
+                        &ITEMS,
+                        &block,
+                        move |_, _, _, _, _| {
+                            calls.fetch_add(1, Ordering::Relaxed);
+                            order.lock().unwrap().push("block:65536");
+                        },
+                    );
+                }
+                {
+                    let calls = Arc::clone(&entity_calls);
+                    let order = Arc::clone(&boundary_order);
+                    (&mut registrar as &mut dyn Registrar).block_entity_capability(
+                        &ITEMS,
+                        &entity,
+                        move |_, _, _, _, offer| {
+                            calls.fetch_add(1, Ordering::Relaxed);
+                            order.lock().unwrap().push("be:65536");
+                            offer.offer(|| Box::new(Marked(42)));
+                        },
+                    );
+                }
+
+                assert!(registrar.refused.is_empty(), "{:?}", registrar.refused);
+                install_registrar(registrar, &rule_schema()).unwrap();
+                mod_vocab::__private::resolve_block_keys(["test:target"], |_| {
+                    sunrise_mod_runtime::block_definitions::BlockDefinition::new(
+                        &[&Default::default()],
+                        0,
+                    )
+                    .map_err(|e| format!("{e:?}"))
+                })
+                .unwrap();
+
+                let pos = [0, 64, 0];
+                let mut world = FakeHost::new();
+                world.level.set_block(pos, "test:target");
+                world.level.block_entity(pos).of_type("test:target");
+
+                assert!(
+                    block_providers(&ITEMS, &world, on(pos, None))
+                        .unwrap()
+                        .ask(&mut world, true)
+                        .is_none()
+                );
+                assert_eq!(block_calls.swap(0, Ordering::Relaxed), 1);
+                assert_eq!(entity_calls.swap(0, Ordering::Relaxed), 1);
+                assert_eq!(
+                    std::mem::take(&mut *boundary_order.lock().unwrap()),
+                    vec!["block:before_game", "be:before_game"]
+                );
+
+                let found = here()
+                    .capability(&mut world, &ITEMS, pos, None)
+                    .expect("final provider past 65,535 should answer");
+                assert_eq!(found.owner(), "enabled");
+                assert_eq!(found.size(&mut world), 42);
+                assert_eq!(block_calls.load(Ordering::Relaxed), 65_536);
+                assert_eq!(entity_calls.load(Ordering::Relaxed), 65_536);
+                assert_eq!(
+                    *boundary_order.lock().unwrap(),
+                    vec![
+                        "block:before_game",
+                        "be:before_game",
+                        "be:65534",
+                        "block:65535",
+                        "block:65536",
+                        "be:65536",
+                    ]
+                );
+            },
+        );
+    }
+
+    #[test]
     pub(crate) fn disabled_capability_providers_are_skipped_and_resume() {
         struct Later;
         #[mod_api::__subscriptions]
@@ -649,7 +986,12 @@ pub mod tests {
             }
         }
         let mods: crate::Mods = vec![
-            ModEntry::new("doubler", Box::new(Doubler)),
+            ModEntry::new(
+                "doubler",
+                Box::new(Doubler {
+                    mock_subjects: true,
+                }),
+            ),
             ModEntry::new("later", Box::new(Later)),
         ]
         .into();
@@ -743,6 +1085,168 @@ pub mod tests {
         );
         let host: &mut dyn ServerHost = &mut HeldItem(stack("test:ordered_item", 1, 0));
         assert_eq!(HAND.capability(host, &ITEM_ITEMS).unwrap().size(host), 1);
+    }
+
+    #[cfg(test)]
+    const SPARSE_POS: [i32; 3] = [0, 64, 0];
+    #[cfg(test)]
+    const SPARSE_HOLDER: Holder = Holder::Chunk([0, 0]);
+    #[cfg(test)]
+    const SPARSE_ITEMS_SIZE: usize = usize::MAX / 2;
+
+    #[cfg(test)]
+    fn with_sparse_providers(run: impl FnOnce(&mut FakeHost, LevelRef)) {
+        struct Sparse;
+        #[mod_api::__subscriptions]
+        impl Hooks for Sparse {
+            fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
+                let items_key = r
+                    .register_attachment_type(AttachmentDescriptor::new(
+                        "test:sparse_items",
+                        StackList::<ItemResource>::new,
+                    ))
+                    .unwrap();
+                let fluids_key = r
+                    .register_attachment_type(
+                        AttachmentDescriptor::new(
+                            "test:sparse_fluids",
+                            StackList::<FluidResource>::new,
+                        )
+                        .serialize(FLUID_STACKS),
+                    )
+                    .unwrap();
+                let kind = r.block_entity_type_key("test:sparse");
+                r.block_entity_capability(&ITEMS, &kind, move |_, _, _, _, offer| {
+                    offer.offer(|| {
+                        Box::new(AttachedItems::new(
+                            &items_key,
+                            SPARSE_HOLDER,
+                            SPARSE_ITEMS_SIZE,
+                            4,
+                            |_| true,
+                        ))
+                    });
+                });
+                r.block_entity_capability_before_game(&FLUIDS, &kind, move |_, _, _, _, offer| {
+                    offer.offer(|| {
+                        Box::new(AttachedFluids::new(
+                            &fluids_key,
+                            SPARSE_HOLDER,
+                            usize::MAX,
+                            1000,
+                            |_| true,
+                        ))
+                    });
+                });
+            }
+        }
+        let mods: Mods = vec![ModEntry::new("test", Box::new(Sparse))].into();
+        crate::testing::with_mods(mods.clone(), || {
+            install_parts_fixture(&mods).unwrap();
+            let mut host = FakeHost::new();
+            let level = host.level.level();
+            host.level.block_entity(SPARSE_POS).of_type("test:sparse");
+            run(&mut host, level);
+        });
+    }
+
+    #[test]
+    fn sparse_items_provider_adapts_to_bulk_storage() {
+        use crate::prelude::ItemsHost;
+        use std::ops::ControlFlow;
+
+        with_sparse_providers(|host, level| {
+            let id = Identifier::parse("minecraft:dirt").unwrap();
+            let cobble = Identifier::parse("minecraft:cobblestone").unwrap();
+            host.registries
+                .resolve_items([id.clone(), cobble.clone()])
+                .unwrap();
+            host.registries.item_component(
+                "minecraft:dirt",
+                "minecraft:max_stack_size",
+                Tag::Int(2),
+            );
+            let dirt = ItemResource::of(&ItemStack::new(host.item_key(&id).unwrap(), 1).unwrap());
+            let cobble =
+                ItemResource::of(&ItemStack::new(host.item_key(&cobble).unwrap(), 1).unwrap());
+            let items = level.capability(host, &ITEMS, SPARSE_POS, None).unwrap();
+            let storage = level.capability(host, &STORAGE, SPARSE_POS, None).unwrap();
+            let last = SPARSE_ITEMS_SIZE - 1;
+            let total_capacity = 2 * SPARSE_ITEMS_SIZE as u64;
+            assert_eq!(storage.amount(host, &dirt), Ok(0));
+            assert_eq!(storage.space_for(host, &dirt), Ok(total_capacity));
+            assert_eq!(
+                storage.space_for(host, &cobble),
+                (SPARSE_ITEMS_SIZE as u64)
+                    .checked_mul(4)
+                    .ok_or(StorageError::Overflow)
+            );
+            host.transaction(|host, tx| {
+                assert_eq!(storage.insert(host, tx, &dirt, 1), Ok(1));
+                assert_eq!(items.extract_at(host, tx, 0, &dirt, 1), Ok(1));
+                assert_eq!(items.insert_at(host, tx, last, &dirt, 1), Ok(1));
+                assert_eq!(storage.insert(host, tx, &dirt, 2), Ok(2));
+                assert_eq!(items.amount(host, last), 2, "top up before filling a gap");
+                assert_eq!(items.amount(host, 0), 1);
+                Ok::<_, ()>(())
+            })
+            .unwrap();
+            assert_eq!(storage.amount(host, &dirt), Ok(3));
+            assert_eq!(storage.space_for(host, &dirt), Ok(total_capacity - 3));
+            let mut entries = Vec::new();
+            storage
+                .visit_entries(host, &mut |resource, amount| {
+                    entries.push((resource.clone(), amount));
+                    ControlFlow::Continue(())
+                })
+                .unwrap();
+            assert_eq!(entries, [(dirt.clone(), 1), (dirt.clone(), 2)]);
+            assert_eq!(
+                host.transaction(|host, tx| Ok::<_, ()>(storage.extract(host, tx, &dirt, 2))),
+                Ok(Ok(2))
+            );
+            assert_eq!(items.amount(host, last), 1);
+        });
+    }
+
+    #[test]
+    fn picking_up_sparse_fluids_moves_only_the_first_occupied_tank() {
+        use crate::fluid_util::try_pickup_fluid;
+        use crate::prelude::BlockStatesHost;
+        use crate::testing::FakeTank;
+
+        with_sparse_providers(|host, level| {
+            let destination = [1, 64, 0];
+            host.registries.resolve_fluids(["minecraft:water"]).unwrap();
+            let key = host.fluid_key("minecraft:water").unwrap();
+            let water = FluidResource::of(&FluidStack::new(key, 1));
+            host.level
+                .block_entity(destination)
+                .tanks
+                .push(FakeTank::new(1000));
+            let target = level.capability(host, &FLUIDS, destination, None).unwrap();
+            let tanks = level.capability(host, &FLUIDS, SPARSE_POS, None).unwrap();
+            assert_eq!(
+                try_pickup_fluid(host, &target, None, level, SPARSE_POS, None),
+                None
+            );
+            assert!(host.game_events.is_empty());
+            let high = i32::MAX as usize;
+            host.transaction(|host, tx| {
+                assert_eq!(tanks.insert_at(host, tx, high, &water, 500), Ok(500));
+                assert_eq!(tanks.insert_at(host, tx, high - 1, &water, 250), Ok(250));
+                Ok::<_, ()>(())
+            })
+            .unwrap();
+            assert_eq!(
+                try_pickup_fluid(host, &target, None, level, SPARSE_POS, None),
+                Some(water.to_stack(250))
+            );
+            assert_eq!(target.amount(host, 0), 250);
+            assert_eq!(tanks.amount(host, high), 500);
+            assert_eq!(host.game_events.len(), 1);
+            assert_eq!(host.game_events[0].event, "minecraft:fluid_pickup");
+        });
     }
 
     #[test]
@@ -842,6 +1346,54 @@ pub mod tests {
                 before + usize::from(slots.is_some())
             );
         }
+    }
+
+    #[test]
+    fn removing_a_block_entity_before_provider_dispatch_skips_its_providers() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct Providers(Arc<AtomicUsize>);
+        #[mod_api::__subscriptions]
+        impl Hooks for Providers {
+            fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
+                let target = r.block_entity_type_key("test:removable");
+                let visits = Arc::clone(&self.0);
+                r.block_entity_capability_before_game(&ITEMS, &target, move |_, _, _, _, _| {
+                    visits.fetch_add(1, Ordering::Relaxed);
+                });
+                let visits = Arc::clone(&self.0);
+                r.block_entity_capability(&ITEMS, &target, move |_, _, _, _, offer| {
+                    visits.fetch_add(1, Ordering::Relaxed);
+                    offer.offer(|| Box::new(Marked(99)));
+                });
+            }
+        }
+
+        let visits = Arc::new(AtomicUsize::new(0));
+        crate::testing::with_mods(
+            vec![ModEntry::new(
+                "provider",
+                Box::new(Providers(visits.clone())),
+            )]
+            .into(),
+            || {
+                install_parts(crate::__private::mods(), &rule_schema(), |_| false).unwrap();
+                let mut host = FakeHost::new();
+                let pos = [0, 64, 0];
+                host.level.block_entity(pos).of_type("test:removable");
+                let at = on(pos, None);
+                let selected = block_providers(&ITEMS, &host, at).unwrap();
+                assert_eq!(selected.ask(&mut host, false).unwrap().size(&mut host), 99);
+                let selected = block_providers(&ITEMS, &host, at).unwrap();
+
+                // Block discovery has only a shared level borrow; removal can happen between
+                // selecting the provider list and lending the site for dispatch.
+                assert!(host.level.remove_block_entity(pos).is_some());
+                assert!(selected.ask(&mut host, false).is_none());
+                assert!(here().capability(&mut host, &ITEMS, pos, None).is_none());
+                assert_eq!(visits.load(Ordering::Relaxed), 2);
+            },
+        );
     }
 
     #[test]
@@ -958,9 +1510,111 @@ pub mod tests {
         assert_eq!(item(1, 1), (false, 27));
         assert_eq!(item(1, 2), (true, 3));
     }
-}
 
-pub(crate) enum ProviderTarget<'a> {
-    BlockEntity(&'a crate::BlockEntityTypeKey),
-    Id(&'a str),
+    #[test]
+    fn panicking_before_game_provider_is_isolated_to_its_registration() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct Empty;
+        #[mod_api::__subscriptions]
+        impl Hooks for Empty {}
+
+        crate::testing::with_mods(
+            vec![
+                ModEntry::new("faulty", Box::new(Empty)),
+                ModEntry::new("healthy", Box::new(Empty)),
+            ]
+            .into(),
+            || {
+                let bad_calls = Arc::new(AtomicUsize::new(0));
+                let none_calls = Arc::new(AtomicUsize::new(0));
+                let winner_calls = Arc::new(AtomicUsize::new(0));
+                let sibling_calls = Arc::new(AtomicUsize::new(0));
+
+                let mut registrar = PartRegistrar::new("faulty");
+                let target = registrar.block_entity_type_key("test:panic_target");
+                let sibling = registrar.block_entity_type_key("test:sibling_target");
+
+                {
+                    let calls = Arc::clone(&bad_calls);
+                    (&mut registrar as &mut dyn Registrar).block_entity_capability_before_game(
+                        &ITEMS,
+                        &target,
+                        move |_, _, _, _, _| {
+                            calls.fetch_add(1, Ordering::Relaxed);
+                            panic!("boom in before-game capability provider");
+                        },
+                    );
+                }
+                {
+                    let calls = Arc::clone(&sibling_calls);
+                    (&mut registrar as &mut dyn Registrar).block_entity_capability(
+                        &ITEMS,
+                        &sibling,
+                        move |_, _, _, _, offer| {
+                            calls.fetch_add(1, Ordering::Relaxed);
+                            offer.offer(|| Box::new(Marked(55)));
+                        },
+                    );
+                }
+
+                registrar.mod_id = "healthy";
+                registrar.mod_index = 1;
+                {
+                    let calls = Arc::clone(&none_calls);
+                    (&mut registrar as &mut dyn Registrar).block_entity_capability_before_game(
+                        &ITEMS,
+                        &target,
+                        move |_, _, _, _, _| {
+                            calls.fetch_add(1, Ordering::Relaxed);
+                        },
+                    );
+                }
+                {
+                    let calls = Arc::clone(&winner_calls);
+                    (&mut registrar as &mut dyn Registrar).block_entity_capability(
+                        &ITEMS,
+                        &target,
+                        move |_, _, _, _, offer| {
+                            calls.fetch_add(1, Ordering::Relaxed);
+                            offer.offer(|| Box::new(Marked(77)));
+                        },
+                    );
+                }
+
+                assert!(registrar.refused.is_empty(), "{:?}", registrar.refused);
+                install_registrar(registrar, &rule_schema()).unwrap();
+
+                let target_pos = [0, 64, 0];
+                let sibling_pos = [1, 64, 0];
+                let mut world = FakeHost::new();
+                world
+                    .level
+                    .block_entity(target_pos)
+                    .of_type("test:panic_target");
+                world
+                    .level
+                    .block_entity(sibling_pos)
+                    .of_type("test:sibling_target");
+
+                for visit in [1, 2] {
+                    let found = here()
+                        .capability(&mut world, &ITEMS, target_pos, None)
+                        .expect("later legitimate provider should win");
+                    assert_eq!(found.owner(), "healthy");
+                    assert_eq!(found.size(&mut world), 77);
+                    assert_eq!(bad_calls.load(Ordering::Relaxed), 1);
+                    assert_eq!(none_calls.load(Ordering::Relaxed), visit);
+                    assert_eq!(winner_calls.load(Ordering::Relaxed), visit);
+                }
+
+                let same_mod = here()
+                    .capability(&mut world, &ITEMS, sibling_pos, None)
+                    .expect("separately registered callback of the same mod should still work");
+                assert_eq!(same_mod.owner(), "faulty");
+                assert_eq!(same_mod.size(&mut world), 55);
+                assert_eq!(sibling_calls.load(Ordering::Relaxed), 1);
+            },
+        );
+    }
 }

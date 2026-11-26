@@ -83,7 +83,7 @@ pub struct Config {
 }
 
 impl Config {
-    /// `REGISTRY_PUBLIC_URL`, `REGISTRY_SESSION_KEY`, `REGISTRY_REPO`,
+    /// `REGISTRY_PUBLIC_URL`, `REGISTRY_SESSION_KEY`, `REGISTRY_REPO` (defaults to [`index::REGISTRY_REPO`]),
     /// `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_BOT_TOKEN`,
     /// `REGISTRY_UPDATE_KEY` (optional), `REGISTRY_DB` (default
     /// `/data/registry.sqlite3`).
@@ -101,8 +101,7 @@ impl Config {
             session_key: key.into_bytes(),
             github: GitHub::new(
                 github::Endpoints::default(),
-                std::env::var("REGISTRY_REPO")
-                    .unwrap_or_else(|_| "horizon-rust/horizon-mods".into()),
+                std::env::var("REGISTRY_REPO").unwrap_or_else(|_| index::REGISTRY_REPO.into()),
                 var("GITHUB_CLIENT_ID")?,
                 var("GITHUB_CLIENT_SECRET")?,
                 var("GITHUB_BOT_TOKEN")?,
@@ -1229,16 +1228,18 @@ fn is_hex_str(s: &str, len: usize) -> bool {
     s.len() == len && s.chars().all(|c| c.is_ascii_hexdigit())
 }
 
-fn is_target_triple(s: &str) -> bool {
-    matches!(
-        s,
+/// The native-build targets this registry builds and serves: Sunrise's platforms. Both the request and its poll
+/// refuse any other target the same way.
+fn supported_target(target: &str) -> Result<(), Refusal> {
+    match target {
         "x86_64-unknown-linux-gnu"
-            | "x86_64-pc-windows-gnu"
-            | "x86_64-pc-windows-msvc"
-            | "aarch64-pc-windows-msvc"
-            | "aarch64-apple-darwin"
-            | "x86_64-apple-darwin"
-    )
+        | "x86_64-pc-windows-gnu"
+        | "x86_64-pc-windows-msvc"
+        | "aarch64-apple-darwin" => Ok(()),
+        _ => Err(bad(format!(
+            "{target:?} is not a target Sunrise builds native mods for"
+        ))),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1281,6 +1282,7 @@ async fn request_native_build(
         ));
     }
 
+    supported_target(&payload.target)?;
     if payload.mods.is_empty() {
         return Err(bad("a native build request needs at least one mod"));
     }
@@ -1444,12 +1446,7 @@ async fn get_native_build(
             query.base
         )));
     }
-    if !is_target_triple(&query.target) {
-        return Err(bad(format!(
-            "{:?} is not a valid target triple",
-            query.target
-        )));
-    }
+    supported_target(&query.target)?;
     if !is_hex_str(&query.key, 64) {
         return Err(bad(format!(
             "{:?} is not a request key (64 hex digits)",
@@ -1646,14 +1643,80 @@ mod tests {
         assert_eq!(client_ip(&HeaderMap::new()), "anonymous");
     }
 
+    #[tokio::test]
+    async fn native_build_endpoints_refuse_removed_targets() {
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let app = router(
+            App::new(Config {
+                public_url: "https://example.invalid".into(),
+                session_key: b"0123456789abcdef0123456789abcdef".to_vec(),
+                github: GitHub::new(
+                    // Invalid URLs cannot make a request even if validation regresses.
+                    github::Endpoints {
+                        web: String::new(),
+                        api: String::new(),
+                        uploads: String::new(),
+                    },
+                    "owner/repo".into(),
+                    "client".into(),
+                    "secret".into(),
+                    "token".into(),
+                ),
+                update_key: None,
+                scratch: PathBuf::new(),
+                database: ":memory:".into(),
+            })
+            .unwrap(),
+        );
+        const BASE: &str = "0123456789abcdef0123456789abcdef01234567";
+        const SHA: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        for target in ["x86_64-apple-darwin", "aarch64-pc-windows-msvc"] {
+            let payload = json!({
+                "target": target,
+                "base": BASE,
+                "mods": [{"id": "zoom", "version": "1.0.0", "sha256": SHA}],
+            });
+            let post = Request::post("/api/native-builds")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(payload.to_string()))
+                .unwrap();
+            let get = Request::get(format!(
+                "/api/native-builds?target={target}&base={BASE}&key={SHA}"
+            ))
+            .body(Body::empty())
+            .unwrap();
+            for request in [post, get] {
+                let method = request.method().clone();
+                let response = app.clone().oneshot(request).await.unwrap();
+                assert_eq!(
+                    response.status(),
+                    StatusCode::BAD_REQUEST,
+                    "{method} {target}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn native_build_query_validation() {
         assert!(is_hex_str("0123456789abcdef0123456789abcdef01234567", 40));
         assert!(!is_hex_str("0123456789abcdef", 40));
         assert!(!is_hex_str("0123456789abcdef0123456789abcdef0123456g", 40));
-        assert!(is_target_triple("x86_64-unknown-linux-gnu"));
-        assert!(is_target_triple("x86_64-pc-windows-gnu"));
-        assert!(is_target_triple("aarch64-apple-darwin"));
-        assert!(!is_target_triple("riscv64gc-unknown-linux-gnu"));
+        for target in [
+            "x86_64-unknown-linux-gnu",
+            "x86_64-pc-windows-gnu",
+            "aarch64-apple-darwin",
+        ] {
+            assert!(supported_target(target).is_ok(), "{target}");
+        }
+        for target in [
+            "x86_64-apple-darwin",
+            "aarch64-pc-windows-msvc",
+            "riscv64gc-unknown-linux-gnu",
+        ] {
+            assert!(supported_target(target).is_err(), "{target}");
+        }
     }
 }

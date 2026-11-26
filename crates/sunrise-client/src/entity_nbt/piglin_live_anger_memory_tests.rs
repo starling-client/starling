@@ -46,10 +46,10 @@ fn guarded_event_saves_actual_uuid_and_remaining_long_ttl() {
     for actor in [[1, 2, 3, 4], [-5, 6, 7, 8]] {
         let mut m = mob();
         crate::mobs::piglin::set_guarded_anger_target(&mut m, Some(actor));
-        assert_eq!(m.extra.anger, 600);
+        assert_eq!(crate::mobs::piglin::angry_at(&m), Some(600));
         assert_eq!(m.ai.target, Some(Who::Player));
         for remaining in [600, 520] {
-            m.extra.anger = remaining;
+            crate::mobs::piglin::set_angry_at(&mut m, remaining);
             for base in [None, Some(&raw)] {
                 let saved = mob_to_nbt(
                     &m,
@@ -106,7 +106,7 @@ fn a_saved_guarded_anger_loads_its_uuid_and_ticks() {
         ("ttl", Tag::Long(99)),
     ]));
     let loaded = mob_from_nbt(&ticking, &types, 2, None).unwrap();
-    assert_eq!(loaded.extra.anger, 99);
+    assert_eq!(crate::mobs::piglin::angry_at(&loaded), Some(99));
     assert_eq!(
         loaded.extra.piglin.guarded_angry_at,
         Some(Some([90, 91, 92, 93]))
@@ -171,7 +171,7 @@ fn calm_loaded_and_missing_identity_states_are_distinct() {
     );
     assert_eq!(memory(&untouched), memory(&raw));
     crate::mobs::piglin::set_guarded_anger_target(&mut m, None);
-    assert_eq!(m.extra.anger, 600);
+    assert_eq!(crate::mobs::piglin::angry_at(&m), Some(600));
     assert_eq!(m.ai.target, Some(Who::Player));
     let saved = mob_to_nbt(
         &m,

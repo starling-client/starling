@@ -1,1 +1,1 @@
-pub use entity::collider::{Collider, ColliderBox, ColliderError};
+pub use entity::collider::{Collider, ColliderBox, ColliderError, ColliderPose};

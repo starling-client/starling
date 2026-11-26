@@ -84,6 +84,9 @@ pub(crate) struct Context<'a> {
     pub local_expression_kind_tracker: crate::proc::ExpressionKindTracker,
     /// Tracks the expression kind of `Expression`s residing in `self.module.global_expressions`
     pub global_expression_kind_tracker: &'a mut crate::proc::ExpressionKindTracker,
+    /// The names in scope where a constant expression (an array size, a `case` label) is
+    /// written, so a `const` local declared there may be named in it (GLSL 4.60, 4.3.3).
+    pub enclosing: Option<&'a crate::front::SymbolTable<String, VariableReference>>,
 }
 
 impl<'a> Context<'a> {
@@ -114,6 +117,7 @@ impl<'a> Context<'a> {
             is_const: false,
             local_expression_kind_tracker: crate::proc::ExpressionKindTracker::new(),
             global_expression_kind_tracker,
+            enclosing: None,
         };
 
         this.emit_start();

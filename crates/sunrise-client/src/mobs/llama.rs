@@ -136,12 +136,15 @@ pub fn breed_offspring(m: &mut Mob, partner: &Seen) -> equine::Offspring {
 struct LlamaHurtBy(HurtByTarget);
 impl Goal for LlamaHurtBy {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         self.0.flags()
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         self.0.can_use(m, cx)
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if m.extra.flag2 {
             m.extra.flag2 = false;
@@ -149,9 +152,11 @@ impl Goal for LlamaHurtBy {
         }
         self.0.can_continue(m, cx)
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.start(m, cx)
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.stop(m, cx)
     }
@@ -190,7 +195,7 @@ fn spit(m: &mut Mob, who: Who, _power: f32, cx: &mut Cx) {
 /// `AbstractHorse.aiStep` for llamas, which never graze: the slow healing.
 pub fn ai_step(m: &mut Mob, w: &MobWorld) {
     if m.alive() && m.random.next_int_bound(900).unwrap_or(1) == 0 && m.death_time == 0 {
-        m.heal(w.loop_context, 1.0);
+        m.heal(w.loop_context, &|| w.side.hit_reads(), 1.0);
     }
     if is_trader(m) {
         super::caravan::trader_llama_tick(m, w);

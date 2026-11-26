@@ -471,7 +471,9 @@ pub(crate) fn rendered_bytes(text: &Text, inherited: Option<&Style>) -> usize {
                 Some(ClickEvent::ChangePage(_) | ClickEvent::ShowDialog(_)) | None => 0,
             };
             let object = match &style.inline_object {
-                Some(InlineObject::Player { fallback, .. }) => fallback.len(),
+                Some(
+                    InlineObject::Player { fallback, .. } | InlineObject::Dynamic { fallback, .. },
+                ) => fallback.len(),
                 Some(InlineObject::Atlas {
                     atlas,
                     sprite,
@@ -1035,6 +1037,114 @@ pub fn name_text(tag: &Tag) -> Text {
     match tag {
         Tag::String(s) => Text::untrusted_legacy(&s.to_string_lossy()),
         t => crate::scoreboard::comp_text(&crate::scoreboard::tag_to_json(t)),
+    }
+}
+
+/// `ComponentSerialization.CODEC`: validate an NBT text component and collapse
+/// a plain `{text: "..."}` compound to a string, returning `None` for invalid
+/// inputs such as numbers (`123`), empty lists (`[]`), or empty compounds (`{}`).
+pub fn validated_component(tag: &Tag) -> Option<Tag> {
+    if !is_valid_component_tag(tag, 0) {
+        return None;
+    }
+    match tag {
+        Tag::Compound(map)
+            if map.len() == 1 && matches!(map.get(&"text".into()), Some(Tag::String(_))) =>
+        {
+            map.get(&"text".into()).cloned()
+        }
+        Tag::List(items) if items.len() == 1 => validated_component(&items[0]),
+        _ => Some(tag.clone()),
+    }
+}
+
+fn is_valid_component_tag(tag: &Tag, depth: usize) -> bool {
+    if depth > 64 {
+        return false;
+    }
+    match tag {
+        Tag::String(_) => true,
+        Tag::List(items) => {
+            !items.is_empty()
+                && items
+                    .iter()
+                    .all(|item| is_valid_component_tag(item, depth + 1))
+        }
+        Tag::Compound(map) => {
+            let is_str = |key: &str| matches!(map.get(&key.into()), Some(Tag::String(_)));
+            let is_num = |t: &Tag| {
+                matches!(
+                    t,
+                    Tag::Byte(_)
+                        | Tag::Short(_)
+                        | Tag::Int(_)
+                        | Tag::Long(_)
+                        | Tag::Float(_)
+                        | Tag::Double(_)
+                )
+            };
+            let valid_content = match map.get(&"type".into()) {
+                Some(Tag::String(ty)) => match ty.to_string_lossy().as_ref() {
+                    "text" => is_str("text"),
+                    "translatable" => is_str("translate"),
+                    "keybind" => is_str("keybind"),
+                    "score" => matches!(map.get(&"score".into()), Some(Tag::Compound(_))),
+                    "selector" => is_str("selector"),
+                    "nbt" => is_str("nbt"),
+                    "object" => map.contains_key(&"player".into()) || is_str("sprite"),
+                    _ => false,
+                },
+                Some(_) => false,
+                None => {
+                    is_str("text")
+                        || is_str("translate")
+                        || is_str("keybind")
+                        || matches!(map.get(&"score".into()), Some(Tag::Compound(_)))
+                        || is_str("selector")
+                        || is_str("nbt")
+                        || map.contains_key(&"player".into())
+                        || is_str("sprite")
+                }
+            };
+            if !valid_content {
+                return false;
+            }
+            if let Some(extra) = map.get(&"extra".into()) {
+                let Tag::List(items) = extra else {
+                    return false;
+                };
+                if items.is_empty()
+                    || !items
+                        .iter()
+                        .all(|item| is_valid_component_tag(item, depth + 1))
+                {
+                    return false;
+                }
+            }
+            if let Some(color) = map.get(&"color".into()) {
+                let Tag::String(s) = color else {
+                    return false;
+                };
+                if parse_color(&s.to_string_lossy()).is_none() {
+                    return false;
+                }
+            }
+            for flag in [
+                "bold",
+                "italic",
+                "underlined",
+                "strikethrough",
+                "obfuscated",
+            ] {
+                if let Some(v) = map.get(&flag.into())
+                    && !is_num(v)
+                {
+                    return false;
+                }
+            }
+            true
+        }
+        _ => false,
     }
 }
 

@@ -68,7 +68,7 @@ TripWireHookBlock.notifyNeighbors	port	crates/sunrise-world/src/level/rails.rs::
 TripWireHookBlock.getDirectSignal	port	crates/sunrise-world/src/level/redstone.rs::Sim::state_direct_signal	strong power from per-state data (powered and facing)
 TripWireHookBlock.rotate	port	crates/sunrise-world/src/worldgen/structure.rs::StateTransforms::rotate
 TripWireHookBlock.createBlockStateDefinition	skip:data		block state definition is data (blocks table in sunrise-items)
-TurtleEggBlock.stepOn	port	crates/sunrise-client/src/motion.rs::MotionWorld::effects_from_blocks	ticked in #3516; `TurtleEggBlock.stepOn` is cited at crates/sunrise-client/src/motion.rs:1434 (in a comment, so `where` names the enclosing fn)
+TurtleEggBlock.stepOn	port	crates/sunrise-client/src/motion/integrate.rs::MotionWorld::effects_from_blocks	ticked in #3516
 TurtleEggBlock.destroyEgg	port	crates/sunrise-world/src/block_landing.rs::BlockLandingRegistry::destroy_egg	the fall roll (1 in 3) and the step roll (1 in 100 through step_on, called from the player's step)
 TurtleEggBlock.decreaseEggs	inline	crates/sunrise-world/src/block_landing.rs::BlockLandingRegistry::fall_on	One egg fewer, or the block removed, inside the TurtleEgg rule.
 TurtleEggBlock.onPlace	port	crates/sunrise-world/src/level/hooks.rs::Sim::on_place	TurtleEgg arm: crack level event on sand.
@@ -135,7 +135,7 @@ BaseContainerBlockEntity.collectImplicitComponents	port	crates/sunrise-client/sr
 BaseContainerBlockEntity.getLootContext	port	crates/sunrise-client/src/structure_blocks.rs::roll_container	position seed and biome feed the loot table roll.
 BeaconBlockEntity.updateBase	port	crates/sunrise-client/src/game/blocks/beacon.rs::Game::beacon_base	counts the pyramid levels (steps 1 to 4)
 BeaconBlockEntity.storeEffect	port	crates/sunrise-client/src/save/block_entity_encode.rs::encode	primary and secondary written to the beacon tag
-BeaconBlockEntity.loadEffect	port	crates/sunrise-client/src/save.rs::decode_block_entity	primary and secondary read from the beacon tag
+BeaconBlockEntity.loadEffect	port	crates/sunrise-client/src/save/block_entity_decode.rs::decode_block_entity	primary and secondary read from the beacon tag
 BeaconBlockEntity.createMenu	port	crates/sunrise-client/src/game/blocks/beacon.rs::Game::beacon_opened
 BeaconBlockEntity.applyImplicitComponents	port	crates/sunrise-client/src/block_entity_item.rs::place	beacon name and lock from item components
 BeaconBlockEntity.collectImplicitComponents	port	crates/sunrise-client/src/block_entity_item.rs::collect	beacon name and lock to item components

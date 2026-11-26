@@ -1,0 +1,15 @@
+ids = [
+    "hook:placement_context",
+    "hook:state_for_placement",
+    "type:world::snapshots::PlacementContext",
+    "type:world::snapshots::PlacementContext.pitch",
+    "type:world::snapshots::PlacementContext.sneaking",
+    "type:world::snapshots::PlacementContext.source",
+    "type:world::snapshots::PlacementContext.yaw",
+    "type:world::snapshots::PlacementSource",
+    "type:world::snapshots::PlacementStateError",
+    "handle:world::snapshots::PlacementContext::directional",
+    "handle:LevelRef::state_for_placement",
+]
+why = "PlacementContext now carries a PlacementSource distinguishing a player placement (BlockPlaceContext: PlacementSource::Player { yaw, pitch, sneaking }) from a directional non-player placement (DirectionalPlaceContext: PlacementSource::Directional { direction }, such as a dispenser placing a shulker box or a falling block checking replaceability). Moving yaw, pitch and sneaking into PlacementSource::Player removes the invalid combination of player orientation fields on a non-player placement. A directional context's replace_clicked is worked out from the block at hit_pos, as DirectionalPlaceContext.replacingClickedOnBlock() is canPlace(), so a value a mod writes there is not read. LevelRef::state_for_placement returns PlacementStateError, which refuses the two directional questions vanilla throws on instead of answering them: NoVerticalLook (the block's rule reads getNearestLookingVerticalDirection, which DirectionalPlaceContext has no player for: SpeleothemBlock) and ReplacingClickedCycle (the clicked block's canBeReplaced asks replacingClickedOnBlock, which is that canBeReplaced again: a slab or snow layer clicked with its own item). A part's placement_context rewrite to such a directional context is refused the same way."
+migrate = "state_for_placement is SDK surface version 4 and placement_context is SDK surface version 3; rebuild against the updated SDK. Match context.source for PlacementSource::Player { yaw, pitch, sneaking } (vanilla getPlayer() != null) versus PlacementSource::Directional { direction } (vanilla DirectionalPlaceContext, getPlayer() == null), and use PlacementContext::directional for non-player placement queries. Don't set replace_clicked on a directional context: the game reads it from the clicked block. Match LevelRef::state_for_placement's error as PlacementStateError: Stale and Unavailable replace LevelReadError's variants, and NoVerticalLook and ReplacingClickedCycle are directional queries vanilla has no answer for."

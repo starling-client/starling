@@ -47,16 +47,11 @@ import threading
 import time
 import urllib.parse
 
-try:
-    from . import lab, oracle_harness as oh, test_rust_parity as base
-    from .test_dedicated_server_parity import Server, free_port
-    from .integration_env import run_game
-except ImportError:
-    import lab
-    import oracle_harness as oh
-    import test_rust_parity as base
-    from test_dedicated_server_parity import Server, free_port
-    from integration_env import run_game
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, oracle_harness as oh, test_rust_parity as base
+from tools.test_dedicated_server_parity import Server, free_port
+from tools.integration_env import run_game
 
 NAME = 'online-mode-parity'
 PLAYER = 'Tester'

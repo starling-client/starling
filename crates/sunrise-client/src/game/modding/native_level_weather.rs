@@ -1,62 +1,12 @@
-//! Weather writes for native server mods through a `LevelRef`, on the same path as
-//! `/weather`: `ServerLevel.setWeatherParameters` with the weather and thunder hooks, and
-//! `Level.setRainLevel` / `setThunderLevel` for how strong the rain and thunder are now. Like
-//! the command, they act on the level in place; a parked level, a stale handle or a client
-//! returns false. The players see the change on the next host sync.
+//! Weather writes for native server mods. Parameters are shared across levels as in
+//! `MinecraftServer.setWeatherParameters`; strengths are immediate interpolants of the
+//! addressed level, as in `Level.setRainLevel` and `Level.setThunderLevel`.
 use super::Game;
-use crate::game::level_control_hooks::LevelControl;
 use mod_api::LevelRef;
 
 impl Game<'_> {
-    /// `ServerLevel.setWeatherParameters(clear, time, raining, thundering)` in the level in
-    /// place, as `/weather` and mods set it: `weather_change` may cancel all of it and
-    /// `thunder_change` the thunder half.
-    pub(in crate::game) fn set_weather_parameters(
-        &mut self,
-        clear: i32,
-        time: i32,
-        raining: bool,
-        thundering: bool,
-    ) {
-        let previous = (
-            self.world.weather.clear_time,
-            self.world.weather.rain_time,
-            self.world.weather.thunder_time,
-            self.world.weather.raining,
-            self.world.weather.thundering,
-        );
-        let mut cancel = false;
-        self.native_weather_change(self.dim.id(), raining, thundering, &mut cancel);
-        let old_thundering = self.world.weather.thundering;
-        let old_thunder_time = self.world.weather.thunder_time;
-        let mut cancel_thunder = false;
-        self.native_thunder_change(self.dim.id(), thundering, &mut cancel_thunder);
-        if cancel {
-            let w = &mut self.world.weather;
-            (
-                w.clear_time,
-                w.rain_time,
-                w.thunder_time,
-                w.raining,
-                w.thundering,
-            ) = previous;
-        } else {
-            // ServerLevel.setWeatherParameters.
-            let w = &mut self.world.weather;
-            w.clear_time = clear;
-            w.rain_time = time;
-            w.thunder_time = time;
-            w.raining = raining;
-            w.thundering = thundering;
-            if cancel_thunder {
-                w.thunder_time = old_thunder_time;
-                w.thundering = old_thundering;
-            }
-        }
-    }
-    /// `set_weather_parameters` through a handle of the level in place. False for a negative
-    /// time, inside the `weather_change` or `thunder_change` hook, a parked level, a stale
-    /// handle or a client.
+    /// Use the resident server level as the origin of the shared parameter write.
+    /// Returns false for an invalid handle or a veto.
     pub(super) fn level_set_weather(
         &mut self,
         level: LevelRef,
@@ -65,94 +15,180 @@ impl Game<'_> {
         raining: bool,
         thundering: bool,
     ) -> bool {
-        if !self.level_in_place(level)
-            || clear_ticks < 0
-            || weather_ticks < 0
-            || LevelControl::Weather.is_heard()
-        {
+        if let Err(error) = self.native_level_world_result(level) {
+            let mod_id = mod_api::content::crash::current_native_mod().unwrap_or("unknown");
+            log::warn!("mod {mod_id}: set_weather refused for {level:?}: {error:?}");
             return false;
         }
-        self.set_weather_parameters(clear_ticks, weather_ticks, raining, thundering);
-        true
+        self.set_weather_parameters(
+            level.dimension_id(),
+            clear_ticks,
+            weather_ticks,
+            raining,
+            thundering,
+        )
     }
-    /// `Level.setRainLevel(rain)` and `setThunderLevel(thunder)`: both halves of each level
-    /// at once, clamped to 0 to 1, so the change shows without fading in. False for a value
-    /// that isn't finite, a parked level, a stale handle or a client.
+
+    /// Set both interpolants for each weather strength on the addressed resident level.
     pub(super) fn level_set_weather_levels(
         &mut self,
         level: LevelRef,
         rain: f32,
         thunder: f32,
     ) -> bool {
-        if !self.level_in_place(level) || !rain.is_finite() || !thunder.is_finite() {
+        if rain.is_nan() || thunder.is_nan() {
+            let mod_id = mod_api::content::crash::current_native_mod().unwrap_or("unknown");
+            log::warn!(
+                "mod {mod_id}: set_weather_levels refused NaN (rain {rain}, thunder {thunder})"
+            );
             return false;
         }
-        let w = &mut self.world.weather;
-        let (rain, thunder) = (rain.clamp(0.0, 1.0), thunder.clamp(0.0, 1.0));
-        w.rain_level = (rain, rain);
-        w.thunder_level = (thunder, thunder);
+        let world = if !self.is_logical_server() || !self.level_handle_current(level) {
+            None
+        } else if level.dimension() == self.dim.key() {
+            Some(&mut self.world)
+        } else {
+            self.levels.parked_world_mut_of(level.dimension_id())
+        };
+        let Some(world) = world else {
+            let mod_id = mod_api::content::crash::current_native_mod().unwrap_or("unknown");
+            log::warn!(
+                "mod {mod_id}: set_weather_levels refused for {level:?}: no resident server level"
+            );
+            return false;
+        };
+        world.weather.set_levels(rain, thunder);
         true
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::native_entity_refs::tests::{run_fresh_cases, with_game};
+    use crate::game::Dim;
     use mod_api::{LevelRef, WorldEpoch};
+    use std::sync::{Arc, Mutex};
+    use sunrise_client::world::Weather;
 
-    #[test]
-    #[ignore = "daily"]
-    fn weather_writes_set_the_level_in_place_and_refuse_others() {
-        super::super::native_entity_refs::tests::with_game(|game| {
-            let level = game.level(game.dim.id()).unwrap();
-            let stale = LevelRef::new(WorldEpoch::new(level.epoch().get() + 1), level.dimension());
-            let nether = LevelRef::new(level.epoch(), mod_api::DimensionKey::NETHER);
-
-            assert!(level.set_weather(game, 0, 6000, true, true));
-            let w = &game.world.weather;
-            assert_eq!(
-                (
-                    w.clear_time,
-                    w.rain_time,
-                    w.thunder_time,
-                    w.raining,
-                    w.thundering
-                ),
-                (0, 6000, 6000, true, true)
-            );
-            assert!(level.set_weather(game, 1200, 0, false, false));
-            let w = &game.world.weather;
-            assert_eq!(
-                (w.clear_time, w.raining, w.thundering),
-                (1200, false, false)
-            );
-            assert!(!level.set_weather(game, -1, 0, false, false));
-            assert!(
-                !nether.set_weather(game, 0, 10, true, false),
-                "a level not in place"
-            );
-            assert!(!stale.set_weather(game, 0, 10, true, false));
-
-            assert!(level.set_weather_levels(game, 0.5, 2.0));
-            let w = &game.world.weather;
-            assert_eq!(
-                (w.rain_level, w.thunder_level),
-                ((0.5, 0.5), (1.0, 1.0)),
-                "clamped, without fading"
-            );
-            assert_eq!(
-                level.weather(game),
-                Some((0.5, 0.5)),
-                "getThunderLevel reads thunder times rain"
-            );
-            assert!(!level.set_weather_levels(game, f32::NAN, 0.0));
-            assert!(!stale.set_weather_levels(game, 0.0, 0.0));
-        });
+    fn parameters(w: &Weather) -> (i32, i32, i32, bool, bool) {
+        (
+            w.clear_time,
+            w.rain_time,
+            w.thunder_time,
+            w.raining,
+            w.thundering,
+        )
     }
 
     #[test]
     #[ignore = "daily"]
-    fn local_difficulty_and_tick_rate_reach_the_game() {
-        super::super::native_entity_refs::tests::with_game(|game| {
+    fn weather_parameters_are_shared_and_strengths_are_local() {
+        crate::game::in_own_process(
+            "game::native_level_weather::tests::weather_parameters_are_shared_and_strengths_are_local",
+            || {
+                with_game(|game| {
+                    game.world_root = game.options.game_dir.clone().unwrap();
+                    let level = game.level(game.dim.id()).unwrap();
+                    let stale =
+                        LevelRef::new(WorldEpoch::new(level.epoch().get() + 1), level.dimension());
+                    let nether = LevelRef::new(level.epoch(), mod_api::DimensionKey::NETHER);
+
+                    assert!(
+                        !nether.set_weather(game, 0, 10, true, false),
+                        "not yet open"
+                    );
+                    assert!(level.set_weather(game, -9, -37, true, true));
+                    assert_eq!(parameters(&game.world.weather), (-9, -37, -37, true, true));
+                    assert!(!stale.set_weather(game, 0, 10, false, false));
+                    assert_eq!(parameters(&game.world.weather), (-9, -37, -37, true, true));
+
+                    game.enter_level(Dim::Nether).unwrap();
+                    game.enter_level(Dim::Overworld).unwrap();
+                    assert_eq!(parameters(&game.world.weather), (-9, -37, -37, true, true));
+                    assert!(nether.set_weather(game, 1200, 0, false, false));
+                    assert_eq!(parameters(&game.world.weather), (1200, 0, 0, false, false));
+                    assert_eq!(
+                        game.dim,
+                        Dim::Overworld,
+                        "a parked origin does not switch levels"
+                    );
+
+                    assert!(level.set_weather_levels(game, f32::NEG_INFINITY, f32::INFINITY));
+                    let w = &game.world.weather;
+                    assert_eq!((w.rain_level, w.thunder_level), ((0.0, 0.0), (1.0, 1.0)));
+                    assert!(level.set_weather_levels(game, 0.5, 2.0));
+                    assert_eq!(
+                        level.weather(game),
+                        Some((0.5, 0.5)),
+                        "thunder scales with rain"
+                    );
+                    assert!(!level.set_weather_levels(game, f32::NAN, 0.0));
+                    assert!(!level.set_weather_levels(game, 0.0, f32::NAN));
+                    assert!(!stale.set_weather_levels(game, 0.0, 0.0));
+                    let w = &game.world.weather;
+                    assert_eq!(
+                        (w.rain_level, w.thunder_level),
+                        ((0.5, 0.5), (1.0, 1.0)),
+                        "refusals change neither interpolant",
+                    );
+
+                    let wet_id = "weather_test:wet";
+                    let wet = {
+                        let _caller = mod_api::content::crash::enter_native_mod(
+                            mod_api::content::crash::ModCall {
+                                id: "weather_test",
+                                hook: "level_tick_post",
+                                part: None,
+                            },
+                        );
+                        game.runtime_level_open(
+                            wet_id,
+                            mod_api::RuntimeLevel::new(
+                                "minecraft:overworld",
+                                mod_api::RuntimeGenerator::Flat,
+                                1,
+                            ),
+                        )
+                        .unwrap()
+                    };
+                    game.apply_runtime_levels();
+                    assert!(wet.set_weather_levels(game, 0.75, 0.25));
+                    assert_eq!(game.dim, Dim::Overworld);
+                    assert_eq!(wet.weather(game), Some((0.75, 0.1875)));
+                    assert_eq!(level.weather(game), Some((0.5, 0.5)));
+
+                    let wet_dim = Dim::extra(wet_id).unwrap();
+                    game.enter_level(wet_dim).unwrap();
+                    assert!(game.can_have_weather());
+                    let w = &game.world.weather;
+                    assert_eq!(
+                        (w.rain_level, w.thunder_level),
+                        ((0.75, 0.75), (0.25, 0.25))
+                    );
+                    assert_eq!(parameters(w), (1200, 0, 0, false, false));
+                    assert!(level.set_weather_levels(game, 0.25, 0.5));
+                    assert_eq!(wet.weather(game), Some((0.75, 0.1875)));
+
+                    game.enter_level(Dim::Overworld).unwrap();
+                    let w = &game.world.weather;
+                    assert_eq!((w.rain_level, w.thunder_level), ((0.25, 0.25), (0.5, 0.5)));
+                    assert_eq!(wet.weather(game), Some((0.75, 0.1875)));
+                })
+            },
+        );
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn local_difficulty_reaches_the_game() {
+        if run_fresh_cases(
+            "game::native_level_weather::tests::local_difficulty_reaches_the_game",
+            "SUNRISE_LOCAL_DIFFICULTY_CHILD",
+            &["local-difficulty"],
+        ) {
+            return;
+        }
+        with_game(|game| {
             let level = game.level(game.dim.id()).unwrap();
             let stale = LevelRef::new(WorldEpoch::new(level.epoch().get() + 1), level.dimension());
             let here = game.local_difficulty([3.0, 64.0, -7.0]);
@@ -160,110 +196,90 @@ mod tests {
             assert_eq!((read.base, read.effective), (here.base, here.effective));
             assert_eq!(read.special_multiplier(), here.special());
             assert_eq!(stale.local_difficulty(game, [3, 64, -7]), None);
-
-            assert!(game.set_tick_rate(40.0));
-            assert_eq!(game.tick_stats().0, 40.0);
-            assert!(!game.set_tick_rate(0.5));
-            assert!(!game.set_tick_rate(f32::NAN));
-            assert_eq!(game.clock.rate(), 40.0, "refusals change nothing");
         });
     }
-    type Log = std::sync::Arc<std::sync::Mutex<Vec<(&'static str, bool)>>>;
 
-    /// A mod that enforces its own weather, border and tick rate from inside the hooks those
-    /// writes fire, the loop the setters refuse.
-    struct Enforcer(Log);
-
-    impl Enforcer {
-        fn log(&self, what: &'static str, ok: bool) {
-            self.0.lock().unwrap().push((what, ok));
-        }
-    }
-
-    #[mod_api::__subscriptions]
-    impl mod_api::Hooks for Enforcer {
-        fn weather_change(
-            &self,
-            host: &mut dyn mod_api::ServerHost,
-            event: &mut mod_api::WeatherChangeEvent<'_>,
-        ) -> mod_api::Flow {
-            let level = host.level(event.dimension).unwrap();
-            self.log("weather", level.set_weather(host, 0, 100, false, false));
-            mod_api::Flow::Continue
-        }
-        fn world_border_center_changed(
-            &self,
-            host: &mut dyn mod_api::ServerHost,
-            _: &mut mod_api::WorldBorderCenterChangedEvent,
-        ) {
-            let level = host.level("minecraft:overworld").unwrap();
-            self.log("center", level.set_world_border_center(host, [7.0, 7.0]));
-            let size = level.set_world_border_size(host, 300.0, 0);
-            self.log("size from center", size);
-        }
-        fn world_border_bounds_changed(
-            &self,
-            host: &mut dyn mod_api::ServerHost,
-            _: &mut mod_api::WorldBorderBoundsChangedEvent,
-        ) {
-            let level = host.level("minecraft:overworld").unwrap();
-            self.log("size", level.set_world_border_size(host, 400.0, 0));
-            let center = level.set_world_border_center(host, [9.0, 9.0]);
-            self.log("center from size", center);
-        }
-        fn server_tick_rate_changed(
-            &self,
-            host: &mut dyn mod_api::ServerHost,
-            _: &mut mod_api::ServerTickRateChangedEvent,
-        ) {
-            self.log("tick", host.set_tick_rate(30.0));
-        }
-    }
-
-    /// A listener calling the setter of the hook it hears is refused, so the hook doesn't fire
-    /// again without end; another control's setter runs once, and its own hook can't come back
-    /// to the first. The outer writes stand, and a write of the value already there is heard
-    /// by nobody.
     #[test]
     #[ignore = "daily"]
-    fn a_listener_calling_its_own_setter_is_refused() {
-        let log = Log::default();
-        let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
-            "enforcer",
-            Box::new(Enforcer(log.clone())),
-        )]
-        .into();
-        let take = || std::mem::take(&mut *log.lock().unwrap());
+    fn weather_veto_does_not_undo_listener_work() {
+        type Proposal = (String, i32, i32, bool, bool);
+        struct Veto(Arc<Mutex<Vec<Proposal>>>);
+
+        #[mod_api::__subscriptions]
+        impl mod_api::Hooks for Veto {
+            fn weather_change(
+                &self,
+                host: &mut dyn mod_api::ServerHost,
+                event: &mut mod_api::WeatherChangeEvent<'_>,
+            ) -> mod_api::Flow {
+                self.0.lock().unwrap().push((
+                    event.dimension.to_owned(),
+                    event.clear_ticks,
+                    event.weather_ticks,
+                    event.raining,
+                    event.thundering,
+                ));
+                let level = host.level("minecraft:overworld").unwrap();
+                if event.weather_ticks == 23 {
+                    assert!(level.set_weather(host, 31, 37, true, false));
+                    assert!(level.set_weather_levels(host, 0.5, 0.25));
+                } else {
+                    assert!(level.set_weather_levels(host, 0.25, 0.75));
+                }
+                mod_api::Flow::Cancel
+            }
+        }
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let mods = vec![mod_api::ModEntry::new("veto", Box::new(Veto(seen.clone())))].into();
         mod_platform::testing::with_mods(mods, || {
-            super::super::native_entity_refs::tests::with_game(|game| {
-                let level = game.level(game.dim.id()).unwrap();
+            with_game(|game| {
+                game.enter_level(Dim::Nether).unwrap();
+                game.enter_level(Dim::Overworld).unwrap();
+                let nether = game.level("minecraft:the_nether").unwrap();
+                let weather = &mut game.world.weather;
+                weather.clear_time = 7;
+                weather.rain_time = 11;
+                weather.thunder_time = 13;
+                weather.raining = false;
+                weather.thundering = true;
 
-                assert!(level.set_weather(game, 0, 6000, true, false));
-                assert_eq!(take(), [("weather", false)]);
-                assert!(game.world.weather.raining, "the outer write stands");
-
-                assert!(level.set_world_border_center(game, [100.0, -50.0]));
+                assert!(!nether.set_weather(game, -7, 19, true, false));
+                let weather = &game.world.weather;
+                assert_eq!(parameters(weather), (7, 11, 13, false, true));
                 assert_eq!(
-                    take(),
-                    [
-                        ("center", false),
-                        ("size", false),
-                        ("center from size", false),
-                        ("size from center", true),
-                    ]
+                    (weather.rain_level, weather.thunder_level),
+                    ((0.25, 0.25), (0.75, 0.75))
                 );
-                assert_eq!(game.border.center(), [100.0, -50.0]);
-                assert_eq!(game.border.size(), 300.0);
-                assert!(level.set_world_border_center(game, [100.0, -50.0]));
-                assert!(level.set_world_border_size(game, 300.0, 0));
-                assert!(take().is_empty(), "an unchanged border is heard by nobody");
+                assert_eq!(
+                    std::mem::take(&mut *seen.lock().unwrap()),
+                    [(String::from("minecraft:the_nether"), -7, 19, true, false)]
+                );
 
-                assert!(game.set_tick_rate(40.0));
-                assert_eq!(take(), [("tick", false)]);
-                assert_eq!(game.clock.rate(), 40.0);
+                let failure = game
+                    .as_console(|game| {
+                        game.execute_line("weather thunder 23t", game.player_source())
+                    })
+                    .unwrap_err();
+                assert_eq!(failure.message.translation_key(), Some("command.failed"));
+                let weather = &game.world.weather;
+                assert_eq!(
+                    parameters(weather),
+                    (31, 37, 37, true, false),
+                    "the accepted nested write is not rolled back",
+                );
+                assert_eq!(
+                    (weather.rain_level, weather.thunder_level),
+                    ((0.5, 0.5), (0.25, 0.25))
+                );
+                assert_eq!(
+                    std::mem::take(&mut *seen.lock().unwrap()),
+                    [(String::from("minecraft:overworld"), 0, 23, true, true)]
+                );
             });
         });
     }
+
     /// `DifficultyInstance`'s formula worked by hand, not through the shared code, for a chunk
     /// that isn't loaded (no inhabited time, no moon) on Hard: 3 x 0.75 = 2.25 (special
     /// multiplier 0.125) before day time 72 000, and 3 x (0.75 + 0.25) = 3.0 (special 0.5)
@@ -271,7 +287,7 @@ mod tests {
     #[test]
     #[ignore = "daily"]
     fn local_difficulty_matches_vanilla_values_for_an_unloaded_chunk() {
-        super::super::native_entity_refs::tests::with_game(|game| {
+        with_game(|game| {
             let level = game.level(game.dim.id()).unwrap();
             let far = (100_000, -100_000);
             assert!(!game.world.chunks.contains_key(&far));

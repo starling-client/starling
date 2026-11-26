@@ -49,6 +49,10 @@ import subprocess
 import sys
 import threading
 
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import file_lock
+
 CACHE = Path(os.environ.get("PARITY_SHIM_CACHE", ".local/parity-runner/oracle-cache"))
 KEEP = Path(os.environ["PARITY_ORACLE_KEEP"]) if os.environ.get("PARITY_ORACLE_KEEP") else None
 KEEP_FORMAT = 2
@@ -100,9 +104,12 @@ class Hashes:
 
     def __init__(self):
         CACHE.mkdir(parents=True, exist_ok=True)
-        self.db = sqlite3.connect(CACHE / "hashes.sqlite", timeout=60)
-        self.db.execute("pragma journal_mode=wal")
-        self.db.execute("create table if not exists hashes (path text primary key, size int, mtime int, sha text)")
+        # Switching a cold database to WAL needs an exclusive SQLite lock.
+        with (CACHE / "hashes.lock").open("a+b") as setup:
+            file_lock.lock(setup)
+            self.db = sqlite3.connect(CACHE / "hashes.sqlite", timeout=60)
+            self.db.execute("pragma journal_mode=wal")
+            self.db.execute("create table if not exists hashes (path text primary key, size int, mtime int, sha text)")
 
     def file(self, path):
         stat = os.stat(path)
@@ -227,11 +234,11 @@ def reusable(saved, paths, hashes):
 
 
 def direct_jdk(program, name):
-    """Whether `program` is $JAVA_HOME's own `name`, resolving to a file in the JDK's own bin/: a wrapper's or
-    selector's JDK, or a link out of the JDK, can change behind the same file."""
+    """Whether `program` is $JAVA_HOME's own `name` (`name.exe` on Windows), resolving to a file in the JDK's own
+    bin/: a wrapper's or selector's JDK, or a link out of the JDK, can change behind the same file."""
     home = os.environ.get("JAVA_HOME")
     resolved = os.path.realpath(program)
-    return (bool(home) and os.path.basename(resolved) == name
+    return (bool(home) and Path(resolved).stem == name
             and os.path.dirname(resolved) == os.path.join(os.path.realpath(home), "bin"))
 
 

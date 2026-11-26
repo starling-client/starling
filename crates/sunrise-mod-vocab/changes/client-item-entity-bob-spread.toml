@@ -1,0 +1,5 @@
+ids = [
+    "method:ClientItemExtensions::should_bob_as_entity",
+    "method:ClientItemExtensions::should_spread_as_entity",
+]
+why = "NeoForge 26.3 IClientItemExtensions.shouldBobAsEntity and shouldSpreadAsEntity: an item's client extensions decide whether its dropped stack bobs and whether a stack's copies spread apart. Both default to true, so existing providers draw as before."

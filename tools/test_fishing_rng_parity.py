@@ -14,10 +14,9 @@ import subprocess
 import sys
 import tempfile
 
-try:
-    from . import lab
-except ImportError:
-    import lab
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab
 
 
 def prepare_reference(work):
@@ -121,8 +120,8 @@ def main():
     env["SUNRISE_FISHING_REFERENCE"] = str(work / "fishing-reference.json")
     env["SUNRISE_FISHING_CAST_REFERENCE"] = str(work / "fishing-casts-reference.json")
     # Use the test profile parity CI prebuilds, with its lower opt-level for the game lib test.
-    subprocess.run(["cargo", "test", "--locked", "-p", "sunrise-client", "--lib",
-                    "game::fishing::tests::fishing_retrieve_reference", "--", "--exact", "--ignored"],
+    subprocess.run([lab.parity_fixtures(),
+                    "game::fishing::tests::fishing_retrieve_reference", "--exact", "--ignored"],
                    cwd=lab.ROOT, env=env, check=True)
     print("fishing: ground prediction, bobbing, seeded catch timers, loot and XP match vanilla")
 

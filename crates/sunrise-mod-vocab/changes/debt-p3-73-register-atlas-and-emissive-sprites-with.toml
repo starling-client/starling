@@ -1,0 +1,36 @@
+ids = [
+    "hook:register_texture_atlases",
+    "hook:emissive",
+    "hook:emissive.layers",
+    "method:Hooks::emissive",
+    "type:EmissiveEvent.layers",
+    "handle:EmissiveEvent::register",
+    "type:EmissiveSpriteRegistration",
+    "type:EmissiveSpriteRegistration.base",
+    "type:EmissiveSpriteRegistration.overlay",
+    "handle:EmissiveSpriteRegistration::new",
+]
+why = "Removed private atlas/sprite quotas (MAX_ATLASES = 32, MAX_SPRITES = 4096), minecraft/sunrise namespace bans, and silent collision drops from register_texture_atlases, aligning with NeoForge RegisterTextureAtlasesEvent and vanilla AtlasManager.KNOWN_ATLASES / TextureManager.register with mod-attributed diagnostics and real GPU atlas dimension constraints. Replaced the per-frame &'static str 32-capped emissive hook with typed EmissiveSpriteRegistration collected on startup and resource reload, resolved during bake into RenderAssets::emissive_layers without a private 32/96 split over the 128-entry Globals.emissive_layers GPU uniform table."
+migrate = """
+In Hooks::emissive, change the signature from
+`fn emissive(&self, host: &dyn ClientHost, event: &mut EmissiveEvent<'_>)`
+to
+`fn emissive(&self, context: &RegistrationContext, event: &mut EmissiveEvent<'_>)`
+and replace `event.layers.push((base, overlay))` with
+`event.register(EmissiveSpriteRegistration::new(base, overlay))` using typed `Identifier`s.
+`emissive` now runs at client startup and on every resource reload instead of per frame, and accepts
+overlay textures at any `assets/<namespace>/textures/<path>.png` without the `emissive/` prefix or
+32-entry cap.
+
+For `hook:register_texture_atlases` (version 4) and `hook:register_texture_atlases.atlases`,
+keep calling `event.register(atlas)` in `Hooks::register_texture_atlases` and look up and draw
+sprites by the same `TextureAtlasRegistration::sprite_name`; UVs are local to each stitched
+atlas texture. Non-built-in atlases in
+`minecraft:` or `sunrise:` are now accepted, collisions with vanilla 26.3's built-in engine atlases
+(`AtlasManager.KNOWN_ATLASES`) on either `definition` or `atlas` and duplicate `definition` or
+`atlas` ids are rejected with error diagnostics keeping the first registration, overflowing mod
+atlases are isolated per atlas against the renderer's actual `max_texture_dimension_2d` limit
+without shrinking unrelated model textures or dropping other atlases, and registered atlas sprites
+replace raw pack files at the same staged path with a warning. Rebuild native mods against the
+updated SDK.
+"""

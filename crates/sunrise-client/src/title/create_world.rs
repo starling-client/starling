@@ -20,8 +20,7 @@ const TABS: [&str; 3] = [
     "createWorld.tab.world.title",
     "createWorld.tab.more.title",
 ];
-/// Difficulty ids, in the cycle button's order.
-pub const DIFFICULTIES: [&str; 4] = ["peaceful", "easy", "normal", "hard"];
+pub use crate::save::DIFFICULTIES;
 
 /// WorldCreationUiState beyond the name and seed. Kept as JSON when the game starts again to
 /// create the world with other content mods (world_content.rs `request_create`).

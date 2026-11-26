@@ -7,6 +7,7 @@ use super::{
     feature::FeatureWorld,
     placement::{LayerBlock, PlacementContext, PlacementQueryError},
     terrain::{TerrainBlockStates, TerrainChunk, TerrainError},
+    write_zone::{GenerationWriteZone, UpgradeWriteHeight},
 };
 use crate::{
     fluid::FluidKind,
@@ -16,7 +17,7 @@ use crate::{
 };
 use std::{collections::HashMap, sync::Arc};
 use sunrise_core::{
-    position::BlockPos,
+    position::{BlockPos, ChunkPos},
     ticks::{
         ProtoChunkTicks, ScheduledTick, TickPriority, TickTypeId, WorldGenTickAccess,
         WorldGenTickContainers,
@@ -259,6 +260,27 @@ impl<'r, B: TerrainBlockStates> TerrainRegion<'r, B> {
             None => Err(RegionError::MissingChunk([x, z])),
         }
     }
+    /// The resident center's generation height restricts writes across the
+    /// region only while the center is upgrading. Target storage is separate.
+    pub(super) fn upgrade_write_height(
+        &self,
+        center: ChunkPos,
+    ) -> Result<Option<UpgradeWriteHeight>, RegionError> {
+        let chunk = self.chunk(center.x, center.z)?;
+        Ok(chunk.is_upgrading().then(|| {
+            let (min_y, height) = chunk.height_for_generation();
+            UpgradeWriteHeight::new(min_y, height)
+        }))
+    }
+    pub(super) fn air(&self) -> BlockStateId {
+        self.chunks[0].air()
+    }
+    pub(super) fn void_air(&self) -> BlockStateId {
+        self.chunks[0].void_air()
+    }
+    pub(super) fn block_properties_table(&self) -> &B {
+        self.chunks[0].block_properties_table()
+    }
     pub fn chunk_mut(&mut self, x: i32, z: i32) -> Result<&mut TerrainChunk<'r, B>, RegionError> {
         match self.index(x, z) {
             Some(i) => Ok(&mut self.chunks[i]),
@@ -477,13 +499,13 @@ impl<B: TerrainBlockStates> PlacementContext for TerrainRegion<'_, B> {
 pub struct TerrainFeatureAccess<'a, 'r, B: TerrainBlockStates, F> {
     region: &'a mut TerrainRegion<'r, B>,
     write: F,
-    write_zone: Option<super::write_zone::GenerationWriteZone>,
+    write_zone: Option<GenerationWriteZone>,
     upgrade_height: UpgradeHeightPolicy,
 }
 enum UpgradeHeightPolicy {
     Unrestricted,
-    Fixed(super::write_zone::UpgradeWriteHeight),
-    Center(sunrise_core::position::ChunkPos),
+    Fixed(UpgradeWriteHeight),
+    Center(ChunkPos),
 }
 impl<'a, 'r, B: TerrainBlockStates, F> TerrainFeatureAccess<'a, 'r, B, F> {
     pub fn new(region: &'a mut TerrainRegion<'r, B>, write: F) -> Self {
@@ -495,23 +517,20 @@ impl<'a, 'r, B: TerrainBlockStates, F> TerrainFeatureAccess<'a, 'r, B, F> {
         }
     }
     /// Apply the horizontal write radius before invoking mutation policy/effects.
-    pub fn with_write_zone(mut self, zone: super::write_zone::GenerationWriteZone) -> Self {
+    pub fn with_write_zone(mut self, zone: GenerationWriteZone) -> Self {
         self.write_zone = Some(zone);
         self
     }
     /// Use an explicit height interval. For live generation lifecycle state,
     /// prefer `with_upgrade_center`, which observes changes made by callbacks.
-    pub fn with_upgrade_height(mut self, height: super::write_zone::UpgradeWriteHeight) -> Self {
+    pub fn with_upgrade_height(mut self, height: UpgradeWriteHeight) -> Self {
         self.upgrade_height = UpgradeHeightPolicy::Fixed(height);
         self
     }
     /// Read the resident center chunk's upgrade state before each write. The
     /// target chunk's upgrade state does not select the region's write height.
     /// Horizontal write radius is configured independently with `with_write_zone`.
-    pub fn with_upgrade_center(
-        mut self,
-        center: sunrise_core::position::ChunkPos,
-    ) -> Result<Self, RegionError> {
+    pub fn with_upgrade_center(mut self, center: ChunkPos) -> Result<Self, RegionError> {
         self.region.chunk(center.x, center.z)?;
         self.upgrade_height = UpgradeHeightPolicy::Center(center);
         Ok(self)
@@ -535,7 +554,7 @@ where
 }
 impl<'r, B: TerrainBlockStates, F> TerrainFeatureAccess<'_, 'r, B, F> {
     /// WorldGenRegion.ensureCanWrite without its diagnostic logging.
-    fn can_write(&mut self, position: [i32; 3]) -> Result<bool, RegionError> {
+    fn can_write(&self, position: [i32; 3]) -> Result<bool, RegionError> {
         if self.write_zone.is_some_and(|zone| {
             !zone.contains_block(BlockPos::new(position[0], position[1], position[2]))
         }) {
@@ -544,13 +563,7 @@ impl<'r, B: TerrainBlockStates, F> TerrainFeatureAccess<'_, 'r, B, F> {
         let height = match self.upgrade_height {
             UpgradeHeightPolicy::Unrestricted => None,
             UpgradeHeightPolicy::Fixed(height) => Some(height),
-            UpgradeHeightPolicy::Center(center) => {
-                let chunk = self.region.chunk(center.x, center.z)?;
-                chunk.is_upgrading().then(|| {
-                    let (min_y, height) = chunk.height_for_generation();
-                    super::write_zone::UpgradeWriteHeight::new(min_y, height)
-                })
-            }
+            UpgradeHeightPolicy::Center(center) => self.region.upgrade_write_height(center)?,
         };
         Ok(height.is_none_or(|height| height.contains(position[1])))
     }

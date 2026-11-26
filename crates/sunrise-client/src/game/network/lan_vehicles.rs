@@ -183,6 +183,14 @@ impl Game<'_> {
             let (lo, hi) = p.bounds();
             return Some((lo, hi, centre(p.pos)));
         }
+        if let Some(t) = self.tnts.iter().find(|t| t.id == id) {
+            let (lo, hi) = corners(t.bounds());
+            return Some((lo, hi, at(t.position)));
+        }
+        if let Some(f) = self.falling.iter().find(|f| f.id == id) {
+            let (lo, hi) = corners(f.bounds());
+            return Some((lo, hi, at(f.position)));
+        }
         let row = self.general_row(id)?;
         let (lo, hi) = corners(super::entity::Entity::bounds(row));
         Some((lo, hi, at(row.position)))
@@ -283,6 +291,10 @@ impl Game<'_> {
                     return None;
                 }
                 let p = game.player_boat_seat(i);
+                // AbstractBoat.positionRider's clampRotation sets the raw body yaw.
+                if let Some(player) = &mut game.player {
+                    player.body_yaw = game.boats[i].yaw;
+                }
                 return Some([p.x, p.y, p.z]);
             }
             // The minecart moves with the rider's input, and lets it out when
@@ -414,13 +426,7 @@ impl Game<'_> {
     /// moved too quickly or wrongly; then it stays, and the client is told
     /// where it is.
     pub(super) fn guest_move_vehicle(&mut self, conn: u32, p: &play::MoveVehicleRequest) {
-        let controls_vehicle = self
-            .lan
-            .as_ref()
-            .and_then(|host| host.hub.guest(conn))
-            .and_then(|g| g.vehicle)
-            .is_none_or(|v| self.guest_controls_vehicle(conn, v));
-        let Some(host) = self.lan.as_ref() else {
+        let Some(host) = self.lan.as_mut() else {
             return;
         };
         let Some(gi) = host.hub.guests.iter().position(|g| g.conn == conn) else {
@@ -433,24 +439,26 @@ impl Game<'_> {
             || !p.yaw.is_finite()
             || !p.pitch.is_finite()
         {
-            self.lan.as_mut().unwrap().hub.kick(
+            host.hub.kick(
                 conn,
                 translatable("multiplayer.disconnect.invalid_vehicle_movement", &[]),
             );
             return;
         }
+        // Unlike MovePlayer, this checks for a resend even before the client has loaded,
+        // and does not apply the packet's rotation while awaiting the teleport.
+        if host.hub.update_awaiting_teleport(gi) || !host.hub.guests[gi].client_loaded() {
+            return;
+        }
         let g = &host.hub.guests[gi];
-        if g.awaiting_teleport.is_some() || !g.client_loaded() {
-            return;
-        }
-        // Only the vehicle's controlling passenger moves it: the move of a
-        // player in a boat's second seat is ignored (#11541).
-        if !controls_vehicle {
-            return;
-        }
         let owner = host.hub.singleplayer_owner == Some(g.uuid);
         let allow_flight = host.hub.config.allow_flight;
         let (vehicle, good) = (g.vehicle, g.vehicle_good);
+        // Only the vehicle's controlling passenger moves it: the move of a
+        // player in a boat's second seat is ignored (#11541).
+        if vehicle.is_some_and(|v| !self.guest_controls_vehicle(conn, v)) {
+            return;
+        }
         let back = |host: &mut LanHost, position: Vec3, yaw: f32| {
             let packet = play::MoveVehicle {
                 position: [position.x, position.y, position.z],
@@ -539,12 +547,13 @@ impl Game<'_> {
             // Unreachable: the vehicle was a boat or a mount, or it returned.
             (None, None) => std::borrow::Cow::Borrowed(""),
         };
-        let mut gate = sunrise_client::move_gate::armed_with(
+        let mut gate = sunrise_client::move_gate::armed_with_controlled(
             &self.loop_context,
             id,
             kind,
             MoverType::Player,
             wanted,
+            true,
         );
         let wanted = gate.delta();
         // A listener's decision that is not the request (#2414, ruling 5):
@@ -626,6 +635,7 @@ impl Game<'_> {
                 }
                 let mut m = self.mobs[i].clone();
                 let mut lent = sunrise_client::health::LentLevel::take(&mut self.world);
+                let mut paused_hurt = None;
                 let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     let w = self.mob_world_base(&[]);
                     let mut level = sunrise_client::health::DamageLevel::lent(
@@ -635,7 +645,10 @@ impl Game<'_> {
                         Some(self.items()),
                         Some(&self.pack.block_registries),
                         &self.damage_hooks,
-                    );
+                    )
+                    .with_variants(world_variants!(self))
+                    .with_reads(crate::game::entity::hit_reads_of!(self))
+                    .with_mob_hurt_handoff(&mut paused_hurt);
                     if let Some(pause) = resume.take() {
                         m.resume_client_moved_fall(&w, &mut level, &mut events, pause)
                     } else {
@@ -651,6 +664,7 @@ impl Game<'_> {
                 lent.give_back(&mut self.world);
                 let pause = outcome.unwrap_or_else(|panic| std::panic::resume_unwind(panic));
                 self.mobs[i] = m;
+                self.paused_mob_hurt = paused_hurt;
                 // LivingEntity.checkFallDamage sends dust before Block.fallOn.
                 // Send it to every nearby player, including the driver.
                 for event in events.extract_if(.., |e| {
@@ -1068,6 +1082,47 @@ pub(in crate::game) mod controller_tests {
         (rider.vehicle, rider.vehicle_order) = (Some(horse), 1);
         game.lan.as_mut().unwrap().hub.guests.push(rider);
         (horse, packets)
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn a_guests_mount_uses_its_totem_during_the_landing() {
+        use crate::game::native_entity_refs::tests::with_game;
+
+        with_game(|game| {
+            let (horse, _packets) = guest_horse_at_start_of_fall(game);
+            game.mobs.update(0, |mob| {
+                mob.health = 1.0;
+                mob.add_effect("minecraft:poison", 25, 0);
+                mob.extra
+                    .set_main_hand_stack(Some(sunrise_client::items::ItemStack::new(
+                        "minecraft:totem_of_undying",
+                        1,
+                    )));
+            });
+            for (y, on_ground) in [
+                (209.0, false),
+                (207.0, false),
+                (204.0, false),
+                (200.0, true),
+            ] {
+                game.guest_move_vehicle(
+                    2,
+                    &play::MoveVehicleRequest {
+                        position: [4.5, y, 4.5],
+                        yaw: 0.0,
+                        pitch: 0.0,
+                        on_ground,
+                    },
+                );
+            }
+            let mob = game.mobs.iter().find(|mob| mob.id == horse).unwrap();
+            assert!(mob.alive());
+            assert!(mob.extra.main_hand_stack().is_none());
+            assert!(!mob.has_effect("minecraft:poison"));
+            assert!(mob.has_effect("minecraft:regeneration"));
+            assert_eq!(game.lan.as_ref().unwrap().hub.guests[0].health, 13.0);
+        });
     }
 
     /// handleMoveVehicle for a horse its guest's client moves: `vehicle.move`

@@ -22,4 +22,22 @@ impl Suggestion {
             int_value: None,
         }
     }
+
+    /// Attach an explanation tooltip shown beside this completion.
+    pub fn with_tooltip(mut self, tooltip: impl Into<String>) -> Self {
+        self.tooltip = Some(tooltip.into());
+        self
+    }
+
+    /// Override the start (inclusive) and end (exclusive) byte offsets replaced by this completion.
+    pub fn with_range(mut self, range: (usize, usize)) -> Self {
+        self.range = range;
+        self
+    }
+
+    /// Set the numeric sort value used when sorting integer completions.
+    pub fn with_int_value(mut self, value: i32) -> Self {
+        self.int_value = Some(value);
+        self
+    }
 }

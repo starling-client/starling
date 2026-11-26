@@ -6,7 +6,7 @@ use super::{
     feature::{FeatureError, FeatureWorld},
     feature_graph::FeatureExecutionError,
     int_range, number_text,
-    placement::PlacementContext,
+    placement::{PlacementContext, PlacementQueryError},
     required,
 };
 use crate::heightmap::HeightmapType;
@@ -72,7 +72,10 @@ impl ScatteredOreFeature {
             });
             let current = world.block(position).map_err(FeatureError::World)?;
             for (rule, state) in &self.targets {
-                if !rule.test(current, position, random) {
+                if !rule
+                    .test(current, position, random)
+                    .map_err(FeatureError::Failed)?
+                {
                     continue;
                 }
                 let skip_air = self.discard <= 0.0
@@ -336,7 +339,12 @@ impl OreFeature {
                                 .iter()
                                 .enumerate()
                                 .fold(0u32, |m, (i, (rule, _))| {
-                                    m | u32::from(rule.test(state, p, random)) << i
+                                    // `self.heights.is_some()` only when `pure_heights`
+                                    // succeeded, which excludes `Node::Mod` (infallible).
+                                    let hit = rule
+                                        .test(state, p, random)
+                                        .expect("pure rule test cannot fail");
+                                    m | u32::from(hit) << i
                                 })
                         })
                     }
@@ -347,7 +355,10 @@ impl OreFeature {
                         if matched >> i & 1 == 0 {
                             continue;
                         }
-                    } else if !rule.test(state, p, random) {
+                    } else if !rule
+                        .test(state, p, random)
+                        .map_err(|e| FeatureExecutionError::Query(PlacementQueryError::Failed(e)))?
+                    {
                         continue;
                     }
                     if !skip_air_check(random, self.discard) {

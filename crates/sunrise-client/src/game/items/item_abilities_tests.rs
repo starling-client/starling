@@ -1,7 +1,10 @@
 #![cfg(test)]
 use super::Game;
 use super::item_abilities::ability;
-use mod_api::{CanPerformActionEvent, Hooks, Host, ItemPart, Registrar, RegistrationContext};
+use mod_api::{
+    CanPerformActionEvent, Hooks, Identifier, ItemAbilityContext, ItemPart, Registrar,
+    RegistrationContext,
+};
 use std::sync::Arc;
 use sunrise_client::items::ItemStack;
 use sunrise_client::mobs::Mob;
@@ -18,8 +21,32 @@ struct Abilities {
 
 #[mod_api::sunrise_part]
 impl ItemPart for Abilities {
-    fn can_perform_action(&self, _: &dyn Host, event: &mut CanPerformActionEvent<'_>) {
+    fn can_perform_action(
+        &self,
+        context: &ItemAbilityContext<'_>,
+        event: &mut CanPerformActionEvent<'_>,
+    ) {
+        let expected_key = event.stack.item();
+        assert_eq!(
+            mod_api::__private::item_key_id(expected_key),
+            Some(self.item)
+        );
+        let swords = context
+            .tags()
+            .key(&Identifier::parse("minecraft:swords").unwrap())
+            .expect("swords tag resolves");
+        assert_eq!(
+            context.tags().is_in_tag(expected_key, swords.typed()),
+            Some(self.item == "minecraft:diamond_sword")
+        );
+        if self.item == "minecraft:shears" && SHEARING.contains(&event.ability) {
+            assert!(event.can_perform);
+        }
+        if self.item == "minecraft:shield" && event.ability == ability::SHIELD_BLOCK {
+            assert!(event.can_perform);
+        }
         if self.grants.contains(&event.ability) {
+            assert!(!event.can_perform);
             event.can_perform = true;
         } else if self.denies.contains(&event.ability) {
             event.can_perform = false;
@@ -39,11 +66,14 @@ impl Hooks for Mod {
     }
 }
 
-/// A serving level with one chunk of air and a pumpkin at (4, 64, 4).
-fn field(game: &mut Game<'_>) {
+/// A serving level with one chunk of air and a pumpkin at (4, 64, 4), its world locked as an open
+/// world's is, so its merged tags are readable. The folder holds the lock; keep it for the test.
+fn field(game: &mut Game<'_>) -> tempfile::TempDir {
     game.options.dedicated = Some(Vec::new());
+    let folder = tempfile::tempdir().unwrap();
+    game.session_lock = Some(sunrise_client::save::SessionLock::acquire(folder.path()).unwrap());
     game.native_lifecycle
-        .begin_open(mod_api::Authority::IntegratedServer);
+        .begin_open(Some(mod_api::Authority::IntegratedServer));
     game.world = sunrise_client::world::World::new(game.res.facts().air, 1);
     game.world
         .chunks
@@ -55,6 +85,7 @@ fn field(game: &mut Game<'_>) {
         .default_state("minecraft:pumpkin")
         .unwrap();
     game.world.set(4, 64, 4, pumpkin).unwrap();
+    folder
 }
 
 fn block_name(game: &Game<'_>, pos: [i32; 3]) -> String {
@@ -134,7 +165,7 @@ fn parts_grant_and_deny_the_abilities_vanilla_asks_of_an_item_isolated() {
     mod_platform::testing::with_mods(mods.clone(), || {
         crate::game::api_values::install_parts(&mods).unwrap();
         with_game(|game| {
-            field(game);
+            let _world = field(game);
             let sword = ItemStack::new("minecraft:diamond_sword", 1);
             let axe = ItemStack::new("minecraft:diamond_axe", 1);
             let shield = ItemStack::new("minecraft:shield", 1);
@@ -199,11 +230,13 @@ fn parts_grant_and_deny_the_abilities_vanilla_asks_of_an_item_isolated() {
             // rod are dropped instead of shearing it, the stick shears it.
             let sheep = add_sheep(game, 8.5);
             for held in [&shears, &rod] {
-                game.dispense_item((7, 64, 0), Direction::East, held.clone())
+                let _ = game
+                    .dispense_item((7, 64, 0), Direction::East, held.clone())
                     .unwrap();
                 assert!(!game.mobs[sheep].extra.sheared);
             }
-            game.dispense_item((7, 64, 0), Direction::East, stick.clone())
+            let _ = game
+                .dispense_item((7, 64, 0), Direction::East, stick.clone())
                 .unwrap();
             assert!(game.mobs[sheep].extra.sheared);
         });
@@ -216,7 +249,7 @@ fn parts_grant_and_deny_the_abilities_vanilla_asks_of_an_item_isolated() {
 #[ignore = "daily"]
 fn without_parts_the_vanilla_item_checks_stand() {
     crate::game::native_entity_refs::tests::with_game(|game| {
-        field(game);
+        let _world = field(game);
         let shield = ItemStack::new("minecraft:shield", 1);
         let granted = game.blocks_attacks(&shield).expect("a shield blocks");
         assert_eq!(granted.delay_seconds, 0.25);
@@ -245,11 +278,204 @@ fn without_parts_the_vanilla_item_checks_stand() {
         assert!(click_sheep(game, sheep, &shears));
         assert!(game.mobs[sheep].extra.sheared);
         let sheep = add_sheep(game, 8.5);
-        game.dispense_item((7, 64, 0), Direction::East, stick)
+        let _ = game
+            .dispense_item((7, 64, 0), Direction::East, stick)
             .unwrap();
         assert!(!game.mobs[sheep].extra.sheared);
-        game.dispense_item((7, 64, 0), Direction::East, shears)
+        let _ = game
+            .dispense_item((7, 64, 0), Direction::East, shears)
             .unwrap();
         assert!(game.mobs[sheep].extra.sheared);
+    });
+}
+
+/// The abilities [`Lights`] heard `block_tool_modification` ask, and whether a player acted.
+static HEARD: std::sync::Mutex<Vec<(mod_api::ToolAbility, bool)>> =
+    std::sync::Mutex::new(Vec::new());
+/// What `host.item_abilities()` answered [`Lights`].
+static LISTED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+/// Where [`Lights`] takes every tool's answer away.
+const REFUSED: [i32; 3] = [6, 64, 8];
+
+/// Parts as [`Mod`] attaches them, and a `block_tool_modification` listener that records
+/// the ability and keeps the block at [`REFUSED`] as it is.
+struct Lights(Vec<Abilities>);
+
+#[mod_api::__subscriptions]
+impl Hooks for Lights {
+    fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
+        for part in &self.0 {
+            let key = r.item_key(part.item);
+            r.item_part(key, part.clone());
+        }
+    }
+    fn block_tool_modification(
+        &self,
+        host: &dyn mod_api::Host,
+        event: &mut mod_api::BlockToolModificationEvent<'_>,
+    ) -> mod_api::Flow {
+        HEARD
+            .lock()
+            .unwrap()
+            .push((event.tool.ability, event.tool.player.is_some()));
+        *LISTED.lock().unwrap() = host.item_abilities();
+        if event.tool.pos == REFUSED {
+            *event.final_state = None;
+        }
+        mod_api::Flow::Continue
+    }
+}
+
+/// A grounded player with a full charge at (0.5, 64, 0.5), its speed the base
+/// `movement_speed` its first tick would set, so standing still passes the sweep's speed bound.
+fn grounded(game: &mut Game<'_>) {
+    let start = Vec3::new(0.5, 64.0, 0.5);
+    let mut player = sunrise_client::motion::PlayerMotion::new(game.motion, start).unwrap();
+    player.ground.on_ground = true;
+    player.speed = 0.1;
+    game.player = Some(player);
+}
+
+/// A part granting a blaze rod `sword_sweep` and `shears_trim` sweeps and trims with it, one
+/// denying a diamond sword `sword_sweep` stops its sweep on the server and the client, a fire
+/// starter lighting a campfire by hand or from a dispenser asks `block_tool_modification` with
+/// `FirestarterLight`, a fire charge denied `firestarter_light` lights nothing, and the host
+/// lists the fourteen abilities.
+#[test]
+#[ignore = "daily"]
+fn parts_answer_the_abilities_at_every_site() {
+    crate::game::in_own_process(
+        "game::item_abilities_tests::parts_answer_the_abilities_at_every_site",
+        parts_answer_the_abilities_at_every_site_isolated,
+    );
+}
+
+fn parts_answer_the_abilities_at_every_site_isolated() {
+    use crate::game::native_entity_refs::tests::{with_client_game, with_game};
+    let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
+        "abilities",
+        Box::new(Lights(vec![
+            Abilities {
+                item: "minecraft:blaze_rod",
+                grants: &[ability::SWORD_SWEEP, ability::SHEARS_TRIM],
+                denies: &[],
+            },
+            Abilities {
+                item: "minecraft:diamond_sword",
+                grants: &[],
+                denies: &[ability::SWORD_SWEEP],
+            },
+            Abilities {
+                item: "minecraft:fire_charge",
+                grants: &[],
+                denies: &[ability::FIRESTARTER_LIGHT],
+            },
+        ])),
+    )]
+    .into();
+    let sweeps = |game: &mut Game<'_>| {
+        grounded(game);
+        [
+            "minecraft:blaze_rod",
+            "minecraft:diamond_sword",
+            "minecraft:iron_sword",
+        ]
+        .map(|item| {
+            game.inventory[game.selected] = Some(ItemStack::new(item, 1));
+            game.sweep_decision(1.0, false, "minecraft:zombie")
+        })
+    };
+    mod_platform::testing::with_mods(mods.clone(), || {
+        crate::game::api_values::install_parts(&mods).unwrap();
+        with_client_game(|client| {
+            assert_eq!(
+                sweeps(client),
+                [true, false, true],
+                "the client predicts the sweep"
+            );
+        });
+        with_game(|game| {
+            field(game);
+            assert_eq!(sweeps(game), [true, false, true], "the server sweeps");
+
+            // A blaze rod crops a cave vine's tip to its top age; a stick does nothing.
+            let registry = game.pack.assets.registry;
+            let vine = registry.default_state("minecraft:cave_vines").unwrap();
+            game.world.set(2, 64, 2, vine).unwrap();
+            let stick = ItemStack::new("minecraft:stick", 1);
+            assert!(!game.shears_crop([2, 64, 2], &stick).unwrap());
+            let rod = ItemStack::new("minecraft:blaze_rod", 1);
+            assert!(game.shears_crop([2, 64, 2], &rod).unwrap());
+            let cropped = registry.state(game.world.block(2, 64, 2)).unwrap();
+            assert_eq!(cropped.properties["age"], "25");
+
+            // Flint and steel lights an unlit campfire through `block_tool_modification`; the
+            // listener takes the answer away for the campfire at `REFUSED`.
+            let mut campfire = registry
+                .state(registry.default_state("minecraft:campfire").unwrap())
+                .unwrap()
+                .clone();
+            campfire.properties.insert("lit".into(), "false".into());
+            let unlit = registry.resolve(&campfire).unwrap();
+            let hit = |pos: [i32; 3]| crate::game::Hit {
+                pos,
+                face: [0, 1, 0],
+                point: [6.5, 65.0, 6.5],
+                inside: false,
+            };
+            for pos in [[6, 64, 6], REFUSED] {
+                game.world.set(pos[0], pos[1], pos[2], unlit).unwrap();
+            }
+            HEARD.lock().unwrap().clear();
+            let flint = ItemStack::new("minecraft:flint_and_steel", 1);
+            let lit = game
+                .fire_starter_lit(&hit([6, 64, 6]), &flint, true)
+                .unwrap()
+                .unwrap();
+            assert_eq!(registry.state(lit).unwrap().properties["lit"], "true");
+            assert_eq!(
+                game.fire_starter_lit(&hit(REFUSED), &flint, true).unwrap(),
+                None
+            );
+            // Denied `firestarter_light`, a fire charge lights nothing; the listener still hears.
+            let charge = ItemStack::new("minecraft:fire_charge", 1);
+            assert_eq!(
+                game.fire_starter_lit(&hit([6, 64, 6]), &charge, true)
+                    .unwrap(),
+                None
+            );
+            // A dispenser's flint and steel lights through the same hook, with no player.
+            game.world.set(10, 64, 6, unlit).unwrap();
+            let _ = game
+                .dispense_item((9, 64, 6), Direction::East, flint)
+                .unwrap();
+            let dispensed = registry.state(game.world.block(10, 64, 6)).unwrap();
+            assert_eq!(dispensed.properties["lit"], "true");
+            let light = mod_api::ToolAbility::FirestarterLight;
+            assert_eq!(
+                *HEARD.lock().unwrap(),
+                [(light, true), (light, true), (light, true), (light, false)]
+            );
+
+            assert_eq!(
+                *LISTED.lock().unwrap(),
+                [
+                    "brush_brush",
+                    "firestarter_light",
+                    "fishing_rod_cast",
+                    "shears_carve",
+                    "shears_dig",
+                    "shears_disarm",
+                    "shears_harvest",
+                    "shears_remove_armor",
+                    "shears_trim",
+                    "shield_block",
+                    "shovel_douse",
+                    "spyglass_scope",
+                    "sword_sweep",
+                    "trident_throw",
+                ]
+            );
+        });
     });
 }

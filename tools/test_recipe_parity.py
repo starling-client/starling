@@ -13,11 +13,12 @@ matched recipe id and the crafting remainders.
 import argparse
 import json
 import random
-try:
-    from . import interaction_lab as lib, lab
-except ImportError:
-    import interaction_lab as lib
-    import lab
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import interaction_lab as lib, lab
 
 DYES = ['white', 'orange', 'magenta', 'light_blue', 'yellow', 'lime', 'pink', 'gray', 'light_gray', 'cyan', 'purple',
         'blue', 'brown', 'green', 'red', 'black']

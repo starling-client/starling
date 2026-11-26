@@ -6,10 +6,12 @@ on the next one, whatever joined after it. Each phase summons, between two froze
 and `Pos`) and primed TNT with one tick of fuse left (gone after its first tick; `tnt_explodes` is off, so nothing
 explodes). The control phase summons nothing after them; the second phase summons an experience orb last. Vanilla's
 values are asserted exactly after each of the first two ticks, and Sunrise must print the same."""
-try:
-    from .command_exec_corpus import cmd, setup
-except ImportError:
-    from command_exec_corpus import cmd, setup
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools.command_exec_corpus import cmd, setup
 
 FLOOR_Y = 200
 AIR_Y = 205

@@ -171,18 +171,23 @@ pub fn cast_particles(m: &Mob, events: &mut Vec<MobEvent>) {
 pub(super) struct CastingSpell;
 impl Goal for CastingSpell {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE | LOOK
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, _cx: &mut Cx) -> bool {
         m.extra.counter > 0
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, _cx: &mut Cx) {
         m.ai.nav.stop();
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, _cx: &mut Cx) {
         m.extra.variant2 = 0;
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         let look = match m.target_info(cx.w) {
             Some(t) => Some([t.position.x, t.eye_y, t.position.z]),
@@ -226,9 +231,11 @@ impl UseSpell {
 }
 impl Goal for UseSpell {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         0
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         let age = i64::from(m.age);
         if self.spell == Spell::Wololo {
@@ -290,12 +297,14 @@ impl Goal for UseSpell {
         }
         true
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if self.spell == Spell::Wololo {
             return m.extra.counter2 != 0 && self.warmup > 0;
         }
         m.target_info(cx.w).is_some_and(|t| t.alive) && self.warmup > 0
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         let (warmup, casting, interval, sound) = self.timing();
         self.warmup = reduced(warmup);
@@ -309,11 +318,13 @@ impl Goal for UseSpell {
         ));
         m.extra.variant2 = self.spell as u8;
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, _cx: &mut Cx) {
         if self.spell == Spell::Wololo {
             m.extra.counter2 = 0;
         }
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.warmup -= 1;
         if self.warmup != 0 {
@@ -521,9 +532,11 @@ fn set_crossbow_charged(m: &mut Mob, charged: bool) {
 }
 impl Goal for CrossbowAttack {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE | LOOK
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         holding_crossbow(m)
             && m.ai
@@ -531,6 +544,7 @@ impl Goal for CrossbowAttack {
                 .and_then(|t| cx.w.target_info(t))
                 .is_some_and(|t| t.alive && !(t.is_player && t.creative))
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         let valid =
             m.ai.target
@@ -538,6 +552,7 @@ impl Goal for CrossbowAttack {
                 .is_some_and(|t| t.alive && !(t.is_player && t.creative));
         valid && holding_crossbow(m)
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         m.ai.aggressive = false;
         m.set_ai_target(cx.w, None);
@@ -547,12 +562,15 @@ impl Goal for CrossbowAttack {
         self.state = Crossbow::Uncharged;
         set_crossbow_charged(m, false);
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, _: &mut Cx) {
         m.ai.aggressive = true;
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         true
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         let Some(who) = m.ai.target else {
             return;
@@ -632,14 +650,19 @@ impl Goal for CrossbowAttack {
                 if sees {
                     shoot_crossbow(m, who, cx);
                     self.state = Crossbow::Uncharged;
-                    set_crossbow_charged(m, false);
                 }
             }
         }
     }
 }
 /// `CrossbowAttackMob.performCrossbowAttack` at power 1.6: one arrow aimed a
-/// third of the way up the target, lifted by a fifth of the distance.
+/// third of the way up the target, lifted by a fifth of the distance: the shot of
+/// `Pillager.performRangedAttack`, and of `Piglin.performRangedAttack`. The shot uses up the
+/// loaded projectile (`CrossbowItem.performShooting` empties `CHARGED_PROJECTILES`), so a
+/// cancelled shot leaves the crossbow loaded. A native mod takes the shot here through
+/// `[[native.mixin]]`, where a Java mod's mixin on `Pillager.performRangedAttack` cancels or
+/// delays it (#4678).
+#[sunrise_mod_api_macros::replaceable]
 fn shoot_crossbow(m: &mut Mob, who: Who, cx: &mut Cx) {
     let Some(t) = cx.w.target_info(who) else {
         return;
@@ -696,6 +719,7 @@ fn shoot_crossbow(m: &mut Mob, who: Who, cx: &mut Cx) {
         1.0,
         pitch,
     ));
+    set_crossbow_charged(m, false);
 }
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ArmPose {
@@ -1037,6 +1061,44 @@ mod tests {
                 .charged
                 .is_empty()
         );
+    }
+
+    /// `CrossbowItem.performShooting` empties `CHARGED_PROJECTILES`: `shoot_crossbow`, the
+    /// replaceable `Pillager.performRangedAttack`, uses up the loaded arrow itself, so a mod
+    /// that cancels the shot leaves the crossbow loaded for the one it lets through later.
+    #[test]
+    #[ignore = "daily"]
+    fn the_crossbow_shot_uses_up_the_loaded_arrow() {
+        use crate::mobs::world::{test_player, with_test_world};
+        let mut outcome = None;
+        let ran = with_test_world(&[], |w, types| {
+            let mut world = w.clone();
+            world.player = Some(test_player(Vec3::new(0.5, 64.0, 6.5)));
+            let kind = Arc::new(types.types["minecraft:pillager"].clone());
+            let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+            m.extra
+                .set_main_hand_stack(Some(ItemStack::new("minecraft:crossbow", 1)));
+            set_crossbow_charged(&mut m, true);
+            let mut fixture = crate::health::TestLevel::new(0);
+            let mut events = Vec::new();
+            let mut cx = Cx {
+                w: &world,
+                level: &mut fixture.level(),
+                events: &mut events,
+            };
+            shoot_crossbow(&mut m, Who::Player, &mut cx);
+            let shot = events
+                .iter()
+                .any(|e| matches!(e, MobEvent::CrossbowShot { .. }));
+            let loaded = m
+                .extra
+                .main_hand_stack()
+                .and_then(|s| s.data())
+                .is_some_and(|d| !d.charged.is_empty());
+            outcome = Some((shot, loaded));
+        });
+        assert!(ran, "vanilla data is missing");
+        assert_eq!(outcome, Some((true, false)));
     }
 
     /// A shot crossbow keeps its stack; only the loaded arrow goes.

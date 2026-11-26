@@ -2,7 +2,9 @@
 """Loaded villager first-tick sleep position, normal sleep and awake controls."""
 import json,sys,hashlib,tempfile
 from pathlib import Path
-import test_command_exec_parity as driver
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_command_exec_parity as driver
 ACTORS=[dict(name='loaded_north',n=1,x=2.5,z=6.5,bed=[2,200,6],facing='north',noai=True),dict(name='loaded_south',n=2,x=6.5,z=7.5,bed=[6,200,7],facing='south',noai=True),dict(name='awake',n=3,x=12.5,z=12.5,bed=None,noai=True),dict(name='normal',n=4,x=10.5,z=6.5,bed=[10,200,6],facing='north',noai=False)]
 def uuid(n):return f'000000e9-0000-0000-0000-{n:012x}'
 def program(full=False,wake=False):

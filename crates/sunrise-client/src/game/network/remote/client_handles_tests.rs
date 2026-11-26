@@ -32,7 +32,7 @@ fn client_handles_reach_a_custom_level() {
                 Some(sunrise_client::scoreboard::json_to_tag(&json)),
             )],
         );
-        game.set_registries(Arc::new(registries));
+        game.set_registries(Arc::new(registries)).unwrap();
         let spawn = SpawnInfo {
             dimension_type: 0,
             dimension: "test:pocket".into(),
@@ -53,7 +53,7 @@ fn client_handles_reach_a_custom_level() {
         assert_eq!(level.dimension().id(game), Some("test:pocket"));
         assert!(game.level("minecraft:overworld").is_none());
         assert!(level.height(game).is_some());
-        let facts = level.dimension_type(game).unwrap();
+        let facts: mod_api::LevelDimensionType<'_> = level.dimension_type(game).unwrap();
         assert_eq!(facts.id, "test:type");
         assert_eq!(facts.coordinate_scale, 4.0);
         assert_eq!(facts.ambient_light, 0.3);
@@ -68,7 +68,7 @@ fn client_handles_reach_a_custom_level() {
             .get_mut("minecraft:dimension_type")
             .unwrap()[0]
             .0 = "test:renamed".into();
-        game.set_registries(Arc::new(renamed));
+        game.set_registries(Arc::new(renamed)).unwrap();
         game.enter_remote_dimension(&spawn, RemoteDimensionEntry::Login, Reason::Other);
         assert_eq!(game.dimension_type().id, "test:renamed");
         // Reject invalid server numbers and enums without failing the join.
@@ -92,7 +92,7 @@ fn client_handles_reach_a_custom_level() {
                     Some(sunrise_client::scoreboard::json_to_tag(&invalid)),
                 )],
             );
-            game.set_registries(Arc::new(registries));
+            game.set_registries(Arc::new(registries)).unwrap();
             game.enter_remote_dimension(&spawn, RemoteDimensionEntry::Login, Reason::Other);
             assert_eq!(game.dimension_type().coordinate_scale, 8.0, "{field}");
             assert!(game.dimension_type().fast_lava);
@@ -120,7 +120,7 @@ fn client_handles_reach_a_custom_level() {
                     Some(sunrise_client::scoreboard::json_to_tag(&boundary)),
                 )],
             );
-            game.set_registries(Arc::new(registries));
+            game.set_registries(Arc::new(registries)).unwrap();
             game.enter_remote_dimension(&spawn, RemoteDimensionEntry::Login, Reason::Other);
             assert_eq!(
                 game.dimension_type().coordinate_scale,
@@ -143,7 +143,7 @@ fn client_handles_reach_a_custom_level() {
                     Some(sunrise_client::scoreboard::json_to_tag(&legal)),
                 )],
             );
-            game.set_registries(Arc::new(registries));
+            game.set_registries(Arc::new(registries)).unwrap();
             game.enter_remote_dimension(&spawn, RemoteDimensionEntry::Login, Reason::Other);
             assert_eq!(game.dimension_type().coordinate_scale, 4.0);
             assert_eq!(game.dimension_type().ambient_light, ambient);
@@ -177,7 +177,7 @@ fn client_handles_reach_a_custom_level() {
 #[ignore = "daily"]
 fn client_handle_reads_answer_from_the_clients_copy() {
     use crate::game::{execution_role::ExecutionRole, native_entity_refs::tests::with_game};
-    use mod_api::{EntityRef, EquipmentSlot, GlobalPos};
+    use mod_api::{EntityReadError, EntityRef, EquipmentSlot, GlobalPos};
     use std::sync::Arc;
     use sunrise_client::{
         chunk::Chunk, first_person::Hand, level_loading::Reason, motion::PlayerMotion,
@@ -252,7 +252,11 @@ fn client_handle_reads_answer_from_the_clients_copy() {
             .unwrap()
             .id("minecraft:speed")
             .unwrap();
-        assert_eq!(living.effects(game), Some(Vec::new()));
+        use std::ops::ControlFlow;
+        assert_eq!(
+            living.visit_effects(game, &mut |_| panic!("effect before sync")),
+            Ok(ControlFlow::Continue(()))
+        );
         assert!(
             living
                 .effect(
@@ -276,7 +280,15 @@ fn client_handle_reads_answer_from_the_clients_copy() {
             )
             .unwrap();
         assert_eq!((effect.duration, effect.amplifier), (600, 1));
-        assert_eq!(living.effects(game).unwrap().len(), 1);
+        let mut effects = Vec::new();
+        assert_eq!(
+            living.visit_effects(game, &mut |effect| {
+                effects.push((effect.duration, effect.amplifier));
+                ControlFlow::Continue(())
+            }),
+            Ok(ControlFlow::Continue(()))
+        );
+        assert_eq!(effects, [(600, 1)]);
         let stone = Some(sunrise_protocol::item::Stack::new(
             game.item_id("minecraft:stone"),
             3,
@@ -328,7 +340,8 @@ fn client_handle_reads_answer_from_the_clients_copy() {
                 vec![("minecraft:overworld".into(), None)],
             );
             Arc::new(registries)
-        });
+        })
+        .unwrap();
         game.handle_packet(C::SetTime(play::SetTime {
             game_time: 100,
             clocks: vec![play::ClockState {
@@ -372,6 +385,28 @@ fn client_handle_reads_answer_from_the_clients_copy() {
         let untracked = EntityRef::new(me.epoch(), 99);
         assert_eq!(untracked.position(game), None);
         assert_eq!(untracked.velocity(game), None);
+
+        // The spawn tracks an item before its item-stack metadata supplies a body.
+        game.spawn_entity(32, "minecraft:item", [10.0, 64.0, 12.0], [0.0; 3]);
+        let pending = game.entity(32).unwrap();
+        assert_eq!(
+            pending.visit_parts(game, &mut |_| panic!("visited without a projected body")),
+            Err(EntityReadError::Unavailable)
+        );
+        assert_eq!(
+            pending.visit_passengers(game, &mut |_| panic!("visited an empty seat list")),
+            Ok(ControlFlow::Continue(()))
+        );
+        assert_eq!(
+            untracked.visit_parts(game, &mut |_| panic!("visited an untracked entity")),
+            Err(EntityReadError::Stale)
+        );
+        game.remote.as_mut().unwrap().reconfiguring = Some(0);
+        assert_eq!(
+            other.visit_parts(game, &mut |_| panic!("visited with no live client world")),
+            Err(EntityReadError::Unavailable)
+        );
+        game.remote.as_mut().unwrap().reconfiguring = None;
 
         // A replaced level retires the handles.
         let mut other_level = spawn.clone();

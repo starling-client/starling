@@ -1,16 +1,14 @@
 use super::*;
 
 #[test]
-fn a_folder_without_prepared_files_is_named_before_loading() {
+fn preflight_names_missing_damaged_or_wrong_profile_game_files() {
+    use sunrise_core::prepared_profile::{MANIFEST, Profile, SCHEMA, STAMP};
     let root = std::env::temp_dir().join(format!("sunrise-unprepared-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
-    let unprepared = root.join(".local/sunrise-client/26.3");
-    let missing = missing_resources(&unprepared, None).expect("no manifest is reported");
-    assert!(missing.contains("sunrise-resources.json"), "{missing}");
+    let missing = preflight_resources(&root, None, false).unwrap_err();
+    assert!(missing.contains(MANIFEST), "{missing}");
     assert!(missing.contains("sunrise-unprepared-"), "{missing}");
     assert!(missing.contains("sunrise-prepare --prepare"), "{missing}");
-    // No hook: no site, no launcher.
-    assert!(!missing.contains("playsunrise"), "{missing}");
     assert!(!missing.contains("launcher"), "{missing}");
     let get = sunrise_hooks::GetTheGame {
         address: "https://example.org/get",
@@ -18,27 +16,50 @@ fn a_folder_without_prepared_files_is_named_before_loading() {
         paragraphs: &[],
         button: "",
     };
-    let missing = missing_resources(&unprepared, Some(get)).expect("no manifest is reported");
+    let missing = preflight_resources(&root, Some(get), false).unwrap_err();
     assert!(
         missing.contains("launcher: download it at https://example.org/get"),
         "{missing}"
     );
     std::fs::create_dir_all(&root).unwrap();
-    std::fs::write(root.join("sunrise-resources.json"), "{}").unwrap();
-    assert_eq!(missing_resources(&root, None), None);
+    let mut manifest =
+        serde_json::json!({"schema": SCHEMA, "minecraft": sunrise_core::version::VERSION_ID});
+    std::fs::write(root.join(MANIFEST), manifest.to_string()).unwrap();
+    let missing_stamp = preflight_resources(&root, None, false).unwrap_err();
+    assert!(
+        missing_stamp.contains("output version unknown"),
+        "{missing_stamp}"
+    );
+    std::fs::write(root.join(STAMP), r#"{"output_version":7}"#).unwrap();
+    let stale = preflight_resources(&root, None, false).unwrap_err();
+    assert!(
+        stale.contains("output version 7")
+            && stale.contains("sunrise-prepare --prepare --server-jar"),
+        "{stale}"
+    );
+    let stamp = serde_json::json!({"output_version": Profile::Full.output_version()});
+    std::fs::write(root.join(STAMP), stamp.to_string()).unwrap();
+    assert_eq!(preflight_resources(&root, None, false), Ok(Profile::Full));
 
-    // A killed export leaves an empty file behind; the error names it
-    // instead of serde's "expected value at line 1 column 1".
     std::fs::write(root.join("gameplay-facts.json"), "").unwrap();
-    let damaged = missing_resources(&root, None).expect("an empty prepared file is reported");
-    assert!(damaged.contains("gameplay-facts.json"), "{damaged}");
-    assert!(damaged.contains("damaged"), "{damaged}");
-    std::fs::write(root.join("gameplay-facts.json"), "{}").unwrap();
-    assert_eq!(missing_resources(&root, None), None);
-
-    std::fs::write(root.join("sunrise-resources.json"), " \n").unwrap();
-    let damaged = missing_resources(&root, None).expect("an empty manifest is reported");
-    assert!(damaged.contains("sunrise-resources.json"), "{damaged}");
+    let damaged = preflight_resources(&root, None, false).unwrap_err();
+    assert!(
+        damaged.contains("gameplay-facts.json is empty"),
+        "{damaged}"
+    );
+    manifest["profile"] = "server".into();
+    std::fs::write(root.join(MANIFEST), manifest.to_string()).unwrap();
+    let server_only = preflight_resources(&root, None, false).unwrap_err();
+    assert!(
+        server_only.contains("server-only") && server_only.contains("--output FULL_DIR"),
+        "{server_only}"
+    );
+    std::fs::write(root.join(MANIFEST), " \n").unwrap();
+    assert!(
+        preflight_resources(&root, None, false)
+            .unwrap_err()
+            .contains(MANIFEST)
+    );
     std::fs::remove_dir_all(&root).unwrap();
 }
 
@@ -108,11 +129,26 @@ fn worker_prepares_owned_models_and_inventory_before_handoff() {
         ]))
         .unwrap()
     };
+    let server = GameCpuResources::load(
+        &sunrise_assets::resource_source::ResourceRoot::directory(root.clone())
+            .with_server_profile(),
+        None,
+        None,
+        false,
+    )
+    .unwrap();
+    assert!(server.crystal_model.is_none());
+    assert!(server.armor_stand_assets.main.is_none());
+    assert!(server.entity_models.leash_knot.is_none());
+    assert_eq!(
+        server.creative_screen.catalog().tabs()[0].id,
+        "minecraft:building_blocks"
+    );
     let worker_root = root.clone();
     let prepared = std::thread::spawn(move || {
         let root = ResourceRoot::directory(worker_root);
         let library = models("example:block/startup_frame");
-        GameCpuResources::load(&root, None, Some(&library)).map_err(|error| error.to_string())
+        GameCpuResources::load(&root, None, Some(&library), true).map_err(|error| error.to_string())
     })
     .join()
     .unwrap()
@@ -152,6 +188,7 @@ fn worker_prepares_owned_models_and_inventory_before_handoff() {
             &sunrise_assets::resource_source::ResourceRoot::directory(root.clone()),
             None,
             None,
+            true,
         )
         .is_err()
     );

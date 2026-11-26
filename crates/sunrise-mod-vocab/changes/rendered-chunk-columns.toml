@@ -1,0 +1,3 @@
+ids = ["method:prelude::ClientRenderClientHost::visit_rendered_chunk_columns"]
+why = "#5911: ClientRenderClientHost::visit_rendered_chunk_columns visits the chunk columns of the shown level whose sections the level renderer has queued for meshing, the loaded footprint of vanilla terrain, so a distant-terrain mod can meet it without a seam instead of guessing a circle from the render distance. New method only."
+migrate = "Nothing to change."

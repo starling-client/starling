@@ -5,27 +5,21 @@ use crate::*;
 #[sunrise_mod_api_macros::host_area]
 pub trait ModStateHost {
     /// Side: both.
-    /// Capture a SNAPSHOT of the current dimension's attachment residency and values.
-    /// Later changes require a fresh query. Removed-but-unswept entities may appear;
-    /// writes through stale holders fail. Values are neither cloned nor eagerly decoded.
-    /// The batch is local, not a save or sync record. In a transaction it can be used
-    /// only while the capturing frame is current. An undeclared id is refused with
-    /// the calling package and attachment id.
+    /// Engine capture adapter. Use `AttachmentQueries::capture` or `AttachmentQueries::query`.
+    // hidden: the game implements it; mods reach it only through `AttachmentQueries`.
+    #[doc(hidden)]
     fn attachment_query(
         &self,
-        namespace: &str,
-        name: &str,
+        key: &AttachmentCaptureKey<'_>,
     ) -> Result<AttachmentBatch, AttachmentError>;
     /// Side: both.
     /// Borrow this host for an attachment snapshot read in its transaction. Pass the
     /// result to `row.with_value` or `query.get`; it does not open a transaction.
     fn attachment_read_scope(&self) -> Result<AttachmentReadScope<'_>, AttachmentRowError>;
     /// Side: both.
-    /// The server-owned holders' attachments; `TYPE.get(host, holder)` reads
-    /// one. On a client it is the copy of what the server synced: `set` and
-    /// `remove` change only the copy. While held during a proxy handoff, the
-    /// client can already read updates or removals for entities and other
-    /// players it tracks, without waiting for placement or requesting a resync.
+    /// The server-owned holders' attachments; `key.get(host, holder, read)` reads
+    /// one through an issued [`AttachmentKey`]. On a client it is the copy of
+    /// what the server synced: `set` and `remove` change only the copy.
     fn attachments(&mut self) -> &mut dyn AttachmentStore;
 }
 /// The server host's methods of the `mod_state` area, implemented by the game and reached through [`ServerHost`].
@@ -43,27 +37,9 @@ pub trait ModStateServerHost {
         token: AttachmentWriteToken,
     ) -> Result<(), AttachmentRowError>;
     /// Side: server.
-    /// Opens a transaction, nested in the open one if any (`Transaction.open`), and gives back
-    /// the seal that ends it. `host.transaction` calls it; use that instead.
-    fn transaction_open(&mut self) -> TransactionSeal;
-    /// Side: server.
-    /// Closes the transaction `seal` ends, committed or aborted, aborting first any opened
-    /// inside it and left open. Refused when `seal` names no open transaction, so a mod ends
-    /// only a transaction it opened. `host.transaction` calls it.
-    fn transaction_close(&mut self, seal: &TransactionSeal, commit: bool);
-    /// Side: server.
     /// Where the transaction system is (`Transaction.getLifecycle`): none open, one open, a
     /// nested one closing, or the outermost closing while the game tells the world of a commit.
     fn transaction_lifecycle(&self) -> TransactionLifecycle;
-    /// Side: server.
-    /// The innermost open transaction, to write in (`Transaction.getCurrentOpenedTransaction`);
-    /// none when none is open. It names the transaction only: ending it still takes the seal its
-    /// opener holds.
-    fn transaction_current(&self) -> Option<Transaction>;
-    /// Side: server.
-    /// How deeply `tx` is nested (`TransactionContext.depth`): 0 for the outermost, none for a
-    /// transaction that is not open.
-    fn transaction_depth(&self, tx: &Transaction) -> Option<u32>;
     /// Side: server.
     /// Runs `task` once after `delay_ticks` server ticks, matching vanilla's
     /// `MinecraftServer.schedule(TickTask)` / `BlockableEventLoop.runAllTasks`. Due tasks drain to

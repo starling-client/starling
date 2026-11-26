@@ -1,0 +1,20 @@
+ids = [
+    "method:prelude::ClientRenderClientHost::instance_group_write",
+    "method:prelude::ClientRenderClientHost::instance_group_set_len",
+    "method:prelude::ClientRenderClientHost::instance_group_set_transform",
+    "method:prelude::ClientRenderClientHost::instance_group_destroy",
+    "method:prelude::EntitiesHost::entity_residency",
+    "method:ClientReloadHost::instance_group_write",
+    "method:ClientReloadHost::instance_group_set_len",
+    "method:ClientReloadHost::instance_group_set_transform",
+    "method:ClientReloadHost::instance_group_destroy",
+    "trait:ClientReloadHost",
+    "trait:InstanceGroupContext",
+    "handle:InstanceGroupRef::write",
+    "handle:InstanceGroupRef::set_len",
+    "handle:InstanceGroupRef::set_group_transform",
+    "handle:InstanceGroupRef::destroy",
+    "handle:EntityRef::residency",
+]
+why = "Retained render-group operations and entity residency now live only on their real handle receivers (`InstanceGroupRef` and `EntityRef`), removing duplicate and flat host methods from `ClientRenderClientHost` and `EntitiesHost`. Following vanilla 26.3's `SubmitNodeCollection.submitCustomGeometry` / NeoForge `submitSpecial` (explicit submission to the queues without per-view handle deduplication or a separate per-call counter) and `Entity.isRemoved` (queried on the entity itself), retained instance groups also drop the thread-local caller-mod gate on handle access and submit every explicit `draw_instance_group` call while keeping handle generation, model/world retirement, and owner-disable cleanup."
+migrate = "Replace `host.instance_group_write(group, first, instances)` with `group.write(host, first, instances)`, `host.instance_group_set_len(group, len)` with `group.set_len(host, len)`, `host.instance_group_set_transform(group, transform)` with `group.set_group_transform(host, transform)`, and `host.instance_group_destroy(group)` with `group.destroy(host)`. This applies to `ClientRenderClientHost` and `ClientReloadHost`: pass the original live client host, client setup context, or published reload context to the handle (generic callers can use `InstanceGroupContext`). Custom `ClientReloadHost` implementations must implement `InstanceGroupContext` if they do not also implement `ClientHost`; its default supplies no backend. Replace `host.entity_residency(entity)` with `entity.residency(host)`. Do not rely on `WorldDrawContext::draw_instance_group` silently ignoring repeated submissions of the same group in one view; submit each group once per intended draw. A live group no longer returns `GroupError::Stale` just because the caller is not its creating mod; share the handle only with callers that should operate on it."

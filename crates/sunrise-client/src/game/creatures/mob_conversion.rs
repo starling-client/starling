@@ -16,7 +16,17 @@ impl Game<'_> {
         kind: &str,
         params: conversion::Params,
         after: conversion::After,
+        before_travel: bool,
     ) {
-        self.convert_to(from, kind, params, after.pre_checked(), |_, _| {});
+        // A conversion vanilla makes before the tick's travel takes the place the mob had then,
+        // which the event's snapshot holds; any other, the live mob's.
+        self.convert_to_moved(
+            from,
+            kind,
+            params,
+            after.pre_checked(),
+            before_travel.then_some(from),
+            |_, _| {},
+        );
     }
 }

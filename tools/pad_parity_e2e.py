@@ -29,10 +29,10 @@ import tempfile
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import lab  # noqa: E402
-
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab  # noqa: E402
+
 EXE = '.exe' if os.name == 'nt' else ''
 
 

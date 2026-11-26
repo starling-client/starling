@@ -77,6 +77,11 @@ impl JoinSeq {
 pub trait Joined {
     fn join_seq(&self) -> JoinSeq;
     fn set_join_seq(&mut self, seq: JoinSeq);
+    /// Entity id when this joined value carries staged mod part registrations waiting for
+    /// the owning server `Game`, so `JoinList` can drain them without scanning every element.
+    fn pending_mod_part_id(&self) -> Option<u32> {
+        None
+    }
 }
 
 /// The existing pass-specific order of survivors and nested spawns.
@@ -172,10 +177,18 @@ pub struct JoinList<T, const DIRECT: bool = true>(
     ListStamp,
     Option<visibility::Binding>,
     Option<visibility::PassLease>,
+    Vec<(u32, JoinSeq)>,
 );
 impl<T: Clone, const DIRECT: bool> Clone for JoinList<T, DIRECT> {
     fn clone(&self) -> Self {
-        Self(self.0.clone(), None, ListStamp::new(), None, None)
+        Self(
+            self.0.clone(),
+            None,
+            ListStamp::new(),
+            None,
+            None,
+            self.5.clone(),
+        )
     }
 }
 impl<T, const DIRECT: bool> Drop for JoinList<T, DIRECT> {
@@ -423,6 +436,10 @@ impl<T: Joined> ResidentList<T> {
     pub fn id_assigned(&self, index: usize) {
         self.0.id_assigned(index);
     }
+    /// Write stamp advancing whenever the list mutates.
+    pub fn stamp(&self) -> ListStamp {
+        self.0.stamp()
+    }
     /// Find an owner using the same lookup as the joined entity lists.
     pub fn locate(&self, join: JoinSeq) -> Option<usize> {
         self.0.locate(join)
@@ -491,7 +508,7 @@ impl<'a, T> IntoIterator for &'a ResidentList<T> {
 
 impl<T, const DIRECT: bool> Default for JoinList<T, DIRECT> {
     fn default() -> Self {
-        Self(Vec::new(), None, ListStamp::new(), None, None)
+        Self(Vec::new(), None, ListStamp::new(), None, None, Vec::new())
     }
 }
 
@@ -625,7 +642,10 @@ impl<T, const DIRECT: bool> JoinList<T, DIRECT> {
                 taken.append(self);
                 *self = taken;
             }
-            RestoreOrder::SpawnsFirst if self.is_empty() => *self = taken,
+            RestoreOrder::SpawnsFirst if self.is_empty() => {
+                taken.5.append(&mut self.5);
+                *self = taken;
+            }
             RestoreOrder::SpawnsFirst => self.append(&mut taken),
         }
         if closes_lift && let Some(binding) = &self.1 {
@@ -641,7 +661,22 @@ impl<T, const DIRECT: bool> JoinList<T, DIRECT> {
             ListStamp::new(),
             None,
             None,
+            Vec::new(),
         )
+    }
+    /// Whether any inserted entity carried staged mod part registrations not yet drained.
+    pub fn has_pending_mod_parts(&self) -> bool {
+        !self.5.is_empty()
+    }
+    /// Take the queued `(id, join)` pairs for entities inserted with staged mod parts.
+    pub fn take_pending_mod_parts(&mut self) -> Vec<(u32, JoinSeq)> {
+        std::mem::take(&mut self.5)
+    }
+    /// Drop a matching tail entry after an immediate flush on insert/load.
+    pub fn pop_pending_mod_part(&mut self, id: u32, join: JoinSeq) {
+        if self.5.last() == Some(&(id, join)) {
+            self.5.pop();
+        }
     }
     /// Move a batch back without changing its join numbers or order.
     pub fn append(&mut self, other: &mut Self) {
@@ -661,6 +696,7 @@ impl<T, const DIRECT: bool> JoinList<T, DIRECT> {
         }
         other.written();
         self.0.append(&mut other.0);
+        self.5.append(&mut other.5);
     }
     pub fn remove(&mut self, index: usize) -> T {
         self.written();
@@ -707,10 +743,14 @@ impl<T, const DIRECT: bool> JoinList<T, DIRECT> {
     }
     pub fn clear(&mut self) {
         self.written();
+        self.5.clear();
         self.truncate(0);
     }
     pub fn truncate(&mut self, len: usize) {
         self.written();
+        if len == 0 {
+            self.5.clear();
+        }
         if let Some(binding) = &self.1 {
             binding.all(&self.0[len.min(self.0.len())..], residency::Change::Remove);
         }
@@ -851,20 +891,6 @@ impl<T: sunrise_mod_runtime::attachments::HasAttachmentLifetime, const DIRECT: b
         entity.attachment_lifetime().retire();
         entity
     }
-}
-
-impl<T: sunrise_mod_runtime::attachments::HasAttachmentLifetime> JoinList<T, false> {
-    /// Audited state edit; debug assertions detect a changed bound registration.
-    pub fn update<R>(&mut self, index: usize, edit: impl FnOnce(&mut T) -> R) -> R {
-        self.written();
-        checked_edit(&mut self.0[index], edit)
-    }
-    pub fn for_each_mut(&mut self, mut edit: impl FnMut(&mut T)) {
-        self.written();
-        for entity in &mut self.0 {
-            checked_edit(entity, &mut edit);
-        }
-    }
     /// Store a tick clone without dropping the owner's lifetime slot.
     pub fn store_back(&mut self, index: usize, entity: T) -> bool
     where
@@ -880,6 +906,34 @@ impl<T: sunrise_mod_runtime::attachments::HasAttachmentLifetime> JoinList<T, fal
         };
         store_back(&mut self.0[index], entity);
         true
+    }
+}
+
+impl<T: sunrise_mod_runtime::attachments::HasAttachmentLifetime> JoinList<T, false> {
+    /// Audited state edit; debug assertions detect a changed bound registration.
+    pub fn update<R>(&mut self, index: usize, edit: impl FnOnce(&mut T) -> R) -> R {
+        self.written();
+        checked_edit(&mut self.0[index], edit)
+    }
+    /// Edit one entity while lending the other rows read-only, with the same
+    /// registration check as [`Self::update`].
+    pub fn update_with_rest<R>(
+        &mut self,
+        index: usize,
+        edit: impl FnOnce(&mut T, &[T], &[T]) -> R,
+    ) -> R {
+        self.written();
+        let (before, at_and_after) = self.0.split_at_mut(index);
+        let (at, after) = at_and_after
+            .split_first_mut()
+            .expect("a valid entity index");
+        checked_edit(at, |at| edit(at, before, after))
+    }
+    pub fn for_each_mut(&mut self, mut edit: impl FnMut(&mut T)) {
+        self.written();
+        for entity in &mut self.0 {
+            checked_edit(entity, &mut edit);
+        }
     }
 }
 
@@ -964,6 +1018,9 @@ impl<T: Joined, const DIRECT: bool> JoinList<T, DIRECT> {
     pub fn put_back(&mut self, index: usize, entity: T) {
         self.written();
         let index = index.min(self.0.len());
+        if let Some(id) = entity.pending_mod_part_id() {
+            self.5.push((id, entity.join_seq()));
+        }
         self.0.insert(index, entity);
         if let Some(binding) = &self.1 {
             binding.entity(&self.0[index], residency::Change::PutBack);
@@ -978,6 +1035,9 @@ impl<T: Joined, const DIRECT: bool> JoinList<T, DIRECT> {
     pub fn push(&mut self, mut entity: T) {
         self.written();
         Self::number(&mut entity);
+        if let Some(id) = entity.pending_mod_part_id() {
+            self.5.push((id, entity.join_seq()));
+        }
         self.0.push(entity);
         if let Some(binding) = &self.1 {
             binding.entity(self.0.last().unwrap(), residency::Change::Install);
@@ -986,6 +1046,9 @@ impl<T: Joined, const DIRECT: bool> JoinList<T, DIRECT> {
     pub fn insert(&mut self, index: usize, mut entity: T) {
         self.written();
         Self::number(&mut entity);
+        if let Some(id) = entity.pending_mod_part_id() {
+            self.5.push((id, entity.join_seq()));
+        }
         self.0.insert(index, entity);
         if let Some(binding) = &self.1 {
             binding.entity(&self.0[index], residency::Change::Install);

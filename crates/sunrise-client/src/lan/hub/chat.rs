@@ -3,6 +3,7 @@
 //! messages checked link by link, the acknowledged window, and messages
 //! relayed with each connection's numbering and signature cache.
 use super::{HostEvent, Hub, string};
+use crate::lan::data::{ChatType, RegistryRef};
 use crate::text::Text;
 use sunrise_core::nbt::{JavaString, Tag};
 use sunrise_protocol::{
@@ -231,27 +232,27 @@ impl Hub {
                 message.content
             )));
         }
+        // ChatType.bind throws when the registry lacks the type; the chat
+        // message chain logs the failure and drops this message (no
+        // broadcast, no rate-spam count), and the player stays connected.
+        let Some(chat_type) = self.chat_type_id("chat") else {
+            events.push(HostEvent::Error(
+                "Chain link failed, continuing to next one: minecraft:chat is not in the chat_type registry"
+                    .to_owned(),
+            ));
+            return;
+        };
         let bound = play::ChatTypeBound {
-            chat_type: self.chat_type,
+            chat_type: chat_type.network_id() as i32,
             name: self.player_display_name(uuid, &name),
             target: None,
         };
-        // The `ServerChatEvent` counterpart runs here:
-        // the game tells the mods, then broadcasts what they left.
-        if crate::native_client_hooks::has_mods() {
-            events.push(HostEvent::ChatSubmitted {
-                message: Box::new(message),
-                bound: Box::new(bound),
-                name,
-            });
-            return;
-        }
-        let line = format!("<{name}> {}", message.content);
-        // No mods here (`has_mods` above), so no `chat_recipient` listener hides anyone.
-        self.broadcast_chat(&message, &bound, line, &[], events);
-        events.push(HostEvent::PlayerChat {
-            sender: uuid,
-            text: message.content,
+        // The game owns publication: ServerChatEvent, then PlayerList's log
+        // and per-player delivery, even when no mod is listening.
+        events.push(HostEvent::ChatSubmitted {
+            message: Box::new(message),
+            bound: Box::new(bound),
+            name,
         });
     }
 
@@ -337,24 +338,15 @@ impl Hub {
         }
     }
 
-    /// PlayerList.broadcastChatMessage: logged (`[Not Secure]` unless signed
-    /// and fresh), then sent to every player but the ones in `hidden` (the
-    /// receivers a mod kept it from, `chat_recipient`).
-    pub fn broadcast_chat(
-        &mut self,
-        message: &ChatMessage,
-        bound: &play::ChatTypeBound,
-        line: String,
-        hidden: &[u128],
-        events: &mut Vec<HostEvent>,
-    ) {
-        let secure = message.trusted(now_millis());
-        events.push(HostEvent::Chat { line, secure });
-        for k in 0..self.guests.len() {
-            if self.guests[k].placed && !hidden.contains(&self.guests[k].uuid) {
-                self.send_chat(k, message, bound);
-            }
-        }
+    /// Look up a live public-chat recipient just before deciding or sending their copy.
+    pub fn chat_recipient(&self, conn: u32) -> Option<(usize, u128)> {
+        let index = self.guests.connection_index(conn)?;
+        let guest = &self.guests[index];
+        (guest.placed
+            && guest.participates_online()
+            && !guest.disconnect_pending
+            && guest.info.chat_visibility == 0)
+            .then_some((index, guest.uuid))
     }
 
     /// ServerPlayer.sendChatMessage (players who show chat) and
@@ -404,7 +396,7 @@ impl Hub {
 
     /// sendChatMessage of a system message: a disguised chat, to players
     /// who show chat.
-    fn send_disguised(&self, k: usize, message: Tag, chat_type: play::ChatTypeBound) {
+    pub fn send_disguised(&self, k: usize, message: Tag, chat_type: play::ChatTypeBound) {
         let g = &self.guests[k];
         if g.info.chat_visibility == 0 {
             g.send(&C::DisguisedChat(play::DisguisedChat {
@@ -491,112 +483,34 @@ impl Hub {
         })
     }
 
-    /// SayCommand from a source without a player: a disguised `say_command` chat, to placed
-    /// players a mod did not hide it from.
-    pub fn console_say(&self, source: &str, text: &str, hidden: &[u128]) {
-        let chat_type = self
-            .sync
-            .id("minecraft:chat_type", "minecraft:say_command")
-            .unwrap_or(self.chat_type);
-        self.broadcast_to(
-            &C::DisguisedChat(play::DisguisedChat {
-                message: literal(text),
-                chat_type: play::ChatTypeBound {
-                    chat_type,
-                    name: literal(source),
-                    target: None,
-                },
-            }),
-            self.online_players()
-                .filter(|guest| guest.info.chat_visibility == 0 && !hidden.contains(&guest.uuid)),
-        );
-    }
-
-    /// `PlayerList.broadcastChatMessage` for an unsigned message with the command source's
-    /// display name, visible as player chat. `except` gets its copy with captured command
-    /// output unless a mod hides it too.
-    pub fn broadcast_source_chat(
-        &self,
-        chat_type: &str,
-        name: Tag,
-        message: Tag,
-        except: Option<u32>,
-        hidden: &[u128],
-    ) {
-        let bound = play::ChatTypeBound {
-            chat_type: self.chat_type_id(chat_type),
-            name,
-            target: None,
-        };
-        for (k, guest) in self.guests.iter().enumerate() {
-            if guest.placed && Some(guest.conn) != except && !hidden.contains(&guest.uuid) {
-                self.send_disguised(k, message.clone(), bound.clone());
-            }
-        }
-    }
-
-    /// A message command's chat (SayCommand, EmoteCommands): to everyone but
-    /// the players in `hidden`, bound to `chat_type` and the sender's name.
-    pub fn broadcast_command_chat(
-        &mut self,
-        i: usize,
-        chat_type: &str,
-        message: Option<ChatMessage>,
-        text: &str,
-        hidden: &[u128],
-        events: &mut Vec<HostEvent>,
-    ) {
-        let (uuid, name) = (self.guests[i].uuid, self.guests[i].name.clone());
-        let bound = play::ChatTypeBound {
-            chat_type: self.chat_type_id(chat_type),
-            name: self.player_display_name(uuid, &name),
-            target: None,
-        };
-        let line = match chat_type {
-            "say_command" => format!("[{name}] {text}"),
-            _ => format!("* {name} {text}"),
-        };
-        match message {
-            Some(message) => self.broadcast_chat(&message, &bound, line, hidden, events),
-            // An unsigned command packet (no signing context):
-            // PlayerChatMessage.system, a disguised chat.
-            None => {
-                events.push(HostEvent::Chat {
-                    line,
-                    secure: false,
-                });
-                for k in 0..self.guests.len() {
-                    if self.guests[k].placed && !hidden.contains(&self.guests[k].uuid) {
-                        self.send_disguised(k, literal(text), bound.clone());
-                    }
-                }
-            }
-        }
-    }
-
     /// MsgCommand.sendMessage to each target: the outgoing line for the
-    /// sender, the incoming one for the target. Nothing is logged.
+    /// sender, the incoming one for the target. Nothing is logged. False,
+    /// with nothing sent, when the registry lacks one of the two chat types:
+    /// `ChatType.bind` throws before the first message goes out, and the
+    /// command fails.
     pub fn whisper(
         &mut self,
         i: usize,
         targets: &[usize],
         message: Option<ChatMessage>,
         text: &str,
-    ) {
+    ) -> bool {
         let (uuid, name) = (self.guests[i].uuid, self.guests[i].name.clone());
-        let (outgoing, incoming) = (
+        let (Some(outgoing), Some(incoming)) = (
             self.chat_type_id("msg_command_outgoing"),
             self.chat_type_id("msg_command_incoming"),
-        );
+        ) else {
+            return false;
+        };
         for &t in targets {
             let target = self.player_display_name(self.guests[t].uuid, &self.guests[t].name);
             let out = play::ChatTypeBound {
-                chat_type: outgoing,
+                chat_type: outgoing.network_id() as i32,
                 name: self.player_display_name(uuid, &name),
                 target: Some(target),
             };
             let inc = play::ChatTypeBound {
-                chat_type: incoming,
+                chat_type: incoming.network_id() as i32,
                 name: self.player_display_name(uuid, &name),
                 target: None,
             };
@@ -611,13 +525,20 @@ impl Hub {
                 }
             }
         }
+        true
     }
 
-    /// A chat type's registry id.
-    fn chat_type_id(&self, name: &str) -> i32 {
-        self.sync
-            .id("minecraft:chat_type", &format!("minecraft:{name}"))
-            .unwrap_or(self.chat_type)
+    /// `ChatType.bind`'s lookup: a `ChatType` key's entry in the world's registry, by the
+    /// network id the clients were sent (`SyncData::id`, the order of the sync), so a pack's
+    /// replacement of the entry is the one they decorate with. None when the registry lacks the
+    /// key, where `getOrThrow` throws: the vanilla pack is not required (`/datapack disable
+    /// vanilla`) and a pack.mcmeta filter can hide a built-in chat type. Each caller does what
+    /// the exception does to it in vanilla.
+    pub fn chat_type_id(&self, name: &str) -> Option<RegistryRef<ChatType>> {
+        let id = self
+            .sync
+            .id("minecraft:chat_type", &format!("minecraft:{name}"))?;
+        Some(RegistryRef::new(id as u32))
     }
 }
 
@@ -628,6 +549,147 @@ pub(super) fn yellow_names(key: &str, names: Vec<Tag>) -> Tag {
         ("with", Tag::List(names)),
         ("color", string("yellow")),
     ])
+}
+
+impl Hub {
+    /// PlayerList.broadcastSystemMessage.
+    pub fn system_message(&self, content: Tag) {
+        self.broadcast(&C::SystemChat(play::SystemChat {
+            content,
+            overlay: false,
+        }));
+    }
+    /// A system message for the guests `hears` picks by name
+    /// (`PlayerList.broadcastSystemToTeam` and its kin).
+    pub fn system_message_to(&self, content: Tag, hears: impl Fn(&str) -> bool) {
+        let body = C::SystemChat(play::SystemChat {
+            content,
+            overlay: false,
+        })
+        .encode();
+        for g in self.guests.iter().filter(|g| g.placed && hears(&g.name)) {
+            g.sender.send(body.clone());
+        }
+    }
+    /// `ServerPlayer.sendSystemMessage` to the guest with `uuid`, in any dimension.
+    pub fn system_message_to_player(&self, uuid: u128, content: Tag) {
+        let body = C::SystemChat(play::SystemChat {
+            content,
+            overlay: false,
+        })
+        .encode();
+        for g in self.guests.iter().filter(|g| g.placed && g.uuid == uuid) {
+            g.sender.send(body.clone());
+        }
+    }
+    /// `ServerPlayer.sendOverlayMessage` to every guest (the action bar).
+    pub fn overlay_message(&self, content: Tag) {
+        self.broadcast(&C::SystemChat(play::SystemChat {
+            content,
+            overlay: true,
+        }));
+    }
+    /// A chat message from the host (a disguised chat: the host has no connection to sign with).
+    pub fn chat(&self, sender: &str, text: &str) {
+        // ChatType.bind throws without the type: nothing is sent.
+        let Some(chat_type) = self.chat_type_id("chat") else {
+            return;
+        };
+        self.broadcast(&C::DisguisedChat(play::DisguisedChat {
+            message: literal(text),
+            chat_type: play::ChatTypeBound {
+                chat_type: chat_type.network_id() as i32,
+                name: literal(sender),
+                target: None,
+            },
+        }));
+    }
+    /// ListPlayersCommand's reply: the players in join order (the host of a
+    /// LAN world first), as display names (Player.getDisplayName, with the
+    /// team's colour and affixes) or names with ids, joined by
+    /// gray commas (ComponentUtils.formatList).
+    pub fn list_reply(&self, uuids: bool) -> Tag {
+        let players: Vec<(u128, &str)> = self
+            .online_players()
+            .map(|g| (g.uuid, g.name.as_str()))
+            .collect();
+        let format = |(uuid, name): (u128, &str)| {
+            if uuids {
+                Tag::compound([
+                    ("translate", string("commands.list.nameAndId")),
+                    (
+                        "with",
+                        Tag::List(vec![
+                            string(name),
+                            string(&sunrise_protocol::crypto::uuid_string(uuid)),
+                        ]),
+                    ),
+                ])
+            } else {
+                self.player_display_name(uuid, name)
+            }
+        };
+        let names = match players.len() {
+            0 => string(""),
+            1 => format(players[0]),
+            _ => {
+                let mut extra = Vec::new();
+                for (k, p) in players.iter().enumerate() {
+                    if k > 0 {
+                        extra.push(Tag::compound([
+                            ("text", string(", ")),
+                            ("color", string("gray")),
+                        ]));
+                    }
+                    extra.push(format(*p));
+                }
+                Tag::compound([("text", string("")), ("extra", Tag::List(extra))])
+            }
+        };
+        Tag::compound([
+            ("translate", string("commands.list.players")),
+            (
+                "with",
+                Tag::List(vec![
+                    Tag::Int(players.len() as i32),
+                    Tag::Int(self.lan.shared.max_players() as i32),
+                    names,
+                ]),
+            ),
+        ])
+    }
+
+    /// Disconnect a guest with a reason (ServerGamePacketListenerImpl.disconnect), once
+    /// ([`Guest::begin_disconnect`]): a guest already on the way out keeps its first reason.
+    pub fn kick(&mut self, conn: u32, reason: Tag) {
+        let text = self.english(&reason);
+        let started = self.update_guest(conn, |g| {
+            g.begin_disconnect(text.clone(), reason)
+                .then(|| (g.uuid, g.name.clone()))
+        });
+        if let Some((player, name)) = started.flatten() {
+            self.pending_kicks.push(HostEvent::Kicked {
+                conn,
+                player,
+                name,
+                reason: text,
+            });
+        }
+    }
+
+    /// `TransferCommand.transfer`: the guest's client is handed to another
+    /// server (`ClientboundTransferPacket`, the play state's `Transfer`); the
+    /// client closes the connection and logs in there. Nothing disconnects the
+    /// player here: as in vanilla, the close comes from the client.
+    pub fn transfer(&self, conn: u32, host: &str, port: i32) {
+        self.send_to(
+            conn,
+            &C::Transfer(sunrise_protocol::packets::configuration::Transfer {
+                host: host.to_owned(),
+                port,
+            }),
+        );
+    }
 }
 
 #[cfg(test)]

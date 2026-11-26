@@ -57,8 +57,8 @@ impl BoundTags {
     }
 }
 /// The registry-derived integer property classification used by feature block-state codecs.
-/// Shared by generator loading and bounded startup leaf validation.
-pub(super) fn integer_properties(registry: &BlockRegistry) -> BTreeSet<(String, String)> {
+/// Shared by generator loading, bounded startup leaf validation and datapack state providers.
+pub fn integer_properties(registry: &BlockRegistry) -> BTreeSet<(String, String)> {
     let mut values = BTreeMap::<(String, String), bool>::new();
     for i in 0..registry.len() {
         let state = registry.state(BlockStateId(i as u32)).unwrap();
@@ -119,12 +119,31 @@ impl<'r> FeatureBlockBindings<'r> {
     pub fn registry(&self) -> &'r BlockRegistry {
         self.registry
     }
-    /// BlockState.isSolid (legacy solidity), when block properties are bound.
-    pub(crate) fn solid(&self) -> Result<BoundBlockProperty, DecodeError> {
-        self.physical_properties
-            .as_ref()
-            .map(|p| p[0].clone())
-            .ok_or(DecodeError::Field("block properties"))
+    /// All bound states of a block by canonical id (e.g. `minecraft:stone`).
+    pub fn block_states(&self, name: &str) -> Option<&Arc<BTreeSet<BlockStateId>>> {
+        self.blocks.get(name)
+    }
+    /// All bound states of a block tag by canonical id (without leading `#`).
+    pub fn tag_states(&self, name: &str) -> Option<&Arc<BTreeSet<BlockStateId>>> {
+        self.tags.get(name)
+    }
+    /// Decode one vanilla block-state JSON value (a bare block ID or `{"id": ..., "properties": ...}`).
+    pub fn decode_block_state(&self, json: &str) -> Result<BlockStateId, DecodeError> {
+        self.codec
+            .decode(json, false)
+            .map_err(|e| DecodeError::Registry(e.to_string()))
+    }
+    /// Air states (`air`, `cave_air`, `void_air`).
+    pub fn air_states(&self) -> [BlockStateId; 3] {
+        self.air
+    }
+    /// Bound fluid-state table.
+    pub fn fluid_table(&self) -> &Arc<crate::fluid::FluidStateTable> {
+        self.fluids.table()
+    }
+    /// Bound `can_occlude` property table, when block properties were loaded.
+    pub fn can_occlude(&self) -> Option<&BoundBlockProperty> {
+        self.can_occlude.as_ref()
     }
 
     /// Bind provider resources and precompiled placement operations to this registry.
@@ -278,6 +297,9 @@ impl<'r> FeatureBlockBindings<'r> {
     }
 }
 impl super::block_predicate::PredicateBlockResolver for FeatureBlockBindings<'_> {
+    fn block_registry(&self) -> Option<&BlockRegistry> {
+        Some(self.registry)
+    }
     fn predicate_state(&self, json: &str) -> Result<BlockStateId, DecodeError> {
         self.codec
             .decode(json, false)
@@ -465,7 +487,10 @@ impl ReplaceBlockFeature {
     ) -> Result<bool, BlockFeatureError<W::Error>> {
         for (rule, state) in &self.targets {
             let current = world.block(origin).map_err(BlockFeatureError::World)?;
-            if rule.test(current, origin, random) {
+            if rule
+                .test(current, origin, random)
+                .map_err(|e| BlockFeatureError::Query(PlacementQueryError::Failed(e)))?
+            {
                 world
                     .set_block(origin, *state, 2)
                     .map_err(BlockFeatureError::World)?;

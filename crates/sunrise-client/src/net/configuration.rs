@@ -17,6 +17,7 @@ struct Registries {
     data: Dynamic,
     dialog_snapshot: Option<Arc<Dynamic>>,
     refusal: Option<String>,
+    packet_error: Option<Reason>,
 }
 
 pub(super) enum Action {
@@ -26,6 +27,7 @@ pub(super) enum Action {
     ConsumeEffectTypes(cfg::RegistryData),
     UpdateTags(cfg::UpdateTags),
     ShowDialog(cfg::ShowDialog),
+    PostEffects(Reason),
 }
 
 impl Configuration {
@@ -41,6 +43,10 @@ impl Configuration {
             action,
         })))
         .map_err(|error| Reason::plain(error.to_string()))
+    }
+
+    pub(super) fn take_packet_error(&self) -> Option<Reason> {
+        self.registries.lock().unwrap().packet_error.take()
     }
 
     fn take_registries(&self) -> Result<Dynamic, String> {
@@ -67,6 +73,9 @@ impl ConfigurationTask {
                 Action::RegistryData(p) | Action::ConsumeEffectTypes(p) => p.owned_heap_bytes(),
                 Action::UpdateTags(p) => p.owned_heap_bytes(),
                 Action::ShowDialog(p) => p.owned_heap_bytes(),
+                Action::PostEffects(r) => {
+                    r.text.capacity().saturating_add(r.key.owned_heap_bytes())
+                }
             }
     }
 
@@ -135,6 +144,19 @@ impl ConfigurationTask {
                     registries: snapshot.clone(),
                 });
             }
+            Action::PostEffects(reason) => {
+                // ClientCommonPacketListenerImpl.handlePostEffects -> onPacketError in listener order.
+                {
+                    let mut registries = self.listener.registries.lock().unwrap();
+                    registries
+                        .packet_error
+                        .get_or_insert_with(|| reason.clone());
+                }
+                if let Some(writer) = self.io.writer.lock().unwrap().as_ref() {
+                    writer.close_after_pending();
+                }
+                return Some(reason.ended(false, true));
+            }
         };
         if let Some(writer) = self.io.writer.lock().unwrap().as_ref() {
             let _ = writer.send(&reply.encode());
@@ -158,26 +180,46 @@ pub struct FinishConfiguration {
     pub(super) writer: Arc<Mutex<Option<QueuedWriter>>>,
     pub(super) configuring: Arc<AtomicBool>,
     pub(super) play: Result<PlayPreparation, String>,
+    pub(super) datapacks: crate::datapack_net::Receiver,
     pub(super) content_verified: bool,
     pub(super) menu_extra_revision: u8,
-    pub(super) resume: mpsc::Sender<Result<Dynamic, Reason>>,
+    pub(super) resume: mpsc::Sender<Result<(Dynamic, crate::datapack_net::Receiver), Reason>>,
 }
 
 impl FinishConfiguration {
     pub(super) fn owned_bytes(&self) -> usize {
-        size_of::<Self>() + self.play.as_ref().err().map_or(0, String::capacity)
+        size_of::<Self>()
+            .saturating_add(self.play.as_ref().err().map_or(0, String::capacity))
+            .saturating_add(self.datapacks.owned_heap_bytes())
     }
 
     pub fn acknowledge(self) {
-        let result = self.play.and_then(|play| {
-            let mut registries = self.listener.take_registries()?;
-            crate::datapack_net::finish_transfer()?;
-            registries.custom_components = self.content_verified;
-            registries.menu_extra_revision = self.menu_extra_revision;
+        let FinishConfiguration {
+            listener,
+            writer,
+            configuring,
+            play,
+            datapacks,
+            content_verified,
+            menu_extra_revision,
+            resume,
+        } = self;
+        if let Some(reason) = listener.take_packet_error() {
+            if let Some(writer) = writer.lock().unwrap().as_ref() {
+                writer.close_after_pending();
+            }
+            let _ = resume.send(Err(reason));
+            return;
+        }
+        let result = play.and_then(|play| {
+            let mut registries = listener.take_registries()?;
+            datapacks.finish_transfer()?;
+            registries.custom_components = content_verified;
+            registries.menu_extra_revision = menu_extra_revision;
             let publish = || {
                 switch_client_protocol(
-                    &self.writer,
-                    &self.configuring,
+                    &writer,
+                    &configuring,
                     Phase::Play,
                     &cfg::Serverbound::FinishConfiguration(Empty).encode(),
                 )
@@ -189,13 +231,13 @@ impl FinishConfiguration {
                     payloads.accept_empty_and_play(publish)?
                 }
             }
-            Ok(registries)
+            Ok((registries, datapacks))
         });
         if result.is_err()
-            && let Some(writer) = self.writer.lock().unwrap().as_ref()
+            && let Some(writer) = writer.lock().unwrap().as_ref()
         {
             writer.close_after_pending();
         }
-        let _ = self.resume.send(result.map_err(Reason::plain));
+        let _ = resume.send(result.map_err(Reason::plain));
     }
 }

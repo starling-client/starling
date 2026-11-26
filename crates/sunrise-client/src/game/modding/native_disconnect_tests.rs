@@ -53,8 +53,7 @@ fn a_leave_request_does_not_follow_a_world_switch() {
         game.connect_local(pipe, "Steve").unwrap();
         let host: &mut dyn ClientHost = game;
         assert_eq!(host.disconnect(Some(kicked())), Ok(()));
-        game.native_lifecycle
-            .begin_open(mod_api::Authority::RemoteClient);
+        game.native_lifecycle.begin_open(None);
         game.native_leave_if_asked().unwrap();
         assert!(game.remote.is_some(), "the new world is not left");
         assert!(game.title.is_none());

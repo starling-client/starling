@@ -46,7 +46,7 @@ Content {
     ],
     blocks: [
         Block {
-            id: "fluid_full:brine",
+            id: "fluid_full:brine_block",
             template: "minecraft:water",
             properties: BlockProperties {
                 hardness: None,
@@ -68,7 +68,10 @@ Content {
                 instrument: None,
                 ignited_by_lava: None,
                 replaceable: None,
-                skip_same_block_faces: None,
+                skip_rendering: None,
+                hides_neighbor_face: [],
+                supports_external_face_hiding: None,
+                spawn_rule: None,
                 vegetation: false,
             },
             shapes: None,
@@ -82,6 +85,7 @@ Content {
             state_properties: {},
             default_state: {},
             item: false,
+            own_item_name: false,
             open_sound: None,
             close_sound: None,
             block_item: None,
@@ -116,8 +120,23 @@ Content {
                     slope_find_distance: 3,
                     source_conversion: true,
                     bucket: false,
+                    flowing: Some(
+                        "fluid_full:brine_flowing",
+                    ),
+                    block: Some(
+                        "fluid_full:brine_block",
+                    ),
                 },
             ),
+            bucket_item: Some(
+                "fluid_full:brine_jar",
+            ),
+            measures: FluidMeasures {
+                temperature: 295,
+                density: 1100,
+                viscosity: 1200,
+                light_level: 7,
+            },
         },
     ],
     fluid_interactions: [],

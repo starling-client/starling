@@ -32,7 +32,7 @@ pub fn mod_key_mapping_parts(mapping: ModKeyMappingRef) -> (NonZeroU64, usize) {
 /// The screens in which two mappings can conflict.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
+// no wire: local client key-binding conflict scope.
 pub enum KeyConflictContext {
     /// Conflicts on every screen.
     #[default]
@@ -64,7 +64,7 @@ mod context_tests {
 /// Its default is `key` with `modifiers` held; shift, control and alt are bound, super is not.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
+// no wire: local client key-mapping registration.
 pub struct KeyRegistration {
     /// The key's id, unique within its mod (`zoom`).
     pub id: String,

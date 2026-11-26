@@ -1,1 +1,1 @@
-pub use block::bundle_items::BundleItems;
+pub use block::bundle_items::{BundleConfig, BundleItems, BundleMetrics, BundleReadError};

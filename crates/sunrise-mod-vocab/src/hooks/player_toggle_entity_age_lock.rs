@@ -1,5 +1,4 @@
 //! The `player_toggle_entity_age_lock` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0316
 
 pub trait Hooks {
     /// A server player toggled an ageable mob's age lock with a golden

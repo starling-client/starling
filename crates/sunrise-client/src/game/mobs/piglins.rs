@@ -152,7 +152,7 @@ impl Game<'_> {
         {
             return false;
         }
-        if m.extra.piglin.admire_disabled > 0 && m.ai.target.is_some() {
+        if m.extra.piglin.admire_disabled.present() && m.ai.target.is_some() {
             return false;
         }
         let holds_loved = m.extra.off_hand_id().is_some_and(|o| self.piglin_loved(o));
@@ -412,9 +412,11 @@ impl Game<'_> {
         }
         let m = &mut self.mobs[index];
         // The memory is set again, for the item it holds now.
-        m.extra.piglin.seen_admire = 0;
+        m.extra.piglin.seen_admire.erase();
         sunrise_client::mobs::piglin::hold_in_offhand(m, stack);
-        m.extra.using_item = ADMIRE;
+        // `admireGoldItem`: `ADMIRING_ITEM` for `ADMIRE` ticks, kept as `Ttl` keeps a
+        // memory (the brain counts it down before it reads it).
+        m.extra.using_item = ADMIRE + 1;
         m.extra.point = None;
         m.nav_stop();
         // The admiring grunt is `PiglinAi.updateActivity`'s: `piglin::brain_step`
@@ -427,8 +429,8 @@ impl Game<'_> {
         if m.species() != Species::Piglin
             || m.is_baby()
             || m.extra.using_item > 0
-            || m.extra.piglin.seen_admire > 0
-            || m.extra.piglin.admire_disabled > 0
+            || m.extra.piglin.seen_admire.present()
+            || m.extra.piglin.admire_disabled.present()
             || !self.piglin_currency(stack)
         {
             return false;
@@ -490,7 +492,11 @@ impl Game<'_> {
         }
         // `LootContextParamSets.PIGLIN_BARTER`: the piglin is THIS_ENTITY, and
         // nothing else is supplied.
-        let piglin = sunrise_client::mobs::drops::loot_entity(&self.mobs[i], None);
+        let piglin = sunrise_client::mobs::drops::loot_entity_with_variants(
+            &self.mobs[i],
+            None,
+            Some(self.world_variants()),
+        );
         let items = self
             .roll_table_at(
                 "minecraft:gameplay/piglin_bartering",

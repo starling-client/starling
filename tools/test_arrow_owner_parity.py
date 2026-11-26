@@ -6,7 +6,9 @@ from pathlib import Path
 import sys
 import tempfile
 
-import test_command_exec_parity as driver
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_command_exec_parity as driver
 
 PLAYER = '[I;-1608632253,-450807400,-1786055591,-2146546415]'
 CASES = [('absent', None), ('mob', '[I;213,1,2,3]'), ('stand', '[I;213,4,5,6]'), ('player', '[I;-1608632253,-450807400,-1786055591,-2146546415]'), ('unresolved', '[I;213,91,92,93]')]

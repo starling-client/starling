@@ -1,0 +1,16 @@
+ids = [
+    "hook:modify_custom_spawners",
+    "type:CustomSpawners",
+    "type:CustomSpawnersEditor",
+    "type:SpawnerEntry",
+    "hook:modify_custom_spawners.dimension",
+    "hook:modify_custom_spawners.spawners",
+    "type:ModifyCustomSpawnersEvent.dimension",
+    "type:ModifyCustomSpawnersEvent.spawners",
+]
+why = """
+NeoForge's `ModifyCustomSpawnersEvent` hands the listener the level and its mutable ordered spawner list. The event gave a dimension string and a list that could only remove built-ins and append mod instances, and it let safe code empty the live list or take an earlier instance out, which a later panic could not restore. It now lends the level (`LevelRef`) and a `CustomSpawnersEditor` over the ordered list: every entry, built-in or a mod's, can be inspected, inserted before, removed, or moved. The editor does not own the live list. Edits are staged, a listener that panics has its edits undone, and the staged order is applied after every listener ran, so an earlier mod's stateful instance survives a later listener's removal and failure. The owned `CustomSpawners` list and its take and put-back operations are no longer part of the event.
+"""
+migrate = """
+Pin `modify_custom_spawners` at `hook_version = 3` instead of `2`. Replace `event.dimension` with `event.level` (read the dimension with `event.level.dimension().id(host)`) and `&mut CustomSpawners` with the editor: `event.spawners.remove(kind)`, `add(spawner)`, `contains(kind)`, `builtins()` and `len()` keep their meaning. Use `insert(index, spawner)` to put a spawner before a built-in, `entries()`, `get(index)` and `position(kind)` to inspect the order (a mod's entry reports its `owner`), and `remove_at(index)` and `move_entry(from, to)` to edit it. `CustomSpawners::empty()` and `take_at` are not reachable from a listener: leave the list alone to keep it, and remove entries one by one to clear it.
+"""

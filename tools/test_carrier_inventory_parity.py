@@ -6,7 +6,9 @@ from pathlib import Path
 import sys
 import tempfile
 
-import test_command_exec_parity as driver
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_command_exec_parity as driver
 
 STACK = '{id:"minecraft:stone",count:3,components:{"minecraft:custom_data":{audit:137}}}'
 OFFER = '{buy:{id:"minecraft:emerald",count:1},sell:{id:"minecraft:dirt",count:2}}'

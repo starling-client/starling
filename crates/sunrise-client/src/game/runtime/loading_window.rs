@@ -1,11 +1,16 @@
 //! The window's first renderer and frames: the renderer built from the prepared textures, the
 //! boot screen's frame, and `start_game`, which turns the loaded resources into a `Game`.
 use super::*;
+<<<<<<< HEAD
 use std::borrow::Cow;
 #[path = "loading_window/starling.rs"]
 mod starling;
 #[allow(unused_imports)]
 pub use self::starling::*;
+||||||| 46c00106def
+=======
+use sunrise_client::gfx::RendererDevice;
+>>>>>>> ed6772e2118
 
 /// CPU mip chains for the block sprites and world border.
 pub(super) fn prepare_renderer_textures(
@@ -27,13 +32,15 @@ pub(super) fn prepare_renderer_textures(
     )
 }
 
-/// Upload pack textures and create the renderer on the window's device.
+/// Upload pack textures and create the renderer on the window's device, with whether the device
+/// made every pipeline of the packs' core shaders it draws (the first refusal, named by its
+/// pipeline, fails the pack load as a required shader's does).
 pub(super) fn build_renderer(
     window: Arc<Window>,
     offscreen: bool,
     pack: &PackResources,
     gui: &UiResources,
-    previous: Option<&Renderer>,
+    device: RendererDevice<'_>,
     prepared: Option<sunrise_client::gfx::PreparedTextures>,
     api: sunrise_client::graphics::GraphicsApi,
     translucent_batching: bool,
@@ -43,7 +50,7 @@ pub(super) fn build_renderer(
     settings: &sunrise_client::graphics::Graphics,
     shader_pack: shader_packs::PickedPack,
     display: sunrise_client::gfx::DisplayReading,
-    filtering: (i32, i32),
+    filtering: (i32, i32, i32),
 ) -> Result<(Renderer, std::result::Result<(), String>)> {
     let (mut renderer, _) = RendererParts::new(
         window,
@@ -88,8 +95,75 @@ pub(super) fn finish_renderer(
     // Chinese and Japanese menu labels go blank when the loading screen hands
     // over to the game.
     atlas.font.reset_cache();
+<<<<<<< HEAD
+||||||| 46c00106def
+    // Made here when the worker did not: the renderer's own fallback has no LabPBR maps.
+    let prepared = Some(prepared.unwrap_or_else(|| prepare_renderer_textures(pack)));
+    let atlas_pixels = atlas.pixels();
+    let mut renderer = pollster::block_on(Renderer::new(
+        window,
+        offscreen,
+        &assets.pixels.get(),
+        assets.sprite_size,
+        assets.sprite_minimum_size,
+        assets.texture_layers,
+        &assets.sprite_mips,
+        &assets.animations,
+        (&atlas_pixels, atlas.width, atlas.height),
+        (&atlas.glint.0, atlas.glint.1, atlas.glint.2),
+        (
+            &atlas.glint_armor.0,
+            atlas.glint_armor.1,
+            atlas.glint_armor.2,
+        ),
+        (&pack.forcefield.2, pack.forcefield.0),
+        gui.panorama.clone(),
+        prepared,
+        previous,
+        api,
+        translucent_batching,
+        (shader_pack.draws_flat, shader_pack.starts_wide),
+        settings,
+        shader_pack.frame(),
+        display,
+    ))?;
+=======
+    // Made here when the worker did not: the renderer's own fallback has no LabPBR maps.
+    let prepared = Some(prepared.unwrap_or_else(|| prepare_renderer_textures(pack)));
+    let atlas_pixels = atlas.pixels();
+    let mut renderer = pollster::block_on(Renderer::new(
+        window,
+        offscreen,
+        &assets.pixels.get(),
+        assets.sprite_size,
+        assets.sprite_minimum_size,
+        assets.texture_layers,
+        &assets.sprite_mips,
+        &assets.animations,
+        (&atlas_pixels, atlas.width, atlas.height),
+        Some(atlas),
+        (&atlas.glint.0, atlas.glint.1, atlas.glint.2),
+        (
+            &atlas.glint_armor.0,
+            atlas.glint_armor.1,
+            atlas.glint_armor.2,
+        ),
+        (&pack.forcefield.2, pack.forcefield.0),
+        gui.panorama.clone(),
+        prepared,
+        device,
+        api,
+        translucent_batching,
+        (shader_pack.draws_flat, shader_pack.starts_wide),
+        settings,
+        shader_pack.frame(),
+        display,
+    ))?;
+    // The world's renderer is not loaded yet, and the upload holds only standalone models, which
+    // no block state's special part changes; `Game` builds its own geometry once it is.
+>>>>>>> ed6772e2118
     let (prepared_vertices, prepared_ranges) =
-        native_block_entity_draw::StandaloneGeometry::new(pack, gui).prepared_upload();
+        native_block_entity_draw::StandaloneGeometry::new(pack, gui, None).prepared_upload();
     renderer.install_prepared_models(
         pack.render.generation,
         &prepared_vertices,
@@ -98,6 +172,7 @@ pub(super) fn finish_renderer(
     // The loading renderer may have been built before the saved graphics settings were
     // adopted. Configure the world swapchain before its first gameplay frame instead of
     // waiting for `Game::apply_settings` after the handoff.
+<<<<<<< HEAD
     renderer.set_present_mode(present.0, present.1);
     renderer.hud.sprite_animations = atlas
         .sprite_animations
@@ -105,24 +180,46 @@ pub(super) fn finish_renderer(
         .map(|(rect, animation)| (*rect, animation.clone(), (usize::MAX, 0, 0)))
         .collect();
     renderer.hud.set_text_shader(&renderer.device, {
+||||||| 46c00106def
+    renderer.set_present_mode(vsync, settings.present_mode);
+    renderer.hud.sprite_animations = atlas
+        .sprite_animations
+        .iter()
+        .map(|(rect, animation)| (*rect, animation.clone(), (usize::MAX, 0, 0)))
+        .collect();
+    renderer.hud.set_text_shader(&renderer.device, {
+=======
+    renderer.set_present_mode(vsync, settings.present_mode);
+    renderer.pack_hdr = shader_pack.hdr;
+    renderer.hud.sprite_animations = atlas.renderer_animations();
+    // The packs' core shaders: the device refusing a pipeline vanilla requires fails the load,
+    // after the renderer is made (`ShaderManager.apply`'s required programs).
+    let gui_text = renderer.hud.set_text_shader(&renderer.device, {
+>>>>>>> ed6772e2118
         let text = &atlas.text_shaders;
         (text.gui.as_deref()).map(|p| (p, &text.expressions.gui[..]))
     });
-    pack.item_renderer
-        .prepare_glint_atlas(renderer.device.limits().max_texture_dimension_2d, filtering)?;
-    renderer.set_lines_shader(
+    pack.item_renderer.prepare_glint_atlas_with_mips(
+        renderer.device.limits().max_texture_dimension_2d,
+        (filtering.0, filtering.1),
+        filtering.2,
+    )?;
+    let world_text = renderer.set_world_text_shaders(&atlas.text_shaders);
+    let clouds = renderer.set_clouds_shader(atlas.clouds_shader.as_deref());
+    let lines = renderer.set_lines_shader(
         (atlas.lines_shader.as_deref()).map(|p| (p, &atlas.lines_expressions[..])),
     );
-    renderer.set_world_text_shaders(&atlas.text_shaders);
-    renderer.set_sky_shaders(
+    let sky = renderer.set_sky_shaders(
         (atlas.sky_shader.as_deref()).map(|p| (p, &atlas.sky_expressions[..])),
         (atlas.stars_shader.as_deref()).map(|p| (p, &atlas.stars_expressions[..])),
     );
-    renderer.set_lightmap_shader(
+    let lightmap = renderer.set_lightmap_shader(
         atlas.lightmap_shader.as_deref(),
         &atlas.lightmap_expressions,
     );
-    let clouds = renderer.set_clouds_shader(atlas.clouds_shader.as_deref());
+    let required = [world_text, gui_text, clouds, lines, sky, lightmap]
+        .into_iter()
+        .collect::<std::result::Result<(), String>>();
     renderer.set_custom_sky(&*pack.custom_sky);
     renderer.set_shared_material_maps(&atlas.material_maps);
     let cit_glints = pack.item_renderer.cit.as_ref().map(|c| &c.glint_textures);
@@ -136,7 +233,13 @@ pub(super) fn finish_renderer(
         let r = atlas.sprites.get(name)?;
         Some([r.u0, r.v0, r.u1, r.v1])
     })?;
+<<<<<<< HEAD
     Ok(clouds)
+||||||| 46c00106def
+    Ok((renderer, clouds))
+=======
+    Ok((renderer, required))
+>>>>>>> ed6772e2118
 }
 
 /// The loading screen's renderer where there is no window to draw on (`--offscreen`): one atlas
@@ -186,13 +289,20 @@ pub(super) fn loading_renderer(
         &[],
         &[],
         (pixels, width, height),
+        atlas,
         (glint_pixels, glint_width, glint_height),
         (glint_pixels, glint_width, glint_height),
         (&FORCEFIELD[..], 1),
         panorama,
         None,
+<<<<<<< HEAD
         previous,
         None,
+||||||| 46c00106def
+        previous,
+=======
+        previous.map_or(RendererDevice::New, RendererDevice::Reuse),
+>>>>>>> ed6772e2118
         api,
         // It draws no terrain.
         false,
@@ -207,11 +317,7 @@ pub(super) fn loading_renderer(
         renderer.forget_start_marker(marker);
     }
     if let Some(atlas) = atlas {
-        renderer.hud.sprite_animations = atlas
-            .sprite_animations
-            .iter()
-            .map(|(rect, animation)| (*rect, animation.clone(), (usize::MAX, 0, 0)))
-            .collect();
+        renderer.hud.sprite_animations = atlas.renderer_animations();
     }
     Ok(renderer)
 }
@@ -223,22 +329,26 @@ pub(super) fn loading_frame(hud: &HudBatch) -> Frame<'_> {
         camera: glam::DVec3::new(0.5, 100.0, 0.5),
         yaw: 0.0,
         pitch: 10.0,
+        roll: 0.0,
         fov_degrees: 85.0,
+        cull_fov_degrees: 85.0,
         eye: glam::DVec3::new(0.5, 100.0, 0.5),
         eye_rotation: [0.0, 10.0],
         first_person: true,
         bob: glam::Mat4::IDENTITY,
+        view_transform: glam::Mat4::IDENTITY,
         spin: glam::Mat4::IDENTITY,
         sky: sunrise_client::environment::Sky::default(),
         shadow_scene_revision: (0, 0),
         shadow_cache: false,
         distance: 12.0,
         detail_distance: 12.0,
+        shadow_distance: None,
         depth_far: 1000.0,
         underwater: false,
-        water_plane: None,
         cave_culling: false,
         title: true,
+        sky_pass: false,
         sky_blocked: false,
         skybox: false,
         end_sky: false,
@@ -340,6 +450,7 @@ pub(super) fn start_game<'a>(
             ),
             entity_models.as_deref(),
             pack.render.model_library.as_deref().ok(),
+            !options.execution_role.is_dedicated_server(),
         )?),
     };
     let mut initial = None;
@@ -509,7 +620,7 @@ impl Game<'_> {
                         game.settings.simulation_distance = 2;
                     }
                     // Headless, but with the same server and memory connection as play.
-                    game.open_integrated(&folder, None, Some(seed), creative, None)?;
+                    game.open_integrated(&folder, None, seed, creative, None)?;
                 } else {
                     // Start after the window is handed over, so --world uses the
                     // same responsive initialization path as the title screen.
@@ -520,7 +631,7 @@ impl Game<'_> {
                     game.pending_entry = Some(PendingWorldEntry::Local {
                         folder,
                         name: None,
-                        seed: Some(seed),
+                        seed,
                         creative,
                         create: None,
                     });

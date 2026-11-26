@@ -8,6 +8,7 @@ ChatComponent.addMessageToQueue	port	crates/sunrise-client-render/src/chat.rs::C
 ChatComponent.processMessageDeletionQueue	port	crates/sunrise-client-render/src/chat.rs::Chat::process_deletions
 ChatComponent.deleteMessage	port	crates/sunrise-client-render/src/chat.rs::Chat::delete_message
 ChatComponent.deleteMessageOrDelay	port	crates/sunrise-client-render/src/chat.rs::Chat::delete_or_delay
+ChatComponent.createDeletedMarker	inline	crates/sunrise-client-render/src/chat.rs::Chat::delete_or_delay	replaces the signed line with a server-system marker tagged system
 ChatComponent.refreshTrimmedMessages	port	crates/sunrise-client-render/src/chat.rs::Chat::rewrap	keeps the scroll; Chat::rescale is rescaleChat's resetChatScroll first, and the search and qol extras reset their own filters
 ChatComponent.scrollChat	port	crates/sunrise-client-render/src/chat.rs::Chat::scroll_by	clamp to the page and clear new-message marker at the bottom
 ChatComponent.getHeight	port	crates/sunrise-client-render/src/chat.rs::ChatOptions::height_px	focused or unfocused chat height in px
@@ -27,7 +28,7 @@ ChatComponent.DrawingFocusedGraphicsAccess.updatePose	skip:ui		pose bookkeeping;
 ChatComponent.DrawingFocusedGraphicsAccess.handleMessage	port	crates/sunrise-client-render/src/chat.rs::Chat::style_at	gap: player: no pointing-hand cursor over clickable chat text; only widgets set the cursor (widgets.rs:28)
 ChatComponent.DrawingFocusedGraphicsAccess.isMouseOver	inline	crates/sunrise-client-render/src/chat.rs::Chat::focused_tags	the cursor test of the tag bar and its icons, folded into the tag lookup
 ChatComponent.DrawingFocusedGraphicsAccess.handleTagIcon	port	crates/sunrise-client-render/src/chat.rs::Chat::focused_tags	the modified-message tags under the cursor: the tooltip of the bar or icon, and the icons of the message the cursor is over
-ChatComponent.DrawingFocusedGraphicsAccess.showTooltip	port	crates/sunrise-client/src/game/interface/chat.rs::Game::draw_chat_screen	gap: minor: every indicator shows the systemSinglePlayer text as its tooltip
+ChatComponent.DrawingFocusedGraphicsAccess.showTooltip	port	crates/sunrise-client/src/game/interface/chat.rs::Game::draw_chat_screen	each hovered indicator tag supplies its own tooltip via Chat::focused_tags
 Checkbox.adjustWidth	missing		minor: the checkbox width is never capped or its label wrapped; dialog_screen.rs:137 sets the width to the full label
 Checkbox.overflowsRowLimit	missing		minor: no tooltip for a label that wraps past two rows; Sunrise dialog labels never wrap
 Checkbox.onPress	port	crates/sunrise-client/src/game/interface/dialogs.rs::Game::dialog_click	toggles the boolean input value (dialogs.rs:448)

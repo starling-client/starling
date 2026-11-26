@@ -37,7 +37,7 @@ fn guest_action(item: &str, action: u8) -> Vec<String> {
     with_game(item, |game| {
         game.reset_entity_residency();
         game.native_lifecycle
-            .begin_open(super::native_lifecycle::Authority::IntegratedServer);
+            .begin_open(Some(mod_api::Authority::IntegratedServer));
         open_to_lan(game);
         let mut player = guest(1);
         // `with_game` binds the local player to UUID 123; the guest is another profile.
@@ -171,6 +171,7 @@ fn axe_disabled_shield_posts_finish() {
                 causing: 1,
                 direct: 1,
                 position: None,
+                direct_type: None,
             },
             &NO_ATTACK,
         );
@@ -267,7 +268,7 @@ fn nether_portal_stops_use_in_target_level() {
                 game.world_root = scratch.path().to_path_buf();
                 game.reset_entity_residency();
                 game.native_lifecycle
-                    .begin_open(mod_api::Authority::IntegratedServer);
+                    .begin_open(Some(mod_api::Authority::IntegratedServer));
                 open_to_lan(game);
                 // Reuse enter_level's normal second-level preparation before the trip.
                 game.enter_level(super::Dim::Nether).unwrap();

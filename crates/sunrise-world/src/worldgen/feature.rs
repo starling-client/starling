@@ -28,7 +28,8 @@ impl FeatureBlocks {
     }
 }
 pub trait FeatureWorld {
-    type Error;
+    /// The owning world's error, including details for placement diagnostics.
+    type Error: std::fmt::Debug;
     fn block(&mut self, position: [i32; 3]) -> Result<BlockStateId, Self::Error>;
     /// Walk the column from `position` by `step` (1 or -1) while `keep`
     /// holds for the block there, reading at most `limit` blocks. Returns the
@@ -54,6 +55,9 @@ pub trait FeatureWorld {
         }
         Ok(p[1])
     }
+    /// Return the owning world's write result. `WorldGenRegion.setBlock` can
+    /// admit a write that changes nothing; live `Level.setBlock` can return
+    /// false for an unchanged state.
     fn set_block(
         &mut self,
         position: [i32; 3],
@@ -65,12 +69,14 @@ pub trait FeatureWorld {
 pub enum FeatureError<E> {
     Random(InvalidBound),
     World(E),
+    Failed(String),
 }
 impl<E: std::fmt::Display> std::fmt::Display for FeatureError<E> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Random(e) => e.fmt(f),
             Self::World(e) => e.fmt(f),
+            Self::Failed(message) => f.write_str(message),
         }
     }
 }

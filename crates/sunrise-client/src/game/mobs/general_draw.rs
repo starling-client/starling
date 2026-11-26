@@ -1,8 +1,9 @@
 //! A mod's general entity rows on the window (#792, stage 5): each row the server shows
 //! (`game/network/remote/general.rs`), drawn by the renderer a mod registered for its type
 //! (`register_entity_renderers`), with the row's shared, frozen synced attachments. A general
-//! type has no look of its own: without a renderer, or with one that failed until the next
-//! resource load, its rows draw nothing.
+//! type has no look of its own: without a renderer, when its renderer returns an `Err` for
+//! that draw, or when its renderer has been disabled for the session after a panic, its rows
+//! draw nothing.
 use super::native_entity_renderers::EntityRendererTable;
 use super::remote::general::RemoteGeneral;
 use super::{Game, entity_culling};
@@ -13,14 +14,26 @@ use sunrise_client::mesher::Vertex;
 /// `EntityRenderState` for a general row: its identity, age and pose at the frame's `partial`
 /// tick, interpolated from the tick before as `Entity.getYRot(partial)` does, with no family's
 /// fields. The frame clones only the attachment generation's Arc; it never consults the live holder.
-fn render_state(id: u32, row: &RemoteGeneral, partial: f32) -> mod_api::EntityRenderState {
+fn render_state(
+    id: u32,
+    row: &RemoteGeneral,
+    partial: f32,
+    at: DVec3,
+    camera: DVec3,
+    dimensions: (f64, f64),
+) -> mod_api::EntityRenderState {
     let lerp = |from: f32, to: f32| from + partial * (to - from);
+    let (width, height) = dimensions;
     mod_api::__private::built::EntityRenderState {
         id,
         partial,
         age: row.age as f32 + partial,
         yaw: lerp(row.previous_rotation[0], row.rotation[0]),
         pitch: lerp(row.previous_rotation[1], row.rotation[1]),
+        position: at.to_array(),
+        size: [width as f32, height as f32],
+        eye_height: (height * 0.85) as f32,
+        distance_to_camera_sq: (at - camera).length_squared(),
         living: None,
         tnt_fuse: None,
         orb_value: None,
@@ -67,6 +80,9 @@ impl Game<'_> {
         out: &mut Vec<Vertex>,
     ) {
         for (&id, row) in frame.rows[range].iter() {
+            if self.hides_as_camera(id as u32) {
+                continue;
+            }
             self.general_entity_geometry(frame, id as u32, row, out);
         }
     }
@@ -83,7 +99,7 @@ impl Game<'_> {
         let Some(resolved) = frame.renderers.general(row.type_slot) else {
             return;
         };
-        if resolved.failed.load(std::sync::atomic::Ordering::Relaxed) {
+        if !resolved.is_enabled() {
             return;
         }
         let position = DVec3::from_array(row.position);
@@ -114,10 +130,11 @@ impl Game<'_> {
         {
             return;
         }
-        let entity = render_state(id, row, frame.alpha as f32);
         let block = at.floor().as_ivec3().to_array();
         let catalog = super::general::general_type_catalog();
-        let (_, height) = catalog.dimensions(row.type_slot);
+        let dimensions = catalog.dimensions(row.type_slot);
+        let (_, height) = dimensions;
+        let entity = render_state(id, row, frame.alpha as f32, at, frame.camera, dimensions);
         let eye = (at.y + height * 0.85).floor() as i32;
         let light = self.world.light(block[0], eye, block[2]);
         let packed = (u32::from(light >> 4) * 16) | ((u32::from(light & 15) * 16) << 8);
@@ -157,10 +174,21 @@ mod tests {
         );
         row.previous_rotation = [0.0, -20.0];
         row.age = 40;
-        let state = render_state(9, &row, 0.25);
+        let state = render_state(
+            9,
+            &row,
+            0.25,
+            glam::DVec3::new(1.0, 2.0, 3.0),
+            glam::DVec3::new(4.0, 6.0, 3.0),
+            (0.6, 1.2),
+        );
         assert_eq!(state.id, 9);
         assert_eq!(state.age, 40.25);
         assert_eq!((state.yaw, state.pitch), (22.5, -10.0));
+        assert_eq!(state.position, [1.0, 2.0, 3.0]);
+        assert_eq!(state.size, [0.6, 1.2]);
+        assert!((state.eye_height - 1.02).abs() < 1e-6);
+        assert_eq!(state.distance_to_camera_sq, 25.0);
         assert!(state.living.is_none() && state.tnt_fuse.is_none() && state.painting.is_none());
     }
 }

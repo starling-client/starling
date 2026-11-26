@@ -2,7 +2,7 @@
 use super::{PlacementContext, PlacementError, PlacementModifier, PlacementQueryError};
 use crate::worldgen::anchor::WorldGenerationContext;
 use crate::{heightmap::HeightmapType, worldgen::feature_sort::FeatureIdentity};
-use std::cell::Cell;
+use std::convert::Infallible;
 use sunrise_core::random::{InvalidBound, RandomSource};
 
 struct Queries<'a, C> {
@@ -12,6 +12,15 @@ struct Queries<'a, C> {
 impl<C: PlacementContext> PlacementContext for Queries<'_, C> {
     fn block_registry(&self) -> Option<&'static crate::registry::BlockRegistry> {
         self.world.block_registry()
+    }
+    fn world_seed(&mut self) -> Result<i64, PlacementQueryError> {
+        self.world.world_seed()
+    }
+    fn sea_level(&mut self) -> Result<i32, PlacementQueryError> {
+        self.world.sea_level()
+    }
+    fn biome_key(&mut self, position: [i32; 3]) -> Result<mod_api::BiomeKey, PlacementQueryError> {
+        self.world.biome_key(position)
     }
     fn state_matches_tag(
         &mut self,
@@ -159,14 +168,7 @@ impl FeaturePlacer {
         origin: [i32; 3],
         feature: impl FnMut(&mut C, &mut R, [i32; 3]) -> Result<bool, E>,
     ) -> Result<bool, FeaturePlacementError<E>> {
-        self.place_with_budget(
-            modifiers,
-            context,
-            random,
-            origin,
-            &Cell::new(1 << 20),
-            feature,
-        )
+        self.place_control(modifiers, context, random, origin, None, feature)
     }
     /// Set the root placed feature only for this invocation's modifier queries.
     /// Nested feature callbacks receive the original world, so their own plain
@@ -185,25 +187,7 @@ impl FeaturePlacer {
             context,
             random,
             origin,
-            (&Cell::new(1 << 20), Some(top_feature)),
-            feature,
-        )
-    }
-    pub(crate) fn place_with_budget<C: PlacementContext, R: RandomSource, E>(
-        &mut self,
-        modifiers: &[PlacementModifier],
-        context: &mut C,
-        random: &mut R,
-        origin: [i32; 3],
-        remaining: &Cell<usize>,
-        feature: impl FnMut(&mut C, &mut R, [i32; 3]) -> Result<bool, E>,
-    ) -> Result<bool, FeaturePlacementError<E>> {
-        self.place_control(
-            modifiers,
-            context,
-            random,
-            origin,
-            (remaining, None),
+            Some(top_feature),
             feature,
         )
     }
@@ -213,24 +197,15 @@ impl FeaturePlacer {
         context: &mut C,
         random: &mut R,
         origin: [i32; 3],
-        control: (&Cell<usize>, Option<FeatureIdentity>),
+        top: Option<FeatureIdentity>,
         mut feature: impl FnMut(&mut C, &mut R, [i32; 3]) -> Result<bool, E>,
     ) -> Result<bool, FeaturePlacementError<E>> {
-        let (remaining, top) = control;
-        const LIMIT: usize = 1 << 20;
-        if modifiers.len() > 1024 || self.pending.len() >= LIMIT {
-            return Err(FeaturePlacementError::WorkLimit);
-        }
         if modifiers.is_empty() {
             return feature(context, random, origin).map_err(FeaturePlacementError::Feature);
         }
         self.pending.push((origin, 0));
         let mut any = false;
         while let Some((position, index)) = self.pending.pop() {
-            if remaining.get() == 0 {
-                return Err(FeaturePlacementError::WorkLimit);
-            }
-            remaining.set(remaining.get() - 1);
             let modifier = modifiers
                 .get(index)
                 .ok_or(FeaturePlacementError::InvalidPendingIndex)?;
@@ -242,10 +217,7 @@ impl FeaturePlacer {
                     },
                     random,
                     position,
-                    |_, p| {
-                        if self.modified.len() >= LIMIT {
-                            return Err(());
-                        }
+                    |_, p| -> Result<(), Infallible> {
                         self.modified.push(p);
                         Ok(())
                     },
@@ -253,23 +225,15 @@ impl FeaturePlacer {
                 .map_err(|e| match e {
                     PlacementError::Random(e) => FeaturePlacementError::Random(e),
                     PlacementError::World(e) => FeaturePlacementError::World(e),
-                    PlacementError::Output(()) | PlacementError::WorkLimit => {
-                        FeaturePlacementError::WorkLimit
-                    }
+                    PlacementError::Output(never) => match never {},
+                    PlacementError::WorkLimit => FeaturePlacementError::WorkLimit,
                 })?;
             let next = index + 1;
             if next < modifiers.len() {
-                if self.pending.len() + self.modified.len() > LIMIT {
-                    return Err(FeaturePlacementError::WorkLimit);
-                }
                 self.pending
                     .extend(self.modified.iter().rev().map(|p| (*p, next)));
             } else {
                 for p in &self.modified {
-                    if remaining.get() == 0 {
-                        return Err(FeaturePlacementError::WorkLimit);
-                    }
-                    remaining.set(remaining.get() - 1);
                     any |= feature(context, random, *p).map_err(FeaturePlacementError::Feature)?;
                 }
             }

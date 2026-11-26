@@ -1,0 +1,11 @@
+# Before releasing, write a summary of at least 25 characters and a description
+# of at least 125 characters. Add at least one [[screenshots]] entry.
+summary = "Short summary"
+description = "Long description"
+
+# Optional: choose up to eight categories from the Sunrise mod registry.
+# categories = ["utility"]
+
+# [[screenshots]]
+# path = "page/screenshot.png"
+# caption = "What the screenshot shows"

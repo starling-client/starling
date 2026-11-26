@@ -1,1 +1,0 @@
-cargo-sunrise-mod native_release::a_nightly_only_listing_can_add_its_first_stable_key_without_replacing_metadata test:publish daily child-process

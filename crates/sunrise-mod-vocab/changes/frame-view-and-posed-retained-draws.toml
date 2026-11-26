@@ -1,0 +1,22 @@
+ids = [
+    "handle:WorldRenderView::new",
+    "handle:WorldRenderView::camera_rotation",
+    "handle:WorldRenderView::camera_forward",
+    "handle:WorldRenderView::camera_up",
+    "handle:WorldRenderView::camera_left",
+    "type:WorldRenderView.camera_entity_eye",
+    "type:WorldRenderView.animation_time",
+    "type:EntityRenderState.position",
+    "type:EntityRenderState.size",
+    "type:EntityRenderState.eye_height",
+    "type:EntityRenderState.distance_to_camera_sq",
+    "type:PreparedItemRef",
+    "handle:PreparedItemRef::destroy",
+    "method:BlockEntityDrawContext::view",
+    "method:BlockEntityDrawContext::instance_group",
+    "method:BlockEntityDrawContext::prepared_item",
+    "method:prelude::ClientRenderClientHost::prepare_item",
+    "method:ClientReloadHost::prepare_item",
+]
+why = "#5077: unify frame camera reads across all world draw callbacks on `WorldRenderView` (`camera_entity_eye`, `animation_time`, `camera_rotation`, `camera_forward`, `camera_up`, `camera_left`), expose it through `BlockEntityDrawContext::view`, populate `EntityRenderState` placement fields (`position`, `size`, `eye_height`, `distance_to_camera_sq`) per view matching vanilla 26.3's `EntityRenderer.extractRenderState`, and add posed retained draws (`BlockEntityDrawContext::instance_group` and `ClientHost::prepare_item` / `PreparedItemRef::destroy` / `BlockEntityDrawContext::prepared_item`)."
+migrate = "Rebuild against the updated SDK. Callers constructing `WorldRenderView::new` pass `camera_entity_eye` and `animation_time`. Mods implementing `BlockEntityDrawContext` in tests implement `view`, `instance_group` and `prepared_item` only if called. Replace per-frame thread-local camera copies and repeated `draw.item` resolution with `draw.view()` and `host.prepare_item` + `draw.prepared_item`."

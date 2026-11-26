@@ -95,6 +95,7 @@ fn function(path: &str, signature: &str) -> Function {
             signature: signature.into(),
             impl_generics: String::new(),
             refs: vec![],
+            behaviour_versions: Default::default(),
         },
     )
 }
@@ -833,6 +834,21 @@ fn breaking_changes_come_first_and_notes_declare_them() {
             .replace("OLD", &old.hash)
             .replace("NEW", &new.hash)
     );
+}
+
+#[test]
+fn a_stale_note_id_is_offered_the_changed_id_it_likely_meant() {
+    let old = functions(vec![function("visit_properties", "fn visit_properties()")]);
+    let new = functions(vec![function("visit_property", "fn visit_property()")]);
+    let d = diff(&old, &new);
+    // The same name under another record kind wins over a closer spelling.
+    assert_eq!(
+        d.nearest("method:visit_properties"),
+        Some("fn:visit_properties")
+    );
+    assert_eq!(d.nearest("fn:visit_propertes"), Some("fn:visit_properties"));
+    assert_eq!(d.nearest("fn:visit_propert"), Some("fn:visit_property"));
+    assert_eq!(d.nearest("behaviour:native_package_files"), None);
 }
 
 #[test]

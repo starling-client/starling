@@ -1,5 +1,4 @@
 //! The `block_shear_entity` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0181
 
 pub trait Hooks {
     /// A dispenser sheared `entity` of kind `kind` at the block in front of

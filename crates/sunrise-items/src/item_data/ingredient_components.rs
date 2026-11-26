@@ -44,10 +44,15 @@ pub fn component_equal(id: &str, a: &ItemStack, b: &ItemStack) -> bool {
         // WritableBookContent.CODEC defaults an omitted pages field to an empty list.
         // The retained raw patches can differ while the decoded contents are identical.
         "minecraft:writable_book_content" => {
-            a.data()
-                .map_or(&[][..], |data| data.writable_pages.as_slice())
-                == b.data()
-                    .map_or(&[][..], |data| data.writable_pages.as_slice())
+            fn pages(s: &ItemStack) -> (&[String], &[Option<String>]) {
+                s.data().map_or((&[], &[]), |data| {
+                    (
+                        data.writable_pages.as_slice(),
+                        data.writable_filtered.as_slice(),
+                    )
+                })
+            }
+            pages(a) == pages(b)
         }
         "minecraft:waxed" | "minecraft:intangible_projectile" | "minecraft:glider" => {
             matches!(a.data().and_then(|d| d.other(id)), Some(Tag::Compound(_)))
@@ -457,7 +462,9 @@ pub fn stored_component_equal(id: &str, a: &ItemStack, b: &ItemStack) -> bool {
         "minecraft:dyed_color" => a.dyed_color == b.dyed_color,
         "minecraft:ominous_bottle_amplifier" => a.ominous_amplifier == b.ominous_amplifier,
         "minecraft:map_post_processing" => a.map_post_processing == b.map_post_processing,
-        "minecraft:writable_book_content" => a.writable_pages == b.writable_pages,
+        "minecraft:writable_book_content" => {
+            (&a.writable_pages, &a.writable_filtered) == (&b.writable_pages, &b.writable_filtered)
+        }
         "minecraft:written_book_content" => a.written == b.written,
         "minecraft:suspicious_stew_effects" => a.stew_effects == b.stew_effects,
         "minecraft:pot_decorations" => match (&a.pot_decorations, &b.pot_decorations) {
@@ -923,6 +930,114 @@ mod tests {
         let mut written = b.clone();
         written.data_mut().writable_pages.push("A page".into());
         assert!(!component_equal(id, &a, &written));
+    }
+
+    /// Vanilla 26.3 `WritableBookContent` CODEC round-trip and equality match the witness recorded by `tools/test_writable_book_parity.py`.
+    #[test]
+    #[ignore = "run by tools/test_writable_book_parity.py"]
+    fn writable_book_pages_keep_their_filtered_text() {
+        #[derive(serde::Deserialize)]
+        struct Witness {
+            minecraft: String,
+            codec_cases: Vec<CodecCase>,
+            equality_cases: Vec<EqualityCase>,
+        }
+        #[derive(serde::Deserialize)]
+        struct CodecCase {
+            name: String,
+            input_snbt: String,
+            encoded_component_canon: String,
+            raw_pages: Vec<String>,
+            filtered_pages: Vec<Option<String>>,
+            reloaded_equal: bool,
+        }
+        #[derive(serde::Deserialize)]
+        struct EqualityCase {
+            left: String,
+            right: String,
+            content_equal: bool,
+            stack_equal: bool,
+        }
+
+        let witness_path = std::env::var_os("SUNRISE_WRITABLE_BOOK_WITNESS").unwrap_or_else(|| {
+            panic!(
+                "SUNRISE_WRITABLE_BOOK_WITNESS is unset; run tools/test_writable_book_parity.py, which records the witness"
+            )
+        });
+        let witness_path = std::path::PathBuf::from(witness_path);
+        let witness_path = if witness_path.is_dir() {
+            witness_path.join("writable_book.json")
+        } else {
+            witness_path
+        };
+        let witness_raw = std::fs::read_to_string(&witness_path).unwrap_or_else(|e| {
+            panic!(
+                "failed to read witness {} (record via tools/test_writable_book_parity.py): {e}",
+                witness_path.display()
+            )
+        });
+        let witness: Witness = serde_json::from_str(&witness_raw).unwrap();
+        assert_eq!(witness.minecraft, "26.3");
+        let id = "minecraft:writable_book_content";
+        let mut parsed = std::collections::HashMap::new();
+        for case in &witness.codec_cases {
+            let read = parse_stack(&case.input_snbt).unwrap().unwrap();
+            let saved = component_snapshot(&read).unwrap();
+            let saved_component = saved.get(id).unwrap();
+            assert_eq!(
+                canon_tag(saved_component),
+                case.encoded_component_canon,
+                "saved component mismatch for {}",
+                case.name
+            );
+            let (_, reloaded) = decode_components(Some(&saved));
+            let reloaded = reloaded.unwrap();
+            assert_eq!(reloaded.writable_pages, case.raw_pages, "{}", case.name);
+            let expected_filtered = if case.filtered_pages.iter().all(Option::is_none) {
+                Vec::new()
+            } else {
+                case.filtered_pages.clone()
+            };
+            assert_eq!(
+                reloaded.writable_filtered, expected_filtered,
+                "{}",
+                case.name
+            );
+            let mut rebuilt = ItemStack::new("minecraft:writable_book", 1);
+            *rebuilt.data_mut() = *reloaded;
+            assert_eq!(
+                component_equal(id, &read, &rebuilt),
+                case.reloaded_equal,
+                "reloaded equality mismatch for {}",
+                case.name
+            );
+            parsed.insert(case.name.clone(), read);
+        }
+        for pair in &witness.equality_cases {
+            let left = &parsed[&pair.left];
+            let right = &parsed[&pair.right];
+            assert_eq!(
+                component_equal(id, left, right),
+                pair.content_equal,
+                "component_equal({}, {})",
+                pair.left,
+                pair.right
+            );
+            assert_eq!(
+                stored_component_equal(id, left, right),
+                pair.content_equal,
+                "stored_component_equal({}, {})",
+                pair.left,
+                pair.right
+            );
+            assert_eq!(
+                left.same_item_same_components(right),
+                pair.stack_equal,
+                "same_item_same_components({}, {})",
+                pair.left,
+                pair.right
+            );
+        }
     }
 
     #[test]

@@ -10,7 +10,7 @@ description = "The game as the platform runs it: the engine's entry with the pla
 sunrise-client = { path = "../sunrise-client", default-features = false }
 # Named only so `default` below can turn on its `default`: see there.
 sunrise-client-lib = { path = "../sunrise-client-lib", default-features = false }
-sunrise-mod-package = { path = "../sunrise-mod-package", default-features = false, features = ["index"] }
+sunrise-mod-package = { path = "../sunrise-mod-package", default-features = false }
 
 sunrise-mod-host = { path = "../sunrise-mod-host", default-features = false }
 

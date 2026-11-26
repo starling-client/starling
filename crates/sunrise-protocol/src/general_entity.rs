@@ -1,5 +1,5 @@
 //! General entity spawn: how a Sunrise server tells a Sunrise client that it now tracks one row
-//! of a mod's general entity type (docs/design/mod-api/general-entity-types.md, stage 5).
+//! of a mod's general entity type.
 //!
 //! A general type's key is not in the synced `minecraft:entity_type` registry, so the vanilla
 //! `AddEntity` cannot name it. Pairing sends this message in its place; after it, the vanilla
@@ -18,10 +18,12 @@ use sunrise_core::vanilla_bytes::Writer;
 pub const CHANNEL: &str = "sunrise:general_entity";
 /// The channel's exact declaration version in the negotiated table.
 pub const VERSION: &str = "1";
-/// The longest type key, in bytes: registration's own bound.
-pub const MAX_KEY: usize = sunrise_mod_runtime::MAX_GENERAL_ENTITY_KEY;
-/// The largest message, in bytes.
-pub const MAX_MESSAGE: usize = 1024;
+/// The longest type key, in Java UTF-16 code units: vanilla's `Identifier.STREAM_CODEC` /
+/// `ByteBufCodecs.STRING_UTF8` (`FriendlyByteBuf.DEFAULT_MAX_STRING_LENGTH`).
+pub const MAX_KEY: usize = 32_767;
+/// The largest clientbound custom payload message, in bytes: vanilla's
+/// `ClientboundCustomPayloadPacket.MAX_PAYLOAD_SIZE` (1 MiB).
+pub const MAX_MESSAGE: usize = crate::packets::custom_payload::CLIENTBOUND_LIMIT;
 
 /// What the server tells a client about a general row.
 #[derive(Clone, Debug, PartialEq)]
@@ -40,7 +42,7 @@ pub enum Message {
 }
 
 /// A message's payload; an error for a key that is not a namespaced identifier of at most
-/// [`MAX_KEY`] bytes, or a value that is not finite.
+/// [`MAX_KEY`] UTF-16 code units, or a value that is not finite.
 pub fn encode(message: &Message) -> Result<Vec<u8>> {
     let mut w = Writer::new();
     match message {
@@ -103,7 +105,10 @@ pub fn decode(data: &[u8]) -> Result<Message> {
 }
 
 fn check_key(key: &str) -> Result<()> {
-    if key.len() > MAX_KEY || Identifier::parse_namespaced(key).is_none() || !key.contains(':') {
+    if key.encode_utf16().count() > MAX_KEY
+        || Identifier::parse_namespaced(key).is_none()
+        || !key.contains(':')
+    {
         return Err(Error::new(
             "general entity: the type key is not an identifier",
         ));
@@ -177,6 +182,12 @@ mod tests {
             *type_key = key.into();
             assert!(encode(&m).is_err(), "{key}");
         }
+        // Keys longer than the removed 256-byte cap still round-trip up to vanilla's string bound.
+        let mut long_valid = spawn();
+        let Message::Spawn { type_key, .. } = &mut long_valid;
+        *type_key = format!("test:{}", "a".repeat(300));
+        assert_eq!(decode(&encode(&long_valid).unwrap()).unwrap(), long_valid);
+
         let mut m = spawn();
         let Message::Spawn { type_key, .. } = &mut m;
         *type_key = format!("test:{}", "a".repeat(MAX_KEY));

@@ -5,7 +5,7 @@ use std::{hint::black_box, sync::Arc, time::Instant};
 use sunrise_client_render::moving_colliders::{self, Placed, Prepared};
 use sunrise_core::geometry::{
     Aabb, Vec3, VoxelShape,
-    oriented::{ColliderBoxes, Frame, MAX_BOXES, OrientedCollider},
+    oriented::{ColliderBoxes, Frame, OrientedCollider},
     try_resolve_step_movement_oriented,
 };
 use sunrise_world::entity_obstruction::EntityIdentity;
@@ -13,11 +13,11 @@ use sunrise_world::entity_obstruction::EntityIdentity;
 const MOVERS: usize = 200;
 const TICKS: usize = 200;
 
-/// A collider at the box cap: a 32 x 32 x 32 lump of unit boxes, its top at y = 32.
+/// A large collider: a 32 x 32 x 32 lump of unit boxes, its top at y = 32.
 fn capped(at: Vec3) -> Placed {
     let side = 32;
-    assert_eq!(side * side * side, MAX_BOXES);
-    let boxes = (0..MAX_BOXES)
+    let total = side * side * side;
+    let boxes = (0..total)
         .map(|i| {
             let (x, y, z) = (
                 (i % side) as f64,

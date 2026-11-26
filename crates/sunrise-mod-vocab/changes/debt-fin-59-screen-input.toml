@@ -1,0 +1,9 @@
+# Follow-up to debt-59-mounted-screen-widgets.toml. Opening and Closing
+# retain their existing contracts here. The v3 delivery changes for
+# screen_key_pressed_post and screen_char_typed_post are listed in that note.
+ids = [
+    "hook:screen_init_post",
+    "type:client::widgets::TextField",
+]
+why = "Vanilla 26.3 DialogScreen.runAction and WarningScreen's Back replace the receiver through Gui.setScreen. Like NeoForge's Gui.setScreen, Sunrise now applies Opening before Closing or remounting, even when both screen IDs are dialog. Screen.keyPressed and AbstractContainerScreen.keyPressed let an unhandled child key reach the container's raw bindings before NeoForge KeyboardHandler.keyPress can emit Post. This lets an unrelated key past the mod browser's focused editor and prevents translated mappings from sorting after a drop. ChatScreen.keyPressed routes completion and history to its own editor; the controller keyboard offers those controls only when that editor owns it."
+migrate = "This follow-up adds no mod-API signature changes to the mounted-widget migration. Keep returning Some(ScreenOpening::Cancel) from screen_opening to retain the current dialog, even for dialog -> dialog; remove workarounds that restored its widgets or focus after a veto. Use screen_key_pressed_pre, not screen_key_pressed_post, to intercept the raw inventory-close or sort key before the container handles it. Keep using screen_key_pressed_post for a key declined by both the browser editor and the container. Keep mounting TextField in screen_init_post and using its edit callbacks; a focused field on Chat no longer forwards controller completion or history navigation to Chat."

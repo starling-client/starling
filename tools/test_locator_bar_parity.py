@@ -24,13 +24,10 @@ import shutil
 import subprocess
 import sys
 
-try:
-    from . import lab, test_rust_parity as base
-    from .test_dedicated_server_parity import Server, free_port, wait_ticks
-except ImportError:
-    import lab
-    import test_rust_parity as base
-    from test_dedicated_server_parity import Server, free_port, wait_ticks
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_rust_parity as base
+from tools.test_dedicated_server_parity import Server, free_port, wait_ticks
 
 NAME = 'locator-bar-parity'
 PROPERTIES = {

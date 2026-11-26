@@ -63,8 +63,9 @@ class Test(NamedTuple):
     ignored: bool
 
 
-def target_roots(root=ROOT):
-    """Cargo target roots, including explicit paths."""
+def target_roots(root=ROOT, tested=False):
+    """Cargo target roots, including explicit paths. `tested`: only the targets `cargo test` builds as tests, without
+    the ones whose manifest entry says `test = false`, whose #[test]s never run."""
     roots = set()
     for workspace in ignored_shards.WORKSPACES:
         table = tomllib.loads((root / workspace / "Cargo.toml").read_text())
@@ -92,6 +93,8 @@ def target_roots(root=ROOT):
                         candidates[target] = folder / entry["path"]
                     elif target not in candidates:
                         candidates[target] = folder / default / f"{target}.rs"
+                    if tested and entry.get("test") is False:
+                        del candidates[target]
                 roots.update((name, f"{kind}:{target}", path.resolve(), folder.resolve())
                              for target, path in candidates.items())
     return sorted((package, target, path.relative_to(root.resolve()).as_posix(),
@@ -105,7 +108,7 @@ def tests(root=ROOT):
     binary = os.environ.get("SUNRISE_GAME_DISCOVERY")
     command = [binary] if binary else ["cargo", "run", "--quiet", "--locked", "-p", "sunrise-game-discovery",
                                       "--bin", "sunrise-game-discovery", "--"]
-    inputs = "".join("\t".join(row) + "\n" for row in target_roots(root))
+    inputs = "".join("\t".join(row) + "\n" for row in target_roots(root, tested=True))
     result = subprocess.run([*command, str(root)], input=inputs, capture_output=True, text=True, cwd=ROOT)
     if result.returncode:
         raise SystemExit(f"canonical Rust test inventory failed ({result.returncode}):\n{result.stderr}")

@@ -262,7 +262,6 @@ fn blur_boundary_splits_blend_runs_without_losing_or_repeating_vertices() {
         let before = batch.runs_in(0..split);
         let after = batch.runs_in(split..30);
         let actual: Vec<_> = before
-            .into_iter()
             .chain(after)
             .flat_map(|(range, blend)| range.map(move |v| (v, blend)))
             .collect();
@@ -279,28 +278,15 @@ fn blur_boundary_splits_blend_runs_without_losing_or_repeating_vertices() {
 fn container_origins_use_java_integer_division() {
     // Odd scaled dimensions, odd image sizes and an oversized panel.
     for (width, height) in [(640, 360), (641, 361), (456, 256), (534, 300), (100, 100)] {
-        let batch = HudBatch {
-            pictures: Vec::new(),
-            vertices: Vec::new(),
-            scale: 3.0,
-            width: width as f32,
-            height: height as f32,
-            patches: Vec::new(),
-            image_patches: Vec::new(),
-            blends: Vec::new(),
-            end_portal: EndPortalFill::default(),
-            glint_alpha: 0.75,
-            glint_colour: 0,
-            game_time: 0.0,
-            blur_at: 0,
-            inline_profiles: Vec::new(),
-        };
-        for (image_width, image_height) in [(195, 136), (176, 166), (176, 222)] {
+        let mut batch = HudBatch::scratch([width, height]);
+        batch.width = width as f32;
+        batch.height = height as f32;
+        for (image_width, image_height) in [(195_i32, 136_i32), (176, 166), (176, 222)] {
             assert_eq!(
                 batch.centered_origin(image_width as f32, image_height as f32),
                 (
-                    ((width - image_width) / 2) as f32,
-                    ((height - image_height) / 2) as f32
+                    ((width as i32 - image_width) / 2) as f32,
+                    ((height as i32 - image_height) / 2) as f32
                 )
             );
         }

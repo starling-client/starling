@@ -1,0 +1,22 @@
+ids = [
+    "hook:living_equipment_change",
+    "hook:living_equipment_change.entity",
+    "hook:living_equipment_change.kind",
+    "hook:living_equipment_change.slot",
+    "hook:living_equipment_change.from",
+    "hook:living_equipment_change.to",
+    "type:LivingEquipmentChangeEvent.entity",
+    "type:LivingEquipmentChangeEvent.kind",
+    "type:LivingEquipmentChangeEvent.slot",
+    "type:LivingEquipmentChangeEvent.from",
+    "type:LivingEquipmentChangeEvent.to",
+]
+why = "Match NeoForge LivingEquipmentChangeEvent over vanilla LivingEntity.detectEquipmentUpdates / collectEquipmentChanges and PlayerEquipment without blanket per-tick equipment cloning. Unchanged mobs, players and armor stands are now compared by borrow against retained slot history (including mob gear overlays without cloning stacks) at their authoritative server equipment update sites (inside each guest's body tick after item use and before attribute updates, unified with mob equipment attribute collection, and with live per-slot comparison on armor stands), only changed slots retain history (and empty history boxes are released), and connected players walk all eight EquipmentSlots as vanilla PlayerEquipment does. Bumps living_equipment_change from main's version 1 to version 3 (version 3 subscribes to the event directly, see P3-02) so listeners receive a typed LivingRef, EquipmentSlot, and lazy Option<ItemStackView<'_>> views for from and to instead of raw entity/kind/slot strings and eagerly converted ItemStack copies."
+migrate = '''
+- Update `Hooks::living_equipment_change` callbacks from main's version 1 to version 3 (the final direct subscription; there is no separate opt-in poll to implement):
+  - `event.entity` is now `LivingRef` instead of `u32` (and `event.kind` is removed): read the id with `event.entity.id()`, the type key with `event.entity.entity().kind(host)` (and `kind.id(host)` if a canonical string is needed), or mutate equipment directly via `event.entity.set_equipment(host, ...)`.
+  - `event.slot` is now `EquipmentSlot` (`MainHand`, `OffHand`, `Feet`, `Legs`, `Chest`, `Head`, `Body`, `Saddle`) instead of `&str`. Connected players now report all eight slots, including `Body` and `Saddle`, matching vanilla `PlayerEquipment`.
+  - `event.from` and `event.to` are now `Option<ItemStackView<'_>>` instead of `Option<&ItemStack>`: read scalars directly with `stack.item()`, `stack.count()`, `stack.damage()` and `stack.damage_component()`, or call `stack.project()` when you need an owned `ItemStack` or its components.
+  - Read `event.from` as the value detected by the previous equipment check, not the last value reported to a listener. Mobs and connected players do not replay changes detected while notification was off.
+- Rebuild against the new SDK so the package's `uses` list records `living_equipment_change` version `3`.
+'''

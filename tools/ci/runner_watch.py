@@ -28,7 +28,7 @@ GUIDE = "https://github.com/sunrise-org/sunrise/blob/main/docs/operations.md#sel
 # What stops while no runner with this label takes jobs, and what the Team does meanwhile. A job asks for a set of
 # labels; the first of these it asks for names it.
 EFFECTS = [
-    ("sunrise-light", "Small jobs (triage and claim commands, pull request labels, overlap notes, the Mojang "
+    ("sunrise-light", "Small jobs (triage commands, pull request labels, overlap notes, the Mojang "
                       "republish check) wait instead of running.",
      "An organisation owner sets the repository variable `SELF_HOSTED_CI` to `off`: they run on GitHub's runners."),
     ("sunrise-checks", "`verify` of the pull requests whose number ends in 0 or 1 wait, so those pull "

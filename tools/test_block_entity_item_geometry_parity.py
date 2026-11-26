@@ -28,10 +28,14 @@ import subprocess
 import sys
 import tempfile
 
-try:
-    from . import lab, test_rust_parity as base, test_model_baking_parity as baking, test_item_model_parity as item_model
-except ImportError:
-    import lab, test_rust_parity as base, test_model_baking_parity as baking, test_item_model_parity as item_model
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import (
+    lab,
+    test_rust_parity as base,
+    test_model_baking_parity as baking,
+    test_item_model_parity as item_model,
+)
 
 PARITY = lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity'
 TEST = 'game::campfire::block_entity_items_tests::block_entity_items_match_the_vanilla_cases'
@@ -155,17 +159,7 @@ def main():
         scratch = Path(tmp)
         homes = {k: scratch / k for k in ('SUNRISE_HOME', 'SUNRISE_LAUNCHER_HOME', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME')}
         env = lab.game_env(os.environ, **homes, RUST_MIN_STACK='16777216')
-        compiled = run(['cargo', 'test', '--locked', '-p', 'sunrise-client', '--lib', '--no-run', '--message-format=json'],
-                       'compile', env=env)
-        binaries = []
-        for line in compiled.read_text(encoding='utf-8').splitlines():
-            if not line.startswith('{'):
-                continue
-            row = json.loads(line)
-            if (row.get('reason') == 'compiler-artifact' and row.get('executable')
-                    and row.get('target', {}).get('name') == 'sunrise_client' and row.get('profile', {}).get('test')):
-                binaries.append(Path(row['executable']))
-        assert len(binaries) == 1, 'expected one Game test binary'
+        binaries = [lab.parity_fixtures()]
         env['SUNRISE_TEST_RESOURCES'] = str(args.resources.resolve())
         env['SUNRISE_BLOCK_ENTITY_ITEM_CASES'] = str(inputs)
         env['SUNRISE_BLOCK_ENTITY_ITEM_OUT'] = str(build / 'rust.jsonl')

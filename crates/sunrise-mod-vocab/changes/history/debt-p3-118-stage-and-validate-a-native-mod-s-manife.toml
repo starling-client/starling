@@ -1,0 +1,25 @@
+# SDK tooling history only: these helper functions were never part of the mod API surface.
+ids = [
+    "fn:sunrise_native_build::registry_generate::stage",
+    "fn:sunrise_native_build::registry_generate::rewrite_dependencies",
+]
+why = """
+The registry builder now validates and rewrites the manifest closure it actually compiles, collects its
+registry requests along the way, and applies the SDK's patches once. A generated `sunrise-internals`
+facade reports an alias conflict rather than replacing another dependency and checking a lock for an
+edge Cargo would not see. The throwaway validation tree and the removed source-workspace route's SDK
+path and lock exemptions are gone. `native-lock` uses the same manifest rules but still resolves an
+inert copy. This is Sunrise SDK tooling; there is no vanilla 26.3 or NeoForge call site.
+"""
+migrate = """
+The old manifest-only staging helpers, `registry_generate::stage` and
+`registry_generate::rewrite_dependencies`, have no public replacement for callers that consumed the
+staged manifests. If you called them to resolve a mod's registry lock, use
+`cargo sunrise-mod native-lock < lock-plan.json` with a one-line JSON plan following the
+[contract-2 lock plan schema](https://github.com/sunrise-org/sunrise/blob/main/docs/modding/src/reference/sdk/08-native-build.md#native-discover-and-native-lock).
+To build the mod, use `cargo sunrise-mod native-build < build-plan.json` with a one-line JSON plan
+following the [contract-2 build plan schema](https://github.com/sunrise-org/sunrise/blob/main/docs/modding/src/reference/sdk/08-native-build.md#the-plan).
+Keep cross-mod dependency declarations in `sunrise-mod.toml`, not Cargo paths to another mod's crate.
+If a registry build reports that the facade's alias (normally `internals`) is already in use, give
+one dependency a distinct Cargo alias using `package = "…"` and use that alias in Rust imports.
+"""

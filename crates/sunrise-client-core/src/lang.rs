@@ -4,7 +4,7 @@
 //! language used by every screen.
 use std::{
     cell::RefCell,
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     sync::{
         Arc, LazyLock, RwLock,
         atomic::{AtomicBool, Ordering},
@@ -24,7 +24,7 @@ impl LanguageInfo {
         format!("{} ({})", self.name, self.region)
     }
 }
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Language {
     pub code: Arc<str>,
     /// `LanguageInfo.bidirectional`: text without a strong character reads
@@ -38,8 +38,163 @@ pub struct Language {
     /// own (the engine's `sunrise` namespace and the crates'), built once with it. `None` when
     /// it has no strings of Sunrise's own to leave out.
     vanilla: Option<Arc<Language>>,
+    /// What the mods' run-time entries ([`set_mod_entries`]) replaced: each key's value from the
+    /// packs, `None` for a key the packs don't have. Put back before entries are applied again.
+    shadowed: HashMap<String, Option<String>>,
 }
 pub const DEFAULT: &str = "en_us";
+
+#[derive(Default)]
+struct ModEntries {
+    entries: BTreeMap<String, BTreeMap<String, HashMap<String, String>>>,
+    disabled: BTreeSet<String>,
+}
+
+/// Entries mods add at run time from their own data (a quest book's language files under
+/// `config/`), plus the currently disabled native mod ids: mod id, then language code, then key
+/// and text. Applied over the packs' entries of every language [`set`] publishes, so they survive
+/// a resource reload. Always accessed while holding [`CURRENT`]'s write lock.
+static MOD_ENTRIES: RwLock<ModEntries> = RwLock::new(ModEntries {
+    entries: BTreeMap::new(),
+    disabled: BTreeSet::new(),
+});
+
+/// Puts back what earlier mod entries replaced in `language`, then applies each enabled mod's
+/// entries in id order: `en_us` immediately before the selected language, so a later mod id wins
+/// across locales while a missing key still falls back to that mod's `en_us`.
+fn apply_mod_entries(language: &mut Language, mods: &ModEntries) {
+    for (key, value) in std::mem::take(&mut language.shadowed) {
+        match value {
+            Some(value) => language.map.insert(key, value),
+            None => language.map.remove(&key),
+        };
+    }
+    let codes: &[&str] = if &*language.code == DEFAULT {
+        &[DEFAULT]
+    } else {
+        &[DEFAULT, &language.code]
+    };
+    for (mod_id, by_code) in &mods.entries {
+        if mods.disabled.contains(mod_id) {
+            continue;
+        }
+        for code in codes {
+            for (key, value) in by_code.get(*code).into_iter().flatten() {
+                let before = language.map.insert(key.clone(), value.clone());
+                language.shadowed.entry(key.clone()).or_insert(before);
+            }
+        }
+    }
+}
+
+fn commit_language(slot: &mut Option<Arc<Language>>, mods: &ModEntries, mut language: Language) {
+    apply_mod_entries(&mut language, mods);
+    *slot = Some(Arc::new(language));
+}
+
+fn republish_locked(slot: &mut Option<Arc<Language>>, mods: &ModEntries) -> bool {
+    let Some(current) = slot.as_deref() else {
+        return false;
+    };
+    let language = current.clone();
+    commit_language(slot, mods, language);
+    true
+}
+
+fn update_publication<R>(
+    f: impl FnOnce(&mut Option<Arc<Language>>, &mut ModEntries) -> (R, bool),
+) -> R {
+    #[cfg(any(test, feature = "test-language-publication"))]
+    let f = {
+        let mut f = Some(f);
+        let isolated = PUBLICATION.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            slot.as_mut().map(|isolated| {
+                let f = f.take().expect("called once");
+                f(&mut isolated.current, &mut isolated.mods)
+            })
+        });
+        if let Some((result, published)) = isolated {
+            if published {
+                scope_changed();
+            }
+            return result;
+        }
+        f.expect("no isolated publication, so not called yet")
+    };
+    let mut current = CURRENT.write().unwrap_or_else(|e| e.into_inner());
+    let mut mods = MOD_ENTRIES.write().unwrap_or_else(|e| e.into_inner());
+    let (result, published) = f(&mut current, &mut mods);
+    if published {
+        if let Some(language) = current.as_deref() {
+            BIDIRECTIONAL.store(language.bidirectional, Ordering::Relaxed);
+            HAS_MOD_OVERLAY.store(!language.shadowed.is_empty(), Ordering::Release);
+        }
+        GENERATION.fetch_add(1, Ordering::Relaxed);
+    }
+    result
+}
+
+/// Replaces mod `mod_id`'s run-time entries for language `code` with `entries` (an empty map drops
+/// them) and publishes the current language again with every mod's entries, so text looks them
+/// up at once. Returns how many entries `mod_id` now has for `code`.
+pub fn set_mod_entries(mod_id: &str, code: &str, entries: HashMap<String, String>) -> usize {
+    let entries: HashMap<String, String> = entries
+        .into_iter()
+        .map(|(key, mut value)| {
+            normalize_numeric_placeholders(&mut value);
+            (key, value)
+        })
+        .collect();
+    let count = entries.len();
+    update_publication(|current, mods| {
+        let changed = if entries.is_empty() {
+            if let Some(by_code) = mods.entries.get_mut(mod_id) {
+                let removed = by_code.remove(code).is_some();
+                if by_code.is_empty() {
+                    mods.entries.remove(mod_id);
+                }
+                removed
+            } else {
+                false
+            }
+        } else {
+            mods.entries
+                .entry(mod_id.to_owned())
+                .or_default()
+                .insert(code.to_owned(), entries);
+            true
+        };
+        let published =
+            changed && !mods.disabled.contains(mod_id) && republish_locked(current, mods);
+        (count, published)
+    })
+}
+
+/// Drops all of mod `mod_id`'s run-time entries, in every language, and publishes again.
+pub fn clear_mod_entries(mod_id: &str) {
+    update_publication(|current, mods| {
+        let removed = mods.entries.remove(mod_id).is_some();
+        let published =
+            removed && !mods.disabled.contains(mod_id) && republish_locked(current, mods);
+        ((), published)
+    });
+}
+
+/// Updates which native mods' run-time entries are disabled, keeping their stored entries so
+/// re-enabling restores them without rerunning startup. Republishes once if any owner with
+/// entries changed enabled state.
+pub fn set_disabled_mod_entries(disabled: &BTreeSet<String>) {
+    update_publication(|current, mods| {
+        let changed = mods
+            .entries
+            .keys()
+            .any(|id| mods.disabled.contains(id) != disabled.contains(id));
+        mods.disabled.clone_from(disabled);
+        let published = changed && republish_locked(current, mods);
+        ((), published)
+    });
+}
 
 static CURRENT: RwLock<Option<Arc<Language>>> = RwLock::new(None);
 /// A language that only the calling thread sees, and the keys it was asked for and did not have
@@ -53,6 +208,8 @@ thread_local! {
 }
 /// The current language's `bidirectional`, read for every drawn string.
 static BIDIRECTIONAL: AtomicBool = AtomicBool::new(false);
+/// Whether the current published language carries any active run-time mod overrides.
+static HAS_MOD_OVERLAY: AtomicBool = AtomicBool::new(false);
 /// Counts the languages set (`set`): another count is another language, so text looked up
 /// before it may read otherwise.
 static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -732,6 +889,31 @@ impl Language {
     pub fn map(&self) -> &HashMap<String, String> {
         &self.map
     }
+    /// The resolved map without any run-time mod overrides: what a network session captures so
+    /// clearing or disabling a mod later falls back to the packs' values, not a stale override.
+    pub fn pack_map(&self) -> HashMap<String, String> {
+        let mut map = self.map.clone();
+        for (key, value) in &self.shadowed {
+            match value {
+                Some(value) => {
+                    map.insert(key.clone(), value.clone());
+                }
+                None => {
+                    map.remove(key);
+                }
+            }
+        }
+        map
+    }
+    /// The active run-time mod override for `key`, if an enabled mod supplied one on top of the
+    /// packs' entries.
+    pub fn mod_entry(&self, key: &str) -> Option<&str> {
+        if self.shadowed.contains_key(key) {
+            self.map.get(key).map(String::as_str)
+        } else {
+            None
+        }
+    }
     pub fn len(&self) -> usize {
         self.map.len() + self.components.len()
     }
@@ -781,17 +963,23 @@ pub fn available(sources: &[&dyn ResourceSource]) -> Vec<LanguageInfo> {
     found.into_values().collect()
 }
 
-#[cfg(feature = "test-language-publication")]
+#[cfg(any(test, feature = "test-language-publication"))]
+struct IsolatedPublication {
+    current: Option<Arc<Language>>,
+    mods: ModEntries,
+}
+
+#[cfg(any(test, feature = "test-language-publication"))]
 thread_local! {
-    static PUBLICATION: RefCell<Option<Arc<Language>>> = const { RefCell::new(None) };
+    static PUBLICATION: RefCell<Option<IsolatedPublication>> = const { RefCell::new(None) };
 }
 
 /// Isolate language reload publication on this fixture thread, including nested scopes.
 /// Unlike `scoped`, subsequent `set` calls replace the visible language.
-#[cfg(feature = "test-language-publication")]
+#[cfg(any(test, feature = "test-language-publication"))]
 pub fn isolate_publication(language: Language) -> impl Drop {
     struct Restore(
-        Option<Arc<Language>>,
+        Option<IsolatedPublication>,
         std::marker::PhantomData<std::rc::Rc<()>>,
     );
     impl Drop for Restore {
@@ -800,12 +988,17 @@ pub fn isolate_publication(language: Language) -> impl Drop {
             scope_changed();
         }
     }
-    let previous = PUBLICATION.with(|slot| slot.replace(Some(Arc::new(language))));
+    let previous = PUBLICATION.with(|slot| {
+        slot.replace(Some(IsolatedPublication {
+            current: Some(Arc::new(language)),
+            mods: ModEntries::default(),
+        }))
+    });
     scope_changed();
     Restore(previous, std::marker::PhantomData)
 }
 
-#[cfg(all(test, feature = "test-language-publication"))]
+#[cfg(test)]
 #[test]
 fn isolated_reload_publications_are_mutable_nested_and_thread_local() {
     let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
@@ -835,32 +1028,21 @@ fn isolated_reload_publications_are_mutable_nested_and_thread_local() {
 }
 
 pub fn set(language: Language) {
-    #[cfg(feature = "test-language-publication")]
-    let language = match PUBLICATION.with(|slot| {
-        let mut slot = slot.borrow_mut();
-        if slot.is_some() {
-            *slot = Some(Arc::new(language));
-            None
-        } else {
-            Some(language)
-        }
-    }) {
-        Some(language) => language,
-        None => {
-            scope_changed();
-            return;
-        }
-    };
-    BIDIRECTIONAL.store(language.bidirectional, Ordering::Relaxed);
-    *CURRENT.write().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(language));
-    GENERATION.fetch_add(1, Ordering::Relaxed);
+    update_publication(|current, mods| {
+        commit_language(current, mods, language);
+        ((), true)
+    });
 }
 pub fn current() -> Option<Arc<Language>> {
     if let Some(language) = SCOPE.with(|s| s.borrow().as_ref().map(|s| s.language.clone())) {
         return Some(language);
     }
-    #[cfg(feature = "test-language-publication")]
-    if let Some(language) = PUBLICATION.with(|slot| slot.borrow().clone()) {
+    #[cfg(any(test, feature = "test-language-publication"))]
+    if let Some(language) = PUBLICATION.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .and_then(|isolated| isolated.current.clone())
+    }) {
         return Some(language);
     }
     CURRENT.read().unwrap_or_else(|e| e.into_inner()).clone()
@@ -921,11 +1103,30 @@ pub(crate) fn missed(key: &str) {
 }
 /// `ClientLanguage.defaultRightToLeft` of the current language.
 pub fn bidirectional() -> bool {
-    #[cfg(feature = "test-language-publication")]
-    if let Some(language) = PUBLICATION.with(|slot| slot.borrow().clone()) {
+    #[cfg(any(test, feature = "test-language-publication"))]
+    if let Some(language) = PUBLICATION.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .and_then(|isolated| isolated.current.clone())
+    }) {
         return language.bidirectional;
     }
     BIDIRECTIONAL.load(Ordering::Relaxed)
+}
+/// Whether the current published language carries any active run-time mod overrides.
+pub fn has_mod_entries() -> bool {
+    #[cfg(any(test, feature = "test-language-publication"))]
+    if let Some(has) = PUBLICATION.with(|slot| {
+        slot.borrow().as_ref().map(|isolated| {
+            isolated
+                .current
+                .as_deref()
+                .is_some_and(|language| !language.shadowed.is_empty())
+        })
+    }) {
+        return has;
+    }
+    HAS_MOD_OVERLAY.load(Ordering::Acquire)
 }
 pub fn code() -> String {
     current().map_or_else(|| DEFAULT.to_owned(), |language| language.code.to_string())
@@ -1645,7 +1846,7 @@ mod tests {
                 // A key is `sunrise.<group>.<name>`: lower-case letters, digits and `_`
                 // between the dots. A key built at run time has a brace; a file name
                 // has one dot; the server addresses that look like keys are listed.
-                const NOT_KEYS: &[&str] = &["sunrise.bunchy7s.dev"];
+                const NOT_KEYS: &[&str] = &["sunrise.bunchy7s.dev", "sunrise.hdr.tonemap"];
                 let key_like = key
                     .bytes()
                     .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_.".contains(&b));
@@ -1874,6 +2075,149 @@ mod tests {
 #[cfg(test)]
 mod shared_source_tests {
     use super::*;
+
+    fn pairs(entries: &[(&str, &str)]) -> HashMap<String, String> {
+        entries
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect()
+    }
+
+    /// Issue #5474: a mod's run-time entries lie over the packs', normalize numeric placeholders,
+    /// survive a fresh pack reload, support replacement and empty-map removal, and come off cleanly.
+    #[test]
+    fn mod_entries_lie_over_the_packs_and_come_off_again() {
+        let _isolated = isolate_publication(Language::of(
+            "de_de",
+            [
+                ("t5474.a".into(), "pack a".into()),
+                ("t5474.b".into(), "pack b".into()),
+            ],
+        ));
+        assert!(!has_mod_entries());
+        assert_eq!(
+            set_mod_entries(
+                "lang_test_mod",
+                "en_us",
+                pairs(&[
+                    ("t5474.a", "en a"),
+                    ("t5474.c", "en c"),
+                    ("t5474.count", "Count %2$03d"),
+                ]),
+            ),
+            3
+        );
+        assert!(has_mod_entries());
+        assert_eq!(
+            set_mod_entries("lang_test_mod", "de_de", pairs(&[("t5474.a", "de a")])),
+            1
+        );
+        assert_eq!(get("t5474.a"), "de a", "the selected language wins");
+        assert_eq!(get("t5474.b"), "pack b", "untouched keys stay");
+        assert_eq!(get("t5474.c"), "en c", "falls back to the mod's en_us");
+        let count = crate::text::Text::translate(
+            "t5474.count",
+            &[
+                crate::text::Text::literal("first"),
+                crate::text::Text::literal("42"),
+            ],
+        );
+        assert_eq!(count.plain(), "Count 42");
+
+        // Replacing entries for a locale updates the published lookup immediately.
+        assert_eq!(
+            set_mod_entries("lang_test_mod", "de_de", pairs(&[("t5474.a", "de a2")])),
+            1
+        );
+        assert_eq!(get("t5474.a"), "de a2");
+
+        // Publishing a fresh pack table keeps the mod overlay on top of the new pack entries.
+        set(Language::of(
+            "de_de",
+            [
+                ("t5474.a".into(), "reloaded a".into()),
+                ("t5474.b".into(), "reloaded b".into()),
+            ],
+        ));
+        assert_eq!(get("t5474.a"), "de a2");
+        assert_eq!(get("t5474.b"), "reloaded b");
+        assert_eq!(get("t5474.c"), "en c");
+
+        // Passing an empty map drops only that locale's entries.
+        assert_eq!(set_mod_entries("lang_test_mod", "de_de", HashMap::new()), 0);
+        assert_eq!(get("t5474.a"), "en a");
+        assert_eq!(get("t5474.c"), "en c");
+
+        clear_mod_entries("lang_test_mod");
+        assert!(!has_mod_entries());
+        assert_eq!(get("t5474.a"), "reloaded a", "the fresh pack text is back");
+        assert!(!has("t5474.c"), "a key only the mod had is gone");
+        assert_eq!(get("t5474.c"), "t5474.c");
+        assert!(!has("t5474.count"));
+    }
+
+    #[test]
+    fn later_mod_id_wins_across_locales_and_clearing_reveals_earlier_mod() {
+        let _isolated = isolate_publication(Language::of(
+            "de_de",
+            [("t5474.shared".into(), "pack shared".into())],
+        ));
+        set_mod_entries("alpha", "de_de", pairs(&[("t5474.shared", "alpha de")]));
+        set_mod_entries("zeta", "en_us", pairs(&[("t5474.shared", "zeta en")]));
+        assert_eq!(get("t5474.shared"), "zeta en");
+
+        clear_mod_entries("zeta");
+        assert_eq!(get("t5474.shared"), "alpha de");
+
+        clear_mod_entries("alpha");
+        assert_eq!(get("t5474.shared"), "pack shared");
+    }
+
+    #[test]
+    fn disabled_mod_entries_stay_hidden_across_reloads_and_return_on_reenable() {
+        let _isolated = isolate_publication(Language::of(
+            "en_us",
+            [("t5474.k".into(), "pack v1".into())],
+        ));
+        set_mod_entries(
+            "mod_a",
+            "en_us",
+            pairs(&[("t5474.k", "mod a"), ("t5474.only", "only a")]),
+        );
+        assert_eq!(get("t5474.k"), "mod a");
+        assert_eq!(get("t5474.only"), "only a");
+
+        // Toggling a mod with no entries does not republish.
+        let before = generation();
+        set_disabled_mod_entries(&BTreeSet::from(["other_mod".to_owned()]));
+        assert_eq!(generation(), before);
+        assert_eq!(get("t5474.k"), "mod a");
+
+        let before = generation();
+        set_disabled_mod_entries(&BTreeSet::from(["mod_a".to_owned()]));
+        assert_eq!(generation(), before + 1);
+        assert!(!has_mod_entries());
+        assert_eq!(get("t5474.k"), "pack v1");
+        assert!(!has("t5474.only"));
+
+        set(Language::of(
+            "en_us",
+            [("t5474.k".into(), "pack v2".into())],
+        ));
+        assert!(!has_mod_entries());
+        assert_eq!(get("t5474.k"), "pack v2");
+        assert!(!has("t5474.only"));
+
+        let before = generation();
+        set_disabled_mod_entries(&BTreeSet::new());
+        assert_eq!(generation(), before + 1);
+        assert!(has_mod_entries());
+        assert_eq!(get("t5474.k"), "mod a");
+        assert_eq!(get("t5474.only"), "only a");
+
+        clear_mod_entries("mod_a");
+        assert_eq!(get("t5474.k"), "pack v2");
+    }
     #[test]
     fn selected_language_and_english_fallback_read_resolved_resources() {
         use sunrise_assets::resource_source::{Resource, ResourceSource};

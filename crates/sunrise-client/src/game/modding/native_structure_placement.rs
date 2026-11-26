@@ -5,7 +5,9 @@ use super::{
     native_structures::{engine_mirror, engine_rotation, template_id},
     structure_blocks::load_settings,
 };
-use mod_api::{StructureMirror, StructureRotation, StructureTemplateSource};
+use mod_api::{
+    LevelRef, StructureMirror, StructureRotation, StructureTemplateError, StructureTemplateSource,
+};
 use sunrise_core::nbt::Limits;
 use sunrise_core::position::BlockPos;
 use sunrise_world::compression::Compression;
@@ -15,123 +17,121 @@ use sunrise_world::worldgen::structure::{StateTransforms, StructureTemplate};
 
 /// Native mods use this; nothing in Sunrise does.
 impl Game<'_> {
-    /// For a server mod: template `source` placed at `at` the way `/place
-    /// template` and a structure block's load place one, with `rotation`,
-    /// `mirror` and `pivot`, the level position the turn and the mirroring go
-    /// around (`at` is what `/place template` uses). Blocks, block-entity data
-    /// and the template's own entities come through vanilla's placement.
-    /// `Err` says why nothing was placed: an id that doesn't parse or has a `.`
-    /// or `..` part, a template the game doesn't have, NBT that doesn't read or
-    /// is past vanilla's limits for a template file, a template that places
-    /// nothing, a client of a server, a chunk of the template's box not
-    /// loaded, or the game's structure resources missing.
-    pub(super) fn place_template(
+    /// For a server mod: template `source` placed at `at` in this server level
+    /// (active or parked) the way `/place template` and a structure block's load
+    /// place one, with `rotation`, `mirror` and `pivot`, the level position the
+    /// turn and the mirroring go around (`at` is what `/place template` uses).
+    /// Blocks, block-entity data and the template's own entities come through
+    /// vanilla's placement.
+    pub(super) fn level_place_template(
         &mut self,
+        level: LevelRef,
         source: &StructureTemplateSource,
         at: [i32; 3],
         pivot: [i32; 3],
         rotation: StructureRotation,
         mirror: StructureMirror,
-    ) -> Result<(), String> {
-        if !self.native_authoritative() {
-            return Err(
-                "a client of a server places nothing: the level's own server places a template"
-                    .into(),
-            );
-        }
-        let rotation = engine_rotation(rotation)
-            .ok_or("that rotation is not one this build knows, so nothing was placed")?;
-        let mirror = engine_mirror(mirror)
-            .ok_or("that mirror is not one this build knows, so nothing was placed")?;
-        let Some(transforms) = self.state_transforms() else {
-            return Err(
-                "the game has no structure block state table (the prepared resources are missing), so nothing was placed"
-                    .into(),
-            );
-        };
-        let template = match source {
-            StructureTemplateSource::Id(id) => {
-                let id = template_id(id).ok_or_else(|| {
-                    format!("`{id}` is not a template id: `namespace:path`, no `.` or `..` part")
-                })?;
-                let entry = self
-                    .template_entry(&id)
-                    .ok_or_else(|| format!("the game has no structure template `{id}`"))?;
-                StructureTemplate::from_nbt(&entry.tag, self.pack.assets.registry, transforms)
-            }
-            StructureTemplateSource::Nbt(bytes) => {
-                template_from_nbt(bytes, self.pack.assets.registry, transforms)?
-            }
-            _ => return Err("that template source is not one this build knows".into()),
-        };
-        // Vanilla turns the template about its own origin for `pivot == at`,
-        // and `PlaceSettings.pivot` counts from the template's corner.
-        let local_pivot = [0, 1, 2].map(|axis| pivot[axis].wrapping_sub(at[axis]));
-        if template.palettes().is_empty() || template.size.iter().any(|side| *side < 1) {
-            return Err(
-                "the template places nothing: it has no palette, or a side of its size is below 1"
-                    .into(),
-            );
-        }
-        // `PlaceCommand.checkLoaded`, over the box the template covers once
-        // turned and mirrored: the chunks it writes into all have to be here.
-        let area = template.bounding_box(at, rotation, local_pivot, mirror);
-        for cx in area.min[0] >> 4..=area.max[0] >> 4 {
-            for cz in area.min[2] >> 4..=area.max[2] >> 4 {
-                if !self.world.chunks.contains_key(&(cx, cz)) {
-                    return Err(format!(
-                        "chunk ({cx}, {cz}) of the template's box is not loaded, so nothing was placed"
-                    ));
+    ) -> Result<(), StructureTemplateError> {
+        let rotation =
+            engine_rotation(rotation).ok_or(StructureTemplateError::UnsupportedTransform)?;
+        let mirror = engine_mirror(mirror).ok_or(StructureTemplateError::UnsupportedTransform)?;
+        self.with_server_level_mut(
+            level,
+            StructureTemplateError::Unavailable,
+            StructureTemplateError::Stale,
+            Some(StructureTemplateError::InTransaction),
+            |game| {
+                let transforms = game
+                    .state_transforms()
+                    .ok_or(StructureTemplateError::Unavailable)?;
+                let template = match source {
+                    StructureTemplateSource::Id(id) => {
+                        let id = template_id(id).ok_or(StructureTemplateError::InvalidId)?;
+                        let entry = game
+                            .template_entry(&id)
+                            .ok_or(StructureTemplateError::NotFound)?;
+                        StructureTemplate::from_nbt(
+                            &entry.tag,
+                            game.pack.assets.registry,
+                            transforms,
+                        )
+                    }
+                    StructureTemplateSource::Nbt(bytes) => {
+                        template_from_nbt(bytes, game.pack.assets.registry, transforms)?
+                    }
+                    _ => return Err(StructureTemplateError::UnsupportedTransform),
+                };
+                // Vanilla turns the template about its own origin for `pivot == at`,
+                // and `PlaceSettings.pivot` counts from the template's corner.
+                let local_pivot = [0, 1, 2].map(|axis| pivot[axis].wrapping_sub(at[axis]));
+                if template.palettes().is_empty() || template.size.iter().any(|side| *side < 1) {
+                    return Err(StructureTemplateError::EmptyTemplate);
                 }
-            }
-        }
-        // `/place template` without `integrity`, `seed` or `strict`: everything
-        // places, the loot seeds come from the clock, and neighbours are not
-        // told.
-        let settings = load_settings(mirror, rotation, 1.0, 0, false);
-        let settings = TemplateSettings {
-            pivot: local_pivot,
-            ..settings
-        };
-        if !self.place_template_object(
-            &template,
-            BlockPos::new(at[0], at[1], at[2]),
-            settings,
-            mirror,
-            rotation,
-        ) {
-            return Err(
-                "the game placed nothing: it has no structure resources, or the palette the placement picks holds no block and the template no entity"
-                    .into(),
-            );
-        }
-        Ok(())
+                // `PlaceCommand.checkLoaded`, over the box the template covers once
+                // turned and mirrored: the chunks it writes into all have to be here.
+                let area = template.bounding_box(at, rotation, local_pivot, mirror);
+                for cx in area.min[0] >> 4..=area.max[0] >> 4 {
+                    for cz in area.min[2] >> 4..=area.max[2] >> 4 {
+                        if !game.world.chunks.contains_key(&(cx, cz)) {
+                            return Err(StructureTemplateError::UnloadedChunk { chunk: [cx, cz] });
+                        }
+                    }
+                }
+                if game
+                    .res
+                    .behaviours()
+                    .live_features()
+                    .and_then(|features| features.structure_resources())
+                    .is_none()
+                {
+                    return Err(StructureTemplateError::Unavailable);
+                }
+                // `/place template` without `integrity`, `seed` or `strict`: everything
+                // places, the loot seeds come from the clock, and neighbours are not
+                // told.
+                let settings = load_settings(mirror, rotation, 1.0, 0, false);
+                let settings = TemplateSettings {
+                    pivot: local_pivot,
+                    ..settings
+                };
+                if !game.place_template_object(
+                    &template,
+                    BlockPos::new(at[0], at[1], at[2]),
+                    settings,
+                    mirror,
+                    rotation,
+                ) {
+                    return Err(StructureTemplateError::EmptyTemplate);
+                }
+                Ok(())
+            },
+        )
     }
 }
 
 /// Vanilla's `StructureTemplate.load` on bytes a mod supplied: a `structure/<namespace>/<path>.nbt`
 /// as the game saves one (gzipped) or the same NBT plain, read under vanilla's limits for a template
-/// file. `Err` says which of the two failed.
+/// file.
 fn template_from_nbt(
     bytes: &[u8],
     registry: &BlockRegistry,
     transforms: &StateTransforms,
-) -> Result<StructureTemplate, String> {
+) -> Result<StructureTemplate, StructureTemplateError> {
     let limits = Limits::templates();
     let raw = if bytes.starts_with(&[0x1f, 0x8b]) {
         Compression::Gzip
             .decode(bytes, limits.max_bytes)
-            .map_err(|error| format!("the structure NBT does not decompress: {error}"))?
+            .map_err(|_| StructureTemplateError::InvalidNbt)?
     } else {
         bytes.to_vec()
     };
     // `NbtIo.readCompressed` refuses a file whose root is not a compound, where
     // the streaming read answers an empty template instead.
     if raw.first() != Some(&10) {
-        return Err("the structure NBT does not read: its root is not a compound".into());
+        return Err(StructureTemplateError::InvalidNbt);
     }
     StructureTemplate::from_bytes(&raw, limits, registry, transforms)
-        .map_err(|error| format!("the structure NBT does not read: {error}"))
+        .map_err(|_| StructureTemplateError::InvalidNbt)
 }
 
 #[cfg(test)]
@@ -226,28 +226,28 @@ mod tests {
     fn nbt_that_is_not_a_structure_is_refused_by_name() {
         let registry = registry();
         let transforms = transforms();
-        // Not gzip, not a compound: the read fails, and the reason says which.
-        let reason = template_from_nbt(b"not nbt at all", &registry, &transforms).unwrap_err();
+        // Not gzip, not a compound: the read fails.
         assert_eq!(
-            reason,
-            "the structure NBT does not read: its root is not a compound"
+            template_from_nbt(b"not nbt at all", &registry, &transforms).unwrap_err(),
+            StructureTemplateError::InvalidNbt
         );
         // An empty file is no template either.
-        assert!(template_from_nbt(b"", &registry, &transforms).is_err());
+        assert_eq!(
+            template_from_nbt(b"", &registry, &transforms).unwrap_err(),
+            StructureTemplateError::InvalidNbt
+        );
         // Gzip over bytes that are not NBT: the decompression succeeds and the
         // read is what refuses.
         let gzipped = Compression::Gzip.encode(b"\x00\x00junk").unwrap();
-        let reason = template_from_nbt(&gzipped, &registry, &transforms).unwrap_err();
-        assert!(
-            reason.starts_with("the structure NBT does not read: "),
-            "{reason}"
+        assert_eq!(
+            template_from_nbt(&gzipped, &registry, &transforms).unwrap_err(),
+            StructureTemplateError::InvalidNbt
         );
         // Gzip that is cut short: decompression itself refuses.
         let truncated = &Compression::Gzip.encode(&structure_nbt()).unwrap()[..12];
-        let reason = template_from_nbt(truncated, &registry, &transforms).unwrap_err();
-        assert!(
-            reason.starts_with("the structure NBT does not decompress: "),
-            "{reason}"
+        assert_eq!(
+            template_from_nbt(truncated, &registry, &transforms).unwrap_err(),
+            StructureTemplateError::InvalidNbt
         );
     }
 
@@ -270,12 +270,9 @@ mod tests {
         let registry = registry();
         let transforms = transforms();
         // 512 lists inside the root compound: the deepest sits at the read cap.
-        let reason =
-            template_from_nbt(&nested_lists_file(512), &registry, &transforms).unwrap_err();
-        assert!(
-            reason.starts_with("the structure NBT does not read: ")
-                && reason.contains("depth limit exceeded"),
-            "{reason}"
+        assert_eq!(
+            template_from_nbt(&nested_lists_file(512), &registry, &transforms).unwrap_err(),
+            StructureTemplateError::InvalidNbt
         );
         // The same file, well inside the cap, reads: the refusal is the cap.
         assert!(template_from_nbt(&nested_lists_file(64), &registry, &transforms).is_ok());
@@ -369,9 +366,11 @@ mod tests {
 
         with_game(|game| {
             ready_chunked_game(game);
+            let level = game.level_ref(game.native_lifecycle.epoch().unwrap(), game.dim.key());
             let registry = game.pack.assets.registry;
             let at = [2, 64, 2];
-            let placed = game.place_template(
+            let placed = game.level_place_template(
+                level,
                 &StructureTemplateSource::nbt(carried_structure_nbt()),
                 at,
                 at,
@@ -431,6 +430,7 @@ mod tests {
 
         with_game(|game| {
             ready_chunked_game(game);
+            let level = game.level_ref(game.native_lifecycle.epoch().unwrap(), game.dim.key());
             let registry = game.pack.assets.registry;
             let stone = registry.default_state("minecraft:stone").unwrap();
             // A 17x1x1 box from `at`: its first column is in chunk (0, 0), which
@@ -462,17 +462,17 @@ mod tests {
             game.world
                 .set(at[0], at[1], at[2], stone)
                 .expect("a write in the loaded chunk");
-            let refused = game.place_template(
+            let refused = game.level_place_template(
+                level,
                 &StructureTemplateSource::nbt(bytes),
                 at,
                 at,
                 StructureRotation::None,
                 StructureMirror::None,
             );
-            let reason = refused.expect_err("a chunk of the box is not loaded");
-            assert!(
-                reason.starts_with("chunk (1, 0) of the template's box is not loaded"),
-                "{reason}"
+            assert_eq!(
+                refused,
+                Err(StructureTemplateError::UnloadedChunk { chunk: [1, 0] })
             );
             assert_eq!(
                 game.world.block(at[0], at[1], at[2]),

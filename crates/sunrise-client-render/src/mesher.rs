@@ -18,14 +18,14 @@ pub mod part_tables;
 mod part_tables_tests;
 mod sides;
 mod visibility_plan;
-pub(crate) use visibility_plan::MAX_RESIDENT_VISIBILITY_BYTES;
 pub use visibility_plan::{
     ANSWER_BYTES, Lease, PLAN_BYTES, SectionAnswer, SectionPlanBuilder, SectionVisibilityPlan,
-    capture_input, plan_section,
+    plan_section,
 };
+pub(crate) use visibility_plan::{MAX_RESIDENT_VISIBILITY_BYTES, capture_input};
 #[cfg(test)]
 #[path = "mesher/source_tests.rs"]
-mod source_tests;
+pub(crate) mod source_tests;
 use crate::connected::{FaceNeighbours, Overlay, Pick, TileLayer};
 use crate::{
     assets::{Assets, RenderAssets},
@@ -50,6 +50,7 @@ use sunrise_assets::model::Direction as ModelDirection;
 use sunrise_connected::{Axes as CtmAxes, Face as CtmFace};
 use sunrise_core::{biome::BiomeZoom, geometry::Direction, position::BlockPos};
 pub use sunrise_render_core::UV_STEPS;
+use sunrise_shaders::RenderLayer;
 use sunrise_world::{
     block_render::FaceVisibility,
     fluid::{FluidKind, FluidState},
@@ -344,7 +345,7 @@ mod vertex_tests {
         // Another face replaces the first.
         assert_eq!(super::fluid_face(super::fluid_face(lit, 5), 1), 0x9D56_3412);
     }
-    /// What `gfx/native_material.rs` reads back from the colour's alpha byte: the face of a
+    /// What the colour's alpha byte holds: the face of a
     /// fluid quad, and the HDR tier.
     fn decoded(color: u32) -> (Option<u32>, u32) {
         let flags = color >> 24;
@@ -412,7 +413,7 @@ pub struct TerrainSource {
     cell: u32,
 }
 impl TerrainSource {
-    pub(crate) fn new(state: u32, pos: [i32; 3], emission: u8, fluid: bool) -> Self {
+    pub fn new(state: u32, pos: [i32; 3], emission: u8, fluid: bool) -> Self {
         debug_assert!(pos.iter().all(|&v| (0..16).contains(&v)));
         Self {
             state,
@@ -423,6 +424,19 @@ impl TerrainSource {
                 | 1 << 13
                 | u32::from(emission.min(15)) << 14,
         }
+    }
+    /// The quad's `mc_Entity` id under `ids` (`Renderer::set_shader_pack`'s `block_ids`, two a
+    /// state: the model's, then the fluid's), as flat draws look it up in their table
+    /// (`pack_atlas`'s `hz_material`): the fluid's for a fluid, -1 for a state past the table;
+    /// in the word `cell` keeps, for the normal stream (`terrain_normals`).
+    pub(crate) fn with_id(self, ids: &[i32]) -> [u32; 2] {
+        let column = (self.cell >> 12) as usize & 1;
+        let id = if (self.state as usize) < ids.len() / 2 {
+            ids[2 * self.state as usize + column]
+        } else {
+            -1
+        };
+        [id as u32, self.cell]
     }
 }
 
@@ -454,8 +468,7 @@ pub struct SectionMesh {
     /// each frame by `block_entity_render` like vanilla's per-section
     /// `SectionCompiler.Results.blockEntities`.
     pub block_entities: Vec<([i32; 3], u32)>,
-    /// Blocks that give off light (world position, state id), for the colour of block light
-    /// Sunrise's shader packs read (`gfx::block_light`).
+    /// Blocks that give off light (world position, state id).
     pub lights: Vec<([i32; 3], u32)>,
     /// Sprite layers emitted while building this mesh. Kept distinct before
     /// upload so the renderer does not rescan every terrain vertex.
@@ -537,6 +550,11 @@ impl SectionMesh {
     /// leave out those facing away from the eye (`sides`).
     /// Then lays them out compactly (`packed`) while the renderer reads that.
     pub fn sort_solid(&mut self) {
+        self.sort_solid_as(packed::packing());
+    }
+
+    /// `sort_solid`, then the compact layout only when `compact`.
+    pub(crate) fn sort_solid_as(&mut self, compact: bool) {
         let quads = self.solid.len() / 4;
         if !self.solid_tints.is_empty() {
             self.solid_tints.resize(quads, packed::UNKNOWN_TINT);
@@ -549,7 +567,7 @@ impl SectionMesh {
         self.bounds = self.compute_bounds();
         self.packed.clear();
         self.packed_far = false;
-        if packed::packing() && quads > 0 && self.solid_tints.len() == quads {
+        if compact && quads > 0 && self.solid_tints.len() == quads {
             packed::layout_into(&self.solid, &self.solid_tints, &mut self.packed);
         }
         self.solid_tints.clear();
@@ -800,6 +818,7 @@ pub struct MeshFacts {
     pub overlay: bool,
     pub tint_sources: u8,
 }
+#[derive(Clone)]
 pub struct MeshTables {
     info: Vec<Info>,
     /// `Info::solid` by state, packed apart: the opacity mask of a section
@@ -952,6 +971,14 @@ fn world_tint(tint: Tint, tints: &mut Tints, [x, y, z]: [i32; 3]) -> Option<u32>
     })
 }
 impl MeshTables {
+    /// Returns a copy of these mesh tables with a rebuilt [`FaceVisibility`] (for example
+    /// after synced block tags update tag-based face rules).
+    pub fn with_visibility(&self, visibility: FaceVisibility) -> Self {
+        let mut tables = self.clone();
+        tables.visibility = visibility;
+        tables
+    }
+
     pub fn new(
         assets: &Assets,
         render: &RenderAssets,
@@ -1106,6 +1133,23 @@ impl MeshTables {
                 cover,
             });
         }
+        let [
+            water_still,
+            water_flow,
+            water_overlay,
+            lava_still,
+            lava_flow,
+        ] = if layers == 0 {
+            [0; 5]
+        } else {
+            [
+                layer("minecraft:block/water_still")?,
+                layer("minecraft:block/water_flow")?,
+                layer("minecraft:block/water_overlay")?,
+                layer("minecraft:block/lava_still")?,
+                layer("minecraft:block/lava_flow")?,
+            ]
+        };
         let mut tables = Self {
             solid: info.iter().map(|i| i.solid).collect(),
             full_faces: info
@@ -1114,11 +1158,11 @@ impl MeshTables {
                 .collect(),
             info,
             visibility,
-            water_still: layer("minecraft:block/water_still")?,
-            water_flow: layer("minecraft:block/water_flow")?,
-            water_overlay: layer("minecraft:block/water_overlay")?,
-            lava_still: layer("minecraft:block/lava_still")?,
-            lava_flow: layer("minecraft:block/lava_flow")?,
+            water_still,
+            water_flow,
+            water_overlay,
+            lava_still,
+            lava_flow,
             mod_fluids,
             animated_layers,
             colormaps: Vec::new(),
@@ -1715,6 +1759,8 @@ fn row_masks_match_cell_definition() {
     }
 }
 #[cfg(test)]
+mod layer_override_tests;
+#[cfg(test)]
 mod leaf_culling_tests;
 #[cfg(test)]
 mod opaque_ice_tests;
@@ -1752,9 +1798,7 @@ pub fn emitting(color: u32, tier: u8) -> u32 {
 }
 /// The high nibble of `TerrainVertex::color`'s alpha byte: 8 plus the face (`Direction`
 /// as usize) on a fluid quad, 0xF on every other. `terrain.wgsl` reads only the low nibble
-/// (the emission), so only the material stage of Sunrise's own packs reads it
-/// (`gfx/native_material.rs`); whether the fluid is water or lava follows from the pass
-/// that draws it.
+/// (the emission); whether the fluid is water or lava follows from the pass that draws it.
 pub const FLUID_FACE_BITS: u32 = 0xF000_0000;
 /// `color` marked as a fluid quad of face `face` (`Direction` as usize, 0 to 5).
 pub fn fluid_face(color: u32, face: usize) -> u32 {
@@ -2270,6 +2314,10 @@ pub struct Mesher<'a> {
     pub opaque_ice: bool,
     /// Sprite layers a shader pack moves into the translucent pass, by layer.
     pub translucent_layers: &'a [bool],
+    /// By state id, the terrain layer a shader pack's `block.properties` moves the state's model
+    /// faces to (`layer.*`, spec 4.2), over every other choice of their pass; `None` keeps the
+    /// state's own. Empty when no state is moved.
+    pub layer_overrides: &'a [Option<RenderLayer>],
     /// What the worker does with leaf faces inside a canopy.
     pub leaf_culling: LeafCullingMode,
     /// By state id, the states a mod hides (`block_render_visibility`): the mesher sees them as air, so
@@ -2578,17 +2626,14 @@ impl Mesher<'_> {
                         ao,
                     };
                     let start = [out.solid.len(), out.translucent.len()];
+                    let pass = match self.layer_overrides.get(id as usize).copied().flatten() {
+                        Some(layer) => Pass::Layer(layer),
+                        None => Pass::Own { force_solid },
+                    };
                     for model in base_first.into_iter().chain(models) {
                         for face in &model.faces {
                             self.model_face(
-                                pad,
-                                groups,
-                                &mut tints,
-                                &mut out,
-                                &at,
-                                state,
-                                face,
-                                force_solid,
+                                pad, groups, &mut tints, &mut out, &at, state, face, pass,
                             );
                         }
                     }
@@ -2828,12 +2873,12 @@ impl Mesher<'_> {
         at: &CellFaces,
         state: &Info,
         face: &BakedFace,
-        force_solid: bool,
+        pass: Pass,
     ) {
         if !self.draws_model_face(pad, &at.sample, state, face) {
             return;
         }
-        self.face(pad, groups, tints, out, at, state, face, force_solid);
+        self.face(pad, groups, tints, out, at, state, face, pass);
     }
 
     fn draws_model_face(
@@ -2881,7 +2926,7 @@ impl Mesher<'_> {
         at: &CellFaces,
         state: &Info,
         face: &BakedFace,
-        force_solid: bool,
+        pass: Pass,
     ) {
         let FaceCell { pos, id, .. } = at.sample;
         let CellFaces { origin, ao, .. } = *at;
@@ -2984,10 +3029,28 @@ impl Mesher<'_> {
             translucent: face.translucent,
             opaque: face.opaque,
         };
-        let own_translucent = self.translucent(own);
-        let tile = |t: TileLayer| in_face_pass(t, own, own_translucent);
+        // A pack's `layer.*` rule decides the face's pass by itself: the face, its tiles and its
+        // overlays' pass, as the face's own translucency, cutoutLeaves and opaqueIce otherwise do.
+        let (own, own_translucent, force_solid, by_sprite) = match pass {
+            Pass::Own { force_solid } => (own, self.translucent(own), force_solid, true),
+            Pass::Layer(layer) => {
+                let own = in_layer(own, layer);
+                (
+                    own,
+                    layer == RenderLayer::Translucent,
+                    layer == RenderLayer::Solid,
+                    false,
+                )
+            }
+        };
+        let tile = |t: TileLayer| match pass {
+            Pass::Own { .. } => in_face_pass(t, own, own_translucent),
+            Pass::Layer(layer) => in_layer(in_face_pass(t, own, own_translucent), layer),
+        };
         match pick {
-            Pick::Keep => self.quad(out, force_solid, own, corners.map(|c| c.0), tint),
+            Pick::Keep => {
+                self.quad_as(out, force_solid, own, corners.map(|c| c.0), by_sprite, tint)
+            }
             Pick::Tile(t) => {
                 let v = corners.map(|c| c.0);
                 self.quad_as(out, force_solid, tile(t), v, false, tint);
@@ -3043,19 +3106,7 @@ impl Mesher<'_> {
             }
         }
     }
-    /// One terrain quad with sprite `tile`, in the pass its alpha needs (`force_solid`: no
-    /// alpha cutout whatever the sprite).
-    fn quad(
-        &self,
-        out: &mut SectionMesh,
-        force_solid: bool,
-        tile: TileLayer,
-        v: [TerrainVertex; 4],
-        tint: Option<u32>,
-    ) {
-        self.quad_as(out, force_solid, tile, v, true, tint);
-    }
-    /// Whether [`Mesher::quad`] draws `tile` in the translucent pass.
+    /// Whether [`Mesher::quad_as`] draws `tile` in the translucent pass by its sprite.
     fn translucent(&self, tile: TileLayer) -> bool {
         match tile {
             TileLayer::Layer {
@@ -3071,9 +3122,11 @@ impl Mesher<'_> {
             TileLayer::Skip | TileLayer::Default => false,
         }
     }
-    /// [`Mesher::quad`], with the sprite's own translucency (`translucent_layers`) counted only
-    /// when `by_sprite`: an overlay's pass is its rule's. `tint`: what its grey levels were
-    /// multiplied by, for the compact layout (`packed`).
+    /// One terrain quad with sprite `tile`, in the pass its alpha needs (`force_solid`: no
+    /// alpha cutout whatever the sprite), with the sprite's own translucency
+    /// (`translucent_layers`) counted only when `by_sprite`: an overlay's pass is its rule's, a
+    /// moved block's its `layer.*` rule's. `tint`: what its grey levels were multiplied by, for
+    /// the compact layout (`packed`).
     fn quad_as(
         &self,
         out: &mut SectionMesh,
@@ -3181,6 +3234,27 @@ fn cuts(c: &[(TerrainVertex, [f32; 2]); 4]) -> Cuts {
         }
     }
     out
+}
+/// How a block's model faces pick their pass: by their sprites and the options (`force_solid`:
+/// no alpha cutout whatever the sprite), or as a shader pack's `layer.*` rule says.
+#[derive(Clone, Copy)]
+enum Pass {
+    Own { force_solid: bool },
+    Layer(RenderLayer),
+}
+/// Tile `t` in `layer` (spec 4.2): translucent blends; cutout keeps the alpha test even over
+/// opaque texels; solid is drawn with no alpha test by the caller (`force_solid`).
+fn in_layer(t: TileLayer, layer: RenderLayer) -> TileLayer {
+    match t {
+        TileLayer::Layer {
+            layer: l, opaque, ..
+        } => TileLayer::Layer {
+            layer: l,
+            translucent: layer == RenderLayer::Translucent,
+            opaque: opaque && layer != RenderLayer::Cutout,
+        },
+        other => other,
+    }
 }
 /// Tile `t` as drawn over a face whose own sprite is `own`, in the face's pass
 /// (`own_translucent`): CTM picks a texture, not a render layer (OptiFine draws a tile in the
@@ -3350,6 +3424,40 @@ mod quarter_tests {
         assert_eq!(
             in_face_pass(TileLayer::Default, face(false), false),
             face(false)
+        );
+    }
+
+    /// A connected-texture tile over a face a `layer.*` rule moved takes the rule's layer: an
+    /// all-opaque tile keeps the alpha test under `layer.cutout` and blends under
+    /// `layer.translucent`; `<default>` is the moved face itself.
+    #[test]
+    fn a_tile_over_a_moved_face_takes_its_layer() {
+        let tile = TileLayer::Layer {
+            layer: 5,
+            translucent: false,
+            opaque: true,
+        };
+        let face = TileLayer::Layer {
+            layer: 1,
+            translucent: false,
+            opaque: true,
+        };
+        let tiled = |layer, t| in_layer(in_face_pass(t, in_layer(face, layer), false), layer);
+        let layer = |translucent, opaque| TileLayer::Layer {
+            layer: 5,
+            translucent,
+            opaque,
+        };
+        assert_eq!(tiled(RenderLayer::Cutout, tile), layer(false, false));
+        assert_eq!(tiled(RenderLayer::Translucent, tile), layer(true, true));
+        assert_eq!(tiled(RenderLayer::Solid, tile), layer(false, true));
+        assert_eq!(
+            tiled(RenderLayer::Cutout, TileLayer::Default),
+            TileLayer::Layer {
+                layer: 1,
+                translucent: false,
+                opaque: false,
+            }
         );
     }
 

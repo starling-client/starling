@@ -1,0 +1,8 @@
+ids = [
+    "handle:PlayerRef::post_effects",
+    "handle:PlayerRef::add_post_effect",
+    "handle:PlayerRef::remove_post_effect",
+    "handle:PlayerRef::clear_post_effects",
+]
+why = "Exposes vanilla 26.3 ServerPlayer post-effect management (#5180) on PlayerRef (getPostEffects, addPostEffect, removePostEffect, clearPostEffects), sharing state, playerdata persistence and ClientboundPostEffectsPacket dirty syncing with /posteffect."
+migrate = "Additive methods on PlayerRef; no existing mod code needs to change."

@@ -23,9 +23,12 @@ impl Game<'_> {
 
 #[cfg(test)]
 mod camera_type_tests {
+    use crate::game::native_entity_refs::tests::{run_fresh_cases, with_client_game};
     use mod_api::{CameraType, CameraTypeCycleEvent, ClientHost, Hooks, ModEntry};
     use mod_platform::testing::with_mods;
     use std::sync::{Arc, Mutex};
+    use sunrise_client::motion::PlayerMotion;
+    use sunrise_core::geometry::Vec3;
 
     /// Skips the front view: F5 goes first person, behind, first person.
     struct NoFront(Arc<Mutex<Vec<(CameraType, CameraType)>>>);
@@ -96,21 +99,32 @@ mod camera_type_tests {
 
     #[derive(Default)]
     struct Calls {
-        poses: std::sync::atomic::AtomicUsize,
+        angles: std::sync::atomic::AtomicUsize,
+        positions: std::sync::atomic::AtomicUsize,
         cycles: std::sync::atomic::AtomicUsize,
     }
     struct SharedCamera(Arc<Calls>);
     #[mod_api::__subscriptions]
     impl Hooks for SharedCamera {
-        fn camera_pose(&self, host: &dyn ClientHost, event: &mut mod_api::CameraPoseEvent<'_>) {
+        fn compute_camera_angles(
+            &self,
+            host: &dyn ClientHost,
+            event: &mut mod_api::ComputeCameraAnglesEvent,
+        ) {
             self.0
-                .poses
+                .angles
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             host.set_camera_type(CameraType::ThirdPersonFront);
             assert_eq!(host.camera_type(), CameraType::ThirdPersonFront);
             host.set_camera_type(CameraType::ThirdPersonBack);
             assert_eq!(host.camera_type(), CameraType::ThirdPersonBack);
-            event.yaw += 15.0;
+            event.yaw += 180.0;
+            event.roll = 180.0;
+        }
+        fn camera_position(&self, _: &dyn ClientHost, _: &mut mod_api::CameraPositionEvent<'_>) {
+            self.0
+                .positions
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
         fn camera_type_cycle(&self, _: &mut dyn ClientHost, _: &mut CameraTypeCycleEvent<'_>) {
             self.0
@@ -122,9 +136,14 @@ mod camera_type_tests {
     #[test]
     #[ignore = "daily"]
     fn shared_camera_pose_requests_apply_before_frame_consumers() {
+        if run_fresh_cases(
+            "game::native_hooks::camera_type::camera_type_tests::shared_camera_pose_requests_apply_before_frame_consumers",
+            "SUNRISE_CAMERA_SHARED_CHILD",
+            &["shared"],
+        ) {
+            return;
+        }
         use std::sync::atomic::Ordering;
-        use sunrise_client::motion::PlayerMotion;
-        use sunrise_core::geometry::Vec3;
 
         let calls = Arc::new(Calls::default());
         let mods: mod_api::Mods = vec![ModEntry::new(
@@ -133,22 +152,204 @@ mod camera_type_tests {
         )]
         .into();
         with_mods(mods, || {
-            crate::game::native_entity_refs::tests::with_client_game(|game| {
+            with_client_game(|game| {
                 game.player = Some(PlayerMotion::new(game.motion, Vec3::ZERO).unwrap());
                 game.title = None;
                 game.spectated_post_effect = Some("minecraft:creeper");
-                let vanilla = game.camera_view(1.0).unwrap();
-                assert_eq!(vanilla.0.z, 0.0);
-                let posed = game.native_camera_pose_now(1.0, vanilla);
+                let posed = game.frame_camera(1.0).unwrap();
                 assert_eq!(game.camera_type, CameraType::ThirdPersonBack);
                 assert_eq!(game.camera_type(), CameraType::ThirdPersonBack);
                 assert_eq!(game.spectated_post_effect, None);
-                assert!((posed.0.z + 4.0).abs() < 1e-6, "refresh unchanged position");
-                assert_eq!(posed.1, 15.0, "preserve the explicit yaw override");
-                assert_eq!(posed.2, vanilla.2);
+                // The overridden yaw faces north, backing off 4 blocks south along +Z.
+                assert_eq!([posed.0.x, posed.0.z], [0.0, 4.0]);
+                assert_eq!((posed.1, posed.2, posed.3), (180.0, 0.0, 180.0));
+                assert_eq!(
+                    game.view.eye_rotation,
+                    [0.0, 0.0],
+                    "entity look is unchanged"
+                );
             });
         });
-        assert_eq!(calls.poses.load(Ordering::Relaxed), 1);
+        assert_eq!(calls.angles.load(Ordering::Relaxed), 1);
+        assert_eq!(calls.positions.load(Ordering::Relaxed), 1);
         assert_eq!(calls.cycles.load(Ordering::Relaxed), 0);
+    }
+
+    struct EditX;
+    #[mod_api::__subscriptions]
+    impl Hooks for EditX {
+        fn camera_position(
+            &self,
+            host: &dyn ClientHost,
+            event: &mut mod_api::CameraPositionEvent<'_>,
+        ) {
+            let [_, _, z] = event.position.coordinates();
+            assert!(event.position.set([Some(12.0), None, Some(z)]));
+            host.set_camera_type(CameraType::FirstPerson);
+        }
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn frame_camera_position_keeps_explicit_axes_when_realigning() {
+        if run_fresh_cases(
+            "game::native_hooks::camera_type::camera_type_tests::frame_camera_position_keeps_explicit_axes_when_realigning",
+            "SUNRISE_CAMERA_POSITION_CHILD",
+            &["position"],
+        ) {
+            return;
+        }
+        with_mods(
+            vec![ModEntry::new("edit-x", Box::new(EditX))].into(),
+            || {
+                with_client_game(|game| {
+                    game.player = Some(PlayerMotion::new(game.motion, Vec3::ZERO).unwrap());
+                    game.previous_position = Vec3::ZERO;
+                    game.title = None;
+                    game.yaw = 180.0;
+                    game.view.eye_height = 1.0;
+                    game.view.eye_height_old = 1.0;
+                    game.camera_type = CameraType::ThirdPersonBack;
+                    let behind = game.camera_view(1.0).unwrap().0;
+                    assert_eq!(
+                        behind.z, 4.0,
+                        "third person looked north, backing off south"
+                    );
+                    let (position, _, _, _) = game.frame_camera(1.0).unwrap();
+                    assert_eq!(game.camera_type, CameraType::FirstPerson);
+                    assert_eq!(
+                        position.to_array(),
+                        [12.0, 1.0, 4.0],
+                        "an explicit Z equal to the detached placement stays pinned"
+                    );
+
+                    // The render-only X override never reaches what streaming and entry
+                    // readiness read.
+                    let placed = game.visual_camera_position().unwrap();
+                    assert_ne!(placed[0], 12.0);
+                    assert_eq!(placed[2], 4.0);
+
+                    let custom = glam::DVec3::new(2.0, 31.0, 5.0);
+                    game.studio.freecam.activate(custom, 180.0, 0.0, 70.0);
+                    game.studio.freecam.roll = 90.0;
+                    let (position, yaw, pitch, roll) = game.frame_camera(1.0).unwrap();
+                    assert_eq!(position.to_array(), [12.0, 31.0, 5.0]);
+                    assert_eq!((yaw, pitch, roll), (180.0, 0.0, -90.0));
+                    assert_eq!(game.studio.freecam.position, custom);
+                    assert_eq!(game.player.as_ref().unwrap().position, Vec3::ZERO);
+                });
+            },
+        );
+    }
+
+    struct PinXz;
+    #[mod_api::__subscriptions]
+    impl Hooks for PinXz {
+        fn camera_position(
+            &self,
+            _: &dyn ClientHost,
+            event: &mut mod_api::CameraPositionEvent<'_>,
+        ) {
+            assert!(event.position.set([Some(1000.0), None, Some(1000.0)]));
+        }
+    }
+
+    /// The render position a mod pins over a chunk the server has not sent never moves the
+    /// placement streaming and the level-entry readiness follow.
+    #[test]
+    #[ignore = "daily"]
+    fn a_pinned_camera_position_over_an_unsent_chunk_leaves_streaming_and_readiness_on_the_player()
+    {
+        if run_fresh_cases(
+            "game::native_hooks::camera_type::camera_type_tests::a_pinned_camera_position_over_an_unsent_chunk_leaves_streaming_and_readiness_on_the_player",
+            "SUNRISE_CAMERA_PIN_CHILD",
+            &["pin"],
+        ) {
+            return;
+        }
+        with_mods(
+            vec![ModEntry::new("pin-xz", Box::new(PinXz))].into(),
+            || {
+                with_client_game(|game| {
+                    game.player = Some(PlayerMotion::new(game.motion, Vec3::ZERO).unwrap());
+                    game.title = None;
+                    let (rendered, _, _, _) = game.frame_camera(1.0).unwrap();
+                    assert_eq!([rendered.x, rendered.z], [1000.0, 1000.0]);
+                    let placed = game.visual_camera_position().unwrap();
+                    assert!(
+                        placed[0].abs() < 2.0 && placed[2].abs() < 2.0,
+                        "streaming follows the player, not the pinned render position: {placed:?}"
+                    );
+                    // The streaming centre is the player's section, not the pinned one's.
+                    game.streaming.center = (500, 500);
+                    game.update_world();
+                    assert_eq!(game.streaming.center, (0, 0));
+                });
+            },
+        );
+    }
+
+    enum AngleWriter {
+        Set,
+        Panic(Arc<std::sync::atomic::AtomicUsize>),
+        Add,
+    }
+    #[mod_api::__subscriptions]
+    impl Hooks for AngleWriter {
+        fn compute_camera_angles(
+            &self,
+            _: &dyn ClientHost,
+            event: &mut mod_api::ComputeCameraAnglesEvent,
+        ) {
+            use std::sync::atomic::Ordering;
+            match self {
+                Self::Set => (event.yaw, event.pitch, event.roll) = (17.0, 2.0, 10.0),
+                Self::Panic(calls) => {
+                    event.roll = 90.0;
+                    calls.fetch_add(1, Ordering::Relaxed);
+                    panic!("fixture camera callback panicked");
+                }
+                Self::Add => event.yaw += 10.0,
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn a_failed_camera_listener_is_disabled_and_later_listeners_still_run() {
+        if run_fresh_cases(
+            "game::native_hooks::camera_type::camera_type_tests::a_failed_camera_listener_is_disabled_and_later_listeners_still_run",
+            "SUNRISE_CAMERA_ANGLE_FAILURE_CHILD",
+            &["angles"],
+        ) {
+            return;
+        }
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let executions = Arc::new(AtomicUsize::new(0));
+        let mods = vec![
+            ModEntry::new("set", Box::new(AngleWriter::Set)),
+            ModEntry::new(
+                "camera-panic",
+                Box::new(AngleWriter::Panic(executions.clone())),
+            ),
+            ModEntry::new("add", Box::new(AngleWriter::Add)),
+        ];
+        with_mods(mods.into(), || {
+            with_client_game(|game| {
+                game.player = Some(PlayerMotion::new(game.motion, Vec3::ZERO).unwrap());
+                game.title = None;
+                // The failed listener's writes are rolled back, the listeners around it still
+                // run, and it stays disabled for the later frame.
+                for _ in 0..2 {
+                    let (_, yaw, pitch, roll) = game.frame_camera(1.0).unwrap();
+                    assert_eq!((yaw, pitch, roll), (27.0, 2.0, 10.0));
+                }
+                assert_eq!(executions.load(Ordering::Relaxed), 1);
+            });
+            let notices = mod_api::__private::take_hook_panics();
+            assert_eq!(notices.len(), 1);
+            assert_eq!(notices[0].mod_id, "camera-panic");
+            assert_eq!(notices[0].hook, "compute_camera_angles");
+        });
     }
 }

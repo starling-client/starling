@@ -9,11 +9,12 @@ under each transformer, with a few blocks above and three clicked faces.
 """
 import argparse
 import random
-try:
-    from . import interaction_lab as lib, lab
-except ImportError:
-    import interaction_lab as lib
-    import lab
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import interaction_lab as lib, lab
 
 ABOVE = ['minecraft:air|', 'minecraft:cave_air|', 'minecraft:stone|', 'minecraft:water|level=0', 'minecraft:oak_slab|type=bottom,waterlogged=false']
 FACES = ['up', 'down', 'north']

@@ -41,10 +41,14 @@ impl RecipeBooksRegistrar for PartRegistrar {
                 &look.enabled_highlighted,
                 &look.disabled_highlighted,
             ] {
-                resource_id(sprite).map_err(|reason| format!("sprite {sprite:?}: {reason}"))?;
+                if crate::Identifier::parse_namespaced(sprite).is_none() {
+                    return Err(format!(
+                        "sprite {sprite:?}: expected a namespaced identifier"
+                    ));
+                }
             }
-            if look.tooltip.is_empty() || look.tooltip.len() > 256 {
-                return Err("tooltip key must be nonempty and at most 256 bytes".into());
+            if look.tooltip.is_empty() {
+                return Err("tooltip key must be nonempty".into());
             }
             self.recipe_book_filters
                 .insert(book.as_str().to_owned(), look);
@@ -62,25 +66,13 @@ impl RecipeBooksRegistrar for PartRegistrar {
     }
 }
 
-/// Split a lowercase `namespace:path` id of at most 256 bytes.
-fn resource_id(id: &str) -> Result<(&str, &str), String> {
-    let (namespace, path) = id.split_once(':').ok_or("explicit namespace required")?;
-    if id.len() > 256 {
-        return Err("id exceeds 256 bytes".into());
-    }
-    if namespace.is_empty()
-        || path.is_empty()
-        || !namespace
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_.-".contains(&b))
-        || !path
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_.-/".contains(&b))
-    {
-        return Err("nonempty lowercase resource-id namespace and path required".into());
-    }
-    Ok((namespace, path))
-}
+/// Vanilla 26.3 `RecipeBookType` enum values.
+const VANILLA_RECIPE_BOOK_TYPES: &[&str] = &[
+    "minecraft:crafting",
+    "minecraft:furnace",
+    "minecraft:blast_furnace",
+    "minecraft:smoker",
+];
 
 impl PartRegistrar {
     fn register_book(
@@ -92,18 +84,35 @@ impl PartRegistrar {
             if mod_vocab::__private::parts_installation::parts_installed() {
                 return Err("registry is frozen".to_owned());
             }
-            let (namespace, _) = resource_id(id)?;
+            crate::Identifier::parse_namespaced(id).ok_or("expected a namespaced identifier")?;
+            if VANILLA_RECIPE_BOOK_TYPES.contains(&id) {
+                return Err(format!("built-in recipe book type {id}"));
+            }
             if let Some(owner) = self.recipe_book_types.get(id) {
                 return Err(format!(
                     "duplicate key declared by {owner} and {}",
                     self.mod_id
                 ));
             }
-            if namespace == "minecraft" || !owns_namespace(self.mod_id, namespace) {
-                return Err("namespace must be owned by the registering mod, not minecraft".into());
-            }
-            if self.recipe_book_types.len() >= 1024 {
-                return Err("registry exceeds 1024 custom books".into());
+            // CompoundTag.write names each field with DataOutput.writeUTF. Check only
+            // the names this declaration will actually write, before recording it.
+            let saved_names = fields.map_or(
+                [Some(("extension book ID", id)), None],
+                |(open, filtering)| {
+                    [
+                        Some(("open field", open)),
+                        Some(("filtering field", filtering)),
+                    ]
+                },
+            );
+            for (role, name) in saved_names.into_iter().flatten() {
+                if u16::try_from(sunrise_core::nbt::JavaString::from(name).modified_utf8_len())
+                    .is_err()
+                {
+                    return Err(format!(
+                        "{role} exceeds the NBT field name limit of 65,535 modified UTF-8 bytes"
+                    ));
+                }
             }
             if let Some((open, filtering)) = fields {
                 use crate::item::recipe_book::saved_fields;
@@ -111,8 +120,8 @@ impl PartRegistrar {
                     return Err("open and filtering fields must differ".into());
                 }
                 for field in [open, filtering] {
-                    if field.is_empty() || field.len() > 256 {
-                        return Err("save fields must be nonempty and at most 256 bytes".into());
+                    if field.is_empty() {
+                        return Err("save fields must be nonempty".into());
                     }
                     if saved_fields::VANILLA
                         .iter()
@@ -193,10 +202,6 @@ mod tests {
         for (a, b) in [("", "valid"), ("valid", ""), ("equal", "equal")] {
             assert!(r.recipe_book_type_with_fields("demo:bad", a, b).is_err());
         }
-        assert!(
-            r.recipe_book_type_with_fields("demo:bad", &"é".repeat(129), "unused")
-                .is_err()
-        );
         r.mod_id = "second";
         for field in ["isModCookingGuiOpen", "isModCookingFilteringCraftable"] {
             assert!(
@@ -216,34 +221,71 @@ mod tests {
     }
 
     #[test]
-    fn registration_rejects_invalid_and_duplicate_declarations() {
+    fn only_persisted_names_must_fit_the_modified_utf8_field_width() {
         let mut registrar = PartRegistrar::new("demo");
-        let key = registrar.recipe_book_type("demo:cooking_pot").unwrap();
-        assert_eq!(key.as_str(), "demo:cooking_pot");
+        let longest_id = format!("demo:{}", "a".repeat(65_530));
+        assert!(registrar.recipe_book_type(&longest_id).is_ok());
+        let oversized_id = longest_id + "a";
+        let error = registrar.recipe_book_type(&oversized_id).unwrap_err();
+        assert!(error.contains("mod demo") && error.contains("extension book ID"));
+
+        // A supplementary character takes two UTF-16 surrogates (six bytes), and NUL two bytes.
+        let longest_field = "😀".repeat(10_922) + "\0a";
+        let oversized_field = longest_field.clone() + "a";
+        let error = registrar
+            .recipe_book_type_with_fields(&oversized_id, "open", &oversized_field)
+            .unwrap_err();
+        assert!(error.contains("mod demo") && error.contains("filtering field"));
+        // The oversized ID is not written as an NBT field when flat fields are declared.
         assert!(
             registrar
-                .recipe_book_type("demo:cooking_pot")
-                .unwrap_err()
-                .contains("duplicate")
+                .recipe_book_type_with_fields(&oversized_id, "open", &longest_field)
+                .is_ok()
         );
-        for id in [
-            "pot",
-            "demo:",
-            ":pot",
-            "demo:Pot",
-            "minecraft:pot",
-            "other:pot",
-            "demo:a:b",
-        ] {
-            assert!(registrar.recipe_book_type(id).is_err(), "{id}");
+        assert_eq!(registrar.recipe_book_types.len(), 2);
+        assert_eq!(registrar.recipe_book_fields.len(), 1);
+    }
+
+    #[test]
+    fn registration_rejects_invalid_and_duplicate_declarations() {
+        let mut registrar = PartRegistrar::new("demo");
+        let key = registrar
+            .recipe_book_type("demo:kitchen/cooking_pot")
+            .unwrap();
+        assert_eq!(key.as_str(), "demo:kitchen/cooking_pot");
+        for id in ["other:pot", "minecraft:pot"] {
+            assert_eq!(registrar.recipe_book_type(id).unwrap().as_str(), id);
+            assert_eq!(registrar.recipe_book_types[id], "demo");
         }
         assert!(
             registrar
-                .recipe_book_type(&format!("demo:{}", "a".repeat(252)))
-                .is_err()
+                .recipe_book_type("demo:kitchen/cooking_pot")
+                .unwrap_err()
+                .contains("duplicate")
         );
-        assert_eq!(registrar.recipe_book_types.len(), 1);
-        assert_eq!(registrar.refused.len(), 9);
+        let malformed = ["pot", "demo:", ":pot", "demo:Pot", "..:pot", "demo:a:b"];
+        for id in malformed {
+            let error = registrar.recipe_book_type(id).unwrap_err();
+            assert!(
+                error.contains("expected a namespaced identifier"),
+                "{error}"
+            );
+        }
+        let built_in = [
+            "minecraft:crafting",
+            "minecraft:furnace",
+            "minecraft:blast_furnace",
+            "minecraft:smoker",
+        ];
+        for id in built_in {
+            let error = registrar.recipe_book_type(id).unwrap_err();
+            assert!(error.contains("built-in recipe book type"), "{error}");
+        }
+        assert_eq!(registrar.recipe_book_types.len(), 3);
+        assert_eq!(
+            registrar.refused.len(),
+            1 + malformed.len() + built_in.len()
+        );
     }
 
     #[test]
@@ -259,20 +301,34 @@ mod tests {
     }
 
     #[test]
-    fn registry_capacity_does_not_evict_existing_books() {
+    fn registration_keeps_more_than_1024_books_and_long_declarations() {
         let mut registrar = PartRegistrar::new("demo");
         for index in 0..1024 {
             registrar
                 .recipe_book_type(&format!("demo:book_{index}"))
                 .unwrap();
         }
-        assert!(
-            registrar
-                .recipe_book_type("demo:overflow")
-                .unwrap_err()
-                .contains("1024")
-        );
-        assert_eq!(registrar.recipe_book_types.len(), 1024);
+        let id = format!("demo:{}", "cook/".repeat(80) + "pot");
+        let open = "é".repeat(150);
+        let filtering = "絞".repeat(150);
+        let book = registrar
+            .recipe_book_type_with_fields(&id, &open, &filtering)
+            .unwrap();
+        let appearance = crate::RecipeBookFilterLook {
+            enabled: format!("demo:{}", "sprite/".repeat(50) + "enabled"),
+            tooltip: "demo.".repeat(80) + "cookable",
+            ..look()
+        };
+        registrar
+            .recipe_book_filter_look(&book, appearance.clone())
+            .unwrap();
+
+        assert_eq!(book.as_str(), id.as_str());
+        assert_eq!(registrar.recipe_book_types.len(), 1025);
+        assert_eq!(registrar.recipe_book_types["demo:book_0"], "demo");
+        assert_eq!(registrar.recipe_book_fields[&id], (open, filtering));
+        assert_eq!(registrar.recipe_book_filters[&id], appearance);
+        assert!(registrar.refused.is_empty());
     }
 
     fn look() -> crate::RecipeBookFilterLook {
@@ -303,15 +359,15 @@ mod tests {
                 ..look()
             },
             crate::RecipeBookFilterLook {
+                enabled: "..:pot".into(),
+                ..look()
+            },
+            crate::RecipeBookFilterLook {
                 disabled_highlighted: "demo:Upper".into(),
                 ..look()
             },
             crate::RecipeBookFilterLook {
                 tooltip: String::new(),
-                ..look()
-            },
-            crate::RecipeBookFilterLook {
-                tooltip: "k".repeat(257),
                 ..look()
             },
         ] {

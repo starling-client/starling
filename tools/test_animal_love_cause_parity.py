@@ -6,7 +6,9 @@ from pathlib import Path
 import sys
 import tempfile
 
-import test_command_exec_parity as driver
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_command_exec_parity as driver
 
 CASES = [('absent', None), ('valid', '[I;57,1,2,3]'),
          ('short', '[I;57,1,2]'), ('long', '[I;57,1,2,3,4]'),

@@ -1,4 +1,4 @@
-//! Plain-data structure-template snapshots and transforms.
+//! Plain-data structure-template transforms, errors, and borrowed block views.
 use crate::{BlockState, Compound};
 
 /// Rotation of a template about its origin.
@@ -55,41 +55,60 @@ impl StructureTemplateSource {
     }
 }
 
-/// The transformed template size and blocks in vanilla placement order.
-#[derive(Clone, Debug, PartialEq, Default)]
+/// Why reading or placing a structure template through [`crate::LevelRef`] was refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, sunrise_mod_api_macros::Wire)]
 #[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
-pub struct StructureTemplateSnapshot {
-    /// Size after rotation.
-    pub size: [i32; 3],
-    /// Blocks in vanilla placement order.
-    pub blocks: Vec<StructureTemplateBlock>,
+pub enum StructureTemplateError {
+    /// The level is gone or its handle belongs to an earlier lifetime.
+    Stale,
+    /// The operation is unavailable on this side, phase, host, or missing structure resources.
+    Unavailable,
+    /// A parked level cannot place a template while a Host transaction is open.
+    InTransaction,
+    /// The template identifier does not parse or contains a `.` or `..` path segment.
+    InvalidId,
+    /// No structure template with this identifier exists in the world or data packs.
+    NotFound,
+    /// The supplied structure NBT bytes failed decompression, parsing, or vanilla template limits.
+    InvalidNbt,
+    /// The template has no palette, a size below 1 on some axis, or places no blocks or entities.
+    EmptyTemplate,
+    /// A chunk covered by the template's transformed bounding box is not loaded (`PlaceCommand.checkLoaded`).
+    UnloadedChunk {
+        /// Coordinates `[cx, cz]` of an unloaded chunk in the template's footprint.
+        chunk: [i32; 2],
+    },
+    /// A block state in the template cannot be mapped to the API block state table.
+    InvalidState,
+    /// The supplied rotation, mirror, or template source variant is unsupported by this build.
+    UnsupportedTransform,
 }
 
-/// A transformed block and its optional block-entity data.
-#[derive(Clone, Debug, PartialEq)]
+impl crate::NoBackend for StructureTemplateError {
+    fn no_backend() -> Self {
+        Self::Unavailable
+    }
+}
+
+impl From<crate::LevelReadError> for StructureTemplateError {
+    fn from(error: crate::LevelReadError) -> Self {
+        match error {
+            crate::LevelReadError::Stale => Self::Stale,
+            crate::LevelReadError::Unavailable => Self::Unavailable,
+        }
+    }
+}
+
+// no wire: borrowed call-scoped observation view; never crosses the mod wire.
+/// A transformed block and its optional borrowed block-entity data, lent to one
+/// [`crate::LevelRef::visit_structure_template`] callback.
+#[derive(Clone, Copy, Debug, PartialEq)]
 #[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
-pub struct StructureTemplateBlock {
+pub struct StructureTemplateBlockView<'a> {
     /// Position in the level.
     pub pos: [i32; 3],
     /// Owned state, including properties, after mirroring and rotation.
-    /// An unavailable mapping refuses the entire template snapshot.
     pub state: BlockState,
     /// Saved block-entity data, without its position.
-    pub nbt: Option<Compound>,
-}
-
-impl StructureTemplateSnapshot {
-    /// Build a snapshot from its size and blocks.
-    pub fn new(size: [i32; 3], blocks: Vec<StructureTemplateBlock>) -> Self {
-        Self { size, blocks }
-    }
-}
-
-impl StructureTemplateBlock {
-    /// Build a block snapshot.
-    pub fn new(pos: [i32; 3], state: BlockState, nbt: Option<Compound>) -> Self {
-        Self { pos, state, nbt }
-    }
+    pub nbt: Option<&'a Compound>,
 }

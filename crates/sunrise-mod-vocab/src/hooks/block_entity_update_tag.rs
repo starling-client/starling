@@ -1,5 +1,4 @@
 //! The `block_entity_update_tag` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0025
 
 pub trait Hooks {
     /// What clients get of the block entity at `pos` when its `id` is
@@ -14,11 +13,16 @@ pub trait Hooks {
         receiver = "associated",
         dispatch = "flat",
         side = "server",
+        version = 2,
         contract = "replace",
         out = "tag",
         scope = "block_entity",
         key = "entity",
         neoforge = "none (vanilla BlockEntity.getUpdateTag; NeoForge adds no event or extension for it); IBlockEntityExtension.handleUpdateTag is the client half"
     )]
-    fn block_entity_update_tag(pos: [i32; 3], entity: &ModBlockEntity, tag: &mut Option<Compound>);
+    fn block_entity_update_tag(
+        pos: [i32; 3],
+        entity: BlockEntityDataView<'_>,
+        tag: &mut Option<Compound>,
+    );
 }

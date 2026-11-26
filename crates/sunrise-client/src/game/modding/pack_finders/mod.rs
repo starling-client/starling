@@ -141,6 +141,17 @@ impl mod_api::prelude::TextHost for StartupDiscovery {
         Err(mod_api::text::TextFormError::Unavailable)
     }
 
+    fn text_to_nbt(&self, _: &mod_api::Text) -> Result<mod_api::Tag, mod_api::text::TextFormError> {
+        Err(mod_api::text::TextFormError::Unavailable)
+    }
+
+    fn text_from_nbt(
+        &self,
+        _: &mod_api::Tag,
+    ) -> Result<Option<mod_api::Text>, mod_api::text::TextFormError> {
+        Err(mod_api::text::TextFormError::Unavailable)
+    }
+
     fn text_from_legacy(&self, _: &str) -> Result<mod_api::Text, mod_api::text::TextFormError> {
         Err(mod_api::text::TextFormError::Unavailable)
     }
@@ -165,7 +176,8 @@ pub(super) fn data_packs(mods: &ModsState) -> Vec<std::sync::Arc<DataPack>> {
         .into_iter()
         .map(|pack| {
             let mut data =
-                DataPack::from_source(pack.id, pack.source.open().expect("retained source"));
+                DataPack::from_source(pack.id, pack.source.open().expect("retained source"))
+                    .with_filter(pack.filter);
             data.selection = pack.selection;
             std::sync::Arc::new(data)
         })
@@ -178,7 +190,16 @@ pub(super) fn data_repository(
     resources: &std::path::Path,
     additional: &[std::sync::Arc<DataPack>],
 ) -> Vec<DataPack> {
-    let mut packs = sunrise_client::datapack::discover_with_features(world, resources);
+    data_repository_in(&world.join("datapacks"), resources, additional)
+}
+
+/// [`data_repository`] over a pack folder itself (Create World's `mcworld-` folder).
+pub(super) fn data_repository_in(
+    folder: &std::path::Path,
+    resources: &std::path::Path,
+    additional: &[std::sync::Arc<DataPack>],
+) -> Vec<DataPack> {
+    let mut packs = sunrise_client::datapack::discover_folder_with_features(folder, resources);
     packs.extend(additional.iter().map(|pack| (**pack).clone()));
     packs.sort_by(|a, b| sunrise_client::datapack::compare_ids(&a.id, &b.id));
     packs

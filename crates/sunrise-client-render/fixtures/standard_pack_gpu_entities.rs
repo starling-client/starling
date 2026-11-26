@@ -2,15 +2,19 @@
 //! SUNRISE_LAUNCHER_HOME, XDG_DATA_HOME and XDG_CONFIG_HOME (AGENTS.md).
 //! `python3 tools/run_standard_pack_gpu_entities.py <output-dir>`
 use client::{
+    fog::{FogType, sky_pass_present},
     gfx::{
         Frame, Renderer, ScreenshotRequest,
         entity_skin::{SkinFrame, SkinJob, SkinPart, SkinVertex},
         pack_draw::EntitySpan,
+        world_primitives::{Batch, DrawRanges, FrameHooks, PreparedHookGeometry},
     },
     graphics::GraphicsApi,
     hud::HudBatch,
+    render_geometry::Vertex,
     render_slots as native_render,
 };
+use mod_api::RenderLevelStage as Stage;
 use std::{
     path::Path,
     sync::{
@@ -19,6 +23,7 @@ use std::{
     },
 };
 use sunrise_client_render as client;
+use sunrise_world::dimension_type::Skybox;
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
@@ -53,7 +58,7 @@ fn install_observer() {
     });
 }
 
-fn pack(renderer: &mut Renderer, folder: &Path, valid: bool) {
+fn pack(renderer: &mut Renderer, folder: &Path, valid: bool, classic_sky_and_hand: bool) {
     let shaders = folder.join("shaders");
     std::fs::create_dir_all(&shaders).unwrap();
     let vertex = "#version 120\nvarying vec2 uv; void main(){gl_Position=ftransform();uv=gl_MultiTexCoord0.xy;}\n";
@@ -78,13 +83,58 @@ fn pack(renderer: &mut Renderer, folder: &Path, valid: bool) {
         )
         .unwrap();
     }
+    let (final_fragment, properties) = if classic_sky_and_hand {
+        for (program, vertex, fragment) in [
+            (
+                "gbuffers_skybasic",
+                "gl_Position=ftransform();",
+                "vec4(1.0,0.0,0.0,1.0)",
+            ),
+            (
+                "gbuffers_hand",
+                "gl_Position=vec4(gl_Vertex.xy,-0.6,1.0);",
+                "vec4(0.0,1.0,0.0,1.0)",
+            ),
+        ] {
+            std::fs::write(
+                shaders.join(format!("{program}.vsh")),
+                format!("#version 120\nvoid main(){{{vertex}}}"),
+            )
+            .unwrap();
+            std::fs::write(
+                shaders.join(format!("{program}.fsh")),
+                format!(
+                    "#version 120\n/* DRAWBUFFERS:0 */\nvoid main(){{gl_FragData[0]={fragment};}}"
+                ),
+            )
+            .unwrap();
+        }
+        (
+            "#version 120\n\
+         varying vec2 uv;
+         uniform sampler2D colortex0;
+         uniform sampler2D depthtex1;
+         uniform sampler2D depthtex2;
+         void main() {
+             float withHand = texture2D(depthtex1, uv).r;
+             float withoutHand = texture2D(depthtex2, uv).r;
+             gl_FragColor = vec4(texture2D(colortex0, uv).rg, withoutHand > withHand ? 1.0 : 0.0, 1.0);
+         }",
+            "oldLighting=false\nshadow.enabled=false\nblend.gbuffers_hand=off\n",
+        )
+    } else {
+        (
+            "#version 120\nvarying vec2 uv; uniform sampler2D colortex0; void main(){gl_FragColor=texture2D(colortex0,uv);}\n",
+            "oldLighting=false\nshadow.enabled=false\n",
+        )
+    };
     std::fs::write(shaders.join("final.vsh"), vertex).unwrap();
-    std::fs::write(shaders.join("final.fsh"), "#version 120\nvarying vec2 uv; uniform sampler2D colortex0; void main(){gl_FragColor=texture2D(colortex0,uv);}\n").unwrap();
-    std::fs::write(
-        shaders.join("shaders.properties"),
-        "oldLighting=false\nshadow.enabled=false\n",
-    )
-    .unwrap();
+    std::fs::write(shaders.join("final.fsh"), final_fragment).unwrap();
+    std::fs::write(shaders.join("shaders.properties"), properties).unwrap();
+    load_pack(renderer, folder, valid);
+}
+
+fn load_pack(renderer: &mut Renderer, folder: &Path, valid: bool) {
     let pack = sunrise_shaders::Pack::open(folder).unwrap();
     let mut macros = sunrise_shaders::Macros::standard();
     renderer.define_pack_macros(&mut macros);
@@ -111,6 +161,226 @@ fn read(path: &Path) -> Vec<u8> {
     bytes
 }
 
+#[derive(Default)]
+struct WorldStageProbe {
+    copies: Vec<Vertex>,
+    feature_lines: Option<[[f32; 8]; 2]>,
+    feature_draws: [DrawRanges; 2],
+    stages: Vec<mod_api::RenderLevelStage>,
+    prepared_after_sky: Option<bool>,
+}
+
+impl FrameHooks for WorldStageProbe {
+    fn on_custom_geometry(&mut self, _: &[mod_api::RenderableSection], _: bool) {}
+    fn on_after_sky(&mut self, _: &[mod_api::RenderableSection], _: bool) {
+        self.stages.push(mod_api::RenderLevelStage::AfterSky);
+    }
+    fn on_prepare_render_buffers(
+        &mut self,
+        _: &[mod_api::RenderableSection],
+        _: bool,
+        out: &mut PreparedHookGeometry,
+    ) {
+        self.prepared_after_sky =
+            Some(self.stages.last() == Some(&mod_api::RenderLevelStage::AfterSky));
+        out.entities.append(&mut self.copies);
+        if !out.entities.is_empty() {
+            out.entity_spans.push(EntitySpan {
+                start: 0,
+                stage: sunrise_shaders::render_stage("BLOCK_ENTITIES"),
+                id: 123,
+                ..Default::default()
+            });
+        }
+    }
+    fn on_render_stage(
+        &mut self,
+        stage: mod_api::RenderLevelStage,
+        _: &[mod_api::RenderableSection],
+        _: bool,
+    ) -> &[DrawRanges] {
+        self.stages.push(stage);
+        match stage {
+            Stage::AfterOpaqueFeatures if self.feature_lines.is_some() => &self.feature_draws[..1],
+            Stage::AfterTranslucentFeatures if self.feature_lines.is_some() => {
+                &self.feature_draws[1..]
+            }
+            _ => &[],
+        }
+    }
+    fn prepared_primitives(&self) -> Batch<'_> {
+        let Some(lines) = &self.feature_lines else {
+            return Batch::default();
+        };
+        Batch {
+            lines_through: &lines[..1],
+            lines: &lines[1..],
+            stage_ends: [[0, 0, 1, 1]; client::gfx::world_primitives::STAGES - 1],
+            ..Default::default()
+        }
+    }
+    fn on_after_level(&mut self, _: &[mod_api::RenderableSection], _: bool) {
+        self.stages.push(mod_api::RenderLevelStage::AfterLevel);
+    }
+}
+
+/// Draws actual translucent entities over an opaque-stage line, and checks that the
+/// translucent-stage line reaches the picture afterwards on both pack timings.
+fn feature_stage_order(
+    renderer: &mut Renderer,
+    frame: Frame<'_>,
+    out: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use sunrise_render_core::TRANSLUCENT_ITEM_OVERLAY;
+
+    let quad = |x: f32, y: f32, z: f32, layer: u32, color: u32| {
+        [[-x, -y, z], [-x, y, z], [x, y, z], [x, -y, z]].map(|pos| Vertex {
+            pos,
+            uv: [0.5; 2],
+            layer,
+            color,
+            light: 0xf0f0,
+            normal: [0, 0, 127, 0],
+            glint_uv: [0.0; 2],
+        })
+    };
+    let mut entities = Vec::from(quad(1.8, 1.2, 5.0, 0, u32::MAX));
+    entities.extend(quad(0.55, 1.0, 4.75, TRANSLUCENT_ITEM_OVERLAY, 0xff00_ff00));
+    let entity_stage = sunrise_shaders::render_stage("ENTITIES");
+    let spans = [
+        EntitySpan {
+            stage: entity_stage,
+            id: 200,
+            ..Default::default()
+        },
+        EntitySpan {
+            start: 4,
+            stage: entity_stage,
+            id: 37,
+            translucent: true,
+            ..Default::default()
+        },
+    ];
+    let frame = Frame {
+        skin: None,
+        entities: &entities,
+        entity_spans: &spans,
+        skybox: false,
+        sky_pass: false,
+        ..frame
+    };
+    for (name, separate) in [
+        ("engine", None),
+        ("pack-early", Some(false)),
+        ("pack-late", Some(true)),
+    ] {
+        if let Some(separate) = separate {
+            let folder = out.join("valid-pack");
+            std::fs::write(
+                folder.join("shaders/shaders.properties"),
+                format!(
+                    "oldLighting=false\nshadow.enabled=false\nseparateEntityDraws={separate}\n"
+                ),
+            )?;
+            load_pack(renderer, &folder, true);
+        }
+        let mut hooks = WorldStageProbe {
+            feature_lines: Some([
+                [
+                    -1.4,
+                    0.0,
+                    5.0,
+                    1.4,
+                    0.0,
+                    5.0,
+                    f32::from_bits(0xffff_0000),
+                    4.0,
+                ],
+                [
+                    -0.32,
+                    0.4,
+                    4.5,
+                    0.32,
+                    0.4,
+                    4.5,
+                    f32::from_bits(0xff00_00ff),
+                    4.0,
+                ],
+            ]),
+            feature_draws: [
+                DrawRanges {
+                    primitives: [0..0, 0..0, 0..0, 0..1],
+                    ..Default::default()
+                },
+                DrawRanges {
+                    primitives: [0..0, 0..0, 0..1, 0..0],
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let path = out.join(format!("feature-order-{name}.png"));
+        renderer.screenshot = Some(ScreenshotRequest {
+            path: path.clone(),
+            size: None,
+            scaled: false,
+            background: false,
+        });
+        renderer.render(&frame, Some(&mut hooks))?;
+        renderer
+            .screenshot_result
+            .take()
+            .expect("feature order readback")?
+            .save()?;
+        let image = read(&path);
+        let pixels = image.as_chunks::<4>().0;
+        let center = pixels[90 * 320 + 160];
+        if separate.is_some() {
+            assert_eq!(
+                center[0], 37,
+                "{name}: translucent pack entity covers the opaque-stage line"
+            );
+        } else {
+            assert!(
+                center[1] > center[0] && center[1] > center[2],
+                "{name}: translucent item covers the opaque-stage line: {center:?}"
+            );
+        }
+        assert_eq!(
+            pixels[90 * 320 + 180][..3],
+            [255, 0, 0],
+            "{name}: opaque-stage line survives over the opaque entity outside the translucent item"
+        );
+        assert!(
+            pixels
+                .as_chunks::<320>()
+                .0
+                .iter()
+                .skip(70)
+                .take(20)
+                .any(|row| row[160][..3] == [0, 0, 255]),
+            "{name}: translucent-stage line draws on top of the translucent entity"
+        );
+        let feature_stages: Vec<_> = hooks
+            .stages
+            .into_iter()
+            .filter(|s| {
+                matches!(
+                    s,
+                    Stage::AfterOpaqueFeatures | Stage::AfterTranslucentFeatures
+                )
+            })
+            .collect();
+        assert_eq!(
+            feature_stages,
+            [Stage::AfterOpaqueFeatures, Stage::AfterTranslucentFeatures],
+            "{name}"
+        );
+    }
+    renderer.drop_shader_packs();
+    Ok(())
+}
+
 fn fixture(window: Arc<Window>, out: &Path) -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all(out)?;
     install_observer();
@@ -126,12 +396,13 @@ fn fixture(window: Arc<Window>, out: &Path) -> Result<(), Box<dyn std::error::Er
         &[],
         &[],
         (&white, 16, 16),
+        None,
         (&zero, 1, 1),
         (&zero, 1, 1),
         (&zero, 1),
         Arc::new(client::gfx::panorama::Faces::colour([0, 0, 0, 255])),
         None,
-        None,
+        sunrise_client_render::gfx::RendererDevice::New,
         GraphicsApi::Vulkan,
         false,
         (true, true),
@@ -145,7 +416,7 @@ fn fixture(window: Arc<Window>, out: &Path) -> Result<(), Box<dyn std::error::Er
         "fixture requires compute skinning"
     );
     let unmodified_tagged = renderer.skins_tagged();
-    pack(&mut renderer, &out.join("valid-pack"), true);
+    pack(&mut renderer, &out.join("valid-pack"), true, false);
     assert!(
         !renderer.skins_tagged(),
         "eye/tagged layers keep the CPU path with a pack"
@@ -215,7 +486,7 @@ fn fixture(window: Arc<Window>, out: &Path) -> Result<(), Box<dyn std::error::Er
         scaled: false,
         background: false,
     });
-    renderer.render(&frame)?;
+    renderer.render(&frame, None)?;
     renderer
         .screenshot_result
         .take()
@@ -265,7 +536,7 @@ fn fixture(window: Arc<Window>, out: &Path) -> Result<(), Box<dyn std::error::Er
         scaled: false,
         background: false,
     });
-    renderer.render(&frame)?;
+    renderer.render(&frame, None)?;
     renderer
         .screenshot_result
         .take()
@@ -285,11 +556,225 @@ fn fixture(window: Arc<Window>, out: &Path) -> Result<(), Box<dyn std::error::Er
     frame.skin = None;
     frame.entities = &cpu;
     frame.entity_spans = &spans;
-    renderer.render(&frame)?;
+    renderer.render(&frame, None)?;
     assert_eq!(OBSERVED.load(Ordering::Relaxed), 1);
     NEEDS_SPANS.store(false, Ordering::Relaxed);
     assert!(renderer.skins_entities());
-    pack(&mut renderer, &out.join("failed-pack"), false);
+    // The second stream must retain its block-entity material after the frame's existing
+    // ordinary-entity spans. The pack's fragment shader emits the block ID in blue.
+    let mut hooks = WorldStageProbe {
+        copies: cpu[4..8]
+            .iter()
+            .map(|vertex| Vertex {
+                pos: [vertex.pos[0], vertex.pos[1], vertex.pos[2] - 0.25],
+                ..*vertex
+            })
+            .collect(),
+        ..Default::default()
+    };
+    frame.skybox = false;
+    frame.end_sky = false;
+    frame.sky_pass = sky_pass_present(FogType::Atmospheric, false, Skybox::None);
+    renderer.screenshot = Some(ScreenshotRequest {
+        path: out.join("world-stage-pack.png"),
+        size: None,
+        scaled: false,
+        background: false,
+    });
+    renderer.render(&frame, Some(&mut hooks))?;
+    renderer
+        .screenshot_result
+        .take()
+        .expect("world stage readback")?
+        .save()?;
+    assert!(
+        read(&out.join("world-stage-pack.png"))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|p| p[2] == 123)
+    );
+    assert!(
+        !hooks.stages.contains(&Stage::AfterSky),
+        "a dimension with no skybox has no sky stage"
+    );
+    assert!(hooks.stages.contains(&Stage::AfterTranslucentParticles));
+    assert!(hooks.stages.ends_with(&[
+        Stage::AfterOpaqueBlocks,
+        Stage::AfterOpaqueFeatures,
+        Stage::AfterTranslucentFeatures,
+        Stage::AfterTranslucentBlocks,
+        Stage::AfterLevel
+    ]));
+    assert_eq!(hooks.prepared_after_sky, Some(false));
+    // Reuse the same renderer without submitting the extra model a second time.
+    renderer.screenshot = Some(ScreenshotRequest {
+        path: out.join("world-stage-pack-next.png"),
+        size: None,
+        scaled: false,
+        background: false,
+    });
+    renderer.render(&frame, Some(&mut WorldStageProbe::default()))?;
+    renderer
+        .screenshot_result
+        .take()
+        .expect("next frame readback")?
+        .save()?;
+    assert!(
+        !read(&out.join("world-stage-pack-next.png"))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|p| p[2] == 123)
+    );
+    frame.sky_pass = sky_pass_present(FogType::Atmospheric, false, Skybox::Overworld);
+    for draw_sky in [true, false] {
+        // The Sky option changes pixels, not the stage's admission.
+        frame.skybox = draw_sky;
+        let mut sky_hooks = WorldStageProbe::default();
+        renderer.render(&frame, Some(&mut sky_hooks))?;
+        assert_eq!(sky_hooks.stages.first(), Some(&Stage::AfterSky));
+        assert_eq!(sky_hooks.prepared_after_sky, Some(true));
+    }
+    frame.skybox = true;
+
+    // Exercise the actual classic pack route, not just an engine sky with a pack active.
+    // The pack's final shader distinguishes sky, hand, and depth1 with the hand vs depth2
+    // without it. Adding the live hook must not move the pack hand past either snapshot.
+    pack(
+        &mut renderer,
+        &out.join("classic-boundary-pack"),
+        true,
+        true,
+    );
+    let hand = [
+        [-0.5, -0.5, 0.0],
+        [0.5, -0.5, 0.0],
+        [0.5, 0.5, 0.0],
+        [-0.5, 0.5, 0.0],
+    ]
+    .map(|pos| Vertex {
+        pos,
+        uv: [0.0; 2],
+        layer: 0,
+        color: u32::MAX,
+        light: 0,
+        normal: [0, 0, 127, 0],
+        glint_uv: [0.0; 2],
+    });
+    frame.entities = &[];
+    frame.entity_spans = &[];
+    frame.hand = &hand;
+    let mut classic = WorldStageProbe::default();
+    for (name, hooks) in [
+        ("classic-boundary-control.png", None),
+        (
+            "classic-boundary-hooked.png",
+            Some(&mut classic as &mut dyn FrameHooks),
+        ),
+    ] {
+        renderer.screenshot = Some(ScreenshotRequest {
+            path: out.join(name),
+            size: None,
+            scaled: false,
+            background: false,
+        });
+        renderer.render(&frame, hooks)?;
+        renderer
+            .screenshot_result
+            .take()
+            .expect("classic boundary readback")?
+            .save()?;
+    }
+    let pixels = read(&out.join("classic-boundary-hooked.png"));
+    assert_eq!(pixels, read(&out.join("classic-boundary-control.png")));
+    let (pixels, _) = pixels.as_chunks::<4>();
+    assert!(
+        pixels.iter().any(|pixel| pixel[..3] == [255, 0, 0]),
+        "pack-owned sky"
+    );
+    assert!(
+        pixels.iter().any(|pixel| pixel[..3] == [0, 255, 255]),
+        "pack-owned hand only in depthtex1"
+    );
+    assert_eq!(classic.prepared_after_sky, Some(false));
+    assert_eq!(
+        classic
+            .stages
+            .iter()
+            .filter(|&&stage| stage == Stage::AfterSky)
+            .count(),
+        1,
+        "the pack's red sky must have exactly one AfterSky notification"
+    );
+    assert!(
+        classic.stages.ends_with(&[
+            Stage::AfterSky,
+            Stage::AfterOpaqueBlocks,
+            Stage::AfterOpaqueFeatures,
+            Stage::AfterTranslucentFeatures,
+            Stage::AfterTranslucentBlocks,
+            Stage::AfterLevel
+        ]),
+        "the pack sky, block, and feature stages follow the engine world stages and precede AfterLevel: {:?}",
+        classic.stages
+    );
+    assert_eq!(
+        classic
+            .stages
+            .iter()
+            .filter(|&&stage| stage == Stage::AfterLevel)
+            .count(),
+        1
+    );
+    // A classic pack keeps the inline End sky outside dragon fog. Even with no
+    // End sky sprite, that pass owns the notification. In boss fog the pack owns it.
+    frame.skybox = false;
+    frame.end_sky = true;
+    frame.sky_pass = sky_pass_present(FogType::Atmospheric, false, Skybox::End);
+    for boss_world_fog in [false, true] {
+        frame.boss_world_fog = boss_world_fog;
+        frame.sky_blocked = boss_world_fog;
+        let mut end = WorldStageProbe::default();
+        renderer.render(&frame, Some(&mut end))?;
+        assert_eq!(
+            end.stages
+                .iter()
+                .filter(|&&stage| stage == Stage::AfterSky)
+                .count(),
+            1,
+            "classic-pack End with boss fog {boss_world_fog}"
+        );
+        assert_eq!(end.prepared_after_sky, Some(false));
+        if boss_world_fog {
+            assert!(end.stages.ends_with(&[
+                Stage::AfterSky,
+                Stage::AfterOpaqueBlocks,
+                Stage::AfterOpaqueFeatures,
+                Stage::AfterTranslucentFeatures,
+                Stage::AfterTranslucentBlocks,
+                Stage::AfterLevel
+            ]));
+        } else {
+            assert_eq!(end.stages.first(), Some(&Stage::AfterSky));
+        }
+    }
+    // The classic pack still draws its boss-fog fan, but powder snow vetoes the stage.
+    frame.sky_pass = sky_pass_present(FogType::PowderSnow, false, Skybox::End);
+    let mut blocked_sky = WorldStageProbe::default();
+    renderer.render(&frame, Some(&mut blocked_sky))?;
+    assert!(
+        !blocked_sky.stages.contains(&Stage::AfterSky),
+        "powder-snow camera fog has no sky stage, even with a pack sky"
+    );
+    frame.skybox = true;
+    frame.end_sky = false;
+    frame.boss_world_fog = false;
+    frame.sky_blocked = false;
+    frame.sky_pass = sky_pass_present(FogType::Atmospheric, false, Skybox::Overworld);
+    frame.hand = &[];
+
+    pack(&mut renderer, &out.join("failed-pack"), false, false);
     assert!(
         !renderer.skins_entities(),
         "failed entity programs retain CPU posing"
@@ -300,6 +785,114 @@ fn fixture(window: Arc<Window>, out: &Path) -> Result<(), Box<dyn std::error::Er
         "ordinary path returns when the pack is dropped"
     );
     assert_eq!(renderer.skins_tagged(), unmodified_tagged);
+
+    // A pack can claim the sun without replacing the disc. Its marker must be drawn before
+    // the sole AfterSky notice, and the blue engine background must still reach the pack.
+    let folder = out.join("celestial-only-pack");
+    let shaders = folder.join("shaders");
+    std::fs::create_dir_all(&shaders)?;
+    // The fixture has no terrain; declare both programs to keep pack diagnostics about the sky.
+    for program in ["gbuffers_terrain", "gbuffers_water"] {
+        std::fs::write(
+            shaders.join(format!("{program}.vsh")),
+            "#version 120\nvoid main(){gl_Position=ftransform();}",
+        )?;
+        std::fs::write(
+            shaders.join(format!("{program}.fsh")),
+            "#version 120\nvoid main(){gl_FragData[0]=vec4(1.0);}",
+        )?;
+    }
+    for (file, source) in [
+        (
+            "gbuffers_skytextured.vsh",
+            "#version 120\nvoid main(){gl_Position=vec4(gl_Vertex.xy/100.0,0.9,1.0);}",
+        ),
+        (
+            "gbuffers_skytextured.fsh",
+            "#version 120\n/* DRAWBUFFERS:0 */\nvoid main(){gl_FragData[0]=vec4(0.0,1.0,0.0,1.0);}",
+        ),
+        (
+            "final.vsh",
+            "#version 120\nvarying vec2 uv; void main(){gl_Position=ftransform(); uv=gl_MultiTexCoord0.xy;}",
+        ),
+        (
+            "final.fsh",
+            "#version 120\nvarying vec2 uv; uniform sampler2D colortex0; void main(){gl_FragColor=texture2D(colortex0,uv);}",
+        ),
+        (
+            "shaders.properties",
+            "shadow.enabled=false\nblend.gbuffers_skytextured=off\n",
+        ),
+    ] {
+        std::fs::write(shaders.join(file), source)?;
+    }
+    load_pack(&mut renderer, &folder, true);
+    let celestial = [
+        [-25.0, -25.0, 100.0],
+        [25.0, -25.0, 100.0],
+        [25.0, 25.0, 100.0],
+        [-25.0, 25.0, 100.0],
+    ]
+    .map(|pos| Vertex { pos, ..hand[0] });
+    frame.sky.sky_color = [0.0, 0.0, 1.0];
+    frame.sky.fog_color = [0.0; 3];
+    // The sky disc's fog ends at the render distance, in blocks: the fixture's 12 hides the
+    // whole disc, which lies at least 16 blocks away, in the black fog. 12 chunks shows it.
+    let fixture_distance = std::mem::replace(&mut frame.distance, 192.0);
+    let mut celestial_hooks = WorldStageProbe::default();
+    frame.celestial = &celestial;
+    frame.celestial_bodies = &[client::gfx::CelestialBody::Sun];
+    renderer.screenshot = Some(ScreenshotRequest {
+        path: out.join("celestial-only.png"),
+        size: None,
+        scaled: false,
+        background: false,
+    });
+    renderer.render(&frame, Some(&mut celestial_hooks))?;
+    renderer
+        .screenshot_result
+        .take()
+        .expect("celestial pack readback")?
+        .save()?;
+    let celestial_image = read(&out.join("celestial-only.png"));
+    let pixels = celestial_image.as_chunks::<4>().0;
+    assert_eq!(pixels[90 * 320 + 160][..3], [0, 255, 0]);
+    assert!(
+        pixels
+            .iter()
+            .any(|pixel| pixel[0] == 0 && pixel[1] == 0 && pixel[2] > 0),
+        "the engine disc was not drawn"
+    );
+    assert_eq!(celestial_hooks.prepared_after_sky, Some(false));
+    assert_eq!(
+        celestial_hooks
+            .stages
+            .iter()
+            .filter(|&&stage| stage == Stage::AfterSky)
+            .count(),
+        1
+    );
+    assert!(celestial_hooks.stages.ends_with(&[
+        Stage::AfterSky,
+        Stage::AfterOpaqueBlocks,
+        Stage::AfterOpaqueFeatures,
+        Stage::AfterTranslucentFeatures,
+        Stage::AfterTranslucentBlocks,
+        Stage::AfterLevel,
+    ]));
+    frame.celestial = &[];
+    frame.celestial_bodies = &[];
+    frame.distance = fixture_distance;
+    renderer.drop_shader_packs();
+
+    let mut ordering_frame = fixture_frame(&hud);
+    ordering_frame.title = false;
+    ordering_frame.camera = glam::DVec3::ZERO;
+    ordering_frame.eye = glam::DVec3::ZERO;
+    ordering_frame.pitch = 0.0;
+    ordering_frame.eye_rotation = [0.0; 2];
+    feature_stage_order(&mut renderer, ordering_frame, out)?;
+
     std::fs::write(
         out.join("result.json"),
         serde_json::to_vec_pretty(&serde_json::json!({
@@ -424,22 +1017,26 @@ fn fixture_frame(hud: &HudBatch) -> Frame<'_> {
         camera: glam::DVec3::new(0.5, 100.0, 0.5),
         yaw: 0.0,
         pitch: 10.0,
+        roll: 0.0,
         fov_degrees: 85.0,
+        cull_fov_degrees: 85.0,
         eye: glam::DVec3::new(0.5, 100.0, 0.5),
         eye_rotation: [0.0, 10.0],
         first_person: true,
         bob: glam::Mat4::IDENTITY,
+        view_transform: glam::Mat4::IDENTITY,
         spin: glam::Mat4::IDENTITY,
         sky: client::environment::Sky::default(),
         shadow_scene_revision: (0, 0),
         shadow_cache: false,
         distance: 12.0,
         detail_distance: 12.0,
+        shadow_distance: None,
         depth_far: 1000.0,
         underwater: false,
-        water_plane: None,
         cave_culling: false,
         title: true,
+        sky_pass: false,
         sky_blocked: false,
         skybox: false,
         end_sky: false,

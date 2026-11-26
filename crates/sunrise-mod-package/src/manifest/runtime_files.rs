@@ -13,8 +13,7 @@ use std::{
     sync::Arc,
 };
 
-/// The folder of a package that holds its runtime files.
-pub const RUNTIME_DIR: &str = "runtime";
+pub use mod_source::package::RUNTIME_DIR;
 
 /// A `[runtime]` table: each file's name under `runtime/` and its SHA-512.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]

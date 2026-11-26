@@ -7,7 +7,7 @@
 use mod_api::{Identifier, ResourceReader, SpriteSourceOutput};
 use serde_json::Value;
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     hash::{DefaultHasher, Hash, Hasher},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -287,7 +287,7 @@ pub fn texture_path(root: &Path, texture: &str, directory: &str) -> PathBuf {
 pub fn texture_resource(texture: &str, directory: &str) -> String {
     // No file can have a NUL in its name, so this one is never there.
     const NOWHERE: &str = "assets/minecraft/textures/sunrise/\0refused.png";
-    if texture.starts_with("sunrise_cit:") {
+    if directory == "textures" && texture.starts_with("sunrise_cit:") {
         return crate::cit_assets::resource(texture, "png").unwrap_or_else(|| NOWHERE.to_owned());
     }
     let (namespace, path) = texture.split_once(':').unwrap_or(("minecraft", texture));
@@ -490,8 +490,11 @@ fn argb(rgba: &[u8]) -> Vec<u32> {
         .collect()
 }
 /// The pixels of a generated sprite (`Region`, `Paletted` or a mod's `Pixels`);
-/// `None` for a plain file, which loads as itself.
-pub fn generate(origin: &SpriteOrigin, load: &dyn Fn(&str) -> Option<Image>) -> Option<Image> {
+/// `None` for a plain file, which loads as itself. `load` takes `(id, directory)`.
+pub fn generate(
+    origin: &SpriteOrigin,
+    load: &dyn Fn(&str, &str) -> Option<Image>,
+) -> Option<Image> {
     match origin {
         SpriteOrigin::File(_) => None,
         SpriteOrigin::Pixels(image) => Some(image.clone()),
@@ -501,7 +504,7 @@ pub fn generate(origin: &SpriteOrigin, load: &dyn Fn(&str) -> Option<Image>) -> 
             divisor_x,
             divisor_y,
         } => {
-            let (w, h, pixels) = load(texture)?;
+            let (w, h, pixels) = load(texture, "textures")?;
             let x_scale = f64::from(w) / divisor_x;
             let y_scale = f64::from(h) / divisor_y;
             // A float-to-integer cast saturates (NaN is 0), so every value here is in range.
@@ -547,9 +550,10 @@ pub fn generate(origin: &SpriteOrigin, load: &dyn Fn(&str) -> Option<Image>) -> 
             palette_key,
             palette,
         } => {
-            let (w, h, pixels) = load(texture)?;
-            let (_, _, key) = load(palette_key)?;
-            let (_, _, target) = load(palette)?;
+            let (w, h, pixels) = load(texture, "textures")?;
+            // `Palette.ID_CONVERTER` resolves palettes under `textures/palettes/`.
+            let (_, _, key) = load(palette_key, "textures/palettes")?;
+            let (_, _, target) = load(palette, "textures/palettes")?;
             let mut mapped = argb(&pixels);
             let key = argb(&key);
             let target = argb(&target);
@@ -645,9 +649,9 @@ fn sorted_textures(source: &crate::resource_source::ResourceSource) -> Vec<Strin
 }
 
 /// The sprites of the atlases a mod registered, each atlas listed from its own definition and
-/// asked of the mods under its own id: two atlases sharing a definition get an answer each. An
-/// atlas whose definition doesn't decode is left out. Once per client prepare, by the staging of
-/// the mods' atlases; the game's atlases are [`Listing`]'s.
+/// asked of the mods under its own id. An atlas whose definition doesn't decode is left out.
+/// Once per client prepare, by the staging of the mods' atlases; the game's atlases are
+/// [`Listing`]'s.
 pub fn registered(
     source: &crate::resource_source::ResourceSource,
     mods: &dyn ModSources,
@@ -666,9 +670,42 @@ pub fn registered(
         .collect()
 }
 
+/// Registration order and atlas ownership of sprites staged by `register_texture_atlases` for
+/// one resource generation, preserved through `HudAtlas` placement so an oversized atlas is
+/// diagnosed and isolated without affecting the base HUD or other mod atlases.
+#[derive(Debug, Default)]
+pub struct StagedTextureAtlases {
+    /// Admitted registrations in order: `(atlas_id, mod_id)`.
+    pub order: Vec<(String, &'static str)>,
+    /// Staged sprite identifier (`<namespace>:gui/atlases/...`) mapped to its owning index in
+    /// [`Self::order`].
+    pub sprite_atlas: HashMap<String, usize>,
+}
+
+/// Built-in engine atlas paths under `minecraft:` (`AtlasManager.KNOWN_ATLASES` in vanilla 26.3).
+pub const KNOWN_ATLASES: &[&str] = &[
+    "banner_patterns",
+    "blocks",
+    "items",
+    "chests",
+    "decorated_pot",
+    "gui",
+    "map_decorations",
+    "paintings",
+    "particles",
+    "shield_patterns",
+    "shulker_boxes",
+    "celestials",
+];
+
+/// Whether `id` names one of vanilla's built-in engine atlases (`AtlasManager.KNOWN_ATLASES`).
+pub fn is_builtin_atlas(id: &Identifier) -> bool {
+    id.namespace() == "minecraft" && KNOWN_ATLASES.contains(&id.path())
+}
+
 /// Sprite listings of the engine atlases (`AtlasManager.KNOWN_ATLASES`). A definition on its own
 /// does not register an atlas. Mod-registered atlases are listed under their own IDs by
-/// [`registered`], even when several atlas IDs use the same definition.
+/// [`registered`].
 #[derive(Debug, Default)]
 pub struct Listing {
     atlases: BTreeMap<String, Listed>,
@@ -677,30 +714,18 @@ impl Listing {
     /// The listing of `source`, asking `mods` for each entry of a registered type.
     pub fn build(source: &crate::resource_source::ResourceSource, mods: &dyn ModSources) -> Self {
         let textures = sorted_textures(source);
-        let atlases = [
-            "banner_patterns",
-            "blocks",
-            "items",
-            "chests",
-            "decorated_pot",
-            "gui",
-            "map_decorations",
-            "paintings",
-            "particles",
-            "shield_patterns",
-            "shulker_boxes",
-            "celestials",
-        ]
-        .into_iter()
-        .filter_map(|atlas| {
-            let id = Identifier::parse(atlas).expect("known engine atlas id");
-            let sources = definition(source, mods, &id)?;
-            Some((
-                id.to_string(),
-                list_atlas(source, &textures, mods, &id, &sources),
-            ))
-        })
-        .collect();
+        let atlases = KNOWN_ATLASES
+            .iter()
+            .copied()
+            .filter_map(|atlas| {
+                let id = Identifier::parse(atlas).expect("known engine atlas id");
+                let sources = definition(source, mods, &id)?;
+                Some((
+                    id.to_string(),
+                    list_atlas(source, &textures, mods, &id, &sources),
+                ))
+            })
+            .collect();
         Self { atlases }
     }
     /// The sprites `atlas` lists; none for an atlas without a definition.
@@ -826,13 +851,13 @@ pub fn finish_origin(
     source: &crate::resource_source::ResourceSource,
     origin: &SpriteOrigin,
 ) -> Option<Material> {
-    let decode = |texture: &str| {
-        crate::hud::decode_resource(source, &texture_resource(texture, "textures")).ok()
+    let decode = |texture: &str, directory: &str| {
+        crate::hud::decode_resource(source, &texture_resource(texture, directory)).ok()
     };
     match origin {
         SpriteOrigin::File(texture) => {
             let resource = texture_resource(texture, "textures");
-            let image = decode(texture)?;
+            let image = decode(texture, "textures")?;
             let mcmeta = source.read_to_string(&format!("{resource}.mcmeta")).ok();
             let animation = crate::hud::animation_of(mcmeta.as_deref());
             frames_fit((image.0, image.1), animation.as_ref()).then_some(Material {
@@ -1092,7 +1117,7 @@ mod tests {
     #[test]
     fn unstitch_cuts_by_divisor() {
         let pixels: Vec<u8> = (0..16u8).flat_map(|i| [i, i, i, 255]).collect();
-        let load = |_: &str| Some((4u32, 4u32, pixels.clone()));
+        let load = |_: &str, _: &str| Some((4u32, 4u32, pixels.clone()));
         let origin = SpriteOrigin::Region {
             texture: "t".into(),
             region: Region {
@@ -1112,10 +1137,31 @@ mod tests {
         assert_eq!(out[8], 14);
     }
 
+    #[test]
+    fn paletted_permutations_load_palettes_from_textures_palettes() {
+        let origin = SpriteOrigin::Paletted {
+            texture: "minecraft:trims/items/boots_trim".into(),
+            palette_key: "minecraft:trim_base".into(),
+            palette: "minecraft:trim/quartz".into(),
+        };
+        let load = |id: &str, dir: &str| match (id, dir) {
+            ("minecraft:trims/items/boots_trim", "textures") => Some((1, 1, vec![10, 20, 30, 255])),
+            ("minecraft:trim_base", "textures/palettes") => Some((1, 1, vec![10, 20, 30, 255])),
+            ("minecraft:trim/quartz", "textures/palettes") => {
+                Some((1, 1, vec![220, 210, 200, 255]))
+            }
+            _ => None,
+        };
+        assert_eq!(
+            generate(&origin, &load),
+            Some((1, 1, vec![220, 210, 200, 255]))
+        );
+    }
+
     /// An unstitch region over a 4x4 texture with divisors 1: the region's numbers are pixels.
     fn region_of(x: f64, y: f64, width: f64, height: f64) -> Option<Image> {
         let pixels: Vec<u8> = (0..16u8).flat_map(|i| [i, i, i, 255]).collect();
-        let load = |_: &str| Some((4u32, 4u32, pixels.clone()));
+        let load = |_: &str, _: &str| Some((4u32, 4u32, pixels.clone()));
         let origin = SpriteOrigin::Region {
             texture: "t".into(),
             region: Region {
@@ -1306,6 +1352,7 @@ mod tests {
                 (merged.to_owned(), vec![bytes("one"), bytes("two")]),
             ]
             .into(),
+            None,
         );
         let seen = Arc::new(Mutex::new(Vec::new()));
         let kept: Arc<Mutex<Option<Arc<dyn ResourceReader>>>> = Arc::default();

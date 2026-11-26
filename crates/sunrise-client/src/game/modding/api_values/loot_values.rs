@@ -1,226 +1,237 @@
-//! Owned loot values at the guarded game boundary. No inventory count rules apply.
-use super::{TryIntoApi, TryIntoEngine};
-use mod_api::world::snapshots as api;
+//! Borrowed loot views and editors at the guarded game boundary. No inventory count rules apply.
+use mod_api::__private::LootStackAccess;
 use sunrise_world::loot as engine;
 
-#[cfg(test)]
-thread_local! { static CONVERSIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum LootValueError {
-    UnknownItem,
-    InvalidName,
-    InvalidPatch,
-}
-
-impl TryIntoApi for engine::LootStack {
-    type Api = api::LootStack;
-    type Error = LootValueError;
-    fn try_into_api(&self) -> Result<Self::Api, Self::Error> {
-        #[cfg(test)]
-        CONVERSIONS.with(|count| count.set(count.get() + 1));
-        let item = mod_api::__private::item_key(&self.item).ok_or(LootValueError::UnknownItem)?;
-        let mut value = api::LootStack::new(item, self.count);
-        value.damage = self.damage;
-        value.enchantments = self.enchantments.clone();
-        value.potion = self.potion.clone();
-        value.map = self.map;
-        value.exploration = self.exploration.as_ref().map(|map| {
-            Box::new(api::ExplorationMap::new(
-                map.destination.clone(),
-                map.decoration.clone(),
-                map.zoom,
-                map.search_radius,
-                map.skip_existing_chunks,
-            ))
-        });
-        value.ominous_amplifier = self.ominous_amplifier;
-        value.stew_effects = self.stew_effects.clone();
-        value.names = self
-            .names
-            .iter()
-            .map(|(id, name)| {
-                sunrise_client_lib::api_text::captured_text(name)
-                    .map(|name| (id.clone(), name))
-                    .map_err(|_| LootValueError::InvalidName)
-            })
-            .collect::<Result<_, _>>()?;
-        value.components = self.components.clone();
-        Ok(value)
-    }
-}
-impl<C: ?Sized> TryIntoEngine<C> for api::LootStack {
-    type Engine = engine::LootStack;
-    type Error = LootValueError;
-    fn try_into_engine(&self, _: &C) -> Result<Self::Engine, Self::Error> {
-        let id = mod_api::__private::item_key_id(self.item).ok_or(LootValueError::UnknownItem)?;
-        // NBT's vanilla container-depth limit applies before copying mod-owned trees.
-        let mut pending: Vec<_> = self
-            .components
-            .iter()
-            .filter_map(|(_, tag)| tag.as_ref().map(|tag| (tag, 0)))
-            .collect();
-        while let Some((tag, depth)) = pending.pop() {
-            use sunrise_core::nbt::Tag;
-            if matches!(tag, Tag::List(_) | Tag::Compound(_)) && depth >= 512 {
-                return Err(LootValueError::InvalidPatch);
-            }
-            match tag {
-                Tag::List(values) => pending.extend(values.iter().map(|value| (value, depth + 1))),
-                Tag::Compound(values) => {
-                    pending.extend(values.values().map(|value| (value, depth + 1)))
-                }
-                _ => {}
-            }
-        }
-        let names = self
-            .names
-            .iter()
-            .map(|(id, name)| {
-                let name = sunrise_client_lib::api_text::to_serialized_engine(name)
-                    .map_err(|_| LootValueError::InvalidName)?;
-                Ok((id.clone(), name.component()))
-            })
-            .collect::<Result<_, _>>()?;
-        Ok(engine::LootStack {
-            item: id.to_owned(),
-            count: self.count,
-            damage: self.damage,
-            enchantments: self.enchantments.clone(),
-            potion: self.potion.clone(),
-            map: self.map,
-            exploration: self.exploration.as_ref().map(|map| {
-                Box::new(engine::ExplorationMap {
-                    destination: map.destination.clone(),
-                    decoration: map.decoration.clone(),
-                    zoom: map.zoom,
-                    search_radius: map.search_radius,
-                    skip_existing_chunks: map.skip_existing_chunks,
-                })
+/// Adapt the evaluator's borrowed rows by value, not a loan of a temporary context.
+pub(crate) fn loot_params(facts: engine::LootContext<'_>) -> mod_api::LootParamsView<'_> {
+    use mod_api::__private::{
+        LootDamageAccess, LootEntityAccess, LootLevelAccess, LootParamsParts,
+    };
+    mod_api::LootParamsView::new(
+        LootParamsParts {
+            queried_table_id: facts.queried_table_id,
+            queried_stack: facts.queried_stack.map(|stack| {
+                (
+                    stack as &dyn LootStackAccess,
+                    queried_inventory_view
+                        as fn(&dyn LootStackAccess) -> Option<mod_api::ItemStackView<'_>>,
+                )
             }),
-            ominous_amplifier: self.ominous_amplifier,
-            stew_effects: self.stew_effects.clone(),
-            names,
-            components: self.components.clone(),
-        })
-    }
+            entity: facts.entity.map(|entity| entity as &dyn LootEntityAccess),
+            last_damage_player: facts.player.map(|entity| entity as &dyn LootEntityAccess),
+            interacting_entity: facts
+                .interacting_entity
+                .map(|entity| entity as &dyn LootEntityAccess),
+            damage: facts.damage.map(|damage| damage as &dyn LootDamageAccess),
+            tool: facts.tool,
+            block: facts.block,
+            biome: facts.biome,
+            origin: facts.place.and_then(|place| place.origin),
+            block_entity: facts.place.and_then(|place| place.block_entity.as_ref()),
+            level: facts
+                .place
+                .and_then(|place| place.level.as_ref())
+                .map(|level| level as &dyn LootLevelAccess),
+            luck: facts.luck,
+        },
+        sunrise_client_lib::api_text::captured_text,
+    )
 }
 
-fn entity(value: &engine::LootEntity) -> Result<api::LootEntity, LootValueError> {
-    // Vehicles form a singly linked chain. Walk it explicitly rather than recursing.
-    let mut chain = Vec::new();
-    let mut next = Some(value);
-    while let Some(value) = next {
-        chain.push(value);
-        next = value.vehicle.as_deref();
-    }
-    let mut vehicle = None;
-    for value in chain.into_iter().rev() {
-        let mut result = api::LootEntity::default();
-        result.kind = value.kind.clone();
-        result.living = value.living;
-        result.on_fire = value.on_fire;
-        result.baby = value.baby;
-        result.vehicle = vehicle;
-        result.cube_size = value.cube_size;
-        result.sheep = value.sheep.clone();
-        result.captain = value.captain;
-        result.frog_variant = value.frog_variant.clone();
-        result.chicken_variant = value.chicken_variant.clone();
-        result.powered = value.powered;
-        result.equipment = value
-            .equipment
-            .iter()
-            .map(|(slot, stack)| Ok((slot.clone(), stack.try_into_api()?)))
-            .collect::<Result<_, _>>()?;
-        vehicle = Some(Box::new(result));
-    }
-    Ok(*vehicle.expect("a chain starts with its supplied entity"))
+fn encode_loot_name(
+    text: &mod_api::text::Text,
+) -> Result<serde_json::Value, mod_api::TextFormError> {
+    sunrise_client_lib::api_text::to_serialized_engine(text).map(|text| text.component())
 }
-impl TryIntoApi for engine::LootContext<'_> {
-    type Api = api::LootContext;
-    type Error = LootValueError;
-    fn try_into_api(&self) -> Result<Self::Api, Self::Error> {
-        #[cfg(test)]
-        CONVERSIONS.with(|count| count.set(count.get() + 1));
-        let mut value = api::LootContext::new(self.seed);
-        value.entity = self.entity.map(entity).transpose()?;
-        value.player = self.player.map(entity).transpose()?;
-        value.damage = self
-            .damage
-            .map(|damage| {
-                let mut result = api::LootDamage::default();
-                result.kind = damage.kind.clone();
-                result.source = damage.source.as_ref().map(entity).transpose()?;
-                result.direct = damage.direct.as_ref().map(entity).transpose()?;
-                Ok(result)
+
+/// Borrow one raw loot candidate without converting it to an owned API stack.
+pub(crate) fn loot_stack_view(stack: &dyn engine::LootStackAccess) -> mod_api::LootStackView<'_> {
+    mod_api::LootStackView::new(stack, sunrise_client_lib::api_text::captured_text)
+}
+
+/// Borrow the evaluator's live candidate for one function invocation.
+pub(crate) fn loot_stack_editor(
+    stack: &mut dyn engine::LootStackEditAccess,
+) -> mod_api::LootStackEditor<'_> {
+    mod_api::LootStackEditor::new(
+        stack,
+        sunrise_client_lib::api_text::captured_text,
+        encode_loot_name,
+    )
+}
+
+/// Borrow the evaluator's live generated loot list for one global modifier invocation.
+pub(crate) fn loot_list(stacks: &mut dyn engine::LootListAccess) -> mod_api::LootList<'_> {
+    mod_api::LootList::new(
+        stacks,
+        sunrise_client_lib::api_text::captured_text,
+        encode_loot_name,
+    )
+}
+
+/// The damage component the ordered patch leaves on a stack of base damage `base`, read as
+/// `LootCandidate::write_component` writes it. Merely reading these scalars must not
+/// materialize the rest of the patch.
+fn queried_damage(
+    base: u32,
+    components: &[(String, Option<sunrise_core::nbt::Tag>)],
+) -> Option<u32> {
+    let mut damage = base;
+    let mut explicit = false;
+    for (id, value) in components {
+        match (id.as_str(), value) {
+            ("minecraft:damage", None) | ("!minecraft:damage", Some(_)) => {
+                damage = 0;
+                explicit = false;
+            }
+            ("minecraft:damage", Some(tag)) => {
+                damage = sunrise_world::datafix::dynamic::as_int(Some(tag), 0).max(0) as u32;
+                explicit = true;
+            }
+            _ => {}
+        }
+    }
+    (damage > 0 || explicit).then_some(damage)
+}
+
+fn queried_inventory_view(stack: &dyn LootStackAccess) -> Option<mod_api::ItemStackView<'_>> {
+    let item = mod_api::__private::item_key(stack.item_id())?;
+    let count = std::num::NonZeroU32::new(u32::try_from(stack.count()).ok()?)?;
+    let damage = queried_damage(u32::try_from(stack.damage()).ok()?, stack.components());
+    Some(mod_api::ItemStackView::queried_loot(
+        (item, count, damage),
+        stack,
+        project_queried_stack,
+    ))
+}
+
+fn project_queried_stack(
+    stack: &dyn LootStackAccess,
+    metadata: super::StackReadMetadata,
+) -> Option<mod_api::ItemStack> {
+    // This is called only by ItemStackView::project, when the mod requests an owned value.
+    let materialized = sunrise_items::items::ItemStack::from_loot(&engine::LootStack {
+        item: stack.item_id().to_owned(),
+        count: stack.count(),
+        damage: stack.damage(),
+        enchantments: stack.enchantments().to_vec(),
+        potion: stack.potion().map(str::to_owned),
+        map: stack.map(),
+        exploration: stack.exploration().map(|map| {
+            Box::new(engine::ExplorationMap {
+                destination: map.destination().to_owned(),
+                decoration: map.decoration().to_owned(),
+                zoom: map.zoom(),
+                search_radius: map.search_radius(),
+                skip_existing_chunks: map.skip_existing_chunks(),
             })
-            .transpose()?;
-        value.tool = self
-            .tool
-            .as_ref()
-            .map(|tool| {
-                Ok(api::LootTool::new(
-                    mod_api::__private::item_key(&tool.item).ok_or(LootValueError::UnknownItem)?,
-                    tool.enchantments.clone(),
-                ))
-            })
-            .transpose()?;
-        value.queried_table_id = self
-            .queried_table_id
-            .clone()
-            .unwrap_or_else(|| sunrise_core::UNKNOWN_LOOT_TABLE.into());
-        value.queried_stack = self.queried_stack.as_ref().map(queried_stack).transpose()?;
-        value.block = self.block.map(str::to_owned);
-        value.luck = self.luck;
-        value.biome = self.biome.map(str::to_owned);
-        value.place = self.place.as_ref().map(|place| {
-            let mut result = api::LootPlace::default();
-            result.origin = place.origin;
-            result.block_entity = place.block_entity.clone();
-            result.level = place.level.as_ref().map(|level| {
-                let mut result = api::LootLevel::default();
-                result.dimension = level.dimension.clone();
-                result.game_time = level.game_time;
-                result.day_time = level.day_time;
-                result.raining = level.raining;
-                result.thundering = level.thundering;
-                result
-            });
-            result
-        });
-        Ok(value)
-    }
+        }),
+        ominous_amplifier: stack.ominous_amplifier(),
+        stew_effects: stack.stew_effects().to_vec(),
+        names: stack.names().to_vec(),
+        components: stack.components().to_vec(),
+    });
+    super::project_stack(&materialized, metadata).ok()
 }
 
-struct LootAbilityHost;
-impl mod_api::Host for LootAbilityHost {}
-mod_api::impl_host_areas!(LootAbilityHost);
-
-pub(crate) fn dispatch_loot_ability(tool: &engine::LootStack, ability: &str, holds: &mut bool) {
-    if !mod_api::__private::item_listens(mod_api::HookId::CanPerformAction, &tool.item) {
+pub(crate) fn dispatch_loot_ability(
+    tool: &dyn engine::LootAbilityTool,
+    ability: &str,
+    tags: &dyn engine::LootTags,
+    holds: &mut bool,
+) {
+    if tool.is_empty()
+        || !mod_api::__private::item_listens(mod_api::HookId::CanPerformAction, tool.item_id())
+    {
         return;
     }
-    let Ok(stack) = queried_stack(tool) else {
+    let tags = crate::game::loot_tags::LootTags(tags);
+    let context = mod_api::ItemAbilityContext::new(&tags);
+    if let Some(loot_stack) = tool.as_loot_stack() {
+        let Some(stack) = queried_inventory_view(loot_stack) else {
+            return;
+        };
+        mod_api::dispatch_can_perform_action(
+            &context,
+            mod_api::__private::CanPerformActionCall {
+                stack,
+                ability,
+                can_perform: holds,
+            },
+        );
+        return;
+    }
+    let Some((count, damage)) = tool.resident_scalars() else {
         return;
     };
-    mod_api::dispatch_can_perform_action(&LootAbilityHost, &stack, ability, holds);
-}
-
-fn queried_stack(stack: &engine::LootStack) -> Result<mod_api::ItemStack, LootValueError> {
-    if stack.count <= 0 || stack.damage < 0 {
-        return Err(LootValueError::InvalidPatch);
-    }
-    sunrise_items::items::ItemStack::from_loot(stack)
-        .try_into_api()
-        .map_err(|_| LootValueError::InvalidPatch)
+    let Some(key) = mod_api::__private::item_key(tool.item_id()) else {
+        return;
+    };
+    let project = |metadata| super::projected_stack(metadata, tool.encode_components()).ok();
+    mod_api::dispatch_can_perform_action(
+        &context,
+        mod_api::__private::CanPerformActionCall {
+            stack: mod_api::ItemStackView::resident((key, count, damage), &project),
+            ability,
+            can_perform: holds,
+        },
+    );
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The borrowed scalar follows the same ordered writes and removals as materializing the
+    /// stack: a write over zero base damage, a removal, and a later write.
+    #[test]
+    fn borrowed_damage_matches_materialization_of_ordered_writes() {
+        use sunrise_core::nbt::Tag;
+        let removal = || Tag::Compound(Default::default());
+        let write = |value| ("minecraft:damage".to_owned(), Some(Tag::Int(value)));
+        let cases: [(u32, Vec<(String, Option<Tag>)>); 5] = [
+            (0, vec![write(19)]),
+            (7, vec![write(19)]),
+            (7, vec![write(19), ("minecraft:damage".into(), None)]),
+            (
+                7,
+                vec![("!minecraft:damage".into(), Some(removal())), write(3)],
+            ),
+            (0, vec![write(0)]),
+        ];
+        for (base, components) in cases {
+            let borrowed = queried_damage(base, &components);
+            let stack = sunrise_items::items::ItemStack::from_loot(&engine::LootStack {
+                item: "minecraft:stick".into(),
+                count: 1,
+                damage: base as i32,
+                enchantments: Vec::new(),
+                potion: None,
+                map: false,
+                exploration: None,
+                ominous_amplifier: None,
+                stew_effects: Vec::new(),
+                names: Vec::new(),
+                components: components.clone(),
+            });
+            assert_eq!(
+                borrowed.unwrap_or(0),
+                stack.damage,
+                "base {base}, patch {components:?}"
+            );
+        }
+        assert_eq!(queried_damage(0, &[write(19)]), Some(19));
+        assert_eq!(queried_damage(0, &[write(0)]), Some(0));
+        assert_eq!(
+            queried_damage(0, &[write(19), ("minecraft:damage".into(), None)]),
+            None
+        );
+    }
     include!("loot_tags_tests.rs");
-    use mod_api::{Hooks, LootEntryData, LootStack, LootTypeContext, ModEntry, ModLootFunction};
+    use mod_api::{
+        Hooks, LootStackEditError, LootStackEditor, LootTypeContext, ModEntry,
+        ModLootConditionCodec, ModLootFunction, ModLootFunctionCodec,
+    };
     fn apply_type(
         kind: &str,
         data: &serde_json::Value,
@@ -232,10 +243,28 @@ mod tests {
         if !types.contains(kind, true) {
             return;
         }
-        let mut random = sunrise_core::random::LegacyRandom::new(0);
-        if let Ok(candidate) = types.apply(kind, data, ctx, &mut random, tags, stack) {
-            *stack = candidate;
+        let mut entry = data.clone();
+        if let Some(object) = entry.as_object_mut() {
+            object.insert("type".into(), serde_json::Value::String(kind.into()));
         }
+        let modifiers = std::sync::Arc::new(std::collections::HashMap::from([(
+            "test:entry".into(),
+            entry,
+        )]));
+        let bindings = types
+            .bind_generation(
+                std::sync::Arc::default(),
+                std::sync::Arc::default(),
+                std::sync::Arc::clone(&modifiers),
+                Vec::new(),
+                Default::default(),
+            )
+            .unwrap();
+        let mut random = sunrise_core::random::LegacyRandom::new(0);
+        bindings
+            .function(None, kind, &modifiers["test:entry"])
+            .unwrap()
+            .apply(ctx, &mut random, tags, stack);
     }
     fn test_type(
         kind: &str,
@@ -248,8 +277,28 @@ mod tests {
         if !types.contains(kind, false) {
             return;
         }
+        let mut entry = data.clone();
+        if let Some(object) = entry.as_object_mut() {
+            object.insert("type".into(), serde_json::Value::String(kind.into()));
+        }
+        let predicates = std::sync::Arc::new(std::collections::HashMap::from([(
+            "test:entry".into(),
+            entry,
+        )]));
+        let bindings = types
+            .bind_generation(
+                std::sync::Arc::default(),
+                std::sync::Arc::clone(&predicates),
+                std::sync::Arc::default(),
+                Vec::new(),
+                Default::default(),
+            )
+            .unwrap();
         let mut random = sunrise_core::random::LegacyRandom::new(0);
-        *holds = types.test(kind, data, ctx, &mut random, tags).unwrap();
+        *holds = bindings
+            .condition(None, kind, &predicates["test:entry"])
+            .unwrap()
+            .test(ctx, &mut random, tags);
     }
     use mod_platform::testing::with_mods;
     use sunrise_core::nbt::Tag;
@@ -273,100 +322,125 @@ mod tests {
     }
     fn context() -> engine::LootContext<'static> {
         engine::LootContext {
-            queried_table_id: None,
-            queried_stack: None,
-            entity: None,
-            damage: None,
-            player: None,
-            tool: None,
-            block: None,
             luck: 1.5,
-            biome: None,
-            seed: 0,
-            place: None,
+            ..Default::default()
         }
     }
+
+    struct Facts;
+    #[mod_api::__subscriptions]
+    impl Hooks for Facts {
+        fn register(&self, r: &mut dyn mod_api::Registrar, _: &mod_api::RegistrationContext) {
+            r.register_loot_condition_type(
+                &mod_api::Identifier::parse("facts:read").unwrap(),
+                Facts,
+            );
+        }
+    }
+    impl ModLootConditionCodec for Facts {
+        fn decode(
+            &self,
+            _: &serde_json::Value,
+        ) -> Result<std::sync::Arc<dyn mod_api::ModLootCondition>, String> {
+            Ok(std::sync::Arc::new(Facts))
+        }
+    }
+    impl mod_api::ModLootCondition for Facts {
+        fn test(&self, context: &mut dyn LootTypeContext) -> Result<bool, String> {
+            let params = context.params();
+            let victim = params.entity().unwrap();
+            assert_eq!(victim.vehicle().unwrap().kind(), "minecraft:boat");
+            assert_eq!(victim.sheep(), Some(("red", true)));
+            assert!(victim.cube_size().is_none());
+            let candidate = victim.equipment("mainhand").unwrap();
+            assert_eq!(candidate.item_id(), "minecraft:stick");
+            assert_eq!(
+                (candidate.count(), candidate.damage(), candidate.map()),
+                (-7, -3, true)
+            );
+            let mut edits = candidate.components();
+            assert_eq!(
+                edits.next(),
+                Some(("test:array", Some(&Tag::ByteArray(vec![7]))))
+            );
+            assert_eq!(edits.next(), Some(("test:byte", None)));
+            assert!(victim.equipment("offhand").is_none());
+            let damage = params.damage().unwrap();
+            assert_eq!(damage.source().unwrap().kind(), "minecraft:skeleton");
+            assert_eq!(damage.direct().unwrap().kind(), "minecraft:arrow");
+            assert_eq!(params.origin(), Some([1.0, 2.0, 3.0]));
+            let level = params.level().unwrap();
+            assert_eq!(
+                (level.dimension(), level.game_time(), level.day_time()),
+                ("test:level", 17, -3)
+            );
+            assert!(level.raining() && !level.thundering());
+            assert!(params.block_entity().is_none());
+            assert_eq!(
+                params.interacting_entity().map(|entity| entity.kind()),
+                Some("minecraft:player")
+            );
+            assert!(params.tool().is_none());
+            assert!(params.block().is_none());
+            Ok(true)
+        }
+    }
+
     #[test]
-    fn loot_context_owns_entity_tool_damage_and_place_facts() {
-        super::super::prepare_stack_boundary_tests();
+    fn loot_params_lend_only_supplied_facts_without_drawing() {
+        use sunrise_core::random::{LegacyRandom, RandomSource};
         let mut victim = engine::LootEntity::new("minecraft:sheep");
-        victim.baby = true;
-        victim.on_fire = true;
         victim.sheep = Some(("red".into(), true));
-        victim.equipment.push(("mainhand".into(), stack()));
         victim.vehicle = Some(Box::new(engine::LootEntity::new("minecraft:boat")));
+        let mut equipment = stack();
+        equipment.components[1].1 = None;
+        victim.equipment.push(("mainhand".into(), equipment));
+        let actor = engine::LootEntity::new("minecraft:player");
         let damage = engine::LootDamage {
             kind: "minecraft:arrow".into(),
             source: Some(engine::LootEntity::new("minecraft:skeleton")),
             direct: Some(engine::LootEntity::new("minecraft:arrow")),
+            is_direct: false,
         };
-        let value = engine::LootContext {
-            queried_table_id: None,
-            queried_stack: None,
-            entity: Some(&victim),
-            damage: Some(&damage),
-            player: None,
-            tool: Some(engine::LootTool {
-                item: "minecraft:stick".into(),
-                enchantments: vec![("minecraft:fortune".into(), 3)],
+        let place = engine::LootPlace {
+            origin: Some([1.0, 2.0, 3.0]),
+            level: Some(engine::LootLevel {
+                dimension: "test:level".into(),
+                game_time: 17,
+                day_time: -3,
+                clocks: Default::default(),
+                raining: true,
+                thundering: false,
             }),
-            block: Some("minecraft:stone"),
-            biome: Some("minecraft:plains"),
-            luck: 1.5,
-            seed: -42,
-            place: Some(std::sync::Arc::new(engine::LootPlace {
-                origin: Some([1.0, 2.0, 3.0]),
-                block_entity: Some(Tag::ByteArray(vec![7])),
-                block_components: None,
-                storage: None,
-                level: Some(engine::LootLevel {
-                    dimension: "test:level".into(),
-                    game_time: 17,
-                    day_time: -3,
-                    raining: true,
-                    thundering: false,
-                }),
-            })),
-        }
-        .try_into_api()
-        .unwrap();
-        let victim = value.entity.unwrap();
-        assert!(victim.baby && victim.on_fire);
-        assert_eq!(victim.sheep, Some(("red".into(), true)));
-        assert_eq!(victim.vehicle.unwrap().kind, "minecraft:boat");
-        assert_eq!(victim.equipment[0].1.count, -7);
-        let damage = value.damage.unwrap();
-        assert_eq!(damage.source.unwrap().kind, "minecraft:skeleton");
-        assert_eq!(damage.direct.unwrap().kind, "minecraft:arrow");
-        let tool = value.tool.unwrap();
-        assert_eq!(
-            mod_api::__private::item_key_id(tool.item),
-            Some("minecraft:stick")
-        );
-        assert_eq!(tool.enchantments, vec![("minecraft:fortune".into(), 3)]);
-        assert_eq!(
-            (
-                value.block.as_deref(),
-                value.biome.as_deref(),
-                value.luck,
-                value.seed
-            ),
-            (Some("minecraft:stone"), Some("minecraft:plains"), 1.5, -42)
-        );
-        let place = value.place.unwrap();
-        assert_eq!(place.origin, Some([1.0, 2.0, 3.0]));
-        assert_eq!(place.block_entity, Some(Tag::ByteArray(vec![7])));
-        let level = place.level.unwrap();
-        assert_eq!(
-            (
-                level.dimension.as_str(),
-                level.game_time,
-                level.day_time,
-                level.raining,
-                level.thundering
-            ),
-            ("test:level", 17, -3, true, false)
-        );
+            ..Default::default()
+        };
+        engine::with_native_loot_place(place, || {
+            let place = engine::current_native_loot_place().unwrap();
+            let facts = engine::LootContext {
+                entity: Some(&victim),
+                interacting_entity: Some(&actor),
+                damage: Some(&damage),
+                place: Some(&place),
+                ..Default::default()
+            };
+            let mut random = LegacyRandom::new(71);
+            with_mods(vec![ModEntry::new("facts", Box::new(Facts))].into(), || {
+                mod_platform::__private::part_tests::install_parts_fixture(
+                    mod_api::__private::mods(),
+                )
+                .unwrap();
+                let mut holds = false;
+                test_type(
+                    "facts:read",
+                    &serde_json::json!({}),
+                    &facts,
+                    &mut holds,
+                    &TestTags,
+                );
+                assert!(holds);
+            });
+            assert_eq!(random.next_long(), LegacyRandom::new(71).next_long());
+        });
     }
 
     struct Edit;
@@ -376,27 +450,37 @@ mod tests {
             r.register_loot_function_type(&mod_api::Identifier::parse("edit:edit").unwrap(), Edit);
         }
     }
-    impl ModLootFunction for Edit {
-        fn validate(&self, _: &LootEntryData) -> Result<(), String> {
-            Ok(())
+    impl ModLootFunctionCodec for Edit {
+        fn decode(
+            &self,
+            _: &serde_json::Value,
+        ) -> Result<std::sync::Arc<dyn ModLootFunction>, String> {
+            Ok(std::sync::Arc::new(Edit))
         }
+    }
+    impl ModLootFunction for Edit {
         fn apply(
             &self,
-            _: &LootEntryData,
-            mut stack: LootStack,
+            stack: &mut LootStackEditor<'_>,
             context: &mut dyn LootTypeContext,
-        ) -> Result<LootStack, String> {
-            assert_eq!(context.snapshot().seed, 0);
-            assert_eq!(stack.count, -7);
-            assert_eq!(stack.components[0].1, Some(Tag::ByteArray(vec![7])));
-            assert_eq!(stack.components[1].1, Some(Tag::Byte(7)));
-            stack.count = -12;
-            stack.components.extend([
-                ("test:array".into(), None),
-                ("test:array".into(), Some(Tag::List(vec![Tag::Int(7)]))),
-                ("test:array".into(), Some(Tag::ByteArray(vec![8]))),
-            ]);
-            Ok(stack)
+        ) -> Result<(), String> {
+            assert_eq!(context.params().luck(), 1.5);
+            {
+                let view = stack.view();
+                assert_eq!(view.count(), -7);
+                let mut components = view.components();
+                assert_eq!(
+                    components.next(),
+                    Some(("test:array", Some(&Tag::ByteArray(vec![7]))))
+                );
+                assert_eq!(components.next(), Some(("test:byte", Some(&Tag::Byte(7)))));
+                assert_eq!(components.next(), None);
+            }
+            stack.set_count(-12);
+            stack.remove_component("test:array")?;
+            stack.push_component("test:array", Tag::List(vec![Tag::Int(7)]))?;
+            stack.push_component("test:array", Tag::ByteArray(vec![8]))?;
+            Ok(())
         }
     }
     #[test]
@@ -436,7 +520,6 @@ mod tests {
         with_mods(Vec::new().into(), || {
             mod_platform::__private::part_tests::install_parts_fixture(mod_api::__private::mods())
                 .unwrap();
-            CONVERSIONS.with(|count| count.set(0));
             let mut output = stack();
             let before = output.clone();
             let mut holds = false;
@@ -456,7 +539,6 @@ mod tests {
                     &TestTags,
                 );
             }
-            assert_eq!(CONVERSIONS.with(|count| count.get()), 0);
             assert_eq!(output, before);
             assert!(!holds);
         });
@@ -464,18 +546,23 @@ mod tests {
     #[test]
     fn loot_patch_depth_matches_the_vanilla_nbt_limit() {
         super::super::prepare_stack_boundary_tests();
-        let mut value = stack().try_into_api().unwrap();
+        let mut target = stack();
+        let mut value = loot_stack_view(&target).to_owned().unwrap();
         let mut tag = Tag::Byte(7);
         for _ in 0..512 {
             tag = Tag::List(vec![tag]);
         }
         value.components = vec![("test:deep".into(), Some(tag))];
-        assert!(value.try_into_engine(&()).is_ok());
+        assert!(
+            loot_stack_editor(&mut target)
+                .replace(value.clone())
+                .is_ok()
+        );
         let tag = value.components[0].1.take().unwrap();
         value.components[0].1 = Some(Tag::List(vec![tag]));
         assert_eq!(
-            value.try_into_engine(&()),
-            Err(LootValueError::InvalidPatch)
+            loot_stack_editor(&mut target).replace(value),
+            Err(LootStackEditError::InvalidPatch)
         );
     }
 
@@ -483,15 +570,16 @@ mod tests {
     fn loot_writeback_keeps_repeated_patch_order() {
         super::super::prepare_stack_boundary_tests();
         let mut value =
-            api::LootStack::new(mod_api::__private::item_key("minecraft:stick").unwrap(), -3);
+            mod_api::LootStack::new(mod_api::__private::item_key("minecraft:stick").unwrap(), -3);
         value.components = vec![
             ("test:value".into(), Some(Tag::Byte(7))),
             ("test:value".into(), Some(Tag::ByteArray(vec![8]))),
         ];
-        let output = value.try_into_engine(&()).unwrap();
-        assert_eq!(output.count, -3);
+        let mut list = engine::LootStacks::default();
+        loot_list(&mut list).push(value).unwrap();
+        assert_eq!(list.0[0].count, -3);
         assert_eq!(
-            output.components,
+            list.0[0].components,
             vec![
                 ("test:value".into(), Some(Tag::Byte(7))),
                 ("test:value".into(), Some(Tag::ByteArray(vec![8]))),
@@ -502,55 +590,73 @@ mod tests {
     fn loot_writeback_keeps_component_removals() {
         super::super::prepare_stack_boundary_tests();
         let mut value =
-            api::LootStack::new(mod_api::__private::item_key("minecraft:stick").unwrap(), 1);
+            mod_api::LootStack::new(mod_api::__private::item_key("minecraft:stick").unwrap(), 1);
         value.components = vec![("test:removed".into(), None)];
-        assert_eq!(
-            value.try_into_engine(&()).unwrap().components,
-            vec![("test:removed".into(), None)]
-        );
+        let mut list = engine::LootStacks::default();
+        loot_list(&mut list).push(value).unwrap();
+        assert_eq!(list.0[0].components, vec![("test:removed".into(), None)]);
     }
 
-    struct Invalid(std::sync::Arc<std::sync::atomic::AtomicBool>);
+    struct ScopedInvalid(std::sync::Arc<std::sync::atomic::AtomicBool>);
     #[mod_api::__subscriptions]
-    impl Hooks for Invalid {
+    impl Hooks for ScopedInvalid {
         fn register(&self, r: &mut dyn mod_api::Registrar, _: &mod_api::RegistrationContext) {
             r.register_loot_function_type(
                 &mod_api::Identifier::parse("invalid:invalid").unwrap(),
-                Invalid(self.0.clone()),
+                ScopedInvalid(self.0.clone()),
             );
         }
     }
-    impl ModLootFunction for Invalid {
-        fn validate(&self, _: &LootEntryData) -> Result<(), String> {
-            Ok(())
+    impl ModLootFunctionCodec for ScopedInvalid {
+        fn decode(
+            &self,
+            _: &serde_json::Value,
+        ) -> Result<std::sync::Arc<dyn ModLootFunction>, String> {
+            Ok(std::sync::Arc::new(ScopedInvalid(self.0.clone())))
         }
+    }
+    impl ModLootFunction for ScopedInvalid {
         fn apply(
             &self,
-            _: &LootEntryData,
-            mut stack: LootStack,
+            stack: &mut LootStackEditor<'_>,
             _: &mut dyn LootTypeContext,
-        ) -> Result<LootStack, String> {
+        ) -> Result<(), String> {
             self.0.store(true, std::sync::atomic::Ordering::Relaxed);
-            stack.count = 99;
-            stack.components.clear();
+            stack.set_count(-19);
+            stack.remove_component("test:array")?;
+            stack.push_component("test:array", Tag::ByteArray(vec![9]))?;
             let mut text = mod_api::text::Text::literal("end");
             for _ in 0..513 {
                 let mut parent = mod_api::text::Text::literal("");
                 parent.children.push(text);
                 text = parent;
             }
-            stack.names.push(("minecraft:custom_name".into(), text));
-            Ok(stack)
+            assert!(matches!(
+                stack.push_name("minecraft:custom_name", &text),
+                Err(LootStackEditError::InvalidName(_))
+            ));
+            let mut deep = Tag::Byte(7);
+            for _ in 0..513 {
+                deep = Tag::List(vec![deep]);
+            }
+            assert_eq!(
+                stack.push_component("test:deep", deep),
+                Err(LootStackEditError::InvalidPatch)
+            );
+            Err("refused invalid write".into())
         }
     }
     #[test]
-    fn loot_invalid_writeback_is_atomic() {
+    fn loot_scoped_editor_keeps_prior_edits_and_refuses_invalid_writes() {
         super::super::prepare_stack_boundary_tests();
         let mut output = stack();
-        let before = output.clone();
         let called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         with_mods(
-            vec![ModEntry::new("invalid", Box::new(Invalid(called.clone())))].into(),
+            vec![ModEntry::new(
+                "invalid",
+                Box::new(ScopedInvalid(called.clone())),
+            )]
+            .into(),
             || {
                 super::super::prepare_stack_boundary_tests();
                 mod_platform::__private::part_tests::install_parts_fixture(
@@ -568,7 +674,17 @@ mod tests {
             },
         );
         assert!(called.load(std::sync::atomic::Ordering::Relaxed));
-        assert_eq!(output, before);
+        assert_eq!(output.count, -19);
+        assert!(output.names.is_empty());
+        assert_eq!(
+            output.components,
+            vec![
+                ("test:array".into(), Some(Tag::ByteArray(vec![7]))),
+                ("test:byte".into(), Some(Tag::Byte(7))),
+                ("test:array".into(), None),
+                ("test:array".into(), Some(Tag::ByteArray(vec![9]))),
+            ]
+        );
     }
 }
 

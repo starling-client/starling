@@ -9,13 +9,13 @@ impl ParticleEngine {
     pub fn handle_level_particles(
         &mut self,
         random: &mut LegacyRandom,
-        world: &World,
+        level: Option<&ParticleLevel<'_>>,
         packet: &LevelParticles,
         options: &ParticleOptions,
     ) {
         let add = |engine: &mut Self, at, v| {
-            engine.add_with_world(
-                Some(world),
+            engine.add_with(
+                level,
                 options,
                 at,
                 v,
@@ -48,10 +48,11 @@ impl ParticleEngine {
         spread: [f64; 3],
         speed: f64,
         count: u32,
+        level: Option<&ParticleLevel<'_>>,
     ) {
         if count == 0 {
             let v = [speed * spread[0], speed * spread[1], speed * spread[2]];
-            self.add(options, at, v);
+            self.add_with(level, options, at, v, false, false);
             return;
         }
         for _ in 0..count {
@@ -66,20 +67,20 @@ impl ParticleEngine {
                 r.next_gaussian() * speed,
                 r.next_gaussian() * speed,
             ];
-            self.add(options, p, v);
+            self.add_with(level, options, p, v, false, false);
         }
     }
     /// `ParticleEngine.createParticle`: always spawned, but `ParticleEngine.add`
     /// drops a spore blossom air particle once `ParticleLimit.SPORE_BLOSSOM` is full.
     pub fn create(&mut self, options: &ParticleOptions, p: [f64; 3], v: [f64; 3]) {
-        self.create_with_world(None, options, p, v);
+        self.create_with_level(None, options, p, v);
     }
 
     /// Create a particle directly, with the level used by a typed factory when present.
     /// False means a factory failed; an intentionally empty result is not a failure.
-    pub fn create_with_world(
+    pub fn create_with_level(
         &mut self,
-        world: Option<&World>,
+        level: Option<&ParticleLevel<'_>>,
         options: &ParticleOptions,
         p: [f64; 3],
         v: [f64; 3],
@@ -91,8 +92,8 @@ impl ParticleEngine {
         let seed = self.seeds.next_long();
         let made = match &options.typed_particle {
             Some((value, _)) => {
-                let Some(world) = world else { return true };
-                match self.make_typed_particle(world, value, p, v, seed) {
+                let Some(level) = level else { return true };
+                match self.make_typed_particle(level, value, p, v, seed) {
                     Ok(particle) => particle,
                     Err(error) => {
                         log::warn!("Could not spawn particle effect: {error}");
@@ -129,7 +130,7 @@ impl ParticleEngine {
             {
                 return true;
             }
-            self.pending.push(PendingParticle::Ordinary(particle));
+            self.push(particle);
         }
         true
     }

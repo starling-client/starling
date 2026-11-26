@@ -1,44 +1,50 @@
 //! Registration-time type coverage and block capability forwarding metadata.
 use super::*;
+use std::any::TypeId;
 
 impl dyn Registrar + '_ {
     /// Whether the game or an earlier/current registration covers this block type.
     /// This is type coverage, not a promise that a lookup at a particular position answers.
+    /// An invalid capability name, mismatched binding, or invalid target key refuses registration.
     pub fn is_block_capability_registered<T: ?Sized + 'static>(
         &mut self,
         key: &CapabilityKey<T>,
         block: &crate::BlockKey,
     ) -> bool {
-        self.block_capability_registered(key.name, type_name::<T>(), block)
+        self.block_capability_registered(key.name, key.binding(), block)
     }
 
     /// Whether the game or an earlier/current registration covers this entity type.
+    /// An invalid capability name, mismatched binding, or invalid target key refuses registration.
     pub fn is_entity_capability_registered<T: ?Sized + 'static, C: 'static>(
         &mut self,
         key: &EntityCapabilityKey<T, C>,
         kind: &crate::EntityTypeKey,
     ) -> bool {
-        self.entity_capability_registered(key.name, kind)
+        self.entity_capability_registered(key.name, key.binding(), kind)
     }
 
     /// Whether the game or an earlier/current registration covers this item type.
+    /// An invalid capability name, mismatched binding, or invalid target key refuses registration.
     pub fn is_item_capability_registered<T: ?Sized + 'static>(
         &mut self,
         key: &ItemCapabilityKey<T>,
         item: &crate::ItemKey,
     ) -> bool {
-        self.item_capability_registered(key.name, item)
+        self.item_capability_registered(key.name, key.binding(), item)
     }
 
     /// Mark whether forwarding this capability to another block is safe. Unmarked keys are
     /// not proxyable. Repeating the same mark is allowed; contradicting an explicit mark
     /// refuses registration, as NeoForge 26.3's `setProxyable`/`setNonProxyable` do.
+    /// The capability name must be a fully qualified resource identifier and the key must match
+    /// its canonical handler type.
     pub fn set_capability_proxyable<T: ?Sized + 'static>(
         &mut self,
         key: &CapabilityKey<T>,
         proxyable: bool,
     ) {
-        self.set_block_capability_proxyable(key.name, type_name::<T>(), proxyable);
+        self.set_block_capability_proxyable(key.name, key.binding(), proxyable);
     }
 }
 
@@ -47,21 +53,35 @@ pub trait CapabilityRegistrationRegistrar {
     /// Request an entity type by canonical registry id; unknown names are refused at resolution.
     fn entity_type_key(&mut self, id: &str) -> crate::EntityTypeKey;
     /// Type-only block coverage, including the game's default provider and registrations so far.
+    /// `binding` is the native provider's type identity and displayed handler name.
     fn block_capability_registered(
         &mut self,
         name: &'static str,
-        handler: &'static str,
+        binding: (TypeId, &'static str),
         block: &crate::BlockKey,
     ) -> bool;
     /// Type-only entity coverage, including the game's default provider and registrations so far.
-    fn entity_capability_registered(&self, name: &str, kind: &crate::EntityTypeKey) -> bool;
+    /// `binding` identifies both handler and context types.
+    fn entity_capability_registered(
+        &mut self,
+        name: &'static str,
+        binding: (TypeId, &'static str),
+        kind: &crate::EntityTypeKey,
+    ) -> bool;
     /// Type-only item coverage, including the game's default provider and registrations so far.
-    fn item_capability_registered(&self, name: &str, item: &crate::ItemKey) -> bool;
-    /// Mark a named block capability; contradictory explicit marks refuse registration.
+    /// `binding` is the native provider's type identity and displayed handler name.
+    fn item_capability_registered(
+        &mut self,
+        name: &'static str,
+        binding: (TypeId, &'static str),
+        item: &crate::ItemKey,
+    ) -> bool;
+    /// Mark a named block capability with its native provider binding; contradictory explicit
+    /// marks refuse registration.
     fn set_block_capability_proxyable(
         &mut self,
         name: &'static str,
-        handler: &'static str,
+        binding: (TypeId, &'static str),
         proxyable: bool,
     );
     /// Known block capabilities in discovery order: built-ins, then registrations so far.
@@ -78,7 +98,8 @@ pub fn block_capability_names(host: &dyn Host) -> Vec<String> {
 /// Whether a published capability is safe to forward to another block. Unknown and unmarked
 /// capabilities are not proxyable. This metadata never changes provider dispatch.
 pub fn block_capability_proxyable(host: &dyn Host, name: &str) -> bool {
-    host.capability_providers().block_capability_proxyable(name)
+    host.capability_providers()
+        .block_capability_proxyable(name, None)
 }
 
 /// An owned snapshot of the known published capabilities safe to forward to another block.

@@ -153,3 +153,47 @@ fn modeled_amplifier_mutation_overrides_stale_raw_and_omits_zero() {
         }
     }
 }
+
+/// `MobEffectInstance.Details` is recursive: a hidden effect's `amplifier` is the same
+/// `UNSIGNED_BYTE` as the active effect's, so 128 to 255 (saved as a negative byte) survive a
+/// save and reload at every depth of the chain.
+#[test]
+fn hidden_effect_amplifiers_load_as_unsigned_bytes_at_every_depth() {
+    let types = types();
+    let mut raw = input(Some(Tag::Byte(2)));
+    let deepest = Tag::compound([("duration", Tag::Int(1200)), ("amplifier", Tag::Byte(-1))]);
+    let hidden = Tag::compound([
+        ("duration", Tag::Int(600)),
+        ("amplifier", Tag::Byte(-56)),
+        ("hidden_effect", deepest),
+    ]);
+    let Some(Tag::List(effects)) = raw.get("active_effects").cloned() else {
+        unreachable!()
+    };
+    let mut effect = effects[0].clone();
+    put(&mut effect, "hidden_effect", hidden);
+    put(&mut raw, "active_effects", Tag::List(vec![effect]));
+
+    let amplifiers = |mob: &crate::mobs::Mob| {
+        let chain = &mob.extra.effect_chains[0];
+        let deeper = chain.hidden.as_deref().expect("the second hidden effect");
+        (chain.amplifier, deeper.amplifier)
+    };
+    let mob = mob_from_nbt(&raw, &types, 7, None).unwrap();
+    assert_eq!(amplifiers(&mob), (200, 255));
+
+    let saved = mob_to_nbt(
+        &mob,
+        [158, 0, 0, 3],
+        None,
+        None,
+        |_| None,
+        &Default::default(),
+    );
+    let hidden = saved_effect(&saved).get("hidden_effect").unwrap();
+    assert_eq!(hidden.get("amplifier"), Some(&Tag::Byte(-56)));
+    let deepest = hidden.get("hidden_effect").unwrap();
+    assert_eq!(deepest.get("amplifier"), Some(&Tag::Byte(-1)));
+    let back = mob_from_nbt(&saved, &types, 8, None).unwrap();
+    assert_eq!(amplifiers(&back), (200, 255));
+}

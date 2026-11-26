@@ -24,6 +24,7 @@ fn pixel(device: &wgpu::Device, queue: &wgpu::Queue, vertex: &str, fragment: &st
         &preprocess(&pack, "gbuffers_terrain.fsh", &macros),
         Target::Buffers,
         &GbuffersInputs::default(),
+        naga::front::glsl::InterfaceLimits::WGPU_DEFAULT,
     )
     .unwrap_or_else(|e| panic!("{e:?}"));
     assert!(!program.interface.draw, "no per-draw block in this probe");

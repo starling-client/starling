@@ -1,0 +1,20 @@
+ids = [
+    "handle:PlayerRef::trigger_criterion",
+    "trait:CriterionTest",
+    "method:CriterionTest::test",
+    "method:CriterionContext::conditions_json",
+    "method:CriterionContext::conditions",
+    "method:CriterionContext::item",
+    "type:CriterionTestError",
+    "type:CriterionTestError.Unavailable",
+    "type:CriterionTestError.Refused",
+    "type:CriterionTestError.Stack",
+    "type:TriggerCriterionError",
+    "type:TriggerCriterionError.BuiltinTrigger",
+    "type:TriggerCriterionError.UnloadedChunk",
+    "type:TriggerCriterionError.BlockUnavailable",
+    "type:TriggerCriterionError.TestPanicked",
+    "handle:Identifier::as_str",
+]
+why = "Vanilla Criterion.CODEC and CriterionTriggerInstance bind and validate criteria at load; SimpleCriterionTrigger.SimpleInstance.player uses LootItemCondition.CODEC, including the required terms of CompositeLootItemCondition.createCodec. SimpleCriterionTrigger.trigger borrows the matcher supplied for that call and then tests the player in their level. NeoForge's CriteriaTriggers.register access transform adds neither a namespace gate nor matcher state. DefaultBlockInteractionTrigger.trigger, ItemUsedOnLocationTrigger.trigger and AnyBlockInteractionTrigger.trigger read the event block from the target player's Level.getBlockState (and getBlockEntity where applicable). MatchBlock tests that event data; a separate LocationPredicate checks its own position. A failed level entry cannot award progress in the wrong level."
+migrate = "Pass &mut predicate instead of Arc::new(predicate) to PlayerRef::trigger_criterion, and change CriterionTest::test's receiver from &self to &mut self. Use criterion.conditions() instead of parsing criterion.conditions_json(); an absent conditions record is Value::Null. In a custom advancement's player field use a vanilla loot condition (use the type field for inline conditions and supply every required field); the other fields stay available to your matcher. Use criterion.item(key, &stack)? instead of wrapping the old boolean in Ok; it returns CriterionTestError::Stack(StackWriteError) for an invalid stack, carrying the rejection reason rather than the stack. Return CriterionTestError::Refused(message) instead of Unavailable or an (Identifier, String) conversion. Clone a CriterionTestError if you need to retain a second copy. Handle TestPanicked for the current invocation only (a later call can lend another matcher for the same key). Neither error enum implements Wire. Match BuiltinTrigger instead of InvalidTrigger for exact vanilla keys and call the corresponding built-in helper; InvalidTrigger now means an empty namespace or path. Replace UnloadedChunk handling in trigger_block_use and trigger_item_used_on_block with BlockUnavailable for an actual event-block read failure; a chunk need not already be resident. All trigger helpers return PlayerUnavailable if the target player's level cannot be entered. Use Identifier::as_str() instead of to_string() to borrow the fully qualified key."

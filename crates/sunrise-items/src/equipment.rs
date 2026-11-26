@@ -115,7 +115,9 @@ fn put(
     items: &crate::items::Items,
 ) {
     let name = SLOT_NAMES[slot];
-    match stack {
+    // `EntityEquipment.CODEC` leaves out an empty stack (`ItemStack.isEmpty`: air or a count
+    // of zero), so a zero-count slot never reloads as an item.
+    match stack.filter(|stack| stack.count > 0 && &*stack.item != "minecraft:air") {
         Some(stack) => {
             compound.insert(name.into(), item_to_nbt(stack, items));
         }
@@ -142,5 +144,18 @@ mod tests {
         assert_eq!(Equipment::read(&tag), e);
         assert_eq!(e.take_all().count(), 2);
         assert!(e.is_empty());
+    }
+
+    #[test]
+    fn a_zero_count_or_air_slot_is_left_out() {
+        let items = crate::items::Items::empty();
+        let mut e = Equipment::default();
+        assert!(e.set(MAINHAND, Some(ItemStack::new("minecraft:trident", 0))));
+        assert!(e.set(OFFHAND, Some(ItemStack::new("minecraft:air", 1))));
+        assert!(e.write(&items).is_none());
+        assert!(e.set(HEAD, Some(ItemStack::new("minecraft:diamond_helmet", 1))));
+        let tag = e.write(&items).unwrap();
+        assert!(tag.get("mainhand").is_none() && tag.get("offhand").is_none());
+        assert!(tag.get("head").is_some());
     }
 }

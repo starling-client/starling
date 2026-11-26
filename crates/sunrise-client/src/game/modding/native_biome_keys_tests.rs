@@ -1,8 +1,9 @@
 #![cfg(test)]
-use mod_api::{DataMap, DataMapError, Tag};
+use mod_api::{BiomeKey, BiomeKeyError, DataMap, DataMapError, Tag};
+
 struct VillagerTypes;
 impl DataMap for VillagerTypes {
-    type Entry = mod_api::BiomeKey;
+    type Entry = BiomeKey;
     type Value = Tag;
     fn id(&self) -> &str {
         "neoforge:villager_types"
@@ -11,6 +12,7 @@ impl DataMap for VillagerTypes {
         Some(value.clone())
     }
 }
+
 #[test]
 #[ignore = "daily"]
 fn biome_key_world_install_reload_and_unavailable_sides() {
@@ -19,7 +21,28 @@ fn biome_key_world_install_reload_and_unavailable_sides() {
             let root = tempfile::tempdir().unwrap();
             game.world_root = root.path().to_owned();
             game.options.dedicated = Some(Vec::new());
-            assert_eq!(game.biome_key("minecraft:plains"), None);
+
+            let plains = BiomeKey::parse("minecraft:plains").unwrap();
+            let desert = BiomeKey::parse("minecraft:desert").unwrap();
+            let marsh = BiomeKey::parse("test:marsh").unwrap();
+            let unknown = BiomeKey::parse("test:nope").unwrap();
+            game.world_biomes = Some(std::sync::Arc::new(
+                game.res
+                    .biomes()
+                    .with_packs([("test:marsh", &serde_json::json!({}))])
+                    .unwrap(),
+            ));
+
+            assert_eq!(
+                game.biome("minecraft:plains"),
+                Err(BiomeKeyError::Unavailable)
+            );
+            assert_eq!(plains.view(game), Err(BiomeKeyError::Unavailable));
+            assert_eq!(
+                plains.data(game, &VillagerTypes),
+                Err(DataMapError::Unavailable)
+            );
+
             let pack = root.path().join("datapacks/biomes");
             let file = pack.join("data/neoforge/data_maps/worldgen/biome/villager_types.json");
             std::fs::create_dir_all(file.parent().unwrap()).unwrap();
@@ -28,56 +51,94 @@ fn biome_key_world_install_reload_and_unavailable_sides() {
                 r#"{"pack":{"description":"Biome fixture"}}"#,
             )
             .unwrap();
+            let definition = pack.join("data/test/worldgen/biome/marsh.json");
+            std::fs::create_dir_all(definition.parent().unwrap()).unwrap();
+            let plains_file = game.res.biomes().builtin_file("minecraft:plains").unwrap();
+            std::fs::write(definition, plains_file.to_string()).unwrap();
             std::fs::write(
                 root.path().join("datapacks.json"),
                 r#"{"enabled":["file/biomes"],"disabled":[]}"#,
             )
             .unwrap();
-            let mut previous: Option<mod_api::BiomeKey> = None;
-            for value in ["minecraft:plains", "minecraft:savanna"] {
-                std::fs::write(&file, format!(r#"{{"replace":true,"values":{{"minecraft:plains":{{"villager_type":"{value}"}}}}}}"#)).unwrap();
+
+            let foreign_keys = mod_api::__private::BiomeKeys::new(u64::MAX, [plains.clone()]);
+            let foreign_view = foreign_keys.view("minecraft:plains").unwrap();
+
+            for (index, value) in ["minecraft:plains", "minecraft:savanna"]
+                .into_iter()
+                .enumerate()
+            {
+                std::fs::write(
+                    &file,
+                    format!(
+                        r#"{{"replace":true,"values":{{"test:marsh":{{"villager_type":"{value}"}}}}}}"#
+                    ),
+                )
+                .unwrap();
                 let packs = game.reload_datapacks(false, &[]).unwrap();
                 let resources = game.options.resources.clone();
                 game.world_tables = game
-                    .stage_world_tables(&packs, previous.is_some(), &resources)
+                    .stage_world_tables(&packs, index > 0, &resources)
                     .unwrap()
                     .tables;
-                let plains = game.biome_key("minecraft:plains").unwrap();
-                assert_eq!(plains.id(game), Ok("minecraft:plains"));
-                assert_eq!(game.biome_key("test:nope"), None);
+
+                let view = game.biome("minecraft:plains").unwrap();
+                assert_eq!(view.id(), "minecraft:plains");
+                assert_eq!(view.key(), &plains);
+                assert!(view.is(&plains));
+                assert_eq!(plains.view(game), Ok(view));
+                assert_eq!(game.biome("test:nope"), Err(BiomeKeyError::UnknownBiome));
                 assert_eq!(
-                    plains.data(game, &VillagerTypes),
-                    Ok(Some(Tag::Compound(sunrise_core::nbt::Compound::from([(
-                        "villager_type".into(),
-                        Tag::String(value.into())
-                    )]))))
+                    game.biome("Bad Name"),
+                    Err(BiomeKeyError::InvalidIdentifier)
+                );
+                assert_eq!(unknown.view(game), Err(BiomeKeyError::UnknownBiome));
+
+                let expected = Ok(Some(Tag::Compound(sunrise_core::nbt::Compound::from([(
+                    "villager_type".into(),
+                    Tag::String(value.into()),
+                )]))));
+                let marsh_view = game.biome("test:marsh").unwrap();
+                assert_eq!(marsh_view.key(), &marsh);
+                assert_eq!(marsh_view.data(game, &VillagerTypes), expected);
+                assert_eq!(marsh.data(game, &VillagerTypes), expected);
+                let reload: &dyn mod_api::ReloadContext = game;
+                assert_eq!(reload.biome_key_id(&marsh), Ok("test:marsh"));
+                assert_eq!(reload.data_map(&marsh, &VillagerTypes), expected);
+                assert_eq!(desert.data(game, &VillagerTypes), Ok(None));
+                assert_eq!(
+                    unknown.data(game, &VillagerTypes),
+                    Err(DataMapError::InvalidKey)
                 );
                 assert_eq!(
-                    game.biome_key("minecraft:desert")
-                        .unwrap()
-                        .data(game, &VillagerTypes),
-                    Ok(None)
+                    game.biome_view_id(foreign_view),
+                    Err(BiomeKeyError::WrongGeneration)
                 );
-                if let Some(old) = previous {
-                    assert_eq!(old.id(game), Err(mod_api::BiomeKeyError::WrongGeneration));
-                    assert_eq!(
-                        old.data(game, &VillagerTypes),
-                        Err(DataMapError::InvalidKey)
-                    );
-                }
-                previous = Some(plains);
+                assert_eq!(
+                    foreign_view.data(game, &VillagerTypes),
+                    Err(DataMapError::InvalidKey)
+                );
             }
-            let key = previous.unwrap();
+
             game.options.dedicated = None;
-            assert_eq!(game.biome_key("minecraft:plains"), None);
             assert_eq!(
-                key.data(game, &VillagerTypes),
+                game.biome("minecraft:plains"),
+                Err(BiomeKeyError::Unavailable)
+            );
+            assert_eq!(plains.view(game), Err(BiomeKeyError::Unavailable));
+            assert_eq!(
+                plains.data(game, &VillagerTypes),
                 Err(DataMapError::Unavailable)
             );
+
             game.options.dedicated = Some(Vec::new());
             game.world_tables = None;
             assert_eq!(
-                key.data(game, &VillagerTypes),
+                game.biome("minecraft:plains"),
+                Err(BiomeKeyError::Unavailable)
+            );
+            assert_eq!(
+                plains.data(game, &VillagerTypes),
                 Err(DataMapError::Unavailable)
             );
         });

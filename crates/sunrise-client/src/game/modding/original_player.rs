@@ -1,27 +1,42 @@
 //! The old `ServerPlayer` retained across `restoreFrom`, independently of its replacement.
 use super::{Dim, Game};
 use mod_api::{
-    ActiveEffect, AttachmentError, AttachmentForm, AttachmentStore, AttachmentValue, Attachments,
+    __private::TransactionFrame, ActiveEffect, AttachmentError, AttachmentStore, Attachments,
     Holder, InventoryView, LevelRef, OriginalPlayerAccess, PlayerExperience,
 };
 use std::sync::{Arc, Mutex};
 use sunrise_core::nbt::Compound;
 use sunrise_items::equipment::Equipment;
 use sunrise_items::items::ItemStack;
+use sunrise_mod_runtime::attachments::{
+    AttachmentBinding, AttachmentLoan, AttachmentStoreKey, AttachmentStoreWrite,
+};
 
-/// Per-player attachment state and active replacement player UUIDs during clone hooks.
+/// Per-player attachment state and the active player scopes during respawn.
 #[derive(Default)]
 pub(super) struct PlayerState {
     pub(super) attachments: sunrise_mod_runtime::attachments::ResidentAttachments,
-    pub(super) cloning_players: Vec<(u128, u32, u32)>,
+    pub(super) cloning_players: Vec<ScopedPlayer>,
+}
+
+pub(super) struct ScopedPlayer {
+    pub(super) uuid: u128,
+    pub(super) conn: u32,
+    /// No whole body is lent while the replacement's attachments are being constructed.
+    pub(super) entity: Option<u32>,
+}
+
+pub(super) enum CloneScope {
+    Constructing,
+    LendBody,
 }
 
 /// Retained original-player attachment storage tied to `Game::transactions` so mutations,
 /// default insertions, removals and decode caching roll back with an aborted transaction.
 pub(in crate::game) struct OriginalAttachmentSlot {
     map: Attachments,
-    active_frames: Vec<u64>,
-    journal: Vec<(u64, Attachments)>,
+    active_frames: Vec<TransactionFrame>,
+    journal: Vec<(TransactionFrame, Attachments)>,
 }
 
 impl OriginalAttachmentSlot {
@@ -33,11 +48,11 @@ impl OriginalAttachmentSlot {
         }
     }
 
-    pub(in crate::game) fn open_frame(&mut self, token: u64) {
+    pub(in crate::game) fn open_frame(&mut self, token: TransactionFrame) {
         self.active_frames.push(token);
     }
 
-    pub(in crate::game) fn close_frame(&mut self, token: u64, commit: bool) {
+    pub(in crate::game) fn close_frame(&mut self, token: TransactionFrame, commit: bool) {
         if let Some(pos) = self.active_frames.iter().rposition(|&t| t == token) {
             self.active_frames.remove(pos);
         }
@@ -82,85 +97,68 @@ impl RetainedOriginalAttachments {
 }
 
 impl AttachmentStore for RetainedOriginalAttachments {
-    fn validate_attachment(
-        &mut self,
-        namespace: &str,
-        name: &str,
-        sync: bool,
-    ) -> Result<(), AttachmentError> {
-        mod_api::__private::validate_attachment_use(namespace, name, sync)
-    }
-
     fn holds(
         &mut self,
         holder: Holder,
-        namespace: &str,
-        name: &str,
+        key: &AttachmentStoreKey<'_>,
     ) -> Result<bool, AttachmentError> {
-        mod_api::__private::validate_attachment_use(namespace, name, false)?;
+        mod_api::__private::validate_attachment_key(key)?;
         let mut slot = self.slot.lock().unwrap_or_else(|e| e.into_inner());
-        AttachmentStore::holds(&mut slot.map, holder, namespace, name)
+        AttachmentStore::holds(&mut slot.map, holder, key)
     }
 
-    fn decoded(
+    fn lend_decoded(
         &mut self,
         holder: Holder,
-        namespace: &str,
-        name: &str,
-    ) -> Result<Option<AttachmentValue>, AttachmentError> {
-        mod_api::__private::validate_attachment_use(namespace, name, false)?;
+        key: &AttachmentStoreKey<'_>,
+        read: AttachmentLoan<'_>,
+    ) -> Result<(), AttachmentError> {
+        mod_api::__private::validate_attachment_key(key)?;
         let mut slot = self.slot.lock().unwrap_or_else(|e| e.into_inner());
-        AttachmentStore::decoded(&mut slot.map, holder, namespace, name)
+        AttachmentStore::lend_decoded(&mut slot.map, holder, key, read)
     }
 
-    fn saved(
+    fn binding(
         &mut self,
         holder: Holder,
-        namespace: &str,
-        name: &str,
-    ) -> Result<Option<Compound>, AttachmentError> {
-        mod_api::__private::validate_attachment_use(namespace, name, false)?;
+        key: &AttachmentStoreKey<'_>,
+    ) -> Result<Option<AttachmentBinding>, AttachmentError> {
+        mod_api::__private::validate_attachment_key(key)?;
         let mut slot = self.slot.lock().unwrap_or_else(|e| e.into_inner());
-        AttachmentStore::saved(&mut slot.map, holder, namespace, name)
+        AttachmentStore::binding(&mut slot.map, holder, key)
     }
 
     fn store(
         &mut self,
         holder: Holder,
-        namespace: &str,
-        name: &str,
-        value: AttachmentValue,
-        form: AttachmentForm,
+        write: AttachmentStoreWrite<'_>,
     ) -> Result<(), AttachmentError> {
-        mod_api::__private::validate_attachment_use(namespace, name, form.policy.sync)?;
+        mod_api::__private::validate_attachment_key(write.key())?;
         let mut slot = self.slot.lock().unwrap_or_else(|e| e.into_inner());
         slot.journal_current();
-        AttachmentStore::store(&mut slot.map, holder, namespace, name, value, form)
+        AttachmentStore::store(&mut slot.map, holder, write)
     }
 
     fn discard(
         &mut self,
         holder: Holder,
-        namespace: &str,
-        name: &str,
-        sync: bool,
+        key: &AttachmentStoreKey<'_>,
     ) -> Result<(), AttachmentError> {
-        mod_api::__private::validate_attachment_use(namespace, name, sync)?;
+        mod_api::__private::validate_attachment_key(key)?;
         let mut slot = self.slot.lock().unwrap_or_else(|e| e.into_inner());
         slot.journal_current();
-        AttachmentStore::discard(&mut slot.map, holder, namespace, name, sync)
+        AttachmentStore::discard(&mut slot.map, holder, key)
     }
 
     fn queue_sync(
         &mut self,
         holder: Holder,
-        namespace: &str,
-        name: &str,
+        key: &AttachmentStoreKey<'_>,
     ) -> Result<(), AttachmentError> {
-        mod_api::__private::validate_attachment_use(namespace, name, true)?;
+        mod_api::__private::validate_attachment_key(key)?;
         let mut slot = self.slot.lock().unwrap_or_else(|e| e.into_inner());
         slot.journal_current();
-        AttachmentStore::queue_sync(&mut slot.map, holder, namespace, name)
+        AttachmentStore::queue_sync(&mut slot.map, holder, key)
     }
 }
 
@@ -230,15 +228,20 @@ impl OriginalPlayerAccess for RetainedOriginalPlayer {
 }
 
 impl Game<'_> {
-    /// Make the callback's player addressable without publishing it in a level's player list
-    /// or entity table. This also covers construction and the post-clone set-spawn event.
+    /// Mark a callback as being in the respawn sequence. Lend the player without publishing
+    /// it in a level when there is a body to read (original or restored replacement).
     pub(super) fn with_cloning_player<R>(
         &mut self,
         conn: u32,
+        scope: CloneScope,
         run: impl FnOnce(&mut Self) -> R,
     ) -> Option<R> {
         let guest = self.command_guest(conn)?;
-        let identity = (guest.uuid, conn, guest.entity_id as u32);
+        let identity = ScopedPlayer {
+            uuid: guest.uuid,
+            conn,
+            entity: matches!(scope, CloneScope::LendBody).then_some(guest.entity_id as u32),
+        };
         self.player_state.cloning_players.push(identity);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(self)));
         self.player_state.cloning_players.pop();
@@ -252,11 +255,10 @@ impl Game<'_> {
     /// and End credits return (`was_death = false`).
     ///
     /// Expects old-player removal/menu-close work to have completed against the old state
-    /// and the destination level to be open (`self.enter_level`). Copies eligible
-    /// attachments into a fresh replacement map unconditionally, retains the old player
-    /// when `player_clone` is listened, assigns the replacement's destination dimension
-    /// without placing it, reinitializes the replacement `ServerPlayer`, and dispatches
-    /// `player_clone` with both holders journaled to `host.transaction`.
+    /// and the destination level to be open (`self.enter_level`). Constructs the replacement
+    /// attachments before copying eligible original entries or restoring vanilla state.
+    /// Dispatches `player_clone` after restoring that data and before placement, with both
+    /// holders journaled to `host.transaction`.
     pub(in crate::game) fn restore_cloned_player(
         &mut self,
         conn: u32,
@@ -265,11 +267,7 @@ impl Game<'_> {
         restore_replacement: impl FnOnce(&mut sunrise_client::lan::guest::Guest),
         after_clone: impl FnOnce(&mut Self),
     ) -> bool {
-        let Some((i, uuid, name)) = self.lan.as_ref().and_then(|host| {
-            let i = host.hub.guests.iter().position(|g| g.conn == conn)?;
-            let g = &host.hub.guests[i];
-            Some((i, g.uuid, g.name.clone()))
-        }) else {
+        let Some((uuid, name)) = self.command_guest(conn).map(|g| (g.uuid, g.name.clone())) else {
             return false;
         };
         debug_assert!(
@@ -284,21 +282,31 @@ impl Game<'_> {
             return false;
         };
         let previous = std::mem::take(&mut **map);
-        let replacement = previous.copy_for_clone(was_death);
+        let _ = self.with_cloning_player(conn, CloneScope::Constructing, |game| {
+            game.reinitialize_server_player(uuid, conn);
+        });
+        let Some(map) = self
+            .lan
+            .as_mut()
+            .and_then(|host| host.hub.guests.attachments_mut(conn))
+        else {
+            return false;
+        };
+        map.copy_clone_attachments_from(
+            &previous,
+            was_death,
+            mod_api::__private::registered_clone_attachment_policy,
+        );
         let mut original = self.retain_original_player(conn, previous);
         // NeoForge's clone keeps only the `PlayerPersisted` part of a mod's saved compound.
         self.keep_only_player_persisted(conn);
         if let Some(host) = self.lan.as_mut() {
-            host.hub.guests.update(i, |g| {
+            host.hub.update_guest(conn, |g| {
                 g.dimension = destination.id().to_owned();
                 restore_replacement(g);
             });
-            if let Some(map) = host.hub.guests.attachments_mut(conn) {
-                **map = replacement;
-            }
         }
-        self.with_cloning_player(conn, |game| {
-            game.reinitialize_server_player(uuid, conn);
+        self.with_cloning_player(conn, CloneScope::LendBody, |game| {
             if let Some(original) = &mut original {
                 game.transactions
                     .push_retained_original(Arc::clone(&original.attachments.slot));
@@ -365,10 +373,11 @@ mod tests {
     use super::*;
     use crate::game::native_guest_turn_tests::with_guests;
     use mod_api::{
-        AttachmentType, Holder, Hooks, HostTransaction, PlayerCloneEvent,
+        AttachmentDescriptor, AttachmentKey, Holder, Hooks, HostTransaction, PlayerCloneEvent,
         PlayerContainerCloseEvent, ServerHost,
     };
     use sunrise_core::nbt::{JavaString, Tag};
+    use sunrise_mod_runtime::attachments::AttachmentType;
 
     const VALUE: AttachmentType<i32> = AttachmentType {
         namespace: "clone",
@@ -376,7 +385,7 @@ mod tests {
         default: || 0,
         codec: None,
         copy_on_death: false,
-        sync: false,
+        sync_codec: None,
     };
     const DEFAULTED: AttachmentType<i32> = AttachmentType {
         namespace: "clone",
@@ -384,7 +393,7 @@ mod tests {
         default: || 41,
         codec: None,
         copy_on_death: false,
-        sync: false,
+        sync_codec: None,
     };
     const RETAINED: AttachmentType<i32> = AttachmentType {
         namespace: "clone",
@@ -398,13 +407,33 @@ mod tests {
             },
         }),
         copy_on_death: true,
-        sync: false,
+        sync_codec: None,
     };
     const SAVED: AttachmentType<i32> = AttachmentType {
         name: "saved",
         copy_on_death: false,
         ..RETAINED
     };
+
+    const MEMORY_NOW: AttachmentType<i32> = AttachmentType {
+        name: "memory_now",
+        ..VALUE
+    };
+
+    fn issued(raw: &AttachmentType<i32>) -> AttachmentKey<i32> {
+        mod_api::testing::attachment_key("clone", raw.name)
+    }
+
+    fn describe(id: &'static str, raw: &AttachmentType<i32>) -> AttachmentDescriptor<i32> {
+        let mut descriptor = AttachmentDescriptor::new(id, raw.default);
+        if let Some(codec) = raw.codec {
+            descriptor = descriptor.serialize(codec);
+        }
+        if raw.copy_on_death {
+            descriptor = descriptor.copy_on_death();
+        }
+        descriptor
+    }
 
     struct Listener {
         death: bool,
@@ -415,11 +444,16 @@ mod tests {
     #[mod_api::__subscriptions]
     impl Hooks for Listener {
         fn register(&self, r: &mut dyn mod_api::Registrar, _: &mod_api::RegistrationContext) {
-            r.register_attachment_type("clone:unsaved", false).unwrap();
-            r.register_attachment_type("clone:defaulted", false)
+            r.register_attachment_type(describe("clone:unsaved", &VALUE))
                 .unwrap();
-            r.register_attachment_type("clone:retained", false).unwrap();
-            r.register_attachment_type("clone:saved", false).unwrap();
+            r.register_attachment_type(describe("clone:defaulted", &DEFAULTED))
+                .unwrap();
+            r.register_attachment_type(describe("clone:retained", &RETAINED))
+                .unwrap();
+            r.register_attachment_type(describe("clone:saved", &SAVED))
+                .unwrap();
+            r.register_attachment_type(describe("clone:memory_now", &MEMORY_NOW))
+                .unwrap();
         }
 
         fn player_clone(&self, host: &mut dyn ServerHost, event: &mut PlayerCloneEvent<'_>) {
@@ -482,87 +516,155 @@ mod tests {
             let replacement_data = replacement.persistent_data(host).unwrap();
             assert_eq!(replacement_data.get(&outside), None);
             assert_eq!(replacement_data.get(&persisted), Some(&persisted_value));
-            let replacement_effects = mod_api::LivingRef::new(replacement.entity())
-                .effects(host)
-                .unwrap();
-            assert_eq!(replacement_effects.len(), usize::from(!self.death));
-
-            const MISSING: AttachmentType<i32> = AttachmentType {
-                name: "missing",
-                ..VALUE
-            };
-            // Never declared, so refused by name (#1448), not read as its default.
+            let mut replacement_count = 0;
             assert_eq!(
-                event.original.attachment(&MISSING),
-                Err(mod_api::AttachmentError::Undeclared {
-                    package_id: "clone".into(),
-                    attachment_id: "clone:missing".into(),
-                })
+                mod_api::LivingRef::new(replacement.entity()).visit_effects(host, &mut |_| {
+                    replacement_count += 1;
+                    std::ops::ControlFlow::Continue(())
+                }),
+                Ok(std::ops::ControlFlow::Continue(()))
+            );
+            assert_eq!(replacement_count, usize::from(!self.death));
+
+            let (_, stale) = mod_api::testing::registered_attachment_fixture(
+                "clone",
+                AttachmentDescriptor::new("clone:unsaved", || 0i32),
+            );
+            assert_eq!(
+                event.original.attachment(&stale, Clone::clone),
+                Err(mod_api::AttachmentError::StaleKey)
             );
 
             // A declared but absent key yields its default without writing either holder.
-            assert_eq!(event.original.attachment(&DEFAULTED), Ok(41));
-            assert_eq!(event.original.has_attachment(&DEFAULTED), Ok(false));
-            assert_eq!(event.original.existing_attachment(&DEFAULTED), Ok(None));
+            assert_eq!(
+                event.original.attachment(&issued(&DEFAULTED), Clone::clone),
+                Ok(41)
+            );
+            assert_eq!(
+                event.original.has_attachment(&issued(&DEFAULTED)),
+                Ok(false)
+            );
             assert_eq!(
                 event
                     .original
-                    .with_decoded_attachment(&DEFAULTED, |value| value.copied()),
+                    .existing_attachment(&issued(&DEFAULTED), |value| value.cloned()),
                 Ok(None)
             );
-            assert_eq!(DEFAULTED.has(host, Holder::Player(event.player)), Ok(false));
+            assert_eq!(
+                event
+                    .original
+                    .with_decoded_attachment(&issued(&DEFAULTED), |value| value.copied()),
+                Ok(None)
+            );
+            assert_eq!(
+                issued(&DEFAULTED).has(host, Holder::Player(event.player)),
+                Ok(false)
+            );
 
             // Saved codec-backed entry decodes once on existing_attachment and caches it.
-            assert_eq!(event.original.has_attachment(&SAVED), Ok(true));
+            assert_eq!(event.original.has_attachment(&issued(&SAVED)), Ok(true));
             assert_eq!(
                 event
                     .original
-                    .with_decoded_attachment(&SAVED, |value| value.copied()),
+                    .with_decoded_attachment(&issued(&SAVED), |value| value.copied()),
                 Ok(None)
             );
-            assert_eq!(event.original.existing_attachment(&SAVED), Ok(Some(31)));
             assert_eq!(
                 event
                     .original
-                    .with_decoded_attachment(&SAVED, |value| value.copied()),
+                    .existing_attachment(&issued(&SAVED), |value| value.cloned()),
                 Ok(Some(31))
             );
             assert_eq!(
-                SAVED.has(host, Holder::Player(event.player)),
+                event
+                    .original
+                    .with_decoded_attachment(&issued(&SAVED), |value| value.copied()),
+                Ok(Some(31))
+            );
+            assert_eq!(
+                issued(&SAVED).has(host, Holder::Player(event.player)),
                 Ok(!self.death)
             );
             // Copied serializable entries start undecoded (independent of original's decoded cache).
             assert_eq!(
-                SAVED.with_decoded(host, Holder::Player(event.player), |value| value.copied()),
+                issued(&SAVED)
+                    .with_decoded(host, Holder::Player(event.player), |value| value.copied()),
                 Ok(None)
             );
             assert_eq!(
-                SAVED.get(host, Holder::Player(event.player)),
+                issued(&SAVED).get(host, Holder::Player(event.player), Clone::clone),
                 Ok(if self.death { 0 } else { 31 })
+            );
+
+            // Its old serialized envelope still exists on the retained original, but
+            // the installed descriptor no longer allows either respawn route to copy it.
+            let memory_now = issued(&MEMORY_NOW);
+            assert_eq!(event.original.has_attachment(&memory_now), Ok(true));
+            assert_eq!(
+                memory_now.has(host, Holder::Player(event.player)),
+                Ok(false)
+            );
+            assert_eq!(
+                memory_now.get_existing(host, Holder::Player(event.player), |value| value.copied()),
+                Ok(None)
             );
 
             // Codec-less attachment exists only on original until explicitly written to replacement,
             // on both death and End credits return (NeoForge AttachmentInternals.copyEntityAttachments).
-            assert_eq!(event.original.attachment(&VALUE), Ok(73));
-            assert_eq!(VALUE.has(host, Holder::Player(event.player)), Ok(false));
-            assert_eq!(event.original.attachment(&RETAINED), Ok(17));
             assert_eq!(
-                RETAINED.with_decoded(host, Holder::Player(event.player), |value| value.copied()),
+                event.original.attachment(&issued(&VALUE), Clone::clone),
+                Ok(73)
+            );
+            assert_eq!(
+                issued(&VALUE).has(host, Holder::Player(event.player)),
+                Ok(false)
+            );
+            assert_eq!(
+                event.original.attachment(&issued(&RETAINED), Clone::clone),
+                Ok(17)
+            );
+            assert_eq!(
+                issued(&RETAINED)
+                    .with_decoded(host, Holder::Player(event.player), |value| value.copied()),
                 Ok(None)
             );
-            assert_eq!(RETAINED.get(host, Holder::Player(event.player)), Ok(17));
+            assert_eq!(
+                issued(&RETAINED).get(host, Holder::Player(event.player), Clone::clone),
+                Ok(17)
+            );
 
             // Writes and removals on original affect only original, leaving replacement untouched.
-            assert_eq!(event.original.set_attachment(&VALUE, 100), Ok(()));
-            assert_eq!(event.original.existing_attachment(&VALUE), Ok(Some(100)));
-            assert_eq!(VALUE.has(host, Holder::Player(event.player)), Ok(false));
-            assert_eq!(event.original.remove_attachment(&RETAINED), Ok(Some(17)));
-            assert_eq!(event.original.has_attachment(&RETAINED), Ok(false));
-            assert_eq!(RETAINED.get(host, Holder::Player(event.player)), Ok(17));
+            assert_eq!(event.original.set_attachment(&issued(&VALUE), 100), Ok(()));
+            assert_eq!(
+                event
+                    .original
+                    .existing_attachment(&issued(&VALUE), |value| value.cloned()),
+                Ok(Some(100))
+            );
+            assert_eq!(
+                issued(&VALUE).has(host, Holder::Player(event.player)),
+                Ok(false)
+            );
+            assert_eq!(
+                event.original.remove_attachment(&issued(&RETAINED)),
+                Ok(Some(17))
+            );
+            assert_eq!(event.original.has_attachment(&issued(&RETAINED)), Ok(false));
+            assert_eq!(
+                issued(&RETAINED).get(host, Holder::Player(event.player), Clone::clone),
+                Ok(17)
+            );
 
             // Mutating the replacement leaves original untouched.
-            VALUE.set(host, Holder::Player(event.player), 99).unwrap();
-            assert_eq!(event.original.existing_attachment(&VALUE), Ok(Some(100)));
+            issued(&VALUE)
+                .set(host, Holder::Player(event.player), 99)
+                .unwrap();
+            assert_eq!(
+                event
+                    .original
+                    .existing_attachment(&issued(&VALUE), |value| value.cloned()),
+                Ok(Some(100))
+            );
             *self.heard.lock().unwrap() += 1;
         }
     }
@@ -576,16 +678,33 @@ mod tests {
         fn player_clone(&self, host: &mut dyn ServerHost, event: &mut PlayerCloneEvent<'_>) {
             // The first listener read the default without storing it. Its explicit mutations
             // are visible to the second listener only on the holder it wrote to.
-            assert_eq!(event.original.has_attachment(&DEFAULTED), Ok(false));
-            assert_eq!(DEFAULTED.has(host, Holder::Player(event.player)), Ok(false));
-            assert_eq!(event.original.existing_attachment(&VALUE), Ok(Some(100)));
-            assert_eq!(VALUE.get(host, Holder::Player(event.player)), Ok(99));
-            assert_eq!(event.original.has_attachment(&RETAINED), Ok(false));
-            assert_eq!(RETAINED.get(host, Holder::Player(event.player)), Ok(17));
+            assert_eq!(
+                event.original.has_attachment(&issued(&DEFAULTED)),
+                Ok(false)
+            );
+            assert_eq!(
+                issued(&DEFAULTED).has(host, Holder::Player(event.player)),
+                Ok(false)
+            );
             assert_eq!(
                 event
                     .original
-                    .with_decoded_attachment(&SAVED, |value| value.copied()),
+                    .existing_attachment(&issued(&VALUE), |value| value.cloned()),
+                Ok(Some(100))
+            );
+            assert_eq!(
+                issued(&VALUE).get(host, Holder::Player(event.player), Clone::clone),
+                Ok(99)
+            );
+            assert_eq!(event.original.has_attachment(&issued(&RETAINED)), Ok(false));
+            assert_eq!(
+                issued(&RETAINED).get(host, Holder::Player(event.player), Clone::clone),
+                Ok(17)
+            );
+            assert_eq!(
+                event
+                    .original
+                    .with_decoded_attachment(&issued(&SAVED), |value| value.copied()),
                 Ok(Some(31))
             );
             *self.heard.lock().unwrap() += 1;
@@ -663,19 +782,55 @@ mod tests {
                     )]));
                 });
                 let attachments = host.hub.guests.attachments_mut(12).unwrap();
-                RETAINED.set(attachments, Holder::Level, 17).unwrap();
-                SAVED.set(attachments, Holder::Level, 31).unwrap();
-                // Keep codec-backed entries undecoded, beside an unserialized binding.
-                let saved = Attachments::from_nbt(attachments.to_nbt());
+                let envelope = |value, copied| {
+                    let mut fields: Compound =
+                        [("value".into(), Tag::compound([("value", Tag::Int(value))]))].into();
+                    if copied {
+                        fields.insert("copy_on_death".into(), Tag::Byte(1));
+                    }
+                    Tag::Compound(fields)
+                };
+                let opaque = envelope(59, true);
+                let saved = Attachments::from_nbt(
+                    [
+                        (
+                            "clone".into(),
+                            Tag::compound([
+                                ("retained", envelope(17, false)),
+                                ("saved", envelope(31, true)),
+                                ("memory_now", envelope(44, true)),
+                            ]),
+                        ),
+                        (
+                            "removed_package".into(),
+                            Tag::compound([("opaque", opaque.clone())]),
+                        ),
+                    ]
+                    .into(),
+                );
                 attachments.replace_contents(saved);
                 VALUE.set(attachments, Holder::Level, 73).unwrap();
                 if death {
                     game.guest_respawn(12);
                 } else {
-                    let play = host.play.entry(12).or_default();
-                    play.won_game = true;
+                    host.hub.update_guest(12, |guest| guest.won_game = true);
                     game.guest_respawn(12);
                 }
+                let saved = Tag::Compound(
+                    game.lan
+                        .as_mut()
+                        .unwrap()
+                        .hub
+                        .guests
+                        .attachments_mut(12)
+                        .unwrap()
+                        .try_to_nbt()
+                        .unwrap(),
+                );
+                assert_eq!(
+                    saved.get("removed_package").unwrap().get("opaque"),
+                    Some(&opaque)
+                );
                 assert_eq!(*heard.lock().unwrap(), 1);
                 assert_eq!(*observer_heard.lock().unwrap(), 1);
                 assert!(game.player_state.cloning_players.is_empty());
@@ -686,18 +841,31 @@ mod tests {
     #[test]
     #[ignore = "daily"]
     fn death_clone_retains_original_and_expires_after_dispatch() {
-        crate::game::native_entity_refs::tests::run_with_game_stack(|| {
-            clone_case(true, false);
-            clone_case(true, true);
-        });
+        use crate::game::native_entity_refs::tests::{run_fresh_cases, run_with_game_stack};
+        const FLAG: &str = "SUNRISE_DEATH_CLONE_CASE";
+        if run_fresh_cases(
+            "game::original_player::tests::death_clone_retains_original_and_expires_after_dispatch",
+            FLAG,
+            &["drop", "keep"],
+        ) {
+            return;
+        }
+        let keep = std::env::var(FLAG).unwrap() == "keep";
+        run_with_game_stack(move || clone_case(true, keep));
     }
 
     #[test]
     #[ignore = "daily"]
     fn end_return_clone_retains_end_state_and_expires_after_dispatch() {
-        crate::game::native_entity_refs::tests::run_with_game_stack(|| {
-            clone_case(false, true);
-        });
+        use crate::game::native_entity_refs::tests::{run_fresh_cases, run_with_game_stack};
+        if run_fresh_cases(
+            "game::original_player::tests::end_return_clone_retains_end_state_and_expires_after_dispatch",
+            "SUNRISE_END_CLONE_CASE",
+            &["end"],
+        ) {
+            return;
+        }
+        run_with_game_stack(|| clone_case(false, true));
     }
 
     #[test]
@@ -730,9 +898,12 @@ mod tests {
         #[mod_api::__subscriptions]
         impl Hooks for CloseAndClone {
             fn register(&self, r: &mut dyn mod_api::Registrar, _: &mod_api::RegistrationContext) {
-                r.register_attachment_type("clone:unsaved", false).unwrap();
-                r.register_attachment_type("clone:saved", false).unwrap();
-                r.register_attachment_type("clone:retained", false).unwrap();
+                r.register_attachment_type(describe("clone:unsaved", &VALUE))
+                    .unwrap();
+                r.register_attachment_type(describe("clone:saved", &SAVED))
+                    .unwrap();
+                r.register_attachment_type(describe("clone:retained", &RETAINED))
+                    .unwrap();
             }
 
             fn player_container_close(
@@ -740,10 +911,14 @@ mod tests {
                 host: &mut dyn ServerHost,
                 event: &mut PlayerContainerCloseEvent<'_>,
             ) {
-                VALUE.set(host, Holder::Player(event.player), 55).unwrap();
-                SAVED.set(host, Holder::Player(event.player), 66).unwrap();
-                RETAINED
-                    .set(host, Holder::Player(event.player), 77)
+                issued(&VALUE)
+                    .set(host, Holder::Player(event.player.uuid()), 55)
+                    .unwrap();
+                issued(&SAVED)
+                    .set(host, Holder::Player(event.player.uuid()), 66)
+                    .unwrap();
+                issued(&RETAINED)
+                    .set(host, Holder::Player(event.player.uuid()), 77)
                     .unwrap();
                 *self.closed.lock().unwrap() += 1;
             }
@@ -765,16 +940,39 @@ mod tests {
                     Some(expected)
                 );
 
-                assert_eq!(event.original.existing_attachment(&VALUE), Ok(Some(55)));
-                assert_eq!(event.original.existing_attachment(&SAVED), Ok(Some(66)));
-                assert_eq!(event.original.existing_attachment(&RETAINED), Ok(Some(77)));
-                assert_eq!(VALUE.has(host, Holder::Player(event.player)), Ok(false));
                 assert_eq!(
-                    SAVED.has(host, Holder::Player(event.player)),
+                    event
+                        .original
+                        .existing_attachment(&issued(&VALUE), |value| value.cloned()),
+                    Ok(Some(55))
+                );
+                assert_eq!(
+                    event
+                        .original
+                        .existing_attachment(&issued(&SAVED), |value| value.cloned()),
+                    Ok(Some(66))
+                );
+                assert_eq!(
+                    event
+                        .original
+                        .existing_attachment(&issued(&RETAINED), |value| value.cloned()),
+                    Ok(Some(77))
+                );
+                assert_eq!(
+                    issued(&VALUE).has(host, Holder::Player(event.player)),
+                    Ok(false)
+                );
+                assert_eq!(
+                    issued(&SAVED).has(host, Holder::Player(event.player)),
                     Ok(!self.death)
                 );
-                assert_eq!(RETAINED.get(host, Holder::Player(event.player)), Ok(77));
-                VALUE.set(host, Holder::Player(event.player), 999).unwrap();
+                assert_eq!(
+                    issued(&RETAINED).get(host, Holder::Player(event.player), Clone::clone),
+                    Ok(77)
+                );
+                issued(&VALUE)
+                    .set(host, Holder::Player(event.player), 999)
+                    .unwrap();
                 let source = self.source.lock().unwrap();
                 let (source_index, old_token) = source.as_ref().unwrap();
                 assert_eq!(
@@ -788,10 +986,11 @@ mod tests {
                         .snapshot_named("clone", "retained")
                         .is_empty()
                 );
-                let batch = host.attachment_query("clone", "unsaved").unwrap();
+                let key = issued(&VALUE);
+                let batch = mod_api::AttachmentQueries::capture(host, &key).unwrap();
                 assert!(
                     batch
-                        .query(&VALUE)
+                        .query(&key)
                         .unwrap()
                         .iter()
                         .try_next()
@@ -850,7 +1049,8 @@ mod tests {
                         let rows = index.lock().unwrap().snapshot_named("clone", "retained");
                         let batch: mod_api::AttachmentBatch =
                             sunrise_mod_runtime::attachments::AttachmentBatch::new(rows).into();
-                        let query = batch.query(&RETAINED).unwrap();
+                        let key = issued(&RETAINED);
+                        let query = batch.query(&key).unwrap();
                         let old = query.iter().try_next().unwrap().unwrap();
                         let token = old.write_token();
                         assert_eq!(game.attachment_validate_write(token.clone()), Ok(()));
@@ -886,14 +1086,17 @@ mod tests {
                                 ]
                             );
                             assert_eq!(
-                                VALUE.get(game, Holder::Player(12)),
+                                issued(&VALUE).get(game, Holder::Player(12), Clone::clone),
                                 Ok(999),
                                 "the old UUID checkpoint must not overwrite the clone listener's write"
                             );
-                            assert_eq!(RETAINED.get(game, Holder::Player(12)), Ok(77));
+                            assert_eq!(
+                                issued(&RETAINED).get(game, Holder::Player(12), Clone::clone),
+                                Ok(77)
+                            );
                         } else {
                             game.handle_server_portal(12);
-                            assert!(game.lan.as_ref().unwrap().play[&12].won_game);
+                            assert!(game.command_guest(12).unwrap().won_game);
                             assert_eq!(*closed.lock().unwrap(), 1, "menu closes at credits entry");
                             assert_eq!(*cloned.lock().unwrap(), 0);
                             let guest = game.command_guest(12).unwrap();
@@ -1042,9 +1245,12 @@ mod tests {
         #[mod_api::__subscriptions]
         impl Hooks for DeclareOnly {
             fn register(&self, r: &mut dyn mod_api::Registrar, _: &mod_api::RegistrationContext) {
-                r.register_attachment_type("clone:unsaved", false).unwrap();
-                r.register_attachment_type("clone:saved", false).unwrap();
-                r.register_attachment_type("clone:retained", false).unwrap();
+                r.register_attachment_type(describe("clone:unsaved", &VALUE))
+                    .unwrap();
+                r.register_attachment_type(describe("clone:saved", &SAVED))
+                    .unwrap();
+                r.register_attachment_type(describe("clone:retained", &RETAINED))
+                    .unwrap();
             }
         }
 
@@ -1063,22 +1269,27 @@ mod tests {
                     VALUE.set(attachments, Holder::Level, 73).unwrap();
                     SAVED.set(attachments, Holder::Level, 31).unwrap();
                     RETAINED.set(attachments, Holder::Level, 17).unwrap();
-                    let play = host.play.entry(12).or_default();
-                    play.won_game = true;
+                    host.hub.update_guest(12, |guest| guest.won_game = true);
                     game.guest_respawn(12);
 
                     let host: &mut dyn ServerHost = game;
-                    assert_eq!(VALUE.has(host, Holder::Player(12)), Ok(false));
+                    assert_eq!(issued(&VALUE).has(host, Holder::Player(12)), Ok(false));
                     assert_eq!(
-                        SAVED.with_decoded(host, Holder::Player(12), |v| v.copied()),
+                        issued(&SAVED).with_decoded(host, Holder::Player(12), |v| v.copied()),
                         Ok(None)
                     );
-                    assert_eq!(SAVED.get(host, Holder::Player(12)), Ok(31));
                     assert_eq!(
-                        RETAINED.with_decoded(host, Holder::Player(12), |v| v.copied()),
+                        issued(&SAVED).get(host, Holder::Player(12), Clone::clone),
+                        Ok(31)
+                    );
+                    assert_eq!(
+                        issued(&RETAINED).with_decoded(host, Holder::Player(12), |v| v.copied()),
                         Ok(None)
                     );
-                    assert_eq!(RETAINED.get(host, Holder::Player(12)), Ok(17));
+                    assert_eq!(
+                        issued(&RETAINED).get(host, Holder::Player(12), Clone::clone),
+                        Ok(17)
+                    );
                 });
             });
         });
@@ -1091,7 +1302,8 @@ mod tests {
         #[mod_api::__subscriptions]
         impl Hooks for Declare {
             fn register(&self, r: &mut dyn mod_api::Registrar, _: &mod_api::RegistrationContext) {
-                r.register_attachment_type("clone:retained", false).unwrap();
+                r.register_attachment_type(describe("clone:retained", &RETAINED))
+                    .unwrap();
             }
         }
         struct Observe(Arc<Mutex<Vec<i32>>>);
@@ -1101,7 +1313,7 @@ mod tests {
                 self.0.lock().unwrap().push(
                     event
                         .original
-                        .existing_attachment(&RETAINED)
+                        .existing_attachment(&issued(&RETAINED), |value| value.cloned())
                         .unwrap()
                         .unwrap(),
                 );
@@ -1125,21 +1337,23 @@ mod tests {
                             g.health = 0.0;
                         });
                         let holder = Holder::Player(12);
-                        RETAINED.set(game, holder, 17).unwrap();
-                        let txn = game.transaction_open();
-                        RETAINED.set(game, holder, 23).unwrap();
-                        game.guest_respawn(12);
+                        issued(&RETAINED).set(game, holder, 17).unwrap();
+                        game.storage_scope(|game, _| {
+                            issued(&RETAINED).set(game, holder, 23).unwrap();
+                            game.guest_respawn(12);
+                            assert!(game.command_guest(12).unwrap().dead);
+                            ((), false)
+                        });
                         assert!(game.command_guest(12).unwrap().dead);
-                        game.transaction_close(&txn, false);
-                        assert!(game.command_guest(12).unwrap().dead);
-                        assert_eq!(RETAINED.get(game, holder), Ok(17));
+                        assert_eq!(issued(&RETAINED).get(game, holder, Clone::clone), Ok(17));
                         assert!(seen.lock().unwrap().is_empty());
-                        let txn = game.transaction_open();
-                        RETAINED.set(game, holder, 29).unwrap();
-                        game.guest_respawn(12);
-                        game.transaction_close(&txn, true);
+                        game.storage_scope(|game, _| {
+                            issued(&RETAINED).set(game, holder, 29).unwrap();
+                            game.guest_respawn(12);
+                            ((), true)
+                        });
                         assert!(!game.command_guest(12).unwrap().dead);
-                        assert_eq!(RETAINED.get(game, holder), Ok(29));
+                        assert_eq!(issued(&RETAINED).get(game, holder, Clone::clone), Ok(29));
                         assert_eq!(
                             &*seen.lock().unwrap(),
                             if subscribe { &[29][..] } else { &[] }
@@ -1160,39 +1374,75 @@ mod tests {
         #[mod_api::__subscriptions]
         impl Hooks for AbortWriter {
             fn register(&self, r: &mut dyn mod_api::Registrar, _: &mod_api::RegistrationContext) {
-                r.register_attachment_type("clone:unsaved", false).unwrap();
-                r.register_attachment_type("clone:defaulted", false)
+                r.register_attachment_type(describe("clone:unsaved", &VALUE))
                     .unwrap();
-                r.register_attachment_type("clone:saved", false).unwrap();
-                r.register_attachment_type("clone:retained", false).unwrap();
+                r.register_attachment_type(describe("clone:defaulted", &DEFAULTED))
+                    .unwrap();
+                r.register_attachment_type(describe("clone:saved", &SAVED))
+                    .unwrap();
+                r.register_attachment_type(describe("clone:retained", &RETAINED))
+                    .unwrap();
             }
 
             fn player_clone(&self, host: &mut dyn ServerHost, event: &mut PlayerCloneEvent<'_>) {
-                let aborted: Result<(), ()> = host.transaction(|host, _| {
-                    VALUE.set(host, Holder::Player(event.player), 555).unwrap();
-                    event.original.set_attachment(&VALUE, 444).unwrap();
-                    assert_eq!(event.original.remove_attachment(&RETAINED), Ok(Some(17)));
-                    assert_eq!(event.original.attachment(&DEFAULTED), Ok(41));
-                    assert_eq!(event.original.existing_attachment(&SAVED), Ok(Some(31)));
-                    // Inner committed transaction must still roll back when outer aborts.
-                    host.transaction(|_, _| {
-                        event.original.set_attachment(&VALUE, 445).unwrap();
-                        Ok::<(), ()>(())
-                    })
-                    .unwrap();
-                    assert_eq!(event.original.existing_attachment(&VALUE), Ok(Some(445)));
-                    assert_eq!(VALUE.get(host, Holder::Player(event.player)), Ok(555));
-                    Err(())
-                });
-                assert_eq!(aborted, Err(()));
-                assert_eq!(VALUE.has(host, Holder::Player(event.player)), Ok(false));
-                assert_eq!(event.original.existing_attachment(&VALUE), Ok(Some(73)));
-                assert_eq!(event.original.has_attachment(&RETAINED), Ok(true));
-                assert_eq!(event.original.has_attachment(&DEFAULTED), Ok(false));
+                let aborted: Result<(), mod_api::TransactionError<()>> =
+                    host.transaction(|host, _| {
+                        issued(&VALUE)
+                            .set(host, Holder::Player(event.player), 555)
+                            .unwrap();
+                        event.original.set_attachment(&issued(&VALUE), 444).unwrap();
+                        assert_eq!(
+                            event.original.remove_attachment(&issued(&RETAINED)),
+                            Ok(Some(17))
+                        );
+                        assert_eq!(
+                            event.original.attachment(&issued(&DEFAULTED), Clone::clone),
+                            Ok(41)
+                        );
+                        assert_eq!(
+                            event
+                                .original
+                                .existing_attachment(&issued(&SAVED), |value| value.cloned()),
+                            Ok(Some(31))
+                        );
+                        // Inner committed transaction must still roll back when outer aborts.
+                        host.transaction(|_, _| {
+                            event.original.set_attachment(&issued(&VALUE), 445).unwrap();
+                            Ok::<(), ()>(())
+                        })
+                        .unwrap();
+                        assert_eq!(
+                            event
+                                .original
+                                .existing_attachment(&issued(&VALUE), |value| value.cloned()),
+                            Ok(Some(445))
+                        );
+                        assert_eq!(
+                            issued(&VALUE).get(host, Holder::Player(event.player), Clone::clone),
+                            Ok(555)
+                        );
+                        Err(())
+                    });
+                assert_eq!(aborted, Err(mod_api::TransactionError::Aborted(())));
+                assert_eq!(
+                    issued(&VALUE).has(host, Holder::Player(event.player)),
+                    Ok(false)
+                );
                 assert_eq!(
                     event
                         .original
-                        .with_decoded_attachment(&SAVED, |value| value.copied()),
+                        .existing_attachment(&issued(&VALUE), |value| value.cloned()),
+                    Ok(Some(73))
+                );
+                assert_eq!(event.original.has_attachment(&issued(&RETAINED)), Ok(true));
+                assert_eq!(
+                    event.original.has_attachment(&issued(&DEFAULTED)),
+                    Ok(false)
+                );
+                assert_eq!(
+                    event
+                        .original
+                        .with_decoded_attachment(&issued(&SAVED), |value| value.copied()),
                     Ok(None)
                 );
                 *self.heard.lock().unwrap() += 1;
@@ -1206,15 +1456,29 @@ mod tests {
         #[mod_api::__subscriptions]
         impl Hooks for CleanObserver {
             fn player_clone(&self, host: &mut dyn ServerHost, event: &mut PlayerCloneEvent<'_>) {
-                assert_eq!(VALUE.has(host, Holder::Player(event.player)), Ok(false));
-                assert_eq!(RETAINED.get(host, Holder::Player(event.player)), Ok(17));
-                assert_eq!(event.original.existing_attachment(&VALUE), Ok(Some(73)));
-                assert_eq!(event.original.has_attachment(&RETAINED), Ok(true));
-                assert_eq!(event.original.has_attachment(&DEFAULTED), Ok(false));
+                assert_eq!(
+                    issued(&VALUE).has(host, Holder::Player(event.player)),
+                    Ok(false)
+                );
+                assert_eq!(
+                    issued(&RETAINED).get(host, Holder::Player(event.player), Clone::clone),
+                    Ok(17)
+                );
                 assert_eq!(
                     event
                         .original
-                        .with_decoded_attachment(&SAVED, |value| value.copied()),
+                        .existing_attachment(&issued(&VALUE), |value| value.cloned()),
+                    Ok(Some(73))
+                );
+                assert_eq!(event.original.has_attachment(&issued(&RETAINED)), Ok(true));
+                assert_eq!(
+                    event.original.has_attachment(&issued(&DEFAULTED)),
+                    Ok(false)
+                );
+                assert_eq!(
+                    event
+                        .original
+                        .with_decoded_attachment(&issued(&SAVED), |value| value.copied()),
                     Ok(None)
                 );
                 *self.heard.lock().unwrap() += 1;
@@ -1251,7 +1515,7 @@ mod tests {
                     let attachments = host.hub.guests.attachments_mut(12).unwrap();
                     RETAINED.set(attachments, Holder::Level, 17).unwrap();
                     SAVED.set(attachments, Holder::Level, 31).unwrap();
-                    let saved = Attachments::from_nbt(attachments.to_nbt());
+                    let saved = Attachments::from_nbt(attachments.try_to_nbt().unwrap());
                     attachments.replace_contents(saved);
                     VALUE.set(attachments, Holder::Level, 73).unwrap();
                     game.guest_respawn(12);

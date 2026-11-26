@@ -34,13 +34,12 @@ import time
 import zlib
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import lab  # noqa: E402
-import net_capture  # noqa: E402
-import test_rust_parity as base  # noqa: E402
-from join_announce import Headless, output_folder, vanilla_client, PLAYER  # noqa: E402
-from test_dedicated_server_parity import Server, free_port  # noqa: E402
-from vanilla_wire_e2e import PROPERTIES  # noqa: E402
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, net_capture, test_rust_parity as base
+from tools.join_announce import Headless, output_folder, vanilla_client, PLAYER
+from tools.test_dedicated_server_parity import Server, free_port
+from tools.vanilla_wire_e2e import PROPERTIES  # noqa: E402
 
 NAMES = net_capture.load_names()
 SIGN = (2, -40, 2)

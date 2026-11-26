@@ -2,23 +2,25 @@
 //! with prepared resources and a disposable game directory. In an owned single-player save,
 //! use `/waypoint_set` to place a cyan marker. The most recent death appears in red after respawn.
 use mod_api::{
-    ClientHost, ClientTickPostEvent, CommandEvent, ConfigFileError, ConfigPath, Flow, Hooks,
-    ModEntry, RegisterClientCommandsEvent, RenderLevelStage, RenderLevelStageEvent, WorldDepth,
-    WorldLine,
+    ClientHost, ClientTickPostEvent, Hooks, ModEntry, RegisterClientCommandsEvent,
+    SubmitCustomGeometryEvent, WorldDepth, WorldLine,
 };
-use std::sync::Mutex;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::{fs, io};
 
 #[derive(Default)]
 struct Markers {
-    path: Option<ConfigPath>,
+    key: Option<(String, String)>,
     manual: Option<[i32; 3]>,
     death: Option<[i32; 3]>,
 }
 
 #[derive(Default)]
-struct Waypoints(Mutex<Markers>);
+struct Waypoints(Arc<Mutex<Markers>>);
 
-/// `ConfigPath` rejects `:` and `\`, which an imported save folder can hold on Unix.
+/// Escape path separators and Windows-reserved characters so an imported save
+/// folder or namespaced dimension maps to one filename component.
 fn escape(part: &str) -> String {
     part.replace('%', "%25")
         .replace('/', "%2F")
@@ -26,20 +28,37 @@ fn escape(part: &str) -> String {
         .replace('\\', "%5C")
 }
 
-fn waypoint_path(save: &str, dimension: &str) -> Option<ConfigPath> {
+fn waypoint_path(instance_dir: &Path, save: &str, dimension: &str) -> Option<PathBuf> {
+    if save.is_empty() || matches!(save, "." | "..") || dimension.is_empty() {
+        return None;
+    }
     let (save, dimension) = (escape(save), escape(dimension));
-    ConfigPath::new(&format!("{save}/{dimension}.json")).ok()
+    Some(
+        instance_dir
+            .join("sunrise-mod-data")
+            .join("waypoints")
+            .join(save)
+            .join(format!("{dimension}.json")),
+    )
 }
 
-fn read_waypoint(host: &dyn ClientHost, path: &ConfigPath) -> Option<[i32; 3]> {
-    match host.data_files().read(path) {
+fn read_waypoint(path: &Path) -> Option<[i32; 3]> {
+    match fs::read(path) {
         Ok(bytes) => serde_json::from_slice(&bytes).ok(),
-        Err(ConfigFileError::NotFound) => None,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
         Err(error) => {
             log::warn!("Could not load the saved waypoint: {error}");
             None
         }
     }
+}
+
+fn write_waypoint(path: &Path, position: [i32; 3]) -> io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let bytes = serde_json::to_vec(&position).expect("integer coordinates serialize");
+    fs::write(path, bytes)
 }
 
 #[mod_api::__subscriptions]
@@ -49,47 +68,59 @@ impl Hooks for Waypoints {
         _: &mut dyn ClientHost,
         event: &mut RegisterClientCommandsEvent<'_>,
     ) {
-        event.commands.push(mod_api::Command::new("waypoint_set"));
-    }
-
-    fn command(&self, host: &mut dyn ClientHost, event: &mut CommandEvent<'_>) -> Flow {
-        if event.command != "waypoint_set" {
-            return Flow::Continue;
-        }
-        if let Some((path, position)) = host
-            .client_session()
-            .client_server()
-            .and_then(|server| waypoint_path(server.save_folder?, host.dimension()))
-            .zip(host.local_player().and_then(|player| {
-                player
-                    .entity()
-                    .position(host)
-                    .map(|pos| pos.map(|axis| axis.floor() as i32))
-            }))
-        {
-            let bytes = serde_json::to_vec(&position).expect("integer coordinates serialize");
-            match host.data_files().write(&path, &bytes) {
-                Ok(()) => {
-                    let mut markers = self.0.lock().unwrap();
-                    markers.path = Some(path);
-                    markers.manual = Some(position);
-                }
-                Err(error) => log::warn!("Could not save the waypoint: {error}"),
-            }
-        }
-        Flow::Cancel
+        let state = Arc::clone(&self.0);
+        event
+            .commands
+            .push(
+                mod_api::Command::new("waypoint_set").executes_client(move |host, _| {
+                    let dimension = host.dimension();
+                    let target = host
+                        .client_session()
+                        .client_server()
+                        .and_then(|server| {
+                            let save = server.save_folder?;
+                            let path = waypoint_path(&host.instance_dir(), save, dimension)?;
+                            Some((save.to_owned(), path))
+                        })
+                        .zip(host.local_player().and_then(|player| {
+                            player
+                                .entity()
+                                .position(host)
+                                .map(|pos| pos.map(|axis| axis.floor() as i32))
+                        }));
+                    if let Some(((save, path), position)) = target {
+                        match write_waypoint(&path, position) {
+                            Ok(()) => {
+                                let mut markers = state.lock().unwrap();
+                                markers.key = Some((save, dimension.to_owned()));
+                                markers.manual = Some(position);
+                                return Some(1);
+                            }
+                            Err(error) => log::warn!("Could not save the waypoint: {error}"),
+                        }
+                    }
+                    None
+                }),
+            );
     }
 
     fn client_tick_post(&self, host: &mut dyn ClientHost, _: &mut ClientTickPostEvent) {
         let dimension = host.dimension();
-        let path = host
+        let key = host
             .client_session()
             .client_server()
-            .and_then(|server| waypoint_path(server.save_folder?, dimension));
+            .and_then(|server| server.save_folder.map(|save| (save, dimension)));
         let mut markers = self.0.lock().unwrap();
-        if markers.path != path {
-            markers.manual = path.as_ref().and_then(|path| read_waypoint(host, path));
-            markers.path = path;
+        let current = markers
+            .key
+            .as_ref()
+            .map(|(save, dim)| (save.as_str(), dim.as_str()));
+        if current != key {
+            markers.manual = key.and_then(|(save, dim)| {
+                let path = waypoint_path(&host.instance_dir(), save, dim)?;
+                read_waypoint(&path)
+            });
+            markers.key = key.map(|(save, dim)| (save.to_owned(), dim.to_owned()));
         }
         markers.death = host
             .local_player()
@@ -109,10 +140,11 @@ impl Hooks for Waypoints {
         *self.0.lock().unwrap() = Markers::default();
     }
 
-    fn render_level_stage(&self, _: &dyn ClientHost, event: &mut RenderLevelStageEvent<'_>) {
-        if event.stage != RenderLevelStage::AfterLevel {
-            return;
-        }
+    fn submit_custom_geometry(
+        &self,
+        _: &dyn ClientHost,
+        event: &mut SubmitCustomGeometryEvent<'_>,
+    ) {
         let markers = self.0.lock().unwrap();
         for (point, color) in [(markers.manual, 0xff00ffff), (markers.death, 0xffff3030)] {
             if let Some([x, y, z]) = point {
@@ -145,25 +177,32 @@ mod tests {
 
     #[test]
     fn waypoint_files_are_scoped_to_the_save_and_dimension() {
-        let overworld = waypoint_path("Test World", "minecraft:overworld").unwrap();
-        assert_eq!(overworld.as_str(), "Test World/minecraft%3Aoverworld.json");
+        let root = Path::new("/instance");
+        let overworld = waypoint_path(root, "Test World", "minecraft:overworld").unwrap();
+        assert_eq!(
+            overworld,
+            root.join("sunrise-mod-data/waypoints/Test World/minecraft%3Aoverworld.json")
+        );
         assert_ne!(
             Some(overworld.clone()),
-            waypoint_path("Test World", "minecraft:the_nether")
+            waypoint_path(root, "Test World", "minecraft:the_nether")
         );
         assert_ne!(
             Some(overworld),
-            waypoint_path("Test World (2)", "minecraft:overworld")
+            waypoint_path(root, "Test World (2)", "minecraft:overworld")
         );
         assert_ne!(
-            waypoint_path("Test World", "example:foo/bar"),
-            waypoint_path("Test World", "example:foo%2Fbar")
+            waypoint_path(root, "Test World", "example:foo/bar"),
+            waypoint_path(root, "Test World", "example:foo%2Fbar")
         );
-        assert_eq!(waypoint_path("..", "minecraft:overworld"), None);
-        assert!(waypoint_path("a:b\\c", "minecraft:overworld").is_some());
+        assert_eq!(waypoint_path(root, "", "minecraft:overworld"), None);
+        assert_eq!(waypoint_path(root, ".", "minecraft:overworld"), None);
+        assert_eq!(waypoint_path(root, "..", "minecraft:overworld"), None);
+        assert_eq!(waypoint_path(root, "Test World", ""), None);
+        assert!(waypoint_path(root, "a:b\\c", "minecraft:overworld").is_some());
         assert_ne!(
-            waypoint_path("a:b", "minecraft:overworld"),
-            waypoint_path("a%3Ab", "minecraft:overworld")
+            waypoint_path(root, "a:b", "minecraft:overworld"),
+            waypoint_path(root, "a%3Ab", "minecraft:overworld")
         );
     }
 }

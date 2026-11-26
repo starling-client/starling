@@ -11,7 +11,7 @@ static VALUE: AttachmentType<i32> = AttachmentType {
     default: || 0,
     codec: None,
     copy_on_death: false,
-    sync: false,
+    sync_codec: None,
 };
 fn observe(entities: &mut BlockEntities) -> Index {
     let index = Index::default();
@@ -192,7 +192,7 @@ fn all_retirement_paths_drop_payloads_after_the_index_guard() {
         default: || unreachable!(),
         codec: None,
         copy_on_death: false,
-        sync: false,
+        sync_codec: None,
     };
     let mut entities = BlockEntities::default();
     let index = observe(&mut entities);

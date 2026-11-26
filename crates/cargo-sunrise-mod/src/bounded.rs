@@ -80,7 +80,11 @@ pub fn read_bytes(path: &Path, limit: u64, symlinks: Symlinks) -> Result<Vec<u8>
     read_limited(file, limit, path)
 }
 /// Reads at most `limit + 1` bytes, so an endless or huge input is refused without being buffered.
-fn read_limited(reader: impl Read, limit: u64, path: &Path) -> Result<Vec<u8>, ReadError> {
+pub(crate) fn read_limited(
+    reader: impl Read,
+    limit: u64,
+    path: &Path,
+) -> Result<Vec<u8>, ReadError> {
     let io_error = |e| ReadError::Io(path.to_owned(), e);
     let mut bytes = Vec::new();
     reader

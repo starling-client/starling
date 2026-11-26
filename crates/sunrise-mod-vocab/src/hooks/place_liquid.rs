@@ -10,12 +10,12 @@ pub trait Hooks {
     /// placed. `None` leaves it to the next part, then to the template. A plain
     /// bucket still empties on false, unlike a validated fluid-container operation.
     ///
-    /// Server only. Player buckets and the fluid utility journal each part's
-    /// writes separately; only `Some(true)` keeps its writes in the outer
-    /// transaction. Spreading, dispensers and live template restores use the
-    /// direct level write host: don't write before returning `None` or false.
-    /// If a transaction is open, these paths log and skip the part, leaving
-    /// the template's answer. On either host, `container_signal` reads stored
+    /// Server only. As in vanilla, what a part writes stays written whatever it
+    /// answers: player buckets and the fluid utility keep its writes in the outer
+    /// transaction (a panicking part's are discarded), and spreading, dispensers
+    /// and live template restores write through the direct level write host. If a
+    /// transaction is open, those direct paths log and skip the part, leaving the
+    /// template's answer. On either host, `container_signal` reads stored
     /// slots without generating deferred loot.
     #[hook(
         dispatch = "flat",
@@ -24,6 +24,7 @@ pub trait Hooks {
         scope = "block",
         key = "state",
         out = "answer",
+        version = 2,
         target = "sunrise_client::game::native_hooks::place_liquid::GameLevel<'_>::native_place_liquid",
         neoforge = "none (vanilla LiquidBlockContainer.placeLiquid)"
     )]

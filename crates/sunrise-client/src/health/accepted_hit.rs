@@ -8,6 +8,7 @@ pub struct AcceptedHit {
     damage_type: String,
     causing: i32,
     direct: i32,
+    direct_type: Option<String>,
     position: Option<[f64; 3]>,
     pub weapon: Option<ItemStack>,
     /// A mob's committed source; synthetic replacements cannot inherit an old weapon.
@@ -23,6 +24,7 @@ impl AcceptedHit {
             damage_type: source.damage_type.to_owned(),
             causing: source.causing,
             direct: source.direct,
+            direct_type: source.direct_type.map(str::to_owned),
             position: source.position,
             weapon: attack.weapon_of(source.direct).cloned(),
             committed,
@@ -33,6 +35,7 @@ impl AcceptedHit {
             damage_type: &self.damage_type,
             causing: self.causing,
             direct: self.direct,
+            direct_type: self.direct_type.as_deref(),
             position: self.position,
         }
     }
@@ -52,7 +55,7 @@ impl super::DamageLevel<'_> {
 
 impl super::PausedHurt {
     /// Borrow the hit's existing name and current factory data through an equipment pause.
-    pub fn source<'a>(&'a self, attack: &Attack) -> HurtSource<'a> {
+    pub fn source<'a>(&'a self, attack: &'a Attack) -> HurtSource<'a> {
         attack.player_source(&self.source_name, self.causing)
     }
 }

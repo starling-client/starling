@@ -12,6 +12,13 @@ pub fn main() -> sunrise_client::Result<()> {
     let facts = BlockFacts::load(root, assets.registry)?;
     let defaults = sunrise_world::item_defaults::read(root)?;
     let damage = sunrise_client::health::HealthResources::load(root)?;
+    let items = sunrise_client::items::Items::load(
+        root,
+        assets.registry,
+        &facts,
+        &sunrise_world::loot::PackOverlay::NONE,
+        &defaults,
+    )?;
     let can_hurt = |stack: &sunrise_client::items::ItemStack, name: &str| {
         let default = defaults
             .entries()
@@ -58,6 +65,7 @@ pub fn main() -> sunrise_client::Result<()> {
                 .ok_or("missing cauldron")?,
         )?;
         let mut item = ItemEntity {
+            size_answer: None,
             attachment_lifetime: Default::default(),
             fall_distance: 0.0,
             random: sunrise_core::random::LegacyRandom::new(0),
@@ -74,6 +82,8 @@ pub fn main() -> sunrise_client::Result<()> {
             velocity: Vec3::ZERO,
             ground: Default::default(),
             age: 0,
+            stack_revision: 0,
+            lifespan: ItemEntity::LIFETIME,
             pickup_delay: 0,
             bob_offset: 0.0,
             ticks: 0,
@@ -86,7 +96,7 @@ pub fn main() -> sunrise_client::Result<()> {
         output.push_str(f[0]);
         for _ in 0..2 {
             if item.health > 0 {
-                item.environment_tick(&world, &facts, assets.registry, &can_hurt);
+                item.environment_tick(&world, &facts, &items, assets.registry, &can_hurt);
             }
             output.push_str(&format!(
                 "\t{},{},{}",

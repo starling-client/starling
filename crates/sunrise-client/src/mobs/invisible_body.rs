@@ -1,6 +1,6 @@
 //! `LivingEntityRenderer.submit` for an invisible body its viewer still sees.
 use super::{
-    Atlas, FrameDraw, Mob, Part, RenderDataSource, Species, base_transform, body_color,
+    Atlas, FrameDraw, Mob, RenderDataSource, Species, WornLayer, base_transform, body_color,
     render_visible, render_with_frame,
 };
 use crate::mesher::Vertex;
@@ -18,7 +18,7 @@ pub fn render_seen_invisible(
     atlas: Atlas,
     light: u32,
     data: &dyn RenderDataSource,
-    extra: &[(&Part, [f32; 4], u32, u32, bool)],
+    extra: &[WornLayer<'_>],
     frame: &mut FrameDraw<'_>,
     out: &mut Vec<Vertex>,
 ) {
@@ -32,6 +32,7 @@ pub fn render_seen_invisible(
     render_visible(
         m,
         alpha,
+        Some(camera),
         [base_transform(m, alpha, camera)],
         atlas,
         light,

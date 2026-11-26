@@ -1,6 +1,19 @@
 use super::*;
 
 fn fixture(empty: bool) -> LootData {
+    fixture_with(if empty {
+        serde_json::json!([])
+    } else {
+        serde_json::json!([
+            {"rolls":1,"entries":[{"type":"minecraft:item","name":"minecraft:diamond","modifier":[{"type":"minecraft:set_count","count":16}]}]},
+            {"rolls":1,"entries":[{"type":"minecraft:item","name":"minecraft:emerald"}]},
+            {"rolls":1,"entries":[{"type":"minecraft:item","name":"minecraft:gold_ingot"}]},
+            {"rolls":1,"entries":[{"type":"minecraft:item","name":"minecraft:iron_ingot"}]}
+        ])
+    })
+}
+
+fn fixture_with(pools: serde_json::Value) -> LootData {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let root = std::env::temp_dir().join(format!(
         "loot-fill-{}-{}",
@@ -10,16 +23,6 @@ fn fixture(empty: bool) -> LootData {
     std::fs::create_dir(&root).unwrap();
     let dir = root.as_path().join("data/minecraft/loot_table");
     std::fs::create_dir_all(&dir).unwrap();
-    let pools = if empty {
-        serde_json::json!([])
-    } else {
-        serde_json::json!([
-            {"rolls":1,"entries":[{"type":"minecraft:item","name":"minecraft:diamond","modifier":[{"type":"minecraft:set_count","count":16}]}]},
-            {"rolls":1,"entries":[{"type":"minecraft:item","name":"minecraft:emerald"}]},
-            {"rolls":1,"entries":[{"type":"minecraft:item","name":"minecraft:gold_ingot"}]},
-            {"rolls":1,"entries":[{"type":"minecraft:item","name":"minecraft:iron_ingot"}]}
-        ])
-    };
     std::fs::write(
         dir.join("test.json"),
         serde_json::json!({"pools":pools}).to_string(),
@@ -200,11 +203,37 @@ fn container_context_supplies_luck_and_this_entity() {
                 ContainerLootContext {
                     luck,
                     entity,
-                    biome: None,
+                    ..Default::default()
                 },
             )
             .unwrap();
         assert_eq!(stacks.iter().map(|s| s.count).sum::<i32>(), expected);
         assert!(stacks.iter().all(|s| s.item == "minecraft:diamond"));
+    }
+}
+
+/// `LootTable.fill` reconstructed from the 26.3 bytecode for a one-stack table: the roll
+/// draws nothing (one pool, one entry, a constant roll), `getAvailableSlots` lists the empty
+/// slots in order and `Util.shuffle`s them (for `i` from the size down to 2, swap `i - 1`
+/// with `nextInt(i)`), the single stack needs no split or shuffle, and it goes to the slot
+/// `availableSlots.remove(size - 1)` gives.
+#[test]
+fn one_stack_lands_in_the_last_shuffled_slot() {
+    let data = fixture_with(serde_json::json!([
+        {"rolls":1,"entries":[{"type":"minecraft:item","name":"minecraft:emerald"}]}
+    ]));
+    for seed in [0_i64, 1, 42, -7, i64::MAX] {
+        let mut expected = LegacyRandom::new(seed);
+        let mut slots: Vec<usize> = (0..27).collect();
+        for i in (2..=slots.len()).rev() {
+            let j = expected.next_int_bound(i as i32).unwrap() as usize;
+            slots.swap(i - 1, j);
+        }
+        let mut want = vec![None; 27];
+        want[*slots.last().unwrap()] = Some(("minecraft:emerald", 1));
+        let mut random = LegacyRandom::new(seed);
+        let filled = data.fill_with("minecraft:test", &mut random, 27, None);
+        assert_eq!(summary(&filled), want, "seed {seed}");
+        assert_eq!(random.next_long(), expected.next_long(), "seed {seed}");
     }
 }

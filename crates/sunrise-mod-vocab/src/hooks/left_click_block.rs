@@ -1,5 +1,4 @@
 //! The `left_click_block` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0058
 
 pub trait Hooks {
     /// A player left-clicks the block `state` at `pos`, `face` the face hit

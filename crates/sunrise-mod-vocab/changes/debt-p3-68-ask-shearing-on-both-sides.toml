@@ -1,0 +1,10 @@
+ids = [
+    "hook:is_shearable",
+    "hook:on_sheared",
+    "method:EntityPart::is_shearable",
+    "method:EntityPart::on_sheared",
+]
+why = "NeoForge ShearsItem.interactLivingEntity asks IShearable.isShearable and calls onSheared on both logical sides, and only the server spawns drops, damages the shears and shears for a dispenser. Both hooks now fire on both sides with a HostSide host, and a client predicting a player's click runs them on its copy of the mob; they were server-only with a read host and a server host."
+migrate = """
+Change the first parameter of `is_shearable` from `&dyn Host` and of `on_sheared` from `&mut dyn ServerHost` to `HostSide<'_>`; match `HostSide::Server(host)` for what a server-only answer did, and a part that must only act on the server returns early on `HostSide::Client(_)`. A part that answered from reads alone keeps answering on both sides. On a client the `drops` a part pushes are discarded, so its `on_sheared` there should only change the entity and play the sound.
+"""

@@ -4,7 +4,12 @@ EntityType.loadPassengersRecursive loads each entry of Passengers with
 loadEntityRecursive and keeps only those that load (an unknown or missing id
 creates nothing); Entity.saveWithoutId then saves the riders the entity has.
 """
-from command_exec_corpus import cmd
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools.command_exec_corpus import cmd
 
 PIG = 'NoAI:1b,NoGravity:1b,PersistenceRequired:1b,Silent:1b'
 

@@ -3,7 +3,7 @@
 //! `Push` / `Pop`, text following the turn, and a non-finite angle refused.
 // The expected matrices spell JOML's products term by term, factors of -1 included.
 #![allow(clippy::neg_multiply)]
-use super::{GuiDraw, IDENTITY, Pose, PoseOp, paint, pose_apply, pose_refused};
+use super::{GuiDraw, IDENTITY, Pose, PoseOp, paint, pose_apply};
 use crate::hud::{HudAtlas, HudBatch};
 use std::f32::consts::{FRAC_PI_2, PI};
 
@@ -190,12 +190,5 @@ fn a_non_finite_angle_is_refused_and_leaves_the_pose_as_it_was() {
         pose_apply(&mut m, ops[1]);
         assert_eq!(bits(m), bits(before));
         assert_eq!(bits(posed(&ops)), bits(posed(&[ops[0], ops[2]])), "{angle}");
-        assert!(
-            matches!(pose_refused(&ops), Some(PoseOp::Rotate(a)) if a.is_nan() == angle.is_nan())
-        );
     }
-    assert_eq!(
-        pose_refused(&[PoseOp::Rotate(1.0), PoseOp::Scale(f32::NAN, 1.0)]),
-        None
-    );
 }

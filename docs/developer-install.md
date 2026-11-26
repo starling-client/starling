@@ -9,7 +9,7 @@ from your own Minecraft installation before installing. The game program, the `-
 (`cargo build -p sunrise-client` builds only the library):
 
 ```sh
-cargo build -p sunrise-game -p sunrise-client-lib --bins -p sunrise-prepare -p sunrise-server -p sunrise-perf -p sunrise-port-pack
+cargo build -p sunrise-game -p sunrise-client-lib --bins -p sunrise-prepare -p sunrise-server -p sunrise-port-pack
 sunrise-launcher developer-install CHECKOUT --program CHECKOUT/target/debug/sunrise-client --trust-unsigned
 ```
 
@@ -25,7 +25,6 @@ programs end in `.exe`:
 | File | Where | Needed by | How to make it |
 |---|---|---|---|
 | `sunrise-ctl` | beside the game program | `package` | cargo build PROFILE -p sunrise-client-lib --bin sunrise-ctl |
-| `sunrise-perf` | beside the game program | `package` | cargo build PROFILE -p sunrise-perf --bin sunrise-perf |
 | `sunrise-prepare` | beside the game program | `package`, `package-server` | cargo build PROFILE -p sunrise-prepare |
 | `sunrise-server` | beside the game program | `package`, `package-server` | cargo build PROFILE -p sunrise-server |
 | `sunrise-port-pack` | beside the game program | `package` | cargo build PROFILE -p sunrise-port-pack |

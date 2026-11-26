@@ -58,7 +58,7 @@ impl std::fmt::Display for Error {
                 path,
                 signature,
             } => trf(
-                "E_INTERNAL_CHANGED: {mod} uses {path}, whose signature is now {signature}; run cargo sunrise-mod update to see what changed.",
+                "E_INTERNAL_CHANGED: {mod} uses {path}, whose signature is now {signature}; run cargo sunrise-mod pin to see what changed.",
                 &[("mod", mod_id), ("path", path), ("signature", signature)],
             ),
             Self::Gated { mod_id, path } => trf(
@@ -115,11 +115,11 @@ impl From<internals::Error> for Error {
 }
 
 impl Catalog {
-    /// Read the pinned game's internals catalog.
-    pub fn read(dir: &Path) -> Result<Self, String> {
-        let path = dir.join(INTERNALS);
+    /// Read a published SDK's internals catalog, requiring the requested build in its header.
+    pub fn read(dir: &Path, build: &str) -> Result<Self, String> {
         Ok(Self {
-            internals: internals::read(&path)?,
+            internals: super::game_uses::published_internals(dir, build)
+                .map_err(|error| error.to_string())?,
             discovery: false,
         })
     }
@@ -395,14 +395,14 @@ mod tests {
     #[test]
     fn reads_and_pins_only_declared_internals() {
         let (dir, bundle, catalog) = fixture("pins");
-        let build = serde_json::json!({"commit": "c".repeat(40)});
+        let build = "c".repeat(40);
         fs::write(
             dir.join(INTERNALS),
-            serde_json::json!({"schema": 1, "build": build, "internals": catalog.internals})
+            serde_json::json!({"schema": 1, "build": {"commit": build}, "internals": catalog.internals})
                 .to_string(),
         )
         .unwrap();
-        let read = Catalog::read(&dir).unwrap();
+        let read = Catalog::read(&dir, &build).unwrap();
         let mut manifest = bundle.manifest.clone();
         manifest.internals[0].hash = None;
         manifest.internals[1].hash = Some("explicit".into());

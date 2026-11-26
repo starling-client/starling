@@ -1,7 +1,7 @@
 //! Data-only inputs carried from an owning load boundary to native load hooks.
 use mod_api::__private::BoundItemTags;
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     ffi::{OsStr, OsString},
     fs,
     path::{Path, PathBuf},
@@ -35,18 +35,128 @@ impl LoadInputs {
     }
 }
 
+type SettingsTable = Arc<[(String, Arc<[(String, String)]>)]>;
+type RegisteredSettingsTable = Arc<[(String, Arc<[(String, Option<String>)]>)]>;
+
 /// A load's registry snapshot with the settings captured for its mods.
 #[derive(Clone)]
 struct Snapshot {
     inputs: Arc<LoadInputs>,
-    settings: Arc<[(String, Arc<[(String, String)]>)]>,
+    settings: SettingsTable,
+    /// Registered setting values captured by their known `(mod_id, key)` pairs
+    /// at the owning load boundary without requiring directory enumeration. Each entry records whether the key was
+    /// present and valid (`Some`) or absent/refused (`None`), so loop readers
+    /// and live settings always observe the same single capture.
+    registered_settings: RegisteredSettingsTable,
+}
+
+/// The settings one candidate generation reads, captured once: the generic per-mod values and
+/// the registered `(mod_id, key)` values. Everything of that generation (reload-listener
+/// registration, the data load, the loop readers and the live store) is built from the same
+/// capture, so none of them can see a file another capture would not.
+#[derive(Clone)]
+pub struct SettingsCapture {
+    settings: SettingsTable,
+    registered_settings: RegisteredSettingsTable,
+}
+
+impl SettingsCapture {
+    /// Captures generic settings for `mod_ids` and registered settings by their known
+    /// `(mod_id, key)` pairs from `settings_root`.
+    pub fn new<'a, 'b>(
+        settings_root: &Path,
+        mod_ids: impl IntoIterator<Item = &'a str>,
+        registered_keys: impl IntoIterator<Item = (&'b str, &'b str)>,
+    ) -> Self {
+        Self {
+            registered_settings: capture_registered_table(settings_root, registered_keys),
+            settings: shared_settings(capture_settings(settings_root, mod_ids)),
+        }
+    }
+
+    /// The initial load's capture over registration's already-captured, sorted settings:
+    /// only `mod_ids` stay visible, and registered keys registration did not capture are
+    /// read by known key.
+    pub fn from_registration<'a, 'b>(
+        settings_root: &Path,
+        mod_ids: impl IntoIterator<Item = &'a str>,
+        settings: Arc<[(String, Arc<[(String, String)]>)]>,
+        registered_keys: impl IntoIterator<Item = (&'b str, &'b str)>,
+    ) -> Self {
+        let registered_settings =
+            merge_registered_with_snapshot(settings_root, &settings, registered_keys);
+        let ids: BTreeSet<_> = mod_ids.into_iter().collect();
+        let settings = if settings.iter().all(|(id, _)| ids.contains(id.as_str())) {
+            settings
+        } else {
+            settings
+                .iter()
+                .filter(|(id, _)| ids.contains(id.as_str()))
+                .cloned()
+                .collect()
+        };
+        Self {
+            settings,
+            registered_settings,
+        }
+    }
+
+    /// A mod's setting as captured, with no file I/O.
+    pub fn setting(&self, mod_id: &str, key: &str) -> Option<&str> {
+        if let Ok(mod_at) = self
+            .registered_settings
+            .binary_search_by(|(known, _)| known.as_str().cmp(mod_id))
+        {
+            let values = &self.registered_settings[mod_at].1;
+            if let Ok(at) = values.binary_search_by(|(known, _)| known.as_str().cmp(key)) {
+                return values[at].1.as_deref();
+            }
+        }
+        lookup_settings_table(&self.settings, mod_id, key)
+    }
 }
 
 impl Snapshot {
     /// Captures settings for `mod_ids`; the registry inputs are shared, not scanned again.
     fn capture<'a>(inputs: Arc<LoadInputs>, mod_ids: impl IntoIterator<Item = &'a str>) -> Self {
-        let settings = shared_settings(capture_settings(&inputs.settings_root, mod_ids));
-        Self { inputs, settings }
+        Self::capture_with_registered(inputs, mod_ids, std::iter::empty())
+    }
+
+    /// Captures generic settings for `mod_ids` and registered settings by
+    /// their known `(mod_id, key)` pairs at the same owning load boundary.
+    fn capture_with_registered<'a, 'b>(
+        inputs: Arc<LoadInputs>,
+        mod_ids: impl IntoIterator<Item = &'a str>,
+        registered_keys: impl IntoIterator<Item = (&'b str, &'b str)>,
+    ) -> Self {
+        let capture = SettingsCapture::new(&inputs.settings_root, mod_ids, registered_keys);
+        Self::from_capture(inputs, capture)
+    }
+
+    fn from_capture(inputs: Arc<LoadInputs>, capture: SettingsCapture) -> Self {
+        Self {
+            inputs,
+            settings: capture.settings,
+            registered_settings: capture.registered_settings,
+        }
+    }
+
+    /// Builds a snapshot sharing registration's already-captured generic settings
+    /// while filling any registered `(mod_id, key)` pairs missing from that bulk
+    /// capture by known key with the same no-follow regular-file admission.
+    fn from_settings_snapshot_with_registered<'a, 'b>(
+        inputs: Arc<LoadInputs>,
+        mod_ids: impl IntoIterator<Item = &'a str>,
+        settings: SettingsTable,
+        registered_keys: impl IntoIterator<Item = (&'b str, &'b str)>,
+    ) -> Self {
+        let capture = SettingsCapture::from_registration(
+            &inputs.settings_root,
+            mod_ids,
+            settings,
+            registered_keys,
+        );
+        Self::from_capture(inputs, capture)
     }
 
     fn registry(&self, name: &str) -> Option<&[String]> {
@@ -54,24 +164,109 @@ impl Snapshot {
     }
 
     fn setting(&self, mod_id: &str, key: &str) -> Option<&str> {
-        let mod_at = self
-            .settings
+        if let Ok(mod_at) = self
+            .registered_settings
             .binary_search_by(|(known, _)| known.as_str().cmp(mod_id))
-            .ok()?;
-        let values = &self.settings[mod_at].1;
-        let at = values
-            .binary_search_by(|(known, _)| known.as_str().cmp(key))
-            .ok()?;
-        Some(values[at].1.as_str())
+        {
+            let values = &self.registered_settings[mod_at].1;
+            if let Ok(at) = values.binary_search_by(|(known, _)| known.as_str().cmp(key)) {
+                return values[at].1.as_deref();
+            }
+        }
+        lookup_settings_table(&self.settings, mod_id, key)
     }
 }
 
-fn shared_settings(
-    settings: BTreeMap<String, BTreeMap<String, String>>,
-) -> Arc<[(String, Arc<[(String, String)]>)]> {
+fn lookup_settings_table<'a>(
+    settings: &'a [(String, Arc<[(String, String)]>)],
+    mod_id: &str,
+    key: &str,
+) -> Option<&'a str> {
+    let mod_at = settings
+        .binary_search_by(|(known, _)| known.as_str().cmp(mod_id))
+        .ok()?;
+    let values = &settings[mod_at].1;
+    let at = values
+        .binary_search_by(|(known, _)| known.as_str().cmp(key))
+        .ok()?;
+    Some(values[at].1.as_str())
+}
+
+fn shared_settings(settings: BTreeMap<String, BTreeMap<String, String>>) -> SettingsTable {
     settings
         .into_iter()
         .map(|(id, values)| (id, values.into_iter().collect()))
+        .collect()
+}
+
+fn capture_registered_table<'a>(
+    settings_root: &Path,
+    registered_keys: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> RegisteredSettingsTable {
+    let mut by_owner: BTreeMap<&'a str, BTreeSet<&'a str>> = BTreeMap::new();
+    for (owner, key) in registered_keys {
+        by_owner.entry(owner).or_default().insert(key);
+    }
+    if by_owner.is_empty() {
+        return Arc::from([]);
+    }
+    let captured = capture_registered_settings_grouped(settings_root, &by_owner);
+    by_owner
+        .into_iter()
+        .map(|(owner, keys)| {
+            let owner_captured = captured.get(owner);
+            let entries: Arc<[(String, Option<String>)]> = keys
+                .into_iter()
+                .map(|key| {
+                    let value = owner_captured.and_then(|map| map.get(key)).cloned();
+                    (key.to_owned(), value)
+                })
+                .collect();
+            (owner.to_owned(), entries)
+        })
+        .collect()
+}
+
+fn merge_registered_with_snapshot<'a>(
+    settings_root: &Path,
+    settings: &[(String, Arc<[(String, String)]>)],
+    registered_keys: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> RegisteredSettingsTable {
+    let mut by_owner: BTreeMap<&'a str, BTreeSet<&'a str>> = BTreeMap::new();
+    for (owner, key) in registered_keys {
+        by_owner.entry(owner).or_default().insert(key);
+    }
+    if by_owner.is_empty() {
+        return Arc::from([]);
+    }
+    let mut missing_by_owner: BTreeMap<&'a str, BTreeSet<&'a str>> = BTreeMap::new();
+    for (&owner, keys) in &by_owner {
+        for &key in keys {
+            if lookup_settings_table(settings, owner, key).is_none() {
+                missing_by_owner.entry(owner).or_default().insert(key);
+            }
+        }
+    }
+    let captured = if missing_by_owner.is_empty() {
+        BTreeMap::new()
+    } else {
+        capture_registered_settings_grouped(settings_root, &missing_by_owner)
+    };
+    by_owner
+        .into_iter()
+        .map(|(owner, keys)| {
+            let owner_captured = captured.get(owner);
+            let entries: Arc<[(String, Option<String>)]> = keys
+                .into_iter()
+                .map(|key| {
+                    let value = lookup_settings_table(settings, owner, key)
+                        .map(str::to_owned)
+                        .or_else(|| owner_captured.and_then(|map| map.get(key)).cloned());
+                    (key.to_owned(), value)
+                })
+                .collect();
+            (owner.to_owned(), entries)
+        })
         .collect()
 }
 
@@ -93,9 +288,20 @@ impl LoadContext {
         inputs: Arc<LoadInputs>,
         mod_ids: impl IntoIterator<Item = &'a str>,
     ) -> Self {
+        Self::new_with_registered(origin, inputs, mod_ids, std::iter::empty())
+    }
+
+    /// Called at a client owning load boundary to capture both generic package
+    /// settings and registered settings by their known `(mod_id, key)` pairs.
+    pub fn new_with_registered<'a, 'b>(
+        origin: DataLoadOrigin,
+        inputs: Arc<LoadInputs>,
+        mod_ids: impl IntoIterator<Item = &'a str>,
+        registered_keys: impl IntoIterator<Item = (&'b str, &'b str)>,
+    ) -> Self {
         Self {
             origin,
-            snapshot: Snapshot::capture(inputs, mod_ids),
+            snapshot: Snapshot::capture_with_registered(inputs, mod_ids, registered_keys),
             fluid_tags: None,
         }
     }
@@ -109,19 +315,47 @@ impl LoadContext {
         mod_ids: impl IntoIterator<Item = &'a str>,
         settings: Arc<[(String, Arc<[(String, String)]>)]>,
     ) -> Self {
-        let ids: std::collections::BTreeSet<_> = mod_ids.into_iter().collect();
-        let settings = if settings.iter().all(|(id, _)| ids.contains(id.as_str())) {
-            settings
-        } else {
-            settings
-                .iter()
-                .filter(|(id, _)| ids.contains(id.as_str()))
-                .cloned()
-                .collect()
-        };
+        Self::from_settings_snapshot_with_registered(
+            origin,
+            inputs,
+            mod_ids,
+            settings,
+            std::iter::empty(),
+        )
+    }
+
+    /// The initial client resource load sharing registration's already-captured
+    /// settings while ensuring every registered `(mod_id, key)` is captured by
+    /// known key without generic snapshot key, enumeration, or aggregate budgets.
+    pub fn from_settings_snapshot_with_registered<'a, 'b>(
+        origin: DataLoadOrigin,
+        inputs: Arc<LoadInputs>,
+        mod_ids: impl IntoIterator<Item = &'a str>,
+        settings: Arc<[(String, Arc<[(String, String)]>)]>,
+        registered_keys: impl IntoIterator<Item = (&'b str, &'b str)>,
+    ) -> Self {
         Self {
             origin,
-            snapshot: Snapshot { inputs, settings },
+            snapshot: Snapshot::from_settings_snapshot_with_registered(
+                inputs,
+                mod_ids,
+                settings,
+                registered_keys,
+            ),
+            fluid_tags: None,
+        }
+    }
+
+    /// An owning load of `origin` over a settings capture taken earlier, so the load reads
+    /// the values the candidate's other readers were given.
+    pub fn with_capture(
+        origin: DataLoadOrigin,
+        inputs: Arc<LoadInputs>,
+        capture: SettingsCapture,
+    ) -> Self {
+        Self {
+            origin,
+            snapshot: Snapshot::from_capture(inputs, capture),
             fluid_tags: None,
         }
     }
@@ -175,9 +409,40 @@ impl LoadContext {
         side: LoopSide,
         mod_ids: impl IntoIterator<Item = &'a str>,
     ) -> LoopContext {
+        self.loop_context_with_registered(side, mod_ids, std::iter::empty())
+    }
+
+    /// The context of a client menu, recipe or player-list loop over this
+    /// load's registry inputs, capturing generic package settings and
+    /// registered settings by their known `(mod_id, key)` pairs.
+    pub fn loop_context_with_registered<'a, 'b>(
+        &self,
+        side: LoopSide,
+        mod_ids: impl IntoIterator<Item = &'a str>,
+        registered_keys: impl IntoIterator<Item = (&'b str, &'b str)>,
+    ) -> LoopContext {
         LoopContext {
             side,
-            snapshot: Snapshot::capture(self.snapshot.inputs.clone(), mod_ids),
+            snapshot: Snapshot::capture_with_registered(
+                self.snapshot.inputs.clone(),
+                mod_ids,
+                registered_keys,
+            ),
+            recipe_properties: Default::default(),
+            item_tags: None,
+        }
+    }
+
+    /// The context of a loop of `side` over this load's registry inputs and a settings capture
+    /// taken earlier, not a new one.
+    pub fn loop_context_with_capture(
+        &self,
+        side: LoopSide,
+        capture: SettingsCapture,
+    ) -> LoopContext {
+        LoopContext {
+            side,
+            snapshot: Snapshot::from_capture(self.snapshot.inputs.clone(), capture),
             recipe_properties: Default::default(),
             item_tags: None,
         }
@@ -265,6 +530,11 @@ impl LoopContext {
     pub fn setting(&self, mod_id: &str, key: &str) -> Option<&str> {
         self.snapshot.setting(mod_id, key)
     }
+
+    /// The settings root captured at the owning load boundary.
+    pub fn settings_root(&self) -> &Path {
+        &self.snapshot.inputs.settings_root
+    }
 }
 
 /// Capture regular UTF-8 files only, never following symlinks (even within the root).
@@ -274,8 +544,124 @@ pub fn capture_settings<'a>(
     mod_ids: impl IntoIterator<Item = &'a str>,
 ) -> BTreeMap<String, BTreeMap<String, String>> {
     capture_settings_with_diagnostics(settings_root, mod_ids, |diagnostics| {
-        log::warn!("Mod settings snapshot omissions at {settings_root:?}:\n{diagnostics}");
+        log::warn!("Bulk mod settings snapshot omissions at {settings_root:?}:\n{diagnostics}");
     })
+}
+
+/// Capture registered settings by their known `(mod_id, key)` pairs using the
+/// same no-follow regular-file UTF-8 admission as `capture_settings`, without
+/// directory enumeration.
+pub fn capture_registered_settings<'a>(
+    settings_root: &Path,
+    keys: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> BTreeMap<String, BTreeMap<String, String>> {
+    let mut by_owner: BTreeMap<&'a str, BTreeSet<&'a str>> = BTreeMap::new();
+    for (mod_id, key) in keys {
+        by_owner.entry(mod_id).or_default().insert(key);
+    }
+    capture_registered_settings_grouped(settings_root, &by_owner)
+}
+
+fn capture_registered_settings_grouped(
+    settings_root: &Path,
+    by_owner: &BTreeMap<&str, BTreeSet<&str>>,
+) -> BTreeMap<String, BTreeMap<String, String>> {
+    capture_registered_settings_with_diagnostics(settings_root, by_owner, |diagnostics| {
+        log::warn!("Registered mod settings omissions at {settings_root:?}:\n{diagnostics}");
+    })
+}
+
+fn capture_registered_settings_with_diagnostics(
+    settings_root: &Path,
+    by_owner: &BTreeMap<&str, BTreeSet<&str>>,
+    report: impl FnOnce(&str),
+) -> BTreeMap<String, BTreeMap<String, String>> {
+    use std::fmt::Write;
+    let mut diagnostics = String::new();
+    let settings =
+        capture_registered_settings_with_report(settings_root, by_owner, |mod_id, key, reason| {
+            match key {
+                Some(key) => writeln!(diagnostics, "  {mod_id:?}/{key:?}: {reason}"),
+                None => writeln!(diagnostics, "  mod {mod_id:?}: {reason}"),
+            }
+            .expect("writing diagnostics to a String");
+        });
+    if !diagnostics.is_empty() {
+        report(&diagnostics);
+    }
+    settings
+}
+
+fn is_plain_component(component: &str) -> bool {
+    let mut components = Path::new(component).components();
+    matches!(components.next(), Some(std::path::Component::Normal(_)))
+        && components.next().is_none()
+}
+
+fn read_captured_value(mut file: fs::File) -> Result<String, String> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .map_err(|error| format!("read failed: {error}"))?;
+    let value = String::from_utf8(bytes)
+        .map_err(|error| format!("invalid UTF-8: {}", error.utf8_error()))?;
+    Ok(value.trim().to_owned())
+}
+
+fn capture_registered_settings_with_report(
+    settings_root: &Path,
+    by_owner: &BTreeMap<&str, BTreeSet<&str>>,
+    mut report: impl FnMut(&str, Option<&OsStr>, &dyn std::fmt::Display),
+) -> BTreeMap<String, BTreeMap<String, String>> {
+    let mut settings = BTreeMap::new();
+    for (&mod_id, owner_keys) in by_owner {
+        if !is_plain_component(mod_id) {
+            report(mod_id, None, &"unsafe package path");
+            continue;
+        }
+        let directory = match open_settings_dir(settings_root, mod_id) {
+            Ok(directory) => directory,
+            Err(SnapshotError::Missing) => continue,
+            Err(SnapshotError::Directory(error)) => {
+                report(
+                    mod_id,
+                    None,
+                    &format_args!("cannot inspect settings directory: {error}"),
+                );
+                continue;
+            }
+            Err(_) => continue,
+        };
+        let mut values = BTreeMap::new();
+        for &key in owner_keys {
+            if !is_plain_component(key) {
+                report(mod_id, Some(OsStr::new(key)), &"unsafe setting key");
+                continue;
+            }
+            let file = match open_regular_setting_file_optional(&directory, OsStr::new(key)) {
+                Ok(Some(file)) => file,
+                Ok(None) => continue,
+                Err(error) => {
+                    report(
+                        mod_id,
+                        Some(OsStr::new(key)),
+                        &format_args!("unsafe or unreadable entry: {error}"),
+                    );
+                    continue;
+                }
+            };
+            match read_captured_value(file) {
+                Ok(value) => {
+                    values.insert(key.to_owned(), value);
+                }
+                Err(error) => report(mod_id, Some(OsStr::new(key)), &error),
+            }
+        }
+        if !values.is_empty() {
+            settings.insert(mod_id.to_owned(), values);
+        }
+    }
+    settings
 }
 
 fn capture_settings_with_diagnostics<'a>(
@@ -310,12 +696,7 @@ fn capture_settings_with_report<'a>(
     {
         // Package ids are normally validated at load time; do not let this public
         // filesystem boundary interpret a path supplied by a caller.
-        if Path::new(mod_id).components().count() != 1
-            || !matches!(
-                Path::new(mod_id).components().next(),
-                Some(std::path::Component::Normal(_))
-            )
-        {
+        if !is_plain_component(mod_id) {
             report(mod_id, None, &"unsafe package path");
             continue;
         }
@@ -357,7 +738,7 @@ fn capture_settings_with_report<'a>(
                     continue;
                 }
             };
-            let mut file = match file {
+            let file = match file {
                 Ok(file) => file,
                 Err(error) => {
                     report(
@@ -368,28 +749,12 @@ fn capture_settings_with_report<'a>(
                     continue;
                 }
             };
-            use std::io::Read;
-            let mut bytes = Vec::new();
-            if let Err(error) = file.read_to_end(&mut bytes) {
-                report(
-                    mod_id,
-                    Some(key.as_ref()),
-                    &format_args!("read failed: {error}"),
-                );
-                continue;
-            }
-            let value = match String::from_utf8(bytes) {
-                Ok(value) => value,
-                Err(error) => {
-                    report(
-                        mod_id,
-                        Some(key.as_ref()),
-                        &format_args!("invalid UTF-8: {}", error.utf8_error()),
-                    );
-                    continue;
+            match read_captured_value(file) {
+                Ok(value) => {
+                    values.insert(key, value);
                 }
-            };
-            values.insert(key, value.trim().to_owned());
+                Err(error) => report(mod_id, Some(key.as_ref()), &error),
+            }
         }
         settings.insert(mod_id.to_owned(), values);
     }
@@ -447,6 +812,51 @@ fn sorted_names(
 }
 
 #[cfg(unix)]
+fn open_settings_dir(root: &Path, mod_id: &str) -> Result<std::os::fd::OwnedFd, SnapshotError> {
+    use rustix::fs::{Mode, OFlags, open, openat};
+    let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
+    let root = settings_directory(
+        open(root, flags | OFlags::DIRECTORY, Mode::empty()).map_err(Into::into),
+    )?;
+    settings_directory(
+        openat(&root, mod_id, flags | OFlags::DIRECTORY, Mode::empty()).map_err(Into::into),
+    )
+}
+
+#[cfg(unix)]
+fn open_regular_setting_file(
+    directory: &std::os::fd::OwnedFd,
+    key: &OsStr,
+    after_open: impl FnOnce(&str),
+) -> std::io::Result<fs::File> {
+    use rustix::fs::{Mode, OFlags, openat};
+    let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
+    let file = fs::File::from(openat(directory, key, flags, Mode::empty())?);
+    if let Some(key) = key.to_str() {
+        after_open(key);
+    }
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "entry is not a regular file",
+        ));
+    }
+    Ok(file)
+}
+
+#[cfg(unix)]
+fn open_regular_setting_file_optional(
+    directory: &std::os::fd::OwnedFd,
+    key: &OsStr,
+) -> std::io::Result<Option<fs::File>> {
+    match open_regular_setting_file(directory, key, |_| {}) {
+        Ok(file) => Ok(Some(file)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(unix)]
 fn snapshot_files(
     root: &Path,
     mod_id: &str,
@@ -460,15 +870,9 @@ fn snapshot_files_with_hook(
     mod_id: &str,
     after_open: impl Fn(&str),
 ) -> Result<impl Iterator<Item = (OsString, std::io::Result<fs::File>)>, SnapshotError> {
-    use rustix::fs::{Dir, Mode, OFlags, open, openat};
+    use rustix::fs::Dir;
     use std::os::unix::ffi::OsStrExt;
-    let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
-    let root = settings_directory(
-        open(root, flags | OFlags::DIRECTORY, Mode::empty()).map_err(Into::into),
-    )?;
-    let directory = settings_directory(
-        openat(&root, mod_id, flags | OFlags::DIRECTORY, Mode::empty()).map_err(Into::into),
-    )?;
+    let directory = open_settings_dir(root, mod_id)?;
     let entries = Dir::read_from(&directory).map_err(std::io::Error::from)?;
     let names = sorted_names(entries.filter_map(|entry| {
         let entry = match entry {
@@ -482,30 +886,15 @@ fn snapshot_files_with_hook(
         Some(Ok(OsStr::from_bytes(name.to_bytes()).to_owned()))
     }))?;
     Ok(names.into_iter().map(move |key| {
-        let file = (|| {
-            let file = fs::File::from(openat(&directory, key.as_os_str(), flags, Mode::empty())?);
-            if let Some(key) = key.to_str() {
-                after_open(key);
-            }
-            if !file.metadata()?.is_file() {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "entry is not a regular file",
-                ));
-            }
-            Ok(file)
-        })();
+        let file = open_regular_setting_file(&directory, key.as_os_str(), &after_open);
         (key, file)
     }))
 }
 
 #[cfg(windows)]
-fn snapshot_files(
-    root: &Path,
-    mod_id: &str,
-) -> Result<impl Iterator<Item = (OsString, std::io::Result<fs::File>)>, SnapshotError> {
-    use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
-    use cap_std::fs::{Dir, OpenOptions};
+fn open_settings_dir(root: &Path, mod_id: &str) -> Result<cap_std::fs::Dir, SnapshotError> {
+    use cap_fs_ext::DirExt;
+    use cap_std::fs::Dir;
     // Open the parent as a capability, then refuse a reparse point at the root
     // and package boundary as well as at each individual file boundary.
     let parent = root
@@ -514,34 +903,86 @@ fn snapshot_files(
     let name = root
         .file_name()
         .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
-    let parent = settings_directory(Dir::open_ambient_dir(parent, cap_std::ambient_authority()))?;
+    let parent = settings_directory(Dir::open_ambient_dir(
+        if parent.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            parent
+        },
+        cap_std::ambient_authority(),
+    ))?;
     let root = settings_directory(parent.open_dir_nofollow(name))?;
-    let directory = settings_directory(root.open_dir_nofollow(mod_id))?;
+    settings_directory(root.open_dir_nofollow(mod_id))
+}
+
+#[cfg(windows)]
+fn open_regular_setting_file(
+    directory: &cap_std::fs::Dir,
+    key: &OsStr,
+) -> std::io::Result<fs::File> {
+    use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
+    use cap_std::fs::{MetadataExt, OpenOptions};
+    let metadata = directory.symlink_metadata(key)?;
+    if !metadata.is_file() || metadata.file_attributes() & 0x400 != 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "entry is not a regular file or is a reparse point",
+        ));
+    }
+    let mut options = OpenOptions::new();
+    options.read(true).follow(FollowSymlinks::No);
+    let file = directory.open_with(key, &options)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.file_attributes() & 0x400 != 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "entry is not a regular file or is a reparse point",
+        ));
+    }
+    Ok(file.into_std())
+}
+
+#[cfg(windows)]
+fn open_regular_setting_file_optional(
+    directory: &cap_std::fs::Dir,
+    key: &OsStr,
+) -> std::io::Result<Option<fs::File>> {
+    match open_regular_setting_file(directory, key) {
+        Ok(file) => Ok(Some(file)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(windows)]
+fn snapshot_files(
+    root: &Path,
+    mod_id: &str,
+) -> Result<impl Iterator<Item = (OsString, std::io::Result<fs::File>)>, SnapshotError> {
+    let directory = open_settings_dir(root, mod_id)?;
     let names = sorted_names(directory.entries()?.map(|entry| Ok(entry?.file_name())))?;
     Ok(names.into_iter().map(move |key| {
-        let file = (|| {
-            let metadata = directory.symlink_metadata(&key)?;
-            use cap_std::fs::MetadataExt;
-            if !metadata.is_file() || metadata.file_attributes() & 0x400 != 0 {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "entry is not a regular file or is a reparse point",
-                ));
-            }
-            let mut options = OpenOptions::new();
-            options.read(true).follow(FollowSymlinks::No);
-            let file = directory.open_with(&key, &options)?;
-            let metadata = file.metadata()?;
-            if !metadata.is_file() || metadata.file_attributes() & 0x400 != 0 {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "entry is not a regular file or is a reparse point",
-                ));
-            }
-            Ok(file.into_std())
-        })();
+        let file = open_regular_setting_file(&directory, key.as_os_str());
         (key, file)
     }))
+}
+
+#[cfg(not(any(unix, windows)))]
+struct UnsupportedSettingsDir;
+
+#[cfg(not(any(unix, windows)))]
+fn open_settings_dir(root: &Path, mod_id: &str) -> Result<UnsupportedSettingsDir, SnapshotError> {
+    let _ = (root, mod_id);
+    Err(std::io::Error::from(std::io::ErrorKind::Unsupported).into())
+}
+
+#[cfg(not(any(unix, windows)))]
+fn open_regular_setting_file_optional(
+    directory: &UnsupportedSettingsDir,
+    key: &OsStr,
+) -> std::io::Result<Option<fs::File>> {
+    let _ = (directory, key);
+    Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -596,6 +1037,29 @@ mod tests {
         ));
         fs::create_dir_all(root.join("reader")).unwrap();
         root
+    }
+
+    #[test]
+    fn one_capture_gives_every_reader_of_a_generation_the_same_value() {
+        let root = root("shared-capture");
+        fs::write(root.join("reader").join("count"), "3").unwrap();
+        let capture = SettingsCapture::new(&root, ["reader"], [("reader", "count")]);
+        // A file edited after the capture reaches nobody built from it.
+        fs::write(root.join("reader").join("count"), "9").unwrap();
+        let inputs = Arc::new(LoadInputs::new(BTreeMap::new(), root.clone()));
+        let load = LoadContext::with_capture(
+            DataLoadOrigin::ClientPreload,
+            inputs.clone(),
+            capture.clone(),
+        );
+        let looped = load.loop_context_with_capture(LoopSide::Client, capture.clone());
+        assert_eq!(capture.setting("reader", "count"), Some("3"));
+        assert_eq!(load.setting("reader", "count"), Some("3"));
+        assert_eq!(looped.setting("reader", "count"), Some("3"));
+        // A new capture is the one that sees the edit.
+        let next = SettingsCapture::new(&root, ["reader"], [("reader", "count")]);
+        assert_eq!(next.setting("reader", "count"), Some("9"));
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
@@ -699,6 +1163,7 @@ mod tests {
             snapshot: Snapshot {
                 inputs: load.snapshot.inputs.clone(),
                 settings: shared_settings(settings),
+                registered_settings: Arc::from([]),
             },
             recipe_properties: Default::default(),
             item_tags: None,
@@ -1009,6 +1474,92 @@ mod tests {
         assert_eq!(worldgen.setting("active", "ground"), Some("mud"));
         assert_eq!(worldgen.setting("inactive", "ground"), None);
         assert_eq!(load.setting("active", "ground"), Some("podzol"));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn registered_settings_capture_by_known_keys_shares_the_load_snapshot() {
+        let root = root("registered-known-keys");
+        for key in ["first", "last"] {
+            fs::write(root.join("reader").join(key), "true").unwrap();
+        }
+        fs::create_dir(root.join("reader/dir_key")).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            fs::write(root.join("secret"), "outside").unwrap();
+            std::os::unix::fs::symlink(root.join("secret"), root.join("reader/link_key")).unwrap();
+            // An unrelated non-UTF-8 sibling does not affect a known-key capture.
+            fs::write(
+                root.join("reader").join(OsString::from_vec(vec![0xff])),
+                "junk",
+            )
+            .unwrap();
+        }
+
+        let registered = [
+            ("reader", "first"),
+            ("reader", "last"),
+            ("reader", "missing_key"),
+            ("reader", "dir_key"),
+            #[cfg(unix)]
+            ("reader", "link_key"),
+        ];
+
+        // Direct per-owner capture (page refresh) reads known keys and refuses links/dirs.
+        let single = capture_registered_settings(&root, registered.iter().copied());
+        assert_eq!(single["reader"].len(), 2);
+        assert_eq!(
+            single["reader"].get("last").map(String::as_str),
+            Some("true")
+        );
+        assert_eq!(single["reader"].get("missing_key"), None);
+        assert_eq!(single["reader"].get("dir_key"), None);
+        #[cfg(unix)]
+        assert_eq!(single["reader"].get("link_key"), None);
+
+        // Full owning load + loop context capture shares the same known-key admission across reloads.
+        let inputs = Arc::new(LoadInputs::new(BTreeMap::new(), root.clone()));
+        let load = LoadContext::new_with_registered(
+            DataLoadOrigin::ClientPreload,
+            inputs.clone(),
+            ["reader"],
+            registered.iter().copied(),
+        );
+        let loop_ctx = load.captured_loop_context(LoopSide::Client);
+        assert_eq!(loop_ctx.setting("reader", "first"), Some("true"));
+        assert_eq!(loop_ctx.setting("reader", "last"), Some("true"));
+        assert_eq!(loop_ctx.setting("reader", "missing_key"), None);
+        assert_eq!(loop_ctx.setting("reader", "dir_key"), None);
+        #[cfg(unix)]
+        assert_eq!(loop_ctx.setting("reader", "link_key"), None);
+
+        // Startup snapshot sharing keeps registration values already captured while still
+        // picking up registered keys omitted by the generic registration snapshot.
+        let registration_snapshot = shared_settings(BTreeMap::from([(
+            "reader".to_owned(),
+            BTreeMap::from([("first".to_owned(), "false".to_owned())]),
+        )]));
+        let startup = LoadContext::from_settings_snapshot_with_registered(
+            DataLoadOrigin::ClientPreload,
+            inputs,
+            ["reader"],
+            registration_snapshot,
+            registered.iter().copied(),
+        );
+        assert_eq!(startup.setting("reader", "first"), Some("false"));
+        assert_eq!(startup.setting("reader", "last"), Some("true"));
+
+        // A new loop context reads edits without mutating the published one.
+        fs::write(root.join("reader/last"), "false").unwrap();
+        let reloaded = load.loop_context_with_registered(
+            LoopSide::Client,
+            ["reader"],
+            registered.iter().copied(),
+        );
+        assert_eq!(reloaded.setting("reader", "last"), Some("false"));
+        assert_eq!(loop_ctx.setting("reader", "last"), Some("true"));
+
         fs::remove_dir_all(&root).unwrap();
     }
 }

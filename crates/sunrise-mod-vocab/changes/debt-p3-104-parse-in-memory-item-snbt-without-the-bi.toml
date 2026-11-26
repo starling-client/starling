@@ -1,0 +1,3 @@
+ids = ["behaviour:item_from_snbt_text"]
+why = "Vanilla's TagParser.parseCompoundFully and ItemStack.CODEC read text and validate the item without a binary byte quota. NeoForge's JsonUtils.readNBT also uses that text parser, while its NbtIo.readUnnamedTag accounts for binary input. The mod host no longer borrows the binary NbtAccounter byte quota; it reports the parser or item decoder's actual failure reason."
+migrate = "Keep calling host.item_from_snbt(snbt) and matching Some(stack) or None. Remove any caller-side length check copied from the binary NBT quota for this in-memory parse. On None, check the log for the syntax, item or component diagnostic. Binary reads still use their own quotas."

@@ -22,7 +22,7 @@ pub use crate::pack_post::construction::{
 pub use crate::pack_weather::Weather;
 
 /// The texture behind a pack sampler name.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Source {
     Color(usize),
     Depth,
@@ -57,6 +57,10 @@ pub enum Source {
     ShadowColor(usize),
     /// The boats' water patches' depth (`sunrise_shaders::WATER_MASK`), for translucent terrain.
     WaterMask,
+    /// A mod-declared auxiliary full depth target (index into `PackPost::mod_depth_decls`).
+    ModDepth(usize),
+    /// A mod-declared auxiliary opaque-depth snapshot (index into `PackPost::mod_depth_decls`).
+    ModOpaqueDepth(usize),
 }
 
 #[derive(Clone)]
@@ -96,7 +100,9 @@ impl SamplerKind {
             | Source::Depth1
             | Source::Depth2
             | Source::ShadowDepth(_, false)
-            | Source::WaterMask => Self::Nearest,
+            | Source::WaterMask
+            | Source::ModDepth(_)
+            | Source::ModOpaqueDepth(_) => Self::Nearest,
             Source::Noise => Self::Repeat,
             Source::Shadow | Source::ShadowDepth(_, true) => Self::Comparison,
             // Blocks look as the game draws them: nearest texels. Between levels, Iris 1.11.7
@@ -291,6 +297,9 @@ pub struct Gpu {
     pub fragment_storage: bool,
     /// Storage read and written by vertex shaders (a geometry stage).
     pub vertex_storage: bool,
+    /// Storage read by vertex shaders: per-section terrain reading its arena page
+    /// (`pack_atlas::TerrainDraws::Pages`).
+    pub vertex_reads: bool,
     /// `clear_texture`; without it images are cleared by copying zeros.
     pub clear: bool,
     pub adapter_formats: bool,
@@ -305,6 +314,7 @@ impl Gpu {
             fragment_storage: flags.contains(D::FRAGMENT_WRITABLE_STORAGE),
             vertex_storage: flags.contains(D::VERTEX_STORAGE)
                 && features.contains(wgpu::Features::VERTEX_WRITABLE_STORAGE),
+            vertex_reads: flags.contains(D::VERTEX_STORAGE),
             clear: features.contains(wgpu::Features::CLEAR_TEXTURE),
             adapter_formats: features
                 .contains(wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES),
@@ -316,7 +326,7 @@ impl Gpu {
             match w.trim() {
                 "compute" => gpu.compute = false,
                 "fragment-storage" => gpu.fragment_storage = false,
-                "vertex-storage" => gpu.vertex_storage = false,
+                "vertex-storage" => (gpu.vertex_storage, gpu.vertex_reads) = (false, false),
                 "clear" => gpu.clear = false,
                 _ => {}
             }
@@ -368,6 +378,12 @@ pub enum Pipeline {
         render: [f32; 2],
         local: [u32; 3],
     },
+    /// A composite-style program whose fragment stage writes no buffer and no image: it draws
+    /// nothing, and only its compute stages (2.6) and forced flips (6.1.6) run at its place in
+    /// the chain. `storage`: its fragment stage binds storage buffers, and so is left out.
+    NoDraw {
+        storage: bool,
+    },
 }
 
 #[derive(Clone)]
@@ -381,6 +397,9 @@ pub struct Pass {
     /// The entity program without colour writes, for the boats' water patches
     /// (`RenderTypes.waterMask`: depth only, so no water shows inside a hull).
     pub water_mask: Option<Slot<wgpu::RenderPipeline>>,
+    /// A block program with its depth biased as vanilla's `RenderPipelines.TEXT_POLYGON_OFFSET`,
+    /// for sign text in `POLYGON_OFFSET` mode (`Draw::polygon_offset`).
+    pub polygon_offset: Option<Slot<wgpu::RenderPipeline>>,
     pub layout: wgpu::BindGroupLayout,
     pub ubo: wgpu::Buffer,
     pub block: Vec<u8>,
@@ -388,6 +407,8 @@ pub struct Pass {
     pub initial_block: Vec<u8>,
     /// (index into `pack_uniforms::NAMES`, declared type, offset).
     pub uniforms: Vec<(Option<usize>, String, u32)>,
+    /// Mod-declared frame uniforms bound to this pass: `(table_index, is_previous, std140_offset)`.
+    pub mod_uniforms: Vec<(usize, bool, u32)>,
     pub samplers: Vec<Binding>,
     /// (location, buffer) of each output that reaches a buffer.
     pub writes: Vec<(u32, usize)>,
@@ -420,6 +441,12 @@ pub struct Pass {
     pub groups: HashMap<u64, wgpu::BindGroup>,
     /// The same for End portal draws, with `end_portal.png` bound as the atlas.
     pub portal_groups: HashMap<u64, wgpu::BindGroup>,
+    /// The same for a mod's dynamic textures (`Draw::texture`), by texture handle: the revision
+    /// of the texture the groups were made for, and the groups.
+    pub dynamic_groups: HashMap<u64, (u64, HashMap<u64, wgpu::BindGroup>)>,
+    /// The same for native terrain quads (`Draw::block_atlas`), with the block atlas bound as
+    /// the atlas (`PackPost::block_atlas_group`).
+    pub block_atlas_groups: HashMap<u64, wgpu::BindGroup>,
     /// (binding, target) of each image: for a buffer, the side its sampler reads.
     pub images: Vec<(u32, Image)>,
     /// Binds the pack's storage buffers in set 4.
@@ -449,17 +476,28 @@ impl Pass {
     /// Back to the uniform values the pass was made with, and no bind groups.
     pub fn reset_history(&mut self) {
         self.block.clone_from(&self.initial_block);
-        self.groups.clear();
-        self.portal_groups.clear();
+        self.forget_groups();
         for compute in &mut self.compute {
             compute.reset_history();
         }
+    }
+
+    /// Drops every cached bind group of the pass: the plain ones, the End portal ones, the
+    /// dynamic texture ones and the block atlas ones, which all name the same buffers.
+    pub fn forget_groups(&mut self) {
+        self.groups.clear();
+        self.portal_groups.clear();
+        self.dynamic_groups.clear();
+        self.block_atlas_groups.clear();
     }
 
     pub fn render(&self) -> &wgpu::RenderPipeline {
         match &self.pipeline {
             Pipeline::Render(p) => p.get().expect("compiled with its pack"),
             Pipeline::Compute { .. } => unreachable!("a compute pass draws nothing"),
+            Pipeline::NoDraw { .. } => {
+                unreachable!("a pass of compute stages and flips draws nothing")
+            }
         }
     }
 }
@@ -492,6 +530,10 @@ pub struct Targets {
     pub depth2: Option<(wgpu::Texture, wgpu::TextureView)>,
     /// The boats' water patches' depth, when translucent terrain reads it (`Source::WaterMask`).
     pub water_mask: Option<(wgpu::Texture, wgpu::TextureView)>,
+    /// Mod-declared auxiliary full depth targets, allocated lazily only when sampled by the pack.
+    pub mod_depth: Vec<Option<(wgpu::Texture, wgpu::TextureView)>>,
+    /// Mod-declared auxiliary opaque-depth copies, allocated lazily only when sampled by the pack.
+    pub mod_opaque_depth: Vec<Option<(wgpu::Texture, wgpu::TextureView)>>,
     /// Both sides' mip chains of the buffers with mipmaps (`color` is their first level).
     pub mips: [Option<[Mips; 2]>; BUFFERS],
     /// Where a pass that both samples and stores a buffer samples it from.
@@ -507,8 +549,9 @@ pub struct Targets {
 pub struct World<'a> {
     /// The block atlas and its size.
     pub atlas: Option<(wgpu::TextureView, [u32; 2])>,
-    /// Of a stitched block atlas, each sprite layer's place (`PackAtlas::rects_table`); empty
-    /// for a grid.
+    /// Each sprite layer's place in the block atlas (`PackAtlas::rects_table`), stitched or a
+    /// grid: flat terrain reads it, and native terrain quads are placed by it
+    /// (`pack_entities::BlockAtlas`).
     pub sprite_rects: &'a [u32],
     pub material_maps: Option<[wgpu::TextureView; 2]>,
     pub lightmap: wgpu::TextureView,

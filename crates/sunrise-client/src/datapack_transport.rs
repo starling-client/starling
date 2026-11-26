@@ -1,14 +1,25 @@
 //! Bounded custom-payload fragments; activate only after the complete snapshot validates.
 use super::*;
+use sunrise_protocol::packets::custom_payload::CLIENTBOUND_LIMIT;
 
 const MAGIC: &[u8; 4] = b"DRS1";
 const HEADER: usize = 12;
-pub const CHUNK_DATA: usize = 512 << 10;
-static ASSEMBLY: Mutex<Assembly> = Mutex::new(Assembly { pending: None });
+// Vanilla's ClientboundCustomPayloadPacket.MAX_PAYLOAD_SIZE includes our fragment header.
+pub const CHUNK_DATA: usize = CLIENTBOUND_LIMIT - HEADER;
+
+fn snapshot_too_large() -> String {
+    format!(
+        "Datapack registry snapshot exceeds the {}-byte transport limit.",
+        mod_api::MAX_SNAPSHOT_BYTES
+    )
+}
 
 pub fn chunks(bytes: &[u8]) -> Result<impl Iterator<Item = Vec<u8>> + '_, String> {
-    if bytes.is_empty() || bytes.len() > mod_api::MAX_SNAPSHOT_BYTES {
-        return Err("Datapack registry snapshot exceeds the 64 MiB transport limit.".into());
+    if bytes.is_empty() {
+        return Err("Cannot send an empty datapack registry snapshot.".into());
+    }
+    if bytes.len() > mod_api::MAX_SNAPSHOT_BYTES {
+        return Err(snapshot_too_large());
     }
     let total = bytes.len() as u32;
     Ok(bytes.chunks(CHUNK_DATA).enumerate().map(move |(i, part)| {
@@ -21,7 +32,7 @@ pub fn chunks(bytes: &[u8]) -> Result<impl Iterator<Item = Vec<u8>> + '_, String
     }))
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct Assembly {
     pending: Option<(usize, Vec<u8>)>,
 }
@@ -29,30 +40,30 @@ impl Assembly {
     fn push(&mut self, packet: &[u8]) -> Result<Option<Vec<u8>>, String> {
         let previous = self.pending.take();
         let bad = || "Invalid or out-of-order datapack registry snapshot fragment.".to_string();
-        if packet.len() < HEADER || &packet[..4] != MAGIC {
+        let (header, part) = packet.split_at_checked(HEADER).ok_or_else(bad)?;
+        if !header.starts_with(MAGIC) {
             return Err(bad());
         }
-        let total = u32::from_le_bytes(packet[4..8].try_into().unwrap()) as usize;
-        let offset = u32::from_le_bytes(packet[8..12].try_into().unwrap()) as usize;
-        if total == 0 || total > mod_api::MAX_SNAPSHOT_BYTES {
-            return Err("Datapack registry snapshot exceeds the 64 MiB transport limit.".into());
-        }
-        if offset >= total || packet.len() - HEADER != CHUNK_DATA.min(total - offset) {
-            return Err(bad());
-        }
-        let mut bytes = if offset == 0 {
-            if previous.is_some() {
-                return Err(bad());
-            }
-            Vec::with_capacity(total)
-        } else {
-            let (expected, bytes) = previous.ok_or_else(bad)?;
-            if total != expected || bytes.len() != offset {
+        let total = u32::from_le_bytes(header[4..8].try_into().unwrap()) as usize;
+        let offset = u32::from_le_bytes(header[8..12].try_into().unwrap()) as usize;
+        let mut bytes = if let Some((expected, bytes)) = previous {
+            if total != expected || offset != bytes.len() {
                 return Err(bad());
             }
             bytes
+        } else {
+            if offset != 0 {
+                return Err(bad());
+            }
+            if total > mod_api::MAX_SNAPSHOT_BYTES {
+                return Err(snapshot_too_large());
+            }
+            Vec::new()
         };
-        bytes.extend_from_slice(&packet[HEADER..]);
+        if offset >= total || part.len() != CHUNK_DATA.min(total - offset) {
+            return Err(bad());
+        }
+        bytes.extend_from_slice(part);
         if bytes.len() == total {
             Ok(Some(bytes))
         } else {
@@ -62,30 +73,60 @@ impl Assembly {
     }
 }
 
-pub fn clear_transfer() {
-    ASSEMBLY.lock().unwrap_or_else(|e| e.into_inner()).pending = None;
+/// A single client configuration's synchronized registries and in-flight snapshot.
+#[derive(Debug, Default)]
+pub struct Receiver {
+    assembly: Assembly,
+    received: Option<Arc<mod_api::DatapackRegistrySet>>,
 }
-pub fn finish_transfer() -> Result<(), String> {
-    if ASSEMBLY
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .pending
-        .is_some()
-    {
-        Err("Incomplete datapack registry snapshot at the end of configuration.".into())
-    } else {
+
+impl Receiver {
+    pub fn received(&self) -> Option<&Arc<mod_api::DatapackRegistrySet>> {
+        self.received.as_ref()
+    }
+
+    pub(crate) fn owned_heap_bytes(&self) -> usize {
+        use sunrise_protocol::retained::OwnedHeap;
+        self.assembly.pending.owned_heap_bytes().saturating_add(
+            self.received
+                .as_deref()
+                .map_or(0, mod_api::__private::queued_datapack_set_bytes),
+        )
+    }
+
+    pub(crate) fn finish_transfer(&self) -> Result<(), String> {
+        if self.assembly.pending.is_some() {
+            Err("Incomplete datapack registry snapshot at the end of configuration.".into())
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn accept_chunk(&mut self, packet: &[u8]) -> Result<(), String> {
+        if let Some(received) = self.decode_chunk(packet)? {
+            self.received = Some(Arc::new(received));
+        }
         Ok(())
     }
-}
-pub fn accept_chunk(packet: &[u8]) -> Result<(), String> {
-    let complete = ASSEMBLY
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .push(packet)?;
-    if let Some(bytes) = complete {
-        accept(&bytes)?;
+
+    /// Accept one snapshot fragment, returning the validated set when a complete snapshot
+    /// finishes decoding without mutating [`Self::received`].
+    pub fn decode_chunk(
+        &mut self,
+        packet: &[u8],
+    ) -> Result<Option<mod_api::DatapackRegistrySet>, String> {
+        if let Some(bytes) = self.assembly.push(packet)? {
+            let declarations = mod_api::__private::datapack_registry_declarations();
+            let received = receive(declarations, &bytes)?;
+            return Ok(Some(received));
+        }
+        Ok(None)
     }
-    Ok(())
+
+    /// Replace the received set after the client binds vanilla value handles on the game thread.
+    pub fn replace_received(&mut self, set: Arc<mod_api::DatapackRegistrySet>) {
+        self.received = Some(set);
+    }
 }
 
 #[cfg(test)]

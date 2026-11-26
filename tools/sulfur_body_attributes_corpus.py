@@ -7,7 +7,12 @@ knockback_resistance, explosion_knockback_resistance and bounciness
 (add_value), friction_modifier and air_drag_modifier (add_multiplied_total).
 Before that first tick the attributes read their defaults.
 """
-from command_exec_corpus import cmd
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools.command_exec_corpus import cmd
 
 BODIES = ['none', 'white_concrete_powder', 'oak_planks', 'andesite', 'iron_block', 'tube_coral_block',
           'white_wool', 'blue_ice', 'mushroom_stem', 'honeycomb_block', 'soul_sand', 'tnt', 'magma_block']

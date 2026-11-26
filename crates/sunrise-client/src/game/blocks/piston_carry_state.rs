@@ -104,7 +104,6 @@ impl Game<'_> {
                         if let Some(renderer) = self.renderer.as_mut() {
                             renderer.invalidate_block_entity_position(p);
                         }
-                        self.be_anims.present_revision = None;
                         self.world.shulkers.remove(&p);
                         self.world.chest_openers.remove(&at);
                         self.lid_openers.remove(&at);

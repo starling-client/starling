@@ -72,6 +72,28 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     }
 }
 
+/// `DirectionalPlaceContext(level, pos, DOWN, ItemStack.EMPTY, UP)`:
+/// the replacement context `FallingBlockEntity.tick` passes to `BlockState.canBeReplaced`.
+/// Its `replace_clicked` is only a seed: `Sim::directional_can_place` asks the level.
+pub(crate) fn landing_replace_context(pos: BlockPos) -> super::place::PlacementContext {
+    super::place::PlacementContext {
+        pos,
+        hit_pos: pos,
+        face: Direction::Up,
+        hit: sunrise_core::geometry::Vec3::new(
+            f64::from(pos.x) + 0.5,
+            f64::from(pos.y),
+            f64::from(pos.z) + 0.5,
+        ),
+        inside: false,
+        source: super::place::PlacementSource::Directional {
+            direction: Direction::Down,
+        },
+        item: String::new(),
+        replace_clicked: true,
+    }
+}
+
 impl Behaviours {
     /// The landing branch of `FallingBlockEntity.tick`, called by the caller's
     /// falling-block entity once it is on the ground (or stuck in water as
@@ -90,24 +112,11 @@ impl Behaviours {
             return Landing::Continue;
         }
         let concrete = self.instance_of(state, Class::ConcretePowder);
-        // DirectionalPlaceContext(level, pos, DOWN, ItemStack.EMPTY, UP).
-        let ctx = super::place::PlacementContext {
-            pos,
-            hit_pos: pos,
-            face: Direction::Up,
-            hit: sunrise_core::geometry::Vec3::new(
-                f64::from(pos.x) + 0.5,
-                f64::from(pos.y),
-                f64::from(pos.z) + 0.5,
-            ),
-            inside: false,
-            yaw: 0.0,
-            pitch: 90.0,
-            sneaking: false,
-            item: String::new(),
-            replace_clicked: true,
-        };
-        let may_replace = sim.can_be_replaced(current, &ctx);
+        // `current.canBeReplaced(context)` with the context clicking `pos` itself is exactly
+        // `DirectionalPlaceContext.canPlace()`. An empty hand never asks a slab or snow
+        // layer for `replacingClickedOnBlock`, so it always has an answer.
+        let ctx = landing_replace_context(pos);
+        let may_replace = sim.directional_can_place(&ctx) == Ok(true);
         let would_continue = sim.is_free(sim.below_state(pos)) && (!concrete || !stuck_in_water);
         let would_survive =
             sim.while_landing(pos, state, |sim| sim.can_survive(state, pos)) && !would_continue;

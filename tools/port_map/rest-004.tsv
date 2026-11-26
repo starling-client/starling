@@ -104,7 +104,7 @@ net/minecraft/client/main/Main#isUuidValid	skip:other		the check behind hasValid
 AbstractClientPlayer.getPlayerInfo	inline	crates/sunrise-client/src/game/network/remote/sync.rs::Game::remote_pushes	the entity id -> uuid -> tab entry lookups stand in for the PlayerInfo; the name, team and game mode are read from that entry
 AbstractClientPlayer.getSkin	port	crates/sunrise-client/src/game/network/remote/status.rs::Game::update_remote_skins	the downloaded skin and slim flag, else DefaultPlayerSkin by uuid, as PlayerInfo.getSkin
 AbstractClientPlayer.getParrotVariantOnShoulder	port	crates/sunrise-client/src/mobs/render.rs::shoulder_parrot	the shoulder slot's stored variant picks the parrot texture and model in the layer
-ClientInput.makeJump	inline	crates/sunrise-client/src/motion.rs::MotionWorld::controlled_simulation_tick	gap: minor: carries the auto-jump flag; no separate jump input
+ClientInput.makeJump	inline	crates/sunrise-client/src/motion/integrate.rs::MotionWorld::controlled_simulation_tick	gap: minor: carries the auto-jump flag; no separate jump input
 FirstPersonHandsAndItems.extractRenderState	inline	crates/sunrise-client/src/game/items/hand.rs::Game::visible_hand_items	gap: minor: bob, swing and map state are read elsewhere; no render-state struct
 FirstPersonHandsAndItems.shouldInstantlyReplaceVisibleItem	port	crates/sunrise-client/src/game/items/hand.rs::shows_held_stack	the same stack object, or an equal one, which plays no swap animation; the slot a replaced hand changed is the exception
 FirstPersonHandsAndItems.extractMapRenderState	inline	crates/sunrise-client/src/game/blocks/maps/mod.rs::Game::held_map	the MAP_ID component picks the map data drawn in the hand, its decorations included, and decides the checkerboard background
@@ -117,7 +117,7 @@ LocalPlayer.sendChanges	port	crates/sunrise-client/src/game/network/remote/sync.
 LocalPlayer.getCurrentMood	inline	crates/sunrise-client/src/ambience.rs::Ambience::tick_biome	gap: minor: moodiness is built here; no getter is exposed
 LocalPlayer.sendIsSprintingIfNeeded	inline	crates/sunrise-client/src/game/network/remote/sync.rs::Game::remote_send_state	sprint start and stop commands
 LocalPlayer.closeContainer	port	crates/sunrise-client/src/game/network/remote/mod.rs::Game::remote_close_container
-LocalPlayer.isSuppressingSlidingDownLadder	port	crates/sunrise-client/src/motion.rs::MotionWorld::suppressing_ladder_slide	gap: minor: sneak only; vanilla also requires not flying
+LocalPlayer.isSuppressingSlidingDownLadder	port	crates/sunrise-client/src/motion/ladder.rs::MotionWorld::suppressing_ladder_slide	gap: minor: sneak only; vanilla also requires not flying
 LocalPlayer.canSpawnSprintParticle	port	crates/sunrise-client/src/game/interface/client_ambient.rs::Game::sprint_dust	gap: minor: the test there is Entity.canSpawnSprintParticle's (sprinting, not spectator, not crouching, alive, out of water and lava) without the !abilities.flying LocalPlayer adds
 LocalPlayer.sendRidingJump	port	crates/sunrise-client/src/game/network/remote_vehicles.rs::riding_jump	START_RIDING_JUMP carrying the jump scale
 LocalPlayer.removeRecipeHighlight	port	crates/sunrise-client/src/recipe_book.rs::Settings::remove_highlight	gap: minor: the seen-recipe packet is not sent, so the server keeps the highlight
@@ -137,7 +137,7 @@ LocalPlayer.shouldStopRunSprinting	port	crates/sunrise-client/src/sprint.rs::Con
 LocalPlayer.shouldStopSwimSprinting	port	crates/sunrise-client/src/sprint.rs::Conditions::should_stop
 LocalPlayer.tickDeath	missing		minor: unsure: the dead local player is not removed after 20 ticks; the death screen flow covers it
 LocalPlayer.rideTick	port	crates/sunrise-client/src/game/network/remote_vehicles.rs::Game::remote_ride	the keys are latched into the boat's input and the seat follows its turn
-LocalPlayer.isHorizontalCollisionMinor	port	crates/sunrise-client/src/motion.rs::EntityMoveWorld::minor_horizontal_collision	the sprint keeps when a move hits a wall at under 8 degrees
+LocalPlayer.isHorizontalCollisionMinor	port	crates/sunrise-client/src/motion/integrate.rs::EntityMoveWorld::minor_horizontal_collision	the sprint keeps when a move hits a wall at under 8 degrees
 LocalPlayer.isMoving	inline	crates/sunrise-client/src/auto_jump.rs::can_auto_jump
 LocalPlayer.isSprintingPossible	port	crates/sunrise-client/src/sprint.rs::Conditions::possible
 LocalPlayer.canStartSprinting	port	crates/sunrise-client/src/sprint.rs::Conditions::can_start	forward, not sprinting, food or may-fly, no slow item in use and not moving slowly unless underwater; `slow_item` is set from the item use (game.rs item_use_slows_sprint), so eating or drinking blocks the start

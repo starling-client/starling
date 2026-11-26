@@ -18,8 +18,29 @@ pub trait ClientTextClientHost {
     /// In-memory text reads do not enforce the 512-node serialization depth cap
     /// or `ExtraCodecs` profile/property bounds.
     /// No NeoForge hook counterpart is documented.
+    /// The visitor returns true to continue and false to stop. The result is true
+    /// if the whole sequence was visited. Use `character.to_owned()` to retain it.
     #[forward_api_inputs]
-    fn text_visual_order(&self, text: &Text) -> Vec<VisualTextCharacter>;
+    fn visit_text_visual_order(
+        &self,
+        text: &Text,
+        visit: &mut dyn FnMut(VisualTextCharacterRef<'_>) -> bool,
+    ) -> bool;
+
+    /// Wrap with the active font as in `Font.split`, and lend each placed line in
+    /// logical order. Returns the laid-out dimensions, even outside a draw.
+    /// The wrapping width and all line positions and returned dimensions are in
+    /// scaled GUI pixels. Clone a line's text to keep it after the visitor returns.
+    /// Invalid layout geometry (including a non-finite scaled result) refuses before visiting
+    /// any line; no line or character output cap applies.
+    /// Use [`GuiCanvas::text_with_word_wrap`] for drawing a label without replaying its lines.
+    #[forward_api_inputs]
+    fn visit_text_lines(
+        &self,
+        text: &Text,
+        spec: TextLayoutSpec,
+        visit: &mut dyn FnMut(TextLine<'_>),
+    ) -> Result<TextLayoutSize, TextLayoutError>;
 
     /// Side: client.
     /// `Font.width(FormattedText)`: the width of a component in unscaled GUI
@@ -43,4 +64,12 @@ pub trait ClientTextClientHost {
     #[forward_api_inputs]
     #[forward_api_output]
     fn text_split(&self, text: &Text, width: i32) -> Vec<Text>;
+
+    /// Side: client.
+    /// `Language.isDefaultRightToLeft`, the flag `Font.isBidirectional` reads: whether the
+    /// active language reads right to left (its `bidirectional` in a pack's `language`
+    /// section), false for the default language. Lay out a row of GUI or tooltip pieces in
+    /// reading order with it. Available outside drawing and outside a logged-in world,
+    /// including client setup, as the other text reads are.
+    fn language_right_to_left(&self) -> bool;
 }

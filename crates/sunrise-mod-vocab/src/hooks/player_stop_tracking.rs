@@ -1,5 +1,4 @@
 //! The `player_stop_tracking` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0148
 
 pub trait Hooks {
     /// A client stopped tracking an entity (NeoForge's

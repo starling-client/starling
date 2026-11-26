@@ -35,12 +35,12 @@ import random
 import subprocess
 import sys
 
-try:
-    from . import lab, test_rust_parity as base, test_model_baking_parity as baking
-    from .hud_parity_cases import KINDS
-except ImportError:
-    import lab, test_rust_parity as base, test_model_baking_parity as baking
-    from hud_parity_cases import KINDS
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_rust_parity as base, test_model_baking_parity as baking
+from tools.hud_parity_cases import KINDS
 
 PARITY = lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity'
 

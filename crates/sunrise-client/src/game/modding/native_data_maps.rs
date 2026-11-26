@@ -47,21 +47,22 @@ pub(crate) trait MapRegistries {
     fn tag(&self, registry: &str, tag: &str) -> Vec<String>;
 }
 
-/// A world's registries while its server tables build: every registry's ids
-/// as the command registries hold them (built in, the packs' and content
-/// mods'), the world's loaded datapack registries (the authority for a
-/// mod-declared one the command ids do not list), the tags bound on the
-/// staged items, and another registry's tags read from the same packs on first use.
+/// A world's registries while its server tables build: candidate IDs, the
+/// declared registries' admitted entries, and the candidate's bound tags.
+/// Standalone readers can also supply their own registry metadata and packs.
 pub(crate) struct WorldRegistries<'a> {
     ids: BTreeMap<&'a str, &'a [String]>,
+    biome_keys: Option<&'a [mod_api::BiomeKey]>,
+    candidate: Option<&'a super::load_conditions::RegistryView>,
     datapack: Option<&'a mod_api::DatapackRegistrySet>,
     items: &'a sunrise_client::items::Items,
+    bound_tags: Option<&'a PackTags>,
     root: &'a std::path::Path,
     overlay: &'a sunrise_world::loot::PackOverlay<'a>,
     id_sets: RefCell<HashMap<String, HashSet<String>>>,
-    datapack_ids: RefCell<HashMap<String, HashSet<String>>>,
     tags: RefCell<HashMap<String, HashMap<String, HashSet<String>>>>,
 }
+type PackTags = HashMap<&'static str, HashMap<String, HashSet<String>>>;
 impl<'a> WorldRegistries<'a> {
     pub(crate) fn new(
         ids: impl IntoIterator<Item = (&'a str, &'a [String])>,
@@ -72,14 +73,31 @@ impl<'a> WorldRegistries<'a> {
     ) -> Self {
         Self {
             ids: ids.into_iter().collect(),
+            biome_keys: None,
+            candidate: None,
             datapack,
             items,
+            bound_tags: None,
             root,
             overlay,
             id_sets: RefCell::default(),
-            datapack_ids: RefCell::default(),
             tags: RefCell::default(),
         }
+    }
+    /// Resolve biome entries only against registered keys, not save placeholders.
+    pub(crate) fn with_biome_keys(mut self, keys: &'a [mod_api::BiomeKey]) -> Self {
+        self.biome_keys = Some(keys);
+        self
+    }
+    /// Prefer the complete staged registry and tag bindings over command metadata.
+    pub(super) fn with_candidate(
+        mut self,
+        candidate: &'a super::load_conditions::RegistryView,
+        tags: &'a PackTags,
+    ) -> Self {
+        self.candidate = Some(candidate);
+        self.bound_tags = Some(tags);
+        self
     }
     /// Whether a mod's declaration names `registry`.
     fn declared(&self, registry: &str) -> bool {
@@ -87,40 +105,42 @@ impl<'a> WorldRegistries<'a> {
             .iter()
             .any(|declaration| declaration.key == registry)
     }
-    /// The loaded entries of a mod-declared datapack registry, read once.
-    fn datapack_entries(&self, registry: &str) -> Option<HashSet<String>> {
-        let mut sets = self.datapack_ids.borrow_mut();
-        Some(
-            sets.entry(registry.to_owned())
-                .or_insert_with(|| {
-                    self.datapack
-                        .and_then(|set| set.entries(registry).ok())
-                        .map(|entries| entries.into_iter().map(String::from).collect())
-                        .unwrap_or_default()
-                })
-                .clone(),
-        )
-    }
 }
 impl MapRegistries for WorldRegistries<'_> {
     fn known(&self, registry: &str) -> bool {
-        self.ids.contains_key(registry) || TYPED.contains(&registry) || self.declared(registry)
+        self.candidate
+            .is_some_and(|candidate| candidate.ids.contains_key(registry))
+            || self.ids.contains_key(registry)
+            || TYPED.contains(&registry)
+            || self.declared(registry)
     }
     fn contains(&self, registry: &str, entry: &str) -> bool {
+        if registry == sunrise_client::lan::data::BIOME_REGISTRY
+            && let Some(keys) = self.biome_keys
+        {
+            let mut sets = self.id_sets.borrow_mut();
+            let set = sets
+                .entry(registry.to_owned())
+                .or_insert_with(|| keys.iter().map(ToString::to_string).collect());
+            return set.contains(entry);
+        }
+        if self.declared(registry) {
+            return self
+                .datapack
+                .is_some_and(|set| set.contains_entry(registry, entry));
+        }
+        if let Some(ids) = self
+            .candidate
+            .and_then(|candidate| candidate.ids.get(registry))
+        {
+            return ids.contains(entry);
+        }
         if let Some(ids) = self.ids.get(registry).filter(|ids| !ids.is_empty()) {
             let mut sets = self.id_sets.borrow_mut();
             let set = sets
                 .entry(registry.to_owned())
                 .or_insert_with(|| ids.iter().cloned().collect());
             return set.contains(entry);
-        }
-        // A mod-declared datapack registry the command ids do not list: the
-        // world's loaded entries are the authority, and an id not held is
-        // refused (#3357's unknown-id rejection).
-        if self.declared(registry) {
-            return self
-                .datapack_entries(registry)
-                .is_some_and(|set| set.contains(entry));
         }
         // A typed registry the sync did not list: no source says its entries.
         true
@@ -131,13 +151,25 @@ impl MapRegistries for WorldRegistries<'_> {
                 .map(|set| set.iter().cloned().collect())
                 .unwrap_or_default()
         };
+        if self.declared(registry) {
+            return self.datapack.map_or_else(Vec::new, |set| {
+                mod_api::__private::game::datapack_tag_members(set, registry, tag).to_vec()
+            });
+        }
         match registry {
             "minecraft:item" => members(&self.items.item_tags),
             "minecraft:block" => members(&self.items.block_tags),
+            "minecraft:fluid" => members(&self.items.fluid_tags),
             sunrise_client::items::EntityTypeTags::REGISTRY => {
                 members(self.items.entity_type_tags.members())
             }
             _ => {
+                if let Some(tags) = self
+                    .bound_tags
+                    .and_then(|tags| tags.get(folder(registry).as_str()))
+                {
+                    return members(tags);
+                }
                 let mut loaded = self.tags.borrow_mut();
                 let tags = loaded.entry(registry.to_owned()).or_insert_with(|| {
                     sunrise_client::items::load_tags(self.root, &folder(registry), self.overlay)
@@ -160,7 +192,7 @@ pub(super) type MergedDataMaps = LoadedMaps<Value>;
 
 #[derive(Default)]
 pub(crate) struct DataMaps {
-    pub(super) biome_keys: mod_api::__private::BiomeKeys,
+    pub(super) biome_keys: std::sync::Arc<mod_api::__private::BiomeKeys>,
     maps: BTreeMap<String, HashMap<String, Vec<(String, Tag)>>>,
     pub(super) mob_maps: std::sync::Arc<sunrise_client::neoforge_mob_maps::NeoForgeMobMaps>,
 }
@@ -248,7 +280,7 @@ fn load_json_maps(
 
 impl DataMaps {
     pub(crate) fn with_biome_keys(mut self, keys: mod_api::__private::BiomeKeys) -> Self {
-        self.biome_keys = keys;
+        self.biome_keys = std::sync::Arc::new(keys);
         self
     }
 
@@ -934,5 +966,61 @@ mod tests {
         );
         let map = &maps["minecraft:block"]["mymod:hardness"];
         assert_eq!(map.get("minecraft:oak_log"), Some(&json!(2)));
+    }
+
+    #[test]
+    fn empty_loaded_biome_registry_rejects_data_map_targets() {
+        let biome_registry = sunrise_client::lan::data::BIOME_REGISTRY;
+        let command_biomes = [String::from("minecraft:plains")];
+        let items = sunrise_client::items::Items::empty();
+        let f = files(&[(
+            "data_maps/mymod:worldgen/biome/climate",
+            &[json!({"values": {
+                "minecraft:plains": 1,
+                "test:marsh": 2
+            }})],
+        )]);
+        let overlay = sunrise_world::loot::PackOverlay {
+            files: &f,
+            ..sunrise_world::loot::PackOverlay::default()
+        };
+
+        // An explicitly empty loaded biome table must reject every target even when
+        // the command registry still lists biome ids.
+        let empty = WorldRegistries::new(
+            [(biome_registry, command_biomes.as_slice())],
+            None,
+            &items,
+            std::path::Path::new("unused"),
+            &overlay,
+        )
+        .with_biome_keys(&[]);
+        assert!(!empty.contains(biome_registry, "minecraft:plains"));
+        let maps = DataMaps::load(&[ty("mymod:climate", biome_registry)], &overlay, &empty);
+        assert_eq!(
+            maps.value(biome_registry, "mymod:climate", "minecraft:plains"),
+            Ok(None)
+        );
+        assert_eq!(maps.entries(biome_registry, "mymod:climate"), Ok(&[][..]));
+
+        // Authoritative loaded biome keys override the command registry for populated tables too.
+        let loaded_keys = [mod_api::BiomeKey::parse("test:marsh").unwrap()];
+        let loaded = WorldRegistries::new(
+            [(biome_registry, command_biomes.as_slice())],
+            None,
+            &items,
+            std::path::Path::new("unused"),
+            &overlay,
+        )
+        .with_biome_keys(&loaded_keys);
+        let maps = DataMaps::load(&[ty("mymod:climate", biome_registry)], &overlay, &loaded);
+        assert_eq!(
+            maps.value(biome_registry, "mymod:climate", "minecraft:plains"),
+            Ok(None)
+        );
+        assert_eq!(
+            maps.value(biome_registry, "mymod:climate", "test:marsh"),
+            Ok(Some(&Tag::Int(2)))
+        );
     }
 }

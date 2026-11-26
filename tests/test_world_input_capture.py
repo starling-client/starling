@@ -174,7 +174,7 @@ struct Game {
     window_cursor: Option<window::PointerSample>,
     window_pointer_space: std::cell::OnceCell<window::PointerSpace>,
     server_packs: ServerPacks, command_prompt: Option<()>, options: Options, settings: Settings,
-    unclaimed_window: bool, scripted: bool, focus_after_run: Option<bool>, applied_focus: Vec<bool>,
+    unclaimed_window: bool, scripted: bool, focus_after_run: Option<bool>, applied_focus: Vec<bool>, screen_grab: bool,
     unclaimed_modifiers: Option<u8>, applied_modifiers: Vec<u8>,
 }
 impl Default for Game {
@@ -186,7 +186,7 @@ impl Default for Game {
             renderer: None, cursor: (0.0, 0.0), window_cursor: None,
             window_pointer_space: std::cell::OnceCell::new(), server_packs: ServerPacks::default(),
             command_prompt: None, options: Options::default(), settings: Settings,
-            unclaimed_window: false, scripted: false, focus_after_run: None, applied_focus: Vec::new(),
+            unclaimed_window: false, scripted: false, focus_after_run: None, applied_focus: Vec::new(), screen_grab: false,
             unclaimed_modifiers: None, applied_modifiers: Vec::new() }
     }
 }
@@ -542,7 +542,14 @@ fn main() {
     @unittest.skipUnless(shutil.which("rustc"), "requires Rust")
     def test_native_mouse_turns_only_during_active_gameplay(self):
         source = "".join((ROOT / "crates/sunrise-client/src" / path).read_text(encoding="utf-8")
+<<<<<<< HEAD
                           for path in ("game/runtime/window_handler.rs", "game/interface/pointer_capture.rs", "game.rs"))
+||||||| 46c00106def
+                          for path in ("game/runtime/window_handler.rs", "game.rs"))
+=======
+                          for path in ("game/runtime/window_handler.rs", "game.rs",
+                                       "game/interface/pointer_capture.rs"))
+>>>>>>> ed6772e2118
         fixture = r'''
 use std::time::Instant;
 #[path = "MOUSE_PATH"] mod mouse;
@@ -572,6 +579,11 @@ impl Game {
     fn pad_yield_input(&mut self, _: &ActiveEventLoop) {}
     // `game/pad/capture.rs`: the radial menu owns the pad while it is open.
     fn pad_radial_captures(&self) -> bool { self.pad.radial.is_open() }
+    // `game/interface/pointer_capture.rs`: a mod screen's pointer grab and its deferred request;
+    // this fixture holds no mod screen, so motion always turns the camera.
+    fn apply_pointer_grab_request(&mut self) {}
+    fn mod_screen_grabs_pointer(&self) -> bool { false }
+    fn screen_pointer_motion(&mut self, _: [f64; 2]) {}
 METHOD
 }
 fn main() {
@@ -606,8 +618,15 @@ fn main() {
 }
 '''
         fixture = fixture.replace("MOUSE_PATH", (ROOT / "crates/sunrise-client-input/src/mouse.rs").as_posix())
+<<<<<<< HEAD
         fixture = fixture.replace("METHOD", method(source, "grabbed_mouse_motion") + "\n" +
                                   method(source, "device_event"))
+||||||| 46c00106def
+        fixture = fixture.replace("METHOD", method(source, "device_event"))
+=======
+        fixture = fixture.replace(
+            "METHOD", method(source, "device_event") + "\n" + method(source, "grabbed_pointer_motion"))
+>>>>>>> ed6772e2118
         self.run_fixture(fixture, "native-mouse")
 
     def run_fixture(self, fixture, name):

@@ -1,0 +1,3 @@
+ids = ["type:Block", "type:Block.use_block_description_prefix"]
+why = "A declared block chooses its item's name key, as Item.Properties does: the block's block.<namespace>.<path> (useBlockDescriptionPrefix, which vanilla's Items.registerBlock calls), or the item's own item.<namespace>.<path> with use_block_description_prefix false, so a mod whose language file keys its block items under item. shows names, not raw keys (#5574). The draft's Wire form gains the field."
+migrate = "Nothing to change: the field defaults to true, the block's key, as before. Set it false, or \"use_block_description_prefix\": false in a block file, for a block item named under item.<namespace>.<path>. Rebuild against the current SDK."

@@ -1,0 +1,3 @@
+ids = ["handle:Command::executes"]
+why = "A server command executor can fail with its own text, just as a vanilla CommandSyntaxException carries a message. The command's source receives failure output independently of success feedback, and execute store records a failed run."
+migrate = "Return Ok(n) instead of Some(n), or Err(message.into()) with a mod_api::Text instead of None."

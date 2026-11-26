@@ -43,6 +43,117 @@ pub struct Findings {
     pub warnings: Vec<String>,
 }
 
+/// The files supplied by a mod's listed `[[jar]]` archives, passed to [`check_references`].
+///
+/// Holds every normalized archive entry path and the raw contents of `assets/<ns>/lang/en_us.json`
+/// files from the jars so references and translation keys resolve against the mod and its jars
+/// together.
+#[derive(Debug, Default, Clone)]
+pub struct JarLayer {
+    /// Entry paths (`/` separators, no leading `/`) inside the listed `[[jar]]` archives.
+    pub files: BTreeSet<String>,
+    /// Raw bytes of `assets/<ns>/lang/en_us.json` files from the jars, keyed by entry path.
+    pub lang_files: BTreeMap<String, Vec<Vec<u8>>>,
+}
+
+impl JarLayer {
+    /// Creates an empty jar layer.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Inserts a normalized file path into the layer.
+    pub fn insert_file(&mut self, path: impl Into<String>) {
+        self.files.insert(path.into());
+    }
+
+    /// Inserts an `assets/<ns>/lang/en_us.json` file's contents (and records its path).
+    pub fn insert_lang(&mut self, path: impl Into<String>, bytes: Vec<u8>) {
+        let path = path.into();
+        self.files.insert(path.clone());
+        self.lang_files.entry(path).or_default().push(bytes);
+    }
+
+    /// Returns whether `path` is present in any listed jar.
+    pub fn contains(&self, path: &str) -> bool {
+        self.files.contains(path)
+    }
+
+    /// Collects the entry names (and `assets/<ns>/lang/en_us.json` contents) of one `.jar` zip
+    /// archive into this layer, within the content limits a mod's own files have: at most
+    /// [`MAX_FILES`](super::MAX_FILES) entries, [`MAX_FILE`](super::MAX_FILE) bytes per English
+    /// names file and [`MAX_TOTAL`](super::MAX_TOTAL) bytes across them. A jar past a limit is an
+    /// error, and the caller passes no layer.
+    pub fn add_archive(&mut self, path: &std::path::Path) -> Result<(), String> {
+        use super::{MAX_FILE, MAX_FILES, MAX_TOTAL};
+        use std::io::Read;
+        let file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let mut zip = zip::ZipArchive::new(file).map_err(|e| format!("{}: {e}", path.display()))?;
+        if zip.len() > MAX_FILES {
+            return Err(format!("{}: more than {MAX_FILES} entries", path.display()));
+        }
+        let mut lang_indices = Vec::new();
+        for i in 0..zip.len() {
+            let entry = zip
+                .by_index_raw(i)
+                .map_err(|e| format!("{}: {e}", path.display()))?;
+            if entry.is_dir() {
+                continue;
+            }
+            let Ok(name) = entry.name() else {
+                continue;
+            };
+            let normalized = name.replace('\\', "/");
+            let normalized = normalized.trim_start_matches('/');
+            if normalized.is_empty() {
+                continue;
+            }
+            if is_en_us_lang(normalized) {
+                lang_indices.push((i, normalized.to_owned()));
+            }
+            self.files.insert(normalized.to_owned());
+        }
+        let mut total = 0u64;
+        for (i, normalized) in lang_indices {
+            let mut entry = zip
+                .by_index(i)
+                .map_err(|e| format!("{}: {e}", path.display()))?;
+            let mut bytes = Vec::new();
+            entry
+                .by_ref()
+                .take(MAX_FILE.saturating_add(1))
+                .read_to_end(&mut bytes)
+                .map_err(|e| format!("{}: {normalized}: {e}", path.display()))?;
+            if bytes.len() as u64 > MAX_FILE {
+                return Err(format!(
+                    "{}: {normalized} is over {} MiB",
+                    path.display(),
+                    MAX_FILE >> 20
+                ));
+            }
+            total += bytes.len() as u64;
+            if total > MAX_TOTAL {
+                return Err(format!(
+                    "{}: English names files are over {} MiB together",
+                    path.display(),
+                    MAX_TOTAL >> 20
+                ));
+            }
+            self.lang_files.entry(normalized).or_default().push(bytes);
+        }
+        Ok(())
+    }
+}
+
+fn is_en_us_lang(path: &str) -> bool {
+    let mut parts = path.split('/');
+    parts.next() == Some("assets")
+        && parts.next().is_some_and(|ns| !ns.is_empty())
+        && parts.next() == Some("lang")
+        && parts.next() == Some("en_us.json")
+        && parts.next().is_none()
+}
+
 /// The most declared ids a message lists.
 const LISTED: usize = 8;
 
@@ -71,10 +182,17 @@ enum Asset {
 }
 
 /// Checks the references among `content`'s files; `Err` only when a file cannot be read.
+///
 /// A native mod or `served_by` content package also has ids declared in code, so the ids it
-/// declares in files are not taken for all of them; a mod with `jar` layers may find assets and
-/// data there.
-pub fn check_references(content: &Content, manifest: &Manifest) -> Result<Findings, String> {
+/// declares in files are not taken for all of them. When `jars` is `Some`, every `[[jar]]` of the
+/// manifest is present in that layer and references resolve against the mod's own files and `jars`
+/// together; when `jars` is `None` and the manifest lists `[[jar]]` (or declared dependencies),
+/// files those archives could supply are skipped or warned rather than failed.
+pub fn check_references(
+    content: &Content,
+    manifest: &Manifest,
+    jars: Option<&JarLayer>,
+) -> Result<Findings, String> {
     let atlas = |name: &String| {
         let mut parts = name.split('/');
         parts.next() == Some("assets") && parts.nth(1) == Some("atlases") && name.ends_with(".json")
@@ -83,9 +201,11 @@ pub fn check_references(content: &Content, manifest: &Manifest) -> Result<Findin
         content,
         manifest,
         reader: content.reader(),
+        jars,
         code: manifest.native.is_some() || manifest.served_by.is_some(),
-        jar: !manifest.jar.is_empty() || !manifest.dependencies.is_empty(),
-        atlas: content.files.iter().any(atlas),
+        unresolved_jar: !manifest.jar.is_empty() && jars.is_none(),
+        has_deps: !manifest.dependencies.is_empty(),
+        atlas: content.files.iter().any(atlas) || jars.is_some_and(|j| j.files.iter().any(atlas)),
         recipe_filters: content.files.iter().any(|name| {
             name.strip_prefix("data/")
                 .and_then(|data| data.split_once('/'))
@@ -154,10 +274,14 @@ struct References<'a> {
     content: &'a Content,
     manifest: &'a Manifest,
     reader: FileReader<'a>,
+    jars: Option<&'a JarLayer>,
     code: bool,
-    /// A `[[jar]]` layer or a declared dependency's jar may supply files of the mod's namespaces.
-    jar: bool,
-    /// The mod has atlas sources, which can rename a sprite or take a whole directory.
+    /// The manifest lists `[[jar]]`, and the caller did not supply their contents.
+    unresolved_jar: bool,
+    /// The manifest declares dependencies whose jars are not inspected here.
+    has_deps: bool,
+    /// The mod (or a supplied jar) has atlas sources, which can rename a sprite or take a whole
+    /// directory.
     atlas: bool,
     /// A filter file may remove recipes or replace a referenced input or result before decoding.
     recipe_filters: bool,
@@ -220,11 +344,20 @@ impl References<'_> {
             .filter(|value| !conditional(value)))
     }
 
-    fn has(&self, file: &str) -> bool {
+    /// Whether an uninspected `[[jar]]` or a declared dependency's jar may supply missing files.
+    fn unknown_jar(&self) -> bool {
+        self.unresolved_jar || self.has_deps
+    }
+
+    fn has_own(&self, file: &str) -> bool {
         self.content
             .files
             .binary_search_by(|f| f.as_str().cmp(file))
             .is_ok()
+    }
+
+    fn has(&self, file: &str) -> bool {
+        self.has_own(file) || self.jars.is_some_and(|jars| jars.contains(file))
     }
 
     /// The path of `id` when it is in one of the mod's namespaces.
@@ -237,11 +370,14 @@ impl References<'_> {
             .then_some((namespace, path))
     }
 
-    /// What else could supply an asset the mod's files lack.
+    /// What else could supply an asset the mod's files (and any supplied jars) lack.
     fn supplier(&self, texture: bool) -> Option<String> {
         let mut others = Vec::new();
-        if self.jar {
-            others.push("a [[jar]] layer or a dependency's jar");
+        match (self.unresolved_jar, self.has_deps) {
+            (true, true) => others.push("a [[jar]] layer or a dependency's jar"),
+            (true, false) => others.push("a [[jar]] layer"),
+            (false, true) => others.push("a dependency's jar"),
+            (false, false) => {}
         }
         if texture && self.atlas {
             others.push("an atlas source (it renames a sprite or reads a directory)");
@@ -543,11 +679,15 @@ impl References<'_> {
         if self.has(&file) {
             return;
         }
-        let other = match (self.jar, self.code) {
-            (true, true) => Some("a [[jar]] layer, a dependency's jar or the mod's code"),
-            (true, false) => Some("a [[jar]] layer or a dependency's jar"),
-            (false, true) => Some("the mod's code"),
-            (false, false) => None,
+        let other = match (self.unresolved_jar, self.has_deps, self.code) {
+            (true, true, true) => Some("a [[jar]] layer, a dependency's jar or the mod's code"),
+            (true, true, false) => Some("a [[jar]] layer or a dependency's jar"),
+            (true, false, true) => Some("a [[jar]] layer or the mod's code"),
+            (true, false, false) => Some("a [[jar]] layer"),
+            (false, true, true) => Some("a dependency's jar or the mod's code"),
+            (false, true, false) => Some("a dependency's jar"),
+            (false, false, true) => Some("the mod's code"),
+            (false, false, false) => None,
         };
         match other {
             None => self.findings.errors.push(format!(
@@ -596,9 +736,13 @@ impl References<'_> {
             .map(|n| format!(" Did you mean {n}?"))
             .unwrap_or_default();
         let listed = self.listed(&known);
-        let reason = uncertainty.or(self
-            .jar
-            .then_some("a [[jar]] layer or a dependency's jar may supply it"));
+        let jar_reason = match (self.unresolved_jar, self.has_deps) {
+            (true, true) => Some("a [[jar]] layer or a dependency's jar may supply it"),
+            (true, false) => Some("a [[jar]] layer may supply it"),
+            (false, true) => Some("a dependency's jar may supply it"),
+            (false, false) => None,
+        };
+        let reason = uncertainty.or(jar_reason);
         if let Some(reason) = reason {
             self.findings.warnings.push(format!(
                 "{name}: could not find {what} {id} among the {kind}s this mod declares ({listed}); {reason}.{near} Otherwise fix the id."
@@ -641,7 +785,7 @@ impl References<'_> {
             let Some((namespace, path)) = self.own(&block.id) else {
                 continue;
             };
-            if !self.has(&format!("data/{namespace}/sunrise/block/{path}.json")) {
+            if !self.has_own(&format!("data/{namespace}/sunrise/block/{path}.json")) {
                 continue;
             }
             let file = format!("data/{namespace}/sunrise/block/{path}.json");
@@ -650,7 +794,8 @@ impl References<'_> {
             // shape takes its template's, which the tool cannot see: a chest or a sign is drawn
             // by its block entity.
             let shape = block.properties.render_shape;
-            if shape != Some(RenderShape::Invisible)
+            if !self.unknown_jar()
+                && shape != Some(RenderShape::Invisible)
                 && shape != Some(RenderShape::EntityblockAnimated)
                 && !self.has(&state)
             {
@@ -677,7 +822,7 @@ impl References<'_> {
                 self.item_definition_exists(&file, &block.id, namespace, path);
             }
             let loot = format!("data/{namespace}/loot_table/blocks/{path}.json");
-            if !self.jar && !self.has(&loot) {
+            if !self.unknown_jar() && !self.has(&loot) {
                 self.findings.warnings.push(format!(
                     "{file}: no local loot table found for the block {} (expected {loot}). Add one if this block needs its own table.",
                     block.id
@@ -693,7 +838,7 @@ impl References<'_> {
                 continue;
             };
             let file = format!("data/{namespace}/sunrise/item/{path}.json");
-            if !self.has(&file) {
+            if !self.has_own(&file) {
                 continue;
             }
             self.item_definition_exists(&file, &item.id, namespace, path);
@@ -704,7 +849,7 @@ impl References<'_> {
 
     fn item_definition_exists(&mut self, file: &str, id: &str, namespace: &str, path: &str) {
         let definition = format!("assets/{namespace}/items/{path}.json");
-        if !self.jar && !self.has(&definition) {
+        if !self.unknown_jar() && !self.has(&definition) {
             self.findings.warnings.push(format!(
                 "{file}: the item {id} has no item definition, so it is drawn as the missing model. Add {definition}."
             ));
@@ -713,31 +858,53 @@ impl References<'_> {
 
     /// Each `(language key, declaring file)` has a name in its namespace's `en_us.json`.
     fn names(&mut self, wanted: Vec<(String, String)>) -> Result<(), String> {
+        if self.unknown_jar() {
+            return Ok(());
+        }
         // `None`: no file. `Some(None)`: a file the game's lenient reader may take and this
         // one does not; no key is asked of it.
-        let mut by_namespace: BTreeMap<String, Option<Option<Value>>> = Default::default();
+        let mut by_namespace: BTreeMap<String, Option<Option<Vec<Value>>>> = Default::default();
         for (key, file) in wanted {
             let namespace = file.split('/').nth(1).unwrap_or_default().to_owned();
             let lang = format!("assets/{namespace}/lang/en_us.json");
             if !by_namespace.contains_key(&namespace) {
-                let value = if self.has(&lang) {
-                    Some(self.parsed(&lang)?.ok().map(|(_, value)| value))
-                } else {
+                let mut found_any = false;
+                let mut lenient = false;
+                let mut parsed = Vec::new();
+                if self.has_own(&lang) {
+                    found_any = true;
+                    match self.parsed(&lang)? {
+                        Ok((_, value)) => parsed.push(value),
+                        Err(_) => lenient = true,
+                    }
+                }
+                if let Some(jar_entries) = self.jars.and_then(|jars| jars.lang_files.get(&lang)) {
+                    for bytes in jar_entries {
+                        found_any = true;
+                        match parse(bytes) {
+                            Ok((_, value)) => parsed.push(value),
+                            Err(_) => lenient = true,
+                        }
+                    }
+                }
+                let entry = if !found_any {
                     None
+                } else if lenient {
+                    Some(None)
+                } else {
+                    Some(Some(parsed))
                 };
-                by_namespace.insert(namespace.clone(), value);
+                by_namespace.insert(namespace.clone(), entry);
             }
             let why = match &by_namespace[&namespace] {
-                Some(Some(lang)) if lang.get(&key).is_some() => continue,
+                Some(Some(langs)) if langs.iter().any(|lang| lang.get(&key).is_some()) => continue,
                 Some(None) => continue,
                 Some(Some(_)) => format!("{lang} has no {key:?}"),
                 None => format!("there is no {lang}"),
             };
-            if !self.jar {
-                self.findings.warnings.push(format!(
-                    "{file}: no local name found for {key} ({why}). Add the key to {lang} if another language source does not supply it."
-                ));
-            }
+            self.findings.warnings.push(format!(
+                "{file}: no local name found for {key} ({why}). Add the key to {lang} if another language source does not supply it."
+            ));
         }
         Ok(())
     }
@@ -771,6 +938,7 @@ fn near_file(check: &References<'_>, folder: &str, extension: &str, id: &str) ->
         .content
         .files
         .iter()
+        .chain(check.jars.iter().flat_map(|jars| jars.files.iter()))
         .filter_map(|f| {
             let path = f.strip_prefix(&prefix)?.strip_suffix(extension)?;
             Some(format!("{namespace}:{path}"))
@@ -1022,7 +1190,11 @@ mod tests {
     ];
 
     /// The good mod with `changes` applied: a file replaced, or removed when its text is empty.
-    fn findings(manifest: &str, changes: &[(&str, &str)]) -> Findings {
+    fn findings_with_jars(
+        manifest: &str,
+        changes: &[(&str, &str)],
+        jars: Option<&JarLayer>,
+    ) -> Findings {
         let dir = tempfile::tempdir().unwrap();
         let mut files: Vec<(&str, &str)> = GOOD.to_vec();
         for (name, text) in changes {
@@ -1039,7 +1211,11 @@ mod tests {
         }
         let package = Package::read(dir.path()).unwrap();
         let content = Content::read(dir.path(), &package.manifest).unwrap();
-        check_references(&content, &package.manifest).unwrap()
+        check_references(&content, &package.manifest, jars).unwrap()
+    }
+
+    fn findings(manifest: &str, changes: &[(&str, &str)]) -> Findings {
+        findings_with_jars(manifest, changes, None)
     }
 
     fn errors(changes: &[(&str, &str)]) -> Vec<String> {
@@ -1298,7 +1474,9 @@ mod tests {
         assert!(e[0].contains("data/gb/tags/worldgen/structure/common/fire.json"));
     }
 
-    /// 3. A `[[jar]]` layer may supply what the files lack: a warning that says so.
+    /// 3. A `[[jar]]` layer may supply what the files lack: without the jar cached, references
+    ///    warn and missing blockstates are skipped; with the jar layer supplied, references
+    ///    resolve against mod ∪ jar and missing files are reported.
     #[test]
     fn a_jar_layer_may_supply_what_the_files_lack() {
         let manifest = format!("{MANIFEST}{}", jar());
@@ -1312,8 +1490,12 @@ mod tests {
             ],
         );
         assert!(f.errors.is_empty(), "{f:?}");
-        assert_eq!(f.warnings.len(), 4, "{f:?}");
+        assert_eq!(f.warnings.len(), 3, "{f:?}");
         assert!(f.warnings.iter().all(|w| w.contains("[[jar]] layer")));
+        assert!(
+            !f.warnings.iter().any(|w| w.contains("blockstate")),
+            "{f:?}"
+        );
         assert!(
             f.warnings
                 .iter()
@@ -1327,6 +1509,72 @@ mod tests {
         // The same mod without a jar breaks.
         let e = errors(&[("data/gb/tags/item/things.json", tag)]);
         assert_eq!(e.len(), 2, "{e:?}");
+    }
+
+    #[test]
+    fn a_jar_layer_resolves_blockstate_and_model_and_reports_missing_ones() {
+        let manifest = format!("{MANIFEST}{}", jar());
+        let model_block = r#"{"template":"minecraft:stone","properties":{"render_shape":"MODEL"}}"#;
+        let stripped = [
+            ("data/gb/sunrise/block/slab.json", model_block),
+            ("assets/gb/blockstates/slab.json", ""),
+            ("assets/gb/models/block/slab.json", ""),
+            ("assets/gb/items/slab.json", ""),
+            ("data/gb/loot_table/blocks/slab.json", ""),
+            ("assets/gb/lang/en_us.json", ""),
+        ];
+        // With no layer supplied and [[jar]] listed, blockstate/loot/item/lang checks are quiet.
+        let no_layer = findings_with_jars(&manifest, &stripped, None);
+        assert!(no_layer.errors.is_empty(), "{no_layer:?}");
+        assert!(no_layer.warnings.is_empty(), "{no_layer:?}");
+
+        // A jar layer holding the blockstate, model, item definition, loot table and lang makes
+        // check completely quiet.
+        let mut complete = JarLayer::new();
+        complete.insert_file("assets/gb/blockstates/slab.json");
+        complete.insert_file("assets/gb/models/block/slab.json");
+        complete.insert_file("assets/gb/items/slab.json");
+        complete.insert_file("data/gb/loot_table/blocks/slab.json");
+        complete.insert_lang(
+            "assets/gb/lang/en_us.json",
+            br#"{"block.gb.slab":"Slab","item.gb.shard":"Shard"}"#.to_vec(),
+        );
+        assert_eq!(
+            findings_with_jars(&manifest, &stripped, Some(&complete)),
+            Findings::default()
+        );
+
+        // Missing the blockstate from the jar layer reports that exact file.
+        let mut no_blockstate = complete.clone();
+        no_blockstate
+            .files
+            .remove("assets/gb/blockstates/slab.json");
+        let f = findings_with_jars(&manifest, &stripped, Some(&no_blockstate));
+        assert_eq!(f.errors.len(), 1, "{f:?}");
+        assert!(
+            f.errors[0].contains("assets/gb/blockstates/slab.json"),
+            "{f:?}"
+        );
+        assert!(f.warnings.is_empty(), "{f:?}");
+
+        // Missing the block model referenced by the mod's own item definition reports that exact
+        // model file.
+        let mut no_model = complete.clone();
+        no_model.files.remove("assets/gb/models/block/slab.json");
+        let with_item_def = [
+            ("data/gb/sunrise/block/slab.json", model_block),
+            ("assets/gb/blockstates/slab.json", ""),
+            ("assets/gb/models/block/slab.json", ""),
+            ("data/gb/loot_table/blocks/slab.json", ""),
+            ("assets/gb/lang/en_us.json", ""),
+        ];
+        let f = findings_with_jars(&manifest, &with_item_def, Some(&no_model));
+        assert_eq!(f.errors.len(), 1, "{f:?}");
+        assert!(
+            f.errors[0].contains("assets/gb/models/block/slab.json"),
+            "{f:?}"
+        );
+        assert!(f.warnings.is_empty(), "{f:?}");
     }
 
     /// 4. A world fluid's flowing form is a fluid, its bucket an item, its block a block.
@@ -1516,5 +1764,40 @@ mod tests {
             "{\"type\":\"minecraft:smelting\",\"ingredient\":\"gb:nope\", // note\n\"result\":{\"id\":\"gb:slab\"}}",
         )]);
         assert!(e[0].contains("gb:nope is not an item"), "{e:?}");
+    }
+
+    /// 10. A jar's entries join the layer under `/` paths, and an English names file over the
+    ///     content limit fails the jar rather than leaving its names out.
+    #[test]
+    fn a_jar_archive_is_read_within_the_content_limits() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let write = |name: &str, entries: &[(&str, &[u8])]| {
+            let path = dir.path().join(name);
+            let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            for (entry, bytes) in entries {
+                zip.start_file(*entry, options).unwrap();
+                zip.write_all(bytes).unwrap();
+            }
+            zip.finish().unwrap();
+            path
+        };
+        let mut layer = JarLayer::new();
+        let jar = write("ok.jar", &[("\\assets\\gb\\lang\\en_us.json", b"{}")]);
+        layer.add_archive(&jar).unwrap();
+        assert!(layer.contains("assets/gb/lang/en_us.json"), "{layer:?}");
+        assert_eq!(
+            layer.lang_files["assets/gb/lang/en_us.json"],
+            [b"{}".to_vec()]
+        );
+        let big = vec![b' '; (crate::content::MAX_FILE + 1) as usize];
+        let jar = write("big.jar", &[("assets/gb/lang/en_us.json", &big)]);
+        let error = JarLayer::new().add_archive(&jar).unwrap_err();
+        assert!(
+            error.ends_with("assets/gb/lang/en_us.json is over 16 MiB"),
+            "{error}"
+        );
     }
 }

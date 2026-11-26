@@ -5,7 +5,6 @@
 use crate::game::{Game, Screen};
 use sunrise_client::{
     containers::BlockEntity,
-    creative::Creative,
     hud::{HudBatch, rgba},
     inv_sort,
     items::ItemStack,
@@ -137,7 +136,7 @@ impl Game<'_> {
         let order = self.stock_sort_order();
         let clicks = {
             let rank = |s: &ItemStack| {
-                let order = Creative::order_of(&order, s).unwrap_or(usize::MAX);
+                let order = order.of(&s.item, s.merge_kind()).unwrap_or(usize::MAX);
                 (order, self.stack_hover_name(s))
             };
             let max = |s: &ItemStack| self.max_stack(s);

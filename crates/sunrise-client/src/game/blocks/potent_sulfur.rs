@@ -4,13 +4,12 @@
 //! its next change of state and push the entities an eruption throws up. The
 //! client's draw the gas clouds and the eruption's plume, play its sound and
 //! push the local player, who moves on its own client and not on the server.
-use super::{Game, potions::mob_effect_id};
+use super::Game;
 use sunrise_client::{
     Result,
     block_entities::Pos,
     containers::BlockEntity,
     effects::EffectInstance,
-    mobs::Mob,
     particles::{ParticleLevel, ParticleOptions, ParticleType as T},
     potent_sulfur::{
         can_be_reached_by_noxious_gas, find_noxious_gas_source_block, unobstructed_block_count,
@@ -29,14 +28,6 @@ const GEYSER_ERUPTION_ACTIVE: &str = "minecraft:block.potent_sulfur.geyser_erupt
 /// `SoundEvents.GEYSER_CONTINUOUS_ACTIVE`.
 const GEYSER_CONTINUOUS_ACTIVE: &str =
     "minecraft:block.potent_sulfur.geyser_continuous_eruption_active";
-
-/// `PotentSulfurBlockEntity.applyNauseaEffect` on a mob that passed the
-/// `canBeAffected` ask.
-fn apply_nausea_effect_to_mob(mob: &mut Mob) {
-    if let Some(nausea) = mob_effect_id("nausea") {
-        mob.add_effect(nausea, EFFECT_DURATION_IN_TICKS, 0);
-    }
-}
 
 impl Game<'_> {
     /// The `potent_sulfur_state` of the block at `pos`, with its block state.
@@ -141,19 +132,11 @@ impl Game<'_> {
         if near.is_empty() {
             return;
         }
-        let reached: Vec<_> = near
-            .into_iter()
-            .map(|j| {
-                let m = &self.mobs[j as usize];
-                (m.id, m.kind.id.clone())
-            })
-            .collect();
-        for (id, kind) in reached {
-            if self.can_be_affected(Some(id as i32), &kind, "nausea")
-                && let Some(m) = self.mobs.iter_mut().find(|m| m.id == id)
-            {
-                apply_nausea_effect_to_mob(m);
-            }
+        let reached: Vec<_> = near.into_iter().map(|j| self.mobs[j as usize].id).collect();
+        for id in reached {
+            let mut nausea = EffectInstance::new("nausea", EFFECT_DURATION_IN_TICKS, 0);
+            nausea.ambient = true;
+            self.add_mob_effect(id, nausea, None);
         }
         // Applicability listeners can move or remove mobs: never acknowledge their
         // writes against the pre-hook grid.
@@ -300,7 +283,6 @@ impl Game<'_> {
             m.alive() && m.bounds().intersects(area)
         });
         let tags = self.items().entity_type_tags.clone();
-        let immune = tags.members().get("minecraft:not_affected_by_geysers");
         for &j in &near {
             let mob = &mut self.mobs[j as usize];
             // Entity.checkFallDistanceAccumulation.
@@ -308,7 +290,10 @@ impl Game<'_> {
                 mob.fall_distance = 1.0;
             }
             if !mob.extra.passenger
-                && !immune.is_some_and(|t| t.contains(&mob.kind.id))
+                && !tags.has_bit(
+                    mob.kind.flags.entity_tag_slot,
+                    sunrise_client::items::EntityTypeTags::NOT_AFFECTED_BY_GEYSERS,
+                )
                 && mob.velocity.y < limit
             {
                 mob.velocity.y += push;
@@ -458,26 +443,18 @@ impl Game<'_> {
                             GEYSER_CONTINUOUS_ACTIVE
                         };
                         let at = source.map(|c| f64::from(c) + 0.5);
-                        // playLocalSound: guests play their own.
-                        self.audio.play_unshared(sound, Some(at), 1.0, 1.0);
+                        // playLocalSound: the seed is the level random's next long; a host's
+                        // guests play their own.
+                        let seed = self.particles.level_random().next_long();
+                        if self.remote.is_some() {
+                            self.play_audio_seeded(sound, Some(at), 1.0, 1.0, seed);
+                        } else {
+                            self.play_audio_unshared(sound, Some(at), 1.0, 1.0);
+                        }
                     }
                 }
                 self.launch_local_player_ticker(pos);
             }
-        }
-    }
-
-    /// `ClientLevel.tickBlockEntities` for the potent sulfur of a server's
-    /// level: every one the client knows ticks.
-    pub(super) fn tick_remote_potent_sulfur(&mut self) {
-        let keys: Vec<Pos> = self
-            .world
-            .block_entities
-            .iter()
-            .filter_map(|(k, e)| matches!(e, BlockEntity::PotentSulfur(_)).then_some(*k))
-            .collect();
-        for key in keys {
-            self.client_tick_potent_sulfur(key);
         }
     }
 
@@ -499,6 +476,7 @@ impl Game<'_> {
 #[cfg(test)]
 mod pass_tests {
     use super::*;
+    use sunrise_client::mobs::Mob;
     use sunrise_core::{geometry::Vec3, random::LegacyRandom};
 
     /// The mobs whose box meets `area`, by walking them all.

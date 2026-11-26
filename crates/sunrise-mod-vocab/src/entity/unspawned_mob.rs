@@ -1,32 +1,24 @@
-//! A mob the game has made but not yet added to a level: its typed refusal, the scoped editor a
-//! hook gets beside its [`UnspawnedMobRef`](crate::UnspawnedMobRef), and the spawn group data
-//! (`SpawnGroupData`) the mobs of one pack share.
+//! A mob the game has made but not yet added to a level: its typed refusal, its scoped read-only
+//! view ([`UnspawnedMobView`]) and mutable editor ([`UnspawnedMobEditor`]), and the spawn group
+//! data (`SpawnGroupData`) the mobs of one pack share.
 
 use crate::{AttributeModifier, EntityRef, EquipmentSlot, Identifier, ItemStack, Text};
 
 /// Why a read or an edit of an unspawned mob was refused.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
+// no wire: returned only by scoped native unspawned-mob views and editors.
 pub enum UnspawnedMobError {
     /// The retained custom name exceeds the component boundary.
     Text(crate::text::TextFormError),
-    /// The hook that lent the handle has returned, the handle belongs to another lend or world,
-    /// or there is no game.
-    Expired,
-    /// This mob's type has no such attribute, or the game keeps no mob behind this lend (the
+    /// This mob's type has no such attribute, or the game keeps no mob behind this loan (the
     /// ender dragon, which it stores apart from mobs, or a position check where the game creates
     /// the mob later from saved data or the world generator).
     Unsupported,
     /// The value is refused: an unknown attribute, a non-finite number, a modifier id the
-    /// attribute already has, an empty or full tag list, or invalid item data.
+    /// attribute already has, an empty or full tag list, invalid item data, an out-of-bounds
+    /// list index, or an invalid pending-child specification.
     Invalid,
-    /// A child is already attached, consumed, or belongs to a different collection.
-    Ownership,
-    /// The action's child capacity would be exceeded.
-    Capacity,
-    /// The bounded nesting or lifetime construction budget is exhausted.
-    Budget,
 }
 
 impl From<crate::text::TextFormError> for UnspawnedMobError {
@@ -41,71 +33,223 @@ impl From<crate::StackWriteError> for UnspawnedMobError {
     }
 }
 
-impl crate::NoBackend for UnspawnedMobError {
-    fn no_backend() -> Self {
-        Self::Expired
-    }
+/// Engine backing for read-only access to an unspawned mob.
+// hidden: the engine owns unspawned-mob read access; listeners use [`UnspawnedMobView`].
+#[doc(hidden)]
+pub trait UnspawnedMobRead {
+    fn kind(&self) -> Result<Identifier, UnspawnedMobError>;
+    fn position(&self) -> Result<[f64; 3], UnspawnedMobError>;
+    fn equipment(&self, slot: EquipmentSlot) -> Result<Option<ItemStack>, UnspawnedMobError>;
+    fn attribute_base(&self, attribute: &Identifier) -> Result<f64, UnspawnedMobError>;
+    fn attribute_value(&self, attribute: &Identifier) -> Result<f64, UnspawnedMobError>;
+    fn tags(&self) -> Result<Vec<String>, UnspawnedMobError>;
+    fn custom_name(&self) -> Result<Option<Text>, UnspawnedMobError>;
 }
 
-/// The edits a hook may make to the mob it was lent, beside the handle's reads.
-///
-/// The game hands this out with the [`UnspawnedMobRef`](crate::UnspawnedMobRef) for one hook
-/// call and keeps neither after it returns. Each method takes that handle and reaches only that
-/// mob: another lend's handle, or one kept from an earlier call, is refused with
-/// [`UnspawnedMobError::Expired`]. An edit applies at once, so the handle's reads, and the next
-/// listener, see it. The editor works where the hook's host is the read-only one: it changes
-/// nothing in the level, only the mob that is about to join it.
-pub trait UnspawnedMobEdits {
-    /// Puts `item` in `slot` (`Mob.setItemSlot`): an API-owned stack; `None` empties the slot. Invalid
-    /// item keys, counts, damage or components are refused with `Invalid`, without changing the
-    /// slot. The stack's attribute modifiers apply to the mob at once.
+/// Engine backing for mutable access to an unspawned mob.
+// hidden: the engine owns unspawned-mob mutable access; listeners use [`UnspawnedMobEditor`].
+#[doc(hidden)]
+pub trait UnspawnedMobWrite: UnspawnedMobRead {
     fn set_equipment(
-        &self,
-        mob: crate::UnspawnedMobRef,
+        &mut self,
         slot: EquipmentSlot,
         item: Option<ItemStack>,
     ) -> Result<(), UnspawnedMobError>;
-
-    /// Sets an attribute's base value (`AttributeInstance.setBaseValue`), kept within the
-    /// attribute's range.
     fn set_attribute_base(
-        &self,
-        mob: crate::UnspawnedMobRef,
+        &mut self,
         attribute: &Identifier,
         base: f64,
     ) -> Result<(), UnspawnedMobError>;
-
-    /// Adds a permanent modifier (`AttributeInstance.addPermanentModifier`), saved with the mob.
     fn add_attribute_modifier(
-        &self,
-        mob: crate::UnspawnedMobRef,
+        &mut self,
         attribute: &Identifier,
         modifier: AttributeModifier,
     ) -> Result<(), UnspawnedMobError>;
-
-    /// Removes the modifier `id` from the attribute; `false` when it had none.
     fn remove_attribute_modifier(
-        &self,
-        mob: crate::UnspawnedMobRef,
+        &mut self,
         attribute: &Identifier,
         id: &Identifier,
     ) -> Result<bool, UnspawnedMobError>;
+    fn add_tag(&mut self, tag: &str) -> Result<bool, UnspawnedMobError>;
+    fn remove_tag(&mut self, tag: &str) -> Result<bool, UnspawnedMobError>;
+    fn set_custom_name(&mut self, name: Option<Text>) -> Result<(), UnspawnedMobError>;
+}
+
+/// A read-only scoped borrow of a spawn candidate. `spawn_cluster_size` lends the mob after
+/// the insertion attempt; other spawn hooks lend it before insertion.
+///
+/// The borrow lasts only for the hook or part call that receives it. Where the site does not
+/// construct the mob ahead of time (chunk-generation packs, spawners with entity data, or the
+/// ender dragon), [`Self::kind`] and [`Self::position`] still succeed and every other read
+/// answers [`UnspawnedMobError::Unsupported`].
+// exhaustive: only the engine constructs a view.
+// no wire: a scoped read-only borrow, not a payload.
+#[derive(Clone, Copy)]
+pub struct UnspawnedMobView<'a> {
+    inner: &'a dyn UnspawnedMobRead,
+}
+
+impl<'a> UnspawnedMobView<'a> {
+    // hidden: the engine constructs a view around its scoped unspawned-mob borrow.
+    #[doc(hidden)]
+    pub fn new(inner: &'a dyn UnspawnedMobRead) -> Self {
+        Self { inner }
+    }
+
+    /// The mob's entity type (`minecraft:zombie`).
+    pub fn kind(&self) -> Result<Identifier, UnspawnedMobError> {
+        self.inner.kind()
+    }
+
+    /// The candidate’s current position.
+    pub fn position(&self) -> Result<[f64; 3], UnspawnedMobError> {
+        self.inner.position()
+    }
+
+    /// The stack in `slot` (`LivingEntity.getItemBySlot`); `None` for an empty slot.
+    pub fn equipment(&self, slot: EquipmentSlot) -> Result<Option<ItemStack>, UnspawnedMobError> {
+        self.inner.equipment(slot)
+    }
+
+    /// An attribute's base value, before modifiers (`AttributeMap.getBaseValue`).
+    /// `Unsupported` for an attribute the mob's type does not have.
+    pub fn attribute_base(&self, attribute: &Identifier) -> Result<f64, UnspawnedMobError> {
+        self.inner.attribute_base(attribute)
+    }
+
+    /// An attribute's value with its modifiers, its equipment's included
+    /// (`AttributeMap.getValue`). `Unsupported` for an attribute the mob's type does not have.
+    pub fn attribute_value(&self, attribute: &Identifier) -> Result<f64, UnspawnedMobError> {
+        self.inner.attribute_value(attribute)
+    }
+
+    /// The tags on the mob so far (`Entity.getTags`).
+    pub fn tags(&self) -> Result<Vec<String>, UnspawnedMobError> {
+        self.inner.tags()
+    }
+
+    /// The mob's custom name, if it has one.
+    pub fn custom_name(&self) -> Result<Option<Text>, UnspawnedMobError> {
+        self.inner.custom_name()
+    }
+}
+
+/// A mutable scoped loan of a mob the game has made but not yet added to a level.
+///
+/// Edits apply at once, so reads on the editor and later listeners see them. The loan lasts only
+/// for the hook call that receives it. Where the game keeps no mob behind the loan (such as the
+/// ender dragon), [`Self::kind`] and [`Self::position`] still succeed and every other read or
+/// edit answers [`UnspawnedMobError::Unsupported`].
+// exhaustive: only the engine constructs an editor.
+// no wire: an exclusive scoped loan, not a payload.
+pub struct UnspawnedMobEditor<'a> {
+    inner: &'a mut dyn UnspawnedMobWrite,
+}
+
+impl<'a> UnspawnedMobEditor<'a> {
+    // hidden: the engine constructs an editor around its scoped unspawned-mob loan.
+    #[doc(hidden)]
+    pub fn new(inner: &'a mut dyn UnspawnedMobWrite) -> Self {
+        Self { inner }
+    }
+
+    /// Borrow this editor as a read-only [`UnspawnedMobView`].
+    pub fn as_view(&self) -> UnspawnedMobView<'_> {
+        UnspawnedMobView::new(&*self.inner)
+    }
+
+    /// The mob's entity type (`minecraft:zombie`).
+    pub fn kind(&self) -> Result<Identifier, UnspawnedMobError> {
+        self.inner.kind()
+    }
+
+    /// Where the mob will join the level.
+    pub fn position(&self) -> Result<[f64; 3], UnspawnedMobError> {
+        self.inner.position()
+    }
+
+    /// The stack in `slot` (`LivingEntity.getItemBySlot`); `None` for an empty slot.
+    pub fn equipment(&self, slot: EquipmentSlot) -> Result<Option<ItemStack>, UnspawnedMobError> {
+        self.inner.equipment(slot)
+    }
+
+    /// An attribute's base value, before modifiers (`AttributeMap.getBaseValue`).
+    /// `Unsupported` for an attribute the mob's type does not have.
+    pub fn attribute_base(&self, attribute: &Identifier) -> Result<f64, UnspawnedMobError> {
+        self.inner.attribute_base(attribute)
+    }
+
+    /// An attribute's value with its modifiers, its equipment's included
+    /// (`AttributeMap.getValue`). `Unsupported` for an attribute the mob's type does not have.
+    pub fn attribute_value(&self, attribute: &Identifier) -> Result<f64, UnspawnedMobError> {
+        self.inner.attribute_value(attribute)
+    }
+
+    /// The tags on the mob so far (`Entity.getTags`).
+    pub fn tags(&self) -> Result<Vec<String>, UnspawnedMobError> {
+        self.inner.tags()
+    }
+
+    /// The mob's custom name, if it has one.
+    pub fn custom_name(&self) -> Result<Option<Text>, UnspawnedMobError> {
+        self.inner.custom_name()
+    }
+
+    /// Puts `item` in `slot` (`Mob.setItemSlot`): an API-owned stack; `None` empties the slot.
+    /// Invalid item keys, counts, damage or components are refused with `Invalid`, without
+    /// changing the slot. The stack's attribute modifiers apply to the mob at once.
+    pub fn set_equipment(
+        &mut self,
+        slot: EquipmentSlot,
+        item: Option<ItemStack>,
+    ) -> Result<(), UnspawnedMobError> {
+        self.inner.set_equipment(slot, item)
+    }
+
+    /// Sets an attribute's base value (`AttributeInstance.setBaseValue`), kept within the
+    /// attribute's range.
+    pub fn set_attribute_base(
+        &mut self,
+        attribute: &Identifier,
+        base: f64,
+    ) -> Result<(), UnspawnedMobError> {
+        self.inner.set_attribute_base(attribute, base)
+    }
+
+    /// Adds a permanent modifier (`AttributeInstance.addPermanentModifier`), saved with the mob.
+    pub fn add_attribute_modifier(
+        &mut self,
+        attribute: &Identifier,
+        modifier: AttributeModifier,
+    ) -> Result<(), UnspawnedMobError> {
+        self.inner.add_attribute_modifier(attribute, modifier)
+    }
+
+    /// Removes the modifier `id` from the attribute; `false` when it had none.
+    pub fn remove_attribute_modifier(
+        &mut self,
+        attribute: &Identifier,
+        id: &Identifier,
+    ) -> Result<bool, UnspawnedMobError> {
+        self.inner.remove_attribute_modifier(attribute, id)
+    }
 
     /// Adds a tag (`Entity.addTag`); `false` when the mob has it already.
-    fn add_tag(&self, mob: crate::UnspawnedMobRef, tag: &str) -> Result<bool, UnspawnedMobError>;
+    pub fn add_tag(&mut self, tag: &str) -> Result<bool, UnspawnedMobError> {
+        self.inner.add_tag(tag)
+    }
 
     /// Removes a tag (`Entity.removeTag`); `false` when the mob did not have it.
-    fn remove_tag(&self, mob: crate::UnspawnedMobRef, tag: &str)
-    -> Result<bool, UnspawnedMobError>;
+    pub fn remove_tag(&mut self, tag: &str) -> Result<bool, UnspawnedMobError> {
+        self.inner.remove_tag(tag)
+    }
 
     /// Names the mob (`Entity.setCustomName`), or takes its name away with `None`.
     /// A component deeper than 512 nodes is refused with `UnspawnedMobError::Text`
     /// before changing the mob's name.
-    fn set_custom_name(
-        &self,
-        mob: crate::UnspawnedMobRef,
-        name: Option<Text>,
-    ) -> Result<(), UnspawnedMobError>;
+    pub fn set_custom_name(&mut self, name: Option<Text>) -> Result<(), UnspawnedMobError> {
+        self.inner.set_custom_name(name)
+    }
 }
 
 /// `AgeableMob.AgeableMobGroupData`: whether the pack's later members may be babies.
@@ -219,7 +363,7 @@ pub enum SpawnGroup {
     Wolf {
         /// The ageable part.
         ageable: AgeableGroup,
-        /// The `minecraft:wolf_variant` registry entry.
+        /// An entry of the world's `minecraft:wolf_variant` registry.
         variant: Identifier,
     },
     /// `AbstractSchoolingFish.SchoolSpawnGroupData`: the school's leader, and for tropical

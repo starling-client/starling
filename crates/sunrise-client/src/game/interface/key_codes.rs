@@ -123,10 +123,3 @@ pub(super) fn drop_held_behind_dialog(
         *right = false;
     }
 }
-
-/// `AbstractContainerScreen.keyPressed` for a key bound to a mouse mapping: a press or repeat of
-/// key.pickItem's key clones the hovered slot; keys bound to key.attack and key.use do nothing
-/// there (#5378).
-pub(super) fn container_key_clones(button: MouseButton, action: KeyAction) -> bool {
-    button == MouseButton::Middle && action != KeyAction::Release
-}

@@ -123,7 +123,7 @@ impl Hooks for Deathwatch {
         Flow::Continue
     }
 
-    fn loot_drops(&self, _: &mut dyn ServerHost, event: &mut LootDropsEvent<'_>) {
+    fn loot_drops(&self, _: &mut dyn ServerHost, event: &mut LootDropsEvent<'_, '_>) {
         if event.context.entity == Some((41, "minecraft:zombie")) {
             self.0
                 .lock()
@@ -1085,5 +1085,23 @@ fn a_passed_calculator_replaces_a_wind_charges_entity_rules() {
         assert!(player < 20.0, "{player}");
         let (zombie, _) = pushes(game);
         assert_eq!(zombie, plain);
+    });
+}
+
+#[test]
+#[ignore = "daily"]
+fn unloaded_centre_and_far_coordinates_still_explode_without_loading_chunks() {
+    heard(move |game, heard| {
+        // Centre in unloaded chunk (-1, 0), beside chunk (0, 0)'s stone floor.
+        explode(game, Blast::at([-1.5, 79.5, 8.5], 4.0), Ok(()));
+        assert!(!game.world.chunks.contains_key(&(-1, 0)), "never loaded");
+        assert!(
+            stone(game) < 256,
+            "rays from an unloaded centre still reach adjacent loaded blocks"
+        );
+        // Centre past 30,000,000 is finite and accepted like ServerLevel.explode.
+        explode(game, Blast::at([4.0e7, 80.5, 8.5], 4.0), Ok(()));
+        let heard = heard.lock().unwrap();
+        assert_eq!((heard.starts.len(), heard.detonates), (2, 2));
     });
 }

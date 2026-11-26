@@ -21,6 +21,7 @@ impl GameLevel<'_> {
 }
 
 impl sunrise_world::level::BlockEntityNeighbors for GameLevel<'_> {
+    #[inline]
     fn observe_block_entity_neighbor(
         &self,
         pos: BlockPos,
@@ -31,6 +32,7 @@ impl sunrise_world::level::BlockEntityNeighbors for GameLevel<'_> {
             self.native_on_neighbor_change(self.dimension, pos, state, neighbor);
         }
     }
+    #[inline]
     fn receives_weak_changes(&self, pos: BlockPos, state: BlockStateId) -> bool {
         let mut receive = false;
         if self.native_authoritative {

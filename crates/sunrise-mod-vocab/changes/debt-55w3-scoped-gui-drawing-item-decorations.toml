@@ -1,0 +1,9 @@
+ids = [
+    "hook:item_decorations",
+    "hook:item_decorations.draw",
+    "type:ItemDecorationsEvent.draw",
+]
+why = "Item decorators draw into the surrounding canvas after the standard bar, cooldown and count. Narrowing the draw surface keeps their output scoped to the caller and out of widget, focus, narration and live-scene state. Decorator canvases can paint standard decorations without recursively invoking item decorators. The item_decorations hook version goes from 1 to 3."
+migrate = '''
+Keep `ItemPart::item_decorations(&self, host: &dyn ClientHost, event: &mut ItemDecorationsEvent<'_>)`. `event.draw` changes from `&mut dyn DrawContext` to `&mut dyn GuiCanvas`; use its fallible primitives, such as `event.draw.fill([event.x, event.y, w, h], color)`. `event.x` and `event.y` are in the surrounding scope's local coordinates, after the model-only pose is restored. The Part method still returns `()`: use `event.draw.scope(&[], None, &mut |canvas| { ...; Ok(()) })` and propagate errors inside that closure to discard just your decoration group. Move widgets, scenes, focus and narration to ordinary HUD or screen draw hooks. Use `event.draw.item_decorations(event.stack, at, count)` for the standard suffix without invoking decorators again; the same holds in a child scope. Rebuild against the SDK with `item_decorations` version 3.
+'''

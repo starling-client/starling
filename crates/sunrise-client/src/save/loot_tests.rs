@@ -496,7 +496,9 @@ fn generated_structure_chest_stays_pending_after_save_and_reload() {
     .unwrap();
     let mut worker = generator.worker();
     let mut region: [Proto; 9] = std::array::from_fn(|i| {
-        generator.proto(&mut worker, 43 + i as i32 % 3 - 1, 21 + i as i32 / 3 - 1)
+        generator
+            .proto(&mut worker, 43 + i as i32 % 3 - 1, 21 + i as i32 / 3 - 1)
+            .unwrap()
     });
     generator.decorate(&mut worker, &mut region);
     let chunk = generator.finish(region.into_iter().nth(4).unwrap());

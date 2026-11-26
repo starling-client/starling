@@ -1,5 +1,4 @@
 //! The `food_level_changed` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0243
 
 pub trait Hooks {
     /// The food level of the server player `player` (`name`) is about to change

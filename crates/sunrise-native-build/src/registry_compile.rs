@@ -16,6 +16,9 @@ pub struct Options<'a> {
     pub consent: Option<&'a dyn Fn(&super::RegistryInventory) -> bool>,
     pub adapter: &'a Path,
     pub mixins: &'a super::MixinsIdentity,
+    /// The package identity and internals already checked by `prebuilt::compile`.
+    pub sdk: &'a prebuilt::Identity,
+    pub catalog: &'a internals::Catalog,
 }
 
 fn compiler_plan(
@@ -47,10 +50,68 @@ fn check_log_template(template: &str, native_log: bool) -> Result<(), String> {
     Ok(())
 }
 
+fn add_facade_dependencies(
+    project: &api::Project<'_>,
+    manifest: &mut toml::Table,
+    facade_relative: &str,
+    facade_package: &str,
+) -> Result<(), String> {
+    let dependencies = manifest
+        .entry("dependencies")
+        .or_insert_with(|| toml::Table::new().into())
+        .as_table_mut()
+        .ok_or("invalid dependencies")?;
+    for (alias, library) in project.api_dependencies() {
+        if library != "internals" {
+            continue;
+        }
+        // Cargo names the extern crate after the key with hyphens as underscores.
+        if let Some(existing) = dependencies
+            .keys()
+            .find(|key| key.replace('-', "_") == alias.replace('-', "_"))
+        {
+            return Err(trf(
+                "{mod}: Cargo.toml dependency alias `{alias}` is already in use; rename the dependency or give `sunrise-internals` a different alias.",
+                &[("mod", &project.bundle.manifest.id), ("alias", existing)],
+            ));
+        }
+        dependencies.insert(
+            alias,
+            toml::toml! {
+                path = (format!("../../{facade_relative}"))
+                package = facade_package
+            }
+            .into(),
+        );
+    }
+    Ok(())
+}
+
+/// Add the SDK entry and give Cargo the same checked root used for generation.
+fn stage_library(
+    dest: &Path,
+    manifest: &mut toml::Table,
+    id: &str,
+    entry: &str,
+) -> Result<PathBuf, String> {
+    let lib = manifest
+        .entry("lib")
+        .or_insert_with(|| toml::Table::new().into())
+        .as_table_mut()
+        .ok_or(tr("Invalid lib table"))?;
+    let root = prebuilt::stage_entry(dest, lib.get("path"), id, entry)?;
+    lib.insert("path".into(), root.display().to_string().into());
+    lib.insert(
+        "crate-type".into(),
+        vec![toml::Value::String("dylib".into())].into(),
+    );
+    Ok(dest.join(root))
+}
+
 /// `out` is the mods folder's staging folder, rewritten every build; `target_dir` is cargo's build
 /// folder, kept between builds of the same game build (see `prebuilt::compile`).
 #[allow(clippy::too_many_arguments)]
-pub fn compile(
+pub(super) fn stage_and_cargo(
     rust: &dyn Toolchain,
     game: &Path,
     out: &Path,
@@ -59,15 +120,12 @@ pub fn compile(
     declared: &[Vec<dependencies::Dependency>],
     resolution: &dependencies::Resolution,
     options: Options<'_>,
-) -> Result<(PathBuf, Vec<PathBuf>), String> {
-    let sdk = prebuilt::identity(game)?;
+    check_only: bool,
+) -> Result<Option<(PathBuf, Vec<PathBuf>)>, String> {
+    let sdk = options.sdk;
     let template = api::template(&game.join(super::api_route::TEMPLATE))?;
     check_log_template(&template, sdk.native_log)?;
-    let lock = sdk.registry_lock.as_ref().ok_or_else(|| tr("The prebuilt SDK does not declare a locked registry graph; install an SDK that supports registry-bearing native mods").to_string())?;
-    let mut patches = sdk.registry_patches.clone().ok_or_else(|| {
-        tr("The prebuilt SDK does not declare game registry patches; install a newer SDK")
-            .to_string()
-    })?;
+    let mut patches = sdk.registry_patches.clone();
     let sdk_root = game.canonicalize().map_err(|e| e.to_string())?;
     for (_, registry) in patches.iter_mut() {
         for (_, spec) in registry
@@ -94,9 +152,8 @@ pub fn compile(
             spec.insert("path".into(), path.to_string_lossy().into_owned().into());
         }
     }
-    let links = sdk.native_links.as_ref().ok_or_else(|| tr("The prebuilt SDK does not declare native library providers; registry-bearing mods cannot be linked safely").to_string())?;
-    let catalog = internals::Catalog::read(game)?;
-    let generated = catalog
+    let generated = options
+        .catalog
         .prepare(projects.iter().map(|project| &project.bundle.manifest))
         .map_err(|e| e.to_string())?;
     // The last build's staging, kept aside until this one's is written: a file whose bytes didn't
@@ -113,132 +170,84 @@ pub fn compile(
     let mut members = Vec::new();
     let mut wrapper_deps = toml::Table::new();
     let deps = game.join("deps");
-    // A mod library's link arguments: only the rpath ones, putting the library's own folder on
-    // its search path (not the game executable's link policy).
-    let mod_link_args = || {
-        let mut link_args = Vec::new();
-        if cfg!(target_os = "linux") {
-            link_args.push("-Wl,--disable-new-dtags".into());
-            link_args.push("-Wl,-rpath,$ORIGIN".into());
-        }
-        if cfg!(target_os = "macos") {
-            link_args.push("-Wl,-rpath,@loader_path".into());
-        }
-        link_args
-    };
+    let link_args: Vec<_> = prebuilt::dylib_rpath_args(std::env::consts::OS)
+        .map(str::to_owned)
+        .collect();
     // Each mod's staged folder and library root, for the shared registry library.
     let mut mod_dirs = BTreeMap::new();
     let mut mod_roots = BTreeMap::new();
-    let packages: BTreeMap<_, _> = projects
+    // Each mod's source digest and the native mods it links, by mod id.
+    let mut sources: BTreeMap<String, (String, Vec<String>)> = BTreeMap::new();
+    let packages: BTreeMap<_, _> = resolution
+        .order
         .iter()
-        .map(|project| {
+        .map(|&index| {
+            let project = &projects[index];
             (
                 project.bundle.manifest.id.as_str(),
                 project.package.as_str(),
             )
         })
         .collect();
+    let mut wanted = Vec::new();
+    let mut generated_facades = BTreeMap::new();
     for (position, &index) in resolution.order.iter().enumerate() {
         let project = &projects[index];
         let bundle = project.bundle;
         let id = &bundle.manifest.id;
-        // Validate the whole local manifest closure without copying or executing its code.
-        let inert = out.join("validation").join(id);
-        super::registry_generate::stage(bundle, &inert)?;
         let relative = format!("native-api/{id}");
         let dest = out.join(&relative);
         super::copy_bundle(bundle, &dest)?;
-        let mut todo = vec![PathBuf::new()];
-        let mut seen = std::collections::BTreeSet::new();
-        while let Some(local) = todo.pop() {
-            if !seen.insert(local.clone()) {
-                continue;
-            }
-            let path = dest.join(&local).join("Cargo.toml");
-            let mut manifest: toml::Table = fs::read_to_string(&path)
-                .map_err(|e| e.to_string())?
-                .parse()
-                .map_err(|e| format!("Cargo.toml: {e}"))?;
-            super::registry_generate::rewrite_dependencies(
-                bundle,
-                &local,
-                &mut manifest,
-                &mut todo,
-            )?;
-            if let Some(targets) = manifest
-                .get_mut("target")
-                .and_then(toml::Value::as_table_mut)
-            {
-                for (_, target) in targets.iter_mut() {
-                    if let Some(table) = target.as_table_mut() {
-                        super::registry_generate::rewrite_dependencies(
-                            bundle, &local, table, &mut todo,
-                        )?;
-                    }
-                }
-            }
-            if local.as_os_str().is_empty() {
-                let targets: Vec<_> = declared[index]
-                    .iter()
-                    .map(|dependency| dependencies::Package {
-                        dependency,
-                        package: packages.get(dependency.id.as_str()).copied(),
-                    })
-                    .collect();
-                let enabled = dependencies::rewrite(id, &mut manifest, &targets)
-                    .map_err(|e| e.to_string())?;
-                let mut dependency =
-                    toml::toml! { path = (relative.clone()) package = (project.package.clone()) };
-                if !enabled.is_empty() {
-                    dependency.insert(
-                        "features".into(),
-                        enabled
-                            .into_iter()
-                            .map(toml::Value::String)
-                            .collect::<Vec<_>>()
-                            .into(),
-                    );
-                }
-                wrapper_deps.insert(format!("mod_{position}"), dependency.into());
-                let lib = manifest
-                    .entry("lib")
-                    .or_insert_with(|| toml::Table::new().into())
-                    .as_table_mut()
-                    .ok_or(tr("Invalid lib table"))?;
-                lib.insert(
-                    "crate-type".into(),
-                    vec![toml::Value::String("dylib".into())].into(),
-                );
-                let root = dest.join(
-                    lib.get("path")
-                        .and_then(toml::Value::as_str)
-                        .unwrap_or("src/lib.rs"),
-                );
-                let entry = root
-                    .parent()
-                    .ok_or(tr("Invalid library root"))?
-                    .join("__sunrise_entry.rs");
-                fs::write(
-                    &entry,
-                    prebuilt::library_entry(
-                        &template,
-                        &[&bundle.manifest],
-                        sdk.commit(),
-                        id,
-                        &bundle.manifest.version.to_string(),
-                        &[],
-                    ),
-                )
-                .map_err(|e| e.to_string())?;
-                let mut source = fs::read_to_string(&root).map_err(|e| e.to_string())?;
-                prebuilt::check_entry_root(&source, id)?;
-                source.push_str("\n#[allow(unsafe_code)]\n#[path = \"__sunrise_entry.rs\"] mod __sunrise_entry;\n");
-                fs::write(&root, source).map_err(|e| e.to_string())?;
-                mod_dirs.insert(id.clone(), dest.clone());
-                mod_roots.insert(id.clone(), root);
-            }
-            fs::write(path, manifest.to_string()).map_err(|e| e.to_string())?;
+        let (mut manifest, requests) =
+            super::crates::rewrite_closure(project, &dest, |local, manifest| {
+                fs::write(dest.join(local).join("Cargo.toml"), manifest.to_string())
+                    .map_err(|e| e.to_string())
+            })?;
+        // Only the builder creates cross-mod paths, from declared edges and actual stage members.
+        // The facade edge below likewise points to the exact package and path generated for this mod.
+        let targets: Vec<_> = declared[index]
+            .iter()
+            .map(|dependency| dependencies::Package {
+                dependency,
+                package: packages.get(dependency.id.as_str()).copied(),
+            })
+            .collect();
+        let enabled =
+            dependencies::rewrite(id, &mut manifest, &targets).map_err(|e| e.to_string())?;
+        let mut dependency =
+            toml::toml! { path = (relative.clone()) package = (project.package.clone()) };
+        if !enabled.is_empty() {
+            dependency.insert(
+                "features".into(),
+                enabled
+                    .into_iter()
+                    .map(toml::Value::String)
+                    .collect::<Vec<_>>()
+                    .into(),
+            );
         }
+        wrapper_deps.insert(format!("mod_{position}"), dependency.into());
+        let source = super::source_digest(bundle).ok_or(tr("Could not hash native mod inputs"))?;
+        let linked = targets
+            .iter()
+            .filter(|target| target.package.is_some())
+            .map(|target| target.dependency.id.clone())
+            .collect();
+        sources.insert(id.clone(), (source, linked));
+        // The identity is written once cargo has resolved the graph it names.
+        let root = stage_library(
+            &dest,
+            &mut manifest,
+            id,
+            &prebuilt::library_entry(
+                &template,
+                &[&bundle.manifest],
+                prebuilt::IDENTITY_MARKER,
+                &[],
+            ),
+        )?;
+        mod_dirs.insert(id.clone(), dest.clone());
+        mod_roots.insert(id.clone(), root);
         let mut externs: BTreeMap<String, PathBuf> = BTreeMap::from([
             ("mod_api".into(), prebuilt::library(&deps, "mod_api")?),
             ("mod_vocab".into(), prebuilt::library(&deps, "mod_vocab")?),
@@ -253,20 +262,16 @@ pub fn compile(
                 externs.insert(name, path);
             }
         }
-        if internals::needed(&bundle.manifest)
-            || project
-                .api_dependencies()
-                .iter()
-                .any(|(_, package)| *package == "internals")
-        {
+        if internals::needed(&bundle.manifest) || project.uses_internals() {
             let facade = &generated[id.as_str()];
             let facade_relative = internals::relative(id);
+            let facade_package = internals::package(id);
+            add_facade_dependencies(project, &mut manifest, &facade_relative, &facade_package)?;
             let facade_dir = out.join(&facade_relative);
             fs::create_dir_all(facade_dir.join("src")).map_err(|e| e.to_string())?;
             fs::write(facade_dir.join("src/lib.rs"), &facade.source).map_err(|e| e.to_string())?;
-            let facade_package = internals::package(id);
-            let manifest = toml::toml! { [package] name = (facade_package.clone()) version = "0.0.0" edition = "2024" };
-            fs::write(facade_dir.join("Cargo.toml"), manifest.to_string())
+            let facade_manifest = toml::toml! { [package] name = (facade_package.clone()) version = "0.0.0" edition = "2024" };
+            fs::write(facade_dir.join("Cargo.toml"), facade_manifest.to_string())
                 .map_err(|e| e.to_string())?;
             let mut facade_externs = BTreeMap::new();
             for name in facade
@@ -275,7 +280,7 @@ pub fn compile(
                 .map(String::as_str)
                 .chain(["sunrise_client"])
             {
-                let path = prebuilt::facade_library(&deps, name, &sdk)?;
+                let path = prebuilt::facade_library(&deps, name, sdk)?;
                 prebuilt::refuse_closure_rlib(id, name, &path)?;
                 facade_externs.insert(name.to_owned(), path);
             }
@@ -287,43 +292,34 @@ pub fn compile(
                 },
             );
             members.push(facade_relative.clone());
-            let mut manifest: toml::Table = fs::read_to_string(dest.join("Cargo.toml"))
-                .map_err(|e| e.to_string())?
-                .parse()
-                .map_err(|e| format!("Cargo.toml: {e}"))?;
-            let dependencies = manifest
-                .entry("dependencies")
-                .or_insert_with(|| toml::Table::new().into())
-                .as_table_mut()
-                .ok_or("invalid dependencies")?;
-            let aliases: Vec<_> = project
-                .api_dependencies()
-                .into_iter()
-                .filter(|(_, package)| *package == "internals")
-                .map(|(name, _)| name)
-                .collect();
-            for alias in aliases {
-                dependencies.insert(alias, toml::toml! { path = (format!("../../{facade_relative}")) package = (facade_package.clone()) }.into());
-            }
-            fs::write(dest.join("Cargo.toml"), manifest.to_string()).map_err(|e| e.to_string())?;
+            generated_facades.insert(facade_package.clone(), project.package.as_str());
             wrapper_deps.insert(
                 format!("mod_{position}_internals"),
                 toml::toml! { path = facade_relative package = facade_package }.into(),
             );
         }
+        fs::write(dest.join("Cargo.toml"), manifest.to_string()).map_err(|e| e.to_string())?;
+        wanted.extend(requests);
         bindings.insert(
             dest,
             registry_rustc::Bindings {
                 externs,
-                link_args: mod_link_args(),
+                link_args: link_args.clone(),
             },
         );
         members.push(relative);
     }
     // `[[native.mixin]]` rows: the patched crates join the workspace beside the mods, whose
     // crates their helpers call, and compile against the SDK like a mod.
-    let patch =
-        super::patch::prepare(rust, game, &out.join("fnr"), projects, &sdk, options.mixins)?;
+    let patch = super::patch::prepare(
+        rust,
+        game,
+        &out.join("fnr"),
+        projects,
+        sdk,
+        options.mixins,
+        check_only,
+    )?;
     if let Some(patch) = &patch {
         for name in &patch.names {
             let dir = patch.dir.join(name);
@@ -351,7 +347,7 @@ pub fn compile(
             manifest.insert("features".into(), features.into());
             fs::write(dir.join("Cargo.toml"), manifest.to_string()).map_err(|e| e.to_string())?;
             let externs: BTreeMap<_, _> =
-                super::patch::sdk_externs(game, &sdk)?.into_iter().collect();
+                super::patch::sdk_externs(game, sdk)?.into_iter().collect();
             for (krate, path) in &externs {
                 prebuilt::refuse_closure_rlib("sunrise_patch", krate, path)?;
             }
@@ -386,8 +382,7 @@ pub fn compile(
         .as_ref()
         .map(|patch| patch.installs.as_slice())
         .unwrap_or(&[]);
-    let mut entry =
-        prebuilt::library_entry(&template, &[], sdk.commit(), "sunrise_patch", "0", installs);
+    let mut entry = prebuilt::library_entry(&template, &[], prebuilt::IDENTITY_MARKER, installs);
     entry.push_str(prebuilt::PATCH_HOST_LINK);
     fs::write(out.join("src/lib.rs"), entry).map_err(|e| e.to_string())?;
     let mut manifest = toml::toml! { [package] name = "sunrise_patch" version = "0.0.0" edition = "2024" [lib] crate-type = ["dylib"] [workspace] resolver = "2" };
@@ -405,23 +400,7 @@ pub fn compile(
         );
     manifest.insert("dependencies".into(), wrapper_deps.into());
     fs::write(out.join("Cargo.toml"), manifest.to_string()).map_err(|e| e.to_string())?;
-    let declared_paths = projects
-        .iter()
-        .map(|project| {
-            (
-                project.bundle.manifest.id.as_str(),
-                project
-                    .bundle
-                    .manifest
-                    .dependencies
-                    .keys()
-                    .map(String::as_str)
-                    .collect(),
-            )
-        })
-        .collect();
-    let wanted = super::crates::wanted(out, &declared_paths)?;
-    let mut plan = registry_plan::Plan::read(lock, projects, &wanted)?;
+    let mut plan = registry_plan::Plan::read(&sdk.registry_lock, projects, &wanted)?;
     plan.authorize_game_patches(&patches);
     plan.fetch_with_patches(rust, out, &patches)?;
     let mut metadata = super::registry_inventory::read(rust, out)?;
@@ -486,7 +465,7 @@ pub fn compile(
             out.join(registry_shared::RELATIVE),
             registry_rustc::Bindings {
                 externs,
-                link_args: mod_link_args(),
+                link_args: link_args.clone(),
             },
         );
         // Cargo records the new local package in the lock, offline: every crate it names is
@@ -495,29 +474,60 @@ pub fn compile(
     }
     let resolved = super::read_lock(out)?;
     plan.check_resolved(&super::registry_lock::RegistryLock::parse(&resolved)?)?;
+    // One workspace unifies the crates.io graph of the whole install set: another mod can move a
+    // version or enable a feature under a mod whose files did not change, so each library's
+    // identity names its graph as cargo just resolved it, after its source digest.
+    let graphs = super::registry_inventory::graphs(rust, out, &mod_dirs)?;
+    let mut identities = super::library_record::Identities::default();
+    let fill = |path: &Path, identity: &str| -> Result<(), String> {
+        let entry = fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        fs::write(path, entry.replace(prebuilt::IDENTITY_MARKER, identity))
+            .map_err(|e| format!("{}: {e}", path.display()))
+    };
+    for &index in &resolution.order {
+        let manifest = &projects[index].bundle.manifest;
+        let (source, linked) = &sources[&manifest.id];
+        let identity = identities.next(
+            sdk.commit(),
+            &manifest.id,
+            &manifest.version.to_string(),
+            &format!("{source}+{}", graphs[&manifest.id]),
+            linked.iter().map(String::as_str),
+        );
+        fill(
+            &mod_roots[&manifest.id].with_file_name("__sunrise_entry.rs"),
+            &identity,
+        )?;
+    }
+    let identity = identities.next(
+        sdk.commit(),
+        "sunrise_patch",
+        "0",
+        "none",
+        patch
+            .iter()
+            .flat_map(|patch| &patch.bundles)
+            .map(|bundle| bundle.manifest.id.as_str()),
+    );
+    fill(&out.join("src/lib.rs"), &identity)?;
     let mut game_names = plan.game.game_package_names();
     for registry in patches.values() {
         for name in registry.as_table().expect("validated SDK patches").keys() {
             game_names.remove(name);
         }
     }
-    super::crates::check_game_graph_names(out, &resolved, &game_names)?;
-    let inventory = metadata.inventory(&super::registry_lock::RegistryLock::default(), links)?;
-    if inventory.added_crates > 0 && !options.consent.is_some_and(|ask| ask(&inventory)) {
-        return Err(crate::host::tr("The mods' crates.io dependencies were not compiled: the plan's \"registry\" field is false or the question was declined. \"registry\": true approves compiling them; their build scripts and proc macros then run on this computer").into());
+    super::crates::check_game_graph_names(projects, &generated_facades, &resolved, &game_names)?;
+    let inventory = metadata.inventory(&plan, &sdk.native_links, &mod_dirs)?;
+    // The mods' own build scripts run under the same yes as the registry crates', so a mod with a
+    // build script and no registry crate still asks.
+    if (inventory.added_crates > 0 || !inventory.build_scripts.is_empty())
+        && !options.consent.is_some_and(|ask| ask(&inventory))
+    {
+        return Err(crate::host::tr("The mods' build scripts and crates.io dependencies were not compiled: the plan's \"registry\" field is false or the question was declined. \"registry\": true approves compiling them; the mods' own build scripts, their dependencies' build scripts and proc macros then run on this computer").into());
     }
-    let mut externs = prebuilt::wrapper_externs(&deps)?;
-    externs.insert("mod_vocab".into(), prebuilt::library(&deps, "mod_vocab")?);
+    let externs = prebuilt::wrapper_externs(&deps)?;
     for (name, path) in &externs {
         prebuilt::refuse_closure_rlib("sunrise_patch", name, path)?;
-    }
-    let mut link_args = Vec::new();
-    if cfg!(target_os = "linux") {
-        link_args.push("-Wl,--disable-new-dtags".into());
-        link_args.push("-Wl,-rpath,$ORIGIN".into());
-    }
-    if cfg!(target_os = "macos") {
-        link_args.push("-Wl,-rpath,@executable_path".into());
     }
     bindings.insert(
         out.to_path_buf(),
@@ -527,7 +537,7 @@ pub fn compile(
         keep_unchanged_times(out, &previous).map_err(|e| e.to_string())?;
         fs::remove_dir_all(&previous).map_err(|e| e.to_string())?;
     }
-    let mut command = super::cargo(rust, out, "build");
+    let mut command = super::cargo(rust, out, if check_only { "check" } else { "build" });
     command
         .args([
             "--workspace",
@@ -553,8 +563,11 @@ pub fn compile(
     let messages = out.join("cargo-messages.jsonl");
     let result = super::run_checked(
         command,
-        tr("Compiling registry mod libraries"),
-        |_| {},
+        if check_only {
+            tr("Checking native mod libraries")
+        } else {
+            tr("Compiling registry mod libraries")
+        },
         Some(fs::File::create(&messages).map_err(|e| e.to_string())?),
         None,
     );
@@ -567,7 +580,7 @@ pub fn compile(
     for diagnostic in &outputs.errors {
         super::append_log(diagnostic.rendered().unwrap_or_default())?;
     }
-    if let Err(failure) = result {
+    if let Err(mut error) = result {
         // The compiler runs in the build's folder: its relative file names are relative to it.
         let sources = super::present::Sources::new(
             out.to_path_buf(),
@@ -579,7 +592,7 @@ pub fn compile(
                 })
                 .collect(),
         );
-        let (mut error, mut raw) = (failure.error, String::new());
+        let mut raw = String::new();
         let mut explained = false;
         for diagnostic in &outputs.errors {
             error.push('\n');
@@ -600,24 +613,18 @@ pub fn compile(
         );
         return Err(super::advised(error, blocked, libraries));
     }
-    let binary = game.join("bin").join(if cfg!(windows) {
-        "sunrise-client.exe"
-    } else {
-        "sunrise-client"
-    });
+    if check_only {
+        return Ok(None);
+    }
+    let binary = game.join("bin").join(crate::CLIENT);
     let release = target_dir.join(rust.target()).join("release");
-    let mut runtime = prebuilt::runtime_libraries(rust, &sdk, game)?;
+    let mut runtime = prebuilt::runtime_libraries(rust, sdk, game)?;
     for &index in &resolution.order {
         let project = &projects[index];
         let library = release.join(prebuilt::dylib_name(&project.crate_name()));
         super::library_record::validate_exports(&library, &project.bundle.manifest.id)?;
-        super::library_record::stamp(
-            &library,
-            sdk.commit(),
-            &project.bundle.manifest.id,
-            &project.bundle.manifest.version.to_string(),
-            false,
-        )?;
+        let id = &project.bundle.manifest.id;
+        super::library_record::stamp(&library, id, identities.recorded(id), false)?;
         runtime.push(library);
     }
     if shared.is_some() {
@@ -628,7 +635,12 @@ pub fn compile(
     }
     let library = release.join(prebuilt::dylib_name("sunrise_patch"));
     super::library_record::validate_exports(&library, "sunrise_patch")?;
-    super::library_record::stamp(&library, sdk.commit(), "sunrise_patch", "0", true)?;
+    super::library_record::stamp(
+        &library,
+        "sunrise_patch",
+        identities.recorded("sunrise_patch"),
+        true,
+    )?;
     runtime.push(library);
     for library in outputs.runtime(
         &metadata.runtime_packages()?,
@@ -651,16 +663,20 @@ pub fn compile(
             runtime.push(library);
         }
     }
-    Ok((binary, runtime))
+    Ok(Some((binary, runtime)))
 }
 
 /// Gives each file under `staged` whose bytes equal the file at the same place under `previous`
-/// that file's modified time.
+/// that file's modified time, and each folder whose entries have the same names as the folder at
+/// the same place that folder's: a build script whose `rerun-if-changed` names a folder reruns
+/// when anything in it, the folder itself included, is newer than its last run.
 fn keep_unchanged_times(staged: &Path, previous: &Path) -> std::io::Result<()> {
+    let mut names = Vec::new();
     for entry in fs::read_dir(staged)? {
         let entry = entry?;
         let kind = entry.file_type()?;
         let old = previous.join(entry.file_name());
+        names.push(entry.file_name());
         if kind.is_dir() {
             if old.is_dir() {
                 keep_unchanged_times(&entry.path(), &old)?;
@@ -679,6 +695,18 @@ fn keep_unchanged_times(staged: &Path, previous: &Path) -> std::io::Result<()> {
                     .set_modified(meta.modified()?)?;
             }
         }
+    }
+    let mut old_names = fs::read_dir(previous)?
+        .map(|entry| entry.map(|entry| entry.file_name()))
+        .collect::<std::io::Result<Vec<_>>>()?;
+    names.sort();
+    old_names.sort();
+    // Setting a time inside a folder leaves the folder's own time alone, so this comes last.
+    if names == old_names {
+        filetime::set_file_mtime(
+            staged,
+            filetime::FileTime::from_last_modification_time(&fs::metadata(previous)?),
+        )?;
     }
     Ok(())
 }
@@ -715,7 +743,203 @@ mod tests {
         assert_ne!(modified("src/added.rs"), then);
     }
 
+    /// A restaged folder whose entries didn't change keeps its old modified time; one that gained
+    /// an entry keeps its new one.
+    #[test]
+    fn only_folders_with_the_same_entries_keep_their_old_time() {
+        let root = tempfile::tempdir().unwrap();
+        let (old, new) = (root.path().join("stage.old"), root.path().join("stage"));
+        for dir in [&old, &new] {
+            for folder in ["data/inner", "grown"] {
+                fs::create_dir_all(dir.join(folder)).unwrap();
+            }
+            fs::write(dir.join("data/inner/a.bin"), "a").unwrap();
+        }
+        fs::write(new.join("grown/added.rs"), "added").unwrap();
+        let then = filetime::FileTime::from_unix_time(1_000_000, 0);
+        for folder in ["data/inner", "data", "grown"] {
+            filetime::set_file_mtime(old.join(folder), then).unwrap();
+        }
+        keep_unchanged_times(&new, &old).unwrap();
+        let modified = |name: &str| {
+            filetime::FileTime::from_last_modification_time(&fs::metadata(new.join(name)).unwrap())
+        };
+        assert_eq!(modified("data"), then);
+        assert_eq!(modified("data/inner"), then);
+        assert_ne!(modified("grown"), then);
+    }
+
+    /// Restaged twice with nothing changed, a build script whose `rerun-if-changed` names a folder
+    /// runs only in the first build: cargo finds nothing in the folder newer than that run.
+    #[test]
+    #[ignore = "daily"]
+    fn a_build_script_watching_a_restaged_folder_stays_fresh() {
+        let root = tempfile::tempdir().unwrap();
+        let (stage, previous) = (root.path().join("stage"), root.path().join("stage.old"));
+        let runs = root.path().join("runs");
+        let write_stage = || {
+            fs::create_dir_all(stage.join("src/data")).unwrap();
+            fs::write(
+                stage.join("Cargo.toml"),
+                "[package]\nname = \"watcher\"\nversion = \"0.0.0\"\nedition = \"2024\"\n[workspace]\n",
+            )
+            .unwrap();
+            fs::write(stage.join("src/lib.rs"), "").unwrap();
+            fs::write(stage.join("src/data/table.txt"), "rows").unwrap();
+            fs::write(
+                stage.join("build.rs"),
+                format!(
+                    "fn main() {{\n    println!(\"cargo::rerun-if-changed=src/data\");\n    \
+                     let mut runs = std::fs::OpenOptions::new().create(true).append(true).open({:?}).unwrap();\n    \
+                     std::io::Write::write_all(&mut runs, b\"run\\n\").unwrap();\n}}\n",
+                    runs
+                ),
+            )
+            .unwrap();
+        };
+        let build = || {
+            let status =
+                std::process::Command::new(std::env::var_os("CARGO").unwrap_or("cargo".into()))
+                    .args(["build", "--offline", "--quiet", "--target-dir"])
+                    .arg(root.path().join("target"))
+                    .current_dir(&stage)
+                    .status()
+                    .unwrap();
+            assert!(status.success());
+        };
+        write_stage();
+        build();
+        for _ in 0..2 {
+            // A second's gap, so a folder written again is newer than the last run even where
+            // the filesystem keeps whole seconds.
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            fs::rename(&stage, &previous).unwrap();
+            write_stage();
+            keep_unchanged_times(&stage, &previous).unwrap();
+            fs::remove_dir_all(&previous).unwrap();
+            build();
+        }
+        assert_eq!(fs::read_to_string(&runs).unwrap(), "run\n");
+    }
+
     use super::*;
+
+    #[test]
+    fn generated_facade_cannot_replace_an_authored_registry_alias() {
+        let dir = tempfile::tempdir().unwrap();
+        super::super::tests::write_bundle(dir.path(), "bake", "");
+        let bundle = super::super::bundle_in(dir.path()).unwrap().unwrap();
+        for (sdk_key, expected_alias) in [
+            ("sunrise-internals", None),
+            ("game-internals", Some("game_internals")),
+        ] {
+            let cargo = format!(
+                r#"
+                [package]
+                name = "bake"
+                version = "0.1.0"
+                [dependencies]
+                sunrise-mod-api = {{ path = ".sunrise/sdk/api/crates/sunrise-mod-api" }}
+                {sdk_key} = {{ package = "sunrise-internals", path = ".sunrise/sdk/api/crates/sunrise-internals" }}
+                internals = {{ package = "itoa", version = "1" }}
+                "#
+            );
+            let project = api::Project::parse(&bundle, &cargo).unwrap();
+            let (mut manifest, wanted) =
+                super::super::crates::rewrite_closure(&project, dir.path(), |_, _| {
+                    unreachable!("fixture has no local dependencies")
+                })
+                .unwrap();
+            let result = add_facade_dependencies(
+                &project,
+                &mut manifest,
+                "native-internals/bake",
+                "sunrise-internals-bake",
+            );
+            let dependencies = &manifest["dependencies"];
+            assert_eq!(dependencies["internals"]["package"].as_str(), Some("itoa"));
+            assert_eq!(dependencies["internals"]["version"].as_str(), Some("1"));
+            assert_eq!(wanted.len(), 1);
+            assert_eq!(wanted[0].name, "itoa");
+            if let Some(alias) = expected_alias {
+                result.unwrap();
+                assert_eq!(
+                    dependencies[alias]["package"].as_str(),
+                    Some("sunrise-internals-bake")
+                );
+                assert_eq!(
+                    dependencies[alias]["path"].as_str(),
+                    Some("../../native-internals/bake")
+                );
+            } else {
+                let error = result.unwrap_err();
+                assert!(
+                    error.contains("bake: Cargo.toml dependency alias `internals`"),
+                    "{error}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn generated_facade_alias_collides_with_a_hyphenated_registry_alias() {
+        let dir = tempfile::tempdir().unwrap();
+        super::super::tests::write_bundle(dir.path(), "bake", "");
+        let bundle = super::super::bundle_in(dir.path()).unwrap().unwrap();
+        let cargo = r#"
+            [package]
+            name = "bake"
+            version = "0.1.0"
+            [dependencies]
+            sunrise-mod-api = { path = ".sunrise/sdk/api/crates/sunrise-mod-api" }
+            game-internals = { package = "itoa", version = "1" }
+            game_internals = { package = "sunrise-internals", path = ".sunrise/sdk/api/crates/sunrise-internals" }
+            "#;
+        let project = api::Project::parse(&bundle, cargo).unwrap();
+        let (mut manifest, _) =
+            super::super::crates::rewrite_closure(&project, dir.path(), |_, _| {
+                unreachable!("fixture has no local dependencies")
+            })
+            .unwrap();
+        let error = add_facade_dependencies(
+            &project,
+            &mut manifest,
+            "native-internals/bake",
+            "sunrise-internals-bake",
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("bake: Cargo.toml dependency alias `"),
+            "{error}"
+        );
+        assert_eq!(
+            manifest["dependencies"]["game-internals"]["package"].as_str(),
+            Some("itoa")
+        );
+    }
+
+    #[test]
+    fn registry_staging_inserts_the_implicit_library_root() {
+        let stage = tempfile::tempdir().unwrap();
+        let src = stage.path().join("src");
+        fs::create_dir(&src).unwrap();
+        fs::write(src.join("lib.rs"), "pub fn library() {}\n").unwrap();
+        let mut manifest = toml::toml! { [package] name = "example" version = "1.0.0" };
+
+        let root = stage_library(stage.path(), &mut manifest, "example", "// generated\n").unwrap();
+        let configured = manifest["lib"]["path"].as_str().unwrap();
+        assert_eq!(stage.path().join(configured), root);
+        assert_eq!(root, src.join("lib.rs"));
+        assert!(
+            fs::read_to_string(root)
+                .unwrap()
+                .contains("mod __sunrise_entry;")
+        );
+        assert_eq!(
+            fs::read_to_string(src.join("__sunrise_entry.rs")).unwrap(),
+            "// generated\n"
+        );
+    }
 
     #[test]
     fn forwarding_sdk_requires_one_logger_slot_in_its_template() {
@@ -969,13 +1193,14 @@ mod tests {
             id: &bundle.manifest.id,
             version: &bundle.manifest.version,
             dependencies: &declared[0],
-            has_api: true,
             code: true,
         }];
         let resolution = dependencies::resolve(&inputs).unwrap();
         let rust = crate::rust::tests::system(required("SUNRISE_TEST_REGISTRY_RUST"));
         let approve = std::env::var_os("SUNRISE_TEST_REGISTRY_DECLINE").is_none();
-        let result = compile(
+        let sdk = prebuilt::identity(&game).unwrap();
+        let catalog = internals::Catalog::read(&game, sdk.commit()).unwrap();
+        let result = stage_and_cargo(
             &rust,
             &game,
             &out,
@@ -985,15 +1210,18 @@ mod tests {
             &resolution,
             Options {
                 consent: Some(&|inventory| {
-                    eprintln!("{}\n{}", inventory.label(), inventory.detail());
+                    eprintln!("Registry dependencies: {inventory:?}");
                     approve
                 }),
                 adapter: &adapter,
                 mixins: &crate::MixinsIdentity::resolve([&bundle], None).unwrap(),
+                sdk: &sdk,
+                catalog: &catalog,
             },
+            false,
         );
         if approve {
-            let (binary, _) = result.unwrap();
+            let (binary, _) = result.unwrap().unwrap();
             assert!(binary.is_file());
             eprintln!("compiled wrapper {}", binary.display());
         } else {

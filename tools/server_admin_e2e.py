@@ -32,9 +32,10 @@ import tempfile
 import threading
 import time
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import lab  # noqa: E402
-from server_bench import DONE, Server  # noqa: E402
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab
+from tools.server_bench import DONE, Server  # noqa: E402
 
 EXE = '.exe' if os.name == 'nt' else ''
 IP = '203.0.113.7'

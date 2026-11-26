@@ -16,8 +16,10 @@ pub(in crate::game) fn mob(
         pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
         polygons: Vec::new(),
         children: Vec::new(),
+        layer: None,
     };
     let kind = MobType {
+        type_key: Default::default(),
         id: entity.into(),
         species,
         width,

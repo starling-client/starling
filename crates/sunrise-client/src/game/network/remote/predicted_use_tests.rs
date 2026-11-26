@@ -50,7 +50,7 @@ fn matrix(mods: mod_api::Mods) {
                     (6, false, 0),
                 ] {
                     for server_only in [false, true] {
-                        game.set_mode_id(0);
+                        game.set_local_mode(sunrise_client::command::args::GameMode::Survival);
                         game.inventory[game.selected] = Some(ItemStack::new("minecraft:paper", 1));
                         let target_state = if path >= 3 { air } else { stone };
                         game.world.set(0, 64, 0, target_state).unwrap();

@@ -26,7 +26,7 @@ pub trait MobLevel {
         &mut self,
         stack: sunrise_client::items::ItemStack,
         position: [f64; 3],
-        pickup_delay: u32,
+        pickup_delay: i32,
     ) -> [f64; 3];
     /// The item entity `ServerLevel.addFreshEntity` just added, unless a mod kept it out.
     fn just_spawned_item(&mut self) -> Option<&mut ItemEntity>;

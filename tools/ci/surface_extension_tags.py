@@ -29,19 +29,32 @@ def catalog(declarations: list[tuple[Path, list[dict[str, str]]]]) -> str:
         if not family.isidentifier() or family in families:
             raise ValueError(f'{path}: invalid or duplicate family name')
         families[family] = len(rows)
-        out.append(f'pub const {family}: &[ExtensionTag] = &[\n')
-        for row in rows:
+        if len(rows) == 1:
+            row = rows[0]
             if set(row) != {'registry', 'id', 'doc'} or not all(isinstance(v, str) and v for v in row.values()):
                 raise ValueError(f'{path}: expected registry, id and doc strings')
             key = (row['registry'], row['id'])
             if key in seen or not row['id'].startswith('sunrise:') or row['id'].startswith('sunrise:class/'):
                 raise ValueError(f'{path}: invalid or duplicate extension tag {key}')
             seen.add(key)
-            out.append('    ExtensionTag {\n')
+            out.append(f'pub const {family}: &[ExtensionTag] = &[ExtensionTag {{\n')
             for field in ('registry', 'id', 'doc'):
-                out.append(f'        {field}: {json.dumps(row[field], ensure_ascii=False)},\n')
-            out.append('    },\n')
-        out.append('];\n')
+                out.append(f'    {field}: {json.dumps(row[field], ensure_ascii=False)},\n')
+            out.append('}];\n')
+        else:
+            out.append(f'pub const {family}: &[ExtensionTag] = &[\n')
+            for row in rows:
+                if set(row) != {'registry', 'id', 'doc'} or not all(isinstance(v, str) and v for v in row.values()):
+                    raise ValueError(f'{path}: expected registry, id and doc strings')
+                key = (row['registry'], row['id'])
+                if key in seen or not row['id'].startswith('sunrise:') or row['id'].startswith('sunrise:class/'):
+                    raise ValueError(f'{path}: invalid or duplicate extension tag {key}')
+                seen.add(key)
+                out.append('    ExtensionTag {\n')
+                for field in ('registry', 'id', 'doc'):
+                    out.append(f'        {field}: {json.dumps(row[field], ensure_ascii=False)},\n')
+                out.append('    },\n')
+            out.append('];\n')
     out.append('pub const ALL: &[ExtensionTag] = &[\n')
     for family, count in families.items():
         for i in range(count):

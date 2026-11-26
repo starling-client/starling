@@ -76,17 +76,11 @@ impl Game<'_> {
                 .iter()
                 .map(|mob| (mob.id, mob.kind.id.clone()))
                 .collect();
-            let mut canceled = Vec::new();
             measure(recorder, &entity_tick, || {
                 for call in 0..CALLS as usize {
                     let (entity, kind) = &entities[call % entities.len()];
-                    self.native_entity_tick_pre(
-                        &dimension,
-                        std::slice::from_ref(entity),
-                        &[kind.as_str()],
-                        &mut canceled,
-                    );
-                    canceled.clear();
+                    let mut canceled = false;
+                    self.native_entity_tick_pre(&dimension, *entity, kind.as_str(), &mut canceled);
                 }
             })?;
         }

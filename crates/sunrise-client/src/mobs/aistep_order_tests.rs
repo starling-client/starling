@@ -87,7 +87,6 @@ fn a_crammed_frozen_enderman_is_hurt_by_the_freeze_first() {
                             &mut m,
                             &crowded,
                             &mut crate::health::TestLevel::new(0).level(),
-                            false,
                             &mut Vec::new(),
                             None,
                         );
@@ -135,7 +134,6 @@ fn a_wet_frozen_enderman_is_hurt_by_the_freeze_first() {
                             &mut m,
                             w,
                             &mut crate::health::TestLevel::new(0).level(),
-                            false,
                             &mut Vec::new(),
                             None,
                         );

@@ -309,7 +309,7 @@ impl Registry {
     }
 
     /// The GPU particle type `id`'s own shader, when it has one that translated.
-    pub(super) fn gpu_shader(&self, id: &str) -> Option<Arc<super::polytone_gpu::GpuShader>> {
+    pub(crate) fn gpu_shader(&self, id: &str) -> Option<Arc<super::polytone_gpu::GpuShader>> {
         self.gpu_shaders.get(id).cloned()
     }
 
@@ -1427,6 +1427,51 @@ pub(super) fn make(
     Some((particle, custom))
 }
 
+/// A GPU particle type's own `shader` translated from its stages' text, or why not, at the files
+/// and lines the pack wrote: the record as its vertex format (`GLUE`),
+/// `polytone:gpu_particle.glsl` as Sunrise lays it out, and a block per uniform.
+fn gpu_program(
+    pack_root: &sunrise_assets::resource_source::ResourceSource,
+    shader: &sunrise_polytone::gpu_particle::ParticleShader,
+    vertex: &str,
+    fragment: &str,
+) -> Result<sunrise_glsl::Translated, Vec<sunrise_glsl::Error>> {
+    use super::polytone_gpu::GLUE;
+    use sunrise_polytone::gpu_particle::{GPU_BLOCK, GPU_PARTICLE_GLSL, GPU_PARTICLE_INCLUDE};
+    // An include over the budget, or not text, stops the translation, refused by name; a missing
+    // one the translator names.
+    let include = |include: &str| -> Result<Option<String>, String> {
+        if include == GPU_PARTICLE_INCLUDE {
+            return Ok(Some(GPU_PARTICLE_GLSL.to_owned()));
+        }
+        let Some((namespace, path)) = include.split_once(':') else {
+            return Ok(None);
+        };
+        read_shader_file(pack_root, &format!("assets/{namespace}/{path}"))
+    };
+    // Wiki "GPU Particles": each of `uniforms` is a block of its own with one float.
+    let provided = |name: &str| name == GPU_BLOCK || shader.uniforms.iter().any(|(n, _)| n == name);
+    // Quoted includes start from the stages' own folder. Errors name the stages by id
+    // (`ns:shaders/core/<name>.vsh`), as includes are named.
+    let dir = shader.stage_dir();
+    let file = |extension| {
+        format!(
+            "{}:shaders/core/{}.{extension}",
+            shader.namespace, shader.name
+        )
+    };
+    let (vertex_file, fragment_file) = (file("vsh"), file("fsh"));
+    let stages = sunrise_glsl::Stages {
+        vertex_dir: &dir,
+        fragment_dir: &dir,
+        vertex,
+        fragment,
+        vertex_file: &vertex_file,
+        fragment_file: &fragment_file,
+    };
+    crate::core_shader::translate_core_at(&stages, &[], &include, &GLUE, &provided)
+}
+
 /// GPU particle type `id`'s own shader (`shader`, wiki "GPU Particles"): its core shader
 /// (`assets/<ns>/shaders/core/<name>.vsh` and `.fsh`) translated with the record as its vertex
 /// format and `polytone:gpu_particle.glsl` as Sunrise lays it out, its texture and its uniforms.
@@ -1436,8 +1481,7 @@ fn gpu_shader(
     id: &str,
     def: &CustomParticle,
 ) -> Option<super::polytone_gpu::GpuShader> {
-    use super::polytone_gpu::{GLUE, GpuShader};
-    use sunrise_polytone::gpu_particle::{GPU_BLOCK, GPU_PARTICLE_GLSL, GPU_PARTICLE_INCLUDE};
+    use super::polytone_gpu::GpuShader;
     let gpu = def.gpu.as_ref()?;
     let shader = def.gpu_shader()?;
     let stage = |extension| {
@@ -1457,34 +1501,15 @@ fn gpu_shader(
     for (name, e) in &shader.refused {
         log::warn!("custom particle {id}: uniform {name}: {e}");
     }
-    // An include over the budget, or not text, stops the translation, refused by name; a missing
-    // one the translator names.
-    let include = |include: &str| -> Result<Option<String>, String> {
-        if include == GPU_PARTICLE_INCLUDE {
-            return Ok(Some(GPU_PARTICLE_GLSL.to_owned()));
-        }
-        let Some((namespace, path)) = include.split_once(':') else {
-            return Ok(None);
-        };
-        read_shader_file(pack_root, &format!("assets/{namespace}/{path}"))
-    };
-    // Wiki "GPU Particles": each of `uniforms` is a block of its own with one float.
     let shader_id = shader.id();
-    let dir = shader.stage_dir();
-    let uniforms = shader.uniforms;
-    let provided = |name: &str| name == GPU_BLOCK || uniforms.iter().any(|(n, _)| n == name);
     // Pack GLSL is untrusted: a panic in the translator or naga refuses the shader too, with
     // no crash report.
-    // Quoted includes start from the stages' own folder.
-    let stages = crate::core_shader::Stages {
-        dir: &dir,
-        vertex: &vertex,
-        fragment: &fragment,
-    };
     let translated = crate::crash::contain(|| {
-        crate::core_shader::translate_core_at(&stages, &[], &include, &GLUE, &provided)
+        gpu_program(pack_root, &shader, &vertex, &fragment)
+            .map_err(|errors| sunrise_glsl::describe(&errors))
     })
     .and_then(|translated| translated);
+    let uniforms = shader.uniforms;
     let program = match translated {
         Ok(program) => program,
         Err(why) => {
@@ -1660,7 +1685,7 @@ impl ParticleEngine {
         drop(ctx);
         drop(frame);
         for (options, position, velocity) in out {
-            self.add(&options, position, velocity);
+            self.add_with(Some(level), &options, position, velocity, false, false);
         }
     }
 
@@ -1711,7 +1736,7 @@ impl ParticleEngine {
         drop(ctx);
         drop(frame);
         for (options, position, velocity) in out {
-            self.add(&options, position, velocity);
+            self.add_with(Some(level), &options, position, velocity, false, false);
         }
         self.sounds.extend(sounds);
     }
@@ -2429,6 +2454,44 @@ mod tests {
         assert_eq!(quads, 0);
     }
 
+    /// An error in a file a type's shader includes, which includes another, names that file
+    /// and its line.
+    #[test]
+    fn an_error_in_a_gpu_shaders_nested_include_names_its_file_and_line() {
+        let fsh = "#version 330\n#moj_import \"lib/outer.glsl\"\nin vec4 vertexColor;\n\
+            out vec4 fragColor;\nvoid main() {\n    fragColor = vertexColor * outer();\n}\n";
+        let extra = [
+            (
+                "assets/test/shaders/core/lib/outer.glsl",
+                "#moj_import \"deep.glsl\"\nfloat outer() { return deep(); }\n".to_owned(),
+            ),
+            (
+                "assets/test/shaders/core/lib/deep.glsl",
+                "// deep\nfloat deep() { return not_declared; }\n".to_owned(),
+            ),
+        ];
+        let pack = shader_pack("rain", fsh, serde_json::json!({}), &extra);
+        let shader = sunrise_polytone::gpu_particle::ParticleShader {
+            namespace: "test".into(),
+            name: "rain".into(),
+            uniforms: Vec::new(),
+            refused: Vec::new(),
+        };
+        let stage = |extension| {
+            let path = shader.stage_path(extension);
+            read_shader_file(&pack, &path).unwrap().unwrap()
+        };
+        let errors = gpu_program(&pack, &shader, &stage("vsh"), &stage("fsh")).unwrap_err();
+        let located: Vec<(&str, u32)> = errors.iter().map(|e| (e.file.as_str(), e.line)).collect();
+        assert_eq!(located, [("test:shaders/core/lib/deep.glsl", 2)]);
+        // One in the stage's own file names that file, by id.
+        let own = "#version 330\nin vec4 vertexColor;\nout vec4 fragColor;\n\
+            void main() {\n    fragColor = vertexColor * missing;\n}\n";
+        let errors = gpu_program(&pack, &shader, &stage("vsh"), own).unwrap_err();
+        let located: Vec<(&str, u32)> = errors.iter().map(|e| (e.file.as_str(), e.line)).collect();
+        assert_eq!(located, [("test:shaders/core/rain.fsh", 5)]);
+    }
+
     /// A type's shader that reads a block it is not given (here `Brightness`, which its
     /// `uniforms` don't name) is refused when the pack loads: no batch, and the type draws its
     /// quad as before.
@@ -2438,6 +2501,29 @@ mod tests {
         let (batches, quads) = spawn_rain(&pack);
         assert!(batches.is_empty());
         assert_eq!(quads, 1);
+    }
+
+    /// `GlslCompiler` compiles a type's own shader, as every program, with
+    /// `RENDERPEARL_DEPTH_IS_ZERO_TO_ONE` on a backend whose depth runs from 0 to 1: one reading a
+    /// block it is not given only where the define is missing is used, and one reading it only
+    /// where the define is there is refused.
+    #[test]
+    fn a_gpu_types_shader_has_the_zero_to_one_depth_define() {
+        let fsh = |directive: &str| {
+            BRIGHT_FSH.replace(
+                "    fragColor = vertexColor * brightnessValue;\n",
+                &format!(
+                    "    fragColor = vertexColor;\n{directive} RENDERPEARL_DEPTH_IS_ZERO_TO_ONE\n    \
+                     fragColor *= brightnessValue;\n#endif\n"
+                ),
+            )
+        };
+        let batches = |directive| {
+            let pack = shader_pack("rain", &fsh(directive), serde_json::json!({}), &[]);
+            spawn_rain(&pack).0.len()
+        };
+        assert_eq!(batches("#ifndef"), 1);
+        assert_eq!(batches("#ifdef"), 0);
     }
 
     /// A quoted include starts from the shader's own folder: `test:weather/rain`'s

@@ -14,9 +14,12 @@ import tempfile
 
 from PIL import Image, ImageChops
 
-import lab
+import sys
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab
+
 
 
 def changed_pixels(first, second):

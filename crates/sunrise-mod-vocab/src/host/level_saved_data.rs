@@ -15,9 +15,15 @@ pub trait LevelSavedDataBackend {
     /// less than 96 blocks away (`Raids.getNearbyRaid`, 9216 squared).
     fn level_raid_at(&self, level: LevelRef, pos: [i32; 3]) -> Option<RaidRef>;
     /// Side: server.
-    /// Every raid `Raids` holds, in its iteration order, stopped ones
-    /// included until their next tick. None for a closed or stale level.
-    fn level_raids(&self, level: LevelRef) -> Option<Vec<RaidRef>>;
+    /// Visits every raid in the level's `Raids` map in its iteration order, including stopped
+    /// raids until their next tick. Return `ControlFlow::Break(())` to stop; `Ok(Continue(()))`
+    /// means the visit completed, including an empty map. A stale level or unavailable raid
+    /// map returns a [`LevelReadError`] without calling the visitor.
+    fn level_visit_raids(
+        &self,
+        level: LevelRef,
+        visit: &mut dyn FnMut(RaidRef) -> core::ops::ControlFlow<()>,
+    ) -> Result<core::ops::ControlFlow<()>, LevelReadError>;
     /// Side: server.
     /// The world's respawn data (`LevelData.getRespawnData`): the world spawn, the level it is
     /// in and the way a player appearing there faces, as `/setworldspawn` sets them. The world
@@ -27,9 +33,17 @@ pub trait LevelSavedDataBackend {
     /// Side: server.
     /// Map `id`'s saved data (`ServerLevel.getMapData(new MapId(id))`): read from memory, or
     /// from `data/minecraft/maps/<id>.dat` when nothing has loaded it yet, without keeping it.
-    /// Maps belong to the world, not to a level. None on a client, for a stale handle and for
-    /// a map id nothing ever made.
-    fn level_map_data(&self, level: LevelRef, id: i32) -> Option<MapState>;
+    /// Maps belong to the world, not to a level. Calls `visit` once on `Ok(Some(()))`, lending
+    /// the dimension and pixels for the call only. Copy them inside `visit` to retain them.
+    /// A missing map returns `Ok(None)`. A retired level or world generation returns
+    /// [`LevelReadError::Stale`]; a client or an absent backend
+    /// returns [`LevelReadError::Unavailable`]. None of these calls the visitor.
+    fn level_visit_map_data(
+        &self,
+        level: LevelRef,
+        id: i32,
+        visit: &mut dyn FnMut(MapState<'_>),
+    ) -> Result<Option<()>, LevelReadError>;
 }
 /// The handles' writes of the `level_saved_data` area, implemented by the game and reached through [`BackendMut`].
 // hidden: a handle's backend, reached through `Backend`; mods call the handle, never this trait

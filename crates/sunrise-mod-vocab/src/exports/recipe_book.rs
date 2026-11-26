@@ -1,5 +1,6 @@
 pub use crate::item::recipe_book::{
-    RecipeBookCategory, RecipeBookIdentity, RecipeBookLayout, RecipeBookSettings, RecipeBookTypeKey,
+    RecipeBookCategory, RecipeBookIdentity, RecipeBookLayout, RecipeBookPlacement,
+    RecipeBookSettings, RecipeBookTypeKey,
 };
 pub use crate::item::recipe_book::{RecipeBookDisplay, RecipeBookDisplayEntry, RecipeSlotDisplay};
 

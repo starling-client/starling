@@ -8,6 +8,7 @@ Generated `sunrise:class/*` tags cannot be written; attach a part with `block_pa
 
 | Registry | Tag | Contract |
 | --- | --- | --- |
+| `block` | `sunrise:golem_heads` | Additional blocks that count as a golem's carved head (`CarvedPumpkinBlock`'s pumpkin predicate) for snow, iron and copper golems. Merged with vanilla's carved pumpkin and jack o'lantern; an empty tag restores vanilla. |
 | `block` | `sunrise:villager_secondary_poi/none` | Additional secondary work blocks for the none villager profession. Merged with vanilla's secondary blocks; an empty tag restores vanilla. |
 | `block` | `sunrise:villager_secondary_poi/armorer` | Additional secondary work blocks for the armorer villager profession. Merged with vanilla's secondary blocks; an empty tag restores vanilla. |
 | `block` | `sunrise:villager_secondary_poi/butcher` | Additional secondary work blocks for the butcher villager profession. Merged with vanilla's secondary blocks; an empty tag restores vanilla. |

@@ -2,7 +2,7 @@
 #![cfg(test)]
 
 use super::native_entity_refs::tests::with_game;
-use std::{path::Path, sync::Arc};
+use std::{ops::ControlFlow, path::Path, sync::Arc};
 
 fn write(path: &Path, bytes: impl AsRef<[u8]>) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -11,7 +11,7 @@ fn write(path: &Path, bytes: impl AsRef<[u8]>) {
 
 #[test]
 #[ignore = "daily"]
-fn generic_processor_and_referencing_pool_accept_pillar_block_properties() {
+fn generic_processor_and_referencing_pool_accept_block_properties() {
     let _publication = sunrise_client::datapack_net::isolate_server_publication();
     let scratch = tempfile::tempdir().unwrap();
     let pack = scratch.path().join("datapacks/processors");
@@ -23,14 +23,14 @@ fn generic_processor_and_referencing_pool_accept_pillar_block_properties() {
         &scratch.path().join("datapacks.json"),
         r#"{"enabled":["vanilla","file/processors"],"disabled":[]}"#,
     );
-    // The supported pillar schema from the processor conversion codec fixture.
+    // A vanilla rule processor matching a block state with properties.
     write(
-        &pack.join("data/registry_processor_test/worldgen/processor_list/pillar.json"),
-        r#"{"processors":[{"processor_type":"sunrise:pillar","pillar_length":15,"pillar_trigger_and_replacements":[{"trigger":{"id":"minecraft:red_stained_glass"},"replacement":{"id":"minecraft:cobblestone"}}]}]}"#,
+        &pack.join("data/registry_processor_test/worldgen/processor_list/rule.json"),
+        r#"{"processors":[{"processor_type":"minecraft:rule","rules":[{"input_predicate":{"predicate_type":"minecraft:blockstate_match","block_state":{"id":"minecraft:oak_stairs","properties":{"facing":"east","half":"top","shape":"straight","waterlogged":"false"}}},"location_predicate":{"predicate_type":"minecraft:always_true"},"output_state":{"id":"minecraft:cobblestone"}}]}]}"#,
     );
     write(
-        &pack.join("data/registry_processor_test/worldgen/template_pool/pillar.json"),
-        r#"{"fallback":"minecraft:empty","elements":[{"weight":1,"element":{"element_type":"minecraft:single_pool_element","location":"minecraft:village/plains/houses/plains_small_house_1","processors":"registry_processor_test:pillar","projection":"rigid"}}]}"#,
+        &pack.join("data/registry_processor_test/worldgen/template_pool/rule.json"),
+        r#"{"fallback":"minecraft:empty","elements":[{"weight":1,"element":{"element_type":"minecraft:single_pool_element","location":"minecraft:village/plains/houses/plains_small_house_1","processors":"registry_processor_test:rule","projection":"rigid"}}]}"#,
     );
     // Unsupported processors must still fail admission, including their pools.
     write(
@@ -54,20 +54,25 @@ fn generic_processor_and_referencing_pool_accept_pillar_block_properties() {
         request.save_root = scratch.path().to_owned();
         game.load_world(request).unwrap();
         let host: &dyn mod_api::Host = game;
-        let accepted = mod_api::Identifier::parse("registry_processor_test:pillar").unwrap();
-        let rejected = mod_api::Identifier::parse("registry_processor_test:rejected").unwrap();
         for registry in [
             "minecraft:worldgen/processor_list",
             "minecraft:worldgen/template_pool",
         ] {
             assert!(
-                host.registry_entry(registry, "registry_processor_test:pillar")
+                host.registry_entry(registry, "registry_processor_test:rule")
                     .is_some(),
                 "{registry}"
             );
-            let entries = host.registry_entries(registry).unwrap();
-            assert!(entries.contains(&accepted), "{registry}");
-            assert!(!entries.contains(&rejected), "{registry}");
+            let mut accepted = false;
+            assert_eq!(
+                host.visit_registry_entries(registry, &mut |id| {
+                    accepted |= id == "registry_processor_test:rule";
+                    assert_ne!(id, "registry_processor_test:rejected", "{registry}");
+                    ControlFlow::Continue(())
+                }),
+                Ok(ControlFlow::Continue(()))
+            );
+            assert!(accepted, "{registry}");
             assert_eq!(
                 host.registry_entry(registry, "registry_processor_test:rejected"),
                 None

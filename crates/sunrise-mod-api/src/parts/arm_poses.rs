@@ -8,22 +8,24 @@ impl ArmPosesRegistrar for PartRegistrar {
         uses_both_arms: bool,
         affects_offhand: bool,
     ) -> crate::CustomArmPose {
-        if crate::Identifier::parse(name).is_err()
-            || !namespaced(name)
-            || name.split_once(':').is_none_or(|(namespace, _)| {
-                namespace == "minecraft" || !owns_namespace(self.mod_id, namespace)
-            })
-            || self.arm_poses.iter().any(|pose| pose.id == name)
-        {
+        if crate::Identifier::parse_namespaced(name).is_none() {
             self.refused.push(format!(
-                "{} registered invalid or duplicate arm pose {name:?}",
+                "{} registered invalid arm pose {name:?}",
                 self.mod_id
+            ));
+            return mod_vocab::__private::parts_installation::arm_pose(u32::MAX, false, false);
+        }
+        if let Some(previous) = self.arm_poses.iter().find(|pose| pose.id == name) {
+            self.refused.push(format!(
+                "{} registered duplicate arm pose {name:?} (already registered by {})",
+                self.mod_id, previous.owner
             ));
             return mod_vocab::__private::parts_installation::arm_pose(u32::MAX, false, false);
         }
         let slot = self.arm_poses.len() as u32;
         self.arm_poses.push(PoseInfo {
             id: name.into(),
+            owner: self.mod_id,
             both: uses_both_arms,
             offhand: affects_offhand,
         });
@@ -36,26 +38,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn registrations_refuse_invalid_duplicate_and_foreign_names() {
+    fn registrations_accept_explicit_namespaces_and_refuse_invalid_or_duplicate_names() {
         let mut registrar = PartRegistrar::new("skillet");
-        let pose = registrar.register_arm_pose("skillet:flip", true, false);
-        assert_eq!(pose.slot(), 0);
-        for id in [
-            "skillet:flip",
-            "other:flip",
-            "",
-            "skillet:",
-            "skillet:Bad Name",
-        ] {
+        let own = registrar.register_arm_pose("skillet:flip", true, false);
+        let foreign = registrar.register_arm_pose("other:flip", false, true);
+        let vanilla_ns = registrar.register_arm_pose("minecraft:flip", false, false);
+        assert_eq!((own.slot(), foreign.slot(), vanilla_ns.slot()), (0, 1, 2));
+        for id in ["skillet:flip", "", "bare", "skillet:", "skillet:Bad Name"] {
             assert_eq!(
                 registrar.register_arm_pose(id, false, false).slot(),
                 u32::MAX
             );
         }
-        assert_eq!(registrar.refused.len(), 5);
-        assert_eq!(registrar.arm_poses.len(), 1);
+        registrar.mod_id = "second";
+        assert_eq!(
+            registrar
+                .register_arm_pose("other:flip", false, false)
+                .slot(),
+            u32::MAX
+        );
+        assert_eq!(registrar.refused.len(), 6);
+        assert!(registrar.refused[0].contains("already registered by skillet"));
+        assert!(registrar.refused[5].contains("second"));
+        assert!(registrar.refused[5].contains("already registered by skillet"));
+        assert_eq!(registrar.arm_poses.len(), 3);
+        assert_eq!(registrar.arm_poses[0].owner, "skillet");
         assert!(registrar.arm_poses[0].both);
         assert!(!registrar.arm_poses[0].offhand);
+        assert_eq!(registrar.arm_poses[1].id, "other:flip");
+        assert_eq!(registrar.arm_poses[1].owner, "skillet");
+        assert_eq!(registrar.arm_poses[2].id, "minecraft:flip");
+        assert_eq!(registrar.arm_poses[2].owner, "skillet");
     }
 
     #[test]
@@ -110,7 +123,7 @@ mod tests {
     }
 
     #[test]
-    fn served_by_arm_pose_delegates_to_serving_host_only() {
+    fn arm_pose_owner_is_the_registrant_not_the_namespace_supplier() {
         let packages = vec![
             crate::PackageInfo::new(
                 "host".into(),
@@ -146,18 +159,39 @@ mod tests {
                 registrar
                     .register_arm_pose("minecraft:cast", false, false)
                     .slot(),
-                u32::MAX
+                1
             );
             registrar.mod_id = "other";
             assert_eq!(
                 registrar
                     .register_arm_pose("runes:other_cast", false, false)
                     .slot(),
+                2
+            );
+            assert_eq!(
+                registrar
+                    .register_arm_pose("runes:cast", false, true)
+                    .slot(),
                 u32::MAX
             );
-            assert_eq!(registrar.arm_poses.len(), 1);
-            assert_eq!(registrar.arm_poses[0].id, "runes:cast");
-            assert_eq!(registrar.refused.len(), 2);
+            assert_eq!(
+                registrar
+                    .arm_poses
+                    .iter()
+                    .map(|p| (p.id.as_str(), p.owner))
+                    .collect::<Vec<_>>(),
+                [
+                    ("runes:cast", "host"),
+                    ("minecraft:cast", "host"),
+                    ("runes:other_cast", "other")
+                ]
+            );
+            assert_eq!(
+                registrar.refused,
+                [
+                    r#"other registered duplicate arm pose "runes:cast" (already registered by host)"#
+                ]
+            );
         });
     }
 }

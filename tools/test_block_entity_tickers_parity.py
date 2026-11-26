@@ -17,11 +17,11 @@ import os
 import random
 import subprocess
 import sys
-try:
-    from . import lab, test_rust_parity as base
-except ImportError:
-    import lab
-    import test_rust_parity as base
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_rust_parity as base
 
 PARITY = lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity'
 TICKING = ['hopper', 'furnace', 'blast_furnace', 'smoker', 'beacon', 'spawner', 'trial_spawner', 'vault',

@@ -1,0 +1,2 @@
+# A frame-graph pass renders into the mip level its OffscreenPass names (#5990).
+sunrise-client-render gfx::mod_frame_graph::tests::gpu_frame_graph_pass_renders_into_its_mip_level lib daily gpu

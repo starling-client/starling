@@ -23,6 +23,7 @@ fn names<T>(test: impl FnOnce(&PacketNames) -> T) -> T {
     test(&PacketNames {
         item: &item,
         category: &category,
+        component: &|_| None,
         tag: &tag,
     })
 }

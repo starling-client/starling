@@ -202,7 +202,7 @@ impl ActiveDebugRenderer {
     pub fn draw(
         &self,
         host: &dyn ClientHost,
-        view: &mod_api::WorldRenderView,
+        view: &mod_api::WorldRenderView<'_>,
         draw: &mut dyn mod_api::WorldDrawContext,
     ) {
         if self.owner.is_enabled() {
@@ -301,7 +301,7 @@ fn all<'a>(registered: &'a [RegisteredDebugEntry]) -> impl Iterator<Item = Entry
         .chain(registered.iter().map(as_entry))
 }
 
-/// `DebugScreenEntries.getEntry` by path.
+/// `DebugScreenEntries.getEntry` by path or namespaced identifier.
 fn entry<'a>(registered: &'a [RegisteredDebugEntry], path: &str) -> Option<Entry<'a>> {
     let bare = path.strip_prefix("minecraft:").unwrap_or(path);
     all(registered).find(|e| {
@@ -320,28 +320,16 @@ pub fn search<'a>(registered: &'a [RegisteredDebugEntry], search: &str) -> Vec<E
     entries
 }
 
-/// The `DebugScreenDisplayer` group key of a vanilla group.
-pub fn group_key(group: DebugGroup) -> &'static str {
-    match group {
-        DebugGroup::Position => "position",
-        DebugGroup::Light => "light",
-        DebugGroup::Memory => "memory",
-        DebugGroup::LookingAtBlock => "looking_at_block",
-        DebugGroup::LookingAtEntity => "looking_at_entity",
-        DebugGroup::LookingAtFluid => "looking_at_fluid",
-        DebugGroup::ChunkGeneration => "chunk_generation",
-    }
-}
-
-/// Drawn lines of visible native text entries, in registration order. Renderer toggles, hidden
-/// entries and callbacks that append nothing do not contribute a group.
+/// Drawn lines of visible native text entries with their `DebugScreenDisplayer` group key, in
+/// registration order. Renderer toggles, hidden entries and callbacks that append nothing do not
+/// contribute a group.
 pub fn mod_lines<'a>(
     entries: &'a [RegisteredDebugEntry],
     host: &'a dyn ClientHost,
     selection: &'a DebugEntries,
     overlay: bool,
     reduced: bool,
-) -> impl Iterator<Item = (DebugGroup, Vec<String>)> + 'a {
+) -> impl Iterator<Item = (Cow<'static, str>, Vec<String>)> + 'a {
     entries.iter().filter_map(move |registered| {
         let entry = &registered.entry;
         let (group, append_lines) = entry.text_lines()?;
@@ -364,7 +352,24 @@ pub fn mod_lines<'a>(
                 append_lines(host, &mut lines);
             })
             .ok()?;
-        (!lines.is_empty()).then_some((group, lines))
+        if lines.is_empty() {
+            return None;
+        }
+        // Vanilla's groups are `minecraft:` identifiers; the overlay keys them by path.
+        let key = match group {
+            DebugGroup::Position => Cow::Borrowed("position"),
+            DebugGroup::Light => Cow::Borrowed("light"),
+            DebugGroup::Memory => Cow::Borrowed("memory"),
+            DebugGroup::LookingAtBlock => Cow::Borrowed("looking_at_block"),
+            DebugGroup::LookingAtEntity => Cow::Borrowed("looking_at_entity"),
+            DebugGroup::LookingAtFluid => Cow::Borrowed("looking_at_fluid"),
+            DebugGroup::ChunkGeneration => Cow::Borrowed("chunk_generation"),
+            DebugGroup::Named(id) if id.namespace() == "minecraft" => {
+                Cow::Owned(id.path().to_owned())
+            }
+            DebugGroup::Named(id) => Cow::Owned(id.to_string()),
+        };
+        Some((key, lines))
     })
 }
 
@@ -797,10 +802,15 @@ mod tests {
             ["mymod:tick_cost", "minecraft:custom_stat", "other:queue"]
         );
         assert_eq!(kept[0].owner.id(), "mymod");
+        assert_eq!(kept[1].owner.id(), "mymod");
         assert_eq!(
             kept[0].entry.text_lines().map(|(group, _)| group),
-            Some(DebugGroup::Memory)
+            Some(&DebugGroup::Memory)
         );
+        let mut selection = DebugEntries::default();
+        selection.set_status("minecraft:custom_stat", Status::AlwaysOn);
+        assert!(selection.enabled(&kept, "minecraft:custom_stat", false, false));
+        assert!(selection.any_enabled(&kept, false, false));
     }
 
     #[test]
@@ -888,10 +898,47 @@ mod tests {
             let groups: Vec<_> = mod_lines(&entries, &host, &selection, true, false).collect();
             assert_eq!(
                 groups,
-                [(DebugGroup::Memory, vec!["Tick cost: 3 ms".to_owned()])]
+                [("memory".into(), vec!["Tick cost: 3 ms".to_owned()])]
             );
-            assert_eq!(group_key(groups[0].0), "memory");
             assert_eq!(current_native_mod(), None);
+        });
+    }
+
+    #[test]
+    fn a_named_group_keeps_its_lines_together_and_minecraft_names_join_vanillas() {
+        mod_platform::testing::with_mods(Vec::new().into(), || {
+            let entry = |id: &str, group: &str, line: &'static str| RegisteredDebugEntry {
+                owner: CallbackOwner::for_mod("mymod"),
+                entry: DebugEntry::text(
+                    id.into(),
+                    match group {
+                        "memory" => DebugGroup::Memory,
+                        named => DebugGroup::Named(Identifier::parse_namespaced(named).unwrap()),
+                    },
+                    move |_, lines| lines.push(line.into()),
+                ),
+            };
+            let entries = [
+                entry("mymod:queue", "mymod:pipes", "Queue: 3"),
+                entry("mymod:heap", "minecraft:memory", "Heap: 12 MiB"),
+                entry("mymod:flow", "mymod:pipes", "Flow: 40/t"),
+                entry("mymod:cache", "memory", "Cache: 2 MiB"),
+            ];
+            let mut selection = DebugEntries::default();
+            for e in &entries {
+                selection.set_status(e.entry.id(), Status::AlwaysOn);
+            }
+            let mut displayer = crate::debug_overlay::Displayer::default();
+            displayer.group("memory", ["Mem: 25% 1046/4096MiB".to_owned()]);
+            for (group, lines) in mod_lines(&entries, &FakeHost::new(), &selection, true, false) {
+                displayer.group(group, lines);
+            }
+            let (left, right) = displayer.columns(&[]);
+            assert_eq!(
+                left,
+                ["Mem: 25% 1046/4096MiB", "Heap: 12 MiB", "Cache: 2 MiB", ""]
+            );
+            assert_eq!(right, ["Queue: 3", "Flow: 40/t", ""]);
         });
     }
 
@@ -942,7 +989,7 @@ mod tests {
                 for _ in 0..2 {
                     assert_eq!(
                         mod_lines(&entries, &host, &selection, true, false).collect::<Vec<_>>(),
-                        [(DebugGroup::Position, vec!["debug_healthy".to_owned()]),]
+                        [("position".into(), vec!["debug_healthy".to_owned()]),]
                     );
                 }
                 assert_eq!(runs.load(Ordering::Relaxed), 1);

@@ -1,4 +1,59 @@
-use std::{fs, process::Command};
+use std::{fs, io::Read, process::Command};
+
+#[test]
+#[ignore = "daily"]
+fn builds_emit_an_identical_ustar_with_only_page_files() {
+    let root = tempfile::tempdir().unwrap();
+    let tool = |dir: &std::path::Path, args: &[&str]| {
+        let output = Command::new(env!("CARGO_BIN_EXE_cargo-sunrise-mod"))
+            .current_dir(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    tool(root.path(), &["new", "ruby"]);
+    let project = root.path().join("ruby");
+    let metadata = b"# keep the author's TOML\nsummary = 'Summary'\ndescription = 'Description'\n[[screenshots]]\npath = 'page/z.png'\n[[screenshots]]\npath = 'page/a.jpg'\n";
+    let png = include_bytes!("../../sunrise-mod-package/tests/fixtures/page.png");
+    let jpeg = include_bytes!("../../sunrise-mod-package/tests/fixtures/page.jpg");
+    fs::write(project.join("page.toml"), metadata).unwrap();
+    fs::write(project.join("page/z.png"), png).unwrap();
+    fs::write(project.join("page/a.jpg"), jpeg).unwrap();
+    let bundle = project.join("target/sunrise-mod/ruby.page.tar");
+    tool(&project, &["build"]);
+    let before = fs::read(&bundle).unwrap();
+    tool(&project, &["build"]);
+    assert_eq!(fs::read(&bundle).unwrap(), before);
+    let mut tar = tar::Archive::new(&before[..]);
+    let mut entries = tar.entries().unwrap();
+    for (name, contents) in [
+        ("page.toml", metadata.as_slice()),
+        ("page/a.jpg", jpeg.as_slice()),
+        ("page/z.png", png.as_slice()),
+    ] {
+        let mut entry = entries.next().unwrap().unwrap();
+        assert_eq!(entry.path_bytes(), name.as_bytes());
+        let header = entry.header();
+        assert!(header.as_ustar().is_some());
+        assert!(header.entry_type().is_file());
+        assert_eq!(header.uid().unwrap(), 0);
+        assert_eq!(header.gid().unwrap(), 0);
+        assert_eq!(header.mtime().unwrap(), 0);
+        assert_eq!(header.mode().unwrap(), 0o644);
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, contents);
+    }
+    assert!(entries.next().is_none());
+    fs::remove_file(project.join("page.toml")).unwrap();
+    tool(&project, &["build"]);
+    assert!(!bundle.exists());
+}
 
 #[test]
 #[ignore = "daily"]

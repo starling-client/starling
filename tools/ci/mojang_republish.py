@@ -25,8 +25,8 @@ import urllib.request
 
 ROOT = Path(__file__).resolve().parents[2]
 # tools/lab.py: the pinned versions and the content rule.
-sys.path.append(str(ROOT / "tools"))
-import lab  # noqa: E402
+sys.path.insert(0, str(ROOT))
+from tools import lab  # noqa: E402
 
 LOCK = ROOT / "research-lock.json"
 MANIFEST_URL = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"

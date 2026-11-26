@@ -8,19 +8,18 @@ use crate::*;
 pub trait EntityFireFrostBackend {
     /// Side: both.
     /// `Entity.isOnFire`: not fire immune, and positive remaining fire ticks OR the
-    /// client's synced shared flag 0. Players, mobs, armor stands and items, as
-    /// `entity_fire_ticks` covers, as well as other players tracked by a client.
-    /// Reads this side's own immunity and fire state. None for other kinds or stale handles.
+    /// client's synced shared flag 0. Every kind of entity, and every entity a client
+    /// tracks. Reads this side's own immunity and fire state. None for a stale handle.
     fn entity_is_on_fire(&self, entity: EntityRef) -> Option<bool>;
     /// Side: both.
     /// `Entity.fireImmune`: type immunity or the live grant on this side. Separate
-    /// species-specific damage rules do not turn on the grant. Players, mobs, armor
-    /// stands and the intrinsically immune dragon. `None` for unsupported entities
-    /// or stale handles.
+    /// species-specific damage rules do not turn on the grant. Every kind of entity:
+    /// the type's own immunity (`EntityType.fireImmune`, a general entity's
+    /// `fire_immune` declaration) counts. `None` for a stale handle.
     fn entity_fire_immune(&self, entity: EntityRef) -> Option<bool>;
     /// Side: server.
-    /// The ticks the entity burns for (`Entity.getRemainingFireTicks`):
-    /// players, mobs, armor stands and items.
+    /// The ticks the entity burns for (`Entity.getRemainingFireTicks`), for every kind of
+    /// entity. `None` for a stale handle, or a kind that keeps no entity data.
     fn entity_fire_ticks(&self, entity: EntityRef) -> Option<i32>;
     /// Side: server.
     /// Returns the entity's frozen ticks (`Entity.getTicksFrozen`).
@@ -39,10 +38,14 @@ pub trait EntityFireFrostBackendMut {
     /// Returns `false` for a stale or unsupported entity, or on a client.
     fn entity_set_fire_immunity(&mut self, entity: EntityRef, immune: bool) -> bool;
     /// Side: server.
-    /// Sets the remaining fire ticks (`Entity.setRemainingFireTicks`).
+    /// Sets the remaining fire ticks (`Entity.setRemainingFireTicks`), for every kind of
+    /// entity. Kinds saved as entity data keep it as the short `Fire`, so a value beyond
+    /// 16 bits does not survive a save. False for a stale handle, or a kind that keeps no
+    /// entity data.
     fn entity_set_remaining_fire_ticks(&mut self, entity: EntityRef, ticks: i32) -> bool;
     /// Side: server.
-    /// Clears positive fire ticks while retaining fire immunity (`Entity.clearFire`).
+    /// Clears positive fire ticks while retaining fire immunity (`Entity.clearFire`), for
+    /// every kind of entity.
     fn entity_clear_fire(&mut self, entity: EntityRef) -> bool;
     /// Side: server.
     /// `Entity.extinguishFire`: plays the ordinary extinguish sound when the
@@ -50,8 +53,8 @@ pub trait EntityFireFrostBackendMut {
     /// and fire-resistant dropped stacks do not play a sound; negative
     /// fire-immunity countdowns are retained.
     /// Uses the engine's entity/cosmetic random and normal sound route.
-    /// Supports players, guests, mobs, armor stands and dropped items. False
-    /// for a stale or unsupported entity.
+    /// Every kind of entity; other kinds than players, mobs, armor stands and dropped
+    /// items use the neutral sound source. False for a stale handle.
     /// Unlike this operation, `clear_fire` is always silent and draws no random.
     fn entity_extinguish_fire(&mut self, entity: EntityRef) -> bool;
     /// Side: server.

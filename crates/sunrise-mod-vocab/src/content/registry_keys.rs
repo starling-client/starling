@@ -393,6 +393,12 @@ pub fn block_definitions() -> Option<&'static sunrise_mod_runtime::block_definit
     resolved_block_keys().get().map(|blocks| &**blocks)
 }
 
+/// Share the immutable definitions published with completed block identities, for a holder
+/// that outlives the borrow or moves to another thread.
+pub fn block_definitions_shared() -> Option<Arc<sunrise_mod_runtime::block_definitions::Blocks>> {
+    resolved_block_keys().get().cloned()
+}
+
 /// Find an item in the completed registry without allocating at a hook boundary.
 pub fn item_key(id: &str) -> Option<ItemKey> {
     Some(ItemKey(*resolved_items().get()?.slots.get(id)?))
@@ -587,6 +593,14 @@ pub fn menu_keys() -> Vec<MenuKey> {
 /// Every loaded enchantment key in registry order.
 pub fn enchantment_keys() -> Vec<EnchantmentKey> {
     ordered_keys(&ENCHANTMENTS, EnchantmentKey)
+}
+
+/// Find a loaded enchantment by canonical registry id.
+pub fn enchantment_key(id: &str) -> Option<EnchantmentKey> {
+    let table = ENCHANTMENTS.read().ok()?;
+    let names = table.as_ref()?;
+    let slot = *names.slots.get(id)?;
+    names.order.contains(&slot).then_some(EnchantmentKey(slot))
 }
 
 impl EntityTypeKey {
@@ -846,21 +860,32 @@ pub(crate) fn block_entity_type_display_name(key: BlockEntityTypeKey) -> Registr
 }
 
 /// Resolve requested effects once, after every mod's content has been registered.
+/// A request an optional dependent made of a provider package that was not admitted
+/// (`provider_admitted` says by package id) is dropped, not refused; a request of an admitted
+/// provider that does not supply the effect keeps its refusal.
 pub fn resolve_effects<'a>(
     ids: impl IntoIterator<Item = &'a str>,
     resolve: impl FnMut(&str) -> Option<usize>,
+    provider_admitted: impl Fn(&str) -> bool,
 ) -> Result<(), Vec<String>> {
-    let effects = sunrise_mod_runtime::registry_keys::resolve_effects(
-        &crate::parts::requested_keys().effects,
-        ids,
-        resolve,
-    )
-    .map_err(|errors| {
-        errors
-            .into_iter()
-            .map(|error| error.to_string())
-            .collect::<Vec<_>>()
-    })?;
+    let mut requests = crate::parts::requested_keys().effects.clone();
+    if let Some(installed) = crate::parts::installed() {
+        requests.withdraw_where(|mod_id, id| {
+            crate::parts::optional_provider_lost(
+                &installed.dependencies,
+                &provider_admitted,
+                mod_id,
+                id,
+            )
+        });
+    }
+    let effects = sunrise_mod_runtime::registry_keys::resolve_effects(&requests, ids, resolve)
+        .map_err(|errors| {
+            errors
+                .into_iter()
+                .map(|error| error.to_string())
+                .collect::<Vec<_>>()
+        })?;
     let _ = crate::parts::resolved_effects().set(effects);
     Ok(())
 }

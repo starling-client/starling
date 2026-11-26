@@ -65,22 +65,19 @@ impl Game<'_> {
                     },
                 ),
             },
-            sync::Frame::Place { selection, use_max } => {
-                let outcome = self.server_mod_book_place(conn, &selection, use_max);
-                // A policy or root-commit callback may have closed or replaced the menu.
-                if self
-                    .mod_book_menu_snapshot(
-                        conn,
-                        selection.catalog.window,
-                        selection.catalog.menu.as_str(),
-                    )
-                    .is_ok_and(|now| now.instance == selection.catalog.instance)
-                {
-                    self.send_guest_mod_book_placement(
-                        conn,
-                        sync::Frame::Reply { selection, outcome },
-                    );
-                }
+            sync::Frame::Place {
+                catalog,
+                display,
+                use_max,
+            } => {
+                self.lan_route_place_recipe(
+                    conn,
+                    super::lan_crafting::RecipePlacementIntent::ModBook {
+                        catalog: &catalog,
+                        display: &display,
+                        use_max,
+                    },
+                );
             }
             _ => {}
         }

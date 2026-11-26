@@ -25,13 +25,14 @@ mod tests {
 
         #[mod_api::__subscriptions]
         impl Hooks for Lookup {
-            fn level_tick_pre(&self, host: HostSide, _: &mut LevelTickPreEvent) {
+            fn level_tick_pre(&self, host: HostSide, event: &mut LevelTickPreEvent) {
                 let HostSide::Server(host) = host else {
                     return;
                 };
-                assert_eq!(host.entity_by_uuid(EntityUuid(u128::MAX)), None);
-                let hit = host
-                    .entity_by_uuid(UUID)
+                let level = event.level;
+                assert_eq!(level.entity_by_uuid(host, EntityUuid(u128::MAX)), None);
+                let hit = level
+                    .entity_by_uuid(host, UUID)
                     .map(|entity| (entity.id(), entity.position(host).unwrap()));
                 self.0.lock().unwrap().push(hit);
             }

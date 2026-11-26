@@ -1187,6 +1187,54 @@ fn hydrate_light<L: AsRef<[u8]>>(
     chunk.light_loaded = true;
 }
 
+/// The packet decoder has already hydrated the supplied layers. Overlay the sections omitted
+/// by the packet from the queued layers, or from storage on a same-position resend.
+pub fn inherit_packet_light(
+    chunk: &mut Chunk,
+    previous: Option<&Chunk>,
+    queued: Option<Vec<sunrise_protocol::chunk::SectionLight>>,
+    sky_light: bool,
+) {
+    let Some(mut layers) = queued.or_else(|| {
+        previous.and_then(Chunk::stored_light)?;
+        Some(vec![(None, None); chunk.sections.len() + 2])
+    }) else {
+        return;
+    };
+    for (b, (sky, block)) in layers.iter_mut().enumerate() {
+        let supplied = chunk.stored_light_layers(b).unwrap_or_default();
+        let stored = previous
+            .and_then(|old| old.stored_light_layers(b))
+            .unwrap_or_default();
+        for (layer, shift, present, old_present) in [
+            (sky, 4, supplied[0], stored[0]),
+            (block, 0, supplied[1], stored[1]),
+        ] {
+            if present {
+                *layer = None;
+            } else if layer.is_none()
+                && old_present
+                && let Some(old) = previous.and_then(|old| old.light_section(b))
+            {
+                *layer = Some(
+                    (0..2048)
+                        .map(|i| {
+                            ((old.light.get(2 * i) >> shift) & 15)
+                                | (((old.light.get(2 * i + 1) >> shift) & 15) << 4)
+                        })
+                        .collect(),
+                );
+            }
+        }
+    }
+    if layers
+        .iter()
+        .any(|(sky, block)| sky.is_some() || block.is_some())
+    {
+        update_light_layers(chunk, &layers, sky_light);
+    }
+}
+
 /// `LevelLightEngine.queueSectionData`: replace only the named layers. Rebuild the render cache
 /// below a changed sky layer until the next stored sky layer supplies its own bottom row.
 /// Returns the column sections whose light changed (the first or last for a changed pad).

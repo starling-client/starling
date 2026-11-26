@@ -2,7 +2,9 @@
 """Full Mob command equipment adoption, saved projection and actual slot copying."""
 import hashlib,json,sys,tempfile,uuid
 from pathlib import Path
-import test_command_exec_parity as driver
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_command_exec_parity as driver
 CASES=[('offhand_custom','weapon.offhand','offhand','stick[custom_data={audit:7}]',3),
  ('head_custom','armor.head','head','iron_helmet[damage=3,custom_data={audit:8}]',1),
  ('offhand_plain','weapon.offhand','offhand','stick',1),

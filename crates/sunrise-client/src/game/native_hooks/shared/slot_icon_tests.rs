@@ -24,6 +24,7 @@ fn empty_slot_draws_icon_but_a_filled_slot_does_not() {
                     window: 1,
                     generation,
                     name: "test:menu".into(),
+                    title: None,
                     block: Some("test:block".into()),
                     pos: None,
                     mod_type: None,
@@ -32,6 +33,7 @@ fn empty_slot_draws_icon_but_a_filled_slot_does_not() {
                 layout_revision: 0,
                 slot_moves: Default::default(),
                 shown: true,
+                detached: false,
                 screen: mod_api::__private::OwnedMenuScreen::new(
                     "test",
                     0,

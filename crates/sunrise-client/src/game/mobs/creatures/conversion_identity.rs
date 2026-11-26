@@ -31,7 +31,19 @@ impl Game<'_> {
     /// gave it. A value without a codec stays behind. The copy is not synced on its own: the new
     /// mob's spawn carries its synced values. A mob with no attachments costs one lookup.
     pub(super) fn copy_conversion_attachments(&mut self, from: u32, to: u32, kind: &str) {
-        let Some(saved) = self.entity_attachments.get(&from).map(|map| map.to_nbt()) else {
+        let Some(saved) =
+            self.entity_attachments
+                .get(&from)
+                .and_then(|map| match map.try_to_nbt() {
+                    Ok(saved) => Some(saved),
+                    Err(error) => {
+                        log::error!(
+                            "Sunrise: conversion attachment copy skipped for entity {from}: {error}"
+                        );
+                        None
+                    }
+                })
+        else {
             return;
         };
         if saved.is_empty() {
@@ -50,10 +62,10 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use crate::game::native_entity_refs::tests::with_game;
-    use mod_api::{AttachmentType, Holder};
+    use mod_api::Holder;
     use sunrise_client::mobs::{Mob, conversion::Params};
     use sunrise_core::{geometry::Vec3, nbt::Tag};
-    use sunrise_mod_runtime::attachments::{AttachmentCodec, AttachmentError};
+    use sunrise_mod_runtime::attachments::{AttachmentCodec, AttachmentError, AttachmentType};
 
     static MARK: AttachmentType<i32> = AttachmentType {
         namespace: "conversion_test",
@@ -67,7 +79,7 @@ mod tests {
             },
         }),
         copy_on_death: false,
-        sync: false,
+        sync_codec: None,
     };
     static LOOSE: AttachmentType<i32> = AttachmentType {
         namespace: "conversion_test",
@@ -75,7 +87,7 @@ mod tests {
         default: || 0,
         codec: None,
         copy_on_death: false,
-        sync: false,
+        sync_codec: None,
     };
 
     /// A villager struck into a witch keeps the attachment that has a codec and leaves the

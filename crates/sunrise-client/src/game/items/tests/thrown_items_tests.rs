@@ -107,6 +107,18 @@ fn a_death_scatter_takes_the_throwers_random_not_the_levels() {
 #[test]
 #[ignore = "daily"]
 fn a_pickup_pitch_is_not_drawn_from_the_levels_random() {
+    use crate::game::native_entity_refs::tests::run_fresh_cases;
+    use crate::game::native_guest_turn_tests::with_guests;
+    use crate::game::native_sound_refs::tests::{guest, packets};
+    use sunrise_core::random::{EntityRandom, LegacyRandom};
+
+    if run_fresh_cases(
+        "game::item_entities::thrown_items_tests::a_pickup_pitch_is_not_drawn_from_the_levels_random",
+        "SUNRISE_PICKUP_PITCH_CASE",
+        &["pickup"],
+    ) {
+        return;
+    }
     let mut resources = None;
     let mut game = standing_game(&mut resources);
     game.spawn_item(
@@ -128,18 +140,37 @@ fn a_pickup_pitch_is_not_drawn_from_the_levels_random() {
         "the pickup drew from the level's random"
     );
 
-    game.build_registries();
-    game.set_allow_commands(true);
-    let level = game.world.random.state();
-    assert!(game.run_command("give @s minecraft:stone 2"));
-    let (volume, pitch) = sound(&mut game, "minecraft:entity.item.pickup");
-    assert_eq!(volume, 0.2);
-    assert!((0.6..5.4).contains(&pitch), "pitch {pitch}");
-    assert_eq!(
-        game.world.random.state(),
-        level,
-        "/give drew from the level's random"
-    );
+    with_guests(|game| {
+        let at = [3.0, 64.0, 5.0];
+        let (listener, rx) = guest(14, 14, at);
+        let hub = &mut game.lan.as_mut().unwrap().hub;
+        hub.guests.push(listener);
+        let C::Sound(pickup) = hub.sound_packet("minecraft:entity.item.pickup", at, 0.2, 2.0, 7, 0)
+        else {
+            unreachable!();
+        };
+        game.build_registries();
+        game.as_guest(12, |game| {
+            game.player.as_mut().unwrap().random = EntityRandom::own(LegacyRandom::new(0x5eed));
+        })
+        .unwrap();
+        let level = game.world.random.state();
+        assert!(game.as_console(|game| game.run_command("give guest12 minecraft:stone 2")));
+        let sounds: Vec<_> = packets(&rx)
+            .into_iter()
+            .filter_map(|p| match p {
+                C::Sound(p) if p.sound == pickup.sound => Some((p.volume, p.pitch.to_bits())),
+                _ => None,
+            })
+            .collect();
+        // Java Random(0x5eed): four draws for the fake item, then two for the pitch.
+        assert_eq!(sounds, [(0.2, 0x3fdcbf84)]);
+        assert_eq!(
+            game.world.random.state(),
+            level,
+            "/give drew from the level's random"
+        );
+    });
 }
 
 /// A window joined to a server through memory, with the sounds it plays
@@ -222,6 +253,45 @@ fn a_client_pickup_sound_takes_the_listeners_random() {
             game.world.random.state(),
             level,
             "the client's orb pickup drew from the level's random"
+        );
+    });
+}
+
+/// `ClientPacketListener.handleTakeItemEntity` shrinks an item's stack by the amount taken and
+/// removes the entity only once it is empty, so a survivor or a replacement stays in view.
+#[test]
+#[ignore = "daily"]
+fn a_client_take_shrinks_an_item_and_removes_it_only_when_empty() {
+    with_remote_game(|game| {
+        let at = Vec3::new(2.5, 64.0, 2.5);
+        game.dropped.push(ItemEntity::new(
+            9,
+            ItemStack::new("minecraft:emerald", 8),
+            at,
+            Vec3::ZERO,
+            0.0,
+        ));
+        let take = |amount: i32| {
+            C::TakeItemEntity(play::TakeItemEntity {
+                item: 9,
+                player: 1,
+                amount,
+            })
+        };
+        game.handle_packet(take(0)).unwrap();
+        assert_eq!(
+            game.dropped[0].stack.count, 8,
+            "an animation of nothing taken"
+        );
+        game.handle_packet(take(3)).unwrap();
+        assert_eq!(
+            game.dropped[0].stack.count, 5,
+            "a partial pickup leaves the rest"
+        );
+        game.handle_packet(take(5)).unwrap();
+        assert!(
+            game.dropped.iter().all(|d| d.id != 9),
+            "an emptied stack goes"
         );
     });
 }

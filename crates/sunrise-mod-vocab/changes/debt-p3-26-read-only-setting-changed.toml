@@ -1,0 +1,20 @@
+ids = [
+    "hook:setting_changed",
+    "method:Hooks::setting_changed",
+    "hook:setting_changed.value",
+    "type:SettingChangedEvent.value",
+]
+why = """
+`setting_changed` runs after the write that caused it is committed. Handing the listener a mutable
+host let it write its own key from the notice, which notified itself again until the process ran out
+of stack. The listener now gets a read-only `Host`; a follow-up write belongs in the callback that
+made the first one. NeoForge's `ModConfigEvent.Reloading` gives its listener the config, not a way
+to write it back during delivery.
+"""
+migrate = """
+Change `fn setting_changed(&self, host: HostSide<'_>, event: &mut SettingChangedEvent<'_>)` to
+`fn setting_changed(&self, host: &dyn Host, event: &mut SettingChangedEvent<'_>)` and pin the hook at
+`hook_version = 3` instead of `2`. Read the new value from `event.value`; the read-only host has no setting reads of its own. A call to
+`set_setting` from inside the notice no longer compiles; make that write in the callback that made
+the first write (the Options > Mods click handler, a config listener, or a command).
+"""

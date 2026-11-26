@@ -1,28 +1,40 @@
 //! Placement state is discarded before a new catalogue or menu can be shown.
 use super::*;
-/// Ghosts kept from the game and a menu part together, as many as a menu may have slots.
-const MAX_GHOSTS: usize = 256;
-/// The ghosts to draw: at most `MAX_GHOSTS`, in order, without one in a slot the screen lacks or one
-/// that resolves to no stack (`GhostSlots.setSlot` keeps only ghosts with a stack).
+/// The ghosts to draw, in slot order, without one in a slot the screen hides or lacks or one that
+/// resolves to no stack (`GhostSlots.setSlot`). A nonempty display replaces the prior entry for
+/// the same physical slot in place; an unresolved empty display does not erase a prior one.
 fn shown_ghosts(
     base: usize,
     ghosts: Vec<mod_api::GhostSlot>,
     has_slot: impl Fn(u16) -> bool,
     resolve: impl Fn(&mod_api::RecipeSlotDisplay) -> Vec<ItemStack>,
 ) -> Vec<super::super::Ghost> {
-    ghosts
-        .into_iter()
-        .take(MAX_GHOSTS)
-        .filter(|ghost| has_slot(ghost.slot))
-        .filter_map(|ghost| {
-            let items = resolve(&ghost.display);
-            (!items.is_empty()).then(|| super::super::Ghost {
-                slot: base + usize::from(ghost.slot),
-                items,
-                result: ghost.result,
-            })
-        })
-        .collect()
+    let mut shown: Vec<super::super::Ghost> = Vec::new();
+    let mut by_slot: std::collections::HashMap<u16, usize> = std::collections::HashMap::new();
+    for ghost in ghosts {
+        if !has_slot(ghost.slot) {
+            continue;
+        }
+        let items = resolve(&ghost.display);
+        if items.is_empty() {
+            continue;
+        }
+        let entry = super::super::Ghost {
+            slot: base + usize::from(ghost.slot),
+            items,
+            result: ghost.result,
+        };
+        match by_slot.entry(ghost.slot) {
+            std::collections::hash_map::Entry::Occupied(existing) => {
+                shown[*existing.get()] = entry;
+            }
+            std::collections::hash_map::Entry::Vacant(vacant) => {
+                vacant.insert(shown.len());
+                shown.push(entry);
+            }
+        }
+    }
+    shown
 }
 pub(super) struct PlacementOverlay {
     pub(super) view: OverlayView,
@@ -30,7 +42,7 @@ pub(super) struct PlacementOverlay {
     pub(super) sources: Vec<u32>,
 }
 impl Game<'_> {
-    pub(super) fn request_mod_book_recipe(&mut self, recipe: String, source: u32) {
+    pub(in crate::game) fn request_mod_book_recipe(&mut self, recipe: String, source: u32) {
         if !self
             .native_net
             .placement
@@ -43,8 +55,9 @@ impl Game<'_> {
         let Ok(recipe) = recipe.try_into() else {
             return;
         };
+        self.recipe_ui.ghost.clear();
         let use_max = self.has_shift_down();
-        if let Some(frame) = self.native_net.placement.client.select(
+        if let Some(frame) = self.native_net.placement.client.place(
             sunrise_client::recipe_book::placement_sync::DisplayId { recipe, source },
             use_max,
         ) {
@@ -95,28 +108,20 @@ impl Game<'_> {
     }
     pub(in crate::game) fn install_mod_book_ghost(
         &mut self,
-        selection: &sunrise_client::recipe_book::placement_sync::Selection,
+        catalog: &sunrise_client::recipe_book::placement_sync::CatalogIdentity,
+        recipe: &sunrise_client::recipe_book::placement_sync::ResourceId,
+        display: &mod_api::RecipeBookDisplay,
     ) {
         let Some(view) = self
             .native_net
             .placement
             .view
             .as_ref()
-            .filter(|view| view.identity == selection.catalog)
+            .filter(|view| &view.identity == catalog)
         else {
             return;
         };
-        let Some(layout) = view.index.layout(selection.catalog.menu.as_str()).cloned() else {
-            return;
-        };
-        let Some(display) = view
-            .index
-            .categories()
-            .flat_map(|category| &category.displays)
-            .find(|entry| entry.recipe == selection.display.recipe.as_str())
-            .and_then(|entry| entry.displays.get(selection.display.source as usize))
-            .cloned()
-        else {
+        let Some(layout) = view.index.layout(catalog.menu.as_str()).cloned() else {
             return;
         };
         let result = match layout.declaration() {
@@ -135,7 +140,7 @@ impl Game<'_> {
         };
         // The game's own ghosts for the layout (none for `Mod`), then the menu part's say.
         let mut ghosts: Vec<mod_api::GhostSlot> = layout
-            .map(&display, fuel_empty)
+            .map(display, fuel_empty)
             .unwrap_or_default()
             .into_iter()
             .map(|(slot, display)| mod_api::GhostSlot {
@@ -144,12 +149,12 @@ impl Game<'_> {
                 result: Some(slot) == result,
             })
             .collect();
-        let menu = selection.catalog.menu.as_str();
+        let menu = catalog.menu.as_str();
         if mod_api::__private::menu_listens(mod_api::HookId::RecipeBookGhost, menu) {
             self.native_recipe_book_ghost(mod_api::__private::RecipeBookGhostCall {
                 menu,
-                recipe: selection.display.recipe.as_str(),
-                display: &display,
+                recipe: recipe.as_str(),
+                display,
                 ghosts: &mut ghosts,
             });
         }
@@ -213,9 +218,50 @@ mod tests {
     }
 
     #[test]
-    fn no_more_than_the_cap_are_kept() {
-        let many = (0..300).map(|n| ghost(n % 10, "demo:a", false)).collect();
-        let shown = shown_ghosts(300, many, |_| true, |_| vec![ItemStack::new("demo:a", 1)]);
-        assert_eq!(shown.len(), 256);
+    fn late_slots_past_old_cap_and_repeated_slot_replacement_follow_ghost_slots_set_slot() {
+        let mut contributions: Vec<_> = (0u16..260)
+            .map(|slot| ghost(slot, &format!("demo:early_{slot}"), false))
+            .collect();
+        contributions.extend([
+            ghost(260, "demo:late_260", true),
+            ghost(261, "demo:hidden_261", false),
+            ghost(262, "demo:late_262", false),
+            ghost(5, "demo:replaced_5", true),
+            ghost(5, "demo:empty", false),
+            ghost(263, "demo:empty", false),
+            ghost(264, "demo:late_264", false),
+        ]);
+        assert!(contributions.len() > 256);
+
+        let shown = shown_ghosts(
+            300,
+            contributions,
+            |slot| slot < 265 && slot != 261,
+            |display| match display {
+                mod_api::RecipeSlotDisplay::Item(id) if id != "demo:empty" => {
+                    vec![ItemStack::new(id, 1)]
+                }
+                _ => Vec::new(),
+            },
+        );
+        let seen: Vec<_> = shown
+            .iter()
+            .map(|g| (g.slot, g.items[0].item.to_string(), g.result))
+            .collect();
+        let mut expected: Vec<_> = (0usize..260)
+            .map(|slot| {
+                if slot == 5 {
+                    (305, "demo:replaced_5".to_owned(), true)
+                } else {
+                    (300 + slot, format!("demo:early_{slot}"), false)
+                }
+            })
+            .collect();
+        expected.extend([
+            (560, "demo:late_260".to_owned(), true),
+            (562, "demo:late_262".to_owned(), false),
+            (564, "demo:late_264".to_owned(), false),
+        ]);
+        assert_eq!(seen, expected);
     }
 }

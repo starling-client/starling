@@ -443,12 +443,12 @@ pub(super) fn leaves_fix(chunk: &mut Tag) {
 }
 
 /// `TrappedChestBlockEntityFix` over a chunk (`{Level: ...}`).
-pub(super) fn trapped_chest_fix(chunk: &mut Tag) {
+pub(super) fn trapped_chest_fix(chunk: &mut Tag) -> super::tables::Result {
     let Some(level) = chunk.get_mut("Level") else {
-        return;
+        return Ok(());
     };
     let Some(Tag::List(raw_sections)) = level.get("Sections").cloned() else {
-        return;
+        return Ok(());
     };
     let mut chests: HashSet<i32> = HashSet::new();
     for raw in &raw_sections {
@@ -474,7 +474,7 @@ pub(super) fn trapped_chest_fix(chunk: &mut Tag) {
     let chunk_z = as_int(level.get("zPos"), 0);
     if let Some(Tag::List(entities)) = level.get_mut("TileEntities") {
         for be in entities {
-            if !super::schema::block_entity_known(be, super::schema::key(1624, 0) - 1) {
+            if !super::schema::block_entity_known(be, super::schema::key(1624, 0) - 1)? {
                 continue;
             }
             let x = as_int(be.get("x"), 0).wrapping_sub(chunk_x << 4);
@@ -485,4 +485,5 @@ pub(super) fn trapped_chest_fix(chunk: &mut Tag) {
             }
         }
     }
+    Ok(())
 }

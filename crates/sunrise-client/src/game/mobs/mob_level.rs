@@ -30,7 +30,7 @@ impl MobLevel for Game<'_> {
         &mut self,
         stack: sunrise_client::items::ItemStack,
         position: [f64; 3],
-        pickup_delay: u32,
+        pickup_delay: i32,
     ) -> [f64; 3] {
         Game::spawn_item_own(self, stack, position, pickup_delay)
     }
@@ -41,7 +41,7 @@ impl MobLevel for Game<'_> {
         Game::mob_uuid(self, id)
     }
     fn play_sound(&mut self, event: &str, at: [f64; 3], volume: f32, pitch: f32) {
-        self.audio.play(event, Some(at), volume, pitch);
+        self.play_audio(event, Some(at), volume, pitch);
     }
     fn on_item_pickup(&mut self, mob_index: usize, item: &ItemEntity) {
         self.mob_item_pickup_trigger(mob_index, item);

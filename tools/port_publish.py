@@ -27,10 +27,9 @@ import subprocess
 import sys
 import tempfile
 
-try:
-    from . import port_report
-except ImportError:
-    import port_report
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import port_report
 
 LABEL = "version-port"
 START, END = "<!-- version-port: generated -->", "<!-- /version-port -->"

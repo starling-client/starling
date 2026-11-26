@@ -12,7 +12,7 @@ use mod_api::{
     __private::{BakedSpecialModelRenderer, SpecialModelSubmission, game::CallbackOwner},
     ItemDisplayContext, ItemStack, SpecialModelBakeContext, SpecialModelCollector,
     SpecialModelConfig, SpecialModelFactory, SpecialModelGeometry, SpecialModelQuad,
-    SpecialModelStack, SpecialModelTints,
+    SpecialModelStack, SpecialModelSubmitOptions, SpecialModelTints,
 };
 use serde_json::{Map, Value};
 use std::{
@@ -422,10 +422,11 @@ impl SpecialModelSubmission for PoseWriter<'_, '_, '_> {
         result
     }
 
-    fn submit_geometry(
+    fn submit_model(
         &mut self,
         geometry: &SpecialModelGeometry,
         tints: SpecialModelTints,
+        options: SpecialModelSubmitOptions,
     ) -> Result<(), String> {
         if self.layer.failure.is_some() {
             return Err("the special layer was already refused".into());
@@ -443,7 +444,30 @@ impl SpecialModelSubmission for PoseWriter<'_, '_, '_> {
             self.layer.failure = Some(SubmissionFailure::Fault(error.into()));
             return Err(error.into());
         };
-        let matrix = self.matrix();
+        let mut matrix = self.matrix();
+        let render_type = match options.render_type {
+            mod_api::SpecialModelRenderType::Custom(handle) => {
+                match self.layer.env.render_type(handle) {
+                    Ok(resolved) => {
+                        // The layering is applied to the model-view the layer draws under
+                        // (`RenderSetup.layeringTransform`); the GUI projection is orthographic.
+                        matrix = sunrise_client_render::mod_pipelines::layering_transform_matrix(
+                            resolved.layering(),
+                            matrix,
+                            self.layer.ctx.display == DisplayContext::Gui,
+                        );
+                        Some(resolved)
+                    }
+                    Err(error) => {
+                        let error =
+                            format!("the special model's render type was refused: {error:?}");
+                        self.layer.failure = Some(SubmissionFailure::Fault(error.clone()));
+                        return Err(error);
+                    }
+                }
+            }
+            _ => None,
+        };
         self.layer.layers.push(LayerRender {
             geometry: LayerGeometry::Quads(geometry.model.clone()),
             tints: LayerTints::Special(tints),
@@ -453,6 +477,8 @@ impl SpecialModelSubmission for PoseWriter<'_, '_, '_> {
             particle: self.layer.base.particle.clone(),
             extents: geometry.extents.clone(),
             display: self.layer.ctx.display,
+            submit_options: options,
+            render_type,
         });
         Ok(())
     }

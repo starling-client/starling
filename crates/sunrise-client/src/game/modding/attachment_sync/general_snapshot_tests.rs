@@ -1,19 +1,26 @@
 //! A general row's attachment snapshot (NeoForge `AttachmentSync`): no empty packet when
 //! nothing is synced, and a `replace: true` snapshot with the current value when synced
 //! attachments are present.
-use super::transport_tests::{VALUE, store};
+use super::transport_tests::VALUE_CODEC;
 use crate::game::general::{GeneralEntityRecord, GeneralTypeEnvelope};
 use crate::game::native_entity_refs::tests::with_game;
-use mod_api::{GeneralEntityCategory, GeneralSavePolicy};
+use mod_api::{AttachmentKey, GeneralEntityCategory, GeneralSavePolicy};
+use std::sync::{Arc, Mutex};
 use sunrise_core::nbt::Tag;
 use sunrise_mod_runtime::attachments::Holder;
 
-struct Declare;
+struct Declare(Arc<Mutex<Option<AttachmentKey<i32>>>>);
 #[mod_api::__subscriptions]
 impl mod_api::Hooks for Declare {
     fn register(&self, r: &mut dyn mod_api::Registrar, _: &mod_api::RegistrationContext) {
-        r.register_attachment_type("sync_route:value", true)
+        let value = r
+            .register_attachment_type(
+                mod_api::AttachmentDescriptor::new("sync_route:value", || 0i32)
+                    .serialize(VALUE_CODEC)
+                    .sync(VALUE_CODEC),
+            )
             .unwrap();
+        *self.0.lock().unwrap() = Some(value);
         r.declare_general_entity(
             "robot",
             GeneralEntityCategory::Misc,
@@ -22,6 +29,7 @@ impl mod_api::Hooks for Declare {
             None,
             GeneralSavePolicy::Save,
             true,
+            false,
             false,
             None,
             8,
@@ -34,17 +42,27 @@ impl mod_api::Hooks for Declare {
 }
 
 /// A server game with `sync_route:robot` declared and `sync_route:value` synced.
-fn with_robot(test: impl FnOnce(&mut super::super::Game<'_>)) {
+fn with_robot(test: impl FnOnce(&mut super::super::Game<'_>, &AttachmentKey<i32>)) {
     mod_platform::__private::initialize().unwrap();
     let _phase = mod_platform::__private::RegistrationGuard::open();
-    let mods: mod_api::Mods = vec![mod_api::ModEntry::new("sync_route", Box::new(Declare))].into();
+    let value_slot = Arc::new(Mutex::new(None));
+    let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
+        "sync_route",
+        Box::new(Declare(value_slot.clone())),
+    )]
+    .into();
     mod_platform::testing::with_mods(mods, || {
         with_game(|game| {
+            let value_key = value_slot
+                .lock()
+                .unwrap()
+                .clone()
+                .expect("Declare registered");
             game.options.dedicated = Some(Vec::new());
             game.native_level_opened(crate::game::Dim::Overworld);
             game.build_registries();
             game.reset_entity_residency();
-            test(game)
+            test(game, &value_key)
         })
     });
 }
@@ -57,6 +75,11 @@ fn robot(game: &mut super::super::Game<'_>) -> u32 {
         rotation: [0.0, 0.0],
         uuid: [1, 2, 3, 4],
         owner: None,
+        custom_name: None,
+        custom_name_visible: false,
+        base: Default::default(),
+        on_ground: false,
+        fall_distance: 0.0,
         envelope: GeneralTypeEnvelope {
             type_key: "sync_route:robot".into(),
             payload_version: 1,
@@ -81,14 +104,15 @@ fn value_of(changes: &[sunrise_mod_runtime::attachments::AttachmentSync]) -> Opt
 #[test]
 #[ignore = "daily"]
 fn a_general_row_always_has_a_first_snapshot_holding_what_it_holds_now() {
-    with_robot(|game| {
+    with_robot(|game, value_key| {
         let id = robot(game);
         // First pairing, nothing synced yet: no empty snapshot packet (NeoForge AttachmentSync).
         assert!(game.attachment_snapshot(Holder::Entity(id)).is_empty());
         // A client that pairs later is sent the value the row holds then.
-        let seal = game.transaction_open();
-        VALUE.set(store(game), Holder::Entity(id), 7).unwrap();
-        game.transaction_close(&seal, true);
+        game.storage_scope(|game, _| {
+            value_key.set(game, Holder::Entity(id), 7).unwrap();
+            ((), true)
+        });
         let late = game.attachment_snapshot(Holder::Entity(id));
         assert_eq!(late.len(), 1);
         assert!(late[0].replace);
@@ -150,7 +174,7 @@ fn remote_player_attachments_only_apply_while_the_foreign_player_is_tracked() {
     use sunrise_mod_runtime::attachments::AttachmentSync;
     use sunrise_protocol::{
         attachment_sync::Message,
-        packets::play::{AddEntity, Clientbound, RemoveEntities},
+        packets::play::{AddEntity, Clientbound, PlayerInfo, PlayerInfoUpdate, RemoveEntities},
     };
 
     crate::game::item_entities::thrown_items_tests::with_remote_game(|game| {
@@ -187,6 +211,15 @@ fn remote_player_attachments_only_apply_while_the_foreign_player_is_tracked() {
             !mirrored(game),
             "sync before pairing must not create a mirror"
         );
+        game.handle_packet(Clientbound::PlayerInfoUpdate(PlayerInfoUpdate {
+            actions: 1,
+            entries: vec![PlayerInfo {
+                uuid,
+                name: Some("TrackedPlayer".into()),
+                ..Default::default()
+            }],
+        }))
+        .unwrap();
         game.handle_packet(Clientbound::AddEntity(AddEntity {
             id,
             uuid,

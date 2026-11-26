@@ -84,7 +84,7 @@ impl Game<'_> {
     /// `block.growing_plant.crop`, the level hears a `block_change`, and the
     /// shears wear by one. True when it cropped (SUCCESS).
     pub(super) fn shears_crop(&mut self, pos: [i32; 3], stack: &ItemStack) -> Result<bool> {
-        if &*stack.item != "minecraft:shears" {
+        if !self.stack_shears(stack, super::item_abilities::ability::SHEARS_TRIM) {
             return Ok(false);
         }
         let state = self.world.block(pos[0], pos[1], pos[2]);
@@ -99,7 +99,7 @@ impl Game<'_> {
         }
         // `GrowingPlantHeadBlock.getMaxAgeState`.
         let max_age = b.table.set_int(state, b.props.age, 25);
-        self.audio.play(
+        self.play_audio(
             "minecraft:block.growing_plant.crop",
             Some([
                 f64::from(pos[0]) + 0.5,
@@ -278,6 +278,8 @@ mod tests {
                         Direction::North,
                         ItemStack::new("minecraft:bone_meal", 3),
                     )
+                    .unwrap()
+                    .continue_value()
                     .unwrap();
                 let b = game.res.behaviours();
                 let state = game.world.block(CROP.x, CROP.y, CROP.z);

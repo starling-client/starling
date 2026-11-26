@@ -2,8 +2,28 @@
 use crate::BlockEntityTypeKey;
 use std::{fmt, sync::Arc};
 
+/// A block entity `LevelRef::block_entities` found: its block position and its type
+/// (`BlockEntity.getType`), not its block's ID nor its saved data.
+// no wire: an in-process host read's result, never sent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub struct BlockEntityAt {
+    /// The block entity's block position.
+    pub pos: [i32; 3],
+    /// Its type's key; `kind.id(host)` names it, as `minecraft:chest`.
+    pub kind: BlockEntityTypeKey,
+}
+
+impl BlockEntityAt {
+    /// The block entity of type `kind` at `pos`.
+    pub fn new(pos: [i32; 3], kind: BlockEntityTypeKey) -> Self {
+        Self { pos, kind }
+    }
+}
+
 /// The mirror followed by rotation applied during structure placement.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, sunrise_mod_api_macros::Wire)]
+// no wire: transform settings are passed only to the local placement callback.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct StructureTransform {
     /// Rotation after mirroring.
@@ -19,11 +39,12 @@ impl StructureTransform {
     }
 }
 
-/// A deterministic transform declined the saved data. Placement keeps the original.
-#[derive(Clone, Debug, PartialEq, Eq, sunrise_mod_api_macros::Wire)]
+/// A deterministic transform could not finish editing the saved data.
+// no wire: refusal diagnostics are reported at the local placement call site.
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct TransformRefusal {
-    /// Diagnostic explaining why the original data must be kept.
+    /// Diagnostic explaining the refusal.
     pub reason: String,
 }
 
@@ -47,34 +68,35 @@ impl From<(crate::Identifier, String)> for TransformRefusal {
     }
 }
 
-/// Saved-data transform.
-/// Runs on the server during structure placement, possibly on worldgen worker threads.
-/// Its only inputs are saved data, rotation and mirror. Determinism is the mod's
-/// obligation, not enforced: any matching `Send + Sync` closure is accepted.
-/// The engine preserves the original `id` and any original `x`, `y`, `z` fields.
-/// Return a refusal to keep the original data. Output must fit standard NBT limits
-/// (64 MiB, one million nodes, depth 512); invalid output keeps the original.
-/// Do not panic: unwinds are caught and refuse the call.
+/// Edits the working saved data for one block in a structure placement, not the reusable template.
+/// Runs on the server, possibly on a worldgen worker, after the block state is placed and any
+/// loot seed is set, before the block entity loads the data. The engine preserves the original
+/// `id` and any original `x`, `y`, `z` fields. Disk and network limits apply only at serialization.
+///
+/// Validate before editing if you need to leave the data unchanged on refusal: a refusal is
+/// reported every time but does not undo edits. A panic is reported and disables this callback
+/// for the session; edits made before the panic are not undone either. Mods must ensure
+/// determinism, including when a matching `Send + Sync` closure is used.
 pub trait BlockEntityTransform: Send + Sync + 'static {
-    /// Transform saved data; no Host or world handle is supplied.
+    /// Edit the working compound directly. No Host or world handle is supplied.
     fn transform(
         &self,
-        data: &crate::Compound,
+        data: &mut crate::Compound,
         transform: StructureTransform,
-    ) -> Result<crate::Compound, TransformRefusal>;
+    ) -> Result<(), TransformRefusal>;
 }
 impl<F> BlockEntityTransform for F
 where
-    F: Fn(&crate::Compound, StructureTransform) -> Result<crate::Compound, TransformRefusal>
+    F: Fn(&mut crate::Compound, StructureTransform) -> Result<(), TransformRefusal>
         + Send
         + Sync
         + 'static,
 {
     fn transform(
         &self,
-        data: &crate::Compound,
+        data: &mut crate::Compound,
         transform: StructureTransform,
-    ) -> Result<crate::Compound, TransformRefusal> {
+    ) -> Result<(), TransformRefusal> {
         self(data, transform)
     }
 }
@@ -91,6 +113,11 @@ where
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum BlockEntityPartError {
+    /// The key was not issued by this installation's registration.
+    InvalidKey {
+        /// The invalid block entity type key.
+        kind: BlockEntityTypeKey,
+    },
     /// Vanilla entities do not expose a native Part's payload.
     VanillaType {
         /// The block entity type that was refused.
@@ -108,6 +135,7 @@ pub enum BlockEntityPartError {
 impl fmt::Display for BlockEntityPartError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidKey { .. } => f.write_str("invalid block entity type key"),
             Self::VanillaType { kind } => write!(
                 f,
                 "cannot attach a native block entity Part to vanilla type {}",
@@ -134,6 +162,7 @@ pub struct BlockEntityTypeBuilder<'a> {
     pub(crate) id: String,
     pub(crate) blocks: Vec<String>,
     pub(crate) transform: Option<Arc<dyn BlockEntityTransform>>,
+    pub(crate) ticker: Option<Arc<crate::parts::BlockEntityTickerSelector>>,
 }
 
 impl BlockEntityTypeBuilder<'_> {
@@ -144,9 +173,23 @@ impl BlockEntityTypeBuilder<'_> {
         self
     }
 
-    /// Set the optional saved-data transform; the mod must ensure determinism.
+    /// Set the optional [`BlockEntityTransform`] that edits data during structure placement.
     pub fn transform(mut self, step: impl BlockEntityTransform) -> Self {
         self.transform = Some(Arc::new(step));
+        self
+    }
+
+    /// Select the states and logical sides of this type that may run their attached Parts' tick methods.
+    /// The game calls this at state registration for accepted blocks only, and only on a side with
+    /// a ticking Part. Without a selector, every accepted state on that side has the ticker.
+    pub fn ticker_when(
+        mut self,
+        select: impl Fn(&dyn crate::BlockMetadata, crate::BlockState, crate::LogicalSide) -> bool
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        self.ticker = Some(Arc::new(select));
         self
     }
 
@@ -157,6 +200,9 @@ impl BlockEntityTypeBuilder<'_> {
             .declare_block_entity_type(&self.id, self.blocks);
         if let Some(step) = self.transform {
             self.registrar.set_block_entity_transform(key, step);
+        }
+        if let Some(select) = self.ticker {
+            self.registrar.set_block_entity_ticker_selector(key, select);
         }
         key
     }

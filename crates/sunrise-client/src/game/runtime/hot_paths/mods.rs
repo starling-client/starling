@@ -4,14 +4,15 @@ use super::{super::Game, Recorder};
 use sunrise_client::Result;
 
 /// The attachment the attachment workloads read and write: plain data, not saved or synced.
-static COUNTER: mod_api::AttachmentType<u32> = mod_api::AttachmentType {
-    namespace: "hot_paths",
-    name: "counter",
-    default: || 0,
-    codec: None,
-    copy_on_death: false,
-    sync: false,
-};
+static COUNTER: sunrise_mod_runtime::attachments::AttachmentType<u32> =
+    sunrise_mod_runtime::attachments::AttachmentType {
+        namespace: "hot_paths",
+        name: "counter",
+        default: || 0,
+        codec: None,
+        copy_on_death: false,
+        sync_codec: None,
+    };
 
 const CALLS: u64 = 100_000;
 
@@ -27,19 +28,17 @@ impl Game<'_> {
             self.hot_mobs(128, 2)?;
             let dimension = self.dim.id().to_owned();
             let entities: Vec<u32> = self.mobs.iter().map(|mob| mob.id).collect();
-            // One entity a call, as an entity told alone is.
-            let mut canceled = Vec::new();
             recorder.measure(hook, CALLS, || {
                 let mut count = 0u64;
                 for call in 0..CALLS as usize {
+                    let mut canceled = false;
                     self.native_entity_tick_pre(
                         &dimension,
-                        std::slice::from_ref(&entities[call % entities.len()]),
-                        &["minecraft:cow"],
+                        entities[call % entities.len()],
+                        "minecraft:cow",
                         &mut canceled,
                     );
-                    count += canceled.len() as u64;
-                    canceled.clear();
+                    count += u64::from(canceled);
                 }
                 count
             })?;

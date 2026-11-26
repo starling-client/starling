@@ -1,0 +1,3 @@
+ids = ["hook:world_save_start", "type:WorldSaveStartEvent"]
+why = "Adds the server hook world_save_start(wait), heard at the start of every world save cycle (autosave, /save-all, a pause, the final save on stop) before levels, players and level.dat are written, so a mod's changes go out in the same cycle. world_saved still reports the cycle's end with the same wait flag."
+migrate = "Nothing to migrate. A mod that saved its own files from world_saved can move that work to world_save_start to keep them in step with the chunks."

@@ -93,6 +93,7 @@ fn unknown_samplers_and_colortex0_to_3_in_gbuffers_terrain_read_the_atlas() {
                 material_maps: false,
                 ids: None,
                 cull: false,
+                pages: false,
             }),
             block_ids: &[],
             sprite_rects: &[],

@@ -4,87 +4,61 @@ use sunrise_client::{chunk::Chunk, containers::BlockEntity};
 #[test]
 #[ignore = "daily"]
 fn forgetting_and_closing_remote_columns_clear_their_data() {
-    with_game(|game| {
-        for x in 0..2 {
-            game.streaming
-                .insert_remote(&mut game.world, Chunk::empty(x, 0));
-            game.world
-                .block_entities
-                .insert((x * 16, 64, 0), BlockEntity::Chest(vec![]));
-        }
-        // A same-position resend replaces the data without removing the column.
-        game.streaming
-            .replace_remote(&mut game.world, Chunk::empty(0, 0));
-        assert_eq!(game.world.chunks.len(), 2);
-        assert!(game.world.chunks.contains_key(&(0, 0)));
-        assert!(game.streaming.is_lit(0, 0));
-        let mut forgotten = [(0, 0)].into_iter().collect();
-        game.forget_remote_columns(&mut forgotten, true);
-        assert!(!game.world.chunks.contains_key(&(0, 0)));
-        assert!(!game.world.block_entities.contains_key(&(0, 64, 0)));
-        assert!(!game.streaming.is_lit(0, 0));
-        assert!(game.world.chunks.contains_key(&(1, 0)));
-        game.forget_remote_columns(&mut [(0, 0)].into_iter().collect(), true);
-        for x in [7, 13] {
-            game.streaming
-                .insert_remote(&mut game.world, Chunk::empty(x, 0));
-            game.world
-                .block_entities
-                .insert((x * 16, 64, 0), BlockEntity::Chest(vec![]));
-        }
-        // Cache-centre packet: move to (15, 0), at radius 10.
-        game.drop_remote_chunks_out_of_range((15, 0), 10);
-        assert!(!game.world.chunks.contains_key(&(1, 0)));
-        assert!(game.world.chunks.contains_key(&(7, 0)));
-        assert!(game.world.chunks.contains_key(&(13, 0)));
-        // Cache-radius packet: shrinking to 2 keeps radius 5 around (15, 0).
-        game.drop_remote_chunks_out_of_range((15, 0), 2);
-        assert!(!game.world.chunks.contains_key(&(7, 0)));
-        assert!(game.world.chunks.contains_key(&(13, 0)));
-        assert!(!game.world.block_entities.contains_key(&(7 * 16, 64, 0)));
-        // A later forget for an evicted column is harmless.
-        game.forget_remote_columns(&mut [(7, 0)].into_iter().collect(), true);
-        game.forget_all_remote_columns();
-        assert!(game.world.chunks.is_empty());
-        assert!(game.world.block_entities.is_empty());
-    });
+    crate::game::in_own_process(
+        "game::remote::tests::remote_columns_tests::forgetting_and_closing_remote_columns_clear_their_data",
+        || {
+            with_game(|game| {
+                for x in 0..2 {
+                    game.streaming
+                        .insert_remote(&mut game.world, Chunk::empty(x, 0));
+                    game.world
+                        .block_entities
+                        .insert((x * 16, 64, 0), BlockEntity::Chest(vec![]));
+                }
+                // A same-position resend replaces the data without removing the column.
+                game.streaming
+                    .replace_remote(&mut game.world, Chunk::empty(0, 0));
+                assert_eq!(game.world.chunks.len(), 2);
+                assert!(game.world.chunks.contains_key(&(0, 0)));
+                assert!(game.streaming.is_lit(0, 0));
+                let mut forgotten = [(0, 0)].into_iter().collect();
+                game.forget_remote_columns(&mut forgotten, true);
+                assert!(!game.world.chunks.contains_key(&(0, 0)));
+                assert!(!game.world.block_entities.contains_key(&(0, 64, 0)));
+                assert!(!game.streaming.is_lit(0, 0));
+                assert!(game.world.chunks.contains_key(&(1, 0)));
+                game.forget_remote_columns(&mut [(0, 0)].into_iter().collect(), true);
+                game.forget_all_remote_columns();
+                assert!(game.world.chunks.is_empty());
+                assert!(game.world.block_entities.is_empty());
+            })
+        },
+    );
 }
 
-/// The client chunk seam (game/network/remote_chunks.rs) across every free
-/// route, as the freed set each route returns: a forget packet, the
-/// eager centre-move drop (a cache-centre packet), the radius-shrink
-/// drop (a cache-radius packet) and the client level going. One freed
-/// entry per column, in the order the routes free them, and a repeat
-/// forget for an already-freed column frees nothing: adopting a column
-/// is a chunk packet's doing (`remote_chunk`), not the streaming
-/// level's.
+/// An explicit drop returns only the column it removed, and closing the level
+/// frees the remaining columns.
 #[test]
 #[ignore = "daily"]
 fn every_free_route_returns_the_columns_it_freed_once() {
-    with_game(|game| {
-        for x in [0, 1] {
-            game.streaming
-                .insert_remote(&mut game.world, Chunk::empty(x, 0));
-        }
-        // A forget packet frees its column once; the same forget again,
-        // for a column already freed, frees nothing.
-        let mut gone = [(0, 0)].into_iter().collect();
-        assert_eq!(game.forget_remote_columns(&mut gone, true), [(0, 0)]);
-        let mut gone = [(0, 0)].into_iter().collect();
-        assert!(game.forget_remote_columns(&mut gone, true).is_empty());
-        for x in [7, 13] {
-            game.streaming
-                .insert_remote(&mut game.world, Chunk::empty(x, 0));
-        }
-        // The centre move to (15, 0) at radius 10 frees (1, 0) only.
-        assert_eq!(game.drop_remote_chunks_out_of_range((15, 0), 10), [(1, 0)]);
-        // Shrinking the radius to 2 frees (7, 0) only.
-        assert_eq!(game.drop_remote_chunks_out_of_range((15, 0), 2), [(7, 0)]);
-        // The client level going frees what is left.
-        assert_eq!(game.forget_all_remote_columns(), [(13, 0)]);
-        assert!(game.world.chunks.is_empty());
-        assert!(game.world.block_entities.is_empty());
-    });
+    crate::game::in_own_process(
+        "game::remote::tests::remote_columns_tests::every_free_route_returns_the_columns_it_freed_once",
+        || {
+            with_game(|game| {
+                for x in [0, 1] {
+                    game.streaming
+                        .insert_remote(&mut game.world, Chunk::empty(x, 0));
+                }
+                let mut gone = [(0, 0)].into_iter().collect();
+                assert_eq!(game.forget_remote_columns(&mut gone, true), [(0, 0)]);
+                let mut gone = [(0, 0)].into_iter().collect();
+                assert!(game.forget_remote_columns(&mut gone, true).is_empty());
+                assert_eq!(game.forget_all_remote_columns(), [(1, 0)]);
+                assert!(game.world.chunks.is_empty());
+                assert!(game.world.block_entities.is_empty());
+            })
+        },
+    );
 }
 
 /// The seam sits at the packet level: streaming adopting, replacing or

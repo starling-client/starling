@@ -1,0 +1,3 @@
+ids = ["handle:PlayerRef::advancement_progress"]
+why = "Adds PlayerRef::advancement_progress (#975), a server-side read of a player's live progress on one loaded advancement mirroring ServerPlayer.getAdvancements().getOrStartProgress(holder), returning the existing AdvancementProgress snapshot type."
+migrate = "Additive method on PlayerRef; no existing mod code needs to change."

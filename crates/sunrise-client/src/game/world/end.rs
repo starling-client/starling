@@ -2,7 +2,7 @@
 //! gateway travel, the obsidian arrival platform, the exit portal and the End
 //! sky. The dragon fight itself lives in game/mobs/dragon.rs: the podium is
 //! inactive until the dragon dies.
-use super::{Dim, Game};
+use super::{Dim, Game, Resources, remote::Remote};
 use sunrise_client::{
     Result,
     containers::BlockEntity,
@@ -282,6 +282,10 @@ impl EndState {
     }
     /// A server's move: an eye has no interpolation handler, so
     /// `moveOrInterpolateTo` puts it there at once. False when `id` isn't one.
+    pub(in crate::game) fn remote_eye_pose(&self, id: u32) -> Option<([f64; 3], [f64; 3])> {
+        let e = self.eyes.iter().find(|e| e.id == id)?;
+        Some((e.position.to_array(), e.previous.to_array()))
+    }
     pub(super) fn move_remote_eye(&mut self, id: u32, at: [f64; 3]) -> bool {
         let Some(e) = self.eyes.iter_mut().find(|e| e.id == id) else {
             return false;
@@ -317,6 +321,12 @@ pub(in crate::game) struct SummonedEye {
     pub(super) motion: Vec3,
     /// `EyeOfEnder.life`: not saved, so a loaded eye starts again at 0.
     life: u32,
+    /// `Entity.remainingFireTicks`, counted down by `baseTick`.
+    pub(super) fire_ticks: i32,
+    /// `Entity.DATA_SHARED_FLAGS_ID` on-fire bit, set after `baseTick` fire processing.
+    pub(super) synced_fire: bool,
+    /// `Entity.hasVisualFire` (`HasVisualFire` in NBT).
+    pub(super) has_visual_fire: bool,
 }
 impl SummonedEye {
     /// `Entity.load`'s motion and `EyeOfEnder.readAdditionalSaveData`'s
@@ -324,6 +334,8 @@ impl SummonedEye {
     pub(super) fn load(tag: &mut sunrise_core::nbt::Tag) -> Self {
         use sunrise_core::nbt::Tag;
         let motion = sunrise_client::entity_nbt::loaded_motion(tag);
+        let fire_ticks = sunrise_client::entity_nbt::fire_ticks_from_nbt(tag);
+        let has_visual_fire = sunrise_client::entity_nbt::flag(tag, "HasVisualFire");
         if let Tag::Compound(c) = tag {
             let mut item = match c.remove(&"Item".into()) {
                 Some(Tag::Compound(item)) => item,
@@ -344,7 +356,13 @@ impl SummonedEye {
             item.insert("count".into(), Tag::Int(1));
             c.insert("Item".into(), Tag::Compound(item));
         }
-        Self { motion, life: 0 }
+        Self {
+            motion,
+            life: 0,
+            fire_ticks,
+            synced_fire: false,
+            has_visual_fire,
+        }
     }
 }
 
@@ -362,6 +380,11 @@ impl Game<'_> {
             if !ticking(o.position.x.floor() as i32, o.position.z.floor() as i32) {
                 return true;
             }
+            // Entity.baseTick: the eye burns down; its hurt does nothing.
+            if eye.fire_ticks > 0 {
+                eye.fire_ticks -= 1;
+            }
+            eye.synced_fire = eye.fire_ticks > 0 || eye.has_visual_fire;
             let m = eye.motion;
             o.position = Vec3::new(o.position.x + m.x, o.position.y + m.y, o.position.z + m.z);
             eye.life += 1;
@@ -372,8 +395,7 @@ impl Game<'_> {
             false
         });
         for at in shattered {
-            self.audio
-                .play("minecraft:entity.ender_eye.death", Some(at), 1.0, 1.0);
+            self.play_audio("minecraft:entity.ender_eye.death", Some(at), 1.0, 1.0);
             self.level_event_at(2003, at.map(|v| v.floor() as i32), 0);
         }
     }
@@ -441,15 +463,27 @@ impl Game<'_> {
 
     /// The environment attributes of the current dimension.
     pub(super) fn dim_environment(&self) -> &Environment {
+        Self::level_environment(
+            self.remote.as_ref(),
+            &self.res,
+            self.dim.id(),
+            &self.dimension_type().id,
+        )
+    }
+
+    /// A field-level borrow for the client tick, which also mutably borrows its particles.
+    pub(super) fn level_environment<'a>(
+        remote: Option<&'a Remote>,
+        resources: &'a Resources,
+        level: &str,
+        dimension_type: &str,
+    ) -> &'a Environment {
         // A client of a server takes the type the server sent, built-in levels included.
-        if let Some(own) = self
-            .remote
-            .as_ref()
+        remote
             .and_then(|r| r.level_environment.as_deref())
-        {
-            return own;
-        }
-        self.res.environment_of(&self.dimension_type().id)
+            .unwrap_or_else(|| {
+                Environment::for_level(level, resources.environment_of(dimension_type))
+            })
     }
 
     /// SkyRenderer.renderEndFlash, drawn after the renderer's resident sky mesh: its quad, if
@@ -648,7 +682,7 @@ impl Game<'_> {
                 flash.x_angle,
                 flash.y_angle,
             );
-            self.audio.play_instance_after(instance, 30);
+            self.play_audio_instance_after(instance, 30);
         }
     }
 
@@ -656,16 +690,9 @@ impl Game<'_> {
     pub(super) fn tick_end(&mut self) -> Result<()> {
         self.end.gateway_cooldown = self.end.gateway_cooldown.saturating_sub(1);
         if self.dimension_type().has_ender_dragon_fight {
-            self.tick_fight();
             // The fireballs fly with the other projectiles; the breath
             // clouds tick here, once.
             self.tick_breath();
-        } else {
-            // `/summon ender_dragon` outside the End: no fight, but the dragon flies.
-            self.tick_fight();
-        }
-        if let Some((id, from, to)) = self.dragon.as_ref().map(|d| (d.id, d.previous, d.position)) {
-            self.entity_section_step(id, [from.x, from.y, from.z], [to.x, to.y, to.z]);
         }
         // The spikes' crystals (placed above) join before they light a fire:
         // a mod that cancels one keeps its fire out too.
@@ -1275,6 +1302,9 @@ impl Game<'_> {
         camera: glam::DVec3,
         out: &mut Vec<Vertex>,
     ) {
+        if self.hides_as_camera(crystal.id) {
+            return;
+        }
         let feet = glam::DVec3::new(crystal.position.x, crystal.position.y, crystal.position.z);
         let rel = feet - camera;
         if rel.length_squared() > 256.0 * 256.0 {
@@ -1395,8 +1425,7 @@ impl Game<'_> {
         });
         let r = self.world.random.next_float();
         let pitch = 0.33 + r * (0.5 - 0.33);
-        self.audio
-            .play("minecraft:entity.ender_eye.launch", Some(at), 1.0, pitch);
+        self.play_audio("minecraft:entity.ender_eye.launch", Some(at), 1.0, pitch);
         // CriteriaTriggers.USED_ENDER_EYE, against the feature's block.
         let (dx, dz) = (
             at[0] - f64::from(nearest.x * 16),
@@ -1425,8 +1454,7 @@ impl Game<'_> {
                 return true;
             }
             let at = eye.position.to_array();
-            self.audio
-                .play("minecraft:entity.ender_eye.death", Some(at), 1.0, 1.0);
+            self.play_audio("minecraft:entity.ender_eye.death", Some(at), 1.0, 1.0);
             if eye.survive {
                 // new ItemEntity(level, x, y, z, item): random spread, 0.2 up.
                 let vx = self.world.random.next_double() * 0.2 - 0.1;
@@ -1521,6 +1549,9 @@ impl Game<'_> {
             yaw.cos() * pitch.sin(),
         ) * 0.25;
         for eye in &self.end.eyes {
+            if self.hides_as_camera(eye.id) {
+                continue;
+            }
             let p = eye.previous + (eye.position - eye.previous) * alpha - camera;
             out.extend(eye_quad(p.as_vec3(), right, up, r));
         }
@@ -2132,4 +2163,4 @@ mod tests {
 
 #[cfg(test)]
 #[path = "end/gateway_cooldown_tests.rs"]
-mod cooldown_tests;
+pub(in crate::game) mod cooldown_tests;

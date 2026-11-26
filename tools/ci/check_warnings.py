@@ -17,19 +17,22 @@ def forward_diagnostics(stream, structured: bool, members: set[str]) -> int:
     """Render one Cargo stream and count warnings; keep stderr separate so it cannot corrupt JSON lines."""
     warnings = 0
     for line in stream:
-        message = None
         if structured:
-            try:
-                message = json.loads(line)
-            except json.JSONDecodeError:
-                pass
-        if isinstance(message, dict) and message.get("reason") == "compiler-message":
-            diagnostic = message["message"]
-            warnings += diagnostic["level"] == "warning" and message["package_id"] in members
-            print(diagnostic.get("rendered") or diagnostic["message"] + "\n", end="", flush=True)
-        elif not isinstance(message, dict) or "reason" not in message:
-            print(line, end="", flush=True)
-            # Cargo/build-script warnings were never denied by rustc's -D warnings. Keep them visible only.
+            if '"compiler-message"' in line:
+                try:
+                    message = json.loads(line)
+                except json.JSONDecodeError:
+                    message = None
+                if isinstance(message, dict) and message.get("reason") == "compiler-message":
+                    diagnostic = message["message"]
+                    warnings += diagnostic["level"] == "warning" and message["package_id"] in members
+                    print(diagnostic.get("rendered") or diagnostic["message"] + "\n", end="", flush=True)
+                    continue
+            elif '"reason"' in line:
+                # Other Cargo records (compiler-artifact, build-script-executed, etc.) are discarded.
+                continue
+        print(line, end="", flush=True)
+        # Cargo/build-script warnings were never denied by rustc's -D warnings. Keep them visible only.
     return warnings
 
 

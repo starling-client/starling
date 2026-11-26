@@ -27,11 +27,12 @@ impl Game<'_> {
             return None;
         }
         let camera = self.native_camera_frame.as_ref()?;
-        sunrise_client::camera::project_point(
+        sunrise_client::camera::project_point_rolled(
             &camera.projection,
             camera.position,
             camera.yaw,
             camera.pitch,
+            camera.roll,
             at,
         )
     }
@@ -57,9 +58,5 @@ impl Game<'_> {
         };
         self.remote_set_camera(id);
         true
-    }
-    /// Collision boxes in block-local coordinates with an empty collision context.
-    pub(in crate::game) fn block_collision(&self, pos: [i32; 3]) -> Vec<[f64; 6]> {
-        self.native_block_collision_in(&self.world, pos)
     }
 }

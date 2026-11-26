@@ -1,5 +1,4 @@
 //! The `block_receive_game` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0180
 
 pub trait Hooks {
     /// A sculk sensor or shrieker received a vibration for `event` at `pos`.

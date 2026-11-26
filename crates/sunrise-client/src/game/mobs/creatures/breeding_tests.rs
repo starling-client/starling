@@ -284,7 +284,7 @@ fn breeding_announces_the_orb_before_the_lower_id_child() {
             self.joins
                 .lock()
                 .unwrap()
-                .push((event.entity, event.kind.into()));
+                .push((event.subject.id(), event.kind.into()));
             Flow::Continue
         }
     }
@@ -324,6 +324,7 @@ fn breeding_announces_the_orb_before_the_lower_id_child() {
                 None,
                 None,
                 sunrise_client::mobs::BreedExperience::Deferred,
+                true,
             );
             assert_eq!(child, Some(base + 3));
             assert_eq!(
@@ -402,6 +403,7 @@ fn breeding_announces_the_orb_before_the_lower_id_child() {
                 None,
                 None,
                 sunrise_client::mobs::BreedExperience::Deferred,
+                true,
             );
             assert_eq!(fox_child, Some(fox_base + 3));
             let fox_child = game.mobs.iter().find(|mob| mob.id == fox_base + 3).unwrap();
@@ -428,6 +430,7 @@ fn breeding_announces_the_orb_before_the_lower_id_child() {
                 Some(choice),
                 None,
                 sunrise_client::mobs::BreedExperience::Deferred,
+                true,
             );
             assert_eq!(child, None);
             // The baby is built before the hook now (its draws and entity number are spent), so a
@@ -510,15 +513,7 @@ fn first_chicken_breed_matches_without_mods_and_with_an_empty_mod() {
 #[test]
 #[ignore = "daily"]
 fn empty_mod_never_defers_breeding_xp() {
-    use crate::game::native_entity_refs::tests::run_fresh_cases;
     use mod_api::{self, Hooks};
-    if run_fresh_cases(
-        "game::creatures::breeding_tests::empty_mod_never_defers_breeding_xp",
-        "SUNRISE_EMPTY_BREED_CHILD",
-        &["empty"],
-    ) {
-        return;
-    }
     struct Empty;
     #[mod_api::__subscriptions]
     impl Hooks for Empty {}
@@ -526,25 +521,26 @@ fn empty_mod_never_defers_breeding_xp() {
     mod_platform::testing::with_mods(mods, || {
         super::super::native_entity_refs::tests::with_game(|game| {
             assert!(!game.mob_world_base(&[]).asks_baby_spawn);
-            let kept = game.dispatch_pending_children(
-                mod_api::HookId::BabyEntitySpawn,
-                true,
-                Vec::new(),
-                &[],
-                |game, edits, cancel| {
-                    game.native_baby_entity_spawn(mod_api::__private::BabyEntitySpawnCall {
-                        dimension: "minecraft:overworld",
-                        parent: 1,
-                        partner: 2,
-                        player: None,
-                        player_entity_id: None,
-                        edits,
-                        cancel,
-                    });
-                },
-                |_, _| (),
-            );
-            assert!(kept.is_none());
+            let mut slot = None;
+            let mut cancel = false;
+            let mut editor = super::super::native_pending_children::BabyChildSlot {
+                action: 0,
+                slot: &mut slot,
+                resources: game.res.clone(),
+                attributes: game.motion.attributes.clone(),
+                dimension: game.dim,
+                constraint: super::super::native_pending_children::ChildConstraint::BreedingAgeable,
+            };
+            game.native_baby_entity_spawn(mod_api::__private::BabyEntitySpawnCall {
+                dimension: "minecraft:overworld",
+                parent: 1,
+                partner: 2,
+                player: None,
+                player_entity_id: None,
+                child: mod_api::BabyEntitySpawnChild::new(&mut editor),
+                cancel: &mut cancel,
+            });
+            assert!(slot.is_none());
             assert!(!game.mob_world_base(&[]).asks_baby_spawn);
         });
     });

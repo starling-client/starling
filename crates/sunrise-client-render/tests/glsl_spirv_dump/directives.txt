@@ -1,0 +1,25 @@
+atlas lines
+  not loaded
+atlas sky
+  not loaded
+atlas stars
+  not loaded
+atlas lightmap
+  not loaded
+atlas text gui
+  vertex e5a07ac3834935d5666e26a2f0876cde82c7ef41e3e251965a517b03ba67b473 1385
+  fragment 13af37bb923e3d2567a8f7b8efab221e0fff6e49fede409f2a25d75f508476a4 830
+atlas text world
+  vertex c57ae0b9a347bd311196ce007d9779ec2a783ac9c02b821f591656b47c04b29e 1074
+  fragment 290d449eb6ade6a17ef6cb2224fd384b0e8b11c5323da9896df7a780ebce424d 864
+atlas text see-through
+  vertex 075043a3615ca33ae0a634997bf84e195468c51c0e90fd820d638304ee7ee1b6 975
+  fragment 4f92cd458533d082f9d35db58708e4c2527a1121ee9269220c075d3a53368506 902
+atlas clouds classic
+  not loaded
+post fixture:post/directives fixture:post/directives
+  vertex 5a7621f06e81bd30e3622d4783bfaa2afdf6cc25cf428930fca1a0e00479e968 438
+  fragment 29caa164f3da35bc15407ef37c724b28ebe3cbd26864bf5bc946770520d81fc8 733
+polytone fixture:rain
+  vertex d754cbc19ac72dcb923a096befdaac4c78b369d16284e6273d92bc8007ccadaf 1178
+  fragment 918d121e1666180097082f44caf529e2cee6d42b2caebe2b0cda8c939a02057f 223

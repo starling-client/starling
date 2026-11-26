@@ -15,7 +15,12 @@ use sunrise_core::{bounding_box::BoundingBox, geometry::Direction, nbt::Tag};
 /// `CompoundTag.getIntOr`: `Mth.floor` of a float or double tag, the low 32
 /// bits of the others, 0 for a missing or non-numeric one.
 pub(crate) fn int(tag: &Tag, key: &str) -> i32 {
-    match tag.get(key).and_then(as_number) {
+    int_value(tag.get(key))
+}
+/// [`int`] of a value already looked up: `Mth.floor` of a float or double tag, the low 32 bits
+/// of the others, 0 for a missing or non-numeric one.
+pub(crate) fn int_value(tag: Option<&Tag>) -> i32 {
+    match tag.and_then(as_number) {
         Some(Number::Float(v)) => v.floor() as i32,
         Some(Number::Double(v)) => v.floor() as i32,
         Some(n) => n.int_value(),

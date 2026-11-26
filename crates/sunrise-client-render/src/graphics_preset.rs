@@ -3,14 +3,14 @@
 //! Every preset turns on the optimizations that leave the picture as it is; Full
 //! Performance adds the ones that change it. What no table names keeps the player's
 //! choice: the display preferences (`graphics_ui`'s `touched`), Far Detail and Leaf
-//! Culling, which follow the machine and the look the player picked, and Translucent
-//! Batching, on unless the player turned it off.
-use super::{EntityCullingMode, GpuCullingMode, ParticleCullingMode, Preset, Upscaling};
+//! Culling, which follow the machine and the look the player picked, Translucent
+//! Batching, on unless the player turned it off, and GPU Culling, off unless the player
+//! turns it on: its picture isn't proven to be vanilla's.
+use super::{EntityCullingMode, ParticleCullingMode, Preset, Upscaling};
 use crate::settings::Settings;
 
 /// What differs between the presets. Every one of them also turns on entity and particle
-/// culling on a worker, the block-entity caches and GPU Culling's Auto (which tries it only
-/// where it makes frames faster), keeps cave culling, the sky, the fog, the weather and the
+/// culling on a worker and the block-entity caches, keeps cave culling, the sky, the fog, the weather and the
 /// animated textures on, uploads meshes unthrottled and draws at a fixed resolution without
 /// TAA.
 struct Table {
@@ -143,7 +143,6 @@ pub fn apply_preset(preset: Preset, s: &mut Settings) {
     g.preset = preset;
     g.lod_distance = t.lod_distance;
     g.cave_culling = true;
-    g.gpu_culling = GpuCullingMode::Auto;
     g.entity_culling = EntityCullingMode::Asynchronous;
     g.particle_culling = ParticleCullingMode::Asynchronous;
     g.opaque_ice = t.opaque_ice;

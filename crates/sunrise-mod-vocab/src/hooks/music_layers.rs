@@ -1,5 +1,4 @@
 //! The `music_layers` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0122
 
 pub trait Hooks {
     /// The tracks to play over (or instead of) the music on this client,

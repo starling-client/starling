@@ -11,6 +11,12 @@ import subprocess
 STEPS = ("preparer-build", "resource-export", "seed-extras")
 # These are diagnostic hints, not a claim about the root cause. Never interpolate matches.
 REASONS = (
+    # sunrise-prepare refusing the imported game files: a version JSON or a jar other than research-lock.json pins
+    # (crates/sunrise-prepare/src/artifacts.rs), as when Mojang re-issues the version JSON with new libraries. First,
+    # since such a log may also hold the other markers on lines before the refusal.
+    ("version file sunrise knows", "pinned-version-differs"),
+    ("does not describe the pinned", "pinned-version-differs"),
+    ("is not the pinned file", "pinned-file-differs"),
     ("no space left on device", "disk-full"),
     ("read-only file system", "read-only-filesystem"),
     ("permission denied", "permission-denied"),

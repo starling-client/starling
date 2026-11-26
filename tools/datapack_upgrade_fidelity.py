@@ -27,9 +27,9 @@ import tempfile
 import time
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "tools"))
-import anvil_dump  # noqa: E402
-from test_dedicated_server_parity import Server, free_port  # noqa: E402
+sys.path.insert(0, str(ROOT))
+from tools import anvil_dump
+from tools.test_dedicated_server_parity import Server, free_port  # noqa: E402
 
 JARS = {"26.2": ROOT / ".local/vanilla-26.2/server.jar", "26.3": ROOT / ".local/minecraft/26.3/jars/server.jar"}
 ERRORS = re.compile(r"Failed to (load|parse|get element)|Errors in registry|Unknown registry key|"

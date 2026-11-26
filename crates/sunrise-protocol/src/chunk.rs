@@ -275,7 +275,7 @@ packet!(
         packed_xz: i8 => crate::buf::Byte,
         y: i16 => crate::buf::Short,
         kind: i32 => VarInt,
-        tag: Tag => crate::buf::Nbt,
+        tag: Tag => crate::buf::OptionalCompoundTag,
     }
 );
 /// Heightmap type id with its packed long array.

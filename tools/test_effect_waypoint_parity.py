@@ -6,8 +6,11 @@ from os import pathsep
 from pathlib import Path
 import subprocess
 
-import test_command_exec_parity as commands
-import test_locator_bar_parity as locator
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_command_exec_parity as commands, test_locator_bar_parity as locator
 
 
 NAME = 'effect-waypoint-parity'

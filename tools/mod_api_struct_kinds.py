@@ -38,7 +38,6 @@ PLATFORM_SOCKET_FILES = frozenset(
         'parts/registration_access.rs',
         'content/crash.rs',
         'world/phase.rs',
-        'block/unresolved_fluid.rs',
     )
 )
 
@@ -198,7 +197,8 @@ def structs(source, file=""):
 
 def defaults_and_constructors(source, file=""):
     """Names with a hand-written `Default` impl, and names with a constructor
-    (a `pub fn` without a `self` receiver that returns `Self` or the type)."""
+    (an unrestricted `pub` function, optionally `const`, `async`, or `unsafe`,
+    without a `self` receiver that returns `Self` or the type)."""
     ts = [v for v, _ in _tokens(source)]
     modules = _modules(ts, file)
     defaults, constructors = set(), set()
@@ -226,25 +226,55 @@ def defaults_and_constructors(source, file=""):
         key = (file, modules[i] + path)
         end = _skip_group(ts, j, '{', '}')
         body = ts[j + 1:end - 1]
-        for k in range(len(body) - 1):
-            if body[k] == 'pub' and body[k + 1] == 'fn':
-                params_at = body.index('(', k)
-                params_end = _skip_group(body, params_at, '(', ')')
-                params = body[params_at:params_end]
-                if 'self' in params[:4]:
-                    continue
-                ret = []
-                m = params_end
-                if m < len(body) and body[m] == '->':
+        # Only direct items count, not tokens in attributes, macro calls or function bodies.
+        groups = {'(': ')', '[': ']', '{': '}'}
+        k = 0
+        while k < len(body):
+            token = body[k]
+            if token in groups:
+                k = _skip_group(body, k, token, groups[token])
+                continue
+            k += 1
+            if token != 'pub':
+                continue
+            fn_at = k
+            while fn_at < len(body) and body[fn_at] in ('const', 'async', 'unsafe'):
+                fn_at += 1
+            name_at = fn_at + 1
+            if (name_at >= len(body) or body[fn_at] != 'fn'
+                    or not re.fullmatch(r'[A-Za-z_]\w*', body[name_at])):
+                continue
+            params_at = name_at + 1
+            if params_at < len(body) and body[params_at] == '<':
+                params_at = _skip_group(body, params_at, '<', '>')
+            if params_at == len(body) or body[params_at] != '(':
+                continue
+            params_end = _skip_group(body, params_at, '(', ')')
+            k = params_end
+            # A receiver's `self` precedes its type; `value: self::Input` is not a receiver.
+            receiver = params_at + 1
+            while body[receiver:receiver + 2] == ['#', '[']:
+                receiver = _skip_group(body, receiver + 1, '[', ']')
+            if body[receiver:receiver + 1] == ['&']:
+                receiver += 1
+                if body[receiver:receiver + 1] == ["'"]:
+                    receiver += 2  # lifetime name
+            if body[receiver:receiver + 1] == ['mut']:
+                receiver += 1
+            if body[receiver:receiver + 1] == ['self']:
+                continue
+            ret = []
+            m = params_end
+            if m < len(body) and body[m] == '->':
+                m += 1
+                while m < len(body) and body[m] not in ('{', 'where', ';'):
+                    ret.append(body[m])
                     m += 1
-                    while m < len(body) and body[m] not in ('{', 'where', ';'):
-                        ret.append(body[m])
-                        m += 1
-                for value in (['Self'], [name]):
-                    if (ret == value or ret == ['Option', '<'] + value + ['>']
-                            or (ret[:2] == ['Result', '<'] and ret[2:3] == value
-                                and ret[3:4] == [','] and ret[-1:] == ['>'])):
-                        constructors.add(key)
+            for value in (['Self'], [name]):
+                if (ret == value or ret == ['Option', '<'] + value + ['>']
+                        or (ret[:2] == ['Result', '<'] and ret[2:3] == value
+                            and ret[3:4] == [','] and ret[-1:] == ['>'])):
+                    constructors.add(key)
     return defaults, constructors
 
 

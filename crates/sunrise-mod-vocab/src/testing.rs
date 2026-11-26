@@ -22,10 +22,26 @@
 //! let moved = server.transaction(|host, tx| {
 //!     move_resources(host, &from, &into, |_: &ItemResource| true, 3, Some(tx))
 //! });
-//! assert_eq!(moved.ok(), Some(3));
+//! assert_eq!(moved, Ok(3));
 //! let into = host.level.block_entity_at([1, 64, 0]).unwrap().items.as_ref().unwrap();
 //! assert_eq!(into.count("minecraft:stone"), 3);
 //! ```
+/// Build the command for one exact ignored test in a fresh copy of this test binary.
+/// The caller supplies scratch resources and verifies the fixture's completion.
+pub fn fresh_case_command(name: &str, flag: &str, case: &str) -> std::process::Command {
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command
+        .args([
+            "--ignored",
+            "--exact",
+            name,
+            "--nocapture",
+            "--test-threads=4",
+        ])
+        .env(flag, case);
+    command
+}
+
 #[path = "testing/journal.rs"]
 mod journal;
 #[path = "testing/level.rs"]
@@ -34,6 +50,8 @@ mod level;
 mod players;
 #[path = "testing/registries.rs"]
 mod registries;
+#[path = "testing/scratch.rs"]
+mod scratch;
 #[path = "testing/services.rs"]
 mod services;
 
@@ -49,14 +67,14 @@ pub use registries::FakeRegistries;
 pub use services::{FakeCommands, FakeMessages};
 
 use crate::item::item_stack::component_edits::edit_item_components;
-use crate::item::transaction::{Transaction, TransactionSeal};
+use crate::item::transaction::{ScratchScopeError, TransactionContext, TransactionScopeError};
 use crate::runtime::Installed;
 use crate::world::ticket_controller::{ControllerInfo, TEST_CONTROLLERS};
 use crate::{
     Backend, BackendMut, BackendMutRef, BackendRef, BlockEntityRef, BlockEntityTypeKey, BlockSide,
-    ClientHost, Commands, EntityRef, FluidStack, Host, InventoryView, ItemComponentEditor,
+    ClientHost, Commands, EntityRef, FluidStack, Host, InventoryView, ItemComponentEditor, ItemKey,
     ItemPlace, ItemPlaceEditError, ItemStack, ItemStackView, LevelRef, Messages, Mods, PlayerRef,
-    Players, ServerHost, TEST_MODS, Tag, Text, TicketController, WorldEpoch,
+    Players, ScratchSlot, ServerHost, StackWriteError, TEST_MODS, Tag, Text, WorldEpoch,
 };
 
 /// The world epoch of every fake's handles.
@@ -210,11 +228,6 @@ pub fn inherit_mods<A, R, F: FnOnce(&A) -> R + Send>(f: F) -> impl FnOnce(&A) ->
     }
 }
 
-/// The ticket controller with this id that the mods of the enclosing `with_mods` registered.
-pub fn ticket_controller(id: &str) -> Option<TicketController> {
-    TicketController::from_id(id)
-}
-
 struct RestoreControllers(Option<&'static [ControllerInfo]>);
 impl Drop for RestoreControllers {
     fn drop(&mut self) {
@@ -258,6 +271,7 @@ pub struct FakeHost {
     pub game_events: Vec<FakeGameEvent>,
     /// The holders' attachments: a lone map answers for any holder.
     pub attachments: sunrise_mod_runtime::attachments::Attachments,
+    scratch: scratch::FakeScratch,
 }
 
 impl FakeHost {
@@ -312,7 +326,10 @@ impl FakeHost {
 
     /// A queued bucket sound and game event, as the game plays them at the outermost commit.
     fn play_fluid_effects(&mut self, queued: level::QueuedFluidEffects) {
-        if let Some(sound) = self.registries.fluid_sound(queued.fluid, queued.pickup) {
+        if let Some(sound) = self
+            .registries
+            .fluid_sound_named(queued.fluid, queued.pickup)
+        {
             self.sounds.push(FakeSound {
                 sound: sound.to_owned(),
                 at: queued.at,
@@ -334,12 +351,144 @@ impl FakeHost {
             },
         });
     }
+    fn container_slot(&self, at: BlockSide, slot: usize) -> Option<&ItemStack> {
+        let items = self.level.standing(at.level, at.pos)?.items.as_ref()?;
+        items.slots.get(slot)?.as_ref()
+    }
     fn max_stack(&self, resource: &crate::ItemResource) -> u32 {
         match resource.value_id(self, "minecraft:max_stack_size") {
             Some(Tag::Int(size)) if (1..=99).contains(&size) => size as u32,
             None => 1,
             _ => 0,
         }
+    }
+    fn validate_scratch_stack(&self, stack: &ItemStack) -> Result<(), StackWriteError> {
+        if FakeRegistries::resolved_item_id(stack.item()).is_none() {
+            return Err(StackWriteError::UnknownItem);
+        }
+        let maximum = self.max_stack(&crate::ItemResource::of(stack));
+        if maximum == 0 {
+            return Err(StackWriteError::InvalidMaximum);
+        }
+        Ok(())
+    }
+    fn run_transaction_scope(
+        &mut self,
+        loan: Option<(Option<ItemKey>, ItemStack)>,
+        run: impl for<'loan> FnOnce(
+            &'loan mut FakeHost,
+            &'loan TransactionContext,
+            Option<ScratchSlot>,
+        ) -> bool,
+    ) -> Result<(bool, Option<scratch::FakeScratchEntry>), TransactionScopeError> {
+        struct ScratchScopeGuard<'a> {
+            host: &'a mut FakeHost,
+            owned_id: Option<u64>,
+            closed: bool,
+        }
+        impl ScratchScopeGuard<'_> {
+            fn finish(mut self, commit: bool) -> Option<scratch::FakeScratchEntry> {
+                self.closed = true;
+                let entry = self
+                    .owned_id
+                    .and_then(|id| self.host.scratch.remove_loan(id));
+                self.host.scratch.close_frame(commit);
+                if commit { entry } else { None }
+            }
+        }
+        impl Drop for ScratchScopeGuard<'_> {
+            fn drop(&mut self) {
+                if !self.closed {
+                    if let Some(id) = self.owned_id {
+                        self.host.scratch.remove_loan(id);
+                    }
+                    self.host.scratch.close_frame(false);
+                }
+            }
+        }
+
+        self.scratch.push_frame();
+        let slot = loan.map(|(item, stack)| self.scratch.insert_loan(item, stack));
+        let guard = ScratchScopeGuard {
+            host: self,
+            owned_id: slot.map(ScratchSlot::id),
+            closed: false,
+        };
+        let committed = FakeJournal::with_scope_with(
+            &mut *guard.host,
+            |host| &mut host.journal,
+            |host| {
+                (
+                    host.players.clone(),
+                    host.level.clone(),
+                    host.attachments.clone(),
+                )
+            },
+            |host, (players, level, attachments)| {
+                (host.players, host.level, host.attachments) = (players, level, attachments);
+            },
+            |host, tx| run(host, tx, slot),
+        )?;
+        let published = guard.finish(committed);
+        // The outermost commit plays what waited for it; an abort already restored `level`.
+        if self.journal.depth() == 0 {
+            for queued in std::mem::take(&mut self.level.fluid_effects) {
+                self.play_fluid_effects(queued);
+            }
+        }
+        Ok((committed, published))
+    }
+}
+
+#[cfg(test)]
+impl FakeHost {
+    pub(crate) fn scratch_live_count(&self) -> usize {
+        self.scratch.live_count()
+    }
+    pub(crate) fn scratch_kept_frame_counts(&self) -> Vec<usize> {
+        self.scratch.kept_frame_counts()
+    }
+    pub(crate) fn scratch_kept_contains(&self, frame_index: usize, slot: ScratchSlot) -> bool {
+        self.scratch.kept_contains(frame_index, slot)
+    }
+    pub(crate) fn with_test_transaction<R>(
+        &mut self,
+        f: impl for<'loan> FnOnce(&'loan mut FakeHost, &'loan TransactionContext) -> (bool, R),
+    ) -> R {
+        let mut out = None;
+        self.run_transaction_scope(None, |host, tx, _| {
+            let (commit, value) = f(host, tx);
+            out = Some(value);
+            commit
+        })
+        .expect("FakeHost transactions are always available");
+        out.expect("transaction callback ran")
+    }
+    pub(crate) fn with_test_scratch_stack<R>(
+        &mut self,
+        stack: ItemStack,
+        f: impl for<'loan> FnOnce(
+            &'loan mut FakeHost,
+            &'loan TransactionContext,
+            &'loan ItemPlace,
+        ) -> (bool, R),
+    ) -> (Option<Option<ItemStack>>, R) {
+        self.validate_scratch_stack(&stack)
+            .expect("test scratch stack is valid");
+        let item = stack.item();
+        let mut out = None;
+        let (_, published) = self
+            .run_transaction_scope(Some((Some(item), stack)), |host, tx, slot| {
+                let place = ItemPlace::Scratch(slot.expect("scratch loan minted"));
+                let (commit, value) = f(host, tx, &place);
+                out = Some(value);
+                commit
+            })
+            .expect("FakeHost transactions are always available");
+        (
+            published.map(|entry| entry.stack),
+            out.expect("scratch callback ran"),
+        )
     }
 }
 impl Host for FakeHost {
@@ -403,12 +552,6 @@ impl crate::prelude::TagsHost for FakeHost {
     fn tags(&self) -> &dyn crate::Tags {
         &self.registries
     }
-    fn fluid_pickup_sound(&self, fluid: &str) -> Option<&'static str> {
-        self.registries.fluid_sound(fluid, true)
-    }
-    fn fluid_empty_sound(&self, fluid: &str) -> Option<&'static str> {
-        self.registries.fluid_sound(fluid, false)
-    }
 }
 impl crate::prelude::BlockStatesHost for FakeHost {
     fn fluid_key(&self, id: &str) -> Option<crate::FluidKey> {
@@ -416,9 +559,6 @@ impl crate::prelude::BlockStatesHost for FakeHost {
     }
 }
 impl crate::prelude::LevelsHost for FakeHost {
-    fn lit_block_name(&self, _: [i32; 3]) -> Option<crate::BlockKey> {
-        None
-    }
     fn is_loaded(&self, id: &str) -> bool {
         self.registries.is_loaded(id)
     }
@@ -441,6 +581,67 @@ impl ServerHost for FakeHost {
     fn backend_mut(&mut self) -> Option<BackendMutRef<'_>> {
         Some(BackendMutRef::of(self))
     }
+    fn with_current_transaction_scope(
+        &mut self,
+        callback: &mut dyn for<'loan> FnMut(&'loan mut dyn ServerHost, &'loan TransactionContext),
+    ) -> Result<(), crate::TransactionUnavailable> {
+        FakeJournal::with_current_scope(self, |host| &host.journal, callback)
+    }
+
+    fn with_transaction_scope(
+        &mut self,
+        callback: &mut dyn for<'loan> FnMut(
+            &'loan mut dyn ServerHost,
+            &'loan TransactionContext,
+        ) -> bool,
+    ) -> Result<bool, TransactionScopeError> {
+        self.run_transaction_scope(None, |host, tx, _| callback(host, tx))
+            .map(|(committed, _)| committed)
+    }
+    fn with_scratch_stack_scope(
+        &mut self,
+        stack: ItemStack,
+        callback: &mut dyn for<'loan> FnMut(
+            &'loan mut dyn ServerHost,
+            &'loan TransactionContext,
+            &'loan ItemPlace,
+        ) -> bool,
+    ) -> Result<Option<Option<ItemStack>>, ScratchScopeError> {
+        self.validate_scratch_stack(&stack)
+            .map_err(ScratchScopeError::Stack)?;
+        let item = stack.item();
+        let (_, published) = self
+            .run_transaction_scope(Some((Some(item), stack)), |host, tx, slot| {
+                let Some(slot) = slot else { return false };
+                let place = ItemPlace::Scratch(slot);
+                callback(host, tx, &place)
+            })
+            .map_err(ScratchScopeError::Transaction)?;
+        Ok(published.map(|entry| entry.stack))
+    }
+    fn with_scratch_slots_scope(
+        &mut self,
+        stack: ItemStack,
+        callback: &mut dyn for<'loan> FnMut(
+            &'loan mut dyn ServerHost,
+            &'loan TransactionContext,
+            &'loan ItemPlace,
+        ) -> bool,
+    ) -> Result<Option<(Option<ItemStack>, Option<ItemStack>)>, ScratchScopeError> {
+        self.validate_scratch_stack(&stack)
+            .map_err(ScratchScopeError::Stack)?;
+        let (_, published) = self
+            .run_transaction_scope(Some((None, stack)), |host, tx, slot| {
+                let Some(slot) = slot else { return false };
+                let place = ItemPlace::Scratch(slot);
+                callback(host, tx, &place)
+            })
+            .map_err(ScratchScopeError::Transaction)?;
+        Ok(published.map(|entry| (entry.stack, entry.overflow)))
+    }
+    fn transaction_matches(&self, tx: Option<&TransactionContext>) -> bool {
+        self.journal.matches(tx)
+    }
 }
 impl crate::host::mod_state::ModStateHost for FakeHost {
     fn attachments(&mut self) -> &mut dyn mod_api::AttachmentStore {
@@ -448,24 +649,6 @@ impl crate::host::mod_state::ModStateHost for FakeHost {
     }
 }
 impl crate::prelude::ModStateServerHost for FakeHost {
-    fn transaction_open(&mut self) -> TransactionSeal {
-        self.journal.open((
-            self.players.clone(),
-            self.level.clone(),
-            self.attachments.clone(),
-        ))
-    }
-    fn transaction_close(&mut self, seal: &TransactionSeal, commit: bool) {
-        if let Some((players, level, attachments)) = self.journal.close(seal, commit) {
-            (self.players, self.level, self.attachments) = (players, level, attachments);
-        }
-        // The outermost commit plays what waited for it.
-        if self.journal.depth() == 0 {
-            for queued in std::mem::take(&mut self.level.fluid_effects) {
-                self.play_fluid_effects(queued);
-            }
-        }
-    }
     fn transaction_lifecycle(&self) -> crate::TransactionLifecycle {
         // The fake tells the world of nothing at a close, so no close is ever seen running.
         if self.journal.depth() == 0 {
@@ -473,12 +656,6 @@ impl crate::prelude::ModStateServerHost for FakeHost {
         } else {
             crate::TransactionLifecycle::Open
         }
-    }
-    fn transaction_current(&self) -> Option<crate::Transaction> {
-        self.journal.current()
-    }
-    fn transaction_depth(&self, tx: &crate::Transaction) -> Option<u32> {
-        self.journal.depth_of(tx)
     }
 }
 impl crate::prelude::ServicesServerHost for FakeHost {
@@ -649,9 +826,23 @@ impl crate::prelude::ItemsBackend for FakeHost {
         let items = self.level.standing(at.level, at.pos)?.items.as_ref()?;
         Some(items.slots.len())
     }
-    fn container_stack(&self, at: BlockSide, slot: usize) -> Option<ItemStack> {
+    fn lend_container_stack(
+        &self,
+        at: BlockSide,
+        slot: usize,
+        read: &mut dyn for<'a> FnMut(ItemStackView<'a>),
+    ) {
+        if let Some(stack) = self.container_slot(at, slot) {
+            read(ItemStackView::from_stack(stack));
+        }
+    }
+    fn container_slot_backing(&self, at: BlockSide, slot: usize) -> Option<crate::StorageSlot> {
         let items = self.level.standing(at.level, at.pos)?.items.as_ref()?;
-        items.slots.get(slot)?.clone()
+        (slot < items.slots.len()).then_some(crate::StorageSlot {
+            level: at.level,
+            pos: at.pos,
+            slot,
+        })
     }
     fn container_capacity(&self, at: BlockSide, slot: usize, stack: Option<&ItemStack>) -> u32 {
         let items = self
@@ -676,9 +867,13 @@ impl crate::prelude::ItemsBackend for FakeHost {
     fn entity_equipment_size(&self, _: u32) -> Option<usize> {
         None
     }
-    fn item_bundle_slots(&self, _: &ItemStack) -> Option<Vec<Option<ItemStack>>> {
+    fn bundle_slots(
+        &self,
+        _: &ItemStack,
+        _: &crate::BundleConfig,
+    ) -> Result<Option<Vec<Option<ItemStack>>>, crate::BundleReadError> {
         // The fake registry models declared containers, not game bundle components.
-        None
+        Ok(None)
     }
     fn item_container_slots(&self, stack: &ItemStack) -> Option<Vec<Option<ItemStack>>> {
         self.registries.container_slots(stack)
@@ -782,10 +977,37 @@ impl crate::prelude::PlayerWorldBackend for FakeHost {
         crate::Identifier::parse(level.dimension_id()).ok()
     }
 }
+crate::block::block_states::impl_block_states_without_tables!(FakeHost {
+    fn fluid_bucket(
+        &self,
+        fluid: crate::FluidKey,
+    ) -> Result<Option<crate::ItemKey>, crate::LevelReadError> {
+        Ok(self.registries.bucket_of(fluid))
+    }
+    fn bucket_fluid(
+        &self,
+        bucket: crate::ItemKey,
+    ) -> Result<Option<crate::FluidKey>, crate::LevelReadError> {
+        Ok(self.registries.fluid_of(bucket))
+    }
+    fn fluid_pickup_sound(
+        &self,
+        fluid: crate::FluidKey,
+    ) -> Result<Option<&'static str>, crate::LevelReadError> {
+        Ok(self.registries.fluid_sound(fluid, true))
+    }
+    fn fluid_empty_sound(
+        &self,
+        fluid: crate::FluidKey,
+    ) -> Result<Option<&'static str>, crate::LevelReadError> {
+        Ok(self.registries.fluid_sound(fluid, false))
+    }
+});
 crate::impl_backend_areas!(
     FakeHost,
     except(
         block_entities,
+        block_states,
         entity_identity,
         fluids_energy,
         items,
@@ -810,8 +1032,11 @@ impl crate::prelude::ItemsBackendMut for FakeHost {
         slot: usize,
         resource: &crate::ItemResource,
         amount: u32,
-        _: &Transaction,
+        tx: &TransactionContext,
     ) -> Result<Option<ItemStack>, crate::StackWriteError> {
+        if !self.journal.matches(Some(tx)) {
+            return Ok(resource.to_stack(amount));
+        }
         let max_stack = self.max_stack(resource);
         if max_stack == 0 {
             return Err(crate::StackWriteError::InvalidMaximum);
@@ -828,8 +1053,11 @@ impl crate::prelude::ItemsBackendMut for FakeHost {
         at: BlockSide,
         slot: usize,
         max: u32,
-        _: &Transaction,
+        tx: &TransactionContext,
     ) -> Option<ItemStack> {
+        if !self.journal.matches(Some(tx)) {
+            return None;
+        }
         let standing = self.level.standing_mut(at.level, at.pos)?;
         standing.items.as_mut()?.extract(slot, max)
     }
@@ -838,9 +1066,12 @@ impl crate::prelude::ItemsBackendMut for FakeHost {
         at: BlockSide,
         resource: &crate::ItemResource,
         amount: u64,
-        tx: &Transaction,
+        tx: &TransactionContext,
     ) -> u64 {
         use crate::prelude::ItemsBackend;
+        if !self.journal.matches(Some(tx)) {
+            return 0;
+        }
         let size = self.container_size(at).unwrap_or(0);
         let mut left = amount;
         for holding in [true, false] {
@@ -848,8 +1079,7 @@ impl crate::prelude::ItemsBackendMut for FakeHost {
                 if left == 0 {
                     break;
                 }
-                let held = self.container_stack(at, slot);
-                let pick = match &held {
+                let pick = match self.container_slot(at, slot) {
                     Some(held) => holding && resource.matches(held),
                     None => !holding,
                 };
@@ -872,17 +1102,20 @@ impl crate::prelude::ItemsBackendMut for FakeHost {
         at: BlockSide,
         resource: &crate::ItemResource,
         amount: u64,
-        tx: &Transaction,
+        tx: &TransactionContext,
     ) -> u64 {
         use crate::prelude::ItemsBackend;
+        if !self.journal.matches(Some(tx)) {
+            return 0;
+        }
         let mut left = amount;
         for slot in 0..self.container_size(at).unwrap_or(0) {
             if left == 0 {
                 break;
             }
             if self
-                .container_stack(at, slot)
-                .is_some_and(|held| resource.matches(&held))
+                .container_slot(at, slot)
+                .is_some_and(|held| resource.matches(held))
             {
                 let ask = left.min(u32::MAX as u64) as u32;
                 left -= self
@@ -897,6 +1130,11 @@ impl crate::prelude::ItemsBackendMut for FakeHost {
         place: &ItemPlace,
         read: &mut dyn for<'a> FnMut(ItemStackView<'a>),
     ) -> Option<()> {
+        if let ItemPlace::Scratch(slot) = place {
+            let stack = self.scratch.held(*slot)?;
+            read(ItemStackView::from_stack(stack));
+            return Some(());
+        }
         let (player, slot) = self.players.place(place)?;
         read(ItemStackView::from_stack(player.slots.get(&slot)?));
         Some(())
@@ -904,11 +1142,11 @@ impl crate::prelude::ItemsBackendMut for FakeHost {
     fn game_edit_stack(
         &mut self,
         place: &ItemPlace,
-        tx: &Transaction,
+        tx: &TransactionContext,
         edit: &mut dyn for<'a> FnMut(&mut ItemComponentEditor<'a>),
     ) -> Result<(), ItemPlaceEditError> {
-        if crate::prelude::ModStateServerHost::transaction_depth(self, tx).is_none() {
-            return Err(ItemPlaceEditError::Unavailable);
+        if !self.journal.matches(Some(tx)) {
+            return Err(ItemPlaceEditError::InvalidContext);
         }
         let (player, slot) = self
             .players
@@ -926,9 +1164,12 @@ impl crate::prelude::ItemsBackendMut for FakeHost {
     fn game_on_crafted_by(
         &mut self,
         _: &ItemPlace,
-        _: &Transaction,
+        tx: &TransactionContext,
         _: i32,
     ) -> Result<(), crate::CraftedByError> {
+        if !self.journal.matches(Some(tx)) {
+            return Err(crate::CraftedByError::InvalidContext);
+        }
         Err(crate::CraftedByError::Unavailable)
     }
     fn game_insert(
@@ -936,11 +1177,17 @@ impl crate::prelude::ItemsBackendMut for FakeHost {
         place: &ItemPlace,
         resource: &crate::ItemResource,
         amount: u32,
-        _: &Transaction,
+        tx: &TransactionContext,
     ) -> Result<u32, crate::StackWriteError> {
+        if !self.journal.matches(Some(tx)) {
+            return Ok(0);
+        }
         let max_stack = self.max_stack(resource);
         if max_stack == 0 {
             return Err(crate::StackWriteError::InvalidMaximum);
+        }
+        if let ItemPlace::Scratch(slot) = place {
+            return Ok(self.scratch.insert(*slot, resource, amount, max_stack));
         }
         Ok(match self.players.place(place) {
             Some((player, slot)) => player.insert(slot, resource, amount, max_stack),
@@ -952,8 +1199,14 @@ impl crate::prelude::ItemsBackendMut for FakeHost {
         place: &ItemPlace,
         resource: &crate::ItemResource,
         amount: u32,
-        _: &Transaction,
+        tx: &TransactionContext,
     ) -> Result<u32, crate::StackWriteError> {
+        if !self.journal.matches(Some(tx)) {
+            return Ok(0);
+        }
+        if let ItemPlace::Scratch(slot) = place {
+            return Ok(self.scratch.extract(*slot, resource, amount));
+        }
         Ok(self
             .players
             .place(place)
@@ -966,8 +1219,11 @@ impl crate::prelude::FluidsEnergyBackendMut for FakeHost {
         at: BlockSide,
         tank: usize,
         fluid: FluidStack,
-        _: &Transaction,
+        tx: &TransactionContext,
     ) -> Option<FluidStack> {
+        if !self.journal.matches(Some(tx)) {
+            return Some(fluid);
+        }
         let standing = self.level.standing_mut(at.level, at.pos);
         match standing.and_then(|standing| standing.tanks.get_mut(tank)) {
             Some(tank) => tank.insert(fluid),
@@ -979,18 +1235,27 @@ impl crate::prelude::FluidsEnergyBackendMut for FakeHost {
         at: BlockSide,
         tank: usize,
         max: u32,
-        _: &Transaction,
+        tx: &TransactionContext,
     ) -> Option<FluidStack> {
+        if !self.journal.matches(Some(tx)) {
+            return None;
+        }
         let standing = self.level.standing_mut(at.level, at.pos)?;
         standing.tanks.get_mut(tank)?.extract(max)
     }
-    fn energy_insert(&mut self, at: BlockSide, amount: u32, _: &Transaction) -> u32 {
+    fn energy_insert(&mut self, at: BlockSide, amount: u32, tx: &TransactionContext) -> u32 {
+        if !self.journal.matches(Some(tx)) {
+            return 0;
+        }
         let standing = self.level.standing_mut(at.level, at.pos);
         standing
             .and_then(|standing| standing.energy.as_mut())
             .map_or(0, |energy| energy.insert(amount))
     }
-    fn energy_extract(&mut self, at: BlockSide, amount: u32, _: &Transaction) -> u32 {
+    fn energy_extract(&mut self, at: BlockSide, amount: u32, tx: &TransactionContext) -> u32 {
+        if !self.journal.matches(Some(tx)) {
+            return 0;
+        }
         let standing = self.level.standing_mut(at.level, at.pos);
         standing
             .and_then(|standing| standing.energy.as_mut())
@@ -1003,13 +1268,15 @@ impl crate::prelude::FluidsEnergyBackendMut for FakeHost {
         level: LevelRef,
         pos: [i32; 3],
         _: Option<PlayerRef>,
-        tx: &Transaction,
-    ) -> Option<FluidStack> {
-        if !self.journal.holds(tx) {
-            return None;
+        tx: &TransactionContext,
+    ) -> Result<Option<FluidStack>, crate::TransactionError<()>> {
+        if !self.journal.matches(Some(tx)) {
+            return Err(crate::TransactionError::InvalidContext);
         }
-        let fluid = self.level.take_source(level, pos)?;
-        Some(FluidStack::new(fluid, 1000))
+        Ok(self
+            .level
+            .take_source(level, pos)
+            .map(|fluid| FluidStack::new(fluid, 1000)))
     }
     /// A source of `fluid` where nothing is; the fake plays no sound or game event for it.
     fn level_place_fluid(
@@ -1019,9 +1286,12 @@ impl crate::prelude::FluidsEnergyBackendMut for FakeHost {
         fluid: crate::FluidKey,
         _: Option<PlayerRef>,
         _: bool,
-        tx: &Transaction,
-    ) -> bool {
-        self.journal.holds(tx) && self.level.put_source(level, pos, fluid)
+        tx: &TransactionContext,
+    ) -> Result<bool, crate::TransactionError<()>> {
+        if !self.journal.matches(Some(tx)) {
+            return Err(crate::TransactionError::InvalidContext);
+        }
+        Ok(self.level.put_source(level, pos, fluid))
     }
     /// Queued with the level for the outermost commit, which plays it as the game does.
     fn level_play_fluid_effects(
@@ -1031,13 +1301,16 @@ impl crate::prelude::FluidsEnergyBackendMut for FakeHost {
         fluid: crate::FluidKey,
         pickup: bool,
         player: Option<PlayerRef>,
-        tx: &Transaction,
-    ) -> bool {
+        tx: &TransactionContext,
+    ) -> Result<bool, crate::TransactionError<()>> {
+        if !self.journal.matches(Some(tx)) {
+            return Err(crate::TransactionError::InvalidContext);
+        }
         let Some(id) = crate::content::registry_keys::fluid_id(fluid) else {
-            return false;
+            return Ok(false);
         };
-        if !self.journal.holds(tx) || level != self.level.level() {
-            return false;
+        if level != self.level.level() {
+            return Ok(false);
         }
         self.level.fluid_effects.push(level::QueuedFluidEffects {
             at: pos.map(|c| f64::from(c) + 0.5),
@@ -1045,7 +1318,7 @@ impl crate::prelude::FluidsEnergyBackendMut for FakeHost {
             pickup,
             player,
         });
-        true
+        Ok(true)
     }
 }
 impl crate::prelude::EntityIdentityBackendMut for FakeHost {
@@ -1125,6 +1398,15 @@ crate::impl_backend_mut_areas!(
     )
 );
 
+/// Use the game fixture's completed Parts registration in place of its earlier probe.
+// hidden: only the game test fixture scopes the controller table after loading Parts.
+#[doc(hidden)]
+pub fn with_installed_ticket_controllers<R>(f: impl FnOnce() -> R) -> R {
+    let _controllers =
+        RestoreControllers(TEST_CONTROLLERS.replace(Some(crate::parts::installed_controllers())));
+    f()
+}
+
 /// Scope the controller lookup rows prepared by the API-owned registration fixture.
 // hidden: API-owned test setup uses this vocabulary fixture, not mod authoring code.
 #[doc(hidden)]
@@ -1178,6 +1460,40 @@ impl crate::__private::WorldgenReader for TestReader {
     fn setting(&self, _: &str, _: &str) -> Option<&str> {
         None
     }
+}
+
+/// Build a `(RegisteredAttachment, AttachmentKey<T>)` pair for tests without running full
+/// mod registration.
+// hidden: API-owned test setup uses this vocabulary fixture, not mod authoring code.
+#[doc(hidden)]
+pub fn registered_attachment_fixture<T: Send + Sync + 'static>(
+    owner: &'static str,
+    descriptor: crate::AttachmentDescriptor<T>,
+) -> (crate::RegisteredAttachment, crate::AttachmentKey<T>) {
+    crate::parts::registered_attachment_fixture(owner, descriptor)
+}
+
+/// Install a single attachment descriptor in the test thread's Parts table and return its live
+/// [`AttachmentKey<T>`](crate::AttachmentKey).
+// hidden: API-owned test setup uses this vocabulary fixture, not mod authoring code.
+#[doc(hidden)]
+pub fn install_attachment_fixture<T: Send + Sync + 'static>(
+    owner: &'static str,
+    descriptor: crate::AttachmentDescriptor<T>,
+) -> crate::AttachmentKey<T> {
+    crate::parts::install_attachment_fixture(owner, descriptor)
+}
+
+/// Retrieve the key issued by this test thread's registration fixture.
+// hidden: API-owned test setup uses this vocabulary fixture, not mod authoring code.
+#[doc(hidden)]
+pub fn attachment_key<T: Send + Sync + 'static>(
+    namespace: &str,
+    name: &str,
+) -> crate::AttachmentKey<T> {
+    crate::parts::installed().unwrap().attachment_types[namespace][name]
+        .downcast_key()
+        .unwrap()
 }
 
 #[cfg(test)]

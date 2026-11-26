@@ -252,3 +252,21 @@ fn with_no_listener_the_report_is_committed_in_place_and_nothing_is_held() {
     assert!(g.pending_move.is_none());
     assert!(g.inbox.is_empty());
 }
+
+/// `handleMovePlayer` still checks moves while the End credits show: a frozen guest who won
+/// the game keeps its move, in order, and the frozen filter comes back.
+#[test]
+fn a_won_game_guests_move_survives_the_frozen_filter_once() {
+    let mut hub = standing(false, vec![at(1.0), tick_end()]);
+    hub.guests.update(0, |g| {
+        g.won_game = true;
+        g.held = true;
+    });
+    hub.keep_acknowledgements(0, &mut Vec::new());
+    let kept: Vec<_> = hub.guests[0]
+        .inbox
+        .iter()
+        .map(|entry| matches!(entry, InboxItem::Packet(S::MovePlayerPos(_), _)))
+        .collect();
+    assert_eq!(kept, [true, false]);
+}

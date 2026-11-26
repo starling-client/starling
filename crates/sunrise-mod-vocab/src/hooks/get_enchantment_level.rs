@@ -12,14 +12,16 @@ pub trait Hooks {
     /// keep the stack's own component. Asked on every such read, often many
     /// times a tick, on the server and on a client (its tooltip modifiers).
     /// A client without this mod keeps its vanilla tooltip; server gameplay uses the modded levels.
+    /// Read the borrowed stack with `get`; call `project` only to keep an owned copy.
     #[hook(
         side = "both",
         contract = "listen",
+        version = 2,
         neoforge = "GetEnchantmentLevelEvent",
         target = "mod_api::item::enchantments::native_get_enchantment_level"
     )]
     fn get_enchantment_level(
-        stack: &ItemStack,
+        stack: ItemStackView<'_>,
         target: Option<&Identifier>,
         enchantments: &mut ItemEnchantments,
     );

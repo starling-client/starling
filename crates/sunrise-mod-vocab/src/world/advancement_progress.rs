@@ -1,7 +1,7 @@
 //! Owned advancement progress captured at a criterion's grant or revoke, and a loaded
 //! advancement's definition.
 
-use crate::{Identifier, ItemStack, Text};
+use crate::{Identifier, ItemStack, NoBackend, Text};
 
 /// One criterion in an advancement, including criteria not yet obtained.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -26,9 +26,10 @@ impl CriterionProgress {
 /// An owned, read-only snapshot of one advancement's complete progress.
 ///
 /// [`crate::PlayerAdvancementProgressEvent::progress`] captures this after the
-/// criterion changes and before completion rewards. Retaining or changing a
-/// clone does not change the player's progress. The same representation can
-/// describe progress outside an event without borrowing the game or a player.
+/// criterion changes and before completion rewards, and
+/// [`crate::PlayerRef::advancement_progress`] reads a server player's live
+/// progress on demand. Retaining or changing a clone does not change the
+/// player's progress.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 #[derive(sunrise_mod_api_macros::Wire)]
@@ -153,4 +154,70 @@ pub enum AdvancementFrame {
     Goal,
     /// `challenge`.
     Challenge,
+}
+
+/// Why awarding or revoking an advancement for a player could not complete.
+// no wire: returned directly to the native caller on the server thread.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum AdvancementError {
+    /// This game is a remote client's copy, not the authoritative server.
+    NotServer,
+    /// The player handle is stale, offline, displaced by a nested turn, or their level could not be entered.
+    PlayerUnavailable,
+    /// No loaded advancement has this identifier.
+    UnknownAdvancement,
+    /// The advancement has no criterion with this name.
+    UnknownCriterion,
+    /// The host has no game backend (for example, a mod's test double).
+    NoBackend,
+}
+
+impl std::fmt::Display for AdvancementError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::NotServer => "advancements can only be changed on the logical server",
+            Self::PlayerUnavailable => "player is unavailable for advancement changes",
+            Self::UnknownAdvancement => "unknown advancement identifier",
+            Self::UnknownCriterion => "unknown advancement criterion",
+            Self::NoBackend => "host has no game backend",
+        })
+    }
+}
+
+impl std::error::Error for AdvancementError {}
+
+impl NoBackend for AdvancementError {
+    fn no_backend() -> Self {
+        Self::NoBackend
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{EntityRef, Host, PlayerRef, ServerHost, WorldEpoch};
+
+    #[test]
+    fn award_and_revoke_without_a_game_refuse_with_no_backend() {
+        struct TestHost;
+        impl Host for TestHost {}
+        mod_api::impl_host_areas!(TestHost);
+        impl ServerHost for TestHost {}
+        mod_api::impl_server_host_areas!(TestHost);
+
+        let player = PlayerRef {
+            entity: EntityRef::new(WorldEpoch::new(1), 1),
+            uuid: 1,
+        };
+        let id = Identifier::parse("test:adv").unwrap();
+        assert_eq!(
+            player.award_advancement(&mut TestHost, &id, None),
+            Err(AdvancementError::NoBackend)
+        );
+        assert_eq!(
+            player.revoke_advancement(&mut TestHost, &id, Some("step")),
+            Err(AdvancementError::NoBackend)
+        );
+    }
 }

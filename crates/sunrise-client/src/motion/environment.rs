@@ -30,7 +30,8 @@ impl MotionWorld<'_, '_, '_> {
                 self.block_registries,
                 self.damage_hooks,
             )
-            .with_player_equipment(self.side.player_equipment()),
+            .with_player_equipment(self.side.player_equipment())
+            .with_reads(self.side.hit_reads()),
             self.health,
             rules,
             id,
@@ -178,7 +179,8 @@ impl MotionWorld<'_, '_, '_> {
                     self.block_registries,
                     self.damage_hooks,
                 )
-                .with_player_equipment(self.side.player_equipment()),
+                .with_player_equipment(self.side.player_equipment())
+                .with_reads(self.side.hit_reads()),
                 self.health,
                 rules,
                 id,
@@ -187,35 +189,24 @@ impl MotionWorld<'_, '_, '_> {
         }
         Ok(())
     }
-
     /// LivingEntity.baseTick's eye-in-wall hurt, after the owning server's shape check.
     pub fn suffocation_hurt(&mut self) -> Result<()> {
         self.environment_hurt("minecraft:in_wall", 1.0)
     }
 
-    pub fn apply_fire_contact(&mut self) -> Result<()> {
+    /// Reset the player's fire-contact delay (`-getFireImmuneTicks()`) when
+    /// not touching fire (`Entity.baseTick`). Ordinary fire ignition and hurt
+    /// run inside `BaseFireBlock.entityInside`'s collector steps.
+    pub fn reset_unlit_fire(&mut self) {
         if self.player.spectator {
             self.player.fire_ticks = 0;
-            return Ok(());
+            return;
         }
-        let damage = fire_contact(self.scene, self.assets.registry, self.player.bounds());
-        if damage > 0.0 {
-            self.player.ticks_frozen = 0;
-            if !self.player.mod_fire_immune && !self.player.fluids.was_touching_water {
-                let multiplier = self.player.attribute("minecraft:burning_time")?;
-                let ticks = ignite_contact(
-                    self.player.fire_ticks,
-                    true,
-                    &mut self.scene.random,
-                    multiplier,
-                );
-                self.player.set_remaining_fire_ticks(ticks);
-            }
-            self.environment_hurt("minecraft:in_fire", damage)?;
-        } else if self.player.fire_ticks <= 0 {
+        if fire_contact(self.scene, self.assets.registry, self.player.bounds()) <= 0.0
+            && self.player.fire_ticks <= 0
+        {
             self.player.fire_ticks = -20;
         }
-        Ok(())
     }
 }
 pub(crate) fn fire_contact(
@@ -420,7 +411,7 @@ pub(crate) fn ignite_contact(
     let ticks = if ticks < 0 {
         ticks + 1
     } else if player {
-        ticks + 1 + random.next_int_bound(2).unwrap_or(0)
+        ticks.wrapping_add(1 + random.next_int_bound(2).unwrap_or(0))
     } else {
         ticks
     };

@@ -1,5 +1,4 @@
 //! The `hopper_pickup_item` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0225
 
 pub trait Hooks {
     /// A hopper at `pos` is about to pick up `count` of `item`. Set `cancel` to leave the dropped stack in the world. Server-side.

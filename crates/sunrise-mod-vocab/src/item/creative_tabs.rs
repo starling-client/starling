@@ -1,5 +1,5 @@
 //! The creative catalog and build-scoped ordered tab edits.
-use crate::{Host, ItemStack, StackWriteError, Text, backend_of};
+use crate::{Host, ItemStack, ItemStackView, StackWriteError, Text, backend_of};
 use sunrise_mod_api_macros::Wire;
 
 /// The creative catalog's permission parameter, not permission to use any item.
@@ -119,7 +119,8 @@ impl CreativeModeTabs {
 
 /// One of a tab's ordered item lists.
 // exhaustive: these are the two collections the event edits
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Wire)]
+// no wire: selects one list of the borrowed creative tab output.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CreativeTabList {
     /// Stacks displayed in the tab itself.
     Parent,
@@ -129,7 +130,8 @@ pub enum CreativeTabList {
 
 /// Which lists an edit targets (`CreativeModeTab.TabVisibility`).
 // exhaustive: both, or one of the only two lists
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Wire)]
+// no wire: selects edits on the borrowed creative tab output.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CreativeTabVisibility {
     /// Edit the parent list only.
     Parent,
@@ -141,7 +143,8 @@ pub enum CreativeTabVisibility {
 
 /// Where to put an inserted stack, independently in each target list.
 // exhaustive: all four positions allowed by the build event
-#[derive(Clone, Debug, Wire)]
+// no wire: describes an insertion into the borrowed creative tab output.
+#[derive(Clone, Debug)]
 pub enum CreativeTabPlacement {
     /// Append at the end.
     Last,
@@ -153,33 +156,14 @@ pub enum CreativeTabPlacement {
     After(ItemStack),
 }
 
-/// Backend request for one edit, with the unconverted API stack. The editor
-/// owns count and component comparison for this callback, not a world write.
-// hidden: this is the generated backend request; mods use CreativeTabEdit.
-// exhaustive: both backends dispatch the closed set of insert and remove requests.
-#[doc(hidden)]
-#[derive(Clone, Debug, Wire)]
-pub enum CreativeTabChange {
-    Insert {
-        placement: CreativeTabPlacement,
-        stack: ItemStack,
-        visibility: CreativeTabVisibility,
-    },
-    Remove {
-        stack: ItemStack,
-        visibility: CreativeTabVisibility,
-    },
-}
-
-/// Why a read or edit of the current tab was refused.
+/// Why an operation on the current tab's output was refused.
+// no wire: reports a refusal on the borrowed creative tab output.
 #[non_exhaustive]
-#[derive(Clone, Debug, PartialEq, Eq, Wire)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CreativeTabEditError {
-    /// This tab's build event is no longer active on the supplied Host.
-    Stale,
     /// An inserted stack must have count one.
     Count,
-    /// A stack could not be resolved in this world.
+    /// An input stack or an entry could not be represented in this build.
     Stack(StackWriteError),
     /// The target list already contains the inserted stack, ignoring count.
     Duplicate(CreativeTabList),
@@ -193,91 +177,51 @@ impl From<StackWriteError> for CreativeTabEditError {
     }
 }
 
-impl crate::NoBackend for CreativeTabEditError {
-    fn no_backend() -> Self {
-        Self::Stale
-    }
-}
-
-/// Edit access for the tab currently running `build_creative_mode_tab_contents`.
-/// It works only during that tab's event on its originating logical side.
-// exhaustive: its private identity cannot be built by mods
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Wire)]
-pub struct CreativeTabEdit(u64);
-
-impl CreativeTabEdit {
-    pub(crate) fn of(id: u64) -> Self {
-        Self(id)
-    }
-
-    /// Read the current ordered entries, including edits from earlier listeners.
-    pub fn entries(
-        self,
-        host: &dyn Host,
+/// The ordered parent and search lists for a single creative mode tab build.
+/// [`crate::BuildCreativeModeTabContentsEvent::output`] lends this editor while the
+/// listener runs. Later listeners see the edits; the editor cannot be saved for later.
+///
+/// ```compile_fail
+/// use mod_api::{BuildCreativeModeTabContentsEvent, CreativeTabOutput};
+/// fn keep_editor(event: &mut BuildCreativeModeTabContentsEvent<'_>) -> &'static mut dyn CreativeTabOutput {
+///     event.output
+/// }
+/// ```
+// no wire: borrows the live tab build and lends its entries in the current callback.
+pub trait CreativeTabOutput {
+    /// Visit the current entries of one list in order, including earlier listeners' edits.
+    /// Reading an entry's item, count or damage does not copy its components. To keep an
+    /// entry or inspect its components, call [`ItemStackView::project`]. If an entry cannot
+    /// be lent, this returns its error without visiting the remaining entries.
+    fn entries(
+        &self,
         list: CreativeTabList,
-    ) -> Result<Vec<ItemStack>, CreativeTabEditError> {
-        backend_of(host)
-            .ok_or(CreativeTabEditError::Stale)?
-            .creative_tab_entries(self, list)
-    }
+        visit: &mut dyn FnMut(ItemStackView<'_>),
+    ) -> Result<(), CreativeTabEditError>;
 
-    /// Insert a count-one stack. Duplicate and anchor checks use exact item/components.
-    pub fn insert(
-        self,
-        host: &dyn Host,
+    /// Insert a count-one stack. Checks the anchor and rejects duplicates by exact item and
+    /// components, ignoring count. When editing both lists, a search error leaves a successful
+    /// parent insertion in place.
+    fn insert(
+        &mut self,
         placement: CreativeTabPlacement,
         stack: ItemStack,
         visibility: CreativeTabVisibility,
-    ) -> Result<(), CreativeTabEditError> {
-        backend_of(host)
-            .ok_or(CreativeTabEditError::Stale)?
-            .creative_tab_change(
-                self,
-                CreativeTabChange::Insert {
-                    placement,
-                    stack,
-                    visibility,
-                },
-            )
-    }
+    ) -> Result<(), CreativeTabEditError>;
 
-    /// Remove an exact item/component match, ignoring count. Absent entries are a no-op.
-    pub fn remove(
-        self,
-        host: &dyn Host,
+    /// Remove an exact item and component match, ignoring count. An absent entry is a no-op.
+    fn remove(
+        &mut self,
         stack: &ItemStack,
         visibility: CreativeTabVisibility,
-    ) -> Result<(), CreativeTabEditError> {
-        backend_of(host)
-            .ok_or(CreativeTabEditError::Stale)?
-            .creative_tab_change(
-                self,
-                CreativeTabChange::Remove {
-                    stack: stack.clone(),
-                    visibility,
-                },
-            )
-    }
+    ) -> Result<(), CreativeTabEditError>;
 
-    /// Remove the matches in each selected list, parent first. The predicate runs in the mod.
-    pub fn remove_if(
-        self,
-        host: &dyn Host,
+    /// Remove the matches in one pass per selected list, parent first, preserving the order
+    /// of survivors. The predicate receives a borrowed entry and runs once per entry in each
+    /// list. If an entry cannot be lent, earlier removals stand and the rest are left untouched.
+    fn remove_if(
+        &mut self,
         visibility: CreativeTabVisibility,
-        mut predicate: impl FnMut(&ItemStack) -> bool,
-    ) -> Result<(), CreativeTabEditError> {
-        for (list, only) in [
-            (CreativeTabList::Parent, CreativeTabVisibility::Parent),
-            (CreativeTabList::Search, CreativeTabVisibility::Search),
-        ] {
-            if visibility == only || visibility == CreativeTabVisibility::Both {
-                for stack in self.entries(host, list)? {
-                    if predicate(&stack) {
-                        self.remove(host, &stack, only)?;
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
+        predicate: &mut dyn FnMut(ItemStackView<'_>) -> bool,
+    ) -> Result<(), CreativeTabEditError>;
 }

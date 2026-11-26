@@ -23,7 +23,7 @@ GATE = ("lint", "verify", "verify-static")
 # The events whose run uses the checked tree's own workflow file.
 OWN_DEFINITION = ("push", "pull_request")
 # The job, and the step in it that shows the job did the Rust work rather than the documentation-only path.
-RUST_STEPS = {"lint": "Lint native targets", "verify": "Test Rust core and voxel kernel correctness"}
+RUST_STEPS = {"lint": "Lint native targets and server build", "verify": "Test Rust core and voxel kernel correctness"}
 
 
 def api(path: str) -> dict:

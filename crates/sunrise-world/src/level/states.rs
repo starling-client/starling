@@ -67,6 +67,7 @@ pub struct StateTable {
     keys: HashMap<String, PropKey>,
     key_names: Vec<String>,
     by_name: HashMap<Box<str>, BlockId>,
+    growing_plant_pairs: Vec<(BlockId, BlockId)>,
 }
 
 pub fn direction_from_name(name: &str) -> Option<Direction> {
@@ -106,6 +107,7 @@ impl StateTable {
             keys: HashMap::new(),
             key_names: Vec::new(),
             by_name: HashMap::new(),
+            growing_plant_pairs: Vec::new(),
         };
         let mut index = 0;
         while index < registry.len() {
@@ -201,6 +203,22 @@ impl StateTable {
             table.blocks.push(info);
             index = end;
         }
+        table.growing_plant_pairs = Vec::with_capacity(table.blocks.len());
+        for (index, info) in table.blocks.iter().enumerate() {
+            let block = BlockId(u16::try_from(index).expect("block count fits BlockId"));
+            let head = info
+                .name
+                .strip_suffix("_plant")
+                .and_then(|name| table.by_name.get(name).copied())
+                .unwrap_or(block);
+            let body_name = format!("{}_plant", table.blocks[head.0 as usize].name);
+            let body = table
+                .by_name
+                .get(body_name.as_str())
+                .copied()
+                .unwrap_or(block);
+            table.growing_plant_pairs.push((head, body));
+        }
         Ok(table)
     }
     fn key_or_insert(&mut self, name: &str) -> PropKey {
@@ -238,6 +256,10 @@ impl StateTable {
     }
     pub fn block_by_name(&self, name: &str) -> Option<BlockId> {
         self.by_name.get(name).copied()
+    }
+    /// The growing-plant head and body for a block, or the block twice when it has no sibling.
+    pub fn growing_plant_pair(&self, block: BlockId) -> (BlockId, BlockId) {
+        self.growing_plant_pairs[block.0 as usize]
     }
     pub fn default_state(&self, block: BlockId) -> BlockStateId {
         self.info(block).default

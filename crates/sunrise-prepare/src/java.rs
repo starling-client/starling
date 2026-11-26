@@ -251,6 +251,25 @@ pub fn find_runtime(major: i64, more: &[PathBuf]) -> Result<Jdk, String> {
     find_tools(major, more, false)
 }
 
+/// Check an explicitly selected Java home, without substituting another installation.
+pub(crate) fn runtime_in(home: &Path, major: i64) -> Result<Jdk, String> {
+    let bin = std::path::absolute(home)
+        .map_err(|e| format!("{}: {e}", home.display()))?
+        .join("bin");
+    let java = executable(&bin, "java");
+    let found = tool_major(&java, "java")?;
+    if i64::from(found) < major {
+        return Err(format!(
+            "{} is Java {found}; Java {major} or newer is needed",
+            java.display()
+        ));
+    }
+    Ok(Jdk {
+        javac: executable(&bin, "javac"),
+        java,
+    })
+}
+
 fn find_tools(major: i64, more: &[PathBuf], compiler: bool) -> Result<Jdk, String> {
     let tool = if compiler { "javac" } else { "java" };
     let need = format!(

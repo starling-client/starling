@@ -14,10 +14,7 @@ impl sunrise_client::mobs::MobHooks for Game<'_> {
             return None;
         }
         let level_ref = self.level(self.dim.id())?;
-        let level = crate::game::native_level_signals::ReadLevel {
-            game: self,
-            level: level_ref,
-        };
+        let level = crate::game::native_level_signals::ReadLevel::new(self, level_ref, &self.world);
         let mut answer = None;
         if let Err(error) = sunrise_client::crash::contain(|| {
             level.native_block_path_type(
@@ -88,6 +85,25 @@ impl sunrise_client::mobs::MobHooks for Game<'_> {
             &mut cancel,
         );
         cancel
+    }
+    fn gaze_disguise(&self, observer: u32, player: &PlayerView, disguised: bool) -> bool {
+        if !mod_api::__private::listened(mod_api::HookId::GazeDisguise) {
+            return disguised;
+        }
+        let Some(epoch) = self.native_lifecycle.epoch() else {
+            return disguised;
+        };
+        let uuid = sunrise_client::lan::playerdata::ints_uuid(player.uuid);
+        let Some(player) = self.player(uuid) else {
+            return disguised;
+        };
+        let mut disguised = disguised;
+        self.native_gaze_disguise(
+            mod_api::EntityRef::new(epoch, observer),
+            player,
+            &mut disguised,
+        );
+        disguised
     }
     fn can_grief(&self, mob: u32, rule: bool) -> bool {
         self.entity_grief(mob, rule)

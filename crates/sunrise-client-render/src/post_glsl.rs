@@ -13,11 +13,13 @@
 //! object at the next two bindings, `NameSampler` becoming the combined
 //! `sampler2D(texture, sampler)` again where it is used. The vertex stage's `main` is
 //! wrapped so that clip y is negated: targets keep GL's rows (row 0 is the bottom edge),
-//! so `texCoord` reads the texel it would in vanilla.
+//! so `texCoord` reads the texel it would in vanilla. Each line keeps the file and line it came
+//! from through the rewrite (`sunrise_glsl::Expanded`), so an error names them.
 use naga::ShaderStage;
-use naga::front::glsl::{Frontend, Options};
+use naga::front::glsl::Frontend;
 use naga::valid::{Capabilities, ValidationFlags, Validator};
 use sunrise_assets::resource_source::ResourceSource;
+use sunrise_glsl::{Error, Expanded};
 
 /// One program, ready for wgpu.
 pub struct Program {
@@ -27,8 +29,29 @@ pub struct Program {
     pub blocks: Vec<(String, u32)>,
     /// Every sampler (`NameSampler`): the texture's binding; the sampler object is the next.
     pub samplers: Vec<(String, u32)>,
-    /// What each stage reads (`core_shader::bindings_read`, from the stages' validation).
+    /// What each stage reads (`sunrise_glsl::bindings_read`, from the stages' validation).
     pub read: Vec<(u32, wgpu::ShaderStages)>,
+    /// The code each stage was parsed from, with where its lines came from.
+    code: [Expanded; 2],
+}
+
+impl Program {
+    /// Where a stage declares the resource at `binding`, a stage reading it first
+    /// (`sunrise_glsl::declared_at`): what a refusal of that declaration names.
+    pub fn declared_at(&self, binding: u32) -> sunrise_glsl::Location {
+        let stages = sunrise_glsl::stages_reading(&self.read, binding);
+        sunrise_glsl::declared_at(
+            [
+                (&self.vertex, &self.code[0]),
+                (&self.fragment, &self.code[1]),
+            ],
+            [
+                stages.contains(wgpu::ShaderStages::VERTEX),
+                stages.contains(wgpu::ShaderStages::FRAGMENT),
+            ],
+            binding,
+        )
+    }
 }
 
 fn is_ident(c: u8) -> bool {
@@ -69,22 +92,26 @@ fn blank_comments(src: &str) -> String {
 pub enum Refused {
     /// A stage file missing or that can't be read (naming it).
     Source(String),
-    /// A stage's includes (`core_shader::expand_imports`).
-    Imports(String, crate::core_shader::ImportRefusal),
+    /// A stage's includes (`core_shader::expand_imports`), at the directive refused.
+    Imports(String, sunrise_glsl::ImportError),
     /// The stages declare more uniform blocks or samplers than the device can bind.
     Declares {
         what: &'static str,
         declared: usize,
         limit: usize,
     },
-    /// The translator's error.
-    Translator(String),
+    /// The translator's errors for `stage` (`ns:post/name`), with the shader stage and
+    /// positions the author wrote.
+    Translator { stage: String, errors: Vec<Error> },
 }
 
 impl std::fmt::Display for Refused {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Source(why) | Self::Translator(why) => f.write_str(why),
+            Self::Source(why) => f.write_str(why),
+            Self::Translator { stage, errors } => {
+                write!(f, "{stage}: {}", sunrise_glsl::describe(errors))
+            }
             Self::Imports(id, refusal) => write!(f, "{id}: {refusal}"),
             Self::Declares {
                 what,
@@ -99,11 +126,13 @@ impl std::fmt::Display for Refused {
 }
 
 /// How many uniform blocks and samplers a pass's two stages may declare between them: what the
-/// device binds to both (twice its per-stage limits). Checked before any analysis.
+/// device binds to both (twice its per-stage limits). Checked before any analysis. With the
+/// device's stage interface limits, which the stages' parse refuses past.
 #[derive(Clone, Copy, Debug)]
 pub struct Declarable {
     pub blocks: usize,
     pub samplers: usize,
+    pub interface: naga::front::glsl::InterfaceLimits,
 }
 
 impl Declarable {
@@ -112,6 +141,7 @@ impl Declarable {
         Self {
             blocks: 2 * limits.max_uniform_buffers_per_shader_stage as usize,
             samplers: 2 * limits.max_sampled_textures_per_shader_stage as usize,
+            interface: crate::core_shader::interface_limits(limits),
         }
     }
 }
@@ -126,8 +156,9 @@ fn read_file(root: &ResourceSource, path: &str) -> Result<Option<String>, String
 /// The stage `id` (`ns:post/name`) with its includes, through the core shaders' resolver
 /// (`core_shader::expand_imports`): the stage and each include read through the bounded
 /// reader, quoted ones from the stage's own folder, each `#moj_import` once, the expansion
-/// bounded, and a missing `polytone_globals.glsl` the built-in one.
-fn stage(root: &ResourceSource, id: &str, ext: &str) -> Result<String, Refused> {
+/// bounded, and a missing `polytone_globals.glsl` the built-in one. Each line keeps its file
+/// (`ns:shaders/post/name.fsh` for the stage) and line.
+fn stage(root: &ResourceSource, id: &str, ext: &str) -> Result<Expanded, Refused> {
     let (ns, path) = id.split_once(':').unwrap_or(("minecraft", id));
     let file = format!("assets/{ns}/shaders/{path}.{ext}");
     let text = read_file(root, &file)
@@ -141,7 +172,7 @@ fn stage(root: &ResourceSource, id: &str, ext: &str) -> Result<String, Refused> 
         let (ns, path) = file.split_once(':').ok_or(format!("bad include {file}"))?;
         read_file(root, &format!("assets/{ns}/{path}"))
     };
-    crate::core_shader::expand_imports(&text, &dir, &read)
+    crate::core_shader::expand_imports(&text, &format!("{ns}:shaders/{path}.{ext}"), &dir, &read)
         .map_err(|e| Refused::Imports(id.to_owned(), e))
 }
 
@@ -208,37 +239,37 @@ fn declarations(src: &str, max: usize) -> Result<Vec<(usize, usize, String, Stri
     Ok(out)
 }
 
-/// The source with each declaration given its binding from the shared tables.
-fn rewrite(src: &str, blocks: &[(String, u32)], samplers: &[(String, u32)]) -> String {
-    let mut out = String::new();
-    let mut pos = 0;
+/// The source with each declaration given its binding from the shared tables; the lines a
+/// sampler's adds come from its declaration's.
+fn rewrite(src: &mut Expanded, blocks: &[(String, u32)], samplers: &[(String, u32)]) {
     // `translate` bounded the keywords before.
-    for (start, end, ty, name, sampler) in declarations(src, usize::MAX).unwrap_or_default() {
-        out.push_str(&src[pos..start]);
-        pos = end;
-        if sampler {
-            let tex = samplers.iter().find(|(n, _)| *n == name).map_or(0, |s| s.1);
-            let kind = if ty == "sampler2D" { "texture2D" } else { &ty };
-            out.push_str(&format!(
-                "layout(set = 0, binding = {tex}) uniform {kind} {name}_hz_tex; \
-                 layout(set = 0, binding = {}) uniform sampler {name}_hz_smp;\n\
-                 #define {name} sampler2D({name}_hz_tex, {name}_hz_smp)\n",
-                tex + 1
-            ));
-        } else {
-            let binding = blocks.iter().find(|(n, _)| *n == name).map_or(0, |s| s.1);
-            out.push_str(&format!(
-                "layout(std140, set = 0, binding = {binding}) uniform {name}"
-            ));
-        }
-    }
-    out.push_str(&src[pos..]);
-    out
+    let declared = declarations(src.text(), usize::MAX).unwrap_or_default();
+    let edits = declared
+        .into_iter()
+        .map(|(start, end, ty, name, sampler)| {
+            let with = if sampler {
+                let tex = samplers.iter().find(|(n, _)| *n == name).map_or(0, |s| s.1);
+                let kind = if ty == "sampler2D" { "texture2D" } else { &ty };
+                format!(
+                    "layout(set = 0, binding = {tex}) uniform {kind} {name}_hz_tex; \
+                     layout(set = 0, binding = {}) uniform sampler {name}_hz_smp;\n\
+                     #define {name} sampler2D({name}_hz_tex, {name}_hz_smp)\n",
+                    tex + 1
+                )
+            } else {
+                let binding = blocks.iter().find(|(n, _)| *n == name).map_or(0, |s| s.1);
+                format!("layout(std140, set = 0, binding = {binding}) uniform {name}")
+            };
+            (start..end, with)
+        })
+        .collect();
+    src.edit(edits);
 }
 
-/// Replaces the word `main` of `void main(` with `hz_main`.
-fn wrap_main(src: &str) -> Result<String, String> {
-    let plain = blank_comments(src);
+/// Replaces the word `main` of `void main(` with `hz_main`, and calls it from a `main` of
+/// Sunrise's own.
+fn wrap_main(src: &mut Expanded) -> Result<(), String> {
+    let plain = blank_comments(src.text());
     let mut at = 0;
     while let Some(found) = plain[at..].find("main") {
         let p = at + found;
@@ -248,51 +279,63 @@ fn wrap_main(src: &str) -> Result<String, String> {
             continue;
         }
         if plain[..p].trim_end().ends_with("void") && plain[p + 4..].trim_start().starts_with('(') {
-            let mut out = String::with_capacity(src.len() + 80);
-            out.push_str(&src[..p]);
-            out.push_str("hz_main");
-            out.push_str(&src[p + 4..]);
-            out.push_str("\nvoid main() { hz_main(); gl_Position.y = -gl_Position.y; }\n");
-            return Ok(out);
+            src.edit(vec![(p..p + 4, "hz_main".to_owned())]);
+            src.wrap(
+                "",
+                "\nvoid main() { hz_main(); gl_Position.y = -gl_Position.y; }\n",
+            );
+            return Ok(());
         }
     }
     Err("no main".into())
 }
 
+/// Runs the directives of one stage, with the backend's defines every program has
+/// (`core_shader::run_directives`: a post pass has none of its own), then parses and validates
+/// it. Refusals name the stage and the authored position, without quoting the rewritten line;
+/// success includes the parsed code.
 fn parse(
     stage: ShaderStage,
-    text: &str,
-) -> Result<(naga::Module, naga::valid::ModuleInfo), String> {
+    code: &Expanded,
+    limits: naga::front::glsl::InterfaceLimits,
+) -> Result<(naga::Module, naga::valid::ModuleInfo, Expanded), Vec<Error>> {
+    let code =
+        crate::core_shader::run_directives(code, &[]).map_err(|e| vec![e.with_stage(stage)])?;
     let module = Frontend::default()
-        .parse(&Options::from(stage), text)
-        .map_err(|e| {
-            e.errors
-                .iter()
-                .map(|e| e.kind.to_string())
-                .collect::<Vec<_>>()
-                .join("; ")
-        })?;
+        .parse(&sunrise_glsl::glsl_options(stage, limits), code.text())
+        .map_err(|e| code.errors_in(stage, &e, |kind, _line| kind.to_string()))?;
     let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
         .validate(&module)
-        .map_err(|e| format!("{:?}", e.into_inner()))?;
-    Ok((module, info))
+        .map_err(|e| {
+            // The innermost span naga gives (an expression inside the function the error names).
+            let span = (e.spans().map(|(s, _)| *s))
+                .filter(|s| s.to_range().is_some())
+                .last();
+            let span = span.unwrap_or_default();
+            vec![
+                code.error_in(span, format!("{:?}", e.into_inner()))
+                    .with_stage(stage),
+            ]
+        })?;
+    Ok((module, info, code))
 }
 
 /// Translates the vertex and fragment shader a pass names (`minecraft:post/invert`), refused
-/// before any analysis when they declare more blocks or samplers than `declarable`.
+/// before any analysis when they declare more blocks or samplers than `declarable`. A parse,
+/// directive or validation refusal names the stage as well as its authored position.
 pub fn translate(
     root: &ResourceSource,
     vertex: &str,
     fragment: &str,
     declarable: Declarable,
 ) -> Result<Program, Refused> {
-    let vs = stage(root, vertex, "vsh")?;
-    let fs = stage(root, fragment, "fsh")?;
+    let mut vs = stage(root, vertex, "vsh")?;
+    let mut fs = stage(root, fragment, "fsh")?;
     // Blocks and samplers are shared by name across the stages, so both agree on a binding.
     let mut blocks: Vec<(String, u32)> = Vec::new();
     let mut names: Vec<String> = Vec::new();
     let keywords = declarable.blocks + declarable.samplers;
-    for src in [&vs, &fs] {
+    for src in [vs.text(), fs.text()] {
         let declared = declarations(src, keywords).map_err(|found| Refused::Declares {
             what: "uniform declarations",
             declared: found,
@@ -322,35 +365,62 @@ pub fn translate(
     }
     let first = blocks.len() as u32;
     let samplers: Vec<(String, u32)> = names.into_iter().zip((first..).step_by(2)).collect();
-    let vs = wrap_main(&rewrite(&vs, &blocks, &samplers)).map_err(Refused::Translator)?;
-    let fs = rewrite(&fs, &blocks, &samplers);
-    let vertex_module = parse(ShaderStage::Vertex, &format!("#version 450\n{vs}"))
-        .map_err(|e| Refused::Translator(format!("{vertex}: {e}")))?;
-    let fragment_module = parse(ShaderStage::Fragment, &format!("#version 450\n{fs}"))
-        .map_err(|e| Refused::Translator(format!("{fragment}: {e}")))?;
-    let read = crate::core_shader::bindings_read([
-        (&vertex_module.0, &vertex_module.1),
-        (&fragment_module.0, &fragment_module.1),
+    let refused = |stage: &str, errors| Refused::Translator {
+        stage: stage.to_owned(),
+        errors,
+    };
+    rewrite(&mut vs, &blocks, &samplers);
+    wrap_main(&mut vs).map_err(|message| {
+        refused(
+            vertex,
+            vec![vs.error_at(None, message).with_stage(ShaderStage::Vertex)],
+        )
+    })?;
+    rewrite(&mut fs, &blocks, &samplers);
+    vs.wrap("#version 450\n", "");
+    fs.wrap("#version 450\n", "");
+    let (vertex_module, vertex_info, vs) = parse(ShaderStage::Vertex, &vs, declarable.interface)
+        .map_err(|errors| refused(vertex, errors))?;
+    let (fragment_module, fragment_info, fs) =
+        parse(ShaderStage::Fragment, &fs, declarable.interface)
+            .map_err(|errors| refused(fragment, errors))?;
+    let read = sunrise_glsl::bindings_read([
+        (&vertex_module, &vertex_info),
+        (&fragment_module, &fragment_info),
     ]);
     Ok(Program {
-        vertex: vertex_module.0,
-        fragment: fragment_module.0,
+        vertex: vertex_module,
+        fragment: fragment_module,
         blocks,
         samplers,
         read,
+        code: [vs, fs],
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core_shader::ImportRefusal;
     use std::path::Path;
+    use sunrise_glsl::{ImportError, ImportRefusal};
+
+    /// `refusal` at `file`'s `line`, as the post shader `stage` refuses it.
+    fn imports(stage: &str, file: &str, line: u32, refusal: ImportRefusal) -> Refused {
+        Refused::Imports(
+            stage.into(),
+            ImportError {
+                file: file.into(),
+                line,
+                refusal,
+            },
+        )
+    }
 
     /// Room for any test shader's declarations.
     const ANY: Declarable = Declarable {
         blocks: 64,
         samplers: 64,
+        interface: naga::front::glsl::InterfaceLimits::WGPU_DEFAULT,
     };
 
     fn root() -> Option<std::path::PathBuf> {
@@ -376,6 +446,111 @@ mod tests {
             translate(&source, "custom:missing", "custom:post/test", ANY),
             Err(Refused::Source(_))
         ));
+    }
+
+    /// The value of `module`'s constant `name`.
+    fn constant(module: &naga::Module, name: &str) -> i64 {
+        let (_, c) = (module.constants.iter())
+            .find(|(_, c)| c.name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("no constant {name}"));
+        match module.global_expressions[c.init] {
+            naga::Expression::Literal(naga::Literal::I32(n)) => n.into(),
+            ref other => panic!("{name} is {other:?}"),
+        }
+    }
+
+    /// A post shader's `__VERSION__` is its own file's `#version` (not the `#version 450` the
+    /// translator writes for naga), in its conditions and its code, each stage its own.
+    #[test]
+    fn a_post_shader_reads_its_version() {
+        use sunrise_assets::resource_source::Resource;
+        let vsh = "#version 330\nconst int seen = __VERSION__;\n\
+            void main() { gl_Position = vec4(float(seen)); }";
+        let fsh = "#version 150\n#if __VERSION__ != 150\n#error not 150\n#endif\n\
+            #ifdef __VERSION__\nconst int seen = __VERSION__;\n#endif\n\
+            #define NEXT (__VERSION__ + 1)\nconst int next = NEXT;\n\
+            layout(location=0) out vec4 fragColor;\n\
+            void main() { fragColor = vec4(float(seen + next)); }";
+        let source = ResourceSource::indexed(std::collections::BTreeMap::from([
+            (
+                "assets/custom/shaders/post/v.vsh".into(),
+                Resource::bytes(vsh.as_bytes().to_vec()),
+            ),
+            (
+                "assets/custom/shaders/post/v.fsh".into(),
+                Resource::bytes(fsh.as_bytes().to_vec()),
+            ),
+        ]));
+        let program = translate(&source, "custom:post/v", "custom:post/v", ANY).unwrap();
+        let read = [
+            constant(&program.vertex, "seen"),
+            constant(&program.fragment, "seen"),
+            constant(&program.fragment, "next"),
+        ];
+        assert_eq!(read, [330, 150, 151]);
+    }
+
+    /// A post shader's include reads the stage's `__VERSION__` in a condition that gates another
+    /// include (pasted with every branch, then dropped by the directives), in `#elif`, in
+    /// `#ifndef` and in its code; a post stage without `#version` reads 110.
+    #[test]
+    fn a_post_shaders_include_and_a_stage_without_version_read_it() {
+        use sunrise_assets::resource_source::Resource;
+        let a = "#if __VERSION__ == 150\n#include \"scale.glsl\"\n#endif\n\
+            const int a = __VERSION__;\n\
+            #if __VERSION__ == 100\nconst int e = 1;\n#elif __VERSION__ == 150\nconst int e = 2;\n#endif\n\
+            #ifndef __VERSION__\nconst int n = 1;\n#else\nconst int n = 4;\n#endif\n";
+        let vsh = "const int seen = __VERSION__;\n\
+            void main() { gl_Position = vec4(float(seen)); }";
+        let fsh = "#version 150\n#include <custom:a.glsl>\n\
+            layout(location=0) out vec4 fragColor;\n\
+            void main() { fragColor = vec4(SCALE * float(a + e + n)); }";
+        let source = ResourceSource::indexed(std::collections::BTreeMap::from([
+            (
+                "assets/custom/shaders/post/n.vsh".into(),
+                Resource::bytes(vsh.as_bytes().to_vec()),
+            ),
+            (
+                "assets/custom/shaders/post/n.fsh".into(),
+                Resource::bytes(fsh.as_bytes().to_vec()),
+            ),
+            (
+                "assets/custom/shaders/include/a.glsl".into(),
+                Resource::bytes(a.as_bytes().to_vec()),
+            ),
+            (
+                "assets/custom/shaders/include/scale.glsl".into(),
+                Resource::bytes(b"#define SCALE 2.0\n".to_vec()),
+            ),
+        ]));
+        let program = translate(&source, "custom:post/n", "custom:post/n", ANY).unwrap();
+        let read = [
+            constant(&program.vertex, "seen"),
+            constant(&program.fragment, "a"),
+            constant(&program.fragment, "e"),
+            constant(&program.fragment, "n"),
+        ];
+        assert_eq!(read, [110, 150, 2, 4]);
+    }
+
+    /// A stage with an array too large to lay out (#4134) is the translator's refusal naming
+    /// that stage, not a panic at the next array.
+    #[test]
+    fn an_array_too_large_to_lay_out_is_refused() {
+        use sunrise_assets::resource_source::Resource;
+        let source = ResourceSource::indexed(std::collections::BTreeMap::from([
+            ("assets/custom/shaders/post/big.vsh".into(), Resource::bytes(b"#version 330\nvoid main() { gl_Position = vec4(0.0, 0.0, 0.0, 1.0); }".to_vec())),
+            ("assets/custom/shaders/post/big.fsh".into(), Resource::bytes(b"#version 330\nfloat big[0x7fffffff];\nfloat after[2];\nlayout(location=0) out vec4 fragColor;\nvoid main() { fragColor = vec4(1.0); }".to_vec())),
+        ]));
+        let Err(refused) = translate(&source, "custom:post/big", "custom:post/big", ANY) else {
+            panic!("the fragment shader's oversized array is refused");
+        };
+        let displayed = refused.to_string();
+        assert!(
+            displayed.starts_with("custom:post/big: custom:shaders/post/big.fsh:2:"),
+            "{displayed}"
+        );
+        assert!(displayed.contains(": fragment shader: "), "{displayed}");
     }
 
     /// `#moj_import`, as Polytone's wiki writes it, and its `polytone_globals.glsl` built in:
@@ -426,8 +601,10 @@ mod tests {
         assert_eq!(shipped, ["Own"]);
         assert_eq!(
             blocks(&pack("other.glsl", None)),
-            Err(Refused::Imports(
-                "p:post/a".into(),
+            Err(imports(
+                "p:post/a",
+                "p:shaders/post/a.fsh",
+                2,
                 ImportRefusal::NotFound("minecraft:shaders/include/other.glsl".into())
             ))
         );
@@ -471,8 +648,10 @@ mod tests {
         let elsewhere = translated(&quoted, &[("assets/p/shaders/include/lib/c.glsl", color)]);
         assert_eq!(
             elsewhere,
-            Err(Refused::Imports(
-                "p:post/a".into(),
+            Err(imports(
+                "p:post/a",
+                "p:shaders/post/a.fsh",
+                2,
                 ImportRefusal::NotFound("p:shaders/post/lib/c.glsl".into())
             ))
         );
@@ -481,7 +660,7 @@ mod tests {
         let pasted = |directive: &str| {
             let fsh = format!("#version 330\n{directive} <c.glsl>\n{directive} <c.glsl>\n{main}");
             let text = stage(&source(&fsh, &[(include, color)]), "p:post/a", "fsh").unwrap();
-            text.matches("const vec4 color").count()
+            text.text().matches("const vec4 color").count()
         };
         assert_eq!((pasted("#moj_import"), pasted("#include")), (1, 2));
         // A file including itself is refused when it nests too deep.
@@ -492,7 +671,12 @@ mod tests {
         );
         assert_eq!(
             cycle,
-            Err(Refused::Imports("p:post/a".into(), ImportRefusal::TooDeep))
+            Err(imports(
+                "p:post/a",
+                "minecraft:shaders/include/loop.glsl",
+                1,
+                ImportRefusal::TooDeep
+            ))
         );
         // The packs' own globals that aren't text: refused by path, not the built-in.
         let globals = "assets/minecraft/shaders/include/polytone_globals.glsl";
@@ -503,7 +687,8 @@ mod tests {
         let unreadable = translated(reads, &[(globals, &[0xff, 0xfe])]);
         assert!(matches!(
             unreadable,
-            Err(Refused::Imports(_, ImportRefusal::Unreadable(why))) if why.contains(globals)
+            Err(Refused::Imports(_, ImportError { refusal: ImportRefusal::Unreadable(why), .. }))
+                if why.contains(globals)
         ));
     }
 
@@ -517,6 +702,7 @@ mod tests {
         let declarable = Declarable {
             blocks: 24,
             samplers: 4,
+            interface: naga::front::glsl::InterfaceLimits::WGPU_DEFAULT,
         };
         let translated = |blocks: usize, samplers: usize| {
             let declared: String = (0..blocks)
@@ -611,15 +797,180 @@ mod tests {
         }
     }
 
+    /// `GlslCompiler` compiles a post pass's stages, as every program, with
+    /// `RENDERPEARL_DEPTH_IS_ZERO_TO_ONE` on a backend whose depth runs from 0 to 1: of two
+    /// blocks the fragment stage declares, it reads the one its `#ifdef` keeps, in either stage.
+    #[test]
+    fn a_post_shader_has_the_zero_to_one_depth_define() {
+        use sunrise_assets::resource_source::Resource;
+        let branch = |out: &str| {
+            format!(
+                "layout(std140) uniform ZeroToOne {{\n    vec4 zeroToOne;\n}};\n\
+                 layout(std140) uniform MinusOneToOne {{\n    vec4 minusOneToOne;\n}};\n\
+                 {out}\nvoid main() {{\n\
+                 #ifdef RENDERPEARL_DEPTH_IS_ZERO_TO_ONE\n    v = zeroToOne;\n\
+                 #else\n    v = minusOneToOne;\n#endif\n"
+            )
+        };
+        let vsh = format!(
+            "#version 330\n{}    gl_Position = vec4(0.0, 0.0, 0.0, 1.0);\n}}",
+            branch("layout(location = 0) out vec4 v;")
+        );
+        let fsh = format!(
+            "#version 330\nlayout(location = 0) in vec4 w;\nlayout(location = 0) out vec4 fragColor;\n{}    fragColor = v + w;\n}}",
+            branch("vec4 v;")
+        );
+        let source = ResourceSource::indexed(std::collections::BTreeMap::from([
+            (
+                "assets/p/shaders/post/a.vsh".into(),
+                Resource::bytes(vsh.into_bytes()),
+            ),
+            (
+                "assets/p/shaders/post/a.fsh".into(),
+                Resource::bytes(fsh.into_bytes()),
+            ),
+        ]));
+        let program = translate(&source, "p:post/a", "p:post/a", ANY).unwrap();
+        let binding = |name: &str| program.blocks.iter().find(|(n, _)| n == name).unwrap().1;
+        let reading = |name: &str| sunrise_glsl::stages_reading(&program.read, binding(name));
+        assert_eq!(reading("ZeroToOne"), wgpu::ShaderStages::VERTEX_FRAGMENT);
+        assert_eq!(reading("MinusOneToOne"), wgpu::ShaderStages::NONE);
+    }
+
     #[test]
     fn sampler_and_block_bindings() {
         let src = "layout(std140) uniform A {\n float x;\n};\nuniform sampler2D InSampler; // c\nvoid main(){}\n";
         let d = declarations(src, usize::MAX).unwrap();
         assert_eq!(d.len(), 2);
-        let out = rewrite(src, &[("A".into(), 0)], &[("InSampler".into(), 1)]);
+        let expanded = |text: &str| {
+            crate::core_shader::expand_imports(
+                text,
+                "p:shaders/post/a.fsh",
+                "p:shaders/post/",
+                &|_| Ok(None),
+            )
+            .unwrap()
+        };
+        let mut out = expanded(src);
+        rewrite(&mut out, &[("A".into(), 0)], &[("InSampler".into(), 1)]);
+        let out = out.text();
         assert!(out.contains("layout(std140, set = 0, binding = 0) uniform A {"));
         assert!(out.contains("binding = 1) uniform texture2D InSampler_hz_tex;"));
         assert!(out.contains("binding = 2) uniform sampler InSampler_hz_smp;"));
-        assert!(wrap_main("void main() {}").unwrap().contains("hz_main"));
+        let mut main = expanded("void main() {}");
+        wrap_main(&mut main).unwrap();
+        assert!(main.text().contains("hz_main"));
+    }
+
+    /// An error in a file an included file includes names that file and the line it is on, past
+    /// the lines a sampler's rewrite adds before it, in the vertex stage (whose `main` is
+    /// wrapped) and in the fragment stage; one in the stage's own file names it.
+    #[test]
+    fn an_error_in_a_nested_include_names_its_file_and_line() {
+        use sunrise_assets::resource_source::Resource;
+        let source = |vsh: &str, fsh: &str| {
+            ResourceSource::indexed(std::collections::BTreeMap::from([
+                (
+                    "assets/p/shaders/post/a.vsh".into(),
+                    Resource::bytes(vsh.as_bytes().to_vec()),
+                ),
+                (
+                    "assets/p/shaders/post/a.fsh".into(),
+                    Resource::bytes(fsh.as_bytes().to_vec()),
+                ),
+                (
+                    "assets/p/shaders/include/outer.glsl".into(),
+                    Resource::bytes(b"// outer\n#include \"inner/deep.glsl\"\n".to_vec()),
+                ),
+                (
+                    "assets/p/shaders/include/inner/deep.glsl".into(),
+                    Resource::bytes(
+                        b"uniform sampler2D DeepSampler;\n/* two\n   lines */\nvec4 deep() { return broken; }\n"
+                            .to_vec(),
+                    ),
+                ),
+            ]))
+        };
+        let vsh = "#version 330\nvoid main() { gl_Position = vec4(0.0, 0.0, 0.0, 1.0); }\n";
+        let fsh = "#version 330\nuniform sampler2D InSampler;\n#include <p:outer.glsl>\n\
+            layout(location=0) out vec4 fragColor;\nvoid main() { fragColor = deep(); }\n";
+        let located = |refused: Result<Program, Refused>| match refused {
+            Err(Refused::Translator { stage, errors }) => {
+                let at = errors.iter().map(|e| (e.file.clone(), e.line)).collect();
+                (stage, at)
+            }
+            other => panic!("not the translator's refusal: {:?}", other.err()),
+        };
+        let deep = ("p:shaders/include/inner/deep.glsl".to_owned(), 4);
+        let fragment = translate(&source(vsh, fsh), "p:post/a", "p:post/a", ANY);
+        assert_eq!(
+            located(fragment),
+            ("p:post/a".to_owned(), vec![deep.clone()])
+        );
+        let vertex = "#version 330\n#include <p:outer.glsl>\n\
+            void main() { gl_Position = deep(); }\n";
+        let fsh_ok = "#version 330\nlayout(location=0) out vec4 fragColor;\n\
+            void main() { fragColor = vec4(1.0); }\n";
+        let refused = translate(&source(vertex, fsh_ok), "p:post/a", "p:post/a", ANY);
+        assert_eq!(located(refused), ("p:post/a".to_owned(), vec![deep]));
+        let own = "#version 330\nuniform sampler2D InSampler;\nlayout(location=0) out vec4 fragColor;\n\
+            void main() { fragColor = missing; }\n";
+        let refused = translate(&source(vsh, own), "p:post/a", "p:post/a", ANY);
+        assert_eq!(
+            located(refused),
+            (
+                "p:post/a".to_owned(),
+                vec![("p:shaders/post/a.fsh".to_owned(), 4)]
+            )
+        );
+    }
+
+    /// An error naga's validator finds (the stage parses) in a file an include includes names
+    /// that file and the line its span starts on.
+    #[test]
+    fn a_validation_error_in_a_nested_include_names_its_file_and_line() {
+        use sunrise_assets::resource_source::Resource;
+        let files = [
+            (
+                "assets/p/shaders/post/a.vsh",
+                "#version 330\nvoid main() { gl_Position = vec4(0.0, 0.0, 0.0, 1.0); }\n",
+            ),
+            (
+                "assets/p/shaders/post/a.fsh",
+                "#version 330\n#include <p:outer.glsl>\nlayout(location=0) out vec4 fragColor;\n\
+                 void main() { fragColor = vec4(pick()); }\n",
+            ),
+            (
+                "assets/p/shaders/include/outer.glsl",
+                "#include \"lib/pick.glsl\"\n",
+            ),
+            (
+                "assets/p/shaders/include/lib/pick.glsl",
+                "// pick\nfloat pick() {\n    float a[2] = float[2](1.0, 2.0);\n    return a[5];\n}\n",
+            ),
+        ];
+        let source = ResourceSource::indexed(
+            (files.iter())
+                .map(|(p, t)| ((*p).to_owned(), Resource::bytes(t.as_bytes().to_vec())))
+                .collect(),
+        );
+        let Err(Refused::Translator { stage, errors }) =
+            translate(&source, "p:post/a", "p:post/a", ANY)
+        else {
+            panic!("not the translator's refusal");
+        };
+        assert_eq!(stage, "p:post/a");
+        let located: Vec<_> = errors
+            .iter()
+            .map(|e| (e.file.as_str(), e.line, e.stage))
+            .collect();
+        assert_eq!(
+            located,
+            [(
+                "p:shaders/include/lib/pick.glsl",
+                4,
+                Some(ShaderStage::Fragment)
+            )]
+        );
     }
 }

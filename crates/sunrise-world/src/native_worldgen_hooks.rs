@@ -4,7 +4,7 @@
 use crate::{
     native_load_context::WorldgenContext,
     registry::{BlockRegistry, BlockStateId},
-    worldgen::structure::Rotation,
+    worldgen::structure::{Mirror, Rotation},
 };
 use std::sync::{Arc, OnceLock, PoisonError, RwLock};
 
@@ -89,6 +89,9 @@ pub struct NativeWorldgenHooks {
     /// `below_trunk_provider`.
     #[allow(clippy::option_option)]
     pub on_tree_grow: fn(&mut dyn TreeGrowAccess, [i32; 3]) -> Option<Option<BlockStateId>>,
+    /// `mirror`: the state a template places at `pos` for `state` mirrored by `mirror`,
+    /// starting from `table`, the game's own mirrored state.
+    pub mirror: fn(BlockStateId, [i32; 3], Mirror, BlockStateId) -> BlockStateId,
     /// `rotate`: the state a template places at `pos` for `state`, already mirrored, turned
     /// by `rotation`, starting from `table`, the game's own turned state.
     pub rotate: fn(BlockStateId, [i32; 3], Rotation, BlockStateId) -> BlockStateId,
@@ -138,6 +141,20 @@ pub(crate) fn on_tree_grow(
     pos: [i32; 3],
 ) -> Option<Option<BlockStateId>> {
     (HOOKS.get()?.on_tree_grow)(access, pos)
+}
+
+/// The state the parts of `state`'s block place at `pos` for `state` mirrored by `mirror`,
+/// starting from the game's own `table`; `table` before the hooks are installed.
+pub(crate) fn mirror(
+    state: BlockStateId,
+    pos: [i32; 3],
+    mirror: Mirror,
+    table: BlockStateId,
+) -> BlockStateId {
+    match HOOKS.get() {
+        Some(hooks) => (hooks.mirror)(state, pos, mirror, table),
+        None => table,
+    }
 }
 
 /// The state the parts of `state`'s block place at `pos` for `state` turned by `rotation`,

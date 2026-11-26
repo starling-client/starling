@@ -66,6 +66,7 @@ fn block_entity_data_received_after_merge() {
                 ]
                 .into(),
                 vec!["notice:counter".into(), "notice:silent".into()],
+                ["notice:counter".into(), "notice:silent".into()],
             ),
         )
         .unwrap();

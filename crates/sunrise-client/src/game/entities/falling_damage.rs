@@ -31,7 +31,7 @@ impl Game<'_> {
                 };
                 // FallingBlockEntity.causeFallDamage selects the entities first, then hurts
                 // them in order. Death listeners can spawn or remove rows between hits.
-                let bounds = falling_block::bounds(block.position);
+                let bounds = block.bounds();
                 let victims: Vec<_> = self
                     .mobs
                     .iter()
@@ -49,11 +49,9 @@ impl Game<'_> {
                     if self.mobs[index].removed {
                         continue;
                     }
-                    let plan = self.prepare_knockback_credit(
-                        self.mobs[index].id as i32,
-                        None,
-                        self.combat.attack(),
-                    );
+                    let mob_id = self.mobs[index].id;
+                    let plan =
+                        self.prepare_knockback_credit(mob_id as i32, None, self.combat.attack());
                     let mut credit = plan.lend(&mut self.last_hurt_by_player);
                     self.mobs[index].damage(
                         crate::game::entity::damage_level_of!(self, &attack, &mut credit, None),
@@ -73,9 +71,9 @@ impl Game<'_> {
                 } else {
                     "minecraft:falling_block"
                 };
-                self.falling_hurt_player(block.id, block.position, impact.amount, kind);
+                let bounds = block.bounds();
+                self.falling_hurt_player(block.id, block.position, bounds, impact.amount, kind);
                 if let Some(host) = self.lan.as_ref() {
-                    let bounds = falling_block::bounds(block.position);
                     let conns = host
                         .hub
                         .guests
@@ -92,7 +90,13 @@ impl Game<'_> {
                         .collect::<Vec<_>>();
                     for conn in conns {
                         self.guest_hit_by(conn, |g| {
-                            g.falling_hurt_player(block.id, block.position, impact.amount, kind)
+                            g.falling_hurt_player(
+                                block.id,
+                                block.position,
+                                bounds,
+                                impact.amount,
+                                kind,
+                            )
                         });
                     }
                 }
@@ -118,7 +122,17 @@ impl Game<'_> {
 
     /// `FallingBlockEntity.tick`: finish a landing, including the placed block
     /// entity and the carried `TileEntityData` applied through loadWithComponents.
-    pub(super) fn finish_falling_block(&mut self, block: FallingBlock, pos: [i32; 3]) {
+    pub(super) fn finish_falling_block(
+        &mut self,
+        block: FallingBlock,
+        pos: [i32; 3],
+    ) -> Option<FallingBlock> {
+        // A moving piston's cell skips the place, drop and discard branch
+        // before cancelDrop is even read: the block stays and is pushed on.
+        let at = self.world.block(pos[0], pos[1], pos[2]);
+        if &*self.res.facts().get(at).name == "minecraft:moving_piston" {
+            return Some(block);
+        }
         let name = self.res.facts().get(block.state).name.clone();
         let anvil = name.ends_with("anvil");
         // Fallable.onBrokenAfterFall: the anvil's, the pointed dripstone's and
@@ -158,7 +172,7 @@ impl Game<'_> {
                     state: None,
                 });
             }
-            return;
+            return None;
         }
         let landing = self.with_level(|b, level, ticks| {
             b.falling_block_landed(
@@ -169,6 +183,9 @@ impl Game<'_> {
                 false,
             )
         });
+        if landing == Landing::Continue {
+            return Some(block);
+        }
         if let Landing::Placed(state) = landing {
             let name = self.res.facts().get(state).name.clone();
             // LevelChunk.setBlockState creates the new block entity even when
@@ -229,14 +246,25 @@ impl Game<'_> {
             // came to rest (on top of a turtle egg, not inside its cell).
             self.drop_falling_block(block.state, block.position);
         }
+        None
     }
-    fn falling_hurt_player(&mut self, entity: u32, position: Vec3, amount: f32, kind: &str) {
+    /// The falling block `entity` at `position`, whose box is `bounds`, hits the acting player.
+    fn falling_hurt_player(
+        &mut self,
+        entity: u32,
+        position: Vec3,
+        bounds: sunrise_core::geometry::Aabb,
+        amount: f32,
+        kind: &str,
+    ) {
         if self.creative || self.spectator() {
             return;
         }
-        if self.player.as_ref().is_none_or(|p| {
-            p.health.dead_or_dying() || !falling_block::bounds(position).intersects(p.bounds())
-        }) {
+        if self
+            .player
+            .as_ref()
+            .is_none_or(|p| p.health.dead_or_dying() || !bounds.intersects(p.bounds()))
+        {
             return;
         }
         let Some(id) = self.health_resources.damage.id(kind) else {
@@ -373,7 +401,13 @@ mod tests {
         *log.lock().unwrap() = Log::default();
     }
     fn hit(game: &mut Game<'_>) {
-        game.falling_hurt_player(241, Vec3::ZERO, 8.0, ANVIL);
+        game.falling_hurt_player(
+            241,
+            Vec3::ZERO,
+            sunrise_client::falling_block::bounds(Vec3::ZERO),
+            8.0,
+            ANVIL,
+        );
     }
     fn health(game: &Game<'_>) -> f32 {
         game.player.as_ref().unwrap().health.health()
@@ -472,4 +506,4 @@ mod tests {
 
 #[cfg(test)]
 #[path = "falling_damage/helmet_tests.rs"]
-mod helmet_tests;
+pub(in crate::game) mod helmet_tests;

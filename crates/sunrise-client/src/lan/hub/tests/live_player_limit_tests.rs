@@ -9,7 +9,12 @@ const ADDRESS: &str = "127.0.0.1:25565";
 fn login_limit(hub: &mut Hub, rx: &std::sync::mpsc::Receiver<crate::lan::Out>) -> i32 {
     while rx.try_recv().is_ok() {}
     hub.guests.update(0, |g| g.placed = false);
-    with_input_context(|ctx| hub.place_new_player(1, ctx));
+    with_input_context(|ctx| {
+        if let Some(i) = hub.begin_player_join(1, ctx) {
+            hub.send_commands(i, hub.commands_packet(hub.guests[i].permission));
+            hub.finish_player_join(i, ctx);
+        }
+    });
     let mut limit = None;
     while let Ok(crate::lan::Out::Packet(body)) = rx.try_recv() {
         let mut reader = sunrise_protocol::buf::Reader::new(&body);

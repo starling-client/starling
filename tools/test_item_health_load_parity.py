@@ -6,6 +6,9 @@ from pathlib import Path
 import subprocess
 import sys
 
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -29,7 +32,7 @@ def main():
     if not (folder / 'vanilla.jsonl').exists():
         return result or 1
     captures = {}
-    from item_health_load_corpus import DIAGNOSTIC_RECORDS
+    from tools.item_health_load_corpus import DIAGNOSTIC_RECORDS
     for side, log in [('java', 'java.log')] + ([] if args.reference_only else [('rust', 'rust.log')]):
         rows = []
         for line in (folder / log).read_text().splitlines():

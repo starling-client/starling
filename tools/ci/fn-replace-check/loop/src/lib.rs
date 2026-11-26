@@ -26,15 +26,8 @@ struct Counter;
 impl mod_api::BlockPart for Counter {}
 #[mod_api::sunrise_part]
 impl mod_api::BlockEntityPart for Counter {
-    fn block_entity_ticks(
-        &self,
-        _: &dyn mod_api::Host,
-        event: &mut mod_api::BlockEntityTicksEvent<'_>,
-    ) {
-        if event.block == COUNTER {
-            event.ticks = true;
-        }
-    }
+    // The loop slots do the observable work; subscribing here binds the resident ticker.
+    fn block_entity_tick(&self, _: &mut mod_api::BlockEntityTickEvent<'_>) {}
 }
 
 /// Called by the helpers: a helper may use its mod's crate.

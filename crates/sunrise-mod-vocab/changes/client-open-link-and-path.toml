@@ -1,0 +1,3 @@
+ids = ["method:prelude::ClientInputClientHost::confirm_link", "method:prelude::ClientInputClientHost::open_path", "type:OpenLinkError", "type:OpenPathError"]
+why = "A client mod opens a web link through the player's confirmation (ConfirmLinkScreen.confirmLinkNow, http and https only as Util.parseAndValidateUntrustedUri accepts them, with `trusted` as vanilla's argument) and hands a folder or file to the desktop's handler (Blaze3D.openPath), as vanilla opens the pack folder and the report folder and NeoForge's mod list opens a mod's URL and file. Neither needs an input event; each returns an error instead of failing."
+migrate = "Additive: nothing to change."

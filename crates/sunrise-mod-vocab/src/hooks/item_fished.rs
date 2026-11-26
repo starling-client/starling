@@ -20,7 +20,7 @@ pub trait Hooks {
     #[hook(
         dispatch = "flat",
         side = "server",
-        version = 3,
+        version = 4,
         contract = "collect",
         out = "drops",
         neoforge = "ItemFishedEvent",

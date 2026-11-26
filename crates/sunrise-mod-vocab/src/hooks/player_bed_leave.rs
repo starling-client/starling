@@ -1,5 +1,4 @@
 //! The `player_bed_leave` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0279
 
 pub trait Hooks {
     /// `PlayerWakeUpEvent`: a server player is getting out of the bed at

@@ -2,7 +2,9 @@
 """Compare accepted merchant result takes and crafted statistics through real owner clicks."""
 import sys
 from pathlib import Path
-import test_command_exec_parity
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_command_exec_parity
 
 if __name__ == '__main__':
     sys.argv += ['--merchant-crafted-fixture']

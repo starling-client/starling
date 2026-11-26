@@ -81,7 +81,7 @@ impl Deref for SectionLists {
 pub struct RendererMemorySnapshot {
     device: wgpu::Device,
     vertices: [u64; 2],
-    cpu: [(&'static str, usize); 4],
+    cpu: [(&'static str, usize); 3],
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -97,7 +97,7 @@ impl RendererMemorySnapshot {
     }
 
     /// Heap bytes of renderer per-section bookkeeping, by name.
-    pub fn cpu_census(&self) -> [(&'static str, usize); 4] {
+    pub fn cpu_census(&self) -> [(&'static str, usize); 3] {
         self.cpu
     }
 
@@ -164,6 +164,31 @@ impl Renderer {
     pub fn packed_layout(&self) -> [bool; 2] {
         [self.packed_quads, crate::lod::packed::far_packing()]
     }
+    /// Whether the section arena's pages are storage too (`follow_arena_layout`), and the
+    /// vertices a page of it holds (`Arena::page_limit`).
+    pub fn section_arena_pages(&self) -> (bool, u64) {
+        (self.arena_storage, self.arena.page_vertices())
+    }
+    /// Whether translucent quads have an arena of their own (`follow_translucent_layout`).
+    pub fn translucent_split(&self) -> bool {
+        self.translucent_arena.is_some()
+    }
+    /// Whether the section arena's pages, and the translucent arena's where it has one, have a
+    /// normal stream (`follow_arena_layout`), and the bytes of the section arena's pages.
+    pub fn section_arena_normals(&self) -> (bool, bool, u64) {
+        let translucent = self.translucent_arena.as_ref();
+        (
+            self.arena.has_normals(),
+            translucent.is_some_and(|a| a.has_normals()),
+            self.arena.bytes(),
+        )
+    }
+    /// Whether the section arena keeps its quads' sources for a `shaders/` pack's terrain drawn
+    /// flat or per section reading the pages (`keep_pack_sources`): with none, its pages have no
+    /// sidecars.
+    pub fn keeps_pack_sources(&self) -> bool {
+        self.arena.sources_read()
+    }
     /// Bytes of the arena the resident chunk sections hold, and of the one far
     /// tiles hold: the same split `gpu_census` reports, for `status`, so the
     /// compact layouts can be seen working.
@@ -220,8 +245,8 @@ impl Renderer {
         allocator_memory(&self.device)
     }
     /// Heap bytes of the renderer's per-section bookkeeping (`sunrise-ctl memory`):
-    /// resident sections, far tiles, block entities and light sources by section.
-    pub fn cpu_census(&self) -> [(&'static str, usize); 4] {
+    /// resident sections, far tiles and block entities by section.
+    pub fn cpu_census(&self) -> [(&'static str, usize); 3] {
         [
             ("resident_sections", self.sections.heap_bytes()),
             (
@@ -230,7 +255,6 @@ impl Renderer {
                     * (size_of::<crate::lod::TileKey>() + size_of::<lod::Tile>() + 1),
             ),
             ("block_entities", self.block_entities.heap_bytes()),
-            ("light_sources", self.light_blocks.heap_bytes()),
         ]
     }
 }

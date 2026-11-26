@@ -10,7 +10,7 @@ use crate::world::World;
 use sunrise_world::registry::BlockStateId;
 
 /// A run of one column, resolved: blocks `y0..=y1` of column (x, z) set to
-/// `state` where filter `only` (if any) passes the block there.
+/// `state` where filter `only` (if any) passes the block there. Filter IDs may be sparse.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Run {
     pub x: i32,
@@ -18,7 +18,7 @@ pub struct Run {
     pub y0: i32,
     pub y1: i32,
     pub state: u32,
-    pub only: Option<u16>,
+    pub only: Option<usize>,
 }
 
 /// What an edit changed.
@@ -40,6 +40,7 @@ pub struct BulkPublication {
 }
 
 /// Per state answers, worked out once each.
+#[derive(Default)]
 struct Memo(Vec<u8>);
 impl Memo {
     #[inline]
@@ -57,9 +58,8 @@ impl Memo {
 
 impl World {
     /// Make `runs` in order, each seeing the changes of those before it.
-    /// `matches(filter, state)` says whether a filter passes a state, and
-    /// `tracked(state)` whether its changes are reported; each is asked once
-    /// per state.
+    /// `matches(filter, state)` is asked once per filter and state, and
+    /// `tracked(state)` once per state to decide whether its changes are reported.
     /// Runs in unloaded chunks and the parts of runs outside each chunk's own column
     /// (`Chunk::layout`) are left out.
     ///
@@ -73,7 +73,7 @@ impl World {
     pub fn edit_runs(
         &mut self,
         runs: &[Run],
-        matches: impl FnMut(u16, u32) -> bool,
+        matches: impl FnMut(usize, u32) -> bool,
         tracked: impl FnMut(u32) -> bool,
     ) -> Outcome {
         self.write_runs::<false>(runs, matches, tracked, |_, _, _, _, _| {})
@@ -86,7 +86,7 @@ impl World {
     pub fn stage_edit_runs(
         &mut self,
         runs: &[Run],
-        matches: impl FnMut(u16, u32) -> bool,
+        matches: impl FnMut(usize, u32) -> bool,
         tracked: impl FnMut(u32) -> bool,
         keep: impl FnMut((i32, i32, i32), u32, u32, bool, Option<u64>),
     ) -> (Outcome, BulkPublication) {
@@ -96,7 +96,7 @@ impl World {
     fn write_runs<const STAGED: bool>(
         &mut self,
         runs: &[Run],
-        mut matches: impl FnMut(u16, u32) -> bool,
+        mut matches: impl FnMut(usize, u32) -> bool,
         mut tracked: impl FnMut(u32) -> bool,
         mut keep: impl FnMut((i32, i32, i32), u32, u32, bool, Option<u64>),
     ) -> (Outcome, BulkPublication) {
@@ -118,8 +118,8 @@ impl World {
                 })
                 .push(i as u32);
         }
-        let mut filter_memo: Vec<Memo> = Vec::new();
-        let mut tracked_memo = Memo(Vec::new());
+        let mut filter_memo: FxHashMap<usize, Memo> = FxHashMap::default();
+        let mut tracked_memo = Memo::default();
         let mut values: Vec<Option<Box<[u32; 4096]>>> = Vec::new();
         let mut changed: Vec<bool> = Vec::new();
         let mut group_clears = Vec::new();
@@ -140,6 +140,10 @@ impl World {
                 let r = runs[i as usize];
                 let (lx, lz) = (r.x & 15, r.z & 15);
                 let (y0, y1) = (r.y0.max(min_y), r.y1.min(max_y - 1));
+                if y0 > y1 {
+                    continue;
+                }
+                let mut filter = r.only.map(|id| (id, filter_memo.entry(id).or_default()));
                 let mut y = y0;
                 while y <= y1 {
                     let s = ((y - min_y) >> 4) as usize;
@@ -155,14 +159,10 @@ impl World {
                         if old == r.state {
                             continue;
                         }
-                        if let Some(f) = r.only {
-                            let f = f as usize;
-                            if filter_memo.len() <= f {
-                                filter_memo.resize_with(f + 1, || Memo(Vec::new()));
-                            }
-                            if !filter_memo[f].get(old, |s| matches(f as u16, s)) {
-                                continue;
-                            }
+                        if let Some((id, memo)) = &mut filter
+                            && !memo.get(old, |state| matches(*id, state))
+                        {
+                            continue;
                         }
                         let pos = (r.x, yy, r.z);
                         let group = has_groups
@@ -268,7 +268,6 @@ mod tests {
     use super::*;
     use crate::chunk::Chunk;
     use std::sync::Arc;
-    use sunrise_world::registry::BlockStateId;
 
     fn world() -> World {
         let mut w = World::new(BlockStateId(0), 0);
@@ -290,7 +289,7 @@ mod tests {
         w.block_log = Some(Vec::new());
         w
     }
-    fn run(x: i32, z: i32, y0: i32, y1: i32, state: u32, only: Option<u16>) -> Run {
+    fn run(x: i32, z: i32, y0: i32, y1: i32, state: u32, only: Option<usize>) -> Run {
         Run {
             x,
             z,
@@ -329,6 +328,31 @@ mod tests {
         assert!(w.dirty_sections.contains(&(1, 4, 1)));
         // the per-block log is left to the blocks set one at a time
         assert!(w.block_log.as_ref().unwrap().is_empty());
+    }
+
+    #[test]
+    fn sparse_filter_ids_match_and_memoize_independently() {
+        let mut w = World::new(BlockStateId(0), 0);
+        w.chunks.insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        let runs = [
+            run(0, 0, 0, 1, 1, Some(0)),
+            run(1, 0, 0, 1, 1, Some(usize::MAX)),
+            run(2, 0, 0, 1, 1, Some(usize::MAX)),
+        ];
+        let mut asked = Vec::new();
+        let out = w.edit_runs(
+            &runs,
+            |id, state| {
+                asked.push((id, state));
+                id == usize::MAX && state == 0
+            },
+            |_| false,
+        );
+        assert_eq!(asked, [(0, 0), (usize::MAX, 0)]);
+        assert_eq!(out.changed, 4);
+        assert_eq!(w.block(0, 0, 0), BlockStateId(0));
+        assert_eq!(w.block(1, 0, 0), BlockStateId(1));
+        assert_eq!(w.block(2, 1, 0), BlockStateId(1));
     }
 
     #[test]

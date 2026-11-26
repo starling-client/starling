@@ -15,13 +15,13 @@ use crate::game::transactions::decision::{
     self, ActionTarget, GameHost, Identity, InvalidReason, MenuId, Outcome, Reply, Side,
     StaleReason,
 };
-use mod_api::item::menu::{ClickedStackResult, StackResult, StackedOnOtherResult};
+use mod_api::item::menu::{ClickAction, StackedEdits, StackedOnOther, StackedOnOtherDirection};
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
 };
 use sunrise_client::menu::{
-    Env, Input, StackedClick, StackedClickedEdit, StackedEditPolicy, StackedOutcome, StackedResume,
+    Env, Input, StackedClick, StackedEdit, StackedEditPolicy, StackedOutcome, StackedResume,
 };
 
 /// What a pickup click did: it ran, or the decision refused it and nothing changed.
@@ -206,23 +206,19 @@ impl Game<'_> {
             shared: shared.clone(),
         };
         // The action's savepoint needs a transaction to nest in: the open one, or this one.
-        let seal = self.transaction_open();
-        let outcome = {
-            let mut host = GameHost {
-                game: &mut *self,
-                identity,
-            };
+        let (outcome, ran) = self.storage_scope(|game, _| {
+            let mut host = GameHost { game, identity };
             let fired = shared.clone();
-            decision::run(
+            let outcome = decision::run(
                 &mut host,
                 &target,
                 |_, _| PickupPlan,
                 move |host| fire(host.game, &fired, probe_carried),
-            )
-        };
-        // A replacement the slot's rules refused is undone with everything the listeners wrote.
-        let ran = matches!(outcome, Ok(Outcome::Applied)) && !shared.refused.get();
-        self.transaction_close(&seal, ran);
+            );
+            // A replacement the slot's rules refused is undone with everything the listeners wrote.
+            let ran = matches!(outcome, Ok(Outcome::Applied)) && !shared.refused.get();
+            ((outcome, ran), ran)
+        });
         match outcome {
             Ok(Outcome::Applied) if ran => Pickup::Ran,
             Ok(Outcome::Applied) => {
@@ -245,353 +241,235 @@ impl Game<'_> {
     }
 }
 
+/// The click as phase `direction` is asked about it, lending `edits`.
+fn click_for<'e>(
+    frozen: &StackedClick,
+    direction: StackedOnOtherDirection,
+    edits: &'e mut StackedEdits,
+) -> StackedOnOther<'e> {
+    let action = if frozen.primary {
+        ClickAction::Primary
+    } else {
+        ClickAction::Secondary
+    };
+    StackedOnOther::new(
+        frozen.player,
+        frozen.player_entity_id,
+        frozen.slot,
+        frozen.container,
+        frozen.container_slot,
+        action,
+        direction,
+        edits,
+    )
+}
+
+/// The working cursor and clicked slot as the edits so far leave them, and the edits converted
+/// for the menu.
+struct Working {
+    carried: Option<ItemStack>,
+    clicked: Option<ItemStack>,
+    edits: Vec<StackedEdit>,
+}
+
+impl Working {
+    /// Validate and convert the edits a phase made, from edit `from` on: each stack it set must
+    /// be a valid stack (a known item, a count within its maximum).
+    fn take_phase(
+        &mut self,
+        game: &Game<'_>,
+        lent: &StackedEdits,
+        from: usize,
+    ) -> std::result::Result<(), InvalidReason> {
+        let items = game.items();
+        for edit in lent.since(from) {
+            let edit = match edit {
+                mod_api::item::menu::StackedEdit::Carried(stack) => {
+                    let stack = stack
+                        .try_into_engine(items)
+                        .map_err(|_| InvalidReason::Count)?;
+                    self.carried = stack.clone();
+                    StackedEdit::Carried(stack)
+                }
+                mod_api::item::menu::StackedEdit::Clicked(stack) => {
+                    let stack = stack
+                        .try_into_engine(items)
+                        .map_err(|_| InvalidReason::Count)?;
+                    self.clicked = stack.clone();
+                    StackedEdit::Clicked(stack)
+                }
+                mod_api::item::menu::StackedEdit::Take(count) => {
+                    if let Some(current) = self.clicked.as_mut() {
+                        current.count = current
+                            .count
+                            .checked_sub(*count)
+                            .ok_or(InvalidReason::Count)?;
+                    }
+                    if self.clicked.as_ref().is_some_and(|stack| stack.count == 0) {
+                        self.clicked = None;
+                    }
+                    StackedEdit::Take(*count)
+                }
+            };
+            self.edits.push(edit);
+        }
+        Ok(())
+    }
+}
+
 /// Fire the global hook (server side only) and item-part overrides in vanilla
-/// `AbstractContainerMenu.tryItemClickBehaviourOverride` order, validating each phase's answer.
-/// The accepted answer is kept for the click; any bad answer refuses it.
+/// `AbstractContainerMenu.tryItemClickBehaviourOverride` order, lending the click's cursor and
+/// slot to each and validating what each phase did. The accepted edits are kept for the click;
+/// any bad answer refuses it.
 fn fire(
     game: &mut Game<'_>,
     shared: &Shared<'_>,
     probe_carried: impl FnOnce(&mut Game<'_>, Option<ItemStack>, Option<ItemStack>) -> bool,
 ) -> Reply {
     let frozen = &shared.frozen;
-    let make_event =
-        |direction: mod_api::item::menu::StackedOnOtherDirection,
-         carried: &Option<ItemStack>,
-         clicked: &Option<ItemStack>|
-         -> std::result::Result<mod_api::item::menu::StackedOnOther, InvalidReason> {
-            let (Ok(carried), Ok(clicked)) = (carried.try_into_api(), clicked.try_into_api())
-            else {
-                return Err(InvalidReason::Plan);
-            };
-            Ok(mod_api::item::menu::StackedOnOther::new(
-                frozen.player,
-                frozen.player_entity_id,
-                frozen.slot,
-                frozen.container,
-                frozen.container_slot,
-                frozen.primary,
-                carried,
-                clicked,
-            )
-            .with_direction(direction))
-        };
-    let finish = |_game: &mut Game<'_>, outcome: StackedOutcome| -> Reply {
+    let (Ok(carried), Ok(clicked)) = (frozen.carried.try_into_api(), frozen.clicked.try_into_api())
+    else {
+        return Reply::Invalid(InvalidReason::Plan);
+    };
+    let mut lent = StackedEdits::new(carried, clicked);
+    let mut working = Working {
+        carried: frozen.carried.clone(),
+        clicked: frozen.clicked.clone(),
+        edits: Vec::new(),
+    };
+    let finish = |outcome: StackedOutcome| -> Reply {
         *shared.answer.borrow_mut() = Some(outcome);
         Reply::Allow
     };
 
     // 1. Global NeoForge `ItemStackedOnOtherEvent`, authoritative server side only, before either
-    // item override. Preserves the documented global listener contract unchanged.
+    // item override. Its edits stand only on a cancelled, handled click, and it may not take.
     if game.is_logical_server() && mod_api::__private::listened(mod_api::HookId::ItemStackedOnOther)
     {
-        let base = match make_event(
-            mod_api::item::menu::StackedOnOtherDirection::Event,
-            &frozen.carried,
-            &frozen.clicked,
-        ) {
-            Ok(event) => event,
-            Err(reason) => return Reply::Invalid(reason),
-        };
-        let mut result = StackedOnOtherResult::default();
         let mut canceled = false;
-        game.native_item_stacked_on_other(&base, &mut result, &mut canceled);
-        let outcome = match answer_global(game, canceled, &result) {
-            Ok(outcome) => outcome,
-            Err(reason) => return Reply::Invalid(reason),
-        };
-        if outcome.canceled {
-            return finish(game, outcome);
+        let mut click = click_for(frozen, StackedOnOtherDirection::Event, &mut lent);
+        game.native_item_stacked_on_other(&mut click, &mut canceled);
+        let handled = click.handled;
+        let edited = !lent.since(0).is_empty();
+        let took = lent
+            .since(0)
+            .iter()
+            .any(|edit| matches!(edit, mod_api::item::menu::StackedEdit::Take(_)));
+        if took || (edited && !(canceled && handled)) {
+            return Reply::Invalid(InvalidReason::Plan);
+        }
+        if let Err(reason) = working.take_phase(game, &lent, 0) {
+            return Reply::Invalid(reason);
+        }
+        if canceled {
+            return finish(StackedOutcome {
+                canceled,
+                handled,
+                policy: StackedEditPolicy::Global,
+                resume: if handled {
+                    StackedResume::Done
+                } else {
+                    StackedResume::Plain
+                },
+                edits: working.edits,
+                ..StackedOutcome::default()
+            });
         }
     }
 
-    let mut working_carried = frozen.carried.clone();
-    let mut working_clicked = frozen.clicked.clone();
-    let mut carried_part_cursor = None;
-    let mut carried_part_took = false;
-    let mut clicked_part_cursor = None;
-    let mut clicked_edit: Option<StackedClickedEdit> = None;
+    // An `ItemPart` phase: `Flow::Cancel` stops the click, `Flow::Continue` goes on with its edits.
+    let part = |game: &mut Game<'_>,
+                lent: &mut StackedEdits,
+                working: &mut Working,
+                item: &str,
+                direction: StackedOnOtherDirection|
+     -> std::result::Result<bool, InvalidReason> {
+        let from = lent.since(0).len();
+        let mut canceled = false;
+        let mut click = click_for(frozen, direction, lent);
+        game.item_stacked_on_other_part(item, &mut click, &mut canceled);
+        working.take_phase(game, lent, from)?;
+        Ok(canceled)
+    };
     let mut any_part_ran = false;
-
-    let apply_clicked_part = |working: &mut Option<ItemStack>,
-                              edit: &mut Option<StackedClickedEdit>,
-                              next: PartClickedEdit| {
-        match next {
-            PartClickedEdit::Set(stack) => {
-                *working = stack.clone();
-                *edit = match edit.take() {
-                    Some(StackedClickedEdit::Take(take)) => {
-                        Some(StackedClickedEdit::TakeThenSet { take, then: stack })
-                    }
-                    _ => Some(StackedClickedEdit::Set(stack)),
-                };
-            }
-            PartClickedEdit::Take(count) => {
-                if let Some(cur) = working.as_mut() {
-                    cur.count = cur.count.saturating_sub(count);
-                    if cur.count == 0 {
-                        *working = None;
-                    }
-                }
-                *edit = match edit.take() {
-                    Some(StackedClickedEdit::Take(first)) => {
-                        Some(StackedClickedEdit::TakeThenTake {
-                            first,
-                            second: count,
-                        })
-                    }
-                    Some(StackedClickedEdit::Set(Some(set))) => {
-                        Some(StackedClickedEdit::SetThenTake { set, take: count })
-                    }
-                    None => Some(StackedClickedEdit::Take(count)),
-                    Some(other) => Some(other),
-                };
-            }
+    let part_policy = |any_part_ran: bool| {
+        if any_part_ran {
+            StackedEditPolicy::Part
+        } else {
+            StackedEditPolicy::Global
         }
     };
 
     // 2. Carried stack's `Item.overrideStackedOnOther`.
-    if let Some(carried_stack) = working_carried.clone()
-        && mod_api::__private::item_listens(
-            mod_api::HookId::ItemStackedOnOther,
-            &carried_stack.item,
-        )
+    if let Some(carried) = working.carried.clone()
+        && mod_api::__private::item_listens(mod_api::HookId::ItemStackedOnOther, &carried.item)
     {
         any_part_ran = true;
-        let event = match make_event(
-            mod_api::item::menu::StackedOnOtherDirection::CarriedOnOther,
-            &working_carried,
-            &working_clicked,
+        match part(
+            game,
+            &mut lent,
+            &mut working,
+            &carried.item,
+            StackedOnOtherDirection::CarriedOnOther,
         ) {
-            Ok(event) => event,
-            Err(reason) => return Reply::Invalid(reason),
-        };
-        let mut result = StackedOnOtherResult::default();
-        let mut canceled = false;
-        game.item_stacked_on_other_part(&carried_stack.item, &event, &mut result, &mut canceled);
-        let part = match answer_part(game, canceled, &result, working_clicked.as_ref()) {
-            Ok(part) => part,
-            Err(reason) => return Reply::Invalid(reason),
-        };
-        carried_part_cursor = part.carried;
-        if let Some(next_carried) = &carried_part_cursor {
-            working_carried = next_carried.clone();
-        }
-        if let Some(next_clicked) = part.clicked {
-            carried_part_took = matches!(next_clicked, PartClickedEdit::Take(_));
-            apply_clicked_part(&mut working_clicked, &mut clicked_edit, next_clicked);
-        }
-        if part.handled {
-            return finish(
-                game,
-                StackedOutcome {
+            Ok(true) => {
+                return finish(StackedOutcome {
                     canceled: true,
                     handled: true,
                     policy: StackedEditPolicy::Part,
                     resume: StackedResume::Done,
-                    carried_part_cursor,
-                    carried_part_took,
-                    clicked: clicked_edit,
+                    edits: working.edits,
                     ..StackedOutcome::default()
-                },
-            );
+                });
+            }
+            Ok(false) => {}
+            Err(reason) => return Reply::Invalid(reason),
         }
     }
 
-    // 3. Real vanilla carried override (`BundleItem.overrideStackedOnOther`): run through the
-    // single shared implementation before deciding whether the clicked ItemPart should fire.
-    let vanilla_carried_takes =
-        probe_carried(game, working_carried.clone(), working_clicked.clone());
-    if vanilla_carried_takes {
-        return finish(
-            game,
-            StackedOutcome {
-                policy: if any_part_ran {
-                    StackedEditPolicy::Part
-                } else {
-                    StackedEditPolicy::Global
-                },
-                resume: StackedResume::VanillaCarried,
-                carried_part_cursor,
-                carried_part_took,
-                clicked: clicked_edit,
-                ..StackedOutcome::default()
-            },
-        );
+    // 3. Vanilla's carried override (`BundleItem.overrideStackedOnOther`), on the stacks the
+    // carried phase left, decides whether the clicked phase is asked.
+    if probe_carried(game, working.carried.clone(), working.clicked.clone()) {
+        return finish(StackedOutcome {
+            policy: part_policy(any_part_ran),
+            resume: StackedResume::VanillaCarried,
+            edits: working.edits,
+            ..StackedOutcome::default()
+        });
     }
 
     // 4. Clicked stack's `Item.overrideOtherStackedOnMe`.
-    if let Some(clicked_stack) = working_clicked.clone()
-        && mod_api::__private::item_listens(
-            mod_api::HookId::ItemStackedOnOther,
-            &clicked_stack.item,
-        )
+    if let Some(clicked) = working.clicked.clone()
+        && mod_api::__private::item_listens(mod_api::HookId::ItemStackedOnOther, &clicked.item)
     {
         any_part_ran = true;
-        let event = match make_event(
-            mod_api::item::menu::StackedOnOtherDirection::OtherStackedOnMe,
-            &working_carried,
-            &working_clicked,
+        match part(
+            game,
+            &mut lent,
+            &mut working,
+            &clicked.item,
+            StackedOnOtherDirection::OtherStackedOnMe,
         ) {
-            Ok(event) => event,
-            Err(reason) => return Reply::Invalid(reason),
-        };
-        let mut result = StackedOnOtherResult::default();
-        let mut canceled = false;
-        game.item_stacked_on_other_part(&clicked_stack.item, &event, &mut result, &mut canceled);
-        let part = match answer_part(game, canceled, &result, working_clicked.as_ref()) {
-            Ok(part) => part,
-            Err(reason) => return Reply::Invalid(reason),
-        };
-        clicked_part_cursor = part.carried;
-        if let Some(next_clicked) = part.clicked {
-            apply_clicked_part(&mut working_clicked, &mut clicked_edit, next_clicked);
-        }
-        if part.handled {
-            return finish(
-                game,
-                StackedOutcome {
+            Ok(true) => {
+                return finish(StackedOutcome {
                     canceled: true,
                     handled: true,
                     policy: StackedEditPolicy::Part,
                     resume: StackedResume::Done,
-                    carried: clicked_part_cursor,
-                    carried_part_cursor,
-                    carried_part_took,
-                    clicked: clicked_edit,
+                    edits: working.edits,
                     ..StackedOutcome::default()
-                },
-            );
-        }
-    }
-
-    finish(
-        game,
-        StackedOutcome {
-            policy: if any_part_ran {
-                StackedEditPolicy::Part
-            } else {
-                StackedEditPolicy::Global
-            },
-            resume: StackedResume::VanillaClicked,
-            carried: clicked_part_cursor,
-            carried_part_cursor,
-            carried_part_took,
-            clicked: clicked_edit,
-            ..StackedOutcome::default()
-        },
-    )
-}
-
-/// The global listener's typed answer, validated once: a stack may be set only by a cancelled
-/// click that is also handled, `ClickedStackResult::Take` is refused, and a set stack must be a
-/// valid one (a known item, a count within its maximum).
-fn answer_global(
-    game: &Game<'_>,
-    canceled: bool,
-    result: &StackedOnOtherResult,
-) -> std::result::Result<StackedOutcome, InvalidReason> {
-    if matches!(result.clicked, ClickedStackResult::Take(_)) {
-        return Err(InvalidReason::Plan);
-    }
-    let carried_set = matches!(result.carried, StackResult::Set(_));
-    let clicked_set = matches!(result.clicked, ClickedStackResult::Set(_));
-    if !(canceled && result.handled) && (carried_set || clicked_set) {
-        return Err(InvalidReason::Plan);
-    }
-    let items = game.items();
-    let carried = match &result.carried {
-        StackResult::Keep => None,
-        StackResult::Set(stack) => Some(
-            stack
-                .try_into_engine(items)
-                .map_err(|_| InvalidReason::Count)?,
-        ),
-    };
-    let clicked = match &result.clicked {
-        ClickedStackResult::Keep => None,
-        ClickedStackResult::Set(stack) => Some(StackedClickedEdit::Set(
-            stack
-                .try_into_engine(items)
-                .map_err(|_| InvalidReason::Count)?,
-        )),
-        ClickedStackResult::Take(_) => return Err(InvalidReason::Plan),
-    };
-    let resume = if !canceled {
-        StackedResume::VanillaAll
-    } else if result.handled {
-        StackedResume::Done
-    } else {
-        StackedResume::Plain
-    };
-    Ok(StackedOutcome {
-        canceled,
-        handled: result.handled,
-        policy: StackedEditPolicy::Global,
-        resume,
-        carried,
-        clicked,
-        ..StackedOutcome::default()
-    })
-}
-
-enum PartClickedEdit {
-    Set(Option<ItemStack>),
-    Take(u32),
-}
-
-struct PartAnswer {
-    handled: bool,
-    carried: Option<Option<ItemStack>>,
-    clicked: Option<PartClickedEdit>,
-}
-
-/// An `ItemPart` override's typed answer, representing both vanilla outcomes inside the
-/// transaction:
-/// - Handled (stop): `Flow::Cancel` with `result.handled == true` (optional stack edits).
-/// - Not handled (continue): `Flow::Continue` with `result.handled == false` (optional stack
-///   edits visible to later overrides and plain pickup).
-///
-/// Contradictory combinations (`canceled != result.handled`), `ClickedStackResult::Take` exceeding
-/// the clicked stack (or on an empty slot), or invalid stacks refuse the click.
-fn answer_part(
-    game: &Game<'_>,
-    canceled: bool,
-    result: &StackedOnOtherResult,
-    current_clicked: Option<&ItemStack>,
-) -> std::result::Result<PartAnswer, InvalidReason> {
-    if canceled != result.handled {
-        return Err(InvalidReason::Plan);
-    }
-    let items = game.items();
-    let carried = match &result.carried {
-        StackResult::Keep => None,
-        StackResult::Set(stack) => Some(
-            stack
-                .try_into_engine(items)
-                .map_err(|_| InvalidReason::Count)?,
-        ),
-    };
-    let clicked = match &result.clicked {
-        ClickedStackResult::Keep => None,
-        ClickedStackResult::Set(stack) => Some(PartClickedEdit::Set(
-            stack
-                .try_into_engine(items)
-                .map_err(|_| InvalidReason::Count)?,
-        )),
-        ClickedStackResult::Take(count) => {
-            let Some(current) = current_clicked else {
-                return Err(InvalidReason::Plan);
-            };
-            if *count == 0 || *count > current.count {
-                return Err(InvalidReason::Count);
+                });
             }
-            Some(PartClickedEdit::Take(*count))
+            Ok(false) => {}
+            Err(reason) => return Reply::Invalid(reason),
         }
-    };
-    Ok(PartAnswer {
-        handled: result.handled,
-        carried,
-        clicked,
+    }
+
+    finish(StackedOutcome {
+        policy: part_policy(any_part_ran),
+        resume: StackedResume::VanillaClicked,
+        edits: working.edits,
+        ..StackedOutcome::default()
     })
 }
 

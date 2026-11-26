@@ -9,6 +9,20 @@ impl Game<'_> {
             return;
         };
         d.death_time += 1;
+        if d.death_canceled {
+            // Cancelled living_death: remove the unhealed body after 20 ticks without
+            // the death roar, experience orbs, or fight completion.
+            if d.death_time >= 20 {
+                let id = d.id;
+                if let Some(&uuid) = self.persist.uuids.get(&id)
+                    && let Some(set) = self.persist.dragon_death_canceled.as_mut()
+                {
+                    set.remove(&uuid);
+                }
+                self.discard_resident_dragon();
+            }
+            return;
+        }
         let t = d.death_time;
         let p = d.position;
         let r = &mut d.random;

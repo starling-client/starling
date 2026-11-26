@@ -3,7 +3,6 @@
     "package": {
       "program": [
         "sunrise-ctl",
-        "sunrise-perf",
         "sunrise-prepare",
         "sunrise-server",
         "sunrise-port-pack"
@@ -42,7 +41,6 @@
   },
   "how": {
     "sunrise-ctl": "cargo build PROFILE -p sunrise-client-lib --bin sunrise-ctl",
-    "sunrise-perf": "cargo build PROFILE -p sunrise-perf --bin sunrise-perf",
     "sunrise-prepare": "cargo build PROFILE -p sunrise-prepare",
     "sunrise-server": "cargo build PROFILE -p sunrise-server",
     "sunrise-port-pack": "cargo build PROFILE -p sunrise-port-pack",

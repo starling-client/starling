@@ -37,6 +37,16 @@ fn fs_blit_color(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
     return textureLoad(source, vec2<i32>(i32(p.x), size.y - 1 - i32(p.y)), 0);
 }
 
+// Export the pack's GL-rows, GL-depth `depthtex0` back to Sunrise's screen-rows, reversed-Z
+// world depth buffer so post-pack stages (`AfterLevel`, `world_drawn`) depth-test against
+// terrain, water, entities, and the first-person hand drawn by the pack.
+@fragment
+fn fs_export_depth(@builtin(position) p: vec4<f32>) -> @builtin(frag_depth) f32 {
+    let size = vec2<i32>(textureDimensions(world_depth));
+    let at = vec2<i32>(i32(p.x), size.y - 1 - i32(p.y));
+    return 1.0 - textureLoad(world_depth, at, 0).r;
+}
+
 @group(0) @binding(2) var linear: sampler;
 
 struct Full {

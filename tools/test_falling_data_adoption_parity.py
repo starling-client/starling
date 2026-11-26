@@ -2,7 +2,9 @@
 """Live FallingBlock data adoption with independent stationary inputs and unchanged controls."""
 import hashlib,json,sys,tempfile,uuid
 from pathlib import Path
-import test_command_exec_parity as driver
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_command_exec_parity as driver
 CASES=[('time',1,'{Time:5}','{Time:12}'),('drop',2,'{DropItem:1b}','{DropItem:0b}')]
 def program():
  ops=[]

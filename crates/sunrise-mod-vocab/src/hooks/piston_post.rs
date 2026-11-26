@@ -1,5 +1,4 @@
 //! The `piston_post` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0041
 
 pub trait Hooks {
     /// On an authoritative server, the piston at `piston` is about to push

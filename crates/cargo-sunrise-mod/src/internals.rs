@@ -346,10 +346,7 @@ pub fn refresh(
     old: &[ListedInternal],
     new: &[ListedInternal],
 ) -> Result<String, String> {
-    manifest
-        .native
-        .as_ref()
-        .ok_or("update needs a [native] mod")?;
+    manifest.native.as_ref().ok_or("pin needs a [native] mod")?;
     let mut report = String::new();
     for (index, declared) in manifest.internals.iter().enumerate() {
         let path = &declared.path;
@@ -777,7 +774,7 @@ facade={package='sunrise-internals',path='.sunrise/sdk/api/crates/sunrise-intern
             internals::check(&entries, "example", &declared)
                 .unwrap_err()
                 .to_string(),
-            "E_INTERNAL_CHANGED: example uses sunrise_client::game::Game<'_>::reach, whose signature is now impl Game<'_> { fn reach(&self, hand: Hand) -> f64 }; run cargo sunrise-mod update to see what changed."
+            "E_INTERNAL_CHANGED: example uses sunrise_client::game::Game<'_>::reach, whose signature is now impl Game<'_> { fn reach(&self, hand: Hand) -> f64 }; run cargo sunrise-mod pin to see what changed."
         );
         declared.hash = Some("abcd".into());
         internals::check(&entries, "example", &declared).unwrap();

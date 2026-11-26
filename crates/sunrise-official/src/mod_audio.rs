@@ -1,6 +1,6 @@
 //! The "Mod audio streams" switch (docs/extras.md): on by default, off the audio mods make
-//! themselves plays on unheard. Its setting and its row in the Extras page's Sound group; the
-//! engine only owns the gain it sets (`sunrise_platform::sound`).
+//! themselves plays on unheard. Its setting and its row in Sunrise Settings' Gameplay page, in its
+//! Sound group; the engine only owns the gain it sets (`sunrise_platform::sound`).
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use sunrise_platform::pages::{Act, Label, Page, Place, Row};
@@ -48,7 +48,7 @@ impl Store for Setting {
     }
 }
 
-/// The switch's row in the Extras page's Sound group, for `sunrise_platform::pages::register`.
+/// The switch's row in the Gameplay page's Sound group, for `sunrise_platform::pages::register`.
 pub static SECTION: Section = Section;
 
 pub struct Section;

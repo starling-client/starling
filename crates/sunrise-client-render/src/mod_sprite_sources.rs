@@ -78,29 +78,12 @@ pub fn register(sources: Vec<Answered<SpriteSourceRegistration>>) -> Vec<String>
     bind_into(&SOURCES, sources)
 }
 
-struct SourceReader<'a> {
-    /// A load-local table, or `None` to read the installed providers.
-    table: Option<&'a SpriteSourceTable>,
-    answer: bool,
-}
+/// A load-local table, or `None` to read the installed providers.
+struct SourceReader<'a>(Option<&'a SpriteSourceTable>);
 
-impl<'a> SourceReader<'a> {
-    const fn declared(table: Option<&'a SpriteSourceTable>) -> Self {
-        Self {
-            table,
-            answer: false,
-        }
-    }
-
-    const fn registered(table: Option<&'a SpriteSourceTable>) -> Self {
-        Self {
-            table,
-            answer: true,
-        }
-    }
-
+impl SourceReader<'_> {
     fn read<T>(&self, read: impl FnOnce(&SpriteSourceTable) -> T) -> T {
-        match self.table {
+        match self.0 {
             Some(table) => read(table),
             None => read(
                 &SOURCES
@@ -122,9 +105,6 @@ impl ModSources for SourceReader<'_> {
         config: &Tag,
         resources: &Arc<dyn ResourceReader>,
     ) -> Vec<SpriteSourceOutput> {
-        if !self.answer {
-            return Vec::new();
-        }
         // Keep the entry, not the registry's read guard, while invoking the provider.
         let Some(entry) = self.read(|table| table.get(kind).cloned()) else {
             return Vec::new();
@@ -151,28 +131,11 @@ impl ModSources for SourceReader<'_> {
     }
 }
 
-/// The native mods' source types, declared but never answered: for a load that draws nothing.
-pub struct Declared;
-impl ModSources for Declared {
-    fn is_registered(&self, kind: &str) -> bool {
-        SourceReader::declared(None).is_registered(kind)
-    }
-    fn ask(
-        &self,
-        atlas: &Identifier,
-        kind: &str,
-        config: &Tag,
-        resources: &Arc<dyn ResourceReader>,
-    ) -> Vec<SpriteSourceOutput> {
-        SourceReader::declared(None).ask(atlas, kind, config, resources)
-    }
-}
-
 /// The native mods' bound sprite source providers, invoked on the resource loader as registrations.
 pub struct Registered;
 impl ModSources for Registered {
     fn is_registered(&self, kind: &str) -> bool {
-        SourceReader::registered(None).is_registered(kind)
+        SourceReader(None).is_registered(kind)
     }
     fn ask(
         &self,
@@ -181,7 +144,7 @@ impl ModSources for Registered {
         config: &Tag,
         resources: &Arc<dyn ResourceReader>,
     ) -> Vec<SpriteSourceOutput> {
-        SourceReader::registered(None).ask(atlas, kind, config, resources)
+        SourceReader(None).ask(atlas, kind, config, resources)
     }
 }
 
@@ -354,12 +317,12 @@ mod tests {
                 "minecraft:custom"
             ]
         );
-        let declared = SourceReader::declared(Some(&table));
+        let registered = SourceReader(Some(&table));
         assert!(
-            declared.is_registered("srcreg:shared")
-                && declared.is_registered("minecraft:single")
-                && declared.is_registered("minecraft:custom")
-                && !declared.is_registered("srcreg:unattributed")
+            registered.is_registered("srcreg:shared")
+                && registered.is_registered("minecraft:single")
+                && registered.is_registered("minecraft:custom")
+                && !registered.is_registered("srcreg:unattributed")
         );
         let source = crate::resource_source::ResourceSource::indexed(
             [
@@ -382,7 +345,7 @@ mod tests {
             ]
             .into(),
         );
-        let listing = Listing::build(&source, &SourceReader::registered(Some(&table)));
+        let listing = Listing::build(&source, &SourceReader(Some(&table)));
         assert_eq!(
             listing
                 .sprites("minecraft:blocks")
@@ -470,7 +433,7 @@ mod tests {
             let table = table.into_inner().unwrap();
             assert_eq!(kept, ["srctest:panics", "srctest:flaky", "srctest:healthy"]);
 
-            let registered = SourceReader::registered(Some(&table));
+            let registered = SourceReader(Some(&table));
             let atlas_source = |kind: &str| {
                 crate::resource_source::ResourceSource::indexed(
                     [(
@@ -605,7 +568,8 @@ mod tests {
             ["srctest:item/apple", "srctest:new"],
             "the mod's, but not what a later built-in source took back"
         );
-        let generated = crate::atlas_sources::generate(&listed.sprites["srctest:new"], &|_| None);
+        let generated =
+            crate::atlas_sources::generate(&listed.sprites["srctest:new"], &|_, _| None);
         assert_eq!(
             generated,
             Some((1, 2, vec![9; 8])),

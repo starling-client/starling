@@ -2,22 +2,19 @@ use super::*;
 
 /// The hook points. Each does nothing in Sunrise.
 impl Game<'_> {
-    /// `FurnaceResultSlot.checkTakeAchievements` ran for a server player at a
-    /// furnace, blast furnace or smoker's result slot: `player` is their UUID
-    /// and `player_entity_id` their network id; `stack` and `amount_removed`
-    /// are what vanilla passes there (`getSmelting`, `getAmountRemoved`). A
-    /// click or a throw passes the taken stack and its count; a shift-click
-    /// passes the slot's stack as it was with the count moved, then what
-    /// stayed in the slot (`None` once it is empty) with 0; a hotbar swap
-    /// passes the taken stack with 0. Fires before `furnace_extract`.
-    /// Server-side.
+    /// `FurnaceResultSlot.checkTakeAchievements` ran at a furnace, blast
+    /// furnace or smoker's result slot with a nonzero `removeCount` (NeoForge
+    /// `PlayerEvent.ItemSmeltedEvent`): `player` is the live player handle,
+    /// `stack` lends the stack vanilla passed there (`getSmelting`), and
+    /// `amount_removed` is `removeCount` (`getAmountRemoved`). On the server it
+    /// fires with `HostSide::Server` after the furnace awards its used recipes
+    /// and pops experience (`AbstractFurnaceBlockEntity.awardUsedRecipesAndPopExperience`);
+    /// on the client it fires with `HostSide::Client` during menu click
+    /// prediction without awarding experience. Both logical sides.
     pub(in crate::game) fn native_item_smelted(
         &mut self,
-        player: u128,
-        player_entity_id: i32,
-        stack: Option<&ItemStack>,
-        amount_removed: u32,
+        call: mod_api::__private::ItemSmeltedCall<'_>,
     ) {
-        self.fire_item_smelted(player, player_entity_id, stack, amount_removed);
+        self.fire_item_smelted(call);
     }
 }

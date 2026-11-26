@@ -83,15 +83,9 @@ impl ShaderOptions {
     }
 
     fn set(&mut self, name: &str, value: String) {
-        let Some(option) = self.options.get(name).filter(|o| o.values.contains(&value)) else {
-            return;
-        };
-        if value == option.default {
-            self.chosen.remove(name);
-        } else {
-            self.chosen.insert(name.to_owned(), value);
+        if sunrise_shaders::choose_option(&mut self.chosen, &self.options, name, value) {
+            self.changed = self.chosen != self.saved;
         }
-        self.changed = self.chosen != self.saved;
     }
 
     /// The option's next value (the previous one with `back`), wrapping around.

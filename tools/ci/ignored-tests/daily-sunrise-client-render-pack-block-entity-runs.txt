@@ -1,0 +1,6 @@
+# A block entity's native terrain quads (a mod's fluids and terrain models) under a shaders/ pack (#5090): what final
+# shows of the block programs' buffer and of the shadow map through the real Renderer (re-running itself in a child
+# process with throwaway homes, under with_xvfb.py on the daily GPU hosts), and the block program's extra bind groups
+# dropped on a resize. Asset-free.
+sunrise-client-render gfx::pack_post::block_atlas_group_tests::a_resize_drops_the_portal_and_block_atlas_groups lib daily gpu
+sunrise-client-render pack_block_entity_runs test:pack_block_entity_runs daily child-process

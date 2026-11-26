@@ -4,13 +4,26 @@ use mod_api::{EntityRef, EntityTypeKey, LevelReadError, PushReaction};
 
 impl Game<'_> {
     pub(super) fn native_entity_kind_key(&self, target: Target) -> Option<EntityTypeKey> {
-        mod_api::__private::resolved_entity_type_key(self.native_entity_kind_name(target)?)
+        // A living entity's type key was resolved with the accepted resources; other kinds
+        // resolve their name.
+        let keys = self.res.living_type_keys();
+        match target {
+            Target::Player | Target::Guest(_) => keys.player,
+            Target::Mob(id) => self.mobs.iter().find(|mob| mob.id == id)?.kind.type_key,
+            Target::Stand(_) => keys.armor_stand,
+            Target::Dragon(_) | Target::DragonPart(_) => keys.ender_dragon,
+            target => {
+                mod_api::__private::resolved_entity_type_key(self.native_entity_kind_name(target)?)
+            }
+        }
     }
 
     fn native_entity_kind_name(&self, target: Target) -> Option<&str> {
         Some(match target {
-            Target::Player | Target::Guest(_) => "minecraft:player",
-            Target::Mob(id) => &self.mobs.iter().find(|mob| mob.id == id)?.kind.id,
+            Target::Player | Target::Guest(_) => super::native_living_body::PLAYER,
+            Target::Mob(id) => super::native_living_body::body_kind_name(
+                sunrise_client::health::LivingBody::Mob(self.mobs.iter().find(|mob| mob.id == id)?),
+            ),
             Target::Item(_) => "minecraft:item",
             Target::Orb(_) => "minecraft:experience_orb",
             Target::Projectile(id) => self
@@ -19,7 +32,7 @@ impl Game<'_> {
                 .iter()
                 .find(|p| p.id == id)?
                 .entity_type(),
-            Target::Stand(_) => "minecraft:armor_stand",
+            Target::Stand(_) => super::native_living_body::ARMOR_STAND,
             Target::General(id) => self.general_kind(id)?,
             Target::Frame(id) => {
                 if self
@@ -37,7 +50,7 @@ impl Game<'_> {
             Target::Cart(id) => self.carts.iter().find(|cart| cart.id == id)?.kind.id(),
             Target::Other(id) => &self.others.iter().find(|other| other.id == id)?.kind,
             Target::Crystal(_) => "minecraft:end_crystal",
-            Target::Dragon(_) | Target::DragonPart(_) => "minecraft:ender_dragon",
+            Target::Dragon(_) | Target::DragonPart(_) => super::native_living_body::ENDER_DRAGON,
             Target::Tnt(_) => "minecraft:tnt",
             Target::Cushion(_) => "minecraft:cushion",
             Target::Falling(_) => "minecraft:falling_block",
@@ -46,6 +59,7 @@ impl Game<'_> {
             Target::Fangs(_) => "minecraft:evoker_fangs",
             Target::Spawner(_) => "minecraft:ominous_item_spawner",
             Target::Cloud(_) => "minecraft:area_effect_cloud",
+            Target::Bolt(_) => "minecraft:lightning_bolt",
             Target::Hook(_) => "minecraft:fishing_bobber",
             Target::Knot(_) => "minecraft:leash_knot",
         })

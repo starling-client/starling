@@ -602,10 +602,53 @@ def nightly_branch_head():
 
 
 DAILY_WORKFLOW = ".github/workflows/daily.yml"
+DAILY_SDK_WORKFLOW = ".github/workflows/prebuilt-game-build.yml"
 DAILY_BRANCHES = ("main", RELEASE_BRANCH)
 DAILY_EVIDENCE_DAYS = 30
 FULL_SHA = re.compile(r"[0-9a-f]{40}", re.ASCII)
 RUN_ATTEMPT = re.compile(r"[1-9][0-9]*/[1-9][0-9]*", re.ASCII)
+
+
+def is_ancestor(older, newer):
+    return subprocess.run(["git", "merge-base", "--is-ancestor", older, newer], cwd=ROOT,
+                          capture_output=True).returncode == 0
+
+
+def daily_workflow_source(entry):
+    """The trusted immutable workflow SHA of a daily run, or "" when its provenance cannot be proved."""
+    branch, source = entry.get("head_branch"), entry.get("head_sha")
+    title = entry.get("display_title")
+    if (entry.get("path") != DAILY_WORKFLOW or entry.get("event") != PUBLISHING_EVENT
+            or branch not in DAILY_BRANCHES or not isinstance(source, str) or not FULL_SHA.fullmatch(source)
+            or isinstance(title, str) and title.endswith("(dry run)")):
+        return ""
+    for field in ("repository", "head_repository"):
+        repo = entry.get(field)
+        if not isinstance(repo, dict) or repo.get("full_name") != PUBLISHING_REPOSITORY:
+            return ""
+
+    # head_branch is only a short name. The SDK is a local reusable workflow in every full daily and
+    # every break-glass daily that can prove the required SDK legs, so its ref and SHA witness the caller's.
+    workflows = entry.get("referenced_workflows")
+    if not isinstance(workflows, list):
+        return ""
+    sdk = f"{PUBLISHING_REPOSITORY}/{DAILY_SDK_WORKFLOW}"
+    ref = f"refs/heads/{branch}"
+    found = False
+    for workflow in workflows:
+        if not isinstance(workflow, dict) or not isinstance(path := workflow.get("path"), str):
+            return ""
+        if path.partition("@")[0] == sdk:
+            if path != f"{sdk}@{source}" or workflow.get("ref") != ref or workflow.get("sha") != source:
+                return ""
+            found = True
+    if not found or run("git", "cat-file", "-t", source, check=False).strip() != "commit":
+        return ""
+
+    # The release jobs check out full history from origin. Require the exact tracking ref (no Git name
+    # guessing when it's absent), and never fetch an object named by an Actions record.
+    tip = run("git", "show-ref", "--verify", "--hash", f"refs/remotes/origin/{branch}", check=False).strip()
+    return source if tip and is_ancestor(source, tip) else ""
 
 
 def attempt_jobs(entry):
@@ -616,15 +659,25 @@ def attempt_jobs(entry):
             if job["status"] == "completed" and job["run_id"] == entry["id"] and job["run_attempt"] == attempt}
 
 
+def full_daily_verdict(sha, source, jobs):
+    """Job evidence for `sha` from one attempt of a trusted workflow source: None without a full verdict.
+
+    The exact summary job names the tested commit, which the immutable workflow source must contain.
+    Dry runs and break-glass runs have suffixed summary names.
+    """
+    summary = jobs.get(f"summary {sha}")
+    if summary not in ("success", "failure") or not is_ancestor(sha, source):
+        return None
+    return summary == "success" and jobs.get(f"green {sha}") == "success"
+
+
 def daily_run_green(entry, sha, running=False):
-    """The run's URL when it is a real success (or `running`: in progress) at head_sha `sha` with its own attempt's green job."""
+    """The URL of an admitted daily run whose own attempt has green job evidence for `sha`, or ""."""
     finished = entry["status"] == "completed" and entry["conclusion"] == "success"
     underway = running and entry["status"] == "in_progress" and entry["conclusion"] is None
-    real = (entry["path"] == DAILY_WORKFLOW and entry["repository"]["full_name"] == REPO
-            and entry["event"] == PUBLISHING_EVENT and entry["head_branch"] in DAILY_BRANCHES
-            and entry["head_sha"] == sha and not entry["display_title"].endswith("(dry run)"))
-    if real and (finished or underway) and attempt_jobs(entry).get(f"green {sha}") == "success":
-        return entry["html_url"]
+    if (finished or underway) and (source := daily_workflow_source(entry)):
+        if full_daily_verdict(sha, source, attempt_jobs(entry)):
+            return entry["html_url"]
     return ""
 
 
@@ -637,7 +690,9 @@ def completed_dailies(now=None):
 
 
 def daily_passed(sha, now=None, this_run=""):
-    """The URL of a real, successful daily run at head_sha `sha` whose own attempt's `green` job passed, or ""; `this_run` ("<id>/<attempt>") may still be running."""
+    """The URL of a successful real daily that tested `sha` and has green evidence in its own attempt, or "".
+    Only an explicitly named `this_run` ("<id>/<attempt>") may still be in progress; it selects evidence, not a caller.
+    """
     if not FULL_SHA.fullmatch(sha or ""):
         return ""
     if this_run:
@@ -645,7 +700,9 @@ def daily_passed(sha, now=None, this_run=""):
             raise SystemExit(f"::error::refused: a daily run is named <run id>/<attempt>, not {this_run!r}")
         run_id, attempt = this_run.split("/")
         entry = gh_json("api", f"repos/{REPO}/actions/runs/{run_id}/attempts/{attempt}")
-        return daily_run_green(entry, sha, running=True) if entry and str(entry["run_attempt"]) == attempt else ""
+        if entry and str(entry["id"]) == run_id and str(entry["run_attempt"]) == attempt:
+            return daily_run_green(entry, sha, running=True)
+        return ""
     for entry in completed_dailies(now):
         if url := daily_run_green(entry, sha):
             return url
@@ -892,32 +949,36 @@ def changed_since(parent_sha, sha):
 
 
 def break_glass_runs():
-    """[(run, {job name: conclusion} of its own attempt)] for every completed real daily dispatch of the evidence
-    window, newest first. A run is known by its jobs' names, which carry the commit it tested: its head_sha is the
-    branch's head when it was dispatched with `commit`, and the branch may have moved on since."""
+    """[(run, {job name: conclusion} of its own attempt)] for completed daily dispatches with trusted sources,
+    newest first. Admit both successes and failures: the latter can give a red full-daily verdict."""
     return [(entry, attempt_jobs(entry)) for entry in completed_dailies()
-            if entry["path"] == DAILY_WORKFLOW and entry["repository"]["full_name"] == REPO
-            and entry["event"] == PUBLISHING_EVENT and entry["head_branch"] in DAILY_BRANCHES]
+            if entry["status"] == "completed" and entry["conclusion"] in ("success", "failure")
+            and daily_workflow_source(entry)]
 
 
 def legs_passed(sha, legs, runs):
-    """The URL of a successful real daily run on the release branch that passed at least `legs` on sha (one job
-    `legs <sha> <leg>` per leg, which daily.yml runs only once the run's selected legs and its SDK passed), else ""."""
+    """The URL of a successful admitted release-branch daily that passed at least `legs` on sha, else "".
+    `legs <sha> <leg>` names each passed leg; the tested sha must be contained in the run's workflow source.
+    """
+    if not FULL_SHA.fullmatch(sha or ""):
+        return ""
     for entry, jobs in runs:
         if (entry["head_branch"] == RELEASE_BRANCH and entry["conclusion"] == "success"
-                and all(jobs.get(f"legs {sha} {leg}") == "success" for leg in legs)):
+                and all(jobs.get(f"legs {sha} {leg}") == "success" for leg in legs)
+                and is_ancestor(sha, entry["head_sha"])):
             return entry["html_url"]
     return ""
 
 
 def full_dailies(sha, runs):
-    """[(run, passed)] of the real full daily runs of sha, newest first: a run that succeeded or failed whose job
-    `summary <sha>` finished; it passed when the run succeeded and its `green <sha>` job did. Runs that tested nothing
-    of sha (a cancelled run, a scheduled run that skipped it, a dry or break-glass run, whose summaries are named
-    apart) don't count."""
-    return [(entry, entry["conclusion"] == "success" and jobs.get(f"green {sha}") == "success")
-            for entry, jobs in runs
-            if entry["conclusion"] in ("success", "failure") and jobs.get(f"summary {sha}") in ("success", "failure")]
+    """[(run, passed)] of the admitted full daily runs of sha, newest first, omitting runs with no full verdict.
+    A failed run is red even when its jobs give green evidence.
+    """
+    if not FULL_SHA.fullmatch(sha or ""):
+        return []
+    return [(entry, entry["conclusion"] == "success" and verdict)
+            for entry, jobs in runs if entry["conclusion"] in ("success", "failure")
+            and (verdict := full_daily_verdict(sha, entry["head_sha"], jobs)) is not None]
 
 
 def newest_full_daily(sha, runs, since=None):
@@ -944,7 +1005,7 @@ def break_glass_problems(sha, tag, parent):
     problems, legs, runs = [], [], break_glass_runs()
     if stable_version(tag)[1][:2] != stable_version(parent.tag)[1][:2]:
         problems.append(f"{tag} is not a patch release of {parent.tag}; a minor or major release takes a full daily")
-    if sha == parent.sha or subprocess.run(["git", "merge-base", "--is-ancestor", parent.sha, sha], cwd=ROOT).returncode:
+    if sha == parent.sha or not is_ancestor(parent.sha, sha):
         problems.append(f"{sha} is not a new commit descending from {parent.tag} ({parent.sha})")
     else:
         plain, special = changed_since(parent.sha, sha)
@@ -1059,7 +1120,7 @@ def channel_head(channel, head, exception="", daily_run=""):
               check=False).strip()
     if not sha:
         raise SystemExit(f"::error::refused: {head} is not a commit of this repository")
-    if subprocess.run(["git", "merge-base", "--is-ancestor", sha, "refs/remotes/origin/main"], cwd=ROOT).returncode:
+    if not is_ancestor(sha, "refs/remotes/origin/main"):
         raise SystemExit(f"::error::refused: {sha} is not on main; a {channel} builds only a commit of main")
     # Both release.yml (before building the SDK) and nightly.py pick use this commit check.
     if channel == "dev" and '"dev-"' not in run(
@@ -1072,7 +1133,7 @@ def channel_head(channel, head, exception="", daily_run=""):
         raise SystemExit(f"::error::refused: {sha} is not {pointer} ({green or 'none yet'}); "
                          "a Nightly ships only the commit of a fully green daily run, or one the owner granted a "
                          "one-time exception (the `exception` input)")
-    # The branch is only a pointer: its head needs its own passed daily run, or the one promoting it (`daily_run`).
+    # The branch is only a pointer: its head needs passed daily evidence, optionally from a named attempt.
     if branch and sha == branch and not daily_passed(sha, this_run=daily_run):
         raise SystemExit(f"::error::refused: {sha}, the head of {NIGHTLY_BRANCH}, has no completed real daily run "
                          "that passed every leg on it")
@@ -1139,7 +1200,7 @@ def main():
                         help="decide --channel nightly: the owner's one-time grant for a commit that is not daily-green")
     parser.add_argument("--ref", help="decide: a real run's GITHUB_REF, which must publish the channel (PUBLISHES)")
     parser.add_argument("--daily-run", default="",
-                        help="decide --channel nightly: the daily run promoting its own commit, <run id>/<attempt>")
+                        help="decide --channel nightly: the daily proof to use, <run id>/<attempt> (may still be running)")
     parser.add_argument("--publish-kind", choices=["daily", "nightly", "dev", "stable", "sdk"],
                         help="authorize: what the run would publish")
     parser.add_argument("--dry-run", default="true", help="authorize: the run's dry_run input; only \"false\" may publish")

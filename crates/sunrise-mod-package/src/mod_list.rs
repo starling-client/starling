@@ -117,16 +117,22 @@ pub struct NativePage {
     pub mappings: Vec<KeyMapping>,
     /// Its settings, in registration order, with the values the page shows.
     pub settings: Vec<NativeSetting>,
+    /// The mod registered its own config screen (`Registrar::register_config_screen`): Config
+    /// shows for it and opens that screen, not this page's settings.
+    pub own_screen: bool,
 }
 
 /// A setting on a native mod's page: its key within the mod, the translation keys of its label
-/// and tooltip, and its value.
+/// and tooltip, the translation key of its section, if any, and its value.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NativeSetting {
     pub key: String,
     pub label: String,
     pub tooltip: Option<String>,
     pub value: NativeSettingValue,
+    /// The translation key of the section its row belongs to, if any: settings
+    /// sharing one are drawn under one heading on the mod's page.
+    pub category: Option<String>,
 }
 
 /// A setting's value as its row shows and changes it.

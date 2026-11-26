@@ -85,7 +85,7 @@ impl Game<'_> {
             f64::from(pos[1]) + 0.5,
             f64::from(pos[2]) + 0.5,
         ];
-        self.audio.play(sound, Some(at), 1.0, 1.0);
+        self.play_audio(sound, Some(at), 1.0, 1.0);
     }
     /// `LoomScreen.mouseClicked` on a pattern button: `clickMenuButton`, and
     /// the select sound when the menu took it.
@@ -97,8 +97,7 @@ impl Game<'_> {
             Some(*flag)
         });
         if taken {
-            self.audio
-                .play("minecraft:ui.loom.select_pattern", None, 1.0, 1.0);
+            self.play_audio("minecraft:ui.loom.select_pattern", None, 1.0, 1.0);
             self.remote_station_button(index as i32);
         }
         taken
@@ -149,24 +148,26 @@ impl Game<'_> {
             .collect()
     }
     /// `LoomScreen.mouseDragged` on the scroller.
-    pub(super) fn loom_drag(&mut self) {
+    pub(super) fn loom_drag(&mut self) -> bool {
         let Some(size) = self
             .renderer
             .as_ref()
             .map(|r| [r.config.width, r.config.height])
         else {
-            return;
+            return false;
         };
         let (_, oy) = self.inventory_origin(&self.interface_batch(size));
         let cursor_y = self.cursor.1;
         let Some(l) = self.station.as_mut().map(|s| &mut s.loom) else {
-            return;
+            return false;
         };
         if l.scrolling && l.display && l.offscreen_rows() > 0 {
             let top = oy + 13.0;
             l.scroll = ((cursor_y - top - 7.5) / (56.0 - 15.0)).clamp(0.0, 1.0);
             l.start_row = l.row_for(l.scroll);
+            return true;
         }
+        false
     }
     pub(super) fn loom_release(&mut self) -> bool {
         self.station
@@ -174,15 +175,17 @@ impl Game<'_> {
             .is_some_and(|s| std::mem::take(&mut s.loom.scrolling))
     }
     /// `LoomScreen.mouseScrolled`.
-    pub(super) fn loom_scroll(&mut self, d: f32) {
+    pub(super) fn loom_scroll(&mut self, d: f32) -> bool {
         let Some(l) = self.station.as_mut().map(|s| &mut s.loom) else {
-            return;
+            return false;
         };
         let offscreen = l.offscreen_rows();
         if l.display && offscreen > 0 {
             l.scroll = (l.scroll - d / offscreen as f32).clamp(0.0, 1.0);
             l.start_row = l.row_for(l.scroll);
+            return true;
         }
+        false
     }
     /// `GuiGraphicsExtractor.bannerPattern`: the banner flag model with its
     /// layers in a 20x40 picture in picture at `(x, y)`.

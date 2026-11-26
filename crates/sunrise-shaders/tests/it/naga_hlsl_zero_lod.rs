@@ -28,6 +28,7 @@ fn hlsl(declaration: &str, sample: &str) -> String {
         &preprocess(&pack, "composite.vsh", &macros),
         &preprocess(&pack, "composite.fsh", &macros),
         Target::Buffers,
+        naga::front::glsl::InterfaceLimits::WGPU_DEFAULT,
     )
     .unwrap();
     let info = naga::valid::Validator::new(

@@ -112,13 +112,24 @@ data slots. If a neighbor write must commit with the subject edit, use
 inputs fails. A read-only or no-op loan does not copy or journal storage. A type
 with no subscriber skips the tick entirely; pending load notices still come first.
 
+### Combining subject and world writes in one transaction
+
+To make a dropped-item edit and a resident block-entity write atomic, run both inside
+`tick.transaction` and return `Err` if either write or the subject reacquisition is refused:
+
+```rust
+{{#include ../../../examples/src/block_entity_transaction.rs:block_entity_transaction}}
+```
+
 ## One-shot client effects
 
 To tell clients about something that happened once, such as a burst of particles, queue
 fields instead of writing them to the saved `nbt`. In `block_entity_tick`, queue
-fields with `tick.with_view(|mut view| view.set_client_update_fields(fields))`, then
-request a sync through `tick.host().block_entity_sync(pos)`. A later call replaces
-the batch; an empty compound clears it.
+fields and take the holder's handle in the same loan:
+`tick.with_view(|mut view| { view.set_client_update_fields(fields); view.handle() })`.
+If it returns `Some(holder)`, call `holder.sync(tick.host())` after the loan ends
+and handle its `LevelWriteError`. The handle works while the holder is out for its own tick.
+A later call to `set_client_update_fields` replaces the batch; an empty compound clears it.
 
 The next block change that reaches a viewer puts the fields over what
 `block_entity_update_tag` gives, or sends them alone without one, in one packet for every
@@ -179,7 +190,7 @@ impl mod_api::BlockEntityPart for Node {
 // registrar.block_entity_part(&node_type, Node)?;
 ```
 
-`event.pos` is where it stands and `event.entity` its data at the call: on a server what the chunk was
+`event.pos` is where it stands and `event.entity` borrows its data at the call: on a server what the chunk was
 just saved with, on a client its copy as the server last sent it. On a server the chunk is saved before
 the call, so a change made in it is not kept, and the chunk may already have left the level, so its
 handle's reads find nothing there. It is not called when the world closes, nor on a client when its whole
@@ -190,12 +201,20 @@ server hook told after the chunk's block entities; a client is told of the block
 ## Client ticks: a machine's hum
 
 What a running machine does on the client alone (a looping hum, smoke from its chimney, a part eased between
-two server updates) hangs off its client tick, vanilla's client `BlockEntityTicker`. A `BlockEntityPart` opts
-its type in with `block_entity_client_ticks`, asked once for each of its blocks, and is then told
-`block_entity_client_tick` once per client tick for each copy this client holds, while the level runs (not
-paused or frozen), in vanilla's ticker order. A loaded copy ticks whether or not it is drawn: hidden behind a
+two server updates) hangs off its client tick, vanilla's client `BlockEntityTicker`. Attach a
+`BlockEntityPart` that implements `block_entity_client_tick`. The type binds a client ticker for its
+accepted states and receives the callback once per client tick for each copy this client holds, while the level runs (not
+paused or frozen), in vanilla's ticker order: a chunk's initial tickers join in packet order, and a state
+change that adds a ticker joins it when enabled. A loaded copy ticks whether or not it is drawn: hidden behind a
 wall, out of view or beyond `block_entity_view_distance`, where `block_entity_submit` is not called. It is
-never called on a server, and a type that doesn't opt in costs nothing.
+never called on a server, and a type with no client tick method has no client ticker.
+
+Use `BlockEntityTypeBuilder::ticker_when` if one type should tick only in some states or on a
+particular side. Its callback receives immutable `BlockMetadata`, the typed `BlockState` and the
+`LogicalSide`. For example, `.ticker_when(|blocks, state, _side| state.property(blocks, "enabled") ==
+Ok(Some("true")))` binds only enabled states on sides that have a subscribed Part. The decision is
+prepared with the block-state table, not asked on every tick. Server tickers use the same registration
+and run `BlockEntityPart::block_entity_tick` through the server scope.
 
 The event carries `event.subject: BlockEntityClientScope<'_>`: call `event.subject.with_view(|view| ...)`
 to read the resident copy's handle, position, level, block state, data slots, item slots and merged NBT
@@ -221,13 +240,6 @@ struct Hum;
 impl mod_api::BlockPart for Hum {}
 #[mod_api::sunrise_part]
 impl mod_api::BlockEntityPart for Hum {
-    fn block_entity_client_ticks(
-        &self,
-        _: &dyn mod_api::ClientHost,
-        event: &mut mod_api::BlockEntityClientTicksEvent<'_>,
-    ) {
-        event.ticks = true;
-    }
     fn block_entity_client_tick(
         &self,
         event: &mut mod_api::BlockEntityClientTickEvent<'_>,
@@ -285,9 +297,10 @@ or changing levels stops every sound. Add particles from the same tick with `hos
 ([hook notes](../../reference/hook-notes.md#client-ticks-hums-smoke-and-moving-parts)).
 
 `player.open_menu(host, entity)` also returns `Result<bool, BlockEntityError>`:
-`Ok(true)` means opened, `Ok(false)` means a non-provider, cancelled open,
-or unconnected/wrong-level player, and
-`Err(BlockEntityError::Stale)` means the entity
+`Ok(true)` means opened, or queued if called inside a transaction. A queued open runs at
+outermost commit and the provider can still refuse; an abort discards the request. `Ok(false)`
+means a non-provider, cancelled open, unconnected/wrong-level player or an active speculative menu
+action. `Err(BlockEntityError::Stale)` means the entity
 does not resolve. It never opens a replacement through an old handle.
 
 ## Blockless status menus
@@ -301,10 +314,23 @@ It is an empty slice when no payload matched this opening. Reusing a window id d
 its previous context. Keep owned decoded values if the screen needs them later; the bytes are
 borrowed only during construction. `pos` is an optional hint offered to the factory and later
 returned by `screen_pos()`. Neither is live data or block backing.
-The menu's declared container slots, if any, start empty. Opening returns the window id or
-`Ok(None)` when vetoed. Invalid type,
+Pass `Some(hand)` from an item's use to let `menu_still_valid` compare that hand's current
+stack with the one at open. Other openers pass `None`. The menu's declared container slots,
+if any, start empty; [`owned_slots`](../../concepts/capabilities/menu-slots.md#menu-owned-slots)
+declares a temporary container that belongs to the window, and adding `results` makes it a
+blockless processing menu that computes outputs in `menu_slot_changed`, handles takes in
+`menu_slot_take`, and returns its non-result inputs to the player on close (dropping overflow, or
+dropping on disconnect or death, and discarding result slots). Opening returns `Ok(Some(MenuRef))`
+(call `menu.container_id(host)` for its window id) or `Ok(None)` when vetoed. Invalid type,
 connection or client support, opening bytes, data count or
 title returns `OpenMenuError`. Neither a refused nor a cancelled open closes the old menu.
+In a transaction `Ok(Some(staged))` returns a `MenuRef` for the staged request, not a live
+window. It cannot read or change any live menu. `container_opened` and installation wait until
+block changes have replayed at outermost commit. The veto runs in the player's level outside
+the transaction. Obtain the live handle after commit from `player.container_menu(host)` or in
+`player_container_open`; an abort leaves the old menu and its window counter untouched.
+An open requested during menu removal also returns a staged handle and waits for the close
+and any earlier requests for that player. Initialize the installed menu in `player_container_open`.
 
 For a slotless status screen, declare `data/mymod/sunrise/menu/status.json` as
 `{ "slots": 0, "player_inventory": false, "data_slots": 2 }`. Register a screen factory
@@ -313,34 +339,51 @@ for `mymod:status` with an empty slot layout. Add a draw callback to the screen 
 ```rust,ignore
 let mut request = ModMenuOpen::new(status, Text::translate("mymod.status", vec![]));
 request.data = vec![-80_000, 7];
-player.open_mod_menu(host, request)?;
+let _menu = player.open_mod_menu(host, request)?; // Option<MenuRef>
 ```
 
 The negotiated blockless payload sends initial `i32` values after the window opens, at
 indices 0 through 65,535. Larger declared indices remain in server storage. A client
 without the required layout is refused with `OpenMenuError::PlayerUnavailable`. In the draw
-callback, read `frame.data.get(index)`; values are not available before they arrive. The owning mod
+callback, read `frame.data.get(index)`; values are not available before they arrive. Server code
 gets the live `MenuRef` from `player.container_menu(host)` or the open event and calls, for
 example, `menu.set_data_slot(host, 0, 120_000)?`. It returns `true` for a changed value,
-`false` for a repeat, and refuses unsupported, stale or foreign menus and undeclared indices.
+`false` for a repeat, and refuses unsupported or stale menus and undeclared indices.
 Updates go only to this player and this window. Within a transaction, another write sees the
 pending value, but a full resend only includes committed values. Commit sends the final changed
 values and abort discards pending writes. Closing or replacing the menu discards its data.
 Buttons and validity still use `menu_button` and `menu_still_valid`; neither needs a slot.
 
-The menu the player had open closes on the server first, as a close does: its `removed`, one
-`player_container_close`, and the cursor stack and crafting grids back to the inventory. Then
+The menu the player had open closes on the server first, as a close does: its `removed`
+(`MenuPart::menu_removed` for an owning mod menu, with any detached `owned_slots` and
+`opening_hand`), the cursor stack and crafting grids back to the inventory, and then one
+`player_container_close` before `containerMenu` resets to the inventory menu. Then
 the new menu is built, its screen opened and its contents sent, and `player_container_open`
-tells of it synchronously. Version 2 names the type string `menu_type` (also on
-`player_container_close`) and supplies `menu: Option<MenuRef>`, valid during the open callback,
-as `PlayerRef::container_menu` does. It is `None` for crafting tables, merchants, workstations,
-lecterns and mount inventories. `replace` is the Java `MenuProvider`'s choice
+tells of it. A native open requested in a transaction or during Close returns a staged identity,
+not a usable window. It runs on commit or after the current Close; initialize the new owner's slots
+and data in `player_container_open`. An abort leaves the old menu alone and does not advance the wire
+counter. On disconnect, `player_logged_out` runs before the old menu's owner and Close listeners.
+`player_container_open` v2 and `player_container_close` v2 both name
+the type string `menu_type` and supply `menu: Option<MenuRef>` (`player_container_close` v2 also
+passes `player: PlayerRef`), valid during the callback as `PlayerRef::container_menu` is. The closing
+handle goes stale after `player_container_close` returns. It is `None` for crafting tables, merchants,
+workstations, lecterns and mount inventories. `replace` is the Java `MenuProvider`'s choice
 (`shouldTriggerClientSideContainerClosingOnOpen`), as for
-[`open_menu`](../../concepts/capabilities/menu-slots.md#a-mods-chest-menu):
+[`PlayerRef::open_chest_menu`](../../concepts/capabilities/menu-slots.md#a-mods-chest-menu):
 `MenuReplace::CloseFirst`, vanilla's default, first sends the client a close for the old
 window, which centres the mouse again; `MenuReplace::InPlace` sends none, so the client keeps
 its screen and its mouse where they are until the new screen replaces it, as when one
 screen of a machine leads to the next.
+
+### Window ids
+
+Each menu the server opens for a player takes the next id of that player's container counter
+(vanilla's `ServerPlayer.containerCounter`), 1 to 100 and round again. `player.container_counter(host)` reads
+the id the last open took, so the next one is `counter % 100 + 1`: the id to hand a menu built before the open,
+as Java's `MenuProvider.createMenu(containerId, ...)` is. `player.next_container_counter(host)` advances the
+counter as an open does without opening anything, for an open that decides after the advance that no window
+follows (a `createMenu` that answers `null`). A mod modelling `ServerPlayer.openMenu` from inside the player's
+own action closes the open menu first with `menu.close_container(host)`, which closes at the call there.
 
 ## The menu's screen
 
@@ -454,7 +497,9 @@ If the extra backing indices are not needed, declare only the exposed slots on t
 
 A click callback returns `None` to leave the press alone or `Some(id)` to consume it and
 send that button to the server. The active menu's server `MenuPart` handles accepted IDs
-in `menu_button` after the normal window and menu checks and `menu_button_valid`. Do not use a client hit test or
+in `menu_button` after the normal window and menu checks and `menu_button_valid`. The owner
+is the declaring package of the custom menu type or the verified opener of a stock menu, not
+the package supplying its screen or recipe book. Do not use a client hit test or
 opening data as authority. `event.subject` is a live `BlockEntityScope`: call
 `event.subject.with_view(...)` to read or edit the backing resident block entity in place
 (it returns `None` on a blockless menu, where `event.context.pos` is also `None`, or after

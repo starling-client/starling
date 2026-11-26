@@ -1,0 +1,2 @@
+# add_pass validates a pass's mod target and mip level from the table entry, without resolving views (#6031).
+sunrise-client-render gfx::mod_render_targets::tests::checking_a_level_agrees_with_resolving_it lib daily gpu

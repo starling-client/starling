@@ -5,6 +5,18 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+/// The value passed to the selected registry codec by NeoForge's
+/// `ConditionalOps.ConditionalDecoder`, after conditions have been evaluated.
+pub fn into_payload(mut value: Value) -> Value {
+    if let Some(fields) = value.as_object_mut()
+        && fields.remove("neoforge:conditions").is_some()
+        && let Some(payload) = fields.remove("neoforge:value")
+    {
+        return payload;
+    }
+    value
+}
+
 /// Enabled package IDs captured by the engine for one owning data load.
 /// Readers share this immutable view; they never recover IDs from namespaces.
 /// Resource selection happens before evaluating ordinary JSON files. Stacked
@@ -250,49 +262,35 @@ impl LoadConditions {
     }
 
     fn verdict(&self, file: &Value, path: &dyn Fn() -> String) -> Verdict {
-        let Some(payload) = file.get("neoforge:conditions") else {
-            return Ok(true);
+        self.decode_file(file)?.verdict(&self.context, path)
+    }
+
+    /// Decode the entire condition list without testing it or adding to registry diagnostics.
+    pub fn decode_file_conditions<'a>(
+        &'a self,
+        file: &'a Value,
+    ) -> Result<DecodedFileConditions<'a>, String> {
+        self.decode_file(file)
+            .map_err(|error| error.message().to_owned())
+    }
+
+    fn decode_file<'a>(
+        &'a self,
+        file: &'a Value,
+    ) -> Result<DecodedFileConditions<'a>, ConditionError> {
+        let payload = file.get("neoforge:conditions");
+        let nodes = match payload {
+            Some(payload) => Condition::decode_list(
+                payload,
+                self.registered.as_ref().map(|lookup| &lookup.0.handlers),
+            )?,
+            None => Vec::new(),
         };
-        let loaded = |id: &str| self.mod_loaded(id);
-        let context = &self.context;
-        let Some(registered) = &self.registered else {
-            return evaluate(payload, &loaded, None, context);
-        };
-        let path = path();
-        let path = if path.starts_with("data/") {
-            path.as_str()
-        } else {
-            path.rfind("/data/")
-                .map_or(path.as_str(), |i| &path[i + 1..])
-        };
-        let state = self
-            .diagnostics
-            .0
-            .as_ref()
-            .expect("owning candidate diagnostics");
-        // Context-free answers are shared across candidate views. Cache the
-        // result, not its loader's recovery policy.
-        let encoded = payload.to_string();
-        let reads_context = [
-            "neoforge:registered",
-            "neoforge:tag_empty",
-            "neoforge:feature_flags_enabled",
-        ]
-        .iter()
-        .any(|name| encoded.contains(name));
-        let cell = state
-            .lock()
-            .unwrap()
-            .cache
-            .entry((
-                path.to_owned(),
-                encoded,
-                if reads_context { context.key() } else { 0 },
-            ))
-            .or_default()
-            .clone();
-        cell.get_or_init(|| evaluate(payload, &loaded, Some(&registered.0.handlers), context))
-            .clone()
+        Ok(DecodedFileConditions {
+            load: self,
+            payload,
+            nodes,
+        })
     }
 
     /// Refuse a failed candidate before publishing any of its tables.
@@ -454,9 +452,154 @@ impl std::hash::Hash for RegisteredLookup {
     }
 }
 
-#[cfg(test)]
-fn conditions_hold(v: &Value, loaded: &dyn Fn(&str) -> bool) -> bool {
-    evaluate(&v["neoforge:conditions"], loaded, None, &Context::default()).unwrap_or(false)
+/// A file's decoded condition program, borrowing its payload and the load that knows its handlers.
+pub struct DecodedFileConditions<'a> {
+    load: &'a LoadConditions,
+    payload: Option<&'a Value>,
+    nodes: Vec<Condition<'a>>,
+}
+
+/// The outcome of advancing a condition program in a staged registry load.
+pub enum ConditionProgress<'a> {
+    Complete(bool),
+    NeedsRegistry(&'a str),
+}
+
+/// A suspended program keeps its place in the condition tree, not a cached verdict.
+/// In particular, reaching a pending registry never re-invokes an earlier callback.
+pub struct ConditionEvaluation<'program, 'load> {
+    load: &'load LoadConditions,
+    frames: Vec<EvaluationFrame<'program, 'load>>,
+    missing_context: Option<&'static str>,
+}
+
+enum EvaluationFrame<'program, 'load> {
+    List(bool, std::slice::Iter<'program, Condition<'load>>),
+    Not,
+    Operand(&'program Condition<'load>),
+}
+
+impl<'program, 'load> ConditionEvaluation<'program, 'load> {
+    /// Test reached operands against the current view, stopping before a pending registry read.
+    pub fn advance(
+        &mut self,
+        view: &LoadConditions,
+        pending: impl Fn(&str) -> bool,
+    ) -> Result<ConditionProgress<'program>, String> {
+        self.advance_context(&view.context, pending)
+            .map_err(|error| error.message().to_owned())
+    }
+
+    fn advance_context(
+        &mut self,
+        context: &Context,
+        pending: impl Fn(&str) -> bool,
+    ) -> Result<ConditionProgress<'program>, ConditionError> {
+        loop {
+            let mut result = match self.frames.last_mut() {
+                Some(EvaluationFrame::List(and, children)) => match children.next() {
+                    Some(node) => {
+                        self.frames.push(EvaluationFrame::Operand(node));
+                        continue;
+                    }
+                    None => *and,
+                },
+                Some(EvaluationFrame::Operand(node)) => match *node {
+                    Condition::Combinator { and, children } => {
+                        let frame = EvaluationFrame::List(*and, children.iter());
+                        self.frames.pop();
+                        self.frames.push(frame);
+                        continue;
+                    }
+                    Condition::Not(child) => {
+                        let frame = EvaluationFrame::Operand(child);
+                        self.frames.pop();
+                        self.frames.push(EvaluationFrame::Not);
+                        self.frames.push(frame);
+                        continue;
+                    }
+                    Condition::Registered { registry, .. }
+                    | Condition::TagEmpty { registry, .. }
+                        if pending(registry) =>
+                    {
+                        return Ok(ConditionProgress::NeedsRegistry(registry));
+                    }
+                    node => node.test_operand(self.load, context, &mut self.missing_context)?,
+                },
+                _ => unreachable!("a running condition has a list or operand"),
+            };
+            self.frames.pop();
+            // A list continues only so long as its result is undecided. Unwind a
+            // decided result through NOT and the parent lists without reading their tails.
+            loop {
+                match self.frames.last() {
+                    Some(EvaluationFrame::List(and, _)) if *and == result => break,
+                    Some(EvaluationFrame::Not) => result = !result,
+                    Some(EvaluationFrame::List(..)) => {}
+                    _ => {
+                        return self
+                            .missing_context
+                            .map_or(Ok(ConditionProgress::Complete(result)), |reason| {
+                                Err(ConditionError::MissingContext(reason))
+                            });
+                    }
+                }
+                self.frames.pop();
+            }
+        }
+    }
+}
+
+impl<'load> DecodedFileConditions<'load> {
+    /// Start testing an already decoded program in candidate dependency order.
+    pub fn evaluation(&self) -> ConditionEvaluation<'_, 'load> {
+        ConditionEvaluation {
+            load: self.load,
+            frames: vec![EvaluationFrame::List(true, self.nodes.iter())],
+            missing_context: None,
+        }
+    }
+
+    fn verdict(&self, context: &Context, path: &dyn Fn() -> String) -> Verdict {
+        let Some(payload) = self.payload else {
+            return Ok(true);
+        };
+        let evaluate = || match self.evaluation().advance_context(context, |_| false)? {
+            ConditionProgress::Complete(allowed) => Ok(allowed),
+            ConditionProgress::NeedsRegistry(_) => unreachable!("no pending registries"),
+        };
+        if !self.load.has_registered() {
+            return evaluate();
+        }
+        let path = path();
+        let path = if path.starts_with("data/") {
+            path.as_str()
+        } else {
+            path.rfind("/data/")
+                .map_or(path.as_str(), |i| &path[i + 1..])
+        };
+        let state = self
+            .load
+            .diagnostics
+            .0
+            .as_ref()
+            .expect("owning candidate diagnostics");
+        // Context-free answers are shared across candidate views. Cache the
+        // result, not its loader's recovery policy.
+        let reads_context = self.nodes.iter().any(Condition::reads_context);
+        let cell = state
+            .lock()
+            .unwrap()
+            .cache
+            .entry((
+                path.to_owned(),
+                payload.to_string(),
+                if reads_context { context.key() } else { 0 },
+            ))
+            .or_default()
+            .clone();
+        cell.get_or_init(evaluate).clone()
+    }
 }
 
 /// Does the built-in evaluator already implement this condition ID?
@@ -515,12 +658,39 @@ struct DecodeErrors<'a> {
 }
 
 impl<'a> Condition<'a> {
+    fn decode_list(
+        payload: &'a Value,
+        handlers: Option<&'a Handlers>,
+    ) -> Result<Vec<Self>, ConditionError> {
+        let nodes = payload.as_array().ok_or_else(|| {
+            ConditionError::Invalid("neoforge:conditions: expected a list".into())
+        })?;
+        // ICondition.LIST_CODEC decodes even branches that cannot affect the boolean answer.
+        let mut errors = DecodeErrors::default();
+        let conditions = nodes
+            .iter()
+            .filter_map(|node| Self::decode(node, handlers, &mut errors))
+            .collect();
+        if !errors.unknown.is_empty() {
+            errors.invalid.insert(format!(
+                "unknown load conditions [{}]",
+                errors.unknown.into_iter().collect::<Vec<_>>().join(", ")
+            ));
+        }
+        if !errors.invalid.is_empty() {
+            return Err(ConditionError::Invalid(
+                errors.invalid.into_iter().collect::<Vec<_>>().join("; "),
+            ));
+        }
+        Ok(conditions)
+    }
+
     fn decode(
         node: &'a Value,
         handlers: Option<&'a Handlers>,
         errors: &mut DecodeErrors<'a>,
     ) -> Option<Self> {
-        let Some(name) = node["type"].as_str() else {
+        let Some(name) = node.get("type").and_then(Value::as_str) else {
             errors
                 .invalid
                 .insert("load condition: missing or invalid type".into());
@@ -583,7 +753,22 @@ impl<'a> Condition<'a> {
                     .filter(|flags| !flags.is_empty())
                     .ok_or("flags")?
                     .iter()
-                    .map(|value| identifier(value, "flags"))
+                    .map(|value| {
+                        let id = identifier(value, "flags")?;
+                        // FeatureFlags.REGISTRY, not the enabled set in the condition context.
+                        match id.as_str() {
+                            "minecraft:vanilla"
+                            | "minecraft:trade_rebalance"
+                            | "minecraft:redstone_experiments"
+                            | "minecraft:minecart_improvements" => Ok(id),
+                            _ => {
+                                errors.invalid.insert(format!(
+                                    "neoforge:feature_flags_enabled: unknown flag {id}"
+                                ));
+                                Err("flags")
+                            }
+                        }
+                    })
                     .collect::<Result<_, _>>()?,
             ),
             Registered => Self::Registered {
@@ -612,25 +797,18 @@ impl<'a> Condition<'a> {
         }))
     }
 
-    // Only pure tests with available inputs can be skipped after the result
-    // is decided. Decode has already checked even the branches we skip.
-    fn must_test(&self, context: &Context) -> bool {
+    fn reads_context(&self) -> bool {
         match self {
-            Self::ModLoaded(_) | Self::Literal(_) => false,
-            Self::FeatureFlags(_) => context.features.is_none(),
-            Self::Registered { .. } => context.registries.is_none(),
-            Self::TagEmpty { .. } => context.tags.is_none(),
-            Self::Not(child) => child.must_test(context),
-            Self::Combinator { children, .. } => {
-                children.iter().any(|child| child.must_test(context))
-            }
-            Self::Custom(..) => true,
+            Self::FeatureFlags(_) | Self::Registered { .. } | Self::TagEmpty { .. } => true,
+            Self::Not(child) => child.reads_context(),
+            Self::Combinator { children, .. } => children.iter().any(Self::reads_context),
+            Self::ModLoaded(_) | Self::Literal(_) | Self::Custom(..) => false,
         }
     }
 
-    fn test(
+    fn test_operand(
         &self,
-        loaded: &dyn Fn(&str) -> bool,
+        load: &LoadConditions,
         context: &Context,
         missing_context: &mut Option<&'static str>,
     ) -> Verdict {
@@ -639,7 +817,7 @@ impl<'a> Condition<'a> {
             Ok(false)
         };
         Ok(match self {
-            Self::ModLoaded(id) => loaded(id),
+            Self::ModLoaded(id) => load.mod_loaded(id),
             Self::Literal(value) => *value,
             Self::FeatureFlags(flags) => {
                 let Some(enabled) = &context.features else {
@@ -661,67 +839,10 @@ impl<'a> Condition<'a> {
                 };
                 !tags.contains(registry, tag)
             }
-            Self::Not(child) => !child.test(loaded, context, missing_context)?,
-            Self::Combinator { and, children } => {
-                Self::combine(*and, children, loaded, context, missing_context)?
-            }
+            Self::Not(_) | Self::Combinator { .. } => unreachable!("not an operand"),
             Self::Custom(handler, args) => handler(args).map_err(ConditionError::Invalid)?,
         })
     }
-
-    fn combine(
-        and: bool,
-        children: &[Self],
-        loaded: &dyn Fn(&str) -> bool,
-        context: &Context,
-        missing_context: &mut Option<&'static str>,
-    ) -> Verdict {
-        let mut answer = and;
-        for child in children {
-            if answer == and || child.must_test(context) {
-                let value = child.test(loaded, context, missing_context)?;
-                answer = if and {
-                    answer && value
-                } else {
-                    answer || value
-                };
-            }
-        }
-        Ok(answer)
-    }
-}
-
-fn evaluate(
-    payload: &Value,
-    loaded: &dyn Fn(&str) -> bool,
-    handlers: Option<&Handlers>,
-    context: &Context,
-) -> Verdict {
-    // Decode the entire tree before invoking any test, including branches that
-    // cannot affect the boolean answer.
-    let mut errors = DecodeErrors::default();
-    let conditions: Vec<_> = payload
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|node| Condition::decode(node, handlers, &mut errors))
-        .collect();
-    if !errors.unknown.is_empty() {
-        errors.invalid.insert(format!(
-            "unknown load conditions [{}]",
-            errors.unknown.into_iter().collect::<Vec<_>>().join(", ")
-        ));
-    }
-    if !errors.invalid.is_empty() {
-        return Err(ConditionError::Invalid(
-            errors.invalid.into_iter().collect::<Vec<_>>().join("; "),
-        ));
-    }
-    let mut missing_context = None;
-    let allowed = Condition::combine(true, &conditions, loaded, context, &mut missing_context)?;
-    missing_context.map_or(Ok(allowed), |reason| {
-        Err(ConditionError::MissingContext(reason))
-    })
 }
 
 #[cfg(test)]
@@ -768,82 +889,81 @@ mod tests {
         );
     }
 
-    fn loaded(id: &str) -> bool {
-        matches!(id, "minecraft" | "create")
-    }
-
     #[test]
     fn a_file_without_conditions_loads() {
-        assert!(conditions_hold(
-            &json!({"type": "minecraft:crafting"}),
-            &loaded
-        ));
+        let conditions = LoadConditions::vanilla();
+        assert!(conditions.allows(&json!({"type": "minecraft:crafting"})));
+        assert!(conditions.allows(&json!({"neoforge:conditions": []})));
     }
 
     #[test]
     fn mod_loaded_follows_the_answer_and_minecraft_always_holds() {
-        assert!(conditions_hold(
-            &json!({"neoforge:conditions": [{"type": "neoforge:mod_loaded", "modid": "create"}]}),
-            &loaded
-        ));
-        assert!(!conditions_hold(
-            &json!({"neoforge:conditions": [{"type": "neoforge:mod_loaded", "modid": "ic2"}]}),
-            &loaded
-        ));
-        assert!(conditions_hold(
-            &json!({"neoforge:conditions": [{"type": "neoforge:mod_loaded", "modid": "minecraft"}]}),
-            &loaded
-        ));
+        let conditions = LoadConditions::new(["create"]);
+        for (modid, expected) in [("create", true), ("ic2", false), ("minecraft", true)] {
+            assert_eq!(
+                conditions.allows(&file(
+                    json!({"type": "neoforge:mod_loaded", "modid": modid})
+                )),
+                expected
+            );
+        }
     }
 
     #[test]
     fn not_and_or_combine_and_all_must_hold() {
-        let not = json!({"type": "neoforge:not", "value": {"type": "neoforge:mod_loaded", "modid": "ic2"}});
-        let mut c = serde_json::Map::new();
-        c.insert("neoforge:conditions".to_owned(), json!([not]));
-        assert!(conditions_hold(&Value::Object(c.clone()), &loaded));
-        let both = json!([
+        let conditions = LoadConditions::new(["create"]);
+        let absent = json!({"type": "neoforge:mod_loaded", "modid": "ic2"});
+        let not = json!({"type": "neoforge:not", "value": absent});
+        assert!(conditions.allows(&file(not)));
+        assert!(conditions.allows(&json!({"neoforge:conditions": [
             {"type": "neoforge:mod_loaded", "modid": "create"},
-            {"type": "neoforge:or", "values": [
-                {"type": "neoforge:mod_loaded", "modid": "ic2"},
-                {"type": "neoforge:always"}
-            ]}
-        ]);
-        c.insert("neoforge:conditions".to_owned(), both);
-        assert!(conditions_hold(&Value::Object(c), &loaded));
-        // One failing condition in the list fails the file.
-        let failing = json!([
-            {"type": "neoforge:always"},
-            {"type": "neoforge:mod_loaded", "modid": "ic2"}
-        ]);
-        let mut f = serde_json::Map::new();
-        f.insert("neoforge:conditions".to_owned(), failing);
-        assert!(!conditions_hold(&Value::Object(f), &loaded));
+            {"type": "neoforge:or", "values": [absent, {"type": "neoforge:always"}]}
+        ]})));
+        assert!(!conditions.allows(&json!({"neoforge:conditions": [
+            {"type": "neoforge:always"}, absent
+        ]})));
     }
 
     #[test]
     fn an_unknown_kind_nested_in_the_tree_leaves_the_file_out() {
-        // `not` of `not` of an unknown: the unknown is two levels down.
-        let nested_not = json!({
-            "neoforge:conditions": [
-                {"type": "neoforge:not", "value":
-                    {"type": "neoforge:not", "value":
-                        {"type": "example:unknown"}}}
-            ]
+        let conditions = LoadConditions::new([]);
+        let nested = json!({"type": "neoforge:not", "value":
+            {"type": "neoforge:not", "value": {"type": "example:unknown"}}
         });
-        assert!(!conditions_hold(&nested_not, &loaded));
-        // `or` with `always` beside a `not` of an unknown: one child is
-        // known-true, but the other's subtree holds an unknown.
-        let nested_or = json!({
-            "neoforge:conditions": [
-                {"type": "neoforge:or", "values": [
-                    {"type": "neoforge:always"},
-                    {"type": "neoforge:not", "value":
-                        {"type": "example:unknown"}}
-                ]}
-            ]
-        });
-        assert!(!conditions_hold(&nested_or, &loaded));
+        let always = json!({"type": "neoforge:always"});
+        let never = json!({"type": "neoforge:never"});
+        for list in [
+            json!([nested]),
+            json!([never, nested]),
+            json!([{"type":"neoforge:and", "values":[never, nested]}]),
+            json!([{"type":"neoforge:or", "values":[always, nested]}]),
+        ] {
+            let file = json!({"neoforge:conditions": list});
+            assert_eq!(
+                conditions.allows_file_isolated(&file, "nested.json"),
+                Err("unknown load conditions [example:unknown]".into())
+            );
+        }
+
+        for non_list in [
+            Value::Null,
+            always.clone(),
+            json!("neoforge:always"),
+            json!(false),
+        ] {
+            let file = json!({"neoforge:conditions": non_list});
+            assert_eq!(
+                conditions.allows_file_isolated(&file, "shape.json"),
+                Err("neoforge:conditions: expected a list".into())
+            );
+        }
+        // A malformed node and an unknown ID survive together, even in a dead branch.
+        let malformed = json!({"type":"neoforge:or", "values":[always, null, nested]});
+        assert!(!conditions.allows_file(&file(malformed), "malformed.json"));
+        assert_eq!(
+            conditions.check_errors(),
+            Err("malformed.json: load condition: missing or invalid type; unknown load conditions [example:unknown]".into())
+        );
     }
 
     fn file(condition: Value) -> Value {
@@ -899,6 +1019,27 @@ mod tests {
     }
 
     #[test]
+    fn feature_flag_codec_rejects_unknown_flags_in_unreached_operands() {
+        let known_disabled =
+            json!({"type":"neoforge:feature_flags_enabled", "flags":["trade_rebalance"]});
+        let conditions = LoadConditions::new([]).with_features(["vanilla"]);
+        assert_eq!(
+            conditions.allows_file_isolated(&file(known_disabled), "known.json"),
+            Ok(false)
+        );
+        let skipped = file(json!({"type":"neoforge:or", "values":[
+            {"type":"neoforge:always"},
+            {"type":"neoforge:feature_flags_enabled", "flags":["test:typo"]}
+        ]}));
+        assert!(
+            conditions
+                .allows_file_isolated(&skipped, "skipped.json")
+                .unwrap_err()
+                .contains("unknown flag test:typo")
+        );
+    }
+
+    #[test]
     fn tag_empty_reads_only_the_tags_this_load_bound() {
         let tin = file(json!({"type": "neoforge:tag_empty", "tag": "c:ingots/tin"}));
         let before_tags = LoadConditions::new([]);
@@ -940,6 +1081,9 @@ mod tests {
 
     #[test]
     fn malformed_builtin_operands_are_errors_before_testing() {
+        let conditions = LoadConditions::new([]).with_lookup([("test:unexpected", |_: &Value| {
+            panic!("tested before decode")
+        })]);
         for malformed in [
             json!({"type": "neoforge:feature_flags_enabled"}),
             json!({"type": "neoforge:feature_flags_enabled", "flags": null}),
@@ -962,44 +1106,59 @@ mod tests {
             let not = json!({"type": "neoforge:not", "value": malformed.clone()});
             let twice = json!({"type": "neoforge:not", "value": not.clone()});
             for condition in [malformed, not, twice] {
-                let payload = json!([
-                    {"type":"neoforge:mod_loaded","modid":"should_not_test"},
-                    {"type":"neoforge:or","values":[{"type":"neoforge:always"},condition]}
-                ]);
+                let file = json!({"neoforge:conditions": [
+                    {"type":"test:unexpected"},
+                    {"type":"neoforge:or","values":[{"type":"neoforge:always"}, condition]}
+                ]});
                 assert!(
-                    matches!(
-                        evaluate(
-                            &payload,
-                            &|_| panic!("tested before decode"),
-                            None,
-                            &Context::default()
-                        ),
-                        Err(ConditionError::Invalid(_))
-                    ),
-                    "{payload}"
+                    conditions
+                        .allows_file_isolated(&file, "invalid.json")
+                        .is_err(),
+                    "{file}"
                 );
             }
         }
     }
 
     #[test]
-    fn decided_combinators_skip_pure_tests_but_not_missing_context() {
-        for (op, deciding, answer) in [("and", "never", false), ("or", "always", true)] {
-            let decisive = json!({ "type": format!("neoforge:{deciding}") });
-            let pure = json!({"type":"neoforge:mod_loaded","modid":"create"});
-            let payload = json!([{"type":format!("neoforge:{op}"),"values":[decisive,pure]}]);
-            let loaded = |_: &str| panic!("tested an already decided pure branch");
-            let context = Context::default();
-            assert_eq!(evaluate(&payload, &loaded, None, &context).unwrap(), answer);
-            let missing = json!([{"type":format!("neoforge:{op}"),"values":[decisive,
-                {"type":"neoforge:not","value":{"type":"neoforge:tag_empty","tag":"test:x"}}]}]);
-            assert!(matches!(
-                evaluate(&missing, &loaded, None, &context),
-                Err(ConditionError::MissingContext(
-                    "neoforge:tag_empty: tags not loaded yet"
-                ))
-            ));
+    fn decided_branches_skip_handlers_and_unavailable_context() {
+        let conditions = LoadConditions::new([])
+            .with_lookup([("test:fail", |_: &Value| Err("handler was reached".into()))]);
+        let never = json!({"type":"neoforge:never"});
+        let always = json!({"type":"neoforge:always"});
+        let fail = json!({"type":"test:fail"});
+        let missing = json!({"type":"neoforge:not", "value":
+            {"type":"neoforge:tag_empty", "tag":"test:x"}
+        });
+        for tail in [fail.clone(), missing.clone()] {
+            for (list, expected) in [
+                (json!([never, tail]), false),
+                (
+                    json!([{"type":"neoforge:and", "values":[never, tail]}]),
+                    false,
+                ),
+                (
+                    json!([{"type":"neoforge:or", "values":[always, tail]}]),
+                    true,
+                ),
+            ] {
+                let file = json!({"neoforge:conditions": list});
+                assert_eq!(
+                    conditions.allows_file_isolated(&file, "decided.json"),
+                    Ok(expected)
+                );
+            }
         }
+        let undecided = json!({"neoforge:conditions": [always, fail, never]});
+        assert_eq!(
+            conditions.allows_file_isolated(&undecided, "undecided.json"),
+            Err("handler was reached".into())
+        );
+        assert_eq!(
+            conditions.allows_file_isolated(&file(missing), "bootstrap.json"),
+            Err("neoforge:tag_empty: tags not loaded yet".into())
+        );
+        assert_eq!(conditions.check_errors(), Ok(()));
     }
 
     #[test]
@@ -1040,7 +1199,7 @@ mod tests {
             "neoforge:conditions".to_owned(),
             json!([{"type": "neoforge:future_thing"}]),
         );
-        assert!(!conditions_hold(&Value::Object(c), &loaded));
+        assert!(!LoadConditions::vanilla().allows(&Value::Object(c)));
     }
 }
 

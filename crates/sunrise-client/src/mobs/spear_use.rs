@@ -7,9 +7,8 @@
 //! living entity flags tell the clients (`mob_meta`), so the arm and the
 //! spear are drawn charging for them as well.
 use super::{
-    Damage, DamageKind, Mob, MobEvent, MobWorld, Species, Who,
+    Damage, DamageKind, Mob, MobEvent, MobWorld, Species, WeaponAttack, WeaponHit, Who,
     brain::Timed,
-    gear,
     goals::{Cx, Goal, LOOK, MOVE, goal_clone, reduced},
 };
 use crate::spear::{Kinetic, REACH, hits_in_reach};
@@ -192,10 +191,12 @@ fn damage_entities(
     );
     let now = w.game_time;
     let action_factor = f64::from(0.2_f32);
-    // The attack damage attribute's base value.
-    let base = m.attrs.attack_damage;
+    // `getAttributeBaseValue(ATTACK_DAMAGE)`: the base alone, without the
+    // modifiers (Strength, Weakness, the weapon's, a command's) that
+    // `m.attrs.attack_damage` holds.
+    let base = super::finalize::base_value(m, super::finalize::Attr::AttackDamage) as f32;
     let mut affected = false;
-    for (i, _) in hits {
+    for (contact, (i, _)) in hits.into_iter().enumerate() {
         let target = &targets[i];
         let recent = m.extra.stabbed.as_ref().is_some_and(|stabbed| {
             stabbed.iter().any(|&(who, at)| {
@@ -227,6 +228,7 @@ fn damage_entities(
             affected |= stab_attack(
                 m,
                 target.who,
+                contact,
                 amount,
                 (damages, pushes, dismounts),
                 w,
@@ -251,82 +253,59 @@ fn damage_entities(
 fn stab_attack(
     m: &mut Mob,
     target: Who,
+    contact: usize,
     base_damage: f32,
     (deals_damage, deals_knockback, dismounts): (bool, bool, bool),
     w: &MobWorld,
     events: &mut Vec<MobEvent>,
 ) -> bool {
-    let species = match target {
-        Who::Mob(id) => w.seen(id).map(|s| s.species),
-        Who::Player => None,
+    let Some(weapon) = m.extra.main_hand_stack() else {
+        return false;
     };
-    // `EnchantmentHelper.modifyDamage`.
-    let damage = base_damage + gear::melee_bonus(m, species);
     let from = [m.position.x, m.position.y, m.position.z];
-    // `weaponItem.getDamageSource(this)`: the spear's, for the hurt and the pushes.
-    let source = Damage {
-        kind: DamageKind::Spear,
-        attacker: Some(Who::Mob(m.id)),
-        from: Some(from),
-        attacker_species: Some(m.species()),
+    let to_rad = std::f32::consts::PI / 180.0;
+    // `LivingEntity.stabAttack`: a type in `cannot_be_dismounted_by_item_usage` stays seated.
+    let flag = crate::items::EntityTypeTags::CANNOT_BE_DISMOUNTED_BY_ITEM_USAGE;
+    let seated = match target {
+        Who::Player => w
+            .items
+            .is_some_and(|items| items.entity_type_tags.has_flag("minecraft:player", flag)),
+        Who::Mob(id) => w.seen(id).is_some_and(|s| w.entity_tag_bit(&s.kind, flag)),
     };
-    let mut affected = deals_knockback;
-    if deals_damage {
-        match target {
-            Who::Player => events.push(w.route_player_event(MobEvent::DamagePlayer {
-                amount: damage,
-                from,
-                kind: "minecraft:spear",
-            })),
-            Who::Mob(id) => events.push(MobEvent::AttackMob {
-                target: id,
-                amount: damage,
-                source,
-            }),
-        }
-        affected = true;
-        // `EnchantmentHelper.doPostAttackEffects`: Fire Aspect.
-        let burn = gear::fire_aspect(m);
-        if burn > 0 {
-            events.push(w.route_player_event(MobEvent::Ignite(target, burn)));
-        }
-    }
-    if deals_knockback {
-        cause_extra_knockback(m, target, 0.4_f32, source, w, events);
-        // `LivingEntity.getKnockback`: the Knockback enchantment, halved.
-        let power = gear::knockback(m) as f32 / 2.0;
-        cause_extra_knockback(m, target, power, source, w, events);
-    }
-    if dismounts && w.target_info(target).is_some_and(|t| t.passenger) {
-        affected = true;
-        events.push(w.route_player_event(MobEvent::StabDismount { target }));
+    let dismounts = dismounts && !seated && w.target_info(target).is_some_and(|t| t.passenger);
+    events.push(w.route_player_event(MobEvent::WeaponAttack(WeaponHit {
+        target,
+        source: Damage {
+            kind: DamageKind::Spear,
+            attacker: Some(Who::Mob(m.id)),
+            from: Some(from),
+            direct: None,
+            attacker_species: Some(m.species()),
+        },
+        weapon: weapon.clone(),
+        amount: base_damage,
+        knockback: m.attrs.attack_knockback as f32,
+        direction: [
+            f64::from((m.yaw * to_rad).msin()),
+            f64::from(-(m.yaw * to_rad).mcos()),
+        ],
+        attack: WeaponAttack::Stab {
+            deals_damage,
+            deals_knockback,
+            dismounts,
+        },
+    })));
+    let affected = deals_damage || deals_knockback || dismounts;
+    if affected {
+        events.push(w.route_player_event(MobEvent::StabMemory {
+            attacker: m.id,
+            target,
+            contact,
+            attempted_damage: deals_damage,
+            otherwise_affected: deals_knockback || dismounts,
+        }));
     }
     affected
-}
-
-/// `LivingEntity.causeExtraKnockback`: a push along the attacker's facing,
-/// which slows the attacker.
-fn cause_extra_knockback(
-    m: &mut Mob,
-    target: Who,
-    power: f32,
-    source: Damage,
-    w: &MobWorld,
-    events: &mut Vec<MobEvent>,
-) {
-    if power <= 0.0 {
-        return;
-    }
-    let to_rad = std::f32::consts::PI / 180.0;
-    events.push(w.route_player_event(MobEvent::Knockback {
-        target,
-        power: f64::from(power),
-        x: f64::from((m.yaw * to_rad).msin()),
-        z: f64::from(-(m.yaw * to_rad).mcos()),
-        source,
-        apply_blocking: None,
-    }));
-    m.velocity = Vec3::new(m.velocity.x * 0.6, m.velocity.y, m.velocity.z * 0.6);
 }
 
 /// `Mob.chargeSpeedModifier` of the mount: a zombie horse runs 1.4 times as
@@ -509,23 +488,28 @@ impl SpearUse {
 }
 impl Goal for SpearUse {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE | LOOK
     }
     /// `SpearUseGoal.canUse`: able to attack and not using an item.
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         able_to_attack(m, cx.w) && !is_using_item(m)
     }
     /// `SpearUseGoal.canContinueToUse`.
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         self.state.as_ref().is_some_and(|s| !s.done) && able_to_attack(m, cx.w)
     }
     /// `SpearUseGoal.start`: aggressive, with a new state.
+    #[inline]
     fn start(&mut self, m: &mut Mob, _: &mut Cx) {
         m.ai.aggressive = true;
         self.state = Some(SpearUseState::new());
     }
     /// `SpearUseGoal.stop`: the navigation stops, the spear goes down.
+    #[inline]
     fn stop(&mut self, m: &mut Mob, _: &mut Cx) {
         m.nav_stop();
         m.ai.aggressive = false;
@@ -533,6 +517,7 @@ impl Goal for SpearUse {
         stop_using_item(m);
     }
     /// `SpearUseGoal.tick`.
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         if let Some(mut state) = self.state.take() {
             self.step(&mut state, m, cx);
@@ -803,19 +788,24 @@ impl Default for PiglinSpear {
 }
 impl Goal for PiglinSpear {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE | LOOK
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
         Self::fighting_with_spear(m)
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
         Self::fighting_with_spear(m)
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         true
     }
     /// `Behavior.doStop` of the behaviours still running when the fight ends.
+    #[inline]
     fn stop(&mut self, m: &mut Mob, _: &mut Cx) {
         if self.approach.running {
             self.approach.running = false;
@@ -831,6 +821,7 @@ impl Goal for PiglinSpear {
         }
     }
     /// `Brain.tick`'s `startEachNonRunningBehavior`, then `tickEachRunningBehavior`.
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         let now = cx.w.game_time;
         if !self.approach.running
@@ -891,30 +882,39 @@ pub(super) fn holds_non_melee_weapon(m: &Mob) -> bool {
 }
 impl<G: Goal + Clone + 'static> Goal for NoMeleeWithSpear<G> {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         self.0.flags()
     }
+    #[inline]
     fn name(&self) -> &'static str {
         self.0.name()
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         !holds_non_melee_weapon(m) && self.0.can_use(m, cx)
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         !holds_non_melee_weapon(m) && self.0.can_continue(m, cx)
     }
+    #[inline]
     fn interruptable(&self) -> bool {
         self.0.interruptable()
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         self.0.every_tick()
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.start(m, cx)
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.stop(m, cx)
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.tick(m, cx)
     }
@@ -922,7 +922,10 @@ impl<G: Goal + Clone + 'static> Goal for NoMeleeWithSpear<G> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Mob, count_use_tick, is_using_item, start_using_item};
+    use super::{
+        Mob, MobEvent, MobWorld, WeaponAttack, WeaponHit, Who, count_use_tick, damage_entities,
+        is_using_item, main_hand_kinetic, stab_attack, start_using_item,
+    };
     use sunrise_core::geometry::Vec3;
 
     fn spear_zombie() -> Mob {
@@ -932,6 +935,63 @@ mod tests {
             Some("minecraft:iron_spear".into()),
         );
         m
+    }
+
+    /// `KineticWeapon.damageEntities`: a mob's charge deals the attack damage
+    /// attribute's base value (`getAttributeBaseValue`) plus the speed bonus,
+    /// whatever modifiers (Strength, Weakness, a command's) the attribute has.
+    #[test]
+    #[ignore = "daily"]
+    fn a_mob_spear_charge_deals_the_base_attack_damage_without_its_modifiers() {
+        use crate::mobs::finalize::{self, Attr, Op};
+        let target = Mob::new(
+            2,
+            crate::mobs::sensor_scan_tests::kind(),
+            Vec3::new(0.0, 80.0, 1.6),
+            0.0,
+        );
+        let others = [target.seen(None, &crate::items::Items::empty())];
+        let charge = |modifier: Option<f64>| {
+            let mut m = spear_zombie();
+            m.position = Vec3::new(0.0, 80.0, 0.0);
+            finalize::set_base(&mut m, Attr::AttackDamage, 3.0);
+            if let Some(amount) = modifier {
+                finalize::add_modifier(
+                    &mut m,
+                    Attr::AttackDamage,
+                    "test:strength",
+                    amount,
+                    Op::AddValue,
+                );
+            }
+            let kinetic = main_hand_kinetic(&m).expect("an iron spear");
+            let mut amounts = Vec::new();
+            assert!(crate::mobs::world::with_test_world(&others, |w, _| {
+                let mut events = Vec::new();
+                // Running 0.1 blocks a tick (2 a second) toward the still target.
+                damage_entities(
+                    &mut m,
+                    &kinetic,
+                    kinetic.delay_ticks,
+                    w,
+                    Vec3::new(0.0, 0.0, 0.1),
+                    &mut events,
+                );
+                amounts.extend(events.iter().filter_map(|event| match event {
+                    MobEvent::WeaponAttack(WeaponHit {
+                        target: Who::Mob(2),
+                        amount,
+                        ..
+                    }) => Some(*amount),
+                    _ => None,
+                }));
+            }));
+            (m.attrs.attack_damage, amounts)
+        };
+        // 3 + floor(2 * 0.95), the iron spear's damage multiplier.
+        assert_eq!(charge(None), (3.0, vec![4.0]));
+        assert_eq!(charge(Some(10.0)), (13.0, vec![4.0]));
+        assert_eq!(charge(Some(-2.0)), (1.0, vec![4.0]));
     }
 
     /// The counters a mod's `living_set_item_use_remaining` leaves a 72000
@@ -953,5 +1013,67 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// `LivingEntity.stabAttack`: a stab that dismounts leaves a rider whose type is in
+    /// `cannot_be_dismounted_by_item_usage` seated and unseats one outside it, and the answer
+    /// follows the tag's membership when it is rebound (a `/reload`).
+    #[test]
+    #[ignore = "daily"]
+    fn a_stab_leaves_a_rider_of_the_no_dismount_tag_seated() {
+        use crate::items::{EntityTypeTags, Items};
+        let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
+        kind.id = "test:rider".into();
+        // Its place in the one-type registry the tags below bind, as a type's is set at load.
+        kind.flags.entity_tag_slot = Some(0);
+        let mut rider = Mob::new(2, std::sync::Arc::new(kind), Vec3::new(1.0, 80.0, 0.0), 0.0);
+        rider.extra.mount = Some(3);
+        let bind = |members: Vec<String>| {
+            let mut items = Items::empty();
+            items.set_entity_type_tags(EntityTypeTags::from_ordered(
+                [(
+                    "minecraft:cannot_be_dismounted_by_item_usage".to_owned(),
+                    members,
+                )]
+                .into(),
+                vec!["test:rider".to_owned()].into(),
+            ));
+            items
+        };
+        let (tagged, untagged) = (bind(vec!["test:rider".into()]), bind(Vec::new()));
+        let others = [rider.seen(None, &tagged)];
+        assert!(crate::mobs::world::with_test_world(&others, |world, _| {
+            for (items, seated) in [(&tagged, true), (&untagged, false), (&tagged, true)] {
+                let w = MobWorld {
+                    items: Some(items),
+                    ..world.clone()
+                };
+                let mut attacker = spear_zombie();
+                let mut events = Vec::new();
+                stab_attack(
+                    &mut attacker,
+                    Who::Mob(2),
+                    0,
+                    1.0,
+                    (false, false, true),
+                    &w,
+                    &mut events,
+                );
+                // The stab's handler unseats the target on the decision made here.
+                let dismounted = events.iter().any(|event| {
+                    matches!(
+                        event,
+                        MobEvent::WeaponAttack(WeaponHit {
+                            attack: WeaponAttack::Stab {
+                                dismounts: true,
+                                ..
+                            },
+                            ..
+                        })
+                    )
+                });
+                assert_eq!(dismounted, !seated, "seated {seated}");
+            }
+        }));
     }
 }

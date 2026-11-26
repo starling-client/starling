@@ -1,9 +1,8 @@
 use crate::source;
 use mod_source::{
     index::Index,
-    modules::{ModuleVariant, cfg_conditions, evaluate_cfg, walk_module_variants},
+    modules::{ModuleVariant, cfg_atom, cfg_conditions, evaluate_cfg, walk_module_variants},
 };
-use quote::ToTokens;
 use std::{
     cell::RefCell,
     collections::{BTreeMap, HashMap, HashSet},
@@ -34,8 +33,7 @@ impl Build {
                     .lines()
                     .filter(|line| !line.is_empty())
                     .map(|line| {
-                        syn::parse_str::<syn::Meta>(line)
-                            .map(|meta| meta.to_token_stream().to_string())
+                        cfg_atom(line)
                             .map_err(|error| format!("invalid target cfg {line:?}: {error}"))
                     })
                     .collect::<Result<HashSet<_>, _>>()

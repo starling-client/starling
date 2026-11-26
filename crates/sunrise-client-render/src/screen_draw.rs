@@ -171,7 +171,14 @@ pub fn text(out: &mut Vec<Draw>, text: Text, x: i32, y: i32, color: i32, shadow:
 /// in it stays a character, as `FormattedCharSequence.forward`
 /// (`StringDecomposer.iterate`, not `iterateFormatted`) draws it. An edit box
 /// builds its own sequence that way, so a `§` in its value shows.
-pub fn text_as_typed(out: &mut Vec<Draw>, text: Text, x: i32, y: i32, color: i32, shadow: bool) {
+pub(crate) fn text_as_typed(
+    out: &mut Vec<Draw>,
+    text: Text,
+    x: i32,
+    y: i32,
+    color: i32,
+    shadow: bool,
+) {
     if (color as u32) >> 24 != 0 {
         out.push(Draw::Text {
             text,
@@ -237,10 +244,10 @@ impl Measure<'_> {
     }
     /// `Font.width(FormattedCharSequence)` of a sequence drawn as it is: a
     /// `§` in the text counts as the glyph it is drawn as.
-    pub fn width_drawn(&self, t: &Text) -> i32 {
+    pub(crate) fn width_drawn(&self, t: &Text) -> i32 {
         self.0.width_drawn(t) as i32
     }
-    pub fn width_str(&self, s: &str) -> i32 {
+    pub(crate) fn width_str(&self, s: &str) -> i32 {
         self.0.width(s) as i32
     }
     /// `StringSplitter.headByWidth`: the leading characters whose widths sum to at most `max`.
@@ -390,7 +397,7 @@ impl Measure<'_> {
 }
 
 /// `TextAlignment.CENTER.calculateLeft`.
-pub fn center_left(anchor: i32, width: i32) -> i32 {
+pub(crate) fn center_left(anchor: i32, width: i32) -> i32 {
     anchor - width / 2
 }
 
@@ -401,7 +408,7 @@ pub fn clip(m: &Measure, t: &Text, width: i32) -> Text {
 }
 
 /// `StringWidget` (CLAMPED) at its position: its single line, clipped when wider than `max_width`.
-pub fn string_widget(
+pub(crate) fn string_widget(
     out: &mut Vec<Draw>,
     m: &Measure,
     message: &Text,
@@ -421,7 +428,7 @@ pub fn string_widget(
 
 /// `MultiLineLabel.create(font, maxWidth, maxRows, message)`: the lines and their widths;
 /// the last kept line gets "..." in `ellipsis` (the message's own style) when rows were cut.
-pub fn label_lines(
+pub(crate) fn label_lines(
     m: &Measure,
     message: &Text,
     max_width: i32,
@@ -444,7 +451,7 @@ pub fn label_lines(
     out
 }
 /// `MultiLineTextWidget.getWidth`.
-pub fn label_width(lines: &[(Text, i32)], max_width: i32) -> i32 {
+pub(crate) fn label_width(lines: &[(Text, i32)], max_width: i32) -> i32 {
     lines.iter().map(|l| l.1).max().unwrap_or(0).min(max_width)
 }
 /// `MultiLineTextWidget.visitLines`.
@@ -497,7 +504,7 @@ pub(crate) fn scroll_position(max_position: f64, now_ms: i64) -> f64 {
 /// clipped to the box and slides back and forth with the clock (`now_ms`).
 /// Vanilla intersects that clip with the enclosing scissor; `paint` does not
 /// stack scissors, so this must not be drawn inside another `Draw::Scissor`.
-pub fn scrolling_text(
+pub(crate) fn scrolling_text(
     out: &mut Vec<Draw>,
     m: &Measure,
     message: &Text,
@@ -532,7 +539,7 @@ pub fn scrolling_text(
 
 /// `ActiveTextCollector.acceptScrollingWithDefaultCenter`: `scrolling_text`
 /// centred between `left` and `right`.
-pub fn scrolling_with_default_center(
+pub(crate) fn scrolling_with_default_center(
     out: &mut Vec<Draw>,
     m: &Measure,
     message: &Text,
@@ -549,7 +556,7 @@ pub fn scrolling_with_default_center(
 /// `AbstractWidget.extractScrollingStringOverContents`: `message` over the
 /// widget's box less `margin` on each side (centred, or scrolling when too
 /// wide).
-pub fn scrolling_string_over_contents(
+pub(crate) fn scrolling_string_over_contents(
     out: &mut Vec<Draw>,
     m: &Measure,
     message: &Text,
@@ -695,7 +702,7 @@ impl TextField {
             message: String::new(),
         }
     }
-    pub fn inner_width(&self) -> i32 {
+    pub(crate) fn inner_width(&self) -> i32 {
         if self.bordered {
             self.width - 8
         } else {
@@ -876,14 +883,14 @@ impl TextField {
         )
     }
     /// `getScreenX`: where a character index is drawn, from the box's left.
-    pub fn screen_x(&self, m: &Measure, index: usize) -> i32 {
+    pub(crate) fn screen_x(&self, m: &Measure, index: usize) -> i32 {
         if index > chars(&self.value) {
             return self.x;
         }
         self.x + m.width_str(&sub(&self.value, 0, index))
     }
     /// `setCursorPosition` then `setHighlightPos`.
-    pub fn set_cursor_and_highlight(&mut self, m: &Measure, pos: usize) {
+    pub(crate) fn set_cursor_and_highlight(&mut self, m: &Measure, pos: usize) {
         self.set_cursor(m, pos);
         self.set_highlight(m, pos);
     }
@@ -1318,12 +1325,11 @@ mod button_label_tests {
                 paint_tooltip(batch, atlas, draws, tooltip);
             };
             assert!(!batch.vertices.is_empty());
-            for v in &batch.vertices {
+            for [x0, y0, x1, y1] in batch.visible_quads().flatten() {
                 assert!(
-                    (left as f32..=right as f32).contains(&v.pos[0])
-                        && (20.0..=40.0).contains(&v.pos[1]),
+                    left as f32 <= x0 && x1 <= right as f32 && 20.0 <= y0 && y1 <= 40.0,
                     "{ms}: {:?}",
-                    v.pos
+                    [x0, y0, x1, y1]
                 );
             }
         }
@@ -1383,12 +1389,9 @@ mod button_label_tests {
                     };
                     if let Some([x0, _, x1, _]) = scissor_of(&draws) {
                         // Whatever scrolled is clipped to the (maybe empty) box.
-                        for v in batch.vertices.iter().skip(sprite_vertices(&atlas, w)) {
-                            assert!(
-                                x1 <= x0 || (x0 as f32..=x1 as f32).contains(&v.pos[0]),
-                                "{w} {ms}: {:?}",
-                                v.pos
-                            );
+                        let scrolled = batch.visible_quads().skip(sprite_vertices(&atlas, w) / 6);
+                        for [l, _, r, _] in scrolled.flatten() {
+                            assert!(x0 as f32 <= l && r <= x1 as f32, "{w} {ms}: {:?}", [l, r]);
                         }
                     }
                 }
@@ -1428,23 +1431,7 @@ mod scissor_tests {
 
     /// The bounds of every quad's six vertices, in draw order.
     fn quads(batch: &HudBatch) -> Vec<[f32; 4]> {
-        batch
-            .vertices
-            .as_chunks::<6>()
-            .0
-            .iter()
-            .map(|q| {
-                let (mut x0, mut y0) = (f32::MAX, f32::MAX);
-                let (mut x1, mut y1) = (f32::MIN, f32::MIN);
-                for v in q {
-                    x0 = x0.min(v.pos[0]);
-                    y0 = y0.min(v.pos[1]);
-                    x1 = x1.max(v.pos[0]);
-                    y1 = y1.max(v.pos[1]);
-                }
-                [x0, y0, x1, y1]
-            })
-            .collect()
+        batch.visible_quads().flatten().collect()
     }
 
     fn fill(x0: i32, y0: i32, x1: i32, y1: i32) -> Draw {

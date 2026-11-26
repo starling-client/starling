@@ -1,8 +1,8 @@
 import hashlib,json,sys,uuid
 from pathlib import Path
-sys.path.insert(0,str(Path.cwd()/'tools'))
-import test_command_exec_parity as driver
-import harness_args
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_command_exec_parity as driver, harness_args
 CASES=[('absent',None),('zero','0b'),('one','1'),('byte127','127b'),('byte128','-128b'),('byte255','-1b'),('int256','256'),('intminus','-1'),('longexact','9007199254740993L'),('longminus','-4294967297L'),('floatpositive','1.75f'),('floatnegativehalf','-0.5f'),('doublenegative','-1.75d'),('doublewrap','256.75d'),('positiveoverflow','1e20d'),('negativeoverflow','-1e20d')]
 def program():
  ops=[]

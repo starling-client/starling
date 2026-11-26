@@ -119,8 +119,50 @@ mod game {
                 Ok(self.clone())
             }
         }
-        #[path = "INDEX_PATH"]
-        pub mod block_state;
+        /// The engine's block-state index as generated dispatch reaches it: routing reads the
+        /// state's block key without converting, and every conversion is counted.
+        pub mod block_state {
+            use super::TryIntoApi;
+            use crate::registry::{BlockRegistry, BlockStateId};
+            use crate::{BlockState, BlockStateError};
+            use std::cell::RefCell;
+            thread_local! {
+                static INDEX: RefCell<Vec<BlockState>> = const { RefCell::new(Vec::new()) };
+            }
+            pub(crate) fn block_listens(hook: crate::HookId, state: BlockStateId) -> bool {
+                INDEX.with_borrow(|index| {
+                    index.get(state.0 as usize).is_some_and(|value| {
+                        crate::__private::block_key_listens(hook, value.block())
+                    })
+                })
+            }
+            pub fn bind(registry: &BlockRegistry) -> Result<(), String> {
+                let forward = (0..registry.len())
+                    .map(|id| {
+                        registry
+                            .state(BlockStateId(id as u32))
+                            .unwrap()
+                            .try_into_api()
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|error| format!("{error:?}"))?;
+                INDEX.with_borrow_mut(|index| *index = forward);
+                Ok(())
+            }
+            impl TryIntoApi for BlockStateId {
+                type Api = BlockState;
+                type Error = BlockStateError;
+                fn try_into_api(&self) -> Result<BlockState, BlockStateError> {
+                    crate::CONVERSIONS.fetch_add(1, crate::Ordering::Relaxed);
+                    INDEX.with_borrow(|index| {
+                        index
+                            .get(self.0 as usize)
+                            .copied()
+                            .ok_or(BlockStateError::UnknownState)
+                    })
+                }
+            }
+        }
         pub fn bind(registry: &crate::registry::BlockRegistry) {
             block_state::bind(registry).unwrap();
         }

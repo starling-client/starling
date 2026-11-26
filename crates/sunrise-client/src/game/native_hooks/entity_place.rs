@@ -3,12 +3,11 @@ use super::*;
 /// The hook points. Each does nothing in Sunrise.
 impl Game<'_> {
     /// `BlockEvent.EntityPlaceEvent` (and `EntityMultiPlaceEvent`, which
-    /// extends it): `placer` is about to set the block `state` at `pos`
-    /// against `placed_against`, as a player placing an item
-    /// (`BlockItem.place`, before the stack shrinks), an enderman putting its
-    /// block down or a snow golem's trail. `placement` is `Multi` when the
-    /// placement writes more blocks (bed, door, tall plant). Cancel stops
-    /// the whole placement. Server-side.
+    /// extends it): `placer` places `state` at `pos` against `placed_against`.
+    /// Ordinary item and mob placements fire before the write; chosen player
+    /// placements fire after their states and block entities are staged.
+    /// `placement` is `Multi` when the placement writes more blocks (bed, door,
+    /// tall plant). Cancel stops the whole placement. Server-side.
     pub(in crate::game) fn native_entity_place(
         &mut self,
         placer: Option<EntityRef>,

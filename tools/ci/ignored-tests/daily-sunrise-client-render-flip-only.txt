@@ -1,0 +1,7 @@
+# The daily GPU tests of a program whose fragment stage writes no buffer (#675).
+sunrise-client-render gfx::pack_post::flip_only_tests::a_program_that_only_flips_flips_its_buffers lib daily gpu
+sunrise-client-render gfx::pack_post::flip_only_tests::a_program_that_only_flips_notes_its_storage_buffer_fragment_stage lib daily gpu
+sunrise-client-render gfx::pack_post::flip_only_tests::a_program_that_writes_no_buffer_runs_its_compute_stages lib daily gpu
+sunrise-client-render gfx::pack_post::flip_only_tests::a_shadowcomp_program_that_only_flips_flips_its_buffers lib daily gpu
+sunrise-client-render gfx::pack_post::flip_only_tests::a_shadowcomp_program_that_writes_no_buffer_runs_its_compute_stages lib daily gpu
+sunrise-client-render gfx::pack_post::flip_only_tests::flips_of_programs_that_only_flip_toggle_their_buffers lib daily gpu

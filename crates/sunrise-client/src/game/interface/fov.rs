@@ -3,6 +3,10 @@
 //! (`GameRenderer.bobHurt`, `bobView`), the portal and Nausea spin
 //! (`GameRenderer.renderLevel`) and the spyglass (`SpyglassItem`,
 //! `Hud.extractSpyglassOverlay`). The arithmetic is `sunrise_client::camera`.
+#[cfg(test)]
+#[path = "fov_camera_tests.rs"]
+mod camera_tests;
+
 use super::Game;
 use sunrise_core::position::BlockPos;
 
@@ -15,8 +19,8 @@ pub(super) fn studio_draws_hand(studio_freecam: bool, ordinary_hand_visible: boo
 }
 use sunrise_client::{
     camera::{
-        BobState, CameraFluid, FovPlayer, HurtBob, UseItem, bob_matrix, field_of_view_modifier,
-        spinning_effect_matrix,
+        BobState, CameraFluid, FovPlayer, UseItem, bob_matrix, field_of_view_modifier,
+        raw_field_of_view_modifier, spinning_effect_matrix,
     },
     fog::{FogType, fog_type},
     hud::HudBatch,
@@ -32,11 +36,22 @@ fn valid_fov_modifier(modifier: f32, fallback: f32) -> f32 {
 }
 
 impl Game<'_> {
-    /// `Player.isScoping`: using a spyglass.
+    /// `Player.isScoping`: the active use began with a spyglass.
     pub(super) fn scoping(&self) -> bool {
-        self.using
-            .and_then(|(slot, _)| self.stack_in(slot))
-            .is_some_and(|s| &*s.item == "minecraft:spyglass")
+        self.using.is_some()
+            && self
+                .use_start
+                .item
+                .as_ref()
+                .is_some_and(|s| self.stack_scopes(s))
+    }
+    /// Whether `stack` looks through as a spyglass does (`spyglass_scope`).
+    pub(super) fn stack_scopes(&self, stack: &sunrise_client::items::ItemStack) -> bool {
+        self.stack_can_perform(
+            stack,
+            super::item_abilities::ability::SPYGLASS_SCOPE,
+            &*stack.item == "minecraft:spyglass",
+        )
     }
     /// `options.fovEffectScale`.
     pub(super) fn fov_effect_scale(&self) -> f32 {
@@ -65,13 +80,13 @@ impl Game<'_> {
         spinning_effect_matrix(intensity, fx.spinning_time + partial * fx.spinning_speed)
     }
     /// What `AbstractClientPlayer.getFieldOfViewModifier` reads.
-    fn fov_player(&self) -> Option<FovPlayer> {
+    pub(super) fn fov_player(&self) -> Option<FovPlayer> {
         let p = self.player.as_ref()?;
-        let using = self.using.and_then(|(slot, ticks)| {
-            let stack = self.stack_in(slot)?;
+        let using = self.using.and_then(|(_, ticks)| {
+            let stack = self.use_start.item.as_ref()?;
             let item = match &*stack.item {
                 "minecraft:bow" => UseItem::Bow,
-                "minecraft:spyglass" => UseItem::Spyglass,
+                _ if self.stack_scopes(stack) => UseItem::Spyglass,
                 _ => UseItem::Other,
             };
             Some((item, ticks as i32))
@@ -84,32 +99,51 @@ impl Game<'_> {
             using,
         })
     }
+    /// The handle of the player entity `id` the camera follows, when it is a player this
+    /// client knows by uuid (a detached spectated snapshot has none).
+    fn camera_player_ref(&self, id: u32) -> Option<mod_api::PlayerRef> {
+        let epoch = self.native_lifecycle.epoch()?;
+        Some(mod_api::__private::game::player_ref(
+            mod_api::EntityRef::new(epoch, id),
+            self.remote_player_uuid(id)?,
+        ))
+    }
     /// `Camera.tick`: the eye height and the field-of-view modifier ease
-    /// halfway toward the player's each tick.
+    /// halfway toward the camera player's each tick.
     pub(super) fn tick_fov(&mut self) {
         let first_person = self.camera_type.is_first_person();
         let effect = self.fov_effect_scale();
-        let target = self.fov_player().map_or(1.0, |player| {
-            let base = field_of_view_modifier(&player, first_person, effect);
-            let mut modifier = base;
-            self.native_compute_fov_modifier(&player, base, &mut modifier);
-            valid_fov_modifier(modifier, base)
-        });
-        let target = self.zoomed_fov_target(target);
-        // A server's spectator camera on a mob or an armor stand: its eye
-        // height. Its modifier stays 1 (another player's own modifier is not
-        // modelled here); the zoom extra still narrows it.
-        if let Some(e) = self.spectated_camera_snapshot() {
-            self.view
-                .tick(Some(e.eye_height), self.zoomed_fov_target(1.0));
-            return;
-        }
-        let eye = self.player.as_ref().map(|p| {
-            if self.sleeping.is_some() {
-                0.2
-            } else {
-                p.dimensions.eye_height
-            }
+        let (fov_player, eye, who) = match self.camera_subject() {
+            Some(cam) if !cam.is_local_player => (
+                cam.fov_player,
+                Some(cam.camera.eye_height),
+                self.camera_player_ref(cam.entity_id),
+            ),
+            _ => (
+                self.fov_player(),
+                self.player.as_ref().map(|p| {
+                    if self.sleeping.is_some() {
+                        0.2
+                    } else {
+                        p.dimensions.eye_height
+                    }
+                }),
+                self.local_player(),
+            ),
+        };
+        let target = fov_player.map_or(1.0, |player| {
+            // AbstractClientPlayer.getFieldOfViewModifier returns 0.1 before
+            // Mth.lerp / ComputeFovModifierEvent when scoping in first person.
+            let Some(raw) = raw_field_of_view_modifier(&player, first_person) else {
+                return field_of_view_modifier(&player, first_person, effect);
+            };
+            let interpolated = field_of_view_modifier(&player, first_person, effect);
+            let Some(who) = who else {
+                return interpolated;
+            };
+            let mut modifier = interpolated;
+            self.native_compute_fov_modifier(who, raw, effect, &mut modifier);
+            valid_fov_modifier(modifier, interpolated)
         });
         self.view.tick(eye, target);
     }
@@ -121,6 +155,12 @@ impl Game<'_> {
         p.health
             .dead_or_dying()
             .then(|| self.ui.death_time.min(i32::MAX as u32) as i32)
+    }
+    /// `modifyFovBasedOnDeathOrFluid`'s death time: the camera entity's, so a spectated entity's.
+    fn camera_death_time(&self) -> Option<i32> {
+        self.camera_subject()
+            .and_then(|c| c.camera.living)
+            .and_then(|l| l.dead)
     }
     /// `Camera.getFluidInCamera` for the camera at `camera`, where the parts of each block it
     /// reads may answer the state the camera sees there (`state_at_viewpoint`), and the mods may
@@ -165,15 +205,14 @@ impl Game<'_> {
         if self.studio.flying() {
             return self.studio.freecam.fov.clamp(1.0, 179.0);
         }
-        let fov = self.view.calculate_fov(
+        let vanilla = self.view.calculate_fov(
             partial,
             self.settings.fov as i32,
             self.fov_effect_scale(),
-            self.death_time(),
+            self.camera_death_time(),
             self.camera_fluid(camera),
             false,
         );
-        let vanilla = self.zoomed_fov_degrees(fov);
         let mut degrees = vanilla;
         self.native_compute_fov(partial, camera, &mut degrees);
         if degrees.is_finite() && (1.0..=179.0).contains(&degrees) {
@@ -185,10 +224,10 @@ impl Game<'_> {
     /// How many times the view is magnified right now: the player's field of
     /// view over the one actually in use, and 1 when nothing is zooming.
     ///
-    /// Reads the result rather than any one zoom, so it covers all three:
-    /// the spyglass (`AbstractClientPlayer.getFieldOfViewModifier`'s tenth
-    /// while `isScoping`), the zoom mod (`native_zoom`) and any mod that
-    /// narrows the field of view through `native_compute_fov`.
+    /// Reads the result rather than any one zoom, so it covers both the
+    /// spyglass (`AbstractClientPlayer.getFieldOfViewModifier`'s tenth while
+    /// `isScoping`) and any mod that narrows the field of view through
+    /// `native_compute_fov_modifier` or `native_compute_fov`.
     pub(super) fn zoom_magnification(&self, camera: [f64; 3]) -> f32 {
         let now = self.fov_degrees(1.0, camera);
         let base = self.settings.fov.clamp(1.0, 179.0);
@@ -204,8 +243,9 @@ impl Game<'_> {
         if !self.settings.extras.lod_zoom_detail {
             return None;
         }
+        let yaw = self.camera_subject().map_or(self.yaw, |c| c.camera.y_rot);
         sunrise_client::lod::ZoomAim::new(
-            self.yaw,
+            yaw,
             self.fov_degrees(1.0, camera),
             self.zoom_magnification(camera),
         )
@@ -215,32 +255,27 @@ impl Game<'_> {
         self.view.calculate_hud_fov(
             partial,
             self.fov_effect_scale(),
-            self.death_time(),
+            self.camera_death_time(),
             self.camera_fluid(camera),
         )
     }
     /// The pose `GameRenderer.renderLevel` multiplies into the projection:
     /// `bobHurt`, then `bobView` with the View Bobbing option.
     pub(super) fn bob_matrix(&self, partial: f32) -> glam::Mat4 {
-        let Some(p) = self.player.as_ref() else {
+        let Some(cam) = self.camera_subject() else {
             return glam::Mat4::IDENTITY;
         };
-        let hurt = &p.health.hurt;
         let state = BobState {
-            living: Some(HurtBob {
-                hurt_time: p.health.hurt_animation_time as f32 - partial,
-                hurt_duration: hurt.hurt_duration,
-                hurt_dir: p.health.hurt_dir,
-                death_time: self.death_time().map(|t| t as f32 + partial),
+            living: cam.hurt.map(|h| h.bob(partial)),
+            player: cam.avatar_bob.map(|avatar| {
+                (
+                    avatar.backwards_interpolated_walk_distance(partial),
+                    avatar.interpolated_bob(partial),
+                )
             }),
-            player: Some((
-                self.avatar.backwards_interpolated_walk_distance(partial),
-                self.avatar.interpolated_bob(partial),
-            )),
         };
         let tilt = self.settings.file.double("damageTiltStrength");
-        glam::Mat4::from_cols_array(&bob_matrix(&state, tilt, self.settings.view_bobbing).m)
-            * self.native_shake_matrix(partial)
+        glam::Mat4::from_cols_array(&bob_matrix(&state, tilt, self.effective_view_bobbing()).m)
     }
     /// `AbstractClientPlayer.tick` and `aiStep` (`ClientAvatarState.tick`,
     /// `updateBob`), `rideTick`'s `resetBob` and `LocalPlayer.move`'s walked
@@ -274,15 +309,14 @@ impl Game<'_> {
             .player
             .as_ref()
             .map(|p| [p.position.x, p.position.y, p.position.z]);
-        self.audio.play("minecraft:item.spyglass.use", at, 1.0, 1.0);
+        self.play_audio("minecraft:item.spyglass.use", at, 1.0, 1.0);
         self.award_stat("used", "minecraft:spyglass", 1);
         self.start_using_item();
     }
     /// `SpyglassItem.releaseUsing` / `finishUsingItem` (after 1200 ticks).
     pub(super) fn stop_spyglass(&mut self) {
         let at = self.eye_position();
-        self.audio
-            .play("minecraft:item.spyglass.stop_using", at, 1.0, 1.0);
+        self.play_audio("minecraft:item.spyglass.stop_using", at, 1.0, 1.0);
     }
     /// `Hud.extractCameraOverlays`: the spyglass scope, its size easing
     /// towards 1.125 by half the frame's game ticks and reset to 0.5 while

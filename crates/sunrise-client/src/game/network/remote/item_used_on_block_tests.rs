@@ -29,6 +29,7 @@ pub(super) fn install_criteria(game: &mut Game<'_>, counts: &[u32], item: &str) 
                     json!({"location": {"type": "minecraft:match_tool", "predicate": tool}})
                 })
                 .into(),
+                player: None,
             }],
             requirements: vec![vec!["seen".into()]],
             rewards: Default::default(),

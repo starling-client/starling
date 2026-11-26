@@ -1,0 +1,2 @@
+ids = ["handle:item::item_stack::ItemStack::hurt_and_break"]
+why = "Mods wear a stack nobody wears (one a hook hands over, one in a container or a block entity) as ItemStack.hurtAndBreak does, Unbreaking and other durability effects included, instead of adding to its damage by hand (#5369)."

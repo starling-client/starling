@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Open corrupt NBT and Anvil files through the real dedicated-server load paths."""
-try:
-    from . import save_fault_harness as h
-except ImportError:
-    import save_fault_harness as h
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import save_fault_harness as h
 
 SECTOR = 4096
 

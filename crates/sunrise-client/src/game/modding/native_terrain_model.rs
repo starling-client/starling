@@ -2,9 +2,7 @@
 //! (`BlockEntityDrawContext::terrain_model`): explicit solid/cutout/cutout-mipped selection,
 //! directional shading, UV shift and shrink, and tint.
 use super::{Game, native_block_entity_draw::BlockEntityDraw};
-use mod_api::{
-    ModelError, ModelRef, TerrainMaterial, TerrainModelError, TerrainModelOptions, TerrainShade,
-};
+use mod_api::{ModelError, ModelRef, TerrainMaterial, TerrainModelOptions, TerrainShade};
 use sunrise_client::{
     models::catalog::BakedFace,
     terrain_model::{
@@ -21,18 +19,19 @@ impl Game<'_> {
         draw: &mut BlockEntityDraw,
         model: ModelRef,
         options: TerrainModelOptions<'_>,
-    ) -> Result<(), TerrainModelError> {
+    ) -> Result<(), ModelError> {
         use mod_api::__private::game::Fields;
         let fields = model.fields();
         if fields.generation != self.standalone_geometry.generation() {
-            return Err(TerrainModelError::Model(ModelError::StaleModel));
+            return Err(ModelError::StaleModel);
         }
-        let faces = self
+        let (faces, special) = self
             .standalone_geometry
             .instance_slot(fields.slot)
-            .and_then(|_| self.model_faces(fields.slot))
-            .ok_or(TerrainModelError::Model(ModelError::UnknownModel))?;
+            .and_then(|slot| Some((self.model_faces(fields.slot)?, slot.special)))
+            .ok_or(ModelError::UnknownModel)?;
         let layers = &self.pack.render.sprite_layers;
+        let color = options.color;
         draw_terrain_model(
             draw,
             faces,
@@ -43,7 +42,13 @@ impl Game<'_> {
                     .copied()
             },
             options,
-        )
+            |pose, light, scope| {
+                if let Some(state) = special {
+                    self.special_model_part(state, pose, light, color, scope);
+                }
+            },
+        );
+        Ok(())
     }
 }
 
@@ -76,28 +81,35 @@ fn engine_options(options: TerrainModelOptions<'_>) -> NativeModelRenderOptions<
     }
 }
 
-/// Appends `faces` under `draw`'s pose, or appends nothing and returns `Refused` when
-/// the renderer refuses the model or `options`.
-fn draw_terrain_model(
+/// Appends each valid quad of `faces` under `draw`'s pose, then `special`'s vertices under the
+/// same pose and light, within `draw`'s device-derived batch capacity.
+pub(super) fn draw_terrain_model(
     draw: &mut BlockEntityDraw,
     faces: &[BakedFace],
     sprite_layer: impl Fn(&str) -> Option<u32>,
     options: TerrainModelOptions<'_>,
-) -> Result<(), TerrainModelError> {
+    special: impl FnOnce(glam::Mat4, u32, &mut sunrise_client::gfx::EntityQuadScope<'_>),
+) {
     let pose = draw.pose();
     let light = draw.element_ambient();
-    let vertices = draw.vertices_mut();
-    let start = vertices.len();
-    let drawn = draw_model(
-        faces,
-        pose,
-        light,
-        engine_options(options),
-        sprite_layer,
-        |vertex| vertices.push(vertex),
-    );
+    let start = draw.vertices_len();
+    {
+        let mut scope = draw.quad_scope();
+        if !scope.has_room() {
+            return;
+        }
+        draw_model(
+            faces,
+            pose,
+            light,
+            engine_options(options),
+            sprite_layer,
+            |quad| scope.submit_quad(quad),
+        );
+        special(pose, light, &mut scope);
+    }
     draw.lit_since(start, BlockEntityDraw::cell_centre, draw.light() & 0xffff);
-    drawn.then_some(()).ok_or(TerrainModelError::Refused)
+    draw.crumbling_since(start);
 }
 
 #[cfg(test)]
@@ -112,7 +124,7 @@ mod tests {
     use sunrise_client::{
         block_entity_render::diffuse_lights,
         gfx::{
-            TERRAIN_MODEL_CUTOUT_MIPPED_OVERLAY, TERRAIN_MODEL_CUTOUT_OVERLAY,
+            EntityQuadCapacity, TERRAIN_MODEL_CUTOUT_MIPPED_OVERLAY, TERRAIN_MODEL_CUTOUT_OVERLAY,
             TERRAIN_MODEL_SOLID_OVERLAY,
         },
         mesher::Vertex,
@@ -140,15 +152,22 @@ mod tests {
         match name {
             "test:casing" => Some(7),
             "test:belt" => Some(11),
+            "minecraft:missingno" => Some(1),
             _ => None,
         }
     }
 
     /// Full bright, a block east of the camera.
-    fn drawn(
+    fn drawn(faces: &[BakedFace], options: TerrainModelOptions<'_>) -> Vec<Vertex> {
+        drawn_with_budget(faces, options, EntityQuadCapacity::default_device(), 0)
+    }
+
+    fn drawn_with_budget(
         faces: &[BakedFace],
         options: TerrainModelOptions<'_>,
-    ) -> (Result<(), TerrainModelError>, Vec<Vertex>) {
+        capacity: EntityQuadCapacity,
+        reserved_quads: usize,
+    ) -> Vec<Vertex> {
         let mut draw = BlockEntityDraw::posed(
             0.0,
             0,
@@ -157,9 +176,10 @@ mod tests {
             Mat4::from_translation(Vec3::X),
             diffuse_lights(false),
             Vec::new(),
-        );
-        let result = draw_terrain_model(&mut draw, faces, sprite, options);
-        (result, draw.into_vertices())
+        )
+        .with_quad_budget(capacity, reserved_quads);
+        draw_terrain_model(&mut draw, faces, sprite, options, |_, _, _| {});
+        draw.into_vertices()
     }
 
     fn materials(vertices: &[Vertex]) -> Vec<u32> {
@@ -177,8 +197,7 @@ mod tests {
             face(Some(RenderType::Cutout), -1),
             face(Some(RenderType::CutoutMipped), -1),
         ];
-        let (result, vertices) = drawn(&faces, TerrainModelOptions::default());
-        assert_eq!(result, Ok(()));
+        let vertices = drawn(&faces, TerrainModelOptions::default());
         assert_eq!(
             materials(&vertices),
             [
@@ -189,11 +208,10 @@ mod tests {
         );
         assert!(vertices.iter().all(|v| v.layer >> 16 == 7));
         assert_eq!(vertices[0].pos[0], 1.0, "drawn under the pose");
-        let (result, vertices) = drawn(
+        let vertices = drawn(
             &faces,
             TerrainModelOptions::default().with_material(TerrainMaterial::CutoutMipped),
         );
-        assert_eq!(result, Ok(()));
         assert_eq!(
             materials(&vertices),
             [TERRAIN_MODEL_CUTOUT_MIPPED_OVERLAY; 3]
@@ -203,8 +221,7 @@ mod tests {
     #[test]
     fn a_translucent_quad_takes_the_translucent_material_under_the_models_and_a_chosen_one_wins() {
         let faces = [face(None, -1), face(Some(RenderType::Translucent), -1)];
-        let (result, vertices) = drawn(&faces, TerrainModelOptions::default());
-        assert_eq!(result, Ok(()));
+        let vertices = drawn(&faces, TerrainModelOptions::default());
         assert_eq!(
             materials(&vertices),
             [
@@ -212,11 +229,10 @@ mod tests {
                 sunrise_client::gfx::TERRAIN_MODEL_TRANSLUCENT_OVERLAY
             ]
         );
-        let (result, vertices) = drawn(
+        let vertices = drawn(
             &faces,
             TerrainModelOptions::default().with_material(TerrainMaterial::Cutout),
         );
-        assert_eq!(result, Ok(()));
         assert_eq!(materials(&vertices), [TERRAIN_MODEL_CUTOUT_OVERLAY; 2]);
     }
 
@@ -236,60 +252,123 @@ mod tests {
             ([face(None, -1)], TerrainShade::Off, false),
             ([flat()], TerrainShade::Entity, true),
         ] {
-            let (result, vertices) =
-                drawn(&faces, TerrainModelOptions::default().with_shade(shade));
-            assert_eq!(result, Ok(()));
+            let vertices = drawn(&faces, TerrainModelOptions::default().with_shade(shade));
             assert_eq!(shaded(&vertices), expected, "{shade:?}");
             assert_eq!(vertices[0].light, 0xF0F0);
         }
     }
 
+    /// `unlit` covers the helpers' draws, not `terrain_model`: its shading and light stay as
+    /// `TerrainModelOptions` and the draw's light give them.
+    #[test]
+    fn unlit_leaves_a_terrain_models_shading_and_light() {
+        let faces = [face(None, -1)];
+        let drawn = |unlit: bool| {
+            let mut draw = BlockEntityDraw::posed(
+                0.0,
+                0,
+                0x3070,
+                [0; 3],
+                Mat4::IDENTITY,
+                diffuse_lights(false),
+                Vec::new(),
+            );
+            draw.unlit(unlit);
+            let options = TerrainModelOptions::default().with_shade(TerrainShade::Model);
+            draw_terrain_model(&mut draw, &faces, sprite, options, |_, _, _| {});
+            draw.into_vertices()
+        };
+        let unlit = drawn(true);
+        let bytes = |v: &[Vertex]| bytemuck::cast_slice::<_, u8>(v).to_vec();
+        assert_eq!(bytes(&unlit), bytes(&drawn(false)));
+        assert!(
+            unlit[0].glint_uv != [0.0; 2] || unlit[0].normal != [0; 4],
+            "still shaded"
+        );
+        assert!(unlit.iter().all(|v| v.light == 0x3070));
+    }
+
     #[test]
     fn the_tint_multiplies_only_quads_with_a_tint_index() {
-        let (result, vertices) = drawn(
+        let vertices = drawn(
             &[face(None, 0), face(None, -1)],
             TerrainModelOptions::default().with_tint(0x80_4020),
         );
-        assert_eq!(result, Ok(()));
         // Vertex colours are ABGR.
         assert_eq!(vertices[0].color, 0xFF20_4080);
         assert_eq!(vertices[4].color, u32::MAX);
     }
 
     #[test]
-    fn a_shift_moves_its_sprite_and_bad_uv_options_refuse_the_draw() {
+    fn shift_fallback_per_quad_isolation_and_vertex_limit() {
         let belt = TerrainUvShift::new("test:casing", "test:belt", [0.5; 2], [0.5, 0.0]);
-        let (result, vertices) = drawn(
+        let vertices = drawn(
             &[face(None, -1)],
             TerrainModelOptions::default().with_uv_shift(belt),
         );
-        assert_eq!(result, Ok(()));
+        assert_eq!(vertices.len(), 4);
         assert!(vertices.iter().all(|v| v.layer >> 16 == 11));
         assert!(vertices.iter().all(|v| v.uv[0] >= 0.5 && v.uv[1] <= 0.5));
-        for options in [
+
+        // Unmatched source sprite is a no-op and keeps the quad's own sprite.
+        let vertices = drawn(
+            &[face(None, -1)],
             TerrainModelOptions::default().with_uv_shift(TerrainUvShift::new(
                 "test:belt",
                 "test:casing",
                 [1.0; 2],
                 [0.0; 2],
             )),
+        );
+        assert_eq!(vertices.len(), 4);
+        assert!(vertices.iter().all(|v| v.layer >> 16 == 7));
+
+        // Missing target sprite resolves to `minecraft:missingno` (layer 1).
+        let vertices = drawn(
+            &[face(None, -1)],
             TerrainModelOptions::default().with_uv_shift(TerrainUvShift::new(
                 "test:casing",
                 "test:missing",
                 [1.0; 2],
                 [0.0; 2],
             )),
+        );
+        assert_eq!(vertices.len(), 4);
+        assert!(vertices.iter().all(|v| v.layer >> 16 == 1));
+
+        // Non-finite shift skips the affected quad while leaving non-matching quads intact.
+        let mut belt_face = face(None, -1);
+        belt_face.quad.material.sprite = "test:belt".into();
+        belt_face.layer = 11;
+        let vertices = drawn(
+            &[face(None, -1), belt_face],
             TerrainModelOptions::default().with_uv_shift(TerrainUvShift::new(
                 "test:casing",
                 "test:belt",
                 [f32::NAN; 2],
                 [0.0; 2],
             )),
+        );
+        assert_eq!(vertices.len(), 4);
+        assert!(vertices.iter().all(|v| v.layer >> 16 == 11));
+
+        // Finite shrink ratio outside 0..=1 is accepted directly.
+        let vertices = drawn(
+            &[face(None, -1)],
             TerrainModelOptions::default().with_uv_shrink_ratio(1.5),
-        ] {
-            let (result, vertices) = drawn(&[face(None, -1)], options);
-            assert_eq!(result, Err(TerrainModelError::Refused), "{options:?}");
-            assert!(vertices.is_empty(), "{options:?}");
-        }
+        );
+        assert_eq!(vertices.len(), 4);
+
+        // Device-derived combined batch budget stops cleanly at whole quads without partial
+        // vertices, accounting for quads already reserved by other draw sources.
+        let capacity =
+            EntityQuadCapacity::from_max_buffer_size(EntityQuadCapacity::VERTEX_QUAD_BYTES * 5);
+        let vertices = drawn_with_budget(
+            &[face(None, -1), face(None, -1), face(None, -1)],
+            TerrainModelOptions::default(),
+            capacity,
+            3,
+        );
+        assert_eq!(vertices.len(), 8);
     }
 }

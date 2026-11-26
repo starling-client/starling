@@ -6,6 +6,16 @@ fn local_transfer_notice() -> Event {
         reason: sunrise_client::lang::get("disconnect.transfer"),
         key: Some("disconnect.transfer".into()),
         from_server: true,
+        after_login: true,
+    }
+}
+
+fn packet_error_notice() -> Event {
+    Event::Disconnected {
+        reason: sunrise_client::lang::get("disconnect.packetError"),
+        key: Some("disconnect.packetError".into()),
+        from_server: false,
+        after_login: true,
     }
 }
 
@@ -13,6 +23,7 @@ fn local_transfer_notice() -> Event {
 struct ListenerTurn {
     opening: Option<RemoteOpening>,
     end: Option<Event>,
+    packet_error: bool,
 }
 
 impl Remote {
@@ -62,6 +73,25 @@ impl Game<'_> {
     pub(in crate::game) fn acknowledge_test_configuration(&mut self) {
         self.wait_for_test_remote_event(|event| matches!(event, Event::FinishConfiguration(_)));
         self.poll_remote_events(true).unwrap();
+    }
+
+    #[cfg(test)]
+    pub(in crate::game) fn drain_test_remote_join(&mut self) {
+        self.wait_for_test_remote_event(|event| matches!(event, Event::Joined { .. }));
+        self.poll_remote_events(true).unwrap();
+    }
+
+    #[cfg(test)]
+    pub(in crate::game) fn dispatch_test_remote_event(&mut self, event: Event) -> Result<()> {
+        let (tx, rx) = sunrise_client::net::ingress::channel(1024, |_| 1).unwrap();
+        tx.send(event).unwrap();
+        let (event, credit) = rx.try_recv_owned().unwrap().into_parts();
+        self.remote
+            .as_mut()
+            .unwrap()
+            .backlog
+            .push_back(Received::Event(event, credit));
+        self.poll_remote_events(true)
     }
 
     /// `Minecraft.runTick`: exhaust the packet phase before starting client tasks. A
@@ -143,9 +173,7 @@ impl Game<'_> {
                 forgotten_credits.push(item.into_event_credit());
                 continue;
             }
-            sunrise_client::spans::time("pr_forget", || {
-                self.forget_remote_columns(&mut forgotten, true)
-            });
+            sunrise_client::spans::time("pr_forget", || self.forget_remote_packets(&mut forgotten));
             forgotten_credits.clear();
             let chunk = matches!(item, Received::Chunk(_, _));
             // Starling: an overdue backlog takes all its chunk packets, or on a phone
@@ -239,9 +267,7 @@ impl Game<'_> {
             return Ok(());
         }
         if self.remote.is_some() {
-            sunrise_client::spans::time("pr_forget", || {
-                self.forget_remote_columns(&mut forgotten, true)
-            });
+            sunrise_client::spans::time("pr_forget", || self.forget_remote_packets(&mut forgotten));
         }
         if let Some(r) = self.remote.as_mut() {
             r.backlog_since = if events.is_empty() {
@@ -271,8 +297,8 @@ impl Game<'_> {
         if !io.accepts_bundle() {
             return Ok(());
         }
-        let endpoint = remote.session.payload_endpoint();
-        let negotiated = endpoint.transport().epoch().is_some_and(|epoch| {
+        let payloads = remote.session.payload_transport();
+        let negotiated = payloads.epoch().is_some_and(|epoch| {
             epoch.phase == Phase::Play
                 && epoch
                     .peer
@@ -298,34 +324,37 @@ impl Game<'_> {
                 })
                 .collect::<Option<Vec<_>>>()
             else {
-                return self.refuse_play_payload("connection groups: unexpected packet in bundle");
+                return self.refuse_remote_input("connection groups: unexpected packet in bundle");
             };
             self.route_connection_group_bundle(&group_packets, negotiated)?;
             return Ok(());
         }
-        // One PacketProcessor task: a handler failure leaves the prefix applied,
-        // skips the suffix, and disconnects via onPacketError.
-        let stop_on_packet_error = |game: &Self, turn: &mut ListenerTurn| {
-            if let Some(remote) = &game.remote {
-                remote.session.close_after_pending();
-            }
-            turn.end.get_or_insert_with(|| io.packet_error());
-        };
+        // One PacketProcessor task: a handler failure leaves the prefix applied and skips the suffix.
         for packet in packets {
             match io.bundle_member(packet) {
                 BundleStep::Event(event) => {
                     if let Err(error) = self.handle_remote_event(event, turn) {
                         log::warn!("Sunrise: bundle packet handler failed: {error}");
-                        stop_on_packet_error(self, turn);
+                        self.record_packet_error(turn, || io.packet_error());
+                        break;
+                    }
+                    if self.remote.is_none() || turn.packet_error {
                         break;
                     }
                 }
                 BundleStep::HandlerFailed => {
                     log::warn!("Sunrise: oversized debug sample in play bundle");
-                    stop_on_packet_error(self, turn);
+                    self.record_packet_error(turn, || io.packet_error());
                     break;
                 }
                 BundleStep::Payload(payload) => {
+                    let Some(endpoint) = self
+                        .remote
+                        .as_ref()
+                        .map(|remote| remote.session.payload_endpoint())
+                    else {
+                        break;
+                    };
                     match Incoming::classify(endpoint.transport(), Phase::Play, payload) {
                         Ok(Classified::Application(incoming)) => {
                             for task in dispatch_bundle(incoming, &endpoint) {
@@ -388,10 +417,21 @@ impl Game<'_> {
             }
             Event::Joined {
                 registries,
+                datapacks,
                 name,
                 uuid,
             } => {
-                self.set_registries(registries);
+                if let Err(error) = self.set_registries(registries) {
+                    return self.refuse_remote_input(error);
+                }
+                // Vanilla `ClientConfigurationPacketListenerImpl.handleConfigurationFinished` ->
+                // `RegistryDataCollector.collectGameRegistries` throws on registry decode failure
+                // and disconnects via `ClientCommonPacketListenerImpl.onPacketError`.
+                if let Err(error) = self.install_client_datapack_receiver(datapacks) {
+                    log::warn!("Sunrise: failed to bind datapack vanilla values: {error}");
+                    self.record_packet_error(turn, packet_error_notice);
+                    return Ok(());
+                }
                 self.connection_joined();
                 self.close_dialogs();
                 if let Some(r) = self.remote.as_mut() {
@@ -408,7 +448,19 @@ impl Game<'_> {
             }
             Event::Features(features) => {
                 if let Some(remote) = &mut self.remote {
-                    remote.features = features.into();
+                    // ClientConfigurationPacketListenerImpl.handleEnabledFeatures resolves
+                    // network identifiers through FeatureFlags.REGISTRY.fromNames.
+                    let flags: sunrise_client::save::FeatureFlagIds = features
+                        .iter()
+                        .filter_map(|id| {
+                            let flag = mod_api::FeatureFlag::from_id(id);
+                            if flag.is_none() {
+                                log::warn!("Unknown feature flag: {id}");
+                            }
+                            flag
+                        })
+                        .collect();
+                    remote.features = flags.as_arc().clone();
                 }
             }
             Event::Brand(brand) => {
@@ -445,10 +497,18 @@ impl Game<'_> {
                 self.flush_chat_queue();
                 self.send_chat_acknowledgement();
                 self.close_dialogs();
+                // clearClientLevel posts Unload before clearing the level.
+                self.unload_client_level();
+                // Minecraft.clearClientLevel -> updateLevelInEngines(null) stops
+                // sound immediately after the level-unload event fires.
+                self.stop_sounds_for_new_level();
                 // The server configuring us now (a proxy's next one)
                 // offers its own far terrain, or none, and announces its
                 // own features again.
                 if let Some(remote) = &mut self.remote {
+                    remote.datapacks = Default::default();
+                    remote.datapack_vanilla_values = None;
+                    remote.has_logical_player = false;
                     remote.viewed.clear();
                     remote.far_terrain = None;
                     remote.quiet_commands = false;
@@ -461,29 +521,32 @@ impl Game<'_> {
                     remote.session.reset_far_terrain();
                 }
                 self.remove_local_player_body();
+                self.post_effects.clear();
+                if let Some(r) = self.remote.as_mut() {
+                    r.camera = None;
+                }
+                self.clear_spectated_entity_post_effect();
                 self.set_screen(Screen::Playing);
                 self.capture(false);
-                // clearClientLevel drops the client level now, so its
-                // unload comes before the configuration screen, not
-                // after the next login's load.
                 self.forget_all_remote_columns();
-                if let Some(old) = self.remote.as_mut().and_then(|r| r.heard_level.take()) {
-                    self.native_client_level_unload(&old);
-                }
-                // Minecraft.clearClientLevel -> updateLevelInEngines(null) stops
-                // sound immediately after the level-unload event fires.
-                self.stop_sounds_for_new_level();
                 self.native_lifecycle.begin_close();
                 self.native_lifecycle_world_closed();
                 let ticks = self.ticks;
                 if let Some(r) = self.remote.as_mut() {
                     self.native_net.holds.borrow_mut().clear();
                     r.reconfiguring = Some(ticks);
-                    r.chat_tree_received = false;
+                    r.server_chat_tree = None;
+                    r.logged_in = false;
                 }
                 resume.acknowledge();
             }
-            Event::Reconfigured(registries) => {
+            Event::Reconfigured {
+                registries,
+                datapacks,
+            } => {
+                if let Err(error) = self.set_registries(registries) {
+                    return self.refuse_remote_input(error);
+                }
                 // handleConfigurationStart → clearClientLevel, and the next
                 // ClientPacketListener starts with no players or scoreboard,
                 // no waypoints (its own ClientWaypointManager: a proxy's next
@@ -495,15 +558,28 @@ impl Game<'_> {
                 self.score.board = Default::default();
                 self.clear_waypoints();
                 if let Some(r) = self.remote.as_mut() {
+                    r.datapacks = Default::default();
+                    r.datapack_vanilla_values = None;
                     r.clear_attachments();
                     r.players.clear();
                     r.tab_players.clear();
+                    r.tab_game_modes.clear();
+                    r.own_player_info = std::cell::OnceCell::new();
+                    r.level_player_infos.clear();
+                    r.has_logical_player = false;
                     r.listed.clear();
                     r.signatures = Default::default();
                     r.custom_completions.clear();
                 }
                 self.ui.registries.custom_completions.clear();
-                self.set_registries(registries);
+                // Vanilla `ClientConfigurationPacketListenerImpl.handleConfigurationFinished` ->
+                // `RegistryDataCollector.collectGameRegistries` disconnects via `onPacketError`.
+                if let Err(error) = self.install_client_datapack_receiver(datapacks) {
+                    log::warn!("Sunrise: failed to bind datapack vanilla values: {error}");
+                    self.record_packet_error(turn, packet_error_notice);
+                    return Ok(());
+                }
+                self.begin_book_negotiation();
             }
             Event::Transfer(task) => {
                 if let Some(packet) = task.into_eligible_packet() {
@@ -545,10 +621,26 @@ impl Game<'_> {
                 C::CustomPayload(p) if p.channel == sunrise_client::perf_net::CHANNEL => {
                     self.remote_perf_reply(&p.data)
                 }
-                packet => self.handle_packet(packet)?,
+                packet => match self.handle_packet(packet) {
+                    // ClientCommonPacketListenerImpl.onPacketError: close first and keep any earlier reason.
+                    Err(e) if e.is::<PacketError>() => {
+                        log::warn!("Sunrise: disconnected: {e}");
+                        self.record_packet_error(turn, packet_error_notice);
+                    }
+                    other => other?,
+                },
             },
         }
         Ok(())
+    }
+
+    /// `ClientCommonPacketListenerImpl.onPacketError`: close first and keep any earlier reason.
+    fn record_packet_error(&self, turn: &mut ListenerTurn, notice: impl FnOnce() -> Event) {
+        if let Some(remote) = &self.remote {
+            remote.session.close_after_pending();
+        }
+        turn.end.get_or_insert_with(notice);
+        turn.packet_error = true;
     }
 
     pub(in crate::game) fn apply_staged_attachment_sync(
@@ -560,15 +652,35 @@ impl Game<'_> {
         self.remote_attachment_sync(message);
     }
 
+    /// `ClientCommonPacketListenerImpl.handlePostEffects`.
+    pub(super) fn apply_post_effects_packet(&mut self, p: play::PostEffects) -> Result<()> {
+        if !self
+            .remote
+            .as_ref()
+            .is_some_and(|r| r.logged_in && r.reconfiguring.is_none())
+        {
+            return Err(PacketError(
+                "Cannot set player post effects before the player is created.",
+            )
+            .into());
+        }
+        self.post_effects = p.effects;
+        Ok(())
+    }
+
     fn finish_remote_disconnect(&mut self, event: Event) -> Result<()> {
         let Event::Disconnected {
             reason,
             key,
             from_server,
+            after_login,
         } = event
         else {
             unreachable!("listener only retains the disconnect notice");
         };
+        if let Some(remote) = &self.remote {
+            remote.session.shutdown_and_wait();
+        }
         self.reset_book_view();
         log::info!("Sunrise: disconnected: {reason}");
         let by = if from_server {
@@ -577,9 +689,39 @@ impl Game<'_> {
             sunrise_hooks::connection::By::Connection
         };
         self.connection_ended(&reason, key.as_deref(), by);
-        self.leave_server(Some(Text::literal(reason)))
+        // Only the common listener calls Minecraft.disconnect; a failed
+        // ConnectScreen or login handshake just changes screens.
+        let screen_reason = match key.as_deref() {
+            Some(k) if sunrise_client::lang::get(k) == reason => Text::translate(k, &[]),
+            _ => Text::literal(reason),
+        };
+        if after_login {
+            self.leave_server(Some(screen_reason))
+        } else {
+            self.finish_leave_server(Some(screen_reason))
+        }
     }
 }
+
+/// Protocol error raised while handling a play packet (`ClientCommonPacketListenerImpl.onPacketError`).
+#[derive(Debug)]
+pub(in crate::game) struct PacketError(pub(super) &'static str);
+
+impl std::fmt::Display for PacketError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+impl std::error::Error for PacketError {}
+
+#[cfg(test)]
+#[path = "bundle_parity_tests.rs"]
+mod bundle_parity_tests;
+
+#[cfg(test)]
+#[path = "post_effects_parity_tests.rs"]
+mod post_effects_parity_tests;
 
 #[cfg(test)]
 mod tests {
@@ -588,6 +730,8 @@ mod tests {
     use crate::game::native_entity_refs::tests::with_client_game;
     use mod_api::{ClientHost, ClientPacketEvent, EntityRef, Hooks, ModEntry};
     use std::sync::mpsc;
+    use sunrise_client::{multiplayer::Screen as MultiplayerScreen, title::Mode};
+    use sunrise_protocol::{connection::Pipe, packets::Empty};
 
     #[test]
     #[ignore = "daily"]
@@ -744,9 +888,15 @@ mod tests {
                 game.selected, 1,
                 "the prefix applied but the suffix did not"
             );
-            assert!(
-                matches!(turn.end, Some(Event::Disconnected { key: Some(key), from_server: false, .. }) if key == "disconnect.packetError")
-            );
+            assert!(matches!(
+                turn.end,
+                Some(Event::Disconnected {
+                    key: Some(key),
+                    from_server: false,
+                    after_login: true,
+                    ..
+                }) if key == "disconnect.packetError"
+            ));
         });
     }
 
@@ -797,6 +947,200 @@ mod tests {
             ));
             game.poll_remote_before_tick().unwrap();
             assert_eq!(calls.try_recv(), Ok(None));
+        });
+    }
+
+    fn push_events(game: &mut Game<'_>, events: impl IntoIterator<Item = Event>) {
+        let publish = game.remote.as_ref().unwrap().session.received_event_probe();
+        for event in events {
+            publish(event);
+        }
+        game.wait_for_test_remote_event(
+            |event| matches!(event, Event::Packet(packet) if matches!(&**packet, C::Login(_))),
+        );
+    }
+
+    fn login_packet() -> play::Clientbound {
+        C::Login(play::Login {
+            player_id: 7,
+            hardcore: false,
+            levels: vec!["minecraft:overworld".into()],
+            max_players: 1,
+            chunk_radius: 2,
+            simulation_distance: 2,
+            reduced_debug_info: false,
+            show_death_screen: true,
+            limited_crafting: false,
+            spawn: play::SpawnInfo {
+                dimension_type: 0,
+                dimension: "minecraft:overworld".into(),
+                seed: 0,
+                game_type: 1,
+                previous_game_type: None,
+                debug: false,
+                flat: true,
+                last_death: None,
+                portal_cooldown: 0,
+                sea_level: 63,
+            },
+            online_mode: false,
+            enforces_secure_chat: false,
+        })
+    }
+
+    fn registries_with_biome(base: &Dynamic, biome_id: &str) -> Arc<Dynamic> {
+        let mut registries = base.clone();
+        registries.registries.insert(
+            "minecraft:dimension_type".into(),
+            vec![("minecraft:overworld".into(), None)],
+        );
+        registries.registries.insert(
+            BIOME_REGISTRY.into(),
+            vec![
+                ("minecraft:plains".into(), None),
+                (
+                    biome_id.into(),
+                    Some(Tag::Compound(sunrise_core::nbt::Compound::new())),
+                ),
+            ],
+        );
+        Arc::new(registries)
+    }
+
+    fn assert_disconnected_with_generic_reason(game: &Game<'_>) {
+        assert!(
+            game.remote.is_none(),
+            "client must disconnect on invalid registry"
+        );
+        assert!(
+            !game.connection_open,
+            "connection must close on invalid registry"
+        );
+        let mode = &game.title.as_ref().expect("the disconnect screen").mode;
+        assert!(matches!(
+            mode,
+            Mode::Multiplayer(MultiplayerScreen::Disconnected { reason, .. })
+                if reason.translation_key() == Some("disconnect.genericReason")
+        ));
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn invalid_biome_registry_disconnects_before_join_or_reconfigured_play() {
+        with_client_game(|game| {
+            // Joined with an invalid biome identifier (e.g. `..:bad` with supplied data) must
+            // disconnect before marking the join complete or processing queued play packets.
+            game.title = None;
+            let (pipe, _server) = Pipe::pair();
+            game.connect_local(pipe, "InvalidBiomeJoin").unwrap();
+            game.connection_starts("example.invalid:25565", "InvalidBiomeJoin", false);
+            let invalid =
+                registries_with_biome(&game.remote.as_ref().unwrap().registries, "..:bad");
+            push_events(
+                game,
+                [
+                    Event::Joined {
+                        registries: invalid,
+                        datapacks: Default::default(),
+                        uuid: 1,
+                        name: "Alex".into(),
+                    },
+                    Event::Packet(Box::new(login_packet())),
+                ],
+            );
+            game.poll_remote_events(true).unwrap();
+            assert_disconnected_with_generic_reason(game);
+
+            // Reconfigured with an invalid biome identifier after a valid play session must
+            // disconnect rather than allowing play to resume with the previous registries.
+            game.world_biomes = None;
+            game.world_biomes_base = None;
+            game.title = None;
+            let (_reader, mut writer) = connect_play_test(game, |_, _| {});
+            if !game.remote.as_ref().unwrap().joined {
+                game.wait_for_test_remote_event(|event| matches!(event, Event::Joined { .. }));
+                game.poll_remote_events(true).unwrap();
+            }
+            game.connection_starts("example.invalid:25565", "InvalidBiomeReconfigure", false);
+            let valid =
+                registries_with_biome(&game.remote.as_ref().unwrap().registries, "test:marsh");
+            let invalid =
+                registries_with_biome(&game.remote.as_ref().unwrap().registries, "..:bad");
+            push_events(
+                game,
+                [
+                    Event::Joined {
+                        registries: valid,
+                        datapacks: Default::default(),
+                        uuid: 2,
+                        name: "Steve".into(),
+                    },
+                    Event::Packet(Box::new(login_packet())),
+                ],
+            );
+            game.poll_remote_events(true).unwrap();
+            assert!(
+                game.remote
+                    .as_ref()
+                    .is_some_and(|r| r.joined && r.logged_in && r.reconfiguring.is_none())
+            );
+            assert!(world_biomes!(game).contains("test:marsh"));
+
+            writer.send(&C::StartConfiguration(Empty).encode()).unwrap();
+            game.wait_for_test_remote_event(|event| matches!(event, Event::Reconfiguring(_)));
+            game.poll_remote_events(true).unwrap();
+            assert!(game.remote.as_ref().unwrap().reconfiguring.is_some());
+            push_events(
+                game,
+                [
+                    Event::Reconfigured {
+                        registries: invalid,
+                        datapacks: Default::default(),
+                    },
+                    Event::Packet(Box::new(login_packet())),
+                ],
+            );
+            game.poll_remote_events(true).unwrap();
+            assert_disconnected_with_generic_reason(game);
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn malformed_trim_material_registry_disconnects_before_join() {
+        with_client_game(|game| {
+            // A malformed synced trim_material entry must fail the registry load and disconnect
+            // instead of falling back to the client's own file for minecraft:gold.
+            game.title = None;
+            let (pipe, _server) = Pipe::pair();
+            game.connect_local(pipe, "MalformedTrimJoin").unwrap();
+            game.connection_starts("example.invalid:25565", "MalformedTrimJoin", false);
+            let mut registries = (*game.remote.as_ref().unwrap().registries).clone();
+            registries.registries.insert(
+                "minecraft:dimension_type".into(),
+                vec![("minecraft:overworld".into(), None)],
+            );
+            registries.registries.insert(
+                "minecraft:trim_material".into(),
+                vec![(
+                    "minecraft:gold".into(),
+                    Some(Tag::Compound(sunrise_core::nbt::Compound::new())),
+                )],
+            );
+            push_events(
+                game,
+                [
+                    Event::Joined {
+                        registries: Arc::new(registries),
+                        datapacks: Default::default(),
+                        uuid: 1,
+                        name: "Alex".into(),
+                    },
+                    Event::Packet(Box::new(login_packet())),
+                ],
+            );
+            game.poll_remote_events(true).unwrap();
+            assert_disconnected_with_generic_reason(game);
         });
     }
 }

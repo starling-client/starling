@@ -6,10 +6,12 @@ Every block state is put at the origin of a random neighbourhood and `randomTick
 scheduled ticks, side effects and the RNG fingerprint after the call must match.
 """
 import random
-try:
-    from . import block_update_harness as h
-except ImportError:
-    import block_update_harness as h
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import block_update_harness as h
 
 
 def cases(facts, count, seed, only):

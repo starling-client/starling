@@ -1,0 +1,3 @@
+ids = ["type:DebugGroup", "handle:DebugEntry::text_lines"]
+why = "DebugGroup gains Named(Identifier): a debug entry's lines can form a group of the mod's own, kept together like vanilla's groups (DebugScreenDisplayer.addToGroup takes any identifier). minecraft:<path> names a vanilla group. DebugGroup is no longer Copy, and DebugEntry::text_lines returns the group by reference."
+migrate = "Clone a DebugGroup where it was copied, match DebugGroup::Named where DebugGroup is matched, and update callers of DebugEntry::text_lines for the &DebugGroup reference."

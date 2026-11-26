@@ -142,8 +142,6 @@ fn content() -> serde_json::Value {
     serde_json::json!({
         "mod": { "api": [manifest::API] },
         "native_mod": { "exact_build": true, "rebuild": true },
-        // The lines it draws: a newer one is read and checked, not drawn yet.
-        "shader": { "schema": sunrise_shader_api::SCHEMA, "api": [sunrise_shader_api::API] },
         "resourcepack": { "format": sunrise_core::version::RESOURCE_PACK_FORMAT },
         "datapack": { "format": sunrise_core::version::DATA_PACK_FORMAT },
         "modpack": { "format": sunrise_mod_package::modpack::FORMAT },
@@ -221,8 +219,7 @@ pub fn markdown() -> String {
         "`content` is what this build loads ([content.md](content.md)), so a launcher offers only \
          what works on it: content \
          mods of the manifest `api` lines in `mod.api`; native mods built for this exact game build \
-         (`native_mod.exact_build`), which need the game rebuilt (`rebuild`); shader packs of \
-         `shader.schema` and the lines in `shader.api` (a newer line is read, not drawn); resource \
+         (`native_mod.exact_build`), which need the game rebuilt (`rebuild`); resource \
          and data packs of `format` (`[major, minor]`; others still load, marked too old or too \
          new as vanilla marks them); modpacks of `modpack.format`; the mod index of \
          `index.schema`.\n"
@@ -452,7 +449,7 @@ mod tests {
     }
 
     /// The content a build says it loads is what its checks take: content mods of api 0.2,
-    /// never the removed 0.1, and the shader line it draws.
+    /// never the removed 0.1.
     #[test]
     fn launch_api_content_is_what_the_build_loads() {
         let reply: serde_json::Value = serde_json::from_str(&reply("x")).unwrap();
@@ -461,10 +458,6 @@ mod tests {
         assert!(
             mods.contains(&"0.2".into()) && !mods.contains(&"0.1".into()),
             "{mods:?}"
-        );
-        assert_eq!(
-            content["shader"]["api"],
-            serde_json::json!([sunrise_shader_api::API])
         );
         assert_eq!(content["native_mod"]["rebuild"], true);
         assert_eq!(

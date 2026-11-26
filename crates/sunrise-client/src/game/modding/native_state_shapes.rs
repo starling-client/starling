@@ -1,8 +1,10 @@
 //! Shape queries for a supplied state without replacing the block in the world.
 use super::{Game, perspective};
 use mod_api::BlockShapeKind;
+use std::ops::ControlFlow;
 use sunrise_client::{
-    block_entity_anim::BlockEntityAnims, collisions::SceneCollisions, world::World,
+    block_entity_anim::BlockEntityAnims, blocks::VisualShape, collisions::SceneCollisions,
+    world::World,
 };
 use sunrise_core::{geometry::VoxelShape, position::BlockPos};
 use sunrise_world::{
@@ -12,15 +14,14 @@ use sunrise_world::{
     registry::BlockStateId,
 };
 
-/// A state's empty-context collision boxes at `pos`, block-local: a block entity's published
-/// shape where its block publishes one, else the declared or vanilla shape. Collision errors
-/// return no boxes. The one read behind `LevelRef::block_shape` and `LevelHost::collision_shape`.
-pub(super) fn collision_boxes(
+/// Common empty-context `BlockStateBase.getCollisionShape` query, including contextual
+/// and block-entity-published shapes. The returned grid shares its backing storage.
+pub(super) fn collision_shape(
     collision: &BlockCollisionRegistry<'_>,
     world: &World,
     state: BlockStateId,
     pos: [i32; 3],
-) -> Vec<[f64; 6]> {
+) -> VoxelShape {
     let mut scene = SceneCollisions {
         world,
         binding: collision,
@@ -33,18 +34,7 @@ pub(super) fn collision_boxes(
             BlockPos::new(pos[0], pos[1], pos[2]),
             &CollisionContext::empty(false),
         )
-        .map(|shape| {
-            shape
-                .boxes()
-                .iter()
-                .map(|bounds| {
-                    let min = bounds.min_position();
-                    let max = bounds.max_position();
-                    [min.x, min.y, min.z, max.x, max.y, max.z]
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+        .unwrap_or_else(|_| VoxelShape::empty())
 }
 
 /// The geometry chosen by selection, before its column offset is applied.
@@ -148,22 +138,36 @@ impl Game<'_> {
         outline_boxes(outline, base)
     }
 
-    pub(super) fn state_shape_boxes(
+    pub(super) fn visit_state_shape(
         &self,
         world: &World,
         anims: &BlockEntityAnims,
         state: BlockStateId,
         pos: [i32; 3],
         kind: BlockShapeKind,
-    ) -> Vec<[f64; 6]> {
+        visit: &mut dyn FnMut([f64; 6]) -> ControlFlow<()>,
+    ) -> ControlFlow<()> {
         match kind {
             BlockShapeKind::Outline => {
                 let (outline, offset) = self.selected_outline(world, state, anims, pos, false);
-                // Stay block-local: adding world coordinates and subtracting them again
-                // would lose precision in offsets used to sample debris.
-                outline_boxes(outline, offset).collect()
+                // Stay block-local; translating to world space and back loses precision.
+                outline_boxes(outline, offset).try_for_each(visit)
             }
-            BlockShapeKind::Collision => collision_boxes(self.collision, world, state, pos),
+            BlockShapeKind::Collision => mod_api::__private::voxel_shape_from_core(
+                collision_shape(self.collision, world, state, pos),
+            )
+            .boxes()
+            .try_for_each(visit),
+            // `BlockStateBase.getVisualShape`, from the same table `ClipBlock::Visual` reads.
+            BlockShapeKind::Visual => {
+                let kind = match self.res.facts().get(state).visual_shape() {
+                    VisualShape::Collision => BlockShapeKind::Collision,
+                    VisualShape::Outline => BlockShapeKind::Outline,
+                    VisualShape::Empty => return ControlFlow::Continue(()),
+                    VisualShape::Block => return visit([0.0, 0.0, 0.0, 1.0, 1.0, 1.0]),
+                };
+                self.visit_state_shape(world, anims, state, pos, kind, visit)
+            }
             _ => unreachable!("BlockShapeKind: unhandled variant"),
         }
     }
@@ -192,6 +196,48 @@ mod tests {
     use super::*;
     use crate::game::api_values::TryIntoApi;
 
+    /// `BlockState.getVisualShape`: nothing for glass, iron bars and powder snow, a full
+    /// block for soul sand and mud, the outline for a snow layer and a fence, the collision
+    /// shape for any other block.
+    #[test]
+    #[ignore = "daily"]
+    fn visual_shape_follows_vanilla_overrides() {
+        crate::game::native_entity_refs::tests::with_game(|game| {
+            let level = game.level("minecraft:overworld").unwrap();
+            for (block, expected) in [
+                ("minecraft:glass", Vec::new()),
+                ("minecraft:iron_bars", Vec::new()),
+                ("minecraft:powder_snow", Vec::new()),
+                ("minecraft:soul_sand", vec![[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]]),
+                ("minecraft:mud", vec![[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]]),
+                ("minecraft:snow", vec![[0.0, 0.0, 0.0, 1.0, 0.125, 1.0]]),
+                (
+                    "minecraft:oak_fence",
+                    vec![[0.375, 0.0, 0.375, 0.625, 1.0, 0.625]],
+                ),
+                ("minecraft:stone_slab", vec![[0.0, 0.0, 0.0, 1.0, 0.5, 1.0]]),
+            ] {
+                let state = game.pack.assets.registry.default_state(block).unwrap();
+                let mut boxes = Vec::new();
+                assert_eq!(
+                    level.visit_block_shape(
+                        game,
+                        state.try_into_api().unwrap(),
+                        [0, 64, 0],
+                        BlockShapeKind::Visual,
+                        &mut |bounds| {
+                            boxes.push(bounds);
+                            ControlFlow::Continue(())
+                        }
+                    ),
+                    Some(ControlFlow::Continue(())),
+                    "{block}"
+                );
+                assert_eq!(boxes, expected, "{block}");
+            }
+        });
+    }
+
     #[test]
     #[ignore = "daily"]
     fn supplied_shape_state_does_not_replace_world_state() {
@@ -213,18 +259,27 @@ mod tests {
             let before = game.world.block(pos[0], pos[1], pos[2]);
             assert_ne!(before, stone);
             for kind in [BlockShapeKind::Outline, BlockShapeKind::Collision] {
-                assert_eq!(
-                    level.block_shape(game, stone.try_into_api().unwrap(), pos, kind),
-                    Some(vec![[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]])
-                );
-                assert_eq!(
-                    level.block_shape(game, slab.try_into_api().unwrap(), pos, kind),
-                    Some(vec![[0.0, 0.0, 0.0, 1.0, 0.5, 1.0]])
-                );
-                assert_eq!(
-                    level.block_shape(game, before.try_into_api().unwrap(), pos, kind),
-                    Some(Vec::new())
-                );
+                for (state, expected) in [
+                    (stone, vec![[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]]),
+                    (slab, vec![[0.0, 0.0, 0.0, 1.0, 0.5, 1.0]]),
+                    (before, Vec::new()),
+                ] {
+                    let mut boxes = Vec::new();
+                    assert_eq!(
+                        level.visit_block_shape(
+                            game,
+                            state.try_into_api().unwrap(),
+                            pos,
+                            kind,
+                            &mut |bounds| {
+                                boxes.push(bounds);
+                                ControlFlow::Continue(())
+                            }
+                        ),
+                        Some(ControlFlow::Continue(()))
+                    );
+                    assert_eq!(boxes, expected);
+                }
             }
             assert_eq!(game.world.block(pos[0], pos[1], pos[2]), before);
         });

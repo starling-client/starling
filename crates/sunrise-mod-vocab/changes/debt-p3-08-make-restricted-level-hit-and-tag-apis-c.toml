@@ -1,0 +1,80 @@
+ids = [
+    "method:LevelWriteHost::set_block_property",
+    "method:LevelWriteHost::play_sound",
+    "method:LevelHost::container_stack",
+    "method:LevelHost::lend_container_stack",
+    "handle:LevelHost::with_container_stack",
+    "method:Tags::block_in_tag",
+    "method:Tags::fluid_in_tag",
+    "handle:BlockKey::is_in_tag",
+    "handle:BlockState::is_in_tag",
+    "handle:FluidKey::is_in_tag",
+    "handle:FluidState::is_in_tag",
+    "handle:ItemKey::is_in_tag",
+    "method:prelude::TagsHost::block_in_tag",
+    "method:prelude::TagsHost::fluid_in_tag",
+    "method:LevelHost::block_in_tag",
+    "method:LevelHost::fluid_in_tag",
+    "method:FeatureContext::block_in_tag",
+    "method:prelude::TagsHost::unresolved_fluid_id",
+    "method:prelude::TagsHost::state_outline",
+    "method:prelude::TagsHost::state_fluid_state",
+    "method:prelude::TagsHost::fluid_is_same",
+    "method:prelude::TagsHost::fluid_bucket",
+    "method:prelude::TagsHost::fluid_pickup_sound",
+    "method:prelude::TagsHost::fluid_empty_sound",
+    "method:LevelHost::state_fluid_state",
+    "handle:BlockState::outline",
+    "handle:BlockState::fluid_state",
+    "handle:FluidKey::is_same",
+    "handle:FluidKey::bucket",
+    "handle:FluidKey::pickup_sound",
+    "handle:FluidKey::empty_sound",
+    "method:HitHost::entity_next_float",
+    "method:HitHost::entity_next_double",
+    "method:HitHost::entity_next_bool",
+    "method:HitHost::entity_next_int",
+    "method:HitHost::lend_entity_random",
+    "handle:EntityRef::next_float",
+    "handle:EntityRef::next_double",
+    "handle:EntityRef::next_bool",
+    "handle:EntityRef::next_int",
+    "handle:EntityRef::with_random",
+    "method:LevelHost::friction",
+    "method:LevelHost::entity_kind",
+    "handle:LevelRef::friction",
+    "type:FrictionEvent",
+    "hook:friction",
+    "hook:explosion_start",
+    "hook:explosion_resistance",
+    "hook:can_drop_from_explosion",
+    "hook:on_block_exploded",
+    "type:GameRuleActor",
+    "hook:game_rule_changed",
+    "method:prelude::TagsHost::bucket_fluid",
+    "hook:friction.entity",
+    "type:FrictionEvent.entity",
+    "method:BlockPart::friction",
+    "hook:game_rule_changed.actor",
+    "type:GameRuleChangedEvent.actor",
+    "type:ExplosionStart.dimension",
+    "type:ExplosionStart.owner",
+    "type:ExplosionStart.source",
+]
+why = "Property writes now share the same BlockUpdateFlags as whole-state writes, matching the flag combination accepted by vanilla Level.setBlock and used by NeoForge IBlockExtension.onDestroyedByPushReaction. Level sounds now take SoundSource like vanilla LevelAccessor.playSound and Level.playSound. Numeric representations stay in the engine; the sound queue and seed timing are unchanged. Restricted levels and the game's item capability now lend the same side-local resident slot instead of copying it up front. That follows vanilla Container.getItem's resident stack and NeoForge WorldlyContainerWrapper.getResource/getAmountAsLong through VanillaContainerWrapper's slot wrappers, without granting the read-only view authority to unpack loot. Block, fluid and item tag membership now share the typed Tags service and key/state is_in_tag(tags, tag) helpers, following vanilla TypedInstance.is(TagKey) on BlockBehaviour.BlockStateBase and FluidState (and ItemStack.is(TagKey)): raw string tag helpers on TagsHost and LevelHost are removed, each host/level view reads its own selected snapshot without substituting local pack tags on clients, and worldgen FeatureContext::block_in_tag takes a retained TagKey instead of &str. States and fluid keys now read facts through the same BlockStates tables on a full host and a restricted level without granting write access. The outline borrows the block-local boxes of vanilla BlockBehaviour.BlockStateBase.getShape with EmptyBlockGetter at the origin; the fluid state follows BlockStateBase.getFluidState and a position read follows BlockGetter.getFluidState. Fluid facts follow vanilla Fluid.isSame, getBucket and getPickupSound and NeoForge FluidType.getSound(SoundActions.BUCKET_EMPTY). Hit listeners borrow the actual Entity.getRandom stream for a callback instead of making separate scalar host calls; the same RandomSource as a restricted level supplies the draws. Friction receives an optional EntityRef and the type key is read only for that entity. It keeps the read-only LevelReader scope of IBlockExtension.getFriction. ServerExplosion and ExplosionDamageCalculator work with a level and direct/indirect entities; the explosion description now carries the dimension key and entity handles. A player-caused GameRuleChangedEvent carries the player handle instead of a second identity snapshot. TagsHost becomes tag-only; the saved name lookup leaves the host (`UnresolvedFluid::id()` borrows the saved name)."
+migrate = """
+- `level.set_block_property(pos, key, value, raw_flags)` -> `level.set_block_property(pos, key, value, flags)` with `flags: BlockUpdateFlags`. Make the same last-argument change in implementations of `LevelWriteHost`. Use `BlockUpdateFlags::NONE` for `0`, `BlockUpdateFlags::CLIENTS` for `UPDATE_CLIENTS` (`2`), and `BlockUpdateFlags::NEIGHBORS | BlockUpdateFlags::CLIENTS` for `UPDATE_ALL` (`3`). If a call already combines `BlockUpdateFlags`, pass the combination without `.bits()`. With a full `ServerHost`, call `level.set_block_property(host, pos, key, value, flags)` on a `LevelRef`.
+- `level.play_sound(sound, at, source.index(), volume, pitch)` -> `level.play_sound(sound, at, source, volume, pitch)` with `source: SoundSource`; use `SoundSource::Blocks` for the old ordinal `4`, for example. In a `LevelWriteHost` implementation, change `source: usize` to `source: SoundSource` as well. `HitHost::play_sound_at` and `play_sound_from` already take `SoundSource` and need no call-site changes.
+- `level.container_stack(at, slot).map(|stack| stack.count())` -> `read.with_container_stack(at, slot, |stack| stack.count())`, where `let read: &dyn LevelHost = level;` also upcasts a `LevelTicksHost`, `LevelRandomHost` or `LevelWriteHost`. To keep the old owned result, use `read.with_container_stack(at, slot, |stack| stack.project()).flatten()`. The view itself cannot escape that callback. If implementing `LevelHost`, replace `container_stack` with `lend_container_stack(&self, at: BlockSide, slot: usize, read: &mut dyn for<'a> FnMut(ItemStackView<'a>))`: call `read` once on success, and do not call it for empty or unavailable storage. Game-side `ItemsBackend` implementations switch to that same loan signature. The public `ITEMS` capability still returns an owned `ItemResource` from `resource(host, slot)`; it does not require a change at capability call sites.
+- `host.block_in_tag(block, "minecraft:logs")` and `level.block_in_tag(block, "minecraft:logs")` -> resolve `let logs = registrar.tag_key("minecraft:logs");` in `Hooks::register` (or `tags.key(&Identifier::parse("minecraft:logs")?)?` at a non-hot boundary) and call `block.is_in_tag(host.tags(), logs)` (or `state.is_in_tag(level.tags(), logs)` / `host.tags().block_in_tag(block, logs)`). Remove `block_in_tag` from custom `LevelHost` implementations.
+- `host.fluid_in_tag("minecraft:water", "minecraft:water")` and `level.fluid_in_tag("minecraft:water", "minecraft:water")` -> resolve a `FluidKey` (or read a `FluidState`) and a `TagKey` once, then call `fluid.is_in_tag(host.tags(), water_tag)` (or `fluid_state.is_in_tag(level.tags(), water_tag)` / `host.tags().fluid_in_tag(fluid, water_tag)`). For items, `item.is_in_tag(host.tags(), tag)` is equivalent to `host.tags().is_in_tag(item, tag)`. Implement `Tags::block_in_tag` and `Tags::fluid_in_tag` on custom `Tags` implementations, and remove `fluid_in_tag` from custom `LevelHost` implementations.
+- `context.block_in_tag(pos, "minecraft:dirt")` inside `FeatureType::place` -> retain `let dirt = registrar.tag_key("minecraft:dirt");` in `Hooks::register` and call `context.block_in_tag(pos, self.dirt)`.
+- `host.state_outline(state)` -> `state.outline(&host.block_states())` (with `HostBlockStates` in scope, or `state.outline(&level.block_states())` in a restricted level). It borrows `&[[f64; 6]]`; call `.map(|boxes| boxes.to_vec())` on the result only if you need an owned copy.
+- `host.state_fluid_state(state)` and `level.state_fluid_state(state)` -> `state.fluid_state(&host.block_states())` or `state.fluid_state(&level.block_states())`. Remove `state_fluid_state` from custom `LevelHost` implementations.
+- `host.fluid_is_same(a, b)`, `host.fluid_bucket(f)`, `host.fluid_pickup_sound(f)` and `host.fluid_empty_sound(f)` -> resolve `FluidKey`s once through `Registrar::fluid_key` (or `host.fluid_key(id)` for a runtime name, checking for `None` there). Then use `a.is_same(&states, b)`, `f.bucket(&states)`, `f.pickup_sound(&states)` and `f.empty_sound(&states)` with `let states = host.block_states();` (or `level.block_states()`).
+- `TagsHost::unresolved_fluid_id(host, fluid)` and `fluid.id(host)` are removed: call `fluid.id()` for an unresolved fluid's saved name (a borrowed `Identifier`). Remove any custom host override of `unresolved_fluid_id`; the `level_fluids` area keeps only its handle backend.
+- Replace `entity.next_float(hit)` or `hit.entity_next_float(entity)` with `entity.with_random(hit, |rng| rng.next_float())`. Analogously use `rng.next_double()`, `rng.next_boolean()` or `rng.next_int_bound(bound)`, and make multiple draws inside one loan when needed. An entity the hit does not lend still returns `None`. Guard `bound > 0` before borrowing if the old `None` for an invalid bound matters: `next_int_bound` returns zero without a draw for a nonpositive bound.
+- Pass `Option<EntityRef>` to `level.friction(host, pos, state, entity)`. A part reads `event.entity` as a handle; `view.entity_kind(entity)` gives its optional `EntityTypeKey`. Forward `event.entity` to a nested `view.friction` query; the view does not read unrelated entities.
+- `ExplosionStart::dimension` is a `DimensionKey` (`dimension.id(host)` borrows the name). `source` and `owner` are optional entity handles; use `EntityRef::id()` if you need the numeric id.
+- `GameRuleChangedEvent::actor` is an `Option<PlayerRef>`. Read UUID, name or entity through that handle instead of a `GameRuleActor` snapshot; changes without a player still report `None`.
+"""

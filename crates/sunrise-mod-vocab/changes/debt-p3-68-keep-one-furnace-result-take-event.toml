@@ -1,0 +1,16 @@
+# Remove duplicate furnace_extract hook and update item_smelted to match NeoForge PlayerEvent.ItemSmeltedEvent.
+ids = [
+    "hook:furnace_extract",
+    "method:Hooks::furnace_extract",
+    "type:FurnaceExtractEvent",
+    "hook:item_smelted",
+    "method:Hooks::item_smelted",
+    "hook:item_smelted.player",
+    "hook:item_smelted.player_entity_id",
+    "hook:item_smelted.stack",
+    "type:ItemSmeltedEvent.player",
+    "type:ItemSmeltedEvent.player_entity_id",
+    "type:ItemSmeltedEvent.stack",
+]
+why = "Keep one furnace result-take event matching vanilla FurnaceResultSlot.checkTakeAchievements and NeoForge PlayerEvent.ItemSmeltedEvent: remove the duplicate furnace_extract hook and update item_smelted to run on both logical sides (server after AbstractFurnaceBlockEntity.awardUsedRecipesAndPopExperience, client during menu click prediction) with a live PlayerRef, a non-optional ItemStackView<'_>, and a nonzero amount_removed."
+migrate = "Move furnace_extract listeners to item_smelted and update item_smelted handlers to accept host: HostSide<'_> (match HostSide::Server(host) for server-only logic or HostSide::Client(host) for client prediction). Field mapping from furnace_extract to ItemSmeltedEvent: player -> event.player.uuid(); name -> event.player.name(host) on HostSide::Server; item -> event.stack.item() for ItemKey or host.item_key_id(event.stack.item()) for string id; count -> event.amount_removed; pos -> removed with no replacement on item_smelted because vanilla FurnaceResultSlot.checkTakeAchievements and NeoForge PlayerEvent.ItemSmeltedEvent carry no block position (track the opened furnace block from right_click_block/player_container_open if a position is needed, or use furnace_smelt for per-block cooking completion). For existing item_smelted listeners: replace player/player_entity_id with event.player (event.player.uuid(), event.player.entity().id(), event.player.name(host)), replace Option<ItemStack> with event.stack as ItemStackView<'_> (event.stack.item(), event.stack.count(), event.stack.project()), and rely on item_smelted firing once per nonzero removeCount (after furnace recipe experience is awarded on the server, and without experience on client prediction)."

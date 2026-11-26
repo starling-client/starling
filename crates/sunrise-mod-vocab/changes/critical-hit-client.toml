@@ -1,0 +1,3 @@
+ids = ["hook:critical_hit", "method:Hooks::critical_hit"]
+why = "critical_hit also fires on the attacking client, like NeoForge's CriticalHitEvent, once for each melee attack the local player sends on a living entity, with vanilla_critical from what the client knows. A listener there only asks: what it writes changes no packet, no server decision and nothing drawn. The hook's side moves from server to both, so its Host is a HostSide."
+migrate = "Rebuild against this SDK and match the hook's HostSide where the listener took a ServerHost; keep server-side work under HostSide::Server."

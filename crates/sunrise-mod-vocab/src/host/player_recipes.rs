@@ -19,10 +19,16 @@ pub trait PlayerRecipesBackend {
     /// Whether the player's recipe book knows `recipe`
     /// (`ServerRecipeBook.contains`).
     fn player_has_discovered_recipe(&self, player: PlayerRef, recipe: &str) -> Option<bool>;
-    /// Side: both.
-    /// The recipes in the player's recipe book (`ServerRecipeBook.recipes`), as qualified ids in
-    /// order (`minecraft:oak_planks`). None for a player it can't reach.
-    fn player_discovered_recipes(&self, player: PlayerRef) -> Option<Vec<String>>;
+    /// Side: server.
+    /// Visits the player's known recipes (`ServerRecipeBook.known`) in the resident book's
+    /// order. Each qualified id (`minecraft:oak_planks`) is borrowed for the callback; copy it
+    /// there to retain it. Return `ControlFlow::Break(())` to stop. A completed visit, including
+    /// an empty book, returns `Ok(Continue(()))`; a refusal does not call the visitor.
+    fn player_visit_discovered_recipes(
+        &self,
+        player: PlayerRef,
+        visit: &mut dyn FnMut(&str) -> core::ops::ControlFlow<()>,
+    ) -> Result<core::ops::ControlFlow<()>, EntityReadError>;
 }
 /// The handles' writes of the `player_recipes` area, implemented by the game and reached through [`BackendMut`].
 // hidden: a handle's backend, reached through `Backend`; mods call the handle, never this trait
@@ -30,9 +36,10 @@ pub trait PlayerRecipesBackend {
 #[sunrise_mod_api_macros::host_area]
 pub trait PlayerRecipesBackendMut {
     /// Side: server.
-    /// Set a registered custom book's authoritative pair and synchronize an
-    /// accepted change. Returns false for an unavailable player, unknown key
-    /// or exhausted storage. An unchanged pair succeeds without notification.
+    /// Set a registered custom book's authoritative pair. Inside a transaction the write is
+    /// rolled back on abort; the outermost commit synchronizes and notifies only the final
+    /// changed pair for each player and book. Returns false for an unavailable player or
+    /// unknown key. An unchanged pair succeeds without notification.
     fn player_set_recipe_book_settings(
         &mut self,
         player: PlayerRef,

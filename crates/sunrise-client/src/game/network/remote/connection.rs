@@ -124,7 +124,14 @@ impl Game<'_> {
         };
         *slot = None;
         let realm = self.realm_session && self.server_address() == Some(server.address.as_str());
-        self.connect_server_with_options(&server.address, &server.name, None, server.lan, realm)
+        self.connect_server_with_options(
+            &server.address,
+            &server.name,
+            None,
+            server.lan,
+            realm,
+            None,
+        )
     }
 }
 
@@ -139,7 +146,7 @@ fn retry_slot(title: &mut Option<sunrise_client::title::Title>) -> Option<&mut O
 impl Game<'_> {
     /// Leave the title for a server (ConnectScreen): an empty world fed by the connection.
     pub(in crate::game) fn connect_server(&mut self, address: &str, name: &str) -> Result<()> {
-        self.connect_server_with_options(address, name, None, false, false)
+        self.connect_server_with_options(address, name, None, false, false, None)
     }
     /// `ConnectScreen.startConnecting`: keep LAN discovery's server kind through loading.
     pub(in crate::game) fn connect_server_with_options(
@@ -149,11 +156,13 @@ impl Game<'_> {
         cookies: Option<sunrise_client::net::Cookies>,
         lan: bool,
         realm: bool,
+        list_name: Option<&str>,
     ) -> Result<()> {
         crate::game::world_loading::world_data_used();
         if self.defer_world_entry(crate::game::PendingWorldEntry::Server {
             address: address.to_owned(),
             name: name.to_owned(),
+            list_name: list_name.map(str::to_owned),
             cookies: cookies.clone(),
             lan,
             realm,
@@ -162,7 +171,7 @@ impl Game<'_> {
         }
         self.join_world_rest()?;
         self.client_logging_out();
-        if let Err(error) = self.join_server(address, name, None, cookies, lan, realm) {
+        if let Err(error) = self.join_server(address, name, None, cookies, lan, realm, list_name) {
             log::warn!("Sunrise: could not join server: {error}");
             let skip = self.settings.file.bool("skipMultiplayerWarning");
             match &mut self.title {
@@ -190,7 +199,7 @@ impl Game<'_> {
         self.to_network_projecting(s, &|_| ())
     }
     // handle_command_suggestions: remote/commands.rs
-    pub(in crate::game) fn set_registries(&mut self, registries: Arc<Dynamic>) {
+    pub(in crate::game) fn set_registries(&mut self, registries: Arc<Dynamic>) -> Result<()> {
         let entries: Vec<(&str, serde_json::Value)> = registries
             .registries
             .get("minecraft:enchantment")
@@ -203,33 +212,42 @@ impl Game<'_> {
                 ))
             })
             .collect();
-        let enchantments = match self
+        let enchantments = self
             .stations()
             .enchantments
             .with_entries(entries.iter().map(|(n, v)| (*n, v)))
-        {
-            Ok(table) => table.map(Arc::new),
-            Err(error) => {
-                log::warn!("Sunrise: refused enchantment registry: {error}");
-                return;
-            }
-        };
+            .map_err(|error| format!("refused enchantment registry: {error}"))?
+            .map(Arc::new);
         // The server's biomes the game lacks (a world data pack's) join the
         // game's table, from the data it sent: colours, meshing and the
         // chunk format all go through that table. The window's own server
         // thread set the world's table already.
-        if self.integrated.is_none() {
-            let table = registries
-                .registries
-                .get(BIOME_REGISTRY)
-                .and_then(|list| client_biomes(self.res.biomes(), list))
-                .map(Arc::new);
-            if table.is_some() || self.world_biomes.is_some() {
-                self.world_biomes_base = table.clone();
-                self.world_biomes = table;
-                let context = self.worker_context();
-                self.streaming.reload_resources(&mut self.world, context);
-            }
+        let world_biomes = if self.integrated.is_none() {
+            Some(
+                registries
+                    .registries
+                    .get(BIOME_REGISTRY)
+                    .map(|list| client_biomes(self.res.biomes(), list))
+                    .transpose()
+                    .map_err(|error| format!("refused biome registry: {error}"))?
+                    .flatten()
+                    .map(Arc::new),
+            )
+        } else {
+            None
+        };
+        // The trims render from the registries the server sent, in its sync order.
+        self.armor_stand_assets
+            .trims
+            .set_synced(&registries)
+            .map_err(|error| format!("refused trim registry: {error}"))?;
+        if let Some(table) = world_biomes
+            && (table.is_some() || self.world_biomes.is_some())
+        {
+            self.world_biomes_base = table.clone();
+            self.world_biomes = table;
+            let context = self.worker_context();
+            self.streaming.reload_resources(&mut self.world, context);
         }
         let biomes: Vec<u16> = registries
             .registries
@@ -240,6 +258,13 @@ impl Game<'_> {
                     .collect()
             })
             .unwrap_or_default();
+        let variants = Arc::new(
+            sunrise_client::mobs::variants::VariantTables::from_synced(
+                &registries,
+                self.res.variants(),
+            )
+            .map_err(|error| format!("refused variant registries: {error}"))?,
+        );
         if let Some(r) = self.remote.as_mut() {
             r.enchantments = enchantments;
             let bits = ceil_log2(biomes.len());
@@ -247,11 +272,14 @@ impl Game<'_> {
             r.chunk_format =
                 Arc::new(ChunkFormat::new(&r.dimension, biomes, bits).in_column(column));
             r.registries = registries;
+            r.variants = variants;
             r.resolve_clocks();
+            r.level_environments.clear();
             self.install_server_items();
             self.reset_creative_contents();
             self.refresh_creative_search_tags();
         }
+        Ok(())
     }
     /// Another player of this level, whose copy passes every click (`Player.interactOn`).
     pub(in crate::game) fn is_level_player(&self, id: i32) -> bool {
@@ -276,7 +304,7 @@ impl Game<'_> {
             if self.ticks.saturating_sub(since) >= 600
                 && sunrise_client::ui::hovered(self.cursor, x, y, 150.0, 20.0)
             {
-                self.audio.play_button_click();
+                self.play_audio_button_click();
                 self.leave_server(None)?;
                 return Ok(true);
             }
@@ -286,8 +314,10 @@ impl Game<'_> {
             return Ok(false);
         };
         if sunrise_client::ui::hovered(self.cursor, x, y, 200.0, 20.0) {
-            self.audio.play_button_click();
-            self.leave_server(None)?;
+            self.play_audio_button_click();
+            // ConnectScreen Cancel aborts the pending connection and returns to
+            // its parent screen without calling Minecraft.disconnect.
+            self.finish_leave_server(None)?;
             return Ok(true);
         }
         Ok(false)

@@ -31,15 +31,24 @@ pub struct AttachmentRow<H> {
 /// Dense rows and residency probes captured as one immutable bucket version.
 #[derive(Clone)]
 pub struct AttachmentSnapshot<H> {
+    key: Option<Arc<AttachmentKey>>,
     rows: Vec<AttachmentRow<H>>,
     slots: FxHashMap<H, usize>,
 }
 impl<H> Default for AttachmentSnapshot<H> {
     fn default() -> Self {
         Self {
+            key: None,
             rows: Vec::new(),
             slots: FxHashMap::default(),
         }
+    }
+}
+impl<H> AttachmentSnapshot<H> {
+    pub(super) fn matches(&self, namespace: &str, name: &str) -> bool {
+        self.key
+            .as_deref()
+            .is_none_or(|key| (key as &dyn Lookup) == (&Named(namespace, name) as &dyn Lookup))
     }
 }
 impl<H> std::ops::Deref for AttachmentSnapshot<H> {
@@ -342,7 +351,12 @@ impl<H: Copy + Eq + Hash> AttachmentIndex<H> {
             let rows = self
                 .buckets
                 .entry(BucketKey(shared_key.clone()))
-                .or_default();
+                .or_insert_with(|| {
+                    Arc::new(AttachmentSnapshot {
+                        key: Some(shared_key.clone()),
+                        ..Default::default()
+                    })
+                });
             owner.slots.insert(shared_key, rows.len());
             Arc::make_mut(rows).push(row);
         }
@@ -448,7 +462,7 @@ mod tests {
             },
         }),
         copy_on_death: false,
-        sync: false,
+        sync_codec: None,
     };
 
     fn key(name: &str) -> AttachmentKey {
@@ -546,7 +560,7 @@ mod tests {
     fn saved_entries_join_without_a_typed_read_and_remain_snapshot_values() {
         let mut source = Attachments::default();
         VALUE.set(&mut source, Holder::Level, 42).unwrap();
-        let nbt = source.to_nbt();
+        let nbt = source.try_to_nbt().unwrap();
         let loaded = Attachments::from_nbt(nbt.clone());
         let raw = loaded.entry("test", "value").unwrap().unwrap().clone();
         let mut index = AttachmentIndex::default();
@@ -558,7 +572,7 @@ mod tests {
         index.set(&owner, &key("value"), entry(99)).into_result();
         assert_eq!(values(&before), [(1, 42)]);
         assert_eq!(values(&index.snapshot(&key("value"))), [(1, 99)]);
-        assert_eq!(loaded.to_nbt(), nbt);
+        assert_eq!(loaded.try_to_nbt().unwrap(), nbt);
     }
 
     #[test]
@@ -749,7 +763,7 @@ mod tests {
             default: || unreachable!(),
             codec: None,
             copy_on_death: false,
-            sync: false,
+            sync_codec: None,
         };
         fn apply<T>(
             index: &Mutex<AttachmentIndex<u32>>,

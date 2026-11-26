@@ -1,5 +1,4 @@
 //! The `attack_entity` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0044
 
 pub trait Hooks {
     /// A player attacks the entity `entity` (`Entity.getId`) of type `kind`

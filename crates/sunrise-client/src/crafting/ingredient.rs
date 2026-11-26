@@ -56,13 +56,9 @@ pub struct Ingredient {
         std::sync::Arc<std::collections::HashMap<String, sunrise_core::nbt::Compound>>,
 }
 impl Ingredient {
-    pub(crate) fn validate_persistence(value: &Value, recipe: &str) -> bool {
-        if let Err(error) = components::persistent_recipe(value) {
-            let recipe = sunrise_items::recipe_sources::qualified(recipe);
-            log::warn!("recipe {recipe} rejected: {error}");
-            return false;
-        }
-        true
+    /// Why a recipe file's components are not persistent, which refuses the file.
+    pub(crate) fn validate_persistence(value: &Value) -> Result<(), String> {
+        components::persistent_recipe(value)
     }
     /// Decode built-in rules and materialize display stacks at a load boundary.
     pub fn prepare_components(&mut self, items: &Items) -> Option<()> {

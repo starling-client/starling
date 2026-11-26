@@ -1,0 +1,5 @@
+ids = [
+    "method:RenderAssets::shader_pack_block_id",
+]
+why = "Adds RenderAssets::shader_pack_block_id, which reads the active shaders/ pack's block.properties integer id (mc_Entity), as Sunrise's shader-pack loader maps it, for a block state: the id the engine's own terrain carries, so a mod drawing block geometry under a pack shades it like terrain (#5699). It is None unless a shaders/ pack is loaded and rendering. The answer changes when the pack is loaded, switched or turned off, and no pack-reload signal exists yet, so a mod asks again when it needs the id rather than caching it; item and entity ids are not part of it."
+migrate = "Additive only."

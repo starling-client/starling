@@ -6,12 +6,31 @@ use super::*;
 pub(super) struct FrameAttempt<K = FrameKey>(Option<K>);
 
 /// The frame the renderer would be made with (`Renderer::requested_frame`), the pick's path,
-/// its outcome.
+/// whether the loader accepted it, and its HDR request (`PickedPack::hdr`).
 type FrameKey = (
     Option<sunrise_client::gfx::FrameConfiguration>,
     PathBuf,
-    Option<Option<sunrise_shader_api::Api>>,
+    Option<bool>,
+    Option<sunrise_shaders::Tonemap>,
 );
+
+/// Whether the frame is looked at again: the frame a renderer made now would draw in (`wanted`),
+/// the pick's `path`, the loader's `outcome` for it or its HDR request (`hdr`,
+/// `PickedPack::hdr`) changed since the last attempt.
+fn look_again<C: PartialEq>(
+    attempts: &mut FrameAttempt<(
+        Option<C>,
+        PathBuf,
+        Option<bool>,
+        Option<sunrise_shaders::Tonemap>,
+    )>,
+    wanted: Option<C>,
+    path: PathBuf,
+    outcome: Option<bool>,
+    hdr: Option<sunrise_shaders::Tonemap>,
+) -> bool {
+    attempts.changed((wanted, path, outcome, hdr))
+}
 
 impl<K: PartialEq> FrameAttempt<K> {
     // Remember attempts, including failures, until the requested configuration changes.
@@ -28,71 +47,76 @@ impl Game<'_> {
         window: Arc<Window>,
         pack: &PackResources,
         gui: &UiResources,
+        opened: Option<sunrise_client::gfx::Opened>,
     ) -> Result<Renderer> {
         build_renderer(
             window,
             self.options.offscreen,
             pack,
             gui,
-            self.renderer.as_ref(),
+            opened.map_or_else(
+                || {
+                    self.renderer.as_ref().map_or(
+                        sunrise_client::gfx::RendererDevice::New,
+                        sunrise_client::gfx::RendererDevice::Reuse,
+                    )
+                },
+                |device| sunrise_client::gfx::RendererDevice::Opened(Box::new(device)),
+            ),
             None,
             self.settings.sunrise.api,
             self.settings.sunrise.translucent_batching,
-            self.settings.vsync,
+            self.effective_vsync(),
             &self.settings.sunrise,
-            shader_packs::picked_pack_shape(&self.settings),
+            self.picked_pack_shape(),
             self.renderer
                 .as_ref()
                 .map(|r| r.display_reading())
                 .unwrap_or_default(),
-            (
-                self.settings.file.int("textureFiltering"),
-                self.settings.file.int("maxAnisotropyBit"),
-            ),
+            self.settings.texture_atlas_settings(),
         )
-        .and_then(|(renderer, clouds)| {
-            clouds?;
+        .and_then(|(renderer, required)| {
+            required?;
             Ok(renderer)
         })
     }
-    /// Under `SUNRISE_HDR_FRAME=float` the frame follows what draws the picture
-    /// (docs/design/hdr-linear-light.md, "When it changes"): when HDR, Smooth Gradients or the
-    /// pick (unless refused) call for another frame than the renderer's, it is made again before
-    /// this frame draws. Without the switch a frame stays until the next start, as before.
+    /// Under `SUNRISE_HDR_FRAME=float` the frame follows what draws the picture: when HDR,
+    /// Smooth Gradients or the pick (unless refused) call for another frame than the renderer's,
+    /// it is made again before this frame draws. Without the switch a frame stays until the next
+    /// start, as before.
     pub(super) fn follow_frame(&mut self) {
         if !native_shaders::linear_frame_switch() {
             return;
         }
         let picked = shader_packs::picked_pack(&self.settings);
-        let path = self.native_shaders.resolve_path(
-            &Self::shader_packs_dir(),
-            picked,
-            shader_packs::dev_pack().is_some(),
-        );
+        let dir = Self::shader_packs_dir();
+        let path = dir.join(picked);
         let available = path.exists()
+            && !sunrise_client::shader_pack_list::unsupported(&dir, picked)
             && path.file_name().is_none_or(|f| {
                 !shader_packs::active_pack(&f.to_string_lossy(), &self.settings.mods).is_empty()
             });
         let outcome = if available {
             native_shaders::outcome(&path)
         } else {
-            Some(None)
+            Some(false)
         };
         // The renderer's offer can change while the game runs (Vulkan's formats follow desktop
         // HDR and the window's output), and the frame with it.
-        let request = shader_packs::picked_pack_shape(&self.settings).frame();
+        let shape = self.picked_pack_shape();
+        let request = shape.frame();
         let wanted = self
             .renderer
             .as_ref()
             .map(|r| r.requested_frame(&self.settings.sunrise, request));
-        if !self.frame_attempted.changed((wanted, path, outcome)) {
+        if !look_again(&mut self.frame_attempted, wanted, path, outcome, shape.hdr) {
             return;
         }
-        if self
-            .renderer
-            .as_ref()
-            .is_none_or(|r| r.frame_follows(&self.settings.sunrise, request))
-        {
+        let Some(renderer) = &mut self.renderer else {
+            return;
+        };
+        let follows = renderer.frame_follows(&self.settings.sunrise, request);
+        if !shader_packs::reconcile_pack_hdr(follows, &mut renderer.pack_hdr, shape.hdr) {
             return;
         }
         if let Err(e) = self.rebuild_renderer() {
@@ -111,7 +135,7 @@ impl Game<'_> {
         if let Some(renderer) = &mut self.renderer {
             renderer.release_surface();
         }
-        let mut renderer = match self.renderer_for(window, &self.pack, &self.gui) {
+        let mut renderer = match self.renderer_for(window, &self.pack, &self.gui, None) {
             Ok(renderer) => renderer,
             Err(error) => {
                 if let Some(renderer) = &mut self.renderer {
@@ -146,8 +170,12 @@ impl Game<'_> {
         // LocalPlayer.refreshChatAbilities: the chat shows what the Chat option allows.
         let abilities = self.chat_abilities();
         self.ui.chat.set_abilities(&self.gui.atlas.font, abilities);
-        let render_distance_changed = self.streaming.radius != self.settings.render_distance;
-        self.streaming.radius = self.settings.render_distance;
+        let streaming_target = crate::game::entity_culling::streaming_radius_for(
+            self.settings.render_distance,
+            self.remote.as_ref().map(|r| r.view_distance),
+        );
+        let render_distance_changed = self.streaming.radius != streaming_target;
+        self.streaming.radius = streaming_target;
         // Options.renderDistance, biomeBlendRadius, ambientOcclusion,
         // cutoutLeaves, Opaque Ice and the leaf-culling mode:
         // LevelExtractor.allChanged when they change.
@@ -229,17 +257,18 @@ impl Game<'_> {
 
     /// Only enabled LOD worlds extend the renderer's range, never simulation.
     pub(super) fn terrain_distance(&self) -> i32 {
+        let distance = self.effective_render_distance();
         if self.lod.is_some() {
-            self.streaming.radius.max(self.lod_distance() as i32)
+            distance.max(self.lod_distance() as i32)
         } else {
-            self.streaming.radius
+            distance
         }
     }
 
     /// The renderer for the window, with the current block sprites, GUI
     /// atlas and world border texture.
     /// A new renderer's atlas holds only the pack's sprites: what was drawn into it at run time
-    /// (skins, maps, mods' dynamic textures, the themed UI's glyphs and corners) has to be drawn
+    /// (skins, maps, the themed UI's glyphs and corners) has to be drawn
     /// again.
     pub(super) fn forget_atlas_slots(&mut self) {
         self.skin_slots.forget();
@@ -247,13 +276,12 @@ impl Game<'_> {
         self.trim_slots.forget();
         self.map_patches.clear();
         self.text_patches.get_mut().clear();
-        self.dynamic_textures.forget_uploads();
         self.kept_block_entities.get_mut().clear();
         sunrise_client::ui_theme::reset_atlas();
     }
 
     pub(super) fn new_renderer(&self, window: Arc<Window>) -> Result<Renderer> {
-        self.renderer_for(window, &self.pack, &self.gui)
+        self.renderer_for(window, &self.pack, &self.gui, None)
     }
 
     /// A renderer made again from the resources loaded takes over: what named the old one's
@@ -270,9 +298,12 @@ impl Game<'_> {
             // A new renderer starts with the vanilla column.
             renderer.clear_sections(self.world.layout());
         }
-        // And has no wall for the world border.
+        // And has no wall for the world border. Its sections' sources are kept as the meshes
+        // on their way carry them.
         self.border_renderer.invalidate();
-        self.renderer = Some(renderer);
+        renderer.keep_pack_sources(self.streaming.shader_pack);
+        self.set_renderer(renderer);
+        self.bind_dynamic_textures();
         self.forget_atlas_slots();
         if !world_kept {
             self.clear_lod();
@@ -280,9 +311,6 @@ impl Game<'_> {
             let context = self.worker_context();
             self.streaming.reload_resources(&mut self.world, context);
         }
-        self.native_shaders = native_shaders::NativeShaders::picking(&std::mem::take(
-            &mut self.native_shaders.picked,
-        ));
         self.apply_ui_settings();
     }
 
@@ -300,8 +328,32 @@ impl Game<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::FrameAttempt;
-    use sunrise_shader_api::Api;
+    use super::{FrameAttempt, look_again};
+    use crate::game::shader_packs::reconcile_pack_hdr;
+    use std::path::PathBuf;
+    use sunrise_shaders::Tonemap;
+
+    /// Same frame, pick and loader outcome; only the pick's tone curve owner changes: the frame
+    /// is looked at again, and the renderer that keeps serving takes the new request.
+    #[test]
+    fn a_new_hdr_request_alone_is_looked_at_again() {
+        let mut attempts = FrameAttempt::default();
+        let path = PathBuf::from("pack");
+        let mut installed = Some(Tonemap::Pack);
+        let mut look =
+            |hdr| look_again(&mut attempts, Some("8-bit"), path.clone(), Some(true), hdr);
+        assert!(look(Some(Tonemap::Pack)));
+        assert!(!look(Some(Tonemap::Pack)));
+        assert!(look(Some(Tonemap::Sunrise)));
+        assert!(!reconcile_pack_hdr(
+            true,
+            &mut installed,
+            Some(Tonemap::Sunrise)
+        ));
+        assert_eq!(installed, Some(Tonemap::Sunrise));
+        assert!(!look(Some(Tonemap::Sunrise)));
+        assert!(look(None));
+    }
 
     #[test]
     fn failed_frame_attempt_waits_for_a_policy_or_setting_change() {
@@ -313,10 +365,10 @@ mod tests {
             ("8-bit", "p", None),
             // HDR output offered later, with HDR On: the frame is looked at again.
             ("float", "p", None),
-            ("float", "p", Some(Some(Api::V0_2))),
-            ("float", "p", Some(Some(Api::V0_2))),
-            ("float", "p", Some(None)),
-            ("float", "p", Some(None)),
+            ("float", "p", Some(true)),
+            ("float", "p", Some(true)),
+            ("float", "p", Some(false)),
+            ("float", "p", Some(false)),
             ("float", "q", None),
             ("8-bit", "q", None),
         ] {

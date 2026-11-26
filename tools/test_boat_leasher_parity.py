@@ -6,14 +6,12 @@ All other arguments, including --binary, are the command-oracle runner's.
 """
 import sys
 
-try:
-    from . import command_exec_corpus as corpus
-    from . import test_command_exec_parity as runner
-    from .boat_leasher_corpus import boat_leasher
-except ImportError:
-    import command_exec_corpus as corpus
-    import test_command_exec_parity as runner
-    from boat_leasher_corpus import boat_leasher
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import command_exec_corpus as corpus, test_command_exec_parity as runner
+from tools.boat_leasher_corpus import boat_leasher
 
 
 def main():

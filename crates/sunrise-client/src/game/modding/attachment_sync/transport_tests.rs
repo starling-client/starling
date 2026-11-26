@@ -2,8 +2,13 @@
 //! connection and LAN TCP: who is sent values, in which order, what a rollback and a stale
 //! epoch send, and what an oversized message does to the connection.
 use super::super::Game;
-use mod_api::{AttachmentCodec, AttachmentStore, AttachmentType, Host};
-use std::time::{Duration, Instant};
+use mod_api::{
+    AttachmentAccess, AttachmentCodec, AttachmentHolder, AttachmentKey, Attachments, Host,
+};
+use std::{
+    sync::atomic::{AtomicUsize, Ordering},
+    time::{Duration, Instant},
+};
 use sunrise_core::nbt::Tag;
 use sunrise_mod_runtime::attachments::Holder;
 use sunrise_protocol::{
@@ -17,35 +22,38 @@ use sunrise_protocol::{
 const NAME: &str =
     "game::attachment_sync::transport_tests::attachment_sync_follows_the_negotiated_route";
 
-pub(super) static VALUE: AttachmentType<i32> = AttachmentType {
-    namespace: "sync_route",
-    name: "value",
-    default: || 0,
-    codec: Some(AttachmentCodec {
-        encode: |n| Ok([("n".into(), Tag::Int(*n))].into()),
-        decode: |c| match c.get(&"n".into()) {
-            Some(Tag::Int(n)) => Ok(*n),
-            _ => Err(mod_api::AttachmentError::Decode),
-        },
-    }),
-    copy_on_death: false,
-    sync: true,
+pub(super) const VALUE_CODEC: AttachmentCodec<i32> = AttachmentCodec {
+    encode: |n| Ok([("n".into(), Tag::Int(*n))].into()),
+    decode: |c| match c.get(&"n".into()) {
+        Some(Tag::Int(n)) => Ok(*n),
+        _ => Err(mod_api::AttachmentError::Decode),
+    },
 };
-/// A value past every network frame limit, and incompressible.
-static BLOB: AttachmentType<Vec<u8>> = AttachmentType {
-    namespace: "sync_route",
-    name: "blob",
-    default: Vec::new,
-    codec: Some(AttachmentCodec {
-        encode: |bytes| Ok([("b".into(), Tag::ByteArray(bytes.clone()))].into()),
-        decode: |c| match c.get(&"b".into()) {
-            Some(Tag::ByteArray(bytes)) => Ok(bytes.clone()),
-            _ => Err(mod_api::AttachmentError::Decode),
-        },
-    }),
-    copy_on_death: false,
-    sync: true,
+
+const BLOB_CODEC: AttachmentCodec<Vec<u8>> = AttachmentCodec {
+    encode: |bytes| Ok([("b".into(), Tag::ByteArray(bytes.clone()))].into()),
+    decode: |c| match c.get(&"b".into()) {
+        Some(Tag::ByteArray(bytes)) => Ok(bytes.clone()),
+        _ => Err(mod_api::AttachmentError::Decode),
+    },
 };
+pub(super) fn value_key() -> AttachmentKey<i32> {
+    mod_api::testing::attachment_key("sync_route", "value")
+}
+
+// This is installed only by the fresh-process route fixtures. The disk decoder creates the
+// throwing owner, not the setup write. The encoder unwinds with another throwing destructor.
+static PANICKING_DROPS: AtomicUsize = AtomicUsize::new(0);
+#[derive(Clone)]
+struct PanickingValue(bool);
+impl Drop for PanickingValue {
+    fn drop(&mut self) {
+        if self.0 {
+            PANICKING_DROPS.fetch_add(1, Ordering::Relaxed);
+            panic!("disk-decoded attachment destructor");
+        }
+    }
+}
 
 /// A mod with no hooks: with a mod loaded, the server sends joining players snapshots.
 pub(super) struct Route;
@@ -53,45 +61,78 @@ pub(super) struct Route;
 impl mod_api::Hooks for Route {
     fn register(&self, registrar: &mut dyn mod_api::Registrar, _: &mod_api::RegistrationContext) {
         registrar
-            .register_attachment_type("sync_route:value", true)
+            .register_attachment_type(
+                mod_api::AttachmentDescriptor::new("sync_route:value", || 0i32)
+                    .serialize(VALUE_CODEC)
+                    .sync(VALUE_CODEC),
+            )
             .unwrap();
         registrar
-            .register_attachment_type("sync_route:blob", true)
+            .register_attachment_type(
+                mod_api::AttachmentDescriptor::new("sync_route:blob", Vec::<u8>::new)
+                    .serialize(BLOB_CODEC)
+                    .sync(BLOB_CODEC),
+            )
+            .unwrap();
+        registrar
+            .register_attachment_type(
+                mod_api::AttachmentDescriptor::new("sync_route:bad_nbt", || ()).sync(
+                    AttachmentCodec {
+                        encode: |_| {
+                            Ok([(
+                                "too_long".into(),
+                                Tag::String("x".repeat(65_536).as_str().into()),
+                            )]
+                            .into())
+                        },
+                        decode: |_| Ok(()),
+                    },
+                ),
+            )
+            .unwrap();
+        registrar
+            .register_attachment_type(
+                mod_api::AttachmentDescriptor::new("sync_route:panic", || PanickingValue(false))
+                    .serialize(AttachmentCodec {
+                        encode: |_| Ok(Default::default()),
+                        decode: |_| Ok(PanickingValue(true)),
+                    })
+                    .sync(AttachmentCodec {
+                        encode: |_| std::panic::panic_any(PanickingValue(true)),
+                        decode: |_| unreachable!("the panicking encoder produced no payload"),
+                    }),
+            )
             .unwrap();
     }
 }
 
-/// The server's own attachment store.
-pub(super) fn store<'a>(server: &'a mut Game<'_>) -> &'a mut dyn AttachmentStore {
-    let host: &mut dyn Host = server;
-    host.attachments()
-}
-
 /// The server sets the level's value, committed or rolled back.
 pub(super) fn set_level(game: &Game<'_>, value: i32, commit: bool) {
+    let key = value_key();
     game.integrated
         .as_ref()
         .unwrap()
         .call(move |server| {
-            let seal = server.transaction_open();
-            VALUE.set(store(server), Holder::Level, value).unwrap();
-            server.transaction_close(&seal, commit);
+            server.storage_scope(|server, _| {
+                key.set(server, Holder::Level, value).unwrap();
+                ((), commit)
+            });
         })
         .unwrap();
 }
 
 /// The window's synced copy of the level's value.
-fn window_value(game: &mut Game<'_>) -> Option<i32> {
+fn window_value(game: &mut Game<'_>, key: &mod_api::AttachmentKey<i32>) -> Option<i32> {
     let host: &dyn Host = game;
-    let rows = host
-        .attachment_query("sync_route", "value")
+    let holder = AttachmentHolder::Level(host.level(host.dimension())?);
+    let batch = mod_api::AttachmentQueries::capture(host, key).unwrap();
+    batch
+        .query(key)
         .unwrap()
-        .query(&VALUE)
-        .ok()?;
-    rows.iter().try_next().unwrap().map(|row| {
-        row.with_value(game.attachment_frame_borrow(), |value| *value)
-            .unwrap()
-    })
+        .get(game.attachment_frame_borrow(), holder, |value| {
+            value.cloned()
+        })
+        .unwrap()
 }
 
 /// Let the server's hub tick `n` times, so later edits land in a later pass.
@@ -111,11 +152,11 @@ pub(super) fn wait_server_ticks(game: &Game<'_>, n: u64) {
     }
 }
 
-fn wait_window(game: &mut Game<'_>, value: i32) {
+fn wait_window(game: &mut Game<'_>, key: &mod_api::AttachmentKey<i32>, value: Option<i32>) {
     let deadline = Instant::now() + Duration::from_secs(30);
-    while window_value(game) != Some(value) {
+    while window_value(game, key) != value {
         game.poll_remote().unwrap();
-        assert!(Instant::now() < deadline, "window never saw {value}");
+        assert!(Instant::now() < deadline, "window never saw {value:?}");
         std::thread::yield_now();
     }
 }
@@ -317,6 +358,7 @@ fn attachment_sync_follows_the_negotiated_route() {
     let mods = vec![mod_api::ModEntry::new("sync_route", Box::new(Route))].into();
     mod_platform::testing::with_mods(mods, || {
         super::super::native_entity_refs::tests::with_client_game(|game| {
+            let value_key = value_key();
             game.settings.render_distance = 2;
             game.settings.simulation_distance = 2;
             let options = sunrise_client::title::WorldOptions {
@@ -341,12 +383,44 @@ fn attachment_sync_follows_the_negotiated_route() {
                 assert!(Instant::now() < deadline);
                 std::thread::yield_now();
             }
+            let set_pair = |game: &Game<'_>, n: i32| {
+                let bad = mod_api::testing::attachment_key("sync_route", "bad_nbt");
+                let good = value_key.clone();
+                game.integrated
+                    .as_ref()
+                    .unwrap()
+                    .call(move |server| {
+                        server.storage_scope(|server, _| {
+                            bad.set(server, Holder::Level, ()).unwrap();
+                            good.set(server, Holder::Level, n).unwrap();
+                            ((), true)
+                        });
+                    })
+                    .unwrap();
+            };
             // Integrated memory connection: a commit reaches the window, a rollback does not.
             set_level(game, 7, true);
-            wait_window(game, 7);
+            wait_window(game, &value_key, Some(7));
             set_level(game, 9, false);
-            set_level(game, 10, true);
-            wait_window(game, 10);
+            set_pair(game, 10);
+            wait_window(game, &value_key, Some(10));
+
+            // Leave a decoded-on-send, saved attachment on the authoritative level before the
+            // TCP peer pairs. A temporary owner and the encoder's panic payload both unwind.
+            let panicking = mod_api::testing::attachment_key("sync_route", "panic");
+            game.integrated
+                .as_ref()
+                .unwrap()
+                .call(move |server| {
+                    panicking
+                        .set(server, Holder::Level, PanickingValue(false))
+                        .unwrap();
+                    let map = server
+                        .attachment_map_quiet(Holder::Level, AttachmentAccess::Existing)
+                        .unwrap();
+                    map.replace_contents(Attachments::from_nbt(map.try_to_nbt().unwrap()));
+                })
+                .unwrap();
 
             let port = game
                 .integrated
@@ -364,28 +438,134 @@ fn attachment_sync_follows_the_negotiated_route() {
             let mut sunrise = peer(port, "SyncSunrise", true);
             let mut vanilla = peer(port, "SyncVanilla", false);
             // A joining Sunrise peer is sent the level's whole value, then each commit in
-            // order; a rolled-back edit sends nothing, and the authority keeps the old value.
+            // order; a refused projection on that same holder does not suppress the join
+            // snapshot or a later commit. A rolled-back edit sends nothing.
             assert_eq!(values_until(&mut sunrise, Holder::Level, 10), [10]);
+            assert_eq!(
+                PANICKING_DROPS.load(Ordering::Relaxed),
+                2,
+                "the failed encoder's panic payload and temporary disk-decoded owner were fenced independently"
+            );
             set_level(game, 11, false);
-            set_level(game, 12, true);
-            assert_eq!(values_until(&mut sunrise, Holder::Level, 12), [12]);
-            let authority = game
-                .integrated
+            let ordered_key = value_key.clone();
+            game.integrated
                 .as_ref()
                 .unwrap()
-                .call(|server| VALUE.get(store(server), Holder::Level))
+                .call(move |server| {
+                    server.storage_scope(|server, _| {
+                        ordered_key.set(server, Holder::Level, 120).unwrap();
+                        server.storage_scope(|server, _| {
+                            ordered_key.set(server, Holder::Level, 999).unwrap();
+                            ((), false)
+                        });
+                        ordered_key.set(server, Holder::Level, 12).unwrap();
+                        ((), true)
+                    });
+                })
                 .unwrap();
+            assert_eq!(values_until(&mut sunrise, Holder::Level, 12), [120, 12]);
+            let authority = {
+                let key = value_key.clone();
+                game.integrated
+                    .as_ref()
+                    .unwrap()
+                    .call(move |server| key.get(server, Holder::Level, Clone::clone))
+                    .unwrap()
+            };
             assert_eq!(authority, Ok(12));
             // A vanilla peer is sent nothing, before or after.
             assert_eq!(sync_packets_within(&mut vanilla, Duration::from_secs(2)), 0);
 
-            // Past the network frame limits: refused by name, the peer stays joined and is
-            // sent the next value. The memory connection has no frame limit.
-            let refused = game
+            let discard = |game: &Game<'_>, commit| {
+                let key = value_key.clone();
+                game.integrated
+                    .as_ref()
+                    .unwrap()
+                    .call(move |server| {
+                        server.storage_scope(|server, _| {
+                            assert_eq!(key.remove(server, Holder::Level), Ok(Some(12)));
+                            ((), commit)
+                        });
+                    })
+                    .unwrap();
+            };
+            wait_window(game, &value_key, Some(12));
+            discard(game, false);
+            wait_server_ticks(game, 2);
+            game.poll_remote().unwrap();
+            assert_eq!(window_value(game, &value_key), Some(12));
+            assert_eq!(sync_packets_within(&mut sunrise, Duration::from_secs(1)), 0);
+            discard(game, true);
+            wait_window(game, &value_key, None);
+
+            // A replica may have a local default even though the server lost that key.
+            // The server's map still holds the other attachments from this route.
+            assert_eq!(value_key.get(game, Holder::Level, |value| *value), Ok(0));
+            assert_eq!(window_value(game, &value_key), Some(0));
+            let absent = value_key.clone();
+            game.integrated
+                .as_ref()
+                .unwrap()
+                .call(move |server| {
+                    server.storage_scope(|server, _| {
+                        assert_eq!(absent.remove(server, Holder::Level), Ok(None));
+                        ((), true)
+                    });
+                })
+                .unwrap();
+            wait_window(game, &value_key, None);
+
+            let holder = game
                 .integrated
                 .as_ref()
                 .unwrap()
                 .call(|server| {
+                    use super::super::creatures::{SpawnReason, SpawnSite};
+                    let pos = server
+                        .lan
+                        .as_ref()
+                        .unwrap()
+                        .hub
+                        .guests
+                        .iter()
+                        .find(|guest| guest.name == "SyncSunrise")
+                        .unwrap()
+                        .position;
+                    let id = server
+                        .spawn_mob(
+                            "minecraft:cow",
+                            pos,
+                            true,
+                            SpawnSite::Finalizing(SpawnReason::Command),
+                        )
+                        .unwrap();
+                    Holder::Entity(id)
+                })
+                .unwrap();
+            wait_server_ticks(game, 2);
+            let good = value_key.clone();
+            let bad = mod_api::testing::attachment_key("sync_route", "bad_nbt");
+            game.integrated
+                .as_ref()
+                .unwrap()
+                .call(move |server| {
+                    server.storage_scope(|server, _| {
+                        bad.set(server, holder, ()).unwrap();
+                        good.set(server, holder, 23).unwrap();
+                        ((), true)
+                    });
+                })
+                .unwrap();
+            assert_eq!(values_until(&mut sunrise, holder, 23), [23]);
+
+            // Past the network frame limits: refused by name, the peer stays joined and is
+            // sent the next value. The memory connection has no frame limit.
+            let blob_key = mod_api::testing::attachment_key("sync_route", "blob");
+            let refused = game
+                .integrated
+                .as_ref()
+                .unwrap()
+                .call(move |server| {
                     let blob: Vec<u8> = (0u32..9 << 20)
                         .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
                         .collect();
@@ -412,7 +592,7 @@ fn attachment_sync_follows_the_negotiated_route() {
                         .clone();
                     let refused = server.queue_attachment_sync(&peer, &body);
                     // The same value through the level's own pass, as a mod's edit sends it.
-                    BLOB.set(store(server), Holder::Level, blob).unwrap();
+                    blob_key.set(server, Holder::Level, blob).unwrap();
                     refused
                 })
                 .unwrap();
@@ -426,6 +606,7 @@ fn attachment_sync_follows_the_negotiated_route() {
             wait_server_ticks(game, 2);
             set_level(game, 13, true);
             assert_eq!(values_until(&mut sunrise, Holder::Level, 13), [13]);
+            wait_window(game, &value_key, Some(13));
 
             // A message prepared against an epoch that ended before the root commit publishes
             // nothing, on the TCP and the memory connection alike.
@@ -453,12 +634,13 @@ fn attachment_sync_follows_the_negotiated_route() {
                             value: Some([("n".into(), Tag::Int(99))].into()),
                         }],
                     };
-                    let seal = server.transaction_open();
-                    server.send_attachment_sync(&senders, &message);
-                    for sender in &senders {
-                        sender.payload_transport().begin_configuration();
-                    }
-                    server.transaction_close(&seal, true);
+                    server.storage_scope(|server, _| {
+                        server.send_attachment_sync(&senders, &message);
+                        for sender in &senders {
+                            sender.payload_transport().begin_configuration();
+                        }
+                        ((), true)
+                    });
                     senders.len()
                 })
                 .unwrap();
@@ -467,7 +649,7 @@ fn attachment_sync_follows_the_negotiated_route() {
             for _ in 0..20 {
                 game.poll_remote().unwrap();
             }
-            assert_eq!(window_value(game), Some(13));
+            assert_eq!(window_value(game, &value_key), Some(13));
             drop((sunrise, vanilla));
             game.leave_server(None).unwrap();
         });

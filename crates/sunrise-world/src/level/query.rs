@@ -215,7 +215,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         }
     }
     /// `Block.canSupportRigidBlock(level, below)`.
-    pub fn can_support_rigid_block(&self, pos: BlockPos) -> bool {
+    pub(crate) fn can_support_rigid_block(&self, pos: BlockPos) -> bool {
         self.signals().can_support_rigid_block(pos)
     }
     /// Rigid support from the neighbour state supplied by a shape update,
@@ -224,14 +224,14 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         self.signals().can_support_rigid_block_on(pos, state)
     }
     /// `Block.canSupportCenter(level, pos, direction)`.
-    pub fn can_support_center(&self, pos: BlockPos, direction: Direction) -> bool {
+    pub(crate) fn can_support_center(&self, pos: BlockPos, direction: Direction) -> bool {
         self.signals().can_support_center(pos, direction)
     }
-    pub fn is_empty_block(&self, pos: BlockPos) -> bool {
+    pub(crate) fn is_empty_block(&self, pos: BlockPos) -> bool {
         self.signals().is_empty_block(pos)
     }
     /// `LevelReader.isWaterAt`: the fluid at `pos` is in the water tag.
-    pub fn is_water_at(&self, pos: BlockPos) -> bool {
+    pub(crate) fn is_water_at(&self, pos: BlockPos) -> bool {
         self.signals().is_water_at(pos)
     }
 }
@@ -441,7 +441,7 @@ impl<L: super::signal_access::SignalAccess + ?Sized> Signals<'_, L> {
         self.b.is_face_sturdy(self.support_state(pos), direction)
     }
     /// `Block.canSupportRigidBlock(level, below)`.
-    pub fn can_support_rigid_block(&self, pos: BlockPos) -> bool {
+    pub(crate) fn can_support_rigid_block(&self, pos: BlockPos) -> bool {
         self.can_support_rigid_block_on(pos, self.state(pos))
     }
     /// `state.isFaceSturdy(level, pos, UP, RIGID)`: `state` with the live block
@@ -464,7 +464,7 @@ impl<L: super::signal_access::SignalAccess + ?Sized> Signals<'_, L> {
             .is_face_sturdy_rigid(self.support_state_for(pos, state), Direction::Up)
     }
     /// `Block.canSupportCenter(level, pos, direction)`.
-    pub fn can_support_center(&self, pos: BlockPos, direction: Direction) -> bool {
+    pub(crate) fn can_support_center(&self, pos: BlockPos, direction: Direction) -> bool {
         let state = self.support_state(pos);
         if direction == Direction::Down && self.b.in_set(state, &self.b.tags.unstable_bottom_center)
         {
@@ -482,11 +482,11 @@ impl<L: super::signal_access::SignalAccess + ?Sized> Signals<'_, L> {
         }
         self.b.is_face_sturdy_center(state, direction)
     }
-    pub fn is_empty_block(&self, pos: BlockPos) -> bool {
+    pub(crate) fn is_empty_block(&self, pos: BlockPos) -> bool {
         self.b.is_air(self.state(pos))
     }
     /// `LevelReader.isWaterAt`: the fluid at `pos` is in the water tag.
-    pub fn is_water_at(&self, pos: BlockPos) -> bool {
+    pub(crate) fn is_water_at(&self, pos: BlockPos) -> bool {
         self.b.is_water_fluid(self.b.fluid(self.state(pos)).kind())
     }
     pub fn is_redstone_conductor(&self, state: BlockStateId, _pos: BlockPos) -> bool {

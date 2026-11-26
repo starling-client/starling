@@ -1,0 +1,3 @@
+ids = ["handle:LevelRef::send_particles_batch"]
+why = "Server mods can send one particle effect around many positions in one call: each position is its own ServerLevel.sendParticles request, in slice order, to players under 32 blocks from it. The whole request is validated before anything is queued, and in a transaction it follows the deferred effect rules."
+migrate = "Nothing to migrate: the method is new."

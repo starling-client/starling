@@ -73,6 +73,7 @@ fn cave_air_above_a_water_source_is_open_water_and_catches_treasure() {
                     &mut level_random,
                     seed,
                     None,
+                    None,
                     open_water,
                     &hook_params(0.0, None),
                 )

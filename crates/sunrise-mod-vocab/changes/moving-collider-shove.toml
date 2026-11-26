@@ -1,0 +1,3 @@
+ids = ["behaviour:moving_collider_shove"]
+why = "Every mod-collider shove cancels only inward velocity after an actual move, and an upward shove raises vertical velocity to the collider's vertical speed without lowering a body already rising faster; vanilla pistons and shulkers are unchanged."
+migrate = "No source change is needed. Do not rely on a body keeping velocity that points into a mod-collider shove."

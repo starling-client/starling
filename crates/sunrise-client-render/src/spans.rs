@@ -285,6 +285,42 @@ impl Laps {
         (*started, *cpu, *mark) = (now, now_cpu, recorded());
     }
 }
+/// Sum a repeated phase into one span for the tick breakdown.
+#[derive(Clone, Default)]
+pub struct SpanTotal {
+    wall: Duration,
+    cpu: Duration,
+    depth: Option<u8>,
+}
+
+impl SpanTotal {
+    pub fn start() -> Option<(Instant, Option<Duration>)> {
+        recording_here().then(|| (Instant::now(), cpu_if_enabled()))
+    }
+
+    pub fn add(&mut self, sample: Option<(Instant, Option<Duration>)>) {
+        if let Some((started, cpu)) = sample {
+            let elapsed = started.elapsed();
+            self.wall += elapsed;
+            self.cpu += cpu
+                .zip(cpu_if_enabled())
+                .map_or(elapsed, |(start, end)| end - start);
+            self.depth = Some(DEPTH.with(Cell::get));
+        }
+    }
+
+    pub fn record(self, name: &'static str) {
+        if let Some(depth) = self.depth {
+            push(Span {
+                name,
+                ms: self.wall.as_secs_f32() * 1000.0,
+                cpu_ms: self.cpu.as_secs_f32() * 1000.0,
+                depth,
+            });
+        }
+    }
+}
+
 /// The CPU time this thread has used, where the platform tells it: a tick
 /// with more wall time than CPU time waited (for a lock, or for a core on a
 /// busy machine).

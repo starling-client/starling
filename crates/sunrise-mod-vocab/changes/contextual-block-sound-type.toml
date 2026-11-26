@@ -1,0 +1,3 @@
+ids = ["hook:sound_type", "method:BlockPart::sound_type"]
+why = "A block's sound type can depend on the level around it, as NeoForge's IBlockExtension.getSoundType(state, level, pos, entity) does: a block can sound as the block beneath or beside it. The part reads the asking side's level, read-only and without loading chunks, instead of the loop context."
+migrate = "Rebuild for hook version 2. Take LevelSide<'_> instead of &dyn LoopContext; match it to its read-only host to read blocks, states, light, fluids, weather, tags and resident block entities around event.pos."

@@ -98,6 +98,7 @@ fn mob_thorns_melee_projectiles_and_non_attacks() {
                 target: 42,
                 amount: 1.0,
                 source,
+                remember_target: true,
             }])
             .unwrap();
             check_answer(g, slot, true);
@@ -137,6 +138,7 @@ fn mob_thorns_melee_projectiles_and_non_attacks() {
                         target: 42,
                         amount: 1.0,
                         source,
+                        remember_target: true,
                     }
                 }
             };

@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# The linker of x86_64-unknown-linux-gnu programs, glibc 2.35 as the ceiling. The -L finds the libasound.so.2 and
+# libudev.so.1 that the game's dylibs need at the executable's link. zig answers Rust's -lgcc_s with its own static
+# libunwind, which gives each library its own unwinder: a panic raised through libstd's libgcc_s then aborts in another
+# library's cleanup ("_Unwind_Resume() can't return"). The system's libgcc_s.so.1 keeps one unwinder, as a native link.
+# zig also reads the --strip-debug of the release profile's strip = "debuginfo" as stripping everything, symbol table
+# included, which leaves panic backtraces and crash reports without function names: the debug info is stripped after
+# the link instead, by the rust-objcopy every Rust toolchain ships, as a native link does.
+args=() strip_debug="" output=""
+previous=""
+for arg in "$@"; do
+  if [[ "$arg" == -lgcc_s ]]; then args+=(/usr/lib/x86_64-linux-gnu/libgcc_s.so.1)
+  elif [[ "$arg" == -Wl,--strip-debug ]]; then strip_debug=1
+  else args+=("$arg")
+  fi
+  [[ "$previous" == -o ]] && output="$arg"
+  previous="$arg"
+done
+zig cc -target x86_64-linux-gnu.2.35 -Wl,--allow-shlib-undefined -L/usr/lib/x86_64-linux-gnu "${args[@]}" || exit
+if [[ -n "$strip_debug" ]]; then
+  exec "$(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-objcopy" --strip-debug "$output"
+fi

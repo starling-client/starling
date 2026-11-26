@@ -16,7 +16,10 @@ use sunrise_core::nbt::{Compound, JavaString, Tag};
 
 pub(super) fn register(out: &mut Vec<(Key, FixFn)>) {
     out.push((key(1450, 0), |cx| {
-        cx.each(Ty::BlockState, |s| *s = bsd::upgrade_block_state_tag(s))
+        cx.each(Ty::BlockState, |s| {
+            *s = bsd::upgrade_block_state_tag(s)?;
+            Ok(())
+        })
     }));
     out.push((key(1451, 1), chunk_palettes));
     out.push((key(1451, 2), piston_block_state));
@@ -84,10 +87,10 @@ pub(super) fn register(out: &mut Vec<(Key, FixFn)>) {
         )
     }));
     out.push((key(1480, 0), |cx| {
-        legacy_block_rename(cx, &table(t::tables().coral))
+        legacy_block_rename(cx, &|id| table(t::coral()?)(id))
     }));
     out.push((key(1480, 0), |cx| {
-        item_rename(cx, &table(t::tables().coral))
+        item_rename(cx, &|id| table(t::coral()?)(id))
     }));
     out.push((key(1483, 0), |cx| {
         entity_rename(cx, &only("minecraft:puffer_fish", "minecraft:pufferfish"))
@@ -109,10 +112,10 @@ pub(super) fn register(out: &mut Vec<(Key, FixFn)>) {
     out.push((key(1484, 0), |cx| legacy_block_rename(cx, &table(SEAGRASS))));
     out.push((key(1484, 0), heightmap_renaming));
     out.push((key(1486, 0), |cx| {
-        entity_rename(cx, &table(t::tables().cod_salmon))
+        entity_rename(cx, &|id| table(t::cod_salmon()?)(id))
     }));
     out.push((key(1486, 0), |cx| {
-        item_rename(cx, &table(t::tables().cod_salmon_eggs))
+        item_rename(cx, &|id| table(t::cod_salmon_eggs()?)(id))
     }));
     const PRISMARINE: &[(&str, &str)] = &[
         (
@@ -169,15 +172,15 @@ pub(super) fn register(out: &mut Vec<(Key, FixFn)>) {
     }));
     out.push((key(1501, 0), advancements_rename));
     out.push((key(1502, 0), |cx| {
-        rename_names(cx, Ty::Recipe, &table(t::tables().recipes))
+        rename_names(cx, Ty::Recipe, &|id| table(t::recipes()?)(id))
     }));
     out.push((key(1506, 0), level_generator_options));
     out.push((key(1510, 0), |cx| {
-        legacy_block_rename(cx, &table(t::tables().the_renamening_blocks))
+        legacy_block_rename(cx, &|id| table(t::the_renamening_blocks()?)(id))
     }));
     out.push((key(1510, 0), |cx| item_rename(cx, &the_renamening_items)));
     out.push((key(1510, 0), |cx| {
-        rename_names(cx, Ty::Recipe, &table(t::tables().recipes_renamening))
+        rename_names(cx, Ty::Recipe, &|id| table(t::recipes_renamening()?)(id))
     }));
     out.push((key(1510, 0), |cx| {
         entity_rename(cx, &the_renamening_entities)
@@ -189,7 +192,7 @@ pub(super) fn register(out: &mut Vec<(Key, FixFn)>) {
     out.push((key(1514, 0), |cx| display_name_to_component(cx, Ty::Team)));
     out.push((key(1514, 0), objective_render_type));
     out.push((key(1515, 0), |cx| {
-        legacy_block_rename(cx, &table(t::tables().coral_fans))
+        legacy_block_rename(cx, &|id| table(t::coral_fans()?)(id))
     }));
     out.push((key(1624, 0), |cx| {
         cx.each(Ty::Chunk, chunk_leaves::trapped_chest_fix)
@@ -203,43 +206,47 @@ fn lookup(table: &'static [(&'static str, &'static str)], k: &str) -> Option<&'s
 }
 
 /// `createRenamer(map)`: the id namespaced, looked up in a table.
-fn table(entries: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<String> {
-    move |id| lookup(entries, &namespaced(id)).map(str::to_owned)
+fn table(
+    entries: &'static [(&'static str, &'static str)],
+) -> impl Fn(&str) -> t::Result<Option<String>> {
+    move |id| Ok(lookup(entries, &namespaced(id)).map(str::to_owned))
 }
 
 /// `createRenamer(from, to)`.
-fn only(from: &'static str, to: &'static str) -> impl Fn(&str) -> Option<String> {
-    move |id| (namespaced(id) == from).then(|| to.to_owned())
+fn only(from: &'static str, to: &'static str) -> impl Fn(&str) -> t::Result<Option<String>> {
+    move |id| Ok((namespaced(id) == from).then(|| to.to_owned()))
 }
 
-fn rename_names(cx: &mut Cx, ty: Ty, f: &dyn Fn(&str) -> Option<String>) {
+fn rename_names(cx: &mut Cx, ty: Ty, f: &dyn Fn(&str) -> t::Result<Option<String>>) {
     cx.each(ty, |v| {
         if let Some(name) = as_str(Some(v))
-            && let Some(new) = f(&name)
+            && let Some(new) = f(&name)?
         {
             *v = string(&new);
         }
+        Ok(())
     });
 }
 
 /// `ItemRenameFix`.
-fn item_rename(cx: &mut Cx, f: &dyn Fn(&str) -> Option<String>) {
+fn item_rename(cx: &mut Cx, f: &dyn Fn(&str) -> t::Result<Option<String>>) {
     rename_names(cx, Ty::ItemName, f);
 }
 
 /// `LegacyBlockRenameFix`: block names, block states and flat block states.
-fn legacy_block_rename(cx: &mut Cx, f: &dyn Fn(&str) -> Option<String>) {
+fn legacy_block_rename(cx: &mut Cx, f: &dyn Fn(&str) -> t::Result<Option<String>>) {
     rename_names(cx, Ty::BlockName, f);
     cx.each(Ty::BlockState, |s| {
         if let Some(name) = as_str(s.get("Name"))
-            && let Some(new) = f(&name)
+            && let Some(new) = f(&name)?
         {
             set(s, "Name", string(&new));
         }
+        Ok(())
     });
     cx.each(Ty::FlatBlockState, |s| {
         let Some(text) = as_str(Some(s)) else {
-            return;
+            return Ok(());
         };
         let mut end = text.len();
         if let Some(p) = text.find('[').filter(|p| *p > 0) {
@@ -248,48 +255,52 @@ fn legacy_block_rename(cx: &mut Cx, f: &dyn Fn(&str) -> Option<String>) {
         if let Some(n) = text.find('{').filter(|n| *n > 0) {
             end = end.min(n);
         }
-        if let Some(new) = f(&text[..end]) {
+        if let Some(new) = f(&text[..end])? {
             *s = string(&format!("{new}{}", &text[end..]));
         }
+        Ok(())
     });
 }
 
 /// `SimplestEntityRenameFix`: entity ids and entity names.
-fn entity_rename(cx: &mut Cx, f: &dyn Fn(&str) -> Option<String>) {
+fn entity_rename(cx: &mut Cx, f: &dyn Fn(&str) -> t::Result<Option<String>>) {
     cx.each(Ty::Entity, |e| {
         if let Some(id) = as_str(e.get("id"))
-            && let Some(new) = f(&namespaced(&id))
+            && let Some(new) = f(&namespaced(&id))?
         {
             set(e, "id", string(&new));
         }
+        Ok(())
     });
     rename_names(cx, Ty::EntityName, f);
 }
 
-fn the_renamening_entities(name: &str) -> Option<String> {
+fn the_renamening_entities(name: &str) -> t::Result<Option<String>> {
     let name = namespaced(name);
     let name = match name.strip_prefix("minecraft:bred_") {
         Some(rest) => format!("minecraft:{rest}"),
         None => name,
     };
-    Some(lookup(t::tables().the_renamening_entities, &name).map_or(name.clone(), str::to_owned))
+    Ok(Some(
+        lookup(t::the_renamening_entities()?, &name).map_or(name.clone(), str::to_owned),
+    ))
 }
 
-fn the_renamening_items(name: &str) -> Option<String> {
+fn the_renamening_items(name: &str) -> t::Result<Option<String>> {
     let name = namespaced(name);
-    if let Some(new) = lookup(t::tables().the_renamening_blocks, &name) {
-        return Some(new.to_owned());
+    if let Some(new) = lookup(t::the_renamening_blocks()?, &name) {
+        return Ok(Some(new.to_owned()));
     }
-    Some(
+    Ok(Some(
         match name.as_str() {
             "minecraft:clownfish" => "minecraft:tropical_fish",
             "minecraft:chorus_fruit_popped" => "minecraft:popped_chorus_fruit",
             "minecraft:evocation_illager_spawn_egg" => "minecraft:evoker_spawn_egg",
             "minecraft:vindication_illager_spawn_egg" => "minecraft:vindicator_spawn_egg",
-            _ => return None,
+            _ => return Ok(None),
         }
         .to_owned(),
-    )
+    ))
 }
 
 /// `LegacyComponentDataFixUtils.createTextComponentJson` of a string tag's text.
@@ -309,8 +320,8 @@ fn chunk_palettes(cx: &mut Cx) {
         }
     });
     cx.each(Ty::Chunk, |c| {
-        super::chunk_flatten::fix(c);
-        reread_as(Ty::Chunk, k, c);
+        super::chunk_flatten::fix(c)?;
+        reread_as(Ty::Chunk, k, c)
     });
 }
 
@@ -324,64 +335,65 @@ fn piston_block_state(cx: &mut Cx) {
         remove(be, "blockData");
         // The new value is built from this remainder: it remembers it.
         mark_read(be);
-        set(be, "blockState", bsd::get_tag(block << 4 | data));
+        set(be, "blockState", bsd::get_tag(block << 4 | data)?);
+        Ok(())
     });
 }
 
 // ------------------------------------------------------------------ 1451.3
 
-fn block_id(name: &str) -> i32 {
-    t::tables()
-        .block_ids
+fn block_id(name: &str) -> t::Result<i32> {
+    Ok(t::block_ids()?
         .iter()
         .find(|(n, _)| *n == name)
-        .map_or(0, |(_, id)| *id)
+        .map_or(0, |(_, id)| *id))
 }
 
 /// The block id of a `BLOCK_NAME` value (`Either<Integer, String>`).
-fn block_name_id(tile: &Tag) -> Option<i32> {
-    match tile {
-        Tag::String(s) => Some(block_id(&namespaced(&s.to_string_lossy()))),
+fn block_name_id(tile: &Tag) -> t::Result<Option<i32>> {
+    Ok(match tile {
+        Tag::String(s) => Some(block_id(&namespaced(&s.to_string_lossy()))?),
         other => as_number(other).map(|n| n.int_value()),
-    }
+    })
 }
 
 /// `EntityBlockStateFix.updateBlockToBlockState`. The typed old field stays in
 /// the remainder it was read from.
-fn block_to_state(e: &mut Tag, old: &str, data_name: &str, new: &str) {
-    let block = e.get(old).and_then(block_name_id);
+fn block_to_state(e: &mut Tag, old: &str, data_name: &str, new: &str) -> t::Result {
+    let block = e.get(old).map(block_name_id).transpose()?.flatten();
     let data = as_int(e.get(data_name), 0) & 15;
     if let Some(block) = block {
-        set(e, new, bsd::get_tag(block << 4 | data));
+        set(e, new, bsd::get_tag(block << 4 | data)?);
     }
     remove(e, data_name);
+    Ok(())
 }
 
 fn entity_block_state(cx: &mut Cx) {
     cx.each(Ty::Entity, |e| {
         let Some(id) = as_str(e.get("id")) else {
-            return;
+            return Ok(());
         };
         match namespaced(&id).as_str() {
             "minecraft:falling_block" => {
                 let block = match e.get("Block") {
-                    Some(tile) => block_name_id(tile).unwrap_or(0),
+                    Some(tile) => block_name_id(tile)?.unwrap_or(0),
                     None => match e.get("TileID").and_then(as_number) {
                         Some(n) => n.int_value(),
                         None => as_int(e.get("Tile"), 0) as i8 as u8 as i32,
                     },
                 };
                 let data = as_int(e.get("Data"), 0) & 15;
-                set(e, "BlockState", bsd::get_tag(block << 4 | data));
+                set(e, "BlockState", bsd::get_tag(block << 4 | data)?);
                 for f in ["Data", "TileID", "Tile"] {
                     remove(e, f);
                 }
             }
             "minecraft:enderman" => {
-                block_to_state(e, "carried", "carriedData", "carriedBlockState")
+                block_to_state(e, "carried", "carriedData", "carriedBlockState")?
             }
             "minecraft:arrow" | "minecraft:spectral_arrow" => {
-                block_to_state(e, "inTile", "inData", "inBlockState")
+                block_to_state(e, "inTile", "inData", "inBlockState")?
             }
             "minecraft:commandblock_minecart"
             | "minecraft:minecart"
@@ -390,10 +402,11 @@ fn entity_block_state(cx: &mut Cx) {
             | "minecraft:tnt_minecart"
             | "minecraft:hopper_minecart"
             | "minecraft:spawner_minecart" => {
-                block_to_state(e, "DisplayTile", "DisplayData", "DisplayState")
+                block_to_state(e, "DisplayTile", "DisplayData", "DisplayState")?
             }
             _ => {}
         }
+        Ok(())
     });
 }
 
@@ -417,50 +430,62 @@ fn map_id(cx: &mut Cx) {
 fn block_name_flattening(cx: &mut Cx) {
     cx.each(Ty::BlockName, |v| {
         let name = match &*v {
-            Tag::String(s) => bsd::upgrade_block_name(&namespaced(&s.to_string_lossy())),
+            Tag::String(s) => bsd::upgrade_block_name(&namespaced(&s.to_string_lossy()))?,
             other => match as_number(other) {
-                Some(n) => bsd::upgrade_block_id(n.int_value()),
-                None => return,
+                Some(n) => bsd::upgrade_block_id(n.int_value())?,
+                None => return Ok(()),
             },
         };
         *v = string(&name);
+        Ok(())
     });
 }
 
 /// `ItemStackTheFlatteningFix.updateItem`.
-fn update_item(name: &str, data: i32) -> Option<&'static str> {
-    static MAP: OnceLock<(HashMap<&'static str, &'static str>, Vec<&'static str>)> =
-        OnceLock::new();
-    let (map, ids) = MAP.get_or_init(|| {
-        let map: HashMap<_, _> = t::tables().item_flattening.iter().copied().collect();
-        let mut ids: Vec<&str> = t::tables()
-            .item_flattening
-            .iter()
-            .map(|(k, _)| &k[..k.find('.').expect("dot")])
-            .collect();
+fn update_item(name: &str, data: i32) -> t::Result<Option<&'static str>> {
+    type ItemTable = (HashMap<&'static str, &'static str>, Vec<&'static str>);
+    static MAP: OnceLock<t::Result<ItemTable>> = OnceLock::new();
+    let entries = t::item_flattening()?;
+    let table = MAP.get_or_init(|| {
+        let invalid = |reason| std::io::Error::new(std::io::ErrorKind::InvalidData, reason);
+        let mut ids = Vec::with_capacity(entries.len());
+        for (key, replacement) in entries {
+            let (id, damage) = key
+                .rsplit_once('.')
+                .ok_or_else(|| invalid("missing item damage suffix"))?;
+            if id.is_empty() || damage.parse::<i32>().is_err() {
+                return Err(invalid("invalid item flattening key").into());
+            }
+            if super::identifier(replacement).is_none() {
+                return Err(invalid("invalid item flattening replacement").into());
+            }
+            ids.push(id);
+        }
         ids.sort_unstable();
         ids.dedup();
-        (map, ids)
+        Ok((entries.iter().copied().collect(), ids))
     });
+    let (map, ids) = table.as_ref().map_err(Clone::clone)?;
     if ids.binary_search(&name).is_err() {
-        return None;
+        return Ok(None);
     }
-    map.get(format!("{name}.{data}").as_str())
+    Ok(map
+        .get(format!("{name}.{data}").as_str())
         .or_else(|| map.get(format!("{name}.0").as_str()))
-        .copied()
+        .copied())
 }
 
 fn item_flattening(cx: &mut Cx) {
     cx.each(Ty::ItemStack, |s| {
         let Some(id) = as_str(s.get("id")) else {
-            return;
+            return Ok(());
         };
         let id = namespaced(&id);
         let data = as_int(s.get("Damage"), 0);
-        if let Some(new) = update_item(&id, data) {
+        if let Some(new) = update_item(&id, data)? {
             set(s, "id", string(new));
         }
-        if t::tables().item_damage_ids.contains(&id.as_str()) {
+        if t::item_damage_ids()?.contains(&id.as_str()) {
             if !matches!(s.get("tag"), Some(Tag::Compound(_))) {
                 set(s, "tag", empty_map());
             }
@@ -469,6 +494,7 @@ fn item_flattening(cx: &mut Cx) {
             }
         }
         remove(s, "Damage");
+        Ok(())
     });
 }
 
@@ -504,16 +530,17 @@ fn spawn_eggs(cx: &mut Cx) {
         |s| {
             // `getOrCreateTyped`: an EntityTag that is missing, or does not read as an entity
             // of the schema, is a default entity of it (the first of its table: a wither).
-            let entity_id = s
-                .get("tag")
-                .and_then(|t| t.get("EntityTag"))
-                .filter(|e| super::schema::flat::entity_tree_known(e, input))
-                .and_then(|e| as_str(e.get("id")))
-                .map(|id| namespaced(&id))
-                .unwrap_or_else(|| "minecraft:wither".to_owned());
-            let egg =
-                lookup(t::tables().spawn_eggs, &entity_id).unwrap_or("minecraft:pig_spawn_egg");
+            let entity_id = s.get("tag").and_then(|t| t.get("EntityTag"));
+            let entity_id = match entity_id {
+                Some(e) if super::schema::flat::entity_tree_known(e, input)? => {
+                    as_str(e.get("id")).map(|id| namespaced(&id))
+                }
+                _ => None,
+            }
+            .unwrap_or_else(|| "minecraft:wither".to_owned());
+            let egg = lookup(t::spawn_eggs()?, &entity_id).unwrap_or("minecraft:pig_spawn_egg");
             set(s, "id", string(egg));
+            Ok(())
         },
     );
 }
@@ -553,9 +580,9 @@ fn to_int(s: &str, default: i32) -> i32 {
 const DEFAULT_FLAT: &str = "minecraft:bedrock,2*minecraft:dirt,minecraft:grass_block;1;village";
 
 /// `LevelFlatGeneratorInfoFix.fixString`.
-fn flat_generator_string(options: &str) -> String {
+fn flat_generator_string(options: &str) -> t::Result<String> {
     if options.is_empty() {
-        return DEFAULT_FLAT.to_owned();
+        return Ok(DEFAULT_FLAT.to_owned());
     }
     let mut parts = split_limit(options, ';', 5).into_iter();
     let first = parts.next().unwrap_or("");
@@ -565,9 +592,9 @@ fn flat_generator_string(options: &str) -> String {
         None => (0, first, Vec::new()),
     };
     if !(0..=3).contains(&version) {
-        return DEFAULT_FLAT.to_owned();
+        return Ok(DEFAULT_FLAT.to_owned());
     }
-    let layers: Vec<String> = layer_info
+    let layers = layer_info
         .split(',')
         .map(|layer| {
             let amount: Vec<&str> = if version < 3 {
@@ -584,44 +611,45 @@ fn flat_generator_string(options: &str) -> String {
             let name_index = usize::from(block_parts[0] == "minecraft");
             let block_string = block_parts.get(name_index).copied().unwrap_or("");
             let block = if version == 3 {
-                block_id(&format!("minecraft:{block_string}"))
+                block_id(&format!("minecraft:{block_string}"))?
             } else {
                 to_int(block_string, 0)
             };
             let data_index = name_index + 1;
             let data = block_parts.get(data_index).map_or(0, |d| to_int(d, 0));
-            let tag = bsd::get_tag(block << 4 | data);
+            let tag = bsd::get_tag(block << 4 | data)?;
             let name = as_str(tag.get("Name")).unwrap_or_default();
-            format!(
+            Ok(format!(
                 "{}{name}",
                 if height == 1 {
                     String::new()
                 } else {
                     format!("{height}*")
                 }
-            )
+            ))
         })
-        .collect();
+        .collect::<t::Result<Vec<_>>>()?;
     let mut result = layers.join(",");
     for part in rest {
         result.push(';');
         result.push_str(part);
     }
-    result
+    Ok(result)
 }
 
 fn flat_generator_info(cx: &mut Cx) {
     cx.each(Ty::Level, |l| {
         if !as_str(l.get("generatorName")).is_some_and(|n| n.eq_ignore_ascii_case("flat")) {
-            return;
+            return Ok(());
         }
         if let Some(options) = as_str(l.get("generatorOptions")) {
             set(
                 l,
                 "generatorOptions",
-                string(&flat_generator_string(&options)),
+                string(&flat_generator_string(&options)?),
             );
         }
+        Ok(())
     });
 }
 
@@ -636,30 +664,35 @@ fn pack_namespaced_with_dot(location: &str) -> String {
 }
 
 /// `StatsCounterFix.unpackLegacyKey`: the stat type and its key.
-fn unpack_legacy_key(k: &str) -> Option<(String, String)> {
-    if t::tables().stats_skip.contains(&k) {
-        return None;
+fn unpack_legacy_key(k: &str) -> t::Result<Option<(String, String)>> {
+    if t::stats_skip()?.contains(&k) {
+        return Ok(None);
     }
-    if let Some(custom) = lookup(t::tables().stats_custom, k) {
-        return Some(("minecraft:custom".to_owned(), custom.to_owned()));
+    if let Some(custom) = lookup(t::stats_custom()?, k) {
+        return Ok(Some(("minecraft:custom".to_owned(), custom.to_owned())));
     }
     // StringUtils.ordinalIndexOf(key, ".", 2)
     let mut dots = k.match_indices('.');
-    let split = dots.nth(1)?.0;
+    let Some((split, _)) = dots.nth(1) else {
+        return Ok(None);
+    };
     let prefix = &k[..split];
     let rest = k[split + 1..].replace('.', ":");
     if prefix == "stat.mineBlock" {
-        return Some(("minecraft:mined".to_owned(), bsd::upgrade_block_name(&rest)));
+        return Ok(Some((
+            "minecraft:mined".to_owned(),
+            bsd::upgrade_block_name(&rest)?,
+        )));
     }
-    if let Some(item_key) = lookup(t::tables().stats_item_keys, prefix) {
-        let new = update_item(&rest, 0).map_or(rest.clone(), str::to_owned);
-        return Some((item_key.to_owned(), new));
+    if let Some(item_key) = lookup(t::stats_item_keys()?, prefix) {
+        let new = update_item(&rest, 0)?.map_or(rest.clone(), str::to_owned);
+        return Ok(Some((item_key.to_owned(), new)));
     }
-    if let Some(entity_key) = lookup(t::tables().stats_entity_keys, prefix) {
-        let new = lookup(t::tables().stats_entities, &rest).map_or(rest.clone(), str::to_owned);
-        return Some((entity_key.to_owned(), new));
+    if let Some(entity_key) = lookup(t::stats_entity_keys()?, prefix) {
+        let new = lookup(t::stats_entities()?, &rest).map_or(rest.clone(), str::to_owned);
+        return Ok(Some((entity_key.to_owned(), new)));
     }
-    None
+    Ok(None)
 }
 
 fn stats_counters(cx: &mut Cx) {
@@ -670,7 +703,7 @@ fn stats_counters(cx: &mut Cx) {
                 if as_number(v).is_none() {
                     continue;
                 }
-                let Some((ty, ty_key)) = unpack_legacy_key(&k.to_string_lossy()) else {
+                let Some((ty, ty_key)) = unpack_legacy_key(&k.to_string_lossy())? else {
                     continue;
                 };
                 let slot = match new.iter().position(|(t, _)| *t == ty) {
@@ -688,18 +721,16 @@ fn stats_counters(cx: &mut Cx) {
             .map(|(ty, entries)| (super::dynamic::key(&ty), Tag::Compound(entries)))
             .collect();
         *stats = Tag::compound([("stats", Tag::Compound(map))]);
+        Ok(())
     });
     cx.each(Ty::Objective, |o| {
         // The output schema reads the objective again: its read hook unpacks the name.
         remove(o, "CriteriaType");
         if let Some(name) = as_str(o.get("CriteriaName")) {
-            let new = if t::tables()
-                .special_objective_criteria
-                .contains(&name.as_str())
-            {
+            let new = if t::special_objective_criteria()?.contains(&name.as_str()) {
                 name
             } else {
-                match unpack_legacy_key(&name) {
+                match unpack_legacy_key(&name)? {
                     None => "dummy".to_owned(),
                     Some((ty, ty_key)) => format!(
                         "{}:{}",
@@ -711,6 +742,7 @@ fn stats_counters(cx: &mut Cx) {
             set(o, "CriteriaName", string(&new));
         }
         super::fixes_a::unpack_objective(o);
+        Ok(())
     });
 }
 
@@ -718,19 +750,19 @@ fn jukebox_record(cx: &mut Cx) {
     cx.block_entity("minecraft:jukebox", |be| {
         let record = as_int(be.get("Record"), 0);
         if record <= 0 {
-            return;
+            return Ok(());
         }
-        let name = t::tables()
-            .item_ids
+        let name = t::item_ids()?
             .iter()
             .find(|(id, _)| *id == record)
             .map_or("minecraft:air", |(_, n)| *n);
-        if let Some(id) = update_item(name, 0) {
+        if let Some(id) = update_item(name, 0)? {
             // `tag.remove("Record")` is not kept: Dynamics are immutable.
             let mut stack = Tag::compound([("id", string(id)), ("Count", Tag::Byte(1))]);
             items::add_names(&mut stack);
             set(be, "RecordItem", stack);
         }
+        Ok(())
     });
 }
 
@@ -754,12 +786,11 @@ fn entity_custom_name(cx: &mut Cx) {
     let k = cx.k;
     cx.each(Ty::Entity, |e| {
         let Some(Tag::String(name)) = e.get("CustomName").cloned() else {
-            return;
+            return Ok(());
         };
         if name.0.is_empty() {
             remove(e, "CustomName");
-            reread(k, e);
-            return;
+            return reread(k, e);
         }
         let id = as_str(e.get("id")).unwrap_or_default();
         let component = if id == "minecraft:commandblock_minecart" {
@@ -768,6 +799,7 @@ fn entity_custom_name(cx: &mut Cx) {
             text_json_units(&name)
         };
         set(e, "CustomName", component);
+        Ok(())
     });
 }
 
@@ -814,10 +846,10 @@ fn block_entity_custom_name(cx: &mut Cx) {
         if let Some(id) = as_str(be.get("id"))
             && !NAMEABLE_BLOCK_ENTITIES.contains(&namespaced(&id).as_str())
         {
-            return;
+            return Ok(());
         }
         fix_tag_custom_name(be);
-        reread_as(Ty::BlockEntity, k, be);
+        reread_as(Ty::BlockEntity, k, be)
     });
 }
 
@@ -846,7 +878,7 @@ fn chunk_to_protochunk(cx: &mut Cx) {
         if let Some(level) = chunk.get_mut("Level") {
             fix_protochunk_level(level);
         }
-        reread_as(Ty::Chunk, k, chunk);
+        reread_as(Ty::Chunk, k, chunk)
     });
 }
 
@@ -930,7 +962,7 @@ fn command_block_custom_name(cx: &mut Cx) {
     let k = cx.k;
     cx.block_entity("minecraft:command_block", |be| {
         fix_tag_custom_name(be);
-        reread_as(Ty::BlockEntity, k, be);
+        reread_as(Ty::BlockEntity, k, be)
     });
 }
 
@@ -968,11 +1000,10 @@ fn igloo_metadata_removal(cx: &mut Cx) {
 fn structure_template_rename(cx: &mut Cx) {
     cx.each(Ty::StructureFeature, |structure| {
         if structure.get("Children").is_none() {
-            return;
+            return Ok(());
         }
         let id = as_str(structure.get("id")).unwrap_or_default();
-        let rename = t::tables()
-            .structure_template_renames
+        let rename = t::structure_template_renames()?
             .iter()
             .find(|(s, _, _)| *s == id);
         let children: Vec<Tag> = stream(structure.get("Children"))
@@ -992,33 +1023,33 @@ fn structure_template_rename(cx: &mut Cx) {
             })
             .collect();
         set(structure, "Children", Tag::List(children));
+        Ok(())
     });
 }
 
 // ------------------------------------------------------------------ 1494
 
 fn enchantment_names(cx: &mut Cx) {
-    let name = |e: &Tag| {
+    let name = |e: &Tag| -> t::Result<&str> {
         let id = as_int(e.get("id"), 0);
-        t::tables()
-            .enchantments
+        Ok(t::enchantments()?
             .iter()
             .find(|(i, _)| *i == id)
-            .map_or("null", |(_, n)| *n)
+            .map_or("null", |(_, n)| *n))
     };
     cx.each(Ty::ItemStack, |s| {
         let Some(tag) = s.get_mut("tag") else {
-            return;
+            return Ok(());
         };
         if is_list(tag.get("ench")) {
             let list: Vec<Tag> = stream(tag.get("ench"))
                 .into_iter()
                 .map(|mut e| {
-                    let n = name(&e);
+                    let n = name(&e)?;
                     set(&mut e, "id", string(n));
-                    e
+                    Ok(e)
                 })
-                .collect();
+                .collect::<t::Result<_>>()?;
             remove(tag, "ench");
             set(tag, "Enchantments", Tag::List(list));
         }
@@ -1026,13 +1057,14 @@ fn enchantment_names(cx: &mut Cx) {
             let list: Vec<Tag> = stream(tag.get("StoredEnchantments"))
                 .into_iter()
                 .map(|mut e| {
-                    let n = name(&e);
+                    let n = name(&e)?;
                     set(&mut e, "id", string(n));
-                    e
+                    Ok(e)
                 })
-                .collect();
+                .collect::<t::Result<_>>()?;
             set(tag, "StoredEnchantments", Tag::List(list));
         }
+        Ok(())
     });
 }
 
@@ -1041,14 +1073,15 @@ fn enchantment_names(cx: &mut Cx) {
 fn advancements_rename(cx: &mut Cx) {
     cx.each(Ty::Advancements, |adv| {
         let Tag::Compound(c) = adv else {
-            return;
+            return Ok(());
         };
         let entries: Vec<_> = std::mem::take(c).into_iter().collect();
         for (k, v) in entries {
             let name = k.to_string_lossy();
-            let renamed = lookup(t::tables().advancements, &name).map_or(k, super::dynamic::key);
+            let renamed = lookup(t::advancements()?, &name).map_or(k, super::dynamic::key);
             c.insert(renamed, v);
         }
+        Ok(())
     });
 }
 
@@ -1091,7 +1124,7 @@ fn layers_info(input: &str) -> Vec<(i32, String)> {
 }
 
 /// `LevelDataGeneratorOptionsFix.convert`.
-fn flat_options(flat: &str) -> Tag {
+fn flat_options(flat: &str) -> t::Result<Tag> {
     let mut parts = flat.split(';');
     let mut biome = "minecraft:plains".to_owned();
     let mut structures: Vec<(String, Vec<(String, String)>)> = Vec::new();
@@ -1101,7 +1134,7 @@ fn flat_options(flat: &str) -> Tag {
         layers = layers_info(first.unwrap_or(""));
         if !layers.is_empty() {
             if let Some(b) = parts.next() {
-                biome = lookup(t::tables().generator_biomes, b)
+                biome = lookup(t::generator_biomes()?, b)
                     .unwrap_or("minecraft:plains")
                     .to_owned();
             }
@@ -1156,11 +1189,11 @@ fn flat_options(flat: &str) -> Tag {
             )
         })
         .collect();
-    Tag::compound([
+    Ok(Tag::compound([
         ("layers", layers),
         ("biome", string(&biome)),
         ("structures", Tag::Compound(structures)),
-    ])
+    ]))
 }
 
 fn level_generator_options(cx: &mut Cx) {
@@ -1169,7 +1202,7 @@ fn level_generator_options(cx: &mut Cx) {
         let options = as_str(level.get("generatorOptions"));
         let name = as_str(level.get("generatorName")).unwrap_or_default();
         if name.eq_ignore_ascii_case("flat") {
-            let converted = flat_options(options.as_deref().unwrap_or(""));
+            let converted = flat_options(options.as_deref().unwrap_or(""))?;
             set(level, "generatorOptions", converted);
         } else if name.eq_ignore_ascii_case("buffet")
             && let Some(options) = options
@@ -1182,6 +1215,7 @@ fn level_generator_options(cx: &mut Cx) {
             }
         }
         let _ = k;
+        Ok(())
     });
 }
 

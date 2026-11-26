@@ -1,0 +1,12 @@
+sunrise-world worldgen::generator::pack_kinds::a_packs_block_state_provider_names_what_a_feature_places lib daily resources
+sunrise-world worldgen::generator::pack_kinds::a_packs_carvers_that_never_run_leave_the_noise_chunk_uncarved lib daily resources
+sunrise-world worldgen::generator::pack_kinds::a_packs_configured_feature_places_its_block lib daily resources
+sunrise-world worldgen::generator::pack_kinds::a_packs_density_function_empties_the_terrain lib daily resources
+sunrise-world worldgen::generator::pack_kinds::a_packs_material_condition_decides_where_the_surface_rule_applies lib daily resources
+sunrise-world worldgen::generator::pack_kinds::a_packs_material_rule_names_the_surface_block lib daily resources
+sunrise-world worldgen::generator::pack_kinds::a_packs_noise_changes_the_terrain_that_samples_it lib daily resources
+sunrise-world worldgen::generator::pack_kinds::a_packs_noise_settings_cap_the_terrain_at_their_noise_range lib daily resources
+sunrise-world worldgen::generator::pack_kinds::a_packs_placed_feature_places_its_configured_feature lib daily resources
+sunrise-world worldgen::generator::pack_kinds::a_packs_processor_list_replaces_a_vanilla_one lib daily resources
+sunrise-world worldgen::generator::pack_kinds::a_packs_structure_set_places_its_structure_where_the_structures_biomes_allow lib daily resources
+sunrise-world worldgen::generator::pack_kinds::a_packs_template_pool_and_processor_list_make_the_start_piece lib daily resources

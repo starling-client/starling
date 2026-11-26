@@ -8,10 +8,11 @@ description = "Shader packs (the shaders/ folder format): reading packs, their .
 
 [dependencies]
 sunrise-core = { path = "../sunrise-core" }
+sunrise-glsl = { path = "../sunrise-glsl" }
 naga = { version = "30.0.1", features = ["glsl-in"] }
 half = "2"
 png = "0.18"
-zip = { version = "9.1.3", default-features = false, features = ["deflate"] }
+zip = { version = "9.1.3", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [dev-dependencies]
 # real_packs hands every translated program to the backends wgpu uses on each platform.

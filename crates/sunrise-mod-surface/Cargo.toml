@@ -10,16 +10,22 @@ description = "The records of surface.json: what an API-only mod can name, with 
 name = "mod_surface"
 
 [dependencies]
-sha2 = "0.10"
+sha2 = { version = "0.10", optional = true }
 # The uses scan parses a mod's source; spans give each place's line and byte.
-proc-macro2 = { version = "1", default-features = false, features = ["span-locations"] }
+proc-macro2 = { version = "1", default-features = false, features = ["span-locations"], optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
-syn = { version = "2", default-features = false, features = ["full", "parsing", "visit"] }
+syn = { version = "2", default-features = false, features = ["full", "parsing", "visit"], optional = true }
 
 # The scan's child caps its own address space.
 [target.'cfg(unix)'.dependencies]
-libc = "0.2"
+libc = { version = "0.2", optional = true }
+
+[features]
+# Default includes the full surface reader and source uses scanner. Runtime game crates disable
+# default features and only take `build_data` and the `uses` metadata constants.
+default = ["scan"]
+scan = ["dep:proc-macro2", "dep:syn", "dep:sha2", "dep:libc"]
 
 [dev-dependencies]
 

@@ -57,12 +57,11 @@ import subprocess
 import time
 from pathlib import Path
 
-try:
-    from . import lab
-    from . import perf_bench as pb
-except ImportError:
-    import lab
-    import perf_bench as pb
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, perf_bench as pb
 
 WORK = lab.ROOT / ".local/pacing-bench"
 SCENARIOS = ["fly16", "ocean", "fly64", "elytra", "teleport", "nether", "portal", "inventory", "mobs", "items",
@@ -485,7 +484,7 @@ def launch(args, distance, tag):
 def dedicated_server(args, distance, directory):
     """A dedicated server of the same build (seed 1234, offline, the client's view distance), once it is up:
     (server, port)."""
-    from test_dedicated_server_parity import Server
+    from tools.test_dedicated_server_parity import Server
     directory.mkdir(parents=True, exist_ok=True)
     port = lab.free_port()
     properties = {

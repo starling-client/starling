@@ -12,11 +12,12 @@ the final inventory are compared.
 import argparse
 import json
 import random
-try:
-    from . import interaction_lab as lib, lab
-except ImportError:
-    import interaction_lab as lib
-    import lab
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import interaction_lab as lib, lab
 
 STATES = ['minecraft:cauldron|', 'minecraft:water_cauldron|level=1', 'minecraft:water_cauldron|level=2',
           'minecraft:water_cauldron|level=3', 'minecraft:lava_cauldron|', 'minecraft:powder_snow_cauldron|level=1',

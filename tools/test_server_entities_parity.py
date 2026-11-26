@@ -9,11 +9,14 @@ set rolling along the rail), boats and a raft (one falling onto the ground), arm
 arms, wearing a helmet, one falling), a chicken jockey, a slime, a pig whose scale `/attribute` sets, item
 frames (one holding a turned diamond), paintings, primed TNT (one falling), a floating falling block, sand
 falling into a cobweb, sand that falls onto a torch and breaks into an item (added after the tick's tracking pass in
-Sunrise), an arrow that lands, a burning arrow and an end crystal. The client records for 20 seconds, the ticks
-running for 200 more after 3, what ClientPacketListener would make of the packets (EntityTranscript): each
-entity's spawn
-packet (position, rotations, data, motion), the entity data it was paired with and all it was sent since, its
-equipment, its attribute instances (ClientboundUpdateAttributesPacket: the ones its first tick creates, the
+Sunrise), an arrow that lands, a burning arrow and an end crystal. The client records what ClientPacketListener
+would make of the packets (EntityTranscript) with the scene frozen through its initial pairing. After
+pairing, the console rotates one stand and teleports two stands. The stand teleported without explicit angles
+is placed from an item with entity data so it starts with distinct head and view yaw. The transcript keeps head
+and view angles separate both at spawn and after the commands. The world then runs for 200 ticks. The transcript
+includes each entity's spawn packet (position, rotations, data, motion), the entity data it was paired with and
+all it was sent since, its equipment, its attribute instances (ClientboundUpdateAttributesPacket: the ones its
+first tick creates, the
 type's set by finalizeSpawn, the baby speed modifier, effects', equipment's and /attribute's) and passengers, and
 where its position syncs leave it; and the attribute instances the player itself is sent from its login on. Both
 transcripts must match exactly, entity by entity (named by type and the block it was added in), once the amounts
@@ -27,17 +30,12 @@ import re
 import shutil
 import subprocess
 import sys
-import time
 
-try:
-    from . import lab, test_rust_parity as base
-    from .test_dedicated_server_parity import Server
-    from .test_locator_bar_parity import generate_world, server_dir
-except ImportError:
-    import lab
-    import test_rust_parity as base
-    from test_dedicated_server_parity import Server
-    from test_locator_bar_parity import generate_world, server_dir
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_rust_parity as base
+from tools.test_dedicated_server_parity import Server
+from tools.test_locator_bar_parity import generate_world, server_dir
 
 NAME = 'server-entities-parity'
 # Ticks the scene runs for once it is summoned: 10 seconds, within the client's 20.
@@ -99,6 +97,13 @@ SCENE = [
 ]
 
 
+STAND_ROTATIONS = [
+    'rotate @e[type=minecraft:armor_stand,x=-2.5,y=-60,z=-2.5,distance=..1,limit=1] 135 0',
+    'teleport @e[type=minecraft:armor_stand,x=-4.5,y=-60,z=-2.5,distance=..1,limit=1] -4.5 -60 -2.5 90 0',
+    'teleport @e[type=minecraft:armor_stand,x=7.5,y=-60,z=0.5,distance=..1,limit=1] 7.5 -60 2.5',
+]
+
+
 # finalizeSpawn's random modifiers on client-syncable attributes (a leader zombie's max health); their amounts
 # differ from one server to the other.
 RANDOM_MODIFIERS = re.compile(r'(id=minecraft:(?:random_spawn_bonus|leader_zombie_bonus), amount=)[^,]+')
@@ -125,6 +130,24 @@ def scene_lines(lines):
     return out
 
 
+def check_stand_rotations(label, lines):
+    # Check the command targets on each server: identical no-ops would pass the transcript diff.
+    for command, key, spawn_angles, final_at, final_angles in (
+        ('rotate', '-3,-60,-3', '90.0 head 90.0', '(-2.5, -60.0, -2.5)', '135.0 head 135.0'),
+        ('explicit-angle teleport', '-5,-60,-3', '0.0 head 0.0', '(-4.5, -60.0, -2.5)', '90.0 head 90.0'),
+        ('omitted-angle teleport', '7,-60,0', '45.0 head 90.0', '(7.5, -60.0, 2.5)', '45.0 head 45.0'),
+    ):
+        prefix = f'play-entities entity minecraft:armor_stand {key} | add at '
+        stands = [line for line in lines if line.startswith(prefix)]
+        if len(stands) != 1:
+            raise AssertionError(f'{label}: {command} expected one paired stand at {key}, got {len(stands)}')
+        spawn, _, rest = stands[0].partition(' | pairing ')
+        if f' rot 0.0,{spawn_angles} data ' not in spawn:
+            raise AssertionError(f'{label}: {command} did not start with the expected stand angles')
+        if f' | now {final_at} rot 0.0,{final_angles} ground ' not in rest:
+            raise AssertionError(f'{label}: {command} did not leave the expected stand position and angles')
+
+
 def run_side(label, server_command, client_command, build, world):
     directory = build / label
     port = server_dir(directory, world)
@@ -134,8 +157,8 @@ def run_side(label, server_command, client_command, build, world):
     try:
         server.wait_for(r'Done \(')
         with (build / f'{label}-client.log').open('w') as log:
-            client = subprocess.Popen([*map(str, client_command), '127.0.0.1', str(port), PLAYER, str(out), 'entities'],
-                                      cwd=lab.ROOT, stdout=log, stderr=subprocess.STDOUT, text=True)
+            client = subprocess.Popen([*map(str, client_command), '127.0.0.1', str(port), PLAYER, str(out),
+                                       'server-entities'], cwd=lab.ROOT, stdout=log, stderr=subprocess.STDOUT, text=True)
             try:
                 server.wait_for(rf'<{PLAYER}> summon the entities', timeout=180)
                 # Frozen, so that every entity is paired as it was summoned whenever each server tracks it in
@@ -143,7 +166,13 @@ def run_side(label, server_command, client_command, build, world):
                 server.console('tick freeze')
                 for command in SCENE:
                     server.console(command)
-                time.sleep(3)
+                # ArmorStandItem.useOn loads entity data (head yaw 90), then snaps the view to placement yaw 45.
+                server.console(f'item replace entity {PLAYER} weapon.mainhand with '
+                               'minecraft:armor_stand[entity_data={id:"minecraft:armor_stand",Rotation:[90f,0f]}]')
+                server.console(f'teleport {PLAYER} 5.5 -60 0.5 -135 0')
+                server.wait_for(rf'<{PLAYER}> stand paired')
+                for command in STAND_ROTATIONS:
+                    server.console(command)
                 # A fixed number of ticks, so that what still changes (a TNT fuse) ends the same.
                 server.console(f'tick step {STEPS}')
                 client.wait(timeout=120)
@@ -201,7 +230,9 @@ def main():
         diff = '\n'.join(difflib.unified_diff(vanilla, sunrise, 'vanilla', 'sunrise', n=0, lineterm=''))
         raise AssertionError(f'{len(errors)} errors, transcripts differ (see {build}/vanilla.txt and sunrise.txt):\n'
                              + '\n'.join(errors[:10]) + '\n' + diff[:8000])
-    if len(vanilla) < len(SCENE) - 2:
+    check_stand_rotations('vanilla', vanilla)
+    check_stand_rotations('sunrise', sunrise)
+    if len(vanilla) < len(SCENE) - 1:
         raise AssertionError(f'only {len(vanilla)} entities tracked: the scene did not run (see {build})')
     lab.write_json(report, dict(
         schema=1, minecraft=lock['minecraft']['version'], platform=platform.platform(),

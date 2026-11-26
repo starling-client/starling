@@ -27,6 +27,68 @@ impl Hooks for Probe {
     }
 }
 
+#[test]
+#[ignore = "daily"]
+fn base_allow_does_not_override_worn_immunity() {
+    use super::native_entity_refs::tests::{prepare_entity_ticking_neighborhood, run_fresh_cases};
+
+    if run_fresh_cases(
+        "game::native_hit_attempt_tests::base_allow_does_not_override_worn_immunity",
+        "SUNRISE_TEST_WORN_IMMUNITY",
+        &["base_allow"],
+    ) {
+        return;
+    }
+
+    let heard = Arc::new(Mutex::new(Vec::new()));
+    let mods = vec![mod_api::ModEntry::new(
+        "allow_base",
+        Box::new(Probe(Arc::clone(&heard), Arc::new(Mutex::new(Some(false))))),
+    )]
+    .into();
+    mod_platform::testing::with_mods(mods, || {
+        with_game(|game| {
+            game.build_registries();
+            game.set_allow_commands(true);
+            prepare_entity_ticking_neighborhood(game, sunrise_core::position::ChunkPos::new(0, 0));
+            assert!(game.run_command(concat!(
+                "summon pig 4.5 100 4.5 {Invulnerable:1b,NoAI:1b,NoGravity:1b,",
+                "equipment:{feet:{id:\"minecraft:leather_boots\",count:1,components:",
+                "{\"minecraft:attribute_modifiers\":[],",
+                "\"minecraft:enchantments\":{\"minecraft:frost_walker\":1}}}}}"
+            )));
+            let pig = game.mobs.last().unwrap().id;
+            assert!(
+                !game
+                    .run_command("damage @e[type=pig,limit=1] 2 minecraft:campfire at 5.5 100 4.5")
+            );
+            assert_eq!(
+                &*heard.lock().unwrap(),
+                &[true],
+                "listener explicitly allows a base refusal"
+            );
+            assert_eq!(game.mob_object(pig).unwrap().health, 10.0);
+
+            assert!(game.run_command("data merge entity @e[type=pig,limit=1] {Invulnerable:0b}"));
+            heard.lock().unwrap().clear();
+            assert!(
+                !game
+                    .run_command("damage @e[type=pig,limit=1] 2 minecraft:campfire at 5.5 100 4.5")
+            );
+            assert_eq!(
+                &*heard.lock().unwrap(),
+                &[false],
+                "the hook's input excludes equipment"
+            );
+            assert_eq!(game.mob_object(pig).unwrap().health, 10.0);
+            assert!(
+                game.run_command("damage @e[type=pig,limit=1] 2 minecraft:in_fire at 5.5 100 4.5")
+            );
+            assert_eq!(game.mob_object(pig).unwrap().health, 8.0);
+        });
+    });
+}
+
 fn fresh_player(game: &mut super::Game<'_>, mode: GameMode) {
     game.player = Some(PlayerMotion::new(game.motion, Vec3::ZERO).unwrap());
     bind_local_player(game, 7, 7);
@@ -53,12 +115,24 @@ fn hit_attempts_reach_the_listener_once_including_refusals() {
                 heard.lock().unwrap().clear();
             };
             fresh_player(game, GameMode::Survival);
-            assert!(game.hurt_player_from(2.0, None, "minecraft:generic", Some(None), false));
+            assert!(game.hurt_player_from(
+                2.0,
+                None,
+                "minecraft:generic",
+                crate::game::creatures::KnownCause::None,
+                false
+            ));
             check(
                 &[false],
                 "accepted player, including equipment continuations",
             );
-            assert!(!game.hurt_player_from(1.0, None, "minecraft:generic", Some(None), false));
+            assert!(!game.hurt_player_from(
+                1.0,
+                None,
+                "minecraft:generic",
+                crate::game::creatures::KnownCause::None,
+                false
+            ));
             check(&[false], "player cooldown refusal");
 
             for (mode, immune) in [
@@ -141,13 +215,25 @@ fn hit_attempts_reach_the_listener_once_including_refusals() {
                 .health
                 .permanently_invulnerable = true;
             *override_answer.lock().unwrap() = Some(false);
-            assert!(game.hurt_player_from(2.0, None, "minecraft:generic", Some(None), false));
+            assert!(game.hurt_player_from(
+                2.0,
+                None,
+                "minecraft:generic",
+                crate::game::creatures::KnownCause::None,
+                false
+            ));
             assert_eq!(game.player.as_ref().unwrap().health.health(), 18.0);
             check(
                 &[true],
                 "listener answer survives nested predicates and equipment continuations",
             );
-            assert!(game.hurt_player_from(4.0, None, "minecraft:generic", Some(None), false));
+            assert!(game.hurt_player_from(
+                4.0,
+                None,
+                "minecraft:generic",
+                crate::game::creatures::KnownCause::None,
+                false
+            ));
             assert_eq!(game.player.as_ref().unwrap().health.health(), 16.0);
             check(
                 &[true],
@@ -156,7 +242,13 @@ fn hit_attempts_reach_the_listener_once_including_refusals() {
             *override_answer.lock().unwrap() = None;
 
             fresh_player(game, GameMode::Creative);
-            assert!(!game.hurt_player_from(2.0, None, "minecraft:generic", Some(None), false));
+            assert!(!game.hurt_player_from(
+                2.0,
+                None,
+                "minecraft:generic",
+                crate::game::creatures::KnownCause::None,
+                false
+            ));
             check(
                 &[false],
                 "creative wrapper: ability refusal follows the base observation",
@@ -171,7 +263,7 @@ fn hit_attempts_reach_the_listener_once_including_refusals() {
                 2.0,
                 None,
                 "minecraft:player_attack",
-                Some(None),
+                crate::game::creatures::KnownCause::None,
                 false
             ));
             check(&[false], "PvP refusal after the first predicate");

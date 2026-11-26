@@ -21,9 +21,6 @@ use sunrise_client::{
 pub(super) const NAME_TAG_UNIT: f32 = 0.025;
 /// Options.getBackgroundOpacity(0.25) black, as ARGB.color.
 const BACKGROUND: u32 = 0x3F00_0000;
-/// The text alpha that goes with getBackgroundOpacity(0.25):
-/// max((0.25 + 0.75) / 2, 0.5), as ARGB.color (the floor of 255 times it).
-pub(super) const FADED: u32 = 0x7F;
 
 /// Local glyph quads only: camera transforms and lighting stay per frame.
 /// Slots follow submission order; comparing the whole styled text also handles entity reorder,
@@ -188,6 +185,7 @@ impl Game<'_> {
     /// camera entity (`LivingEntityRenderer.shouldShowName`).
     fn own_name_tag(&self) -> Option<(&Mob, String)> {
         if !self.settings.extras.own_name_tag
+            || !self.controls_camera()
             || self.camera_type.is_first_person()
             || self.sleeping.is_some()
             || self.spectator()
@@ -278,6 +276,13 @@ impl Game<'_> {
             }
             // EntityAttachment.NAME_TAG: 0.5 above the box of the current pose.
             let p = name_tag_at(m, alpha);
+            let feet = m.previous.lerp(m.position, alpha);
+            let origin = glam::DVec3::new(feet.x, feet.y, feet.z);
+            let kind = if player {
+                TagKind::Fixed("minecraft:player")
+            } else {
+                TagKind::Mob(m.kind.clone())
+            };
             // The name tag distance is measured to the entity.
             let distance_sqr =
                 glam::DVec3::new(m.position.x, m.position.y, m.position.z).distance_squared(camera);
@@ -307,7 +312,12 @@ impl Game<'_> {
             };
             // LivingEntityRenderer.shouldShowName (team rules included), then
             // MobRenderer: a visible name, or the mob under the crosshair.
-            let invisible = sb::invisible_to(team, viewer, self.spectator(), m.is_invisible());
+            let invisible = sb::invisible_to(
+                team,
+                viewer,
+                self.own_player_is_spectator(),
+                m.is_invisible(),
+            );
             // Entity.isDiscrete: a crouching player.
             let discrete = player && m.extra.crouching;
             let view = sb::NameView {
@@ -315,7 +325,7 @@ impl Game<'_> {
                 distance_sqr,
                 invisible_to_viewer: invisible,
                 hud_hidden: self.ui.hide_gui,
-                is_camera: false,
+                is_camera: self.live_remote_camera_id() == Some(m.id),
                 is_vehicle: ridden.contains(&m.id),
             };
             // MobRenderer.shouldShowName: a visible name, or the mob under the
@@ -336,7 +346,7 @@ impl Game<'_> {
             let mut visible = name_shown;
             let mut text = None;
             if hooks {
-                self.native_render_name_tag(
+                self.native_render_name_tag_can_render(
                     m.id,
                     if player {
                         "minecraft:player"
@@ -360,6 +370,10 @@ impl Game<'_> {
                         lines: vec![(text, 0.0)],
                         light: l,
                         discrete,
+                        entity_id: m.id,
+                        kind,
+                        origin,
+                        score: true,
                     });
                 }
                 continue;
@@ -410,17 +424,25 @@ impl Game<'_> {
                 (m.position.y + f64::from(m.height())).floor() as i32,
                 m.position.z.floor() as i32,
             );
+            let score = lines.len() == 2;
             tags.push(NameTag {
                 at: p,
                 lines,
                 light: l,
                 discrete,
+                entity_id: m.id,
+                kind,
+                origin,
+                score,
             });
         }
         drop(player_ids);
         // Armor stands name themselves: an invisible one with a visible name
         // is a hologram (its model is skipped, its name tag is not).
         for a in &self.armor_stands {
+            if self.hides_as_camera(a.id) {
+                continue;
+            }
             if !hooks {
                 let Some(_) = &a.custom_name else {
                     continue;
@@ -468,7 +490,7 @@ impl Game<'_> {
             let mut visible = name_shown;
             let mut text = None;
             if hooks {
-                self.native_render_name_tag(
+                self.native_render_name_tag_can_render(
                     a.id,
                     "minecraft:armor_stand",
                     name_shown,
@@ -505,11 +527,16 @@ impl Game<'_> {
                 (at.y + height).floor() as i32,
                 at.z.floor() as i32,
             );
+            let score = lines.len() == 2;
             tags.push(NameTag {
                 at: glam::DVec3::new(at.x, at.y + height + 0.5, at.z),
                 lines,
                 light: l,
                 discrete: false,
+                entity_id: a.id,
+                kind: TagKind::Fixed("minecraft:armor_stand"),
+                origin: glam::DVec3::new(at.x, at.y, at.z),
+                score,
             });
         }
         // ItemFrameRenderer.shouldShowName/getNameTag: only the targeted
@@ -540,7 +567,7 @@ impl Game<'_> {
                 let mut visible = name_shown;
                 let mut text = None;
                 if hooks {
-                    self.native_render_name_tag(
+                    self.native_render_name_tag_can_render(
                         frame.id,
                         frame.kind(),
                         name_shown,
@@ -555,13 +582,21 @@ impl Game<'_> {
                 // submitter lifts it 0.5. ItemFrameRenderer offsets rendering
                 // 0.3 toward its facing and -0.25 vertically.
                 let step = frame.step();
-                tags.push(NameTag {
-                    at: center
+                let offset = |y| {
+                    center
                         + glam::DVec3::new(
                             f64::from(step[0] as f32 * 0.3),
-                            0.75,
+                            y,
                             f64::from(step[2] as f32 * 0.3),
-                        ),
+                        )
+                };
+                tags.push(NameTag {
+                    at: offset(0.75),
+                    // ItemFrameRenderer.getRenderOffset: the pose the tag is drawn in.
+                    origin: offset(-0.25),
+                    entity_id: frame.id,
+                    kind: TagKind::Fixed(frame.kind()),
+                    score: false,
                     lines: vec![(
                         Text::untrusted(text.or(name).unwrap_or_default()).resolve_legacy(),
                         0.0,
@@ -575,7 +610,76 @@ impl Game<'_> {
                 });
             }
         }
+<<<<<<< HEAD
         self.remote_name_tags(camera, &mut tags);
+||||||| 46c00106def
+=======
+        // DisplayRenderer.submit -> EntityRenderer.shouldShowName: uses the same visibility
+        // decision and per-entity partial tick as the display itself, within 64 blocks.
+        let scale = self.view_scale();
+        let now = std::time::Instant::now();
+        for (&id, display) in &self.text_displays {
+            if !display.has_render_state() {
+                continue;
+            }
+            let Some(name) = display.custom_name() else {
+                continue;
+            };
+            let entity_partial = self.display_partial(id, alpha);
+            if !self.display_visible_with_frustum(
+                id,
+                display,
+                camera,
+                entity_partial as f32,
+                scale,
+                now,
+                frustum,
+            ) {
+                continue;
+            }
+            let pos = display.position();
+            if pos.distance_squared(camera) >= 64.0 * 64.0 {
+                continue;
+            }
+            let name_shown = display.custom_name_visible();
+            let mut visible = name_shown;
+            let mut text = None;
+            if hooks {
+                self.native_render_name_tag_can_render(
+                    id as u32,
+                    display.kind(),
+                    name_shown,
+                    &mut visible,
+                    &mut text,
+                );
+            }
+            if !visible {
+                continue;
+            }
+            let at = display.render_position(entity_partial);
+            let team = self.mob_team(id as u32);
+            let shown = match team {
+                Some(t) => t.formatted_name(name.clone()),
+                None => name.clone(),
+            }
+            .resolve_legacy();
+            let shown = text
+                .map(|text| Text::untrusted(text).resolve_legacy())
+                .unwrap_or(shown);
+            let light = display.packed_light(&self.world, at);
+            // Display is sized (0, 0): NAME_TAG attachment is (0, 0, 0), lifted 0.5 by submitNameTag.
+            tags.push(NameTag {
+                at: glam::DVec3::new(at.x, at.y + 0.5, at.z),
+                lines: vec![(shown, 0.0)],
+                light,
+                discrete: display.is_discrete(),
+                entity_id: id as u32,
+                kind: TagKind::Fixed(display.kind()),
+                origin: glam::DVec3::new(at.x, at.y, at.z),
+                score: false,
+            });
+        }
+>>>>>>> ed6772e2118
         tags
     }
     /// `SubmitNodeCollection.submitNameTag`: a discrete name is drawn once,
@@ -586,17 +690,26 @@ impl Game<'_> {
         camera: glam::DVec3,
         alpha: f64,
         out: &mut Vec<Vertex>,
-        see_through: &mut Vec<Vertex>,
+        see_through: &mut super::text_displays::SeeThroughCollector,
     ) {
         let mut patches = Vec::new();
         let mut layouts = std::mem::take(&mut self.name_tag_layouts);
         layouts.begin_frame(&self.gui.atlas);
-        for tag in self.collect_name_tags(
-            camera,
-            alpha,
-            !mod_api::__private::mods().is_empty(),
-            self.view_frustum.as_ref(),
-        ) {
+        let background = self.settings.text_background(0.25);
+        let faded = self.settings.faded_text_alpha(0.25);
+        let pack_text = (self.renderer.as_ref()).is_some_and(|r| r.draws_pack_world_text());
+        let hooks = !mod_api::__private::mods().is_empty();
+        // Asked once a frame: with no listener, no line is posed or copied.
+        let do_render =
+            hooks && mod_api::__private::listened(mod_api::HookId::RenderNameTagDoRender);
+        let mut content = String::new();
+        for mut tag in self.collect_name_tags(camera, alpha, hooks, self.view_frustum.as_ref()) {
+            if do_render {
+                self.name_tag_do_render(&mut tag, camera, alpha, out, &mut content);
+                if tag.lines.is_empty() {
+                    continue;
+                }
+            }
             let o = tag.at - camera;
             // `gbuffers_entities` draws name tag text (2.3); a sneaking player's faded tag, on its
             // background, blends.
@@ -606,9 +719,9 @@ impl Game<'_> {
                 patches.extend(self.styled_name_tag_quads(
                     o,
                     &tag.lines,
-                    FADED,
-                    BACKGROUND,
-                    0,
+                    faded,
+                    background,
+                    name_tag_layer(pack_text, faded, background),
                     light,
                     NAME_TAG_UNIT,
                     out,
@@ -625,28 +738,75 @@ impl Game<'_> {
                 &tag.lines,
                 0xFF,
                 0,
-                0,
+                name_tag_layer(pack_text, 0xFF, 0),
                 light,
                 NAME_TAG_UNIT,
                 out,
                 Some(&mut layouts),
             ));
-            // RenderPipelines.TEXT_SEE_THROUGH: no depth test, no lightmap.
+            // RenderPipelines.TEXT_SEE_THROUGH: no depth test, no lightmap; sorted with all
+            // see-through text submits by camera-relative pose distance.
+            let st_start = see_through.start();
             patches.extend(self.styled_name_tag_quads(
                 o,
                 &tag.lines,
-                FADED,
-                BACKGROUND,
+                faded,
+                background,
                 2,
                 0,
                 NAME_TAG_UNIT,
-                see_through,
+                see_through.buffer_mut(),
                 Some(&mut layouts),
             ));
+            let dist_sq =
+                super::text_displays::submit_distance_sq(o.x as f32, o.y as f32, o.z as f32);
+            see_through.finish(st_start, dist_sq);
         }
         layouts.end_frame();
         self.name_tag_layouts = layouts;
         self.map_patches.extend(patches);
+    }
+    /// `render_name_tag_do_render` for each line of `tag`, in vanilla's order (score, then name),
+    /// keeping what the listeners draw and dropping the lines they cancel. The name keeps its lift
+    /// when the score line is canceled (`EntityRenderer.submitNameDisplay` lifts outside the `if`).
+    /// `content` is the frame's one buffer for the lines' text.
+    fn name_tag_do_render(
+        &self,
+        tag: &mut NameTag,
+        camera: glam::DVec3,
+        alpha: f64,
+        out: &mut Vec<Vertex>,
+        content: &mut String,
+    ) {
+        let start = out.len();
+        // `NAME_TAG` attachment: `at` is 0.5 above it (`submitNameTag`).
+        let attachment = tag.at - tag.origin - glam::DVec3::new(0.0, 0.5, 0.0);
+        let mut first = true;
+        tag.lines.retain(|(text, lift)| {
+            let line = if std::mem::take(&mut first) && tag.score {
+                mod_api::NameTagLine::Score
+            } else {
+                mod_api::NameTagLine::Name
+            };
+            content.clear();
+            text.write_plain(content);
+            !self.mod_name_tag_line(
+                tag.entity_id,
+                tag.kind.id(),
+                line,
+                content,
+                tag.origin,
+                *lift,
+                attachment,
+                alpha as f32,
+                camera,
+                tag.light,
+                out,
+            )
+        });
+        if out.len() > start {
+            self.mark_entity(start, tag.kind.id());
+        }
     }
     /// The lines of one name tag, `o` from the camera: the text at
     /// `text_alpha` in its layer, on the translucent black background
@@ -759,6 +919,22 @@ impl Game<'_> {
     }
 }
 
+/// The layer of a name tag's `Font.DisplayMode.NORMAL` copy when a pack's `core/text` draws the
+/// world's text (`pack_text`; `RenderTypes.text`): `SubmitNodeCollection.submitNameTagPart` puts
+/// it in the solid phase when `canRenderAsSolid` (its text's alpha 255 and its background's 0, in
+/// a level), else with the translucent text (`OIT_TEXT` under Improved Transparency). Without
+/// one, the native entity layer (0), which world views also draw. `text_alpha` is 0 to 255,
+/// `background` ARGB.
+pub(super) fn name_tag_layer(pack_text: bool, text_alpha: u32, background: u32) -> u32 {
+    if !pack_text {
+        0
+    } else if text_alpha == 0xFF && background >> 24 == 0 {
+        sunrise_client::gfx::NAME_TAG_SOLID_OVERLAY
+    } else {
+        sunrise_client::gfx::NAME_TAG_OVERLAY
+    }
+}
+
 /// Use the renderer's camera-relative clip test before measuring or emitting text.
 fn name_tag_in_view(
     frustum: Option<&impl sunrise_client::gfx::Cull>,
@@ -849,12 +1025,33 @@ pub(super) fn name_tag_at(m: &Mob, alpha: f64) -> glam::DVec3 {
 }
 
 /// A name tag: where it hangs, its lines (text, lift), the packed light at
-/// the entity and whether it is discrete.
+/// the entity and whether it is discrete; and for `render_name_tag_do_render`, its entity, the
+/// entity's render origin (`at` less its `NAME_TAG` attachment and the 0.5 lift) and whether
+/// `lines[0]` is the score line.
 struct NameTag {
     at: glam::DVec3,
     lines: Vec<(Text, f64)>,
     light: u8,
     discrete: bool,
+    entity_id: u32,
+    kind: TagKind,
+    origin: glam::DVec3,
+    score: bool,
+}
+
+/// The type id of a name tag's entity, borrowed when a hook is asked.
+enum TagKind {
+    Mob(std::sync::Arc<sunrise_client::mobs::MobType>),
+    Fixed(&'static str),
+}
+
+impl TagKind {
+    fn id(&self) -> &str {
+        match self {
+            Self::Mob(kind) => &kind.id,
+            Self::Fixed(id) => id,
+        }
+    }
 }
 
 /// `Entity.DATA_CUSTOM_NAME` of a mob named `name`: its component with its style (a name
@@ -930,7 +1127,7 @@ mod tests {
         let mut atlas = HudAtlas::boot();
         atlas.font = sunrise_client::font::Font::load(
             &sunrise_assets::resource_source::ResourceSource::directory(root.clone()),
-            &Default::default(),
+            &atlas.sprites,
             &[],
             (1024, 1024),
             (512, 512),
@@ -1121,8 +1318,10 @@ mod tests {
             pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
             polygons: Vec::new(),
             children: Vec::new(),
+            layer: None,
         };
         let kind = MobType {
+            type_key: Default::default(),
             shadow: None,
             id: "minecraft:player".into(),
             species: Species::Zombie,

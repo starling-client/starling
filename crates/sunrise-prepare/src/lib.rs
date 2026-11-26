@@ -20,11 +20,12 @@ pub mod java;
 pub mod launch_api;
 mod pool;
 pub mod pyjson;
+mod server;
 mod sounds;
 mod survival;
 mod worker;
 
-pub use check::{check, missing_extras, STAMP};
+pub use check::{check, check_server, missing_extras, STAMP};
 pub use files::clone_or_copy;
 pub use sounds::{add_assets, fonts, languages, packs, panorama, sounds, BUILT_IN_PACKS};
 
@@ -44,7 +45,8 @@ pub type Log<'a> = &'a dyn Fn(&str);
 pub type Progress<'a> = &'a dyn Fn(f32);
 
 /// The stages of `steps`, each opened by `Run::stage`: what the fraction counts.
-const STAGES: u32 = 19;
+const STAGES: u32 = 21;
+const SERVER_STAGES: u32 = STAGES - 4;
 
 /// The exporter bundle side, and the worker index that runs it (a Prism install has no server
 /// jar, so the client jar is the server side; the sides still compile and run separately).
@@ -52,7 +54,7 @@ const SERVER_SIDE: usize = 0;
 const CLIENT_SIDE: usize = 1;
 
 /// The manifest's `schema`: the prepared files' layout, which the launcher compares.
-pub const SCHEMA: i64 = 7;
+pub use sunrise_core::prepared_profile::SCHEMA;
 
 /// What this preparer makes. The launcher copies a prepared version's resources to a newly installed
 /// version whose preparer has the same number (and the same pinned jars), so a release that changes
@@ -61,7 +63,17 @@ pub const SCHEMA: i64 = 7;
 /// the preparer and fails when the output is not the one output-versions.txt gives this number
 /// (`python3 tools/prepare_output.py check`). The launcher reads this line from the version
 /// folder's sources: keep it on one line, as it is.
-pub const OUTPUT_VERSION: u32 = 7;
+pub const OUTPUT_VERSION: u32 = 9;
+
+/// Independent output pin for the dedicated server profile.
+pub const SERVER_OUTPUT_VERSION: u32 = 2;
+
+// The checked literals above remain readable by older launchers and output-history tooling.
+const _: () = {
+    use sunrise_core::prepared_profile::Profile;
+    assert!(OUTPUT_VERSION == Profile::Full.output_version());
+    assert!(SERVER_OUTPUT_VERSION == Profile::Server.output_version());
+};
 
 pub struct Options {
     /// The version folder (a release folder, or a checkout): research-lock.json, the exporters'
@@ -91,6 +103,14 @@ pub fn resources_dir(root: &Path, version: &str, output: Option<&Path>) -> PathB
         Some(output) => output.to_path_buf(),
         None => root.join(".local/sunrise-client").join(version),
     }
+}
+
+/// The server profile lives beside the full folder under a server's `game-files`.
+pub fn server_resources_dir(root: &Path, version: &str, output: Option<&Path>) -> PathBuf {
+    output.map(Path::to_path_buf).unwrap_or_else(|| {
+        root.join("game-files/sunrise-client")
+            .join(format!("{version}-server"))
+    })
 }
 
 pub(crate) fn hex(bytes: &[u8]) -> String {
@@ -445,13 +465,11 @@ struct Run<'a> {
     jdk: java::Jdk,
     java_major: i64,
     server: PathBuf,
-    client: PathBuf,
+    client: Option<ClientInputs>,
     /// The server jar and its libraries: the classpath of the server-side exporters.
     server_classpath: String,
-    /// The client jar and its libraries: the classpath of the client-side exporters.
-    client_classpath: String,
-    /// No server jar was found: the client jar is the server side (Prism keeps none).
-    server_from_client: bool,
+    /// The outer server bundle for vanilla's data generator, absent on Prism.
+    server_bundle: Option<PathBuf>,
     /// The compiled exporter classes, or why they didn't compile: one attempt for all lanes.
     bundles: Mutex<Option<Result<PathBuf, String>>>,
     /// The exporter JVMs, which run at the same time: the server's, the client's, and on a
@@ -464,6 +482,11 @@ struct Run<'a> {
     /// Tells the caller's thread that a lane opened a stage of `steps`: it counts them.
     stage: &'a (dyn Fn() + Sync),
     inputs: artifacts::Inputs,
+}
+
+struct ClientInputs {
+    jar: PathBuf,
+    classpath: String,
 }
 
 const PARITY: &str = "mods/sunrise/src/test/java/dev/sunriselab/parity";
@@ -614,7 +637,7 @@ impl Run<'_> {
 
 /// Prepares the resources; returns their folder (`resources_dir`).
 pub fn prepare(options: &Options, log: Log) -> Result<PathBuf, String> {
-    prepare_impl(options, log, &|_| {}, false)
+    prepare_impl(options, log, &|_| {}, false, false)
 }
 
 /// `prepare`, telling `progress` the fraction done as each stage begins, and 1 at the end.
@@ -623,12 +646,21 @@ pub fn prepare_with_progress(
     log: Log,
     progress: Progress,
 ) -> Result<PathBuf, String> {
-    prepare_impl(options, log, progress, false)
+    prepare_impl(options, log, progress, false, false)
 }
 
 /// Release build tool: compile and link-check only Sunrise's original exporter classes.
 pub fn compile_exporters(options: &Options, log: Log) -> Result<PathBuf, String> {
-    prepare_impl(options, log, &|_| {}, true)
+    prepare_impl(options, log, &|_| {}, true, false)
+}
+
+/// Prepare the dedicated profile from Mojang's pinned server.jar; never look up client files.
+pub fn prepare_server_with_progress(
+    options: &Options,
+    log: Log,
+    progress: Progress,
+) -> Result<PathBuf, String> {
+    prepare_impl(options, log, progress, false, true)
 }
 
 fn prepare_impl(
@@ -636,47 +668,68 @@ fn prepare_impl(
     log: Log,
     progress: Progress,
     compile_only: bool,
+    server_only: bool,
 ) -> Result<PathBuf, String> {
     let started = Instant::now();
     let root = &std::path::absolute(&options.root)
         .map_err(|e| format!("{}: {e}", options.root.display()))?;
     let lock = artifacts::Lock::read(root)?;
-    // Java first: nothing below can finish without it, and the player should hear it at once.
-    let mut homes: Vec<PathBuf> = options.java_home.iter().cloned().collect();
-    homes.extend(java::minecraft_runtimes(
-        &artifacts::game_files(options.minecraft_dir.as_deref(), &lock.version).runtimes,
-    ));
-    let jdk = java::find_runtime(lock.java_major, &homes)?;
-    // The import and the exporters' scratch files.
-    let _local_lock = hold_lock(&root.join(".local"), log)?;
-    let reused = if options.import {
-        artifacts::reuse_verified(root, log)?
+    let local = if server_only {
+        root.join(".local/server-prepare")
     } else {
-        None
+        root.join(".local")
     };
-    let (found, client_libraries) = match reused {
-        Some(checked) => checked,
-        None => {
-            if options.import {
-                artifacts::import(
-                    root,
-                    &lock,
-                    options.minecraft_dir.as_deref(),
-                    &options.inputs,
-                    options.server_jar.as_deref(),
-                    log,
-                )?;
+    let _local_lock = hold_lock(&local, log)?;
+    let (jdk, server, server_libraries, server_bundle, client) = if server_only {
+        let bundle = server::jar(root, &lock, options.server_jar.as_deref(), log)?;
+        let jdk = server::java(root, &lock, options.java_home.as_deref(), log)?;
+        let (jar, libraries) = artifacts::unpack_server(bundle.clone(), &local, &lock.version)?;
+        (jdk, jar, libraries, Some(bundle), None)
+    } else {
+        let mut homes: Vec<PathBuf> = options.java_home.iter().cloned().collect();
+        homes.extend(java::minecraft_runtimes(
+            &artifacts::game_files(options.minecraft_dir.as_deref(), &lock.version).runtimes,
+        ));
+        let jdk = java::find_runtime(lock.java_major, &homes)?;
+        let reused = if options.import {
+            artifacts::reuse_verified(root, log)?
+        } else {
+            None
+        };
+        let (found, libraries) = match reused {
+            Some(checked) => checked,
+            None => {
+                if options.import {
+                    artifacts::import(
+                        root,
+                        &lock,
+                        options.minecraft_dir.as_deref(),
+                        &options.inputs,
+                        options.server_jar.as_deref(),
+                        log,
+                    )?;
+                }
+                let found = artifacts::verify(&lock)?;
+                let libraries = artifacts::client_libraries(&lock, &found.manifest)?;
+                (found, libraries)
             }
-            let found = artifacts::verify(&lock)?;
-            let libraries = artifacts::client_libraries(&lock, &found.manifest)?;
-            (found, libraries)
-        }
+        };
+        let jar = found.jars["client"].clone();
+        let classpath = classpath_join(&jar, &libraries);
+        let bundle = (!found.server_from_client).then(|| lock.directory.join("jars/server.jar"));
+        (
+            jdk,
+            found.jars["server"].clone(),
+            found.libraries,
+            bundle,
+            Some(ClientInputs { jar, classpath }),
+        )
     };
-    let local = root.join(".local");
     let resources = match &options.output {
         Some(output) => {
             std::path::absolute(output).map_err(|e| format!("{}: {e}", output.display()))?
         }
+        None if server_only => server_resources_dir(root, &lock.version, None),
         None => resources_dir(root, &lock.version, None),
     };
     // `--output` may name the `.local` folder itself, whose lock is held already: a second
@@ -688,20 +741,40 @@ fn prepare_impl(
     };
     let manifest_path = resources.join("sunrise-resources.json");
     let oracle = root.join(PARITY).join("VanillaHeightmapOracle.java");
-    let jar_hashes = pool::map(&[&found.jars["client"], &found.jars["server"]], |jar| {
-        digest(jar, "sha256")
-    })?;
-    let origin = Value::Object(vec![
-        ("minecraft".into(), Value::Str(lock.version.clone())),
-        ("client_sha256".into(), Value::Str(jar_hashes[0].clone())),
-        ("server_sha256".into(), Value::Str(jar_hashes[1].clone())),
+    let mut origin = vec![("minecraft".into(), Value::Str(lock.version.clone()))];
+    if let Some(client) = &client {
+        origin.push((
+            "client_sha256".into(),
+            Value::Str(digest(&client.jar, "sha256")?),
+        ));
+    } else {
+        origin.extend([
+            ("profile".into(), Value::Str("server".into())),
+            (
+                "server_sha1".into(),
+                Value::Str(lock.pin("server_sha1")?.into()),
+            ),
+        ]);
+    }
+    origin.extend([
+        (
+            "server_sha256".into(),
+            Value::Str(digest(&server, "sha256")?),
+        ),
         (
             "exporter_sha256".into(),
             Value::Str(digest(&oracle, "sha256")?),
         ),
     ]);
     let previous = if manifest_path.exists() {
-        read_json(&manifest_path)?
+        let manifest = read_json(&manifest_path)?;
+        if (manifest.get("profile").and_then(Value::as_str) == Some("server")) != server_only {
+            return Err(format!(
+                "{} was prepared for a different profile; choose a different --output",
+                resources.display()
+            ));
+        }
+        manifest
     } else {
         Value::Object(Vec::new())
     };
@@ -725,15 +798,14 @@ fn prepare_impl(
                 resources: resources.clone(),
                 jdk,
                 java_major: lock.java_major,
-                server: found.jars["server"].clone(),
-                client: found.jars["client"].clone(),
-                server_classpath: classpath_join(&found.jars["server"], &found.libraries),
-                client_classpath: classpath_join(&found.jars["client"], &client_libraries),
-                server_from_client: found.server_from_client,
+                server_classpath: classpath_join(&server, &server_libraries),
+                server,
+                client,
+                server_bundle,
                 bundles: Mutex::new(None),
                 workers: [Mutex::new(None), Mutex::new(None), Mutex::new(None)],
                 previous,
-                origin,
+                origin: Value::Object(origin),
                 log: &say,
                 stage: &stage,
                 inputs: options.inputs.clone(),
@@ -744,18 +816,35 @@ fn prepare_impl(
             // Not current until this preparation finishes: --check says so meanwhile, and
             // after a failure.
             check::remove_stamp(&resources)?;
-            steps(&run, &lock, &oracle, minecraft)?;
-            check::write_stamp(&resources)?;
+            steps(&run, &oracle, minecraft)?;
+            check::write_stamp_for(
+                &resources,
+                if server_only {
+                    SERVER_OUTPUT_VERSION
+                } else {
+                    OUTPUT_VERSION
+                },
+            )?;
             Ok(resources)
         });
-        relay(lines, log, progress);
+        relay(
+            lines,
+            log,
+            progress,
+            if server_only { SERVER_STAGES } else { STAGES },
+        );
         work.join()
             .unwrap_or_else(|_| Err("The preparation stopped unexpectedly".into()))
     })?;
     if !compile_only {
         progress(1.0);
         log(&format!(
-            "Prepared Sunrise native-client resources: {}",
+            "Prepared Sunrise {} resources: {}",
+            if server_only {
+                "dedicated server"
+            } else {
+                "native-client"
+            },
             result.display()
         ));
     }
@@ -765,13 +854,18 @@ fn prepare_impl(
 
 /// Hands the lanes' messages to the caller's `log` and `progress`: a line, or None for a stage
 /// opened. The fraction done is the stages opened before the one opening.
-fn relay(messages: std::sync::mpsc::Receiver<Option<String>>, log: Log, progress: Progress) {
+fn relay(
+    messages: std::sync::mpsc::Receiver<Option<String>>,
+    log: Log,
+    progress: Progress,
+    total: u32,
+) {
     let mut stages = 0;
     for message in messages {
         match message {
             Some(line) => log(&line),
             None => {
-                progress(stages.min(STAGES) as f32 / STAGES as f32);
+                progress(stages.min(total) as f32 / total as f32);
                 stages += 1;
             }
         }
@@ -797,29 +891,28 @@ type Entries = Vec<(&'static str, Value)>;
 /// idle: a 6-core laptop finished its other JVMs 20 s before the server lane.
 const SPLIT_BLOCKS_JOBS: usize = 6;
 
-fn steps(
-    run: &Run,
-    lock: &artifacts::Lock,
-    oracle: &Path,
-    minecraft: Option<&Path>,
-) -> Result<(), String> {
+fn steps(run: &Run, oracle: &Path, minecraft: Option<&Path>) -> Result<(), String> {
     let root = &run.resources;
     let repo = &run.root;
     let server_cp = run.server_classpath.as_str();
-    let client_cp = run.client_classpath.as_str();
+    let client = run.client.as_ref();
 
     run.stage();
     let block_tags = "data/minecraft/tags/block/";
     let tags = json_resources(&mut open_zip(&run.server)?, block_tags)?;
-    if tags != json_resources(&mut open_zip(&run.client)?, block_tags)? {
-        return Err("Reference block tags disagree".into());
+    if let Some(client) = client {
+        if tags != json_resources(&mut open_zip(&client.jar)?, block_tags)? {
+            return Err("Reference block tags disagree".into());
+        }
     }
     write_json(&root.join("block-tags.json"), &tags)?;
     let tags = &tags;
 
     let binding = run.oracle("VanillaBlockStateBindingOracle.java");
     let helper = run.oracle("VanillaCuboidModelOracle.java");
-    let binding_sources = source_hashes(repo, &[&binding, &helper])?;
+    let binding_sources = client
+        .map(|_| source_hashes(repo, &[&binding, &helper]))
+        .transpose()?;
     let visibility = run.oracle("VanillaFaceVisibilityOracle.java");
     let collision = run.oracle("VanillaCollisionOracle.java");
     let collision_sources = source_hashes(repo, &[&collision])?;
@@ -879,7 +972,7 @@ fn steps(
                 side,
                 what,
                 if side == CLIENT_SIDE {
-                    client_cp
+                    &client.expect("client exports have a client jar").classpath
                 } else {
                     server_cp
                 },
@@ -959,14 +1052,16 @@ fn steps(
             let export = run.local.join("sunrise-client-health");
             mkdir(&export)?;
             let mut server = open_zip(&run.server)?;
-            let mut client = open_zip(&run.client)?;
+            let mut client_zip = client.map(|client| open_zip(&client.jar)).transpose()?;
             for (file, prefix) in [
                 ("types.json", "data/minecraft/damage_type/"),
                 ("tags.json", "data/minecraft/tags/damage_type/"),
             ] {
                 let resources = json_resources(&mut server, prefix)?;
-                if resources != json_resources(&mut client, prefix)? {
-                    return Err("Reference damage resources disagree".into());
+                if let Some(client) = &mut client_zip {
+                    if resources != json_resources(client, prefix)? {
+                        return Err("Reference damage resources disagree".into());
+                    }
                 }
                 write_json(&export.join(file), &resources)?;
             }
@@ -1091,6 +1186,19 @@ fn steps(
             &[],
             "datafix-export.log",
         )?;
+        // Per-state path types, spawn-surface predicates and spawn placements.
+        run.stage();
+        let mob_data = single(
+            "mob data",
+            "mob-data.json",
+            &["VanillaMobDataExporter.java"],
+            "mob_data_exporters_sha256",
+            "server_sha256",
+            "mob-data/classes",
+            "1G",
+            &[arg(&run.server)],
+            "mob-data-export.log",
+        )?;
         if !split_blocks {
             worldgen_blocks(run, 0)?;
         }
@@ -1099,58 +1207,80 @@ fn steps(
             ("gameplay_exporters_sha256", gameplay),
             ("entity_types_exporters_sha256", entity_types),
             ("behaviour_exporters_sha256", behaviour),
+            ("mob_data_exporters_sha256", mob_data),
             ("datafix_exporters_sha256", datafix),
         ])
     });
 
     // The client exporter JVM, then the command registries' own.
-    let client: pool::Lane<Entries> = Box::new(|| {
-        // Block state to model bindings, from the client.
-        let model_states = root.join("model-states.json");
-        run.stage();
-        if !(run.previous("model_state_exporters_sha256") == Some(&binding_sources)
-            && run.same("client_sha256")
-            && model_states.exists()
-            && run.previous("model_states_sha256") == Some(&run.file_hash("model-states.json")?))
-        {
-            run.export(
-                CLIENT_SIDE,
-                "model bindings",
-                client_cp,
-                &root.join("client-classes"),
-                &["VanillaBlockStateBindingOracle"],
-                "512M",
-                &["export".into(), arg(&model_states)],
-                &root.join("model-state-export.log"),
+    let command_and_client: pool::Lane<Entries> = Box::new(|| {
+        let mut entries = Vec::new();
+        if let Some(client) = client {
+            // Block state to model bindings, from the client.
+            let model_states = root.join("model-states.json");
+            run.stage();
+            if !(run.previous("model_state_exporters_sha256") == binding_sources.as_ref()
+                && run.same("client_sha256")
+                && model_states.exists()
+                && run.previous("model_states_sha256")
+                    == Some(&run.file_hash("model-states.json")?))
+            {
+                run.export(
+                    CLIENT_SIDE,
+                    "model bindings",
+                    &client.classpath,
+                    &root.join("client-classes"),
+                    &["VanillaBlockStateBindingOracle"],
+                    "512M",
+                    &["export".into(), arg(&model_states)],
+                    &root.join("model-state-export.log"),
+                )?;
+            }
+            run.stage();
+            let entity_models = single(
+                "entity models",
+                "entity-models.json",
+                &["VanillaEntityModelExporter.java"],
+                "entity_model_exporters_sha256",
+                "client_sha256",
+                "entity-models/classes",
+                "1G",
+                &[],
+                "entity-model-export.log",
             )?;
+            // The two built-in render pipeline locations registries, for mod registration.
+            run.stage();
+            let render_pipelines = single(
+                "render pipelines",
+                "render-pipelines.json",
+                &["VanillaRenderPipelineExporter.java"],
+                "render_pipeline_exporters_sha256",
+                "client_sha256",
+                "render-pipelines/classes",
+                "512M",
+                &[],
+                "render-pipeline-export.log",
+            )?;
+            // Keyframe animation definitions from the client jar.
+            run.stage();
+            let mob_animations = single(
+                "mob animations",
+                "mob-animations.json",
+                &["VanillaMobAnimationExporter.java"],
+                "mob_animations_exporters_sha256",
+                "client_sha256",
+                "mob-animations/classes",
+                "1G",
+                &[arg(&client.jar)],
+                "mob-animations-export.log",
+            )?;
+            run.close_worker(CLIENT_SIDE);
+            entries.extend([
+                ("entity_model_exporters_sha256", entity_models),
+                ("render_pipeline_exporters_sha256", render_pipelines),
+                ("mob_animations_exporters_sha256", mob_animations),
+            ]);
         }
-        run.stage();
-        let entity_models = single(
-            "entity models",
-            "entity-models.json",
-            &["VanillaEntityModelExporter.java"],
-            "entity_model_exporters_sha256",
-            "client_sha256",
-            "entity-models/classes",
-            "1G",
-            &[],
-            "entity-model-export.log",
-        )?;
-        // Mob AI and animation facts: per-state path types, spawn placements and the
-        // client's keyframe animation definitions (needs the client jar).
-        run.stage();
-        let mob_data = single(
-            "mob data",
-            "mob-data.json",
-            &["VanillaMobDataExporter.java"],
-            "mob_data_exporters_sha256",
-            "client_sha256",
-            "mob-data/classes",
-            "1G",
-            &[arg(&run.client)],
-            "mob-data-export.log",
-        )?;
-        run.close_worker(1);
 
         // Vanilla's built-in registries for in-game command parsing (mob effects,
         // data component types, dialogs, block entity and tag members).
@@ -1173,10 +1303,7 @@ fn steps(
             )?;
             copy(&export.join("registries.json"), &command_registries)?;
         }
-        Ok(vec![
-            ("entity_model_exporters_sha256", entity_models),
-            ("mob_data_exporters_sha256", mob_data),
-        ])
+        Ok(entries)
     });
 
     // The data generator's JVM, then the creative inventory's.
@@ -1192,25 +1319,20 @@ fn steps(
             let log = run.log_file(&log_path)?;
             // A server bundle names the data generator in its manifest; with the client jar as
             // the server side (a Prism install has no server jar) the classpath names it instead.
-            let args = if run.server_from_client {
+            let mut args = if let Some(bundle) = &run.server_bundle {
+                vec![
+                    "-DbundlerMainClass=net.minecraft.data.Main".into(),
+                    "-jar".into(),
+                    arg(bundle),
+                ]
+            } else {
                 vec![
                     "-cp".into(),
                     run.server_classpath.clone(),
                     "net.minecraft.data.Main".into(),
-                    "--reports".into(),
-                    "--output".into(),
-                    "out".into(),
-                ]
-            } else {
-                vec![
-                    "-DbundlerMainClass=net.minecraft.data.Main".into(),
-                    "-jar".into(),
-                    arg(&lock.directory.join("jars").join("server.jar")),
-                    "--reports".into(),
-                    "--output".into(),
-                    "out".into(),
                 ]
             };
+            args.extend(["--reports".into(), "--output".into(), "out".into()]);
             run.jdk
                 .java(&args, Some(&datagen), &log)
                 .map_err(|e| format!("{e} in the data generator; see {}", log_path.display()))?;
@@ -1252,15 +1374,19 @@ fn steps(
     // the vanilla pack's icon (`pack.png`) for the pack screen.
     let files: pool::Lane<Entries> = Box::new(|| {
         run.stage();
-        (run.log)("Copying the client's assets and data");
         let started = Instant::now();
-        let mut indexed = sounds::Assets::load(repo, Some(root), minecraft, &run.inputs, run.log);
-        let (version, count) = extract_client_resources(&run.client, root, indexed.as_mut().ok())?;
-        sounds::optional_imports(indexed.as_mut().map_err(|e| e.as_str()), run.log);
-        (run.log)(&format!(
-            "Copied the client's assets and data{}",
-            took(started)
-        ));
+        let (version, count) = if let Some(client) = client {
+            (run.log)("Copying the client's assets and data");
+            let mut indexed =
+                sounds::Assets::load(repo, Some(root), minecraft, &run.inputs, run.log);
+            let result = extract_resources(&client.jar, root, indexed.as_mut().ok(), false)?;
+            sounds::optional_imports(indexed.as_mut().map_err(|e| e.as_str()), run.log);
+            result
+        } else {
+            (run.log)("Copying the server's data and English translations");
+            extract_resources(&run.server, root, None, true)?
+        };
+        (run.log)(&format!("Copied game resources{}", took(started)));
         worldgen_bundles(run)?;
         Ok(vec![
             (
@@ -1274,7 +1400,7 @@ fn steps(
         ])
     });
 
-    let mut lanes = vec![server, client, reports, files];
+    let mut lanes = vec![server, command_and_client, reports, files];
     if split_blocks {
         // With cores to spare, the generator's block behaviour (a quarter of the server lane's
         // time) runs on a second server JVM beside the first; it pays its own Bootstrap.
@@ -1289,7 +1415,12 @@ fn steps(
     run.stage();
     worldgen_tables(run)?;
 
-    let entry = |key: &str| entries.iter().find(|(k, _)| *k == key).unwrap().1.clone();
+    let entry = |key: &str| {
+        entries
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map_or(Value::Null, |(_, value)| value.clone())
+    };
     let file_hashes = |names: &[&str]| -> Result<Value, String> {
         Ok(Value::Object(
             names
@@ -1313,7 +1444,10 @@ fn steps(
         ),
         ("render_exporters_sha256".into(), render_sources),
         ("render_files_sha256".into(), file_hashes(&render_files)?),
-        ("model_state_exporters_sha256".into(), binding_sources),
+        (
+            "model_state_exporters_sha256".into(),
+            binding_sources.unwrap_or(Value::Null),
+        ),
         (
             "gameplay_exporters_sha256".into(),
             entry("gameplay_exporters_sha256"),
@@ -1323,12 +1457,20 @@ fn steps(
             entry("entity_model_exporters_sha256"),
         ),
         (
+            "render_pipeline_exporters_sha256".into(),
+            entry("render_pipeline_exporters_sha256"),
+        ),
+        (
             "creative_exporters_sha256".into(),
             entry("creative_exporters_sha256"),
         ),
         (
             "mob_data_exporters_sha256".into(),
             entry("mob_data_exporters_sha256"),
+        ),
+        (
+            "mob_animations_exporters_sha256".into(),
+            entry("mob_animations_exporters_sha256"),
         ),
         (
             "entity_types_exporters_sha256".into(),
@@ -1348,7 +1490,11 @@ fn steps(
         ),
         (
             "model_states_sha256".into(),
-            run.file_hash("model-states.json")?,
+            if client.is_some() {
+                run.file_hash("model-states.json")?
+            } else {
+                Value::Null
+            },
         ),
         ("data_version".into(), entry("data_version")),
         ("facts_sha256".into(), run.file_hash("facts.json")?),
@@ -1358,6 +1504,10 @@ fn steps(
         ),
         ("resource_files".into(), entry("resource_files")),
     ]);
+    manifest.retain(|(_, value)| *value != Value::Null);
+    if client.is_none() {
+        manifest.push(("server_files".into(), check::server_files(root)?));
+    }
     write_json(
         &root.join("sunrise-resources.json"),
         &Value::Object(manifest),
@@ -1367,10 +1517,11 @@ fn steps(
 /// Check existing JAR assets by their ZIP size/CRC without inflating every member again.
 /// Indexed panorama/font/language replacements have stronger SHA-1 checks and take precedence.
 /// The members are checked and written on several threads, each with the jar open.
-fn extract_client_resources(
+fn extract_resources(
     jar: &Path,
     root: &Path,
     mut indexed: Option<&mut sounds::Assets>,
+    server_only: bool,
 ) -> Result<(Value, usize), String> {
     let mut client = open_zip(jar)?;
     let version = pyjson::loads(&zip_text(&mut client, "version.json")?)?;
@@ -1380,9 +1531,16 @@ fn extract_client_resources(
     let mut groups: Vec<Vec<(String, PathBuf)>> = Vec::new();
     let mut group_of = std::collections::HashMap::new();
     for name in zip_names(&client)? {
-        if !(name.starts_with("assets/") || name.starts_with("data/") || name == "pack.png")
-            || name.ends_with('/')
-        {
+        let included = if server_only {
+            name.starts_with("data/")
+                || matches!(
+                    name.as_str(),
+                    "assets/minecraft/lang/en_us.json" | "assets/minecraft/lang/deprecated.json"
+                )
+        } else {
+            name.starts_with("assets/") || name.starts_with("data/") || name == "pack.png"
+        };
+        if !included || name.ends_with('/') {
             continue;
         }
         let relative = member_path(&name, "Invalid resource path")?;
@@ -1520,7 +1678,12 @@ fn worldgen_bundles(run: &Run) -> Result<(), String> {
     mkdir(&out)?;
     // Structure templates: gzip NBT files under structure/<namespace>/<path>.nbt.
     let prefix = "data/minecraft/structure/";
-    let (server, client) = (open_zip(&run.server)?, open_zip(&run.client)?);
+    let server = open_zip(&run.server)?;
+    let client = run
+        .client
+        .as_ref()
+        .map(|client| open_zip(&client.jar))
+        .transpose()?;
     // zip_names gives each name once.
     let templates: Vec<String> = zip_names(&server)?
         .into_iter()
@@ -1534,10 +1697,13 @@ fn worldgen_bundles(run: &Run) -> Result<(), String> {
     pool::map(&WORLDGEN_BUNDLES, |(name, path)| {
         let prefix = format!("data/minecraft/{path}/");
         let resources = json_resources(&mut server.clone(), &prefix)?;
-        if resources.as_object().is_none_or(<[_]>::is_empty)
-            || resources != json_resources(&mut client.clone(), &prefix)?
-        {
-            return Err(format!("Reference worldgen resources disagree: {path}"));
+        if resources.as_object().is_none_or(<[_]>::is_empty) {
+            return Err(format!("Reference worldgen resources are missing: {path}"));
+        }
+        if let Some(client) = &client {
+            if resources != json_resources(&mut client.clone(), &prefix)? {
+                return Err(format!("Reference worldgen resources disagree: {path}"));
+            }
         }
         write_text(
             &out.join(format!("{name}.json")),
@@ -1817,6 +1983,7 @@ mod tests {
             messages,
             &|line| lines.borrow_mut().push(line.to_string()),
             &|done| fractions.borrow_mut().push(done),
+            STAGES,
         );
         let lines = lines.into_inner();
         assert_eq!(lines.len() as u32, STAGES);
@@ -1933,7 +2100,7 @@ mod tests {
         }
         archive.finish().unwrap();
         let root = dir.join("resources");
-        let (version, count) = extract_client_resources(&jar, &root, None).unwrap();
+        let (version, count) = extract_resources(&jar, &root, None, false).unwrap();
         assert_eq!(version.get("world_version"), Some(&Value::Int("1".into())));
         assert_eq!(count, 403);
         let resources = &members[1..members.len() - 1];
@@ -1956,7 +2123,7 @@ mod tests {
         let kept = root.join("assets/minecraft/textures/5.png");
         let before = fs::metadata(&kept).unwrap().modified().unwrap();
         assert_eq!(
-            extract_client_resources(&jar, &root, None).unwrap().1,
+            extract_resources(&jar, &root, None, false).unwrap().1,
             count
         );
         check();

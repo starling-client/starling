@@ -1,5 +1,4 @@
 //! The `block_lock_check` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0179
 
 pub trait Hooks {
     /// A guest's block inventory lock check at `pos`. `locked` is the

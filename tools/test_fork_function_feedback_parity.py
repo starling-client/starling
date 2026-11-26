@@ -10,7 +10,9 @@ from pathlib import Path
 import shutil
 import sys
 
-import test_command_exec_parity as runner
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_command_exec_parity as runner
 
 PARITY_MANUAL = "a proof run by hand: --work-dir DIR --reference-only for the Java side, then --work-dir DIR2 --reference-dir DIR --binary BIN"  # not a harness: tools/parity.py leaves it out
 
@@ -64,7 +66,7 @@ def main():
     chat = "--chat-diagnostic" in sys.argv
     if chat:
         sys.argv.remove("--chat-diagnostic")
-        from fork_function_feedback_corpus import cases
+        from tools.fork_function_feedback_corpus import cases
         program = cases(runner.corpus_module.cmd, chat=True)
         runner.corpus_module.groups = lambda: [(GROUP, program)]
     else:

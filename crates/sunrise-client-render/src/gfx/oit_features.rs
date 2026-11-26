@@ -45,6 +45,8 @@ const PLAIN: wgpu::DepthBiasState = wgpu::DepthBiasState {
     slope_scale: 0.0,
     clamp: 0.0,
 };
+/// `RenderPipelines.OIT_TEXT_POLYGON_OFFSET`: zero depth bias (unlike classic `TEXT_POLYGON_OFFSET`).
+pub(crate) const OIT_TEXT_BIAS: wgpu::DepthBiasState = PLAIN;
 
 impl Features {
     /// `layouts`: `Oit`'s stage groups (at group 2); `entity`, `weather` and
@@ -170,8 +172,8 @@ impl Features {
             cull,
             bias,
         };
-        // The classic pipelines' biases: text and cracks (10, 1), shadows
-        // (128 ulps and a slope, over the block tops they lie on).
+        // The classic pipelines' biases: cracks (10, 1), shadows (128 ulps and a slope,
+        // over the block tops they lie on); `OIT_TEXT_POLYGON_OFFSET` uses zero bias.
         let offset = wgpu::DepthBiasState {
             constant: 10,
             slope_scale: 1.0,
@@ -193,7 +195,7 @@ impl Features {
                 &entity_module,
                 entities,
                 &entity_buffers,
-                kind("text", "entity", Some(wgpu::Face::Back), offset),
+                kind("text", "entity", Some(wgpu::Face::Back), OIT_TEXT_BIAS),
             ),
             crumbling: set(
                 &entity_module,
@@ -271,5 +273,39 @@ impl Features {
                 },
             ),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "run by tools/test_displays_parity.py"]
+    fn oit_text_polygon_offset_depth_bias_matches_vanilla_26_3() {
+        let path = std::env::var("SUNRISE_DISPLAY_PARITY_WITNESS").expect(
+            "SUNRISE_DISPLAY_PARITY_WITNESS must be set (run via tools/test_displays_parity.py)",
+        );
+        let text =
+            std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("failed to read {path}: {e}"));
+        let witness: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(witness["meta"]["game_version"], "26.3");
+        let p = &witness["text_submit_phases_and_sorting"]["pipelines"];
+        let scale_bits = u32::from_str_radix(
+            p["oit_text_polygon_offset_bias_scale_bits"]
+                .as_str()
+                .unwrap(),
+            16,
+        )
+        .unwrap();
+        let constant_bits = u32::from_str_radix(
+            p["oit_text_polygon_offset_bias_constant_bits"]
+                .as_str()
+                .unwrap(),
+            16,
+        )
+        .unwrap();
+        assert_eq!(OIT_TEXT_BIAS.slope_scale.to_bits(), scale_bits);
+        assert_eq!((OIT_TEXT_BIAS.constant as f32).to_bits(), constant_bits);
     }
 }

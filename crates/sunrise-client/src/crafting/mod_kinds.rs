@@ -139,10 +139,14 @@ struct CraftingRemainderView<'a> {
     default: &'a dyn Fn(&ItemStack) -> Option<ItemStack>,
 }
 impl mod_api::LoopContext for CraftingRemainderView<'_> {
-    fn is_in_tag(&self, item: mod_api::ItemKey, tag: mod_api::TagKey) -> Option<bool> {
+    fn is_in_tag(
+        &self,
+        item: mod_api::ItemKey,
+        tag: mod_api::TagKey<mod_api::ItemKey>,
+    ) -> Option<bool> {
         self.context.is_in_tag(item, tag)
     }
-    fn items_in_tag(&self, tag: mod_api::TagKey) -> Option<&[mod_api::ItemKey]> {
+    fn items_in_tag(&self, tag: mod_api::TagKey<mod_api::ItemKey>) -> Option<&[mod_api::ItemKey]> {
         self.context.items_in_tag(tag)
     }
     fn mod_recipe_property_contains(&self, set: &str, item: mod_api::ItemKey) -> bool {

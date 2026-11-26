@@ -1,11 +1,11 @@
 // Types that lived in the API root before the domain split.
 use crate::*;
 
-/// A saved fluid name retained for the lifetime of the process.
-// no wire: decoding validates the u64 slot with UnresolvedFluid::from_slot on the host.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-// exhaustive: only trusted engine boundaries create handles
-pub struct UnresolvedFluid(pub(crate) u64);
+/// A saved fluid name no registered fluid has, kept verbatim until its declaring mod returns.
+/// `Wire` sends the name; decoding refuses a name the receiving game has registered.
+#[derive(Clone, Debug, PartialEq, Eq)]
+// exhaustive: its field is private, so only a validated unregistered name makes one
+pub struct UnresolvedFluid(pub(crate) Identifier);
 
 /// A dimension (`minecraft:the_nether`), as the game's table numbers it: a `LevelRef`'s identity.
 /// A key stays the same dimension until the game exits; `key.id(host)` borrows the name.
@@ -14,16 +14,14 @@ pub struct UnresolvedFluid(pub(crate) u64);
 // exhaustive: its field is private, so only the game's table creates a key
 pub struct DimensionKey(pub(crate) u32);
 
-/// Why a game rule category declaration was refused.
+/// Why a game rule or category declaration was refused.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 #[derive(sunrise_mod_api_macros::Wire)]
 pub enum GameRuleError {
     /// The identifier is invalid.
     InvalidId,
-    /// The namespace does not belong to the declaring mod.
-    ForeignNamespace,
-    /// The category is already declared.
+    /// The category or rule is already declared.
     Duplicate,
     /// An integer rule's `min` is above its `max`, or its default is outside `min..=max`.
     InvalidRange,
@@ -49,6 +47,41 @@ pub struct IntGameRuleKey(pub(crate) u32);
 // exhaustive: only the registration table creates keys
 pub struct FluidKey(pub(crate) u32);
 
+impl FluidKey {
+    /// Whether this fluid is in `tag` (`FluidState.is(TagKey)`), over `tags`'s current
+    /// authoritative snapshot. An unknown tag is `Some(false)`; unavailable tags or mappings
+    /// return `None`.
+    pub fn is_in_tag(self, tags: &dyn Tags, tag: TagKey<FluidKey>) -> Option<bool> {
+        tags.fluid_in_tag(self, tag)
+    }
+    /// Whether this fluid and `other` are the same fluid (`Fluid.isSame`): a source and its
+    /// flowing form are, so `minecraft:water` and `minecraft:flowing_water` are the same, water
+    /// and lava not. False when either key has no world fluid or tables are unavailable.
+    pub fn is_same(self, states: &BlockStates<'_>, other: FluidKey) -> bool {
+        states.backend().fluid_is_same(self, other).unwrap_or(false)
+    }
+    /// The bucket item that picks this fluid up (`Fluid.getBucket`), `minecraft:water_bucket`
+    /// for water and flowing water. `None` for `minecraft:empty` (whose bucket is air), for a
+    /// tank-only fluid, or when tables are unavailable.
+    pub fn bucket(self, states: &BlockStates<'_>) -> Option<ItemKey> {
+        states.backend().fluid_bucket(self).ok().flatten()
+    }
+    /// The sound event a bucket plays as it picks this fluid up (`Fluid.getPickupSound`),
+    /// `minecraft:item.bucket.fill_lava` for lava and flowing lava. `None` for
+    /// `minecraft:empty`, for a tank-only fluid, or when tables are unavailable.
+    pub fn pickup_sound(self, states: &BlockStates<'_>) -> Option<&'static str> {
+        states.backend().fluid_pickup_sound(self).ok().flatten()
+    }
+    /// The sound event a bucket plays as it empties this fluid (`BucketItem.playEmptySound`,
+    /// NeoForge's `FluidType.getSound(SoundActions.BUCKET_EMPTY)`),
+    /// `minecraft:item.bucket.empty_lava` for lava and flowing lava and
+    /// `minecraft:item.bucket.empty` for water and a mod's world fluid. `None` for
+    /// `minecraft:empty`, for a tank-only fluid, or when tables are unavailable.
+    pub fn empty_sound(self, states: &BlockStates<'_>) -> Option<&'static str> {
+        states.backend().fluid_empty_sound(self).ok().flatten()
+    }
+}
+
 /// Sampling parameters for `LevelRef::find_closest_biome`, in blocks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -65,13 +98,7 @@ pub struct BiomeSearch {
 }
 
 impl BiomeSearch {
-    /// Maximum potential biome samples in one synchronous search (65,536).
-    /// Work is bounded before searching, even when the origin would match immediately.
-    pub const MAX_SAMPLES: u64 = 65_536;
-
     /// The radius must be nonnegative and both sampling steps positive.
-    /// A search returns `None` if `(2 * (radius / horizontal_step) + 1)^2`
-    /// times `((dimension_height - 1) / vertical_step + 1)` exceeds [`Self::MAX_SAMPLES`].
     pub fn new(origin: [i32; 3], radius: i32, horizontal_step: i32, vertical_step: i32) -> Self {
         Self {
             origin,
@@ -162,6 +189,12 @@ impl FluidState {
     pub fn is_source(self) -> bool {
         self.source
     }
+    /// Whether this state's fluid is in `tag` (`FluidState.is(TagKey)`), delegating through
+    /// `self.fluid`. An unknown tag is `Some(false)`; unavailable tags or mappings return
+    /// `None`.
+    pub fn is_in_tag(self, tags: &dyn Tags, tag: TagKey<FluidKey>) -> Option<bool> {
+        self.fluid.is_in_tag(tags, tag)
+    }
     /// Match carried vanilla properties locally. Unknown names or noncanonical values
     /// do not match. Validate against `host.fluid_states()` separately for indexed errors.
     pub fn matches(self, constraints: &[StateConstraint]) -> bool {
@@ -198,7 +231,7 @@ pub struct PortalShape {
 #[non_exhaustive]
 pub struct ExplosionStart<'a> {
     /// The level it happens in (`minecraft:overworld`).
-    pub dimension: &'a str,
+    pub dimension: DimensionKey,
     /// The explosion's center in blocks.
     pub center: [f64; 3],
     /// The explosion's radius in blocks.
@@ -212,11 +245,11 @@ pub struct ExplosionStart<'a> {
     pub damage_type: &'a str,
     /// The entity that explodes (`getDirectSourceEntity`): a creeper, a wind
     /// charge, the bearer of Wind Charged, when Sunrise tracks it.
-    pub source: Option<u32>,
+    pub source: Option<EntityRef>,
     /// `getIndirectSourceEntity`: a living source itself, a primed TNT's
     /// owner, or a projectile's living owner (a ghast for its fireball, a
     /// wither for its skull, the thrower of a wind charge).
-    pub owner: Option<u32>,
+    pub owner: Option<EntityRef>,
 }
 
 /// One server world open or client level; it rejects a previous world's handles.
@@ -336,6 +369,19 @@ impl LevelRef {
         crate::content::registry_keys::dimension_id(self.dimension)
             .expect("the game's table made the key")
     }
+    /// Side: both.
+    /// Property `key` of the block state at `pos` (`StateHolder.getValue`):
+    /// `east` for `facing`. None for a block without it, or as for
+    /// `block_state`. API 381.
+    /// The value borrows `host`, not `key`.
+    pub fn block_property<'h>(
+        self,
+        host: &'h dyn Host,
+        pos: [i32; 3],
+        key: &str,
+    ) -> Option<&'h str> {
+        crate::backend::backend_of(host)?.level_block_property(self, pos, key)
+    }
     /// Borrow the named server level's live random stream (`Level.getRandom`) for `draw`
     /// only: `level.with_random(host, |rng| rng.next_int_bound(bound))`. The closure cannot
     /// keep or reseed the stream. Draws advance that level's live stream directly in
@@ -354,46 +400,80 @@ impl LevelRef {
         let backend = crate::backend::backend_mut_of(host)?;
         crate::world::random::with_random_draw(draw, |draw| backend.with_level_random(self, draw))
     }
+    /// The loaded entity of this server level with `uuid`, as vanilla's
+    /// `ServerLevel.getEntity(UUID)` reads the level's entity lookup; NeoForge mods call the
+    /// same vanilla method, which NeoForge does not extend. It reads the named open level
+    /// whether it is the one in place for this hook or parked while the server ticks
+    /// another, through the level's UUID index: it never switches, loads or scans a level.
+    /// To search every level, as vanilla's `ServerLevel.getEntityInAnyDimension(UUID)`
+    /// does, ask the hook's own level first, then each other level of
+    /// [`Levels::visit_levels`]:
+    ///
+    /// ```
+    /// use core::ops::ControlFlow;
+    /// use mod_api::prelude::*;
+    /// use mod_api::{EntityRef, EntityUuid, LevelRef, ServerHost};
+    /// fn find_anywhere(host: &dyn ServerHost, own: LevelRef, uuid: EntityUuid) -> Option<EntityRef> {
+    ///     own.entity_by_uuid(host, uuid).or_else(|| {
+    ///         let mut found = None;
+    ///         let _ = host.levels().visit_levels(&mut |level| {
+    ///             found = (level != own).then(|| level.entity_by_uuid(host, uuid)).flatten();
+    ///             match found {
+    ///                 Some(_) => ControlFlow::Break(()),
+    ///                 None => ControlFlow::Continue(()),
+    ///             }
+    ///         });
+    ///         found
+    ///     })
+    /// }
+    /// ```
+    ///
+    /// Returns `None` for an entity in a hidden section of the level in place or whose chunk is
+    /// not loaded, one resident in another
+    /// level, a dragon part, an entity held out of lookup, taken from its resident storage,
+    /// unavailable under a scoped item loan or queued for removal, a vehicle being
+    /// destroyed, a stale handle, a level that is not open, and outside server world access.
+    /// The lookup leaves entity and level state alone.
+    ///
+    /// The handle it returns is an ordinary [`EntityRef`]: the calls that read an entity of a
+    /// parked level (`kind`, `uuid`, `level`) answer for it, and the others refuse it while
+    /// its level is parked, as they refuse any entity outside the level in place.
+    pub fn entity_by_uuid(self, host: &dyn ServerHost, uuid: EntityUuid) -> Option<EntityRef> {
+        crate::backend::backend_of(host)?.level_entity_by_uuid(self, uuid)
+    }
     /// The open of the world the handle belongs to.
     pub fn epoch(self) -> WorldEpoch {
         self.epoch
     }
 }
 
-/// A mod-owned watered area in one server level. Created by [`LevelRef::add_water_ticket`].
-/// Explicit removal, owner disable and level unload invalidate it. Never saved.
-#[derive(sunrise_mod_api_macros::Wire, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+/// A live watered area in one server level. Created by [`LevelRef::add_water_ticket`].
+/// Any holder with this handle can remove it via [`WaterTicket::remove`]; level unload and,
+/// when attributed to an enabled mod at creation, that mod's disable also invalidate it.
+/// Stays in-process (never serialized or saved): re-add in `level_load` or a block entity's
+/// load listener.
+// no wire: a live ticket identity can only be issued by its level
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 // exhaustive: its fields are private, so mods cannot build or destructure it
 pub struct WaterTicket {
     pub(crate) level: LevelRef,
-    pub(crate) id: u64,
+    pub(crate) id: sunrise_mod_runtime::water_tickets::WaterTicketId,
 }
 
 impl WaterTicket {
-    /// Construct a handle at the game boundary.
-    // hidden: a game-side constructor; mods receive tickets from `add_water_ticket`
-    #[doc(hidden)]
-    pub fn new(level: LevelRef, id: u64) -> Self {
-        Self { level, id }
-    }
     /// The level this transient ticket belongs to.
     pub fn level(self) -> LevelRef {
         self.level
     }
-    /// The session-only identity used by the game.
-    // hidden: a game-side helper; mods use the handle's methods
-    #[doc(hidden)]
-    pub fn id(self) -> u64 {
-        self.id
-    }
 }
 
 /// A raid of a level (`Raid`), by the id `Raids` keeps it under, which the
-/// raids file saves. `level.raid_at(host, pos)`, `level.raids(host)`,
-/// `level.raid(host, id)` and `mob.raid(host)` make one. A handle resolves
-/// again on each call: it reads as `None` or `false` once the raid is gone,
-/// for a handle of an earlier open, for a closed level, and on a client.
-/// Reads and writes reach parked server levels without moving them into place.
+/// raids file saves. `level.raid_at(host, pos)`, `level.visit_raids(host, visit)`,
+/// `level.raid(host, id)` and `mob.raid(host)` supply handles. Each call resolves the handle
+/// again. Collection visits distinguish a gone raid or a stale level ([`RaidReadError::Stale`])
+/// from a phase or side that cannot read it ([`RaidReadError::Unavailable`]). Other calls
+/// return `None` or `false` on refusal. Reads and writes reach parked server levels without
+/// moving them into place.
 #[derive(sunrise_mod_api_macros::Wire, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 // exhaustive: its fields are private, so mods cannot build or destructure it
 pub struct RaidRef {
@@ -433,6 +513,31 @@ pub enum RaidStatus {
     Stopped,
 }
 
+/// The world clock a level follows (`WorldClock`, a `minecraft:world_clock` registry entry): the
+/// one its dimension type names as `default_clock`, shared by every level of that dimension type
+/// and saved with the world (`ServerClockManager`). `level.clock(host)` makes one; its writes are
+/// `ServerClockManager`'s `setTotalTicks`, `setRate` and `setPaused`. A paused clock is a fixed
+/// time. A handle resolves again on each call, through its level: `false` once the level is gone,
+/// for a handle of an earlier open, and on a client.
+#[derive(sunrise_mod_api_macros::Wire, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+// exhaustive: its fields are private, so mods cannot build or destructure it
+pub struct WorldClockRef {
+    pub(crate) level: LevelRef,
+}
+
+impl WorldClockRef {
+    /// Create a handle for the game.
+    // hidden: a game-side helper, not part of the mod surface
+    #[doc(hidden)]
+    pub fn new(level: LevelRef) -> Self {
+        Self { level }
+    }
+    /// The level whose default clock this is.
+    pub fn level(self) -> LevelRef {
+        self.level
+    }
+}
+
 /// A chunk position in an open level. A handle may be kept after unloading;
 /// reads resolve it again, returning `false` or `None` when it is no longer loaded.
 #[derive(sunrise_mod_api_macros::Wire, Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -466,6 +571,32 @@ impl ChunkRef {
 pub enum ChunkStatus {
     /// A full chunk in a level's live world.
     Full,
+}
+
+/// Why `level.load_chunk` did not bring its chunk to FULL: the error of the `ChunkResult`
+/// vanilla's chunk futures carry (`ServerChunkCache.getChunkFuture`, `ChunkResult.isSuccess`),
+/// and the failure Sunrise adds where vanilla would crash. `Ok(())` is the chunk loaded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+#[derive(sunrise_mod_api_macros::Wire)]
+pub enum ChunkLoadError {
+    /// Vanilla's `ChunkResult` error (`ChunkHolder.UNLOADED_CHUNK`): the chunk could not be
+    /// held, or the level went away during the wait. A stale handle, a client, a level the
+    /// server has not opened, a chunk past `ChunkPos.isValid` and a level whose generation is
+    /// paused or stopped answer it too.
+    Unloaded,
+    /// Generation panicked for this chunk or for one its generation needs around it: a mod's
+    /// chunk generator, contained by the engine where vanilla would crash. The level stays open
+    /// and is not generated there again until it opens again; asking again answers `Failed` at
+    /// once.
+    Failed,
+}
+
+impl crate::NoBackend for ChunkLoadError {
+    /// No game: as for a level the server has not opened.
+    fn no_backend() -> Self {
+        Self::Unloaded
+    }
 }
 
 /// A chunk's ticket level (`ChunkLevel`), as the server holds it: how much of
@@ -505,6 +636,60 @@ pub enum LightLayer {
     Sky,
 }
 
+/// A built-in Minecraft feature flag (`net.minecraft.world.flag.FeatureFlags.REGISTRY`).
+///
+/// Used by general entity declarations (`EntityType.Builder.requiredFeatures`) and checked
+/// against a world's [`FeatureFlags`] (`EntityType.isEnabled`) at spawn and load.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[non_exhaustive]
+#[derive(sunrise_mod_api_macros::Wire)]
+pub enum FeatureFlag {
+    /// `minecraft:vanilla` (`FeatureFlags.VANILLA`).
+    Vanilla,
+    /// `minecraft:trade_rebalance` (`FeatureFlags.TRADE_REBALANCE`).
+    TradeRebalance,
+    /// `minecraft:redstone_experiments` (`FeatureFlags.REDSTONE_EXPERIMENTS`).
+    RedstoneExperiments,
+    /// `minecraft:minecart_improvements` (`FeatureFlags.MINECART_IMPROVEMENTS`).
+    MinecartImprovements,
+}
+
+impl FeatureFlag {
+    /// Every built-in flag in vanilla `FeatureFlags.REGISTRY` order.
+    pub const ALL: [Self; 4] = [
+        Self::Vanilla,
+        Self::TradeRebalance,
+        Self::RedstoneExperiments,
+        Self::MinecartImprovements,
+    ];
+
+    /// The flag's canonical namespaced id (`minecraft:vanilla`, `minecraft:trade_rebalance`, ...).
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::Vanilla => "minecraft:vanilla",
+            Self::TradeRebalance => "minecraft:trade_rebalance",
+            Self::RedstoneExperiments => "minecraft:redstone_experiments",
+            Self::MinecartImprovements => "minecraft:minecart_improvements",
+        }
+    }
+
+    /// Resolve a feature flag id as `FeatureFlags.REGISTRY` does. Like `Identifier.CODEC`,
+    /// this uses the `minecraft` namespace if the namespace is omitted or empty.
+    pub fn from_id(id: &str) -> Option<Self> {
+        let (namespace, path) = id.split_once(':').unwrap_or(("minecraft", id));
+        if !matches!(namespace, "" | "minecraft") {
+            return None;
+        }
+        match path {
+            "vanilla" => Some(Self::Vanilla),
+            "trade_rebalance" => Some(Self::TradeRebalance),
+            "redstone_experiments" => Some(Self::RedstoneExperiments),
+            "minecart_improvements" => Some(Self::MinecartImprovements),
+            _ => None,
+        }
+    }
+}
+
 /// The effective feature flags a world enables (`FeatureFlagSet`, `LevelReader.enabledFeatures`),
 /// each as its id (`minecraft:vanilla`, `minecraft:redstone_experiments`), shared with the world.
 /// Getting and reading it allocates nothing.
@@ -525,6 +710,15 @@ impl FeatureFlags {
         let bare = !flag.contains(':');
         self.iter()
             .any(|id| id == flag || (bare && id.strip_prefix("minecraft:") == Some(flag)))
+    }
+    /// `FeatureFlagSet.contains(FeatureFlag)`: whether the typed flag `flag` is enabled.
+    pub fn contains_flag(&self, flag: FeatureFlag) -> bool {
+        self.contains(flag.id())
+    }
+    /// `FeatureFlagSet.isSubsetOf` (`FeatureElement.isEnabled`): whether every flag in `required`
+    /// is enabled in this set.
+    pub fn contains_all(&self, required: &[FeatureFlag]) -> bool {
+        required.iter().all(|&flag| self.contains_flag(flag))
     }
     /// The enabled flag ids.
     pub fn iter(&self) -> impl Iterator<Item = &str> {
@@ -609,11 +803,6 @@ pub enum ResistanceCells {
     },
 }
 
-impl ResistanceCells {
-    /// The most cells one batched read covers; a larger one is refused.
-    pub const MAX: u64 = 262_144;
-}
-
 /// Why a batched explosion resistance read was refused, with nothing read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -621,8 +810,8 @@ impl ResistanceCells {
 pub enum ResistanceCellsError {
     /// A box whose `max` is below its `min` on some axis, or columns whose `max_y` is below `min_y`.
     Inverted,
-    /// More cells than [`ResistanceCells::MAX`]: this many.
-    TooMany(u64),
+    /// The area's cell count exceeds what this machine can allocate in one read.
+    Overflow,
     /// A host without a game.
     NoGame,
 }
@@ -639,19 +828,12 @@ impl crate::NoBackend for ResistanceCellsError {
 #[non_exhaustive]
 #[derive(sunrise_mod_api_macros::Wire)]
 pub enum ExplosionDestroyError {
-    /// More positions than [`ExplosionDestroyError::MAX_POSITIONS`]: this many.
-    TooMany(u64),
     /// A stale level, or one not in place; a stale source or one in another level; a client.
     Unavailable,
-    /// A centre or radius that isn't finite, or a negative radius.
+    /// A centre or radius that isn't finite.
     InvalidBlast,
     /// A host without a game.
     NoGame,
-}
-
-impl ExplosionDestroyError {
-    /// The most positions one call takes.
-    pub const MAX_POSITIONS: u64 = 65_536;
 }
 
 impl crate::NoBackend for ExplosionDestroyError {
@@ -936,19 +1118,12 @@ impl Difficulty {
     }
 }
 
-/// What spawned a mob, where `EntitySpawnReason` alone does not say (`FinalizeSpawnEvent.getSpawner`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
-pub enum SpawnSource {
-    /// A spawner or trial spawner block at this position.
-    Block(BlockPos),
-}
-
-/// The spawner block that asked for a spawn check (`MobSpawnEvent.PositionCheck.getSpawner`):
-/// what `mob_spawn_placement_check` and `mob_spawn_position_check` get when a block spawns the
-/// mob. Natural spawning, chunk generation, patrols, sieges, reinforcements and a spawner
-/// minecart have none.
+/// What spawner triggered a spawn (`FinalizeSpawnEvent.getSpawner` and
+/// `MobSpawnEvent.PositionCheck.getSpawner`).
+///
+/// Each hook supplies only the variants its NeoForge counterpart can produce:
+/// `finalize_spawn` (`Either<BlockEntity, Entity>`) supplies `Block`, `Trial` and `Minecart`,
+/// while `mob_spawn_position_check` (`BaseSpawner`) supplies `Block` and `Minecart`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 #[derive(sunrise_mod_api_macros::Wire)]
@@ -962,6 +1137,11 @@ pub enum Spawner {
     Trial {
         /// Where the block is.
         pos: BlockPos,
+    },
+    /// A spawner minecart entity (`MinecartSpawner`).
+    Minecart {
+        /// The spawner minecart entity.
+        entity: crate::EntityRef,
     },
 }
 
@@ -1108,7 +1288,7 @@ pub enum Despawn {
     Deny,
 }
 
-/// Block shape used by an empty-context level ray.
+/// Block shape used by a level ray (`ClipContext.Block`).
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, sunrise_mod_api_macros::Wire)]
 pub enum ClipBlock {
@@ -1116,33 +1296,102 @@ pub enum ClipBlock {
     Collider,
     /// Outline.
     Outline,
+    /// `ClipContext.Block.VISUAL`: the visual shape (`BlockState.getVisualShape`), the one
+    /// vanilla's third-person camera stops on. It is the collision shape except where vanilla
+    /// overrides `getVisualShape`: glass, stained and tinted glass, copper grates
+    /// (`TransparentBlock`), iron and copper bars and glass panes (`IronBarsBlock`) and powder
+    /// snow have none, so the ray passes; soul sand and mud are a full block; snow layers and
+    /// fences are their outline (`getShape`). A mod block on one of these templates follows
+    /// its template. NeoForge adds nothing here.
+    Visual,
 }
 
-/// Fluid mode for a level ray. Only the listed modes are supported.
+/// Fluid mode for a level ray (`ClipContext.Fluid`).
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, sunrise_mod_api_macros::Wire)]
 pub enum ClipFluid {
-    /// None.
+    /// `NONE`: ignore fluids.
     None,
+    /// `SOURCE_ONLY`: stop at source fluids (`FluidState.isSource`), including waterlogged blocks.
+    SourceOnly,
+    /// `ANY`: stop at every non-empty fluid (`!FluidState.isEmpty`), including waterlogged blocks.
+    Any,
+    /// `WATER`: stop at fluids in the `minecraft:water` fluid tag (`FluidState.is(FluidTags.WATER)`), including tagged mod fluids and waterlogged blocks.
+    Water,
 }
 
-/// Result of a block ray, including the vanilla miss result.
+/// Result of a block ray (`BlockGetter.clip`). `LevelRef::clip` returns it in
+/// [`ClipOutcome::Hit`] with `miss` unset; `EntityRef::pick` also returns the vanilla miss result
+/// (`BlockHitResult.miss`) with it set.
 #[derive(Clone, Copy, Debug, PartialEq)]
 // exhaustive: the game builds it with a literal; mods only read it
 #[derive(sunrise_mod_api_macros::Wire)]
 pub struct ClipHit {
-    /// Whether the ray hit nothing; the other fields are then the vanilla miss values.
+    /// Whether the ray hit nothing. On a miss, `location` is the ray's end point, `block` is
+    /// its floored block coordinates, `face` is the nearest direction toward `from - to`, and
+    /// `inside` is `false`.
     pub miss: bool,
-    /// The hit block's position.
+    /// The hit block's position, or the floored end point on a miss.
     pub block: [i32; 3],
-    /// The face the ray entered.
+    /// The face the ray entered (or the nearest direction toward `from - to` on a miss).
     pub face: BlockFace,
-    /// The exact hit point in blocks.
+    /// The exact hit point in blocks, or the ray's end point on a miss.
     pub location: [f64; 3],
-    /// Whether the ray started inside the block.
+    /// Whether the ray started inside the block (`false` on a miss).
     pub inside: bool,
-    /// Whether the hit is the world border.
+    /// Whether the hit is the world border (`false` for `LevelRef::clip`, which follows
+    /// `BlockGetter.clip`, not `CollisionGetter.clipIncludingBorder`).
     pub world_border: bool,
+}
+
+/// Whose collision context a level ray reads block shapes with (`CollisionContext.empty()` or
+/// `CollisionContext.of(entity)`). It is the part of vanilla's `ClipContext` that varies for a
+/// mod; the ray's endpoints, block shape and fluid mode are `LevelRef::clip`'s other arguments.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, sunrise_mod_api_macros::Wire)]
+pub enum CollisionContext {
+    /// `CollisionContext.empty()`: no entity, so shapes that depend on who asks (scaffolding,
+    /// powder snow, a mod `BlockPart::collision_shape`) answer their default.
+    Empty,
+    /// `CollisionContext.of(entity)`: shapes answer for this entity, as for its own movement.
+    Entity(EntityRef),
+}
+
+/// What a level ray found (`BlockGetter.clip`), or where it had to stop.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
+#[derive(sunrise_mod_api_macros::Wire)]
+pub enum ClipOutcome {
+    /// The ray stopped on a block or fluid.
+    Hit(ClipHit),
+    /// The ray reached its end through loaded columns and out-of-height cells and hit nothing
+    /// (`BlockHitResult.miss`).
+    Miss,
+    /// The ray entered a column that is not loaded before it found a hit or its end. Nothing
+    /// is loaded and no answer is guessed past it.
+    Unloaded {
+        /// The first cell of the ray inside the unloaded column.
+        at: [i32; 3],
+    },
+}
+
+/// Why `LevelRef::clip` could not run the ray at all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+#[derive(sunrise_mod_api_macros::Wire)]
+pub enum ClipError {
+    /// The level handle (or the entity of the `CollisionContext`) is gone or belongs to an
+    /// earlier open of the world, the level is not readable from this host, or the ray reached a
+    /// shape the level cannot answer (no outline implementation for a dynamic block).
+    StaleLevel,
+    /// An endpoint has a NaN or infinite coordinate.
+    NonFiniteRay,
+}
+
+impl crate::NoBackend for ClipError {
+    fn no_backend() -> Self {
+        Self::StaleLevel
+    }
 }
 
 /// The world's respawn data (`LevelData.RespawnData`): where a player without a spawn point of
@@ -1162,17 +1411,18 @@ pub struct RespawnData {
 }
 
 /// A map's saved data (`MapItemSavedData`) as it stands: where it is, how far it reaches and
-/// its pixels. The markers (players, banners, frames) are not part of it.
+/// its pixels. The markers (players, banners, frames) are not part of it. The dimension and
+/// colors are borrowed for the duration of [`LevelRef::visit_map_data`]'s visitor.
+// no wire: borrows the map for a scoped visit.
 #[derive(Clone, Debug, PartialEq, Eq)]
 // exhaustive: the game builds it with a literal; mods only read it
-#[derive(sunrise_mod_api_macros::Wire)]
-pub struct MapState {
+pub struct MapState<'a> {
     /// The centre block `[x, z]`.
     pub center: [i32; 2],
     /// A map pixel is `1 << scale` blocks, 0 to 4.
     pub scale: u8,
     /// The dimension it shows, `minecraft:overworld`.
-    pub dimension: String,
+    pub dimension: &'a str,
     /// A locked map (a cartography table's glass pane) no longer reveals the world.
     pub locked: bool,
     /// Whether it shows its holders' markers.
@@ -1180,7 +1430,7 @@ pub struct MapState {
     /// Whether it shows them however far away they are.
     pub unlimited: bool,
     /// 128 by 128 map colour ids, row by row (`x + z * 128`).
-    pub colors: Vec<u8>,
+    pub colors: &'a [u8],
 }
 
 /// One entity a level ray passes through, as tested by `ProjectileUtil.getEntityHitResult`.
@@ -1215,22 +1465,6 @@ impl TickId {
     }
 }
 
-/// The world phases (`world_lifecycle`'s `phase`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-/// The phase names are the hook log's stable vocabulary (the Debug text
-/// the mixins write); keep them despite the shared prefix.
-#[allow(clippy::enum_variant_names)]
-#[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
-pub enum WorldPhase {
-    /// The open failed; `error_text` is the engine's own error text.
-    WorldOpenFailed,
-    /// World close final.
-    WorldCloseFinal,
-    /// The server loop or final save failed; `error_text` carries the error.
-    WorldCloseFailed,
-}
-
 /// The tick phases carry whether the world runs, including frozen steps.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -1248,34 +1482,20 @@ pub enum ServerTickPhase {
     },
 }
 
-/// Context for every world lifecycle phase.
-/// `authority` is the server role. LocalAuthoritative and RemoteClient never
-/// fire. `epoch` identifies the open attempt, including failed opens;
-/// the same epoch identifies its ready, final-close, or failed-close event.
-/// `tick` counts non-paused server ticks since the world opened.
+// no wire: lifecycle callbacks carry local server state, not saved or network data.
+/// Context carried by server tick notifications (`server_tick`) and world-read queries.
+/// `authority` is the server role. `LocalAuthoritative` and `RemoteClient` never
+/// fire. `epoch` identifies the world open attempt, and `tick` counts non-paused
+/// server ticks since the world opened.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
 pub struct LifecycleContext {
-    /// The server role that fired the phase.
+    /// The server role that owns the world.
     pub authority: Authority,
-    /// Identifies the open attempt this phase belongs to.
+    /// Identifies the world open attempt.
     pub epoch: WorldEpoch,
     /// Non-paused server ticks since the world opened.
     pub tick: TickId,
-}
-
-// no wire: borrowed call-scoped view; transport uses owned snapshots rather than serializing references.
-/// The player responsible for a game rule change.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-// exhaustive: the game builds it with a literal; mods only read it
-pub struct GameRuleActor<'a> {
-    /// Player UUID.
-    pub uuid: u128,
-    /// Server entity ID.
-    pub entity_id: i32,
-    /// Player name.
-    pub name: &'a str,
 }
 
 /// How a criterion's advancement progress changed.
@@ -1289,26 +1509,106 @@ pub enum ProgressType {
     Revoke,
 }
 
+// no wire: a validated event name for native playback; the sound's own protocol carries its name.
+/// A validated sound event identifier, independent of what resource packs are loaded.
+// exhaustive: private field; constructed only by SoundEventKey::parse.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SoundEventKey(pub(crate) Arc<str>);
+
+impl SoundEventKey {
+    /// Parse a sound event name as vanilla's `Identifier.parse` does. With no namespace, or an
+    /// empty namespace before `:`, the namespace is `minecraft`. Returns `None` for invalid
+    /// identifier syntax, not for an event missing from the current packs. Parse a part's keys
+    /// during loading and keep them on the part.
+    pub fn parse(name: &str) -> Option<Self> {
+        let id = Identifier::parse(name).ok()?;
+        Some(Self(id.to_string().into()))
+    }
+
+    /// The fully qualified event name (`namespace:path`).
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+// no wire: an in-process sound-type identity; it is not a sound event on the wire.
+/// The vanilla `SoundType` identities that affect sound selection independently
+/// of their event keys (see `AbstractHorse.isWoodSoundType`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum BlockSoundTypeIdentity {
+    /// An ordinary or custom sound type without one of the identities below.
+    #[default]
+    Other,
+    /// `SoundType.WOOD`.
+    Wood,
+    /// `SoundType.NETHER_WOOD`.
+    NetherWood,
+    /// `SoundType.STEM`.
+    Stem,
+    /// `SoundType.CHERRY_WOOD`.
+    CherryWood,
+    /// `SoundType.BAMBOO_WOOD`.
+    BambooWood,
+}
+
+// no wire: native block facts and a native callback edit; playback sends the selected event only.
 /// A block state's sounds (`BlockState.getSoundType()`, vanilla's `SoundType`): the sound
-/// events, as `LevelRef::play_sound` names them, and the volume and pitch they play at.
+/// event keys and the base volume and pitch. Playback uses only the event requested by the
+/// current action and applies that action's volume and pitch factors.
 #[derive(Clone, Debug, PartialEq)]
-// exhaustive: the game builds it with a literal; mods only read it
-#[derive(sunrise_mod_api_macros::Wire)]
+// exhaustive: the game and mods build it with a literal
 pub struct BlockSoundType {
+    /// Identity independent of event keys and levels. In-place event edits keep it;
+    /// use [`BlockSoundTypeIdentity::Other`] when constructing a custom sound type.
+    pub identity: BlockSoundTypeIdentity,
     /// `SoundType.getVolume`.
     pub volume: f32,
     /// `SoundType.getPitch`.
     pub pitch: f32,
     /// `getBreakSound`: the block broken.
-    pub break_sound: std::sync::Arc<str>,
+    pub break_sound: SoundEventKey,
     /// `getStepSound`: walked on.
-    pub step: std::sync::Arc<str>,
+    pub step: SoundEventKey,
     /// `getPlaceSound`: placed.
-    pub place: std::sync::Arc<str>,
-    /// `getHitSound`: hit while being mined.
-    pub hit: std::sync::Arc<str>,
+    pub place: SoundEventKey,
+    /// `getHitSound`: hit while being mined, or used by a sniffer digging.
+    pub hit: SoundEventKey,
     /// `getFallSound`: landed on.
-    pub fall: std::sync::Arc<str>,
+    pub fall: SoundEventKey,
+}
+
+impl BlockSoundType {
+    /// The event read for this action. A sniffer digging reads the hit event.
+    pub fn event(&self, cause: BlockSoundCause) -> &SoundEventKey {
+        match cause {
+            BlockSoundCause::Step => &self.step,
+            BlockSoundCause::Fall => &self.fall,
+            BlockSoundCause::Place => &self.place,
+            BlockSoundCause::Break => &self.break_sound,
+            BlockSoundCause::Dig => &self.hit,
+        }
+    }
+}
+
+#[cfg(test)]
+mod block_sound_tests {
+    use super::SoundEventKey;
+
+    #[test]
+    fn event_keys_apply_vanilla_identifier_defaults_without_a_sound_registry() {
+        for (input, expected) in [
+            ("block.stone.step", "minecraft:block.stone.step"),
+            (":block.stone.step", "minecraft:block.stone.step"),
+            ("test:missing/path", "test:missing/path"),
+            ("", "minecraft:"),
+        ] {
+            assert_eq!(SoundEventKey::parse(input).unwrap().as_str(), expected);
+        }
+        for invalid in ["x:bad path", "Upper:step", "..:step", "x:y:z"] {
+            assert_eq!(SoundEventKey::parse(invalid), None, "{invalid}");
+        }
+    }
 }
 
 /// Why a block's sound type is read (`BlockPart::sound_type`): which of its sounds the game is
@@ -1425,9 +1725,11 @@ impl TriState {
 /// ```
 /// A client-side level cannot write:
 /// ```compile_fail
-/// use mod_api::LevelSide;
+/// use mod_api::{BlockUpdateFlags, LevelSide};
 /// fn write(side: LevelSide<'_>) {
-///     if let LevelSide::Client(level) = side { level.set_block_property([0, 0, 0], "a", "b", 0); }
+///     if let LevelSide::Client(level) = side {
+///         level.set_block_property([0, 0, 0], "a", "b", BlockUpdateFlags::NONE);
+///     }
 /// }
 /// ```
 pub trait LevelHost {
@@ -1436,7 +1738,6 @@ pub trait LevelHost {
     /// Returns `None` before the registry is complete or when no classification exists for `id`.
     /// This is a load-owned registry read, not an entity lookup. It allocates nothing and gives
     /// the same answer on either side; no entity need be loaded.
-    #[sunrise_mod_api_macros::computed_in_mod]
     fn entity_type_is_living(&self, id: &str) -> Option<bool> {
         crate::content::registry_keys::resolved_entity_types()
             .get()?
@@ -1450,7 +1751,6 @@ pub trait LevelHost {
     /// according to the read's result type.
     ///
     /// Computed from this level view's tables.
-    #[sunrise_mod_api_macros::computed_in_mod]
     fn block_states(&self) -> crate::BlockStates<'_> {
         crate::BlockStates::unavailable()
     }
@@ -1499,18 +1799,23 @@ pub trait LevelHost {
     fn has_item_capability(&self, _pos: [i32; 3], _side: Option<Direction>) -> Option<bool> {
         None
     }
-    /// The slots on this side, as `ItemsHost::container_size` reads them.
-    /// Snapshot only: never generates loot or loads chunks. None for unloaded positions,
-    /// clients or unsupported storage. Owning game thread only, never in worker hook bodies.
-    fn container_size(&self, _at: crate::BlockSide) -> Option<usize> {
+    /// The number of slots on this side, as [`ItemsBackend::container_size`](crate::prelude::ItemsBackend::container_size) reads it.
+    /// Never generates loot or loads chunks. None for unloaded positions, clients or
+    /// unsupported storage. Owning game thread only, never in worker hook bodies.
+    fn container_size(&self, _at: BlockSide) -> Option<usize> {
         None
     }
-    /// A side-local slot snapshot, as `ItemsHost::container_stack` reads it.
-    /// Never generates unopened container loot or loads chunks; unopened slots remain empty.
-    /// None for unloaded positions, clients, empty slots or unsupported storage.
-    /// Owning game thread only, never reachable from a worker-thread hook body.
-    fn container_stack(&self, _at: crate::BlockSide, _slot: usize) -> Option<crate::ItemStack> {
-        None
+    /// Lend the resident stack in this side-local slot once, as
+    /// [`ItemsBackend::lend_container_stack`](crate::prelude::ItemsBackend::lend_container_stack) reads it.
+    /// Never loads chunks or generates loot; unopened slots remain empty. Does not invoke `read` for empty or unreadable slots or when storage is unavailable
+    /// in this view, including at unloaded positions and on clients. Owning game thread only.
+    /// Use `with_container_stack` on `&dyn LevelHost` to return a value from the loan.
+    fn lend_container_stack(
+        &self,
+        _at: BlockSide,
+        _slot: usize,
+        _read: &mut dyn for<'a> FnMut(ItemStackView<'a>),
+    ) {
     }
     /// Borrow the host for a snapshot read in the transaction that captured it.
     /// A level view without transaction state supplies only the unscoped default.
@@ -1553,8 +1858,13 @@ pub trait LevelHost {
         &self,
         _pos: [i32; 3],
         _state: BlockState,
-        _entity: Option<(u32, &str)>,
+        _entity: Option<EntityRef>,
     ) -> Option<f32> {
+        None
+    }
+    /// The type of an entity this view lends, if it knows the entity. A friction callback
+    /// can read the type of its query entity without a full game host.
+    fn entity_kind(&self, _entity: EntityRef) -> Option<EntityTypeKey> {
         None
     }
     /// The block `state` is a state of (`BlockState.getBlock()`): `mymod:shaft`. None for an
@@ -1582,11 +1892,6 @@ pub trait LevelHost {
     fn height(&self) -> i32 {
         unimplemented!("LevelHost::height")
     }
-    /// `BlockState.is(TagKey)`: numeric membership of the resolved block in the merged block tag.
-    /// Unknown tags return false; unavailable authoritative tags or block mappings return None.
-    fn block_in_tag(&self, _block: BlockKey, _tag: &str) -> Option<bool> {
-        unimplemented!("LevelHost::block_in_tag")
-    }
     /// The merged-tag service for this level's owning-thread context: a frame resource, whose
     /// methods are the imports.
     fn tags(&self) -> &dyn Tags {
@@ -1596,15 +1901,6 @@ pub trait LevelHost {
     /// None where the position is not loaded or outside the build height; it never loads a chunk.
     fn fluid_state(&self, _pos: [i32; 3]) -> Option<FluidState> {
         unimplemented!("LevelHost::fluid_state")
-    }
-    /// `BlockState.getFluidState`: the fluid a state holds (water for a waterlogged one). None
-    /// for an id no state has.
-    fn state_fluid_state(&self, _state: BlockState) -> Option<FluidState> {
-        unimplemented!("LevelHost::state_fluid_state")
-    }
-    /// `FluidState.is(TagKey)`: whether the fluid registry name is in the merged fluid tag, as `block_in_tag` reads.
-    fn fluid_in_tag(&self, _fluid: &str, _tag: &str) -> Option<bool> {
-        unimplemented!("LevelHost::fluid_in_tag")
     }
     /// `BlockState.setValue`, through `native_state_with_property`; None if invalid.
     fn state_with_property(
@@ -1636,6 +1932,20 @@ pub trait LevelHost {
     /// not snow or none. False where `pos` is not loaded, the chunk is never loaded for it.
     fn is_raining_at(&self, _pos: [i32; 3]) -> bool {
         unimplemented!("LevelHost::is_raining_at")
+    }
+    /// `Level.isRaining`: whether it rains in this level (its rain level is above 0.2),
+    /// wherever a position is. Both sides answer for the level the view belongs to. None in a
+    /// callback whose level view has no weather: the friction and hit hooks have none.
+    fn is_raining(&self) -> Option<bool> {
+        None
+    }
+    /// `Level.getSkyDarken`: how much the sky light is dimmed this tick, 0 to 11, from the
+    /// time of day, rain and thunder. With [`Self::raw_brightness`] it gives
+    /// `LevelReader.getMaxLocalRawBrightness(pos)`, which `SaplingBlock.randomTick` tests
+    /// (`>= 9`). Both sides answer for the level the view belongs to. None where
+    /// [`Self::is_raining`] is None.
+    fn sky_darken(&self) -> Option<i32> {
+        None
     }
     /// `LevelReader.enabledFeatures`: the feature flags the world enables.
     fn enabled_features(&self) -> FeatureFlags {
@@ -1674,14 +1984,30 @@ pub trait LevelHost {
     fn has_neighbor_signal(&self, _pos: [i32; 3]) -> Option<bool> {
         None
     }
-    /// The collision shape of the block at `pos` (`BlockState.getCollisionShape(level, pos)`
-    /// with an empty context), as boxes `[minX, minY, minZ, maxX, maxY, maxZ]` in block units
-    /// relative to `pos`: a block entity's published shape where its block publishes one, else
-    /// the declared or vanilla shape. Empty for a block with no collision. None where `pos` is
-    /// not loaded or outside the build height (it never loads a chunk), and in a callback whose
-    /// level has no shape view. `LevelRef::block_shape` is the same read from a handle.
-    fn collision_shape(&self, _pos: [i32; 3]) -> Option<Vec<[f64; 6]>> {
+    /// The block-local shape (`BlockState.getCollisionShape` with an empty context), using a
+    /// block entity's published shape when present. `VoxelShape::boxes` visits the geometry
+    /// without copying it. Returns `None` for unloaded or out-of-height positions and a
+    /// callback that has no shape view. For a handle, use `LevelRef::visit_block_collision`.
+    fn collision_shape(&self, _pos: [i32; 3]) -> Option<VoxelShape> {
         None
+    }
+}
+
+impl dyn LevelHost + '_ {
+    /// Read a side-local resident stack without taking ownership. Returns `None` if
+    /// [`LevelHost::lend_container_stack`] cannot lend the slot. Item, count and damage need
+    /// no projection; call [`ItemStackView::project`] inside `read` to keep an owned stack
+    /// or inspect its component patch. The view itself cannot leave the callback.
+    pub fn with_container_stack<R>(
+        &self,
+        at: BlockSide,
+        slot: usize,
+        read: impl for<'a> FnOnce(ItemStackView<'a>) -> R,
+    ) -> Option<R> {
+        crate::item::item_stack::read_stack_view(read, |lend| {
+            self.lend_container_stack(at, slot, lend);
+            Some(())
+        })
     }
 }
 
@@ -1696,7 +2022,7 @@ pub trait LevelRandomHost: LevelHost {
     fn container_signal(&mut self, _pos: [i32; 3]) -> Option<i32> {
         None
     }
-    /// The holders' server-owned attachments; `TYPE.get(host, holder)` reads one through it.
+    /// The holders' server-owned attachments; `key.get_in(level, holder, read)` reads one through it.
     fn attachments(&mut self) -> &mut dyn AttachmentStore {
         unimplemented!("LevelRandomHost::attachments")
     }
@@ -1718,16 +2044,25 @@ pub trait LevelRandomHost: LevelHost {
 /// A sound is queued at the call, and its seed is drawn then from the level's sound-seed
 /// stream, never from the level's [draw stream](LevelRandomHost::lend_random). An entity's
 /// own stream (`Entity.getRandom`) advances in listener order, so the hit's continuation sees
-/// the draws. A hit lends its attacker where the game applies a melee hit (the attacking player or mob,
-/// for player → mob, mob → mob and mob → player) and no entity at any other damage site
-/// (environment, projectiles, explosions, potions and the like); any other entity, a stale
-/// handle and a call on a client answer `None` or `false`.
+/// the draws. A hit lends the entity its source names as its causing entity, where the game
+/// has it at hand: the attacking player or mob of a melee hit (player → mob, mob → mob and
+/// mob → player) or of Thorns, the shooter or owner of a projectile, a firework rocket, evoker
+/// fangs, a wither skull, a thrown trident or a wind charge, the igniter or owner of an
+/// explosion, and a pufferfish stinging a mob inside its own tick. A guest that is not in place
+/// is lent from its hub record, for its reads only (no random, no sound); the integrated owner
+/// displaced by another player's turn is not lent. Other damage lends none: damage with no
+/// causing entity (environment, fall, fire, drowning) and the sites that do not lend theirs (a
+/// thrown potion's or an effect cloud's owner, among others). When the victim caused its own
+/// hit (a player's own TNT hurting that player), the source names the victim and nothing else is
+/// lent: [`causing`](Self::causing) answers `None` and the listener reads the entity through
+/// [`victim`](Self::victim). Any other entity, a stale handle and a call on a client answer
+/// `None` or `false`.
 pub trait HitHost: LevelRandomHost {
     /// `Level.playSound(null, x, y, z, sound, source, volume, pitch)`: plays sound event
     /// `sound` at `at` for every player in this level within range (16 blocks, times the
-    /// volume above 1), under `source`'s volume slider. A `minecraft:` event must be
-    /// registered; a mod's goes by name. True means queued, not heard; false for an event
-    /// or a position, volume or pitch the network can't carry, and where no sound can be sent.
+    /// volume above 1), under `source`'s volume slider. Registered events go by ID and other
+    /// valid keys by name, with volume and pitch as supplied. True means queued, not heard;
+    /// false for a malformed event key or where no sound can be sent.
     fn play_sound_at(
         &mut self,
         _sound: &str,
@@ -1741,7 +2076,8 @@ pub trait HitHost: LevelRandomHost {
     /// `Level.playSound(null, entity, sound, source, volume, pitch)`: the same sound bound to
     /// `entity`, so it follows it, heard by every player within range of where the entity is now,
     /// the entity's own player too (it is not `EntityRef::play_sound`, which leaves that player
-    /// out and plays nothing for a silent mob). False for a handle the hit does not lend.
+    /// out and plays nothing for a silent mob). Uses the same event resolution and volume and
+    /// pitch as `play_sound_at`. False for a malformed key or a handle the hit does not lend.
     fn play_sound_from(
         &mut self,
         _entity: EntityRef,
@@ -1752,23 +2088,27 @@ pub trait HitHost: LevelRandomHost {
     ) -> bool {
         unimplemented!("HitHost::play_sound_from")
     }
-    /// `RandomSource.nextFloat` on the entity's own random (0 up to, not including, 1). None
-    /// for a handle the hit does not lend.
-    fn entity_next_float(&mut self, _entity: EntityRef) -> Option<f32> {
-        unimplemented!("HitHost::entity_next_float")
+    /// Lend the entity's live `Entity.getRandom` stream for one draw closure.
+    /// Decline an entity this hit does not lend without invoking the closure. Draws are
+    /// not rewound on panic or abort. Use [`EntityRef::with_random`] to request a loan.
+    fn lend_entity_random(&mut self, _entity: EntityRef, _draw: RandomDraw<'_>) {}
+    /// The entity the hit lands on, when it is living (`LivingIncomingDamageEvent.getEntity`), at
+    /// `living_incoming_damage`, `living_damage_pre` and `living_damage_post`: a mob, a player
+    /// or the dragon (an armor stand's own `hurtServer` never reaches these hooks). Its reads
+    /// answer from the live entity at the call. None at `living_shield_block` and
+    /// `living_use_totem`, which lend no view.
+    fn victim(&self) -> Option<LivingView<'_>> {
+        unimplemented!("HitHost::victim")
     }
-    /// `RandomSource.nextDouble` on the entity's own random.
-    fn entity_next_double(&mut self, _entity: EntityRef) -> Option<f64> {
-        unimplemented!("HitHost::entity_next_double")
-    }
-    /// `RandomSource.nextBoolean` on the entity's own random.
-    fn entity_next_bool(&mut self, _entity: EntityRef) -> Option<bool> {
-        unimplemented!("HitHost::entity_next_bool")
-    }
-    /// `RandomSource.nextInt(bound)` on the entity's own random, 0 up to `bound`. None for a
-    /// `bound` of 0 or less, which draws nothing.
-    fn entity_next_int(&mut self, _entity: EntityRef, _bound: i32) -> Option<i32> {
-        unimplemented!("HitHost::entity_next_int")
+    /// The hit's causing entity (`DamageSource.getEntity`), at the same three hooks, when the
+    /// hit lends that entity (see [`HitHost`]: a melee attacker, a projectile's shooter, an
+    /// explosion's igniter, a parked guest's record...) and the source names it: None where the
+    /// source names another entity or none (a wither skull whose shooter was removed), where it
+    /// names the victim itself (read that through [`Self::victim`]), for a removed entity, at a
+    /// damage site that lends no entity, for a non-living causer and for a causer in another
+    /// level.
+    fn causing(&self) -> Option<LivingView<'_>> {
+        unimplemented!("HitHost::causing")
     }
 }
 
@@ -1800,25 +2140,27 @@ pub trait LevelWriteHost: LevelTicksHost + LevelRandomHost {
     fn remove_block(&mut self, _pos: [i32; 3], _moved: bool) -> bool {
         unimplemented!("LevelWriteHost::remove_block")
     }
-    /// Change a block property through `native_set_block_property`.
+    /// Change a block property through `Level.setBlock` with [`BlockUpdateFlags`], preserving its block entity.
     fn set_block_property(
         &mut self,
         _pos: [i32; 3],
         _key: &str,
         _value: &str,
-        _flags: i32,
+        _flags: BlockUpdateFlags,
     ) -> bool {
         unimplemented!("LevelWriteHost::set_block_property")
     }
-    /// Play a sound for nearby players. Inside an open transaction in the active level, the
-    /// level-sound hook runs synchronously; only the resolved sound waits for the owning level's
-    /// outermost commit and draws its seed when published. An abort discards it. Outside a
-    /// transaction a queued sound draws its seed at the call, even if a later hook cancels it.
+    /// Queue a sound for nearby players under the given [`SoundSource`]. Registered events go by ID and other valid keys by
+    /// name, with volume and pitch as supplied.
+    /// Inside an open transaction in the active level, the level-sound hook runs synchronously.
+    /// Only the resolved sound waits for the owning level's outermost commit and draws its seed
+    /// when published. An abort discards it. Outside a transaction a queued sound draws its
+    /// seed at the call, even if a later hook cancels it.
     fn play_sound(
         &mut self,
         _sound: &str,
         _at: [f64; 3],
-        _source: usize,
+        _source: SoundSource,
         _volume: f32,
         _pitch: f32,
     ) -> bool {
@@ -1862,11 +2204,7 @@ pub struct StructureSearch {
 }
 
 impl StructureSearch {
-    /// The largest radius one synchronous search takes: `/locate`'s and an
-    /// explorer map's 100 rings.
-    pub const MAX_RADIUS: i32 = 100;
-
-    /// The radius must be from 0 to [`Self::MAX_RADIUS`].
+    /// The radius must be nonnegative.
     pub fn new(origin: [i32; 3], radius: i32) -> Self {
         Self { origin, radius }
     }
@@ -1905,8 +2243,8 @@ pub enum GameRuleReadError {
 /// One of the scoreboard's objectives of an open server world (vanilla's `Objective`). It holds
 /// the world's epoch and an identity the board gave the objective when it was added, so an
 /// objective that was removed (even if its name was added again) or a handle from an earlier
-/// open reads as stale: reads answer `None` or [`ObjectiveError::Stale`] and writes change
-/// nothing.
+/// open reads as stale: reads answer `None`, [`ObjectiveError::Stale`] or
+/// [`ObjectiveReadError::Stale`], and writes change nothing.
 #[derive(sunrise_mod_api_macros::Wire, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 // exhaustive: its fields are private, so mods cannot build or destructure it
 pub struct ObjectiveRef {
@@ -1924,4 +2262,37 @@ pub struct ObjectiveRef {
 pub struct TeamRef {
     pub(crate) epoch: WorldEpoch,
     pub(crate) id: u64,
+}
+
+/// Why a bulk block edit through [`LevelRef::edit_blocks`] was refused before changing any block.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, sunrise_mod_api_macros::Wire)]
+#[non_exhaustive]
+pub enum BlockEditError {
+    /// The level is gone or its handle belongs to an earlier lifetime.
+    Stale,
+    /// The operation is unavailable on this side, phase or host.
+    Unavailable,
+    /// A palette entry is not a valid block state in the owning registry.
+    InvalidState(BlockStateError),
+    /// A filter predicate failed typed validation or its block or tag is unavailable.
+    InvalidPredicate,
+    /// A run names a palette entry past the end of `BlockEdit::palette`.
+    PaletteOutOfRange,
+    /// A run names a filter past the end of `BlockEdit::filters`.
+    FilterOutOfRange,
+}
+
+impl crate::NoBackend for BlockEditError {
+    fn no_backend() -> Self {
+        Self::Unavailable
+    }
+}
+
+impl From<BlockStateError> for BlockEditError {
+    fn from(error: BlockStateError) -> Self {
+        match error {
+            BlockStateError::Unavailable => Self::Unavailable,
+            error => Self::InvalidState(error),
+        }
+    }
 }

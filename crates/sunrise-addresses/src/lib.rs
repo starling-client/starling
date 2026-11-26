@@ -43,6 +43,18 @@ pub const HORIZON_MIXINS_SOURCE: &str =
 /// Where the fork releases the prebuilt horizon-mixins tool; a release's tag and file follow.
 pub const MIXINS_TOOL_RELEASES: &str = "https://github.com/sunrise-org/sunrise/releases/download";
 
+/// The signed v2 mod registry index, used to resolve library mods during a native build: the
+/// minisign signature's four lines, then the index's exact bytes, in one file.
+pub const MOD_REGISTRY_INDEX: &str = "https://sunrise-org.github.io/sunrise-mods/v2/index.signed";
+
+/// Registry metadata on the default branch, used by the mod authoring tool.
+pub const MOD_REGISTRY_METADATA: &str =
+    "https://raw.githubusercontent.com/sunrise-org/sunrise-mods/main/registry";
+
+/// The registry's repository, where `cargo sunrise-mod collection` bases a collection's commit
+/// and opens its pull request.
+pub const MOD_REGISTRY_REPOSITORY: &str = "https://github.com/sunrise-org/sunrise-mods";
+
 /// Where the fork publishes each game build's mod SDK (`sdk-<build id>`) and the game releases
 /// whose `sdk.json` names their build; a release's tag and file follow. `SUNRISE_SDK_BASE`
 /// overrides it.
@@ -63,3 +75,9 @@ pub const GAME_GIT_API: &str = "https://api.github.com/repos/sunrise-org/sunrise
 /// leads to port 24454). Reached by name, never by IP address, which can shift. The Sunrise layer
 /// presents the client identity the server requires (`sunrise-official`).
 pub const HORIZON_SERVER: &str = "play.playhorizon.dev";
+
+/// Modrinth's v2 API, used to resolve original `[[jar]]` references by SHA-512 or version.
+pub const MODRINTH_API: &str = "https://api.modrinth.com/v2";
+
+/// Modrinth's file CDN host, from which original `[[jar]]` archives are downloaded.
+pub const MODRINTH_CDN_HOST: &str = "cdn.modrinth.com";

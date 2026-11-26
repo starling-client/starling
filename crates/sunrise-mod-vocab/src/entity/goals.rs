@@ -6,8 +6,8 @@
 //!
 //! ```no_run
 //! # use mod_api::{
-//! #     EntityPart, Goal, GoalContext, GoalFlags, GoalRegistrar, Hooks, Registrar,
-//! #     RegistrationContext,
+//! #     EntityPart, Goal, GoalContext, GoalFlags, Hooks, RegisterGoalsEvent, Registrar,
+//! #     RegistrationContext, ServerHost,
 //! # };
 //! # use std::sync::atomic::{AtomicU32, Ordering};
 //! #[derive(Default)]
@@ -16,8 +16,12 @@
 //! struct ZombieGoals;
 //! #[mod_api::sunrise_part]
 //! impl EntityPart for ZombieGoals {
-//!     fn register_goals(&self, goals: &mut GoalRegistrar<'_>) {
-//!         goals.add_goal(7, Stare::default());
+//!     fn register_goals(
+//!         &self,
+//!         _host: &mut dyn ServerHost,
+//!         event: &mut RegisterGoalsEvent<'_, '_>,
+//!     ) {
+//!         event.goals.add_goal(7, Stare::default());
 //!     }
 //! }
 //!
@@ -145,21 +149,42 @@ pub trait Goal: Send + Sync + 'static {
 // exhaustive: its fields are private, so mods cannot build or destructure it
 pub struct GoalRegistrar<'a> {
     inner: &'a mut dyn GoalRegistrarBackend,
+    mod_id: &'static str,
+    part: &'static str,
 }
 impl<'a> GoalRegistrar<'a> {
     // hidden: a game-side helper, not part of the mod surface
     #[doc(hidden)]
     pub fn new(inner: &'a mut dyn GoalRegistrarBackend) -> Self {
-        Self { inner }
+        Self {
+            inner,
+            mod_id: "",
+            part: "",
+        }
+    }
+    pub(crate) fn route_kind(&self) -> &str {
+        self.inner.mob_id()
+    }
+    pub(crate) fn set_owner(&mut self, mod_id: &'static str, part: &'static str) {
+        self.mod_id = mod_id;
+        self.part = part;
+    }
+    pub(crate) fn checkpoint(&self) -> (usize, usize) {
+        self.inner.checkpoint()
+    }
+    pub(crate) fn rollback(&mut self, checkpoint: (usize, usize)) {
+        self.inner.rollback(checkpoint);
     }
     /// `GoalSelector.addGoal(priority, goal)` on the mob's goal selector.
     pub fn add_goal<P: Goal>(&mut self, priority: i32, goal: P) {
-        self.inner.add_goal(priority, Box::new(goal));
+        self.inner
+            .add_goal(self.mod_id, self.part, priority, Box::new(goal));
     }
     /// `GoalSelector.addGoal` on the mob's target selector: the
     /// nearest-hurt-target kinds, as vanilla's second selector holds them.
     pub fn add_target_goal<P: Goal>(&mut self, priority: i32, goal: P) {
-        self.inner.add_target_goal(priority, Box::new(goal));
+        self.inner
+            .add_target_goal(self.mod_id, self.part, priority, Box::new(goal));
     }
     /// The mob being built, as far as construction goes: its entity type, the
     /// datum vanilla's per-species `registerGoals` branches on.
@@ -192,12 +217,28 @@ impl<'a> RegistrarMob<'a> {
 // hidden: a game-side helper, not part of the mod surface
 #[doc(hidden)]
 pub trait GoalRegistrarBackend {
-    /// `GoalRegistrar::add_goal`, the built goal boxed.
-    fn add_goal(&mut self, priority: i32, goal: Box<dyn Goal>);
-    /// `GoalRegistrar::add_target_goal`, the built goal boxed.
-    fn add_target_goal(&mut self, priority: i32, goal: Box<dyn Goal>);
+    /// `GoalRegistrar::add_goal`, the built goal boxed with its registering mod and part.
+    fn add_goal(
+        &mut self,
+        mod_id: &'static str,
+        part: &'static str,
+        priority: i32,
+        goal: Box<dyn Goal>,
+    );
+    /// `GoalRegistrar::add_target_goal`, the built goal boxed with its registering mod and part.
+    fn add_target_goal(
+        &mut self,
+        mod_id: &'static str,
+        part: &'static str,
+        priority: i32,
+        goal: Box<dyn Goal>,
+    );
     /// The entity type id of the mob being built.
     fn mob_id(&self) -> &str;
+    /// Checkpoint staged goal counts before a listener runs.
+    fn checkpoint(&self) -> (usize, usize);
+    /// Discard staged goals added since `checkpoint` when a listener aborts.
+    fn rollback(&mut self, checkpoint: (usize, usize));
 }
 
 // no wire: borrowed host or registrar backend; access stays scoped to the owning call.
@@ -246,8 +287,9 @@ impl<'a> GoalContext<'a> {
     /// as [`MobRef::move_to_path`](crate::MobRef::move_to_path) does on the
     /// handle. The engine classifies each node's type on submit and trims the
     /// path; the path is followed as given rather than judged by that type.
-    /// A supplied path keeps no recompute target, so a block change on it or
-    /// the stuck check drops it without a search. As in vanilla, a goal of the
+    /// As in vanilla, a block change on the path re-searches to the target the
+    /// navigation last searched for (with none, the path is kept), and the
+    /// stuck check drops it. As in vanilla, a goal of the
     /// mob's own that creates a path replaces this one next tick. The mob this
     /// goal runs on is always there, so the refusals are `NotFinite` and
     /// `Empty`, the same [`MoveToPathError`] the handle answers.
@@ -273,6 +315,27 @@ impl<'a> GoalContext<'a> {
     pub fn jump(&mut self) {
         self.inner.jump()
     }
+    /// `getDeltaMovement()`: the mob's velocity now, in blocks a tick,
+    /// with any write this goal made earlier in the tick.
+    pub fn delta_movement(&self) -> [f64; 3] {
+        self.inner.delta_movement()
+    }
+    /// `setDeltaMovement(x, y, z)`: replace the mob's velocity, in blocks a
+    /// tick. It applies at once, inside the mob's AI step, so the travel
+    /// that follows in the same tick uses it, and clients see it
+    /// through the entity's ordinary motion tracking. False, the velocity
+    /// unchanged, when a component is not finite; nothing else is refused or
+    /// clamped.
+    pub fn set_delta_movement(&mut self, velocity: [f64; 3]) -> bool {
+        self.inner.set_delta_movement(velocity)
+    }
+    /// `addDeltaMovement(x, y, z)`: add `delta` to the mob's velocity, as
+    /// [`set_delta_movement`](Self::set_delta_movement) does with the sum.
+    /// False, the velocity unchanged, when a component of `delta` or of the
+    /// sum is not finite.
+    pub fn add_delta_movement(&mut self, delta: [f64; 3]) -> bool {
+        self.inner.add_delta_movement(delta)
+    }
 }
 
 // hidden: a game-side helper, not part of the mod surface
@@ -296,6 +359,12 @@ pub trait GoalCxBackend {
     fn set_target(&mut self, target: Option<LivingRef>) -> bool;
     /// `GoalContext::jump`.
     fn jump(&mut self);
+    /// `GoalContext::delta_movement`.
+    fn delta_movement(&self) -> [f64; 3];
+    /// `GoalContext::set_delta_movement`.
+    fn set_delta_movement(&mut self, velocity: [f64; 3]) -> bool;
+    /// `GoalContext::add_delta_movement`.
+    fn add_delta_movement(&mut self, delta: [f64; 3]) -> bool;
 }
 
 #[cfg(test)]
@@ -308,14 +377,33 @@ mod tests {
         targets: Vec<(i32, &'static str)>,
     }
     impl GoalRegistrarBackend for Recording {
-        fn add_goal(&mut self, priority: i32, goal: Box<dyn Goal>) {
+        fn add_goal(
+            &mut self,
+            _: &'static str,
+            _: &'static str,
+            priority: i32,
+            goal: Box<dyn Goal>,
+        ) {
             self.goals.push((priority, goal.name()));
         }
-        fn add_target_goal(&mut self, priority: i32, goal: Box<dyn Goal>) {
+        fn add_target_goal(
+            &mut self,
+            _: &'static str,
+            _: &'static str,
+            priority: i32,
+            goal: Box<dyn Goal>,
+        ) {
             self.targets.push((priority, goal.name()));
         }
         fn mob_id(&self) -> &str {
             "minecraft:zombie"
+        }
+        fn checkpoint(&self) -> (usize, usize) {
+            (self.goals.len(), self.targets.len())
+        }
+        fn rollback(&mut self, (goals, targets): (usize, usize)) {
+            self.goals.truncate(goals);
+            self.targets.truncate(targets);
         }
     }
 

@@ -3,6 +3,7 @@ use super::super::{
     Game,
     entity::{Entity, with_entity},
 };
+use super::KnownCause;
 use sunrise_client::{mobs::Species, scoreboard::teams_allow_damage};
 use sunrise_core::geometry::Vec3;
 use sunrise_protocol::packets::play::{Clientbound, GameEvent};
@@ -60,7 +61,7 @@ impl Game<'_> {
                 (1 + puff) as f32,
                 Some(at),
                 "minecraft:mob_attack",
-                Some(Some(id)),
+                KnownCause::Entity(id),
                 false,
             ) {
                 continue;

@@ -1,9 +1,7 @@
 # Build times
 
 `tools/build_times.py` measures how long Sunrise takes to build, the same way on any checkout, so that two
-machines or two commits can be compared. It exists for [#3916](https://github.com/horizon-rust/horizon/issues/3916)
-(a leaner codebase that builds faster): the crate split needs a number before and a number after.
-It only measures. It does not change the build.
+machines or two commits can be compared. It only measures; it does not change the build.
 
 ## What it measures
 
@@ -51,8 +49,7 @@ The incremental builds add one comment line (`// build-times probe ...`) to a fi
 behaviour, yet the file really changes. `--edit` says where it goes:
 
 - `middle` (the default): before the top-level item nearest the middle of the file that follows a blank line
-  (not a doc comment or an attribute). At `78043f09a` that is line 708 of 1149 in `level/mod.rs`, 7434 of 8436
-  in `gfx.rs` and 17519 of 20333 in `game.rs`; `items.rs` has no such item, so its comment goes on line 1, as
+  (not a doc comment or an attribute); if the file has no such item, the comment goes on line 1, as
   with `top`, and the report warns. Every line below the comment moves, which is what an edit there does to
   rustc's incremental cache: the code below must be compiled again. The report gives the line (`file:line`).
 - `top`: the first line. All the file's code moves.
@@ -81,68 +78,3 @@ A table of seconds before, after and the change, for the cold builds, the nothin
 incremental build, every crate of the cold builds' slowest list, and the two critical paths. When the
 CPU, OS, RAM, jobs, rustc, edit mode, edited files or build variables (`RUSTFLAGS`, `RUSTC_WRAPPER`...) differ
 between the reports, it says so first: those seconds are not comparable.
-
-## First numbers
-
-Measured on 2026-11-01 at `78043f09a` (main) plus the tool, with `rustc 1.99.1` and the default jobs (16, the logical
-CPUs). Seconds, wall clock. Incremental builds use the default `middle` edit; the median of 3 runs for `dev`
-and of 2 (Windows) or 1 (Linux) for `fast`.
-
-| Machine | Windows 11 (26300), native | Linux: Ubuntu 26.04 in WSL2 on the same PC |
-|---|---|---|
-| CPU | AMD Ryzen 7 7700X, 8 cores, 16 threads | the same, 16 threads |
-| RAM | 32 GB | 8 GB seen by the VM |
-| Disk | SATA SSD (C:), repository on NVMe (D:) | the VM's ext4 disk |
-| Linker | MSVC `link.exe` | the default `cc` |
-
-| Build | Windows dev | Linux dev | Windows fast | Linux fast |
-|---|---|---|---|---|
-| Cold | 106.6 | 99.9 | 235.6 | 184.7 |
-| Nothing changed | 0.4 | 0.2 | 0.4 | 0.2 |
-| Edit in `sunrise-world` (`level/mod.rs`) | 21.4 | 22.0 | 29.5 | 60.5 |
-| Edit in `sunrise-client-render` (`gfx.rs`) | 15.8 | 12.2 | 78.3 | 51.6 |
-| Edit in `sunrise-client` (`game.rs`) | 14.4 | 10.6 | 92.3 | 60.6 |
-| Edit in `sunrise-items` (`items.rs`) | 23.1 | 19.0 | 127.5 | 83.8 |
-| Crates recompiled by those four edits | 9, 2, 1, 3 | the same | the same | the same |
-
-Crates recompiled: an edit in `sunrise-world` recompiles `sunrise-world` and the eight crates above it
-(`sunrise-items`, `sunrise-protocol`, `sunrise-command`, `sunrise-client-core`, `sunrise-client-input`,
-`sunrise-server-files`, `sunrise-client-render` and `sunrise-client`); one in `sunrise-items` recompiles it,
-`sunrise-client-render` and `sunrise-client`; one in `sunrise-client-render` recompiles it and `sunrise-client`;
-one in `game.rs` only `sunrise-client`.
-
-What the cold build's timings page shows (`dev`, Windows):
-
-- 361 units. The critical path starts with `proc-macro2`, `quote` and `syn`, goes through the `windows` crates
-  (`windows` itself 20 s), `wgpu-hal` (7 s), `wgpu-core` (7 s) and `sunrise-client-render` (14 s), and ends with
-  `sunrise-client` the library (21 s, from second 50 to 72) and then `sunrise-client` the binary (35 s, from 72
-  to 107). Beside the library only `sunrise-client-render` runs, for its last 4 s; beside the binary nothing runs
-  but `sunrise-ctl` for 3 s. A third of the build is one rustc on one crate.
-- The crates that cost most compiler time added up: `sunrise-client` 60 s, `windows` 35 s, `sunrise-world` 27 s,
-  `naga` 17 s, `windows-sys` 15 s, `ash` 15 s, `sunrise-client-render` 14 s.
-- In `fast`, `sunrise-client` costs 160 s added up, `sunrise-world` 67 s, `windows` 57 s, `naga` 54 s,
-  `sunrise-client-render` 34 s. The critical path is nearly the same chain, longer: `windows` 33 s, `wgpu-hal` 31 s,
-  `wgpu-core` 27 s, `sunrise-client-render` 34 s, the library 43 s, the binary 114 s.
-
-Which edit is used changes the incremental numbers (`dev`, Windows, 2 runs each, 3 for `middle`; in `items.rs`
-`middle` is the `top` edit, see above):
-
-| Edit | `sunrise-world` | `sunrise-client-render` | `sunrise-client` | `sunrise-items` |
-|---|---|---|---|---|
-| `touch` (no change to the bytes) | 19.2 | 14.6 | 8.7 | 14.9 |
-| `append` (comment on the last line) | 19.2 | 14.9 | 9.0 | 15.1 |
-| `middle` (comment between items) | 21.4 | 15.8 | 14.4 | 23.1 |
-| `top` (comment on the first line) | 22.4 | 24.4 | 16.8 | 23.1 |
-
-`touch` and `append` recompile exactly the same crates as the other two: cargo goes by the modification time, and
-rustc finds nothing new in the code. What they cost is the floor: rustc's startup and analysis of each crate
-on the way up, plus the link. A comment further up moves the lines below it, so rustc compiles that code again;
-that is the 1 to 10 s more.
-
-Load. These runs were done while no other build or test was running. The CPU was 7% to 17% busy before the `dev`
-builds of the main Windows run (the Unreal Editor and background services are open on that PC); one measurement,
-at 16.6%, was warned about. In the `touch`, `append` and `top` runs it was 5% to 26%, and two measurements were
-warned about (25.6% and 21.5%). The `fast` runs on Windows and all Linux runs had no warning. Two earlier
-attempts, made while another job was running tests on the PC, were thrown away. The Linux runs are in a WSL2
-virtual machine: they show the shape on Linux, not what a bare-metal Linux machine on this hardware does.
-Repeated incremental runs differ by 1.5 s at most in `dev`; for `fast` on Windows, 2 runs agreed to within 2 s.

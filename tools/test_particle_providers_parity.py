@@ -15,10 +15,12 @@ import random
 import struct
 import subprocess
 
-try:
-    from . import lab, oracle_harness as harness, test_rust_parity as base, test_model_baking_parity as baking
-except ImportError:
-    import lab, oracle_harness as harness, test_rust_parity as base, test_model_baking_parity as baking
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, oracle_harness as harness, test_rust_parity as base, test_model_baking_parity as baking
 
 STONE = 1  # Block.stateById(1) in 26.3
 

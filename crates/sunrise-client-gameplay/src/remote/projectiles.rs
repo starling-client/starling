@@ -2,7 +2,7 @@
 use sunrise_client::arrows::{ArrowEvent, ArrowScene};
 use sunrise_client::items::ItemStack;
 use sunrise_client::join_seq::JoinList;
-use sunrise_client::particles::{ParticleEngine, ParticleOptions, ParticleType};
+use sunrise_client::particles::{ParticleEngine, ParticleLevel, ParticleOptions, ParticleType};
 use sunrise_client::projectiles::{Hit, Projectile, ProjectileKind, ProjectileWorld};
 use sunrise_core::{
     geometry::{Vec3, trig},
@@ -29,7 +29,7 @@ pub fn default_cloud_particle() -> ParticleOptions {
 /// (an entity effect stays still).
 pub fn cloud_client_tick(
     particles: &mut ParticleEngine,
-    world: &sunrise_client::world::World,
+    level: &ParticleLevel<'_>,
     at: [f64; 3],
     radius: f32,
     waiting: bool,
@@ -76,7 +76,7 @@ pub fn cloud_client_tick(
             (particle, v)
         };
         // The no-flag overload: always-show thinning, without a limiter override.
-        particles.add_always_visible_with_world(world, options, at, velocity);
+        particles.add_always_visible_with_level(level, options, at, velocity);
     }
 }
 

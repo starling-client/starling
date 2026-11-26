@@ -1,0 +1,3 @@
+ids = ["hook:is_valid_book_shelf", "type:IsValidBookShelfEvent", "trait:EnchantingTableOffsetsRegistrar", "method:EnchantingTableOffsetsRegistrar::add_enchanting_table_offsets", "type:HookId"]
+why = "Adds the both-sides is_valid_book_shelf hook, seeded with vanilla's isValidBookShelf answer and used by the enchanting offer sum and the client's enchant particles, and Registrar::add_enchanting_table_offsets, which adds scan offsets to BOOKSHELF_OFFSETS once at startup. HookId gains its variant."
+migrate = "Nothing to migrate. A mod that matches HookId exhaustively adds the IsValidBookShelf arm; one with a wildcard arm compiles unchanged."

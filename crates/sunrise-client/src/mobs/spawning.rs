@@ -18,14 +18,6 @@ pub struct BiomeFacts {
     pub mushroom: bool,
     pub desert: bool,
     pub jungle: bool,
-    /// Frog variant from `spawns_warm/cold_variant_frogs` (0 temperate, 1 warm, 2 cold).
-    pub frog: u8,
-    /// Wolf variant index (`tame::WOLF_VARIANTS`).
-    pub wolf: u8,
-    /// `MoonBrightnessCheck(>= 0.9)`: the full moon.
-    pub full_moon: bool,
-    /// `spawns_coral_variant_zombie_nautilus` (the warm ocean).
-    pub coral_nautilus: bool,
     /// `#minecraft:spawns_white_rabbits` (`Rabbit.getRandomRabbitVariant`).
     pub white_rabbit: bool,
     /// `#minecraft:spawns_gold_rabbits` (`Rabbit.getRandomRabbitVariant`).
@@ -158,7 +150,7 @@ pub(in crate::mobs) mod tests {
     }
 
     struct Level {
-        registries: crate::mobs::finalize::SpawnRegistries,
+        variants: crate::mobs::variants::VariantTables,
         enchantments: crate::enchant::Enchantments,
         items: crate::items::Items,
     }
@@ -196,7 +188,7 @@ pub(in crate::mobs) mod tests {
         }
         fn spawn_data(&self) -> crate::mobs::finalize::SpawnData<'_> {
             crate::mobs::finalize::SpawnData {
-                registries: &self.registries,
+                variants: &self.variants,
                 enchantments: &self.enchantments,
                 items: &self.items,
                 camel_husk_size: (1.0, 1.0),
@@ -212,7 +204,7 @@ pub(in crate::mobs) mod tests {
                     .join(sunrise_core::VANILLA_VERSION);
                 let defaults = sunrise_world::item_defaults::read(&root).unwrap();
                 std::sync::Mutex::new(Level {
-                    registries: crate::mobs::finalize::SpawnRegistries::load(&root),
+                    variants: crate::mobs::variants::VariantTables::load_prepared(&root),
                     enchantments: crate::enchant::Enchantments::load(&root, &defaults).unwrap(),
                     items: crate::items::Items::tags_only(
                         &root,

@@ -56,7 +56,11 @@ pub fn rgb_color_from_tag(value: &crate::nbt::Tag) -> Option<i32> {
         }
         _ => return None,
     };
-    // ARGB.as8BitChannel -> Mth.floor -> Java's saturating float-to-int cast.
+    Some(opaque_rgb_from_floats(channels))
+}
+
+/// `ARGB.colorFromFloat(1, r, g, b)`: floor the scaled channels and retain their low bytes.
+pub fn opaque_rgb_from_floats(channels: [f32; 3]) -> i32 {
     let [red, green, blue] = channels.map(|n| ((n * 255.0).floor() as i32) & 255);
-    Some((255 << 24) | (red << 16) | (green << 8) | blue)
+    (255 << 24) | (red << 16) | (green << 8) | blue
 }

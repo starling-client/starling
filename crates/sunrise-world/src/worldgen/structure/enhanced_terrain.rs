@@ -311,7 +311,6 @@ mod tests {
             projection,
             waterlogging: None,
             enhanced_terrain: own.map(Arc::new),
-            ground_level: 1,
         })
     }
 

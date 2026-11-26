@@ -123,9 +123,8 @@ New dependencies: `prost` (runtime), `protox` and `prost-build` (build only). No
 
 ### 2.2 `crates/sunrise-perf` (the reader)
 
-It is a workspace member with `publish = false`. Its program ships in the game's release folders beside sunrise-ctl
-(the `package` route of `crates/sunrise-mod-package/src/sdk/inputs.json`), so a player or an agent reads a capture
-without building it; no other shipped program links its library. It is one library and one binary, `sunrise-perf`.
+It is a workspace member with `publish = false`, a dev tool built from source (`cargo build --release -p sunrise-perf`):
+the release folders don't carry it (#2442), and no shipped program links its library. It is one library and one binary, `sunrise-perf`.
 Modules: `read` (whole-file reader), `follow` (incremental reader), `ids` (§5.2), `query` (§6),
 `stats` (§6.6), `summary` (§5), `export` (pprof, folded, Perfetto), `attach`, `cli`, `mcp` (§8), `wasm` (C-ABI exports
 for the web UI, behind feature `wasm`).
@@ -146,8 +145,8 @@ known to build for wasm32. A dev-dependency test checks that a report written by
 | `sunrise-client-render` | `sunrise-perf-format` | converts `sunrise_threads` aggregates, spans and `PassTiming` into messages (`perf_capture.rs`) |
 | `sunrise-client-lib`, `sunrise-client` (game, dedicated server) | `sunrise-perf-format` | triggers, the writer, the remote channel (§4.2) |
 | `sunrise-threads` | nothing new | stays free of internal dependencies; it keeps producing its in-memory `Profile` |
-| `sunrise-perf` | `sunrise-perf-format` | never a dependency of another shipped program; its own program ships beside the game |
-| web UI (`horizon-rust/horizon-site`) | `sunrise_perf.wasm`, a build artifact of this repo | draws only |
+| `sunrise-perf` | `sunrise-perf-format` | never a dependency of another shipped program; a dev tool, built from source (`cargo build --release -p sunrise-perf`), not in the release folders (#2442) |
+| web UI (`sunrise-org/sunny`) | `sunrise_perf.wasm`, a build artifact of this repo | draws only |
 
 The conversion from `sunrise_threads::Profile` to the `samples` message lives in sunrise-client-render. It replaces
 `profile/viewer.rs`, which today builds the same columnar data inside sunrise-threads
@@ -908,11 +907,11 @@ the load settle before stopping it.
 - Spec B's nightly regression rule (permutation test, MAD history) stays in its own tool. It is a CI policy over a
   history, not a question about two captures.
 
-## 7. The web UI (`horizon-rust/horizon-site`)
+## 7. The web UI (`sunrise-org/sunny`)
 
 ### 7.1 What it is and where it lives
 
-- **Location and stack.** The browser UI and upload API live in horizon-rust/horizon-site, the Next.js App Router website behind playsunrise.net. The UI has its own root layout under `app/perf/`; helpers live under `lib/perf/`, translations under `messages/perf/`, and static assets under `public/perf/`. The routes are `/perf`, `/perf/c/<id>` and `/api/perf/captures`; configuration stays in environment variables. The game's defaults are playsunrise.net's (`PERF_VIEWER` and `PERF_CAPTURES` in `sunrise-addresses`), and `SUNRISE_PERF_VIEWER` and `SUNRISE_PERF_CAPTURES` point a build elsewhere.
+- **Location and stack.** The browser UI and upload API live in `sunrise-org/sunny`, the website repository behind playsunrise.net. The UI has its own root layout under `app/perf/`; helpers live under `lib/perf/`, translations under `messages/perf/`, and static assets under `public/perf/`. The routes are `/perf`, `/perf/c/<id>` and `/api/perf/captures`; configuration stays in environment variables. The game's defaults are playsunrise.net's (`PERF_VIEWER` and `PERF_CAPTURES` in `sunrise-addresses`), and `SUNRISE_PERF_VIEWER` and `SUNRISE_PERF_CAPTURES` point a build elsewhere.
 - **The wasm does the computing.** The page loads `sunrise_perf.wasm`, the `sunrise-perf` library built for
   `wasm32-unknown-unknown` with feature `wasm`, for reading, queries and statistics. The UI only draws, and every
   number it shows comes from a wasm call. So the web UI and the CLI cannot disagree, and no second implementation
@@ -1073,7 +1072,7 @@ prints it, and adds a warning when a budget is exceeded.
 | Q1 | All three audiences (agents, server owners, developers) from day one; built by volunteers, no number stated. |
 | Q2 | Protobuf, extension `.hzperf`. Chosen for schema-as-contract, decode speed and memory, and timeline scale (the 2-min profile is 547 KB as columnar JSON, 120 KB deflated). |
 | Q3 | Files only in v1; the counter registry is label-ready, so a Prometheus exporter is one small PR later. |
-| Q4 | The game ships only `sunrise-perf-format` (generated types, gzip writer, health recorder; Q4's original "framed writer" is superseded by Q9). Everything that reads lives in `sunrise-perf`, a separate program in the release folders, including `sunrise-perf mcp` and the wasm build. No reading commands or MCP tools in sunrise-ctl or sunrise-server; the game prints the path and the web UI's address. |
+| Q4 | The game ships only `sunrise-perf-format` (generated types, gzip writer, health recorder; Q4's original "framed writer" is superseded by Q9). Everything that reads lives in `sunrise-perf`, a separate dev tool built from source (not in the release folders since #2442), including `sunrise-perf mcp` and the wasm build. No reading commands or MCP tools in sunrise-ctl or sunrise-server; the game prints the path and the web UI's address. |
 | Q5 | Local files first: nothing uploads unless the player presses Share (§7.3). |
 | Q9 | One gzip stream holding one protobuf `Capture`; no frames, index, crash recovery or partial reads; our tools only. The live-follow rules (§3.2) are part of the contract. |
 | Q10 | Whole-file gzip/deflate, pure Rust (`flate2`). |

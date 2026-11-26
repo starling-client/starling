@@ -10,16 +10,19 @@ import json
 import os
 import math
 import uuid
-import anvil_dump as nbt
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import anvil_dump as nbt
 from pathlib import Path
 import struct
 import subprocess
 import time
 
-import net_capture
-import test_hostile_sound_categories_parity as sound
-import test_locator_bar_parity as net
-from test_dedicated_server_parity import Server, game_time
+from tools import net_capture, test_hostile_sound_categories_parity as sound, test_locator_bar_parity as net
+from tools.test_dedicated_server_parity import Server, game_time
 
 PLAYER = 'Alice'
 ACTOR = 'Bob'

@@ -15,20 +15,19 @@ use crate::blocks::Fluid;
 use crate::health::DamageLevel;
 use std::collections::HashMap;
 use std::ops::ControlFlow;
-use sunrise_core::{geometry::Vec3, random::RandomSource};
+use sunrise_core::geometry::Vec3;
+use sunrise_core::random::RandomSource;
 
 // Nautilus state: `tame`/`owner`, the saddle, `head` the body armour,
-// `variant` the zombie's variant (0 temperate, 1 warm), `anim_ticks` the
-// dash cooldown and `flag2` dashing, `counter` the attack target cooldown,
-// `counter2` the charge cooldown, `anger` the ticks left of `ANGRY_AT`
-// (at `ai.last_hurt_by`), `ints[1]` the rider's breath effect given,
-// `scratch[1]` a dash whose sound is still to play.
+// `zombie_nautilus_variant` the zombie's world-registry variant holder,
+// `anim_ticks` the dash cooldown and `flag2` dashing, `counter` the attack
+// target cooldown, `counter2` the charge cooldown, `anger` the ticks left of
+// `ANGRY_AT` (at `ai.last_hurt_by`), `ints[1]` the rider's breath effect
+// given, `scratch[1]` a dash whose sound is still to play.
 const DASH_COOLDOWN: i32 = 40;
 const TIME_BETWEEN_ATTACKS: i32 = 80;
 const ANGER_DURATION: i32 = 400;
 const ATTACK_TARGET_COOLDOWN: &str = "minecraft:attack_target_cooldown";
-/// `ZombieNautilusVariants`: the variant keys in index order.
-pub const VARIANTS: [&str; 2] = ["temperate", "warm"];
 
 pub fn is_nautilus(s: Species) -> bool {
     matches!(s, Species::Nautilus | Species::ZombieNautilus)
@@ -67,15 +66,6 @@ pub fn register(m: &mut Mob) {
         g.add(2, t);
         g.add(3, Charge::new(0.6));
         g.add(4, Stroll::swimming(1.0, 1));
-    }
-}
-/// `finalizeSpawn`: `NautilusAi.initMemories` (2400 to 3600 ticks before it
-/// first looks for prey) and the zombie's variant by biome.
-pub fn finalize(m: &mut Mob, warm_ocean: bool, r: &mut impl RandomSource) {
-    m.extra.counter = 2400 + r.next_int_bound(1201).unwrap_or(0);
-    m.extra.nautilus_attack_cooldown_ttl = Some(i64::MAX);
-    if zombie(m) {
-        m.extra.variant = u8::from(warm_ocean);
     }
 }
 /// `getControllingPassenger`: a player on a saddled nautilus.
@@ -177,9 +167,20 @@ pub(super) fn travel(
 ) -> ControlFlow<super::living::TravelPause> {
     let speed = m.ai.speed;
     m.move_relative(speed, input);
-    m.travel_move(w, level, events, pause, |m, _, _, _| {
-        m.velocity = Vec3::new(m.velocity.x * 0.9, m.velocity.y * 0.9, m.velocity.z * 0.9);
-    })
+    m.travel_move(
+        w,
+        level,
+        events,
+        pause,
+        sunrise_world::travel::TravelMode::Water,
+        |m, _, _, _| {
+            m.set_velocity(Vec3::new(
+                m.velocity.x * 0.9,
+                m.velocity.y * 0.9,
+                m.velocity.z * 0.9,
+            ));
+        },
+    )
 }
 /// `tickRidden` and `getRiddenInput`: turn half way to the rider, swim along
 /// their look, faster in water (`getRiddenSpeed`), and dash on the jump.
@@ -502,18 +503,23 @@ impl Charge {
 }
 impl Goal for Charge {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE | LOOK
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
         m.ai.target.is_some() && m.extra.counter2 <= 0 && m.extra.in_love <= 0
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         self.still_ok(m, cx)
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         true
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.start = m.position;
         let Some(t) = m.ai.target.and_then(|who| cx.w.target_info(who)) else {
@@ -543,12 +549,14 @@ impl Goal for Charge {
             sound(m, name, cx.events);
         }
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         m.extra.counter2 = TIME_BETWEEN_ATTACKS;
         if let super::TargetChange::Set(target) = cx.w.change_target(m, true, None) {
             m.ai.target = target;
         }
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         let Some(who) = m.ai.target else { return };
         let Some(t) = cx.w.target_info(who) else {
@@ -564,12 +572,13 @@ impl Goal for Charge {
         let amount = m.attrs.attack_damage;
         cx.events.push(match who {
             Who::Player => {
-                cx.w.route_player_event(MobEvent::AttackPlayer(amount, from))
+                cx.w.route_player_event(MobEvent::AttackPlayer(amount, from, None))
             }
             Who::Mob(id) => MobEvent::AttackMob {
                 target: id,
                 amount,
                 source: super::Damage::mob(m.id, from),
+                remember_target: false,
             },
         });
         let level = |e: &str| {
@@ -607,36 +616,49 @@ impl Goal for Charge {
         }
     }
 }
-/// The body texture: the baby's, the adult's, or the zombie's variant.
-pub fn texture(m: &Mob) -> String {
-    match (zombie(m), m.is_baby(), m.extra.variant) {
-        (true, _, 1) => "entity/nautilus/zombie_nautilus_coral".into(),
-        (true, _, _) => "entity/nautilus/zombie_nautilus".into(),
-        (false, true, _) => "entity/nautilus/nautilus_baby".into(),
-        (false, false, _) => "entity/nautilus/nautilus".into(),
+/// The body texture: the baby's, the adult's, or the zombie's variant from the
+/// synced `minecraft:zombie_nautilus_variant` table (`ZombieNautilusRenderer.getTextureLocation`).
+/// An absent entry yields an empty key so the renderer draws the missing texture
+/// rather than a built-in fallback.
+pub fn texture(m: &Mob, variants: Option<&super::variants::VariantTables>) -> String {
+    if zombie(m) {
+        let Some(variants) = variants else {
+            return String::new();
+        };
+        let Some(r) = m.zombie_nautilus_variant(&variants.zombie_nautilus) else {
+            return String::new();
+        };
+        let Some(entry) = variants.zombie_nautilus.get(r) else {
+            return String::new();
+        };
+        return entry.texture().to_owned();
     }
-}
-/// The body model: `ZombieNautilusRenderer` picks the coral model for the
-/// warm variant.
-pub fn model(m: &Mob) -> &'static str {
-    match (zombie(m), m.is_baby(), m.extra.variant) {
-        (true, _, 1) => "zombie_nautilus_coral#main",
-        (true, _, _) => "zombie_nautilus#main",
-        (false, true, _) if m.kind.layer("nautilus_baby#main").is_some() => "nautilus_baby#main",
-        _ => "nautilus#main",
-    }
-}
-/// The `NAUTILUS_BODY` equipment texture of a nautilus armour item.
-pub fn armor_texture(item: &str) -> Option<String> {
-    let material = item
-        .strip_prefix("minecraft:")?
-        .strip_suffix("_nautilus_armor")?;
-    let material = if material == "golden" {
-        "gold"
+    if m.is_baby() {
+        "entity/nautilus/nautilus_baby".into()
     } else {
-        material
-    };
-    Some(format!("entity/equipment/nautilus_body/{material}"))
+        "entity/nautilus/nautilus".into()
+    }
+}
+/// The body model: `ZombieNautilusRenderer` picks the normal or coral model from
+/// the synced variant's `model` field (`ZombieNautilusVariant.ModelType`).
+/// An unresolved holder has no vanilla case (`getVariant().value()` is always
+/// bound), so this is only reached before the tables arrive: the renderer needs
+/// some model key, and the normal model is kept while [`texture`] yields the
+/// missing texture, as the other registry-backed families do.
+pub fn model(m: &Mob, variants: Option<&super::variants::VariantTables>) -> &'static str {
+    if zombie(m) {
+        return variants
+            .and_then(|v| {
+                m.zombie_nautilus_variant(&v.zombie_nautilus)
+                    .and_then(|r| v.zombie_nautilus.get(r))
+            })
+            .map_or("zombie_nautilus#main", |entry| entry.model_key());
+    }
+    if m.is_baby() && m.kind.layer("nautilus_baby#main").is_some() {
+        "nautilus_baby#main"
+    } else {
+        "nautilus#main"
+    }
 }
 /// `NautilusModel.setupAnim` (and `ZombieNautilusCoralModel`'s corals,
 /// hidden under armour).
@@ -655,7 +677,11 @@ pub fn anim(m: &Mob, s: &State, p: &mut Poses, animations: &HashMap<String, Anim
 }
 /// `TamableAnimal.addAdditionalSaveData`: owner and ordered Sitting, plus
 /// the saddle, the zombie's variant and the brain's attack cooldown.
-pub fn to_nbt(m: &Mob, map: &mut crate::entity_nbt::EntityTagWriter) {
+pub fn to_nbt(
+    m: &Mob,
+    map: &mut crate::entity_nbt::EntityTagWriter,
+    variants: Option<&super::variants::VariantTables>,
+) {
     use sunrise_core::nbt::Tag;
     if let Some(owner) = m.extra.owner {
         map.insert("Owner".into(), Tag::IntArray(owner.to_vec()));
@@ -663,12 +689,12 @@ pub fn to_nbt(m: &Mob, map: &mut crate::entity_nbt::EntityTagWriter) {
         map.remove(&"Owner".into());
     }
     map.insert("Sitting".into(), Tag::Byte(i8::from(m.extra.sitting)));
-    if zombie(m) {
-        let v = VARIANTS[usize::from(m.extra.variant).min(1)];
-        map.insert(
-            "variant".into(),
-            Tag::String(format!("minecraft:{v}").as_str().into()),
-        );
+    if zombie(m)
+        && let Some(variants) = variants
+        && let Some(r) = m.zombie_nautilus_variant(&variants.zombie_nautilus)
+        && let Some(id) = variants.zombie_nautilus.id(r)
+    {
+        map.insert("variant".into(), Tag::String(id.into()));
     }
     let memory = m.extra.nautilus_attack_cooldown_ttl.map(|ttl| {
         let mut fields = vec![("value", Tag::Int(m.extra.counter))];
@@ -688,10 +714,6 @@ pub fn from_nbt(m: &mut Mob, tag: &sunrise_core::nbt::Tag) {
     m.extra.owner = crate::save::uuid_from_tag(tag.get("Owner"));
     m.extra.tame = m.extra.owner.is_some();
     crate::mobs::tame::restore_sitting(m, crate::entity_nbt::flag(tag, "Sitting"));
-    if let Some(Tag::String(v)) = tag.get("variant") {
-        let v = v.to_string().unwrap_or_default();
-        m.extra.variant = u8::from(v.trim_start_matches("minecraft:") == "warm");
-    }
     let memory = tag
         .get("Brain")
         .and_then(|b| b.get("memories"))

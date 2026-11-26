@@ -11,7 +11,7 @@ The folders are the workspace packages `cargo-sunrise-mod` depends on (normal an
 by `cargo metadata`, so a crate the tool starts to use is watched without anyone editing a list here.
 """
 import argparse
-import importlib.util
+import ast
 import datetime as dt
 import json
 import os
@@ -21,15 +21,20 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+from tools import prebuilt_game, release_train as train
 
 TAG = "mod-tool"
 TOOL = "cargo-sunrise-mod"
 INFO = "tool.json"
 # What builds the tool besides its crates: the lock and the manifest every crate resolves through, the pinned compiler,
-# and the files that build, pack, sign and publish it.
-BUILD_INPUTS = ("Cargo.toml", "Cargo.lock", "tools/ci/rust-version", "tools/prebuilt_game.py", "tools/ci/mod_tool.py",
-                "tools/ci/sign_release.sh", ".github/workflows/mod-tool.yml")
+# and the files that sign and publish it. The Python that builds and packs it is `BUILD_PROGRAM` and the tools/ modules
+# it imports, found by `build_inputs`.
+BUILD_FILES = ("Cargo.toml", "Cargo.lock", "tools/ci/rust-version", "tools/ci/mod_tool.py", "tools/ci/sign_release.sh",
+               ".github/workflows/mod-tool.yml")
+BUILD_PROGRAM = "tools/prebuilt_game.py"
 CONTRACT_SOURCE = "crates/sunrise-native-build/src/contract.rs"
+RELEASE_CONTRACT_SOURCE = "crates/sunrise-mod-package/src/page.rs"
 
 
 def run(*command: str, check: bool = True) -> str:
@@ -60,6 +65,28 @@ def crates(metadata: dict | None = None) -> list[str]:
     return sorted(Path(packages[id]["manifest_path"]).parent.relative_to(root).as_posix() for id in seen)
 
 
+def build_inputs() -> list[str]:
+    """`BUILD_FILES`, `BUILD_PROGRAM` and every tools/ module it imports, transitively (`from tools import x`,
+    `from tools.x import y` or `import tools.x`), so a module the build starts to use is watched without anyone editing
+    a list here."""
+    found, todo = set(), [BUILD_PROGRAM]
+    while todo:
+        path = todo.pop()
+        if path in found:
+            continue
+        found.add(path)
+        for node in ast.walk(ast.parse((ROOT / path).read_text())):
+            if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                modules = [node.module, *(f"{node.module}.{alias.name}" for alias in node.names)]
+            elif isinstance(node, ast.Import):
+                modules = [alias.name for alias in node.names]
+            else:
+                continue
+            files = (f"{module.replace('.', '/')}.py" for module in modules if module.startswith("tools."))
+            todo.extend(file for file in files if (ROOT / file).is_file())
+    return sorted({*BUILD_FILES, *found})
+
+
 def previous() -> str:
     """The commit the published `mod-tool` holds (its tool.json), or "" when there is none yet. Only decides whether to
     build; what a user trusts is the signature, which the publish job checks."""
@@ -84,15 +111,11 @@ def changed(since: str, head: str) -> list[str]:
     folders = crates()
     if not since or not is_ancestor(since, head):
         return folders
-    paths = [*(folder + "/" for folder in folders), *BUILD_INPUTS]
+    paths = [*(folder + "/" for folder in folders), *build_inputs()]
     return [line for line in run("git", "diff", "--name-only", since, head, "--", *paths).splitlines() if line]
 
 
 def decide(force: bool) -> None:
-    # By its path: putting tools/ on sys.path would shadow the tests' modules of the same names.
-    spec = importlib.util.spec_from_file_location("release_train", ROOT / "tools/release_train.py")
-    train = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(train)
     head = run("git", "rev-parse", "--verify", os.environ["COMMIT"] + "^{commit}").strip()
     if not is_ancestor(head, "refs/remotes/origin/main"):
         sys.exit(f"::error::refused: {head} is not on main; {TAG} holds only a commit of main")
@@ -114,9 +137,12 @@ def decide(force: bool) -> None:
 def tool_json(commit: str, out: Path) -> None:
     """tool.json: what the signed sums bind to the tool beside each archive's hash."""
     contract = re.search(r"pub const CONTRACT: u32 = (\d+);", (ROOT / CONTRACT_SOURCE).read_text())
+    release = re.search(r"pub const RELEASE_CONTRACT: u32 = (\d+);", (ROOT / RELEASE_CONTRACT_SOURCE).read_text())
     date = run("git", "log", "-1", "--format=%cd", "--date=format-local:%Y-%m-%d", commit).strip()
     out.write_text(json.dumps({"schema": 1, "tag": TAG, "commit": commit, "date": date,
                                "native_contract": int(contract.group(1)),
+                               "release_contract": int(release.group(1)),
+                               "package_format": prebuilt_game.package_format(ROOT),
                                "rust": (ROOT / "tools/ci/rust-version").read_text().strip()}, indent=2) + "\n")
 
 

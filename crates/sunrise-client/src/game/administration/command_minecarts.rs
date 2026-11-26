@@ -11,6 +11,18 @@ use super::{
 use sunrise_client::{command_block::Mode, text::Text};
 use sunrise_protocol::packets::play::{self, Serverbound as S};
 
+impl Minecart {
+    /// Snapshot the same component codec used for the saved output and the
+    /// failure-text admission check, rather than the edit screen's plain text.
+    pub(super) fn sync_command_output(&mut self) {
+        self.synced_output = self
+            .command
+            .last_output
+            .as_ref()
+            .map(|text| sunrise_client::scoreboard::component_tag(&text.component_view()));
+    }
+}
+
 impl Game<'_> {
     fn edit_command_cart<R>(
         &mut self,
@@ -27,8 +39,8 @@ impl Game<'_> {
     /// into its synched data (`DATA_ID_COMMAND_NAME`, `DATA_ID_LAST_OUTPUT`).
     pub(super) fn cart_command_updated(&mut self, id: u32) {
         self.edit_command_cart(id, |c| {
-            c.synced_command = c.command.command.clone();
-            c.synced_output = c.command.last_output_string();
+            c.synced_command.clone_from(&c.command.command);
+            c.sync_command_output();
         });
     }
     /// `BaseCommandBlock.performCommand` for the cart: false when it already
@@ -68,6 +80,7 @@ impl Game<'_> {
                 dimension,
                 origin_dimension: dimension,
                 origin_player: false,
+                native_output: None,
                 level: None,
                 block: None,
                 cart: Some(id),
@@ -96,46 +109,30 @@ impl Game<'_> {
     /// `CloseableCommandBlockSource.sendSystemMessage` for the cart: its last
     /// output stamped with the time, then `onUpdated`. Nothing when it does
     /// not track output (`CommandSource.NULL`).
-    pub(super) fn cart_command_output(&mut self, id: u32, message: Text) {
+    pub(super) fn cart_command_output(&mut self, id: u32, format: impl FnOnce(Text) -> Text) {
         let updated = self.edit_command_cart(id, |c| {
             if !c.command.track_output {
                 return false;
             }
             let time = chrono::Local::now().format("[%H:%M:%S] ").to_string();
-            c.command.last_output = Some(Text::literal(time).append(message));
+            c.command.last_output = Some(format(Text::literal(time)));
             true
         });
         if updated == Some(true) {
             self.cart_command_updated(id);
         }
     }
-    /// `CommandSourceStack.sendSuccess` from a command minecart: its output
-    /// when `send_command_feedback`, and `broadcastToAdmins` when
-    /// `command_block_output`.
-    pub(super) fn cart_command_success(&mut self, id: u32, message: Text, broadcast: bool) {
-        let Some(name) = self
-            .carts
-            .iter()
-            .find(|c| c.id == id && c.kind == CartKind::CommandBlock && c.command.track_output)
-            .map(|c| c.command.name())
-        else {
-            return;
-        };
-        let feedback = self
+    /// `CommandSourceStack.sendSuccess`'s line to a command minecart
+    /// (`BaseCommandBlock.acceptsSuccess`): its output while it tracks output
+    /// and `send_command_feedback` is on. The operators' share is
+    /// `broadcast_to_admins`.
+    pub(super) fn cart_command_success(&mut self, id: u32, message: Text) {
+        if self
             .ui
             .rules
-            .bool_at(sunrise_client::gamerules::vanilla::SEND_COMMAND_FEEDBACK);
-        if feedback {
-            self.cart_command_output(id, message.clone());
-        }
-        if broadcast
-            && feedback
-            && self
-                .ui
-                .rules
-                .bool_at(sunrise_client::gamerules::vanilla::COMMAND_BLOCK_OUTPUT)
+            .bool_at(sunrise_client::gamerules::vanilla::SEND_COMMAND_FEEDBACK)
         {
-            self.broadcast_source_to_admins(name, message);
+            self.cart_command_output(id, |timestamp| timestamp.append(message));
         }
     }
 

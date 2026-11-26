@@ -16,14 +16,12 @@ import time
 import uuid
 import zipfile
 
-try:
-    from . import lab, oracle_harness, test_rust_parity as base
-    from .test_dedicated_server_parity import Server, free_port, game_time
-except ImportError:
-    import lab
-    import oracle_harness
-    import test_rust_parity as base
-    from test_dedicated_server_parity import Server, free_port, game_time
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, oracle_harness, test_rust_parity as base
+from tools.test_dedicated_server_parity import Server, free_port, game_time
 
 UUID = '0000014b-0000-0000-0000-000000000001'
 

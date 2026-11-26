@@ -54,11 +54,17 @@ pub(super) fn run_event_loop(mut game: Game<'_>) -> Result<()> {
 pub(super) struct Loading {
     pub(super) window: Option<Arc<Window>>,
     pub(super) renderer: Option<Renderer>,
+<<<<<<< HEAD
     /// What the loading screen draws with until the world's renderer is built from it
     /// (`finish`): the panorama and the HUD, and none of the world's pipelines.
     pub(super) boot_renderer: Option<sunrise_client::gfx::boot::BootRenderer>,
     /// The world's renderer, made on the boot renderer's device while the title stays up.
     pub(super) world_renderer: Option<WorldRenderer>,
+||||||| 46c00106def
+=======
+    /// The opened GPU device's `max_texture_dimension_2d`, shared with the background loader.
+    pub(super) max_atlas_size: Arc<AtomicU32>,
+>>>>>>> ed6772e2118
     /// The boot screen's atlas, until the pack's GUI atlas replaces it.
     pub(super) boot: sunrise_client::hud::HudAtlas,
     pub(super) gui: Option<UiResources>,
@@ -206,6 +212,7 @@ impl Loading {
             });
         let offscreen = self.options.as_ref().is_some_and(|o| o.offscreen);
         let boot_step = startup::step("renderer.boot");
+<<<<<<< HEAD
         // The menu bundle may have come before the window (Android's setup puts its skin on
         // while the surface is still on its way; `set_ui` then had no window to build for):
         // its atlas, not the boot screen's, is the one its screens' text and sprites name.
@@ -251,6 +258,35 @@ impl Loading {
         match failed {
             None => {}
             Some(e) => {
+||||||| 46c00106def
+        match loading_renderer(
+            window.clone(),
+            offscreen,
+            Some(&self.boot),
+            None,
+            None,
+            self.settings.sunrise.api,
+        ) {
+            Ok(r) => self.renderer = Some(r),
+            Err(e) => {
+=======
+        match loading_renderer(
+            window.clone(),
+            offscreen,
+            Some(&self.boot),
+            None,
+            None,
+            self.settings.sunrise.api,
+        ) {
+            Ok(r) => {
+                self.max_atlas_size.store(
+                    r.device.limits().max_texture_dimension_2d,
+                    Ordering::Relaxed,
+                );
+                self.renderer = Some(r);
+            }
+            Err(e) => {
+>>>>>>> ed6772e2118
                 #[cfg(target_os = "windows")]
                 if let Some(stop) = &boot_paint_stop {
                     stop.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -362,11 +398,26 @@ impl Loading {
     }
     /// The menu bundle arrived: rebuild the loading screen with the real atlas
     /// and title panorama.
-    pub(super) fn set_ui(&mut self, gui: UiResources, root: PathBuf) {
+    pub(super) fn set_ui(
+        &mut self,
+        mut gui: UiResources,
+        root: PathBuf,
+        source: sunrise_assets::resource_source::ResourceSource,
+    ) {
         log::info!(
             "Sunrise: loading the title artwork after {} ms",
             self.started.elapsed().as_millis()
         );
+        if let Some(renderer) = &self.renderer
+            && let Err(error) = gui.stitch_for_device(
+                &source,
+                &self.vanilla_root,
+                renderer.device.limits().max_texture_dimension_2d,
+            )
+        {
+            self.error = Some(error);
+            return;
+        }
         let additional = self
             .options
             .as_ref()
@@ -566,6 +617,7 @@ impl Loading {
             self.started.elapsed().as_secs_f32(),
             self.settings.file.double("panoramaScrollSpeed") as f32,
         );
+<<<<<<< HEAD
         let diagnostic_prepared = diagnostic_started.elapsed();
         let drawn = if let Some(boot) = &mut self.boot_renderer {
             match boot.render(&batch, yaw, !console && !onboarding) {
@@ -573,6 +625,17 @@ impl Loading {
                 Err(e) => {
                     log::warn!("Sunrise: loading screen frame failed: {e}");
                     false
+||||||| 46c00106def
+        if let Some(renderer) = &mut self.renderer {
+            match renderer.render(&frame) {
+                Ok(true) if self.gui.is_some() && self.menu.pending.is_none() => {
+                    self.title_drawn = true;
+=======
+        if let Some(renderer) = &mut self.renderer {
+            match renderer.render(&frame, None) {
+                Ok(true) if self.gui.is_some() && self.menu.pending.is_none() => {
+                    self.title_drawn = true;
+>>>>>>> ed6772e2118
                 }
             }
         } else if let Some(renderer) = &mut self.renderer {
@@ -738,6 +801,7 @@ impl Loading {
             self.settings.file.int("maxAnisotropyBit"),
         );
         let renderer_at = Instant::now();
+<<<<<<< HEAD
         let renderer_step = startup::step("handoff.renderer");
         let (renderer, clouds) = match built {
             Some(mut renderer) => {
@@ -789,6 +853,56 @@ impl Loading {
             }
         };
         drop(renderer_step);
+||||||| 46c00106def
+        let (renderer, clouds) = startup::time("renderer.world", || {
+            build_renderer(
+                window.clone(),
+                options.offscreen,
+                &loaded.pack,
+                &gui,
+                self.renderer.as_ref(),
+                loaded.renderer_cpu,
+                self.settings.sunrise.api,
+                self.settings.sunrise.translucent_batching,
+                self.settings.vsync,
+                &self.settings.sunrise,
+                shader_packs::picked_pack_shape(&self.settings),
+                self.renderer
+                    .as_ref()
+                    .map(|r| r.display_reading())
+                    .unwrap_or_default(),
+                (
+                    self.settings.file.int("textureFiltering"),
+                    self.settings.file.int("maxAnisotropyBit"),
+                ),
+            )
+        })?;
+=======
+        let mut pick_hdr = shader_packs::PickHdr::default();
+        let (renderer, required) = startup::time("renderer.world", || {
+            build_renderer(
+                window.clone(),
+                options.offscreen,
+                &loaded.pack,
+                &gui,
+                self.renderer.as_ref().map_or(
+                    sunrise_client::gfx::RendererDevice::New,
+                    sunrise_client::gfx::RendererDevice::Reuse,
+                ),
+                loaded.renderer_cpu,
+                self.settings.sunrise.api,
+                self.settings.sunrise.translucent_batching,
+                self.settings.vsync,
+                &self.settings.sunrise,
+                shader_packs::startup_pack_shape(&self.settings, &mut pick_hdr),
+                self.renderer
+                    .as_ref()
+                    .map(|r| r.display_reading())
+                    .unwrap_or_default(),
+                self.settings.texture_atlas_settings(),
+            )
+        })?;
+>>>>>>> ed6772e2118
         log::info!(
             "Sunrise: world renderer ready after {} ms",
             self.started.elapsed().as_millis()
@@ -849,9 +963,11 @@ impl Loading {
         let game_ms = game_at.elapsed().as_millis();
         game.fullscreen = self.fullscreen;
         game.panorama_rotation = self.panorama_rotation;
+        // The pick's HDR request as the renderer was made for it, with its notes already logged.
+        *game.native_shaders.pick_hdr.get_mut() = pick_hdr;
         self.menu.handoff(&mut game);
         game.apply_settings();
-        if let Err(error) = clouds {
+        if let Err(error) = required {
             game.selection_reload_failed(&error);
         }
         game.previous = Instant::now();
@@ -965,14 +1081,25 @@ impl ApplicationHandler for App {
 /// manifest is `sunrise-resources.json`): without them, say where they were
 /// looked for and how to get them, before a window or a loader starts. `get` is
 /// the page a hook sends the player to (`sunrise_hooks::engine::get_the_game`).
+<<<<<<< HEAD
 #[cfg(not(target_os = "android"))]
 pub(super) fn missing_resources(
+||||||| 46c00106def
+pub(super) fn missing_resources(
+=======
+pub(super) fn preflight_resources(
+>>>>>>> ed6772e2118
     root: &std::path::Path,
     get: Option<sunrise_hooks::GetTheGame>,
-) -> Option<String> {
-    let shown = std::path::absolute(root).unwrap_or_else(|_| root.to_path_buf());
-    if !root.join("sunrise-resources.json").is_file() {
-        let launcher = get.map_or(String::new(), |get| {
+    dedicated: bool,
+) -> std::result::Result<sunrise_core::prepared_profile::Profile, String> {
+    use sunrise_core::{
+        prepared_profile::{MANIFEST, Manifest, Profile},
+        version::VERSION_ID,
+    };
+
+    if !root.join(MANIFEST).is_file() {
+        let launcher = get.filter(|_| !dedicated).map_or(String::new(), |get| {
             format!(
                 "Sunrise is started from its launcher: download it at {} (Download). It needs \
                  your own Minecraft: Java Edition; the launcher signs you in and prepares the \
@@ -980,18 +1107,25 @@ pub(super) fn missing_resources(
                 get.address
             )
         });
-        return Some(format!(
-            "Sunrise's prepared game files are missing: no sunrise-resources.json in {}\n\
-             {launcher}sunrise-prepare --prepare, or pass --resources <folder>",
+        let shown = std::path::absolute(root).unwrap_or_else(|_| root.to_path_buf());
+        let profile = if dedicated {
+            Profile::Server
+        } else {
+            Profile::Full
+        };
+        return Err(format!(
+            "Sunrise's prepared game files are missing: no {MANIFEST} in {}\n\
+             {launcher}{}, or pass --resources <folder>",
             shown.display(),
+            profile.repair(root),
         ));
     }
-    damaged_prepared(root).map(|problem| {
+    let manifest = Manifest::read(root).map_err(|problem| {
         format!(
-            "Sunrise's prepared game files are damaged: {problem} in {}\n\
-             Prepare them again with the launcher, or: sunrise-prepare --prepare",
-            shown.display()
+            "Sunrise's prepared game files at {} are damaged: {problem}",
+            root.display(),
         )
+<<<<<<< HEAD
     })
 }
 
@@ -1004,20 +1138,57 @@ pub(super) fn damaged_prepared(root: &std::path::Path) -> Option<String> {
     let bytes = std::fs::read(&manifest).ok()?;
     if bytes.iter().all(u8::is_ascii_whitespace) {
         return Some("sunrise-resources.json is empty".into());
+||||||| 46c00106def
+    })
+}
+
+/// Which top-level prepared file a killed preparation or an interrupted copy
+/// left unusable. The loader parses these before it can start; naming one
+/// beats serde's bare "expected value at line 1 column 1".
+pub(super) fn damaged_prepared(root: &std::path::Path) -> Option<String> {
+    let manifest = root.join("sunrise-resources.json");
+    let bytes = std::fs::read(&manifest).ok()?;
+    if bytes.iter().all(u8::is_ascii_whitespace) {
+        return Some("sunrise-resources.json is empty".into());
+=======
+    })?;
+    let profile = manifest.profile();
+    if profile == Profile::Server && !dedicated {
+        return Err(format!(
+            "{} contains server-only game files, not a full client preparation. Run \
+             `sunrise-prepare --prepare --server-jar PATH --output FULL_DIR` with your own \
+             client files, then pass --resources FULL_DIR.",
+            root.display(),
+        ));
+>>>>>>> ed6772e2118
     }
-    if serde_json::from_slice::<serde_json::Value>(&bytes).is_err() {
-        return Some("sunrise-resources.json is not valid JSON".into());
+    let mut problems = manifest.version_problems(root, VERSION_ID);
+    if profile == Profile::Server {
+        problems.extend(manifest.server_inventory_problems(root));
     }
-    for entry in std::fs::read_dir(root).ok()?.flatten() {
-        let path = entry.path();
-        if path.extension() != Some(std::ffi::OsStr::new("json")) {
-            continue;
+    // An empty JSON file left by an interrupted export fails with a generic
+    // parse error later. Name the file now, before starting a loader or a window.
+    if let Ok(entries) = std::fs::read_dir(root) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension() == Some(std::ffi::OsStr::new("json"))
+                && std::fs::metadata(&path).is_ok_and(|meta| meta.is_file() && meta.len() == 0)
+            {
+                problems.push(format!("{} is empty", entry.file_name().to_string_lossy()));
+            }
         }
-        if std::fs::metadata(&path).is_ok_and(|meta| meta.len() == 0) {
-            return Some(format!("{} is empty", entry.file_name().to_string_lossy()));
-        }
     }
-    None
+    if problems.is_empty() {
+        Ok(profile)
+    } else {
+        Err(format!(
+            "Sunrise's prepared game files in {} are stale or damaged:\n  {}\n\
+             Prepare them again with `{}`.",
+            root.display(),
+            problems.join("\n  "),
+            profile.repair(root),
+        ))
+    }
 }
 
 /// `Minecraft.<init>`: `startedCleanly` left false means the previous start

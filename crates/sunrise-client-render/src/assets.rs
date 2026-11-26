@@ -94,11 +94,15 @@ pub struct RenderAssets {
     pub(crate) sprite_names: Vec<Option<String>>,
     /// The layers of the texture files read on their own (emissive overlays), by raw name.
     pub file_layers: std::collections::BTreeMap<String, u32>,
-    /// OptiFine's emissive block overlays: base sprite and overlay sprite names.
-    pub emissive: Vec<(String, String)>,
+    /// Emissive block overlays resolved during bake/reload (mod-registered and OptiFine),
+    /// sorted by base sprite layer for `Globals.emissive_layers` and bound to [`Self::generation`].
+    pub emissive_layers: Vec<[u32; 4]>,
     pub translucent_layers: Vec<bool>,
     /// Each layer's `MipmapGenerator` settings.
     pub sprite_mips: Vec<crate::mipmap::Settings>,
+    /// The first frame, at its own side, of each layer larger than `sprite_size`
+    /// (`Sprites::oversized`), which the layer holds shrunk.
+    pub oversized_sprites: std::collections::BTreeMap<u32, (u32, Vec<u8>)>,
     /// The resource packs' LabPBR maps (normals, specular), layer by layer at `pbr_size`:
     /// empty when they ship none.
     pub pbr_normals: Vec<u8>,
@@ -132,9 +136,10 @@ impl RenderAssets {
             sprite_layers: Default::default(),
             sprite_names: Vec::new(),
             file_layers: Default::default(),
-            emissive: Vec::new(),
+            emissive_layers: Vec::new(),
             translucent_layers: Vec::new(),
             sprite_mips: Vec::new(),
+            oversized_sprites: Default::default(),
             pbr_normals: Vec::new(),
             pbr_specular: Vec::new(),
             pbr_size: 0,
@@ -157,6 +162,76 @@ impl RenderAssets {
             .ok_or(mod_api::ModelError::UnknownModel)?;
         Ok(mod_api::__private::built::model_ref(self.generation, slot))
     }
+    /// Block-atlas sprite `sprite`'s first frame at its own resolution, for `RenderAssets::atlas_sprite_pixels`:
+    /// `split` is the layers to an array (`Renderer::sprite_split`). The layer pixels are the frame
+    /// the sprite starts on (an animation's first `.mcmeta` frame), scaled up to the array edge
+    /// by whole pixels when the sprite is smaller (`Sprites::finish`), so a sprite whose own side
+    /// (`Settings::native_size`) is not above the edge is read back exactly. A larger one, which the
+    /// layer holds shrunk to the edge, comes back from the frame `Sprites::finish` kept for it at
+    /// its own size.
+    pub fn atlas_sprite_pixels(
+        &self,
+        sprite: mod_api::SpriteRef,
+        split: u32,
+    ) -> std::result::Result<mod_api::AtlasSpritePixels, mod_api::AtlasSpriteError> {
+        use mod_api::AtlasSpriteError::{NoSuchSprite, NotReady};
+        if self.generation == 0 {
+            return Err(NotReady);
+        }
+        let split = u64::from(split.max(1));
+        if u64::from(sprite.layer) >= split {
+            return Err(NoSuchSprite);
+        }
+        let layer = u64::from(sprite.array) * split + u64::from(sprite.layer);
+        if layer >= u64::from(self.texture_layers) {
+            return Err(NoSuchSprite);
+        }
+        if let Some((side, rgba)) = u32::try_from(layer)
+            .ok()
+            .and_then(|layer| self.oversized_sprites.get(&layer))
+        {
+            return Ok(mod_api::__private::built::atlas_sprite_pixels(
+                *side,
+                *side,
+                rgba.clone(),
+            ));
+        }
+        let edge = self.sprite_size as usize;
+        let bytes = edge * edge * 4;
+        let Some(held) = (layer as usize)
+            .checked_mul(bytes)
+            .and_then(|from| self.pixels.range(from, bytes))
+        else {
+            return Err(NoSuchSprite);
+        };
+        let side = self
+            .sprite_mips
+            .get(layer as usize)
+            .map_or(edge, |m| m.native_size as usize);
+        if side == 0 || side >= edge {
+            return Ok(mod_api::__private::built::atlas_sprite_pixels(
+                edge as u32,
+                edge as u32,
+                held,
+            ));
+        }
+        // `Sprites::finish` read the pixel at row `r * side / edge` for each of the `edge` rows;
+        // the first row that reads source row `y` is `ceil(y * edge / side)`.
+        let at = |y: usize| (y * edge).div_ceil(side);
+        let mut rgba = Vec::with_capacity(side * side * 4);
+        for y in 0..side {
+            let row = at(y) * edge;
+            for x in 0..side {
+                let offset = (row + at(x)) * 4;
+                rgba.extend_from_slice(&held[offset..offset + 4]);
+            }
+        }
+        Ok(mod_api::__private::built::atlas_sprite_pixels(
+            side as u32,
+            side as u32,
+            rgba,
+        ))
+    }
     /// The keyframe animation `id` of this published store
     /// (`assets/<namespace>/neoforge/animations/entity/<path>.json`).
     pub fn animation(&self, id: &mod_api::Identifier) -> Option<mod_api::AnimationHolder> {
@@ -169,6 +244,52 @@ impl RenderAssets {
         id: &mod_api::Identifier,
     ) -> std::result::Result<mod_api::RenderPipelineRef, mod_api::RenderPipelineError> {
         self.mod_pipelines.resolve(id)
+    }
+
+    /// The handle of the built-in or registered custom render type `id` in this published store.
+    pub fn render_type(
+        &self,
+        id: &mod_api::Identifier,
+    ) -> std::result::Result<mod_api::RenderTypeRef, mod_api::RenderTypeError> {
+        self.mod_pipelines.resolve_render_type(id)
+    }
+
+    /// The handle of the built-in entity render type `kind` drawing the dynamic texture
+    /// `texture` in this published store (`Pipelines::textured_render_type`).
+    pub fn textured_render_type(
+        &self,
+        kind: crate::mod_pipelines::BuiltinRenderType,
+        texture: &mod_api::Identifier,
+    ) -> std::result::Result<mod_api::RenderTypeRef, mod_api::RenderTypeError> {
+        self.mod_pipelines.textured_render_type(kind, texture)
+    }
+
+    /// The built-in entity render type and dynamic texture a handle from
+    /// [`Self::textured_render_type`] names.
+    pub fn textured_render_type_of(
+        &self,
+        handle: mod_api::RenderTypeRef,
+    ) -> std::result::Result<
+        (crate::mod_pipelines::BuiltinRenderType, mod_api::Identifier),
+        mod_api::RenderTypeError,
+    > {
+        self.mod_pipelines.textured_render_type_of(handle)
+    }
+
+    /// The handle of the registered compute pipeline `id` in this published store.
+    pub fn compute_pipeline(
+        &self,
+        id: &mod_api::Identifier,
+    ) -> std::result::Result<mod_api::ComputePipelineRef, mod_api::ComputePipelineError> {
+        self.mod_pipelines.compute().resolve(id)
+    }
+
+    /// The handle of the registered pipeline modifier `id` (static across resource reloads).
+    pub fn pipeline_modifier(
+        &self,
+        id: &mod_api::Identifier,
+    ) -> std::result::Result<mod_api::PipelineModifierRef, mod_api::RenderPipelineError> {
+        crate::mod_pipelines::resolve_modifier(id)
     }
 
     /// Validate a handle for an API that only accepts registered standalone models.
@@ -204,10 +325,11 @@ impl RenderAssets {
 }
 
 /// The block sprites' pixels for a renderer to upload. Once a renderer has
-/// them ([`Self::pack`]) they are kept lz4-compressed: the GPU holds the
+/// them ([`Self::pack`]) they are kept lz4-compressed in blocks: the GPU holds the
 /// texture array, and the copy only serves a renderer made again (another
 /// window, a lost device, another graphics API), which waits for
-/// [`Self::get`] to uncompress them. Shared by the window and the workers'
+/// [`Self::get`] to uncompress them, or a read of one range ([`Self::range`]),
+/// which uncompresses only the blocks it touches. Shared by the window and the workers'
 /// `RenderAssets`, so the compressed form replaces the raw one in place.
 pub struct SpritePixels(Arc<PixelStore>);
 struct PixelStore {
@@ -216,8 +338,12 @@ struct PixelStore {
     packing: std::sync::atomic::AtomicBool,
     /// As built; dropped once `packed` holds them.
     raw: std::sync::Mutex<Option<Arc<Vec<u8>>>>,
-    packed: std::sync::OnceLock<Vec<u8>>,
+    /// `raw` in lz4 blocks of [`PACKED_BLOCK`] bytes (the last may be shorter).
+    packed: std::sync::OnceLock<Vec<Vec<u8>>>,
 }
+/// Uncompressed bytes per lz4 block of packed sprite pixels: a read of one layer
+/// uncompresses this much at most beyond the layer itself.
+const PACKED_BLOCK: usize = 64 * 1024;
 impl SpritePixels {
     pub fn new(pixels: Vec<u8>) -> Self {
         Self(Arc::new(PixelStore {
@@ -238,14 +364,39 @@ impl SpritePixels {
     pub fn get(&self) -> Arc<Vec<u8>> {
         let raw = self.0.raw.lock().unwrap_or_else(|e| e.into_inner()).clone();
         raw.unwrap_or_else(|| {
-            let packed = self.0.packed.get().map(Vec::as_slice).unwrap_or_default();
             Arc::new(
-                lz4_flex::decompress_size_prepended(packed)
-                    .ok()
-                    .filter(|p| p.len() == self.0.len)
+                self.unpack(0, self.0.len)
                     .unwrap_or_else(|| vec![0; self.0.len]),
             )
         })
+    }
+    /// The `bytes` bytes from byte `from` of the pixels, uncompressing only the blocks they
+    /// lie in once packed. None when the range reaches past [`Self::len`].
+    pub fn range(&self, from: usize, bytes: usize) -> Option<Vec<u8>> {
+        let end = from.checked_add(bytes).filter(|end| *end <= self.0.len)?;
+        let raw = self.0.raw.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        match raw {
+            Some(raw) => raw.get(from..end).map(<[u8]>::to_vec),
+            None => Some(self.unpack(from, end).unwrap_or_else(|| vec![0; bytes])),
+        }
+    }
+    /// Bytes `from..end` (within `len`) out of the packed blocks; None when they are not packed
+    /// yet or a block does not decode to its size.
+    fn unpack(&self, from: usize, end: usize) -> Option<Vec<u8>> {
+        let packed = self.0.packed.get()?;
+        let mut out = Vec::with_capacity(end - from);
+        if from == end {
+            return Some(out);
+        }
+        for index in from / PACKED_BLOCK..=(end - 1) / PACKED_BLOCK {
+            let start = index * PACKED_BLOCK;
+            let size = PACKED_BLOCK.min(self.0.len - start);
+            let block = lz4_flex::decompress_size_prepended(packed.get(index)?)
+                .ok()
+                .filter(|block| block.len() == size)?;
+            out.extend_from_slice(&block[from.max(start) - start..end.min(start + size) - start]);
+        }
+        Some(out)
     }
     /// Keep them compressed from now on, once a renderer has uploaded them:
     /// compressed on a thread of their own, the raw copy dropped after.
@@ -258,7 +409,11 @@ impl SpritePixels {
         let job = move || {
             let raw = store.raw.lock().unwrap_or_else(|e| e.into_inner()).clone();
             if let Some(raw) = raw {
-                let _ = store.packed.set(lz4_flex::compress_prepend_size(&raw));
+                let _ = store.packed.set(
+                    raw.chunks(PACKED_BLOCK)
+                        .map(lz4_flex::compress_prepend_size)
+                        .collect(),
+                );
                 // `get` reads the compressed copy from here on.
                 *store.raw.lock().unwrap_or_else(|e| e.into_inner()) = None;
             }
@@ -366,6 +521,14 @@ impl Assets {
     pub fn reload(&self, root: &crate::resource_source::ResourceRoot) -> Result<RenderAssets> {
         RenderAssets::load(root, self)
     }
+    /// [`Assets::reload`] with mod-registered emissive overlays collected for this reload.
+    pub fn reload_with_emissive(
+        &self,
+        root: &crate::resource_source::ResourceRoot,
+        emissive_sprites: &[mod_api::Answered<mod_api::EmissiveSpriteRegistration>],
+    ) -> Result<RenderAssets> {
+        RenderAssets::load_with_parsed(root, self, true, None, emissive_sprites)
+    }
     /// [`Assets::reload`] with the model library already parsed.
     ///
     /// Parsing it reads every model file under `assets/`, which needs no
@@ -378,10 +541,19 @@ impl Assets {
         root: &crate::resource_source::ResourceRoot,
         parsed: crate::model_library::ParsedModels,
     ) -> Result<RenderAssets> {
-        RenderAssets::load_with_parsed(root, self, true, Some(parsed))
+        RenderAssets::load_with_parsed(root, self, true, Some(parsed), &[])
     }
-    /// [`Assets::reload`] for a server, which draws nothing: the sprites'
-    /// layers, without the block or item models or the textures' pixels.
+    /// [`Assets::reload_with_models`] with mod-registered emissive overlays collected for this
+    /// resource load.
+    pub fn reload_with_models_and_emissive(
+        &self,
+        root: &crate::resource_source::ResourceRoot,
+        parsed: crate::model_library::ParsedModels,
+        emissive_sprites: &[mod_api::Answered<mod_api::EmissiveSpriteRegistration>],
+    ) -> Result<RenderAssets> {
+        RenderAssets::load_with_parsed(root, self, true, Some(parsed), emissive_sprites)
+    }
+    /// [`Assets::reload`] for a server, which has no sprites or baked models.
     pub fn reload_for_server(
         &self,
         root: &crate::resource_source::ResourceRoot,
@@ -399,7 +571,7 @@ impl RenderAssets {
         assets: &Assets,
         draws: bool,
     ) -> Result<Self> {
-        Self::load_with_parsed(root, assets, draws, None)
+        Self::load_with_parsed(root, assets, draws, None, &[])
     }
     /// `parsed`: the model library when a caller parsed it ahead of this
     /// (see [`Assets::reload_with_models`]); otherwise it is parsed here.
@@ -408,15 +580,18 @@ impl RenderAssets {
         assets: &Assets,
         draws: bool,
         parsed: Option<crate::model_library::ParsedModels>,
+        emissive_sprites: &[mod_api::Answered<mod_api::EmissiveSpriteRegistration>],
     ) -> Result<Self> {
         let registry = assets.registry;
         let mut sprites = if draws {
             crate::sprites::Sprites::with_disk_cache(root)
         } else {
-            crate::sprites::Sprites::for_server(root.source().clone())
+            crate::sprites::Sprites::default()
         };
-        for name in MATERIALS {
-            sprites.insert(&format!("minecraft:block/{name}"))?;
+        if draws {
+            for name in MATERIALS {
+                sprites.insert(&format!("minecraft:block/{name}"))?;
+            }
         }
         // A server draws no block and no item: its block models (about 24 MB
         // baked) and item model library (7 MB) stay empty.
@@ -453,35 +628,39 @@ impl RenderAssets {
             let _step = crate::spans::startup::step("core.item_library");
             parsed.into_item_library()
         };
-        // Fluids are drawn by the fluid renderer, not block models; breaking
-        // progress uses the destroy-stage overlays.
-        for name in [
-            "water_still",
-            "water_flow",
-            "water_overlay",
-            "lava_still",
-            "lava_flow",
-        ] {
-            sprites.insert_in_blocks(&format!("minecraft:block/{name}"))?;
-        }
-        for model in crate::fluid_models::resolved() {
+        if draws {
+            // Fluids are drawn by the fluid renderer, not block models; breaking
+            // progress uses the destroy-stage overlays. Ensure the missing texture
+            // sprite is always present in the blocks atlas for missing-sprite fallbacks.
+            sprites.insert_in_blocks("minecraft:missingno")?;
             for name in [
-                Some(&model.still),
-                Some(&model.flowing),
-                model.overlay.as_ref(),
-            ]
-            .into_iter()
-            .flatten()
-            {
-                sprites.insert_in_blocks(name)?;
+                "water_still",
+                "water_flow",
+                "water_overlay",
+                "lava_still",
+                "lava_flow",
+            ] {
+                sprites.insert_in_blocks(&format!("minecraft:block/{name}"))?;
             }
-        }
-        if crate::fluid_models::any_flat_look() {
-            sprites.insert_flat(crate::fluid_models::FLAT_SPRITE)?;
-        }
-        for stage in 0..10 {
-            sprites.insert(&format!("minecraft:block/destroy_stage_{stage}"))?;
-            sprites.insert(&format!("minecraft:block/destroy_oit_stage_{stage}"))?;
+            for model in crate::fluid_models::resolved() {
+                for name in [
+                    Some(&model.still),
+                    Some(&model.flowing),
+                    model.overlay.as_ref(),
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    sprites.insert_in_blocks(name)?;
+                }
+            }
+            if crate::fluid_models::any_flat_look() {
+                sprites.insert_flat(crate::fluid_models::FLAT_SPRITE)?;
+            }
+            for stage in 0..10 {
+                sprites.insert(&format!("minecraft:block/destroy_stage_{stage}"))?;
+                sprites.insert(&format!("minecraft:block/destroy_oit_stage_{stage}"))?;
+            }
         }
         let fusion = if draws {
             let _step = crate::spans::startup::step("core.fusion");
@@ -494,9 +673,7 @@ impl RenderAssets {
         } else {
             Default::default()
         };
-        let mut emissive = Vec::new();
         let mut connected = if draws {
-            crate::native_emissive::load(root.source(), &mut sprites);
             // A side's sprite, for rules that connect by tile: the first quad facing it.
             let catalog = &models.catalog;
             let mut found = Vec::new();
@@ -546,14 +723,14 @@ impl RenderAssets {
         }
         // After the connected tiles: a tile identical to a block shares its layer, and the
         // overlays skip shared layers.
-        if draws {
-            emissive = crate::native_emissive::load_optifine(root.source(), &mut sprites);
-        }
-        sprites.save_disk_cache();
-        if draws {
-            sprites.finish();
+        let emissive_layers = if draws {
+            crate::native_emissive::load_layers(root.source(), emissive_sprites, &mut sprites)
         } else {
-            sprites.finish_without_pixels();
+            Vec::new()
+        };
+        if draws {
+            sprites.save_disk_cache();
+            sprites.finish();
         }
         // `finish` grows the buffer by doubling: keep only the bytes in use.
         sprites.pixels.shrink_to_fit();
@@ -577,17 +754,26 @@ impl RenderAssets {
             sprite_layers: sprites.layers,
             sprite_names,
             file_layers: sprites.files,
-            emissive,
+            emissive_layers,
             translucent_layers: sprites.translucent,
             sprite_mips: sprites.mips,
+            oversized_sprites: sprites.oversized,
             pbr_normals: sprites.normals,
             pbr_specular: sprites.specular,
             pbr_size: sprites.pbr_size,
             connected,
             fusion,
-            mod_animations: crate::mod_animations::Animations::load(root.source()),
+            mod_animations: if draws {
+                crate::mod_animations::Animations::load(root.source())
+            } else {
+                Default::default()
+            },
             // A required pipeline that doesn't build fails the load: nothing of it is published.
-            mod_pipelines: crate::mod_pipelines::Pipelines::load(root.source(), generation)?,
+            mod_pipelines: if draws {
+                crate::mod_pipelines::Pipelines::load(root.source(), generation)?
+            } else {
+                Default::default()
+            },
             generation,
         })
     }
@@ -779,9 +965,207 @@ mod tests {
                 .0
                 .packed
                 .get()
-                .is_some_and(|p| p.len() < pixels.len())
+                .is_some_and(|p| p.iter().map(Vec::len).sum::<usize>() < pixels.len())
         );
         assert_eq!(*stored.get(), pixels);
         assert_eq!(stored.len(), pixels.len());
+    }
+
+    #[test]
+    fn a_range_of_packed_pixels_reads_across_blocks() {
+        // Three blocks and a bit: the ranges lie in one block, across a boundary, over
+        // two boundaries, at the very end, and past it.
+        let pixels: Vec<u8> = (0..3 * super::PACKED_BLOCK + 100)
+            .map(|i| (i * 13 % 251) as u8)
+            .collect();
+        let stored = super::SpritePixels::new(pixels.clone());
+        stored.pack();
+        let started = std::time::Instant::now();
+        while stored.0.raw.lock().unwrap().is_some() {
+            assert!(started.elapsed().as_secs() < 10, "packing never finished");
+            std::thread::yield_now();
+        }
+        for (from, bytes) in [
+            (10, 20),
+            (65_530, 12),
+            (65_000, 70_000),
+            (3 * 65_536, 100),
+            (7, 0),
+        ] {
+            assert_eq!(
+                stored.range(from, bytes).as_deref(),
+                Some(&pixels[from..from + bytes]),
+                "{bytes} bytes from {from}"
+            );
+        }
+        assert_eq!(stored.range(3 * 65_536 + 1, 100), None);
+        assert_eq!(stored.range(usize::MAX, 2), None);
+    }
+}
+
+#[cfg(test)]
+mod atlas_sprite_pixels_tests {
+    use super::{RenderAssets, SpritePixels};
+    use crate::{
+        mipmap::Settings,
+        resource_source::ResourceSource,
+        sprites::{Sprites, resample},
+    };
+    use mod_api::{AtlasSpriteError, SpriteRef};
+
+    fn sprite(array: u32, layer: u32) -> SpriteRef {
+        SpriteRef {
+            array,
+            layer,
+            animated: false,
+            cutout: false,
+        }
+    }
+
+    /// An atlas of `edge`-pixel layers holding each native frame scaled up as `Sprites::finish` does.
+    fn atlas(edge: u32, natives: &[(u32, Vec<u8>)]) -> RenderAssets {
+        let mut atlas = RenderAssets::unpublished();
+        atlas.generation = 1;
+        atlas.sprite_size = edge;
+        atlas.texture_layers = natives.len() as u32;
+        atlas.sprite_mips = natives
+            .iter()
+            .map(|(side, _)| Settings {
+                native_size: *side,
+                ..Default::default()
+            })
+            .collect();
+        atlas.pixels = SpritePixels::new(
+            natives
+                .iter()
+                .flat_map(|(side, frame)| resample(frame, *side, edge))
+                .collect(),
+        );
+        atlas
+    }
+
+    fn frame(side: u32, seed: u8) -> Vec<u8> {
+        (0..side * side * 4)
+            .map(|i| (i as u8).wrapping_mul(31).wrapping_add(seed))
+            .collect()
+    }
+
+    #[test]
+    fn a_small_sprite_comes_back_at_its_own_size() {
+        let (small, whole, odd) = (frame(4, 1), frame(16, 2), frame(3, 3));
+        let atlas = atlas(
+            16,
+            &[(4, small.clone()), (16, whole.clone()), (3, odd.clone())],
+        );
+        for (layer, side, expected) in [(0, 4, small), (1, 16, whole), (2, 3, odd)] {
+            let read = atlas
+                .atlas_sprite_pixels(sprite(0, layer), u32::MAX)
+                .unwrap();
+            assert_eq!((read.width, read.height), (side, side));
+            assert_eq!(read.rgba, expected, "layer {layer}");
+        }
+    }
+
+    /// A sprite larger than the array's edge comes back at its own size from the frame
+    /// `Sprites::finish` kept, not from the layer it holds shrunk (#5814).
+    #[test]
+    fn a_sprite_above_the_edge_comes_back_at_its_own_size() {
+        let big = frame(8, 9);
+        let mut shrunk = atlas(2, &[(2, frame(2, 1)), (2, frame(2, 2))]);
+        shrunk.sprite_mips[1].native_size = 8;
+        shrunk.oversized_sprites.insert(1, (8, big.clone()));
+        let read = shrunk.atlas_sprite_pixels(sprite(0, 1), u32::MAX).unwrap();
+        assert_eq!((read.width, read.height), (8, 8));
+        assert_eq!(read.rgba, big);
+        // The layer beside it still reads from the array.
+        let other = shrunk.atlas_sprite_pixels(sprite(0, 0), u32::MAX).unwrap();
+        assert_eq!(other.rgba, frame(2, 1));
+    }
+
+    /// `Sprites::finish` keeps the frame each layer larger than the edge starts on, at its own
+    /// size, and nothing of a layer that fits.
+    #[test]
+    fn the_frame_a_shrunk_layer_starts_on_is_kept_at_its_own_size() {
+        use std::sync::Arc;
+        let (small, big, second) = (frame(16, 3), frame(32, 4), frame(32, 5));
+        let native = [
+            (16, Arc::new(vec![small]), 0),
+            (32, Arc::new(vec![big, second.clone()]), 1),
+            (16, Arc::new(vec![frame(16, 6)]), 0),
+        ];
+        let kept = crate::sprites::oversized_frames(&native, 16);
+        assert_eq!(kept.into_iter().collect::<Vec<_>>(), [(1, (32, second))]);
+        assert!(crate::sprites::oversized_frames(&native, 32).is_empty());
+    }
+
+    #[test]
+    fn arrays_split_the_layers() {
+        let atlas = atlas(2, &[(2, frame(2, 1)), (2, frame(2, 2)), (2, frame(2, 3))]);
+        let read = atlas.atlas_sprite_pixels(sprite(1, 0), 2).unwrap();
+        assert_eq!(read.rgba, frame(2, 3));
+        let second = atlas.atlas_sprite_pixels(sprite(0, 1), 2).unwrap();
+        assert_eq!(second.rgba, frame(2, 2));
+    }
+
+    #[test]
+    fn an_animated_sprite_reads_back_the_frame_it_starts_on() {
+        // A sheet of two solid 16 x 16 frames, the animation starting on the second.
+        let root =
+            std::env::temp_dir().join(format!("sunrise-sprite-start-{}", std::process::id()));
+        let directory = root.join("assets/test/textures");
+        std::fs::create_dir_all(&directory).unwrap();
+        let sheet: Vec<u8> = [[10, 20, 30, 255], [200, 100, 50, 255]]
+            .iter()
+            .flat_map(|texel| texel.repeat(16 * 16))
+            .collect();
+        let path = directory.join("start.png");
+        let mut encoder = png::Encoder::new(std::fs::File::create(&path).unwrap(), 16, 32);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder
+            .write_header()
+            .unwrap()
+            .write_image_data(&sheet)
+            .unwrap();
+        std::fs::write(
+            path.with_extension("png.mcmeta"),
+            r#"{"animation":{"frames":[1,0]}}"#,
+        )
+        .unwrap();
+        let mut sprites = Sprites::new(ResourceSource::directory(root.clone()));
+        let layer = sprites.insert("test:start").unwrap();
+        sprites.finish();
+        std::fs::remove_dir_all(&root).unwrap();
+        let mut atlas = RenderAssets::unpublished();
+        atlas.generation = 1;
+        atlas.sprite_size = sprites.size;
+        atlas.texture_layers = sprites.count() as u32;
+        atlas.sprite_mips = sprites.mips;
+        atlas.pixels = SpritePixels::new(sprites.pixels);
+        let read = atlas
+            .atlas_sprite_pixels(sprite(0, layer), u32::MAX)
+            .unwrap();
+        assert_eq!((read.width, read.height), (16, 16));
+        assert_eq!(read.rgba, [200, 100, 50, 255].repeat(16 * 16));
+    }
+
+    #[test]
+    fn a_reference_with_no_sprite_is_refused_and_nothing_published_is_not_ready() {
+        let atlas = atlas(2, &[(2, frame(2, 1))]);
+        for bad in [
+            sprite(0, 1),
+            sprite(1, 0),
+            sprite(0, 2),
+            sprite(u32::MAX, u32::MAX),
+        ] {
+            assert_eq!(
+                atlas.atlas_sprite_pixels(bad, 2),
+                Err(AtlasSpriteError::NoSuchSprite)
+            );
+        }
+        assert_eq!(
+            RenderAssets::unpublished().atlas_sprite_pixels(sprite(0, 0), 1),
+            Err(AtlasSpriteError::NotReady)
+        );
     }
 }

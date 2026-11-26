@@ -177,7 +177,8 @@ public final class VanillaBlockEntityRenderOracle {
                         submit.addProperty("y", (float) args[2]);
                         submit.addProperty("text", text((FormattedCharSequence) args[3]));
                         submit.addProperty("shadow", (boolean) args[4]);
-                        submit.addProperty("mode", args[5].toString());
+                        var mode = (Font.DisplayMode) args[5];
+                        submit.addProperty("mode", mode.name());
                         submit.addProperty("light", (int) args[6]);
                         submit.addProperty("color", (int) args[7]);
                         submit.addProperty("background", (int) args[8]);
@@ -186,7 +187,7 @@ public final class VanillaBlockEntityRenderOracle {
                         submit.add("glyphs", glyphs(sequence, (float) args[1], (float) args[2], (int) args[7], (int) args[6], pose.last().pose()));
                         boolean[] obfuscated = {false};
                         sequence.accept((index, style, c) -> { obfuscated[0] |= style.isObfuscated(); return true; });
-                        if (!obfuscated[0]) submit.add("textVertices", textVertices(sequence, (float) args[1], (float) args[2], (int) args[7] | 0xff000000, (int) args[9] == 0 ? 0 : (int) args[9] | 0xff000000, (int) args[6]));
+                        if (!obfuscated[0]) submit.add("textVertices", textVertices(sequence, (float) args[1], (float) args[2], (int) args[7] | 0xff000000, (int) args[9] == 0 ? 0 : (int) args[9] | 0xff000000, (int) args[6], mode));
                     }
                     case "submitCustomGeometry" -> {
                         var pose = (PoseStack) args[0];
@@ -305,28 +306,33 @@ public final class VanillaBlockEntityRenderOracle {
         return result;
     }
 
-    static JsonArray textVertices(FormattedCharSequence sequence, float x, float y, int color, int outline, int light) {
+    static JsonArray textVertices(FormattedCharSequence sequence, float x, float y, int color, int outline, int light, Font.DisplayMode submittedMode) {
+        var result = new JsonArray();
+        if (outline != 0) {
+            recordTextVertices(result, font.prepare8xTextOutline(sequence, x, y, outline), light, Font.DisplayMode.NORMAL);
+        }
+        recordTextVertices(result, font.prepareText(sequence, x, y, color, false, false, 0), light,
+            outline == 0 ? submittedMode : Font.DisplayMode.POLYGON_OFFSET);
+        return result;
+    }
+
+    // Capture the prepared glyphs in the two modes of TextFeatureRenderer.renderText, on one plane.
+    static void recordTextVertices(JsonArray result, Font.PreparedText prepared, int light, Font.DisplayMode mode) {
         var verts = new ArrayList<float[]>();
         var consumer = recorder(verts);
         var pose = new Matrix4f();
-        var visitor = new Font.GlyphVisitor() {
+        prepared.visit(new Font.GlyphVisitor() {
             @Override public void acceptRenderable(net.minecraft.client.gui.font.TextRenderable renderable) {
                 renderable.render(pose, consumer, light, false);
             }
-        };
-        if (outline != 0) {
-            font.prepare8xTextOutline(sequence, x, y, outline).visit(visitor);
-            pose.translate(0, 0, 0.05F); // Sunrise's POLYGON_OFFSET substitute.
-        }
-        font.prepareText(sequence, x, y, color, false, false, 0).visit(visitor);
-        var result = new JsonArray();
+        });
         for (float[] v : verts) {
             var point = new JsonArray();
             point.add(v[0]); point.add(v[1]); point.add(v[2]);
             point.add(Integer.toUnsignedLong(Float.floatToRawIntBits(v[3])));
+            point.add(mode.name());
             result.add(point);
         }
-        return result;
     }
 
     static DyeColor dye(String name) {

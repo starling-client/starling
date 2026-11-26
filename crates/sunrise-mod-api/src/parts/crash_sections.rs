@@ -17,6 +17,7 @@ impl PartRegistrar {
             mod_index: self.mod_index,
             label,
             section,
+            panicked: Default::default(),
         });
     }
 }

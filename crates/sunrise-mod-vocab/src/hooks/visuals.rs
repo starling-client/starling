@@ -1,5 +1,4 @@
 //! The `visuals` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0001
 
 pub trait Hooks {
     /// The world frame's local, world-space rim and colored-light sources.

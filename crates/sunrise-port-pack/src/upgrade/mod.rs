@@ -29,6 +29,13 @@ use std::{collections::BTreeMap, fs, path::Path};
 /// 26.3's data pack format (`version.json`'s `pack_version.data_major`).
 pub const PACK_FORMAT: u64 = 121;
 
+/// The data folders (`data/<namespace>/<folder>/`) 26.2 read whose files 26.3 reads from another
+/// folder, in 26.3's format: (26.2's folder, 26.3's).
+pub const RENAMED_FOLDERS: [(&str, &str); 2] = [
+    ("worldgen/configured_carver", "worldgen/carver"),
+    ("worldgen/configured_feature", "worldgen/feature"),
+];
+
 /// What the upgrade did and what it could not do faithfully.
 #[derive(Default, Debug)]
 pub struct Report {
@@ -99,11 +106,10 @@ pub fn upgrade_pack(files: &BTreeMap<String, Vec<u8>>) -> (BTreeMap<String, Vec<
             }
             _ => None,
         };
-        let path = match file.registry.as_str() {
-            "worldgen/configured_carver" => file.with_registry("worldgen/carver"),
-            "worldgen/configured_feature" => file.with_registry("worldgen/feature"),
-            _ => path.clone(),
-        };
+        let path = RENAMED_FOLDERS
+            .iter()
+            .find(|(old, _)| *old == file.registry)
+            .map_or_else(|| path.clone(), |(_, new)| file.with_registry(new));
         match upgraded {
             Some(u) => {
                 *report.upgraded.entry(file.registry.clone()).or_default() += 1;

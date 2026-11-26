@@ -22,10 +22,10 @@ ServerChunkCache.getChunkForLighting	inline	crates/sunrise-client-render/src/str
 ServerChunkCache.runDistanceManagerUpdates	inline	crates/sunrise-client/src/game.rs::Game::update_chunk_tickets	ticket levels are recomputed once a tick from players and forced chunks
 ServerChunkCache.isPositionTicking	port	crates/sunrise-client/src/game/blocks/level_access.rs::GameLevel::is_ticking_chunk	block-ticking ticket level and a lit chunk with its neighbours loaded
 ServerChunkCache.close	inline	crates/sunrise-client/src/game/world/autosave.rs::Game::save_game	save with wait; nothing else to close
-ServerChunkCache.broadcastChangedChunks	port	crates/sunrise-client/src/lan/hub.rs::Hub::broadcast_block_changes	block changes grouped by section as BlockUpdate or SectionBlocksUpdate, plus block entity data; light is in broadcast_light_changes
+ServerChunkCache.broadcastChangedChunks	port	crates/sunrise-client/src/lan/hub/block_changes.rs::Hub::broadcast_block_changes	block changes grouped by section as BlockUpdate or SectionBlocksUpdate, plus block entity data; light is in broadcast_light_changes
 ServerChunkCache.getFullChunk	inline	crates/sunrise-client/src/game/mobs/natural_spawning.rs::Game::spawn_natural	the spawn pass reads World::chunks directly
 ServerChunkCache.blockChanged	inline	crates/sunrise-client-render/src/world.rs::World::set	World::set pushes the position onto block_log, which the hub drains
-ServerChunkCache.onLightUpdate	port	crates/sunrise-client/src/lan/hub.rs::Hub::broadcast_light_changes	light_log read once a tick; sent to players for whom the column is on the tracked border
+ServerChunkCache.onLightUpdate	port	crates/sunrise-client/src/lan/hub/block_changes.rs::Hub::broadcast_light_changes	light_log read once a tick; sent to players for whom the column is on the tracked border
 ServerChunkCache.addTicketAndLoadWithRadius	inline	crates/sunrise-client-render/src/streaming.rs::Streaming::update	spawn search and guest placement wait for streaming to produce the columns; no ticket-with-radius future
 ServerChunkCache.MainThreadExecutor.pollTask	inline	crates/sunrise-client-render/src/streaming.rs::Streaming::update	chunk-system updates run once per tick (streaming and ticket levels); there is no task queue to poll
 ServerEntity.isFullPrecisionEncodingRequired	port	crates/sunrise-client/src/lan/entity.rs::full_precision_required	an item's box against a wall after a vertical or horizontal collision decides the full position sync; primed TNT and a happy ghast take the precise branch before it
@@ -42,7 +42,7 @@ ServerLevel.tickThunder	port	crates/sunrise-client/src/game/entities/lightning.r
 ServerLevel.findLightningTargetAround	port	crates/sunrise-client/src/game/entities/lightning.rs::Game::lightning_target
 ServerLevel.announceSleepStatus	port	crates/sunrise-client/src/game/network/lan_actions/sleep.rs::Game::announce_sleep_status
 ServerLevel.getMoonBrightness	inline	crates/sunrise-client/src/game/mobs/creatures/mod.rs::Game::local_difficulty	MOON_BRIGHTNESS table indexed by day / 24000 mod 8
-ServerLevel.prepareWeather	port	crates/sunrise-client/src/save.rs::Level::read	rain and thunder levels start at 1 when the saved flags are on
+ServerLevel.prepareWeather	port	crates/sunrise-client/src/save/level.rs::Level::read	rain and thunder levels start at 1 when the saved flags are on
 ServerLevel.advanceWeatherCycle	port	crates/sunrise-client-render/src/world.rs::Weather::tick_timers	level fade in tick_levels, game events broadcast in Hub::sync_world
 ServerLevel.resetWeatherCycle	inline	crates/sunrise-client/src/game.rs::Game::tick_sleep	the sleep-through-night reset; /weather sets the timers itself
 ServerLevel.tickFluid	port	crates/sunrise-world/src/level/tick.rs::Behaviours::scheduled_step
@@ -54,7 +54,7 @@ ServerLevel.save	port	crates/sunrise-client/src/game.rs::Game::save_level
 ServerLevel.saveLevelData	port	crates/sunrise-client/src/game/world/autosave.rs::Game::save_game_metadata
 ServerLevel.getEntities	inline	crates/sunrise-client/src/game/administration/commands/mod.rs::Game::select_in_level	entity selectors filter the per-kind entity lists
 ServerLevel.addDuringTeleport	inline	crates/sunrise-client/src/game/blocks/nether_portal.rs::Game::resolve_arrivals	mobs, items, boats and carts waiting for a portal exit join the level with the chunk entities; players go through Hub::respawn
-ServerLevel.addPlayer	inline	crates/sunrise-client/src/lan/hub.rs::Hub::place_new_player
+ServerLevel.addPlayer	inline	crates/sunrise-client/src/lan/hub.rs::Hub::finish_player_join
 ServerLevel.addEntity	inline	crates/sunrise-client/src/game/mobs/creatures/mod.rs::Game::spawn_mob	mobs go in Game::mobs; other kinds have their own lists
 ServerLevel.tryAddFreshEntityWithPassengers	inline	crates/sunrise-client/src/game/world/persist.rs::Game::load_mob	gap: minor: loads a mob with its Passengers but never refuses a UUID that is already loaded, so /summon with a fixed UUID twice makes two
 ServerLevel.unload	inline	crates/sunrise-client/src/game.rs::Game::update_world	unloaded columns drop their block entities and names, and their entities are saved out
@@ -85,9 +85,9 @@ ServerLevel.EntityCallbacks.onDestroyed	inline	crates/sunrise-client/src/lan/way
 ServerLevel.EntityCallbacks.onTrackingStart	inline	crates/sunrise-client/src/lan/entity.rs::Entities::tick	an entity is tracked the first tick the level lists it; guests, waypoints and the sleep list are polled each tick, and there are no separate dragon part entities
 ServerLevel.EntityCallbacks.onTrackingEnd	inline	crates/sunrise-client/src/lan/entity.rs::Entities::tick	an entity the level stops listing is removed from every viewer (RemoveEntities)
 ServerPlayer.<init>	port	crates/sunrise-client/src/lan/guest.rs::Guest::new
-ServerPlayer.readAdditionalSaveData	port	crates/sunrise-client/src/save.rs::Level::read_player	gap: minor: entered_nether_pos, last_explosion_impact_pos and spawn_extra_particles_on_fall are not read back (kept verbatim in player_extra); post_effects, previousPlayerGameType, the recipe book, respawn, shoulders, warden tracker and raid omen are read
-ServerPlayer.addAdditionalSaveData	port	crates/sunrise-client/src/save.rs::Level::player_tag	gap: minor: writes only what it reads; the keys still listed above come from the loaded file unchanged
-ServerPlayer.saveParentVehicle	port	crates/sunrise-client/src/save.rs::Level::player_tag	the RootVehicle {Attach, Entity} tree goes in the player compound (lan/playerdata.rs::store for a guest), so the ride comes back on the next login
+ServerPlayer.readAdditionalSaveData	port	crates/sunrise-client/src/save/level.rs::Level::read_player	gap: minor: entered_nether_pos, last_explosion_impact_pos and spawn_extra_particles_on_fall are not read back (kept verbatim in player_extra); post_effects, previousPlayerGameType, the recipe book, respawn, shoulders, warden tracker and raid omen are read
+ServerPlayer.addAdditionalSaveData	port	crates/sunrise-client/src/save/level.rs::Level::player_tag	gap: minor: writes only what it reads; the keys still listed above come from the loaded file unchanged
+ServerPlayer.saveParentVehicle	port	crates/sunrise-client/src/save/level.rs::Level::player_tag	the RootVehicle {Attach, Entity} tree goes in the player compound (lan/playerdata.rs::store for a guest), so the ride comes back on the next login
 ServerPlayer.loadAndSpawnParentVehicle	port	crates/sunrise-client/src/game/world/persist.rs::Game::restore_saved_vehicle	the mount is spawned from RootVehicle.Entity and the player is put back on it (`riding`)
 ServerPlayer.saveEnderPearls	inline	crates/sunrise-client/src/game/world/persist.rs::Game::entity_chunks	a thrown pearl is saved with its chunk as an ordinary entity (entity_nbt::throwable_to_nbt), not in the player file; gap: minor: a pearl in a chunk that never saves, a stasis chamber's, is not kept
 ServerPlayer.loadAndSpawnEnderPearl	inline	crates/sunrise-client/src/game/world/persist.rs::Game::spawn_loaded_entities	entity_nbt::throwable_from_nbt spawns a saved pearl back, in the chunk's own level; there is no per-player list to read
@@ -124,16 +124,16 @@ ServerPlayer.onEffectsRemoved	port	crates/sunrise-client/src/lan/hub.rs::Hub::sy
 ServerPlayer.magicCrit	port	crates/sunrise-client/src/lan/containers.rs::Hub::critical_hit
 ServerPlayer.onUpdateAbilities	inline	crates/sunrise-client/src/lan/hub.rs::Hub::set_game_mode	abilities go out with a game mode change; there is no other way abilities change
 ServerPlayer.createCommandSourceStack	inline	crates/sunrise-client/src/game/network/lan_actions/commands.rs::Game::run_guest_command	the guest is swapped in as the acting player and its permission level applied
-ServerPlayer.sendSystemMessage	port	crates/sunrise-client/src/lan/hub.rs::Hub::system_message
+ServerPlayer.sendSystemMessage	port	crates/sunrise-client/src/lan/hub/chat.rs::Hub::system_message
 ServerPlayer.sendBuildLimitMessage	port	crates/sunrise-client/src/game/network/lan_actions/packets.rs::Game::build_limit_message	the build.tooHigh and build.tooLow overlay at the world height limits
 ServerPlayer.getIpAddress	skip:server		for ban-ip and the dedicated server log
-ServerPlayer.updateOptions	port	crates/sunrise-client/src/lan/hub.rs::Hub::process_inbox	the ClientInformation arm: view distance, main hand, model parts and chat visibility are kept
+ServerPlayer.updateOptions	port	crates/sunrise-client/src/lan/hub/moves.rs::Hub::process_inbox	the ClientInformation arm: view distance, main hand, model parts and chat visibility are kept
 ServerPlayer.clientInformation	skip:java		getter
-ServerPlayer.sendServerStatus	port	crates/sunrise-client/src/lan/hub.rs::Hub::place_new_player	ServerData with the motd and icon at join
+ServerPlayer.sendServerStatus	port	crates/sunrise-client/src/lan/hub.rs::Hub::finish_player_join	ServerData with the motd and icon at join
 ServerPlayer.updateInvisibilityStatus	inline	crates/sunrise-client/src/lan/hub.rs::guest_body	a spectator is always invisible, else the invisibility effect decides; guest_body feeds the shared flags sent by ServerEntity.sendDirtyEntityData (shared_flags)
 ServerPlayer.drop	port	crates/sunrise-client/src/game.rs::Game::player_drop	item_dropped and drop statistics, thrower set
 ServerPlayer.calculateGameModeForNewPlayer	port	crates/sunrise-client/src/game/network/lan/mod.rs::Game::lan_guest_joined	default or forced game mode for a new or force-gamemode guest
-ServerPlayer.storeGameTypes	port	crates/sunrise-client/src/save.rs::Level::player_tag	both are saved: playerGameType, and previousPlayerGameType (absent when unset, as storeNullable is), read back into previous_game_mode
+ServerPlayer.storeGameTypes	port	crates/sunrise-client/src/save/level.rs::Level::player_tag	both are saved: playerGameType, and previousPlayerGameType (absent when unset, as storeNullable is), read back into previous_game_mode
 ServerPlayer.shouldFilterMessageTo	skip:service		text filtering
 ServerPlayer.mayInteract	inline	crates/sunrise-client/src/game/network/lan_actions/packets.rs::Game::under_spawn_protection	gap: minor: same as ServerLevel.mayInteract, no world border check
 ServerPlayer.onItemPickup	port	crates/sunrise-client/src/game/interface/advancements/mod.rs::Game::trigger_thrown_picked_up_by_player	a taken stack whose owner is another player fires thrown_item_picked_up_by_player, whole or partial
@@ -143,4 +143,4 @@ ServerPlayer.removeVehicle	inline	crates/sunrise-client/src/game/network/lan_ent
 ServerPlayer.getKnownSpeed	port	crates/sunrise-client/src/game/items/spear.rs::Game::known_player_movement	a rider's speed is its root vehicle's (mob_speed walks up the mounts); a guest's is the movement it last reported
 ServerPlayer.onEquippedItemBroken	port	crates/sunrise-client/src/game.rs::Game::damage_held	gap: minor: only the held item counts toward the broken statistic; breaking armour is not counted
 ServerPlayer.registerAndUpdateEnderPearlTicket	missing		minor: a thrown ender pearl holds no chunk of its own (no ENDER_PEARL ticket); it is saved only with a chunk that saves, so one in an unloaded chunk is gone
-ServerPlayer.debugSubscriptions	skip:debug		debug subscriptions for the debug screen
+ServerPlayer.debugSubscriptions	port	crates/sunrise-client/src/lan/containers.rs::Hub::tick_time_subscribers	the stored request is read only for an operator

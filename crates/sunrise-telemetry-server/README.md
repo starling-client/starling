@@ -32,7 +32,7 @@ The totals are grouped per version, OS, GPU vendor and render distance. Each gro
 
 ## Benchmarks summary
 
-`src/summary.rs` makes it with the same rules as the website's `scripts/benchmarks.mjs` (horizon-rust/horizon-site), which bakes the page's fallback copy; both are tested against the same fixtures (`tests/fixtures/benchmarks/` here, copied in the site's repository).
+`src/summary.rs` makes it with the same rules as the website's `scripts/benchmarks.mjs` (`sunrise-org/sunny`), which bakes the page's fallback copy; both are tested against the same fixtures (`tests/fixtures/benchmarks/` here, copied in the site's repository).
 
 - Only reports that compare: a version 1 `sunrise-benchmark-report` of the standard flight over the four scenes, VSync off, no frame cap, on screen, from Sunrise or plain vanilla, naming its GPU and CPU.
 - A group (GPU, CPU, render distance, game) is published only with **at least 3 different installs**. Each install counts once: the median of its runs, then the median across installs.

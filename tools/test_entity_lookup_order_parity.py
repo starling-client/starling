@@ -8,11 +8,12 @@ import json
 import os
 import subprocess
 
-try:
-    from . import lab, oracle_harness as h
-except ImportError:
-    import lab
-    import oracle_harness as h
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, oracle_harness as h
 
 
 def snapshots(output):

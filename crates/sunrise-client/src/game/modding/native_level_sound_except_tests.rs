@@ -2,7 +2,7 @@
 //! connection inside the game.
 
 use super::native_guest_turn_tests::with_guests;
-use mod_api::SoundSource;
+use mod_api::{HostTransaction, SoundSource};
 use std::sync::{Arc, mpsc};
 use sunrise_client::lan::{Out, PlayerSender};
 use sunrise_protocol::{buf::Reader, packets::play::Clientbound as C};
@@ -120,7 +120,7 @@ fn a_level_sound_inside_a_transaction_waits_for_commit_and_discards_on_rollback(
                     .unwrap();
 
                 // Rolled-back transaction: nothing is queued while open and nothing publishes on abort.
-                let rolled = mod_api::run_transaction(game, |game, _| {
+                let rolled = game.storage_transaction(|game, _| {
                     assert!(game.level_play_sound(
                         level,
                         bell,
@@ -154,8 +154,8 @@ fn a_level_sound_inside_a_transaction_waits_for_commit_and_discards_on_rollback(
 
                 // Nested transactions: an aborted child drops its sound; a committed child waits for root
                 // commit and respects `except`.
-                let committed = mod_api::run_transaction(game, |game, _| {
-                    let inner_abort = mod_api::run_transaction(game, |game, _| {
+                let committed = game.storage_transaction(|game, _| {
+                    let inner_abort = game.storage_transaction(|game, _| {
                         assert!(game.level_play_sound(
                             level,
                             anvil,
@@ -169,7 +169,7 @@ fn a_level_sound_inside_a_transaction_waits_for_commit_and_discards_on_rollback(
                     });
                     assert!(inner_abort.is_err());
 
-                    let inner_commit = mod_api::run_transaction(game, |game, _| {
+                    let inner_commit = game.storage_transaction(|game, _| {
                         assert!(game.level_play_sound(
                             level,
                             bell,
@@ -258,7 +258,8 @@ fn entity_sounds_bound_sounds_particles_and_level_events_defer_inside_transactio
                     )
                     .unwrap(),
                 );
-                game.audio.set_listener(at, 0.0, 0.0);
+                game.audio
+                    .set_listener(at, [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]);
                 let end_portal_spawn = "minecraft:block.end_portal.spawn";
                 let portal_plays = |game: &super::Game<'_>| {
                     game.audio.heard.get(end_portal_spawn).copied().unwrap_or(0)
@@ -320,7 +321,7 @@ fn entity_sounds_bound_sounds_particles_and_level_events_defer_inside_transactio
                 // untouched.
                 let portal_before_abort = portal_plays(game);
                 assert!(game.ui.rules.set("global_sound_events", Value::Bool(true)));
-                let rolled = mod_api::run_transaction(game, |game, _| {
+                let rolled = game.storage_transaction(|game, _| {
                     assert!(game.entity_play_sound(entity13, burp, 1.0, 1.0));
                     assert!(game.entity_play_bound_sound(
                         entity13,
@@ -378,8 +379,8 @@ fn entity_sounds_bound_sounds_particles_and_level_events_defer_inside_transactio
                 // without advancing RNG; committed child waits for root commit, then publishes every
                 // effect directly in call order.
                 let portal_before_commit = portal_plays(game);
-                let committed = mod_api::run_transaction(game, |game, _| {
-                    let aborted_child = mod_api::run_transaction(game, |game, _| {
+                let committed = game.storage_transaction(|game, _| {
+                    let aborted_child = game.storage_transaction(|game, _| {
                         assert!(game.entity_play_sound(entity13, anvil, 1.0, 1.0));
                         assert!(game.entity_play_bound_sound(
                             entity13,
@@ -410,7 +411,7 @@ fn entity_sounds_bound_sounds_particles_and_level_events_defer_inside_transactio
                     });
                     assert!(aborted_child.is_err());
 
-                    let kept_child = mod_api::run_transaction(game, |game, _| {
+                    let kept_child = game.storage_transaction(|game, _| {
                         assert!(game.entity_play_sound(entity13, burp, 1.0, 1.0));
                         assert!(game.entity_play_bound_sound(
                             entity13,
@@ -571,7 +572,7 @@ fn entity_sounds_bound_sounds_particles_and_level_events_defer_inside_transactio
                 clear_queues(game);
                 decode_packets(&rx12);
                 decode_packets(&rx13);
-                let rolled_plain = mod_api::run_transaction(game, |game, _| {
+                let rolled_plain = game.storage_transaction(|game, _| {
                     assert!(game.level_global_level_event(level, 1023, pos, 0));
                     assert!(game.lan_events.is_empty());
                     assert!(game.lan_global_events.is_empty());
@@ -583,7 +584,7 @@ fn entity_sounds_bound_sounds_particles_and_level_events_defer_inside_transactio
                 assert!(game.lan_global_events.is_empty());
                 assert!(game.audio.capture.as_ref().unwrap().is_empty());
 
-                let committed_plain = mod_api::run_transaction(game, |game, _| {
+                let committed_plain = game.storage_transaction(|game, _| {
                     assert!(game.level_global_level_event(level, 1023, pos, 0));
                     assert!(game.lan_events.is_empty());
                     Ok::<(), ()>(())
@@ -697,10 +698,10 @@ fn cross_level_transaction_replays_effects_in_request_level_and_preserves_packet
                 // Open an outer transaction in Overworld, switch to Nether and open a Nether
                 // transaction to issue Nether effects across all effect kinds, commit the Nether
                 // transaction, and switch back to Overworld before closing the outer transaction.
-                let committed = mod_api::run_transaction(game, |game, _| {
+                let committed = game.storage_transaction(|game, _| {
                     game.enter_level(super::Dim::Nether).unwrap();
                     let nether = game.level("minecraft:the_nether").unwrap();
-                    let nether_committed = mod_api::run_transaction(game, |game, _| {
+                    let nether_committed = game.storage_transaction(|game, _| {
                         assert!(game.level_global_level_event(nether, 1038, pos, 0));
                         assert!(game.player_stop_sound(player13, Some(end_portal_spawn), None));
                         assert!(game.player_play_sound(
@@ -784,7 +785,7 @@ fn cross_level_transaction_replays_effects_in_request_level_and_preserves_packet
                 // transaction is open replay into the Nether on Overworld commit in exact order
                 // and stay discarded on abort.
                 let nether_handle = game.level("minecraft:the_nether").unwrap();
-                let cross_abort = mod_api::run_transaction(game, |game, _| {
+                let cross_abort = game.storage_transaction(|game, _| {
                     assert!(game.level_send_particles(
                         nether_handle,
                         &heart,
@@ -809,7 +810,7 @@ fn cross_level_transaction_replays_effects_in_request_level_and_preserves_packet
                 assert!(decode_packets(&rx12).is_empty());
                 assert!(decode_packets(&rx13).is_empty());
 
-                let cross_commit = mod_api::run_transaction(game, |game, _| {
+                let cross_commit = game.storage_transaction(|game, _| {
                     assert!(game.level_send_particles(
                         nether_handle,
                         &heart,
@@ -857,7 +858,7 @@ fn cross_level_transaction_replays_effects_in_request_level_and_preserves_packet
                 decode_packets(&rx13);
                 game.as_guest(13, |game| {
                     let acting = game.player(13).unwrap();
-                    let res = mod_api::run_transaction(game, |game, _| {
+                    let res = game.storage_transaction(|game, _| {
                         assert!(game.player_stop_sound(acting, Some(anvil), None));
                         assert!(game.level_global_level_event(nether, 1038, pos, 0));
                         assert!(game.player_stop_sound(acting, Some(end_portal_spawn), None));
@@ -917,7 +918,7 @@ fn committed_effects_leave_unrelated_queues_intact_prevent_sound_recursion_and_k
                         && !self.triggered.swap(true, Ordering::SeqCst)
                         && let HostSide::Server(server) = host
                     {
-                        let res: Result<(), ()> = server.transaction(|server, _| {
+                        let res = server.transaction(|server, _| {
                             assert!(e.level.play_sound(
                                 server,
                                 "minecraft:block.anvil.use",
@@ -927,7 +928,7 @@ fn committed_effects_leave_unrelated_queues_intact_prevent_sound_recursion_and_k
                                 1.0,
                                 None,
                             ));
-                            Ok(())
+                            Ok::<(), ()>(())
                         });
                         assert!(res.is_ok());
                     }
@@ -1006,7 +1007,7 @@ fn committed_effects_leave_unrelated_queues_intact_prevent_sound_recursion_and_k
                     // the call (observing `bell`, emitting `anvil`, and observing `anvil`), while commit
                     // performs pure delivery with zero mod callbacks and leaves unrelated queues intact.
                     let mut calls_before_commit = 0;
-                    let committed = mod_api::run_transaction(game, |game, _| {
+                    let committed = game.storage_transaction(|game, _| {
                         assert!(game.level_play_sound(
                             level,
                             bell,
@@ -1062,6 +1063,9 @@ fn committed_effects_leave_unrelated_queues_intact_prevent_sound_recursion_and_k
                     // Part C: Non-player `living_hurt_and_break` inside an aborted transaction mutates the
                     // mob's equipment immediately (unjournaled), so its break event (49 for Head) must
                     // also emit immediately rather than being discarded on rollback.
+                    game.world
+                        .chunks
+                        .insert((0, 0), Arc::new(sunrise_client::chunk::Chunk::empty(0, 0)));
                     game.lan_entity_events.clear();
                     let zombie_id = game
                         .spawn_mob(
@@ -1082,7 +1086,7 @@ fn committed_effects_leave_unrelated_queues_intact_prevent_sound_recursion_and_k
                         .set_equipment_stack(EquipmentSlot::Head as usize, Some(helmet));
                     let zombie_living = LivingRef::new(game.entity(zombie_id).unwrap());
 
-                    let aborted = mod_api::run_transaction(game, |game, _| {
+                    let aborted = game.storage_transaction(|game, _| {
                         let broken =
                             game.living_hurt_and_break(zombie_living, EquipmentSlot::Head, 1);
                         assert!(broken.is_some(), "helmet breaks on final durability point");
@@ -1144,7 +1148,7 @@ fn sound_listener_transaction_preserves_mixed_play_and_stop_packet_order() {
                         && let HostSide::Server(server) = host
                     {
                         let player = self.target.lock().unwrap().expect("target player set");
-                        let res: Result<(), ()> = server.transaction(|server, _| {
+                        let res = server.transaction(|server, _| {
                             assert!(e.level.play_sound(
                                 server,
                                 "minecraft:block.anvil.use",
@@ -1170,7 +1174,7 @@ fn sound_listener_transaction_preserves_mixed_play_and_stop_packet_order() {
                                     None,
                                 ));
                             }
-                            Ok(())
+                            Ok::<(), ()>(())
                         });
                         assert!(res.is_ok());
                         if let Some(victim) = self.hurt_on_bell.lock().unwrap().take() {
@@ -1287,7 +1291,7 @@ fn sound_listener_transaction_preserves_mixed_play_and_stop_packet_order() {
                         .hub
                         .set_sound_seeds(LegacyRandom::new(0xBEEF_1234));
                     let mut expected_seeds = LegacyRandom::new(0xBEEF_1234);
-                    let aborted = mod_api::run_transaction(game, |game, _| {
+                    let aborted = game.storage_transaction(|game, _| {
                         assert!(game.level_play_sound(
                             level,
                             bell,
@@ -1310,7 +1314,7 @@ fn sound_listener_transaction_preserves_mixed_play_and_stop_packet_order() {
                     emit_extra_burp.store(true, Ordering::SeqCst);
                     calls.store(0, Ordering::SeqCst);
                     let mut calls_at_closure_end = 0;
-                    let committed = mod_api::run_transaction(game, |game, _| {
+                    let committed = game.storage_transaction(|game, _| {
                         assert!(game.level_play_sound(
                             level,
                             bell,
@@ -1360,7 +1364,7 @@ fn sound_listener_transaction_preserves_mixed_play_and_stop_packet_order() {
                     // it) while keeping its own committed `[sound_anvil, stop_anvil]` in order.
                     emit_extra_burp.store(false, Ordering::SeqCst);
                     cancel_bell.store(true, Ordering::SeqCst);
-                    let replaced = mod_api::run_transaction(game, |game, _| {
+                    let replaced = game.storage_transaction(|game, _| {
                         assert!(game.level_play_sound(
                             level,
                             bell,
@@ -1394,6 +1398,9 @@ fn sound_listener_transaction_preserves_mixed_play_and_stop_packet_order() {
                     // 4. Non-transactional tick flush (`lan_sounds`): listener's committed transaction
                     // delivers `[sound_anvil, stop_anvil]` before the outer bell sound, but the
                     // raw hit sound appended by the callback belongs to the next flush.
+                    game.world
+                        .chunks
+                        .insert((0, 0), Arc::new(sunrise_client::chunk::Chunk::empty(0, 0)));
                     let victim = game
                         .spawn_mob(
                             "minecraft:zombie",
@@ -1618,7 +1625,7 @@ fn always_producing_sound_listener_stops_at_one_nested_sound_in_and_out_of_trans
 
                     // 1. Positional sound inside a transaction: `bell` dispatches `at_position` once,
                     // which plays `anvil` without re-entering the hook; commit sends `[pos_anvil, pos_bell]`.
-                    let committed = mod_api::run_transaction(game, |game, _| {
+                    let committed = game.storage_transaction(|game, _| {
                         assert!(game.level_play_sound(
                             level,
                             bell,
@@ -1667,7 +1674,7 @@ fn always_producing_sound_listener_stops_at_one_nested_sound_in_and_out_of_trans
                     // 3. Entity-bound sound inside a transaction: dispatches `at_entity` once; its nested
                     // positional (`burp`) and bound (`anvil`) sounds bypass BOTH level-sound hooks and
                     // commit in call order `[pos_burp, ent_anvil, ent_bell]`.
-                    let entity_tx = mod_api::run_transaction(game, |game, _| {
+                    let entity_tx = game.storage_transaction(|game, _| {
                         assert!(game.entity_play_bound_sound(
                             entity13,
                             bell,
@@ -1778,9 +1785,8 @@ fn cross_level_sound_listener_block_writes_journal_by_dimension_on_abort_commit_
             struct NetherBlockHook {
                 pos: [i32; 3],
                 write_state: mod_api::BlockState,
-                second_write_state: mod_api::BlockState,
                 /// 0 = direct (no Nether tx), 1 = nested Nether tx commits, 2 = nested Nether tx
-                /// aborts, 3 = raw Nether tx left open, 4 = two-deep raw Nether txs left open.
+                /// aborts.
                 tx_mode: Arc<AtomicUsize>,
                 calls: Arc<AtomicUsize>,
             }
@@ -1809,28 +1815,18 @@ fn cross_level_sound_listener_block_writes_journal_by_dimension_on_abort_commit_
                         };
                         match self.tx_mode.load(Ordering::SeqCst) {
                             1 => {
-                                let committed = mod_api::run_transaction(server, |server, _| {
+                                let committed = server.transaction(|server, _| {
                                     write_state(server, self.write_state);
                                     Ok::<(), ()>(())
                                 });
                                 assert!(committed.is_ok());
                             }
                             2 => {
-                                let aborted = mod_api::run_transaction(server, |server, _| {
+                                let aborted = server.transaction(|server, _| {
                                     write_state(server, self.write_state);
                                     Err::<(), ()>(())
                                 });
                                 assert!(aborted.is_err());
-                            }
-                            3 => {
-                                let _abandoned = server.transaction_open();
-                                write_state(server, self.write_state);
-                            }
-                            4 => {
-                                let _outer_abandoned = server.transaction_open();
-                                write_state(server, self.write_state);
-                                let _inner_abandoned = server.transaction_open();
-                                write_state(server, self.second_write_state);
                             }
                             _ => write_state(server, self.write_state),
                         }
@@ -1857,7 +1853,6 @@ fn cross_level_sound_listener_block_writes_journal_by_dimension_on_abort_commit_
                 let iron = state(game, "minecraft:iron_block");
                 let gold = state(game, "minecraft:gold_block");
                 let emerald_api = emerald.try_into_api().unwrap();
-                let iron_api = iron.try_into_api().unwrap();
 
                 // Populate chunk (0, 0) in both dimensions with distinct blocks at the exact same coords.
                 if !game.world.chunks.contains_key(&(0, 0)) {
@@ -1893,7 +1888,6 @@ fn cross_level_sound_listener_block_writes_journal_by_dimension_on_abort_commit_
                     Box::new(NetherBlockHook {
                         pos,
                         write_state: emerald_api,
-                        second_write_state: iron_api,
                         tx_mode: Arc::clone(&tx_mode),
                         calls: Arc::clone(&calls),
                     }),
@@ -1905,7 +1899,7 @@ fn cross_level_sound_listener_block_writes_journal_by_dimension_on_abort_commit_
                     // level-owned journals are per-dimension, so Nether's direct write does not
                     // enter Overworld's journal and Overworld's abort never overwrites Overworld's
                     // diamond_block with Nether's original netherrack.
-                    let aborted = mod_api::run_transaction(game, |game, _| {
+                    let aborted = game.storage_transaction(|game, _| {
                         assert!(game.level_play_sound(
                             nether,
                             bell,
@@ -1933,7 +1927,7 @@ fn cross_level_sound_listener_block_writes_journal_by_dimension_on_abort_commit_
                         g.world.set(pos[0], pos[1], pos[2], netherrack).unwrap();
                     })
                     .unwrap();
-                    let aborted_both = mod_api::run_transaction(game, |game, _| {
+                    let aborted_both = game.storage_transaction(|game, _| {
                         assert_eq!(
                             game.level_set_block(overworld, pos, gold, BlockUpdateFlags::NEIGHBORS),
                             Ok(true)
@@ -1963,30 +1957,24 @@ fn cross_level_sound_listener_block_writes_journal_by_dimension_on_abort_commit_
                     })
                     .unwrap();
                     tx_mode.store(2, Ordering::SeqCst);
-                    let nether_abort_overworld_commit =
-                        mod_api::run_transaction(game, |game, _| {
-                            assert_eq!(
-                                game.level_set_block(
-                                    overworld,
-                                    pos,
-                                    gold,
-                                    BlockUpdateFlags::NEIGHBORS
-                                ),
-                                Ok(true)
-                            );
-                            assert!(game.level_play_sound(
-                                nether,
-                                bell,
-                                at,
-                                SoundSource::Blocks,
-                                1.0,
-                                1.0,
-                                None,
-                            ));
-                            assert_eq!(block_in(game, super::Dim::Overworld), gold);
-                            assert_eq!(block_in(game, super::Dim::Nether), netherrack);
-                            Ok::<(), ()>(())
-                        });
+                    let nether_abort_overworld_commit = game.storage_transaction(|game, _| {
+                        assert_eq!(
+                            game.level_set_block(overworld, pos, gold, BlockUpdateFlags::NEIGHBORS),
+                            Ok(true)
+                        );
+                        assert!(game.level_play_sound(
+                            nether,
+                            bell,
+                            at,
+                            SoundSource::Blocks,
+                            1.0,
+                            1.0,
+                            None,
+                        ));
+                        assert_eq!(block_in(game, super::Dim::Overworld), gold);
+                        assert_eq!(block_in(game, super::Dim::Nether), netherrack);
+                        Ok::<(), ()>(())
+                    });
                     assert!(nether_abort_overworld_commit.is_ok());
                     assert_eq!(calls.load(Ordering::SeqCst), 3);
                     assert_eq!(game.dim, super::Dim::Overworld);
@@ -2000,7 +1988,7 @@ fn cross_level_sound_listener_block_writes_journal_by_dimension_on_abort_commit_
                     // when the outer Overworld transaction later ABORTS (even while Overworld also
                     // wrote to `pos`), Overworld restores diamond_block and Nether stays emerald_block.
                     tx_mode.store(1, Ordering::SeqCst);
-                    let nested_abort = mod_api::run_transaction(game, |game, _| {
+                    let nested_abort = game.storage_transaction(|game, _| {
                         assert_eq!(
                             game.level_set_block(overworld, pos, gold, BlockUpdateFlags::NEIGHBORS),
                             Ok(true)
@@ -2029,7 +2017,7 @@ fn cross_level_sound_listener_block_writes_journal_by_dimension_on_abort_commit_
                         g.world.set(pos[0], pos[1], pos[2], netherrack).unwrap();
                     })
                     .unwrap();
-                    let both_commit = mod_api::run_transaction(game, |game, _| {
+                    let both_commit = game.storage_transaction(|game, _| {
                         assert_eq!(
                             game.level_set_block(overworld, pos, gold, BlockUpdateFlags::NEIGHBORS),
                             Ok(true)
@@ -2069,21 +2057,24 @@ fn cross_level_sound_listener_block_writes_journal_by_dimension_on_abort_commit_
                     game.spawn_item(stack, at, [0.0; 3], 10);
                     let entity = game.entity(game.dropped.last().unwrap().id).unwrap();
                     let item = game.item_entity(entity).unwrap();
-                    tx_mode.store(3, Ordering::SeqCst);
-                    let abandoned_abort = mod_api::run_transaction(game, |game, _| {
+                    let abandoned_abort = game.storage_transaction(|game, _| {
                         assert_eq!(
                             game.level_set_block(overworld, pos, gold, BlockUpdateFlags::NEIGHBORS),
                             Ok(true)
                         );
-                        assert!(game.level_play_sound(
-                            nether,
-                            bell,
-                            at,
-                            SoundSource::Blocks,
-                            1.0,
-                            1.0,
-                            None,
-                        ));
+                        game.with_effect_level(super::Dim::Nether, |g| {
+                            let _ = g.open_storage_transaction();
+                            assert_eq!(
+                                g.level_set_block(
+                                    nether,
+                                    pos,
+                                    emerald,
+                                    BlockUpdateFlags::NEIGHBORS
+                                ),
+                                Ok(true)
+                            );
+                        })
+                        .unwrap();
                         assert_eq!(game.dim, super::Dim::Overworld);
                         assert_eq!(game.transactions.len(), 2);
                         assert_eq!(block_in(game, super::Dim::Overworld), gold);
@@ -2095,7 +2086,7 @@ fn cross_level_sound_listener_block_writes_journal_by_dimension_on_abort_commit_
                             .flatten()
                             .unwrap();
                         stack.set_count(2).unwrap();
-                        assert_eq!(item.set_stack(game, stack), Ok(true));
+                        assert_eq!(item.set_stack(game, Some(stack)), Ok(true));
                         assert_eq!(item.pickup_delay(game), Some(0));
                         assert_eq!(item.with_stack(game, |stack| stack.count()), Some(2));
                         Err::<(), ()>(())
@@ -2103,7 +2094,6 @@ fn cross_level_sound_listener_block_writes_journal_by_dimension_on_abort_commit_
                     assert!(abandoned_abort.is_err());
                     assert_eq!(item.pickup_delay(game), Some(10));
                     assert_eq!(item.with_stack(game, |stack| stack.count()), Some(1));
-                    assert_eq!(calls.load(Ordering::SeqCst), 6);
                     assert_eq!(game.dim, super::Dim::Overworld);
                     assert!(game.transactions.is_empty());
                     assert!(!defers_retirement_in(game, super::Dim::Overworld));
@@ -2114,20 +2104,24 @@ fn cross_level_sound_listener_block_writes_journal_by_dimension_on_abort_commit_
                     // 7. Abandoned raw Nether transaction during an Overworld transaction that
                     // COMMITS: the abandoned Nether child aborts in the Nether (restoring
                     // netherrack) while the Overworld parent commits its own gold_block write.
-                    let abandoned_commit = mod_api::run_transaction(game, |game, _| {
+                    let abandoned_commit = game.storage_transaction(|game, _| {
                         assert_eq!(
                             game.level_set_block(overworld, pos, gold, BlockUpdateFlags::NEIGHBORS),
                             Ok(true)
                         );
-                        assert!(game.level_play_sound(
-                            nether,
-                            bell,
-                            at,
-                            SoundSource::Blocks,
-                            1.0,
-                            1.0,
-                            None,
-                        ));
+                        game.with_effect_level(super::Dim::Nether, |g| {
+                            let _ = g.open_storage_transaction();
+                            assert_eq!(
+                                g.level_set_block(
+                                    nether,
+                                    pos,
+                                    emerald,
+                                    BlockUpdateFlags::NEIGHBORS
+                                ),
+                                Ok(true)
+                            );
+                        })
+                        .unwrap();
                         assert_eq!(game.dim, super::Dim::Overworld);
                         assert_eq!(game.transactions.len(), 2);
                         assert_eq!(block_in(game, super::Dim::Overworld), gold);
@@ -2135,7 +2129,6 @@ fn cross_level_sound_listener_block_writes_journal_by_dimension_on_abort_commit_
                         Ok::<(), ()>(())
                     });
                     assert!(abandoned_commit.is_ok());
-                    assert_eq!(calls.load(Ordering::SeqCst), 7);
                     assert_eq!(game.dim, super::Dim::Overworld);
                     assert!(game.transactions.is_empty());
                     assert!(!defers_retirement_in(game, super::Dim::Overworld));
@@ -2147,21 +2140,29 @@ fn cross_level_sound_listener_block_writes_journal_by_dimension_on_abort_commit_
                     // that ABORTS: both Nether frames unwind in the Nether back to netherrack and
                     // Overworld restores diamond_block.
                     game.world.set(pos[0], pos[1], pos[2], diamond).unwrap();
-                    tx_mode.store(4, Ordering::SeqCst);
-                    let two_deep_abort = mod_api::run_transaction(game, |game, _| {
+                    let two_deep_abort = game.storage_transaction(|game, _| {
                         assert_eq!(
                             game.level_set_block(overworld, pos, gold, BlockUpdateFlags::NEIGHBORS),
                             Ok(true)
                         );
-                        assert!(game.level_play_sound(
-                            nether,
-                            bell,
-                            at,
-                            SoundSource::Blocks,
-                            1.0,
-                            1.0,
-                            None,
-                        ));
+                        game.with_effect_level(super::Dim::Nether, |g| {
+                            let _ = g.open_storage_transaction();
+                            assert_eq!(
+                                g.level_set_block(
+                                    nether,
+                                    pos,
+                                    emerald,
+                                    BlockUpdateFlags::NEIGHBORS
+                                ),
+                                Ok(true)
+                            );
+                            let _ = g.open_storage_transaction();
+                            assert_eq!(
+                                g.level_set_block(nether, pos, iron, BlockUpdateFlags::NEIGHBORS),
+                                Ok(true)
+                            );
+                        })
+                        .unwrap();
                         assert_eq!(game.dim, super::Dim::Overworld);
                         assert_eq!(game.transactions.len(), 3);
                         assert_eq!(block_in(game, super::Dim::Overworld), gold);
@@ -2169,7 +2170,6 @@ fn cross_level_sound_listener_block_writes_journal_by_dimension_on_abort_commit_
                         Err::<(), ()>(())
                     });
                     assert!(two_deep_abort.is_err());
-                    assert_eq!(calls.load(Ordering::SeqCst), 8);
                     assert_eq!(game.dim, super::Dim::Overworld);
                     assert!(game.transactions.is_empty());
                     assert!(!defers_retirement_in(game, super::Dim::Overworld));
@@ -2180,20 +2180,29 @@ fn cross_level_sound_listener_block_writes_journal_by_dimension_on_abort_commit_
                     // 9. Two-deep abandoned raw Nether children during an Overworld transaction
                     // that COMMITS: both Nether frames abort in the Nether back to netherrack
                     // while Overworld keeps its committed gold_block write.
-                    let two_deep_commit = mod_api::run_transaction(game, |game, _| {
+                    let two_deep_commit = game.storage_transaction(|game, _| {
                         assert_eq!(
                             game.level_set_block(overworld, pos, gold, BlockUpdateFlags::NEIGHBORS),
                             Ok(true)
                         );
-                        assert!(game.level_play_sound(
-                            nether,
-                            bell,
-                            at,
-                            SoundSource::Blocks,
-                            1.0,
-                            1.0,
-                            None,
-                        ));
+                        game.with_effect_level(super::Dim::Nether, |g| {
+                            let _ = g.open_storage_transaction();
+                            assert_eq!(
+                                g.level_set_block(
+                                    nether,
+                                    pos,
+                                    emerald,
+                                    BlockUpdateFlags::NEIGHBORS
+                                ),
+                                Ok(true)
+                            );
+                            let _ = g.open_storage_transaction();
+                            assert_eq!(
+                                g.level_set_block(nether, pos, iron, BlockUpdateFlags::NEIGHBORS),
+                                Ok(true)
+                            );
+                        })
+                        .unwrap();
                         assert_eq!(game.dim, super::Dim::Overworld);
                         assert_eq!(game.transactions.len(), 3);
                         assert_eq!(block_in(game, super::Dim::Overworld), gold);
@@ -2201,7 +2210,6 @@ fn cross_level_sound_listener_block_writes_journal_by_dimension_on_abort_commit_
                         Ok::<(), ()>(())
                     });
                     assert!(two_deep_commit.is_ok());
-                    assert_eq!(calls.load(Ordering::SeqCst), 9);
                     assert_eq!(game.dim, super::Dim::Overworld);
                     assert!(game.transactions.is_empty());
                     assert!(!defers_retirement_in(game, super::Dim::Overworld));
@@ -2209,22 +2217,18 @@ fn cross_level_sound_listener_block_writes_journal_by_dimension_on_abort_commit_
                     assert_eq!(block_in(game, super::Dim::Overworld), gold);
                     assert_eq!(block_in(game, super::Dim::Nether), netherrack);
 
-                    // 10. Abandoned raw Nether root opened during `flush_native_sounds` outside
-                    // any Overworld transaction: `abort_open_transactions` from Overworld must
-                    // close the Nether frame in the Nether and keep Overworld untouched.
+                    // 10. Abandoned raw Nether root outside any Overworld transaction:
+                    // `abort_open_transactions` from Overworld must close the Nether frame in the
+                    // Nether and keep Overworld untouched.
                     game.world.set(pos[0], pos[1], pos[2], diamond).unwrap();
-                    tx_mode.store(3, Ordering::SeqCst);
-                    assert!(game.level_play_sound(
-                        nether,
-                        bell,
-                        at,
-                        SoundSource::Blocks,
-                        1.0,
-                        1.0,
-                        None,
-                    ));
-                    game.flush_native_sounds();
-                    assert_eq!(calls.load(Ordering::SeqCst), 10);
+                    game.with_effect_level(super::Dim::Nether, |g| {
+                        let _ = g.open_storage_transaction();
+                        assert_eq!(
+                            g.level_set_block(nether, pos, emerald, BlockUpdateFlags::NEIGHBORS),
+                            Ok(true)
+                        );
+                    })
+                    .unwrap();
                     assert_eq!(game.dim, super::Dim::Overworld);
                     assert_eq!(game.transactions.len(), 1);
                     assert_eq!(block_in(game, super::Dim::Overworld), diamond);
@@ -2237,11 +2241,11 @@ fn cross_level_sound_listener_block_writes_journal_by_dimension_on_abort_commit_
                     assert_eq!(block_in(game, super::Dim::Overworld), diamond);
                     assert_eq!(block_in(game, super::Dim::Nether), netherrack);
 
-                    // 11. Explicit cross-level commit of a Nether seal while Overworld is active:
+                    // 11. Explicit cross-level commit of a Nether frame while Overworld is active:
                     // commits in the Nether, publishes Nether retirement, and restores Overworld.
-                    let nether_seal = game
+                    let nether_frame = game
                         .with_effect_level(super::Dim::Nether, |g| {
-                            let seal = g.transaction_open();
+                            let frame = g.open_storage_transaction();
                             assert_eq!(
                                 g.level_set_block(
                                     nether,
@@ -2251,12 +2255,12 @@ fn cross_level_sound_listener_block_writes_journal_by_dimension_on_abort_commit_
                                 ),
                                 Ok(true)
                             );
-                            seal
+                            frame
                         })
                         .unwrap();
                     assert_eq!(game.dim, super::Dim::Overworld);
                     assert_eq!(game.transactions.len(), 1);
-                    game.transaction_close(&nether_seal, true);
+                    game.close_storage_frame(nether_frame, true);
                     assert_eq!(game.dim, super::Dim::Overworld);
                     assert!(game.transactions.is_empty());
                     assert!(!defers_retirement_in(game, super::Dim::Overworld));
@@ -2283,36 +2287,22 @@ fn cross_level_sound_listener_player_attachment_writes_rollback_to_original_and_
     in_isolated_process(
         "cross_level_sound_listener_player_attachment_writes_rollback_to_original_and_preserve_nested_merge",
         || {
-            use mod_api::{Flow, HostSide, ServerHost};
+            use mod_api::{AttachmentKey, Flow, HostSide, ServerHost};
+            use std::sync::Mutex;
             use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
             use sunrise_core::nbt::{Compound, Tag};
-            use sunrise_mod_runtime::attachments::{
-                AttachmentCodec, AttachmentError, AttachmentType, Holder,
-            };
+            use sunrise_mod_runtime::attachments::{AttachmentCodec, AttachmentError, Holder};
 
             const ORIGINAL: i32 = 10;
             const TENTATIVE_OVERWORLD: i32 = 20;
             const TENTATIVE_NETHER: i32 = 30;
-            const MARK: AttachmentType<i32> = AttachmentType {
-                namespace: "cross_level_sound_test",
-                name: "mark",
-                default: || 0,
-                codec: Some(AttachmentCodec {
-                    encode: |value| Ok(Compound::from([("n".into(), Tag::Int(*value))])),
-                    decode: |data| match data.get(&"n".into()) {
-                        Some(Tag::Int(n)) => Ok(*n),
-                        _ => Err(AttachmentError::Decode),
-                    },
-                }),
-                copy_on_death: true,
-                sync: false,
-            };
 
             struct NetherPlayerAttachmentHook {
                 player_uuid: u128,
                 expect_before: Arc<std::sync::atomic::AtomicI32>,
                 nested_tx: Arc<AtomicBool>,
                 calls: Arc<AtomicUsize>,
+                mark: Arc<Mutex<Option<AttachmentKey<i32>>>>,
             }
             #[mod_api::__subscriptions]
             impl mod_api::Hooks for NetherPlayerAttachmentHook {
@@ -2321,8 +2311,25 @@ fn cross_level_sound_listener_player_attachment_writes_rollback_to_original_and_
                     r: &mut dyn mod_api::Registrar,
                     _: &mod_api::RegistrationContext,
                 ) {
-                    r.register_attachment_type("cross_level_sound_test:mark", false)
+                    let key = r
+                        .register_attachment_type(
+                            mod_api::AttachmentDescriptor::new(
+                                "cross_level_sound_test:mark",
+                                || 0i32,
+                            )
+                            .serialize(AttachmentCodec {
+                                encode: |value| {
+                                    Ok(Compound::from([("n".into(), Tag::Int(*value))]))
+                                },
+                                decode: |data| match data.get(&"n".into()) {
+                                    Some(Tag::Int(n)) => Ok(*n),
+                                    _ => Err(AttachmentError::Decode),
+                                },
+                            })
+                            .copy_on_death(),
+                        )
                         .unwrap();
+                    *self.mark.lock().unwrap() = Some(key);
                 }
 
                 fn play_level_sound_at_position(
@@ -2335,17 +2342,18 @@ fn cross_level_sound_listener_player_attachment_writes_rollback_to_original_and_
                     }
                     self.calls.fetch_add(1, Ordering::SeqCst);
                     if let HostSide::Server(server) = host {
+                        let mark = self.mark.lock().unwrap().clone().unwrap();
                         let holder = Holder::Player(self.player_uuid);
                         assert_eq!(
-                            MARK.get_existing(server, holder),
+                            mark.get_existing(server, holder, |v| v.copied()),
                             Ok(Some(self.expect_before.load(Ordering::SeqCst))),
                             "Nether listener reaches the same live player-owned attachment map"
                         );
                         let write = |server: &mut dyn ServerHost| {
-                            MARK.set(server, holder, TENTATIVE_NETHER).unwrap();
+                            mark.set(server, holder, TENTATIVE_NETHER).unwrap();
                         };
                         if self.nested_tx.load(Ordering::SeqCst) {
-                            let merged = mod_api::run_transaction(server, |server, _| {
+                            let merged = server.transaction(|server, _| {
                                 write(server);
                                 Ok::<(), ()>(())
                             });
@@ -2361,19 +2369,23 @@ fn cross_level_sound_listener_player_attachment_writes_rollback_to_original_and_
             let expect_before = Arc::new(std::sync::atomic::AtomicI32::new(TENTATIVE_OVERWORLD));
             let nested_tx = Arc::new(AtomicBool::new(false));
             let calls = Arc::new(AtomicUsize::new(0));
-            let mods = vec![mod_api::ModEntry::new(
+            let mark = Arc::new(Mutex::new(None));
+            let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
                 "cross_level_sound_test",
                 Box::new(NetherPlayerAttachmentHook {
                     player_uuid: 12,
                     expect_before: Arc::clone(&expect_before),
                     nested_tx: Arc::clone(&nested_tx),
                     calls: Arc::clone(&calls),
+                    mark: Arc::clone(&mark),
                 }),
             )]
             .into();
 
-            mod_platform::testing::with_mods(mods, || {
+            mod_platform::testing::with_mods(mods.clone(), || {
+                crate::game::api_values::install_parts(&mods).unwrap();
                 with_guests(|game| {
+                    let mark = mark.lock().unwrap().clone().unwrap();
                     game.options.dedicated = Some(Vec::new());
                     // Load Nether once so it sits in `levels.parked` while Overworld is active.
                     game.enter_level(super::Dim::Nether).unwrap();
@@ -2386,8 +2398,11 @@ fn cross_level_sound_listener_player_attachment_writes_rollback_to_original_and_
 
                     {
                         let host: &mut dyn ServerHost = game;
-                        MARK.set(host, holder, ORIGINAL).unwrap();
-                        assert_eq!(MARK.get_existing(host, holder), Ok(Some(ORIGINAL)));
+                        mark.set(host, holder, ORIGINAL).unwrap();
+                        assert_eq!(
+                            mark.get_existing(host, holder, |v| v.copied()),
+                            Ok(Some(ORIGINAL))
+                        );
                     }
 
                     game.as_guest(12, |game| {
@@ -2395,10 +2410,10 @@ fn cross_level_sound_listener_player_attachment_writes_rollback_to_original_and_
                         // listener + abort: repeat across multiple fresh HashMap instances so
                         // hash-order randomization cannot hide duplicate-dimension snapshots.
                         for round in 0..16 {
-                            let aborted = mod_api::run_transaction(game, |game, _| {
+                            let aborted = game.storage_transaction(|game, _| {
                                 {
                                     let host: &mut dyn ServerHost = game;
-                                    MARK.set(host, holder, TENTATIVE_OVERWORLD).unwrap();
+                                    mark.set(host, holder, TENTATIVE_OVERWORLD).unwrap();
                                 }
                                 assert!(game.level_play_sound(
                                     nether,
@@ -2413,7 +2428,7 @@ fn cross_level_sound_listener_player_attachment_writes_rollback_to_original_and_
                                 {
                                     let host: &mut dyn ServerHost = game;
                                     assert_eq!(
-                                        MARK.get_existing(host, holder),
+                                        mark.get_existing(host, holder, |v| v.copied()),
                                         Ok(Some(TENTATIVE_NETHER))
                                     );
                                 }
@@ -2422,7 +2437,7 @@ fn cross_level_sound_listener_player_attachment_writes_rollback_to_original_and_
                             assert!(aborted.is_err());
                             let host: &mut dyn ServerHost = game;
                             assert_eq!(
-                                MARK.get_existing(host, holder),
+                                mark.get_existing(host, holder, |v| v.copied()),
                                 Ok(Some(ORIGINAL)),
                                 "round {round}: direct cross-level abort must restore ORIGINAL"
                             );
@@ -2434,10 +2449,10 @@ fn cross_level_sound_listener_player_attachment_writes_rollback_to_original_and_
                         // aborts -> parent keeps its ORIGINAL snapshot through nested merge.
                         nested_tx.store(true, Ordering::SeqCst);
                         for round in 0..16 {
-                            let aborted = mod_api::run_transaction(game, |game, _| {
+                            let aborted = game.storage_transaction(|game, _| {
                                 {
                                     let host: &mut dyn ServerHost = game;
-                                    MARK.set(host, holder, TENTATIVE_OVERWORLD).unwrap();
+                                    mark.set(host, holder, TENTATIVE_OVERWORLD).unwrap();
                                 }
                                 assert!(game.level_play_sound(
                                     nether,
@@ -2451,7 +2466,7 @@ fn cross_level_sound_listener_player_attachment_writes_rollback_to_original_and_
                                 {
                                     let host: &mut dyn ServerHost = game;
                                     assert_eq!(
-                                        MARK.get_existing(host, holder),
+                                        mark.get_existing(host, holder, |v| v.copied()),
                                         Ok(Some(TENTATIVE_NETHER))
                                     );
                                 }
@@ -2460,7 +2475,7 @@ fn cross_level_sound_listener_player_attachment_writes_rollback_to_original_and_
                             assert!(aborted.is_err());
                             let host: &mut dyn ServerHost = game;
                             assert_eq!(
-                                MARK.get_existing(host, holder),
+                                mark.get_existing(host, holder, |v| v.copied()),
                                 Ok(Some(ORIGINAL)),
                                 "round {round}: nested-merge cross-level abort must restore ORIGINAL"
                             );
@@ -2468,10 +2483,10 @@ fn cross_level_sound_listener_player_attachment_writes_rollback_to_original_and_
                         assert_eq!(calls.load(Ordering::SeqCst), 32);
 
                         // 3. Nested-merge commit persists the final Nether write.
-                        let committed = mod_api::run_transaction(game, |game, _| {
+                        let committed = game.storage_transaction(|game, _| {
                             {
                                 let host: &mut dyn ServerHost = game;
-                                MARK.set(host, holder, TENTATIVE_OVERWORLD).unwrap();
+                                mark.set(host, holder, TENTATIVE_OVERWORLD).unwrap();
                             }
                             assert!(game.level_play_sound(
                                 nether,
@@ -2489,7 +2504,7 @@ fn cross_level_sound_listener_player_attachment_writes_rollback_to_original_and_
                         {
                             let host: &mut dyn ServerHost = game;
                             assert_eq!(
-                                MARK.get_existing(host, holder),
+                                mark.get_existing(host, holder, |v| v.copied()),
                                 Ok(Some(TENTATIVE_NETHER))
                             );
                         }
@@ -2501,11 +2516,14 @@ fn cross_level_sound_listener_player_attachment_writes_rollback_to_original_and_
                     // rollback still restores the parked guest's attachment map.
                     {
                         let host: &mut dyn ServerHost = game;
-                        assert_eq!(MARK.get_existing(host, holder), Ok(Some(TENTATIVE_NETHER)));
-                        MARK.set(host, holder, ORIGINAL).unwrap();
+                        assert_eq!(
+                            mark.get_existing(host, holder, |v| v.copied()),
+                            Ok(Some(TENTATIVE_NETHER))
+                        );
+                        mark.set(host, holder, ORIGINAL).unwrap();
                     }
                     expect_before.store(ORIGINAL, Ordering::SeqCst);
-                    let parked_abort = mod_api::run_transaction(game, |game, _| {
+                    let parked_abort = game.storage_transaction(|game, _| {
                         game.as_guest(12, |game| {
                             assert!(game.level_play_sound(
                                 nether,
@@ -2524,7 +2542,7 @@ fn cross_level_sound_listener_player_attachment_writes_rollback_to_original_and_
                     assert_eq!(calls.load(Ordering::SeqCst), 34);
                     let host: &mut dyn ServerHost = game;
                     assert_eq!(
-                        MARK.get_existing(host, holder),
+                        mark.get_existing(host, holder, |v| v.copied()),
                         Ok(Some(ORIGINAL)),
                         "parked guest attachment restores even when first written in Nether"
                     );
@@ -2545,7 +2563,9 @@ fn same_uuid_fake_players_across_levels_rollback_attachment_health_and_inventory
     in_isolated_process(
         "same_uuid_fake_players_across_levels_rollback_attachment_health_and_inventory_independently",
         || {
-            use mod_api::{Flow, HostSide, ItemPlace, ItemResource, LivingRef, ServerHost};
+            use mod_api::{
+                AttachmentKey, Flow, HostSide, ItemPlace, ItemResource, LivingRef, ServerHost,
+            };
             use std::sync::Mutex;
             use std::sync::atomic::{AtomicUsize, Ordering};
             use sunrise_client::items::ItemStack;
@@ -2572,7 +2592,7 @@ fn same_uuid_fake_players_across_levels_rollback_attachment_health_and_inventory
                     },
                 }),
                 copy_on_death: false,
-                sync: false,
+                sync_codec: None,
             };
 
             #[derive(Clone, Copy)]
@@ -2593,7 +2613,7 @@ fn same_uuid_fake_players_across_levels_rollback_attachment_health_and_inventory
 
             fn replace_fake_slot0(
                 server: &mut dyn ServerHost,
-                tx: &mod_api::Transaction,
+                tx: &mod_api::TransactionContext,
                 item: &str,
                 count: u32,
             ) {
@@ -2611,16 +2631,17 @@ fn same_uuid_fake_players_across_levels_rollback_attachment_health_and_inventory
                 {
                     assert_eq!(
                         place.extract(server, tx, &res, existing_count),
-                        existing_count
+                        Ok(existing_count)
                     );
                 }
                 let next = item_resource(item);
-                assert_eq!(place.insert(server, tx, &next, count), count);
+                assert_eq!(place.insert(server, tx, &next, count), Ok(count));
             }
 
             struct NetherFakeWriteHook {
                 plan: Arc<Mutex<Option<FakeWritePlan>>>,
                 calls: Arc<AtomicUsize>,
+                mark: Arc<Mutex<Option<AttachmentKey<i32>>>>,
             }
             #[mod_api::__subscriptions]
             impl mod_api::Hooks for NetherFakeWriteHook {
@@ -2629,8 +2650,24 @@ fn same_uuid_fake_players_across_levels_rollback_attachment_health_and_inventory
                     r: &mut dyn mod_api::Registrar,
                     _: &mod_api::RegistrationContext,
                 ) {
-                    r.register_attachment_type("cross_level_fake_test:mark", false)
+                    let key = r
+                        .register_attachment_type(
+                            mod_api::AttachmentDescriptor::new(
+                                "cross_level_fake_test:mark",
+                                || 0i32,
+                            )
+                            .serialize(AttachmentCodec {
+                                encode: |value| {
+                                    Ok(Compound::from([("n".into(), Tag::Int(*value))]))
+                                },
+                                decode: |data| match data.get(&"n".into()) {
+                                    Some(Tag::Int(n)) => Ok(*n),
+                                    _ => Err(AttachmentError::Decode),
+                                },
+                            }),
+                        )
                         .unwrap();
+                    *self.mark.lock().unwrap() = Some(key);
                 }
 
                 fn play_level_sound_at_position(
@@ -2646,21 +2683,24 @@ fn same_uuid_fake_players_across_levels_rollback_attachment_health_and_inventory
                     };
                     self.calls.fetch_add(1, Ordering::SeqCst);
                     if let HostSide::Server(server) = host {
-                        let apply = |server: &mut dyn ServerHost, tx: &mod_api::Transaction| {
-                            MARK.set(server, Holder::Player(FAKE_UUID), plan.mark)
-                                .unwrap();
-                            replace_fake_slot0(server, tx, plan.item, plan.count);
-                            assert!(plan.living.set_health(server, plan.health));
-                        };
+                        let mark = self.mark.lock().unwrap().clone().unwrap();
+                        let apply =
+                            |server: &mut dyn ServerHost, tx: &mod_api::TransactionContext| {
+                                mark.set(server, Holder::Player(FAKE_UUID), plan.mark)
+                                    .unwrap();
+                                replace_fake_slot0(server, tx, plan.item, plan.count);
+                                assert!(plan.living.set_health(server, plan.health));
+                            };
                         if plan.nested {
-                            let merged = mod_api::run_transaction(server, |server, tx| {
+                            let merged = server.transaction(|server, tx| {
                                 apply(server, tx);
                                 Ok::<(), ()>(())
                             });
                             assert!(merged.is_ok());
                         } else {
-                            let tx = server.transaction_current().expect("active transaction");
-                            apply(server, &tx);
+                            server
+                                .current_transaction(|server, tx| apply(server, tx))
+                                .expect("active transaction");
                         }
                     }
                     Flow::Continue
@@ -2669,17 +2709,21 @@ fn same_uuid_fake_players_across_levels_rollback_attachment_health_and_inventory
 
             let plan = Arc::new(Mutex::new(None));
             let calls = Arc::new(AtomicUsize::new(0));
-            let mods = vec![mod_api::ModEntry::new(
+            let mark = Arc::new(Mutex::new(None));
+            let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
                 "cross_level_fake_test",
                 Box::new(NetherFakeWriteHook {
                     plan: Arc::clone(&plan),
                     calls: Arc::clone(&calls),
+                    mark: Arc::clone(&mark),
                 }),
             )]
             .into();
 
-            mod_platform::testing::with_mods(mods, || {
+            mod_platform::testing::with_mods(mods.clone(), || {
+                crate::game::api_values::install_parts(&mods).unwrap();
                 with_guests(|game| {
+                    let mark = mark.lock().unwrap().clone().unwrap();
                     game.options.dedicated = Some(Vec::new());
                     let holder = Holder::Player(FAKE_UUID);
                     let place = ItemPlace::PlayerSlot {
@@ -2693,9 +2737,9 @@ fn same_uuid_fake_players_across_levels_rollback_attachment_health_and_inventory
                     let ow_living = LivingRef::new(ow_fake.entity());
                     {
                         let host: &mut dyn ServerHost = game;
-                        MARK.set(host, holder, OW_MARK).unwrap();
+                        mark.set(host, holder, OW_MARK).unwrap();
                         assert!(ow_living.set_health(host, OW_HEALTH));
-                        let seeded = mod_api::run_transaction(host, |host, tx| {
+                        let seeded = host.transaction(|host, tx| {
                             replace_fake_slot0(host, tx, "minecraft:apple", 2);
                             Ok::<(), ()>(())
                         });
@@ -2710,9 +2754,9 @@ fn same_uuid_fake_players_across_levels_rollback_attachment_health_and_inventory
                     let nether_living = LivingRef::new(nether_fake.entity());
                     {
                         let host: &mut dyn ServerHost = game;
-                        MARK.set(host, holder, NETHER_MARK).unwrap();
+                        mark.set(host, holder, NETHER_MARK).unwrap();
                         assert!(nether_living.set_health(host, NETHER_HEALTH));
-                        let seeded = mod_api::run_transaction(host, |host, tx| {
+                        let seeded = host.transaction(|host, tx| {
                             replace_fake_slot0(host, tx, "minecraft:emerald", 5);
                             Ok::<(), ()>(())
                         });
@@ -2804,14 +2848,17 @@ fn same_uuid_fake_players_across_levels_rollback_attachment_health_and_inventory
                     // 1. Direct write to Nether fake only while in Nether, then abort.
                     {
                         let host: &mut dyn ServerHost = game;
-                        let aborted: Result<(), ()> = mod_api::run_transaction(host, |host, tx| {
-                            MARK.set(host, holder, 99).unwrap();
+                        let aborted = host.transaction(|host, tx| {
+                            mark.set(host, holder, 99).unwrap();
                             assert!(nether_living.set_health(host, 4.0));
                             replace_fake_slot0(host, tx, "minecraft:stick", 1);
-                            assert_eq!(MARK.get_existing(host, holder), Ok(Some(99)));
+                            assert_eq!(
+                                mark.get_existing(host, holder, |v| v.copied()),
+                                Ok(Some(99))
+                            );
                             assert_eq!(nether_living.health(host), Some(4.0));
                             assert_eq!(place.with_stack(host, |s| s.count()), Some(1));
-                            Err(())
+                            Err::<(), ()>(())
                         });
                         assert!(aborted.is_err());
                     }
@@ -2840,20 +2887,23 @@ fn same_uuid_fake_players_across_levels_rollback_attachment_health_and_inventory
                     // second write (including zero health), then outer aborts.
                     {
                         let host: &mut dyn ServerHost = game;
-                        let aborted: Result<(), ()> = mod_api::run_transaction(host, |host, tx| {
-                            MARK.set(host, holder, 50).unwrap();
+                        let aborted = host.transaction(|host, tx| {
+                            mark.set(host, holder, 50).unwrap();
                             assert!(nether_living.set_health(host, 12.0));
                             replace_fake_slot0(host, tx, "minecraft:coal", 3);
-                            let inner = mod_api::run_transaction(host, |host, inner_tx| {
-                                MARK.set(host, holder, 99).unwrap();
+                            let inner = host.transaction(|host, inner_tx| {
+                                mark.set(host, holder, 99).unwrap();
                                 replace_fake_slot0(host, inner_tx, "minecraft:stick", 1);
                                 assert!(nether_living.set_health(host, 0.0));
                                 Ok::<(), ()>(())
                             });
                             assert!(inner.is_ok());
-                            assert_eq!(MARK.get_existing(host, holder), Ok(Some(99)));
+                            assert_eq!(
+                                mark.get_existing(host, holder, |v| v.copied()),
+                                Ok(Some(99))
+                            );
                             assert_eq!(nether_living.health(host), Some(0.0));
-                            Err(())
+                            Err::<(), ()>(())
                         });
                         assert!(aborted.is_err());
                     }
@@ -2893,7 +2943,7 @@ fn same_uuid_fake_players_across_levels_rollback_attachment_health_and_inventory
                         count: 1,
                         nested: false,
                     });
-                    let cross_direct = mod_api::run_transaction(game, |game, _| {
+                    let cross_direct = game.storage_transaction(|game, _| {
                         assert!(game.level_play_sound(
                             nether,
                             bell,
@@ -2932,7 +2982,7 @@ fn same_uuid_fake_players_across_levels_rollback_attachment_health_and_inventory
                     // Cross-level nested-merge abort: first listener write direct, second listener
                     // write inside a committed nested transaction (including zero health), then
                     // outer Overworld transaction aborts.
-                    let cross_nested = mod_api::run_transaction(game, |game, _| {
+                    let cross_nested = game.storage_transaction(|game, _| {
                         *plan.lock().unwrap() = Some(FakeWritePlan {
                             living: nether_living,
                             mark: 55,
@@ -3003,7 +3053,7 @@ fn same_uuid_fake_players_across_levels_rollback_attachment_health_and_inventory
                         count: 4,
                         nested: true,
                     });
-                    let cross_commit = mod_api::run_transaction(game, |game, _| {
+                    let cross_commit = game.storage_transaction(|game, _| {
                         assert!(game.level_play_sound(
                             nether,
                             bell,

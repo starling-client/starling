@@ -16,7 +16,6 @@ static BACKEND: OnceLock<Option<Backend>> = OnceLock::new();
 pub struct Backend {
     pub registration: &'static crate::__private::RegistrationAccess,
     pub diagnostics: &'static Diagnostics,
-    pub unresolved_fluids: crate::__private::UnresolvedFluidAccess,
     pub enter: fn(ModGuardFactory, ModCall) -> ModGuard,
     pub leave: fn(State),
     pub profiler_enabled: &'static std::sync::atomic::AtomicBool,

@@ -16,8 +16,12 @@ import subprocess
 import tempfile
 import time
 
-from agent_control_e2e import Cli
-import lab
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools.agent_control_e2e import Cli
+from tools import lab
 
 
 # The gateway beside the End's spawn platform, where the player waits.

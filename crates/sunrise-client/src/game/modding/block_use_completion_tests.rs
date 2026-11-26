@@ -90,9 +90,14 @@ fn consuming_cancellation_has_one_outer_on_local_and_packet_routes() {
     )]));
     crate::game::native_guest_turn_tests::with_guests(|g| {
         g.build_registries();
-        g.world
-            .chunks
-            .insert((0, 0), Arc::new(sunrise_client::chunk::Chunk::empty(0, 0)));
+        g.world.chunks.insert(
+            (0, 0),
+            Arc::new({
+                let mut chunk = sunrise_client::chunk::Chunk::empty(0, 0);
+                chunk.lit = true; // a FULL read of a hand-made column finds it ready
+                chunk
+            }),
+        );
         let state = g
             .pack
             .assets
@@ -268,9 +273,14 @@ fn resource_gated_block_use_order_and_stacks_on_server_and_guest() {
     let _recording = Recording::start();
     crate::game::native_guest_turn_tests::with_guests(|g| {
         crate::game::native_guest_turn_tests::place_host(g);
-        g.world
-            .chunks
-            .insert((0, 0), Arc::new(sunrise_client::chunk::Chunk::empty(0, 0)));
+        g.world.chunks.insert(
+            (0, 0),
+            Arc::new({
+                let mut chunk = sunrise_client::chunk::Chunk::empty(0, 0);
+                chunk.lit = true; // a FULL read of a hand-made column finds it ready
+                chunk
+            }),
+        );
         let anchor = g
             .pack
             .assets
@@ -351,9 +361,14 @@ fn resource_gated_block_use_order_and_stacks_on_server_and_guest() {
 fn resource_gated_map_on_banner_fires_once_and_toggles_the_real_marker() {
     let _recording = Recording::start();
     crate::game::native_guest_turn_tests::with_guests(|g| {
-        g.world
-            .chunks
-            .insert((0, 0), Arc::new(sunrise_client::chunk::Chunk::empty(0, 0)));
+        g.world.chunks.insert(
+            (0, 0),
+            Arc::new({
+                let mut chunk = sunrise_client::chunk::Chunk::empty(0, 0);
+                chunk.lit = true; // a FULL read of a hand-made column finds it ready
+                chunk
+            }),
+        );
         let banner = g
             .pack
             .assets
@@ -511,9 +526,14 @@ fn block_use_listener_replacements_keep_original_on_both_routes() {
         let _recording = Recording::start();
         crate::game::native_guest_turn_tests::with_guests(|g| {
             g.build_registries();
-            g.world
-                .chunks
-                .insert((0, 0), Arc::new(sunrise_client::chunk::Chunk::empty(0, 0)));
+            g.world.chunks.insert(
+                (0, 0),
+                Arc::new({
+                    let mut chunk = sunrise_client::chunk::Chunk::empty(0, 0);
+                    chunk.lit = true; // a FULL read of a hand-made column finds it ready
+                    chunk
+                }),
+            );
             let hit = Hit {
                 pos: [3, 64, 4],
                 face: [0, 1, 0],
@@ -627,14 +647,18 @@ fn block_use_nested_originals_and_replacements_are_isolated() {
 #[test]
 #[ignore = "daily"]
 fn block_use_registry_guard_final_hand_matches_original() {
-    mod_platform::__private::install(Arc::from([]));
     let _recording = Recording::start();
-    crate::game::native_guest_turn_tests::with_guests(|g| {
+    let scan_registry = |g: &mut Game<'_>| {
         g.build_registries();
         g.set_mode_id(0);
-        g.world
-            .chunks
-            .insert((0, 0), Arc::new(sunrise_client::chunk::Chunk::empty(0, 0)));
+        g.world.chunks.insert(
+            (0, 0),
+            Arc::new({
+                let mut chunk = sunrise_client::chunk::Chunk::empty(0, 0);
+                chunk.lit = true; // a FULL read of a hand-made column finds it ready
+                chunk
+            }),
+        );
         let stone = g
             .pack
             .assets
@@ -682,6 +706,9 @@ fn block_use_registry_guard_final_hand_matches_original() {
             reports > 0,
             "registry guard exercised no consuming block uses"
         );
+    };
+    mod_platform::testing::with_mods(Arc::from([]), || {
+        crate::game::native_guest_turn_tests::with_guests(scan_registry);
     });
 }
 
@@ -731,9 +758,14 @@ fn block_use_hive_bottles_report_shrink_and_exhaustion_on_both_routes() {
     let _recording = Recording::start();
     crate::game::native_guest_turn_tests::with_guests(|g| {
         g.build_registries();
-        g.world
-            .chunks
-            .insert((0, 0), Arc::new(sunrise_client::chunk::Chunk::empty(0, 0)));
+        g.world.chunks.insert(
+            (0, 0),
+            Arc::new({
+                let mut chunk = sunrise_client::chunk::Chunk::empty(0, 0);
+                chunk.lit = true; // a FULL read of a hand-made column finds it ready
+                chunk
+            }),
+        );
         let registry = g.pack.assets.registry;
         let hive = registry.default_state("minecraft:beehive").unwrap();
         let mut full = registry.state(hive).unwrap().clone();
@@ -780,9 +812,14 @@ fn block_use_lodestone_reports_component_edit_on_both_routes() {
     let _recording = Recording::start();
     crate::game::native_guest_turn_tests::with_guests(|g| {
         g.build_registries();
-        g.world
-            .chunks
-            .insert((0, 0), Arc::new(sunrise_client::chunk::Chunk::empty(0, 0)));
+        g.world.chunks.insert(
+            (0, 0),
+            Arc::new({
+                let mut chunk = sunrise_client::chunk::Chunk::empty(0, 0);
+                chunk.lit = true; // a FULL read of a hand-made column finds it ready
+                chunk
+            }),
+        );
         let lodestone = g
             .pack
             .assets

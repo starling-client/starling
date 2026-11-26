@@ -1,6 +1,6 @@
 //! The world pass after culling, and the renderer's GPU pass timing switches and readings.
 use super::pack_post::PackPostExt as _;
-use super::{Renderer, native_pack, pack_post, pack_timing};
+use super::{Renderer, pack_post, pack_timing};
 
 pub(super) fn world_pass_after_culling<'e>(
     encoder: &'e mut wgpu::CommandEncoder,
@@ -86,29 +86,26 @@ impl Renderer {
             .as_mut()
             .map(pack_timing::PassTiming::take_frames)
             .unwrap_or_default();
-        let pack = match Self::pass_timer(&mut self.pack_post, &mut self.native) {
+        let pack = match Self::pass_timer(&mut self.pack_post) {
             Some(Some(t)) => t.take_frames(),
             _ => Vec::new(),
         };
         pack_timing::TimedFrames { own, pack }
     }
-    /// The running shader pack's timer, of either kind.
-    pub(super) fn pass_timer<'a>(
-        pack: &'a mut Option<(i32, Option<pack_post::PackPost>)>,
-        native: &'a mut Option<native_pack::NativePack>,
-    ) -> Option<&'a mut Option<pack_timing::PassTiming>> {
-        match (pack, native) {
-            (Some((_, Some(post))), _) => Some(post.pass_timer()),
-            (_, Some(native)) => Some(&mut native.timing),
+    /// The running shader pack's timer.
+    pub(super) fn pass_timer(
+        pack: &mut Option<(i32, Option<pack_post::PackPost>)>,
+    ) -> Option<&mut Option<pack_timing::PassTiming>> {
+        match pack {
+            Some((_, Some(post))) => Some(post.pass_timer()),
             _ => None,
         }
     }
     /// Each pass of the running shader pack with its median GPU time in milliseconds, while
     /// they are timed (`set_pass_timing`).
     pub fn shader_pass_times(&self) -> Vec<(String, f32)> {
-        let timer = match (&self.pack_post, &self.native) {
-            (Some((_, Some(post))), _) => post.timing_pack().as_ref(),
-            (_, Some(native)) => native.timing.as_ref(),
+        let timer = match &self.pack_post {
+            Some((_, Some(post))) => post.timing_pack().as_ref(),
             _ => None,
         };
         timer
@@ -144,9 +141,8 @@ impl Renderer {
             .as_ref()
             .map(pack_timing::PassTiming::readings)
             .filter(|r| !r.is_empty());
-        let pack = match (&self.pack_post, &self.native) {
-            (Some((_, Some(post))), _) => post.timing_pack().as_ref(),
-            (_, Some(native)) => native.timing.as_ref(),
+        let pack = match &self.pack_post {
+            Some((_, Some(post))) => post.timing_pack().as_ref(),
             _ => None,
         }
         .map(pack_timing::PassTiming::readings)

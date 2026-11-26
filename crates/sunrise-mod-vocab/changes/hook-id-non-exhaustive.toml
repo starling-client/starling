@@ -1,0 +1,3 @@
+ids = ["type:HookId"]
+why = "`HookId` is the generated, hidden index of the hook catalog, named by `Hooks::subscribed` and the Part traits' `*_subscribed`. Mods never match on it, and a new hook is an addition, so the enum is now `#[non_exhaustive]` and adding a hook no longer reads as a breaking change."
+migrate = "A `match` on `HookId` outside the API needs a `_` arm. Name a hook by `hook:<name>`, not by its `HookId`."

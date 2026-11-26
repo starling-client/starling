@@ -1,5 +1,4 @@
 //! The `entity_toggle_glide` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0209
 
 pub trait Hooks {
     /// A guest's fall flying state changed on the server. The change has

@@ -97,14 +97,23 @@ fn a_panicking_hidden_status_replacement_leaves_other_rows() {
         .into_iter()
         .enumerate()
         {
-            let batch = game.hud_layers([640, 480]);
+            let batch = game.hud([640, 480]);
             assert_eq!(take().as_slice(), expected);
-            assert!(!batch.vertices.iter().any(|v| v.color == FAILED));
+            assert_eq!(batch.vertices.iter().any(|v| v.color == FAILED), frame == 0);
             assert!(batch.vertices.iter().any(|v| v.color == SIBLING));
-            assert_eq!(game.ui.room.bottom(), 125.0);
+            assert_eq!(
+                game.ui.room.bottom(),
+                if frame == 0 { 100.0 } else { 125.0 }
+            );
             if frame == 0 {
                 // The shared queue retains the failure under F1.
-                let [(Some(toast), _)] = game.server_packs.hook_panics.as_slice() else {
+                let [
+                    crate::game::toast_manager::VisibleToast {
+                        toast: crate::game::toast_manager::Toast::Diagnostic { toast, .. },
+                        ..
+                    },
+                ] = game.toast_manager.visible.as_slice()
+                else {
                     panic!("expected one mandatory mod error toast");
                 };
                 assert_eq!(

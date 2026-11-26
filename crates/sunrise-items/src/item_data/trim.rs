@@ -97,3 +97,9 @@ pub fn to_nbt(trim: &Trim) -> Tag {
     };
     Tag::compound([("material", material), ("pattern", pattern)])
 }
+
+/// Whether `value` is a payload the modeled `minecraft:trim` component takes: a loot editor
+/// refuses any other shape instead of clearing the modeled trim while keeping the patch.
+pub fn payload_ok(value: &Tag) -> bool {
+    from_nbt(value).is_some()
+}

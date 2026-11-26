@@ -1,5 +1,4 @@
 //! The `block_dispense_armor` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0174
 
 pub trait Hooks {
     /// A dispenser equipped `item` on the first eligible `target` in front

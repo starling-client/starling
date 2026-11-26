@@ -42,10 +42,10 @@ pub fn install(first: i32, mut names: Vec<String>) -> Result<(), InstallError> {
     {
         return Err(InstallError::InvalidRange);
     }
-    if names.iter().any(|name| {
-        sunrise_core::identifier::Identifier::parse_namespaced(name)
-            .is_none_or(|id| id.namespace() == "minecraft")
-    }) {
+    if names
+        .iter()
+        .any(|name| sunrise_core::identifier::Identifier::parse_namespaced(name).is_none())
+    {
         return Err(InstallError::InvalidName);
     }
     names.sort();

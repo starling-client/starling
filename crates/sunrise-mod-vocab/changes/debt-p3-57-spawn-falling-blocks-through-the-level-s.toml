@@ -1,0 +1,83 @@
+ids = [
+    "method:prelude::EntitiesServerHost::spawn_falling_block",
+    "handle:LevelRef::spawn_falling_block",
+    "hook:entity_join_level",
+    "hook:entities_load",
+    "handle:LevelRef::visit_all_entities",
+    "handle:LevelRef::visit_entities_in",
+    "handle:LevelRef::ray_trace_entities",
+    "handle:LevelRef::ray_trace_nearest_entity",
+    "behaviour:level_visit_all_entities",
+    "behaviour:level_visit_entities_in",
+    "behaviour:level_ray_trace_entities",
+    "behaviour:level_ray_trace_nearest_entity",
+    "behaviour:entity_lookup_accessible_sections",
+    "hook:entity_join_level.entity",
+    "type:EntityJoinLevelEvent.entity",
+]
+why = """
+Vanilla 26.3 `FallingBlockEntity.fall` replaces the source with its legacy fluid
+state and adds the entity through `ServerLevel.addFreshEntity`.
+`PersistentEntitySectionManager.addEntity` files it in a section even if that
+section is not accessible or ticking. This path does not require a loaded chunk
+or use `SummonCommand.createEntity`'s `Level.isInSpawnableBounds` check.
+NeoForge asks `EntityJoinLevelEvent` during admission, not after later scheduled
+block ticks. Its `CommonHooks.onPlayerTossEvent` asks about the item before adding
+that item; it does not delay another entity's admission.
+
+The old server helper took a dimension string, accepted only the level in place,
+imposed a 1,024-entity quota and clamped live velocity. Both natural and typed
+spawns now use one fresh falling-block path and ask the same join hook. The typed
+call works for any open server level and leaves the source untouched.
+`Entity.setDeltaMovement` keeps the live velocity; `ClientboundAddEntityPacket`
+and `ClientboundSetEntityMotionPacket` quantize it only at encoding (`LpVec3`).
+Air is admitted and discarded on its first tick (`FallingBlockEntity.tick`).
+
+`PersistentEntitySectionManager` defaults unlisted columns to hidden and
+integrates their existing entity records before replacing the section on disk
+(`storeChunkSections`). Once owned, an emptied section replaces its old record
+as well, so a move or removal cannot leave behind a stale copy.
+
+NeoForge's `EntityJoinLevelEvent` carries the joining entity. `entity_join_level`
+(hook version 5) replaces the numeric `entity` with `subject`, that entity's handle, so
+a listener can read it before admission even into a hidden section; `Host::entity` still
+finds only entities in accessible sections.
+"""
+migrate = """
+Replace `host.spawn_falling_block(dimension, state, pos, velocity, falling)` with:
+
+```rust,ignore
+let Some(level) = host.level(dimension) else { return; };
+match level.spawn_falling_block(host, state, pos, velocity, falling) {
+    Ok(Some(entity)) => { /* handle to the new falling block */ }
+    Ok(None) => { /* non-finite position or velocity, exhausted ids, or a join veto */ }
+    Err(err) => { /* Stale (stale or closed level), Unavailable (client), or InvalidState */ }
+}
+```
+
+- Pass the intended open level even when parked. Neither summon bounds nor
+  whether the destination chunk is loaded governs admission; spawning does not
+  load a chunk. Remove any handling for a parked-level or unloaded-chunk refusal.
+- `host.entity(id)` and `host.entity_by_uuid(uuid)` only discover entities in
+  accessible sections (server players are still always accessible). Use the
+  `EntityRef` returned by `LevelRef::spawn_falling_block` while its column is hidden.
+- `LevelRef::visit_all_entities`, `LevelRef::visit_entities_in`,
+  `LevelRef::ray_trace_entities`, and `LevelRef::ray_trace_nearest_entity` omit
+  hidden server entities. Keep the spawn handle for an entity you must address
+  before its section is tracked; do not recover it with a query.
+- No per-level count cap or live velocity clamp applies. Air now spawns and is
+  discarded when first ticked; skip the call yourself if you do not want it made.
+- After `entity_constructing`, the spawn asks `entity_join_level`. A veto returns
+  `Ok(None)` before the call returns, including from an `item_toss` listener.
+  With a transaction in the destination level the join waits for its root commit;
+  treat the returned handle as provisional until that commit, since an abort or
+  a join veto makes it stale. A transaction only in the caller's level does not
+  defer work in a different destination level.
+- In `entity_join_level` (hook version 5) read `event.subject` where you read `event.entity`: `event.subject.id()` is the id, and the handle itself reads the joining entity while its column is hidden. A fresh natural fall is now told
+  before the next scheduled block tick, not after the scheduled pass. A veto
+  keeps the falling entity out; it does not restore the replaced source block.
+  `loaded_from_disk` can also be true when a save first reads an entity section
+  before its terrain loads; do not use a disk join as a terrain-load notice.
+- Keep the `entities_load` callback for entity records and pin version 2 (`hook:entities_load` was version 1): it can fire during a save without the corresponding terrain. Entity-record admission is distinct from terrain availability, so use `chunk_load` for
+  terrain: a save can now read an entity section before terrain loads.
+"""

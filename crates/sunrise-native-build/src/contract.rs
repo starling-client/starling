@@ -9,7 +9,23 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 /// The contract this tool speaks: a plan naming another is refused, so a caller never misreads a reply.
+///
+/// Bump it for any tool change that alters what a caller may send the tool or rely on from it:
+/// plan fields, events, exit codes and outputs. A change that also alters the package layout
+/// bumps `PACKAGE_FORMAT` in `sunrise-mod-package` too.
 pub const CONTRACT: u32 = 2;
+
+/// The commit this tool was built from: release and SDK builds compile with `SUNRISE_TOOL_COMMIT`
+/// set, any other build is `local`. `--version`, `self-update` and the kept builds' key all read it.
+pub const TOOL_COMMIT: &str = tool_build_id(option_env!("SUNRISE_TOOL_COMMIT"));
+
+/// A build that names no commit, or an empty one, is `local`: never a git call whose answer goes stale.
+const fn tool_build_id(named: Option<&'static str>) -> &'static str {
+    match named {
+        Some(commit) if !commit.is_empty() => commit,
+        _ => "local",
+    }
+}
 
 /// What to build, the first line of standard input.
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
@@ -161,8 +177,6 @@ pub struct Blame {
 pub enum BlameKind {
     /// Its own library didn't compile.
     Compile,
-    /// It has a build script, which a prebuilt build refuses.
-    BuildScript,
     /// It asks for Cargo features, which a prebuilt build refuses.
     Features,
 }
@@ -194,9 +208,6 @@ fn blame(error: &str, ids: &[String]) -> Option<Blame> {
     ids.iter().find_map(|id| {
         let kind = if error.contains(&format!("{} failed (", prebuilt::compiling(id))) {
             BlameKind::Compile
-        } else if error.contains(&prebuilt::Refusal::BuildScript { mod_id: id.clone() }.to_string())
-        {
-            BlameKind::BuildScript
         } else if error.contains(&prebuilt::Refusal::Features { mod_id: id.clone() }.to_string()) {
             BlameKind::Features
         } else {
@@ -291,18 +302,7 @@ pub fn run(plan: &Plan, input: &mut dyn BufRead, out: &mut dyn Write) -> Result<
     }
 }
 
-fn compile(
-    plan: &Plan,
-    say: &dyn Fn(Event) -> Result<(), String>,
-    input: &mut dyn BufRead,
-    ids: &std::cell::RefCell<Vec<String>>,
-) -> Result<Event, String> {
-    let work = crate::root();
-    std::fs::create_dir_all(&work).map_err(|e| format!("{}: {e}", work.display()))?;
-    let side = match Target::from(plan.target) {
-        Target::Client => sunrise_mod_package::manifest::Side::Client,
-        Target::Server => sunrise_mod_package::manifest::Side::Server,
-    };
+fn native_projects(plan: &Plan) -> Result<Vec<crate::Bundle>, String> {
     let mods: Vec<_> = scan_bundles(&plan.mods)?
         .into_iter()
         .filter(|bundle| bundle.manifest.native.is_some())
@@ -310,10 +310,17 @@ fn compile(
     if mods.is_empty() {
         return Err(format!("{} holds no native mod.", plan.mods.display()));
     }
-    *ids.borrow_mut() = mods
-        .iter()
-        .map(|bundle| bundle.manifest.id.clone())
-        .collect();
+    Ok(mods)
+}
+
+fn code_links(
+    mods: &[crate::Bundle],
+    target: Target,
+) -> Result<(Vec<Vec<dependencies::Dependency>>, dependencies::Resolution), String> {
+    let side = match target {
+        Target::Client => sunrise_mod_package::manifest::Side::Client,
+        Target::Server => sunrise_mod_package::manifest::Side::Server,
+    };
     let declared: Vec<Vec<dependencies::Dependency>> = mods
         .iter()
         .map(|bundle| {
@@ -328,13 +335,59 @@ fn compile(
         .map(|(bundle, deps)| dependencies::Mod {
             id: &bundle.manifest.id,
             version: &bundle.manifest.version,
-            has_api: true,
             code: true,
             dependencies: deps,
         })
         .collect();
     let resolution = dependencies::resolve_links(&inputs)
         .map_err(|error| format!("code link requirements refused: {error}"))?;
+    Ok((declared, resolution))
+}
+
+/// Type-check a developer's staged native projects through the build's own route and SDK
+/// bindings, without producing or installing native libraries.
+pub fn check_rust(plan: &Plan) -> Result<(), String> {
+    let work = crate::root();
+    let mods = native_projects(plan)?;
+    let (declared, resolution) = code_links(&mods, plan.target.into())?;
+    let projects = mods
+        .iter()
+        .map(api::Project::read)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    if let Some(reason) = prebuilt::refusal(&projects) {
+        return Err(reason.to_string());
+    }
+    prebuilt::compile(
+        &plan.toolchain,
+        &plan.package,
+        &work.join("prebuilt-check"),
+        &plan.mods,
+        Route::of(&projects),
+        &projects,
+        &declared,
+        &resolution,
+        Some(&|_| plan.registry == Some(true)),
+        &|_, _, _| {},
+        true,
+    )
+    .map(drop)
+}
+
+fn compile(
+    plan: &Plan,
+    say: &dyn Fn(Event) -> Result<(), String>,
+    input: &mut dyn BufRead,
+    ids: &std::cell::RefCell<Vec<String>>,
+) -> Result<Event, String> {
+    let work = crate::root();
+    std::fs::create_dir_all(&work).map_err(|e| format!("{}: {e}", work.display()))?;
+    let mods = native_projects(plan)?;
+    *ids.borrow_mut() = mods
+        .iter()
+        .map(|bundle| bundle.manifest.id.clone())
+        .collect();
+    let (declared, resolution) = code_links(&mods, plan.target.into())?;
     let projects: Vec<_> = mods
         .iter()
         .map(api::Project::read)
@@ -355,7 +408,11 @@ fn compile(
             say(question).is_ok() && answer(&mut **asked.borrow_mut())
         })
     };
-    let (binary, libraries) = prebuilt::compile(
+    let prebuilt::Built {
+        binary,
+        libraries,
+        catalog,
+    } = prebuilt::compile(
         &plan.toolchain,
         &plan.package,
         &crate::root().join("prebuilt-build"),
@@ -372,8 +429,9 @@ fn compile(
                 total,
             });
         },
-    )?;
-    let catalog = crate::internals::Catalog::read(&plan.package.api)?;
+        false,
+    )?
+    .expect("build mode returns artifacts");
     let mut internals = BTreeMap::new();
     for &index in &resolution.order {
         let manifest = &mods[index].manifest;
@@ -407,6 +465,13 @@ fn answer(input: &mut dyn BufRead) -> bool {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn a_build_that_names_no_commit_is_local() {
+        assert_eq!(tool_build_id(None), "local");
+        assert_eq!(tool_build_id(Some("")), "local");
+        assert_eq!(tool_build_id(Some("abc123")), "abc123");
+    }
 
     fn plan(mods: &Path) -> Plan {
         Plan {
@@ -491,20 +556,16 @@ mod tests {
     #[test]
     fn a_refused_mod_ends_in_a_failed_event_before_anything_compiles() {
         let dir = crate::tests::dir("contract-refused");
-        let project = dir.join("scripted");
-        crate::tests::write_bundle(&project, "scripted", "");
+        let project = dir.join("optioned");
+        crate::tests::write_bundle(&project, "optioned", "");
         std::fs::write(
             project.join("Cargo.toml"),
-            "[package]\nname='scripted'\nversion='1.0.0'\nedition='2024'\n[dependencies]\nsunrise-mod-api={path='.sunrise/sdk/api/crates/sunrise-mod-api'}\n",
+            "[package]\nname='optioned'\nversion='1.0.0'\nedition='2024'\n[dependencies]\nsunrise-mod-api={path='.sunrise/sdk/api/crates/sunrise-mod-api'}\n[features]\nextra=[]\n",
         )
         .unwrap();
-        std::fs::write(project.join("build.rs"), "fn main() {}").unwrap();
         let mut out = Vec::new();
         let error = run(&plan(&dir), &mut "".as_bytes(), &mut out).unwrap_err();
-        assert!(
-            error.starts_with("E_NATIVE_BUILD_SCRIPT: scripted"),
-            "{error}"
-        );
+        assert!(error.starts_with("E_NATIVE_FEATURES: optioned"), "{error}");
         let lines: Vec<Event> = String::from_utf8(out)
             .unwrap()
             .lines()
@@ -515,8 +576,8 @@ mod tests {
             [Event::Failed {
                 error,
                 blame: Some(Blame {
-                    mod_id: "scripted".into(),
-                    kind: BlameKind::BuildScript,
+                    mod_id: "optioned".into(),
+                    kind: BlameKind::Features,
                 }),
                 used: Vec::new(),
             }]

@@ -125,8 +125,10 @@ public final class VanillaProtocolClient {
     private ProtocolInfo<?> outbound;
     private String state;
     private final boolean lowerSkyPads;
-    /** With a fifth argument {@code entities}: the entity transcript mode (EntityTranscript). */
+    /** With {@code entities} or {@code server-entities}: the entity transcript mode (EntityTranscript). */
     private EntityTranscript entities;
+    /** The server-entities scene places a stand before running its rotation commands. */
+    private boolean placeStand;
     /** With {@code ride}: the entity mode, plus the order of what the player sees of a ride through a portal (RideTranscript). */
     private RideTranscript ride;
     /** With {@code goat-voices}, {@code elder-curse}, {@code level-events} or {@code allay-dance}: the entity mode, plus a phased scene (PhasedTranscript). */
@@ -148,6 +150,10 @@ public final class VanillaProtocolClient {
         Path output = Path.of(args[3]);
         VanillaProtocolClient client = new VanillaProtocolClient(args.length > 4 && args[4].equals("lower-sky-pads"));
         if (args.length > 4 && args[4].equals("entities")) client.entities = new EntityTranscript();
+        if (args.length > 4 && args[4].equals("server-entities")) {
+            client.entities = new EntityTranscript();
+            client.placeStand = true;
+        }
         if (args.length > 4 && args[4].equals("ride")) {
             client.entities = new EntityTranscript();
             client.ride = new RideTranscript();
@@ -522,6 +528,7 @@ public final class VanillaProtocolClient {
         // When the first of them came, and when the furnace's ingot did.
         long snowballAt = 0;
         long smeltedAt = 0;
+        boolean standClicked = false;
         // The player's own id, and what the ender pearl it throws does to it.
         int playerId = -1;
         boolean pearl = false;
@@ -558,6 +565,14 @@ public final class VanillaProtocolClient {
                 Packet<?> packet = r.packet;
                 counts.merge(r.type, 1, Integer::sum);
                 if (entities != null && !entities.acceptSelf(packet) && step >= ENTITIES) entities.accept(packet);
+                if (placeStand && standClicked
+                    && packet instanceof net.minecraft.network.protocol.game.ClientboundAddEntityPacket p
+                    && p.getType() == net.minecraft.world.entity.EntityTypes.ARMOR_STAND
+                    && p.getX() == 7.5 && p.getY() == -60 && p.getZ() == 0.5) {
+                    send(new ServerboundChatPacket("stand paired", Instant.now(), 0L, Optional.empty(),
+                        new LastSeenMessages.Update(0, new BitSet(), (byte) 0)));
+                    placeStand = false;
+                }
                 if (ride != null && step >= ENTITIES) ride.accept(packet);
                 if (ride != null && ride.takeBoard() >= 0) {
                     // The player right-clicks the vehicle (Entity.interact: it takes the player on).
@@ -607,6 +622,12 @@ public final class VanillaProtocolClient {
                     if (respawning) respawnAt = position;
                     send(new ServerboundAcceptTeleportationPacket(p.id(), position.position().x, position.position().y, position.position().z,
                         position.yRot(), position.xRot()));
+                    // The console sets the item in hand before teleporting the player for this click.
+                    if (placeStand && !standClicked && step == ENTITIES
+                        && position.position().equals(new Vec3(5.5, -60, 0.5)) && position.yRot() == -135) {
+                        useOn(new net.minecraft.core.BlockPos(7, -61, 0), net.minecraft.world.InteractionHand.MAIN_HAND, 1);
+                        standClicked = true;
+                    }
                     // The 26.3 client answers with the acceptance alone; a second position in the
                     // same tick is an invalid move to vanilla's server once the player is loaded.
                     // The entity mode's scene may teleport the player (to another level): the
@@ -958,7 +979,11 @@ public final class VanillaProtocolClient {
 
     /** ServerboundUseItemOnPacket on the top of the block under the player. */
     private void useOn(PositionMoveRotation at, net.minecraft.world.InteractionHand hand, int sequence) throws Exception {
-        net.minecraft.core.BlockPos ground = net.minecraft.core.BlockPos.containing(at.position()).below();
+        useOn(net.minecraft.core.BlockPos.containing(at.position()).below(), hand, sequence);
+    }
+
+    /** Click the center of the top face of the given block. */
+    private void useOn(net.minecraft.core.BlockPos ground, net.minecraft.world.InteractionHand hand, int sequence) throws Exception {
         send(new net.minecraft.network.protocol.game.ServerboundUseItemOnPacket(hand,
             new net.minecraft.world.phys.BlockHitResult(net.minecraft.world.phys.Vec3.atCenterOf(ground).add(0.0, 0.5, 0.0),
                 net.minecraft.core.Direction.UP, ground, false), sequence));

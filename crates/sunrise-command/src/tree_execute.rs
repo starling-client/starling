@@ -2,7 +2,7 @@
 //! `execute`, `run` to the root; conditions both execute (as a test) and
 //! continue the chain; `store` redirects with a result callback.
 use super::{
-    Dispatcher,
+    Dispatcher, RegistryId,
     args::{ArgType, Resource},
     vanilla::{ENTITIES, GAMEMASTERS},
 };
@@ -145,7 +145,11 @@ fn conditionals(d: &mut Dispatcher, m: usize, ex: usize) {
 
     let biome = d.literal(m, "biome");
     let pos = d.argument(biome, "pos", ArgType::BlockPos);
-    let b = d.argument(pos, "biome", ArgType::ResOrTag("minecraft:worldgen/biome"));
+    let b = d.argument(
+        pos,
+        "biome",
+        ArgType::ResOrTag(RegistryId::from_static("minecraft:worldgen/biome")),
+    );
     conditional(d, b, ex);
 
     let loaded = d.literal(m, "loaded");
@@ -186,7 +190,7 @@ fn conditionals(d: &mut Dispatcher, m: usize, ex: usize) {
     let p = d.argument(
         predicate,
         "predicate",
-        ArgType::ResourceOrId("minecraft:predicate"),
+        ArgType::ResourceOrId(RegistryId::from_static("minecraft:predicate")),
     );
     conditional(d, p, ex);
 

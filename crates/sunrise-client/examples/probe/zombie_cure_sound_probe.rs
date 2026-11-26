@@ -13,6 +13,7 @@ use sunrise_core::{geometry::Vec3, random::RandomSource};
 
 fn kind(eye_height: f64) -> Arc<MobType> {
     Arc::new(MobType {
+        type_key: Default::default(),
         shadow: None,
         id: "minecraft:zombie_villager".into(),
         species: Species::ZombieVillager,
@@ -51,6 +52,7 @@ fn kind(eye_height: f64) -> Arc<MobType> {
             pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
             polygons: Vec::new(),
             children: Vec::new(),
+            layer: None,
         }),
         layers: Default::default(),
         texture: String::new(),

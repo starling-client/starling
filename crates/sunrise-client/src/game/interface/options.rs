@@ -29,6 +29,12 @@ pub(super) const CONTROL_HELP: &[&str] = &[
     "graphics-set KEY VALUE         set a Sunrise graphics setting (resolutionScale 25..200, presentMode, workers...), apply and save it",
 ];
 
+/// The Max Framerate option's "Unlimited" (`Options.framerateLimit`'s 260).
+const UNLIMITED_FRAMERATE: i32 = 260;
+/// How often the loop comes round while a mod skips every frame's render (`framerate_limit`
+/// 0): vanilla's limit for a minimised window (`FramerateLimitTracker`'s 10).
+const SKIPPED_FRAME_RATE: i32 = 10;
+
 impl Game<'_> {
     pub(super) fn save_title_options(&mut self) {
         if let Some(title) = &self.title
@@ -78,6 +84,7 @@ impl Game<'_> {
                     .ok_or("options-set KEY VALUE: missing the value")?;
                 let narrator = self.settings.narrator();
                 let reduced = self.settings.reduced_debug_info;
+                let before_atlas = self.settings.texture_atlas_settings();
                 self.settings = self.settings.with_option(key, value)?;
                 if self.settings.reduced_debug_info != reduced {
                     self.debug_entries.invalidate();
@@ -92,6 +99,9 @@ impl Game<'_> {
                 match *key {
                     "lang" => self.load_language(&self.settings.language.clone()),
                     "resourcePacks" | "incompatibleResourcePacks" => self.reload_packs(),
+                    _ if self.settings.texture_atlas_settings() != before_atlas => {
+                        self.reload_packs();
+                    }
                     _ => {}
                 }
                 // Labels change (a language, a value): `ui` reads the redrawn screen.
@@ -196,7 +206,6 @@ impl Game<'_> {
         if to_game && self.title.is_none() {
             self.capture(true);
         }
-        self.dragging = false;
         // Closed from calibration (sunrise-ctl, a lost window): out of it.
         self.show_calibration((0.0, 0.0));
     }
@@ -204,9 +213,15 @@ impl Game<'_> {
     pub(super) fn open_options(&mut self, from_title: bool) {
         self.open_options_at(from_title, Page::Main);
     }
+<<<<<<< HEAD
     pub(super) fn open_options_at(&mut self, from_title: bool, page: Page) {
         #[cfg(target_os = "android")]
         self.mobile_options_open();
+||||||| 46c00106def
+    pub(super) fn open_options_at(&mut self, from_title: bool, page: Page) {
+=======
+    pub(in crate::game) fn open_options_at(&mut self, from_title: bool, page: Page) {
+>>>>>>> ed6772e2118
         // Gameplay keys must not stay held behind the options screen, where
         // bindings can also change before the physical key is released.
         self.clear_device_keys();
@@ -224,9 +239,13 @@ impl Game<'_> {
         ui.skin_cloud = sunrise_client::accounts::skin_cloud();
         ui.offer_catalog();
         ui.open_at(!from_title && self.title.is_none(), page);
+        ui.capture_video_atlas(&self.settings);
         ui.minecart_improvements = minecart_improvements;
         ui.languages = lang::available(&[&self.pack.source]);
         self.refresh_pack_lists();
+        if let Page::NativeMod(index) = page {
+            self.native_settings_refresh(index);
+        }
     }
     /// While the resource pack screen is open, `resourcepacks/` is looked at once a second
     /// and the list found again when its packs changed (`PackSelectionScreen.tick`'s
@@ -359,12 +378,8 @@ impl Game<'_> {
                 return Ok(false);
             }
             let (events, handled) = self.ui.options.release_with_outcome();
-            self.dragging = false;
             self.handle_option_events(events)?;
             return Ok(handled);
-        }
-        if !right {
-            self.dragging = true;
         }
         let size = self.gui_size();
         let framebuffer = self.renderer.as_ref().map_or([1280, 720], |r| {
@@ -386,26 +401,25 @@ impl Game<'_> {
         self.handle_option_events(events)?;
         Ok(handled)
     }
-    pub(super) fn options_drag(&mut self) -> Result<()> {
+    pub(super) fn options_drag(&mut self) -> Result<bool> {
         let size = self.gui_size();
         let framebuffer = self.renderer.as_ref().map_or([1280, 720], |r| {
             [r.config.width as i32, r.config.height as i32]
         });
         let mut ui = std::mem::take(&mut self.ui.options);
-        let events = ui.click(
+        let (handled, events) = ui.drag(
             &mut self.settings,
             &self.gui.atlas,
-            self.cursor.0,
-            self.cursor.1,
+            self.cursor,
             size,
             framebuffer,
-            true,
             false,
         );
         self.ui.options = ui;
-        self.handle_option_events(events)
+        self.handle_option_events(events)?;
+        Ok(handled)
     }
-    pub(super) fn options_key(&mut self, key: KeyCode, text: Option<&str>) -> Result<()> {
+    pub(super) fn options_key(&mut self, key: KeyCode, text: Option<&str>) -> Result<bool> {
         let size = self.gui_size();
         let shift = self.has_shift_down();
         let framebuffer = self.renderer.as_ref().map_or([1280, 720], |r| {
@@ -415,9 +429,18 @@ impl Game<'_> {
         self.ui.options.framebuffer = framebuffer;
         let mut ui = std::mem::take(&mut self.ui.options);
         ui.modifiers = self.modifiers().bits;
-        let events = ui.key_modifiers(&mut self.settings, &self.gui.atlas, key, text, shift);
+        let (handled, events) = ui.key_input(&mut self.settings, &self.gui.atlas, key, text, shift);
         self.ui.options = ui;
-        self.handle_option_events(events)
+        self.handle_option_events(events)?;
+        self.refresh_screen_widgets();
+        Ok(handled)
+    }
+    pub(super) fn options_key_released(&mut self, key: KeyCode) -> Result<bool> {
+        self.ui.options.modifiers = self.modifiers().bits;
+        let events = self.ui.options.key_released(&mut self.settings, key);
+        let handled = !events.is_empty();
+        self.handle_option_events(events)?;
+        Ok(handled)
     }
     /// Ctrl+A/C/V/X in the options' search boxes; false when none has focus.
     pub(super) fn options_shortcut(
@@ -428,16 +451,22 @@ impl Game<'_> {
             .options
             .shortcut(&self.gui.atlas, shortcut, &mut self.clipboard)
     }
+<<<<<<< HEAD
     /// The wheel on the options. A finger's scroll (`finger`) only scrolls: a list moved by a
     /// finger that landed on a cycle button must not cycle it at each step, as a mouse wheel over it
     /// does (`CycleButton.mouseScrolled`).
     pub(super) fn options_scroll(&mut self, amount: f32, finger: bool) -> Result<()> {
+||||||| 46c00106def
+    pub(super) fn options_scroll(&mut self, amount: f32) -> Result<()> {
+=======
+    pub(super) fn options_scroll(&mut self, amount: f32) -> Result<bool> {
+>>>>>>> ed6772e2118
         if self.pad_stick_scroll() {
             let size = self.gui_size();
             self.ui
                 .options
                 .scroll_at(&self.settings, size, self.cursor, amount);
-            return Ok(());
+            return Ok(true);
         }
         let framebuffer = self.renderer.as_ref().map_or([1280, 720], |r| {
             [r.config.width as i32, r.config.height as i32]
@@ -447,9 +476,11 @@ impl Game<'_> {
             let mut ui = std::mem::take(&mut self.ui.options);
             let events = ui.video_wheel_gui_scale(&mut self.settings, framebuffer, amount);
             self.ui.options = ui;
-            return self.handle_option_events(events);
+            self.handle_option_events(events)?;
+            return Ok(true);
         }
         let size = self.gui_size();
+<<<<<<< HEAD
         if finger {
             self.ui
                 .options
@@ -457,10 +488,16 @@ impl Game<'_> {
             return Ok(());
         }
         let events =
+||||||| 46c00106def
+        let events =
+=======
+        let (handled, events) =
+>>>>>>> ed6772e2118
             self.ui
                 .options
-                .wheel(&mut self.settings, size, self.cursor, framebuffer, amount);
-        self.handle_option_events(events)
+                .wheel_input(&mut self.settings, size, self.cursor, framebuffer, amount);
+        self.handle_option_events(events)?;
+        Ok(handled)
     }
     /// Mouse buttons pressed while a key is being bound.
     pub(super) fn options_waiting_for_key(&self) -> bool {
@@ -471,9 +508,10 @@ impl Game<'_> {
         let events = self.ui.options.bind_mouse(&mut self.settings, button);
         self.handle_option_events(events)
     }
-    pub(super) fn handle_option_events(&mut self, events: Vec<Event>) -> Result<()> {
+    pub(in crate::game) fn handle_option_events(&mut self, events: Vec<Event>) -> Result<()> {
         for e in events {
             match e {
+<<<<<<< HEAD
                 Event::DiagnosticsExport => self.export_diagnostics(),
                 Event::DiagnosticsOpen => self.open_diagnostics(),
                 Event::DiagnosticsRecord => self.toggle_diagnostic_recording(),
@@ -481,6 +519,11 @@ impl Game<'_> {
                 Event::PerfLab(i) => self.perf_lab_next(i),
                 Event::Calibrate(i) => self.perf_calibrate_button(i),
                 Event::ButtonClick => self.audio.play_button_click(),
+||||||| 46c00106def
+                Event::ButtonClick => self.audio.play_button_click(),
+=======
+                Event::ButtonClick => self.play_audio_button_click(),
+>>>>>>> ed6772e2118
                 Event::DebugEntriesChanged => self.debug_entries.invalidate(),
                 Event::Changed => {
                     #[cfg(target_os = "android")]
@@ -534,6 +577,11 @@ impl Game<'_> {
                 }
                 Event::Packs(_) => {
                     self.settings.save(&Self::options_path());
+                    self.reload_packs();
+                }
+                Event::ReloadTextures => {
+                    self.settings.save(&Self::options_path());
+                    self.apply_settings();
                     self.reload_packs();
                 }
                 Event::PackOptions { entries, chosen } => {
@@ -591,29 +639,11 @@ impl Game<'_> {
                     use sunrise_client::clipboard::Clipboard;
                     self.clipboard.set(&text);
                 }
-                Event::BrowseMods => {
-                    let ui = &mut self.ui.options.mod_browser;
-                    self.mod_jobs.browse(ui, Self::game_dir());
-                }
-                Event::InstallMod(id) => {
-                    if self.player.is_none() {
-                        let ui = &mut self.ui.options.mod_browser;
-                        self.mod_jobs.install(ui, Self::game_dir(), id);
-                    }
-                }
-                // The website, through ConfirmLinkScreen as other links.
-                Event::OpenModPage(url) => self.confirm_trusted_link(&url, Screen::Options),
                 Event::ListShaderPacks => {
-                    let (key, _) = sunrise_client::shader_pack_list::resolve(
-                        &Self::shader_packs_dir(),
-                        &self.settings.sunrise.shader_pack,
-                    );
-                    if key != self.settings.sunrise.shader_pack {
-                        self.settings.sunrise.shader_pack = key;
-                        self.settings.save(&Self::options_path());
-                    }
                     self.settings.shader_packs =
                         sunrise_client::shader_pack_list::scan(&Self::shader_packs_dir());
+                    // A pack may have been replaced under the same name.
+                    self.native_shaders.pick_hdr.get_mut().forget();
                 }
                 Event::ListMods => self.list_copied_native_mods(),
                 Event::ModToggled(i) => self.mod_toggled(i),
@@ -631,6 +661,7 @@ impl Game<'_> {
                 Event::ImportButtonImage(id) => self.pick_button_image(id),
                 Event::OpenShaderOptions => self.open_shader_options(),
                 Event::ShaderOptions => self.save_shader_options(),
+<<<<<<< HEAD
                 Event::NativePackOptions(i) => {
                     if let Some(pack) = self.settings.shader_packs.get(i) {
                         pack.save_values(&Self::shader_packs_dir());
@@ -643,8 +674,36 @@ impl Game<'_> {
                 Event::RestartGame => {
                     #[cfg(target_os = "android")]
                     crate::android::restart_app();
+||||||| 46c00106def
+                Event::NativePackOptions(i) => {
+                    if let Some(pack) = self.settings.shader_packs.get(i) {
+                        pack.save_values(&Self::shader_packs_dir());
+                    }
+                }
+                Event::OpenShaderPackFolder => {
+                    let dir = Self::shader_packs_dir();
+                    let _ = std::fs::create_dir_all(&dir);
+                    super::packs::open_folder(&dir);
+=======
+                Event::OpenShaderPackFolder => {
+                    let dir = Self::shader_packs_dir();
+                    let _ = std::fs::create_dir_all(&dir);
+                    super::packs::open_folder(&dir);
+>>>>>>> ed6772e2118
                 }
                 Event::NativeSettings(i) => self.native_settings_refresh(i),
+                Event::ModConfigScreen(i) => {
+                    let Some(id) = self.settings.mods.installed.get(i).map(|m| m.id.clone()) else {
+                        continue;
+                    };
+                    match mod_api::__private::create_config_screen(self, &id) {
+                        Some(Ok(true)) => {
+                            self.native_mod_screen_parent = self.mod_screen_open(&id);
+                        }
+                        Some(Err(reason)) => log::error!("mod {id}: {reason}"),
+                        Some(Ok(false)) | None => {}
+                    }
+                }
                 Event::NativeSetting(i, j) => self.native_setting_event(i, j),
                 Event::Credits => self.open_win_screen(false, super::win::Finish::Options),
                 Event::HudEditor => self.open_hud_editor(true),
@@ -762,11 +821,12 @@ impl Game<'_> {
             self.settings.sunrise.save(dir);
         }
         self.hold_fullbright();
+        let vsync = self.effective_vsync();
         let s = &self.settings;
         if let Some(r) = self.renderer.as_mut() {
             r.gamma = s.gamma as f32;
             r.improved_transparency = s.improved_transparency;
-            r.set_present_mode(s.vsync, s.sunrise.present_mode);
+            r.set_present_mode(vsync, s.sunrise.present_mode);
             r.animated_textures = s.sunrise.animated_textures;
             r.screenshot_quality = s.sunrise.screenshot_quality;
             r.set_mipmap_levels(s.mipmap_levels.max(0) as u32);
@@ -827,9 +887,8 @@ impl Game<'_> {
             self.ui.chat.rescale(&self.gui.atlas);
         }
         self.notify_window_resize();
-        // The GUI scale is part of the screen's size (`Screen.resize`): a
-        // change remakes its build before this frame draws it.
-        self.build_screen();
+        // GUI-scale changes rebuild mounted children before the next input.
+        self.refresh_screen_widgets();
     }
     pub(super) fn resize_state_of(&self, size: winit::dpi::PhysicalSize<u32>) -> ResizeState {
         let viewport = self
@@ -850,8 +909,11 @@ impl Game<'_> {
     }
     /// Fires `window_resize` once when the physical or GUI-scaled dimensions change.
     pub(super) fn notify_window_resize(&mut self) {
-        let Some(window) = &self.window else { return };
-        let now = self.resize_state_of(window.inner_size());
+        // The size `ClientOptionsClientHost::window_size` reads, so the two agree.
+        let Some([width, height]) = self.window_size() else {
+            return;
+        };
+        let now = self.resize_state_of(winit::dpi::PhysicalSize::new(width, height));
         if now.differs_from(&mut self.resize_state) {
             self.native_window_resize(
                 now.size.width,
@@ -859,7 +921,7 @@ impl Game<'_> {
                 now.gui_size[0],
                 now.gui_size[1],
             );
-            self.build_screen();
+            self.refresh_screen_widgets();
         }
     }
     /// `Window.updateFullscreenState`: a fullscreen change made by the window
@@ -885,17 +947,16 @@ impl Game<'_> {
         self.settings.save(&Self::options_path());
         self.apply_ui_settings();
     }
-    /// The Extras page's shader pack key: turns the picked pack off, or asks for the last
-    /// pick again. The same persistent pick the Shader Packs screen writes: turning off keeps
-    /// the last non-empty pick, resuming restores it, and the off state survives a restart.
+    /// The shader pack key (Sunrise Settings' Shaders page): turns the picked pack off, or asks
+    /// for the last pick again. The same persistent pick the Shaders page writes: turning off
+    /// keeps the last non-empty pick, resuming restores it, and the off state survives a restart.
     /// With `SUNRISE_SHADER_PACK` set the developer override wins and the key does nothing.
     /// Invalidation stays with the normal selection path: the next frame's `shader_pack_inputs`
-    /// sees the changed pick and drops or loads the pack itself, for either pack kind.
+    /// sees the changed pick and drops or loads the pack itself.
     pub(super) fn toggle_shader_pack(&mut self) {
         let present = |key: &str| {
-            sunrise_client::shader_pack_list::resolve(&Self::shader_packs_dir(), key)
-                .1
-                .exists()
+            let dir = Self::shader_packs_dir();
+            !sunrise_client::shader_pack_list::unsupported(&dir, key) && dir.join(key).exists()
         };
         let plan = plan_shader_toggle(
             &self.settings.sunrise.shader_pack,
@@ -930,7 +991,8 @@ impl Game<'_> {
         }
     }
     /// `FramerateLimitTracker.getFramerateLimit`: the Max Framerate option,
-    /// throttled when minimised, idle, or in a menu without a world.
+    /// throttled when minimised, idle, or in a menu without a world, then a mod's
+    /// `framerate_limit` answer in its place. 0 is a mod's skip of the frame's render.
     pub(super) fn framerate_limit(&self) -> i32 {
         let context = FrameContext {
             inactivity: if self.settings.inactivity_fps_limit == "minimized" {
@@ -959,11 +1021,19 @@ impl Game<'_> {
             .settings
             .sunrise
             .battery_limit(limit, self.title.is_none(), self.focused);
+<<<<<<< HEAD
         // Starling: a phone's menu over the world draws at most 60 frames a second
         // (`menu_frame_cap`). No `cfg` here: dynamic_fps_for_rust hooks this function, and
         // horizon-mixins refuses a target body with one.
         let limit = menu_frame_cap(limit, context.has_screen);
         // A native mod may only lower it (`native_framerate_limit`).
+||||||| 46c00106def
+        // A native mod may only lower it (`native_framerate_limit`).
+=======
+        // A native mod's answer takes its place, raised to at most unlimited (260) or
+        // lowered, 0 skipping the frame's render; below 0 keeps the game's own
+        // (`native_framerate_limit`).
+>>>>>>> ed6772e2118
         let mut hooked = limit;
         self.native_framerate_limit(
             mod_focus(self.focused),
@@ -971,8 +1041,8 @@ impl Game<'_> {
             self.title.is_none(),
             &mut hooked,
         );
-        if hooked >= 1 {
-            hooked.min(limit)
+        if hooked >= 0 {
+            hooked.min(UNLIMITED_FRAMERATE)
         } else {
             limit
         }
@@ -980,11 +1050,17 @@ impl Game<'_> {
     /// `Minecraft.runTick`'s frame limiter: `FramerateLimiter.limitDisplayFPS`
     /// below 260 frames per second, sleeping then spin-waiting until the
     /// frame's slot ends (not in scripted frame-count runs).
-    pub(super) fn limit_frame(&mut self) {
+    /// `limit` is this frame's `framerate_limit`: a frame a mod skipped (0) waits as one at
+    /// `SKIPPED_FRAME_RATE` would, so the loop goes on ticking without spinning.
+    pub(super) fn limit_frame(&mut self, limit: i32) {
         if self.options.frames.is_some() {
             return;
         }
-        let limit = self.framerate_limit();
+        let limit = if limit == 0 {
+            SKIPPED_FRAME_RATE
+        } else {
+            limit
+        };
         match self.settings.sunrise.pacing {
             sunrise_client::graphics::Pacing::Precise => {
                 sunrise_client::window::end_frame(&mut self.limiter, limit, &mut self.frame_clock)
@@ -1094,7 +1170,8 @@ mod resize_state_tests {
                 super::super::native_entity_refs::tests::with_client_game(|game| {
                     game.options.offscreen = true;
                     game.window = Some(window.clone());
-                    game.renderer = Some(game.new_renderer(window.clone()).unwrap());
+                    let renderer = game.new_renderer(window.clone()).unwrap();
+                    game.set_renderer(renderer);
                     game.renderer.as_mut().unwrap().resize(960, 1080);
                     game.settings.gui_scale = scale;
                     game.settings.force_unicode = false;
@@ -1116,6 +1193,103 @@ mod resize_state_tests {
                     assert!(events.lock().unwrap().is_empty());
                 });
             }
+        });
+    }
+
+    /// `ClientOptionsClientHost::window_size` (`Window.getWidth`, `getHeight`): none without a
+    /// window, then the size `window_resize` reports, before and after the window is resized.
+    #[test]
+    #[ignore = "daily"]
+    fn window_size_reads_the_size_window_resize_reports() {
+        // Winit permits only one event loop per process, even after it is dropped.
+        if crate::game::native_entity_refs::tests::run_fresh_cases(
+            "game::options::resize_state_tests::window_size_reads_the_size_window_resize_reports",
+            "SUNRISE_WINDOW_SIZE_CHILD",
+            &["window"],
+        ) {
+            return;
+        }
+        use mod_api::{ClientHost, Hooks, ModEntry, WindowResizeEvent};
+        use mod_platform::testing::with_mods;
+        use std::sync::{Arc, Mutex};
+        use winit::platform::pump_events::EventLoopExtPumpEvents;
+        struct Listener(Arc<Mutex<Vec<[u32; 2]>>>);
+        #[mod_api::__subscriptions]
+        impl Hooks for Listener {
+            fn window_resize(&self, _: &mut dyn ClientHost, event: &mut WindowResizeEvent) {
+                self.0.lock().unwrap().push([event.width, event.height]);
+            }
+        }
+        /// Creates the hidden window when the loop resumes; the resize request is the
+        /// test's own, so its events need no handling.
+        #[derive(Default)]
+        struct Hidden(Option<Arc<winit::window::Window>>);
+        impl winit::application::ApplicationHandler for Hidden {
+            fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
+                if self.0.is_none() {
+                    let attributes = winit::window::Window::default_attributes()
+                        .with_visible(false)
+                        .with_inner_size(PhysicalSize::new(1920, 1080));
+                    self.0 = Some(Arc::new(event_loop.create_window(attributes).unwrap()));
+                }
+            }
+            fn window_event(
+                &mut self,
+                _: &winit::event_loop::ActiveEventLoop,
+                _: winit::window::WindowId,
+                _: winit::event::WindowEvent,
+            ) {
+            }
+        }
+        let reported = Arc::new(Mutex::new(Vec::new()));
+        let mut builder = winit::event_loop::EventLoop::builder();
+        #[cfg(target_os = "linux")]
+        {
+            use winit::platform::x11::EventLoopBuilderExtX11;
+            builder.with_x11().with_any_thread(true);
+        }
+        // Libtest runs the test on a thread of its own.
+        #[cfg(target_os = "windows")]
+        {
+            use winit::platform::windows::EventLoopBuilderExtWindows;
+            builder.with_any_thread(true);
+        }
+        let mut event_loop = builder.build().unwrap();
+        let mut app = Hidden::default();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while app.0.is_none() && std::time::Instant::now() < deadline {
+            event_loop.pump_app_events(Some(std::time::Duration::from_millis(10)), &mut app);
+        }
+        let window = app
+            .0
+            .clone()
+            .expect("the event loop resumed and made the window");
+        let mods = vec![ModEntry::new("size", Box::new(Listener(reported.clone())))].into();
+        with_mods(mods, || {
+            super::super::native_entity_refs::tests::with_client_game(|game| {
+                game.options.offscreen = true;
+                assert_eq!((&*game as &dyn ClientHost).window_size(), None);
+                game.window = Some(window.clone());
+                assert_eq!(
+                    (&*game as &dyn ClientHost).window_size(),
+                    Some([1920, 1080])
+                );
+                game.notify_window_resize();
+                assert_eq!(reported.lock().unwrap().pop(), Some([1920, 1080]));
+
+                let _ = window.request_inner_size(PhysicalSize::new(1280, 720));
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                while window.inner_size() != PhysicalSize::new(1280, 720)
+                    && std::time::Instant::now() < deadline
+                {
+                    event_loop
+                        .pump_app_events(Some(std::time::Duration::from_millis(10)), &mut app);
+                }
+                assert_eq!((&*game as &dyn ClientHost).window_size(), Some([1280, 720]));
+                game.notify_window_resize();
+                assert_eq!(reported.lock().unwrap().pop(), Some([1280, 720]));
+                assert!(reported.lock().unwrap().is_empty());
+            });
         });
     }
 

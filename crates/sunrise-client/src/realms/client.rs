@@ -284,7 +284,7 @@ pub struct RealmTierRange {
 
 impl RealmTierRange {
     /// `RealmsSettingsTab.currentOrDefault`.
-    pub fn current_or_default(&self) -> i32 {
+    pub(crate) fn current_or_default(&self) -> i32 {
         self.current.unwrap_or(self.default_value)
     }
 
@@ -295,7 +295,7 @@ impl RealmTierRange {
 }
 
 /// `RealmsRegion`: each region's `nameId` and its translation key.
-pub fn region_translation_key(name_id: &str) -> Option<&'static str> {
+pub(crate) fn region_translation_key(name_id: &str) -> Option<&'static str> {
     const REGIONS: [(&str, &str); 27] = [
         (
             "AustraliaEast",
@@ -678,7 +678,7 @@ impl RealmsNotification {
 
     /// `VisitUrl.getMessage`: the message's translation, or its default line when the
     /// language has no such key (`RealmsText.createComponent`'s null).
-    pub fn visit_message(&self) -> String {
+    pub(crate) fn visit_message(&self) -> String {
         text_or(
             self.message.as_ref(),
             "mco.notification.visitUrl.message.default",
@@ -686,7 +686,7 @@ impl RealmsNotification {
     }
 
     /// `VisitUrl.buildOpenLinkButton`'s label, with its default too.
-    pub fn visit_button_text(&self) -> String {
+    pub(crate) fn visit_button_text(&self) -> String {
         text_or(
             self.button_text.as_ref(),
             "mco.notification.visitUrl.buttonText.default",
@@ -695,7 +695,7 @@ impl RealmsNotification {
 
     /// `InfoPopup.buildScreen`'s title: `None` when the language has no translation, which
     /// makes vanilla skip the popup (`title.createComponent()`).
-    pub fn info_title(&self) -> Option<String> {
+    pub(crate) fn info_title(&self) -> Option<String> {
         let title = self.title.as_ref()?;
         crate::lang::has(&title.translation_key).then(|| translate_text(title))
     }
@@ -709,7 +709,7 @@ impl RealmsNotification {
     }
 
     /// `InfoPopup`'s URL button: its URL and `urlText` (the default label when missing).
-    pub fn info_url_button(&self) -> Option<(String, String)> {
+    pub(crate) fn info_url_button(&self) -> Option<(String, String)> {
         let button = self.url_button.as_ref()?;
         Some((
             button.url.clone(),
@@ -1274,14 +1274,14 @@ impl RealmsClient {
     }
 
     /// `RealmsClient.agreeToTos`: `POST mco/tos/agreed`, an empty body.
-    pub fn agree_to_tos(&self) -> Result<(), RealmsError> {
+    pub(crate) fn agree_to_tos(&self) -> Result<(), RealmsError> {
         let url = self.url("mco/tos/agreed");
         Self::execute(self.request("POST", &url, READ_TIMEOUT), Some(""))?;
         Ok(())
     }
 
     /// `RealmsClient.backupsFor`: `GET worlds/{id}/backups`.
-    pub fn backups_for(&self, realm_id: i64) -> Result<Vec<Backup>, RealmsError> {
+    pub(crate) fn backups_for(&self, realm_id: i64) -> Result<Vec<Backup>, RealmsError> {
         let url = self.url(&format!("worlds/{realm_id}/backups"));
         let json = Self::execute(self.request("GET", &url, READ_TIMEOUT), None)?;
         serde_json::from_str::<BackupListResponse>(&json)
@@ -1291,7 +1291,7 @@ impl RealmsClient {
 
     /// `RealmsClient.restoreWorld`: `PUT worlds/{id}/backups?backupId={backupId}`, with
     /// vanilla's 40 s/600 s request timeouts.
-    pub fn restore_world(&self, realm_id: i64, backup_id: &str) -> Result<(), RealmsError> {
+    pub(crate) fn restore_world(&self, realm_id: i64, backup_id: &str) -> Result<(), RealmsError> {
         let url = self.url(&format!("worlds/{realm_id}/backups"));
         let query = format!("backupId={}", urlencoded(backup_id)?);
         Self::execute(
@@ -1302,7 +1302,7 @@ impl RealmsClient {
     }
 
     /// `RealmsClient.requestDownloadInfo`: `GET worlds/{id}/slot/{slot}/download`.
-    pub fn request_download_info(
+    pub(crate) fn request_download_info(
         &self,
         realm_id: i64,
         slot: i32,
@@ -1313,7 +1313,7 @@ impl RealmsClient {
     }
 
     /// `RealmsClient.pendingInvites`.
-    pub fn pending_invites(&self) -> Result<Vec<PendingInviteDto>, RealmsError> {
+    pub(crate) fn pending_invites(&self) -> Result<Vec<PendingInviteDto>, RealmsError> {
         let json = Self::execute(
             self.request("GET", &self.url("invites/pending"), READ_TIMEOUT),
             None,
@@ -1326,7 +1326,9 @@ impl RealmsClient {
     /// `RealmsClient.getLiveStats`: each Realm's online players, by realm id. The
     /// `playerList` is a JSON string inside the JSON (`LenientJsonParser`), each entry a
     /// profile with `playerId`.
-    pub fn live_players(&self) -> Result<std::collections::HashMap<i64, Vec<String>>, RealmsError> {
+    pub(crate) fn live_players(
+        &self,
+    ) -> Result<std::collections::HashMap<i64, Vec<String>>, RealmsError> {
         let json = Self::execute(
             self.request("GET", &self.url("activities/liveplayerlist"), READ_TIMEOUT),
             None,
@@ -1355,64 +1357,64 @@ impl RealmsClient {
     }
 
     /// `RealmsClient.acceptInvitation`.
-    pub fn accept_invite(&self, invitation_id: &str) -> Result<(), RealmsError> {
+    pub(crate) fn accept_invite(&self, invitation_id: &str) -> Result<(), RealmsError> {
         let url = self.url(&format!("invites/accept/{}", path_segment(invitation_id)?));
         Self::execute(self.request("PUT", &url, READ_TIMEOUT), Some("")).map(drop)
     }
 
     /// `RealmsClient.rejectInvitation`.
-    pub fn reject_invite(&self, invitation_id: &str) -> Result<(), RealmsError> {
+    pub(crate) fn reject_invite(&self, invitation_id: &str) -> Result<(), RealmsError> {
         let url = self.url(&format!("invites/reject/{}", path_segment(invitation_id)?));
         Self::execute(self.request("PUT", &url, READ_TIMEOUT), Some("")).map(drop)
     }
 
     /// `RealmsClient.uninviteMyselfFrom`: leaves someone else's Realm.
-    pub fn uninvite_myself(&self, realm_id: i64) -> Result<(), RealmsError> {
+    pub(crate) fn uninvite_myself(&self, realm_id: i64) -> Result<(), RealmsError> {
         let url = self.url(&format!("invites/{realm_id}"));
         Self::execute(self.request("DELETE", &url, READ_TIMEOUT), None).map(drop)
     }
 
     /// `RealmsClient.open`.
-    pub fn open_realm(&self, realm_id: i64) -> Result<(), RealmsError> {
+    pub(crate) fn open_realm(&self, realm_id: i64) -> Result<(), RealmsError> {
         let url = self.url(&format!("worlds/{realm_id}/open"));
         Self::execute(self.request("PUT", &url, READ_TIMEOUT), Some("")).map(drop)
     }
 
     /// `RealmsClient.close`.
-    pub fn close_realm(&self, realm_id: i64) -> Result<(), RealmsError> {
+    pub(crate) fn close_realm(&self, realm_id: i64) -> Result<(), RealmsError> {
         let url = self.url(&format!("worlds/{realm_id}/close"));
         Self::execute(self.request("PUT", &url, READ_TIMEOUT), Some("")).map(drop)
     }
 
     /// `RealmsClient.subscriptionFor`: `GET subscriptions/{id}` (no `worlds/` prefix).
-    pub fn subscription_for(&self, realm_id: i64) -> Result<Subscription, RealmsError> {
+    pub(crate) fn subscription_for(&self, realm_id: i64) -> Result<Subscription, RealmsError> {
         let url = self.url(&format!("subscriptions/{realm_id}"));
         let json = Self::execute(self.request("GET", &url, READ_TIMEOUT), None)?;
         serde_json::from_str(&json).map_err(|_| RealmsError::Parse)
     }
 
     /// `RealmsClient.deleteRealm` (`Request.delete`).
-    pub fn delete_realm(&self, realm_id: i64) -> Result<(), RealmsError> {
+    pub(crate) fn delete_realm(&self, realm_id: i64) -> Result<(), RealmsError> {
         let url = self.url(&format!("worlds/{realm_id}"));
         Self::execute(self.request("DELETE", &url, READ_TIMEOUT), None).map(drop)
     }
 
     /// `RealmsClient.getOwnRealm`: the detail answer with the slots and the players.
-    pub fn get_own_realm(&self, realm_id: i64) -> Result<RealmServer, RealmsError> {
+    pub(crate) fn get_own_realm(&self, realm_id: i64) -> Result<RealmServer, RealmsError> {
         let url = self.url(&format!("worlds/{realm_id}"));
         let json = Self::execute(self.request("GET", &url, READ_TIMEOUT), None)?;
         serde_json::from_str(&json).map_err(|_| RealmsError::Parse)
     }
 
     /// `RealmsClient.op`: `POST ops/{id}/{uuid}` with an empty body, then the ops.
-    pub fn op_player(&self, realm_id: i64, uuid: &str) -> Result<Ops, RealmsError> {
+    pub(crate) fn op_player(&self, realm_id: i64, uuid: &str) -> Result<Ops, RealmsError> {
         let url = self.url(&format!("ops/{realm_id}/{}", undashed(uuid)?));
         let json = Self::execute(self.request("POST", &url, READ_TIMEOUT), Some(""))?;
         serde_json::from_str(&json).map_err(|_| RealmsError::Parse)
     }
 
     /// `RealmsClient.deop`: `DELETE ops/{id}/{uuid}`, then the ops.
-    pub fn deop_player(&self, realm_id: i64, uuid: &str) -> Result<Ops, RealmsError> {
+    pub(crate) fn deop_player(&self, realm_id: i64, uuid: &str) -> Result<Ops, RealmsError> {
         let url = self.url(&format!("ops/{realm_id}/{}", undashed(uuid)?));
         let json = Self::execute(self.request("DELETE", &url, READ_TIMEOUT), None)?;
         serde_json::from_str(&json).map_err(|_| RealmsError::Parse)
@@ -1420,7 +1422,11 @@ impl RealmsClient {
 
     /// `RealmsClient.invite`: `POST invites/{id}` with `{"name": ...}`; the answer is the
     /// Realm as `RealmsServer.parse` reads it, and its `players` are the invited list.
-    pub fn invite_player(&self, realm_id: i64, name: &str) -> Result<Vec<PlayerInfo>, RealmsError> {
+    pub(crate) fn invite_player(
+        &self,
+        realm_id: i64,
+        name: &str,
+    ) -> Result<Vec<PlayerInfo>, RealmsError> {
         let body = serde_json::json!({"name": name}).to_string();
         let url = self.url(&format!("invites/{realm_id}"));
         let json = Self::execute(self.request("POST", &url, READ_TIMEOUT), Some(&body))?;
@@ -1430,28 +1436,28 @@ impl RealmsClient {
     }
 
     /// `RealmsClient.uninvite`: `DELETE invites/{id}/invite/{uuid}`.
-    pub fn uninvite_player(&self, realm_id: i64, uuid: &str) -> Result<(), RealmsError> {
+    pub(crate) fn uninvite_player(&self, realm_id: i64, uuid: &str) -> Result<(), RealmsError> {
         let url = self.url(&format!("invites/{realm_id}/invite/{}", undashed(uuid)?));
         Self::execute(self.request("DELETE", &url, READ_TIMEOUT), None).map(drop)
     }
 
     /// `RealmsClient.updateSlot`: `POST worlds/{id}/slot/{slotId}` with
     /// `RealmsSlotUpdateDto`'s JSON.
-    pub fn update_slot(&self, realm_id: i64, slot: &RealmSlot) -> Result<(), RealmsError> {
+    pub(crate) fn update_slot(&self, realm_id: i64, slot: &RealmSlot) -> Result<(), RealmsError> {
         let body = slot_update(slot).to_string();
         let url = self.url(&format!("worlds/{realm_id}/slot/{}", slot.slot_id));
         Self::execute(self.request("POST", &url, READ_TIMEOUT), Some(&body)).map(drop)
     }
 
     /// `RealmsClient.switchSlot`: `PUT worlds/{id}/slot/{slotId}`, the service's yes or no.
-    pub fn switch_slot(&self, realm_id: i64, slot_id: i32) -> Result<bool, RealmsError> {
+    pub(crate) fn switch_slot(&self, realm_id: i64, slot_id: i32) -> Result<bool, RealmsError> {
         let url = self.url(&format!("worlds/{realm_id}/slot/{slot_id}"));
         let json = Self::execute(self.request("PUT", &url, READ_TIMEOUT), Some(""))?;
         json.trim().parse::<bool>().map_err(|_| RealmsError::Parse)
     }
 
     /// `RealmsClient.getPreferredRegionSelections`: every region and its quality.
-    pub fn preferred_regions(&self) -> Result<Vec<RegionDataDto>, RealmsError> {
+    pub(crate) fn preferred_regions(&self) -> Result<Vec<RegionDataDto>, RealmsError> {
         let json = Self::execute(
             self.request("GET", &self.url("regions/preferredRegions"), READ_TIMEOUT),
             None,
@@ -1465,7 +1471,7 @@ impl RealmsClient {
     /// `RealmsConfigurationDto`'s JSON: the active slot's `RealmsSlotUpdateDto` as `options`,
     /// its settings, the region preference (its id and the region's `nameId`) and the
     /// name and description.
-    pub fn update_configuration(
+    pub(crate) fn update_configuration(
         &self,
         realm_id: i64,
         name: &str,
@@ -1480,7 +1486,7 @@ impl RealmsClient {
 
     /// `RealmsClient.getRealmTierConfiguration`: `GET worlds/{id}/configuration/tier`. A range
     /// the answer lacks is a configuration error, as `getRealmTierConfiguration`'s parse makes it.
-    pub fn get_tier_configuration(
+    pub(crate) fn get_tier_configuration(
         &self,
         realm_id: i64,
     ) -> Result<RealmTierConfiguration, RealmsError> {
@@ -1496,7 +1502,7 @@ impl RealmsClient {
     }
 
     /// `RealmsClient.updateRenderDistance`: `PUT worlds/{id}/configuration/renderDistance/{n}`.
-    pub fn update_render_distance(
+    pub(crate) fn update_render_distance(
         &self,
         realm_id: i64,
         render_distance: i32,
@@ -1508,7 +1514,7 @@ impl RealmsClient {
     }
 
     /// `RealmsClient.updateSimulationDistance`: `PUT worlds/{id}/configuration/simDistance/{n}`.
-    pub fn update_simulation_distance(
+    pub(crate) fn update_simulation_distance(
         &self,
         realm_id: i64,
         simulation_distance: i32,
@@ -1521,7 +1527,7 @@ impl RealmsClient {
 
     /// `RealmsClient.fetchWorldTemplates`: `GET worlds/templates/{type}?page={page}&pageSize={size}`.
     /// `WorldTemplatePaginatedList.parse` leaves a page it can't read empty rather than failing.
-    pub fn fetch_world_templates(
+    pub(crate) fn fetch_world_templates(
         &self,
         page: i32,
         page_size: i32,
@@ -1537,7 +1543,7 @@ impl RealmsClient {
 
     /// `RealmsClient.resetWorldWithTemplate`: `POST worlds/{id}/reset` with
     /// `RealmsWorldResetDto` as `resetWorldWithTemplate` builds it (no seed, level type -1).
-    pub fn reset_world_with_template(
+    pub(crate) fn reset_world_with_template(
         &self,
         realm_id: i64,
         template_id: i64,
@@ -1569,12 +1575,12 @@ impl RealmsClient {
     }
 
     /// `RealmsClient.notificationsSeen`: `POST notifications/seen` with the UUIDs.
-    pub fn notifications_seen(&self, uuids: &[String]) -> Result<(), RealmsError> {
+    pub(crate) fn notifications_seen(&self, uuids: &[String]) -> Result<(), RealmsError> {
         self.notification_answer("notifications/seen", uuids)
     }
 
     /// `RealmsClient.notificationsDismiss`: `POST notifications/dismiss` with the UUIDs.
-    pub fn notifications_dismiss(&self, uuids: &[String]) -> Result<(), RealmsError> {
+    pub(crate) fn notifications_dismiss(&self, uuids: &[String]) -> Result<(), RealmsError> {
         self.notification_answer("notifications/dismiss", uuids)
     }
 
@@ -1586,7 +1592,7 @@ impl RealmsClient {
     }
 
     /// `RealmsClient.getNews`: `GET mco/v1/news`, the page the header's news button opens.
-    pub fn news_link(&self) -> Result<Option<String>, RealmsError> {
+    pub(crate) fn news_link(&self) -> Result<Option<String>, RealmsError> {
         let json = Self::execute(
             self.request("GET", &self.url("mco/v1/news"), Duration::from_secs(10)),
             None,
@@ -1603,7 +1609,7 @@ impl RealmsClient {
 
     /// `RealmsClient.clientCompatible`: `GET mco/client/compatible`, whose text answer names
     /// a `CompatibleVersionResponse` exactly (`Enum.valueOf`: no trimming, case counts).
-    pub fn client_compatible(&self) -> Result<CompatibleVersion, RealmsError> {
+    pub(crate) fn client_compatible(&self) -> Result<CompatibleVersion, RealmsError> {
         let url = self.url("mco/client/compatible");
         let answer = Self::execute(self.request("GET", &url, READ_TIMEOUT), None)?;
         match answer.as_str() {
@@ -1616,7 +1622,7 @@ impl RealmsClient {
 
     /// `RealmsClient.hasParentalConsent`: `GET mco/available`, read with
     /// `Boolean.parseBoolean` (`true` in any case is yes, anything else is no).
-    pub fn has_parental_consent(&self) -> Result<bool, RealmsError> {
+    pub(crate) fn has_parental_consent(&self) -> Result<bool, RealmsError> {
         let url = self.url("mco/available");
         let answer = Self::execute(self.request("GET", &url, READ_TIMEOUT), None)?;
         Ok(answer.eq_ignore_ascii_case("true"))
@@ -1624,7 +1630,7 @@ impl RealmsClient {
 
     /// `RealmsClient.trialAvailable`: `GET trial`, the service's yes or no. The product
     /// page shows its trial note only when this says yes.
-    pub fn trial_available(&self) -> Result<bool, RealmsError> {
+    pub(crate) fn trial_available(&self) -> Result<bool, RealmsError> {
         let json = Self::execute(self.request("GET", &self.url("trial"), READ_TIMEOUT), None)?;
         json.trim().parse::<bool>().map_err(|_| RealmsError::Parse)
     }
@@ -1632,7 +1638,7 @@ impl RealmsClient {
     /// `RealmsClient.initializeRealm`: `POST worlds/{id}/initialize` with
     /// `RealmsDescriptionDto` — the name and description a new Realm starts with
     /// (`RealmCreationTask`).
-    pub fn initialize_realm(
+    pub(crate) fn initialize_realm(
         &self,
         realm_id: i64,
         name: &str,
@@ -1645,7 +1651,7 @@ impl RealmsClient {
 
     /// `RealmsClient.putIntoMinigameMode`: `PUT worlds/minigames/{minigame}/{realm}`, the
     /// service's yes or no (`SwitchMinigameTask`).
-    pub fn put_into_minigame_mode(
+    pub(crate) fn put_into_minigame_mode(
         &self,
         realm_id: i64,
         minigame_id: &str,
@@ -1658,7 +1664,7 @@ impl RealmsClient {
 
     /// `RealmsClient.requestUploadInfo`: `PUT worlds/{id}/backups/upload`, the token the last
     /// answer gave as `UploadInfo.createRequest` sends it. `None` when it names no target.
-    pub fn request_upload_info(
+    pub(crate) fn request_upload_info(
         &self,
         realm_id: i64,
         previous_token: Option<&str>,
@@ -1677,7 +1683,7 @@ impl RealmsClient {
     /// read once `cancel` is set; a `Retry-After` answer sends the body again (`MAX_RETRIES`),
     /// counting from zero as `UploadStatus.restart` does.
     #[allow(clippy::too_many_arguments)]
-    pub fn upload_world(
+    pub(crate) fn upload_world(
         &self,
         realm_id: i64,
         slot_id: i32,
@@ -1787,7 +1793,7 @@ impl RealmsClient {
     }
 
     /// `RealmsClient.redeemInviteCode`: `POST api/v1.0/invite/codes/use/{code}`.
-    pub fn redeem_invite_code(&self, code: &str) -> Result<(), RealmsError> {
+    pub(crate) fn redeem_invite_code(&self, code: &str) -> Result<(), RealmsError> {
         let code = path_segment(code.trim())?;
         self.frontend(
             "POST",
@@ -1798,7 +1804,7 @@ impl RealmsClient {
     }
 
     /// `RealmsClient.inviteCodes`: `GET api/v1.0/invite/codes?realmId={id}`.
-    pub fn invite_codes(&self, realm_id: i64) -> Result<Vec<InviteCode>, RealmsError> {
+    pub(crate) fn invite_codes(&self, realm_id: i64) -> Result<Vec<InviteCode>, RealmsError> {
         let json = self.frontend(
             "GET",
             &format!("api/v1.0/invite/codes?realmId={realm_id}"),
@@ -1809,7 +1815,7 @@ impl RealmsClient {
 
     /// `RealmsClient.createInviteCode`: `POST api/v1.0/invite/codes` with
     /// `InviteCodeRequestDto`'s JSON.
-    pub fn create_invite_code(
+    pub(crate) fn create_invite_code(
         &self,
         realm_id: i64,
         enabled: bool,
@@ -1827,7 +1833,7 @@ impl RealmsClient {
     }
 
     /// `RealmsClient.updateInviteCode`: `POST api/v1.0/invite/codes/update`.
-    pub fn update_invite_code(
+    pub(crate) fn update_invite_code(
         &self,
         realm_id: i64,
         code: &str,
@@ -1846,7 +1852,7 @@ impl RealmsClient {
     }
 
     /// `RealmsClient.deleteInviteCode`: `DELETE api/v1.0/invite/codes/delete/{code}`.
-    pub fn delete_invite_code(&self, code: &str) -> Result<(), RealmsError> {
+    pub(crate) fn delete_invite_code(&self, code: &str) -> Result<(), RealmsError> {
         self.frontend(
             "DELETE",
             &format!("api/v1.0/invite/codes/delete/{}", path_segment(code)?),

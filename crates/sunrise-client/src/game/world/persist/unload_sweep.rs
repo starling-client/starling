@@ -130,6 +130,14 @@ impl Game<'_> {
             }
             keep
         });
+        // Lightning bolts never save (`EntityType.noSave()`); drop them when their chunk unloads.
+        self.bolts.retain(|b| {
+            let keep = !gone(Vec3::new(b.at[0], b.at[1], b.at[2]));
+            if !keep {
+                removed.push(b.id);
+            }
+            keep
+        });
         self.mobs.retain(|m| {
             let keep = !leaving.contains(&m.id);
             if !keep {

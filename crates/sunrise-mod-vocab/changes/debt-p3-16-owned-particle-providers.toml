@@ -1,0 +1,86 @@
+# Native targets whose signatures also change are listed in migrate below.
+ids = [
+    "hook:register_particle_providers",
+    "handle:ParticleProviders::register_sprite_set",
+    "handle:ParticleProviderRegistry::into_providers",
+    "trait:ParticleProvider",
+    "method:ParticleProvider::tick",
+    "method:ParticleProvider::extract",
+    "method:ParticleProvider::create_particle",
+    "type:ModParticle",
+    "type:ModParticle.position",
+    "type:ModParticle.previous",
+    "type:ModParticle.velocity",
+    "type:ModParticle.age",
+    "type:ModParticle.lifetime",
+    "type:ModParticle.size",
+    "type:ModParticle.rgba",
+    "type:ModParticle.frame",
+    "type:ModParticle.removed",
+    "type:ModParticle.state",
+    "type:ModParticle.facing",
+    "type:ModParticle.roll",
+    "type:ParticleBatch",
+    "handle:ParticleBatch::len",
+    "handle:ParticleBatch::is_empty",
+    "handle:ParticleBatch::get_mut",
+    "handle:ParticleBatch::iter_mut",
+    "type:ParticleSpriteSet",
+    "handle:ParticleSpriteSet::frame_count",
+    "type:ParticleSpawn",
+    "type:ParticleSpawn.options",
+    "type:ParticleSpawn.position",
+    "type:ParticleSpawn.velocity",
+    "type:ParticleSpawn.level",
+    "type:ParticleSpawn.random",
+    "trait:ParticleView",
+    "method:ParticleView::position",
+    "method:ParticleView::previous_position",
+    "method:ParticleView::velocity",
+    "method:ParticleView::age",
+    "method:ParticleView::lifetime",
+    "method:ParticleView::on_ground",
+    "method:ParticleView::is_alive",
+    "method:ParticleView::size",
+    "method:ParticleView::rgba",
+    "method:ParticleView::sprite_index",
+    "method:ParticleView::facing",
+    "method:ParticleView::roll",
+    "method:ParticleView::previous_roll",
+    "trait:ParticleTickView",
+    "method:ParticleTickView::set_position",
+    "method:ParticleTickView::set_previous_position",
+    "method:ParticleTickView::set_velocity",
+    "method:ParticleTickView::set_age",
+    "method:ParticleTickView::set_lifetime",
+    "method:ParticleTickView::set_gravity",
+    "method:ParticleTickView::set_friction",
+    "method:ParticleTickView::set_has_physics",
+    "method:ParticleTickView::set_size",
+    "method:ParticleTickView::set_rgba",
+    "method:ParticleTickView::set_sprite_index",
+    "method:ParticleTickView::set_sprite_from_age",
+    "method:ParticleTickView::set_facing",
+    "method:ParticleTickView::set_roll",
+    "method:ParticleTickView::move_by",
+    "method:ParticleTickView::advance_age",
+    "method:ParticleTickView::tick_base",
+    "method:ParticleTickView::remove",
+    "trait:CustomParticle",
+    "method:CustomParticle::tick",
+    "method:CustomParticle::extract",
+]
+why = """
+Vanilla ParticleProvider.createParticle, ParticleEngine.makeParticle/add/tick and ParticleGroup.add create a particle before pending group admission, then tick the admitted instance. Particle.tick/remove govern previous pose and expiry; draw output is not simulation state. Like NeoForge RegisterParticleProvidersEvent.registerSpriteSet, the client binds factories to registered ParticleType<T> sprite sets separately from the common registry. Owned instances replace stock batch copies and fixed scratch slots while keeping common particle options, map and stream codecs, packet RNG separation, and zero-to-many sprite quad output.
+"""
+migrate = '''
+Keep `Registrar::register_particle_type`, its map and stream codecs, `ty.options(value)`, and `RegisterParticleProvidersEvent.providers`. Change `event.providers.register_sprite_set(ty, Arc::new(P))` to `event.providers.register_sprite_set(ty, |sprites| P { ... })`. The factory returns the bound provider and can use `sprites.frame_count()`. It is called once on each load of the matching sprite set, not during registration. Code using `ParticleProviderRegistry::into_providers` to initialize the renderer now hands its returned typed factory map to `register_particle_providers` rather than a map of already constructed providers.
+
+Implement `ParticleProvider<T>::create_particle(&self, spawn: &mut ParticleSpawn<'_, T>, particle: &mut dyn ParticleTickView) -> Option<Box<dyn CustomParticle>>`. Read the same typed codec value via `spawn.options`, position and auxiliary inputs via `spawn.position` and `spawn.velocity`, and the live level and provider RNG via `spawn.level` and `spawn.random`. Return `None` to decline; return `Some(Box::new(Instance { ... }))` to submit an instance. Move the former four scratch numbers in `ModParticle.state` to owned fields on `Instance`. Neither the instance nor the views cross the wire.
+
+Replace `ParticleProvider::tick` and all `ParticleBatch` accessors (`len`, `is_empty`, `get_mut`, `iter_mut`) and iteration with `CustomParticle::tick(&mut self, particle: &mut dyn ParticleTickView, level: &dyn ParticleLevelView)` on `Instance`. The default runs `tick_base()`. For custom motion call `advance_age()` first and `move_by(delta)` if it returns true, or manage lifetime yourself and call `remove()`. Replace `position`, `previous`, `velocity`, `age`, `lifetime`, `size`, `rgba`, `frame`, `facing`, and `roll` fields with `position()`, `previous_position()`, `velocity()`, `age()`, `lifetime()`, `size()`, `rgba()`, `sprite_index()`, `facing()`, `roll()` and their corresponding `set_*` methods. Use `on_ground()` to read the collision result, `set_gravity`, `set_friction` and `set_has_physics` to change the base motion, and `set_sprite_from_age()` for vanilla animation. A frame index is an exact `usize`; an invalid setter leaves the field unchanged. Replace `removed` with `!is_alive()` for reads and `remove()` for writes. There is no revive or batch conversion call.
+
+Move `ParticleProvider::extract` to `CustomParticle::extract(&self, particle: &dyn ParticleView, view: &ParticleExtractView, output: &mut dyn QuadParticleRenderState)`. Read the live pose using the same getters above and use `previous_roll()` for its prior roll. `ParticleQuad` and its fields are unchanged: call `add_default()` for the ordinary interpolated quad, call `add(quad)` as often as needed, or emit nothing. Invalid quads are omitted and a failed callback discards that call's output without changing simulation. The next sprite reload discards live and pending native instances before rebinding their factories.
+
+For native replacements of `sunrise_client_render::particles::ParticleEngine::add_with`, insert `level: Option<&ParticleLevel<'_>>` before `options` and return the next implementation's `bool`; pass `Some(&level)` when lending the target level or `None` for stock calls without a loan. Native uses of `add_with_world`, `create_with_world`, and `add_always_visible_with_world` move to `add_with`, `create_with_level`, and `add_always_visible_with_level` respectively and borrow `ParticleLevel` instead of `World`. `send_particles`, `tracking_emitter`, `tracking_emitter_for` and `explosion` take the level loan as their last argument; the first three accept `None` when no native provider is involved. `cloud_client_tick` and `handle_level_particles` likewise take a particle level in place of `World` (`Option` for packet interception). Construct the loan with `ParticleLevel::new(world, facts, collision)`. Do not clone a `Particle` or require `Clone` on `ParticleController`; keep ownership with the engine.
+'''

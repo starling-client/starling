@@ -18,7 +18,10 @@ use sunrise_client::{
 };
 
 fn bodies(encoder: &ChunkEncoder, columns: &[&Chunk], world: &World) -> Vec<Vec<u8>> {
-    columns.iter().map(|c| encoder.body_in(c, world)).collect()
+    columns
+        .iter()
+        .map(|c| encoder.body_in(c, world).unwrap())
+        .collect()
 }
 
 fn fixture(

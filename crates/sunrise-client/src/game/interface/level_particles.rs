@@ -231,7 +231,7 @@ impl Game<'_> {
         if data == 1 {
             let at = [pos.x, pos.y, pos.z].map(|v| f64::from(v) + 0.5);
             let pitch = self.world.random.next_float() * 0.1 + 0.9;
-            self.audio.play(
+            self.play_audio(
                 "minecraft:entity.dragon_fireball.explode",
                 Some(at),
                 1.0,
@@ -321,6 +321,13 @@ impl Game<'_> {
     /// every guest whatever their dimension, each at their own position
     /// (`Hub::global_level_event`).
     pub(super) fn global_level_event(&mut self, id: i32, pos: [i32; 3], data: i32) {
+        let global = self
+            .ui
+            .rules
+            .bool_at(sunrise_client::gamerules::vanilla::GLOBAL_SOUND_EVENTS);
+        if global && self.server_level_event_canceled(id, pos, data, true) {
+            return;
+        }
         // ServerLevel.globalLevelEvent: without global_sound_events it is a
         // plain level event (`levelEvent(null, ...)`), sent to the players
         // near `pos`; the vanilla client has no plain sound for 1023, 1028
@@ -341,6 +348,13 @@ impl Game<'_> {
     /// Deliver one committed global level event immediately without touching unrelated
     /// `lan_global_events` or `lan_events`, preserving packet order across effect kinds.
     pub(super) fn deliver_global_level_event(&mut self, id: i32, pos: [i32; 3], data: i32) {
+        let global = self
+            .ui
+            .rules
+            .bool_at(sunrise_client::gamerules::vanilla::GLOBAL_SOUND_EVENTS);
+        if global && self.server_level_event_canceled(id, pos, data, true) {
+            return;
+        }
         if !self
             .ui
             .rules
@@ -378,7 +392,7 @@ impl Game<'_> {
             [0, 1, 2].map(|k| eye[k] + d[k] / length * 2.0)
         });
         // Each guest plays it from the global packet.
-        self.audio.play_unshared(sound, at, volume, 1.0);
+        self.play_audio_unshared(sound, at, volume, 1.0);
     }
     /// `ClientLevel.addBreakingBlockEffects`: the block's hit sound (only for
     /// `play_sound`) and one crumb on the face being mined; nothing for air.
@@ -468,6 +482,9 @@ impl Game<'_> {
     /// `lan_events`, sending its packet directly when a LAN host is active so packet order matches
     /// commit order across effect kinds.
     pub(super) fn deliver_level_event(&mut self, id: i32, pos: [i32; 3], data: i32) {
+        if self.server_level_event_canceled(id, pos, data, false) {
+            return;
+        }
         let saved_level_events = std::mem::take(&mut self.level_events);
         let saved_lan_events = std::mem::take(&mut self.lan_events);
         self.level_events.push(LevelEvent::LevelEvent {
@@ -476,7 +493,9 @@ impl Game<'_> {
             data,
             source: None,
         });
+        let asked = crate::game::native_hooks::server_level_event::LevelEventsAsked::mark();
         let _ = self.process_level_events();
+        drop(asked);
         let recorded = std::mem::replace(&mut self.lan_events, saved_lan_events);
         let extra_level_events = std::mem::replace(&mut self.level_events, saved_level_events);
         self.level_events.extend(extra_level_events);

@@ -15,17 +15,14 @@ import re
 import subprocess
 import sys
 
-try:
-    from . import lab, test_rust_parity as base
-    from .test_dedicated_server_parity import Server, wait_ticks
-    from .test_forced_end_parity import answer
-    from .test_locator_bar_parity import generate_world, server_dir
-except ImportError:
-    import lab
-    import test_rust_parity as base
-    from test_dedicated_server_parity import Server, wait_ticks
-    from test_forced_end_parity import answer
-    from test_locator_bar_parity import generate_world, server_dir
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_rust_parity as base
+from tools.test_dedicated_server_parity import Server, wait_ticks
+from tools.test_forced_end_parity import answer
+from tools.test_locator_bar_parity import generate_world, server_dir
 
 NAME = 'server-dimension-item-parity'
 LEVELS = ('minecraft:overworld', 'minecraft:the_nether')

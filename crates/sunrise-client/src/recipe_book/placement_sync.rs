@@ -5,23 +5,42 @@ mod catalogue;
 #[path = "placement_sync_tests.rs"]
 mod tests;
 
-pub const RESOURCE_ID_BYTES: usize = 32767;
-pub const CHUNK_BYTES: usize = super::settings_sync::MAX_BYTES / 2;
-pub const MAX_CATALOG_BYTES: usize = sunrise_protocol::frame::MAX_FRAME;
+/// The Identifier stream codec uses STRING_UTF8 (32,767 UTF-16 code units).
+/// Valid namespaced identifiers are ASCII, so this is their byte limit on the wire only.
+pub(super) const RESOURCE_ID_BYTES: usize = 32767;
+/// Budget for a Part in one play packet, including packet ID (a one-byte VarInt),
+/// channel length (a one-byte VarInt), channel, settings tag, Wire variant tag,
+/// epoch, request number, offset and byte-vector length.
+pub const CHUNK_BYTES: usize = sunrise_protocol::frame::MAX_GUARANTEED_PACKET_BODY
+    - (1 + 1 + super::settings_sync::CHANNEL.len() + 1 + 4 + 8 + 8 + 4 + 4);
 
-/// A resource location that can cross vanilla's resource-location string boundary.
-#[derive(Clone, Debug, PartialEq, Eq, mod_api::Wire)]
+/// A validated fully qualified identifier shared by book settings and placement.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, mod_api::Wire)]
 #[wire(via = String)]
 pub struct ResourceId(String);
 impl ResourceId {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    pub(super) fn fits_wire(&self) -> bool {
+        self.0.len() <= RESOURCE_ID_BYTES
+    }
+
+    /// Takes a key obtained from or already checked against the frozen book registry.
+    pub fn from_registered_book(book: &mod_api::RecipeBookTypeKey) -> Self {
+        Self(book.as_str().to_owned())
+    }
+}
+impl std::borrow::Borrow<str> for ResourceId {
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
 }
 impl TryFrom<String> for ResourceId {
     type Error = ();
     fn try_from(value: String) -> Result<Self, ()> {
-        if value.len() <= RESOURCE_ID_BYTES && super::resource_id::valid(&value) {
+        if mod_api::Identifier::parse_namespaced(&value).is_some() {
             Ok(Self(value))
         } else {
             Err(())
@@ -53,12 +72,6 @@ pub struct CatalogIdentity {
     pub menu: ResourceId,
     pub book: ResourceId,
 }
-#[derive(Clone, Debug, PartialEq, Eq, mod_api::Wire)]
-pub struct Selection {
-    pub catalog: CatalogIdentity,
-    pub number: u64,
-    pub display: DisplayId,
-}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, mod_api::Wire)]
 pub enum Refusal {
     Unsupported,
@@ -72,14 +85,8 @@ pub enum Refusal {
     TooLarge,
     Invalid,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, mod_api::Wire)]
-pub enum Outcome {
-    Placed,
-    MissingIngredients,
-    Refused(Refusal),
-}
 
-#[derive(Clone, Debug, PartialEq, Eq, mod_api::Wire)]
+#[derive(Clone, Debug, PartialEq, mod_api::Wire)]
 pub enum Frame {
     Hello {
         epoch: u64,
@@ -110,12 +117,14 @@ pub enum Frame {
         bytes: Vec<u8>,
     },
     Place {
-        selection: Selection,
+        catalog: CatalogIdentity,
+        display: DisplayId,
         use_max: bool,
     },
-    Reply {
-        selection: Selection,
-        outcome: Outcome,
+    Ghost {
+        catalog: CatalogIdentity,
+        recipe: ResourceId,
+        display: mod_api::RecipeBookDisplay,
     },
     Refused {
         epoch: u64,
@@ -129,9 +138,9 @@ pub enum Frame {
     },
 }
 
-/// Bump when `Frame` or the code-free catalogue body changes on the wire. The
-/// fragmentation limits are part of `schema()` independently.
-const PROTOCOL: u64 = 2;
+/// Bump when the placement frame or catalogue protocol changes. Part size is
+/// also included independently in `schema()`.
+const PROTOCOL: u64 = 4;
 
 /// Borrowed category view with concretized displays, avoiding deep copies of
 /// `PlacementInfo` trees before wire depth and size limits are enforced.
@@ -152,9 +161,11 @@ pub fn encode_borrowed_catalogue(
     declarations: &[BorrowedCategory<'_>],
 ) -> Result<Vec<u8>, Refusal> {
     let mut writer = mod_api::wire::Writer::new();
-    writer.limit(MAX_CATALOG_BYTES);
+    // Start.total and Part.offset are u32; individual Parts fit the connection frame.
+    writer.limit(u32::MAX as usize);
     catalogue::write_borrowed_categories(&mut writer, declarations);
-    if writer.error().is_some() {
+    if let Some(error) = writer.error() {
+        log::warn!("[recipe book] cannot encode placement catalogue: {error}");
         return Err(Refusal::TooLarge);
     }
     Ok(writer.into_bytes())
@@ -163,9 +174,11 @@ pub fn encode_borrowed_catalogue(
 /// Encode the remote display projection of already validated native declarations.
 pub fn encode_catalogue(declarations: &[mod_api::RecipeBookCategory]) -> Result<Vec<u8>, Refusal> {
     let mut writer = mod_api::wire::Writer::new();
-    writer.limit(MAX_CATALOG_BYTES);
+    // Start.total and Part.offset are u32; individual Parts fit the connection frame.
+    writer.limit(u32::MAX as usize);
     catalogue::write_categories(&mut writer, declarations);
-    if writer.error().is_some() {
+    if let Some(error) = writer.error() {
+        log::warn!("[recipe book] cannot encode placement catalogue: {error}");
         return Err(Refusal::TooLarge);
     }
     Ok(writer.into_bytes())
@@ -180,16 +193,11 @@ pub fn decode_catalogue(bytes: &[u8]) -> Result<Vec<mod_api::RecipeBookCategory>
 
 /// What the client and the server must agree on before either sends a frame.
 pub fn schema() -> u64 {
-    [
-        PROTOCOL,
-        CHUNK_BYTES as u64,
-        MAX_CATALOG_BYTES as u64,
-        RESOURCE_ID_BYTES as u64,
-    ]
-    .into_iter()
-    .fold(0xcbf2_9ce4_8422_2325, |hash, word| {
-        (hash ^ word).wrapping_mul(0x0100_0000_01b3)
-    })
+    [PROTOCOL, CHUNK_BYTES as u64, RESOURCE_ID_BYTES as u64]
+        .into_iter()
+        .fold(0xcbf2_9ce4_8422_2325, |hash, word| {
+            (hash ^ word).wrapping_mul(0x0100_0000_01b3)
+        })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -224,7 +232,6 @@ pub struct Client {
     pending: Option<PendingCatalog>,
     catalog: Option<CatalogIdentity>,
     completed: Option<CatalogIdentity>,
-    selection: Option<Selection>,
 }
 impl Client {
     /// Reset connection authority before negotiating a different epoch.
@@ -252,7 +259,6 @@ impl Client {
         self.pending = None;
         self.catalog = None;
         self.completed = None;
-        self.selection = None;
     }
     pub fn invalidate(&mut self, epoch: u64) -> bool {
         if self.epoch != Some(epoch) {
@@ -261,7 +267,6 @@ impl Client {
         self.pending = None;
         self.catalog = None;
         self.completed = None;
-        self.selection = None;
         true
     }
     /// A catalogue refusal must name the outstanding request, not a superseded window.
@@ -327,8 +332,8 @@ impl Client {
         {
             return Err(Refusal::Stale);
         }
-        if total == 0 || total > MAX_CATALOG_BYTES {
-            return Err(Refusal::TooLarge);
+        if total == 0 {
+            return Err(Refusal::Invalid);
         }
         if pending.incoming.is_some() {
             return Err(Refusal::Invalid);
@@ -355,7 +360,8 @@ impl Client {
         let incoming = pending.incoming.as_mut().ok_or(Refusal::Invalid)?;
         let offset = usize::try_from(offset).map_err(|_| Refusal::Invalid)?;
         if offset != incoming.bytes.len()
-            || bytes.len() != (incoming.total - incoming.bytes.len()).min(CHUNK_BYTES)
+            || bytes.is_empty()
+            || bytes.len() > incoming.total - incoming.bytes.len()
         {
             return Err(Refusal::Invalid);
         }
@@ -389,36 +395,19 @@ impl Client {
         }
         self.completed = None;
         self.catalog = Some(identity);
-        self.selection = None;
         true
     }
-    pub fn select(&mut self, display: DisplayId, use_max: bool) -> Option<Frame> {
-        self.selection = None;
+    pub fn place(&self, display: DisplayId, use_max: bool) -> Option<Frame> {
         let catalog = self.catalog.clone()?;
-        let number = self.number.checked_add(1)?;
-        self.number = number;
-        let selection = Selection {
+        Some(Frame::Place {
             catalog,
-            number,
             display,
-        };
-        self.selection = Some(selection.clone());
-        Some(Frame::Place { selection, use_max })
+            use_max,
+        })
     }
-    /// Only a current missing-ingredients reply authorizes ghost installation.
-    /// Consume only the reply to the current selection. Stale replies cannot
-    /// cancel a newer request's timeout or install its ghosts.
-    pub fn reply(&mut self, selection: &Selection, outcome: Outcome) -> Option<Outcome> {
-        if self.selection.as_ref() != Some(selection)
-            || self.catalog.as_ref() != Some(&selection.catalog)
-        {
-            return None;
-        }
-        self.selection = None;
-        Some(outcome)
-    }
-    pub fn click(&mut self) {
-        self.selection = None;
+    /// Only a server ghost for the currently accepted catalogue may populate this opening.
+    pub fn accepts_ghost(&self, catalog: &CatalogIdentity) -> bool {
+        self.catalog.as_ref() == Some(catalog)
     }
     pub fn epoch(&self) -> Option<u64> {
         self.epoch
@@ -431,7 +420,7 @@ impl Client {
     }
 }
 
-/// Replay protection is connection-scoped, not reset by a repeated Hello or menu close.
+/// Catalogue-transfer sequencing is connection-scoped, not reset by a repeated Hello or menu close.
 pub struct Authority {
     epoch: u64,
     ready: bool,
@@ -473,11 +462,10 @@ impl Authority {
     pub fn owns(&self, catalog: &CatalogIdentity) -> bool {
         self.ready && self.catalog.as_ref() == Some(catalog)
     }
-    pub fn place(&mut self, selection: &Selection) -> Result<(), Refusal> {
-        if !self.owns(&selection.catalog) || selection.number <= self.last {
+    pub fn place(&self, catalog: &CatalogIdentity) -> Result<(), Refusal> {
+        if !self.owns(catalog) {
             return Err(Refusal::Stale);
         }
-        self.last = selection.number;
         Ok(())
     }
     pub fn clear(&mut self) {

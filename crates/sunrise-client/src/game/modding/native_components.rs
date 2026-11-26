@@ -3,22 +3,6 @@ use super::Game;
 use sunrise_client::items::ItemStack;
 use sunrise_core::nbt::Tag;
 
-/// Failure to access a native item component.
-#[derive(Debug)]
-pub(crate) enum NativeComponentError {
-    UnknownType,
-    InvalidValue(sunrise_protocol::Error),
-}
-impl std::fmt::Display for NativeComponentError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::UnknownType => f.write_str("unregistered component type"),
-            Self::InvalidValue(error) => write!(f, "invalid component value: {error}"),
-        }
-    }
-}
-impl std::error::Error for NativeComponentError {}
-
 /// Use the attack calculations with a private RNG snapshot, never the world's live source.
 fn stack_attack_bonus_preview(
     enchantments: &sunrise_items::enchant::Enchantments,
@@ -101,14 +85,14 @@ impl Game<'_> {
     pub(super) fn item_burn_time(&self, item: mod_api::ItemKey) -> Option<i32> {
         let item = mod_api::__private::item_key_id(item)?;
         let (time, _) = self.items().get(item)?.fuel.as_ref()?;
-        Some(self.res.providers().int_value(time))
+        Some(self.active_providers().int_value(time))
     }
     /// Item `item`'s chance to raise a composter's level (its `compostable` component's layers provider
     /// resolved), None where it is not compostable. API @API:item_components@.
     pub(super) fn item_compost_chance(&self, item: mod_api::ItemKey) -> Option<f32> {
         let item = mod_api::__private::item_key_id(item)?;
         let layers = self.items().get(item)?.compostable.as_ref()?;
-        Some(self.res.providers().layer_chance(layers))
+        Some(self.active_providers().layer_chance(layers))
     }
     /// The slot `stack` is equipped to (`Equippable.slot`) after its component patch, behind
     /// `ItemResource::equippable_slot`, through the opaque backend. API @API:item_components@.
@@ -209,43 +193,23 @@ impl Game<'_> {
     ) -> sunrise_client::text::Text {
         sunrise_client::stations::hover_name_in(&self.loop_context, &self.pack.names, stack)
     }
+    /// `ItemStack.getItemName` as a component: the name a mod item's Part gives the stack, else
+    /// vanilla's, without the custom name or a book's title. The Part is asked at most once.
+    pub(in crate::game) fn stack_item_name_text(
+        &self,
+        stack: &ItemStack,
+    ) -> sunrise_client::text::Text {
+        sunrise_client::stations::item_name_in(&self.loop_context, &self.pack.names, stack)
+    }
     /// `ItemStack.isBarVisible`, `getBarWidth`, `getBarColor`, before client-only hooks.
     pub(in crate::game) fn item_resource_bar(&self, stack: &ItemStack) -> Option<mod_api::ItemBar> {
-        use super::api_values::TryIntoApi;
-        let snapshot = stack.try_into_api().ok()?;
-        let resource = mod_api::ItemResource::of(&snapshot);
-        let component = |id| {
-            resource.value(
-                self,
-                &mod_api::ComponentId::new(id).expect("built-in component"),
-            )
-        };
-        if self.items().get(&stack.item)?.bundle {
-            let contents = component("minecraft:bundle_contents")?;
-            let patch = Tag::compound([("minecraft:bundle_contents", contents)]);
-            let (damage, extra) = sunrise_items::item_data::decode_components(Some(&patch));
-            let effective = ItemStack {
-                item: stack.item.clone(),
-                count: 1,
-                damage,
-                extra,
-            };
-            let (width, color) =
-                sunrise_items::bundle::Contents::of(self.items(), &effective)?.bar()?;
-            return Some(mod_api::ItemBar { width, color });
-        }
-        if !resource.damageable(self) {
-            return None;
-        }
-        let max_damage = component("minecraft:max_damage")
-            .as_ref()
-            .and_then(sunrise_items::properties::component_int)?;
-        let damage = component("minecraft:damage")
-            .as_ref()
-            .and_then(sunrise_items::properties::component_int)?;
-        sunrise_items::properties::damage_bar(damage, max_damage)
-            .try_into_api()
-            .unwrap()
+        let items = self.items();
+        let info = items.get(&stack.item)?;
+        let bar = sunrise_items::properties::stack_bar(items, stack, Some(info))?;
+        Some(mod_api::ItemBar {
+            width: bar.width,
+            color: bar.color,
+        })
     }
     /// Actor state shared by detached stack queries, without swapping equipment or players.
     fn item_combat_actor(&self, actor: mod_api::LivingRef) -> Option<(bool, bool, f64, bool)> {
@@ -388,6 +352,56 @@ impl Game<'_> {
     pub(in crate::game) fn enchantments_compatible(&self, a: &str, b: &str) -> bool {
         world_stations!(self).enchantments.compatible(a, b)
     }
+    /// `ItemStack.hurtAndBreak(amount, level, player, onBreak)` on a stack nobody wears: the
+    /// stack after the wear, None once it broke away. A named player is checked as the other
+    /// player reads check it (`player_handle_read`) and must be in `level`, so the wear and its
+    /// random draws stay in the level in place; the player is then swapped in for the wear
+    /// (their infinite materials, their durability trigger) without changing levels. Refused
+    /// off the server, for another level than the one in place, or for a player who is not
+    /// here or is in another level.
+    pub(in crate::game) fn item_stack_hurt_and_break(
+        &mut self,
+        stack: &ItemStack,
+        level: mod_api::LevelRef,
+        amount: i32,
+        player: Option<mod_api::PlayerRef>,
+    ) -> Result<Option<ItemStack>, mod_api::StackWriteError> {
+        use super::commands::Target;
+        use super::durability::Wearer;
+        use mod_api::StackWriteError::Unavailable;
+        if !self.is_logical_server()
+            || level.dimension() != self.dim.key()
+            || self.native_level_world(level).is_none()
+        {
+            return Err(Unavailable);
+        }
+        let (worn, _broken) = match player {
+            None => self.damage_stack_worn(stack, amount, Wearer::Nobody),
+            Some(player) => {
+                self.player_handle_read(player).ok_or(Unavailable)?;
+                let target = self
+                    .native_entity_target(player.entity())
+                    .ok_or(Unavailable)?;
+                let here = match target {
+                    Target::Player => self.acting_in_level_in_place(),
+                    Target::Guest(conn) => self
+                        .lan
+                        .as_ref()
+                        .and_then(|lan| lan.hub.guest(conn))
+                        .is_some_and(|guest| super::Dim::from_id(&guest.dimension) == self.dim),
+                    _ => false,
+                };
+                if !here {
+                    return Err(Unavailable);
+                }
+                self.for_player(target, |game| {
+                    game.damage_stack_worn(stack, amount, Wearer::Player)
+                })
+                .ok_or(Unavailable)?
+            }
+        };
+        Ok(worn)
+    }
     /// Roll through the game's enchantment registry and the active level's random source.
     pub(in crate::game) fn item_resource_enchant_randomly(
         &mut self,
@@ -418,6 +432,22 @@ impl Game<'_> {
             stack, picked,
         ))
     }
+    /// `EnchantmentHelper.modifyDurabilityToRepairFromXp` for `stack` and `points`, by the world's
+    /// enchantment definitions, drawing from the active level's random as Mending's repair does,
+    /// behind `ItemResource::durability_to_repair_from_xp`. API @API:item_components@.
+    pub(in crate::game) fn item_resource_durability_to_repair_from_xp(
+        &mut self,
+        stack: &ItemStack,
+        points: i32,
+    ) -> u32 {
+        super::enchant_effects::repair_from_xp(
+            &world_stations!(self).enchantments,
+            Some(world_items!(self)),
+            stack,
+            points,
+            &mut self.world.random,
+        )
+    }
     /// Whether an enchantment on `stack` has effect component `effect`, by the world's
     /// enchantment definitions (`EnchantmentHelper.has`), behind
     /// `ItemResource::has_enchantment_effect`, through the opaque backend. API
@@ -426,80 +456,6 @@ impl Game<'_> {
         world_stations!(self)
             .enchantments
             .has_component(stack, effect)
-    }
-}
-
-// Native mods use these helpers.
-#[allow(dead_code)]
-impl Game<'_> {
-    /// Read a native component, including the item's default when not patched.
-    pub(super) fn native_component<'a>(
-        &'a self,
-        stack: &'a ItemStack,
-        id: &str,
-    ) -> Result<Option<&'a Tag>, NativeComponentError> {
-        if sunrise_protocol::item::custom::id(id).is_none() {
-            return Err(NativeComponentError::UnknownType);
-        }
-        if let Some(data) = stack.data() {
-            if data.other(&format!("!{id}")).is_some() {
-                return Ok(None);
-            }
-            if let Some(value) = data.other(id) {
-                return Ok(Some(value));
-            }
-        }
-        Ok(self
-            .items()
-            .get(&stack.item)
-            .and_then(|item| item.custom_components.get(id)))
-    }
-
-    /// Set a registered native component after checking the network NBT limits.
-    pub(super) fn native_set_component(
-        &self,
-        stack: &mut ItemStack,
-        id: &str,
-        value: Tag,
-    ) -> Result<(), NativeComponentError> {
-        if sunrise_protocol::item::custom::id(id).is_none() {
-            return Err(NativeComponentError::UnknownType);
-        }
-        sunrise_core::nbt::validate_component_value(&value).map_err(|error| {
-            NativeComponentError::InvalidValue(sunrise_protocol::Error::new(error))
-        })?;
-        let default = self
-            .items()
-            .get(&stack.item)
-            .and_then(|item| item.custom_components.get(id));
-        let value = (default != Some(&value)).then_some(value);
-        let removed = format!("!{id}");
-        let data = stack.data_mut();
-        data.set_other(&removed, None);
-        data.set_other(id, value);
-        stack.tidy();
-        Ok(())
-    }
-
-    /// Remove a native component, including its item default.
-    pub(super) fn native_remove_component(
-        &self,
-        stack: &mut ItemStack,
-        id: &str,
-    ) -> Result<(), NativeComponentError> {
-        if sunrise_protocol::item::custom::id(id).is_none() {
-            return Err(NativeComponentError::UnknownType);
-        }
-        let default = self
-            .items()
-            .get(&stack.item)
-            .is_some_and(|item| item.custom_components.contains_key(id));
-        let removed = format!("!{id}");
-        let data = stack.data_mut();
-        data.set_other(id, None);
-        data.set_other(&removed, default.then(|| Tag::Compound(Default::default())));
-        stack.tidy();
-        Ok(())
     }
 }
 
@@ -588,6 +544,32 @@ mod enchantment_conflict_tests {
         });
     }
 
+    /// `EnchantmentHelper.modifyDurabilityToRepairFromXp` through `ItemResource`: vanilla
+    /// Mending's `repair_with_xp` multiplies the points by 2, a stack without the effect keeps
+    /// them, and an unconditioned effect draws nothing from the level's random.
+    #[test]
+    #[ignore = "daily"]
+    fn durability_to_repair_from_xp_runs_the_stacks_repair_with_xp_effects() {
+        with_game(|game| {
+            let mut mending = ItemStack::new("minecraft:diamond_pickaxe", 1);
+            mending.enchant("minecraft:mending", 1);
+            let mending = ItemResource::of(&test_snapshot(&mending));
+            let mut unbreaking = ItemStack::new("minecraft:diamond_pickaxe", 1);
+            unbreaking.enchant("minecraft:unbreaking", 3);
+            let unbreaking = ItemResource::of(&test_snapshot(&unbreaking));
+            let expected_random = game.world.random.clone();
+
+            assert_eq!(mending.durability_to_repair_from_xp(game, 7), 14);
+            assert_eq!(mending.durability_to_repair_from_xp(game, 0), 0);
+            // Vanilla starts from the points and lets the effects change them: none, none changed.
+            assert_eq!(unbreaking.durability_to_repair_from_xp(game, 7), 7);
+            assert_eq!(
+                game.world.random.clone().next_long(),
+                expected_random.clone().next_long()
+            );
+        });
+    }
+
     /// `Enchantment.areCompatible`: the same enchantment twice and the exclusive sets conflict,
     /// others and unknown ids do not.
     #[test]
@@ -603,7 +585,7 @@ mod enchantment_conflict_tests {
 }
 
 #[cfg(test)]
-mod item_resource_property_tests {
+pub(in crate::game) mod item_resource_property_tests {
     fn engine(resource: &mod_api::ItemResource, count: u32) -> sunrise_items::items::ItemStack {
         super::super::api_values::stack_value(&resource.to_stack(count).unwrap()).unwrap()
     }
@@ -618,6 +600,10 @@ mod item_resource_property_tests {
     #[test]
     #[ignore = "daily"]
     fn effective_resource_properties_match_vanilla() {
+        run_effective_resource_properties_match_vanilla();
+    }
+
+    pub(in crate::game) fn run_effective_resource_properties_match_vanilla() {
         let inputs = std::env::var("SUNRISE_ITEM_PROPERTIES_CASES")
             .map(|path| std::fs::read_to_string(path).unwrap())
             .unwrap_or_else(|_| {
@@ -696,6 +682,10 @@ mod item_resource_property_tests {
     #[test]
     #[ignore = "daily"]
     fn item_resource_changed_defaults_and_consumption() {
+        run_item_resource_changed_defaults_and_consumption();
+    }
+
+    pub(in crate::game) fn run_item_resource_changed_defaults_and_consumption() {
         use mod_api::{ComponentId, ItemResource, Tag};
         use serde_json::json;
         use std::{fs, path::Path};
@@ -733,7 +723,15 @@ mod item_resource_property_tests {
             serde_json::from_slice(&fs::read(resources.join("items.json")).unwrap()).unwrap();
         defaults["minecraft:iron_sword"]["minecraft:damage"] = json!(75);
         defaults["minecraft:iron_sword"]["minecraft:enchantment_glint_override"] = json!(false);
+        defaults["minecraft:bundle"]["minecraft:bundle_contents"] =
+            json!([{"id": "minecraft:stone", "count": 32}]);
         defaults["sunrise:consumable_fixture"] = defaults["minecraft:stick"].clone();
+        defaults["minecraft:stick"]["minecraft:bundle_contents"] =
+            json!([{"id": "minecraft:stone", "count": 32}]);
+        defaults["minecraft:red_bundle"]
+            .as_object_mut()
+            .unwrap()
+            .remove("minecraft:bundle_contents");
         // A mod item belongs to the registry as well as the component report.
         let mut registries: Value =
             serde_json::from_slice(&fs::read(resources.join("command-registries.json")).unwrap())
@@ -808,6 +806,234 @@ mod item_resource_property_tests {
             let removed = resource.without_component(game, &damage);
             assert_eq!(engine(&removed, 1).effective_damage(info), 0);
             assert!(removed.bar(game).is_none());
+
+            let bundle_stack = ItemStack::new("minecraft:bundle", 1);
+            let stone = ItemStack::new("minecraft:stone", 1);
+            let bundle = ItemResource::of(&super::super::api_values::test_snapshot(&bundle_stack));
+            // Vanilla BundleItem: half a stack weighs 1/2, showing 1 + floor(12 / 2)
+            // pixels in the not-full colour. Bar, capacity, tooltip and nested weight
+            // all read the same effective component.
+            let bar = bundle.bar(game).unwrap();
+            assert_eq!((bar.width, bar.color), (7, 0x7087FF));
+            let items = game.items();
+            assert_eq!(
+                sunrise_client::bundle::Contents::of(items, &bundle_stack)
+                    .unwrap()
+                    .items(),
+                &[ItemStack::new("minecraft:stone", 32)]
+            );
+            assert_eq!(
+                sunrise_client::bundle::Contents::room_in_stack(items, &bundle_stack, &stone),
+                Some(32)
+            );
+            let layout =
+                sunrise_client::bundle::tooltip_layout(items, &bundle_stack, 0.0, 0.0, 96.0, 2)
+                    .unwrap();
+            assert_eq!(layout.slots.len(), 1);
+            assert_eq!(layout.slots[0].1, ItemStack::new("minecraft:stone", 32));
+            assert_eq!(layout.fill, 47.0);
+            assert_eq!(layout.label, None);
+
+            // An explicitly empty or removed component suppresses the prototype's
+            // contents rather than inheriting them.
+            let contents = ComponentId::new("minecraft:bundle_contents").unwrap();
+            let empty = bundle
+                .with_component(game, &contents, Tag::List(Vec::new()))
+                .unwrap();
+            let empty_stack = engine(&empty, 1);
+            assert!(empty.bar(game).is_none());
+            assert!(
+                sunrise_client::bundle::Contents::of(items, &empty_stack)
+                    .unwrap()
+                    .items()
+                    .is_empty()
+            );
+            assert_eq!(
+                sunrise_client::bundle::Contents::room_in_stack(items, &empty_stack, &stone),
+                Some(64)
+            );
+            assert_eq!(
+                sunrise_client::bundle::tooltip_layout(items, &empty_stack, 0.0, 0.0, 96.0, 2)
+                    .unwrap()
+                    .label,
+                Some("item.minecraft.bundle.empty")
+            );
+
+            // Emptying a bundle with nonempty defaults preserves explicit emptiness.
+            let mut emptied = bundle_stack.clone();
+            let mut mutable = sunrise_client::bundle::Contents::of(items, &emptied).unwrap();
+            assert_eq!(
+                mutable.remove_one(items),
+                Some(ItemStack::new("minecraft:stone", 32))
+            );
+            mutable.store(items, &mut emptied);
+            assert!(
+                sunrise_client::bundle::Contents::of(items, &emptied)
+                    .unwrap()
+                    .items()
+                    .is_empty()
+            );
+            assert_eq!(
+                sunrise_client::bundle::Contents::room_in_stack(items, &emptied, &stone),
+                Some(64)
+            );
+            assert_eq!(
+                sunrise_client::bundle::tooltip_layout(items, &emptied, 0.0, 0.0, 96.0, 2)
+                    .unwrap()
+                    .label,
+                Some("item.minecraft.bundle.empty")
+            );
+            assert!(
+                ItemResource::of(&super::super::api_values::test_snapshot(&emptied))
+                    .bar(game)
+                    .is_none()
+            );
+
+            let removed_bundle = bundle.without_component(game, &contents);
+            let removed_bundle_stack = engine(&removed_bundle, 1);
+
+            // An authoritative inventory update carries the patch, not the effective
+            // prototype value. Check all three states through the real slot codec.
+            use sunrise_protocol::{
+                buf::{Codec, Reader},
+                item::{Component, component::BUNDLE_CONTENTS},
+                packets::play::ContainerSetSlot,
+                registry::{Builtin, Dynamic},
+            };
+            let builtin = Builtin::load(&Builtin::find(&resources).unwrap()).unwrap();
+            let synced = Dynamic::default();
+            for (stack, expected) in [
+                (&bundle_stack, Some(32)),
+                (&emptied, Some(0)),
+                (&removed_bundle_stack, None),
+            ] {
+                let packet = ContainerSetSlot {
+                    container: 0,
+                    state: 1,
+                    slot: 36,
+                    item: sunrise_client::lan::guest::stack_to_network(
+                        |name| builtin.get("minecraft:item").unwrap().id(name).unwrap(),
+                        |registry, name| builtin.get(registry)?.id(name),
+                        &Some(stack.clone()),
+                    ),
+                };
+                let mut writer = sunrise_core::vanilla_bytes::Writer::new();
+                ContainerSetSlot::write(&packet, &mut writer);
+                let received = ContainerSetSlot::read(&mut Reader::new(&writer.data))
+                    .unwrap()
+                    .item
+                    .unwrap();
+                match expected {
+                    Some(0) => assert!(matches!(
+                        received.component(BUNDLE_CONTENTS),
+                        Some(Component::Stacks(contents)) if contents.is_empty()
+                    )),
+                    _ => assert!(received.component(BUNDLE_CONTENTS).is_none()),
+                }
+                assert_eq!(
+                    received.removed.contains(&BUNDLE_CONTENTS),
+                    expected.is_none()
+                );
+                let adopted = sunrise_client::item_sync::from_network(&received, &builtin, &synced);
+                let contents = sunrise_client::bundle::contents_of(items, &adopted);
+                assert_eq!(
+                    contents.map(|contents| contents.iter().map(|stack| stack.count).sum::<u32>()),
+                    expected,
+                );
+                assert_eq!(
+                    sunrise_items::properties::stack_bar(items, &adopted, items.get(&adopted.item))
+                        .map(|bar| bar.width),
+                    (expected == Some(32)).then_some(7),
+                );
+            }
+
+            assert!(removed_bundle.bar(game).is_none());
+            assert!(sunrise_client::bundle::Contents::of(items, &removed_bundle_stack).is_none());
+            assert_eq!(
+                sunrise_client::bundle::Contents::room_in_stack(
+                    items,
+                    &removed_bundle_stack,
+                    &stone
+                ),
+                None
+            );
+            assert!(
+                sunrise_client::bundle::tooltip_layout(
+                    items,
+                    &removed_bundle_stack,
+                    0.0,
+                    0.0,
+                    96.0,
+                    2
+                )
+                .is_none()
+            );
+
+            // Nested prototype-backed bundle: 1/2 contents + 1/16 overhead = 9/16,
+            // leaving 28/64 room and drawing 1 + floor(9 * 12 / 16) = 7 pixels.
+            let mut outer = ItemStack::new("minecraft:blue_bundle", 1);
+            outer.data_mut().bundle_contents = vec![bundle_stack];
+            let outer_bar = ItemResource::of(&super::super::api_values::test_snapshot(&outer))
+                .bar(game)
+                .unwrap();
+            assert_eq!((outer_bar.width, outer_bar.color), (7, 0x7087FF));
+            assert_eq!(
+                sunrise_client::bundle::Contents::room_in_stack(items, &outer, &stone),
+                Some(28)
+            );
+            assert_eq!(
+                sunrise_client::bundle::tooltip_layout(items, &outer, 0.0, 0.0, 96.0, 2)
+                    .unwrap()
+                    .fill,
+                52.0
+            );
+            // An outer bundle holding the emptied inner bundle counts only its 1/16 overhead.
+            let mut outer_empty_inner = ItemStack::new("minecraft:blue_bundle", 1);
+            outer_empty_inner.data_mut().bundle_contents = vec![emptied];
+            let inner_empty_bar =
+                ItemResource::of(&super::super::api_values::test_snapshot(&outer_empty_inner))
+                    .bar(game)
+                    .unwrap();
+            assert_eq!(
+                (inner_empty_bar.width, inner_empty_bar.color),
+                (1, 0x7087FF)
+            );
+            assert_eq!(
+                sunrise_client::bundle::Contents::room_in_stack(items, &outer_empty_inner, &stone),
+                Some(60)
+            );
+
+            // Vanilla ItemStack.isBarVisible/getBarWidth/getBarColor dispatch to the
+            // registered item behavior, independently of mutable prototype defaults.
+            let stick_stack = ItemStack::new("minecraft:stick", 1);
+            let stick = ItemResource::of(&super::super::api_values::test_snapshot(&stick_stack));
+            assert!(stick.bar(game).is_none());
+            assert!(
+                sunrise_items::properties::stack_bar(
+                    items,
+                    &stick_stack,
+                    items.get(&stick_stack.item)
+                )
+                .is_none()
+            );
+
+            let red_bundle = ItemResource::of(&super::super::api_values::test_snapshot(
+                &ItemStack::new("minecraft:red_bundle", 1),
+            ));
+            assert!(red_bundle.bar(game).is_none());
+            let patched_red = red_bundle
+                .with_component(
+                    game,
+                    &contents,
+                    Tag::List(vec![Tag::compound([
+                        ("id", Tag::String("minecraft:stone".into())),
+                        ("count", Tag::Int(32)),
+                    ])]),
+                )
+                .unwrap();
+            let red_bar = patched_red.bar(game).unwrap();
+            assert_eq!((red_bar.width, red_bar.color), (7, 0x7087FF));
+
             let enchanted = resource
                 .with_component(
                     game,
@@ -1062,7 +1288,7 @@ mod combat_query_tests {
                 Some(18.0)
             );
             game.inventory[game.selected] = Some(mace.clone());
-            assert_eq!(game.smash_damage_bonus("minecraft:player"), 18.0);
+            assert_eq!(game.smash_damage_bonus("minecraft:player", None), 18.0);
             patch(
                 &mut mace,
                 "minecraft:damage_type",
@@ -1084,6 +1310,11 @@ mod combat_query_tests {
                 .get("minecraft:zombie")
                 .unwrap()
                 .clone();
+            // A mod reaches an entity only in an accessible section.
+            game.world.chunks.insert(
+                (0, 0),
+                std::sync::Arc::new(sunrise_client::chunk::Chunk::empty(0, 0)),
+            );
             game.mobs
                 .push(sunrise_client::mobs::Mob::new(21, kind, Vec3::ZERO, 0.0));
             let zombie = mod_api::LivingRef::new(game.entity(21).unwrap());
@@ -1254,18 +1485,4 @@ pub(in crate::game) fn stack_can_be_hurt_by(
         .get(stack.item.as_ref())
         .and_then(|components| components.get("minecraft:damage_resistant"));
     sunrise_client::item_damage::stack_can_be_hurt_by(default, catalog, stack, name)
-}
-
-pub(in crate::game) const ITEM_ENVIRONMENT_DAMAGE: [&str; 4] = [
-    "minecraft:on_fire",
-    "minecraft:lava",
-    "minecraft:in_fire",
-    "minecraft:cactus",
-];
-
-pub(in crate::game) fn item_damage_resolver<'a>(
-    models: &'a sunrise_assets::item_model::ItemModels,
-    catalog: &'a sunrise_world::damage_source::Catalog,
-) -> impl Fn(&ItemStack, &str) -> bool + 'a {
-    move |stack, damage| stack_can_be_hurt_by(models, catalog, stack, damage).unwrap_or(true)
 }

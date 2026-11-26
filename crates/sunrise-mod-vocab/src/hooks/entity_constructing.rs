@@ -13,11 +13,13 @@ pub trait Hooks {
     /// bred or loaded entity and for a guest's player when it joins and when it respawns; on
     /// a client for each entity and player its server adds to its view, and for its own
     /// player at login and at each respawn, a dimension change's included (vanilla makes a
-    /// new `LocalPlayer` there). A guest's file, or what its player keeps through a respawn,
-    /// is read over what you set. An entity whose chunk unloads and loads again is a new
-    /// entity, told again, as in vanilla. An entity changing dimension keeps its attachments
-    /// and is not told again, where vanilla constructs the copy it moves
-    /// (`Entity.teleportCrossDimension`, then `restoreFrom`).
+    /// new `LocalPlayer` there). A server player's constructor sees a fresh attachment map.
+    /// After this hook, a join reads saved entries over it before `player_load_from_file`,
+    /// and death or End credits respawn copies eligible entries over it before `player_clone`.
+    /// Constructor entries not replaced by the load or copy stay. An entity whose chunk
+    /// unloads and loads again is a new entity, told again, as in vanilla. An entity changing
+    /// dimension keeps its attachments and is not told again, where vanilla constructs the
+    /// copy it moves (`Entity.teleportCrossDimension`, then `restoreFrom`).
     #[hook(
         dispatch = "flat",
         side = "both",

@@ -20,8 +20,8 @@ the engine empty-stack refusal remains internal.
 `MenuRef::close_container(host)` closes a player's open menu on a server as
 `ServerPlayer.closeContainer` does. A live handle close queues `ContainerClose` before tearing
 down the menu and returning the carried stack, and fires `player_container_close` once. It
-returns `false` when a disconnect is pending; if accepted during a click, the close runs only
-when that click commits. The player's own inventory menu is never closed. A client closes its
-own screen with `MenuRef::close`."#]
+returns `false` when a disconnect is pending. The close runs immediately outside a transaction.
+Inside one, the request closes that same window at outermost commit; an abort leaves it open.
+The player's own inventory menu is never closed. A client closes its own screen with `MenuRef::close`."#]
     fn player_inventory_ops_note0();
 }

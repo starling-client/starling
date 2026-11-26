@@ -498,16 +498,35 @@ class CompareTests(unittest.TestCase):
 
     def test_server_ticks_count_only_the_flights_own_ticks(self):
         from tools.perf_bench import game_time, server_ticks
-        replies = {"command time query gametime": {"chat": ["The time is 48210"]},
+        replies = {"command time query gametime": {"ok": True, "chat": [], "success": True, "result": 48210},
                    "command tick query": {"chat": ["Percentiles: P50: 2.9ms P95: 4.2ms P99: 6.0ms. Sample: 100"]}}
 
         def control(verb):
             return replies[verb]
 
         self.assertEqual(game_time(control), 48210)
-        self.assertIsNone(server_ticks(control, 99), "a window reaching back before the flight is not the flight's")
-        self.assertIsNone(server_ticks(control, None), "uncounted ticks are not shown to belong to the flight")
+        with self.assertRaisesRegex(RuntimeError, "needs a longer --seconds"):
+            server_ticks(control, 99)
         self.assertEqual(server_ticks(control, 100)["p50_ms"], 2.9)
+
+    def test_game_time_is_the_commands_result_not_its_chat_text(self):
+        from tools.perf_bench import parse_game_time
+        # The game answers "The game time is 48210 tick(s)" and the control reply carries no such line.
+        self.assertEqual(parse_game_time({"ok": True, "chat": [], "success": True, "result": 48210}), 48210)
+
+    def test_an_unparseable_game_time_or_tick_query_raises(self):
+        from tools.perf_bench import game_time, parse_game_time, server_ticks
+        for reply in ({"ok": True, "chat": ["The game time is 48210 tick(s)"], "success": False, "result": None},
+                      {"ok": True, "chat": [], "success": False, "result": 0},
+                      {"ok": True, "chat": [], "success": True, "result": None},
+                      {"ok": True, "chat": [], "success": True, "result": "48210"},
+                      {"ok": True, "chat": [], "success": True, "result": True}, {}):
+            with self.assertRaisesRegex(RuntimeError, "no game time"):
+                parse_game_time(reply)
+        with self.assertRaisesRegex(RuntimeError, "no game time"):
+            game_time(lambda verb: {"chat": ["The time is 48210"]})
+        with self.assertRaisesRegex(RuntimeError, "no percentiles"):
+            server_ticks(lambda verb: {"chat": ["Unknown command"]}, 240)
 
     def test_ungated_tick_figures_are_listed_for_the_summary(self):
         from tools.perf_bench import ungated_ticks

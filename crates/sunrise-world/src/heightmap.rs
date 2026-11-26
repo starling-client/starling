@@ -129,6 +129,10 @@ impl Heightmap {
     pub fn kind(&self) -> HeightmapType {
         self.kind
     }
+    /// The dimension's build range, which can differ from its chunk storage layout.
+    pub fn build_height(&self) -> std::ops::Range<i32> {
+        self.min_y..self.min_y + self.height
+    }
     pub fn raw_data(&self) -> &[u64] {
         self.data.words()
     }

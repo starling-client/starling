@@ -38,7 +38,7 @@ impl Game<'_> {
             result,
         );
     }
-    /// A drag the open screen's handlers have seen (`ScreenEvent.MouseDragged.Post`).
+    /// A drag the receiving screen did not handle (`ScreenEvent.MouseDragged.Post`).
     pub(in crate::game) fn native_screen_mouse_dragged_post(
         &self,
         screen: &ScreenView<'_>,
@@ -48,7 +48,7 @@ impl Game<'_> {
     ) {
         self.fire_screen_mouse_dragged_post(screen, button, delta, modifiers);
     }
-    /// A wheel turn the open screen has scrolled by (`ScreenEvent.MouseScrolled.Post`).
+    /// A wheel turn the receiving screen did not handle (`ScreenEvent.MouseScrolled.Post`).
     pub(in crate::game) fn native_screen_mouse_scrolled_post(
         &self,
         screen: &ScreenView<'_>,
@@ -84,8 +84,7 @@ impl Game<'_> {
         screen: &ScreenView<'_>,
         c: char,
         modifiers: u32,
-        canceled: &mut bool,
     ) {
-        self.fire_screen_char_typed_post(screen, c, modifiers, canceled);
+        self.fire_screen_char_typed_post(screen, c, modifiers);
     }
 }

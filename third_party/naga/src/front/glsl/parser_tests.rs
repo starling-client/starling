@@ -580,6 +580,48 @@ fn constants() {
     assert!(constants.next().is_none());
 }
 
+/// GLSL 4.60 §4.1.3: an integer literal whose bit pattern does not fit in 32
+/// bits is an error at the literal, not its low 32 bits.
+#[test]
+fn integer_literals_past_32_bits() {
+    let past = |source: &str, literal: &str| {
+        let errors = Frontend::default()
+            .parse(&Options::from(ShaderStage::Vertex), source)
+            .err()
+            .unwrap()
+            .errors;
+        let at = source.find(literal).unwrap() as u32;
+        assert!(
+            errors.contains(&Error {
+                kind: ErrorKind::SemanticError("Integer literal does not fit in 32 bits".into()),
+                meta: Span::new(at, at + literal.len() as u32),
+            }),
+            "{source}: {errors:?}"
+        );
+    };
+    // Kept to its low 32 bits, this was `float a[1];`.
+    past(
+        "#version 450\nfloat a[4294967297];\nvoid main() {}",
+        "4294967297",
+    );
+    past(
+        "#version 450\nvoid main() { int x = 4294967297; }",
+        "4294967297",
+    );
+    past(
+        "#version 450\nvoid main() { uint x = 99999999999u; }",
+        "99999999999u",
+    );
+
+    // The widest patterns that fit are kept unmodified: `-1` as an `int`.
+    Frontend::default()
+        .parse(
+            &Options::from(ShaderStage::Vertex),
+            "#version 450\nvoid main() { int x = 4294967295; uint y = 0xFFFFFFFFu; }",
+        )
+        .unwrap();
+}
+
 #[test]
 fn function_overloading() {
     let mut frontend = Frontend::default();

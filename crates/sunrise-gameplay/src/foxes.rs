@@ -213,6 +213,7 @@ mod tests {
 
     fn kind(id: &str, species: Species) -> Arc<MobType> {
         Arc::new(MobType {
+            type_key: Default::default(),
             shadow: None,
             id: id.into(),
             species,
@@ -251,6 +252,7 @@ mod tests {
                 pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
                 polygons: Vec::new(),
                 children: Vec::new(),
+                layer: None,
             }),
             layers: Default::default(),
             texture: String::new(),
@@ -267,6 +269,7 @@ mod tests {
     fn dropped(stack: ItemStack) -> ItemEntity {
         let at = Vec3::new(0.5, 64.0, 0.5);
         ItemEntity {
+            size_answer: None,
             random: sunrise_core::random::LegacyRandom::new(0),
             attachment_lifetime: Default::default(),
             fall_distance: 0.0,
@@ -288,6 +291,8 @@ mod tests {
             },
             vertical_collision: false,
             age: 0,
+            stack_revision: 0,
+            lifespan: ItemEntity::LIFETIME,
             pickup_delay: 0,
             bob_offset: 0.0,
             ticks: 0,
@@ -329,7 +334,7 @@ mod tests {
             &mut self,
             _stack: ItemStack,
             _at: [f64; 3],
-            pickup_delay: u32,
+            pickup_delay: i32,
         ) -> [f64; 3] {
             if pickup_delay == 40 {
                 self.mobs[0] = Mob::new(9, kind("minecraft:cow", Species::Cow), Vec3::ZERO, 0.0);

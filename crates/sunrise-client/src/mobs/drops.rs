@@ -55,6 +55,8 @@ pub struct Death<'a> {
     /// The `doMobLoot` game rule.
     pub mob_drops: bool,
     pub world_seed: i64,
+    /// The world's data-driven variant tables for registry-backed loot predicates.
+    pub variants: Option<&'a super::variants::VariantTables>,
 }
 
 /// What a death's loot rolls with: the world's random sequences, the level's
@@ -423,6 +425,15 @@ pub fn drop_preserved_equipment(m: &mut Mob) -> Vec<crate::items::ItemStack> {
 }
 /// The facts loot predicates read about a mob.
 pub fn loot_entity(m: &Mob, vehicle: Option<LootEntity>) -> LootEntity {
+    loot_entity_with_variants(m, vehicle, None)
+}
+/// [`loot_entity`] with the world's data-driven variant tables for
+/// registry-backed variant predicates (`LootView::chicken_variant`, `LootView::frog_variant`, etc.).
+pub fn loot_entity_with_variants(
+    m: &Mob,
+    vehicle: Option<LootEntity>,
+    variants: Option<&super::variants::VariantTables>,
+) -> LootEntity {
     use Species as S;
     let s = m.species();
     let mut e = LootEntity::new(&m.kind.id);
@@ -446,14 +457,14 @@ pub fn loot_entity(m: &Mob, vehicle: Option<LootEntity>) -> LootEntity {
         e.captain = Some(raider::is_captain(m));
     }
     if s == S::Frog {
-        e.frog_variant = Some(
-            ["minecraft:temperate", "minecraft:warm", "minecraft:cold"]
-                [usize::from(m.extra.variant).min(2)]
-            .to_owned(),
-        );
+        e.frog_variant = variants
+            .and_then(|v| m.frog_variant(&v.frog).and_then(|r| v.frog.id(r)))
+            .map(str::to_owned);
     }
     if s == S::Chicken {
-        e.chicken_variant = super::finalize::variant_component(m).map(|(_, id)| id);
+        e.chicken_variant = variants
+            .and_then(|v| m.chicken_variant(&v.chicken).and_then(|r| v.chicken.id(r)))
+            .map(str::to_owned);
     }
     e.powered = s == S::Creeper && m.extra.charged;
     e.equipment = SLOTS
@@ -522,7 +533,7 @@ pub fn roll_death(m: &mut Mob, d: &Death, rolls: &mut dyn DeathRolls) -> Rolled 
     let mut out = Vec::new();
     let mut table_rolled = false;
     death_state(m);
-    let mut this = loot_entity(m, d.vehicle.clone());
+    let mut this = loot_entity_with_variants(m, d.vehicle.clone(), d.variants);
     this.nbt = d.this_nbt.clone();
     let mut skulls = false;
     // Creeper.killedEntity: a charged creeper's victim drops its head.
@@ -531,14 +542,15 @@ pub fn roll_death(m: &mut Mob, d: &Death, rolls: &mut dyn DeathRolls) -> Rolled 
         && source.powered
         && d.mob_drops
     {
-        let params = EntityLootParams {
-            this: this.clone(),
-            damage: d.damage.clone(),
-            player: None,
-            luck: 0.0,
-            attacker: None,
-        };
-        let items = roll(d, "minecraft:charged_creeper/root", &params, rolls, 0);
+        let params = EntityLootParams::death(this.clone(), d.damage.clone(), None);
+        let items = roll_death_table(
+            d.loot,
+            "minecraft:charged_creeper/root",
+            &params,
+            rolls,
+            0,
+            d.world_seed,
+        );
         skulls = items.iter().any(|i| !i.is_empty());
         out.extend(items.into_iter().filter(|i| !i.is_empty()).map(Drop::Item));
     }
@@ -558,14 +570,20 @@ pub fn roll_death(m: &mut Mob, d: &Death, rolls: &mut dyn DeathRolls) -> Rolled 
         })
         .flatten();
     if let Some(table) = death_loot_table(m, d.mob_drops) {
-        let params = EntityLootParams {
-            this: this.clone(),
-            damage: d.damage.clone(),
-            player: d.player.clone().filter(|_| killed_by_player),
-            luck: if killed_by_player { d.luck } else { 0.0 },
-            attacker: None,
+        let credit = if killed_by_player {
+            d.player.clone().map(|player| (player, d.luck))
+        } else {
+            None
         };
-        let items = roll(d, &table, &params, rolls, m.extra.death_table_seed);
+        let params = EntityLootParams::death(this.clone(), d.damage.clone(), credit);
+        let items = roll_death_table(
+            d.loot,
+            &table,
+            &params,
+            rolls,
+            m.extra.death_table_seed,
+            d.world_seed,
+        );
         out.extend(items.into_iter().filter(|i| !i.is_empty()).map(Drop::Item));
         table_rolled = true;
     }
@@ -737,40 +755,47 @@ fn slot_chance(
 /// The loot table `die` rolls for `m` (`LivingEntity.getLootTable`), when it
 /// rolls one: none with `doMobLoot` off, nor for a baby that isn't a monster.
 pub fn death_loot_table(m: &Mob, mob_drops: bool) -> Option<String> {
-    // Mob.getLootTable: the mob's own `DeathLootTable`, else its type's
-    // (`EntityType.getDefaultLootTable`: `entities/` before the type's path,
-    // in its namespace, so a content mod's type rolls its own table).
-    (mob_drops && (is_monster(m.species()) || !m.is_baby())).then(|| {
-        m.extra.death_loot_table.clone().unwrap_or_else(|| {
-            let id = m.kind.id.as_str();
-            let (namespace, path) = id.split_once(':').unwrap_or(("minecraft", id));
-            format!("{namespace}:entities/{path}")
-        })
-    })
+    (mob_drops && (is_monster(m.species()) || !m.is_baby())).then(|| mob_loot_table(m))
 }
+
+/// `Mob.getLootTable`, independent of whether its death would cause a drop.
+pub fn mob_loot_table(m: &Mob) -> String {
+    m.extra
+        .death_loot_table
+        .clone()
+        .unwrap_or_else(|| entity_type_loot_table(&m.kind.id))
+}
+
+/// The default key of an entity type that has a loot table (`EntityType.getDefaultLootTable`).
+pub fn entity_type_loot_table(kind: &str) -> String {
+    let (namespace, path) = kind.split_once(':').unwrap_or(("minecraft", kind));
+    format!("{namespace}:entities/{path}")
+}
+
 /// `LootTable.getRandomItems(params, seed, ...)`: a seed's own random, else
 /// the table's random sequence, else the level's random.
-fn roll(
-    d: &Death,
+pub fn roll_death_table(
+    loot: &LootData,
     table: &str,
     params: &EntityLootParams,
     rolls: &mut dyn DeathRolls,
     seed: i64,
+    world_seed: i64,
 ) -> Vec<LootStack> {
     if seed != 0 {
         let random = &mut LegacyRandom::new(seed);
         return if rolls.asks_enchanted_level() {
             let ask = &mut |_: &mut LegacyRandom, id: &str, level| rolls.enchanted_level(id, level);
-            d.loot.roll_death_entity(table, random, params, ask)
+            loot.roll_death_entity(table, random, params, ask)
         } else {
-            d.loot.roll_entity(table, random, params)
+            loot.roll_entity(table, random, params)
         };
     }
-    match d.loot.random_sequence(table) {
-        Some(id) => roll_live(d, table, params, rolls, |r| {
-            r.sequences().get(id, d.world_seed)
+    match loot.random_sequence(table) {
+        Some(id) => roll_live(loot, table, params, rolls, |r| {
+            r.sequences().get(id, world_seed)
         }),
-        None => roll_live(d, table, params, rolls, |r| r.level_random()),
+        None => roll_live(loot, table, params, rolls, |r| r.level_random()),
     }
 }
 /// A roll on a random the game keeps (`home` finds it), with `roll` given the
@@ -797,17 +822,17 @@ pub fn roll_asked<R: Clone, T>(
 }
 /// A death's roll on a random the game keeps: asked when a mod listens.
 fn roll_live<R: RandomSource + Clone>(
-    d: &Death,
+    loot: &LootData,
     table: &str,
     params: &EntityLootParams,
     rolls: &mut dyn DeathRolls,
     home: impl for<'r> Fn(&'r mut dyn DeathRolls) -> &'r mut R,
 ) -> Vec<LootStack> {
     if !rolls.asks_enchanted_level() {
-        return d.loot.roll_entity(table, home(rolls), params);
+        return loot.roll_entity(table, home(rolls), params);
     }
     roll_asked(rolls, home, |random, ask| {
-        d.loot.roll_death_entity(table, random, params, ask)
+        loot.roll_death_entity(table, random, params, ask)
     })
 }
 /// `LivingEntity.shouldDropExperience`: babies drop none, except monsters and
@@ -889,6 +914,7 @@ mod death_loot_table_tests {
             vehicle: None,
             mob_drops: true,
             world_seed: 0,
+            variants: None,
         };
         let items = |seed: i64, own: bool| {
             let kind = crate::mobs::sensor_scan_tests::kind();
@@ -949,17 +975,6 @@ mod death_loot_table_tests {
         let defaults = sunrise_world::item_defaults::read(&root).unwrap();
         let loot = LootData::load(&root, &PackOverlay::NONE, &defaults).unwrap();
         let _ = std::fs::remove_dir_all(&root);
-        let death = Death {
-            loot: &loot,
-            this_nbt: None,
-            damage: None,
-            player: None,
-            player_killed: false,
-            luck: 0.0,
-            vehicle: None,
-            mob_drops: true,
-            world_seed: 0,
-        };
         let run = |mut level_random: LegacyRandom, draws: bool| {
             let mut sequences = RandomSequences::default();
             let mut rolls = Drawing(
@@ -970,7 +985,7 @@ mod death_loot_table_tests {
                 draws,
             );
             let params = EntityLootParams::default();
-            let items = roll(&death, "minecraft:test", &params, &mut rolls, 0);
+            let items = roll_death_table(&loot, "minecraft:test", &params, &mut rolls, 0, 0);
             (items[0].count, level_random.next_long())
         };
         // The draw comes before the roll's only one, as if made just before it.
@@ -1003,6 +1018,7 @@ mod death_loot_table_tests {
             vehicle: None,
             mob_drops: true,
             world_seed: 0,
+            variants: None,
         };
         let run = |chosen: Option<f32>| {
             let kind = crate::mobs::sensor_scan_tests::kind();
@@ -1143,6 +1159,7 @@ mod slot_tests {
             vehicle: None,
             mob_drops: true,
             world_seed: 0,
+            variants: None,
         };
         let zombie = |helmet: bool| {
             let mut m = mob("minecraft:zombie", Species::Zombie);

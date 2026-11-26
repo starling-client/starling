@@ -20,6 +20,13 @@ impl WorkerResources {
             .and_then(|resource| resource.downcast_ref())
             .ok_or(PlacementQueryError::Unavailable)
     }
+    pub fn get_arc(registry: &BlockRegistry) -> Result<Arc<Self>, PlacementQueryError> {
+        registry
+            .mod_worker_resource
+            .get()
+            .and_then(|resource| Arc::clone(resource).downcast::<Self>().ok())
+            .ok_or(PlacementQueryError::Unavailable)
+    }
     pub fn state(&self, block: BlockKey) -> BlockState {
         BlockState::of(self.metadata, block, &[]).unwrap_or(self.air)
     }

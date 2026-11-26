@@ -20,7 +20,8 @@ pub trait Hooks {
         side = "server",
         contract = "listen",
         version = 3,
-        neoforge = "RegisterConfigurationTasksEvent"
+        neoforge = "RegisterConfigurationTasksEvent",
+        listener_transaction = "always"
     )]
     fn register_configuration_tasks(
         connection: mod_api::ConfigurationConnection,

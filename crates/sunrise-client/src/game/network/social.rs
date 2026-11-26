@@ -11,10 +11,7 @@ use sunrise_client::{
     text::Text,
     ui::EditBox,
 };
-use winit::{
-    event::{ElementState, KeyEvent},
-    keyboard::{KeyCode, PhysicalKey},
-};
+use winit::keyboard::KeyCode;
 
 /// `PlayerSocialManager.hiddenPlayers` and the screen's state.
 pub(super) struct Social {
@@ -68,16 +65,23 @@ impl Game<'_> {
         }
     }
     /// `Minecraft.isBlocked`: whether a player's chat is hidden (never the player's own).
-    pub(super) fn social_hides(&mut self, id: u128) -> bool {
+    pub(super) fn social_hides(&self, id: u128) -> bool {
         if !self.social.hidden.contains(&id) {
             return false;
         }
-        let (_, me) = self.social_players();
+        let me = self.remote.as_ref().map_or_else(
+            || {
+                self.level.player_uuid.map_or(0, |u| {
+                    u.iter()
+                        .fold(0u128, |a, &w| (a << 32) | u128::from(w as u32))
+                })
+            },
+            |r| r.profile(),
+        );
         id != me
     }
     /// `new SocialInteractionsScreen(lastScreen)`: it opens on All, with an empty search.
     pub(super) fn open_social(&mut self, from_pause: bool) {
-        self.hide_social_tutorial();
         self.social.page = Page::All;
         self.social.search.set_value("");
         self.social.tooltip = Default::default();
@@ -200,7 +204,7 @@ impl Game<'_> {
         let social_screen::Click::Action(action) = kind else {
             return false;
         };
-        self.audio.play_button_click();
+        self.play_audio_button_click();
         match action {
             Action::Page(page) => {
                 self.social.page = page;
@@ -229,33 +233,28 @@ impl Game<'_> {
         true
     }
     /// `AbstractSelectionList.mouseScrolled`: a row's height and a bit a notch.
-    pub(super) fn social_scroll(&mut self, delta: f32) {
+    pub(super) fn social_scroll(&mut self, delta: f32) -> bool {
+        if !self.pad_stick_scroll()
+            && !self.pad_step_scroll()
+            && !social_screen::list_contains(self.cursor, self.gui_size())
+        {
+            return false;
+        }
         self.social.scroll -= delta * 18.0;
         // `social_view` clamps it to the list.
         let _ = self.social_view();
+        true
     }
     /// The search box has the focus from the start (`setInitialFocus`): typing fills it.
-    pub(super) fn social_key(&mut self, event: &KeyEvent) {
-        if event.state != ElementState::Pressed {
-            return;
+    pub(super) fn social_key(&mut self, key: KeyCode) -> bool {
+        if key == KeyCode::Escape {
+            self.close_social();
+            return true;
         }
-        let PhysicalKey::Code(key) = event.physical_key else {
-            return;
-        };
-        match key {
-            KeyCode::Escape => self.close_social(),
-            _ => {
-                // `EditBox.keyPressed`: Backspace, Delete, the arrows, Home and End.
-                let (ctrl, shift) = (self.has_control_down(), self.has_shift_down());
-                if !self.social.search.key(key, ctrl, shift)
-                    && self.types_text()
-                    && let Some(text) = event.text.as_deref()
-                {
-                    self.social_type(text);
-                }
-                self.social.scroll = 0.0;
-            }
-        }
+        let (ctrl, shift) = (self.has_control_down(), self.has_shift_down());
+        let handled = self.social.search.key(key, ctrl, shift);
+        self.social.scroll = 0.0;
+        handled
     }
     pub(super) fn social_backspace(&mut self) {
         self.social.search.key(KeyCode::Backspace, false, false);

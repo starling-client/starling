@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 use std::time::Instant;
 
-use crate::cases::Case;
+use crate::cases::{Case, CaseId};
 use crate::check::{Outcome, Request};
 
 pub type Files = BTreeMap<String, Vec<u8>>;
@@ -115,6 +115,22 @@ pub fn shrink(
         ..case.clone()
     }
     .materialize();
+    // A case holds its whole pack (`Case::unmutated`): first every file its programs don't read,
+    // at once.
+    let unread: Vec<String> = files
+        .keys()
+        .filter(|p| !kept(p) && !case.reach.contains(*p))
+        .cloned()
+        .collect();
+    if !unread.is_empty() && budget.spend() {
+        let mut fewer = files.clone();
+        for path in &unread {
+            fewer.remove(path);
+        }
+        if fails(ev, &fewer, request, signature) {
+            files = fewer;
+        }
+    }
     // Biggest first: they hold the most to remove.
     let mut paths: Vec<String> = files.keys().cloned().collect();
     paths.sort_by_key(|p| std::cmp::Reverse(files[p].len()));
@@ -173,10 +189,49 @@ pub fn shrink(
     Shrunk { steps, files }
 }
 
-/// A failing case found by a run.
-#[derive(Clone, Debug)]
+/// What a run reports of a case: its seed, pack, dimension, terrain, programs, the bytes of its
+/// files with every step applied, and its steps. The dimension and terrain are `None` for a case
+/// whose pack ended its case process before they were drawn.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Info {
+    pub seed: u64,
+    pub pack: String,
+    pub dim: Option<usize>,
+    pub flat: Option<bool>,
+    pub programs: Vec<String>,
+    pub bytes: usize,
+    pub steps: usize,
+}
+
+impl Info {
+    /// `case`, whose files with every step applied are `files`.
+    pub fn of(case: &Case, files: &Files) -> Self {
+        Self {
+            bytes: files.values().map(Vec::len).sum(),
+            ..Self::sampled(case)
+        }
+    }
+
+    /// `case` as it is sampled, before its steps run: its bytes are the pack's, without a copy
+    /// of the pack.
+    pub fn sampled(case: &Case) -> Self {
+        Self {
+            seed: case.seed,
+            pack: case.pack.clone(),
+            dim: Some(case.dim),
+            flat: Some(case.flat),
+            programs: case.programs.clone(),
+            bytes: case.files.values().map(Vec::len).sum(),
+            steps: case.steps.len(),
+        }
+    }
+}
+
+/// A failing case found by a run: which case (to make it again), what it was, and how it failed.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Found {
-    pub case: Case,
+    pub id: CaseId,
+    pub case: Info,
     pub request: Request,
     pub failure: crate::check::Failure,
     pub step: String,
@@ -199,12 +254,7 @@ pub fn group(found: Vec<Found>) -> BTreeMap<String, Vec<Found>> {
         groups.entry(f.group()).or_default().push(f);
     }
     for members in groups.values_mut() {
-        members.sort_by_key(|f| {
-            (
-                f.case.materialize().values().map(Vec::len).sum::<usize>(),
-                f.case.seed,
-            )
-        });
+        members.sort_by_key(|f| (f.case.bytes, f.id));
     }
     groups
 }

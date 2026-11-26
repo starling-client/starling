@@ -1,0 +1,183 @@
+{
+  "schema": 2,
+  "serial": 1795408124,
+  "generated": "2026-11-23T04:28:51.640351672Z",
+  "builds": [
+    {
+      "id": "dev-2026-11-22-7cfdf81",
+      "commit": "7cfdf81463ebb4a19705768273909f7f3f03601d"
+    },
+    {
+      "id": "nightly-2026-11-16-234db8d",
+      "commit": "234db8df6210165318b2b604dea50275357bfaeb"
+    },
+    {
+      "id": "nightly-2026-11-17-2d81263",
+      "commit": "2d8126336e579777eabf9b2fd8b3d476236a04f2"
+    },
+    {
+      "id": "nightly-2026-11-19-520fc48",
+      "commit": "520fc4882de3abb8ecd8b98293f4d7263bc88181"
+    },
+    {
+      "id": "nightly-2026-11-20-9425651",
+      "commit": "94256510f74e6843754e0a93fd9e4da7e45b1056"
+    }
+  ],
+  "categories": [
+    {
+      "id": "adventure",
+      "icon": "compass",
+      "kinds": [
+        "mod",
+        "native-mod"
+      ]
+    },
+    {
+      "id": "cursed",
+      "icon": "skull",
+      "kinds": [
+        "mod",
+        "native-mod"
+      ]
+    },
+    {
+      "id": "decoration",
+      "icon": "palette",
+      "kinds": [
+        "mod",
+        "native-mod"
+      ]
+    },
+    {
+      "id": "economy",
+      "icon": "coins",
+      "kinds": [
+        "mod",
+        "native-mod"
+      ]
+    },
+    {
+      "id": "equipment",
+      "icon": "shield",
+      "kinds": [
+        "mod",
+        "native-mod"
+      ]
+    },
+    {
+      "id": "food",
+      "icon": "apple",
+      "kinds": [
+        "mod",
+        "native-mod"
+      ]
+    },
+    {
+      "id": "game-mechanics",
+      "icon": "sliders-horizontal",
+      "kinds": [
+        "mod",
+        "native-mod"
+      ]
+    },
+    {
+      "id": "library",
+      "icon": "library",
+      "kinds": [
+        "mod",
+        "native-mod"
+      ]
+    },
+    {
+      "id": "magic",
+      "icon": "wand-sparkles",
+      "kinds": [
+        "mod",
+        "native-mod"
+      ]
+    },
+    {
+      "id": "management",
+      "icon": "clipboard-list",
+      "kinds": [
+        "mod",
+        "native-mod"
+      ]
+    },
+    {
+      "id": "minigame",
+      "icon": "gamepad-2",
+      "kinds": [
+        "mod",
+        "native-mod"
+      ]
+    },
+    {
+      "id": "mobs",
+      "icon": "paw-print",
+      "kinds": [
+        "mod",
+        "native-mod"
+      ]
+    },
+    {
+      "id": "optimization",
+      "icon": "gauge",
+      "kinds": [
+        "mod",
+        "native-mod"
+      ]
+    },
+    {
+      "id": "social",
+      "icon": "users",
+      "kinds": [
+        "mod",
+        "native-mod"
+      ]
+    },
+    {
+      "id": "storage",
+      "icon": "archive",
+      "kinds": [
+        "mod",
+        "native-mod"
+      ]
+    },
+    {
+      "id": "technology",
+      "icon": "cpu",
+      "kinds": [
+        "mod",
+        "native-mod"
+      ]
+    },
+    {
+      "id": "transportation",
+      "icon": "train-front",
+      "kinds": [
+        "mod",
+        "native-mod"
+      ]
+    },
+    {
+      "id": "utility",
+      "icon": "wrench",
+      "kinds": [
+        "mod",
+        "native-mod"
+      ]
+    },
+    {
+      "id": "worldgen",
+      "icon": "mountain",
+      "kinds": [
+        "mod",
+        "native-mod"
+      ]
+    }
+  ],
+  "projects": [],
+  "revoked": []
+}

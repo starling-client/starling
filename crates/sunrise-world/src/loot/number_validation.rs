@@ -24,12 +24,12 @@ pub fn number(value: &Value) -> Result<(), String> {
         | "sin" | "cos" | "truncate" => &["input"],
         "score" | "storage" => &["fallback"],
         "conditional" => {
-            super::validate_loot_condition(&value["condition"])?;
+            super::validate_typed_loot_condition(&value["condition"])?;
             &["on_true", "on_false"]
         }
         "number_dispatcher" => {
             for case in value["cases"].as_array().into_iter().flatten() {
-                super::validate_loot_condition(&case["condition"])?;
+                super::validate_typed_loot_condition(&case["condition"])?;
                 number(&case["value"])?;
             }
             &["default"]

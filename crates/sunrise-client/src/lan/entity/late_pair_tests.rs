@@ -36,6 +36,7 @@ fn late_pairing_does_not_duplicate_or_spend_the_next_arrow_update() {
         view_distance: 10,
         chunks: &chunks,
         sources: None,
+        far: &[],
         tracker: &mut tracker,
         out: &mut out,
     }];
@@ -128,6 +129,7 @@ fn late_pairing_keeps_chunk_range_and_own_entity_filters() {
             view_distance: 10,
             chunks: &chunks,
             sources: None,
+            far: &[],
             tracker: &mut tracker,
             out: &mut out,
         }];
@@ -177,6 +179,7 @@ fn a_vehicle_uses_a_later_passengers_range_in_the_same_late_batch() {
             view_distance: 10,
             chunks: &chunks,
             sources: None,
+            far: &[],
             tracker: &mut tracker,
             out: &mut out,
         }];

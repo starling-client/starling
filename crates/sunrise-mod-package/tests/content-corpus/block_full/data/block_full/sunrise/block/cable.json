@@ -4,6 +4,7 @@
   "thickness": 6,
   "properties": {
     "push_reaction": "PUSH",
-    "offset": "XZ"
+    "offset": "XZ",
+    "spawn_rule": "ocelot_or_parrot"
   }
 }

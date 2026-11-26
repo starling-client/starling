@@ -81,17 +81,24 @@ fn a_packs_text_draws_its_expression_uniforms() {
             return the_loading_screen_draws_zeros(game);
         }
         // A text display in front of the camera, as a server's would arrive.
+        let sy = game.world.shape.column().section_index(65).unwrap() as i32;
+        game.settings.chunk_fade = 0.0;
+        game.renderer
+            .as_mut()
+            .unwrap()
+            .upload((0, sy, 0), &sunrise_client::mesher::SectionMesh::default());
         let mut display = super::text_displays::RemoteTextDisplay::new(
             super::text_displays::Shows::Text,
             [0.5, 65.5, 3.5],
             0.0,
         );
-        display.data = sunrise_client::text_display::TextDisplayData {
-            text: std::sync::Arc::new(sunrise_client::text::Text::literal("W")),
-            ..Default::default()
-        };
+        display.metadata(&[(
+            23,
+            0,
+            sunrise_protocol::entity_data::Value::Text(sunrise_core::nbt::Tag::String("W".into())),
+        )]);
         game.text_displays.insert(1, display);
-        game.tick_text_displays();
+        game.tick_text_displays(game.clock.runs_normally());
         // Fullbright, in its own process, is on from the first frame: it changes nothing.
         game.renderer.as_mut().unwrap().fullbright = fullbright;
         // The world text over the frame with the GUI hidden (F1), then the GUI's (F3's text)
@@ -125,7 +132,7 @@ fn the_loading_screen_draws_zeros(game: &mut super::Game<'_>) {
     sunrise_client::level_loading::draw_progress(&mut hud, &game.gui.atlas, "Loading", 0.5);
     let loading = |game: &mut super::Game<'_>| {
         let frame = super::loading_frame(&hud);
-        game.renderer.as_mut().unwrap().render(&frame)
+        game.renderer.as_mut().unwrap().render(&frame, None)
     };
     assert_eq!(corner(game, loading), [0, 128, 0]);
 }

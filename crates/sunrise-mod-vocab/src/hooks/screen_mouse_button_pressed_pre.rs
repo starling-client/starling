@@ -1,5 +1,4 @@
 //! The `screen_mouse_button_pressed_pre` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0093
 
 pub trait Hooks {
     /// A press about to go to `Screen.mouseClicked` (`ScreenEvent.MouseButtonPressed.Pre`).
@@ -11,16 +10,12 @@ pub trait Hooks {
     /// ago. Cancel to skip the screen handler, Post and gameplay mappings; a cancelled real
     /// press still counts as handled for double-click detection.
     ///
-    /// It fires before anything the screen does with the press, on the window
-    /// only, and while a screen of the game's or the title's is open (Options
-    /// and the pack list opened from the title screen count, with no player
-    /// and no `menu`; the title's own screens, their
-    /// `screen.id` from the title state machine). It does not fire on the
-    /// connect and loading screens, nor for a server
-    /// dialog, the server pack, link and code-of-conduct prompts, a book or a
-    /// sign editor drawn over gameplay, nor while a world loads or saves: the
-    /// click there stays the game's own. A gamepad click or a click the
-    /// keyboard's focus sends is not the mouse and fires nothing.
+    /// Fires before the receiving screen acts, including the title's screens and
+    /// a dialog, confirmation prompt, book, lectern or sign editor in front of
+    /// another screen. It does not fire with no screen, on the connection or
+    /// world-loading screen itself, or during a closing save. Only window mouse
+    /// input (including a control-socket click sent through the window), not a
+    /// gamepad's or keyboard focus's synthesized click.
     #[hook(
         target = "sunrise_client::game::native_hooks::base::Game<'_>::native_screen_mouse_button_pressed_pre",
         receiver = "read",
@@ -30,7 +25,7 @@ pub trait Hooks {
         out = "canceled",
         neoforge = "ScreenEvent.MouseButtonPressed.Pre",
         cancellable = true,
-        version = 2
+        version = 3
     )]
     fn screen_mouse_button_pressed_pre(
         screen: &ScreenView<'_>,

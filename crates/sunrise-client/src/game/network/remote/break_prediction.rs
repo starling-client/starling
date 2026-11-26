@@ -37,6 +37,7 @@ impl Game<'_> {
         // Keep every resulting write under the break's sequence, so packet reconciliation
         // can correct them without running the local rules again.
         let [x, y, z] = pos;
+        let broken = pos;
         let pos = BlockPos::new(x, y, z);
         let (mut changes, order) = self.with_level(|b, base, ticks| {
             let mut level = DryLevel::new(base);
@@ -56,16 +57,23 @@ impl Game<'_> {
         // Apply every final state before publishing anything. Emit one notice per net
         // change, in the simulation's after-shape order (the last notice for each position).
         let mut applied = Vec::with_capacity(changes.len());
+        let mut removed = false;
         for at in order.into_iter().rev() {
             if let Some(state) = changes.remove(&at) {
                 let pos = [at.x, at.y, at.z];
                 if let Some(previous) = self.predict_block(pos, state, sequence) {
+                    removed |= pos == broken && previous != state;
                     applied.push((pos, previous, state));
                 }
             }
         }
         for (pos, previous, state) in applied.into_iter().rev() {
             self.finish_client_block_write(pos, Some(previous), state, true);
+        }
+        // `Block.destroy` once `setBlock` changed the block: `state` is `oldState`, and the
+        // client holds no saved block entity data.
+        if removed && mod_api::__private::listened(mod_api::HookId::PlayerDestroyedBlock) {
+            self.native_player_destroyed_block(broken, state, None);
         }
         self.mining = None;
     }
@@ -233,7 +241,7 @@ impl Game<'_> {
         });
         if let Err(error) = check_group_updates(&self.world, updates, self.connection_group_limit())
         {
-            return self.refuse_play_payload(error);
+            return self.refuse_remote_input(error);
         }
         for (pos, prediction) in settled {
             let [x, y, z] = pos;
@@ -268,6 +276,18 @@ impl Game<'_> {
         let previous = self.world.block(x, y, z);
         if !self.world.loaded(x, z) || self.world.set(x, y, z, state).is_err() {
             return None;
+        }
+        if previous != state
+            && let Some(chunk) = self.world.chunks.get_mut(&(x >> 4, z >> 4))
+        {
+            Arc::make_mut(chunk).update_packet_motion_blocking(pos, &self.pack.assets.properties);
+        }
+        // LevelChunk.setBlockState drops the old pot only when the block changes;
+        // a new state of the same pot keeps its event-driven wobble.
+        if self.be_anims.pots.contains_key(&pos)
+            && self.res.facts().get(previous).name != self.res.facts().get(state).name
+        {
+            self.be_anims.pots.remove(&pos);
         }
         if let Some(restored) = restored {
             let RemovedEntity {
@@ -328,6 +348,7 @@ impl Game<'_> {
             direction: 0,
             sequence: 0,
         }));
+        self.native_client_break_progress(self.own_entity_id(), pos, -1);
         self.reset_attack_strength();
         true
     }

@@ -28,11 +28,14 @@ pub trait Hooks {
     /// After a screen's preedit handler (`ScreenEvent.Preedit.Post`) and only
     /// when no text field took the composition (the handler returned false:
     /// vanilla's focused field takes it, so this is a preedit no field
-    /// wanted) and `screen_preedit_pre` did not cancel. Same arguments.
+    /// wanted) and `screen_preedit_pre` did not cancel. Reports the receiver
+    /// captured at Pre. A built-in mounted `TextField` can consume preedit; a
+    /// custom `ScreenWidget` does not. Same arguments as Pre.
     #[hook(
         receiver = "read",
         dispatch = "flat",
         side = "client",
+        version = 2,
         contract = "listen",
         neoforge = "ScreenEvent.Preedit.Post",
         cancellable = false

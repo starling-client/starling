@@ -22,7 +22,6 @@ use sunrise_client::{
     pad_glyph::{Glyph, Glyphs},
 };
 use sunrise_client_input::radial;
-use winit::event::MouseButton;
 use winit::keyboard::KeyCode;
 
 pub(super) const HELP: &[&str] = &[
@@ -599,6 +598,9 @@ impl Game<'_> {
             // Like a click into the window: take the pointer.
             self.capture(true);
         }
+        if !down && playing {
+            let _ = self.screen_state.context_menu_input.take_pad(button);
+        }
         if !playing {
             self.pad_menu_button(event_loop, button, down)?;
             if down {
@@ -720,14 +722,6 @@ impl Game<'_> {
             }
             Route::Mouse(button) => {
                 let playing = self.title.is_none() && self.screen == Screen::Playing;
-                // What the window path tells mods and the click counters. Pick block isn't one
-                // they count.
-                if playing
-                    && matches!(button, MouseButton::Left | MouseButton::Right)
-                    && (down || !self.mouse_mapping_held_elsewhere(button, Source::Pad))
-                {
-                    self.extras_mouse(button, down);
-                }
                 if !down || playing {
                     self.mouse_mapping(button, down, Source::Pad)?;
                 }
@@ -767,6 +761,9 @@ impl Game<'_> {
 
     /// B and Start: what Escape does where the pad is.
     pub(in crate::game) fn pad_back(&mut self) -> Result<()> {
+        if self.context_menu_key(KeyCode::Escape) {
+            return Ok(());
+        }
         // The death confirm's buttons wait a second, as its Escape does.
         if self
             .ui
@@ -781,7 +778,7 @@ impl Game<'_> {
         // The options open over the title screen too: they come first, as
         // for the keyboard's Escape.
         if self.screen == Screen::Options {
-            return self.options_key(KeyCode::Escape, None);
+            return self.options_key(KeyCode::Escape, None).map(|_| ());
         }
         // A mod's screen in front of the title takes the Escape itself.
         if self.title_input_active()
@@ -910,16 +907,22 @@ impl Game<'_> {
                 label("sunrise.controller.notice.controller_disconnected.hint"),
             ),
         };
-        self.controller_notice.raise(notice);
+        let clock = sunrise_client::toasts::ToastClock::of(self.clock.still());
+        self.controller_notice.raise(notice, clock);
     }
 
     /// Connection notices sit below the boss bars and last as long as a toast.
-    pub(super) fn draw_controller_notice(&mut self, batch: &mut HudBatch) {
+    pub(super) fn draw_controller_notice(
+        &mut self,
+        batch: &mut HudBatch,
+        clock: sunrise_client::toasts::ToastClock,
+    ) {
         let shown_for = Duration::from_secs_f64(5.0 * self.settings.notification_display_time);
         self.controller_notice.draw(
             batch,
             &self.gui.atlas,
             self.ui.room.below_top(18.0),
+            clock,
             shown_for,
         );
     }

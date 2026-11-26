@@ -22,13 +22,12 @@ cover XP values and RNG advancement with block drops and Silk Touch on/off.
 import json
 import os
 import random
-try:
-    from . import block_update_harness as h, lab, test_dispenser_parity as d, test_rust_parity as base
-except ImportError:
-    import block_update_harness as h
-    import lab
-    import test_dispenser_parity as d
-    import test_rust_parity as base
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import block_update_harness as h, lab, test_dispenser_parity as d, test_rust_parity as base
 
 
 def plain(item, count=1):

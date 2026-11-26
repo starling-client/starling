@@ -1,4 +1,3 @@
-#![cfg(test)]
 //! `on_chunk_unloaded` through a real game (#3145): a chunk with two mod block entities and a
 //! vanilla chest leaves the world when its `/forceload` ticket goes, through the game's own
 //! streaming, save and unload; the chunk comes back from its saved data; then the world closes.
@@ -31,6 +30,12 @@ impl BlockPart for Pot {}
 impl BlockEntityPart for Pot {
     fn on_chunk_unloaded(&self, host: HostSide<'_>, event: &mut OnChunkUnloadedEvent<'_>) {
         let HostSide::Server(host) = host else {
+            assert_eq!(
+                event.entity.nbt().get(&"unload_witness".into()),
+                Some(&Tag::Int(event.pos[0]))
+            );
+            assert_eq!(event.entity.item_slot(0).unwrap().count(), 5);
+            assert!(event.entity.copy_item_slot(0).is_none());
             CALLS
                 .lock()
                 .unwrap()
@@ -192,7 +197,11 @@ fn each_mod_block_entity_of_an_unloading_chunk_is_told_once() {
 #[ignore = "daily"]
 fn a_client_tells_a_forgotten_column_but_not_its_level_going() {
     use crate::game::execution_role::ExecutionRole;
-    use sunrise_client::{chunk::Chunk, containers::ModBlockEntity};
+    use sunrise_client::{
+        chunk::Chunk,
+        containers::{ModBlockEntity, ModBlockEntityFields},
+        items::ItemStack,
+    };
     use sunrise_protocol::connection::Pipe;
     if run_fresh_cases(
         "game::native_hooks::on_chunk_unloaded_tests::a_client_tells_a_forgotten_column_but_not_its_level_going",
@@ -216,7 +225,14 @@ fn a_client_tells_a_forgotten_column_but_not_its_level_going() {
                 .insert_remote(&mut game.world, Chunk::empty(x, z));
         }
         for [x, y, z] in POTS.into_iter().chain([other]) {
-            let pot = ModBlockEntity::new(POT.into(), Default::default());
+            let pot = ModBlockEntity::new(
+                POT.into(),
+                ModBlockEntityFields {
+                    nbt: Compound::from([("unload_witness".into(), Tag::Int(x))]),
+                    items: vec![Some(ItemStack::new("unload_probe:unregistered", 5))],
+                    ..Default::default()
+                },
+            );
             game.world
                 .block_entities
                 .insert((x, y, z), BlockEntity::Mod(Box::new(pot)));

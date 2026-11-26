@@ -22,7 +22,7 @@ impl Game<'_> {
         hand: Hand,
         stack: &ItemStack,
     ) -> Option<mod_api::InteractionResult> {
-        if !mod_api::__private::has_part_hook(mod_api::HookId::UseOn) {
+        if !mod_api::__private::item_listens(mod_api::HookId::UseOn, &stack.item) {
             return None;
         }
         let snapshot = stack.try_into_api().ok()?;

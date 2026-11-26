@@ -1,7 +1,6 @@
 # Prepared-resource/descriptive-ignore inventory migration for #4451.
 # PACKAGE TEST TARGET daily REASON; exact logical libtest identities, sorted.
 sunrise-client-lib advancements::tests::index_on_vanilla_tree lib daily resources
-sunrise-client-lib animate_tick::biome_particle_tests::biome_ambient_particle_is_emitted_by_the_animate_tick lib daily resources
 sunrise-client-lib crafting::ingredient::builtin_kinds_tests::families::numeric::components_match_damage_ignore_count_and_refuse_empty lib daily resources
 sunrise-client-lib crafting::ingredient::builtin_kinds_tests::families::numeric::components_strict_counts_max_damage_default_and_custom_name lib daily resources
 sunrise-client-lib crafting::ingredient::builtin_kinds_tests::families::rest::block_tag_logs_uses_block_items_and_rejects_hash lib daily resources
@@ -33,7 +32,6 @@ sunrise-client-lib item_tooltip::tests::equipment_attributes_with_prepared_items
 sunrise-client-lib lan::data::tests::datapack_damage_registry_reload_keeps_wire_ids_and_reloads_tags_before_future_join lib daily resources
 sunrise-client-lib landing::tests::datapack_damage_landing_uses_world_armor_tags_and_exhaustion lib daily resources
 sunrise-client-lib menu::place::custom::tests::a_persistent_six_cell_grid_preserves_cooked_output_and_fuel lib daily resources
-sunrise-client-lib menu::place::custom::tests::an_interrupted_context_refuses_without_applying_even_a_missing_ingredient_clear lib daily resources
 sunrise-client-lib menu::place::custom::tests::component_distinct_stacks_never_pool_into_one_destination lib daily resources
 sunrise-client-lib menu::place::custom::tests::existing_damaged_input_is_usable_but_inventory_damaged_tools_are_not_autofilled lib daily resources
 sunrise-client-lib menu::place::custom::tests::full_inventory_refuses_unchanged_in_survival_and_defers_creative_drops lib daily resources

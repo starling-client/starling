@@ -23,17 +23,12 @@ import subprocess
 import sys
 import time
 
-try:
-    from . import lab, test_rust_parity as base
-    from .test_dedicated_server_parity import Server, wait_ticks
-    from .test_locator_bar_parity import generate_world
-    from .test_server_knockback_parity import server_dir
-except ImportError:
-    import lab
-    import test_rust_parity as base
-    from test_dedicated_server_parity import Server, wait_ticks
-    from test_locator_bar_parity import generate_world
-    from test_server_knockback_parity import server_dir
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_rust_parity as base
+from tools.test_dedicated_server_parity import Server, wait_ticks
+from tools.test_locator_bar_parity import generate_world
+from tools.test_server_knockback_parity import server_dir
 
 NAME = 'server-wool-vibration-parity'
 KNOWN = {}
@@ -80,7 +75,19 @@ def drop(x, ground, height=1.25):
 
 
 def walk(x, ground):
-    return [line for i in range(1, 21) for line in at(round(x + 0.2 * i, 3), ground, True)]
+    """Twenty client positions, a fifth of a block apart, with a stop after the ninth. A step's vibration comes due
+    every 1.67 blocks walked (Entity.nextStep), so at the ninth and the seventeenth position. The sensor's active
+    phase is counted from the first of them and is not extended by the second (LevelChunkTicks.schedule keeps the
+    tick that is already scheduled), so without the stop it ends 21 to 22 ticks after the last position (vanilla
+    26.3, measured) while the phase is read 17 to 20 ticks after it: walk-stone read active one run and inactive
+    the next (2026-11-23). The stop lets that phase and the cooldown pass, so the second step opens the phase the
+    walk is read in, as a jump's landing does."""
+    lines = []
+    for i in range(1, 21):
+        if i == 10:
+            lines.append('ticks 45')
+        lines += at(round(x + 0.2 * i, 3), ground, True)
+    return lines
 
 
 def arena(floor):
@@ -183,6 +190,13 @@ def run_side(label, server_command, client_command, build, world):
     server = Server(server_command, directory, label)
     try:
         server.wait_for(r'Done \(')
+        # Natural spawning stays off. The arena lies below y=40 in a slime chunk of this seed, and a slime's landing
+        # is a step (frequency 1, as the player's own) a few blocks from the sensor, at a moment that differs from
+        # run to run: thousands of slime packets in a run on each server, none of them compared, each free to be
+        # the sensor's last vibration or to reopen its phase while a case measures. The slimes spawned before the
+        # rule are killed by the first arena.
+        server.console('gamerule spawn_mobs false')
+        server.wait_for(r'Game rule spawn_mobs is now set to false')
         with (build / f'{label}-client.log').open('w') as log:
             client = subprocess.Popen([*map(str, client_command), '127.0.0.1', str(port), str(out)], cwd=lab.ROOT,
                                       stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)

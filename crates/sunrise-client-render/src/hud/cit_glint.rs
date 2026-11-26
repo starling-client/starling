@@ -384,8 +384,7 @@ impl CitGlintPass {
             bind_group_layouts: &[Some(hud), Some(&layout)],
             ..Default::default()
         });
-        let attributes =
-            wgpu::vertex_attr_array![0=>Float32x2,1=>Float32x2,2=>Unorm8x4,3=>Float32,4=>Float32x2];
+        let attributes = wgpu::vertex_attr_array![0=>Float32x2,1=>Float32x2,2=>Unorm8x4,3=>Float32,4=>Float32x2,5=>Uint32];
         let pipelines = textures
             .blends
             .iter()

@@ -1,0 +1,21 @@
+ids = [
+    "handle:LevelRef::detached_generator",
+    "method:prelude::WorldEditServerHost::terrain_surface",
+    "type:DetachedChunkGenerator",
+    "type:GenerationStage",
+    "type:GenerationError",
+]
+why = """
+Replace synchronous `ServerHost::terrain_surface` (and `MAX_TERRAIN_COLUMNS`) with
+`LevelRef::detached_generator`, returning a thread-safe `DetachedChunkGenerator` handle that runs
+both undecorated column surface sampling (`sample_surface_columns`) and full off-world chunk
+generation up to `GenerationStage` (`generate_chunk`) on background threads without blocking the
+server tick or mutating live world/save state (#5236).
+"""
+migrate = """
+- Replace `host.terrain_surface(dimension, columns)` (and `MAX_TERRAIN_COLUMNS`) with
+  `let gen = level.detached_generator(host)?; let surfaces = gen.sample_surface_columns(columns)?;`.
+  `DetachedChunkGenerator` is `Clone + Send + Sync + 'static` and safe to move to worker threads.
+- For full off-world chunk columns (biomes, noise, surface, carvers, features, or lighting), call
+  `gen.generate_chunk(pos, stage)` which returns an immutable `ChunkSnapshot`.
+"""

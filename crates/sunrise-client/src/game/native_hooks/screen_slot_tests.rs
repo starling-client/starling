@@ -1,5 +1,3 @@
-#![cfg(test)]
-
 /// A data packet for an old window leaves the open mod screen alone.
 #[test]
 fn mod_screen_data_is_its_windows_only() {
@@ -9,6 +7,7 @@ fn mod_screen_data_is_its_windows_only() {
             window: 4,
             generation: 1,
             name: "gtmod:menu".into(),
+            title: None,
             block: Some("gtmod:machine".into()),
             pos: None,
             mod_type: None,
@@ -22,6 +21,7 @@ fn mod_screen_data_is_its_windows_only() {
             mod_api::MenuScreen::new(mod_api::MenuScreenLayout::default()),
         ),
         shown: true,
+        detached: false,
     };
     assert!(s.set_data(4, 1, 7));
     assert!(!s.set_data(3, 1, 99));
@@ -48,15 +48,16 @@ fn slot_moves_refuse_what_the_screen_does_not_show() {
         }),
     ];
     use mod_api::ScreenSlotRefusal::*;
+    let at = |slot: usize| declared.get(slot).map(|s| s.as_ref().map(|s| s.position));
     let moves = super::SlotMoves::default();
     // The current place again changes nothing, not even the count.
-    assert_eq!(moves.set(&declared, 0, Some([8.0, 18.0])), Ok(()));
+    assert_eq!(moves.set(0, at(0), Some([8.0, 18.0])), Ok(()));
     assert_eq!(moves.count.get(), 0);
-    assert_eq!(moves.set(&declared, 2, Some([100.5, -4.0])), Ok(()));
+    assert_eq!(moves.set(2, at(2), Some([100.5, -4.0])), Ok(()));
     assert_eq!(moves.count.get(), 1);
     // Pending until the build commits it; the read-back sees it at once.
     assert_eq!(moves.position(2, Some([26.0, 18.0])), Some([26.0, 18.0]));
-    assert_eq!(moves.latest(&declared, 2), Some([100.5, -4.0]));
+    assert_eq!(moves.latest(2, at(2)), Some([100.5, -4.0]));
     moves.commit();
     assert_eq!(moves.position(2, Some([26.0, 18.0])), Some([100.5, -4.0]));
     assert_eq!(moves.position(0, Some([8.0, 18.0])), Some([8.0, 18.0]));
@@ -68,7 +69,7 @@ fn slot_moves_refuse_what_the_screen_does_not_show() {
         (0, Some([0.0, f32::INFINITY]), BadPosition),
     ] {
         assert_eq!(
-            moves.set(&declared, slot, pos),
+            moves.set(slot, at(slot), pos),
             Err(refusal),
             "{slot} {pos:?}"
         );
@@ -76,27 +77,27 @@ fn slot_moves_refuse_what_the_screen_does_not_show() {
     assert_eq!(moves.count.get(), 1);
     assert_eq!(moves.position(0, Some([8.0, 18.0])), Some([8.0, 18.0]));
     // Hiding a slot inactive at open is already so.
-    assert_eq!(moves.set(&declared, 1, None), Ok(()));
+    assert_eq!(moves.set(1, at(1), None), Ok(()));
     assert_eq!(moves.count.get(), 1);
     // Activating a slot declared `None` at open works and can be hidden again (`Slot.isActive()`).
-    assert_eq!(moves.set(&declared, 1, Some([44.0, 18.0])), Ok(()));
+    assert_eq!(moves.set(1, at(1), Some([44.0, 18.0])), Ok(()));
     assert_eq!(moves.count.get(), 2);
-    assert_eq!(moves.latest(&declared, 1), Some([44.0, 18.0]));
+    assert_eq!(moves.latest(1, at(1)), Some([44.0, 18.0]));
     assert_eq!(moves.position(1, None), None);
     moves.commit();
     assert_eq!(moves.position(1, None), Some([44.0, 18.0]));
-    assert_eq!(moves.set(&declared, 1, None), Ok(()));
+    assert_eq!(moves.set(1, at(1), None), Ok(()));
     assert_eq!(moves.count.get(), 3);
     moves.commit();
     assert_eq!(moves.position(1, None), None);
     // Hidden, then shown again where the mod puts it.
-    assert_eq!(moves.set(&declared, 2, None), Ok(()));
+    assert_eq!(moves.set(2, at(2), None), Ok(()));
     assert_eq!(moves.count.get(), 4);
-    assert_eq!(moves.set(&declared, 2, None), Ok(()));
+    assert_eq!(moves.set(2, at(2), None), Ok(()));
     assert_eq!(moves.count.get(), 4);
     moves.commit();
     assert_eq!(moves.position(2, Some([26.0, 18.0])), None);
-    assert_eq!(moves.set(&declared, 2, Some([26.0, 18.0])), Ok(()));
+    assert_eq!(moves.set(2, at(2), Some([26.0, 18.0])), Ok(()));
     moves.commit();
     assert_eq!(moves.position(2, Some([26.0, 18.0])), Some([26.0, 18.0]));
     assert_eq!(moves.count.get(), 5);

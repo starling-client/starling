@@ -1,0 +1,17 @@
+ids = [
+    "type:ChunkRefusal",
+    "type:ChunkRefusal.NotInPlace",
+    "type:ChunkRefusal.TooManyChunks",
+    "handle:LevelRef::relight_chunks",
+    "handle:ChunkRef::resend",
+    "behaviour:level_relight_chunks",
+    "behaviour:chunk_resend",
+]
+why = "Relight and resend no longer refuse parked levels or impose mod call or queue quotas. Queued work belongs to the resolved level. The light scheduler counts actual jobs until they return, following vanilla ThreadedLevelLightEngine.runUpdate, and asks dynamic light in the owning level before processing edits as in NeoForge BlockLightEngine.getEmission. Resends wait for the column's light work (vanilla ChunkMap.waitForLightBeforeSending, ThreadedLevelLightEngine.waitForPendingTasks and ChunkHolder.getChunkToSend) and go only to sent-chunk holders (ChunkMap.getPlayers/isChunkTracked), with the updated light in the packet as in vanilla and NeoForge PlayerChunkSender.sendChunk. Removing the two refusal variants also changes the ChunkRefusal Wire layout."
+migrate = """
+- Keep `level.relight_chunks(host, chunks)`; pass the intended open server level, even when parked. Remove manual splitting for the old quota. A requested chunk that is not loaded no longer queues its loaded neighbours; the count is how many loaded columns were newly queued, including the ring. Only `Stale` or `Client` can be returned.
+- Keep `chunk.resend(host)` on a loaded chunk of the intended level, even when parked. You can call it immediately after `relight_chunks`: the resend waits for the column's light work pending at the call and any whole-column jobs needed by those edits. No holder means `Ok(())` with nothing queued. The refusals are `Stale`, `Client` and `NotLoaded`.
+- Remove the `ChunkRefusal::NotInPlace` match arm and any retry for the level to become active; there is no replacement refusal.
+- Remove the `ChunkRefusal::TooManyChunks { asked, max }` match arm and any quota-based retries; there is no replacement refusal.
+- Encode `ChunkRefusal` with the new build. Do not decode old `ChunkRefusal` bytes with the new build: the `NotLoaded` Wire tag changed from 3 to 2 (the former `NotInPlace` tag). If you kept encoded values, read them with the old build, then re-encode surviving variants with the new build; discard the removed variants.
+"""

@@ -3,8 +3,6 @@
 
 Usage:
   ignored_shards.py --matrix --all      `matrix=`, every shard and the daily-rows legs (the daily run)
-  ignored_shards.py --prepare PACKAGE [ARG...]   run what PACKAGE's tests need built first (PREPARE), with ARGs
-                                                 appended (`-j2`); nothing when it needs nothing
   ignored_shards.py --matrix BASE HEAD  `matrix=`, the shards this pull request must run
 
 The ignored-tests check is a matrix with one package per shard; this file is the single
@@ -16,7 +14,6 @@ into that tree), so that directory counts for both packages.
 """
 
 import json
-import subprocess
 import sys
 import tomllib
 from functools import lru_cache
@@ -39,13 +36,16 @@ SHARDS = ("sunrise-client", "sunrise-client-lib", "sunrise-client-render", "sunr
 DAILY_ROWS = "daily-rows"
 # The leg that runs each workspace's daily rows.
 DAILY_ROWS_LEGS = {".": DAILY_ROWS}
-# What a package's tests need built that `cargo test` does not build itself, by package: the one command, run
-# before its tests by `verify` (dyna-ci.yml) and the daily run (tools/ci/ignored_tests.py), so they
-# cannot drift. sunrise-mod-package's holder tests start the `holder_actor` example from beside their test executable
-# (target/debug/examples, the test profile's folder).
+# What a package's ignored tests need built that `cargo test` does not build itself, by package: the command the daily
+# run (tools/ci/ignored_tests.py) runs before them. sunrise-mod-package's holder tests start the `holder_actor` example
+# from beside their test executable (target/debug/examples, the test profile's folder); every one of them is a daily
+# row, so `verify` builds nothing for them.
 PREPARE = {
     "sunrise-mod-package": ["cargo", "build", "--locked", "--profile", "test", "-p", "sunrise-mod-package",
                             "--features", "runtime-process", "--example", "holder_actor"],
+    # tests/shader_fuzz_cli.rs drives the `shader_fuzz` example through its command line.
+    "sunrise-render-shaderpack": ["cargo", "build", "--locked", "--profile", "test", "-p", "sunrise-render-shaderpack",
+                                  "--example", "shader_fuzz"],
 }
 # A package too big for one test process's memory runs as several legs, `PACKAGE#NofM` (tools/ci/ignored_tests.py
 # gives each test to exactly one leg). sunrise-client's single process was killed (signal 9) on three main runs.
@@ -161,12 +161,6 @@ def select(paths, dependencies):
 
 if __name__ == "__main__":
     arguments = sys.argv[1:]
-    if arguments[:1] == ["--prepare"] and len(arguments) >= 2:
-        command = PREPARE.get(arguments[1])
-        if command:
-            print("$ " + " ".join([*command, *arguments[2:]]), flush=True)
-            sys.exit(subprocess.run([*command, *arguments[2:]], cwd=ROOT).returncode)
-        sys.exit(0)
     every = arguments[:2] == ["--matrix", "--all"]
     selected = len(arguments) == 3 and arguments[0] == "--matrix"
     if every:

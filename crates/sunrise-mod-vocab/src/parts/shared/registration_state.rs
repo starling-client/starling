@@ -7,8 +7,8 @@ pub(crate) struct Installed {
     /// Names this installation among all of the process's; never reused, unlike an address.
     pub(crate) epoch: u64,
     pub(crate) dependencies: Arc<crate::__private::EffectiveDependencies>,
-    pub(crate) namespace_authority: Arc<crate::parts::NamespaceAuthority>,
     pub(crate) effect_ticks: crate::parts::effects::ResolvedEffectTicks,
+    pub(crate) configs: Vec<crate::configs::RegisteredConfig>,
     pub(crate) menu_screen_factories: HashMap<String, crate::parts::menus::MenuScreenRegistration>,
     pub(crate) menu_recipe_books: HashMap<String, crate::parts::menus::MenuBookDeclaration>,
     pub(crate) recipe_book_types: HashMap<String, String>,
@@ -16,19 +16,23 @@ pub(crate) struct Installed {
     pub(crate) recipe_book_filters: HashMap<String, crate::RecipeBookFilterLook>,
     pub(crate) game_rule_categories: Vec<String>,
     pub(crate) game_rules: Vec<crate::GameRuleDecl>,
-    pub(crate) attachment_types: HashMap<String, HashMap<String, bool>>,
-    pub(crate) attachment_owners: HashMap<String, HashMap<String, &'static str>>,
+    pub(crate) attachment_types:
+        HashMap<&'static str, HashMap<&'static str, crate::RegisteredAttachment>>,
     pub(crate) custom_stats: Vec<String>,
     pub(crate) custom_stat_owners: Vec<&'static str>,
-    pub(crate) entity_tick_each: crate::parts::EntityTickEach,
+    /// Enchanting table scan offsets the mods declared, in load order.
+    pub(crate) enchanting_table_offsets: Vec<[i32; 3]>,
     pub(crate) game_rule_slots: Vec<u32>,
     pub(crate) keys: Parts,
     pub(crate) tags: TagParts,
     pub(crate) block_entity_types: Vec<(&'static str, BlockEntityTypeDecl)>,
-    pub(crate) block_entity_transforms: HashMap<String, Arc<dyn crate::BlockEntityTransform>>,
+    pub(crate) block_entity_ticker_selectors:
+        Vec<crate::parts::block_entities::RegisteredBlockEntityTickerSelector>,
+    pub(crate) block_entity_transforms:
+        HashMap<String, crate::parts::block_entities::RegisteredBlockEntityTransform>,
     pub(crate) entity_attributes: Vec<EntityAttributeDeclaration>,
     pub(crate) world_fluids: Vec<(&'static str, (String, crate::WorldFluid))>,
-    pub(crate) fluid_interactions: Vec<crate::FluidInteraction>,
+    pub(crate) fluid_interactions: Vec<crate::__private::RegisteredFluidInteraction>,
     pub(crate) entity_attribute_modifications: Vec<EntityAttributeModification>,
     pub(crate) attributes: Vec<super::attributes::AttributeDeclaration>,
     pub(crate) attribute_widenings: Vec<super::attributes::AttributeBoundsWidening>,
@@ -58,12 +62,21 @@ pub(crate) struct Installed {
     pub(crate) consume_effects: Vec<crate::parts::RegisteredConsumeEffect>,
     pub(crate) arm_poses: Vec<crate::client::arm_pose::PoseInfo>,
     pub(crate) structure_types: Vec<crate::world::structure_type::StructureTypeInfo>,
+    pub(crate) pool_element_types: Vec<crate::world::pool_element::PoolElementTypeInfo>,
+    pub(crate) structure_processor_types:
+        Vec<crate::world::structure_processor::StructureProcessorTypeInfo>,
+    pub(crate) rule_test_types: Vec<crate::world::rule_test::RuleTestTypeInfo>,
+    pub(crate) pos_rule_test_types: Vec<crate::world::rule_test::PosRuleTestTypeInfo>,
     pub(crate) feature_types: Vec<crate::world::feature_type::FeatureTypeInfo>,
+    pub(crate) placement_modifier_types:
+        Vec<crate::world::placement_modifier::PlacementModifierTypeInfo>,
     pub(crate) loot_modifier_serializers:
         Vec<crate::parts::loot_modifiers::LootModifierSerializerInfo>,
     pub(crate) loot_function_types: Vec<crate::parts::loot_types::LootFunctionTypeInfo>,
     pub(crate) loot_condition_types: Vec<crate::parts::loot_types::LootConditionTypeInfo>,
     pub(crate) dimensions: Vec<crate::world::dimension::DimensionInfo>,
+    /// The world clocks the mods registered, as `namespace:path` ids.
+    pub(crate) world_clocks: Vec<Box<str>>,
     pub(crate) chunk_generators: Vec<crate::world::chunk_generator::ChunkGeneratorInfo>,
     pub(crate) biome_sources: Vec<crate::world::biome_source::BiomeSourceInfo>,
     /// Loading warnings for each owning mod, in registration order.

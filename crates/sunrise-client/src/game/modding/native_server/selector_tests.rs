@@ -29,7 +29,7 @@ impl mod_api::Hooks for SelectorCommands {
                 let heard = self.0.clone();
                 mod_api::Command::new(usage).executes(move |_, _, command| {
                     heard.lock().unwrap().push(command.clone());
-                    Some(1)
+                    Ok(1)
                 })
             }),
         );
@@ -39,205 +39,236 @@ impl mod_api::Hooks for SelectorCommands {
 #[test]
 #[ignore = "daily"]
 fn native_selectors_deliver_ordered_handles_once_and_refuse_invalid_selections() {
-    let heard = Arc::new(Mutex::new(Vec::new()));
-    mod_platform::testing::with_mods(
-        vec![mod_api::ModEntry::new(
-            "selector_acceptance",
-            Box::new(SelectorCommands(heard.clone())),
-        )]
-        .into(),
+    crate::game::in_own_process(
+        "game::native_server::selector_tests::native_selectors_deliver_ordered_handles_once_and_refuse_invalid_selections",
         || {
-            super::super::native_guest_turn_tests::with_guests(|game| {
-                game.build_registries();
-                game.register_native_commands();
-                let first = game.player(12).unwrap();
-                let second = game.player(13).unwrap();
-                let cow = game.res.mob_types().get("minecraft:cow").unwrap().clone();
-                // Deliberately neither ID order nor insertion order is distance order.
-                for (id, x) in [(101, 12.0), (103, 4.0), (102, 7.0)] {
-                    game.mobs
-                        .push(Mob::new(id, cow.clone(), Vec3::new(x, 64.0, 5.0), 0.0));
-                }
-                let near = game.entity(103).unwrap();
-                let middle = game.entity(102).unwrap();
-                let far = game.entity(101).unwrap();
-                game.as_guest(12, |game| {
-                    assert!(game.perform_native_command(12, 4, "heal @a"));
-                    {
-                        let calls = heard.lock().unwrap();
-                        assert_eq!(
-                            calls.len(),
-                            1,
-                            "one invocation, not one per selected player"
-                        );
-                        assert_eq!(
-                            calls[0].argument("targets"),
-                            Some(&Value::Players(vec![first, second]))
-                        );
-                    }
-                    for line in [
-                        "selectone @e[type=minecraft:cow,limit=1,sort=nearest]",
-                        "selectall @e[type=minecraft:cow,sort=furthest]",
-                        "selectall @e[type=minecraft:cow,sort=nearest]",
-                    ] {
-                        assert!(game.perform_native_command(12, 4, line), "{line}");
-                    }
-                    {
-                        let calls = heard.lock().unwrap();
-                        assert_eq!(calls.len(), 4);
-                        assert_eq!(calls[1].argument("target"), Some(&Value::Entity(near)));
-                        assert_eq!(
-                            calls[2].argument("targets"),
-                            Some(&Value::Entities(vec![far, middle, near]))
-                        );
-                        assert_eq!(
-                            calls[3].argument("targets"),
-                            Some(&Value::Entities(vec![near, middle, far]))
-                        );
-                    }
-                    // Selector permission is independent of the command's permission (all
-                    // these commands are public). Names must still work at level zero.
-                    let random = game.world.random.state();
-                    for line in ["heal @a", "selectone @r", "selectall @e", "selectplayer @s"] {
-                        game.chat_capture = Some(Vec::new());
-                        assert!(game.perform_native_command(12, 0, line), "{line}");
-                        let output = game.chat_capture.take().unwrap();
-                        assert_eq!(
-                            output[0].plain(),
-                            Text::translate("argument.entity.selector.not_allowed", &[]).plain(),
-                            "{line}"
-                        );
-                    }
-                    assert_eq!(game.world.random.state(), random);
-                    assert_eq!(
-                        heard.lock().unwrap().len(),
-                        4,
-                        "denied selectors never dispatch"
-                    );
-                    for line in [
-                        "heal guest13",
-                        "selectone guest13",
-                        "selectall guest13",
-                        "selectplayer guest13",
-                    ] {
-                        assert!(game.perform_native_command(12, 0, line), "{line}");
-                    }
-                    for line in [
-                        "optionalplayers",
-                        "optionalentity",
-                        "optionalentities",
-                        "optionalplayers @a",
-                        "optionalentity @s",
-                        "optionalentities @s",
-                    ] {
-                        assert!(game.perform_native_command(12, 4, line), "{line}");
-                    }
-                })
-                .unwrap();
-                {
-                    let calls = heard.lock().unwrap();
-                    assert_eq!(calls.len(), 14);
-                    assert_eq!(
-                        calls[4].argument("targets"),
-                        Some(&Value::Players(vec![second]))
-                    );
-                    assert_eq!(
-                        calls[5].argument("target"),
-                        Some(&Value::Entity(second.entity()))
-                    );
-                    assert_eq!(
-                        calls[6].argument("targets"),
-                        Some(&Value::Entities(vec![second.entity()]))
-                    );
-                    assert_eq!(calls[7].argument("target"), Some(&Value::Player(second)));
-                    assert!(calls[8..11].iter().all(|call| call.arguments.is_empty()));
-                    assert_eq!(
-                        calls[11].argument("targets"),
-                        Some(&Value::Players(vec![first, second]))
-                    );
-                    assert_eq!(
-                        calls[12].argument("target"),
-                        Some(&Value::Entity(first.entity()))
-                    );
-                    assert_eq!(
-                        calls[13].argument("targets"),
-                        Some(&Value::Entities(vec![first.entity()]))
-                    );
-                }
-                for (line, key) in [
-                    ("heal @a[name=missing]", "argument.entity.notfound.player"),
-                    ("selectplayer missing", "argument.entity.notfound.player"),
-                    (
-                        "selectall @e[type=minecraft:cow,name=missing]",
-                        "argument.entity.notfound.entity",
-                    ),
-                    (
-                        "selectone @e[type=minecraft:cow,name=missing,limit=1]",
-                        "argument.entity.notfound.entity",
-                    ),
-                    ("selectplayer @a", "argument.player.toomany"),
-                    (
-                        "selectone @e[type=minecraft:cow]",
-                        "argument.entity.toomany",
-                    ),
-                    (
-                        "optionalplayers @a[name=missing]",
-                        "argument.entity.notfound.player",
-                    ),
-                    (
-                        "optionalentities @e[type=minecraft:cow,name=missing]",
-                        "argument.entity.notfound.entity",
-                    ),
-                ] {
-                    game.chat_capture = Some(Vec::new());
-                    assert!(game.perform_native_console_command(line), "{line}");
-                    let output = game.chat_capture.take().unwrap();
-                    assert_eq!(
-                        output[0].plain(),
-                        Text::translate(key, &[]).plain(),
-                        "{line}"
-                    );
-                    assert_eq!(
-                        heard.lock().unwrap().len(),
-                        14,
-                        "{line} must not reach the listener"
-                    );
-                }
+            let heard = Arc::new(Mutex::new(Vec::new()));
+            mod_platform::testing::with_mods(
+                vec![mod_api::ModEntry::new(
+                    "selector_acceptance",
+                    Box::new(SelectorCommands(heard.clone())),
+                )]
+                .into(),
+                || {
+                    super::super::native_guest_turn_tests::with_guests(|game| {
+                        game.build_registries();
+                        game.register_native_commands();
+                        let first = game.player(12).unwrap();
+                        let second = game.player(13).unwrap();
+                        let cow = game.res.mob_types().get("minecraft:cow").unwrap().clone();
+                        // Deliberately neither ID order nor insertion order is distance order.
+                        for (id, x) in [(101, 12.0), (103, 4.0), (102, 7.0)] {
+                            game.mobs
+                                .push(Mob::new(id, cow.clone(), Vec3::new(x, 64.0, 5.0), 0.0));
+                        }
+                        let near = game.entity(103).unwrap();
+                        let middle = game.entity(102).unwrap();
+                        let far = game.entity(101).unwrap();
+                        game.as_guest(12, |game| {
+                            assert_eq!(
+                                game.perform_native_command(12, 4, "heal @a", false),
+                                Some(true)
+                            );
+                            {
+                                let calls = heard.lock().unwrap();
+                                assert_eq!(
+                                    calls.len(),
+                                    1,
+                                    "one invocation, not one per selected player"
+                                );
+                                assert_eq!(
+                                    calls[0].argument("targets"),
+                                    Some(&Value::Players(vec![first, second]))
+                                );
+                            }
+                            for line in [
+                                "selectone @e[type=minecraft:cow,limit=1,sort=nearest]",
+                                "selectall @e[type=minecraft:cow,sort=furthest]",
+                                "selectall @e[type=minecraft:cow,sort=nearest]",
+                            ] {
+                                assert_eq!(
+                                    game.perform_native_command(12, 4, line, false),
+                                    Some(true),
+                                    "{line}"
+                                );
+                            }
+                            {
+                                let calls = heard.lock().unwrap();
+                                assert_eq!(calls.len(), 4);
+                                assert_eq!(calls[1].argument("target"), Some(&Value::Entity(near)));
+                                assert_eq!(
+                                    calls[2].argument("targets"),
+                                    Some(&Value::Entities(vec![far, middle, near]))
+                                );
+                                assert_eq!(
+                                    calls[3].argument("targets"),
+                                    Some(&Value::Entities(vec![near, middle, far]))
+                                );
+                            }
+                            // Selector permission is independent of the command's permission (all
+                            // these commands are public). Names must still work at level zero.
+                            let random = game.world.random.state();
+                            for line in
+                                ["heal @a", "selectone @r", "selectall @e", "selectplayer @s"]
+                            {
+                                game.chat_capture = Some(Vec::new());
+                                assert_eq!(
+                                    game.perform_native_command(12, 0, line, false),
+                                    Some(false),
+                                    "{line}"
+                                );
+                                let output = game.chat_capture.take().unwrap();
+                                assert_eq!(
+                                    output[0].plain(),
+                                    Text::translate("argument.entity.selector.not_allowed", &[])
+                                        .plain(),
+                                    "{line}"
+                                );
+                            }
+                            assert_eq!(game.world.random.state(), random);
+                            assert_eq!(
+                                heard.lock().unwrap().len(),
+                                4,
+                                "denied selectors never dispatch"
+                            );
+                            for line in [
+                                "heal guest13",
+                                "selectone guest13",
+                                "selectall guest13",
+                                "selectplayer guest13",
+                            ] {
+                                assert_eq!(
+                                    game.perform_native_command(12, 0, line, false),
+                                    Some(true),
+                                    "{line}"
+                                );
+                            }
+                            for line in [
+                                "optionalplayers",
+                                "optionalentity",
+                                "optionalentities",
+                                "optionalplayers @a",
+                                "optionalentity @s",
+                                "optionalentities @s",
+                            ] {
+                                assert_eq!(
+                                    game.perform_native_command(12, 4, line, false),
+                                    Some(true),
+                                    "{line}"
+                                );
+                            }
+                        })
+                        .unwrap();
+                        {
+                            let calls = heard.lock().unwrap();
+                            assert_eq!(calls.len(), 14);
+                            assert_eq!(
+                                calls[4].argument("targets"),
+                                Some(&Value::Players(vec![second]))
+                            );
+                            assert_eq!(
+                                calls[5].argument("target"),
+                                Some(&Value::Entity(second.entity()))
+                            );
+                            assert_eq!(
+                                calls[6].argument("targets"),
+                                Some(&Value::Entities(vec![second.entity()]))
+                            );
+                            assert_eq!(calls[7].argument("target"), Some(&Value::Player(second)));
+                            assert!(calls[8..11].iter().all(|call| call.arguments.is_empty()));
+                            assert_eq!(
+                                calls[11].argument("targets"),
+                                Some(&Value::Players(vec![first, second]))
+                            );
+                            assert_eq!(
+                                calls[12].argument("target"),
+                                Some(&Value::Entity(first.entity()))
+                            );
+                            assert_eq!(
+                                calls[13].argument("targets"),
+                                Some(&Value::Entities(vec![first.entity()]))
+                            );
+                        }
+                        for (line, key) in [
+                            ("heal @a[name=missing]", "argument.entity.notfound.player"),
+                            ("selectplayer missing", "argument.entity.notfound.player"),
+                            (
+                                "selectall @e[type=minecraft:cow,name=missing]",
+                                "argument.entity.notfound.entity",
+                            ),
+                            (
+                                "selectone @e[type=minecraft:cow,name=missing,limit=1]",
+                                "argument.entity.notfound.entity",
+                            ),
+                            ("selectplayer @a", "argument.player.toomany"),
+                            (
+                                "selectone @e[type=minecraft:cow]",
+                                "argument.entity.toomany",
+                            ),
+                            (
+                                "optionalplayers @a[name=missing]",
+                                "argument.entity.notfound.player",
+                            ),
+                            (
+                                "optionalentities @e[type=minecraft:cow,name=missing]",
+                                "argument.entity.notfound.entity",
+                            ),
+                        ] {
+                            game.chat_capture = Some(Vec::new());
+                            assert!(game.perform_native_console_command(line), "{line}");
+                            let output = game.chat_capture.take().unwrap();
+                            assert_eq!(
+                                output[0].plain(),
+                                Text::translate(key, &[]).plain(),
+                                "{line}"
+                            );
+                            assert_eq!(
+                                heard.lock().unwrap().len(),
+                                14,
+                                "{line} must not reach the listener"
+                            );
+                        }
 
-                // Resident mobs remain selector candidates while their native handle
-                // is temporarily held out during a mutation.
-                game.held_out.push(103);
-                assert!(game.entity(103).is_none());
-                for line in [
-                    "selectall @e[type=minecraft:cow,x=3,y=64,z=5,distance=..2]",
-                    "selectone @e[type=minecraft:cow,x=3,y=64,z=5,limit=1,sort=nearest]",
-                ] {
-                    game.chat_capture = Some(Vec::new());
-                    assert!(game.perform_native_console_command(line));
-                    let output = game.chat_capture.take().unwrap();
-                    assert_eq!(
-                        output[0].plain(),
-                        Text::translate("argument.entity.notfound.entity", &[]).plain()
-                    );
-                    assert_eq!(heard.lock().unwrap().len(), 14);
-                }
-                // Drop only the unavailable handle, preserving the remaining order.
-                game.as_guest(12, |game| {
-                    assert!(game.perform_native_command(
-                        12,
-                        4,
-                        "selectall @e[type=minecraft:cow,sort=nearest]"
-                    ));
-                })
-                .unwrap();
-                game.held_out.pop();
-                let calls = heard.lock().unwrap();
-                assert_eq!(calls.len(), 15);
-                assert_eq!(
-                    calls[14].argument("targets"),
-                    Some(&Value::Entities(vec![middle, far]))
-                );
-            });
+                        // Resident mobs remain selector candidates while their native handle
+                        // is temporarily held out during a mutation.
+                        game.held_out.push(103);
+                        assert!(game.entity(103).is_none());
+                        for line in [
+                            "selectall @e[type=minecraft:cow,x=3,y=64,z=5,distance=..2]",
+                            "selectone @e[type=minecraft:cow,x=3,y=64,z=5,limit=1,sort=nearest]",
+                        ] {
+                            game.chat_capture = Some(Vec::new());
+                            assert!(game.perform_native_console_command(line));
+                            let output = game.chat_capture.take().unwrap();
+                            assert_eq!(
+                                output[0].plain(),
+                                Text::translate("argument.entity.notfound.entity", &[]).plain()
+                            );
+                            assert_eq!(heard.lock().unwrap().len(), 14);
+                        }
+                        // Drop only the unavailable handle, preserving the remaining order.
+                        game.as_guest(12, |game| {
+                            assert_eq!(
+                                game.perform_native_command(
+                                    12,
+                                    4,
+                                    "selectall @e[type=minecraft:cow,sort=nearest]",
+                                    false,
+                                ),
+                                Some(true)
+                            );
+                        })
+                        .unwrap();
+                        game.held_out.pop();
+                        let calls = heard.lock().unwrap();
+                        assert_eq!(calls.len(), 15);
+                        assert_eq!(
+                            calls[14].argument("targets"),
+                            Some(&Value::Entities(vec![middle, far]))
+                        );
+                    });
+                },
+            );
         },
     );
 }
@@ -250,7 +281,11 @@ fn selector_kinds_publish_vanilla_flags_and_share_parser_suggestions() {
         mod_api::Command::new("person <target:player>"),
         mod_api::Command::new("people <target:players>"),
     ];
-    let (tree, _, problems) = command_tree(&commands, |_| false, &HashMap::new());
+    let (tree, _, problems) = command_tree(
+        &commands,
+        &sunrise_client::command::Dispatcher::new(),
+        &HashMap::new(),
+    );
     assert!(problems.is_empty(), "{problems:?}");
     let mut dispatcher = Dispatcher::new();
     register_dispatcher(
@@ -324,55 +359,64 @@ fn selector_kinds_publish_vanilla_flags_and_share_parser_suggestions() {
 #[test]
 #[ignore = "daily"]
 fn entity_selection_has_no_additional_count_cap() {
-    let heard = Arc::new(Mutex::new(Vec::new()));
-    mod_platform::testing::with_mods(
-        vec![mod_api::ModEntry::new(
-            "selector_uncapped",
-            Box::new(SelectorCommands(heard.clone())),
-        )]
-        .into(),
+    crate::game::in_own_process(
+        "game::native_server::selector_tests::entity_selection_has_no_additional_count_cap",
         || {
-            super::super::native_guest_turn_tests::with_guests(|game| {
-                game.build_registries();
-                game.register_native_commands();
-                let cow = game.res.mob_types().get("minecraft:cow").unwrap().clone();
-                // Reversed insertion order rules out accidental list/ID ordering.
-                for id in (1000..1300).rev() {
-                    game.mobs.push(Mob::new(
-                        id,
-                        cow.clone(),
-                        Vec3::new(f64::from(id - 1000) + 4.0, 64.0, 5.0),
-                        0.0,
-                    ));
-                }
-                let epoch = game.player(12).unwrap().entity().epoch();
-                game.as_guest(12, |game| {
-                    assert!(game.perform_native_command(
-                        12,
-                        4,
-                        "selectall @e[type=minecraft:cow,sort=nearest]"
-                    ));
-                })
-                .unwrap();
-                let calls = heard.lock().unwrap();
-                assert_eq!(calls.len(), 1);
-                assert_eq!(
-                    calls[0].argument("targets"),
-                    Some(&Value::Entities(
-                        (1000..1300)
-                            .map(|id| mod_api::EntityRef::new(epoch, id))
-                            .collect()
-                    ))
-                );
-            });
+            let heard = Arc::new(Mutex::new(Vec::new()));
+            mod_platform::testing::with_mods(
+                vec![mod_api::ModEntry::new(
+                    "selector_uncapped",
+                    Box::new(SelectorCommands(heard.clone())),
+                )]
+                .into(),
+                || {
+                    super::super::native_guest_turn_tests::with_guests(|game| {
+                        game.build_registries();
+                        game.register_native_commands();
+                        let cow = game.res.mob_types().get("minecraft:cow").unwrap().clone();
+                        // Reversed insertion order rules out accidental list/ID ordering.
+                        for id in (1000..1300).rev() {
+                            game.mobs.push(Mob::new(
+                                id,
+                                cow.clone(),
+                                Vec3::new(f64::from(id - 1000) + 4.0, 64.0, 5.0),
+                                0.0,
+                            ));
+                        }
+                        let epoch = game.player(12).unwrap().entity().epoch();
+                        game.as_guest(12, |game| {
+                            assert_eq!(
+                                game.perform_native_command(
+                                    12,
+                                    4,
+                                    "selectall @e[type=minecraft:cow,sort=nearest]",
+                                    false,
+                                ),
+                                Some(true)
+                            );
+                        })
+                        .unwrap();
+                        let calls = heard.lock().unwrap();
+                        assert_eq!(calls.len(), 1);
+                        assert_eq!(
+                            calls[0].argument("targets"),
+                            Some(&Value::Entities(
+                                (1000..1300)
+                                    .map(|id| mod_api::EntityRef::new(epoch, id))
+                                    .collect()
+                            ))
+                        );
+                    });
+                },
+            );
         },
     );
 }
 
-/// One overworld cow (entity 1, tag `over`) and one nether cow (entity 2, tag `under`), then
-/// `lines` run as the first guest with the console's permission; each line's last invocation
-/// names the expected entities in its `argument` (their ids, sorted). Entity ids are handed
-/// out in summon order.
+/// One overworld cow (cow 1, tag `over`) and one nether cow (cow 2, tag `under`), then `lines`
+/// run as the first guest with the console's permission; each line's last invocation names the
+/// expected cows in its `argument` (their numbers, sorted). The cows take the next entity ids in
+/// summon order, after those the guests reserved.
 fn in_two_levels(lines: &[(&str, &str, &[u32])]) {
     let heard = Arc::new(Mutex::new(Vec::new()));
     mod_platform::testing::with_mods(
@@ -386,6 +430,7 @@ fn in_two_levels(lines: &[(&str, &str, &[u32])]) {
                 game.build_registries();
                 game.register_native_commands();
                 game.ui.registries.permission = 4;
+                let before_cows = game.next_entity;
                 assert!(game.run_command(r#"summon minecraft:cow 4 64 5 {Tags:["over"]}"#));
                 assert!(game.run_command(
                     r#"execute in minecraft:the_nether run summon minecraft:cow 4 64 5 {Tags:["under"]}"#
@@ -406,7 +451,9 @@ fn in_two_levels(lines: &[(&str, &str, &[u32])]) {
                             other => panic!("{line}: {other:?}"),
                         };
                         ids.sort_unstable();
-                        assert_eq!(&ids, expected, "{line}");
+                        let expected: Vec<u32> =
+                            expected.iter().map(|cow| before_cows + cow).collect();
+                        assert_eq!(ids, expected, "{line}");
                     }
                 })
                 .unwrap();
@@ -421,18 +468,23 @@ fn in_two_levels(lines: &[(&str, &str, &[u32])]) {
 #[test]
 #[ignore = "daily"]
 fn a_typed_entity_argument_reaches_an_entity_in_another_level() {
-    in_two_levels(&[
-        (
-            "selectone @e[type=minecraft:cow,tag=over,limit=1]",
-            "target",
-            &[1],
-        ),
-        (
-            "selectone @e[type=minecraft:cow,tag=under,limit=1]",
-            "target",
-            &[2],
-        ),
-    ]);
+    crate::game::in_own_process(
+        "game::native_server::selector_tests::a_typed_entity_argument_reaches_an_entity_in_another_level",
+        || {
+            in_two_levels(&[
+                (
+                    "selectone @e[type=minecraft:cow,tag=over,limit=1]",
+                    "target",
+                    &[1],
+                ),
+                (
+                    "selectone @e[type=minecraft:cow,tag=under,limit=1]",
+                    "target",
+                    &[2],
+                ),
+            ]);
+        },
+    );
 }
 
 /// A selector with no positional option reaches every level; `distance` (like `x`, `y`, `z`,
@@ -441,40 +493,45 @@ fn a_typed_entity_argument_reaches_an_entity_in_another_level() {
 #[test]
 #[ignore = "daily"]
 fn execute_moves_the_selector_source_to_its_level_and_entity() {
-    in_two_levels(&[
-        // No positional option: both levels, whatever level the source is in.
-        ("selectall @e[type=minecraft:cow]", "targets", &[1, 2]),
-        (
-            "execute in minecraft:the_nether run selectall @e[type=minecraft:cow]",
-            "targets",
-            &[1, 2],
-        ),
-        (
-            "execute in minecraft:the_nether run selectall @e[type=minecraft:cow,tag=over]",
-            "targets",
-            &[1],
-        ),
-        // Confined by `distance`: the level of the source `execute in` made.
-        (
-            "execute in minecraft:the_nether run selectall @e[type=minecraft:cow,distance=..1000]",
-            "targets",
-            &[2],
-        ),
-        (
-            "execute in minecraft:overworld run selectall @e[type=minecraft:cow,distance=..1000]",
-            "targets",
-            &[1],
-        ),
-        (
-            "selectall @e[type=minecraft:cow,distance=..1000]",
-            "targets",
-            &[1],
-        ),
-        // `as` the overworld cow: `@s` is that cow, not the invoker.
-        (
-            "execute as @e[type=minecraft:cow,tag=over] run selectone @s",
-            "target",
-            &[1],
-        ),
-    ]);
+    crate::game::in_own_process(
+        "game::native_server::selector_tests::execute_moves_the_selector_source_to_its_level_and_entity",
+        || {
+            in_two_levels(&[
+                // No positional option: both levels, whatever level the source is in.
+                ("selectall @e[type=minecraft:cow]", "targets", &[1, 2]),
+                (
+                    "execute in minecraft:the_nether run selectall @e[type=minecraft:cow]",
+                    "targets",
+                    &[1, 2],
+                ),
+                (
+                    "execute in minecraft:the_nether run selectall @e[type=minecraft:cow,tag=over]",
+                    "targets",
+                    &[1],
+                ),
+                // Confined by `distance`: the level of the source `execute in` made.
+                (
+                    "execute in minecraft:the_nether run selectall @e[type=minecraft:cow,distance=..1000]",
+                    "targets",
+                    &[2],
+                ),
+                (
+                    "execute in minecraft:overworld run selectall @e[type=minecraft:cow,distance=..1000]",
+                    "targets",
+                    &[1],
+                ),
+                (
+                    "selectall @e[type=minecraft:cow,distance=..1000]",
+                    "targets",
+                    &[1],
+                ),
+                // `as` the overworld cow: `@s` is that cow, not the invoker.
+                (
+                    "execute as @e[type=minecraft:cow,tag=over] run selectone @s",
+                    "target",
+                    &[1],
+                ),
+            ]);
+        },
+    );
 }

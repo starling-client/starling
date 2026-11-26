@@ -17,9 +17,10 @@ import subprocess
 import sys
 import time
 
-import anvil_dump as nbt
-import test_locator_bar_parity as net
-from test_disconnect_crafting_parity import generate, offline, uuid_words, wait_new
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import anvil_dump as nbt, test_locator_bar_parity as net
+from tools.test_disconnect_crafting_parity import generate, offline, uuid_words, wait_new
 
 A, B = 'H264Alice', 'H264Bob'
 ROOT, STONE = 'minecraft:story/root', 'minecraft:story/mine_stone'

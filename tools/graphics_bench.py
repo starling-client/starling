@@ -25,12 +25,10 @@ import sys
 import time
 from pathlib import Path
 
-try:
-    from . import lab
-except ImportError:
-    import lab
-
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+from tools import lab
+
 SEED = "1234"
 WORLD = "GraphicsBench"
 # (name, from xyz, to xyz, pitch): straight flights at a constant speed over

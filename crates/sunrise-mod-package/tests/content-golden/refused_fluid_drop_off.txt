@@ -36,4 +36,4 @@ icon:
 None
 
 content:
-refused: data/refused_fluid_drop_off/sunrise/fluid/sample.json: world: drop_off is 1 to 7
+refused: data/refused_fluid_drop_off/sunrise/fluid/sample.json: world: drop_off is 0 or more

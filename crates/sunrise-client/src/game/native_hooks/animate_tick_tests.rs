@@ -1,4 +1,3 @@
-#![cfg(test)]
 //! `animate_tick`: a pick of `ClientLevel.animateTick`'s sampling whose block has a part
 //! answering it calls that part inside the pick (after the block's own effects, before its
 //! fluid's, the next pick and the rain), with the level's random itself: the part's draws and
@@ -185,6 +184,9 @@ fn the_part_runs_inside_its_pick_before_the_fluid_the_next_pick_and_the_rain() {
         game.world_biomes = Some(Arc::new(biomes));
         game.settings.particles = 0;
         game.settings.sunrise.weather = true;
+        // Run after a camera frame: tickWeatherEffects uses the camera position,
+        // which is still the origin until the camera has aligned with its entity.
+        game.camera_view(1.0).expect("camera over the rod floor");
         game.particles.requested = Some(Vec::new());
         game.tick_particles();
         let log: Vec<(ParticleType, [i32; 3])> = game

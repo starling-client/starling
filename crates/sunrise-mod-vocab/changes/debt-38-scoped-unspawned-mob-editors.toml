@@ -1,0 +1,88 @@
+ids = [
+    "hook:baby_entity_spawn",
+    "hook:baby_entity_spawn.edits",
+    "hook:baby_entity_spawn.child",
+    "hook:mob_split",
+    "hook:mob_split.edits",
+    "hook:mob_split.children",
+    "hook:finalize_spawn",
+    "hook:finalize_spawn.mob",
+    "hook:finalize_spawn.edits",
+    "hook:mob_spawned",
+    "hook:mob_spawn_position_check",
+    "hook:mob_spawn_position_check.mob",
+    "type:BabyEntitySpawnEvent.edits",
+    "type:BabyEntitySpawnEvent.child",
+    "type:MobSplitEvent.edits",
+    "type:MobSplitEvent.children",
+    "type:FinalizeSpawnEvent.mob",
+    "type:FinalizeSpawnEvent.edits",
+    "type:MobSpawnPositionCheckEvent.mob",
+    "method:EntityPart::spawn_cluster_size",
+    "type:PendingChildrenRef",
+    "type:UnattachedMob",
+    "type:UnspawnedMobRef",
+    "trait:PendingChildrenEdits",
+    "method:PendingChildrenEdits::children",
+    "method:PendingChildrenEdits::len",
+    "method:PendingChildrenEdits::is_empty",
+    "method:PendingChildrenEdits::child",
+    "method:PendingChildrenEdits::construct",
+    "method:PendingChildrenEdits::append",
+    "method:PendingChildrenEdits::replace",
+    "method:PendingChildrenEdits::remove",
+    "method:PendingChildrenEdits::set_position",
+    "method:PendingChildrenEdits::set_yaw",
+    "method:PendingChildrenEdits::set_baby",
+    "method:PendingChildrenEdits::set_size",
+    "trait:UnspawnedMobEdits",
+    "method:UnspawnedMobEdits::set_equipment",
+    "method:UnspawnedMobEdits::set_attribute_base",
+    "method:UnspawnedMobEdits::add_attribute_modifier",
+    "method:UnspawnedMobEdits::remove_attribute_modifier",
+    "method:UnspawnedMobEdits::add_tag",
+    "method:UnspawnedMobEdits::remove_tag",
+    "method:UnspawnedMobEdits::set_custom_name",
+    "handle:UnspawnedMobRef::kind",
+    "handle:UnspawnedMobRef::position",
+    "handle:UnspawnedMobRef::equipment",
+    "handle:UnspawnedMobRef::attribute_base",
+    "handle:UnspawnedMobRef::attribute_value",
+    "handle:UnspawnedMobRef::tags",
+    "handle:UnspawnedMobRef::custom_name",
+    "handle:UnattachedMob::mob",
+    "type:UnspawnedMobError",
+    "type:UnspawnedMobError.Expired",
+    "type:UnspawnedMobError.Ownership",
+    "type:UnspawnedMobError.Capacity",
+    "type:UnspawnedMobError.Budget",
+    "type:PendingMobSpec",
+    "type:UnspawnedMobView",
+    "type:UnspawnedMobEditor",
+    "type:UnspawnedMob",
+    "type:PendingChildEditor",
+    "type:BabyEntitySpawnChild",
+    "type:MobSplitChildren",
+    "handle:BabyEntitySpawnChild::construct",
+    "handle:MobSplitChildren::construct",
+]
+why = """\
+Replace lease IDs, the slot arena, per-listener expiry, parent-staleness aborts and count/depth caps with scoped Rust borrows and owned `UnspawnedMob` values. Constructing a detached child posts `entity_constructing` immediately, even if the listener discards it. Detached children carry unpublished state and discard it on drop without rolling back other Host writes. `UnspawnedMobError` and `PendingMobSpec` no longer implement `Wire`.
+
+The shared dispatcher reports a panicking callback, disables only that mod's callback for that hook for the session, and restores its cancellation flag. Direct child/list/slot edits are not journaled and stand, as at NeoForge's `MobSplitEvent.getChildren` and `BabyEntitySpawnEvent.setChild`; existing Host journals still undo the writes they cover. An engine unwind before admission drops any unpublished children without replaying construction.
+
+NeoForge's `BabyEntitySpawnEvent` at vanilla 26.3's `Animal.spawnChildFromBreeding` and `Fox.FoxBreedGoal.breed` lends one optional `AgeableMob` (a `Fox` for fox breeding) before either parent's cooldown, inside `BreedGoal.tick` or `AnimalMakeLove.tick`, before the initiating animal's remaining AI, movement and age/love clocks. An adult replacement is legal; breeding applies baby age on acceptance. Fox breeder trust, credit and parent cooldown precede the child's baby age and final snap; ordinary animal credit follows the child's baby age and snap. Cancellation cools both parents, while an uncanceled empty slot skips breeding finalization and leaves both parents' age and love unchanged.
+
+NeoForge's `MobSplitEvent.getChildren` at `AbstractCubeMob.remove` lends an unbounded ordered list, even an empty list for primed sulfur cubes above size 1. The `Entity.<init>` patch posts `EntityConstructing` for each proposed child before the split event, including proposals later removed or canceled; the remaining children join in list order, then the parent completes `LivingEntity.remove` (including `OozingMobEffect.onMobRemoved`). A later breeding failure does not undo that removal. A failed join retires just its admission, not earlier successful joins. `FinalizeSpawnEvent` and `MobSpawnEvent.PositionCheck` lend the candidate before insertion. NeoForge replaces vanilla's `Mob.getMaxSpawnClusterSize` in `NaturalSpawner.spawnCategoryForPosition` after `ServerLevelAccessor.addFreshEntityWithPassengers` offers each body in order and `SpawnState.afterSpawn` accounts for the primary, even when NeoForge's `PersistentEntitySectionManager.addEntity` join event vetoed the addition or a listener moved the mob to another level.\
+"""
+migrate = """\
+- `finalize_spawn` (hook version 3): setting `spawn_cancelled` vetoes admission but does not skip finalization. Return `Flow::Cancel` as well to skip vanilla initialization. Configured ordinary and trial spawners post the event with the loaded body but never run vanilla initialization; chunk-generation packs lend the actual candidate with their group data. `event.edits` is removed and `event.mob` is now `UnspawnedMobEditor<'_>`. Call reads and writes directly on `event.mob` without passing `host` or a handle: `event.mob.kind()`, `event.mob.position()`, `event.mob.equipment(slot)`, `event.mob.attribute_base(&id)`, `event.mob.attribute_value(&id)`, `event.mob.tags()`, `event.mob.custom_name()`, `event.mob.set_equipment(slot, item)`, `event.mob.set_attribute_base(&id, base)`, `event.mob.add_attribute_modifier(&id, modifier)`, `event.mob.remove_attribute_modifier(&id, &mod_id)`, `event.mob.add_tag(tag)`, `event.mob.remove_tag(tag)`, `event.mob.set_custom_name(name)`. Use `event.mob.as_view()` when passing a read-only `UnspawnedMobView<'_>`.
+- `mob_spawn_position_check` (hook version 3): configured spawners and generated packs lend the actual candidate. Trial spawners still post the placement check, but not this hook. `event.mob` is now `UnspawnedMobView<'_>`. Replace `event.mob.kind(host)` / `custom_name(host)` / etc. with `event.mob.kind()` / `event.mob.custom_name()` directly without `host`.
+- `mob_spawned` (hook version 2): a natural spawn notifies per admitted body in the source level, before spawn-state accounting and the cluster-size callback. Only the primary is natural; a separately constructed jockey or passenger is not. A veto or a transfer out of the source does not post a notice for that body.
+- `EntityPart::spawn_cluster_size`: change the `mob` parameter type from `UnspawnedMobRef` to `UnspawnedMobView<'_>`, and replace `mob.position(host)` / `mob.kind(host)` / `mob.tags(host)` with `mob.position()` / `mob.kind()` / `mob.tags()`. The part runs after the natural spawn insertion attempt and spawn accounting, before the limit comparison; read the view to observe edits made during admission. Use the Host for world queries and use `mob` for candidate reads: a rejected candidate has no resident row, and a moved candidate's original entity ID may no longer resolve in the spawning level.
+- `baby_entity_spawn` (hook version 4): delete `let lease = event.edits.children()?` and use `event.child`. Replace `edits.len(lease)?` with `if event.child.is_present() { 1u32 } else { 0 }` (or just test `is_present()`), and `edits.is_empty(lease)?` with `event.child.is_empty()`. For index 0, replace `edits.child(lease, 0)?` with `event.child.get().ok_or(UnspawnedMobError::Invalid)?`, or use `get_mut()` for edits. There is no other valid index. Replace `edits.construct(lease, spec)?` with `event.child.construct(host, spec)?`. Move the child into `event.child.replace(child)?`; to preserve old append behavior, check `is_present()` and refuse before replacing an occupied slot. To preserve old indexed replacement, check index 0 and that the slot is occupied, then `drop(event.child.replace(child)?);`. Replace `edits.remove(lease, 0)?` with `drop(event.child.take().ok_or(UnspawnedMobError::Invalid)?);` (use `event.child.clear()` if absence is fine). The feeder fields fall back to the partner's resolved feeder when the initiating parent's is absent. Replacements may start as adults, but must be `AgeableMob` (`minecraft:fox` for fox breeding); accepted children are made babies before joining.
+- `mob_split` (hook version 4): delete `let lease = event.edits.children()?` and use `event.children`. Replace `edits.len(lease)?` with `event.children.len()` (now `usize`) and `edits.is_empty(lease)?` with `event.children.is_empty()`. For an old `u32` index, first use `let i = usize::try_from(index).map_err(|_| UnspawnedMobError::Invalid)?;`. Replace `edits.child(lease, index)?` with `event.children.get(i).ok_or(UnspawnedMobError::Invalid)?` (or `get_mut(i)` with the same `None` handling for edits). Replace `edits.remove(lease, index)?` with `drop(event.children.remove(i).ok_or(UnspawnedMobError::Invalid)?);` and `edits.replace(lease, index, child)?` with `drop(event.children.replace(i, child)?);`. Both calls return an owned child, so drop it to keep the old discard behavior. Replace `edits.construct(lease, spec)?` with `event.children.construct(host, spec)?` and `edits.append(lease, child)?` with `event.children.push(child)?`.
+- Replace the removed `UnspawnedMobEdits` methods with the same methods on `event.mob`, a `PendingChildEditor` from `get_mut()`, or an owned `UnspawnedMob`, without a handle argument.
+- In both hooks, replace `detached.mob().kind(host)` (and other `UnspawnedMobRef` reads) with `detached.kind()` directly on the owned `UnspawnedMob`. Replace `edits.set_position(handle, position)` / `set_yaw` / `set_baby` / `set_size` with the same methods on the `PendingChildEditor<'_>` from `get_mut()` or directly on the owned `UnspawnedMob`, without a handle argument.
+- `PendingChildrenRef`, `UnattachedMob`, and `UnspawnedMobRef` are removed and have no `Wire` substitute (they were scoped in-process handles, not serializable payloads); if a mod serialized fields from them, pass owned plain data instead. Remove match arms for `UnspawnedMobError::Expired`, `Ownership`, `Capacity`, and `Budget`, and remove any `Wire` usage of `UnspawnedMobError` or `PendingMobSpec` (and any `NoBackend` reliance on `UnspawnedMobError`). Any `UnspawnedMob` not attached to a slot or list is discarded automatically on drop.\
+"""

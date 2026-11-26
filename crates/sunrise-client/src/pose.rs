@@ -90,6 +90,49 @@ impl From<mod_api::Pose> for Pose {
         }
     }
 }
+/// What `Player.getDesiredPose` reads of a player.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PoseFlags {
+    /// `LivingEntity.isSleeping`.
+    pub sleeping: bool,
+    /// `Entity.isSwimming`.
+    pub swimming: bool,
+    /// `LivingEntity.isFallFlying`.
+    pub fall_flying: bool,
+    /// `LivingEntity.isAutoSpinAttack`: Riptide's spin.
+    pub auto_spin_attack: bool,
+    /// `Entity.isShiftKeyDown`.
+    pub shift_key_down: bool,
+    /// `Abilities.flying`.
+    pub flying: bool,
+}
+/// `Player.getDesiredPose` of the player `player` (entity id): sleeping, swimming, fall flying,
+/// Riptide's spin, crouching (shift held, not flying), else standing. `updatePlayerPose` then
+/// keeps it only where it fits ([`MotionWorld::update_player_pose`]: the client's prediction
+/// and the server's copy of every player), and the server shows the others the pose that
+/// update took. NeoForge and Fabric have no event that decides the
+/// pose, so a Java mod mixes into `Player.getDesiredPose`; a native mod answers here through
+/// `[[native.mixin]]` (#4854).
+#[sunrise_mod_api_macros::replaceable]
+pub fn desired_pose(player: i32, flags: PoseFlags) -> Pose {
+    let pose = if flags.sleeping {
+        Pose::Sleeping
+    } else if flags.swimming {
+        Pose::Swimming
+    } else if flags.fall_flying {
+        Pose::FallFlying
+    } else if flags.auto_spin_attack {
+        Pose::SpinAttack
+    } else if flags.shift_key_down && !flags.flying {
+        Pose::Crouching
+    } else {
+        Pose::Standing
+    };
+    #[cfg(test)]
+    let pose = crate::rule_replacements::desired_pose(player, flags).unwrap_or(pose);
+    let _ = player;
+    pose
+}
 #[derive(Clone, Copy, Debug)]
 pub struct Dimensions {
     pub width: f32,
@@ -118,6 +161,32 @@ impl SizeAnswer {
     /// The size the entity had with this answer: the listeners', else vanilla's.
     pub fn effective(&self) -> [f32; 3] {
         self.size.unwrap_or(self.vanilla)
+    }
+    /// The box of an entity whose pose doesn't size it, at `position`: `vanilla_box`, the one
+    /// its kind makes for its vanilla size `vanilla`, unless `answer` resized it and still
+    /// holds for that size. Then `EntityDimensions.makeBoundingBox` of the answer, on the same
+    /// bottom (a wind charge's sits below its position).
+    pub fn sized_box(
+        answer: Option<Self>,
+        vanilla: [f32; 3],
+        position: Vec3,
+        vanilla_box: Aabb,
+    ) -> Aabb {
+        let Some([width, height, _]) =
+            answer.and_then(|answer| answer.size.filter(|_| answer.vanilla == vanilla))
+        else {
+            return vanilla_box;
+        };
+        let half = f64::from(width / 2.0);
+        let bottom = vanilla_box.min_position().y;
+        Aabb::new(
+            Vec3::new(position.x - half, bottom, position.z - half),
+            Vec3::new(
+                position.x + half,
+                bottom + f64::from(height),
+                position.z + half,
+            ),
+        )
     }
 }
 impl Dimensions {
@@ -253,20 +322,17 @@ impl MotionWorld<'_, '_, '_> {
         if !self.can_fit_pose(Pose::Swimming)? {
             return Ok(());
         }
-        // Player.getDesiredPose: sleeping, swimming, gliding, Riptide's spin.
-        let desired = if self.player.sleeping {
-            Pose::Sleeping
-        } else if self.player.swimming {
-            Pose::Swimming
-        } else if self.player.fall_flying {
-            Pose::FallFlying
-        } else if self.player.auto_spin_attack_ticks > 0 {
-            Pose::SpinAttack
-        } else if self.player.shift_key_down && !self.player.flying {
-            Pose::Crouching
-        } else {
-            Pose::Standing
-        };
+        let desired = desired_pose(
+            self.player.entity_id,
+            PoseFlags {
+                sleeping: self.player.sleeping,
+                swimming: self.player.swimming,
+                fall_flying: self.player.fall_flying,
+                auto_spin_attack: self.player.auto_spin_attack_ticks > 0,
+                shift_key_down: self.player.shift_key_down,
+                flying: self.player.flying,
+            },
+        );
         let pose = if self.player.spectator || self.can_fit_pose(desired)? {
             desired
         } else if self.can_fit_pose(Pose::Crouching)? {
@@ -318,6 +384,9 @@ impl MotionWorld<'_, '_, '_> {
     }
     /// `LivingEntity.aiStep` travels the rider after its sprint decision.
     pub fn finish_rider_tick(&mut self, direction: [f32; 2]) -> Result<()> {
+        if self.player.may_fly && self.player.local_spectator {
+            self.player.flying = true;
+        }
         self.rider_travel_tick(direction)?;
         self.passenger_sits_up()
     }

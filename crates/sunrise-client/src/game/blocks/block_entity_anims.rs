@@ -30,15 +30,22 @@ const PLAYER: u64 = u64::MAX;
 
 pub(super) use sunrise_gameplay::container_openers::recheck_opener_count;
 
+/// What a client tick of the animated block entities shares between them.
+pub(super) struct AnimTick {
+    /// The conduits' frame blocks, copied when the first of them ticks.
+    frames: Option<std::collections::HashSet<String>>,
+}
+
 impl Game<'_> {
     /// `BlockEntity.triggerEvent(a, b)` on the client copy of the block entity at `pos`.
-    pub(super) fn block_entity_event(&mut self, pos: [i32; 3], a: i32, b: i32) {
+    pub(in crate::game) fn block_entity_event(&mut self, pos: [i32; 3], a: i32, b: i32) {
         let state = self.world.block(pos[0], pos[1], pos[2]).0;
         let time = self.world.game_time;
         // PotentSulfurBlock.triggerEvent.
         if self.potent_sulfur_eruption_event((pos[0], pos[1], pos[2])) {
             return;
         }
+        self.claim_anim(pos);
         match self.be_anims.ticker(state) {
             Some(Ticker::Lid) => {
                 self.be_anims
@@ -277,8 +284,7 @@ impl Game<'_> {
         }
         let mut positions: Vec<_> = self.be_anims.bells.keys().copied().collect();
         positions.sort_unstable();
-        let raiders = self.items().entity_type_tags.clone();
-        let raiders = raiders.members().get("minecraft:raiders");
+        let tags = self.items().entity_type_tags.clone();
         for pos in positions {
             if self
                 .be_anims
@@ -287,13 +293,13 @@ impl Game<'_> {
             {
                 self.be_anims.bells.remove(&pos);
             } else if self.block_ticking_area()(pos[0], pos[2]) {
-                self.tick_bell(pos, raiders);
+                self.tick_bell(pos, &tags);
             }
         }
     }
 
     /// `BellBlockEntity.tick` and `makeRaidersGlow`, using live entity/tag state.
-    fn tick_bell(&mut self, pos: [i32; 3], raiders: Option<&std::collections::HashSet<String>>) {
+    fn tick_bell(&mut self, pos: [i32; 3], tags: &sunrise_client::items::EntityTypeTags) {
         let player = self.player_view().map(|p| BellEntity {
             position: [p.position.x, p.position.y, p.position.z],
             alive: p.alive,
@@ -308,7 +314,10 @@ impl Game<'_> {
             Some(BellEntity {
                 position: [m.position.x, m.position.y, m.position.z],
                 alive: m.alive() && !m.removed,
-                raider: raiders.is_some_and(|raiders| raiders.contains(&m.kind.id)),
+                raider: tags.has_bit(
+                    m.kind.flags.entity_tag_slot,
+                    sunrise_client::items::EntityTypeTags::RAIDERS,
+                ),
             })
         };
         let tick = self
@@ -325,8 +334,7 @@ impl Game<'_> {
         // On a server its own copy does this and sends the sound.
         if tick.resonate && self.remote.is_none() {
             // The server's copy plays the resonance for everyone.
-            self.audio
-                .play("minecraft:block.bell.resonate", Some(centre), 1.0, 1.0);
+            self.play_audio("minecraft:block.bell.resonate", Some(centre), 1.0, 1.0);
         }
         if let Some((particles, glow)) = tick.ended {
             for (p, color) in particles.into_iter().filter(|_| self.renderer.is_some()) {
@@ -340,9 +348,19 @@ impl Game<'_> {
                 self.particles.add(&options, p, [0.0; 3]);
             }
             // makeRaidersGlow (the server's effect).
-            for m in self.mobs.iter_mut().filter(|_| self.remote.is_none()) {
-                if glow.contains(&u64::from(m.id)) {
-                    m.add_effect("minecraft:glowing", 60, 0);
+            if self.remote.is_none() {
+                let targets: Vec<u32> = self
+                    .mobs
+                    .iter()
+                    .filter(|m| glow.contains(&u64::from(m.id)))
+                    .map(|m| m.id)
+                    .collect();
+                for mob_id in targets {
+                    self.add_mob_effect(
+                        mob_id,
+                        sunrise_client::effects::EffectInstance::new("glowing", 60, 0),
+                        None,
+                    );
                 }
             }
         }
@@ -354,61 +372,55 @@ impl Game<'_> {
         self.tick_bell_servers();
     }
 
-    /// The client tickers of the loaded animated block entities, once per client tick
-    /// (`ClientLevel.tickBlockEntities`).
-    pub(super) fn tick_block_entity_anims(&mut self) {
-        // A server has no window, but its bells, gateways and conduits still run
-        // their server tickers; a client of one only animates what it is sent.
-        if self.remote.is_none() {
-            self.tick_block_entity_servers();
+    /// The animation state belongs to the block entity object at `pos` (its generation): one
+    /// made again there starts fresh, even between two ticks.
+    fn claim_anim(&mut self, pos: [i32; 3]) {
+        if let Some(generation) = self
+            .world
+            .block_entities
+            .generation(&(pos[0], pos[1], pos[2]))
+        {
+            self.be_anims.claim(pos, generation);
         }
-        let Some(r) = &self.renderer else {
-            return;
-        };
-        // Sorted by position: the order they tick in, and a quick lookup.
-        // Read again only when the drawn block entities changed.
-        let revision = r.block_entity_revision();
-        if self.be_anims.present_revision != Some(revision) {
-            let mut present: Vec<([i32; 3], Ticker)> = r
-                .block_entities()
-                .filter_map(|(p, s)| Some((*p, self.be_anims.ticker(*s)?)))
-                .collect();
-            present.sort_unstable_by_key(|(p, _)| *p);
-            if self.remote.is_none() {
-                self.be_anims.retain_present_preserving_bells(&present);
-            } else {
-                self.be_anims.retain_present(&present);
-            }
-            self.be_anims.present = present;
-            self.be_anims.present_revision = Some(revision);
-        }
-        let positions = std::mem::take(&mut self.be_anims.present);
-        let players: Vec<[f64; 3]> = match &self.player {
-            Some(p) if !self.spectator() => vec![[p.position.x, p.position.y, p.position.z]],
-            _ => Vec::new(),
-        };
-        let raiders = self.items().entity_type_tags.clone();
-        let raiders = raiders.members().get("minecraft:raiders");
-        let frames = self
-            .res
-            .items()
-            .block_tags
-            .get("minecraft:conduit_effect_block")
-            .cloned()
-            .unwrap_or_default();
-        // The lids this tick swept (`moveCollidedEntities`), for the player
-        // this client moves itself.
-        let mut shulker_pushes = Vec::new();
-        for &(pos, ticker) in &positions {
+    }
+
+    /// The start of a client tick of the animated block entities: forgets the state of those
+    /// gone (no longer the object that owned it), and of decorated pots whose block is gone. A
+    /// pot is no block entity here and has no ticker, so its wobble lives with its block.
+    pub(super) fn begin_block_entity_anims(&mut self) -> AnimTick {
+        let world = &self.world;
+        self.be_anims.retain_owned(
+            |p, g| world.block_entities.generation(&(p[0], p[1], p[2])) == Some(g),
+            |p| world.block(p[0], p[1], p[2]).0,
+        );
+        AnimTick { frames: None }
+    }
+    /// The client ticker of the animated block entity at `pos` (`ClientLevel.tickBlockEntities`),
+    /// in the ticker list's order with every other client ticker.
+    pub(super) fn tick_block_entity_anim(
+        &mut self,
+        pos: [i32; 3],
+        ticker: Ticker,
+        anim: &mut AnimTick,
+    ) {
+        self.claim_anim(pos);
+        {
             match ticker {
                 Ticker::Lid => self.tick_chest_lid(pos),
                 Ticker::Book => {
+                    // The player where earlier tickers (a lid's push) left it.
+                    let player = match &self.player {
+                        Some(p) if !self.spectator() => {
+                            Some([p.position.x, p.position.y, p.position.z])
+                        }
+                        _ => None,
+                    };
                     let anims = &mut self.be_anims;
-                    anims
-                        .books
-                        .entry(pos)
-                        .or_default()
-                        .tick(pos, &players, &mut anims.book_random);
+                    anims.books.entry(pos).or_default().tick(
+                        pos,
+                        player.as_slice(),
+                        &mut anims.book_random,
+                    );
                 }
                 Ticker::Shulker { facing } => {
                     // `ShulkerBoxBlockEntity.tick` runs on both sides: the
@@ -421,8 +433,12 @@ impl Game<'_> {
                             .entry(pos)
                             .or_default()
                             .tick(pos, facing);
+                        // The lid pushes at its turn, so later tickers read the pushed player.
                         if let Some(push) = tick.push {
-                            shulker_pushes.push((pos, facing, push));
+                            if let Some(shulker) = self.be_anims.shulkers.get(&pos) {
+                                self.world.shulkers.insert(pos, shulker.clone());
+                            }
+                            self.push_shulker_local(vec![(pos, facing, push)]);
                         }
                     }
                 }
@@ -433,10 +449,19 @@ impl Game<'_> {
                     // Integrated servers already ticked this state above, independently
                     // of drawn block entities. Remote clients only animate their copy.
                     if self.remote.is_some() {
-                        self.tick_bell(pos, raiders);
+                        let tags = self.items().entity_type_tags.clone();
+                        self.tick_bell(pos, &tags);
                     }
                 }
                 Ticker::Conduit => {
+                    let frames = anim.frames.get_or_insert_with(|| {
+                        self.res
+                            .items()
+                            .block_tags
+                            .get("minecraft:conduit_effect_block")
+                            .cloned()
+                            .unwrap_or_default()
+                    });
                     let target = self.conduit_target(pos);
                     let world = &self.world;
                     let facts = self.res.facts();
@@ -458,7 +483,7 @@ impl Game<'_> {
                         is_water,
                         is_frame,
                         target,
-                        self.particles.random(),
+                        self.particles.level_random(),
                     );
                     let nautilus = ParticleOptions::simple(ParticleType::Nautilus);
                     for (p, v) in particles {
@@ -474,16 +499,17 @@ impl Game<'_> {
                 }
             }
         }
-        self.be_anims.present = positions;
-        // The lid's grown box collides and pushes here too: a client of a
-        // server owns its own player's position, so the server's
+    }
+    /// The end of the tick: the lids' collision snapshot.
+    pub(super) fn finish_block_entity_anims(&mut self) {
+        // The lids' grown boxes collide and push in their turns (`tick_block_entity_anim`): a
+        // client of a server owns its own player's position, so the server's
         // `moveCollidedEntities` alone would be undone by the client's next
         // move, and a lid the client cannot collide with never holds it up.
         // Only the player: `tick_block_entities` has already pushed the mobs
         // and the guests, and a second push would double the lift.
         if self.remote.is_some() {
             self.sync_shulkers();
-            self.push_shulker_local(shulker_pushes);
         }
     }
     /// `ConduitBlockEntity.serverTick` of every conduit in the chunks that
@@ -594,7 +620,7 @@ impl Game<'_> {
                 } else {
                     "minecraft:block.conduit.deactivate"
                 };
-                self.audio.play(sound, Some(centre), 1.0, 1.0);
+                self.play_audio(sound, Some(centre), 1.0, 1.0);
             }
             if let Some(frames) = check.frames {
                 self.conduit_apply_effects(pos, frames);
@@ -603,11 +629,10 @@ impl Game<'_> {
         }
         let (ambient, short) = conduit.ambient(time, &mut self.world.random);
         if ambient {
-            self.audio
-                .play("minecraft:block.conduit.ambient", Some(centre), 1.0, 1.0);
+            self.play_audio("minecraft:block.conduit.ambient", Some(centre), 1.0, 1.0);
         }
         if short {
-            self.audio.play(
+            self.play_audio(
                 "minecraft:block.conduit.ambient.short",
                 Some(centre),
                 1.0,
@@ -644,7 +669,7 @@ impl Game<'_> {
                 ambient: true,
                 ..EffectInstance::new("conduit_power", 260, 0)
             };
-            g.apply_player_effect(power);
+            g.add_player_effect(power);
         });
     }
     /// `Entity.isInRain`: rain at the block position or at the top of the box.
@@ -735,8 +760,7 @@ impl Game<'_> {
             Damage::of(DamageKind::Magic),
         );
         self.finish_mob_damage_at(index);
-        self.audio
-            .play("minecraft:block.conduit.attack.target", Some(at), 1.0, 1.0);
+        self.play_audio("minecraft:block.conduit.attack.target", Some(at), 1.0, 1.0);
     }
     /// `ConduitBlockEntity.selectNewTarget`: one of the enemies in water or
     /// rain whose box meets the conduit's block inflated by 8.
@@ -880,16 +904,19 @@ impl Game<'_> {
     /// pot's saved `sherds` (back, left, right, front).
     pub(super) fn block_anim(&self, pos: [i32; 3], partial: f32) -> BlockAnim {
         let state = self.world.block(pos[0], pos[1], pos[2]);
+        // A replacement may draw before its first ConduitBlockEntity.clientTick.
+        if matches!(self.be_anims.ticker(state.0), Some(Ticker::Conduit))
+            && let Some(&owner) = self.be_anims.owners.get(&pos)
+            && self
+                .world
+                .block_entities
+                .generation(&(pos[0], pos[1], pos[2]))
+                != Some(owner)
+        {
+            return BlockAnim::default();
+        }
         let sherds = if &*self.res.facts().get(state).name == "minecraft:decorated_pot" {
-            let sherds = self.saved_tag(pos).and_then(|t| t.get("sherds"));
-            ["back", "left", "right", "front"].map(|side| match sherds.and_then(|s| s.get(side)) {
-                // An item id, or the item stack the processed templates hold.
-                Some(Tag::String(id)) => Some(id.to_string_lossy()),
-                Some(stack) => {
-                    sunrise_client::save::item_from_nbt(stack).map(|s| s.item.to_string())
-                }
-                None => None,
-            })
+            pot_sherds(self.saved_tag(pos))
         } else {
             Default::default()
         };
@@ -914,6 +941,10 @@ impl Game<'_> {
         else {
             return None;
         };
+        self.skull_skin(skull)
+    }
+    /// [`Self::skull_skin_at`] for a skull that is not in the level, as a carried one.
+    pub(super) fn skull_skin(&self, skull: &sunrise_client::containers::Skull) -> Option<String> {
         let skin = skull.skin.as_ref()?;
         // PlayerSkin.Patch: a `texture` override replaces the profile's skin.
         if let Some(texture) = &skin.texture
@@ -933,8 +964,7 @@ impl Game<'_> {
             else {
                 return None;
             };
-            let (value, signature) = profile.textures()?;
-            let url = skins::unpack(&value, signature, skins::texture_uris()).skin?;
+            let url = skins::unpack_insecure(profile.textures()?).skin?;
             let location = skins::skin_location(&skins::texture_hash(&url)?);
             Some((url, location))
         });
@@ -954,6 +984,17 @@ impl Game<'_> {
     }
 }
 
+/// The sherds (item ids: back, left, right, front) in the saved tag of a decorated pot.
+pub(super) fn pot_sherds(saved: Option<&Tag>) -> [Option<String>; 4] {
+    let sherds = saved.and_then(|t| t.get("sherds"));
+    ["back", "left", "right", "front"].map(|side| match sherds.and_then(|s| s.get(side)) {
+        // An item id, or the item stack the processed templates hold.
+        Some(Tag::String(id)) => Some(id.to_string_lossy()),
+        Some(stack) => sunrise_client::save::item_from_nbt(stack).map(|s| s.item.to_string()),
+        None => None,
+    })
+}
+
 /// `Entity.isInRain`'s two positions: `blockPosition()` and the same column at the box's top.
 fn rain_positions(at: Vec3, top: f64) -> (BlockPos, BlockPos) {
     let p = BlockPos::new(
@@ -965,10 +1006,14 @@ fn rain_positions(at: Vec3, top: f64) -> (BlockPos, BlockPos) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(in crate::game) mod tests {
     #[test]
     #[ignore = "daily"]
     fn replacing_a_gateway_discards_its_old_cooldown() {
+        run_replacing_a_gateway_discards_its_old_cooldown();
+    }
+
+    pub(in crate::game) fn run_replacing_a_gateway_discards_its_old_cooldown() {
         use crate::game::*;
         let root = std::path::PathBuf::from(
             std::env::var_os("SUNRISE_TEST_RESOURCES").expect("set SUNRISE_TEST_RESOURCES"),

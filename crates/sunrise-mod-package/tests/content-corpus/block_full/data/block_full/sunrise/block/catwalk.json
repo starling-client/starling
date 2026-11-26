@@ -5,6 +5,7 @@
     "render_shape": "INVISIBLE",
     "push_reaction": "IGNORE_ENTITY",
     "offset": "NONE",
-    "random_ticks": true
+    "random_ticks": true,
+    "spawn_rule": "never"
   }
 }

@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# The C compiler of build scripts for x86_64-unknown-linux-gnu with glibc 2.35 as its ceiling, whatever the runner's
+# glibc. The image's libudev and ALSA headers come after zig's own glibc headers, never before them.
+args=()
+for arg in "$@"; do
+  [[ "$arg" == --target=* ]] || args+=("$arg")
+done
+exec zig cc -target x86_64-linux-gnu.2.35 -idirafter /usr/include -idirafter /usr/include/x86_64-linux-gnu "${args[@]}"

@@ -1,5 +1,4 @@
 //! The `loot_table_load` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0087
 
 pub trait Hooks {
     /// A native mod's hook point (docs/modding/src/how-to/native-mods.md), declared in `hooks/*.rs` with the game's:

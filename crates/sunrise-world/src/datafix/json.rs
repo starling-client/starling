@@ -24,6 +24,51 @@ impl Json {
             _ => None,
         }
     }
+    /// `JsonOps.getNumberValue` followed by `Number.intValue`, as used by `Codec.INT`.
+    pub fn as_i32(&self) -> Option<i32> {
+        let Json::Num(literal) = self else {
+            return None;
+        };
+        if let Ok(value) = literal.parse::<i32>() {
+            return Some(value);
+        }
+        // Gson's LazilyParsedNumber falls back to BigDecimal for fractions,
+        // exponents and large integers. NumberLimits.parseBigDecimal accepts
+        // at most 10,000 characters, and requires |scale| < 10,000.
+        if literal.len() > 10_000 {
+            return None;
+        }
+        let (negative, literal) = literal
+            .strip_prefix('-')
+            .map_or((false, literal.as_str()), |magnitude| (true, magnitude));
+        let (mantissa, exponent) = match literal.split_once(['e', 'E']) {
+            Some((mantissa, exponent)) => (mantissa, exponent.parse::<i32>().ok()?),
+            None => (literal, 0),
+        };
+        let (whole, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+        let scale = (fraction.len() as i32).checked_sub(exponent)?;
+        if scale.unsigned_abs() >= 10_000 {
+            return None;
+        }
+        // Truncate toward zero and keep the low bits without floating-point
+        // rounding or expanding the power of ten.
+        let digits_to_keep = (whole.len() + fraction.len()).saturating_sub(scale.max(0) as usize);
+        let mut low_bits = whole
+            .chars()
+            .chain(fraction.chars())
+            .take(digits_to_keep)
+            .try_fold(0u32, |n, digit| {
+                Some(n.wrapping_mul(10).wrapping_add(digit.to_digit(10)?))
+            })?;
+        if scale < 0 {
+            low_bits = low_bits.wrapping_mul(10u32.wrapping_pow(scale.unsigned_abs()));
+        }
+        Some(if negative {
+            low_bits.wrapping_neg() as i32
+        } else {
+            low_bits as i32
+        })
+    }
     pub(super) fn insert(entries: &mut Vec<(Vec<u16>, Json)>, key: Vec<u16>, value: Json) {
         if let Some(e) = entries.iter_mut().find(|(k, _)| *k == key) {
             e.1 = value;
@@ -112,11 +157,11 @@ impl Reader<'_> {
         }
     }
     fn value(&mut self, depth: usize) -> R<Json> {
-        if depth > 255 {
-            return Err(());
-        }
         let c = self.skip_ws()?.ok_or(())?;
         match c {
+            // JsonReader.push: DEFAULT_NESTING_LIMIT (255) open objects and arrays, the
+            // document's own stack entry not counted; values inside them are not limited.
+            0x7B | 0x5B if depth >= 255 => Err(()),
             0x7B => self.object(depth),
             0x5B => self.array(depth),
             0x22 => {
@@ -229,8 +274,11 @@ impl Reader<'_> {
                 match e {
                     0x75 => {
                         let hex = self.s.get(self.pos..self.pos + 4).ok_or(())?;
-                        let text = String::from_utf16(hex).map_err(|_| ())?;
-                        out.push(u16::from_str_radix(&text, 16).map_err(|_| ())?);
+                        let code = hex.iter().try_fold(0u16, |code, &unit| {
+                            let digit = char::from_u32(u32::from(unit))?.to_digit(16)?;
+                            Some(code * 16 + digit as u16)
+                        });
+                        out.push(code.ok_or(())?);
                         self.pos += 4;
                     }
                     0x74 => out.push(u('\t')),
@@ -238,8 +286,8 @@ impl Reader<'_> {
                     0x6E => out.push(u('\n')),
                     0x72 => out.push(u('\r')),
                     0x66 => out.push(0x0C),
-                    0x0A | 0x22 | 0x5C | 0x2F => out.push(e),
-                    0x27 => out.push(e),
+                    0x22 | 0x5C | 0x2F => out.push(e),
+                    0x0A | 0x27 if self.mode != Mode::Strict => out.push(e),
                     _ if self.lenient() => out.push(e),
                     _ => return Err(()),
                 }
@@ -381,7 +429,68 @@ pub fn parse_lenient(s: &[u16]) -> Option<Json> {
 }
 /// `StrictJsonParser.parse`.
 pub fn parse_strict(s: &[u16]) -> Option<Json> {
-    parse_mode(s, Mode::Strict)
+    // JsonReader.fillBuffer skips a leading byte-order mark.
+    parse_mode(s.strip_prefix(&[0xfeff]).unwrap_or(s), Mode::Strict)
+}
+
+/// Read and migrate a `ServerStatsCounter.parse` document without opening a file.
+/// Requires a JSON object. Legacy fixes can be refused if their tables are unavailable.
+pub fn migrate_stats(text: &str) -> Option<Json> {
+    use super::{
+        CURRENT, Ty,
+        files::{AdvancementJson, json_to_tag},
+        try_update,
+    };
+
+    let mut parsed = parse_strict(&text.encode_utf16().collect::<Vec<_>>())?;
+    // NbtUtils.getDataVersion(Dynamic, int), with ServerStatsCounter.parse's default.
+    let from = match parsed.get("DataVersion") {
+        Some(version @ Json::Num(_)) => version.as_i32()?,
+        _ => 1343,
+    };
+    let Json::Obj(fields) = &mut parsed else {
+        return None;
+    };
+    if from >= CURRENT {
+        return Some(parsed);
+    }
+
+    // The stats fixes move/rename counters without computing from their counts.
+    // Decode numeric leaves before the NBT bridge so it cannot round them.
+    let normalize_count = |value: &mut Json| {
+        *value = value
+            .as_i32()
+            .map_or(Json::Null, |n| Json::Num(n.to_string()));
+    };
+    if from <= 1451 {
+        // The flat layout predates V1451_6's StatsCounterFix. Only numbers are read.
+        for (_, count) in fields {
+            normalize_count(count);
+        }
+    } else {
+        // The grouped fixes only read `stats`. Keep malformed groups and counts
+        // distinguishable from valid values without converting their contents.
+        fields.retain(|(key, _)| key.iter().copied().eq("stats".encode_utf16()));
+        if let Some((_, stats)) = fields.first_mut() {
+            if let Json::Obj(groups) = stats {
+                for (_, group) in groups {
+                    if let Json::Obj(counts) = group {
+                        for (_, count) in counts {
+                            normalize_count(count);
+                        }
+                    } else {
+                        *group = Json::Null;
+                    }
+                }
+            } else {
+                *stats = Json::Null;
+            }
+        }
+    }
+    let mut tag = json_to_tag(&parsed, AdvancementJson::Other);
+    try_update(Ty::Stats, &mut tag, from, CURRENT).ok()?;
+    // The counts were normalized to numbers and nulls above: no boolean marker to read back.
+    Some(from_nbt(&tag))
 }
 
 /// `GsonHelper.fromJson`: read one value without requiring the end of the document.
@@ -578,6 +687,16 @@ mod tests {
     use super::*;
     fn w(s: &str) -> Vec<u16> {
         s.encode_utf16().collect()
+    }
+    /// Gson 2.14's JsonReader opens at most 255 nested arrays or objects.
+    #[test]
+    fn nesting_stops_at_the_json_reader_limit() {
+        let nested = |n: usize| w(&format!("{}1{}", "[".repeat(n), "]".repeat(n)));
+        assert!(parse_strict(&nested(255)).is_some());
+        assert!(parse_strict(&nested(256)).is_none());
+        let empty = |n: usize| w(&format!("{}{}", "[".repeat(n), "]".repeat(n)));
+        assert!(parse_strict(&empty(255)).is_some());
+        assert!(parse_strict(&empty(256)).is_none());
     }
     #[test]
     fn gson_helper_reads_one_value_but_retains_strict_token_boundaries() {

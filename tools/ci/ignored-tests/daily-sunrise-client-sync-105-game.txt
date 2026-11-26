@@ -8,7 +8,6 @@ sunrise-client game::buckets::filled_bucket_stat_tests::emptying_a_filled_bucket
 sunrise-client game::buckets::filled_bucket_stat_tests::filling_a_bucket_from_a_cauldron_counts_both lib daily resources
 sunrise-client game::buckets::filled_bucket_stat_tests::pouring_a_bucket_into_a_cauldron_counts_both lib daily resources
 sunrise-client game::buckets::filled_bucket_stat_tests::washing_a_shulker_box_is_not_an_item_used lib daily resources
-sunrise-client game::cat_spawner::cat_spawner_tests::a_cat_spawner_cat_faces_south_without_a_level_draw lib daily resources
 sunrise-client game::cauldron_underwater_tests::a_cauldron_under_water_swallows_a_lava_or_powder_snow_bucket lib daily resources
 sunrise-client game::combat::bee_sting_tests::a_landed_sting_sets_the_stinger_and_poisons_on_normal_and_hard lib daily resources
 sunrise-client game::combat::bee_sting_tests::a_refused_sting_leaves_the_bee_alone lib daily resources

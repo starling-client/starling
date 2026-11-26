@@ -1,0 +1,42 @@
+ids = [
+    "hook:block_entity_ticks",
+    "hook:block_entity_ticks.block",
+    "hook:block_entity_ticks.ticks",
+    "method:BlockEntityPart::block_entity_ticks",
+    "type:BlockEntityTicksEvent",
+    "type:BlockEntityTicksEvent.block",
+    "type:BlockEntityTicksEvent.ticks",
+    "hook:block_entity_client_ticks",
+    "hook:block_entity_client_ticks.block",
+    "hook:block_entity_client_ticks.ticks",
+    "method:BlockEntityPart::block_entity_client_ticks",
+    "type:BlockEntityClientTicksEvent",
+    "type:BlockEntityClientTicksEvent.block",
+    "type:BlockEntityClientTicksEvent.ticks",
+    "hook:block_entity_tick",
+    "hook:block_entity_client_tick",
+    "hook:block_entity_submit",
+    "hook:block_entity_submit.entity",
+    "type:BlockEntitySubmitEvent.entity",
+    "hook:block_entity_render_bounding_box",
+    "hook:block_entity_render_bounding_box.entity",
+    "type:BlockEntityRenderBoundingBoxEvent.entity",
+    "hook:block_entity_update_tag",
+    "hook:block_entity_update_tag.entity",
+    "type:BlockEntityUpdateTagEvent.entity",
+    "hook:pre_remove_side_effects",
+    "hook:pre_remove_side_effects.entity",
+    "type:PreRemoveSideEffectsEvent.entity",
+    "hook:on_chunk_unloaded",
+    "hook:on_chunk_unloaded.entity",
+    "type:OnChunkUnloadedEvent.entity",
+]
+why = '''Vanilla 26.3 `EntityBlock.getTicker` and `LevelChunk.updateBlockEntityTicker` bind a ticker for a block state, block-entity type and side rather than polling block names. Sunrise derives that binding from the registered type's ticking Parts and an optional typed state selector. The two execution hooks retain their existing sequential subject scopes. `BlockEntityRenderer.submit`, the associated culling bounds, `BlockEntity.getUpdateTag`, `BlockEntity.preRemoveSideEffects` and NeoForge's `IBlockEntityExtension.onChunkUnloaded` lend the actual subject rather than cloning its NBT, slots and data. An unprojectable stack no longer prevents the callback from being called; projection is per slot when requested. The existing render and update tag outputs and codecs are unchanged.'''
+migrate = '''
+- Remove `BlockEntityPart::block_entity_ticks`, `BlockEntityTicksEvent` and reads/writes of its `block` and `ticks` fields (including the corresponding hook fields). Attach a Part implementing `block_entity_tick` (v6) to the typed block entity declaration instead; the server subject scope is unchanged.
+- Remove `BlockEntityPart::block_entity_client_ticks`, `BlockEntityClientTicksEvent` and reads/writes of its `block` and `ticks` fields (including the corresponding hook fields). Attach a Part implementing `block_entity_client_tick` (v3) instead; its `BlockEntityClientScope` is unchanged.
+- If an old poll selected only some blocks or states, register `.ticker_when(|metadata, state, side| ...)` on `BlockEntityTypeBuilder`. Compare `state.block()` with a registered `BlockKey`, or read `state.property(metadata, name)`. Returns `true` to admit that state on that side when a Part subscribes. With no selector, all accepted states on a subscribed side bind a ticker, independent of the block's factory type.
+- `block_entity_submit` (v3), `block_entity_render_bounding_box` (v2), `block_entity_update_tag` (v2), `pre_remove_side_effects` (v5) and `on_chunk_unloaded` (v2): keep the same Part methods and use `event.entity: BlockEntityDataView<'_>` instead of `&ModBlockEntity`. Read `id()` or `kind()` for type, `nbt()` in place of `.nbt`, `data_slots()` in place of `.data`, and `item_slots()`/`item_slot(index)` in place of iterating `.items`. Use `copy_item_slot(index)` only where a complete owned stack is needed; it returns `None` for an empty or unprojectable slot. Copy only values you need after the call. Use `draw.keep()` for renderer cache retention rather than keeping the subject's old snapshot revision.
+- On unload keep using `event.block_entity` as the key to release retained work. Read the actual outgoing row through `event.entity`; its handle need not resolve in the level during eviction. Scene-provided draw data stays detached and is borrowed directly; its `event.pos` is scene-local. The update-tag output and removal-output fields are unchanged.
+- Rebuild against the SDK and refresh the native package's surface usage list.
+'''

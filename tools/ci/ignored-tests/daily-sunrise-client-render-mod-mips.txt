@@ -1,0 +1,2 @@
+sunrise-client-render gfx::mod_pipelines::tests::a_glsl_image_store_writes_one_mip_level_of_a_render_target lib daily gpu
+sunrise-client-render gfx::mod_render_targets::tests::a_mip_chain_has_a_view_per_level_and_refuses_the_storage_images_it_was_not_made_for lib daily gpu

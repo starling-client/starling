@@ -1,0 +1,2 @@
+ids = ["handle:LivingRef::no_jump_delay"]
+why = "Mods can read LivingEntity.noJumpDelay for a server's player in place and mobs, and the client's own player. EntityRef::is_sprinting, pose, is_crouching and is_in_lava also answer on a client now."

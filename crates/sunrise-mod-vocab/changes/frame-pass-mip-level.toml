@@ -1,0 +1,2 @@
+ids = ["type:FramePassDescriptor.mip_level", "handle:FramePassDescriptor::mip_level"]
+why = "A frame-graph pass renders into the mip level its OffscreenPass names, as a direct offscreen pass does: FramePassDescriptor::offscreen keeps OffscreenPass.mip_level, and add_pass refuses a level outside the target with FrameGraphError::InvalidTarget(InvalidMipLevels). Before, every frame-graph pass drew mip level 0."

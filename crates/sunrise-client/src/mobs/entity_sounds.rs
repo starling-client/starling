@@ -1,6 +1,8 @@
 //! Content sound slots retain dynamic vanilla selection when inherited.
 use std::borrow::Cow;
-use sunrise_mod_package::content::entity_sounds::{EntitySounds, SoundOverride};
+use sunrise_mod_package::content::entity_sounds::{
+    EntitySounds, SoundOverride, StepOverride, StepSound,
+};
 
 #[derive(Clone, Copy, Debug, Default)]
 pub enum Selection {
@@ -25,6 +27,15 @@ pub struct Sounds {
     pub hurt: Selection,
     pub death: Selection,
     pub step: Selection,
+    /// A declared step's `playSound` volume and pitch; a plain id plays at the
+    /// block step's 0.15 and 1.0.
+    pub step_volume_pitch: Option<(f32, f32)>,
+    /// `LivingEntity.getSoundVolume`, in place of the template's.
+    pub volume: Option<f32>,
+    /// The base of `LivingEntity.getVoicePitch`, in place of 1.0.
+    pub voice_pitch: Option<f32>,
+    /// `Mob.getAmbientSoundInterval`, read once into the type's `ambient_interval`.
+    pub ambient_interval: Option<i32>,
 }
 impl Sounds {
     pub fn load(entity: &str, row: &serde_json::Value) -> crate::Result<Self> {
@@ -39,12 +50,30 @@ impl Sounds {
             Some(SoundOverride::Mute(_)) => Selection::Mute,
             Some(SoundOverride::Id(id)) => Selection::Id(intern_full_id(&id)),
         };
+        let (step, step_volume_pitch) = match sounds.step {
+            None => (Selection::Inherit, None),
+            Some(StepOverride::Mute(_)) => (Selection::Mute, None),
+            Some(StepOverride::Id(id)) => (Selection::Id(intern_full_id(&id)), None),
+            Some(StepOverride::Sound(StepSound {
+                sound,
+                volume,
+                pitch,
+            })) => (Selection::Id(intern_full_id(&sound)), Some((volume, pitch))),
+        };
         Ok(Self {
             ambient: resolve(sounds.ambient),
             hurt: resolve(sounds.hurt),
             death: resolve(sounds.death),
-            step: resolve(sounds.step),
+            step,
+            step_volume_pitch,
+            volume: sounds.volume,
+            voice_pitch: sounds.voice_pitch,
+            ambient_interval: sounds.ambient_interval,
         })
+    }
+    /// The base `getVoicePitch` spreads around: the declared one, else 1.0.
+    pub fn voice_pitch(&self) -> f32 {
+        self.voice_pitch.unwrap_or(1.0)
     }
 }
 /// Namespace normalization at audio/network boundaries. Full ids are borrowed unchanged.
@@ -91,10 +120,19 @@ pub fn step(
     pos: [i32; 3],
     state: sunrise_world::registry::BlockStateId,
 ) -> Option<(Cow<'static, str>, f32, f32)> {
-    match m.kind.sound_overrides.step {
-        Selection::Inherit => super::ai::inherited_step_sound(m, w, pos, state),
-        Selection::Id(id) => Some((Cow::Borrowed(id), 0.15, 1.0)),
-        Selection::Mute => None,
+    declared_step(&m.kind.sound_overrides)
+        .unwrap_or_else(|| super::ai::inherited_step_sound(m, w, pos, state))
+}
+/// The step a content type declares (`playSound(step, volume, pitch)`, or
+/// silence), or `None` when the slot inherits the template's.
+fn declared_step(sounds: &Sounds) -> Option<Option<(Cow<'static, str>, f32, f32)>> {
+    match sounds.step {
+        Selection::Inherit => None,
+        Selection::Id(id) => {
+            let (volume, pitch) = sounds.step_volume_pitch.unwrap_or((0.15, 1.0));
+            Some(Some((Cow::Borrowed(id), volume, pitch)))
+        }
+        Selection::Mute => Some(None),
     }
 }
 

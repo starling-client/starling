@@ -2,7 +2,9 @@
 """ItemEntity saved max-stack default patches; zero observation ticks."""
 import hashlib,json,sys,tempfile,uuid
 from pathlib import Path
-import test_command_exec_parity as driver
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_command_exec_parity as driver
 CASES=[('helmet-plain','iron_helmet',None),('helmet-default','iron_helmet','{"minecraft:max_stack_size":1}'),('helmet-keep','iron_helmet','{"minecraft:max_stack_size":1,"minecraft:custom_data":{keep:88}}'),('stone-plain','stone',None),('stone-default','stone','{"minecraft:max_stack_size":64}'),('stone-nondefault','stone','{"minecraft:max_stack_size":16}'),('stone-removed','stone','{"!minecraft:max_stack_size":{}}'),('pearl-plain','ender_pearl',None),('pearl-default','ender_pearl','{"minecraft:max_stack_size":16}'),('pearl-nondefault','ender_pearl','{"minecraft:max_stack_size":8}')]
 def program():
  ops=[]

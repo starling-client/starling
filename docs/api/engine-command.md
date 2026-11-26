@@ -32,7 +32,8 @@ One JSON object on stdout:
   "args": ["--resources", "/srv/mc/resources", "--control-socket", "/srv/mc/.sunrise/engine.json", "--dedicated", "--nogui"],
   "cwd": "/srv/mc",
   "env": {"SUNRISE_NO_AUDIO": "1", "MIMALLOC_ALLOW_THP": "0"},
-  "resources": "/srv/mc/resources"
+  "resources": "/srv/mc/resources",
+  "resources_pending": false
 }
 ```
 
@@ -41,7 +42,10 @@ One JSON object on stdout:
 - `args`: its arguments, in order.
 - `cwd`: the folder it runs in, absolute.
 - `env`: the variables it sets on top of the inherited environment. A `null` value means the variable is removed.
-- `resources`: the prepared game files it reads (`--resources`), absolute.
+- `resources`: the game-files folder the supervisor selects (`--resources`), absolute. Startup, this
+  description and `import-resources` all use the same version and profile checks.
+- `resources_pending`: `true` if the supervisor needs to prepare its managed server profile at
+  `resources`; otherwise `false`. The probe does not prepare it.
 - Every path is a string. A path that isn't valid Unicode is an `io` error, not a lossy string.
 
 ### Errors
@@ -49,12 +53,12 @@ One JSON object on stdout:
 One JSON object on stdout, with the message for a person:
 
 ```json
-{"format": 1, "error": {"kind": "resources", "message": "no prepared game files. …"}}
+{"format": 1, "error": {"kind": "resources", "message": "the prepared game files in /srv/mc/custom are incomplete or damaged: …"}}
 ```
 
 | `kind` | Means | Exit |
 | --- | --- | --- |
-| `resources` | no prepared game files in any place `run` looks: preparing them is the fix | 3 |
+| `resources` | the selected folder cannot be used or prepared by `run`, for example an explicit `engine.resources` folder that is not ready | 3 |
 | `configuration` | `server.toml` doesn't parse or fails its checks | 1 |
 | `program` | no game program beside `sunrise-server`, on the `PATH` or at `engine.path` | 1 |
 | `io` | a file couldn't be read, or a path isn't valid Unicode | 1 |
@@ -67,6 +71,11 @@ A refused command line (anything after `engine-command` but `--json`) exits 2 wi
 stdout.
 
 ### Starting it
+
+If `resources_pending` is `true` for a configured server that has already accepted the EULA, run
+`sunrise-server --dir DIR init --yes`. This prepares the selected managed slot without changing
+`server.toml` or starting the engine. Probe again: the same path is now ready and `resources_pending`
+is `false`. Only then take launch leases and send Start.
 
 The reply is what to run; how `sunrise-server run` starts it is fixed, so a launcher that starts the engine itself
 does the same (`command_with_transfers` in `crates/sunrise-server-launch/src/lib.rs`):
@@ -92,4 +101,5 @@ pin the reply's shape.
 
 ## Changelog
 
-- format 1: `engine-command [--json]`, the error kinds above and exit code 3 for missing game files.
+- format 1: `engine-command [--json]`, the error kinds above and exit code 3 for unusable game files.
+  The additive `resources_pending` field distinguishes preparation by the supervisor from a resource error.

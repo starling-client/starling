@@ -1,11 +1,11 @@
 //! The `server_tick` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0009
 
 pub trait Hooks {
     /// The authoritative server tick's phases: `ServerTickStart` before any
     /// level is ticked (NeoForge's `ServerTickEvent.Pre`), `ServerTickEnd`
-    /// after the last (`.Post`). Read blocks with `native_server_block`, by
-    /// dimension: which level `self.world` holds here is not defined. A paused
+    /// after the last (`.Post`). Runs on integrated and dedicated servers only.
+    /// To read a loaded block, resolve the dimension with `host.level(dimension)`
+    /// and call `level.block_state(host, pos)` on the returned handle. A paused
     /// pass fires nothing; a frozen world carries `world_running` false except
     /// during a requested step. `host.server_has_time()` says whether optional
     /// work still fits before the next tick is due (`ServerTickEvent.hasTime`).

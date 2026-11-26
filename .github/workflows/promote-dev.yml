@@ -1,0 +1,82 @@
+name: promote dev
+# A Dev build is published as two drafts, sdk-<sha> and dev-<date>-<short> (nightly-build.yml kind dev), tested from
+# them (docs/release-flow.md "Dev"), and made public here, by hand, with nothing rebuilt: both drafts are checked as
+# launchers check them, the game's sdk.json must be its SDK's, then the SDK is made public, then the game, then the
+# Dev builds older than a week are pruned and the SDK's generated modding book is published.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The Dev build's draft, dev-<date>-<short>
+        type: string
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: promote-dev
+  cancel-in-progress: false
+defaults:
+  run:
+    shell: bash
+jobs:
+  promote:
+    if: github.ref == 'refs/heads/main'
+    # A publisher stays on GitHub's runner (tests/test_nightly.py).
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write  # the two releases, and to see them while they are drafts
+    outputs:
+      sha: ${{ steps.check.outputs.sha }}
+      sdk: ${{ steps.public.outputs.sdk }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Both drafts, complete and signed as launchers check them
+        id: check
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^dev-[0-9]{4}-[0-9]{2}-[0-9]{2}-([0-9a-f]{7})$ ]] || { echo "::error::$TAG is not dev-<date>-<short>"; exit 1; }
+          short=${BASH_REMATCH[1]}
+          [[ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" == true ]] || { echo "::error::$TAG is not a draft"; exit 1; }
+          sha=$(gh release view "$TAG" --json targetCommitish --jq .targetCommitish)
+          [[ "$sha" =~ ^[0-9a-f]{40}$ && "${sha:0:7}" == "$short" ]] || { echo "::error::$TAG targets $sha, not a commit $short…"; exit 1; }
+          game="$RUNNER_TEMP/$TAG" sdk="$RUNNER_TEMP/sdk-$sha"
+          gh release download "$TAG" -D "$game"
+          gh release download "sdk-$sha" -D "$sdk"
+          python3 tools/ci/nightly.py verify-sums --tag dev --publishing "$game"
+          python3 tools/ci/nightly.py verify-sums --tag "$TAG" --signature SHA256SUMS.v2.sig --publishing "$game"
+          python3 tools/ci/nightly.py verify-sums --tag "sdk-$sha" --publishing "$sdk"
+          python3 tools/ci/nightly.py require-sdk --draft "$sha"
+          cmp "$game/sdk.json" "$sdk/sdk.json" || { echo "::error::$TAG carries another SDK index than sdk-$sha's"; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - name: The SDK public, then the game
+        id: public
+        env:
+          SHA: ${{ steps.check.outputs.sha }}
+        run: |
+          set -euo pipefail
+          sdk=false
+          if [[ "$(gh release view "sdk-$SHA" --json isDraft --jq .isDraft)" == true ]]; then
+            gh release edit "sdk-$SHA" --draft=false --prerelease --latest=false
+            sdk=true
+          fi
+          echo "sdk=$sdk" >> "$GITHUB_OUTPUT"
+          gh release edit "$TAG" --draft=false --prerelease --latest=false
+          python3 tools/ci/nightly.py prune-dev --days 7
+          echo "### Made public: $([[ $sdk == true ]] && echo "sdk-$SHA, then ")$TAG" >> "$GITHUB_STEP_SUMMARY"
+
+  # The SDK's generated modding book, once the SDK is public (when it was public already, its publication did it).
+  book:
+    needs: promote
+    if: needs.promote.outputs.sdk == 'true'
+    permissions:
+      contents: write  # the orphan branch modding-book-generated
+    uses: ./.github/workflows/modding-book-generated.yml
+    with:
+      commit: ${{ needs.promote.outputs.sha }}

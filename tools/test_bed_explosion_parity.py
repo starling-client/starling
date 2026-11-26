@@ -18,14 +18,10 @@ import subprocess
 import sys
 import difflib
 
-try:
-    from . import lab, test_rust_parity as base, test_server_knockback_parity as kb
-    from .test_locator_bar_parity import generate_world
-except ImportError:
-    import lab
-    import test_rust_parity as base
-    import test_server_knockback_parity as kb
-    from test_locator_bar_parity import generate_world
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_rust_parity as base, test_server_knockback_parity as kb
+from tools.test_locator_bar_parity import generate_world
 
 NAME = 'bed-explosion-parity'
 FACINGS = {'north': (0, -1), 'south': (0, 1), 'west': (-1, 0), 'east': (1, 0)}
@@ -192,11 +188,11 @@ def main():
     vanilla_server = ['java', '-Xmx2g', '-Duser.timezone=UTC', '-cp', dependencies, 'net.minecraft.server.Main', 'nogui']
     sunrise_server = [binary, '--resources', lab.RESOURCES, '--dedicated', '--nogui']
     client = ['java', '-Xmx1g', '-cp', str(classes) + os.pathsep + dependencies, 'dev.sunriselab.parity.KnockbackClient']
-    kb.CASES, kb.SETUP, kb.PLAYERS = CASES, SETUP, ('Alice',)
+    kb.SETUP, kb.PLAYERS = SETUP, ('Alice',)
     kb.PROPERTIES['allow-flight'] = 'true'
     world = generate_world(vanilla_server, build)
-    vanilla = compared(kb.run_side('vanilla', vanilla_server, client, build, world))
-    sunrise = compared(kb.run_side('sunrise', sunrise_server, client, build, world))
+    vanilla = compared(kb.run_side('vanilla', vanilla_server, client, build, world, CASES))
+    sunrise = compared(kb.run_side('sunrise', sunrise_server, client, build, world, CASES))
     differ = []
     for case in CASES:
         want, got = vanilla.get(case, []), sunrise.get(case, [])

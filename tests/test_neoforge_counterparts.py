@@ -18,8 +18,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 PAGE = "reference/neoforge-counterparts.md"
 
-with patch.object(sys, "path", [*sys.path, str(ROOT / "tools")]):
-    import modding_hook_notes as notes
+from tools import modding_hook_notes as notes
 
 
 class Counterparts(unittest.TestCase):
@@ -68,26 +67,29 @@ class Counterparts(unittest.TestCase):
 
     def test_book_command_accepts_the_mdbook_protocol_outside_the_checkout(self):
         config = tomllib.loads((ROOT / "docs/modding/book.toml").read_text())
-        command = shlex.split(config["preprocessor"]["neoforge-counterparts"]["command"])
+        _, flag, program = shlex.split(config["preprocessor"]["neoforge-counterparts"]["command"])
         context = {"root": str(ROOT / "docs/modding")}
         with tempfile.TemporaryDirectory() as elsewhere:
             # A stand-in `cargo` answers for xtask, which would otherwise compile here: it renders the page only when
             # asked from the checkout for `mod-api counterparts`. The real page is the Rust tests' (`counterparts`
             # in sunrise-mod-api-gen) and the modding-book workflow's `mdbook build`, which runs this command.
-            cargo = Path(elsewhere, "bin", "cargo")
-            cargo.parent.mkdir()
-            cargo.write_text(f"""#!{sys.executable}
-import os, sys
-assert os.getcwd() == {str(ROOT)!r}, os.getcwd()
+            cargo = Path(elsewhere, "cargo.py")
+            cargo.write_text(f"""import os, sys
+assert os.path.samefile(os.getcwd(), {str(ROOT)!r}), os.getcwd()
 assert sys.argv[1:] == ["run", "--quiet", "-p", "xtask", "--", "mod-api", "counterparts"], sys.argv
 print("# NeoForge counterparts\\n\\n| `item_decorations` | client | `IItemDecorator.render` |")
 """)
-            cargo.chmod(0o755)
-            env = {**os.environ, "PATH": f"{cargo.parent}{os.pathsep}{os.environ['PATH']}"}
-            supported = subprocess.run([*command, "supports", "html"], cwd=elsewhere, env=env,
+            # The command's program runs under the Python running the tests, and its one `cargo` call runs the
+            # stand-in the same way: a script cannot be found on PATH or run by name on every platform.
+            command = [sys.executable, flag, f"""import subprocess, sys
+_run = subprocess.run
+subprocess.run = lambda command, **kwargs: _run(
+    [sys.executable, {str(cargo)!r}, *command[1:]] if command[0] == "cargo" else command, **kwargs)
+{program}"""]
+            supported = subprocess.run([*command, "supports", "html"], cwd=elsewhere,
                 check=True, capture_output=True, text=True)
             self.assertEqual(supported.stdout, "")
-            result = subprocess.run(command, cwd=elsewhere, env=env, check=True, capture_output=True,
+            result = subprocess.run(command, cwd=elsewhere, check=True, capture_output=True,
                 text=True, input=json.dumps([context, self.book()]))
         book = json.loads(result.stdout)
         chapter = book["sections"][0]["Chapter"]["sub_items"][0]["Chapter"]

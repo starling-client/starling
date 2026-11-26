@@ -1,8 +1,10 @@
 """Exact water/air orb fields; identity uses registration, never saved UUID NBT."""
-try:
-    from .command_exec_corpus import cmd, setup
-except ImportError:
-    from command_exec_corpus import cmd, setup
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools.command_exec_corpus import cmd, setup
 
 
 def arithmetic_inputs():

@@ -18,8 +18,6 @@ pub enum PlacementRefusal {
     InvalidLayout,
     Unavailable,
     Denied,
-    NoRoom,
-    Changed,
 }
 
 impl MenuPlacement {

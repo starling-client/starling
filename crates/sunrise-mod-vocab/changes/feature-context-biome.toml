@@ -1,0 +1,3 @@
+ids = ["trait:FeatureContext"]
+why = "A mod feature reads the biome where it places (#4880): FeatureContext::biome(pos) answers vanilla's WorldGenLevel.getBiome, the noise biome of the quart the biome zoom picks for that block, the read the game's own features (snow and freeze) make, as the BiomeKey KeysHost::biome_key gives for that id after the same data load. It is None where the level can't be read, as block answers: in decoration, outside the 3x3 chunks around the one being decorated. The game implements the trait; it is charged one unit of the feature's work budget like the other world queries."
+migrate = "Nothing to change for mods that call FeatureContext: the game implements it. A mod that implements FeatureContext itself (a test double) adds biome."

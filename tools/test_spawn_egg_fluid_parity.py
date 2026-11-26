@@ -8,10 +8,12 @@ creative, adventure (with/without can_place_on), peaceful monster eggs, removed
 and replaced entity_data, and the Ender Dragon's egg on a block.
 """
 import json
-try:
-    from . import test_locator_bar_parity as net
-except ImportError:
-    import test_locator_bar_parity as net
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_locator_bar_parity as net
 
 CASES = [
     ('block-use', 'stone', 'cow', 'survival', '', True),
@@ -44,7 +46,8 @@ for name, block, mob, mode, component, spawn in CASES:
         f'cmd Alice fill 0 75 0 4 80 4 minecraft:{block}',
         f'cmd Alice tp @s 2.5 81 -0.5 0 {0 if name.startswith("block-use") else 50}',
         *(['cmd Alice summon minecraft:strider 2.5 81 1.5 {NoAI:1b}'] if name.startswith('block-use') else []),
-        f'cmd Alice give @s {egg}{component} 8',
+        # A drop from the previous mob can fill the selected slot after clear.
+        f'cmd Alice item replace entity @s weapon.mainhand with {egg}{component} 8',
         'cmd Alice scoreboard objectives remove eggs',
         f'cmd Alice scoreboard objectives add eggs minecraft.used:minecraft.{mob}_spawn_egg',
         *([f'cmd Alice gamemode {mode}'] if mode != 'creative' else []),

@@ -8,7 +8,9 @@ A block's `ItemStorage` answers by kind, with `u64` amounts:
 
 - `amount(host, resource)` and `space_for(host, resource)`: how much of one kind it holds, and the planning bound
   for that kind. The default handler decides offer-dependent admission on the actual insert, not in `space_for`.
-- `insert(host, tx, resource, amount)` and `extract(...)`: writes in the caller's transaction, never more than asked.
+- `insert(host, tx, resource, amount)` and `extract(...)`: write with the innermost
+  `&TransactionContext`, returning `Result<u64, StorageError>` and never moving more than asked.
+  A mismatched context returns `Err(StorageError::InvalidContext)`.
 - `visit_entries(host, &mut visitor)`: calls `visitor(&kind, amount)` for each occupied entry, in provider order.
   For a container, this is the order of the slots exposed on the queried side, not necessarily physical slot order.
   Each slot has its own amount, even when several hold the same kind.
@@ -24,25 +26,7 @@ holds: register it `before_game` if the block also has slots.
 To find the first entry with at least `minimum` items, stop as soon as it matches:
 
 ```rust
-use mod_api::{ItemResource, ItemStorage, ServerHost, StorageError};
-use std::ops::ControlFlow;
-
-fn first_at_least(
-    storage: &dyn ItemStorage,
-    host: &mut dyn ServerHost,
-    minimum: u64,
-) -> Result<Option<(ItemResource, u64)>, StorageError> {
-    let mut found = None;
-    storage.visit_entries(host, &mut |kind, amount| {
-        if amount >= minimum {
-            found = Some((kind.clone(), amount));
-            ControlFlow::Break(())
-        } else {
-            ControlFlow::Continue(())
-        }
-    })?;
-    Ok(found)
-}
+{{#include ../../../examples/src/item_behaviors.rs:items_by_kind}}
 ```
 
 Providers skip empty entries and report repeated kinds separately. Read only as far as the visitor asks:
@@ -56,6 +40,10 @@ as above; do not re-enter the provider or write inside the callback. Act on the 
 
 `transfer(host, from, to, resource, max, tx)` moves one kind: all or nothing, a partial take
 retried, and `StorageError::Overanswered` when a handler answers more than it was asked.
+`StorageError::InvalidContext` means the caller did not supply the current context.
+`StorageError::TransactionUnavailable` means the host could not open the transfer savepoint;
+`StorageError::CommitRefused` means it ran and the host rolled back its requested commit.
+None of these is a zero transfer.
 It queries the source amount and destination space before extracting and inserting.
 A partial move can require additional calls. `transfer_matching(host, from, to, filter, max, tx)` moves up to `max`
 items accepted by the filter. It does not read the source when `max` is zero. Otherwise it visits the source once

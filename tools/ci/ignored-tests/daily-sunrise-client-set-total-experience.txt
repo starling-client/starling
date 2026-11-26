@@ -1,2 +1,0 @@
-# Setting a player's total experience through the mod API (#4752).
-sunrise-client game::native_player_food::tests::the_total_is_set_alone_and_a_negative_one_is_refused lib daily resources

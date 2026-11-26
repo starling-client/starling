@@ -11,8 +11,24 @@ use std::{
     collections::{BTreeMap, HashMap},
     fs,
     path::Path,
+    sync::Arc,
 };
 use sunrise_core::random::{LegacyRandom, RandomSource};
+use sunrise_protocol::registry::Builtin;
+use sunrise_world::environment_attributes::{
+    Attribute, Entry as AttrEntry, Value as AttrValue, attribute as env_attribute,
+};
+
+fn music_volume_attribute() -> &'static Attribute {
+    env_attribute("audio/music_volume").expect("audio/music_volume attribute is registered")
+}
+
+/// Static `SOUND_EVENT` registry, not the resource pack's playable sound pools.
+pub(crate) fn registered_sound(builtin: &Builtin, name: &str) -> bool {
+    builtin
+        .get("minecraft:sound_event")
+        .is_some_and(|ids| ids.ids.contains_key(name))
+}
 
 /// The Music page's groups: each built-in situation's own tracks first, then
 /// every other `music.` event's tracks that no earlier group listed, under
@@ -22,7 +38,16 @@ use sunrise_core::random::{LegacyRandom, RandomSource};
 pub fn track_groups(registry: &SoundRegistry) -> Vec<MusicGroup> {
     let mut groups: Vec<MusicGroup> = Vec::new();
     let mut listed: Vec<String> = Vec::new();
-    let builtin = Music::builtin();
+    // Built-in situations the Music settings page lists, in its order.
+    let builtin = [
+        ("sunrise.pages.music.menu", Music::menu()),
+        ("sunrise.pages.music.overworld", Music::game()),
+        ("sunrise.pages.music.creative", Music::creative()),
+        ("sunrise.pages.music.underwater", Music::under_water()),
+        ("sunrise.pages.music.end", Music::end()),
+        ("sunrise.pages.music.boss", Music::end_boss()),
+        ("sunrise.pages.music.credits", Music::credits()),
+    ];
     for (label, music) in &builtin {
         let tracks = registry.tracks(&music.sound);
         if tracks.is_empty() {
@@ -99,12 +124,17 @@ pub struct BackgroundMusic {
     pub underwater: Option<Music>,
 }
 impl BackgroundMusic {
-    fn parse(v: &Value) -> Self {
-        Self {
-            default: Music::parse(&v["default"]),
-            creative: Music::parse(&v["creative"]),
-            underwater: Music::parse(&v["underwater"]),
-        }
+    fn parse(v: &Value, registered: &impl Fn(&str) -> bool) -> Option<Self> {
+        let v = v.as_object()?;
+        let music = |name: &str| match v.get(name) {
+            Some(value) => Music::parse(value, registered).map(Some),
+            None => Some(None),
+        };
+        Some(Self {
+            default: music("default")?,
+            creative: music("creative")?,
+            underwater: music("underwater")?,
+        })
     }
     /// `BackgroundMusic.select`.
     pub fn select(&self, creative: bool, underwater: bool) -> Option<&Music> {
@@ -120,18 +150,41 @@ impl BackgroundMusic {
 #[derive(Clone, Debug, Default)]
 struct Layer {
     music: Option<BackgroundMusic>,
-    volume: Option<f32>,
+    volume: Option<AttrEntry>,
 }
 impl Layer {
-    fn parse(json: &Value) -> Self {
-        let attributes = &json["attributes"];
-        let music = &attributes["minecraft:audio/background_music"];
-        Self {
-            music: (!music.is_null()).then(|| BackgroundMusic::parse(music)),
-            volume: attributes["minecraft:audio/music_volume"]
-                .as_f64()
-                .map(|v| v.clamp(0.0, 1.0) as f32),
-        }
+    fn parse(json: &Value, builtin: &Builtin) -> Option<Self> {
+        let Some(attributes) = json.as_object()?.get("attributes") else {
+            return Some(Self::default());
+        };
+        let attributes = attributes.as_object()?;
+        Some(Self {
+            music: match attributes.get("minecraft:audio/background_music") {
+                Some(music) => Some(BackgroundMusic::parse(music, &|sound| {
+                    registered_sound(builtin, sound)
+                })?),
+                None => None,
+            },
+            volume: match attributes.get("minecraft:audio/music_volume") {
+                Some(volume) => Some(AttrEntry::parse(music_volume_attribute(), volume).ok()?),
+                None => None,
+            },
+        })
+    }
+}
+
+fn resolve_volume(dimension: Option<&Layer>, biome: Option<&Layer>) -> f32 {
+    let attr = music_volume_attribute();
+    let mut value = attr.default_value().expect("music_volume default");
+    if let Some(entry) = dimension.and_then(|l| l.volume.as_ref()) {
+        value = entry.apply(&value);
+    }
+    if let Some(entry) = biome.and_then(|l| l.volume.as_ref()) {
+        value = entry.apply(&value);
+    }
+    match attr.sanitize(value) {
+        AttrValue::Float(v) => v,
+        _ => 1.0,
     }
 }
 /// What `Minecraft.getSituationalMusic` and `getMusicVolume` read.
@@ -182,11 +235,12 @@ impl Situation<'_> {
 /// Music attributes by dimension type and biome.
 #[derive(Clone, Debug, Default)]
 pub struct MusicTables {
+    builtin: Arc<Builtin>,
     dimensions: HashMap<String, Layer>,
     biomes: HashMap<String, Layer>,
 }
 impl MusicTables {
-    pub fn load(root: &Path) -> Self {
+    pub fn load(root: &Path, builtin: Arc<Builtin>) -> Self {
         let read = |dir: &str| -> HashMap<String, Layer> {
             let Ok(entries) = fs::read_dir(root.join("data/minecraft").join(dir)) else {
                 return HashMap::new();
@@ -197,13 +251,14 @@ impl MusicTables {
                     let path = e.path();
                     let name = path.file_stem()?.to_str()?.to_owned();
                     let json: Value = serde_json::from_slice(&fs::read(&path).ok()?).ok()?;
-                    Some((format!("minecraft:{name}"), Layer::parse(&json)))
+                    Some((format!("minecraft:{name}"), Layer::parse(&json, &builtin)?))
                 })
                 .collect()
         };
         Self {
             dimensions: read("dimension_type"),
             biomes: read("worldgen/biome"),
+            builtin,
         }
     }
     /// `EnvironmentAttributes.BACKGROUND_MUSIC` at a position.
@@ -216,11 +271,7 @@ impl MusicTables {
     }
     /// `EnvironmentAttributes.MUSIC_VOLUME` at a position (default 1).
     pub fn volume(&self, dimension: &str, biome: &str) -> f32 {
-        self.biomes
-            .get(biome)
-            .and_then(|l| l.volume)
-            .or_else(|| self.dimensions.get(dimension).and_then(|l| l.volume))
-            .unwrap_or(1.0)
+        resolve_volume(self.dimensions.get(dimension), self.biomes.get(biome))
     }
     /// `background` and `volume` in a biome a data pack gave (`pack`, its
     /// file) or the built-in biome `biome`.
@@ -231,17 +282,15 @@ impl MusicTables {
                 self.volume(dimension, biome),
             );
         };
-        let layer = Layer::parse(json);
+        let layer = Layer::parse(json, &self.builtin).unwrap_or_default();
         let dimension = self.dimensions.get(dimension);
+        let volume = resolve_volume(dimension, Some(&layer));
         (
             layer
                 .music
                 .or_else(|| dimension.and_then(|l| l.music.clone()))
                 .unwrap_or_default(),
-            layer
-                .volume
-                .or_else(|| dimension.and_then(|l| l.volume))
-                .unwrap_or(1.0),
+            volume,
         )
     }
 }
@@ -677,38 +726,122 @@ mod tests {
     /// what it leaves out comes from the dimension, not the built-in biome.
     #[test]
     fn a_pack_biome_reads_its_own_file_over_the_dimension() {
-        let layer_of = |json: serde_json::Value| Layer::parse(&json);
+        use serde_json::json;
+        fn layer_of(sound: &str, volume: serde_json::Value) -> serde_json::Value {
+            json!({"attributes": {
+                "minecraft:audio/background_music": {"default": {
+                    "sound": {"sound_id": sound}, "min_delay": 1, "max_delay": 2
+                }},
+                "minecraft:audio/music_volume": volume
+            }})
+        }
+        let builtin = Arc::new(Builtin::default());
         let tables = MusicTables {
             dimensions: HashMap::from([(
                 "minecraft:overworld".to_owned(),
-                layer_of(serde_json::json!({"attributes": {
-                    "minecraft:audio/background_music": {"default": {"sound": "minecraft:music.game"}},
-                    "minecraft:audio/music_volume": 0.8
-                }})),
+                Layer::parse(&layer_of("test:game", 0.8.into()), &builtin).unwrap(),
             )]),
             biomes: HashMap::from([(
                 "minecraft:plains".to_owned(),
-                layer_of(serde_json::json!({"attributes": {
-                    "minecraft:audio/background_music": {"default": {"sound": "minecraft:music.overworld.meadow"}},
-                    "minecraft:audio/music_volume": 0.3
-                }})),
+                Layer::parse(&layer_of("test:meadow", 0.3.into()), &builtin).unwrap(),
             )]),
+            builtin,
         };
         let sound =
             |(music, volume): (BackgroundMusic, f32)| (music.default.map(|m| m.sound), volume);
         let builtin = tables.at("minecraft:overworld", "minecraft:plains", None);
-        assert_eq!(
-            sound(builtin),
-            (Some("minecraft:music.overworld.meadow".into()), 0.3)
-        );
-        let pack = serde_json::json!({"attributes": {
-            "minecraft:audio/background_music": {"default": {"sound": "pack:music.dunes"}}
-        }});
+        assert_eq!(sound(builtin), (Some("test:meadow".to_owned()), 0.3));
+        let mut pack = layer_of("test:dunes", 0.7.into());
         let packed = tables.at("minecraft:overworld", "minecraft:plains", Some(&pack));
-        assert_eq!(sound(packed), (Some("pack:music.dunes".into()), 0.8));
-        let bare = serde_json::json!({"temperature": 0.8});
+        assert_eq!(sound(packed), (Some("test:dunes".to_owned()), 0.7));
+        for bad in [json!(null), json!({"min_delay": 0, "max_delay": 5})] {
+            pack["attributes"]["minecraft:audio/background_music"]["creative"] = bad;
+            let packed = tables.at("minecraft:overworld", "minecraft:plains", Some(&pack));
+            assert_eq!(sound(packed), (Some("test:game".to_owned()), 0.8));
+        }
+        let bare = json!({"temperature": 0.8});
         let packed = tables.at("minecraft:overworld", "minecraft:plains", Some(&bare));
-        assert_eq!(sound(packed), (Some("minecraft:music.game".into()), 0.8));
+        assert_eq!(sound(packed), (Some("test:game".to_owned()), 0.8));
+
+        // Valid float modifiers apply over the inherited dimension volume and
+        // sanitize the final result; out-of-range raw overrides are rejected.
+        let modified = layer_of(
+            "test:dunes",
+            json!({"modifier": "multiply", "argument": 0.5}),
+        );
+        let packed = tables.at("minecraft:overworld", "minecraft:plains", Some(&modified));
+        assert_eq!(sound(packed), (Some("test:dunes".to_owned()), 0.4));
+
+        let saturated = layer_of("test:dunes", json!({"modifier": "add", "argument": 0.5}));
+        let packed = tables.at("minecraft:overworld", "minecraft:plains", Some(&saturated));
+        assert_eq!(sound(packed), (Some("test:dunes".to_owned()), 1.0));
+
+        for raw_bad in [json!(1.5), json!(-0.1)] {
+            let bad = layer_of("test:dunes", raw_bad);
+            assert!(Layer::parse(&bad, &tables.builtin).is_none());
+            let packed = tables.at("minecraft:overworld", "minecraft:plains", Some(&bad));
+            assert_eq!(sound(packed), (Some("test:game".to_owned()), 0.8));
+        }
+    }
+
+    #[test]
+    fn audio_music_codec_requires_valid_delays_and_sound_holders() {
+        use mod_api::client::music::parse_sound_event;
+        use serde_json::json;
+
+        let registered = |sound: &str| sound == "minecraft:music.game";
+        let base = json!({"sound":"music.game", "min_delay":0, "max_delay":0});
+        assert_eq!(
+            Music::parse(&base, &registered),
+            Some(Music::new("minecraft:music.game", 0, 0, false))
+        );
+        let mut inline = json!({
+            "sound": {"sound_id":"test:track", "range":32.0},
+            "min_delay":10, "max_delay":20, "replace_current_music":true
+        });
+        assert_eq!(
+            parse_sound_event(&inline["sound"], &registered),
+            Some(("test:track".to_owned(), Some(32.0)))
+        );
+        assert_eq!(
+            Music::parse(&inline, &registered),
+            Some(Music::new("test:track", 10, 20, true))
+        );
+        inline["sound"]["range"] = json!("not a number");
+        assert_eq!(
+            parse_sound_event(&inline["sound"], &registered),
+            Some(("test:track".to_owned(), None))
+        );
+        assert_eq!(
+            Music::parse(&inline, &registered),
+            Some(Music::new("test:track", 10, 20, true))
+        );
+        for (field, bad) in [
+            ("min_delay", json!(-1)),
+            ("max_delay", json!(-1)),
+            ("max_delay", json!(2147483648_i64)),
+            ("min_delay", json!("0")),
+            ("sound", json!("test:unknown")),
+            ("sound", json!({"range": 8})),
+            ("replace_current_music", json!(null)),
+        ] {
+            let mut input = base.clone();
+            input[field] = bad;
+            assert!(Music::parse(&input, &registered).is_none(), "{input}");
+        }
+        for field in ["min_delay", "max_delay", "sound"] {
+            let mut input = base.clone();
+            input.as_object_mut().unwrap().remove(field);
+            assert!(Music::parse(&input, &registered).is_none(), "{input}");
+        }
+        assert_eq!(
+            BackgroundMusic::parse(&json!({}), &registered),
+            Some(BackgroundMusic::default())
+        );
+        assert!(
+            BackgroundMusic::parse(&json!({"default":base, "creative":null}), &registered)
+                .is_none()
+        );
     }
 
     fn layer(sound: &str, volume: f32) -> MusicLayer {
@@ -942,6 +1075,44 @@ mod tests {
         }
         // Records and other events are not music.
         assert!(seen.iter().all(|id| !id.contains("records/")));
+    }
+
+    #[test]
+    fn track_groups_orders_all_builtin_situations() {
+        let mut registry = SoundRegistry::default();
+        registry.add_file(
+            "minecraft",
+            br#"{
+                "music.credits": {"sounds": ["music/game/end/credits"]},
+                "music.dragon": {"sounds": ["music/game/end/boss"]},
+                "music.end": {"sounds": ["music/game/end/end"]},
+                "music.under_water": {"sounds": ["music/game/water/axolotl"]},
+                "music.creative": {"sounds": ["music/game/creative/creative1"]},
+                "music.game": {"sounds": ["music/game/calm1"]},
+                "music.menu": {"sounds": ["music/menu/menu1"]}
+            }"#,
+            &|_, _| true,
+        );
+        let groups = track_groups(&registry);
+        let actual: Vec<(&str, &str)> = groups
+            .iter()
+            .map(|group| (group.label.as_str(), group.tracks[0].event.as_str()))
+            .collect();
+        assert_eq!(
+            actual,
+            [
+                ("sunrise.pages.music.menu", "minecraft:music.menu"),
+                ("sunrise.pages.music.overworld", "minecraft:music.game"),
+                ("sunrise.pages.music.creative", "minecraft:music.creative"),
+                (
+                    "sunrise.pages.music.underwater",
+                    "minecraft:music.under_water"
+                ),
+                ("sunrise.pages.music.end", "minecraft:music.end"),
+                ("sunrise.pages.music.boss", "minecraft:music.dragon"),
+                ("sunrise.pages.music.credits", "minecraft:music.credits"),
+            ]
+        );
     }
 
     /// The overworld pool, two tracks, and a menu track.

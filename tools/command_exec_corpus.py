@@ -1,3 +1,10 @@
+
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
 """Command scripts for tools/test_command_exec_parity.py.
 
 Each group is a list of operations: `cmd` runs a command as the player and
@@ -15,7 +22,7 @@ depend on world generation.
 ISOLATED_WOLF_ANGER = frozenset({'wolf anger live writes'})
 
 
-def cmd(command, record=True, expect_result=None, comparison=None):
+def cmd(command, record=True, expect_result=None, comparison=None, components=False):
     op = {'op': 'cmd', 'cmd': command}
     if not record:
         op['record'] = False
@@ -23,6 +30,8 @@ def cmd(command, record=True, expect_result=None, comparison=None):
         op['expect_result'] = expect_result
     if comparison is not None:
         op['comparison'] = comparison
+    if components:
+        op['components'] = True
     return op
 
 
@@ -54,21 +63,12 @@ def inline_predicate_constants():
 def predicate_selector_fixtures(group_names):
     fixtures = {}
     if 'mob custom name components' in group_names:
-        try:
-            from .mob_name_predicate_corpus import predicates as name_predicates
-        except ImportError:
-            from mob_name_predicate_corpus import predicates as name_predicates
+        from tools.mob_name_predicate_corpus import predicates as name_predicates
         fixtures.update(name_predicates())
     if 'mob effect predicate view' in group_names:
-        try:
-            from .mob_effect_predicate_corpus import predicates as effect_predicates
-        except ImportError:
-            from mob_effect_predicate_corpus import predicates as effect_predicates
+        from tools.mob_effect_predicate_corpus import predicates as effect_predicates
         fixtures.update(effect_predicates())
-    try:
-        from . import player_food_predicate_corpus as player_food
-    except ImportError:
-        import player_food_predicate_corpus as player_food
+    from tools import player_food_predicate_corpus as player_food
     if player_food.GROUP in group_names:
         fixtures.update(player_food.predicates())
     if 'named smoke predicates' in group_names:
@@ -605,6 +605,7 @@ def world_blocks():
 
 
 def entities():
+    enchant_target = '@e[type=minecraft:armor_stand,tag=enchant_target,limit=1]'
     return [
         cmd('/summon minecraft:pig 4.5 210 4.5 {NoAI:1b,NoGravity:1b,Tags:["a","h"]}'),
         cmd('/summon minecraft:cow 6.5 210 4.5 {NoAI:1b,NoGravity:1b,CustomName:"Daisy",Tags:["h"]}'),
@@ -772,10 +773,72 @@ def entities():
             cmd(f'/data get entity @e[type=minecraft:{kind},limit=1] Item.id'),
             cmd(f'/kill @e[type=minecraft:{kind}]'),
         )],
+        cmd('/summon minecraft:armor_stand 8.5 210 4.5 {NoGravity:1b,ShowArms:1b,Tags:["enchant_target"],'
+            'equipment:{mainhand:{id:"minecraft:trident",count:1}}}', expect_result=1),
+        cmd(f'/enchant {enchant_target} minecraft:riptide 3', expect_result=1),
+        cmd(f'/data get entity {enchant_target} equipment.mainhand.components."minecraft:enchantments"',
+            expect_result=1),
         *setup('/kill @e[type=minecraft:armor_stand]'),
         {'op': 'tick', 'n': 25},
         cmd('/execute if entity @e[tag=h]'),
     ]
+
+
+def summon_custom_name_replies():
+    # SummonCommand replies with Entity.getDisplayName (team format, show_entity hover, UUID
+    # insertion, click_event stripped on name and siblings) and validates CustomName as a text
+    # component; /execute summon applies SummonCommand's spawn-bounds check (26.3, #2694).
+    ops = [
+        # Spawn-bounds check before creating the entity, then an in-bounds redirect to @s.
+        cmd('/execute positioned 4.5 20000000 4.5 summon evoker_fangs run tag @s add out_of_bounds', components=True),
+        cmd('/execute if entity @e[type=evoker_fangs]'),
+        cmd('/execute if entity @e[type=evoker_fangs,tag=out_of_bounds]'),
+        cmd('/execute positioned 4.5 200 4.5 summon evoker_fangs run tag @s add in_bounds'),
+        cmd('/execute if entity @e[type=evoker_fangs,tag=in_bounds]'),
+        # Team used to verify UUID-keyed team formatting vs plain selector name=.
+        cmd('/team add t2694'),
+        cmd('/team modify t2694 color red'),
+        cmd('/team modify t2694 prefix "[R] "'),
+        cmd('/team modify t2694 suffix "!"'),
+    ]
+    kinds = [
+        (1, 'evoker_fangs', 2.5, ''),
+        (2, 'experience_orb', 5.5, ''),
+        (3, 'area_effect_cloud', 8.5, ''),
+        (4, 'ender_dragon', 11.5, ''),
+        (5, 'pig', 14.5, 'NoAI:1b,NoGravity:1b,'),
+    ]
+    variants = [
+        (1, ''),
+        (2, 'CustomName:""'),
+        (3, 'CustomName:"fz"'),
+        (4, 'CustomName:{text:"fz",color:"gold",bold:true}'),
+        (5, 'CustomName:{text:"fz",color:"gold",click_event:{action:"run_command",command:"/say hi"},extra:[{text:"!",color:"aqua",click_event:{action:"suggest_command",command:"/help"}}]}'),
+        (6, 'CustomName:{text:"fz",hover_event:{action:"show_text",value:"old"},insertion:"old"}'),
+        (7, 'CustomName:42'),
+        (8, 'CustomName:{}'),
+        (9, 'CustomName:{text:42}'),
+        (10, 'CustomName:[]'),
+    ]
+    for kind_id, kind, x, extra in kinds:
+        for case_id, name_nbt in variants:
+            uuid_arr = f'[I;2694,0,{kind_id},{case_id}]'
+            uuid_str = f'00000a86-0000-0000-0000-{kind_id:04x}{case_id:08x}'
+            fields = f'{extra}UUID:{uuid_arr}' + (f',{name_nbt}' if name_nbt else '')
+            z = 4.5 + (case_id % 5) * 2.0
+            ops.append(cmd(f'/summon {kind} {x} 200 {z} {{{fields}}}', components=True))
+            if kind == 'ender_dragon':
+                ops.append(cmd(f'/kill {uuid_str}', components=True))
+        # Team-formatted reply by UUID, while selector name= stays free of team prefix/suffix.
+        team_uuid_arr = f'[I;2694,1,{kind_id},1]'
+        team_uuid_str = f'00000a86-0000-0001-0000-{kind_id:04x}00000001'
+        team_fields = f'{extra}UUID:{team_uuid_arr},CustomName:"fz",Team:"t2694",Tags:["t2694_team"]'
+        ops.append(cmd(f'/summon {kind} {x} 200 14.5 {{{team_fields}}}', components=True))
+        ops.append(cmd(f'/execute if entity @e[type={kind},tag=t2694_team,name=fz]'))
+        ops.append(cmd(f'/execute if entity @e[type={kind},tag=t2694_team,name="[R] fz!"]'))
+        if kind == 'ender_dragon':
+            ops.append(cmd(f'/kill {team_uuid_str}', components=True))
+    return ops
 
 
 def wither_spawn():
@@ -1476,6 +1539,113 @@ def shulker_command_damage():
     ops += setup('/kill @e[tag=sd]', *[f'/scoreboard objectives remove sd_{k}' for k in ('x', 'y', 'z', 'x2', 'y2', 'z2')],
                  '/fill 159 203 159 192 221 183 minecraft:air', '/forceload remove 144 144 207 207', '/tick unfreeze')
     return ops
+
+
+SHULKER_MOTION_GROUP = 'shulker motion and yaw'
+SHULKER_MOTION_UUID_PREFIX = '00000a7a-0000-0000-0000-'
+SHULKER_MOTION_LOADED_CASES = (
+    {
+        'name': 'loaded_noai_default',
+        'uuid_index': 1,
+        'no_ai': True,
+        'motion': [0.1, 0.25, -0.3],
+        'rotation': [45.0, 10.0],
+        'nbt': '{id:"minecraft:shulker",Pos:[0.5d,64d,0.5d],NoAI:1b,Motion:[0.1d,0.25d,-0.3d],Rotation:[45f,10f]}',
+    },
+    {
+        'name': 'loaded_noai_negative',
+        'uuid_index': 2,
+        'no_ai': True,
+        'motion': [-0.5, -0.125, 0.75],
+        'rotation': [-135.5, -20.25],
+        'nbt': '{id:"minecraft:shulker",Pos:[0.5d,64d,0.5d],NoAI:1b,Motion:[-0.5d,-0.125d,0.75d],Rotation:[-135.5f,-20.25f]}',
+    },
+    {
+        'name': 'loaded_ai',
+        'uuid_index': 3,
+        'no_ai': False,
+        'motion': [0.1, 0.25, -0.3],
+        'rotation': [45.0, 10.0],
+        'nbt': '{id:"minecraft:shulker",Pos:[0.5d,64d,0.5d],Motion:[0.1d,0.25d,-0.3d],Rotation:[45f,10f]}',
+    },
+)
+SHULKER_MOTION_WATER_CASE = {
+    'name': 'noai_flowing_water',
+    'uuid_index': 4,
+    'no_ai': True,
+    'motion': [0.1, 0.25, -0.3],
+    'rotation': [45.0, 10.0],
+    'trough_levels': [0, 1, 2, 3, 4, 5, 6, 7],
+    'shulker_trough_index': 3,
+    'ticks': 5,
+}
+
+
+def shulker_motion_uuid(index):
+    return f'{SHULKER_MOTION_UUID_PREFIX}{index:04x}00000001'
+
+
+def shulker_motion_and_yaw():
+    """Vanilla 26.3 (#2682): a loaded shulker has zero Motion and keeps its loaded Rotation, and a NoAI shulker in flowing water keeps zero Motion and its Rotation across ticks."""
+    x0, y0, z0 = 5632, 260, 5632
+    chunk = [[(x0 >> 4) + i, (z0 >> 4) + k] for i in range(-2, 3) for k in range(-2, 3)]
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': chunk},
+           cmd('/tick freeze', False),
+           cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} stone', False)]
+    # Build a steady-state 1-wide stone trough with water levels 0..7 along +x.
+    ops += setup(
+        f'/fill {x0 + 1} {y0} {z0 + 7} {x0 + 10} {y0} {z0 + 7} stone',
+        f'/fill {x0 + 1} {y0} {z0 + 9} {x0 + 10} {y0} {z0 + 9} stone',
+        f'/setblock {x0 + 1} {y0} {z0 + 8} stone',
+        *[f'/setblock {x0 + 2 + offset} {y0} {z0 + 8} water[level={level}]'
+          for offset, level in enumerate(SHULKER_MOTION_WATER_CASE['trough_levels'])],
+    )
+
+    def summon_shulker(x, z, index, no_ai, motion, rotation):
+        m = ','.join(f'{v}d' for v in motion)
+        r = ','.join(f'{v}f' for v in rotation)
+        ai = 'NoAI:1b,' if no_ai else ''
+        return cmd(f'/summon shulker {x}.5 {y0} {z}.5 '
+                   f'{{UUID:[I;2682,0,{index},1],{ai}PersistenceRequired:1b,Motion:[{m}],Rotation:[{r}]}}',
+                   expect_result=1)
+
+    noai_loaded = [case for case in SHULKER_MOTION_LOADED_CASES if case['no_ai']]
+    ai_loaded = [case for case in SHULKER_MOTION_LOADED_CASES if not case['no_ai']]
+    for offset, case in enumerate(noai_loaded):
+        ops.append(summon_shulker(x0 + 2 + 4 * offset, z0 + 2, case['uuid_index'], True,
+                                  case['motion'], case['rotation']))
+    water_x = x0 + 2 + SHULKER_MOTION_WATER_CASE['shulker_trough_index']
+    water_level = SHULKER_MOTION_WATER_CASE['trough_levels'][SHULKER_MOTION_WATER_CASE['shulker_trough_index']]
+    water_uuid = shulker_motion_uuid(SHULKER_MOTION_WATER_CASE['uuid_index'])
+    ops.append(summon_shulker(water_x, z0 + 8, SHULKER_MOTION_WATER_CASE['uuid_index'], True,
+                              SHULKER_MOTION_WATER_CASE['motion'], SHULKER_MOTION_WATER_CASE['rotation']))
+
+    for case in noai_loaded:
+        uid = shulker_motion_uuid(case['uuid_index'])
+        ops += [cmd(f'/data get entity {uid} Motion'), cmd(f'/data get entity {uid} Rotation')]
+    ops += [cmd(f'/execute if block {water_x} {y0} {z0 + 8} water[level={water_level}]', expect_result=1),
+            cmd(f'/data get entity {water_uuid} Motion'),
+            cmd(f'/data get entity {water_uuid} Rotation')]
+
+    for _ in range(SHULKER_MOTION_WATER_CASE['ticks']):
+        ops += [cmd('/tick unfreeze', False), {'op': 'tick', 'n': 1}, cmd('/tick freeze', False),
+                cmd(f'/execute if block {water_x} {y0} {z0 + 8} water[level={water_level}]', expect_result=1),
+                cmd(f'/data get entity {water_uuid} Motion'),
+                cmd(f'/data get entity {water_uuid} Rotation')]
+
+    for case in noai_loaded:
+        uid = shulker_motion_uuid(case['uuid_index'])
+        ops += [cmd(f'/data get entity {uid} Motion'), cmd(f'/data get entity {uid} Rotation')]
+    for offset, case in enumerate(ai_loaded):
+        uid = shulker_motion_uuid(case['uuid_index'])
+        ops.append(summon_shulker(x0 + 10 + 2 * offset, z0 + 2, case['uuid_index'], False,
+                                  case['motion'], case['rotation']))
+        ops += [cmd(f'/data get entity {uid} Motion'), cmd(f'/data get entity {uid} Rotation')]
+
+    return ops + setup('/tick unfreeze',
+                       f'/kill @e[type=!player,x={x0},y={y0 - 4},z={z0},dx=16,dy=16,dz=16]',
+                       f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 + 2} {z0 + 15} air',
+                       f'/forceload remove {x0} {z0}')
 
 
 def snbt_trailing_commas():
@@ -2692,22 +2862,13 @@ def advancement_reward_fixtures(group_names):
 def function_return_fixtures(group_names):
     functions = {}
     if 'fork function feedback' in group_names:
-        try:
-            from .fork_function_feedback_corpus import functions as fork_functions
-        except ImportError:
-            from fork_function_feedback_corpus import functions as fork_functions
+        from tools.fork_function_feedback_corpus import functions as fork_functions
         functions.update(fork_functions())
     if 'function condition fallthrough' in group_names:
-        try:
-            from .function_condition_corpus import functions as condition_functions
-        except ImportError:
-            from function_condition_corpus import functions as condition_functions
+        from tools.function_condition_corpus import functions as condition_functions
         functions.update(condition_functions())
     if any(name.startswith('wolf anger ') for name in group_names):
-        try:
-            from .wolf_anger_corpus import functions as anger_functions
-        except ImportError:
-            from wolf_anger_corpus import functions as anger_functions
+        from tools.wolf_anger_corpus import functions as anger_functions
         functions.update(anger_functions())
     if 'macro source type error' in group_names:
         functions.update({'command_macro:apply': '$scoreboard players add #hits macro_error $(amount)\n',
@@ -2814,18 +2975,12 @@ def function_return_feedback():
 
 
 def fork_function_feedback_cases():
-    try:
-        from .fork_function_feedback_corpus import cases
-    except ImportError:
-        from fork_function_feedback_corpus import cases
+    from tools.fork_function_feedback_corpus import cases
     return cases(cmd)
 
 
 def function_condition_fallthrough():
-    try:
-        from .function_condition_corpus import conditions
-    except ImportError:
-        from function_condition_corpus import conditions
+    from tools.function_condition_corpus import conditions
     return conditions()
 
 
@@ -3503,10 +3658,7 @@ def shulker_box_empty_items():
 
 
 def shulker_lock_drop_cases():
-    try:
-        from .shulker_lock_drop_corpus import cases
-    except ImportError:
-        from shulker_lock_drop_corpus import cases
+    from tools.shulker_lock_drop_corpus import cases
     return cases(cmd)
 
 
@@ -5286,8 +5438,8 @@ def projectile_saved_uuid():
 
 
 def entity_ticking_gate():
-    """#12769: thrown potions, experience orbs, rockets and area effect clouds
-    freeze in a loaded chunk that no longer ticks entities, as it unloads."""
+    """#12769, #2361: thrown potions, experience orbs, rockets, area effect clouds,
+    evoker fangs and ominous item spawners freeze once their chunk leaves entity-ticking range."""
     x0, y0, z0 = 3392, 300, 3392
     chunk = [[x0 >> 4, z0 >> 4]]
     subjects = [
@@ -5298,14 +5450,26 @@ def entity_ticking_gate():
         ('area_effect_cloud', 'Duration:100000,Radius:0.5f', 'Age'),
         ('area_effect_cloud', 'Duration:100000,Radius:0.5f,potion_contents:{potion:"minecraft:regeneration"}', 'Age'),
     ]
+    fangs_uuid = '000031e1-0000-0000-0000-000700000001'
+    spawner_uuid = '000031e1-0000-0000-0000-000800000001'
+    box = f'x={x0},y={y0 - 8},z={z0},dx=16,dy=24,dz=16'
     ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': chunk}]
     for n, (kind, body, _) in enumerate(subjects, 1):
         ops += setup(f'/summon {kind} {x0 + 1}.5 {y0 + 2} {z0 + n * 2}.5 '
                      f'{{UUID:[I;12769,0,{n},1],NoGravity:1b,{body}}}')
+    ops += setup(
+        f'/summon minecraft:evoker_fangs {x0 + 5}.5 {y0 + 2} {z0 + 2}.5 '
+        '{UUID:[I;12769,0,7,1],Warmup:10,Silent:1b}',
+        f'/summon minecraft:ominous_item_spawner {x0 + 5}.5 {y0 + 2} {z0 + 6}.5 '
+        '{UUID:[I;12769,0,8,1],spawn_item_after_ticks:3L,item:{id:"minecraft:stone",count:1}}',
+    )
 
     def reads():
         for n, (_, _, key) in enumerate(subjects, 1):
             ops.append(cmd(f'/data get entity 000031e1-0000-0000-0000-{n:04x}00000001 {key}'))
+        ops.append(cmd(f'/data get entity {fangs_uuid} Warmup'))
+        ops.append(cmd(f'/execute if entity {spawner_uuid}'))
+        ops.append(cmd(f'/execute if entity @e[type=minecraft:item,{box}]'))
 
     ops.append({'op': 'tick', 'n': 2})
     reads()
@@ -5316,8 +5480,314 @@ def entity_ticking_gate():
     reads()
     ops.append({'op': 'tick', 'n': 3})
     reads()
-    return ops + setup(f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=24,dz=16]',
-                       f'/forceload remove {x0} {z0}')
+    return ops + setup(f'/kill @e[type=!player,{box}]', f'/forceload remove {x0} {z0}')
+
+
+def fangs_spawner_scheduled_ticket_pause():
+    """#2361: a resident chunk losing its forced ticket during a scheduled block tick pauses fangs and spawners that tick."""
+    tx0, y0, tz0 = 3456, 300, 3392
+    cx0, cz0 = 3472, 3392
+    t_chunk = [tx0 >> 4, tz0 >> 4]
+    c_chunk = [cx0 >> 4, cz0 >> 4]
+    target_box = f'x={tx0},y={y0 - 8},z={tz0},dx=15,dy=24,dz=15'
+    control_box = f'x={cx0},y={y0 - 8},z={cz0},dx=15,dy=24,dz=15'
+    t_fangs = '00000939-0000-0000-0001-000000000001'
+    t_spawner = '00000939-0000-0000-0001-000000000002'
+    c_fangs = '00000939-0000-0000-0001-000000000003'
+    c_spawner = '00000939-0000-0000-0001-000000000004'
+    cb = (cx0 + 2, y0, cz0 + 12)
+
+    def check_cb(command, accepted, value):
+        op = cmd(command)
+        op['expect_callback'] = [accepted, value]
+        return op
+
+    def observe(t_warmup, t_spawner_ok, t_items, c_warmup, c_spawner_ok, c_items):
+        return [
+            cmd(f'/data get entity {t_fangs} Warmup', expect_result=t_warmup),
+            check_cb(f'/execute if entity {t_spawner}', t_spawner_ok, int(t_spawner_ok)),
+            check_cb(f'/execute if entity @e[type=minecraft:item,{target_box}]', t_items > 0, t_items),
+            cmd(f'/data get entity {c_fangs} Warmup', expect_result=c_warmup),
+            check_cb(f'/execute if entity {c_spawner}', c_spawner_ok, int(c_spawner_ok)),
+            check_cb(f'/execute if entity @e[type=minecraft:item,{control_box}]', c_items > 0, c_items),
+        ]
+
+    def step(n):
+        return [cmd('/tick unfreeze', expect_result=0), {'op': 'tick', 'n': n}, cmd('/tick freeze', expect_result=1)]
+
+    ops = [
+        cmd('/tick freeze', expect_result=1),
+        cmd(f'/forceload add {tx0} {tz0}', expect_result=1),
+        cmd(f'/forceload add {cx0} {cz0}', expect_result=1),
+        {'op': 'wait_chunks', 'chunks': [t_chunk, c_chunk]},
+        cmd(f'/execute if loaded {tx0} {y0} {tz0}', expect_result=1),
+        cmd(f'/execute if loaded {cx0} {y0} {cz0}', expect_result=1),
+        cmd(f'/setblock {tx0 + 5} {y0} {tz0 + 6} minecraft:stone', expect_result=1),
+        cmd(f'/setblock {cx0 + 5} {y0} {cz0 + 6} minecraft:stone', expect_result=1),
+        cmd(f'/kill @e[type=!player,{target_box}]', False),
+        cmd(f'/kill @e[type=!player,{control_box}]', False),
+        cmd(f'/summon minecraft:evoker_fangs {tx0 + 5}.5 {y0 + 2} {tz0 + 2}.5 '
+            '{UUID:[I;2361,0,65536,1],Warmup:10,Silent:1b}', expect_result=1),
+        cmd(f'/summon minecraft:ominous_item_spawner {tx0 + 5}.5 {y0 + 2} {tz0 + 6}.5 '
+            '{UUID:[I;2361,0,65536,2],spawn_item_after_ticks:4L,item:{id:"minecraft:stone",count:1}}', expect_result=1),
+        cmd(f'/summon minecraft:evoker_fangs {cx0 + 5}.5 {y0 + 2} {cz0 + 2}.5 '
+            '{UUID:[I;2361,0,65536,3],Warmup:10,Silent:1b}', expect_result=1),
+        cmd(f'/summon minecraft:ominous_item_spawner {cx0 + 5}.5 {y0 + 2} {cz0 + 6}.5 '
+            '{UUID:[I;2361,0,65536,4],spawn_item_after_ticks:4L,item:{id:"minecraft:stone",count:1}}', expect_result=1),
+    ]
+    # Baseline active tick while both chunks are entity-ticking.
+    ops += step(1) + observe(9, True, 0, 9, True, 0)
+    # Scheduled command block in the neighboring forced chunk removes the target's ticket before entities tick.
+    ops += [cmd(f'/setblock {cb[0]} {cb[1]} {cb[2]} '
+                f'minecraft:command_block{{auto:1b,Command:"forceload remove {tx0} {tz0}"}}', expect_result=1)]
+    ops += step(1)
+    ops += [
+        cmd(f'/data get block {cb[0]} {cb[1]} {cb[2]} SuccessCount', expect_result=1),
+        cmd(f'/execute unless loaded {tx0} {y0} {tz0}', expect_result=1),
+        cmd(f'/execute if loaded {cx0} {y0} {cz0}', expect_result=1),
+    ]
+    # Removal tick: target chunk stays resident via neighbor ticket but pauses on this same tick.
+    ops += observe(9, True, 0, 8, True, 0)
+    # Pause: control reaches before-drop, drops at tick 4, and continues while target stays frozen.
+    ops += step(1) + observe(9, True, 0, 7, True, 0)
+    ops += step(1) + observe(9, True, 0, 6, False, 1)
+    ops += step(2) + observe(9, True, 0, 4, False, 1)
+    # Resumption: target regains its forced ticket, ticks to immediately before drop, then drops on the next tick.
+    ops += [
+        cmd(f'/forceload add {tx0} {tz0}', expect_result=1),
+        {'op': 'wait_chunks', 'chunks': [t_chunk]},
+        cmd(f'/execute if loaded {tx0} {y0} {tz0}', expect_result=1),
+    ]
+    ops += observe(9, True, 0, 4, False, 1)
+    ops += step(2) + observe(7, True, 0, 2, False, 1)
+    ops += step(1) + observe(6, False, 1, 1, False, 1)
+    return ops + setup(
+        '/tick unfreeze',
+        f'/setblock {cb[0]} {cb[1]} {cb[2]} minecraft:air',
+        f'/setblock {tx0 + 5} {y0} {tz0 + 6} minecraft:air',
+        f'/setblock {cx0 + 5} {y0} {cz0 + 6} minecraft:air',
+        f'/kill @e[type=!player,{target_box}]',
+        f'/kill @e[type=!player,{control_box}]',
+        f'/forceload remove {tx0} {tz0}',
+        f'/forceload remove {cx0} {cz0}',
+    )
+
+
+def fangs_ominous_spawner_ticking_witness_cases():
+    """26.3 witness cases for #2361 (evoker_fangs and ominous_item_spawner ticking-chunk gate)."""
+    return [
+        {'name': 'near_player_fangs_1_tick', 'kind': 'evoker_fangs', 'pos': [8.5, 200.0, 8.5],
+         'forced_chunks': [], 'initial_warmup': 5, 'ticks': 1},
+        {'name': 'near_player_fangs_3_ticks', 'kind': 'evoker_fangs', 'pos': [8.5, 200.0, 8.5],
+         'forced_chunks': [], 'initial_warmup': 5, 'ticks': 3},
+        {'name': 'near_player_fangs_zero_warmup_1_tick', 'kind': 'evoker_fangs', 'pos': [8.5, 200.0, 8.5],
+         'forced_chunks': [], 'initial_warmup': 0, 'ticks': 1},
+        {'name': 'near_player_fangs_expires', 'kind': 'evoker_fangs', 'pos': [8.5, 200.0, 8.5],
+         'forced_chunks': [], 'initial_warmup': 0, 'ticks': 23},
+        {'name': 'sim_edge_fangs_1_tick', 'kind': 'evoker_fangs', 'pos': [40.5, 200.0, 8.5],
+         'forced_chunks': [], 'initial_warmup': 5, 'ticks': 1},
+        {'name': 'outside_sim_ring_fangs_1_tick', 'kind': 'evoker_fangs', 'pos': [56.5, 200.0, 8.5],
+         'forced_chunks': [], 'initial_warmup': 5, 'ticks': 1},
+        {'name': 'outside_sim_ring_fangs_5_ticks', 'kind': 'evoker_fangs', 'pos': [56.5, 200.0, 8.5],
+         'forced_chunks': [], 'initial_warmup': 5, 'ticks': 5},
+        {'name': 'neg_sim_edge_fangs_1_tick', 'kind': 'evoker_fangs', 'pos': [-31.5, 200.0, 8.5],
+         'forced_chunks': [], 'initial_warmup': 5, 'ticks': 1},
+        {'name': 'neg_outside_sim_ring_fangs_1_tick', 'kind': 'evoker_fangs', 'pos': [-32.5, 200.0, 8.5],
+         'forced_chunks': [], 'initial_warmup': 5, 'ticks': 1},
+        {'name': 'far_unforced_fangs_1_tick', 'kind': 'evoker_fangs', 'pos': [3397.5, 302.0, 3394.5],
+         'forced_chunks': [], 'initial_warmup': 5, 'ticks': 1},
+        {'name': 'far_unforced_fangs_60_ticks', 'kind': 'evoker_fangs', 'pos': [3397.5, 302.0, 3394.5],
+         'forced_chunks': [], 'initial_warmup': 5, 'ticks': 60},
+        {'name': 'very_far_unforced_fangs_1_tick', 'kind': 'evoker_fangs', 'pos': [100000.5, 200.0, 0.5],
+         'forced_chunks': [], 'initial_warmup': 5, 'ticks': 1},
+        {'name': 'far_forced_fangs_1_tick', 'kind': 'evoker_fangs', 'pos': [3397.5, 302.0, 3394.5],
+         'forced_chunks': [[212, 212]], 'initial_warmup': 5, 'ticks': 1},
+        {'name': 'near_player_spawner_1_tick', 'kind': 'ominous_item_spawner', 'pos': [10.5, 200.0, 8.5],
+         'forced_chunks': [], 'item': 'minecraft:stone', 'spawn_item_after_ticks': 1, 'ticks': 1},
+        {'name': 'near_player_spawner_before_delay', 'kind': 'ominous_item_spawner', 'pos': [10.5, 200.0, 8.5],
+         'forced_chunks': [], 'item': 'minecraft:stone', 'spawn_item_after_ticks': 3, 'ticks': 2},
+        {'name': 'near_player_spawner_at_delay', 'kind': 'ominous_item_spawner', 'pos': [10.5, 200.0, 8.5],
+         'forced_chunks': [], 'item': 'minecraft:stone', 'spawn_item_after_ticks': 3, 'ticks': 3},
+        {'name': 'sim_edge_spawner_1_tick', 'kind': 'ominous_item_spawner', 'pos': [40.5, 200.0, 10.5],
+         'forced_chunks': [], 'item': 'minecraft:stone', 'spawn_item_after_ticks': 1, 'ticks': 1},
+        {'name': 'outside_sim_ring_spawner_1_tick', 'kind': 'ominous_item_spawner', 'pos': [56.5, 200.0, 10.5],
+         'forced_chunks': [], 'item': 'minecraft:stone', 'spawn_item_after_ticks': 1, 'ticks': 1},
+        {'name': 'outside_sim_ring_spawner_5_ticks', 'kind': 'ominous_item_spawner', 'pos': [56.5, 200.0, 10.5],
+         'forced_chunks': [], 'item': 'minecraft:stone', 'spawn_item_after_ticks': 1, 'ticks': 5},
+        {'name': 'neg_sim_edge_spawner_1_tick', 'kind': 'ominous_item_spawner', 'pos': [-31.5, 200.0, 10.5],
+         'forced_chunks': [], 'item': 'minecraft:stone', 'spawn_item_after_ticks': 1, 'ticks': 1},
+        {'name': 'neg_outside_sim_ring_spawner_1_tick', 'kind': 'ominous_item_spawner', 'pos': [-32.5, 200.0, 10.5],
+         'forced_chunks': [], 'item': 'minecraft:stone', 'spawn_item_after_ticks': 1, 'ticks': 1},
+        {'name': 'far_unforced_spawner_1_tick', 'kind': 'ominous_item_spawner', 'pos': [3397.5, 302.0, 3398.5],
+         'forced_chunks': [], 'item': 'minecraft:stone', 'spawn_item_after_ticks': 1, 'ticks': 1},
+        {'name': 'far_unforced_spawner_60_ticks', 'kind': 'ominous_item_spawner', 'pos': [3397.5, 302.0, 3398.5],
+         'forced_chunks': [], 'item': 'minecraft:stone', 'spawn_item_after_ticks': 1, 'ticks': 60},
+        {'name': 'very_far_unforced_spawner_1_tick', 'kind': 'ominous_item_spawner', 'pos': [100000.5, 200.0, 0.5],
+         'forced_chunks': [], 'item': 'minecraft:stone', 'spawn_item_after_ticks': 1, 'ticks': 1},
+        {'name': 'far_forced_spawner_1_tick', 'kind': 'ominous_item_spawner', 'pos': [3397.5, 302.0, 3398.5],
+         'forced_chunks': [[212, 212]], 'item': 'minecraft:stone', 'spawn_item_after_ticks': 1, 'ticks': 1},
+    ]
+
+
+def fangs_spawner_scheduled_ticket_pause_witness_spec():
+    """26.3 witness spec for #2361 scheduled-block-tick ticket removal, pause, and resumption."""
+    tx0, y0, tz0 = 3456, 300, 3392
+    cx0, cz0 = 3472, 3392
+    return {
+        'target_chunk': [tx0 >> 4, tz0 >> 4],
+        'control_chunk': [cx0 >> 4, cz0 >> 4],
+        'command_block_pos': [cx0 + 2, y0, cz0 + 12],
+        'target_fangs_pos': [tx0 + 5.5, float(y0 + 2), tz0 + 2.5],
+        'target_spawner_pos': [tx0 + 5.5, float(y0 + 2), tz0 + 6.5],
+        'control_fangs_pos': [cx0 + 5.5, float(y0 + 2), cz0 + 2.5],
+        'control_spawner_pos': [cx0 + 5.5, float(y0 + 2), cz0 + 6.5],
+        'initial_warmup': 10,
+        'item': 'minecraft:stone',
+        'spawn_item_after_ticks': 4,
+        'stages': [
+            {'name': 'initial_active_tick', 'action': 'tick', 'ticks': 1},
+            {'name': 'scheduled_removal_tick', 'action': 'schedule_remove_and_tick', 'ticks': 1},
+            {'name': 'pause_before_control_drop', 'action': 'tick', 'ticks': 1},
+            {'name': 'pause_at_control_drop', 'action': 'tick', 'ticks': 1},
+            {'name': 'pause_after_control_drop', 'action': 'tick', 'ticks': 2},
+            {'name': 'resumed_before_ticking', 'action': 'forceload_add', 'ticks': 0},
+            {'name': 'resumed_before_drop', 'action': 'tick', 'ticks': 2},
+            {'name': 'resumed_at_drop', 'action': 'tick', 'ticks': 1},
+        ],
+    }
+
+
+def fangs_ominous_spawner_ticking_witness_script(cases, pause_spec=None):
+    """Build VanillaCommandExecOracle operations for recording the 26.3 ticking-gate witness."""
+    ops = [{'op': 'server_distances'}]
+    for index, case in enumerate(cases, 1):
+        x, y, z = case['pos']
+        cx, cz = int(x // 16), int(z // 16)
+        chunk_x0, chunk_z0 = cx * 16, cz * 16
+        uid = f'00000939-0000-0000-0000-{index:04x}00000001'
+        box = f'x={chunk_x0},y={int(y) - 16},z={chunk_z0},dx=16,dy=32,dz=16'
+        keep_forced = [cx, cz] in case['forced_chunks']
+        ops += [cmd('/tick freeze', False),
+                cmd(f'/forceload add {chunk_x0} {chunk_z0}', False),
+                {'op': 'wait_chunks', 'chunks': [[cx, cz]]},
+                cmd(f'/kill @e[type=!player,{box}]', False)]
+        if case['kind'] == 'evoker_fangs':
+            ops.append(cmd(
+                f'/summon minecraft:evoker_fangs {x} {y} {z} '
+                f'{{UUID:[I;2361,0,{index},1],Warmup:{case["initial_warmup"]},Silent:1b}}',
+                False))
+        else:
+            ops.append(cmd(
+                f'/summon minecraft:ominous_item_spawner {x} {y} {z} '
+                f'{{UUID:[I;2361,0,{index},1],spawn_item_after_ticks:{case["spawn_item_after_ticks"]}L,'
+                f'item:{{id:"{case["item"]}",count:1}}}}',
+                False))
+        if not keep_forced:
+            ops.append(cmd(f'/forceload remove {chunk_x0} {chunk_z0}', False))
+        ops += [cmd('/tick unfreeze', False),
+                {'op': 'tick', 'n': case['ticks']},
+                cmd('/tick freeze', False)]
+        if not keep_forced:
+            ops += [cmd(f'/forceload add {chunk_x0} {chunk_z0}', False),
+                    {'op': 'wait_chunks', 'chunks': [[cx, cz]]}]
+        ops.append(cmd(f'/execute if entity {uid}'))
+        if case['kind'] == 'evoker_fangs':
+            ops.append(cmd(f'/data get entity {uid} Warmup'))
+        else:
+            ops.append(cmd(f'/execute if entity @e[type=minecraft:item,{box}]'))
+        ops += [cmd(f'/kill @e[type=!player,{box}]', False),
+                cmd(f'/forceload remove {chunk_x0} {chunk_z0}', False),
+                cmd('/tick unfreeze', False),
+                {'op': 'tick', 'n': 1}]
+    if pause_spec is not None:
+        tcx, tcz = pause_spec['target_chunk']
+        ccx, ccz = pause_spec['control_chunk']
+        tx0, tz0 = tcx * 16, tcz * 16
+        cx0, cz0 = ccx * 16, ccz * 16
+        cbx, cby, cbz = pause_spec['command_block_pos']
+        y0 = cby
+        target_box = f'x={tx0},y={y0 - 8},z={tz0},dx=15,dy=24,dz=15'
+        control_box = f'x={cx0},y={y0 - 8},z={cz0},dx=15,dy=24,dz=15'
+        tf = pause_spec['target_fangs_pos']
+        ts = pause_spec['target_spawner_pos']
+        cf = pause_spec['control_fangs_pos']
+        cs = pause_spec['control_spawner_pos']
+        t_fangs = '00000939-0000-0000-0002-000000000001'
+        t_spawner = '00000939-0000-0000-0002-000000000002'
+        c_fangs = '00000939-0000-0000-0002-000000000003'
+        c_spawner = '00000939-0000-0000-0002-000000000004'
+        warmup = pause_spec['initial_warmup']
+        delay = pause_spec['spawn_item_after_ticks']
+        item = pause_spec['item']
+        ops += [
+            cmd('/tick freeze', False),
+            cmd(f'/forceload add {tx0} {tz0}', False),
+            cmd(f'/forceload add {cx0} {cz0}', False),
+            {'op': 'wait_chunks', 'chunks': [[tcx, tcz], [ccx, ccz]]},
+            cmd(f'/setblock {int(ts[0])} {y0} {int(ts[2])} minecraft:stone', False),
+            cmd(f'/setblock {int(cs[0])} {y0} {int(cs[2])} minecraft:stone', False),
+            cmd(f'/kill @e[type=!player,{target_box}]', False),
+            cmd(f'/kill @e[type=!player,{control_box}]', False),
+            cmd(f'/summon minecraft:evoker_fangs {tf[0]} {tf[1]} {tf[2]} '
+                f'{{UUID:[I;2361,0,131072,1],Warmup:{warmup},Silent:1b}}', False),
+            cmd(f'/summon minecraft:ominous_item_spawner {ts[0]} {ts[1]} {ts[2]} '
+                f'{{UUID:[I;2361,0,131072,2],spawn_item_after_ticks:{delay}L,item:{{id:"{item}",count:1}}}}', False),
+            cmd(f'/summon minecraft:evoker_fangs {cf[0]} {cf[1]} {cf[2]} '
+                f'{{UUID:[I;2361,0,131072,3],Warmup:{warmup},Silent:1b}}', False),
+            cmd(f'/summon minecraft:ominous_item_spawner {cs[0]} {cs[1]} {cs[2]} '
+                f'{{UUID:[I;2361,0,131072,4],spawn_item_after_ticks:{delay}L,item:{{id:"{item}",count:1}}}}', False),
+        ]
+        for stage in pause_spec['stages']:
+            action = stage['action']
+            if action == 'schedule_remove_and_tick':
+                ops.append(cmd(
+                    f'/setblock {cbx} {cby} {cbz} '
+                    f'minecraft:command_block{{auto:1b,Command:"forceload remove {tx0} {tz0}"}}', False))
+            elif action == 'forceload_add':
+                ops += [cmd(f'/forceload add {tx0} {tz0}', False),
+                        {'op': 'wait_chunks', 'chunks': [[tcx, tcz]]}]
+            if stage['ticks'] > 0:
+                ops += [cmd('/tick unfreeze', False),
+                        {'op': 'tick', 'n': stage['ticks']},
+                        cmd('/tick freeze', False)]
+            if action == 'schedule_remove_and_tick':
+                ops.append(cmd(f'/data get block {cbx} {cby} {cbz} SuccessCount'))
+            ops += [
+                cmd(f'/execute if loaded {tx0} {y0} {tz0}'),
+                cmd(f'/execute if loaded {cx0} {y0} {cz0}'),
+                cmd(f'/data get entity {t_fangs} Warmup'),
+                cmd(f'/execute if entity {t_spawner}'),
+                cmd(f'/execute if entity @e[type=minecraft:item,{target_box}]'),
+                cmd(f'/data get entity {c_fangs} Warmup'),
+                cmd(f'/execute if entity {c_spawner}'),
+                cmd(f'/execute if entity @e[type=minecraft:item,{control_box}]'),
+            ]
+        ops += [
+            cmd('/tick unfreeze', False),
+            cmd(f'/setblock {cbx} {cby} {cbz} minecraft:air', False),
+            cmd(f'/setblock {int(ts[0])} {y0} {int(ts[2])} minecraft:air', False),
+            cmd(f'/setblock {int(cs[0])} {y0} {int(cs[2])} minecraft:air', False),
+            cmd(f'/kill @e[type=!player,{target_box}]', False),
+            cmd(f'/kill @e[type=!player,{control_box}]', False),
+            cmd(f'/forceload remove {tx0} {tz0}', False),
+            cmd(f'/forceload remove {cx0} {cz0}', False),
+        ]
+    return ops
+
+
+# 26.3 eye_of_ender Item load/save normalization cases (#2357).
+EYE_ITEM_CASES = [
+    ('default', '{}'),
+    ('stone_count', '{Item:{id:"minecraft:stone",count:5}}'),
+    ('air', '{Item:{id:"minecraft:air",count:1}}'),
+    ('unqualified_stone', '{Item:{id:"stone",count:3}}'),
+    ('stone_components', '{Item:{id:"minecraft:stone",count:5,components:{"minecraft:custom_name":"Orb"}}}'),
+    ('air_components', '{Item:{id:"minecraft:air",count:1,components:{"minecraft:custom_name":"Drop"}}}'),
+]
+
+
+def eye_item_uuid(index):
+    return f'00003207-0000-0001-0000-{index:04x}00000001'
 
 
 def summoned_eye_of_ender():
@@ -5351,10 +5821,21 @@ def summoned_eye_of_ender():
     ops += setup(f'/summon eye_of_ender {x0 + 8}.5 {y0 + 2} {z0 + 8}.5 '
                  f'{{UUID:[I;12807,0,{len(subjects) + 1},1],Motion:[0d,0d,0.01d]}}')
     ops.append({'op': 'tick', 'n': 50})
+    # Summon and read eye_of_ender Item normalization cases live, then across a chunk reload (#2357).
+    item_uuids = [eye_item_uuid(n) for n in range(1, len(EYE_ITEM_CASES) + 1)]
+    for n, (_, nbt) in enumerate(EYE_ITEM_CASES, 1):
+        inner = nbt[1:-1]
+        sep = ',' if inner else ''
+        ops += setup(f'/summon eye_of_ender {x0 + 2}.5 {y0 + 2} {z0 + n * 2}.5 '
+                     f'{{UUID:[I;12807,1,{n},1]{sep}{inner}}}')
+    for u in item_uuids:
+        ops.append(cmd(f'/data get entity {u} Item'))
     ops += [cmd(f'/forceload remove {x0} {z0}', False), {'op': 'tick', 'n': 60},
             cmd(f'/execute unless loaded {x0} {y0} {z0}', expect_result=1),
             cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': chunk}]
     ops.append(cmd(f'/data get entity {last} Pos'))
+    for u in item_uuids:
+        ops.append(cmd(f'/data get entity {u} Item'))
     ops.append({'op': 'tick', 'n': 80})
     ops.append(cmd(f'/execute if entity {last}', expect_result=1))
     ops.append({'op': 'tick', 'n': 1})
@@ -6146,34 +6627,22 @@ def zombie_nautilus_ignored_age():
 
 
 def boat_passenger_tree_cases(original_full=False):
-    try:
-        from .boat_passenger_tree_corpus import cases
-    except ImportError:
-        from boat_passenger_tree_corpus import cases
+    from tools.boat_passenger_tree_corpus import cases
     return cases(cmd, original_full)
 
 
 def effective_component_presence_cases():
-    try:
-        from .effective_component_presence_corpus import cases
-    except ImportError:
-        from effective_component_presence_corpus import cases
+    from tools.effective_component_presence_corpus import cases
     return cases(cmd)
 
 
 def jukebox_saved_clock_cases():
-    try:
-        from .jukebox_saved_clock_corpus import cases
-    except ImportError:
-        from jukebox_saved_clock_corpus import cases
+    from tools.jukebox_saved_clock_corpus import cases
     return cases(cmd)
 
 
 def item_count_predicate_cases():
-    try:
-        from .item_count_predicate_corpus import cases
-    except ImportError:
-        from item_count_predicate_corpus import cases
+    from tools.item_count_predicate_corpus import cases
     return cases(cmd)
 
 
@@ -6541,10 +7010,7 @@ def advancement_loot_fixtures(group_names):
         tables['parity:pack_loot'] = {'type': 'minecraft:chest', 'pools': [{'rolls': 1, 'entries': [
             {'type': 'minecraft:item', 'name': 'minecraft:emerald',
              'modifier': {'type': 'minecraft:set_count', 'count': 3}}]}]}
-    try:
-        from . import player_food_predicate_corpus as player_food
-    except ImportError:
-        import player_food_predicate_corpus as player_food
+    from tools import player_food_predicate_corpus as player_food
     if player_food.GROUP in group_names:
         advancements.update(player_food.advancements())
     return advancements, tables
@@ -6871,18 +7337,12 @@ def advancement_reward_functions():
 
 
 def moving_piston_presentation_diagnostic():
-    try:
-        from .moving_piston_data_corpus import moving_piston_presentation
-    except ImportError:
-        from moving_piston_data_corpus import moving_piston_presentation
+    from tools.moving_piston_data_corpus import moving_piston_presentation
     return moving_piston_presentation(cmd, setup)
 
 
 def piston_mob_bounce():
-    try:
-        from .piston_bounce_corpus import piston_bounce
-    except ImportError:
-        from piston_bounce_corpus import piston_bounce
+    from tools.piston_bounce_corpus import piston_bounce
     return piston_bounce(cmd, setup)
 
 
@@ -7069,6 +7529,33 @@ def falling_block_in_moving_piston():
             ops.append(cmd('/execute if block 33 210 31 minecraft:sand'))
             ops.append(cmd('/execute if entity @e[type=minecraft:item,x=28,y=208,z=28,dx=8,dy=10,dz=6]'))
     ops += setup('/kill @e[type=!player]', '/fill 28 208 28 36 218 34 air')
+    return ops
+
+
+def falling_block_resting_in_moving_piston():
+    """#2363 (26.3): a falling block resting inside a moving_piston cell stays across ticks."""
+    ops = []
+    selector = '@e[type=minecraft:falling_block,tag=moving_piston_rest,limit=1]'
+    cases = (
+        ('minecraft:sand', 'Time:1,Motion:[0.1d,0.0d,0.0d]', 2),
+        ('minecraft:sand', 'Time:1,CancelDrop:1b,Motion:[0.1d,0.0d,-0.05d]', 1),
+        ('minecraft:gravel', 'Time:5,Motion:[-0.08d,-0.25d,0.04d]', 1),
+    )
+    for block_state, fields, ticks in cases:
+        ops += setup('/kill @e[tag=moving_piston_rest]', '/fill 0 208 0 4 212 4 air',
+                     '/fill 0 209 0 4 209 4 stone', '/setblock 2 210 2 minecraft:moving_piston')
+        ops.append(cmd('/summon minecraft:falling_block 2.5 210 2.5 '
+                       f'{{BlockState:"{block_state}",{fields},Tags:["moving_piston_rest"]}}'))
+        for _ in range(ticks):
+            ops.append({'op': 'tick', 'n': 1})
+            ops.append(cmd(f'/data get entity {selector} Pos'))
+            ops.append(cmd(f'/data get entity {selector} Motion'))
+            ops.append(cmd(f'/data get entity {selector} Time'))
+            ops.append(cmd(f'/data get entity {selector} OnGround'))
+            ops.append(cmd(f'/data get entity {selector} BlockState'))
+            ops.append(cmd('/execute if block 2 210 2 minecraft:moving_piston'))
+            ops.append(cmd('/execute if entity @e[type=minecraft:item,x=0,y=208,z=0,dx=5,dy=5,dz=5]'))
+    ops += setup('/kill @e[tag=moving_piston_rest]', '/fill 0 208 0 4 212 4 air')
     return ops
 
 
@@ -7548,6 +8035,152 @@ def ominous_spawner_loaded_entity_fields():
                                  f'/forceload remove {x0} {z0}')
 
 
+CLOUD_FALLING_ROTATION_GROUP = 'cloud and falling block loaded rotation'
+CLOUD_FALLING_ROTATION_CASES = [
+    ('normal', 'Rotation:[45.0f,10.0f]'),
+    ('default', ''),
+    ('neg_yaw_high_pitch', 'Rotation:[-560.0f,100.0f]'),
+    ('neg_pitch_wrap', 'Rotation:[10.0f,-450.0f]'),
+    ('pos_yaw_pitch_wrap', 'Rotation:[405.5f,-370.25f]'),
+    ('neg_zero', 'Rotation:[-0.0f,-360.0f]'),
+]
+CLOUD_FALLING_ROTATION_MERGES = [
+    ('falling_merge_normal', 'Rotation:[45.0f,10.0f]'),
+    ('falling_merge_neg_yaw_high_pitch', 'Rotation:[-560.0f,100.0f]'),
+    ('falling_merge_neg_zero', 'Rotation:[-0.0f,-360.0f]'),
+]
+CLOUD_FALLING_ROTATION_ENTITIES = (
+    ('cloud', 'area_effect_cloud', 'Duration:2000'),
+    ('falling', 'falling_block', 'BlockState:{Name:"minecraft:sand"},Time:1,NoGravity:1b'),
+)
+
+
+def _cloud_falling_rotation_specs():
+    specs = []
+    n = 0
+    for short, kind, base in CLOUD_FALLING_ROTATION_ENTITIES:
+        for label, rot in CLOUD_FALLING_ROTATION_CASES:
+            n += 1
+            sep = ',' if rot else ''
+            specs.append((n, f'0000396d-0000-0000-0000-{n:04x}00000001', f'{short}_{label}', kind, f'{base}{sep}{rot}'))
+    return specs
+
+
+def cloud_and_falling_block_loaded_rotation():
+    """Vanilla 26.3: area_effect_cloud and falling_block keep their loaded Rotation across tick, merge and chunk reload (#2680)."""
+    x0, y0, z0 = 5504, 300, 5120
+    specs = _cloud_falling_rotation_specs()
+    merge_n = len(specs) + 1
+    merge_uid = f'0000396d-0000-0000-0000-{merge_n:04x}00000001'
+    merge_base = CLOUD_FALLING_ROTATION_ENTITIES[1][2]
+    ops = [*setup(f'/forceload add {x0} {z0}'), {'op': 'wait_chunks', 'chunks': [[x0 >> 4, z0 >> 4]]}]
+    for n, _, _, kind, fields in specs:
+        x = x0 + 2 + ((n - 1) % len(CLOUD_FALLING_ROTATION_CASES)) * 2
+        z = z0 + 4 + ((n - 1) // len(CLOUD_FALLING_ROTATION_CASES)) * 4
+        ops.append(cmd(f'/summon {kind} {x}.5 {y0} {z}.5 {{UUID:[I;14701,0,{n},1],{fields}}}', expect_result=1))
+    ops.append(cmd(f'/summon falling_block {x0 + 2}.5 {y0} {z0 + 12}.5 {{UUID:[I;14701,0,{merge_n},1],{merge_base}}}',
+                   expect_result=1))
+
+    def reads():
+        return [cmd(f'/data get entity {uid} Rotation') for _, uid, _, _, _ in specs]
+
+    ops += reads() + [{'op': 'tick', 'n': 1}] + reads()
+    for _, rot in CLOUD_FALLING_ROTATION_MERGES:
+        ops.append(cmd(f'/data merge entity {merge_uid} {{{rot}}}', expect_result=1))
+        ops.append(cmd(f'/data get entity {merge_uid} Rotation'))
+    ops += [*setup(f'/forceload remove {x0} {z0}'), {'op': 'tick', 'n': 60},
+            cmd(f'/execute unless loaded {x0} {y0} {z0}', expect_result=1),
+            *setup(f'/forceload add {x0} {z0}'), {'op': 'wait_chunks', 'chunks': [[x0 >> 4, z0 >> 4]]}]
+    return ops + reads() + setup(f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=24,dz=16]',
+                                 f'/forceload remove {x0} {z0}')
+
+
+def extract_cloud_falling_rotation_witness(records, version, server_jar_sha256, java_version, java_release):
+    """Extract the exact 26.3 Rotation witness from VanillaCommandExecOracle records."""
+    import re
+    import struct
+
+    def parse_rotation(record, expected_cmd):
+        if record.get('cmd') != expected_cmd:
+            raise ValueError(f'unexpected record cmd: {record.get("cmd")!r} != {expected_cmd!r}')
+        if record.get('results') != [[True, 2]]:
+            raise ValueError(f'unexpected /data get Rotation results for {expected_cmd}: {record.get("results")!r}')
+        messages = record.get('messages') or []
+        if len(messages) != 1:
+            raise ValueError(f'expected one feedback line for {expected_cmd}: {messages!r}')
+        text = ''.join(span[0] for span in messages[0])
+        prefix = ' has the following entity data: '
+        if prefix not in text:
+            raise ValueError(f'unexpected Rotation feedback: {text!r}')
+        snbt = text.split(prefix, 1)[1]
+        match = re.fullmatch(r'\[(-?\d+(?:\.\d+)?(?:E[+-]?\d+)?)f, (-?\d+(?:\.\d+)?(?:E[+-]?\d+)?)f\]', snbt)
+        if not match:
+            raise ValueError(f'unexpected Rotation SNBT: {snbt!r}')
+        bits = [struct.unpack('>I', struct.pack('>f', float(match.group(i))))[0] for i in (1, 2)]
+        return snbt, bits
+
+    specs = _cloud_falling_rotation_specs()
+    merge_n = len(specs) + 1
+    merge_uid = f'0000396d-0000-0000-0000-{merge_n:04x}00000001'
+    merge_base = CLOUD_FALLING_ROTATION_ENTITIES[1][2]
+    count = len(specs)
+    expected_total = (count + 1) + count + count + 2 * len(CLOUD_FALLING_ROTATION_MERGES) + 1 + count
+    if len(records) != expected_total:
+        raise ValueError(f'expected {expected_total} witness records, got {len(records)}')
+    pos = count + 1
+    summon_reads = [parse_rotation(records[pos + i], f'/data get entity {uid} Rotation')
+                    for i, (_, uid, _, _, _) in enumerate(specs)]
+    pos += count
+    tick_reads = [parse_rotation(records[pos + i], f'/data get entity {uid} Rotation')
+                  for i, (_, uid, _, _, _) in enumerate(specs)]
+    pos += count
+    merges = []
+    for label, rot in CLOUD_FALLING_ROTATION_MERGES:
+        merge_cmd = f'/data merge entity {merge_uid} {{{rot}}}'
+        if records[pos].get('cmd') != merge_cmd or records[pos].get('results') != [[True, 1]]:
+            raise ValueError(f'unexpected merge record: {records[pos]!r}')
+        pos += 1
+        snbt, bits = parse_rotation(records[pos], f'/data get entity {merge_uid} Rotation')
+        pos += 1
+        merges.append({
+            'label': label,
+            'kind': 'minecraft:falling_block',
+            'initial_nbt': f'{{{merge_base}}}',
+            'merge_nbt': f'{{{rot}}}',
+            'after_merge_snbt': snbt,
+            'after_merge_bits': bits,
+        })
+    if records[pos].get('cmd') != '/execute unless loaded 5504 300 5120' or records[pos].get('results') != [[True, 1]]:
+        raise ValueError(f'unexpected unload guard record: {records[pos]!r}')
+    pos += 1
+    reload_reads = [parse_rotation(records[pos + i], f'/data get entity {uid} Rotation')
+                    for i, (_, uid, _, _, _) in enumerate(specs)]
+    cases = []
+    for (_, _, label, kind, fields), (s_snbt, s_bits), (t_snbt, t_bits), (r_snbt, r_bits) in zip(
+            specs, summon_reads, tick_reads, reload_reads):
+        cases.append({
+            'label': label,
+            'kind': f'minecraft:{kind}',
+            'summon_nbt': f'{{{fields}}}',
+            'after_summon_snbt': s_snbt,
+            'after_summon_bits': s_bits,
+            'after_tick_snbt': t_snbt,
+            'after_tick_bits': t_bits,
+            'after_reload_snbt': r_snbt,
+            'after_reload_bits': r_bits,
+        })
+    return {
+        'minecraft': version,
+        'oracle': 'VanillaCommandExecOracle',
+        'group': CLOUD_FALLING_ROTATION_GROUP,
+        'java': java_version,
+        'java_release': java_release,
+        'server_jar_sha256': server_jar_sha256,
+        'cases': cases,
+        'merges': merges,
+    }
+
+
 def thrown_projectile_rotation():
     """`ThrowableProjectile.tick` and `LlamaSpit.tick` end their move with `Projectile.updateRotation`:
     the pitch and yaw go a fifth of the way (`lerpRotation`) from the last tick's towards the
@@ -7592,6 +8225,90 @@ def item_frame_rotation():
                 cmd(f'/data get entity 00003714-0000-0000-0000-{n:04x}00000001 Facing')]
     return ops + setup(f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=32,dz=16]',
                        f'/fill {x0} {y0} {z0} {x0 + 15} {y0 + 8} {z0 + 15} air', f'/forceload remove {x0} {z0}')
+
+
+STAND_LIVING_GROUP = 'armor stand living counters'
+STAND_LIVING_FIELDS = ('HurtTime', 'Air', 'FallFlying', 'current_impulse_context_reset_grace_time', 'PortalCooldown')
+STAND_LIVING_TICKS = (0, 1, 2, 5, 20, 40, 50)
+STAND_LIVING_CASES = (
+    ('main', False, (2.5, 200.0, 2.5),
+     '{NoGravity:1b,HurtTime:40s,Air:100s,FallFlying:1b,current_impulse_context_reset_grace_time:20,PortalCooldown:20}'),
+    ('full', False, (4.5, 200.0, 2.5), '{NoGravity:1b,Air:32767s}'),
+    ('cap', False, (3.5, 200.0, 2.5), '{NoGravity:1b,Air:298s}'),
+    ('negative', False, (2.5, 200.0, 4.5),
+     '{NoGravity:1b,HurtTime:-5s,Air:-10s,current_impulse_context_reset_grace_time:-3,PortalCooldown:-4}'),
+    ('underwater', True, (7.5, 200.0, 7.5), '{NoGravity:1b,Air:5s}'),
+    ('underwater_full', True, (7.5, 200.0, 6.5), '{NoGravity:1b,Air:300s}'),
+)
+STAND_LIVING_PIG_CONTROL = ('pig_water', (8.5, 200.0, 8.5), '{NoAI:1b,NoGravity:1b,Air:5s}')
+
+
+def armor_stand_living_counters():
+    """ArmorStand living counters across ticks in dry air and water (26.3)."""
+    ops = [
+        *setup('/forceload add 0 0 15 15', '/fill 0 199 0 15 206 15 air', '/fill 0 199 0 15 199 15 stone',
+               '/fill 5 200 5 10 204 10 glass hollow', '/fill 6 200 6 9 203 9 water'),
+        {'op': 'settle'},
+        cmd('/execute if block 7 200 7 water', expect_result=1),
+        cmd('/execute if block 7 201 7 water', expect_result=1),
+        cmd('/execute if block 7 202 7 water', expect_result=1),
+    ]
+    for name, _, (x, y, z), nbt in STAND_LIVING_CASES:
+        tagged = f'{{Tags:["stand_living_actor","stand_living_{name}"],{nbt[1:]}'
+        ops += setup(f'/summon minecraft:armor_stand {x} {y} {z} {tagged}')
+    pig_name, (px, py, pz), pig_nbt = STAND_LIVING_PIG_CONTROL
+    ops += setup(f'/summon minecraft:pig {px} {py} {pz} {{Tags:["stand_living_actor","stand_living_{pig_name}"],{pig_nbt[1:]}')
+    elapsed = 0
+    for tick in STAND_LIVING_TICKS:
+        if tick > elapsed:
+            ops.append({'op': 'tick', 'n': tick - elapsed})
+            elapsed = tick
+        for name, _, _, _ in STAND_LIVING_CASES:
+            for field in STAND_LIVING_FIELDS:
+                ops.append(cmd(f'/data get entity @e[tag=stand_living_{name},limit=1] {field}'))
+        ops.append(cmd(f'/data get entity @e[tag=stand_living_{pig_name},limit=1] Air'))
+    return ops + setup('/kill @e[tag=stand_living_actor]', '/fill 0 199 0 15 206 15 air', '/forceload remove 0 0 15 15')
+
+
+def extract_stand_living_witness(version, records):
+    """Build a 26.3 witness JSON from VanillaCommandExecOracle records for armor_stand_living_counters."""
+    prefix = ' has the following entity data: '
+    index = 3
+    cases = [{'name': name, 'in_water': in_water, 'nbt': nbt, 'snapshots': []}
+             for name, in_water, _, nbt in STAND_LIVING_CASES]
+    pig_name, _, pig_nbt = STAND_LIVING_PIG_CONTROL
+    pig_snapshots = []
+    for tick in STAND_LIVING_TICKS:
+        for case in cases:
+            values = {}
+            for field in STAND_LIVING_FIELDS:
+                row = records[index]
+                index += 1
+                expected_cmd = f'/data get entity @e[tag=stand_living_{case["name"]},limit=1] {field}'
+                if row.get('cmd') != expected_cmd:
+                    raise ValueError(f'unexpected record at {index - 1}: {row.get("cmd")!r} != {expected_cmd!r}')
+                text = ''.join(span[0] for span in row['messages'][0])
+                values[field] = text.split(prefix, 1)[1]
+            case['snapshots'].append({'tick': tick, 'values': values})
+        row = records[index]
+        index += 1
+        expected_cmd = f'/data get entity @e[tag=stand_living_{pig_name},limit=1] Air'
+        if row.get('cmd') != expected_cmd:
+            raise ValueError(f'unexpected pig control record at {index - 1}: {row.get("cmd")!r}')
+        text = ''.join(span[0] for span in row['messages'][0])
+        pig_snapshots.append({'tick': tick, 'value': text.split(prefix, 1)[1]})
+    if index != len(records):
+        raise ValueError(f'unconsumed records: {index} != {len(records)}')
+    return {
+        'minecraft': version,
+        'oracle': 'VanillaCommandExecOracle',
+        'group': STAND_LIVING_GROUP,
+        'fields': list(STAND_LIVING_FIELDS),
+        'cases': cases,
+        'controls': {
+            pig_name: {'in_water': True, 'nbt': pig_nbt, 'field': 'Air', 'snapshots': pig_snapshots},
+        },
+    }
 
 
 def living_short_timers():
@@ -8327,105 +9044,349 @@ def explosion_creaking_heart_experience():
                        f'/forceload remove {x0} {z0}')
 
 
+def moved_thrown_item_save():
+    """#2691 (26.3): thrown-item projectiles decode, edit, move, unload and reload their typed Item."""
+    x0, y0, z0 = 5696, 300, 5568
+    ring = [[(x0 >> 4) + i, (z0 >> 4) + k] for i in range(-2, 3) for k in range(-2, 3)]
+    # (kind, offset (dx, dy, dz), summon fields, optional pre-tick /data edit, expects movement)
+    cases = [
+        # All four throwables with custom Item + motion.
+        ('egg', (2.5, 2, 2.5), 'Item:{id:"minecraft:stone",count:5},Motion:[0.05d,0.0d,0.0d],NoGravity:1b', None, True),
+        ('snowball', (2.5, 2, 5.5), 'Item:{id:"minecraft:stone",count:5},Motion:[0.05d,0.0d,0.0d],NoGravity:1b', None, True),
+        ('ender_pearl', (2.5, 2, 8.5), 'Item:{id:"minecraft:stone",count:5},Motion:[0.05d,0.0d,0.0d],NoGravity:1b', None, True),
+        ('experience_bottle', (2.5, 2, 11.5), 'Item:{id:"minecraft:stone",count:5},Motion:[0.05d,0.0d,0.0d],NoGravity:1b', None, True),
+        ('egg', (2.5, 2, 14.5), 'Item:{id:"minecraft:blue_egg",count:3},Motion:[0.05d,0.0d,0.0d],NoGravity:1b', None, True),
+        # Missing Item defaults to the kind's item for all four throwables.
+        ('egg', (2.5, 4, 2.5), 'Motion:[0.05d,0.0d,0.0d],NoGravity:1b', None, True),
+        ('snowball', (2.5, 4, 5.5), 'Motion:[0.05d,0.0d,0.0d],NoGravity:1b', None, True),
+        ('ender_pearl', (2.5, 4, 8.5), 'Motion:[0.05d,0.0d,0.0d],NoGravity:1b', None, True),
+        ('experience_bottle', (2.5, 4, 11.5), 'Motion:[0.05d,0.0d,0.0d],NoGravity:1b', None, True),
+        # Same-position distinct stacks (stationary and moved).
+        ('snowball', (2.5, 6, 2.5), 'Item:{id:"minecraft:diamond",count:2},Motion:[0.0d,0.0d,0.0d],NoGravity:1b', None, False),
+        ('snowball', (2.5, 6, 2.5), 'Item:{id:"minecraft:emerald",count:4},Motion:[0.0d,0.0d,0.0d],NoGravity:1b', None, False),
+        ('snowball', (2.5, 6, 5.5), 'Item:{id:"minecraft:gold_ingot",count:3},Motion:[0.05d,0.0d,0.0d],NoGravity:1b', None, True),
+        ('snowball', (2.5, 6, 5.5), 'Item:{id:"minecraft:iron_ingot",count:3},Motion:[0.05d,0.0d,0.0d],NoGravity:1b', None, True),
+        # /data edits before movement (valid moved, valid stationary, rejected reset).
+        ('snowball', (2.5, 6, 8.5), 'Item:{id:"minecraft:stone",count:5},Motion:[0.05d,0.0d,0.0d],NoGravity:1b',
+         '/data modify entity {uuid} Item set value {id:"minecraft:emerald",count:3}', True),
+        ('snowball', (2.5, 6, 11.5), 'Item:{id:"minecraft:stone",count:5},Motion:[0.0d,0.0d,0.0d],NoGravity:1b',
+         '/data modify entity {uuid} Item set value {id:"minecraft:copper_ingot",count:2}', False),
+        ('egg', (2.5, 6, 14.5), 'Item:{id:"minecraft:stone",count:5},Motion:[0.05d,0.0d,0.0d],NoGravity:1b',
+         '/data modify entity {uuid} Item set value {count:5}', True),
+        # Rejected items fall back to the kind's default item.
+        ('snowball', (2.5, 8, 2.5), 'Item:{count:5},Motion:[0.05d,0.0d,0.0d],NoGravity:1b', None, True),
+        ('snowball', (2.5, 8, 5.5), 'Item:{id:"minecraft:air",count:1},Motion:[0.05d,0.0d,0.0d],NoGravity:1b', None, True),
+        ('snowball', (2.5, 8, 8.5), 'Item:{id:"minecraft:not_an_item",count:1},Motion:[0.05d,0.0d,0.0d],NoGravity:1b', None, True),
+        ('snowball', (2.5, 8, 11.5), 'Item:{id:"minecraft:stone",count:0},Motion:[0.05d,0.0d,0.0d],NoGravity:1b', None, True),
+        ('snowball', (2.5, 8, 14.5), 'Item:{id:"minecraft:stone",count:100},Motion:[0.05d,0.0d,0.0d],NoGravity:1b', None, True),
+        ('snowball', (2.5, 10, 2.5), 'Item:{id:"minecraft:stone",count:1,components:{"minecraft:not_a_component":1}},Motion:[0.05d,0.0d,0.0d],NoGravity:1b', None, True),
+        ('snowball', (2.5, 10, 5.5), 'Item:{id:"minecraft:stone",count:1,components:{"minecraft:damage":"bad"}},Motion:[0.05d,0.0d,0.0d],NoGravity:1b', None, True),
+        ('snowball', (2.5, 10, 8.5), 'Item:{id:"minecraft:stone",count:1,components:{"minecraft:creative_slot_lock":{}}},Motion:[0.05d,0.0d,0.0d],NoGravity:1b', None, True),
+        # Mixed valid + rejected components and non-compound Item / components.
+        ('snowball', (2.5, 14, 2.5), 'Item:{id:"minecraft:stone",count:1,components:{"minecraft:custom_name":"pebble","minecraft:damage":"bad"}},Motion:[0.05d,0.0d,0.0d],NoGravity:1b', None, True),
+        ('snowball', (2.5, 14, 5.5), 'Item:{id:"minecraft:stone",count:1,components:{"minecraft:custom_name":"pebble","minecraft:not_a_component":1}},Motion:[0.05d,0.0d,0.0d],NoGravity:1b', None, True),
+        ('snowball', (2.5, 14, 8.5), 'Item:{id:"minecraft:stone",count:1,components:123},Motion:[0.05d,0.0d,0.0d],NoGravity:1b', None, True),
+        ('snowball', (2.5, 14, 11.5), 'Item:"minecraft:stone",Motion:[0.05d,0.0d,0.0d],NoGravity:1b', None, True),
+        # Bare ids and modeled potion stacks.
+        ('splash_potion', (2.5, 10, 11.5), 'Item:{id:"splash_potion",count:5},Motion:[0.05d,0.0d,0.0d],NoGravity:1b', None, True),
+        ('snowball', (2.5, 10, 14.5), 'Item:{id:"stone",count:5},Motion:[0.05d,0.0d,0.0d],NoGravity:1b', None, True),
+        ('splash_potion', (2.5, 12, 2.5), 'Item:{id:"minecraft:splash_potion",count:2,components:{"minecraft:potion_contents":{potion:"minecraft:harming"}}},Motion:[0.05d,0.0d,0.0d],NoGravity:1b', None, True),
+        # Valid component-bearing stacks.
+        ('egg', (2.5, 12, 5.5), 'Item:{id:"minecraft:stone",count:5,components:{"minecraft:custom_name":"pebble","minecraft:custom_data":{tag:1b}}},Motion:[0.05d,0.0d,0.0d],NoGravity:1b', None, True),
+        ('ender_pearl', (2.5, 12, 8.5), 'Item:{id:"minecraft:diamond_sword",count:1,components:{"minecraft:damage":7,"minecraft:enchantments":{"minecraft:unbreaking":2}}},Motion:[0.05d,0.0d,0.0d],NoGravity:1b', None, True),
+        # Moved projectile landing on another projectile's exact load position.
+        ('snowball', (2.549500000476837, 16, 2.5), 'Item:{id:"minecraft:coal",count:1},Motion:[0.0d,0.0d,0.0d],NoGravity:1b', None, False),
+        ('snowball', (2.5, 16, 2.5), 'Item:{id:"minecraft:quartz",count:2},Motion:[0.05d,0.0d,0.0d],NoGravity:1b', None, True),
+    ]
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': ring},
+           cmd('/tick freeze', False)]
+    for n, (kind, (dx, dy, dz), fields, edit, _) in enumerate(cases, 1):
+        uuid = f'00000a83-0000-0000-0000-{n:04x}00000001'
+        ops.append(cmd(f'/summon {kind} {x0 + dx} {y0 + dy} {z0 + dz} {{UUID:[I;2691,0,{n},1],{fields}}}', expect_result=1))
+        if edit is not None:
+            ops.append(cmd(edit.replace('{uuid}', uuid), expect_result=1))
+    ops += [cmd('/tick unfreeze', False), {'op': 'tick', 'n': 1}, cmd('/tick freeze', False)]
+    for n in range(1, len(cases) + 1):
+        uuid = f'00000a83-0000-0000-0000-{n:04x}00000001'
+        ops.append(cmd(f'/data get entity {uuid} Pos'))
+        ops.append(cmd(f'/data get entity {uuid} Item'))
+    ops += [cmd('/tick unfreeze', False), cmd(f'/forceload remove {x0} {z0}', False), {'op': 'tick', 'n': 60},
+            cmd(f'/execute unless loaded {x0} {y0} {z0}', expect_result=1),
+            cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': ring}]
+    for n in range(1, len(cases) + 1):
+        uuid = f'00000a83-0000-0000-0000-{n:04x}00000001'
+        ops.append(cmd(f'/data get entity {uuid} Item'))
+    return ops + setup(f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=32,dz=16]',
+                       f'/forceload remove {x0} {z0}')
+def _cloud_water_coord(base, offset):
+    if '.' not in offset:
+        return str(base + int(offset))
+    whole, frac = offset.split('.', 1)
+    return f'{base + int(whole)}.{frac}'
+
+
+# #2359: AreaEffectCloud water/lava fall-distance and fluid-current cases (vanilla 26.3).
+CLOUD_WATER_ORIGIN = (4928, 260, 4928)
+CLOUD_WATER_BLOCK = (1, 0, 0)
+CLOUD_WATER_TICKS = (0, 1, 2)
+CLOUD_WATER_BLOCKS = (
+    # Single still water source for the wet/dry/edge/above controls.
+    (1, 0, 0, 'minecraft:water'),
+    # Walled flowing water channel along +X at z=20.
+    (0, -1, 20, 'minecraft:stone'),
+    (1, -1, 20, 'minecraft:stone'),
+    (2, -1, 20, 'minecraft:stone'),
+    (3, -1, 20, 'minecraft:stone'),
+    (-1, 0, 20, 'minecraft:stone'),
+    (4, 0, 20, 'minecraft:stone'),
+    (0, 0, 19, 'minecraft:stone'),
+    (1, 0, 19, 'minecraft:stone'),
+    (2, 0, 19, 'minecraft:stone'),
+    (3, 0, 19, 'minecraft:stone'),
+    (0, 0, 21, 'minecraft:stone'),
+    (1, 0, 21, 'minecraft:stone'),
+    (2, 0, 21, 'minecraft:stone'),
+    (3, 0, 21, 'minecraft:stone'),
+    (0, 0, 20, 'minecraft:water[level=0]'),
+    (1, 0, 20, 'minecraft:water[level=1]'),
+    (2, 0, 20, 'minecraft:water[level=2]'),
+    (3, 0, 20, 'minecraft:water[level=3]'),
+    # Walled flowing lava channel along +X at x=10..13, z=20.
+    (10, -1, 20, 'minecraft:stone'),
+    (11, -1, 20, 'minecraft:stone'),
+    (12, -1, 20, 'minecraft:stone'),
+    (13, -1, 20, 'minecraft:stone'),
+    (9, 0, 20, 'minecraft:stone'),
+    (14, 0, 20, 'minecraft:stone'),
+    (10, 0, 19, 'minecraft:stone'),
+    (11, 0, 19, 'minecraft:stone'),
+    (12, 0, 19, 'minecraft:stone'),
+    (13, 0, 19, 'minecraft:stone'),
+    (10, 0, 21, 'minecraft:stone'),
+    (11, 0, 21, 'minecraft:stone'),
+    (12, 0, 21, 'minecraft:stone'),
+    (13, 0, 21, 'minecraft:stone'),
+    (10, 0, 20, 'minecraft:lava[level=0]'),
+    (11, 0, 20, 'minecraft:lava[level=2]'),
+    (12, 0, 20, 'minecraft:lava[level=4]'),
+    (13, 0, 20, 'minecraft:lava[level=6]'),
+    # Flowing water at the far (high.x, high.y, high.z) cell of the radius-32 box.
+    (112, 0, 112, 'minecraft:stone'),
+    (113, 0, 112, 'minecraft:stone'),
+    (111, 1, 112, 'minecraft:stone'),
+    (114, 1, 112, 'minecraft:stone'),
+    (112, 1, 111, 'minecraft:stone'),
+    (113, 1, 111, 'minecraft:stone'),
+    (112, 1, 113, 'minecraft:stone'),
+    (113, 1, 113, 'minecraft:stone'),
+    (113, 1, 112, 'minecraft:water[level=0]'),
+    (112, 1, 112, 'minecraft:water[level=1]'),
+)
+CLOUD_WATER_CASES = (
+    ('beside_water', '0.5', '0', '0.5', None, '20.0', 200, ''),
+    ('dry', '20.5', '0', '0.5', None, '20.0', 200, ''),
+    ('small_radius_dry', '0.5', '0', '0.5', '0.4', '20.0', 200, ''),
+    ('edge_touching_water', '4.5', '0', '0.5', '3.0', '12.5', 200, ''),
+    ('edge_outside_water', '5.0', '0', '0.5', '3.0', '12.5', 200, ''),
+    ('above_water', '0.5', '1', '0.5', '3.0', '7.25', 200, ''),
+    ('flowing_water_nonzero_motion', '1.5', '0', '20.5', '0.4', '20.0', 200, 'Motion:[0.05d,0.0d,-0.02d]'),
+    ('lava_nonzero_age', '11.5', '0', '20.5', '0.4', '20.0', 200, 'Age:50'),
+    ('lava_neg_min_double', '12.5', '0', '20.5', '0.4', '-4.9E-324', 200, 'Age:50'),
+    ('radius_32_far_corner', '80.5', '0.75', '80.5', '32.0', '18.0', 200, ''),
+)
+
+
+def area_effect_cloud_water_fall():
+    """#2359 (vanilla 26.3): AreaEffectCloud fall_distance and Motion in water, lava, and radius-32 boundary."""
+    x0, y0, z0 = CLOUD_WATER_ORIGIN
+    chunks = [[(x0 >> 4) + dx, (z0 >> 4) + dz] for dx in range(-2, 9) for dz in range(-2, 9)]
+    ops = [cmd(f'/forceload add {x0 - 16} {z0 - 16} {x0 + 127} {z0 + 127}', False),
+           {'op': 'wait_chunks', 'chunks': chunks},
+           cmd('/tick freeze', False)]
+    for dx, dy, dz, block in CLOUD_WATER_BLOCKS:
+        ops.append(cmd(f'/setblock {x0 + dx} {y0 + dy} {z0 + dz} {block}', expect_result=1))
+    for n, (_, dx, dy, dz, radius, fall, duration, extra) in enumerate(CLOUD_WATER_CASES, 1):
+        x, y, z = _cloud_water_coord(x0, dx), _cloud_water_coord(y0, dy), _cloud_water_coord(z0, dz)
+        nbt = f'UUID:[I;2359,0,{n},1],fall_distance:{fall}d,Duration:{duration}'
+        if radius is not None:
+            nbt += f',Radius:{radius}f'
+        if extra:
+            nbt += f',{extra}'
+        ops.append(cmd(f'/summon minecraft:area_effect_cloud {x} {y} {z} {{{nbt}}}', expect_result=1))
+
+    def reads():
+        for n in range(1, len(CLOUD_WATER_CASES) + 1):
+            uid = f'00000937-0000-0000-0000-{n:04x}00000001'
+            ops.append(cmd(f'/data get entity {uid} fall_distance'))
+            ops.append(cmd(f'/data get entity {uid} Motion'))
+
+    reads()
+    for _ in CLOUD_WATER_TICKS[1:]:
+        ops += [cmd('/tick unfreeze', False), {'op': 'tick', 'n': 1}, cmd('/tick freeze', False)]
+        reads()
+    cleanup = [
+        '/tick unfreeze',
+        f'/kill @e[type=minecraft:area_effect_cloud,x={x0 - 16},y={y0 - 4},z={z0 - 16},dx=144,dy=16,dz=144]',
+    ]
+    for dx, dy, dz, _ in reversed(CLOUD_WATER_BLOCKS):
+        cleanup.append(f'/setblock {x0 + dx} {y0 + dy} {z0 + dz} air')
+    cleanup.append(f'/forceload remove {x0 - 16} {z0 - 16} {x0 + 127} {z0 + 127}')
+    return ops + setup(*cleanup)
+
+
+def summon_lightning_bolt_nbt():
+    # Vanilla 26.3 witness for /summon minecraft:lightning_bolt with trailing NBT (#2690).
+    # Covers synchronized RNG identity/lifetime/fire, inherited Entity state, UUID admission
+    # (live bolt, in-place Player offline UUID, malformed string UUID, release on discard),
+    # CustomName validation & team formatting, /execute summon, Passengers both ways, and
+    # entity-ticking chunk eligibility.
+    player_uuid = '-1608632253,-450807400,-1786055591,-2146546415'
+    ops = [
+        # 1. Synchronized RNG strike, live NBT, inherited Entity state, fire, rod, creeper, exact discard tick.
+        {'op': 'sync_randoms', 'uniquifier': 26901, 'entity_id': 2690100, 'level_seed': 26901},
+        cmd('/fill 3 209 3 5 209 5 minecraft:stone', False),
+        cmd('/setblock 4 209 4 minecraft:lightning_rod'),
+        cmd('/execute if block 4 209 4 minecraft:lightning_rod[powered=false]'),
+        cmd('/summon minecraft:creeper 4.5 210 4.5 {NoAI:1b,NoGravity:1b,Invulnerable:1b,Tags:["bolt_creeper"]}'),
+        cmd('/data get entity @e[tag=bolt_creeper,limit=1] powered'),
+        cmd('/summon minecraft:lightning_bolt 4.5 210 4.5 {CustomName:"fz",Fire:40s,Silent:1b,PortalCooldown:12,Tags:["bolt_a"]}'),
+        cmd('/data get entity @e[type=minecraft:lightning_bolt,tag=bolt_a,limit=1]'),
+        {'op': 'tick', 'n': 1},
+        cmd('/execute if block 4 209 4 minecraft:lightning_rod[powered=true]'),
+        cmd('/data get entity @e[tag=bolt_creeper,limit=1] powered'),
+        cmd('/data get entity @e[type=minecraft:lightning_bolt,tag=bolt_a,limit=1] Fire'),
+        cmd('/data get entity @e[type=minecraft:lightning_bolt,tag=bolt_a,limit=1] PortalCooldown'),
+        # Step tick-by-tick to witness exact discard timing under synchronized RNGs (discards on tick 8).
+        *[item for _ in range(9) for item in (
+            {'op': 'tick', 'n': 1},
+            cmd('/execute if entity @e[type=minecraft:lightning_bolt,tag=bolt_a]'),
+        )],
+        cmd('/execute if block 4 209 4 minecraft:lightning_rod[powered=false]'),
+        # Strike over solid stone to witness real spawnFire(4) placement on first server tick.
+        cmd('/setblock 6 209 4 minecraft:stone', False),
+        cmd('/summon minecraft:lightning_bolt 6.5 210 4.5 {Silent:1b,Tags:["bolt_fire"]}'),
+        {'op': 'tick', 'n': 1},
+        cmd('/execute if block 6 210 4 minecraft:fire'),
+        {'op': 'tick', 'n': 60},
+        cmd('/execute if entity @e[type=minecraft:lightning_bolt]'),
+        cmd('/fill 3 209 3 7 211 5 minecraft:air', False),
+
+        # 2. UUID admission: live bolt dup, in-place Player dup, malformed string UUID, release on discard.
+        {'op': 'sync_randoms', 'uniquifier': 26902, 'entity_id': 2690200, 'level_seed': 26902},
+        cmd('/summon minecraft:armor_stand 10.5 210 4.5 {NoGravity:1b,UUID:[I;2690,0,0,2],Tags:["bolt_stand"]}'),
+        cmd('/summon minecraft:lightning_bolt 8.5 210 4.5 {UUID:[I;2690,0,0,1],Fire:20s,Tags:["bolt_live_uuid"]}'),
+        cmd('/summon minecraft:lightning_bolt 8.5 210 4.5 {UUID:[I;2690,0,0,1],Tags:["bolt_dup_live"]}'),
+        cmd(f'/summon minecraft:lightning_bolt 8.5 210 4.5 {{UUID:[I;{player_uuid}],Tags:["bolt_dup_player"]}}'),
+        {'op': 'sync_randoms', 'uniquifier': 26907, 'entity_id': 2690700, 'level_seed': 26907},
+        cmd('/summon minecraft:lightning_bolt 8.5 210 4.5 {UUID:"00000a82-0000-0000-0000-000000000002",Tags:["bolt_str_uuid"]}'),
+        cmd('/data get entity @e[type=minecraft:lightning_bolt,tag=bolt_str_uuid,limit=1] UUID'),
+        {'op': 'tick', 'n': 60},
+        cmd('/execute if entity @e[type=minecraft:lightning_bolt]'),
+        # UUID released on discard: re-summoning [I;2690,0,0,1] now succeeds.
+        cmd('/summon minecraft:lightning_bolt 8.5 210 4.5 {UUID:[I;2690,0,0,1],Tags:["bolt_reused"]}'),
+        {'op': 'tick', 'n': 60},
+        cmd('/execute if entity @e[type=minecraft:lightning_bolt]'),
+
+        # 3. CustomName validation (numeric 123 ignored), styled component, Team formatting, plain no-NBT form.
+        {'op': 'sync_randoms', 'uniquifier': 26903, 'entity_id': 2690300, 'level_seed': 26903},
+        *setup('/team add bolt_team', '/team modify bolt_team color aqua', '/team modify bolt_team prefix "[B] "'),
+        cmd('/summon minecraft:lightning_bolt 8.5 210 4.5 {CustomName:123,Tags:["bolt_bad_name"]}'),
+        cmd('/data get entity @e[type=minecraft:lightning_bolt,tag=bolt_bad_name,limit=1] CustomName'),
+        cmd('/summon minecraft:lightning_bolt 8.5 210 4.5 {CustomName:{text:"Bolt",color:"gold"},Tags:["bolt_gold"]}'),
+        cmd('/summon minecraft:lightning_bolt 8.5 210 4.5 {Team:"bolt_team",CustomName:"Zap",Tags:["bolt_teamed"]}'),
+        cmd('/summon minecraft:lightning_bolt 8.5 210 4.5'),
+        {'op': 'tick', 'n': 60},
+        cmd('/execute if entity @e[type=minecraft:lightning_bolt]'),
+        *setup('/team remove bolt_team'),
+
+        # 4. /execute summon creates a live bolt that strikes and discards.
+        {'op': 'sync_randoms', 'uniquifier': 26904, 'entity_id': 2690400, 'level_seed': 26904},
+        cmd('/setblock 10 209 4 minecraft:lightning_rod'),
+        cmd('/execute positioned 10.5 210 4.5 summon minecraft:lightning_bolt run tag @s add exec_bolt'),
+        cmd('/execute if entity @e[type=minecraft:lightning_bolt,tag=exec_bolt]'),
+        {'op': 'tick', 'n': 1},
+        cmd('/execute if block 10 209 4 minecraft:lightning_rod[powered=true]'),
+        {'op': 'tick', 'n': 60},
+        cmd('/execute if entity @e[type=minecraft:lightning_bolt,tag=exec_bolt]'),
+
+        # 5. Passengers both ways: bolt riding serializable vehicle vs bolt refusing to be a vehicle.
+        {'op': 'sync_randoms', 'uniquifier': 26905, 'entity_id': 2690500, 'level_seed': 26905},
+        cmd('/summon minecraft:armor_stand 12.5 210 4.5 {NoGravity:1b,Tags:["bolt_veh"],Passengers:[{id:"minecraft:lightning_bolt",UUID:[I;2690,0,0,10],Tags:["bolt_rider"]}]}'),
+        cmd('/execute if entity @e[type=minecraft:lightning_bolt,tag=bolt_rider]'),
+        cmd('/execute as @e[tag=bolt_rider] on vehicle if entity @s[tag=bolt_veh]'),
+        cmd('/execute as @e[tag=bolt_veh] on passengers if entity @s[tag=bolt_rider]'),
+        cmd('/data get entity @e[tag=bolt_veh,limit=1] Passengers'),
+        cmd('/ride @e[tag=bolt_stand,limit=1] mount @e[tag=bolt_rider,limit=1]'),
+        cmd('/summon minecraft:lightning_bolt 12.5 210 4.5 {UUID:[I;2690,0,0,11],Tags:["bolt_root"],Passengers:[{id:"minecraft:pig",UUID:[I;2690,0,0,2],NoAI:1b,Tags:["bolt_unadmitted_child"]}]}'),
+        cmd('/execute if entity @e[type=minecraft:lightning_bolt,tag=bolt_root]'),
+        cmd('/execute if entity @e[tag=bolt_unadmitted_child]'),
+        cmd('/execute as @e[tag=bolt_root] on passengers if entity @s'),
+        {'op': 'tick', 'n': 60},
+        cmd('/execute if entity @e[type=minecraft:lightning_bolt]'),
+
+        # 6. Tick eligibility: non-entity-ticking border chunk (16, 0) holds bolt until promoted.
+        {'op': 'sync_randoms', 'uniquifier': 26906, 'entity_id': 2690600, 'level_seed': 26906},
+        cmd('/forceload add 240 0', False),
+        {'op': 'wait_chunks', 'chunks': [[15, 0], [16, 0]]},
+        cmd('/setblock 260 209 4 minecraft:lightning_rod'),
+        cmd('/summon minecraft:lightning_bolt 260.5 210 4.5 {Fire:40s,Tags:["bolt_border"]}'),
+        {'op': 'tick', 'n': 5},
+        cmd('/execute if entity @e[type=minecraft:lightning_bolt,tag=bolt_border]'),
+        cmd('/data get entity @e[type=minecraft:lightning_bolt,tag=bolt_border,limit=1] Fire'),
+        cmd('/execute if block 260 209 4 minecraft:lightning_rod[powered=false]'),
+        cmd('/forceload add 256 0', False),
+        {'op': 'wait_chunks', 'chunks': [[16 + dx, dz] for dx in range(-2, 3) for dz in range(-2, 3)], 'tick_level': False},
+        {'op': 'tick', 'n': 1},
+        cmd('/execute if block 260 209 4 minecraft:lightning_rod[powered=true]'),
+        cmd('/data get entity @e[type=minecraft:lightning_bolt,tag=bolt_border,limit=1] Fire'),
+        {'op': 'tick', 'n': 60},
+        cmd('/execute if entity @e[type=minecraft:lightning_bolt,tag=bolt_border]'),
+        *setup(
+            '/forceload remove 240 0',
+            '/forceload remove 256 0',
+            '/kill @e[tag=bolt_creeper]',
+            '/kill @e[tag=bolt_stand]',
+            '/kill @e[tag=bolt_veh]',
+            '/fill 0 208 0 15 215 15 minecraft:air',
+            '/setblock 260 209 4 minecraft:air',
+        ),
+    ]
+    return ops
+
+
 def groups():
-    try:
-        from .spectral_duration_corpus import cases as spectral_saved_duration
-    except ImportError:
-        from spectral_duration_corpus import cases as spectral_saved_duration
-    try:
-        from .item_health_load_corpus import cases as item_health_load
-    except ImportError:
-        from item_health_load_corpus import cases as item_health_load
-    try:
-        from .vehicle_kill_corpus import vehicle_kill_contents
-    except ImportError:
-        from vehicle_kill_corpus import vehicle_kill_contents
-    try:
-        from .vehicle_container_corpus import vehicle_containers
-        from .boat_loot_corpus import boat_loot
-    except ImportError:
-        from vehicle_container_corpus import vehicle_containers
-        from boat_loot_corpus import boat_loot
-    try:
-        from .vehicle_boolean_corpus import other_entity_boolean_flags, vehicle_boolean_flags
-    except ImportError:
-        from vehicle_boolean_corpus import other_entity_boolean_flags, vehicle_boolean_flags
-    try:
-        from .data_literal_corpus import storage_literals
-    except ImportError:
-        from data_literal_corpus import storage_literals
-    try:
-        from .craft_map_take_corpus import cases as craft_map_takes
-    except ImportError:
-        from craft_map_take_corpus import cases as craft_map_takes
-    try:
-        from .potion_effect_icon_corpus import cases as potion_effect_icons
-    except ImportError:
-        from potion_effect_icon_corpus import cases as potion_effect_icons
-    try:
-        from .trader_llama_delay_corpus import llama_delay
-    except ImportError:
-        from trader_llama_delay_corpus import llama_delay
-    try:
-        from .guest_close_event_corpus import cases as guest_close_events
-    except ImportError:
-        from guest_close_event_corpus import cases as guest_close_events
-    try:
-        from .pot_hopper_corpus import cases as pot_hopper_cases
-    except ImportError:
-        from pot_hopper_corpus import cases as pot_hopper_cases
-    try:
-        from .transmute_patch_corpus import cases as transmute_patches
-    except ImportError:
-        from transmute_patch_corpus import cases as transmute_patches
-    try:
-        from .mob_effect_predicate_corpus import cases as mob_effect_predicates
-    except ImportError:
-        from mob_effect_predicate_corpus import cases as mob_effect_predicates
-    try:
-        from .fill_block_nbt_corpus import fill_block_nbt
-    except ImportError:
-        from fill_block_nbt_corpus import fill_block_nbt
-    try:
-        from .seed_sync_corpus import cases as seed_sync_proof
-    except ImportError:
-        from seed_sync_corpus import cases as seed_sync_proof
-    try:
-        from .mob_name_predicate_corpus import cases as mob_name_predicates
-    except ImportError:
-        from mob_name_predicate_corpus import cases as mob_name_predicates
-    try:
-        from . import player_food_predicate_corpus as player_food
-    except ImportError:
-        import player_food_predicate_corpus as player_food
-    try:
-        from .frame_map_corpus import frame_maps, treasure_map_copies
-        from .allay_damage_corpus import allay_player_damage
-        from .wolf_anger_corpus import groups as wolf_anger_groups
-        from .allay_healing_corpus import allay_healing
-        from .loaded_cloud_corpus import loaded_clouds
-        from .moving_piston_data_corpus import moving_piston_data
-        from .carpet_farm_corpus import carpet_farms
-        from .passenger_teleport_corpus import passenger_teleports
-        from .gateway_passenger_corpus import gateway_passengers
-        from .gateway_item_motion_corpus import gateway_item_motion
-        from .item_honey_bounce_corpus import item_honey_bounce
-        from .item_merge_corpus import stack_limit_merges
-        from .conduit_table_entity_corpus import conduit_table_entities
-    except ImportError:
-        from frame_map_corpus import frame_maps, treasure_map_copies
-        from allay_damage_corpus import allay_player_damage
-        from wolf_anger_corpus import groups as wolf_anger_groups
-        from allay_healing_corpus import allay_healing
-        from loaded_cloud_corpus import loaded_clouds
-        from moving_piston_data_corpus import moving_piston_data
-        from carpet_farm_corpus import carpet_farms
-        from passenger_teleport_corpus import passenger_teleports
-        from gateway_passenger_corpus import gateway_passengers
-        from gateway_item_motion_corpus import gateway_item_motion
-        from item_honey_bounce_corpus import item_honey_bounce
-        from item_merge_corpus import stack_limit_merges
-        from conduit_table_entity_corpus import conduit_table_entities
+    from tools.spectral_duration_corpus import cases as spectral_saved_duration
+    from tools.item_health_load_corpus import cases as item_health_load
+    from tools.vehicle_kill_corpus import vehicle_kill_contents
+    from tools.vehicle_container_corpus import vehicle_containers
+    from tools.boat_loot_corpus import boat_loot
+    from tools.vehicle_boolean_corpus import other_entity_boolean_flags, vehicle_boolean_flags
+    from tools.data_literal_corpus import storage_literals
+    from tools.craft_map_take_corpus import cases as craft_map_takes
+    from tools.potion_effect_icon_corpus import cases as potion_effect_icons
+    from tools.trader_llama_delay_corpus import llama_delay
+    from tools.guest_close_event_corpus import cases as guest_close_events
+    from tools.pot_hopper_corpus import cases as pot_hopper_cases
+    from tools.transmute_patch_corpus import cases as transmute_patches
+    from tools.mob_effect_predicate_corpus import cases as mob_effect_predicates
+    from tools.fill_block_nbt_corpus import fill_block_nbt
+    from tools.seed_sync_corpus import cases as seed_sync_proof
+    from tools.mob_name_predicate_corpus import cases as mob_name_predicates
+    from tools import player_food_predicate_corpus as player_food
+    from tools.frame_map_corpus import frame_maps, treasure_map_copies
+    from tools.allay_damage_corpus import allay_player_damage
+    from tools.wolf_anger_corpus import groups as wolf_anger_groups
+    from tools.allay_healing_corpus import allay_healing
+    from tools.loaded_cloud_corpus import loaded_clouds
+    from tools.moving_piston_data_corpus import moving_piston_data
+    from tools.carpet_farm_corpus import carpet_farms
+    from tools.passenger_teleport_corpus import passenger_teleports
+    from tools.gateway_passenger_corpus import gateway_passengers
+    from tools.gateway_item_motion_corpus import gateway_item_motion
+    from tools.item_honey_bounce_corpus import item_honey_bounce
+    from tools.item_merge_corpus import stack_limit_merges
+    from tools.conduit_table_entity_corpus import conduit_table_entities
+    from tools.first_tick_lava_burn_corpus import GROUP as FIRST_TICK_LAVA_BURN, first_tick_lava_burn
     result = [
         ('setup', group_setup()),
         ('guest container close event', guest_close_events()),
@@ -8515,6 +9476,7 @@ def groups():
         ('seed sync proof', seed_sync_proof(cmd, setup)),
         ('animal signed InLove', animal_signed_in_love()),
         ('mob fire resistance damage', mob_fire_resistance_damage()),
+        (FIRST_TICK_LAVA_BURN, first_tick_lava_burn(cmd, setup)),
         ('armor stand climbing', armor_stand_climbing()),
         ('painting saved ground', painting_saved_ground()),
         ('mob armor damage', mob_armor_damage()),
@@ -8539,6 +9501,7 @@ def groups():
         ('living short timers', living_short_timers()),
         ('projectile fall distance', projectile_fall_distance()),
         ('ominous spawner loaded fields', ominous_spawner_loaded_entity_fields()),
+        (CLOUD_FALLING_ROTATION_GROUP, cloud_and_falling_block_loaded_rotation()),
         ('thrown projectile rotation', thrown_projectile_rotation()),
         ('item frame rotation', item_frame_rotation()),
         ('item fall distance', item_fall_distance()),
@@ -8554,6 +9517,7 @@ def groups():
         ('scheduled block item birth', scheduled_item_birth()),
         ('piston push ground', piston_push_ground()),
         ('falling block in a moving piston', falling_block_in_moving_piston()),
+        ('falling block resting in moving piston', falling_block_resting_in_moving_piston()),
         ('piston tnt effects', piston_tnt_effects()),
         ('carpet farms', carpet_farms(cmd, setup)),
         ('passenger teleports', passenger_teleports(cmd, setup)),
@@ -8576,6 +9540,7 @@ def groups():
         ('tnt minecart explosion power', tnt_minecart_explosion_power()),
         ('enderman command damage', enderman_command_damage()),
         ('shulker command damage', shulker_command_damage()),
+        (SHULKER_MOTION_GROUP, shulker_motion_and_yaw()),
         ('SNBT trailing commas', snbt_trailing_commas()),
         ('execute', execute()),
         ('projectile origin', projectile_origin()),
@@ -8587,6 +9552,7 @@ def groups():
         ('numeric array edits', numeric_array_edits()),
         ('projectile saved UUID', projectile_saved_uuid()),
         ('entity ticking gate', entity_ticking_gate()),
+        ('fangs and ominous spawner scheduled ticket pause', fangs_spawner_scheduled_ticket_pause()),
         ('summoned eye of ender', summoned_eye_of_ender()),
         ('awake villager saved position', awake_villager_saved_position()),
         ('villager wake rotation', villager_wake_rotation()),
@@ -8648,6 +9614,7 @@ def groups():
         ('boat float height', boat_float_height()),
         ('vehicle fall clip', vehicle_fall_clip()),
         ('projectile saved ground', projectile_saved_ground()),
+        ('moved thrown item save', moved_thrown_item_save()),
         ('teleport lands', teleport_lands()),
         ('rocket data merge', rocket_data_merge()),
         ('mob fall clip', mob_fall_clip()),
@@ -8657,6 +9624,10 @@ def groups():
         ('vehicle ground and fall', vehicle_ground_and_fall()),
         ('vehicle saved ground and fall', vehicle_saved_ground_and_fall()),
         ('ravager saved movement speed', ravager_saved_movement_speed()),
+        (STAND_LIVING_GROUP, armor_stand_living_counters()),
+        ('summon custom name replies', summon_custom_name_replies()),
+        ('area effect cloud water fall distance', area_effect_cloud_water_fall()),
+        ('summon lightning_bolt NBT', summon_lightning_bolt_nbt()),
         # Last: it leaves the player in other food than it found.
         (player_food.GROUP, player_food.cases(cmd, setup)),
     ]

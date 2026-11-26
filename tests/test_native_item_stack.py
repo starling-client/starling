@@ -5,7 +5,7 @@ import subprocess
 import tempfile
 import unittest
 
-from rust_items import rust_fn
+from tests.rust_items import rust_fn
 
 
 class NativeItemStackTests(unittest.TestCase):
@@ -26,13 +26,13 @@ impl HudBatch {
 }
 struct Game { res: Resources }
 impl Game {
-    fn draw_item_model(&self, batch: &mut HudBatch, stack: &ItemStack, x: f32, y: f32) {
+    fn draw_item_model(&self, batch: &mut HudBatch, stack: &ItemStack, x: f32, y: f32, _seed: i32) {
         assert_eq!((stack.count, stack.damage, x, y), (42, 13, 2.0, 3.0));
         batch.vertices.push(1);
     }
     fn draw_item_decorations(&self, batch: &mut HudBatch, stack: &ItemStack,
-                             x: f32, y: f32, count: Option<String>) {
-        assert_eq!((stack.count, stack.damage, x, y, count.as_deref()), (42, 13, 2.0, 3.0, Some("")));
+                             x: f32, y: f32, count: Option<&str>) {
+        assert_eq!((stack.count, stack.damage, x, y, count), (42, 13, 2.0, 3.0, Some("")));
         batch.vertices.push(2);
     }
     METHOD

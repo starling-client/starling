@@ -24,26 +24,8 @@ impl Game<'_> {
             p
         } else if self.spawn.is_none() || self.player_spawn.is_some() {
             // A new world: its spawn, then the first player around it.
-            if self.spawn.is_none() {
-                let Some([x, y, z]) = self.find_world_spawn()? else {
-                    return Ok(());
-                };
-                self.spawn = Some(Vec3::new(
-                    f64::from(x) + 0.5,
-                    f64::from(y),
-                    f64::from(z) + 0.5,
-                ));
-                self.level.spawn = Some([f64::from(x), f64::from(y), f64::from(z)]);
-                // The world's spawn from the start, not only once saved: a bed set
-                // before the first save must not become it.
-                self.level.world_spawn.get_or_insert([x, y, z]);
-                // The "Bonus Chest" create-world option, placed once with the spawn.
-                if !self.spawn_hook_cancelled
-                    && sunrise_client::save::WorldGen::read(&self.world_root)
-                        .is_some_and(|g| g.bonus_chest)
-                {
-                    self.place_bonus_chest([x, y, z])?;
-                }
+            if self.spawn.is_none() && !self.try_initialize_world_spawn(false)? {
+                return Ok(());
             }
             let s = self
                 .level
@@ -86,6 +68,7 @@ impl Game<'_> {
         player.may_fly = self.creative || spectator;
         player.invulnerable = self.creative || spectator;
         player.spectator = spectator;
+        player.local_spectator = spectator;
         if spectator {
             player.flying = true;
         } else if !player.may_fly {

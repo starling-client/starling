@@ -1,0 +1,3 @@
+ids = ["hook:server_level_event", "type:ServerLevelEventEvent", "type:HookId"]
+why = "Adds the server hook server_level_event (vanilla ServerLevel.levelEvent and globalLevelEvent): a listener hears every level event the server sends, plain or global, and may cancel it so no ClientboundLevelEventPacket goes out and the world's own player neither hears nor sees it, as quiet-boss and dimension-isolation mods need. NeoForge has no counterpart. New hook: no existing hook version changes."
+migrate = "Additive. A mod that matches HookId exhaustively adds the ServerLevelEvent arm."

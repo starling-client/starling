@@ -1,30 +1,33 @@
 // exports: none (reached inside the crate only)
-//! Crash report lines a mod adds (NeoForge's `CrashReportCallables`), computed when a report is
-//! written rather than when they are registered.
+//! Crash report lines a mod adds (NeoForge's `CrashReportCallables`), computed while a report is
+//! built, after the panicking thread has unwound.
 use super::*;
 
-/// A crash report line a mod computes when the report is written: NeoForge's
-/// `ISystemReportExtender`, `ICrashReportHeader`, or a `registerCrashCallable` supplier with its
-/// active check. The report asks it once, on a thread of its own, while the game may have stopped
-/// mid-tick: read the mod's own state, and don't wait on anything the game holds.
+/// A crash report line a mod computes: NeoForge's `ISystemReportExtender`, `ICrashReportHeader`,
+/// or a `registerCrashCallable` supplier with its active check. It is asked in registration order
+/// when a report is built, on the thread that builds it after the panicking thread has unwound,
+/// as vanilla builds a report outside the throw. Read the mod's own state, and keep it cheap.
 pub trait CrashSection: Send + Sync + 'static {
-    /// The line's text, or `None` to leave it out of this report. The report keeps it on one
-    /// line (control characters become spaces) and cuts it to 4096 bytes.
+    /// The full text to include in the report, or `None` to omit this entry.
     fn value(&self) -> Option<String>;
 }
 
 /// The registration side of [`CrashSection`]: what [`Registrar`] adds them with.
 pub trait CrashSectionsRegistrar {
-    /// `registerCrashCallable(label, supplier)`: a line of every crash report's system details,
-    /// `<mod id>: <label>: <value>`, after Sunrise's own lines, in mod load order. A section that
-    /// panics, traps or doesn't answer within the report's wait reads `~~ERROR~~`, and the report
-    /// is still written. The lines of the mod the crash is attributed to are not asked.
+    /// `registerCrashCallable(label, supplier)`: a system detail, `<mod id>: <label>: <value>`,
+    /// run and written after Sunrise's own lines in registration order, even if the crash is
+    /// attributed to the registering mod. Continuation lines in multiline labels, values and
+    /// errors are prefixed with `\t\t<mod id> | ` so they stay attributed to the registering mod.
+    /// A failed entry starts with `~~ERROR~~`
+    /// without preventing later entries from running. A panic logs the mod, queues an error toast,
+    /// and disables only this registration for the rest of the session.
     fn crash_section(&mut self, label: &str, section: Arc<dyn CrashSection>);
-    /// `registerHeader`: a line under the report's title, `<mod id>: <value>`, asked as a
-    /// [`crash_section`](Self::crash_section) is.
+    /// `registerHeader`: an entry under the report's title, `<mod id>: <value>`, with continuation
+    /// lines prefixed `\t<mod id> | `, asked as a [`crash_section`](Self::crash_section) is.
     fn crash_header(&mut self, header: Arc<dyn CrashSection>);
 }
 
+// no wire: process-local callback and panic state.
 #[derive(Clone)]
 pub(crate) struct CrashSectionPart {
     pub(crate) mod_id: &'static str,
@@ -32,18 +35,42 @@ pub(crate) struct CrashSectionPart {
     /// The detail's label; `None` for a header line.
     pub(crate) label: Option<Box<str>>,
     pub(crate) section: Arc<dyn crate::CrashSection>,
+    pub(crate) panicked: Arc<std::sync::atomic::AtomicBool>,
 }
 
-/// The crash report lines the enabled mods registered, in registration order: the mod's
-/// `[mod] id`, the label (`None` for a header line) and what computes the line.
-pub fn mod_crash_lines() -> Vec<(&'static str, Option<Box<str>>, Arc<dyn CrashSection>)> {
-    installed().map_or_else(Vec::new, |installed| {
-        installed
-            .keys
-            .crash_sections
-            .iter()
-            .filter(|line| crate::mod_index_on(line.mod_index))
-            .map(|line| (line.mod_id, line.label.clone(), line.section.clone()))
-            .collect()
-    })
+/// Enabled crash report entries in registration order: the mod's `[mod] id`, label
+/// (`None` for a header), and the callable under the shared retained callback boundary.
+pub fn mod_crash_lines(
+    headers: bool,
+) -> impl Iterator<
+    Item = (
+        &'static str,
+        Option<&'static str>,
+        impl FnOnce() -> Result<Option<String>, String> + Send + 'static,
+    ),
+> {
+    let operation = if headers {
+        "crash_header"
+    } else {
+        "crash_section"
+    };
+    installed()
+        .into_iter()
+        .flat_map(|installed| &installed.keys.crash_sections)
+        .filter(move |line| {
+            line.label.is_none() == headers
+                && crate::callback_owner::enabled(line.mod_index, &line.panicked)
+        })
+        .map(move |line| {
+            (line.mod_id, line.label.as_deref(), move || {
+                crate::callback_owner::call(
+                    line.mod_id,
+                    line.mod_index,
+                    &line.panicked,
+                    "crash report",
+                    operation,
+                    || line.section.value(),
+                )
+            })
+        })
 }

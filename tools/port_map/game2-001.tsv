@@ -17,7 +17,7 @@ Squid.getMovementEmission	port	crates/sunrise-client/src/mobs/ai.rs::movement_so
 Squid.rotateVector	inline	crates/sunrise-client/src/mobs/aquatic.rs::spawn_ink	xRot then yRot of the body angles, inside spawn_ink
 Squid.finalizeSpawn	port	crates/sunrise-client/src/mobs/finalize.rs::Ctx::finalize	S::Squid arm: ageable group with 0.05 baby chance
 Turtle.defineSynchedData	port	crates/sunrise-client/src/game/network/lan/mod.rs::mob_meta	HAS_EGG and LAYING_EGG as entity metadata 18 and 19
-Turtle.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt	home_pos and has_egg written here
+Turtle.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_write.rs::mob_to_nbt	home_pos and has_egg written here
 Turtle.checkTurtleSpawnRules	port	crates/sunrise-client/src/mobs/spawn_rules.rs::check_spawn_rules	S::Turtle arm: below sea+4, sand, bright
 Turtle.createAttributes	skip:data		attribute values come from data tables (attr lookups in mobs.rs)
 Turtle.getAmbientSound	port	crates/sunrise-client/src/mobs/ai.rs::turtle_ambient_silent	silent in water, in the air and as a baby
@@ -25,10 +25,10 @@ Turtle.playStepSound	port	crates/sunrise-client/src/mobs/ai/step.rs::step_sound	
 Turtle.travelInWater	port	crates/sunrise-client/src/mobs/turtle.rs::travel	ticked in #3512; `Turtle.travelInWater` is cited at crates/sunrise-client/src/mobs/turtle.rs:152
 Turtle.TurtleLayEggGoal.isValidTarget	port	crates/sunrise-client/src/mobs/turtle.rs::LayEgg::valid	air above and sand below
 Wolf.registerGoals	port	crates/sunrise-client/src/mobs/tame.rs::register
-Wolf.getSoundSet	port	crates/sunrise-client/src/mobs/finalize.rs::variant_sound
+Wolf.getSoundSet	port	crates/sunrise-client/src/mobs/variants.rs::WolfSoundVariant::sound
 Wolf.createAttributes	skip:data		attribute values come from data tables
 Wolf.defineSynchedData	port	crates/sunrise-client/src/game/network/lan/mod.rs::mob_meta	flags, variant and anger metadata sent to clients
-Wolf.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt	CollarColor written
+Wolf.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_write.rs::mob_to_nbt	CollarColor written
 Wolf.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_load.rs::mob_from_nbt	CollarColor, sound_variant and anger read; live command writes initialize the wolf remaining anger at the current level clock
 Wolf.finalizeSpawn	port	crates/sunrise-client/src/mobs/finalize.rs::Ctx::finalize	gap: minor: sound variant is stored but no sound uses it (see getSoundSet)
 Wolf.getAmbientSound	port	crates/sunrise-client/src/mobs/ai.rs::ambient_sound	gap: minor: angry is taken as having a target, not the anger timer
@@ -132,7 +132,7 @@ Cushion.wouldSurviveAt	port	crates/sunrise-client/src/cushion.rs::survives
 Cushion.hasAnchorBelow	inline	crates/sunrise-client/src/cushion.rs::survives	anchor scan under the box
 Cushion.isCoveredBySuffocatingBlocks	inline	crates/sunrise-client/src/cushion.rs::survives	per-block suffocating test through PlacementWorld::suffocating
 Cushion.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::cushion_from_nbt	color tag read
-Cushion.get	port	crates/sunrise-client/src/game/entities/pick_entity.rs::Game::entity_pick_result	the pick gives the cushion item in its colour
+Cushion.get	port	crates/sunrise-client/src/game/entities/pick_entity.rs::Game::pick_result_of	the pick gives the cushion item in its colour
 Cushion.applyImplicitComponent	port	crates/sunrise-client/src/game/entities/cushions.rs::Game::place_cushion	colour from the stack's cushion colour data
 HangingEntity.onSyncedDataUpdated	skip:other		client resync of the facing; Sunrise keeps the facing as a field
 HangingEntity.setDirection	skip:other		facing field write; bounds are derived on demand from the facing

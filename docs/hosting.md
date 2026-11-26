@@ -35,24 +35,25 @@ plan are in [server.md](server.md).
   them.
 - **No Docker image is published.** You build it yourself from the repository (below). Publishing an image
   needs the project owner.
-- Nothing of Mojang's is downloaded or shipped. The server reads the game files you prepare from your own copy
-  of Minecraft 26.3.
+- The server does not need a Minecraft account or client install to prepare its game files. Setup can download
+  Mojang's free `server.jar` and Java runtime directly from Mojang, checking their SHA-1s. Neither the downloads
+  nor the prepared data are shipped with Sunrise.
 
 ## 1. Install
 
-Linux (x86-64) and macOS (Apple Silicon or Intel):
+Linux (x86-64) and macOS (Apple Silicon):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/sunrise-org/sunrise/main/packaging/server/install.sh | sh
 ```
 
-Windows (x64 or ARM64), in PowerShell:
+Windows x64, in PowerShell:
 
 ```powershell
 irm https://raw.githubusercontent.com/sunrise-org/sunrise/main/packaging/server/install.ps1 | iex
 ```
 
-The script picks the machine's x64 or ARM64 archive, including when PowerShell runs under x64 emulation. It downloads
+The scripts install Linux x86_64, Apple-chip macOS and Windows x64, Sunrise's three platforms. It downloads
 the current Sunrise Nightly from GitHub, or the release `--version <tag>` names (Windows: `-Version <tag>`): a stable
 release's tag, such as `26.3-0.1.0`, puts the server on that stable line, which its updates then follow. It checks it
 against the release's signature with a verifier the script pins (it refuses the install if anything doesn't match),
@@ -75,35 +76,27 @@ from there too.
 
 ## 2. Prepare the game files
 
-Sunrise reads Minecraft's data from your own copy of the game. You need Minecraft Java Edition 26.3, played
-once from the official launcher on this computer, a Java 25 runtime, and the 26.3 `server.jar`: it's the
-`downloads.server.url` in your launcher's `versions/26.3/26.3.json`. Then:
+Nothing to do before `init`: if it finds no prepared files after you accept the EULA, it runs
+`sunrise-prepare --server` to download the pinned `server.jar` from Mojang and prepare the server's data. If a
+release has no suitable Java installed, preparation also downloads Mojang's Java runtime. Running the server
+itself does not use Java.
 
-```sh
-sunrise-prepare --prepare --server-jar /path/to/server.jar
-```
+If the server cannot reach Mojang, download the pinned `server.jar` on another computer, copy it to the server,
+and run `sunrise-server init --server-jar /path/to/server.jar`. Provide Java 25 or newer through `JAVA_HOME` for
+an entirely offline preparation. A source checkout needs a JDK to compile the exporters; releases include the
+compiled exporters and need only a runtime.
 
-Add `--minecraft-dir PATH` if your launcher keeps the game elsewhere. The prepared files go to
-`game-files`, which updates keep.
+Or prepare on another computer with `sunrise-prepare --server` and copy its `game-files/sunrise-client/26.3-server`
+folder to the server. Use `sunrise-server import-resources DIR` to install that copy, or
+`sunrise-server init --resources DIR` to use it in place.
 
-**On a headless machine** (a VPS, a home server) with no Minecraft install, the launcher's command line can
-download the game for your account and set the server up there:
-
-```sh
-sunrise-launcher install latest
-sunrise-launcher account sign-in        # shows a code: enter it at the address it prints, on any device
-sunrise-launcher prepare --download     # Mojang's files, for the signed-in account that owns Minecraft
-sunrise-launcher servers set-up
-sunrise-launcher servers create --name "My server" --accept-eula
-sunrise-launcher servers run "My server" -- start
-```
-
-Or prepare on your own computer instead, with the launcher or `sunrise-prepare`, and copy the prepared `26.3` folder to the server with `sunrise-server import-resources DIR` (it checks the
-folder and its version first), or by hand: into
-`~/.local/share/sunrise/game-files/sunrise-client/26.3`, or into `resources/` in the server folder, or anywhere
-`[engine] resources` in `server.toml` names. A folder copied this way needs release v2026.10.17.07 or
-newer: older ones don't keep `registries.json` and `commands.json` with the prepared files, and the
-server then stops with "registries.json not found next to the resources". Prepare again with a newer release.
+Managed server files are prepared again when `sunrise-server run` finds they are missing or stale. To prepare
+those files before starting a configured server that has already accepted the EULA, run
+`sunrise-server --dir DIR init --yes`; it leaves `server.toml` unchanged. For a folder you set in `[engine] resources`, run
+`sunrise-prepare --server --output DIR` for server-only output. To repair a full folder, including output v7,
+run `sunrise-prepare --prepare --server-jar PATH --output DIR` with your own client files. Full output v8 is
+required. Use `--complete` to copy the sounds and run the full check, including client extras. Only the launcher downloads
+client files, for a signed-in account that owns Minecraft. Keep full and server-only output in separate folders.
 
 ## 3. First run
 
@@ -121,8 +114,8 @@ sunrise-server init
 4. whether to use a whitelist (yes by default, as in vanilla) and who to add;
 5. whether to make the first player an operator.
 
-It then tells you where it found the game and its files. Every question has a flag, so it also runs from a
-script:
+It then tells you where it found the game and its files, or prepares the files if they are missing. Every
+question has a flag, so it also runs from a script:
 
 ```sh
 sunrise-server init --eula --world survival --seed 12345 --port 25565 --whitelist --player Alex --op Alex --yes
@@ -255,18 +248,11 @@ The four caps limit what mods can ask for, counted per level:
 0 refuses every area of that kind. A request over a cap is refused whole, and the mod is told which cap and
 its value. Areas end when the player leaves.
 
-### Levels a mod opens: `sunrise-max-runtime-levels`
+### Levels a mod opens
 
-A mod can open levels of its own while the server runs ([runtime levels](modding/src/how-to/world/runtime-levels.md)).
-The server keeps at most 64 of them open at once, for all mods together; the 65th request is refused
-with `CapReached`. Set another number under `[properties]` in `server.toml`:
-
-```toml
-[properties]
-sunrise-max-runtime-levels = 128
-```
-
-A level frees its place when its mod unloads or deletes it (a delete also removes its folder from `dimensions/`). After 300 ticks with nobody in it, it leaves memory, as any custom level does, but keeps its place: it opens again when someone enters it.
+A mod can [open levels while the server runs](modding/src/how-to/world/runtime-levels.md). An idle level
+leaves memory and opens again when someone enters it. An explicit unload closes the level but keeps its
+folder; deleting the level also removes its folder from `dimensions/`.
 
 Already have a vanilla server? Run `sunrise-server init` in its folder, or `sunrise-server import
 server.properties` to write `server.toml` from it. The world, `ops.json`, `whitelist.json` and the ban lists
@@ -339,7 +325,7 @@ playsunrise.net", and the console says which client it was. The check reads the 
 by (`minecraft:brand`), which any client can fake: it keeps out players who didn't install Sunrise, not
 cheaters. The server's own checks (reach, movement) are what protect it.
 
-Sunrise clients can get their far terrain (Video Settings → LOD Distance) from the server: set
+Sunrise clients can get their far terrain (Sunrise Settings → General → LOD Distance) from the server: set
 `sunrise-lod-distance` under `[properties]` to how far, in chunks (1024 at most), and the server samples the
 tiles each player's client asks for out to there. It is off (0) by default: far tiles show the world's terrain
 far past the view distance, which helps players find the seed. A player's own LOD Distance applies when it is
@@ -654,8 +640,7 @@ The choice for a missing mod is saved in the world, so it holds even if the sett
 Substitution keeps the missing region's slot and weight; a returning mod does not undo it.
 Adoption keeps saved weights for returning regions, takes declared weights for new regions and
 drops absent regions. Completed chunks keep their saved biomes and blocks. New generation may
-differ in surface material, carving, features and structures. The
-[design note](design/mod-api/mod-biome-regions.md) lists record limits and fixture coverage.
+differ in surface material, carving, features and structures.
 
 ### Worlds saved with mods that are gone: `[missing_mods]`
 

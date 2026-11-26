@@ -10,11 +10,11 @@ import random
 import subprocess
 import tempfile
 
-try:
-    from . import lab, test_rust_parity
-except ImportError:
-    import lab
-    import test_rust_parity
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_rust_parity
 
 
 def corpus():

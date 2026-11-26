@@ -4,28 +4,38 @@ use super::*;
 use crate::game::api_values::TryIntoApi;
 use crate::game::native_entity_refs::tests::with_game;
 use mod_api::{
-    AttachedEnergy, AttachedItems, AttachmentType, EnergyHandler, HostTransaction, ITEM_STACKS,
-    ItemResource, ResourceHandler, ServerHost, StackList,
+    AttachedEnergy, AttachedItems, AttachmentDescriptor, AttachmentKey, EnergyHandler,
+    HostTransaction, ITEM_STACKS, ItemResource, ResourceHandler, ServerHost, StackList,
 };
 use sunrise_client::{chunk::Chunk, items::ItemStack};
 
-static ITEMS: AttachmentType<StackList<ItemResource>> = AttachmentType {
-    namespace: "storage_test",
-    name: "items",
-    default: Vec::new,
-    codec: Some(ITEM_STACKS),
-    copy_on_death: false,
-    sync: false,
-};
-static ENERGY: AttachmentType<u32> = AttachmentType {
-    namespace: "storage_test",
-    name: "energy",
-    default: || 0,
-    codec: None,
-    copy_on_death: false,
-    sync: false,
-};
 const CHUNK: Holder = Holder::Chunk([2, 3]);
+
+#[derive(Clone)]
+struct StorageKeys {
+    items: AttachmentKey<StackList<ItemResource>>,
+    energy: AttachmentKey<u32>,
+}
+
+struct StorageMod {
+    keys: Arc<Mutex<Option<StorageKeys>>>,
+}
+
+#[mod_api::__subscriptions]
+impl mod_api::Hooks for StorageMod {
+    fn register(&self, r: &mut dyn mod_api::Registrar, _: &mod_api::RegistrationContext) {
+        let items = r
+            .register_attachment_type(
+                AttachmentDescriptor::new("storage_test:items", StackList::new)
+                    .serialize(ITEM_STACKS),
+            )
+            .unwrap();
+        let energy = r
+            .register_attachment_type(AttachmentDescriptor::new("storage_test:energy", || 0u32))
+            .unwrap();
+        *self.keys.lock().unwrap() = Some(StorageKeys { items, energy });
+    }
+}
 
 fn chunk_game(game: &mut Game<'_>) {
     game.options.dedicated = Some(Vec::new());
@@ -35,40 +45,55 @@ fn chunk_game(game: &mut Game<'_>) {
         .insert((2, 3), Arc::new(Chunk::empty(2, 3)));
 }
 
+fn with_storage_game(test: impl FnOnce(&mut Game<'_>, &StorageKeys)) {
+    let keys = Arc::new(Mutex::new(None));
+    let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
+        "storage_test",
+        Box::new(StorageMod { keys: keys.clone() }),
+    )]
+    .into();
+    mod_platform::testing::with_mods(mods, || {
+        with_game(|game| {
+            let keys = keys.lock().unwrap().clone().expect("StorageMod registered");
+            chunk_game(game);
+            test(game, &keys);
+        });
+    });
+}
+
 #[test]
 #[ignore = "daily"]
 fn attached_items_are_undone_by_an_abort_and_saved_by_their_codec() {
-    with_game(|game| {
-        chunk_game(game);
+    with_storage_game(|game, keys| {
         let dirt = ItemResource::of(&ItemStack::new("minecraft:dirt", 1).try_into_api().unwrap());
-        let slots = AttachedItems::new(&ITEMS, CHUNK, 9, 64, |_| true).unwrap();
+        let slots = AttachedItems::new(&keys.items, CHUNK, 9, 64, |_| true);
         let host: &mut dyn ServerHost = game;
-        let aborted =
-            host.transaction(|host, tx| Err::<(), _>(slots.insert_at(host, tx, 4, &dirt, 10)));
-        assert_eq!(aborted, Err(10));
-        assert_eq!(ITEMS.has(host, CHUNK), Ok(false));
-        let went =
-            host.transaction(|host, tx| Ok::<_, ()>(slots.insert_at(host, tx, 4, &dirt, 10)));
+        let aborted = host
+            .transaction(|host, tx| Err::<(), _>(slots.insert_at(host, tx, 4, &dirt, 10).unwrap()));
+        assert_eq!(aborted, Err(mod_api::TransactionError::Aborted(10)));
+        assert_eq!(keys.items.has(host, CHUNK), Ok(false));
+        let went = host.transaction(|host, tx| slots.insert_at(host, tx, 4, &dirt, 10));
         assert_eq!(went, Ok(10));
         assert_eq!(slots.amount(host, 4), 10);
         // What the save writes reads back to the same index.
-        let held = ITEMS.get_existing(host, CHUNK).unwrap().unwrap();
-        let codec = ITEMS.codec.as_ref().unwrap();
-        let reloaded = (codec.decode)(&(codec.encode)(&held).unwrap()).unwrap();
-        assert_eq!(reloaded[4], Some((dirt, 10)));
-        assert!(reloaded[..4].iter().all(Option::is_none));
+        let held = keys
+            .items
+            .get_existing(host, CHUNK, |value| value.cloned())
+            .unwrap()
+            .unwrap();
+        let reloaded = (ITEM_STACKS.decode)(&(ITEM_STACKS.encode)(&held).unwrap()).unwrap();
+        assert_eq!(reloaded, StackList::from([(4, (dirt, 10))]));
     });
 }
 
 #[test]
 #[ignore = "daily"]
 fn attached_energy_refuses_past_its_capacity() {
-    with_game(|game| {
-        chunk_game(game);
-        let battery = AttachedEnergy::new(&ENERGY, CHUNK, 100, 1000, 1000);
+    with_storage_game(|game, keys| {
+        let battery = AttachedEnergy::new(&keys.energy, CHUNK, 100, 1000, 1000);
         let host: &mut dyn ServerHost = game;
         let insert = |host: &mut dyn ServerHost, amount| {
-            host.transaction(|host, tx| Ok::<_, ()>(battery.insert(host, tx, amount)))
+            host.transaction(|host, tx| battery.insert(host, tx, amount))
         };
         assert_eq!(insert(&mut *host, 150), Ok(100));
         assert_eq!(insert(&mut *host, 1), Ok(0));

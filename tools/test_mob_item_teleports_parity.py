@@ -5,20 +5,17 @@ This is a Sunrise hook integration proof, not an independent vanilla oracle.
 The teleport_consume, pearl_death, pearl_wind_charge and mob_ai harnesses
 separately cover the shared vanilla algorithms and gameplay consumers.
 """
-import json
 import os
 from pathlib import Path
 import re
 import subprocess
 import tempfile
 
-try:
-    from . import integration_env, lab, oracle_harness as harness, test_rust_parity as base
-except ImportError:
-    import integration_env
-    import lab
-    import oracle_harness as harness
-    import test_rust_parity as base
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import integration_env, lab, test_rust_parity as base
 
 
 CASES = (
@@ -40,18 +37,7 @@ def main():
                lab.ROOT / 'tools/oracle_harness.py', lab.ROOT / 'tools/test_rust_parity.py']
     sources += sorted((lab.ROOT / 'crates').rglob('*.rs'))
     hashes = base.source_hashes(sources)
-    harness.run_logged(['cargo', 'test', '--locked', '-p', 'sunrise-client',
-                        '--lib', '--no-default-features', '--no-run', '--message-format=json'],
-                       build, 'compile-rust', timeout=3600)
-    artifacts = [json.loads(line) for line in (build / 'compile-rust.log').read_text().splitlines()
-                 if line.startswith('{')]
-    executables = {record['executable'] for record in artifacts
-                   if record.get('reason') == 'compiler-artifact'
-                   and record.get('executable') and record.get('profile', {}).get('test')
-                   and record['target']['name'] == 'sunrise_client'
-                   and 'lib' in record['target']['kind']}
-    assert len(executables) == 1, executables
-    executable = executables.pop()
+    executable = lab.parity_fixtures(default_features=False)
     listed = subprocess.check_output([executable, '--list', '--ignored'], text=True)
     passed = []
     for case in CASES:

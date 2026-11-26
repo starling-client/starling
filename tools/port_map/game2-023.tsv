@@ -10,7 +10,7 @@ FlowingFluid.BlockStatePairKey.equals	skip:java	-	cache key record equality
 FlowingFluid.BlockStatePairKey.hashCode	skip:java	-	cache key record hash
 FlowingFluid.SpreadContext.getBlockState	port	crates/sunrise-world/src/level/fluids.rs::Sim::context_state	-
 FlowingFluid.SpreadContext.isHole	port	crates/sunrise-world/src/level/fluids.rs::Sim::context_is_hole	-
-Fluid.getAABB	inline	crates/sunrise-client/src/arrows.rs::Ticker::collided_with_fluid	the fluid box (block to block plus height) is built inside collided_with_fluid for the sweep test
+Fluid.getAABB	inline	crates/sunrise-client/src/entities/arrows/flight.rs::Ticker::collided_with_fluid	the fluid box (block to block plus height) is built inside collided_with_fluid for the sweep test
 FluidState.isSourceOfType	port	crates/sunrise-world/src/level/fluids.rs::Sim::is_source_of	family comparison instead of owner identity; same result for source states
 LavaFluid.hasFlammableNeighbours	inline	crates/sunrise-world/src/level/fluids.rs::Sim::lava_random_tick	the six-neighbour check is folded into the random tick; uses the plain IGNITED_BY_LAVA flag, no face argument
 LavaFluid.isFlammable	port	crates/sunrise-world/src/level/fluids.rs::Sim::lava_flammable	deprecated no-face overload; same build-height and chunk check and flag
@@ -112,20 +112,20 @@ CommandStorage.Container.getKeys	port	crates/sunrise-client/src/command_storage.
 LevelStorageSource.LevelStorageAccess.releaseTemporarilyAndRun	skip:other	-	used only by the external datafixer tool (FileFixerUpper); Sunrise does not run it
 LevelStorageSource.LevelStorageAccess.safeClose	skip:other	-	closes the session lock and logs a failure; Sunrise releases its lock when the session drops
 LevelStorageSource.LevelStorageAccess.getLevelPath	skip:other	-	path helper for level resources; Sunrise builds these paths where they are used (save.rs::saved_data_path)
-LevelStorageSource.LevelStorageAccess.collectIssues	port	crates/sunrise-client/src/save.rs::level_dat_issue	the issue line of each file on RecoverWorldDataScreen (title.rs)
-LevelStorageSource.LevelStorageAccess.fixAndGetSummaryFromTag	port	crates/sunrise-client/src/title.rs::list_worlds	gap: minor: the world list reads name and last played directly, without a data fix first
-LevelStorageSource.LevelStorageAccess.getUnfixedDataTagWithFallback	port	crates/sunrise-client/src/save.rs::fall_back_to_level_dat_old	the dedicated server (Main) takes level.dat_old and restores it; the client asks on RecoverWorldDataScreen instead (WorldOpenFlows)
-LevelStorageSource.LevelStorageAccess.getUnfixedDataTag	inline	crates/sunrise-client/src/save.rs::Level::read	the Data compound of level.dat is read inside Level::read
-LevelStorageSource.LevelStorageAccess.saveDataTag	inline	crates/sunrise-client/src/save.rs::Level::write	level.dat is written inside Level::write
-LevelStorageSource.LevelStorageAccess.saveLevelData	port	crates/sunrise-client/src/save.rs::write_dat	the temp file, the level.dat_old swap and the write are in write_dat
+LevelStorageSource.LevelStorageAccess.collectIssues	port	crates/sunrise-client/src/save/level_dat.rs::level_dat_issue	the issue line of each file on RecoverWorldDataScreen (title.rs)
+LevelStorageSource.LevelStorageAccess.fixAndGetSummaryFromTag	port	crates/sunrise-client/src/save/worlds.rs::list_worlds	gap: minor: the world list reads name and last played directly, without a data fix first
+LevelStorageSource.LevelStorageAccess.getUnfixedDataTagWithFallback	port	crates/sunrise-client/src/save/level_dat.rs::fall_back_to_level_dat_old	the dedicated server (Main) takes level.dat_old and restores it; the client asks on RecoverWorldDataScreen instead (WorldOpenFlows)
+LevelStorageSource.LevelStorageAccess.getUnfixedDataTag	inline	crates/sunrise-client/src/save/level.rs::Level::read	the Data compound of level.dat is read inside Level::read
+LevelStorageSource.LevelStorageAccess.saveDataTag	inline	crates/sunrise-client/src/save/level.rs::Level::write	level.dat is written inside Level::write
+LevelStorageSource.LevelStorageAccess.saveLevelData	port	crates/sunrise-client/src/save/level_dat.rs::write_dat	the temp file, the level.dat_old swap and the write are in write_dat
 LevelStorageSource.LevelStorageAccess.getIconFile	port	crates/sunrise-client/src/title.rs::Title::icon	gap: minor: no session-lock check; Sunrise reads icon.png whenever it is there
 LevelStorageSource.LevelStorageAccess.renameLevel	port	crates/sunrise-client/src/title/world_management.rs::rename	-
 LevelStorageSource.LevelStorageAccess.renameAndDropPlayer	port	crates/sunrise-client/src/realms/download.rs::rename_and_drop_player	when a downloaded Realms world has no links: level.dat's LevelName becomes the folder's name and singleplayer_uuid is dropped; a failure only logs
 LevelStorageSource.LevelStorageAccess.modifyLevelDataWithoutDatafix	inline	crates/sunrise-client/src/title/world_management.rs::rename	read, change the Data compound and write back; rename is the only edit Sunrise makes
 LevelStorageSource.LevelStorageAccess.makeWorldBackup	port	crates/sunrise-client/src/title/world_management.rs::backup	-
-LevelStorageSource.LevelStorageAccess.hasWorldData	inline	crates/sunrise-client/src/title.rs::list_worlds	gap: minor: a folder counts as a world only when its level.dat reads; level.dat_old is not checked
-LevelStorageSource.LevelStorageAccess.restoreLevelDataFromOld	port	crates/sunrise-client/src/save.rs::restore_level_data_from_old	keeps the broken file as level.dat_corrupted_<time>; gap: minor: a failed move puts level.dat back and reports the failure (vanilla reports success with noRollback)
-PlayerDataStorage.backup	port	crates/sunrise-client/src/save.rs::back_up_unreadable_player	a player file that does not read is copied to <uuid>_corrupted_<time>.dat before the save writes over it
+LevelStorageSource.LevelStorageAccess.hasWorldData	inline	crates/sunrise-client/src/save/worlds.rs::list_worlds	gap: minor: listing checks for a regular level.dat or level.dat_old rather than mere existence; only level.dat is read for a normal summary
+LevelStorageSource.LevelStorageAccess.restoreLevelDataFromOld	port	crates/sunrise-client/src/save/level_dat.rs::restore_level_data_from_old	keeps the broken file as level.dat_corrupted_<time>; gap: minor: a failed move puts level.dat back and reports the failure (vanilla reports success with noRollback)
+PlayerDataStorage.backup	port	crates/sunrise-client/src/save/level_dat.rs::back_up_unreadable_player	a player file that does not read is copied to <uuid>_corrupted_<time>.dat before the save writes over it
 SavedDataStorage.getDataFile	port	crates/sunrise-client/src/save/saved_data.rs::saved_data_path	gap: minor: no check that the path stays inside the data folder; the names come from fixed callers
 SavedDataStorage.computeIfAbsent	inline	crates/sunrise-client/src/save.rs::compound_or_empty	the default is an empty compound when the file is absent
 SavedDataStorage.get	port	crates/sunrise-client/src/save/saved_data.rs::read_saved_data	gap: minor: reads the file on each call; vanilla caches the read per type
@@ -133,7 +133,7 @@ SavedDataStorage.isGzip	inline	crates/sunrise-world/src/datafix/files.rs::read_s
 SavedDataStorage.collectDirtyTagsToSave	skip:other	-	Sunrise writes each saved-data file when its owner saves; there is no dirty set
 SavedDataStorage.encodeUnchecked	inline	crates/sunrise-client/src/save/saved_data.rs::write_saved_data	DataVersion is added in write_saved_data; callers encode the data
 SavedDataStorage.tryWrite	port	crates/sunrise-client/src/save/saved_data.rs::write_saved_data	-
-SavedDataStorage.close	inline	crates/sunrise-client/src/save.rs::Level::write	the final save of the saved data happens in Level::write
+SavedDataStorage.close	inline	crates/sunrise-client/src/save/level.rs::Level::write	the final save of the saved data happens in Level::write
 TagValueInput.DecodeFromListFailedProblem.description	skip:debug	-	error text for logs only
 TagValueInput.UnexpectedListElementTypeProblem.description	skip:debug	-	error text for logs only
 PortalShape.findPortalShape	port	crates/sunrise-world/src/level/portal.rs::Sim::find_empty_portal_shape	preferred axis first, then the other; here the predicate is an empty frame with no portal block
@@ -143,8 +143,8 @@ PortalShape.getDistanceUntilEdgeAboveFrame	port	crates/sunrise-world/src/level/p
 PortalShape.calculateHeight	inline	crates/sunrise-world/src/level/portal.rs::Sim::find_portal_shape	height rows loop and the 3 to 21 check are inline
 PortalShape.hasTopFrame	inline	crates/sunrise-world/src/level/portal.rs::Sim::find_portal_shape	the top frame row check is inline
 PortalShape.getDistanceUntilTop	inline	crates/sunrise-world/src/level/portal.rs::Sim::find_portal_shape	rows loop counts portal blocks as it goes, inline
-TeleportTransition.playPortalSound	inline	crates/sunrise-client/src/lan/hub.rs::Hub::land	level event 1032 is sent on arrival
-TeleportTransition.withRotation	inline	crates/sunrise-client/src/lan/hub.rs::Hub::change_level	the turned yaw is applied with the level change
-TeleportTransition.withPosition	inline	crates/sunrise-client/src/lan/hub.rs::Hub::land	the exit position is applied on arrival
+TeleportTransition.playPortalSound	inline	crates/sunrise-client/src/lan/hub/passage_cross.rs::Hub::land	level event 1032 is sent on arrival
+TeleportTransition.withRotation	inline	crates/sunrise-client/src/lan/hub/passage_cross.rs::Hub::finish_level_change	the turned yaw is applied with the level change
+TeleportTransition.withPosition	inline	crates/sunrise-client/src/lan/hub/passage_cross.rs::Hub::land	the exit position is applied on arrival
 TeleportTransition.transitionAsPassenger	port	crates/sunrise-client/src/game/world/server_travel.rs::Game::carry_riders_through_portals	riders travel with the vehicle and ride it again on arrival
 DefaultRedstoneWireEvaluator.calculateTargetStrength	inline	crates/sunrise-world/src/level/redstone.rs::Sim::wire_update_power	the 15 shortcut and the max with the incoming signal are inline

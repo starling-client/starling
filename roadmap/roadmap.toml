@@ -313,24 +313,6 @@ speed-ups are under 'Steady frames at long render distances'."""
 links = ["#1805"]
 
 [[item]]
-id = "native-shaders"
-title = "Sunrise's own shader format and kit"
-status = "shipped"
-shipped_in = "v0.2.70"
-area = "rendering"
-plain = """Sunrise's own way to make shader packs, with tools to write and test them. Every pack is checked before it \
-runs, and the registry will list them."""
-dev = """`sunrise-shader-api` (API 0.1, experimental): WGSL stages with typed inputs inside the renderer's passes, \
-options as WGSL override constants, and the `sunrise-shader new|check|pack` tool with templates and the \
-example pack Golden Hour. Merged: the check every pack passes (#1820) and the tool, templates and guide \
-(#1822). In review: the post stage running in the game with hot reload (#1861), the sky stage (#1863) and \
-registry checks that use the game's own check (#1855). Left: the material, lighting and shadow stages, a \
-last-good fallback on reload, a GPU-time overlay per stage and budgets (docs/shaders.md, \
-docs/api/shaders.md). The Iris/OptiFine loader is a separate item, 'Shader packs, written again from \
-scratch'."""
-links = ["#1820", "#1822", "#1861", "#1863", "#1855", "docs/shaders.md", "docs/api/shaders.md"]
-
-[[item]]
 id = "server-dialogs"
 title = "Server dialogs and login screens"
 status = "shipped"
@@ -801,7 +783,7 @@ computer, as it already does for native mods."""
 dev = """Issue #4354: when no release asset matches the platform, the launcher fetches the tagged source and runs \
 the same pinned-toolchain `cargo build --locked` its native-mod builds use, with a warning about the time it \
 takes. The build is unsigned, so the launcher marks the version as built locally."""
-links = ["#4354", "docs/native-mods.md"]
+links = ["#4354", "docs/modding/src/how-to/native-mods.md"]
 
 [[item]]
 id = "windows-arm64"
@@ -809,8 +791,9 @@ title = "Sunrise on Windows ARM64"
 status = "later"
 area = "platforms"
 plain = """A native Sunrise for Windows on ARM computers, such as Snapdragon laptops."""
-dev = """Releases are x64 for Windows and Linux and arm64 for macOS. Needs an aarch64-pc-windows-msvc build in the release workflow and a machine to test on."""
-links = ["docs/release-flow.md"]
+dev = """Releases are x64 for Windows and Linux and arm64 for macOS, the SDK's three platforms. Windows ARM64 returns \
+only with its own SDK (https://github.com/sunrise-org/sunrise/issues/4556): a game build, the SDK's slices and a machine to test on."""
+links = ["https://github.com/sunrise-org/sunrise/issues/4556", "docs/release-flow.md"]
 
 [[item]]
 id = "opengl-fallback"
@@ -880,9 +863,9 @@ title = "Sunrise on Intel Macs"
 status = "later"
 area = "platforms"
 plain = "Builds of the game and the launcher for Macs with an Intel processor."
-dev = """x86_64 game and launcher builds, picked per processor (#1171). Before it ships it needs a run on a real \
-Intel Mac: Rosetta on Apple Silicon only proves the CPU code. Requests: #1161, #1792."""
-links = ["#1171", "#1161", "#1792"]
+dev = """x86_64 game builds return only with their own SDK (https://github.com/sunrise-org/sunrise/issues/4556), and need a run on a real Intel Mac: Rosetta on \
+Apple Silicon only proves the CPU code. Requests: #1161, #1792."""
+links = ["https://github.com/sunrise-org/sunrise/issues/4556", "#1161", "#1792"]
 
 [[item]]
 id = "targeted-optimisations"
@@ -987,8 +970,8 @@ homes, mace smashes and knockback."""
 dev = """Villages: iron golem village goals, villager memories across saves, villager age, job-site claiming on \
 dedicated servers, flower offers (#1639 is one report). Combat: the mobs' `attack_knockback` attribute, mace \
 smash logic, the hit knockback source on the host, the fire burnout biome tag. Each is checked against \
-vanilla by a harness (docs/rust-parity.md)."""
-links = ["#1639", "docs/rust-parity.md"]
+vanilla by a harness (docs/status.md)."""
+links = ["#1639", "docs/status.md"]
 
 [[item]]
 id = "audio-device"
@@ -1005,13 +988,12 @@ id = "shader-pack-examples"
 title = "Well-known shader looks, rewritten for Sunrise"
 status = "later"
 area = "rendering"
-plain = """Popular shader packs rewritten in Sunrise's format, so good packs exist from the start. Only packs whose \
-licence is open source and compatible with ours are rewritten, never anything else."""
+plain = """Popular shader packs rewritten as Iris/OptiFine-format packs, so good packs exist from the start. Only packs \
+whose licence is open source and compatible with ours are rewritten, never anything else."""
 dev = """The first candidates are Photon, Chocapic13 and MakeUp Ultra Fast, each only after its licence is read and \
 recorded: a pack is rewritten only if it is open source and compatible with Sunrise's licence, and the \
-rewrite is written from the shader format's documentation and the look on screen, not from anyone's code. \
-Today only the Golden Hour example exists (`crates/sunrise-shader-api/packs/golden_hour`)."""
-links = ["docs/shaders.md", "crates/sunrise-shader-api/packs/golden_hour"]
+rewrite is written from the shader format's documentation and the look on screen, not from anyone's code."""
+links = ["docs/shaders.md"]
 
 [[item]]
 id = "beta-label"

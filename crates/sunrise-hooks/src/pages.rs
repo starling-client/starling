@@ -9,15 +9,15 @@ use crate::registry::Registry;
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Place {
-    /// A button on the Sunrise Settings page, after the engine's own pages.
+    /// A row on Sunrise Settings' Extras page, after PvP & HUD's, that opens the page.
     SunriseSettings,
     /// A full-width button of the pause menu, above Options. The
     /// pause menu has it only when a page registered there.
     Pause,
-    /// A section of Sunrise Settings' Extras page, with no entry: its rows join the page's group
+    /// A section of Sunrise Settings' Gameplay page, with no entry: its rows join the page's group
     /// its title names when the page has one (`sunrise.extras.header.multiplayer`), else they
     /// start a group of their own after the page's. A [`Row::Heading`] starts another group. A
-    /// [`Row::Key`] shows its key there, without changing it: give a page of its own to a key.
+    /// [`Row::Key`] binds there as it does on a page of its own.
     Extras,
     /// The title screen's Friends icon slot (vanilla's `CommonButtons.friends`, beside Language
     /// and Accessibility): with a page registered here the icon opens the first one as a form of
@@ -79,7 +79,7 @@ pub enum Row {
     /// A button that does something ([`Row::button`]). An inactive one is drawn greyed and
     /// never pressed; two half-width ones in a row sit side by side; a footer one sits at the
     /// bottom beside Done on a page drawn as its own screen, and with the others elsewhere.
-    /// Sunrise Settings' Extras shows only active ones.
+    /// Sunrise Settings' Gameplay page shows only active ones.
     #[non_exhaustive]
     Button {
         label: &'static str,

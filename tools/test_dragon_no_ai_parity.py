@@ -19,15 +19,13 @@ import shutil
 import subprocess
 import time
 
-try:
-    from . import lab, test_rust_parity as base
-    from .test_dedicated_server_parity import Server, free_port, game_time
-    from .test_server_world_gen_parity import escape
-except ImportError:
-    import lab
-    import test_rust_parity as base
-    from test_dedicated_server_parity import Server, free_port, game_time
-    from test_server_world_gen_parity import escape
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_rust_parity as base
+from tools.test_dedicated_server_parity import Server, free_port, game_time
+from tools.test_server_world_gen_parity import escape
 
 PLAYER = 'Tester'
 MESSAGE = re.compile(r'\[Server thread/INFO\]: (?:System chat: )?(.*)$')

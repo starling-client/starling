@@ -1,0 +1,1 @@
+cargo-sunrise-mod dev::tests::a_lock_the_pinned_sdk_moved_is_refused_until_refreshed bin:cargo-sunrise-mod daily child-process

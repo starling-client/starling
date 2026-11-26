@@ -1,5 +1,4 @@
 //! The `entity_interact` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0057
 
 pub trait Hooks {
     /// A player right-clicks the entity `entity` (`Entity.getId`) of type

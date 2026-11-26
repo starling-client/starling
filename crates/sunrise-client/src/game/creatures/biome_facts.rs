@@ -23,7 +23,6 @@ pub(in crate::game) fn biome_facts_in(
         Climate::Temperate
     };
     BiomeFacts {
-        coral_nautilus: has("minecraft:spawns_coral_variant_zombie_nautilus"),
         white_rabbit: has("minecraft:spawns_white_rabbits"),
         gold_rabbit: has("minecraft:spawns_gold_rabbits"),
         climate,
@@ -37,14 +36,5 @@ pub(in crate::game) fn biome_facts_in(
         mushroom: b.name == "minecraft:mushroom_fields",
         desert: b.name == "minecraft:desert",
         jungle: has("minecraft:is_jungle"),
-        wolf: sunrise_client::mobs::tame::wolf_variant_for(&b.name, &has),
-        full_moon: (world.day_time / 24000).rem_euclid(8) == 0,
-        frog: if has("minecraft:spawns_warm_variant_frogs") {
-            1
-        } else if has("minecraft:spawns_cold_variant_frogs") {
-            2
-        } else {
-            0
-        },
     }
 }

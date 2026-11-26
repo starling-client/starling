@@ -167,7 +167,7 @@ fn an_accepted_move_still_yields_when_it_logs_moved_wrongly() {
         });
         let mut events = Vec::new();
         let mut held = false;
-        assert!(hub.process_inbox(0, ctx, &mut events, true, &mut held));
+        assert!(hub.process_inbox(0, ctx, &mut events, true, &mut held, &mut None));
         assert!(
             matches!(&events[..], [HostEvent::Warn(_), HostEvent::AcceptedMove(_, movement), HostEvent::InputCredits(_)] if movement.horizontal_collision)
         );

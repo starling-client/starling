@@ -43,7 +43,8 @@ impl Game<'_> {
         // (no pickup delay).
         let (dx, dz) = (f64::from(dx), f64::from(dz));
         let table = "minecraft:carve/pumpkin";
-        let mut drops = self.sequence_loot(table, table, Some(shears));
+        let actor = self.interacting_loot_entity();
+        let mut drops = self.interact_loot_at(table, pos, state, Some(actor), Some(shears));
         let origin = pos.map(|c| f64::from(c) + 0.5);
         let player = Some(self.native_acting_id());
         self.native_use_drops(
@@ -66,7 +67,7 @@ impl Game<'_> {
             let vz = 0.05 * dz + r.next_double() * 0.02;
             self.spawn_item(seeds, at, [vx, 0.05, vz], 0);
         }
-        self.audio.play(
+        self.play_audio(
             "minecraft:block.pumpkin.carve",
             Some([
                 f64::from(pos[0]) + 0.5,

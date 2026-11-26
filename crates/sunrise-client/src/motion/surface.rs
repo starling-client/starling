@@ -22,6 +22,16 @@ pub trait SideLevel {
     fn player_equipment(&self) -> crate::health::PlayerEquipment<'_> {
         [None; 8]
     }
+    /// Whether a living target not lent to the mob tick still has a live body.
+    fn living_target_alive(&self, _id: u32) -> bool {
+        false
+    }
+    /// What a hit on that player needs to name and read the living entities it lends, and what
+    /// the view a heal or movement hook lends of an entity this side ticks needs; none where
+    /// this side has no open world. Only a hit's level and such a hook's listeners ask.
+    fn hit_reads(&self) -> Option<crate::health::HitReads<'_>> {
+        None
+    }
     /// The damage-type registry of this side's current level.
     fn damage_types(&self) -> &sunrise_world::damage_source::Catalog;
     /// The resident block entity at `pos` of `world`, as a handle of this side's level.
@@ -33,6 +43,19 @@ pub trait SideLevel {
         registry: &BlockRegistry,
         entity: mod_api::BlockEntityRef,
     ) -> Option<mod_api::Compound>;
+    /// The world open that owns motion entities on this side.
+    fn world_epoch(&self) -> Option<mod_api::WorldEpoch> {
+        None
+    }
+    /// The read-only block-state and fluid fact tables of this side. Only dry test/probe sides
+    /// have no tables.
+    fn block_states(&self) -> Option<mod_api::BlockStates<'_>> {
+        None
+    }
+    /// The world's frozen variant registries (server's world tables, or client's synced tables).
+    fn variant_tables(&self) -> Option<&crate::mobs::variants::VariantTables> {
+        None
+    }
 }
 
 /// Level data for tests and probes that do not have a live game.
@@ -78,8 +101,9 @@ pub fn dry_side() -> &'static dyn SideLevel {
     &*SIDE
 }
 
-/// The engine data a subscribed friction part may read. Borrows the actual world, this side's
-/// level data and the caller's coefficient table; it carries no write access or entity snapshot.
+/// The read-only level a subscribed block part reads: friction, bounce restitution, sound type
+/// and a client's step-on. Borrows the actual world, this side's level data and the caller's
+/// friction coefficient table; it carries no write access or entity snapshot.
 #[derive(Clone, Copy)]
 pub struct FrictionLevel<'a> {
     pub world: &'a World,
@@ -157,6 +181,22 @@ pub fn native_is_ladder(
     ladder: &mut bool,
 ) {
     crate::native_client_hooks::is_ladder(context, entity, pos, state, ladder);
+}
+
+/// Whether a block stops a sneaking player's slide down a climbable as scaffolding does
+/// (`IBlockExtension.isScaffolding`, which `LivingEntity.handleOnClimbable` asks of the block the
+/// player stands in) is being decided. `scaffolding` starts with the `minecraft:scaffolding`
+/// answer and the block's parts may change it. Fires on replayed ticks too, so a listener must be
+/// a pure function of its inputs.
+#[inline(never)]
+pub fn native_is_scaffolding(
+    context: &LoopContext,
+    entity: u32,
+    pos: BlockPos,
+    state: BlockStateId,
+    scaffolding: &mut bool,
+) {
+    crate::native_client_hooks::is_scaffolding(context, entity, pos, state, scaffolding);
 }
 
 /// The factors the `block_jump_factor` and `block_speed_factor` parts give the blocks an entity

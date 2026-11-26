@@ -1,0 +1,3 @@
+ids = ["type:HookId"]
+why = "`HookId` is generated from the hook catalog. This round adds catalog entries for native hook moments and removes duplicate and retired entries, so the enum has the same additions and removals."
+migrate = "Remove match arms for deleted variants and handle the new variants in exhaustive `HookId` matches. For each removed listener use the replacement or stop subscribing as described in that hook's change note."

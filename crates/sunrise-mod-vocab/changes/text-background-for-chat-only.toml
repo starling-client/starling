@@ -1,0 +1,3 @@
+ids = ["type:ClientGuiOptions.background_for_chat_only", "handle:ClientGuiOptions::background_color", "handle:ClientGuiOptions::background_opacity"]
+why = "ClientGuiOptions carries the Text Background: Chat only switch, with Options.getBackgroundOpacity and getBackgroundColor as background_opacity and background_color, so a mod draws the text backdrop vanilla would (#5653)."
+migrate = "ClientGuiOptions has a new field, background_for_chat_only. Mods only read it; the game builds it."

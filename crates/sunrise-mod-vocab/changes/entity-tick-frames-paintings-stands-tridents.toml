@@ -1,0 +1,3 @@
+ids = ["hook:entity_tick_pre", "hook:entity_tick_post"]
+why = "Version 5 tells the server's item and glow item frames, paintings, armor stands and thrown tridents, each alone around its own tick (NeoForge's EntityTickEvent.Pre and Post, posted in tickNonPassenger for every entity), under the same event signature. A Pre that cancels skips that entity's tick and its Post."
+migrate = "Rebuild against this SDK. Expect calls for these entity types, each told alone with its kind (minecraft:item_frame, minecraft:glow_item_frame, minecraft:painting, minecraft:armor_stand, minecraft:trident). A listener that cancels by type should check event.kind before returning Flow::Cancel."

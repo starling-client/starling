@@ -1,5 +1,4 @@
 //! The `bell_ring` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0169
 
 pub trait Hooks {
     /// On an authoritative server, a bell at `pos` is about to ring. Set

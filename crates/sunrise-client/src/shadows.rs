@@ -164,7 +164,21 @@ pub fn in_view(
     radius: f32,
     strength: f32,
 ) -> bool {
-    let Some((radius, _)) = shadow_gates(radius, strength, pos.distance_squared(camera)) else {
+    in_view_from(view, camera, pos, pos, radius, strength)
+}
+
+/// [`in_view`] using `distance_pos` (vanilla `state.distanceToCameraSq` from uninterpolated
+/// `entity.position()`) for the distance/strength gate and `pos` for shadow placement.
+pub fn in_view_from(
+    view: &crate::gfx::JoinedFrusta,
+    camera: DVec3,
+    pos: DVec3,
+    distance_pos: DVec3,
+    radius: f32,
+    strength: f32,
+) -> bool {
+    let Some((radius, _)) = shadow_gates(radius, strength, distance_pos.distance_squared(camera))
+    else {
         return false;
     };
     let (min, max) = bounds(camera, pos, radius);
@@ -201,7 +215,43 @@ pub fn shadow(
     sky_darken: i32,
     out: &mut Vec<Vertex>,
 ) {
-    let Some((radius, pow)) = shadow_gates(radius, strength, pos.distance_squared(camera)) else {
+    shadow_from(
+        world,
+        facts,
+        collision_bounds,
+        sprite,
+        camera,
+        pos,
+        pos,
+        radius,
+        strength,
+        ambient_light,
+        sky_darken,
+        out,
+    );
+}
+
+/// [`shadow`] using `distance_pos` (vanilla `state.distanceToCameraSq` from uninterpolated
+/// `entity.position()`) for the distance/strength fade and `pos` for placement.
+#[allow(clippy::too_many_arguments)]
+pub fn shadow_from(
+    world: &World,
+    facts: &BlockFacts,
+    collision_bounds: &impl Fn(
+        sunrise_world::registry::BlockStateId,
+    ) -> Option<sunrise_core::geometry::Aabb>,
+    sprite: Rect,
+    camera: DVec3,
+    pos: DVec3,
+    distance_pos: DVec3,
+    radius: f32,
+    strength: f32,
+    ambient_light: f32,
+    sky_darken: i32,
+    out: &mut Vec<Vertex>,
+) {
+    let Some((radius, pow)) = shadow_gates(radius, strength, distance_pos.distance_squared(camera))
+    else {
         return;
     };
     let r = f64::from(radius);

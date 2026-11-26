@@ -1,0 +1,3 @@
+ids = ["type:NbtUpgradeError.UnsupportedVersion"]
+why = "Standalone NBT upgrades read versions below the first schema with that schema, as vanilla does."
+migrate = "Remove the UnsupportedVersion match arm. Pass -1 as the source version for unversioned data."

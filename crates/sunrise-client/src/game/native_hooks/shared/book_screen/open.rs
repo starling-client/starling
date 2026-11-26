@@ -13,9 +13,6 @@ impl Game<'_> {
             .facts()
             .get(self.world.block(pos.0, pos.1, pos.2))
             .name;
-        if block.starts_with("minecraft:") {
-            return None;
-        }
         let container = mod_api::__private::parts_installation::block_container(block)?;
         let (opens, _) = mod_menu(container.menu.as_deref()?)?;
         (opens == menu).then_some(block.as_ref())
@@ -123,12 +120,14 @@ impl Game<'_> {
             }
         }
         screen.slots.resize_with(backing_slots, || None);
+        let title = remote.menu_title_snapshot().cloned();
         self.mod_screen = Some(OpenNativeScreen {
             menu: OpenNativeMenu {
                 key,
                 window: *window,
                 generation: remote.menu.generation,
                 name: name.clone(),
+                title,
                 block: block.map(str::to_owned),
                 pos,
                 mod_type,
@@ -141,6 +140,7 @@ impl Game<'_> {
             },
             screen: instance,
             shown: false,
+            detached: false,
         });
         true
     }

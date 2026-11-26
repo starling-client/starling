@@ -77,26 +77,21 @@ fn a_clip_through_the_middle_keeps_the_ramp_between_the_two_colours() {
     let (top, bottom) = (0xFFFF_0000, 0x0000_00FF);
     paint(&mut batch, &atlas, &[gradient(0, 0, 10, 8, top, bottom)]);
     batch.clip_since(0, 0.0, 2.0, 10.0, 6.0);
-    // A quarter and three quarters of the way down: every channel, alpha too, is mixed.
-    let at = |y: f32| {
-        let colors: Vec<u32> = batch
-            .vertices
-            .iter()
-            .filter(|v| v.pos[1] == y)
-            .map(|v| v.color)
-            .collect();
-        assert!(!colors.is_empty(), "nothing on the cut at y {y}");
-        assert!(colors.iter().all(|c| *c == colors[0]));
-        colors[0].to_le_bytes()
-    };
-    let near = |got: [u8; 4], want: [u8; 4]| {
-        for (g, w) in got.into_iter().zip(want) {
-            assert!(g.abs_diff(w) <= 1, "{got:?} is not {want:?}");
-        }
-    };
-    // Packed RGBA bytes are r, g, b, a.
-    near(at(2.0), [191, 0, 64, 191]);
-    near(at(6.0), [64, 0, 191, 64]);
+    assert_eq!(
+        batch.scissors_in(0..6).collect::<Vec<_>>(),
+        [(0..6, Some([0.0, 2.0, 10.0, 6.0]))]
+    );
+    assert_eq!(
+        vertices(&batch),
+        [
+            ([0.0, 0.0], 0xFF00_00FF),
+            ([10.0, 0.0], 0xFF00_00FF),
+            ([10.0, 8.0], 0x00FF_0000),
+            ([0.0, 0.0], 0xFF00_00FF),
+            ([10.0, 8.0], 0x00FF_0000),
+            ([0.0, 8.0], 0x00FF_0000),
+        ]
+    );
 }
 
 #[test]

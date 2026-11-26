@@ -102,8 +102,19 @@ layout_fields!("slot" => $width);
         }
     )+};
 }
-// `EntityTypeKey` derives its own `Wire`.
-slot_keys!(u32; crate::GameEventKey, BlockEntityTypeKey, BlockKey, BoolGameRuleKey, IntGameRuleKey, DimensionKey, EffectKey, EnchantmentKey, FluidKey, ItemKey, MenuKey, crate::client::particle_keys::ParticleKey, TagKey);
+// `EntityTypeKey` derives its own `Wire`; `TagKey<K>` encodes its interned slot below.
+slot_keys!(u32; crate::GameEventKey, BlockEntityTypeKey, BlockKey, BoolGameRuleKey, IntGameRuleKey, DimensionKey, EffectKey, EnchantmentKey, FluidKey, ItemKey, MenuKey, crate::client::particle_keys::ParticleKey);
+impl<K: 'static> Wire for TagKey<K> {
+    layout_fields!("slot" => u32);
+    const MIN: usize = <u32 as Wire>::MIN;
+    fn put(&self, out: &mut Writer) {
+        out.put(&self.wire_slot());
+    }
+    fn take(input: &mut Reader<'_>) -> Result<Self, WireError> {
+        let slot = input.take::<u32>()?;
+        Self::from_slot(slot).map_err(WireError::Invalid)
+    }
+}
 // The registry-entry key families: narrowing and host slot resolution share one
 // table. Tags and unresolved fluids are not registry-entry key families.
 slot_keys!(registries;
@@ -141,21 +152,42 @@ slot_keys!(registries;
         crate::client::particle_keys::particle_key(id).map(|key| key.0)
     };
 );
-slot_keys!(u64; UnresolvedFluid);
+impl Wire for UnresolvedFluid {
+    layout_fields!("unresolved-fluid:v2"; "id" => crate::Identifier);
+    const MIN: usize = <crate::Identifier as Wire>::MIN;
+    fn put(&self, out: &mut Writer) {
+        out.put(&self.0);
+    }
+    fn take(input: &mut Reader<'_>) -> Result<Self, WireError> {
+        let id = input.take::<crate::Identifier>()?;
+        UnresolvedFluid::new(id).ok_or(WireError::Invalid(
+            "an unresolved fluid names a registered or empty fluid",
+        ))
+    }
+}
 
 impl Wire for crate::Identifier {
-    layout_fields!(ordinary_only "validated-identifier:v1"; "namespace" => String, "path" => String);
+    layout_fields!("validated-identifier:v1"; "namespace" => String, "path" => String);
     const MIN: usize = 8;
     fn put(&self, out: &mut Writer) {
-        if out.ordinary_only() {
+        // The identifier owns its boxed `namespace:path` text, one byte (the separator) longer
+        // than the two wire strings.
+        if out.charge_with(|budget| {
+            budget.identifier_data()?;
+            budget.bytes(1)
+        }) {
             out.put_str(self.namespace());
             out.put_str(self.path());
         }
     }
     fn take(input: &mut Reader<'_>) -> Result<Self, WireError> {
-        input.ordinary_only()?;
-        Self::from_parts(input.take_str()?, input.take_str()?)
-            .map_err(|_| WireError::Invalid("invalid identifier"))
+        let namespace = input.take_str()?;
+        let path = input.take_str()?;
+        input.charge_with(|budget| {
+            budget.identifier_data()?;
+            budget.bytes(namespace.len() as u64 + path.len() as u64 + 1)
+        })?;
+        Self::from_parts(namespace, path).map_err(|_| WireError::Invalid("invalid identifier"))
     }
 }
 impl Wire for crate::LevelKey {
@@ -170,48 +202,6 @@ impl Wire for crate::LevelKey {
         // The level key's process-wide interner cannot charge this payload's budget.
         input.ordinary_only()?;
         Self::parse(input.take_str()?).map_err(|_| WireError::Invalid("invalid level key"))
-    }
-}
-impl Wire for crate::ConfigPath {
-    layout_fields!("text" => String);
-    const MIN: usize = 4;
-    fn put(&self, out: &mut Writer) {
-        out.put_str(self.as_str());
-    }
-    fn take(input: &mut Reader<'_>) -> Result<Self, WireError> {
-        let text = input.take::<String>()?;
-        if text.is_empty() {
-            Ok(Self::root())
-        } else {
-            Self::try_from(text).map_err(|_| WireError::Invalid("invalid config path"))
-        }
-    }
-}
-impl Wire for crate::SpawnerKey {
-    layout_fields!(ordinary_only "validated-spawner-key:v1"; "text" => String);
-    const MIN: usize = 4;
-    fn put(&self, out: &mut Writer) {
-        if out.ordinary_only() {
-            out.put_str(self.as_str());
-        }
-    }
-    fn take(input: &mut Reader<'_>) -> Result<Self, WireError> {
-        input.ordinary_only()?;
-        Self::new(input.take_str()?).ok_or(WireError::Invalid("invalid spawner key"))
-    }
-}
-impl Wire for crate::CustomSpawners {
-    layout_fields!(ordinary_only "unique-spawner-entries:v1"; "entries" => Vec<crate::SpawnerEntry>);
-    const MIN: usize = 4;
-    fn put(&self, out: &mut Writer) {
-        if out.ordinary_only() {
-            crate::SpawnerEntry::put_list(self.entries(), out);
-        }
-    }
-    fn take(input: &mut Reader<'_>) -> Result<Self, WireError> {
-        input.ordinary_only()?;
-        Self::try_from(input.take::<Vec<crate::SpawnerEntry>>()?)
-            .map_err(|_| WireError::Invalid("duplicate spawner"))
     }
 }
 
@@ -290,17 +280,6 @@ impl Wire for crate::BakedModelKey {
         Self::from_parts(input.take()?, input.take()?).map_err(WireError::Invalid)
     }
 }
-impl Wire for crate::RenderPipelineRef {
-    layout_fields!("generation" => u64, "slot" => u32);
-    const MIN: usize = 12;
-    fn put(&self, out: &mut Writer) {
-        out.put(&self.0);
-        out.put(&self.1);
-    }
-    fn take(input: &mut Reader<'_>) -> Result<Self, WireError> {
-        Self::from_parts(input.take()?, input.take()?).map_err(WireError::Invalid)
-    }
-}
 impl Wire for crate::InstanceGroupRef {
     layout_fields!("generation" => u64, "slot" => u32);
     const MIN: usize = 12;
@@ -366,23 +345,7 @@ mod tests {
 
     #[test]
     fn wire_checked_values_and_garbage() {
-        round(crate::ConfigPath::new("example/options.toml").unwrap());
-        round(crate::ConfigPath::root());
-        round(crate::SpawnerKey::new("example:spawner").unwrap());
-        round(crate::CustomSpawners::vanilla());
         round(crate::Identifier::parse("example:thing").unwrap());
-        let mut out = Writer::new();
-        out.put_str("../escape");
-        assert!(Reader::decode::<crate::ConfigPath>(out.bytes()).is_err());
-        out.clear();
-        out.put_str("not namespaced");
-        assert!(Reader::decode::<crate::SpawnerKey>(out.bytes()).is_err());
-        out.clear();
-        out.put(&vec![
-            crate::SpawnerEntry::Builtin(crate::SpawnerKind::Cat),
-            crate::SpawnerEntry::Builtin(crate::SpawnerKind::Cat),
-        ]);
-        assert!(Reader::decode::<crate::CustomSpawners>(out.bytes()).is_err());
         for len in 0..64 {
             let bytes: Vec<u8> = (0..len).map(|i| (i * 37 + len * 11) as u8).collect();
             let _ = Reader::decode::<crate::ItemStack>(&bytes);
@@ -870,19 +833,6 @@ impl crate::wire::Wire for crate::TicketOwner {
                 tag => return Err(crate::wire::WireError::Tag(tag)),
             })
         })
-    }
-}
-
-// Biome keys carry a slot and an engine-owned generation. Validate on the receiving host.
-impl Wire for crate::BiomeKey {
-    layout_fields!("slot" => u32, "generation" => u64);
-    const MIN: usize = <u32 as Wire>::MIN + <u64 as Wire>::MIN;
-    fn put(&self, out: &mut Writer) {
-        out.put(&self.0);
-        out.put(&self.1);
-    }
-    fn take(input: &mut Reader<'_>) -> Result<Self, WireError> {
-        Ok(Self(input.take()?, input.take()?))
     }
 }
 

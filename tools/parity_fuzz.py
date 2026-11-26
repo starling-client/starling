@@ -19,13 +19,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-try:
-    from . import lab, test_command_exec_parity as harness
-except ImportError:
-    import lab
-    import test_command_exec_parity as harness
-
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, parity_fuzz_corpus as corpus, test_command_exec_parity as harness
+
+CORPUS = ROOT / 'tools' / 'fuzz_corpus'
 
 # Far from the player (8.5 230 8.5) and its view distance, above any terrain; one chunk per scenario, three apart.
 AREA_X, AREA_Z, FLOOR_Y = 4096, 4096, 300
@@ -243,13 +241,14 @@ def subject(scenario, step):
 # Running batches through the command-exec harness.
 
 class Runner:
-    def __init__(self, work, binary, size):
+    def __init__(self, work, binary, size, *, bisect_failures=True):
         self.work, self.binary, self.size = work, binary, size
+        self.bisect_failures = bisect_failures
         self.batches = self.references = 0
 
-    def run(self, scenarios, *, repeat_vanilla=True):
+    def run(self, scenarios, *, repeat_vanilla=True, single_batch=False):
         """Per scenario: {'failures': [(signature, read, differences)], 'invalid': reason} or {'crash': log}."""
-        if len(scenarios) > self.size:
+        if not single_batch and len(scenarios) > self.size:
             return [r for start in range(0, len(scenarios), self.size)
                     for r in self.run(scenarios[start:start + self.size], repeat_vanilla=repeat_vanilla)]
         if not scenarios:
@@ -285,6 +284,8 @@ class Runner:
                                     env={**os.environ, 'SUNRISE_HARNESS_TIMEOUT': str(30 * len(scenarios) + 600)})
             (batch / f'{label}.log').write_text(result.stdout + result.stderr, encoding='utf-8')
             if result.returncode:
+                if not self.bisect_failures:
+                    raise RuntimeError(f'harness failed; see {batch}')
                 if len(scenarios) == 1:
                     return [{'crash': (result.stdout + result.stderr)[-2000:]}]
                 half = len(scenarios) // 2  # find the scenario that stops the run
@@ -334,6 +335,20 @@ def signatures(result):
     if 'crash' in result:
         return ['crash']
     return [] if result['invalid'] else list(dict.fromkeys(failure[0] for failure in result['failures']))
+
+
+def check_cases(runner, cases):
+    """Replay both inputs of each case together. Return failed names and names with harness crashes."""
+    scenarios = [s for case in cases for s in (case.scenario, case.original)]
+    results = runner.run(scenarios, single_batch=True)
+    failed, crashed = [], []
+    for case, (shrunk, original) in zip(cases, zip(results[::2], results[1::2], strict=True), strict=True):
+        if any('crash' in result for result in (shrunk, original)):
+            crashed.append(case.name)
+        elif any(signatures(result) or result.get('invalid') or result.get('vanilla-unstable')
+                 for result in (shrunk, original)):
+            failed.append(case.name)
+    return failed, crashed
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -396,6 +411,30 @@ def shrink(runner, failing, rounds):
     return current
 
 
+def group_report(runner, scenarios, results, rounds, *, known=(), shrink_limit=None):
+    """Group stable divergences by signature, keeping the original of every shrunk input."""
+    failing = [(s, r) for s, r in zip(scenarios, results, strict=True) if signatures(r)]
+    groups = {}
+    for scenario, result in failing:
+        for sig in signatures(result):
+            groups.setdefault(sig, []).append((scenario, result))
+    groups = dict(sorted(groups.items(), key=lambda g: -len(g[1])))
+    originals = {sig: min(members, key=lambda m: len(json.dumps(m[0]))) for sig, members in groups.items()}
+    candidates = [sig for sig in groups if sig not in known][:shrink_limit]
+    shrunk = originals | shrink(runner, {sig: originals[sig] for sig in candidates}, rounds)
+    report = {'scenarios': len(scenarios), 'diverging': len(failing),
+              'invalid': [(s['seed'], r['invalid']) for s, r in zip(scenarios, results, strict=True) if r.get('invalid')],
+              'vanilla-unstable': sum(len(r.get('vanilla-unstable', [])) for r in results), 'groups': []}
+    for sig, members in groups.items():
+        scenario, result = shrunk[sig]
+        report['groups'].append({
+            'signature': sig, 'seeds': [s['seed'] for s, _ in members], 'scenario': scenario, 'original': originals[sig][0],
+            'commands': [op['cmd'] if op['op'] == 'cmd' else json.dumps({k: v for k, v in op.items() if k != 'step'})
+                         for op in render(scenario, 0)],
+            'differences': result.get('crash') or [[cmd, d[:8]] for s, cmd, d in result['failures'] if s == sig][:3]})
+    return report
+
+
 # ---------------------------------------------------------------------------------------------------------------
 # Command line
 
@@ -410,27 +449,62 @@ SMOKE = [{'family': 'smoke', 'seed': 1, 'steps': [
 
 
 def main():
-    try:
-        from . import parity_fuzz_scenarios as families
-    except ImportError:
-        import parity_fuzz_scenarios as families
+    from tools import parity_fuzz_scenarios as families
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('family', choices=sorted(families.FAMILIES), nargs='?', default='persist')
     parser.add_argument('--seed', type=int, default=1, help='first scenario seed')
     parser.add_argument('--count', type=int, default=40, help='scenarios to generate')
     source = parser.add_mutually_exclusive_group()
-    source.add_argument('--replay', type=Path, help='run the scenarios of this JSON file instead of generating them')
+    source.add_argument('--replay', type=Path, help='run saved scenario JSON instead of generating it')
     source.add_argument('--smoke', action='store_true', help='fixed scenarios that must match: the tool works')
+    source.add_argument('--promote', type=Path, help='replay a scenario or report group and add a passing case')
+    source.add_argument('--corpus', action='store_true', help='check both forms of every promoted case')
+    parser.add_argument('--name', help='lowercase case name for --promote')
     parser.add_argument('--batch', type=int, default=40, help='scenarios per harness run')
     parser.add_argument('--shrink-rounds', type=int, default=6)
     parser.add_argument('--binary', type=Path, help='an already built Sunrise game')
     parser.add_argument('--work-dir', type=Path, default=lab.LOCAL / 'parity-fuzz')
     args = parser.parse_args()
+    if (args.promote is None) != (args.name is None):
+        parser.error('--promote and --name must be used together')
+    if args.batch <= 0:
+        parser.error('--batch must be positive')
     work = args.work_dir.resolve()
     work.mkdir(parents=True, exist_ok=True)
     runner = Runner(work, args.binary and args.binary.resolve(strict=True), args.batch)
-    if args.smoke or args.replay:
-        scenarios = SMOKE if args.smoke else json.loads(args.replay.read_text(encoding='utf-8'))
+    if args.promote or args.corpus:
+        try:
+            cases = ([corpus.Case.from_input(args.name, json.loads(args.promote.read_text(encoding='utf-8')))]
+                     if args.promote else corpus.load(CORPUS))
+        except (OSError, ValueError) as error:
+            parser.error(str(error))
+        failed, crashed = check_cases(runner, cases)
+        if args.corpus:
+            pending = work / 'corpus-result.pending.json'
+            lab.write_json(pending, {'failed': failed, 'crashed': crashed})
+            pending.replace(work / 'corpus-result.json')
+        if crashed:
+            print('Harness did not complete: ' + ', '.join(crashed), file=sys.stderr)
+        if failed:
+            print('Cases did not match: ' + ', '.join(failed), file=sys.stderr)
+        if crashed or failed:
+            return 1
+        if args.promote:
+            try:
+                print(f'Promoted {corpus.write(CORPUS, cases[0])}')
+            except OSError as error:
+                parser.error(str(error))
+        else:
+            print(f'{len(cases)} corpus cases matched in both forms')
+        return 0
+    if args.smoke:
+        scenarios = SMOKE
+    elif args.replay:
+        try:
+            saved = json.loads(args.replay.read_text(encoding='utf-8'))
+            scenarios = [corpus.validate_scenario(row) for row in (saved if isinstance(saved, list) else [saved])]
+        except (OSError, ValueError) as error:
+            parser.error(str(error))
     else:
         if args.family == 'persist':
             families.discover(runner, work)
@@ -448,24 +522,9 @@ def main():
             sys.exit(f'smoke scenarios diverge: {[s["seed"] for s, _ in failing]} invalid: {invalid} '
                      f'empty reads: {empty} unstable reads: {unstable}; see {work}')
         return
-    groups = {}
-    for scenario, result in failing:
-        for sig in signatures(result):
-            groups.setdefault(sig, []).append((scenario, result))
-    # One bug, one shrink: each group's smallest scenario stands for it.
-    shrunk = shrink(runner, {sig: min(members, key=lambda m: len(json.dumps(m[0]))) for sig, members in groups.items()},
-                    args.shrink_rounds)
-    report = {'scenarios': len(scenarios), 'invalid': invalid, 'diverging': len(failing),
-              'vanilla-unstable': unstable, 'groups': []}
-    for sig, members in sorted(groups.items(), key=lambda g: -len(g[1])):
-        scenario, result = shrunk[sig]
-        report['groups'].append({
-            'signature': sig, 'seeds': [s['seed'] for s, _ in members], 'scenario': scenario,
-            'commands': [op['cmd'] if op['op'] == 'cmd' else json.dumps({k: v for k, v in op.items() if k != 'step'})
-                         for op in render(scenario, 0)],
-            'differences': result.get('crash') or [[cmd, d[:8]] for s, cmd, d in result['failures'] if s == sig][:3]})
+    report = group_report(runner, scenarios, results, args.shrink_rounds)
     lab.write_json(work / 'report.json', report)
-    print(f'{len(failing)} diverging scenarios in {len(groups)} groups '
+    print(f'{len(failing)} diverging scenarios in {len(report["groups"])} groups '
           f'({runner.batches} differential and {runner.references} reference-only harness runs):')
     for group in report['groups']:
         print(f'  {len(group["seeds"]):3d}  {group["signature"]}')
@@ -473,4 +532,4 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())

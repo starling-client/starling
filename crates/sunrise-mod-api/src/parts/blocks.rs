@@ -66,33 +66,8 @@ impl BlocksRegistrar for PartRegistrar {
         name: &'static str,
         block: &crate::BlockKey,
         before_game: bool,
-        provider: BlockProviderOf,
+        provider: NativeCapabilityProvider,
     ) {
-        let slot = mod_vocab::__private::parts_installation::block_key_slot(*block);
-        let id = self
-            .registry_keys
-            .borrow()
-            .blocks
-            .id(slot)
-            .map(str::to_owned);
-        let Some(id) = id else {
-            self.refused.push(format!(
-                "mod {}: invalid block key slot {slot}",
-                self.mod_id
-            ));
-            return;
-        };
-        self.capability(
-            |p| &mut p.block_capabilities,
-            Some(|p| &p.capabilities),
-            name,
-            ProviderTarget::Id(&id),
-            before_game,
-            {
-                let handler =
-                    mod_vocab::__private::parts_installation::block_provider_handler(&provider);
-                (provider, handler)
-            },
-        );
+        self.capability(name, ProviderTarget::Block(*block), before_game, provider);
     }
 }

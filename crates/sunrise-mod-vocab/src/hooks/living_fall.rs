@@ -1,5 +1,4 @@
 //! The `living_fall` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0346
 
 pub trait Hooks {
     /// A living entity is about to handle a fall (`LivingFallEvent`). Mods may

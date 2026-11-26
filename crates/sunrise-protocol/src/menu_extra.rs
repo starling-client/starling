@@ -1,6 +1,6 @@
 //! Menu extra data: what a Sunrise server tells a Sunrise client about a
 //! native mod's menu type its block opened, just before the
-//! `ClientboundOpenScreenPacket` of the same window (docs/native-mods.md,
+//! `ClientboundOpenScreenPacket` of the same window (docs/modding/src/how-to/native-mods.md,
 //! "Menu extra data"). NeoForge's counterpart is `openMenu` with an extra-data
 //! writer, read by the menu type's `IContainerFactory`.
 //!

@@ -134,8 +134,8 @@ pub fn main() -> Result<()> {
                         _ => skins::Download::Ready,
                     }
                 };
-                if let Some(skin) = skins::lookup(&textures, !local, download) {
-                    player.skin = skin;
+                if let skins::SkinLookup::Ready(skin) = skins::lookup(&textures, !local, download) {
+                    player.skin = skin.body(uuid).0.to_owned();
                 }
             }
             players.push(player);

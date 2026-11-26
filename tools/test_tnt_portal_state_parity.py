@@ -4,17 +4,15 @@
 The contracts follow pinned PrimedTnt.teleport and its save/load methods. This
 runs no Java server, world generation or cross-dimensional travel transcript.
 """
-import json
 import os
 from pathlib import Path
 import subprocess
-import sys
 import tempfile
-try:
-    from . import lab, test_rust_parity as base
-except ImportError:
-    import lab
-    import test_rust_parity as base
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_rust_parity as base
 
 
 def child_env(scratch, resources=None):
@@ -45,28 +43,7 @@ def main():
                *sorted((lab.ROOT / "crates/sunrise-client/src").rglob("*.rs")),
                *sorted((lab.ROOT / "crates/sunrise-client-render/src").rglob("*.rs"))]
     hashes = base.source_hashes(sources)
-    with tempfile.TemporaryDirectory(prefix="sunrise-tnt-state-build-") as directory:
-        command = ["cargo", "test", "--locked", "-p", "sunrise-client", "--lib",
-                   "--no-run", "--message-format=json"]
-        with (build / "compile.jsonl").open("w", encoding="utf-8") as output:
-            result = subprocess.run(command, cwd=lab.ROOT,
-                                    env=child_env(Path(directory)), stdout=output)
-    artifacts = []
-    for line in (build / "compile.jsonl").read_text(encoding="utf-8").splitlines():
-        try:
-            row = json.loads(line)
-        except ValueError:
-            continue
-        if result.returncode and row.get("reason") == "compiler-message":
-            print(row.get("message", {}).get("rendered", ""), file=sys.stderr, end="")
-        if row.get("reason") == "compiler-artifact" and row.get("executable") \
-                and row.get("target", {}).get("name") == "sunrise_client" \
-                and row.get("profile", {}).get("test"):
-            artifacts.append(Path(row["executable"]))
-    result.check_returncode()
-    if len(artifacts) != 1:
-        raise AssertionError("Expected one actual gameplay library test executable")
-    binary = artifacts[0]
+    binary = lab.parity_fixtures()
     binary_hash = lab.digest(binary, "sha256")
     with tempfile.TemporaryDirectory(prefix="sunrise-tnt-state-game-") as directory:
         scratch = Path(directory)

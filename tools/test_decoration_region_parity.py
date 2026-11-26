@@ -9,14 +9,17 @@ import platform
 import random
 import subprocess
 
-try:
-    from . import lab, test_rust_parity as base, test_worldgen_parity as worldgen, test_feature_region_parity as region, test_decoration_parity as decoration
-except ImportError:
-    import lab
-    import test_rust_parity as base
-    import test_worldgen_parity as worldgen
-    import test_feature_region_parity as region
-    import test_decoration_parity as decoration
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import (
+    lab,
+    test_rust_parity as base,
+    test_worldgen_parity as worldgen,
+    test_feature_region_parity as region,
+    test_decoration_parity as decoration,
+)
 
 
 def corpus(facts):

@@ -1,13 +1,13 @@
 //! A mod's general entity types on the client (#792, stage 5): a renderer registered for one
 //! resolves to its catalog slot, a type with none is named; each row shown on the window is drawn
-//! by its type's renderer at the frame's interpolated pose, with its synced attachments; a renderer that fails is dropped until resources reload; a type
-//! with no renderer draws nothing.
+//! by its type's renderer at the frame's interpolated pose, with its synced attachments. A
+//! panicking renderer stays disabled across reloads; a type with no renderer draws nothing.
 use super::Game;
-use super::native_entity_renderers::EntityRendererTable;
+use super::native_entity_renderers::{EntityRendererTable, RegisteredEntityRenderer};
 use crate::game::general::GeneralTypeCatalog;
 use mod_api::{
-    AttachmentCodec, AttachmentError, AttachmentType, BlockEntityDrawContext, EntityRenderState,
-    EntityRenderer,
+    AttachmentCodec, AttachmentDescriptor, AttachmentError, AttachmentKey, BlockEntityDrawContext,
+    EntityRenderState, EntityRenderer,
 };
 use std::{
     collections::BTreeMap,
@@ -31,6 +31,7 @@ fn declaration(id: &str) -> mod_api::__private::GeneralEntityTypeDeclaration {
         save_policy: mod_api::GeneralSavePolicy::Save,
         summonable: true,
         pickable: false,
+        fire_immune: false,
         piston_push_reaction: mod_api::PushReaction::PushPull,
         tracking_chunks: 8,
         update_interval: 1,
@@ -56,9 +57,9 @@ fn a_general_types_renderer_resolves_to_its_slot_and_a_type_without_one_is_named
     let catalog =
         GeneralTypeCatalog::freeze(&[declaration("test:missile"), declaration("test:plain")])
             .unwrap();
-    let registered: BTreeMap<String, Arc<dyn EntityRenderer>> = [(
+    let registered: BTreeMap<String, RegisteredEntityRenderer> = [(
         "test:missile".to_owned(),
-        Arc::new(Blank) as Arc<dyn EntityRenderer>,
+        RegisteredEntityRenderer::new(Arc::new(Blank), None),
     )]
     .into();
     let (table, unknown) =
@@ -73,26 +74,19 @@ fn a_general_types_renderer_resolves_to_its_slot_and_a_type_without_one_is_named
     assert_eq!(table.unrendered_general(&catalog), ["test:plain"]);
 }
 
-/// The type's synced field the renderer reads while drawing.
-static FUEL: AttachmentType<i32> = AttachmentType {
-    namespace: "test",
-    name: "fuel",
-    default: || 0,
-    codec: Some(AttachmentCodec {
-        encode: |n| Ok([("n".into(), Tag::Int(*n))].into()),
-        decode: |c| match c.get(&"n".into()) {
-            Some(Tag::Int(n)) => Ok(*n),
-            _ => Err(AttachmentError::Decode),
-        },
-    }),
-    copy_on_death: false,
-    sync: true,
+const FUEL_CODEC: AttachmentCodec<i32> = AttachmentCodec {
+    encode: |n| Ok([("n".into(), Tag::Int(*n))].into()),
+    decode: |c| match c.get(&"n".into()) {
+        Some(Tag::Int(n)) => Ok(*n),
+        _ => Err(AttachmentError::Decode),
+    },
 };
 
 /// `test:missile`'s renderer: draws one stone quad from its pose's origin, and keeps the last
 /// state it was handed and the fuel it read from the snapshot.
 #[derive(Default)]
 struct Missile {
+    fuel_key: Mutex<Option<AttachmentKey<i32>>>,
     seen: Mutex<Option<EntityRenderState>>,
     fuel: Mutex<Option<i32>>,
 }
@@ -103,8 +97,17 @@ impl EntityRenderer for Missile {
         draw: &mut dyn BlockEntityDrawContext,
     ) -> Result<(), String> {
         *self.seen.lock().unwrap() = Some(entity.clone());
+        let fuel_key = self
+            .fuel_key
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("test:fuel registered");
         let fuel = match &entity.attachments {
-            Some(snapshot) => snapshot.get(&FUEL).map_err(|e| format!("{e:?}"))?.copied(),
+            Some(snapshot) => snapshot
+                .get(&fuel_key)
+                .map_err(|e| format!("{e:?}"))?
+                .copied(),
             None => None,
         };
         *self.fuel.lock().unwrap() = fuel;
@@ -156,7 +159,12 @@ struct Scene {
 #[mod_api::__subscriptions]
 impl mod_api::Hooks for Scene {
     fn register(&self, r: &mut dyn mod_api::Registrar, _: &mod_api::RegistrationContext) {
-        r.register_attachment_type("test:fuel", true).unwrap();
+        let fuel = r
+            .register_attachment_type(
+                AttachmentDescriptor::new("test:fuel", || 0i32).sync(FUEL_CODEC),
+            )
+            .unwrap();
+        *self.missile.fuel_key.lock().unwrap() = Some(fuel);
         for path in ["missile", "bomb", "plain"] {
             r.declare_general_entity(
                 path,
@@ -166,6 +174,7 @@ impl mod_api::Hooks for Scene {
                 None,
                 mod_api::GeneralSavePolicy::Save,
                 true,
+                false,
                 false,
                 None,
                 8,
@@ -502,25 +511,39 @@ fn general_submission_keeps_lookup_order_across_removal_and_reentry() {
     );
 }
 
-/// A panicking renderer draws nothing and is asked no more until a reload resolves it again; a
-/// type with no renderer draws nothing, and neither stops the others.
+/// A panicking renderer rolls back its draw, stays disabled for the session (including across a
+/// resource reload), and queues an error toast naming the mod; a type with no renderer draws
+/// nothing, and neither stops the other renderers from the same mod.
 #[test]
 #[ignore = "daily"]
-fn a_failing_renderer_is_dropped_until_reload_and_a_type_without_one_draws_nothing() {
+fn a_panicking_renderer_stays_disabled_across_reload_and_a_type_without_one_draws_nothing() {
     in_scene(
-        "a_failing_renderer_is_dropped_until_reload_and_a_type_without_one_draws_nothing",
+        "a_panicking_renderer_stays_disabled_across_reload_and_a_type_without_one_draws_nothing",
         |game, scene| {
-            for _ in 0..2 {
-                assert_eq!(frame(game, 1.0).len(), 4, "the missile alone");
-                assert_eq!(scene.bomb.calls.load(Ordering::Relaxed), 1);
-            }
+            let _ = mod_api::__private::take_hook_panics();
+            assert_eq!(frame(game, 1.0).len(), 4, "the missile alone");
+            assert_eq!(scene.bomb.calls.load(Ordering::Relaxed), 1);
+            assert_eq!(
+                mod_api::__private::take_hook_panics(),
+                [mod_api::__private::HookPanicReport {
+                    mod_id: "test",
+                    hook: "EntityRenderer::submit",
+                }],
+                "the shared journal records the mod and retained operation once"
+            );
+
+            assert_eq!(frame(game, 1.0).len(), 4, "the missile alone on next frame");
+            assert_eq!(scene.bomb.calls.load(Ordering::Relaxed), 1);
+            assert!(mod_api::__private::take_hook_panics().is_empty());
+
             super::model_baking_completed_tests::reload(game);
             assert_eq!(frame(game, 1.0).len(), 4);
             assert_eq!(
                 scene.bomb.calls.load(Ordering::Relaxed),
-                2,
-                "asked again after it"
+                1,
+                "stays disabled across resource reload for the rest of the session"
             );
+            assert!(mod_api::__private::take_hook_panics().is_empty());
             // The reload kept the rows.
             assert_eq!(game.remote.as_ref().unwrap().general.rows.len(), 3);
         },
@@ -530,11 +553,13 @@ fn a_failing_renderer_is_dropped_until_reload_and_a_type_without_one_draws_nothi
 #[path = "native_general_renderers_tests/fixture.rs"]
 mod fixture;
 
-struct NativeProbe;
+struct NativeProbe {
+    keys: Arc<fixture::Keys>,
+}
 #[mod_api::__subscriptions]
 impl mod_api::Hooks for NativeProbe {
     fn register(&self, registrar: &mut dyn mod_api::Registrar, _: &mod_api::RegistrationContext) {
-        fixture::register(registrar);
+        fixture::register(registrar, &self.keys);
     }
 
     fn register_entity_renderers(
@@ -542,12 +567,12 @@ impl mod_api::Hooks for NativeProbe {
         _: &mod_api::RegistrationContext,
         event: &mut mod_api::RegisterEntityRenderersEvent<'_>,
     ) {
-        fixture::register_renderer(event.renderers);
+        fixture::register_renderer(event.renderers, &self.keys);
     }
 }
 
 /// Loads a saved row of the fixture's type at `position` with fuel 7: the chunk-load route.
-fn load_saved_row(server: &mut Game<'_>, position: [f64; 3]) -> u32 {
+fn load_saved_row(server: &mut Game<'_>, position: [f64; 3], fuel: &AttachmentKey<i32>) -> u32 {
     use mod_api::{Holder, Host};
     let uuid = [380, 39, 9, 57];
     let saved = Tag::Compound(
@@ -573,51 +598,42 @@ fn load_saved_row(server: &mut Game<'_>, position: [f64; 3]) -> u32 {
         .find(|row| row.uuid == uuid)
         .unwrap()
         .id;
-    let tx = server.transaction_open();
-    fixture::FUEL
-        .set(
-            (server as &mut dyn Host).attachments(),
-            Holder::Entity(id),
-            7,
-        )
-        .unwrap();
-    server.transaction_close(&tx, true);
+    server.storage_scope(|server, _| {
+        fuel.set(server as &mut dyn Host, Holder::Entity(id), 7)
+            .unwrap();
+        ((), true)
+    });
     id
 }
 
 /// Spawns a row of the fixture's type at `position` through `LevelRef::spawn_entity`, writing
 /// its fuel of 7 on the returned handle in the same transaction: the route a mod's own code
 /// takes, so the row's first tracking snapshot holds the field.
-fn spawn_row(server: &mut Game<'_>, position: [f64; 3]) -> u32 {
+fn spawn_row(server: &mut Game<'_>, position: [f64; 3], fuel: &AttachmentKey<i32>) -> u32 {
     use mod_api::{EntitySpawn, Holder, Host, SpawnBody};
-    let tx = server.transaction_open();
-    let level = (server as &mut dyn Host)
-        .level("minecraft:overworld")
-        .expect("the overworld is in place");
-    let row = level
-        .spawn_entity(
-            server as &mut dyn mod_api::ServerHost,
-            fixture::KIND,
-            position,
-            &EntitySpawn::new(SpawnBody::General),
-        )
-        .expect("the spawn is admitted");
-    fixture::FUEL
-        .set(
-            (server as &mut dyn Host).attachments(),
-            Holder::Entity(row.id()),
-            7,
-        )
-        .unwrap();
-    server.transaction_close(&tx, true);
-    row.id()
+    server.storage_scope(|server, _| {
+        let level = (server as &mut dyn Host)
+            .level("minecraft:overworld")
+            .expect("the overworld is in place");
+        let row = level
+            .spawn_entity(
+                server as &mut dyn mod_api::ServerHost,
+                fixture::KIND,
+                position,
+                &EntitySpawn::new(SpawnBody::General),
+            )
+            .expect("the spawn is admitted");
+        fuel.set(server as &mut dyn Host, Holder::Entity(row.id()), 7)
+            .unwrap();
+        (row.id(), true)
+    })
 }
 
 /// Opens an integrated flat world whose window reads the fixture's renderer, has `place` put a row of the fixture's type with fuel 7 on the server above
 /// build height, and checks that the window shows it: the tracker syncs the row and its field
 /// with no injected client packets, and the renderer's quad, whose width is the fuel, is in the
 /// frame's entity pass, before and after a resource reload that leaves the row in place.
-fn integrated_scene(test: &str, place: fn(&mut Game<'_>, [f64; 3]) -> u32) {
+fn integrated_scene(test: &str, place: fn(&mut Game<'_>, [f64; 3], &AttachmentKey<i32>) -> u32) {
     const CASE: &str = "SUNRISE_GENERAL_RENDERER_TARGET";
     if super::native_entity_refs::tests::run_fresh_cases(
         &format!("game::native_general_renderers_tests::{test}"),
@@ -628,9 +644,10 @@ fn integrated_scene(test: &str, place: fn(&mut Game<'_>, [f64; 3]) -> u32) {
     }
     crate::game::native_entity_refs::tests::run_with_game_stack(move || {
         mod_platform::__private::initialize().unwrap();
+        let keys = Arc::new(fixture::Keys::default());
         let mods = vec![mod_api::ModEntry::new(
             "general_render_fixture",
-            Box::new(NativeProbe),
+            Box::new(NativeProbe { keys: keys.clone() }),
         )]
         .into();
         let registration = mod_platform::__private::RegistrationGuard::open();
@@ -652,6 +669,7 @@ fn integrated_scene(test: &str, place: fn(&mut Game<'_>, [f64; 3]) -> u32) {
                 poll_until(game, |g| {
                     g.remote.as_ref().is_some_and(|r| r.logged_in && r.joined)
                 });
+                let fuel = keys.fuel();
                 let (id, at) = game
                     .integrated
                     .as_ref()
@@ -665,7 +683,7 @@ fn integrated_scene(test: &str, place: fn(&mut Game<'_>, [f64; 3]) -> u32) {
                             f64::from(server.world.shape.max_y() + 1),
                             z.floor(),
                         ];
-                        (place(server, position), position)
+                        (place(server, position, &fuel), position)
                     })
                     .unwrap();
                 let camera = glam::DVec3::from_array(at) - glam::DVec3::Z * 5.0;

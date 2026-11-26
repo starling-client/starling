@@ -12,12 +12,10 @@ import subprocess
 import sys
 import tempfile
 
-try:
-    from . import lab
-    from .integration_env import game_environment
-except ImportError:
-    import lab
-    from integration_env import game_environment
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab
+from tools.integration_env import game_environment
 
 
 def main():

@@ -27,13 +27,10 @@ import subprocess
 import sys
 import time
 
-try:
-    from . import lab, test_rust_parity as base
-    from .test_dedicated_server_parity import CONSOLE_LINE, Server, free_port, wait_ticks, write_server_dir
-except ImportError:
-    import lab
-    import test_rust_parity as base
-    from test_dedicated_server_parity import CONSOLE_LINE, Server, free_port, wait_ticks, write_server_dir
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_rust_parity as base
+from tools.test_dedicated_server_parity import CONSOLE_LINE, Server, free_port, wait_ticks, write_server_dir
 
 NAME = 'server-level-lifetime-parity'
 LEVELS = (('overworld', 'minecraft:overworld'), ('nether', 'minecraft:the_nether'), ('end', 'minecraft:the_end'))

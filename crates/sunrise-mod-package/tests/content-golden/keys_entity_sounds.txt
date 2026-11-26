@@ -42,6 +42,7 @@ Content {
     ),
     files: [
         "data/keys_entity_sounds/sunrise/entity_type/listener.json",
+        "data/keys_entity_sounds/sunrise/entity_type/walker.json",
     ],
     blocks: [],
     items: [],
@@ -80,6 +81,43 @@ Content {
                     Mute(
                         None,
                     ),
+                ),
+                volume: None,
+                voice_pitch: None,
+                ambient_interval: None,
+            },
+        },
+        EntityType {
+            id: "keys_entity_sounds:walker",
+            template: "minecraft:zombie",
+            allowed_in_peaceful: None,
+            shadow_radius: None,
+            shadow_strength: None,
+            item: None,
+            damage: 0.0,
+            attributes: {},
+            passenger_attachments: [],
+            sounds: EntitySounds {
+                ambient: None,
+                hurt: None,
+                death: None,
+                step: Some(
+                    Sound(
+                        StepSound {
+                            sound: "keys_entity_sounds:walker.step",
+                            volume: 1.0,
+                            pitch: 0.9,
+                        },
+                    ),
+                ),
+                volume: Some(
+                    0.6,
+                ),
+                voice_pitch: Some(
+                    0.8,
+                ),
+                ambient_interval: Some(
+                    120,
                 ),
             },
         },

@@ -12,7 +12,7 @@ use std::{
 };
 
 use super::{
-    AttachmentError, AttachmentType,
+    AttachmentError, AttachmentType, CheckedAttachmentType,
     index::{AttachmentIndex, AttachmentOwner, AttachmentRow, AttachmentSnapshot},
 };
 
@@ -147,6 +147,17 @@ impl<H> AttachmentBatch<H> {
         self
     }
 
+    fn check_key<T>(&self, key: &AttachmentType<T>) -> Result<(), AttachmentError> {
+        if !self
+            .rows
+            .as_ref()
+            .is_none_or(|rows| rows.matches(key.namespace, key.name))
+        {
+            return Err(AttachmentError::TypeMismatch);
+        }
+        Ok(())
+    }
+
     /// Bind the key once, checking its policy before any row is read.
     /// The query borrows only the key, never the index or host.
     pub fn query<T: Send + Sync + 'static>(
@@ -154,7 +165,28 @@ impl<H> AttachmentBatch<H> {
         key: &AttachmentType<T>,
     ) -> Result<AttachmentQuery<'_, H, T>, AttachmentError> {
         key.validate_policy()?;
-        Ok(AttachmentQuery { batch: self, key })
+        self.check_key(key)?;
+        Ok(AttachmentQuery {
+            batch: self,
+            key,
+            epoch: None,
+        })
+    }
+
+    /// Bind a pre-validated key without re-running policy checks.
+    /// The query borrows only the key, never the index or host.
+    pub fn query_checked<'key, T: Send + Sync + 'static>(
+        self,
+        key: &'key CheckedAttachmentType<T>,
+        epoch: u64,
+    ) -> Result<AttachmentQuery<'key, H, T>, AttachmentError> {
+        let key = key.as_type();
+        self.check_key(key)?;
+        Ok(AttachmentQuery {
+            batch: self,
+            key,
+            epoch: Some(epoch),
+        })
     }
 }
 
@@ -165,6 +197,7 @@ impl<H> AttachmentBatch<H> {
 pub struct AttachmentQuery<'key, H, T: 'static> {
     batch: AttachmentBatch<H>,
     key: &'key AttachmentType<T>,
+    epoch: Option<u64>,
 }
 
 impl<H: Copy, T: Send + Sync + 'static> AttachmentQuery<'_, H, T> {
@@ -180,38 +213,36 @@ impl<H: Copy, T: Send + Sync + 'static> AttachmentQuery<'_, H, T> {
                 .iter(),
             key: self.key,
             scope: self.batch.scope.as_ref(),
+            epoch: self.epoch,
         }
     }
 }
 
-impl<H: Copy + Eq + Hash, T: Clone + Send + Sync + 'static> AttachmentQuery<'_, H, T> {
-    /// Read an owned captured value with an expected O(1) holder probe before decode.
-    /// Absent or not yet synced holders return `Ok(None)`, without initializing
-    /// defaults. Decode/type errors are preserved as `AttachmentRowError::Value`.
-    /// `None` does not mean the holder is alive: absent and not-live holders
-    /// alike return `Ok(None)` when absent from captured membership, without a
-    /// host liveness check. Only scoped residency probes report `StaleHolder`.
-    /// Later replacements, removals and rebinds require a fresh snapshot.
-    /// Scoped reads borrow the original frame tracker through decode and clone.
-    pub fn get(
+impl<H: Copy + Eq + Hash, T: Send + Sync + 'static> AttachmentQuery<'_, H, T> {
+    /// Lend a captured value with an expected O(1) holder probe before decode.
+    /// An absent holder lends `None` without initializing a default or checking residency.
+    /// Scoped reads borrow the original frame tracker throughout the loan; later changes
+    /// to membership and bindings require a fresh snapshot.
+    pub fn get<R>(
         &self,
         host: Option<&AttachmentQueryScopes>,
         holder: H,
-    ) -> Result<Option<T>, AttachmentRowError> {
+        read: impl FnOnce(Option<&T>) -> R,
+    ) -> Result<R, AttachmentRowError> {
         if let Some(scope) = &self.batch.scope {
             scope.check_on(host)?;
         }
         let Some(rows) = self.batch.rows.as_deref() else {
-            return Ok(None);
+            return Ok(read(None));
         };
         let Some(slot) = rows.slot_for(holder) else {
-            return Ok(None);
+            return Ok(read(None));
         };
-        rows[slot]
+        let value = rows[slot]
             .entry
-            .read_validated(self.key)
-            .map(|value| Some(value.clone()))
-            .map_err(AttachmentRowError::Value)
+            .read_in_installation(self.key, self.epoch)
+            .map_err(AttachmentRowError::Value)?;
+        Ok(read(Some(value)))
     }
 }
 
@@ -220,6 +251,7 @@ impl<H: Copy + Eq + Hash, T: Clone + Send + Sync + 'static> AttachmentQuery<'_, 
 pub struct AttachmentIter<'q, H, T: 'static> {
     rows: slice::Iter<'q, AttachmentRow<H>>,
     key: &'q AttachmentType<T>,
+    epoch: Option<u64>,
     scope: Option<&'q AttachmentQueryScope>,
 }
 
@@ -236,7 +268,7 @@ impl<'q, H: Copy, T: Send + Sync + 'static> AttachmentIter<'q, H, T> {
         };
         let value = row
             .entry
-            .read_validated(self.key)
+            .read_in_installation(self.key, self.epoch)
             .map_err(AttachmentRowError::Value)?;
         Ok(Some(AttachmentRowRef {
             holder: row.holder,
@@ -351,7 +383,7 @@ mod tests {
             },
         }),
         copy_on_death: false,
-        sync: false,
+        sync_codec: None,
     };
     pub(super) fn key() -> super::super::index::AttachmentKey {
         ("query".into(), "value".into())
@@ -360,7 +392,9 @@ mod tests {
         Arc::new(AttachmentEntry {
             state: super::super::Entry::Decoded(Decoded {
                 value: Arc::new(value),
+                persistence: None,
                 encoded: None,
+                synced: None,
                 policy: AttachmentPolicy {
                     copy_on_death: false,
                     sync: false,
@@ -595,7 +629,7 @@ mod tests {
             default: || unreachable!(),
             codec: None,
             copy_on_death: false,
-            sync: false,
+            sync_codec: None,
         };
         let batch = AttachmentBatch::new(index.lock().unwrap().snapshot(&key()))
             .query::<Probe>(&probe_key)
@@ -621,13 +655,13 @@ mod existing_tests {
         let token = retained.iter().try_next().unwrap().unwrap().write_token();
         index.unload(7).into_result();
         let fresh = query(&index);
-        assert_eq!(fresh.get(None, 7), Ok(None)); // no longer live
-        assert_eq!(fresh.get(None, 11), Ok(None)); // never resident
+        assert_eq!(fresh.get(None, 7, |value| value.cloned()), Ok(None)); // no longer live
+        assert_eq!(fresh.get(None, 11, |value| value.cloned()), Ok(None)); // never resident
         assert_eq!(
             index.validate_owner(&token),
             Err(AttachmentRowError::StaleHolder)
         );
-        assert_eq!(retained.get(None, 7), Ok(Some(7))); // captured, not live
+        assert_eq!(retained.get(None, 7, |value| value.cloned()), Ok(Some(7))); // captured, not live
     }
 
     #[test]
@@ -636,21 +670,30 @@ mod existing_tests {
         let a = index.register(7, [(key(), entry(7u32))]).into_result();
         index.register(9, [(key(), entry(9u32))]).into_result();
         let old = query(&index);
-        assert_eq!(old.get(None, 7), Ok(Some(7)));
-        assert_eq!(old.get(None, 9), Ok(Some(9)));
-        assert_eq!(old.get(None, 11), Ok(None));
+        assert_eq!(old.get(None, 7, |value| value.cloned()), Ok(Some(7)));
+        assert_eq!(old.get(None, 9, |value| value.cloned()), Ok(Some(9)));
+        assert_eq!(old.get(None, 11, |value| value.cloned()), Ok(None));
         index.set(&a, &key(), entry(8u32)).into_result();
-        assert_eq!(query(&index).get(None, 7), Ok(Some(8)));
-        assert_eq!(old.get(None, 7), Ok(Some(7)));
+        assert_eq!(
+            query(&index).get(None, 7, |value| value.cloned()),
+            Ok(Some(8))
+        );
+        assert_eq!(old.get(None, 7, |value| value.cloned()), Ok(Some(7)));
         index.remove(&a, &key()).into_result();
-        assert_eq!(query(&index).get(None, 7), Ok(None));
+        assert_eq!(query(&index).get(None, 7, |value| value.cloned()), Ok(None));
         index.register(7, [(key(), entry(10u32))]).into_result();
         assert_eq!(
             index.validate_owner(&a),
             Err(AttachmentRowError::StaleHolder)
         );
         assert_eq!(index.snapshot(&key()).slot_of(&a), None);
-        assert_eq!(query(&index).get(None, 7), Ok(Some(10)));
-        assert_eq!(query(&AttachmentIndex::default()).get(None, 7), Ok(None));
+        assert_eq!(
+            query(&index).get(None, 7, |value| value.cloned()),
+            Ok(Some(10))
+        );
+        assert_eq!(
+            query(&AttachmentIndex::default()).get(None, 7, |value| value.cloned()),
+            Ok(None)
+        );
     }
 }

@@ -1,5 +1,4 @@
 //! The `player_toggle_flight` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0165
 
 pub trait Hooks {
     /// A player's client started (`flying`) or stopped flying (vanilla's

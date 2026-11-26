@@ -1,6 +1,8 @@
 //! Levels, chunks, dimensions, spawning, fluids as world state and the vocabulary the world speaks.
 
 pub(crate) mod advancement_progress;
+pub(crate) mod placement_modifier;
+pub(crate) mod pool_element;
 pub(crate) mod scoreboard;
 pub(crate) mod team;
 // hidden: a module of game-side types; mods use their re-exports
@@ -12,13 +14,17 @@ pub(crate) mod biome_region;
 pub(crate) mod biome_source;
 pub(crate) mod chunk_generator;
 pub(crate) mod chunk_refusal;
+pub(crate) mod chunk_request;
+pub(crate) mod chunk_snapshot;
 pub(crate) mod clock_adjustment;
+pub(crate) mod convention_tags;
 pub(crate) mod criteria;
 pub(crate) mod custom_spawners;
 pub(crate) mod data_maps;
 pub(crate) mod datapack_registry;
 pub(crate) mod datapack_registry_set;
 pub(crate) mod datapack_snapshot;
+pub(crate) mod detached_generator;
 pub(crate) mod dimension;
 pub(crate) mod dimension_transition;
 pub(crate) mod explosion_settings;
@@ -33,6 +39,9 @@ pub(crate) mod inside_write;
 pub(crate) mod landing_write;
 pub(crate) mod level_write_error;
 pub(crate) mod map_decoration_types;
+// hidden: a module of game-side entry points; mods use their re-exports
+#[doc(hidden)]
+pub mod mirror;
 // hidden: a module of game-side types; mods use their re-exports
 #[doc(hidden)]
 pub mod mod_chunk_tickets;
@@ -48,13 +57,16 @@ pub(crate) mod reload_order;
 // hidden: a module of game-side entry points; mods use their re-exports
 #[doc(hidden)]
 pub mod rotation;
+pub(crate) mod rule_test;
 pub(crate) mod runtime_files;
 pub(crate) mod runtime_levels;
+pub(crate) mod saved_chunk;
 pub(crate) mod scheduler;
 pub(crate) mod server_console;
 pub(crate) mod server_reload;
 pub mod snapshots;
 pub(crate) mod startup_progress;
+pub(crate) mod structure_processor;
 pub(crate) mod structure_template;
 pub(crate) mod structure_type;
 pub(crate) mod tags;

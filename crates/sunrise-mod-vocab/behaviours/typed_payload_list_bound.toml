@@ -1,0 +1,11 @@
+version = 1
+doc = """\
+A list in a typed payload has no count limit of its own, as in vanilla (`ByteBufCodecs.collection` defaults to \
+`Integer.MAX_VALUE`): its count is refused when its entries, at `Wire::MIN` bytes each and never less than one, \
+could not fit in the rest of the body. The writer refuses the same lists the reader would, so a list the peer \
+would refuse is never queued. A payload is bounded as a whole by the connection's frames and the 8 MiB \
+`PAYLOAD_DECODE_BUDGET`."""
+tests = [
+  "crates/sunrise-mod-api/src/parts/payloads/typed_tests.rs::a_million_byte_list_crosses_clientbound_and_a_count_its_bytes_cannot_hold_is_refused",
+  "crates/sunrise-mod-vocab/src/payload/codec_tests.rs::a_zero_width_list_counts_each_entry_as_one_byte_in_both_codecs",
+]

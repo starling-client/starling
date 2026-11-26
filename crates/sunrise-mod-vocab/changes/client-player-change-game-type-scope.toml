@@ -1,0 +1,7 @@
+ids = [
+    "hook:client_player_change_game_type",
+    "hook:client_player_change_game_type.player_id",
+    "type:ClientPlayerChangeGameTypeEvent.player_id",
+]
+why = "client_player_change_game_type version 2 fires for every changed PlayerInfo profile in ClientPacketListener.applyPlayerInfoUpdate before the new mode is stored and after LocalPlayer.onGameModeChanged clears local Y motion on Spectator entry, matching NeoForge's ClientHooks.onClientChangeGameType without requiring a spawned entity."
+migrate = "Handle Option<i32> in event.player_id (None for tab-only profiles without a spawned entity in the client level) and filter by event.player_uuid if you only care about the local player. If your manifest pins this hook, request hook_version = 2."

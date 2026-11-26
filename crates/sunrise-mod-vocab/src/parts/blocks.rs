@@ -197,7 +197,8 @@ pub(crate) struct BlockHookParts {
 
 impl BlockHookParts {
     pub(crate) fn new(id: &str, parts: &[Attached<dyn BlockPart>]) -> Self {
-        let owner_slot = crate::runtime::content_owner_index(id)
+        let owner_slot = crate::runtime::content_block(id)
+            .flatten()
             .and_then(|owner| parts.iter().position(|part| part.mod_index == owner));
         Self {
             parts: parts.to_vec(),
@@ -252,19 +253,30 @@ fn cached_slot_tracks_the_first_owner_in_dispatch_order_and_live_toggles() {
         ]
         .into(),
         || {
+            crate::runtime::install_content_owners(
+                [
+                    ("shared:first", "other"),
+                    ("shared:later", "owner"),
+                    ("shared:absent", "owner"),
+                ],
+                [],
+                [],
+                [],
+            );
             let attach = |mod_index, mod_id, order, type_name| Attached::<dyn BlockPart> {
                 mod_id,
                 mod_index,
                 order,
                 type_name,
                 part: Arc::new(Probe),
+                panicked: Default::default(),
             };
             let other = attach(0, "other", 0, "Other");
             let owner = attach(1, "owner", 0, "Owner");
             let second = attach(1, "owner", 1, "Second");
-            let first = BlockHookParts::new("other:first", &[other.clone(), owner.clone()]);
-            let later = BlockHookParts::new("owner:later", &[other.clone(), owner, second]);
-            let absent = BlockHookParts::new("owner:absent", &[other]);
+            let first = BlockHookParts::new("shared:first", &[other.clone(), owner.clone()]);
+            let later = BlockHookParts::new("shared:later", &[other.clone(), owner, second]);
+            let absent = BlockHookParts::new("shared:absent", &[other]);
 
             assert_eq!(later.disabled_owner_slot(), None);
             assert!(crate::set_mod_enabled("owner", false));
@@ -297,7 +309,9 @@ impl dyn Registrar + '_ {
     /// if any, and a read-only level. Call `offer.offer(|| Box::new(Voids))` to answer, or
     /// leave the offer untouched to decline. Asked
     /// in one list with the providers of the block entity type there, as
-    /// [`LevelRef::capability`](crate::LevelRef::capability) orders them.
+    /// [`LevelRef::capability`](crate::LevelRef::capability) orders them. For a given fully qualified
+    /// name, both kinds must use the same handler type. Invalid names, keys and conflicting types
+    /// refuse registration.
     pub fn block_capability<T: ?Sized + 'static>(
         &mut self,
         key: &CapabilityKey<T>,
@@ -312,11 +326,12 @@ impl dyn Registrar + '_ {
         + Sync
         + 'static,
     ) {
+        let provider: Arc<BlockProvider<T>> = Arc::new(provider);
         self.provide_block_capability(
             key.name,
             block,
             false,
-            BlockProviderOf::of(Arc::new(provider)),
+            NativeCapabilityProvider::of::<T, _>(provider),
         );
     }
     /// `block_capability`, asked ahead of the game's own provider.
@@ -334,11 +349,12 @@ impl dyn Registrar + '_ {
         + Sync
         + 'static,
     ) {
+        let provider: Arc<BlockProvider<T>> = Arc::new(provider);
         self.provide_block_capability(
             key.name,
             block,
             true,
-            BlockProviderOf::of(Arc::new(provider)),
+            NativeCapabilityProvider::of::<T, _>(provider),
         );
     }
 }
@@ -366,7 +382,7 @@ pub trait BlocksRegistrar {
         name: &'static str,
         block: &crate::BlockKey,
         before_game: bool,
-        provider: BlockProviderOf,
+        provider: NativeCapabilityProvider,
     );
 }
 

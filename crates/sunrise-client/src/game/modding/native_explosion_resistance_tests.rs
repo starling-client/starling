@@ -279,13 +279,21 @@ fn a_batched_read_answers_each_cell_in_order() {
             ]
         );
         assert!(!game.world.chunks.contains_key(&(6, 6)));
-        let too_many = ResistanceCells::Box {
+        let past_old_cap = ResistanceCells::Box {
             min: [0, 0, 0],
             max: [63, 63, 64],
         };
+        let large = reads(game, &past_old_cap, None).unwrap();
+        assert_eq!(large.len(), 266_240);
+        assert_eq!(large[0], NoResistance);
+        assert_eq!(large[63], Unavailable);
+        let overflow = ResistanceCells::Box {
+            min: [i32::MIN; 3],
+            max: [i32::MAX; 3],
+        };
         assert_eq!(
-            reads(game, &too_many, None),
-            Err(ResistanceCellsError::TooMany(266_240))
+            reads(game, &overflow, None),
+            Err(ResistanceCellsError::Overflow)
         );
         assert_eq!(
             parts.pure.0.load(Ordering::Relaxed),

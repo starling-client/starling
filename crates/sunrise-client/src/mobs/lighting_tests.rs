@@ -37,6 +37,7 @@ fn normal_matrix_includes_parent_scale_and_child_rotation() {
         pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.0, 1.0, 0.5],
         polygons: Vec::new(),
         children: vec![child],
+        layer: None,
     };
     let mut animated = Vec::new();
     render::draw(

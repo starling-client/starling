@@ -50,9 +50,8 @@ fn warning_dispatch_uses_neutral_at_tick_four() {
     const WARNING: &str = "minecraft:block.trial_spawner.about_to_spawn_item";
     let center = [6.5, 102.5, 4.5];
     game.audio.capture = Some(Vec::new());
-    game.audio
-        .play("minecraft:block.stone.break", Some(center), 1.0, 1.0);
-    game.audio.play_on(
+    game.play_audio("minecraft:block.stone.break", Some(center), 1.0, 1.0);
+    game.play_audio_on(
         6,
         "minecraft:block.note_block.pling",
         Some(center),
@@ -103,8 +102,7 @@ fn warning_dispatch_uses_neutral_at_tick_four() {
             );
         }
     }
-    game.audio
-        .play("minecraft:block.stone.break", Some(center), 1.0, 1.0);
+    game.play_audio("minecraft:block.stone.break", Some(center), 1.0, 1.0);
     assert_eq!(
         game.audio.capture.as_ref().unwrap().last().unwrap().source,
         4,

@@ -35,6 +35,7 @@ impl GameLevel<'_> {
                         self.world,
                         at,
                         &self.facts.get(state).name,
+                        self.items,
                         |key, entity, block| self.encode_live_block_entity(key, entity, block),
                     )
                 })
@@ -43,20 +44,35 @@ impl GameLevel<'_> {
         sunrise_world::loot::copy::with_storage(self.loot_storage.clone(), || {
             sunrise_world::loot::copy::with_block_source(source.or(captured.as_deref()), || {
                 let (items, registry, seed) = (self.items, self.registry, self.seed);
+                // ORIGIN is the block's centre and its location checks read this level,
+                // so the roll keeps the randoms until it ends.
+                let mut random = self.world.random.clone();
+                let mut sequences = std::mem::take(&mut *self.rand_sequences);
+                let view = self.location_view();
+                let read = |predicate: &serde_json::Value, at: [f64; 3]| {
+                    sunrise_client::advancements::location(predicate, at, &view)
+                };
+                let roll = BlockLootRoll {
+                    location: Some(sunrise_client::advancements::loot_location(
+                        at.map(|c| f64::from(c) + 0.5),
+                        &read,
+                    )),
+                    ..roll
+                };
                 if !self.native_authoritative
                     || !mod_api::__private::listened(mod_api::HookId::EnchantedBlockLoot)
                 {
-                    let sequences = Some((&mut *self.rand_sequences, seed));
-                    return items.block_drops(
+                    let drops = items.block_drops(
                         registry,
                         state,
                         roll,
-                        &mut self.world.random,
-                        sequences,
+                        &mut random,
+                        Some((&mut sequences, seed)),
                     );
+                    self.world.random = random;
+                    *self.rand_sequences = sequences;
+                    return drops;
                 }
-                let mut random = self.world.random.clone();
-                let mut sequences = std::mem::take(&mut *self.rand_sequences);
                 let tool = roll.held;
                 let level = &*self;
                 let levels = |enchantment: &str, mut read: u32| {
@@ -249,7 +265,7 @@ mod tests {
                 assert_eq!(level_side.entity, None);
                 reads.lock().unwrap().clear();
 
-                game.combat.explosion_direct = Some(9);
+                game.combat.explosion_direct = Some((9, "minecraft:tnt"));
                 game.world.set(POS[0], POS[1], POS[2], gravel).unwrap();
                 let center = POS.map(|c| f64::from(c) + 0.5);
                 let blast = crate::game::explosion::BlockInteraction::Destroy;

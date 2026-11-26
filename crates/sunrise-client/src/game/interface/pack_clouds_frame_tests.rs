@@ -24,7 +24,7 @@ const OIT_INCLUDES: [&str; 7] = [
 ];
 
 /// A pack of vanilla's `oit.glsl` includes and `own` files.
-fn pack(own: &[(&str, &str)]) -> ResourceSource {
+pub(super) fn pack(own: &[(&str, &str)]) -> ResourceSource {
     let root = ResourceSource::directory(fixture_root());
     let mut files: std::collections::BTreeMap<String, Resource> = OIT_INCLUDES
         .iter()
@@ -74,7 +74,7 @@ fn drawn_frame(game: &mut super::Game<'_>) -> (Vec<u8>, usize) {
         scaled: false,
         background: false,
     });
-    game.render_with(|renderer, frame| renderer.render(frame))
+    game.render_with(|renderer, frame| renderer.render(frame, None))
         .unwrap();
     let result = game.renderer.as_mut().unwrap().screenshot_result.take();
     let mut pending = result.unwrap().unwrap();
@@ -155,23 +155,24 @@ fn a_packs_clouds_draw_with_and_without_improved_transparency() {
             .unwrap()
             .set_clouds_shader(Some(programs))
             .unwrap();
-        // Each stage translates, and the varying's location is present in both. Only pipeline
-        // linking checks the vertex's float against the fragment's integer at this location.
-        let mismatched = [
-            (
-                CLOUDS[0].0,
-                "#version 330\nlayout(location = 0) flat out float tag;\nvoid main() { gl_Position = vec4(1.0); tag = 1.0; }",
-            ),
-            (
-                CLOUDS[1].0,
-                "#version 330\nlayout(location = 0) flat in int tag;\nlayout(location = 0) out vec4 pixel;\nvoid main() { pixel = vec4(float(tag)); }",
-            ),
-        ];
-        let refused = crate::game::UiResources::load(&pack(&mismatched), std::path::Path::new(""))
-            .unwrap()
-            .atlas
-            .clouds_shader
-            .unwrap();
+        // Every pack shader the device would refuse in these pipelines is refused when the
+        // packs load or made to fit, so the refused programs are built by hand: they sample
+        // binding 4 (`Sampler0`'s), which no clouds pipeline binds.
+        let parse = |wgsl: &str| wgpu::naga::front::wgsl::parse_str(wgsl).unwrap();
+        let program = || {
+            sunrise_client_render::core_shader::validated(
+                parse("@vertex fn main() -> @builtin(position) vec4<f32> { return vec4(1.0); }"),
+                parse(
+                    "@group(0) @binding(4) var t: texture_2d<f32>;\n@group(0) @binding(5) var s: sampler;\n\
+                     @fragment fn main() -> @location(0) vec4<f32> { return textureSample(t, s, vec2(0.5)); }",
+                ),
+                Vec::new(),
+            )
+        };
+        let refused = sunrise_client::clouds::pack::Programs {
+            classic: program(),
+            oit: Box::new([program(), program(), program()]),
+        };
         let error = game
             .renderer
             .as_mut()

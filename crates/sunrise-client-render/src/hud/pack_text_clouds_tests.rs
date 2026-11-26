@@ -126,12 +126,12 @@ fn each_improved_transparency_stage_is_given_its_passs_samplers() {
     .expect("every sampler is its stage's")
     .expect("the pack's clouds");
     let oit = &given.oit;
-    let at = |name: &str| {
-        let index = oit[0].other.iter().position(|n| n == name).unwrap();
-        crate::core_shader::other_binding(index)
+    let at = |program: &Translated, name: &str| {
+        let index = program.other.iter().position(|n| n == name).unwrap();
+        program.other_binding(index)
     };
-    let fragment_reads = |program: &CoreProgram, name: &str| {
-        program.stages_reading(at(name)) == wgpu::ShaderStages::FRAGMENT
+    let fragment_reads = |program: &Translated, name: &str| {
+        program.stages_reading(at(program, name)) == wgpu::ShaderStages::FRAGMENT
     };
     assert!(!fragment_reads(&oit[0], "DepthBoundsSampler"));
     assert!(fragment_reads(&oit[1], "DepthBoundsSampler"));
@@ -183,11 +183,12 @@ fn a_clouds_program_any_pipeline_refuses_fails_the_load() {
     assert_eq!(refused.pipeline, "minecraft:pipeline/oit_accumulate_clouds");
 }
 
-/// What the device would refuse when it makes a pipeline fails the load too, as vanilla's
-/// compile failure does: reading `Sampler0`, which no clouds pass binds; writing the colour
-/// target with integers.
+/// Reading `Sampler0`, which no clouds pass binds, fails the load, as vanilla's builder refuses a
+/// descriptor missing from the pipeline's layout. Writing the colour target with integers, which
+/// vanilla's builder doesn't check, loads: the device doesn't take it, so the native clouds draw
+/// (`core_clouds::clouds_for_frame`), with the note naming the target.
 #[test]
-fn a_clouds_program_its_pipeline_cant_bind_or_target_fails_the_load() {
+fn a_clouds_program_reading_a_sampler_no_pass_binds_fails_the_load() {
     let sampler = fragment(
         "uniform sampler2D Sampler0;\nlayout(location = 0) out vec4 fragColor;",
         "fragColor = vertexColor * texture(Sampler0, vec2(0.5));",
@@ -199,9 +200,19 @@ fn a_clouds_program_its_pipeline_cant_bind_or_target_fails_the_load() {
         "layout(location = 0) out ivec4 fragColor;",
         "fragColor = ivec4(vertexColor * 255.0);",
     );
-    let refused = clouds(&integers).unwrap_err();
-    assert_eq!(refused.pipeline, "minecraft:pipeline/clouds");
-    assert!(refused.why.contains("colour target 0"), "{refused}");
+    let programs = clouds(&integers).unwrap().expect("the pack's clouds");
+    let target = wgpu::TextureFormat::Rgba8Unorm;
+    assert_eq!(
+        programs
+            .classic
+            .past_device_limit(&wgpu::Limits::default(), &[target]),
+        Some(sunrise_glsl::PastDeviceLimit::ColourOutput {
+            location: 0,
+            kind: Some(naga::ScalarKind::Sint),
+            components: 4,
+            target
+        })
+    );
 }
 
 /// A pack replacing only an include the clouds' stages use changes them: the stages are
@@ -304,4 +315,55 @@ fn only_an_active_include_override_selects_or_refuses_clouds() {
             assert!(load_clouds(&root, &defaults).unwrap().is_some());
         }
     }
+}
+
+/// A `DynamicTransforms` larger than its slot (26.3's 160 bytes and an 8-member array, 288) in
+/// the clouds' fragment stage: the native clouds draw and the pack stays, as before this change;
+/// one within its slot loads.
+#[test]
+fn a_clouds_vanilla_block_past_its_slot_draws_natively() {
+    let fsh = |extra: &str| {
+        fragment(
+            &format!(
+                "layout(std140) uniform DynamicTransforms {{\n    mat4 ModelViewMat;\n    \
+                 mat4 TextureMat;\n    vec4 ColorModulator;\n    vec3 ModelOffset;\n{extra}}};\n\
+                 layout(location = 0) out vec4 fragColor;"
+            ),
+            "    fragColor = vertexColor * ColorModulator;",
+        )
+    };
+    assert!(clouds(&fsh("    vec4 More;\n")).unwrap().is_some());
+    assert!(clouds(&fsh("    vec4 More[8];\n")).unwrap().is_none());
+}
+
+/// What only the clouds' pipeline refuses, after the translation, names the declaration it is
+/// about: a vanilla sampler read in an included file (no clouds pass binds one) at that file's
+/// line.
+#[test]
+fn a_refusal_after_the_translation_names_the_declaration() {
+    let tinted = "// tint\nuniform sampler2D Sampler1;\nvec4 tint() { return texture(Sampler1, vec2(0.5)); }\n";
+    let fsh = fragment(
+        "#moj_import <minecraft:tint.glsl>\nlayout(location = 0) out vec4 fragColor;",
+        "    fragColor = vertexColor * tint();",
+    );
+    let defaults = source(&[(VSH, CLOUDS_VSH), (FSH, CLOUDS_FSH)]);
+    let tint = "assets/minecraft/shaders/include/tint.glsl";
+    let root = source(&[(VSH, CLOUDS_VSH), (FSH, &fsh), (tint, tinted)]);
+    let refused = load_clouds(&root, &defaults).unwrap_err();
+    let at = |file: &str, line, message: &str| {
+        sunrise_glsl::Location {
+            file: file.into(),
+            line,
+        }
+        .error(message)
+        .to_string()
+    };
+    assert_eq!(
+        refused.why,
+        at(
+            "minecraft:shaders/include/tint.glsl",
+            2,
+            "Sampler1 is not a sampler of this pipeline"
+        )
+    );
 }

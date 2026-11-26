@@ -637,13 +637,14 @@ pub const COMMANDS: &[Cmd] = &[
          With raw, the reply lists each rendered frame's time in milliseconds (frame_ms). \
          The streaming_work series is [unload_entries_visited, upload_elements_sorted, upload_elements_merged]. \
          The unload counter covers departures and replacements in the active world. \
-         The streaming_uploads series is [meshes_uploaded, vertex_bytes_uploaded] for inline and queued mesh submissions to the renderer. \
+         The streaming_uploads series is [meshes_uploaded, bytes_uploaded] for inline and queued mesh submissions to the renderer. \
          This includes empty meshes and excludes stale meshes skipped before submission. \
-         Bytes use the upload budget's unpacked vertex size, not actual GPU transfers. \
+         Bytes are the upload budget's (the renderer's mesh_upload_bytes): the vertices at their unpacked size, compact records too, \
+         plus a shaders/ pack's normal-stream entries and quad sources as they are copied. \
          The streaming_block_entities series is [block_entities_inserted_on_load, item_entities_visited]. \
          Replacements count as inserts; item_entities_visited counts entity visits in the item-render loops. \
          The streaming_span_ms object holds wall milliseconds for unload_block_entities (column removal on departure or replacement), \
-         order_uploads (stale-entry filtering and queue ordering), upload_queue (queued uploads only), \
+         order_uploads (stale-entry filtering and queue ordering), upload (inline uploads only), upload_queue (queued uploads only), \
          load_block_entities (column block-entity loads) and block_entity_items (campfire, vault, shelf and brushable item loops). \
          Spans are summed by name per frame and null where they did not run.",
         ["sunrise-ctl fly 0 100 0 500 100 0 20"], &[], mcp: false, local: false),

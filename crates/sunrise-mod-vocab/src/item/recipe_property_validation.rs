@@ -1,87 +1,83 @@
-//! Validation at the listener boundary, before the next mod sees its edits.
+//! Scoped insertion and namespace validation for [`crate::RecipePropertySetsEvent`].
 use super::RecipePropertyAddition;
+use crate::Answered;
 
-pub(crate) fn validate_recipe_properties(
-    owner: &str,
-    previous: &[RecipePropertyAddition],
-    additions: &mut Vec<RecipePropertyAddition>,
-) {
-    validate_in(owner, &crate::LoadedMods::new(), previous, additions);
-}
-
-fn validate_in(
-    owner: &str,
-    packages: &crate::LoadedMods,
-    previous: &[RecipePropertyAddition],
-    additions: &mut Vec<RecipePropertyAddition>,
-) {
-    additions.retain(|addition| {
-        let Some((namespace, _)) = addition.set.split_once(':') else {
-            // Bare keys name vanilla sets; the engine checks that they exist.
-            return true;
-        };
-        let existing = previous.iter().any(|old| old.set == addition.set);
-        let owned = crate::parts::owns_namespace_in(packages, owner, namespace);
-        let valid = crate::Identifier::parse_namespaced(&addition.set).is_some()
-            && (namespace == "minecraft" || existing || owned);
-        if !valid {
+impl crate::RecipePropertySetsEvent<'_> {
+    /// Add items to a recipe property set. A valid explicit key can create a custom set,
+    /// including an unused `minecraft:` key. Bare names refer to built-in sets.
+    /// Contributions are unioned without changing the first contributor's attribution.
+    pub fn register(&mut self, addition: RecipePropertyAddition) {
+        let mod_id = self.mod_id;
+        if addition.set.contains(':')
+            && crate::Identifier::parse_namespaced(&addition.set).is_none()
+        {
             log::warn!(
-                "recipe_property_sets: {owner} cannot create set {} outside its owned namespaces",
+                "recipe_property_sets: {mod_id}: invalid set key {}",
                 addition.set
             );
+            return;
         }
-        valid
-    });
+        self.additions.push(Answered {
+            answer: addition,
+            mod_id,
+        });
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::world::phase::with_test_package_inventory;
     use crate::{PackageInfo, PackageKind, Side};
-    use std::sync::Arc;
 
     #[test]
-    fn owned_manifest_namespace_can_create_but_foreign_new_key_cannot() {
-        let packages = crate::LoadedMods::from_entries(Arc::from([PackageInfo::new(
+    fn any_valid_namespace_can_create_sets_and_keeps_contributor_attribution() {
+        let packages = vec![PackageInfo::new(
             "ported_farmersdelight".into(),
             "1".into(),
             PackageKind::Code,
             Side::Both,
             vec!["ported_farmersdelight".into(), "farmersdelight".into()],
             vec![],
-        )]));
-        let previous = vec![RecipePropertyAddition::new("another:known", vec![])];
-        let mut additions: Vec<_> = [
-            "farmersdelight:cooking_pot_input",
-            "ported_farmersdelight:input",
-            "another:known",
-            "another:new",
-            "BAD:input",
-            "minecraft:furnace_input",
-        ]
-        .into_iter()
-        .map(|key| RecipePropertyAddition::new(key, vec![]))
-        .collect();
-        validate_in(
-            "ported_farmersdelight",
-            &packages,
-            &previous,
-            &mut additions,
-        );
-        assert_eq!(
-            additions.iter().map(|a| a.set.as_str()).collect::<Vec<_>>(),
-            [
+        )];
+        let mut additions = Vec::new();
+        with_test_package_inventory(packages, || {
+            let mut event = crate::RecipePropertySetsEvent {
+                mod_id: "another",
+                additions: &mut additions,
+            };
+            event.register(RecipePropertyAddition::new("another:known", vec![]));
+            event.mod_id = "ported_farmersdelight";
+            for key in [
                 "farmersdelight:cooking_pot_input",
                 "ported_farmersdelight:input",
                 "another:known",
-                "minecraft:furnace_input"
+                "another:new",
+                "BAD:input",
+                "minecraft:furnace_input",
+            ] {
+                event.register(RecipePropertyAddition::new(key, vec![]));
+            }
+        });
+        assert_eq!(
+            additions
+                .iter()
+                .map(|a| (a.answer.set.as_str(), a.mod_id))
+                .collect::<Vec<_>>(),
+            [
+                ("another:known", "another"),
+                ("farmersdelight:cooking_pot_input", "ported_farmersdelight"),
+                ("ported_farmersdelight:input", "ported_farmersdelight"),
+                ("another:known", "ported_farmersdelight"),
+                ("another:new", "ported_farmersdelight"),
+                ("minecraft:furnace_input", "ported_farmersdelight"),
             ]
         );
     }
 
     #[test]
-    fn served_content_namespace_grants_recipe_property_creation_only_to_its_host() {
-        let packages = crate::LoadedMods::from_entries(Arc::from([
+    fn served_content_namespace_does_not_change_property_set_admission() {
+        let packages = vec![
             PackageInfo::new(
                 "horizon_java".into(),
                 "1".into(),
@@ -115,7 +111,7 @@ mod tests {
                 vec!["plain".into()],
                 vec![],
             ),
-        ]));
+        ];
         let keys = [
             "runes:altar_input",
             "runes_extra:catalyst",
@@ -123,34 +119,24 @@ mod tests {
             "plain:input",
             "third:input",
         ];
-        let mut host_additions: Vec<_> = keys
-            .iter()
-            .map(|key| RecipePropertyAddition::new(*key, vec![]))
-            .collect();
-        validate_in("horizon_java", &packages, &[], &mut host_additions);
-        assert_eq!(
-            host_additions
-                .iter()
-                .map(|a| a.set.as_str())
-                .collect::<Vec<_>>(),
-            [
-                "runes:altar_input",
-                "runes_extra:catalyst",
-                "horizon_java:own"
-            ]
-        );
-
-        let mut third_additions: Vec<_> = keys
-            .iter()
-            .map(|key| RecipePropertyAddition::new(*key, vec![]))
-            .collect();
-        validate_in("third", &packages, &[], &mut third_additions);
-        assert_eq!(
-            third_additions
-                .iter()
-                .map(|a| a.set.as_str())
-                .collect::<Vec<_>>(),
-            ["third:input"]
-        );
+        with_test_package_inventory(packages, || {
+            for mod_id in ["third", "horizon_java"] {
+                let mut additions = Vec::new();
+                let mut event = crate::RecipePropertySetsEvent {
+                    mod_id,
+                    additions: &mut additions,
+                };
+                for key in keys {
+                    event.register(RecipePropertyAddition::new(key, vec![]));
+                }
+                assert_eq!(
+                    additions
+                        .iter()
+                        .map(|a| a.answer.set.as_str())
+                        .collect::<Vec<_>>(),
+                    keys
+                );
+            }
+        });
     }
 }

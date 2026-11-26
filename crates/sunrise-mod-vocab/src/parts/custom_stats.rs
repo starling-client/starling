@@ -4,8 +4,8 @@ use super::*;
 /// Custom statistics declared during registration.
 pub trait CustomStatsRegistrar {
     /// Declare `path` in the registering mod's namespace, or an explicit
-    /// `namespace:path` in a manifest-owned namespace other than `minecraft`.
-    /// Invalid, duplicate or frozen declarations refuse installation,
+    /// `namespace:path` in any valid namespace.
+    /// Invalid, duplicate, built-in or frozen declarations refuse installation,
     /// even when the returned error is ignored. IDs freeze before worlds open.
     /// Servers with custom statistics require Sunrise clients with the same
     /// ordered registry; the configuration-phase content identity checks it.

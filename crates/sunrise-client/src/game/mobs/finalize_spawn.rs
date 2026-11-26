@@ -28,13 +28,12 @@ pub(super) fn biome_or_plains(name: Option<String>) -> String {
 impl FinalizeGame<'_, '_> {
     /// The biome id at a block, when its chunk is loaded.
     fn biome_name(&self, pos: [i32; 3]) -> Option<String> {
-        let chunk = self.game.world.chunks.get(&(pos[0] >> 4, pos[2] >> 4))?;
-        Some(
-            world_biomes!(self.game)
-                .get(chunk.biome(pos[0], pos[1], pos[2]))
-                .name
-                .clone(),
-        )
+        // `LevelReader.getBiome`: the noise cell the biome zoom picks, perhaps in a neighbouring chunk.
+        let game = &self.game;
+        let biome = game
+            .world
+            .biome_at(game.streaming.biome_zoom, pos[0], pos[1], pos[2])?;
+        Some(world_biomes!(game).get(biome).name.clone())
     }
 }
 
@@ -47,11 +46,33 @@ impl finalize::FinalizeLevel for FinalizeGame<'_, '_> {
         biome_or_plains(self.biome_name(pos))
     }
     fn biome_tag(&self, tag: &str, pos: [i32; 3]) -> bool {
-        self.biome_name(pos)
-            .is_some_and(|b| self.game.res.mob_data().biome_has(tag, &b))
+        self.biome_name(pos).is_some_and(|b| {
+            if let Some(tags) = self
+                .game
+                .world_tables
+                .as_ref()
+                .and_then(|t| t.pack_tags.get("worldgen/biome"))
+            {
+                return tags.get(tag).is_some_and(|members| members.contains(&b));
+            }
+            self.game.res.mob_data().biome_has(tag, &b)
+        })
     }
     fn structures_with_piece_at(&self, pos: [i32; 3]) -> Vec<String> {
         self.game.structures_at(pos)
+    }
+    fn structure_tag(&self, tag: &str, structure: &str) -> bool {
+        if let Some(tags) = self
+            .game
+            .world_tables
+            .as_ref()
+            .and_then(|t| t.pack_tags.get("worldgen/structure"))
+        {
+            return tags
+                .get(tag)
+                .is_some_and(|members| members.contains(structure));
+        }
+        self.game.structure_tag(tag).iter().any(|m| m == structure)
     }
     fn moon_phase(&self, _: [i32; 3]) -> usize {
         self.game.finalize_moon_phase()
@@ -126,13 +147,25 @@ impl Game<'_> {
     pub(super) fn finalize_halloween(&self) -> bool {
         finalize::is_halloween()
     }
+    /// The active variant tables: a client's synced registries when joined,
+    /// otherwise the server's frozen world tables (or prepared defaults).
+    pub(in crate::game) fn world_variants(&self) -> &sunrise_client::mobs::variants::VariantTables {
+        if let Some(r) = self.remote.as_ref()
+            && !r.variants.is_empty()
+        {
+            return &r.variants;
+        }
+        self.world_tables
+            .as_ref()
+            .map_or_else(|| self.res.variants(), |t| &t.variants)
+    }
     /// The tables a finalizeSpawn `Ctx` borrows: the variant registries, the
     /// enchantments and items its gear rolls need, and `EntityTypes.CAMEL_HUSK`'s
     /// dimensions if the table has the type.
     pub(super) fn finalize_spawn_data(&self) -> finalize::SpawnData<'_> {
         let game = self;
         finalize::SpawnData {
-            registries: game.res.spawn_registries(),
+            variants: game.world_variants(),
             enchantments: &world_stations!(game).enchantments,
             items: world_items!(game),
             camel_husk_size: game
@@ -152,12 +185,7 @@ impl Game<'_> {
     ) -> finalize::SpawnEvent {
         // A mob finalization makes starts without group data, and the
         // finalization that follows reads none.
-        let (outcome, _) = self.finalize_spawn_event(mob, reason, None, &mut None);
-        match outcome {
-            super::creatures::Finalized::Cancelled => finalize::SpawnEvent::Cancelled,
-            super::creatures::Finalized::Skipped => finalize::SpawnEvent::Skip,
-            super::creatures::Finalized::Done => finalize::SpawnEvent::Finalize,
-        }
+        self.finalize_spawn_event(mob, reason, None, &mut None).0
     }
     /// The game's own finalization of a mob, with no event: the same
     /// `finalize::Ctx` world generation runs, over the live level, with the
@@ -196,7 +224,7 @@ impl Game<'_> {
         game.world.random = random;
         for m in created {
             game.mobs.push(m);
-            game.native_mobs_joined(game.mobs.len() - 1, false);
+            game.admit_new_mobs(game.mobs.len() - 1);
         }
     }
 }
@@ -301,7 +329,7 @@ mod tests {
             game.world.random =
                 sunrise_core::random::LevelRandom::for_level(LegacyRandom::new(42_i64));
             let outcome = game.finalize_with(&mut with, Reason::Natural, None);
-            assert_eq!(outcome, super::super::creatures::Finalized::Done);
+            assert!(outcome);
             // The same stream for the plain path: same seed, same draws.
             game.world.random =
                 sunrise_core::random::LevelRandom::for_level(LegacyRandom::new(42_i64));

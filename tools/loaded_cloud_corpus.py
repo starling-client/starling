@@ -213,10 +213,14 @@ def loaded_clouds(cmd, setup, contract='loader', summary=None):
     return out
 
 
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 if __name__ == '__main__':
     import sys
-    import command_exec_corpus as corpus
-    import test_command_exec_parity as runner
+    from tools import command_exec_corpus as corpus, test_command_exec_parity as runner
 
     contract = 'full' if '--full' in sys.argv else 'loader'
     if '--full' in sys.argv:

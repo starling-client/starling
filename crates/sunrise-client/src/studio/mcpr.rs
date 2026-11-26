@@ -250,7 +250,12 @@ impl McprWriter {
     ///
     /// After an error the writer refuses further packets; `finish` still
     /// packages every frame written whole before it.
-    pub fn write_packet(&mut self, timestamp_ms: u32, id: i32, payload: &[u8]) -> io::Result<()> {
+    pub(crate) fn write_packet(
+        &mut self,
+        timestamp_ms: u32,
+        id: i32,
+        payload: &[u8],
+    ) -> io::Result<()> {
         if self.failed {
             return Err(io::Error::other("an earlier write failed"));
         }
@@ -302,12 +307,14 @@ impl McprWriter {
     }
 
     /// The stream file holding the packets until `finish` succeeds.
-    pub fn stream_path(&self) -> &Path {
+    #[cfg(test)]
+    pub(crate) fn stream_path(&self) -> &Path {
         &self.temp_tmcpr_path
     }
 
     /// The metadata file holding the session until `finish` succeeds.
-    pub fn metadata_path(&self) -> &Path {
+    #[cfg(test)]
+    pub(crate) fn metadata_path(&self) -> &Path {
         &self.temp_meta_path
     }
 
@@ -377,7 +384,7 @@ impl McprWriter {
 
     /// Atomically replace the optional camera path without touching the packet
     /// stream, metadata, or other archive entries.
-    pub fn replace_camera_track(path: &Path, track: &CameraTrack) -> io::Result<()> {
+    pub(crate) fn replace_camera_track(path: &Path, track: &CameraTrack) -> io::Result<()> {
         let part = sibling(path, "camera.part");
         let result = (|| {
             let file = File::open(path)?;
@@ -427,7 +434,7 @@ impl McprWriter {
     }
 
     /// Atomically replace the optional editor markers without touching packet data.
-    pub fn replace_markers(path: &Path, markers: &[Marker]) -> io::Result<()> {
+    pub(crate) fn replace_markers(path: &Path, markers: &[Marker]) -> io::Result<()> {
         let part = sibling(path, "markers.part");
         let result = (|| {
             let file = File::open(path)?;
@@ -826,7 +833,7 @@ impl McprReader {
     }
 
     /// Total number of packets indexed in the recording.
-    pub fn total_packets(&self) -> usize {
+    pub(crate) fn total_packets(&self) -> usize {
         self.total_packets
     }
 
@@ -862,7 +869,10 @@ impl McprReader {
     ///
     /// Starting at the first packet of a millisecond keeps the packets that
     /// arrived together, such as a chunk and the entities in it, together.
-    pub fn seek_to_timestamp(&mut self, target_timestamp_ms: u32) -> io::Result<Option<u32>> {
+    pub(crate) fn seek_to_timestamp(
+        &mut self,
+        target_timestamp_ms: u32,
+    ) -> io::Result<Option<u32>> {
         let Some(first) = self.packet_index.first() else {
             return Ok(None);
         };

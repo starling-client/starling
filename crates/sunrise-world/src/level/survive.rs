@@ -510,15 +510,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         &self,
         block: super::states::BlockId,
     ) -> (super::states::BlockId, super::states::BlockId) {
-        let name = &*self.b.table.info(block).name;
-        let head = name.strip_suffix("_plant").unwrap_or(name);
-        let head = self.b.table.block_by_name(head).unwrap_or(block);
-        let body = self
-            .b
-            .table
-            .block_by_name(&format!("{}_plant", &*self.b.table.info(head).name))
-            .unwrap_or(block);
-        (head, body)
+        self.b.table.growing_plant_pair(block)
     }
     /// `GrowingPlantBlock.canAttachTo` (kelp refuses `cannot_support_kelp`).
     fn growing_plant_can_attach_to(&self, state: BlockStateId, attached: BlockStateId) -> bool {
@@ -554,7 +546,12 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     /// `FireBlock.getIgniteOdds` and `getBurnOdds` of `state` at `pos`, asked
     /// from its side `face`: the level's answer, else the world's
     /// `neoforge:flammable` value, else `FireBlock.bootStrap`'s table.
-    fn fire_odds(&self, state: BlockStateId, pos: BlockPos, face: Direction) -> (i32, i32) {
+    pub(crate) fn fire_odds(
+        &self,
+        state: BlockStateId,
+        pos: BlockPos,
+        face: Direction,
+    ) -> (i32, i32) {
         if self.b.is_waterlogged(state) {
             return (0, 0);
         }
@@ -697,5 +694,34 @@ impl<L: super::signal_access::SignalAccess + ?Sized> Signals<'_, L> {
 impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     pub(crate) fn direction_prop(&self, direction: Direction) -> super::states::PropKey {
         self.signals().direction_prop(direction)
+    }
+}
+
+#[cfg(test)]
+mod growing_plant_pair_tests {
+    use super::super::tests::{TestLevel, fixture};
+
+    #[test]
+    #[ignore = "daily"]
+    fn growing_plant_pair_resolves_both_halves_and_falls_back_to_the_original_block() {
+        let Some(f) = fixture() else { return };
+        let b = &f.behaviours;
+        let mut level = TestLevel::new(b);
+        let mut ticks = super::super::Ticks::new(0);
+        let sim = b.sim(&mut level, &mut ticks);
+
+        for (head_name, body_name) in [
+            ("minecraft:kelp", "minecraft:kelp_plant"),
+            ("minecraft:twisting_vines", "minecraft:twisting_vines_plant"),
+            ("minecraft:weeping_vines", "minecraft:weeping_vines_plant"),
+        ] {
+            let head = b.table.block_by_name(head_name).unwrap();
+            let body = b.table.block_by_name(body_name).unwrap();
+            assert_eq!(sim.growing_plant_pair(head), (head, body));
+            assert_eq!(sim.growing_plant_pair(body), (head, body));
+        }
+
+        let stone = b.table.block_by_name("minecraft:stone").unwrap();
+        assert_eq!(sim.growing_plant_pair(stone), (stone, stone));
     }
 }

@@ -70,16 +70,11 @@ import tempfile
 import time
 import zlib
 
-try:
-    from . import lab, oracle_harness as oh, test_rust_parity as base
-    from .integration_env import game_environment, run_game
-    from .lab import free_port  # the other server harnesses import it from here
-except ImportError:
-    from integration_env import game_environment, run_game
-    import lab
-    import oracle_harness as oh
-    import test_rust_parity as base
-    from lab import free_port
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, oracle_harness as oh, test_rust_parity as base
+from tools.integration_env import game_environment, run_game
+from tools.lab import free_port  # the other server harnesses import it from here
 
 NAME = 'dedicated-server-parity'
 SEED = 12345

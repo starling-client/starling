@@ -13,6 +13,34 @@ impl Game<'_> {
         self.entity_section_moved_id(id as u32);
     }
 
+    /// `ClientLevel.isTickingEntity`: players always tick; other entities tick while their chunk is loaded.
+    fn remote_entity_is_ticking(&self, id: i32) -> bool {
+        let Some(r) = self.remote.as_ref() else {
+            return true;
+        };
+        if r.entity_id == id || r.level_players.contains_key(&id) {
+            return true;
+        }
+        let pos = if let Some(m) = self.mob_index.get_ref(&self.mobs, id as u32) {
+            [m.position.x, m.position.z]
+        } else if let Some(i) = self.interactions.get(&id) {
+            [i.position.x, i.position.z]
+        } else if let Some(a) = self.armor_stands.iter().find(|a| a.id == id as u32) {
+            [a.position.x, a.position.z]
+        } else if let Some(b) = self.boats.iter().find(|b| b.id == id as u32) {
+            [b.position.x, b.position.z]
+        } else if let Some(c) = self.carts.iter().find(|c| c.id == id as u32) {
+            [c.position.x, c.position.z]
+        } else if let Some(t) = r.entities.get(&id) {
+            [t.position[0], t.position[2]]
+        } else {
+            return false;
+        };
+        self.world
+            .chunks
+            .contains_key(&((pos[0].floor() as i32) >> 4, (pos[1].floor() as i32) >> 4))
+    }
+
     pub(super) fn remote_position_sync_and_file(
         &mut self,
         id: i32,
@@ -21,13 +49,12 @@ impl Game<'_> {
         pitch: f32,
         on_ground: bool,
     ) {
-        self.move_entity(
-            id,
-            Some(path),
-            Some((yaw, pitch)),
-            on_ground,
-            super::MovePacket::PositionSync,
-        );
+        let packet = if self.remote_entity_is_ticking(id) {
+            super::MovePacket::PositionSync
+        } else {
+            super::MovePacket::PositionSyncSnap
+        };
+        self.move_entity(id, Some(path), Some((yaw, pitch)), on_ground, packet);
         self.entity_section_moved_id(id as u32);
     }
 
@@ -38,9 +65,7 @@ impl Game<'_> {
         rotation: (f32, f32),
     ) {
         self.remote_move_vehicle(position, rotation);
-        let boat = self
-            .riding
-            .filter(|&id| self.controls_boat(id) && self.boats.iter().any(|b| b.id == id));
+        let boat = self.riding.filter(|&id| self.controls_boat(id));
         if let Some(id) = self.driven_mount().map(|m| m.id).or(boat) {
             self.entity_section_moved_id(id);
         }
@@ -64,10 +89,14 @@ pub(super) fn tick_items(
     let mut items = game.dropped.lift();
     let mut i = 0;
     while i < items.len() {
-        let (_, discarded) =
-            game.tick_item_with_block_contacts(&mut items[i], None, &[], true, &mut |splash| {
-                entered.push(splash)
-            });
+        let (_, discarded) = game.tick_item_with_block_contacts(
+            &mut items[i],
+            None,
+            &[],
+            true,
+            None,
+            &mut |splash| entered.push(splash),
+        );
         let from = items[i].previous;
         let to = items[i].position;
         if !discarded {

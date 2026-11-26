@@ -63,17 +63,7 @@ pub fn spawn_cat(l: &mut dyn CustomSpawnerLevel, pos: [i32; 3], persistent: bool
         f64::from(pos[1]),
         f64::from(pos[2]) + 0.5,
     ];
-    let Some(id) = l.spawn_mob("minecraft:cat", at, persistent, Reason::Natural, Some(0.0)) else {
-        return;
-    };
-    // `Cat.finalizeSpawn` asks `#cats_spawn_as_black` about the origin: `snapTo` runs after it, so a hut does not make it black.
-    let black = l.structure_tag("minecraft:cats_spawn_as_black");
-    let at_origin = l.structures_at([0, 0, 0]);
-    if at_origin.iter().any(|s| black.contains(s))
-        && let Some(m) = l.parts().mobs.iter_mut().find(|m| m.id == id)
-    {
-        m.extra.variant = 10;
-    }
+    let _ = l.spawn_mob("minecraft:cat", at, persistent, Reason::Natural, Some(0.0));
 }
 
 /// One of the living players in `alive`, drawn from the level random, then the two offsets; the

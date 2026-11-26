@@ -4,7 +4,7 @@
 //! `SimpleEnergyHandler`. They act where the world is simulated, never on a client's copy, and
 //! only on the level in place; their writes are kept by the transaction they are given.
 use super::Game;
-use mod_api::{BlockSide, Transaction};
+use mod_api::{BlockSide, TransactionContext};
 use std::sync::Arc;
 use sunrise_client::containers::{BlockEntity, ModEnergyBuffer};
 use sunrise_core::nbt::{Compound, JavaString, Tag};
@@ -107,9 +107,9 @@ impl Game<'_> {
         &mut self,
         at: BlockSide,
         amount: u32,
-        tx: &Transaction,
+        tx: &TransactionContext,
     ) -> u32 {
-        if !self.transaction_holds(tx) {
+        if !self.transaction_context_is_current(tx) {
             return 0;
         }
         self.energy_moved(at, amount, true)
@@ -121,9 +121,9 @@ impl Game<'_> {
         &mut self,
         at: BlockSide,
         amount: u32,
-        tx: &Transaction,
+        tx: &TransactionContext,
     ) -> u32 {
-        if !self.transaction_holds(tx) {
+        if !self.transaction_context_is_current(tx) {
             return 0;
         }
         self.energy_moved(at, amount, false)
@@ -154,7 +154,7 @@ mod tests {
             BlockUpdateFlags, ENERGY, ENTITY_ENERGY, ENTITY_FLUIDS, Holder, move_energy,
             resource_util::move_resources,
         };
-        use mod_platform::__private::part_tests::{ROBOT_FLUID, game_thread};
+        use mod_platform::__private::part_tests::{game_thread, robot_fluid_key};
         use sunrise_client::chunk::Chunk;
         use sunrise_client::containers::{ModBlockEntity, ModBlockEntityFields};
         use sunrise_client::entities::ArmorStand;
@@ -224,13 +224,15 @@ mod tests {
                 Ok(100)
             );
             assert_eq!((source.amount(host), target.amount(host)), (700, 100));
-            let abort: Result<(), ()> = host.transaction(|host, tx| {
+            let abort: Result<(), mod_api::TransactionError<()>> = host.transaction(|host, tx| {
                 assert_eq!(move_energy(host, &source, &target, 100, tx), Ok(100));
                 Err(())
             });
             assert!(abort.is_err());
             assert_eq!((source.amount(host), target.amount(host)), (700, 100));
-            ROBOT_FLUID.set(host, Holder::Entity(14), 600).unwrap();
+            robot_fluid_key()
+                .set(host, Holder::Entity(14), 600)
+                .unwrap();
             let tank = stand.capability(host, &ENTITY_FLUIDS, None).unwrap();
             let from = other.capability(host, &ENTITY_FLUIDS, None).unwrap();
             assert_eq!(
@@ -245,7 +247,7 @@ mod tests {
                 Ok(100)
             );
             assert_eq!((from.amount(host, 0), tank.amount(host, 0)), (500, 100));
-            let abort: Result<(), ()> = host.transaction(|host, tx| {
+            let abort: Result<(), mod_api::TransactionError<()>> = host.transaction(|host, tx| {
                 assert_eq!(
                     move_resources(host, &from, &tank, |_| true, 100, Some(tx)),
                     Ok(100)
@@ -366,7 +368,10 @@ mod tests {
             assert_eq!(moved(game, Some(Direction::Up), 1000, true), Ok(0));
             assert_eq!(held(game), [500, 300]);
             // An aborted move leaves both as they were.
-            assert_eq!(moved(game, None, 200, false), Err(200));
+            assert_eq!(
+                moved(game, None, 200, false),
+                Err(mod_api::TransactionError::Aborted(200))
+            );
             assert_eq!(held(game), [500, 300]);
         });
     }

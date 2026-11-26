@@ -1,0 +1,3 @@
+ids = ["hook:hotbar_attack_indicator_progress", "type:HotbarAttackIndicatorProgressEvent", "type:HookId"]
+why = "Adds the client hook hotbar_attack_indicator_progress, version 1: the stock hotbar's attack indicator progress for one draw (Hud.extractItemHotbar), editable within 0.0..=1.0, after the item decorations and only when the original hotbar body reaches the indicator in Hotbar mode. The crosshair indicator, attack charge and combat are unchanged."
+migrate = "A mod that matches HookId exhaustively adds the new arm; one with a wildcard arm compiles unchanged."

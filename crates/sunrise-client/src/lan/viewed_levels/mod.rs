@@ -9,12 +9,14 @@
 //! for spawning, sleeping, raids or any other rule. A client whose capability answer allows it is
 //! sent the areas of the levels it is not in, each packet wrapped with its level (`send`), and
 //! the entities there (`entities`). A travel into a level its client views swaps that level with
-//! the one it leaves (`switch`). From revision 2 their sounds go too (`sounds`).
+//! the one it leaves (`switch`). From revision 2 their sounds go too (`sounds`). From revision 5
+//! an area in the player's own level is sent past its view (`own`).
 //!
 //! With no area on the server, a level pass costs one integer compare ([`ViewedLevels::active`]).
 pub mod areas;
 pub mod capability;
 pub(super) mod entities;
+pub mod own;
 pub(super) mod send;
 mod sounds;
 mod switch;
@@ -66,6 +68,8 @@ pub struct Viewed {
     counts: BTreeMap<String, (u32, u32)>,
     /// The viewed levels open on the client, by dimension.
     pub(super) views: BTreeMap<String, View>,
+    /// Its own level past its view.
+    pub(in crate::lan) own: own::Own,
     /// The levels its client was told at Login: before revision 4 a viewed level is named by its
     /// index there. A level opened since (a runtime level) is not among them, and one closed
     /// since keeps its place.
@@ -147,9 +151,13 @@ impl Viewed {
     pub fn forget_views(&mut self) {
         self.views.clear();
     }
-    /// Counts the player in `active` while it has areas or views, and stops once it has neither.
+    /// Counts the player in `active` while it has areas, views or own-level columns kept past its
+    /// view (`own`), and stops once it has none.
     fn recount(&mut self, active: &Arc<AtomicUsize>) {
-        let wanted = !self.areas.is_empty() || !self.views.is_empty();
+        let wanted = !self.areas.is_empty()
+            || !self.views.is_empty()
+            || !self.own.kept.is_empty()
+            || !self.own.sources.is_empty();
         if wanted && self.counted.is_none() {
             active.fetch_add(1, Ordering::Relaxed);
             self.counted = Some(Counted(active.clone()));
@@ -206,6 +214,7 @@ impl Hub {
             for view in v.views.values_mut() {
                 view.dirty = true;
             }
+            v.own.dirty = true;
             v.recount(&active);
         });
         Ok(())

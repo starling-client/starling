@@ -1,4 +1,3 @@
-#![cfg(test)]
 //! Post-placement notices through the actual player and dispenser block-item paths.
 use crate::game::native_entity_refs::tests::{bind_local_player, run_fresh_cases, with_game_at};
 use crate::game::{Game, GuestUse, Hit};
@@ -291,6 +290,8 @@ fn block_items_notify_after_setup_and_before_consumption() {
         let left = game
             .dispense_item((9, 64, 6), Direction::East, shulker_stack())
             .unwrap()
+            .continue_value()
+            .unwrap()
             .unwrap();
         assert_eq!(left.count, 3);
         let notices = probe.notices.lock().unwrap();
@@ -329,6 +330,8 @@ fn block_items_notify_after_setup_and_before_consumption() {
         let left = game
             .dispense_item((9, 64, 8), Direction::East, shulker_stack())
             .unwrap()
+            .continue_value()
+            .unwrap()
             .unwrap();
         assert_eq!(left.count, 4);
         assert_eq!(game.world.block(10, 64, 8), air);
@@ -336,6 +339,8 @@ fn block_items_notify_after_setup_and_before_consumption() {
         game.world.set(10, 64, 10, stone).unwrap();
         let left = game
             .dispense_item((9, 64, 10), Direction::East, shulker_stack())
+            .unwrap()
+            .continue_value()
             .unwrap()
             .unwrap();
         assert_eq!(left.count, 4);

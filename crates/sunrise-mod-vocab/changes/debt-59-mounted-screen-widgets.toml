@@ -1,0 +1,208 @@
+# Behaviour-only or signature-unchanged entry points (omitted from `ids` because
+# the surface gate rejects unchanged IDs as stale):
+#   method:ClientHost::mod_screen_open
+#   handle:client::widgets::TextField::new
+#   method:Hooks::screen_init_post                    type:ScreenInitPostEvent
+#   hook:screen_mouse_button_pressed_pre.double_click
+#   method:Hooks::screen_mouse_button_pressed_pre     type:ScreenMouseButtonPressedPreEvent
+#   type:ScreenMouseButtonPressedPreEvent.double_click
+#   hook:screen_mouse_button_pressed_post.double_click
+#   method:Hooks::screen_mouse_button_pressed_post    type:ScreenMouseButtonPressedPostEvent
+#   type:ScreenMouseButtonPressedPostEvent.double_click
+#   type:ScreenMouseButtonPressedPostEvent.was_click_handled
+#   type:ScreenMouseButtonPressedPostEvent.result
+#   method:Hooks::screen_mouse_button_released_post
+#   type:ScreenMouseButtonReleasedPostEvent           type:ScreenMouseButtonReleasedPostEvent.was_release_handled
+#   type:ScreenMouseButtonReleasedPostEvent.result
+#   method:Hooks::screen_mouse_dragged_post           type:ScreenMouseDraggedPostEvent
+#   method:Hooks::screen_mouse_scrolled_post          type:ScreenMouseScrolledPostEvent
+#   method:Hooks::screen_key_pressed_post
+#   type:ScreenKeyPressedPostEvent
+#   method:Hooks::screen_key_released_post            type:ScreenKeyReleasedPostEvent
+#                                                     type:ScreenCharTypedPostEvent
+ids = [
+    "hook:screen_init_post",
+    "hook:screen_init_post.widgets",
+    "hook:screen_preedit_post",
+    "hook:screen_mouse_button_pressed_pre",
+    "hook:screen_mouse_button_pressed_post",
+    "hook:screen_mouse_button_released_pre",
+    "hook:screen_mouse_button_released_post",
+    "hook:screen_mouse_dragged_pre",
+    "hook:screen_mouse_scrolled_pre",
+    "hook:screen_key_pressed_pre",
+    "hook:screen_key_pressed_post",
+    "hook:screen_key_released_pre",
+    "hook:screen_char_typed_pre",
+    "type:ScreenInitPostEvent.widgets",
+    "type:ScreenView.mod_screen",
+    "hook:screen_mouse_dragged_post",
+    "hook:screen_mouse_scrolled_post",
+    "hook:screen_key_released_post",
+    "hook:screen_char_typed_post",
+    "hook:screen_char_typed_post.cancelled",
+    "method:Hooks::screen_char_typed_post",
+    "type:ScreenCharTypedPostEvent.cancelled",
+    "method:DrawContext::widget_button",
+    "method:DrawContext::widget_text_field",
+    "type:client::widgets::TextFieldView",
+    "type:client::widgets::TextFieldLayout",
+    "handle:client::widgets::TextFieldLayout::new",
+    "type:client::widgets::WidgetId",
+    "type:client::widgets::Outcome",
+    "handle:client::widgets::Outcome::handled",
+    "type:client::widgets::Button",
+    "type:client::widgets::Button.rect",
+    "type:client::widgets::Button.label",
+    "type:client::widgets::Button.active",
+    "type:client::widgets::Button.sprites",
+    "handle:client::widgets::Button::new",
+    "type:client::widgets::TextField",
+    "type:client::widgets::TextField.rect",
+    "type:client::widgets::TextField.edit",
+    "type:client::widgets::TextField.active",
+    "type:client::widgets::TextField.bordered",
+    "type:client::widgets::TextField.text_color",
+    "type:client::widgets::TextField.suggestion",
+    "type:client::widgets::TextField.message",
+    "handle:client::widgets::TextField::value",
+    "handle:client::widgets::TextField::set_value",
+    "type:client::widgets::Widget",
+    "type:client::widgets::Widgets",
+    "handle:client::widgets::Widgets::new",
+    "handle:client::widgets::Widgets::add_button",
+    "handle:client::widgets::Widgets::add_text_field",
+    "handle:client::widgets::Widgets::widget",
+    "handle:client::widgets::Widgets::button",
+    "handle:client::widgets::Widgets::button_mut",
+    "handle:client::widgets::Widgets::text_field",
+    "handle:client::widgets::Widgets::text_field_mut",
+    "handle:client::widgets::Widgets::focused",
+    "handle:client::widgets::Widgets::set_focus",
+    "handle:client::widgets::Widgets::draw",
+    "handle:client::widgets::Widgets::mouse_pressed",
+    "handle:client::widgets::Widgets::mouse_released",
+    "handle:client::widgets::Widgets::mouse_dragged",
+    "handle:client::widgets::Widgets::key_pressed",
+    "handle:client::widgets::Widgets::char_typed",
+]
+why = """
+Replaces mod-owned immediate-mode widget records and layout round-trips (`Widgets`, `Outcome`, \
+`Widget`, `WidgetId`, `TextFieldView`, `TextFieldLayout`, `DrawContext::widget_button`, \
+`DrawContext::widget_text_field`) with engine-mounted screen widgets (`Button`, `ButtonState`, \
+`TextField`, `ScreenWidget`, `ScreenWidgetId`, `ScreenWidgets`) registered during \
+`Hooks::screen_init_post`, following NeoForge `ScreenEvent.Init.Post` and vanilla 26.3 \
+`Screen.addRenderableWidget`, `Button.Builder` / `Button.onPress`, `EditBox`, and \
+`ContainerEventHandler`. The engine now owns mounted widget drawing, hover, focus, Tab traversal, \
+narration, local `EditBox` layout/IME/double-click state, and synchronous screen transitions from \
+widget callbacks via temporary ownership extraction. Aligns `ClientHost::mod_screen_open` with \
+vanilla `Gui.setScreen` and NeoForge `ScreenEvent.Opening` / `ScreenEvent.Closing` so it can \
+replace any open screen, title screen, overlay, or other mod screen with proper close cleanup. \
+Aligns screen input Pre/Post hooks to vanilla `MouseHandler.onButton` / `LastClick` (250 ms \
+same-screen same-button `double_click`) and NeoForge `MouseHandler.java.patch`, \
+`KeyboardHandler.java.patch`, and `ScreenEvent.*.Post`: every Post reports the receiving screen \
+captured at Pre time; mouse press/release Post hooks collect a `TriState` result over the \
+original widget or screen answer; key press/release Post \
+hooks fire only when unhandled and remain cancellable; and drag, scroll, char, and preedit Post \
+hooks fire as non-cancellable notices only when unhandled. `DialogScreen.runAction` uses a new \
+receiver for the waiting screen, even though it shares the `dialog` id. `ConfirmScreen` button \
+presses are handled; `ContainerEventHandler.mouseDragged` reports the top screen's child result. \
+Vanilla `AbstractContainerScreen.keyPressed` consumes inventory close and applies unhandled slot \
+actions before Post. `KeyboardHandler.charTyped` does not require a physical key or focused editor.
+"""
+migrate = """
+1. Mounted widgets (`screen_init_post` v2): remove mod-owned `Widgets` fields, `Outcome` matches, \
+`DrawContext::widget_button` / `widget_text_field` calls, `TextFieldView` / `TextFieldLayout`, and \
+manual screen input forwarding for buttons and text fields. In `Hooks::screen_init_post`, mount \
+children on `event.widgets`:
+   - Buttons: replace `let mut b = Button::new(rect, label); b.sprites = Some(art); widgets.add_button(b)` \
+with `event.widgets.add_button(Button::new(rect, label, |state, host| { ... }).sprites(art))` (or \
+`Button::inactive(rect, label)` for disabled buttons). Mutate `state: &mut ButtonState` and call \
+`host.close_screen()`, `host.mod_screen_close(...)`, or `host.mod_screen_open(...)` synchronously \
+inside `on_press`.
+   - Text fields: replace `TextField.rect`, `edit`, `active`, `bordered`, `value()`, and \
+`set_value(...)` with `TextField::new(rect, max_length).value(initial).hint(...).active(...).editable(...).bordered(...).on_change(|text, host| ...).on_submit(|text, host| ...)` \
+mounted via `event.widgets.add_text_field(...)`, storing shared state on your mod struct across \
+resizes. Call `event.widgets.set_initial_focus(id)` to focus a widget on open.
+     - Removed `TextField` fields without a built-in builder: `TextField.text_color`, \
+`TextField.suggestion`, and `TextField.message` were removed. Use `.hint(Text)` only for \
+empty-state placeholder text (`EditBox.setHint`, not an inline completion suffix or narration \
+label). For custom text colours, inline completion suggestions, or custom narration/rendering, \
+implement `ScreenWidget` with a local `TextEdit` and `DrawContext`, mounted via \
+`event.widgets.add_widget(Box::new(...))`.
+   - `Widgets::focused()` / `set_focus(...)`: during Init use `event.widgets.set_initial_focus(id)`. \
+There is no live focus setter or query on `ScreenWidgets`. To observe live focus for your own \
+control, mount a custom `ScreenWidget`, store the bool passed to `ScreenWidget::set_focused`, \
+and use it in your rendering and callbacks; mouse and keyboard navigation set actual focus. \
+`set_focused` is a notification, not a way to claim focus.
+   - `Widgets::button_mut(id)` / `text_field_mut(id)`: there is no lookup or live mutator for the \
+built-in widgets. Change a built-in button through `&mut ButtonState` in its `on_press`. Put \
+initial text in `TextField::value(...)` at Init and observe player edits with `on_change`. For \
+rendering or editing that reacts to other runtime state, place that state on a custom \
+`ScreenWidget` (or share it with the mod) and apply the changes there.
+   - Custom controls: implement `ScreenWidget` and mount via `event.widgets.add_widget(Box::new(...))`.
+2. `ScreenView.mod_screen` and `ClientHost::mod_screen_open`:
+   - `ScreenView` now carries `mod_screen: Option<&str>`, naming the owning mod of that screen \
+snapshot when `screen.id == "mod"` (and `None` for vanilla/title/overlay screens). Migrate \
+`screen_closing` and `screen_*_post` listeners from checking live `host.mod_screen()` to checking \
+`event.screen.mod_screen` so they still identify the receiving mod screen after a synchronous \
+`mod_a -> mod_b` replacement or close; keep `host.mod_screen()` when querying whichever mod screen \
+is currently open.
+   - `ClientHost::mod_screen_open`: no signature change; it now opens over any open vanilla screen, \
+title screen, overlay, or other mod screen through `screen_opening` / `screen_closing` rather than \
+returning `false` outside bare `Screen::Playing`. Remove any workaround that closed another screen \
+first only to satisfy the old restriction.
+3. Screen input hooks: the entries below mark which hooks have moved from v2 to v3. The other \
+changed mouse, key and character Pre/Post hooks and preedit Post are v2.
+   - `screen_mouse_button_pressed_pre`: v2 excluded overlays such as the server-pack prompt; v3 \
+can cancel a press on the top prompt or dialog, before any native or mounted child handles it.
+   - `screen_mouse_button_pressed_post`: v2 observed the stock screen's answer on the screens \
+covered by v2 Pre. v3 observes the captured top receiver after native and mounted routing. A hit \
+on the first child counts as handled even when its answer prevents it from taking focus.
+   - `screen_mouse_button_released_post`: v2 observed stock screen handling; v3 observes the \
+captured top receiver's answer, including mounted child releases. Ordinary inventory quick-craft \
+completion is not a handled release by itself; an early swallowed release still is.
+   - `screen_key_released_pre`: v2 dispatched socket releases to a title screen; v3 dispatches \
+window and socket releases to the current receiver, including in-world screens and prompts.
+   - `screen_key_pressed_post`: v2 used the screen still open after handling and skipped a closed \
+screen. v3 reports an unhandled press on the captured receiver even after that screen closed \
+or was replaced. It also follows the shared socket press route (down, repeat, or the press in tap).
+   - The mouse button, drag, scroll, key and typed-character Pre hooks now receive overlays, as do \
+matching Post hooks. To keep the previous exclusion, return without handling when \
+`event.screen.id` is `"command_prompt"`, `"link_prompt"`, `"code_of_conduct"`, `"server_pack_prompt"`, \
+`"dialog"`, `"book_view"`, `"book_edit"`, `"book_sign"`, `"lectern"`, or `"sign_editor"`.
+   - Release cancellation depends on the source and phase. Cancelling physical release Pre \
+skips the screen and Post but still clears device state and runs mapped keyboard release cleanup. \
+Cancelling control-socket release Pre (`key ... up`, or the release in `key ... tap`) skips \
+the screen, Post and `control_key_up`, so a held mapping can stay down. Cancelling an unhandled \
+release Post skips normal mapped release on either route after the screen declined, without \
+undoing device tracking. Do not cancel a release just to bypass the screen after allowing its press.
+   - `screen_key_pressed_post` no longer sees the bound inventory close key if the container took it. \
+To prevent a container slot swap, pick or drop, cancel `screen_key_pressed_pre` instead of Post: \
+those slot actions have already taken effect when the unhandled Post fires.
+   - `screen_char_typed_pre.field`: preserved for focused vanilla boxes and focused mounted \
+built-in `TextField`s (modifications to `event.field` are applied back through the `EditBox` \
+filter, `max_length`, and `on_change` responder). Focused custom `ScreenWidget`s own their own \
+state and therefore report `event.field == None`; filter or rewrite characters in \
+`ScreenWidget::char_typed` or cancel in `screen_char_typed_pre`.
+   - `screen_mouse_button_pressed_pre` and `screen_mouse_button_pressed_post`: read `event.double_click` \
+for vanilla's 250 ms double-click flag (update exhaustive pattern matches or literals).
+   - `screen_mouse_button_pressed_post` and `screen_mouse_button_released_post`: read \
+`event.was_click_handled` or `event.was_release_handled` for the original widget or screen answer. \
+Write `*event.result = TriState::True` to force handled, or `TriState::False` to force unhandled. \
+The default uses the original answer.
+   - `screen_mouse_dragged_post` and `screen_mouse_scrolled_post`: now fire on the receiving screen \
+only when neither mounted widgets nor the screen handled the drag or scroll.
+   - `screen_key_pressed_post` and `screen_key_released_post`: continue cancelling with \
+`event.cancelled = true` or `Flow::Cancel` for unhandled keys; both now report the receiving screen.
+   - `screen_char_typed_post`: v2 exposed a cancellable Post and delivered socket or input-method \
+text only for a bound preset editor. v3 is a non-cancellable notice for unhandled characters \
+on the captured screen, including socket `type`. Change the return type from `Flow` to `()` and \
+remove any `event.cancelled` access. Printable window text with no physical key, such as an Alt code, uses the normal Pre, child, \
+and Post route even without a focused edit box.
+   - `screen_preedit_post`: a focused custom `ScreenWidget` does not consume preedit, even with \
+`captures_input() == true`. Unless Pre cancels, handle the unconsumed composition as a notice in \
+`screen_preedit_post` keyed by the receiving screen and your own focus state, or use a built-in \
+`TextField` for engine-owned composition (which consumes preedit and skips Post). Committed text \
+still reaches `ScreenWidget::char_typed` character by character.
+"""

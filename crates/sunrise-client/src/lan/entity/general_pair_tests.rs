@@ -154,6 +154,7 @@ fn pass(level: &mut Entities, clients: &mut [Client], at: &[[f64; 3]], states: &
             view_distance: c.view_distance,
             chunks: &chunks,
             sources: c.sources.as_deref(),
+            far: &[],
             tracker: &mut c.tracker,
             out,
         })
@@ -288,7 +289,7 @@ fn leaving_range_removes_the_row_and_coming_back_spawns_it_afresh() {
     assert_eq!(spawn_ids(&sunrise.sent[2]), [7]);
 }
 
-/// A key the spawn cannot carry (registration refuses one; a row may not have one): no client is
+/// A key the protocol spawn message cannot carry (past `general_entity::MAX_KEY`): no client is
 /// introduced to the row, so none is recorded as tracking it or sent its moves.
 #[test]
 fn a_row_whose_spawn_cannot_be_written_is_tracked_by_nobody() {

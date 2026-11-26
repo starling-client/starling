@@ -17,8 +17,10 @@ impl GameLevel<'_> {
 
 impl Game<'_> {
     /// The resistance the parts of `state` at `pos` give it against `explosion`, in place of
-    /// its static one, on a logical server. A negative or non-finite answer is refused and a
-    /// panicking part contained, both with a warning: None keeps the static value.
+    /// its static one, on a logical server. Any finite answer is accepted (and combined with the
+    /// cell's fluid via `max`, matching `ExplosionDamageCalculator.getBlockExplosionResistance`);
+    /// a non-finite answer is refused and a panicking part contained, both with a warning: None
+    /// keeps the static value.
     pub(in crate::game) fn part_explosion_resistance(
         &mut self,
         pos: [i32; 3],
@@ -44,7 +46,7 @@ impl Game<'_> {
             return None;
         }
         match resistance {
-            Some(value) if !(value.is_finite() && value >= 0.0) => {
+            Some(value) if !value.is_finite() => {
                 log::warn!("explosion_resistance refused {value}; using the block's own");
                 None
             }

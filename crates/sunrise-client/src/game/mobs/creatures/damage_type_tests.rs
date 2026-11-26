@@ -12,6 +12,7 @@ fn named_damage_keeps_its_registry_id_with_or_without_an_attacker() {
                 kind: DamageKind::Named(named),
                 attacker,
                 from: None,
+                direct: None,
                 attacker_species: None,
             }),
             "example:fan_fire"
@@ -27,6 +28,7 @@ fn a_creeper_blast_is_a_player_explosion() {
         kind: DamageKind::Explosion,
         attacker,
         from: Some([0.0; 3]),
+        direct: None,
         attacker_species: None,
     };
     let creeper = blast(Some(Who::Mob(7)));

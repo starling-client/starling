@@ -27,10 +27,9 @@ import sys
 import tempfile
 import zipfile
 
-try:
-    from . import lab
-except ImportError:
-    import lab
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab
 
 # Classes whose decompiled source a generator parses: (side, class).
 SOURCES = [("client", "net/minecraft/world/entity/EntityTypes")]

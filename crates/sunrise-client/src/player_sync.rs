@@ -32,10 +32,18 @@ impl PositionSender {
         let d: [f64; 3] = std::array::from_fn(|i| position[i] - self.position[i]);
         let moved =
             d[0] * d[0] + d[1] * d[1] + d[2] * d[2] > 2.0e-4 * 2.0e-4 || self.reminder >= 20;
+<<<<<<< HEAD
         let rotated = rotation.0 - self.rotation.0 != 0.0
             || rotation.1 - self.rotation.1 != 0.0
             || self.told.take().is_some_and(|told| told != rotation);
         let flags = u8::from(on_ground) | u8::from(collision) << 1;
+||||||| 46c00106def
+        let rotated = rotation.0 - self.rotation.0 != 0.0 || rotation.1 - self.rotation.1 != 0.0;
+        let flags = u8::from(on_ground) | u8::from(collision) << 1;
+=======
+        let rotated = rotation.0 - self.rotation.0 != 0.0 || rotation.1 - self.rotation.1 != 0.0;
+        let flags = play::pack_move_player_flags(on_ground, collision);
+>>>>>>> ed6772e2118
         let [x, y, z] = position;
         let (yaw, pitch) = rotation;
         let packet = if moved && rotated {

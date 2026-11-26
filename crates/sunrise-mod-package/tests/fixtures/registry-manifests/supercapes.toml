@@ -9,7 +9,7 @@ side = "client"
 capabilities = ["registries"]
 
 # The Sunrise build and mixins tool commit this mod is compiled against.
-# Bump both with `cargo sunrise-mod update --sunrise <build>` when a new mod API lands.
+# Move the Sunrise build pin with `cargo sunrise-mod pin <build>` when a new mod API lands.
 # Current pin: Sunrise Mod SDK 9425651 (94256510f74, 19 Nov 2026, API 0.2, game 26.3).
 [native]
 game = "26.3"

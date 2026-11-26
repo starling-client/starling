@@ -8,10 +8,12 @@ address, the first MOTD kept, never expired while the screen is open).
 VanillaLanOracle and the `lan_probe` example must print the same lines."""
 import random
 
-try:
-    from . import oracle_harness as oh
-except ImportError:
-    import oracle_harness as oh
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import oracle_harness as oh
 
 NAME = 'lan-parity'
 

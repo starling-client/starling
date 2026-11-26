@@ -1,33 +1,26 @@
 #[test]
-fn entity_tick_pre_collects_each_mods_cancels_for_the_family_in_mod_order() {
+fn entity_tick_pre_cancels_on_first_veto_in_mod_order() {
     struct Cancel(&'static str);
     #[mod_api::__subscriptions]
     impl Hooks for Cancel {
-        fn entity_tick_pre(&self, _: HostSide<'_>, event: &mut EntityTickPreEvent<'_>) {
-            for (&entity, &kind) in event.entities.iter().zip(event.kinds) {
-                if kind == self.0 {
-                    event.canceled.push(entity);
-                }
+        fn entity_tick_pre(&self, _: HostSide<'_>, event: &mut EntityTickPreEvent<'_>) -> Flow {
+            if event.kind == self.0 {
+                Flow::Cancel
+            } else {
+                Flow::Continue
             }
         }
     }
-    let entities = [1, 2, 3, 4];
-    let kinds = [
-        "minecraft:zombie",
-        "minecraft:item",
-        "minecraft:cow",
-        "minecraft:item",
-    ];
-    let mut canceled = vec![9];
+    let mut canceled = false;
     install(Vec::<ModEntry>::new().into());
     dispatch_entity_tick_pre(
         HostSide::Server(&mut TestHost),
         "minecraft:overworld",
-        &entities,
-        &kinds,
+        1,
+        "minecraft:zombie",
         &mut canceled,
     );
-    assert_eq!(canceled, [9]);
+    assert!(!canceled);
     install(
         vec![
             ModEntry::new("items", Box::new(Cancel("minecraft:item"))),
@@ -38,9 +31,17 @@ fn entity_tick_pre_collects_each_mods_cancels_for_the_family_in_mod_order() {
     dispatch_entity_tick_pre(
         HostSide::Server(&mut TestHost),
         "minecraft:overworld",
-        &entities,
-        &kinds,
+        3,
+        "minecraft:cow",
         &mut canceled,
     );
-    assert_eq!(canceled, [9, 2, 4, 1]);
+    assert!(!canceled);
+    dispatch_entity_tick_pre(
+        HostSide::Server(&mut TestHost),
+        "minecraft:overworld",
+        1,
+        "minecraft:zombie",
+        &mut canceled,
+    );
+    assert!(canceled);
 }

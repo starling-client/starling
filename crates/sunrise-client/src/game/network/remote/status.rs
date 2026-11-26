@@ -1,21 +1,27 @@
 use super::*;
+use sunrise_client::skins;
 
 impl Game<'_> {
     /// `PlayerInfo.getSkin` for every player entity, including NPCs that are
     /// never in the tab list: resolve each profile's textures and give the
     /// level's player models their skin.
     pub(in crate::game) fn update_remote_skins(&mut self) {
-        let local = self.remote.as_ref().map(|r| r.profile);
         self.poll_own_profile();
         let Some(r) = self.remote.as_mut() else {
             return;
         };
-        let local = local.unwrap_or(r.profile);
-        let mut entries = skin_entries(
+        let local = r.profile;
+        let level: Vec<_> = r
+            .level_players
+            .iter()
+            .map(|(id, uuid)| (*id as u32, *uuid))
+            .collect();
+        let listed = skin_entries(
             &r.level_players,
             &r.skin_textures,
             &mut r.level_player_textures,
         );
+<<<<<<< HEAD
         let (online_mode, names): (bool, Vec<(u128, String)>) = (
             r.online_mode,
             r.players.iter().map(|(u, n)| (*u, n.clone())).collect(),
@@ -23,18 +29,48 @@ impl Game<'_> {
         let own = match &r.own_profile {
             OwnProfile::Done(Some(t)) => Some(t.clone()),
             _ => None,
+||||||| 46c00106def
+        let own = match &r.own_profile {
+            OwnProfile::Done(Some(t)) => Some(t.clone()),
+            _ => None,
+=======
+        // Unpacked and verified on the skin downloader's threads: the game
+        // thread reads answers and starts the rest (`SkinManager.getOrLoad`).
+        let entries: Vec<(u128, Arc<skins::Textures>)> = {
+            let keys = r.services_keys.lock().unwrap_or_else(|e| e.into_inner());
+            let mut downloads = self.skin_downloads.borrow_mut();
+            listed
+                .iter()
+                .filter_map(|(uuid, property)| {
+                    property
+                        .unpack(&mut downloads, &keys, *uuid != local)
+                        .map(|textures| (*uuid, textures))
+                })
+                .collect()
+>>>>>>> ed6772e2118
         };
         // Minecraft.profileFuture: the signed-in account's active skin and cape
-        // from `/minecraft/profile` when the server sent none (single player) or
-        // only a skin without the equipped cape.
-        if let Some(own) = own {
-            if let Some((_, t)) = entries.iter_mut().find(|(u, _)| *u == local) {
-                if t.skin.is_none() {
-                    t.skin = own.skin.clone();
-                    if own.skin.is_some() {
-                        t.slim = own.slim;
+        // when the server sent none (single player), or only a skin without
+        // the equipped cape: the account's skin, with its model, where the server
+        // sent none, and its cape where the server sent none.
+        let own = match &r.own_profile {
+            OwnProfile::Done(Some(own)) => match entries.iter().find(|(u, _)| *u == local) {
+                // Each profile's textures stay behind their `Arc`: only the
+                // signed-in account's merge is copied.
+                Some((_, textures)) => {
+                    let mut merged = textures.as_ref().clone();
+                    if merged.skin.is_none() {
+                        merged.skin.clone_from(&own.skin);
+                        if own.skin.is_some() {
+                            merged.slim = own.slim;
+                        }
                     }
+                    if merged.cape.is_none() {
+                        merged.cape.clone_from(&own.cape);
+                    }
+                    Some(merged)
                 }
+<<<<<<< HEAD
                 if t.cape.is_none() {
                     t.cape = own.cape.clone();
                 }
@@ -73,7 +109,31 @@ impl Game<'_> {
         // PlayerSkin.cape of each resolved skin.
         let mut capes: HashMap<u128, String> = HashMap::new();
         for (uuid, textures) in entries {
+||||||| 46c00106def
+                if t.cape.is_none() {
+                    t.cape = own.cape.clone();
+                }
+            } else if own.skin.is_some() || own.cape.is_some() {
+                entries.retain(|(u, _)| *u != local);
+                entries.push((local, own));
+            }
+        }
+        let mut resolved: Vec<(u128, String)> = Vec::new();
+        // PlayerSkin.model of each resolved skin: the textures' `slim`.
+        let mut slim = std::collections::HashSet::new();
+        // PlayerSkin.cape of each resolved skin.
+        let mut capes: HashMap<u128, String> = HashMap::new();
+        for (uuid, textures) in entries {
+=======
+                None => (own.skin.is_some() || own.cape.is_some()).then(|| own.clone()),
+            },
+            _ => None,
+        };
+        let mut skins = HashMap::new();
+        {
+>>>>>>> ed6772e2118
             // PlayerInfo.createSkinLookup: only the local player's own skin
+<<<<<<< HEAD
             // may be unsigned; Ely.by's never are.
             let secure = uuid != local && !from_elyby.contains(&uuid);
             let skin = {
@@ -81,15 +141,32 @@ impl Game<'_> {
                 sunrise_client::skins::lookup(&textures, secure, |kind, url| {
                     downloads.state(kind, url)
                 })
+||||||| 46c00106def
+            // may be unsigned.
+            let skin = {
+                let mut downloads = self.skin_downloads.borrow_mut();
+                sunrise_client::skins::lookup(&textures, uuid != local, |kind, url| {
+                    downloads.state(kind, url)
+                })
+=======
+            // may be unsigned.
+            let mut downloads = self.skin_downloads.borrow_mut();
+            let mut resolve = |uuid, textures: &skins::Textures| {
+                if let skins::SkinLookup::Ready(skin) =
+                    skins::lookup(textures, uuid != local, |kind, url| {
+                        downloads.state(kind, url)
+                    })
+                    && skin != skins::ResolvedSkin::default()
+                {
+                    skins.insert(uuid, skin);
+                }
+>>>>>>> ed6772e2118
             };
-            if let Some(skin) = skin {
-                if textures.slim {
-                    slim.insert(uuid);
-                }
-                if let Some(cape) = sunrise_client::skins::cape(&textures) {
-                    capes.insert(uuid, cape);
-                }
-                resolved.push((uuid, skin));
+            for (uuid, textures) in entries.iter().filter(|(u, _)| own.is_none() || *u != local) {
+                resolve(*uuid, textures);
+            }
+            if let Some(textures) = &own {
+                resolve(local, textures);
             }
         }
         // Starling, Options > Skin Customization: the player's own skin, in this game only (others
@@ -104,22 +181,19 @@ impl Game<'_> {
             }
         }
         // An offline name's skin from the launcher, where neither the server
-        // nor an account gives the local player one.
-        if !resolved.iter().any(|(u, _)| *u == local)
-            && let Some((rgba, is_slim)) = sunrise_client::skins::offline_skin()
+        // nor an account gives the local player textures.
+        if !skins.contains_key(&local)
+            && let Some((rgba, is_slim)) = skins::offline_skin()
         {
             const OFFLINE: &str = "sunrise/offline_skin";
             if !self.skin_slots.contains(OFFLINE) || !self.gui.atlas.sprites.contains_key(OFFLINE) {
                 self.store_skin(OFFLINE.into(), rgba.clone());
             }
-            if *is_slim {
-                slim.insert(local);
-            }
-            resolved.push((local, OFFLINE.into()));
+            skins.entry(local).or_default().custom_body = Some((OFFLINE.into(), *is_slim));
         }
         // An offline name's cape from the launcher, where the profile has none.
-        if !capes.contains_key(&local)
-            && let Some(rgba) = sunrise_client::skins::offline_cape()
+        if skins.get(&local).is_none_or(|s| s.cape.is_none())
+            && let Some(rgba) = skins::offline_cape()
         {
             const OFFLINE: &str = "capes/offline";
             if !self.skin_slots.contains(OFFLINE) || !self.gui.atlas.sprites.contains_key(OFFLINE) {
@@ -129,29 +203,8 @@ impl Game<'_> {
                     .remember_image(OFFLINE, rgba);
                 self.store_skin(OFFLINE.into(), rgba.to_vec());
             }
-            capes.insert(local, OFFLINE.into());
+            skins.entry(local).or_default().cape = Some(OFFLINE.into());
         }
-        // PlayerInfo.getSkin: the downloaded skin and its model, else the
-        // profile's default skin (DefaultPlayerSkin.get), slim or wide.
-        let skin_of = |skins: &HashMap<u128, String>, uuid: u128| match skins.get(&uuid) {
-            Some(skin) => (skin.clone(), slim.contains(&uuid)),
-            None => {
-                let skin = sunrise_client::tab_list::default_skin(uuid);
-                (skin.to_owned(), skin.contains("/slim/"))
-            }
-        };
-        let skins: HashMap<_, _> = resolved.into_iter().collect();
-        let Some((level, own)) = self.remote.as_ref().map(|r| {
-            (
-                r.level_players
-                    .iter()
-                    .map(|(id, uuid)| (*id as u32, *uuid))
-                    .collect::<Vec<_>>(),
-                r.profile,
-            )
-        }) else {
-            return;
-        };
         // Only the skins drawn hold atlas slots: the level's players, not
         // every entry of a busy server's player list.
         // Build once: resolving each player must not scan every level entity.
@@ -166,16 +219,18 @@ impl Game<'_> {
             let Some(&i) = players.get(&id) else {
                 continue;
             };
-            let (skin, is_slim) = self.drawn_skin(uuid, skin_of(&skins, uuid));
-            let cape = capes.get(&uuid).filter(|c| self.again_skin(c)).cloned();
+            let (skin, is_slim, cape) =
+                skins::drawable_skin(uuid, skins.get(&uuid), true, |sprite| {
+                    self.again_skin(sprite)
+                });
             let mob = &mut self.mobs[i];
-            mob.skin = Some(skin);
+            mob.skin = Some(skin.to_owned());
             mob.slim = is_slim;
-            mob.cape = cape;
+            mob.cape = cape.map(str::to_owned);
         }
         if self.player_model.is_some() {
-            let (skin, is_slim) = self.drawn_skin(own, skin_of(&skins, own));
             // Avatar.isModelPartShown(CAPE): the Skin Customization option.
+<<<<<<< HEAD
             let cape = capes
                 .get(&own)
                 .filter(|_| self.settings.file.bool("modelPart_cape"))
@@ -188,10 +243,23 @@ impl Game<'_> {
             } else {
                 None
             };
+||||||| 46c00106def
+            let cape = capes
+                .get(&own)
+                .filter(|_| self.settings.file.bool("modelPart_cape"))
+                .filter(|c| self.again_skin(c))
+                .cloned();
+=======
+            let show_cape = self.settings.file.bool("modelPart_cape");
+            let (skin, is_slim, cape) =
+                skins::drawable_skin(local, skins.get(&local), show_cape, |sprite| {
+                    self.again_skin(sprite)
+                });
+>>>>>>> ed6772e2118
             if let Some(mob) = self.player_model.as_mut() {
-                mob.skin = Some(skin);
+                mob.skin = Some(skin.to_owned());
                 mob.slim = is_slim;
-                mob.cape = cape;
+                mob.cape = cape.map(str::to_owned);
             }
         }
         if let Some(r) = self.remote.as_mut()
@@ -212,16 +280,7 @@ impl Game<'_> {
                 let profile = m.profile.as_ref();
                 let t = profile.and_then(|p| p.properties.iter().find(|p| p.name == "textures"));
                 let textures = if let Some(t) = t {
-                    let signature = if t.signature.is_some() {
-                        sunrise_client::skins::Signature::Signed
-                    } else {
-                        sunrise_client::skins::Signature::Unsigned
-                    };
-                    sunrise_client::skins::unpack(
-                        &t.value,
-                        signature,
-                        sunrise_client::skins::texture_uris(),
-                    )
+                    skins::unpack_insecure(&t.value)
                 } else {
                     // `ResolvableProfile.resolveProfile`: no `textures` and
                     // only a name or an id resolves through the services.
@@ -234,13 +293,7 @@ impl Game<'_> {
                     });
                     key.and_then(|key| match self.skin_profiles.borrow_mut().state(&key) {
                         sunrise_client::skins::Resolve::Done(Some(profile)) => {
-                            profile.textures().map(|(value, signature)| {
-                                sunrise_client::skins::unpack(
-                                    &value,
-                                    signature,
-                                    sunrise_client::skins::texture_uris(),
-                                )
-                            })
+                            profile.textures().map(skins::unpack_insecure)
                         }
                         _ => None,
                     })
@@ -251,14 +304,13 @@ impl Game<'_> {
             .collect();
         let mut resolved: Vec<(usize, Option<String>, bool)> = Vec::new();
         for (id, textures) in mannequins {
-            let skin = {
-                let mut downloads = self.skin_downloads.borrow_mut();
-                sunrise_client::skins::lookup(&textures, false, |kind, url| {
-                    downloads.state(kind, url)
-                })
-            };
-            let slim = skin.is_some() && textures.slim;
-            resolved.push((id, skin, slim));
+            let mut downloads = self.skin_downloads.borrow_mut();
+            let (skin, slim) =
+                match skins::lookup(&textures, false, |kind, url| downloads.state(kind, url)) {
+                    skins::SkinLookup::Ready(skin) => skin.custom_body.unzip(),
+                    _ => (None, None),
+                };
+            resolved.push((id, skin, slim.unwrap_or(false)));
         }
         for (i, skin, slim) in resolved {
             let skin = skin.filter(|s| !s.starts_with("skins/") || self.again_skin(s));

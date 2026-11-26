@@ -1,4 +1,4 @@
-//! Frozen mesh visibility plans (`section_visibility`, docs/design/mod-api/mesh-visibility.md).
+//! Frozen mesh visibility plans (`section_visibility`).
 //!
 //! The world thread captures a section's raw input ([`capture_input`]), asks the mods, combines
 //! their checked answers in a [`SectionPlanBuilder`] and freezes one [`SectionVisibilityPlan`]
@@ -6,7 +6,7 @@
 //! reads that plan: no mod code, world or host reaches it. Without a plan the mesher runs its
 //! `NoMasks` body, in which every step below is a constant and compiles away.
 use super::{ALL_VISIBLE, B, Mesher, P, Region, SectionMesh, pi};
-use crate::chunk::Chunk;
+use crate::{biome::Biomes, chunk::Chunk};
 use mod_api::{
     BlockState, SectionCell, SectionVisibility, SectionVisibilityInput, SectionVisibilityRefusal,
 };
@@ -352,25 +352,30 @@ pub(super) fn hidden_terrain(
 
 /// Lend native listeners a raw view captured from the same region the worker uses, before any
 /// masks are applied. Above and below the world is air with the light the column gives it there.
-pub fn capture_input(
+pub(crate) fn capture_input(
     region: &Region,
     sy: i32,
     mut state_of: impl FnMut(u32) -> BlockState,
+    biomes: &Biomes,
 ) -> SectionVisibilityInput {
     let centre = region[1][1].as_ref().expect("centre chunk");
     let base_y = centre.min_y() + sy * 16;
-    SectionVisibilityInput::capture([centre.x * 16, base_y, centre.z * 16], |[x, y, z]| {
-        let column = &region[(z.div_euclid(16) + 1) as usize][(x.div_euclid(16) + 1) as usize];
-        let (lx, wy, lz) = (x.rem_euclid(16), base_y + y, z.rem_euclid(16));
-        match column {
-            Some(chunk) => (
-                SectionCell::State(state_of(chunk.get(lx, wy, lz))),
-                chunk.light(lx, wy, lz),
-                Some(mod_api::__private::biome_id(chunk.biome(lx, wy, lz).into())),
-            ),
-            None => (SectionCell::Missing, 0, None),
-        }
-    })
+    SectionVisibilityInput::capture(
+        [centre.x * 16, base_y, centre.z * 16],
+        |[x, y, z]| {
+            let column = &region[(z.div_euclid(16) + 1) as usize][(x.div_euclid(16) + 1) as usize];
+            let (lx, wy, lz) = (x.rem_euclid(16), base_y + y, z.rem_euclid(16));
+            match column {
+                Some(chunk) => (
+                    SectionCell::State(state_of(chunk.get(lx, wy, lz))),
+                    chunk.light(lx, wy, lz),
+                    Some(chunk.biome(lx, wy, lz)),
+                ),
+                None => (SectionCell::Missing, 0, None),
+            }
+        },
+        biomes.registered_keys().clone(),
+    )
 }
 
 #[cfg(test)]

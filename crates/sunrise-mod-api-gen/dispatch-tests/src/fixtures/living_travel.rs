@@ -1,6 +1,8 @@
-//! The global cancel dispatcher's per-listener output check for `living_travel`.
+//! The `living_travel` fixture: shared cancel dispatch passes input, velocity
+//! and cancellation through independently without synthetic caps or a rollback
+//! validator, and `#[listener(receive_cancelled)]` listeners may clear cancellation.
 
-/// What a fixture listener heard of one travel: the input and velocity it was handed.
+/// What a fixture listener heard of one travel: the input, velocity and cancel flag.
 type TravelHeard = Vec<([f64; 3], [f64; 3], bool)>;
 
 /// A listener that records what it hears, then writes `input` and `velocity`.
@@ -72,35 +74,32 @@ fn dispatch_travel(mut input: [f64; 3], mut velocity: [f64; 3]) -> ([f64; 3], [f
 }
 
 #[test]
-fn a_refused_pair_rolls_back_its_cancel_and_later_listeners_hear_the_accepted_result() {
-    let input = [0.5, 0.0, 0.0];
-    let velocity = [3.0, 0.0, 0.0];
+fn edits_above_former_synthetic_maxima_and_cancellation_pass_through() {
+    let input = [2.0, 0.0, 0.0];
+    let velocity = [80.0, 0.0, 0.0];
+    let (_, first) = setter("first", input, velocity, Cancel::None);
+    let (later_heard, later) = setter("later", [3.0, 0.0, 0.0], [90.0, 0.0, 0.0], Cancel::None);
+    install(vec![first, later].into());
+    assert_eq!(
+        dispatch_travel([0.1, 0.0, 0.0], [1.0, 0.0, 0.0]),
+        ([3.0, 0.0, 0.0], [90.0, 0.0, 0.0], false)
+    );
+    assert_eq!(*later_heard.lock().unwrap(), vec![(input, velocity, false)]);
+
     for cancel in [Cancel::Flag, Cancel::Flow] {
-        let (_, accepted) = setter("accepted", input, velocity, Cancel::None);
-        let (refused_heard, refused) = setter("refused", [2.0, 0.0, 0.0], [7.0, 0.0, 0.0], cancel);
-        let (later_heard, later) = setter("later", input, velocity, Cancel::None);
-        install(vec![accepted, refused, later].into());
-        let refusals = capture_output_refusals(|| {
-            for _ in 0..2 {
-                assert_eq!(
-                    dispatch_travel([0.1, 0.0, 0.0], [1.0, 0.0, 0.0]),
-                    (input, velocity, false),
-                    "the accepted result stands; the refused one, cancellation included, is gone"
-                );
-            }
-        });
-        assert_eq!(refusals, [("refused", "living_travel", "input"); 2]);
-        assert!(!runtime::poisoned(HookId::LivingTravel, "refused"));
-        assert_eq!(
-            *refused_heard.lock().unwrap(),
-            [(input, velocity, false); 2]
-        );
-        assert_eq!(*later_heard.lock().unwrap(), [(input, velocity, false); 2]);
+        let (_, canceller) = setter("canceller", [f64::NAN, 0.0, 0.0], [90.0, 0.0, 0.0], cancel);
+        let (skipped_heard, skipped) = setter("skipped", [0.0; 3], [0.0; 3], Cancel::None);
+        install(vec![canceller, skipped].into());
+        let (out_input, out_velocity, canceled) = dispatch_travel([0.1, 0.0, 0.0], [1.0, 0.0, 0.0]);
+        assert!(canceled, "cancellation is independent of output values");
+        assert!(out_input[0].is_nan());
+        assert_eq!(out_velocity, [90.0, 0.0, 0.0]);
+        assert!(skipped_heard.lock().unwrap().is_empty());
     }
 }
 
 #[test]
-fn a_listener_receiving_a_cancellation_cannot_clear_it() {
+fn a_listener_receiving_a_cancellation_may_clear_it() {
     struct Clear(Arc<Mutex<TravelHeard>>);
     #[mod_api::__subscriptions]
     impl Hooks for Clear {
@@ -115,20 +114,23 @@ fn a_listener_receiving_a_cancellation_cannot_clear_it() {
         }
     }
 
-    let input = [0.5, 0.0, 0.0];
-    let velocity = [3.0, 0.0, 0.0];
+    let input = [2.0, 0.0, 0.0];
+    let velocity = [70.0, 0.0, 0.0];
     let (_, first) = setter("first", input, velocity, Cancel::Flow);
     let heard = Arc::new(Mutex::new(Vec::new()));
     let clear = ModEntry::new("clear", Box::new(Clear(Arc::clone(&heard))));
-    let (skipped_heard, skipped) = setter("skipped", [0.0; 3], [0.0; 3], Cancel::None);
-    install(vec![first, clear, skipped].into());
-    assert_eq!(dispatch_travel([0.0; 3], [0.0; 3]), (input, velocity, true));
+    let (after_heard, after) = setter("after", [0.5, 0.0, 0.0], [3.0, 0.0, 0.0], Cancel::None);
+    install(vec![first, clear, after].into());
+    assert_eq!(
+        dispatch_travel([0.0; 3], [0.0; 3]),
+        ([0.5, 0.0, 0.0], [3.0, 0.0, 0.0], false)
+    );
     assert_eq!(*heard.lock().unwrap(), vec![(input, velocity, true)]);
-    assert!(skipped_heard.lock().unwrap().is_empty());
+    assert_eq!(*after_heard.lock().unwrap(), vec![(input, velocity, false)]);
 }
 
 #[test]
-fn a_no_op_listener_does_not_propose_the_games_out_of_budget_velocity() {
+fn a_no_op_listener_leaves_the_games_velocity_unchanged() {
     struct Observe;
     #[mod_api::__subscriptions]
     impl Hooks for Observe {
@@ -139,13 +141,10 @@ fn a_no_op_listener_does_not_propose_the_games_out_of_budget_velocity() {
     }
 
     install(vec![ModEntry::new("observe", Box::new(Observe))].into());
-    let refusals = capture_output_refusals(|| {
-        assert_eq!(
-            dispatch_travel([0.0; 3], [65.0, 0.0, 0.0]),
-            ([0.0; 3], [65.0, 0.0, 0.0], false)
-        );
-    });
-    assert!(refusals.is_empty());
+    assert_eq!(
+        dispatch_travel([0.0; 3], [65.0, 0.0, 0.0]),
+        ([0.0; 3], [65.0, 0.0, 0.0], false)
+    );
 }
 
 mod crate_root {
@@ -163,19 +162,12 @@ mod crate_root {
                     Ok(())
                 }
             }
-
-            /// The fixture's validator: input.x past 1.0 or velocity.x past 64.0 is
-            /// refused only on replacement. The real budgets are tested in the vocabulary crate.
-            pub(crate) fn refused_travel_output(
-                accepted_input: &[f64; 3],
-                accepted_velocity: &[f64; 3],
-                input: &[f64; 3],
+            pub(crate) fn refused_velocity_output(
+                accepted: &[f64; 3],
                 velocity: &[f64; 3],
             ) -> Result<(), &'static str> {
-                if accepted_input[0].to_bits() != input[0].to_bits() && input[0] > 1.0 {
-                    Err("input")
-                } else if accepted_velocity[0].to_bits() != velocity[0].to_bits()
-                    && velocity[0] > 64.0
+                if accepted.map(f64::to_bits) != velocity.map(f64::to_bits)
+                    && velocity.iter().any(|v| !v.is_finite())
                 {
                     Err("velocity")
                 } else {

@@ -1,0 +1,3 @@
+ids = ["method:prelude::ScreensClientHost::set_debug_fps_text"]
+why = "A client mod adds its own text to the end of F3's frame rate line (DebugEntryFps), as Dynamic FPS shows its reduced frame rate there, instead of an entry of its own that starts off (#5554)."
+migrate = "Nothing to change: additive."

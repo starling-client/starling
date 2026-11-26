@@ -1,5 +1,4 @@
 //! The `sponge_absorb` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0332
 
 pub trait Hooks {
     /// A sponge at `pos` absorbed water and became wet. Server-side.

@@ -49,7 +49,7 @@ impl Game<'_> {
             return false;
         };
         host.hub.ops.insert(uuid, level);
-        host.hub.resend_commands();
+        self.resend_commands_filtered();
         true
     }
 }

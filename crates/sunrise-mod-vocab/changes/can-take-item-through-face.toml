@@ -1,0 +1,3 @@
+ids = ["hook:can_take_item_through_face", "type:HookId"]
+why = "BlockEntityPart::can_take_item_through_face adds server-side per-slot extraction for mod block containers at WorldlyContainer.canTakeItemThroughFace. It returns an optional override of the declared output slots, asked with a read-only Host by hoppers pulling from below and by sided ITEMS and STORAGE extracts; face slot lists and menus are unchanged."
+migrate = "No existing hook version changes. To let items out by saved state, implement BlockEntityPart::can_take_item_through_face; ModContainer::outputs stays the answer when it returns None. A mod that matches HookId exhaustively adds the new can_take_item_through_face arm; one with a wildcard arm compiles unchanged."

@@ -5,4 +5,4 @@ sunrise-client game::lan_actions::pickups::orb_merge_contract_tests::a_count_pas
 sunrise-client game::lan_actions::pickups::orb_merge_contract_tests::a_resident_merge_of_three_times_two_and_five_saves_and_pays_eleven lib daily resources
 sunrise-client game::lan_actions::pickups::orb_merge_contract_tests::a_spawning_merge_of_three_times_two_and_five_saves_and_pays_eleven lib daily resources
 sunrise-client game::lan_actions::pickups::orb_merge_contract_tests::a_spawning_merge_tells_the_hook_the_signed_destination_value lib daily resources
-sunrise-client game::orb_merge_tests::set_experience_orb_refuses_a_write_a_save_cannot_hold lib daily resources
+sunrise-client game::orb_merge_tests::experience_orb_ref_writes_live_ints_and_refuses_invalid_count lib daily resources

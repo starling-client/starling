@@ -7,7 +7,10 @@
 //! server the screen shows the server's menu (`ClientboundMountScreenOpenPacket`)
 //! and its clicks go out as container clicks; a server's players get theirs
 //! from game/network/lan_mount_menu.rs.
-use super::{Game, Screen};
+use super::{
+    Game, Screen,
+    transactions::{After, SaveChunkScope},
+};
 use sunrise_client::{
     hud::{HudBatch, rgba},
     items::ItemStack,
@@ -17,8 +20,7 @@ use sunrise_client::{
 /// `AbstractChestedHorse.INV_CHEST_COUNT`.
 const CHEST_SIZE: usize = 15;
 pub(super) use sunrise_gameplay::mount_rules::{
-    ARMOR, CHEST, COLUMNS, SADDLE, body_armor_fits, has_mount_menu, mount_columns, shows_body,
-    shows_saddle,
+    ARMOR, CHEST, SADDLE, body_armor_fits, has_mount_menu, mount_columns, shows_body, shows_saddle,
 };
 
 /// The open mount menu: copies of the mount's slots, written back on every change.
@@ -76,30 +78,26 @@ impl Game<'_> {
         });
         self.show_mount_menu();
     }
-    /// `ClientPacketListener.handleMountScreenOpen`: a server's horse
-    /// inventory over mount `entity`, its slots to come in the menu's content.
-    pub(super) fn open_remote_mount_menu(&mut self, entity: u32, columns: usize) -> bool {
-        let Some(species) = self
-            .mobs
-            .iter()
-            .find(|m| m.id == entity)
-            .map(Mob::species)
-            .filter(|s| has_mount_menu(*s))
-        else {
-            return false;
-        };
+    /// Open the screen for the server's already installed mount window. Its
+    /// equipment and chest stacks arrive in the menu's content packets.
+    pub(super) fn open_remote_mount_menu(
+        &mut self,
+        entity: u32,
+        species: Species,
+        items: Vec<Option<ItemStack>>,
+    ) {
+        let columns = items.len() / 3;
         self.mount_menu.open = Some(Open {
             mob: entity,
             species,
-            columns: columns.min(COLUMNS),
+            columns,
             saddle: None,
             armor: None,
-            items: vec![None; CHEST_SIZE],
+            items,
             show_saddle: shows_saddle(species),
             show_armor: shows_body(species),
         });
         self.show_mount_menu();
-        true
     }
     fn show_mount_menu(&mut self) {
         if self.remote.is_none() && self.lan_acting.is_none() {
@@ -192,7 +190,7 @@ impl Game<'_> {
         };
         let (saddle, armor) = (open.saddle.clone(), open.armor.clone());
         let body = open.show_armor.then_some(armor);
-        let items = open.items.clone();
+        let items = open.items.iter().take(open.columns * 3).cloned().collect();
         self.mount_store(index, saddle, body, items);
     }
     /// The slots of mount `index` as its menu shows them: the saddle, the
@@ -208,8 +206,9 @@ impl Game<'_> {
         let m = &self.mobs[index];
         let species = m.species();
         let body = shows_body(species).then(|| m.equipment_stacks()[6].clone());
-        let mut items = m.extra.items.clone();
-        items.resize(mount_columns(m) * 3, None);
+        let size = mount_columns(m) * 3;
+        let mut items: Vec<_> = m.extra.items.iter().take(size).cloned().collect();
+        items.resize(size, None);
         (m.saddle_item(), body, items)
     }
     /// The menu's slots back on mount `index` (`body` None: not its slot),
@@ -240,7 +239,6 @@ impl Game<'_> {
                     .unwrap_or_else(|| "minecraft:item.armor.equip_generic".into())
             })
         };
-        let m = &mut self.mobs[index];
         let id = m.id;
         let pos = m.position;
         let saddle_off = m.extra.saddled() && saddle.is_none();
@@ -250,23 +248,35 @@ impl Game<'_> {
         let body_on = body
             .as_ref()
             .is_some_and(|b| b.is_some() && m.extra.body_id().is_none());
+        self.journal_equipment(id);
+        let m = &mut self.mobs[index];
         m.set_saddle(saddle);
         if let Some(body) = body {
             m.extra.set_body_stack(body);
         }
-        let mut items = items;
-        let keep = m.extra.items.len().max(CHEST_SIZE);
-        items.resize(keep, None);
-        m.extra.items = items;
-        let (x, z) = (at[0].floor() as i32 >> 4, at[2].floor() as i32 >> 4);
-        self.world.modified.insert((x, z));
-        if let Some(sound) = sound {
-            self.audio.play(&sound, Some(at), 1.0, 1.0);
+        if !items.is_empty() {
+            self.journal_entity(id);
+            let _ = self.edit_entity_slots(id, |slots, _| {
+                for (slot, stack) in slots.iter_mut().zip(items) {
+                    *slot = stack;
+                }
+            });
         }
-        if saddle_put_on || body_on {
-            self.mob_equip_event(id, [pos.x, pos.y, pos.z], true);
-        } else if saddle_off || body_off {
-            self.mob_equip_event(id, [pos.x, pos.y, pos.z], false);
+        let chunk = (at[0].floor() as i32 >> 4, at[2].floor() as i32 >> 4);
+        if self.has_open_transaction() {
+            self.journal_chunk_save(chunk, SaveChunkScope::Transaction);
+        } else {
+            self.world.modified.insert(chunk);
+        }
+        let equips = saddle_put_on || body_on;
+        if equips || saddle_off || body_off {
+            self.after_commit(After::MountEquipment {
+                dim: self.dim,
+                id,
+                at: [pos.x, pos.y, pos.z],
+                sound: sound.map(|sound| (sound, at)),
+                equips,
+            });
         }
     }
     pub(super) fn mount_slots(&self) -> Option<Vec<usize>> {
@@ -323,11 +333,17 @@ impl Game<'_> {
             _ => None,
         }
     }
+    pub(super) fn is_mount_chest_slot(&self, i: usize) -> bool {
+        self.mount_menu
+            .open
+            .as_ref()
+            .is_some_and(|open| i >= CHEST && i - CHEST < open.columns * 3)
+    }
     pub(super) fn mount_slot(&self, i: usize) -> &Option<ItemStack> {
         match self.mount_menu.open.as_ref() {
             Some(open) if i == SADDLE => &open.saddle,
             Some(open) if i == ARMOR => &open.armor,
-            Some(open) if i >= CHEST && i - CHEST < CHEST_SIZE => &open.items[i - CHEST],
+            Some(open) if i >= CHEST && i - CHEST < open.items.len() => &open.items[i - CHEST],
             _ => &self.scratch_slot,
         }
     }
@@ -335,7 +351,7 @@ impl Game<'_> {
         match self.mount_menu.open.as_mut() {
             Some(open) if i == SADDLE => &mut open.saddle,
             Some(open) if i == ARMOR => &mut open.armor,
-            Some(open) if i >= CHEST && i - CHEST < CHEST_SIZE => &mut open.items[i - CHEST],
+            Some(open) if i >= CHEST && i - CHEST < open.items.len() => &mut open.items[i - CHEST],
             _ => &mut self.scratch_slot,
         }
     }
@@ -346,7 +362,7 @@ impl Game<'_> {
         };
         match slot {
             SADDLE => (&*stack.item == "minecraft:saddle", 1),
-            ARMOR => (body_armor_fits(open.species, &stack.item), 1),
+            ARMOR => (body_armor_fits(self.items(), open.species, stack), 1),
             _ => (true, 64),
         }
     }
@@ -581,33 +597,67 @@ mod reach_tests;
 mod tests {
     use super::*;
 
-    #[test]
-    fn only_horses_wear_horse_armour() {
-        assert!(body_armor_fits(
-            Species::Horse,
-            "minecraft:iron_horse_armor"
-        ));
-        assert!(body_armor_fits(
-            Species::ZombieHorse,
-            "minecraft:diamond_horse_armor"
-        ));
-        assert!(!body_armor_fits(
-            Species::Donkey,
-            "minecraft:iron_horse_armor"
-        ));
-        assert!(!body_armor_fits(
-            Species::Horse,
-            "minecraft:iron_chestplate"
-        ));
+    /// A stack of `item` whose `equippable` component has `slot` and, when given,
+    /// `allowed` entity types.
+    fn worn(item: &str, slot: &str, allowed: Option<&[&str]>) -> ItemStack {
+        use sunrise_core::nbt::Tag;
+        let mut fields = vec![("slot", Tag::String(slot.into()))];
+        if let Some(allowed) = allowed {
+            fields.push((
+                "allowed_entities",
+                Tag::List(allowed.iter().map(|id| Tag::String((*id).into())).collect()),
+            ));
+        }
+        let mut stack = ItemStack::new(item, 1);
+        stack
+            .data_mut()
+            .set_other("minecraft:equippable", Some(Tag::compound(fields)));
+        stack
     }
 
     #[test]
-    fn llamas_wear_carpets_and_no_saddle() {
-        assert!(body_armor_fits(Species::Llama, "minecraft:red_carpet"));
-        assert!(!body_armor_fits(
-            Species::Llama,
-            "minecraft:iron_horse_armor"
-        ));
+    fn the_equippable_component_decides_what_a_horse_wears() {
+        let items = sunrise_client::items::Items::empty();
+        let horses = ["minecraft:horse", "minecraft:zombie_horse"];
+        let mod_armor = worn("example:obsidian_plate", "body", Some(&horses));
+        assert!(body_armor_fits(&items, Species::Horse, &mod_armor));
+        assert!(body_armor_fits(&items, Species::ZombieHorse, &mod_armor));
+        assert!(!body_armor_fits(&items, Species::Donkey, &mod_armor));
+        // A `_horse_armor` id without the component fits nothing.
+        let bare = ItemStack::new("minecraft:iron_horse_armor", 1);
+        assert!(!body_armor_fits(&items, Species::Horse, &bare));
+        // Another slot does not fit the body slot.
+        let helmet = worn("example:hat", "head", None);
+        assert!(!body_armor_fits(&items, Species::Horse, &helmet));
+    }
+
+    #[test]
+    fn vanilla_body_armour_still_fits_its_mobs() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/sunrise-client")
+            .join(sunrise_core::VANILLA_VERSION);
+        if !root.join("items.json").exists() {
+            return;
+        }
+        let defaults = sunrise_world::item_defaults::read(&root).unwrap();
+        let items = sunrise_client::items::Items::catalog(
+            &root,
+            &sunrise_world::loot::PackOverlay::NONE,
+            &defaults,
+        )
+        .unwrap();
+        let fits = |species, item| body_armor_fits(&items, species, &ItemStack::new(item, 1));
+        assert!(fits(Species::Horse, "minecraft:iron_horse_armor"));
+        assert!(fits(Species::ZombieHorse, "minecraft:diamond_horse_armor"));
+        assert!(!fits(Species::Donkey, "minecraft:iron_horse_armor"));
+        assert!(!fits(Species::Horse, "minecraft:iron_chestplate"));
+        assert!(fits(Species::Nautilus, "minecraft:iron_nautilus_armor"));
+        assert!(fits(Species::Llama, "minecraft:red_carpet"));
+        assert!(!fits(Species::Llama, "minecraft:iron_horse_armor"));
+    }
+
+    #[test]
+    fn llamas_wear_no_saddle() {
         assert!(shows_body(Species::TraderLlama));
         assert!(!shows_saddle(Species::Llama));
         assert!(shows_saddle(Species::Donkey) && !shows_body(Species::Donkey));

@@ -1,1 +1,4 @@
-pub use world::snapshots::{LootContext, LootStack, PlacementContext, PlacementPlacer};
+pub use world::snapshots::{
+    ExplorationMap, LootStack, PlacementContext, PlacementPlacer, PlacementSource,
+    PlacementStateError,
+};

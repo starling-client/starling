@@ -10,8 +10,12 @@ deletes the nine methods from gfx.rs. Fork edits to the moved methods follow in 
     python3 tools/sync/take_upstream_census_move.py --upstream <sha>
 """
 import argparse
+from pathlib import Path
+import sys
 
-import take_upstream_game_moves as moves
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+from tools.sync import take_upstream_game_moves as moves
 
 GFX = "crates/sunrise-client-render/src/gfx.rs"
 CENSUS = "crates/sunrise-client-render/src/gfx/census.rs"

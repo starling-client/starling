@@ -1,0 +1,3 @@
+ids = ["method:prelude::ServicesServerHost::profiles", "trait:Profiles", "type:AccountProfile", "type:AccountProfileProperty", "type:ProfileResolution"]
+why = "Adds the server profiles service: resolve_name and resolve_id look an account's signed profile up through the server's ProfileResolver.Cached, the resolver /fetchprofile and dynamic heads use, as a pollable answer."
+migrate = "Nothing to migrate."

@@ -33,7 +33,7 @@ pub(super) fn pipeline(
         multisample: Default::default(),
         fragment: Some(wgpu::FragmentState {
             module: shader,
-            entry_point: Some("fs_entity_unmarked"),
+            entry_point: Some("fs_entity_text"),
             compilation_options: wgpu::PipelineCompilationOptions {
                 constants: &super::linear_blend::frame_constants(format, linear),
                 ..Default::default()
@@ -72,7 +72,7 @@ mod tests {
     @vertex fn vs_entity(@location(0) pos:vec3<f32>, @location(3) color:vec4<f32>)->Out {
      return Out(vec4(pos,1.0),color);
     }
-    @fragment fn fs_entity_unmarked(v:Out)->@location(0) vec4<f32> { return v.color; }
+    @fragment fn fs_entity_text(v:Out)->@location(0) vec4<f32> { return v.color; }
     "#
                 .into(),
             ),

@@ -3,22 +3,28 @@
 #[cfg(test)]
 use key_codes::drop_held_behind_dialog;
 use key_codes::{
-    container_key_clones, follow_named_keymap, gameplay_has_keyboard, glfw_button, glfw_modifiers,
-    keyboard_button,
+    follow_named_keymap, gameplay_has_keyboard, glfw_button, glfw_modifiers, keyboard_button,
 };
 // `entry` starts the game from `game::Options`, so this one is named outside the module too.
 pub(crate) use launch_options::Options;
 #[cfg(not(target_os = "android"))]
 use loading_screen::missing_resources;
 use loading_screen::{
+<<<<<<< HEAD
     App, Loading, event_loop, leave_fullscreen_after, run_event_loop, unclean_start_recovery,
+||||||| 46c00106def
+    App, Loading, leave_fullscreen_after, missing_resources, run_event_loop, unclean_start_recovery,
+=======
+    App, Loading, leave_fullscreen_after, preflight_resources, run_event_loop,
+    unclean_start_recovery,
+>>>>>>> ed6772e2118
 };
 use motion_ids::{motion_at, motion_block_entity};
 #[cfg(test)]
 use resource_load::load_resources;
 use resource_load::{
-    Progress, StartupLoadContext, launch_world, load_resources_for_mods, load_resources_sync,
-    named_scope, synchronous_startup,
+    Progress, StartupLoadContext, launch_world, load_resources_for_mods_with_limit,
+    load_resources_sync, named_scope, synchronous_startup,
 };
 use resource_loader::{
     EntityModels, GameCpuResources, Loaded, LoaderMsg, PendingWorldEntry, WorldRestLoader,
@@ -38,11 +44,37 @@ macro_rules! world_items {
         }
     };
 }
+macro_rules! world_variants {
+    ($s:ident) => {
+        match &$s.world_tables {
+            Some(t) => &*t.variants,
+            None => $s.res.variants(),
+        }
+    };
+}
 macro_rules! world_recipes {
     ($s:ident) => {
         match &$s.world_tables {
             Some(t) => &t.recipes,
             None => $s.res.recipes(),
+        }
+    };
+}
+/// The painting variants the world places with (`Painting.create`): its own
+/// registry and `#minecraft:placeable`, else the prepared root's.
+macro_rules! world_paintings {
+    ($s:ident) => {
+        match &$s.world_tables {
+            Some(t) => &t.painting_variants,
+            None => &$s.painting_variants,
+        }
+    };
+}
+macro_rules! world_providers {
+    ($s:ident) => {
+        match &$s.world_tables {
+            Some(t) => &t.providers,
+            None => $s.res.providers(),
         }
     };
 }
@@ -96,6 +128,7 @@ macro_rules! game_side {
                 ))
             }),
             facts: $s.res.facts(),
+            tables: $crate::game::native_block_tables::BlockTables::new(&$s.res, &$s.pack),
             biomes: world_biomes!($s),
             behaviours: $s.res.behaviours(),
             features: $s
@@ -107,6 +140,14 @@ macro_rules! game_side {
             items: $s.res.items(),
             damage_types: &$s.health_resources.damage,
             player_equipment: acting_equipment!($s),
+            hit_borrows: $crate::game::native_surface::HitBorrows {
+                living_types: $s.res.living_type_keys(),
+                attributes: &$s.motion.attributes,
+                player_effects: &$s.potions.effects,
+                player_uuid: $s.lan_acting_uuid,
+                player_attachments: &$s.player_state.attachments,
+                entity_attachments: &*$s.entity_attachments,
+            },
             tag_items: if $s.options.execution_role.is_client() {
                 $s.remote.as_ref().and_then(|remote| remote.tags.as_ref())
             } else {
@@ -202,7 +243,7 @@ mod block_entity_anims;
 mod block_entity_part_state_tests;
 #[cfg(test)]
 #[path = "game/blocks/block_entity_reach_draw_tests.rs"]
-mod block_entity_reach_draw_tests;
+pub(in crate::game) mod block_entity_reach_draw_tests;
 #[path = "game/blocks/block_entity_ticks.rs"]
 mod block_entity_ticks;
 #[path = "game/blocks/block_items.rs"]
@@ -266,6 +307,8 @@ mod bundle_use_tests;
 mod bundles;
 #[path = "game/items/cake_eligibility.rs"]
 mod cake_eligibility;
+#[path = "game/interface/camera_hud.rs"]
+mod camera_hud;
 #[cfg(test)]
 #[path = "game/interface/camera_submersion_tests.rs"]
 mod camera_submersion_tests;
@@ -350,8 +393,6 @@ mod composter;
 mod condition_reload_state;
 #[path = "game/items/consume.rs"]
 mod consume;
-#[path = "game/modding/consume_effect_dispatch.rs"]
-mod consume_effect_dispatch;
 #[cfg(test)]
 #[path = "game/modding/consume_effect_dispatch_tests.rs"]
 mod consume_effect_dispatch_tests;
@@ -364,8 +405,16 @@ mod container_hooks;
 mod container_layout;
 #[path = "game/world/container_loot.rs"]
 mod container_loot;
+#[path = "game/interface/context_menu.rs"]
+mod context_menu;
+#[cfg(test)]
+#[path = "game/items/continue_using_tests.rs"]
+mod continue_using_tests;
 #[path = "game/runtime/control.rs"]
 mod control;
+#[cfg(test)]
+#[path = "game/mobs/conversion_place_tests.rs"]
+mod conversion_place_tests;
 #[path = "game/mobs/copper_golems.rs"]
 mod copper_golems;
 #[cfg(test)]
@@ -393,6 +442,9 @@ mod creatures;
 mod crop_grow_tests;
 #[path = "game/items/crossbow.rs"]
 mod crossbow;
+#[cfg(test)]
+#[path = "game/entities/crosshair_pick_tests.rs"]
+mod crosshair_pick_tests;
 #[cfg(test)]
 #[path = "game/entities/cushion_refind_tests.rs"]
 mod cushion_refind_tests;
@@ -440,6 +492,8 @@ mod decorated_pot;
 pub(crate) mod dedicated;
 #[path = "game/items/deflect.rs"]
 mod deflect;
+#[path = "game/interface/demo_intro.rs"]
+mod demo_intro;
 #[path = "game/interface/developer_launch.rs"]
 mod developer_launch;
 #[path = "game/interface/dialogs.rs"]
@@ -464,8 +518,6 @@ mod dragon_boss_bar_name_tests;
 #[cfg(test)]
 #[path = "game/mobs/dragon_fireball_motion_tests.rs"]
 mod dragon_fireball_motion_tests;
-#[path = "game/modding/draw_boundary.rs"]
-mod draw_boundary;
 #[cfg(test)]
 #[path = "game/items/dropped_by_player_tests.rs"]
 mod dropped_by_player_tests;
@@ -534,6 +586,9 @@ mod entity_sections;
 mod entity_sizes;
 #[path = "game/entities/entity_sounds.rs"]
 mod entity_sounds;
+#[cfg(test)]
+#[path = "game/entities/entity_tick_families_tests.rs"]
+mod entity_tick_families_tests;
 #[path = "game/modding/entity_type_rows.rs"]
 mod entity_type_rows;
 #[path = "game/items/equip_answers.rs"]
@@ -600,6 +655,9 @@ mod fishing;
 mod fluid_interaction_tests;
 #[path = "game/modding/fluid_interactions.rs"]
 mod fluid_interactions;
+#[cfg(test)]
+#[path = "game/interface/fluid_passage_tests.rs"]
+mod fluid_passage_tests;
 #[path = "game/interface/focused_text_field.rs"]
 mod focused_text_field;
 #[path = "game/interface/fov.rs"]
@@ -608,6 +666,9 @@ mod fov;
 mod foxes;
 #[path = "game/interface/frame_geometry.rs"]
 mod frame_geometry;
+#[cfg(test)]
+#[path = "game/modding/frame_view_retained_draw_tests.rs"]
+mod frame_view_retained_draw_tests;
 #[path = "game/entities/frames.rs"]
 mod frames;
 #[cfg(feature = "friends")]
@@ -649,6 +710,9 @@ mod golems;
 mod grindstone_decisions_tests;
 #[path = "game/blocks/growth.rs"]
 mod growth;
+#[cfg(test)]
+#[path = "game/modding/gui_canvas_items_tests.rs"]
+mod gui_canvas_items_tests;
 #[path = "game/modding/gui_clips.rs"]
 mod gui_clips;
 #[path = "game/interface/gui_entity.rs"]
@@ -659,13 +723,6 @@ mod gui_gradient_tests;
 #[cfg(test)]
 #[path = "game/modding/gui_layer_tests.rs"]
 mod gui_layer_tests;
-#[path = "game/modding/gui_paint_items.rs"]
-mod gui_paint_items;
-#[cfg(test)]
-#[path = "game/modding/gui_paint_items_tests.rs"]
-mod gui_paint_items_tests;
-#[path = "game/modding/gui_pose.rs"]
-mod gui_pose;
 #[path = "game/items/hand.rs"]
 mod hand;
 #[cfg(test)]
@@ -692,6 +749,8 @@ mod hook_meddler_tests;
 mod host;
 #[path = "game/runtime/hot_paths/mod.rs"]
 mod hot_paths;
+#[path = "game/modding/hotbar_items.rs"]
+mod hotbar_items;
 #[path = "game/interface/hud_editor.rs"]
 mod hud_editor;
 #[path = "game/interface/hud_render.rs"]
@@ -731,6 +790,9 @@ mod interaction_data_tests;
 mod interactions;
 #[path = "game/interface/inventory_input.rs"]
 mod inventory_input;
+#[cfg(test)]
+#[path = "game/modding/inventory_menu_parts_tests.rs"]
+mod inventory_menu_parts_tests;
 #[path = "game/interface/inventory_slots.rs"]
 mod inventory_slots;
 #[path = "game/items/inventory_tick.rs"]
@@ -884,8 +946,6 @@ mod launch_timeout;
 mod leads;
 #[path = "game/blocks/level_access.rs"]
 mod level_access;
-#[path = "game/modding/level_control_hooks.rs"]
-mod level_control_hooks;
 #[path = "game/interface/level_particles.rs"]
 mod level_particles;
 #[path = "game/interface/level_sounds.rs"]
@@ -980,8 +1040,6 @@ mod mob_looting;
 mod mob_sounds;
 #[path = "game/modding/mod_api_host.rs"]
 mod mod_api_host;
-#[path = "game/interface/mod_browser.rs"]
-mod mod_browser;
 #[path = "game/modding/mod_container_openers.rs"]
 mod mod_container_openers;
 #[cfg(test)]
@@ -998,6 +1056,8 @@ mod mod_raycast_tests;
 #[cfg(test)]
 #[path = "game/interface/mod_recipe_property_tests.rs"]
 mod mod_recipe_property_tests;
+#[path = "game/interface/mod_toasts.rs"]
+mod mod_toasts;
 #[cfg(test)]
 #[path = "game/modding/model_baking_completed_tests.rs"]
 mod model_baking_completed_tests;
@@ -1052,6 +1112,9 @@ mod native_block_entity_transform;
 mod native_block_entity_transform_tests;
 #[path = "game/modding/native_block_extra_models.rs"]
 mod native_block_extra_models;
+#[cfg(test)]
+#[path = "game/modding/native_block_metadata_reads_tests.rs"]
+mod native_block_metadata_reads_tests;
 #[path = "game/modding/native_block_sounds.rs"]
 pub(crate) mod native_block_sounds;
 #[path = "game/modding/native_block_sprites.rs"]
@@ -1061,12 +1124,13 @@ mod native_block_states;
 #[path = "game/modding/native_block_tables.rs"]
 mod native_block_tables;
 #[cfg(test)]
+#[path = "game/modding/native_block_tables_tests.rs"]
+mod native_block_tables_tests;
+#[cfg(test)]
 #[path = "game/modding/native_block_use_criteria_tests.rs"]
 mod native_block_use_criteria_tests;
 #[path = "game/modding/native_book_apply.rs"]
 mod native_book_apply;
-#[path = "game/modding/native_book_backings.rs"]
-mod native_book_backings;
 #[path = "game/modding/native_book_catalogue.rs"]
 mod native_book_catalogue;
 #[path = "game/modding/native_book_displays.rs"]
@@ -1081,8 +1145,6 @@ mod native_book_net;
 mod native_book_placement;
 #[path = "game/modding/native_book_receive.rs"]
 mod native_book_receive;
-#[path = "game/modding/native_book_scope.rs"]
-mod native_book_scope;
 #[path = "game/modding/native_book_settings.rs"]
 mod native_book_settings;
 #[path = "game/modding/native_book_transport.rs"]
@@ -1096,8 +1158,6 @@ mod native_bots;
 mod native_capability_cache_tests;
 #[path = "game/modding/native_cauldron_contents.rs"]
 mod native_cauldron_contents;
-#[path = "game/modding/native_chat_recipients.rs"]
-mod native_chat_recipients;
 #[cfg(test)]
 #[path = "game/modding/native_chat_recipients_tests.rs"]
 mod native_chat_recipients_tests;
@@ -1110,8 +1170,12 @@ mod native_chunk_queries;
 #[cfg(test)]
 #[path = "game/modding/native_chunk_relight_tests.rs"]
 mod native_chunk_relight_tests;
+#[path = "game/modding/native_chunk_requests.rs"]
+mod native_chunk_requests;
 #[path = "game/modding/native_chunk_save.rs"]
 mod native_chunk_save;
+#[path = "game/modding/native_chunk_snapshot.rs"]
+mod native_chunk_snapshot;
 #[path = "game/modding/native_claimed_items.rs"]
 mod native_claimed_items;
 #[path = "game/modding/native_client_particles.rs"]
@@ -1136,12 +1200,13 @@ pub(crate) mod native_collision_shape;
 #[cfg(test)]
 #[path = "game/modding/native_command_completion_tests.rs"]
 mod native_command_completion_tests;
+#[cfg(test)]
+#[path = "game/modding/native_command_entity_tests.rs"]
+mod native_command_entity_tests;
 #[path = "game/modding/native_command_reads.rs"]
 mod native_command_reads;
 #[path = "game/modding/native_components.rs"]
 mod native_components;
-#[path = "game/modding/native_config_files.rs"]
-mod native_config_files;
 #[path = "game/modding/native_configs.rs"]
 mod native_configs;
 #[path = "game/modding/native_connection_groups.rs"]
@@ -1151,8 +1216,6 @@ mod native_console;
 #[cfg(test)]
 #[path = "game/modding/native_console_tests.rs"]
 mod native_console_tests;
-#[path = "game/modding/native_content_items.rs"]
-mod native_content_items;
 #[path = "game/modding/native_criteria.rs"]
 mod native_criteria;
 #[path = "game/modding/native_custom_geometry.rs"]
@@ -1173,8 +1236,12 @@ mod native_datafix;
 mod native_datafix_tests;
 #[path = "game/modding/native_datapack_refs.rs"]
 mod native_datapack_refs;
+#[path = "game/modding/native_datapack_values.rs"]
+mod native_datapack_values;
 #[path = "game/modding/native_death_weapon.rs"]
 mod native_death_weapon;
+#[path = "game/modding/native_detached_generation.rs"]
+mod native_detached_generation;
 #[path = "game/modding/native_dimensions.rs"]
 mod native_dimensions;
 #[path = "game/modding/native_disconnect.rs"]
@@ -1195,6 +1262,11 @@ mod native_dynamic_textures_tests;
 mod native_effect_category;
 #[path = "game/modding/native_entities.rs"]
 mod native_entities;
+#[path = "game/modding/native_entity_base.rs"]
+mod native_entity_base;
+#[cfg(test)]
+#[path = "game/modding/native_entity_base_tests.rs"]
+mod native_entity_base_tests;
 #[path = "game/modding/native_entity_commands.rs"]
 mod native_entity_commands;
 #[path = "game/modding/native_entity_data.rs"]
@@ -1234,6 +1306,11 @@ mod native_entity_move_tests;
 mod native_entity_moves;
 #[path = "game/modding/native_entity_physics.rs"]
 mod native_entity_physics;
+#[path = "game/modding/native_entity_previous.rs"]
+mod native_entity_previous;
+#[cfg(test)]
+#[path = "game/modding/native_entity_previous_tests.rs"]
+mod native_entity_previous_tests;
 #[path = "game/modding/native_entity_refs.rs"]
 mod native_entity_refs;
 #[path = "game/modding/native_entity_remove.rs"]
@@ -1315,16 +1392,25 @@ mod native_hanging_tests;
 #[path = "game/modding/native_harvest_queries.rs"]
 mod native_harvest_queries;
 #[cfg(test)]
+#[path = "game/modding/native_heal_motion_view_tests.rs"]
+mod native_heal_motion_view_tests;
+#[cfg(test)]
 #[path = "game/modding/native_held_out_tests.rs"]
 mod native_held_out_tests;
 #[cfg(test)]
 #[path = "game/modding/native_hit_attempt_tests.rs"]
 mod native_hit_attempt_tests;
+#[cfg(test)]
+#[path = "game/modding/native_hit_causer_tests.rs"]
+mod native_hit_causer_tests;
 #[path = "game/modding/native_hit_effects.rs"]
 mod native_hit_effects;
 #[cfg(test)]
 #[path = "game/modding/native_hit_sounds_tests.rs"]
 mod native_hit_sounds_tests;
+#[cfg(test)]
+#[path = "game/modding/native_hit_view_tests.rs"]
+mod native_hit_view_tests;
 mod native_hooks;
 // Starling's own game modules (game/starling/): Sunrise names each of its modules here, so these are named too.
 #[path = "game/starling/build_mining.rs"]
@@ -1445,10 +1531,15 @@ mod native_live_holder_tests;
 mod native_living_absorption;
 #[path = "game/modding/native_living_blocking.rs"]
 mod native_living_blocking;
+#[path = "game/modding/native_living_body.rs"]
+mod native_living_body;
 #[path = "game/modding/native_living_effects.rs"]
 mod native_living_effects;
 #[path = "game/modding/native_living_flags.rs"]
 mod native_living_flags;
+#[cfg(test)]
+#[path = "game/modding/native_living_model_posed_tests.rs"]
+mod native_living_model_posed_tests;
 #[path = "game/modding/native_living_position.rs"]
 mod native_living_position;
 #[path = "game/modding/native_living_refs.rs"]
@@ -1456,6 +1547,9 @@ mod native_living_refs;
 #[cfg(test)]
 #[path = "game/modding/native_living_renderers_tests.rs"]
 mod native_living_renderers_tests;
+#[cfg(test)]
+#[path = "game/modding/native_living_travel_moved_tests.rs"]
+mod native_living_travel_moved_tests;
 #[cfg(test)]
 #[path = "game/modding/native_living_travel_sweep_tests.rs"]
 mod native_living_travel_sweep_tests;
@@ -1488,6 +1582,8 @@ mod native_menus;
 mod native_merchant_refs;
 #[path = "game/modding/native_minecart_refs.rs"]
 mod native_minecart_refs;
+#[path = "game/modding/native_mob_attack.rs"]
+mod native_mob_attack;
 #[path = "game/modding/native_mob_draw.rs"]
 mod native_mob_draw;
 #[path = "game/modding/native_mob_goals.rs"]
@@ -1553,6 +1649,8 @@ mod native_place_feature;
 #[cfg(test)]
 #[path = "game/modding/native_place_feature_tests.rs"]
 mod native_place_feature_tests;
+#[path = "game/modding/native_placement_modifiers.rs"]
+mod native_placement_modifiers;
 #[cfg(test)]
 #[path = "game/modding/native_placement_state_tests.rs"]
 mod native_placement_state_tests;
@@ -1604,6 +1702,11 @@ mod native_player_place;
 #[cfg(test)]
 #[path = "game/modding/native_player_place_tests.rs"]
 mod native_player_place_tests;
+#[path = "game/modding/native_player_post_effects.rs"]
+mod native_player_post_effects;
+#[cfg(test)]
+#[path = "game/modding/native_player_post_effects_tests.rs"]
+mod native_player_post_effects_tests;
 #[path = "game/modding/native_player_reach.rs"]
 mod native_player_reach;
 #[path = "game/modding/native_player_respawn.rs"]
@@ -1621,8 +1724,12 @@ mod native_player_visibility;
 #[cfg(test)]
 #[path = "game/modding/native_player_visibility_tests.rs"]
 mod native_player_visibility_tests;
+#[path = "game/modding/native_pool_elements.rs"]
+mod native_pool_elements;
 #[path = "game/modding/native_portal_destination.rs"]
 mod native_portal_destination;
+#[path = "game/modding/native_profiles.rs"]
+mod native_profiles;
 #[path = "game/modding/native_projectile_launch.rs"]
 mod native_projectile_launch;
 #[cfg(test)]
@@ -1661,9 +1768,14 @@ mod native_registry_ids_tests;
 #[cfg(test)]
 #[path = "game/modding/native_registry_processor_tests.rs"]
 mod native_registry_processor_tests;
+#[path = "game/modding/native_render_hooks.rs"]
+mod native_render_hooks;
+#[cfg(test)]
+#[path = "game/modding/native_render_hooks_tests.rs"]
+mod native_render_hooks_tests;
 #[cfg(test)]
 #[path = "game/modding/native_render_pair_tests.rs"]
-mod native_render_pair_tests;
+pub(in crate::game) mod native_render_pair_tests;
 #[path = "game/modding/native_render_visibility.rs"]
 mod native_render_visibility;
 #[cfg(test)]
@@ -1675,6 +1787,10 @@ mod native_resources;
 mod native_ride_player;
 #[path = "game/modding/native_rotate.rs"]
 pub(crate) mod native_rotate;
+#[path = "game/modding/native_rule_tests.rs"]
+mod native_rule_tests;
+#[path = "game/modding/native_saved_chunks.rs"]
+mod native_saved_chunks;
 #[path = "game/modding/native_scene.rs"]
 mod native_scene;
 #[path = "game/modding/native_scene_live.rs"]
@@ -1682,10 +1798,16 @@ mod native_scene_live;
 #[cfg(test)]
 #[path = "game/modding/native_scene_live_tests.rs"]
 mod native_scene_live_tests;
+
+#[path = "game/modding/native_client_scoreboard.rs"]
+mod native_client_scoreboard;
 #[path = "game/modding/native_scoreboard.rs"]
 mod native_scoreboard;
 #[path = "game/modding/native_scoreboard_teams.rs"]
 mod native_scoreboard_teams;
+
+#[path = "game/modding/native_section_dirty.rs"]
+mod native_section_dirty;
 #[path = "game/modding/native_section_visibility.rs"]
 mod native_section_visibility;
 #[path = "game/modding/native_server.rs"]
@@ -1702,6 +1824,11 @@ mod native_shaders;
 #[cfg(test)]
 #[path = "game/modding/native_shield_totem_tests.rs"]
 mod native_shield_totem_tests;
+#[path = "game/modding/native_singleplayer_owner.rs"]
+mod native_singleplayer_owner;
+#[cfg(test)]
+#[path = "game/modding/native_singleplayer_owner_tests.rs"]
+mod native_singleplayer_owner_tests;
 #[cfg(test)]
 #[path = "game/modding/native_small_reads_tests.rs"]
 mod native_small_reads_tests;
@@ -1710,6 +1837,9 @@ mod native_small_reads_tests;
 mod native_smoke_source_tests;
 #[path = "game/modding/native_sound_refs.rs"]
 mod native_sound_refs;
+#[cfg(test)]
+#[path = "game/modding/native_sound_seed_tests.rs"]
+mod native_sound_seed_tests;
 #[path = "game/modding/native_special_renderers.rs"]
 mod native_special_renderers;
 #[cfg(test)]
@@ -1719,10 +1849,15 @@ mod native_spectator_shader_tests;
 mod native_state_shapes;
 #[path = "game/modding/native_structure_placement.rs"]
 mod native_structure_placement;
+#[path = "game/modding/native_structure_processors.rs"]
+mod native_structure_processors;
 #[path = "game/modding/native_structure_types.rs"]
 mod native_structure_types;
 #[path = "game/modding/native_structures.rs"]
 mod native_structures;
+#[cfg(test)]
+#[path = "game/modding/native_success_broadcast_tests.rs"]
+mod native_success_broadcast_tests;
 #[path = "game/modding/native_surface.rs"]
 pub(crate) mod native_surface;
 #[path = "game/modding/native_tags.rs"]
@@ -1733,6 +1868,8 @@ mod native_terrain_model;
 mod native_text_json;
 #[path = "game/modding/native_text_legacy.rs"]
 mod native_text_legacy;
+#[path = "game/modding/native_text_nbt.rs"]
+mod native_text_nbt;
 #[path = "game/modding/native_tick_time.rs"]
 mod native_tick_time;
 #[path = "game/modding/native_ticks.rs"]
@@ -1806,6 +1943,14 @@ mod owner_link;
 mod pack_clouds_frame_tests;
 #[path = "game/modding/pack_finders/mod.rs"]
 mod pack_finders;
+#[cfg(test)]
+#[path = "game/interface/pack_layer_frame_tests.rs"]
+mod pack_layer_frame_tests;
+#[path = "game/interface/pack_layers.rs"]
+mod pack_layers;
+#[cfg(test)]
+#[path = "game/interface/pack_sources_tests.rs"]
+mod pack_sources_tests;
 #[path = "game/world/packs/mod.rs"]
 mod packs;
 #[path = "game/interface/pad/mod.rs"]
@@ -1820,6 +1965,9 @@ mod pad_menu;
 mod paintings;
 #[path = "game/mobs/pandas.rs"]
 mod pandas;
+#[cfg(sunrise_parity_fixtures)]
+#[path = "game/parity_fixtures.rs"]
+pub mod parity_fixtures;
 #[path = "game/modding/part_admission.rs"]
 mod part_admission;
 #[cfg(test)]
@@ -1858,6 +2006,9 @@ mod pickups;
 #[cfg(test)]
 #[path = "game/mobs/piglin_admire_tests.rs"]
 mod piglin_admire_tests;
+#[cfg(test)]
+#[path = "game/mobs/piglin_conversion_tests.rs"]
+mod piglin_conversion_tests;
 #[path = "game/mobs/piglins.rs"]
 mod piglins;
 #[path = "game/blocks/piston_carry.rs"]
@@ -2037,6 +2188,9 @@ mod respawn_position;
 #[cfg(test)]
 #[path = "game/blocks/respawn_position_tests.rs"]
 mod respawn_position_tests;
+#[cfg(test)]
+#[path = "game/modding/rule_replacements.rs"]
+mod rule_replacements;
 #[path = "game/world/runtime_levels.rs"]
 mod runtime_levels;
 #[cfg(test)]
@@ -2075,6 +2229,8 @@ mod screen_info;
 mod screen_render_phase_tests;
 #[path = "game/interface/screen_room.rs"]
 mod screen_room;
+#[path = "game/interface/screen_widgets.rs"]
+mod screen_widgets;
 #[path = "game/interface/screens.rs"]
 mod screens;
 #[path = "game/runtime/screenshot_sequence.rs"]
@@ -2100,8 +2256,15 @@ mod server_travel;
 #[cfg(test)]
 #[path = "game/administration/setblock_order_tests.rs"]
 mod setblock_order_tests;
+<<<<<<< HEAD
 #[path = "game/starling/setup/mod.rs"]
 mod setup;
+||||||| 46c00106def
+=======
+#[cfg(test)]
+#[path = "game/interface/shader_pack_switch_tests.rs"]
+mod shader_pack_switch_tests;
+>>>>>>> ed6772e2118
 #[path = "game/interface/shader_packs.rs"]
 mod shader_packs;
 #[cfg(test)]
@@ -2117,6 +2280,8 @@ mod shield;
 mod shoulders;
 #[path = "game/interface/sign_edit.rs"]
 mod sign_edit;
+#[path = "game/modding/slot_changes.rs"]
+mod slot_changes;
 #[cfg(test)]
 #[path = "game/modding/slot_pickup_tests.rs"]
 mod slot_pickup_tests;
@@ -2146,7 +2311,7 @@ mod spawn_yaw_tests;
 mod spawner;
 #[cfg(test)]
 #[path = "game/mobs/spawner_client_tick_tests.rs"]
-mod spawner_client_tick_tests;
+pub(in crate::game) mod spawner_client_tick_tests;
 #[path = "game/items/spear.rs"]
 mod spear;
 #[path = "game/items/spear_players.rs"]
@@ -2178,6 +2343,9 @@ mod stand_command_hurt_tests;
 #[path = "game/interface/stand_equipment_change_tests.rs"]
 mod stand_equipment_change_tests;
 #[cfg(test)]
+#[path = "game/entities/stand_low_health_tests.rs"]
+mod stand_low_health_tests;
+#[cfg(test)]
 #[path = "game/modding/start_riding_refusal_tests.rs"]
 mod start_riding_refusal_tests;
 #[cfg(test)]
@@ -2208,6 +2376,11 @@ mod stations;
 mod stats;
 #[path = "game/interface/stats_screen.rs"]
 mod stats_screen;
+#[path = "game/entities/stock_layer_mask.rs"]
+mod stock_layer_mask;
+#[cfg(test)]
+#[path = "game/items/stop_using_tests.rs"]
+mod stop_using_tests;
 #[path = "game/world/storage.rs"]
 mod storage;
 #[cfg(test)]
@@ -2268,6 +2441,8 @@ mod tick_script;
 mod titles;
 #[path = "game/entities/tnt.rs"]
 mod tnt;
+#[path = "game/interface/toast_manager.rs"]
+mod toast_manager;
 #[path = "game/blocks/tool_modification.rs"]
 mod tool_modification;
 #[path = "game/items/totem.rs"]
@@ -2316,7 +2491,7 @@ mod using_item;
 mod vault;
 #[cfg(test)]
 #[path = "game/entities/vehicle_removal_tests.rs"]
-mod vehicle_removal_tests;
+pub(in crate::game) mod vehicle_removal_tests;
 #[path = "game/entities/vehicle_teleport.rs"]
 mod vehicle_teleport;
 #[cfg(test)]
@@ -2362,8 +2537,14 @@ mod wither;
 #[cfg(test)]
 #[path = "game/mobs/wither_star_tests.rs"]
 mod wither_star_tests;
+<<<<<<< HEAD
 #[path = "game/starling/world_content.rs"]
 mod world_content;
+||||||| 46c00106def
+=======
+#[path = "game/world/world_border.rs"]
+mod world_border;
+>>>>>>> ed6772e2118
 #[path = "game/world/world_entry.rs"]
 mod world_entry;
 #[cfg(test)]
@@ -2386,6 +2567,9 @@ mod world_session;
 #[cfg(test)]
 #[path = "game/blocks/world_test_def_tests.rs"]
 mod world_test_def_tests;
+#[cfg(test)]
+#[path = "game/interface/world_text_frame_tests.rs"]
+mod world_text_frame_tests;
 #[path = "game/world/world_update.rs"]
 mod world_update;
 #[path = "game/items/worn_boots.rs"]
@@ -2418,9 +2602,10 @@ use sunrise_client_render::block_entity_reach::Reach;
 use self::api_values::TryIntoApi;
 pub(crate) use api_values::{block_jump_factor, block_speed_factor, is_ladder};
 pub use native_block_entity_draw::BlockEntityDraw;
-pub use native_configs::ConfigFile;
 pub use native_data_maps::DataMapType;
-pub use native_hooks::{PhantomSpawnResult, Shake, SleepProblem};
+pub(crate) use native_hooks::is_scaffolding;
+pub use native_hooks::{PhantomSpawnResult, SleepProblem};
+pub(crate) use native_living_body::with_lent_view;
 pub use native_mob_draw::{MobRender, PlayerRender};
 use std::{
     cell::RefCell,
@@ -2542,6 +2727,8 @@ enum Screen {
     ServerLinks,
     /// ConfirmLinkScreen for a server link (game/network/server_links.rs).
     ConfirmLink,
+    /// Parentless PopupScreen opened by the server's demo event.
+    DemoIntro,
     /// DialogScreen.WarningScreen: the note about custom screens.
     DialogWarning,
     /// WinScreen: the end poem and the credits (game/interface/win.rs).
@@ -2577,6 +2764,7 @@ impl Screen {
             Screen::BlockEditor => "block_editor",
             Screen::ServerLinks => "server_links",
             Screen::ConfirmLink => "confirm_link",
+            Screen::DemoIntro => "demo_intro",
             Screen::DialogWarning => "dialog_warning",
             Screen::Win => "win",
             Screen::DebugOptions => "debug_options",
@@ -2621,6 +2809,13 @@ impl Mining {
     fn stage(&self) -> Option<u8> {
         (self.progress > 0.0).then(|| ((self.progress * 10.0) as u8).min(9))
     }
+}
+/// What a transform does beyond the swap: its `transform_type` and the `drop_strategy` its loot
+/// table's stacks pop with (both empty for a tool ability outside the table).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct TransformKind {
+    pub(crate) transform_type: String,
+    pub(crate) drop_strategy: String,
 }
 #[derive(Clone, Copy)]
 struct TransformContext<'a> {
@@ -2737,6 +2932,9 @@ struct GameLevel<'w> {
     /// (`Entity.isIgnoringBlockTriggers`).
     trigger_extras: Vec<Aabb>,
     biomes: &'w Biomes,
+    biome_keys: Option<&'w mod_api::__private::BiomeKeys>,
+    /// `BiomeManager`'s zoom over this level's seed, for `biome_name`.
+    biome_zoom: sunrise_core::biome::BiomeZoom,
     seed: i64,
     behaviours: &'w Behaviours,
     items: &'w Items,
@@ -2745,6 +2943,8 @@ struct GameLevel<'w> {
     /// Container loot tables (`unpackLootTable`).
     loot: Option<std::sync::Arc<sunrise_world::loot::LootData>>,
     loot_storage: std::sync::Arc<sunrise_world::loot::copy::StorageData>,
+    /// The level's world clocks, for `time_check` in loot conditions.
+    loot_clocks: std::collections::BTreeMap<String, i64>,
     registry: &'static sunrise_world::registry::BlockRegistry,
     block_registries: &'w sunrise_client::command::args::Registries,
     rules: sunrise_world::level::GameRules,
@@ -2785,12 +2985,17 @@ struct GameLevel<'w> {
     debug: bool,
     native_sounds: &'w mut Vec<creatures::NativeSound>,
     loop_context: &'w sunrise_world::native_load_context::LoopContext,
+    /// This side's level data, for the read-only level a block's sound type is asked in.
+    side: native_surface::GameSide<'w>,
     native_particles: &'w mut Vec<lan_particles::QueuedParticle>,
     sound_seeds: Option<&'w sunrise_client::lan::hub::Hub>,
     drop_entity: Option<mod_api::EntityRef>,
     /// `LootContextParams.INTERACTING_ENTITY` of a block-interaction drop: the
     /// player whose click `use_without_item` runs for.
     interacting: Option<sunrise_world::loot::LootEntity>,
+    /// `LootContextParams.TOOL` of a block-interaction drop, when an item
+    /// triggered the interaction (`None` for bare-hand `use_without_item`).
+    interacting_tool: Option<ItemStack>,
     /// What a location predicate of such a drop reads beyond the level's own
     /// fields (`blocks::location_world`).
     location: location_world::LocationRefs<'w>,
@@ -2908,7 +3113,7 @@ impl GameLevel<'_> {
 impl<'w> entity::EntityLists<'w> {
     /// Non-player, non-mob boxes with `Entity.blocksBuilding`. The block level
     /// supplies its minecart snapshot; the mob level reads the live cart boxes.
-    fn non_mob_building_blocker_boxes(
+    pub(in crate::game) fn non_mob_building_blocker_boxes(
         self,
         carts: impl Iterator<Item = Aabb> + 'w,
         crystals: &'w [dragon::Crystal],
@@ -2927,7 +3132,7 @@ impl<'w> entity::EntityLists<'w> {
                 self.falling
                     .iter()
                     .filter(|f| f.blocks_building)
-                    .map(|f| sunrise_client::falling_block::bounds(f.position)),
+                    .map(FallingBlock::bounds),
             )
     }
 }
@@ -2981,6 +3186,9 @@ struct FallingBlock {
     damage: sunrise_client::falling_block::Damage,
     /// The UUID and compound it was loaded with, kept while it moves.
     saved: Option<Box<([i32; 4], sunrise_core::nbt::Tag)>>,
+    /// What `entity_size` answered at its last size refresh (`EntityEvent.Size`): its box takes
+    /// the answer while it holds for its vanilla size.
+    pub(super) size_answer: Option<sunrise_client::pose::SizeAnswer>,
 }
 // Starling: in a module of its own, so the game module calls no macro at its top: horizon-mixins
 // can't tell what such a call defines, and refused a native mod's macros in every function under
@@ -2991,6 +3199,18 @@ mod falling_block_attachments {
 }
 
 impl FallingBlock {
+    /// `EntityType.FALLING_BLOCK.getDimensions()`: width, height and eye height.
+    const DIMENSIONS: [f32; 3] = [0.98, 0.98, 0.833_000_06];
+    /// Its box (`falling_block::bounds`), or its `entity_size` answer's.
+    fn bounds(&self) -> sunrise_core::geometry::Aabb {
+        let vanilla = sunrise_client::falling_block::bounds(self.position);
+        sunrise_client::pose::SizeAnswer::sized_box(
+            self.size_answer,
+            Self::DIMENSIONS,
+            self.position,
+            vanilla,
+        )
+    }
     /// Where `FallingBlockRenderer` draws the block's model corner, `alpha`
     /// into the tick: centred on the entity, then moved by `offset`, the
     /// block's random model offset (`ModelBlockRenderer.tesselateBlock`:
@@ -3039,15 +3259,20 @@ struct WorldCore {
     collision: Arc<BlockCollisionRegistry<'static>>,
     motion: MotionResources,
     suffocation: sunrise_world::suffocation::SuffocationRegistry<'static>,
-    spawn_registries: sunrise_client::mobs::finalize::SpawnRegistries,
+    variants: Arc<sunrise_client::mobs::variants::VariantTables>,
     threads: usize,
 }
 
 struct WorldRest {
     items: Arc<Items>,
     recipes: Recipes,
-    transformers: sunrise_client::block_transform::Transformers,
+    /// The open world's `block_transformer` registry, published by
+    /// [`Resources::set_transformers`] (empty until a world opens).
+    transformers: std::sync::RwLock<Arc<sunrise_client::block_transform::Transformers>>,
     mob_types: HashMap<String, Arc<MobType>>,
+    /// The registry keys of the player, the armor stand and the dragon, resolved with these
+    /// resources as each mob type's own key is ([`MobType::type_key`]).
+    living_type_keys: sunrise_client::health::LivingTypeKeys,
     mob_data: sunrise_client::mobs::MobData,
     /// Complete pre-creation facts for the registered entity types.
     spawner_types: HashMap<String, sunrise_client::mobs::spawner::SpawnerTypeFacts>,
@@ -3068,6 +3293,8 @@ struct WorldRest {
     /// `SpinAttackEffectModel` (Riptide's spinning boxes).
     spin_attack: Option<sunrise_client::mobs::Part>,
     stations: sunrise_client::stations::StationData,
+    test_environments: Arc<HashMap<String, test_environments::Environment>>,
+    test_instances: Arc<HashMap<String, test_instances::TestDef>>,
 }
 
 /// The content tables a world's data packs change, loaded when the world
@@ -3084,7 +3311,16 @@ struct WorldTables {
     items: Arc<Items>,
     /// Registry definitions stay frozen at world open, even when tags reload.
     packed_registries: Arc<sunrise_client::lan::data::PackRegistryDefinitions>,
+    painting_variants: paintings::PaintingVariants,
+    /// `block_transformer`, bound to the block registry.
+    transformers: Arc<sunrise_client::block_transform::Transformers>,
+    /// Frozen `minecraft:timeline` entries and their bound tags, read by `Environment` and
+    /// `/time`.
+    timelines: sunrise_client::environment::TimelineTable,
+    /// Data-driven mob variant and sound-variant registries, frozen at world open.
+    variants: Arc<sunrise_client::mobs::variants::VariantTables>,
     providers: Providers,
+    biomes: Arc<world_loading::WorldBiomeRegistry>,
     loot: Arc<sunrise_world::loot::LootData>,
     loot_modifier_manager: Arc<mod_api::GlobalLootModifierManager>,
     recipes: Recipes,
@@ -3095,11 +3331,16 @@ struct WorldTables {
     /// Pack tags used by advancement predicates and built-in data maps
     /// (`TagLoader.loadTagsForExistingRegistries`). Damage tags live in the catalog.
     pack_tags: HashMap<&'static str, HashMap<String, HashSet<String>>>,
+    /// The gameplay attributes of the dimension types, biomes and timelines (with the
+    /// packs' timeline tags) that the raid code reads.
+    gameplay: Arc<sunrise_client::patrol::GameplayAttributes>,
+    /// `Registries.TEST_ENVIRONMENT` and `Registries.TEST_INSTANCE`, frozen at world open.
+    test_environments: Arc<HashMap<String, test_environments::Environment>>,
+    test_instances: Arc<HashMap<String, test_instances::TestDef>>,
 }
 
 struct PreparedParts {
     block_states: Arc<api_values::block_state::Index>,
-    tags: HashMap<String, HashSet<mod_api::BlockKey>>,
     parts: Option<mod_api::Parts>,
     cauldrons: Arc<cauldron_interactions::Table>,
 }
@@ -3285,6 +3526,15 @@ struct TickScratch {
     later: Vec<BlockPos>,
 }
 
+/// Video options a mod set for this session only, over the player's saved ones.
+#[derive(Default)]
+struct SessionVideo {
+    vsync: Option<bool>,
+    /// As `options.txt` names it: `false`, `fast` or `true`.
+    clouds: Option<&'static str>,
+    view_bobbing: Option<bool>,
+}
+
 struct Game<'a> {
     /// Shared with an integrated server; `collision` and `motion` borrow from it.
     res: Arc<Resources>,
@@ -3293,6 +3543,8 @@ struct Game<'a> {
     /// `DebugEntryChunkGeneration`'s `lastPos` and `result`: F3's `Density` line is sampled
     /// again only when the feet block (or the dimension) changes.
     debug_density: RefCell<debug_keys::DensityCache>,
+    /// What each mod added to F3's frame rate line (`set_debug_fps_text`), by mod id.
+    debug_fps_texts: RefCell<Vec<(&'static str, String)>>,
     pending_pack_reload: bool,
     /// HDR, Smooth Gradients, picked path and outcome at the last frame attempt, including a failed
     /// replacement (`follow_frame`).
@@ -3313,7 +3565,7 @@ struct Game<'a> {
     /// The window's inbox for server notices, kept across world disconnects.
     client_reports: Arc<sunrise_client::chunk_io::Reports>,
     /// The link a chat click asks to open (`ConfirmLinkScreen`).
-    link_prompt: Option<String>,
+    link_prompt: Option<chat::LinkPrompt>,
     /// A command the player didn't type, waiting for their answer
     /// (game/network/remote_chat.rs).
     command_prompt: Option<remote_chat::CommandPrompt>,
@@ -3327,6 +3579,8 @@ struct Game<'a> {
     motion: &'a MotionResources,
     /// This world's frozen damage definitions and reloadable tag snapshot.
     pub(super) health_resources: sunrise_client::health::HealthResources,
+    /// Contact hurts a vehicle tick queued; applied once its copy is stored.
+    pub(super) vehicle_contact_hurts: Vec<crate::game::entity::ContactHurt>,
     damage_tag_generation: u64,
     /// The registries native mods registered data map types for, as of the
     /// server tables' last build: what `data_maps_updated` fires for.
@@ -3338,6 +3592,7 @@ struct Game<'a> {
     /// The title and menu bundle (GUI atlas, font and panorama).
     gui: UiResources,
     instance_groups: std::cell::RefCell<native_instance_groups::InstanceGroupStorage>,
+    prepared_items: std::cell::RefCell<native_instance_groups::PreparedItemStorage>,
     standalone_geometry: native_block_entity_draw::StandaloneGeometry,
     /// `FogRenderer`'s evolving state.
     fog: sunrise_client::fog::FogState,
@@ -3367,6 +3622,7 @@ struct Game<'a> {
     view_arrival: sunrise_client::streaming::ViewArrival,
     options: Options,
     player: Option<PlayerMotion>,
+    drop_spam_throttler: sunrise_client::menu::DropSpamThrottler,
     spawn: Option<Vec3>,
     clock: FixedStep,
     previous_position: Vec3,
@@ -3432,8 +3688,6 @@ struct Game<'a> {
     rejected_keys: HashSet<KeyCode>,
     physical_buttons: HashSet<MouseButton>,
     drag_button: Option<MouseButton>,
-    screen_activation: u64,
-    last_screen_press: Option<native_hooks::ScreenPress>,
     /// Control + left click as a right click (macOS).
     right_click_emulation: sunrise_client_input::mouse::RightClickEmulation,
     cursor: (f32, f32),
@@ -3451,9 +3705,26 @@ struct Game<'a> {
     /// wanting it takes it again (`MouseHandler.grabMouse`, whose grab
     /// outlives the window's focus).
     regrab_on_refocus: bool,
+    /// The open mod screen holds the pointer (`ClientHost::set_pointer_grab`): `captured` is
+    /// its grab, and the device's motion goes to `screen_pointer_motion`, not the camera.
+    /// Cleared by any release and when the screen changes.
+    screen_grab: bool,
+    /// A grab or release the calling mod asked for through `&self` (`set_pointer_grab`),
+    /// applied by `apply_pointer_grab_request` at the next input event or frame.
+    pointer_grab_request: std::cell::Cell<Option<bool>>,
+    /// Files dropped on the window in this event-loop pass, in the order winit gave them
+    /// (one event each), kept only while a mod listens to `screen_files_dropped`; the pass's
+    /// `idle` fires them as one list, as vanilla's `MouseHandler.onDrop` hands `Screen.onFilesDrop`.
+    dropped_files: Vec<std::path::PathBuf>,
     /// Controller connection notices.
     controller_notice: sunrise_client::controller_notice::NoticeSlot,
     focused: bool,
+    /// The pointer is over the window, as the window system last told (its enter and leave
+    /// events, or a move inside it).
+    window_hovered: bool,
+    /// The window is fully hidden (`WindowEvent::Occluded`): covered, on another desktop, or
+    /// minimized where the system reports that.
+    window_occluded: bool,
     /// The visible window of a game an agent started, until a person clicks into it: its
     /// pointer grab stays inside the game as `--offscreen`'s does, so the person's pointer is
     /// never taken, hidden or moved, and their keys and mouse don't reach the game.
@@ -3500,6 +3771,14 @@ struct Game<'a> {
     window: Option<Arc<Window>>,
     /// What `window_resize` last reported: the physical size and the GUI settings behind the scaled size.
     resize_state: Option<ResizeState>,
+    /// The renderer's mod GPU tables and device handles, set with the renderer by `set_renderer`.
+    /// Declared before `renderer` so it drops first: its `Device` and `Queue` clones are gone
+    /// before the renderer's surface is, at `Game` drop. Invariant: it is `Some` exactly when a
+    /// renderer is installed or `Game::render` has it out; install both through `set_renderer`.
+    pub(in crate::game) mod_gpu: Option<sunrise_client::gfx::ModGpuResources>,
+    /// `None` while `Game::render` has the renderer out for `Renderer::render`, and so during every
+    /// frame hook a mod runs. Nothing a hook reaches may read it: state facing mods lives in
+    /// [`Self::mod_gpu`]'s `ModGpuResources`, and the per-frame values in `render_snapshot`.
     renderer: Option<Renderer>,
     /// Avoid an endless rebuild loop if the new device is lost as well.
     last_device_recovery: Option<Instant>,
@@ -3513,6 +3792,9 @@ struct Game<'a> {
     see_through_vertices: Vec<Vertex>,
     /// The first-person player's model, which only a native pack's shadow pass draws.
     shadow_only_vertices: std::cell::RefCell<Vec<Vertex>>,
+    /// Complete quads already committed to other streams in the active frame's combined entity
+    /// batch (additive, hand, and entity vertices outside the current target buffer).
+    frame_batch_reserved_quads: std::cell::Cell<usize>,
     /// Runs of `entity_vertices` by entity, for a shader pack's per-entity draws; recorded only
     /// while `pack_ids` is set (game/interface/shader_packs.rs).
     entity_spans: std::cell::RefCell<Vec<sunrise_client::gfx::pack_draw::EntitySpan>>,
@@ -3567,21 +3849,41 @@ struct Game<'a> {
     kept_block_entities: std::cell::RefCell<native_block_entity_draw::KeptGeometry>,
     /// Mod screens' living scenes, per mod and clock id (game/modding/native_scene_live.rs).
     live_scenes: std::cell::RefCell<native_scene_live::LiveScenes>,
-    /// Client mods' dynamic textures in the GUI atlas's pool (game/modding/native_dynamic_textures.rs).
+    /// Client mods' dynamic textures, one GPU texture each (game/modding/native_dynamic_textures.rs).
     dynamic_textures: sunrise_client::hud::dynamic_textures::DynamicTextures,
     /// Glyphs from `native_draw_text` (`&self`): uploaded to the font atlas with the frame.
     text_patches: std::cell::RefCell<Vec<sunrise_client::font::Patch>>,
     /// Prepared block-entity copies for this frame, in entity-stream order.
     prepared_model_draws: std::cell::RefCell<Vec<sunrise_client::gfx::PreparedModelDraw>>,
     /// Scratch for the copies a frame draws through the terrain materials.
-    model_copy_order: Vec<u32>,
+    model_copy_order: std::cell::RefCell<Vec<u32>>,
     world_geometry: Option<sunrise_client::world_geometry::WorldGeometry>,
+    /// Read-only renderer snapshot cached while `self.renderer` is temporarily taken for
+    /// `Renderer::render` so `ClientHost` queries still see framebuffer size and
+    /// prepared-model limits.
+    render_snapshot: std::cell::Cell<Option<RenderSnapshot>>,
+    /// A session VSync change came while `Renderer::render` had the renderer out: the surface
+    /// is reconfigured once it is back (`apply_pending_present_mode`).
+    present_mode_pending: bool,
+    /// The shader pack's state and bound mod pipeline slots as the latest frame's render
+    /// callbacks read them, set before `Renderer::render` takes `self.renderer` away
+    /// (`ClientOptionsClientHost::shader_pack_state`, `RenderAssets::pipeline_pack_bound`).
+    pack_frame_state: std::cell::Cell<Option<mod_api::ShaderPackState>>,
+    pack_frame_slots: std::cell::RefCell<Vec<usize>>,
     /// `DebugRenderer.renderers`: active mod renderers and their owners, resolved at refresh.
     debug_renderers: Vec<sunrise_client::debug_entries::ActiveDebugRenderer>,
     /// `DebugRenderer.lastDebugEntriesVersion`: none before the first view of a world.
     debug_renderers_version: Option<u64>,
-    /// Next undrawn mod layer in HUD `gui_layers::order`; `None` while hidden or outside its pass.
+    /// Next undrawn mod layer in HUD `gui_layers::order`; `None` outside their pass.
     hud_layer_next: Option<usize>,
+    /// Drawn bounding rectangles `[x, y, width, height]` in GUI pixels for HUD layers drawn so far
+    /// in the current HUD pass (`ScreensClientHost::hud_layer_bounds`). Cleared before screens draw.
+    hud_layer_bounds: Vec<(&'static str, [f32; 4])>,
+    /// The status columns' heights in this HUD pass (NeoForge's `Hud.leftHeight`, `rightHeight`).
+    hud_status_heights: hud_layout::StatusBarHeights,
+    /// Heights a mod set during the current HUD layer (`set_gui_status_heights`), applied to
+    /// `hud_status_heights` before the next body draws. A cell, as mods write through `&self`.
+    hud_status_heights_set: std::cell::Cell<Option<[i32; 2]>>,
     /// The mod block entities' view distances, asked of the parts once (`native_block_entity_draw`).
     mod_view_distances: std::cell::OnceCell<native_block_entity_draw::ViewDistances>,
     /// What drawing a block entity asks of its block, by state id (`block_entity_reach`):
@@ -3628,9 +3930,12 @@ struct Game<'a> {
     /// This thread's authority over the game's tick-owned state (`parallel::TickThread`): a
     /// `Game` never leaves the thread that built it.
     tick: sunrise_client::parallel::TickThread,
-    setting_overrides: std::cell::RefCell<std::collections::BTreeMap<(String, String), String>>,
+    /// Authoritative store for this game side's native mod settings registered with
+    /// `SettingsRegistrar::register_setting`.
+    native_settings: native_hooks::mod_settings::SharedSettings,
     /// The native damage hooks every level of this game lends to its hits.
     damage_hooks: sunrise_client::health::DamageHooks,
+    paused_mob_hurt: Option<Box<sunrise_client::mobs::PausedMobHurt>>,
     music: sunrise_client::music::MusicManager,
     /// The tracks native mods play over the music (`native_music_layers`).
     music_layers: sunrise_client::music::MusicLayers,
@@ -3641,7 +3946,10 @@ struct Game<'a> {
     music_notes: sunrise_client::toasts::MusicNotes,
     ambience: sunrise_client::ambience::Ambience,
     /// The sound engine was told the game paused (pauseAllExcept).
-    sound_paused: bool,
+    /// The sounds' pause as last applied: (the game's pause, a mod's `set_sounds_paused`).
+    sound_paused: (bool, bool),
+    /// A client mod paused every sound (`set_sounds_paused`).
+    mod_sounds_paused: bool,
     /// Minecarts whose `MinecartSoundInstance` is playing.
     cart_sounds: HashSet<u32>,
     /// The minecart the riding sounds were started for (`LocalPlayer.startRiding`).
@@ -3652,11 +3960,12 @@ struct Game<'a> {
     was_fall_flying: bool,
     /// Bees whose buzz is playing, and whether it is the aggressive one.
     bee_sounds: HashMap<u32, bool>,
-    /// Guardians whose attack hum is playing.
-    guardian_sounds: HashSet<u32>,
     /// Remote guardian eye targets reused between ticks.
     guardian_look_scratch: Vec<(usize, [f64; 3])>,
     dropped: sunrise_client::join_seq::JoinList<ItemEntity>,
+    /// The lethal damage type recorded while a lifted dropped item died with a listening
+    /// `ItemDestroyed` hook, consumed by its caller once `dropped` is put back.
+    item_destroyed_damage: Option<(u32, String)>,
     next_entity: u32,
     /// The last entity id when this level's entity pass began: an item with a
     /// later one was added during that pass and first ticks on the next
@@ -3681,9 +3990,8 @@ struct Game<'a> {
     lectern_pulses: Vec<((i32, i32, i32), i32)>,
     /// LevelLoadingScreen.smoothedProgress while the player is not placed yet.
     loading_progress: f32,
-    /// `CreateWorldScreen.openCreateWorldScreen`'s data read, on a worker,
-    /// while the title says `createWorld.preparing`.
-    creation_job: Option<std::thread::JoinHandle<std::result::Result<(), String>>>,
+    /// `createWorld.preparing` has been drawn: the data read runs on the next poll.
+    creation_read_started: bool,
     /// When `loading_progress` last eased (the server thread's load, 50 ms a step).
     loading_progress_at: Option<std::time::Instant>,
     /// A received packet started or ended a piston's move: `poll_remote`
@@ -3706,7 +4014,7 @@ struct Game<'a> {
     creatures: creatures::Creatures,
     sculk: sculk::SculkState,
     raiding: raids::Raiding,
-    attack_ticks: u32,
+    attack_ticks: i32,
     /// The main hand's item at the last player tick, whose attack damage and
     /// speed modifiers apply (`LivingEntity.detectEquipmentUpdates`): a hotbar
     /// swap just before an attack keeps them, with the new item's enchantments
@@ -3771,6 +4079,8 @@ struct Game<'a> {
     /// The source of a command run through /execute (the player otherwise).
     command_source: Option<commands::execute::Source>,
     native_command_filter: bool,
+    /// Public chat broadcasts a `chat_recipient` listener's commands start while one runs.
+    chat_broadcasts: lan_chat::ChatBroadcasts,
     titles: titles::Titles,
     /// `Hud.toolHighlightTimer`: the selected item name.
     tool_highlight: sunrise_client::hud_overlays::ToolHighlight,
@@ -3783,6 +4093,8 @@ struct Game<'a> {
     ticks_until_autosave: i64,
     applied_modifiers: Vec<(String, String)>,
     experience: Experience,
+    /// `Player.DATA_SCORE_ID`, independent of `totalExperience`.
+    player_score: i32,
     orbs: sunrise_client::join_seq::JoinList<ExperienceOrb>,
     xp_delay: u32,
     ordered: ordered_tick::OrderedTicks,
@@ -3808,16 +4120,16 @@ struct Game<'a> {
     clicks: sunrise_client::first_person::Clicks<Option<ItemStack>>,
     hand_strength: sunrise_client::attack_strength::AttackStrength,
     settings: Settings,
+    /// Video options a mod set for this session only (`set_session_vsync`,
+    /// `set_session_clouds`): never in `settings`, so never saved.
+    session_video: SessionVideo,
     look: look::LookCache,
     tutorial: tutorial::Tutorial,
-    tutorial_toasts: Vec<tutorial::HintToast>,
-    /// The `SystemToastId.NARRATOR_TOGGLE` toast, wherever the player is.
-    narrator_toast: Option<sunrise_client::toasts::SystemToast>,
+    toast_manager: toast_manager::ToastManager,
     /// The open screen's narration (`Screen`'s narration state and timing).
     narration: sunrise_client::screen_narrator::ScreenNarrator,
     /// Where the options screen returns: true = title, false = pause menu.
     options_from_title: bool,
-    dragging: bool,
     /// `ClientAvatarState`: walked distance and view bob.
     avatar: sunrise_client::camera::AvatarBob,
     flash: u32,
@@ -3829,7 +4141,7 @@ struct Game<'a> {
     lightning_seen: [u32; 2],
     /// The head of the bed while sleeping; the visual timer also survives waking.
     sleeping: Option<[i32; 3]>,
-    sleep_timer: u32,
+    sleep_timer: i32,
     /// The beds players sleep in that this game marked `occupied`, by level
     /// (game/blocks/beds.rs).
     player_beds: Vec<(Dim, [i32; 3])>,
@@ -3873,6 +4185,7 @@ struct Game<'a> {
     end_portal_travel: bool,
     /// The open WinScreen (game/interface/win.rs).
     win: Option<win::Win>,
+    demo_intro: Option<demo_intro::DemoIntro>,
     end: end::EndState,
     block_ticks: Ticks,
     tick_scratch: TickScratch,
@@ -3901,6 +4214,7 @@ struct Game<'a> {
     /// Entities of types Sunrise does not simulate.
     others: sunrise_client::join_seq::ResidentList<commands::OtherEntity>,
     armor_stand_assets: armor_stands::ArmorStandAssets,
+    client_item_extension_owners: client_item_extensions::ItemExtensionOwners,
     /// `WaypointStyleManager`.
     waypoint_styles: sunrise_client::locator_bar::WaypointStyles,
     /// `ClientWaypointManager`: the locator bar's waypoints.
@@ -3908,12 +4222,17 @@ struct Game<'a> {
     /// The camera the last frame drew from (position, yaw, pitch, fov), for the locator bar.
     locator_camera: Option<([f64; 3], f32, f32, f32)>,
     native_camera_frame: Option<mod_api::Camera>,
-    /// The yaw and pitch a native mod's camera drew the last frame from (`native_camera_pose`),
-    /// none when it drew from vanilla's.
-    posed_rotation: Option<(f32, f32)>,
+    /// The camera entity's interpolated eye position for the current world frame, or `None`
+    /// when there is no camera entity (title screen, scenes).
+    native_camera_entity_eye: Option<[f64; 3]>,
+    /// The yaw, pitch and roll a native mod's or spectated camera drew the last frame from,
+    /// none when it drew from the local player's vanilla view.
+    posed_rotation: Option<(f32, f32, f32)>,
     /// `LocalPlayer.postEffects`: the chains the server has the screen run
     /// (`ClientboundPostEffectsPacket`), in order.
     post_effects: Vec<String>,
+    /// Reused per-frame `requestedPostEffects` storage.
+    requested_post_effects_buf: Vec<String>,
     /// The game time (ticks and partial) of the last frame, for `PolyDeltaTime`.
     polytone_post_ticks: f64,
     /// The last expression context built (what the packs' expressions read), kept across frames
@@ -3921,6 +4240,8 @@ struct Game<'a> {
     expression_frame: sunrise_client::environment::Frame,
     /// `GameRenderer.spectatedEntityPostEffect` (`checkEntityPostEffect`).
     spectated_post_effect: Option<&'static str>,
+    /// `GameRenderer.spectatedEntityEffectActive` (`toggleSpectatorPostEffect`).
+    spectated_post_effect_active: bool,
     /// `LocalPlayer.experienceDisplayStartTick`: (last progress, seen a change, tick).
     experience_display: (f32, bool, u64),
     boats: sunrise_client::join_seq::JoinList<boats::Boat, false>,
@@ -3938,7 +4259,7 @@ struct Game<'a> {
     watched_vehicles: Vec<lan_vehicles::WatchedVehicle>,
     /// Songs playing from jukeboxes (tracked sound handles).
     jukebox_sounds: HashMap<(i32, i32, i32), u64>,
-    bolts: Vec<lightning::Bolt>,
+    bolts: sunrise_client::join_seq::ResidentList<lightning::Bolt>,
     maps: maps::Maps,
     /// The ender dragon fight (game/mobs/dragon.rs).
     fight: dragon::Fight,
@@ -3949,7 +4270,12 @@ struct Game<'a> {
     /// Map textures waiting for the next HUD batch to upload them.
     map_patches: Vec<sunrise_client::font::Patch>,
     name_tag_layouts: names::NameTagLayouts,
-    text_displays: std::collections::HashMap<i32, text_displays::RemoteTextDisplay>,
+    text_displays: indexmap::IndexMap<i32, text_displays::RemoteTextDisplay>,
+    see_through_collector: text_displays::SeeThroughCollector,
+    translucent_display_collector: text_displays::TranslucentDisplayCollector,
+    display_visible_scratch: Vec<(i32, f64)>,
+    block_display_parts_scratch: Vec<u32>,
+    display_inline_profiles_scratch: Vec<std::sync::Arc<serde_json::Value>>,
     interactions: std::collections::HashMap<i32, interactions::RemoteInteraction>,
     /// The fence knots a server tracks to this client, by entity id, at their
     /// block (`LeashFenceKnotEntity`).
@@ -3957,6 +4283,8 @@ struct Game<'a> {
     /// The entity ids a hosted server gives the knots its mobs hang on, by
     /// block, while a lead is tied there.
     knot_ids: HashMap<[i32; 3], u32>,
+    /// Fence posts whose natural knot was killed and whose leads drop next tick.
+    broken_knots: Vec<[i32; 3]>,
     text_display_vertices: usize,
     /// Player skin downloads, and which skin each atlas skin slot holds
     /// (least recently shown first).
@@ -3965,8 +4293,14 @@ struct Game<'a> {
     /// and mannequins) resolve through the services in the background.
     skin_profiles: RefCell<sunrise_client::skins::Resolver>,
     skin_slots: sunrise_client::skins::SkinSlots,
+<<<<<<< HEAD
     /// The player's own skin from Options > Skin Customization (game/own_skin.rs).
     own_skin: own_skin::OwnSkin,
+||||||| 46c00106def
+=======
+    /// What `apply_player_skin_override` resolved for the selected dynamic texture.
+    player_skin_slot: Option<native_hooks::resolve_player_skin::PlayerSkinSlot>,
+>>>>>>> ed6772e2118
     /// Runtime trim slots and the last completed preparation for this atlas.
     trim_slots: sunrise_client::trims::TrimSlots,
     cart_models: minecarts::CartModels,
@@ -4011,6 +4345,8 @@ struct Game<'a> {
     creaking: creaking::CreakingState,
     /// Monster spawners' display mobs (`game/mobs/spawner.rs`).
     spawners: spawner::SpawnerState,
+    /// The active level's stored `ServerChunkCache.spawnEnemies` setting.
+    chunk_spawn_enemies: bool,
     /// Reused candidate buffers for natural spawning.
     spawn_scratch: natural_spawning::SpawnScratch,
     trident_model: Option<sunrise_client::mobs::Part>,
@@ -4020,6 +4356,10 @@ struct Game<'a> {
     hoppers: HashMap<(i32, i32, i32), machines::HopperState>,
     /// The open `host.transaction`s, innermost last (`transactions.rs`).
     transactions: transactions::OpenTransactions,
+    /// The source of the running dispenser behaviour, including across mod callbacks.
+    dispense_source: Option<dispenser::DispenseSource>,
+    /// Open mod menus whose `menu_slot_changed` dispatch is currently on the call stack.
+    slot_changed_active: Vec<slot_changes::SlotChangedTarget>,
     /// Backing blocks whose contents notice is on the call stack, innermost last.
     contents_changing: Vec<(mod_api::LevelRef, BlockPos)>,
     /// The mod screen of a menu open on this client (`native_screen`).
@@ -4102,9 +4442,7 @@ struct Game<'a> {
     pvp: pvp::PvpState,
     /// Sunrise mods (`game/modding/mods/mod.rs`), none running unless turned on.
     mods: mods::ModsState,
-    /// The in-game browser's worker, separate from the cloneable reload inputs.
-    mod_jobs: mod_browser::Jobs,
-    /// Every item and recipe, for mods (`game/modding/native_recipes.rs`), made once.
+    /// Live recipe and known-display tables for typed mod reads.
     recipe_tables: native_recipes::RecipeTables,
     /// The item panel beside container screens (`game/modding/native_panel.rs`).
     panel: native_panel::Panel,
@@ -4117,17 +4455,20 @@ struct Game<'a> {
     /// The native lifecycle bookkeeping.
     native_lifecycle: native_lifecycle::NativeLifecycle,
     resident_entities: resident_state::ResidentEntities,
-    /// The mobs lent to the hook calls running now, before they join a level
-    /// (game/modding/native_unspawned_mob.rs).
-    lent_mobs: RefCell<native_unspawned_mob::LentMobs>,
     /// Entities whose copies are held out of storage; their handles refuse until stored back.
     held_out: Vec<u32>,
+    /// The game's `config/` folder beside `options.txt` (or `server.properties`
+    /// on a dedicated server), lent by `Host::config_dir`.
+    config_root: std::sync::Arc<std::path::Path>,
     /// Native mods' config files this game loaded (game/modding/native_configs.rs).
     native_configs: native_configs::NativeConfigs,
     /// Private custom-book connection and placement state.
     native_net: native_net::NativeNet,
     /// The mod whose own screen is open (`Screen::Mod`).
     native_mod_screen: Option<String>,
+    /// The open mod screen came from the Mods screen's Config (`IConfigScreenFactory`'s
+    /// `parent`): closing it returns to Options > Mods.
+    native_mod_screen_parent: bool,
     /// Meshed sections waiting for an upload budget (Sunrise settings).
     pending_uploads: Vec<sunrise_client::streaming::MeshUpload>,
     /// Empty between updates. Reuses storage for merging two sorted runs.
@@ -4158,10 +4499,6 @@ struct Game<'a> {
     tick_script: tick_script::TickScript,
     /// The overworld's last `sky_darken` and its inputs (time, rain, thunder).
     sky_darken_memo: std::cell::Cell<Option<((Dim, i64, u32, u32), i32)>>,
-    /// The last water plane `water_plane` found, kept while none is in reach.
-    water_plane_memo: std::cell::Cell<Option<f32>>,
-    /// The camera's block and the second `water_plane` last scanned at.
-    water_plane_scan: std::cell::Cell<Option<([i32; 3], i64)>>,
     /// What the boats' and minecarts' ticks know about the mobs: their box reach
     /// (`vehicle_mob_reach`) and a grid of their boxes (`mobs_meeting`).
     vehicle_mobs: boat_passengers::VehicleMobs,
@@ -4208,6 +4545,9 @@ struct Game<'a> {
     level_shapes: sunrise_client::chunk::LevelShapes,
     /// This game is that server thread's (game/world/integrated.rs).
     serving: Option<integrated::Serving>,
+    /// `IntegratedServer`'s single-player profile, fixed when the server thread is created,
+    /// before its startup hooks (game/modding/native_singleplayer_owner.rs). None elsewhere.
+    singleplayer_profile: Option<native_singleplayer_owner::SingleplayerProfile>,
     /// The open world is shared behind an invite code (game/network/friends.rs).
     #[cfg(feature = "friends")]
     friends: Option<friends::Sharing>,
@@ -4222,11 +4562,6 @@ struct Game<'a> {
     /// by id, a miss included (game/administration/structure_blocks.rs).
     structure_templates: HashMap<String, Option<structure_blocks::TemplateEntry>>,
     structure_spawns: sunrise_client::mobs::spawn_selection::StructureSpawns,
-    /// The game tests read so far, by id (the test instance registry).
-    test_defs: std::cell::RefCell<HashMap<String, Option<test_instances::TestDef>>>,
-    /// `test_defs` holds the world's whole test instance registry
-    /// (`snapshot_test_defs`), so a miss is final.
-    test_defs_snapshot: bool,
     /// `GameTestBlockHighlightRenderer.markers`: block, text, removal time.
     test_highlights: HashMap<(i32, i32, i32), (String, std::time::Instant)>,
     /// `GameTestTicker.SINGLETON`: the game tests running on this server.
@@ -4268,6 +4603,12 @@ struct Game<'a> {
     spawn_policies: HashMap<mod_api::DimensionKey, natural_spawning::SpawnPolicy>,
     /// The passages mods registered in each level, and a client's copy (`native_passages.rs`).
     passages: native_passages::Passages,
+    /// Non-blocking server chunk load/generation requests (`native_chunk_requests.rs`).
+    async_chunk_requests: native_chunk_requests::AsyncChunkRequests,
+    /// Open-state flags for `SavedChunkReader` handles per dimension (`native_saved_chunks.rs`).
+    saved_chunk_readers: std::cell::RefCell<HashMap<Dim, Arc<std::sync::atomic::AtomicBool>>>,
+    /// Open detached chunk generators handed out by `LevelRef::detached_generator`.
+    detached_generators: native_detached_generation::DetachedGenerators,
     /// PauseScreen.showPauseMenu (false after F3+Escape).
     pause_menu: bool,
     pause_focus: Option<u8>,
@@ -4281,11 +4622,10 @@ struct Game<'a> {
     gamemode_switcher: Option<sunrise_client::game_mode_switcher::GameModeSwitcher>,
     /// The system clipboard (`KeyboardHandler.clipboardManager`).
     clipboard: sunrise_client::clipboard::SystemClipboard,
-    /// The game is handling a key, mouse or typed-text event, from the window or the
-    /// control socket: the only time a mod reaches the clipboard (`with_user_input`).
-    user_input: std::cell::Cell<bool>,
     /// Select All in the append-only text fields.
     text_selection: sunrise_client::clipboard::AppendSelection,
+    /// The client loop consumes a mod's quit request outside the calling hook.
+    client_quit: std::cell::Cell<saving::ClientQuit>,
     /// The world was saved for the application ending (`save_for_exit`).
     saved_for_exit: bool,
     /// The world was saved as the game left the screen, and it has not come back since
@@ -4356,6 +4696,8 @@ struct Game<'a> {
     /// A mod asked for the command trees again (`native_refresh_commands`):
     /// the next server tick asks every mod for its commands and resends them.
     native_commands: native_server::NativeCommandState,
+    /// Client-side native mod commands bound to the current client dispatcher generation.
+    pub(in crate::game) native_client_commands: native_server::NativeClientCommandState,
     /// The abilities of the server player whose turn it is (`as_guest`): their record's
     /// copy, which the turn reads and writes and the put-back at the end of `guest_turn` stores. None outside a turn.
     acting_abilities: Option<sunrise_client::lan::abilities::PlayerAbilities>,
@@ -4364,6 +4706,8 @@ struct Game<'a> {
     /// A guest's `/save-all`: saved once their turn ends (`run_guest_command`),
     /// when their own state is back in their record.
     save_after_guest_turn: bool,
+    /// Guards `begin_world_save` against re-entry while `world_save_start` runs.
+    world_save_starting: bool,
     /// Guests whose records are displaced by nested player swaps, outer first.
     lan_guest_swaps: Vec<u32>,
     /// Bodies and their statistics displaced by guest turns, outer first.
@@ -4381,13 +4725,8 @@ struct Game<'a> {
     lan_ender_menus: Vec<(u32, sunrise_core::nbt::Tag)>,
     /// Live attachments and original snapshots retained during player replacement.
     player_state: original_player::PlayerState,
-    /// The block the acting player is breaking (`break_block`): its destroy
-    /// event, and the ones before it, are the player's own (`Level.levelEvent`
-    /// with the player excluded); the events after it are not.
-    lan_break_pos: Option<[i32; 3]>,
-    /// Where a player's break puts the block's own drops instead of popping
-    /// them (`PlayerRef::destroy_block` with `into_inventory`).
-    break_collect: Option<Vec<ItemStack>>,
+    /// Active player breaks waiting on `break_block` listeners.
+    active_player_breaks: Vec<ActivePlayerBreak>,
     /// The name of the guest `lan_acting` acts for (`Player.getName`).
     lan_acting_name: Option<String>,
     /// Their UUID (`Player.getUUID`).
@@ -4406,7 +4745,7 @@ struct Game<'a> {
     lan_acting_entity: Option<u32>,
     /// Whether the player currently swapped into the game is connectionless.
     lan_acting_fake: bool,
-    /// A fake player's `perform_action` in progress, and what it refused.
+    /// A fake player's `perform_action`, or a mod's attack, in progress, and what it refused.
     fake_action: std::sync::Arc<native_server::FakeAction>,
     /// Command feedback to forward to a guest.
     chat_capture: Option<Vec<sunrise_client::text::Text>>,
@@ -4429,10 +4768,11 @@ struct Game<'a> {
     guest_player_sounds: Vec<(String, [f64; 3], f32, f32)>,
     /// Sounds bound to an entity this tick, for the players (`game/interface/level_sounds.rs`).
     bound_sounds: Vec<level_sounds::BoundSound>,
-    /// `broadcastToAdmins` lines a guest's command queued, sent once it
-    /// returns: the line, whether operators get it and whether the console
-    /// logs it.
-    admin_feedback: Vec<(sunrise_client::text::Text, bool, bool)>,
+    /// `broadcastToAdmins` lines for the other operators that a command queued,
+    /// sent once it returns (`send_admin_feedback`), each with the guest whose
+    /// command it was (`commandSource() != source`): None for a block, a
+    /// minecart, the console or the host.
+    admin_feedback: Vec<(sunrise_client::text::Text, Option<u32>)>,
     /// The server console is running a command: whether its feedback goes to
     /// the operators (`DedicatedServer.shouldInformAdmins`,
     /// `broadcast-console-to-ops`).
@@ -4443,6 +4783,8 @@ struct Game<'a> {
     /// A dedicated server's operator, whitelist and ban lists, for `/op`,
     /// `/ban` and friends (`DedicatedPlayerList`).
     server_lists: Option<std::sync::Arc<std::sync::Mutex<dedicated::Lists>>>,
+    /// `Services.nameToIdCache`: the server thread's usercache.json.
+    user_cache: Option<sunrise_client::server::user_cache::UserCache>,
     /// State of `/spectate`, `/posteffect`, `/debug`, `/waypoint` and friends.
     cmds: commands::extra::CommandExtras,
     /// The retained server reload listeners of the last successful reload.
@@ -4487,6 +4829,31 @@ struct Game<'a> {
 /// and its server thread name the same dimensions.
 static EXTRA_DIMS: std::sync::RwLock<Vec<mod_api::DimensionKey>> =
     std::sync::RwLock::new(Vec::new());
+/// Custom level keys parsed when the world registers its dimensions, not on each block query.
+static EXTRA_LEVELS: std::sync::RwLock<
+    Vec<(mod_api::DimensionKey, sunrise_core::dimension::Dimension)>,
+> = std::sync::RwLock::new(Vec::new());
+
+/// An active player break waiting on `break_block` listeners. When a nested
+/// player break completes removal at the same `(dim, pos)`, `removed_by_nested`
+/// is set so the outer break does not apply removal effects again even if a
+/// non-air block or fluid remains (such as fewer turtle eggs or water).
+struct ActivePlayerBreak {
+    dim: Dim,
+    pos: [i32; 3],
+    removed_by_nested: bool,
+}
+
+struct ActiveBreakGuard<'g, 'a> {
+    game: &'g mut Game<'a>,
+    depth: usize,
+}
+
+impl Drop for ActiveBreakGuard<'_, '_> {
+    fn drop(&mut self) {
+        self.game.active_player_breaks.truncate(self.depth);
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Dim {
@@ -4503,10 +4870,17 @@ impl Dim {
             Self::Overworld => LevelDimension::Overworld,
             Self::Nether => LevelDimension::Nether,
             Self::End => LevelDimension::End,
-            Self::Extra(_) => LevelDimension::of_level(
-                sunrise_core::LevelKey::parse(self.id())
-                    .unwrap_or(sunrise_core::LevelKey::OVERWORLD),
-            ),
+            Self::Extra(key) => EXTRA_LEVELS
+                .read()
+                .unwrap()
+                .iter()
+                .find_map(|(candidate, level)| (*candidate == key).then_some(*level))
+                .unwrap_or_else(|| {
+                    LevelDimension::of_level(
+                        sunrise_core::LevelKey::parse(self.id())
+                            .unwrap_or(sunrise_core::LevelKey::OVERWORLD),
+                    )
+                }),
         }
     }
     fn id(self) -> &'static str {
@@ -4567,17 +4941,42 @@ impl Dim {
     }
     /// The dimensions past vanilla's three of the world being opened.
     fn set_extra<'a>(ids: impl Iterator<Item = &'a str>) {
-        *EXTRA_DIMS.write().unwrap() = ids.map(mod_api::__private::dimension_key).collect();
+        let extra: Vec<_> = ids
+            .map(|id| {
+                (
+                    mod_api::__private::dimension_key(id),
+                    LevelDimension::of_level(
+                        sunrise_core::LevelKey::parse(id)
+                            .unwrap_or(sunrise_core::LevelKey::OVERWORLD),
+                    ),
+                )
+            })
+            .collect();
+        *EXTRA_DIMS.write().unwrap() = extra.iter().map(|(key, _)| *key).collect();
+        *EXTRA_LEVELS.write().unwrap() = extra;
     }
     /// Adds the dimension `id` a remote server sent, which no local world told of, so that
     /// [`Self::from_id`] finds it.
     fn add_extra(id: &str) {
         if !Self::exists(id) {
-            EXTRA_DIMS
-                .write()
-                .unwrap()
-                .push(mod_api::__private::dimension_key(id));
+            let key = mod_api::__private::dimension_key(id);
+            let level = LevelDimension::of_level(
+                sunrise_core::LevelKey::parse(id).unwrap_or(sunrise_core::LevelKey::OVERWORLD),
+            );
+            EXTRA_DIMS.write().unwrap().push(key);
+            EXTRA_LEVELS.write().unwrap().push((key, level));
         }
+    }
+    /// Drops a remote or runtime dimension that is no longer part of the open world.
+    pub(in crate::game) fn remove_extra(id: &str) {
+        EXTRA_DIMS
+            .write()
+            .unwrap()
+            .retain(|key| mod_api::__private::dimension_id(*key) != Some(id));
+        EXTRA_LEVELS
+            .write()
+            .unwrap()
+            .retain(|(key, _)| mod_api::__private::dimension_id(*key) != Some(id));
     }
     /// The dimension as mods' level handles name it.
     fn key(self) -> mod_api::DimensionKey {
@@ -4600,11 +4999,11 @@ impl Dim {
     }
 }
 /// `Inventory.add` on a player's 36 slots (hotbar first) and off hand,
-/// `max` the stack's own maximum: onto equal stacks first
-/// (`getSlotWithRemainingSpace`: the selected slot, the off hand, then the
-/// hotbar and the main inventory), then into empty slots of the inventory
-/// (`getFreeSlot`, never the off hand). What does not fit stays in `stack`;
-/// true when some of it is left.
+/// `max` the stack's own maximum, one slot at a time (`addResource`): onto an
+/// equal stack while there is one (`getSlotWithRemainingSpace`), else into an
+/// empty slot of the inventory (`getFreeSlot`, never the off hand), until the
+/// stack is used up, no slot is left or a slot takes none of it. What does
+/// not fit stays in `stack`; true when some of it is left.
 fn inventory_add(
     inventory: &mut [Option<ItemStack>],
     offhand: &mut Option<ItemStack>,
@@ -4612,41 +5011,47 @@ fn inventory_add(
     max: u32,
     stack: &mut ItemStack,
 ) -> bool {
-    let order = std::iter::once(selected)
-        .chain(std::iter::once(shield::OFFHAND_SLOT))
-        .chain((0..36).filter(|&i| i != selected));
-    for i in order {
-        let slot = if i == shield::OFFHAND_SLOT {
+    use sunrise_client::menu::{OFFHAND, free_slot, slot_with_remaining_space};
+    loop {
+        // `Inventory.add`: an empty stack adds nothing (`isEmpty`).
+        if stack.count == 0 {
+            return false;
+        }
+        let slot =
+            slot_with_remaining_space(&inventory[..36], offhand.as_ref(), selected, stack, max)
+                .or_else(|| free_slot(&inventory[..36]));
+        #[cfg(test)]
+        let slot =
+            rule_replacements::add_slot(&inventory[..36], offhand.as_ref(), selected, stack, max)
+                .unwrap_or(slot);
+        let Some(slot) = slot else {
+            return true;
+        };
+        let cell = if slot == OFFHAND {
             &mut *offhand
         } else {
-            &mut inventory[i]
+            &mut inventory[slot]
         };
-        if let Some(slot) = slot
-            && slot.same_item_same_components(stack)
-            && slot.count < max
-        {
-            let moved = (max - slot.count).min(stack.count);
-            slot.count += moved;
-            stack.count -= moved;
-            if stack.count == 0 {
-                return false;
+        let moved = cell
+            .as_ref()
+            .map_or(max, |cell| max.saturating_sub(cell.count))
+            .min(stack.count);
+        // `Inventory.add`'s loop ends once an `addResource` moves nothing
+        // (`getCount() < lastSize`): a slot with no room for the stack.
+        if moved == 0 {
+            return true;
+        }
+        match cell {
+            Some(cell) => cell.count += moved,
+            None => {
+                *cell = Some(ItemStack {
+                    count: moved,
+                    ..stack.clone()
+                })
             }
         }
+        stack.count -= moved;
     }
-    for slot in inventory.iter_mut().take(36) {
-        if slot.is_none() {
-            let moved = stack.count.min(max);
-            *slot = Some(ItemStack {
-                count: moved,
-                ..stack.clone()
-            });
-            stack.count -= moved;
-            if stack.count == 0 {
-                return false;
-            }
-        }
-    }
-    true
 }
 
 fn facing_offset(facing: &str) -> [i32; 3] {
@@ -4741,11 +5146,6 @@ mod view_vector_tests {
         }
     }
 }
-/// `Level.canHaveWeather`: sky light, no ceiling, and not the End (the one
-/// level the rule names by id).
-fn level_can_have_weather(sky_light: bool, has_ceiling: bool, is_end: bool) -> bool {
-    sky_light && !has_ceiling && !is_end
-}
 /// `Camera.setRotation` (`rotationYXZ(π - yaw, -pitch, 0)`) for the player's
 /// view, turned round in third-person front view (`Camera.setup`).
 fn camera_rotation(
@@ -4753,18 +5153,23 @@ fn camera_rotation(
     yaw: f32,
     pitch: f32,
 ) -> glam::Quat {
-    let (view_yaw, view_pitch) =
+    camera_rotation_rolled(camera_type, yaw, pitch, 0.0)
+}
+/// [`camera_rotation`] with roll in degrees (`ViewportEvent.ComputeCameraAngles`).
+fn camera_rotation_rolled(
+    camera_type: sunrise_client::camera::CameraType,
+    yaw: f32,
+    pitch: f32,
+    roll: f32,
+) -> glam::Quat {
+    let (view_yaw, view_pitch, view_roll) =
         if camera_type == sunrise_client::camera::CameraType::ThirdPersonFront {
-            (yaw + 180.0, -pitch)
+            (yaw + 180.0, -pitch, -roll)
         } else {
-            (yaw, pitch)
+            (yaw, pitch, roll)
         };
-    glam::Quat::from_euler(
-        glam::EulerRot::YXZ,
-        std::f32::consts::PI - view_yaw.to_radians(),
-        -view_pitch.to_radians(),
-        0.0,
-    )
+    let q = sunrise_client::camera::rotation_with_roll(view_yaw, view_pitch, view_roll);
+    glam::Quat::from_xyzw(q.x, q.y, q.z, q.w)
 }
 /// The world directions of a camera-facing quad's x and y: `PoseStack.rotate` by the camera's
 /// orientation, as `FishingHookRenderer`, `DragonFireballRenderer` and
@@ -4864,6 +5269,64 @@ impl Game<'_> {
             sunrise_core::LevelKey::parse(dim.id()).unwrap_or(sunrise_core::LevelKey::OVERWORLD),
         )
     }
+    /// Sets up the same block-entity scene for both world draw paths.
+    fn with_block_entity_scene(
+        &self,
+        camera: glam::DVec3,
+        partial: f32,
+        dynamic_visible: &dyn Fn([i32; 3], u32, glam::DVec3, glam::DVec3) -> bool,
+        draw: impl FnOnce(&BlockEntityScene<'_>),
+    ) {
+        let lid = |p: [i32; 3]| self.chest_lid(p, partial);
+        let anim = |p: [i32; 3]| self.block_anim(p, partial);
+        let substitute = |text: &sunrise_client::text::Text| self.substitute_inline_images(text);
+        let inline_sprite = |atlas: &str, sprite: &str| self.gui.atlas.inline_sprite(atlas, sprite);
+        use block_entity_render::SignOutline;
+        let sign_outline =
+            if self.player.is_some() && self.camera_type.is_first_person() && self.scoping() {
+                SignOutline::FirstPersonScope
+            } else {
+                self.camera_subject().map_or(SignOutline::None, |subject| {
+                    SignOutline::CameraEntity(glam::DVec3::from_array(subject.camera.position))
+                })
+            };
+        let scene = BlockEntityScene {
+            camera,
+            sign_outline,
+            orientation: self.camera_orientation(),
+            anim: &anim,
+            texts: None,
+            partial,
+            game_time: self.world.game_time,
+            max_y: self.world.shape.max_y() - 1,
+            world: &self.world,
+            sprites: &self.gui.atlas.sprites,
+            emissive: &self.gui.atlas.emissive,
+            translucent_sprites: &self.gui.atlas.translucent,
+            atlas_revision: self.gui.atlas.revision,
+            nether: self.nether_lighting(),
+            lid: &lid,
+            sign: &|p| match self.world.block_entities.get(&(p[0], p[1], p[2])) {
+                Some(BlockEntity::Sign(sign)) => Some(sign),
+                _ => None,
+            },
+            inline_images: self.inline_images_revision().map(|revision| {
+                block_entity_render::SignInlineImages {
+                    revision,
+                    substitute: &substitute,
+                    sprite: &inline_sprite,
+                }
+            }),
+            banner: &|p| self.banner_layers_at(p),
+            skull: &|p| self.skull_skin_at(p),
+            glyph: &|c| self.gui.atlas.glyph_cell(c),
+            glyphs: self.gui.atlas.font.epoch(),
+            font: Some(&self.gui.atlas.font),
+            dynamic_visible: Some(dynamic_visible),
+        };
+        draw(&scene);
+    }
+
     fn eye_position(&self) -> Option<[f64; 3]> {
         let p = self.player.as_ref()?;
         Some([
@@ -4939,11 +5402,10 @@ impl Game<'_> {
         Some(b)
     }
     fn outline_context_kind(&self) -> sunrise_world::collision_context::EntityContextKind {
-        if self.spectated_camera_snapshot().is_some() {
-            sunrise_world::collision_context::EntityContextKind::Living
-        } else {
-            sunrise_world::collision_context::EntityContextKind::Player
-        }
+        self.camera_subject().map_or(
+            sunrise_world::collision_context::EntityContextKind::Player,
+            |c| c.collision_kind,
+        )
     }
     /// A block's outline boxes in world space (`getShape` plus the random offset).
     fn outline_boxes(&self, pos: [i32; 3]) -> Vec<[f64; 6]> {
@@ -5059,15 +5521,10 @@ impl Game<'_> {
         if let Some(hit) = self.tick_hit.get() {
             return hit;
         }
-        let (origin, dir) = self.aim()?;
-        // GameRenderer.pick: the block ray runs out to the larger of the two
-        // interaction ranges; filterHitResult then drops a hit past the
-        // block's.
-        self.clip_ray(origin, dir, self.block_reach.max(self.entity_reach))
-            .filter(|hit| {
-                let distance: [f64; 3] = std::array::from_fn(|i| hit.point[i] - origin[i]);
-                distance.iter().map(|v| v * v).sum::<f64>() <= self.block_reach.powi(2)
-            })
+        match self.compute_crosshair_decision() {
+            pick_entity::CrosshairDecision::Block(hit) => Some(hit),
+            _ => None,
+        }
     }
     /// An item-specific POV outline ray at the current rotation and block reach.
     pub(super) fn item_pick(&self) -> Option<Hit> {
@@ -5177,7 +5634,7 @@ impl Game<'_> {
         stack: ItemStack,
         position: [f64; 3],
         velocity: Option<[f64; 3]>,
-        pickup_delay: u32,
+        pickup_delay: i32,
         random: Option<spill::ItemRandom>,
     ) -> [f64; 3] {
         let velocity = self.push_item_entity(stack, position, velocity, pickup_delay, random);
@@ -5191,7 +5648,16 @@ impl Game<'_> {
         let key = (pos[0], pos[1], pos[2]);
         match self.world.block_entities.get(&key) {
             Some(entity) => {
-                Some(self.encode_live_block_entity(key, entity, block, self.res.items()))
+                let items = self.res.items();
+                let current = self.encode_live_block_entity(key, entity, block, items);
+                Some(spill::live_full_metadata(
+                    &self.world,
+                    key,
+                    entity,
+                    block,
+                    items,
+                    current,
+                ))
             }
             None => spill::saved_entity(&self.world, pos),
         }
@@ -5228,6 +5694,7 @@ impl Game<'_> {
                 day_time: self.world.day_time,
                 raining: weather && rain > 0.2,
                 thundering: weather && thunder > 0.9,
+                clocks: self.loot_clock_ticks(),
             }),
         }
     }
@@ -5303,8 +5770,7 @@ impl Game<'_> {
         let client = self.options.execution_role.is_client();
         match splash {
             ItemSplash::Sound { at, volume, pitch } if !client => {
-                self.audio
-                    .play("minecraft:entity.generic.splash", Some(at), volume, pitch);
+                self.play_audio("minecraft:entity.generic.splash", Some(at), volume, pitch);
             }
             ItemSplash::Particle {
                 bubble,
@@ -5541,8 +6007,14 @@ impl Game<'_> {
         let rules = self.level_rules();
         let native_authoritative = self.native_authoritative();
         let liquid_transaction_open = self.has_level_transaction();
-        let environment = self.res.environment_of(&self.dimension_type().id);
+        let environment = Self::level_environment(
+            self.remote.as_ref(),
+            &self.res,
+            self.dim.id(),
+            &self.dimension_type().id,
+        );
         let other_entities = entity::entity_lists_of!(self, without_carts);
+        let loot_clocks = self.loot_clock_ticks();
         let mut level = GameLevel {
             cake_probe: false,
             cake_requested: std::cell::Cell::new(false),
@@ -5594,6 +6066,10 @@ impl Game<'_> {
             building_player_boxes,
             player_collision,
             biomes: world_biomes!(self),
+            biome_keys: (self.serving.is_some() || self.options.dedicated.is_some())
+                .then(|| self.world_tables.as_ref().map(|t| &*t.data_maps.biome_keys))
+                .flatten(),
+            biome_zoom: self.streaming.biome_zoom,
             seed: self.level.seed,
             behaviours: self.res.behaviours(),
             items: world_items!(self),
@@ -5606,6 +6082,7 @@ impl Game<'_> {
                 self.server_loot.get()
             },
             loot_storage: self.score.storage.snapshot(),
+            loot_clocks,
             registry: self.pack.assets.registry,
             block_registries: &self.pack.block_registries,
             rules,
@@ -5627,11 +6104,13 @@ impl Game<'_> {
             debug: self.world_debug,
             native_sounds: &mut self.creatures.lan_sounds,
             loop_context: &self.loop_context,
+            side: game_side!(self),
             native_particles: &mut self.creatures.lan_particles,
             sound_seeds: self.lan.as_ref().map(|host| &host.hub),
             drop_tool: None,
             drop_entity: None,
             interacting: None,
+            interacting_tool: None,
             location: location_world::LocationRefs {
                 dimension: self.dim.id(),
                 end: &self.end,
@@ -5687,18 +6166,37 @@ impl Game<'_> {
         flags: i32,
         create_entity: bool,
     ) -> bool {
+        self.set_block_live_with_entity(
+            pos,
+            state,
+            flags,
+            create_entity,
+            transactions::BlockEntityCreation::Live,
+        )
+    }
+
+    fn set_block_live_with_entity(
+        &mut self,
+        pos: [i32; 3],
+        state: BlockStateId,
+        flags: i32,
+        create_entity: bool,
+        creation: transactions::BlockEntityCreation,
+    ) -> bool {
+        use transactions::BlockEntityCreation::{Deferred, Live, Staged};
+        let live_factory = matches!(creation, Live);
         let [x, y, z] = pos;
         let at = BlockPos::new(x, y, z);
         let previous = self.world.block(x, y, z);
         let b = self.res.behaviours();
-        if self.remote.is_some()
-            || flags & level_flags::UPDATE_SKIP_BLOCK_ENTITY_SIDEEFFECTS != 0
-            || b.block(previous) == b.block(state)
-            || b.keeps_block_entity(previous, state)
-            || !(self.res.facts().get(previous).block_entity
+        let server_removal = self.remote.is_none()
+            && flags & level_flags::UPDATE_SKIP_BLOCK_ENTITY_SIDEEFFECTS == 0
+            && b.block(previous) != b.block(state)
+            && !b.keeps_block_entity(previous, state)
+            && (self.res.facts().get(previous).block_entity
                 || self.world.block_entities.stateful_entity(previous.0)
-                || self.world.block_entities.get(&(x, y, z)).is_some())
-        {
+                || self.world.block_entities.get(&(x, y, z)).is_some());
+        if !server_removal && live_factory {
             return self.with_level(|b, level, ticks| {
                 let changed = b.set_block(level, ticks, at, state, flags);
                 if create_entity {
@@ -5713,9 +6211,13 @@ impl Game<'_> {
                 let write = b.begin_block_write(level, ticks, at, state, flags)?;
                 let spawn_start = level.spill.spawns.len();
                 let orb_start = level.spill.orbs.len();
-                let removal = write
-                    .effectful_removal()
-                    .map(|old| level.pre_remove_entity(at, old, true));
+                let removal = if server_removal {
+                    write
+                        .effectful_removal()
+                        .map(|old| level.pre_remove_entity(at, old, true))
+                } else {
+                    None
+                };
                 let spawns = level.spill.spawns.split_off(spawn_start);
                 let orbs = level.spill.orbs.split_off(orb_start);
                 Some((write, removal, spawns, orbs))
@@ -5727,8 +6229,17 @@ impl Game<'_> {
         self.with_level(|b, level, ticks| {
             let removal_updates =
                 removal.map(|removal| level.finish_remove_entity(at, previous, removal));
-            let changed = b.finish_block_write(level, ticks, write, removal_updates);
-            if create_entity {
+            let changed =
+                b.finish_block_write(level, ticks, write, removal_updates, |level, at, state| {
+                    match creation {
+                        Live => level.ensure_block_entity(at, state),
+                        Deferred => {}
+                        Staged { entity, .. } => {
+                            entity.install(level.world, (at.x, at.y, at.z), true)
+                        }
+                    }
+                });
+            if create_entity && live_factory {
                 level.finish_native_block(pos, previous, state, changed);
             }
             changed
@@ -5829,6 +6340,10 @@ impl Game<'_> {
     /// with neither a server nor a player (the headless fixtures) ticks
     /// everywhere.
     fn update_chunk_tickets(&mut self) {
+        self.rebuild_chunk_tickets(true);
+    }
+
+    fn rebuild_chunk_tickets(&mut self, notify: bool) {
         let rule = self
             .ui
             .rules
@@ -5864,13 +6379,28 @@ impl Game<'_> {
                 forced: self.streaming.forced.iter().copied().collect(),
                 // Filled from the `PORTAL` tickets by `update`.
                 portal: Vec::new(),
+                spawn: Vec::new(),
                 // EnderDragonFight.tick: while a player watches the fight, the arena holds a
                 // `DRAGON` ticket of radius 9 at (0, 0), so its island ticks out to 7 chunks
                 // whatever the watcher's simulation distance. The fight is where the type has one.
                 dragon: (self.dimension_type().has_ender_dragon_fight
                     && self.fight.arena_watched())
                 .then_some((0, 0)),
-                viewed: self.viewed_tickets(),
+                viewed: {
+                    let mut viewed = self.viewed_tickets();
+                    if self.streaming.has_async_requests() {
+                        viewed.extend(self.streaming.async_requests().map(|center| {
+                            sunrise_client::ticket_levels::ViewedTicket {
+                                center,
+                                radius: 0,
+                                ticking: false,
+                            }
+                        }));
+                        viewed.sort_unstable();
+                        viewed.dedup();
+                    }
+                    viewed
+                },
                 view_distance: self.settings.render_distance.clamp(2, 32),
                 simulation_distance: self.settings.simulation_distance.max(2),
             }
@@ -5878,11 +6408,14 @@ impl Game<'_> {
         // The levels' changes are kept only for a listener, so that a tick
         // with none looks at no chunk.
         self.tickets.record_changes(
-            self.is_logical_server()
+            notify
+                && self.is_logical_server()
                 && mod_api::__private::listened(mod_api::HookId::ChunkTicketLevelUpdated),
         );
         self.tickets.update(sources);
-        self.run_chunk_ticket_level_updates();
+        if notify {
+            self.run_chunk_ticket_level_updates();
+        }
     }
     /// `ServerLevel.startTickingChunk`: a loaded chunk's saved ticks are
     /// scheduled from the game time at which it becomes a ticking chunk
@@ -5949,7 +6482,19 @@ impl Game<'_> {
     }
     /// Side effects reported by the behaviour library, in vanilla order.
     fn process_level_events(&mut self) -> Result<()> {
-        let events = std::mem::take(&mut self.level_events);
+        let mut events = std::mem::take(&mut self.level_events);
+        // A mod's `server_level_event` may keep a level event from going out.
+        if self.is_logical_server()
+            && mod_api::__private::listened(mod_api::HookId::ServerLevelEvent)
+            && !native_hooks::server_level_event::LevelEventsAsked::marked()
+        {
+            events.retain(|event| match *event {
+                LevelEvent::LevelEvent { id, pos, data, .. } => {
+                    !self.server_level_event_canceled(id, [pos.x, pos.y, pos.z], data, false)
+                }
+                _ => true,
+            });
+        }
         self.lan_record_events(&events);
         dispense_fixture::record_events(&events);
         for event in events {
@@ -6013,8 +6558,7 @@ impl Game<'_> {
                 } => {
                     self.growth_particles(pos, data);
                     let at = [pos.x, pos.y, pos.z].map(|v| f64::from(v) + 0.5);
-                    self.audio
-                        .play("minecraft:item.bone_meal.use", Some(at), 1.0, 1.0);
+                    self.play_audio("minecraft:item.bone_meal.use", Some(at), 1.0, 1.0);
                 }
                 LevelEvent::LevelEvent {
                     id: 2015,
@@ -6111,6 +6655,7 @@ impl Game<'_> {
                         f64::from(pos.z) + 0.5,
                     ];
                     self.particles.add_with(
+                        None,
                         &sunrise_client::particles::ParticleOptions::simple(
                             sunrise_client::particles::ParticleType::ExplosionEmitter,
                         ),
@@ -6121,7 +6666,7 @@ impl Game<'_> {
                     );
                     let random = self.particles.level_random();
                     let pitch = (1.0 + (random.next_float() - random.next_float()) * 0.2) * 0.7;
-                    self.audio.play_unshared(
+                    self.play_audio_unshared(
                         "minecraft:block.end_gateway.spawn",
                         Some(at),
                         10.0,
@@ -6147,7 +6692,7 @@ impl Game<'_> {
                 // relative sound, and it is not captured for other players.
                 LevelEvent::LevelEvent { id: 1032, .. } => {
                     let pitch = self.particles.level_random().next_float() * 0.4 + 0.8;
-                    self.audio.play_on(
+                    self.play_audio_on(
                         sunrise_client::sound_engine::AMBIENT,
                         "minecraft:block.portal.travel",
                         None,
@@ -6245,9 +6790,9 @@ impl Game<'_> {
                         ) {
                             // Clients play these sounds from their level events;
                             // capturing it also sends a duplicate sound packet.
-                            self.audio.play_unshared(name, c, volume, pitch);
+                            self.play_audio_unshared(name, c, volume, pitch);
                         } else {
-                            self.audio.play(name, c, volume, pitch);
+                            self.play_audio(name, c, volume, pitch);
                         }
                     }
                     // LevelEventHandler draws smoke after the sound.
@@ -6290,20 +6835,38 @@ impl Game<'_> {
                         f64::from(pos.y) + 0.5,
                         f64::from(pos.z) + 0.5,
                     ];
-                    let name = if sound.contains(':') {
-                        sound.to_string()
+                    use sunrise_world::level::LevelSoundSource;
+                    // Block placement carries a canonical key from its resolved sound type.
+                    let qualified;
+                    let name = if matches!(source, Some(LevelSoundSource::BlockPlacement { .. }))
+                        || sound.contains(':')
+                    {
+                        &*sound
                     } else {
-                        format!("minecraft:{sound}")
+                        qualified = format!("minecraft:{sound}");
+                        &qualified
                     };
-                    match source {
-                        Some(sunrise_world::level::LevelSoundSource::Blocks) => self.audio.play_on(
+                    if source.is_some() {
+                        self.play_audio_on(
                             mod_api::SoundSource::Blocks.index(),
-                            &name,
+                            name,
                             Some(c),
                             volume,
                             pitch,
-                        ),
-                        None => self.audio.play(&name, Some(c), volume, pitch),
+                        );
+                        if let Some(LevelSoundSource::BlockPlacement {
+                            except: Some(placer),
+                        }) = source
+                            && let Some(captured) = self
+                                .audio
+                                .capture
+                                .as_mut()
+                                .and_then(|sounds| sounds.last_mut())
+                        {
+                            captured.except_entity = Some(placer);
+                        }
+                    } else {
+                        self.play_audio(name, Some(c), volume, pitch);
                     }
                 }
                 // Handled as the behaviour emits it (GameLevel::emit).
@@ -6327,30 +6890,9 @@ impl Game<'_> {
                         f64::from(pos.y),
                         f64::from(pos.z) + 0.5,
                     );
-                    self.next_entity += 1;
-                    self.falling.push(FallingBlock {
-                        attachment_lifetime: Default::default(),
-                        rotation: [0.0, 0.0],
-                        join: Default::default(),
-                        id: self.next_entity,
-                        state,
-                        blocks_building: true,
-                        start_pos: pos,
-                        position: p,
-                        previous: p,
-                        velocity: Vec3::ZERO,
-                        age: 0,
-                        no_gravity: false,
-                        portal: Default::default(),
-                        drop_item: true,
-                        fall_distance: 0.0,
-                        ground: Default::default(),
-                        fire_ticks: 0,
-                        sync_velocity: false,
-                        stuck: Vec3::ZERO,
-                        damage,
-                        saved: None,
-                    });
+                    // Admit before returning to the next scheduled block tick.
+                    // A join veto does not undo the source replacement.
+                    let _ = self.spawn_falling_block_entity(state, p, Vec3::ZERO, true, damage);
                 }
                 LevelEvent::Player { pos, effect, .. } => match effect {
                     PlayerEffect::OpenMenu => self.open_block_effect_menu([pos.x, pos.y, pos.z]),
@@ -6427,8 +6969,7 @@ impl Game<'_> {
                         f64::from(pos.y) + 0.5,
                         f64::from(pos.z) + 0.5,
                     ];
-                    self.audio
-                        .play("minecraft:block.frogspawn.hatch", Some(at), 1.0, 1.0);
+                    self.play_audio("minecraft:block.frogspawn.hatch", Some(at), 1.0, 1.0);
                     let count = 2 + self.world.random.next_int_bound(4).unwrap_or(0);
                     for _ in 0..count {
                         // getRandomTadpolePositionOffset: 0.2..0.8 inside the block.
@@ -6513,16 +7054,17 @@ impl Game<'_> {
                     kind: "note_custom_sound",
                     ..
                 } => {
-                    if let Some(BlockEntity::Skull(skull)) =
-                        self.world.block_entities.get(&(pos.x, pos.y + 1, pos.z))
-                        && let Some(sound) = skull.note_block_sound.as_deref()
-                    {
+                    let sound = match self.world.block_entities.get(&(pos.x, pos.y + 1, pos.z)) {
+                        Some(BlockEntity::Skull(skull)) => skull.note_block_sound.clone(),
+                        _ => None,
+                    };
+                    if let Some(sound) = sound.as_deref() {
                         let at = [
                             f64::from(pos.x) + 0.5,
                             f64::from(pos.y) + 0.5,
                             f64::from(pos.z) + 0.5,
                         ];
-                        self.audio.play(sound, Some(at), 3.0, 1.0);
+                        self.play_audio(sound, Some(at), 3.0, 1.0);
                     }
                 }
                 // `level.addParticle`: only the local player's own click draws it.
@@ -6733,45 +7275,125 @@ impl Game<'_> {
         self.with_level(|b, level, ticks| b.set_block(level, ticks, at, cracked, 260));
         cracked
     }
-    fn break_block_as_player(&mut self, pos: [i32; 3]) -> Result<bool> {
-        // DebugStickItem.canDestroyBlock: a left click selects a property and
-        // never destroys the block.
-        if !self.debug_stick_can_destroy(pos)? {
-            return Ok(false);
+    /// Marks every enclosing player break at `pos` in the current dimension as
+    /// already removed so it does not repeat removal effects when it resumes.
+    pub(in crate::game) fn invalidate_active_player_breaks(&mut self, pos: [i32; 3]) {
+        let dim = self.dim;
+        for active in &mut self.active_player_breaks {
+            if active.dim == dim && active.pos == pos {
+                active.removed_by_nested = true;
+            }
         }
-        // ServerPlayerGameMode.destroyBlock.
-        if self.block_action_restricted(pos) {
-            return Ok(false);
-        }
-        if !self
-            .res
-            .items()
-            .can_destroy_block(self.held(), self.creative)
+    }
+    /// `CommonHooks.fireBlockBreak` where `ServerPlayerGameMode.destroyBlock` asks it: the
+    /// acting player's checks, then the mods' `break_block`. The state at `pos` and the
+    /// experience `break_block` left, or None when a check refused the break or a mod canceled it.
+    pub(in crate::game) fn break_block_allowed(
+        &mut self,
+        pos: [i32; 3],
+    ) -> Result<Option<(BlockStateId, Option<u32>)>> {
+        // ServerPlayerGameMode.destroyBlock and CommonHooks.fireBlockBreak read the main hand,
+        // whichever hand is acting.
+        self.with_hand(Hand::Main, |game| {
+            let state = game.world.block(pos[0], pos[1], pos[2]);
+            let mut canceled = !game.debug_stick_can_destroy(pos)?
+                || !game
+                    .res
+                    .items()
+                    .can_destroy_block(game.held(), game.creative)
+                || game.block_action_restricted(pos)
+                || (!game.can_use_game_master_blocks()
+                    && is_game_master_block(&game.res.facts().get(state).name));
+            let mut exp_to_drop = None;
+            if game.native_authoritative()
+                && (!canceled || mod_api::__private::listened(mod_api::HookId::BreakBlock))
+            {
+                game.native_break_block(pos, state, &mut canceled, &mut exp_to_drop);
+            }
+            if canceled
+                || (!game.can_use_game_master_blocks()
+                    && is_game_master_block(&game.res.facts().get(state).name))
+                || game.block_action_restricted(pos)
+            {
+                return Ok(None);
+            }
+            Ok(Some((state, exp_to_drop)))
+        })
+    }
+    fn break_block_as_player(
+        &mut self,
+        pos: [i32; 3],
+        collect: Option<&mut Vec<ItemStack>>,
+    ) -> Result<bool> {
+        let [x, y, z] = pos;
+        // `Level.getBlockState` at the boundary: a column the level does not hold resident is
+        // loaded to read it, and what it holds, air included, is the subject of the break
+        // callback (`ServerPlayerGameMode.destroyBlock` has no air filter).
+        if !self.world.is_loaded_at(x, y, z)
+            && !(self.native_authoritative()
+                && self.load_full_chunk(None, (x >> 4, z >> 4)).is_ok())
         {
             return Ok(false);
         }
-        // ServerPlayerGameMode.destroyBlock (and MultiPlayerGameMode.destroyBlock
-        // on the client): a GameMasterBlock stays when the player cannot use
-        // game master blocks (Player.canUseGameMasterBlocks).
-        let state = self.world.block(pos[0], pos[1], pos[2]);
-        if !self.can_use_game_master_blocks()
-            && is_game_master_block(&self.res.facts().get(state).name)
-        {
-            return Ok(false);
-        }
-        // Native mods, once the game allowed the break: a canceled one keeps
-        // the block, and a guest's acknowledgement puts it back in its world.
-        let mut canceled = false;
+        let state = self.world.block(x, y, z);
+        // NeoForge CommonHooks.fireBlockBreak: pre-cancel when the held item,
+        // game mode, or game-master check refuses the break, then post
+        // `break_block` before applying `ServerPlayerGameMode.destroyBlock`'s
+        // hard restrictions.
+        let mut canceled = !self.debug_stick_can_destroy(pos)?
+            || !self
+                .res
+                .items()
+                .can_destroy_block(self.held(), self.creative)
+            || self.block_action_restricted(pos)
+            || (!self.can_use_game_master_blocks()
+                && is_game_master_block(&self.res.facts().get(state).name));
         let mut exp_to_drop = None;
-        self.native_break_block(pos, state, &mut canceled, &mut exp_to_drop);
-        if canceled {
+        // A break of this same block from inside the callback still outstanding on it does not
+        // dispatch again: it would call itself without end. It still removes the block, as a nested
+        // removal, and the outer break then applies none of its own.
+        let outstanding = self
+            .active_player_breaks
+            .iter()
+            .any(|active| active.dim == self.dim && active.pos == pos);
+        let removed_by_nested = if self.native_authoritative()
+            && !outstanding
+            && (!canceled || mod_api::__private::listened(mod_api::HookId::BreakBlock))
+        {
+            let depth = self.active_player_breaks.len();
+            self.active_player_breaks.push(ActivePlayerBreak {
+                dim: self.dim,
+                pos,
+                removed_by_nested: false,
+            });
+            let guard = ActiveBreakGuard { game: self, depth };
+            guard
+                .game
+                .native_break_block(pos, state, &mut canceled, &mut exp_to_drop);
+            guard.game.active_player_breaks[depth].removed_by_nested
+        } else {
+            false
+        };
+        // If canceled, if a nested break already completed removal at this
+        // position in this level (even when a block or fluid remains), or if
+        // the listener left air here, do not apply removal effects again.
+        if canceled || removed_by_nested || self.res.behaviours().is_air(self.world.block(x, y, z))
+        {
+            return Ok(false);
+        }
+        // ServerPlayerGameMode.destroyBlock: hard game-master and game-mode
+        // restrictions still hold even if a `receive_cancelled` listener
+        // cleared the pre-cancel.
+        if (!self.can_use_game_master_blocks()
+            && is_game_master_block(&self.res.facts().get(state).name))
+            || self.block_action_restricted(pos)
+        {
             return Ok(false);
         }
         self.input_feedback(sunrise_client::input_source::Feedback::BlockBroken);
         self.touch_vibrate(touch::BREAK_BUZZ);
         let broken = state;
         let facts = self.res.facts().get(state).clone();
-        let held = self.held().cloned();
         let key = (pos[0], pos[1], pos[2]);
         self.unpack_loot(container_loot::LootTarget::Block(key), None);
         let live = (!self.creative)
@@ -6819,17 +7441,14 @@ impl Game<'_> {
             .as_ref()
             .is_some_and(|(h, (honey, _))| !h.bees.is_empty() || honey.is_some_and(|l| l > 0));
         let creative = self.creative;
-        // The block's parts first, then playerWillDestroy and Level.removeBlock.
-        let (removed, state, harvest) =
-            self.player_destroy_block_removal(pos, state, &facts, held.as_ref(), filled_hive);
+        let player_destroy::PlayerRemoval {
+            removed,
+            state,
+            harvest,
+            tool: held,
+            broken_tool,
+        } = self.player_destroy_block_removal(pos, state, &facts, filled_hive);
         if !creative {
-            // The stack as the removal left it: a listener may have swapped it.
-            let held = self.held().cloned();
-            let broken_tool = if removed {
-                self.mine_block_with_held(&facts.name, facts.hardness)
-            } else {
-                None
-            };
             if removed && harvest {
                 // Block.playerDestroy: the mined statistic, the exhaustion and the drops.
                 self.award_stat("mined", &facts.name, 1);
@@ -6864,7 +7483,7 @@ impl Game<'_> {
                     (stacks, exp_to_drop),
                 );
                 let canceled = dropped.canceled;
-                if let Some(kept) = self.break_collect.as_mut() {
+                if let Some(kept) = collect {
                     kept.extend(dropped.items.into_iter().map(|item| item.stack));
                     if dropped.experience > 0 {
                         self.spawn_orbs(pos.map(|v| f64::from(v) + 0.5), dropped.experience);
@@ -7051,8 +7670,10 @@ impl Game<'_> {
                 crack: None,
             });
         }
+        // BlockState.getDestroyProgress each tick: a block Part may answer for an unbreakable block.
+        let progress = self.destroy_progress(hit.pos);
         let state = self.world.block(hit.pos[0], hit.pos[1], hit.pos[2]);
-        if self.res.facts().get(state).hardness < 0.0 {
+        if progress == 0.0 && self.res.facts().get(state).hardness < 0.0 {
             // The server still counts its destroy ticks on an unbreakable block.
             let m = self.mining.as_mut().ok_or("mining")?;
             m.per_tick = 0.0;
@@ -7061,7 +7682,6 @@ impl Game<'_> {
             self.destroy_progress_event(pos, hit.face, ticks);
             return Ok(());
         }
-        let progress = self.destroy_progress(hit.pos);
         self.swing_arm();
         let m = self.mining.as_mut().ok_or("mining")?;
         m.per_tick = progress;
@@ -7126,9 +7746,8 @@ impl Game<'_> {
     ///
     /// A mod hears the change first (`native_entity_change_block_pre`, Bukkit's
     /// `EntityChangeBlockEvent`): cancelling puts the block back and skips the
-    /// updates and the events, so nothing the change would have caused happens -
-    /// the crop on trampled farmland stays, because breaking it is the
-    /// neighbour update below and not a write of its own.
+    /// updates and events. `FarmlandBlock.fallOn` is decided separately by
+    /// `trample_farmland` before it writes.
     ///
     /// The game event the rule posts comes back for the caller to post with the
     /// landing player in place (`post_landing_vibration`).
@@ -7234,7 +7853,7 @@ impl Game<'_> {
             .default_state("minecraft:air")
             .unwrap_or(BlockStateId(0))
     }
-    /// Whether a mod cancelled a landing's block change
+    /// Whether a mod cancelled a generic landing write (not `FarmlandBlock.fallOn`)
     /// (`native_entity_change_block_pre`): asked with the two blocks' names and
     /// the player whose landing it was (`None` when no player did it).
     fn landing_change_cancelled(
@@ -7285,7 +7904,11 @@ impl Game<'_> {
         if self.remote.is_some() {
             return self.with_residency_tick(Self::tick_remote);
         }
-        self.tick_first_level()
+        let running = self.clock.world_runs();
+        if running {
+            sunrise_client::spans::time("tick_functions", || self.tick_functions());
+        }
+        self.tick_first_level(running)
     }
     /// The title remains the no-level sentinel while debug options or a mod's
     /// screen covers it. Only UI dispatch ignores it; world loading and
@@ -7293,7 +7916,32 @@ impl Game<'_> {
     fn title_input_active(&self) -> bool {
         self.title.is_some() && !matches!(self.screen, Screen::DebugOptions | Screen::Mod)
     }
+    #[cfg(test)]
     fn hud(&mut self, size: [u32; 2]) -> HudBatch {
+        self.hud_with_reload(size, None)
+    }
+
+    /// Aligns `locator_camera` with this frame's render camera before HUD extraction
+    /// (`GameRenderer.renderLevel` sets `mainCamera` before `Gui.render`).
+    pub(in crate::game) fn extract_frame_hud(
+        &mut self,
+        size: [u32; 2],
+        reload_overlay: Option<(f32, sunrise_client::level_loading::OverlayFade)>,
+        title: bool,
+        camera: [f64; 3],
+        view_yaw: f32,
+        view_pitch: f32,
+        fov_degrees: f32,
+    ) -> HudBatch {
+        self.locator_camera = (!title).then_some((camera, view_yaw, view_pitch, fov_degrees));
+        self.hud_with_reload(size, reload_overlay)
+    }
+
+    fn hud_with_reload(
+        &mut self,
+        size: [u32; 2],
+        reload_overlay: Option<(f32, sunrise_client::level_loading::OverlayFade)>,
+    ) -> HudBatch {
         // Gui.extractRenderState passes integer coordinates to the HUD and screen. Keep
         // the projected fractions for input, but draw and hit-test hover at the frame's pixel.
         let pointer = self.project_window_cursor(size);
@@ -7307,21 +7955,50 @@ impl Game<'_> {
         self.ui.room = sunrise_client::hud_kit::room::Room::new(gui.width, gui.height);
         // The pack prompt replaces the connecting screen (setScreen), but
         // in game it opens over the world.
+        self.settle_title_toasts();
         let mut batch = if (self.server_packs.prompt.is_some()
             || self.code_of_conduct.is_some()
             || self.dialog_open())
             && self.player.is_none()
         {
-            let mut batch = HudBatch::new(size, self.settings.gui_scale_inputs());
-            self.draw_pack_toasts(&mut batch, true, false);
-            batch
+            gui
         } else {
             self.hud_layers(size)
         };
+<<<<<<< HEAD
         self.draw_interface_overlays(&mut batch);
         // The ToastManager draws over every screen, the title and the
         // options included: the narrator's toast follows the player there.
         self.draw_narrator_toast(&mut batch);
+||||||| 46c00106def
+        // Vanilla's confirmation replaces the dialog as the screen.
+        if self.command_prompt.is_none() {
+            self.draw_dialog(&mut batch);
+        }
+        self.draw_pack_prompt(&mut batch);
+        self.draw_code_of_conduct(&mut batch);
+        self.draw_link_prompt(&mut batch);
+        self.draw_command_prompt(&mut batch);
+        // The ToastManager draws over every screen, the title and the
+        // options included: the narrator's toast follows the player there.
+        self.draw_narrator_toast(&mut batch);
+=======
+        // Vanilla's confirmation replaces the dialog as the screen.
+        if self.command_prompt.is_none() {
+            self.draw_dialog(&mut batch);
+        }
+        self.draw_pack_prompt(&mut batch);
+        self.draw_code_of_conduct(&mut batch);
+        self.draw_link_prompt(&mut batch);
+        self.draw_command_prompt(&mut batch);
+        self.draw_context_menu(&mut batch);
+        if let Some((bar, fade)) = reload_overlay {
+            self.draw_reload_overlay(&mut batch, bar, fade);
+        }
+        // Gui.extractRenderState draws toasts over the active screen or overlay,
+        // after the saving indicator and before the debug overlay.
+        self.draw_every_toast(&mut batch);
+>>>>>>> ed6772e2118
         // Gui.extractRenderState: the debug overlay comes after the screen
         // and the toasts, so it is over everything, menus included.
         self.draw_debug_overlay(&mut batch, size);
@@ -7348,8 +8025,24 @@ impl Game<'_> {
             );
             self.cursor = self.in_interface(pointer.subpixel());
         }
+        self.pack.item_renderer.end_gui_frame();
         batch
     }
+    fn draw_reload_overlay(
+        &self,
+        batch: &mut HudBatch,
+        bar: f32,
+        fade: sunrise_client::level_loading::OverlayFade,
+    ) {
+        sunrise_client::level_loading::draw_loading_overlay(
+            batch,
+            &self.gui.atlas,
+            bar,
+            fade,
+            self.settings.file.bool("darkMojangStudiosBackground"),
+        );
+    }
+
     fn hud_layers(&mut self, size: [u32; 2]) -> HudBatch {
         use sunrise_client::gui_layers::VanillaGuiLayer;
 
@@ -7377,8 +8070,13 @@ impl Game<'_> {
             // screen, after its own drawing.
             self.publish_screen_regions(&batch, None);
             self.draw_screen_with_post_hook(&mut batch);
+<<<<<<< HEAD
             menus.finish(&mut batch);
             self.draw_pack_toasts(&mut batch, true, false);
+||||||| 46c00106def
+            self.draw_pack_toasts(&mut batch, true, false);
+=======
+>>>>>>> ed6772e2118
             return batch;
         }
         if self.screen == Screen::Options && self.title.is_some() {
@@ -7386,24 +8084,24 @@ impl Game<'_> {
             self.draw_options(&mut batch, drawn);
             self.publish_screen_regions(&batch, None);
             self.draw_screen_with_post_hook(&mut batch);
+<<<<<<< HEAD
             self.draw_pack_toasts(&mut batch, true, false);
             menus.finish(&mut batch);
+||||||| 46c00106def
+            self.draw_pack_toasts(&mut batch, true, false);
+=======
+>>>>>>> ed6772e2118
             return batch;
         }
-        self.settle_title_toasts();
-        if let Some(title) = &mut self.title {
-            if std::mem::take(&mut title.onboarding_finished) {
-                // Options.onboardingAccessibilityFinished.
-                self.settings.file.set(
-                    "onboardAccessibility",
-                    sunrise_client::options_file::V::Bool(false),
-                );
-                self.settings.save(&Self::options_path());
-            }
-            if let Some(sound) = title.update_toast(self.settings.notification_display_time as f32)
-            {
-                self.audio.play(sound, None, 1.0, 1.0);
-            }
+        if let Some(title) = &mut self.title
+            && std::mem::take(&mut title.onboarding_finished)
+        {
+            // Options.onboardingAccessibilityFinished.
+            self.settings.file.set(
+                "onboardAccessibility",
+                sunrise_client::options_file::V::Bool(false),
+            );
+            self.settings.save(&Self::options_path());
         }
         if let Some(title) = &self.title {
             for found in title.lan_found_narrations((w, h)) {
@@ -7421,11 +8119,19 @@ impl Game<'_> {
             }
             self.publish_screen_regions(&batch, None);
             self.draw_screen_with_post_hook(&mut batch);
+<<<<<<< HEAD
             self.draw_toasts(&mut batch, false);
             self.draw_tutorial_toasts(&mut batch, false);
             self.draw_pack_toasts(&mut batch, false, false);
             self.draw_music_toast(&mut batch, false);
             menus.finish(&mut batch);
+||||||| 46c00106def
+            self.draw_toasts(&mut batch, false);
+            self.draw_tutorial_toasts(&mut batch, false);
+            self.draw_pack_toasts(&mut batch, false, false);
+            self.draw_music_toast(&mut batch, false);
+=======
+>>>>>>> ed6772e2118
             return batch;
         }
         if self.title.is_some() {
@@ -7457,22 +8163,34 @@ impl Game<'_> {
             // toasts still come after, as over any screen.
             self.publish_screen_regions(&batch, None);
             self.draw_title_screen_with_post_hook(&mut batch);
+<<<<<<< HEAD
             self.draw_toasts(&mut batch, false);
             self.draw_tutorial_toasts(&mut batch, false);
             self.draw_pack_toasts(&mut batch, false, false);
             self.draw_music_toast(&mut batch, false);
             menus.finish(&mut batch);
+||||||| 46c00106def
+            self.draw_toasts(&mut batch, false);
+            self.draw_tutorial_toasts(&mut batch, false);
+            self.draw_pack_toasts(&mut batch, false, false);
+            self.draw_music_toast(&mut batch, false);
+=======
+>>>>>>> ed6772e2118
             return batch;
         }
-        let atlas_ptr: *const HudAtlas = &self.gui.atlas;
-        let _ = atlas_ptr;
         // The ToastManager draws over every screen: a server's packs
         // download while the connection screen shows.
         if self.remote_overlay(&mut batch) {
             self.publish_screen_regions(&batch, None);
+<<<<<<< HEAD
             self.draw_pack_toasts(&mut batch, false, false);
             self.draw_music_toast(&mut batch, false);
             menus.finish(&mut batch);
+||||||| 46c00106def
+            self.draw_pack_toasts(&mut batch, false, false);
+            self.draw_music_toast(&mut batch, false);
+=======
+>>>>>>> ed6772e2118
             return batch;
         }
         menus.finish(&mut batch);
@@ -7480,7 +8198,14 @@ impl Game<'_> {
         // crosshair, hotbar, effects, bars, sidebar, action bar, titles and chat;
         // the sleep overlay, debug screen and open screens still draw.
         let spectator = self.spectator();
+<<<<<<< HEAD
         let (full_w, full_h) = (batch.width, batch.height);
+||||||| 46c00106def
+        let (wi, hi) = (w as i32, h as i32);
+=======
+        let camera = self.camera_player();
+        let (wi, hi) = (w as i32, h as i32);
+>>>>>>> ed6772e2118
         let mut gui_canceled = false;
         let replaying = self.replay.playing();
         if !replaying {
@@ -7504,8 +8229,14 @@ impl Game<'_> {
         );
         let dispatch_hud = !gui_canceled && !replaying;
         self.hud_layer_next = dispatch_hud.then_some(0);
+<<<<<<< HEAD
         let (w, h) = (full_w, full_h);
         let (wi, hi) = (w as i32, h as i32);
+||||||| 46c00106def
+=======
+        self.hud_status_heights = Default::default();
+        self.hud_status_heights_set.set(None);
+>>>>>>> ed6772e2118
         self.ui.room = self.hud_room(w, h, show_hud);
         // Starling: the HUD keeps to the screen's safe area (`hud_safe_insets`), from the hotbar on;
         // what covers the view (the spyglass, the crosshair, the sleep overlay) takes all of it.
@@ -7526,7 +8257,7 @@ impl Game<'_> {
             } else {
                 0
             };
-            let attack = (indicator == 1 || indicator == 2).then(|| {
+            let crosshair_attack = (indicator == 1).then(|| {
                 let speed = self.main_hand_attack_speed();
                 (
                     self.hand_strength.scale(0.0, speed),
@@ -7544,7 +8275,6 @@ impl Game<'_> {
                     && !g.touch_hides_crosshair()
                     && (g.screen != Screen::Creative || CREATIVE_SHIFT.get() == 0.0)
                 {
-                    let crosshair_attack = attack.filter(|_| indicator == 1);
                     let full = crosshair_attack.is_some_and(|(strength, delay)| {
                         hud_layout::full_attack_indicator(strength, delay, g.crosshair_living())
                     });
@@ -7574,6 +8304,7 @@ impl Game<'_> {
                     return;
                 }
                 if spectator {
+<<<<<<< HEAD
                     g.draw_spectator_hotbar(batch);
                 } else {
                     let partial = g.clock.fraction() as f32;
@@ -7600,6 +8331,51 @@ impl Game<'_> {
                     // `extractSlot` for each item, in order, on the path `gui_paint` takes.
                     let mut items = crate::game::gui_paint_items::HotbarItems { game: g };
                     hud_layout::paint_items(batch, &g.gui.atlas, &draws, &mut items);
+||||||| 46c00106def
+                    g.draw_spectator_hotbar(batch);
+                } else {
+                    let partial = g.clock.fraction() as f32;
+                    let inputs = hud_layout::HotbarInputs {
+                        selected: g.selected as i32,
+                        right_handed: !g.settings.main_hand_left,
+                        offhand: g.offhand.is_some(),
+                        slots: std::array::from_fn(|i| {
+                            g.inventory[i]
+                                .as_ref()
+                                .map(|_| (f32::from(g.hotbar_pop[i]) - partial).max(0.0))
+                        }),
+                        offhand_pop: (f32::from(g.hotbar_pop[9]) - partial).max(0.0),
+                        attack: attack
+                            .filter(|_| indicator == 2)
+                            .map(|(strength, _)| strength),
+                    };
+                    let draws = hud_layout::hotbar(wi, hi, &inputs);
+                    // `extractSlot` for each item, in order, on the path `gui_paint` takes.
+                    let mut items = crate::game::gui_paint_items::HotbarItems { game: g };
+                    hud_layout::paint_items(batch, &g.gui.atlas, &draws, &mut items);
+=======
+                    g.draw_spectator_hotbar(batch, g.own_player_is_spectator());
+                } else if let Some((inputs, source)) = g.camera_hotbar(camera) {
+                    g.draw_item_hotbar(batch, [wi, hi], &inputs, source);
+                    if indicator == 2 {
+                        // Items and arm follow the camera; the charge belongs to the local player.
+                        let mut progress = g.hand_strength.scale(0.0, g.main_hand_attack_speed());
+                        g.native_hotbar_attack_indicator_progress(
+                            native_hooks::HotbarAttackIndicatorProgressCall {
+                                progress: &mut progress,
+                            },
+                        );
+                        let mut draws = Vec::new();
+                        hud_layout::hotbar_attack_indicator(
+                            wi,
+                            hi,
+                            inputs.right_handed,
+                            progress,
+                            &mut draws,
+                        );
+                        hud_layout::paint(batch, &g.gui.atlas, &draws);
+                    }
+>>>>>>> ed6772e2118
                 }
             });
             self.gui_layer(VanillaGuiLayer::Effects, &mut batch, &mut |g, batch| {
@@ -7613,36 +8389,20 @@ impl Game<'_> {
                     g.draw_boss_bars(batch);
                 }
             });
-            let mut corners = sunrise_client::extras_hud::Corners::new(
-                w,
-                h,
-                if show_hud {
-                    self.effect_rows_height()
-                } else {
-                    0.0
-                },
-            );
             if show_hud {
-                self.draw_extras(&mut batch, &mut corners);
+                self.draw_extras(&mut batch);
             }
 
             // NeoForge's Hud.registerVanillaLayers: each status row owns its own extraction.
             // The installed vanilla bodies share the column heights and a scratch draw list.
-            let mut status_heights = hud_layout::StatusBarHeights::default();
             let mut status_rows = Vec::new();
-            let mount = if !show_hud || spectator {
+            let mount = if !show_hud {
                 None
             } else {
-                self.mount_index().map(|i| {
-                    let mob = &self.mobs[i];
-                    (
-                        hud_layout::vehicle_max_hearts(mob.attrs.max_health),
-                        mob.health,
-                    )
-                })
+                self.camera_vehicle_health(camera)
             };
             // NeoForge applies hudVisible and survivalVisible to the vanilla bodies only.
-            let show_survival_status = show_hud && !self.creative && !spectator;
+            let show_survival_status = show_hud && self.can_hurt_player();
             self.gui_layer(
                 VanillaGuiLayer::PlayerHealth,
                 &mut batch,
@@ -7650,23 +8410,7 @@ impl Game<'_> {
                     if !show_survival_status {
                         return;
                     }
-                    let (tick, millis) = (g.visual_ticks() as i32, g.visual_millis());
-                    let Some(p) = &mut g.player else { return };
-                    let blink = g.health_hud.update_health(
-                        p.health.health(),
-                        tick,
-                        millis,
-                        p.health.hurt.cooldown > 0,
-                    );
-                    let inputs = hud_layout::HealthInputs {
-                        tick,
-                        max_health: p.attribute("minecraft:max_health").unwrap_or(20.0) as f32,
-                        absorption: p.health.absorption(),
-                        regeneration: g.potions.effects.get("regeneration").is_some(),
-                        hardcore: g.level.hardcore,
-                        blink,
-                    };
-                    let Some(kind) = g.player_heart_kind() else {
+                    let Some((inputs, kind)) = g.camera_health_inputs(camera) else {
                         return;
                     };
                     status_rows.clear();
@@ -7675,7 +8419,7 @@ impl Game<'_> {
                         kind,
                         wi,
                         hi,
-                        &mut status_heights,
+                        &mut g.hud_status_heights,
                         &mut status_rows,
                     );
                     hud_layout::paint(batch, &g.gui.atlas, &status_rows);
@@ -7685,29 +8429,28 @@ impl Game<'_> {
                 if !show_survival_status {
                     return;
                 }
-                let Some(p) = &mut g.player else { return };
-                let armor = p
-                    .attribute("minecraft:armor")
-                    .or_else(|_| p.attribute("armor"))
-                    .unwrap_or(0.0) as i32;
+                let Some(armor) = g.camera_armor(camera) else {
+                    return;
+                };
                 status_rows.clear();
-                hud_layout::armor_level(armor, wi, hi, &mut status_heights, &mut status_rows);
+                hud_layout::armor_level(armor, wi, hi, &mut g.hud_status_heights, &mut status_rows);
                 hud_layout::paint(batch, &g.gui.atlas, &status_rows);
             });
             self.gui_layer(VanillaGuiLayer::FoodLevel, &mut batch, &mut |g, batch| {
                 if !show_survival_status || mount.is_some_and(|(hearts, _)| hearts != 0) {
                     return;
                 }
-                let Some(p) = &g.player else { return };
-                let inputs = hud_layout::FoodInputs {
-                    tick: g.visual_ticks() as i32,
-                    food: p.health.food.food,
-                    saturation: p.health.food.saturation,
-                    hunger: g.potions.effects.get("hunger").is_some(),
+                let Some(inputs) = g.camera_food_inputs(camera) else {
+                    return;
                 };
                 status_rows.clear();
-                g.health_hud
-                    .food_level(&inputs, wi, hi, &mut status_heights, &mut status_rows);
+                g.health_hud.food_level(
+                    &inputs,
+                    wi,
+                    hi,
+                    &mut g.hud_status_heights,
+                    &mut status_rows,
+                );
                 hud_layout::paint(batch, &g.gui.atlas, &status_rows);
             });
             self.gui_layer(
@@ -7723,7 +8466,7 @@ impl Game<'_> {
                         hi,
                         hearts,
                         health,
-                        &mut status_heights,
+                        &mut g.hud_status_heights,
                         &mut status_rows,
                     );
                     hud_layout::paint(batch, &g.gui.atlas, &status_rows);
@@ -7733,34 +8476,32 @@ impl Game<'_> {
                 if !show_survival_status {
                     return;
                 }
-                let Some(p) = &g.player else { return };
-                let inputs = hud_layout::AirInputs {
-                    tick: g.visual_ticks() as i32,
-                    air: p.air,
-                    max_air: 300,
-                    // Hud.extractAirBubbles checks the fluid at the eyes, not the block.
-                    under_water: p.is_eye_in_fluid(sunrise_client::motion::WATER),
+                let Some((inputs, sound_at)) = g.camera_air_inputs(camera) else {
+                    return;
                 };
-                let at = [p.position.x, p.position.y, p.position.z];
                 status_rows.clear();
-                let pop_sound =
-                    g.health_hud
-                        .air_level(&inputs, wi, hi, &mut status_heights, &mut status_rows);
+                let pop_sound = g.health_hud.air_level(
+                    &inputs,
+                    wi,
+                    hi,
+                    &mut g.hud_status_heights,
+                    &mut status_rows,
+                );
                 hud_layout::paint(batch, &g.gui.atlas, &status_rows);
-                // Hud.playAirBubblePoppedSound: Player.playSound (PLAYERS), heard
-                // by this client only.
-                if let Some((volume, pitch)) = pop_sound {
+                // Hud.playAirBubblePoppedSound: Player.playSound (PLAYERS), heard by this
+                // client only, so another player's bubbles pop silently.
+                if let Some((volume, pitch)) = pop_sound
+                    && let Some(at) = sound_at
+                {
                     let players = sunrise_client::settings::SOUND_SOURCES
                         .iter()
                         .position(|s| *s == "player")
                         .unwrap_or(0);
                     let capture = g.audio.capture.take();
-                    g.audio
-                        .play_on(players, "ui.hud.bubble_pop", Some(at), volume, pitch);
+                    g.play_audio_on(players, "ui.hud.bubble_pop", Some(at), volume, pitch);
                     g.audio.capture = capture;
                 }
             });
-
             use sunrise_client::locator_bar::ContextualBar;
             // After the health rows (Hud.extractHotbarAndDecorations): jump, locator or XP bar.
             self.gui_layer(
@@ -7770,14 +8511,8 @@ impl Game<'_> {
                     if !show_hud {
                         return;
                     }
-                    let has_experience = !g.creative && !spectator;
-                    let contextual = ContextualBar::next(
-                        g.waypoints.has_waypoints(),
-                        !spectator && g.jumpable_mount(),
-                        g.mount_jumping(),
-                        has_experience,
-                        g.experience_recent(),
-                    );
+                    let has_experience = g.can_hurt_player();
+                    let contextual = g.contextual_bar();
                     if contextual == ContextualBar::JumpableVehicle {
                         g.draw_jump_bar(batch, wi, hi);
                     }
@@ -7820,7 +8555,7 @@ impl Game<'_> {
                 &mut batch,
                 &mut |g, batch| {
                     if show_hud && !spectator {
-                        g.draw_selected_name(batch, !g.creative);
+                        g.draw_selected_name(batch, g.can_hurt_player());
                     }
                 },
             );
@@ -7829,6 +8564,7 @@ impl Game<'_> {
                 VanillaGuiLayer::SleepOverlay,
                 &mut batch,
                 &mut |g, batch| {
+<<<<<<< HEAD
                     let mut draws =
                         hud_overlays::sleep_overlay(full_wi, full_hi, g.sleep_timer as i32);
                     if !draws.is_empty() && margins != [0.0; 4] {
@@ -7841,6 +8577,11 @@ impl Game<'_> {
                         );
                         draws.push(hud_layout::GuiDraw::Pop);
                     }
+||||||| 46c00106def
+                    let draws = hud_overlays::sleep_overlay(wi, hi, g.sleep_timer as i32);
+=======
+                    let draws = hud_overlays::sleep_overlay(wi, hi, g.sleep_timer);
+>>>>>>> ed6772e2118
                     hud_layout::paint(batch, &g.gui.atlas, &draws);
                 },
             );
@@ -7898,7 +8639,9 @@ impl Game<'_> {
             });
             self.draw_mod_gui_layers(None, &mut batch);
             self.hud_layer_next = None;
-            self.native_render_gui_post(&mut batch, &mut corners);
+            self.hud_status_heights_set.set(None);
+            self.native_render_gui_post(&mut batch);
+            self.hud_layer_bounds.clear();
         }
         if let Some(area) = area {
             area.finish(&mut batch);
@@ -7965,6 +8708,7 @@ impl Game<'_> {
             Screen::Social => self.draw_social_screen(&mut batch),
             Screen::ServerLinks => self.draw_server_links(&mut batch),
             Screen::ConfirmLink => self.draw_confirm_link(&mut batch),
+            Screen::DemoIntro => self.draw_demo_intro(&mut batch),
             Screen::DialogWarning => self.draw_dialog_warning(&mut batch),
             Screen::CommandBlock => self.draw_command_block(&mut batch),
             Screen::BlockEditor => self.draw_block_editor(&mut batch),
@@ -7994,7 +8738,6 @@ impl Game<'_> {
         self.publish_screen_regions(&batch, region_screen);
         self.draw_screen_with_post_hook(&mut batch);
         self.draw_saving_indicator(&mut batch);
-        self.draw_every_toast(&mut batch, self.replay.playing(), gui_canceled);
         if self.server_packs.prompt.is_none() {
             self.remote_hud(&mut batch);
             self.draw_sign_editor(&mut batch);
@@ -8058,18 +8801,17 @@ impl Game<'_> {
     /// `Camera.setRotation`: the camera's orientation, turned round in
     /// third-person front view.
     pub(super) fn camera_orientation(&self) -> glam::Quat {
-        if self.studio.flying() {
-            return camera_rotation(
-                sunrise_client::camera::CameraType::FirstPerson,
+        use sunrise_client::camera::CameraType::FirstPerson;
+        match self.posed_rotation {
+            // Extracted frame angles are already in the camera convention, including studio roll
+            // and third-person front mirroring.
+            Some((yaw, pitch, roll)) => camera_rotation_rolled(FirstPerson, yaw, pitch, roll),
+            None if self.studio.flying() => camera_rotation_rolled(
+                FirstPerson,
                 self.studio.freecam.yaw,
                 self.studio.freecam.pitch,
-            ) * glam::Quat::from_rotation_z(self.studio.freecam.roll.to_radians());
-        }
-        match self.posed_rotation {
-            // The frame's camera, already turned round in front view.
-            Some((yaw, pitch)) => {
-                camera_rotation(sunrise_client::camera::CameraType::FirstPerson, yaw, pitch)
-            }
+                -self.studio.freecam.roll,
+            ),
             None => camera_rotation(self.camera_type, self.yaw, self.pitch),
         }
     }
@@ -8157,11 +8899,7 @@ impl Game<'_> {
         // One scan for both passes that draw them (block entities below and the
         // overlay near the end of this function).
         let cracks = self.cracks(camera);
-        let fire_yaw = if self.camera_type == sunrise_client::camera::CameraType::ThirdPersonFront {
-            self.yaw + 180.0
-        } else {
-            self.yaw
-        };
+        let fire_yaw = self.posed_rotation.map_or(self.view.y_rot, |(y, _, _)| y);
         // Packs may move vertices or draw from another camera. The guarded
         // billboard frustum covers TAA's jitter without changing model culling.
         let fire_view = billboard_frustum
@@ -8174,6 +8912,9 @@ impl Game<'_> {
         };
         laps.lap("eg_prep");
         for item in &self.dropped {
+            if self.hides_as_camera(item.id) {
+                continue;
+            }
             if item.fire_ticks > 0
                 && self
                     .stack_can_be_hurt_by(&item.stack, "minecraft:in_fire")
@@ -8201,6 +8942,9 @@ impl Game<'_> {
         }
         laps.lap("eg_fire_items");
         for stand in &self.armor_stands {
+            if self.hides_as_camera(stand.id) {
+                continue;
+            }
             if stand.is_on_fire() && !stand.marker {
                 let scale = if stand.small { 0.5 } else { 1.0 };
                 let at = stand.render_position(alpha);
@@ -8255,7 +8999,9 @@ impl Game<'_> {
                 }
                 F::Dragon => {
                     // A dragon summoned outside the End draws at its join slot too.
-                    if let Some(dragon) = self.dragon.as_ref() {
+                    if let Some(dragon) =
+                        self.dragon.as_ref().filter(|d| !self.hides_as_camera(d.id))
+                    {
                         self.dragon_geometry(dragon, camera, alpha, &mut out, additive);
                     }
                 }
@@ -8273,14 +9019,17 @@ impl Game<'_> {
                 }
                 F::Orb => {
                     self.mark_entity(out.len(), "minecraft:experience_orb");
-                    let live = self.orbs[range].iter().map(|o| {
-                        let at = [
-                            o.previous.x + (o.position.x - o.previous.x) * alpha,
-                            o.previous.y + (o.position.y - o.previous.y) * alpha,
-                            o.previous.z + (o.position.z - o.previous.z) * alpha,
-                        ];
-                        (o, at, alpha as f32)
-                    });
+                    let live = self.orbs[range]
+                        .iter()
+                        .filter(|o| !self.hides_as_camera(o.id))
+                        .map(|o| {
+                            let at = [
+                                o.previous.x + (o.position.x - o.previous.x) * alpha,
+                                o.previous.y + (o.position.y - o.previous.y) * alpha,
+                                o.previous.z + (o.position.z - o.previous.z) * alpha,
+                            ];
+                            (o, at, alpha as f32)
+                        });
                     let frame = orb_frame.get_or_init(|| self.orb_frame());
                     self.orb_geometry(camera, frame, live, orb_view, &mut out);
                 }
@@ -8336,6 +9085,9 @@ impl Game<'_> {
         laps.lap("eg_other_creatures");
         // These billboards stay in their later pass, outside the ordered body runs.
         for m in &self.mobs {
+            if self.hides_as_camera(m.id) {
+                continue;
+            }
             // Blaze.isOnFire: a charged blaze burns.
             let blazing = m.species() == sunrise_client::mobs::Species::Blaze && m.extra.flag;
             if (m.is_on_fire() || blazing) && !m.removed {
@@ -8399,18 +9151,29 @@ impl Game<'_> {
         laps.lap("eg_displays");
         let mut see_through = std::mem::take(&mut self.see_through_vertices);
         see_through.clear();
-        self.name_tag_geometry(camera, alpha, &mut out, &mut see_through);
-        self.test_instance_marker_geometry(camera, &mut out, &mut see_through);
+        let mut st_collector = std::mem::take(&mut self.see_through_collector);
+        st_collector.clear();
+        self.name_tag_geometry(camera, alpha, &mut out, &mut st_collector);
+        self.test_instance_marker_geometry(camera, &mut out, &mut st_collector);
         self.debug_renderer_geometry(camera, &mut out);
-        self.text_display_geometry(camera, alpha, &mut out, &mut see_through);
+        self.text_display_geometry(camera, alpha, &mut out, &mut st_collector);
+        st_collector.flush(&mut see_through);
+        self.see_through_collector = st_collector;
         self.see_through_vertices = see_through;
         laps.lap("eg_name_tags");
+<<<<<<< HEAD
         // Entity shadows (EntityRenderer.extractShadow), unless the Entity Shadows option is off; a
         // native pack's sun shadows replace them.
+||||||| 46c00106def
+        // Entity shadows (EntityRenderer.extractShadow); a native pack's sun shadows replace them.
+=======
+        // Entity shadows (EntityRenderer.extractShadow); a shader pack's sun shadows replace them.
+>>>>>>> ed6772e2118
         self.mark_translucent_entity(out.len(), "minecraft:entity_shadow");
-        let pack_shadows = self.renderer.as_ref().is_some_and(|r| {
-            r.pack_entity_shadows() || (self.overworld_skybox() && r.native_shadow())
-        });
+        let pack_shadows = self
+            .renderer
+            .as_ref()
+            .is_some_and(|r| r.pack_entity_shadows());
         let shadows = self.settings.entity_shadows && self.pack.polytone_colors.entity_shadows();
         let shadow_sprite = (shadows && !pack_shadows)
             .then(|| self.gui.atlas.sprites.get("misc/shadow").copied())
@@ -8426,34 +9189,67 @@ impl Game<'_> {
                     p.z + (q.z - p.z) * a,
                 )
             };
-            let mut casters: Vec<(glam::DVec3, f32, f32)> =
-                sunrise_client::shadows::mob_casters(&self.mobs, a).collect();
+            // Each caster carries (interpolated placement pos, current distance pos, radius, strength).
+            let mut casters: Vec<(glam::DVec3, glam::DVec3, f32, f32)> =
+                sunrise_client::shadows::mob_casters(
+                    self.mobs.iter().filter(|m| !self.hides_as_camera(m.id)),
+                    a,
+                )
+                .map(|(pos, r, s)| (pos, pos, r, s))
+                .collect();
             let item = sunrise_client::shadows::shadow_params("minecraft:item");
             casters.extend(
                 self.dropped
                     .iter()
-                    .map(|i| (lerp(i.previous, i.position), item.0, item.1)),
+                    .filter(|i| !self.hides_as_camera(i.id))
+                    .map(|i| {
+                        let p = lerp(i.previous, i.position);
+                        (p, p, item.0, item.1)
+                    }),
             );
             let orb = sunrise_client::shadows::shadow_params("minecraft:experience_orb");
             casters.extend(
                 self.orbs
                     .iter()
-                    .map(|o| (lerp(o.previous, o.position), orb.0, orb.1)),
+                    .filter(|o| !self.hides_as_camera(o.id))
+                    .map(|o| {
+                        let p = lerp(o.previous, o.position);
+                        (p, p, orb.0, orb.1)
+                    }),
             );
-            // Text, block and item displays (DisplayRenderer's shadow radius).
-            casters.extend(self.text_displays.values().filter_map(|d| d.shadow(a)));
+            // Text, block and item displays: same visibility gate, per-entity partial tick,
+            // and current-position distance fade as `EntityRenderer.extractShadow`.
+            let display_scale = self.view_scale();
+            let display_now = std::time::Instant::now();
+            casters.extend(self.text_displays.iter().filter_map(|(&id, d)| {
+                let entity_partial = self.display_partial(id, a);
+                if !self.display_visible(
+                    id,
+                    d,
+                    camera,
+                    entity_partial as f32,
+                    display_scale,
+                    display_now,
+                ) {
+                    return None;
+                }
+                let (pos, r, s) = d.shadow(entity_partial)?;
+                Some((pos, d.position(), r, s))
+            }));
             // Packs may move vertices or draw from another view.
             let shadow_view = self
                 .view_frustum
                 .as_ref()
                 .filter(|_| self.pack_ids.is_none() && self.native_shaders.picked.is_empty());
-            for (pos, radius, strength) in casters {
+            for (pos, dist_pos, radius, strength) in casters {
                 if let Some(view) = shadow_view
-                    && !sunrise_client::shadows::in_view(view, camera, pos, radius, strength)
+                    && !sunrise_client::shadows::in_view_from(
+                        view, camera, pos, dist_pos, radius, strength,
+                    )
                 {
                     continue;
                 }
-                sunrise_client::shadows::shadow(
+                sunrise_client::shadows::shadow_from(
                     &self.world,
                     self.res.facts(),
                     &|state| {
@@ -8468,6 +9264,7 @@ impl Game<'_> {
                     sprite,
                     camera,
                     pos,
+                    dist_pos,
                     radius,
                     strength,
                     ambient,
@@ -8503,9 +9300,14 @@ impl Game<'_> {
             // A shader pack keeps the cache off (`render_with_cache_options_and_callbacks`),
             // so nothing warms it.
             let warm_cache = self.pack_ids.is_none();
-            for entity in
-                r.block_entities_in_range(self.settings.chunk_fade as f32, camera, view, long_range)
-            {
+            for entity in r.block_entities_in_range(
+                self.settings.chunk_fade as f32,
+                camera,
+                view,
+                self.effective_render_distance(),
+                long_range,
+                off_screen,
+            ) {
                 let (pos, state) = *entity.block;
                 if !self.live_block_entity_render(pos, state) {
                     continue;
@@ -8559,127 +9361,104 @@ impl Game<'_> {
                 );
                 !self.block_entity_occluded(bounds)
             };
-            let lid = |p: [i32; 3]| self.chest_lid(p, alpha as f32);
-            let anim = |p: [i32; 3]| self.block_anim(p, alpha as f32);
-            let substitute =
-                |text: &sunrise_client::text::Text| self.substitute_inline_images(text);
-            let inline_sprite =
-                |atlas: &str, sprite: &str| self.gui.atlas.inline_sprite(atlas, sprite);
-            let scene = BlockEntityScene {
-                camera,
-                orientation: self.camera_orientation(),
-                anim: &anim,
-                texts: None,
-                partial: alpha as f32,
-                game_time: self.world.game_time,
-                max_y: self.world.shape.max_y() - 1,
-                world: &self.world,
-                sprites: &self.gui.atlas.sprites,
-                emissive: &self.gui.atlas.emissive,
-                translucent_sprites: &self.gui.atlas.translucent,
-                atlas_revision: self.gui.atlas.revision,
-                nether: self.nether_lighting(),
-                lid: &lid,
-                sign: &|p| match self.world.block_entities.get(&(p[0], p[1], p[2])) {
-                    Some(BlockEntity::Sign(sign)) => Some(sign),
-                    _ => None,
-                },
-                inline_images: self.inline_images_revision().map(|revision| {
-                    block_entity_render::SignInlineImages {
-                        revision,
-                        substitute: &substitute,
-                        sprite: &inline_sprite,
-                    }
-                }),
-                banner: &|p| self.banner_layers_at(p),
-                skull: &|p| self.skull_skin_at(p),
-                glyph: &|c| self.gui.atlas.glyph_cell(c),
-                glyphs: self.gui.atlas.font.epoch(),
-                font: Some(&self.gui.atlas.font),
-                dynamic_visible: Some(&dynamic_visible),
-            };
-            let visible = camera_list.into_iter().chain(shadow_only.iter().copied());
-            let block_entity_cache = CacheOptions {
-                shulker_boxes: self.settings.sunrise.cache_shulker_boxes,
-                signs: self.settings.sunrise.cache_signs,
-                decorated_pots: self.settings.sunrise.cache_decorated_pots,
-                bells: self.settings.sunrise.cache_bells,
-                chests: self.settings.sunrise.cache_chests,
-                banners: self.settings.sunrise.cache_banners,
-                copper_golem_statues: self.settings.sunrise.cache_copper_golem_statues,
-            };
-            // Entity occlusion is for ordinary entity meshes. Block entities
-            // already have section and per-block frustum culling; routing them
-            // through the per-vertex occlusion callback both repeats that work
-            // and disables their per-section GPU cache. Shader packs still need
-            // per-entity span marks, so they keep the callback path.
-            if self.pack_ids.is_some() {
-                let section_revision = |pos| r.block_entity_section_revision(pos);
-                static_block_entity_stats = self
-                    .res
-                    .block_entity_render()
-                    .render_with_cache_options_and_callbacks(
-                        &scene,
-                        visible,
-                        block_entity_cache,
-                        r.block_entity_revision(),
-                        Some(&section_revision),
-                        &mut out,
-                        |pos, state, start| {
-                            self.mark_block_entity(start, state);
-                            self.mark_motion(start, motion_block_entity(pos));
-                        },
-                        |pos, _, start, out| {
-                            if shadow_only_at.contains(&pos) {
-                                self.hide_spans_from(start, out.len());
-                            }
-                        },
-                    );
-            } else {
-                (
-                    static_block_entities,
-                    visible_static_block_entity_sections,
-                    static_block_entity_stats,
-                ) = self
-                    .res
-                    .block_entity_render()
-                    .render_with_gpu_cache_options(
-                        &scene,
-                        visible,
-                        cache_candidates.into_iter(),
-                        block_entity_cache,
-                        r.block_entity_revision(),
-                        |pos| r.block_entity_section_revision(pos),
-                        &mut out,
-                    );
-            }
-            // Mod block entities: their mods draw them (`native_block_entity_submit`),
-            // culled by the bounds they give. A world without any (`has_mods`) has none
-            // to find among its other unrendered block entities (furnaces, hoppers...).
-            let mods = self
-                .world
-                .block_entities
-                .has_mods()
-                .then(|| {
-                    r.visible_block_entities(self.settings.chunk_fade as f32)
-                        .filter(|(_, state)| !self.res.block_entity_render().renders(*state))
-                })
-                .into_iter()
-                .flatten();
-            let untemplated = self.untemplated_mod_block_entities(camera);
-            self.mod_block_entity_geometry(
-                mods.chain(untemplated.iter()),
-                camera,
-                alpha as f32,
-                &mut out,
-            );
-            self.mark_stage(out.len(), "DESTROY");
-            for &(pos, stage) in &cracks {
-                let state = self.world.block(pos[0], pos[1], pos[2]);
-                self.res
-                    .block_entity_render()
-                    .render_breaking(&scene, pos, state.0, stage, &mut out);
-            }
+            self.with_block_entity_scene(camera, alpha as f32, &dynamic_visible, |scene| {
+                let visible = camera_list.into_iter().chain(shadow_only.iter().copied());
+                let block_entity_cache = CacheOptions {
+                    shulker_boxes: self.settings.sunrise.cache_shulker_boxes,
+                    signs: self.settings.sunrise.cache_signs,
+                    decorated_pots: self.settings.sunrise.cache_decorated_pots,
+                    bells: self.settings.sunrise.cache_bells,
+                    chests: self.settings.sunrise.cache_chests,
+                    banners: self.settings.sunrise.cache_banners,
+                    copper_golem_statues: self.settings.sunrise.cache_copper_golem_statues,
+                };
+                // Entity occlusion is for ordinary entity meshes. Block entities
+                // already have section and per-block frustum culling; routing them
+                // through the per-vertex occlusion callback both repeats that work
+                // and disables their per-section GPU cache. Shader packs still need
+                // per-entity span marks, so they keep the callback path.
+                if self.pack_ids.is_some() {
+                    let section_revision = |pos| r.block_entity_section_revision(pos);
+                    static_block_entity_stats = self
+                        .res
+                        .block_entity_render()
+                        .render_with_cache_options_and_callbacks(
+                            scene,
+                            visible,
+                            block_entity_cache,
+                            r.block_entity_revision(),
+                            Some(&section_revision),
+                            &mut out,
+                            |pos, state, start| {
+                                self.mark_block_entity(start, state);
+                                self.mark_motion(start, motion_block_entity(pos));
+                            },
+                            |pos, _, start, out| {
+                                if shadow_only_at.contains(&pos) {
+                                    self.hide_spans_from(start, out.len());
+                                }
+                            },
+                        );
+                } else {
+                    (
+                        static_block_entities,
+                        visible_static_block_entity_sections,
+                        static_block_entity_stats,
+                    ) = self
+                        .res
+                        .block_entity_render()
+                        .render_with_gpu_cache_options(
+                            scene,
+                            visible,
+                            cache_candidates.into_iter(),
+                            block_entity_cache,
+                            r.block_entity_revision(),
+                            |pos| r.block_entity_section_revision(pos),
+                            &mut out,
+                        );
+                }
+                // Mod block entities: their mods draw them (`native_block_entity_submit`),
+                // culled by the eye-visible section filter (ordinary renderers) and the bounds
+                // they give. A world without any (`has_mods`) has none to find among its other
+                // unrendered block entities (furnaces, hoppers...).
+                let radius = self.effective_render_distance();
+                let untemplated = self.untemplated_mod_block_entities(camera);
+                let mods = self
+                    .world
+                    .block_entities
+                    .has_mods()
+                    .then(|| {
+                        r.visible_block_entities(
+                            self.settings.chunk_fade as f32,
+                            camera,
+                            view,
+                            radius,
+                        )
+                        .filter(|((_, state), _)| !self.res.block_entity_render().renders(*state))
+                    })
+                    .into_iter()
+                    .flatten();
+                let untemplated_eye = untemplated.iter().map(|block| {
+                    (
+                        block,
+                        r.block_entity_section_in_eye_view(block.0, camera, view.as_ref(), radius),
+                    )
+                });
+                let mod_cracks = self.mod_block_entity_geometry(
+                    mods.chain(untemplated_eye),
+                    camera,
+                    alpha as f32,
+                    &mut out,
+                );
+                self.mark_stage(out.len(), "DESTROY");
+                out.extend(mod_cracks);
+                for &(pos, stage) in &cracks {
+                    let state = self.world.block(pos[0], pos[1], pos[2]);
+                    self.res
+                        .block_entity_render()
+                        .render_breaking(scene, pos, state.0, stage, &mut out);
+                }
+            });
         }
         laps.lap("eg_block_entities");
         self.mark_motion(out.len(), 0);
@@ -8773,6 +9552,9 @@ impl Game<'_> {
         } = *setup;
         let tables = &self.pack.context.tables;
         for f in &self.falling[run] {
+            if self.hides_as_camera(f.id) {
+                continue;
+            }
             let p = f.model_origin(alpha, |state, x, z| tables.offset(state, x, z)) - camera;
             let o = p.as_vec3();
             // Only rear-origin models pay for the envelope/depth check. The
@@ -8870,6 +9652,11 @@ impl Game<'_> {
                 continue;
             }
             if let Some(resolved) = native_entity_renderers::experience_orb_renderer() {
+                let [width, height, eye_height] = o
+                    .size_answer
+                    .filter(|s| s.vanilla == sunrise_client::entities::ExperienceOrb::DIMENSIONS)
+                    .and_then(|s| s.size)
+                    .unwrap_or(sunrise_client::entities::ExperienceOrb::DIMENSIONS);
                 let entity: mod_api::EntityRenderState =
                     mod_api::__private::built::EntityRenderState {
                         id: o.id,
@@ -8877,6 +9664,11 @@ impl Game<'_> {
                         age: o.age as f32 + partial,
                         yaw: o.rotation[0],
                         pitch: o.rotation[1],
+                        position: at,
+                        size: [width, height],
+                        eye_height,
+                        distance_to_camera_sq: (glam::DVec3::from_array(at) - camera)
+                            .length_squared(),
                         living: None,
                         tnt_fuse: None,
                         orb_value: Some(o.value),
@@ -9095,9 +9887,7 @@ impl Game<'_> {
         }
     }
 
-    /// The mob hit along the view, the distance to it and the point the ray
-    /// met its box at, measured from the mob's feet (`EntityHitResult
-    /// .getLocation() - entity.position()`, the interact packet's location).
+    /// The mob hit along the view, its distance, and the hit point relative to its feet.
     fn mob_hit(&self) -> Option<(usize, f64, [f64; 3])> {
         if let Some(hit) = self.cached_entity_pick() {
             let (entity, distance, point) = hit?;
@@ -9112,45 +9902,32 @@ impl Game<'_> {
         if let Some(hit) = self.tick_mob {
             return hit;
         }
-        let mut pick = crate::game::pick_accumulator::PickAccumulator::new(self.entity_reach);
-        self.mob_hit_within_with_pick(self.entity_reach, &mut pick)
+        let pick_entity::CrosshairDecision::Entity(hit) = self.compute_crosshair_decision() else {
+            return None;
+        };
+        let i = self.mob_index.find_ref(&self.mobs, hit.id)?;
+        let point = Vec3::new(hit.point[0], hit.point[1], hit.point[2]);
+        Some((
+            i,
+            hit.distance_sq.sqrt(),
+            interact_location(point, self.mobs[i].position),
+        ))
     }
-    /// The brush's `ProjectileUtil.getHitResultOnViewVector` uses the nearest
-    /// box entry, excluding the source but not its vehicle or passengers.
+    /// The brush's `ProjectileUtil.getHitResultOnViewVector` excludes only the source entity.
     pub(super) fn mob_hit_within(&self, reach: f64) -> Option<(usize, f64, [f64; 3])> {
         let source = self.pick_camera_id();
-        let mut nearest = f64::INFINITY;
-        self.mob_hit_within_consider(reach, |id, distance| {
-            if Some(id) == source || distance == 0.0 || distance >= nearest {
-                return false;
-            }
-            nearest = distance;
-            true
-        })
-    }
-    pub(super) fn mob_hit_within_with_pick(
-        &self,
-        reach: f64,
-        pick: &mut crate::game::pick_accumulator::PickAccumulator,
-    ) -> Option<(usize, f64, [f64; 3])> {
-        self.mob_hit_within_consider(reach, |id, distance| pick.consider(self, id, distance))
-    }
-    fn mob_hit_within_consider(
-        &self,
-        reach: f64,
-        mut consider: impl FnMut(u32, f64) -> bool,
-    ) -> Option<(usize, f64, [f64; 3])> {
         let (eye, dir) = self.aim()?;
+        let mut nearest = f64::INFINITY;
         let mut best: Option<(usize, f64, [f64; 3])> = None;
         for (i, m) in self.mobs.iter().enumerate() {
-            // EntitySelector.CAN_BE_PICKED is isPickable — `!isRemoved`,
-            // not alive: a health-0 fake player still answers a click.
-            if m.removed {
+            if m.removed || Some(m.id) == source {
                 continue;
             }
             if let Some(t) = ray_box(eye, dir, reach, m.bounds())
-                && consider(m.id, t)
+                && t != 0.0
+                && t < nearest
             {
+                nearest = t;
                 let point = Vec3::new(
                     eye[0] + dir[0] * t,
                     eye[1] + dir[1] * t,
@@ -9168,11 +9945,13 @@ impl Game<'_> {
             return false;
         };
         let sword = self.held().is_some_and(|s| {
-            self.res
+            let sword = self
+                .res
                 .items()
                 .item_tags
                 .get("minecraft:swords")
-                .is_some_and(|tag| tag.contains(&*s.item))
+                .is_some_and(|tag| tag.contains(&*s.item));
+            self.stack_can_perform(s, item_abilities::ability::SWORD_SWEEP, sword)
         });
         let vanilla = p.is_sweep_attack(scale, crit, sword);
         let (mut sweeping, mut canceled) = (vanilla, false);
@@ -9264,48 +10043,43 @@ impl Game<'_> {
     }
     fn finish_open_world(
         &mut self,
-        prepared: world_loading::PreparedWorld,
+        mut prepared: world_loading::PreparedWorld,
     ) -> Result<functions::PackStack> {
         self.reset_tutorial();
         // Another world: its generator, not the last one's Density line.
         self.debug_density.borrow_mut().clear();
-        let world_loading::PreparedWorld {
-            save_root,
-            shapes,
-            level,
-            world,
-            biomes,
-            streaming,
-            save,
-            session_lock,
-            rand_sequences,
-            locator,
-            loot,
-            owner_migration,
-        } = prepared;
-        self.server_loot = loot;
-        let dim = Dim::from_id(&level.dimension);
-        self.level_shapes = shapes;
-        self.world_root = save_root.clone();
+        self.server_loot = Default::default();
+        self.world_root.clone_from(&prepared.save_root);
         // The root moves before the prepared level is installed. Until then a
         // final save must not run: the lock below only marks tag tables.
         self.world_adopted = false;
-        self.owner_migration = owner_migration;
-        // Saves and chunk readers share the same placeholder IDs.
-        self.world_biomes = Some(biomes);
-        self.world_biomes_base = self.world_biomes.clone();
+        self.owner_migration = prepared.owner_migration;
         sunrise_client::crash::set_detail(
             "World",
-            format!("{} ({})", level.name, save_root.display()),
+            format!("{} ({})", prepared.level.name, prepared.save_root.display()),
         );
-        self.end.set_locator(locator);
-        self.share_spawn_conditions();
         self.score = Default::default();
         reset_world_progress(&mut self.adv, &mut self.stats);
         self.reset_creative_contents();
-        let stack = self
-            .open_world_datapacks(&level.enabled_features)
+        let features = prepared.level.enabled_features.clone();
+        let (stack, terrain) = self
+            .open_world_datapacks(&features, Some(&mut prepared))
             .map_err(|error| error.diagnostic())?;
+        let world_loading::PreparedTerrain {
+            configured_levels,
+            world,
+            streaming,
+            save,
+            ..
+        } = terrain.expect("opening a world prepares its terrain");
+        let world_loading::PreparedWorld {
+            save_root,
+            level,
+            session_lock,
+            rand_sequences,
+            ..
+        } = prepared;
+        let dim = Dim::from_id(&level.dimension);
         let root = self.options.resources.clone();
         self.damage_tag_generation = self.damage_tag_generation.wrapping_add(1);
         // A code-mod switch can have rebuilt the root since `Game::new`.
@@ -9368,10 +10142,11 @@ impl Game<'_> {
         self.yaw = yaw;
         self.pitch = pitch;
         self.selected = level.selected_slot.clamp(0, 8) as usize;
+        self.bind_chunk_disk_worker(&save, dim);
         self.streaming = streaming;
         self.world = world;
+        self.chunk_spawn_enemies = true;
         self.inventory = inventory;
-        self.bind_chunk_disk_worker(&save, dim);
         self.save = self.with_profession_save_snapshot(save);
         // MinecraftServer.prepareLevels restores the saved tickets after the
         // built-in levels have been published.
@@ -9431,6 +10206,7 @@ impl Game<'_> {
             progress: self.level.xp_progress,
             total: self.level.xp_total,
         };
+        self.player_score = self.level.player_score;
         self.restore_effects();
         self.mining = None;
         self.container = None;
@@ -9454,7 +10230,12 @@ impl Game<'_> {
         self.streaming.nether_shading =
             facts.cardinal_light == sunrise_world::dimension_type::CardinalLight::Nether;
         self.load_world_state()?;
-        self.open_builtin_levels()?;
+        // MinecraftServer.createLevels loads scoreboard, command storage, and
+        // stopwatches before firing the Overworld's LevelEvent.Load.
+        if self.remote.is_none() {
+            self.load_scoreboard();
+        }
+        self.open_configured_levels(&configured_levels)?;
         Ok(stack)
     }
     fn finish_close_world(&mut self) -> Result<()> {
@@ -9646,7 +10427,14 @@ impl Game<'_> {
         &self,
         stack: &ItemStack,
         hit: &Hit,
-    ) -> Option<(BlockStateId, String, Option<String>, u32, String, String)> {
+    ) -> Option<(
+        BlockStateId,
+        String,
+        Option<String>,
+        u32,
+        String,
+        TransformKind,
+    )> {
         let blocking = self
             .offhand
             .as_ref()
@@ -9670,7 +10458,14 @@ impl Game<'_> {
         stack: &ItemStack,
         hit: &Hit,
         context: TransformContext<'_>,
-    ) -> Option<(BlockStateId, String, Option<String>, u32, String, String)> {
+    ) -> Option<(
+        BlockStateId,
+        String,
+        Option<String>,
+        u32,
+        String,
+        TransformKind,
+    )> {
         use sunrise_client::block_transform::Around;
         let TransformContext {
             world,
@@ -9723,9 +10518,8 @@ impl Game<'_> {
             registry,
             pos,
         };
-        let vanilla = self
-            .res
-            .transformers()
+        let transformers = self.res.transformers();
+        let vanilla = transformers
             .apply(self.items(), registry, &id, face_name, &around)
             .and_then(|(_, t, state)| Some((registry.resolve(&state).ok()?, t)));
         let result = |new, t: &sunrise_client::block_transform::Transform| {
@@ -9735,7 +10529,10 @@ impl Game<'_> {
                 t.loot.clone(),
                 t.damage,
                 t.particle.clone(),
-                t.transform_type.clone(),
+                TransformKind {
+                    transform_type: t.transform_type.clone(),
+                    drop_strategy: t.drop_strategy.clone(),
+                },
             )
         };
         let mapped = self.axe_mapped(&id, block);
@@ -9789,16 +10586,25 @@ impl Game<'_> {
     fn use_block_transformer(&mut self, stack: &ItemStack, hit: &Hit) -> Result<bool> {
         let pos = hit.pos;
         let face = hit.face;
-        let Some((new, sound, loot, damage, particle, transform_type)) =
-            self.block_transform(stack, hit)
+        let Some((new, sound, loot, damage, particle, kind)) = self.block_transform(stack, hit)
         else {
             return Ok(false);
         };
+        let transform_type = kind.transform_type;
         // BlockTransformer.transformBlock: ITEM_USED_ON_BLOCK before the swap.
         self.trigger_block("minecraft:item_used_on_block", pos, stack);
-        // A loot table drops on the clicked face, before the block changes.
-        if loot.as_deref() == Some("minecraft:till/rooted_dirt") {
-            self.pop_resource_from_face(pos, face, ItemStack::new("minecraft:hanging_roots", 1));
+        // Block.dropFromBlockInteractLootTable of the transform's own loot table, popped by its
+        // drop strategy, before the block changes.
+        if let Some(table) = loot {
+            let state = self.world.block(pos[0], pos[1], pos[2]);
+            let actor = self.interacting_loot_entity();
+            for drop in self.interact_loot_at(&table, pos, state, Some(actor), Some(stack)) {
+                if kind.drop_strategy == "clicked_face" {
+                    self.pop_resource_from_face(pos, face, drop);
+                } else {
+                    self.pop_resource(pos, drop);
+                }
+            }
         }
         let old = self.world.block(pos[0], pos[1], pos[2]);
         self.level_set(pos, new)?;
@@ -9812,10 +10618,10 @@ impl Game<'_> {
             f64::from(pos[2]) + 0.5,
         ];
         if self.lan_acting.is_some() {
-            self.audio.play_unshared(&sound, Some(at), 1.0, 1.0);
+            self.play_audio_unshared(&sound, Some(at), 1.0, 1.0);
             self.guest_player_sounds.push((sound.clone(), at, 1.0, 1.0));
         } else {
-            self.audio.play(&sound, Some(at), 1.0, 1.0);
+            self.play_audio(&sound, Some(at), 1.0, 1.0);
         }
         // ItemStack.useOn: a use that acted counts as one of the item.
         self.award_stat("used", &stack.item, 1);
@@ -9831,11 +10637,11 @@ impl Game<'_> {
     fn wax_on_sound(&mut self, at: [f64; 3]) {
         let sound = "minecraft:item.honeycomb.wax_on";
         if self.lan_acting.is_some() {
-            self.audio.play_unshared(sound, Some(at), 1.0, 1.0);
+            self.play_audio_unshared(sound, Some(at), 1.0, 1.0);
             self.guest_block_sounds
                 .push((sound.to_owned(), at, 1.0, 1.0));
         } else {
-            self.audio.play(sound, Some(at), 1.0, 1.0);
+            self.play_audio(sound, Some(at), 1.0, 1.0);
         }
     }
     /// `BlockTransformer.transformBlock`'s `COPPER_CHEST` extra: a double
@@ -9956,7 +10762,7 @@ impl Game<'_> {
             } else {
                 "minecraft:item.bucket.fill"
             };
-            self.audio.play(sound, Some(at(hit.pos)), 1.0, 1.0);
+            self.play_audio(sound, Some(at(hit.pos)), 1.0, 1.0);
             self.post_block_game_event(
                 "minecraft:fluid_pickup",
                 hit.pos,
@@ -9986,17 +10792,11 @@ impl Game<'_> {
                 return Ok(UseResult::Fail);
             }
             let target = self.bucket_target(content, &hit);
-            let mut canceled = false;
-            self.native_fill_bucket(stack, target, &mut canceled);
             // `mayUseItemAt(blockPos2)`: a block that refuses the fluid passes
             // it to the block beside, so a mod hears that block too (powder
             // snow places like a block and never goes there).
             let beside_too = content != BucketContent::Powder && hit.beside() != target;
-            if !canceled && beside_too {
-                self.native_fill_bucket(stack, hit.beside(), &mut canceled);
-            }
-            if canceled
-                || self.bucket_empty_cancelled(stack, target)
+            if self.bucket_empty_cancelled(stack, target)
                 || beside_too && self.bucket_empty_cancelled(stack, hit.beside())
             {
                 return Ok(UseResult::Fail);
@@ -10085,15 +10885,8 @@ impl Game<'_> {
             if !self.may_build() && !self.can_place_on_in_adventure(hit.pos) {
                 return Ok(UseResult::Fail);
             }
-            let name = self.res.facts().get(clicked).name.clone();
-            if self.can_light(clicked, &name) {
-                let registry = self.pack.assets.registry;
-                let mut state = registry
-                    .state(clicked)
-                    .cloned()
-                    .ok_or("missing lit block state")?;
-                state.properties.insert("lit".into(), "true".into());
-                self.level_set(hit.pos, registry.resolve(&state)?)?;
+            if let Some(lit) = self.fire_starter_lit(&hit, stack, true)? {
+                self.level_set(hit.pos, lit)?;
                 let sound = if item == "fire_charge" {
                     "minecraft:item.firecharge.use"
                 } else {
@@ -10249,12 +11042,15 @@ impl Game<'_> {
         }
         self.tracked_special_box(id as i32)
     }
-    /// `Player.giveExperiencePoints`: `add_experience_levels` runs once for each
-    /// level gained or lost, and the mods hear of the level change once.
+    /// `Player.giveExperiencePoints`: the signed grant, zero included (the `player_xp_change` listener
+    /// may rewrite it), changes the score before the XP bar.
+    /// `add_experience_levels` runs once for each level gained or lost, and the mods hear
+    /// of the level change once.
     pub(super) fn give_experience_points(&mut self, points: i32) {
         let Some(points) = self.xp_change(points) else {
             return;
         };
+        self.player_score = self.player_score.wrapping_add(points);
         let old_level = self.experience.level;
         self.experience.add_points(points);
         while self.experience.progress < 0.0 {
@@ -10316,25 +11112,48 @@ impl Game<'_> {
         // A frame on the submit thread holds its surface texture, and the surface goes first.
         old.queue.wait();
         drop(old);
-        let (mut renderer, clouds) = build_renderer(
+        // The new device may be smaller or larger than the lost one: stitch the GUI atlas for it
+        // and rebind its UV consumers before the renderer uploads pages and anything publishes.
+        let device = pollster::block_on(sunrise_client::gfx::Opened::for_window(
+            &window,
+            self.options.offscreen,
+            self.settings.sunrise.api,
+            self.pack.render.texture_layers,
+        ))?;
+        if self.gui.stitch_for_device(
+            &self.pack.source,
+            &self.vanilla_root(),
+            device.max_atlas_size(),
+        )? {
+            self.particles.reload(
+                &self.pack.source,
+                &self.gui.atlas.sprites,
+                &self.gui.atlas.translucent,
+            );
+            self.standalone_geometry = native_block_entity_draw::StandaloneGeometry::new(
+                &self.pack,
+                &self.gui,
+                self.res.try_block_entity_render(),
+            );
+            sunrise_client::ui_theme::reset_atlas();
+            self.native_texture_atlas_stitched(mod_api::TextureAtlas::Gui);
+        }
+        let (mut renderer, required) = build_renderer(
             window,
             self.options.offscreen,
             &self.pack,
             &self.gui,
-            None,
+            sunrise_client::gfx::RendererDevice::Opened(Box::new(device)),
             None,
             self.settings.sunrise.api,
             self.settings.sunrise.translucent_batching,
-            self.settings.vsync,
+            self.effective_vsync(),
             &self.settings.sunrise,
-            shader_packs::picked_pack_shape(&self.settings),
+            self.picked_pack_shape(),
             display,
-            (
-                self.settings.file.int("textureFiltering"),
-                self.settings.file.int("maxAnisotropyBit"),
-            ),
+            self.settings.texture_atlas_settings(),
         )?;
-        clouds?;
+        required?;
         (renderer.screenshot, renderer.screenshot_result) = (screenshot, screenshot_result);
         self.adopt_renderer(renderer);
         log::info!("Sunrise: graphics device recovered; rebuilding world meshes");
@@ -10623,7 +11442,7 @@ impl Game<'_> {
             }
         }
     }
-    fn tick_sleep(&mut self) {
+    pub(in crate::game) fn tick_sleep(&mut self) {
         self.sleep_timer = tick_sleep_timer(self.sleep_timer, self.sleeping.is_some());
         if let Some(head) = self.sleeping {
             // LivingEntity.tick's checkBedExists: a sleeper whose bed is
@@ -10658,21 +11477,17 @@ impl Game<'_> {
         }
         // ServerLevel.tick: once enough of the players have slept 100 ticks,
         // skip to morning if `advance_time` is on, wake everyone, and
-        // resetWeatherCycle if `advance_weather` is on and it is raining.
-        if self.enough_slept() {
+        // resetWeatherCycle if `advance_weather` is on and it is raining,
+        // unless a mod's `sleep_skip_night` cancels it.
+        if self.sleep_skips_night() {
             if self
                 .ui
                 .rules
                 .bool_at(sunrise_client::gamerules::vanilla::ADVANCE_TIME)
             {
-                // SleepFinishedTimeEvent on the level's own clock (game/world/wake_time.rs): None
-                // when a mod canceled, so `native_time_skip` is not asked, or no time fits.
-                if let Some((clock, t, target)) = self.sleep_finished_move() {
-                    let mut cancel = false;
-                    self.native_time_skip(self.dim.id(), t, target, "sleep", &mut cancel);
-                    if !cancel {
-                        self.set_command_clock_time(&clock, target);
-                    }
+                // SleepFinishedTimeEvent is the sleep clock's only decision.
+                if let Some((clock, target)) = self.sleep_finished_move() {
+                    self.set_command_clock_time(&clock, target);
                 }
             }
             // Level.isRaining: the rain level is above 0.2.
@@ -10696,12 +11511,7 @@ impl Game<'_> {
         }
     }
     /// Copy the live player and world state into the `Level` that gets saved.
-    pub(super) fn sync_level(&mut self) {
-        self.level.player_impulse_grace = self.player.as_ref().map(|p| p.impulse.reset_grace_time);
-        self.level.player_fall_particles = self
-            .player
-            .as_ref()
-            .map(|p| p.spawn_extra_particles_on_fall);
+    fn sync_world_level_data(&mut self) {
         // Level.write saves the game rules (game_rules.dat) with the rest.
         self.level.game_rules = self.ui.rules.by_name();
         // PrimaryLevelData.setDifficulty: /difficulty and the options button change it.
@@ -10712,6 +11522,15 @@ impl Game<'_> {
         // level.dat holds the Overworld clock's total, whichever level is in place.
         self.level.day_time = self.command_clock_time("minecraft:overworld");
         self.level.end_clock = Some(self.world.end_clock);
+    }
+
+    pub(super) fn sync_level(&mut self) {
+        self.sync_world_level_data();
+        self.level.player_impulse_grace = self.player.as_ref().map(|p| p.impulse.reset_grace_time);
+        self.level.player_fall_particles = self
+            .player
+            .as_ref()
+            .map(|p| p.spawn_extra_particles_on_fall);
         // A server has no player of its own; the entry of `guest_turn` puts one in
         // `self.player` only while a command reads it.
         if self.player.is_none() && self.options.dedicated.is_some() {
@@ -10741,6 +11560,7 @@ impl Game<'_> {
         level.xp_level = self.experience.level;
         level.xp_progress = self.experience.progress;
         level.xp_total = self.experience.total;
+        level.player_score = self.player_score;
         level.root_vehicle = vehicle.as_ref().map(|v| v.2).or(self.pending_vehicle);
         // The ride's tree, or none once the file's own came back.
         match vehicle {
@@ -10915,18 +11735,31 @@ impl Game<'_> {
         Ok(rendered)
     }
     fn render_frame(&mut self) -> Result<bool> {
-        self.render_with(|renderer, frame| {
-            sunrise_client::spans::time("renderer", || renderer.render(frame))
+        self.render_with_hooks(|renderer, frame, hooks| {
+            sunrise_client::spans::time("renderer", || renderer.render(frame, hooks))
         })
     }
 
     /// Build the complete frame before handing its borrowed geometry and lighting to
     /// the consumer. Tests use the same boundary as GPU submission.
+    #[cfg(test)]
     fn render_with(
         &mut self,
         consume: impl FnOnce(&mut Renderer, &Frame<'_>) -> Result<bool>,
     ) -> Result<bool> {
+        self.render_with_hooks(|renderer, frame, _| consume(renderer, frame))
+    }
+
+    fn render_with_hooks(
+        &mut self,
+        consume: impl FnOnce(
+            &mut Renderer,
+            &Frame<'_>,
+            Option<&mut dyn sunrise_client::gfx::world_primitives::FrameHooks>,
+        ) -> Result<bool>,
+    ) -> Result<bool> {
         self.begin_frame_draws();
+        self.extract_arm_poses();
         let prepare = spans::guard("prepare");
         let mut pr = spans::laps();
         // The window's GPU holds the atlas: its copy in memory is kept
@@ -10979,7 +11812,7 @@ impl Game<'_> {
                     );
                     pr.lap("pr_loading");
                     drop(prepare);
-                    return renderer.render(&loading_frame(&hud));
+                    return renderer.render(&loading_frame(&hud), None);
                 }
                 return Ok(false);
             }
@@ -11023,7 +11856,7 @@ impl Game<'_> {
                 );
                 pr.lap("pr_loading");
                 drop(prepare);
-                return renderer.render(&loading_frame(&hud));
+                return renderer.render(&loading_frame(&hud), None);
             }
             return Ok(false);
         }
@@ -11044,29 +11877,7 @@ impl Game<'_> {
                 );
                 pr.lap("pr_loading");
                 drop(prepare);
-                return renderer.render(&loading_frame(&hud));
-            }
-            return Ok(false);
-        }
-        // A pack reload's `LoadingOverlay`: once opaque it covers the frame
-        // alone; while it fades in or out it is drawn over the frame's GUI.
-        let reload_overlay = self.reload_overlay_frame();
-        if let Some((bar, fade)) = reload_overlay.filter(|(_, fade)| fade.opaque()) {
-            if let Some(renderer) = &mut self.renderer {
-                let mut hud = HudBatch::new(
-                    [renderer.config.width, renderer.config.height],
-                    self.settings.gui_scale_inputs(),
-                );
-                sunrise_client::level_loading::draw_loading_overlay(
-                    &mut hud,
-                    &self.gui.atlas,
-                    bar,
-                    fade,
-                    self.settings.file.bool("darkMojangStudiosBackground"),
-                );
-                pr.lap("pr_loading");
-                drop(prepare);
-                return renderer.render(&loading_frame(&hud));
+                return renderer.render(&loading_frame(&hud), None);
             }
             return Ok(false);
         }
@@ -11077,60 +11888,79 @@ impl Game<'_> {
         else {
             return Ok(false);
         };
+        // An opaque LoadingOverlay needs no world or screen behind it; the
+        // ToastManager still draws in front of it.
+        let reload_overlay = self.reload_overlay_frame();
+        if let Some((bar, fade)) = reload_overlay.filter(|(_, fade)| fade.opaque()) {
+            let mut hud = HudBatch::new(size, self.settings.gui_scale_inputs());
+            self.draw_reload_overlay(&mut hud, bar, fade);
+            self.draw_every_toast(&mut hud);
+            self.pack.item_renderer.end_gui_frame();
+            pr.lap("pr_loading");
+            drop(prepare);
+            return self
+                .renderer
+                .as_mut()
+                .expect("renderer sized above")
+                .render(&loading_frame(&hud), None);
+        }
         pr.lap("pr_setup");
         let alpha = self.frame_world_partial_tick();
         self.refresh_client_pick(alpha as f32);
-        // Camera.getCameraEntityPartialTicks: the view, the hand and the
-        // player's own model stay smooth while the level is frozen.
-        let camera_alpha = self.clock.camera_fraction();
-        self.apply_requested_camera_type();
-        let vanilla = self.camera_view(camera_alpha as f32);
-        let view = vanilla.map(|view| {
-            if self.shows_panorama() || self.studio.flying() {
-                view
-            } else {
-                self.native_camera_pose_now(camera_alpha as f32, view)
-            }
-        });
-        // What faces the camera (particles, item sprites, block entity text) faces a mod's.
-        // A spectated entity's view is not the local player's yaw and pitch
-        // (`Camera.setup` reads the camera entity), so it is kept too.
-        let spectating = self.spectated_camera_snapshot().is_some();
-        self.posed_rotation = view
-            .filter(|posed| spectating || Some(*posed) != vanilla)
-            .map(|(_, yaw, pitch)| (yaw, pitch));
+        // Camera.getCameraEntityPartialTicks: only players and their mounts stay unfrozen.
+        let camera_alpha = self.camera_partial_tick();
+        let view = self.frame_camera(camera_alpha as f32);
+        self.check_screenshot_sequence_camera(view);
+        // What faces the camera (particles, item sprites, block entity text) faces the frame's
+        // camera (including mod angle overrides, roll, sleeping, or a spectated entity).
+        self.posed_rotation = view.map(|(_, yaw, pitch, roll)| (yaw, pitch, roll));
         let eye = view.map(|_| {
             (
                 glam::DVec3::from_array(self.view.eye),
                 self.view.eye_rotation,
             )
         });
-        let (camera, underwater, view_yaw, view_pitch) = match view {
-            Some((c, yaw, pitch)) => {
+        let (camera, underwater, view_yaw, view_pitch, view_roll) = match view {
+            Some((c, yaw, pitch, roll)) => {
                 let s =
                     self.world
                         .block(c.x.floor() as i32, c.y.floor() as i32, c.z.floor() as i32);
-                (c, self.res.facts().get(s).fluid == Fluid::Water, yaw, pitch)
+                (
+                    c,
+                    self.res.facts().get(s).fluid == Fluid::Water,
+                    yaw,
+                    pitch,
+                    roll,
+                )
             }
             None => (
                 glam::DVec3::new(0.5, 100.0, 0.5),
                 false,
                 self.yaw,
                 self.pitch,
+                0.0,
             ),
         };
         pr.lap("pr_camera");
-        self.audio
-            .set_listener([camera.x, camera.y, camera.z], view_yaw, view_pitch);
+        // `SoundEngine.updateSource`: use the actual camera basis, not the entity's own look
+        // or presentation-only bob/spin transforms.
+        let (forward, up) = if view.is_some() {
+            (self.view.forwards, self.view.up)
+        } else {
+            let q = sunrise_client::camera::rotation_with_roll(view_yaw, view_pitch, view_roll);
+            (q.transform([0.0, 0.0, -1.0]), q.transform([0.0, 1.0, 0.0]))
+        };
+        self.audio.set_listener(camera.to_array(), forward, up);
         self.follow_audio_stream_entities();
         pr.lap("pr_listener");
         let block = [
-            camera.x.floor() as i32,
-            camera.y.floor() as i32,
-            camera.z.floor() as i32,
+            sunrise_core::mth::floor(camera.x),
+            sunrise_core::mth::floor(camera.y),
+            sunrise_core::mth::floor(camera.z),
         ];
-        // The camera inside an opaque block sees nothing through it: disable.
+        // Camera.extractRenderState: only spectator inside a solidRender block disables smartCull.
         let cave_culling = self.settings.sunrise.cave_culling
+<<<<<<< HEAD
             && !self
                 .res
                 .facts()
@@ -11141,10 +11971,33 @@ impl Game<'_> {
         if cave_culling
             && self.title.is_none()
             && !kept_menu
+||||||| 46c00106def
+            && !self
+                .res
+                .facts()
+                .get(self.world.block(block[0], block[1], block[2]))
+                .solid_render;
+        // The cave culling search runs on its worker while the frame is prepared.
+        if cave_culling
+            && self.title.is_none()
+=======
+            && !(self.spectator()
+                && self
+                    .res
+                    .facts()
+                    .get(self.world.block(block[0], block[1], block[2]))
+                    .solid_render);
+        // The bounded section graph runs on its worker while the frame is prepared, even when
+        // smart culling is off (`SectionOcclusionGraph.runUpdates`).
+        let effective_render_distance = self.effective_render_distance();
+        let effective_detail_distance = (effective_render_distance * 16) as f32;
+        if self.title.is_none()
+>>>>>>> ed6772e2118
             && let Some(renderer) = self.renderer.as_mut()
         {
+            renderer.sync_loaded_columns(&self.world.chunks);
             sunrise_client::spans::time("occlusion", || {
-                renderer.start_occlusion(camera, (self.streaming.radius * 16) as f32)
+                renderer.start_occlusion(camera, effective_detail_distance, cave_culling)
             });
         }
         pr.lap("pr_occlusion");
@@ -11237,7 +12090,7 @@ impl Game<'_> {
             (*temperature, *downfall) = (info.temperature, info.downfall);
             (*frame_rain, *frame_thunder) = (rain, thunder);
             (*game_time, *day_time) = (self.world.game_time, self.view_day_time());
-            *render_distance = self.streaming.radius;
+            *render_distance = effective_render_distance;
             *sky_type = match self.dimension_type().skybox {
                 sunrise_world::dimension_type::Skybox::Overworld => 1,
                 sunrise_world::dimension_type::Skybox::End => 2,
@@ -11262,15 +12115,35 @@ impl Game<'_> {
             environment.set_frame(&frame);
             polytone_frame = Some(&frame);
         }
-        let mut sky = environment.sample(&sunrise_client::environment::Sample {
-            day_time: self.view_day_time(),
-            rain,
-            thunder,
-            blend: Some(&blend),
-            biome: Some(attributes_of(biome)),
-            post_blend: Some(&post_blend),
-            post_biome: Some(post_of(biome)),
-        });
+        let fixed_time = self
+            .settings
+            .extras
+            .pvp
+            .tweaks
+            .time
+            .filter(|_| self.own_view())
+            .map(|_| self.view_day_time());
+        let sample_clock = |clock: &str| {
+            if let Some(t) = fixed_time {
+                t
+            } else if let Some(remote) = self.remote.as_ref() {
+                remote.named_clock_time(clock)
+            } else {
+                self.command_clock_time(clock)
+            }
+        };
+        let mut sky = environment.sample_with_clock(
+            &sunrise_client::environment::Sample {
+                day_time: self.view_day_time(),
+                rain,
+                thunder,
+                blend: Some(&blend),
+                biome: Some(attributes_of(biome)),
+                post_blend: Some(&post_blend),
+                post_biome: Some(post_of(biome)),
+            },
+            &sample_clock,
+        );
         self.end_flash_sky(&mut sky, alpha);
         if self.flash > 0 && !self.settings.file.bool("hideLightningFlashes") {
             // ClientLevel's flash layer while skyFlashTime > 0: the sky colour
@@ -11290,28 +12163,15 @@ impl Game<'_> {
         let on_top = g.on_top;
         pr.lap("pr_debug");
         let visuals = if self.title.is_none() {
-            self.native_frame_visuals(alpha, &mut lines)
+            self.native_frame_visuals(&mut lines)
         } else {
             native_visuals::FrameVisuals::default()
         };
-        let emissive_layers = if self.title.is_none() {
-            let mut requests = Vec::new();
-            self.native_emissive(&mut requests);
-            // Native mods' overlays first, then the packs' OptiFine emissive blocks.
-            sunrise_client::native_emissive::table(
-                &self.pack.render.sprite_layers,
-                &self.pack.render.file_layers,
-                requests,
-                &self.pack.render.emissive,
-            )
-        } else {
-            Vec::new()
-        };
         pr.lap("pr_native_visuals");
-        let view = if self.studio.flying() {
-            glam::Mat4::from_quat(self.camera_orientation().conjugate())
-        } else {
+        let view = if view_roll == 0.0 {
             sunrise_client::camera::view_matrix(view_yaw, view_pitch)
+        } else {
+            sunrise_client::camera::view_matrix_rolled(view_yaw, view_pitch, view_roll)
         };
         let at = camera.to_array();
         // GameRenderer.render3dHud: the debug crosshair, first person with the HUD shown.
@@ -11337,6 +12197,7 @@ impl Game<'_> {
         // CAN_PLACE_ON item matching the block, and spectators with a menu block; Sunrise
         // does not open menus for spectators, so those never show it. An open
         // screen does not hide it: vanilla checks the HUD and the game mode, not the screen.
+<<<<<<< HEAD
         let adventure = self.mode == sunrise_client::command::args::GameMode::Adventure;
         let can_build = self.may_build() || adventure;
         let outline = if block_outline_drawn(
@@ -11376,9 +12237,73 @@ impl Game<'_> {
         } else {
             Vec::new()
         };
+||||||| 46c00106def
+        let adventure = self.mode == sunrise_client::command::args::GameMode::Adventure;
+        let can_build = self.may_build() || adventure;
+        let outline = if block_outline_drawn(
+            self.ui.hide_gui,
+            self.entity_targeted(),
+            can_build,
+            self.shows_panorama(),
+        ) {
+            self.pick()
+                .filter(|h| {
+                    self.may_build()
+                        || !self.block_action_restricted(h.pos)
+                        || self.can_place_on_in_adventure(h.pos)
+                })
+                .filter(|h| {
+                    let state = self.world.block(h.pos[0], h.pos[1], h.pos[2]);
+                    let mut canceled = false;
+                    self.native_block_highlight(h.pos, state, alpha as f32, &mut canceled);
+                    !canceled
+                })
+                .map(|h| {
+                    let state = self.world.block(h.pos[0], h.pos[1], h.pos[2]);
+                    outline_after_terrain = self
+                        .pack
+                        .render
+                        .model_catalog
+                        .collect(state, BlockPos::new(h.pos[0], h.pos[1], h.pos[2]))
+                        .is_ok_and(|models| {
+                            models
+                                .iter()
+                                .any(|(_, model)| model.faces.iter().any(|f| f.translucent))
+                        });
+                    self.outline_edges_iter(state, h.pos).collect()
+                })
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+=======
+        let outline: Vec<_> = self
+            .block_outline_hit()
+            .filter(|h| {
+                let state = self.world.block(h.pos[0], h.pos[1], h.pos[2]);
+                let mut canceled = false;
+                self.native_block_highlight(h.pos, state, alpha as f32, &mut canceled);
+                !canceled
+            })
+            .map(|h| {
+                let state = self.world.block(h.pos[0], h.pos[1], h.pos[2]);
+                outline_after_terrain = self
+                    .pack
+                    .render
+                    .model_catalog
+                    .collect(state, BlockPos::new(h.pos[0], h.pos[1], h.pos[2]))
+                    .is_ok_and(|models| {
+                        models
+                            .iter()
+                            .any(|(_, model)| model.faces.iter().any(|f| f.translucent))
+                    });
+                self.outline_edges_iter(state, h.pos).collect()
+            })
+            .unwrap_or_default();
+>>>>>>> ed6772e2118
         pr.lap("pr_outline");
         let title = self.shows_panorama();
-        let (yaw, pitch) = if title {
+        let (yaw, pitch, roll) = if title {
             // PanoramaRenderer: the title cube spins at 0.1 degrees per tick, pitched 10 degrees.
             (
                 self.panorama_rotation.update(
@@ -11386,14 +12311,25 @@ impl Game<'_> {
                     self.settings.file.double("panoramaScrollSpeed") as f32,
                 ),
                 10.0,
+                0.0,
             )
         } else {
-            (view_yaw, view_pitch)
+            (view_yaw, view_pitch, view_roll)
+        };
+        let frame_view_matrix = if title {
+            sunrise_client::camera::view_matrix(yaw, pitch)
+        } else {
+            view
         };
         let fov_degrees = if title {
             85.0
         } else {
             self.fov_degrees(camera_alpha as f32, camera.to_array())
+        };
+        let cull_fov_degrees = if title {
+            85.0
+        } else {
+            sunrise_client::gfx::cull_fov(fov_degrees, (self.settings.fov as i32) as f32)
         };
         let camera_effects = fov::camera_effects_enabled(title, self.studio.flying());
         let bob = if !camera_effects {
@@ -11404,18 +12340,53 @@ impl Game<'_> {
         let spin = if !camera_effects {
             glam::Mat4::IDENTITY
         } else {
-            self.spinning_matrix(camera_alpha as f32)
+            self.spinning_matrix(alpha as f32)
         };
         let terrain_distance = self.terrain_distance();
         let distance = (terrain_distance * 16) as f32;
         let depth_far =
             sunrise_client::camera::depth_far(terrain_distance, self.settings.cloud_range);
+<<<<<<< HEAD
         // Only native mods read it: no matrices or allocation per frame without one.
         // Starling: and the mods made for Sunrise's own API (`native_camera`,
         // starling/native_compat.rs), which that list doesn't hold.
         let mods_read_camera = true;
+||||||| 46c00106def
+        let mods_read_camera = !mod_api::__private::mods().is_empty();
+=======
+        let view_transform = if camera_effects
+            && self.player.is_some()
+            && mod_api::__private::listened(mod_api::HookId::RenderViewTransform)
+            && let Some(renderer) = &self.renderer
+        {
+            let usable = renderer.view_transform_validator(
+                [yaw, pitch, roll],
+                fov_degrees,
+                depth_far,
+                bob,
+                spin,
+            );
+            mod_api::ViewTransform::with_frame(usable, |transform| {
+                self.native_render_view_transform(camera_alpha as f32, transform);
+                glam::Mat4::from_cols_array(&transform.matrix())
+            })
+        } else {
+            glam::Mat4::IDENTITY
+        };
+        // The pose the camera, GUI and hand see: the vanilla bob, then the mod's transform.
+        let posed_bob = bob * view_transform;
+>>>>>>> ed6772e2118
         self.screen_blur_requested.set(false);
-        self.native_camera_frame = (mods_read_camera && !title).then(|| {
+        // GUI and world hooks read the same frame snapshot. Keep its dimension allocation
+        // between frames rather than formatting another copy for the world renderer.
+        self.native_camera_entity_eye =
+            (!title && self.camera_subject().is_some()).then_some(self.view.eye);
+        let previous_camera = self.native_camera_frame.take();
+        self.native_camera_frame = (!title && !mod_api::__private::mods().is_empty()).then(|| {
+            let mut dimension =
+                previous_camera.map_or_else(String::new, |snapshot| snapshot.dimension);
+            dimension.clear();
+            dimension.push_str(self.dim.id());
             let partial = camera_alpha as f32;
             mod_api::Camera {
                 position: camera.to_array(),
@@ -11424,11 +12395,11 @@ impl Game<'_> {
                 partial_tick: partial,
                 yaw,
                 pitch,
+                roll,
                 fov_degrees,
                 near: 0.05,
                 far: depth_far,
-                view: (bob * spin * sunrise_client::camera::view_matrix(yaw, pitch))
-                    .to_cols_array(),
+                view: (posed_bob * spin * frame_view_matrix).to_cols_array(),
                 projection: glam::Mat4::perspective_rh(
                     fov_degrees.to_radians(),
                     size[0] as f32 / size[1].max(1) as f32,
@@ -11436,43 +12407,46 @@ impl Game<'_> {
                     0.05,
                 )
                 .to_cols_array(),
-                dimension: self.dim.id().to_string(),
+                dimension,
             }
         });
         let _projection_frame = (!title).then(|| self.activate_projection_frame());
         pr.lap("pr_projection");
         let vanilla_skin = self.apply_player_skin_override(title);
         // GUI hooks project against this frame's camera, including its bob/spin and FOV.
-        let mut hud = sunrise_client::spans::time("hud", || self.hud(size));
-        self.flush_ime(&mut hud);
-        self.native_gui_render_post(&mut hud, self.ui.hide_gui, self.focused);
-        if let Some((bar, fade)) = reload_overlay {
-            sunrise_client::level_loading::draw_loading_overlay(
-                &mut hud,
-                &self.gui.atlas,
-                bar,
-                fade,
-                self.settings.file.bool("darkMojangStudiosBackground"),
-            );
+        let mut hud = sunrise_client::spans::time("hud", || {
+            self.extract_frame_hud(
+                size,
+                reload_overlay,
+                title,
+                camera.to_array(),
+                view_yaw,
+                view_pitch,
+                fov_degrees,
+            )
+        });
+        if reload_overlay.is_none() {
+            self.flush_ime(&mut hud);
         }
         self.resolve_inline_profiles(&hud.inline_profiles);
         pr.lap("pr_hud");
-        self.locator_camera =
-            (!title).then_some((camera.to_array(), view_yaw, view_pitch, fov_degrees));
-        let mut requested_post_effects = self.requested_post_effects();
         // The packs' Polytone post chains, after vanilla's (#11486).
         let game_ticks = self.world.game_time as f64 + alpha;
         let delta_ticks = (game_ticks - self.polytone_post_ticks).clamp(0.0, 20.0) as f32;
         self.polytone_post_ticks = game_ticks;
         self.evaluate_pack_expressions(polytone_frame);
-        let polytone_extras = match (&self.pack.polytone_post, polytone_frame) {
+        let (polytone_effects, polytone_extras) = match (&self.pack.polytone_post, polytone_frame) {
             (Some(post), Some(frame)) => {
                 let (effects, extras) = post.frame(frame);
-                requested_post_effects.extend(effects);
-                Some(extras)
+                (effects, Some(extras))
             }
-            _ => None,
+            _ => (Vec::new(), None),
         };
+        let mut requested_post_effects = std::mem::take(&mut self.requested_post_effects_buf);
+        self.sync_requested_post_effects(
+            &mut requested_post_effects,
+            polytone_effects.iter().map(String::as_str),
+        );
         // Polytone's globals (wiki "Extra Shader Uniforms"), built only when something reads
         // them: here when an installed pack core shader does, and by the post effects when a
         // pass of theirs does (`Request::poly_globals`, called at most once a frame). The
@@ -11491,7 +12465,7 @@ impl Game<'_> {
                 depth_far,
                 0.05,
             ),
-            model_view: bob * spin * sunrise_client::camera::view_matrix(yaw, pitch),
+            model_view: posed_bob * spin * frame_view_matrix,
             sun_angle: sun_angle.to_radians() - std::f32::consts::FRAC_PI_2,
             day_time: day_time.rem_euclid(24000) as f32,
             delta_time: delta_ticks,
@@ -11501,11 +12475,24 @@ impl Game<'_> {
         let core_globals = self.reads_poly_globals().then(poly_globals);
         self.give_poly_globals(core_globals.as_ref());
         self.expression_frame = frame;
-        self.view_frustum =
-            self.world_view_frustum(camera, [fov_degrees, yaw, pitch], bob * spin, depth_far);
+        // Camera.createProjectionMatrixForCulling: max(fov, configuredFov), without bob or spin,
+        // under the mod's view transform.
+        self.view_frustum = self.world_view_frustum(
+            camera,
+            [cull_fov_degrees, yaw, pitch, roll],
+            view_transform,
+            depth_far,
+        );
         let billboard_frustum = if self.settings.sunrise.taa {
             self.renderer.as_ref().map(|r| {
-                r.camera_frustum_with_jitter(fov_degrees, yaw, pitch, bob * spin, depth_far)
+                r.camera_frustum_with_jitter(
+                    cull_fov_degrees,
+                    yaw,
+                    pitch,
+                    roll,
+                    view_transform,
+                    depth_far,
+                )
             })
         } else {
             self.view_frustum
@@ -11525,12 +12512,19 @@ impl Game<'_> {
         let mut pack_inputs = if title {
             Default::default()
         } else {
-            self.shader_pack_inputs(camera, alpha as f32, &sky)
+            self.shader_pack_inputs(camera, eye.map_or(camera, |e| e.0), alpha as f32, &sky)
         };
         // Retain the existing additive particle stream; the ordered dragon emitter appends
         // the eyes and rays to it without changing their material routing.
         let mut additive = self.particles.take_additive();
+<<<<<<< HEAD
         if !title && !kept_menu {
+||||||| 46c00106def
+        if !title {
+=======
+        if !title {
+            self.frame_batch_reserved_quads.set(additive.len() / 4);
+>>>>>>> ed6772e2118
             let (built, static_sections, visible_static_sections, static_stats) =
                 spans::time("entity_geometry", || {
                     self.entity_geometry(camera, alpha, billboard_frustum, entities, &mut additive)
@@ -11540,6 +12534,7 @@ impl Game<'_> {
             visible_static_block_entity_sections = visible_static_sections;
             static_block_entity_stats = static_stats;
         } else {
+            self.frame_batch_reserved_quads.set(0);
             // No level behind the panorama, so no entity either: the GPU path's
             // draws are started by `begin_skinning`, which only `entity_geometry`
             // runs, and would otherwise stay those of the last world frame and
@@ -11556,12 +12551,10 @@ impl Game<'_> {
             self.dragon_fireball_geometry(camera, alpha, &mut entities);
         }
         pr.lap("pr_dragon_fireballs_bolts");
+        let sky_effect_blocked = self.camera_subject().is_some_and(|c| c.blocks_sky);
         let (celestial, celestial_bodies, stars) = if title {
             (Vec::new(), Vec::new(), None)
-        } else if self.overworld_skybox()
-            && self.potions.effects.get("darkness").is_none()
-            && self.potions.effects.get("blindness").is_none()
-        {
+        } else if self.overworld_skybox() && !sky_effect_blocked {
             // Camera.doesMobEffectBlockSky: no sun, moon or stars.
             self.celestial_geometry(&sky, rain)
         } else if self.end_skybox() && self.settings.sunrise.sky {
@@ -11575,12 +12568,14 @@ impl Game<'_> {
         let (mut hand, hand_items) = if title || self.scoping() {
             Default::default()
         } else {
+            self.frame_batch_reserved_quads
+                .set((additive.len() / 4).saturating_add(entities.len() / 4));
             self.hand_geometry(camera_alpha)
         };
         // GameRenderer.render3dHud: the screen effects after the hand, in
         // its pass (the hand pass draws with `bob * view`).
         if !title {
-            let view = bob * sunrise_client::camera::view_matrix(yaw, pitch);
+            let view = posed_bob * frame_view_matrix;
             let aspect = size[0] as f32 / size[1].max(1) as f32;
             self.item_activation_geometry(camera_alpha as f32, view, aspect, &mut hand);
         }
@@ -11655,16 +12650,19 @@ impl Game<'_> {
                 &mut entities,
             );
             self.polytone_gpu_particles(camera, alpha);
+            self.follow_debug_selection();
         }
         let mut world_geometry = self.world_geometry.take().expect("view storage");
-        self.fill_world_geometry(
-            title,
+        let white = self.gui.atlas.sprites["sunrise/white"];
+        world_geometry.reset(
             camera.to_array(),
             view,
-            alpha,
-            &mut world_geometry,
-            &mut entities,
+            [(white.u0 + white.u1) * 0.5, (white.v0 + white.v1) * 0.5],
         );
+        world_geometry.set_model_cut(entities.len() as u32);
+        // Seconds of game time, wrapping every hour (72,000 ticks) so f32 keeps sub-tick steps.
+        world_geometry
+            .set_time(((self.world.game_time.rem_euclid(72_000) as f64 + alpha) / 20.0) as f32);
         if let Some((skin, slim)) = vanilla_skin
             && let Some(avatar) = self.player_model.as_mut()
         {
@@ -11673,7 +12671,7 @@ impl Game<'_> {
         // After the mods' world geometry, whose labels add see-through copies.
         let see_through = std::mem::take(&mut self.see_through_vertices);
         let colored_lights = if self.title.is_none() {
-            visuals.finish(self, camera)
+            visuals.finish(camera)
         } else {
             Vec::new()
         };
@@ -11682,13 +12680,18 @@ impl Game<'_> {
         // map_patches any earlier leaves them a frame behind.
         hud.patches.append(&mut self.map_patches);
         hud.patches.append(self.text_patches.get_mut());
-        self.dynamic_texture_patches(&mut hud.image_patches);
+        self.dynamic_texture_commands(&mut hud.dynamic_commands);
         let entity_spans = std::mem::take(self.entity_spans.get_mut());
         let entity_motion = std::mem::take(self.entity_motion.get_mut());
         let entity_motion_posed = std::mem::take(self.entity_motion_posed.get_mut());
         let glowing = std::mem::take(self.glowing_vertices.get_mut());
         let shadow_only = std::mem::take(self.shadow_only_vertices.get_mut());
         let skin = std::mem::take(self.skin_frame.get_mut());
+        use sunrise_world::dimension_type::Skybox;
+        let skybox = self.dimension_type().skybox;
+        let camera_fog = self.camera_fog_type(camera.to_array());
+        let boss_world_fog = self.boss_overlay.should_create_world_fog();
+        let fast_clouds = self.effective_clouds() == "fast";
         let frame = Frame {
             weather: &weather,
             weather_time: sunrise_client::weather::Time::new(self.world.game_time, alpha as f32),
@@ -11696,46 +12699,40 @@ impl Game<'_> {
             camera,
             yaw,
             pitch,
+            roll,
             fov_degrees,
+            cull_fov_degrees,
             eye: eye.filter(|_| !title).map_or(camera, |e| e.0),
             eye_rotation: eye.filter(|_| !title).map_or([yaw, pitch], |e| e.1),
             first_person: eye.is_none() || title || !self.view.detached,
             bob,
+            view_transform,
             spin,
             sky,
             shadow_scene_revision: (self.world.revision, self.world.chunks.membership_revision()),
             shadow_cache: self.settings.sunrise.shadow_cache,
             distance,
-            detail_distance: (self.streaming.radius * 16) as f32,
+            detail_distance: effective_detail_distance,
+            shadow_distance: Some(effective_detail_distance),
             depth_far,
             underwater,
-            water_plane: if title
-                || underwater
-                || !self
-                    .renderer
-                    .as_ref()
-                    .is_some_and(|r| r.wants_water_plane())
-            {
-                None
-            } else {
-                self.water_plane(camera)
-            },
             title,
+            sky_pass: !title
+                && sunrise_client::fog::sky_pass_present(camera_fog, sky_effect_blocked, skybox),
             sky_blocked: sunrise_client::fog::sky_pass_skipped(
-                self.camera_fog_type([camera.x, camera.y, camera.z]),
-                self.potions.effects.get("blindness").is_some()
-                    || self.potions.effects.get("darkness").is_some(),
-                self.boss_overlay.should_create_world_fog(),
+                camera_fog,
+                sky_effect_blocked,
+                boss_world_fog,
             ),
-            skybox: self.overworld_skybox() && self.settings.sunrise.sky,
-            end_sky: self.end_skybox() && self.settings.sunrise.sky,
+            skybox: skybox == Skybox::Overworld && self.settings.sunrise.sky,
+            end_sky: skybox == Skybox::End && self.settings.sunrise.sky,
             end_sky_sprite: self
                 .gui
                 .atlas
                 .sprites
                 .get("environment/end_sky")
                 .map(|r| [r.u0, r.v0, r.u1, r.v1]),
-            boss_world_fog: self.boss_overlay.should_create_world_fog(),
+            boss_world_fog,
             environment_fog: (self.dim == Dim::Nether).then_some((sky.fog_start, sky.fog_end)),
             cave_culling,
             water_fog,
@@ -11751,22 +12748,19 @@ impl Game<'_> {
             hud: &hud,
             glint_alpha: self.glint_frame.alpha,
             glint_ticks: self.glint_frame.scroll_ticks(),
-            clouds: (!title
-                && self.overworld_skybox()
-                && sunrise_client::clouds::visible(&self.settings.clouds, sky.cloud_color[3]))
-            .then(|| self.gui.atlas.sprites.get("sunrise/white"))
-            .flatten()
-            .map(|white| sunrise_client::clouds::Input {
-                texture: &self.pack.clouds,
-                uv: [(white.u0 + white.u1) / 2.0, (white.v0 + white.v1) / 2.0],
-                camera,
-                time: self.world.game_time,
-                partial_tick: alpha,
-                range: self.settings.cloud_range,
-                fast: self.settings.clouds == "fast",
-                color: sky.cloud_color,
-                height: sky.cloud_height,
-            }),
+            clouds: self
+                .frame_cloud_uv(title, &sky)
+                .map(|uv| sunrise_client::clouds::Input {
+                    texture: &self.pack.clouds,
+                    uv,
+                    camera,
+                    time: self.world.game_time,
+                    partial_tick: alpha,
+                    range: self.settings.cloud_range,
+                    fast: fast_clouds,
+                    color: sky.cloud_color,
+                    height: sky.cloud_height,
+                }),
             entities: &entities,
             explicit_particles: Some(&explicit_particle_quads),
             static_block_entities: &static_block_entities,
@@ -11779,14 +12773,18 @@ impl Game<'_> {
             glowing: &glowing,
             dynamic_lights: &self.dynamic_lights,
             colored_lights: &colored_lights,
-            emissive_layers: &emissive_layers,
+            emissive_layers: if self.title.is_none() {
+                &self.pack.render.emissive_layers
+            } else {
+                &[]
+            },
             lightning: sunrise_client::gfx::lightning::Input {
                 bolts: &bolts,
                 uv: sunrise_client::gfx::lightning::white_uv(&self.gui.atlas.font.white()),
             },
             additive: &additive,
             see_through: &see_through,
-            world_primitives: world_geometry.batch_with(&self.pack.render.mod_pipelines),
+            world_primitives: Default::default(),
             shadow_only: &shadow_only,
             celestial: if self.settings.sunrise.sky || title {
                 &celestial
@@ -11854,7 +12852,8 @@ impl Game<'_> {
         let debug_passes = self.debug_lists_gpu_passes();
         let lightmap_chart = self.debug_shows_lightmap();
         let mut prepared_draws = std::mem::take(&mut *self.prepared_model_draws.borrow_mut());
-        let result = match self.renderer.as_mut() {
+        let mut renderer_slot = self.renderer.take();
+        let result = match renderer_slot.as_mut() {
             Some(renderer) => {
                 use sunrise_client::client_perf::request::GpuSwitch;
                 let capture_gpu = self.profile.gpu();
@@ -11875,10 +12874,49 @@ impl Game<'_> {
                     sunrise_client::debug_overlay::GPU_TIMING_GAP
                 });
                 renderer.stage_prepared_draws(&prepared_draws);
-                consume(renderer, &frame)
+                self.render_snapshot.set(Some(RenderSnapshot {
+                    framebuffer: [renderer.config.width, renderer.config.height],
+                    prepared_generation: renderer.prepared_generation(),
+                    staged_prepared_draws: prepared_draws.len() as u64,
+                }));
+                self.pack_frame_state
+                    .set(renderer.shader_pack_state(&frame));
+                let mut slots = self.pack_frame_slots.borrow_mut();
+                slots.clear();
+                slots.extend_from_slice(renderer.pack_bound_mod_slots());
+                drop(slots);
+                let world_camera = self
+                    .native_camera_frame
+                    .as_ref()
+                    .filter(|_| self.has_world_render_hooks());
+                let mut driver = world_camera.map(|camera| {
+                    native_custom_geometry::GameWorldStageDriver::new(
+                        self,
+                        camera,
+                        alpha,
+                        &mut world_geometry,
+                    )
+                });
+                let rendered = consume(
+                    renderer,
+                    &frame,
+                    driver
+                        .as_mut()
+                        .map(|d| d as &mut dyn sunrise_client::gfx::world_primitives::FrameHooks),
+                );
+                self.render_snapshot.set(None);
+                rendered
             }
-            None => Err("renderer".into()),
+            None => {
+                self.pack_frame_state.set(None);
+                self.pack_frame_slots.borrow_mut().clear();
+                Err("renderer".into())
+            }
         };
+        drop(frame);
+        self.renderer = renderer_slot;
+        self.apply_pending_present_mode();
+        self.requested_post_effects_buf = requested_post_effects;
         prepared_draws.clear();
         *self.prepared_model_draws.borrow_mut() = prepared_draws;
         let _cleanup = spans::guard("pr_cleanup");
@@ -11909,6 +12947,57 @@ impl Game<'_> {
         result
     }
 }
+/// Read-only renderer state cached while `Game::renderer` is temporarily taken for
+/// `Renderer::render` so `ClientHost` queries keep working inside stage callbacks.
+#[derive(Clone, Copy)]
+pub(super) struct RenderSnapshot {
+    pub(super) framebuffer: [u32; 2],
+    pub(super) prepared_generation: Option<u64>,
+    pub(super) staged_prepared_draws: u64,
+}
+
+impl Game<'_> {
+    pub(super) fn has_renderer(&self) -> bool {
+        self.renderer.is_some() || self.render_snapshot.get().is_some()
+    }
+    pub(super) fn renderer_framebuffer(&self) -> Option<[u32; 2]> {
+        self.renderer
+            .as_ref()
+            .map(|r| [r.config.width, r.config.height])
+            .or_else(|| self.render_snapshot.get().map(|s| s.framebuffer))
+    }
+    pub(super) fn renderer_prepared_generation(&self) -> Option<u64> {
+        self.renderer.as_ref().map_or_else(
+            || {
+                self.render_snapshot
+                    .get()
+                    .and_then(|s| s.prepared_generation)
+            },
+            |r| r.prepared_generation(),
+        )
+    }
+    pub(super) fn renderer_prepared_room_info(&self) -> Option<(u64, u64)> {
+        let max_buffer_size = self.mod_gpu.as_ref()?.max_buffer_size();
+        let staged = match self.renderer {
+            Some(_) => 0,
+            None => self
+                .render_snapshot
+                .get()
+                .map_or(0, |s| s.staged_prepared_draws),
+        };
+        Some((max_buffer_size, staged))
+    }
+    /// The mod GPU handles: always there when a renderer is, also during `Renderer::render`.
+    pub(in crate::game) fn mod_gpu(&self) -> Option<&sunrise_client::gfx::ModGpuResources> {
+        self.mod_gpu.as_ref()
+    }
+    /// Installs `renderer` and the handles mods reach it through.
+    pub(in crate::game) fn set_renderer(&mut self, renderer: Renderer) {
+        self.mod_gpu = Some(renderer.mod_gpu().clone());
+        self.renderer = Some(renderer);
+    }
+}
+
 /// `computeNextAutosaveInterval`'s arithmetic: `Math.max(100, (int)(rate * 300.0F))`.
 fn autosave_interval(rate: f32) -> i64 {
     i64::from((rate * 300.0) as i32).max(100)
@@ -11921,6 +13010,7 @@ struct WindowKeyInput<'a> {
     state: ElementState,
     repeat: bool,
     text: Option<&'a str>,
+    shortcut: Option<sunrise_client::clipboard::EditShortcut>,
 }
 
 /// winit's events for a window's game, with any loop: a headless client (#4951) has no
@@ -12010,46 +13100,26 @@ impl Game<'_> {
                 self.held_key_text.released(key);
             }
         }
-        // The input method consumes composing keys before screen dispatch (including the Enter
-        // or Escape that Windows may send just after `Ime::Commit`).
-        if pressed && self.ime_suppresses_key() {
+        // The OS consumes composing keys before they can reach a screen or a shortcut.
+        if (pressed && self.ime_suppresses_key()) || before_screen(self) {
             return true;
         }
-        // Windows' Alt codes can supply text without a physical key. Dispatch it like
-        // KeyboardHandler.charTyped, rather than dropping it in a screen's key handler.
-        if pressed
-            && matches!(input.physical, PhysicalKey::Unidentified(_))
-            && let Some(text) = input.text
-        {
-            if self.preset_editor_title().is_some() {
-                self.screen_chars_typed(Some(text));
-                return true;
-            }
-            let text: String = text.chars().filter(|c| !c.is_control()).collect();
-            if !text.is_empty() && self.text_field_focused() && self.types_text() {
-                self.screen_text_each(&text, |game, c| {
-                    // Err only says no box of the screen takes it.
-                    let _ = game.type_chars_into_screen(c);
-                });
-            }
-            return true;
+        let key = match input.physical {
+            PhysicalKey::Code(key) => Some(key),
+            PhysicalKey::Unidentified(_) => None,
+        };
+        if let Err(error) = self.dispatch_window_keyboard(
+            event_loop,
+            key,
+            pressed,
+            input.repeat,
+            input.shortcut,
+            input.text,
+        ) {
+            self.error = Some(error);
+            event_loop.exit();
         }
-        if before_screen(self) {
-            return true;
-        }
-        if pressed
-            && let PhysicalKey::Code(key) = input.physical
-            && self.preset_editor_title().is_some()
-        {
-            let result = self.preset_editor_key_pressed(event_loop, key, input.repeat);
-            self.screen_chars_typed(input.text);
-            if let Err(error) = result {
-                self.error = Some(error);
-                event_loop.exit();
-            }
-            return true;
-        }
-        false
+        true
     }
 
     /// Window bookkeeping, shortcuts and overlays before dispatching to the screen. Returns
@@ -12082,6 +13152,8 @@ impl Game<'_> {
             self.physical_buttons.clear();
             self.drag_button = None;
             self.container_buttons.clear();
+            self.screen_state.context_menu_input.clear();
+            self.mod_browser_focus_lost();
         }
         if let WindowEvent::ModifiersChanged(m) = event {
             self.update_modifiers(m.state());
@@ -12093,6 +13165,9 @@ impl Game<'_> {
         // Pack drops on the resource-pack and Create New World screens.
         if let WindowEvent::DroppedFile(path) = event {
             self.drop_pack_file(path);
+            if mod_api::__private::listened(mod_api::HookId::ScreenFilesDropped) {
+                self.dropped_files.push(path.clone());
+            }
         }
         // Fullscreen is a window shortcut, before screens consume keyboard input.
         // Not Alt or Super on their own: leaving the window isn't playing with the keyboard.
@@ -12145,7 +13220,15 @@ impl Game<'_> {
                 (_, false) => KeyAction::Press,
                 (_, true) => KeyAction::Repeat,
             };
-            if self.debug_key(key, action) {
+            if self.context_menu_key_active()
+                && (self.context_menu_open()
+                    || (action != KeyAction::Press
+                        && self.context_menu_owns_key(Source::Keyboard, key)))
+            {
+                if action == KeyAction::Release {
+                    self.debug_key_release_cleanup(key);
+                }
+            } else if self.debug_key(key, action) {
                 return true;
             }
         }
@@ -12202,8 +13285,8 @@ impl Game<'_> {
                     let (w, h) = self.gui_size();
                     let (x, y) = sunrise_client::level_loading::file_fixer_cancel(w, h);
                     if sunrise_client::ui::hovered(self.cursor, x, y, 200.0, 20.0) {
-                        self.audio.play_button_click();
                         upgrade.set_canceled();
+                        self.play_audio_button_click();
                     }
                 }
                 _ => {}
@@ -12382,7 +13465,7 @@ impl Game<'_> {
             let handled = widget || self.preset_editor_mouse_clicked(code, double_click);
             self.save_title_options();
             if sound {
-                self.audio.play_button_click();
+                self.play_audio_button_click();
             }
             self.title_action(action)?;
             self.reopen_data_packs()?;
@@ -12454,8 +13537,7 @@ impl Game<'_> {
             }
             Screen::Inventory => {
                 self.inventory_mouse_release(!left)
-                    | self.station_release()
-                    | self.recipe_book_release()
+                    || (self.station_release() | self.recipe_book_release())
             }
             Screen::Chat if left_press => self.chat_click(),
             Screen::Creative if pressed => {
@@ -12463,11 +13545,18 @@ impl Game<'_> {
                 true
             }
             Screen::Creative => {
+<<<<<<< HEAD
                 let released = left && self.creative_screen.release();
                 let taken = self.inventory_mouse_release(!left) || released;
                 // Starling: Bedrock Inventory's window follows the pointer again.
                 self.bedrock_held = false;
                 taken
+||||||| 46c00106def
+                let released = left && self.creative_screen.release();
+                self.inventory_mouse_release(!left) || released
+=======
+                self.inventory_mouse_release(!left) || (left && self.creative_screen.release())
+>>>>>>> ed6772e2118
             }
             Screen::Paused if left_press && self.pause_menu => self.pause_click()?,
             Screen::WorldOptions if left_press => self.world_options_click(),
@@ -12481,6 +13570,7 @@ impl Game<'_> {
             }
             Screen::HudEditor if left => self.hud_editor_release(),
             Screen::ConfirmLink if left_press => self.confirm_link_click(),
+            Screen::DemoIntro if left_press => self.demo_intro_click(),
             Screen::DialogWarning if left_press => self.dialog_warning_click()?,
             Screen::WorldOptions if left => self.world_options_release(),
             Screen::Friends if left_press => self.friends_screen_click(),
@@ -12509,6 +13599,23 @@ impl Game<'_> {
         })
     }
 
+    #[cfg(test)]
+    fn handle_window_event_inner(
+        &mut self,
+        event_loop: &dyn EventLoopCtl,
+        event: WindowEvent,
+        cursor_sample: Option<sunrise_client::window::PointerSample>,
+        mouse_press_millis: Option<u64>,
+    ) -> bool {
+        self.handle_window_event_inner_as(
+            event_loop,
+            event,
+            cursor_sample,
+            mouse_press_millis,
+            input_trace::InputOrigin::User,
+        )
+    }
+
     /// One window event, in the order vanilla's `KeyboardHandler` and `MouseHandler` see it.
     ///
     /// A controller doesn't come through here in play: `pad_action` goes straight to the mappings
@@ -12519,12 +13626,13 @@ impl Game<'_> {
     /// `mouse_press_millis` is the monotonic timestamp of a physical press, absent for synthetic
     /// inputs and all other events.
     /// Returns true when button routing already settled the title before its Post.
-    fn handle_window_event_inner(
+    fn handle_window_event_inner_as(
         &mut self,
         event_loop: &dyn EventLoopCtl,
-        mut event: WindowEvent,
+        event: WindowEvent,
         cursor_sample: Option<sunrise_client::window::PointerSample>,
         mouse_press_millis: Option<u64>,
+        origin: input_trace::InputOrigin,
     ) -> bool {
         if self.platform_keypad_event(event_loop, &mut event) {
             return false;
@@ -12540,6 +13648,7 @@ impl Game<'_> {
                     state: key.state,
                     repeat: key.repeat,
                     text: key.text.as_deref(),
+                    shortcut: self.edit_shortcut(key),
                 },
                 before_screen,
             ),
@@ -12548,115 +13657,10 @@ impl Game<'_> {
         if handled {
             return false;
         }
-        // ScreenEvent.KeyPressed.Pre: the open screen hears of the key before
-        // it acts on it, and a cancelled press goes no further — no focus
-        // move, no Escape-close, no inventory or hotbar key, no typing by the
-        // key itself. It fires after the window's own
-        // shortcuts (fullscreen, screenshot, the debug keys, the narrator) so
-        // those keep working with a mod that cancels; the key's release still
-        // comes through.
-        //
-        // A key's characters are a separate callback of GLFW's, and it comes
-        // after the key callback (`KeyboardHandler.charTyped`): they are taken
-        // off the key here and dispatched once the screen has acted on it, on
-        // the screen that is open then (`ScreenEvent.CharacterTyped.Pre`).
-        // Options keeps its text on the key: its own key path routes a key's
-        // text between its boxes and its key-bind capture, and no key that
-        // carries text closes that screen or moves its focus. The title's
-        // screens keep theirs while no box has focus: Space presses a button
-        // there, and the box that opens must not take its character.
-        let mut typed: Option<String> = None;
-        if let WindowEvent::KeyboardInput {
-            event: key_event, ..
-        } = &mut event
-            && key_event.state == ElementState::Pressed
-        {
-            let title_text = control::title_owns_text(&self.screen, self.title.is_some());
-            if self.screen_hooks_open()
-                && self.screen != Screen::Options
-                && (!title_text || self.title.as_mut().is_some_and(|t| t.has_caret_field()))
-            {
-                typed = key_event.text.take().map(|text| text.to_string());
-            }
-            let canceled = match key_event.physical_key {
-                PhysicalKey::Code(key) => {
-                    self.screen_key_pressed(key, key_event.repeat)
-                        || (!key_event.repeat && self.container_key(key))
-                }
-                PhysicalKey::Unidentified(_) => false,
-            };
-            if self.screen_hooks_open()
-                && (self.screen == Screen::Options || (title_text && self.types_text()))
-            {
-                // The hook after the key's own, then the text the key path
-                // types in place (its own routing keeps it).
-                if let Some(text) = key_event.text.as_deref() {
-                    let left = self.screen_text_typed(text);
-                    if left.as_deref() != Some(text) {
-                        key_event.text = left.map(Into::into);
-                    }
-                }
-            }
-            if canceled {
-                // charTyped is a separate callback: the characters still
-                // reach the text box, without the key's own effects. Options'
-                // characters already passed the hook in place.
-                if let Some(text) = typed.as_deref() {
-                    self.screen_chars_typed(Some(text));
-                } else if self.screen == Screen::Options
-                    && let Some(text) = key_event.text.as_deref()
-                    && self.types_text()
-                {
-                    let text: String = text.chars().filter(|c| !c.is_control()).collect();
-                    if !text.is_empty() {
-                        // Err only says no box of the screen takes it.
-                        let _ = self.type_chars_into_screen(&text);
-                    }
-                }
-                return false;
-            }
-        }
-        // Screen.keyPressed: Tab, the arrows and Enter move and press the
-        // menu's focus, unless the focused widget or the screen keeps them.
-        if let WindowEvent::KeyboardInput {
-            event: key_event, ..
-        } = &event
-            && key_event.state == ElementState::Pressed
-            && let PhysicalKey::Code(key) = key_event.physical_key
-            && self.key_focus_key(event_loop, key)
-        {
-            // The keyboard's focus took the key; its characters are a separate
-            // callback and still come (`KeyboardHandler.charTyped`).
-            self.screen_chars_typed(typed.as_deref());
-            return false;
-        }
+        let initial_instance = self.screen_state.screen_instance;
         let mut mouse_post: Option<native_hooks::ScreenMousePost> = None;
         let mut title_settled = false;
         let result: Result<()> = (|| {
-            if let WindowEvent::MouseInput { state, button, .. } = &event
-                && !self.pad_synthetic_input()
-            {
-                self.track_drag_button(*button, *state == ElementState::Pressed);
-            }
-            if let WindowEvent::KeyboardInput { event, .. } = &event
-                && event.state == ElementState::Released
-                && let PhysicalKey::Code(key) = event.physical_key
-                && self.screen_key_released(key)
-            {
-                // Screen cancellation must not leave a held keyboard mapping down.
-                self.remove_device_key(&key);
-                self.mapped_key_event(key, false, false)?;
-                return Ok(());
-            }
-            if let WindowEvent::KeyboardInput { event, .. } = &event
-                && event.state == ElementState::Released
-                && self.screen == Screen::Options
-                && let PhysicalKey::Code(key) = event.physical_key
-            {
-                self.ui.options.modifiers = self.modifiers().bits;
-                let events = self.ui.options.key_released(&mut self.settings, key);
-                self.handle_option_events(events)?;
-            }
             match event {
                 WindowEvent::CloseRequested => {
                     if !self.settings.quit_shortcuts
@@ -12699,12 +13703,26 @@ impl Game<'_> {
                             self.keys.clear();
                             let options = self.toggle_options();
                             self.vanilla_mappings.set_keys_up_on_focus_loss(options);
+                            // GLFW releases every held key and button when
+                            // the window loses focus, so a mod's mappings go
+                            // up as vanilla's do; their pending clicks stay.
+                            self.mod_keys.set_all_up();
+                            self.capture(false);
+                        } else if self.screen_grab {
+                            // A mod screen's grab goes with the focus under a control
+                            // connection too; the game's own grab stays as it was.
                             self.capture(false);
                         }
                         self.regrab_on_refocus = held;
                     }
                 }
                 WindowEvent::CursorMoved { .. } => {
+                    // A screen holding the pointer grab hears only `screen_pointer_motion`:
+                    // where the system merely confines the hidden cursor (Windows, X11), its
+                    // moves leave the screen's cursor and drags alone.
+                    if self.mod_screen_grabs_pointer() {
+                        return Ok(());
+                    }
                     if let (Some(r), Some(sample)) = (&self.renderer, cursor_sample) {
                         let size = [r.config.width, r.config.height];
                         let projection = self.pointer_projection(size);
@@ -12713,61 +13731,72 @@ impl Game<'_> {
                             .map_or([0.0; 2], |previous| projection.drag_delta(previous, sample));
                         self.set_window_cursor(sample, projection);
                         let [w, h] = projection.gui.size.map(|v| v as f32);
-                        if self.studio_mouse_dragged(w) {
+                        if self.context_menu_hover([w, h]) {
+                            return Ok(());
+                        }
+                        let overlay = self.observed_overlay_now();
+                        if self.observed_screen_view().is_none() && self.studio_mouse_dragged(w) {
+                            return Ok(());
+                        }
+                        let button = if self.pad_synthetic_input() {
+                            if self.pad.menu.held[0] {
+                                Some(MouseButton::Left)
+                            } else {
+                                self.pad.menu.held[1].then_some(MouseButton::Right)
+                            }
+                        } else {
+                            self.drag_button
+                                .filter(|b| self.physical_buttons.contains(b))
+                        };
+                        if self.screen_mouse_moved(delta) {
+                            return Ok(());
+                        }
+                        if self.screen_state.screen_instance != initial_instance {
                             return Ok(());
                         }
                         match self.screen_mouse_dragged(delta) {
                             native_hooks::ScreenMousePre::Canceled => return Ok(()),
-                            native_hooks::ScreenMousePre::Passed(post) => {
-                                if self.container_drag() {
-                                    return Ok(());
-                                }
-                                mouse_post = Some(post);
-                            }
+                            native_hooks::ScreenMousePre::Passed(post) => mouse_post = Some(post),
                             native_hooks::ScreenMousePre::NotFired => {}
                         }
-                        if self.dialog_open() {
-                            self.dialog_drag();
+                        if self.screen_state.screen_instance != initial_instance {
+                            return Ok(());
                         }
-                        if self.screen == Screen::BlockEditor {
-                            self.block_editor_drag();
-                        }
-                        if self.screen == Screen::Advancements {
-                            self.advancements_drag();
-                        }
-                        if self.screen == Screen::Stats {
-                            self.stats_drag();
-                        }
-                        if self.screen == Screen::DebugOptions {
-                            self.debug_options_drag();
-                        }
-                        if self.screen == Screen::HudEditor {
-                            self.hud_editor_drag();
-                        }
-                        if self.screen == Screen::WorldOptions {
-                            self.world_options_drag();
-                        }
-                        if self.screen == Screen::Creative {
-                            let batch = HudBatch::new(size, self.settings.gui_scale_inputs());
-                            let (_, oy) = Self::creative_origin(&batch);
-                            self.creative_screen.drag_scrollbar(self.cursor.1 - oy);
-                        }
-                        if self.screen == Screen::Inventory {
-                            self.station_drag();
-                            self.recipe_book_drag();
-                        }
-                        if matches!(self.screen, Screen::Inventory | Screen::Creative) {
-                            self.inventory_drag_move();
-                        }
-                        if self.title_input_active()
-                            && let Some(title) = &mut self.title
+                        if delta != [0.0; 2]
+                            && let Some(button) = button
                         {
+<<<<<<< HEAD
                             title.drag(self.cursor, (w, h));
                             title.drag_field(&self.gui.atlas, self.cursor.0);
                         }
                         self.drag_title_player();
                         if self.dragging && self.screen == Screen::Options {
                             self.options_drag()?;
+||||||| 46c00106def
+                            title.drag(self.cursor, (w, h));
+                            title.drag_field(&self.gui.atlas, self.cursor.0);
+                        }
+                        if self.dragging && self.screen == Screen::Options {
+                            self.options_drag()?;
+=======
+                            // A press on the item panel's list is the panel's until its
+                            // release: no widget, menu or slot hears the drag.
+                            let panel = self.mod_browser_drag_move();
+                            let handled = panel
+                                || (self.observed_screen_view().is_some()
+                                    && self.mounted_widget_mouse_dragged(
+                                        self.cursor(),
+                                        glfw_button(button),
+                                        delta,
+                                        glfw_modifiers(self.modifiers),
+                                    ));
+                            let handled = handled
+                                || (self.screen_state.screen_instance == initial_instance
+                                    && self.screen_drag_response(overlay, button, size, (w, h))?);
+                            if let Some(post) = mouse_post.as_mut() {
+                                post.handled = handled;
+                            }
+>>>>>>> ed6772e2118
                         }
                     }
                 }
@@ -12792,6 +13821,9 @@ impl Game<'_> {
                         }) * wheel_sensitivity
                     };
                     let d = scaled(raw_y) as f32;
+                    if self.context_menu_wheel(d) {
+                        return Ok(());
+                    }
                     // ScreenEvent.MouseScrolled.Pre: the open screen hears of
                     // the wheel before anything scrolls, and a cancelled turn
                     // scrolls nothing — no bundle, no list, slider or
@@ -12799,36 +13831,60 @@ impl Game<'_> {
                     // playing, which the gate excludes. A wheel the pad or the
                     // keyboard's focus made up is not the mouse: it fires
                     // nothing.
-                    if !self.pad_synthetic_input()
-                        && let Some(screen) = self.screen_view_now()
-                    {
-                        let mut canceled = false;
-                        self.native_screen_mouse_scrolled_pre(
-                            &screen,
-                            [scaled(raw_x), scaled(raw_y)],
-                            glfw_modifiers(self.modifiers),
-                            &mut canceled,
-                        );
-                        if canceled {
+                    let scroll = [scaled(raw_x), scaled(raw_y)];
+                    if !self.pad_synthetic_input() {
+                        let modifiers = glfw_modifiers(self.modifiers);
+                        if let Some(receiver) = self.observed_input_screen() {
+                            let mut canceled = false;
+                            self.native_screen_mouse_scrolled_pre(
+                                &receiver.view(),
+                                scroll,
+                                modifiers,
+                                &mut canceled,
+                            );
+                            if canceled {
+                                return Ok(());
+                            }
+                            mouse_post = Some(native_hooks::ScreenMousePost::new(
+                                receiver,
+                                modifiers,
+                                native_hooks::ScreenMousePostKind::Scroll(scroll),
+                            ));
+                            if self.screen_state.screen_instance != initial_instance {
+                                return Ok(());
+                            }
+                        }
+                        if self.observed_screen_view().is_some() {
+                            if self.mounted_widget_mouse_scrolled(self.cursor(), scroll, modifiers)
+                            {
+                                if let Some(post) = mouse_post.as_mut() {
+                                    post.handled = true;
+                                }
+                                return Ok(());
+                            }
+                            if self.screen_state.screen_instance != initial_instance {
+                                return Ok(());
+                            }
+                        }
+                        if mouse_post.is_some() && self.container_wheel(d) {
+                            if let Some(post) = mouse_post.as_mut() {
+                                post.handled = true;
+                            }
                             return Ok(());
                         }
-                        if self.container_wheel(scaled(raw_y) as f32) {
+                        if self.screen_state.screen_instance != initial_instance {
                             return Ok(());
                         }
-                        mouse_post = Some(native_hooks::ScreenMousePost::Scroll([
-                            scaled(raw_x),
-                            scaled(raw_y),
-                        ]));
                     }
-                    // A prompt is vanilla's `Minecraft.screen`, the only one MouseHandler.onScroll
-                    // tells: the top one hears the wheel, as the click arms below pick it, and
-                    // nothing behind it does.
-                    if self.prompt_open() {
-                        if self.command_prompt.is_some() || self.link_prompt.is_some() {
-                        } else if self.code_of_conduct.is_some() {
-                            self.code_of_conduct_scroll(d);
-                        } else if self.server_packs.prompt.is_none() {
-                            self.dialog_scroll(d);
+                    // Only the topmost overlay is the receiving screen.
+                    if let Some(overlay) = self.observed_overlay_now() {
+                        let handled = match overlay {
+                            "code_of_conduct" => self.code_of_conduct_scroll(d),
+                            "dialog" => self.dialog_scroll(d),
+                            _ => false,
+                        };
+                        if let Some(post) = mouse_post.as_mut() {
+                            post.handled = handled;
                         }
                         return Ok(());
                     }
@@ -12837,13 +13893,48 @@ impl Game<'_> {
                     // screen underneath (bundle, creative tabs' list, station)
                     // and the Post event hear nothing of that notch.
                     if d != 0.0 && self.mod_browser_wheel(d) {
+                        if let Some(post) = mouse_post.as_mut() {
+                            post.handled = true;
+                        }
                         return Ok(());
                     }
+                    let mut screen_scrolled = false;
                     let stick_scroll = self.pad_stick_scroll();
                     let step_scroll = self.pad_step_scroll();
+<<<<<<< HEAD
                     if self.title_input_active() && self.screen != Screen::Win {
                         let gui = self.gui_size();
                         let title = self.title.as_mut().expect("title input is active");
+||||||| 46c00106def
+                    if self.title_input_active()
+                        && self.screen != Screen::Win
+                        && let Some(title) = &mut self.title
+                    {
+                        let size = self
+                            .window
+                            .as_ref()
+                            .map(|w| w.inner_size())
+                            .unwrap_or_default();
+                        let batch = HudBatch::new(
+                            [size.width, size.height],
+                            self.settings.gui_scale_inputs(),
+                        );
+                        let gui = (batch.width, batch.height);
+=======
+                    if self.screen == Screen::Playing
+                        && let Some(title) = &mut self.title
+                    {
+                        let size = self
+                            .window
+                            .as_ref()
+                            .map(|w| w.inner_size())
+                            .unwrap_or_default();
+                        let batch = HudBatch::new(
+                            [size.width, size.height],
+                            self.settings.gui_scale_inputs(),
+                        );
+                        let gui = (batch.width, batch.height);
+>>>>>>> ed6772e2118
                         if step_scroll {
                             title.step_scroll(d, self.cursor, gui);
                         } else if stick_scroll {
@@ -12852,7 +13943,7 @@ impl Game<'_> {
                             // Starling: a finger's drag scrolls and never cycles a button.
                             title.finger_scroll(d, self.cursor, gui);
                         } else {
-                            title.scroll_worlds(d, self.cursor, gui);
+                            screen_scrolled = title.scroll_worlds(d, self.cursor, gui);
                         }
                     }
                     // MouseHandler.onScroll: the hotbar (or the spectator
@@ -12875,6 +13966,7 @@ impl Game<'_> {
                         };
                         self.hotbar_wheel_step(wheel, vertical_steps);
                     }
+<<<<<<< HEAD
                     if self.screen == Screen::Chat && d != 0.0 {
                         self.chat_scroll(d);
                     }
@@ -12886,127 +13978,228 @@ impl Game<'_> {
                     }
                     if self.screen == Screen::Options && d != 0.0 {
                         self.options_scroll(d, finger)?;
+||||||| 46c00106def
+                    if self.screen == Screen::Chat && d != 0.0 {
+                        self.chat_scroll(d);
+                    }
+                    if self.screen == Screen::Social && d != 0.0 {
+                        self.social_scroll(d);
+                    }
+                    if self.screen == Screen::CommandBlock && d != 0.0 {
+                        self.command_block_scroll(d);
+                    }
+                    if self.screen == Screen::Options && d != 0.0 {
+                        self.options_scroll(d)?;
+=======
+                    match self.screen {
+                        // ChatScreen.mouseScrolled always takes the wheel.
+                        Screen::Chat => {
+                            self.chat_scroll(d);
+                            screen_scrolled = true;
+                        }
+                        Screen::Social => screen_scrolled |= self.social_scroll(d),
+                        Screen::CommandBlock => screen_scrolled |= self.command_block_scroll(d),
+                        Screen::Options => screen_scrolled |= self.options_scroll(d)?,
+                        _ => {}
+>>>>>>> ed6772e2118
                     }
                     // AbstractContainerScreen.mouseScrolled: a bundle under the
                     // cursor takes the wheel before the screen's own scrolling.
                     let bundle = bundles::takes_bundle_wheel(self.screen)
                         && d != 0.0
                         && self.bundle_scroll(scaled(raw_x), scaled(raw_y));
-                    if self.screen == Screen::Creative && d != 0.0 && !bundle {
+                    if bundle {
+                        screen_scrolled = true;
+                    }
+                    if self.screen == Screen::Creative
+                        && d != 0.0
+                        && !bundle
+                        && self.creative_screen.can_scroll(&self.pack.names)
+                    {
                         self.creative_screen.wheel(f64::from(d), &self.pack.names);
+                        screen_scrolled = true;
                     }
                     if self.screen == Screen::Inventory
                         && d != 0.0
                         && !bundle
-                        && !self.tweak_scroll(d, self.inventory_target().0)
+                        && (self.tweak_scroll(d, self.inventory_target().0)
+                            || self.station_scroll(d))
                     {
-                        self.station_scroll(d);
+                        screen_scrolled = true;
                     }
-                    if self.screen == Screen::Stats && d != 0.0 {
-                        self.stats_scroll(d);
-                    }
-                    if self.screen == Screen::WorldOptions && d != 0.0 {
-                        self.world_options_scroll(d);
-                    }
-                    if self.screen == Screen::ServerLinks && d != 0.0 {
-                        self.server_links_scroll(d);
-                    }
-                    if self.screen == Screen::DebugOptions && d != 0.0 {
-                        self.debug_options_scroll(d);
-                    }
-                    if self.screen == Screen::HudEditor && d != 0.0 {
-                        self.hud_editor_scroll(f64::from(d));
-                    }
-                    if self.screen == Screen::Advancements {
-                        self.advancements_scroll(scaled(raw_x) as f32, d);
+                    screen_scrolled |= match self.screen {
+                        Screen::Stats if d != 0.0 => self.stats_scroll(d),
+                        Screen::WorldOptions if d != 0.0 => self.world_options_scroll(d),
+                        Screen::ServerLinks if d != 0.0 => self.server_links_scroll(d),
+                        Screen::DebugOptions if d != 0.0 => self.debug_options_scroll(d),
+                        Screen::HudEditor if d != 0.0 => self.hud_editor_scroll(f64::from(d)),
+                        Screen::Advancements => self.advancements_scroll(scroll[0] as f32, d),
+                        _ => false,
+                    };
+                    if let Some(post) = mouse_post.as_mut() {
+                        post.handled = screen_scrolled;
                     }
                 }
-                event @ WindowEvent::MouseInput { state, button, .. } => {
+                WindowEvent::MouseInput { state, button, .. } => {
                     let pressed = state == ElementState::Pressed;
                     let code = glfw_button(button);
-                    // Set by the outer handler at physical button-up.
+                    let modifiers = glfw_modifiers(self.modifiers);
+                    let synthetic = self.pad_synthetic_input();
+                    let mouse_source = if synthetic {
+                        context_menu::MouseSource::Game
+                    } else {
+                        origin.into()
+                    };
+                    // An open context menu takes every press (and its matching release) until it closes.
+                    if self.context_menu_mouse(mouse_source, button, pressed) {
+                        return Ok(());
+                    }
                     let owned_release = std::mem::take(&mut self.container_owned_up);
                     let had_screen = self.mod_mappings_screen_open() || self.remote_loading();
-                    let mut container_handled = owned_release;
-                    let mut button_post = None;
-                    let mut screen_press = None;
-                    let mut double_click = false;
-                    // A controller or a click made by keyboard focus does not fire screen hooks.
-                    if !self.pad_synthetic_input()
-                        && let Some(screen) = self.screen_view_now()
-                    {
-                        if let Some(millis) = mouse_press_millis {
-                            let press = native_hooks::ScreenPress {
-                                activation: self.screen_activation,
-                                screen: self.screen,
-                                title_mode: if self.screen == Screen::Playing {
-                                    self.title
-                                        .as_ref()
-                                        .map(sunrise_client::title::Title::mode_activation)
-                                } else {
-                                    None
-                                },
-                                button: code,
-                                millis,
-                            };
-                            double_click = press.is_double_click(self.last_screen_press);
-                            screen_press = Some(press);
-                        }
-                        let modifiers = glfw_modifiers(self.modifiers);
+                    let receiver = (!synthetic).then(|| self.observed_input_screen()).flatten();
+                    let title_mode = (self.screen == Screen::Playing
+                        && !self.screen_over_playing())
+                    .then(|| {
+                        self.title
+                            .as_ref()
+                            .map(sunrise_client::title::Title::mode_activation)
+                    })
+                    .flatten();
+                    let press_millis = mouse_press_millis.filter(|_| receiver.is_some());
+                    let double_click = press_millis.is_some_and(|millis| {
+                        self.screen_state.is_double_click(
+                            millis,
+                            initial_instance,
+                            title_mode,
+                            code,
+                        )
+                    });
+                    if !synthetic {
+                        self.track_drag_button(button, pressed);
+                    }
+                    if pressed {
+                        self.mod_browser_other_press(button == MouseButton::Left);
+                    }
+                    if let Some(receiver) = &receiver {
                         let mut canceled = false;
-                        let hook = if pressed {
+                        if pressed {
                             self.native_screen_mouse_button_pressed_pre(
-                                &screen,
+                                &receiver.view(),
                                 code,
                                 modifiers,
                                 double_click,
                                 &mut canceled,
                             );
-                            mod_api::HookId::ScreenMouseButtonPressedPost
                         } else {
                             self.native_screen_mouse_button_released_pre(
-                                &screen,
+                                &receiver.view(),
                                 code,
                                 modifiers,
                                 &mut canceled,
                             );
-                            mod_api::HookId::ScreenMouseButtonReleasedPost
-                        };
+                        }
                         if canceled {
-                            // NeoForge treats a cancelled Pre as handled without running Post.
-                            if let Some(press) = screen_press {
-                                self.last_screen_press = Some(press);
+                            // A vetoed release of a press on the item panel
+                            // drops its item, sending nothing.
+                            if !pressed && button == MouseButton::Left {
+                                self.mod_browser_release_vetoed();
+                            }
+                            if self.screen_state.screen_instance == initial_instance
+                                && let Some(millis) = press_millis
+                            {
+                                self.screen_state.record_click(
+                                    millis,
+                                    initial_instance,
+                                    title_mode,
+                                    code,
+                                );
                             }
                             return Ok(());
                         }
-                        if mod_api::__private::listened(hook) {
-                            button_post = Some(native_hooks::ScreenButtonPost {
-                                screen: self.observe_view(screen),
-                                button: code,
-                                pressed,
-                                modifiers,
-                                double_click,
-                            });
+                    }
+                    // The left release of a press on the item panel's list is
+                    // the panel's, even once its menu closed or was replaced:
+                    // no screen, mounted widget or container hook hears it.
+                    let panel_release =
+                        !pressed && button == MouseButton::Left && self.mod_browser_release();
+                    let mut handled = owned_release || panel_release;
+                    if !panel_release && self.screen_state.screen_instance == initial_instance {
+                        let inventory_release = !pressed
+                            && matches!(self.screen, Screen::Inventory | Screen::Creative)
+                            && self.observed_overlay_now().is_none()
+                            && !self.remote_loading();
+                        let native_child = pressed.then(|| self.native_pointer_child()).flatten();
+                        if let Some(child) = native_child {
+                            // A hit belongs to the first ordered child even if it declines.
+                            // Only the child's own answer can change focus.
+                            let accepted =
+                                self.route_screen_button(button, code, true, double_click)?;
+                            if accepted
+                                && button == MouseButton::Left
+                                && self.screen_state.screen_instance == initial_instance
+                            {
+                                self.focus_native_pointer_child(child);
+                            }
+                            handled = true;
+                        } else {
+                            if !owned_release
+                                && !inventory_release
+                                && !self.key_focus_driving()
+                                && self.observed_screen_view().is_some()
+                            {
+                                let mouse = self.cursor();
+                                handled = if pressed {
+                                    self.mounted_widget_mouse_clicked(
+                                        mouse,
+                                        code,
+                                        modifiers,
+                                        double_click,
+                                    )
+                                } else {
+                                    self.mounted_widget_mouse_released(mouse, code, modifiers)
+                                };
+                            }
+                            if !handled && self.screen_state.screen_instance == initial_instance {
+                                handled = receiver.is_some()
+                                    && self.container_mouse(button, pressed, false);
+                            }
+                            if !handled && self.screen_state.screen_instance == initial_instance {
+                                handled =
+                                    self.route_screen_button(button, code, pressed, double_click)?;
+                            }
                         }
-                        container_handled = self.container_mouse(button, pressed, owned_release);
+                        if inventory_release
+                            && !handled
+                            && self.screen_state.screen_instance == initial_instance
+                            && !self.key_focus_driving()
+                            && self.observed_screen_view().is_some()
+                        {
+                            handled =
+                                self.mounted_widget_mouse_released(self.cursor(), code, modifiers);
+                        }
                     }
-                    if !container_handled {
-                        self.key_focus_mouse_press(&event);
-                    }
-                    let mut handled = container_handled
-                        || self.route_screen_button(button, code, pressed, double_click)?;
                     if had_screen {
                         self.settle_title_mode();
                         title_settled = true;
                     }
-                    if let Some(post) = button_post {
-                        handled = self.screen_button_post(&post, handled);
+                    if let Some(receiver) = receiver {
+                        handled = self.screen_button_post(
+                            &receiver,
+                            code,
+                            pressed,
+                            modifiers,
+                            double_click,
+                            handled,
+                        );
                     }
-                    if handled && let Some(press) = screen_press {
-                        self.last_screen_press = Some(press);
+                    if handled
+                        && self.screen_state.screen_instance == initial_instance
+                        && let Some(millis) = press_millis
+                    {
+                        self.screen_state
+                            .record_click(millis, initial_instance, title_mode, code);
                     }
-                    // MouseHandler.onButton: only an unhandled edge goes through to the
-                    // gameplay mappings, and only once the settled state has no screen.
+                    // Only the unhandled edge, with no screen now open, reaches mappings.
                     if handled
                         || self.mod_mappings_screen_open()
                         || self.remote_loading()
@@ -13017,10 +14210,9 @@ impl Game<'_> {
                     {
                         return Ok(());
                     }
-                    if pressed && !self.pad_synthetic_input() {
+                    if pressed && !synthetic {
                         self.mod_mappings_button(button, true);
                     }
-                    // A click that merely closed a screen is not a new click into the world.
                     if pressed && !self.captured && !had_screen {
                         self.capture(true);
                         return Ok(());
@@ -13030,315 +14222,10 @@ impl Game<'_> {
                         self.physical_buttons.remove(&button);
                         return Ok(());
                     }
-                    self.extras_mouse(button, pressed);
                     if pressed && self.settings.keys.get("key.smoothCamera") == input {
                         self.smooth_camera_action();
                     }
                     self.mapped_mouse_event(button, &input, pressed)?;
-                }
-                // ConfirmScreen.keyPressed: Escape answers no, once its delay is over.
-                WindowEvent::KeyboardInput { event, .. }
-                    if self.screen == Screen::Dead && self.ui.death_confirm.is_some() =>
-                {
-                    if event.state == ElementState::Pressed
-                        && event.physical_key == PhysicalKey::Code(KeyCode::Escape)
-                        && self
-                            .ui
-                            .death_confirm
-                            .is_some_and(|t| t.elapsed().as_millis() >= 1000)
-                    {
-                        self.death_confirm_answer(false)?;
-                    }
-                }
-                // ConfirmScreen.keyPressed: Escape answers no.
-                WindowEvent::KeyboardInput { event, .. } if self.command_prompt.is_some() => {
-                    if event.state == ElementState::Pressed
-                        && let PhysicalKey::Code(key) = event.physical_key
-                    {
-                        self.command_prompt_key(key);
-                    }
-                }
-                WindowEvent::KeyboardInput { event, .. } if self.link_prompt.is_some() => {
-                    if event.state == ElementState::Pressed
-                        && event.physical_key == PhysicalKey::Code(KeyCode::Escape)
-                    {
-                        self.answer_link_prompt(false);
-                    }
-                }
-                // CodeOfConductScreen.shouldCloseOnEsc is false: no key leaves the screen.
-                WindowEvent::KeyboardInput { .. } if self.code_of_conduct.is_some() => {}
-                WindowEvent::KeyboardInput { event, .. } if self.server_packs.prompt.is_some() => {
-                    if event.state == ElementState::Pressed
-                        && event.physical_key == PhysicalKey::Code(KeyCode::Escape)
-                    {
-                        self.answer_pack_prompt(false)?;
-                    }
-                }
-                WindowEvent::KeyboardInput { event, .. } if self.dialog_open() => {
-                    let shortcut = self.edit_shortcut(&event);
-                    if event.state == ElementState::Pressed
-                        && let PhysicalKey::Code(key) = event.physical_key
-                    {
-                        self.dialog_key(key, shortcut, event.text.as_deref())?
-                    }
-                }
-                WindowEvent::KeyboardInput { event, .. }
-                    if self.screen == Screen::Chat && self.title.is_none() =>
-                {
-                    if let PhysicalKey::Code(key) = event.physical_key {
-                        if event.state == ElementState::Pressed {
-                            self.insert_device_key(key);
-                            self.chat_key(&event);
-                        } else {
-                            self.remove_device_key(&key);
-                        }
-                    }
-                }
-                WindowEvent::KeyboardInput { event, .. } if self.sign_edit.is_some() => {
-                    self.sign_edit_key(&event)
-                }
-                WindowEvent::KeyboardInput { event, .. } if self.book.is_some() => {
-                    self.book_key(&event)
-                }
-                WindowEvent::KeyboardInput { event, .. }
-                    if self.screen == Screen::Creative
-                        && self.creative_screen.tab().search
-                        && !self.mod_browser_typing()
-                        && event.state == ElementState::Pressed
-                        && !matches!(event.physical_key, PhysicalKey::Code(KeyCode::Escape)) =>
-                {
-                    if let PhysicalKey::Code(key) = event.physical_key
-                        && self.search_tab_hotbar_key(key)
-                    {
-                        // The hovered slot took the key, and its characters
-                        // go nowhere (`ignoreTextInput`).
-                        typed = None;
-                    } else if let Some(shortcut) = self.edit_shortcut(&event) {
-                        self.creative_search_shortcut(shortcut);
-                    } else if let PhysicalKey::Code(key) = event.physical_key {
-                        // EditBox.keyPressed: arrows, Home, End, Delete and Backspace.
-                        let before = self.creative_screen.search.value.clone();
-                        let (ctrl, shift) = (self.has_control_down(), self.has_shift_down());
-                        if self.creative_screen.search.key(key, ctrl, shift) {
-                            if self.creative_screen.search.value != before {
-                                self.creative_screen.scroll = 0.0;
-                            }
-                        } else {
-                            self.creative_search_edit(event.text.as_deref());
-                        }
-                    } else {
-                        self.creative_search_edit(event.text.as_deref());
-                    }
-                }
-                WindowEvent::KeyboardInput { event, .. }
-                    if self.recipe_search_focused()
-                        && event.state == ElementState::Pressed
-                        && !matches!(event.physical_key, PhysicalKey::Code(KeyCode::Escape)) =>
-                {
-                    // The recipe book's search box takes every key but Escape.
-                    self.recipe_key(&event);
-                }
-                WindowEvent::KeyboardInput { event, .. }
-                    if self.mod_browser_typing()
-                        && event.state == ElementState::Pressed
-                        && !matches!(event.physical_key, PhysicalKey::Code(KeyCode::Escape)) =>
-                {
-                    // A mod's item panel's search box, as the recipe book's.
-                    self.mod_browser_key(&event);
-                }
-                WindowEvent::KeyboardInput { event, .. }
-                    if self.station_typing()
-                        && event.state == ElementState::Pressed
-                        && !matches!(event.physical_key, PhysicalKey::Code(KeyCode::Escape)) =>
-                {
-                    // The anvil rename box takes every key but Escape (AnvilScreen.keyPressed).
-                    if let Some(shortcut) = self.edit_shortcut(&event) {
-                        self.station_shortcut(shortcut);
-                    } else if let PhysicalKey::Code(key) = event.physical_key
-                        && self.station_key(key)
-                    {
-                    } else {
-                        let backspace = event.physical_key == PhysicalKey::Code(KeyCode::Backspace);
-                        self.station_text(event.text.as_deref(), backspace);
-                    }
-                }
-                WindowEvent::KeyboardInput { event, .. }
-                    if self.screen == Screen::WorldOptions
-                        && !matches!(event.physical_key, PhysicalKey::Code(KeyCode::Escape)) =>
-                {
-                    self.world_options_key(&event)
-                }
-                WindowEvent::KeyboardInput { event, .. } if self.screen == Screen::Win => {
-                    self.win_key(&event)?
-                }
-                WindowEvent::KeyboardInput { event, .. }
-                    if self.screen.takes_presses() && event.state == ElementState::Pressed =>
-                {
-                    self.screen_press(&event)
-                }
-                // Options consumes presses; releases still reach the bound
-                // gameplay mapping below, including sneak/sprint toggles.
-                WindowEvent::KeyboardInput { event, .. }
-                    if self.screen == Screen::Options && event.state == ElementState::Pressed =>
-                {
-                    if let Some(shortcut) = self.edit_shortcut(&event)
-                        && self.options_shortcut(shortcut)
-                    {
-                        return Ok(());
-                    }
-                    if let PhysicalKey::Code(key) = event.physical_key {
-                        self.options_key(key, event.text.as_deref())?;
-                    }
-                }
-                WindowEvent::KeyboardInput { event, .. }
-                    if self.screen == Screen::Paused
-                        && event.state == ElementState::Pressed
-                        && self.pause_menu
-                        && !matches!(event.physical_key, PhysicalKey::Code(KeyCode::Escape)) =>
-                {
-                    if let PhysicalKey::Code(key) = event.physical_key {
-                        self.native_panel_key_event(key, true, event.repeat);
-                    }
-                    if let PhysicalKey::Code(key) = event.physical_key {
-                        self.pause_key(key)?;
-                    }
-                }
-                WindowEvent::KeyboardInput { event, .. }
-                    if self.screen == Screen::Dead && event.state == ElementState::Pressed =>
-                {
-                    if let PhysicalKey::Code(key) = event.physical_key {
-                        self.native_panel_key_event(key, true, event.repeat);
-                    }
-                    if let PhysicalKey::Code(key) = event.physical_key {
-                        self.death_key(key)?;
-                    }
-                }
-                WindowEvent::KeyboardInput { event, .. } if self.title_input_active() => {
-                    if event.state == ElementState::Pressed {
-                        if let Some(shortcut) = self.edit_shortcut(&event) {
-                            self.title_shortcut(shortcut);
-                            return Ok(());
-                        }
-                        // `TabNavigationBar.keyPressed` comes before the open
-                        // tab's own widgets: Ctrl plus a digit or Tab picks a
-                        // tab instead of reaching them.
-                        if let PhysicalKey::Code(key) = event.physical_key {
-                            let ctrl = self.has_control_down_with_quirk();
-                            let shift = self.has_shift_down();
-                            let tab = self
-                                .title
-                                .as_mut()
-                                .and_then(|t| t.tab_bar_key(key, ctrl, shift));
-                            if let Some(sound) = tab {
-                                if sound {
-                                    self.audio.play_button_click();
-                                }
-                                return Ok(());
-                            }
-                        }
-                        let (w, h) = self.gui_size();
-                        match event.physical_key {
-                            // `WorldListEntry.keyPressed`: Space joins too, with the button click sound.
-                            PhysicalKey::Code(
-                                code @ (KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Space),
-                            ) if code != KeyCode::Space
-                                || self.title.as_mut().is_some_and(|t| {
-                                    !t.has_caret_field()
-                                        && (t.list_focused() || t.focused_button.is_some())
-                                }) =>
-                            {
-                                let (action, sound) = self
-                                    .title
-                                    .as_mut()
-                                    .map_or((Action::None, false), |t| t.confirm_key_size((w, h)));
-                                self.save_title_options();
-                                if sound {
-                                    self.audio.play_button_click();
-                                }
-                                self.title_action(action)?;
-                            }
-                            PhysicalKey::Code(
-                                key @ (KeyCode::Backspace
-                                | KeyCode::Delete
-                                | KeyCode::ArrowLeft
-                                | KeyCode::ArrowRight
-                                | KeyCode::Home
-                                | KeyCode::End),
-                            ) if self.title.as_mut().is_some_and(|t| t.has_caret_field()) => {
-                                let (ctrl, shift) =
-                                    (self.has_control_down(), self.has_shift_down());
-                                if let Some(t) = self.title.as_mut() {
-                                    t.field_key(key, ctrl, shift);
-                                }
-                            }
-                            PhysicalKey::Code(
-                                key @ (KeyCode::ArrowLeft
-                                | KeyCode::ArrowRight
-                                | KeyCode::ArrowUp
-                                | KeyCode::ArrowDown),
-                            ) => {
-                                let shift = self.has_shift_down();
-                                if let Some(t) = self.title.as_mut() {
-                                    t.arrow_key(key, (w, h), shift);
-                                }
-                            }
-                            PhysicalKey::Code(key)
-                                if self
-                                    .title
-                                    .as_mut()
-                                    .is_some_and(|t| t.page_missing_mods(key, (w, h))) => {}
-                            PhysicalKey::Code(KeyCode::Backspace) => self.title_edit(None, true),
-                            PhysicalKey::Code(KeyCode::Tab) => {
-                                let shift = self.has_shift_down();
-                                if let Some(t) = self.title.as_mut() {
-                                    t.tab_dir(shift, (w, h));
-                                }
-                            }
-                            PhysicalKey::Code(KeyCode::Escape) => {
-                                if let Some(t) = self.title.as_mut() {
-                                    t.escape();
-                                    self.reopen_data_packs()?;
-                                }
-                                self.save_title_options();
-                            }
-                            PhysicalKey::Code(KeyCode::F5) => {
-                                if let Some(t) = self.title.as_mut() {
-                                    t.refresh_servers();
-                                }
-                            }
-                            _ => self.title_edit(event.text.as_deref(), false),
-                        }
-                    }
-                }
-                WindowEvent::KeyboardInput { event, .. } => {
-                    let PhysicalKey::Code(key) = event.physical_key else {
-                        return Ok(());
-                    };
-                    let pressed = event.state == ElementState::Pressed;
-                    if self.key_press_canceled(key, pressed, event.repeat) {
-                        return Ok(());
-                    }
-                    self.native_panel_key_event(
-                        key,
-                        event.state == ElementState::Pressed,
-                        event.repeat,
-                    );
-                    // Screen.keyPressed sees the physical key, repeats included.
-                    if event.state == ElementState::Pressed
-                        && self.screen == Screen::Inventory
-                        && (self.merchant_key(key) || self.recipe_book_key(key))
-                    {
-                        return Ok(());
-                    }
-                    // ScreenEvent.KeyPressed.Post / KeyReleased.Post: no screen arm
-                    // took the key, so the open screen's `keyPressed` returned
-                    // false; a cancel marks it handled and the game's own key
-                    // handling never sees it.
-                    if self.screen_key_post(key, event.state == ElementState::Pressed, event.repeat)
-                    {
-                        return Ok(());
-                    }
-                    self.mapped_key_event(key, event.state == ElementState::Pressed, event.repeat)?;
                 }
                 WindowEvent::RedrawRequested => {
                     let flight_spans = self
@@ -13354,6 +14241,17 @@ impl Game<'_> {
                     let elapsed = now.duration_since(self.previous);
                     self.frame_ticks = elapsed.as_secs_f32() * 20.0;
                     self.previous = now;
+                    // `elapsed` is the interval that just ended: the wall time of the iteration
+                    // before this one, booked now with the work it left, its own.
+                    let booked = self.profile.unbooked.take();
+                    if let Some(frame) = &booked {
+                        self.record_perf_frame(
+                            elapsed.as_secs_f32() * 1000.0,
+                            frame.cpu_ms,
+                            frame.gpu_ms,
+                            &frame.spans,
+                        );
+                    }
                     self.upload_pace.frame(elapsed);
                     self.studio_fly(elapsed);
                     // Arrow-key camera controls belong to gameplay; chat and
@@ -13406,7 +14304,9 @@ impl Game<'_> {
                     self.advance_flight();
                     self.tick_world_icon();
                     let ticked = Instant::now();
-                    let rendered = self.render_and_flip(elapsed)?;
+                    // A mod's `framerate_limit` of 0 skips this frame's render.
+                    let limit = self.framerate_limit();
+                    let rendered = limit != 0 && self.render_and_flip(elapsed)?;
                     self.native_frame_end()?;
                     // Drain once for both the raw flight and the slow-frame/capture route.
                     let frame_spans = if sunrise_client::spans::recording_here() {
@@ -13419,17 +14319,36 @@ impl Game<'_> {
                         sunrise_client::spans::FrameRecording::block_entity_work,
                     );
                     drop(flight_spans);
+<<<<<<< HEAD
                     let mut perf_times = None;
                     let mut diagnostic_sample = None;
                     // Starling: the frame for the performance test's averages (perf_lab.rs).
                     let mut lab_sample = None;
+||||||| 46c00106def
+                    let mut perf_times = None;
+=======
+                    let mut own_work = None;
+>>>>>>> ed6772e2118
                     if let Some(r) = self.renderer.as_mut() {
                         let cpu = now.elapsed().saturating_sub(r.last_wait);
                         sunrise_threads::work::tick_end(cpu.as_nanos() as u64);
+                        let ms = |d: Duration| d.as_secs_f32() * 1000.0;
+                        let gpu = if rendered {
+                            r.gpu_times.last().copied()
+                        } else {
+                            None
+                        };
+                        own_work = Some((ms(cpu), gpu));
                         if rendered {
+<<<<<<< HEAD
                             let ms = |d: Duration| d.as_secs_f32() * 1000.0;
                             lab_sample = Some((ms(elapsed), ms(cpu), r.gpu_times.last().copied()));
                             perf_times = Some((ms(cpu), r.gpu_times.last().copied()));
+||||||| 46c00106def
+                            let ms = |d: Duration| d.as_secs_f32() * 1000.0;
+                            perf_times = Some((ms(cpu), r.gpu_times.last().copied()));
+=======
+>>>>>>> ed6772e2118
                             let g = &self.settings.sunrise;
                             // The scale while Dynamic Resolution moves it on its own.
                             let dynamic_scale = g
@@ -13522,6 +14441,7 @@ impl Game<'_> {
                         r.gpu_times.clear();
                         self.platform_frame_hint(rendered, cpu);
                     }
+<<<<<<< HEAD
                     if let Some(sample) = diagnostic_sample {
                         let context = self.diagnostic_context();
                         crate::performance::submit(sample, context);
@@ -13532,6 +14452,11 @@ impl Game<'_> {
                     }
                     self.perf_lab_frame(lab_sample);
                     self.limit_frame();
+||||||| 46c00106def
+                    self.limit_frame();
+=======
+                    self.limit_frame(limit);
+>>>>>>> ed6772e2118
                     let paused = self.pauses_game();
                     if paused != self.pause {
                         let mut cancel = false;
@@ -13606,16 +14531,16 @@ impl Game<'_> {
                         log::warn!("Sunrise: couldn't save the world icon: {error}");
                     }
                     self.record_streaming_work(rendered, block_entity_work, &frame_spans);
+                    if let Some((cpu_ms, gpu_ms)) = own_work {
+                        // The next iteration books this one with the interval it ends in.
+                        self.profile.unbooked = Some(profile_capture::UnbookedFrame {
+                            cpu_ms,
+                            gpu_ms,
+                            spans: frame_spans,
+                        });
+                    }
                     if rendered {
                         self.frame_stats.record(elapsed.as_secs_f32() * 1000.0);
-                        if let Some((cpu, gpu)) = perf_times {
-                            self.record_perf_frame(
-                                elapsed.as_secs_f32() * 1000.0,
-                                cpu,
-                                gpu,
-                                &frame_spans,
-                            );
-                        }
                         if sunrise_threads::alloc_count::ON {
                             self.record_frame_allocs();
                         }
@@ -13636,8 +14561,11 @@ impl Game<'_> {
                             && self.screen == Screen::Playing
                             && self.player.is_some()
                         {
-                            self.perf
-                                .frame(elapsed.as_secs_f32() * 1000.0, &frame_spans);
+                            // The interval is the last iteration's, and so are its spans.
+                            self.perf.frame(
+                                elapsed.as_secs_f32() * 1000.0,
+                                booked.as_ref().map_or(&[], |frame| frame.spans.as_slice()),
+                            );
                             if startup::filling() {
                                 let mut fill: Vec<(&'static str, usize)> =
                                     self.streaming.stages().to_vec();
@@ -13660,6 +14588,8 @@ impl Game<'_> {
                         self.frames += 1;
                         self.fps_frames += 1;
                         sunrise_client::crash::debug_crash_tick();
+                        // `BlockableEventLoop.relayDelayCrash`: a worker's panic is reported on this thread.
+                        sunrise_client::crash::relay_worker_panic();
                         if self.fps_at.elapsed() >= Duration::from_secs(1) {
                             self.fps = self.fps_frames as f32 / self.fps_at.elapsed().as_secs_f32();
                             self.fps_frames = 0;
@@ -13685,15 +14615,406 @@ impl Game<'_> {
         {
             self.screen_mouse_post(post);
         }
-        // ScreenEvent.CharacterTyped.Pre: GLFW's char callback comes after its
-        // key callback, so a key's characters reach the screen the key left
-        // open, after the key's own effects (`KeyboardHandler.charTyped`).
-        self.screen_chars_typed(typed.as_deref());
         if let Err(e) = result {
             self.error = Some(e);
             event_loop.exit();
         }
         title_settled
+    }
+
+    /// Dispatch to the topmost screen only, taking the receiver's own result.
+    fn screen_drag_response(
+        &mut self,
+        overlay: Option<&str>,
+        button: MouseButton,
+        framebuffer: [u32; 2],
+        gui: (f32, f32),
+    ) -> Result<bool> {
+        let left = button == MouseButton::Left;
+        if let Some(overlay) = overlay {
+            return Ok(left && overlay == "dialog" && self.dialog_drag());
+        }
+        if !self.pad_synthetic_input() && self.container_drag() {
+            return Ok(true);
+        }
+        if self.screen == Screen::Playing
+            && let Some(title) = self.title.as_mut()
+        {
+            return Ok(left
+                && (title.drag(self.cursor, gui)
+                    || title.drag_field(&self.gui.atlas, self.cursor.0)));
+        }
+        Ok(match self.screen {
+            Screen::BlockEditor if left => self.block_editor_drag(),
+            Screen::Advancements if left => self.advancements_drag(),
+            Screen::Stats if left => self.stats_drag(),
+            Screen::DebugOptions if left => self.debug_options_drag(),
+            Screen::HudEditor if left => self.hud_editor_drag(),
+            Screen::WorldOptions if left => self.world_options_drag(),
+            Screen::Options if left => self.options_drag()?,
+            Screen::Creative => {
+                let batch = HudBatch::new(framebuffer, self.settings.gui_scale_inputs());
+                let (_, oy) = Self::creative_origin(&batch);
+                (left && self.creative_screen.drag_scrollbar(self.cursor.1 - oy))
+                    || self.inventory_drag_move()
+            }
+            Screen::Inventory => {
+                (left && (self.station_drag() || self.recipe_book_drag()))
+                    || self.inventory_drag_move()
+            }
+            _ => false,
+        })
+    }
+
+    /// Route a winit key event and its text independently: Windows Alt-code
+    /// characters can arrive without a physical key (`KeyboardHandler.charTyped`).
+    fn dispatch_window_keyboard(
+        &mut self,
+        event_loop: &dyn EventLoopCtl,
+        key: Option<KeyCode>,
+        pressed: bool,
+        repeat: bool,
+        shortcut: Option<sunrise_client::clipboard::EditShortcut>,
+        text: Option<&str>,
+    ) -> Result<()> {
+        if !self.context_menu_key_active() {
+            self.dispatch_window_keyboard_as::<false>(
+                event_loop, key, pressed, repeat, shortcut, text,
+            )
+        } else {
+            self.dispatch_window_keyboard_as::<true>(
+                event_loop, key, pressed, repeat, shortcut, text,
+            )
+        }
+    }
+
+    #[inline(always)]
+    fn dispatch_window_keyboard_as<const MENU: bool>(
+        &mut self,
+        event_loop: &dyn EventLoopCtl,
+        key: Option<KeyCode>,
+        pressed: bool,
+        repeat: bool,
+        shortcut: Option<sunrise_client::clipboard::EditShortcut>,
+        text: Option<&str>,
+    ) -> Result<()> {
+        let has_screen = self.observed_screen_view().is_some();
+        let menu_blocking = MENU
+            && (self.context_menu_open()
+                || key.is_some_and(|k| self.context_menu_owns_key(Source::Keyboard, k)));
+        if let Some(key) = key
+            && !self.dispatch_screen_key_as::<MENU>(
+                event_loop,
+                key,
+                pressed,
+                repeat,
+                shortcut,
+                Source::Keyboard,
+            )?
+            && !self.key_press_canceled(key, pressed, repeat)
+        {
+            self.native_panel_key_event(key, pressed, repeat);
+            self.mapped_key_event(key, pressed, repeat)?;
+        }
+        // GLFW's character event follows the key, even if KeyPressed.Pre canceled;
+        // recheck the menu in case a key callback just opened one.
+        if pressed && has_screen && !menu_blocking && !self.context_menu_open() {
+            self.settle_title_mode();
+            self.screen_chars_typed(text);
+        }
+        Ok(())
+    }
+
+    /// Shared window/socket ScreenEvent Pre → the captured screen → cancellable Post.
+    /// A declined event is never offered to a replacement screen or its bindings.
+    fn dispatch_screen_key(
+        &mut self,
+        event_loop: &dyn EventLoopCtl,
+        key: KeyCode,
+        pressed: bool,
+        repeat: bool,
+        shortcut: Option<sunrise_client::clipboard::EditShortcut>,
+        source: Source,
+    ) -> Result<bool> {
+        if !self.context_menu_key_active() {
+            self.dispatch_screen_key_as::<false>(event_loop, key, pressed, repeat, shortcut, source)
+        } else {
+            self.dispatch_screen_key_as::<true>(event_loop, key, pressed, repeat, shortcut, source)
+        }
+    }
+
+    #[inline(always)]
+    fn dispatch_screen_key_as<const MENU: bool>(
+        &mut self,
+        event_loop: &dyn EventLoopCtl,
+        key: KeyCode,
+        pressed: bool,
+        repeat: bool,
+        shortcut: Option<sunrise_client::clipboard::EditShortcut>,
+        source: Source,
+    ) -> Result<bool> {
+        if MENU && self.context_menu_key_event(source, key, pressed, repeat) {
+            return Ok(true);
+        }
+        let instance = self.screen_state.screen_instance;
+        let receiver = self.observed_input_screen();
+        let canceled = if pressed {
+            self.screen_key_pressed_on(receiver.as_ref(), key, repeat)
+        } else {
+            self.screen_key_released_on(receiver.as_ref(), key)
+        };
+        if canceled {
+            if !pressed && source == Source::Keyboard {
+                // Cleanup a physical release without dispatching it to another screen.
+                self.remove_device_key(&key);
+                self.mapped_key_event(key, false, false)?;
+            }
+            return Ok(true);
+        }
+        if self.screen_state.screen_instance == instance
+            && self.screen_key_response(event_loop, key, pressed, repeat, shortcut)?
+        {
+            return Ok(true);
+        }
+        let post_canceled = self.screen_key_post_on(receiver.as_ref(), key, pressed, repeat);
+        Ok(post_canceled
+            || self.screen_state.screen_instance != instance
+            || (pressed
+                && ((receiver.is_some() && self.context_menu_open())
+                    || self.mounted_widget_captures_input()
+                    || self.observed_overlay_now().is_some()
+                    || self.title_input_active()
+                    || matches!(
+                        self.screen,
+                        Screen::Chat
+                            | Screen::Options
+                            | Screen::Social
+                            | Screen::WorldOptions
+                            | Screen::CommandBlock
+                            | Screen::BlockEditor
+                            | Screen::DebugOptions
+                            | Screen::DemoIntro
+                            | Screen::Win
+                    ))))
+    }
+
+    fn screen_key_response(
+        &mut self,
+        event_loop: &dyn EventLoopCtl,
+        key: KeyCode,
+        pressed: bool,
+        repeat: bool,
+        shortcut: Option<sunrise_client::clipboard::EditShortcut>,
+    ) -> Result<bool> {
+        let instance = self.screen_state.screen_instance;
+        let modifiers = glfw_modifiers(self.modifiers);
+        if !pressed {
+            if self.mounted_widget_key_released(key, modifiers) {
+                return Ok(true);
+            }
+            if self.screen_state.screen_instance != instance
+                || self.observed_overlay_now().is_some()
+            {
+                return Ok(false);
+            }
+            return match self.screen {
+                Screen::Options => self.options_key_released(key),
+                Screen::Win => self.win_key(key, false),
+                _ => Ok(false),
+            };
+        }
+        if !repeat && self.container_key(key) {
+            return Ok(true);
+        }
+        if self.screen_state.screen_instance != instance {
+            return Ok(false);
+        }
+        // AdvancementsScreen.keyPressed consumes its own binding before its children.
+        if self.screen == Screen::Advancements
+            && self.observed_overlay_now().is_none()
+            && sunrise_client::keybinds::key_name(key)
+                == Some(self.settings.keys.get("key.advancements"))
+        {
+            self.close_advancements();
+            return Ok(true);
+        }
+        if key == KeyCode::Escape
+            && self.screen == Screen::Mod
+            && self.observed_overlay_now().is_none()
+        {
+            self.close_mod_screen();
+            return Ok(true);
+        }
+        if self.mounted_widget_key_pressed(key, repeat, modifiers) {
+            return Ok(true);
+        }
+        if self.screen_state.screen_instance != instance {
+            return Ok(false);
+        }
+        let overlay = self.observed_overlay_now();
+        let container =
+            matches!(self.screen, Screen::Inventory | Screen::Creative) && overlay.is_none();
+        if overlay == Some("dialog")
+            && (!self.screen_state.widgets.has_focus() || key == KeyCode::Escape)
+            && self.dialog_key(key, shortcut)?
+        {
+            return Ok(true);
+        }
+        if self.preset_editor_key(key) {
+            return Ok(true);
+        }
+        let focus_handled = self.key_focus_key(event_loop, key);
+        if let Some(handled) = focus_handled
+            && (handled || !container)
+        {
+            return Ok(handled);
+        }
+        if self.screen_state.screen_instance != instance {
+            return Ok(false);
+        }
+        // The real focused child has already had the key. A custom child's declined key
+        // is not translated into a mouse click or passed to a vanilla field behind it.
+        if !container && self.screen_state.widgets.has_focus() && key != KeyCode::Escape {
+            return Ok(false);
+        }
+        match self.observed_overlay_now() {
+            Some("command_prompt") => return Ok(self.command_prompt_key(key)),
+            Some("link_prompt") => {
+                if key == KeyCode::Escape {
+                    self.answer_link_prompt(false);
+                    return Ok(true);
+                }
+                return Ok(false);
+            }
+            Some("server_pack_prompt") => {
+                if key == KeyCode::Escape {
+                    self.answer_pack_prompt(false)?;
+                    return Ok(true);
+                }
+                return Ok(false);
+            }
+            Some("code_of_conduct" | "dialog") => return Ok(false),
+            _ => {}
+        }
+        if self.sign_edit.is_some() {
+            return Ok(self.sign_edit_key(key, shortcut));
+        }
+        if self.book.is_some() {
+            return Ok(self.book_key(key, shortcut));
+        }
+        if self.screen == Screen::Playing && self.title.is_some() {
+            return self.title_screen_key(key, shortcut);
+        }
+        match self.screen {
+            Screen::Chat => return Ok(self.chat_key(key, shortcut)),
+            Screen::Social => return Ok(self.social_key(key)),
+            Screen::CommandBlock => return Ok(self.command_block_key_code(key, shortcut, None)),
+            Screen::BlockEditor => return Ok(self.block_editor_key_code(key, shortcut, None)),
+            Screen::DebugOptions => return Ok(self.debug_options_key(key, shortcut)),
+            Screen::Options => {
+                if shortcut.is_some_and(|shortcut| self.options_shortcut(shortcut)) {
+                    return Ok(true);
+                }
+                return self.options_key(key, None);
+            }
+            Screen::WorldOptions if key != KeyCode::Escape => {
+                return Ok(self.world_options_key(key, shortcut));
+            }
+            Screen::Win => return self.win_key(key, true),
+            Screen::Paused if self.pause_menu && key != KeyCode::Escape => {
+                return self.pause_key(key);
+            }
+            Screen::Dead => return self.death_key(key),
+            _ => {}
+        }
+        if container {
+            return self.container_screen_key(key, shortcut);
+        }
+        if key == KeyCode::Escape && self.screen != Screen::Playing {
+            self.key_pressed(key, key)?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    fn title_screen_key(
+        &mut self,
+        key: KeyCode,
+        shortcut: Option<sunrise_client::clipboard::EditShortcut>,
+    ) -> Result<bool> {
+        let field_focused = self.vanilla_text_field_focused();
+        if let Some(shortcut) = shortcut
+            && field_focused
+        {
+            self.title_shortcut(shortcut);
+            return Ok(true);
+        }
+        let ctrl = self.has_control_down_with_quirk();
+        let shift = self.has_shift_down();
+        if let Some(sound) = self
+            .title
+            .as_mut()
+            .and_then(|t| t.tab_bar_key(key, ctrl, shift))
+        {
+            if sound {
+                self.play_audio_button_click();
+            }
+            return Ok(true);
+        }
+        let size = self.gui_size();
+        let Some(title) = self.title.as_mut() else {
+            return Ok(false);
+        };
+        match key {
+            KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Space
+                if key != KeyCode::Space
+                    || (!title.has_caret_field()
+                        && (title.list_focused() || title.focused_button.is_some())) =>
+            {
+                let (action, sound) = title.confirm_key_size(size);
+                let handled = sound || !matches!(action, Action::None);
+                self.save_title_options();
+                if sound {
+                    self.play_audio_button_click();
+                }
+                self.title_action(action)?;
+                Ok(handled)
+            }
+            KeyCode::Backspace
+            | KeyCode::Delete
+            | KeyCode::ArrowLeft
+            | KeyCode::ArrowRight
+            | KeyCode::Home
+            | KeyCode::End
+                if title.has_caret_field() =>
+            {
+                Ok(title.field_key(key, ctrl, shift))
+            }
+            KeyCode::ArrowLeft | KeyCode::ArrowRight | KeyCode::ArrowUp | KeyCode::ArrowDown => {
+                title.arrow_key(key, size, shift);
+                Ok(false)
+            }
+            key if title.page_missing_mods(key, size) => Ok(true),
+            KeyCode::Backspace if field_focused => {
+                self.title_edit(None, true);
+                Ok(true)
+            }
+            KeyCode::Tab => {
+                title.tab_dir(shift, size);
+                Ok(false)
+            }
+            KeyCode::Escape => {
+                title.escape();
+                self.reopen_data_packs()?;
+                self.save_title_options();
+                Ok(true)
+            }
+            KeyCode::F5 if matches!(title.mode, sunrise_client::title::Mode::Multiplayer(_)) => {
+                title.refresh_servers();
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
     }
 }
 /// misc/forcefield.png for the world border wall (square, power of two).
@@ -13735,7 +15056,34 @@ impl<'a> Game<'a> {
         Self::initialize_mod_runtime_for_tests();
         // A scoped hook on this thread asks this game's parts.
         mod_api::__private::mark_game_thread();
-        let loop_side = options.execution_role.loop_side();
+        let role = options.execution_role;
+        let loop_side = role.loop_side();
+        let item_data = res.core.item_data.context();
+        // The window and its integrated server share the instance's one settings authority.
+        let native_settings = options.mods.settings.clone();
+        if role.is_logical_server() {
+            // Config loading and server startup hooks can read settings before the world
+            // publishes its loop context. An integrated server takes its own capture.
+            let settings = if item_data.origin() == role.data_load_origin() {
+                item_data.captured_loop_context(loop_side)
+            } else {
+                let inventory =
+                    sunrise_mod_package::enabled::EnabledMods::read(&options.resources)?;
+                let ids: std::collections::BTreeSet<_> = inventory.server_ids().collect();
+                let registered = native_hooks::mod_settings::registered_setting_keys()
+                    .filter(|(owner, _)| ids.contains(owner));
+                item_data.loop_context_with_registered(loop_side, [], registered)
+            };
+            let server_owners: std::collections::BTreeSet<_> =
+                sunrise_mod_package::enabled::EnabledMods::read(&options.resources)?
+                    .server_ids()
+                    .map(str::to_owned)
+                    .collect();
+            let _ = native_settings
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .sync_from_loop_context(&settings, |owner| server_owners.contains(owner));
+        }
         let root = options.resources.clone();
         let mod_sources = options.mods.clone();
         let registry = pack.assets.registry;
@@ -13756,6 +15104,7 @@ impl<'a> Game<'a> {
                 ),
                 None,
                 pack.render.model_library.as_deref().ok(),
+                !options.execution_role.is_dedicated_server(),
             )
         })?;
         let world = if options.execution_role.is_logical_server() {
@@ -13767,18 +15116,37 @@ impl<'a> Game<'a> {
             settings.file.int("tutorialStep"),
         ));
         let creative = options.creative;
+        let hud_layer_bounds = if options.execution_role.is_client() {
+            use sunrise_client::gui_layers::{VanillaGuiLayer, order};
+            Vec::with_capacity(
+                order().map_or(VanillaGuiLayer::ALL.len(), |order| order.slots().len()),
+            )
+        } else {
+            Vec::new()
+        };
         let inventory = vec![None; 36];
         let now = Instant::now();
         let look = options.look;
         let slow_frame_ms = options
             .spikes
             .unwrap_or(sunrise_client::client_perf::SLOW_FRAME_MS);
-        let mut particles = sunrise_client::particles::ParticleEngine::new(
-            &pack.source,
-            &gui.atlas.sprites,
-            &gui.atlas.translucent,
-        );
-        particles.set_block_state_source(Game::particle_block_states);
+        let particles = if options.execution_role.is_client() {
+            let mut engine = sunrise_client::particles::ParticleEngine::new(
+                &pack.source,
+                &gui.atlas.sprites,
+                &gui.atlas.translucent,
+            );
+            engine.set_block_state_source(Game::particle_block_states);
+            engine
+        } else if options.execution_role.is_dedicated_server() {
+            sunrise_client::particles::ParticleEngine::without_sprites()
+        } else {
+            sunrise_client::particles::ParticleEngine::new_server(
+                &pack.source,
+                &gui.atlas.sprites,
+                &gui.atlas.translucent,
+            )
+        };
         let resource_source = pack.source.clone();
         let (pack, gui) = if let Some(initial) = initial {
             let mut unpublished = pack.clone();
@@ -13807,7 +15175,11 @@ impl<'a> Game<'a> {
             1,
         );
         streaming.paused = true;
-        let standalone_geometry = native_block_entity_draw::StandaloneGeometry::new(&pack, &gui);
+        let standalone_geometry = native_block_entity_draw::StandaloneGeometry::new(
+            &pack,
+            &gui,
+            res.try_block_entity_render(),
+        );
         let mut game = Game {
             structure_spawns: sunrise_client::mobs::spawn_selection::StructureSpawns::load(
                 &options.resources,
@@ -13818,6 +15190,7 @@ impl<'a> Game<'a> {
             rest_loader: None,
             pending_entry: None,
             debug_density: RefCell::default(),
+            debug_fps_texts: RefCell::default(),
             pending_pack_reload: false,
             frame_attempted: render_settings::FrameAttempt::default(),
             pack_folder: None,
@@ -13834,6 +15207,7 @@ impl<'a> Game<'a> {
             collision: res.collision(),
             motion: res.motion(),
             health_resources: res.motion().health.clone(),
+            vehicle_contact_hurts: Vec::new(),
             damage_tag_generation: 1,
             data_map_registries: Vec::new(),
             pending_initial_models: None,
@@ -13841,6 +15215,7 @@ impl<'a> Game<'a> {
             pack,
             gui,
             instance_groups: Default::default(),
+            prepared_items: Default::default(),
             standalone_geometry,
             fog: Default::default(),
             screen_fx: Default::default(),
@@ -13858,6 +15233,7 @@ impl<'a> Game<'a> {
             view_arrival: Default::default(),
             options,
             player: None,
+            drop_spam_throttler: Default::default(),
             spawn: None,
             clock: FixedStep::default(),
             previous_position: Vec3::ZERO,
@@ -13901,8 +15277,6 @@ impl<'a> Game<'a> {
             rejected_keys: HashSet::new(),
             physical_buttons: HashSet::new(),
             drag_button: None,
-            screen_activation: 0,
-            last_screen_press: None,
             right_click_emulation: Default::default(),
             cursor: (0.0, 0.0),
             window_cursor: None,
@@ -13911,8 +15285,13 @@ impl<'a> Game<'a> {
             captured: false,
             capture_mode: None,
             regrab_on_refocus: false,
+            screen_grab: false,
+            pointer_grab_request: std::cell::Cell::new(None),
+            dropped_files: Vec::new(),
             controller_notice: Default::default(),
             focused: true,
+            window_hovered: false,
+            window_occluded: false,
             unclaimed_window: false,
             unclaimed_modifiers: None,
             focus_after_run: None,
@@ -13937,12 +15316,14 @@ impl<'a> Game<'a> {
             window: None,
             resize_state: None,
             renderer: None,
+            mod_gpu: None,
             last_device_recovery: None,
             entity_vertices: Vec::new(),
             dynamic_lights: Vec::new(),
             luminance: Default::default(),
             see_through_vertices: Vec::new(),
             shadow_only_vertices: Default::default(),
+            frame_batch_reserved_quads: Default::default(),
             entity_spans: Default::default(),
             entity_runs: Vec::new(),
             entity_motion: Default::default(),
@@ -13974,11 +15355,18 @@ impl<'a> Game<'a> {
             dynamic_textures: Default::default(),
             text_patches: Default::default(),
             prepared_model_draws: Default::default(),
-            model_copy_order: Vec::new(),
+            model_copy_order: Default::default(),
             world_geometry: Some(Default::default()),
+            render_snapshot: std::cell::Cell::new(None),
+            present_mode_pending: false,
+            pack_frame_state: std::cell::Cell::new(None),
+            pack_frame_slots: Default::default(),
             debug_renderers: Vec::new(),
             debug_renderers_version: None,
             hud_layer_next: None,
+            hud_layer_bounds,
+            hud_status_heights: Default::default(),
+            hud_status_heights_set: Default::default(),
             mod_view_distances: Default::default(),
             block_entity_reach: Default::default(),
             item_level_cache: Default::default(),
@@ -13998,10 +15386,11 @@ impl<'a> Game<'a> {
             world_adopted: false,
             startup_ticket_restore_pending: false,
             audio,
-            loop_context: Arc::new(res.core.item_data.context().loop_context(loop_side, [])),
+            loop_context: Arc::new(item_data.loop_context(loop_side, [])),
             tick: sunrise_client::parallel::TickThread::mint(),
-            setting_overrides: Default::default(),
+            native_settings,
             damage_hooks: native_hooks::DAMAGE_HOOKS,
+            paused_mob_hurt: None,
             music: {
                 // The manager starts with the saved option (MusicManager's constructor).
                 let mut music = sunrise_client::music::MusicManager::default();
@@ -14016,15 +15405,16 @@ impl<'a> Game<'a> {
             music_toast_state: settings.file.int("musicToast").clamp(0, 2) as u8,
             music_notes: Default::default(),
             ambience: Default::default(),
-            sound_paused: false,
+            sound_paused: (false, false),
+            mod_sounds_paused: false,
             cart_sounds: HashSet::new(),
             riding_cart_sounds: None,
             riding_sound: None,
             was_fall_flying: false,
             bee_sounds: HashMap::new(),
-            guardian_sounds: HashSet::new(),
             guardian_look_scratch: Vec::new(),
             dropped: Default::default(),
+            item_destroyed_damage: None,
             next_entity: 0,
             ticked_entities_through: u32::MAX,
             contact_drops: 0..0,
@@ -14036,7 +15426,7 @@ impl<'a> Game<'a> {
             book_last_click: None,
             lectern_pulses: Vec::new(),
             loading_progress: 0.0,
-            creation_job: None,
+            creation_read_started: false,
             loading_progress_at: None,
             moving_pistons_stale: false,
             spawn_origin: None,
@@ -14080,6 +15470,7 @@ impl<'a> Game<'a> {
             cooldowns: Default::default(),
             command_source: None,
             native_command_filter: false,
+            chat_broadcasts: Default::default(),
             titles: Default::default(),
             tool_highlight: Default::default(),
             saving_indicator: Default::default(),
@@ -14088,6 +15479,7 @@ impl<'a> Game<'a> {
             ticks_until_autosave: 6000,
             applied_modifiers: Vec::new(),
             experience: Experience::default(),
+            player_score: 0,
             orbs: Default::default(),
             xp_delay: 0,
             ordered: Default::default(),
@@ -14102,13 +15494,12 @@ impl<'a> Game<'a> {
             clicks: Default::default(),
             hand_strength: Default::default(),
             settings,
+            session_video: SessionVideo::default(),
             look: Default::default(),
             tutorial,
-            tutorial_toasts: Vec::new(),
-            narrator_toast: None,
+            toast_manager: Default::default(),
             narration: Default::default(),
             options_from_title: false,
-            dragging: false,
             avatar: Default::default(),
             flash: 0,
             custom_sky: Default::default(),
@@ -14133,6 +15524,7 @@ impl<'a> Game<'a> {
             respawn_config: None,
             end_portal_travel: false,
             win: None,
+            demo_intro: None,
             end: Default::default(),
             block_ticks: Ticks::new(0),
             tick_scratch: TickScratch::default(),
@@ -14155,15 +15547,19 @@ impl<'a> Game<'a> {
             cushions: Default::default(),
             others: Default::default(),
             armor_stand_assets: prepared.armor_stand_assets,
+            client_item_extension_owners: Default::default(),
             waypoint_styles: prepared.waypoint_styles,
             waypoints: Default::default(),
             locator_camera: None,
             native_camera_frame: None,
+            native_camera_entity_eye: None,
             posed_rotation: None,
             post_effects: Vec::new(),
+            requested_post_effects_buf: Vec::new(),
             polytone_post_ticks: 0.0,
             expression_frame: Default::default(),
             spectated_post_effect: None,
+            spectated_post_effect_active: false,
             experience_display: Default::default(),
             boats: Default::default(),
             leash_boats: Vec::new(),
@@ -14174,7 +15570,7 @@ impl<'a> Game<'a> {
             carts: Default::default(),
             watched_vehicles: Vec::new(),
             jukebox_sounds: HashMap::new(),
-            bolts: Vec::new(),
+            bolts: Default::default(),
             maps: maps::Maps::default(),
             fight: dragon::Fight::default(),
             dragon: Default::default(),
@@ -14184,9 +15580,15 @@ impl<'a> Game<'a> {
             map_patches: Vec::new(),
             name_tag_layouts: Default::default(),
             text_displays: Default::default(),
+            see_through_collector: Default::default(),
+            translucent_display_collector: Default::default(),
+            display_visible_scratch: Vec::new(),
+            block_display_parts_scratch: Vec::new(),
+            display_inline_profiles_scratch: Vec::new(),
             interactions: Default::default(),
             remote_knots: Default::default(),
             knot_ids: Default::default(),
+            broken_knots: Vec::new(),
             text_display_vertices: 0,
             skin_downloads: RefCell::new({
                 let mut downloads = sunrise_client::skins::Downloader::new(
@@ -14199,7 +15601,12 @@ impl<'a> Game<'a> {
             }),
             skin_profiles: RefCell::new(sunrise_client::skins::Resolver::new()),
             skin_slots: sunrise_client::skins::SkinSlots::new(sunrise_client::hud::SKIN_SLOTS),
+<<<<<<< HEAD
             own_skin: Default::default(),
+||||||| 46c00106def
+=======
+            player_skin_slot: None,
+>>>>>>> ed6772e2118
             trim_slots: Default::default(),
             cart_models: prepared.cart_models,
             riding: None,
@@ -14221,6 +15628,7 @@ impl<'a> Game<'a> {
             ominous_spawners: Default::default(),
             creaking: Default::default(),
             spawners: Default::default(),
+            chunk_spawn_enemies: true,
             spawn_scratch: Default::default(),
             trident_model: prepared.trident_model,
             arrow_model: prepared.arrow_model,
@@ -14228,6 +15636,8 @@ impl<'a> Game<'a> {
             tnts: Default::default(),
             hoppers: HashMap::new(),
             transactions: Default::default(),
+            dispense_source: None,
+            slot_changed_active: Vec::new(),
             contents_changing: Vec::new(),
             mod_screen: None,
             mod_container_viewers: HashMap::new(),
@@ -14286,7 +15696,6 @@ impl<'a> Game<'a> {
             extras: Default::default(),
             pvp: Default::default(),
             mods: mod_sources,
-            mod_jobs: Default::default(),
             recipe_tables: Default::default(),
             panel: Default::default(),
             native_shaders: Default::default(),
@@ -14294,14 +15703,13 @@ impl<'a> Game<'a> {
             mod_keys: Default::default(),
             native_lifecycle: Default::default(),
             resident_entities: Default::default(),
-            lent_mobs: Default::default(),
             held_out: Vec::with_capacity(4),
+            config_root: mod_api::__private::RegistrationData::resolved_config_dir(),
             native_configs: Default::default(),
             native_net: Default::default(),
             native_mod_screen: None,
+            native_mod_screen_parent: false,
             sky_darken_memo: Default::default(),
-            water_plane_memo: Default::default(),
-            water_plane_scan: Default::default(),
             vehicle_mobs: Default::default(),
             persist: Default::default(),
             missing_professions: Default::default(),
@@ -14327,13 +15735,12 @@ impl<'a> Game<'a> {
             integrated: None,
             level_shapes: Default::default(),
             serving: None,
+            singleplayer_profile: None,
             world_options: None,
             options_to_world_options: false,
             command_block_screen: None,
             block_editor: None,
             structure_templates: HashMap::new(),
-            test_defs: std::cell::RefCell::new(HashMap::new()),
-            test_defs_snapshot: false,
             test_highlights: HashMap::new(),
             game_tests: game_tests::GameTests::default(),
             #[cfg(feature = "friends")]
@@ -14357,6 +15764,9 @@ impl<'a> Game<'a> {
             spawn_counts: HashMap::new(),
             spawn_policies: HashMap::new(),
             passages: Default::default(),
+            async_chunk_requests: Default::default(),
+            saved_chunk_readers: Default::default(),
+            detached_generators: Default::default(),
             pause_menu: true,
             pause_focus: None,
             death_focus: None,
@@ -14364,8 +15774,8 @@ impl<'a> Game<'a> {
             previous_mode: None,
             gamemode_switcher: None,
             clipboard: Default::default(),
-            user_input: Default::default(),
             text_selection: Default::default(),
+            client_quit: std::cell::Cell::new(saving::ClientQuit::Running),
             saved_for_exit: false,
             saved_for_background: false,
             pending_save: None,
@@ -14398,16 +15808,17 @@ impl<'a> Game<'a> {
             lan_acting: None,
             acting_abilities: None,
             native_commands: Default::default(),
+            native_client_commands: Default::default(),
             lan_building_boxes: Default::default(),
             save_after_guest_turn: false,
+            world_save_starting: false,
             lan_guest_swaps: Vec::new(),
             lan_displaced_players: Vec::new(),
             interrupted_turns: Vec::new(),
             crash_save: Default::default(),
             lan_ender_menus: Vec::new(),
             player_state: Default::default(),
-            lan_break_pos: None,
-            break_collect: None,
+            active_player_breaks: Vec::new(),
             guest_packets: Vec::new(),
             guest_cooldowns: Vec::new(),
             guest_entity_events: Vec::new(),
@@ -14428,6 +15839,7 @@ impl<'a> Game<'a> {
             console_broadcast: None,
             rcon_source: false,
             server_lists: None,
+            user_cache: None,
             world_tables: None,
             server_loot: Default::default(),
             server_items: None,
@@ -14560,6 +15972,7 @@ pub(crate) fn run_with(
     sunrise_world::datafix::set_resources(
         &std::path::absolute(&vanilla_root).unwrap_or_else(|_| vanilla_root.clone()),
     );
+<<<<<<< HEAD
     // Starling (#474): resources from an older preparer are prepared again, not half loaded.
     #[cfg(target_os = "android")]
     if options.execution_role.is_client() {
@@ -14575,7 +15988,39 @@ pub(crate) fn run_with(
             log::error!("Sunrise: {error}");
             let settings = Settings::load(&Game::options_path());
             return no_resources::show(&vanilla_root, &settings);
+||||||| 46c00106def
+    if let Some(error) = missing_resources(&vanilla_root, sunrise_hooks::engine::get_the_game()) {
+        // The game build started by hand (the release's zip), not by the
+        // launcher: a window says where to get it. Scripts and servers get
+        // the error.
+        if !options.offscreen && !synchronous_startup(&options) {
+            log::error!("Sunrise: {error}");
+            let settings = Settings::load(&Game::options_path());
+            return no_resources::show(&vanilla_root, &settings);
+=======
+    let preparation = match preflight_resources(
+        &vanilla_root,
+        sunrise_hooks::engine::get_the_game(),
+        options.execution_role.is_dedicated_server(),
+    ) {
+        Ok(profile) => profile,
+        Err(error) => {
+            // Keep the introductory GUI for an installation with no manifest.
+            // A present but unusable preparation needs the exact re-prepare error.
+            if !options.offscreen
+                && !synchronous_startup(&options)
+                && !vanilla_root
+                    .join(sunrise_core::prepared_profile::MANIFEST)
+                    .is_file()
+            {
+                log::error!("Sunrise: {error}");
+                let settings = Settings::load(&Game::options_path());
+                return no_resources::show(&vanilla_root, &settings);
+            }
+            return Err(error.into());
+>>>>>>> ed6772e2118
         }
+<<<<<<< HEAD
         return Err(error.into());
     }
     // Bedrock's touch buttons, fetched from Mojang once (bedrock_touch.rs) where the resources
@@ -14630,6 +16075,14 @@ pub(crate) fn run_with(
             }
         }
     }
+||||||| 46c00106def
+        return Err(error.into());
+    }
+    let mut early_settings = Settings::load(&Game::options_path());
+=======
+    };
+    let mut early_settings = Settings::load(&Game::options_path());
+>>>>>>> ed6772e2118
     options
         .mods
         .capture_code_switches(&early_settings.mods.disabled);
@@ -14643,8 +16096,13 @@ pub(crate) fn run_with(
     let jar_store = sunrise_client::logging::game_home().join("jars");
     let admission = options.mods.admit_startup_packages(&jar_store)?;
     api_values::install_packages(admission.native_packages(), admission.content_packages())?;
+    let instance_dir = Game::game_dir();
+    if let Err(error) = native_hooks::config_dir(&instance_dir) {
+        log::warn!("Sunrise: config folder: {error}");
+    }
     mods::install_registration_data(
         &vanilla_root,
+        instance_dir,
         mods::runtime_files::sources(&options.mods),
         mods::package_files::sources(&admission),
     )?;
@@ -14659,6 +16117,37 @@ pub(crate) fn run_with(
         {
             log::warn!("Mod structure types already installed; keeping the first table");
         }
+        // Their pool element types, before any world decodes its template pools.
+        if sunrise_world::worldgen::structure::mod_elements::install_mod_pool_element_types(
+            native_pool_elements::installed_pool_element_types(),
+        )
+        .is_err()
+        {
+            log::warn!("Mod pool element types already installed; keeping the first table");
+        }
+        // Their structure processor types, before any world decodes its processor lists.
+        if sunrise_world::worldgen::structure::mod_processors::install_mod_structure_processor_types(
+            native_structure_processors::installed_structure_processor_types(),
+        )
+        .is_err()
+        {
+            log::warn!("Mod structure processor types already installed; keeping the first table");
+        }
+        // Their rule test and position rule test types, before any processor list or feature decodes.
+        if sunrise_world::worldgen::mod_rule_tests::install_mod_rule_test_types(
+            native_rule_tests::installed_rule_test_types(),
+        )
+        .is_err()
+        {
+            log::warn!("Mod rule test types already installed; keeping the first table");
+        }
+        if sunrise_world::worldgen::mod_rule_tests::install_mod_pos_rule_test_types(
+            native_rule_tests::installed_pos_rule_test_types(),
+        )
+        .is_err()
+        {
+            log::warn!("Mod position rule test types already installed; keeping the first table");
+        }
         // Their feature types, before any world decodes its configured features.
         if sunrise_world::worldgen::mod_features::install_mod_feature_types(
             native_feature_types::installed_feature_types(),
@@ -14666,6 +16155,14 @@ pub(crate) fn run_with(
         .is_err()
         {
             log::warn!("Mod feature types already installed; keeping the first table");
+        }
+        // Their placement modifier types, before any world decodes its placed features.
+        if sunrise_world::worldgen::placement::mod_placements::install_mod_placement_modifier_types(
+            native_placement_modifiers::installed_placement_modifier_types(),
+        )
+        .is_err()
+        {
+            log::warn!("Mod placement modifier types already installed; keeping the first table");
         }
         // The levels they registered, below the data packs of every world opened.
         if sunrise_world::worldgen::overrides::install_mod_dimensions(
@@ -14684,12 +16181,13 @@ pub(crate) fn run_with(
         mods::register_layer_definitions(options.execution_role, &vanilla_root)?;
         mods::register_debug_entries(options.execution_role);
         mods::register_gui_layers(options.execution_role);
+        mods::register_client_tooltip_component_factories(options.execution_role);
         mods::register_map_decoration_types();
         mods::register_range_select_item_model_properties(options.execution_role);
         mods::register_select_item_model_properties(options.execution_role);
         mods::register_resource_sources(options.execution_role);
-        mods::register_enchantment_damage_effects();
-        mods::register_client_presentations(options.execution_role)?;
+        mods::register_enchantment_effects();
+        mods::register_client_presentations(options.execution_role, &vanilla_root)?;
         mods::register_meshing(options.execution_role);
         mods::register_particles(options.execution_role)?;
         mods::freeze_declarations();
@@ -14737,7 +16235,12 @@ pub(crate) fn run_with(
     }
     let roots = if options.execution_role.is_dedicated_server() {
         // Dedicated startup sees enabled mod assets but no client's resource packs.
-        mods::content_root(&vanilla_root, &options.mods)?.into()
+        let base = mods::content_root(&vanilla_root, &options.mods)?;
+        match preparation {
+            sunrise_core::prepared_profile::Profile::Full => base,
+            sunrise_core::prepared_profile::Profile::Server => base.with_server_profile(),
+        }
+        .into()
     } else {
         packs::startup_root(
             &vanilla_root,
@@ -14761,11 +16264,19 @@ pub(crate) fn run_with(
     )?;
     let gui = loaded.gui.ok_or("missing menu bundle")?;
     options.resources = loaded.root.clone();
+<<<<<<< HEAD
     // Starling: a phone's setup before 0.1.6 left the sounds out.
     sunrise_client::preparer::complete_sounds(&vanilla_root);
     // Starling: the prepared resources loaded, the files they came from can go.
     sunrise_client::preparer::drop_downloads(&vanilla_root);
     let audio = if !options.execution_role.is_client() || options.headless {
+||||||| 46c00106def
+    let audio = if !options.execution_role.is_client() || options.headless {
+=======
+    let audio = if options.execution_role.is_dedicated_server() {
+        Audio::for_server()
+    } else if !options.execution_role.is_client() || options.headless {
+>>>>>>> ed6772e2118
         Audio::silent(&loaded.pack.source)
     } else {
         Audio::with_device(&loaded.pack.source, &early_settings.sound_device)
@@ -14802,7 +16313,7 @@ pub(crate) fn run_with(
 }
 
 /// The right and left arms of a player model layer (`PlayerModel.rightArm`
-/// and `leftArm`, with their sleeves).
+/// and `leftArm`, with their sleeves), each keeping the layer.
 fn player_arms(
     root: &std::path::Path,
     key: &str,
@@ -14812,25 +16323,18 @@ fn player_arms(
         Some(document) => document.model(key),
         None => sunrise_client::mobs::load_model(root, key),
     };
-    ["right_arm", "left_arm"].map(|name| {
-        model
-            .as_ref()
-            .and_then(|m| m.children.iter().find(|c| c.name == name).cloned())
-    })
+    ["right_arm", "left_arm"].map(|name| model.as_ref().and_then(|m| m.detached_child(name)))
 }
 
-/// The most `Player.sleepCounter` reaches: 100 asleep, then up to here over the
-/// waking fade.
-const MAX_SLEEP_TIMER: u32 = 109;
-
 // Player.tick: cap the sleeping fade at 100, then fade out over 10 waking ticks.
-fn tick_sleep_timer(timer: u32, sleeping: bool) -> u32 {
+fn tick_sleep_timer(timer: i32, sleeping: bool) -> i32 {
     if sleeping {
-        (timer + 1).min(100)
-    } else if (1..MAX_SLEEP_TIMER).contains(&timer) {
-        timer + 1
+        timer.wrapping_add(1).min(100)
+    } else if timer > 0 {
+        let next = timer.wrapping_add(1);
+        if next >= 110 { 0 } else { next }
     } else {
-        0
+        timer
     }
 }
 
@@ -14920,7 +16424,9 @@ pub(crate) use closest_space::closest_space_nudge;
 use inventory_input::drop_whole_stack;
 use subtitles::{Subtitles, in_game_ui, subtitles};
 
-use hud_render::{block_outline_drawn, debug_crosshair_drawn, is_game_master_block};
+#[cfg(test)]
+use hud_render::block_outline_drawn;
+use hud_render::{debug_crosshair_drawn, is_game_master_block};
 #[cfg(test)]
 mod test_neighbourhood {
     //! Shared fixture step for tests that tick entities on prepared data.
@@ -14948,21 +16454,6 @@ mod test_neighbourhood {
                 }
             }
         }
-    }
-}
-
-fn write_level_for_role(
-    level: &mut Level,
-    dir: &std::path::Path,
-    role: execution_role::ExecutionRole,
-    items: &crate::items::Items,
-    keep_owner_file: bool,
-) -> Result<()> {
-    match (role.writes_singleplayer_player(), keep_owner_file) {
-        (true, false) => level.write(dir, items),
-        // A crash save keeps the owner's file as last saved, and a legacy `Data.Player`.
-        (true, true) => level.write_keeping_player(dir),
-        (false, _) => level.write_without_player(dir),
     }
 }
 
@@ -15116,6 +16607,10 @@ mod nested_orb_spawn_tests {
 #[cfg(test)]
 #[path = "game/interface/tests/sign_chain_tests.rs"]
 mod sign_chain_tests;
+
+#[cfg(test)]
+#[path = "game/interface/tests/sign_outline_tests.rs"]
+mod sign_outline_tests;
 
 #[cfg(test)]
 #[path = "game/interface/tests/sign_use_tests.rs"]

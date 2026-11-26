@@ -5,7 +5,7 @@ import subprocess
 import tempfile
 import unittest
 
-from rust_items import rust_fn
+from tests.rust_items import rust_fn
 
 ROOT = Path(__file__).resolve().parents[1]
 

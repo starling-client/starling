@@ -89,9 +89,16 @@ impl Game<'_> {
     pub(super) fn remove_local_player_body(&mut self) {
         self.reset_client_item_use();
         self.hook.discard();
+        let id = self.player.as_ref().map(|player| player.entity_id as u32);
         self.resident_entities.local_player.retire();
         self.player_state.attachments.retire();
         self.player = None;
+        self.player_model = None;
+        if self.remote.is_some()
+            && let Some(id) = id
+        {
+            self.pick_section_remove(id);
+        }
     }
 
     pub(super) fn bind_local_player_residency(&mut self) {
@@ -103,13 +110,15 @@ impl Game<'_> {
             self.resident_entities.local_player.retire();
             return;
         };
-        self.resident_entities.local_player.bind(
+        let id = player.entity_id as u32;
+        let old = self.resident_entities.local_player.identity();
+        let admitted = self.resident_entities.local_player.bind(
             &journal,
             Owner {
                 dimension: self.dim.key(),
                 kind: Kind::Player,
             },
-            player.entity_id as u32,
+            id,
             Source::LocalPlayer,
             self.remote
                 .as_ref()
@@ -117,6 +126,12 @@ impl Game<'_> {
                 .map(|remote| sunrise_client::lan::playerdata::uuid_ints(remote.profile()))
                 .or(self.level.player_uuid),
         );
+        if self.remote.is_some() && admitted {
+            if let Some(old) = old.filter(|old| old.id.get() != id) {
+                self.pick_section_remove(old.id.get());
+            }
+            self.pick_section_sync_id(id);
+        }
         if let Some(remote) = self.remote.as_ref().filter(|remote| remote.logged_in)
             && let Some(epoch) = self.native_lifecycle.epoch()
         {

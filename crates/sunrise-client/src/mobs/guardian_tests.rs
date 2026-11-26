@@ -78,7 +78,11 @@ fn a_still_guardian_spikes_whoever_hits_it() {
     let (landed, spiked) = hit("a player's sword");
     assert!(landed);
     match spiked[..] {
-        [MobEvent::DamagePlayer { amount, from, kind }] => {
+        [
+            MobEvent::DamagePlayer {
+                amount, from, kind, ..
+            },
+        ] => {
             assert_eq!((*amount, *kind), (2.0, "minecraft:thorns"));
             assert_eq!(*from, [0.5, 64.0, 0.5]);
         }

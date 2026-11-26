@@ -1,7 +1,7 @@
-#![cfg(test)]
 //! `client_chunk_load` and `client_chunk_unload` through a loopback client (#3425): a chunk
 //! packet adopts a column and tells its load once the blocks are in; every route that frees a
-//! resident column tells its unload once, with its blocks still readable.
+//! column (eviction, a radius shrink, the forget packet, level close) tells its unload, and the
+//! view centre moving away hides slots untold.
 use crate::game::Game;
 use crate::game::execution_role::ExecutionRole;
 use crate::game::native_entity_refs::tests::{run_fresh_cases, with_game_role};
@@ -211,25 +211,92 @@ fn a_client_tells_a_chunk_packet_and_its_forget_once() {
     });
 }
 
-/// The centre-move and radius drops tell one unload per dropped column and none for the
-/// kept ones; the client level going tells the rest.
+/// SyntheticChunkCache: a centre move only hides slots and shows them again untold, a negative
+/// alias replaces exactly its occupant, and a real resize frees out-of-range slots, each with
+/// its unload.
 #[test]
 #[ignore = "daily"]
-fn every_route_that_frees_a_column_tells_its_unload() {
-    const NAME: &str = "game::native_hooks::client_chunk_hooks_tests::every_route_that_frees_a_column_tells_its_unload";
-    if run_fresh_cases(NAME, "SUNRISE_CLIENT_CHUNK_ROUTES", &["game"]) {
-        return;
-    }
-    with_client(|game| {
-        for x in [1, 7, 13] {
-            game.streaming
-                .insert_remote(&mut game.world, sunrise_client::chunk::Chunk::empty(x, 0));
-        }
-        assert_eq!(game.drop_remote_chunks_out_of_range((15, 0), 10), [(1, 0)]);
-        assert_eq!(without_blocks(take_calls()), unloaded([1, 0]));
-        assert_eq!(game.drop_remote_chunks_out_of_range((15, 0), 2), [(7, 0)]);
-        assert_eq!(without_blocks(take_calls()), unloaded([7, 0]));
-        assert_eq!(game.forget_all_remote_columns(), [(13, 0)]);
-        assert_eq!(without_blocks(take_calls()), unloaded([13, 0]));
-    });
+fn cache_packets_hide_replace_and_resize_slots() {
+    use sunrise_protocol::packets::play::{
+        Clientbound as C, Distance, ForgetLevelChunk, SetChunkCacheCenter,
+    };
+    crate::game::in_own_process(
+        "game::native_hooks::client_chunk_hooks_tests::cache_packets_hide_replace_and_resize_slots",
+        || {
+            with_client(|game| {
+                let radius = |distance| C::SetChunkCacheRadius(Distance { distance });
+                let center = |x| C::SetChunkCacheCenter(SetChunkCacheCenter { x, z: 0 });
+                let forget = |x| C::ForgetLevelChunk(ForgetLevelChunk { pos: [x, 0] });
+                game.settings.render_distance = 8;
+                game.apply_packet(radius(2)).unwrap();
+                let packet = stone_column(game, 0, 0);
+                game.apply_packet(C::LevelChunkWithLight(packet)).unwrap();
+                let origin = game.world.chunks[&(0, 0)].clone();
+                take_calls();
+
+                game.apply_packet(radius(1)).unwrap();
+                assert_eq!(game.effective_render_distance(), 1);
+                assert_eq!(game.terrain_distance(), 1);
+                assert!(std::sync::Arc::ptr_eq(&origin, &game.world.chunks[&(0, 0)]));
+                game.apply_packet(radius(0)).unwrap();
+                assert_eq!(game.terrain_distance(), 8);
+                game.settings.render_distance = 10;
+                game.apply_settings();
+                assert_eq!(game.streaming.radius, 10);
+                game.apply_packet(radius(4)).unwrap();
+                game.settings.render_distance = 11;
+                game.apply_settings();
+                assert_eq!(game.terrain_distance(), 4);
+                assert_eq!(game.streaming.radius, 5);
+                game.apply_packet(radius(14)).unwrap();
+                assert_eq!(game.terrain_distance(), 11);
+                game.apply_packet(radius(2)).unwrap();
+
+                game.apply_packet(center(11)).unwrap();
+                assert!(!game.world.loaded(0, 0));
+                assert_eq!(game.world.chunks.resident_keys().count(), 1);
+                game.apply_packet(forget(0)).unwrap();
+                game.apply_packet(radius(1)).unwrap();
+                game.apply_packet(center(0)).unwrap();
+                assert!(std::sync::Arc::ptr_eq(&origin, &game.world.chunks[&(0, 0)]));
+                assert!(take_calls().is_empty());
+
+                game.apply_packet(center(-11)).unwrap();
+                let packet = stone_column(game, -11, 0);
+                game.apply_packet(C::LevelChunkWithLight(packet)).unwrap();
+                let alias = game.world.chunks[&(-11, 0)].clone();
+                assert_eq!(game.world.chunks.resident_keys().count(), 1);
+                assert_eq!(
+                    without_blocks(take_calls()),
+                    [
+                        ("unload", "minecraft:overworld".into(), [0, 0]),
+                        ("load", "minecraft:overworld".into(), [-11, 0]),
+                    ],
+                );
+                game.apply_packet(center(0)).unwrap();
+                game.apply_packet(forget(0)).unwrap();
+                game.apply_packet(center(-11)).unwrap();
+                assert!(std::sync::Arc::ptr_eq(
+                    &alias,
+                    &game.world.chunks[&(-11, 0)]
+                ));
+                assert!(take_calls().is_empty());
+
+                game.apply_packet(radius(8)).unwrap();
+                let packet = stone_column(game, -3, 0);
+                game.apply_packet(C::LevelChunkWithLight(packet)).unwrap();
+                assert_eq!(game.world.chunks.resident_keys().count(), 2);
+                take_calls();
+                game.apply_packet(radius(2)).unwrap();
+                assert_eq!(game.world.chunks.resident_keys().count(), 1);
+                assert!(std::sync::Arc::ptr_eq(
+                    &alias,
+                    &game.world.chunks[&(-11, 0)]
+                ));
+                assert_eq!(without_blocks(take_calls()), unloaded([-3, 0]));
+                assert_eq!(game.forget_all_remote_columns(), [(-11, 0)]);
+                assert_eq!(without_blocks(take_calls()), unloaded([-11, 0]));
+            })
+        },
+    );
 }

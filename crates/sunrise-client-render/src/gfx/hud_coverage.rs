@@ -50,22 +50,21 @@ pub(crate) struct Pipeline {
 
 impl Pipeline {
     /// `None` when `enabled` and the shader can't be given a coverage output (a resource
-    /// pack's, which the caller then doesn't use).
+    /// pack's, which the caller then doesn't use). The plain pipeline is made first either way,
+    /// so the device checks it whatever the coverage mode.
     pub(crate) fn new(
         device: &wgpu::Device,
         desc: &wgpu::RenderPipelineDescriptor<'_>,
         source: wgpu::ShaderSource<'_>,
         enabled: bool,
     ) -> Option<Self> {
+        let plain = device.create_render_pipeline(desc);
         let coverage = if enabled {
             Some(pipeline(device, desc, source)?)
         } else {
             None
         };
-        Some(Self {
-            plain: device.create_render_pipeline(desc),
-            coverage,
-        })
+        Some(Self { plain, coverage })
     }
 
     pub(crate) fn get(&self, coverage: bool) -> &wgpu::RenderPipeline {

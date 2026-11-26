@@ -25,7 +25,8 @@ pub struct Staged {
 
 /// Expose internals, give functions replacement slots and write the build data
 /// (`internals.json`, `loops.json`, `functions.json`), each with a header naming `build`.
-/// Catalog only the original game items, before adding the replacement helpers.
+/// Catalog only the original game items, before adding the replacement helpers. For lower-crate
+/// mixin targets, declarations from literal includes are widened in their own staged files.
 /// A pass stamps the copy before edits; even a failed pass requires fresh source for a retry.
 pub fn stage(
     root: &Path,
@@ -126,6 +127,217 @@ mod tests {
             commit: "c".repeat(40),
         };
         super::stage(root, internals, mode, &build)
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn lower_mixin_copy_calls_private_included_helper() {
+        use crate::{functions, patch};
+        use std::{fs, process::Command};
+
+        let target_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target");
+        fs::create_dir_all(&target_dir).unwrap();
+        let scratch = tempfile::tempdir_in(target_dir).unwrap();
+        let out = scratch.path();
+        let pristine = out.join("pristine");
+        let staged = out.join("staged");
+        let lower_src = Path::new("crates/lower/src");
+        let selected = lower_src.join("hidden.rs");
+        let helper = lower_src.join("fragments/nested/helper.rs");
+        let write = |root: &Path, relative: &Path, text: &str| {
+            let path = root.join(relative);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, text).unwrap();
+        };
+        let source = [
+            (
+                "crates/sunrise-client/Cargo.toml",
+                "[package]\nname = 'sunrise-client'\n[dependencies]\n",
+            ),
+            ("crates/sunrise-client/src/lib.rs", "mod game; mod entry;"),
+            ("crates/sunrise-client/src/game.rs", ""),
+            ("crates/sunrise-client/src/entry.rs", ""),
+            ("crates/sunrise-mod-api-gen/internals.txt", ""),
+            (crate::crossing::CROSSING_FOREIGN_FILE, "[]"),
+            (
+                "Cargo.lock",
+                "version = 4\n\n[[package]]\nname = \"lower\"\nversion = \"0.1.0\"\n\n[[package]]\nname = \"sunrise-client\"\nversion = \"0.1.0\"\n",
+            ),
+            (
+                "crates/lower/Cargo.toml",
+                "[package]\nname = 'lower'\nversion = '0.1.0'\n",
+            ),
+            ("crates/lower/src/lib.rs", "mod hidden;"),
+        ];
+        let marker = "#[sunrise_mod_api_macros::replaceable]";
+        let marked = format!(
+            r#"
+{marker}
+fn listed(value: u32) -> u32 {{ child::deep(imported(value)) - 1 + pick(0) }}
+include!("fragments/outer.rs");
+#[cfg(unix)]
+include!("fragments/unix.rs");
+#[cfg_attr(unix, cfg(not(unix)))]
+include!("fragments/other.rs");
+mod child {{ include!("fragments/child.rs"); }}
+#[cfg(feature = "fast")]
+include!("fragments/fast.rs");
+#[cfg(not(feature = "fast"))]
+include!("fragments/slow.rs");
+fn fast_impl(value: u32) -> u32 {{ value }}
+fn slow_impl(value: u32) -> u32 {{ value + 1000 }}
+"#
+        );
+        for root in [&pristine, &staged] {
+            for (relative, text) in source {
+                write(root, Path::new(relative), text);
+            }
+            write(root, &selected, &marked);
+            write(
+                root,
+                &lower_src.join("fragments/outer.rs"),
+                r#"include!("nested/helper.rs");"#,
+            );
+            write(
+                root,
+                &helper,
+                "fn helper(value: u32) -> u32 { value * 7 }\nuse self::helper as imported;",
+            );
+            write(
+                root,
+                &lower_src.join("fragments/unix.rs"),
+                r#"include!("nested/unix.rs");"#,
+            );
+            write(
+                root,
+                &lower_src.join("fragments/nested/unix.rs"),
+                "fn unix_only() {}\nuse std::path::Path as PlatformPath;",
+            );
+            // A helper only the inline child's fragment declares, visible to its parent.
+            write(
+                root,
+                &lower_src.join("fragments/child.rs"),
+                "pub(super) fn deep(value: u32) -> u32 { value + 1 }",
+            );
+            // The lower crate is built with `fast`, the patch without: the copy must still
+            // call what the prebuilt crate's import chose.
+            write(
+                root,
+                &lower_src.join("fragments/fast.rs"),
+                "use self::fast_impl as pick;",
+            );
+            write(
+                root,
+                &lower_src.join("fragments/slow.rs"),
+                "use self::slow_impl as pick;",
+            );
+            write(
+                root,
+                &lower_src.join("fragments/other.rs"),
+                "fn non_unix_only() {}\nuse std::path::PathBuf as PlatformPath;",
+            );
+        }
+
+        stage(&staged, &staged.join("internals.json"), Mode::Build).unwrap();
+        let text = fs::read_to_string(staged.join(functions::FILE)).unwrap();
+        let (_, index): (Build, functions::FunctionIndex) =
+            mod_surface::build_data::read(functions::FILE, &text).unwrap();
+        let index = index.checked().unwrap();
+        let targets = ["lower::hidden::listed".to_owned()];
+        let generate = || {
+            patch::generate(
+                &pristine,
+                "fixture_patch",
+                &targets,
+                &Default::default(),
+                &index,
+            )
+        };
+        let generated = generate().unwrap();
+        let [(patch_name, patch_source)] = generated.libs.as_slice() else {
+            panic!("expected exactly one lower-crate patch library");
+        };
+        let install = generated.patched[0].install.as_deref().unwrap();
+
+        // The fixture links with rustc alone, so remove only the original no-op marker from
+        // the staged file. The generated slot and all visibility edits are left as staged.
+        let text = fs::read_to_string(staged.join(&selected)).unwrap();
+        fs::write(staged.join(&selected), text.replace(marker, "")).unwrap();
+        let rustc = |source: &Path, args: &[&str]| {
+            let result = Command::new("rustc")
+                .args(["--edition=2024", "--out-dir"])
+                .arg(out)
+                .args(args)
+                .arg(source)
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "{}: {}",
+                source.display(),
+                String::from_utf8_lossy(&result.stderr)
+            );
+        };
+        rustc(
+            &staged.join(lower_src).join("lib.rs"),
+            &[
+                "--crate-type=rlib",
+                "--crate-name=lower",
+                "--cfg",
+                "feature=\"fast\"",
+            ],
+        );
+        let lower = format!("lower={}", out.join("liblower.rlib").display());
+        let patch_file = out.join("patch.rs");
+        fs::write(&patch_file, patch_source).unwrap();
+        rustc(
+            &patch_file,
+            &[
+                "--crate-type=rlib",
+                "--crate-name",
+                patch_name,
+                "--extern",
+                &lower,
+            ],
+        );
+        let patch = format!(
+            "{patch_name}={}",
+            out.join(format!("lib{patch_name}.rlib")).display()
+        );
+        let search = format!("dependency={}", out.display());
+        write(
+            out,
+            Path::new("driver.rs"),
+            &format!(
+                r#"
+fn main() {{
+    assert_eq!({patch_name}::hidden::listed(6), 42);
+    assert_eq!({patch_name}::hidden::helper(6), 42);
+    assert!({install});
+    assert_eq!(lower::hidden::listed(6), 42);
+}}
+"#
+            ),
+        );
+        rustc(
+            &out.join("driver.rs"),
+            &["--extern", &lower, "--extern", &patch, "-L", &search],
+        );
+        let result = Command::new(out.join(format!("driver{}", std::env::consts::EXE_SUFFIX)))
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+
+        // The target and its span are unchanged. The mirror must still read and validate the
+        // fragment by its indexed path, and give a source diagnostic if it disappears.
+        fs::remove_file(pristine.join(&helper)).unwrap();
+        let refused = generate().unwrap_err();
+        assert_eq!(refused[0].code, "E_MIXIN_SOURCE");
+        assert!(refused[0].why.contains("helper.rs"), "{}", refused[0].why);
     }
 
     #[test]

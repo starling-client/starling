@@ -5,13 +5,18 @@ use std::sync::atomic::{AtomicI16, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use sunrise_core::nbt::{Compound, Tag};
 use sunrise_core::paletted::{PalettedContainer, Strategy};
-use sunrise_world::registry::BlockStateId;
+use sunrise_world::{heightmap::Heightmap, registry::BlockStateId};
 
 pub mod block_entity;
+<<<<<<< HEAD
 #[path = "chunk/starling.rs"]
 mod starling;
 #[allow(unused_imports)]
 pub use self::starling::*;
+||||||| 46c00106def
+=======
+mod packet_heightmap;
+>>>>>>> ed6772e2118
 
 /// The vanilla Overworld's column, which every dimension's chunks hold for
 /// now (`LevelShape::column`).
@@ -80,6 +85,10 @@ impl LevelShape {
         self.has_ceiling = has_ceiling;
         self
     }
+    /// `Level.canHaveWeather`: the End is excluded by level key, not dimension type.
+    pub fn can_have_weather(self, is_end: bool) -> bool {
+        self.sky_light && !self.has_ceiling && !is_end
+    }
     /// One above the highest block (`getMaxY() + 1`).
     pub fn max_y(self) -> i32 {
         self.min_y + self.height
@@ -107,14 +116,40 @@ impl LevelShape {
 }
 
 /// The shapes of a world's levels, from its dimension types.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LevelShapes {
     pub overworld: LevelShape,
     pub nether: LevelShape,
     pub end: LevelShape,
-    /// The levels past vanilla's three that the world's data packs give, by id.
-    /// Leaked once per world opened, so the shapes stay `Copy`.
-    pub extra: &'static [ExtraLevel],
+    /// The levels past vanilla's three that the world's data packs give, by id. Clones share this
+    /// immutable snapshot; the runtime cache may retain recent snapshots for reuse.
+    pub extra: ExtraLevels,
+}
+/// An immutable snapshot of the levels past vanilla's three. Publishing a change makes a new
+/// snapshot; a reader that holds the old one keeps it until it lets go.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ExtraLevels(Option<Arc<[ExtraLevel]>>);
+impl ExtraLevels {
+    /// No levels past vanilla's three.
+    pub const NONE: Self = Self(None);
+    /// The snapshot of `levels`.
+    pub fn new(levels: Vec<ExtraLevel>) -> Self {
+        Self::from_shared(levels.into())
+    }
+    /// A snapshot backed by shared storage, such as the runtime-level retention cache.
+    pub fn from_shared(levels: Arc<[ExtraLevel]>) -> Self {
+        if levels.is_empty() {
+            Self::NONE
+        } else {
+            Self(Some(levels))
+        }
+    }
+}
+impl std::ops::Deref for ExtraLevels {
+    type Target = [ExtraLevel];
+    fn deref(&self) -> &[ExtraLevel] {
+        self.0.as_deref().unwrap_or(&[])
+    }
 }
 /// A level past vanilla's three.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -124,12 +159,13 @@ pub struct ExtraLevel {
     pub dimension_type: &'static str,
     pub shape: LevelShape,
 }
+
 impl LevelShapes {
     pub const VANILLA: Self = Self {
         overworld: LevelShape::OVERWORLD,
         nether: LevelShape::NETHER,
         end: LevelShape::END,
-        extra: &[],
+        extra: ExtraLevels::NONE,
     };
     /// The shape of the level `id` (`minecraft:overworld`,
     /// `minecraft:the_nether`, `minecraft:the_end`); others get the
@@ -695,8 +731,11 @@ pub struct Chunk {
     /// the highest non-air block, or the column's minimum Y. Built on the first read; a
     /// `set` that can move a column's surface marks that column, found again on its next read.
     surface: Heights,
-    /// `Heightmap.Types.MOTION_BLOCKING` per column, kept like `surface`.
+    /// Block-derived MOTION_BLOCKING for locally built columns, kept like `surface`.
     motion_blocking: Heights,
+    /// A remote column's authoritative MOTION_BLOCKING data. Packet adoption and client
+    /// block writes maintain this map instead of re-deriving it from the whole column.
+    packet_motion_blocking: Option<Arc<Heightmap>>,
     pub lit: bool,
     /// Light read from a save with `isLightOn`: no light job is needed.
     pub light_loaded: bool,
@@ -716,8 +755,11 @@ pub struct Chunk {
     pub saved: Option<Arc<ChunkExtras>>,
     /// Validated container limits, rebuilt on chunk admission and extras writes.
     pub container_stack_limits: std::collections::HashMap<(i32, i32, i32), u32>,
-    /// Entities read from a save (vanilla entity NBT), spawned on arrival.
-    pub entities: Vec<sunrise_core::nbt::Tag>,
+    /// Generated or legacy terrain-embedded entities, spawned on arrival.
+    pub entities: Vec<Tag>,
+    /// Independent entity-region snapshot read by the worker. The level may
+    /// already own this section (for a save before terrain arrived).
+    pub disk_entities: Vec<Tag>,
     /// Structure starts reaching into this chunk (`structures.References`):
     /// structure id and the start's chunk.
     pub structure_refs: Vec<(Arc<str>, (i32, i32))>,
@@ -764,6 +806,7 @@ impl Chunk {
             light_support: crate::section_mask::SectionMask::EMPTY,
             surface: Heights::default(),
             motion_blocking: Heights::default(),
+            packet_motion_blocking: None,
             lit: false,
             light_loaded: false,
             fresh: false,
@@ -776,6 +819,7 @@ impl Chunk {
             saved: None,
             container_stack_limits: Default::default(),
             entities: Vec::new(),
+            disk_entities: Vec::new(),
             dynamic_emission: Default::default(),
             dynamic_pending: false,
             connection_groups: Default::default(),
@@ -960,12 +1004,11 @@ impl Chunk {
     pub fn world_surface(&self, x: i32, z: i32, air: impl Fn(u32) -> bool) -> i32 {
         self.height(&self.surface, x, z, |v| !air(v))
     }
-    /// `getHeight(Heightmap.Types.MOTION_BLOCKING, x, z)` (`x`, `z` within
-    /// the chunk): one above the highest state where `blocks` (a motion
-    /// blocking block or a fluid), or the column's minimum Y. Kept as
-    /// `world_surface` is.
+    /// `getHeight(Heightmap.Types.MOTION_BLOCKING, x, z)`: use the remote column's map,
+    /// or derive it from motion-blocking blocks and fluids for a locally built column.
     pub fn motion_blocking(&self, x: i32, z: i32, blocks: impl Fn(u32) -> bool) -> i32 {
-        self.height(&self.motion_blocking, x, z, blocks)
+        self.packet_motion_blocking_height(x, z)
+            .unwrap_or_else(|| self.height(&self.motion_blocking, x, z, blocks))
     }
     /// One column's height in `map`: the whole map built on its first read, a column a write
     /// marked found again down that column alone.
@@ -1114,6 +1157,11 @@ impl Chunk {
             .filter(|map| map.heights.get().is_some())
             .count()
             * std::mem::size_of::<[i16; 256]>();
+        if let Some(map) = &self.packet_motion_blocking {
+            census.heightmap_bytes += std::mem::size_of::<Heightmap>()
+                + 2 * std::mem::size_of::<usize>()
+                + map.heap_bytes();
+        }
         for section in &self.sections {
             if !seen.insert(Arc::as_ptr(section)) {
                 continue;
@@ -1255,15 +1303,35 @@ pub struct ChunkExtras {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn a_published_level_snapshot_lives_as_long_as_its_last_reader() {
+        let level = |id| super::ExtraLevel {
+            id,
+            dimension_type: "minecraft:overworld",
+            shape: super::LevelShape::OVERWORLD,
+        };
+        let first = super::ExtraLevels::new(vec![level("a:one")]);
+        let reader = first.clone();
+        let weak = std::sync::Arc::downgrade(first.0.as_ref().unwrap());
+        // The world publishes a new snapshot; the reader still sees the old levels.
+        drop(first);
+        let published = super::ExtraLevels::new(vec![level("a:one"), level("a:two")]);
+        assert_eq!(reader.len(), 1);
+        assert_eq!(published.len(), 2);
+        assert!(weak.upgrade().is_some());
+        drop(reader);
+        assert!(weak.upgrade().is_none(), "the last reader freed it");
+        assert_eq!(published.len(), 2);
+    }
+
+    #[test]
     fn a_worlds_extra_levels_keep_their_shape_and_type() {
         let shape = super::LevelShape::new(-128, 448, 448, true, false).unwrap();
         let levels = super::LevelShapes {
-            extra: vec![super::ExtraLevel {
+            extra: super::ExtraLevels::new(vec![super::ExtraLevel {
                 id: "test:pocket",
                 dimension_type: "test:small",
                 shape,
-            }]
-            .leak(),
+            }]),
             ..super::LevelShapes::VANILLA
         };
         assert_eq!(levels.get("test:pocket"), shape);

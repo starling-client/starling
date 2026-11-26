@@ -1,19 +1,36 @@
 //! Entity Part state (#796 stage 3) on real entities: one value each, kept with its entity
 //! through edits, transactions, removal, unloading, reloading and changes of level.
-use std::{collections::HashSet, panic::AssertUnwindSafe, sync::Arc};
+use std::{
+    collections::HashSet,
+    panic::AssertUnwindSafe,
+    sync::{Arc, Mutex},
+};
 
 use mod_api::{
-    AttachmentType, EntityPart, EntityPartState, EntityRef, Hooks, HostTransaction, PartStateError,
-    Registrar, ServerHost, WorldEpoch, edit_part_state, read_state,
+    AttachmentDescriptor, AttachmentKey, EntityPart, EntityPartState, EntityRef, EntityResidency,
+    Hooks, HostTransaction, PartStateError, Registrar, ServerHost, WorldEpoch, edit_part_state,
+    read_state,
 };
 use sunrise_client::chunk::Chunk;
 use sunrise_core::{
     geometry::Vec3,
     nbt::{Compound, Tag},
 };
-use sunrise_mod_runtime::attachments::{AttachmentCodec, AttachmentError, Attachments, Holder};
+use sunrise_mod_runtime::attachments::{
+    AttachmentCodec, AttachmentError, AttachmentType, Attachments, Holder,
+};
 
 use super::{Dim, Game};
+
+fn i32_codec() -> AttachmentCodec<i32> {
+    AttachmentCodec {
+        encode: |n| Ok([("n".into(), Tag::Int(*n))].into()),
+        decode: |saved: &Compound| match saved.get(&"n".into()) {
+            Some(Tag::Int(n)) => Ok(*n),
+            _ => Err(AttachmentError::Decode),
+        },
+    }
+}
 
 static CHARGE: AttachmentType<i32> = AttachmentType {
     namespace: "part_state",
@@ -27,42 +44,60 @@ static CHARGE: AttachmentType<i32> = AttachmentType {
         },
     }),
     copy_on_death: false,
-    sync: false,
-};
-
-/// Kept for the session only: no codec.
-static SCRATCH: AttachmentType<i32> = AttachmentType {
-    namespace: "part_state",
-    name: "scratch",
-    default: || 0,
-    codec: None,
-    copy_on_death: false,
-    sync: false,
+    sync_codec: None,
 };
 
 /// Keeps a charge on each entity of its types.
-struct Charge;
+#[derive(Clone)]
+struct Charge {
+    charge: AttachmentKey<i32>,
+}
 #[mod_api::sunrise_part]
 impl EntityPart for Charge {
-    fn register_goals(&self, goals: &mut mod_api::GoalRegistrar<'_>) {
-        let _ = goals;
+    fn register_goals(
+        &self,
+        _host: &mut dyn mod_api::ServerHost,
+        event: &mut mod_api::RegisterGoalsEvent<'_, '_>,
+    ) {
+        let _ = event;
     }
 }
 impl EntityPartState for Charge {
     type Data = i32;
-    const DATA: &'static AttachmentType<i32> = &CHARGE;
+    fn state_key(&self) -> &AttachmentKey<i32> {
+        &self.charge
+    }
+}
+
+#[derive(Clone)]
+struct StateKeys {
+    charge: Charge,
+    /// Kept for the session only: no codec.
+    scratch: AttachmentKey<i32>,
 }
 
 /// Declares the general type `part_state:robot` and attaches `Charge` with state to two mob
 /// types and to the robot; the `refused` case also attaches it to the refused kind `refused`.
 struct StateMod {
     refused: Option<&'static str>,
+    keys: Arc<Mutex<Option<StateKeys>>>,
 }
 #[mod_api::__subscriptions]
 impl Hooks for StateMod {
     fn register(&self, r: &mut dyn Registrar, _: &mod_api::RegistrationContext) {
-        r.register_attachment_type("part_state:charge", false)
+        let charge = r
+            .register_attachment_type(
+                AttachmentDescriptor::new("part_state:charge", || 0_i32).serialize(i32_codec()),
+            )
             .unwrap();
+        let scratch = r
+            .register_attachment_type(AttachmentDescriptor::new("part_state:scratch", || 0_i32))
+            .unwrap();
+        let part = Charge { charge };
+        *self.keys.lock().unwrap() = Some(StateKeys {
+            charge: part.clone(),
+            scratch,
+        });
         r.declare_general_entity(
             "robot",
             mod_api::GeneralEntityCategory::Misc,
@@ -71,6 +106,7 @@ impl Hooks for StateMod {
             None,
             mod_api::GeneralSavePolicy::Save,
             true,
+            false,
             false,
             None,
             8,
@@ -83,14 +119,14 @@ impl Hooks for StateMod {
             .into_iter()
             .chain(self.refused)
         {
-            r.entity_part_with_state(kind, Charge).unwrap();
+            r.entity_part_with_state(kind, part.clone()).unwrap();
         }
     }
 }
 
 /// Runs the test `name` in a fresh process (installed mods are process-wide) with `StateMod`
 /// installed, on a dedicated server's overworld with chunk 0 0 loaded.
-fn with_state_mod(name: &str, test: impl FnOnce(&mut Game<'_>)) {
+fn with_state_mod(name: &str, test: impl FnOnce(&mut Game<'_>, &StateKeys)) {
     if super::native_entity_refs::tests::run_fresh_cases(
         name,
         "SUNRISE_ENTITY_PART_STATE_CHILD",
@@ -98,16 +134,23 @@ fn with_state_mod(name: &str, test: impl FnOnce(&mut Game<'_>)) {
     ) {
         return;
     }
-    with_mod(StateMod { refused: None }, |game| {
-        // Registration is over once the game is built: the test runs in the world's phase.
-        game.options.dedicated = Some(Vec::new());
-        game.native_level_opened(Dim::Overworld);
-        game.world
-            .chunks
-            .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
-        game.native_joins_skip();
-        test(game);
-    });
+    let keys = Arc::new(Mutex::new(None));
+    with_mod(
+        StateMod {
+            refused: None,
+            keys: keys.clone(),
+        },
+        |game| {
+            let state_keys = keys.lock().unwrap().clone().expect("StateMod registered");
+            game.options.dedicated = Some(Vec::new());
+            game.native_level_opened(Dim::Overworld);
+            game.world
+                .chunks
+                .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+            game.native_joins_skip();
+            test(game, &state_keys);
+        },
+    );
 }
 
 /// `test` on a game with `state_mod` installed. The registration phase is scoped around the
@@ -139,6 +182,17 @@ fn mob_tag(kind: &str, uuid: i32) -> Tag {
     ])
 }
 
+/// The Nether, with the chunk the fixtures' mobs stand in: a mob is visible to the entity
+/// getter only in an accessible section (`PersistentEntitySectionManager.getEntityGetter`).
+fn enter_nether(game: &mut Game<'_>) {
+    game.enter_level(Dim::Nether).unwrap();
+    if !game.world.chunks.contains_key(&(0, 0)) {
+        game.world
+            .chunks
+            .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+    }
+}
+
 /// A fresh mob of `kind` in the level the game is in, and its handle.
 fn mob(game: &mut Game<'_>, kind: &str, uuid: i32) -> EntityRef {
     let id = game.load_mob(mob_tag(kind, uuid), None).unwrap();
@@ -152,6 +206,11 @@ fn robot_tag(uuid: i32) -> Tag {
         velocity: [0.0; 3],
         rotation: [0.0, 90.0],
         owner: None,
+        custom_name: None,
+        custom_name_visible: false,
+        base: Default::default(),
+        on_ground: false,
+        fall_distance: 0.0,
         uuid: [uuid, 0, 0, 2],
         envelope: super::general::GeneralTypeEnvelope {
             type_key: "part_state:robot".to_owned(),
@@ -163,8 +222,10 @@ fn robot_tag(uuid: i32) -> Tag {
     .to_tag()
 }
 
-fn stored(game: &mut Game<'_>, entity: EntityRef) -> Option<i32> {
-    Charge::state_existing(game, entity).unwrap()
+fn stored(charge: &Charge, game: &mut Game<'_>, entity: EntityRef) -> Option<i32> {
+    charge
+        .state_existing(game, entity, |value| value.cloned())
+        .unwrap()
 }
 
 /// What `level`'s attachment index holds for `CHARGE`, by entity id.
@@ -192,17 +253,22 @@ fn indexed(game: &Game<'_>, level: Dim) -> Vec<(u32, i32)> {
 #[ignore = "daily"]
 fn entity_part_state_is_per_entity_through_edits_transactions_and_panics() {
     const NAME: &str = "game::entity_part_state_tests::entity_part_state_is_per_entity_through_edits_transactions_and_panics";
-    with_state_mod(NAME, |game| {
+    with_state_mod(NAME, |game, keys| {
+        let charge = &keys.charge;
         let (a, b) = (
             mob(game, "minecraft:cow", 11),
             mob(game, "minecraft:cow", 12),
         );
         // Reads insert nothing: an entity no edit reached keeps no map at all.
-        assert_eq!(Charge::state(game, a), Ok(0));
-        assert_eq!(stored(game, a), None);
+        assert_eq!(a.residency(game), EntityResidency::InPlace);
+        assert_eq!(charge.state(game, a, Clone::clone), Ok(0));
+        assert_eq!(stored(charge, game, a), None);
         assert!(!game.entity_attachments.contains_key(&a.id()));
-        assert_eq!(Charge::edit_state(game, a, |_, n| *n = 7), Ok(()));
-        assert_eq!((stored(game, a), stored(game, b)), (Some(7), None));
+        assert_eq!(charge.edit_state(game, a, |_, _tx, n| *n = 7), Ok(()));
+        assert_eq!(
+            (stored(charge, game, a), stored(charge, game, b)),
+            (Some(7), None)
+        );
         assert_eq!(
             indexed(game, Dim::Overworld),
             [(a.id(), 7)],
@@ -211,57 +277,69 @@ fn entity_part_state_is_per_entity_through_edits_transactions_and_panics() {
 
         // A handle of another world open is refused, and creates nothing.
         let foreign = EntityRef::new(WorldEpoch::new(a.epoch().get() + 1), b.id());
-        assert_eq!(Charge::state(game, foreign), Err(PartStateError::Stale));
+        assert_eq!(foreign.residency(game), EntityResidency::Gone);
         assert_eq!(
-            Charge::edit_state(game, foreign, |_, n| *n = 1),
+            charge.state(game, foreign, Clone::clone),
+            Err(PartStateError::Stale)
+        );
+        assert_eq!(
+            charge.edit_state(game, foreign, |_, _tx, n| *n = 1),
             Err(PartStateError::Stale)
         );
         assert!(!game.entity_attachments.contains_key(&b.id()));
 
         // An inner edit commits into the outer transaction, which then aborts: the value goes
         // back, and with it the save gate.
-        let aborted: Result<(), ()> = (game as &mut dyn ServerHost).transaction(|host, _| {
-            assert_eq!(Charge::edit_state(host, a, |_, n| *n = 11), Ok(()));
-            assert_eq!(Charge::state(host, a), Ok(11), "later steps see it");
-            assert!(
-                !sunrise_client::join_seq::visibility::passes_settled(),
-                "no save while it is tentative"
-            );
-            Err(())
-        });
-        assert_eq!(aborted, Err(()));
-        assert_eq!(stored(game, a), Some(7));
+        let aborted: Result<(), mod_api::TransactionError<()>> = (game as &mut dyn ServerHost)
+            .transaction(|host, _| {
+                assert_eq!(charge.edit_state(host, a, |_, _tx, n| *n = 11), Ok(()));
+                assert_eq!(
+                    charge.state(host, a, Clone::clone),
+                    Ok(11),
+                    "later steps see it"
+                );
+                assert!(
+                    !sunrise_client::join_seq::visibility::passes_settled(),
+                    "no save while it is tentative"
+                );
+                Err(())
+            });
+        assert_eq!(aborted, Err(mod_api::TransactionError::Aborted(())));
+        assert_eq!(stored(charge, game, a), Some(7));
         assert!(sunrise_client::join_seq::visibility::passes_settled());
         assert_eq!(indexed(game, Dim::Overworld), [(a.id(), 7)]);
 
         // A panic inside an edit leaves no default behind.
         let host: &mut dyn ServerHost = game;
         let panicked = std::panic::catch_unwind(AssertUnwindSafe(|| {
-            Charge::edit_state(host, b, |_, n| {
+            charge.edit_state(host, b, |_, _tx, n| {
                 *n = 5;
                 panic!("edit fails");
             })
         }));
         assert!(panicked.is_err());
         assert!(game.transactions.is_empty());
-        assert_eq!(stored(game, b), None);
+        assert_eq!(stored(charge, game, b), None);
 
         // The same state can't be edited from inside its own edit; another key can.
-        let inner = Charge::edit_state(game, a, |host, n| {
+        let inner = charge.edit_state(game, a, |host, _tx, n| {
             *n = 10;
             (
-                Charge::edit_state(host, a, |_, n| *n = 99),
-                edit_part_state(host, a, &SCRATCH, |_, n| *n = 1),
+                charge.edit_state(host, a, |_, _tx, n| *n = 99),
+                edit_part_state(host, a, &keys.scratch, |_, _tx, n| *n = 1),
             )
         });
         assert_eq!(inner, Ok((Err(PartStateError::Reentrant), Ok(()))));
-        assert_eq!(stored(game, a), Some(10));
-        assert_eq!(read_state(game, a, &SCRATCH), Ok(Some(1)));
+        assert_eq!(stored(charge, game, a), Some(10));
+        assert_eq!(
+            read_state(game, a, &keys.scratch, |value| value.cloned()),
+            Ok(Some(1))
+        );
 
         // An undecodable saved value refuses before the closure runs and keeps its bytes.
         let mut saved = Attachments::default();
         CHARGE.set(&mut saved, Holder::Level, 0).unwrap();
-        let mut raw = saved.to_nbt();
+        let mut raw = saved.try_to_nbt().unwrap();
         let Some(Tag::Compound(names)) = raw.get_mut(&"part_state".into()) else {
             unreachable!()
         };
@@ -280,34 +358,47 @@ fn entity_part_state_is_per_entity_through_edits_transactions_and_panics() {
             name: "charge",
             error: AttachmentError::Decode,
         };
-        assert_eq!(Charge::state(game, b), Err(decode.clone()));
+        assert_eq!(charge.state(game, b, Clone::clone), Err(decode.clone()));
         let mut ran = false;
-        assert_eq!(Charge::edit_state(game, b, |_, _| ran = true), Err(decode));
+        assert_eq!(
+            charge.edit_state(game, b, |_, _tx, _| ran = true),
+            Err(decode)
+        );
         assert!(!ran);
-        assert_eq!(game.entity_attachments[&b.id()].to_nbt(), raw);
+        assert_eq!(game.entity_attachments[&b.id()].try_to_nbt().unwrap(), raw);
 
         // A mob out of its list for its own tick can't be reached until it is back.
         let taken = game.mobs.lift();
-        assert_eq!(Charge::state(game, a), Err(PartStateError::HolderBusy));
+        assert_eq!(a.residency(game), EntityResidency::Busy);
         assert_eq!(
-            Charge::edit_state(game, a, |_, n| *n = 1),
+            charge.state(game, a, Clone::clone),
+            Err(PartStateError::HolderBusy)
+        );
+        assert_eq!(
+            charge.edit_state(game, a, |_, _tx, n| *n = 1),
             Err(PartStateError::HolderBusy)
         );
         game.mobs.restore(
             taken,
             sunrise_client::join_seq::RestoreOrder::SurvivorsFirst,
         );
-        assert_eq!(stored(game, a), Some(10));
+        assert_eq!(a.residency(game), EntityResidency::InPlace);
+        assert_eq!(stored(charge, game, a), Some(10));
 
         // A handle answers only in its own level.
-        game.enter_level(Dim::Nether).unwrap();
-        assert_eq!(Charge::state(game, a), Err(PartStateError::OtherLevel));
+        enter_nether(game);
+        assert_eq!(a.residency(game), EntityResidency::OtherLevel);
         assert_eq!(
-            Charge::edit_state(game, a, |_, n| *n = 1),
+            charge.state(game, a, Clone::clone),
+            Err(PartStateError::OtherLevel)
+        );
+        assert_eq!(
+            charge.edit_state(game, a, |_, _tx, n| *n = 1),
             Err(PartStateError::OtherLevel)
         );
         game.enter_level(Dim::Overworld).unwrap();
-        assert_eq!(stored(game, a), Some(10));
+        assert_eq!(a.residency(game), EntityResidency::InPlace);
+        assert_eq!(stored(charge, game, a), Some(10));
     });
 }
 
@@ -315,7 +406,8 @@ fn entity_part_state_is_per_entity_through_edits_transactions_and_panics() {
 #[ignore = "daily"]
 fn a_removed_or_unloaded_entity_is_stale_and_a_reloaded_one_reads_its_saved_value() {
     const NAME: &str = "game::entity_part_state_tests::a_removed_or_unloaded_entity_is_stale_and_a_reloaded_one_reads_its_saved_value";
-    with_state_mod(NAME, |game| {
+    with_state_mod(NAME, |game, keys| {
+        let charge = &keys.charge;
         // No declaration means no allocation: a mob type no Part keeps state on gets no
         // attachment map and no index row from its spawn, a tick and a save.
         let sheep = mob(game, "minecraft:sheep", 20);
@@ -335,23 +427,29 @@ fn a_removed_or_unloaded_entity_is_stale_and_a_reloaded_one_reads_its_saved_valu
 
         // Removed, then a new cow: the old handle is stale, the new one reads the default.
         let gone = mob(game, "minecraft:cow", 21);
-        assert_eq!(Charge::edit_state(game, gone, |_, n| *n = 3), Ok(()));
+        assert_eq!(charge.edit_state(game, gone, |_, _tx, n| *n = 3), Ok(()));
         assert!(game.entity_discard(gone));
         game.native_removals_flush();
-        assert_eq!(Charge::state(game, gone), Err(PartStateError::Stale));
+        assert_eq!(
+            charge.state(game, gone, Clone::clone),
+            Err(PartStateError::Stale)
+        );
         let again = mob(game, "minecraft:cow", 22);
         assert_ne!(again.id(), gone.id());
-        assert_eq!(Charge::state(game, again), Ok(0));
+        assert_eq!(charge.state(game, again, Clone::clone), Ok(0));
 
         // Unloaded by the residency owner's walk, which writes each map into the entity's NBT
         // before the rows go, then loaded back from that NBT under a fresh id.
-        assert_eq!(Charge::edit_state(game, again, |_, n| *n = 7), Ok(()));
+        assert_eq!(charge.edit_state(game, again, |_, _tx, n| *n = 7), Ok(()));
         assert_eq!(
-            edit_part_state(game, again, &SCRATCH, |_, n| *n = 4),
+            edit_part_state(game, again, &keys.scratch, |_, _tx, n| *n = 4),
             Ok(())
         );
         let saved = game.entity_chunks(&HashSet::from([(0, 0)]), true);
-        assert_eq!(Charge::state(game, again), Err(PartStateError::Stale));
+        assert_eq!(
+            charge.state(game, again, Clone::clone),
+            Err(PartStateError::Stale)
+        );
         assert!(indexed(game, Dim::Overworld).is_empty());
         let saved = saved
             .into_iter()
@@ -367,10 +465,13 @@ fn a_removed_or_unloaded_entity_is_stale_and_a_reloaded_one_reads_its_saved_valu
         let reloaded = game.mobs[0].id;
         let reloaded = game.entity(reloaded).unwrap();
         assert_ne!(reloaded, again);
-        assert_eq!(Charge::state(game, again), Err(PartStateError::Stale));
-        assert_eq!(stored(game, reloaded), Some(7));
         assert_eq!(
-            read_state(game, reloaded, &SCRATCH),
+            charge.state(game, again, Clone::clone),
+            Err(PartStateError::Stale)
+        );
+        assert_eq!(stored(charge, game, reloaded), Some(7));
+        assert_eq!(
+            read_state(game, reloaded, &keys.scratch, |value| value.cloned()),
             Ok(None),
             "session only"
         );
@@ -381,56 +482,65 @@ fn a_removed_or_unloaded_entity_is_stale_and_a_reloaded_one_reads_its_saved_valu
 #[ignore = "daily"]
 fn a_spawn_or_removal_inside_an_aborted_action_keeps_the_bindings() {
     const NAME: &str = "game::entity_part_state_tests::a_spawn_or_removal_inside_an_aborted_action_keeps_the_bindings";
-    with_state_mod(NAME, |game| {
+    with_state_mod(NAME, |game, keys| {
+        let charge = &keys.charge;
         let cow = mob(game, "minecraft:cow", 31);
-        assert_eq!(Charge::edit_state(game, cow, |_, n| *n = 7), Ok(()));
+        assert_eq!(charge.edit_state(game, cow, |_, _tx, n| *n = 7), Ok(()));
 
         // Removed inside an action: stale at once, but bound until the root commits; the abort
         // brings it back with its value.
-        let seal = game.transaction_open();
-        assert!(game.entity_discard(cow));
-        assert_eq!(Charge::state(game, cow), Err(PartStateError::Stale));
+        let pig = game.storage_scope(|game, _| {
+            assert!(game.entity_discard(cow));
+            assert_eq!(
+                charge.state(game, cow, Clone::clone),
+                Err(PartStateError::Stale)
+            );
+            assert_eq!(
+                charge.edit_state(game, cow, |_, _tx, n| *n = 1),
+                Err(PartStateError::Stale)
+            );
+            assert_eq!(
+                indexed(game, Dim::Overworld),
+                [(cow.id(), 7)],
+                "nothing retired yet"
+            );
+            // A spawn inside it exists at once and keeps state; the abort removes both.
+            let (Tag::Compound(nbt), _) = sunrise_core::nbt::parse_snbt("{}").unwrap() else {
+                unreachable!()
+            };
+            let level = game.level("minecraft:overworld").unwrap();
+            let pig = game
+                .level_summon(level, "minecraft:pig", [1.5, 70.0, 1.5], nbt)
+                .unwrap()
+                .unwrap();
+            assert_eq!(charge.edit_state(game, pig, |_, _tx, n| *n = 5), Ok(()));
+            assert_eq!(
+                indexed(game, Dim::Overworld),
+                [(cow.id(), 7), (pig.id(), 5)]
+            );
+            (pig, false)
+        });
+        assert_eq!(charge.state(game, cow, Clone::clone), Ok(7));
         assert_eq!(
-            Charge::edit_state(game, cow, |_, n| *n = 1),
+            charge.state(game, pig, Clone::clone),
             Err(PartStateError::Stale)
         );
-        assert_eq!(
-            indexed(game, Dim::Overworld),
-            [(cow.id(), 7)],
-            "nothing retired yet"
-        );
-        // A spawn inside it exists at once and keeps state; the abort removes both.
-        let (Tag::Compound(nbt), _) = sunrise_core::nbt::parse_snbt("{}").unwrap() else {
-            unreachable!()
-        };
-        let pig = game
-            .summon(
-                "minecraft:overworld",
-                "minecraft:pig",
-                [1.5, 70.0, 1.5],
-                nbt,
-            )
-            .unwrap();
-        let pig = game.entity(pig).unwrap();
-        assert_eq!(Charge::edit_state(game, pig, |_, n| *n = 5), Ok(()));
-        assert_eq!(
-            indexed(game, Dim::Overworld),
-            [(cow.id(), 7), (pig.id(), 5)]
-        );
-        game.transaction_close(&seal, false);
-        assert_eq!(Charge::state(game, cow), Ok(7));
-        assert_eq!(Charge::state(game, pig), Err(PartStateError::Stale));
         assert!(!game.entity_attachments.contains_key(&pig.id()));
         assert_eq!(indexed(game, Dim::Overworld), [(cow.id(), 7)]);
 
         // A nested removal committed into its parent still waits; the root commit retires it.
-        let outer = game.transaction_open();
-        let inner = game.transaction_open();
-        assert!(game.entity_discard(cow));
-        game.transaction_close(&inner, true);
-        assert_eq!(indexed(game, Dim::Overworld), [(cow.id(), 7)]);
-        game.transaction_close(&outer, true);
-        assert_eq!(Charge::state(game, cow), Err(PartStateError::Stale));
+        game.storage_scope(|game, _| {
+            game.storage_scope(|game, _| {
+                assert!(game.entity_discard(cow));
+                ((), true)
+            });
+            assert_eq!(indexed(game, Dim::Overworld), [(cow.id(), 7)]);
+            ((), true)
+        });
+        assert_eq!(
+            charge.state(game, cow, Clone::clone),
+            Err(PartStateError::Stale)
+        );
         // The removal ran at the root commit; its row goes when the mob does, at the sweep.
         game.native_removals_flush();
         game.tickets.update(None);
@@ -444,25 +554,29 @@ fn a_spawn_or_removal_inside_an_aborted_action_keeps_the_bindings() {
 #[ignore = "daily"]
 fn a_lone_mob_or_general_row_moves_under_a_new_id_and_a_ridden_pig_keeps_its_handle() {
     const NAME: &str = "game::entity_part_state_tests::a_lone_mob_or_general_row_moves_under_a_new_id_and_a_ridden_pig_keeps_its_handle";
-    with_state_mod(NAME, |game| {
+    with_state_mod(NAME, |game, keys| {
+        let charge = &keys.charge;
         // A lone mob: rebuilt under a new id in the other level, its state with it.
         let cow = mob(game, "minecraft:cow", 41);
-        assert_eq!(Charge::edit_state(game, cow, |_, n| *n = 7), Ok(()));
+        assert_eq!(charge.edit_state(game, cow, |_, _tx, n| *n = 7), Ok(()));
         let state = game.take_transferred_entity_state(cow.id());
         game.mobs.retain(|m| m.id != cow.id());
         game.detach_entity(cow.id());
         assert!(indexed(game, Dim::Overworld).is_empty());
-        game.enter_level(Dim::Nether).unwrap();
+        enter_nether(game);
         let moved = game
             .load_mob_transferred(mob_tag("minecraft:cow", 41), None, Some(state))
             .unwrap();
         let moved = game.entity(moved).unwrap();
         assert_ne!(moved, cow);
-        assert_eq!(stored(game, moved), Some(7));
+        assert_eq!(stored(charge, game, moved), Some(7));
         assert_eq!(indexed(game, Dim::Nether), [(moved.id(), 7)]);
-        assert_eq!(Charge::state(game, cow), Err(PartStateError::Stale));
         assert_eq!(
-            Charge::edit_state(game, cow, |_, n| *n = 1),
+            charge.state(game, cow, Clone::clone),
+            Err(PartStateError::Stale)
+        );
+        assert_eq!(
+            charge.edit_state(game, cow, |_, _tx, n| *n = 1),
             Err(PartStateError::Stale)
         );
         assert!(
@@ -477,8 +591,8 @@ fn a_lone_mob_or_general_row_moves_under_a_new_id_and_a_ridden_pig_keeps_its_han
         let robot = game.resident_entities.general.rows[0].id;
         assert!(robot > next);
         let robot = game.entity(robot).unwrap();
-        assert_eq!(Charge::state(game, robot), Ok(0));
-        assert_eq!(Charge::edit_state(game, robot, |_, n| *n = 9), Ok(()));
+        assert_eq!(charge.state(game, robot, Clone::clone), Ok(0));
+        assert_eq!(charge.edit_state(game, robot, |_, _tx, n| *n = 9), Ok(()));
         assert_eq!(
             indexed(game, Dim::Overworld),
             [(robot.id(), 9)],
@@ -490,7 +604,7 @@ fn a_lone_mob_or_general_row_moves_under_a_new_id_and_a_ridden_pig_keeps_its_han
             .rows
             .retain(|row| row.id != robot.id());
         game.detach_entity(robot.id());
-        game.enter_level(Dim::Nether).unwrap();
+        enter_nether(game);
         game.world
             .chunks
             .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
@@ -498,14 +612,17 @@ fn a_lone_mob_or_general_row_moves_under_a_new_id_and_a_ridden_pig_keeps_its_han
         let arrived = game.resident_entities.general.rows[0].id;
         let arrived = game.entity(arrived).unwrap();
         assert_ne!(arrived, robot);
-        assert_eq!(stored(game, arrived), Some(9));
+        assert_eq!(stored(charge, game, arrived), Some(9));
         assert_eq!(
             indexed(game, Dim::Nether),
             [(moved.id(), 7), (arrived.id(), 9)],
             "bound on transfer adopt"
         );
         game.enter_level(Dim::Overworld).unwrap();
-        assert_eq!(Charge::state(game, robot), Err(PartStateError::Stale));
+        assert_eq!(
+            charge.state(game, robot, Clone::clone),
+            Err(PartStateError::Stale)
+        );
 
         // A saddled pig a player rides keeps its id across: a guest on it steps into a portal
         // with it, the carrier path starts the guest's trip and parks the pig, and the arrival
@@ -525,7 +642,7 @@ fn a_lone_mob_or_general_row_moves_under_a_new_id_and_a_ridden_pig_keeps_its_han
         }
         let pig = game.load_mob(tag, None).unwrap();
         let pig = game.entity(pig).unwrap();
-        assert_eq!(Charge::edit_state(game, pig, |_, n| *n = 5), Ok(()));
+        assert_eq!(charge.edit_state(game, pig, |_, _tx, n| *n = 5), Ok(()));
         let conn = game.lan.as_ref().unwrap().hub.guests[0].conn;
         assert_eq!(game.player(123), Some(rider));
         game.lan.as_mut().unwrap().hub.guests.update(0, |guest| {
@@ -556,23 +673,26 @@ fn a_lone_mob_or_general_row_moves_under_a_new_id_and_a_ridden_pig_keeps_its_han
             "the pig waits for it"
         );
         assert_eq!(
-            stored(game, pig),
+            stored(charge, game, pig),
             Some(5),
             "still in its level while it waits"
         );
-        game.enter_level(Dim::Nether).unwrap();
+        enter_nether(game);
         game.arrive_vehicle(Dim::Overworld, pig.id(), Vec3::new(1.0, 70.0, 3.0), 0.0);
         assert_eq!(
             game.lan.as_ref().unwrap().hub.guests[0].vehicle,
             Some(pig.id())
         );
         assert_eq!(game.entity(pig.id()), Some(pig));
-        assert_eq!(stored(game, pig), Some(5));
-        assert_eq!(Charge::edit_state(game, pig, |_, n| *n += 1), Ok(()));
-        assert_eq!(stored(game, pig), Some(6));
+        assert_eq!(stored(charge, game, pig), Some(5));
+        assert_eq!(charge.edit_state(game, pig, |_, _tx, n| *n += 1), Ok(()));
+        assert_eq!(stored(charge, game, pig), Some(6));
         assert!(indexed(game, Dim::Nether).contains(&(pig.id(), 6)));
         game.enter_level(Dim::Overworld).unwrap();
-        assert_eq!(Charge::state(game, pig), Err(PartStateError::OtherLevel));
+        assert_eq!(
+            charge.state(game, pig, Clone::clone),
+            Err(PartStateError::OtherLevel)
+        );
         assert!(indexed(game, Dim::Overworld).is_empty());
     });
 }
@@ -581,76 +701,89 @@ fn a_lone_mob_or_general_row_moves_under_a_new_id_and_a_ridden_pig_keeps_its_han
 #[ignore = "daily"]
 fn a_transfer_inside_an_aborted_action_leaves_the_state_with_the_entity() {
     const NAME: &str = "game::entity_part_state_tests::a_transfer_inside_an_aborted_action_leaves_the_state_with_the_entity";
-    with_state_mod(NAME, |game| {
+    with_state_mod(NAME, |game, keys| {
+        let charge = &keys.charge;
         let cow = mob(game, "minecraft:cow", 51);
-        assert_eq!(Charge::edit_state(game, cow, |_, n| *n = 7), Ok(()));
-        let seal = game.transaction_open();
-        assert_eq!(Charge::edit_state(game, cow, |_, n| *n = 9), Ok(()));
-        let state = game.take_transferred_entity_state(cow.id());
-        game.mobs.retain(|m| m.id != cow.id());
-        game.detach_entity(cow.id());
-        assert_eq!(
-            indexed(game, Dim::Overworld),
-            [(cow.id(), 9)],
-            "the source index keeps its row until the root closes"
-        );
-        game.enter_level(Dim::Nether).unwrap();
-        let moved = game
-            .load_mob_transferred(mob_tag("minecraft:cow", 51), None, Some(state))
-            .unwrap();
-        let moved = game.entity(moved).unwrap();
-        assert_eq!(stored(game, moved), Some(9));
-        assert_eq!(Charge::edit_state(game, moved, |_, n| *n = 11), Ok(()));
-        game.enter_level(Dim::Overworld).unwrap();
-        game.transaction_close(&seal, false);
+        assert_eq!(charge.edit_state(game, cow, |_, _tx, n| *n = 7), Ok(()));
+        let moved = game.storage_scope(|game, _| {
+            assert_eq!(charge.edit_state(game, cow, |_, _tx, n| *n = 9), Ok(()));
+            let state = game.take_transferred_entity_state(cow.id());
+            game.mobs.retain(|m| m.id != cow.id());
+            game.detach_entity(cow.id());
+            assert_eq!(
+                indexed(game, Dim::Overworld),
+                [(cow.id(), 9)],
+                "the source index keeps its row until the root closes"
+            );
+            enter_nether(game);
+            let moved = game
+                .load_mob_transferred(mob_tag("minecraft:cow", 51), None, Some(state))
+                .unwrap();
+            let moved = game.entity(moved).unwrap();
+            assert_eq!(stored(charge, game, moved), Some(9));
+            assert_eq!(charge.edit_state(game, moved, |_, _tx, n| *n = 11), Ok(()));
+            game.enter_level(Dim::Overworld).unwrap();
+            (moved, false)
+        });
 
         // Travel is not undone: the map stays with the cow under its new id, with the writes the
         // action made rolled back; the old handle stays stale and its row is gone.
         assert!(indexed(game, Dim::Overworld).is_empty());
-        assert_eq!(Charge::state(game, cow), Err(PartStateError::Stale));
+        assert_eq!(
+            charge.state(game, cow, Clone::clone),
+            Err(PartStateError::Stale)
+        );
         assert!(!game.entity_attachments.contains_key(&cow.id()));
-        game.enter_level(Dim::Nether).unwrap();
-        assert_eq!(stored(game, moved), Some(7));
+        enter_nether(game);
+        assert_eq!(stored(charge, game, moved), Some(7));
         assert_eq!(indexed(game, Dim::Nether), [(moved.id(), 7)]);
 
         // Two transfers in one action, A to B and B to C: the second take keeps B's map as it
         // is then (9), but the abort restores what the action first found (7), at C.
         game.enter_level(Dim::Overworld).unwrap();
         let a = mob(game, "minecraft:cow", 52);
-        assert_eq!(Charge::edit_state(game, a, |_, n| *n = 7), Ok(()));
-        let seal = game.transaction_open();
-        assert_eq!(Charge::edit_state(game, a, |_, n| *n = 9), Ok(()));
-        let state = game.take_transferred_entity_state(a.id());
-        game.mobs.retain(|m| m.id != a.id());
-        game.detach_entity(a.id());
-        game.enter_level(Dim::Nether).unwrap();
-        let b = game
-            .load_mob_transferred(mob_tag("minecraft:cow", 52), None, Some(state))
-            .unwrap();
-        let b = game.entity(b).unwrap();
-        assert_eq!(stored(game, b), Some(9));
-        let state = game.take_transferred_entity_state(b.id());
-        game.mobs.retain(|m| m.id != b.id());
-        game.detach_entity(b.id());
-        game.enter_level(Dim::Overworld).unwrap();
-        let c = game
-            .load_mob_transferred(mob_tag("minecraft:cow", 52), None, Some(state))
-            .unwrap();
-        let c = game.entity(c).unwrap();
-        assert_eq!(stored(game, c), Some(9));
-        game.transaction_close(&seal, false);
+        assert_eq!(charge.edit_state(game, a, |_, _tx, n| *n = 7), Ok(()));
+        let (b, c) = game.storage_scope(|game, _| {
+            assert_eq!(charge.edit_state(game, a, |_, _tx, n| *n = 9), Ok(()));
+            let state = game.take_transferred_entity_state(a.id());
+            game.mobs.retain(|m| m.id != a.id());
+            game.detach_entity(a.id());
+            enter_nether(game);
+            let b = game
+                .load_mob_transferred(mob_tag("minecraft:cow", 52), None, Some(state))
+                .unwrap();
+            let b = game.entity(b).unwrap();
+            assert_eq!(stored(charge, game, b), Some(9));
+            let state = game.take_transferred_entity_state(b.id());
+            game.mobs.retain(|m| m.id != b.id());
+            game.detach_entity(b.id());
+            game.enter_level(Dim::Overworld).unwrap();
+            let c = game
+                .load_mob_transferred(mob_tag("minecraft:cow", 52), None, Some(state))
+                .unwrap();
+            let c = game.entity(c).unwrap();
+            assert_eq!(stored(charge, game, c), Some(9));
+            ((b, c), false)
+        });
 
         assert!(game.transactions.is_empty());
-        assert_eq!(stored(game, c), Some(7), "the value the action first found");
+        assert_eq!(
+            stored(charge, game, c),
+            Some(7),
+            "the value the action first found"
+        );
         assert_eq!(indexed(game, Dim::Overworld), [(c.id(), 7)]);
         for stale in [a, b] {
-            assert_eq!(Charge::state(game, stale), Err(PartStateError::Stale));
+            assert_eq!(
+                charge.state(game, stale, Clone::clone),
+                Err(PartStateError::Stale)
+            );
             assert!(
                 !game.entity_attachments.contains_key(&stale.id()),
                 "nothing left behind"
             );
         }
-        game.enter_level(Dim::Nether).unwrap();
+        enter_nether(game);
         assert_eq!(
             indexed(game, Dim::Nether),
             [(moved.id(), 7)],
@@ -661,13 +794,14 @@ fn a_transfer_inside_an_aborted_action_leaves_the_state_with_the_entity() {
         // arrival waits for a later pass: the arrival carries what the action first found.
         game.enter_level(Dim::Overworld).unwrap();
         let late = mob(game, "minecraft:cow", 53);
-        assert_eq!(Charge::edit_state(game, late, |_, n| *n = 7), Ok(()));
-        let seal = game.transaction_open();
-        assert_eq!(Charge::edit_state(game, late, |_, n| *n = 9), Ok(()));
-        let state = game.take_transferred_entity_state(late.id());
-        game.mobs.retain(|m| m.id != late.id());
-        game.detach_entity(late.id());
-        game.transaction_close(&seal, false);
+        assert_eq!(charge.edit_state(game, late, |_, _tx, n| *n = 7), Ok(()));
+        let state = game.storage_scope(|game, _| {
+            assert_eq!(charge.edit_state(game, late, |_, _tx, n| *n = 9), Ok(()));
+            let state = game.take_transferred_entity_state(late.id());
+            game.mobs.retain(|m| m.id != late.id());
+            game.detach_entity(late.id());
+            (state, false)
+        });
         assert!(game.transactions.is_empty());
         assert_eq!(
             indexed(game, Dim::Overworld),
@@ -675,12 +809,12 @@ fn a_transfer_inside_an_aborted_action_leaves_the_state_with_the_entity() {
             "its row retired"
         );
         assert!(!game.entity_attachments.contains_key(&late.id()));
-        game.enter_level(Dim::Nether).unwrap();
+        enter_nether(game);
         let arrived = game
             .load_mob_transferred(mob_tag("minecraft:cow", 53), None, Some(state))
             .unwrap();
         let arrived = game.entity(arrived).unwrap();
-        assert_eq!(stored(game, arrived), Some(7), "not the aborted 9");
+        assert_eq!(stored(charge, game, arrived), Some(7), "not the aborted 9");
         assert_eq!(
             indexed(game, Dim::Nether),
             [(moved.id(), 7), (arrived.id(), 7)]
@@ -690,31 +824,35 @@ fn a_transfer_inside_an_aborted_action_leaves_the_state_with_the_entity() {
         // rolled back before C arrives. The arrival carries what the action first found at A.
         game.enter_level(Dim::Overworld).unwrap();
         let first = mob(game, "minecraft:cow", 54);
-        assert_eq!(Charge::edit_state(game, first, |_, n| *n = 7), Ok(()));
-        let seal = game.transaction_open();
-        assert_eq!(Charge::edit_state(game, first, |_, n| *n = 9), Ok(()));
-        let state = game.take_transferred_entity_state(first.id());
-        game.mobs.retain(|m| m.id != first.id());
-        game.detach_entity(first.id());
-        game.enter_level(Dim::Nether).unwrap();
-        let second = game
-            .load_mob_transferred(mob_tag("minecraft:cow", 54), None, Some(state))
-            .unwrap();
-        let second = game.entity(second).unwrap();
-        assert_eq!(stored(game, second), Some(9));
-        let state = game.take_transferred_entity_state(second.id());
-        game.mobs.retain(|m| m.id != second.id());
-        game.detach_entity(second.id());
-        game.enter_level(Dim::Overworld).unwrap();
-        game.transaction_close(&seal, false);
+        assert_eq!(charge.edit_state(game, first, |_, _tx, n| *n = 7), Ok(()));
+        let (state, second) = game.storage_scope(|game, _| {
+            assert_eq!(charge.edit_state(game, first, |_, _tx, n| *n = 9), Ok(()));
+            let state = game.take_transferred_entity_state(first.id());
+            game.mobs.retain(|m| m.id != first.id());
+            game.detach_entity(first.id());
+            enter_nether(game);
+            let second = game
+                .load_mob_transferred(mob_tag("minecraft:cow", 54), None, Some(state))
+                .unwrap();
+            let second = game.entity(second).unwrap();
+            assert_eq!(stored(charge, game, second), Some(9));
+            let state = game.take_transferred_entity_state(second.id());
+            game.mobs.retain(|m| m.id != second.id());
+            game.detach_entity(second.id());
+            game.enter_level(Dim::Overworld).unwrap();
+            ((state, second), false)
+        });
         assert!(game.transactions.is_empty());
         let third = game
             .load_mob_transferred(mob_tag("minecraft:cow", 54), None, Some(state))
             .unwrap();
         let third = game.entity(third).unwrap();
-        assert_eq!(stored(game, third), Some(7), "not the aborted 9");
+        assert_eq!(stored(charge, game, third), Some(7), "not the aborted 9");
         for stale in [first, second] {
-            assert_eq!(Charge::state(game, stale), Err(PartStateError::Stale));
+            assert_eq!(
+                charge.state(game, stale, Clone::clone),
+                Err(PartStateError::Stale)
+            );
             assert!(
                 !game.entity_attachments.contains_key(&stale.id()),
                 "nothing left behind"
@@ -724,7 +862,7 @@ fn a_transfer_inside_an_aborted_action_leaves_the_state_with_the_entity() {
             indexed(game, Dim::Overworld),
             [(c.id(), 7), (third.id(), 7)]
         );
-        game.enter_level(Dim::Nether).unwrap();
+        enter_nether(game);
         assert_eq!(
             indexed(game, Dim::Nether),
             [(moved.id(), 7), (arrived.id(), 7)],
@@ -758,6 +896,7 @@ fn entity_part_state_on_a_player_a_vanilla_family_or_an_unknown_type_refuses_the
         with_mod(
             StateMod {
                 refused: Some(kind),
+                keys: Arc::new(Mutex::new(None)),
             },
             |_| {},
         );

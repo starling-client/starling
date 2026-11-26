@@ -20,13 +20,10 @@ import re
 import subprocess
 import sys
 
-try:
-    from . import class_index, vanilla_map
-except ImportError:
-    import class_index
-    import vanilla_map
-
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import class_index, vanilla_map
+
 PROTOCOL = "net/minecraft/network/protocol/"
 DATAFIX = "net/minecraft/util/datafix/"
 # Generated tables, what makes them stale, and how to regenerate them (docs/version-ports.md, "Regenerate").

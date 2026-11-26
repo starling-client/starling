@@ -7,8 +7,13 @@ use crate::{
     Error, Result,
     packets::configuration::{RegistryData, UpdateTags},
 };
-use std::{collections::HashMap, path::Path};
-use sunrise_core::identifier::Identifier;
+use serde::{Deserialize, Deserializer, de};
+use std::{
+    collections::{BTreeMap, HashMap, btree_map::Entry},
+    fmt,
+    path::Path,
+};
+use sunrise_core::identifier::{self, Identifier};
 use sunrise_core::nbt::{JavaString, Tag};
 
 /// One registry: names by network id and the reverse lookup.
@@ -73,6 +78,17 @@ impl crate::item::Names for SyncedNames<'_> {
             })
             .map(str::to_owned)
     }
+
+    fn registry_entry(&self, registry: &str, id: i32) -> Option<(&str, Option<&Tag>)> {
+        self.dynamic.entry(registry, id)
+    }
+
+    fn contains_entry(&self, registry: &str, name: &str) -> bool {
+        self.builtin
+            .get(registry)
+            .is_some_and(|ids| ids.id(name).is_some())
+            || self.dynamic.has_entry(registry, name)
+    }
 }
 
 impl SyncedNames<'_> {
@@ -118,6 +134,86 @@ fn names(text: &str, id: &Identifier) -> bool {
     text.split_once(':') == Some((id.namespace(), id.path()))
 }
 
+struct ReportRegistry {
+    entries: Option<ReportEntries>,
+}
+
+impl<'de> Deserialize<'de> for ReportRegistry {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        struct Visitor;
+
+        impl<'de> de::Visitor<'de> for Visitor {
+            type Value = ReportRegistry;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a registry report object")
+            }
+
+            fn visit_map<A: de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> std::result::Result<Self::Value, A::Error> {
+                let mut entries: Option<Option<ReportEntries>> = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    if key == "entries" {
+                        if entries.is_some() {
+                            return Err(de::Error::duplicate_field("entries"));
+                        }
+                        entries = Some(map.next_value()?);
+                    } else {
+                        map.next_value::<de::IgnoredAny>()?;
+                    }
+                }
+                Ok(ReportRegistry {
+                    entries: entries.flatten(),
+                })
+            }
+        }
+
+        deserializer.deserialize_map(Visitor)
+    }
+}
+
+/// Read keys directly from the JSON object, before a map can overwrite a duplicate.
+struct ReportEntries(BTreeMap<String, serde_json::Value>);
+
+impl<'de> Deserialize<'de> for ReportEntries {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        struct Visitor;
+
+        impl<'de> de::Visitor<'de> for Visitor {
+            type Value = ReportEntries;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a registry entries object with unique keys")
+            }
+
+            fn visit_map<A: de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> std::result::Result<Self::Value, A::Error> {
+                let mut entries = BTreeMap::new();
+                while let Some(key) = map.next_key::<String>()? {
+                    match entries.entry(key) {
+                        Entry::Vacant(entry) => {
+                            entry.insert(map.next_value()?);
+                        }
+                        Entry::Occupied(entry) => {
+                            return Err(de::Error::custom(format!(
+                                "duplicate report key {}",
+                                entry.key()
+                            )));
+                        }
+                    }
+                }
+                Ok(ReportEntries(entries))
+            }
+        }
+
+        deserializer.deserialize_map(Visitor)
+    }
+}
+
 impl Builtin {
     pub fn load(path: &Path) -> Result<Self> {
         let text = std::fs::read_to_string(path)
@@ -125,17 +221,15 @@ impl Builtin {
         Self::parse(&text)
     }
     pub fn parse(text: &str) -> Result<Self> {
-        let json: serde_json::Value = serde_json::from_str(text)
+        let report: BTreeMap<String, ReportRegistry> = serde_json::from_str(text)
             .map_err(|e| Error::new(format!("registries report: {e}")))?;
         let mut registries = HashMap::new();
-        for (name, registry) in json
-            .as_object()
-            .ok_or_else(|| Error::new("registries report is not an object"))?
-        {
-            let Some(entries) = registry["entries"].as_object() else {
+        for (name, registry) in report {
+            let Some(ReportEntries(entries)) = registry.entries else {
                 continue;
             };
-            let mut names = vec![String::new(); entries.len()];
+            let mut slots = vec![None; entries.len()];
+            let mut ids = HashMap::with_capacity(entries.len());
             for (entry, value) in entries {
                 let id = value["protocol_id"]
                     .as_u64()
@@ -149,15 +243,31 @@ impl Builtin {
                         "{entry}: protocol_id {id} out of range"
                     )));
                 }
-                if id >= names.len() {
-                    names.resize(id + 1, String::new());
+                if id >= slots.len() {
+                    slots.resize(id + 1, None);
                 }
-                if !names[id].is_empty() {
+                if slots[id].is_some() {
                     return Err(Error::new(format!("{entry}: duplicate protocol_id {id}")));
                 }
-                names[id] = entry.clone();
+                slots[id] = (!entry.is_empty()).then_some(entry);
             }
-            registries.insert(name.clone(), Ids::from_names(names));
+            // Publish canonical IDs in numeric slot order. Invalid IDs leave gaps;
+            // like MappedRegistry.register, reject repeated identifier keys.
+            let mut names = Vec::with_capacity(slots.len());
+            for (slot, entry) in slots.into_iter().enumerate() {
+                let key = entry
+                    .and_then(|entry| identifier::canonicalize(entry).ok())
+                    .unwrap_or_default();
+                if let Some(previous) = ids.insert(key.clone(), slot as i32)
+                    && !key.is_empty()
+                {
+                    return Err(Error::new(format!(
+                        "{name}: duplicate registry key {key} at protocol_ids {previous} and {slot}"
+                    )));
+                }
+                names.push(key);
+            }
+            registries.insert(name, Ids { names, ids });
         }
         Ok(Self { registries })
     }
@@ -207,6 +317,14 @@ impl crate::item::Names for Dynamic {
             Some(snapshot) => snapshot.kind(id),
             None => builtin_name(id).map(|_| Kind::Builtin(id)),
         }
+    }
+
+    fn registry_entry(&self, registry: &str, id: i32) -> Option<(&str, Option<&Tag>)> {
+        self.entry(registry, id)
+    }
+
+    fn contains_entry(&self, registry: &str, name: &str) -> bool {
+        self.has_entry(registry, name)
     }
 }
 
@@ -308,6 +426,18 @@ impl Dynamic {
             .get(i)
             .map(|(n, _)| n.as_str())
     }
+    pub fn entry(&self, registry: &str, id: i32) -> Option<(&str, Option<&Tag>)> {
+        let i = usize::try_from(id).ok()?;
+        self.registries
+            .get(registry)?
+            .get(i)
+            .map(|(n, tag)| (n.as_str(), tag.as_ref()))
+    }
+    pub fn has_entry(&self, registry: &str, name: &str) -> bool {
+        self.registries
+            .get(registry)
+            .is_some_and(|entries| entries.iter().any(|(n, _)| n == name))
+    }
     /// The id of an entry by name, the reverse of `name`. A registry has one
     /// entry per id, so the first match is the only one.
     pub fn id(&self, registry: &str, name: &str) -> Option<i32> {
@@ -325,13 +455,26 @@ impl Dynamic {
         self.registries.is_empty()
     }
     /// The synchronized dimension type `id` as the JSON a data pack writes it, with its name:
-    /// what `DimensionFacts::patched` reads. None without data. A byte is a flag (every one the
-    /// type has is), and a number with no fraction is an integer, as Sunrise's server sends a
-    /// pack's JSON numbers as doubles.
+    /// what `DimensionFacts::patched` reads. None without data. The four codec flags accept any
+    /// numeric tag (matching `Dynamic::dimension`), other bytes are flags, and a number with no
+    /// fraction is an integer, as Sunrise's server sends a pack's JSON numbers as doubles.
     pub fn dimension_json(&self, id: i32) -> Option<(String, serde_json::Value)> {
         let name = self.name("minecraft:dimension_type", id)?.to_owned();
         let tag = self.data("minecraft:dimension_type", id)?;
-        Some((name, tag_json(tag)))
+        let mut json = tag_json(tag);
+        if let (Tag::Compound(map), serde_json::Value::Object(obj)) = (tag, &mut json) {
+            for key in [
+                "has_skylight",
+                "has_ceiling",
+                "has_fixed_time",
+                "has_ender_dragon_fight",
+            ] {
+                if let Some(flag) = map.get(&JavaString::from(key)).and_then(flag_value) {
+                    obj.insert(key.to_owned(), serde_json::Value::Bool(flag));
+                }
+            }
+        }
+        Some((name, json))
     }
     /// The dimension type's vertical range and sky light, from its
     /// synchronized data or the vanilla defaults for known names.
@@ -341,10 +484,7 @@ impl Dynamic {
             .unwrap_or("minecraft:overworld");
         let mut d = DimensionType::vanilla(name);
         if let Some(Tag::Compound(map)) = self.data("minecraft:dimension_type", id) {
-            let int = |k: &str| match map.get(&JavaString::from(k)) {
-                Some(Tag::Int(v)) => Some(*v),
-                _ => None,
-            };
+            let int = |k: &str| map.get(&JavaString::from(k)).and_then(int_value);
             if let Some(v) = int("min_y") {
                 d.min_y = v;
             }
@@ -361,21 +501,21 @@ impl Dynamic {
                 d.min_y = vanilla.min_y;
                 d.height = vanilla.height;
             }
-            if let Some(Tag::Byte(v)) = map.get(&JavaString::from("has_skylight")) {
-                d.has_skylight = *v != 0;
+            let flag = |k: &str| map.get(&JavaString::from(k)).and_then(flag_value);
+            if let Some(v) = flag("has_skylight") {
+                d.has_skylight = v;
             }
-            if let Some(Tag::Byte(v)) = map.get(&JavaString::from("has_ceiling")) {
-                d.has_ceiling = *v != 0;
+            if let Some(v) = flag("has_ceiling") {
+                d.has_ceiling = v;
             }
             // Any number, as vanilla's codec reads it (Sunrise's own server sends a
             // world pack's JSON numbers as doubles).
-            d.ambient_light = match map.get(&JavaString::from("ambient_light")) {
-                Some(Tag::Float(v)) => f32::from_bits(*v),
-                Some(Tag::Double(v)) => f64::from_bits(*v) as f32,
-                Some(Tag::Int(v)) => *v as f32,
-                Some(Tag::Byte(v)) => f32::from(*v),
-                _ => d.ambient_light,
-            };
+            if let Some(v) = map
+                .get(&JavaString::from("ambient_light"))
+                .and_then(float_value)
+            {
+                d.ambient_light = v;
+            }
             // DimensionType.defaultClock: the world clock this level's day
             // time follows (absent in the Nether).
             d.default_clock = match map.get(&JavaString::from("default_clock")) {
@@ -388,6 +528,37 @@ impl Dynamic {
             };
         }
         d
+    }
+}
+/// `NbtOps.getNumberValue(tag).intValue()`: every numeric tag is a number.
+fn int_value(tag: &Tag) -> Option<i32> {
+    Some(match *tag {
+        Tag::Byte(v) => i32::from(v),
+        Tag::Short(v) => i32::from(v),
+        Tag::Int(v) => v,
+        Tag::Long(v) => v as i32,
+        Tag::Float(v) => f32::from_bits(v) as i32,
+        Tag::Double(v) => f64::from_bits(v) as i32,
+        _ => return None,
+    })
+}
+/// `NbtOps.getNumberValue(tag).floatValue()`.
+fn float_value(tag: &Tag) -> Option<f32> {
+    Some(match *tag {
+        Tag::Byte(v) => f32::from(v),
+        Tag::Short(v) => f32::from(v),
+        Tag::Int(v) => v as f32,
+        Tag::Long(v) => v as f32,
+        Tag::Float(v) => f32::from_bits(v),
+        Tag::Double(v) => f64::from_bits(v) as f32,
+        _ => return None,
+    })
+}
+/// `NbtOps.getBooleanValue`: a number's `doubleValue() != 0`.
+fn flag_value(tag: &Tag) -> Option<bool> {
+    match *tag {
+        Tag::Double(v) => Some(f64::from_bits(v) != 0.0),
+        _ => float_value(tag).map(|v| v != 0.0),
     }
 }
 /// A dimension type's tag as JSON (see `Dynamic::dimension_json`).
@@ -613,6 +784,12 @@ mod tests {
         assert_eq!(items.name(2), None);
     }
 
+    #[test]
+    fn rejects_positional_registry_report_records() {
+        let report = r#"{"minecraft:item":[{"minecraft:stick":{"protocol_id":0}}]}"#;
+        assert!(Builtin::parse(report).is_err());
+    }
+
     /// A crafted huge protocol_id must error instead of allocating a
     /// name table of that size, and duplicate ids must error instead of
     /// silently overwriting.
@@ -628,6 +805,20 @@ mod tests {
         let b = Builtin::parse(sparse).unwrap();
         let x = b.get("minecraft:block_entity_type").unwrap();
         assert_eq!(x.name(7), Some("minecraft:sign"));
+    }
+
+    #[test]
+    fn rejects_duplicate_canonical_report_keys() {
+        for first_key in ["stick", "minecraft:stick"] {
+            let report = format!(
+                r#"{{"minecraft:item":{{"entries":{{
+                    "{first_key}":{{"protocol_id":1}},
+                    "minecraft:stick":{{"protocol_id":5}}
+                }}}}}}"#
+            );
+            let error = Builtin::parse(&report).unwrap_err();
+            assert!(error.0.contains("duplicate"), "{error}");
+        }
     }
 
     #[test]
@@ -692,6 +883,29 @@ mod tests {
         assert_eq!(shape(1024, 1024), (-64, 384));
     }
 
+    /// `NbtOps` reads any numeric tag as a number or a flag: a world pack's JSON numbers as
+    /// doubles (Sunrise's server sends them so) or a proxy's shorts keep the server's shape.
+    #[test]
+    fn a_dimension_shape_in_any_numeric_tag_is_the_servers() {
+        let mut d = Dynamic::default();
+        d.add(RegistryData {
+            registry: "minecraft:dimension_type".into(),
+            entries: vec![RegistryEntry {
+                id: "minecraft:overworld".into(),
+                data: Some(Tag::compound([
+                    ("min_y", Tag::Double(0f64.to_bits())),
+                    ("height", Tag::Short(256)),
+                    ("logical_height", Tag::Long(256)),
+                    ("has_skylight", Tag::Int(0)),
+                    ("has_ceiling", Tag::Double(0.5f64.to_bits())),
+                ])),
+            }],
+        });
+        let t = d.dimension(0);
+        assert_eq!((t.min_y, t.height, t.logical_height), (0, 256, 256));
+        assert!(!t.has_skylight && t.has_ceiling);
+    }
+
     #[test]
     fn dimension_reads_default_clock() {
         let mut d = Dynamic::default();
@@ -753,6 +967,24 @@ mod tests {
         assert_eq!(facts.sky_light_level, 4.0);
         assert_eq!(facts.height.height, 128);
         assert!(Dynamic::default().dimension_json(0).is_none());
+        // Non-byte numeric flags (e.g. Double) normalize to JSON booleans, matching `dimension`.
+        d.add(RegistryData {
+            registry: "minecraft:dimension_type".into(),
+            entries: vec![RegistryEntry {
+                id: "mymod:double_flags".into(),
+                data: Some(Tag::compound([
+                    ("has_skylight", Tag::Double(1.0f64.to_bits())),
+                    ("has_ceiling", Tag::Int(0)),
+                    ("has_fixed_time", Tag::Double(1e-50f64.to_bits())),
+                    ("has_ender_dragon_fight", Tag::Short(1)),
+                ])),
+            }],
+        });
+        let (_, json) = d.dimension_json(0).unwrap();
+        assert_eq!(json["has_skylight"], true);
+        assert_eq!(json["has_ceiling"], false);
+        assert_eq!(json["has_fixed_time"], true);
+        assert_eq!(json["has_ender_dragon_fight"], true);
     }
 
     #[test]

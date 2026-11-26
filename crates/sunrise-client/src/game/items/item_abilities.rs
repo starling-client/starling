@@ -12,9 +12,59 @@ pub(in crate::game) mod ability {
     pub const SHEARS_HARVEST: &str = "shears_harvest";
     /// Carving a pumpkin.
     pub const SHEARS_CARVE: &str = "shears_carve";
+    /// Brushing a suspicious block or an armadillo.
+    pub const BRUSH_BRUSH: &str = "brush_brush";
+    /// Lighting TNT, a campfire, a candle or a candle cake.
+    pub const FIRESTARTER_LIGHT: &str = "firestarter_light";
+    /// Casting a fishing rod.
+    pub const FISHING_ROD_CAST: &str = "fishing_rod_cast";
+    /// Mining as shears do (cobwebs, leaves, wool): a dug block's loot and the tool's wear.
+    pub const SHEARS_DIG: &str = "shears_dig";
+    /// Disarming a tripwire.
+    pub const SHEARS_DISARM: &str = "shears_disarm";
+    /// Shearing a mob's armour or carpet off.
+    pub const SHEARS_REMOVE_ARMOR: &str = "shears_remove_armor";
+    /// Trimming a growing plant's tip so it stops growing.
+    pub const SHEARS_TRIM: &str = "shears_trim";
+    /// Putting out a lit campfire.
+    pub const SHOVEL_DOUSE: &str = "shovel_douse";
+    /// Looking through a spyglass.
+    pub const SPYGLASS_SCOPE: &str = "spyglass_scope";
+    /// A charged, grounded melee hit sweeping its neighbours.
+    pub const SWORD_SWEEP: &str = "sword_sweep";
+    /// Throwing a trident.
+    pub const TRIDENT_THROW: &str = "trident_throw";
+
+    /// Every ability the game asks, as `ItemAbility.getActions` lists them.
+    /// [`ALL`] as owned names, as every host answers `item_abilities`.
+    pub(in crate::game) fn names() -> Vec<String> {
+        ALL.map(String::from).to_vec()
+    }
+
+    pub const ALL: [&str; 14] = [
+        BRUSH_BRUSH,
+        FIRESTARTER_LIGHT,
+        FISHING_ROD_CAST,
+        SHEARS_CARVE,
+        SHEARS_DIG,
+        SHEARS_DISARM,
+        SHEARS_HARVEST,
+        SHEARS_REMOVE_ARMOR,
+        SHEARS_TRIM,
+        SHIELD_BLOCK,
+        SHOVEL_DOUSE,
+        SPYGLASS_SCOPE,
+        SWORD_SWEEP,
+        TRIDENT_THROW,
+    ];
 }
 
 impl Game<'_> {
+    /// `host.item_abilities()`: [`ability::ALL`] as owned names.
+    pub(in crate::game) fn item_abilities(&self) -> Vec<String> {
+        ability::names()
+    }
+
     /// `ItemStack.canPerformAction(ability)`, once vanilla answered `vanilla`. A stack whose
     /// item has no part for it keeps `vanilla` at the cost of one table lookup, and the stack
     /// is not looked at.
@@ -37,11 +87,11 @@ impl Game<'_> {
         self.stack_can_perform(stack, ability, &*stack.item == "minecraft:shears")
     }
 
-    /// Whether the held stack shears a mob (`shears_harvest`): shears, or a stack whose
+    /// Whether the held stack shears as shears do (`ability`): shears, or a stack whose
     /// item parts let it.
-    pub(in crate::game) fn held_shears(&self) -> bool {
+    pub(in crate::game) fn held_shears(&self, ability: &str) -> bool {
         self.held()
-            .is_some_and(|stack| self.stack_shears(stack, ability::SHEARS_HARVEST))
+            .is_some_and(|stack| self.stack_shears(stack, ability))
     }
 
     /// Whether `stack` carries the `blocks_attacks` component (its own, or its item's unless

@@ -20,19 +20,11 @@ impl Renderer {
             self.pack_atlas = None;
             self.pack_material_atlases = None;
         }
-        let instance = wgpu::vertex_attr_array![5=>Float32x4];
-        let vertex = wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<TerrainVertex>() as u64,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &TERRAIN_ATTRIBUTES,
-        };
-        let instances = wgpu::VertexBufferLayout {
-            array_stride: 16,
-            step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &instance,
-        };
-        let buffers = [Some(vertex), Some(instances)];
+        let draws = self.pack_terrain_draws();
+        let buffers = pack_terrain_buffers();
+        let buffers = &buffers[..terrain_buffer_count(draws)];
         let flat = self.pack_terrain_flat;
+        let pages = draws.reads_pages();
         let sprite_rects = self
             .pack_atlas
             .as_ref()
@@ -53,14 +45,19 @@ impl Renderer {
                     .map_or([1, 1], |t| [t.width(), t.height()]),
                 terrain: self.pack_atlas.as_ref().map(|_| pack_post::Geometry {
                     // Flat terrain programs pull their vertices (`pack_atlas::PULL_FLAT`).
-                    buffers: if flat { &[] } else { &buffers },
+                    buffers: if flat { &[] } else { buffers },
                     table: self.flat.as_ref().filter(|_| flat).map(|f| &f.draw_layout),
                     depth_write: true,
                     atlas: None,
                     material_maps: true,
                     ids: None,
                     cull: true,
+<<<<<<< HEAD
                     prepass: false,
+||||||| 46c00106def
+=======
+                    pages,
+>>>>>>> ed6772e2118
                 }),
                 block_ids,
                 celestial: self
@@ -72,26 +69,56 @@ impl Renderer {
                 weather: true,
                 hand: true,
             };
-            pack_post::PackPost::new(
-                &self.device,
-                &self.queue,
-                &self.adapter,
+            let mod_runtime = crate::mod_pipelines::pack_runtime_specs();
+            let mod_vertex_buffers = [Some(mod_pipelines::PipelineVertex::buffer_layout())];
+            let mod_set1_layouts: Vec<Option<&wgpu::BindGroupLayout>> = self
+                .world_primitives
+                .as_ref()
+                .map(|wp| wp.pipelines.set1_bind_group_layouts())
+                .unwrap_or_default();
+            let mod_vertex_stages = self
+                .world_primitives
+                .as_ref()
+                .map(|wp| wp.pipelines.pack_vertex_stages())
+                .unwrap_or_default();
+            pack_post::PackPost::new_with_mods(
+                (&self.device, &self.queue, &self.adapter),
                 post,
                 self.output.frame.format,
                 world,
+                mod_runtime
+                    .as_runtime_with_layouts(&mod_vertex_buffers, &mod_set1_layouts)
+                    .with_vertex_stages(&mod_vertex_stages),
                 &std::sync::atomic::AtomicBool::new(false),
             )
         });
         self.pack_loading = None;
-        self.install_shader_pack(dimension, post.transpose())
+        self.install_shader_pack(dimension, post.transpose(), block_ids.to_vec())
     }
     /// Runs the pack `set_shader_pack` or `load_shader_pack` built (`None`: no pack), or none when
     /// it can't run, for the dimension `dimension`; the programs that run and their notes.
+    /// `block_ids` are the pack's, as `set_shader_pack` takes them.
     fn install_shader_pack(
         &mut self,
         dimension: i32,
         post: std::result::Result<Option<pack_post::PackPost>, pack_post::Refused>,
+        block_ids: Vec<i32>,
     ) -> std::result::Result<Option<(Vec<String>, Vec<String>)>, pack_post::Refused> {
+        self.pack_changed();
+        let runs = post.as_ref().is_ok_and(Option::is_some);
+        let block_ids = if runs { block_ids } else { Vec::new() };
+        let old = self.pack_block_ids.as_deref().map_or(&[][..], |ids| &ids.0);
+        if block_ids != old {
+            // The normal stream holds each quad's id under the ids it was uploaded with: the
+            // game meshes every section again for this pack's.
+            if runs && self.arena.has_normals() {
+                self.sections_dropped |=
+                    self.sections.len() > 0 || !self.lods.is_empty() || self.lod_pending.is_some();
+                self.clear_sections(self.layout);
+            }
+            self.pack_block_ids =
+                (!block_ids.is_empty()).then(|| Box::new(PackBlockIds(block_ids)));
+        }
         let mut post = match post {
             Ok(post) => post,
             Err(e) => {
@@ -109,16 +136,13 @@ impl Renderer {
         }
         let report = post.as_ref().map(pack_post::PackPost::report);
         self.pack_post = Some((dimension, post));
-        if self.pack_post.as_ref().is_some_and(|p| p.1.is_some()) {
-            self.native = None;
-        }
         Ok(report)
     }
     /// Sets the external shader pipeline world frames call (`external`), or none.
     pub fn set_external_pipeline(&mut self, pipeline: Option<Box<dyn external::ExternalPipeline>>) {
         self.external = pipeline;
     }
-    /// Makes the running shader pack, of either kind, forget what it kept from earlier frames:
+    /// Makes the running shader pack forget what it kept from earlier frames:
     /// the next frame draws as a freshly loaded pack's first. Nothing to do without a pack.
     pub fn reset_shader_pack_history(&mut self) {
         // A frame still on the submit thread uses the targets and readbacks replaced
@@ -130,19 +154,43 @@ impl Renderer {
         if let Some((_, Some(post))) = &mut self.pack_post {
             post.reset_history(&self.device);
         }
-        if let Some(native) = &mut self.native {
-            native.frame.reset_history();
-            if let Some(post) = &mut native.post {
-                post.reset_history();
-            }
+    }
+    /// Counts a shader pack loaded, switched or turned off (`ShaderPackState::generation`).
+    fn pack_changed(&mut self) {
+        self.pack_generation = self.pack_generation.wrapping_add(1);
+    }
+    /// The running pack as a mod reads it this frame, or `None` while the panorama shows or no
+    /// pack runs. `frame` gives the camera, so the shadow matrices are this frame's.
+    pub fn shader_pack_state(&self, frame: &Frame<'_>) -> Option<mod_api::ShaderPackState> {
+        if frame.title {
+            return None;
+        }
+        match &self.pack_post {
+            Some((_, Some(post))) => Some(mod_api::ShaderPackState::new(
+                post.has_clouds(),
+                post.mod_shadow_state(frame).map(
+                    |(resolution, distance, model_view, projection)| {
+                        mod_api::ShaderPackShadowView::new(
+                            resolution, distance, model_view, projection,
+                        )
+                    },
+                ),
+                self.pack_generation,
+            )),
+            _ => None,
         }
     }
-    /// The running shader pack's kind: `iris` (a `shaders/` pack) or `native` (one of
-    /// Sunrise's own).
+    /// The mod pipeline slots the running `shaders/` pack bound to its programs.
+    pub fn pack_bound_mod_slots(&self) -> &[usize] {
+        match &self.pack_post {
+            Some((_, Some(post))) => post.bound_mod_slots(),
+            _ => &[],
+        }
+    }
+    /// The running shader pack's kind: `iris` (a `shaders/` pack).
     pub fn shader_pack_kind(&self) -> Option<&'static str> {
-        match (&self.pack_post, &self.native) {
-            (Some((_, Some(_))), _) => Some("iris"),
-            (_, Some(_)) => Some("native"),
+        match &self.pack_post {
+            Some((_, Some(_))) => Some("iris"),
             _ => None,
         }
     }
@@ -202,26 +250,39 @@ impl Renderer {
             .as_ref()
             .map(|t| t.create_view(&Default::default()));
         let flat = self.pack_terrain_flat;
+        let draws = self.pack_terrain_draws();
+        let pages = draws.reads_pages();
         let table = (self.flat.as_ref())
             .filter(|_| flat)
             .map(|f| f.draw_layout.clone());
         let terrain = self.pack_atlas.is_some();
+        let draws_sections = PackLoading::draws_of(&pack, terrain);
         let clouds = self.cloud_bindings.clone();
+        let mod_runtime = crate::mod_pipelines::pack_runtime_specs();
+        let mod_set1_owned: Vec<Option<wgpu::BindGroupLayout>> = self
+            .world_primitives
+            .as_ref()
+            .map(|wp| {
+                wp.pipelines
+                    .set1_bind_group_layouts()
+                    .into_iter()
+                    .map(|l| l.cloned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mod_vertex_stages = self
+            .world_primitives
+            .as_ref()
+            .map(|wp| wp.pipelines.pack_vertex_stages())
+            .unwrap_or_default();
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let cancelled = cancel.clone();
         let build = move || {
-            let instance = wgpu::vertex_attr_array![5=>Float32x4];
-            let vertex = wgpu::VertexBufferLayout {
-                array_stride: std::mem::size_of::<TerrainVertex>() as u64,
-                step_mode: wgpu::VertexStepMode::Vertex,
-                attributes: &TERRAIN_ATTRIBUTES,
-            };
-            let instances = wgpu::VertexBufferLayout {
-                array_stride: 16,
-                step_mode: wgpu::VertexStepMode::Instance,
-                attributes: &instance,
-            };
-            let buffers = [Some(vertex), Some(instances)];
+            let buffers = pack_terrain_buffers();
+            let buffers = &buffers[..terrain_buffer_count(draws)];
+            let mod_vertex_buffers = [Some(mod_pipelines::PipelineVertex::buffer_layout())];
+            let mod_set1_refs: Vec<Option<&wgpu::BindGroupLayout>> =
+                mod_set1_owned.iter().map(Option::as_ref).collect();
             let world = pack_post::World {
                 atlas,
                 sprite_rects: &sprite_rects,
@@ -230,14 +291,19 @@ impl Renderer {
                 gui_size,
                 terrain: terrain.then(|| pack_post::Geometry {
                     // Flat terrain programs pull their vertices (`pack_atlas::PULL_FLAT`).
-                    buffers: if flat { &[] } else { &buffers },
+                    buffers: if flat { &[] } else { buffers },
                     table: table.as_ref(),
                     depth_write: true,
                     atlas: None,
                     material_maps: true,
                     ids: None,
                     cull: true,
+<<<<<<< HEAD
                     prepass: false,
+||||||| 46c00106def
+=======
+                    pages,
+>>>>>>> ed6772e2118
                 }),
                 block_ids: &block_ids,
                 celestial,
@@ -245,7 +311,24 @@ impl Renderer {
                 weather: true,
                 hand: true,
             };
+<<<<<<< HEAD
             pack_post::PackPost::new(&device, &queue, &adapter, pack(), format, world, &cancelled)
+||||||| 46c00106def
+            pack_post::PackPost::new(&device, &queue, &adapter, pack, format, world, &cancelled)
+=======
+            let post = pack_post::PackPost::new_with_mods(
+                (&device, &queue, &adapter),
+                pack,
+                format,
+                world,
+                mod_runtime
+                    .as_runtime_with_layouts(&mod_vertex_buffers, &mod_set1_refs)
+                    .with_vertex_stages(&mod_vertex_stages),
+                &cancelled,
+            );
+            // The ids come back with it, for `install_shader_pack`.
+            (post, block_ids)
+>>>>>>> ed6772e2118
         };
         // A pack is not the game's code: a panic building it turns the pack off (#3525).
         let thread = std::thread::Builder::new()
@@ -256,6 +339,7 @@ impl Renderer {
         match thread {
             Ok(thread) => {
                 // The last pack doesn't draw this dimension meanwhile.
+                self.pack_changed();
                 self.pack_post = None;
                 self.pack_loading = Some(PackLoading {
                     dimension,
@@ -263,12 +347,14 @@ impl Renderer {
                     label,
                     started,
                     _cancel: CancelOnDrop(cancel),
+                    draws: draws_sections,
                 });
             }
             Err(e) => {
                 log::error!("shader pack {label}: no thread to build it on: {e}");
                 // Off for this dimension, as a pack that fails, not tried again every frame.
                 self.pack_loading = None;
+                self.pack_changed();
                 self.pack_post = Some((dimension, None));
             }
         }
@@ -289,27 +375,35 @@ impl Renderer {
             return None;
         }
         let loading = self.pack_loading.take()?;
-        let built = match loading.thread.join() {
+        let (built, block_ids) = match loading.thread.join() {
             Ok(Ok(built)) => built,
-            Ok(Err(panic)) => Err(pack_post::Refused {
-                reason: format!("building it panicked: {panic}"),
-                notes: Vec::new(),
-            }),
-            Err(_) => Err(pack_post::Refused {
-                reason: "its thread panicked".into(),
-                notes: Vec::new(),
-            }),
+            // A pack that doesn't run keeps no ids.
+            Ok(Err(panic)) => (
+                Err(pack_post::Refused {
+                    reason: format!("building it panicked: {panic}"),
+                    notes: Vec::new(),
+                }),
+                Vec::new(),
+            ),
+            Err(_) => (
+                Err(pack_post::Refused {
+                    reason: "its thread panicked".into(),
+                    notes: Vec::new(),
+                }),
+                Vec::new(),
+            ),
         };
-        let report = self.install_shader_pack(loading.dimension, built.map(Some));
+        let report = self.install_shader_pack(loading.dimension, built.map(Some), block_ids);
         Some((loading.dimension, loading.label, loading.started, report))
     }
-    /// Drops the running shader pack, of either kind.
+    /// Drops the running shader pack.
     pub fn drop_shader_packs(&mut self) {
         self.pack_loading = None;
+        self.pack_changed();
         self.pack_post = None;
-        self.native = None;
         self.pack_atlas = None;
         self.separate_ao = false;
+        self.pack_block_ids = None;
     }
     /// Sets whether shader pack terrain inputs pass vertex alpha to `hz_Color.a` (`separateAo=true`).
     pub fn set_separate_ao(&mut self, separate_ao: bool) {
@@ -324,6 +418,7 @@ impl Renderer {
     pub fn set_pack_lava_layers(&mut self, layers: Vec<u16>) {
         self.pack_lava_layers = layers;
     }
+<<<<<<< HEAD
     /// Runs the sky, material and post stages of one of Sunrise's own shader packs from now
     /// on (`None`: no pack), with its options' values; replaces a `shaders/` pack. Returns the
     /// stages' labels; on an error the pack that ran keeps running.
@@ -399,11 +494,75 @@ impl Renderer {
         }
         Ok(labels)
     }
+||||||| 46c00106def
+    /// Runs the sky, material and post stages of one of Sunrise's own shader packs from now
+    /// on (`None`: no pack), with its options' values; replaces a `shaders/` pack. Returns the
+    /// stages' labels; on an error the pack that ran keeps running.
+    pub fn set_native_shader_pack(
+        &mut self,
+        pack: Option<(
+            sunrise_shader_api::Report,
+            Vec<(String, f64)>,
+            Vec<(u32, u32)>,
+            Vec<(u32, u32)>,
+            block_light::LightTable,
+        )>,
+    ) -> std::result::Result<Vec<String>, String> {
+        let linear = pack
+            .as_ref()
+            .is_some_and(|p| p.0.manifest.api == sunrise_shader_api::Api::V0_2);
+        if (linear || self.output.frame.format == LINEAR_FRAME)
+            && linear != (self.output.frame.format == LINEAR_FRAME)
+            && !std::mem::replace(&mut self.frame_kept_logged, true)
+        {
+            log::info!(
+                "Sunrise renderer: the {:?} frame stays until the renderer is made again; a shader pack picked or dropped since runs on it",
+                self.output.frame.format
+            );
+        }
+        let Some((report, constants, sprite_tags, sprite_materials, lights)) = pack else {
+            self.native = None;
+            return Ok(Vec::new());
+        };
+        let terrain = native_material::TerrainShape {
+            globals: &self.terrain_layout,
+            flat: self.flat.as_ref().map(|f| &f.draw_layout),
+            sprites: self.terrain_sprites,
+            format: self.output.frame.format,
+            linear: self.output.frame.linear_light,
+            sprite_tags: &sprite_tags,
+            sprite_materials: &sprite_materials,
+            entities: &self.entity_bindings,
+            weather_groups: [&self.weather.entity_layout, &self.weather.time_layout],
+            pbr: self.pbr_maps.as_ref().and_then(|arrays| arrays.first()),
+        };
+        let (pack, labels) = native_pack::NativePack::new(
+            &self.device,
+            &self.queue,
+            &terrain,
+            report,
+            &constants,
+            lights,
+        )?;
+        self.native = pack.draws().then_some(pack);
+        if self.native.is_some() {
+            self.pack_post = None;
+            self.pack_atlas = None;
+            self.pack_material_atlases = None;
+        }
+        Ok(labels)
+    }
+=======
+>>>>>>> ed6772e2118
     /// What a shader pack's gbuffers programs read from Sunrise's geometry: the sky's, and
     /// terrain's in the pack's block atlas (made here when missing; none when it does not fit).
     pub fn pack_inputs(&mut self) -> sunrise_shaders::GameInputs {
         let terrain = self.pack_terrain_inputs();
-        pack_atlas::game_inputs(terrain, self.pack_terrain_flat, &self.pack_lava_layers)
+        sunrise_shaders::GameInputs {
+            interface_limits: crate::core_shader::interface_limits(&self.device.limits()),
+            mod_programs: crate::mod_pipelines::pack_program_requests(),
+            ..pack_atlas::game_inputs(terrain, self.pack_terrain_flat, &self.pack_lava_layers)
+        }
     }
 
     pub(super) fn pack_terrain_inputs(&mut self) -> Option<sunrise_shaders::GbuffersInputs> {
@@ -474,11 +633,47 @@ impl Renderer {
         // Flat draws whenever the device has them (`render` keeps them on with a pack): the
         // per-section draws give the pack no face normals and no `mc_Entity`.
         self.pack_terrain_flat = flat;
-        Some(
-            self.pack_atlas
-                .as_ref()?
-                .terrain_inputs(self.pack_terrain_flat),
-        )
+        // Per-section draws read the pages where the pack's terrain programs still fit the
+        // vertex stage with them, and the normal stream where they don't but fit with it.
+        let gpu = pack_post::Gpu::of(&self.adapter, self.device.features());
+        let limits = self.device.limits();
+        let fit = (self.pack_terrain_bindings).pages_fit(&limits, gpu);
+        self.pack_terrain_pages = !flat && self.terrain_pages && fit;
+        let stream = (self.pack_terrain_bindings).normals_fit(&limits, gpu);
+        self.pack_terrain_normals = !flat && !self.pack_terrain_pages && stream;
+        if !flat && !self.pack_terrain_pages && !stream {
+            log::warn!(
+                "shader pack terrain: {:?} fit the vertex stage's buffers with neither set 3 \
+                 nor the normal stream; per-section draws give the constant normal and tangent, \
+                 mc_Entity -1 and at_midBlock 0",
+                self.pack_terrain_bindings
+            );
+        }
+        let draws = self.pack_terrain_draws();
+        Some(self.pack_atlas.as_ref()?.terrain_inputs_for(draws))
+    }
+    /// How the game's terrain draws give the pack's terrain programs their vertices, as
+    /// `pack_terrain_inputs` last took them: flat, or per section, reading their quad's corners
+    /// from the section arena's pages where vertex shaders read storage and the pack's programs
+    /// fit with them (`pack_terrain_pages`), else their quad's normal and tangent from the
+    /// normal stream where they fit with it (`pack_terrain_normals`), else as attributes alone.
+    pub(crate) fn pack_terrain_draws(&self) -> pack_atlas::TerrainDraws {
+        match (
+            self.pack_terrain_flat,
+            self.pack_terrain_pages,
+            self.pack_terrain_normals,
+        ) {
+            (true, ..) => pack_atlas::TerrainDraws::Flat,
+            (false, true, _) => pack_atlas::TerrainDraws::Pages,
+            (false, false, true) => pack_atlas::TerrainDraws::Normals,
+            (false, false, false) => pack_atlas::TerrainDraws::Attributes,
+        }
+    }
+    /// What the pack about to be loaded binds in its terrain programs' vertex stage
+    /// (`pack_atlas::TerrainBindings::of`), before `pack_inputs`: per-section draws read the
+    /// arena's pages, or else the normal stream, only where those programs still fit with them.
+    pub fn set_pack_terrain_bindings(&mut self, bindings: pack_atlas::TerrainBindings) {
+        self.pack_terrain_bindings = bindings;
     }
     /// The macros this renderer gives shader packs: the GL extensions this device has
     /// (subgroups, when it has them), and the vendor, renderer and mipmap levels
@@ -486,16 +681,24 @@ impl Renderer {
     pub fn define_pack_macros(&self, macros: &mut sunrise_shaders::Macros) {
         macros.define_renderer(self.mipmaps);
         if self.device.features().contains(wgpu::Features::SUBGROUP) {
-            for ext in [
-                "basic",
-                "vote",
-                "arithmetic",
-                "ballot",
-                "shuffle",
-                "shuffle_relative",
-            ] {
-                macros.define(format!("MC_GL_KHR_shader_subgroup_{ext}"), "");
+            macros.define_subgroups();
+        }
+        for (name, value) in crate::mod_pipelines::pack_defines() {
+            macros.define(name, value);
+        }
+    }
+
+    /// How the active translated shader pack binds mod pipeline `slot`.
+    pub fn pack_override_state(&self, slot: usize) -> mod_api::PackOverrideState {
+        match &self.pack_post {
+            Some((_, Some(post))) => {
+                if post.is_mod_pipeline_bound(slot) {
+                    mod_api::PackOverrideState::Bound
+                } else {
+                    mod_api::PackOverrideState::UnboundPack
+                }
             }
+            _ => mod_api::PackOverrideState::NoPack,
         }
     }
 
@@ -503,5 +706,41 @@ impl Renderer {
     pub fn shader_pack_dimension(&self) -> Option<i32> {
         let loading = self.pack_loading.as_ref().map(|l| l.dimension);
         loading.or_else(|| self.pack_post.as_ref().map(|p| p.0))
+    }
+}
+
+/// The section origins' vertex attribute (`section_instance`).
+const INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 1] = wgpu::vertex_attr_array![5=>Float32x4];
+
+/// The vertex buffers a pack's per-section terrain programs read: the arena's vertices, the
+/// sections' origins and the normal stream (`pack_atlas::NORMAL_ATTRIBUTES`), of which a
+/// pipeline takes `terrain_buffer_count`.
+fn pack_terrain_buffers() -> [Option<wgpu::VertexBufferLayout<'static>>; 3] {
+    [
+        Some(wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<TerrainVertex>() as u64,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &TERRAIN_ATTRIBUTES,
+        }),
+        Some(wgpu::VertexBufferLayout {
+            array_stride: 16,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &INSTANCE_ATTRIBUTES,
+        }),
+        Some(wgpu::VertexBufferLayout {
+            array_stride: pack_atlas::NORMAL_BYTES,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &pack_atlas::NORMAL_ATTRIBUTES,
+        }),
+    ]
+}
+
+/// How many of `pack_terrain_buffers` a terrain program drawn as `draws` reads: the normal
+/// stream only with `TerrainDraws::Normals`.
+fn terrain_buffer_count(draws: pack_atlas::TerrainDraws) -> usize {
+    if draws == pack_atlas::TerrainDraws::Normals {
+        3
+    } else {
+        2
     }
 }

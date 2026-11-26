@@ -72,6 +72,7 @@ fn count_policy_applies_only_to_the_named_output() {
         &[("extra".into(), &stacks)],
         Some(&output),
         true,
+        false,
         "AnyCollector",
         false,
         None,
@@ -82,11 +83,11 @@ fn count_policy_applies_only_to_the_named_output() {
     .unwrap();
     let (extra, drops) = crossing
         .before
-        .split_once("let mut __accepted_drops")
+        .split_once("let mut __journal_drops")
         .unwrap();
-    assert!(extra.contains("value.try_into_engine(&**items)?"));
+    assert!(extra.contains("value.try_into_engine(&**items)"));
     assert!(!extra.contains("value.try_into_engine_preserving_count"));
-    assert!(drops.contains("value.try_into_engine_preserving_count(&**items)?"));
+    assert!(drops.contains("value.try_into_engine_preserving_count(&**items)"));
 }
 
 #[test]

@@ -79,9 +79,12 @@ fn a_mods_entity_type_puts_its_chain_on_while_spectated() {
             assert_eq!(game.spectated_post_effect, None);
             game.check_entity_post_effect(true);
             assert_eq!(game.spectated_post_effect, Some("example:cow_vision"));
-            // The entity leaving returns the view to the player, with no chain.
+            // Removing the entity retains the detached camera's chain until SetCamera replaces it.
             game.handle_packet(C::RemoveEntities(play::RemoveEntities { ids: vec![31] }))
                 .unwrap();
+            assert_eq!(game.spectated_post_effect, Some("example:cow_vision"));
+            let own = game.own_entity_id();
+            game.remote_set_camera(own);
             assert_eq!(game.spectated_post_effect, None);
 
             // A vanilla mob keeps its own chain: the mod's registration for it was skipped.

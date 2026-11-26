@@ -21,6 +21,11 @@ impl Ttl {
     pub fn present(self) -> bool {
         self.0 > 0
     }
+    /// The time to live left while the memory is present (`MemorySlot.timeToLive`),
+    /// 0 on its last tick.
+    pub fn left(self) -> Option<i32> {
+        (self.0 > 0).then(|| self.0 - 1)
+    }
     /// `Brain.forgetOutdatedMemories`, once at the start of each tick.
     pub fn tick(&mut self) {
         if self.0 > 0 {

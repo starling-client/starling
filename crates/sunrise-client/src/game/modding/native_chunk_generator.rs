@@ -1,10 +1,13 @@
 //! Native terrain adapter for the API's worker context.
 use super::native_worldgen::WorkerResources;
-use mod_api::{BlockKey, BlockMetadata, BlockState, ChunkAccess, ChunkGenerator, ChunkPos};
+use mod_api::{
+    BiomeKey, BlockKey, BlockMetadata, BlockState, ChunkAccess, ChunkBiomes, ChunkGenerator,
+    ChunkPos, Compound, Identifier,
+};
 use std::sync::Arc;
 use sunrise_world::worldgen::mod_generators::{
-    ChunkAccess as EngineChunk, ModChunkGenerator, ModChunkGenerators, VanillaStages,
-    install_mod_chunk_generators,
+    ChunkAccess as EngineChunk, ChunkBiomes as EngineBiomes, ModChunkGenerator, ModChunkGenerators,
+    VanillaStages, install_mod_chunk_generators,
 };
 
 /// A mod's generator with the vanilla stages it asked for at registration.
@@ -25,6 +28,34 @@ impl ModChunkGenerator for Adapter {
     }
     fn vanilla_stages(&self) -> VanillaStages {
         self.stages
+    }
+    fn create_biomes(&self, chunk: &mut dyn EngineBiomes) {
+        self.generator.create_biomes(&mut Biomes(chunk));
+    }
+}
+
+/// The engine's biome cells as the API's [`ChunkBiomes`].
+struct Biomes<'a>(&'a mut dyn EngineBiomes);
+impl ChunkBiomes for Biomes<'_> {
+    fn pos(&self) -> ChunkPos {
+        self.0.pos()
+    }
+    fn level(&self) -> &str {
+        self.0.level()
+    }
+    fn seed(&self) -> i64 {
+        self.0.seed()
+    }
+    fn min_y(&self) -> i32 {
+        self.0.min_y()
+    }
+    fn height(&self) -> i32 {
+        self.0.height()
+    }
+    fn fill_biomes_from_noise(&mut self, resolver: &mut dyn FnMut([i32; 3]) -> BiomeKey) {
+        self.0.fill_biomes_from_noise(&mut |quart| -> Identifier {
+            resolver(quart).into_identifier()
+        });
     }
 }
 
@@ -63,6 +94,9 @@ impl ChunkAccess for Converting<'_> {
             .index
             .to_engine(state)
             .is_ok_and(|state| self.inner.set_block(pos, state))
+    }
+    fn set_block_entity_nbt(&mut self, nbt: Compound) {
+        self.inner.set_block_entity_nbt(nbt);
     }
 }
 
@@ -140,7 +174,7 @@ mod tests {
         let generators = installed_chunk_generators();
         for _ in 0..2 {
             assert_eq!(
-                generators["test:chaos"].vanilla_stages(),
+                generators[&Identifier::parse("test:chaos").unwrap()].vanilla_stages(),
                 VanillaStages {
                     surface: true,
                     carvers: false,

@@ -697,6 +697,7 @@ mod tests {
             serde_json::json!({
                 "unload_block_entities": [0.375, null, null],
                 "order_uploads": [0.5, null, null],
+                "upload": [null, null, 0.25],
                 "upload_queue": [1.125, null, null],
                 "load_block_entities": [0.375, null, null],
                 "block_entity_items": [0.1875, null, 0.25],
@@ -810,7 +811,10 @@ pub struct FrameStats {
     /// Per rendered frame during a raw flight: unload entries visited, upload
     /// elements sorted and upload elements merged.
     streaming_work: Vec<[u64; 3]>,
-    /// Meshes submitted to the renderer and their bytes at the upload budget's vertex size.
+    /// Meshes submitted to the renderer and their bytes as the upload budget counts them
+    /// (`Renderer::mesh_upload_bytes`): the vertices at 24 bytes each, compact records too
+    /// (which copy about a quarter of that), and a `shaders/` pack's stream and sources beside
+    /// them as copied.
     streaming_uploads: Vec<[u64; 2]>,
     /// Column-load writes and item-render entity visits, per rendered frame.
     streaming_block_entities: Vec<[u64; 2]>,
@@ -836,9 +840,10 @@ pub struct FrameStats {
 /// building the frame's geometry and HUD, and the renderer's own work.
 pub const PHASES: [&str; 4] = ["update", "tick", "prepare", "render"];
 
-const STREAMING_SPANS: [&str; 5] = [
+const STREAMING_SPANS: [&str; 6] = [
     "unload_block_entities",
     "order_uploads",
+    "upload",
     "upload_queue",
     "load_block_entities",
     "block_entity_items",

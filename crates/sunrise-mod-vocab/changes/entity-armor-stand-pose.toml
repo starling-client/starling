@@ -1,0 +1,3 @@
+ids = ["handle:EntityRef::armor_stand_pose", "handle:EntityRef::armor_stand_flags", "type:ArmorStandPose", "type:ArmorStandFlags"]
+why = "#5528: EntityRef::armor_stand_pose and armor_stand_flags read an armor stand's six pose rotations (ArmorStand.getHeadPose ... getRightLegPose) and its client flags (isSmall, showArms, showBasePlate, isMarker) on both sides; a client answers from the synced DATA_*_POSE and DATA_CLIENT_FLAGS, so an editing screen sees another player's or a command's change live. None for another kind or a stale handle. New methods and types only."
+migrate = "Nothing to change."

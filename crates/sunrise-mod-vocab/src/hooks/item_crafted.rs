@@ -1,5 +1,4 @@
 //! The `item_crafted` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0229
 
 pub trait Hooks {
     /// A player took a crafting grid's result (`ResultSlot.onTake`, NeoForge's

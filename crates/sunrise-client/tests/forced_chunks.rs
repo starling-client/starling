@@ -47,12 +47,12 @@ struct Plain;
 impl ChunkGenerator for Plain {
     type Worker = ();
     fn worker(&self) {}
-    fn proto(&self, _: &mut (), x: i32, z: i32) -> Proto {
-        Box::new(Column {
+    fn proto(&self, _: &mut (), x: i32, z: i32) -> std::result::Result<Proto, String> {
+        Ok(Box::new(Column {
             x,
             z,
             decorated: false,
-        })
+        }))
     }
     fn decorates(&self) -> bool {
         true

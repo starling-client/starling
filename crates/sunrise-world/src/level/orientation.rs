@@ -92,7 +92,7 @@ impl Orientation {
             right.opposite()
         }
     }
-    pub fn with_front(self, front: Direction) -> Self {
+    pub(crate) fn with_front(self, front: Direction) -> Self {
         let up = if front == self.up {
             self.front.opposite()
         } else if front == self.up.opposite() {
@@ -102,7 +102,7 @@ impl Orientation {
         };
         Self::new(up, front, self.side_bias)
     }
-    pub fn with_up(self, up: Direction) -> Self {
+    pub(crate) fn with_up(self, up: Direction) -> Self {
         let front = if up == self.front {
             self.up.opposite()
         } else if up == self.front.opposite() {
@@ -112,7 +112,7 @@ impl Orientation {
         };
         Self::new(up, front, self.side_bias)
     }
-    pub fn with_front_preserve_up(self, front: Direction) -> Self {
+    pub(crate) fn with_front_preserve_up(self, front: Direction) -> Self {
         if axis_of(front) == axis_of(self.up) {
             self
         } else {
@@ -127,7 +127,7 @@ impl Orientation {
             next
         }
     }
-    pub fn with_side_bias(self, side_bias: SideBias) -> Self {
+    pub(crate) fn with_side_bias(self, side_bias: SideBias) -> Self {
         Self { side_bias, ..self }
     }
     pub fn with_mirror(self) -> Self {
@@ -147,7 +147,7 @@ impl Orientation {
             self.up,
         ]
     }
-    pub fn horizontal_directions(self) -> [Direction; 4] {
+    pub(crate) fn horizontal_directions(self) -> [Direction; 4] {
         [
             self.front.opposite(),
             self.front,
@@ -155,7 +155,7 @@ impl Orientation {
             self.side().opposite(),
         ]
     }
-    pub fn vertical_directions(self) -> [Direction; 2] {
+    pub(crate) fn vertical_directions(self) -> [Direction; 2] {
         [self.up.opposite(), self.up]
     }
     pub fn random(random: &mut impl RandomSource) -> Self {
@@ -164,7 +164,7 @@ impl Orientation {
 }
 
 impl<L: LevelAccess + ?Sized> Sim<'_, L> {
-    pub fn initial_orientation(
+    pub(crate) fn initial_orientation(
         &mut self,
         front: Option<Direction>,
         up: Option<Direction>,

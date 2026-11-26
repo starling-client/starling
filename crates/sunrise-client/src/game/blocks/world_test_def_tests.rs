@@ -218,3 +218,142 @@ fn a_world_keeps_the_test_instances_it_opened_with() {
     let _ = std::fs::remove_dir_all(&a);
     let _ = std::fs::remove_dir_all(&b);
 }
+
+/// A pack test instance `test:smoke` runs with `/test run test:smoke`, applies the
+/// pack test environment it names, and both entries appear in the synced registry data.
+#[test]
+#[ignore = "daily"]
+fn a_pack_test_instance_runs_and_applies_its_pack_test_environment() {
+    let world = std::env::temp_dir().join(format!("game-test-pack-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&world);
+    let pack = world.join("datapacks/fixture");
+    let envs = pack.join("data/test/test_environment");
+    let instances = pack.join("data/test/test_instance");
+    std::fs::create_dir_all(&envs).unwrap();
+    std::fs::create_dir_all(&instances).unwrap();
+    std::fs::write(
+        pack.join("pack.mcmeta"),
+        r#"{"pack":{"description":"Game test fixture","pack_format":100}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        envs.join("storm.json"),
+        r#"{"type":"minecraft:all_of","definitions":[{"type":"minecraft:weather","weather":"thunder"},{"type":"minecraft:game_rules","rules":{"minecraft:advance_time":false}}]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        instances.join("smoke.json"),
+        r#"{"type":"minecraft:block_based","structure":"minecraft:empty","environment":"test:storm","max_ticks":20,"required":true}"#,
+    )
+    .unwrap();
+    let mut resources = None;
+    let mut game = game(&mut resources, &world);
+    game.reload_datapacks(false, &game.level.enabled_features.clone())
+        .unwrap();
+    game.load_world_state().unwrap();
+    assert!(game.test_environment("test:storm").is_some());
+    assert!(game.test_def("test:smoke").is_some());
+    for cx in -1..=2 {
+        for cz in -1..=2 {
+            game.world
+                .chunks
+                .insert((cx, cz), Arc::new(Chunk::empty(cx, cz)));
+        }
+    }
+    game.player = Some(
+        sunrise_client::motion::PlayerMotion::new(game.motion, Vec3::new(24.5, 100.0, 8.5))
+            .unwrap(),
+    );
+    game.world.weather.raining = false;
+    game.world.weather.thundering = false;
+    game.ui.rules.set(
+        "minecraft:advance_time",
+        sunrise_client_core::gamerules::Value::Bool(true),
+    );
+    game.chat_capture = Some(Vec::new());
+    assert!(game.run_command("test run test:smoke"));
+    let said: Vec<String> = game
+        .chat_capture
+        .take()
+        .unwrap()
+        .iter()
+        .map(|t| t.plain())
+        .collect();
+    assert_eq!(
+        said.first().map(String::as_str),
+        Some("Running 1 test(s)..."),
+        "{said:?}"
+    );
+    assert_eq!(
+        said.get(1).map(String::as_str),
+        Some("Starting environment test:storm batch 0"),
+        "{said:?}"
+    );
+    assert!(
+        game.world.weather.raining && game.world.weather.thundering,
+        "pack test environment weather must be applied"
+    );
+    assert_eq!(
+        game.ui.rules.get("minecraft:advance_time"),
+        Some(sunrise_client_core::gamerules::Value::Bool(false)),
+        "pack test environment game rule must be applied"
+    );
+    let overlay = game.pack_files();
+    let sync = sunrise_client::lan::data::SyncData::load_with_frozen_damage(
+        &game.options.resources,
+        &overlay,
+        &sunrise_client::lan::data::FrozenDamage::new(&game.health_resources.damage, &overlay),
+        game.world_tables.as_ref().map(|t| t.biomes.table.as_ref()),
+        game.world_tables.as_ref().map(|t| &t.packed_registries),
+        game.res.item_defaults(),
+        &sunrise_client::crafting::ResolvedSources::default(),
+        None,
+        None,
+    )
+    .unwrap();
+    let packets = sync.registry_packets(true, &game.level_shapes);
+    for (registry, id) in [
+        ("minecraft:test_environment", "test:storm"),
+        ("minecraft:test_instance", "test:smoke"),
+    ] {
+        let entry = packets
+            .iter()
+            .find(|packet| packet.registry == registry)
+            .unwrap_or_else(|| panic!("missing synced registry {registry}"))
+            .entries
+            .iter()
+            .find(|entry| entry.id == id)
+            .unwrap_or_else(|| panic!("missing synced entry {id} in {registry}"));
+        assert!(
+            entry.data.is_some(),
+            "pack entry {id} in {registry} must carry its synced data"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&world);
+}
+
+/// A malformed test instance refuses the world open and names the offending file
+/// (`RegistryDataLoader.load/logErrors`).
+#[test]
+#[ignore = "daily"]
+fn a_malformed_test_instance_refuses_world_open_naming_the_file() {
+    let world = world_with(
+        "malformed",
+        &[(
+            "test:broken",
+            r#"{"type":"minecraft:block_based","structure":"minecraft:empty","environment":"minecraft:default","max_ticks":0}"#,
+        )],
+    );
+    let mut resources = None;
+    let mut game = game(&mut resources, &world);
+    let error = game
+        .reload_datapacks(false, &game.level.enabled_features.clone())
+        .err()
+        .expect("malformed test_instance must refuse world open")
+        .to_string();
+    assert!(
+        error.contains("data/test/test_instance/broken.json"),
+        "error must name the malformed file: {error}"
+    );
+    let _ = std::fs::remove_dir_all(&world);
+}

@@ -1,5 +1,0 @@
-manifest:
-refused: horizon-mixin.toml: unsupported package path
-
-icon:
-unavailable

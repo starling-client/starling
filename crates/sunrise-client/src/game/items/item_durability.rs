@@ -19,6 +19,8 @@ impl Game<'_> {
         armor_weapon: Option<sunrise_client::health::ArmorWeapon>,
     ) -> sunrise_client::Result<sunrise_client::health::BlockOutcome> {
         let rules = self.world.health_rules;
+        // One decision about the hit's causing entity for its three levels.
+        let decision = crate::game::entity::causer_decision!(self, attack.attacker);
         let helmet = self.armor[0]
             .as_ref()
             .is_some_and(|s| s.count > 0 && &*s.item != "minecraft:air");
@@ -31,10 +33,7 @@ impl Game<'_> {
                     self,
                     attack,
                     no_push,
-                    sunrise_client::health::HitLend::attacking_mob(
-                        self.mobs.iter_mut(),
-                        attack.attacker
-                    ),
+                    crate::game::entity::player_victim_causer!(self, decision),
                     acting_equipment!(self)
                 ),
                 &self.health_resources,
@@ -63,10 +62,7 @@ impl Game<'_> {
                     self,
                     attack,
                     no_push,
-                    sunrise_client::health::HitLend::attacking_mob(
-                        self.mobs.iter_mut(),
-                        attack.attacker
-                    )
+                    crate::game::entity::player_victim_causer!(self, decision)
                 ),
                 &self.health_resources,
                 rules,
@@ -85,10 +81,8 @@ impl Game<'_> {
                     self,
                     attack,
                     no_push,
-                    sunrise_client::health::HitLend::attacking_mob(
-                        self.mobs.iter_mut(),
-                        attack.attacker
-                    )
+                    crate::game::entity::player_victim_causer!(self, decision),
+                    acting_equipment!(self)
                 ),
                 &self.health_resources,
                 rules,
@@ -121,6 +115,7 @@ impl Game<'_> {
                     causing: *causing,
                     direct: *direct,
                     position: *position,
+                    direct_type: None,
                 };
                 self.hurt_armor(&source, *amount);
             }

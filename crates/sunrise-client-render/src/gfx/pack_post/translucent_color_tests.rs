@@ -99,6 +99,7 @@ fn translucent_draws_sample_the_color_written_by_deferred() {
                             material_maps: false,
                             ids: None,
                             cull: false,
+                            pages: false,
                         }),
                         block_ids: &[],
                         sprite_rects: &[],

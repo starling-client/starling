@@ -233,7 +233,7 @@ fn remote_mining_component_update_restarts_unless_the_part_refuses() {
                     let (mut peer, _writer) = crate::game::remote::tests::connect_menu_test(game);
                     peer.set_read_timeout(Some(std::time::Duration::from_millis(50)))
                         .unwrap();
-                    game.set_mode_id(0);
+                    game.set_local_mode(sunrise_client::command::args::GameMode::Survival);
                     let mut player =
                         PlayerMotion::new(game.motion, Vec3::new(0.5, 64.0, 3.5)).unwrap();
                     player.ground.on_ground = true;

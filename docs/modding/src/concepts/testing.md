@@ -35,15 +35,18 @@ let into = level.capability(server, &ITEMS, [1, 64, 0], None).unwrap();
 let moved = server.transaction(|host, tx| {
     move_resources(host, &from, &into, |_: &ItemResource| true, 3, Some(tx))
 });
-assert_eq!(moved.ok(), Some(3));
+assert_eq!(moved, Ok(3));
 let into = host.level.block_entity_at([1, 64, 0]).unwrap().items.as_ref().unwrap();
 assert_eq!(into.count("minecraft:stone"), 3);
 ```
 
 Sounds and game events a hook plays in the level are kept in `host.sounds` and `host.game_events`, in order and
 outside the journal, as the game sends them at once. Fluids a test uses are resolved with
-`host.registries.resolve_fluids([...])`, and `host.registries.fluid_sounds(fluid, fill, empty)` gives one the
-bucket sounds `fluid_pickup_sound` and `fluid_empty_sound` answer.
+`host.registries.resolve_fluids([...])`, `host.registries.fluid_sounds(fluid, fill, empty)` gives one the
+bucket sounds `FluidKey::pickup_sound` and `FluidKey::empty_sound` answer through `host.block_states()`, and
+`host.registries.fluid_bucket(fluid, item)` the bucket the game registers for it, which `FluidKey::bucket` answers
+and `ItemKey::bucket_fluid` answers back through `host.block_states()`, so the empty bucket's `ITEM_FLUIDS` fills
+to it and the filled one drains.
 
 A fake's constructors do not install or resolve entity types. Declare its entities with
 `host.level.entity(id, kind)`, then call `host.resolve_entity_types().unwrap()` explicitly.

@@ -1,6 +1,7 @@
 //! The design's storage, persistence, copy and replace acceptance cases (#2415).
 use super::*;
 use crate::recipe_book::{BookType, Settings};
+use sunrise_core::nbt::{self, JavaString, Limits, NamedTag};
 
 const POT: &str = "demo:cooking_pot";
 const OVEN: &str = "demo:oven";
@@ -28,16 +29,20 @@ fn entry(open: Tag, filtering: Tag) -> Tag {
     Tag::compound([("open", open), ("filtering", filtering)])
 }
 
+fn id(text: &str) -> ResourceId {
+    ResourceId::try_from(text.to_owned()).unwrap()
+}
+
 #[test]
 fn a_fresh_book_reads_closed_and_one_book_leaves_another_alone() {
     let mut books = CustomBooks::default();
     assert_eq!(books.get(POT), BookFlags::default());
     assert_eq!(books.get(OVEN), BookFlags::default());
-    assert_eq!(books.set(POT, OPEN), Ok(true));
+    assert!(books.set(&id(POT), OPEN));
     assert_eq!(books.get(POT), OPEN);
     assert_eq!(books.get(OVEN), BookFlags::default());
-    assert_eq!(books.set(POT, OPEN), Ok(false), "an unchanged pair");
-    assert_eq!(books.set(OVEN, BookFlags::default()), Ok(false));
+    assert!(!books.set(&id(POT), OPEN), "an unchanged pair");
+    assert!(!books.set(&id(OVEN), BookFlags::default()));
     assert_eq!(books.len(), 1, "a default pair adds no entry");
 }
 
@@ -45,7 +50,7 @@ fn a_fresh_book_reads_closed_and_one_book_leaves_another_alone() {
 fn a_saved_book_loads_exactly_and_the_vanilla_pairs_stay() {
     let mut settings = Settings::read(Some(&saved(None)));
     settings.filtering[BookType::Crafting.index()] = true;
-    settings.custom.set(POT, OPEN).unwrap();
+    settings.custom.set(&id(POT), OPEN);
     let vanilla = (settings.open, settings.filtering);
     let loaded = Settings::read(Some(&settings.write()));
     assert_eq!(loaded.custom.get(POT), OPEN);
@@ -56,8 +61,8 @@ fn a_saved_book_loads_exactly_and_the_vanilla_pairs_stay() {
 #[test]
 fn both_flags_are_written_for_each_book_including_zero() {
     let mut books = CustomBooks::default();
-    books.set(POT, FILTERING).unwrap();
-    books.set("demo:anvil", OPEN).unwrap();
+    books.set(&id(POT), FILTERING);
+    books.set(&id("demo:anvil"), OPEN);
     let Some(Tag::Compound(written)) = books.write() else {
         panic!("an extension");
     };
@@ -96,21 +101,18 @@ fn a_book_without_its_mod_is_kept_through_save_and_load() {
 #[test]
 fn a_copy_is_independent_and_a_replace_drops_what_only_the_destination_had() {
     let mut a = Settings::default();
-    a.custom.set(POT, OPEN).unwrap();
+    a.custom.set(&id(POT), OPEN);
     let b = a.clone();
-    a.custom.set(POT, FILTERING).unwrap();
+    a.custom.set(&id(POT), FILTERING);
     assert_eq!(b.custom.get(POT), OPEN, "the copy is a value");
     let mut destination = Settings::default();
-    destination
-        .custom
-        .set(
-            OVEN,
-            BookFlags {
-                open: true,
-                filtering: true,
-            },
-        )
-        .unwrap();
+    destination.custom.set(
+        &id(OVEN),
+        BookFlags {
+            open: true,
+            filtering: true,
+        },
+    );
     destination = b.clone();
     assert_eq!(destination.custom.iter().collect::<Vec<_>>(), [(POT, OPEN)]);
     assert_eq!(destination.custom.get(OVEN), BookFlags::default());
@@ -153,106 +155,40 @@ fn a_malformed_entry_is_skipped_and_the_rest_read() {
 }
 
 #[test]
-fn an_extension_over_a_limit_reads_empty_and_vanilla_still_reads() {
-    let books = |n: usize| {
-        Tag::Compound(
-            (0..n)
-                .map(|i| {
-                    (
-                        JavaString::from(format!("demo:book_{i}").as_str()),
-                        entry(Tag::Byte(1), Tag::Byte(0)),
-                    )
-                })
-                .collect(),
+fn large_saved_books_round_trip_with_a_malformed_sibling() {
+    // Every book is from an absent mod. Their names alone exceed the old
+    // extension byte budget, without any padding or malformed bytes on disk.
+    let prefix = format!("absent:{}", "cook/".repeat(100));
+    let ids: Vec<_> = (0..1_100).map(|i| format!("{prefix}{i:04}")).collect();
+    let initial = Tag::compound(
+        ids.iter()
+            .map(|id| (id.as_str(), entry(Tag::Byte(1), Tag::Byte(0))))
+            .chain([(
+                "absent:malformed",
+                Tag::compound([("nested", Tag::compound([("flag", Tag::Byte(1))]))]),
+            )]),
+    );
+    let player_bytes = |book| {
+        nbt::write_named(
+            &NamedTag {
+                name: "".into(),
+                tag: Tag::compound([("recipeBook", book)]),
+            },
+            Limits::saved(),
         )
+        .unwrap()
     };
-    assert_eq!(
-        CustomBooks::read(Some(&saved(Some(books(MAX_BOOKS))))).len(),
-        MAX_BOOKS
-    );
-    let over = saved(Some(books(MAX_BOOKS + 1)));
-    let settings = Settings::read(Some(&over));
-    assert!(settings.custom.is_empty(), "too many books");
-    assert!(
-        settings.open[BookType::Furnace.index()],
-        "vanilla pairs still read"
-    );
-
-    let long = format!("demo:{}", "a".repeat(MAX_ID_BYTES));
-    let tag = Tag::compound([
-        (POT, entry(Tag::Byte(1), Tag::Byte(0))),
-        (long.as_str(), entry(Tag::Byte(1), Tag::Byte(0))),
-    ]);
-    assert!(
-        CustomBooks::read(Some(&saved(Some(tag)))).is_empty(),
-        "an id too long"
-    );
-
-    let padding = Tag::ByteArray(vec![0; MAX_ENCODED_BYTES]);
-    let tag = Tag::compound([
-        (POT, entry(Tag::Byte(1), Tag::Byte(0))),
-        ("demo:padded", Tag::compound([("pad", padding)])),
-    ]);
-    assert!(
-        CustomBooks::read(Some(&saved(Some(tag)))).is_empty(),
-        "too many bytes"
-    );
-
-    assert!(
-        CustomBooks::read(Some(&saved(Some(Tag::Byte(1))))).is_empty(),
-        "not a compound"
-    );
-}
-
-#[test]
-fn a_full_map_refuses_a_new_book_without_dropping_one() {
-    let mut books = CustomBooks::default();
-    for i in 0..MAX_BOOKS {
-        books.set(&format!("demo:book_{i}"), OPEN).unwrap();
+    let raw = player_bytes(saved(Some(initial)));
+    assert!(raw.len() > 512 * 1024);
+    let loaded = load(&raw);
+    for settings in [loaded.clone(), load(&player_bytes(loaded.write()))] {
+        assert!(settings.open[BookType::Furnace.index()]);
+        let actual: Vec<_> = settings.custom.iter().collect();
+        assert_eq!(
+            actual,
+            ids.iter().map(|id| (id.as_str(), OPEN)).collect::<Vec<_>>()
+        );
     }
-    assert_eq!(books.set(POT, OPEN), Err(BookError::Full));
-    assert_eq!(books.len(), MAX_BOOKS);
-    assert_eq!(books.get(POT), BookFlags::default());
-    assert_eq!(
-        books.set("demo:book_0", FILTERING),
-        Ok(true),
-        "a saved book still changes"
-    );
-}
-
-#[test]
-fn a_book_id_is_a_namespaced_resource_id() {
-    for id in [POT, "a:b", "my-mod.x:path/to_book", "minecraft:crafting"] {
-        assert!(valid_book_id(id), "{id}");
-    }
-    let long = format!("demo:{}", "a".repeat(MAX_ID_BYTES));
-    for id in [
-        "",
-        "demo",
-        ":pot",
-        "demo:",
-        "Demo:pot",
-        "demo:Pot",
-        "de/mo:pot",
-        "demo:pot!",
-        long.as_str(),
-    ] {
-        assert!(!valid_book_id(id), "{id:?}");
-    }
-    assert_eq!(
-        CustomBooks::default().set("demo", OPEN),
-        Err(BookError::InvalidId("demo".into()))
-    );
-}
-
-#[test]
-fn the_encoded_size_counts_as_nbt_writes_it() {
-    let tag = Tag::compound([(POT, entry(Tag::Byte(1), Tag::Byte(0)))]);
-    let bytes = sunrise_core::nbt::write_network(&tag, sunrise_core::nbt::Limits::saved()).unwrap();
-    // `write_network` adds the root's own type byte.
-    let size = bytes.len() - 1;
-    assert!(encoded_within(&tag, size));
-    assert!(!encoded_within(&tag, size - 1));
 }
 
 /// A saved player root in raw NBT: `recipeBook` with empty lists, the furnace book open and an
@@ -287,125 +223,31 @@ fn raw_book(out: &mut Vec<u8>, id: &str, open: u8) {
     out.push(0);
 }
 
-/// The settings a raw player file loads, and whether its `recipeBook` kept the extension.
-fn load(raw: &[u8]) -> (Settings, bool) {
-    let (named, used) = read_saved(raw).expect("the file reads");
+fn load(raw: &[u8]) -> Settings {
+    let (named, used) = nbt::read_named(raw, Limits::saved()).expect("the file reads");
     assert_eq!(used, raw.len());
-    let book = named.tag.get("recipeBook");
-    let kept = book.and_then(|b| b.get(EXTENSION)).is_some();
-    (Settings::read(book), kept)
+    Settings::read(named.tag.get("recipeBook"))
 }
 
 #[test]
-fn a_saved_file_reads_the_extension_within_its_budget() {
-    let (settings, kept) = load(&raw_player(|out| raw_book(out, POT, 1)));
-    assert!(kept);
-    assert_eq!(settings.custom.get(POT), OPEN);
-    assert!(settings.open[BookType::Furnace.index()]);
-}
-
-#[test]
-fn a_saved_extension_with_a_book_twice_is_dropped_and_vanilla_reads() {
-    // A `Tag::Compound` cannot hold the same key twice, so only raw bytes show this.
-    let (settings, kept) = load(&raw_player(|out| {
-        raw_book(out, POT, 1);
+fn a_saved_extension_uses_compound_tags_last_duplicate_and_keeps_other_books() {
+    let settings = load(&raw_player(|out| {
         raw_book(out, POT, 0);
+        raw_book(out, OVEN, 1);
+        raw_book(out, POT, 1);
     }));
-    assert!(!kept, "the reader leaves the extension out");
-    assert!(settings.custom.is_empty());
+    assert_eq!(
+        settings.custom.iter().collect::<Vec<_>>(),
+        [(POT, OPEN), (OVEN, OPEN)]
+    );
     assert!(settings.open[BookType::Furnace.index()]);
-}
-
-#[test]
-fn a_saved_extension_over_its_byte_or_depth_budget_is_dropped_unbuilt() {
-    let over_bytes = raw_player(|out| {
-        key(out, 10, POT);
-        key(out, 7, "pad");
-        out.extend(((MAX_ENCODED_BYTES + 1) as i32).to_be_bytes());
-        out.extend(std::iter::repeat_n(0, MAX_ENCODED_BYTES + 1));
-        out.push(0);
-    });
-    let too_deep = raw_player(|out| {
-        key(out, 10, POT);
-        key(out, 10, "nested");
-        out.extend([0, 0]);
-    });
-    for raw in [over_bytes, too_deep] {
-        let (settings, kept) = load(&raw);
-        assert!(!kept);
-        assert!(settings.custom.is_empty());
-        assert!(
-            settings.open[BookType::Furnace.index()],
-            "vanilla still reads"
-        );
-    }
 }
 
 #[test]
 fn a_truncated_extension_still_fails_the_file() {
     let mut raw = raw_player(|out| raw_book(out, POT, 1));
     raw.truncate(raw.len() - 4);
-    assert!(read_saved(&raw).is_err());
-}
-
-#[test]
-fn the_same_key_outside_recipe_book_reads_as_before() {
-    // {OtherData:{"sunrise:book_settings":{x:1b, x:2b}}}: no recipe book here, so the plain
-    // reader's last-duplicate-wins stands.
-    let mut raw = vec![10, 0, 0];
-    key(&mut raw, 10, "OtherData");
-    key(&mut raw, 10, EXTENSION);
-    for value in [1, 2] {
-        key(&mut raw, 1, "x");
-        raw.push(value);
-    }
-    raw.extend([0, 0, 0]);
-    let (named, _) = read_saved(&raw).unwrap();
-    let (plain, _) = sunrise_core::nbt::read_named(&raw, Limits::saved()).unwrap();
-    assert_eq!(named, plain);
-    let x = named
-        .tag
-        .get("OtherData")
-        .and_then(|d| d.get(EXTENSION))
-        .and_then(|e| e.get("x"));
-    assert_eq!(x, Some(&Tag::Byte(2)));
-}
-
-/// The extension with `x` twice, inside `recipeBook` under the compounds `path` names.
-fn nested_book(path: &[&str]) -> Vec<u8> {
-    let mut raw = vec![10, 0, 0];
-    for name in path.iter().chain(["recipeBook"].iter()) {
-        key(&mut raw, 10, name);
-    }
-    key(&mut raw, 10, EXTENSION);
-    for value in [1, 2] {
-        key(&mut raw, 1, "x");
-        raw.push(value);
-    }
-    raw.extend(std::iter::repeat_n(0, path.len() + 3));
-    raw
-}
-
-#[test]
-fn only_the_players_own_recipe_book_is_budgeted() {
-    // A `recipeBook` that is not the player's reads as the plain reader reads it.
-    let raw = nested_book(&["OtherData"]);
-    let (named, _) = read_saved(&raw).unwrap();
-    let (plain, _) = sunrise_core::nbt::read_named(&raw, Limits::saved()).unwrap();
-    assert_eq!(named, plain);
-    let x = ["OtherData", "recipeBook", EXTENSION, "x"]
-        .iter()
-        .try_fold(&named.tag, |tag, key| tag.get(key));
-    assert_eq!(x, Some(&Tag::Byte(2)));
-    // The player's book: the root's, or `level.dat`'s `Data.Player`.
-    for path in [&[][..], &["Data", "Player"]] {
-        let (named, _) = read_saved(&nested_book(path)).unwrap();
-        let book = path
-            .iter()
-            .chain(["recipeBook"].iter())
-            .try_fold(&named.tag, |tag, key| tag.get(key));
-        assert_eq!(book.map(|b| b.get(EXTENSION)), Some(None), "{path:?}");
-    }
+    assert!(nbt::read_named(&raw, Limits::saved()).is_err());
 }
 
 #[test]
@@ -497,7 +339,7 @@ fn installed_field_declaration_roundtrips_the_player_book() {
     assert_eq!(written.get("isModCookingGuiOpen"), Some(&Tag::Byte(1)));
     assert!(written.get("isModCookingFilteringCraftable").is_none());
     assert!(written.get(EXTENSION).is_none());
-    let raw = sunrise_core::nbt::write_named(
+    let raw = nbt::write_named(
         &NamedTag {
             name: "".into(),
             tag: written,
@@ -505,7 +347,7 @@ fn installed_field_declaration_roundtrips_the_player_book() {
         Limits::saved(),
     )
     .unwrap();
-    let (parsed, _) = read_saved(&raw).unwrap();
+    let (parsed, _) = nbt::read_named(&raw, Limits::saved()).unwrap();
     assert_eq!(
         Settings::read_valid(Some(&parsed.tag), &|_| true)
             .custom

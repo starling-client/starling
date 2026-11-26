@@ -5,10 +5,10 @@
 //! against the prebuilt game and the mods, and the generated `main` installs each copy through
 //! its point's replacement slot. What can't take this route is refused by name; nothing here
 //! falls back to compiling the game.
-use super::{Bundle, MixinsIdentity, api, prebuilt::Identity};
+use super::{Bundle, MixinsIdentity, api, game_uses, prebuilt::Identity};
 use crate::host::trf;
 use crate::rust::Toolchain;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use sunrise_platform::mod_build::api_gen;
@@ -28,6 +28,8 @@ pub const CRATE: &str = "sunrise_patched";
 pub struct Patch {
     pub rlibs: Vec<(String, PathBuf)>,
     pub installs: Vec<String>,
+    /// The mods whose libraries the patched crates link.
+    pub mods: Vec<String>,
 }
 
 fn install_expression(target: &str, mods: &[&str], install: &str) -> String {
@@ -150,14 +152,16 @@ pub fn build(
     sdk: &Identity,
     mixins: &MixinsIdentity,
     rustc: impl Fn(&str) -> std::process::Command,
+    check_only: bool,
 ) -> Result<Option<Patch>, String> {
-    let Some(prepared) = prepare(rust, game, out, projects, sdk, mixins)? else {
+    let Some(prepared) = prepare(rust, game, out, projects, sdk, mixins, check_only)? else {
         return Ok(None);
     };
     // The patched crates, against the prebuilt game and the mods.
     let mut compiled = Vec::new();
     for name in &prepared.names {
-        let rlib = out.join(format!("lib{name}.rlib"));
+        let extension = if check_only { "rmeta" } else { "rlib" };
+        let rlib = out.join(format!("lib{name}.{extension}"));
         let mut hash = sha2::Sha256::new();
         use sha2::Digest;
         hash.update(sdk.commit());
@@ -186,6 +190,9 @@ pub fn build(
         .arg("-o")
         .arg(&rlib)
         .arg(prepared.dir.join(name).join("src/lib.rs"));
+        if check_only {
+            cmd.arg("--emit=metadata");
+        }
         game_cfg(&mut cmd, sdk);
         // An `@` file, one argument per line: an extern per SDK crate passes Windows'
         // 32,767-character command-line limit.
@@ -203,13 +210,18 @@ pub fn build(
         let mut arg = std::ffi::OsString::from("@");
         arg.push(&argfile);
         cmd.arg(arg);
-        super::run(cmd, "Compiling the patched functions", |_| {})?;
+        super::run(cmd, "Compiling the patched functions")?;
         fs::write(saved, fingerprint).map_err(|e| e.to_string())?;
         compiled.push((name.clone(), rlib));
     }
     prepared.log()?;
     Ok(Some(Patch {
         rlibs: compiled,
+        mods: prepared
+            .bundles
+            .iter()
+            .map(|bundle| bundle.manifest.id.clone())
+            .collect(),
         installs: prepared.installs,
     }))
 }
@@ -266,30 +278,22 @@ impl Prepared<'_> {
 /// are asked, from the game's `loops.json`. A row naming no published loop, and a mixin that
 /// replaces or redirects a filled loop's entry (anything but `HEAD` and `RETURN`, which compose
 /// around the loop), are refused by name.
-fn loop_slots(game: &Path, bundles: &[&Bundle]) -> Result<Vec<api_gen::patch::LoopSlots>, String> {
+fn loop_slots(
+    game: &Path,
+    commit: &str,
+    bundles: &[&Bundle],
+) -> Result<Vec<api_gen::patch::LoopSlots>, String> {
     use sunrise_mod_package::manifest::mixin::Kind;
-    let rows: Vec<(&Bundle, &sunrise_mod_package::manifest::loops::Loop)> = bundles
+    let published =
+        game_uses::published_loops(game, commit).map_err(|e| format!("E_MIXIN_INDEX: {e}"))?;
+    let mut ordered: Vec<_> = bundles
         .iter()
         .flat_map(|bundle| bundle.native().r#loop.iter().map(move |row| (*bundle, row)))
         .collect();
-    let path = game.join(api_gen::loops::FILE);
-    // A game built before published loops has no list, and so no loop a row can name.
-    #[derive(serde::Deserialize)]
-    struct Loops {
-        loops: Vec<api_gen::loops::PublishedLoop>,
-    }
-    let published = match fs::read_to_string(&path) {
-        Ok(text) => {
-            sunrise_mod_package::build_data::read::<Loops>(api_gen::loops::FILE, &text)
-                .map_err(|e| format!("{}: {e}", path.display()))?
-                .1
-                .loops
-        }
-        Err(_) => Vec::new(),
-    };
     let mut refusals = Vec::new();
     // A loop with a mixin on its function is copied with it, slots or none.
     let mut filled: Vec<api_gen::patch::LoopSlots> = published
+        .entries
         .iter()
         .filter(|l| {
             let generic = l.generic_target();
@@ -302,25 +306,17 @@ fn loop_slots(game: &Path, bundles: &[&Bundle]) -> Result<Vec<api_gen::patch::Lo
             slots: Vec::new(),
         })
         .collect();
-    let mut ordered = rows;
     ordered.sort_by(|(a, ra), (b, rb)| {
         (ra.priority, &a.manifest.id, &ra.id).cmp(&(rb.priority, &b.manifest.id, &rb.id))
     });
     for (bundle, row) in ordered {
         let id = &bundle.manifest.id;
-        let Some(found) = published.iter().find(|l| l.name == row.name) else {
-            let known: Vec<&str> = published.iter().map(|l| l.name.as_str()).collect();
-            refusals.push(format!(
-                "E_LOOP_UNKNOWN: {id}:{}: the game publishes no loop `{}`; its loops: {}",
-                row.id,
-                row.name,
-                if known.is_empty() {
-                    "none".to_owned()
-                } else {
-                    known.join(", ")
-                }
-            ));
-            continue;
+        let found = match published.require(id, row) {
+            Ok(found) => found,
+            Err(refusal) => {
+                refusals.push(refusal);
+                continue;
+            }
         };
         let path = bundle.dir.join(&row.helper);
         let helper = fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -372,30 +368,6 @@ fn loop_slots(game: &Path, bundles: &[&Bundle]) -> Result<Vec<api_gen::patch::Lo
     }
 }
 
-/// The game build's function index (`functions.json`), from its SDK at `game`: where each function
-/// a row may target is in the source, and whether it can be copied. With no index for this build
-/// nothing is copied: the source is never walked instead.
-fn function_index(game: &Path, commit: &str) -> Result<api_gen::functions::FunctionIndex, String> {
-    use api_gen::functions::FILE;
-    let path = game.join(FILE);
-    let text = fs::read_to_string(&path).map_err(|e| {
-        format!(
-            "E_MIXIN_INDEX: {}: {e}: the game build's SDK has no function index, so no function can be copied; fetch the SDK again",
-            path.display()
-        )
-    })?;
-    let (build, index): (_, api_gen::functions::FunctionIndex) =
-        sunrise_mod_package::build_data::read(FILE, &text)
-            .map_err(|e| format!("E_MIXIN_INDEX: {e}"))?;
-    if build.commit != commit {
-        return Err(format!(
-            "E_MIXIN_INDEX: {FILE} describes game build {}, not {commit}; fetch the SDK again",
-            build.commit
-        ));
-    }
-    index.checked().map_err(|e| format!("E_MIXIN_INDEX: {e}"))
-}
-
 /// Copies, generates and transforms the patch crates for `projects` into `out`, without
 /// compiling them; `None` when no mod has a mixin, module, bridge or loop.
 pub fn prepare<'a>(
@@ -405,6 +377,7 @@ pub fn prepare<'a>(
     projects: &[api::Project<'a>],
     sdk: &Identity,
     mixins: &MixinsIdentity,
+    check_only: bool,
 ) -> Result<Option<Prepared<'a>>, String> {
     prepare_with(rust, game, None, out, projects, sdk, mixins, None)
 }
@@ -438,7 +411,9 @@ pub fn prepare_with<'a>(
     if bundles.is_empty() {
         return Ok(None);
     }
-    let loops = loop_slots(game, &bundles)?;
+    let loops = loop_slots(game, sdk.commit(), &bundles)?;
+    let index =
+        game_uses::function_index(game, sdk.commit()).map_err(|e| format!("E_MIXIN_INDEX: {e}"))?;
     let requests: Vec<(String, String, String)> = bundles
         .iter()
         .flat_map(|bundle| {
@@ -466,7 +441,6 @@ pub fn prepare_with<'a>(
         None => super::source(sdk.commit())?,
     };
     let started = std::time::Instant::now();
-    let index = function_index(game, sdk.commit())?;
     // A filled loop's entry, or one whose loop function has rows, is copied like a mixin's target,
     // with the loop's body.
     let targets: Vec<String> = rows
@@ -480,6 +454,21 @@ pub fn prepare_with<'a>(
     let mut extras = extras(&bundles)?;
     extras.loops = loops;
     extras.linked = sdk_extern_names(sdk).map(str::to_owned).collect();
+    extras.lower_crate_cfg = Some(match sdk.lower_crate_cfg() {
+        Some(recorded) => recorded.clone(),
+        // A check only types the mods against the SDK, so an SDK that predates the lower
+        // crates' records takes the pinned compiler's cfg for each of them, as `build` does
+        // through the SDK's own tool.
+        None if check_only => {
+            let atoms = printed_cfg(rust, sdk)?;
+            index
+                .crates
+                .keys()
+                .map(|krate| (krate.clone(), atoms.clone()))
+                .collect()
+        }
+        None => BTreeMap::new(),
+    });
     let generated = api_gen::patch::generate(&source, CRATE, &targets, &extras, &index);
     let refusals: Vec<String> = match &generated {
         Ok(_) => Vec::new(),
@@ -588,6 +577,7 @@ pub fn prepare_with<'a>(
         // The tool plans against what the patch library compiles: this computer's cfg set under the
         // flags it is compiled with (the prebuilt game's target is this computer's,
         // `check_identity`), and the features the game was built with.
+<<<<<<< HEAD
         let mut print = super::prebuilt::rustc_with(rust, &[], "2024");
         game_cfg(&mut print, sdk);
         if let Some(target) = target {
@@ -598,14 +588,24 @@ pub fn prepare_with<'a>(
         if !printed.status.success() {
             return Err(String::from_utf8_lossy(&printed.stderr).into_owned());
         }
+||||||| 46c00106def
+        let mut print = super::prebuilt::rustc_with(rust, &[], "2024");
+        game_cfg(&mut print, sdk);
+        print.args(["--print", "cfg"]);
+        let printed = print.output().map_err(|e| e.to_string())?;
+        if !printed.status.success() {
+            return Err(String::from_utf8_lossy(&printed.stderr).into_owned());
+        }
+=======
+>>>>>>> ed6772e2118
         let mut cmd = super::apply(rust, tool, &workspace, &mods, &patched);
-        for option in build_cfg(&String::from_utf8_lossy(&printed.stdout)) {
+        for option in printed_cfg(rust, sdk)? {
             cmd.arg("--cfg").arg(option);
         }
         // The features are the game crate's: the tool decides `feature` predicates only in its
         // copies, and refuses them in the copies of the crates below it.
         cmd.arg("--features-of").arg(CRATE);
-        super::run(cmd, "Applying the mixins to their functions", |_| {})?;
+        super::run(cmd, "Applying the mixins to their functions")?;
         patched
     } else {
         workspace.clone()
@@ -687,6 +687,18 @@ fn game_cfg(cmd: &mut std::process::Command, sdk: &Identity) {
     }
 }
 
+/// The pinned compiler's `--print cfg` for the SDK's target under the game's features.
+fn printed_cfg(rust: &dyn Toolchain, sdk: &Identity) -> Result<Vec<String>, String> {
+    let mut print = super::prebuilt::rustc_with(rust, &[], "2024");
+    game_cfg(&mut print, sdk);
+    print.args(["--print", "cfg", "--target", rust.target()]);
+    let printed = print.output().map_err(|e| e.to_string())?;
+    if !printed.status.success() {
+        return Err(String::from_utf8_lossy(&printed.stderr).into_owned());
+    }
+    Ok(build_cfg(&String::from_utf8_lossy(&printed.stdout)))
+}
+
 /// The cfg options of the build the patch library is compiled into, in rustc's `--cfg` spelling:
 /// what `rustc --print cfg` printed, which carries the game's features and the target's facts.
 /// The tool decides only the features and the target facts from it; flag-dependent options such as
@@ -702,6 +714,51 @@ fn build_cfg(printed: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod refusal_tests {
+    /// A retained SDK that predates the lower crates' cfg records is checked against the pinned
+    /// compiler's own cfg for its target and the game's features, so a lower-crate mixin target
+    /// is not refused for an empty cfg. Needs a real rustc.
+    #[test]
+    #[ignore = "daily"]
+    fn the_checks_lower_crate_cfg_is_the_pinned_compilers_for_the_sdks_features() {
+        let sysroot = std::process::Command::new("rustc")
+            .args(["--print", "sysroot"])
+            .output()
+            .unwrap();
+        let sysroot = String::from_utf8(sysroot.stdout).unwrap();
+        use crate::rust::Toolchain as _;
+        let rust = crate::rust::tests::system(sysroot.trim().into());
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("sunrise-prebuilt.json"),
+            serde_json::json!({
+                "package_format": sunrise_mod_package::sdk::PACKAGE_FORMAT,
+                "commit": "0123456789abcdef0123456789abcdef01234567",
+                "rustc": "release: 1",
+                "side": "client",
+                "target": rust.target(),
+                "registry_lock": "version = 4\n",
+                "registry_patches": {},
+                "native_links": [],
+                "facade_crates": [],
+                "game_features": ["audio"],
+                "slices": { "runtime": [], "api": [] }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let sdk = crate::prebuilt::identity(dir.path()).unwrap();
+        assert!(sdk.lower_crate_cfg().is_none());
+        let printed = super::printed_cfg(&rust, &sdk).unwrap();
+        assert!(
+            printed.contains(&"feature=\"audio\"".to_owned()),
+            "{printed:?}"
+        );
+        assert!(
+            printed.iter().any(|atom| atom.starts_with("target_os=")),
+            "{printed:?}"
+        );
+    }
+
     /// A rebuild in the same folder starts with no applied-patch output, whether the last build
     /// left a folder, a file or a link there; a link's target is untouched.
     #[test]
@@ -766,44 +823,69 @@ mod refusal_tests {
     #[test]
     fn a_missing_or_foreign_function_index_is_refused_by_name() {
         let game = tempfile::tempdir().unwrap();
-        let commit = "c".repeat(40);
-        let error = super::function_index(game.path(), &commit).unwrap_err();
+        let commit = crate::tests::A;
+        let read = || super::game_uses::function_index(game.path(), commit);
+        let error = read().unwrap_err().to_string();
         assert!(
-            error.starts_with("E_MIXIN_INDEX: ") && error.contains("no function index"),
+            error.contains("functions.json") && error.contains("fetch the SDK again"),
             "{error}"
         );
-        let write = |commit: &str| {
-            std::fs::write(
-                game.path().join("functions.json"),
-                format!(
-                    r#"{{"schema":1,"build":{{"commit":"{commit}"}},"crates":{{}},"functions":{{}},"refused":{{}}}}"#
-                ),
-            )
-            .unwrap();
+        let write = |commit, functions| {
+            let index = serde_json::json!({
+                "schema": 1, "build": {"commit": commit},
+                "crates": {"sunrise_client": {
+                    "library": "sunrise_client", "modules": {"sunrise_client::game": []},
+                }},
+                "functions": functions, "refused": {},
+            });
+            std::fs::write(game.path().join("functions.json"), index.to_string()).unwrap();
         };
-        write(&"d".repeat(40));
-        let error = super::function_index(game.path(), &commit).unwrap_err();
+        write(crate::tests::B, serde_json::json!({}));
+        let error = read().unwrap_err().to_string();
+        assert!(error.contains("functions.json"), "{error}");
         assert!(
-            error.starts_with("E_MIXIN_INDEX: functions.json describes game build dddd"),
+            error.contains(crate::tests::B) && error.contains(commit),
             "{error}"
         );
-        write(&commit);
-        assert_eq!(
-            super::function_index(game.path(), &commit).unwrap(),
-            Default::default()
-        );
+        write(commit, serde_json::json!({}));
+        assert!(read().unwrap().functions.is_empty());
         // A tampered index whose module the copy would write as Rust is refused, not a panic.
+        write(
+            commit,
+            serde_json::json!({"sunrise_client::game::f": {
+                "module": "sunrise_client::not a path!",
+                "file": "crates/sunrise-client/src/game.rs", "span": [0, 1],
+                "signature_hash": "", "sha256": "",
+            }}),
+        );
+        let error = read().unwrap_err().to_string();
+        assert!(error.contains("functions.json"), "{error}");
+        assert!(
+            error.contains("sunrise_client::game::f")
+                && error.contains("sunrise_client::not a path!"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn patching_refuses_a_missing_loop_catalog_but_accepts_an_empty_one() {
+        let game = tempfile::tempdir().unwrap();
+        let commit = crate::tests::A;
+        let error = super::loop_slots(game.path(), commit, &[]).err().unwrap();
+        assert!(error.starts_with("E_MIXIN_INDEX:"), "{error}");
+        assert!(
+            error.contains("loops.json") && error.contains("fetch the SDK again"),
+            "{error}"
+        );
         std::fs::write(
-            game.path().join("functions.json"),
-            format!(
-                r#"{{"schema":1,"build":{{"commit":"{commit}"}},"crates":{{"sunrise_client":{{"library":"sunrise_client","modules":{{"sunrise_client::game":[]}}}}}},"functions":{{"sunrise_client::game::f":{{"module":"sunrise_client::not a path!","file":"crates/sunrise-client/src/game.rs","span":[0,1],"signature_hash":"","sha256":""}}}},"refused":{{}}}}"#
-            ),
+            game.path().join("loops.json"),
+            format!(r#"{{"schema":1,"build":{{"commit":"{commit}"}},"loops":[]}}"#),
         )
         .unwrap();
-        let error = super::function_index(game.path(), &commit).unwrap_err();
         assert!(
-            error.starts_with("E_MIXIN_INDEX: functions.json: function `sunrise_client::game::f` is in `sunrise_client::not a path!`"),
-            "{error}"
+            super::loop_slots(game.path(), commit, &[])
+                .unwrap()
+                .is_empty()
         );
     }
 

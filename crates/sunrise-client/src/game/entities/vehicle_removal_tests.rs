@@ -167,10 +167,6 @@ struct Observe(Arc<Observation>);
 
 #[mod_api::__subscriptions]
 impl Hooks for Observe {
-    fn register(&self, registrar: &mut dyn mod_api::Registrar, _: &mod_api::RegistrationContext) {
-        registrar.entity_tick_each("minecraft:pig");
-    }
-
     fn entity_mount(
         &self,
         host: &mut dyn ServerHost,
@@ -198,15 +194,15 @@ impl Hooks for Observe {
         }
     }
 
-    fn entity_tick_listened(&self, _: HostSide<'_>, event: &mut mod_api::EntityTickListenedEvent) {
-        event.listened = true;
-    }
-
-    fn entity_tick_pre(&self, host: HostSide<'_>, event: &mut mod_api::EntityTickPreEvent<'_>) {
-        if event.entities.contains(&72) && self.0.veto_rider_tick.load(Ordering::Relaxed) {
-            event.canceled.push(72);
+    fn entity_tick_pre(
+        &self,
+        host: HostSide<'_>,
+        event: &mut mod_api::EntityTickPreEvent<'_>,
+    ) -> mod_api::Flow {
+        if event.entity == 72 && self.0.veto_rider_tick.load(Ordering::Relaxed) {
+            return mod_api::Flow::Cancel;
         }
-        if event.entities.contains(&74)
+        if event.entity == 74
             && let HostSide::Server(host) = host
         {
             let riding = host
@@ -219,6 +215,7 @@ impl Hooks for Observe {
                 .unwrap()
                 .push(format!("later:riding={riding}"));
         }
+        mod_api::Flow::Continue
     }
 }
 
@@ -303,11 +300,10 @@ fn wind_charged_mob_removal_cannot_reenter_through_its_own_burst() {
             host: &mut dyn ServerHost,
             event: &mut mod_api::ExplosionStartEvent<'_>,
         ) -> Flow {
-            if event.explosion.source == Some(71)
+            if let Some(source) = event.explosion.source.filter(|source| source.id() == 71)
                 && self.0.bursts.fetch_add(1, Ordering::Relaxed) == 0
             {
                 // Only try once so an unguarded removal is a bounded failure.
-                let source = host.entity(71).expect("the burst's source still resolves");
                 assert!(
                     !source.remove(host, mod_api::RemovalReason::Killed),
                     "the burst cannot remove its own source again"
@@ -358,6 +354,10 @@ fn wind_charged_mob_removal_cannot_reenter_through_its_own_burst() {
 #[test]
 #[ignore = "daily"]
 fn mob_removal_order_witness() {
+    run_mob_removal_order_witness();
+}
+
+pub(in crate::game) fn run_mob_removal_order_witness() {
     let observation = Arc::new(Observation::default());
     with_removal_test_hooks(Observe(observation.clone()), |game| {
         game.boats

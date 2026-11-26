@@ -143,16 +143,24 @@ impl Builder {
         &mut self,
         biomes: impl IntoIterator<Item = &'m AttributeMap>,
     ) -> &mut Self {
-        let mut seen: Vec<&'static str> = Vec::new();
         for map in biomes {
             for attribute in map.attributes() {
-                if !seen.contains(&attribute.id) {
-                    seen.push(attribute.id);
-                    self.push(attribute, Layer::Biome);
-                }
+                self.biome_attribute(attribute);
             }
         }
         self
+    }
+
+    /// Include a biome attribute whose map can come from a level's live registry.
+    pub fn biome_attribute(&mut self, attribute: &'static Attribute) {
+        let layers = &mut self
+            .layers
+            .entry(attribute.id)
+            .or_insert_with(|| (attribute, Vec::new()))
+            .1;
+        if !layers.iter().any(|layer| matches!(layer, Layer::Biome)) {
+            layers.push(Layer::Biome);
+        }
     }
 
     /// `EnvironmentAttributeSystem.Builder.addTimelineLayer`: a time-based layer per track

@@ -26,18 +26,14 @@ static BUILT: &[mod_api::__private::native::BuiltMod] = &[
 #[unsafe(no_mangle)]
 pub extern "C" fn sunrise_native_build() -> *const std::os::raw::c_char {
     // The build identity ends with the panic strategy this library was compiled with: the game
-    // unwinds a refused Host call through the mod's frames, so it refuses `abort` at load.
-    static IDENTITY: std::sync::OnceLock<std::ffi::CString> = std::sync::OnceLock::new();
-    IDENTITY
-        .get_or_init(|| {
-            let panic = if cfg!(panic = "unwind") {
-                "unwind"
-            } else {
-                "abort"
-            };
-            std::ffi::CString::new(format!("/* NATIVE_BUILD */ {panic}")).expect("no NUL")
-        })
-        .as_ptr()
+    // unwinds a refused Host call through the mod's frames, so it refuses `abort` at load. The
+    // whole identity is one NUL-terminated literal, so the loader finds it in the library's
+    // bytes before any of its code runs.
+    #[cfg(panic = "unwind")]
+    const IDENTITY: &std::ffi::CStr = c"/* NATIVE_BUILD */ unwind";
+    #[cfg(not(panic = "unwind"))]
+    const IDENTITY: &std::ffi::CStr = c"/* NATIVE_BUILD */ abort";
+    IDENTITY.as_ptr()
 }
 #[unsafe(no_mangle)]
 pub fn sunrise_native_mod_v1() -> &'static mod_api::__private::native::NativeMod {

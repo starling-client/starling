@@ -87,7 +87,10 @@ impl Game<'_> {
         // it checks as the player's; `getblock` and `container` read what this
         // client has of it.
         if self.remote.is_some() && matches!(words.first(), Some(&("setblock" | "fill"))) {
-            self.send_signed_chat_input(&format!("/{}", words.join(" ")));
+            let command = words.join(" ");
+            if self.chat_abilities().allows(&format!("/{command}")) {
+                let _ = self.send_server_command(&command);
+            }
             return Ok(Some(json!({ "ok": true, "sent": true })));
         }
         let int = |i: usize| -> Result<i32> {

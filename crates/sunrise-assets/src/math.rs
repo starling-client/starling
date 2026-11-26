@@ -281,6 +281,28 @@ impl Mat4 {
     pub fn is_finite(&self) -> bool {
         self.0.iter().flatten().all(|v| v.is_finite())
     }
+    /// `Matrix4f.transformPosition(Vector3f)`: `Vector3f.mulPosition`, `m * (x, y, z, 1)`.
+    pub fn transform_position(&self, [x, y, z]: [f32; 3]) -> [f32; 3] {
+        let m = &self.0;
+        if self.has(TRANSLATION) {
+            return [x + m[3][0], y + m[3][1], z + m[3][2]];
+        }
+        std::array::from_fn(|row| {
+            fma(
+                m[0][row],
+                x,
+                fma(m[1][row], y, fma(m[2][row], z, m[3][row])),
+            )
+        })
+    }
+    /// `Matrix4f.transformDirection(Vector3f)`: `Vector3f.mulDirection`, `m * (x, y, z, 0)`.
+    pub fn transform_direction(&self, [x, y, z]: [f32; 3]) -> [f32; 3] {
+        let m = &self.0;
+        if self.has(IDENTITY) || self.has(TRANSLATION) {
+            return [x, y, z];
+        }
+        std::array::from_fn(|row| fma(m[0][row], x, fma(m[1][row], y, m[2][row] * z)))
+    }
 }
 
 /// `Quaternionf.normalize` as the codec applies it to four components.
@@ -291,7 +313,7 @@ pub fn normalize_quaternion(q: [f32; 4]) -> [f32; 4] {
 }
 /// JOML `Math.sin(float)` without fast math.
 pub fn joml_sin(rad: f32) -> f32 {
-    f64::from(rad).sin() as f32
+    sunrise_core::jmath::sin(f64::from(rad)) as f32
 }
 /// JOML `Math.cosFromSin(float, float)` without fast math: the magnitude from
 /// the sine, the sign from the angle's quadrant (exact zeros at right angles).
@@ -365,7 +387,7 @@ fn rotate3(m: &Mat3, q: [f32; 4]) -> Mat3 {
     })
 }
 /// `Quaternionf.mul`: `a * b`.
-fn quaternion_mul(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
+pub(crate) fn quaternion_mul(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
     let ([x, y, z, w], [qx, qy, qz, qw]) = (a, b);
     [
         fma(w, qx, fma(x, qw, fma(y, qz, -z * qy))),

@@ -1,5 +1,4 @@
 //! Per-area API surfaces, assembled at their original lexical scopes.
-use crate::catalog::Catalog;
 use quote::ToTokens;
 use std::{collections::BTreeMap, path::Path};
 use syn::Item;
@@ -10,7 +9,7 @@ use sunrise_game_discovery::exports::PREFIX;
 pub(crate) fn sources(root: &Path) -> Result<BTreeMap<String, String>, String> {
     let (mut out, has_parts, has_host) = sunrise_game_discovery::exports::fragments(
         root,
-        Catalog::modules(&root.join(DIRECTORY)).map_err(|e| e.to_string())?,
+        sunrise_game_discovery::module_files(&root.join(DIRECTORY))?,
     )?;
     if has_host {
         // Re-export the generated macro aliases, not the include!-expanded
@@ -156,7 +155,7 @@ mod tests {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let vocab = root.join("crates/sunrise-mod-vocab/src");
         let mut missing = Vec::new();
-        for family in Catalog::modules(&vocab.join("parts")).unwrap() {
+        for family in sunrise_game_discovery::module_files(&vocab.join("parts")).unwrap() {
             let path = vocab.join(format!("parts/{family}.rs"));
             let source = fs::read_to_string(&path).unwrap();
             let file = syn::parse_file(&source).unwrap();

@@ -21,23 +21,66 @@ fn attribute_values_add_then_multiply_as_vanilla() {
     assert_eq!(snapshot_value(&snapshot(1.0, all)), 6.0);
 }
 
-/// `Entity.lookAt`: yaw 0 faces +Z, -90 faces +X; pitch -90 looks up.
+/// The pinned vanilla 26.3 side is `VanillaTurnOracle`'s `look_at.txt`
+/// (`tools/test_mob_turn_parity.py`, recorded into `.local/witness/26.3/mob_turn/look_at.txt`):
+/// `Entity.lookAt(FEET, target)` from each place to each offset, as the yaw and pitch bits it
+/// stores: the cardinal directions, the yaw wrap at -180, both pitch signs, straight up and down
+/// (`Mth.atan2` stops a hair short of 90) and a target at the eye (-90 yaw, pitch -0.0).
 #[test]
-fn look_at_turns_towards_the_target() {
-    let close = |(yaw, pitch): (f32, f32), want: (f32, f32)| {
-        assert!(
-            (yaw - want.0).abs() < 1e-3 && (pitch - want.1).abs() < 1e-3,
-            "{yaw} {pitch}, want {want:?}"
-        );
-    };
-    let at = [10.0, 64.0, -5.0];
-    let off = |d: [f64; 3]| [at[0] + d[0], at[1] + d[1], at[2] + d[2]];
-    close(look_at_rotation(at, off([0.0, 0.0, 3.0])), (0.0, 0.0));
-    close(look_at_rotation(at, off([3.0, 0.0, 0.0])), (-90.0, 0.0));
-    close(look_at_rotation(at, off([-3.0, 0.0, 0.0])), (90.0, 0.0));
-    close(look_at_rotation(at, off([0.0, 0.0, -3.0])), (-180.0, 0.0));
-    close(look_at_rotation(at, off([0.0, 2.0, 2.0])), (0.0, -45.0));
-    close(look_at_rotation(at, off([0.0, -4.0, 4.0])), (0.0, 45.0));
+#[ignore = "run by tools/test_mob_turn_parity.py"]
+fn look_at_matches_the_pinned_oracle() {
+    run_look_at_matches_the_pinned_oracle();
+}
+
+pub(in crate::game) fn run_look_at_matches_the_pinned_oracle() {
+    let witness_dir = std::env::var_os("SUNRISE_MOB_TURN_WITNESS_DIR").expect(
+        "SUNRISE_MOB_TURN_WITNESS_DIR must be set; run through tools/test_mob_turn_parity.py, which records the witness",
+    );
+    let witness_path = std::path::Path::new(&witness_dir).join("look_at.txt");
+    let witness = std::fs::read_to_string(&witness_path).unwrap_or_else(|err| {
+        panic!(
+            "failed to read {} ({err}); run through tools/test_mob_turn_parity.py, which records the witness",
+            witness_path.display()
+        )
+    });
+    let bits = |v: f64| format!("{:016x}", v.to_bits());
+    let mut rows = Vec::new();
+    for from in [[10.0, 64.0, -5.0], [0.0, 0.0, 0.0], [0.5, 64.5, 0.5]] {
+        for off in [
+            [0.0, 0.0, 3.0],
+            [3.0, 0.0, 0.0],
+            [-3.0, 0.0, 0.0],
+            [0.0, 0.0, -3.0],
+            [0.0, 2.0, 2.0],
+            [0.0, -4.0, 4.0],
+            [1.0, 0.5, 2.0],
+            [0.0, 5.0, 0.0],
+            [0.0, -5.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [-2.0, 1.0, -0.0001],
+            [7.0, -3.0, -1.0],
+        ] {
+            let to = [from[0] + off[0], from[1] + off[1], from[2] + off[2]];
+            let (yaw, pitch) = look_at_rotation(from, to);
+            rows.push(format!(
+                "{} {} {} {} {} {} {:08x} {:08x}",
+                bits(from[0]),
+                bits(from[1]),
+                bits(from[2]),
+                bits(off[0]),
+                bits(off[1]),
+                bits(off[2]),
+                yaw.to_bits(),
+                pitch.to_bits()
+            ));
+        }
+    }
+    let actual = rows.join("\n") + "\n";
+    if let Some(dir) = std::env::var_os("SUNRISE_TURN_OUTPUT_DIR") {
+        std::fs::write(std::path::Path::new(&dir).join("look_at.txt"), &actual).unwrap();
+    }
+    assert_eq!(rows.len(), 36);
+    assert_eq!(actual, witness);
 }
 
 /// `handleMovePlayer` moves the player's pitch and the model's old pitch

@@ -1,0 +1,3 @@
+ids = ["hook:enchanted_entity_loot"]
+why = "enchanted_entity_loot is also asked when a mod rolls a living entity's death loot with EntityRef::roll_death_loot, for an entity that is not dying, with the mod's own source and attacker. A listener that rolls death loot from inside the hook is asked again for that roll, as NeoForge's EnchantedEntityLootEvent is for any entity loot roll with a damage source; nothing stops the recursion but the listener."
+migrate = "A listener that assumed the entity is dying, or that source and attacker came from a real hit, checks its own state instead. A listener that calls EntityRef::roll_death_loot stops its own recursion, for example with a flag it sets around the call."

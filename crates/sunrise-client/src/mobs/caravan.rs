@@ -67,12 +67,15 @@ impl FollowCaravan {
 }
 impl Goal for FollowCaravan {
     goal_clone!();
+    #[inline]
     fn name(&self) -> &'static str {
         "LlamaFollowCaravanGoal"
     }
+    #[inline]
     fn flags(&self) -> u8 {
         super::goals::MOVE
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if m.extra.leash.is_some() || in_caravan(m) {
             return false;
@@ -120,6 +123,7 @@ impl Goal for FollowCaravan {
         m.extra.ints[1] = head.id as i32 + 1;
         true
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         let caravan = head_of(m);
         if caravan == 0 {
@@ -157,11 +161,13 @@ impl Goal for FollowCaravan {
         }
         true
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, _: &mut Cx) {
         m.extra.ints[1] = 0;
         // A double 2.1 here, while the llama built it with 2.1F.
         self.speed = 2.1;
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         let caravan = head_of(m);
         if caravan == 0 {
@@ -202,9 +208,11 @@ pub struct DefendTrader {
 }
 impl Goal for DefendTrader {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         TARGET
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         let Some(super::leash::Holder::Mob(id)) = m.extra.leash else {
             return false;
@@ -236,9 +244,11 @@ impl Goal for DefendTrader {
         self.attacker = Some(by);
         true
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         target_continue(&mut self.st, false, m, cx)
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         m.set_ai_target(cx.w, self.attacker);
         if let Some(super::leash::Holder::Mob(id)) = m.extra.leash
@@ -248,6 +258,7 @@ impl Goal for DefendTrader {
             self.timestamp = stamp;
         }
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         m.set_ai_target(cx.w, None);
     }

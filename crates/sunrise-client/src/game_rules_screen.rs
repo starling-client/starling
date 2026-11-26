@@ -309,6 +309,13 @@ impl RulesScreen {
                 .wheel(delta, ROW / 2.0, HEADER, h - FOOTER, content);
         }
     }
+    pub fn wheel_at(&mut self, delta: f32, y: f32, h: f32) -> bool {
+        if self.confirm || !(HEADER..h - FOOTER).contains(&y) {
+            return false;
+        }
+        self.wheel(delta, h);
+        true
+    }
     /// A press on the scrollbar holds it (AbstractSelectionList.updateScrolling).
     pub fn press_scrollbar(&mut self, cursor: (f32, f32), (w, h): (f32, f32)) -> bool {
         let content = self.content();
@@ -316,11 +323,12 @@ impl RulesScreen {
             .press(cursor, Self::bar(w), HEADER, h - FOOTER, content)
     }
     /// The pointer moved while the scrollbar is held.
-    pub fn drag(&mut self, y: f32, h: f32) {
+    pub fn drag(&mut self, y: f32, h: f32) -> bool {
         if self.scroll.held() {
             let content = self.content();
-            self.scroll.drag(y, HEADER, h - FOOTER, content);
+            return self.scroll.drag(y, HEADER, h - FOOTER, content);
         }
+        false
     }
     /// The button came up: the scrollbar lets go.
     pub fn release(&mut self) -> bool {

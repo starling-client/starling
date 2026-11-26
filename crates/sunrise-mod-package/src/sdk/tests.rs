@@ -167,9 +167,31 @@ fn a_game_releases_copy_names_its_build_before_the_build_is_known() {
 }
 
 #[test]
+fn a_refusal_names_the_side_that_is_older() {
+    let program = [
+        Refusal::Schema(u64::from(SCHEMA) + 1),
+        Refusal::PackageFormat(u64::from(PACKAGE_FORMAT) + 1),
+    ];
+    for refusal in program {
+        let text = refusal.to_string();
+        assert!(text.contains("program is older"), "{text}");
+        assert!(!text.contains("SDK is older"), "{text}");
+    }
+    let sdk = [
+        Refusal::Schema(u64::from(SCHEMA) - 1),
+        Refusal::PackageFormat(u64::from(PACKAGE_FORMAT) - 1),
+    ];
+    for refusal in sdk {
+        let text = refusal.to_string();
+        assert!(text.contains("SDK is older"), "{text}");
+        assert!(!text.contains("program is older"), "{text}");
+    }
+}
+
+#[test]
 fn each_bad_index_is_refused_by_name() {
     let good = json(&index(&[(ENGINE, b"engine")]));
-    let cases: [(&str, fn(&mut serde_json::Value), Refusal); 8] = [
+    let cases: [(&str, fn(&mut serde_json::Value), Refusal); 7] = [
         (
             "unknown schema",
             |v| v["schema"] = 2.into(),
@@ -194,14 +216,6 @@ fn each_bad_index_is_refused_by_name() {
             Refusal::Codec {
                 asset: ENGINE.into(),
                 codec: "zstd".into(),
-            },
-        ),
-        (
-            "unknown kind",
-            |v| v["assets"][ENGINE]["kind"] = "slice".into(),
-            Refusal::Kind {
-                asset: ENGINE.into(),
-                kind: "slice".into(),
             },
         ),
         (
@@ -386,6 +400,15 @@ fn asset_names_state_kind_target_and_side() {
             )),
         ),
         (
+            "programs-x86_64-unknown-linux-gnu-server.tar.xz",
+            Some((
+                Kind::Programs,
+                Codec::Xz,
+                Some("x86_64-unknown-linux-gnu".into()),
+                Some(Side::Server),
+            )),
+        ),
+        (
             "tool-x86_64-pc-windows-gnu.tar.xz",
             Some((
                 Kind::Tool,
@@ -452,6 +475,80 @@ fn the_package_format_reads_with_any_line_ending() {
     assert_eq!(number("6\r\n"), 6);
     assert_eq!(number("16"), 16);
     assert_eq!(PACKAGE_FORMAT, 6);
+}
+
+#[test]
+fn a_newer_sdks_asset_kind_is_left_out_and_refused_only_by_a_route_that_needs_it() {
+    const SYMBOLS: &str = "symbols-x86_64-unknown-linux-gnu.tar.xz";
+    let mut newer = json(&index(&[(ENGINE, b"engine")]));
+    newer["assets"][SYMBOLS] = serde_json::json!({
+        "sha256": sha256_hex(b"symbols"), "size": 7, "kind": "symbols", "codec": "zstd",
+        "target": "x86_64-unknown-linux-gnu", "side": "both", "debug": true,
+    });
+    newer["inputs"]["routes"]["play"] = serde_json::json!({"sdk": ["runtime", "symbols"]});
+    let read = Index::read(newer.to_string().as_bytes(), COMMIT).unwrap();
+    // Everything this reader knows still reads: the engine route and its asset.
+    assert!(read.asset(ENGINE).is_ok());
+    assert!(read.inputs.route("engine").is_ok());
+    // The new kind's asset is not listed, and its route is refused when it is asked for.
+    assert_eq!(read.asset(SYMBOLS), Err(Refusal::Unlisted(SYMBOLS.into())));
+    assert_eq!(
+        read.route_assets("play", "x86_64-unknown-linux-gnu", Side::Client),
+        Err(Refusal::Kind {
+            route: "play".into(),
+            kind: "symbols".into(),
+        })
+    );
+}
+
+/// `index` written with the asset `name`'s entry replaced by the raw JSON `entry`: text that
+/// a `serde_json::Value` cannot hold, such as a repeated key or a number past `f64`.
+fn with_raw_entry(index: &Index, name: &str, entry: &str) -> Vec<u8> {
+    let mut value = json(index);
+    value["assets"][name] = "@entry@".into();
+    value.to_string().replace("\"@entry@\"", entry).into_bytes()
+}
+
+#[test]
+fn an_entry_is_decoded_from_its_own_text_once_its_kind_is_known() {
+    const SYMBOLS: &str = "symbols-x86_64-unknown-linux-gnu.tar.xz";
+    let written = index(&[(ENGINE, b"engine")]);
+    // The engine's entry as written, with `extra` text before its closing brace.
+    let engine = |extra: &str| {
+        let written = json(&written)["assets"][ENGINE].to_string();
+        format!("{}{extra}}}", written.strip_suffix('}').unwrap())
+    };
+    // A newer SDK's entry is skipped unread, and so is a known entry's unknown field.
+    let newer = with_raw_entry(&written, SYMBOLS, r#"{"kind":"symbols","size":1e400}"#);
+    assert_eq!(Index::read(&newer, COMMIT).unwrap(), written);
+    let later_field = with_raw_entry(&written, ENGINE, &engine(r#","later":1e400"#));
+    assert_eq!(Index::read(&later_field, COMMIT).unwrap(), written);
+    let refused = [
+        ("a repeated known field", engine(r#","size":7"#)),
+        ("a repeated kind", engine(r#","kind":"runtime""#)),
+        (
+            "a repeated unknown kind",
+            r#"{"kind":"symbols","kind":"runtime"}"#.to_owned(),
+        ),
+        ("no kind", r#"{"size":1}"#.to_owned()),
+        ("a kind that is not a string", r#"{"kind":1}"#.to_owned()),
+        ("an array", r#"["symbols"]"#.to_owned()),
+    ];
+    for (case, entry) in refused {
+        let bytes = with_raw_entry(&written, ENGINE, &entry);
+        assert!(
+            matches!(Index::read(&bytes, COMMIT), Err(Refusal::Malformed(why)) if why.starts_with(ENGINE)),
+            "{case}"
+        );
+    }
+}
+
+#[test]
+#[should_panic(expected = "route play names asset kind \"symbols\"")]
+fn the_bundled_input_list_refuses_a_route_naming_an_unknown_kind() {
+    let mut list = serde_json::to_value(inputs()).unwrap();
+    list["routes"]["play"] = serde_json::json!({"sdk": ["runtime", "symbols"]});
+    bundled(&list.to_string());
 }
 
 #[test]

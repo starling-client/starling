@@ -37,10 +37,10 @@ A Rust mod that answers a hook, built and run by `cargo sunrise-mod`.
 
 - **Getting started** walks you from nothing to a running mod.
 - **Concepts** explains how the pieces fit: hooks and the `Host`, Parts, capabilities, attachments,
-  transactions, and the routes a mod has into the game's own code.
+  transactions, and the routes a mod has into the game's own code. Start with
+  [How a mod works](concepts/how-mods-work.md).
 - **How-to** pages each solve one task, grouped by what you are changing.
 - **Reference** lists the manifest, the package and registry formats, and links the
   [API reference](reference/api.md), which documents every hook, event and `Host` method.
 
 The complete example mod is [sunrise-machine-sample](https://github.com/sunrise-org/sunrise-machine-sample).
-A coding agent can start from [`llms.txt`](llms.txt).

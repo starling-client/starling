@@ -2,7 +2,7 @@
 
 Where another launcher puts content in a Sunrise game folder, how it turns content on and off, and what it checks
 first. It is the install side of the [Launch API](launch.md). The registry's file it installs from is
-[mod-index.md](mod-index.md). `sunrise-launcher` is the reference implementation. Proposed in
+[registry-index.md](../modding/src/reference/registry-index.md). `sunrise-launcher` is the reference implementation. Proposed in
 horizon-rust/horizon#10562.
 
 ## Overview
@@ -11,7 +11,7 @@ horizon-rust/horizon#10562.
 | --- | --- |
 | Level | experimental ([stability.md](stability.md)), with the Launch API |
 | Covers | the folders and files of each kind under `--game-dir`, turning content on and off, when a change applies, what to check before installing, what a build loads (`content` in `sunrise-client --launch-api`) |
-| Not yet | an API for a running game (install while it plays); native mods for a launcher that doesn't build Sunrise |
+| Not yet | an API for a running game (install while it plays); native mods for a launcher that does not run the SDK build step |
 
 ## What a build loads
 
@@ -21,8 +21,7 @@ Offer a version only when this build loads it:
 | Kind | Loads when | From `content` |
 | --- | --- | --- |
 | Content mod (`.smod`) | its manifest `api` is listed | `mod.api` |
-| Native mod (`.smod`) | the game is rebuilt with it for this exact build | `native_mod.exact_build`, `native_mod.rebuild` |
-| Sunrise shader pack (`.sshader`) | its manifest's `schema` and `api` are listed | `shader.schema`, `shader.api` |
+| Native mod (`.smod`) | built against the pinned prebuilt SDK for this exact build | `native_mod.exact_build`, `native_mod.rebuild` |
 | Resource pack | always; outside `format` it is marked too old or too new, as vanilla marks it | `resourcepack.format` |
 | Data pack | the same | `datapack.format` |
 | Modpack (`.spack`) | its `format` is this one | `modpack.format` |
@@ -36,28 +35,30 @@ starts and writes them when the player changes a setting.
 | Kind | File | Folder | On and off |
 | --- | --- | --- | --- |
 | Content mod | `<id>.smod`, or a folder with `sunrise-mod.toml` | `sunrise-mods/` | `sunrise-mods.txt`: a `mod.<id>:true` line turns it on. A mod without one is off |
-| Native mod | `<id>.smod` with `[native]` in `sunrise-mod.toml` | `sunrise-mods/` | runs only in a game built with it: `mod.<id>:true` chooses it for the next build, `mod.<id>:false` turns a built one off |
-| Shader pack | a `.sshader` or a folder with `sunrise-shaders.toml`; a `shaders/`-format `.zip` or folder | `shaderpacks/` | `sunrise-graphics.txt`: `pickedShaderPack:<file or folder name>`, empty for none. A pack's options are in `shaderpacks/<name>.txt` |
+| Native mod | `<id>.smod` with `[native]` in `sunrise-mod.toml` | `sunrise-native-mods/` | compiled for the instance's exact build: `mod.<id>:true` turns it on, `mod.<id>:false` turns it off |
+| Shader pack | a `shaders/`-format `.zip` or folder | `shaderpacks/` | `sunrise-graphics.txt`: `pickedShaderPack:<file or folder name>`, empty for none. A pack's options are in `shaderpacks/<name>.txt` |
 | Resource pack | a `.zip` or a folder with `pack.mcmeta` | `resourcepacks/` | `options.txt`: `resourcePacks:["vanilla","file/<name>"]`, lowest priority first, as vanilla's |
 | Data pack | a `.zip` or a folder with `pack.mcmeta` and `data/` | `saves/<world>/datapacks/` | `saves/<world>/datapacks.json`: `{"enabled": [...], "disabled": [...]}`, each `file/<name>` (or `vanilla`). A pack in neither list is on |
 
 - **When a change applies.** Every change above applies at the next start. While the game plays, its own
   screens switch packs, shader packs and assets-only content mods live; a content mod that adds blocks, items,
-  entity types or world generation loads only at start ([mods.md](../mods.md)).
-- **Native mods** need Sunrise rebuilt with them (horizon-mixins, [native-mods.md](../native-mods.md)). A launcher
-  that doesn't build Sunrise doesn't offer them.
+  entity types or world generation loads only at start ([installing-mods.md](../modding/src/players/installing-mods.md#turning-mods-on)).
+- **Native mods** compile on the player's machine against the build's pinned prebuilt SDK without rebuilding the
+  game ([native-mods.md](../modding/src/how-to/native-mods.md)). A launcher that does not run that build step
+  does not offer them.
 - **A modpack** isn't copied into the game folder. A launcher reads its `sunrise-modpack.toml`, installs each mod
   it lists from the index with the checks below, writes `mod.<id>:true` for those with `on` (the default), and
-  copies `overrides/` into the game folder. `overrides/` may hold only what [mod-index.md](mod-index.md#spack)
-  lists, within its size limits.
+  copies `overrides/` into the game folder. `overrides/` may hold only what
+  [registry-index.md](../modding/src/reference/registry-index.md#spack) lists, within its size limits.
 
 ## Before installing a file
 
-The checks `sunrise_mod_package::index::check_file` makes, which [mod-index.md](mod-index.md#before-a-file-is-installed)
-specifies. A launcher that installs from the index makes the same ones:
+The checks `sunrise_mod_package::index::check_file` makes, which
+[registry-index.md](../modding/src/reference/registry-index.md#before-a-file-is-installed) specifies. A launcher that
+installs from the index makes the same ones:
 
 1. **Where it comes from.** An `https://` address of the index's shape: a registry release
-   (`https://github.com/horizon-rust/horizon-mods/releases/download/...`) or a release asset of the project's own
+   (`https://github.com/sunrise-org/sunrise-mods/releases/download/...`) or a release asset of the project's own
    GitHub repository. Anything else is refused.
 2. **Size and SHA-256.** The size is at most 64 MiB and equals the entry's, and the SHA-256 is the entry's.
    Check both before the file reaches the game folder.
@@ -65,7 +66,8 @@ specifies. A launcher that installs from the index makes the same ones:
    version signed with another key is refused. With no key, say the project is unsigned.
 4. **Revoked.** A file in `revoked[]` (by `sha256`, or every version of an `id` without one) isn't installed. An
    installed copy is turned off (`mod.<id>:false`, or out of `resourcePacks`), and the player is told the reason.
-5. **What the file says.** Its manifest matches the entry (id, version, API), as mod-index.md lists for each kind.
+5. **What the file says.** Its manifest matches the entry (id, version, API), as
+   [registry-index.md](../modding/src/reference/registry-index.md) lists for each kind.
 
 ## Stability
 

@@ -1,6 +1,7 @@
 //! The server scoreboard's teams, and the client's view of them.
 
 use crate::{TeamColor, Text, TextFormError};
+use core::ops::ControlFlow;
 
 /// `Team.Visibility`: who sees a team's name tags or death messages.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -125,51 +126,37 @@ impl crate::NoBackend for TeamMembersReadError {
     }
 }
 
-/// A team as this client was sent it. Every team goes to every client, shown or not.
-#[derive(Clone, Debug, PartialEq)]
-#[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
-pub struct ClientTeam {
-    /// The team's name.
-    pub name: String,
-    /// The display name.
-    pub display_name: Text,
-    /// The team's color, or None for none.
-    pub color: Option<TeamColor>,
-    /// What is put before a member's name.
-    pub prefix: Text,
-    /// What is put after a member's name.
-    pub suffix: Text,
-    /// Whether members may hurt each other.
-    pub friendly_fire: bool,
-    /// Whether members see their invisible teammates.
-    pub see_friendly_invisibles: bool,
-    /// Who sees the members' name tags.
-    pub name_tag_visibility: TeamVisibility,
-    /// Whether members push and are pushed.
-    pub collision_rule: CollisionRule,
-    /// The members' holder keys, in the order they arrived. The server does not send a team's
-    /// death message visibility, so a client has none to read.
-    pub members: Vec<String>,
-}
+/// A received team for one visitor call. The server sends all teams, but not their
+/// death message visibility.
+// no wire: in-process scoped scoreboard view.
+pub trait ClientTeam {
+    /// The team's key.
+    fn name(&self) -> &str;
 
-impl ClientTeam {
-    /// A team named `name` as vanilla's `PlayerTeam` starts: its name as the display name, no
-    /// color, empty prefix and suffix, friendly fire and friendly invisibles on, name tags and
-    /// collision for everyone, and no members. Set the public fields for the rest.
-    pub fn new(name: impl Into<String>) -> Self {
-        let name = name.into();
-        Self {
-            display_name: Text::literal(name.clone()),
-            name,
-            color: None,
-            prefix: Text::literal(""),
-            suffix: Text::literal(""),
-            friendly_fire: true,
-            see_friendly_invisibles: true,
-            name_tag_visibility: TeamVisibility::Always,
-            collision_rule: CollisionRule::Always,
-            members: Vec::new(),
-        }
-    }
+    /// The team's color, or `None` if it has no color.
+    fn color(&self) -> Option<TeamColor>;
+
+    /// Whether members may hurt each other.
+    fn friendly_fire(&self) -> bool;
+
+    /// Whether members see their invisible teammates.
+    fn see_friendly_invisibles(&self) -> bool;
+
+    /// Who sees the members' name tags.
+    fn name_tag_visibility(&self) -> TeamVisibility;
+
+    /// Whether members push and are pushed.
+    fn collision_rule(&self) -> CollisionRule;
+
+    /// Visits the members' holder keys in board order. Return `ControlFlow::Break(())` to stop.
+    fn visit_members(&self, visit: &mut dyn FnMut(&str) -> ControlFlow<()>) -> ControlFlow<()>;
+
+    /// Copies the display name, or reports why this text cannot be represented.
+    fn copy_display_name(&self) -> Result<Text, TextFormError>;
+
+    /// Copies the prefix prepended to each member's name, or reports a conversion error.
+    fn copy_prefix(&self) -> Result<Text, TextFormError>;
+
+    /// Copies the suffix appended to each member's name, or reports a conversion error.
+    fn copy_suffix(&self) -> Result<Text, TextFormError>;
 }

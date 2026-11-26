@@ -6,6 +6,9 @@ level, position, block state, and `include_data`, true when a creative player pi
 player reads such as `event.player.food(host).map(|food| food.level)`. The request does not include
 a client hit face. Return `None` to keep the game's item.
 
+A server mod reads the same answer, with that player acting, through `PlayerRef::clone_item_stack`
+(see its documentation in the [API reference](../../reference/api.md)).
+
 ## Breaking-crack display
 
 `BlockPart::break_progress_positions(host, event)` supplies extra positions for a
@@ -142,14 +145,25 @@ state whose parts are asked. The host is a read-only `LevelSide`.
 | `block_changed` | The global server hook hears a change earlier, right after the state is written, and also for replaced writes. |
 | Panics | A panicking part is contained with a warning. |
 
+## Placement writes
+
+`BlockPart::on_place` is vanilla's `BlockBehaviour.onPlace`, heard on the server for every write of a
+new state: a player's placement, `/setblock`, `/fill`, a structure, a piston. Only the parts on the new
+state hear it, and `event.old_state` and `event.moved_by_piston` say what it replaced and whether a
+piston wrote it. It gets the level writer `neighbor_changed` gets, so a part can read its signals and set
+blocks in the call, as a lamp switches to its lit block the moment it is placed beside power; the write's
+neighbour updates run as vanilla's do. It runs before the block's own `onPlace` handling.
+
 ## Rotation
 
 `BlockPart::rotate` answers how a structure template turns your block as it places it: world
 generation's structures, `/place template`, the structure block, jigsaw blocks and the host's
-template snapshots. `event.state` is already mirrored, `event.pos` is where it goes and
-`event.rotation` the template's turn. `event.rotated` starts at the game's own turned state; set
+template snapshots. `event.state` is already mirrored (see [Mirroring](#mirroring)), `event.pos`
+is where it goes and `event.rotation` the template's turn. `event.rotated` starts at the game's own turned state; set
 it to another state of the same block, for example
-`context.state_with_property(event.state, "facing", "north")`.
+`context.state_with_property(event.state, "facing", "north")`. Read the value to turn with
+`context.state_property(event.state, "facing")` (vanilla's `state.getValue(FACING)`), an owned
+`String`, or `None` for a key the state does not have.
 
 Jigsaw connector discovery is different from block placement: matching and expansion read
 the connector's plain rotated state, without calling `BlockPart::rotate`, as
@@ -162,8 +176,22 @@ template block writes still call the rotation Part at their placed world positio
 | --- | --- |
 | Context | A worldgen Part method: a `WorldgenHost` on the worldgen workers or the server thread, no `Host`, no writes. Keep it a pure function of the event. |
 | Refusals | A state of another block, or one the game does not have, is refused with a warning; the game's state is placed. |
-| Mirroring | Stays the game's: vanilla's table, or the template's for a mod block. |
+| Mirroring | `BlockPart::mirror`, asked before this one: see [Mirroring](#mirroring). |
 | Panics | A panicking part is contained with a warning, and the game's state is placed. |
+
+## Mirroring
+
+`BlockPart::mirror` answers how a structure template mirrors your block as it places it, as a block
+overriding vanilla's `BlockBehaviour.mirror(BlockState, Mirror)` does: world generation's structures,
+`/place template`, the structure block and the host's template snapshots. `event.state` is the
+template's state, `event.pos` is where it goes and `event.mirror` the template's mirror
+(`LeftRight` flips north and south, `FrontBack` east and west). `event.mirrored` starts at the
+game's own mirrored state; set it to another state of the same block, for example
+`context.state_with_property(event.state, "facing", "south")`. `BlockPart::rotate` then turns the
+state you answer. A template asks it for every block, `StructureMirror::None` included, as
+`StructureTemplate.placeInWorld` calls `mirror(NONE)`; the legacy structure pieces ask it only when
+they mirror. Jigsaw connectors are never mirrored. Context, refusals and panics follow the
+[rotation](#rotation) rules.
 
 ## Step effects
 
@@ -187,10 +215,10 @@ can still hurt dropped items.
 Use `bounds` to test overlap with a surface that is smaller than the block. `event.request(LandingWrite::…)`
 queues a write at `pos`. The `fall_on` drain applies the ordered block writes after the entity batch,
 only if the block still holds the contacted state. An invalid state or non-finite movement or damage
-refuses that Part's outputs. Other Parts' accepted writes and movement edits remain. This replaces `Hooks::block_step_on`, the former server-only notice.
+refuses that Part's outputs. Other Parts' accepted writes and movement edits remain.
 
-Boats and minecarts ([#4177](https://github.com/sunrise-org/sunrise/issues/4177)), armor stands and
-projectiles ignore `EntityWrite::Hurt` from both callbacks. Experience orbs accept it only from `step_on`.
+Boats, minecarts, armor stands and projectiles ignore `EntityWrite::Hurt` from both `step_on`
+and `fall_on`. Experience orbs accept it only from `step_on`.
 
 ## Landing writes
 
@@ -211,7 +239,7 @@ state and vanilla's movement-affecting position (which can differ from the legac
 `event.fall_distance` is the distance stored after fall handling, so a body that has just landed can report zero.
 
 `BlockPart::fall_on` runs at vanilla's landing moment on a read-only level random host.
-Hook version 2 exposes writable `event.distance` and `event.damage_multiplier`, not calculated
+The event exposes writable `event.distance` and `event.damage_multiplier`, not calculated
 damage. Vanilla blocks supply their own pair: hay uses 0.2, beds 0.5, slime 0,
 and pointed dripstone adds 2.5 to distance and uses 2.0. Other blocks start at 1.0.
 The engine applies `floor((distance + 1e-6 - safe_fall_distance) * damage_multiplier * fall_damage_multiplier_attribute)`.
@@ -230,16 +258,29 @@ preserves the requested resource-drop flag.
 
 ## Inside-block effects
 
-`BlockPart::entity_inside` runs on the server as the entity's sweep reaches the block.
-Use `event.run_before` or `event.run_after` to schedule an `EntityWrite` around an
-`InsideEffect`. Both `entity_inside` and `step_on` accept
-`EntityWrite::Hurt { damage_type, amount }`. Request the key once in `register`,
-for example `r.damage_type_key("minecraft:hot_floor")`. The level supplies the
-registered damage type, including data-pack types and tags, without a causing
-or direct entity. If the type is absent in that world, the hurt does not apply.
-Players, mobs and dropped items accept hurt from both callbacks. Experience
-orbs accept hurt from `step_on` only. Neither callback adds a hurt path for
-armor stands, projectiles or vehicles.
+`BlockPart::entity_inside` (version 4) runs on the server as the entity's sweep reaches the block.
+Use `event.run_before` or `event.run_after` to queue an owned closure around an `InsideEffect` slot.
+The closure receives a short-lived `&mut InsideEntityView` when the sweep flushes, even if no
+`event.apply` was requested for that slot. Built-in effects use the same ordered slots, and
+later callbacks stop when the entity dies. A dropped item sweeps once, after `step_on`.
+
+```rust,ignore
+event.run_after(InsideEffect::FireIgnite, |entity| {
+    entity.hurt("minecraft:hot_floor", 1.0);
+});
+```
+
+When migrating a v2 `EntityWrite::Hurt`, use the same registered damage-type ID you used for
+`r.damage_type_key`. `hurt_with_source` can additionally take typed handles for the direct
+entity and the causing entity (for example, a projectile and its shooter). An absent damage
+type or stale source handle makes that hurt return `false`. Players, mobs and dropped items
+use their live hurt path; a projectile's hurt path can mark it hurt for sync and still return
+`false`.
+
+`BlockPart::step_on` still queues `EntityWrite`, not closures. Its `EntityWrite::Hurt` still
+takes a `DamageTypeKey` requested in `register`, and has no direct or causing entity.
+Experience orbs accept hurt from `step_on` only. Neither callback adds a hurt path for armor
+stands or vehicles.
 
 ## Storage changes
 
@@ -265,12 +306,12 @@ state, never saved. Unloading the source does not cancel watches of its position
 
 The backing contents are already written, before dirty/comparator updates. The default `ITEMS`
 and item `STORAGE` handlers coalesce their implicit notice per backing block at root commit,
-for vanilla containers and engine-managed mod slots. In contract version 5, notices committed
-inside `menu_quick_move` wait until that hook's accepted source remainder is in place (or until
-it finishes without one). If the original backing container was removed or replaced, neither
-its replacement nor watchers receive that notice. Explicit `BlockEntityRef::set_changed`
-notifies immediately, even inside a transaction and for unchanged contents; abort does not
-retract it. Each Part runs in its own transaction. Keep using `host.transaction` for additional writes:
+for vanilla containers and engine-managed mod slots. During `menu_quick_move`, implicit notices
+publish only after a committed move settles its source slot (including when the source is
+emptied), and never after an unhandled or refused move. If the original backing container was
+removed or replaced, neither its replacement nor watchers receive that notice. Explicit
+`BlockEntityRef::set_changed` notifies immediately, even inside a transaction and for
+unchanged contents; abort does not retract it. Each Part runs in its own transaction. Keep using `host.transaction` for additional writes:
 a successful nested transaction merges into the Part's frame, but a panic in that Part discards
 its writes without undoing the backing change that raised the notice. The next Part can still
 run, and only the panicking callback is disabled for the session.
@@ -307,10 +348,33 @@ is not empty, passing the fluid (`FluidState`) and its position. The contract is
 
 Normally rain on the block above, session water tickets and dry-out work as usual. With no Part on the farmland the
 scan is vanilla's. When the content owner's subscribed rule is [switched off](../disabled-content.md), only earlier
-enabled Parts or an enabled mod's session water ticket can wet the block. Rain and dry-out are held, not trampling.
+enabled Parts or an active session water ticket (tickets attributed to a disabled mod are cleared on disable) can wet
+the block. Rain and dry-out are held, not trampling.
 Bookshelf slot-occupancy flags and the last-interacted slot are transactional storage bookkeeping,
 not notification effects. Aborting restores them with the items. Changed observers, comparator
 ticks and data-send requests already issued still survive that abort.
+
+## Climbing and scaffolding
+
+`BlockPart::is_ladder` is asked for the block a living entity stands in, and `BlockPart::is_scaffolding` for the block a
+player on a climbable stands in. Both fire on both sides, are `listen`, and must be pure functions of the event: set the
+field to decide, and a block with no part keeps vanilla's answer.
+
+| Part | Starts as | Effect of the answer |
+|---|---|---|
+| `is_ladder` | The block is in `#minecraft:climbable` | `true` climbs like a ladder, `false` refuses a tagged block |
+| `is_scaffolding` | The state is `minecraft:scaffolding` | While sneaking, `true` lets the player keep sliding down the climbable, `false` stops the slide |
+
+`is_scaffolding` is asked for players only; mobs never ask it. The player's id, the block its position is in and that
+block's state are passed.
+
+## Map colour
+
+`BlockPart::map_color` sets the map colour a block shows at a position, as NeoForge's `IBlockExtension.getMapColor`
+does. It is `collect`, server only, and read-only: set `color` to a `MapColor` id from 0 to 61, starting from the state's
+own colour. Map updates ask it for the dirt and stone noise under a ceiling, for every step of the scan down from the
+surface (0 keeps the scan going) and for the colour a scanned block, or its fluid's block, finally draws as. An answer
+above 61 is refused: the block keeps its own colour, and the refusal is logged once per block.
 
 ## Fluid faces beside a block
 
@@ -351,5 +415,5 @@ explicit state and position, or `event.level.add_terrain_particle(host, state, s
 velocity)` for an individual piece of debris. The debris uses the supplied state's material and
 samples its tint at `source_pos`, which can differ from the spawn point. These helpers don't
 redispatch the hit or destroy Part or play a sound, but can ask block tint sources. Read the
-supplied state's outline with `event.level.block_shape` if you need to sample it. The hit helper
-uses the same random stream as `event.random`.
+supplied state's outline with `event.level.visit_block_shape` if you need to sample it. The hit
+helper uses the same random stream as `event.random`.

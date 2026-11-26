@@ -53,6 +53,7 @@ impl Game<'_> {
             } => self.open_world(&folder, Some(&name), seed, creative, Some(&options))?,
             Action::Connect {
                 address,
+                name,
                 lan,
                 realm,
             } => self.connect_server_with_options(
@@ -61,6 +62,7 @@ impl Game<'_> {
                 None,
                 lan,
                 realm,
+                name.as_deref(),
             )?,
             Action::DataPacks { dir, selected } => {
                 self.clear_device_keys();
@@ -320,11 +322,16 @@ impl Game<'_> {
         self.repro_on_exit();
         self.finish_perf();
         self.connection_left(sunrise_hooks::connection::Left::Quit);
-        if self.title.is_some() || self.saved_for_exit {
+        if self.saved_for_exit {
             return Ok(());
         }
-        // exitWorldAndClose disconnects the client from its world.
+        // Minecraft.exitWorldAndClose calls disconnectWithProgressScreen even
+        // when no level is open (including quitting from the title screen).
         self.client_logging_out();
+        if self.title.is_some() {
+            self.saved_for_exit = true;
+            return Ok(());
+        }
         // Native application termination can bypass the close request, so make the same
         // client-side worker abort explicit before the game-owned streaming state is dropped.
         self.streaming.abort_generation();
@@ -365,8 +372,13 @@ impl Game<'_> {
         // title screen is nonsense.
         self.repro_world_closed();
         self.clear_waypoints();
+        // The closed world's timelines must not reach the next world's levels.
+        sunrise_client::environment::Environment::set_level_attributes(
+            Vec::new(),
+            Default::default(),
+        );
         self.post_effects.clear();
-        self.spectated_post_effect = None;
+        self.clear_spectated_entity_post_effect();
         // Mod screens' living scenes go with the world their entities were copied from.
         self.live_scenes.get_mut().clear();
         if self.external_server() {

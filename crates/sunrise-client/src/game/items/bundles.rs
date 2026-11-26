@@ -69,8 +69,9 @@ impl Game<'_> {
 
     /// `BundleMouseActions.toggleSelectedBundleItem`: the stack here and, on a server, there.
     fn select_bundle(&mut self, slot: usize, index: i32) {
+        let res = self.res.clone();
         if let Some(stack) = self.slot_mut(slot) {
-            toggle_selected(stack, index);
+            toggle_selected(res.items(), stack, index);
         }
         if self.remote.is_some() {
             let (_, menu) = self.remote_menu();

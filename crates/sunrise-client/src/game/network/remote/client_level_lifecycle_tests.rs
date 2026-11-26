@@ -10,6 +10,363 @@ fn tick_ends_need_the_level_the_login_makes() {
     assert!(!client_has_level(true, Some(40)), "reconfiguring");
 }
 
+#[test]
+#[ignore = "daily"]
+fn client_level_notices_pair_across_replacement_reconfiguration_leave_and_quit() {
+    use crate::game::{
+        native_client_session::tests::logged_client,
+        native_entity_refs::tests::{run_fresh_cases, with_client_game},
+        remote::{Received, RemoteDimensionEntry, tests::connect_play_test},
+    };
+    use mod_api::__private::{HookPanicReport, take_hook_panics};
+    use mod_api::{
+        BlockState, ClientHost, ClientLevelLoadEvent, ClientLevelUnloadEvent, DatapackCandidate,
+        DatapackField, DatapackFieldKind, DatapackReadError, DatapackRegistrySet,
+        DatapackRegistrySync, DatapackValue, Hooks, LevelRef, ModEntry, Registrar,
+        RegistrationContext,
+    };
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
+    use sunrise_client::{
+        datapack_net,
+        level_loading::Reason,
+        net::{Event, ingress},
+    };
+    use sunrise_protocol::packets::{
+        configuration::CustomPayload,
+        play::{Clientbound, Login, SpawnInfo},
+    };
+
+    if run_fresh_cases(
+        "game::remote::tests::client_level_lifecycle_tests::client_level_notices_pair_across_replacement_reconfiguration_leave_and_quit",
+        "SUNRISE_CLIENT_LEVEL_LIFECYCLE_CASE",
+        &["reconfiguration"],
+    ) {
+        return;
+    }
+
+    struct Notice {
+        kind: &'static str,
+        dimension: String,
+        level: LevelRef,
+        block: Option<BlockState>,
+        power: Option<i64>,
+    }
+    struct Log(Arc<Mutex<Vec<Notice>>>);
+    impl Log {
+        fn record(&self, kind: &'static str, host: &dyn ClientHost, dimension: &str) {
+            let level = host
+                .level(dimension)
+                .expect("the event's level must resolve");
+            let block = level.block_state(host, [3, 70, 5]);
+            let mut power = None;
+            let _ = level.datapack_read(host, "levels:spell", "addon:fire", &mut |entry| {
+                if let Some(DatapackValue::Int(value)) = entry.get("power") {
+                    power = Some(*value);
+                }
+            });
+            self.0.lock().unwrap().push(Notice {
+                kind,
+                dimension: dimension.to_owned(),
+                level,
+                block,
+                power,
+            });
+        }
+    }
+    #[mod_api::__subscriptions]
+    impl Hooks for Log {
+        fn register(&self, registrar: &mut dyn Registrar, _: &RegistrationContext) {
+            registrar
+                .declare_datapack_registry(
+                    "spell",
+                    DatapackRegistrySync::Required,
+                    vec![DatapackField::required(
+                        "power",
+                        DatapackFieldKind::Int { min: 0, max: 100 },
+                    )],
+                )
+                .unwrap();
+        }
+        fn client_level_load(
+            &self,
+            host: &mut dyn ClientHost,
+            event: &mut ClientLevelLoadEvent<'_>,
+        ) {
+            self.record("load", host, event.dimension);
+        }
+        fn client_level_unload(
+            &self,
+            host: &mut dyn ClientHost,
+            event: &mut ClientLevelUnloadEvent<'_>,
+        ) {
+            self.record("unload", host, event.dimension);
+        }
+    }
+    #[derive(Default)]
+    struct Panics {
+        loads: AtomicUsize,
+        unloads: AtomicUsize,
+    }
+    struct Broken(Arc<Panics>);
+    #[mod_api::__subscriptions]
+    impl Hooks for Broken {
+        #[listener(priority = 100)]
+        fn client_level_load(&self, _: &mut dyn ClientHost, _: &mut ClientLevelLoadEvent<'_>) {
+            self.0.loads.fetch_add(1, Ordering::Relaxed);
+            panic!("client Load listener");
+        }
+
+        #[listener(priority = 100)]
+        fn client_level_unload(&self, _: &mut dyn ClientHost, _: &mut ClientLevelUnloadEvent<'_>) {
+            self.0.unloads.fetch_add(1, Ordering::Relaxed);
+            panic!("client Unload listener");
+        }
+    }
+
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let panics = Arc::new(Panics::default());
+    mod_platform::testing::with_mods(
+        vec![
+            ModEntry::new("broken-client-lifecycle", Box::new(Broken(panics.clone()))),
+            ModEntry::new("levels", Box::new(Log(log.clone()))),
+        ]
+        .into(),
+        || {
+            with_client_game(|game| {
+                let login = SpawnInfo {
+                    dimension_type: 0,
+                    dimension: "minecraft:overworld".into(),
+                    seed: 0,
+                    game_type: 1,
+                    previous_game_type: None,
+                    debug: false,
+                    flat: true,
+                    last_death: None,
+                    portal_cooldown: 0,
+                    sea_level: 63,
+                };
+                let _server = connect_play_test(game, |_, _| {});
+                game.wait_for_test_remote_event(|event| matches!(event, Event::Joined { .. }));
+                game.poll_remote_events(true).unwrap();
+                {
+                    let remote = game.remote.as_mut().unwrap();
+                    remote.logged_in = true;
+                    remote.entity_id = 7;
+                    remote.profile = 42;
+                }
+                let declarations = mod_api::__private::datapack_registry_declarations();
+                let candidate = |power| {
+                    DatapackCandidate::build(
+                        declarations,
+                        &[(
+                            "data/addon/levels/spell/fire.json".into(),
+                            vec![(
+                                "fixture".into(),
+                                format!(r#"{{"power":{power}}}"#).into_bytes(),
+                            )],
+                        )],
+                        &mut mod_api::__private::NoVanillaValueDecoder,
+                    )
+                    .unwrap()
+                };
+                let encode = |set: &DatapackRegistrySet| {
+                    set.snapshot(declarations, |_| true).encode().unwrap()
+                };
+                let receiver = |set: &DatapackRegistrySet| {
+                    let mut receiver = datapack_net::Receiver::default();
+                    for chunk in datapack_net::chunks(&encode(set)).unwrap() {
+                        receiver.accept_chunk(&chunk).unwrap();
+                    }
+                    receiver
+                };
+                game.remote.as_mut().unwrap().datapacks =
+                    receiver(&DatapackRegistrySet::from_candidate(candidate(17)));
+                game.enter_remote_dimension(&login, RemoteDimensionEntry::Login, Reason::Other);
+                let overworld = game.level(&login.dimension).unwrap();
+                game.world
+                    .chunks
+                    .insert((0, 0), Arc::new(sunrise_client::chunk::Chunk::empty(0, 0)));
+                game.enter_remote_dimension(&login, RemoteDimensionEntry::Respawn, Reason::Other);
+                assert_eq!(game.level(&login.dimension), Some(overworld));
+                let mut nether = login.clone();
+                nether.dimension = "minecraft:the_nether".into();
+                game.enter_remote_dimension(&nether, RemoteDimensionEntry::Respawn, Reason::Other);
+                let nether = game.level(&nether.dimension).unwrap();
+                assert_eq!(
+                    log.lock().unwrap()[1].level,
+                    nether,
+                    "constructor handle survives installation"
+                );
+                assert_eq!(
+                    game.level_block_state(overworld, [3, 70, 5]),
+                    None,
+                    "old handle retires after Unload"
+                );
+                assert_eq!(
+                    overworld.visit_datapack_entries(game, "levels:spell", &mut |_| unreachable!()),
+                    Err(DatapackReadError::UnknownRegistry),
+                    "a synchronized registry does not revive a stale level handle"
+                );
+                let next_set = DatapackRegistrySet::from_candidate(candidate(29));
+                let (tx, rx) = ingress::channel(1024, |_| 1).unwrap();
+                tx.send(Event::Reconfiguring(Box::new(
+                    sunrise_client::net::PhaseChange::dummy_for_test(),
+                )))
+                .unwrap();
+                // The next configuration has already accepted all its registry fragments
+                // and queued the handoff before the game can unload the retiring level.
+                tx.send(Event::Reconfigured {
+                    registries: game.remote.as_ref().unwrap().registries.clone(),
+                    datapacks: receiver(&next_set),
+                })
+                .unwrap();
+                game.remote
+                    .as_mut()
+                    .unwrap()
+                    .backlog
+                    .extend(rx.take_turn().into_iter().map(|receipt| {
+                        let (event, credit) = receipt.into_parts();
+                        Received::Event(event, credit)
+                    }));
+                game.poll_remote_events(true).unwrap();
+                let remote = game.remote.as_ref().unwrap();
+                assert!(remote.reconfiguring.is_some());
+                assert!(!remote.logged_in);
+                game.apply_packet(Clientbound::Login(Login {
+                    player_id: 8,
+                    hardcore: false,
+                    levels: vec![login.dimension.clone()],
+                    max_players: 1,
+                    chunk_radius: 2,
+                    simulation_distance: 2,
+                    reduced_debug_info: false,
+                    show_death_screen: true,
+                    limited_crafting: false,
+                    spawn: login.clone(),
+                    online_mode: false,
+                    enforces_secure_chat: false,
+                }))
+                .unwrap();
+                let remote = game.remote.as_ref().unwrap();
+                assert!(remote.reconfiguring.is_none());
+                assert!(remote.logged_in);
+                assert_eq!(remote.entity_id, 8);
+                let next = game.level(&login.dimension).unwrap();
+                assert_eq!(
+                    nether.visit_datapack_entries(game, "levels:spell", &mut |_| unreachable!()),
+                    Err(DatapackReadError::UnknownRegistry),
+                );
+                assert_eq!(
+                    nether.datapack_read(
+                        game,
+                        "levels:spell",
+                        "addon:fire",
+                        &mut |_| unreachable!()
+                    ),
+                    Err(DatapackReadError::UnknownRegistry),
+                );
+                let reloaded = DatapackRegistrySet::from_candidate(candidate(31));
+                for data in datapack_net::chunks(&encode(&reloaded)).unwrap() {
+                    game.apply_packet(Clientbound::CustomPayload(CustomPayload {
+                        channel: datapack_net::CHANNEL.into(),
+                        data,
+                    }))
+                    .unwrap();
+                }
+                let mut reloaded_power = None;
+                next.datapack_read(game, "levels:spell", "addon:fire", &mut |entry| {
+                    if let Some(DatapackValue::Int(value)) = entry.get("power") {
+                        reloaded_power = Some(*value);
+                    }
+                })
+                .unwrap();
+                assert_eq!(reloaded_power, Some(31));
+                tx.send(Event::Reconfiguring(Box::new(
+                    sunrise_client::net::PhaseChange::dummy_for_test(),
+                )))
+                .unwrap();
+                let (event, credit) = rx.try_recv_owned().unwrap().into_parts();
+                game.remote
+                    .as_mut()
+                    .unwrap()
+                    .backlog
+                    .push_back(Received::Event(event, credit));
+                game.poll_remote_events(true).unwrap();
+                // Disconnecting from the reconfiguration screen must not unload twice.
+                game.leave_server(None).unwrap();
+                let _server = logged_client(game);
+                game.enter_remote_dimension(&login, RemoteDimensionEntry::Login, Reason::Other);
+                game.leave_server(None).unwrap();
+                let _server = logged_client(game);
+                game.enter_remote_dimension(&login, RemoteDimensionEntry::Login, Reason::Other);
+                game.begin_closing_save(true).unwrap();
+                assert!(game.poll_closing_save().unwrap());
+                game.save_for_exit().unwrap();
+                assert_eq!(panics.loads.load(Ordering::Relaxed), 1);
+                assert_eq!(panics.unloads.load(Ordering::Relaxed), 1);
+                assert_eq!(
+                    take_hook_panics(),
+                    [
+                        HookPanicReport {
+                            mod_id: "broken-client-lifecycle",
+                            hook: "client_level_load"
+                        },
+                        HookPanicReport {
+                            mod_id: "broken-client-lifecycle",
+                            hook: "client_level_unload"
+                        },
+                    ]
+                );
+            });
+        },
+    );
+    let log = log.lock().unwrap();
+    assert_eq!(
+        log.iter()
+            .map(|notice| (notice.kind, notice.dimension.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            ("load", "minecraft:overworld"),
+            ("load", "minecraft:the_nether"),
+            ("unload", "minecraft:overworld"),
+            ("unload", "minecraft:the_nether"),
+            ("load", "minecraft:overworld"),
+            ("unload", "minecraft:overworld"),
+            ("load", "minecraft:overworld"),
+            ("unload", "minecraft:overworld"),
+            ("load", "minecraft:overworld"),
+            ("unload", "minecraft:overworld"),
+        ]
+    );
+    assert_eq!(log[0].level, log[2].level);
+    assert_eq!(log[1].level, log[3].level);
+    assert_ne!(log[0].level.epoch(), log[1].level.epoch());
+    assert!(log[0].block.is_none() && log[1].block.is_none());
+    assert_eq!(
+        log.iter().map(|notice| notice.power).collect::<Vec<_>>(),
+        [
+            Some(17),
+            Some(17),
+            Some(17),
+            Some(17),
+            Some(29),
+            Some(31),
+            None,
+            None,
+            None,
+            None,
+        ],
+        "retiring levels see their own configuration and the new level sees its handoff and reload"
+    );
+    assert!(
+        log[2].block.is_some(),
+        "the retiring Overworld still holds the old chunk"
+    );
+}
+
 /// #12148: a proxy moves the player to its next server. The last server's
 /// columns stay until the next Login, but Reconfigured already put in the
 /// next server's biome table, shorter when only the last server had a
@@ -145,8 +502,8 @@ fn client_level_transitions_stop_streams_opened_during_unload() {
         native_entity_refs::tests::with_client_game, remote::RemoteDimensionEntry,
     };
     use mod_api::{
-        AudioStream, AudioStreamRef, AudioStreamState, ClientDisconnectingEvent, ClientHost,
-        ClientLevelUnloadEvent, Hooks, ModEntry, SoundSource, StreamSpec,
+        AudioStream, AudioStreamRef, AudioStreamState, ClientHost, ClientLevelUnloadEvent,
+        ClientPlayerLoggingOutEvent, Hooks, ModEntry, SoundSource, StreamSpec,
     };
     use std::sync::{Arc, Mutex};
     use sunrise_client::level_loading::Reason;
@@ -183,7 +540,11 @@ fn client_level_transitions_stop_streams_opened_during_unload() {
             self.open(host);
         }
 
-        fn client_disconnecting(&self, host: &dyn ClientHost, _: &mut ClientDisconnectingEvent) {
+        fn client_player_logging_out(
+            &self,
+            host: &mut dyn ClientHost,
+            _: &mut ClientPlayerLoggingOutEvent,
+        ) {
             self.open(host);
         }
     }

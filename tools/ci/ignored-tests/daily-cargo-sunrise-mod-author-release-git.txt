@@ -1,0 +1,12 @@
+cargo-sunrise-mod author_release::tests::git_fixtures::a_hook_that_changes_the_checked_tree_stops_the_tag bin:cargo-sunrise-mod daily child-process
+cargo-sunrise-mod author_release::tests::git_fixtures::preview_and_failed_check_leave_files_and_refs_untouched bin:cargo-sunrise-mod daily child-process
+cargo-sunrise-mod author_release::tests::git_fixtures::publishes_native_package_and_keeps_pinned_dependencies bin:cargo-sunrise-mod daily child-process
+cargo-sunrise-mod author_release::tests::git_fixtures::pull_request_release_pushes_a_release_branch_and_leaves_a_protected_default_branch bin:cargo-sunrise-mod daily child-process
+cargo-sunrise-mod author_release::tests::git_fixtures::refuses_a_pending_merge_and_a_different_push_destination bin:cargo-sunrise-mod daily child-process
+cargo-sunrise-mod author_release::tests::git_fixtures::refuses_dirty_branch_local_or_remote_tag_and_behind_branch bin:cargo-sunrise-mod daily child-process
+cargo-sunrise-mod author_release::tests::git_fixtures::rejected_branch_push_does_not_publish_the_tag bin:cargo-sunrise-mod daily child-process
+cargo-sunrise-mod author_release::tests::git_fixtures::release_pushes_the_branch_before_the_tag bin:cargo-sunrise-mod daily child-process
+cargo-sunrise-mod author_release::tests::git_fixtures::release_refuses_an_ignored_native_lock bin:cargo-sunrise-mod daily child-process
+cargo-sunrise-mod author_release::tests::git_fixtures::release_removes_old_copied_files_in_its_commit bin:cargo-sunrise-mod daily child-process
+cargo-sunrise-mod author_release::tests::git_fixtures::setup_keeps_ignored_files_and_refuses_a_foreign_caller bin:cargo-sunrise-mod daily child-process
+cargo-sunrise-mod author_release::tests::git_fixtures::setup_refreshes_only_workflow_files_and_keeps_foreign_release bin:cargo-sunrise-mod daily child-process

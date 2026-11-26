@@ -1,5 +1,8 @@
 //! The mod's own crate. Its `[[native.mixin]]` helpers (`src/mixins/`) are compiled into copies of the
 //! game functions they patch, not into this crate.
+mod shared;
+pub use shared::Bend;
+
 #[derive(Default)]
 struct Mod;
 

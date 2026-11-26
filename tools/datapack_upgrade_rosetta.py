@@ -23,8 +23,8 @@ import tempfile
 import zipfile
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "tools"))
-import lab  # noqa: E402
+sys.path.insert(0, str(ROOT))
+from tools import lab  # noqa: E402
 
 PREFIXES = ("data/minecraft/worldgen/", "data/minecraft/dimension_type/")
 RENAMES = {"configured_carver": "carver", "configured_feature": "feature"}

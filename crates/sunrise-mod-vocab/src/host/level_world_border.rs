@@ -7,9 +7,9 @@ use crate::*;
 #[sunrise_mod_api_macros::host_area]
 pub trait LevelWorldBorderBackend {
     /// Side: server.
-    /// The level's world border as [min_x, min_z, max_x, max_z], using the
-    /// previous size while it moves. Sunrise currently shares one border
-    /// across its dimensions. None for a stale handle or a closed level.
+    /// The named level's world border as `[min_x, min_z, max_x, max_z]`, using the
+    /// previous size while it moves. Reads a resident level without switching to it.
+    /// `None` for a stale handle, a closed level or on a client.
     fn level_world_border(&self, level: LevelRef) -> Option<[f64; 4]>;
 }
 /// The handles' writes of the `level_world_border` area, implemented by the game and reached through [`BackendMut`].
@@ -18,27 +18,32 @@ pub trait LevelWorldBorderBackend {
 #[sunrise_mod_api_macros::host_area]
 pub trait LevelWorldBorderBackendMut {
     /// Side: server.
-    /// Moves the world border's centre (`WorldBorder.setCenter`), as `/worldborder center`
-    /// does. Sunrise keeps one border for every level, so this moves it everywhere; the
-    /// players see it after the next sync. The centre it already has is true, with nothing
-    /// heard. False for a centre that isn't finite or lies past 2.9999984E7 on x or z, a call
-    /// from inside `world_border_center_changed`, a stale handle, a level the server has not
-    /// opened or a client.
+    /// Sets the named level's border center (`WorldBorder.setCenter`). Finite centers
+    /// aren't subject to `/worldborder center`'s argument range: the extent itself clips
+    /// its edges to the absolute bounds. Every successful write notifies the level's
+    /// watchers and fires `world_border_center_changed`, including equal-value writes.
+    /// A nested write skips callbacks for this hook already running on this thread.
+    /// Returns `false` and logs the refusal for invalid geometry, a stale handle,
+    /// a closed level or a client.
     fn level_set_world_border_center(&mut self, level: LevelRef, center: [f64; 2]) -> bool;
     /// Side: server.
-    /// Sets the world border's size, as `/worldborder set`: at once when `ticks` is 0
-    /// (`setSize`), otherwise growing or shrinking in a straight line over `ticks` game ticks
-    /// from its size now (`lerpSizeBetween`). The one border every level shares. A still
-    /// border set to the size it has at once is true, with nothing heard. False for a size
-    /// outside 1 to 5.9999968E7, a negative `ticks`, a call from inside
-    /// `world_border_bounds_changed`, a stale handle, a level the server has not opened or a
-    /// client.
+    /// Sets the named level's border size at once when `ticks <= 0` (`WorldBorder.setSize`),
+    /// or starts a timed change from its current size (`WorldBorder.lerpSizeBetween`).
+    /// Accepts finite sizes with a valid extent: after clipping the edges to the
+    /// absolute bounds and rounding them out as in `WorldBorder.StaticBorderExtent`,
+    /// `Shapes.box` requires the minima not to exceed the maxima. The command's size
+    /// range does not apply.
+    /// Every success notifies the level's watchers and fires `world_border_bounds_changed`,
+    /// including equal-value writes. A timed write to the current size sends a lerp notice
+    /// but does not start a moving extent. A nested write skips callbacks for this hook
+    /// already running on this thread. Returns `false` and logs the refusal for invalid
+    /// geometry, a stale handle, a closed level or a client.
     fn level_set_world_border_size(&mut self, level: LevelRef, size: f64, ticks: i64) -> bool;
     /// Side: server.
-    /// The world border's damage (`setDamagePerBlock`, `setSafeZone`), as `/worldborder
-    /// damage amount` and `buffer`: a player outside the border and past `safe_zone` blocks
-    /// takes `per_block` damage for each block beyond it. False for a value that is
-    /// negative or not finite, a stale handle, a level the server has not opened or a client.
+    /// Sets the named level's border damage and safe zone (`WorldBorder.setDamagePerBlock`
+    /// and `setSafeZone`). Accepts signed finite values. These settings aren't sent to
+    /// clients. Returns `false` and logs the refusal for a non-finite value, a stale handle,
+    /// a closed level or a client.
     fn level_set_world_border_damage(
         &mut self,
         level: LevelRef,
@@ -46,11 +51,10 @@ pub trait LevelWorldBorderBackendMut {
         safe_zone: f64,
     ) -> bool;
     /// Side: server.
-    /// The world border's warning (`setWarningBlocks`, `setWarningTime`), as `/worldborder
-    /// warning distance` and `time`: a player's screen tints red within `distance` blocks of
-    /// the border, or when a shrinking border will reach them within `ticks` game ticks.
-    /// False for a negative value, a stale handle, a level the server has not opened or a
-    /// client.
+    /// Sets the named level's border warning distance (blocks) and time (ticks) through
+    /// `WorldBorder.setWarningBlocks` and `setWarningTime`. Accepts signed values and sends
+    /// each setting to that level's watchers, even if the values are unchanged. Returns
+    /// `false` and logs the refusal for a stale handle, a closed level or a client.
     fn level_set_world_border_warning(
         &mut self,
         level: LevelRef,

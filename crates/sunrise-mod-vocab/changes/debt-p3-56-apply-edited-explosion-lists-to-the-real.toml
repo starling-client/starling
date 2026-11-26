@@ -1,0 +1,21 @@
+ids = [
+    "handle:ResistanceCells::MAX",
+    "handle:ExplosionDestroyError::MAX_POSITIONS",
+    "type:ResistanceCellsError",
+    "type:ResistanceCellsError.TooMany",
+    "type:ResistanceCellsError.Overflow",
+    "type:ExplosionDestroyError",
+    "type:ExplosionDestroyError.TooMany",
+    "hook:explosion_resistance",
+    "hook:explosion_detonate",
+    "hook:explosion_knockback",
+    "hook:wind_burst",
+    "handle:LevelRef::explode",
+    "handle:LevelRef::explosion_destroy_blocks",
+    "handle:LevelRef::explosion_resistances",
+    "behaviour:level_explode",
+    "behaviour:level_explosion_destroy_blocks",
+    "behaviour:level_explosion_resistances",
+]
+why = "Match vanilla 26.3 ServerLevel.explode, ServerExplosion, WindCharge.explode, BreezeWindCharge.explode, and ExplosionDamageCalculator.getBlockExplosionResistance, and NeoForge ExplosionEvent.Detonate and IBlockExtension.getExplosionResistance: LevelRef::explosion_destroy_blocks now applies listener-added, removed, and reordered block positions from explosion_detonate with listener-returned order and multiplicity intact (filtered only to loaded in-height chunks); wind bursts (including player and breeze wind charges, even when mob_griefing disables breeze block triggers) now post explosion_detonate before knockback and apply edited block and entity lists to both phases; synthetic caps and admission gates are removed (ResistanceCells::MAX, ResistanceCellsError::TooMany replaced by Overflow for allocation overflow, ExplosionDestroyError::MAX_POSITIONS and TooMany, the 30,000,000 centre bound and loaded-centre-chunk refusal on LevelRef::explode, and the negative-radius refusal on LevelRef::explosion_destroy_blocks); and BlockPart::explosion_resistance (bumped to hook version 2) accepts finite negative values, combining them with fluid resistance via max (0.0 empty, 100.0 water/lava) and refusing only non-finite answers. The blast reaches the edited entity list entry by entry in its order across kinds (players, end crystals and the dragon, item frames, paintings, cushions, armour stands and the storage kinds), and an entry a listener repeats is reached as often as it is named, as the patched `ServerExplosion.hurtEntities` iterates the list itself; a wind burst's later shuffle of its candidates is separate from that multiplicity."
+migrate = "Remove references to ResistanceCells::MAX, ExplosionDestroyError::MAX_POSITIONS, ResistanceCellsError::TooMany, and ExplosionDestroyError::TooMany. Handle ResistanceCellsError::Overflow for cell areas that exceed allocation capacity. Expect explosion_detonate listeners to hear wind bursts as well as ordinary blasts, to add, remove, or reorder blocks (with listener multiplicity preserved) in LevelRef::explosion_destroy_blocks, LevelRef::explode to run for any finite centre without requiring the centre chunk to be loaded, and BlockPart::explosion_resistance (version 2) finite negative answers to combine with fluid resistance via max. Rebuild native mods against the updated SDK. Version bumps: `explosion_detonate` 2 -> 3 (listeners now also hear wind-charge bursts, and added or duplicated block positions reach the block-only operation), `explosion_knockback` 1 -> 2 and `wind_burst` 1 -> 2 (both now observe the edited wind candidates); pin the new versions. The edited entity list's multiplicity is kept: a repeated valid entry is visited once per occurrence, in list order across entity kinds. The wind burst's later shuffle of block candidates is separate: it reorders block positions after the listeners' edits and never changes entity visits."

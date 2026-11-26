@@ -70,14 +70,11 @@ import uuid
 import zipfile
 from pathlib import Path
 
-try:
-    from . import lab, runtime, stress_scenes
-except ImportError:
-    import lab
-    import runtime
-    import stress_scenes
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, runtime, stress_scenes
+from tools.ci import cargo_jobs
 
-ROOT = lab.ROOT
 WORK = ROOT / ".local/perf-bench"
 VANILLA = lab.GAME
 SEED = 1234
@@ -645,25 +642,30 @@ def parse_tick_query(lines):
     return None
 
 
-GAME_TIME = re.compile(r"The time is (\d+)")
+def parse_game_time(reply):
+    """The game time in a `command time query gametime` reply: the command's own `result`, not its chat text."""
+    # The game answers "The game time is N tick(s)" in a line the control reply may not carry, and its result is N.
+    result = reply.get("result")
+    if not reply.get("success") or isinstance(result, bool) or not isinstance(result, int):
+        raise RuntimeError(f"`time query gametime` gave no game time: {reply}")
+    return result
 
 
 def game_time(control):
     """The server's game time (`/time query gametime`): one per server tick, so two readings count the ticks between."""
-    try:
-        lines = control("command time query gametime").get("chat") or []
-    except (OSError, ValueError, RuntimeError):
-        return None
-    return next((int(m[1]) for line in lines if (m := GAME_TIME.search(line))), None)
+    return parse_game_time(control("command time query gametime"))
 
 
 def server_ticks(control, ticked):
-    """The server's tick times over the flight, or None unless `/tick query`'s window lies inside its `ticked` server ticks."""
-    try:
-        query = parse_tick_query(control("command tick query").get("chat") or [])
-    except (OSError, ValueError, RuntimeError):
-        return None
-    return query if query and query["samples"] >= TICK_WINDOW and (ticked or 0) >= TICK_WINDOW else None
+    """The server's tick times over the flight; raises unless `/tick query` answers with a window inside the flight's `ticked` server ticks."""
+    reply = control("command tick query")
+    query = parse_tick_query(reply.get("chat") or [])
+    if query is None:
+        raise RuntimeError(f"`tick query` gave no percentiles line: {reply}")
+    if query["samples"] < TICK_WINDOW or ticked < TICK_WINDOW:
+        raise RuntimeError(f"`tick query` shows {query['samples']} tick times but the flight ran {ticked} server ticks; "
+                           f"its window of {TICK_WINDOW} needs a longer --seconds")
+    return query
 
 
 def menu_hold(control, seconds):
@@ -778,9 +780,7 @@ def run_sunrise(args, distance):
                 scene["client_tick_ms"] = tick_phase * summary.get("frames", 0) / ticks
             scene["entities"] = {"mobs": status.get("mobs"), "block_entities": status.get("block_entities")}
             if server_scene:
-                time_after = game_time(control)
-                ran = time_after - time_before if None not in (time_before, time_after) else None
-                scene["server_tick"] = server_ticks(control, ran)
+                scene["server_tick"] = server_ticks(control, game_time(control) - time_before)
             if name in stress_scenes.NAMES:
                 for line in stress_scenes.cleanup(name):
                     control("command " + line)
@@ -1019,7 +1019,7 @@ def driven(args, distance, command, game_dir, env, log, events, options, loaded_
 def run_neoforge(args, distance):
     """A NeoForge 1.21.1 client (dev-only, tools/neoforge_oracle.py) with the driver mod and --mod-jars:
     the mods a ported pack replaces, on the loader the pack runs on."""
-    import neoforge_oracle
+    from tools import neoforge_oracle
     home = neoforge_oracle.client()[0]
     mod = neoforge_oracle.build_bench(home)
     game_dir = WORK / args.game
@@ -1094,7 +1094,7 @@ def hardware():
         info.update(os_version=q("sw_vers", "-productVersion"), cpu=q("sysctl", "-n", "machdep.cpu.brand_string"),
                     ram_mb=int(q("sysctl", "-n", "hw.memsize") or 0) >> 20)
     elif sys.platform == "win32":
-        info.update(os_version=windows_version(), cpu=windows_cpu(), ram_mb=windows_ram_bytes() >> 20)
+        info.update(os_version=windows_version(), cpu=windows_cpu(), ram_mb=cargo_jobs.physical_memory() >> 20)
     else:
         release = dict(l.split("=", 1) for l in Path("/etc/os-release").read_text().splitlines() if "=" in l)
         info["os_version"] = f"{release.get('PRETTY_NAME', '').strip(chr(34))} (kernel {platform.release()})"
@@ -1102,7 +1102,7 @@ def hardware():
             if line.startswith("model name"):
                 info["cpu"] = line.split(":", 1)[1].strip()
                 break
-        info["ram_mb"] = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") >> 20
+        info["ram_mb"] = cargo_jobs.physical_memory() >> 20
     return info
 
 
@@ -1124,19 +1124,6 @@ def windows_cpu():
             return str(winreg.QueryValueEx(key, "ProcessorNameString")[0]).strip()
     except OSError:
         return platform.processor()
-
-
-def windows_ram_bytes():
-    import ctypes
-
-    class Status(ctypes.Structure):  # MEMORYSTATUSEX
-        _fields_ = [("dwLength", ctypes.c_uint32), ("dwMemoryLoad", ctypes.c_uint32)] + [
-            (name, ctypes.c_uint64) for name in ("ullTotalPhys", "ullAvailPhys", "ullTotalPageFile",
-                                                 "ullAvailPageFile", "ullTotalVirtual", "ullAvailVirtual",
-                                                 "ullAvailExtendedVirtual")]
-
-    status = Status(dwLength=ctypes.sizeof(Status))
-    return status.ullTotalPhys if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)) else 0
 
 
 def report(args, distance, runs, app):
@@ -1544,7 +1531,7 @@ def app(args):
             version, commit = args.release, None
         return {"name": "sunrise-client", "version": version, "commit": commit, **({"mods": mods} if mods else {})}
     if args.game == "neoforge":
-        import neoforge_oracle
+        from tools import neoforge_oracle
         jars = [j.name for f in filter(None, (args.mod_jars, args.deps)) for j in sorted(Path(f).glob("*.jar"))]
         return {"name": "minecraft", "version": "1.21.1",
                 "mods": [{"name": "neoforge", "version": neoforge_oracle.NEOFORGE}] + [{"name": j} for j in jars]}

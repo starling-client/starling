@@ -1,5 +1,4 @@
 //! The server block-entity ticker, in vanilla's `Level.tickBlockEntities` order.
-// catalog-order: 0024
 
 pub trait Hooks {
     /// A server tick of a resident mod block entity of your registered `kind`.
@@ -27,7 +26,8 @@ pub trait Hooks {
     /// explicitly through `event.subject.host()` when persisted state changes
     /// (matching vanilla `BlockEntity.setChanged` / `AbstractFurnaceBlockEntity.serverTick`).
     /// Normal menu synchronization reads the resident data slots. With no Part
-    /// subscribed for this type, the game skips the tick dispatch.
+    /// subscribed for this type, there is no ticker. An optional selector on
+    /// `BlockEntityTypeBuilder::ticker_when` restricts the registered states and sides.
     #[hook(
         receiver = "associated",
         dispatch = "flat",
@@ -36,7 +36,7 @@ pub trait Hooks {
         scope = "block_entity",
         key = "kind",
         neoforge = "none (vanilla BlockEntityTicker; NeoForge adds no event or extension for it)",
-        version = 5
+        version = 6
     )]
     fn block_entity_tick(kind: mod_api::BlockEntityTypeKey, subject: mod_api::BlockEntityScope<'_>);
 }

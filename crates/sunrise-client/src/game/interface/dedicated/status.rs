@@ -11,6 +11,7 @@ use super::{ServerState, capture_log};
 use crate::game::Game;
 use serde_json::{Value, json};
 use std::{
+    collections::VecDeque,
     sync::atomic::Ordering,
     time::{Duration, Instant},
 };
@@ -18,26 +19,39 @@ use std::{
 /// The window the tick rate is measured over.
 const TPS_WINDOW: Duration = Duration::from_secs(5);
 
+fn record_tick(ticks: &mut VecDeque<Instant>, at: Instant) {
+    ticks.push_back(at);
+    // Keep the boundary before the window, including the previous completion
+    // when a single tick takes longer than the window. Otherwise every slow
+    // completion prunes its predecessor and the measured rate is always zero.
+    while ticks.len() > 2 && at.duration_since(ticks[1]) > TPS_WINDOW {
+        ticks.pop_front();
+    }
+}
+
+fn measured_tps(ticks: &VecDeque<Instant>, include_boundary: bool) -> f64 {
+    let (Some(first), Some(last)) = (ticks.front(), ticks.back()) else {
+        return 0.0;
+    };
+    let boundary = usize::from(!include_boundary && last.duration_since(*first) > TPS_WINDOW);
+    let intervals = ticks.len() - 1 - boundary;
+    let elapsed = last.duration_since(ticks[boundary]).as_secs_f64().max(1e-9);
+    intervals as f64 / elapsed
+}
+
 impl ServerState {
     /// One pass of the server loop ended.
     pub(super) fn ticked(&mut self, at: Instant) {
-        self.ticks.push_back(at);
-        while self
-            .ticks
-            .front()
-            .is_some_and(|t| at.duration_since(*t) > TPS_WINDOW)
-        {
-            self.ticks.pop_front();
-        }
+        record_tick(&mut self.ticks, at);
     }
     /// Ticks per second over the last few seconds.
     pub(super) fn tps(&self) -> f64 {
-        match (self.ticks.front(), self.ticks.back()) {
-            (Some(first), Some(last)) if self.ticks.len() > 1 => {
-                (self.ticks.len() - 1) as f64 / last.duration_since(*first).as_secs_f64().max(1e-9)
-            }
-            _ => 0.0,
-        }
+        measured_tps(&self.ticks, true)
+    }
+
+    /// Keep shutdown hand-over timing on the original five-second window.
+    pub(super) fn transfer_tps(&self) -> f64 {
+        measured_tps(&self.ticks, false)
     }
 }
 
@@ -146,14 +160,17 @@ impl Game<'_> {
                 .iter()
                 .filter(|g| g.participates_online())
                 .map(|g| {
-                    player_status(
+                    let mut status = player_status(
                         &g.name,
                         g.uuid,
                         g.ip_address(),
                         g.latency.load(Ordering::Relaxed),
                         &g.dimension,
                         g.position,
-                    )
+                    );
+                    // Charged bytes held for transmission, including packet bookkeeping.
+                    status["pending_send_bytes"] = json!(g.sender.pending.load(Ordering::Relaxed));
+                    status
                 })
                 .collect();
             (players, h.hub.lan.shared.max_players())
@@ -206,6 +223,24 @@ fn player_status(
 #[cfg(test)]
 mod tests {
     use super::{player_status, server_mods};
+    #[test]
+    fn slow_ticks_keep_a_measurable_interval_and_recover() {
+        let mut ticks = std::collections::VecDeque::new();
+        let start = std::time::Instant::now();
+        super::record_tick(&mut ticks, start);
+        super::record_tick(&mut ticks, start + std::time::Duration::from_secs(20));
+        assert_eq!(super::measured_tps(&ticks, true), 0.05);
+        assert_eq!(super::measured_tps(&ticks, false), 0.0);
+        super::record_tick(&mut ticks, start + std::time::Duration::from_millis(20_050));
+        assert_eq!(super::measured_tps(&ticks, false), 20.0);
+        for tick in 2..=120 {
+            super::record_tick(
+                &mut ticks,
+                start + std::time::Duration::from_millis(20_000 + tick * 50),
+            );
+        }
+        assert_eq!(super::measured_tps(&ticks, true), 20.0);
+    }
     use serde_json::json;
 
     #[test]

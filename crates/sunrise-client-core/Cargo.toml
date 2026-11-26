@@ -17,6 +17,8 @@ serde_json = { version = "1.0.151", features = ["raw_value"] }
 [features]
 # Mutable thread-local language publication for resource-backed game fixtures only.
 test-language-publication = []
+# Thread-local content mod effect registries for test fixtures only.
+test-effect-registry = []
 
 [lints]
 workspace = true

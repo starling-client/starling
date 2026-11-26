@@ -1,6 +1,9 @@
 //! What a liquid block turns into beside another fluid or block (NeoForge's
 //! `FluidInteractionRegistry`), declared by a mod.
-use crate::{BlockKey, FluidKey, StateConstraint, TagKey};
+use crate::{
+    BlockKey, BlockPos, FluidKey, FluidState, LevelHost, LevelWriteHost, StateConstraint, TagKey,
+};
+use std::sync::Arc;
 
 /// What has to be beside the liquid block: above it or to a side, never below.
 /// A fluid is read from the neighbour cell's fluid state, so a waterlogged block holds water.
@@ -108,4 +111,50 @@ impl FluidInteraction {
         self.below = Some(below);
         self
     }
+}
+
+/// Where a native fluid interaction is asked, NeoForge's `HasFluidInteraction.test` and
+/// `FluidInteraction.interact` arguments: the liquid block at `pos`, the neighbour `relative`
+/// it is checked against (above or to a side, never below), and the liquid's fluid state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+// exhaustive: NeoForge's three callback arguments, fixed by its interfaces.
+// no wire: local arguments of an in-process callback.
+pub struct FluidInteractionAt {
+    /// The liquid block.
+    pub pos: BlockPos,
+    /// The neighbour checked.
+    pub relative: BlockPos,
+    /// The liquid's fluid state at `pos`.
+    pub state: FluidState,
+}
+
+/// An interaction of a liquid block a native mod implements itself: NeoForge's
+/// `FluidInteractionRegistry.InteractionInformation` built from its own `HasFluidInteraction`
+/// (`test`) and `FluidInteraction` (`interact`). Registered with
+/// [`Registrar::fluid_interaction_handler`](crate::Registrar::fluid_interaction_handler), it takes
+/// its place among the source fluid's interactions in registration order. When a liquid is
+/// placed or a neighbour changes, each neighbour above, north, south, west and east is walked in
+/// turn, and at each the first interaction whose test answers true runs; the spread stops there.
+/// `interact` makes its own changes, with no `fluid_place_block` and no fizz unless it plays one.
+/// Server-side; a panicking callback is reported for its mod and answers false or does nothing.
+pub trait FluidInteractionHandler: Send + Sync + 'static {
+    /// Whether this interaction applies at `at` (`HasFluidInteraction.test`).
+    fn test(&self, level: &dyn LevelHost, at: FluidInteractionAt) -> bool;
+    /// Carry the interaction out at `at` (`FluidInteraction.interact`).
+    fn interact(&self, level: &mut dyn LevelWriteHost, at: FluidInteractionAt);
+}
+
+/// One fluid interaction a mod registered, in registration order: a table entry, or a native
+/// handler with the fluid it belongs to and the mod that registered it.
+// hidden: the engine's view of registrations; mods register through `Registrar`.
+#[doc(hidden)]
+// exhaustive: the two registration forms `Registrar` offers.
+// no wire: holds an in-process callback.
+pub enum RegisteredFluidInteraction {
+    Declared(FluidInteraction),
+    Handler {
+        owner: crate::callback_owner::CallbackOwner,
+        source: FluidKey,
+        handler: Arc<dyn FluidInteractionHandler>,
+    },
 }

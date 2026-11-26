@@ -22,11 +22,14 @@ import shutil
 import subprocess
 import time
 
-import lab
-import test_locator_bar_parity as net
-from test_dedicated_server_parity import game_time
-from test_disconnect_crafting_parity import generate
-from test_machine_recipe_placement_parity import Commands
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_locator_bar_parity as net
+from tools.test_dedicated_server_parity import game_time
+from tools.test_disconnect_crafting_parity import generate
+from tools.test_machine_recipe_placement_parity import Commands
 
 PLAYER = 'FallGuest'
 ADVANCEMENTS = {'any': None, 'short': {'max': 1.0}, 'five': {'min': 4.9, 'max': 5.1}, 'landing': 3.5}

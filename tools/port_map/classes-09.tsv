@@ -16,7 +16,7 @@ CompositeLootItemCondition	skip:java		codec only
 CompositeLootItemCondition.Builder	skip:java		builder (addTerm)
 ConditionUserBuilder	skip:java		builder interface for loot conditions
 DamageSourceCondition.test	port	crates/sunrise-world/src/loot.rs::Context::condition	damage_source_properties arm (mob death loot)
-EnchantmentActiveCheck.test	inline	crates/sunrise-client/src/game/items/enchant_effects.rs::Game::tick_soul_speed	the soul speed modifiers switch on and off here; the ENCHANTMENT_ACTIVE flag itself is not read as a condition
+EnchantmentActiveCheck.test	inline	crates/sunrise-client/src/game/items/enchant_effects.rs::Game::update_soul_speed_location	the soul speed modifiers switch on and off here; the ENCHANTMENT_ACTIVE flag itself is not read as a condition
 EntityHasScoreCondition.hasScore	missing		named Game predicates support this/constant ranges in advancements::conditions; the separate global loot.rs::condition engine and score providers remain unsupported
 EntityHasScoreCondition.test	missing		same global-loot gap as hasScore; named Game this/constant ranges use the actual holder snapshot via Game::check_predicate
 EntityHasScoreCondition.validate	skip:data		datapack validation

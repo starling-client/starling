@@ -79,7 +79,9 @@ impl Hooks for MyMod {
   fluid layer when that is `minecraft:empty`.
 - Registration returns keys for registered fluids. An unregistered key
   draws the same as `None` and produces a log message once per item.
-- It is asked on the client each time such a stack is drawn, so answer from the stack alone and keep it cheap. Only
-  items outside `minecraft:` are asked: a part on a vanilla item is not.
+- It is asked on the client each time a fluid-container model node resolves a stack, so answer from the stack alone
+  and keep it cheap. Composite models can query the same stack multiple times in one resolution, and there is no
+  once-per-frame guarantee. Only items outside `minecraft:` with subscribed Parts are asked: a part on a vanilla item
+  is not, and unresolved stacks do not dispatch.
 - It is the client's picture only. What the stack holds for gameplay (filling, emptying, pipes) stays in the stack's
   own data and the `ITEM_FLUIDS` capability.

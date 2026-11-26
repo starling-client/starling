@@ -1,0 +1,4 @@
+#!/bin/sh
+# The linker of x86_64-pc-windows-gnu programs on a Linux runner (setup.sh x86_64-pc-windows-gnu): llvm-mingw's clang with
+# the empty libgcc archives in front and its unwinder behind.
+exec x86_64-w64-mingw32-clang -L"$CROSS_MINGW_STUBS" "$@" -lunwind

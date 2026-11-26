@@ -3,7 +3,10 @@
 //! its game time every 20 ticks, its clocks when they jump or change rate and its weather as it
 //! changes, the chunks no area covered for [`super::view::LINGER`] ticks forgotten, and `close`
 //! once nothing of it is left. Its entities go in the tracking pass (`entities`).
-use super::super::hub::{Hub, TickCtx, game_event};
+use super::super::{
+    hub::{Hub, TickCtx},
+    weather,
+};
 use super::view::View;
 use crate::{chunk::Chunk, streaming::Streaming, world::World};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -276,23 +279,16 @@ impl Hub {
         let spawn = self.spawn_info(i, 0, ctx.sea_level);
         let mut runs = Runs::new(level);
         runs.push(&self.time_packet(ctx.world, ctx.clock_rate).encode());
-        let w = &ctx.world.weather;
-        if w.raining {
-            for (event, param) in [
-                (game_event::START_RAINING, 0.0),
-                (game_event::RAIN_LEVEL, w.rain_level.1),
-                (game_event::THUNDER_LEVEL, w.thunder_level.1),
-            ] {
-                runs.push(&C::GameEvent(play::GameEvent { event, param }).encode());
-            }
-        }
-        let weather = (w.raining, w.rain_level.1, w.thunder_level.1);
+        let state = weather::state(ctx.world, dimension);
+        weather::send_updates(None, state, |packet| {
+            runs.push(&packet.encode());
+        });
         let clock = Clock::now(self, ctx.world, ctx.clock_rate);
         let dimension = dimension.clone();
         let caps = self.viewed.caps;
         self.guests.update(i, |g| {
             let mut view = View::new(level);
-            view.weather = weather;
+            view.weather = state;
             view.clock = clock;
             g.viewed.views.insert(dimension, view);
             let columns = caps.for_client(g.sender.viewed_levels).loaded_per_player;
@@ -333,12 +329,31 @@ impl Hub {
         }
         let chunks: Vec<&Chunk> = taken.iter().map(|&(_, c)| c).collect();
         self.encoder.warm(&chunks);
-        let bodies = self.encoder.bodies_with(&chunks, world, &|x, z| {
+        let encoded = self.encoder.bodies_with(&chunks, world, &|x, z| {
             streaming.and_then(|s| s.proto_sections(x, z))
         });
+        let mut ok_taken = Vec::with_capacity(taken.len());
+        let mut bodies = Vec::with_capacity(encoded.len());
+        let mut failed = Vec::new();
+        for ((idx, chunk), result) in taken.into_iter().zip(encoded) {
+            match result {
+                Ok(body) => {
+                    ok_taken.push((idx, chunk));
+                    bodies.push(body);
+                }
+                Err(error) => {
+                    log::warn!(
+                        "[lan] viewed chunk ({}, {}) could not be encoded: {error}",
+                        chunk.x,
+                        chunk.z
+                    );
+                    failed.push(idx);
+                }
+            }
+        }
         let sync_groups = g.negotiated_connection_groups();
         let mut grouped = false;
-        let (payloads, taken) = batch_runs(view.level, &taken, &bodies, |chunk| {
+        let (payloads, sent) = batch_runs(view.level, &ok_taken, &bodies, |chunk| {
             if sync_groups && !chunk.connection_groups.is_empty() {
                 grouped = true;
                 super::super::hub::block_changes::encode_chunk_connection_groups(chunk)
@@ -346,27 +361,37 @@ impl Hub {
                 Vec::new()
             }
         });
-        if taken.is_empty() {
+        if sent.is_empty() && failed.is_empty() {
             return;
         }
         let dimension = self.config.dimension.clone();
-        let size = taken.len();
+        let size = sent.len();
         self.guests.update(i, |g| {
-            g.batch_quota -= size as f32;
-            g.send(&C::ChunkBatchStart(Empty));
-            if grouped {
-                g.sender.send_batch(payloads);
-            } else {
-                g.sender.send_many(payloads);
+            if size > 0 {
+                g.batch_quota -= size as f32;
+                g.send(&C::ChunkBatchStart(Empty));
+                if grouped {
+                    g.sender.send_batch(payloads);
+                } else {
+                    g.sender.send_many(payloads);
+                }
+                g.send(&C::ChunkBatchFinished(play::ChunkBatchFinished {
+                    size: size as i32,
+                }));
+                g.unacknowledged += 1;
             }
-            g.send(&C::ChunkBatchFinished(play::ChunkBatchFinished {
-                size: size as i32,
-            }));
-            g.unacknowledged += 1;
             if let Some(view) = g.viewed.views.get_mut(&dimension) {
-                for idx in taken.into_iter().rev() {
+                let mut remove: Vec<(usize, bool)> = sent
+                    .into_iter()
+                    .map(|idx| (idx, true))
+                    .chain(failed.into_iter().map(|idx| (idx, false)))
+                    .collect();
+                remove.sort_unstable_by_key(|&(idx, _)| idx);
+                for (idx, was_sent) in remove.into_iter().rev() {
                     let key = view.queue.remove(idx);
-                    view.sent.insert(key);
+                    if was_sent {
+                        view.sent.insert(key);
+                    }
                 }
             }
         });
@@ -379,6 +404,7 @@ impl Hub {
         let dimension = self.config.dimension.clone();
         let sync_time = self.ticks.is_multiple_of(20);
         let clock = Clock::now(self, world, clock_rate);
+        let state = weather::state(world, &dimension);
         let clocks = (self.guests[i].viewed.view(&dimension))
             .filter(|view| view.clock.changed(&clock))
             .map(|_| self.time_packet(world, clock_rate).encode());
@@ -399,26 +425,10 @@ impl Hub {
                     .encode(),
                 );
             }
-            let w = &world.weather;
-            let (raining, rain, thunder) = view.weather;
-            let mut event = |event, param| {
-                runs.push(&C::GameEvent(play::GameEvent { event, param }).encode());
-            };
-            if w.raining != raining {
-                let start = if w.raining {
-                    game_event::START_RAINING
-                } else {
-                    game_event::STOP_RAINING
-                };
-                event(start, 0.0);
-            }
-            if (w.rain_level.1 - rain).abs() > f32::EPSILON {
-                event(game_event::RAIN_LEVEL, w.rain_level.1);
-            }
-            if (w.thunder_level.1 - thunder).abs() > f32::EPSILON {
-                event(game_event::THUNDER_LEVEL, w.thunder_level.1);
-            }
-            view.weather = (w.raining, w.rain_level.1, w.thunder_level.1);
+            weather::send_updates(Some(view.weather), state, |packet| {
+                runs.push(&packet.encode());
+            });
+            view.weather = state;
             g.sender.send_many(runs.finish());
         });
     }

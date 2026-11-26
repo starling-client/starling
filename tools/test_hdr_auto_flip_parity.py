@@ -4,43 +4,34 @@
 One game runs offscreen on the float frame (SUNRISE_HDR_FRAME=float, SUNRISE_HDR_OUTPUT=pq) with HDR on Auto, under
 SUNRISE_STILL=1. No HDR display is needed: SUNRISE_HDR_DISPLAY names a file that says what the system reports for the
 display, `on` or `off`, which the game reads every two seconds as it reads the system. The file starts at `on`, turns
-`off`, then `on` again, and the scenes are shot in each state. A second game starts with the file at `off`. A third
-flips as the first under the shader API 0.2 example pack (golden_hour_0_2) with flat draws on (SUNRISE_FLAT_DRAWS=1),
-where a Sunrise pack lays solid terrain out wide instead of compact (`packed_layout`).
+`off`, then `on` again, and the scenes are shot in each state. A second game starts with the file at `off`.
 
 It fails unless:
 - HDR output follows the file: the shots have their -hdr.png while it says `on`, and none while it says `off`;
 - the renderer was made again for each frame (the 8-bit one, then the float one), so the flips were real;
 - no section was meshed again by either flip (`meshed_sections` of sunrise-ctl status), and as many stay resident;
 - the pictures after on -> off -> on are the first ones, pixel for pixel, the -hdr.png too;
-- the pictures while `off` are those of the game that started at `off`;
-- under the pack, the same, but against no game started at `off`; and the pack ran: solid terrain is laid out wide,
-  and its pictures differ from the first game's.
+- the pictures while `off` are those of the game that started at `off`.
 
 Sunrise's own feature: there is no vanilla oracle, and the pictures compared are all this build's.
 
   test_hdr_auto_flip_parity.py [--bin-dir DIR] [--resources DIR] [-j N]
 """
 import argparse
-import json
 import os
 import shutil
 import sys
 import time
 from pathlib import Path
 
-try:
-    from . import lab
-    from . import test_frame_identity_parity as identity
-except ImportError:
-    import lab
-    import test_frame_identity_parity as identity
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_frame_identity_parity as identity
 
 RUN = lab.LOCAL / 'hdr-auto-flip'
 SCENES = ['day_water', 'night_lights']
 ENV = {'SUNRISE_HDR_FRAME': 'float', 'SUNRISE_HDR_OUTPUT': 'pq'}
 MADE_AGAIN = 'the renderer was made again for the frame'
-PACK = 'golden_hour_0_2'
 
 
 def status(game):
@@ -68,9 +59,9 @@ def flip(game, display, to):
     return before, status(game)
 
 
-def session(name, bin_dir, out, env_base, args, flips, pack=None):
+def session(name, bin_dir, out, env_base, args, flips):
     """A game that starts with the display at `flips[0]` and follows the rest, the scenes shot in each state as
-    <name>.<n>.<scene>.png, under `pack` if given. The (before, after) counts of each flip."""
+    <name>.<n>.<scene>.png. The (before, after) counts of each flip."""
     folder = RUN / 'games' / name
     shutil.rmtree(folder, ignore_errors=True)
     folder.mkdir(parents=True)
@@ -78,11 +69,7 @@ def session(name, bin_dir, out, env_base, args, flips, pack=None):
     (folder / 'options.txt').write_text('chatVisibility:2\ntutorialStep:none\npauseOnLostFocus:false\n')
     display = folder / 'display.txt'
     display.write_text(flips[0])
-    extra = {}
-    if pack:
-        shutil.copytree(lab.ROOT / 'crates/sunrise-shader-api/packs' / pack, folder / 'shaderpacks' / pack)
-        extra = {'SUNRISE_SHADER_PACK': pack, 'SUNRISE_FLAT_DRAWS': '1'}
-    env = lab.game_env(env_base, SUNRISE_STILL='1', SUNRISE_HDR_DISPLAY=display, **ENV, **extra)
+    env = lab.game_env(env_base, SUNRISE_STILL='1', SUNRISE_HDR_DISPLAY=display, **ENV)
     game = identity.Game(bin_dir, folder, env, args)
     counts = []
     try:
@@ -93,8 +80,6 @@ def session(name, bin_dir, out, env_base, args, flips, pack=None):
                 counts.append(flip(game, display, to))
             for scene in SCENES:
                 identity.shoot_named(game, out, f'{name}.{n}', scene)
-        lab.write_json(out / f'{name}.layout.json', {'packed_layout': game.ctl('status')['renderer']['packed_layout'],
-                                                     'flat': game.ctl('section-draws')['flat']})
         (out / f'{name}.log').write_text(str(game.ctl('logs', '--lines', '4000', check=False)), encoding='utf-8')
     finally:
         game.quit()
@@ -124,26 +109,7 @@ def checks(out, name, counts):
             break
         problems += same(out, f'{name}.2.{scene}', f'{name}.0.{scene}', '.png')
         problems += same(out, f'{name}.2.{scene}', f'{name}.0.{scene}', '-hdr.png')
-        if name == 'flip':
-            problems += same(out, f'{name}.1.{scene}', f'off.0.{scene}', '.png')
-    return problems
-
-
-def pack_ran(out):
-    """That the pack drew: solid terrain laid out wide, as for a Sunrise pack, and pictures unlike the first game's."""
-    problems = []
-    layout = json.loads((out / 'pack.layout.json').read_text())
-    # Without flat draws (lavapipe) solid terrain is wide with or without a pack, so only the pictures tell.
-    if not layout['flat']:
-        print('pack: no flat draws on this device: the wide layout is not checked, only the pictures')
-    elif layout['packed_layout'][0]:
-        problems.append('pack: solid terrain stayed compact: no Sunrise pack ran')
-    for n in range(3):
-        for scene in SCENES:
-            for suffix in ('.png', '-hdr.png'):
-                shots = out / f'flip.{n}.{scene}{suffix}', out / f'pack.{n}.{scene}{suffix}'
-                if all(s.exists() for s in shots) and identity.compare(*shots, None) is None:
-                    problems.append(f'pack.{n}.{scene}{suffix}: the same as without the pack: it did not run')
+        problems += same(out, f'{name}.1.{scene}', f'off.0.{scene}', '.png')
     return problems
 
 
@@ -163,11 +129,9 @@ def main():
     out.mkdir(parents=True)
     counts = session('flip', bin_dir, out, env, args, ('on', 'off', 'on'))
     session('off', bin_dir, out, env, args, ('off',))
-    pack_counts = session('pack', bin_dir, out, env, args, ('on', 'off', 'on'), PACK)
     print(f'meshed and resident sections, before and after each flip: {counts}', flush=True)
-    print(f'the same under {PACK}: {pack_counts}', flush=True)
-    problems = checks(out, 'flip', counts) + checks(out, 'pack', pack_counts) + pack_ran(out)
-    lab.write_json(RUN / 'report.json', {'counts': counts, 'pack_counts': pack_counts, 'failures': problems})
+    problems = checks(out, 'flip', counts)
+    lab.write_json(RUN / 'report.json', {'counts': counts, 'failures': problems})
     print('hdr auto flip:', 'PASS' if not problems else f'{len(problems)} FAILED')
     for problem in problems:
         print('  ', problem)

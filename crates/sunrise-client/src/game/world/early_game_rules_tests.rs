@@ -1,8 +1,29 @@
 #![cfg(test)]
 use crate::game::native_entity_refs::tests::with_game;
-use mod_api::{Hooks, ModEntry, ServerHost};
+use core::ops::ControlFlow;
+use mod_api::{GameRuleValue, Hooks, ModEntry, ServerHost};
 use std::sync::{Arc, Mutex};
 use sunrise_client::gamerules::Value;
+
+fn collect_rules<E>(
+    enumerate: impl FnOnce(
+        &mut dyn FnMut(&str, GameRuleValue) -> ControlFlow<()>,
+    ) -> Result<ControlFlow<()>, E>,
+) -> Vec<(String, GameRuleValue)>
+where
+    E: core::fmt::Debug,
+{
+    let mut rules = Vec::new();
+    assert_eq!(
+        enumerate(&mut |id, value| {
+            rules.push((id.to_owned(), value));
+            ControlFlow::Continue(())
+        })
+        .unwrap(),
+        ControlFlow::Continue(())
+    );
+    rules
+}
 
 struct Observe(Arc<Mutex<Vec<&'static str>>>);
 fn assert_rules(host: &dyn ServerHost) {
@@ -18,7 +39,7 @@ fn assert_rules(host: &dyn ServerHost) {
         host.game_rule("minecraft:not_a_rule"),
         Err(mod_api::GameRuleReadError::UnknownRule)
     );
-    let rules = host.game_rules();
+    let rules = collect_rules(|visit| host.visit_game_rules(visit));
     assert!(rules.contains(&(
         "minecraft:keep_inventory".into(),
         mod_api::GameRuleValue::Bool(true)
@@ -92,15 +113,14 @@ fn early_server_game_rules_saved_and_creation_values() {
                                 game.res.clone(),
                                 game.pack.clone(),
                                 game.options.clone(),
-                                game.settings.clone(),
                                 Arc::new(sunrise_world::datafix::progress::UpgradeProgress::new()),
                             )
                             .unwrap();
                             game.prepare_early_game_rules(loader).unwrap()
                         };
                         game.native_server_about_to_start(dedicated);
-                        game.native_server_starting(dedicated);
                         game.finish_open_world(prepared).unwrap();
+                        game.native_server_starting(dedicated);
                         assert_rules(game);
                         let level = game.level(game.dim.id()).unwrap();
                         assert_eq!(
@@ -112,8 +132,8 @@ fn early_server_game_rules_saved_and_creation_values() {
                             Ok(Some(mod_api::GameRuleValue::Int(7)))
                         );
                         assert_eq!(
-                            level.game_rules(game).unwrap(),
-                            <dyn ServerHost>::game_rules(game)
+                            collect_rules(|visit| level.visit_game_rules(game, visit)),
+                            collect_rules(|visit| (game as &dyn ServerHost).visit_game_rules(visit))
                         );
                     });
                 },

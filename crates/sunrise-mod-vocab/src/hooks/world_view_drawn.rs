@@ -1,5 +1,4 @@
 //! The `world_view_drawn` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0350
 
 pub trait Hooks {
     /// A world view is drawn (see [`WorldViewDrawn`]): once per view taken this frame, after

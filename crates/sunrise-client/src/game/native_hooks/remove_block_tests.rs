@@ -1,4 +1,3 @@
-#![cfg(test)]
 //! Removal exposes the engine's default and still lets a block Part replace it.
 use crate::game::api_values::TryIntoApi;
 use crate::game::native_entity_refs::tests::{run_fresh_cases, with_game_at};

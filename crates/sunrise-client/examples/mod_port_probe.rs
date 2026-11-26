@@ -30,9 +30,10 @@ fn boxes(list: impl IntoIterator<Item = [f64; 6]>) -> Value {
     json!(v)
 }
 
-fn sound(s: &sunrise_client::blocks::Sounds) -> Value {
-    json!({"volume": s.volume, "pitch": s.pitch, "break": &*s.break_sound, "step": &*s.step,
-        "place": &*s.place, "hit": &*s.hit, "fall": &*s.fall})
+fn sound(s: &mod_api::BlockSoundType) -> Value {
+    json!({"volume": s.volume, "pitch": s.pitch, "break": s.break_sound.as_str(),
+        "step": s.step.as_str(), "place": s.place.as_str(), "hit": s.hit.as_str(),
+        "fall": s.fall.as_str()})
 }
 
 fn tool(name: &str) -> Option<ItemStack> {

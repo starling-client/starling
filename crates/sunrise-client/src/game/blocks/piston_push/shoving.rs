@@ -1,11 +1,22 @@
 //! The directional push of `PistonMovingBlockEntity.moveCollidedEntities` for mod colliders:
-//! the moving boxes meet a body along their sweep, then the deepest advance sets its push.
+//! the moving or turning boxes meet a body along their simultaneous sweep, then shove it clear.
 use super::*;
 use sunrise_client_render::moving_colliders::{Placed, Shove};
+use sunrise_core::geometry::oriented::OrientedCollider;
 
 #[cfg(test)]
 #[path = "shoving_tests.rs"]
 mod tests;
+
+enum SweepKind<'a> {
+    Translation {
+        before: &'a OrientedCollider,
+        delta: Vec3,
+    },
+    General {
+        before: &'a OrientedCollider,
+    },
+}
 
 impl Game<'_> {
     pub(super) fn shove_pass(&mut self, start: &Prepared, steps: &StepHeights, riders: &[Rider]) {
@@ -16,14 +27,21 @@ impl Game<'_> {
             .placed()
             .filter_map(|after| {
                 let before = &starts.get(&after.id)?.collider;
-                let delta = after.collider.frame.origin.subtract(before.frame.origin);
-                // Turning colliders still carry riders. Their angular sweep is a separate
-                // geometry problem; testing just the endpoints would miss a turn's path.
-                if delta == Vec3::ZERO || !before.frame.same_turn(&after.collider.frame) {
+                if before.frame == after.collider.frame {
                     return None;
                 }
-                let swept = before.world_bounds()?.expand_towards(delta);
-                Some((after, before, delta, swept))
+                if before.frame.same_turn(&after.collider.frame) {
+                    let delta = after.collider.frame.origin.subtract(before.frame.origin);
+                    if delta == Vec3::ZERO {
+                        return None;
+                    }
+                    let swept = before.world_bounds()?.expand_towards(delta);
+                    Some((after, SweepKind::Translation { before, delta }, swept))
+                } else {
+                    let bounds = before.boxes.bounds()?;
+                    let swept = before.frame.swept_bounds(&after.collider.frame, bounds);
+                    Some((after, SweepKind::General { before }, swept))
+                }
             })
             .collect();
         if sweeps.is_empty() {
@@ -44,11 +62,10 @@ impl Game<'_> {
         let mut current = end.clone();
         let mut stand_grid = None;
         let mut shoved = false;
-        for (after, before, delta, swept) in sweeps {
+        for (after, kind, swept) in sweeps {
             let source = after.id;
             let first = riders.partition_point(|rider| rider.support < source);
             let supported = &riders[first..];
-            let direction = delta.scale(1.0 / delta.length());
             for &selected in &targets {
                 if after.exempt.contains(&selected.id)
                     || supported
@@ -71,13 +88,29 @@ impl Game<'_> {
                 if no_physics || rides {
                     continue;
                 }
-                let fraction =
-                    before.translation_push_fraction(&after.collider, body.bounds, delta);
-                if fraction > 0.0 {
-                    // The piston's clearance is added once to its largest box advance.
-                    let movement = delta
-                        .scale(fraction)
-                        .add_vector(direction.scale(piston_push::PUSH_OFFSET));
+                let movement = match kind {
+                    SweepKind::Translation { before, delta } => {
+                        let fraction =
+                            before.translation_push_fraction(&after.collider, body.bounds, delta);
+                        if fraction > 0.0 {
+                            let direction = delta.scale(1.0 / delta.length());
+                            // The piston's clearance is added once to its largest box advance.
+                            Some(
+                                delta
+                                    .scale(fraction)
+                                    .add_vector(direction.scale(piston_push::PUSH_OFFSET)),
+                            )
+                        } else {
+                            None
+                        }
+                    }
+                    SweepKind::General { before } => before.sweep_push_displacement(
+                        &after.collider,
+                        body.bounds,
+                        piston_push::PUSH_OFFSET,
+                    ),
+                };
+                if let Some(movement) = movement {
                     {
                         let _scope = moving_colliders::Scope::enter_level(
                             self.collider_level(),
@@ -86,7 +119,6 @@ impl Game<'_> {
                         let _shove = Shove::enter(selected.id, source);
                         self.move_pushed_body(
                             MoverType::Carried,
-                            None,
                             target,
                             body,
                             movement,
@@ -95,6 +127,51 @@ impl Game<'_> {
                         );
                     }
                     shoved = true;
+                    if let Some(target) = self.resolve_push_target(selected)
+                        && !matches!(target, MoveWho::Guest(_))
+                    {
+                        let moved = match target {
+                            MoveWho::Player => self
+                                .player
+                                .as_ref()
+                                .map_or(Vec3::ZERO, |player| player.position),
+                            MoveWho::Entity(handle) => {
+                                with_entity!(self, handle, entity => entity.position())
+                            }
+                            MoveWho::Guest(_) => unreachable!(),
+                        }
+                        .subtract(body.position);
+                        if moved != Vec3::ZERO {
+                            let (SweepKind::Translation { before, .. }
+                            | SweepKind::General { before }) = kind;
+                            let rise = after.collider.frame.origin.y - before.frame.origin.y;
+                            let normal = movement.normalize();
+                            match target {
+                                MoveWho::Player => {
+                                    if let Some(player) = self.player.as_mut() {
+                                        player.velocity = cancel_shove_velocity(
+                                            player.velocity,
+                                            normal,
+                                            movement.y,
+                                            rise,
+                                        );
+                                    }
+                                }
+                                MoveWho::Entity(handle) => {
+                                    with_entity_mut!(self, handle, entity => {
+                                        let velocity = cancel_shove_velocity(
+                                            *entity.velocity_mut(),
+                                            normal,
+                                            movement.y,
+                                            rise,
+                                        );
+                                        *entity.velocity_mut() = velocity;
+                                    });
+                                }
+                                MoveWho::Guest(_) => {}
+                            }
+                        }
+                    }
                     if current.placed().any(|p| p.exempt.contains(&selected.id)) {
                         // This body owns a collider, or is the vehicle of a holder. Its
                         // new pose is an obstacle to later shoves, not another sweep.
@@ -108,4 +185,19 @@ impl Game<'_> {
             self.position_riders();
         }
     }
+}
+
+/// Removes the part of `velocity` that points into a shove along `normal`. An upward shove
+/// raises vertical velocity to the collider's own vertical speed `collider_rise` but never
+/// lowers it, so a body already rising faster keeps its speed.
+fn cancel_shove_velocity(velocity: Vec3, normal: Vec3, upward: f64, collider_rise: f64) -> Vec3 {
+    let inward = velocity.dot(normal);
+    if inward >= 0.0 {
+        return velocity;
+    }
+    let mut velocity = velocity.subtract(normal.scale(inward));
+    if upward > 0.0 {
+        velocity.y = velocity.y.max(collider_rise);
+    }
+    velocity
 }

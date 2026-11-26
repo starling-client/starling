@@ -65,6 +65,7 @@ enum OutputNotice {
 
 struct Probe {
     family: Family,
+    retained: Mutex<Option<mod_api::AttachmentKey<i32>>>,
     calls: AtomicUsize,
     posts: Mutex<Vec<u32>>,
     first_proposal: Mutex<Option<Proposal>>,
@@ -92,7 +93,9 @@ impl Probe {
 
     fn progress(&self, host: &mut dyn mod_api::LevelRandomHost) {
         *self.draw.lock().unwrap() = host.with_random(|random| random.next_long());
-        let _ = VALUE.set(host.attachments(), Holder::Level, 314);
+        if let Some(retained) = self.retained.lock().unwrap().as_ref() {
+            let _ = retained.set_in(host, Holder::Level, 314);
+        }
     }
 }
 
@@ -195,15 +198,19 @@ impl mod_api::BlockPart for HealthyLanding {
 }
 #[mod_api::sunrise_part]
 impl mod_api::EntityPart for GoalPart {
-    fn register_goals(&self, goals: &mut mod_api::GoalRegistrar<'_>) {
-        goals.add_target_goal(
+    fn register_goals(
+        &self,
+        _host: &mut dyn mod_api::ServerHost,
+        event: &mut mod_api::RegisterGoalsEvent<'_, '_>,
+    ) {
+        event.goals.add_target_goal(
             0,
             GoalSpec {
                 probe: self.0.clone(),
                 target: true,
             },
         );
-        goals.add_goal(
+        event.goals.add_goal(
             0,
             GoalSpec {
                 probe: self.0.clone(),
@@ -236,26 +243,13 @@ impl mod_api::Hooks for Hooks {
             self.probe.outputs.lock().unwrap().push(OutputNotice::Egg);
         }
     }
-    fn entity_tick_listened(
-        &self,
-        _: mod_api::HostSide<'_>,
-        event: &mut mod_api::EntityTickListenedEvent,
-    ) {
-        if self.panics {
-            event.listened = true;
-        }
-    }
     fn entity_tick_post(
         &self,
         _: mod_api::HostSide<'_>,
         event: &mut mod_api::EntityTickPostEvent<'_>,
     ) {
         if self.panics {
-            self.probe
-                .posts
-                .lock()
-                .unwrap()
-                .extend_from_slice(event.entities);
+            self.probe.posts.lock().unwrap().push(event.entity);
         }
     }
     fn register(&self, r: &mut dyn mod_api::Registrar, _: &mod_api::RegistrationContext) {
@@ -270,8 +264,13 @@ impl mod_api::Hooks for Hooks {
         if !self.panics {
             return;
         }
-        r.register_attachment_type("borrowed-panic:retained", false)
+        let retained = r
+            .register_attachment_type(mod_api::AttachmentDescriptor::new(
+                "borrowed-panic:retained",
+                || 0i32,
+            ))
             .unwrap();
+        *self.probe.retained.lock().unwrap() = Some(retained);
         if self.probe.family.is_goal() {
             r.entity_part("minecraft:zombie", GoalPart(self.probe.clone()));
         }
@@ -373,7 +372,7 @@ const VALUE: AttachmentType<i32> = AttachmentType {
     default: || 0,
     codec: None,
     copy_on_death: false,
-    sync: false,
+    sync_codec: None,
 };
 struct Scratch(std::path::PathBuf);
 impl Drop for Scratch {
@@ -476,7 +475,7 @@ fn prime_hook(mob: &mut Mob, family: Family) {
     }
 }
 
-fn fixture_mob(game: &Game<'_>, id: u32, family: Family, output: Output) -> Mob {
+fn fixture_mob(game: &mut Game<'_>, id: u32, family: Family, output: Output) -> Mob {
     let kind = game
         .res
         .mob_types()
@@ -492,6 +491,7 @@ fn fixture_mob(game: &Game<'_>, id: u32, family: Family, output: Output) -> Mob 
         .unwrap()
         .clone();
     let mut mob = Mob::new(id, kind, Vec3::new(f64::from(id - 70), 80.0, 0.5), 0.0);
+    game.flush_unjoined_mob_parts(&mut mob);
     mob.no_ai = true;
     if output == Output::Push && id == 70 {
         mob.position.x = 1.2;
@@ -552,13 +552,14 @@ fn run_fixture(family: Family, output: Output, dim: Dim) {
     let _ =
         sunrise_client::block_contact::HOOKS.set(crate::game::native_hooks::BLOCK_CONTACT_HOOKS);
     if family == Family::Knockback {
-        assert!(sunrise_client::brewing::register_mod_effects([(
-            "borrowed-panic:hit".into(),
-            0,
-            sunrise_client::brewing::Category::Neutral,
-            None,
-            FAILING_MOD.into(),
-        )]));
+        assert!(sunrise_client::brewing::register_mod_effects([
+            sunrise_client::brewing::ModEffect::new(
+                "borrowed-panic:hit",
+                0,
+                sunrise_client::brewing::Category::Neutral,
+                FAILING_MOD,
+            )
+        ]));
     }
     let scratch = tempfile::tempdir().unwrap();
     let goal_payload = family.is_goal().then(|| Box::new(PanicToken(0xdecaf)));
@@ -567,6 +568,7 @@ fn run_fixture(family: Family, output: Output, dim: Dim) {
         .map(|token| token as *const PanicToken as usize);
     let probe = Arc::new(Probe {
         family,
+        retained: Mutex::default(),
         calls: AtomicUsize::new(0),
         posts: Mutex::default(),
         first_proposal: Mutex::default(),
@@ -656,7 +658,7 @@ fn run_fixture(family: Family, output: Output, dim: Dim) {
                     .batches
                     .push_back(MobOutputBatch {
                         normal: NormalMobActions::default(),
-                        guests: vec![(12, 71, MobEvent::AttackPlayer(2.0, [1.0, 80.0, 0.5]))],
+                        guests: vec![(12, 71, MobEvent::AttackPlayer(2.0, [1.0, 80.0, 0.5], None))],
                     });
             }
             game.last_hurt_by_player
@@ -715,9 +717,15 @@ fn run_fixture(family: Family, output: Output, dim: Dim) {
                 "first callback entry"
             );
             if let Some(payload) = &unwind {
+                let posts = std::mem::take(&mut *probe.posts.lock().unwrap());
                 assert!(
-                    probe.posts.lock().unwrap().is_empty(),
-                    "aborted tick fired Post"
+                    !posts.contains(&72),
+                    "aborted tick fired Post for the panicking mob"
+                );
+                assert_eq!(
+                    posts,
+                    [71],
+                    "earlier completed mob fired its per-entity Post before the panic"
                 );
                 let token = payload
                     .downcast_ref::<PanicToken>()
@@ -856,8 +864,9 @@ fn run_fixture(family: Family, output: Output, dim: Dim) {
                     );
                 }
                 game.tick_creature_entities().unwrap();
-                assert!(
-                    !probe.posts.lock().unwrap().is_empty(),
+                assert_eq!(
+                    probe.posts.lock().unwrap().as_slice(),
+                    ids,
                     "real post listener never ran on retry"
                 );
                 table.end_tick().unwrap();
@@ -1077,27 +1086,13 @@ impl mod_api::Hooks for Consumer {
         self.probe.eggs.lock().unwrap().push(event.entity);
     }
 
-    fn entity_tick_listened(
-        &self,
-        _: mod_api::HostSide<'_>,
-        event: &mut mod_api::EntityTickListenedEvent,
-    ) {
-        if self.panics {
-            event.listened = true;
-        }
-    }
-
     fn entity_tick_post(
         &self,
         _: mod_api::HostSide<'_>,
         event: &mut mod_api::EntityTickPostEvent<'_>,
     ) {
         if self.panics {
-            self.probe
-                .posts
-                .lock()
-                .unwrap()
-                .extend_from_slice(event.entities);
+            self.probe.posts.lock().unwrap().push(event.entity);
         }
     }
 }

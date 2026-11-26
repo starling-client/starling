@@ -1,6 +1,6 @@
 //! Matched resident ticker workload: the same keyed Part uses a view or a retained handle.
 use super::{super::Game, Recorder, world::FLOOR};
-use mod_api::{BlockEntityRef, HostTransaction};
+use mod_api::BlockEntityRef;
 use std::{cell::RefCell, sync::Arc};
 use sunrise_client::{
     Result,
@@ -124,12 +124,10 @@ impl Game<'_> {
                 if transaction {
                     // One ambient frame per pass, not per row or listener. Every row's first
                     // write in a frame pays for the same before-image in both modes.
-                    let result: std::result::Result<(), std::convert::Infallible> = game
-                        .transaction(|game, _| {
-                            pass(game);
-                            Ok(())
-                        });
-                    result.unwrap();
+                    game.storage_scope(|game, _| {
+                        pass(game);
+                        ((), true)
+                    });
                 } else {
                     pass(game);
                 }

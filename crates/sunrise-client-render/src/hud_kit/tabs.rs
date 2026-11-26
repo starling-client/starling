@@ -605,11 +605,10 @@ mod tests {
         let mut batch = HudBatch::scratch([854, 480]);
         draw_tabs(&mut batch, &atlas, &strip, 1.0);
         assert!(!batch.vertices.is_empty());
-        for v in &batch.vertices {
-            let [x, y] = v.pos;
+        for [x0, y0, x1, y1] in batch.visible_quads().flatten() {
             assert!(
-                (40.0..=240.0).contains(&x) && (10.0..=22.0).contains(&y),
-                "{x} {y}"
+                40.0 <= x0 && x1 <= 240.0 && 10.0 <= y0 && y1 <= 22.0,
+                "{x0} {y0} {x1} {y1}"
             );
         }
         let mut faded = HudBatch::scratch([854, 480]);

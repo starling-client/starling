@@ -5,7 +5,9 @@
 use mod_api::__private::game::*;
 
 mod texture_atlases;
-pub(in crate::game) use texture_atlases::{collect_texture_atlases, stage_texture_atlases};
+pub(in crate::game) use texture_atlases::{
+    collect_emissive_sprites, collect_texture_atlases, stage_texture_atlases,
+};
 
 #[cfg(test)]
 #[path = "client_reload_tests.rs"]
@@ -28,6 +30,7 @@ pub(super) type PreparedClientReload = PreparedStep<()>;
 /// queries return real values. Later reloads pass `&Game` directly.
 pub(super) struct StartupReloadContext<'a> {
     settings: Option<&'a Settings>,
+    captured: &'a sunrise_world::native_load_context::SettingsCapture,
 }
 
 impl ClientReloadListenerContext for StartupReloadContext<'_> {
@@ -54,8 +57,13 @@ impl ClientReloadListenerContext for StartupReloadContext<'_> {
     fn is_loaded(&self, id: &str) -> bool {
         mod_api::__private::loaded_mods().get(id).is_some()
     }
-    fn setting(&self, mod_id: &str, key: &str) -> Option<String> {
-        Game::startup_setting(mod_id, key)
+    fn setting(
+        &self,
+        key: mod_api::SettingKey,
+    ) -> Result<mod_api::SettingValue, mod_api::SettingAccessError> {
+        let (owner, spec) = mod_api::__private::setting_entry(key)
+            .ok_or(mod_api::SettingAccessError::UnknownKey)?;
+        Ok(spec.read(self.captured.setting(owner, &spec.key)))
     }
     fn math_profile(&self) -> mod_api::MathProfile {
         Game::startup_math_profile()
@@ -71,14 +79,71 @@ impl ClientReloadListenerContext for StartupReloadContext<'_> {
     }
 }
 
+/// The registration context of a later reload: the game answers everything except the
+/// settings, which come from the capture the candidate generation was prepared from (so a file
+/// edited since the game last read it cannot give registration a value the generation's
+/// loops do not see).
+struct CapturedReloadContext<'a, 'g> {
+    game: &'a Game<'g>,
+    captured: &'a sunrise_world::native_load_context::SettingsCapture,
+}
+
+impl ClientReloadListenerContext for CapturedReloadContext<'_, '_> {
+    fn dist(&self) -> mod_api::Dist {
+        self.game.dist()
+    }
+    fn game_version(&self) -> &'static str {
+        self.game.game_version()
+    }
+    fn server_data_version(&self) -> i32 {
+        self.game.server_data_version()
+    }
+    fn sunrise_version(&self) -> &'static str {
+        self.game.sunrise_version()
+    }
+    fn game_tests_enabled(&self) -> bool {
+        self.game.game_tests_enabled()
+    }
+    fn on(&self, mod_id: &str) -> bool {
+        self.game.on(mod_id)
+    }
+    fn is_loaded(&self, id: &str) -> bool {
+        self.game.is_loaded(id)
+    }
+    fn setting(
+        &self,
+        key: mod_api::SettingKey,
+    ) -> Result<mod_api::SettingValue, mod_api::SettingAccessError> {
+        let (owner, spec) = mod_api::__private::setting_entry(key)
+            .ok_or(mod_api::SettingAccessError::UnknownKey)?;
+        Ok(spec.read(self.captured.setting(owner, &spec.key)))
+    }
+    fn math_profile(&self) -> mod_api::MathProfile {
+        self.game.math_profile()
+    }
+    fn text_string(&self, text: &mod_api::Text) -> String {
+        self.game.text_string(text)
+    }
+    fn published(&self) -> Option<&dyn ClientReloadHost> {
+        self.game.published()
+    }
+}
+
 impl Game<'_> {
-    /// Registers a later reload's client listeners through the game
-    /// (`native_add_client_reload_listeners`), gated on the hook being
-    /// listened to.
-    pub(super) fn register_client_reload_listeners(&self) -> mod_api::ClientListenerRegistry {
+    /// Registers a later reload's client listeners (`AddClientReloadListeners`), gated on the
+    /// hook being listened to, over the settings capture the reload's generation was prepared
+    /// from.
+    pub(super) fn register_client_reload_listeners(
+        &self,
+        captured: &sunrise_world::native_load_context::SettingsCapture,
+    ) -> mod_api::ClientListenerRegistry {
         let mut listeners = <mod_api::ClientListenerRegistry as mod_api::__private::game::ClientReloadListenersOrder>::new();
         if mod_api::__private::listened(HookId::AddClientReloadListeners) {
-            self.native_add_client_reload_listeners(&mut listeners);
+            let context = CapturedReloadContext {
+                game: self,
+                captured,
+            };
+            Self::native_add_client_reload_listeners(&context, &mut listeners);
         }
         listeners
     }
@@ -89,10 +154,11 @@ impl Game<'_> {
 /// the loader thread and leaves `published()` as `None`.
 pub(super) fn register_startup_client_reload_listeners(
     settings: Option<&Settings>,
+    captured: &sunrise_world::native_load_context::SettingsCapture,
 ) -> mod_api::ClientListenerRegistry {
     let mut listeners = <mod_api::ClientListenerRegistry as mod_api::__private::game::ClientReloadListenersOrder>::new();
     if mod_api::__private::listened(HookId::AddClientReloadListeners) {
-        let context = StartupReloadContext { settings };
+        let context = StartupReloadContext { settings, captured };
         mod_api::dispatch_add_client_reload_listeners(&context, |listen| {
             listeners.register_listener(listen)
         });

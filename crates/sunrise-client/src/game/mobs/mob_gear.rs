@@ -18,40 +18,39 @@ use sunrise_client::{
 use sunrise_core::random::RandomSource;
 use {sunrise_core::nbt::Tag, sunrise_world::loot::EntityLootParams};
 
-/// `EnchantmentsByCostWithDifficulty` of `mob_spawn_equipment`.
-const MIN_COST: i32 = 5;
-const MAX_COST_SPAN: f32 = 17.0;
-
 /// The mobs that call `populateDefaultEquipmentEnchantments` when they spawn.
 impl Game<'_> {
     /// `Mob.equip(EquipmentTable)` for a spawner's `equipment`: the loot table
-    /// (the mob as `this`, its random sequence) is rolled and each stack goes
-    /// in the slot `EquipmentUser.resolveSlot` picks, with the table's drop
-    /// chance for that slot.
-    pub(super) fn equip_from_table(&mut self, id: u32, table: &Tag) {
+    /// (the mob as `this`, its random sequence or the level's random) is rolled
+    /// and each stack goes in the slot `EquipmentUser.resolveSlot` picks, with
+    /// the table's drop chance for that slot.
+    pub(super) fn equip_mob_from_table(
+        &self,
+        mob: &mut sunrise_client::mobs::Mob,
+        table: &Tag,
+        random: &mut sunrise_core::random::LegacyRandom,
+        sequences: &mut sunrise_client::random_sequences::RandomSequences,
+    ) {
         let Some((name, chances)) = equipment_table(table) else {
             return;
         };
         let Some(loot) = self.server_loot.get() else {
             return;
         };
-        let Some(m) = self.mobs.iter().find(|m| m.id == id) else {
-            return;
-        };
         if !loot.has_table(&name) {
             return;
         }
         let params = EntityLootParams {
-            this: drops::loot_entity(m, None),
+            this: drops::loot_entity_with_variants(mob, None, Some(self.world_variants())),
             ..EntityLootParams::default()
         };
         let seed = self.level.seed;
         let stacks = match loot.random_sequence(&name) {
             Some(sequence) => {
-                let random = self.rand_sequences.get(sequence, seed);
+                let random = sequences.get(sequence, seed);
                 loot.roll_entity(&name, random, &params)
             }
-            None => loot.roll_entity(&name, &mut self.world.random, &params),
+            None => loot.roll_entity(&name, random, &params),
         };
         let mut inserted: Vec<usize> = Vec::new();
         for stack in stacks.iter().filter(|s| !s.is_empty()) {
@@ -69,75 +68,163 @@ impl Game<'_> {
             let Some(slot) = slot.filter(|s| !inserted.contains(s)) else {
                 continue;
             };
-            if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
-                equip_stack(m, slot, stack, chances[slot]);
-            }
+            equip_stack(mob, slot, stack, chances[slot]);
             inserted.push(slot);
         }
     }
-    /// `EnchantmentsByCostWithDifficulty.enchant` on the stack the mob holds
-    /// in a `finalize` slot: nothing is drawn when the slot is empty.
+    /// `SkeletonTrapGoal.enchant` (`EnchantmentHelper.enchantItemFromProvider`
+    /// with `mob_spawn_equipment` and `skeleton.getRandom()`): nothing is drawn
+    /// when the slot is empty.
     pub(super) fn enchant_item(&mut self, id: u32, slot: usize, special: f32) {
-        let Some(stack) = self
+        let items = world_items!(self);
+        let enchantments = &world_stations!(self).enchantments;
+        let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) else {
+            return;
+        };
+        let Some(stack) = sunrise_client::mobs::finalize::item_stack(m, slot) else {
+            return;
+        };
+        let picked = enchantments.enchant_from_provider(
+            "minecraft:mob_spawn_equipment",
+            items,
+            &mut m.random,
+            &stack,
+            special,
+        );
+        let slot = sunrise_client::mobs::finalize::gear_slot(slot);
+        for (enchantment, level) in picked {
+            gear::upgrade(m, slot, &enchantment, level);
+        }
+    }
+    /// `Pillager` / `Vindicator.applyRaidBuffs`: enchants a fresh crossbow or
+    /// iron axe through the world's raid enchantment providers.
+    pub(super) fn apply_raid_buffs(&mut self, id: u32, kind: RaiderType, wave: i32, odds: f32) {
+        let Some(pos) = self
             .mobs
             .iter()
             .find(|m| m.id == id)
-            .and_then(|m| sunrise_client::mobs::finalize::item_stack(m, slot))
+            .map(|m| [m.position.x, m.position.y, m.position.z])
         else {
             return;
         };
-        let random = &mut self.world.random;
-        let top = MIN_COST + (special * MAX_COST_SPAN) as i32;
-        let cost = random
-            .next_int_between_inclusive(MIN_COST, top)
-            .unwrap_or(MIN_COST);
-        let e = &world_stations!(self).enchantments;
-        let pool = e.tag("minecraft:on_mob_spawn_equipment");
-        let picked = e.select(world_items!(self), random, &stack, cost, pool);
-        if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
-            let slot = sunrise_client::mobs::finalize::gear_slot(slot);
-            for (enchantment, level) in picked {
-                gear::upgrade(m, slot, &enchantment, level);
-            }
-        }
-    }
-    /// `Pillager` / `Vindicator.applyRaidBuffs`: Quick Charge on a fresh
-    /// crossbow after waves 3 and 5, Sharpness on a fresh axe.
-    pub(super) fn apply_raid_buffs(&mut self, id: u32, kind: RaiderType, wave: i32, odds: f32) {
+        let special = self.local_difficulty(pos).special();
+        let items = world_items!(self);
+        let enchantments = &world_stations!(self).enchantments;
         let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) else {
             return;
         };
         let enchant = m.random.next_float() <= odds;
         match kind {
             RaiderType::Pillager if enchant => {
-                let level = if wave > raid::num_groups(2) {
-                    2
+                let provider = if wave > raid::num_groups(2) {
+                    Some("minecraft:raid/pillager_post_wave_5")
                 } else if wave > raid::num_groups(1) {
-                    1
+                    Some("minecraft:raid/pillager_post_wave_3")
                 } else {
-                    0
+                    None
                 };
-                if level > 0 {
+                if let Some(provider) = provider {
+                    let crossbow = sunrise_client::items::ItemStack::new("minecraft:crossbow", 1);
+                    let picked = enchantments.enchant_from_provider(
+                        provider,
+                        items,
+                        &mut m.random,
+                        &crossbow,
+                        special,
+                    );
                     sunrise_client::mobs::finalize::set_item(
                         m,
                         sunrise_client::mobs::finalize::MAINHAND,
                         "minecraft:crossbow",
                     );
-                    gear::upgrade(m, MAIN, "minecraft:quick_charge", level);
+                    for (enchantment, level) in picked {
+                        gear::upgrade(m, MAIN, &enchantment, level);
+                    }
                 }
             }
             RaiderType::Vindicator => {
+                let axe = sunrise_client::items::ItemStack::new("minecraft:iron_axe", 1);
+                let picked = if enchant {
+                    let provider = if wave > raid::num_groups(2) {
+                        "minecraft:raid/vindicator_post_wave_5"
+                    } else {
+                        "minecraft:raid/vindicator"
+                    };
+                    enchantments.enchant_from_provider(
+                        provider,
+                        items,
+                        &mut m.random,
+                        &axe,
+                        special,
+                    )
+                } else {
+                    Vec::new()
+                };
                 sunrise_client::mobs::finalize::set_item(
                     m,
                     sunrise_client::mobs::finalize::MAINHAND,
                     "minecraft:iron_axe",
                 );
-                if enchant {
-                    let level = if wave > raid::num_groups(2) { 2 } else { 1 };
-                    gear::upgrade(m, MAIN, "minecraft:sharpness", level);
+                for (enchantment, level) in picked {
+                    gear::upgrade(m, MAIN, &enchantment, level);
                 }
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "daily"]
+    fn raid_pillager_crossbow_uses_pack_enchantment_provider() {
+        let mut resources = None;
+        let mut game = crate::game::game_tests::tests::server_game(&mut resources);
+        let root = game.options.resources.clone();
+        let dir = tempfile::tempdir().unwrap();
+        let providers = dir
+            .path()
+            .join("datapacks/raid_override/data/minecraft/enchantment_provider/raid");
+        std::fs::create_dir_all(&providers).unwrap();
+        std::fs::write(
+            dir.path().join("datapacks/raid_override/pack.mcmeta"),
+            r#"{"pack":{"description":"raid provider override"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            providers.join("pillager_post_wave_3.json"),
+            r#"{"type":"minecraft:single","enchantment":"minecraft:multishot","level":1}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("datapacks.json"),
+            r#"{"enabled":["file/raid_override"],"disabled":[]}"#,
+        )
+        .unwrap();
+        game.world_root = dir.path().to_path_buf();
+        let stack = crate::game::functions::pack_stack(
+            &game.world_root,
+            &root,
+            &sunrise_assets::resource_source::ResourceSource::directory(root.clone()),
+            &Default::default(),
+            false,
+            &[],
+            &[],
+        );
+        game.world_tables = game
+            .stage_world_tables(&stack, false, &root)
+            .unwrap()
+            .tables;
+        let id = game
+            .spawn_mob_raw("minecraft:pillager", [8.5, 64.0, 8.5], false)
+            .unwrap();
+        // Wave 4 > num_groups(1) = 3; odds 1.0 guarantees enchanting.
+        game.apply_raid_buffs(id, RaiderType::Pillager, 4, 1.0);
+        let m = game.mobs.iter().find(|m| m.id == id).unwrap();
+        assert_eq!(gear::level(m, MAIN, "minecraft:multishot"), 1);
+        assert_eq!(gear::level(m, MAIN, "minecraft:quick_charge"), 0);
     }
 }

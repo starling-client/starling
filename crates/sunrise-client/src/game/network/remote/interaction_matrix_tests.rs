@@ -217,6 +217,7 @@ fn advancement_tree(game: &mut Game<'_>) {
                 name: "seen".into(),
                 trigger,
                 conditions: serde_json::json!({}).into(),
+                player: None,
             }],
             requirements: vec![vec!["seen".into()]],
             rewards: Default::default(),
@@ -250,6 +251,8 @@ fn matrix(mods: mod_api::Mods) {
                     )
                     .unwrap();
                 game.world.set(0, 63, 0, stone).unwrap();
+                // A FULL read of this hand-made column (the advancement's block read) finds it ready.
+                Arc::make_mut(game.world.chunks.get_mut(&(0, 0)).unwrap()).lit = true;
                 game.forced_hit = Some(hit());
                 for hand in [Hand::Main, Hand::Off] {
                     for case in cases(hand) {
@@ -264,10 +267,8 @@ fn matrix(mods: mod_api::Mods) {
                         } else {
                             (other, held)
                         };
-                        game.clear_device_keys();
-                        if case.sneak {
-                            game.insert_device_key(winit::keyboard::KeyCode::ShiftLeft);
-                        }
+                        // Each case supplies the logical sneak state of the acting player.
+                        game.set_mapping_held("key.sneak", case.sneak);
                         if let Some(remote) = game.remote.as_mut() {
                             remote.last_input = if case.sneak {
                                 super::super::SHIFT_INPUT

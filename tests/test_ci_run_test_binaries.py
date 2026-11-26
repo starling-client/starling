@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import unittest.mock
 
@@ -41,7 +42,7 @@ class RunTestBinariesTests(unittest.TestCase):
         ])
         binaries = runner.test_binaries(messages)
         self.assertEqual([b["executable"] for b in binaries], ["/t/a"])
-        self.assertEqual(binaries[0]["cwd"], "/repo/crates/sunrise-world")
+        self.assertEqual(binaries[0]["cwd"], str(Path("/repo/crates/sunrise-world")))
         self.assertEqual(binaries[0]["env"]["CARGO_PKG_NAME"], "sunrise-world")
         self.assertEqual(binaries[0]["env"]["CARGO_CRATE_NAME"], "sunrise_world")
 
@@ -284,6 +285,52 @@ printf 'ok a::slow <7.500s>\\nok a::fast <0.001s>\\n' > "$log"
             cargo = self.fake_toolchain(root, [clean])
             code, _ = self.run_main("--jobs", "1", "--no-data-skips", "--", str(cargo), "test")
             self.assertEqual(code, 0)
+
+    # A libtest stand-in whose a::stuck outlasts the test's patience (it exits by itself after 30 s, so a regression
+    # fails on the time instead of hanging the suite). With several threads libtest warns about it after
+    # TEST_WARN_TIMEOUT_S; on one thread it only prints the start line.
+    HANGING_LIBTEST = """#!/bin/sh
+for arg in "$@"; do case "$arg" in --list) printf 'a::stuck: test\\n\\n1 test, 0 benchmarks\\n'; exit 0;; esac; done
+case " $* " in *' --test-threads=1 '*) printf 'test a::other ... ok <0.001s>\\ntest a::stuck ... '; exec sleep 30;; esac
+echo 'test a::other ... ok <0.001s>'
+printf 'test a::stuck has been running for over 60 seconds\\n'
+exec sleep 30
+"""
+
+    def hanging(self, directory: str) -> dict:
+        binary = Path(directory) / "hanging"
+        binary.write_text(self.HANGING_LIBTEST)
+        binary.chmod(0o755)
+        return {"executable": str(binary), "cwd": directory, "env": {}, "label": "pkg"}
+
+    @unittest.skipUnless(os.name == "posix" and shutil.which("sh"), "requires a POSIX shell")
+    def test_a_hung_test_fails_at_once_by_name(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "crates/sunrise-world").mkdir(parents=True)
+            cargo = self.fake_toolchain(root, [Path(self.hanging(directory)["executable"])])
+            started = time.monotonic()
+            code, output = self.run_main("--jobs", "1", "--time-limits", "2,5", "--", str(cargo), "test")
+            self.assertLess(time.monotonic() - started, 15, output)
+            self.assertEqual(code, 1)
+            summary = output[output.index("FAILED TESTS"):].splitlines()
+            self.assertIn("::error::sunrise-world lib.rs (hanging): hung: a::stuck still running after 60 s; killed",
+                          summary)
+            self.assertIn("    a::stuck", summary)
+
+    @unittest.skipUnless(os.name == "posix" and shutil.which("sh"), "requires a POSIX shell")
+    def test_a_test_hung_on_one_thread_is_named_from_its_start_line(self):
+        with tempfile.TemporaryDirectory() as directory:
+            binary = self.hanging(directory)
+            # A selection ending in the `--exact` flag, timed (so --logfile follows it) and untimed.
+            for timed in (True, False):
+                with self.subTest(timed=timed), unittest.mock.patch.object(runner, "HANG_SECONDS", 0.5):
+                    started = time.monotonic()
+                    result = runner.run_one(binary, {}, ["--test-threads=1", "a::stuck", "--exact"], timed=timed)
+                    self.assertLess(time.monotonic() - started, 15)
+                    self.assertEqual(result["hung"], ["a::stuck"])
+                    self.assertTrue(result["status"].startswith("hung: a::stuck"))
+                    result["output"].close()
 
     @unittest.skipUnless(os.name == "posix" and shutil.which("sh"), "requires a POSIX shell")
     def test_a_listing_without_test_binaries_fails(self):

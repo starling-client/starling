@@ -152,6 +152,19 @@ fn prepared(dir: &Path) -> Option<Vec<File>> {
     Some(files)
 }
 
+/// Whether a discovered pack file can name a resource (`PathPackResources.listPath`,
+/// `FilePackResources.listResources`). Invalid paths are reported and ignored before decoding.
+pub fn valid_resource_path(namespace: &str, path: &str) -> bool {
+    if !namespace.is_empty()
+        && sunrise_core::identifier::Identifier::from_parts(namespace, path).is_ok()
+    {
+        true
+    } else {
+        log::warn!("Invalid path in pack: {namespace}:{path}, ignoring");
+        false
+    }
+}
+
 /// The namespace folders under a `data` folder, sorted: those on the disk and
 /// those a prepared root holds only in its data file.
 pub fn namespaces(data: &Path) -> Vec<String> {

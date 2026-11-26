@@ -2,7 +2,6 @@
 //! empties it.
 use super::Game;
 use super::dispenser::{CLICK, Dispensed, FAIL, Pos, offset};
-use mod_api::HostTransaction;
 use sunrise_client::{Result, items::ItemStack};
 use sunrise_core::geometry::Direction;
 use sunrise_world::{fluid::FluidKind, level::BucketContent};
@@ -34,7 +33,7 @@ impl Game<'_> {
         let answer = match self.empty_contents_listens(&stack.item) {
             true => {
                 let before = slots(self);
-                self.transaction(|game, _| {
+                self.storage_transaction(|game, _| {
                     let answer =
                         game.native_empty_contents_event(Self::pos_of(target), None, &stack);
                     match answer == Some(true) && slots(game) != before {

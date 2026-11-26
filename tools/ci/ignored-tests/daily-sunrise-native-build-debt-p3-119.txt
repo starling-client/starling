@@ -1,0 +1,1 @@
+sunrise-native-build tests::build_commands_inherit_the_tools_process_group lib daily child-process

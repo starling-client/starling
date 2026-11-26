@@ -36,9 +36,8 @@ import subprocess
 import sys
 import tempfile
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import check_stand_ins  # noqa: E402
-import split_part_table as part_table  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from tools.hotspots import check_stand_ins, split_part_table as part_table
 
 
 class CarryError(Exception):

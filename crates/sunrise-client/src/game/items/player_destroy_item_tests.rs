@@ -192,7 +192,7 @@ fn mining_reports_after_the_drop_hook(game: &mut Game<'_>, observer: &Observer) 
     tool.damage = 249;
     game.inventory[game.selected] = Some(tool);
     observer.0.lock().unwrap().mining_order.clear();
-    assert!(game.player_break_block(pos).unwrap());
+    assert!(game.player_break_block(pos, None).unwrap());
     assert!(game.held().is_none());
     assert_ne!(game.world.block(pos[0], pos[1], pos[2]), stone);
     assert!(
@@ -318,7 +318,11 @@ fn run_isolated() {
                     Some(PlayerMotion::new(game.motion, Vec3::new(0.5, 64.0, 0.5)).unwrap());
                 const PLAYER: u128 = 0x0000_0001_0000_0002_0000_0003_0000_0004;
                 native_entity_refs::tests::bind_local_player(game, 71, PLAYER);
-                game.set_mode_id(0);
+                if client {
+                    game.set_local_mode(sunrise_client::command::args::GameMode::Survival);
+                } else {
+                    game.set_mode_id(0);
+                }
                 game.selected = 0;
                 game.screen = Screen::Playing;
                 game.world

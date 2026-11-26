@@ -1,21 +1,22 @@
 //! The `client_level_load` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0140
 
 pub trait Hooks {
     /// The client made a new level for `dimension` (NeoForge's
     /// `LevelEvent.Load` from the `ClientLevel` constructor): on joining a
     /// server, single player's own included, and on changing dimension.
-    /// Its chunks come after. When the dimension changes, the old level's
-    /// `client_level_unload` follows this, as `Minecraft.setLevel`
-    /// tells it after the new level is made. Client-side, on the window; the
-    /// server's levels have `level_load`.
+    /// `host.level(event.dimension)` resolves the new level before it is installed.
+    /// The new level can read datapack registries already synchronized by the
+    /// server; its chunks arrive later. On replacement, `client_level_unload` follows
+    /// while the retiring level and its own handles still resolve. Client-side,
+    /// on the window; the server's levels have `level_load`.
     #[hook(
         target = "sunrise_client::game::native_hooks::base::Game<'_>::native_client_level_load",
         dispatch = "flat",
         side = "client",
         contract = "listen",
         neoforge = "LevelEvent.Load",
-        cancellable = false
+        cancellable = false,
+        version = 2
     )]
     fn client_level_load(dimension: &str);
 }

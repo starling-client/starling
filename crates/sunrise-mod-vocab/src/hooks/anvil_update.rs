@@ -14,6 +14,7 @@ pub trait Hooks {
     /// Both sides, including the update after material consumption with the
     /// left slot still present. On the server that update observes the player
     /// after `AnvilMenu.onTake` has charged the levels.
+    /// A mod's own anvil menu runs these listeners with `PlayerRef::anvil_update`; a call from inside a listener declines.
     #[hook(
         dispatch = "flat",
         side = "both",

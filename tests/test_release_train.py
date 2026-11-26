@@ -2,14 +2,15 @@ import datetime as dt
 import io
 import os
 import subprocess
-import sys
-import textwrap
 from pathlib import Path
 import tempfile
 import unittest
 from unittest import mock
 
 from tools import release_train as train
+from tools.ci import vendored_yaml
+
+yaml = vendored_yaml.load()
 
 NOW = dt.datetime(2026, 10, 15, 12, 0, tzinfo=dt.timezone.utc)
 
@@ -448,8 +449,6 @@ class ReleaseTrainTests(unittest.TestCase):
         # A dry run or a by-hand check only reads.
         self.assertEqual(gate([cancelled], [False], publishing=False), (False, []))
         # Only publishing runs (release.yml's decide, nightly-build.yml's pick) set GATE_RERUN, with the right to start the run again.
-        sys.path.insert(0, str(train.ROOT / "tools/ci/vendor/pyyaml-6.0.3.zip"))
-        import yaml
         decide = yaml.safe_load((train.ROOT / ".github/workflows/release.yml").read_text())["jobs"]["decide"]
         self.assertEqual(decide["permissions"]["actions"], "write")
         self.assertEqual(decide["steps"][-1]["env"]["GATE_RERUN"], "${{ steps.mode.outputs.publish == 'true' && '1' || '' }}")

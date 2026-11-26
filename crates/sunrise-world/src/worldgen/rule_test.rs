@@ -1,13 +1,14 @@
 //! Registry-bound replacement predicates with ordered short-circuit evaluation.
 use super::{
-    DecodeError, Object, block_feature::FeatureBlockBindings, density::identifier, integer,
+    DecodeError, Object,
+    block_feature::FeatureBlockBindings,
+    density::identifier,
+    integer,
+    mod_random::EngineRandom,
+    mod_rule_tests::{ModRuleTest, RuleTestDecodeScope, RuleTestRunContext},
     number_text, required,
 };
-use crate::{
-    block_properties::BoundBlockProperty,
-    fluid::{FluidKind, FluidStateTable},
-    registry::BlockStateId,
-};
+use crate::registry::BlockStateId;
 use serde_json::value::RawValue;
 use std::{collections::BTreeSet, sync::Arc};
 use sunrise_core::random::RandomSource;
@@ -25,85 +26,7 @@ enum Node {
     RandomStates(Arc<BTreeSet<BlockStateId>>, f32),
     RandomState(BlockStateId, f32),
     Height(i32, i32),
-    Phase(Box<MatterPhase>),
-}
-/// `sunrise:matter_phase`: Repurposed Structures' MatterPhaseRuleTest, which
-/// its mineshafts and Nether monument use to match a block by what it is
-/// made of (`phase_to_test_for`), optionally inverted (`invert_condition`).
-#[derive(Clone, Debug)]
-struct MatterPhase {
-    phase: Phase,
-    invert: bool,
-    air: [BlockStateId; 3],
-    fluids: Arc<FluidStateTable>,
-    /// Only for `SOLID`.
-    can_occlude: Option<BoundBlockProperty>,
-    /// Blocks.RAIL and Blocks.CHAIN (26.3's iron chain).
-    rail_or_chain: BTreeSet<BlockStateId>,
-}
-#[derive(Clone, Copy, Debug)]
-enum Phase {
-    Solid,
-    Liquid,
-    Air,
-    AirRailOrChain,
-    LiquidRailOrChain,
-}
-impl MatterPhase {
-    fn decode(object: &Object, bindings: &FeatureBlockBindings<'_>) -> Result<Self, DecodeError> {
-        let name: String = serde_json::from_str(required(object, "phase_to_test_for")?.get())?;
-        let phase = match name.as_str() {
-            "SOLID" => Phase::Solid,
-            "LIQUID" => Phase::Liquid,
-            "AIR" => Phase::Air,
-            "AIR_RAIL_OR_CHAIN" => Phase::AirRailOrChain,
-            "LIQUID_RAIL_OR_CHAIN" => Phase::LiquidRailOrChain,
-            _ => return Err(DecodeError::Field("matter phase")),
-        };
-        let invert = match object.get("invert_condition") {
-            Some(v) => serde_json::from_str(v.get())?,
-            None => false,
-        };
-        let can_occlude = match phase {
-            Phase::Solid => Some(
-                bindings
-                    .can_occlude
-                    .clone()
-                    .ok_or(DecodeError::Field("matter phase block properties"))?,
-            ),
-            _ => None,
-        };
-        let mut rail_or_chain = BTreeSet::new();
-        for name in ["minecraft:rail", "minecraft:iron_chain"] {
-            rail_or_chain.extend(bindings.blocks.get(name).into_iter().flat_map(|s| s.iter()));
-        }
-        Ok(Self {
-            phase,
-            invert,
-            air: bindings.air,
-            fluids: bindings.fluids.table().clone(),
-            can_occlude,
-            rail_or_chain,
-        })
-    }
-    fn test(&self, state: BlockStateId) -> bool {
-        let air = self.air.contains(&state);
-        let liquid = self
-            .fluids
-            .get(state)
-            .is_some_and(|f| f.kind() != FluidKind::Empty);
-        let rail_or_chain = || self.rail_or_chain.contains(&state);
-        let matched = match self.phase {
-            Phase::Solid => {
-                !air && !liquid && self.can_occlude.as_ref().is_some_and(|c| c.contains(state))
-            }
-            Phase::Liquid => liquid,
-            Phase::Air => air,
-            Phase::AirRailOrChain => air || rail_or_chain(),
-            Phase::LiquidRailOrChain => liquid || rail_or_chain(),
-        };
-        matched != self.invert
-    }
+    Mod(Arc<dyn ModRuleTest>),
 }
 impl RuleTest {
     pub fn from_json(json: &str, bindings: &FeatureBlockBindings<'_>) -> Result<Self, DecodeError> {
@@ -187,20 +110,31 @@ impl RuleTest {
                     Node::Any(values)
                 }
             }
-            "sunrise:matter_phase" => {
-                Node::Phase(Box::new(MatterPhase::decode(&object, bindings)?))
+            other => {
+                if let Some(ty) = super::mod_rule_tests::mod_rule_test_type(other) {
+                    let value: serde_json::Value = serde_json::from_str(json)?;
+                    let scope = RuleTestDecodeScope::new(bindings, depth, *remaining);
+                    let rule = ty
+                        .decode(&value, &scope)
+                        .map_err(|e| DecodeError::Registry(format!("rule test {other}: {e}")))?;
+                    *remaining = scope.remaining();
+                    Node::Mod(rule)
+                } else {
+                    return Err(DecodeError::Registry(format!(
+                        "unknown rule test type {other} (field predicate_type)"
+                    )));
+                }
             }
-            _ => return Err(DecodeError::Field("replacement rule type")),
         };
         Ok(Self(node))
     }
     /// The Y ranges of its height tests (its only use of the position),
-    /// or `None` when a test draws from the random source: then the result
-    /// is not a function of the state and those ranges alone.
+    /// or `None` when a test draws from the random source or runs a mod rule
+    /// test: then the result is not a function of the state and those ranges alone.
     pub(crate) fn pure_heights(&self, out: &mut Vec<(i32, i32)>) -> Option<()> {
         match &self.0 {
-            Node::True | Node::States(_) | Node::State(_) | Node::Phase(_) => Some(()),
-            Node::RandomStates(..) | Node::RandomState(..) => None,
+            Node::True | Node::States(_) | Node::State(_) => Some(()),
+            Node::RandomStates(..) | Node::RandomState(..) | Node::Mod(_) => None,
             Node::Height(min, max) => {
                 if !out.contains(&(*min, *max)) {
                     out.push((*min, *max));
@@ -213,27 +147,52 @@ impl RuleTest {
             }
         }
     }
+    /// Returns the mod rule test implementation if this rule test was decoded from
+    /// a mod-registered type.
+    pub fn as_mod(&self) -> Option<&Arc<dyn ModRuleTest>> {
+        match &self.0 {
+            Node::Mod(rule) => Some(rule),
+            _ => None,
+        }
+    }
     pub fn test(
         &self,
         state: BlockStateId,
         position: [i32; 3],
         random: &mut impl RandomSource,
-    ) -> bool {
+    ) -> Result<bool, String> {
         match &self.0 {
-            Node::True => true,
-            Node::Not(rule) => !rule.test(state, position, random),
-            Node::All(rules) => rules.iter().all(|rule| rule.test(state, position, random)),
-            Node::Any(rules) => rules.iter().any(|rule| rule.test(state, position, random)),
-            Node::States(states) => states.contains(&state),
-            Node::State(expected) => state == *expected,
+            Node::True => Ok(true),
+            Node::Not(rule) => Ok(!rule.test(state, position, random)?),
+            Node::All(rules) => {
+                for rule in rules {
+                    if !rule.test(state, position, random)? {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            }
+            Node::Any(rules) => {
+                for rule in rules {
+                    if rule.test(state, position, random)? {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            }
+            Node::States(states) => Ok(states.contains(&state)),
+            Node::State(expected) => Ok(state == *expected),
             Node::RandomStates(states, probability) => {
-                states.contains(&state) && random.next_float() < *probability
+                Ok(states.contains(&state) && random.next_float() < *probability)
             }
             Node::RandomState(expected, probability) => {
-                state == *expected && random.next_float() < *probability
+                Ok(state == *expected && random.next_float() < *probability)
             }
-            Node::Height(min, max) => *min <= position[1] && position[1] <= *max,
-            Node::Phase(phase) => phase.test(state),
+            Node::Height(min, max) => Ok(*min <= position[1] && position[1] <= *max),
+            Node::Mod(rule) => {
+                let mut random = EngineRandom(random);
+                rule.test(&RuleTestRunContext, state, position, &mut random)
+            }
         }
     }
 }

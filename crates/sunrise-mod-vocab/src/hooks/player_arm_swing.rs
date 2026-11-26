@@ -1,5 +1,4 @@
 //! The `player_arm_swing` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0276
 
 pub trait Hooks {
     /// A criterion of a server player's advancement was granted or revoked, after its progress changed

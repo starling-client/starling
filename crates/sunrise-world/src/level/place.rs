@@ -4,7 +4,7 @@
 use super::{
     Behaviours, LevelAccess, LevelEvent, Sim, Ticks,
     classes::{Class, Interface},
-    data::ItemKind,
+    data::{ItemBinding, ItemKind},
     query::{axis_of, clockwise, counter_clockwise, is_horizontal},
     states::BlockId,
     update::{HORIZONTAL, above, below, rel},
@@ -16,7 +16,48 @@ use sunrise_core::{
     random::RandomSource,
 };
 
-/// A player's use-item-on-block action (`UseOnContext` inputs).
+/// Who initiated a block placement: a player (`BlockPlaceContext`) or a
+/// directional non-player source (`DirectionalPlaceContext`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PlacementSource {
+    /// A player's use-item-on-block placement (`BlockPlaceContext` with a non-null player).
+    Player {
+        /// Player view yaw in degrees (`getYRot` / `getRotation`).
+        yaw: f32,
+        /// Player view pitch in degrees (`getXRot`).
+        pitch: f32,
+        /// `isSecondaryUseActive` (sneaking).
+        sneaking: bool,
+    },
+    /// `DirectionalPlaceContext` (`getPlayer() == null`): a non-player placement
+    /// acting along `direction` (e.g. a dispenser placing a shulker box or a
+    /// falling block checking replaceability).
+    Directional {
+        /// The direction passed to `DirectionalPlaceContext`.
+        direction: Direction,
+    },
+}
+
+/// A question a `DirectionalPlaceContext` has no answer to: vanilla throws instead of
+/// returning a state, `null` or a boolean, so the question is refused rather than answered.
+/// Only a directional source can hit these; a player's `BlockPlaceContext` answers both.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DirectionalRefusal {
+    /// The block's `getStateForPlacement` reads `getNearestLookingVerticalDirection`.
+    /// `DirectionalPlaceContext` doesn't override it, so `BlockPlaceContext`'s
+    /// `Direction.getFacingAxis(getPlayer(), Y)` reads the pitch of a null player and
+    /// throws a `NullPointerException`. `SpeleothemBlock` (pointed dripstone, sulfur
+    /// spikes) is the only vanilla reader.
+    NoVerticalLook,
+    /// The clicked block's `canBeReplaced` reads `replacingClickedOnBlock`, which a
+    /// `DirectionalPlaceContext` answers with `canPlace()`: that same `canBeReplaced` of
+    /// the same block, so vanilla recurses until the stack overflows. In vanilla this is a
+    /// `SlabBlock` that isn't double, or a `SnowLayerBlock` under eight layers, clicked
+    /// with its own item.
+    ReplacingClickedCycle,
+}
+
+/// A block-item placement action (`UseOnContext` / `DirectionalPlaceContext` inputs).
 #[derive(Clone, Debug)]
 pub struct PlaceContext {
     /// The block that was hit (`BlockHitResult.getBlockPos`).
@@ -27,11 +68,8 @@ pub struct PlaceContext {
     pub hit: Vec3,
     /// `BlockHitResult.isInside`.
     pub inside: bool,
-    /// Player view rotation in degrees (`getYRot`, `getXRot`).
-    pub yaw: f32,
-    pub pitch: f32,
-    /// `isSecondaryUseActive` (sneaking).
-    pub sneaking: bool,
+    /// Who initiated the placement: a player's view/sneak state or a directional source.
+    pub source: PlacementSource,
     /// The item in hand (registry name, e.g. `minecraft:oak_stairs`).
     pub item: String,
     /// `Player.canUseGameMasterBlocks` (creative operator); gates command,
@@ -93,7 +131,8 @@ pub struct PlacementPreview {
 #[derive(Clone, Debug)]
 pub struct PlacementContext {
     /// Where the block would go (`getClickedPos`): the clicked block itself
-    /// when it can be replaced, else the block beside it.
+    /// when it can be replaced, else the block beside it (or always the clicked
+    /// block for `DirectionalPlaceContext`).
     pub pos: BlockPos,
     /// The block that was clicked (`getHitResult().getBlockPos`).
     pub hit_pos: BlockPos,
@@ -104,16 +143,17 @@ pub struct PlacementContext {
     /// `BlockHitResult.isInside`: the click hit the inside of the clicked
     /// block's shape.
     pub inside: bool,
-    /// The placer's rotation, in degrees (`getRotation`).
-    pub yaw: f32,
-    pub pitch: f32,
-    /// `isSecondaryUseActive`: the player placing it is sneaking.
-    pub sneaking: bool,
+    /// Who initiated the placement (`BlockPlaceContext` vs `DirectionalPlaceContext`).
+    pub source: PlacementSource,
     /// The item in the placer's hand (`getItemInHand().getItem()`), as its
     /// registry name: `minecraft:oak_stairs`.
     pub item: String,
     /// Whether the clicked block is replaceable (`replacingClickedOnBlock`),
-    /// i.e. whether the block goes into the clicked position.
+    /// i.e. whether the block goes into the clicked position. A player's
+    /// `BlockPlaceContext` stores the value it was built with; a
+    /// `DirectionalPlaceContext` works it out from the level on every call
+    /// (`canPlace()`), so the engine sets it from the clicked block with
+    /// `Sim::settle_replacing_clicked` before anything reads it.
     pub replace_clicked: bool,
 }
 
@@ -188,31 +228,118 @@ fn rotation_segment_of(direction: Direction) -> i32 {
 }
 
 impl PlacementContext {
+    /// `UseOnContext.isSecondaryUseActive` / `DirectionalPlaceContext.isSecondaryUseActive`.
+    pub(crate) fn is_sneaking(&self) -> bool {
+        matches!(self.source, PlacementSource::Player { sneaking: true, .. })
+    }
+    /// `UseOnContext.getRotation` / `DirectionalPlaceContext.getRotation`.
+    fn rotation(&self) -> f32 {
+        match self.source {
+            PlacementSource::Player { yaw, .. } => yaw,
+            PlacementSource::Directional { direction } => {
+                (super::query::data_2d(direction) * 90) as f32
+            }
+        }
+    }
+    /// `UseOnContext.getHorizontalDirection` / `DirectionalPlaceContext.getHorizontalDirection`.
     fn horizontal_direction(&self) -> Direction {
-        from_y_rot(f64::from(self.yaw))
+        match self.source {
+            PlacementSource::Player { yaw, .. } => from_y_rot(f64::from(yaw)),
+            PlacementSource::Directional { direction } => {
+                if axis_of(direction) == Axis::Y {
+                    Direction::North
+                } else {
+                    direction
+                }
+            }
+        }
     }
+    /// `BlockPlaceContext.getNearestLookingDirections` /
+    /// `DirectionalPlaceContext.getNearestLookingDirections`.
     fn nearest_looking_directions(&self) -> [Direction; 6] {
-        let mut directions = ordered_by_nearest(self.yaw, self.pitch);
-        if self.replace_clicked {
-            return directions;
+        match self.source {
+            PlacementSource::Player { yaw, pitch, .. } => {
+                let mut directions = ordered_by_nearest(yaw, pitch);
+                if self.replace_clicked {
+                    return directions;
+                }
+                let target = self.face.opposite();
+                if let Some(index) = directions.iter().position(|d| *d == target)
+                    && index > 0
+                {
+                    directions.copy_within(0..index, 1);
+                    directions[0] = target;
+                }
+                directions
+            }
+            PlacementSource::Directional { direction } => match direction {
+                Direction::Down => [
+                    Direction::Down,
+                    Direction::North,
+                    Direction::East,
+                    Direction::South,
+                    Direction::West,
+                    Direction::Up,
+                ],
+                Direction::Up => [
+                    Direction::Down,
+                    Direction::Up,
+                    Direction::North,
+                    Direction::East,
+                    Direction::South,
+                    Direction::West,
+                ],
+                Direction::North => [
+                    Direction::Down,
+                    Direction::North,
+                    Direction::East,
+                    Direction::West,
+                    Direction::Up,
+                    Direction::South,
+                ],
+                Direction::South => [
+                    Direction::Down,
+                    Direction::South,
+                    Direction::East,
+                    Direction::West,
+                    Direction::Up,
+                    Direction::North,
+                ],
+                Direction::West => [
+                    Direction::Down,
+                    Direction::West,
+                    Direction::South,
+                    Direction::Up,
+                    Direction::North,
+                    Direction::East,
+                ],
+                Direction::East => [
+                    Direction::Down,
+                    Direction::East,
+                    Direction::South,
+                    Direction::Up,
+                    Direction::North,
+                    Direction::West,
+                ],
+            },
         }
-        let target = self.face.opposite();
-        if let Some(index) = directions.iter().position(|d| *d == target)
-            && index > 0
-        {
-            directions.copy_within(0..index, 1);
-            directions[0] = target;
-        }
-        directions
     }
+    /// `BlockPlaceContext.getNearestLookingDirection` /
+    /// `DirectionalPlaceContext.getNearestLookingDirection`.
     fn nearest_looking_direction(&self) -> Direction {
-        ordered_by_nearest(self.yaw, self.pitch)[0]
+        match self.source {
+            PlacementSource::Player { yaw, pitch, .. } => ordered_by_nearest(yaw, pitch)[0],
+            PlacementSource::Directional { .. } => Direction::Down,
+        }
     }
-    fn nearest_looking_vertical(&self) -> Direction {
-        if self.pitch < 0.0 {
-            Direction::Up
-        } else {
-            Direction::Down
+    /// `BlockPlaceContext.getNearestLookingVerticalDirection`: `Direction.getFacingAxis(player, Y)`.
+    /// `None` for a directional source: `DirectionalPlaceContext` doesn't override it and has no
+    /// player, so vanilla throws (`DirectionalRefusal::NoVerticalLook`).
+    fn nearest_looking_vertical(&self) -> Option<Direction> {
+        match self.source {
+            PlacementSource::Player { pitch, .. } if pitch < 0.0 => Some(Direction::Up),
+            PlacementSource::Player { .. } => Some(Direction::Down),
+            PlacementSource::Directional { .. } => None,
         }
     }
     fn click_y(&self) -> f64 {
@@ -229,8 +356,48 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     fn item_is(&self, ctx: &PlacementContext, block: BlockId) -> bool {
         !ctx.item.is_empty() && *self.b.block_data(block).item == *ctx.item
     }
-    /// `BlockState.canBeReplaced(BlockPlaceContext)`.
+    /// `BlockState.canBeReplaced(BlockPlaceContext)`, reading `replacingClickedOnBlock`
+    /// from the context as it stands.
     pub(crate) fn can_be_replaced(&self, state: BlockStateId, ctx: &PlacementContext) -> bool {
+        self.replaceable(state, ctx, Some(ctx.replace_clicked)) == Some(true)
+    }
+
+    /// `DirectionalPlaceContext.canPlace()`, which is also its `replacingClickedOnBlock()`:
+    /// whether the block at the clicked position (`getHitResult().getBlockPos()`) can be
+    /// replaced in this context. Vanilla asks the level on every call and stores nothing,
+    /// so `ctx.replace_clicked` is not read. `Err(ReplacingClickedCycle)` when that block's
+    /// own rule asks `replacingClickedOnBlock`, which is this same question again.
+    pub(crate) fn directional_can_place(
+        &self,
+        ctx: &PlacementContext,
+    ) -> Result<bool, DirectionalRefusal> {
+        self.replaceable(self.state(ctx.hit_pos), ctx, None)
+            .ok_or(DirectionalRefusal::ReplacingClickedCycle)
+    }
+
+    /// Give a directional context the `replace_clicked` its `replacingClickedOnBlock()` would
+    /// return here (`directional_can_place`). A player's `BlockPlaceContext` stores the value
+    /// it was built with, so a player context is left as it is.
+    pub(crate) fn settle_replacing_clicked(
+        &self,
+        ctx: &mut PlacementContext,
+    ) -> Result<(), DirectionalRefusal> {
+        if let PlacementSource::Directional { .. } = ctx.source {
+            ctx.replace_clicked = self.directional_can_place(ctx)?;
+        }
+        Ok(())
+    }
+
+    /// `BlockState.canBeReplaced(BlockPlaceContext)` with `replacing` as the context's
+    /// `replacingClickedOnBlock()`. `None` means that answer is the one being worked out
+    /// (`directional_can_place`): a rule that reads it returns `None`, as vanilla never
+    /// returns from it.
+    fn replaceable(
+        &self,
+        state: BlockStateId,
+        ctx: &PlacementContext,
+        replacing: Option<bool>,
+    ) -> Option<bool> {
         let b = self.b;
         let p = b.props;
         let block = b.block(state);
@@ -239,27 +406,33 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             b.is_replaceable(state) && (ctx.item.is_empty() || !sim.item_is(ctx, block))
         };
         for class in &data.chain {
-            return match class {
+            return Some(match class {
                 Class::Candle => {
-                    (!ctx.sneaking && self.item_is(ctx, block) && b.table.int(state, p.candles) < 4)
+                    (!ctx.is_sneaking()
+                        && self.item_is(ctx, block)
+                        && b.table.int(state, p.candles) < 4)
                         || default(self)
                 }
                 Class::SeaPickle => {
-                    (!ctx.sneaking && self.item_is(ctx, block) && b.table.int(state, p.pickles) < 4)
+                    (!ctx.is_sneaking()
+                        && self.item_is(ctx, block)
+                        && b.table.int(state, p.pickles) < 4)
                         || default(self)
                 }
                 Class::TurtleEgg => {
-                    (!ctx.sneaking && self.item_is(ctx, block) && b.table.int(state, p.eggs) < 4)
+                    (!ctx.is_sneaking()
+                        && self.item_is(ctx, block)
+                        && b.table.int(state, p.eggs) < 4)
                         || default(self)
                 }
                 Class::FlowerBed => {
-                    (!ctx.sneaking
+                    (!ctx.is_sneaking()
                         && self.item_is(ctx, block)
                         && b.table.int(state, p.flower_amount) < 4)
                         || default(self)
                 }
                 Class::LeafLitter => {
-                    (!ctx.sneaking
+                    (!ctx.is_sneaking()
                         && self.item_is(ctx, block)
                         && b.table.int(state, p.segment_amount) < 4)
                         || default(self)
@@ -280,7 +453,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                     let kind = b.table.text(state, p.kind);
                     if kind == "double" || !self.item_is(ctx, block) {
                         false
-                    } else if ctx.replace_clicked {
+                    } else if replacing? {
                         let above = ctx.hit.y - f64::from(ctx.hit_pos.y) > 0.5;
                         if kind == "bottom" {
                             ctx.face == Direction::Up || (above && is_horizontal(ctx.face))
@@ -295,7 +468,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                     let layers = b.table.int(state, p.layers);
                     if !self.item_is(ctx, block) || layers >= 8 {
                         layers == 1
-                    } else if ctx.replace_clicked {
+                    } else if replacing? {
                         ctx.face == Direction::Up
                     } else {
                         true
@@ -310,9 +483,9 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                     }
                 }
                 _ => continue,
-            };
+            });
         }
-        default(self)
+        Some(default(self))
     }
 
     fn fluid_is_water_source(&self, pos: BlockPos) -> bool {
@@ -324,12 +497,15 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
 
     /// `Block.getStateForPlacement(context)` for `block`, after the level's
     /// hook (`LevelAccess::before_state_for_placement`), which a mod block
-    /// answers for itself.
+    /// answers for itself. `Ok(None)` is vanilla's `null`. `Err` when the
+    /// block's own rule has no answer for the context, where vanilla throws
+    /// (`DirectionalRefusal::NoVerticalLook`); a part's answer replaces the
+    /// rule, so it is never refused.
     pub(crate) fn state_for_placement(
         &mut self,
         block: BlockId,
         ctx: &PlacementContext,
-    ) -> Option<BlockStateId> {
+    ) -> Result<Option<BlockStateId>, DirectionalRefusal> {
         let default = self.b.default_of(block);
         let fluid = self.fluid_at(ctx.pos);
         let mut answer = None;
@@ -339,22 +515,29 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             // The candidate need not belong to the item-bound block. An ID outside
             // the state table falls back to vanilla before it can be looked up.
             Some(Some(new)) if (new.0 as usize) < self.b.table.state_count() => {
-                return Some(new);
+                return Ok(Some(new));
             }
             // Vanilla's `null` return: the block goes nowhere.
-            Some(None) => return None,
+            Some(None) => return Ok(None),
             _ => {}
         }
-        let placed = self.placement_at(block, 0, ctx)?;
-        if self.b.block_data(block).declared_waterlogged {
-            Some(self.b.table.set_bool(
+        // A rule with no answer notes why in `placement_refusal` and returns no state.
+        let placed = self.placement_at(block, 0, ctx);
+        if let Some(refusal) = self.placement_refusal.take() {
+            return Err(refusal);
+        }
+        let Some(placed) = placed else {
+            return Ok(None);
+        };
+        Ok(Some(if self.b.block_data(block).declared_waterlogged {
+            self.b.table.set_bool(
                 placed,
                 self.b.props.waterlogged,
                 fluid.kind() == crate::fluid::FluidKind::Water,
-            ))
+            )
         } else {
-            Some(placed)
-        }
+            placed
+        }))
     }
 
     fn placement_at(
@@ -432,7 +615,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             }
             Class::Skull => {
                 let state = sup!()?;
-                Some(table.set_int(state, p.rotation, rotation_segment(ctx.yaw)))
+                Some(table.set_int(state, p.rotation, rotation_segment(ctx.rotation())))
             }
             Class::WallSkull => {
                 let mut state = sup!()?;
@@ -473,13 +656,15 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                     }
                 }
             }
-            Class::Banner => {
-                Some(table.set_int(default, p.rotation, rotation_segment(ctx.yaw + 180.0)))
-            }
+            Class::Banner => Some(table.set_int(
+                default,
+                p.rotation,
+                rotation_segment(ctx.rotation() + 180.0),
+            )),
             Class::StandingSign => Some(wl(table.set_int(
                 default,
                 p.rotation,
-                rotation_segment(ctx.yaw + 180.0),
+                rotation_segment(ctx.rotation() + 180.0),
             ))),
             Class::Barrel | Class::Command | Class::Dispenser => Some(table.set_dir(
                 default,
@@ -600,10 +785,10 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                 let below_hanging = b
                     .tag("minecraft:all_hanging_signs")
                     .is_some_and(|tag| b.in_set(above_state, tag));
-                let direction = from_y_rot(f64::from(ctx.yaw));
+                let direction = from_y_rot(f64::from(ctx.rotation()));
                 let mut attached_to_middle =
-                    !self.collision_face_full_at(above_pos, Direction::Down) || ctx.sneaking;
-                if below_hanging && !ctx.sneaking {
+                    !self.collision_face_full_at(above_pos, Direction::Down) || ctx.is_sneaking();
+                if below_hanging && !ctx.is_sneaking() {
                     if b.instance_of(above_state, Class::WallHangingSign) {
                         if axis_of(b.facing(above_state)) == axis_of(direction) {
                             attached_to_middle = false;
@@ -625,7 +810,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                 let segment = if !attached_to_middle {
                     rotation_segment_of(direction.opposite())
                 } else {
-                    rotation_segment(ctx.yaw + 180.0)
+                    rotation_segment(ctx.rotation() + 180.0)
                 };
                 Some(wl(table.set_int(
                     table.set_bool(default, p.attached, attached_to_middle),
@@ -777,7 +962,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                 let mut facing = horizontal.opposite();
                 let face = ctx.face;
                 if is_horizontal(face)
-                    && ctx.sneaking
+                    && ctx.is_sneaking()
                     && let Some(neighbour_facing) =
                         self.chest_candidate_partner_facing(default, pos, face.opposite())
                     && axis_of(neighbour_facing) != axis_of(face)
@@ -789,7 +974,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                         "left"
                     };
                 }
-                if kind == "single" && !ctx.sneaking {
+                if kind == "single" && !ctx.is_sneaking() {
                     if self.chest_candidate_partner_facing(default, pos, clockwise(facing))
                         == Some(facing)
                     {
@@ -1200,7 +1385,13 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                 Some(table.set_bool(default, p.snowy, snowy))
             }
             Class::Speleothem => {
-                let default_tip = ctx.nearest_looking_vertical().opposite();
+                // Read before anything else, as `SpeleothemBlock.getStateForPlacement` does:
+                // with no player to look, vanilla throws whatever the supports are.
+                let Some(look) = ctx.nearest_looking_vertical() else {
+                    self.placement_refusal = Some(DirectionalRefusal::NoVerticalLook);
+                    return Some(None);
+                };
+                let default_tip = look.opposite();
                 let tip = if self.is_valid_speleothem_placement(block, pos, default_tip) {
                     default_tip
                 } else if self.is_valid_speleothem_placement(block, pos, default_tip.opposite()) {
@@ -1208,7 +1399,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                 } else {
                     return Some(None);
                 };
-                let thickness = self.speleothem_thickness_for(block, pos, tip, !ctx.sneaking);
+                let thickness = self.speleothem_thickness_for(block, pos, tip, !ctx.is_sneaking());
                 let state = table.set_dir(default, p.vertical_direction, tip);
                 Some(wl(table.set_text(state, p.thickness, thickness)))
             }
@@ -1627,6 +1818,80 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         b.air()
     }
 
+    /// The `BlockPlaceContext` / `DirectionalPlaceContext` constructors for `input`: where
+    /// the block goes and whether the clicked block is replaced. A player's context seeds
+    /// `replaceClicked` with `true`, stores what the clicked block's `canBeReplaced` answers,
+    /// and places beside a block it can't replace. A directional context always places at
+    /// the clicked block and answers `replacingClickedOnBlock` from it
+    /// (`settle_replacing_clicked`).
+    fn resolve_context(
+        &self,
+        input: &PlaceContext,
+    ) -> Result<PlacementContext, DirectionalRefusal> {
+        let mut ctx = PlacementContext {
+            pos: input.clicked_pos,
+            hit_pos: input.clicked_pos,
+            face: input.face,
+            hit: input.hit,
+            inside: input.inside,
+            source: input.source,
+            item: input.item.clone(),
+            replace_clicked: true,
+        };
+        match ctx.source {
+            PlacementSource::Player { .. } => {
+                ctx.replace_clicked = self.can_be_replaced(self.state(input.clicked_pos), &ctx);
+                if !ctx.replace_clicked {
+                    ctx.pos = rel(input.clicked_pos, input.face);
+                }
+            }
+            PlacementSource::Directional { .. } => self.settle_replacing_clicked(&mut ctx)?,
+        }
+        Ok(ctx)
+    }
+
+    /// The item's `getPlacementState`: its block's `getStateForPlacement`, or for a
+    /// `StandingAndWallBlockItem` the first of the wall and standing candidates, in
+    /// `getNearestLookingDirections` order, that survives. `Err` when a candidate's rule
+    /// throws (`state_for_placement`).
+    fn placement_state(
+        &mut self,
+        binding: &ItemBinding,
+        ctx: &PlacementContext,
+    ) -> Result<Option<BlockStateId>, DirectionalRefusal> {
+        let b = self.b;
+        if !matches!(
+            binding.kind,
+            ItemKind::StandingAndWall | ItemKind::HangingSign
+        ) {
+            return self.state_for_placement(binding.block, ctx);
+        }
+        let wall = match binding.wall_block {
+            Some(wall) => self.state_for_placement(wall, ctx)?,
+            None => None,
+        };
+        let attachment = binding.attachment.unwrap_or(Direction::Down);
+        for direction in ctx.nearest_looking_directions() {
+            if direction == attachment.opposite() {
+                continue;
+            }
+            let candidate = if direction == attachment {
+                self.state_for_placement(binding.block, ctx)?
+            } else {
+                wall
+            };
+            if let Some(candidate) = candidate {
+                let hanging_ok = binding.kind != ItemKind::HangingSign
+                    || !b.instance_of(candidate, Class::WallHangingSign)
+                    || self.wall_hanging_sign_can_place(candidate, ctx.pos);
+                if hanging_ok && self.can_survive(candidate, ctx.pos) {
+                    return Ok(Some(candidate));
+                }
+            }
+        }
+        Ok(None)
+    }
+
     /// `BlockItem.place` (and its subclasses' overrides).
     /// `BlockPlaceContext` resolution, `updatePlacementContext` and the item's
     /// `getPlacementState` (survival and obstruction checks included).
@@ -1638,31 +1903,29 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     ) -> Option<ResolvedPlacement> {
         let b = self.b;
         let binding = b.item_binding(&input.item).cloned()?;
-        let mut ctx = PlacementContext {
-            pos: input.clicked_pos,
-            hit_pos: input.clicked_pos,
-            face: input.face,
-            hit: input.hit,
-            inside: input.inside,
-            yaw: input.yaw,
-            pitch: input.pitch,
-            sneaking: input.sneaking,
-            item: input.item.clone(),
-            replace_clicked: true,
-        };
-        ctx.replace_clicked = self.can_be_replaced(self.state(input.clicked_pos), &ctx);
-        if !ctx.replace_clicked {
-            ctx.pos = rel(input.clicked_pos, input.face);
-        }
+        let mut ctx = self.resolve_context(input).ok()?;
         let rewritten = match rewrite(self.level, &ctx) {
             Some(Some(replacement)) => {
                 ctx = replacement;
+                // A part's directional context is a `DirectionalPlaceContext`: its
+                // `replacingClickedOnBlock()` comes from the level, not from the part.
+                if let Err(refusal) = self.settle_replacing_clicked(&mut ctx) {
+                    log::warn!("placement_context: refused {}: {refusal:?}", input.item);
+                    return None;
+                }
                 true
             }
             Some(None) => return None,
             None => {
-                // The default keeps BlockPlaceContext.canPlace before the item's rewrite.
-                if !ctx.replace_clicked && !self.can_be_replaced(self.state(ctx.pos), &ctx) {
+                // The default keeps BlockPlaceContext.canPlace / DirectionalPlaceContext.canPlace
+                // before the item's rewrite.
+                let can_place = match ctx.source {
+                    PlacementSource::Directional { .. } => ctx.replace_clicked,
+                    PlacementSource::Player { .. } => {
+                        ctx.replace_clicked || self.can_be_replaced(self.state(ctx.pos), &ctx)
+                    }
+                };
+                if !can_place {
                     return None;
                 }
                 if binding.kind == ItemKind::Scaffolding {
@@ -1691,36 +1954,17 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             binding.kind,
             ItemKind::StandingAndWall | ItemKind::HangingSign
         );
-        let primary = match binding.kind {
-            ItemKind::StandingAndWall | ItemKind::HangingSign => {
-                let wall = binding
-                    .wall_block
-                    .and_then(|wall| self.state_for_placement(wall, &ctx));
-                let attachment = binding.attachment.unwrap_or(Direction::Down);
-                let mut chosen = None;
-                for direction in ctx.nearest_looking_directions() {
-                    if direction == attachment.opposite() {
-                        continue;
-                    }
-                    let candidate = if direction == attachment {
-                        self.state_for_placement(binding.block, &ctx)
-                    } else {
-                        wall
-                    };
-                    if let Some(candidate) = candidate {
-                        let hanging_ok = binding.kind != ItemKind::HangingSign
-                            || !b.instance_of(candidate, Class::WallHangingSign)
-                            || self.wall_hanging_sign_can_place(candidate, ctx.pos);
-                        if hanging_ok && self.can_survive(candidate, ctx.pos) {
-                            chosen = Some(candidate);
-                            break;
-                        }
-                    }
+        let primary = match self.placement_state(&binding, &ctx) {
+            Ok(primary) => primary?,
+            // Vanilla throws, so the item is not used. Only a part's rewrite can bring a
+            // directional context to a rule that throws: a dispenser places shulker boxes.
+            Err(refusal) => {
+                if rewritten {
+                    log::warn!("placement_context: refused {}: {refusal:?}", input.item);
                 }
-                chosen
+                return None;
             }
-            _ => self.state_for_placement(binding.block, &ctx),
-        }?;
+        };
         if !input.can_use_game_master_blocks && b.data(primary).implements(Interface::GameMaster) {
             return None;
         }
@@ -1799,17 +2043,20 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         })
     }
 
-    fn report_placement(&mut self, placed: &AppliedPlacement) {
+    fn report_placement(&mut self, placed: &AppliedPlacement, placer: Option<u32>) {
         let pos = placed.context.pos;
         let state = placed.state;
-        let own = self.b.data(state).sounds.clone();
-        let sounds = self.level.place_sound_type(pos, state, own);
+        let sound = self
+            .level
+            .override_place_sound(pos, state, placer)
+            .unwrap_or_else(|| self.b.facts(state).placement_sound.clone())
+            .for_placement(&placed.context.item);
         self.emit(LevelEvent::Sound {
             pos,
-            sound: sounds.place.clone(),
-            source: None,
-            volume: (sounds.volume + 1.0) / 2.0,
-            pitch: sounds.pitch * 0.8,
+            sound: mod_api::__private::game::sound_event_name(sound.event),
+            source: Some(super::LevelSoundSource::BlockPlacement { except: placer }),
+            volume: sound.volume,
+            pitch: sound.pitch,
         });
         self.game_event_state(pos, "minecraft:block_place", state);
     }
@@ -1828,7 +2075,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                 Some(ctx.clone())
             };
         }
-        let direction = if ctx.sneaking {
+        let direction = if ctx.is_sneaking() {
             if ctx.inside {
                 ctx.face.opposite()
             } else {
@@ -1886,6 +2133,49 @@ impl Behaviours {
     ) {
         self.sim(level, ticks).set_placed_by(pos, state);
     }
+    /// Record a placement operation's writes and effects against a tentative level,
+    /// deferring their update passes and effects until acceptance.
+    pub fn capture_placement_operations<L: LevelAccess + ?Sized>(
+        &self,
+        level: &mut L,
+        ticks: &mut Ticks,
+        run: impl FnOnce(&Self, &mut L, &mut Ticks),
+    ) -> Vec<super::ticks::PlacementOperation> {
+        struct Capture<'a>(&'a mut Ticks);
+        impl Drop for Capture<'_> {
+            fn drop(&mut self) {
+                self.0.placement = None;
+            }
+        }
+        let capture = Capture(ticks);
+        capture.0.placement = Some(Vec::new());
+        run(self, level, capture.0);
+        capture.0.placement.take().unwrap()
+    }
+
+    /// Publish a captured callback effect. The caller has already accepted its writes.
+    pub fn publish_placement_effect<L: LevelAccess + ?Sized>(
+        &self,
+        level: &mut L,
+        ticks: &mut Ticks,
+        effect: super::ticks::PlacementEffect,
+    ) {
+        use super::ticks::PlacementEffect;
+        let mut sim = self.sim(level, ticks);
+        match effect {
+            PlacementEffect::Neighbors(at, block, orientation) => {
+                sim.update_neighbors_at_oriented(at, block, orientation);
+            }
+            PlacementEffect::LevelEvent(event) => sim.emit(event),
+            PlacementEffect::BlockEvent(event) => {
+                sim.ticks.queue_block_event(event);
+            }
+            PlacementEffect::BlockTick(at, block, delay, priority) => {
+                sim.schedule_tick_priority(at, block, delay, priority);
+            }
+        }
+    }
+
     /// `BlockItem.place` for the item in `ctx`: resolves the replaced
     /// position, computes `getStateForPlacement`, checks survival and entity
     /// obstruction, writes the block (flags 11), runs `setPlacedBy` (second
@@ -1935,7 +2225,7 @@ impl Behaviours {
         if placed.matches_candidate {
             sim.set_placed_by(placed.context.pos, placed.state);
         }
-        sim.report_placement(&placed);
+        sim.report_placement(&placed, None);
         placed.state = sim.state(placed.context.pos);
         Some(placed)
     }
@@ -1986,31 +2276,22 @@ impl Behaviours {
         level: &mut L,
         ticks: &mut Ticks,
         placed: &AppliedPlacement,
+        placer: Option<u32>,
     ) {
-        self.sim(level, ticks).report_placement(placed);
+        self.sim(level, ticks).report_placement(placed, placer);
     }
     /// `DirectionalPlaceContext.canPlace`: whether the block at the clicked
     /// position can be replaced by the item (a dispenser places only there).
+    /// `Err(ReplacingClickedCycle)` where vanilla never returns: the clicked
+    /// block's rule asks `replacingClickedOnBlock`, which is this question.
     pub fn directional_can_place<L: LevelAccess + ?Sized>(
         &self,
         level: &mut L,
         ticks: &mut Ticks,
         ctx: &PlaceContext,
-    ) -> bool {
+    ) -> Result<bool, DirectionalRefusal> {
         let sim = self.sim(level, ticks);
-        let inner = PlacementContext {
-            pos: ctx.clicked_pos,
-            hit_pos: ctx.clicked_pos,
-            face: ctx.face,
-            hit: ctx.hit,
-            inside: ctx.inside,
-            yaw: ctx.yaw,
-            pitch: ctx.pitch,
-            sneaking: ctx.sneaking,
-            item: ctx.item.clone(),
-            replace_clicked: true,
-        };
-        sim.can_be_replaced(sim.state(ctx.clicked_pos), &inner)
+        sim.resolve_context(ctx).map(|ctx| ctx.replace_clicked)
     }
     /// What `BlockItem.place` would place for `ctx`, without writing anything
     /// (None when vanilla's placement fails).
@@ -2024,33 +2305,79 @@ impl Behaviours {
             .map(|(_, preview)| preview)
     }
     /// `getStateForPlacement` of `block` for `ctx` without placing anything
-    /// (`None` when vanilla refuses the placement). The position is resolved
-    /// as `BlockPlaceContext` does.
+    /// (`Ok(None)` when vanilla refuses the placement). The position is resolved
+    /// as `BlockPlaceContext` (or `DirectionalPlaceContext`) does. `Err` where
+    /// vanilla throws for a directional context (`DirectionalRefusal`).
     pub fn state_for_placement<L: LevelAccess + ?Sized>(
         &self,
         level: &mut L,
         ticks: &mut Ticks,
         block: BlockId,
         input: &PlaceContext,
-    ) -> Option<BlockStateId> {
+    ) -> Result<Option<BlockStateId>, DirectionalRefusal> {
         let mut sim = self.sim(level, ticks);
-        let mut ctx = PlacementContext {
-            pos: input.clicked_pos,
-            hit_pos: input.clicked_pos,
-            face: input.face,
-            hit: input.hit,
-            inside: input.inside,
-            yaw: input.yaw,
-            pitch: input.pitch,
-            sneaking: input.sneaking,
-            item: input.item.clone(),
-            replace_clicked: true,
-        };
-        ctx.replace_clicked = sim.can_be_replaced(sim.state(input.clicked_pos), &ctx);
-        if !ctx.replace_clicked {
-            ctx.pos = rel(input.clicked_pos, input.face);
-        }
+        let ctx = sim.resolve_context(input)?;
         sim.state_for_placement(block, &ctx)
+    }
+}
+
+#[cfg(test)]
+mod placement_sound_tests {
+    use super::*;
+    use crate::level::{GameplayStateSource, LevelSoundSource, data, tests::TestLevel};
+    use mod_api::SoundEventKey;
+
+    #[test]
+    fn placement_reports_the_resolved_key_and_levels_of_the_placed_state() {
+        let mut b = data::inert_support_fixture();
+        // A synthetic multi-state block: distinguish the selected state's sound from its
+        // default's without loading prepared resources or depending on block-item eligibility.
+        let default = b.default_of(b.named.water);
+        let state = b.table.set_int(default, b.props.level, 1);
+        assert_ne!(state, default);
+        let facts = serde_json::json!({"sound": {
+            "place": {"id": ":block.stone.place"}, "volume": 3.0, "pitch": 1.25
+        }});
+        b.facts[state.0 as usize].placement_sound = facts
+            .placement_sound(&mut |name| {
+                SoundEventKey::parse(name).ok_or_else(|| crate::compression::invalid(name))
+            })
+            .unwrap();
+        let mut level = TestLevel::new(&b);
+        let pos = BlockPos::new(1, 2, 1);
+        b.report_placement(
+            &mut level,
+            &mut Ticks::new(0),
+            &AppliedPlacement {
+                context: PlacementContext {
+                    pos,
+                    hit_pos: pos,
+                    face: Direction::Up,
+                    hit: Vec3::ZERO,
+                    inside: false,
+                    source: PlacementSource::Player {
+                        yaw: 0.0,
+                        pitch: 0.0,
+                        sneaking: false,
+                    },
+                    item: "test:block_item".into(),
+                    replace_clicked: true,
+                },
+                state,
+                matches_candidate: true,
+            },
+            None,
+        );
+        assert_eq!(
+            level.events.first(),
+            Some(&LevelEvent::Sound {
+                pos,
+                sound: "minecraft:block.stone.place".into(),
+                source: Some(LevelSoundSource::BlockPlacement { except: None }),
+                volume: 2.0,
+                pitch: 1.0,
+            })
+        );
     }
 }
 
@@ -2070,9 +2397,11 @@ mod placed_against_tests {
                     face,
                     hit: Vec3::new(0.0, 0.0, 0.0),
                     inside: false,
-                    yaw: 0.0,
-                    pitch: 0.0,
-                    sneaking: false,
+                    source: PlacementSource::Player {
+                        yaw: 0.0,
+                        pitch: 0.0,
+                        sneaking: false,
+                    },
                     item: String::new(),
                     replace_clicked: false,
                 },
@@ -2090,5 +2419,156 @@ mod placed_against_tests {
             decision.context.pos = clicked;
             assert_eq!(decision.placed_against_pos(), clicked.offset(-x, -y, -z));
         }
+    }
+
+    #[test]
+    fn directional_place_context_matches_vanilla_overrides() {
+        let pos = BlockPos::new(4, 64, 8);
+        let make = |source: PlacementSource| PlacementContext {
+            pos,
+            hit_pos: pos,
+            face: Direction::Up,
+            hit: Vec3::new(4.5, 64.0, 8.5),
+            inside: false,
+            source,
+            item: String::new(),
+            replace_clicked: true,
+        };
+
+        // Player at yaw 0 looking south vs directional south: different source and looking dirs.
+        let player_south = make(PlacementSource::Player {
+            yaw: 0.0,
+            pitch: 0.0,
+            sneaking: true,
+        });
+        assert!(player_south.is_sneaking());
+        assert_eq!(player_south.horizontal_direction(), Direction::South);
+        assert_eq!(player_south.rotation(), 0.0);
+        assert_eq!(player_south.nearest_looking_direction(), Direction::South);
+        // `Direction.getFacingAxis(player, Y)`: up only for a negative pitch.
+        assert_eq!(
+            player_south.nearest_looking_vertical(),
+            Some(Direction::Down)
+        );
+        let player_up = make(PlacementSource::Player {
+            yaw: 0.0,
+            pitch: -10.0,
+            sneaking: false,
+        });
+        assert_eq!(player_up.nearest_looking_vertical(), Some(Direction::Up));
+
+        let expected: [(Direction, Direction, f32, [Direction; 6]); 6] = [
+            (
+                Direction::Down,
+                Direction::North,
+                -90.0,
+                [
+                    Direction::Down,
+                    Direction::North,
+                    Direction::East,
+                    Direction::South,
+                    Direction::West,
+                    Direction::Up,
+                ],
+            ),
+            (
+                Direction::Up,
+                Direction::North,
+                -90.0,
+                [
+                    Direction::Down,
+                    Direction::Up,
+                    Direction::North,
+                    Direction::East,
+                    Direction::South,
+                    Direction::West,
+                ],
+            ),
+            (
+                Direction::North,
+                Direction::North,
+                180.0,
+                [
+                    Direction::Down,
+                    Direction::North,
+                    Direction::East,
+                    Direction::West,
+                    Direction::Up,
+                    Direction::South,
+                ],
+            ),
+            (
+                Direction::South,
+                Direction::South,
+                0.0,
+                [
+                    Direction::Down,
+                    Direction::South,
+                    Direction::East,
+                    Direction::West,
+                    Direction::Up,
+                    Direction::North,
+                ],
+            ),
+            (
+                Direction::West,
+                Direction::West,
+                90.0,
+                [
+                    Direction::Down,
+                    Direction::West,
+                    Direction::South,
+                    Direction::Up,
+                    Direction::North,
+                    Direction::East,
+                ],
+            ),
+            (
+                Direction::East,
+                Direction::East,
+                270.0,
+                [
+                    Direction::Down,
+                    Direction::East,
+                    Direction::South,
+                    Direction::Up,
+                    Direction::North,
+                    Direction::West,
+                ],
+            ),
+        ];
+
+        for (direction, horizontal, rotation, ordered) in expected {
+            let ctx = make(PlacementSource::Directional { direction });
+            assert!(!ctx.is_sneaking(), "{direction:?}");
+            assert_eq!(ctx.horizontal_direction(), horizontal, "{direction:?}");
+            assert_eq!(ctx.rotation(), rotation, "{direction:?}");
+            assert_eq!(
+                ctx.nearest_looking_direction(),
+                Direction::Down,
+                "{direction:?}"
+            );
+            assert_eq!(ctx.nearest_looking_directions(), ordered, "{direction:?}");
+            // Not overridden: `getFacingAxis(null, Y)` throws, so there is no answer.
+            assert_eq!(ctx.nearest_looking_vertical(), None, "{direction:?}");
+        }
+    }
+
+    #[test]
+    fn falling_block_landing_context_uses_directional_down() {
+        let pos = BlockPos::new(12, 70, -5);
+        let ctx = super::super::falling::landing_replace_context(pos);
+        assert_eq!(ctx.pos, pos);
+        assert_eq!(ctx.hit_pos, pos);
+        assert_eq!(ctx.face, Direction::Up);
+        assert_eq!(ctx.hit, Vec3::new(12.5, 70.0, -4.5));
+        assert!(!ctx.inside);
+        assert_eq!(
+            ctx.source,
+            PlacementSource::Directional {
+                direction: Direction::Down,
+            }
+        );
+        assert!(ctx.item.is_empty());
     }
 }

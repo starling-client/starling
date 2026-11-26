@@ -181,6 +181,38 @@ public final class VanillaHudOracle {
         @Override public boolean showVehicleHealth() { return true; }
     }
 
+    /** Another player the view follows: a RemotePlayer answering from the case's watched object. */
+    public static final class Watched extends net.minecraft.client.player.RemotePlayer {
+        Level level;
+        Entity vehicle;
+        ItemStack offhand = ItemStack.EMPTY;
+        private Watched() { super(null, null); }
+        static JsonObject w() { return c.getAsJsonObject("watched"); }
+        static float wf(String k, float d) { return w().has(k) ? w().get(k).getAsFloat() : d; }
+        static boolean wb(String k) { return w().has(k) && w().get(k).getAsBoolean(); }
+        @Override public float getHealth() { return wf("health", 20); }
+        @Override public double getAttributeValue(Holder<Attribute> a) { return a == Attributes.MAX_HEALTH ? wf("maxHealth", 20) : 0.0; }
+        @Override public float getAbsorptionAmount() { return wf("absorption", 0); }
+        @Override public int getArmorValue() { return (int) wf("armor", 0); }
+        @Override public boolean hasEffect(Holder<MobEffect> effect) { return false; }
+        @Override public boolean isFullyFrozen() { return wb("frozen"); }
+        @Override public int getAirSupply() { return (int) wf("air", 300); }
+        @Override public boolean isEyeInFluid(TagKey<Fluid> tag) { return tag == FluidTags.WATER && wb("underWater"); }
+        @Override public Entity getVehicle() { return vehicle; }
+        @Override public ItemStack getOffhandItem() { return offhand; }
+        @Override public HumanoidArm getMainArm() { return wb("rightHanded") ? HumanoidArm.RIGHT : HumanoidArm.LEFT; }
+        @Override public Level level() { return level; }
+        @Override public void playSound(net.minecraft.sounds.SoundEvent sound, float volume, float pitch) { }
+    }
+
+    /** The watched player's mount answering health from the watched object. */
+    public static final class WatchedMount extends net.minecraft.world.entity.animal.equine.Horse {
+        private WatchedMount() { super(null, null); }
+        @Override public float getHealth() { return Watched.wf("vehicleHealth", 0); }
+        @Override public double getAttributeValue(Holder<Attribute> a) { return a == Attributes.MAX_HEALTH ? Watched.wf("vehicleMaxHealth", 0) : 0.0; }
+        @Override public boolean showVehicleHealth() { return true; }
+    }
+
     /** Minecraft.crosshairPickEntity: a living entity, alive as the case says. */
     public static final class Target extends net.minecraft.world.entity.animal.equine.Horse {
         private Target() { super(null, null); }
@@ -434,6 +466,31 @@ public final class VanillaHudOracle {
                     put(camera, net.minecraft.client.Camera.class, "entity", null);
                 switch (c.get("kind").getAsString()) {
                     case "decorations" -> {
+                        // Hud.getCameraPlayer: the view follows a Horse (not a Player) or another RemotePlayer.
+                        switch (c.has("cameraKind") ? c.get("cameraKind").getAsString() : "self") {
+                            case "mob" -> put(camera, net.minecraft.client.Camera.class, "entity", alloc(Target.class));
+                            case "otherPlayer" -> {
+                                var w = c.getAsJsonObject("watched");
+                                var watched = alloc(Watched.class);
+                                watched.level = clientLevel;
+                                put(watched, net.minecraft.world.entity.player.Player.class, "foodData", new FoodData());
+                                watched.damageCooldownTime = 0;
+                                var watchedInventory = new Inventory(watched, new EntityEquipment());
+                                put(watched, net.minecraft.world.entity.player.Player.class, "inventory", watchedInventory);
+                                if (w.has("mainHand") && w.get("mainHand").getAsBoolean()) {
+                                    var sword = new ItemStack(Items.DIAMOND_SWORD);
+                                    watchedInventory.setItem(0, sword);
+                                    slots.put(sword, 0);
+                                }
+                                if (w.has("offhand") && w.get("offhand").getAsBoolean()) {
+                                    watched.offhand = new ItemStack(Items.SHIELD);
+                                    slots.put(watched.offhand, 40);
+                                }
+                                if (w.has("vehicleMaxHealth")) watched.vehicle = alloc(WatchedMount.class);
+                                put(camera, net.minecraft.client.Camera.class, "entity", watched);
+                            }
+                            default -> { }
+                        }
                         if (c.has("crosshair") && c.get("crosshair").getAsBoolean()) {
                             put(options, Options.class, "cameraType", net.minecraft.client.CameraType.FIRST_PERSON);
                             var debug = alloc(net.minecraft.client.gui.components.debug.DebugScreenEntryList.class);
@@ -446,7 +503,7 @@ public final class VanillaHudOracle {
                         if (mode != GameType.SPECTATOR) hotbar.invoke(hud, capture, delta);
                         if (mode.isSurvival()) health.invoke(hud, capture);
                         vehicle.invoke(hud, capture);
-                        if (c.has("experienceBar") && c.get("experienceBar").getAsBoolean()) new ExperienceBar(mc).extractBackground(capture, delta);
+                        if (mode.isSurvival() && c.has("experienceBar") && c.get("experienceBar").getAsBoolean()) new ExperienceBar(mc).extractBackground(capture, delta);
                         if (mode.isSurvival() && actor.experienceLevel > 0) level.invoke(null, capture, font, actor.experienceLevel);
                     }
                     case "effects" -> {

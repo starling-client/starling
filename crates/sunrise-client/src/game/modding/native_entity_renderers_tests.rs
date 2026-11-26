@@ -3,7 +3,7 @@
 //! item, a vanilla boat is unchanged, the later registration for a type wins, an unknown type is
 //! refused by name, and a resource reload keeps the registered renderer in use.
 use super::Game;
-use super::native_entity_renderers::EntityRendererTable;
+use super::native_entity_renderers::{EntityRendererTable, RegisteredEntityRenderer};
 use mod_api::{BlockEntityDrawContext, EntityRenderState, EntityRenderer};
 use std::{
     collections::BTreeMap,
@@ -99,12 +99,12 @@ static TYPES: [ThrownType; 2] = [
 /// Resolves `ids`, each with a renderer of its own, against [`TYPES`] and the entity types
 /// `minecraft:oak_boat`, `ruby:bolt` and `ruby:dart`.
 fn resolve(ids: &[&str]) -> (EntityRendererTable, Vec<String>) {
-    let registered: BTreeMap<String, Arc<dyn EntityRenderer>> = ids
+    let registered: BTreeMap<String, RegisteredEntityRenderer> = ids
         .iter()
         .map(|id| {
             (
                 (*id).to_owned(),
-                Raised::new(1.0) as Arc<dyn EntityRenderer>,
+                RegisteredEntityRenderer::new(Raised::new(1.0), None),
             )
         })
         .collect();
@@ -299,26 +299,35 @@ fn a_vanilla_boat_is_unchanged_by_a_registration_for_its_type() {
     );
 }
 
-/// A failing renderer falls back to the item and is asked no more; only a reload's fresh table asks
-/// it again, so this also fails when a reload does not rebuild the table (or does not finish).
+/// A renderer returning `Err` falls back to the item for that frame only and stays active for
+/// later frames and after a resource reload.
 #[test]
 #[ignore = "daily"]
-fn a_failed_renderer_draws_the_item_until_a_resource_reload_resolves_it_again() {
+fn a_failed_renderer_falls_back_for_that_frame_and_recovers_on_the_next() {
     in_scene(
-        "a_failed_renderer_draws_the_item_until_a_resource_reload_resolves_it_again",
+        "a_failed_renderer_falls_back_for_that_frame_and_recovers_on_the_next",
         |game, scene| {
-            for frame in ["the failing frame", "the next frame"] {
-                let spike = thrown_frame(game, &["ruby:spike"]);
-                assert!(!spike.is_empty(), "{frame}: its snowball item");
-                assert!(
-                    spike.iter().all(|v| above(v) < 2.0),
-                    "{frame}: no quad kept: {spike:?}"
-                );
-                assert_eq!(scene.spike.calls(), 1, "{frame}: asked once, then no more");
-            }
+            let _ = mod_api::__private::take_hook_panics();
+            let spike = thrown_frame(game, &["ruby:spike"]);
+            assert!(!spike.is_empty(), "the failing frame: its snowball item");
+            assert!(
+                spike.iter().all(|v| above(v) < 2.0),
+                "the failing frame: no quad kept: {spike:?}"
+            );
+            assert_eq!(scene.spike.calls(), 1);
+            assert!(
+                mod_api::__private::take_hook_panics().is_empty(),
+                "an Err return never queues a panic notice"
+            );
+
+            let spike = thrown_frame(game, &["ruby:spike"]);
+            assert_eq!(scene.spike.calls(), 2, "asked again on the next frame");
+            assert_eq!(spike.len(), 4, "one quad and no item: {spike:?}");
+            assert!(spike.iter().all(|v| (400.0..=401.0).contains(&above(v))));
+
             super::model_baking_completed_tests::reload(game);
             let spike = thrown_frame(game, &["ruby:spike"]);
-            assert_eq!(scene.spike.calls(), 2, "the reload resolved it again");
+            assert_eq!(scene.spike.calls(), 3, "the reload resolved it again");
             assert_eq!(spike.len(), 4, "one quad and no item: {spike:?}");
             assert!(spike.iter().all(|v| (400.0..=401.0).contains(&above(v))));
         },

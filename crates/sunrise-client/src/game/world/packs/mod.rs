@@ -376,14 +376,10 @@ impl Game<'_> {
             if self.spawn_pack_reload(ReloadKind::Selection).is_ok() {
                 // addResourcePackLoadFailToast(null), SystemToast.addOrUpdate.
                 let title = sunrise_client::text::Text::translate("resourcePack.load_fail", &[]);
-                match &mut self.server_packs.load_fail {
-                    Some(toast) => toast.reset(title, None),
-                    None => {
-                        self.server_packs.load_fail = self.add_system_toast(
-                            sunrise_client::toasts::SystemToast::new(title, None),
-                        );
-                    }
-                }
+                self.add_or_update_system_toast(
+                    super::toast_manager::SystemToastId::PackLoadFailure,
+                    sunrise_client::toasts::SystemToast::new(title, None),
+                );
                 return;
             }
         }
@@ -445,27 +441,45 @@ impl Game<'_> {
             self.pack.context.clone(),
         );
         let (unicode, japanese) = (self.settings.force_unicode, self.settings.japanese_glyphs);
+        let max_atlas_size = self
+            .renderer
+            .as_ref()
+            .map_or(sunrise_client::hud::MAX_ATLAS_SIZE, |r| {
+                r.device.limits().max_texture_dimension_2d
+            });
         // The reload's mod listeners register here, on the thread that owns
         // the game, before the staging worker starts: each listener keeps its
         // registering mod for crash attribution.
-        let client_listeners = self.register_client_reload_listeners();
+        // The generation's settings are captured here, once, before registration: the listeners
+        // register over the capture and the apply builds its loop readers from it.
+        let captured = self
+            .capture_candidate_settings(&self.options.resources)
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
+        let client_listeners = self.register_client_reload_listeners(&captured);
         let texture_atlases = super::client_reload::collect_texture_atlases();
+        let emissive_sprites = super::client_reload::collect_emissive_sprites();
         super::mods::register_fluid_models(self.options.execution_role);
         let stage = move |progress: &crate::game::Progress| {
-            stage_pack(
+            stage_pack_with_emissive(
                 &vanilla,
                 &selected,
                 &server,
                 &mod_sources,
                 client_listeners,
                 &texture_atlases,
+                &emissive_sprites,
                 &assets,
                 &res,
                 &context,
                 unicode,
                 japanese,
+                max_atlas_size,
                 progress,
             )
+            .map(|mut staged| {
+                staged.settings = Some(captured);
+                staged
+            })
             .map_err(|e| e.to_string())
         };
         #[cfg(test)]
@@ -473,6 +487,11 @@ impl Game<'_> {
         self.pack_reload = Some(PackReload::spawn(kind, stage)?);
         self.reload_overlay = Some(ReloadOverlay::default());
         Ok(())
+    }
+    /// `ScreensClientHost::reload_overlay_visible`: a pack reload's `LoadingOverlay` is up,
+    /// from the reload's start until it has faded out (`Gui.overlay()`).
+    pub(in crate::game) fn reload_overlay_visible(&self) -> bool {
+        self.pack_reload.is_some() || self.reload_overlay.is_some()
     }
     /// One frame of the pack reload's `LoadingOverlay`: its bar eased toward
     /// the reload's progress (all of it once applied) and how far it has
@@ -534,20 +553,31 @@ impl Game<'_> {
             block_entity_shapes,
             waypoint_styles,
             armor_stand_assets,
+            entity_models,
             frame_models,
             sounds,
             language,
+            settings,
         } = staged;
         // All fallible preflight finishes before any listener or the game
-        // publishes the candidate. In particular, registration can refuse it.
-        let loop_context = self.prepare_loop_context(&root)?;
+        // publishes the candidate.
+        let loop_context = match settings {
+            Some(captured) => self.prepare_loop_context_from(captured),
+            None => self.prepare_loop_context(&root)?,
+        };
         let professions = self.prepare_client_professions()?;
-        let item_extensions = Self::prepare_client_item_extensions(&gui)?;
+        let item_extensions =
+            Self::prepare_client_item_extensions(&gui, &mut self.client_item_extension_owners);
         // A reload from the title can apply before the start's world-rest worker is done.
         self.join_world_rest()?;
         let tab_modifiers = sunrise_client::polytone_creative_tabs::TabModifier::read_all(&root);
-        let standalone_geometry =
-            super::native_block_entity_draw::StandaloneGeometry::new(&pack, &gui);
+        let standalone_geometry = super::native_block_entity_draw::StandaloneGeometry::new(
+            &pack,
+            &gui,
+            self.res.try_block_entity_render(),
+        );
+        // A resource reload reads the shader pack's files again too (its request for HDR).
+        self.native_shaders.pick_hdr.get_mut().forget();
         // Keep the working GPU resources, and hand its window surface over.
         if let Some(renderer) = &mut self.renderer {
             renderer.release_surface();
@@ -561,24 +591,24 @@ impl Game<'_> {
                     self.options.offscreen,
                     &pack,
                     &gui,
-                    self.renderer.as_ref(),
+                    self.renderer.as_ref().map_or(
+                        sunrise_client::gfx::RendererDevice::New,
+                        sunrise_client::gfx::RendererDevice::Reuse,
+                    ),
                     Some(textures),
                     self.settings.sunrise.api,
                     self.settings.sunrise.translucent_batching,
-                    self.settings.vsync,
+                    self.effective_vsync(),
                     &self.settings.sunrise,
-                    super::shader_packs::picked_pack_shape(&self.settings),
+                    self.picked_pack_shape(),
                     self.renderer
                         .as_ref()
                         .map(|r| r.display_reading())
                         .unwrap_or_default(),
-                    (
-                        self.settings.file.int("textureFiltering"),
-                        self.settings.file.int("maxAnisotropyBit"),
-                    ),
+                    self.settings.texture_atlas_settings(),
                 )
-                .and_then(|(renderer, clouds)| {
-                    clouds?;
+                .and_then(|(renderer, required)| {
+                    required?;
                     Ok(renderer)
                 })
             })
@@ -626,6 +656,7 @@ impl Game<'_> {
                 .unwrap_or_else(std::sync::PoisonError::into_inner) =
                 sunrise_client::custom_armor::load_from(&game.armor_stand_assets.root);
             game.armor_stand_assets.extensions = item_extensions;
+            game.entity_models = entity_models;
             game.random_tick_sections.clear();
             game.portals.sections.clear();
             game.options.resources = root.clone();
@@ -635,6 +666,11 @@ impl Game<'_> {
             game.build_level_environments();
             game.standalone_geometry = standalone_geometry;
             game.instance_groups.borrow_mut().clear();
+            game.prepared_items.borrow_mut().clear();
+            if let Some(renderer) = &game.renderer {
+                renderer.clear_mod_meshes();
+                renderer.clear_mod_uniforms();
+            }
             // The new atlas's skin and map slots are blank: players and maps
             // upload into it again instead of naming sprites it does not have.
             game.skin_slots.forget();
@@ -719,11 +755,6 @@ impl Game<'_> {
             if has_renderer {
                 game.apply_ui_settings();
             }
-            // Sunrise's own shader pack is built again: its sprite tags name the old atlas's
-            // layers, and a new renderer runs no pack.
-            game.native_shaders = super::native_shaders::NativeShaders::picking(&std::mem::take(
-                &mut game.native_shaders.picked,
-            ));
             game.ui.chat.rescale(&game.gui.atlas);
             game.install_loop_context(loop_context);
             game.resolve_entity_renderers();
@@ -738,13 +769,15 @@ impl Game<'_> {
 /// `apply_staged_pack` does the GPU half and the swap): the overlay
 /// root, the models and sprites, the menu bundle, the pack's tables and its
 /// CPU mip chains.
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
 pub(super) fn stage_pack(
     vanilla_root: &Path,
     selected: &[String],
     server: &[Pack],
     mod_sources: &super::mods::ModsState,
     client_listeners: mod_api::ClientListenerRegistry,
-    texture_atlases: &[mod_api::TextureAtlasRegistration],
+    texture_atlases: &[mod_api::Answered<mod_api::TextureAtlasRegistration>],
     assets: &Arc<Assets>,
     res: &Resources,
     context: &WorkerContext,
@@ -752,6 +785,44 @@ pub(super) fn stage_pack(
     japanese: bool,
     progress: &super::Progress,
 ) -> sunrise_client::Result<StagedPack> {
+    stage_pack_with_emissive(
+        vanilla_root,
+        selected,
+        server,
+        mod_sources,
+        client_listeners,
+        texture_atlases,
+        &[],
+        assets,
+        res,
+        context,
+        force_unicode,
+        japanese,
+        sunrise_client::hud::MAX_ATLAS_SIZE,
+        progress,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn stage_pack_with_emissive(
+    vanilla_root: &Path,
+    selected: &[String],
+    server: &[Pack],
+    mod_sources: &super::mods::ModsState,
+    client_listeners: mod_api::ClientListenerRegistry,
+    texture_atlases: &[mod_api::Answered<mod_api::TextureAtlasRegistration>],
+    emissive_sprites: &[mod_api::Answered<mod_api::EmissiveSpriteRegistration>],
+    assets: &Arc<Assets>,
+    res: &Resources,
+    context: &WorkerContext,
+    force_unicode: bool,
+    japanese: bool,
+    max_atlas_size: u32,
+    progress: &super::Progress,
+) -> sunrise_client::Result<StagedPack> {
+    // EntityModelSet.vanilla builds these definitions from the base game, not packs.
+    let entity_models_doc = sunrise_client::mobs::EntityModelDocument::load(vanilla_root)
+        .map_err(|e| format!("loading vanilla entity model definitions: {e}"))?;
     let resource_root = startup_root(vanilla_root, selected, server, mod_sources)?.selected?;
     let resource_root = super::client_reload::stage_texture_atlases(resource_root, texture_atlases);
     let root = resource_root.prepared().to_path_buf();
@@ -763,7 +834,6 @@ pub(super) fn stage_pack(
         || -> sunrise_client::Result<_> {
             // The world's models and sprites and the GUI atlas read the same root and nothing of
             // each other: about a second each, side by side.
-            let pool = super::resource_tables::dynamic_texture_pool();
             // The sound events and the language are read here too, not in
             // the frame that applies the reload (about 20 ms of it).
             let (render, atlas, panorama, (sounds, language)) = std::thread::scope(|s| {
@@ -771,7 +841,7 @@ pub(super) fn stage_pack(
                     let game = sunrise_assets::resource_source::ResourceSource::directory(
                         vanilla_root.to_path_buf(),
                     );
-                    HudAtlas::build_over_with_dynamic_textures(&source, &source, &game, pool)
+                    HudAtlas::build_over_and_limit(&source, &source, &game, max_atlas_size)
                         .map_err(|e| e.to_string())
                 });
                 let panorama = super::resource_load::named_scope(s, "pack-assets", || {
@@ -784,7 +854,7 @@ pub(super) fn stage_pack(
                     )
                 });
                 (
-                    assets.reload(&resource_root),
+                    assets.reload_with_emissive(&resource_root, emissive_sprites),
                     atlas.join(),
                     panorama.join(),
                     small
@@ -823,6 +893,7 @@ pub(super) fn stage_pack(
             let block_entity_shapes = res.block_entity_render().shapes_for(&source);
             let waypoint_styles = sunrise_client::locator_bar::WaypointStyles::load(&source);
             let armor_stand_assets = super::armor_stands::ArmorStandAssets::load(&source, None);
+            let entity_models = super::EntityModels::load(Some(&entity_models_doc));
             let frame_models =
                 super::frames::bake_frames(pack.render.model_library.as_deref().ok());
             progress.set(3);
@@ -836,9 +907,11 @@ pub(super) fn stage_pack(
                 block_entity_shapes,
                 waypoint_styles,
                 armor_stand_assets,
+                entity_models,
                 frame_models,
                 sounds,
                 language,
+                settings: None,
             })
         },
     )
@@ -856,6 +929,7 @@ pub(super) struct StagedPack {
     pub root: PathBuf,
     pub waypoint_styles: sunrise_client::locator_bar::WaypointStyles,
     pub armor_stand_assets: super::armor_stands::ArmorStandAssets,
+    pub entity_models: super::EntityModels,
     pub frame_models: [super::frames::FrameModel; 4],
     /// The mod reload listeners' prepared applies, ordered around publication
     /// of the staged models.
@@ -870,6 +944,9 @@ pub(super) struct StagedPack {
     /// The root's sound events and current language.
     pub sounds: sunrise_client::sound_events::SoundRegistry,
     pub language: lang::Language,
+    /// The settings capture the reload's listeners registered over, when the reload took one;
+    /// the apply builds the loop readers from it.
+    pub settings: Option<sunrise_world::native_load_context::SettingsCapture>,
 }
 
 /// A pack reload's stages, indexed by `progress`: the overlay draws how far
@@ -1232,6 +1309,31 @@ mod tests {
         );
     }
 
+    /// `ScreensClientHost::reload_overlay_visible` (#5555): false with no reload, true
+    /// while a reload stages and while its overlay fades out, false once it has faded.
+    #[test]
+    #[ignore = "daily"]
+    fn a_mod_reads_whether_the_reload_overlay_is_up() {
+        crate::game::native_entity_refs::tests::with_client_game(|game| {
+            let visible = |game: &Game<'_>| {
+                <Game<'_> as mod_api::prelude::ScreensClientHost>::reload_overlay_visible(game)
+            };
+            assert!(!visible(game));
+            game.pack_reload = Some(
+                PackReload::spawn_holding(ReloadKind::Selection, Duration::ZERO, |_| {
+                    Err("staged".into())
+                })
+                .unwrap(),
+            );
+            game.reload_overlay = Some(ReloadOverlay::default());
+            assert!(visible(game), "staging");
+            game.pack_reload = None;
+            assert!(visible(game), "fading out after the reload");
+            game.reload_overlay = None;
+            assert!(!visible(game), "faded out");
+        });
+    }
+
     /// `LoadingOverlay.isReadyToFadeOut`: a reload that stages at once still
     /// keeps its overlay up - the 1000 ms `fadeInStart` gate - so a small pack
     /// does not flash the Mojang logo for a frame or two.
@@ -1274,3 +1376,7 @@ mod tests {
 #[cfg(test)]
 #[path = "clouds_reload_tests.rs"]
 mod clouds_reload_tests;
+
+#[cfg(test)]
+#[path = "core_shaders_reload_tests.rs"]
+mod core_shaders_reload_tests;

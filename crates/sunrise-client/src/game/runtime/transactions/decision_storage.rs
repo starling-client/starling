@@ -94,9 +94,9 @@ pub(in crate::game) trait ActionHost {
     fn residence(&self, holder: EntityRef) -> Residence;
     fn has_transaction(&self) -> bool;
     fn menu_busy(&self, menu: MenuId) -> bool;
-    fn open_action(&mut self, menu: MenuId) -> u64;
-    fn action_is_current(&self, savepoint: u64, menu: MenuId) -> bool;
-    fn close_action(&mut self, savepoint: u64, commit: bool);
+    fn open_action(&mut self, menu: MenuId) -> TransactionFrame;
+    fn action_is_current(&self, savepoint: TransactionFrame, menu: MenuId) -> bool;
+    fn close_action(&mut self, savepoint: TransactionFrame, commit: bool);
     fn journal(&mut self) -> &mut Journal;
     fn defer(&mut self, effect: Effect);
     fn decided(&mut self) {}
@@ -167,33 +167,20 @@ impl ActionHost for GameHost<'_, '_> {
             .any(|level| level.action.as_ref().is_some_and(|a| a.menu == menu))
     }
 
-    fn open_action(&mut self, menu: MenuId) -> u64 {
-        let (token, _) = self.game.open_storage_transaction();
+    fn open_action(&mut self, menu: MenuId) -> TransactionFrame {
+        let frame = self.game.open_storage_transaction();
         self.game.transactions.last_mut().unwrap().action = Some(ActiveAction::new(menu));
-        token
+        frame
     }
 
-    fn action_is_current(&self, savepoint: u64, menu: MenuId) -> bool {
+    fn action_is_current(&self, savepoint: TransactionFrame, menu: MenuId) -> bool {
         self.game.transactions.last().is_some_and(|level| {
-            level.token == savepoint && level.action.as_ref().is_some_and(|a| a.menu == menu)
+            level.frame == Some(savepoint) && level.action.as_ref().is_some_and(|a| a.menu == menu)
         })
     }
 
-    fn close_action(&mut self, savepoint: u64, commit: bool) {
-        let Some(at) = self
-            .game
-            .transactions
-            .iter()
-            .position(|l| l.token == savepoint)
-        else {
-            return;
-        };
-        // An abandoned nested transaction is always aborted, never implicitly
-        // committed by the action. Use the existing journal close ordering.
-        while self.game.transactions.len() > at + 1 {
-            self.game.close_storage_transaction(false);
-        }
-        self.game.close_storage_transaction(commit);
+    fn close_action(&mut self, savepoint: TransactionFrame, commit: bool) {
+        let _ = self.game.close_storage_frame(savepoint, commit);
     }
 
     fn journal(&mut self) -> &mut Journal {

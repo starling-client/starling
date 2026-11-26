@@ -38,7 +38,7 @@ pub(super) struct GuestPlay {
     suggestion_budget: bool,
     /// The guest's `Player.getCooldowns()` (`Game::cooldowns` for its turn).
     pub(super) cooldowns: sunrise_client::cooldowns::Cooldowns,
-    attack_ticks: u32,
+    attack_ticks: i32,
     /// The main hand's item at the guest's last tick (`Game::attack_item`).
     attack_item: Option<std::sync::Arc<str>>,
     swing: sunrise_client::first_person::SwingState,
@@ -60,17 +60,18 @@ pub(super) struct GuestPlay {
     swings: u32,
     /// The guest's riding jump charge (`LocalPlayer.jumpRidingTicks`).
     mount: super::mounts::MountState,
-    /// The trading screen the guest has open.
-    pub(super) merchant: Option<super::lan_trading::GuestMerchant>,
     /// The mount inventory the guest has open (game/network/lan_mount_menu.rs).
     pub(super) mount_window: Option<super::lan_mount_menu::GuestMount>,
     /// The lectern the guest reads (game/network/lan_stations.rs).
     pub(super) lectern: Option<super::lan_stations::GuestLectern>,
-    /// The equipment the mods last heard this guest wear (`native_players_equipment`), by
-    /// `EquipmentSlot`: main hand, off hand, feet, legs, chest, head.
-    pub(super) equipment_heard: Option<Box<[Option<crate::items::ItemStack>; 6]>>,
+    /// The equipment `LivingEntity.detectEquipmentUpdates` /
+    /// `collectEquipmentChanges` last saw this guest wear (`lastEquipmentItems`),
+    /// by `EquipmentSlot` ordinal (`mainhand` through `saddle`). Shared between
+    /// equipment attribute refreshes and `living_equipment_change`; allocated
+    /// only while non-empty.
+    pub(super) last_equipment: Option<Box<sunrise_items::equipment::Equipment>>,
     /// The slots of the guest's inventories the mods last heard (`native_players_inventory_changes`),
-    /// by `NativeInventoryKind`: Player, Ender, Cursor, Crafting.
+    /// in player inventory, ender chest, cursor and crafting order.
     pub(super) inventory_heard: Option<Box<[Vec<Option<crate::items::ItemStack>>; 4]>>,
     /// What the guest's body was given for its effects and enchantments.
     potions: super::potions::BodyPotions,
@@ -86,21 +87,14 @@ pub(super) struct GuestPlay {
     marks: super::advancements::TravelMarks,
     /// `Entity.portalProcess` and `portalCooldown` (game/world/server_travel.rs).
     pub(super) portal: sunrise_client::nether_portal::PortalState,
-    /// `ServerPlayer.wonGame`: the End poem is showing, the player waits for
-    /// its client's PERFORM_RESPAWN.
-    pub(super) won_game: bool,
     /// `Player.takeXpDelay`: ticks until the next orb can be taken.
     pub(super) xp_delay: u32,
     /// This player entity's age and level-up sound cooldown.
     level_up_sound: sunrise_client::entities::LevelUpSound,
     /// What last killed the guest outright (`/kill`): the death message's key.
     death_cause: Option<String>,
-    /// The equipment modifiers on the guest's attributes (`apply_equipment`)
-    /// and the armour and hands they were put on for: the hub's player
-    /// is a `ServerPlayer` too, whose worn armour counts
-    /// (`LivingEntity.collectEquipmentChanges`).
+    /// The equipment modifiers on the guest's attributes (`apply_equipment`).
     modifiers: Vec<(String, String)>,
-    equipped: Option<Vec<Option<ItemStack>>>,
     craft_grid: Vec<Option<ItemStack>>,
     /// The guest's cast fishing hook (`Player.fishing`).
     pub(super) hook: sunrise_client::join_seq::ResidentSlot<super::fishing::Hook>,
@@ -108,31 +102,6 @@ pub(super) struct GuestPlay {
     /// What `ServerPlayer` last recorded for the guest's scoreboard criteria
     /// (`lastRecordedHealthAndAbsorption` and the others).
     score_recorded: super::scoreboard::Recorded,
-}
-
-/// `LivingEntity.collectEquipmentChanges` for a guest: whether its armor, main hand or off
-/// hand differs from what its modifiers were put on for (`equipped`), which then records them.
-/// The body tick asks (`detectEquipmentUpdates`), so the packets of a tick act with the
-/// modifiers from before it: a slot change and an attack sent in one tick hit with the old
-/// item's attack damage and charge speed (the attribute swap).
-fn equipment_changed(
-    equipped: &mut Option<Vec<Option<ItemStack>>>,
-    armor: &[Option<ItemStack>],
-    held: Option<&ItemStack>,
-    offhand: Option<&ItemStack>,
-) -> bool {
-    let unchanged = equipped.as_deref().is_some_and(|eq| {
-        eq.len() == armor.len() + 2
-            && eq[..armor.len()] == armor[..]
-            && eq[armor.len()].as_ref() == held
-            && eq[armor.len() + 1].as_ref() == offhand
-    });
-    if !unchanged {
-        let mut now = armor.to_vec();
-        now.extend([held.cloned(), offhand.cloned()]);
-        *equipped = Some(now);
-    }
-    !unchanged
 }
 
 /// A guest's command waiting for the hub (`LanHost::commands`).
@@ -187,7 +156,7 @@ impl GuestPlay {
     }
 
     /// The guest's `Player.attackStrengthTicker` outside its turn.
-    pub(in crate::game) fn attack_ticks(&self) -> u32 {
+    pub(in crate::game) fn attack_ticks(&self) -> i32 {
         self.attack_ticks
     }
     /// The main-hand item of the guest's last tick (`Game.attack_item`).
@@ -418,7 +387,7 @@ fn stop_dig(play: &GuestPlay, pos: [i32; 3], air: bool, ticks: u64, per_tick: f3
 }
 
 /// ServerPlayer.swingAndResetAttackStrength resets only when a use starts a swing.
-fn reset_use_attack_strength(ticker: &mut u32, before: u32, after: u32) {
+fn reset_use_attack_strength(ticker: &mut i32, before: u32, after: u32) {
     if before != after {
         *ticker = 0;
     }
@@ -1168,8 +1137,8 @@ mod tests {
         };
         use mod_api::InteractionResult as Answer;
         use mod_api::{
-            self, BlockPart, CloneItemStackEvent, Hooks, Host, ItemPart, ItemStack, Registrar,
-            ServerHost, UseItemOnEvent, UseOnEvent, UseWithoutItemEvent,
+            self, BlockPart, CloneItemStackEvent, Hooks, Host, HostSide, ItemPart, ItemStack,
+            Registrar, UseItemOnEvent, UseOnEvent, UseWithoutItemEvent,
         };
         use std::sync::{
             Arc, Mutex,
@@ -1226,9 +1195,12 @@ mod tests {
         impl BlockPart for User {
             fn use_item_on(
                 &self,
-                host: &mut dyn ServerHost,
+                host: HostSide<'_>,
                 event: &mut UseItemOnEvent<'_>,
             ) -> Option<Answer> {
+                let HostSide::Server(host) = host else {
+                    return None;
+                };
                 let replacement = self.replace_with.lock().unwrap().take();
                 if let Some(state) = replacement {
                     let level = host.level("minecraft:overworld").unwrap();
@@ -1250,9 +1222,12 @@ mod tests {
             }
             fn use_without_item(
                 &self,
-                host: &mut dyn ServerHost,
+                host: HostSide<'_>,
                 event: &mut UseWithoutItemEvent<'_>,
             ) -> Option<Answer> {
+                let HostSide::Server(host) = host else {
+                    return None;
+                };
                 assert_eq!(event.click.hand, mod_api::client::first_person::Hand::Main);
                 if let Some(level) = self.empty_food.lock().unwrap().take() {
                     let player = host.player(event.click.player).unwrap();
@@ -1364,7 +1339,7 @@ mod tests {
                     seed: 0,
                     max_players: 2,
                     integrated: true,
-                    levels: game.level_shapes,
+                    levels: game.level_shapes.clone(),
                     level_seeds: game.levels.runtime.seeds(),
                 };
                 game.lan_host(settings, net, config).unwrap();
@@ -1900,7 +1875,7 @@ mod tests {
     fn block_part_use_item_on_consumes_once() {
         use super::super::native_entity_refs::tests::with_game;
         use mod_api::InteractionResult as Answer;
-        use mod_api::{self, BlockPart, Hooks, Registrar, ServerHost, UseItemOnEvent};
+        use mod_api::{self, BlockPart, Hooks, HostSide, Registrar, UseItemOnEvent};
         use std::sync::{
             Arc,
             atomic::{AtomicUsize, Ordering::SeqCst},
@@ -1911,11 +1886,7 @@ mod tests {
         struct BlockUse(Arc<AtomicUsize>);
         #[mod_api::sunrise_part]
         impl BlockPart for BlockUse {
-            fn use_item_on(
-                &self,
-                _: &mut dyn ServerHost,
-                _: &mut UseItemOnEvent<'_>,
-            ) -> Option<Answer> {
+            fn use_item_on(&self, _: HostSide<'_>, _: &mut UseItemOnEvent<'_>) -> Option<Answer> {
                 self.0.fetch_add(1, SeqCst);
                 Some(Answer::Success)
             }
@@ -1968,7 +1939,7 @@ mod tests {
     fn replacing_empty_note_block_use_does_not_award_vanilla_stats() {
         use super::super::native_entity_refs::tests::with_game;
         use mod_api::InteractionResult as Answer;
-        use mod_api::{self, BlockPart, Hooks, Registrar, ServerHost, UseWithoutItemEvent};
+        use mod_api::{self, BlockPart, Hooks, HostSide, Registrar, UseWithoutItemEvent};
         use std::sync::{
             Arc,
             atomic::{AtomicBool, Ordering::SeqCst},
@@ -1981,7 +1952,7 @@ mod tests {
         impl BlockPart for Replacement {
             fn use_without_item(
                 &self,
-                _: &mut dyn ServerHost,
+                _: HostSide<'_>,
                 _: &mut UseWithoutItemEvent<'_>,
             ) -> Option<Answer> {
                 self.0.load(SeqCst).then_some(Answer::Success)
@@ -2394,23 +2365,109 @@ mod respawn_position_tests {
 mod pickup_xp_tests {
     use super::super::native_entity_refs::tests::with_game;
     use super::super::native_item_places::tests::{guest, open_to_lan};
+    use mod_api::{
+        ExperienceOrbWriteError, Flow, Hooks, LevelReadError, ModEntry, PickupXpEvent, ServerHost,
+    };
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
     use sunrise_client::entities::ExperienceOrb;
+    use sunrise_client::entity_nbt::{orb_to_nbt, orbs_from_nbt};
     use sunrise_core::geometry::Vec3;
+    use sunrise_core::nbt::Tag;
 
     /// Listens to `pickup_xp`, canceling it when told to.
     struct Listen(bool);
     #[mod_api::__subscriptions]
-    impl mod_api::Hooks for Listen {
-        fn pickup_xp(
-            &self,
-            _: &mut dyn mod_api::ServerHost,
-            _: &mut mod_api::PickupXpEvent<'_>,
-        ) -> mod_api::Flow {
-            if self.0 {
-                mod_api::Flow::Cancel
-            } else {
-                mod_api::Flow::Continue
+    impl Hooks for Listen {
+        fn pickup_xp(&self, _: &mut dyn ServerHost, _: &mut PickupXpEvent<'_>) -> Flow {
+            if self.0 { Flow::Cancel } else { Flow::Continue }
+        }
+    }
+
+    struct Edit {
+        value: Option<i32>,
+        count: Option<u32>,
+        expect_count_err: Option<ExperienceOrbWriteError>,
+        kill: bool,
+        cancel: bool,
+        calls: Arc<AtomicUsize>,
+    }
+    #[mod_api::__subscriptions]
+    impl Hooks for Edit {
+        fn pickup_xp(&self, host: &mut dyn ServerHost, event: &mut PickupXpEvent<'_>) -> Flow {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            assert_eq!(event.orb.entity().id(), 40);
+            assert_eq!(host.experience_orb(event.orb.entity()), Ok(Some(event.orb)));
+            if let Some(value) = self.value {
+                assert_eq!(event.orb.set_value(host, value), Ok(()));
+                assert_eq!(event.orb.value(host), Ok(value));
             }
+            if let Some(count) = self.count {
+                match self.expect_count_err {
+                    Some(err) => assert_eq!(event.orb.set_count(host, count), Err(err)),
+                    None => {
+                        assert_eq!(event.orb.set_count(host, count), Ok(()));
+                        assert_eq!(event.orb.count(host), Ok(count));
+                    }
+                }
+            }
+            if self.kill {
+                assert_eq!(event.orb.entity().kill(host), Ok(true));
+                assert_eq!(event.orb.count(host), Err(LevelReadError::Stale));
+            }
+            if self.cancel {
+                Flow::Cancel
+            } else {
+                Flow::Continue
+            }
+        }
+    }
+
+    struct ObserveAndEdit {
+        seen: Arc<Mutex<Vec<(i32, u32)>>>,
+        write_value: Option<i32>,
+        write_count: Option<u32>,
+    }
+    #[mod_api::__subscriptions]
+    impl Hooks for ObserveAndEdit {
+        fn pickup_xp(&self, host: &mut dyn ServerHost, event: &mut PickupXpEvent<'_>) -> Flow {
+            let value = event.orb.value(host).expect("live orb value");
+            let count = event.orb.count(host).expect("live orb count");
+            self.seen.lock().unwrap().push((value, count));
+            if let Some(v) = self.write_value {
+                assert_eq!(event.orb.set_value(host, v), Ok(()));
+            }
+            if let Some(c) = self.write_count {
+                assert_eq!(event.orb.set_count(host, c), Ok(()));
+            }
+            Flow::Continue
+        }
+    }
+
+    fn make_orb(value: i32, count: u32) -> ExperienceOrb {
+        let p = Vec3::new(0.5, 70.0, 0.5);
+        ExperienceOrb {
+            size_answer: None,
+            attachment_lifetime: Default::default(),
+            rotation: [0.0, 0.0],
+            join: Default::default(),
+            id: 40,
+            position: p,
+            previous: p,
+            velocity: Vec3::ZERO,
+            value,
+            age: 0,
+            ground: sunrise_world::ground_support::GroundState::from_ground_flag(true),
+            count,
+            fire_ticks: 0,
+            ticks: 0,
+            air: 300,
+            health: 5,
+            no_gravity: true,
+            following: None,
+            fall_distance: 0.0,
         }
     }
 
@@ -2424,32 +2481,55 @@ mod pickup_xp_tests {
             g.loaded = true;
             g.position = [0.5, 70.0, 0.5];
             game.lan.as_mut().unwrap().hub.guests.push(g);
-            let p = Vec3::new(0.5, 70.0, 0.5);
-            game.orbs.push(ExperienceOrb {
-                attachment_lifetime: Default::default(),
-                rotation: [0.0, 0.0],
-                join: Default::default(),
-                id: 40,
-                position: p,
-                previous: p,
-                velocity: Vec3::ZERO,
-                value: 7,
-                age: 0,
-                ground: sunrise_world::ground_support::GroundState::from_ground_flag(true),
-                count: 1,
-                fire_ticks: 0,
-                ticks: 0,
-                air: 300,
-                health: 5,
-                no_gravity: true,
-                following: None,
-                fall_distance: 0.0,
-            });
+            game.orbs.push(make_orb(7, 1));
             game.guest_orbs(0);
             let left = game.orbs.iter().any(|o| o.id == 40);
             out = (left, game.lan.as_ref().unwrap().hub.guests[0].xp_total);
         });
         out
+    }
+
+    fn run_pickup_mods(
+        initial_value: i32,
+        initial_count: u32,
+        initial_xp: i32,
+        mods: Vec<ModEntry>,
+    ) -> (Option<(i32, u32)>, i32, u32, Option<Tag>) {
+        let mut out = (None, 0, 0, None);
+        mod_platform::testing::with_mods(mods.into(), || {
+            with_game(|game| {
+                open_to_lan(game);
+                let mut g = guest(1);
+                g.loaded = true;
+                g.position = [0.5, 70.0, 0.5];
+                g.xp_total = initial_xp;
+                game.lan.as_mut().unwrap().hub.guests.push(g);
+                game.orbs.push(make_orb(initial_value, initial_count));
+                game.guest_orbs(0);
+                let surviving = game.orbs.iter().find(|o| o.id == 40);
+                let saved = surviving.map(|o| orb_to_nbt(o, [0; 4]));
+                let state = surviving.map(|o| (o.value, o.count));
+                let host = game.lan.as_ref().unwrap();
+                let xp = host.hub.guests[0].xp_total;
+                let delay = host.play.get(&1).map_or(0, |p| p.xp_delay);
+                out = (state, xp, delay, saved);
+            });
+        });
+        out
+    }
+
+    fn run_pickup(
+        initial_value: i32,
+        initial_count: u32,
+        initial_xp: i32,
+        hooks: impl Hooks + 'static,
+    ) -> (Option<(i32, u32)>, i32, u32, Option<Tag>) {
+        run_pickup_mods(
+            initial_value,
+            initial_count,
+            initial_xp,
+            vec![ModEntry::new("pickup-xp", Box::new(hooks))],
+        )
     }
 
     /// `PlayerXpEvent.PickupXp` through the shared `listened` probe: a pickup goes the
@@ -2459,10 +2539,246 @@ mod pickup_xp_tests {
     fn pickup_xp_is_the_same_with_and_without_a_listener() {
         let none = take_orb();
         assert_eq!(none, (false, 7));
-        let mods = vec![mod_api::ModEntry::new("listen", Box::new(Listen(false)))].into();
+        let mods = vec![ModEntry::new("listen", Box::new(Listen(false)))].into();
         mod_platform::testing::with_mods(mods, || assert_eq!(take_orb(), none));
-        let mods = vec![mod_api::ModEntry::new("cancel", Box::new(Listen(true)))].into();
+        let mods = vec![ModEntry::new("cancel", Box::new(Listen(true)))].into();
         mod_platform::testing::with_mods(mods, || assert_eq!(take_orb(), (true, 0)));
+    }
+
+    /// `ExperienceOrbRef::set_value` keeps vanilla `ExperienceOrb.DATA_VALUE` signed `int`
+    /// semantics without clamping `<= 0` to 1; surviving orbs persist `Value` as a signed short.
+    #[test]
+    #[ignore = "daily"]
+    fn pickup_xp_value_edits_keep_signed_vanilla_semantics_independently_of_count() {
+        let (orb, xp, delay, saved) = run_pickup(
+            7,
+            2,
+            10,
+            Edit {
+                value: Some(0),
+                count: None,
+                expect_count_err: None,
+                kill: false,
+                cancel: false,
+                calls: Arc::new(AtomicUsize::new(0)),
+            },
+        );
+        assert_eq!((orb, xp, delay), (Some((0, 1)), 10, 2));
+        let back = orbs_from_nbt(&saved.unwrap());
+        assert_eq!((back[0].value, back[0].count), (0, 1));
+
+        let (orb, xp, delay, saved) = run_pickup(
+            7,
+            2,
+            10,
+            Edit {
+                value: Some(-5),
+                count: None,
+                expect_count_err: None,
+                kill: false,
+                cancel: false,
+                calls: Arc::new(AtomicUsize::new(0)),
+            },
+        );
+        assert_eq!((orb, xp, delay), (Some((-5, 1)), 10, 2));
+        let back = orbs_from_nbt(&saved.unwrap());
+        assert_eq!((back[0].value, back[0].count), (-5, 1));
+
+        let (orb, xp, delay, saved) = run_pickup(
+            7,
+            2,
+            0,
+            Edit {
+                value: Some(40_000),
+                count: None,
+                expect_count_err: None,
+                kill: false,
+                cancel: false,
+                calls: Arc::new(AtomicUsize::new(0)),
+            },
+        );
+        assert_eq!((orb, xp, delay), (Some((40_000, 1)), 40_000, 2));
+        let tag = saved.unwrap();
+        assert_eq!(tag.get("Value"), Some(&Tag::Short(40_000_i32 as i16)));
+        assert_eq!(tag.get("Count"), Some(&Tag::Int(1)));
+    }
+
+    /// `ExperienceOrbRef::set_count` enforces vanilla `ExtraCodecs.POSITIVE_INT` (`1..=i32::MAX`)
+    /// without mutating the orb on `0` or `> i32::MAX`; `1` takes one pickup and discards,
+    /// `> 1` takes one pickup and leaves `count - 1`, and `EntityRef::kill` removes the orb
+    /// without awarding XP or setting `takeXpDelay`.
+    #[test]
+    #[ignore = "daily"]
+    fn pickup_xp_count_edits_enforce_positive_int_and_kill_discards_without_delay() {
+        let (orb, xp, delay, _) = run_pickup(
+            7,
+            3,
+            0,
+            Edit {
+                value: None,
+                count: Some(0),
+                expect_count_err: Some(ExperienceOrbWriteError::InvalidCount),
+                kill: false,
+                cancel: false,
+                calls: Arc::new(AtomicUsize::new(0)),
+            },
+        );
+        assert_eq!((orb, xp, delay), (Some((7, 2)), 7, 2));
+
+        let (orb, xp, delay, _) = run_pickup(
+            7,
+            3,
+            0,
+            Edit {
+                value: None,
+                count: Some(i32::MAX as u32 + 1),
+                expect_count_err: Some(ExperienceOrbWriteError::InvalidCount),
+                kill: false,
+                cancel: false,
+                calls: Arc::new(AtomicUsize::new(0)),
+            },
+        );
+        assert_eq!((orb, xp, delay), (Some((7, 2)), 7, 2));
+
+        let (orb, xp, delay, _) = run_pickup(
+            7,
+            3,
+            0,
+            Edit {
+                value: None,
+                count: Some(1),
+                expect_count_err: None,
+                kill: false,
+                cancel: false,
+                calls: Arc::new(AtomicUsize::new(0)),
+            },
+        );
+        assert_eq!((orb, xp, delay), (None, 7, 2));
+
+        let (orb, xp, delay, saved) = run_pickup(
+            7,
+            1,
+            0,
+            Edit {
+                value: None,
+                count: Some(4),
+                expect_count_err: None,
+                kill: false,
+                cancel: false,
+                calls: Arc::new(AtomicUsize::new(0)),
+            },
+        );
+        assert_eq!((orb, xp, delay), (Some((7, 3)), 7, 2));
+        let back = orbs_from_nbt(&saved.unwrap());
+        assert_eq!((back[0].value, back[0].count), (7, 3));
+
+        let (orb, xp, delay, saved) = run_pickup(
+            7,
+            3,
+            0,
+            Edit {
+                value: None,
+                count: None,
+                expect_count_err: None,
+                kill: true,
+                cancel: false,
+                calls: Arc::new(AtomicUsize::new(0)),
+            },
+        );
+        assert_eq!((orb, xp, delay, saved), (None, 0, 0, None));
+    }
+
+    /// A veto skips the pickup continuation (`takeXpDelay` stays 0, no XP or count decrement)
+    /// while leaving live orb writes in place; `takeXpDelay > 0` skips firing `pickup_xp`
+    /// until it reaches 0; and later listeners immediately observe earlier live orb edits.
+    #[test]
+    #[ignore = "daily"]
+    fn pickup_xp_cancel_cooldown_and_multi_listener_live_orb_edits() {
+        let cancel_calls = Arc::new(AtomicUsize::new(0));
+        let (orb, xp, delay, _) = run_pickup(
+            7,
+            2,
+            0,
+            Edit {
+                value: Some(99),
+                count: Some(5),
+                expect_count_err: None,
+                kill: false,
+                cancel: true,
+                calls: Arc::clone(&cancel_calls),
+            },
+        );
+        assert_eq!(cancel_calls.load(Ordering::Relaxed), 1);
+        assert_eq!((orb, xp, delay), (Some((99, 5)), 0, 0));
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mods = vec![ModEntry::new(
+            "pickup-cooldown",
+            Box::new(Edit {
+                value: None,
+                count: None,
+                expect_count_err: None,
+                kill: false,
+                cancel: false,
+                calls: Arc::clone(&calls),
+            }),
+        )]
+        .into();
+        mod_platform::testing::with_mods(mods, || {
+            with_game(|game| {
+                open_to_lan(game);
+                let mut g = guest(1);
+                g.loaded = true;
+                g.position = [0.5, 70.0, 0.5];
+                game.lan.as_mut().unwrap().hub.guests.push(g);
+                game.orbs.push(make_orb(7, 2));
+
+                game.guest_orbs(0);
+                assert_eq!(calls.load(Ordering::Relaxed), 1);
+                assert_eq!(game.lan.as_ref().unwrap().hub.guests[0].xp_total, 7);
+                assert_eq!(game.lan.as_ref().unwrap().play[&1].xp_delay, 2);
+
+                // Tick while delayed: takeXpDelay drops 2 -> 1 and pickup_xp does not fire.
+                game.guest_orbs(0);
+                assert_eq!(calls.load(Ordering::Relaxed), 1);
+                assert_eq!(game.lan.as_ref().unwrap().hub.guests[0].xp_total, 7);
+                assert_eq!(game.lan.as_ref().unwrap().play[&1].xp_delay, 1);
+
+                // Next tick: takeXpDelay drops 1 -> 0, pickup_xp fires and takes the last orb.
+                game.guest_orbs(0);
+                assert_eq!(calls.load(Ordering::Relaxed), 2);
+                assert_eq!(game.lan.as_ref().unwrap().hub.guests[0].xp_total, 14);
+                assert_eq!(game.lan.as_ref().unwrap().play[&1].xp_delay, 2);
+                assert!(game.orbs.is_empty());
+            });
+        });
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let (orb, xp, delay, _) = run_pickup_mods(
+            7,
+            1,
+            0,
+            vec![
+                ModEntry::new(
+                    "first",
+                    Box::new(ObserveAndEdit {
+                        seen: Arc::clone(&seen),
+                        write_value: Some(15),
+                        write_count: Some(3),
+                    }),
+                ),
+                ModEntry::new(
+                    "second",
+                    Box::new(ObserveAndEdit {
+                        seen: Arc::clone(&seen),
+                        write_value: Some(21),
+                        write_count: None,
+                    }),
+                ),
+            ],
+        );
+        assert_eq!(*seen.lock().unwrap(), [(7, 1), (15, 3)]);
+        assert_eq!((orb, xp, delay), (Some((21, 2)), 21, 2));
     }
 }
 
@@ -3422,7 +3738,7 @@ mod bundle_slot_tests;
 
 #[cfg(test)]
 #[path = "tests/crack_feedback_tests.rs"]
-mod crack_feedback_tests;
+pub(in crate::game) mod crack_feedback_tests;
 
 #[cfg(test)]
 #[path = "tests/menu_still_valid_tests.rs"]

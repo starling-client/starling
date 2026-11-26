@@ -50,10 +50,10 @@ const DYE_COLORS: [&str; 16] = [
     "black",
 ];
 
-fn consts() -> &'static Consts {
+fn consts(data: &bsd::Data) -> &'static Consts {
     static C: OnceLock<Consts> = OnceLock::new();
     C.get_or_init(|| {
-        let mut states = bsd::data().instances.clone();
+        let mut states = data.instances.clone();
         let mut add = |name: &str, props: &[(&str, &str)]| -> u32 {
             states.push(State::new(name, props));
             (states.len() - 1) as u32
@@ -341,14 +341,14 @@ impl Section {
         }
     }
 
-    fn get_block(&self, pos: usize) -> u32 {
+    fn get_block(&self, pos: usize, air: u32) -> u32 {
         if pos <= 4095 {
             self.palette
                 .get(self.buffer[pos] as usize)
                 .copied()
-                .unwrap_or_else(|| consts().air)
+                .unwrap_or(air)
         } else {
-            consts().air
+            air
         }
     }
 
@@ -375,7 +375,7 @@ impl Section {
         }
     }
 
-    fn upgrade(&mut self, mut sides: i32) -> i32 {
+    fn upgrade(&mut self, mut sides: i32, c: &Consts, d: &bsd::Data) -> i32 {
         if !self.has_data {
             return sides;
         }
@@ -387,12 +387,10 @@ impl Section {
         };
         let data = nibbles("Data");
         let add_blocks = nibbles("Add");
-        let c = consts();
         self.seen.insert(c.air);
         self.palette.push(c.air);
         self.palette_ids.insert(c.air, 0);
         self.list.push(c.air);
-        let d = bsd::data();
         for idx in 0..4096usize {
             let (xx, yy, zz) = (idx & 15, idx >> 8 & 15, idx >> 4 & 15);
             let id = add_blocks.get(xx, yy, zz) << 12
@@ -415,12 +413,11 @@ impl Section {
         sides
     }
 
-    fn write(&self) -> Tag {
+    fn write(&self, c: &Consts) -> Tag {
         let mut section = self.raw.clone();
         if !self.has_data {
             return section;
         }
-        let c = consts();
         let palette: Vec<Tag> = self
             .list
             .iter()
@@ -480,6 +477,7 @@ fn relative(pos: i64, direction: Direction) -> i64 {
 }
 
 struct UpgradeChunk {
+    consts: &'static Consts,
     sides: i32,
     sections: Vec<Option<Section>>,
     /// `Int2ObjectLinkedOpenHashMap`: insertion order, a repeated key keeps its place.
@@ -503,11 +501,11 @@ impl UpgradeChunk {
     fn get_block(&self, pos: i64) -> u32 {
         if (0..=65535).contains(&pos) {
             match self.section(pos) {
-                Some(s) => s.get_block((pos & 4095) as usize),
-                None => consts().air,
+                Some(s) => s.get_block((pos & 4095) as usize, self.consts.air),
+                None => self.consts.air,
             }
         } else {
-            consts().air
+            self.consts.air
         }
     }
     fn set_block(&mut self, pos: i64, block: u32) {
@@ -518,30 +516,31 @@ impl UpgradeChunk {
         }
     }
     fn name(&self, pos: i64) -> &str {
-        &consts().states[self.get_block(pos) as usize].name
+        &self.consts.states[self.get_block(pos) as usize].name
     }
     fn state(&self, pos: i64) -> &State {
-        &consts().states[self.get_block(pos) as usize]
+        &self.consts.states[self.get_block(pos) as usize]
     }
 }
 
 /// `ChunkPalettedStorageFix.fix` over a chunk (`{Level: ...}`).
-pub(super) fn fix(chunk: &mut Tag) {
+pub(super) fn fix(chunk: &mut Tag) -> super::tables::Result {
     let Some(level) = chunk.get_mut("Level") else {
-        return;
+        return Ok(());
     };
     if !matches!(level.get("Sections"), Some(Tag::List(_))) {
-        return;
+        return Ok(());
     }
-    let new_level = upgrade_level(level);
-    *level = new_level;
+    *level = upgrade_level(level, bsd::data()?);
+    Ok(())
 }
 
-fn upgrade_level(level: &Tag) -> Tag {
-    let c = consts();
+fn upgrade_level(level: &Tag, data: &bsd::Data) -> Tag {
+    let c = consts(data);
     let x0 = as_int(level.get("xPos"), 0) << 4;
     let z0 = as_int(level.get("zPos"), 0) << 4;
     let mut chunk = UpgradeChunk {
+        consts: c,
         sides: 0,
         sections: (0..16).map(|_| None).collect(),
         block_entities: Vec::new(),
@@ -562,7 +561,7 @@ fn upgrade_level(level: &Tag) -> Tag {
     if let Some(Tag::List(sections)) = level.get("Sections") {
         for raw in sections {
             let mut section = Section::new(raw.clone());
-            chunk.sides = section.upgrade(chunk.sides);
+            chunk.sides = section.upgrade(chunk.sides, c, data);
             let y = section.y;
             if (0..16).contains(&y) {
                 chunk.sections[y as usize] = Some(section);
@@ -603,7 +602,7 @@ fn upgrade_level(level: &Tag) -> Tag {
     let mut indices = sunrise_core::nbt::Compound::new();
     let mut sections = Vec::new();
     for section in chunk.sections.iter().flatten() {
-        sections.push(section.write());
+        sections.push(section.write(c));
         indices.insert(
             key(&section.y.to_string()),
             Tag::IntArray(section.update.clone()),

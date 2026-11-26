@@ -7,9 +7,13 @@ use crate::*;
 #[sunrise_mod_api_macros::host_area]
 pub trait LevelEntitiesBackend {
     /// Side: server.
+    /// The engine side of [`LevelRef::entity_by_uuid`], whose doc holds the contract.
+    #[manual_handle]
+    fn level_entity_by_uuid(&self, level: LevelRef, uuid: EntityUuid) -> Option<EntityRef>;
+    /// Side: server.
     /// Visit members of the server level's entity lookup (`ServerLevel.getAllEntities`),
     /// including spectators and entities outside any spatial query. Dragon parts are not
-    /// lookup members. Vehicles being removed are skipped.
+    /// lookup members. Entities in hidden sections and vehicles being removed are skipped.
     ///
     /// The visitor can make shared reads on the same host, including another visit.
     /// No residency guard is held while it runs. Return `ControlFlow::Break(())` to stop;
@@ -65,18 +69,19 @@ pub trait LevelEntitiesBackend {
     /// or unavailable world access return [`LevelReadError::Unavailable`]. A refused
     /// visit does not call the visitor.
     ///
-    /// The walk uses entity-list order, then item frames and paintings in join order
-    /// (frames first on ties), then the dragon's body. On the server, block, item and text
-    /// displays, markers, interactions and fishing hooks come next, then placed guests
-    /// other than spectators. Displays and markers use zero-sized physical boxes,
-    /// not rendering bounds. The client walks the entities it tracks, including tracked
-    /// players, then its own player if not spectating. The dragon's intersecting parts
-    /// come last on either side, in vanilla part-table order.
+    /// Ordinary entities are visited in level section order, and in entry order within
+    /// each section. This includes block, item and text displays on both sides, as well as
+    /// the client's own player if not spectating and placed non-spectator guests on the
+    /// server. The dragon's intersecting parts come last, in vanilla part-table order.
     ///
-    /// Unresolved handles are skipped, including held-out server entities. Tridents
-    /// that do not resolve, eyes of ender and leash knots are not visited. The projectile
-    /// list is temporarily absent during `hears_projectile_impacts`; it is visible again
-    /// during `projectile_impact`, including the live owners of hits that would consume them.
+    /// Displays have zero-sized physical boxes: their position must be strictly between
+    /// the query's faces on all axes. The client uses the display's current tick position
+    /// after movement interpolation, not the last destination or its render culling box.
+    /// Ordinary crosshair picking still ignores displays.
+    ///
+    /// Unresolved handles, including held-out server entities, and entities in hidden
+    /// server sections are skipped. Eyes of ender and leash knots are not visited. The projectile
+    /// list is visible during `projectile_impact`, including live owners of hits that would consume them.
     fn level_visit_entities_in(
         &self,
         level: LevelRef,
@@ -102,6 +107,28 @@ pub trait LevelEntitiesBackend {
         &self,
         level: LevelRef,
         visit: &mut dyn FnMut(PlayerRef) -> core::ops::ControlFlow<()>,
+    ) -> Result<core::ops::ControlFlow<()>, LevelReadError>;
+    /// Side: server.
+    /// Visit experience orbs in `level` whose bounding boxes intersect `min`..`max`
+    /// (`Level.getEntities(EntityTypeTest.forClass(ExperienceOrb.class), box, ...)`),
+    /// in the level's order, without building a list. Face-only contact does not
+    /// intersect, and inverted bounds are swapped on each axis as in vanilla's
+    /// `AABB`. Orbs with `count == 0`, held-out orbs, and orbs pending removal are
+    /// skipped. Works on both active and parked server levels.
+    ///
+    /// The visitor can make shared reads on the same host (including
+    /// [`ExperienceOrbRef::value`], [`ExperienceOrbRef::count`], and
+    /// [`ExperienceOrbRef::age`]). Return `ControlFlow::Continue(())` to keep
+    /// visiting or `ControlFlow::Break(())` to stop early. Returns
+    /// `Err(LevelReadError::Stale)` for a stale level and
+    /// `Err(LevelReadError::Unavailable)` on a client, outside world access, or for
+    /// non-finite bounds, without calling the visitor.
+    fn level_visit_experience_orbs(
+        &self,
+        level: LevelRef,
+        min: [f64; 3],
+        max: [f64; 3],
+        visit: &mut dyn FnMut(ExperienceOrbRef) -> core::ops::ControlFlow<()>,
     ) -> Result<core::ops::ControlFlow<()>, LevelReadError>;
     /// Side: server.
     /// Every entity the segment from `from` to `to` passes through, nearest first: the test
@@ -181,10 +208,10 @@ pub trait LevelEntitiesBackendMut {
     /// Side: server.
     /// Spawns `stack` as an item entity at `x y z` (`new ItemEntity(level, x,
     /// y, z, stack)` and `addFreshEntity`): its own random motion (up 0.2, up
-    /// to 0.1 either way across), with `pickup_delay` ticks before it can be
-    /// picked up, as `ItemEntity.setPickupDelay` at construction (vanilla
-    /// passes 10 for a block's drop, 40 for a player's throw and 32767 for
-    /// never). None, with nothing
+    /// to 0.1 either way across), with signed `pickup_delay` ticks before it
+    /// can be picked up, as `ItemEntity.setPickUpDelay` at construction
+    /// (vanilla passes 10 for a block's drop, 40 for a player's throw, and
+    /// 32767 for never). None, with nothing
     /// spawned, for an empty stack or an unknown item, a value that isn't
     /// finite, on a client, for a stale handle, a level not in place, or an
     /// item a mod kept out (`entity_join_level`).
@@ -197,14 +224,14 @@ pub trait LevelEntitiesBackendMut {
         y: f64,
         z: f64,
         stack: ItemStack,
-        pickup_delay: u32,
+        pickup_delay: i32,
     ) -> Result<Option<EntityRef>, StackWriteError>;
     /// Side: server.
     /// `spawn_item` with the item entity's motion set to
     /// `motion` (blocks a tick), as `new ItemEntity(level, x, y, z, stack,
-    /// deltaX, deltaY, deltaZ)`, and the same `pickup_delay` ticks before it
-    /// can be picked up (`ItemEntity.setPickupDelay`). None in the same
-    /// cases, and for a motion that isn't finite.
+    /// deltaX, deltaY, deltaZ)`, and the same signed `pickup_delay` ticks
+    /// before it can be picked up (`ItemEntity.setPickUpDelay`). None in the
+    /// same cases, and for a motion that isn't finite.
     fn level_spawn_item_with_motion(
         &mut self,
         level: LevelRef,
@@ -213,7 +240,7 @@ pub trait LevelEntitiesBackendMut {
         z: f64,
         stack: ItemStack,
         motion: [f64; 3],
-        pickup_delay: u32,
+        pickup_delay: i32,
     ) -> Result<Option<EntityRef>, StackWriteError>;
     /// Side: server.
     /// Awards `amount` experience at `x y z` as vanilla's `ExperienceOrb.award`

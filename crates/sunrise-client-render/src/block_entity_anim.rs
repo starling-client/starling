@@ -888,10 +888,9 @@ pub struct BlockEntityAnims {
     pub random: LegacyRandom,
     /// [`Ticker`] by block state id (see [`BlockEntityAnims::classify`]).
     pub kinds: Vec<Option<Ticker>>,
-    /// The drawn block entities with a ticker, sorted by position, and the
-    /// renderer's block entity revision they were read at.
-    pub present: Vec<([i32; 3], Ticker)>,
-    pub present_revision: Option<u64>,
+    /// The block entity object (its generation) each position's client animation state belongs
+    /// to: a block entity made again there starts fresh, as vanilla's new object does.
+    pub owners: FxHashMap<[i32; 3], u64>,
 }
 impl Default for BlockEntityAnims {
     fn default() -> Self {
@@ -909,12 +908,67 @@ impl Default for BlockEntityAnims {
             conduit_servers: FxHashMap::default(),
             random: LegacyRandom::new(0x6c6576656c),
             kinds: Vec::new(),
-            present: Vec::new(),
-            present_revision: None,
+            owners: FxHashMap::default(),
         }
     }
 }
 impl BlockEntityAnims {
+    /// Gives the animation state at `pos` to the block entity object `generation`: the state of
+    /// another object that was there is dropped.
+    pub fn claim(&mut self, pos: [i32; 3], generation: u64) {
+        if self
+            .owners
+            .insert(pos, generation)
+            .is_some_and(|g| g != generation)
+        {
+            self.forget_client(pos);
+        }
+    }
+    /// Drops the client animation state of every owner `alive` refuses, and of the decorated
+    /// pots (which are no block entity here, so own nothing) whose block `state_at` is not one.
+    pub fn retain_owned(
+        &mut self,
+        alive: impl Fn([i32; 3], u64) -> bool,
+        state_at: impl Fn([i32; 3]) -> u32,
+    ) {
+        let Self {
+            owners,
+            chests,
+            books,
+            shulkers,
+            bells,
+            conduits,
+            skulls,
+            gateways,
+            pots,
+            kinds,
+            ..
+        } = self;
+        owners.retain(|p, g| {
+            let keep = alive(*p, *g);
+            if !keep {
+                chests.remove(p);
+                books.remove(p);
+                shulkers.remove(p);
+                bells.remove(p);
+                conduits.remove(p);
+                skulls.remove(p);
+                gateways.remove(p);
+            }
+            keep
+        });
+        pots.retain(|p, _| matches!(kinds.get(state_at(*p) as usize), Some(Some(Ticker::Pot))));
+    }
+    /// Drops the client animation state at `pos` (not the integrated server's).
+    fn forget_client(&mut self, pos: [i32; 3]) {
+        self.chests.remove(&pos);
+        self.books.remove(&pos);
+        self.shulkers.remove(&pos);
+        self.bells.remove(&pos);
+        self.conduits.remove(&pos);
+        self.skulls.remove(&pos);
+        self.gateways.remove(&pos);
+    }
     /// Fills [`Self::kinds`] for every state of the registry.
     pub fn classify(&mut self, registry: &sunrise_world::registry::BlockRegistry) {
         self.kinds = (0..registry.len() as u32)
@@ -924,7 +978,6 @@ impl BlockEntityAnims {
                     .and_then(|s| ticker(&s.name, |k| s.properties.get(k).cloned()))
             })
             .collect();
-        self.present_revision = None;
     }
     /// The ticker of a block state.
     pub fn ticker(&self, state: u32) -> Option<Ticker> {
@@ -946,6 +999,8 @@ impl BlockEntityAnims {
                 .binary_search_by_key(p, |(q, _)| *q)
                 .is_ok_and(|i| f(&present[i].1))
         };
+        self.owners
+            .retain(|p, _| present.binary_search_by_key(p, |(q, _)| *q).is_ok());
         self.chests.retain(|p, _| is(p, |t| *t == Ticker::Lid));
         self.books.retain(|p, _| is(p, |t| *t == Ticker::Book));
         self.shulkers

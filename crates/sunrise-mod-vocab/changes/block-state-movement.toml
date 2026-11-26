@@ -1,0 +1,8 @@
+ids = [
+    "handle:BlockStates::collision",
+    "handle:BlockStates::landing",
+    "handle:BlockStates::path_type",
+    "type:StateCollision",
+    "type:BlockLanding",
+]
+why = "Mods can classify a block state's collision (fixed, contextual or positional), its declared landing coefficients and its static walking path type on either side without parsing block names."

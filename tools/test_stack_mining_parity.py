@@ -5,12 +5,11 @@ import os
 from pathlib import Path
 import subprocess
 
-try:
-    from . import lab, oracle_harness as harness, test_rust_parity as base
-    from . import test_model_baking_parity as baking
-except ImportError:
-    import lab, oracle_harness as harness, test_rust_parity as base
-    import test_model_baking_parity as baking
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, oracle_harness as harness, test_rust_parity as base, test_model_baking_parity as baking
 
 
 def corpus():

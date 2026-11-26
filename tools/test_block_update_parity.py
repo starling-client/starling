@@ -7,10 +7,12 @@ state and compare the resulting state, requested scheduled ticks, side effects a
 RNG use; `neighbor` cases call `handleNeighborChanged` from one direction.
 """
 import random
-try:
-    from . import block_update_harness as h
-except ImportError:
-    import block_update_harness as h
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import block_update_harness as h
 
 
 def cases(facts, count, seed, only):

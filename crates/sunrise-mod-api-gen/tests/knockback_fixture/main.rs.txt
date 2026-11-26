@@ -1,12 +1,11 @@
 fn main() {
     let hit = Damage { attacker: None, from: None };
-    // The old point fixture doubled power at each entry (fourfold at the short
-    // entry, twofold at the full entry). Those heads no longer exist. Supply the
-    // same final strength through the surviving living hook instead.
+    // Both short and full knockback entries delegate to one living hook call
+    // with the same strength, cancel, and motion semantics.
     for (full, scale, cancel, expected_x, expected_y) in [
-        (false, 4.0, false, -0.8, 0.4),
+        (false, 2.0, false, -0.4, 0.4),
         (true, 2.0, false, -0.4, 0.4),
-        (false, 4.0, true, 0.0, 0.0),
+        (false, 2.0, true, 0.0, 0.0),
         (true, 2.0, true, 0.0, 0.0),
         (false, 1.0, false, -0.2, 0.2),
     ] {
@@ -25,6 +24,7 @@ fn main() {
         let mut game = Game {
             player: Some(motion::PlayerMotion {
                 velocity: Vec3::default(), ground: Ground { on_ground: true }, entity_id: 1,
+                attributes: motion::Attributes, random: Random,
             }),
             level,
             last_hurt_by_player: (),

@@ -1,9 +1,8 @@
 pub trait Notes {
     #[notes = r#"## Loaded chunks
 
-`LevelRef::loaded_chunks(host)` lists the chunks the level holds now, the same ones `chunk`
-finds by position, ordered by x then z so two calls over an unchanged level agree. It loads no
-chunk and sorts a copy of the level's loaded set, so call it when a mod needs the whole set, not
-for a position it already knows."#]
+`level.visit_loaded_chunks(host, &mut visit)` visits the chunks the level holds now, in x-then-z
+order. It loads no chunk and does not copy the loaded set. Return `ControlFlow::Break(())` to
+stop or `Continue(())` to visit the next chunk."#]
     fn chunk_refs_note0();
 }

@@ -45,10 +45,31 @@ pub fn tr(en: &str) -> &str {
 
 /// `en` in the host's language with its `{name}` holes filled.
 pub fn trf(en: &str, args: &[(&str, &str)]) -> String {
-    let mut out = tr(en).to_string();
-    for (name, value) in args {
-        out = out.replace(&format!("{{{name}}}"), value);
+    trf_with(host().tr, en, args)
+}
+
+pub(crate) fn trf_with(
+    tr: for<'a> fn(&'a str) -> &'a str,
+    en: &str,
+    args: &[(&str, &str)],
+) -> String {
+    let mut template = tr(en);
+    let mut out = String::with_capacity(template.len());
+    // Only the translated template can contain holes; argument values are literal text.
+    while let Some((literal, tail)) = template.split_once('{') {
+        out.push_str(literal);
+        if let Some((rest, value)) = args.iter().find_map(|&(name, value)| {
+            let rest = tail.strip_prefix(name)?.strip_prefix('}')?;
+            Some((rest, value))
+        }) {
+            out.push_str(value);
+            template = rest;
+        } else {
+            out.push('{');
+            template = tail;
+        }
     }
+    out.push_str(template);
     out
 }
 

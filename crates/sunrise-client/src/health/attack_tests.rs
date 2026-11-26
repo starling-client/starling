@@ -86,6 +86,7 @@ fn is_direct_compares_causing_and_direct_entities_not_damage_type() {
         )),
         attacker: Some(Who::Mob(5)),
         from: None,
+        direct: None,
         attacker_species: None,
     };
     let melee = Damage::mob(5, [0.0; 3]);
@@ -125,6 +126,7 @@ fn is_direct_compares_causing_and_direct_entities_not_damage_type() {
         kind: DamageKind::Arrow,
         attacker: Some(Who::Player),
         from: None,
+        direct: None,
         attacker_species: None,
     }));
 }
@@ -159,12 +161,14 @@ fn direct_entity_and_large_fireball_follow_entities_not_damage_type() {
         kind: DamageKind::Fireball,
         attacker: Some(Who::Player),
         from: None,
+        direct: None,
         attacker_species: None,
     };
     let generic_kind = Damage {
         kind: DamageKind::Generic,
         attacker: Some(Who::Player),
         from: None,
+        direct: None,
         attacker_species: None,
     };
     assert!(large_fireball.direct_is_large_fireball(&generic_kind));

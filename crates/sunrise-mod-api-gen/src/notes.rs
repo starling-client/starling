@@ -70,6 +70,10 @@ mod tests {
         );
         let page = super::generate(&root).unwrap();
         assert!(page.contains("## Counterparts"));
+        assert!(
+            !page.contains("@API:"),
+            "rendered Hook notes must not leak raw @API: tokens"
+        );
         assert!(!path.exists(), "rendering must not write into book sources");
     }
 }

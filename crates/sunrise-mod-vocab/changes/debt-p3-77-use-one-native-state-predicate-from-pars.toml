@@ -1,0 +1,36 @@
+ids = [
+    "type:StatePredicate",
+    "handle:StatePredicate::block",
+    "handle:StatePredicate::tag",
+    "type:StatePredicateTarget",
+    "type:StatePredicateTarget.Block",
+    "type:StatePredicateTarget.Tag",
+    "type:StatePredicateRecord",
+    "handle:StatePredicateRecord::new",
+    "type:StatePredicateRecord.target",
+    "type:StatePredicateRecord.constraints",
+    "type:BlockEdit",
+    "type:BlockRun",
+]
+why = "StatePredicate stays native from construction through matching. Vanilla BlockStateParser.readBlock and readProperties resolve the block and check explicit properties against its registered definition; readVagueProperties treats tag properties as strings and refuses duplicates. BlockPredicateArgument.parse passes these requirements into matching. NeoForge leaves those argument rules unchanged; ExtendPoiTypesEvent.addBlockToPoi likewise takes states from the registered block's definition. Sunrise's bulk edit has no vanilla equivalent; it no longer rejects filter lists at an artificial 65,536 entries."
+migrate = """
+Replace `StatePredicate::from(StatePredicateRecord::new(StatePredicateTarget::Block(key), constraints))`
+with `StatePredicate::block(key, &constraints)?`. For `StatePredicateTarget::Tag(key)`, use
+`StatePredicate::tag(key, &constraints)?`. If you already called `StatePredicate::block(metadata,
+key, &constraints)` or `StatePredicate::tag(metadata, tags, key, &constraints)`, drop the
+metadata and tag-service arguments. Construct exact block predicates once the game has published
+its resolved block definitions, for example in `extend_poi_types` or a world hook. Handle
+`BlockStateError` from the constructor instead of calling `__private::validate_state_predicate`
+or waiting for `WorldEditServerHost::edit_blocks` to check properties.
+
+Replace `StatePredicateRecord::from(&predicate).target` with `predicate.block_key()` or
+`predicate.tag_key()`, and `record.constraints` with `predicate.constraints()` (a borrowed slice).
+Drop any Wire encoding of `StatePredicate`, `StatePredicateRecord`, `StatePredicateTarget`,
+`BlockEdit`, or `BlockRun`; pass the native values directly. If a mod has its own persistence or
+network format, store canonical block or tag names and explicit property pairs in that format, then
+resolve the names and use the checked constructors when reading. Do not store process-local keys.
+
+Keep `BlockRun.only: Option<u32>` as the index into `BlockEdit.filters`. A run may address filters
+beyond the former limit; the index still has to name an existing filter. There is no need to split
+edits solely to stay under 65,536 filters.
+"""

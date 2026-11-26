@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from test_stable_mod_api import ADDITIVE, BREAKING, CONDITIONAL, HEAD, OLD, PREVIOUS, SURFACE, sdk_assets, sealed
+from tests.test_stable_mod_api import ADDITIVE, BREAKING, CONDITIONAL, HEAD, OLD, PREVIOUS, SURFACE, sdk_assets, sealed
 from tools.ci import nightly
 
 # A record hash in the writer's form.

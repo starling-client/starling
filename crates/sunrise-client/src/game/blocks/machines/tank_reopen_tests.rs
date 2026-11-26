@@ -14,8 +14,8 @@ use super::{BlockEntity, Game};
 use crate::game::native_entity_refs::tests::{run_fresh_cases, with_game_at};
 use crate::game::world_loading::WorldRequest;
 use mod_api::{
-    BlocksEvent, FLUIDS, FluidResource, FluidStack, Hooks, HostTransaction, LevelRef, ModEntry,
-    ModFluidTanks, Mods, Registrar, RegistrationContext,
+    BlocksEvent, FLUIDS, FluidResource, FluidStack, Hooks, LevelRef, ModEntry, ModFluidTanks, Mods,
+    Registrar, RegistrationContext,
 };
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -150,16 +150,20 @@ fn a_committed_mod_tank_survives_a_world_save_close_and_reopen() {
         ));
         let tanks = level.capability(game, &FLUIDS, pos, None).unwrap();
         assert_eq!(
-            game.transaction(|host, tx| Ok::<_, ()>((
-                tanks.insert_at(host, tx, 0, &fluid(BRINE, 1), 1500),
-                tanks.insert_at(host, tx, 1, &fluid("minecraft:lava", 1), 1000),
+            game.storage_transaction(|host, tx| Ok::<_, ()>((
+                tanks
+                    .insert_at(host, tx, 0, &fluid(BRINE, 1), 1500)
+                    .unwrap(),
+                tanks
+                    .insert_at(host, tx, 1, &fluid("minecraft:lava", 1), 1000)
+                    .unwrap(),
             ))),
             Ok((1500, 1000))
         );
         // An aborted transaction's insert is rolled back and must not be saved.
         assert_eq!(
-            game.transaction(|host, tx| {
-                assert_eq!(tanks.insert_at(host, tx, 0, &fluid(BRINE, 1), 500), 500);
+            game.storage_transaction(|host, tx| {
+                assert_eq!(tanks.insert_at(host, tx, 0, &fluid(BRINE, 1), 500), Ok(500));
                 Err::<(), _>("abort")
             }),
             Err("abort")

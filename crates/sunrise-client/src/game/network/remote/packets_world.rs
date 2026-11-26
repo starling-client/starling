@@ -1,16 +1,19 @@
 use super::*;
+use sunrise_core::geometry::border::BorderError;
 
 impl Game<'_> {
     /// `C::ForgetLevelChunk`: its arms of `apply_packet`, guard and order kept.
     pub(super) fn apply_forget_level_chunk_packet(&mut self, p: play::ForgetLevelChunk) {
         // `poll_remote` forgets a run of them at once.
-        self.forget_remote_columns(&mut [(p.pos[0], p.pos[1])].into_iter().collect(), true);
+        let [x, z] = p.pos;
+        self.forget_remote_packets(&mut [(x, z)].into_iter().collect());
     }
 
     /// `C::BlockDestruction`: its arms of `apply_packet`, guard and order kept.
     pub(super) fn apply_block_destruction_packet(&mut self, p: play::BlockDestruction) {
         // ClientPacketListener.handleBlockDestruction: another player's crack.
         self.destroy_block_progress(p.id, p.pos, i32::from(p.progress));
+        self.native_client_break_progress(p.id, p.pos, i32::from(p.progress));
     }
 
     /// `C::SectionBlocksUpdate`: apply verified states in packet order.
@@ -80,34 +83,59 @@ impl Game<'_> {
         }
     }
 
-    /// `C::InitializeBorder`: its arms of `apply_packet`, guard and order kept.
-    pub(super) fn apply_initialize_border_packet(&mut self, p: play::InitializeBorder) {
-        let b = &mut self.border;
-        b.set_center([p.center_x, p.center_z]);
+    /// `ClientPacketListener.handleInitializeBorder`: install the level's incoming geometry
+    /// and warnings, without running server listeners.
+    pub(super) fn apply_initialize_border_packet(
+        &mut self,
+        p: play::InitializeBorder,
+    ) -> std::result::Result<(), BorderError> {
+        let mut border = sunrise_client::worldborder::WorldBorder::default();
+        // Validate the incoming extent against the incoming center and clip limit,
+        // not against any part of the extent this packet replaces.
+        border.set_absolute_max_size(p.absolute_max_size)?;
+        border.set_center([p.center_x, p.center_z])?;
         if p.lerp_time > 0 {
-            b.lerp_between(p.old_size, p.new_size, p.lerp_time);
+            border.lerp_between(p.old_size, p.new_size, p.lerp_time)?;
         } else {
-            b.set_size(p.new_size);
+            border.set_size(p.new_size)?;
         }
-        b.set_absolute_max_size(p.absolute_max_size);
-        b.warning_distance = p.warning_blocks;
-        b.warning_time = p.warning_time;
+        border.warning_distance = p.warning_blocks;
+        border.warning_time = p.warning_time;
+        border.damage_per_block = self.border.damage_per_block;
+        border.safe_zone = self.border.safe_zone;
+        self.border = border;
+        Ok(())
     }
 
-    /// `C::SetBorderLerpSize`: its arms of `apply_packet`, guard and order kept.
-    pub(super) fn apply_set_border_lerp_size_packet(&mut self, p: play::SetBorderLerpSize) {
-        self.border
-            .lerp_between(p.old_size, p.new_size, p.lerp_time);
-    }
-
-    /// `C::SetDefaultSpawnPosition`: its arms of `apply_packet`, guard and order kept.
+    /// `ClientPacketListener.handleSetSpawn` / `ClientLevel.setRespawnData`: store the
+    /// border-adjusted spawn position with the packet's dimension for the compass.
     pub(super) fn apply_set_default_spawn_position_packet(
         &mut self,
         p: play::SetDefaultSpawnPosition,
     ) {
-        // handleSetSpawn: ClientLevel.setRespawnData, which spawn compasses point at: the
-        // position with the level it is in, which the compass compares with its own.
-        let [x, y, z] = p.pos.pos;
+        let [mut x, mut y, mut z] = p.pos.pos;
+        // Level.getWorldBorderAdjustedRespawnData tests the integer BlockPos against
+        // the active level's border, even when the packet names a different level.
+        if let Some(remote) = &self.remote
+            && !self
+                .border
+                .geometry()
+                .is_within_bounds(f64::from(x), f64::from(z), 0.0)
+        {
+            [x, z] = self.border.center().map(sunrise_core::mth::floor);
+            // Level.getHeight: the horizontal range is half-open; outside it use
+            // this level's sea level, and for missing chunks use its build minimum.
+            const WORLD_RANGE: std::ops::Range<i32> = -30_000_000..30_000_000;
+            y = if WORLD_RANGE.contains(&x) && WORLD_RANGE.contains(&z) {
+                self.world
+                    .chunks
+                    .get(&(x >> 4, z >> 4))
+                    .and_then(|chunk| chunk.packet_motion_blocking_height(x, z))
+                    .unwrap_or(remote.dimension.min_y)
+            } else {
+                remote.sea_level.wrapping_add(1)
+            };
+        }
         self.spawn = Some(Vec3::new(
             f64::from(x) + 0.5,
             f64::from(y),
@@ -183,14 +211,12 @@ impl Game<'_> {
             4 if self.screen != Screen::Win => {
                 self.open_win_screen(true, super::super::win::Finish::RemoteRespawn);
             }
+            // DEMO_EVENT: a parentless popup or a client-system hint.
+            5 => self.apply_demo_event(p.param),
             // START_RAINING, STOP_RAINING, RAIN_LEVEL_CHANGE and THUNDER_LEVEL_CHANGE.
             event @ (1 | 2 | 7 | 8) => self.world.weather.game_event(event, p.param),
             3 => {
-                self.set_mode_id(p.rounded_param());
-                let mode = self.mode_id();
-                if let Some(r) = self.remote.as_mut() {
-                    r.game_mode = mode;
-                }
+                self.set_local_mode(crate::game::game_mode::mode_from_id(p.rounded_param()));
                 if self.spectator() {
                     self.reset_client_item_use();
                 }

@@ -61,7 +61,7 @@ impl MixinsIdentity {
                 && (sdk.rev != identity.revision || sdk.patch != identity.patch)
             {
                 return Err(trf(
-                    "E_MIXINS_IDENTITY: {mod} needs the SDK's horizon-mixins {sdk_rev} (patch {sdk_patch}), but this tool uses {tool_rev} (patch {tool_patch}). Install the cargo sunrise-mod tool from the selected SDK, or use cargo sunrise-mod update to select an SDK that matches this tool.",
+                    "E_MIXINS_IDENTITY: {mod} needs the SDK's horizon-mixins {sdk_rev} (patch {sdk_patch}), but this tool uses {tool_rev} (patch {tool_patch}). Install the cargo sunrise-mod tool from the selected SDK, or use cargo sunrise-mod pin to select an SDK that matches this tool.",
                     &[
                         ("mod", id),
                         ("sdk_rev", &sdk.rev),
@@ -200,7 +200,7 @@ fn build(rust: &dyn Toolchain, dir: &Path, revision: &str) -> Result<(), String>
         .arg(top.join("crates/horizon-mixins-cli"))
         .arg("--root")
         .arg(dir);
-    let built = run(cmd, "Building horizon-mixins", |_| {});
+    let built = run(cmd, "Building horizon-mixins");
     let _ = fs::remove_dir_all(&partial);
     built
 }
@@ -329,7 +329,7 @@ mod tests {
                 &sdk.patch,
                 MIXINS_REV,
                 &patch,
-                "cargo sunrise-mod update",
+                "cargo sunrise-mod pin",
             ] {
                 assert!(error.contains(fragment), "{error}");
             }

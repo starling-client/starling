@@ -51,7 +51,6 @@ pub fn peek_height_scale(m: &Mob) -> Option<f32> {
 
 pub fn register(m: &mut Mob) {
     m.no_gravity = true;
-    m.yaw = 0.0;
     m.body_yaw = 0.0;
     m.previous_body_yaw = 0.0;
     if m.extra.color == 0 && m.extra.variant == 0 {
@@ -520,12 +519,10 @@ pub fn keep_eased_peek(slot: &mut Mob, old: &Mob) {
     slot.anim.v[PEEK] = old.anim.v[PEEK];
     slot.anim.vo[PEEK] = old.anim.vo[PEEK];
 }
-/// `Shulker.tick` additions: stay still and square on its block, then
-/// [`shell_tick`].
+/// `Shulker.tick` additions: stay square on its block, then [`shell_tick`]. Only
+/// `Shulker.finalizeSpawn` sets the yaw (0), so a loaded yaw is kept.
 pub fn tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
-    m.velocity = Vec3::ZERO;
     m.body_yaw = 0.0;
-    m.yaw = 0.0;
     m.head_pitch = 0.0;
     shell_tick(m, w, events);
 }
@@ -533,6 +530,8 @@ pub fn tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
 /// rides nothing keeps a face (or teleports), and the lid eases toward its
 /// raw peek, pushing whatever it opens into.
 pub fn shell_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
+    // `Shulker.getDeltaMovement` is always zero and `setDeltaMovement` does nothing.
+    m.velocity = Vec3::ZERO;
     let p = block_pos(m);
     if m.extra.mount.is_none() && !can_stay_at(m, w, p, m.extra.variant3) {
         match attachable(m, w, p) {
@@ -809,24 +808,30 @@ struct ShulkerAttack {
 }
 impl Goal for ShulkerAttack {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE | LOOK
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         true
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         m.target_info(cx.w).is_some_and(|t| t.alive) && peaceful_off(m, cx.w)
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.attack_time = 20;
         set_peek(m, 100, cx.events, cx.w.attributes);
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         set_peek(m, 0, cx.events, cx.w.attributes);
     }
     /// `Shulker.ShulkerAttackGoal.tick`: the bullet starts at the centre of
     /// the shulker's box ([`bullet_origin`]).
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         if !peaceful_off(m, cx.w) {
             return;
@@ -874,26 +879,32 @@ struct Peek {
 }
 impl Goal for Peek {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         0
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         m.ai.target.is_none()
             && m.random.next_int_bound(reduced(40)).unwrap_or(1) == 0
             && can_stay_at(m, cx.w, block_pos(m), m.extra.variant3)
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, _cx: &mut Cx) -> bool {
         m.ai.target.is_none() && self.time > 0
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.time = reduced(20 * (1 + m.random.next_int_bound(3).unwrap_or(0)));
         set_peek(m, 30, cx.events, cx.w.attributes);
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         if m.ai.target.is_none() {
             set_peek(m, 0, cx.events, cx.w.attributes);
         }
     }
+    #[inline]
     fn tick(&mut self, _m: &mut Mob, _cx: &mut Cx) {
         self.time -= 1;
     }
@@ -1010,7 +1021,7 @@ mod tests {
             .unwrap()
     }
 
-    fn modifiers(m: &Mob, catalog: &Arc<Catalog>) -> Vec<Modifier> {
+    fn modifiers<'a>(m: &'a Mob, catalog: &Arc<Catalog>) -> &'a [Modifier] {
         m.extra
             .live
             .modifiers(catalog, &m.kind.id, "minecraft:armor", Vec::new)
@@ -1050,7 +1061,7 @@ mod tests {
             assert!((armor(&m, &catalog) - 27.5).abs() < 1e-12);
             assert_eq!(super::super::armor::values(&m), (27.0, 0.0));
             let covered = modifiers(&m, &catalog)
-                .into_iter()
+                .iter()
                 .find(|m| m.id() == "minecraft:covered")
                 .unwrap();
             assert_eq!(covered.amount(), 20.0);
@@ -1454,6 +1465,182 @@ mod tests {
 #[cfg(test)]
 mod saved_bytes_tests {
     use super::*;
+
+    fn shulker_types() -> std::collections::HashMap<String, std::sync::Arc<crate::mobs::MobType>> {
+        let mut kind = crate::mobs::sensor_scan_tests::kind();
+        let k = std::sync::Arc::make_mut(&mut kind);
+        k.id = "minecraft:shulker".into();
+        k.species = Species::Shulker;
+        [("minecraft:shulker".into(), kind)].into()
+    }
+
+    fn shulker_motion_witness_26_3() -> serde_json::Value {
+        let env_path = std::env::var("SUNRISE_SHULKER_MOTION_WITNESS").expect(
+            "SUNRISE_SHULKER_MOTION_WITNESS is unset; run through tools/test_shulker_motion_parity.py, which records the witness",
+        );
+        let path = std::path::PathBuf::from(&env_path);
+        let path = if path.is_dir() {
+            path.join("shulker_motion.json")
+        } else {
+            path
+        };
+        let raw = std::fs::read_to_string(&path).unwrap_or_else(|err| {
+            panic!(
+                "failed to read shulker motion witness at {} ({err}); run through tools/test_shulker_motion_parity.py",
+                path.display()
+            )
+        });
+        let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(value["minecraft"].as_str(), Some("26.3"));
+        value
+    }
+
+    fn hex_u64_vec3(value: &serde_json::Value) -> [u64; 3] {
+        let items = value.as_array().unwrap();
+        assert_eq!(items.len(), 3);
+        std::array::from_fn(|i| u64::from_str_radix(items[i].as_str().unwrap(), 16).unwrap())
+    }
+
+    fn hex_u32_vec2(value: &serde_json::Value) -> [u32; 2] {
+        let items = value.as_array().unwrap();
+        assert_eq!(items.len(), 2);
+        std::array::from_fn(|i| u32::from_str_radix(items[i].as_str().unwrap(), 16).unwrap())
+    }
+
+    fn mob_motion_bits(m: &Mob) -> [u64; 3] {
+        [
+            m.velocity.x.to_bits(),
+            m.velocity.y.to_bits(),
+            m.velocity.z.to_bits(),
+        ]
+    }
+
+    fn mob_rotation_bits(m: &Mob) -> [u32; 2] {
+        [m.yaw.to_bits(), m.head_pitch.to_bits()]
+    }
+
+    /// Vanilla 26.3 witness recorded by `tools/test_shulker_motion_parity.py`: a loaded shulker matches vanilla 26.3 motion and rotation bits.
+    #[test]
+    #[ignore = "run by tools/test_shulker_motion_parity.py"]
+    fn a_loaded_shulker_has_no_motion_and_keeps_its_yaw() {
+        use crate::entity_nbt::mob_from_nbt;
+        let witness = shulker_motion_witness_26_3();
+        let types = shulker_types();
+        let cases = witness["loaded_cases"].as_array().unwrap();
+        assert!(!cases.is_empty());
+        for case in cases {
+            let name = case["name"].as_str().unwrap();
+            let snbt = case["nbt"].as_str().unwrap();
+            let tag = sunrise_core::nbt::parse_snbt(snbt).unwrap().0;
+            let m = mob_from_nbt(&tag, &types, 1, None).unwrap();
+            let after_load = &case["after_load"];
+            assert_eq!(
+                mob_motion_bits(&m),
+                hex_u64_vec3(&after_load["motion_bits"]),
+                "26.3 loaded motion mismatch for {name}"
+            );
+            assert_eq!(
+                mob_rotation_bits(&m),
+                hex_u32_vec2(&after_load["rotation_bits"]),
+                "26.3 loaded rotation mismatch for {name}"
+            );
+        }
+    }
+
+    /// Vanilla 26.3 witness recorded by `tools/test_shulker_motion_parity.py`: a NoAI shulker in flowing water matches vanilla 26.3 motion and rotation bits on every tick.
+    #[test]
+    #[ignore = "run by tools/test_shulker_motion_parity.py"]
+    fn a_noai_shulker_in_flowing_water_keeps_zero_motion() {
+        use std::sync::Arc;
+        use sunrise_core::nbt::Tag;
+        let witness = shulker_motion_witness_26_3();
+        let case = &witness["flowing_water_case"];
+        let levels: Vec<i64> = case["trough_levels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_i64().unwrap())
+            .collect();
+        let shulker_index = case["shulker_trough_index"].as_u64().unwrap() as i32;
+        let input_motion = hex_u64_vec3(&case["input_motion_bits"]);
+        let input_rotation = hex_u32_vec2(&case["input_rotation_bits"]);
+        let ticks = case["ticks"].as_array().unwrap();
+        assert!(ticks.len() > 1);
+        assert_eq!(ticks[0]["tick"].as_u64(), Some(0));
+        let ran = super::super::world::with_built_test_world(
+            &[],
+            |world, registry| {
+                world
+                    .chunks
+                    .insert((0, 0), Arc::new(crate::chunk::Chunk::empty(0, 0)));
+                let stone = registry.default_state("minecraft:stone").unwrap();
+                for x in 0..16 {
+                    for z in 0..16 {
+                        world.set(x, 63, z, stone).unwrap();
+                    }
+                }
+                // Build the same steady-state 1-wide stone trough recorded in the 26.3 witness.
+                for x in 1..=(levels.len() as i32 + 2) {
+                    world.set(x, 64, 3, stone).unwrap();
+                    world.set(x, 64, 5, stone).unwrap();
+                }
+                world.set(1, 64, 4, stone).unwrap();
+                for (offset, level) in levels.iter().enumerate() {
+                    let level = level.to_string();
+                    let water = registry
+                        .saved_state_id(&Tag::compound([
+                            ("id", Tag::String("minecraft:water".into())),
+                            (
+                                "properties",
+                                Tag::compound([("level", Tag::String(level.as_str().into()))]),
+                            ),
+                        ]))
+                        .unwrap();
+                    world.set(2 + offset as i32, 64, 4, water).unwrap();
+                }
+            },
+            |w, types| {
+                let kind = Arc::new(types.types["minecraft:shulker"].clone());
+                let pos = Vec3::new(f64::from(2 + shulker_index) + 0.5, 64.0, 4.5);
+                let mut m = Mob::new(1, kind, pos, f32::from_bits(input_rotation[0]));
+                m.head_pitch = f32::from_bits(input_rotation[1]);
+                m.no_ai = case["no_ai"].as_bool().unwrap();
+                m.persistent = true;
+                m.velocity = Vec3::new(
+                    f64::from_bits(input_motion[0]),
+                    f64::from_bits(input_motion[1]),
+                    f64::from_bits(input_motion[2]),
+                );
+                let pushed = w.pushed_by_currents(m.bounds(), Vec3::ZERO);
+                assert_ne!(
+                    [pushed.x.to_bits(), pushed.y.to_bits(), pushed.z.to_bits()],
+                    [0.0_f64.to_bits(); 3]
+                );
+                let (mut level, mut events) = (crate::health::TestLevel::new(0), Vec::new());
+                for row in &ticks[1..] {
+                    let tick = row["tick"].as_u64().unwrap();
+                    assert!(super::super::ai::tick(
+                        &mut m,
+                        w,
+                        &mut level.level(),
+                        &mut events
+                    ));
+                    assert!(m.fluids.in_water, "tick {tick}: shulker must be in water");
+                    assert_eq!(
+                        mob_motion_bits(&m),
+                        hex_u64_vec3(&row["motion_bits"]),
+                        "26.3 water motion mismatch at tick {tick}"
+                    );
+                    assert_eq!(
+                        mob_rotation_bits(&m),
+                        hex_u32_vec2(&row["rotation_bits"]),
+                        "26.3 water rotation mismatch at tick {tick}"
+                    );
+                }
+            },
+        );
+        assert!(ran, "vanilla data is missing");
+    }
 
     /// `Shulker.readAdditionalSaveData`: `AttachFace` is
     /// `Direction.LEGACY_ID_CODEC` (`from3DDataValue` wraps the id through

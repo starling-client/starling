@@ -62,3 +62,94 @@ same id) says beforehand what it would do, for a recipe the player's book holds
 or not. Call it while the answer is wanted, for example while hovering the
 "+". On a remote server the client asks again when the cached answer is one
 second old, even if the menu has not changed.
+
+## Recipe filters
+
+You can remove recipes or replace inputs and outputs from a content mod or data
+pack without listing recipe IDs. Create `data/<ns>/recipe_filter/<name>.json`
+with a `{"filters": [...]}` object. Each filter requires all its match keys to
+hold and exactly one action. A filter with no match keys matches every recipe:
+
+| Key | Meaning |
+|---|---|
+| `id` | the recipe id; `*` matches any run of characters (`minecraft:*_planks`) |
+| `type` | the recipe's `type`, with the same `*` (`mymod:*`) |
+| `input` | an item id or `#tag` among the recipe's inputs |
+| `output` | an item id among its outputs (anything under `result`, `results`, `output` or `outputs`) |
+| `remove` | `true`: the recipe is not loaded |
+| `replace_input` | `{"from": ..., "to": ...}`: every input that is `from` becomes `to` |
+| `replace_output` | the same, for the outputs |
+
+```json
+{"filters": [
+  {"id": "minecraft:*_planks", "remove": true},
+  {"type": "mymod:*", "replace_input": {"from": "minecraft:iron_ingot", "to": "#c:ingots/iron"}}
+]}
+```
+
+### Filter application rules
+
+- Filters run after pack overrides are merged and recipe load conditions pass.
+  They operate on JSON, including recipes of mod-defined types.
+- Files apply in recipe-filter ID order; filters within a file apply in array
+  order. Later filters see earlier replacements. Removal stops processing that recipe.
+- A higher-priority pack's file replaces a file with the same ID.
+- Input and output matching walks JSON strings, excluding `type`, `group`,
+  `category` and `neoforge:conditions`. Strings under `result`, `results`,
+  `output` or `outputs` count as outputs; other strings count as inputs.
+  A `{"tag": "c:ingots/iron"}` value matches `#c:ingots/iron`.
+- Replacement changes matching strings, not JSON object keys or structure.
+  When replacing a `tag` value, the stored string omits the leading `#`.
+- Crafting, station and brewing loaders, the recipe book and recipe data sent to
+  players use the filtered recipes.
+
+An unknown filter key, invalid value type, or anything other than exactly one
+action skips that filter with a warning. `remove: false` does not count as an
+action. A replacement requires string `from` and `to` values. Invalid JSON skips
+the file with a warning.
+
+## Recipe priorities
+
+When two recipes match the same input, the first one wins. A content mod or data
+pack picks the winner with `data/neoforge/recipe_priorities.json`, the resource
+used by NeoForge's `RecipePriorityManager`. The same filename under any other
+namespace has no effect.
+
+```json
+{"replace": false, "entries": {"example:specific": 5, "example:broad": -1}}
+```
+
+| Key | Meaning |
+|---|---|
+| `entries` | recipe ID to priority, a signed 32-bit integer; an ID without a namespace is `minecraft:`. A layer cannot give the same ID twice using different spellings. |
+| `replace` | `true` clears every priority an earlier layer set, even when `entries` is absent or empty |
+| `neoforge:conditions` | an array of [load conditions](conditional-data.md); a valid false condition skips the entire layer |
+
+A recipe with no entry has priority 0.
+
+### Priority layers
+
+Files apply lowest layer first: the game's own data, then content mods in
+dependency order (a mod's jars in declared order, below its own directory or
+`.smod` files), then the world's enabled data packs in pack order. Every layer of
+this one path counts, including lower copies. Content mods need not claim the
+`neoforge` namespace to provide it. A later entry overrides an earlier one.
+Well-formed IDs that name no loaded recipe are kept quietly.
+
+An unreadable file is logged with its pack and resource path and skipped. A
+readable file with malformed JSON, invalid load conditions, or invalid priority
+data refuses the load and names its pack and resource path. Nothing from that
+file applies. A layer with valid false conditions is skipped before its priority
+data is decoded.
+
+### Priority order
+
+The recipes are sorted once per server data load, by descending priority and then
+by vanilla's registration order (path, then namespace). Crafting, every cooking
+type, smithing, the stonecutter list and the recipes of mod-defined types follow
+that order; nothing sorts or looks a priority up while recipes match. With no
+file, the order is vanilla's.
+
+A client joined to a server lists its stonecutter recipes in the order the
+server sent them, and its buttons number those entries, whatever packs the client
+has itself.

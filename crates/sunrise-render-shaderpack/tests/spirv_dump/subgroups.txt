@@ -1,0 +1,458 @@
+options defaults {}
+subgroups false
+  folder "" draws Attributes
+    note no program for terrain; nothing draws it
+    note no program for translucent terrain; nothing draws it
+    sizes 7c72221e55a2a07da8d7677f435a9e7ef2278c125c142620e28251595a4c3538
+    program 0 composite Composite
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv 38ae39e2aa2e1910387f35cab74711b6b6a5d4d052fb5bb4417817813f81018a words 1881
+      fragment spirv d696e7d7787f2f7b5b7cd9b495f34df9e9c5ea77bb2a75f704969c9f55ee4379 words 1639
+      interface cbc0c20ab62d34f6565c275c6dc5895ee276200326d5dabc89d5855ba1bd7a2d
+    program 1 composite1 Composite
+      settings ec6427c4bfd50a624fed52dab2996771432a329535a37968de29164c244ecf87
+      compute composite1 spirv df9de9d49446748f1b22cb351644dc776107f92225c10b6743f41c2a11bb2a03 words 1605
+      compute composite1 interface ad5bf04e6bb83d1ce4e6fdf68fb6cd247f56f86bfb8a41f14e66308014900db8
+  folder "" draws Pages
+    note no program for terrain; nothing draws it
+    note no program for translucent terrain; nothing draws it
+    sizes 7c72221e55a2a07da8d7677f435a9e7ef2278c125c142620e28251595a4c3538
+    program 0 composite Composite
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv 38ae39e2aa2e1910387f35cab74711b6b6a5d4d052fb5bb4417817813f81018a words 1881
+      fragment spirv d696e7d7787f2f7b5b7cd9b495f34df9e9c5ea77bb2a75f704969c9f55ee4379 words 1639
+      interface cbc0c20ab62d34f6565c275c6dc5895ee276200326d5dabc89d5855ba1bd7a2d
+    program 1 composite1 Composite
+      settings ec6427c4bfd50a624fed52dab2996771432a329535a37968de29164c244ecf87
+      compute composite1 spirv df9de9d49446748f1b22cb351644dc776107f92225c10b6743f41c2a11bb2a03 words 1605
+      compute composite1 interface ad5bf04e6bb83d1ce4e6fdf68fb6cd247f56f86bfb8a41f14e66308014900db8
+  folder "" draws Normals
+    note no program for terrain; nothing draws it
+    note no program for translucent terrain; nothing draws it
+    sizes 7c72221e55a2a07da8d7677f435a9e7ef2278c125c142620e28251595a4c3538
+    program 0 composite Composite
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv 38ae39e2aa2e1910387f35cab74711b6b6a5d4d052fb5bb4417817813f81018a words 1881
+      fragment spirv d696e7d7787f2f7b5b7cd9b495f34df9e9c5ea77bb2a75f704969c9f55ee4379 words 1639
+      interface cbc0c20ab62d34f6565c275c6dc5895ee276200326d5dabc89d5855ba1bd7a2d
+    program 1 composite1 Composite
+      settings ec6427c4bfd50a624fed52dab2996771432a329535a37968de29164c244ecf87
+      compute composite1 spirv df9de9d49446748f1b22cb351644dc776107f92225c10b6743f41c2a11bb2a03 words 1605
+      compute composite1 interface ad5bf04e6bb83d1ce4e6fdf68fb6cd247f56f86bfb8a41f14e66308014900db8
+  folder "" draws Flat
+    note no program for terrain; nothing draws it
+    note no program for translucent terrain; nothing draws it
+    sizes 7c72221e55a2a07da8d7677f435a9e7ef2278c125c142620e28251595a4c3538
+    program 0 composite Composite
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv 38ae39e2aa2e1910387f35cab74711b6b6a5d4d052fb5bb4417817813f81018a words 1881
+      fragment spirv d696e7d7787f2f7b5b7cd9b495f34df9e9c5ea77bb2a75f704969c9f55ee4379 words 1639
+      interface cbc0c20ab62d34f6565c275c6dc5895ee276200326d5dabc89d5855ba1bd7a2d
+    program 1 composite1 Composite
+      settings ec6427c4bfd50a624fed52dab2996771432a329535a37968de29164c244ecf87
+      compute composite1 spirv df9de9d49446748f1b22cb351644dc776107f92225c10b6743f41c2a11bb2a03 words 1605
+      compute composite1 interface ad5bf04e6bb83d1ce4e6fdf68fb6cd247f56f86bfb8a41f14e66308014900db8
+subgroups true
+  folder "" draws Attributes
+    note no program for terrain; nothing draws it
+    note no program for translucent terrain; nothing draws it
+    sizes 7c72221e55a2a07da8d7677f435a9e7ef2278c125c142620e28251595a4c3538
+    program 0 composite Composite
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv 38ae39e2aa2e1910387f35cab74711b6b6a5d4d052fb5bb4417817813f81018a words 1881
+      fragment spirv d696e7d7787f2f7b5b7cd9b495f34df9e9c5ea77bb2a75f704969c9f55ee4379 words 1639
+      interface cbc0c20ab62d34f6565c275c6dc5895ee276200326d5dabc89d5855ba1bd7a2d
+    program 1 composite1 Composite
+      settings ec6427c4bfd50a624fed52dab2996771432a329535a37968de29164c244ecf87
+      compute composite1 spirv 4ea5d044a1a6ec207243b1e4fd0f394507e8f9aaba04935d1e76ea95e326e435 words 1621
+      compute composite1 interface ad5bf04e6bb83d1ce4e6fdf68fb6cd247f56f86bfb8a41f14e66308014900db8
+  folder "" draws Pages
+    note no program for terrain; nothing draws it
+    note no program for translucent terrain; nothing draws it
+    sizes 7c72221e55a2a07da8d7677f435a9e7ef2278c125c142620e28251595a4c3538
+    program 0 composite Composite
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv 38ae39e2aa2e1910387f35cab74711b6b6a5d4d052fb5bb4417817813f81018a words 1881
+      fragment spirv d696e7d7787f2f7b5b7cd9b495f34df9e9c5ea77bb2a75f704969c9f55ee4379 words 1639
+      interface cbc0c20ab62d34f6565c275c6dc5895ee276200326d5dabc89d5855ba1bd7a2d
+    program 1 composite1 Composite
+      settings ec6427c4bfd50a624fed52dab2996771432a329535a37968de29164c244ecf87
+      compute composite1 spirv 4ea5d044a1a6ec207243b1e4fd0f394507e8f9aaba04935d1e76ea95e326e435 words 1621
+      compute composite1 interface ad5bf04e6bb83d1ce4e6fdf68fb6cd247f56f86bfb8a41f14e66308014900db8
+  folder "" draws Normals
+    note no program for terrain; nothing draws it
+    note no program for translucent terrain; nothing draws it
+    sizes 7c72221e55a2a07da8d7677f435a9e7ef2278c125c142620e28251595a4c3538
+    program 0 composite Composite
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv 38ae39e2aa2e1910387f35cab74711b6b6a5d4d052fb5bb4417817813f81018a words 1881
+      fragment spirv d696e7d7787f2f7b5b7cd9b495f34df9e9c5ea77bb2a75f704969c9f55ee4379 words 1639
+      interface cbc0c20ab62d34f6565c275c6dc5895ee276200326d5dabc89d5855ba1bd7a2d
+    program 1 composite1 Composite
+      settings ec6427c4bfd50a624fed52dab2996771432a329535a37968de29164c244ecf87
+      compute composite1 spirv 4ea5d044a1a6ec207243b1e4fd0f394507e8f9aaba04935d1e76ea95e326e435 words 1621
+      compute composite1 interface ad5bf04e6bb83d1ce4e6fdf68fb6cd247f56f86bfb8a41f14e66308014900db8
+  folder "" draws Flat
+    note no program for terrain; nothing draws it
+    note no program for translucent terrain; nothing draws it
+    sizes 7c72221e55a2a07da8d7677f435a9e7ef2278c125c142620e28251595a4c3538
+    program 0 composite Composite
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv 38ae39e2aa2e1910387f35cab74711b6b6a5d4d052fb5bb4417817813f81018a words 1881
+      fragment spirv d696e7d7787f2f7b5b7cd9b495f34df9e9c5ea77bb2a75f704969c9f55ee4379 words 1639
+      interface cbc0c20ab62d34f6565c275c6dc5895ee276200326d5dabc89d5855ba1bd7a2d
+    program 1 composite1 Composite
+      settings ec6427c4bfd50a624fed52dab2996771432a329535a37968de29164c244ecf87
+      compute composite1 spirv 4ea5d044a1a6ec207243b1e4fd0f394507e8f9aaba04935d1e76ea95e326e435 words 1621
+      compute composite1 interface ad5bf04e6bb83d1ce4e6fdf68fb6cd247f56f86bfb8a41f14e66308014900db8
+options profile.high {"BLUR_STEPS": "8", "EXTRA_PASS": "true"}
+subgroups false
+  folder "" draws Attributes
+    note no program for terrain; nothing draws it
+    note no program for translucent terrain; nothing draws it
+    sizes 7c72221e55a2a07da8d7677f435a9e7ef2278c125c142620e28251595a4c3538
+    program 0 composite Composite
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv 38ae39e2aa2e1910387f35cab74711b6b6a5d4d052fb5bb4417817813f81018a words 1881
+      fragment spirv d696e7d7787f2f7b5b7cd9b495f34df9e9c5ea77bb2a75f704969c9f55ee4379 words 1639
+      interface cbc0c20ab62d34f6565c275c6dc5895ee276200326d5dabc89d5855ba1bd7a2d
+    program 1 composite1 Composite
+      settings ec6427c4bfd50a624fed52dab2996771432a329535a37968de29164c244ecf87
+      compute composite1 spirv df9de9d49446748f1b22cb351644dc776107f92225c10b6743f41c2a11bb2a03 words 1605
+      compute composite1 interface ad5bf04e6bb83d1ce4e6fdf68fb6cd247f56f86bfb8a41f14e66308014900db8
+    program 2 composite2 Composite
+      settings ec6427c4bfd50a624fed52dab2996771432a329535a37968de29164c244ecf87
+      compute composite2 spirv 67df19d37db24a104468243da060e712b815a52fe9572f21ec4a449cba19aebb words 1781
+      compute composite2 interface b0f04306c3699e5285c7db275a3ea04a1d917b618fed01b398390f7ad469ab1a
+  folder "" draws Pages
+    note no program for terrain; nothing draws it
+    note no program for translucent terrain; nothing draws it
+    sizes 7c72221e55a2a07da8d7677f435a9e7ef2278c125c142620e28251595a4c3538
+    program 0 composite Composite
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv 38ae39e2aa2e1910387f35cab74711b6b6a5d4d052fb5bb4417817813f81018a words 1881
+      fragment spirv d696e7d7787f2f7b5b7cd9b495f34df9e9c5ea77bb2a75f704969c9f55ee4379 words 1639
+      interface cbc0c20ab62d34f6565c275c6dc5895ee276200326d5dabc89d5855ba1bd7a2d
+    program 1 composite1 Composite
+      settings ec6427c4bfd50a624fed52dab2996771432a329535a37968de29164c244ecf87
+      compute composite1 spirv df9de9d49446748f1b22cb351644dc776107f92225c10b6743f41c2a11bb2a03 words 1605
+      compute composite1 interface ad5bf04e6bb83d1ce4e6fdf68fb6cd247f56f86bfb8a41f14e66308014900db8
+    program 2 composite2 Composite
+      settings ec6427c4bfd50a624fed52dab2996771432a329535a37968de29164c244ecf87
+      compute composite2 spirv 67df19d37db24a104468243da060e712b815a52fe9572f21ec4a449cba19aebb words 1781
+      compute composite2 interface b0f04306c3699e5285c7db275a3ea04a1d917b618fed01b398390f7ad469ab1a
+  folder "" draws Normals
+    note no program for terrain; nothing draws it
+    note no program for translucent terrain; nothing draws it
+    sizes 7c72221e55a2a07da8d7677f435a9e7ef2278c125c142620e28251595a4c3538
+    program 0 composite Composite
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv 38ae39e2aa2e1910387f35cab74711b6b6a5d4d052fb5bb4417817813f81018a words 1881
+      fragment spirv d696e7d7787f2f7b5b7cd9b495f34df9e9c5ea77bb2a75f704969c9f55ee4379 words 1639
+      interface cbc0c20ab62d34f6565c275c6dc5895ee276200326d5dabc89d5855ba1bd7a2d
+    program 1 composite1 Composite
+      settings ec6427c4bfd50a624fed52dab2996771432a329535a37968de29164c244ecf87
+      compute composite1 spirv df9de9d49446748f1b22cb351644dc776107f92225c10b6743f41c2a11bb2a03 words 1605
+      compute composite1 interface ad5bf04e6bb83d1ce4e6fdf68fb6cd247f56f86bfb8a41f14e66308014900db8
+    program 2 composite2 Composite
+      settings ec6427c4bfd50a624fed52dab2996771432a329535a37968de29164c244ecf87
+      compute composite2 spirv 67df19d37db24a104468243da060e712b815a52fe9572f21ec4a449cba19aebb words 1781
+      compute composite2 interface b0f04306c3699e5285c7db275a3ea04a1d917b618fed01b398390f7ad469ab1a
+  folder "" draws Flat
+    note no program for terrain; nothing draws it
+    note no program for translucent terrain; nothing draws it
+    sizes 7c72221e55a2a07da8d7677f435a9e7ef2278c125c142620e28251595a4c3538
+    program 0 composite Composite
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv 38ae39e2aa2e1910387f35cab74711b6b6a5d4d052fb5bb4417817813f81018a words 1881
+      fragment spirv d696e7d7787f2f7b5b7cd9b495f34df9e9c5ea77bb2a75f704969c9f55ee4379 words 1639
+      interface cbc0c20ab62d34f6565c275c6dc5895ee276200326d5dabc89d5855ba1bd7a2d
+    program 1 composite1 Composite
+      settings ec6427c4bfd50a624fed52dab2996771432a329535a37968de29164c244ecf87
+      compute composite1 spirv df9de9d49446748f1b22cb351644dc776107f92225c10b6743f41c2a11bb2a03 words 1605
+      compute composite1 interface ad5bf04e6bb83d1ce4e6fdf68fb6cd247f56f86bfb8a41f14e66308014900db8
+    program 2 composite2 Composite
+      settings ec6427c4bfd50a624fed52dab2996771432a329535a37968de29164c244ecf87
+      compute composite2 spirv 67df19d37db24a104468243da060e712b815a52fe9572f21ec4a449cba19aebb words 1781
+      compute composite2 interface b0f04306c3699e5285c7db275a3ea04a1d917b618fed01b398390f7ad469ab1a
+subgroups true
+  folder "" draws Attributes
+    note no program for terrain; nothing draws it
+    note no program for translucent terrain; nothing draws it
+    sizes 7c72221e55a2a07da8d7677f435a9e7ef2278c125c142620e28251595a4c3538
+    program 0 composite Composite
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv 38ae39e2aa2e1910387f35cab74711b6b6a5d4d052fb5bb4417817813f81018a words 1881
+      fragment spirv d696e7d7787f2f7b5b7cd9b495f34df9e9c5ea77bb2a75f704969c9f55ee4379 words 1639
+      interface cbc0c20ab62d34f6565c275c6dc5895ee276200326d5dabc89d5855ba1bd7a2d
+    program 1 composite1 Composite
+      settings ec6427c4bfd50a624fed52dab2996771432a329535a37968de29164c244ecf87
+      compute composite1 spirv 4ea5d044a1a6ec207243b1e4fd0f394507e8f9aaba04935d1e76ea95e326e435 words 1621
+      compute composite1 interface ad5bf04e6bb83d1ce4e6fdf68fb6cd247f56f86bfb8a41f14e66308014900db8
+    program 2 composite2 Composite
+      settings ec6427c4bfd50a624fed52dab2996771432a329535a37968de29164c244ecf87
+      compute composite2 spirv 67df19d37db24a104468243da060e712b815a52fe9572f21ec4a449cba19aebb words 1781
+      compute composite2 interface b0f04306c3699e5285c7db275a3ea04a1d917b618fed01b398390f7ad469ab1a
+  folder "" draws Pages
+    note no program for terrain; nothing draws it
+    note no program for translucent terrain; nothing draws it
+    sizes 7c72221e55a2a07da8d7677f435a9e7ef2278c125c142620e28251595a4c3538
+    program 0 composite Composite
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv 38ae39e2aa2e1910387f35cab74711b6b6a5d4d052fb5bb4417817813f81018a words 1881
+      fragment spirv d696e7d7787f2f7b5b7cd9b495f34df9e9c5ea77bb2a75f704969c9f55ee4379 words 1639
+      interface cbc0c20ab62d34f6565c275c6dc5895ee276200326d5dabc89d5855ba1bd7a2d
+    program 1 composite1 Composite
+      settings ec6427c4bfd50a624fed52dab2996771432a329535a37968de29164c244ecf87
+      compute composite1 spirv 4ea5d044a1a6ec207243b1e4fd0f394507e8f9aaba04935d1e76ea95e326e435 words 1621
+      compute composite1 interface ad5bf04e6bb83d1ce4e6fdf68fb6cd247f56f86bfb8a41f14e66308014900db8
+    program 2 composite2 Composite
+      settings ec6427c4bfd50a624fed52dab2996771432a329535a37968de29164c244ecf87
+      compute composite2 spirv 67df19d37db24a104468243da060e712b815a52fe9572f21ec4a449cba19aebb words 1781
+      compute composite2 interface b0f04306c3699e5285c7db275a3ea04a1d917b618fed01b398390f7ad469ab1a
+  folder "" draws Normals
+    note no program for terrain; nothing draws it
+    note no program for translucent terrain; nothing draws it
+    sizes 7c72221e55a2a07da8d7677f435a9e7ef2278c125c142620e28251595a4c3538
+    program 0 composite Composite
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv 38ae39e2aa2e1910387f35cab74711b6b6a5d4d052fb5bb4417817813f81018a words 1881
+      fragment spirv d696e7d7787f2f7b5b7cd9b495f34df9e9c5ea77bb2a75f704969c9f55ee4379 words 1639
+      interface cbc0c20ab62d34f6565c275c6dc5895ee276200326d5dabc89d5855ba1bd7a2d
+    program 1 composite1 Composite
+      settings ec6427c4bfd50a624fed52dab2996771432a329535a37968de29164c244ecf87
+      compute composite1 spirv 4ea5d044a1a6ec207243b1e4fd0f394507e8f9aaba04935d1e76ea95e326e435 words 1621
+      compute composite1 interface ad5bf04e6bb83d1ce4e6fdf68fb6cd247f56f86bfb8a41f14e66308014900db8
+    program 2 composite2 Composite
+      settings ec6427c4bfd50a624fed52dab2996771432a329535a37968de29164c244ecf87
+      compute composite2 spirv 67df19d37db24a104468243da060e712b815a52fe9572f21ec4a449cba19aebb words 1781
+      compute composite2 interface b0f04306c3699e5285c7db275a3ea04a1d917b618fed01b398390f7ad469ab1a
+  folder "" draws Flat
+    note no program for terrain; nothing draws it
+    note no program for translucent terrain; nothing draws it
+    sizes 7c72221e55a2a07da8d7677f435a9e7ef2278c125c142620e28251595a4c3538
+    program 0 composite Composite
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv 38ae39e2aa2e1910387f35cab74711b6b6a5d4d052fb5bb4417817813f81018a words 1881
+      fragment spirv d696e7d7787f2f7b5b7cd9b495f34df9e9c5ea77bb2a75f704969c9f55ee4379 words 1639
+      interface cbc0c20ab62d34f6565c275c6dc5895ee276200326d5dabc89d5855ba1bd7a2d
+    program 1 composite1 Composite
+      settings ec6427c4bfd50a624fed52dab2996771432a329535a37968de29164c244ecf87
+      compute composite1 spirv 4ea5d044a1a6ec207243b1e4fd0f394507e8f9aaba04935d1e76ea95e326e435 words 1621
+      compute composite1 interface ad5bf04e6bb83d1ce4e6fdf68fb6cd247f56f86bfb8a41f14e66308014900db8
+    program 2 composite2 Composite
+      settings ec6427c4bfd50a624fed52dab2996771432a329535a37968de29164c244ecf87
+      compute composite2 spirv 67df19d37db24a104468243da060e712b815a52fe9572f21ec4a449cba19aebb words 1781
+      compute composite2 interface b0f04306c3699e5285c7db275a3ea04a1d917b618fed01b398390f7ad469ab1a
+options profile.odd {"EXTRA_PASS": "true"}
+subgroups false
+  folder "" draws Attributes
+    note no program for terrain; nothing draws it
+    note no program for translucent terrain; nothing draws it
+    sizes 7c72221e55a2a07da8d7677f435a9e7ef2278c125c142620e28251595a4c3538
+    program 0 composite Composite
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv 38ae39e2aa2e1910387f35cab74711b6b6a5d4d052fb5bb4417817813f81018a words 1881
+      fragment spirv d696e7d7787f2f7b5b7cd9b495f34df9e9c5ea77bb2a75f704969c9f55ee4379 words 1639
+      interface cbc0c20ab62d34f6565c275c6dc5895ee276200326d5dabc89d5855ba1bd7a2d
+    program 1 composite1 Composite
+      settings ec6427c4bfd50a624fed52dab2996771432a329535a37968de29164c244ecf87
+      compute composite1 spirv df9de9d49446748f1b22cb351644dc776107f92225c10b6743f41c2a11bb2a03 words 1605
+      compute composite1 interface ad5bf04e6bb83d1ce4e6fdf68fb6cd247f56f86bfb8a41f14e66308014900db8
+    program 2 composite2 Composite
+      settings ec6427c4bfd50a624fed52dab2996771432a329535a37968de29164c244ecf87
+      compute composite2 spirv 3e9fe7d95509c65004861b042042fb7c5823b757baa332d141badc87dba89d57 words 1785
+      compute composite2 interface b0f04306c3699e5285c7db275a3ea04a1d917b618fed01b398390f7ad469ab1a
+  folder "" draws Pages
+    note no program for terrain; nothing draws it
+    note no program for translucent terrain; nothing draws it
+    sizes 7c72221e55a2a07da8d7677f435a9e7ef2278c125c142620e28251595a4c3538
+    program 0 composite Composite
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv 38ae39e2aa2e1910387f35cab74711b6b6a5d4d052fb5bb4417817813f81018a words 1881
+      fragment spirv d696e7d7787f2f7b5b7cd9b495f34df9e9c5ea77bb2a75f704969c9f55ee4379 words 1639
+      interface cbc0c20ab62d34f6565c275c6dc5895ee276200326d5dabc89d5855ba1bd7a2d
+    program 1 composite1 Composite
+      settings ec6427c4bfd50a624fed52dab2996771432a329535a37968de29164c244ecf87
+      compute composite1 spirv df9de9d49446748f1b22cb351644dc776107f92225c10b6743f41c2a11bb2a03 words 1605
+      compute composite1 interface ad5bf04e6bb83d1ce4e6fdf68fb6cd247f56f86bfb8a41f14e66308014900db8
+    program 2 composite2 Composite
+      settings ec6427c4bfd50a624fed52dab2996771432a329535a37968de29164c244ecf87
+      compute composite2 spirv 3e9fe7d95509c65004861b042042fb7c5823b757baa332d141badc87dba89d57 words 1785
+      compute composite2 interface b0f04306c3699e5285c7db275a3ea04a1d917b618fed01b398390f7ad469ab1a
+  folder "" draws Normals
+    note no program for terrain; nothing draws it
+    note no program for translucent terrain; nothing draws it
+    sizes 7c72221e55a2a07da8d7677f435a9e7ef2278c125c142620e28251595a4c3538
+    program 0 composite Composite
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv 38ae39e2aa2e1910387f35cab74711b6b6a5d4d052fb5bb4417817813f81018a words 1881
+      fragment spirv d696e7d7787f2f7b5b7cd9b495f34df9e9c5ea77bb2a75f704969c9f55ee4379 words 1639
+      interface cbc0c20ab62d34f6565c275c6dc5895ee276200326d5dabc89d5855ba1bd7a2d
+    program 1 composite1 Composite
+      settings ec6427c4bfd50a624fed52dab2996771432a329535a37968de29164c244ecf87
+      compute composite1 spirv df9de9d49446748f1b22cb351644dc776107f92225c10b6743f41c2a11bb2a03 words 1605
+      compute composite1 interface ad5bf04e6bb83d1ce4e6fdf68fb6cd247f56f86bfb8a41f14e66308014900db8
+    program 2 composite2 Composite
+      settings ec6427c4bfd50a624fed52dab2996771432a329535a37968de29164c244ecf87
+      compute composite2 spirv 3e9fe7d95509c65004861b042042fb7c5823b757baa332d141badc87dba89d57 words 1785
+      compute composite2 interface b0f04306c3699e5285c7db275a3ea04a1d917b618fed01b398390f7ad469ab1a
+  folder "" draws Flat
+    note no program for terrain; nothing draws it
+    note no program for translucent terrain; nothing draws it
+    sizes 7c72221e55a2a07da8d7677f435a9e7ef2278c125c142620e28251595a4c3538
+    program 0 composite Composite
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv 38ae39e2aa2e1910387f35cab74711b6b6a5d4d052fb5bb4417817813f81018a words 1881
+      fragment spirv d696e7d7787f2f7b5b7cd9b495f34df9e9c5ea77bb2a75f704969c9f55ee4379 words 1639
+      interface cbc0c20ab62d34f6565c275c6dc5895ee276200326d5dabc89d5855ba1bd7a2d
+    program 1 composite1 Composite
+      settings ec6427c4bfd50a624fed52dab2996771432a329535a37968de29164c244ecf87
+      compute composite1 spirv df9de9d49446748f1b22cb351644dc776107f92225c10b6743f41c2a11bb2a03 words 1605
+      compute composite1 interface ad5bf04e6bb83d1ce4e6fdf68fb6cd247f56f86bfb8a41f14e66308014900db8
+    program 2 composite2 Composite
+      settings ec6427c4bfd50a624fed52dab2996771432a329535a37968de29164c244ecf87
+      compute composite2 spirv 3e9fe7d95509c65004861b042042fb7c5823b757baa332d141badc87dba89d57 words 1785
+      compute composite2 interface b0f04306c3699e5285c7db275a3ea04a1d917b618fed01b398390f7ad469ab1a
+subgroups true
+  folder "" draws Attributes
+    note no program for terrain; nothing draws it
+    note no program for translucent terrain; nothing draws it
+    sizes 7c72221e55a2a07da8d7677f435a9e7ef2278c125c142620e28251595a4c3538
+    program 0 composite Composite
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv 38ae39e2aa2e1910387f35cab74711b6b6a5d4d052fb5bb4417817813f81018a words 1881
+      fragment spirv d696e7d7787f2f7b5b7cd9b495f34df9e9c5ea77bb2a75f704969c9f55ee4379 words 1639
+      interface cbc0c20ab62d34f6565c275c6dc5895ee276200326d5dabc89d5855ba1bd7a2d
+    program 1 composite1 Composite
+      settings ec6427c4bfd50a624fed52dab2996771432a329535a37968de29164c244ecf87
+      compute composite1 spirv 4ea5d044a1a6ec207243b1e4fd0f394507e8f9aaba04935d1e76ea95e326e435 words 1621
+      compute composite1 interface ad5bf04e6bb83d1ce4e6fdf68fb6cd247f56f86bfb8a41f14e66308014900db8
+    program 2 composite2 Composite
+      settings ec6427c4bfd50a624fed52dab2996771432a329535a37968de29164c244ecf87
+      compute composite2 spirv 3e9fe7d95509c65004861b042042fb7c5823b757baa332d141badc87dba89d57 words 1785
+      compute composite2 interface b0f04306c3699e5285c7db275a3ea04a1d917b618fed01b398390f7ad469ab1a
+  folder "" draws Pages
+    note no program for terrain; nothing draws it
+    note no program for translucent terrain; nothing draws it
+    sizes 7c72221e55a2a07da8d7677f435a9e7ef2278c125c142620e28251595a4c3538
+    program 0 composite Composite
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv 38ae39e2aa2e1910387f35cab74711b6b6a5d4d052fb5bb4417817813f81018a words 1881
+      fragment spirv d696e7d7787f2f7b5b7cd9b495f34df9e9c5ea77bb2a75f704969c9f55ee4379 words 1639
+      interface cbc0c20ab62d34f6565c275c6dc5895ee276200326d5dabc89d5855ba1bd7a2d
+    program 1 composite1 Composite
+      settings ec6427c4bfd50a624fed52dab2996771432a329535a37968de29164c244ecf87
+      compute composite1 spirv 4ea5d044a1a6ec207243b1e4fd0f394507e8f9aaba04935d1e76ea95e326e435 words 1621
+      compute composite1 interface ad5bf04e6bb83d1ce4e6fdf68fb6cd247f56f86bfb8a41f14e66308014900db8
+    program 2 composite2 Composite
+      settings ec6427c4bfd50a624fed52dab2996771432a329535a37968de29164c244ecf87
+      compute composite2 spirv 3e9fe7d95509c65004861b042042fb7c5823b757baa332d141badc87dba89d57 words 1785
+      compute composite2 interface b0f04306c3699e5285c7db275a3ea04a1d917b618fed01b398390f7ad469ab1a
+  folder "" draws Normals
+    note no program for terrain; nothing draws it
+    note no program for translucent terrain; nothing draws it
+    sizes 7c72221e55a2a07da8d7677f435a9e7ef2278c125c142620e28251595a4c3538
+    program 0 composite Composite
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv 38ae39e2aa2e1910387f35cab74711b6b6a5d4d052fb5bb4417817813f81018a words 1881
+      fragment spirv d696e7d7787f2f7b5b7cd9b495f34df9e9c5ea77bb2a75f704969c9f55ee4379 words 1639
+      interface cbc0c20ab62d34f6565c275c6dc5895ee276200326d5dabc89d5855ba1bd7a2d
+    program 1 composite1 Composite
+      settings ec6427c4bfd50a624fed52dab2996771432a329535a37968de29164c244ecf87
+      compute composite1 spirv 4ea5d044a1a6ec207243b1e4fd0f394507e8f9aaba04935d1e76ea95e326e435 words 1621
+      compute composite1 interface ad5bf04e6bb83d1ce4e6fdf68fb6cd247f56f86bfb8a41f14e66308014900db8
+    program 2 composite2 Composite
+      settings ec6427c4bfd50a624fed52dab2996771432a329535a37968de29164c244ecf87
+      compute composite2 spirv 3e9fe7d95509c65004861b042042fb7c5823b757baa332d141badc87dba89d57 words 1785
+      compute composite2 interface b0f04306c3699e5285c7db275a3ea04a1d917b618fed01b398390f7ad469ab1a
+  folder "" draws Flat
+    note no program for terrain; nothing draws it
+    note no program for translucent terrain; nothing draws it
+    sizes 7c72221e55a2a07da8d7677f435a9e7ef2278c125c142620e28251595a4c3538
+    program 0 composite Composite
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv 38ae39e2aa2e1910387f35cab74711b6b6a5d4d052fb5bb4417817813f81018a words 1881
+      fragment spirv d696e7d7787f2f7b5b7cd9b495f34df9e9c5ea77bb2a75f704969c9f55ee4379 words 1639
+      interface cbc0c20ab62d34f6565c275c6dc5895ee276200326d5dabc89d5855ba1bd7a2d
+    program 1 composite1 Composite
+      settings ec6427c4bfd50a624fed52dab2996771432a329535a37968de29164c244ecf87
+      compute composite1 spirv 4ea5d044a1a6ec207243b1e4fd0f394507e8f9aaba04935d1e76ea95e326e435 words 1621
+      compute composite1 interface ad5bf04e6bb83d1ce4e6fdf68fb6cd247f56f86bfb8a41f14e66308014900db8
+    program 2 composite2 Composite
+      settings ec6427c4bfd50a624fed52dab2996771432a329535a37968de29164c244ecf87
+      compute composite2 spirv 3e9fe7d95509c65004861b042042fb7c5823b757baa332d141badc87dba89d57 words 1785
+      compute composite2 interface b0f04306c3699e5285c7db275a3ea04a1d917b618fed01b398390f7ad469ab1a
+options profile.subgroups
+subgroups false
+  absent
+subgroups true
+  options with subgroups {"BLUR_STEPS": "2", "EXTRA_PASS": "true"}
+  folder "" draws Attributes
+    note no program for terrain; nothing draws it
+    note no program for translucent terrain; nothing draws it
+    sizes 7c72221e55a2a07da8d7677f435a9e7ef2278c125c142620e28251595a4c3538
+    program 0 composite Composite
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv 38ae39e2aa2e1910387f35cab74711b6b6a5d4d052fb5bb4417817813f81018a words 1881
+      fragment spirv d696e7d7787f2f7b5b7cd9b495f34df9e9c5ea77bb2a75f704969c9f55ee4379 words 1639
+      interface cbc0c20ab62d34f6565c275c6dc5895ee276200326d5dabc89d5855ba1bd7a2d
+    program 1 composite1 Composite
+      settings ec6427c4bfd50a624fed52dab2996771432a329535a37968de29164c244ecf87
+      compute composite1 spirv 4ea5d044a1a6ec207243b1e4fd0f394507e8f9aaba04935d1e76ea95e326e435 words 1621
+      compute composite1 interface ad5bf04e6bb83d1ce4e6fdf68fb6cd247f56f86bfb8a41f14e66308014900db8
+    program 2 composite2 Composite
+      settings ec6427c4bfd50a624fed52dab2996771432a329535a37968de29164c244ecf87
+      compute composite2 spirv 7d2dbc063992bbb0aa10f90c7a18704f1ab4772792e69d80b529d2841ea7cb89 words 1777
+      compute composite2 interface b0f04306c3699e5285c7db275a3ea04a1d917b618fed01b398390f7ad469ab1a
+  folder "" draws Pages
+    note no program for terrain; nothing draws it
+    note no program for translucent terrain; nothing draws it
+    sizes 7c72221e55a2a07da8d7677f435a9e7ef2278c125c142620e28251595a4c3538
+    program 0 composite Composite
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv 38ae39e2aa2e1910387f35cab74711b6b6a5d4d052fb5bb4417817813f81018a words 1881
+      fragment spirv d696e7d7787f2f7b5b7cd9b495f34df9e9c5ea77bb2a75f704969c9f55ee4379 words 1639
+      interface cbc0c20ab62d34f6565c275c6dc5895ee276200326d5dabc89d5855ba1bd7a2d
+    program 1 composite1 Composite
+      settings ec6427c4bfd50a624fed52dab2996771432a329535a37968de29164c244ecf87
+      compute composite1 spirv 4ea5d044a1a6ec207243b1e4fd0f394507e8f9aaba04935d1e76ea95e326e435 words 1621
+      compute composite1 interface ad5bf04e6bb83d1ce4e6fdf68fb6cd247f56f86bfb8a41f14e66308014900db8
+    program 2 composite2 Composite
+      settings ec6427c4bfd50a624fed52dab2996771432a329535a37968de29164c244ecf87
+      compute composite2 spirv 7d2dbc063992bbb0aa10f90c7a18704f1ab4772792e69d80b529d2841ea7cb89 words 1777
+      compute composite2 interface b0f04306c3699e5285c7db275a3ea04a1d917b618fed01b398390f7ad469ab1a
+  folder "" draws Normals
+    note no program for terrain; nothing draws it
+    note no program for translucent terrain; nothing draws it
+    sizes 7c72221e55a2a07da8d7677f435a9e7ef2278c125c142620e28251595a4c3538
+    program 0 composite Composite
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv 38ae39e2aa2e1910387f35cab74711b6b6a5d4d052fb5bb4417817813f81018a words 1881
+      fragment spirv d696e7d7787f2f7b5b7cd9b495f34df9e9c5ea77bb2a75f704969c9f55ee4379 words 1639
+      interface cbc0c20ab62d34f6565c275c6dc5895ee276200326d5dabc89d5855ba1bd7a2d
+    program 1 composite1 Composite
+      settings ec6427c4bfd50a624fed52dab2996771432a329535a37968de29164c244ecf87
+      compute composite1 spirv 4ea5d044a1a6ec207243b1e4fd0f394507e8f9aaba04935d1e76ea95e326e435 words 1621
+      compute composite1 interface ad5bf04e6bb83d1ce4e6fdf68fb6cd247f56f86bfb8a41f14e66308014900db8
+    program 2 composite2 Composite
+      settings ec6427c4bfd50a624fed52dab2996771432a329535a37968de29164c244ecf87
+      compute composite2 spirv 7d2dbc063992bbb0aa10f90c7a18704f1ab4772792e69d80b529d2841ea7cb89 words 1777
+      compute composite2 interface b0f04306c3699e5285c7db275a3ea04a1d917b618fed01b398390f7ad469ab1a
+  folder "" draws Flat
+    note no program for terrain; nothing draws it
+    note no program for translucent terrain; nothing draws it
+    sizes 7c72221e55a2a07da8d7677f435a9e7ef2278c125c142620e28251595a4c3538
+    program 0 composite Composite
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv 38ae39e2aa2e1910387f35cab74711b6b6a5d4d052fb5bb4417817813f81018a words 1881
+      fragment spirv d696e7d7787f2f7b5b7cd9b495f34df9e9c5ea77bb2a75f704969c9f55ee4379 words 1639
+      interface cbc0c20ab62d34f6565c275c6dc5895ee276200326d5dabc89d5855ba1bd7a2d
+    program 1 composite1 Composite
+      settings ec6427c4bfd50a624fed52dab2996771432a329535a37968de29164c244ecf87
+      compute composite1 spirv 4ea5d044a1a6ec207243b1e4fd0f394507e8f9aaba04935d1e76ea95e326e435 words 1621
+      compute composite1 interface ad5bf04e6bb83d1ce4e6fdf68fb6cd247f56f86bfb8a41f14e66308014900db8
+    program 2 composite2 Composite
+      settings ec6427c4bfd50a624fed52dab2996771432a329535a37968de29164c244ecf87
+      compute composite2 spirv 7d2dbc063992bbb0aa10f90c7a18704f1ab4772792e69d80b529d2841ea7cb89 words 1777
+      compute composite2 interface b0f04306c3699e5285c7db275a3ea04a1d917b618fed01b398390f7ad469ab1a

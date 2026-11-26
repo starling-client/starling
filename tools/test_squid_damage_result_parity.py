@@ -9,7 +9,9 @@ import json
 from pathlib import Path
 import sys
 
-import test_command_exec_parity as driver
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_command_exec_parity as driver
 
 COW = '000000b1-0000-0000-0000-000000000064'
 CASES = [('glow_ai0_cow', 'glow_squid', 0, True),

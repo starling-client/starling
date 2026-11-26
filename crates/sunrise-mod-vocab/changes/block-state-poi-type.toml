@@ -1,0 +1,2 @@
+ids = ["handle:BlockStates::poi_type"]
+why = "Mods read the point of interest type a block state belongs to (PoiTypes.forState), mods' extend_poi_types states included, for overlays and job-site helpers (#5493)."

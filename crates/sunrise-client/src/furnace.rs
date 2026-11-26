@@ -259,7 +259,13 @@ impl<'v> crate::providers::ConditionContext<'v> for FurnaceConditions<'v> {
             target: None,
             interacting: None,
             tool: None,
-            block_pos: Some(self.pos),
+            event_block: self
+                .world
+                .block_state(self.pos)
+                .map(|state| adv::BlockEvent {
+                    state,
+                    block_entity: Some(self.pos),
+                }),
             origin: self.pos.map(|axis| f64::from(axis) + 0.5),
         };
         condition.is_null() || adv::condition_leaf(condition, &context, self.world)

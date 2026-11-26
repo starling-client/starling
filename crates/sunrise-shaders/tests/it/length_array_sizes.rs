@@ -2,7 +2,7 @@
 //! expression "whether or not the object itself is constant" (GLSL 4.60, 4.3.3, as #8463
 //! quotes it), here members of storage buffers sizing shared arrays and a local one.
 //! glslangValidator takes the shader.
-use sunrise_shaders::{Origin, Preprocessed, translate_compute};
+use sunrise_shaders::{Preprocessed, translate_compute};
 
 const SOURCE: &str = "layout(local_size_x = 64) in;\n\
     layout(std430, binding = 1) restrict buffer probeList { uint count; uint[64] data; } pl;\n\
@@ -22,20 +22,9 @@ const SOURCE: &str = "layout(local_size_x = 64) in;\n\
     }\n";
 
 fn stage(code: &str) -> Preprocessed {
-    Preprocessed {
-        code: code.into(),
-        files: vec!["original.csh".into()],
-        lines: code
-            .lines()
-            .enumerate()
-            .map(|(i, _)| Origin {
-                file: 0,
-                line: i as u32 + 1,
-            })
-            .collect(),
-        version: Some((430, None)),
-        ..Default::default()
-    }
+    let mut pp = Preprocessed::from_source("original.csh", code);
+    pp.version = Some((430, None));
+    pp
 }
 
 /// The number of elements of the array a variable or its member `member` holds.

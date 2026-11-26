@@ -1,21 +1,5 @@
-//! `LivingEntity.canFreeze` and the powder-snow test behind it.
+//! `LivingEntity.canFreeze`.
 use super::{Mob, MobWorld};
-use sunrise_core::geometry::Vec3;
-
-pub(crate) fn in_powder_snow(m: &Mob, w: &MobWorld) -> bool {
-    let b = m.bounds().deflate(Vec3::new(1e-5, 1e-5, 1e-5));
-    let (min, max) = (b.min_position(), b.max_position());
-    for x in min.x.floor() as i32..=max.x.floor() as i32 {
-        for y in min.y.floor() as i32..=max.y.floor() as i32 {
-            for z in min.z.floor() as i32..=max.z.floor() as i32 {
-                if &*w.facts.get(w.world.block(x, y, z)).name == "minecraft:powder_snow" {
-                    return true;
-                }
-            }
-        }
-    }
-    false
-}
 
 /// `LivingEntity.canFreeze`: not a `#freeze_immune_entity_types` mob and no
 /// worn piece in `#freeze_immune_wearables`.
@@ -33,7 +17,7 @@ pub fn can_freeze(m: &Mob, w: &MobWorld) -> bool {
     if m.species() == super::Species::SulfurCube && crate::mobs::sulfur_cube::has_body(m) {
         return false;
     }
-    if w.entity_has("minecraft:freeze_immune_entity_types", &m.kind.id) {
+    if w.entity_tag_bit(&m.kind, crate::items::EntityTypeTags::FREEZE_IMMUNE) {
         return false;
     }
     let immune = w
@@ -52,6 +36,14 @@ pub fn can_freeze(m: &Mob, w: &MobWorld) -> bool {
     .any(|item| immune.is_some_and(|t| t.contains(item)))
 }
 
+/// Whether `p`'s head item disguises their gaze from mob `observer`: vanilla's tag test,
+/// then a mod's `gaze_disguise` answer (`IItemExtension.isGazeDisguise`).
+pub fn gaze_disguised(observer: u32, p: &crate::mobs::PlayerView, w: &MobWorld) -> bool {
+    let disguised = wears_gaze_disguise(p.head.as_deref(), w);
+    w.mob_hooks.map_or(disguised, |hooks| {
+        hooks.gaze_disguise(observer, p, disguised)
+    })
+}
 /// The player's HEAD item belongs to vanilla's gaze disguise tag.
 pub fn wears_gaze_disguise(head: Option<&str>, w: &MobWorld) -> bool {
     head.is_some_and(|item| {

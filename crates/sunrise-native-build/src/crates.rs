@@ -1,15 +1,16 @@
-//! Lock-file isolation for the launcher's flat native crates.
-//! The launcher stages one crate at native-api/<mod>/.
+//! Local Cargo manifest closure staging and lock-file isolation for native mods.
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
-use sunrise_mod_package::native_route::{API_PACKAGE, INTERNALS_PACKAGE, PACKAGES};
+
+use super::api;
 
 /// Where the launcher stages the mods' crates.
 pub const DIR: &str = "native-api";
 
 pub fn check_game_graph_names(
-    stage: &Path,
+    projects: &[api::Project<'_>],
+    generated_facades: &BTreeMap<String, &str>,
     text: &str,
     game_names: &BTreeSet<String>,
 ) -> Result<(), String> {
@@ -18,33 +19,20 @@ pub fn check_game_graph_names(
         .get("package")
         .and_then(toml::Value::as_array)
         .ok_or("Cargo.lock: missing packages")?;
-    let mut staged = Vec::new();
-    for (mod_id, manifest) in manifests(&stage.join(DIR))? {
-        let text = fs::read_to_string(manifest).map_err(|e| e.to_string())?;
-        let value: toml::Table = text.parse().map_err(|e| format!("Cargo.toml: {e}"))?;
-        let name = value
-            .get("package")
-            .and_then(|p| p.get("name"))
-            .and_then(toml::Value::as_str)
-            .ok_or("Cargo.toml: missing package name")?
-            .to_owned();
-        staged.push((mod_id, name));
-    }
-    // Each staged mod's generated facade, by package, and the mod crate it belongs to. Only that
-    // crate passes through it: a facade with a registry or git source, or one reached from any
-    // other crate, is walked like any dependency, so its game dependency is refused.
-    let facades: BTreeMap<String, &str> = staged
+    // Only the owning mod may reach its generated path facade. A resolved registry or git
+    // package with the same name is walked like any other crate.
+    let mut facades = generated_facades.clone();
+    for package in packages
         .iter()
-        .filter(|(id, _)| {
-            let facade = super::internals::package(id);
-            packages.iter().all(|p| {
-                p.get("name").and_then(toml::Value::as_str) != Some(&facade)
-                    || p.get("source").is_none()
-            })
-        })
-        .map(|(id, name)| (super::internals::package(id), name.as_str()))
-        .collect();
-    for (mod_id, name) in &staged {
+        .filter(|package| package.get("source").is_some())
+    {
+        if let Some(name) = package.get("name").and_then(toml::Value::as_str) {
+            facades.remove(name);
+        }
+    }
+    for project in projects {
+        let mod_id = &project.bundle.manifest.id;
+        let name = &project.package;
         let mut todo = vec![(name.to_owned(), name.to_owned())];
         let mut seen = BTreeSet::new();
         while let Some((current, via)) = todo.pop() {
@@ -63,7 +51,7 @@ pub fn check_game_graph_names(
                     .filter_map(toml::Value::as_str)
                 {
                     let dep = dep.split_whitespace().next().unwrap_or(dep);
-                    if dep == API_PACKAGE || facades.get(dep) == Some(&current.as_str()) {
+                    if facades.get(dep) == Some(&current.as_str()) {
                         continue;
                     }
                     let first = if current == *name {
@@ -86,33 +74,7 @@ pub fn check_game_graph_names(
     Ok(())
 }
 
-// Cargo still reads the underscore spellings before edition 2024.
-pub(super) const DEPENDENCY_KINDS: [&str; 5] = [
-    "dependencies",
-    "dev-dependencies",
-    "build-dependencies",
-    "dev_dependencies",
-    "build_dependencies",
-];
-
-pub(super) fn dependency_tables(manifest: &toml::Table) -> impl Iterator<Item = &toml::Table> {
-    std::iter::once(manifest)
-        .chain(
-            manifest
-                .get("target")
-                .and_then(toml::Value::as_table)
-                .into_iter()
-                .flat_map(|targets| targets.values().filter_map(toml::Value::as_table)),
-        )
-        .flat_map(|table| {
-            DEPENDENCY_KINDS
-                .into_iter()
-                .filter_map(|kind| table.get(kind).and_then(toml::Value::as_table))
-        })
-}
-
-/// A crate a mod's crate asks for in its `Cargo.toml`: under its own name or `package`, in any
-/// dependency table (dev and build ones too: the lock has them all).
+/// A crate a mod asks for in any Cargo dependency table (the lock includes dev and build deps).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Wanted {
     pub mod_id: String,
@@ -121,234 +83,163 @@ pub struct Wanted {
     pub requirement: semver::VersionReq,
 }
 
-/// Registry dependencies of each staged crate, validating generated local paths as well.
-pub fn wanted(
-    stage: &Path,
-    declared: &BTreeMap<&str, BTreeSet<&str>>,
-) -> Result<Vec<Wanted>, String> {
-    let mut out = Vec::new();
-    let staged_manifests = manifests(&stage.join(DIR))?;
-    let mut pending = staged_manifests.clone();
-    let mut seen = BTreeSet::new();
-    while let Some((mod_id, manifest)) = pending.pop() {
-        if !seen.insert(manifest.clone()) {
-            continue;
-        }
-        let text =
-            fs::read_to_string(&manifest).map_err(|e| format!("{}: {e}", manifest.display()))?;
-        let value: toml::Table = text
-            .parse()
-            .map_err(|e| format!("{}: {e}", manifest.display()))?;
-        for section in ["patch", "replace", "workspace"] {
-            if value.contains_key(section) {
-                return Err(format!("{}: [{section}] is refused", manifest.display()));
-            }
-        }
-        for (key, dep) in dependency_tables(&value).flatten() {
-            if dep.get("package").is_some_and(|package| !package.is_str()) {
-                return Err(format!(
-                    "{}: dependency {key} has a non-string package name",
-                    manifest.display()
-                ));
-            }
-            let get = |name: &str| dep.get(name).and_then(|v| v.as_str());
-            if get("package").unwrap_or(key) == "sunrise-client" {
-                return Err(super::api::ProjectError::GameDependency {
-                    mod_id: mod_id.clone(),
-                    key: key.clone(),
+/// Visit the root manifest already parsed by `Project`, then each reachable local manifest once.
+/// `input` is the real staged bundle for a build, or the author's project for lock generation.
+/// Remove the SDK dependencies, emit local manifests through `write_local`, and return the
+/// rewritten root manifest plus the registry requests for the lock check.
+pub(crate) fn rewrite_closure(
+    project: &api::Project<'_>,
+    input: &Path,
+    mut write_local: impl FnMut(&Path, &mut toml::Table) -> Result<(), String>,
+) -> Result<(toml::Table, Vec<Wanted>), String> {
+    struct LocalEdge {
+        manifest: PathBuf,
+        key: String,
+        package: String,
+    }
+    let mod_id = &project.bundle.manifest.id;
+    let mut wanted = Vec::new();
+    let mut root = project.cargo.clone();
+    let mut seen = BTreeMap::<PathBuf, String>::new();
+    let mut pending = vec![(PathBuf::new(), None::<LocalEdge>)];
+    while let Some((relative, edge)) = pending.pop() {
+        let dir = input.join(&relative);
+        let manifest_path = dir.join("Cargo.toml");
+        let parsed_dependencies;
+        let mut parsed_manifest;
+        let (manifest, dependencies) = if let Some(edge) = edge {
+            let wrong_package = || {
+                format!(
+                    "{}: path dependency {} has the wrong package name (expected {} in {})",
+                    edge.manifest.display(),
+                    edge.key,
+                    edge.package,
+                    manifest_path.display()
+                )
+            };
+            if let Some(package) = seen.get(&relative) {
+                if package != &edge.package {
+                    return Err(wrong_package());
                 }
-                .to_string());
-            }
-            if let Some(path) = dep.get("path") {
-                let path = path.as_str().ok_or_else(|| {
-                    format!(
-                        "{}: dependency {key} has a non-string path",
-                        manifest.display()
-                    )
-                })?;
-                if [
-                    "git",
-                    "registry",
-                    "registry-index",
-                    "branch",
-                    "rev",
-                    "tag",
-                    "workspace",
-                ]
-                .iter()
-                .any(|source| dep.get(*source).is_some())
-                {
-                    return Err(format!(
-                        "{}: dependency {key} has conflicting source selectors",
-                        manifest.display()
-                    ));
-                }
-                let package = match dep.get("package") {
-                    Some(value) => value.as_str().ok_or_else(|| {
-                        format!(
-                            "{}: dependency {key} has a non-string package name",
-                            manifest.display()
-                        )
-                    })?,
-                    None => key,
-                };
-                // The game's own packages, at the path `api::stage` rewrites them to.
-                if package == super::internals::package(&mod_id)
-                    && path == format!("../../{}", super::internals::relative(&mod_id))
-                {
-                    continue;
-                }
-                if PACKAGES.iter().any(|(game, _)| {
-                    *game != INTERNALS_PACKAGE
-                        && package == *game
-                        && path == format!("../../crates/{game}")
-                }) {
-                    continue;
-                }
-                let root = stage.join(DIR).join(&mod_id);
-                let relative = manifest
-                    .parent()
-                    .ok_or("invalid native manifest")?
-                    .strip_prefix(&root)
-                    .map_err(|e| e.to_string())?;
-                if !path.starts_with("../") || !relative.as_os_str().is_empty() {
-                    let inside = local_path(&root, relative, path)?;
-                    let nested = root.join(inside).join("Cargo.toml");
-                    if is_link_or_junction(
-                        &fs::symlink_metadata(&nested).map_err(|e| e.to_string())?,
-                    ) {
-                        return Err("linked dependency manifest is refused".into());
-                    }
-                    let nested_manifest: toml::Table = fs::read_to_string(&nested)
-                        .map_err(|e| e.to_string())?
-                        .parse()
-                        .map_err(|e| format!("Cargo.toml: {e}"))?;
-                    if nested_manifest
-                        .get("package")
-                        .and_then(|p| p.get("name"))
-                        .and_then(toml::Value::as_str)
-                        != Some(package)
-                    {
-                        return Err(format!(
-                            "{}: path dependency {key} has the wrong package name",
-                            manifest.display()
-                        ));
-                    }
-                    pending.push((mod_id.clone(), nested));
-                    continue;
-                }
-                validate_sibling_path(
-                    &mod_id,
-                    &manifest,
-                    path,
-                    package,
-                    &staged_manifests,
-                    declared,
-                )?;
                 continue;
             }
-            for selector in [
-                "git",
-                "registry",
-                "registry-index",
-                "branch",
-                "rev",
-                "tag",
-                "workspace",
-            ] {
-                if dep.get(selector).is_some() {
-                    return Err(format!(
-                        "{}: dependency {key}: {selector} sources are not allowed; use crates.io with Cargo.lock",
-                        manifest.display()
+            let metadata = fs::symlink_metadata(&manifest_path)
+                .map_err(|e| format!("{}: {e}", manifest_path.display()))?;
+            if is_link_or_junction(&metadata) || !metadata.is_file() {
+                return Err(format!(
+                    "{}: dependency manifest must be an ordinary file",
+                    manifest_path.display()
+                ));
+            }
+            parsed_manifest = api::read(&manifest_path)?;
+            if parsed_manifest
+                .get("package")
+                .and_then(|p| p.get("name"))
+                .and_then(toml::Value::as_str)
+                != Some(edge.package.as_str())
+            {
+                return Err(wrong_package());
+            }
+            seen.insert(relative.clone(), edge.package);
+            api::check_source_overrides(&parsed_manifest)
+                .map_err(|error| format!("{}: {error}", manifest_path.display()))?;
+            parsed_dependencies = api::parse_dependencies(mod_id, &parsed_manifest)
+                .map_err(|error| format!("{}: {error}", manifest_path.display()))?;
+            (&mut parsed_manifest, parsed_dependencies.as_slice())
+        } else {
+            seen.insert(relative.clone(), project.package.clone());
+            (&mut root, project.dependencies.as_slice())
+        };
+        if manifest.contains_key("workspace") {
+            return Err(format!(
+                "{}: [workspace] is refused",
+                manifest_path.display()
+            ));
+        }
+        for dep in dependencies.iter() {
+            match &dep.source {
+                api::CargoSource::Sdk { .. } => {
+                    dep.table_mut(manifest).remove(&dep.key);
+                }
+                api::CargoSource::Local { package, path } => {
+                    let inside = local_path(input, &relative, path).map_err(|error| {
+                        format!(
+                            "{}: dependency {}: {error}",
+                            manifest_path.display(),
+                            dep.key
+                        )
+                    })?;
+                    pending.push((
+                        inside,
+                        Some(LocalEdge {
+                            manifest: manifest_path.clone(),
+                            key: dep.key.clone(),
+                            package: package.clone(),
+                        }),
                     ));
                 }
+                api::CargoSource::Registry { package, version } => {
+                    let version = version.as_ref().ok_or_else(|| {
+                        format!(
+                            "{}: registry dependency {} must declare a version",
+                            manifest_path.display(),
+                            dep.key
+                        )
+                    })?;
+                    let requirement = semver::VersionReq::parse(version).map_err(|error| {
+                        format!(
+                            "{}: dependency {}: {error}",
+                            manifest_path.display(),
+                            dep.key
+                        )
+                    })?;
+                    wanted.push(Wanted {
+                        mod_id: mod_id.clone(),
+                        name: package.clone(),
+                        version: version.clone(),
+                        requirement,
+                    });
+                }
             }
-            let version = dep
-                .as_str()
-                .or(get("version"))
-                .ok_or_else(|| {
-                    format!(
-                        "{}: registry dependency {key} must declare a version",
-                        manifest.display()
-                    )
-                })?
-                .to_owned();
-            let requirement = semver::VersionReq::parse(&version)
-                .map_err(|e| format!("{mod_id}: dependency {key}: {e}"))?;
-            out.push(Wanted {
-                mod_id: mod_id.to_owned(),
-                name: get("package").unwrap_or(key).to_owned(),
-                version,
-                requirement,
-            });
+        }
+        if !relative.as_os_str().is_empty() {
+            write_local(&relative, manifest)?;
         }
     }
-    out.sort_by(|a, b| (&a.mod_id, &a.name, &a.version).cmp(&(&b.mod_id, &b.name, &b.version)));
-    Ok(out)
-}
-
-/// `(mod id, its crate's Cargo.toml)` under `native-api/`, sorted.
-fn manifests(dir: &Path) -> Result<Vec<(String, PathBuf)>, String> {
-    let mut out = Vec::new();
-    let read = |d: &Path| -> Result<Vec<PathBuf>, String> {
-        let metadata = fs::symlink_metadata(d).map_err(|e| format!("{}: {e}", d.display()))?;
-        if is_link_or_junction(&metadata) {
-            return Err(format!("{}: linked native crate directory", d.display()));
-        }
-        if !metadata.is_dir() {
-            return Err(format!("{}: not a native crate directory", d.display()));
-        }
-        let entries = fs::read_dir(d).map_err(|e| format!("{}: {e}", d.display()))?;
-        let mut paths = Vec::new();
-        for entry in entries {
-            let path = entry.map_err(|e| format!("{}: {e}", d.display()))?.path();
-            let metadata =
-                fs::symlink_metadata(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-            if is_link_or_junction(&metadata) {
-                return Err(format!("{}: linked native crate entry", path.display()));
-            }
-            if metadata.is_dir() {
-                paths.push(path);
-            }
-        }
-        paths.sort();
-        Ok(paths)
-    };
-    for mod_dir in read(dir)? {
-        let id = mod_dir
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned();
-        let manifest = mod_dir.join("Cargo.toml");
-        match fs::symlink_metadata(&manifest) {
-            Ok(metadata) if is_link_or_junction(&metadata) => {
-                return Err(format!("{}: linked crate manifest", manifest.display()));
-            }
-            Ok(metadata) if metadata.is_file() => out.push((id, manifest)),
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(format!("{}: {error}", manifest.display())),
-        }
-    }
-    Ok(out)
+    wanted.sort_by(|a, b| (&a.name, &a.version).cmp(&(&b.name, &b.version)));
+    Ok((root, wanted))
 }
 
 /// Resolve a path within one mod without following links or traversing outside its root.
-pub fn local_path(root: &Path, relative: &Path, path: &str) -> Result<PathBuf, String> {
+pub(super) fn local_path(root: &Path, relative: &Path, path: &str) -> Result<PathBuf, String> {
     if path.contains('\\') {
         return Err("dependency path must use portable separators".into());
     }
-    let mut inside = relative.to_path_buf();
-    for component in Path::new(path).components() {
+    let mut inside = PathBuf::new();
+    for component in relative.components().chain(Path::new(path).components()) {
         match component {
-            Component::Normal(part) => inside.push(part),
+            Component::Normal(part) => {
+                // A Windows drive prefix can parse as Normal in the middle of a path,
+                // then replace the path so far when pushed on its own. Reject it on every host.
+                if matches!(part.as_encoded_bytes(), [drive, b':', ..] if drive.is_ascii_alphabetic())
+                    || matches!(
+                        Path::new(part).components().next(),
+                        Some(Component::Prefix(_) | Component::RootDir)
+                    )
+                {
+                    return Err("path outside the mod is refused".into());
+                }
+                inside.push(part);
+            }
             Component::CurDir => {}
             Component::ParentDir if inside.pop() => {}
             _ => return Err("path outside the mod is refused".into()),
         }
     }
-    let mut checked = root.to_path_buf();
+    let mut checked = fs::canonicalize(root).map_err(|e| e.to_string())?;
+    if !checked.join(&inside).starts_with(&checked) {
+        return Err("path outside the mod is refused".into());
+    }
     for part in inside.components() {
         checked.push(part);
         let meta = fs::symlink_metadata(&checked).map_err(|e| e.to_string())?;
@@ -357,76 +248,6 @@ pub fn local_path(root: &Path, relative: &Path, path: &str) -> Result<PathBuf, S
         }
     }
     Ok(inside)
-}
-
-/// Only a declared `../<mod-id>` may name another staged mod's crate. Its directory and
-/// manifest must be ordinary entries; never canonicalize a source path or follow a link.
-fn validate_sibling_path(
-    mod_id: &str,
-    manifest: &Path,
-    path: &str,
-    package: &str,
-    staged_manifests: &[(String, PathBuf)],
-    declared: &BTreeMap<&str, BTreeSet<&str>>,
-) -> Result<(), String> {
-    let invalid = || {
-        format!(
-            "{}: dependency path {path:?} is not a declared sibling crate",
-            manifest.display()
-        )
-    };
-    let Some(crate_id) = path.strip_prefix("../") else {
-        return Err(invalid());
-    };
-    if crate_id.is_empty()
-        || crate_id.contains('/')
-        || crate_id.contains('\\')
-        || !declared
-            .get(mod_id)
-            .is_some_and(|ids| ids.contains(crate_id))
-    {
-        return Err(invalid());
-    }
-    let mut components = Path::new(path).components();
-    if !matches!(components.next(), Some(Component::ParentDir))
-        || !matches!(components.next(), Some(Component::Normal(_)))
-        || components.next().is_some()
-    {
-        return Err(invalid());
-    }
-
-    let crate_dir = manifest.parent().ok_or_else(invalid)?;
-    let mod_dir = crate_dir.parent().ok_or_else(invalid)?;
-    let sibling = mod_dir.join(crate_id);
-    let sibling_metadata = fs::symlink_metadata(&sibling).map_err(|_| invalid())?;
-    if is_link_or_junction(&sibling_metadata) || !sibling_metadata.is_dir() {
-        return Err(invalid());
-    }
-
-    let sibling_manifest = sibling.join("Cargo.toml");
-    let manifest_metadata = fs::symlink_metadata(&sibling_manifest).map_err(|_| invalid())?;
-    if is_link_or_junction(&manifest_metadata) || !manifest_metadata.is_file() {
-        return Err(invalid());
-    }
-    if !staged_manifests
-        .iter()
-        .any(|(_, staged)| staged == &sibling_manifest)
-    {
-        return Err(invalid());
-    }
-
-    let text = fs::read_to_string(&sibling_manifest).map_err(|_| invalid())?;
-    let value: toml::Table = text.parse().map_err(|_| invalid())?;
-    let staged_package = value
-        .get("package")
-        .and_then(toml::Value::as_table)
-        .and_then(|package| package.get("name"))
-        .and_then(toml::Value::as_str)
-        .ok_or_else(invalid)?;
-    if staged_package != package {
-        return Err(invalid());
-    }
-    Ok(())
 }
 
 /// `symlink_metadata` reports links without following them. Windows junctions are reparse points
@@ -446,234 +267,216 @@ pub fn is_link_or_junction(metadata: &fs::Metadata) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
 
-    static NEXT_STAGE: AtomicUsize = AtomicUsize::new(0);
-
-    struct StageFixture {
-        root: PathBuf,
+    fn fixture(dir: &Path, body: &str) -> super::super::Bundle {
+        write_fixture(dir, body);
+        super::super::bundle_in(dir).unwrap().unwrap()
     }
 
-    impl StageFixture {
-        fn new() -> Self {
-            let root = loop {
-                let root = std::env::temp_dir().join(format!(
-                    "sunrise-native-sibling-{}-{}",
-                    std::process::id(),
-                    NEXT_STAGE.fetch_add(1, Ordering::Relaxed)
-                ));
-                match fs::create_dir(&root) {
-                    Ok(()) => break root,
-                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                    Err(error) => panic!("{}: {error}", root.display()),
-                }
-            };
-            Self { root }
-        }
-
-        fn root(&self) -> &Path {
-            &self.root
-        }
-
-        fn add_crate(&self, mod_id: &str, crate_id: &str, package: &str, body: &str) -> PathBuf {
-            let id = if crate_id == "engine" {
-                mod_id
-            } else {
-                crate_id
-            };
-            let dir = self.root.join(DIR).join(id);
-            write_manifest(&dir, package, body);
-            dir
-        }
-    }
-
-    impl Drop for StageFixture {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.root);
-        }
+    fn write_fixture(dir: &Path, body: &str) {
+        super::super::tests::write_bundle(dir, "bake", "");
+        fs::write(
+            dir.join("Cargo.toml"),
+            format!("[package]\nname='bake-engine'\nversion='0.1.0'\n[dependencies]\nsunrise-mod-api={{path='.sunrise/sdk/api/crates/sunrise-mod-api'}}\n{body}"),
+        )
+        .unwrap();
+        // A path dependency's folder must be in the package, so the helper the bodies name exists
+        // before the bundle is read; each test then writes the manifest it wants into it.
+        write_manifest(&dir.join("src/helper"), "helper", "");
     }
 
     fn write_manifest(dir: &Path, package: &str, body: &str) {
         fs::create_dir_all(dir).unwrap();
         fs::write(
             dir.join("Cargo.toml"),
-            format!("[package]\nname = {package:?}\nversion = \"0.1.0\"\n{body}"),
+            format!("[package]\nname={package:?}\nversion='0.1.0'\n{body}"),
         )
         .unwrap();
     }
 
-    fn wanted(stage: &Path) -> Result<Vec<Wanted>, String> {
-        let targets = [
-            "same_name",
-            "industrial_sim",
-            "test_support",
-            "build_helper",
-            "unix_helper",
-            "windows_test",
-            "target_build",
-            "actual",
-            "absolute",
-            "linked",
-            "local",
-            "not_a_crate",
-        ];
-        let declared = BTreeMap::from([("bake", targets.into_iter().collect())]);
-        super::wanted(stage, &declared)
-    }
-
-    fn assert_rejected_path(label: &str, dependency: impl FnOnce(&StageFixture) -> String) {
-        let stage = StageFixture::new();
-        let entry = dependency(&stage);
-        stage.add_crate(
-            "bake",
-            "engine",
-            "bake-engine",
-            &format!("[dependencies]\n{entry}\n"),
+    #[test]
+    fn real_staging_rewrites_a_shared_local_manifest_and_collects_its_pins() {
+        let input = tempfile::tempdir().unwrap();
+        let build = tempfile::tempdir().unwrap();
+        let bundle = fixture(
+            input.path(),
+            "helper={path='src/helper'}\nregex='1'\n[target.'cfg(unix)'.dev_dependencies]\nalt={path='src/./helper',package='helper'}\n",
         );
-        assert!(wanted(stage.root()).is_err(), "{label}");
-    }
-
-    fn wants(mod_id: &str, name: &str, version: &str) -> Wanted {
-        Wanted {
-            mod_id: mod_id.into(),
-            name: name.into(),
-            version: version.into(),
-            requirement: semver::VersionReq::parse(version).unwrap(),
-        }
-    }
-
-    #[test]
-    fn wanted_rejects_unknown_malformed_or_out_of_mod_sibling_paths() {
-        assert_rejected_path("unknown sibling", |_| {
-            "unknown = { path = \"../missing\" }".into()
-        });
-        assert_rejected_path("package alias does not match sibling manifest", |stage| {
-            stage.add_crate("bake", "actual", "actual-package", "");
-            "local = { path = \"../actual\", package = \"different-package\" }".into()
-        });
-        assert_rejected_path("absolute path", |stage| {
-            let sibling = stage.add_crate("bake", "absolute", "absolute-package", "");
-            format!(
-                "local = {{ path = {:?}, package = \"absolute-package\" }}",
-                sibling.to_string_lossy().to_string()
-            )
-        });
-        assert_rejected_path("path escapes the mod directory", |stage| {
-            write_manifest(&stage.root.join("outside"), "outside-package", "");
-            "local = { path = \"../../../outside\", package = \"outside-package\" }".into()
-        });
-        assert_rejected_path("path crosses into another mod", |stage| {
-            stage.add_crate("zoom", "foreign", "foreign-package", "");
-            "local = { path = \"../../zoom/foreign\", package = \"foreign-package\" }".into()
-        });
-        assert_rejected_path("path is not a string", |_| "local = { path = 7 }".into());
-        assert_rejected_path("sibling Cargo.toml is not a regular file", |stage| {
-            let sibling = stage.root.join(DIR).join("not_a_crate");
-            fs::create_dir_all(sibling.join("Cargo.toml")).unwrap();
-            "local = { path = \"../not_a_crate\" }".into()
-        });
-    }
-
-    #[test]
-    fn sibling_crates_require_a_manifest_dependency_and_the_game_path_is_exact() {
-        let stage = StageFixture::new();
-        stage.add_crate(
-            "bake",
-            "engine",
-            "bake-engine",
-            "[dependencies]\nother={path='../other'}\n",
+        let helper = "src/helper";
+        let child_manifest = "[build-dependencies]\nfmt={package='itoa',version='=1.0.18'}\n[target.'cfg(windows)'.dependencies]\nsdk={package='sunrise-mod-api',path='.sunrise/sdk/api/crates/sunrise-mod-api'}\n";
+        write_manifest(&input.path().join(helper), "helper", child_manifest);
+        let project = api::Project::read(&bundle).unwrap();
+        let staged = build.path().join(DIR).join(&bundle.manifest.id);
+        super::super::copy_bundle(&bundle, &staged).unwrap();
+        let (root, wanted) = rewrite_closure(&project, &staged, |local, manifest| {
+            fs::write(staged.join(local).join("Cargo.toml"), manifest.to_string())
+                .map_err(|e| e.to_string())
+        })
+        .unwrap();
+        assert!(root["dependencies"].get("sunrise-mod-api").is_none());
+        assert_eq!(
+            root["dependencies"]["helper"]["path"].as_str(),
+            Some("src/helper")
         );
-        stage.add_crate("other", "other", "other", "");
-        assert!(super::wanted(stage.root(), &BTreeMap::new()).is_err());
-        let declared = BTreeMap::from([("bake", BTreeSet::from(["other"]))]);
-        assert!(super::wanted(stage.root(), &declared).is_ok());
-        let root = stage.root().join(DIR).join("bake/Cargo.toml");
-        for (package, path, valid) in [
-            ("sunrise-mod-api", "../../crates/sunrise-mod-api", true),
-            ("sunrise-mod-api", "../../other/sunrise-mod-api", false),
-        ] {
-            fs::write(&root, format!("[package]\nname='bake'\nversion='1'\n[dependencies]\napi={{package='{package}',path='{path}'}}\n")).unwrap();
-            assert_eq!(super::wanted(stage.root(), &BTreeMap::new()).is_ok(), valid);
-        }
-    }
-
-    #[test]
-    fn registry_sources_are_refused_before_any_cargo_resolution() {
-        for (selector, value) in [
-            ("git", "'https://example.invalid/repo'"),
-            ("registry", "'other'"),
-            ("registry-index", "'https://example.invalid/index'"),
-            ("workspace", "true"),
-        ] {
-            let stage = StageFixture::new();
-            stage.add_crate(
-                "bake",
-                "engine",
-                "bake-engine",
-                &format!("[dependencies]\nremote={{version='1', {selector}={value}}}\n"),
-            );
-            let error = wanted(stage.root()).unwrap_err();
-            assert!(error.contains(selector), "{error}");
-        }
-    }
-
-    #[test]
-    fn local_crate_registry_requests_are_included_and_nested_patches_are_refused() {
-        let stage = StageFixture::new();
-        let root = stage.add_crate(
-            "bake",
-            "engine",
-            "bake-engine",
-            "[dependencies]\nhelper={path='src/helper'}\n",
-        );
-        write_manifest(
-            &root.join("src/helper"),
-            "helper",
-            "[dependencies]\nitoa='=0.4.8'\n",
+        let local = api::read(&staged.join(helper).join("Cargo.toml")).unwrap();
+        assert!(
+            local["target"]["cfg(windows)"]["dependencies"]
+                .get("sdk")
+                .is_none()
         );
         assert_eq!(
-            wanted(stage.root()).unwrap(),
-            [wants("bake", "itoa", "=0.4.8")]
+            local["build-dependencies"]["fmt"]["version"].as_str(),
+            Some("=1.0.18")
         );
-        write_manifest(
-            &root.join("src/helper"),
-            "helper",
-            "[patch.crates-io]\nitoa={path='../outside'}\n",
+        let pins: Vec<_> = wanted
+            .iter()
+            .map(|w| (w.mod_id.as_str(), w.name.as_str(), w.version.as_str()))
+            .collect();
+        assert_eq!(pins, [("bake", "itoa", "=1.0.18"), ("bake", "regex", "1")]);
+        let original = api::read(&input.path().join(helper).join("Cargo.toml")).unwrap();
+        assert!(
+            original["target"]["cfg(windows)"]["dependencies"]
+                .get("sdk")
+                .is_some()
         );
-        assert!(wanted(stage.root()).unwrap_err().contains("[patch]"));
     }
 
     #[test]
-    fn wanted_rejects_each_conflicting_path_source_selector() {
-        let selectors = [
-            ("git", "\"https://example.invalid/repo\""),
-            ("registry", "\"crates-io\""),
-            ("registry-index", "\"https://example.invalid/index\""),
-            ("branch", "\"main\""),
-            ("rev", "\"0123456789abcdef\""),
-            ("tag", "\"v1.0.0\""),
+    fn authored_paths_cannot_escape_or_name_a_different_local_package() {
+        for (body, expected) in [
+            ("bad={path='../other'}", "leaves the package"),
+            ("bad={path='/absolute'}", "leaves the package"),
+            ("bad={path=7}", "dependency path must be a string"),
+            ("bad={path='src/not_a_crate'}", "Is a directory"),
+            (
+                "bad={path='src/helper',package='different'}\n[target.'cfg(unix)'.dependencies]\nhelper={path='src/helper'}",
+                "path dependency bad has the wrong package name",
+            ),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let input = temp.path().join("bake");
+            write_fixture(&input, body);
+            write_manifest(&temp.path().join("other"), "bad", "");
+            write_manifest(&input.join("src/helper"), "helper", "");
+            fs::create_dir_all(input.join("src/not_a_crate/Cargo.toml")).unwrap();
+            // Reading the package refuses a path that leaves it or names a folder it lacks.
+            let result = super::super::bundle_in(&input)
+                .map(|bundle| bundle.unwrap())
+                .and_then(|bundle| {
+                    let project = api::Project::read(&bundle).map_err(|e| e.to_string())?;
+                    rewrite_closure(&project, &input, |_, _| Ok(()))
+                });
+            let error = result.unwrap_err();
+            assert!(error.contains(expected), "{body}: {error}");
+        }
+    }
+
+    #[test]
+    fn nested_manifests_cannot_override_the_builds_sources() {
+        let input = tempfile::tempdir().unwrap();
+        let bundle = fixture(input.path(), "helper={path='src/helper'}");
+        let helper = input.path().join("src/helper");
+        let project = api::Project::read(&bundle).unwrap();
+        for (body, expected) in [
+            ("[patch.crates-io]\nitoa={path='../outside'}", "[patch]"),
+            ("[replace]\n'itoa:1.0.0'={path='../outside'}", "[replace]"),
+            ("[workspace]", "[workspace]"),
+            (
+                "[dependencies]\nsdk={package='sunrise-mod-api',path='../../crates/sunrise-mod-api'}",
+                "E_SDK_SOURCE",
+            ),
+            (
+                "[target.'cfg(unix)'.build-dependencies]\ngame={package='sunrise-client',version='1'}",
+                "E_GAME_DEPENDENCY",
+            ),
+        ] {
+            write_manifest(&helper, "helper", body);
+            let error = rewrite_closure(&project, input.path(), |_, _| Ok(())).unwrap_err();
+            assert!(error.contains(expected), "{body}: {error}");
+        }
+        write_manifest(&helper, "helper", "");
+        fs::create_dir(helper.join(".cargo")).unwrap();
+        fs::write(helper.join(".cargo/config"), "").unwrap();
+        let staged = tempfile::tempdir().unwrap();
+        super::super::copy_bundle(&bundle, staged.path()).unwrap();
+        assert!(!staged.path().join("src/helper/.cargo/config").exists());
+        rewrite_closure(&project, staged.path(), |_, _| Ok(())).unwrap();
+    }
+
+    #[test]
+    fn path_sources_cannot_be_combined_with_other_selectors() {
+        for (selector, value) in [
+            ("git", "'https://example.invalid/repo'"),
+            ("registry", "'crates-io'"),
+            ("registry-index", "'https://example.invalid/index'"),
+            ("branch", "'main'"),
+            ("rev", "'0123456789abcdef'"),
+            ("tag", "'v1.0.0'"),
             ("workspace", "true"),
-        ];
-        let accepted: Vec<&str> = selectors
-            .iter()
-            .filter_map(|(selector, value)| {
-                let stage = StageFixture::new();
-                stage.add_crate("bake", "local", "local-package", "");
-                let dependency = format!(
-                    "local = {{ path = \"../local\", package = \"local-package\", {selector} = {value} }}"
-                );
-                stage.add_crate(
-                    "bake",
-                    "engine",
-                    "bake-engine",
-                    &format!("[dependencies]\n{dependency}\n"),
-                );
-                wanted(stage.root()).is_ok().then_some(*selector)
-            })
-            .collect();
-        assert!(
-            accepted.is_empty(),
-            "path dependencies accepted conflicting source selectors: {accepted:?}"
-        );
+        ] {
+            let input = tempfile::tempdir().unwrap();
+            let bundle = fixture(input.path(), "helper={path='src/helper'}");
+            write_manifest(
+                &input.path().join("src/helper"),
+                "helper",
+                &format!(
+                    "[target.'cfg(unix)'.dev-dependencies]\nprobe={{path='nested', {selector}={value}}}"
+                ),
+            );
+            let project = api::Project::read(&bundle).unwrap();
+            let error = rewrite_closure(&project, input.path(), |_, _| Ok(())).unwrap_err();
+            assert!(
+                error.contains(&format!("{selector} source is refused")),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_registry_dependency_cannot_reach_the_game_via_the_mod_api_package_name() {
+        let input = tempfile::tempdir().unwrap();
+        let bundle = fixture(input.path(), "parent='1'");
+        let projects = [api::Project::read(&bundle).unwrap()];
+        let lock = r#"
+            [[package]]
+            name = 'bake-engine'
+            dependencies = ['parent']
+            [[package]]
+            name = 'parent'
+            dependencies = ['sunrise-mod-api 1.0.0']
+            [[package]]
+            name = 'sunrise-mod-api'
+            version = '1.0.0'
+            source = 'registry+https://github.com/rust-lang/crates.io-index'
+        "#;
+        let game_names = BTreeSet::from(["sunrise-mod-api".to_owned()]);
+        let error =
+            check_game_graph_names(&projects, &BTreeMap::new(), lock, &game_names).unwrap_err();
+        assert!(error.contains("parent -> sunrise-mod-api"), "{error}");
+    }
+
+    #[test]
+    fn only_the_owning_mods_generated_facade_is_exempt_from_the_game_graph_check() {
+        let input = tempfile::tempdir().unwrap();
+        let bundle = fixture(input.path(), "");
+        let projects = [api::Project::read(&bundle).unwrap()];
+        let facades = BTreeMap::from([("sunrise-internals-bake".to_owned(), "bake-engine")]);
+        let game_names = BTreeSet::from(["sunrise-client".to_owned()]);
+        let lock = r#"
+            [[package]]
+            name = 'bake-engine'
+            dependencies = ['sunrise-internals-bake']
+            [[package]]
+            name = 'sunrise-internals-bake'
+            dependencies = ['sunrise-client']
+        "#;
+        check_game_graph_names(&projects, &facades, lock, &game_names).unwrap();
+        let foreign = lock.replace("dependencies = ['sunrise-internals-bake']", "dependencies = ['parent']\n[[package]]\nname='parent'\ndependencies=['sunrise-internals-bake']");
+        let registry =
+            format!("{lock}\nsource='registry+https://github.com/rust-lang/crates.io-index'");
+        for lock in [&foreign, &registry] {
+            let error = check_game_graph_names(&projects, &facades, lock, &game_names).unwrap_err();
+            assert!(error.contains("-> sunrise-client"), "{error}");
+        }
     }
 }

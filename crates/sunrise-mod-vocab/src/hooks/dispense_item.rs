@@ -1,5 +1,4 @@
 //! The `dispense_item` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0075
 
 pub trait Hooks {
     /// `DispenserBlock.getDispenseMethod`: choose a behaviour for any item,
@@ -10,9 +9,13 @@ pub trait Hooks {
     /// a remainder of None empties the slot, `Some(stack)` replaces it (the hook
     /// owns consumption: no extra item is removed afterwards). `event` is the
     /// level event the dispenser plays with its smoke: 1000 the click, 1001 the
-    /// fail sound (`OptionalDispenseItemBehavior` without success), or 0 for
-    /// nothing at all (`DispenseItemBehavior.NOOP`). To drop one normally,
-    /// answer `(native_dispense_default(..), 1000)`.
+    /// fail sound (`OptionalDispenseItemBehavior` without success), or 0 for no sound or smoke.
+    /// In an open transaction in the dispenser's level, sound and smoke follow the behaviour's
+    /// published effects at the outermost commit and are discarded on abort.
+    /// The remainder is detached until the dispenser writes its slot. An invalid remainder is
+    /// reported without writing or notifying the slot, and no other behaviour runs. To drop one
+    /// normally, resolve `host.level(dimension)`, call `level.dispense_default(host, pos, facing, stack)`,
+    /// and answer `(remainder, 1000)` on `Ok(remainder)`.
     #[hook(
         target = "sunrise_client::game::native_hooks::base::Game<'_>::native_dispense_item",
         dispatch = "flat",
@@ -22,7 +25,7 @@ pub trait Hooks {
         scope = "item",
         key = "stack",
         neoforge = "none (vanilla DispenserBlock.getDispenseMethod; NeoForge adds no event or extension for it)",
-        version = 2
+        version = 4
     )]
     fn dispense_item(
         dimension: &str,

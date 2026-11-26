@@ -18,7 +18,7 @@ Strider.StriderPathNavigation.createPathFinder	port	crates/sunrise-client/src/mo
 Strider.StriderPathNavigation.isStableDestination	port	crates/sunrise-client/src/mobs/nav.rs::Mob::stable_destination	lava counts as stable for lava walkers
 Vex.registerGoals	port	crates/sunrise-client/src/mobs/vex.rs::register	float, charge, random move, look goals, owner and player targets
 Vex.restoreFrom	missing		no mob `restoreFrom`: a vex that changes dimension keeps no owner link
-Vex.addAdditionalSaveData	inline	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt	owner is written as the owner's UUID, nothing when the vex has no owner; bound_pos only when bound, life_ticks only with a limited life
+Vex.addAdditionalSaveData	inline	crates/sunrise-client/src/entity_nbt/mob_write.rs::mob_to_nbt	owner is written as the owner's UUID, nothing when the vex has no owner; bound_pos only when bound, life_ticks only with a limited life
 Vex.readAdditionalSaveData	inline	crates/sunrise-client/src/entity_nbt/mob_load.rs::mob_from_nbt	bound_pos, life_ticks (no limit when absent) and owner, kept as the UUID the save names
 Vex.getVexFlag	inline	crates/sunrise-client/src/mobs/vex.rs::Charge::can_continue	the charging bit is the plain extra.flag; there is no flags byte
 Vex.setVexFlag	inline	crates/sunrise-client/src/mobs/vex.rs::Charge::start	start sets extra.flag; stop and tick clear it
@@ -82,7 +82,7 @@ CreakingAi.initCoreActivity	port	crates/sunrise-client/src/mobs/monster_brain.rs
 CreakingAi.initIdleActivity	port	crates/sunrise-client/src/mobs/monster_brain.rs::creaking_packages	idle: attack active creakings, look sometimes, stroll, look-walk or do nothing
 CreakingAi.initFightActivity	port	crates/sunrise-client/src/mobs/monster_brain.rs::creaking_packages	fight: walk to target, melee on a 40 tick cooldown, stop when unreachable
 AbstractCubeMob.registerGoals	port	crates/sunrise-client/src/mobs/cube.rs::register	float, random direction, keep jumping, attack goal and player and golem targets
-AbstractCubeMob.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt	Size stored minus one, and wasOnGround
+AbstractCubeMob.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_write.rs::mob_to_nbt	Size stored minus one, and wasOnGround
 AbstractCubeMob.refreshDimensions	skip:other		bounds are read from the size on each use, so there is no separate refresh; the position is never reset
 AbstractCubeMob.onSyncedDataUpdated	missing		no size sync from a spawn or a data update: `mobs/living.rs` takes a mob's dimensions from its own size, and `game/network/remote/mod.rs` applies no cube size
 AbstractCubeMob.setUpSplitCube	port	crates/sunrise-client/src/game/mobs/creatures/mod.rs::Game::split_dead_cube	gap: minor: children get half size and the same fixed offsets, but no random yaw
@@ -134,8 +134,8 @@ Hoglin.ageBoundaryReached	port	crates/sunrise-client/src/mobs/finalize.rs::age_b
 Hoglin.checkHoglinSpawnRules	port	crates/sunrise-client/src/mobs/spawn_rules.rs::check_spawn_rules	not spawned on a nether wart block
 Hoglin.finalizeSpawn	port	crates/sunrise-client/src/mobs/finalize.rs::Ctx::finalize	20 percent start as babies
 Hoglin.mobInteract	port	crates/sunrise-client/src/game/mobs/creatures/mod.rs::Game::interact_mob	gap: minor: a fed hoglin does not become persistent
-Hoglin.finishConversion	port	crates/sunrise-client/src/mobs/piglin.rs::ai_step	zombification turns it into a zoglin with nausea
-Hoglin.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt	gap: minor: CannotBeHunted is not written
+Hoglin.finishConversion	port	crates/sunrise-client/src/mobs/piglin.rs::zombification_tick	zombification turns it into a zoglin with nausea
+Hoglin.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_write.rs::mob_to_nbt	gap: minor: CannotBeHunted is not written
 Hoglin.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_load.rs::mob_from_nbt	gap: minor: CannotBeHunted is not read
 Hoglin.getBreedOffspring	port	crates/sunrise-client/src/game/mobs/creatures/mod.rs::Game::breed	gap: minor: the hoglin child is not made persistent
 HoglinAi.initCoreActivity	inline	crates/sunrise-client/src/mobs/piglin.rs::register_hoglin	gap: minor: look-at-target and move-to-target sinks are not separate; the goal set stands in for them

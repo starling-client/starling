@@ -3,12 +3,11 @@
 import json
 import os
 from pathlib import Path
-try:
-    from . import lab, test_rust_parity as base, oracle_harness as harness
-except ImportError:
-    import lab
-    import test_rust_parity as base
-    import oracle_harness as harness
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_rust_parity as base, oracle_harness as harness
 
 
 def main():

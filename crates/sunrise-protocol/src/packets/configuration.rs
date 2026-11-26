@@ -1,10 +1,12 @@
 //! Configuration state: registries, tags, known packs, feature flags and the
 //! common packets (keep-alive, ping, custom payloads, resource packs).
 use crate::{
-    Result,
+    Error, Result,
     buf::{
-        Bool, Byte, Codec, Ident, Int, List, Long, Nbt, Opt, Reader, Str, StrN, UByte, Uuid, VarInt,
+        Bool, Byte, Codec, Ident, Int, List, Long, Nbt, Opt, Reader, Str, StrN, TrustedComponent,
+        TrustedNbt, UByte, Uuid, VarInt,
     },
+    entity_data::humanoid_arm_id,
     packet, packet_enum,
     packets::Empty,
 };
@@ -15,7 +17,7 @@ packet!(CookieRequest { key: String => Ident });
 pub use super::custom_payload::CustomPayload;
 packet!(
     /// Common disconnect: a chat component (NBT).
-    Disconnect { reason: Tag => Nbt }
+    Disconnect { reason: Tag => TrustedComponent }
 );
 packet!(KeepAlive { id: i64 => Long });
 packet!(Ping { id: i32 => Int });
@@ -31,7 +33,7 @@ packet!(ResourcePackPush {
     url: String => Str,
     hash: String => StrN<40>,
     required: bool => Bool,
-    prompt: Option<Tag> => Opt<Nbt>,
+    prompt: Option<Tag> => Opt<TrustedComponent>,
 });
 packet!(StoreCookie { key: String => Ident, payload: Vec<u8> => crate::buf::Bytes });
 packet!(Transfer { host: String => Str, port: i32 => VarInt });
@@ -45,6 +47,11 @@ packet!(
 packet!(KnownPack { namespace: String => Str, id: String => Str, version: String => Str });
 packet!(SelectKnownPacks { packs: Vec<KnownPack> => List<KnownPack> });
 packet!(CodeOfConduct { text: String => Str });
+packet!(
+    /// ClientboundPostEffectsPacket: the `post_effect` chains (ids) the player's
+    /// screen runs, in order (`ServerPlayer.postEffects`).
+    PostEffects { effects: Vec<String> => List<Ident> }
+);
 
 /// ServerLinks.UntrustedEntry's `type` (Either<KnownLinkType, Component>): a
 /// known link's id, or a custom label component.
@@ -67,7 +74,7 @@ impl Codec<ServerLink> for ServerLink {
         let kind = if Bool::read(r)? {
             ServerLinkKind::Known(VarInt::read(r)?)
         } else {
-            ServerLinkKind::Custom(Nbt::read(r)?)
+            ServerLinkKind::Custom(TrustedComponent::read(r)?)
         };
         Ok(Self {
             kind,
@@ -96,7 +103,7 @@ packet!(
 packet!(
     /// ClientboundShowDialogPacket.CONTEXT_FREE_STREAM_CODEC: the dialog
     /// itself (`Dialog.DIRECT_CODEC` as NBT).
-    ShowDialog { dialog: Tag => Nbt }
+    ShowDialog { dialog: Tag => TrustedNbt }
 );
 packet!(
     /// ServerboundCustomClickActionPacket: a `custom` click event's id and
@@ -104,12 +111,15 @@ packet!(
     CustomClickAction { id: String => Ident, payload: Option<Tag> => ClickPayload }
 );
 /// ServerboundCustomClickActionPacket.UNTRUSTED_TAG_CODEC: an optional tag
-/// (`End` when there is none) behind its length, 65536 bytes at most.
+/// (`End` when there is none) behind its length, 65536 bytes at most, read
+/// with `new NbtAccounter(32768, 16)`: a 32 KiB heap quota and 16 nested
+/// lists and compounds.
 pub struct ClickPayload;
 impl Codec<Option<Tag>> for ClickPayload {
     fn read(r: &mut Reader) -> Result<Option<Tag>> {
         let n = r.count(65536)?;
-        let tag = Reader::new(r.bytes(n)?).nbt()?;
+        let (tag, _) = sunrise_core::nbt::read_network_accounted(r.bytes(n)?, 32768, 16)
+            .map_err(|e| Error::new(format!("NBT: {e}")))?;
         Ok((tag != Tag::End).then_some(tag))
     }
     fn write(v: &Option<Tag>, w: &mut Writer) {
@@ -131,6 +141,7 @@ packet_enum!(Clientbound, crate::ids::configuration::clientbound {
     RegistryData(RegistryData) = REGISTRY_DATA,
     ResourcePackPop(ResourcePackPop) = RESOURCE_PACK_POP,
     ResourcePackPush(ResourcePackPush) = RESOURCE_PACK_PUSH,
+    PostEffects(PostEffects) = POST_EFFECTS,
     StoreCookie(StoreCookie) = STORE_COOKIE,
     Transfer(Transfer) = TRANSFER,
     UpdateEnabledFeatures(UpdateEnabledFeatures) = UPDATE_ENABLED_FEATURES,
@@ -183,7 +194,7 @@ impl Codec<ClientInformation> for ClientInformation {
             chat_visibility: VarInt::read(r)?,
             chat_colors: Bool::read(r)?,
             model_customisation: UByte::read(r)?,
-            main_hand: VarInt::read(r)?,
+            main_hand: humanoid_arm_id(VarInt::read(r)?),
             text_filtering: Bool::read(r)?,
             allows_listing: Bool::read(r)?,
             particle_status: VarInt::read(r)?,
@@ -386,6 +397,37 @@ mod tests {
     }
 
     #[test]
+    fn registry_data_validates_and_normalizes_ids_on_decode() {
+        let decode = |entries: &[&str]| {
+            let mut body = Writer::new();
+            body.string("worldgen/biome");
+            body.varint(entries.len() as i32);
+            for id in entries {
+                body.string(id);
+                body.bool(false);
+            }
+            Clientbound::decode(
+                crate::ids::configuration::clientbound::REGISTRY_DATA,
+                &body.data,
+            )
+        };
+        assert_eq!(
+            decode(&["plains", "example:..", ":desert"]).unwrap(),
+            Clientbound::RegistryData(RegistryData {
+                registry: "minecraft:worldgen/biome".into(),
+                entries: ["minecraft:plains", "example:..", "minecraft:desert"]
+                    .into_iter()
+                    .map(|id| RegistryEntry {
+                        id: id.into(),
+                        data: None,
+                    })
+                    .collect(),
+            }),
+        );
+        assert!(decode(&["plains", "..:example", ":desert"]).is_err());
+    }
+
+    #[test]
     fn client_information_carries_the_main_hand() {
         // Skin Customization's Main Hand: HumanoidArm LEFT is 0, RIGHT is 1.
         for main_hand in [0, 1] {
@@ -410,5 +452,62 @@ mod tests {
         let mut w = Writer::new();
         ClickPayload::write(&Some(Tag::Byte(1)), &mut w);
         assert_eq!(w.data, [2, 1, 1]);
+    }
+
+    /// `UNTRUSTED_TAG_CODEC` reads with `new NbtAccounter(32768, 16)`. A root byte array costs
+    /// 24 bytes plus one per element (`ByteArrayTag.TYPE.load`), so 32744 elements fill the
+    /// quota and one more passes it; 16 nested lists are the deepest it takes.
+    #[test]
+    fn click_payload_keeps_vanilla_untrusted_heap_and_depth() {
+        let read = |tag: Tag| {
+            let mut w = Writer::new();
+            ClickPayload::write(&Some(tag), &mut w);
+            ClickPayload::read(&mut Reader::new(&w.data))
+        };
+        assert!(read(Tag::ByteArray(vec![0; 32744])).is_ok());
+        assert!(read(Tag::ByteArray(vec![0; 32745])).is_err());
+        let nested = |depth: usize| (0..depth).fold(Tag::Int(1), |tag, _| Tag::List(vec![tag]));
+        assert_eq!(read(nested(16)).unwrap(), Some(nested(16)));
+        assert!(read(nested(17)).is_err());
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn configuration_decodes_post_effects_packet_26_3() {
+        let dir = std::env::var("SUNRISE_NETWORK_WITNESS_DIR").expect(
+            "SUNRISE_NETWORK_WITNESS_DIR must be set (run via tools/test_network_parity.py)",
+        );
+        let path = std::path::Path::new(&dir).join("post_effects.json");
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+        let witness: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let hex = |s: &str| -> Vec<u8> {
+            (0..s.len() / 2)
+                .map(|i| u8::from_str_radix(&s[2 * i..2 * i + 2], 16).unwrap())
+                .collect()
+        };
+        let wire = &witness["wire"];
+        let config_id = wire["config_packet_id"].as_i64().unwrap() as i32;
+        assert_eq!(
+            config_id,
+            crate::ids::configuration::clientbound::POST_EFFECTS
+        );
+        for key in ["config_empty_hex", "config_two_hex"] {
+            let raw = hex(wire[key].as_str().unwrap());
+            let mut r = Reader::new(&raw);
+            let id = r.varint().unwrap();
+            assert_eq!(id, config_id, "{key}");
+            let body = r.rest();
+            let packet = Clientbound::decode(id, body).unwrap();
+            assert!(
+                !matches!(packet, Clientbound::Unknown(..)),
+                "{key}: post_effects decoded as Unknown: {packet:?}"
+            );
+            assert_eq!(packet.encode(), raw, "{key}: wire round-trip");
+        }
+        assert!(
+            Clientbound::decode(config_id, &[1]).is_err(),
+            "truncated post_effects list must fail decode"
+        );
     }
 }

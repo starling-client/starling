@@ -3,14 +3,54 @@
 //! thread as soon as the packet arrives, so the frame that handles it in
 //! order only inserts the result (`ClientPacketListener.handleLevelChunkWithLight`).
 use super::Game;
-use std::sync::Arc;
-use sunrise_client::{chunk::Chunk, streaming::Streaming};
+use std::{collections::VecDeque, sync::Arc};
+use sunrise_client::{
+    chunk::Chunk,
+    fast_hash::{FxHashMap, FxHashSet},
+    streaming::Streaming,
+};
 use sunrise_mod_runtime::attachments::Holder;
-use sunrise_protocol::packets::play;
+use sunrise_protocol::{chunk::SectionLight, packets::play};
 
 pub(in crate::game) use sunrise_client_gameplay::remote::chunks::{
     ChunkDecoder, ChunkFormat, Next, section_blocks,
 };
+
+type Column = (i32, i32);
+
+/// The level's light state is independent of its cache of block columns. An
+/// entry with no layers still enables lighting (`setLightEnabled(true)`).
+#[derive(Default)]
+pub(super) struct RemoteLight {
+    columns: FxHashMap<Column, Option<Vec<SectionLight>>>,
+    queue: VecDeque<(Column, LightTask)>,
+    queued_counts: FxHashMap<Column, usize>,
+}
+
+enum LightTask {
+    Apply {
+        layers: Vec<SectionLight>,
+        rebuild: bool,
+    },
+    Forget,
+}
+
+impl RemoteLight {
+    fn enqueue(&mut self, key: Column, task: LightTask) {
+        self.queue.push_back((key, task));
+        *self.queued_counts.entry(key).or_default() += 1;
+    }
+
+    fn pop(&mut self) -> Option<(Column, LightTask)> {
+        let (key, task) = self.queue.pop_front()?;
+        let count = self.queued_counts.get_mut(&key).expect("queued light task");
+        *count -= 1;
+        if *count == 0 {
+            self.queued_counts.remove(&key);
+        }
+        Some((key, task))
+    }
+}
 
 impl Game<'_> {
     /// A chunk packet's column was adopted, with its block entities in the
@@ -31,9 +71,11 @@ impl Game<'_> {
     pub(in crate::game) fn client_chunk_unload(&mut self, x: i32, z: i32, level_stays: bool) {
         self.forget_chunk_passages(x, z);
         if mod_api::__private::listened(mod_api::HookId::ClientChunkUnload)
-            && let Some(dimension) = self.client_chunk_dimension()
+            && let Some(level) = self.native_client_level()
         {
-            self.native_client_chunk_unload(&dimension, [x, z]);
+            // LevelEvent.Unload may already have been posted, but the columns
+            // still belong to the installed level until they are released.
+            self.native_client_chunk_unload(level.dimension_id(), [x, z]);
         }
         if level_stays && let Some(level) = self.native_client_level() {
             self.notify_chunk_block_entities_unloaded(level, (x, z));
@@ -57,41 +99,106 @@ impl Game<'_> {
         p: &play::LevelChunkWithLight,
         decoded: Option<(&Arc<ChunkFormat>, Result<Chunk, String>)>,
     ) {
-        // ClientChunkCache.replaceWithPacketData: a column outside the
-        // storage around the view centre is ignored.
+        let Some(format) = self.remote.as_ref().map(|r| r.chunk_format.clone()) else {
+            return;
+        };
+        let key = (p.x, p.z);
         if !self.remote_chunk_in_range(p.x, p.z) {
             log::warn!(
                 "Ignoring chunk since it's not in the view range: {}, {}",
                 p.x,
                 p.z
             );
+            // Only block admission failed; handleLevelChunkWithLight still queues its light.
+            if let Some(r) = &mut self.remote {
+                r.chunk_light.enqueue(
+                    key,
+                    LightTask::Apply {
+                        layers: format.light(&p.light),
+                        rebuild: false,
+                    },
+                );
+            }
             return;
         }
-        let Some(format) = self.remote.as_ref().map(|r| r.chunk_format.clone()) else {
-            return;
-        };
         let column = match decoded {
             Some((used, column)) if Arc::ptr_eq(used, &format) => column,
             _ => format.column(p),
         };
-        let chunk = match column {
+        let mut chunk = match column {
             Ok(chunk) => chunk,
             Err(e) => {
                 log::warn!("Sunrise: chunk {} {}: {e}", p.x, p.z);
                 return;
             }
         };
-        let (x, z) = (p.x, p.z);
+        let (x, z) = key;
+        if let Some(alias) = self.world.chunks.client_chunk_alias(key) {
+            if let Some(r) = &mut self.remote {
+                // ClientLevel.unload disables the old slot's column, not its successor.
+                r.chunk_light.columns.remove(&alias);
+            }
+            self.forget_remote_columns(&mut [alias].into_iter().collect(), true);
+        }
+        let previous = self.world.chunks.get(&key);
+        let resident = previous.is_some();
+        let pending = self.remote.as_mut().and_then(|r| {
+            if r.chunk_light.queued_counts.contains_key(&key) {
+                // The decoder already hydrated this packet. Apply its supplied layers
+                // again in order if earlier queued packets can still overwrite them.
+                r.chunk_light.enqueue(
+                    key,
+                    LightTask::Apply {
+                        layers: format.light(&p.light),
+                        rebuild: false,
+                    },
+                );
+                None
+            } else {
+                r.chunk_light.columns.entry(key).or_default().take()
+            }
+        });
+        sunrise_client::light::inherit_packet_light(
+            &mut chunk,
+            previous.map(Arc::as_ref),
+            pending,
+            format.has_skylight,
+        );
+        // Heightmap.Types.MOTION_BLOCKING has stream ID 4; the last occurrence
+        // wins, as in ClientboundLevelChunkPacketData's EnumMap codec.
+        let words = p
+            .chunk
+            .heightmaps
+            .iter()
+            .rev()
+            .find_map(|(kind, words)| (*kind == 4).then_some(words.as_slice()));
+        // LevelChunk.replaceWithPacketData reads the map after the sections. Do it
+        // before either streaming replacement path so it doesn't depend on mesh changes.
+        if let Some(remote) = &self.remote {
+            chunk.adopt_packet_motion_blocking(
+                previous.map(Arc::as_ref),
+                [remote.dimension.min_y, remote.dimension.height],
+                words,
+                &self.pack.assets.properties,
+            );
+        }
         self.supersede_group_predictions(&chunk);
         // A column sent again while it is resident (a bulk edit): only what changed is lit and meshed again.
-        let resident = self.world.chunks.contains_key(&(x, z));
         if resident {
+            // LevelChunk.replaceWithPacketData clears the old block entities. Pots keep
+            // their wobble outside the block entity store, so retire it here too.
+            self.be_anims
+                .pots
+                .retain(|[bx, _, bz], _| (*bx >> 4, *bz >> 4) != (x, z));
             sunrise_client::spans::time("replace_remote", || {
                 self.streaming.replace_remote(&mut self.world, chunk)
             });
         } else {
             self.streaming.insert_remote(&mut self.world, chunk);
         }
+        // Before any block entity joins: a state change before the first ticker pass (a campfire
+        // lit) must find which states tick, to join the list at that moment, not at its place.
+        self.ensure_client_ticking_states();
         sunrise_client::spans::time("unload_block_entities", || {
             self.world.block_entities.unload_column((x, z));
         });
@@ -182,27 +289,95 @@ impl Game<'_> {
         }
     }
 
-    /// `handleLightUpdatePacket`: the sections it names take its light.
+    /// `handleLightUpdatePacket`: queue light independently of block admission.
     pub(super) fn remote_light_update(&mut self, p: &play::LightUpdate) {
-        let Some(format) = self.remote.as_ref().map(|r| r.chunk_format.clone()) else {
-            return;
-        };
-        if !self.world.chunks.contains_key(&(p.x, p.z)) {
-            return;
+        if let Some(r) = &mut self.remote {
+            let layers = r.chunk_format.light(&p.light);
+            r.chunk_light.enqueue(
+                (p.x, p.z),
+                LightTask::Apply {
+                    layers,
+                    rebuild: true,
+                },
+            );
         }
-        let layers = format.light(&p.light);
-        let Some(chunk) = self.world.chunks.get_mut(&(p.x, p.z)) else {
-            return;
-        };
-        let changed = sunrise_client::light::update_light_layers(
-            Arc::make_mut(chunk),
-            &layers,
-            format.has_skylight,
-        );
-        Streaming::light_updated(&mut self.world, p.x, p.z, &changed);
-        self.ask_updated_light_emission((p.x, p.z), &changed);
+    }
+
+    pub(super) fn forget_remote_light(&mut self, positions: &FxHashSet<Column>) {
+        if let Some(r) = &mut self.remote {
+            for &key in positions {
+                r.chunk_light.enqueue(key, LightTask::Forget);
+            }
+        }
+    }
+
+    pub(super) fn clear_remote_light(&mut self) {
+        if let Some(r) = &mut self.remote {
+            r.chunk_light = RemoteLight::default();
+        }
+    }
+
+    /// `ClientLevel.pollLightUpdates`, before streaming takes the light inputs for meshes.
+    pub(super) fn poll_remote_light(&mut self) {
+        let Some(r) = &self.remote else { return };
+        let size = r.chunk_light.queue.len();
+        // `ClientLevel.pollLightUpdates`: under 1000 queued, the greater of 10 and a
+        // tenth of them; otherwise all of them.
+        let limit = if size < 1000 { 10.max(size / 10) } else { size };
+        for _ in 0..limit {
+            let Some(r) = &mut self.remote else { break };
+            let Some((key @ (x, z), task)) = r.chunk_light.pop() else {
+                break;
+            };
+            let LightTask::Apply {
+                mut layers,
+                rebuild,
+            } = task
+            else {
+                r.chunk_light.columns.remove(&key);
+                continue;
+            };
+            if rebuild {
+                // Use this packet's masks, not the pending union or the changed values.
+                Streaming::rebuild_packet_light(&mut self.world, x, z, &layers);
+            }
+            let pending = r.chunk_light.columns.entry(key).or_default();
+            if let Some(earlier) = pending.take() {
+                for ((sky, block), (old_sky, old_block)) in layers.iter_mut().zip(earlier) {
+                    if sky.is_none() {
+                        *sky = old_sky;
+                    }
+                    if block.is_none() {
+                        *block = old_block;
+                    }
+                }
+            }
+            if !layers
+                .iter()
+                .any(|(sky, block)| sky.is_some() || block.is_some())
+            {
+                continue;
+            }
+            if let Some(chunk) = self.world.chunks.resident_get_mut(&key) {
+                let changed = sunrise_client::light::update_light_layers(
+                    Arc::make_mut(chunk),
+                    &layers,
+                    r.chunk_format.has_skylight,
+                );
+                Streaming::light_updated(&mut self.world, x, z, &changed);
+                if rebuild {
+                    self.ask_updated_light_emission(key, &changed);
+                }
+            } else {
+                *pending = Some(layers);
+            }
+        }
     }
 }
+
+#[cfg(test)]
+#[path = "remote_chunk_light_tests.rs"]
+mod light_tests;
 
 #[cfg(test)]
 mod tests {

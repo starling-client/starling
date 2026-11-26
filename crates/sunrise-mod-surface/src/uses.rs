@@ -83,12 +83,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::path::Path;
 
-/// What a mod's manifest says that the list depends on.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct ManifestFacts {
-    /// Capability keys and hooks it names.
-    pub names: Vec<String>,
-}
+pub use crate::uses_meta::{MAX_USES_BYTES, ManifestFacts, USES_FILE};
 
 /// Why an entry is in the list.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -2929,12 +2924,6 @@ pub const PLAIN_SCHEMA: u32 = 3;
 /// judges it: a literal that no longer builds fails there, under the mod's name. They hold no
 /// hook versions either ([`Fit::Unversioned`]).
 const DOUBTING_SCHEMA: u32 = 1;
-
-/// The file a mod carries its [`UsesTable`] in, beside its `sunrise-mod.toml`.
-pub const USES_FILE: &str = "uses.json";
-
-/// The largest table [`UsesTable::read`] reads, in bytes.
-pub const MAX_USES_BYTES: usize = 4 << 20;
 
 /// The list a package carries: what the mod uses, with each item's hash at the build it was made
 /// for.

@@ -1,12 +1,12 @@
 //! `Minecraft.getSituationalMusic` and `getMusicVolume` for the music manager,
 //! the local player's ambient sound handlers and the sound engine tick.
-use super::Game;
+use super::{Game, native_hooks::play_sound::HookedSounds};
 use sunrise_client::{
     blocks::Fluid,
     music::{BackgroundMusic, Music, MusicFrequency, Situation},
     options_ui::MusicGroup,
     random_source,
-    sound_engine::{SoundInstance, Sounds, TickContext},
+    sound_engine::{SoundInstance, TickContext},
 };
 
 impl Game<'_> {
@@ -17,7 +17,9 @@ impl Game<'_> {
         self.native_music(&mut music, &mut volume);
         let mut layers = Vec::new();
         self.native_music_layers(&mut layers);
-        self.music_layers.tick(&layers, &mut self.audio);
+        let mut music_layers = std::mem::take(&mut self.music_layers);
+        music_layers.tick(&layers, &mut HookedSounds(self));
+        self.music_layers = music_layers;
         // Options.musicFrequency's listener: MusicManager.setMinutesBetweenSongs.
         let frequency = MusicFrequency::parse(&self.settings.file.name("musicFrequency"));
         if frequency != self.music.frequency {
@@ -41,8 +43,9 @@ impl Game<'_> {
                 .remote
                 .as_ref()
                 .is_some_and(|r| r.reconfiguring.is_some());
-        self.music
-            .tick(music.as_ref(), volume, loading, &mut self.audio);
+        let mut manager = std::mem::take(&mut self.music);
+        manager.tick(music.as_ref(), volume, loading, &mut HookedSounds(self));
+        self.music = manager;
         // Options.musicToast's listener: ToastManager.setMusicToastDisplayState.
         let state = self.settings.file.int("musicToast").clamp(0, 2) as u8;
         if state != self.music_toast_state {
@@ -65,7 +68,9 @@ impl Game<'_> {
     }
     /// A Music page row: play this track of `event` now.
     pub(super) fn play_music_track(&mut self, event: &str, track: &str) {
-        self.music.play_track(event, track, &mut self.audio);
+        let mut manager = std::mem::take(&mut self.music);
+        manager.play_track(event, track, &mut HookedSounds(self));
+        self.music = manager;
     }
     /// `Options.getFinalSoundSourceVolume(SoundSource.MUSIC)`.
     fn final_music_volume(&self) -> f32 {
@@ -89,7 +94,7 @@ impl Game<'_> {
         };
         let mut title = song;
         let mut description = None;
-        if self.add_toast(mod_api::ToastKind::Other, &mut title, &mut description)
+        if self.admit_toast(mod_api::ToastKind::Other, &mut title, &mut description)
             && let Some(toast) = &mut self.now_playing
         {
             toast.title = title;
@@ -133,18 +138,19 @@ impl Game<'_> {
         &mut self,
         batch: &mut sunrise_client::hud::HudBatch,
         hidden: bool,
+        clock: sunrise_client::toasts::ToastClock,
     ) {
         let song = self.now_playing_song();
         let Some(toast) = self.now_playing.as_mut() else {
             return;
         };
-        toast.update(song.is_some(), &mut self.music_notes);
+        toast.update(clock, song.is_some(), &mut self.music_notes);
         let Some(song) = song else {
             return;
         };
         if self.screen == super::Screen::Paused {
             if self.pause_menu && self.final_music_volume() > 0.0 {
-                self.music_notes.tick();
+                self.music_notes.tick(clock);
                 sunrise_client::toasts::draw_now_playing(
                     &self.gui.atlas,
                     batch,
@@ -168,13 +174,16 @@ impl Game<'_> {
             self.sound_entity_state(id)
         });
 
-        if self.pause != self.sound_paused {
-            if self.pause {
-                self.audio.pause();
-            } else {
-                self.audio.resume();
+        let paused = (self.pause, self.mod_sounds_paused);
+        if paused != self.sound_paused {
+            // From whatever was paused, to what is now.
+            self.audio.resume();
+            match sound_pause(self.pause, self.mod_sounds_paused) {
+                SoundPause::All => self.audio.pause_all(),
+                SoundPause::Game => self.audio.pause(),
+                SoundPause::Playing => {}
             }
-            self.sound_paused = self.pause;
+            self.sound_paused = paused;
         }
         let (vehicle, carts) = self.start_cart_sounds();
         let mobs = self.start_mob_sounds();
@@ -192,7 +201,7 @@ impl Game<'_> {
         // elytra's flying sound.
         if player_fall_flying && !self.was_fall_flying {
             let instance = SoundInstance::elytra(player_position, random_source::create());
-            self.audio.play_instance(instance, false);
+            self.play_audio_instance(instance, false);
         }
         self.was_fall_flying = player_fall_flying;
         let ctx = TickContext {
@@ -213,7 +222,10 @@ impl Game<'_> {
         // Client mods' sounds asked for since the last update start with it, then their stops
         // and fades apply.
         self.apply_mod_sounds();
+        self.dispatch_live_play_sounds();
         self.audio.tick(self.pause, &ctx);
+        // A delayed sound that came due in the tick starts, with its hook, at that tick.
+        self.dispatch_play_sounds();
     }
     /// `Minecraft.setLevel` -> `updateLevelInEngines`: `SoundManager.stop()`.
     /// The music manager keeps its stopped track and, on its next tick, waits
@@ -226,30 +238,18 @@ impl Game<'_> {
     }
     /// `getSituationalMusic` and `getMusicVolume`.
     pub(super) fn situational_music(&self) -> (Option<Music>, f32) {
-        let empty = BackgroundMusic::default();
-        // The title screen has no player (and no level for the camera probe).
-        // A server's client has its player from handleLogin on, before the
-        // first teleport makes it here: the camera is still at the origin.
-        // A reconfiguration's clearClientLevel drops it again (menu music),
-        // so the last server's columns are never probed.
-        let eye = if self.title.is_some() {
-            None
+        // Login creates the client level before its first player teleport;
+        // reconfiguration clears it again. Use the render camera's probe
+        // while the level is present, not the local player's eyes.
+        let in_world = self.title.is_none()
+            && (self.player.is_some() || self.remote.as_ref().is_some_and(|r| r.has_level()));
+        let (background, probe_volume) = if in_world {
+            let biome = self.biome_at(self.view.position);
+            self.res
+                .music()
+                .at(self.dim.id(), biome, world_biomes!(self).pack_file(biome))
         } else {
-            self.eye_position().or_else(|| {
-                self.remote
-                    .as_ref()
-                    .is_some_and(|r| r.has_level())
-                    .then_some([0.0; 3])
-            })
-        };
-        let (background, probe_volume) = match eye {
-            Some(eye) => {
-                let (dimension, biome) = (self.dim.id(), self.biome_at(eye));
-                self.res
-                    .music()
-                    .at(dimension, biome, world_biomes!(self).pack_file(biome))
-            }
-            None => (empty, 1.0),
+            (BackgroundMusic::default(), 1.0)
         };
         let situation = Situation {
             // WinScreen.getBackgroundMusic.
@@ -257,7 +257,7 @@ impl Game<'_> {
                 .win
                 .is_some()
                 .then(mod_api::client::music::Music::credits),
-            in_world: eye.is_some(),
+            in_world,
             in_end: self.dim == super::Dim::End,
             boss_music: self.boss_music(),
             background: &background,
@@ -347,11 +347,14 @@ impl Game<'_> {
             position: feet,
             eye_y,
             underwater,
-            spectator: self.spectator(),
+            spectator: self.own_player_is_spectator(),
             light: &light,
             bubble_column,
         };
+        // The context borrows the level, so the ambience starts through the audio and its
+        // `play_sound` hooks fire as this returns.
         self.ambience.tick(&ctx, &mut self.audio);
+        self.dispatch_play_sounds();
     }
 }
 
@@ -376,6 +379,10 @@ fn update_bound_entities(
         }));
     }
 }
+
+#[cfg(test)]
+#[path = "tests/audio_music_tests.rs"]
+mod audio_music_tests;
 
 #[cfg(test)]
 mod bound_lookup_tests {
@@ -428,5 +435,38 @@ mod bound_lookup_tests {
         assert_eq!(a.state().position, [1.0; 3]);
         assert_eq!(replacement.state().position, [4.0; 3]);
         assert!(!replacement.state().removed);
+    }
+}
+
+/// Which sounds a tick holds paused.
+#[derive(Debug, PartialEq)]
+enum SoundPause {
+    /// None.
+    Playing,
+    /// The game's pause (`SoundManager.pause`): all but the music and the interface.
+    Game,
+    /// A mod's `set_sounds_paused`: every sound, whatever the game's pause.
+    All,
+}
+
+/// A mod's pause holds every sound and outlasts the game's; the game's holds its own set.
+fn sound_pause(game: bool, mods: bool) -> SoundPause {
+    match (game, mods) {
+        (_, true) => SoundPause::All,
+        (true, false) => SoundPause::Game,
+        (false, false) => SoundPause::Playing,
+    }
+}
+
+#[cfg(test)]
+mod sound_pause_tests {
+    use super::*;
+
+    #[test]
+    fn a_mods_pause_holds_every_sound_over_the_games() {
+        assert_eq!(sound_pause(false, false), SoundPause::Playing);
+        assert_eq!(sound_pause(true, false), SoundPause::Game);
+        assert_eq!(sound_pause(false, true), SoundPause::All);
+        assert_eq!(sound_pause(true, true), SoundPause::All);
     }
 }

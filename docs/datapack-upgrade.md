@@ -96,7 +96,7 @@ The server logs must hold no data pack or registry errors.
 `minecraft:map_post_processing` are network-only types in 26.3. Recipes,
 loot component patches, exact predicates, slot-source filters, and item stacks
 inside text or dialogs cannot set or remove them (`!component` is also refused).
-Horizon logs the component and owning
+Sunrise logs the component and owning
 file's resource ID, skips that file, and continues loading the other files.
 
 Type-only references remain valid: `copy_components`, tooltip toggles and hidden

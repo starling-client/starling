@@ -151,6 +151,10 @@ fn scene(
 #[test]
 #[ignore = "daily"]
 fn interact_with_a_pig_or_strider() {
+    run_interact_with_a_pig_or_strider();
+}
+
+pub(in crate::game) fn run_interact_with_a_pig_or_strider() {
     if tests::run_fresh_cases(TEST, CHILD, &["boarding"]) {
         return;
     }
@@ -184,7 +188,7 @@ fn interact_with_a_pig_or_strider() {
                     seed: 0,
                     max_players: 16,
                     integrated: false,
-                    levels: game.level_shapes,
+                    levels: game.level_shapes.clone(),
                     level_seeds: game.levels.runtime.seeds(),
                 },
             )

@@ -20,7 +20,6 @@ PLATFORMS = [
     {"target": "x86_64-unknown-linux-gnu", "os": "ubuntu-22.04", "run": True},
     {"target": "aarch64-unknown-linux-gnu", "os": "ubuntu-22.04", "run": False},
     {"target": "x86_64-pc-windows-msvc", "os": "windows-latest", "run": True},
-    {"target": "x86_64-apple-darwin", "os": "macos-latest", "run": True},
     {"target": "aarch64-apple-darwin", "os": "macos-latest", "run": True},
 ]
 

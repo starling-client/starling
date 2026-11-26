@@ -130,7 +130,7 @@ mod tests {
             game.options.execution_role =
                 crate::game::execution_role::ExecutionRole::IntegratedServer;
             game.native_lifecycle
-                .begin_open(Authority::IntegratedServer);
+                .begin_open(Some(Authority::IntegratedServer));
             assert_eq!(ChunkRef::new(level, [0, 0]).is_slime_chunk(game), None);
             assert_eq!(active.is_slime_chunk(game), None);
         });

@@ -350,23 +350,29 @@ pub fn player_above(m: &Mob, w: &MobWorld) -> bool {
 struct HappyGhastFloat;
 impl Goal for HappyGhastFloat {
     goal_clone!();
+    #[inline]
     fn name(&self) -> &'static str {
         "HappyGhastFloatGoal"
     }
+    #[inline]
     fn flags(&self) -> u8 {
         Float.flags()
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         !on_still_timeout(m) && Float.can_use(m, cx)
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         // `HappyGhastFloatGoal` inherits `Goal.canContinueToUse`, which asks
         // the overridden `canUse`: the still timeout applies mid-float too.
         self.can_use(m, cx)
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         true
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         Float.tick(m, cx)
     }
@@ -386,12 +392,15 @@ impl GhastTempt {
 }
 impl Goal for GhastTempt {
     goal_clone!();
+    #[inline]
     fn name(&self) -> &'static str {
         "ForNonPathfinders"
     }
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE | LOOK
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if self.calm_down > 0 {
             self.calm_down -= 1;
@@ -413,11 +422,13 @@ impl Goal for GhastTempt {
         let range = (16.0_f64 * visibility).max(2.0);
         m.distance_sqr(p.position) <= range * range
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, _: &mut Cx) {
         // stopNavigation: setWait; calmDown = reducedTickDelay(100).
         m.ai.mov.operation = Operation::Wait;
         self.calm_down = super::goals::reduced(100);
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         let Some(p) = cx.w.selected_player().cloned() else {
             return;
@@ -475,12 +486,15 @@ impl FloatAround {
 }
 impl Goal for FloatAround {
     goal_clone!();
+    #[inline]
     fn name(&self) -> &'static str {
         "RandomFloatAroundGoal"
     }
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
         if !m.ai.mov.has_wanted() {
             return true;
@@ -490,12 +504,14 @@ impl Goal for FloatAround {
             (x - m.position.x).powi(2) + (y - m.position.y).powi(2) + (z - m.position.z).powi(2);
         !(1.0..=3600.0).contains(&d)
     }
+    #[inline]
     fn can_continue(&mut self, _: &mut Mob, _: &mut Cx) -> bool {
         false
     }
     /// `getSuitableFlyToPosition`: the first of 64 random points within 16
     /// blocks (and home) that is good; failing that, the last point, kept
     /// below the motion-blocking surface.
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         let c = m.position;
         let choose = |m: &mut Mob| {
@@ -604,7 +620,7 @@ pub fn ai_step(m: &mut Mob, w: &MobWorld) {
             || w.precipitation_at(x, y, z).is_some();
         let interval = if wet { 20 } else { 600 };
         if m.age.is_multiple_of(interval) {
-            m.heal(w.loop_context, 1.0);
+            m.heal(w.loop_context, &|| w.side.hit_reads(), 1.0);
         }
     }
     still_tick(m, w);

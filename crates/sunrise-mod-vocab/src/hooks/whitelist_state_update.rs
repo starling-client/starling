@@ -1,5 +1,4 @@
 //! The `whitelist_state_update` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0342
 
 pub trait Hooks {
     /// The dedicated server's whitelist changed to `enabled`.

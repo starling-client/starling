@@ -4,14 +4,9 @@
 //! projectile whose impact a mod canceled flies the tick again from where it was,
 //! through whatever it hit.
 use super::{
-    Game,
-    commands::Target,
-    creatures::ProjWorld,
-    dragon::{CRYSTAL_IDS, SPECIAL},
-    lan_pvp::meets_players,
+    Game, commands::Target, creatures::TargetQuery, dragon::SPECIAL, lan_pvp::meets_players,
     native_hooks::mob_kind,
 };
-use mod_api::TransactionSeal;
 use std::ops::Range;
 use sunrise_client::{
     arrows::{ArrowEvent, ArrowSound},
@@ -73,33 +68,6 @@ fn projectile_type(p: &Projectile) -> &'static str {
     p.entity_type()
 }
 
-/// Closes an impact's existing world journal even if a listener unwinds.
-pub(super) struct ImpactTransaction<'game, 'resources> {
-    pub game: &'game mut Game<'resources>,
-    pub seal: Option<TransactionSeal>,
-}
-
-impl<'game, 'resources> ImpactTransaction<'game, 'resources> {
-    pub(super) fn new(game: &'game mut Game<'resources>, enabled: bool) -> Self {
-        let seal = enabled.then(|| game.transaction_open());
-        Self { game, seal }
-    }
-
-    pub(super) fn close(mut self, commit: bool) {
-        if let Some(seal) = self.seal.take() {
-            self.game.transaction_close(&seal, commit);
-        }
-    }
-}
-
-impl Drop for ImpactTransaction<'_, '_> {
-    fn drop(&mut self) {
-        if let Some(seal) = self.seal.take() {
-            self.game.transaction_close(&seal, false);
-        }
-    }
-}
-
 /// Events produced by applying the contact, not the arrow's earlier flight.
 pub(super) fn projectile_impact_event(event: &ArrowEvent) -> bool {
     matches!(
@@ -150,7 +118,7 @@ impl Game<'_> {
     }
 
     /// Dispatch a hit for a projectile ticked outside the shared projectile list.
-    /// The caller checks the server opt-in gate and exposes the live projectile
+    /// The caller checks `native_hears_impacts` and exposes the live projectile
     /// before calling; misses never dispatch.
     pub(super) fn native_separate_projectile_impact(
         &mut self,
@@ -203,16 +171,12 @@ impl Game<'_> {
     }
 
     /// Whether this game is a server that flies projectiles for the mods (the
-    /// server thread or a dedicated server, never a client) and a mod asked to hear their impacts
-    /// (`native_hears_projectile_impacts`). Without one, the tick keeps no copy
+    /// server thread or a dedicated server, never a client) and an enabled mod
+    /// subscribes to `projectile_impact`. Without one, the tick keeps no copy
     /// of its projectiles: it costs nothing.
     pub(super) fn native_hears_impacts(&self) -> bool {
-        if self.serving.is_none() && self.options.dedicated.is_none() {
-            return false;
-        }
-        let mut hears = false;
-        self.native_hears_projectile_impacts(&mut hears);
-        hears
+        (self.serving.is_some() || self.options.dedicated.is_some())
+            && mod_api::__private::enabled_listened(mod_api::HookId::ProjectileImpact)
     }
 
     /// The entity id of the one who shot `p`: a mob's, a player's, else 0.
@@ -246,15 +210,15 @@ impl Game<'_> {
     ) -> bool {
         let owner = self.native_thrower(guest);
         let (entity, entity_kind, block, face, at) = match hit {
-            Hit::Entity {
-                who: Who::Mob(id),
-                at,
-            } => {
-                let (entity, kind) = self.native_impact_entity(id);
+            Hit::Entity { who, at } => {
+                let (entity, kind) = match who {
+                    Who::Mob(id) => self.native_impact_entity(id),
+                    Who::Player => (self.own_entity_id() as u32, "minecraft:player".into()),
+                };
                 (Some(entity), kind, [0; 3], [0; 3], at)
             }
             Hit::Block { pos, face, at } => (None, String::new(), pos, face, at),
-            _ => return false,
+            Hit::None => return false,
         };
         let dimension = self.dim.id();
         let mut canceled = false;
@@ -274,42 +238,27 @@ impl Game<'_> {
     }
 
     /// The entity id a projectile's hit on the reserved or ordinary `id` stands for: a dragon
-    /// part is the dragon, an End crystal its own id. Allocates nothing.
+    /// part is the dragon, every other entity (including End crystals) uses its own id.
     fn native_impact_entity_id(&self, id: u32) -> u32 {
         if id < SPECIAL {
             id
-        } else if id < CRYSTAL_IDS {
-            self.dragon.as_ref().map_or(0, |d| d.id)
         } else {
-            self.crystals
-                .get((id - CRYSTAL_IDS) as usize)
-                .map_or(0, |c| c.id)
+            self.dragon.as_ref().map_or(0, |d| d.id)
         }
     }
 
     /// The entity id and type a projectile's hit on the reserved or ordinary
-    /// `id` stands for: a dragon part is the dragon, an End crystal its own id.
+    /// `id` stands for: a dragon part is the dragon, every other entity uses its own id.
     fn native_impact_entity(&self, id: u32) -> (u32, String) {
         let entity = self.native_impact_entity_id(id);
         if id >= SPECIAL {
-            let kind = if id < CRYSTAL_IDS {
-                "minecraft:ender_dragon"
-            } else {
-                "minecraft:end_crystal"
-            };
-            return (entity, kind.into());
+            return (entity, "minecraft:ender_dragon".into());
+        }
+        if let Some(kind) = self.entity_kind_for_who(Who::Mob(id)) {
+            return (id, kind);
         }
         if let Some(mob) = self.mobs.iter().find(|m| m.id == id) {
             return (id, mob_kind(mob));
-        }
-        if let Some(cart) = self.carts.iter().find(|c| c.id == id) {
-            return (id, cart.kind.id().into());
-        }
-        if let Some(boat) = self.boats.iter().find(|b| b.id == id) {
-            return (id, boat.entity_type_name().into());
-        }
-        if self.lan_guest_entities().iter().any(|&(_, e)| e == id) {
-            return (id, "minecraft:player".into());
         }
         (id, String::new())
     }
@@ -375,7 +324,10 @@ impl Game<'_> {
         self.removal_pending(&target) || self.persist.removals.contains(&target)
     }
 
-    fn native_projectile_impact_canceled(&mut self, p: &Projectile, hit: Hit) -> bool {
+    pub(super) fn native_projectile_impact_canceled(&mut self, p: &Projectile, hit: Hit) -> bool {
+        if !self.native_hears_impacts() {
+            return false;
+        }
         let (entity, entity_kind, block, face, at) = match hit {
             Hit::Block { pos, at, face } => (None, String::new(), pos, face, at),
             Hit::Entity { who, at } => {
@@ -671,7 +623,7 @@ impl Game<'_> {
     /// `p`, as it was before its tick, flown that tick through what it hit
     /// (`Projectile::tick_through`, `arrows::tick_through`): the projectile after
     /// it, whether it stays, and the arrow events it made.
-    fn native_projectile_through(
+    pub(super) fn native_projectile_through(
         &self,
         mut p: Projectile,
     ) -> (Projectile, bool, Vec<(Vec3, ArrowEvent)>) {
@@ -686,21 +638,16 @@ impl Game<'_> {
         if shooter.is_some() {
             p.owner = shooter;
         }
-        let mut targets = self.projectile_targets();
-        if mob_shot || pvp {
-            targets.extend(self.lan_projectile_targets());
-        }
+        let include_guests = mob_shot || pvp;
+        let query = TargetQuery::for_projectile(&p, include_guests);
+        let live = self.live_proj_world(query, &[]);
         let rain = self.arrow_rain();
         let scene = self.arrow_scene(&rain);
         let (keep, _) = if p.arrow.is_some() {
-            sunrise_client::arrows::tick_through(&mut p, &scene, &targets)
+            let mut scratch = sunrise_client::arrows::ArrowHitScratch::new();
+            sunrise_client::arrows::tick_through_live(&mut p, &scene, &live, &mut scratch)
         } else {
-            let w = self.mob_world_base(&[]);
-            p.tick_through(&ProjWorld {
-                w: &w,
-                targets: &targets,
-                border: Some(self.border.bounds()),
-            })
+            p.tick_through(&live)
         };
         if shooter.is_some() {
             p.owner = Some(Who::Player);

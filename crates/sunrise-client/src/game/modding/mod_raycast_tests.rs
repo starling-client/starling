@@ -89,4 +89,63 @@ fn mod_raycasts_hit_loaded_blocks_only_with_far_terrain_on_or_off() {
     at(&mut game, 40.5);
     assert_eq!(game.view_hit(), None);
     assert_eq!(game.raycast(1024.0), None);
+
+    // Loaded chunks past 1024 blocks are reachable with no fixed distance ceiling,
+    // and nonpositive or non-finite distances miss.
+    game.world
+        .chunks
+        .insert((0, 100), Arc::new(Chunk::empty(0, 100)));
+    game.block_ticks
+        .add_empty_chunk(sunrise_core::position::ChunkPos::new(0, 100))
+        .unwrap();
+    assert!(game.run_command("fill 0 100 1600 15 103 1600 stone"));
+    game.yaw = 0.0;
+    game.pitch = 0.0;
+    at(&mut game, 0.5);
+    let (far_distance, far_hit) = game.view_hit().expect("loaded stone past 1024 blocks");
+    assert_eq!(
+        (far_hit.block_x, far_hit.block_y, far_hit.block_z),
+        (0, 101, 1600)
+    );
+    assert_eq!(far_distance, 1599.5);
+    assert_eq!(game.raycast(2000.0), Some(far_hit.clone()));
+    assert_eq!(game.raycast(f32::MAX), Some(far_hit));
+    assert_eq!(game.raycast(1500.0), None);
+    for bad in [0.0, -1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        assert_eq!(game.raycast(bad), None);
+    }
+
+    // Starting inside a block, neither query's shape clip depends on distant chunks.
+    let distant = game.world.chunks.remove(&(0, 100)).unwrap();
+    assert!(game.run_command("setblock 0 101 0 stone"));
+    let inside_view = game.view_hit().expect("the stone containing the eye");
+    assert_eq!(
+        (
+            inside_view.1.block_x,
+            inside_view.1.block_y,
+            inside_view.1.block_z
+        ),
+        (0, 101, 0)
+    );
+    assert!(inside_view.1.z > 0.5 && inside_view.1.z < 1.0);
+    // The bounded query uses the caller's endpoints for VoxelShape.clip's nudge
+    // and short-sweep rejection, even though traversal stops with the loaded chunks.
+    let inside_raycast = game.raycast(100.0).expect("inside stone");
+    assert_eq!(
+        (
+            inside_raycast.block_x,
+            inside_raycast.block_y,
+            inside_raycast.block_z
+        ),
+        (0, 101, 0)
+    );
+    assert_eq!(inside_raycast.z, 0.6);
+    assert_eq!(
+        game.raycast(0.0001),
+        None,
+        "sub-1e-7 squared sweep inside a block misses as in VoxelShape.clip"
+    );
+    game.world.chunks.insert((0, 100), distant);
+    assert_eq!(game.view_hit(), Some(inside_view));
+    assert_eq!(game.raycast(100.0), Some(inside_raycast));
 }

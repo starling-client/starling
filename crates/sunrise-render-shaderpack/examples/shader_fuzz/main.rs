@@ -1,39 +1,51 @@
 //! The Rust side of tools/shader_fuzz.py: a seeded robustness fuzzer of the shader-pack
-//! translator. Each case is a pack (the committed seed pack, or a pack of `--corpus`) cut down
-//! to one or two programs, mutated by a few named steps, and loaded through `load_post` as the
-//! game loads a pack, with the game's own inputs (`pack_atlas::game_inputs`).
+//! translator. Each case is a pack (the committed seed pack, or a pack of `--corpus`), whole, with
+//! one or two of its programs mutated by a few named steps (`cases::generate`),
+//! and loaded through `load_post` as the game loads a pack, with the game's own inputs
+//! (`pack_atlas::game_inputs`).
 //!
 //!     shader_fuzz [--seed N] [--count N] [--budget SECONDS] [--corpus DIR] [--jobs N]
-//!                 [--replay SEED] [--smoke] [--time-limit SECONDS] [--memory-limit MIB]
-//!                 [--size-limit MIB] [--shrink-seconds N] [--work-dir DIR]
+//!                 [--replay SEED|smoke:N] [--smoke] [--time-limit SECONDS] [--memory-limit MIB]
+//!                 [--size-limit MIB] [--shrink-seconds N] [--work-dir DIR] [--seed-pack DIR]
 //!
 //! Every case keeps these invariants: no panic; done within `--time-limit`; within
 //! `--memory-limit` (the worker's allocator refuses past it, which aborts it); every stage file
-//! within `--size-limit` once preprocessed; every program that loads validates in naga; every
+//! of the dimension's folder within `--size-limit` once preprocessed; every program that loads validates in naga; every
 //! note names its subject, and a program the unmutated case loaded is loaded or named; the same
-//! case loads the same twice. Cases run in worker processes (this binary, `worker`), so a hang
-//! or an abort costs one case. A failure is grouped by invariant, first failing step and
-//! detail; each group's smallest case is shrunk while the same failure stays, written as a pack
-//! folder under `<work-dir>/groups/`, and listed in `<work-dir>/report.json` with the seed that
-//! replays it. Exits 1 when any case fails.
+//! case loads the same twice.
+//!
+//! The run (this process) only lists the corpus: names and paths. Each of `--jobs` case
+//! processes (this binary, `case`) opens and reads the packs of its cases, makes them and
+//! shrinks them, within `--memory-limit`, so a pack that exhausts it or hangs costs its case,
+//! reported as that case's failure. A case process loads each candidate in its own eval
+//! worker (this binary, `worker`), so a hang or an abort of the translator costs one load. A
+//! failure is grouped by invariant, first failing step and detail; each group's smallest case
+//! is shrunk while the same failure stays, written as a pack folder under `<work-dir>/groups/`,
+//! and listed in `<work-dir>/report.json` with the arguments that replay its smallest case
+//! (`replay_args`), beside the cases run and skipped (each skipped one is printed with why) and
+//! how each case process ended. `--budget` alone generates cases until it ends, `--count` alone
+//! that many, both until the first is reached, neither 200. Exits 1 when any case fails, or
+//! when no case ran. `--seed-pack` replaces the committed seed pack
+//! (`examples/shader_fuzz/seeds`).
 
 mod cases;
 mod check;
+mod process;
 mod shrink;
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::collections::{BTreeMap, HashMap};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
+use std::sync::mpsc::RecvTimeoutError;
 use std::time::{Duration, Instant};
 
-use cases::{Case, Source};
+use cases::{Case, CaseId, Entry};
 use check::{Failure, Outcome, Request};
-use shrink::{Budget, Evaluate, Files, Found};
+use process::Process;
+use shrink::{Budget, Evaluate, Files, Found, Info};
 
 /// The system allocator, counting: past `LIMIT` bytes in use an allocation fails, and the
 /// process aborts with Rust's "memory allocation of N bytes failed".
@@ -107,23 +119,30 @@ static ALLOCATOR: Counting = Counting;
 
 struct Options {
     seed: u64,
-    count: u64,
+    /// Cases to generate: none past this many. Unbounded when only `--budget` is given; 200
+    /// when neither is.
+    count: Option<u64>,
+    /// Seconds to generate cases for: none starts past it.
     budget: Option<Duration>,
     corpus: Option<PathBuf>,
     jobs: usize,
-    replay: Option<u64>,
+    replay: Option<CaseId>,
     smoke: bool,
     time_limit: Duration,
     memory_mib: usize,
     size_limit: usize,
     shrink: Duration,
     work: PathBuf,
+    /// The pack the smoke cases take, and the index's first.
+    seeds: PathBuf,
+    /// This binary, which runs the case and eval processes.
+    exe: PathBuf,
 }
 
 fn options(args: &[String]) -> Result<Options, String> {
     let mut o = Options {
         seed: 1,
-        count: 200,
+        count: None,
         budget: None,
         corpus: None,
         jobs: 1,
@@ -134,6 +153,8 @@ fn options(args: &[String]) -> Result<Options, String> {
         size_limit: 16 << 20,
         shrink: Duration::from_secs(120),
         work: PathBuf::from(".local/shader-fuzz"),
+        seeds: cases::seed_pack(),
+        exe: std::env::current_exe().unwrap_or_default(),
     };
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -141,21 +162,78 @@ fn options(args: &[String]) -> Result<Options, String> {
         let number = |v: String| v.parse::<u64>().map_err(|_| format!("{arg}: not a number"));
         match arg.as_str() {
             "--seed" => o.seed = number(value()?)?,
-            "--count" => o.count = number(value()?)?,
+            "--count" => o.count = Some(number(value()?)?),
             "--budget" => o.budget = Some(Duration::from_secs(number(value()?)?)),
             "--corpus" => o.corpus = Some(PathBuf::from(value()?)),
             "--jobs" => o.jobs = number(value()?)?.max(1) as usize,
-            "--replay" => o.replay = Some(number(value()?)?),
+            "--replay" => {
+                let id = value()?;
+                let parsed = id
+                    .parse()
+                    .map_err(|()| format!("{arg}: not a seed or smoke:N"))?;
+                o.replay = Some(parsed);
+            }
             "--smoke" => o.smoke = true,
             "--time-limit" => o.time_limit = Duration::from_secs(number(value()?)?),
             "--memory-limit" => o.memory_mib = number(value()?)? as usize,
             "--size-limit" => o.size_limit = (number(value()?)? as usize) << 20,
             "--shrink-seconds" => o.shrink = Duration::from_secs(number(value()?)?),
             "--work-dir" => o.work = PathBuf::from(value()?),
+            "--seed-pack" => o.seeds = PathBuf::from(value()?),
             _ => return Err(format!("unknown argument {arg}")),
         }
     }
+    if o.count.is_none() && o.budget.is_none() {
+        o.count = Some(200);
+    }
     Ok(o)
+}
+
+/// The arguments that make case `id` of run `o` again, alone (`--replay`), with what decides
+/// its failures: the seed pack when the run had its own (`--seed-pack`: the smoke cases are its
+/// programs, and it is the first pack a generated case draws from), the corpus a generated case
+/// draws its pack from (the smoke cases take the seed pack only), and the run's time, memory and
+/// size limits.
+fn replay_args(o: &Options, id: CaseId) -> Vec<String> {
+    let mut out = vec!["--replay".to_owned(), id.to_string()];
+    if o.seeds != cases::seed_pack() {
+        out.push("--seed-pack".to_owned());
+        out.push(o.seeds.to_string_lossy().into_owned());
+    }
+    if let (CaseId::Seed(_), Some(corpus)) = (id, &o.corpus) {
+        out.push("--corpus".to_owned());
+        out.push(corpus.to_string_lossy().into_owned());
+    }
+    for (flag, value) in [
+        ("--time-limit", o.time_limit.as_secs()),
+        ("--memory-limit", o.memory_mib as u64),
+        ("--size-limit", (o.size_limit >> 20) as u64),
+    ] {
+        out.push(flag.to_owned());
+        out.push(value.to_string());
+    }
+    out
+}
+
+/// `args` as one POSIX shell line: each argument as it is when it holds only characters the
+/// shell takes literally, else in single quotes (a `'` in it written `'"'"'`).
+fn shell_line(args: &[String]) -> String {
+    let plain = |a: &str| {
+        !a.is_empty()
+            && a.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"@%+=:,./_-".contains(&b))
+    };
+    let quoted: Vec<String> = args
+        .iter()
+        .map(|a| {
+            if plain(a) {
+                a.clone()
+            } else {
+                format!("'{}'", a.replace('\'', "'\"'\"'"))
+            }
+        })
+        .collect();
+    quoted.join(" ")
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -220,9 +298,14 @@ fn safe_component(part: &str) -> bool {
         })
 }
 
+/// A path of `files` that can't be written below the run's shader directory.
+fn unstageable(files: &Files) -> Option<&String> {
+    files.keys().find(|p| !p.split('/').all(safe_component))
+}
+
 /// Validate the whole pack before replacing any previous scratch data.
 fn write_pack(dir: &Path, files: &Files) -> std::io::Result<()> {
-    if let Some(path) = files.keys().find(|p| !p.split('/').all(safe_component)) {
+    if let Some(path) = unstageable(files) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             format!("invalid pack path {path:?}"),
@@ -265,11 +348,25 @@ impl Evaluate for InProcess {
     }
 }
 
-fn request_json(dir: &Path, r: &Request) -> String {
-    serde_json::json!({
-        "dir": dir, "dim": r.dim, "flat": r.flat, "expect": r.expect, "size_limit": r.size_limit,
-    })
-    .to_string()
+fn request_value(r: &Request) -> serde_json::Value {
+    serde_json::json!({"dim": r.dim, "flat": r.flat, "expect": r.expect, "size_limit": r.size_limit})
+}
+
+fn strings(v: &serde_json::Value) -> Vec<String> {
+    v.as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|s| s.as_str().map(str::to_owned))
+        .collect()
+}
+
+fn parse_request(v: &serde_json::Value) -> Request {
+    Request {
+        dim: v["dim"].as_u64().unwrap_or(0) as usize,
+        flat: v["flat"].as_bool().unwrap_or(true),
+        expect: strings(&v["expect"]),
+        size_limit: v["size_limit"].as_u64().unwrap_or(u64::MAX) as usize,
+    }
 }
 
 fn outcome_json(o: &Outcome) -> String {
@@ -284,28 +381,80 @@ fn outcome_json(o: &Outcome) -> String {
 
 fn parse_outcome(line: &str) -> Option<Outcome> {
     let v: serde_json::Value = serde_json::from_str(line).ok()?;
-    let strings = |v: &serde_json::Value| -> Vec<String> {
-        v.as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|s| s.as_str().map(str::to_owned))
-            .collect()
-    };
+    let failures = v["failures"]
+        .as_array()?
+        .iter()
+        .map(|f| match &strings(f)[..] {
+            [invariant, detail] => Some(Failure::new(invariant, detail.clone())),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>()?;
     Some(Outcome {
-        failures: v["failures"]
-            .as_array()?
-            .iter()
-            .map(|f| {
-                let pair = strings(f);
-                Failure::new(&pair[0], pair[1].clone())
-            })
-            .collect(),
+        failures,
         loaded: strings(&v["loaded"]),
         shadow_pass: v["shadow_pass"].as_bool()?,
     })
 }
 
-/// The worker: requests in, outcomes out, a line each.
+fn id_value(id: CaseId) -> serde_json::Value {
+    match id {
+        CaseId::Seed(seed) => serde_json::json!({"seed": seed}),
+        CaseId::Smoke(n) => serde_json::json!({"smoke": n}),
+    }
+}
+
+fn parse_id(v: &serde_json::Value) -> Option<CaseId> {
+    match (v["seed"].as_u64(), v["smoke"].as_u64()) {
+        (Some(seed), None) => Some(CaseId::Seed(seed)),
+        (None, Some(n)) => Some(CaseId::Smoke(n as usize)),
+        _ => None,
+    }
+}
+
+fn info_value(i: &Info) -> serde_json::Value {
+    serde_json::json!({
+        "seed": i.seed, "pack": i.pack, "dim": i.dim, "flat": i.flat, "programs": i.programs,
+        "bytes": i.bytes, "steps": i.steps,
+    })
+}
+
+fn parse_info(v: &serde_json::Value) -> Option<Info> {
+    Some(Info {
+        seed: v["seed"].as_u64()?,
+        pack: v["pack"].as_str()?.to_owned(),
+        dim: v["dim"]
+            .as_u64()
+            .map(|d| d as usize)
+            .filter(|&d| d < cases::DIMENSIONS.len()),
+        flat: v["flat"].as_bool(),
+        programs: strings(&v["programs"]),
+        bytes: v["bytes"].as_u64()? as usize,
+        steps: v["steps"].as_u64()? as usize,
+    })
+}
+
+fn found_value(f: &Found) -> serde_json::Value {
+    serde_json::json!({
+        "id": id_value(f.id), "case": info_value(&f.case), "request": request_value(&f.request),
+        "failure": [f.failure.invariant, f.failure.detail], "step": f.step,
+    })
+}
+
+fn parse_found(v: &serde_json::Value) -> Option<Found> {
+    let failure = match &strings(&v["failure"])[..] {
+        [invariant, detail] => Failure::new(invariant, detail.clone()),
+        _ => return None,
+    };
+    Some(Found {
+        id: parse_id(&v["id"])?,
+        case: parse_info(&v["case"])?,
+        request: parse_request(&v["request"]),
+        failure,
+        step: v["step"].as_str()?.to_owned(),
+    })
+}
+
+/// The eval worker: a case's pack folder and request in, its outcome out, a line each.
 fn worker(memory_mib: usize) {
     std::panic::set_hook(Box::new(|info| {
         let at = info
@@ -326,124 +475,67 @@ fn worker(memory_mib: usize) {
     for line in stdin.lock().lines() {
         let Ok(line) = line else { break };
         let v: serde_json::Value = serde_json::from_str(&line).expect("a request");
-        let request = Request {
-            dim: v["dim"].as_u64().unwrap_or(0) as usize,
-            flat: v["flat"].as_bool().unwrap_or(true),
-            expect: v["expect"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|s| s.as_str().map(str::to_owned))
-                .collect(),
-            size_limit: v["size_limit"].as_u64().unwrap_or(u64::MAX) as usize,
-        };
         let dir = PathBuf::from(v["dir"].as_str().unwrap_or("."));
-        let outcome = check::check(&dir, &request);
+        let outcome = check::check(&dir, &parse_request(&v["request"]));
         let _ = writeln!(out, "{}", outcome_json(&outcome));
         let _ = out.flush();
     }
 }
 
-/// A worker process, restarted after a case it could not finish.
+/// The eval worker of a case process: each candidate pack written to `dir` and checked there.
 struct Worker {
     dir: PathBuf,
     memory_mib: usize,
     time_limit: Duration,
-    running: Option<Running>,
-}
-
-struct Running {
-    child: std::process::Child,
-    input: std::process::ChildStdin,
-    lines: Receiver<String>,
-    errors: std::thread::JoinHandle<Vec<u8>>,
+    process: Process,
 }
 
 impl Worker {
-    fn start(&mut self) -> &mut Running {
-        self.running.get_or_insert_with(|| {
-            let exe = std::env::current_exe().expect("this binary");
-            let mut child = Command::new(exe)
-                .args(["worker", &self.memory_mib.to_string()])
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
-                .expect("a worker starts");
-            let input = child.stdin.take().expect("piped");
-            let output = child.stdout.take().expect("piped");
-            let mut errors_in = child.stderr.take().expect("piped");
-            let (tx, lines) = channel();
-            std::thread::spawn(move || {
-                for line in BufReader::new(output).lines().map_while(Result::ok) {
-                    if tx.send(line).is_err() {
-                        break;
-                    }
-                }
-            });
-            // The last 8 KiB the worker wrote to stderr, once it has exited (end of the pipe).
-            let errors = std::thread::spawn(move || {
-                let (mut tail, mut buf) = (Vec::new(), [0u8; 4096]);
-                while let Ok(n) = errors_in.read(&mut buf) {
-                    if n == 0 {
-                        break;
-                    }
-                    tail.extend_from_slice(&buf[..n]);
-                    let excess = tail.len().saturating_sub(8192);
-                    tail.drain(..excess);
-                }
-                tail
-            });
-            Running {
-                child,
-                input,
-                lines,
-                errors,
-            }
-        })
+    fn new(exe: &Path, dir: PathBuf, memory_mib: usize, time_limit: Duration) -> Self {
+        let args = ["worker".to_owned(), memory_mib.to_string()];
+        Self {
+            dir,
+            memory_mib,
+            time_limit,
+            process: Process::new(exe, &args, None),
+        }
+    }
+}
+
+/// A pack a case process could not write to its folder (a file name the run can't write, a
+/// file where the pack also has a folder of that name, a write that failed): the case's, not a
+/// translator finding. Raised as a panic payload through the case's run, caught by `staged`.
+struct Staging(String);
+
+/// `files` written as the pack in `dir`, or `Staging` raised.
+fn stage(dir: &Path, files: &Files) {
+    if let Err(e) = write_pack(dir, files) {
+        std::panic::panic_any(Staging(format!("{}: {e}", dir.display())));
+    }
+}
+
+/// `run`'s result, or why a pack it wrote could not be staged.
+fn staged<T>(run: impl FnOnce() -> T) -> Result<T, String> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)) {
+        Ok(value) => Ok(value),
+        Err(payload) => match payload.downcast::<Staging>() {
+            Ok(staging) => Err(staging.0),
+            Err(payload) => std::panic::resume_unwind(payload),
+        },
     }
 }
 
 impl Evaluate for Worker {
     fn eval(&mut self, files: &Files, request: &Request) -> Outcome {
-        let dir = self.dir.clone();
-        output(&dir, write_pack(&dir, files));
-        let limit = self.time_limit;
-        let running = self.start();
-        let sent = writeln!(running.input, "{}", request_json(&dir, request))
-            .and_then(|_| running.input.flush());
-        let reply = match sent {
-            Ok(()) => running.lines.recv_timeout(limit),
-            Err(_) => Err(RecvTimeoutError::Disconnected),
-        };
+        stage(&self.dir, files);
+        let line = serde_json::json!({"dir": self.dir, "request": request_value(request)});
+        let reply = self.process.ask(&line.to_string(), self.time_limit);
         if let Ok(line) = &reply
             && let Some(outcome) = parse_outcome(line)
         {
             return outcome;
         }
-        let mut gone = self.running.take().expect("running");
-        let _ = gone.child.kill();
-        let status = gone.child.wait();
-        // All the worker wrote: the reader ends at the end of the pipe, which the exit closed.
-        let errors = gone.errors.join().unwrap_or_default();
-        let errors = String::from_utf8_lossy(&errors).into_owned();
-        let failure = match reply {
-            // Only this depends on timing: a case that takes about the limit can land either side.
-            Err(RecvTimeoutError::Timeout) => {
-                Failure::new("time", format!("over {} s", limit.as_secs()))
-            }
-            _ if errors.contains("memory allocation of") => {
-                Failure::new("memory", format!("over {} MiB", self.memory_mib))
-            }
-            _ => Failure::new(
-                "crash",
-                format!(
-                    "{}: {}",
-                    status.map_or("?".into(), |s| s.to_string()),
-                    check::shape(errors.lines().last().unwrap_or(""))
-                ),
-            ),
-        };
+        let failure = self.process.fail(&reply, self.time_limit, self.memory_mib);
         Outcome {
             failures: vec![failure],
             ..Default::default()
@@ -463,9 +555,12 @@ fn expect(case: &Case, base: &Outcome, files: &Files) -> Vec<String> {
     if properties.contains("program.") {
         return Vec::new();
     }
+    // Of the files the programs read, and the root `.properties` files: a step that renames a
+    // name runs through every source file of the pack, which holds the other programs' too.
     let touched: Vec<&String> = case
         .files
         .keys()
+        .filter(|p| case.reach.contains(*p) || (!p.contains('/') && p.ends_with(".properties")))
         .filter(|p| files.get(*p) != case.files.get(*p))
         .collect();
     base.loaded
@@ -475,140 +570,483 @@ fn expect(case: &Case, base: &Outcome, files: &Files) -> Vec<String> {
         .collect()
 }
 
-type BaseKey = (String, usize, bool, Vec<String>);
+/// A case's pack, dimension and terrain: its unmutated load (the pack is whole whatever programs
+/// the steps edit).
+type BaseKey = (String, usize, bool);
 
-/// What every worker thread shares.
-struct Run<'a> {
-    corpus: &'a [Source],
-    o: &'a Options,
-    next: AtomicU64,
-    started: Instant,
-    bases: Mutex<HashMap<BaseKey, Outcome>>,
-    found: Mutex<Vec<Found>>,
-    done: AtomicU64,
+/// Runs made cases through `ev`, keeping each unmutated case's outcome.
+struct Runner<E> {
+    ev: E,
+    bases: HashMap<BaseKey, Outcome>,
+    size_limit: usize,
 }
 
-impl Run<'_> {
+impl<E: Evaluate> Runner<E> {
+    fn new(ev: E, size_limit: usize) -> Self {
+        Self {
+            ev,
+            bases: HashMap::new(),
+            size_limit,
+        }
+    }
+
     fn request(&self, case: &Case, expect: Vec<String>) -> Request {
         Request {
             dim: case.dim,
             flat: case.flat,
             expect,
-            size_limit: self.o.size_limit,
+            size_limit: self.size_limit,
         }
     }
 
-    /// Case `seed` through `ev`: its failures, each with its first failing step.
-    fn run_case(&self, ev: &mut dyn Evaluate, case: &Case) {
-        let key = (
-            case.pack.clone(),
-            case.dim,
-            case.flat,
-            case.programs.clone(),
-        );
-        let cached = self.bases.lock().unwrap().get(&key).cloned();
-        let base = cached.unwrap_or_else(|| {
-            let base = ev.eval(&case.files, &self.request(case, Vec::new()));
-            self.bases.lock().unwrap().insert(key, base.clone());
-            base
-        });
+    /// Case `id` (`case`)'s failures, each with its first failing step.
+    fn run(&mut self, id: CaseId, case: &Case) -> Vec<Found> {
+        let key = (case.pack.clone(), case.dim, case.flat);
+        let base = match self.bases.get(&key) {
+            Some(base) => base.clone(),
+            None => {
+                let base = self.ev.eval(&case.files, &self.request(case, Vec::new()));
+                self.bases.insert(key, base.clone());
+                base
+            }
+        };
         let files = case.materialize();
         let request = self.request(case, expect(case, &base, &files));
-        let outcome = ev.eval(&files, &request);
-        for failure in outcome.failures {
-            let step = shrink::first_step(ev, case, &request, &failure.signature());
-            self.found.lock().unwrap().push(Found {
-                case: case.clone(),
+        let outcome = self.ev.eval(&files, &request);
+        let info = Info::of(case, &files);
+        outcome
+            .failures
+            .into_iter()
+            .map(|failure| Found {
+                id,
+                case: info.clone(),
+                step: shrink::first_step(&mut self.ev, case, &request, &failure.signature()),
                 request: request.clone(),
                 failure,
-                step,
-            });
+            })
+            .collect()
+    }
+}
+
+/// What a group's shrunk case holds: its steps, its files and their lines.
+#[derive(Debug, PartialEq)]
+struct Summary {
+    steps: Vec<String>,
+    files: Vec<String>,
+    lines: usize,
+}
+
+impl Summary {
+    fn of(shrunk: &shrink::Shrunk) -> Self {
+        Self {
+            steps: shrunk
+                .steps
+                .iter()
+                .map(|s| format!("{} {}", s.kind.name(), s.file))
+                .collect(),
+            files: shrunk.files.keys().cloned().collect(),
+            lines: shrunk
+                .files
+                .values()
+                .map(|b| b.split(|&c| c == b'\n').filter(|l| !l.is_empty()).count())
+                .sum(),
         }
-        let done = self.done.fetch_add(1, Ordering::Relaxed) + 1;
-        if done.is_multiple_of(100) {
-            println!(
-                "{done} cases, {} failures, {:.0} s",
-                self.found.lock().unwrap().len(),
-                self.started.elapsed().as_secs_f64()
-            );
+    }
+}
+
+/// What running a case gave.
+#[derive(Debug, PartialEq)]
+enum Ran {
+    /// Its failures.
+    Found(Vec<Found>),
+    /// It makes no case (`cases::NoCase`), or its pack could not be staged: why.
+    Skipped(String),
+    /// A smoke case past the last (or past a seed pack that doesn't open), why: the smoke cases
+    /// end there; a replay of it is skipped, with why.
+    Past(String),
+}
+
+impl From<cases::NoCase> for Ran {
+    fn from(no: cases::NoCase) -> Self {
+        match no {
+            cases::NoCase::Past(why) => Ran::Past(why),
+            no => Ran::Skipped(no.to_string()),
+        }
+    }
+}
+
+/// Where a run's cases are made and run: case processes in a run, this process in tests.
+trait Cases {
+    fn run(&mut self, id: CaseId) -> Ran;
+
+    /// `found`'s case shrunk within `seconds` while it fails the same way, written as a pack in
+    /// `dir`; `None` when it can't be made again.
+    fn shrink(&mut self, found: &Found, seconds: Duration, dir: &Path) -> Option<Summary>;
+}
+
+/// Cases made, read and run in this process: what a case process does, and the tests.
+struct Local<'a, E> {
+    index: &'a [Entry],
+    runner: Runner<E>,
+}
+
+impl<E: Evaluate> Cases for Local<'_, E> {
+    fn run(&mut self, id: CaseId) -> Ran {
+        match cases::sample(self.index, id) {
+            Ok(case) => Ran::Found(self.runner.run(id, &case)),
+            Err(no) => no.into(),
         }
     }
 
-    fn cases(&self, ev: &mut dyn Evaluate, seeds: &[Case]) {
-        loop {
-            let i = self.next.fetch_add(1, Ordering::Relaxed);
-            let case = match seeds.get(i as usize) {
-                Some(case) => case.clone(),
-                None if !seeds.is_empty() => break,
-                None => {
-                    let over = self.o.budget.is_some_and(|b| self.started.elapsed() >= b);
-                    if i >= self.o.count || over {
-                        break;
-                    }
-                    let seed = cases::case_seed(self.o.seed, i);
-                    match cases::generate(self.corpus, seed, true) {
-                        Some(case) => case,
-                        None => continue,
-                    }
+    fn shrink(&mut self, found: &Found, seconds: Duration, dir: &Path) -> Option<Summary> {
+        let case = cases::sample(self.index, found.id).ok()?;
+        let budget = Budget {
+            evals: 4000,
+            until: Instant::now() + seconds,
+        };
+        let signature = found.failure.signature();
+        let shrunk = shrink::shrink(
+            &mut self.runner.ev,
+            &case,
+            &found.request,
+            &signature,
+            budget,
+        );
+        stage(dir, &shrunk.files);
+        Some(Summary::of(&shrunk))
+    }
+}
+
+/// A case process: the run's index and limits first, then cases to make and run, or a group's
+/// case to shrink. Each case's pack is opened and read here, within `--memory-limit`, so a pack
+/// that exhausts it ends this process and is that case's failure, not the run's.
+fn case_process() {
+    let stdin = std::io::stdin();
+    let mut lines = stdin.lock().lines();
+    let Some(Ok(config)) = lines.next() else {
+        return;
+    };
+    let config: serde_json::Value = serde_json::from_str(&config).expect("a configuration");
+    let index: Vec<Entry> = config["index"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|e| {
+            Some(Entry {
+                name: e[0].as_str()?.to_owned(),
+                path: PathBuf::from(e[1].as_str()?),
+            })
+        })
+        .collect();
+    let memory_mib = config["memory_mib"].as_u64().unwrap_or(2048) as usize;
+    let time_limit = Duration::from_secs(config["time_limit"].as_u64().unwrap_or(20));
+    let size_limit = config["size_limit"].as_u64().unwrap_or(u64::MAX) as usize;
+    let dir = PathBuf::from(config["dir"].as_str().expect("a worker directory"));
+    LIMIT.store(memory_mib << 20, Ordering::Relaxed);
+    // A pack that can't be staged is answered (`staged`), not a crash to report.
+    let report = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if info.payload().downcast_ref::<Staging>().is_none() {
+            report(info);
+        }
+    }));
+    let exe = std::env::current_exe().expect("this binary");
+    let ev = Worker::new(&exe, dir, memory_mib, time_limit);
+    let mut local = Local {
+        index: &index,
+        runner: Runner::new(ev, size_limit),
+    };
+    let mut out = std::io::stdout();
+    let mut reply = |v: serde_json::Value| {
+        let _ = writeln!(out, "{v}");
+        let _ = out.flush();
+    };
+    for line in lines {
+        let Ok(line) = line else { break };
+        let v: serde_json::Value = serde_json::from_str(&line).expect("a request");
+        if let Some(found) = parse_found(&v["shrink"]) {
+            let seconds = Duration::from_secs(v["seconds"].as_u64().unwrap_or(0));
+            let dir = PathBuf::from(v["dir"].as_str().expect("a group directory"));
+            let summary = match staged(|| local.shrink(&found, seconds, &dir)) {
+                Ok(summary) => summary.map(
+                    |s| serde_json::json!({"steps": s.steps, "files": s.files, "lines": s.lines}),
+                ),
+                Err(why) => {
+                    reply(serde_json::json!({"shrunk": null, "staging": why}));
+                    continue;
                 }
             };
-            self.run_case(ev, &case);
+            reply(serde_json::json!({ "shrunk": summary }));
+            continue;
+        }
+        let id = parse_id(&v["run"]).expect("a case");
+        let case = match cases::sample(&index, id) {
+            Ok(case) => case,
+            Err(cases::NoCase::Past(why)) => {
+                reply(serde_json::json!({ "past": why }));
+                continue;
+            }
+            Err(no) => {
+                reply(serde_json::json!({ "skipped": no.to_string() }));
+                continue;
+            }
+        };
+        reply(serde_json::json!({"sampled": info_value(&Info::sampled(&case))}));
+        // A pack the run can't write makes no case: the driver's limit, not the translator's.
+        match staged(|| local.runner.run(id, &case)) {
+            Ok(found) => reply(
+                serde_json::json!({"found": found.iter().map(found_value).collect::<Vec<_>>()}),
+            ),
+            Err(why) => reply(
+                serde_json::json!({ "skipped": format!("{}: can't stage the pack: {why}", case.pack) }),
+            ),
+        }
+    }
+    // The run's requests ended: the eval worker's end too, waited for, and how it ended.
+    let worker = local.runner.ev.process.close().map(|c| c.status);
+    reply(serde_json::json!({ "closed": worker }));
+}
+
+/// A case process of the run, from the coordinator's side.
+struct Remote<'a> {
+    index: &'a [Entry],
+    o: &'a Options,
+    process: Process,
+}
+
+impl<'a> Remote<'a> {
+    fn new(index: &'a [Entry], o: &'a Options, n: usize) -> Self {
+        let config = serde_json::json!({
+            "index": index.iter().map(|e| (&e.name, &e.path)).collect::<Vec<_>>(),
+            "memory_mib": o.memory_mib,
+            "time_limit": o.time_limit.as_secs(),
+            "size_limit": o.size_limit,
+            "dir": o.work.join(format!("worker{n}")),
+        });
+        Self {
+            index,
+            o,
+            process: Process::new(&o.exe, &["case".to_owned()], Some(config.to_string())),
+        }
+    }
+
+    /// Case `id`, whose process ended (`reply`) at `step`: the case's failure.
+    fn died(
+        &mut self,
+        id: CaseId,
+        case: Option<Info>,
+        reply: &Result<String, RecvTimeoutError>,
+        limit: Duration,
+        step: &str,
+    ) -> Found {
+        let failure = self.process.fail(reply, limit, self.o.memory_mib);
+        let case = case.unwrap_or_else(|| Info {
+            seed: id.seed(),
+            pack: self.index[id.pack(self.index.len())].name.clone(),
+            dim: None,
+            flat: None,
+            programs: Vec::new(),
+            bytes: 0,
+            steps: 0,
+        });
+        Found {
+            id,
+            request: Request {
+                dim: case.dim.unwrap_or(0),
+                flat: case.flat.unwrap_or(true),
+                expect: Vec::new(),
+                size_limit: self.o.size_limit,
+            },
+            case,
+            failure,
+            step: step.to_owned(),
         }
     }
 }
 
-/// Fixed cases that must hold every invariant: each seed program alone, unmutated, in flat and
-/// grid terrain, and all of them together.
-fn smoke(corpus: &[Source]) -> Vec<Case> {
-    let seeds = &corpus[0];
-    let (folder, programs) = &seeds.folders[0];
-    let mut sets: Vec<Vec<String>> = programs.iter().map(|p| vec![p.clone()]).collect();
-    sets.push(programs.clone());
-    let mut out = Vec::new();
-    for flat in [true, false] {
-        for set in &sets {
-            out.push(Case {
-                seed: 0,
-                pack: seeds.name.clone(),
-                dim: 0,
-                flat,
-                programs: set.clone(),
-                folder: folder.clone(),
-                files: cases::subset(seeds, folder, set),
-                steps: Vec::new(),
-            });
-        }
+impl Remote<'_> {
+    /// The case process closed at the end of its cases: how it and its eval worker ended, as
+    /// the report lists them (`None` when it never started).
+    fn finish(mut self) -> Option<serde_json::Value> {
+        let closed = self.process.close()?;
+        let worker = closed
+            .lines
+            .iter()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .find_map(|v| v.get("closed").cloned());
+        Some(serde_json::json!({"exit": closed.status, "worker": worker}))
     }
-    out
 }
 
-/// A group's report entry, its shrunk case written as a pack under `dir`.
+impl Cases for Remote<'_> {
+    fn run(&mut self, id: CaseId) -> Ran {
+        let limit = self.o.time_limit;
+        let request = serde_json::json!({"run": id_value(id)}).to_string();
+        let reply = self.process.ask(&request, limit);
+        let sampled = reply
+            .as_ref()
+            .ok()
+            .and_then(|l| serde_json::from_str::<serde_json::Value>(l).ok());
+        let info = match &sampled {
+            Some(v) if v["past"].is_string() => {
+                return Ran::Past(v["past"].as_str().unwrap_or("").to_owned());
+            }
+            Some(v) if v["skipped"].is_string() => {
+                return Ran::Skipped(v["skipped"].as_str().unwrap_or("").to_owned());
+            }
+            Some(v) => parse_info(&v["sampled"]),
+            None => None,
+        };
+        let Some(info) = info else {
+            return Ran::Found(vec![self.died(id, None, &reply, limit, "sample")]);
+        };
+        // The base and the case, then the steps one by one: each eval is bounded by the
+        // worker's limit, so this bounds only a case process that stopped answering.
+        let limit = limit * (info.steps as u32 + 3) + Duration::from_secs(30);
+        let reply = self.process.next(limit);
+        let answer = reply
+            .as_ref()
+            .ok()
+            .and_then(|l| serde_json::from_str::<serde_json::Value>(l).ok());
+        if let Some(why) = answer.as_ref().and_then(|v| v["skipped"].as_str()) {
+            return Ran::Skipped(why.to_owned());
+        }
+        let found = answer.and_then(|v| {
+            v["found"]
+                .as_array()
+                .map(|f| f.iter().map(parse_found).collect::<Option<Vec<Found>>>())
+        });
+        match found {
+            Some(Some(found)) => Ran::Found(found),
+            _ => Ran::Found(vec![self.died(id, Some(info), &reply, limit, "run")]),
+        }
+    }
+
+    fn shrink(&mut self, found: &Found, seconds: Duration, dir: &Path) -> Option<Summary> {
+        let request = serde_json::json!({
+            "shrink": found_value(found), "seconds": seconds.as_secs(), "dir": dir,
+        });
+        let limit = seconds + self.o.time_limit * 3 + Duration::from_secs(30);
+        let reply = self.process.ask(&request.to_string(), limit);
+        let shrunk = reply
+            .as_ref()
+            .ok()
+            .and_then(|l| serde_json::from_str::<serde_json::Value>(l).ok());
+        let Some(v) = shrunk else {
+            let _ = self.process.fail(&reply, limit, self.o.memory_mib);
+            return None;
+        };
+        if let Some(why) = v["staging"].as_str() {
+            eprintln!(
+                "shader_fuzz: {}: can't stage the shrunk case: {why}",
+                found.case.pack
+            );
+        }
+        let s = &v["shrunk"];
+        Some(Summary {
+            steps: strings(&s["steps"]),
+            files: strings(&s["files"]),
+            lines: s["lines"].as_u64()? as usize,
+        })
+    }
+}
+
+/// What every thread of a run shares.
+struct Run<'a> {
+    o: &'a Options,
+    next: AtomicU64,
+    started: Instant,
+    found: Mutex<Vec<Found>>,
+    done: AtomicU64,
+    skipped: AtomicU64,
+}
+
+impl<'a> Run<'a> {
+    fn new(o: &'a Options) -> Self {
+        Self {
+            o,
+            next: AtomicU64::new(0),
+            started: Instant::now(),
+            found: Mutex::new(Vec::new()),
+            done: AtomicU64::new(0),
+            skipped: AtomicU64::new(0),
+        }
+    }
+
+    /// The run's cases through `cases`, until none are left: the smoke cases, the case
+    /// `--replay` names, or generated ones until `--count` of them or `--budget` ends,
+    /// whichever comes first.
+    fn cases(&self, cases: &mut dyn Cases) {
+        loop {
+            let i = self.next.fetch_add(1, Ordering::Relaxed);
+            let id = if self.o.smoke {
+                CaseId::Smoke(i as usize)
+            } else if let Some(id) = self.o.replay {
+                if i > 0 {
+                    break;
+                }
+                id
+            } else {
+                let over = self.o.budget.is_some_and(|b| self.started.elapsed() >= b);
+                if self.o.count.is_some_and(|count| i >= count) || over {
+                    break;
+                }
+                CaseId::Seed(cases::case_seed(self.o.seed, i))
+            };
+            let found = match cases.run(id) {
+                Ran::Found(found) => found,
+                // Past the last of `--smoke`'s cases, they end; the one case a replay names is
+                // skipped, with why, as any other.
+                Ran::Past(_) if self.o.replay.is_none() => break,
+                Ran::Skipped(why) | Ran::Past(why) => {
+                    eprintln!("shader_fuzz: case {id}: {why}; skipped");
+                    self.skipped.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                }
+            };
+            self.found.lock().unwrap().extend(found);
+            let done = self.done.fetch_add(1, Ordering::Relaxed) + 1;
+            if done.is_multiple_of(100) {
+                println!(
+                    "{done} cases, {} failures, {:.0} s",
+                    self.found.lock().unwrap().len(),
+                    self.started.elapsed().as_secs_f64()
+                );
+            }
+        }
+    }
+}
+
+/// A group's report entry; its shrunk case (`shrunk`, written in `dir` by the shrinker) and
+/// `case.txt` in `dir`.
 fn write_group(
+    o: &Options,
     dir: &Path,
     name: &str,
     members: &[Found],
-    shrunk: &shrink::Shrunk,
+    shrunk: Option<&Summary>,
 ) -> serde_json::Value {
     let first = &members[0];
-    output(dir, write_pack(dir, &shrunk.files));
-    let steps: Vec<String> = shrunk
-        .steps
-        .iter()
-        .map(|s| format!("{} {}", s.kind.name(), s.file))
-        .collect();
-    let lines = shrunk
-        .files
-        .values()
-        .map(|b| b.split(|&c| c == b'\n').filter(|l| !l.is_empty()).count())
-        .sum::<usize>();
+    let replay = replay_args(o, first.id);
+    output(dir, std::fs::create_dir_all(dir));
+    let (steps, files, lines) = match shrunk {
+        Some(s) => (s.steps.clone(), s.files.clone(), s.lines),
+        None => (Vec::new(), Vec::new(), 0),
+    };
+    let dimension = first.case.dim.map(|d| cases::DIMENSIONS[d].0);
+    let terrain = first.case.flat.map(|f| if f { "flat" } else { "grid" });
     let summary = format!(
-        "group: {name}\nreplay: --replay {}\npack: {}\nprograms: {}\ndimension: {}\nterrain: {}\nsteps: {}\n",
-        first.case.seed,
+        "group: {name}\nreplay: {}\npack: {}\nprograms: {}\ndimension: {}\nterrain: {}\nsteps: {}\n",
+        shell_line(&replay),
         first.case.pack,
         first.case.programs.join(" "),
-        cases::DIMENSIONS[first.case.dim].0,
-        if first.case.flat { "flat" } else { "grid" },
-        steps.join(", "),
+        dimension.unwrap_or("?"),
+        terrain.unwrap_or("?"),
+        if shrunk.is_some() {
+            steps.join(", ")
+        } else {
+            "? (the case could not be made again to shrink)".to_owned()
+        },
     );
     let summary_path = dir.join("case.txt");
     output(&summary_path, std::fs::write(&summary_path, summary));
@@ -618,96 +1056,66 @@ fn write_group(
         "step": first.step,
         "detail": first.failure.detail,
         "count": members.len(),
-        "seeds": members.iter().take(20).map(|m| m.case.seed).collect::<Vec<_>>(),
-        "replay": first.case.seed,
+        "cases": members.iter().take(20).map(|m| m.id.to_string()).collect::<Vec<_>>(),
+        "replay": first.id.to_string(),
+        "replay_args": replay,
         "pack": first.case.pack,
         "programs": first.case.programs,
-        "dimension": cases::DIMENSIONS[first.case.dim].0,
+        "dimension": dimension,
         "flat": first.case.flat,
         "steps": steps,
-        "files": shrunk.files.keys().collect::<Vec<_>>(),
+        "files": files,
         "lines": lines,
         "dir": dir,
     })
 }
 
-fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.first().map(String::as_str) == Some("worker") {
-        let mib = args.get(1).and_then(|m| m.parse().ok()).unwrap_or(2048);
-        return worker(mib);
-    }
-    let mut o = match options(&args) {
-        Ok(o) => o,
-        Err(e) => {
-            eprintln!("shader_fuzz: {e}");
-            std::process::exit(2);
+/// The run `o` asks for, its report written: the exit code, 1 when any case fails.
+fn fuzz(o: &Options) -> i32 {
+    let mut index = cases::index(&o.seeds, o.corpus.as_deref());
+    // A case process is told its packs' paths as text.
+    index.retain(|e| {
+        let text = e.path.to_str().is_some();
+        if !text {
+            eprintln!(
+                "shader_fuzz: corpus: {}: not a UTF-8 path, left out",
+                e.path.display()
+            );
         }
-    };
-    if !args.iter().any(|arg| arg == "--work-dir") {
-        o.work = output(&o.work, default_folder(&o.work));
-    }
-    output(&o.work, claim_folder(&o.work));
-    let corpus = cases::corpus(o.corpus.as_deref());
-    let names: Vec<&str> = corpus.iter().map(|s| s.name.as_str()).collect();
+        text
+    });
+    let names: Vec<&str> = index.iter().map(|s| s.name.as_str()).collect();
     println!("corpus: {}", names.join(", "));
-    let fixed: Vec<Case> = if o.smoke {
-        smoke(&corpus)
-    } else if let Some(seed) = o.replay {
-        vec![cases::generate(&corpus, seed, true).expect("the seed makes a case with this corpus")]
-    } else {
-        Vec::new()
-    };
-    let run = Run {
-        corpus: &corpus,
-        o: &o,
-        next: AtomicU64::new(0),
-        started: Instant::now(),
-        bases: Mutex::new(HashMap::new()),
-        found: Mutex::new(Vec::new()),
-        done: AtomicU64::new(0),
-    };
-    let worker = |n: usize| Worker {
-        dir: o.work.join(format!("worker{n}")),
-        memory_mib: o.memory_mib,
-        time_limit: o.time_limit,
-        running: None,
-    };
+    let run = Run::new(o);
+    // How each case process ended once its cases did: closed, and waited for.
+    let processes = Mutex::new(Vec::new());
     std::thread::scope(|scope| {
         for n in 0..o.jobs {
-            let (run, fixed, mut ev) = (&run, &fixed, worker(n));
-            scope.spawn(move || run.cases(&mut ev, fixed));
+            let (run, processes, mut cases) = (&run, &processes, Remote::new(&index, o, n));
+            scope.spawn(move || {
+                run.cases(&mut cases);
+                processes.lock().unwrap().extend(cases.finish());
+            });
         }
     });
     let elapsed = run.started.elapsed();
     let found = run.found.into_inner().unwrap();
     let failing = found.len();
     let groups: Vec<(String, Vec<Found>)> = shrink::group(found).into_iter().collect();
-    // Each group's smallest case, shrunk; the groups share the workers.
+    // Each group's smallest case, shrunk; the groups share the case processes.
     let next = AtomicUsize::new(0);
     let entries: Mutex<BTreeMap<usize, serde_json::Value>> = Mutex::new(BTreeMap::new());
     std::thread::scope(|scope| {
         for n in 0..o.jobs.min(groups.len()) {
-            let (groups, next, entries, mut ev, o) = (&groups, &next, &entries, worker(n), &o);
+            let (groups, next, entries, processes) = (&groups, &next, &entries, &processes);
+            let mut cases = Remote::new(&index, o, n);
             scope.spawn(move || {
                 loop {
                     let i = next.fetch_add(1, Ordering::Relaxed);
                     let Some((name, members)) = groups.get(i) else {
                         break;
                     };
-                    let first = &members[0];
-                    let budget = Budget {
-                        evals: 4000,
-                        until: Instant::now() + o.shrink,
-                    };
-                    let shrunk = shrink::shrink(
-                        &mut ev,
-                        &first.case,
-                        &first.request,
-                        &first.failure.signature(),
-                        budget,
-                    );
-                    let group = format!("{:02}-{}", i + 1, first.failure.invariant);
+                    let group = format!("{:02}-{}", i + 1, members[0].failure.invariant);
                     let base = o.work.join("groups");
                     if !safe_component(&group) || group.contains('/') {
                         output(
@@ -719,16 +1127,24 @@ fn main() {
                         );
                     }
                     let dir = base.join(group);
-                    let entry = write_group(&dir, name, members, &shrunk);
+                    let shrunk = cases.shrink(&members[0], o.shrink, &dir);
+                    let entry = write_group(o, &dir, name, members, shrunk.as_ref());
                     entries.lock().unwrap().insert(i, entry);
                 }
+                processes.lock().unwrap().extend(cases.finish());
             });
         }
     });
     let entries: Vec<serde_json::Value> = entries.into_inner().unwrap().into_values().collect();
+    let (done, skipped) = (
+        run.done.load(Ordering::Relaxed),
+        run.skipped.load(Ordering::Relaxed),
+    );
     let report = serde_json::json!({
         "seed": o.seed,
-        "cases": run.done.load(Ordering::Relaxed),
+        "cases": done,
+        "skipped": skipped,
+        "processes": processes.into_inner().unwrap(),
         "failing": failing,
         "seconds": elapsed.as_secs(),
         "corpus": names,
@@ -741,25 +1157,59 @@ fn main() {
         std::fs::write(&path, serde_json::to_string_pretty(&report).unwrap() + "\n"),
     );
     println!(
-        "{} cases in {:.0} s: {failing} failures in {} groups",
-        report["cases"],
+        "{done} cases ({skipped} skipped) in {:.0} s: {failing} failures in {} groups",
         elapsed.as_secs_f64(),
         entries.len()
     );
     for g in &entries {
         println!(
-            "  {:4}  {}  (replay: --replay {}, {} lines in {})",
+            "  {:4}  {}  (replay: {}, {} lines in {})",
             g["count"],
             g["group"].as_str().unwrap_or(""),
-            g["replay"],
+            shell_line(&strings(&g["replay_args"])),
             g["lines"],
             g["dir"].as_str().unwrap_or("")
         );
     }
     println!("report: {}", path.display());
-    if !entries.is_empty() {
-        std::process::exit(1);
+    // A run that ran no case checked nothing: not a pass.
+    if done == 0 {
+        println!("no case ran");
     }
+    i32::from(!entries.is_empty() || done == 0)
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match args.first().map(String::as_str) {
+        Some("worker") => {
+            let mib = args.get(1).and_then(|m| m.parse().ok()).unwrap_or(2048);
+            return worker(mib);
+        }
+        Some("case") => return case_process(),
+        _ => {}
+    }
+    let mut o = match options(&args) {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("shader_fuzz: {e}");
+            std::process::exit(2);
+        }
+    };
+    // The replay commands name the corpus and a given seed pack as paths from anywhere.
+    let full = |path: PathBuf| match std::fs::canonicalize(&path) {
+        Ok(full) if full.to_str().is_some() => full,
+        _ => path,
+    };
+    o.corpus = o.corpus.map(full);
+    if args.iter().any(|arg| arg == "--seed-pack") {
+        o.seeds = full(o.seeds);
+    }
+    if !args.iter().any(|arg| arg == "--work-dir") {
+        o.work = output(&o.work, default_folder(&o.work));
+    }
+    output(&o.work, claim_folder(&o.work));
+    std::process::exit(fuzz(&o));
 }
 
 #[cfg(test)]
@@ -830,24 +1280,28 @@ mod tests {
         o
     }
 
-    fn run_with<'a>(corpus: &'a [Source], o: &'a Options) -> Run<'a> {
-        Run {
-            corpus,
-            o,
-            next: AtomicU64::new(0),
-            started: Instant::now(),
-            bases: Mutex::new(HashMap::new()),
-            found: Mutex::new(Vec::new()),
-            done: AtomicU64::new(0),
+    fn local<'a, E: Evaluate>(index: &'a [Entry], ev: E) -> Local<'a, E> {
+        Local {
+            index,
+            runner: Runner::new(ev, 16 << 20),
+        }
+    }
+
+    /// A folder pack at `dir` with `files` in its `shaders` folder.
+    fn write_folder_pack(dir: &Path, files: &[(&str, &[u8])]) {
+        for (path, bytes) in files {
+            let file = dir.join("shaders").join(path);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, bytes).unwrap();
         }
     }
 
     #[test]
     fn the_seed_pack_holds_every_invariant() {
-        let corpus = cases::corpus(None);
+        let index = cases::index(&cases::seed_pack(), None);
         let dir = temp();
         let mut ev = InProcess { dir: dir.clone() };
-        let all = smoke(&corpus);
+        let all = cases::smoke(&index).unwrap();
         let together = all.iter().find(|c| c.programs.len() == 7).unwrap();
         let outcome = ev.eval(
             &together.files,
@@ -879,18 +1333,276 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|a| (*a).to_owned()).collect()
+    }
+
+    /// The cases a run of `list` generates through cases that pass at once, until the run
+    /// stops or `fake_end` were made (then the fake ends it, as past the last smoke case does).
+    fn generated(list: &[&str], fake_end: usize) -> Vec<CaseId> {
+        struct Fake(Vec<CaseId>, usize);
+        impl Cases for Fake {
+            fn run(&mut self, id: CaseId) -> Ran {
+                if self.0.len() == self.1 {
+                    return Ran::Past(String::new());
+                }
+                self.0.push(id);
+                Ran::Found(Vec::new())
+            }
+
+            fn shrink(&mut self, _: &Found, _: Duration, _: &Path) -> Option<Summary> {
+                None
+            }
+        }
+        let o = options(&args(list)).unwrap();
+        let run = Run::new(&o);
+        let mut fake = Fake(Vec::new(), fake_end);
+        run.cases(&mut fake);
+        assert_eq!(run.done.load(Ordering::Relaxed), fake.0.len() as u64);
+        fake.0
+    }
+
+    /// `--budget` alone is not capped by a count: the run goes on until the budget ends (here
+    /// an hour, so the fake ends it at 500). 200 cases only when neither control is given.
+    #[test]
+    fn budget_alone_runs_until_the_budget_ends() {
+        let seeds = |n: u64| {
+            (0..n)
+                .map(|i| CaseId::Seed(cases::case_seed(1, i)))
+                .collect()
+        };
+        let ids: Vec<CaseId> = seeds(500);
+        assert_eq!(generated(&["--budget", "3600"], 500), ids);
+        assert_eq!(generated(&[], 500), seeds(200));
+        assert_eq!(generated(&["--count", "7"], 500), seeds(7));
+        assert_eq!(
+            generated(&["--count", "7", "--budget", "3600"], 500),
+            seeds(7)
+        );
+        assert_eq!(generated(&["--budget", "0"], 500), []);
+        // A budget already spent stops a run whatever its count.
+        let o = options(&args(&["--count", "9", "--budget", "5"])).unwrap();
+        let mut run = Run::new(&o);
+        run.started = Instant::now().checked_sub(Duration::from_secs(6)).unwrap();
+        struct Never;
+        impl Cases for Never {
+            fn run(&mut self, id: CaseId) -> Ran {
+                panic!("{id} made past the budget")
+            }
+
+            fn shrink(&mut self, _: &Found, _: Duration, _: &Path) -> Option<Summary> {
+                None
+            }
+        }
+        run.cases(&mut Never);
+        assert_eq!(run.done.load(Ordering::Relaxed), 0);
+    }
+
+    /// `--replay` takes what a report gives: a generated case's seed, or a smoke case by its
+    /// place; anything else is refused.
+    #[test]
+    fn replay_names_a_generated_or_a_smoke_case() {
+        let replay = |id: &str| options(&args(&["--replay", id])).map(|o| o.replay);
+        assert_eq!(replay("0"), Ok(Some(CaseId::Seed(0))));
+        assert_eq!(
+            replay("18446744073709551615"),
+            Ok(Some(CaseId::Seed(u64::MAX)))
+        );
+        assert_eq!(replay("smoke:3"), Ok(Some(CaseId::Smoke(3))));
+        for bad in [
+            "",
+            "smoke:",
+            "smoke:x",
+            "smoke:3:4",
+            "smoke:-1",
+            "-1",
+            "+1",
+            "0x1",
+            " 1",
+            "1 ",
+            "18446744073709551616",
+            "Smoke:1",
+            "seed:1",
+        ] {
+            assert!(replay(bad).is_err(), "{bad:?}");
+        }
+        assert_eq!(CaseId::Seed(1234).to_string(), "1234");
+        assert_eq!(CaseId::Smoke(5).to_string(), "smoke:5");
+        // The smoke case replayed is the smoke run's own, not the case seed 0 generates.
+        let index = cases::index(&cases::seed_pack(), None);
+        let smoke = cases::smoke(&index).unwrap();
+        assert!(smoke.len() > 3);
+        for (n, case) in smoke.iter().enumerate() {
+            assert_eq!(
+                cases::sample(&index, CaseId::Smoke(n)).as_ref().ok(),
+                Some(case)
+            );
+        }
+        let seed0 = cases::sample(&index, CaseId::Seed(0)).unwrap();
+        assert!(!seed0.steps.is_empty());
+        assert!(smoke.iter().all(|c| c.steps.is_empty()));
+    }
+
+    /// A group's replay arguments keep what decides its case and its failures: the corpus a
+    /// generated case is drawn from (not a smoke case's: the seed pack only), the run's own seed
+    /// pack (both kinds: the smoke cases' programs, a generated case's first pack), and the run's
+    /// time, memory and size limits, defaults or not. The line quotes what the shell would split.
+    #[test]
+    fn replay_arguments_keep_the_corpus_and_the_limits() {
+        let o = options(&args(&[
+            "--corpus",
+            "/packs/my packs",
+            "--time-limit",
+            "31",
+            "--memory-limit",
+            "777",
+            "--size-limit",
+            "5",
+            "--seed",
+            "9",
+            "--jobs",
+            "3",
+        ]))
+        .unwrap();
+        let seed = replay_args(&o, CaseId::Seed(42));
+        assert_eq!(
+            seed,
+            args(&[
+                "--replay",
+                "42",
+                "--corpus",
+                "/packs/my packs",
+                "--time-limit",
+                "31",
+                "--memory-limit",
+                "777",
+                "--size-limit",
+                "5"
+            ])
+        );
+        assert_eq!(
+            shell_line(&seed),
+            "--replay 42 --corpus '/packs/my packs' --time-limit 31 --memory-limit 777 \
+             --size-limit 5"
+        );
+        assert_eq!(
+            replay_args(&o, CaseId::Smoke(2)),
+            args(&[
+                "--replay",
+                "smoke:2",
+                "--time-limit",
+                "31",
+                "--memory-limit",
+                "777",
+                "--size-limit",
+                "5"
+            ])
+        );
+        // Replayed, the arguments are the run's case and limits again.
+        let again = options(&seed).unwrap();
+        assert_eq!(again.replay, Some(CaseId::Seed(42)));
+        assert_eq!(again.corpus, o.corpus);
+        assert_eq!(
+            (again.time_limit, again.memory_mib, again.size_limit),
+            (o.time_limit, o.memory_mib, o.size_limit)
+        );
+        assert_eq!(
+            shell_line(&args(&[
+                "it's",
+                "$HOME",
+                "a\"b",
+                "",
+                "plain-1.0/x=y,z:@%+_"
+            ])),
+            r#"'it'"'"'s' '$HOME' 'a"b' '' plain-1.0/x=y,z:@%+_"#
+        );
+        // A run's own seed pack is in every case's arguments, and replays as that seed pack.
+        let own = options(&args(&[
+            "--seed-pack",
+            "/packs/my seeds",
+            "--corpus",
+            "/packs/c",
+        ]))
+        .unwrap();
+        let seed = replay_args(&own, CaseId::Seed(7));
+        assert_eq!(
+            seed,
+            args(&[
+                "--replay",
+                "7",
+                "--seed-pack",
+                "/packs/my seeds",
+                "--corpus",
+                "/packs/c",
+                "--time-limit",
+                "20",
+                "--memory-limit",
+                "2048",
+                "--size-limit",
+                "16"
+            ])
+        );
+        assert_eq!(
+            replay_args(&own, CaseId::Smoke(0)),
+            args(&[
+                "--replay",
+                "smoke:0",
+                "--seed-pack",
+                "/packs/my seeds",
+                "--time-limit",
+                "20",
+                "--memory-limit",
+                "2048",
+                "--size-limit",
+                "16"
+            ])
+        );
+        assert_eq!(
+            options(&seed).unwrap().seeds,
+            PathBuf::from("/packs/my seeds")
+        );
+    }
+
+    /// A smoke case that is skipped (its pack could not be staged) doesn't end the smoke cases:
+    /// only the first past the last does.
+    #[test]
+    fn a_skipped_smoke_case_does_not_end_the_run() {
+        struct Fake(Vec<CaseId>);
+        impl Cases for Fake {
+            fn run(&mut self, id: CaseId) -> Ran {
+                self.0.push(id);
+                match id {
+                    CaseId::Smoke(0) => Ran::Skipped("seeds: can't stage the pack".into()),
+                    CaseId::Smoke(n) if n < 3 => Ran::Found(Vec::new()),
+                    _ => Ran::Past(String::new()),
+                }
+            }
+
+            fn shrink(&mut self, _: &Found, _: Duration, _: &Path) -> Option<Summary> {
+                None
+            }
+        }
+        let mut o = opts(temp());
+        o.smoke = true;
+        let run = Run::new(&o);
+        let mut fake = Fake(Vec::new());
+        run.cases(&mut fake);
+        assert_eq!(fake.0, (0..4).map(CaseId::Smoke).collect::<Vec<_>>());
+        assert_eq!(run.done.load(Ordering::Relaxed), 2);
+        assert_eq!(run.skipped.load(Ordering::Relaxed), 1);
+    }
+
     #[test]
     fn fixed_seeds_hold_every_invariant() {
-        let corpus = cases::corpus(None);
+        let index = cases::index(&cases::seed_pack(), None);
         let dir = temp();
         let mut o = opts(dir.clone());
         // Run seed 2: cases of every kind of step that hold, quick enough to run in-process
         // (without the worker's time and memory bounds).
         o.seed = 2;
-        o.count = 4;
-        let run = run_with(&corpus, &o);
-        let mut ev = InProcess { dir: dir.join("w") };
-        run.cases(&mut ev, &[]);
+        o.count = Some(4);
+        let run = Run::new(&o);
+        run.cases(&mut local(&index, InProcess { dir: dir.join("w") }));
         assert_eq!(run.done.load(Ordering::Relaxed), 4);
         let found = run.found.into_inner().unwrap();
         assert!(
@@ -898,6 +1610,250 @@ mod tests {
             "{:?}",
             found.iter().map(Found::group).collect::<Vec<_>>()
         );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The render-driving outputs of a load: every program's modules, interfaces and settings,
+    /// the notes, and the pack's textures, buffer sizes, buffer objects, images, custom
+    /// uniforms, buffer formats and shadow pass. (`Custom` itself holds hash maps, whose `Debug`
+    /// order is not the same twice.)
+    fn outputs(post: &sunrise_shaders::Post) -> Vec<String> {
+        let seen = check::observe(post);
+        let mut out: Vec<String> = seen
+            .pieces
+            .iter()
+            .map(|(label, hash)| format!("{label} {hash}"))
+            .collect();
+        out.extend([
+            format!("{:?}", seen.loaded),
+            format!("{:?}", seen.notes),
+            format!("{:?}", post.textures),
+            format!("{:?}", post.sizes),
+            format!("{:?}", post.buffer_objects),
+            format!("{:?}", post.images),
+            format!("{:?}", post.custom.uniforms().collect::<Vec<_>>()),
+            format!("{:?}", post.custom.notes),
+            format!("{:?}", post.config),
+            format!("{:?}", post.shadow_pass),
+        ]);
+        out
+    }
+
+    /// The pack at `full` loaded as a case on `programs` (dimension 0, flat terrain, no step)
+    /// loads it, and as the pack itself loads: both, with their render-driving outputs equal.
+    fn unmutated(full: &Path, programs: &[&str]) -> sunrise_shaders::Post {
+        let source = cases::Source::open(full).unwrap();
+        let programs = programs.iter().map(|p| (*p).to_owned()).collect();
+        let case = Case::unmutated(&source, 0, 0, true, programs);
+        let sample = full.with_extension("case");
+        write_pack(&sample, &case.materialize()).unwrap();
+        let request = Request {
+            dim: 0,
+            flat: true,
+            expect: Vec::new(),
+            size_limit: 16 << 20,
+        };
+        let (whole, part) = (check::load(full, &request), check::load(&sample, &request));
+        assert_eq!(outputs(&part), outputs(&whole));
+        part
+    }
+
+    /// The loader reads, for `composite`: an include with a comment after it, a raw custom
+    /// texture and its `.mcmeta`, a buffer object's file, and an option that a stage file of
+    /// another (incomplete) program declares, which `shaders.properties` tests. A case on
+    /// `composite` keeps them all, and loads exactly as the whole pack does.
+    #[test]
+    fn an_unmutated_sample_loads_as_the_full_pack() {
+        let dir = temp();
+        let full = dir.join("full");
+        let properties: &[u8] = b"\
+customTexture.fzNoise = tex/fz.dat TEXTURE_2D RGBA8 2 2 RGBA UNSIGNED_BYTE
+bufferObject.1 = 16 data/fz.bin
+#ifdef FZ_HALF
+size.buffer.colortex2 = 0.5 0.5
+#endif
+";
+        let composite = b"#version 120
+
+#include \"/lib/a.glsl\" // the shared part
+
+uniform sampler2D colortex0;
+varying vec2 texcoord;
+
+void main() {
+#ifdef FZ_HALF
+    gl_FragData[0] = texture2D(colortex0, texcoord) * fz_a();
+#endif
+}
+";
+        let vertex: &[u8] = b"#version 120
+
+varying vec2 texcoord;
+
+void main() {
+    gl_Position = ftransform();
+    texcoord = gl_MultiTexCoord0.xy;
+}
+";
+        let water_fragment = b"#version 120
+
+#define FZ_HALF
+
+uniform sampler2D colortex0;
+varying vec2 texcoord;
+
+void main() {
+    gl_FragData[0] = texture2D(colortex0, texcoord);
+}
+";
+        write_folder_pack(
+            &full,
+            &[
+                ("shaders.properties", properties),
+                ("composite.vsh", vertex),
+                ("composite.fsh", composite),
+                ("lib/a.glsl", b"float fz_a() { return 0.5; }\n"),
+                ("gbuffers_water.fsh", water_fragment),
+                ("tex/fz.dat", &[7u8; 16]),
+                ("tex/fz.dat.mcmeta", br#"{"texture": {"blur": true}}"#),
+                ("data/fz.bin", &[1u8; 16]),
+            ],
+        );
+        let part = unmutated(&full, &["composite"]);
+        // What each input gave: `composite` loaded with its include, the texture blurred, the
+        // buffer filled, colortex2 at half size.
+        assert_eq!(check::observe(&part).loaded, ["composite"]);
+        assert_eq!(part.textures.len(), 1);
+        assert_eq!(part.textures[0].name, "fzNoise");
+        let sunrise_shaders::TextureSource::Image(texture) = &part.textures[0].source else {
+            panic!("a texture from the pack's file");
+        };
+        assert!(texture.blur);
+        assert_eq!(
+            part.buffer_objects.get(&1),
+            Some(&sunrise_shaders::BufferObject::File {
+                bytes: 16,
+                path: "data/fz.bin".into(),
+                data: vec![1; 16],
+            })
+        );
+        assert_eq!(
+            part.sizes[2],
+            Some(sunrise_shaders::BufferSize::Relative([0.5, 0.5]))
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// What other programs decide for a case's program stays: `composite` sampling
+    /// `shadowtex0` turns the shadow pass on (no `shadow.enabled`), so a case on `shadow` loads
+    /// it; `gbuffers_terrain_solid` splits terrain, so a case on `gbuffers_terrain` draws the
+    /// cutout part with it.
+    #[test]
+    fn a_sample_keeps_what_the_other_programs_decide() {
+        let dir = temp();
+        let vertex: &[u8] =
+            b"#version 120\nvarying vec2 texcoord;\nvoid main() {\n    gl_Position = ftransform();\n    texcoord = gl_MultiTexCoord0.xy;\n}\n";
+        let reads = |sampler: &str| {
+            format!(
+                "#version 120\nuniform sampler2D {sampler};\nvarying vec2 texcoord;\nvoid main() {{\n    gl_FragData[0] = texture2D({sampler}, texcoord);\n}}\n"
+            )
+            .into_bytes()
+        };
+        let shadows = dir.join("shadows");
+        let (shadowtex, colortex) = (reads("shadowtex0"), reads("colortex0"));
+        write_folder_pack(
+            &shadows,
+            &[
+                ("composite.vsh", vertex),
+                ("composite.fsh", &shadowtex),
+                ("shadow.vsh", vertex),
+                ("shadow.fsh", &colortex),
+            ],
+        );
+        let part = unmutated(&shadows, &["shadow"]);
+        assert!(part.shadow_pass);
+        assert_eq!(
+            part.shadow.as_ref().map(|p| p.name.as_str()),
+            Some("shadow")
+        );
+        let terrain = dir.join("terrain");
+        let texture = reads("gtexture");
+        write_folder_pack(
+            &terrain,
+            &[
+                ("gbuffers_terrain.vsh", vertex),
+                ("gbuffers_terrain.fsh", &texture),
+                ("gbuffers_terrain_solid.vsh", vertex),
+                ("gbuffers_terrain_solid.fsh", &texture),
+            ],
+        );
+        let part = unmutated(&terrain, &["gbuffers_terrain"]);
+        let name = |p: &Option<sunrise_shaders::PostProgram>| p.as_ref().map(|p| p.name.clone());
+        assert_eq!(
+            name(&part.terrain).as_deref(),
+            Some("gbuffers_terrain_solid")
+        );
+        assert_eq!(
+            name(&part.terrain_cutout).as_deref(),
+            Some("gbuffers_terrain")
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// `separateAo = true` gives terrain the game's inputs with each vertex's own ambient
+    /// occlusion in its colour's alpha (`PackAtlas::terrain_inputs_sized`'s `separate_ao`).
+    #[test]
+    fn separate_ao_comes_from_the_pack() {
+        let dir = temp();
+        let seeds = cases::index(&cases::seed_pack(), None)
+            .remove(0)
+            .path
+            .join("shaders");
+        let read = |name: &str| std::fs::read(seeds.join(name)).unwrap();
+        let (vertex, fragment) = (read("gbuffers_terrain.vsh"), read("gbuffers_terrain.fsh"));
+        write_folder_pack(
+            &dir,
+            &[
+                ("shaders.properties", b"separateAo = true\n"),
+                ("gbuffers_terrain.vsh", &vertex),
+                ("gbuffers_terrain.fsh", &fragment),
+            ],
+        );
+        let request = Request {
+            dim: 0,
+            flat: false,
+            expect: Vec::new(),
+            size_limit: 16 << 20,
+        };
+        let terrain = |post: &sunrise_shaders::Post| {
+            let program = post.terrain.as_ref().expect("terrain loads");
+            format!("{:?}", program.program.as_ref().unwrap().vertex)
+        };
+        let pack = sunrise_shaders::Pack::open(&dir).unwrap();
+        let with = |separate_ao: bool| {
+            let mut macros = sunrise_shaders::Macros::standard();
+            macros.define_renderer(4);
+            let (properties, _) = sunrise_shaders::read_properties(&pack, &mut macros);
+            let atlas = sunrise_render_shaderpack::pack_atlas::PackAtlas::terrain_inputs_sized(
+                [1024, 1024],
+                64,
+                16,
+                separate_ao,
+                sunrise_render_shaderpack::pack_atlas::TerrainDraws::Attributes,
+            );
+            let inputs =
+                sunrise_render_shaderpack::pack_atlas::game_inputs(Some(atlas), false, &[3, 4]);
+            terrain(&sunrise_shaders::load_post(
+                &pack,
+                "",
+                &properties,
+                &macros,
+                &inputs,
+            ))
+        };
+        let loaded = terrain(&check::load(&dir, &request));
+        assert_eq!(loaded, with(true));
+        assert_ne!(loaded, with(false));
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -928,23 +1884,24 @@ mod tests {
         }
     }
 
-    fn shrunk(ev: &mut dyn Evaluate, first: &Found) -> shrink::Shrunk {
+    fn shrunk(ev: &mut dyn Evaluate, index: &[Entry], first: &Found) -> shrink::Shrunk {
         let budget = Budget {
             evals: 10_000,
             until: Instant::now() + Duration::from_secs(60),
         };
+        let case = cases::sample(index, first.id).unwrap();
         let signature = first.failure.signature();
-        shrink::shrink(ev, &first.case, &first.request, &signature, budget)
+        shrink::shrink(ev, &case, &first.request, &signature, budget)
     }
 
     #[test]
     fn a_planted_failure_is_shrunk_and_grouped() {
-        let corpus = cases::corpus(None);
+        let index = cases::index(&cases::seed_pack(), None);
         let mut o = opts(temp());
-        o.count = 1000;
-        let run = run_with(&corpus, &o);
+        o.count = Some(1000);
+        let run = Run::new(&o);
         let mut ev = planted;
-        run.cases(&mut ev, &[]);
+        run.cases(&mut local(&index, ev));
         let groups = shrink::group(run.found.into_inner().unwrap());
         let (refusals, others): (Vec<_>, Vec<_>) = groups
             .iter()
@@ -959,7 +1916,7 @@ mod tests {
         for (name, members) in others {
             assert!(members.len() > 1, "{name}");
             let first = &members[0];
-            let shrunk = shrunk(&mut ev, first);
+            let shrunk = shrunk(&mut ev, &index, first);
             // One step, one file, one line: the planted declaration.
             assert_eq!(shrunk.steps.len(), 1, "{name}");
             assert_eq!(shrunk.steps[0].kind, cases::Kind::Declaration);
@@ -972,8 +1929,8 @@ mod tests {
             };
             assert_eq!(text, line);
             // The replay seed makes the same case, which fails the same way.
-            let again = cases::generate(&corpus, first.case.seed, true).unwrap();
-            assert_eq!(again, first.case);
+            let again = cases::generate(&index, first.case.seed, true).unwrap();
+            assert_eq!(Ok(&again), cases::sample(&index, first.id).as_ref());
             assert!(
                 planted(&again.materialize(), &first.request)
                     .failures
@@ -984,7 +1941,7 @@ mod tests {
         assert!(!refusals.is_empty());
         for (name, members) in refusals {
             assert!(name.ends_with("|composite: not loaded, no note"), "{name}");
-            let shrunk = shrunk(&mut ev, &members[0]);
+            let shrunk = shrunk(&mut ev, &index, &members[0]);
             // Both stage files stay, neither empty, one with the line a step wrote: without
             // them `composite` would be missing, not refused.
             assert_eq!(
@@ -1008,12 +1965,13 @@ mod tests {
 
     #[test]
     fn a_step_on_another_programs_file_expects_nothing() {
-        let corpus = cases::corpus(None);
+        let index = cases::index(&cases::seed_pack(), None);
         let base = Outcome {
             loaded: vec!["composite".into(), "final".into()],
             ..Default::default()
         };
-        let mut case = smoke(&corpus)
+        let mut case = cases::smoke(&index)
+            .unwrap()
             .into_iter()
             .find(|c| c.programs.len() == 7)
             .unwrap();
@@ -1031,12 +1989,56 @@ mod tests {
     }
 
     #[test]
-    fn worker_lines_round_trip() {
+    fn process_lines_round_trip() {
         let outcome = Outcome {
             failures: vec![Failure::new("naga", "composite: x")],
             loaded: vec!["composite".into()],
             shadow_pass: true,
         };
         assert_eq!(parse_outcome(&outcome_json(&outcome)), Some(outcome));
+        for (id, case) in [
+            (
+                CaseId::Seed(u64::MAX),
+                Info {
+                    seed: u64::MAX,
+                    pack: "P \"1\".zip".into(),
+                    dim: Some(2),
+                    flat: Some(false),
+                    programs: vec!["composite1".into(), "final".into()],
+                    bytes: 1234,
+                    steps: 6,
+                },
+            ),
+            (
+                CaseId::Smoke(3),
+                Info {
+                    seed: 0,
+                    pack: "seeds".into(),
+                    dim: None,
+                    flat: None,
+                    programs: Vec::new(),
+                    bytes: 0,
+                    steps: 0,
+                },
+            ),
+        ] {
+            let found = Found {
+                id,
+                case,
+                request: Request {
+                    dim: 2,
+                    flat: false,
+                    expect: vec!["final".into()],
+                    size_limit: 16 << 20,
+                },
+                failure: Failure::new("memory", "over 64 MiB"),
+                step: "sample".into(),
+            };
+            let line = found_value(&found).to_string();
+            assert_eq!(
+                parse_found(&serde_json::from_str(&line).unwrap()),
+                Some(found)
+            );
+        }
     }
 }

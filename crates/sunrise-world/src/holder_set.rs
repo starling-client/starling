@@ -8,81 +8,115 @@ use serde_json::Value;
 use std::collections::BTreeSet;
 
 /// One registry, as a reader binds it: what an id and a tag resolve to.
-pub trait HolderLookup {
+pub trait HolderLookup<E = String> {
     type Id: Ord + Clone;
     /// The registry's entry noun in errors (`biome`, `block`, `item`...).
     fn what(&self) -> &str;
     /// The members one entry id stands for (a block stands for all its states).
-    fn entry(&self, id: &str) -> Result<Vec<Self::Id>, String>;
+    fn entry(&self, id: &str) -> Result<Vec<Self::Id>, E>;
     /// A tag's members; `tag` has no `#`.
-    fn tag(&self, tag: &str) -> Result<Vec<Self::Id>, String>;
+    fn tag(&self, tag: &str) -> Result<Vec<Self::Id>, E>;
     /// Every entry: what `any` holds and what `not` takes its value from.
-    fn all(&self) -> Result<Vec<Self::Id>, String>;
+    fn all(&self) -> Result<Vec<Self::Id>, E>;
 }
 
 /// The members `value` names in `lookup`'s registry, in holder-set order
 /// without repeats: `or` concatenates its values, `and` keeps its first
-/// value's order, `any` and `not` follow `all`.
-pub fn resolve<L: HolderLookup + ?Sized>(value: &Value, lookup: &L) -> Result<Vec<L::Id>, String> {
-    Ok(match value {
-        Value::String(name) => unique(match name.strip_prefix('#') {
-            Some(tag) => lookup.tag(tag)?,
-            None => lookup.entry(name)?,
-        }),
+/// value's order, `any` and `not` follow `all`. Lookup failures keep their error type.
+pub fn resolve<L: HolderLookup<E> + ?Sized, E: From<String>>(
+    value: &Value,
+    lookup: &L,
+) -> Result<Vec<L::Id>, E> {
+    decode(value, lookup, false, None)
+}
+
+/// `HolderSetCodec.directCodec` with the registry element's inline codec.
+/// Vanilla direct lists keep holder order and multiplicity; NeoForge's
+/// composite sets still use the shared set operations.
+pub(crate) fn resolve_with_inline<L: HolderLookup<E>, E: From<String>>(
+    value: &Value,
+    lookup: &L,
+    always_list: bool,
+    inline: &dyn Fn(&Value) -> Result<L::Id, E>,
+) -> Result<Vec<L::Id>, E> {
+    decode(value, lookup, always_list, Some(inline))
+}
+
+type InlineHolder<'a, Id, E> = &'a dyn Fn(&Value) -> Result<Id, E>;
+
+fn decode<L: HolderLookup<E> + ?Sized, E: From<String>>(
+    value: &Value,
+    lookup: &L,
+    always_list: bool,
+    inline: Option<InlineHolder<'_, L::Id, E>>,
+) -> Result<Vec<L::Id>, E> {
+    let element = |value: &Value| match value {
+        Value::String(name) if !name.starts_with('#') => lookup.entry(name),
+        Value::Object(_) => {
+            inline.ok_or_else(|| format!("not a {} holder", lookup.what()))?(value).map(|v| vec![v])
+        }
+        _ => Err(format!("not a {} holder", lookup.what()).into()),
+    };
+    let nested = |value| decode(value, lookup, always_list, inline);
+    let direct = match value {
+        Value::String(name) if name.starts_with('#') => return lookup.tag(&name[1..]).map(unique),
         Value::Array(list) => {
             let mut out = Vec::new();
-            for element in list {
-                let id = element
-                    .as_str()
-                    .filter(|id| !id.starts_with('#'))
-                    .ok_or_else(|| format!("a {} list holds ids only", lookup.what()))?;
-                out.extend(lookup.entry(id)?);
+            for v in list {
+                out.extend(element(v)?);
             }
-            unique(out)
+            out
         }
         Value::Object(object) => {
             let kind = object.get("type").and_then(Value::as_str).unwrap_or("");
             match kind.strip_prefix("neoforge:").unwrap_or(kind) {
-                "any" => unique(lookup.all()?),
+                "any" => return lookup.all().map(unique),
                 short @ ("or" | "and") => {
                     let values = object
                         .get("values")
                         .and_then(Value::as_array)
                         .ok_or_else(|| format!("{} holder set {kind}: no values", lookup.what()))?;
-                    let mut sets = values.iter().map(|v| resolve(v, lookup));
-                    let first = match sets.next() {
-                        Some(first) => first?,
-                        None => Vec::new(),
-                    };
+                    let mut sets = values.iter().map(nested);
+                    let mut out = unique(sets.next().transpose()?.unwrap_or_default());
                     if short == "or" {
-                        let mut out = first;
                         for set in sets {
                             out.extend(set?);
                         }
-                        unique(out)
-                    } else {
-                        let mut out = first;
-                        for set in sets {
-                            let set: BTreeSet<_> = set?.into_iter().collect();
-                            out.retain(|id| set.contains(id));
-                        }
-                        out
+                        return Ok(unique(out));
                     }
+                    for set in sets {
+                        let set: BTreeSet<_> = set?.into_iter().collect();
+                        out.retain(|id| set.contains(id));
+                    }
+                    return Ok(out);
                 }
                 "not" => {
                     let value = object
                         .get("value")
                         .ok_or_else(|| format!("{} holder set {kind}: no value", lookup.what()))?;
-                    let inner: BTreeSet<_> = resolve(value, lookup)?.into_iter().collect();
-                    unique(lookup.all()?)
+                    let inner: BTreeSet<_> = nested(value)?.into_iter().collect();
+                    return Ok(unique(lookup.all()?)
                         .into_iter()
                         .filter(|id| !inner.contains(id))
-                        .collect()
+                        .collect());
                 }
-                _ => return Err(format!("{} set type {kind:?} is not read", lookup.what())),
+                _ if !always_list && inline.is_some() => element(value)?,
+                _ => return Err(format!("{} set type {kind:?} is not read", lookup.what()).into()),
             }
         }
-        _ => return Err(format!("not a {} id, tag or list", lookup.what())),
+        _ if !always_list => element(value)?,
+        _ => {
+            return Err(format!(
+                "{} holder set must be a list, tag or custom set",
+                lookup.what()
+            )
+            .into());
+        }
+    };
+    Ok(if inline.is_some() {
+        direct
+    } else {
+        unique(direct)
     })
 }
 

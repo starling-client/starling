@@ -1,0 +1,14 @@
+ids = [
+    "type:DatapackFieldKind",
+    "type:DatapackValue",
+    "type:DatapackVanillaValue",
+    "type:DatapackDecodeError.InvalidVanillaValue",
+    "type:DatapackValueError",
+    "type:IntProviderValue",
+    "type:BlockStateProviderValue",
+    "type:BlockPredicateValue",
+    "type:HolderSetValue",
+    "handle:DatapackCandidate::build",
+]
+why = "#5368 part 2: datapack registry schemas can declare the four vanilla codec value kinds used by data-driven mods — IntProvider { min, max } (IntProviders.codec), BlockStateProvider (BlockStateProvider.CODEC), BlockPredicate (BlockPredicate.CODEC) and HolderSet { registry } for minecraft:block (RegistryCodecs.homogeneousList). The engine decodes them at candidate load and on synced clients with vanilla's codecs, storing them in a per-load table keyed by a generation number and index, and exposes Copy handles (IntProviderValue::sample, BlockStateProviderValue::state, BlockPredicateValue::test, HolderSetValue::contains) that return DatapackValueError::Stale after /reload or snapshot replacement rather than panicking. DatapackCandidate::build now takes the decoder for those kinds as a third argument."
+migrate = "DatapackCandidate::build(declarations, files) becomes build(declarations, files, decoder): pass the engine's decoder, or `&mut NoVanillaValueDecoder` when no schema declares a vanilla value kind. Otherwise nothing to migrate: the kinds, values and errors are non_exhaustive and only grow, so matches over them already carry a wildcard arm."

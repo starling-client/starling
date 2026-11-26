@@ -1,0 +1,10 @@
+# 26.3 item enchantment glint parity checks against VanillaItemGlintOracle (.local witness and prepared 26.3 resources).
+sunrise-client game::item_draw::tests::item_display_end_crystal_world_submit_uses_vanilla_glint_scale_and_atlas_uv_26_3 lib daily child-process
+sunrise-client-lib item_render::glint_tests::block_item_glint_uses_blocks_atlas_uv_26_3 lib daily resources
+sunrise-client-lib item_render::glint_tests::compass_special_foil_uses_decal_uv_26_3 lib daily resources
+sunrise-client-lib item_render::glint_tests::end_crystal_world_sink_uses_atlas_uv_and_item_glint_scale_26_3 lib daily resources
+sunrise-client-lib item_render::glint_tests::glint_atlases_match_vanilla_26_3_mip_and_aniso lib daily resources
+sunrise-client-lib item_render::glint_tests::glint_uv_matches_vanilla_26_3_texture_transform_bits lib daily resources
+sunrise-client-lib item_render::glint_tests::shield_banner_pattern_blends_low_alpha_without_depth_write_26_3 lib daily resources
+sunrise-client-lib item_render::glint_tests::special_model_trident_and_shield_glint_uses_entity_scale_26_3 lib daily resources
+sunrise-client-lib item_render::glint_tests::translucent_foil_variants_composite_with_overlapping_translucent_surface_in_oit_26_3 lib daily resources

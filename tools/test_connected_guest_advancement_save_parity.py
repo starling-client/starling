@@ -5,12 +5,12 @@ Disconnect is an independent cross-check. Full files, timestamps and packets rem
 """
 import argparse, hashlib, json, os, re, shutil, tempfile, time
 from pathlib import Path
-try:
-    from . import net_capture, test_locator_bar_parity as net
-    from .test_builtin_component_delivery_parity import Commands, generate, offline, uuid_words
-except ImportError:
-    import net_capture, test_locator_bar_parity as net
-    from test_builtin_component_delivery_parity import Commands, generate, offline, uuid_words
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import net_capture, test_locator_bar_parity as net
+from tools.test_builtin_component_delivery_parity import Commands, generate, offline, uuid_words
 
 IDS = ('minecraft:story/root', 'minecraft:story/mine_stone')
 PHASES = (('save', 'save-all', (True, True)),

@@ -36,4 +36,4 @@ icon:
 None
 
 content:
-refused: data/minecraft/recipe/suspect.json: a mod adds files in its own namespaces (data/refused_content_vanilla_override/ and those listed in namespaces), to vanilla and convention (c) tags, to vanilla's atlases, or to declared shared resource paths
+refused: data/minecraft/recipe/suspect.json: a mod adds files in its own namespaces (data/refused_content_vanilla_override/ and those listed in namespaces), to vanilla and convention (c, neoforge) tags, to vanilla's atlases, or to declared shared resource paths

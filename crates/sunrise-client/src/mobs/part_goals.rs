@@ -13,10 +13,7 @@ use super::{
     Mob, MobWorld,
     goals::{Cx, Goal as EngineGoal, GoalSelector},
 };
-use mod_api::{
-    WorldEpoch,
-    content::crash::{ModCall, enter_native_mod},
-};
+use mod_api::WorldEpoch;
 
 /// The native side a mod goal runs against (the `mob_hooks` pattern): the
 /// game's facts for the tick's read view, and the one call that runs a goal
@@ -34,8 +31,16 @@ pub trait GoalHost {
     fn merchant_trading_player_lent(&self, mob: &Mob) -> Option<mod_api::PlayerRef>;
     /// Current XP and level, including an open guest's trading session.
     fn merchant_trade_state_lent(&self, mob: &Mob) -> (i32, i32);
-    /// Live player passengers of a vehicle, with their boarding order.
-    fn player_passenger_seats(&self, vehicle: u32) -> Vec<(i64, u32)>;
+    /// Lend a vehicle's player seats in source order. True if the visitor stopped the visit.
+    fn visit_player_passenger_seats(
+        &self,
+        vehicle: u32,
+        visit: &mut dyn FnMut(i64, u32) -> bool,
+    ) -> bool;
+    /// The next rider of an object that was not lent to the mob tick, including retained riders.
+    fn next_passenger_seat(&self, vehicle: u32, after: Option<u32>) -> Option<u32>;
+    /// The actual parent of an object that was not lent, even if it has no handle.
+    fn passenger_vehicle(&self, rider: u32) -> Option<u32>;
     /// Whether this player steers the lent mob.
     fn mob_player_controls(&self, mob: &Mob, player: u32) -> bool;
     /// Dismount location using a mob lent out of the game list.
@@ -50,6 +55,10 @@ pub trait GoalHost {
     fn mob_can_use_portal(&self, mob: &Mob) -> bool;
     /// Compute climbing from the game's collision and climbing registry.
     fn mob_is_climbing(&self, mob: &Mob) -> bool;
+    /// The raw `setLastHurtMob` record (target id, holder tick) of a living holder that
+    /// resolves in the ordinary game view during the tick: a player, or an armor stand or the
+    /// dragon of this level. Its target is resolved in the tick's view, where a lent mob is visible.
+    fn living_last_hurt_record(&self, living: mod_api::LivingRef) -> Option<(u32, i32)>;
     /// Player credit for a mob, distinguishing absent credit from an unresolved player.
     fn mob_player_credit(&self, mob: &Mob) -> Option<Option<u32>>;
     /// The mob `attacker` that hurt a lent mob, when it is not in this level
@@ -144,63 +153,89 @@ pub enum BehaviorOp {
     Stop,
 }
 
-/// Ask the installed entity parts for the mob's mod goals (#1077), right after
-/// the species' own `ai::register` — vanilla's `registerGoals` moment, which a
-/// mob loaded from a chunk passes through as a spawned one does.
-pub fn attach(m: &mut Mob) {
-    if !mod_api::__private::has_entity_parts() {
-        return;
-    }
-    let parts = mod_api::__private::entity_parts();
-    let list = parts.entity_parts(&m.kind.id);
-    if list.is_empty() {
-        return;
-    }
-    let (id, mob_id) = (m.id, &m.kind.id);
-    for attached in list {
-        let _guard = enter_native_mod(ModCall {
-            id: attached.mod_id(),
-            hook: "register_goals",
-            part: Some(attached.type_name()),
-        });
-        let ai = &mut m.ai;
-        let mut registrar = RegistrarFor {
-            goals: &mut ai.goals,
-            targets: &mut ai.targets,
-            mob_id,
-            mob_entity: id,
-            mod_id: attached.mod_id(),
-            part: attached.type_name(),
-        };
-        attached
-            .part()
-            .register_goals(&mut mod_api::GoalRegistrar::new(&mut registrar));
-    }
-}
-
-/// The game's side of [`mod_api::GoalRegistrar`]: the mob's two selectors.
-struct RegistrarFor<'a> {
-    goals: &'a mut GoalSelector,
-    targets: &'a mut GoalSelector,
-    mob_id: &'a str,
+/// Staged `register_goals` additions collected at the owning `Game` boundary and
+/// applied to the mob's original two selectors inside the listener's transaction.
+pub struct StagedGoals {
     mob_entity: u32,
-    mod_id: &'static str,
-    part: &'static str,
+    mob_id: String,
+    goals: Vec<(i32, ModGoal)>,
+    targets: Vec<(i32, ModGoal)>,
 }
 
-impl mod_api::GoalRegistrarBackend for RegistrarFor<'_> {
-    fn add_goal(&mut self, priority: i32, goal: Box<dyn mod_api::Goal>) {
-        let goal = ModGoal::new(self.mob_entity, self.mod_id, self.part, goal);
-        self.goals.add_boxed(priority, Box::new(goal));
+impl StagedGoals {
+    /// Start an empty staged goal buffer for mob `mob_entity` of entity type `mob_id`.
+    pub fn new(mob_entity: u32, mob_id: String) -> Self {
+        Self {
+            mob_entity,
+            mob_id,
+            goals: Vec::new(),
+            targets: Vec::new(),
+        }
     }
 
-    fn add_target_goal(&mut self, priority: i32, goal: Box<dyn mod_api::Goal>) {
-        let goal = ModGoal::new(self.mob_entity, self.mod_id, self.part, goal);
-        self.targets.add_boxed(priority, Box::new(goal));
+    /// Apply every accepted staged goal to the mob's goal and target selectors.
+    pub fn apply_to(self, goals: &mut GoalSelector, targets: &mut GoalSelector) {
+        for (priority, goal) in self.goals {
+            goals.add_boxed(priority, Box::new(goal));
+        }
+        for (priority, goal) in self.targets {
+            targets.add_boxed(priority, Box::new(goal));
+        }
+    }
+
+    /// Discard all staged goals behind each registering mod's panic fence.
+    pub fn discard(self) {
+        for (_, goal) in self.goals.into_iter().chain(self.targets) {
+            mod_api::runtime::discard_registration(
+                (mod_api::HookId::RegisterGoals, "register_goals"),
+                Some(goal.mod_id),
+                goal,
+            );
+        }
+    }
+}
+
+impl mod_api::GoalRegistrarBackend for StagedGoals {
+    fn add_goal(
+        &mut self,
+        mod_id: &'static str,
+        part: &'static str,
+        priority: i32,
+        goal: Box<dyn mod_api::Goal>,
+    ) {
+        let goal = ModGoal::new(self.mob_entity, mod_id, part, goal);
+        self.goals.push((priority, goal));
+    }
+
+    fn add_target_goal(
+        &mut self,
+        mod_id: &'static str,
+        part: &'static str,
+        priority: i32,
+        goal: Box<dyn mod_api::Goal>,
+    ) {
+        let goal = ModGoal::new(self.mob_entity, mod_id, part, goal);
+        self.targets.push((priority, goal));
     }
 
     fn mob_id(&self) -> &str {
-        self.mob_id
+        &self.mob_id
+    }
+
+    fn checkpoint(&self) -> (usize, usize) {
+        (self.goals.len(), self.targets.len())
+    }
+
+    fn rollback(&mut self, (goals_len, targets_len): (usize, usize)) {
+        let discarded_goals = self.goals.split_off(goals_len);
+        let discarded_targets = self.targets.split_off(targets_len);
+        for (_, goal) in discarded_goals.into_iter().chain(discarded_targets) {
+            mod_api::runtime::discard_registration(
+                (mod_api::HookId::RegisterGoals, "register_goals"),
+                Some(goal.mod_id),
+                goal,
+            );
+        }
     }
 }
 

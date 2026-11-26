@@ -1,0 +1,3 @@
+ids = ["method:prelude::ClientTextClientHost::language_right_to_left"]
+why = "Adds a client read of whether the active language reads right to left (Language.isDefaultRightToLeft, the flag Font.isBidirectional reads), so a mod lays out a row of GUI or tooltip pieces in reading order (#5354)."
+migrate = "Additive. Read host.language_right_to_left() on the client, in or outside a world and in client setup, beside the other text reads."

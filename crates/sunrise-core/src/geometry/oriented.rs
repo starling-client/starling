@@ -10,37 +10,32 @@ use super::{Aabb, Axis, COLLISION_EPSILON, Vec3};
 use rustc_hash::FxHashMap;
 use std::{cell::RefCell, sync::Arc};
 
-/// The most boxes one collider holds.
-pub const MAX_BOXES: usize = 32_768;
-/// The farthest a box may lie from the collider's origin on any axis, in blocks.
-pub const MAX_REACH: f64 = 512.0;
-/// How far from length 1 a rotation may be.
-pub const ROTATION_TOLERANCE: f64 = 1.0e-3;
-
-/// Why a box of a collider is refused.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BoxFault {
-    NonFinite,
-    OutOfRange,
+/// Checks one box's corners against the collider contract: every coordinate must be finite
+/// both as `f64` and in the `f32` representation kept on the wire.
+pub fn check_box(min: [f64; 3], max: [f64; 3]) -> bool {
+    min.iter()
+        .chain(&max)
+        .all(|v| v.is_finite() && (*v as f32).is_finite())
 }
 
-/// Checks one box's corners against the collider contract. The one check every way a collider
-/// enters the game goes through: a mod's `set_collider`, a save, and the sync wire.
-pub fn check_box(min: [f64; 3], max: [f64; 3]) -> Result<(), BoxFault> {
-    let values = min.iter().chain(&max);
-    if values.clone().any(|v| !v.is_finite()) {
-        return Err(BoxFault::NonFinite);
-    }
-    if values.clone().any(|v| v.abs() > MAX_REACH) {
-        return Err(BoxFault::OutOfRange);
-    }
-    Ok(())
+/// Whether a pivot has finite coordinates.
+pub fn check_pivot(pivot: [f64; 3]) -> bool {
+    pivot.iter().all(|v| v.is_finite())
 }
 
-/// Whether a rotation is a finite quaternion of length 1 within [`ROTATION_TOLERANCE`].
-pub fn check_rotation(q: [f64; 4]) -> bool {
-    q.iter().all(|v| v.is_finite())
-        && (q.iter().map(|v| v * v).sum::<f64>().sqrt() - 1.0).abs() <= ROTATION_TOLERANCE
+/// Normalizes a finite, non-zero quaternion `[x, y, z, w]` to unit length.
+/// Returns `None` for a zero, NaN or infinite quaternion.
+pub fn normalize_rotation(q: [f32; 4]) -> Option<[f32; 4]> {
+    if !q.iter().all(|v| v.is_finite()) {
+        return None;
+    }
+    let wide = q.map(f64::from);
+    let norm = wide.iter().map(|v| v * v).sum::<f64>().sqrt();
+    if !norm.is_finite() || norm == 0.0 {
+        return None;
+    }
+    let out = wide.map(|v| (v / norm) as f32);
+    out.iter().all(|v| v.is_finite()).then_some(out)
 }
 
 thread_local! {
@@ -61,12 +56,18 @@ const OVERSIZED_CELLS: i64 = 4096;
 /// An axis whose squared length is below this (parallel edges) separates nothing new.
 const DEGENERATE_AXIS: f64 = 1.0e-12;
 
-/// A collider's frame: where its origin is in the world and where its local axes point.
+/// A collider's frame: where local `(0, 0, 0)` sits in the world, where its local axes point,
+/// and the pivot + unit quaternion it turns about.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Frame {
+    /// World position of local `(0, 0, 0)`: `entity_position + pivot - rotation * pivot`.
     pub origin: Vec3,
     /// The world directions of the local x, y and z axes: the columns of the rotation.
     axes: [Vec3; 3],
+    /// The local point the boxes turn about, in blocks from the entity's position.
+    pivot: Vec3,
+    /// Unit quaternion `[x, y, z, w]` for shortest-arc interpolation.
+    rotation: [f64; 4],
 }
 
 impl Frame {
@@ -78,64 +79,132 @@ impl Frame {
                 Vec3::new(0.0, 1.0, 0.0),
                 Vec3::new(0.0, 0.0, 1.0),
             ],
+            pivot: Vec3::ZERO,
+            rotation: [0.0, 0.0, 0.0, 1.0],
         }
     }
 
-    /// The frame turned by a quaternion `[x, y, z, w]`. A quaternion that is not unit length
-    /// is normalised; a zero or non-finite one gives no turn.
+    /// The frame turned by a quaternion `[x, y, z, w]` about the entity's position (pivot zero).
+    /// A quaternion that is not unit length is normalised; a zero or non-finite one gives no turn.
     pub fn from_quaternion(origin: Vec3, q: [f64; 4]) -> Self {
+        Self::from_pose(origin, Vec3::ZERO, q)
+    }
+
+    /// The frame turned by a quaternion `[x, y, z, w]` about `pivot`:
+    /// `world = entity_position + pivot + rotation * (local - pivot)`.
+    /// A quaternion that is not unit length is normalised; a zero or non-finite one gives no turn.
+    pub fn from_pose(entity_position: Vec3, pivot: Vec3, q: [f64; 4]) -> Self {
+        let pivot = if pivot.is_finite() { pivot } else { Vec3::ZERO };
         let norm = q.iter().map(|v| v * v).sum::<f64>().sqrt();
-        if !norm.is_finite() || norm < 1.0e-12 {
-            return Self::translation(origin);
+        if !norm.is_finite() || norm == 0.0 {
+            return Self {
+                pivot,
+                ..Self::translation(entity_position)
+            };
         }
-        let [x, y, z, w] = q.map(|v| v / norm);
+        let unit = q.map(|v| v / norm);
+        let [x, y, z, w] = unit;
+        let axes = [
+            Vec3::new(
+                1.0 - 2.0 * (y * y + z * z),
+                2.0 * (x * y + z * w),
+                2.0 * (x * z - y * w),
+            ),
+            Vec3::new(
+                2.0 * (x * y - z * w),
+                1.0 - 2.0 * (x * x + z * z),
+                2.0 * (y * z + x * w),
+            ),
+            Vec3::new(
+                2.0 * (x * z + y * w),
+                2.0 * (y * z - x * w),
+                1.0 - 2.0 * (x * x + y * y),
+            ),
+        ];
+        let rotated_pivot = Vec3::new(
+            pivot.x * axes[0].x + pivot.y * axes[1].x + pivot.z * axes[2].x,
+            pivot.x * axes[0].y + pivot.y * axes[1].y + pivot.z * axes[2].y,
+            pivot.x * axes[0].z + pivot.y * axes[1].z + pivot.z * axes[2].z,
+        );
         Self {
-            origin,
-            axes: [
-                Vec3::new(
-                    1.0 - 2.0 * (y * y + z * z),
-                    2.0 * (x * y + z * w),
-                    2.0 * (x * z - y * w),
-                ),
-                Vec3::new(
-                    2.0 * (x * y - z * w),
-                    1.0 - 2.0 * (x * x + z * z),
-                    2.0 * (y * z + x * w),
-                ),
-                Vec3::new(
-                    2.0 * (x * z + y * w),
-                    2.0 * (y * z - x * w),
-                    1.0 - 2.0 * (x * x + y * y),
-                ),
-            ],
+            origin: entity_position.add_vector(pivot).subtract(rotated_pivot),
+            axes,
+            pivot,
+            rotation: unit,
         }
     }
 
-    /// The frame `amount` of the way from `self` to `other` (0 is `self`): the origin in a
-    /// line, the axes blended and made orthonormal again, which for the small turns between two
-    /// ticks is the shortest rotation.
+    /// The local pivot point the frame turns about.
+    pub fn pivot(&self) -> Vec3 {
+        self.pivot
+    }
+
+    /// The unit quaternion `[x, y, z, w]` of this frame.
+    pub fn rotation(&self) -> [f64; 4] {
+        self.rotation
+    }
+
+    /// The angle of the shortest-arc rotation between `self` and `other`, in radians (`0..=PI`).
+    pub fn turn_angle(&self, other: &Self) -> f64 {
+        let dot: f64 = self
+            .rotation
+            .iter()
+            .zip(other.rotation)
+            .map(|(l, r)| l * r)
+            .sum();
+        2.0 * dot.abs().clamp(0.0, 1.0).acos()
+    }
+
+    /// The frame `amount` of the way from `self` to `other` (0 is `self`): the pivot moves
+    /// linearly while the frame turns by the shortest arc about it.
     pub fn interpolate(&self, other: &Self, amount: f64) -> Self {
         let a = amount.clamp(0.0, 1.0);
-        let mix = |k: usize| {
-            self.axes[k]
-                .scale(1.0 - a)
-                .add_vector(other.axes[k].scale(a))
-        };
-        let unit = |v: Vec3, fallback: Vec3| {
-            let n = v.length();
-            if n.is_finite() && n > DEGENERATE_AXIS {
-                v.scale(1.0 / n)
-            } else {
-                fallback
-            }
-        };
-        let x = unit(mix(0), self.axes[0]);
-        let z = unit(x.cross(mix(1)), self.axes[2]);
-        let y = z.cross(x);
-        Self {
-            origin: self.origin.lerp(other.origin, a),
-            axes: [x, y, z],
+        if a == 0.0 {
+            return *self;
         }
+        if a == 1.0 {
+            return *other;
+        }
+        let mut q1 = other.rotation;
+        let mut dot: f64 = self.rotation.iter().zip(q1).map(|(l, r)| l * r).sum();
+        if dot < 0.0 {
+            q1 = q1.map(|v| -v);
+            dot = -dot;
+        }
+        let blended = if dot > 1.0 - 1.0e-12 {
+            std::array::from_fn(|i| self.rotation[i] * (1.0 - a) + q1[i] * a)
+        } else {
+            let theta = dot.clamp(-1.0, 1.0).acos();
+            let sin_theta = theta.sin();
+            let w0 = ((1.0 - a) * theta).sin() / sin_theta;
+            let w1 = (a * theta).sin() / sin_theta;
+            std::array::from_fn(|i| self.rotation[i] * w0 + q1[i] * w1)
+        };
+        let pivot = if self.pivot == other.pivot {
+            self.pivot
+        } else {
+            self.pivot.lerp(other.pivot, a)
+        };
+        let pivot_world = self
+            .to_world(self.pivot)
+            .lerp(other.to_world(other.pivot), a);
+        Self::from_pose(pivot_world.subtract(pivot), pivot, blended)
+    }
+
+    /// Conservative world-space AABB enclosing `local` over the entire simultaneous
+    /// translation-and-rotation motion from `self` to `other`.
+    pub fn swept_bounds(&self, other: &Self, local: Aabb) -> Aabb {
+        if self.same_turn(other) {
+            return self
+                .world_bounds(local)
+                .union_bounds(other.world_bounds(local));
+        }
+        let radius = max_corner_radius(local, self.pivot, other.pivot);
+        let extent = Vec3::new(radius, radius, radius);
+        let from = self.to_world(self.pivot);
+        let to = other.to_world(other.pivot);
+        Aabb::new(from.subtract(extent), from.add_vector(extent))
+            .union_bounds(Aabb::new(to.subtract(extent), to.add_vector(extent)))
     }
 
     /// Whether the two frames point their axes the same way (they differ only in origin).
@@ -203,7 +272,7 @@ impl Frame {
 #[derive(Clone, Debug, Default)]
 pub struct ColliderBoxes {
     boxes: Vec<Aabb>,
-    cells: FxHashMap<[i32; 3], Vec<u32>>,
+    cells: FxHashMap<[i64; 3], Vec<u32>>,
     /// The side of a cell, from the boxes alone.
     cell: f64,
     oversized: Vec<u32>,
@@ -238,11 +307,20 @@ fn cell_range(b: Aabb, cell: f64) -> ([i64; 3], [i64; 3]) {
     ([f(lo.x), f(lo.y), f(lo.z)], [f(hi.x), f(hi.y), f(hi.z)])
 }
 
+/// How many cells `lo..=hi` spans. A box as far out as a finite `f32` reaches saturates
+/// [`cell_range`] to `i64::MIN..=i64::MAX` on an axis, so the count is taken in `i128` and
+/// saturates rather than overflowing.
+fn cell_count(lo: [i64; 3], hi: [i64; 3]) -> i128 {
+    (0..3).fold(1, |count: i128, i| {
+        count.saturating_mul(i128::from(hi[i]) - i128::from(lo[i]) + 1)
+    })
+}
+
 impl ColliderBoxes {
     /// Builds the grid. The boxes must be finite; callers refuse anything else first.
     pub fn new(boxes: Vec<Aabb>) -> Self {
         let cell = cell_side(&boxes);
-        let mut cells: FxHashMap<[i32; 3], Vec<u32>> = FxHashMap::default();
+        let mut cells: FxHashMap<[i64; 3], Vec<u32>> = FxHashMap::default();
         let mut oversized = Vec::new();
         let mut solid = Vec::new();
         let mut bounds: Option<Aabb> = None;
@@ -254,18 +332,14 @@ impl ColliderBoxes {
             solid.push(index as u32);
             bounds = Some(bounds.map_or(*b, |all| all.union_bounds(*b)));
             let (lo, hi) = cell_range(*b, cell);
-            let count = (0..3).map(|i| hi[i] - lo[i] + 1).product::<i64>();
-            if count > OVERSIZED_CELLS {
+            if cell_count(lo, hi) > i128::from(OVERSIZED_CELLS) {
                 oversized.push(index as u32);
                 continue;
             }
             for x in lo[0]..=hi[0] {
                 for y in lo[1]..=hi[1] {
                     for z in lo[2]..=hi[2] {
-                        cells
-                            .entry([x as i32, y as i32, z as i32])
-                            .or_default()
-                            .push(index as u32);
+                        cells.entry([x, y, z]).or_default().push(index as u32);
                     }
                 }
             }
@@ -304,15 +378,14 @@ impl ColliderBoxes {
             return;
         }
         let (lo, hi) = cell_range(local, self.cell);
-        let count = (0..3).map(|i| hi[i] - lo[i] + 1).product::<i64>();
-        if count > self.cells.len() as i64 {
+        if cell_count(lo, hi) > self.cells.len() as i128 {
             self.solid.iter().any(|&index| f(index));
             return;
         }
         for x in lo[0]..=hi[0] {
             for y in lo[1]..=hi[1] {
                 for z in lo[2]..=hi[2] {
-                    if let Some(list) = self.cells.get(&[x as i32, y as i32, z as i32])
+                    if let Some(list) = self.cells.get(&[x, y, z])
                         && list.iter().any(|&index| f(index))
                     {
                         return;
@@ -330,8 +403,7 @@ impl ColliderBoxes {
             return;
         }
         let (lo, hi) = cell_range(local, self.cell);
-        let count = (0..3).map(|i| hi[i] - lo[i] + 1).product::<i64>();
-        if count > self.cells.len() as i64 {
+        if cell_count(lo, hi) > self.cells.len() as i128 {
             // A query wider than the grid: every box is cheaper than every cell.
             out.extend_from_slice(&self.solid);
             return;
@@ -339,7 +411,7 @@ impl ColliderBoxes {
         for x in lo[0]..=hi[0] {
             for y in lo[1]..=hi[1] {
                 for z in lo[2]..=hi[2] {
-                    if let Some(list) = self.cells.get(&[x as i32, y as i32, z as i32]) {
+                    if let Some(list) = self.cells.get(&[x, y, z]) {
                         out.extend_from_slice(list);
                     }
                 }
@@ -349,6 +421,90 @@ impl ColliderBoxes {
         out.sort_unstable();
         out.dedup();
     }
+}
+
+/// Maximum distance from either `pivot_a` or `pivot_b` to any corner of `local`.
+fn max_corner_radius(local: Aabb, pivot_a: Vec3, pivot_b: Vec3) -> f64 {
+    let (lo, hi) = (local.min, local.max);
+    let mut r = 0.0_f64;
+    for i in 0..8 {
+        let corner = Vec3::new(
+            if i & 1 == 0 { lo.x } else { hi.x },
+            if i & 2 == 0 { lo.y } else { hi.y },
+            if i & 4 == 0 { lo.z } else { hi.z },
+        );
+        r = r.max(corner.subtract(pivot_a).length());
+        if pivot_a != pivot_b {
+            r = r.max(corner.subtract(pivot_b).length());
+        }
+    }
+    r
+}
+
+/// Separating-axis tests for a frame's orientation.
+fn frame_axes(frame: &Frame, cross_threshold: f64) -> Axes {
+    let world = [
+        Vec3::new(1.0, 0.0, 0.0),
+        Vec3::new(0.0, 1.0, 0.0),
+        Vec3::new(0.0, 0.0, 1.0),
+    ];
+    let local = frame.axes;
+    let mut list = [Vec3::ZERO; 15];
+    let mut count = 0;
+    for axis in world.into_iter().chain(local) {
+        list[count] = axis;
+        count += 1;
+    }
+    for w in world {
+        for l in local {
+            let c = w.cross(l);
+            let n = c.length_squared();
+            if n > cross_threshold {
+                list[count] = c.scale(1.0 / n.sqrt());
+                count += 1;
+            }
+        }
+    }
+    Axes { list, count }
+}
+
+/// Centre distance (`obb - mover`) and summed radii of `mover` and `obb` on unit `axis`.
+fn frame_extents(frame: &Frame, mover: Aabb, obb: &Obb, axis: Vec3) -> (f64, f64) {
+    let m = mover.center();
+    let e = mover.size();
+    let rm = e.x / 2.0 * axis.x.abs() + e.y / 2.0 * axis.y.abs() + e.z / 2.0 * axis.z.abs();
+    let rb = (0..3)
+        .map(|i| obb.half[i] * frame.axes[i].dot(axis).abs())
+        .sum::<f64>();
+    (obb.centre.dot(axis) - m.dot(axis), rm + rb)
+}
+
+/// Signed SAT separation between `local` under `frame` and world box `mover`, together with
+/// the unit axis achieving it, oriented from the collider box toward `mover`.
+/// Positive means separated by at least that Euclidean distance; `<= 0` means overlapping.
+fn separation_and_axis(frame: &Frame, local: Aabb, mover: Aabb) -> (f64, Vec3) {
+    let size = local.size();
+    let obb = Obb {
+        centre: frame.to_world(local.center()),
+        half: [size.x / 2.0, size.y / 2.0, size.z / 2.0],
+    };
+    let axes = frame_axes(frame, DEGENERATE_AXIS);
+    let mut best_sep = f64::NEG_INFINITY;
+    let mut best_axis = Vec3::new(0.0, 1.0, 0.0);
+    for axis in axes.iter() {
+        let (distance, radii) = frame_extents(frame, mover, &obb, axis);
+        let sep = distance.abs() - radii;
+        if sep > best_sep {
+            best_sep = sep;
+            // `distance` is `obb - mover`, so pointing from `obb` toward `mover` opposes its sign.
+            best_axis = if distance > 0.0 {
+                axis.scale(-1.0)
+            } else {
+                axis
+            };
+        }
+    }
+    (best_sep, best_axis)
 }
 
 /// One collider placed in the world: its boxes under a frame. The boxes are shared, so a
@@ -446,6 +602,125 @@ impl OrientedCollider {
             }
         });
         allowed
+    }
+
+    /// First contact time `t` in `[0, 1]` and box index when this collider moves simultaneously
+    /// in translation and rotation from `self.frame` to `after.frame`, found by conservative
+    /// advancement. Only boxes surviving at the same index and local bounds sweep.
+    pub fn sweep_first_contact(&self, after: &Self, mover: Aabb) -> Option<(f64, u32)> {
+        if self.frame == after.frame {
+            return None;
+        }
+        let all = self.boxes.bounds()?;
+        if !self.frame.swept_bounds(&after.frame, all).intersects(mover) {
+            return None;
+        }
+        let v_lin = after
+            .frame
+            .to_world(after.frame.pivot)
+            .subtract(self.frame.to_world(self.frame.pivot))
+            .length();
+        let v_piv = after.frame.pivot.subtract(self.frame.pivot).length();
+        let theta = self.frame.turn_angle(&after.frame);
+
+        let mut best: Option<(f64, u32)> = None;
+        for &index in &self.boxes.solid {
+            let local = self.boxes.boxes[index as usize];
+            if after.boxes.boxes.get(index as usize) != Some(&local) {
+                continue;
+            }
+            if !self
+                .frame
+                .swept_bounds(&after.frame, local)
+                .intersects(mover)
+            {
+                continue;
+            }
+            let r_box = max_corner_radius(local, self.frame.pivot, after.frame.pivot);
+            let v_max = v_lin + v_piv + theta * r_box;
+            if v_max <= 1.0e-12 {
+                continue;
+            }
+            let limit = best.map_or(1.0, |(bt, _)| bt);
+            let mut t = 0.0_f64;
+            let mut checked_end = false;
+            for _ in 0..256 {
+                let frame_t = self.frame.interpolate(&after.frame, t);
+                let (sep, _) = separation_and_axis(&frame_t, local, mover);
+                if sep <= COLLISION_EPSILON {
+                    if best.is_none_or(|(bt, _)| t < bt) {
+                        best = Some((t, index));
+                    }
+                    break;
+                }
+                if checked_end || t >= limit {
+                    break;
+                }
+                let dt = (sep / v_max).max(COLLISION_EPSILON / v_max);
+                t += dt;
+                if t >= limit {
+                    t = limit;
+                    checked_end = true;
+                }
+            }
+            if best.is_some_and(|(bt, _)| bt == 0.0) {
+                break;
+            }
+        }
+        best
+    }
+
+    /// World displacement that shoves `mover` out of a simultaneous translation-and-rotation
+    /// sweep from `self` to `after`, adding `clearance` along the push direction and resolving
+    /// any remaining end-pose overlap so `mover` is not left inside a box.
+    pub fn sweep_push_displacement(
+        &self,
+        after: &Self,
+        mover: Aabb,
+        clearance: f64,
+    ) -> Option<Vec3> {
+        let (t_hit, index) = self.sweep_first_contact(after, mover)?;
+        let local = self.boxes.boxes[index as usize];
+        if t_hit == 0.0 {
+            // If already touching at the start and moving cleanly away, do not pull it along.
+            let (sep0, _) = separation_and_axis(&self.frame, local, mover);
+            let probe = self.frame.interpolate(&after.frame, 1.0e-4);
+            let (sep_next, _) = separation_and_axis(&probe, local, mover);
+            let (sep_end, _) = separation_and_axis(&after.frame, local, mover);
+            if sep_next > sep0 && sep_end > COLLISION_EPSILON {
+                return None;
+            }
+        }
+        let frame_hit = self.frame.interpolate(&after.frame, t_hit);
+        let center = mover.center();
+        let end_center = after.frame.to_world(frame_hit.to_local(center));
+        let mut push = end_center.subtract(center);
+        let len = push.length();
+        if len > 1.0e-12 {
+            push = push.add_vector(push.scale(clearance / len));
+        } else {
+            let (_, axis) = separation_and_axis(&frame_hit, local, mover);
+            push = axis.scale(clearance);
+        }
+        // An axis-aligned body can still clip a turned box at the end pose; resolve any
+        // remaining overlap along the deepest box's separating axis.
+        for _ in 0..4 {
+            let placed = mover.move_by(push);
+            let mut deepest: Option<(f64, Vec3)> = None;
+            after.overlapping(placed, |hit| {
+                let b = after.boxes.boxes[hit as usize];
+                let (sep, axis) = separation_and_axis(&after.frame, b, placed);
+                if sep < -COLLISION_EPSILON && deepest.is_none_or(|(d, _)| sep < d) {
+                    deepest = Some((sep, axis));
+                }
+                false
+            });
+            let Some((sep, axis)) = deepest else {
+                break;
+            };
+            push = push.add_vector(axis.scale(-sep + clearance));
+        }
+        push.is_finite().then_some(push)
     }
 
     /// Fraction of a straight collider's travel remaining after its first contact with `mover`.
@@ -596,40 +871,12 @@ impl OrientedCollider {
     /// The axes of the separating-axis test: the world axes, the box's, and their cross
     /// products (those not parallel), computed once for a query.
     fn axes(&self, cross_threshold: f64) -> Axes {
-        let world = [
-            Vec3::new(1.0, 0.0, 0.0),
-            Vec3::new(0.0, 1.0, 0.0),
-            Vec3::new(0.0, 0.0, 1.0),
-        ];
-        let local = self.frame.axes;
-        let mut list = [Vec3::ZERO; 15];
-        let mut count = 0;
-        for axis in world.into_iter().chain(local) {
-            list[count] = axis;
-            count += 1;
-        }
-        for w in world {
-            for l in local {
-                let c = w.cross(l);
-                let n = c.length_squared();
-                if n > cross_threshold {
-                    list[count] = c.scale(1.0 / n.sqrt());
-                    count += 1;
-                }
-            }
-        }
-        Axes { list, count }
+        frame_axes(&self.frame, cross_threshold)
     }
 
     /// Centre distance and summed radii of the two boxes on `axis`.
     fn extents(&self, mover: Aabb, obb: &Obb, axis: Vec3) -> (f64, f64) {
-        let m = mover.center();
-        let e = mover.size();
-        let rm = e.x / 2.0 * axis.x.abs() + e.y / 2.0 * axis.y.abs() + e.z / 2.0 * axis.z.abs();
-        let rb = (0..3)
-            .map(|i| obb.half[i] * self.frame.axes[i].dot(axis).abs())
-            .sum::<f64>();
-        (obb.centre.dot(axis) - m.dot(axis), rm + rb)
+        frame_extents(&self.frame, mover, obb, axis)
     }
 
     /// The smallest overlap over all axes: positive when the boxes interpenetrate.
@@ -817,6 +1064,35 @@ mod tests {
             Vec3::new(min[0], min[1], min[2]),
             Vec3::new(max[0], max[1], max[2]),
         )
+    }
+
+    /// Boxes as far out as a finite `f32` reaches (a mod's collider has no reach limit) are
+    /// gridded without overflowing: one spanning every cell is oversized, and the far ones keep
+    /// cells of their own, so queries anywhere name exactly the boxes they may meet.
+    #[test]
+    fn boxes_at_the_edge_of_f32_grid_without_overflow() {
+        let far = 3.0e38;
+        let boxes = ColliderBoxes::new(vec![
+            b([0.0; 3], [1.0; 3]),
+            b([-far; 3], [far; 3]),
+            b([far - 1.0e32; 3], [far; 3]),
+            b([-far; 3], [-far + 1.0e32; 3]),
+        ]);
+        let mut out = Vec::new();
+        boxes.candidates(b([0.25; 3], [0.75; 3]), &mut out);
+        assert_eq!(out, [0, 1]);
+        boxes.candidates(b([far - 1.0e31; 3], [far; 3]), &mut out);
+        assert_eq!(out, [1, 2]);
+        boxes.candidates(b([-far; 3], [-far + 1.0e31; 3]), &mut out);
+        assert_eq!(out, [1, 3]);
+        let mut seen = Vec::new();
+        boxes.visit_candidates(b([-far; 3], [far; 3]), |index| {
+            seen.push(index);
+            false
+        });
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(seen, [0, 1, 2, 3]);
     }
 
     fn yaw(origin: Vec3, degrees: f64) -> Frame {
@@ -1068,29 +1344,126 @@ mod tests {
         }
     }
 
-    /// One check for a box and a rotation, whichever way they arrive.
+    /// One check for a box, pivot and rotation, whichever way they arrive.
     #[test]
-    fn the_contract_check_refuses_by_name() {
-        assert_eq!(check_box([-512.0; 3], [512.0; 3]), Ok(()));
+    fn the_contract_check_refuses_non_finite_and_zero_quaternions() {
+        assert!(check_box([-512.0; 3], [512.0; 3]));
+        assert!(check_box([-10_000.0; 3], [10_000.0; 3]));
+        assert!(!check_box([0.0, f64::NAN, 0.0], [1.0; 3]));
+        assert!(!check_box([0.0, f64::INFINITY, 0.0], [1.0; 3]));
+        assert!(!check_box([-1.0e300, 0.0, 0.0], [1.0; 3]));
+        assert!(check_pivot([10.0, -5.0, 2.5]));
+        assert!(!check_pivot([f64::NAN, 0.0, 0.0]));
+        assert!(!check_pivot([0.0, f64::INFINITY, 0.0]));
+        // Any finite non-zero quaternion is normalized; zero, NaN and infinite are refused.
         assert_eq!(
-            check_box([0.0; 3], [512.5, 1.0, 1.0]),
-            Err(BoxFault::OutOfRange)
+            normalize_rotation([0.0, 0.0, 0.0, 3.0]),
+            Some([0.0, 0.0, 0.0, 1.0])
         );
-        assert_eq!(
-            check_box(
-                [-f64::from(f32::MAX), 0.0, 0.0],
-                [f64::from(f32::MAX), 1.0, 1.0]
-            ),
-            Err(BoxFault::OutOfRange)
+        assert_eq!(normalize_rotation([0.0, 0.0, 0.0, 0.0]), None);
+        assert_eq!(normalize_rotation([f32::NAN, 0.0, 0.0, 1.0]), None);
+        assert_eq!(normalize_rotation([f32::INFINITY, 0.0, 0.0, 1.0]), None);
+    }
+
+    /// A box turned about an off-centre pivot lands at `entity + pivot + rotation * (local - pivot)`.
+    #[test]
+    fn a_box_turned_about_an_off_centre_pivot_lands_where_the_formula_puts_it() {
+        let entity = Vec3::new(10.0, 64.0, -3.0);
+        let pivot = Vec3::new(2.0, 1.0, 4.0);
+        let half = std::f64::consts::FRAC_PI_4; // 90 deg yaw about Y: +x -> -z, +z -> +x
+        let frame = Frame::from_pose(entity, pivot, [0.0, half.sin(), 0.0, half.cos()]);
+        // The pivot itself stays fixed at entity + pivot.
+        assert!(frame.to_world(pivot).distance(entity.add_vector(pivot)) < 1.0e-12);
+        // A local point `(5, 1, 4)` is `+3` along x from the pivot; 90 deg yaw sends it to `-3` along z.
+        let local = Vec3::new(5.0, 1.0, 4.0);
+        let expected = entity
+            .add_vector(pivot)
+            .add_vector(Vec3::new(0.0, 0.0, -3.0));
+        assert!(
+            frame.to_world(local).distance(expected) < 1.0e-12,
+            "{:?} vs {:?}",
+            frame.to_world(local),
+            expected
         );
-        assert_eq!(
-            check_box([0.0, f64::NAN, 0.0], [1.0; 3]),
-            Err(BoxFault::NonFinite)
+        assert!(frame.to_local(frame.to_world(local)).distance(local) < 1.0e-12);
+        // Interpolation moves the pivot linearly and turns by the shortest arc about it.
+        let start = Frame::from_pose(entity, pivot, [0.0, 0.0, 0.0, 1.0]);
+        let end = Frame::from_pose(
+            entity.add_vector(Vec3::new(4.0, 0.0, 0.0)),
+            pivot,
+            [0.0, half.sin(), 0.0, half.cos()],
         );
-        assert!(check_rotation([0.0, 0.0, 0.0, 1.0005]));
-        assert!(!check_rotation([0.0, 0.0, 0.0, 1.01]));
-        assert!(!check_rotation([0.0, 0.0, 0.0, 0.0]));
-        assert!(!check_rotation([f64::INFINITY, 0.0, 0.0, 1.0]));
+        let mid = start.interpolate(&end, 0.5);
+        assert!(
+            mid.to_world(pivot).distance(
+                entity
+                    .add_vector(Vec3::new(2.0, 0.0, 0.0))
+                    .add_vector(pivot)
+            ) < 1.0e-12
+        );
+        let r = 3.0 * std::f64::consts::FRAC_1_SQRT_2;
+        let expected_mid = entity
+            .add_vector(Vec3::new(2.0, 0.0, 0.0))
+            .add_vector(pivot)
+            .add_vector(Vec3::new(r, 0.0, -r));
+        assert!(
+            mid.to_world(local).distance(expected_mid) < 1.0e-12,
+            "{:?} vs {:?}",
+            mid.to_world(local),
+            expected_mid
+        );
+    }
+
+    /// A step that both translates and turns stops at the first contact that sweeping the two
+    /// in turn (either order) would skip.
+    #[test]
+    fn simultaneous_translation_and_rotation_sweep_hits_what_sequential_sweeps_skip() {
+        let arm = Arc::new(ColliderBoxes::new(vec![b(
+            [4.0, 0.0, -0.25],
+            [5.0, 1.0, 0.25],
+        )]));
+        let q0 = [0.0, 0.0, 0.0, 1.0];
+        let half = std::f64::consts::FRAC_PI_4; // 90 deg yaw: +x -> -z
+        let q1 = [0.0, half.sin(), 0.0, half.cos()];
+
+        let start =
+            OrientedCollider::new(Frame::from_pose(Vec3::ZERO, Vec3::ZERO, q0), arm.clone());
+        let end = OrientedCollider::new(
+            Frame::from_pose(Vec3::new(0.0, 0.0, 6.0), Vec3::ZERO, q1),
+            arm.clone(),
+        );
+        // Sequential intermediates: translate-only and rotate-only.
+        let mid_trans = OrientedCollider::new(
+            Frame::from_pose(Vec3::new(0.0, 0.0, 6.0), Vec3::ZERO, q0),
+            arm.clone(),
+        );
+        let mid_rot = OrientedCollider::new(Frame::from_pose(Vec3::ZERO, Vec3::ZERO, q1), arm);
+
+        // At t = 0.5, the arm centre (4.5, 0.5, 0) lands at (3.182, 0.5, -0.182).
+        let mover = b([2.9, 0.0, -0.4], [3.4, 1.0, 0.1]);
+
+        // Both sequential decompositions miss `mover` completely.
+        assert_eq!(start.sweep_first_contact(&mid_trans, mover), None);
+        assert_eq!(mid_trans.sweep_first_contact(&end, mover), None);
+        assert_eq!(start.sweep_first_contact(&mid_rot, mover), None);
+        assert_eq!(mid_rot.sweep_first_contact(&end, mover), None);
+
+        // The simultaneous sweep finds the first contact in (0, 0.5).
+        let (t_hit, hit_box) = start
+            .sweep_first_contact(&end, mover)
+            .expect("simultaneous sweep must contact mover");
+        assert_eq!(hit_box, 0);
+        assert!(
+            t_hit > 0.0 && t_hit < 0.5,
+            "unexpected contact time {t_hit}"
+        );
+        // And the push displacement leaves `mover` clear of the end pose.
+        let push = start
+            .sweep_push_displacement(&end, mover, 0.01)
+            .expect("push displacement");
+        assert!(!end.intersects(mover.move_by(push)));
+        // A non-finite clearance never yields a non-finite push.
+        assert_eq!(start.sweep_push_displacement(&end, mover, f64::NAN), None);
     }
 
     /// The grid's cell is picked from the boxes alone, inside its bounds, and whatever its size a

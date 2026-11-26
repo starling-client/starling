@@ -77,7 +77,9 @@ impl ModBookIndex {
         let mut recipe_ids = BTreeSet::new();
         for category in declarations {
             for id in [&category.id, &category.recipe_type, &category.search_group] {
-                if !super::custom_books::valid_book_id(id) || id.starts_with("minecraft:") {
+                if mod_api::Identifier::parse_namespaced(id).is_none()
+                    || id.starts_with("minecraft:")
+                {
                     return Err(DisplayLoadError::InvalidId(id.clone()));
                 }
             }
@@ -87,7 +89,7 @@ impl ModBookIndex {
             if !resources.book(&category.book) {
                 return Err(unknown("book", category.book.as_str()));
             }
-            if !super::custom_books::valid_book_id(&category.target_menu) {
+            if mod_api::Identifier::parse_namespaced(&category.target_menu).is_none() {
                 return Err(DisplayLoadError::InvalidId(category.target_menu));
             }
             if !resources.menu(&category.target_menu) {

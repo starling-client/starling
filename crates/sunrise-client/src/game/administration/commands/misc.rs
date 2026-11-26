@@ -1,6 +1,5 @@
 //! `/random` (RandomCommand) and `/teammsg` (TeamMsgCommand).
 use super::{Arg, Context, Game, R, Target, err};
-use crate::game::chat::PLAYER_NAME;
 use sunrise_client::{
     clock::SprintReport,
     text::{self, Text},
@@ -80,9 +79,7 @@ impl Game<'_> {
                     Some(Arg::Float(v)) => *v,
                     _ => 20.0,
                 };
-                // MinecraftServer.setTickRate: the autosave wait already
-                // running is shortened when the new rate asks for less.
-                self.apply_tick_rate(rate);
+                self.set_tick_rate(rate);
                 self.feedback(t(
                     "commands.tick.rate.success",
                     &[lit(format_fixed(f64::from(rate), 1))],
@@ -315,9 +312,12 @@ impl Game<'_> {
         }
         Ok(value)
     }
-    /// `/teammsg`: the executor's team hears the message.
+    /// `/teammsg` (TeamMsgCommand): the message is player chat to each online member of the
+    /// executor's team, bound to the world's `team_msg_command_incoming` chat type, and to the
+    /// executor with `team_msg_command_outgoing`, both targeting the team's display name.
+    /// Unsigned, so a disguised chat (`PlayerChatMessage.system`). Returns the receivers.
     pub(super) fn cmd_teammsg(&mut self, ctx: &Context) -> R<i32> {
-        let entity = match self.command_source {
+        let entity = match &self.command_source {
             Some(s) => s.entity,
             None => Some(Target::Player),
         };
@@ -330,22 +330,34 @@ impl Game<'_> {
         let Some(team) = self.score.board.players_team(&holder).cloned() else {
             return Err(err("commands.teammsg.failed.noteam", &[]));
         };
-        // Only the local player can be on the receiving end.
-        let player_name = PLAYER_NAME.to_owned();
-        let player_in_team = self
-            .score
-            .board
-            .players_team(&player_name)
-            .is_some_and(|t| t.name == team.name);
-        if !player_in_team {
+        let sender = match entity {
+            Target::Guest(conn) => Some(conn),
+            Target::Player => self.lan_acting,
+            _ => None,
+        };
+        let board = &self.score.board;
+        let receivers: Vec<u32> = self
+            .lan
+            .iter()
+            .flat_map(|host| host.hub.online_players())
+            .filter(|g| {
+                Some(g.conn) == sender
+                    || board
+                        .players_team(&g.name)
+                        .is_some_and(|t| t.name == team.name)
+            })
+            .map(|g| g.conn)
+            .collect();
+        if receivers.is_empty() {
             return Ok(0);
         }
         let raw = match ctx.get("message") {
             Some(Arg::Str(m)) => m.clone(),
             _ => String::new(),
         };
-        let message = self.expand_selectors(&raw);
-        let hover = text::Style {
+        let message = self.resolve_chat_message(&raw);
+        let name = self.source_display_name();
+        let suggest = text::Style {
             hover: Some(std::sync::Arc::new(Text::translate(
                 "chat.type.team.hover",
                 &[],
@@ -353,15 +365,43 @@ impl Game<'_> {
             click: Some(text::ClickEvent::SuggestCommand("/teammsg ".into())),
             ..text::Style::default()
         };
-        let team_name = team.formatted_display_name().with_style(&hover);
-        let sender = self.target_name(entity);
-        let key = if entity == Target::Player {
-            "chat.type.team.sent"
-        } else {
-            "chat.type.team.text"
-        };
-        self.system_message(Text::translate(key, &[team_name, sender, message]));
-        Ok(1)
+        let team_name = sunrise_client::lan::data::component_nbt(
+            &team
+                .formatted_display_name()
+                .with_style(&suggest)
+                .component(),
+        );
+        let content = sunrise_client::lan::data::component_nbt(&message.component());
+        let name = sunrise_client::lan::data::component_nbt(&name.component());
+        if let Some(host) = &self.lan {
+            // ChatType.bind throws for a missing type: the command fails.
+            let bind = |chat_type: &str| {
+                host.hub.chat_type_id(chat_type).map(|id| {
+                    sunrise_protocol::packets::play::ChatTypeBound {
+                        chat_type: id.network_id() as i32,
+                        name: name.clone(),
+                        target: Some(team_name.clone()),
+                    }
+                })
+            };
+            let (Some(incoming), Some(outgoing)) = (
+                bind("team_msg_command_incoming"),
+                bind("team_msg_command_outgoing"),
+            ) else {
+                return Err(err("command.failed", &[]));
+            };
+            for &conn in &receivers {
+                if let Some(index) = host.hub.guests.connection_index(conn) {
+                    let bound = if Some(conn) == sender {
+                        outgoing.clone()
+                    } else {
+                        incoming.clone()
+                    };
+                    host.hub.send_disguised(index, content.clone(), bound);
+                }
+            }
+        }
+        Ok(receivers.len() as i32)
     }
 }
 

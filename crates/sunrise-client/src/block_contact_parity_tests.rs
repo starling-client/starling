@@ -224,6 +224,12 @@ fn old_sweep(
             InsideShape::Boxes(boxes) => walk
                 .bounds_at(from)
                 .collided_along_vector(to.subtract(from), &boxes),
+            // Entity.collidedWithShapeMovingFrom over the shape's boxes moved to the block.
+            InsideShape::Fixed(shape) => {
+                let boxes: Vec<_> = shape.moved(Vec3::from_block(p)).boxes().to_vec();
+                walk.bounds_at(from)
+                    .collided_along_vector(to.subtract(from), &boxes)
+            }
         };
         let inside_fluid = walk.collided_with_fluid(p, from, to);
         if !(inside_block || inside_fluid) || !visited.insert(p.pack()) {

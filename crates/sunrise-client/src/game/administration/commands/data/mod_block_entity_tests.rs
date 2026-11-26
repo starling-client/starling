@@ -119,6 +119,7 @@ fn actual_data_commands_preserve_same_mod_entity_runtime_state() {
         let mut types = sunrise_client::block_entity_types::BlockEntityTypes::new(
             [(BLOCK.to_owned(), ENTITY.to_owned())].into(),
             vec![ENTITY.to_owned(), "fixture:replacement".to_owned()],
+            [ENTITY.to_owned(), "fixture:replacement".into()],
         );
         types.add_valid(BLOCK, "fixture:replacement").unwrap();
         sunrise_client::block_entity_types::install(types).unwrap();
@@ -187,10 +188,14 @@ fn actual_data_commands_preserve_same_mod_entity_runtime_state() {
                 ("added", Tag::Short(9)),
             ]))
         );
-        assert_eq!(loaded.items.len(), 2);
+        assert_eq!(
+            loaded.items.len(),
+            4,
+            "the container keeps its declared size"
+        );
         assert!(
-            loaded.items[0].is_none(),
-            "saved inventory replaces the old slots"
+            [0, 2, 3].iter().all(|&slot| loaded.items[slot].is_none()),
+            "only the decoded stack occupies a slot after loading"
         );
         let stack = loaded.items[1].as_ref().unwrap();
         assert_eq!(stack.item.as_ref(), "minecraft:diamond");
@@ -199,6 +204,8 @@ fn actual_data_commands_preserve_same_mod_entity_runtime_state() {
             stack.data().unwrap().other("minecraft:custom_data"),
             Some(&Tag::compound([("stamp", Tag::Byte(8))]))
         );
+        assert!(loaded.items[2].is_none());
+        assert!(loaded.items[3].is_none());
 
         let before = run(&mut game, "data remove block 2 64 2 Opaque.typed");
         changed(&game, before);
@@ -212,11 +219,16 @@ fn actual_data_commands_preserve_same_mod_entity_runtime_state() {
         assert_eq!(projected.get("Items"), Some(&expected));
         let before = run(&mut game, "data remove block 2 64 2 Items");
         changed(&game, before);
-        assert!(
-            entity(&game).items.is_empty(),
-            "removed inventory must not resurrect"
+        assert_eq!(
+            entity(&game).items,
+            [None, None, None, None],
+            "removing the saved inventory clears the slots without shrinking the container"
         );
         assert!(!entity(&game).nbt.contains_key(&"Items".into()));
+        assert_eq!(
+            game.data_of(&DataRef::Block(POS)).unwrap().get("Items"),
+            None
+        );
         let before = run(&mut game, "data remove block 2 64 2 Opaque");
         changed(&game, before);
         assert!(!entity(&game).nbt.contains_key(&"Opaque".into()));
@@ -224,7 +236,7 @@ fn actual_data_commands_preserve_same_mod_entity_runtime_state() {
         // Unknown, non-inventory Items belongs to the mod's opaque saved data.
         let before = run(&mut game, "data merge block 2 64 2 {Items:{opaque:5b}}");
         changed(&game, before);
-        assert!(entity(&game).items.is_empty());
+        assert_eq!(entity(&game).items, [None, None, None, None]);
         assert_eq!(
             entity(&game).nbt.get(&"Items".into()),
             Some(&Tag::compound([("opaque", Tag::Byte(5))]))
@@ -256,7 +268,7 @@ fn actual_data_commands_preserve_same_mod_entity_runtime_state() {
         assert_eq!(game.data_of(&DataRef::Block(POS)).unwrap(), saved);
 
         game.native_lifecycle
-            .begin_open(mod_api::Authority::IntegratedServer);
+            .begin_open(Some(mod_api::Authority::IntegratedServer));
         game.options.dedicated = Some(Vec::new());
         let level = game.level("minecraft:overworld").unwrap();
         let handle = game.block_entity(level, POS).unwrap();

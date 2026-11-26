@@ -1,5 +1,4 @@
 //! The `is_signal_source` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0055
 
 pub trait Hooks {
     /// `BlockState.isSignalSource`: set `source` for a block of yours that

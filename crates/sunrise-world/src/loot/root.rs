@@ -17,13 +17,21 @@ impl<R: RandomSource + Clone> Context<'_, R> {
         if generation.is_empty() {
             return items;
         }
-        generation.apply(self, items)
+        let mut generated = LootStacks(items);
+        generation.apply(self, &mut generated);
+        generated.0
     }
 }
 
 impl<R: RandomSource + Clone> global_modifiers::ModifierRoll for Context<'_, R> {
     fn facts(&self) -> LootContext<'_> {
-        self.roll_facts(0)
+        query_context::roll_facts(
+            &self.query,
+            self.place.as_deref(),
+            self.entity,
+            self.biome,
+            self.luck,
+        )
     }
     fn next_int(&mut self) -> i32 {
         self.random.next_int()
@@ -46,17 +54,31 @@ impl<R: RandomSource + Clone> global_modifiers::ModifierRoll for Context<'_, R> 
     fn next_gaussian(&mut self) -> f64 {
         self.random.next_gaussian()
     }
-    fn condition(&mut self, condition: &Value) -> bool {
-        Context::condition(self, condition)
+    fn condition(&mut self, condition: &types::PreparedCondition) -> bool {
+        self.condition_with_bindings(condition.value(), Some(condition.rules()))
     }
-    fn roll_raw(&mut self, id: &str) -> Result<Vec<LootStack>, String> {
+    fn roll_raw(
+        &mut self,
+        id: &str,
+        visit: &mut dyn FnMut(&dyn LootStackAccess),
+    ) -> Result<(), String> {
+        let mut output = LootStacks::default();
+        self.append_raw(id, &mut output)?;
+        for stack in &output.0 {
+            visit(stack);
+        }
+        Ok(())
+    }
+    fn append_raw(&mut self, id: &str, generated: &mut dyn LootListAccess) -> Result<(), String> {
         let table = self
             .data
             .tables
             .get(id)
             .ok_or_else(|| format!("table: missing loot table {id}"))?;
-        let mut output = Vec::new();
-        self.table_raw(id, table, &mut |_, stack| output.push(stack));
-        Ok(output)
+        let target = (generated as &mut dyn std::any::Any)
+            .downcast_mut::<LootStacks>()
+            .ok_or("foreign loot output list")?;
+        self.table_raw(id, table, &mut |_, stack| target.0.push(stack));
+        Ok(())
     }
 }

@@ -4,12 +4,15 @@
 //!
 //! The `zombie` fixture is shared with the behavior tests (#824).
 use super::super::creatures;
-use super::super::native_entity_refs::tests::with_game;
+use super::super::native_entity_refs::tests::{
+    fixture_resident_column, run_fresh_cases, with_game,
+};
 use mod_api::{
-    EntityPart, EntityRef, Goal, GoalContext, GoalFlags, GoalRegistrar, Hooks, LivingRef, ModEntry,
-    Registrar, RegistrationContext,
+    EntityPart, EntityRef, Goal, GoalContext, GoalFlags, Hooks, LivingRef, ModEntry,
+    RegisterGoalsEvent, Registrar, RegistrationContext,
 };
 use std::sync::Mutex;
+
 use sunrise_client::mobs::{self, Mob, goals::Cx};
 use sunrise_core::{geometry::Vec3, random::RandomSource};
 
@@ -80,9 +83,13 @@ impl Goal for Counter {
 struct ZombieGoals;
 #[mod_api::sunrise_part]
 impl EntityPart for ZombieGoals {
-    fn register_goals(&self, goals: &mut GoalRegistrar<'_>) {
-        assert_eq!(goals.mob().id(), "minecraft:zombie");
-        goals.add_goal(7, Counter::default());
+    fn register_goals(
+        &self,
+        _host: &mut dyn mod_api::ServerHost,
+        event: &mut RegisterGoalsEvent<'_, '_>,
+    ) {
+        assert_eq!(event.goals.mob().id(), "minecraft:zombie");
+        event.goals.add_goal(7, Counter::default());
     }
 }
 
@@ -93,7 +100,11 @@ static ASKED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0
 struct Asked;
 #[mod_api::sunrise_part]
 impl EntityPart for Asked {
-    fn register_goals(&self, _: &mut GoalRegistrar<'_>) {
+    fn register_goals(
+        &self,
+        _host: &mut dyn mod_api::ServerHost,
+        _: &mut RegisterGoalsEvent<'_, '_>,
+    ) {
         ASKED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 }
@@ -126,7 +137,7 @@ impl mobs::goals::Goal for Vanilla {
     }
 }
 
-/// A zombie in the game's list, as `Mob::new` builds it.
+/// A zombie in the game's list, as `Mob::new` builds it, with staged mod parts flushed.
 pub(in crate::game) fn zombie(game: &mut super::super::Game<'_>, id: u32, at: [f64; 3]) {
     let kind = game
         .res
@@ -137,6 +148,19 @@ pub(in crate::game) fn zombie(game: &mut super::super::Game<'_>, id: u32, at: [f
     let mut m = Mob::new(id, kind, Vec3::new(at[0], at[1], at[2]), 0.0);
     m.ground.on_ground = true;
     game.mobs.push(m);
+    let join = game.mobs.last().unwrap().join;
+    game.flush_resident_mob_parts(id, join);
+}
+
+/// Re-stage and flush `register_goals` on a resident mob in `game.mobs[index]`
+/// after a test clears its selectors.
+fn restage_and_flush_goals(game: &mut super::super::Game<'_>, index: usize) {
+    let (id, join) = {
+        let m = &mut game.mobs[index];
+        m.stage_mod_goals();
+        (m.id, m.join)
+    };
+    game.flush_resident_mob_parts(id, join);
 }
 
 /// The zombie's goal selector ticks once, as `server_ai_step` ticks it: the
@@ -244,8 +268,8 @@ fn two_mobs_keep_independent_state_and_random_streams() {
         // Only the mod goal, so the species' own draws stay out of the count.
         game.mobs[0].ai.goals.clear();
         game.mobs[1].ai.goals.clear();
-        mobs::part_goals::attach(&mut game.mobs[0]);
-        mobs::part_goals::attach(&mut game.mobs[1]);
+        restage_and_flush_goals(game, 0);
+        restage_and_flush_goals(game, 1);
         // Construction already consumed the living entity's yaw draw.
         // Snapshot at the goal boundary, not before the entity constructor.
         let mut after_first = game.mobs[0].random.clone();
@@ -279,6 +303,7 @@ fn reads_answer_the_tick_view_and_refuse_what_it_lacks() {
     READS.lock().unwrap().clear();
     install_game_mods();
     with_game(|game| {
+        fixture_resident_column(&mut game.world, (0, 0));
         zombie(game, 20, [3.5, 65.0, 3.5]);
         zombie(game, 21, [13.5, 65.0, 13.5]);
         game.mobs[1].health = 12.5;
@@ -310,7 +335,7 @@ fn a_higher_priority_goal_interrupts_a_running_mod_goal() {
         // Just the two competing goals: the mod goal (registered at 7 by the
         // part) and a vanilla standin above it at 3.
         game.mobs[0].ai.goals.clear();
-        mobs::part_goals::attach(&mut game.mobs[0]);
+        restage_and_flush_goals(game, 0);
         assert!(
             game.mobs[0]
                 .ai
@@ -366,8 +391,12 @@ fn set_target_follows_the_write_rules() {
     struct Targets;
     #[mod_api::sunrise_part]
     impl EntityPart for Targets {
-        fn register_goals(&self, goals: &mut GoalRegistrar<'_>) {
-            goals.add_goal(5, SetTarget);
+        fn register_goals(
+            &self,
+            _host: &mut dyn mod_api::ServerHost,
+            event: &mut RegisterGoalsEvent<'_, '_>,
+        ) {
+            event.goals.add_goal(5, SetTarget);
         }
     }
     struct TargetMod;
@@ -382,6 +411,7 @@ fn set_target_follows_the_write_rules() {
     crate::game::api_values::install_parts(&[ModEntry::new("targets", Box::new(TargetMod))])
         .unwrap();
     with_game(|game| {
+        fixture_resident_column(&mut game.world, (0, 0));
         zombie(game, 40, [3.5, 65.0, 3.5]);
         zombie(game, 41, [13.5, 65.0, 13.5]);
         let other = game.entity(41).unwrap();
@@ -389,7 +419,7 @@ fn set_target_follows_the_write_rules() {
         // Only the writing goal, so no species goal races it.
         game.mobs[0].ai.goals.clear();
         game.mobs[0].ai.targets.clear();
-        mobs::part_goals::attach(&mut game.mobs[0]);
+        restage_and_flush_goals(game, 0);
         tick_goals(game, 0);
         assert_eq!(
             game.mobs[0].ai.target,
@@ -480,8 +510,12 @@ fn the_host_answers_without_panicking() {
     struct Readers;
     #[mod_api::sunrise_part]
     impl EntityPart for Readers {
-        fn register_goals(&self, goals: &mut GoalRegistrar<'_>) {
-            goals.add_goal(4, Reader);
+        fn register_goals(
+            &self,
+            _host: &mut dyn mod_api::ServerHost,
+            event: &mut RegisterGoalsEvent<'_, '_>,
+        ) {
+            event.goals.add_goal(4, Reader);
         }
     }
     struct ReaderMod;
@@ -508,7 +542,7 @@ fn the_host_answers_without_panicking() {
         set_other(other);
         // Only the reader goal, so nothing else races it.
         game.mobs[0].ai.goals.clear();
-        mobs::part_goals::attach(&mut game.mobs[0]);
+        restage_and_flush_goals(game, 0);
         game.options.dedicated = Some(Vec::new());
         assert!(
             game.mob_world_base(&[]).goal_host.is_some(),
@@ -542,12 +576,14 @@ fn the_host_answers_without_panicking() {
     });
 }
 
-/// A mob of `kind` in the game's list, as `Mob::new` builds it.
+/// A mob of `kind` in the game's list, as `Mob::new` builds it, with staged mod parts flushed.
 fn mob_of(game: &mut super::super::Game<'_>, id: u32, kind: &str, at: [f64; 3]) {
     let kind = game.res.mob_types().get(kind).unwrap().clone();
     let mut m = Mob::new(id, kind, Vec3::new(at[0], at[1], at[2]), 0.0);
     m.ground.on_ground = true;
     game.mobs.push(m);
+    let join = game.mobs.last().unwrap().join;
+    game.flush_resident_mob_parts(id, join);
 }
 
 /// A survival player standing at `at`, as mobs see one (`world::test_player`'s
@@ -619,7 +655,8 @@ fn a_client_copy_registers_no_mod_goals() {
             .get("minecraft:zombie")
             .unwrap()
             .clone();
-        let copy = Mob::new_remote(81, kind, Vec3::new(3.5, 65.0, 5.5), 0.0);
+        let mut copy = Mob::new_remote(81, kind, Vec3::new(3.5, 65.0, 5.5), 0.0);
+        game.flush_unjoined_mob_parts(&mut copy);
         assert!(
             !copy
                 .ai
@@ -636,12 +673,15 @@ fn a_client_copy_registers_no_mod_goals() {
 fn a_screens_entity_registers_no_mod_goals() {
     install_game_mods();
     let asked = || ASKED.load(std::sync::atomic::Ordering::Relaxed);
-    super::super::native_entity_refs::tests::with_client_game(|game| {
+    with_game(|game| {
         let kind = game.res.mob_types().get("minecraft:husk").unwrap().clone();
-        // The authoritative construction asks the part…
-        let _ = Mob::new(90, kind, Vec3::new(0.5, 65.0, 0.5), 0.0);
-        let before = asked();
-        assert!(before >= 1, "the part is installed");
+        // The authoritative construction + flush asks the part…
+        let mut husk = Mob::new(90, kind, Vec3::new(0.5, 65.0, 0.5), 0.0);
+        game.flush_unjoined_mob_parts(&mut husk);
+    });
+    let before = asked();
+    assert!(before >= 1, "the part is installed");
+    super::super::native_entity_refs::tests::with_client_game(|game| {
         // …a screen drawing the type, by type and from saved data, does not.
         let look = mod_api::GuiEntityLook::At([50.0, 40.0]);
         let view = mod_api::GuiEntityView::new([26.0, 8.0, 75.0, 78.0], 30.0, 0.0625, look);
@@ -680,8 +720,12 @@ fn a_goal_jump_goes_through_the_jump_control_input() {
     struct Jumpers;
     #[mod_api::sunrise_part]
     impl EntityPart for Jumpers {
-        fn register_goals(&self, goals: &mut GoalRegistrar<'_>) {
-            goals.add_goal(6, Jumper);
+        fn register_goals(
+            &self,
+            _host: &mut dyn mod_api::ServerHost,
+            event: &mut RegisterGoalsEvent<'_, '_>,
+        ) {
+            event.goals.add_goal(6, Jumper);
         }
     }
     struct JumpMod;
@@ -696,7 +740,7 @@ fn a_goal_jump_goes_through_the_jump_control_input() {
     with_game(|game| {
         zombie(game, 82, [3.5, 65.0, 3.5]);
         game.mobs[0].ai.goals.clear();
-        mobs::part_goals::attach(&mut game.mobs[0]);
+        restage_and_flush_goals(game, 0);
         tick_goals(game, 0);
         // The goal asked the jump control, not its output: the production
         // `jump_control_tick` assigns the output from this wish.
@@ -739,8 +783,12 @@ fn set_target_refuses_what_the_write_handle_refuses() {
     struct Targets;
     #[mod_api::sunrise_part]
     impl EntityPart for Targets {
-        fn register_goals(&self, goals: &mut GoalRegistrar<'_>) {
-            goals.add_goal(5, SetTarget);
+        fn register_goals(
+            &self,
+            _host: &mut dyn mod_api::ServerHost,
+            event: &mut RegisterGoalsEvent<'_, '_>,
+        ) {
+            event.goals.add_goal(5, SetTarget);
         }
     }
     struct TargetMod;
@@ -755,6 +803,9 @@ fn set_target_refuses_what_the_write_handle_refuses() {
     crate::game::api_values::install_parts(&[ModEntry::new("golems", Box::new(TargetMod))])
         .unwrap();
     with_game(|game| {
+        for column in [(0, 0), (1, 1), (2, 2)] {
+            fixture_resident_column(&mut game.world, column);
+        }
         mob_of(game, 90, "minecraft:iron_golem", [3.5, 65.0, 3.5]);
         mob_of(game, 91, "minecraft:zombie", [13.5, 65.0, 13.5]);
         mob_of(game, 92, "minecraft:creeper", [23.5, 65.0, 23.5]);
@@ -762,7 +813,7 @@ fn set_target_refuses_what_the_write_handle_refuses() {
         // Only the writing goal, so no species goal races it.
         game.mobs[0].ai.goals.clear();
         game.mobs[0].ai.targets.clear();
-        mobs::part_goals::attach(&mut game.mobs[0]);
+        restage_and_flush_goals(game, 0);
         for id in [91, 92, 93] {
             *TARGET.lock().unwrap() = Some(game.entity(id).unwrap());
             tick_goals(game, 0);
@@ -853,8 +904,12 @@ fn move_and_look_inputs_pass_the_navigation_boundary() {
     struct Movers;
     #[mod_api::sunrise_part]
     impl EntityPart for Movers {
-        fn register_goals(&self, goals: &mut GoalRegistrar<'_>) {
-            goals.add_goal(6, Mover);
+        fn register_goals(
+            &self,
+            _host: &mut dyn mod_api::ServerHost,
+            event: &mut RegisterGoalsEvent<'_, '_>,
+        ) {
+            event.goals.add_goal(6, Mover);
         }
     }
     struct MoveMod;
@@ -870,7 +925,7 @@ fn move_and_look_inputs_pass_the_navigation_boundary() {
     with_game(|game| {
         zombie(game, 83, [3.5, 65.0, 3.5]);
         game.mobs[0].ai.goals.clear();
-        mobs::part_goals::attach(&mut game.mobs[0]);
+        restage_and_flush_goals(game, 0);
         tick_goals(game, 0);
         let (nan_at, inf_speed, _) = RESULTS.lock().unwrap().last().copied().unwrap();
         assert!(!nan_at, "a NaN coordinate refuses");
@@ -915,8 +970,12 @@ fn the_player_the_tick_sees_resolves_by_its_captured_identity() {
     struct Readers;
     #[mod_api::sunrise_part]
     impl EntityPart for Readers {
-        fn register_goals(&self, goals: &mut GoalRegistrar<'_>) {
-            goals.add_goal(6, PlayerReader);
+        fn register_goals(
+            &self,
+            _host: &mut dyn mod_api::ServerHost,
+            event: &mut RegisterGoalsEvent<'_, '_>,
+        ) {
+            event.goals.add_goal(6, PlayerReader);
         }
     }
     struct PlayerMod;
@@ -933,7 +992,7 @@ fn the_player_the_tick_sees_resolves_by_its_captured_identity() {
     with_game(|game| {
         zombie(game, 84, [3.5, 65.0, 3.5]);
         game.mobs[0].ai.goals.clear();
-        mobs::part_goals::attach(&mut game.mobs[0]);
+        restage_and_flush_goals(game, 0);
         // A server's tick lends a guest's view, with the guest's real
         // identity captured beside it — no player of the game's own exists.
         let view = view_player([9.5, 65.0, 9.5]);
@@ -989,6 +1048,22 @@ fn mod_goal_tick_cost() {
     install_game_mods();
     with_game(|game| {
         zombie(game, 60, [3.5, 65.0, 3.5]);
+        let mut wrapped = {
+            let mut mob = Mob::new(
+                60,
+                game.res
+                    .mob_types()
+                    .get("minecraft:zombie")
+                    .unwrap()
+                    .clone(),
+                Vec3::new(3.5, 65.0, 3.5),
+                0.0,
+            );
+            mob.ai.goals.clear();
+            mob.stage_mod_goals();
+            game.flush_unjoined_mob_parts(&mut mob);
+            std::mem::take(&mut mob.ai.goals)
+        };
         let mut mobs = game.mobs.lift();
         let snapshot: Vec<_> = mobs
             .iter()
@@ -1011,22 +1086,7 @@ fn mod_goal_tick_cost() {
         let per_plain = spin(&mut plain, &mut mobs[0], &mut cx, 20_000);
         // The mod goal through its wrapper and context: a fresh zombie's
         // registered Counter, alone in its selector.
-        let per_mod = {
-            let mut mob = Mob::new(
-                60,
-                game.res
-                    .mob_types()
-                    .get("minecraft:zombie")
-                    .unwrap()
-                    .clone(),
-                Vec3::new(3.5, 65.0, 3.5),
-                0.0,
-            );
-            mob.ai.goals.clear();
-            mobs::part_goals::attach(&mut mob);
-            let mut wrapped = std::mem::take(&mut mob.ai.goals);
-            spin(&mut wrapped, &mut mobs[0], &mut cx, 20_000)
-        };
+        let per_mod = spin(&mut wrapped, &mut mobs[0], &mut cx, 20_000);
         println!(
             "per tick: plain engine goal {per_plain:.1} ns, mod goal {per_mod:.1} ns, \
              wrapper overhead {:+.1} ns",
@@ -1053,8 +1113,8 @@ impl Hooks for GoalsAndFinalize {
 }
 
 /// A `finalize_spawn` listener lends the mob for its call: the mod goal
-/// attached when the mob was made (`part_goals::attach`, whose copies carry
-/// no goal and name themselves `ModGoal`) is still the mob's own afterwards.
+/// attached when the mob was made (whose copies carry no goal and name
+/// themselves `ModGoal`) is still the mob's own afterwards.
 #[test]
 #[ignore = "daily"]
 fn a_finalize_spawn_listener_keeps_the_mod_goals() {
@@ -1070,6 +1130,7 @@ fn a_finalize_spawn_listener_keeps_the_mod_goals() {
     .unwrap();
     with_game(|game| {
         game.resolve_parts().unwrap();
+        fixture_resident_column(&mut game.world, (0, 0));
         let kind = game
             .res
             .mob_types()
@@ -1085,4 +1146,267 @@ fn a_finalize_spawn_listener_keeps_the_mod_goals() {
             "the mod goal survives the lend"
         );
     });
+}
+
+/// The pig a [`Leap`] goal leaps at: the mod that owns the goal knows the
+/// target it chose.
+const PREY: u32 = 71;
+
+/// One velocity call a [`Leap`] goal made at its start: what it answered and
+/// the velocity `delta_movement` read straight after it, as bits.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Step {
+    call: &'static str,
+    answer: bool,
+    read: [u64; 3],
+}
+
+/// The [`Leap`] goals' steps, kept by the test's own mod: the fixture lends
+/// it to each goal it registers.
+type Journal = std::sync::Arc<Mutex<Vec<Step>>>;
+
+/// `LeapAtTargetGoal(mob, 0.4)` written against the goal context: it reads
+/// its own mob's velocity and replaces it (#3926). Before the launch, its
+/// start checks every velocity call once and puts the velocity back.
+struct Leap {
+    journal: Journal,
+    target: Option<EntityRef>,
+}
+impl Leap {
+    /// Make a velocity call and record its answer with the read after it.
+    fn step(
+        &self,
+        cx: &mut GoalContext<'_>,
+        call: &'static str,
+        write: impl FnOnce(&mut GoalContext<'_>) -> bool,
+    ) {
+        let answer = write(cx);
+        let read = cx.delta_movement().map(f64::to_bits);
+        self.journal
+            .lock()
+            .unwrap()
+            .push(Step { call, answer, read });
+    }
+}
+impl Goal for Leap {
+    fn flags(&self) -> GoalFlags {
+        GoalFlags::JUMP.union(GoalFlags::MOVE)
+    }
+    fn name(&self) -> &'static str {
+        "Leap"
+    }
+    fn can_use(&mut self, cx: &mut GoalContext<'_>) -> bool {
+        self.target = cx.host().entity(PREY);
+        let Some(target) = self.target else {
+            return false;
+        };
+        let mob = cx.mob().entity();
+        let (Some(at), Some(own)) = (target.position(cx.host()), mob.position(cx.host())) else {
+            return false;
+        };
+        let (x, y, z) = (own[0] - at[0], own[1] - at[1], own[2] - at[2]);
+        let d = x * x + y * y + z * z;
+        if !(4.0..=16.0).contains(&d) || mob.on_ground(cx.host()) != Some(true) {
+            return false;
+        }
+        // `nextInt(reducedTickDelay(5))`.
+        cx.random().next_int_bound(3) == 0
+    }
+    fn can_continue(&mut self, cx: &mut GoalContext<'_>) -> bool {
+        cx.mob().entity().on_ground(cx.host()) == Some(false)
+    }
+    fn start(&mut self, cx: &mut GoalContext<'_>) {
+        let before = cx.delta_movement();
+        self.step(cx, "before", |_| true);
+        self.step(cx, "set", |cx| cx.set_delta_movement([0.25, -0.5, 0.75]));
+        self.step(cx, "add", |cx| {
+            cx.add_delta_movement([0.125, 0.0625, -0.25])
+        });
+        self.step(cx, "set NaN", |cx| {
+            cx.set_delta_movement([f64::NAN, 0.5, 0.5])
+        });
+        self.step(cx, "add infinite", |cx| {
+            cx.add_delta_movement([0.0, f64::INFINITY, 0.0])
+        });
+        self.step(cx, "set large", |cx| {
+            cx.set_delta_movement([f64::MAX, 1.0, -2.0])
+        });
+        self.step(cx, "add overflowing", |cx| {
+            cx.add_delta_movement([f64::MAX, 3.0, 4.0])
+        });
+        self.step(cx, "restore", |cx| cx.set_delta_movement(before));
+        // The launch, as vanilla's `start` computes it.
+        let movement = cx.delta_movement();
+        let at = self.target.and_then(|t| t.position(cx.host())).unwrap();
+        let own = cx.mob().entity().position(cx.host()).unwrap();
+        let mut delta = [at[0] - own[0], 0.0, at[2] - own[2]];
+        let length_sqr = delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2];
+        if length_sqr > 1.0e-7 {
+            // `delta.normalize().scale(0.4).add(movement.scale(0.2))`.
+            let length = length_sqr.sqrt();
+            delta = [
+                delta[0] / length * 0.4 + movement[0] * 0.2,
+                delta[1] / length * 0.4 + movement[1] * 0.2,
+                delta[2] / length * 0.4 + movement[2] * 0.2,
+            ];
+        }
+        let launch = [delta[0], f64::from(0.4_f32), delta[2]];
+        self.step(cx, "launch", |cx| cx.set_delta_movement(launch));
+    }
+}
+
+struct Leaps(Journal);
+#[mod_api::sunrise_part]
+impl EntityPart for Leaps {
+    fn register_goals(
+        &self,
+        _host: &mut dyn mod_api::ServerHost,
+        event: &mut RegisterGoalsEvent<'_, '_>,
+    ) {
+        event.goals.add_goal(
+            4,
+            Leap {
+                journal: self.0.clone(),
+                target: None,
+            },
+        );
+    }
+}
+
+struct LeapMod(Journal);
+#[mod_api::__subscriptions]
+impl Hooks for LeapMod {
+    fn register(&self, r: &mut dyn Registrar, _cx: &RegistrationContext) {
+        r.entity_part("minecraft:wolf", Leaps(self.0.clone()));
+    }
+}
+
+/// A wolf about to leap at a pig 2.5 blocks east and 1.5 south, on a stone
+/// floor, with only its leap goal: the engine's `LeapAtTarget`, or the mod's
+/// [`Leap`]. Its position, velocity and ground flag after each of 40 mob
+/// ticks, as bits.
+fn leap_trace(mod_goal: bool) -> Vec<[u64; 7]> {
+    use sunrise_client::mobs::Who;
+    let mut trace = Vec::new();
+    with_game(|game| {
+        game.options.dedicated = Some(Vec::new());
+        for (x, z) in (-1..=1).flat_map(|x| (-1..=1).map(move |z| (x, z))) {
+            let mut chunk = sunrise_client::chunk::Chunk::empty(x, z);
+            chunk.lit = true;
+            game.world.chunks.insert((x, z), std::sync::Arc::new(chunk));
+        }
+        let stone = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:stone")
+            .unwrap();
+        for x in 0..16 {
+            for z in 0..16 {
+                game.world.set(x, 64, z, stone).unwrap();
+            }
+        }
+        mob_of(game, 70, "minecraft:wolf", [3.5, 65.0, 3.5]);
+        mob_of(game, PREY, "minecraft:pig", [6.0, 65.0, 5.0]);
+        for m in game.mobs.iter_mut() {
+            m.ai.goals.clear();
+            m.ai.targets.clear();
+        }
+        game.mobs[0].ai.target = Some(Who::Mob(PREY));
+        if mod_goal {
+            restage_and_flush_goals(game, 0);
+        } else {
+            game.mobs[0]
+                .ai
+                .goals
+                .add(4, mobs::goals::LeapAtTarget::new(0.4));
+        }
+        for _ in 0..40 {
+            game.world.game_time += 1;
+            game.tick_mobs().unwrap();
+            let wolf = game.mobs.iter().find(|m| m.id == 70).unwrap();
+            let (p, v) = (wolf.position, wolf.velocity);
+            trace.push([
+                p.x.to_bits(),
+                p.y.to_bits(),
+                p.z.to_bits(),
+                v.x.to_bits(),
+                v.y.to_bits(),
+                v.z.to_bits(),
+                u64::from(wolf.ground.on_ground),
+            ]);
+        }
+    });
+    trace
+}
+
+/// A mod goal that ports `LeapAtTargetGoal` through
+/// `GoalContext::set_delta_movement` launches its mob as the engine's port of
+/// vanilla's goal does, on the same seed: the same velocity and position bit
+/// for bit, tick after tick, through the flight to the landing. Each velocity
+/// call answers as `Entity.setDeltaMovement` and `addDeltaMovement` decide,
+/// and `delta_movement` reads its effect at once: accepted writes land, and
+/// a refused one (a NaN set, an infinite add, a finite add whose sum
+/// overflows) changes nothing.
+#[test]
+#[ignore = "daily"]
+fn a_mod_leap_goal_flies_and_lands_as_the_engine_leap_does() {
+    if run_fresh_cases(
+        "game::native_goal_ticks::tests::a_mod_leap_goal_flies_and_lands_as_the_engine_leap_does",
+        "SUNRISE_GOAL_DELTA_MOVEMENT_CHILD",
+        &["valid"],
+    ) {
+        return;
+    }
+    let journal = Journal::default();
+    let entry = || ModEntry::new("leaps", Box::new(LeapMod(journal.clone())));
+    mod_platform::__private::install(vec![entry()].into());
+    crate::game::api_values::install_parts(&[entry()]).unwrap();
+    let engine = leap_trace(false);
+    let ported = leap_trace(true);
+    let airborne = engine.iter().position(|t| t[6] == 0);
+    assert!(airborne.is_some(), "the engine's wolf leaps");
+    assert!(
+        engine[airborne.unwrap()..].iter().any(|t| t[6] == 1),
+        "and lands within the trace"
+    );
+    assert_eq!(
+        ported, engine,
+        "the mod's leap is the engine's, bit for bit"
+    );
+
+    let steps = journal.lock().unwrap().clone();
+    assert!(!steps.is_empty(), "the mod's goal started");
+    assert_eq!(steps.len() % 9, 0, "every start makes its nine calls");
+    let bits = |v: [f64; 3]| v.map(f64::to_bits);
+    for start in steps.chunks(9) {
+        let before = start[0].read;
+        let added = bits([0.375, -0.4375, 0.5]);
+        let large = bits([f64::MAX, 1.0, -2.0]);
+        let expected = [
+            ("before", true, before),
+            ("set", true, bits([0.25, -0.5, 0.75])),
+            ("add", true, added),
+            ("set NaN", false, added),
+            ("add infinite", false, added),
+            ("set large", true, large),
+            ("add overflowing", false, large),
+            ("restore", true, before),
+        ];
+        for (step, (call, answer, read)) in start.iter().zip(expected) {
+            assert_eq!(step.call, call);
+            assert_eq!(step.answer, answer, "{call} answers {answer}");
+            assert_eq!(
+                step.read, read,
+                "{call}: delta_movement reads {read:?} straight after"
+            );
+        }
+        let launch = start[8];
+        assert_eq!((launch.call, launch.answer), ("launch", true));
+        assert_eq!(
+            launch.read[1],
+            f64::from(0.4_f32).to_bits(),
+            "the launch's rise reads back"
+        );
+    }
 }

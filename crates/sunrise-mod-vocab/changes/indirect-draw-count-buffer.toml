@@ -1,0 +1,8 @@
+ids = [
+    "type:IndirectDraw.count_buffer",
+    "handle:IndirectDraw::with_count_buffer",
+    "type:RenderCapabilities.multi_draw_indirect_count",
+    "type:PipelineDrawError.UnsupportedIndirectCount",
+]
+why = "#5908: an IndirectDraw may read how many commands to draw from a GPU-written u32 (with_count_buffer), capped by max_count (multi_draw_indirect_count), so a compute-culled draw list costs nothing for its culled slots. RenderCapabilities::multi_draw_indirect_count says where the adapter can (MULTI_DRAW_INDIRECT_COUNT, not DirectX 12, whose count draws drop base_vertex); elsewhere the draw is refused with PipelineDrawError::UnsupportedIndirectCount. IndirectDraw and RenderCapabilities are non_exhaustive, so this adds fields without breaking callers."
+migrate = "Nothing to change."

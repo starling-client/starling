@@ -42,12 +42,10 @@ import sys
 import time
 from pathlib import Path
 
-try:
-    from . import lab
-except ImportError:
-    import lab
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab
 
-ROOT = lab.ROOT
 REPORT_FORMAT, REPORT_VERSION = "sunrise-build-times", 1
 WORK = Path(".local") / "build-times"
 MARKER = ".sunrise-build-times"
@@ -178,10 +176,7 @@ def summarize_timings(units, top=TOP_CRATES):
 
 def machine_info():
     try:
-        try:
-            from . import perf_bench
-        except ImportError:
-            import perf_bench
+        from tools import perf_bench
         info = perf_bench.hardware()
     except Exception:
         info = {"os": sys.platform, "arch": platform.machine(), "cpu_threads": os.cpu_count(),

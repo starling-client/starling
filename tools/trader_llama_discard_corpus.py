@@ -5,7 +5,12 @@ down by one each tick and, at 0 or below, removes its leash and discards
 itself in that same tick. A delay of 5 is gone after the fifth tick, and a
 delay of 0 after the first. A tame llama and a persistent one are controls.
 """
-from command_exec_corpus import cmd
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools.command_exec_corpus import cmd
 
 LLAMAS = [(1, 'delay5', 'DespawnDelay:5'), (2, 'delay0', 'DespawnDelay:0'),
           (3, 'tame5', 'DespawnDelay:5,Tame:1b'), (4, 'persistent5', 'DespawnDelay:5,PersistenceRequired:1b')]

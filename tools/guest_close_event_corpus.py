@@ -3,10 +3,12 @@
 Whole listener compounds remain executable H064/H191 diagnostics. The strict
 contract covers exact partial event/position reads, callbacks, state and clocks.
 """
-try:
-    from .command_exec_corpus import cmd
-except ImportError:
-    from command_exec_corpus import cmd
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools.command_exec_corpus import cmd
 
 
 def cases():

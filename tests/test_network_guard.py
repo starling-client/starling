@@ -152,3 +152,18 @@ class NetworkGuard(unittest.TestCase):
     def test_unreadable_listing_fails_closed(self):
         with self.assertRaises(network_guard.ListingFailed):
             list(network_guard.invocations([{"label": "target", "env": {}}], {}, [], lambda *args: None))
+
+
+class HungUnderTheGuard(unittest.TestCase):
+    def test_a_hung_binary_keeps_its_named_failure_beside_the_violation(self):
+        import io
+
+        def hung_run_one(binary, env, args, timed, listing_env=None):
+            Path(env["SUNRISE_NETWORK_GUARD_LOG"]).write_text("loaded 7\nconnect inet\n")
+            return {"binary": binary, "pid": 7, "output": io.StringIO(), "hung": ["a::stuck"],
+                    "status": "hung: a::stuck still running after 60 s; killed"}
+
+        result = network_guard.run(({"label": "pkg"}, []), {}, False, Path("/guard.so"), hung_run_one)
+        self.assertEqual(result["hung"], ["a::stuck"])
+        self.assertEqual(result["status"],
+                         "hung: a::stuck still running after 60 s; killed; network guard: connect inet")

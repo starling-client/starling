@@ -6,7 +6,7 @@ fn item_stacked_on_other_dispatches_global_and_item_parts() {
         fn item_stacked_on_other(
             &self,
             _: HostSide<'_>,
-            event: &mut ItemStackedOnOtherEvent<'_>,
+            event: &mut ItemStackedOnOtherEvent<'_, '_>,
         ) -> Flow {
             self.0.lock().unwrap().push("global");
             if self.1 {
@@ -31,7 +31,7 @@ fn item_stacked_on_other_dispatches_global_and_item_parts() {
         fn item_stacked_on_other(
             &self,
             _: HostSide<'_>,
-            event: &mut ItemStackedOnOtherEvent<'_>,
+            event: &mut ItemStackedOnOtherEvent<'_, '_>,
         ) -> Flow {
             self.log.lock().unwrap().push(self.label);
             event.cancelled |= self.cancel_flag;
@@ -73,21 +73,14 @@ fn item_stacked_on_other_dispatches_global_and_item_parts() {
         ..Parts::default()
     });
     let mut host = TestHost;
-    let click = mod_api::mod_api::item::menu::StackedOnOther;
-    let mut result = mod_api::mod_api::item::menu::StackedOnOtherResult;
+    let mut click = mod_api::mod_api::item::menu::StackedOnOther(std::marker::PhantomData);
     let mut canceled = false;
-    dispatch_item_stacked_on_other(
-        HostSide::Server(&mut host),
-        &click,
-        &mut result,
-        &mut canceled,
-    );
+    dispatch_item_stacked_on_other(HostSide::Server(&mut host), &mut click, &mut canceled);
     assert!(canceled);
     dispatch_item_stacked_on_other_part(
         HostSide::Server(&mut host),
         "test:pouch",
-        &click,
-        &mut result,
+        &mut click,
         &mut canceled,
     );
     assert_eq!(*log.lock().unwrap(), ["global"]);
@@ -99,18 +92,12 @@ fn item_stacked_on_other_dispatches_global_and_item_parts() {
         Box::new(GlobalListener(log.clone(), false)),
     )]));
     canceled = false;
-    dispatch_item_stacked_on_other(
-        HostSide::Server(&mut host),
-        &click,
-        &mut result,
-        &mut canceled,
-    );
+    dispatch_item_stacked_on_other(HostSide::Server(&mut host), &mut click, &mut canceled);
     assert!(!canceled);
     dispatch_item_stacked_on_other_part(
         HostSide::Server(&mut host),
         "test:pouch",
-        &click,
-        &mut result,
+        &mut click,
         &mut canceled,
     );
     assert!(canceled);
@@ -126,8 +113,7 @@ fn item_stacked_on_other_dispatches_global_and_item_parts() {
     dispatch_item_stacked_on_other_part(
         HostSide::Server(&mut host),
         "test:pouch",
-        &click,
-        &mut result,
+        &mut click,
         &mut canceled,
     );
     assert!(canceled);

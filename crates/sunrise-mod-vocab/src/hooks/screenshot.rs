@@ -20,7 +20,8 @@ pub trait Hooks {
         contract = "cancel",
         out = "cancel",
         neoforge = "ScreenshotEvent",
-        cancellable = true
+        cancellable = true,
+        version = 2
     )]
     fn screenshot(
         image: &mut ScreenshotImage,

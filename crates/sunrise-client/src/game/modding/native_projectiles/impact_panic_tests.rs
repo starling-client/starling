@@ -1,7 +1,5 @@
 use super::*;
-use mod_api::{
-    Flow, HearsProjectileImpactsEvent, Hooks, HostTransaction, ProjectileImpactEvent, ServerHost,
-};
+use mod_api::{Flow, Hooks, HostTransaction, ProjectileImpactEvent, ServerHost};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -20,13 +18,6 @@ struct PanicAfterAdmission {
 }
 #[mod_api::__subscriptions]
 impl Hooks for PanicAfterAdmission {
-    fn hears_projectile_impacts(
-        &self,
-        _: &dyn mod_api::Host,
-        event: &mut HearsProjectileImpactsEvent,
-    ) {
-        event.hears = true;
-    }
     fn projectile_impact(
         &self,
         host: &mut dyn ServerHost,
@@ -45,15 +36,16 @@ impl Hooks for PanicAfterAdmission {
             assert!(self.admitted.load(Ordering::SeqCst));
             // Hook dispatch now contains the panic. The callback's own transaction
             // still has to abort its tentative spawn before dispatch resumes.
-            let _: Result<(), ()> = host.transaction(|host, _| {
-                let spawned = host.summon(
-                    event.dimension,
+            let _ = host.transaction::<(), ()>(|host, _| {
+                let level = host.level(event.dimension).unwrap();
+                let spawned = level.summon(
+                    host,
                     "minecraft:snowball",
                     [9.5, 70.0, 0.5],
                     Default::default(),
                 );
                 assert!(
-                    spawned.is_some(),
+                    spawned.unwrap().is_some(),
                     "the tentative spawn must exist to roll back"
                 );
                 self.panicked.store(true, Ordering::SeqCst);
@@ -175,7 +167,7 @@ fn shoot_listener_panic_after_admission_preserves_owned_rows() {
                     .iter()
                     .map(|p| (p.id, p.join))
                     .collect();
-                assert!(game.transaction_current().is_none());
+                assert!(!game.has_open_transaction());
                 // The contained panic cannot retire a live owner or publish the aborted spawn.
                 assert_eq!(restored, before, "panic changed survivor identity or order");
                 let mut table = game.resident_entities.table.borrow_mut();

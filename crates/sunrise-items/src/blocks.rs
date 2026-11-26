@@ -2,10 +2,11 @@
 //! (`gameplay-facts.json`), indexed by registry state ID.
 mod decode;
 use crate::Result;
+use mod_vocab::{BlockSoundCause, BlockSoundType, BlockSoundTypeIdentity, SoundEventKey};
 use serde_json::Value;
-use std::{collections::HashMap, path::Path, sync::Arc};
+use std::{collections::HashMap, io, path::Path, sync::Arc};
 use sunrise_world::{
-    level::{Behaviours, GameplayStateSource},
+    level::{Behaviours, GameplayStateSource, data::BlockSound},
     registry::{BlockRegistry, BlockStateId},
 };
 
@@ -22,16 +23,6 @@ pub enum Fluid {
     Lava,
     /// A mod's world fluid: a fluid to a bucket's ray, neither water nor lava to anything else.
     Modded,
-}
-#[derive(Clone, Debug)]
-pub struct Sounds {
-    pub volume: f32,
-    pub pitch: f32,
-    pub break_sound: Arc<str>,
-    pub step: Arc<str>,
-    pub place: Arc<str>,
-    pub hit: Arc<str>,
-    pub fall: Arc<str>,
 }
 /// `SignBlockEntity.createDefaultSignText` of a content sign: the `DyeColor` id and glow.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -69,7 +60,7 @@ pub struct StateFacts {
     /// The item pick-block takes (`BlockState.getCloneItemStack`): `item` unless the block
     /// declares its own, as a crop picks its seed.
     pub pick_item: Arc<str>,
-    pub sounds: Sounds,
+    pub sounds: BlockSoundType,
     pub fluid: Fluid,
     /// Fluid amount 1..=8 (8 = source/falling surface), 0 when there is no fluid.
     pub fluid_level: u8,
@@ -120,6 +111,19 @@ pub fn cube_edges() -> Vec<[f64; 6]> {
     }
     edges
 }
+/// The shape `BlockBehaviour.getVisualShape` answers ([`StateFacts::visual_shape`]): the one
+/// `ClipContext.Block.VISUAL` rays (the camera's, a mod's `ClipBlock::Visual`) stop on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VisualShape {
+    /// `BlockBehaviour.getVisualShape`'s default: the collision shape, with the ray's context.
+    Collision,
+    /// `Shapes.empty()`: nothing, the ray passes.
+    Empty,
+    /// `Shapes.block()`: the full cube.
+    Block,
+    /// The selection outline (`getShape`), with its column offset.
+    Outline,
+}
 /// Which of the four `SignBlock` subclasses a block is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SignForm {
@@ -147,6 +151,25 @@ impl StateFacts {
     /// reads connected textures treats them alike.
     pub fn is_pane(&self) -> bool {
         self.has_class("IronBarsBlock")
+    }
+    /// Which shape `BlockBehaviour.getVisualShape` gives this state (`ClipContext.Block.VISUAL`),
+    /// from the first class of the chain that overrides it: `TransparentBlock` (glass, stained
+    /// and tinted glass, copper grates), `IronBarsBlock` (bars and panes) and `PowderSnowBlock`
+    /// give nothing, `SoulSandBlock` and `MudBlock` a full block, `SnowLayerBlock` and
+    /// `FenceBlock` their outline (`getShape`). Any other block, a mod block on one of
+    /// these templates included, keeps vanilla's default, its collision shape.
+    pub fn visual_shape(&self) -> VisualShape {
+        self.classes
+            .iter()
+            .find_map(|class| match &**class {
+                "TransparentBlock" | "IronBarsBlock" | "PowderSnowBlock" => {
+                    Some(VisualShape::Empty)
+                }
+                "SoulSandBlock" | "MudBlock" => Some(VisualShape::Block),
+                "SnowLayerBlock" | "FenceBlock" => Some(VisualShape::Outline),
+                _ => None,
+            })
+            .unwrap_or(VisualShape::Collision)
     }
     /// `OffsetType.XZ`/`XYZ` with `getMaxHorizontalOffset` and
     /// `getMaxVerticalOffset`, as (max horizontal, max vertical): vertical 0
@@ -200,15 +223,15 @@ pub struct GameplayProjection {
     dampening: u64,
     hardness: f64,
     push: Arc<str>,
-    volume: f64,
-    pitch: f64,
-    place: Arc<str>,
-    break_sound: Arc<str>,
-    fall: Arc<str>,
+    placement_sound: BlockSound,
 }
 
 impl GameplayProjection {
-    fn from_entry(entry: &decode::Entry<'_>, strings: &mut HashMap<String, Arc<str>>) -> Self {
+    fn from_entry(
+        entry: &decode::Entry<'_>,
+        state: &StateFacts,
+        strings: &mut HashMap<String, Arc<str>>,
+    ) -> Self {
         fn intern(strings: &mut HashMap<String, Arc<str>>, value: &str) -> Arc<str> {
             if let Some(existing) = strings.get(value) {
                 return Arc::clone(existing);
@@ -217,32 +240,28 @@ impl GameplayProjection {
             strings.insert(value.to_owned(), Arc::clone(&value_arc));
             value_arc
         }
-        const FLAGS: [&str; 11] = [
-            "replaceable",
-            "random_ticks",
-            "solid_render",
-            "liquid",
-            "block_entity",
-            "ignited_by_lava",
-            "can_occlude",
-            "full_collision",
-            "skylight_down",
-            "requires_tool",
-            "shape_occlusion",
-        ];
         Self {
-            flags: FLAGS.iter().enumerate().fold(0, |flags, (i, name)| {
-                flags | ((u16::from(entry.flag(name))) << i)
-            }),
-            emission: entry.unsigned("emission"),
-            dampening: entry.unsigned("dampening"),
-            hardness: entry.number("hardness"),
-            push: intern(strings, entry.text("push")),
-            volume: entry.sound_number("volume"),
-            pitch: entry.sound_number("pitch"),
-            place: intern(strings, entry.sound_id("place")),
-            break_sound: intern(strings, entry.sound_id("break")),
-            fall: intern(strings, entry.sound_id("fall")),
+            flags: [
+                entry.replaceable,
+                entry.random_ticks,
+                entry.solid_render,
+                entry.liquid,
+                entry.block_entity,
+                entry.ignited_by_lava,
+                entry.can_occlude,
+                entry.full_collision,
+                entry.skylight_down,
+                entry.requires_tool,
+                entry.shape_occlusion,
+            ]
+            .into_iter()
+            .enumerate()
+            .fold(0, |flags, (i, set)| flags | (u16::from(set) << i)),
+            emission: entry.emission.as_u64().unwrap_or(0),
+            dampening: entry.dampening.as_u64().unwrap_or(0),
+            hardness: entry.hardness.as_f64().unwrap_or(0.0),
+            push: intern(strings, entry.push.as_deref().unwrap_or("")),
+            placement_sound: BlockSound::from_type(&state.sounds, BlockSoundCause::Place),
         }
     }
 }
@@ -284,20 +303,11 @@ impl GameplayStateSource for GameplayProjection {
     fn text(&self, name: &str) -> &str {
         if name == "push" { &self.push } else { "" }
     }
-    fn sound_number(&self, name: &str) -> f64 {
-        match name {
-            "volume" => self.volume,
-            "pitch" => self.pitch,
-            _ => 1.0,
-        }
-    }
-    fn sound_id(&self, name: &str) -> &str {
-        match name {
-            "place" => &self.place,
-            "break" => &self.break_sound,
-            "fall" => &self.fall,
-            _ => "",
-        }
+    fn placement_sound(
+        &self,
+        _: &mut dyn FnMut(&str) -> io::Result<SoundEventKey>,
+    ) -> io::Result<BlockSound> {
+        Ok(self.placement_sound.clone())
     }
 }
 
@@ -333,11 +343,12 @@ impl BlockFacts {
         behaviours: &Value,
         parallel: bool,
     ) -> Result<(Self, Vec<GameplayProjection>)> {
-        Self::load_with_callback(root, registry, behaviours, parallel, |entries| {
+        Self::load_with_callback(root, registry, behaviours, parallel, |entries, states| {
             let mut strings = HashMap::new();
             Ok(entries
                 .iter()
-                .map(|entry| GameplayProjection::from_entry(entry, &mut strings))
+                .zip(states)
+                .map(|(entry, state)| GameplayProjection::from_entry(entry, state, &mut strings))
                 .collect())
         })
     }
@@ -347,7 +358,7 @@ impl BlockFacts {
         registry: &BlockRegistry,
         behaviours: &Value,
     ) -> Result<Self> {
-        Ok(Self::load_with_callback(root, registry, behaviours, true, |_| Ok(()))?.0)
+        Ok(Self::load_with_callback(root, registry, behaviours, true, |_, _| Ok(()))?.0)
     }
 
     /// Build both tables from the same behaviour document and gameplay decoder.
@@ -356,11 +367,9 @@ impl BlockFacts {
         registry: &BlockRegistry,
         behaviours: &Value,
     ) -> Result<(Self, Behaviours)> {
-        Self::load_with_callback(root, registry, behaviours, true, |entries| {
-            Ok(Behaviours::load_with_gameplay(
-                registry, root, behaviours, entries,
-            )?)
-        })
+        let (facts, gameplay) = Self::load_with_projection(root, registry, behaviours, true)?;
+        let behaviours = Behaviours::load_with_gameplay(registry, root, behaviours, &gameplay)?;
+        Ok((facts, behaviours))
     }
 
     fn load_with_callback<T>(
@@ -368,7 +377,7 @@ impl BlockFacts {
         registry: &BlockRegistry,
         behaviours: &Value,
         parallel: bool,
-        callback: impl FnOnce(&[decode::Entry<'_>]) -> Result<T>,
+        callback: impl FnOnce(&[decode::Entry<'_>], &[StateFacts]) -> Result<T>,
     ) -> Result<(Self, T)> {
         let path = root.join("gameplay-facts.json");
         let bytes = sunrise_world::json_file::read_bytes(&path)?;
@@ -395,7 +404,7 @@ impl BlockFacts {
         bytes: &[u8],
         registry: &BlockRegistry,
         behaviours: &Value,
-        callback: impl FnOnce(&[decode::Entry<'_>]) -> Result<T>,
+        callback: impl FnOnce(&[decode::Entry<'_>], &[StateFacts]) -> Result<T>,
     ) -> Result<(Self, T)> {
         let raw: decode::Gameplay<'_> = sunrise_world::json_file::parse(path, bytes)?;
         let entries = raw
@@ -470,6 +479,17 @@ impl BlockFacts {
             names.insert(s.to_owned(), name.clone());
             name
         };
+        let mut sound_events: HashMap<String, SoundEventKey> = HashMap::new();
+        let mut sound_event = |id: Option<&str>| -> Result<SoundEventKey> {
+            let name = id.unwrap_or("");
+            if let Some(key) = sound_events.get(name) {
+                return Ok(key.clone());
+            }
+            let key = SoundEventKey::parse(name)
+                .ok_or_else(|| format!("invalid block sound event identifier: {name:?}"))?;
+            sound_events.insert(name.to_owned(), key.clone());
+            Ok(key)
+        };
         let mut shapes = decode::Shapes::default();
         let mut states = Vec::with_capacity(entries.len());
         for (index, entry) in entries.iter().enumerate() {
@@ -479,6 +499,29 @@ impl BlockFacts {
             }
             let state = registry.state(id).ok_or("missing registry state")?;
             let sound = &entry.sound;
+            let identity = match sound.identity.as_deref() {
+                Some("other") => BlockSoundTypeIdentity::Other,
+                Some("wood") => BlockSoundTypeIdentity::Wood,
+                Some("nether_wood") => BlockSoundTypeIdentity::NetherWood,
+                Some("stem") => BlockSoundTypeIdentity::Stem,
+                Some("cherry_wood") => BlockSoundTypeIdentity::CherryWood,
+                Some("bamboo_wood") => BlockSoundTypeIdentity::BambooWood,
+                Some(other) => {
+                    return Err(format!(
+                        "{}: block state {index} has unknown sound type identity {other:?}",
+                        path.display()
+                    )
+                    .into());
+                }
+                None => {
+                    return Err(format!(
+                        "{}: block state {index} is missing its sound type identity. \
+                         Prepare these resources again with the launcher or sunrise-prepare --prepare",
+                        path.display()
+                    )
+                    .into());
+                }
+            };
             let prop = |k: &str| state.properties.get(k).map(String::as_str);
             let (fluid, fluid_level, fluid_falling) = match state.name.as_str() {
                 "minecraft:water" | "minecraft:lava" => {
@@ -503,7 +546,7 @@ impl BlockFacts {
                 | "minecraft:seagrass"
                 | "minecraft:tall_seagrass" => (Fluid::Water, 8, false),
                 _ if prop("waterlogged") == Some("true") => (Fluid::Water, 8, false),
-                name if sunrise_world::fluid::mod_fluid_named(name).is_some() => {
+                name if sunrise_world::fluid::mod_fluid_of_block_name(name).is_some() => {
                     let level: u8 = prop("level").and_then(|v| v.parse().ok()).unwrap_or(0);
                     match level {
                         0 => (Fluid::Modded, 8, false),
@@ -569,14 +612,15 @@ impl BlockFacts {
                         .or(entry.item.as_deref())
                         .unwrap_or("minecraft:air"),
                 ),
-                sounds: Sounds {
+                sounds: BlockSoundType {
+                    identity,
                     volume: sound.volume as f32,
                     pitch: sound.pitch as f32,
-                    break_sound: intern(sound.r#break.id.as_deref().unwrap_or("")),
-                    step: intern(sound.step.id.as_deref().unwrap_or("")),
-                    place: intern(sound.place.id.as_deref().unwrap_or("")),
-                    hit: intern(sound.hit.id.as_deref().unwrap_or("")),
-                    fall: intern(sound.fall.id.as_deref().unwrap_or("")),
+                    break_sound: sound_event(sound.r#break.id.as_deref())?,
+                    step: sound_event(sound.step.id.as_deref())?,
+                    place: sound_event(sound.place.id.as_deref())?,
+                    hit: sound_event(sound.hit.id.as_deref())?,
+                    fall: sound_event(sound.fall.id.as_deref())?,
                 },
                 fluid,
                 fluid_level,
@@ -593,7 +637,7 @@ impl BlockFacts {
                     .ok_or("missing block behaviour class chain")?,
             });
         }
-        let extra = callback(entries)?;
+        let extra = callback(entries, &states)?;
         Ok((
             Self {
                 states,
@@ -630,65 +674,13 @@ impl BlockFacts {
     }
 }
 
-impl GameplayStateSource for decode::Entry<'_> {
-    fn flag(&self, name: &str) -> bool {
-        match name {
-            "replaceable" => self.replaceable,
-            "random_ticks" => self.random_ticks,
-            "solid_render" => self.solid_render,
-            "liquid" => self.liquid,
-            "block_entity" => self.block_entity,
-            "ignited_by_lava" => self.ignited_by_lava,
-            "can_occlude" => self.can_occlude,
-            "full_collision" => self.full_collision,
-            "skylight_down" => self.skylight_down,
-            "requires_tool" => self.requires_tool,
-            "shape_occlusion" => self.shape_occlusion,
-            _ => false,
-        }
-    }
-    fn unsigned(&self, name: &str) -> u64 {
-        match name {
-            "emission" => self.emission.as_u64().unwrap_or(0),
-            "dampening" => self.dampening.as_u64().unwrap_or(0),
-            _ => 0,
-        }
-    }
-    fn number(&self, name: &str) -> f64 {
-        match name {
-            "hardness" => self.hardness.as_f64().unwrap_or(0.0),
-            _ => 0.0,
-        }
-    }
-    fn text(&self, name: &str) -> &str {
-        match name {
-            "push" => self.push.as_deref().unwrap_or(""),
-            _ => "",
-        }
-    }
-    fn sound_number(&self, name: &str) -> f64 {
-        match name {
-            "volume" => self.sound.volume,
-            "pitch" => self.sound.pitch,
-            _ => 1.0,
-        }
-    }
-    fn sound_id(&self, name: &str) -> &str {
-        match name {
-            "place" => self.sound.place.id.as_deref().unwrap_or(""),
-            "break" => self.sound.r#break.id.as_deref().unwrap_or(""),
-            "fall" => self.sound.fall.id.as_deref().unwrap_or(""),
-            _ => "",
-        }
-    }
-}
-
 #[cfg(test)]
 mod pane_tests {
     use super::*;
 
     fn state(name: &str, classes: &[&str]) -> StateFacts {
         let text = |s: &str| -> Arc<str> { s.into() };
+        let sound = SoundEventKey::parse("").unwrap();
         StateFacts {
             name: text(name),
             emission: 0,
@@ -711,14 +703,15 @@ mod pane_tests {
             explosion_resistance: 0.0,
             item: text("minecraft:air"),
             pick_item: text("minecraft:air"),
-            sounds: Sounds {
+            sounds: BlockSoundType {
+                identity: BlockSoundTypeIdentity::Other,
                 volume: 1.0,
                 pitch: 1.0,
-                break_sound: text(""),
-                step: text(""),
-                place: text(""),
-                hit: text(""),
-                fall: text(""),
+                break_sound: sound.clone(),
+                step: sound.clone(),
+                place: sound.clone(),
+                hit: sound.clone(),
+                fall: sound,
             },
             fluid: Fluid::None,
             fluid_level: 0,

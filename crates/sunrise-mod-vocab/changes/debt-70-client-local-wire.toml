@@ -1,0 +1,69 @@
+ids = [
+  "hook:register_render_pipelines",
+  "type:Camera",
+  "type:ClientAudioOptions",
+  "type:ClientBossBar",
+  "type:ClientChatOptions",
+  "type:ClientGraphicsOptions",
+  "type:ClientGuiOptions",
+  "type:ClientInputOptions",
+  "type:ClientModifiers",
+  "type:ClientPayload",
+  "type:ColoredLight",
+  "type:CrosshairTarget",
+  "type:CubeDefinition",
+  "type:CubeDeformation",
+  "type:KeyAction",
+  "type:KeyConflictContext",
+  "type:KeyRegistration",
+  "type:LayerDefinition",
+  "type:MeshDefinition",
+  "type:ModelPart",
+  "type:ModelPolygon",
+  "type:ModelVertex",
+  "type:NoteBlockChange",
+  "type:PanelEvent",
+  "type:PanelStyle",
+  "type:PartPose",
+  "type:PipelineBlend",
+  "type:PipelineDrawError",
+  "type:PipelineDrawError.CapacityExceeded",
+  "type:PipelineDrawError.NonFinite",
+  "type:PipelineQuad",
+  "type:PipelineTexture",
+  "type:PipelineTextureError",
+  "type:PipelineTextureError.NoSlot",
+  "type:PipelineTextureError.OverCap",
+  "type:PipelineVertexFormat",
+  "type:RecipeLayout",
+  "type:RecipePage",
+  "type:RecipeResult",
+  "type:RecipeView",
+  "type:RenderPipeline",
+  "type:RenderPipelineError",
+  "type:ScreenId",
+  "type:ScreenOpening",
+  "type:ScreenTarget",
+  "type:SignEditView",
+  "type:SoundAttenuation",
+  "type:SoundEffects",
+  "type:SoundPlay",
+  "type:SoundRef",
+  "type:SoundSource",
+  "type:SoundState",
+  "type:Stack",
+  "type:ToastKind",
+  "type:Zoom",
+]
+why = """
+Client-surface cleanups aligning with vanilla 26.3 and NeoForge:
+
+1. Local client drawing, render-pipeline, input, audio, screen, options, recipe-panel, and pose/model/animation values live only in-process, following vanilla 26.3 (`Camera`, `Options`, `SoundInstance`, `SoundSource`, `HitResult`, `LerpingBossEvent`, `RenderPipeline`, `ModelPart`, `LayerDefinition`, `AnimationState`, `KeyMapping`) and NeoForge (`SubmitCustomGeometryEvent`, `RenderLevelStageEvent`, `RegisterRenderPipelinesEvent`, `EntityRenderersEvent.RegisterLayerDefinitions`, `RegisterJsonAnimationTypesEvent`, `RegisterKeyMappingsEvent`, `InputEvent`, `ToastAddEvent`, `PlaySoundEvent`, `ScreenEvent`, `CustomizeGuiOverlayEvent`, `ViewportEvent`), which never define binary transport codecs for them. Their `Wire` implementations and private transport mirrors (`AnimationHolderWire` and its siblings) are removed while keeping JSON helpers, asset loading, saved modifier bits, timing, pose edits, mesh checks, live `FrameModel` storage, and `Wire` on cross-boundary types (`MenuRef`, `NoteInstrument`, `ParticleStatus`, `BossBarRef`, `BossBarColor`, `BossBarOverlay`).
+2. Remove unimplemented atlas-pool `PipelineTextureError::{OverCap, NoSlot}` and `PipelineDrawError::{CapacityExceeded, NonFinite}`. Keep `WorldDrawContext::pipeline_quads` as deferred geometry; individual invalid quads no longer roll back their slice, and buffers grow in device-sized chunks, following `SubmitNodeCollection` / `LevelRenderer` and NeoForge `SubmitCustomGeometryEvent`.
+3. `register_render_pipelines` (v3) accepts any valid ID, fails startup for duplicate mod pipeline IDs, and checks vanilla collisions in the matching required or optional table from `RenderPipelines.requiredPipelines` and `optionalPipelines`. Mod pipeline lookup remains by ID alone.
+"""
+migrate = """
+1. Remove these local client drawing, render-pipeline, input, audio, screen, options, recipe-panel, key-mapping, model, and animation types from `#[derive(Wire)]` structs and `Writer::put` / `Reader::decode` calls. Keep all in-process client usage unchanged (including JSON loading and `serde_json` / `String::from` / `TryFrom<String>` conversions on `MeshDefinition` and `ModelPart`). When synchronizing data over a typed payload, copy only the owned primitive or cross-boundary fields you intend to send (such as an owned `String` bounded by `PAYLOAD_MAX_STRING_BYTES`, parsed via `Identifier::parse` at the receiving boundary, `u32` modifier bits, coordinates, tick counts, rotation angles, or `ItemStack`) into your own `#[derive(mod_api::Wire)]` struct; `Identifier` itself uses `ordinary_only` Wire routes rather than typed payloads.
+2. Drop match arms on `PipelineTextureError::{OverCap, NoSlot}` and `PipelineDrawError::{CapacityExceeded, NonFinite}` (keep `_` for non-exhaustive enums). `WorldDrawContext::pipeline_quads` returns `PipelineDrawError::Pipeline` for an invalid or stale handle and skips individual quads with non-finite coordinates or UVs. Submit these quads in `submit_custom_geometry` or a debug renderer, not in `render_level_stage`.
+3. Pin `register_render_pipelines` to version 3. Use unique mod pipeline IDs across required and optional declarations; `RenderAssets::render_pipeline(&id)` is unchanged. Startup rejects collisions in the matching vanilla table. Regenerate the prepared client resources if startup reports a missing or damaged `render-pipelines.json`.
+"""

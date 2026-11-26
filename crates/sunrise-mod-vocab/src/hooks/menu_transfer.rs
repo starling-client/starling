@@ -10,7 +10,14 @@ pub trait Hooks {
     /// menu with no block) and `recipe` the recipe's id as the viewer sent
     /// it. Return `Some(Moves)` once moved, or `Missing`, `NoRoom` or
     /// `NotIntoMenu`; a part that returns None lets the game try its own
-    /// crafting-grid transfer. A dry run must move nothing.
+    /// crafting-grid transfer. A dry run must move nothing. With `dry_run` a
+    /// part may also push the recipe's cells nothing fills to
+    /// `missing_cells`, and the cells it lacks but could craft to
+    /// `craftable_cells` (both empty by default), in `RecipeTransferCheck`'s
+    /// cell order; the game keeps the ones below the recipe's cell count
+    /// (its known layout: one for stonecutting, 256 for a recipe it can't
+    /// inspect), each once, in ascending order, and ignores both outside a
+    /// dry run.
     #[notes = r##"### Recipe transfer into a mod menu
 
 A viewer's "+" (`RecipesClientHost::transfer_recipe_id`, or `transfer_recipe` for a recipe-book recipe)
@@ -24,11 +31,21 @@ capability) and returns a `RecipeTransferResult`; the viewer shows it as it show
 returns None hands the transfer on to the game's grid transfer, which answers `NotIntoMenu` for a
 menu without a crafting grid. Vanilla menu types are never asked. The contract is the same in a solo world and
 for a LAN host's own player: the game is the server there, and asks the part on the same server-side path
-(the player's own block container menu, its UUID, `dry_run` for the viewer's check) before its grid transfer."##]
+(the player's own block container menu, its UUID, `dry_run` for the viewer's check) before its grid transfer.
+
+Version 2 adds the dry run's cells. `missing_cells` names the recipe's cells no item fills and
+`craftable_cells` the ones the menu lacks but could craft (a storage network's autocrafting), both as indices in
+`RecipeTransferCheck`'s cell order: width by height for a shaped recipe, else its ingredients in order. They reach
+the viewer as `RecipeTransferCheck::missing_cells` and `craftable_cells`, with any answer, so a part can answer
+`Moves` and still mark the craftable cells. The game keeps both lists below the recipe's cell count, from its
+known layout (one for a stonecutting recipe, three for smithing, the placement's slots for crafting and cooking;
+256 for a recipe it can't inspect, such as a mod's own type), each once, in ascending order; pushes outside a dry
+run are dropped."##]
     #[hook(
         dispatch = "api_carrier",
         side = "server",
         contract = "replace",
+        version = 2,
         out = "result",
         scope = "menu",
         key = "menu",
@@ -42,5 +59,7 @@ for a LAN host's own player: the game is the server there, and asks the part on 
         max: bool,
         dry_run: bool,
         result: &mut Option<RecipeTransferResult>,
+        missing_cells: &mut Vec<u32>,
+        craftable_cells: &mut Vec<u32>,
     );
 }

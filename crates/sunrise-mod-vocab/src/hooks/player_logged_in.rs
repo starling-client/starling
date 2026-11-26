@@ -1,5 +1,4 @@
 //! The `player_logged_in` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0067
 
 pub trait Hooks {
     /// `player` (`name`) joined the game (NeoForge's

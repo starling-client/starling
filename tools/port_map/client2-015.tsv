@@ -54,7 +54,7 @@ StatsScreen.ItemStatisticsList.ItemRowComparator.compare	inline	crates/sunrise-c
 StatsScreen.MobsStatisticsList.MobRow.extractContent	port	crates/sunrise-client/src/game/interface/stats_screen.rs::Game::draw_stats	mob name, kills and killed-by lines
 StatsScreen.MobsStatisticsList.MobRow.getNarration	inline	crates/sunrise-client/src/game/interface/stats_screen.rs::Game::draw_stats	narrator.select(joinForNarration(kills, killed by)) built as the mobs list's hovered row text
 StatsScreen.StatisticsTab.doLayout	skip:ui		layout only: list size and position
-AdvancementTab.copyPosition	inline	crates/sunrise-client/src/game/interface/advancements_screen.rs::Game::adv_cache	a rebuilt tree keeps adv_ui.scroll; tab bounds are recomputed in adv_view
+AdvancementTab.copyPosition	inline	crates/sunrise-client/src/game/interface/advancements_screen.rs::Game::rebuild_remote_tabs	rebuilt tabs retain their own pan, centring and bounds, but not hover and fade
 AdvancementTab.extractTab	port	crates/sunrise-client/src/game/interface/advancements_screen.rs::Game::draw_advancements	tab sprite per position (first, middle, last) and selected state
 AdvancementTab.extractIcon	port	crates/sunrise-client/src/game/interface/advancements_screen.rs::Game::draw_advancements	tab icon at its side offset
 AdvancementTab.extractContents	port	crates/sunrise-client/src/game/interface/advancements_screen.rs::Game::draw_advancements	background grid, connection lines and advancement widgets inside the 234 by 113 area
@@ -62,8 +62,8 @@ AdvancementTab.extractTooltips	port	crates/sunrise-client/src/game/interface/adv
 AdvancementTab.scroll	port	crates/sunrise-client/src/game/interface/advancements_screen.rs::Game::adv_scroll_by	clamps the scroll to the tab bounds on each axis
 AdvancementTab.canScrollHorizontally	inline	crates/sunrise-client/src/game/interface/advancements_screen.rs::Game::adv_scroll_by	scrolls only when the bounds are wider than 234
 AdvancementTab.canScrollVertically	inline	crates/sunrise-client/src/game/interface/advancements_screen.rs::Game::adv_scroll_by	scrolls only when the bounds are taller than 113
-AdvancementTab.addAdvancement	inline	crates/sunrise-client/src/game/interface/advancements_screen.rs::Game::adv_view	tasks of each tab are placed in the view's widget list
-AdvancementTab.addWidget	inline	crates/sunrise-client/src/game/interface/advancements_screen.rs::Game::adv_view	tab bounds grown by each widget (28 by 27)
+AdvancementTab.addAdvancement	inline	crates/sunrise-client/src/game/interface/advancements_screen.rs::Game::adv_cache	packet tasks are assigned to tabs using their insertion-time root
+AdvancementTab.addWidget	inline	crates/sunrise-client/src/game/interface/advancements_screen.rs::TabBounds::add_widget	tab bounds grown by each widget using Java signed integer arithmetic
 AdvancementTabType.extractRenderState	port	crates/sunrise-client/src/game/interface/advancements_screen.rs::tab_sprite	first, middle or last sprite, selected variant
 AdvancementTabType.extractIcon	port	crates/sunrise-client/src/game/interface/advancements_screen.rs::icon_offset	icon offset per side
 AdvancementTabType.getX	port	crates/sunrise-client/src/game/interface/advancements_screen.rs::tab_pos	x per side and index
@@ -74,25 +74,25 @@ AdvancementWidget.createWidget	inline	crates/sunrise-client/src/game/interface/a
 AdvancementWidget.getMaxProgressWidth	inline	crates/sunrise-client/src/game/interface/advancements_screen.rs::Game::adv_widget_text	width of the progress text when there is more than one requirement
 AdvancementWidget.getMaxWidth	inline	crates/sunrise-client/src/game/interface/advancements_screen.rs::Game::adv_widget_text	widest line of the wrapped description
 AdvancementWidget.findOptimalLines	inline	crates/sunrise-client/src/game/interface/advancements_screen.rs::Game::adv_widget_text	offsets 0, 10, -10, 25, -25 and the 10 px tolerance
-AdvancementWidget.findFirstVisibleParent	inline	crates/sunrise-client/src/game/interface/advancements_screen.rs::Game::adv_view	nearest displayed ancestor becomes the parent
+AdvancementWidget.findFirstVisibleParent	inline	crates/sunrise-client/src/game/interface/advancements/mod.rs::RemoteTree::widget_links	resolves the nearest displayed insertion-time ancestor
 AdvancementWidget.extractConnectivity	port	crates/sunrise-client/src/game/interface/advancements_screen.rs::Game::draw_advancements	connection lines, background pass then the line pass
 AdvancementWidget.extractRenderState	port	crates/sunrise-client/src/game/interface/advancements_screen.rs::Game::draw_advancements	frame sprite (obtained or not) and the item icon
 AdvancementWidget.extractMultilineText	inline	crates/sunrise-client/src/game/interface/advancements_screen.rs::Game::adv_draw_hover	description lines in the hover card
 AdvancementWidget.isMouseOver	port	crates/sunrise-client/src/game/interface/advancements_screen.rs::Game::adv_tick_hover	26 px box hit test; hidden advancements count only when done
 AdvancementWidget.attachToParent	inline	crates/sunrise-client/src/game/interface/advancements_screen.rs::Game::adv_view	parent link set when the view is built
-AdvancementsScreen.init	port	crates/sunrise-client/src/game/interface/advancements_screen.rs::Game::open_advancements	opens on the kept tab; gap: minor: no tab pages with < and > buttons, the view shows at most 26 tabs
+AdvancementsScreen.init	port	crates/sunrise-client/src/game/interface/advancements_screen.rs::Game::open_advancements	packet-backed opens clear the screen tab, replay roots to select the first tab, and report that selection again; non-packet opens resolve the saved root or first tab; gap: minor: no tab pages with < and > buttons, the view shows at most 26 tabs
 AdvancementsScreen.repositionElements	skip:ui		layout only: window position
 AdvancementsScreen.removed	missing		minor: the server is not sent the closed-screen packet when the advancements screen closes
 AdvancementsScreen.tick	port	crates/sunrise-client/src/game/interface/advancements_screen.rs::Game::adv_tick_hover	hover tracking and card fade; gap: minor: runs from the frame, not the 20 Hz tick
 AdvancementsScreen.mouseClicked	port	crates/sunrise-client/src/game/interface/advancements_screen.rs::Game::advancements_mouse	left click selects a tab, Done closes; gap: minor: tab pages are not filtered
-AdvancementsScreen.keyPressed	port	crates/sunrise-client/src/game/interface/play_keys.rs::Game::key_pressed	the advancements key (L) closes the screen
+AdvancementsScreen.keyPressed	port	crates/sunrise-client/src/game.rs::Game::screen_key_response	the bound Advancements key closes the screen, consumed before KeyPressed.Post
 AdvancementsScreen.extractRenderState	port	crates/sunrise-client/src/game/interface/advancements_screen.rs::Game::draw_advancements	window, tabs and contents; gap: minor: no 'page / pages' text
 AdvancementsScreen.mouseDragged	port	crates/sunrise-client/src/game/interface/advancements_screen.rs::Game::advancements_drag	first movement starts scrolling, later ones move the tree
 AdvancementsScreen.mouseScrolled	port	crates/sunrise-client/src/game/interface/advancements_screen.rs::Game::advancements_scroll	wheel scrolls 16 px per step
 AdvancementsScreen.extractInside	port	crates/sunrise-client/src/game/interface/advancements_screen.rs::Game::draw_advancements	'no advancements' placeholder when there is no tab
 AdvancementsScreen.extractWindow	port	crates/sunrise-client/src/game/interface/advancements_screen.rs::Game::draw_advancements	window background, tab bar and the selected tab title (window() gives the position)
 AdvancementsScreen.extractTooltips	port	crates/sunrise-client/src/game/interface/advancements_screen.rs::Game::draw_advancements	tab title tooltips; the card tooltip comes from adv_draw_hover
-AdvancementsScreen.onAdvancementsUpdated	port	crates/sunrise-client/src/game/interface/advancements_screen.rs::Game::adv_cache	a changed tree rebuilds the positions; tabs and progress are read in adv_view and at draw time
+AdvancementsScreen.onAdvancementsUpdated	port	crates/sunrise-client/src/game/interface/advancements_screen.rs::Game::remote_advancement_tabs_updated	runs on every packet while open; retains each surviving tab's position and uses the first tab if the selected root is gone
 AdvancementsScreen.getAdvancementWidget	skip:java		lookup of a widget by node; Sunrise indexes positions by tree index
 DebugOptionsScreen.init	port	crates/sunrise-client/src/game/interface/debug_options.rs::Game::debug_options_header	init's vertical layout (HEADER 61, FOOTER 33, the title row and warning), the search box and scroll made in Game::toggle_debug_options, the footer in footer()
 DebugOptionsScreen.addProfileButton	port	crates/sunrise-client/src/game/interface/debug_options.rs::footer	the two profile buttons (Default, Performance) are the first two footer buttons; clicking one loads that profile in Game::debug_options_click

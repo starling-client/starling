@@ -133,12 +133,10 @@ impl Game<'_> {
         let (ok, mut lines) = self.with_guest_swap(c.conn, self.dim, |game| {
             game.chat_capture = Some(Vec::new());
             let level = std::mem::replace(&mut game.ui.registries.permission, c.permission);
-            let ok = if game.perform_native_command(c.conn, c.permission, &c.command) {
-                true
-            } else if c.quiet {
-                game.run_command_quietly(&c.command)
-            } else {
-                game.run_command(&c.command)
+            let ok = match game.perform_native_command(c.conn, c.permission, &c.command, c.quiet) {
+                Some(ok) => ok,
+                None if c.quiet => game.run_command_quietly(&c.command),
+                None => game.run_command(&c.command),
             };
             game.ui.registries.permission = level;
             (ok, game.chat_capture.take().unwrap_or_default())
@@ -168,37 +166,37 @@ impl Game<'_> {
             );
         }
         // The other operators hear of it; never the player whose command it was.
-        self.send_admin_feedback(Some(c.conn));
+        self.send_admin_feedback();
         Some((ok, lines))
     }
 
-    /// The `broadcastToAdmins` lines a command queued (`source`: the guest
-    /// whose it was; none for the host's or the console's): every other
-    /// operator gets them, and the console logs them as the server's own
-    /// system messages (MinecraftServer.sendSystemMessage).
-    pub(in crate::game) fn send_admin_feedback(&mut self, source: Option<u32>) {
+    /// The `broadcastToAdmins` lines queued so far: every operator
+    /// (`PlayerList.isOp`) but the guest each line's command came from (kept
+    /// with the line, so a block's line still pending when a guest's command
+    /// drains the queue reaches that guest too). The server's log already has
+    /// them (`broadcast_to_admins`). Without a server open to players they are
+    /// dropped: no one else can hear them.
+    pub(in crate::game) fn send_admin_feedback(&mut self) {
+        let lines = std::mem::take(&mut self.admin_feedback);
         let Some(host) = self.lan.as_ref() else {
             return;
         };
-        // server.toml's `admin_feedback_to_ops` off: the console's log only.
-        let to_ops = host.hub.admin_feedback_to_ops;
-        for (line, ops, console) in std::mem::take(&mut self.admin_feedback) {
-            if ops && to_ops {
-                let content = sunrise_client::lan::data::component_nbt(&line.component());
-                for g in host
-                    .hub
-                    .guests
-                    .iter()
-                    .filter(|g| Some(g.conn) != source && g.permission > 0)
-                {
-                    g.send(&C::SystemChat(play::SystemChat {
-                        content: content.clone(),
-                        overlay: false,
-                    }));
-                }
-            }
-            if console {
-                crate::game::dedicated::log("INFO", &format!("System chat: {}", line.plain()));
+        // server.toml's `admin_feedback_to_ops` off: the log only.
+        if !host.hub.admin_feedback_to_ops {
+            return;
+        }
+        for (line, source) in lines {
+            let content = sunrise_client::lan::data::component_nbt(&line.component());
+            for g in host
+                .hub
+                .guests
+                .iter()
+                .filter(|g| g.placed && Some(g.conn) != source && host.hub.is_op(g.uuid))
+            {
+                g.send(&C::SystemChat(play::SystemChat {
+                    content: content.clone(),
+                    overlay: false,
+                }));
             }
         }
     }
@@ -293,20 +291,15 @@ impl Game<'_> {
         // Commands.sendCommands prunes the tree a player's client completes from; the answer the
         // server sends follows the same test, so a child literal of a path the sender may not run
         // is not offered either (Bukkit hides it; brigadier alone lists every child).
-        let ((start, end), mut suggestions, provider) =
-            d.client_suggestions_owned(&parse, command.len(), &self.ui.registries);
-        // An argument whose type declares a suggestion provider owns its answer: the provider
-        // already gave it for this sender, so `tab_complete` is not asked and no listener can add
-        // to, replace or erase it. Ordinary completions keep the hook.
-        if !provider {
-            self.native_tab_complete(
-                player_uuid,
-                &player_name,
-                command,
-                [start, end],
-                &mut suggestions,
-            );
-        }
+        let ((start, end), mut suggestions) =
+            d.client_suggestions(&parse, command.len(), &self.ui.registries);
+        self.native_tab_complete(
+            player_uuid,
+            &player_name,
+            command,
+            [start, end],
+            &mut suggestions,
+        );
         let reg = self.suggestion_registries();
         reg.permission = level;
         reg.sender = own_sender;

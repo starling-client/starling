@@ -1,5 +1,10 @@
 """Actual command damage -> existing sculk listener, before/after a same-tick teleport."""
-from command_exec_corpus import cmd, setup
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools.command_exec_corpus import cmd, setup
 
 
 def raw(command, scope, callback=None):

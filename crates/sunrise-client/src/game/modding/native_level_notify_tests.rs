@@ -1,6 +1,6 @@
 //! #968/#3720: crack effects wait for commit; explicit block-update requests survive abort.
 use super::native_entity_refs::tests::with_game;
-use mod_api::HostTransaction;
+use mod_api::{HostTransaction, TransactionError};
 use std::sync::Arc;
 use sunrise_client::chunk::Chunk;
 
@@ -26,11 +26,12 @@ fn crack_packets_wait_for_root_commit_and_preserve_fifo() {
             .unwrap();
         let level = game.level(game.dim.id()).unwrap();
         let host: &mut dyn mod_api::ServerHost = game;
-        let aborted: Result<(), ()> = host.transaction(|host, _| {
+        let aborted: Result<(), TransactionError<()>> = host.transaction(|host, _| {
             host.transaction(|host, _| {
                 assert!(level.set_break_progress(host, -7, [1, 64, 1], 2));
                 Ok::<_, ()>(())
-            })?;
+            })
+            .unwrap();
             assert!(rx.try_recv().is_err());
             Err(())
         });
@@ -38,7 +39,7 @@ fn crack_packets_wait_for_root_commit_and_preserve_fifo() {
         assert!(rx.try_recv().is_err());
         let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let host: &mut dyn mod_api::ServerHost = game;
-            let _: Result<(), ()> = host.transaction(|host, _| {
+            let _: Result<(), TransactionError<()>> = host.transaction(|host, _| {
                 assert!(level.set_break_progress(host, -7, [1, 64, 1], 4));
                 assert!(rx.try_recv().is_err());
                 panic!("abort crack transaction");
@@ -52,7 +53,8 @@ fn crack_packets_wait_for_root_commit_and_preserve_fifo() {
             host.transaction(|host, _| {
                 assert!(level.set_break_progress(host, -7, [1, 64, 1], 6));
                 Ok::<_, ()>(())
-            })?;
+            })
+            .unwrap();
             assert!(level.set_break_progress(host, -7, [1, 64, 1], -1));
             assert!(rx.try_recv().is_err());
             Ok::<_, ()>(())
@@ -91,7 +93,7 @@ fn break_progress_waits_for_commit_but_explicit_block_updates_survive_abort() {
         game.world.block_log = Some(Vec::new());
         let level = game.level(game.dim.id()).unwrap();
         let host: &mut dyn mod_api::ServerHost = game;
-        let aborted: Result<(), ()> = host.transaction(|host, _| {
+        let aborted: Result<(), TransactionError<()>> = host.transaction(|host, _| {
             assert!(level.set_break_progress(host, -7, [1, 64, 1], 3));
             assert!(level.send_block_updated(host, [2, 64, 2]));
             Err(())
@@ -174,13 +176,14 @@ fn biome_writes_roll_back_and_only_the_root_commit_notifies_clients() {
         let name = world_biomes!(game).list[usize::from(target)].name.clone();
         let old_name = world_biomes!(game).list[usize::from(old)].name.clone();
         let host: &mut dyn mod_api::ServerHost = game;
-        let aborted: Result<(), ()> = host.transaction(|host, _| {
+        let aborted: Result<(), TransactionError<()>> = host.transaction(|host, _| {
             assert!(level.set_biome(host, pos, &name));
             assert!(rx.try_recv().is_err());
             host.transaction(|host, _| {
                 assert!(level.set_biome(host, [4, 64, 0], &name));
                 Ok::<_, ()>(())
-            })?;
+            })
+            .unwrap();
             assert!(
                 !level.set_biome(host, pos, &name),
                 "unchanged cell is refused"
@@ -207,7 +210,7 @@ fn biome_writes_roll_back_and_only_the_root_commit_notifies_clients() {
         let host: &mut dyn mod_api::ServerHost = game;
         host.transaction(|host, _| {
             assert!(level.set_biome(host, pos, &name));
-            let inner: Result<(), ()> = host.transaction(|host, _| {
+            let inner: Result<(), TransactionError<()>> = host.transaction(|host, _| {
                 assert!(level.set_biome(host, pos, &old_name));
                 Err(())
             });
@@ -217,7 +220,8 @@ fn biome_writes_roll_back_and_only_the_root_commit_notifies_clients() {
                 assert!(level.set_biome(host, pos, &old_name));
                 assert!(level.set_biome(host, [3, 67, 3], &name));
                 Ok::<_, ()>(())
-            })?;
+            })
+            .unwrap();
             assert!(rx.try_recv().is_err());
             Ok::<_, ()>(())
         })
@@ -274,7 +278,7 @@ fn biome_negative_min_y_and_unwind_restore_without_publication() {
         let level = game.level(game.dim.id()).unwrap();
         let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let host: &mut dyn mod_api::ServerHost = game;
-            let _: Result<(), ()> = host.transaction(|host, _| {
+            let _: Result<(), TransactionError<()>> = host.transaction(|host, _| {
                 assert!(!level.set_biome(host, [-1, -65, -1], &name));
                 assert!(!level.set_biome(host, [-1, 320, -1], &name));
                 assert!(level.set_biome(host, [-1, -64, -1], &name));

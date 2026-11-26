@@ -7,8 +7,8 @@ AccountProfileKeyPairManager.fetchProfileKeyPair	port	crates/sunrise-client-rend
 AccountProfileKeyPairManager.parsePublicKey	port	crates/sunrise-client-render/src/auth.rs::parse_certificates	publicKeySignatureV2, expiresAt
 CacheSlot.compute	skip:java		memo slot for a computed value; Sunrise has no per-context cache slot
 ChunkBatchSizeCalculator.onBatchFinished	port	crates/sunrise-protocol/src/chunk_batch.rs::ChunkBatchSize::on_batch_finished	timed on the network thread; the load bots share it
-ClientAdvancements.setSelectedTab	port	crates/sunrise-client/src/game/interface/advancements_screen.rs::Game::advancements_mouse	gap: minor: the tab change is local; the openedTab packet to the server is not sent
-ClientAdvancements.setListener	skip:ui		listener plumbing for the advancements screen; Sunrise's screen reads its state each frame
+ClientAdvancements.setSelectedTab	port	crates/sunrise-client/src/game/interface/advancements_screen.rs::Game::select_advancement_tab	reports the selected tab and keeps its root ID on the connection
+ClientAdvancements.setListener	skip:ui		the open screen handles update callbacks directly; packet-backed opening clears the screen tab and replays roots so the first tab is selected
 ClientAdvancements.get	port	crates/sunrise-client/src/advancements.rs::Tree::get	returns the advancement by id; holder wrapper is not needed
 ClientChunkCache.isValidChunk	skip:other		chunks are stored by position, so there is no ring slot to check
 ClientChunkCache.drop	port	crates/sunrise-client-render/src/streaming.rs::Streaming::forget_columns	Game::client_chunk_unload tells mods (client_chunk_unload) before the column is freed; block entities and renderer columns are cleared in Game::apply_forget_level_chunk_packet
@@ -88,7 +88,7 @@ ClientLevel.setBlock	port	crates/sunrise-client/src/game/network/remote/mod.rs::
 ClientLevel.<init>	port	crates/sunrise-client/src/game/network/remote/session.rs::Game::enter_remote_dimension	gap: minor: the environment layers are applied in Game::render
 ClientLevel.addEnvironmentAttributeLayers	port	crates/sunrise-client/src/game.rs::Game::render	sky colour and sky light move during a lightning flash
 ClientLevel.pollLightUpdates	skip:other		light is applied when it arrives or relit at once (light.rs relight); there is no queue to poll
-ClientLevel.getPrecipitationAt	port	crates/sunrise-client/src/game/blocks/level_access.rs::GameLevel::precipitation	the column's biome decides; no column, no answer (the chunk lookup fails, as vanilla answers none for an unloaded column)
+ClientLevel.getPrecipitationAt	port	crates/sunrise-client/src/game/world/weather.rs::precipitation_at	requires a loaded column, then uses the seeded block biome and the joined level's sea level
 ClientLevel.removeBlockBreakingProgress	inline	crates/sunrise-client/src/game/modding/client_cracks.rs::Game::destroy_block_progress	minor: the 400-tick expiry runs on every update, not every 20 ticks
 ClientLevel.removeProgress	inline	crates/sunrise-client/src/game/modding/client_cracks.rs::Game::destroy_block_progress	cracks are keyed by breaker id, so there are no per-position sets to tidy
 ClientLevel.shouldTickDeath	missing		minor: death animations tick for every remote mob held; no simulation-distance check

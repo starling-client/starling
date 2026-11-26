@@ -19,8 +19,8 @@ use mod_api::InteractionResult as Answer;
 use mod_api::{
     self, BlockPart, ENTITY_ITEMS, Flow, Hooks, HostSide, HostTransaction, ItemPart, ItemResource,
     LivingEntityUseItemFinishEvent, LogicalSide, Registrar, RightClickBlockEvent,
-    RightClickItemEvent, ServerHost, TriState, UseItemEvent, UseItemOnBlockEvent, UseItemOnEvent,
-    UseOnEvent, UsePhase,
+    RightClickItemEvent, TriState, UseItemEvent, UseItemOnBlockEvent, UseItemOnEvent, UseOnEvent,
+    UsePhase, UseWithoutItemEvent,
 };
 use std::sync::{
     Arc, Mutex,
@@ -43,11 +43,12 @@ impl Game<'_> {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum Step {
     Phase(UsePhase, LogicalSide),
     BlockPart,
-    UseOnPart,
+    EmptyPart(Hand, bool),
+    UseOnPart(LogicalSide),
     FirstPart,
     Air(LogicalSide, Hand),
     ItemPart,
@@ -61,7 +62,12 @@ struct Controls {
     first_answer: Option<Answer>,
     first_part_answer: Option<Answer>,
     block_answer: Option<Answer>,
+    block_part_answer: Option<Answer>,
+    block_part_select_slot: Option<u8>,
+    record_empty: bool,
+    empty_part_answer: Option<Answer>,
     item_on_answer: Option<Answer>,
+    client_use_on_answer: Option<Answer>,
     air_answer: Option<Answer>,
     air_main_only: bool,
     consume_item: bool,
@@ -84,6 +90,7 @@ struct Controls {
     /// How many `right_click_block` events fired.
     clicks: usize,
     click_hands: Vec<Hand>,
+    use_item_on_packets: usize,
     use_item_packets: usize,
     /// The click is the host's own, not the fixture guest's: skip the guest identity asserts.
     host_click: bool,
@@ -122,6 +129,7 @@ impl Hooks for Observer {
         event: &mut mod_api::ClientPacketSendEvent<'_>,
     ) -> Flow {
         match event.packet.id.path() {
+            "use_item_on" => self.0.lock().unwrap().use_item_on_packets += 1,
             "use_item" => self.0.lock().unwrap().use_item_packets += 1,
             "set_creative_mode_slot" => self.0.lock().unwrap().creative_slot_packets += 1,
             _ => {}
@@ -200,7 +208,7 @@ impl Hooks for Observer {
             let slot = player.selected_slot(host).unwrap();
             let resource = ItemResource::of(event.click.stack.unwrap());
             host.transaction(|host, tx| {
-                assert_eq!(items.extract_at(host, tx, slot, &resource, 1), 1);
+                assert_eq!(items.extract_at(host, tx, slot, &resource, 1), Ok(1));
                 Ok::<_, ()>(())
             })
             .unwrap();
@@ -236,19 +244,44 @@ impl Hooks for Observer {
 }
 #[mod_api::sunrise_part]
 impl BlockPart for Observer {
-    fn use_item_on(&self, _: &mut dyn ServerHost, _: &mut UseItemOnEvent<'_>) -> Option<Answer> {
+    fn use_item_on(&self, host: HostSide<'_>, event: &mut UseItemOnEvent<'_>) -> Option<Answer> {
+        assert_eq!(side(&host), event.click.side);
+        let (select_slot, answer) = {
+            let mut state = self.0.lock().unwrap();
+            state.steps.push(Step::BlockPart);
+            (state.block_part_select_slot, state.block_part_answer)
+        };
+        if let (Some(slot), HostSide::Client(host)) = (select_slot, host) {
+            assert_eq!(host.select_hotbar_slot(slot), Ok(()));
+        }
+        answer
+    }
+    fn use_without_item(
+        &self,
+        host: HostSide<'_>,
+        event: &mut UseWithoutItemEvent<'_>,
+    ) -> Option<Answer> {
+        assert_eq!(side(&host), event.click.side);
         let mut state = self.0.lock().unwrap();
-        state.steps.push(Step::BlockPart);
-        None
+        if state.record_empty {
+            assert_eq!(event.click.hit.point, [0.5, 65.0, 0.5]);
+            assert!(!event.click.hit.inside);
+            state.steps.push(Step::EmptyPart(
+                event.click.hand,
+                event.click.stack.is_some(),
+            ));
+        }
+        state.empty_part_answer
     }
 }
 #[mod_api::sunrise_part]
 impl ItemPart for Observer {
     fn on_item_use_first(
         &self,
-        _: &mut dyn ServerHost,
-        _: &mut mod_api::OnItemUseFirstEvent<'_>,
+        host: HostSide<'_>,
+        event: &mut mod_api::OnItemUseFirstEvent<'_>,
     ) -> Option<Answer> {
+        assert_eq!(side(&host), event.click.side);
         let mut state = self.0.lock().unwrap();
         if state.record_first {
             state.steps.push(Step::FirstPart);
@@ -256,11 +289,13 @@ impl ItemPart for Observer {
         state.first_part_answer
     }
     fn use_on(&self, host: HostSide<'_>, _: &mut UseOnEvent<'_>) -> Option<Answer> {
-        let HostSide::Server(_) = host else {
-            return None;
+        let mut state = self.0.lock().unwrap();
+        let (side, answer) = match host {
+            HostSide::Server(_) => (LogicalSide::Server, Answer::SuccessServer),
+            HostSide::Client(_) => (LogicalSide::Client, state.client_use_on_answer?),
         };
-        self.0.lock().unwrap().steps.push(Step::UseOnPart);
-        Some(Answer::SuccessServer)
+        state.steps.push(Step::UseOnPart(side));
+        Some(answer)
     }
     fn use_item(&self, host: HostSide<'_>, event: &mut UseItemEvent<'_>) -> Option<Answer> {
         if let Some(hand) = self.0.lock().unwrap().expected_hand {
@@ -306,7 +341,11 @@ fn with_interaction_game_at(
             None
         };
         game.player = Some(PlayerMotion::new(game.motion, Vec3::new(0.5, 64.0, 3.5)).unwrap());
-        game.set_mode_id(1);
+        if client {
+            game.set_local_mode(sunrise_client::command::args::GameMode::Creative);
+        } else {
+            game.set_mode_id(1);
+        }
         game.world
             .chunks
             .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
@@ -400,7 +439,11 @@ fn right_click_block_forced_item_use_reaches_empty_hand_on_both_sides() {
                 );
                 // TRUE bypasses the stack/cooldown gate, not adventure's
                 // placement predicate (which an empty hand cannot satisfy).
-                game.set_mode_id(2);
+                if client {
+                    game.set_local_mode(sunrise_client::command::args::GameMode::Adventure);
+                } else {
+                    game.set_mode_id(2);
+                }
                 *observer.0.lock().unwrap() = Controls {
                     use_block: TriState::False,
                     use_item: TriState::True,
@@ -470,7 +513,7 @@ fn right_click_block_explicit_allow_overrides_sneak_skip_on_both_sides() {
                         } else {
                             vec![]
                         };
-                        if used && !client {
+                        if used {
                             expected.push(Step::BlockPart);
                         }
                         assert_eq!(observer.0.lock().unwrap().steps, expected);
@@ -514,9 +557,7 @@ fn phase_events_replace_the_behaviour_before_its_part_on_both_sides() {
                 assert!(use_block(game, client));
                 assert_ne!(game.world.block(0, 64, 0), lever);
                 let mut expected = vec![Step::Phase(UsePhase::Block, side)];
-                if !client {
-                    expected.push(Step::BlockPart);
-                }
+                expected.push(Step::BlockPart);
                 assert_eq!(observer.0.lock().unwrap().steps, expected);
 
                 for answer in [Answer::Success, Answer::SuccessServer, Answer::Consume] {
@@ -578,12 +619,10 @@ fn phase_events_replace_the_behaviour_before_its_part_on_both_sides() {
                 *observer.0.lock().unwrap() = Controls::default();
                 let _ = use_block(game, client);
                 let mut expected = vec![Step::Phase(UsePhase::Block, side)];
-                if !client {
-                    expected.push(Step::BlockPart);
-                }
+                expected.push(Step::BlockPart);
                 expected.push(Step::Phase(UsePhase::ItemAfterBlock, side));
                 if !client {
-                    expected.push(Step::UseOnPart);
+                    expected.push(Step::UseOnPart(LogicalSide::Server));
                 }
                 assert_eq!(observer.0.lock().unwrap().steps, expected);
 
@@ -605,9 +644,7 @@ fn phase_events_replace_the_behaviour_before_its_part_on_both_sides() {
                         answer.consumes_action() || answer == Answer::Fail
                     );
                     let mut expected = vec![Step::Phase(UsePhase::Block, side)];
-                    if !client {
-                        expected.push(Step::BlockPart);
-                    }
+                    expected.push(Step::BlockPart);
                     expected.push(Step::Phase(UsePhase::ItemAfterBlock, side));
                     assert_eq!(observer.0.lock().unwrap().steps, expected);
                     assert_eq!(
@@ -629,7 +666,11 @@ fn phase_events_replace_the_behaviour_before_its_part_on_both_sides() {
                 assert!(observer.0.lock().unwrap().steps.is_empty());
 
                 // ItemStack.useOn passes before Item.useOn in adventure mode.
-                game.set_mode_id(2);
+                if client {
+                    game.set_local_mode(sunrise_client::command::args::GameMode::Adventure);
+                } else {
+                    game.set_mode_id(2);
+                }
                 *observer.0.lock().unwrap() = Controls {
                     use_block: TriState::False,
                     ..Controls::default()
@@ -656,7 +697,11 @@ fn phase_events_replace_the_behaviour_before_its_part_on_both_sides() {
                     observer.0.lock().unwrap().steps,
                     [Step::Phase(UsePhase::ItemAfterBlock, side)]
                 );
-                game.set_mode_id(1);
+                if client {
+                    game.set_local_mode(sunrise_client::command::args::GameMode::Creative);
+                } else {
+                    game.set_mode_id(1);
+                }
 
                 // In 26.3 dousing is CampfireBlock.useItemOn, not Item.useOn:
                 // a canceled BLOCK cannot predict it or reach ITEM_AFTER_BLOCK.
@@ -677,9 +722,7 @@ fn phase_events_replace_the_behaviour_before_its_part_on_both_sides() {
                 assert!(use_block(game, client));
                 assert_ne!(game.world.block(0, 64, 0), campfire);
                 let mut expected = vec![Step::Phase(UsePhase::Block, side)];
-                if !client {
-                    expected.push(Step::BlockPart);
-                }
+                expected.push(Step::BlockPart);
                 assert_eq!(observer.0.lock().unwrap().steps, expected);
 
                 game.offhand = Some(ItemStack::new("minecraft:stick", 1));
@@ -734,7 +777,11 @@ fn canceled_item_results_keep_the_stack_wrappers_side_effects() {
         };
         for client in [false, true] {
             with_interaction_game(client, |game| {
-                game.set_mode_id(0);
+                if client {
+                    game.set_local_mode(sunrise_client::command::args::GameMode::Survival);
+                } else {
+                    game.set_mode_id(0);
+                }
                 let stone = game
                     .pack
                     .assets
@@ -828,7 +875,7 @@ fn a_spectator_fires_right_click_block_on_the_client_and_its_cancel_answers() {
     crate::game::api_values::install_parts(&mods).unwrap();
     mod_platform::testing::with_mods(mods, || {
         with_interaction_game(true, |game| {
-            game.set_mode_id(3);
+            game.set_local_mode(sunrise_client::command::args::GameMode::Spectator);
             assert!(game.spectator());
             let stone = game
                 .pack
@@ -880,7 +927,7 @@ fn a_spectators_passing_block_click_skips_item_use_for_both_hands() {
     crate::game::api_values::install_parts(&mods).unwrap();
     mod_platform::testing::with_mods(mods, || {
         with_interaction_game(true, |game| {
-            game.set_mode_id(3);
+            game.set_local_mode(sunrise_client::command::args::GameMode::Spectator);
             assert!(game.spectator());
             game.offhand = Some(ItemStack::new("minecraft:shield", 1));
             let stone = game
@@ -1131,9 +1178,7 @@ fn before_block_cancellation_pass_continues_but_fail_and_consuming_results_stop(
                     let mut expected = vec![Step::Phase(UsePhase::ItemBeforeBlock, side)];
                     if reaches_block {
                         expected.push(Step::Phase(UsePhase::Block, side));
-                        if !client {
-                            expected.push(Step::BlockPart);
-                        }
+                        expected.push(Step::BlockPart);
                     }
                     assert_eq!(observer.0.lock().unwrap().steps, expected);
                 }
@@ -1152,9 +1197,7 @@ fn before_block_cancellation_pass_continues_but_fail_and_consuming_results_stop(
                     Step::Phase(UsePhase::ItemBeforeBlock, side),
                     Step::Phase(UsePhase::Block, side),
                 ];
-                if !client {
-                    expected.push(Step::BlockPart);
-                }
+                expected.push(Step::BlockPart);
                 expected.push(Step::Phase(UsePhase::ItemAfterBlock, side));
                 assert_eq!(observer.0.lock().unwrap().steps, expected);
             });
@@ -1173,7 +1216,218 @@ fn on_item_use_first_runs_before_the_block_and_ends_the_click() {
     .into();
     crate::game::api_values::install_parts(&mods).unwrap();
     mod_platform::testing::with_mods(mods, || {
-        with_interaction_game(false, |game| {
+        for client in [false, true] {
+            with_interaction_game(client, |game| {
+                let registry = game.pack.assets.registry;
+                let stone = registry.default_state("minecraft:stone").unwrap();
+                let lever = game
+                    .with_props(
+                        registry.default_state("minecraft:lever").unwrap(),
+                        &[("face", "floor")],
+                    )
+                    .unwrap();
+                game.world.set(0, 63, 0, stone).unwrap();
+                game.world.set(0, 64, 0, lever).unwrap();
+                game.forced_hit = Some(hit());
+                let side = if client {
+                    LogicalSide::Client
+                } else {
+                    LogicalSide::Server
+                };
+
+                // Every non-PASS Part answer stops before the block, including TRY.
+                for (answer, used, swings) in [
+                    (Answer::Success, true, 1),
+                    (Answer::SuccessServer, true, u32::from(!client)),
+                    (Answer::Consume, true, 0),
+                    (Answer::Fail, true, 0),
+                    (Answer::TryWithEmptyHand, false, 0),
+                ] {
+                    *observer.0.lock().unwrap() = Controls {
+                        record_first: true,
+                        first_part_answer: Some(answer),
+                        ..Controls::default()
+                    };
+                    let before = game.swings_started;
+                    assert_eq!(use_block(game, client), used);
+                    assert_eq!(game.swings_started - before, swings);
+                    assert_eq!(game.world.block(0, 64, 0), lever);
+                    let first = Step::Phase(UsePhase::ItemBeforeBlock, side);
+                    let seen = observer.0.lock().unwrap();
+                    assert_eq!(seen.steps, [first, Step::FirstPart]);
+                    assert_eq!(seen.use_item_on_packets, usize::from(client));
+                }
+
+                // The broadcast event goes first: its cancel stops the Part.
+                *observer.0.lock().unwrap() = Controls {
+                    record_first: true,
+                    first_answer: Some(Answer::Success),
+                    first_part_answer: Some(Answer::Success),
+                    ..Controls::default()
+                };
+                assert!(use_block(game, client));
+                assert_eq!(game.world.block(0, 64, 0), lever);
+                assert_eq!(
+                    observer.0.lock().unwrap().steps,
+                    [Step::Phase(UsePhase::ItemBeforeBlock, side)]
+                );
+
+                // A pass goes on: the block's phase and the lever flip.
+                *observer.0.lock().unwrap() = Controls {
+                    record_first: true,
+                    first_part_answer: Some(Answer::Pass),
+                    ..Controls::default()
+                };
+                assert!(use_block(game, client));
+                assert_ne!(game.world.block(0, 64, 0), lever);
+                assert_eq!(
+                    observer.0.lock().unwrap().steps[..3],
+                    [
+                        Step::Phase(UsePhase::ItemBeforeBlock, side),
+                        Step::FirstPart,
+                        Step::Phase(UsePhase::Block, side),
+                    ]
+                );
+            });
+        }
+    });
+}
+
+#[test]
+#[ignore = "daily"]
+fn client_block_part_replaces_the_template_for_either_hand() {
+    let observer = Observer::default();
+    let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
+        "block_prediction",
+        Box::new(observer.clone()),
+    )]
+    .into();
+    crate::game::api_values::install_parts(&mods).unwrap();
+    mod_platform::testing::with_mods(mods, || {
+        with_interaction_game(true, |game| {
+            let lever = game
+                .pack
+                .assets
+                .registry
+                .default_state("minecraft:lever")
+                .unwrap();
+            game.world.set(0, 64, 0, lever).unwrap();
+            game.forced_hit = Some(hit());
+            game.offhand = Some(ItemStack::new("minecraft:stick", 1));
+            let block = Step::Phase(UsePhase::Block, LogicalSide::Client);
+            for hand in [Hand::Main, Hand::Off] {
+                for (answer, ends, swings) in [
+                    (Answer::Success, true, 1),
+                    (Answer::SuccessServer, true, 0),
+                    (Answer::Consume, true, 0),
+                    (Answer::Pass, false, 0),
+                    (Answer::Fail, false, 0),
+                ] {
+                    *observer.0.lock().unwrap() = Controls {
+                        expected_hand: Some(hand),
+                        block_part_answer: Some(answer),
+                        record_empty: true,
+                        ..Controls::default()
+                    };
+                    let before = game.swings_started;
+                    assert_eq!(
+                        game.remote_use_item_on(hand, mod_api::InteractionAttempt::Press, None),
+                        ends,
+                        "{hand:?} {answer:?}"
+                    );
+                    assert_eq!(game.swings_started - before, swings);
+                    assert_eq!(game.world.block(0, 64, 0), lever);
+                    let state = observer.0.lock().unwrap();
+                    assert_eq!(state.use_item_on_packets, 1);
+                    assert_eq!(state.use_item_packets, 0);
+                    let mut expected = vec![block.clone(), Step::BlockPart];
+                    if !ends {
+                        expected.push(Step::Phase(UsePhase::ItemAfterBlock, LogicalSide::Client));
+                    }
+                    assert_eq!(state.steps, expected);
+                }
+            }
+        });
+    });
+}
+
+/// One right click on a block whose Part acts in `use_item_on` and answers `Success`, with
+/// something in the off hand. The client runs the Part too, so `Minecraft.startUseItem` stops
+/// at the main hand: one request goes out and the off hand gets no turn. The server runs the
+/// Part once for that request. The lever stays put on both sides: the Part replaced its toggle.
+#[test]
+#[ignore = "daily"]
+fn a_successful_block_part_runs_once_per_click_on_both_sides() {
+    let observer = Observer::default();
+    let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
+        "one_click",
+        Box::new(observer.clone()),
+    )]
+    .into();
+    crate::game::api_values::install_parts(&mods).unwrap();
+    mod_platform::testing::with_mods(mods, || {
+        for client in [false, true] {
+            with_interaction_game(client, |game| {
+                let lever = game
+                    .pack
+                    .assets
+                    .registry
+                    .default_state("minecraft:lever")
+                    .unwrap();
+                game.world.set(0, 64, 0, lever).unwrap();
+                game.forced_hit = Some(hit());
+                game.offhand = Some(ItemStack::new("minecraft:stick", 1));
+                *observer.0.lock().unwrap() = Controls {
+                    hands: Some(Vec::new()),
+                    block_part_answer: Some(Answer::Success),
+                    ..Controls::default()
+                };
+                let before = game.swings_started;
+                if client {
+                    game.remote_use(mod_api::InteractionAttempt::Press);
+                } else {
+                    assert!(use_block(game, false));
+                }
+                let side = if client {
+                    LogicalSide::Client
+                } else {
+                    LogicalSide::Server
+                };
+                let state = observer.0.lock().unwrap();
+                assert_eq!(
+                    state.steps,
+                    [Step::Phase(UsePhase::Block, side), Step::BlockPart]
+                );
+                assert_eq!(state.click_hands, [Hand::Main]);
+                assert!(
+                    state
+                        .hands
+                        .as_ref()
+                        .unwrap()
+                        .iter()
+                        .all(|hand| *hand == Hand::Main)
+                );
+                assert_eq!(state.use_item_on_packets, usize::from(client));
+                assert_eq!(state.use_item_packets, 0);
+                assert_eq!(game.swings_started - before, 1);
+                assert_eq!(game.world.block(0, 64, 0), lever);
+            });
+        }
+    });
+}
+
+#[test]
+#[ignore = "daily"]
+fn client_empty_block_part_runs_only_for_the_selected_main_hand_fallback() {
+    let observer = Observer::default();
+    let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
+        "empty_prediction",
+        Box::new(observer.clone()),
+    )]
+    .into();
+    crate::game::api_values::install_parts(&mods).unwrap();
+    mod_platform::testing::with_mods(mods, || {
+        with_interaction_game(true, |game| {
             let registry = game.pack.assets.registry;
             let stone = registry.default_state("minecraft:stone").unwrap();
             let lever = game
@@ -1185,58 +1439,226 @@ fn on_item_use_first_runs_before_the_block_and_ends_the_click() {
             game.world.set(0, 63, 0, stone).unwrap();
             game.world.set(0, 64, 0, lever).unwrap();
             game.forced_hit = Some(hit());
-            let server = LogicalSide::Server;
-
-            // Every non-PASS Part answer stops before the block, including TRY.
-            for (answer, used, swings) in [
-                (Answer::Success, true, 1),
-                (Answer::SuccessServer, true, 1),
-                (Answer::Consume, true, 0),
-                (Answer::Fail, true, 0),
-                (Answer::TryWithEmptyHand, false, 0),
-            ] {
+            game.offhand = Some(ItemStack::new("minecraft:stick", 1));
+            for hand in [Hand::Main, Hand::Off] {
+                for (event_answer, part_answer) in [
+                    (None, None),
+                    (None, Some(Answer::TryWithEmptyHand)),
+                    (Some(Answer::TryWithEmptyHand), Some(Answer::Fail)),
+                ] {
+                    *observer.0.lock().unwrap() = Controls {
+                        expected_hand: Some(hand),
+                        block_answer: event_answer,
+                        block_part_answer: part_answer,
+                        record_empty: true,
+                        empty_part_answer: Some(Answer::SuccessServer),
+                        ..Controls::default()
+                    };
+                    let before = game.swings_started;
+                    assert_eq!(
+                        game.remote_use_item_on(hand, mod_api::InteractionAttempt::Press, None),
+                        hand == Hand::Main
+                    );
+                    assert_eq!(game.swings_started, before);
+                    assert_eq!(game.world.block(0, 64, 0), lever);
+                    let state = observer.0.lock().unwrap();
+                    assert_eq!(state.use_item_on_packets, 1);
+                    let mut expected = vec![Step::Phase(UsePhase::Block, LogicalSide::Client)];
+                    if event_answer.is_none() {
+                        expected.push(Step::BlockPart);
+                    }
+                    expected.push(if hand == Hand::Main {
+                        Step::EmptyPart(Hand::Main, true)
+                    } else {
+                        Step::Phase(UsePhase::ItemAfterBlock, LogicalSide::Client)
+                    });
+                    assert_eq!(state.steps, expected);
+                }
+            }
+            // The empty-hand Part replaces the lever's toggle even when its
+            // answer falls through. The selected item phase and Part run next.
+            for answer in [Answer::Pass, Answer::Fail, Answer::TryWithEmptyHand] {
                 *observer.0.lock().unwrap() = Controls {
-                    record_first: true,
-                    first_part_answer: Some(answer),
+                    record_empty: true,
+                    empty_part_answer: Some(answer),
+                    client_use_on_answer: Some(Answer::Consume),
                     ..Controls::default()
                 };
                 let before = game.swings_started;
-                assert_eq!(use_block(game, false), used);
-                assert_eq!(game.swings_started - before, swings);
+                assert!(
+                    game.remote_use_item_on(Hand::Main, mod_api::InteractionAttempt::Press, None),
+                    "{answer:?}"
+                );
+                assert_eq!(game.swings_started, before);
                 assert_eq!(game.world.block(0, 64, 0), lever);
-                let first = Step::Phase(UsePhase::ItemBeforeBlock, server);
-                assert_eq!(observer.0.lock().unwrap().steps, [first, Step::FirstPart]);
+                let state = observer.0.lock().unwrap();
+                assert_eq!(state.use_item_on_packets, 1);
+                assert_eq!(state.use_item_packets, 0);
+                assert_eq!(
+                    state.steps,
+                    [
+                        Step::Phase(UsePhase::Block, LogicalSide::Client),
+                        Step::BlockPart,
+                        Step::EmptyPart(Hand::Main, true),
+                        Step::Phase(UsePhase::ItemAfterBlock, LogicalSide::Client),
+                        Step::UseOnPart(LogicalSide::Client),
+                    ],
+                    "{answer:?}",
+                );
             }
-
-            // The broadcast event goes first: its cancel stops the Part.
-            *observer.0.lock().unwrap() = Controls {
-                record_first: true,
-                first_answer: Some(Answer::Success),
-                first_part_answer: Some(Answer::Success),
-                ..Controls::default()
-            };
-            assert!(use_block(game, false));
-            assert_eq!(game.world.block(0, 64, 0), lever);
-            assert_eq!(
-                observer.0.lock().unwrap().steps,
-                [Step::Phase(UsePhase::ItemBeforeBlock, server)]
-            );
-
-            // A pass goes on: the block's phase and the lever flip.
-            *observer.0.lock().unwrap() = Controls {
-                record_first: true,
-                first_part_answer: Some(Answer::Pass),
-                ..Controls::default()
-            };
-            assert!(use_block(game, false));
+            // When neither Part answers, the ordinary lever prediction still runs.
+            *observer.0.lock().unwrap() = Controls::default();
+            let before = game.swings_started;
+            assert!(game.remote_use_item_on(Hand::Main, mod_api::InteractionAttempt::Press, None));
+            assert_eq!(game.swings_started - before, 1);
             assert_ne!(game.world.block(0, 64, 0), lever);
+            assert_eq!(observer.0.lock().unwrap().use_item_on_packets, 1);
+        });
+    });
+}
+
+#[test]
+#[ignore = "daily"]
+fn an_unrepresentable_held_stack_defers_to_client_block_prediction() {
+    let observer = Observer::default();
+    let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
+        "refused_prediction",
+        Box::new(observer.clone()),
+    )]
+    .into();
+    crate::game::api_values::install_parts(&mods).unwrap();
+    mod_platform::testing::with_mods(mods, || {
+        with_interaction_game(true, |game| {
+            let registry = game.pack.assets.registry;
+            let stone = registry.default_state("minecraft:stone").unwrap();
+            let lever = game
+                .with_props(
+                    registry.default_state("minecraft:lever").unwrap(),
+                    &[("face", "floor")],
+                )
+                .unwrap();
+            game.world.set(0, 63, 0, stone).unwrap();
+            game.world.set(0, 64, 0, lever).unwrap();
+            game.forced_hit = Some(hit());
+            game.inventory[game.selected] = Some(ItemStack::new("minecraft:stick", 0));
+            *observer.0.lock().unwrap() = Controls {
+                record_first: true,
+                record_empty: true,
+                first_part_answer: Some(Answer::Consume),
+                block_part_answer: Some(Answer::Consume),
+                empty_part_answer: Some(Answer::Consume),
+                ..Controls::default()
+            };
+            let before = game.swings_started;
+            assert!(game.remote_use_item_on(Hand::Main, mod_api::InteractionAttempt::Press, None));
+            assert_eq!(game.swings_started - before, 1);
+            assert_ne!(game.world.block(0, 64, 0), lever);
+            let state = observer.0.lock().unwrap();
+            assert!(state.steps.is_empty());
+            assert_eq!(state.use_item_on_packets, 1);
+        });
+    });
+}
+
+#[test]
+#[ignore = "daily"]
+fn a_stale_client_block_click_discards_the_part_decision() {
+    with_interaction_game(true, |game| {
+        let registry = game.pack.assets.registry;
+        let stone = registry.default_state("minecraft:stone").unwrap();
+        let lever = registry.default_state("minecraft:lever").unwrap();
+        for replace_target in [true, false] {
+            game.world.set(0, 64, 0, lever).unwrap();
+            game.inventory[game.selected] = Some(ItemStack::new("minecraft:stick", 1));
+            let held = game.inventory[game.selected].clone();
+            let click = game.block_click(&hit(), Hand::Main, None);
+            let mut calls = 0;
+            let answer =
+                game.with_block_click_part(&click, lever, held.as_ref(), |game, answer| {
+                    calls += 1;
+                    if replace_target {
+                        game.world.set(0, 64, 0, stone).unwrap();
+                    } else {
+                        game.inventory[game.selected].as_mut().unwrap().count += 1;
+                    }
+                    *answer = Some(Answer::Success);
+                });
+            assert_eq!(calls, 1);
+            assert_eq!(answer, Err(crate::game::native_hooks::StaleBlockClick));
+        }
+    });
+}
+
+#[test]
+#[ignore = "daily"]
+fn a_slot_changing_client_part_keeps_the_original_slot_for_the_block_request() {
+    use crate::game::native_hotbar_slot::hotbar_slot_tests::{logged_in, sent};
+    use sunrise_protocol::packets::play::{self, Serverbound as S};
+
+    let observer = Observer::default();
+    let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
+        "slot_changing_part",
+        Box::new(observer.clone()),
+    )]
+    .into();
+    crate::game::api_values::install_parts(&mods).unwrap();
+    mod_platform::testing::with_mods(mods, || {
+        with_game(|game| {
+            let mut reader = logged_in(game);
+            game.set_local_mode(sunrise_client::command::args::GameMode::Creative);
+            game.world
+                .chunks
+                .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+            let lever = game
+                .pack
+                .assets
+                .registry
+                .default_state("minecraft:lever")
+                .unwrap();
+            game.world.set(0, 64, 0, lever).unwrap();
+            game.forced_hit = Some(hit());
+            game.selected = 2;
+            game.inventory[2] = Some(ItemStack::new("minecraft:stick", 1));
+            game.inventory[4] = Some(ItemStack::new("minecraft:stone", 1));
+            game.offhand = Some(ItemStack::new("minecraft:shield", 1));
+            *observer.0.lock().unwrap() = Controls {
+                block_part_select_slot: Some(4),
+                block_part_answer: Some(Answer::Success),
+                ..Controls::default()
+            };
+            let before = game.swings_started;
+            game.remote_use(mod_api::InteractionAttempt::Press);
+
+            assert_eq!(game.selected, 4, "the local selection still changes");
             assert_eq!(
-                observer.0.lock().unwrap().steps[..3],
+                game.swings_started, before,
+                "the stale answer must not swing"
+            );
+            assert_eq!(game.world.block(0, 64, 0), lever);
+            let packets = sent(&mut reader);
+            assert!(
+                matches!(
+                    packets.as_slice(),
+                    [S::SetCarriedItem(play::SetCarriedItem { slot: 2 }), S::UseItemOn(request)]
+                        if request.hand == 0
+                            && request.pos == [0, 64, 0]
+                            && request.face == 1
+                            && request.cursor == [0.5, 1.0, 0.5]
+                            && !request.inside
+                            && !request.world_border
+                            && request.sequence == 1
+                ),
+                "expected the original slot followed by one unchanged request: {packets:?}",
+            );
+            let state = observer.0.lock().unwrap();
+            assert_eq!(state.click_hands, [Hand::Main]);
+            assert_eq!(
+                state.steps,
                 [
-                    Step::Phase(UsePhase::ItemBeforeBlock, server),
-                    Step::FirstPart,
-                    Step::Phase(UsePhase::Block, server),
-                ]
+                    Step::Phase(UsePhase::Block, LogicalSide::Client),
+                    Step::BlockPart
+                ],
+                "the stale decision must not retry or fall through",
             );
         });
     });
@@ -1314,7 +1736,7 @@ fn an_item_used_from_the_off_hand_reaches_the_use_hooks_on_the_server() {
                         .all(|h| *h == Hand::Off || guest.is_none())
                 );
                 assert_eq!(state.hands.as_ref().unwrap().last(), Some(&Hand::Off));
-                assert_eq!(state.steps.last(), Some(&Step::UseOnPart));
+                assert_eq!(state.steps.last(), Some(&Step::UseOnPart(side)));
             }
         });
     });
@@ -1347,7 +1769,7 @@ fn setup_interaction_guest(
             seed: 0,
             max_players: 2,
             integrated: true,
-            levels: game.level_shapes,
+            levels: game.level_shapes.clone(),
             level_seeds: game.levels.runtime.seeds(),
         },
     )
@@ -1815,8 +2237,7 @@ fn a_server_client_keeps_a_bundle_use_until_the_server_completes_it() {
     mod_platform::testing::with_mods(mods, || {
         with_interaction_game(true, |game| {
             game.inventory[game.selected] = Some(ItemStack::new("minecraft:bundle", 1));
-            // The use starts at tick 0, which records the item in use.
-            game.using = Some((game.selected, 0));
+            assert!(game.start_using_item());
             // 200 client ticks: the use is still on, waiting for the server.
             for _ in 0..200 {
                 game.remote_tick_using();
@@ -1839,6 +2260,126 @@ fn a_server_client_keeps_a_bundle_use_until_the_server_completes_it() {
     });
 }
 
+/// `SolidBucketItem.getPlaceSound` changes only the event: both sides use
+/// the contextual sound type's levels, even with a no-op level-sound listener.
+#[test]
+#[ignore = "daily"]
+fn powder_snow_placement_uses_the_bucket_event_and_contextual_levels() {
+    use crate::game::native_sound_refs::tests::{guest, packets};
+    use mod_api::{BlockSoundCause, SoundSource, SoundTypeEvent};
+    use sunrise_protocol::packets::play::Clientbound;
+
+    struct PowderSound;
+    #[mod_api::sunrise_part]
+    impl BlockPart for PowderSound {
+        fn sound_type(&self, _: mod_api::LevelSide<'_>, event: &mut SoundTypeEvent<'_>) {
+            if event.cause == BlockSoundCause::Place {
+                event.sound.volume = 3.0;
+                event.sound.pitch = -1.25;
+            }
+        }
+    }
+    #[mod_api::__subscriptions]
+    impl Hooks for PowderSound {
+        fn register(&self, r: &mut dyn Registrar, _: &mod_api::RegistrationContext) {
+            let powder = r.block_key("minecraft:powder_snow");
+            r.block_part(powder, PowderSound);
+        }
+    }
+    struct Observe(Arc<AtomicUsize>);
+    #[mod_api::__subscriptions]
+    impl Hooks for Observe {
+        fn play_level_sound_at_position(
+            &self,
+            _: HostSide<'_>,
+            e: &mut mod_api::PlayLevelSoundAtPositionEvent,
+        ) -> Flow {
+            if e.sound.to_string() == EMPTY_POWDER_SNOW {
+                assert_eq!((e.original_volume, e.original_pitch), (2.0, -1.0));
+                self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            Flow::Continue
+        }
+    }
+    const EMPTY_POWDER_SNOW: &str = "minecraft:item.bucket.empty_powder_snow";
+    if !crate::game::native_block_sounds::tests::install_sound_fixture_in_child(
+        "game::remote::interaction_event_tests::powder_snow_placement_uses_the_bucket_event_and_contextual_levels",
+    ) {
+        return;
+    }
+    for listened in [false, true] {
+        let observed = Arc::new(AtomicUsize::new(0));
+        let mut mods = vec![mod_api::ModEntry::new(
+            "powder_sound",
+            Box::new(PowderSound),
+        )];
+        if listened {
+            mods.push(mod_api::ModEntry::new(
+                "observe_sound",
+                Box::new(Observe(observed.clone())),
+            ));
+        }
+        mod_platform::testing::with_mods(mods.into(), || {
+            for client in [false, true] {
+                with_interaction_game(client, |game| {
+                    let registry = game.pack.assets.registry;
+                    let stone = registry.default_state("minecraft:stone").unwrap();
+                    let powder = registry.default_state("minecraft:powder_snow").unwrap();
+                    game.world.set(0, 64, 0, stone).unwrap();
+                    game.forced_hit = Some(hit());
+                    game.inventory[game.selected] =
+                        Some(ItemStack::new("minecraft:powder_snow_bucket", 1));
+                    game.audio.capture = Some(Vec::new());
+                    assert!(use_block(game, client));
+                    assert_eq!(game.world.block(0, 65, 0), powder);
+                    let captured = game.audio.capture.as_ref().unwrap();
+                    let [sound] = captured.as_slice() else {
+                        panic!("expected one placement sound, client={client}")
+                    };
+                    assert_eq!(sound.event, EMPTY_POWDER_SNOW);
+                    assert_eq!(sound.source, SoundSource::Blocks.index());
+                    assert_eq!((sound.volume, sound.pitch), (2.0, -1.0));
+                    assert_eq!(sound.except_entity, if client { None } else { Some(12) });
+
+                    if !client {
+                        let (other, rx) = guest(13, 13, [0.5, 65.0, 0.5]);
+                        game.lan.as_mut().unwrap().hub.guests.push(other);
+                        game.lan_broadcast_effects();
+                        let id = game
+                            .lan
+                            .as_ref()
+                            .unwrap()
+                            .hub
+                            .sync_data()
+                            .id("minecraft:sound_event", EMPTY_POWDER_SNOW)
+                            .unwrap();
+                        let sounds: Vec<_> = packets(&rx)
+                            .into_iter()
+                            .filter_map(|packet| {
+                                if let Clientbound::Sound(sound) = packet {
+                                    Some(sound)
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+                        let [sound] = sounds.as_slice() else {
+                            panic!("expected one sound packet")
+                        };
+                        assert_eq!(sound.sound, (id, None), "use the registered bucket event");
+                        assert_eq!(sound.source, SoundSource::Blocks as i32);
+                        assert_eq!((sound.volume, sound.pitch), (2.0, -1.0));
+                    }
+                });
+            }
+        });
+        assert_eq!(
+            observed.load(std::sync::atomic::Ordering::Relaxed),
+            if listened { 2 } else { 0 }
+        );
+    }
+}
+
 /// `SolidBucketItem.useOn`: a powder snow bucket placed on a block leaves an empty bucket in the
 /// hand that placed it, on the server and in the client's own prediction, so the client's next
 /// click in the same tick uses the bucket (`use_item`) as vanilla's does.
@@ -1848,7 +2389,11 @@ fn a_placed_powder_snow_bucket_leaves_a_bucket_in_hand_on_both_sides() {
     mod_platform::testing::with_mods(Vec::new().into(), || {
         for client in [false, true] {
             with_interaction_game(client, |game| {
-                game.set_mode_id(0);
+                if client {
+                    game.set_local_mode(sunrise_client::command::args::GameMode::Survival);
+                } else {
+                    game.set_mode_id(0);
+                }
                 let stone = game
                     .pack
                     .assets

@@ -390,21 +390,10 @@ pub struct HurtSource<'a> {
     /// dealt during a projectile's impact (an ownerless wither skull, a tipped arrow's
     /// instant harm).
     pub direct: i32,
+    /// The direct entity's type (`minecraft:splash_potion`, `minecraft:area_effect_cloud`),
+    /// when the source names one, independently of its class family.
+    pub direct_type: Option<&'a str>,
     pub position: Option<[f64; 3]>,
-}
-/// Which entry of vanilla's `LivingEntity.knockback` a push came through, as
-/// `living_knockback` tells its listener. The short entry (power, direction) only delegates to
-/// the full one (which also takes whether the push comes from an effect), so one push through
-/// the short entry reaches the hook once, as `Short`; a call of the full entry itself is `Full`.
-/// A listener that changes the strength where a mixin on both entries would change it twice
-/// for a short-entry call and once for a full-entry call applies its change twice on `Short`.
-// exhaustive: vanilla has exactly these two entries, `knockback(power, x, z)` and the full one
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, sunrise_mod_api_macros::Wire)]
-pub enum KnockbackEntry {
-    /// The push entered through `knockback(power, x, z)`, which then calls the full entry.
-    Short,
-    /// The push entered the full entry directly.
-    Full,
 }
 /// Where the entity a hit lands on stands and looks (`getViewVector`), for
 /// `HURT_SERVER`.
@@ -430,6 +419,183 @@ pub struct ShieldBlock {
     /// vanilla's `ItemDamageFunction` of the final `blocked_damage` applies.
     /// The damage sequence's `shield_damage` value.
     pub shield_damage: i32,
+}
+
+/// Which living entity of a hit a [`LivingView`] reads.
+// hidden: the engine keys its reads by it; listeners hold a LivingView.
+// no wire: an engine-local selector of a hit-scoped borrow.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum LivingParty {
+    /// The entity the hit lands on.
+    Victim,
+    /// The hit's causing entity (`DamageSource.getEntity`).
+    Causing,
+    /// The one entity a heal or movement hook is about: the healed entity of `living_heal`,
+    /// the moving entity of `living_jump_power`, `living_speed` and `living_flying_speed`.
+    Subject,
+}
+
+/// Engine backing for a [`LivingView`]: the live borrows of a hit's victim and causing entity,
+/// or of the entity a heal or movement hook is about, read with the same engine functions as
+/// the [`LivingRef`](crate::LivingRef) reads.
+// hidden: the engine owns the borrowed bodies; listeners read through LivingView.
+// no wire: engine-implemented hit-scoped reads.
+#[doc(hidden)]
+pub trait LivingReads {
+    /// The entity's handle in the open world, or None when the party is not lent.
+    fn living_entity(&self, party: LivingParty) -> Option<crate::EntityRef>;
+    /// [`LivingView::kind`].
+    fn living_kind(&self, party: LivingParty) -> Option<crate::EntityTypeKey>;
+    /// [`LivingView::holder`].
+    fn living_holder(&self, party: LivingParty) -> Option<crate::Holder>;
+    /// [`LivingView::health`].
+    fn living_health(&self, party: LivingParty) -> Option<f32>;
+    /// [`LivingView::absorption`].
+    fn living_absorption(&self, party: LivingParty) -> Option<f32>;
+    /// [`LivingView::max_health`].
+    fn living_max_health(&self, party: LivingParty) -> Option<f32>;
+    /// [`LivingView::effect`].
+    fn living_effect(
+        &self,
+        party: LivingParty,
+        effect: crate::EffectKey,
+    ) -> Option<crate::ActiveEffect>;
+    /// [`LivingView::effects`].
+    fn living_effects(&self, party: LivingParty) -> Option<Vec<crate::ActiveEffect>>;
+    /// [`LivingView::potion_affected`].
+    fn living_potion_affected(&self, party: LivingParty, effect: crate::EffectKey) -> bool;
+    /// [`LivingView::attribute_value`].
+    fn living_attribute_value(&self, party: LivingParty, id: &str) -> Option<f64>;
+    /// [`LivingView::with_hand_item`]: lend the stack in `hand` to `read` once.
+    fn living_hand_item(
+        &self,
+        party: LivingParty,
+        hand: crate::Hand,
+        read: &mut dyn for<'a> FnMut(crate::ItemStackView<'a>),
+    ) -> Option<()>;
+    /// [`LivingView::no_ai`].
+    fn living_no_ai(&self, party: LivingParty) -> Option<bool>;
+}
+
+/// A living entity a hook lends its listener for reading: a hit's victim
+/// ([`HitHost::victim`](crate::HitHost::victim)) or causing entity
+/// ([`HitHost::causing`](crate::HitHost::causing)), the entity `living_heal` heals
+/// (NeoForge `LivingHealEvent.getEntity`), or the entity whose jump power, speed or flying
+/// speed `living_jump_power`, `living_speed` and `living_flying_speed` compute. Each read
+/// answers from the entity's live state at the call, through the engine function the
+/// matching [`LivingRef`](crate::LivingRef) read uses, so the two agree at the same moment.
+/// It borrows what the game lends, and no method writes; it is valid only during the
+/// listener's call.
+// no wire: a call-scoped borrow of the hit's live entity state.
+#[derive(Clone, Copy)]
+#[non_exhaustive]
+pub struct LivingView<'h> {
+    reads: &'h dyn LivingReads,
+    party: LivingParty,
+    entity: crate::EntityRef,
+}
+
+impl<'h> LivingView<'h> {
+    /// A view of `party` through `reads`, or None when the hit does not lend that party.
+    // hidden: only the engine constructs a view around its live borrows.
+    #[doc(hidden)]
+    pub fn new(reads: &'h dyn LivingReads, party: LivingParty) -> Option<Self> {
+        let entity = reads.living_entity(party)?;
+        Some(Self {
+            reads,
+            party,
+            entity,
+        })
+    }
+    /// The entity's handle (NeoForge `LivingEvent.getEntity` for the victim and the healed
+    /// entity, vanilla `DamageSource.getEntity` for the causing entity), as
+    /// [`LivingRef::entity`](crate::LivingRef::entity). It outlives the view.
+    pub fn entity(&self) -> crate::EntityRef {
+        self.entity
+    }
+    /// The entity's id (`Entity.getId`, the network id events carry), as
+    /// [`LivingRef::id`](crate::LivingRef::id).
+    pub fn id(&self) -> u32 {
+        self.entity.id()
+    }
+    /// The entity's type key (`Entity.getType`), as [`EntityRef::kind`](crate::EntityRef::kind).
+    pub fn kind(&self) -> Option<crate::EntityTypeKey> {
+        self.reads.living_kind(self.party)
+    }
+    /// The holder of the entity's attachments, for `has` and `get_existing` (NeoForge
+    /// `IAttachmentHolder.hasData` and `getExistingData`) through the hit's host: a player's [`Holder::Player`](crate::Holder::Player) by UUID, any other
+    /// entity's [`Holder::Entity`](crate::Holder::Entity) by id. The hit's host only reads
+    /// them: a write, or a `get` that would store its default, refuses with
+    /// [`AttachmentError::ReadOnlyHolder`](crate::AttachmentError::ReadOnlyHolder). A heal or
+    /// movement hook gets no host, so there the holder only names the entity.
+    pub fn holder(&self) -> Option<crate::Holder> {
+        self.reads.living_holder(self.party)
+    }
+    /// The entity's health (`LivingEntity.getHealth`), as
+    /// [`LivingRef::health`](crate::LivingRef::health).
+    pub fn health(&self) -> Option<f32> {
+        self.reads.living_health(self.party)
+    }
+    /// The entity's absorption amount (`LivingEntity.getAbsorptionAmount`), as
+    /// [`LivingRef::absorption`](crate::LivingRef::absorption): None for an armor stand and
+    /// the dragon.
+    pub fn absorption(&self) -> Option<f32> {
+        self.reads.living_absorption(self.party)
+    }
+    /// The entity's maximum health (`LivingEntity.getMaxHealth`), as
+    /// [`LivingRef::max_health`](crate::LivingRef::max_health).
+    pub fn max_health(&self) -> Option<f32> {
+        self.reads.living_max_health(self.party)
+    }
+    /// The entity's instance of `effect` (`LivingEntity.getEffect`), as
+    /// [`LivingRef::effect`](crate::LivingRef::effect).
+    pub fn effect(&self, effect: crate::EffectKey) -> Option<crate::ActiveEffect> {
+        self.reads.living_effect(self.party, effect)
+    }
+    /// The entity's active effects (`LivingEntity.getActiveEffects`), as
+    /// [`LivingRef::effects`](crate::LivingRef::effects).
+    pub fn effects(&self) -> Option<Vec<crate::ActiveEffect>> {
+        self.reads.living_effects(self.party)
+    }
+    /// Whether the entity has `effect` (`LivingEntity.hasEffect`), as
+    /// [`LivingRef::potion_affected`](crate::LivingRef::potion_affected).
+    pub fn potion_affected(&self, effect: crate::EffectKey) -> bool {
+        self.reads.living_potion_affected(self.party, effect)
+    }
+    /// The effective value of an attribute (`LivingEntity.getAttributeValue`), as
+    /// [`LivingRef::attribute_value`](crate::LivingRef::attribute_value).
+    pub fn attribute_value(&self, id: &str) -> Option<f64> {
+        self.reads.living_attribute_value(self.party, id)
+    }
+    /// Read `hand` (`LivingEntity.getItemInHand`; `getMainHandItem` for
+    /// [`Hand::Main`](crate::Hand::Main)), as
+    /// [`LivingRef::with_hand_item`](crate::LivingRef::with_hand_item): `Some` of `read`'s
+    /// result, or None without calling it for an empty hand.
+    pub fn with_hand_item<R>(
+        &self,
+        hand: crate::Hand,
+        read: impl for<'a> FnOnce(crate::ItemStackView<'a>) -> R,
+    ) -> Option<R> {
+        crate::item::item_stack::read_stack_view(read, |lend| {
+            self.reads.living_hand_item(self.party, hand, lend)
+        })
+    }
+    /// Whether the mob's own AI is off (`Mob.isNoAi`), as
+    /// [`MobRef::no_ai`](crate::MobRef::no_ai): None for anything but a mob.
+    pub fn no_ai(&self) -> Option<bool> {
+        self.reads.living_no_ai(self.party)
+    }
+}
+
+impl std::fmt::Debug for LivingView<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LivingView")
+            .field("party", &self.party)
+            .field("entity", &self.entity)
+            .finish()
+    }
 }
 
 #[cfg(test)]

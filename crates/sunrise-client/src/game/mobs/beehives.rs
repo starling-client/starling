@@ -56,12 +56,10 @@ impl HiveHost for GameHive<'_, '_> {
     }
     fn load(&mut self, tag: &Tag) -> Option<Mob> {
         let kind = sunrise_client::entity_nbt::kind(tag)?;
-        if !self
-            .game
-            .items()
-            .entity_type_tags
-            .contains("minecraft:beehive_inhabitors", &kind)
-        {
+        if !self.game.items().entity_type_tags.has_flag(
+            &kind,
+            sunrise_client::items::EntityTypeTags::BEEHIVE_INHABITORS,
+        ) {
             return None;
         }
         let id = self.game.load_mob(tag.clone(), None)?;
@@ -363,21 +361,23 @@ impl Game<'_> {
             .map(|p| [p.position.x, p.position.y, p.position.z]);
         if shears {
             // dropHoneycomb (harvest/beehive), the shear sound, hurtAndBreak.
-            for stack in self.sequence_loot(
+            let actor = self.interacting_loot_entity();
+            for stack in self.interact_loot_at(
                 "minecraft:harvest/beehive",
-                "minecraft:harvest/beehive",
+                pos,
+                state,
+                Some(actor),
                 Some(held),
             ) {
                 self.pop_resource(pos, stack);
             }
-            self.audio
-                .play("minecraft:block.beehive.shear", at, 1.0, 1.0);
+            self.play_audio("minecraft:block.beehive.shear", at, 1.0, 1.0);
             self.damage_held(1);
             self.post_block_game_event("minecraft:shear", pos, self.sculk_actor(), None);
         } else {
             // shrink(1), then the honey bottle in the hand, the inventory or
             // on the ground.
-            self.audio.play("minecraft:item.bottle.fill", at, 1.0, 1.0);
+            self.play_audio("minecraft:item.bottle.fill", at, 1.0, 1.0);
             self.consume_player_slot(self.held_slot(), 1);
             let bottle = ItemStack::new("minecraft:honey_bottle", 1);
             if self.held().is_none() {

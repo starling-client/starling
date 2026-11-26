@@ -1,0 +1,6 @@
+ids = [
+    "fn:content::resource_util::find_extractable_resource",
+    "fn:content::resource_util::extract_first",
+]
+why = "Both helpers now open a rollback scope before reading the handler, following NeoForge 26.3's ResourceHandlerUtil.findExtractableResource and extractFirst. An empty handler or a filter that rejects every resource no longer masks a refused transaction. The vanilla slot order and successful no-transfer result are unchanged (HopperBlockEntity.suckInItems and tryTakeInItemFromSlot)."
+migrate = "Keep the same find_extractable_resource and extract_first calls and context argument. Handle Err(TransactionError::Unavailable) as a refusal even when the handler is empty or the filter would reject every resource; use Ok(None) for an accepted probe that finds nothing. An extract_first call with amount zero still returns Ok(None) without opening a scope."

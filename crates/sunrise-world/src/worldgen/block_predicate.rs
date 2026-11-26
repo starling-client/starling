@@ -29,6 +29,9 @@ pub(super) fn bound_property(
 /// Resolve a block holder set against the same immutable registry used by world
 /// queries. Unknown blocks/tags fail during decoding, even in unused branches.
 pub trait PredicateBlockResolver {
+    fn block_registry(&self) -> Option<&crate::registry::BlockRegistry> {
+        None
+    }
     fn predicate_state(&self, _json: &str) -> Result<BlockStateId, DecodeError> {
         Err(DecodeError::Field("predicate block state registry"))
     }

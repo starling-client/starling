@@ -352,8 +352,8 @@ fn code_leaf<O: Ops>(kind: i32, r: &mut Reader, names: &dyn Names) -> Option<O::
         }
         // `Codec.FLOAT`: minimum_attack_charge, potion_duration_scale.
         7 | 54 => float_with::<O>(r)?,
-        // `Identifier.CODEC`: tooltip_style, note_block_sound.
-        35 | 73 => identifier_with::<O>(&r.string(32767).ok()?)?,
+        // `Identifier.CODEC`: note_block_sound.
+        73 => identifier_with::<O>(&r.string(32767).ok()?)?,
         // `Enchantable`, `VillagerFood`.
         31 => int_record_with::<O>("value", r)?,
         44 => int_record_with::<O>("nutrition", r)?,

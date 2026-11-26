@@ -1,18 +1,22 @@
 //! The `setting_changed` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0020
 
 pub trait Hooks {
-    /// The player changed setting `key` of mod `mod_id` on its page in Options > Mods
-    /// (`Registrar::register_setting`); the new value is kept already, so read it with
-    /// `setting_bool` and its siblings. Only mod `mod_id` hears it: a mod is told of its own
-    /// settings, never another's.
+    /// A registered setting changed through a typed write, Options > Mods, or a settings reload.
+    /// Runs on the side that changed the value, after publishing it. Only the setting's owner
+    /// hears it. `value` is the new value. The
+    /// listener gets a read-only [`Host`](crate::Host): the write that caused the notice is
+    /// already committed, and a listener that wrote its own key from here would notify itself
+    /// without end. Make a follow-up write from the callback that made the first one.
     #[hook(
         target = "sunrise_client::game::native_hooks::base::Game<'_>::native_setting_changed",
         dispatch = "flat",
-        side = "client",
+        side = "both",
+        receiver = "read",
+        host = "read",
         contract = "listen",
         owner = "mod_id",
-        neoforge = "ModConfigEvent.Reloading (a ModConfigSpec value set on the config screen)"
+        neoforge = "ModConfigEvent.Reloading",
+        version = 3
     )]
-    fn setting_changed(mod_id: &str, key: &str);
+    fn setting_changed(mod_id: &str, key: &str, value: SettingValue);
 }

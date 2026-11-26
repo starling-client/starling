@@ -26,8 +26,8 @@ mod tests {
     };
     use mod_api::{
         __private::{HookPanicReport, take_hook_panics},
-        AudioStream, AudioStreamRef, AudioStreamState, ClientDisconnectingEvent, ClientHost, Hooks,
-        ModEntry, SoundSource, StreamSpec,
+        AudioStream, AudioStreamRef, AudioStreamState, ClientHost, ClientPlayerLoggingOutEvent,
+        Hooks, ModEntry, SoundSource, StreamSpec,
     };
     use std::{
         sync::{Arc, Mutex, mpsc},
@@ -290,10 +290,10 @@ mod tests {
         struct Listener(mpsc::Sender<i32>);
         #[mod_api::__subscriptions]
         impl Hooks for Listener {
-            fn client_disconnecting(
+            fn client_player_logging_out(
                 &self,
-                host: &dyn ClientHost,
-                _: &mut ClientDisconnectingEvent,
+                host: &mut dyn ClientHost,
+                _: &mut ClientPlayerLoggingOutEvent,
             ) {
                 let record = self.0.clone();
                 host.client_executor()
@@ -315,6 +315,7 @@ mod tests {
                     reason: "fixture disconnected".into(),
                     key: None,
                     from_server: true,
+                    after_login: true,
                 });
                 let executor = executor(game, "producer");
                 let first = record.clone();

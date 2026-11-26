@@ -3,7 +3,7 @@
 pub trait Hooks {
     /// Once a frame, in a world or not, right after the frame was rendered
     /// (NeoForge's `RenderFrameEvent.Post`). `elapsed` is the frame's time. It
-    /// fires for a frame that was skipped too; `flip_frame` is the moment a
+    /// fires for a frame the renderer skipped too; `flip_frame` is the moment a
     /// frame was presented. `world_partial_tick` is the interpolation used by
     /// that frame, held while paused or frozen; `partial_tick` is the advancing
     /// window clock. Outside a world both use the window clock. Neither is

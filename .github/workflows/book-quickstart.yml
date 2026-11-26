@@ -102,8 +102,7 @@ jobs:
         run: python3 tools/ci/source_mtimes.py "${CARGO_TARGET_DIR:-target}/ci-source-mtimes-v2.json"
       - name: Cap build parallelism to the runner
         run: python3 tools/ci/cargo_jobs.py --job-mib 3072 --cap
-      # The tool names the commit it was built from (`--version`, a release plan's `tool_commit`), as a release
-      # tool does. Set for every later step, so the test builds below don't rebuild it as `dev`.
+      # The tool names the commit it was built from (`--version`), as a release tool does. Set for every later step, so the test builds below don't rebuild it as `dev`.
       - name: The tool's commit
         run: |
           tool_commit=$(git rev-parse --verify HEAD)
@@ -182,13 +181,74 @@ jobs:
         run: >-
           cargo test --locked -p cargo-sunrise-mod --test run --
           --ignored --exact run_writes_native_registration_logs_to_latest_log
-      - name: The start pages run with the mod tool alone
-        run: python3 tools/book_quickstart.py --tool "${CARGO_TARGET_DIR:-target}/debug/cargo-sunrise-mod"
-      - name: Generated native release on this run's Linux SDK
+      - name: A native mod's C source builds through its build script
         if: inputs.own_sdk
         run: >-
-          python3 tools/ci/mod_release_smoke.py --tool "${CARGO_TARGET_DIR:-target}/debug/cargo-sunrise-mod"
-          --scratch "$QS_SCRATCH" --commit "$(git rev-parse HEAD)"
+          cargo test --locked -p cargo-sunrise-mod --test build_errors --
+          --ignored --exact a_native_mod_compiles_its_c_source_with_cc_from_its_build_script
+      - name: Native add-on builds with local libraries
+        if: inputs.own_sdk
+        run: >-
+          cargo test --locked -p cargo-sunrise-mod --test addon --
+          --ignored --exact builds_and_checks_a_native_addon_with_local_libraries
+      - name: Prepare dedicated server resources for the own-sdk tests
+        if: inputs.own_sdk
+        run: |
+          if [ "$RUNNER_ENVIRONMENT" = self-hosted ] && [ -n "${DYNA_CI_KEEP:-}" ]; then
+            mkdir -p "$DYNA_CI_KEEP/mojang-server" .local
+            ln -sfn "$DYNA_CI_KEEP/mojang-server" .local/server-downloads
+          fi
+          profile="$QS_SCRATCH/server-resources"
+          cargo build --release --locked -p sunrise-prepare
+          preparer="${CARGO_TARGET_DIR:-target}/release/sunrise-prepare"
+          python3 tools/ci/preparation_step.py resource-export "$RUNNER_TEMP/server-prepare.log" \
+            "$preparer" --server --output "$profile"
+          echo "SUNRISE_TEST_SERVER_PROFILE=$profile" >> "$GITHUB_ENV"
+      - name: Two separately built mods cross a mod event in a real game
+        if: inputs.own_sdk
+        run: >-
+          cargo test --locked -p cargo-sunrise-mod --test m2m_mod_events --
+          --ignored --exact two_separately_built_mods_cross_a_mod_event_in_a_real_game
+      - name: A library built against another build of its dependency is refused
+        if: inputs.own_sdk
+        run: >-
+          cargo test --locked -p cargo-sunrise-mod --test dependency_identity --
+          --ignored --exact a_library_built_against_another_build_of_a_native_dependency_is_refused
+      - name: A library whose crates another mod changed is refused
+        if: inputs.own_sdk
+        run: >-
+          cargo test --locked -p cargo-sunrise-mod --test dependency_identity --
+          --ignored --exact a_library_whose_crates_another_mod_changed_is_refused_beside_its_dependent
+      - name: Prepare dedicated server resources for the own-sdk tests
+        if: inputs.own_sdk
+        run: |
+          if [ "$RUNNER_ENVIRONMENT" = self-hosted ] && [ -n "${DYNA_CI_KEEP:-}" ]; then
+            mkdir -p "$DYNA_CI_KEEP/mojang-server" .local
+            ln -sfn "$DYNA_CI_KEEP/mojang-server" .local/server-downloads
+          fi
+          profile="$QS_SCRATCH/server-resources"
+          cargo build --release --locked -p sunrise-prepare
+          preparer="${CARGO_TARGET_DIR:-target}/release/sunrise-prepare"
+          python3 tools/ci/preparation_step.py resource-export "$RUNNER_TEMP/server-prepare.log" \
+            "$preparer" --server --output "$profile"
+          echo "SUNRISE_TEST_SERVER_PROFILE=$profile" >> "$GITHUB_ENV"
+      - name: "Two separately built native mods interoperate through c: convention tags"
+        if: inputs.own_sdk
+        run: >-
+          cargo test --locked -p cargo-sunrise-mod --test convention_tags --
+          --ignored --exact two_separately_built_native_mods_interoperate_through_c_convention_tags
+      - name: Two separately built mods gate all data loaders with load conditions
+        if: inputs.own_sdk
+        run: >-
+          cargo test --locked -p cargo-sunrise-mod --test m2m_load_conditions --
+          --ignored --exact two_separately_built_mods_gate_all_data_loaders_with_load_conditions
+      - name: Installed native rows bend and route a client model
+        if: inputs.own_sdk
+        run: >-
+          cargo test --locked -p cargo-sunrise-mod --test installed_client_draw --
+          --ignored --exact installed_lower_bends_and_routes_a_client_model
+      - name: The start pages run with the mod tool alone
+        run: python3 tools/book_quickstart.py --tool "${CARGO_TARGET_DIR:-target}/debug/cargo-sunrise-mod"
       - name: Clean private scratch
         if: always() && inputs.own_sdk
         run: |

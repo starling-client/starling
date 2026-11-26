@@ -1,11 +1,11 @@
-//! `menu_clicked`, `menu_button`, `menu_quick_move` and `menu_slot_take` through real listeners:
-//! `menu_clicked` runs as a decided action (`decided_action`), while `menu_button`,
-//! `menu_quick_move` and `menu_slot_take` lend live resident storage through `BlockEntityScope`.
-//! The fixtures need prepared resources.
+//! `menu_clicked` runs directly on the receiving menu before default click execution.
+//! `menu_button`, `menu_quick_move` and `menu_slot_take` lend live resident storage through
+//! `BlockEntityScope`. The fixtures need prepared resources.
 use crate::game::native_guest_turn_tests::{register_test_menu, with_guests};
 use mod_api::{
-    BlockEntityPart, Flow, Hooks, HostBlockStates, ITEMS, ItemPlace, ItemResource, MenuButtonEvent,
-    MenuClickedEvent, MenuQuickMoveEvent, MenuSlotTakeEvent, ModEntry, Mods, Registrar, ServerHost,
+    BlockEntityPart, Flow, Hooks, HostBlockStates, HostTransaction, ITEMS, ItemPlace, ItemResource,
+    MenuButtonEvent, MenuClickedEvent, MenuQuickMoveEvent, MenuSlotTakeEvent, ModEntry, Mods,
+    Registrar, ServerHost,
 };
 use std::{
     cell::{Cell, RefCell},
@@ -17,6 +17,9 @@ use sunrise_client::{
     lan::menu::Slots,
 };
 use sunrise_protocol::packets::play::{ContainerButtonClick, ContainerClick, Serverbound};
+
+#[path = "mod_menu_decisions_tests/container_layout.rs"]
+mod container_layout;
 
 #[derive(Clone, Default)]
 struct Script {
@@ -60,6 +63,7 @@ struct Script {
     write_clicked_block: bool,
     continue_after_player_write: bool,
     replace_display: bool,
+    replace_other: bool,
 }
 
 thread_local! {
@@ -84,15 +88,15 @@ fn script(script: Script) {
     SCRIPT.with(|s| *s.borrow_mut() = script);
 }
 
-fn write_dirt(host: &mut dyn ServerHost) {
+fn write_dirt_in_tx(host: &mut dyn ServerHost, tx: &mod_api::TransactionContext) {
     let key = mod_api::__private::item_key("minecraft:dirt").unwrap();
     let dirt = mod_api::ItemStack::new(key, 1).unwrap();
     let place = ItemPlace::PlayerSlot {
         player: 12,
         slot: 20,
     };
-    let tx = host.transaction_current().expect("inside the action");
-    assert_eq!(place.insert(host, &tx, &ItemResource::of(&dirt), 2), 2);
+    assert!(!host.transaction_matches(None), "inside the action");
+    assert_eq!(place.insert(host, tx, &ItemResource::of(&dirt), 2), Ok(2));
 }
 
 struct Part;
@@ -110,7 +114,7 @@ impl BlockEntityPart for Part {
         DISPATCHES.set(DISPATCHES.get() + 1);
         IN_ACTION.with(|a| {
             a.borrow_mut()
-                .push(event.subject.host().transaction_current().is_some())
+                .push(!event.subject.host().transaction_matches(None))
         });
         let s = SCRIPT.with(|s| s.borrow().clone());
         let stone = |count| {
@@ -121,19 +125,20 @@ impl BlockEntityPart for Part {
             .unwrap()
         };
         if s.write_dirt {
-            let _: Result<(), ()> = event.subject.transaction(|scope, tx| {
-                let key = mod_api::__private::item_key("minecraft:dirt").unwrap();
-                let dirt = mod_api::ItemStack::new(key, 1).unwrap();
-                let place = ItemPlace::PlayerSlot {
-                    player: 12,
-                    slot: 20,
-                };
-                assert_eq!(
-                    place.insert(scope.host(), tx, &ItemResource::of(&dirt), 2),
-                    2
-                );
-                Ok(())
-            });
+            let _: Result<(), mod_api::TransactionError<()>> =
+                event.subject.transaction(|scope, tx| {
+                    let key = mod_api::__private::item_key("minecraft:dirt").unwrap();
+                    let dirt = mod_api::ItemStack::new(key, 1).unwrap();
+                    let place = ItemPlace::PlayerSlot {
+                        player: 12,
+                        slot: 20,
+                    };
+                    assert_eq!(
+                        place.insert(scope.host(), tx, &ItemResource::of(&dirt), 2),
+                        Ok(2)
+                    );
+                    Ok(())
+                });
         }
         if s.invalid {
             assert_eq!(
@@ -157,31 +162,32 @@ impl BlockEntityPart for Part {
         }
         if s.transactional_panic {
             *event.stack = Some(stone(1));
-            let _: Result<(), ()> = event.subject.transaction(|scope, tx| {
-                scope
-                    .with_view(|mut entity| {
-                        assert_eq!(entity.set_item_slot(1, Some(stone(4))), Ok(true));
-                        assert_eq!(entity.set_item_slot(2, Some(stone(5))), Ok(true));
-                        if s.write_update {
-                            entity.set_client_update_fields(mod_api::Compound::from([(
-                                "panic_fixture".into(),
-                                mod_api::Tag::Int(1),
-                            )]));
-                        }
-                    })
-                    .expect("live resident block entity");
-                let key = mod_api::__private::item_key("minecraft:dirt").unwrap();
-                let dirt = mod_api::ItemStack::new(key, 1).unwrap();
-                let place = ItemPlace::PlayerSlot {
-                    player: 12,
-                    slot: 20,
-                };
-                assert_eq!(
-                    place.insert(scope.host(), tx, &ItemResource::of(&dirt), 2),
-                    2
-                );
-                panic!("a listener failed");
-            });
+            let _: Result<(), mod_api::TransactionError<()>> =
+                event.subject.transaction(|scope, tx| {
+                    scope
+                        .with_view(|mut entity| {
+                            assert_eq!(entity.set_item_slot(1, Some(stone(4))), Ok(true));
+                            assert_eq!(entity.set_item_slot(2, Some(stone(5))), Ok(true));
+                            if s.write_update {
+                                entity.set_client_update_fields(mod_api::Compound::from([(
+                                    "panic_fixture".into(),
+                                    mod_api::Tag::Int(1),
+                                )]));
+                            }
+                        })
+                        .expect("live resident block entity");
+                    let key = mod_api::__private::item_key("minecraft:dirt").unwrap();
+                    let dirt = mod_api::ItemStack::new(key, 1).unwrap();
+                    let place = ItemPlace::PlayerSlot {
+                        player: 12,
+                        slot: 20,
+                    };
+                    assert_eq!(
+                        place.insert(scope.host(), tx, &ItemResource::of(&dirt), 2),
+                        Ok(2)
+                    );
+                    panic!("a listener failed");
+                });
         }
         if s.notify_destination {
             let host = event.subject.host();
@@ -213,18 +219,19 @@ impl BlockEntityPart for Part {
             }
         }
         if s.cross {
-            let _: Result<(), ()> = event.subject.transaction(|scope, tx| {
-                let host = scope.host();
-                let level = host.level("minecraft:overworld").expect("the level");
-                let items = level
-                    .capability(host, &ITEMS, [2, 64, 1], None)
-                    .expect("the second block's items");
-                assert_eq!(
-                    items.insert_at(host, tx, 0, &ItemResource::of(&stone(1)), 4),
-                    4
-                );
-                Ok(())
-            });
+            let _: Result<(), mod_api::TransactionError<()>> =
+                event.subject.transaction(|scope, tx| {
+                    let host = scope.host();
+                    let level = host.level("minecraft:overworld").expect("the level");
+                    let items = level
+                        .capability(host, &ITEMS, [2, 64, 1], None)
+                        .expect("the second block's items");
+                    assert_eq!(
+                        items.insert_at(host, tx, 0, &ItemResource::of(&stone(1)), 4),
+                        Ok(4)
+                    );
+                    Ok(())
+                });
             event.stack.as_mut().unwrap().set_count(6).unwrap();
         }
         if s.replace_destination {
@@ -255,14 +262,14 @@ impl BlockEntityPart for Part {
             );
             if s.remove_and_reopen {
                 assert_eq!(
-                    host.open_menu(
-                        12,
+                    host.player(12).unwrap().open_chest_menu(
+                        host,
                         1,
                         mod_api::Text::literal("reopened by menu_quick_move"),
                         Vec::new(),
                         mod_api::MenuReplace::InPlace,
                     ),
-                    Ok(None),
+                    Err(mod_api::OpenMenuError::ClickInProgress),
                     "a tentative quick-move transaction refuses speculative screen replacement"
                 );
             }
@@ -285,7 +292,12 @@ impl BlockEntityPart for Part {
         }
         Flow::Continue
     }
-
+}
+/// `menu_slot_take` for the live depot's menu type. A part of its own, so the depot's other menu
+/// hooks (`menu_clicked`, `menu_button`) stay off the quick-move menu.
+struct Taker;
+#[mod_api::sunrise_part]
+impl mod_api::MenuPart for Taker {
     fn menu_slot_take(&self, event: &mut MenuSlotTakeEvent<'_>) {
         if !SCRIPT.with(|s| {
             let s = s.borrow();
@@ -298,19 +310,20 @@ impl BlockEntityPart for Part {
             event.left.map_or(0, |left| left.count()),
         )));
         if SCRIPT.with(|s| s.borrow().fail_take) {
-            let _: Result<(), ()> = event.subject.transaction(|scope, tx| {
-                let key = mod_api::__private::item_key("minecraft:dirt").unwrap();
-                let dirt = mod_api::ItemStack::new(key, 1).unwrap();
-                let place = ItemPlace::PlayerSlot {
-                    player: 12,
-                    slot: 20,
-                };
-                assert_eq!(
-                    place.insert(scope.host(), tx, &ItemResource::of(&dirt), 2),
-                    2
-                );
-                panic!("the take listener failed after the cross-block move");
-            });
+            let _: Result<(), mod_api::TransactionError<()>> =
+                event.subject.transaction(|scope, tx| {
+                    let key = mod_api::__private::item_key("minecraft:dirt").unwrap();
+                    let dirt = mod_api::ItemStack::new(key, 1).unwrap();
+                    let place = ItemPlace::PlayerSlot {
+                        player: 12,
+                        slot: 20,
+                    };
+                    assert_eq!(
+                        place.insert(scope.host(), tx, &ItemResource::of(&dirt), 2),
+                        Ok(2)
+                    );
+                    panic!("the take listener failed after the cross-block move");
+                });
         }
     }
 }
@@ -322,13 +335,13 @@ impl mod_api::MenuPart for Part {
             return Flow::Continue;
         };
         assert_eq!(event.menu, DEPOT_MENU);
-        assert!(
-            host.menu(event.uuid, event.window).is_none(),
-            "not a native window"
-        );
         let player = host.player(event.uuid).unwrap();
-        assert!(player.container_menu(host).is_some());
-        let tx = host.transaction_current().unwrap();
+        let menu = player.container_menu(host).unwrap();
+        assert!(matches!(
+            menu.slot_backing(host, 0),
+            Some(mod_api::MenuSlotBacking::BlockEntity { .. })
+        ));
+        assert!(host.transaction_matches(None));
         if s.write_other_block || s.write_clicked_block {
             let level = host.level("minecraft:overworld").unwrap();
             let (pos, id) = if s.write_clicked_block {
@@ -339,10 +352,14 @@ impl mod_api::MenuPart for Part {
             let stack =
                 mod_api::ItemStack::new(mod_api::__private::item_key(id).unwrap(), 1).unwrap();
             let items = level.capability(host, &ITEMS, pos, None).unwrap();
-            assert_eq!(
-                items.insert_at(host, &tx, 0, &ItemResource::of(&stack), 2),
-                2
-            );
+            host.transaction(|host, tx| {
+                assert_eq!(
+                    items.insert_at(host, tx, 0, &ItemResource::of(&stack), 2),
+                    Ok(2)
+                );
+                Ok::<_, ()>(())
+            })
+            .unwrap();
         }
         flow
     }
@@ -379,28 +396,29 @@ impl mod_api::MenuPart for Part {
             );
         }
         if script.transactional_panic {
-            let _: Result<(), ()> = event.subject.transaction(|scope, tx| {
-                scope
-                    .with_view(|mut entity| {
-                        assert!(entity.set_data_slots(&[77]));
-                        entity.set_client_update_fields(mod_api::Compound::from([(
-                            "panic_fixture".into(),
-                            mod_api::Tag::Int(2),
-                        )]));
-                    })
-                    .expect("live resident block entity");
-                let key = mod_api::__private::item_key("minecraft:dirt").unwrap();
-                let dirt = mod_api::ItemStack::new(key, 1).unwrap();
-                let place = ItemPlace::PlayerSlot {
-                    player: 12,
-                    slot: 20,
-                };
-                assert_eq!(
-                    place.insert(scope.host(), tx, &ItemResource::of(&dirt), 2),
-                    2
-                );
-                panic!("menu button panicked inside subject.transaction");
-            });
+            let _: Result<(), mod_api::TransactionError<()>> =
+                event.subject.transaction(|scope, tx| {
+                    scope
+                        .with_view(|mut entity| {
+                            assert!(entity.set_data_slots(&[77]));
+                            entity.set_client_update_fields(mod_api::Compound::from([(
+                                "panic_fixture".into(),
+                                mod_api::Tag::Int(2),
+                            )]));
+                        })
+                        .expect("live resident block entity");
+                    let key = mod_api::__private::item_key("minecraft:dirt").unwrap();
+                    let dirt = mod_api::ItemStack::new(key, 1).unwrap();
+                    let place = ItemPlace::PlayerSlot {
+                        player: 12,
+                        slot: 20,
+                    };
+                    assert_eq!(
+                        place.insert(scope.host(), tx, &ItemResource::of(&dirt), 2),
+                        Ok(2)
+                    );
+                    panic!("menu button panicked inside subject.transaction");
+                });
         }
         if script.write_update {
             event
@@ -422,18 +440,17 @@ impl mod_api::MenuPart for Part {
             panic!("menu button failed after editing the entity and cursor");
         }
         if script.replace_menu {
-            event
-                .subject
-                .host()
-                .open_menu(
-                    event.context.player,
+            let host = event.subject.host();
+            host.player(event.context.player)
+                .expect("the menu button's player is online")
+                .open_chest_menu(
+                    host,
                     1,
                     mod_api::Text::literal("opened by menu_button"),
                     Vec::new(),
                     mod_api::MenuReplace::InPlace,
                 )
-                .unwrap()
-                .expect("the menu button's player is online");
+                .unwrap();
         }
     }
 }
@@ -446,6 +463,7 @@ impl Hooks for Mod {
         r.block_entity_part(&kind, Part).unwrap();
         r.menu_part(DEPOT_MENU, Part);
         r.menu_part(STATUS_MENU, Part);
+        r.menu_part(QUICK_MOVE_MENU, Taker);
     }
 }
 
@@ -466,18 +484,43 @@ impl mod_api::MenuPart for ClickPart {
         event: &mut MenuClickedEvent<'_>,
     ) -> mod_api::Flow {
         DISPATCHES.set(DISPATCHES.get() + 1);
-        IN_ACTION.with(|a| a.borrow_mut().push(host.transaction_current().is_some()));
+        IN_ACTION.with(|a| a.borrow_mut().push(!host.transaction_matches(None)));
         assert_eq!(event.menu, "minecraft:generic_9x1");
         assert_eq!(event.uuid, 12);
         let s = SCRIPT.with(|s| s.borrow().clone());
-        if s.write_dirt {
-            write_dirt(host);
+        if s.replace_other {
+            host.player(13)
+                .unwrap()
+                .open_chest_menu(
+                    host,
+                    1,
+                    mod_api::Text::literal("Other player's display"),
+                    vec![],
+                    mod_api::MenuReplace::InPlace,
+                )
+                .unwrap();
+        }
+        if s.write_dirt && s.panic {
+            let _ = host.transaction(|host, tx| -> Result<(), ()> {
+                write_dirt_in_tx(host, tx);
+                panic!("a listener failed");
+            });
+        } else if s.write_dirt {
+            host.transaction(|host, tx| {
+                write_dirt_in_tx(host, tx);
+                Ok::<_, ()>(())
+            })
+            .unwrap();
         }
         if s.replace_display {
             let item =
                 mod_api::ItemStack::new(mod_api::__private::item_key("minecraft:dirt").unwrap(), 1)
                     .unwrap();
-            host.menu_set_items(event.uuid, event.window, vec![Some(item)])
+            host.player(event.uuid)
+                .unwrap()
+                .container_menu(host)
+                .unwrap()
+                .set_items(host, vec![Some(item)])
                 .unwrap();
         }
         if s.panic {
@@ -492,8 +535,31 @@ impl mod_api::MenuPart for ClickPart {
 }
 
 fn with_mod(test: impl FnOnce()) {
-    let mods: Mods = vec![ModEntry::new("movemod", Box::new(Mod))].into();
+    struct Presenter;
+    #[mod_api::__subscriptions]
+    impl Hooks for Presenter {
+        fn register(&self, r: &mut dyn Registrar, _: &mod_api::RegistrationContext) {
+            r.register_menu_screen(
+                DEPOT_MENU,
+                std::sync::Arc::new(
+                    |_: &dyn mod_api::ClientHost, _: mod_api::MenuScreenOpen<'_>| None,
+                ),
+            )
+            .unwrap();
+        }
+    }
+    let mods: Mods = vec![
+        ModEntry::new("movemod", Box::new(Mod)),
+        ModEntry::new("presenter", Box::new(Presenter)),
+    ]
+    .into();
     mod_platform::testing::with_mods(mods.clone(), || {
+        mod_api::__private::install_content_owners(
+            [],
+            [],
+            [],
+            [(DEPOT_MENU, "movemod"), (STATUS_MENU, "movemod")],
+        );
         crate::game::api_values::install_parts(&mods).unwrap();
         test();
     });
@@ -540,7 +606,30 @@ fn inventory(game: &crate::game::Game<'_>, slot: usize) -> u32 {
 #[test]
 #[ignore = "daily"]
 fn a_click_on_a_mod_menu_tells_the_mods_inside_an_action_and_a_failure_undoes_it() {
-    let mods: Mods = vec![ModEntry::new("clickmod", Box::new(ClickMod))].into();
+    struct HealthyMod;
+    #[mod_api::__subscriptions]
+    impl Hooks for HealthyMod {
+        fn register(&self, r: &mut dyn Registrar, _: &mod_api::RegistrationContext) {
+            r.menu_part("minecraft:generic_9x1", HealthyPart);
+        }
+    }
+    struct HealthyPart;
+    #[mod_api::sunrise_part]
+    impl mod_api::MenuPart for HealthyPart {
+        fn menu_clicked(&self, _: &mut dyn ServerHost, _: &mut MenuClickedEvent<'_>) -> Flow {
+            HEALTHY_DISPATCHES.set(HEALTHY_DISPATCHES.get() + 1);
+            Flow::Continue
+        }
+    }
+    thread_local! {
+        static HEALTHY_DISPATCHES: Cell<usize> = const { Cell::new(0) };
+    }
+
+    let mods: Mods = vec![
+        ModEntry::new("clickmod", Box::new(ClickMod)),
+        ModEntry::new("healthymod", Box::new(HealthyMod)),
+    ]
+    .into();
     mod_platform::testing::with_mods(mods.clone(), || {
         crate::game::api_values::install_parts(&mods).unwrap();
         with_guests(|game| {
@@ -549,31 +638,36 @@ fn a_click_on_a_mod_menu_tells_the_mods_inside_an_action_and_a_failure_undoes_it
                 game.lan_guest_packet(12, container_click(window, 3, 0));
                 game.run_native_menu_events();
             };
-            // Row 72: the mods hear the click once, inside the action, and what the listener
-            // wrote through the `Host` stays when it finishes.
+            // `menu_clicked` runs directly on the actual menu without a synthetic decided
+            // action wrapper: writes made in the callback stand on Cancel and Continue.
+            HEALTHY_DISPATCHES.set(0);
             script(Script {
                 write_dirt: true,
                 ..Script::default()
             });
             click(game);
             assert_eq!(DISPATCHES.get(), 1);
-            assert_eq!(decided(), 1);
-            assert_eq!(IN_ACTION.with(|a| a.borrow().clone()), [true]);
+            assert_eq!(HEALTHY_DISPATCHES.get(), 0, "Cancel stops later parts");
+            assert_eq!(decided(), 0, "no synthetic decided-action wrapper");
+            assert_eq!(IN_ACTION.with(|a| a.borrow().clone()), [false]);
             assert_eq!(inventory(game, 20), 2);
             assert!(game.transactions.is_empty());
+
+            // Continue after a player inventory write keeps the write and continues to later parts.
             game.lan.as_mut().unwrap().hub.guests.update(0, |g| {
                 g.inventory[20] = None;
             });
+            HEALTHY_DISPATCHES.set(0);
             // Row 90: heard inside a transaction that then aborts: the write is undone.
             script(Script {
                 write_dirt: true,
                 ..Script::default()
             });
-            // Row 90: heard inside a transaction that then aborts: the write is undone.
-            let seal = game.transaction_open();
-            click(game);
-            assert_eq!(inventory(game, 20), 2);
-            game.transaction_close(&seal, false);
+            game.storage_scope(|game, _| {
+                click(game);
+                assert_eq!(inventory(game, 20), 2);
+                ((), false)
+            });
             assert_eq!(inventory(game, 20), 0);
             script(Script {
                 write_dirt: true,
@@ -582,14 +676,34 @@ fn a_click_on_a_mod_menu_tells_the_mods_inside_an_action_and_a_failure_undoes_it
             });
             click(game);
             assert_eq!(DISPATCHES.get(), 1);
+            assert_eq!(HEALTHY_DISPATCHES.get(), 1);
             assert_eq!(
                 inventory(game, 20),
-                0,
-                "Continue cannot change its read set"
+                2,
+                "Continue keeps prior callback writes"
             );
             assert!(game.transactions.is_empty());
-            // Rows 79 and 84: a write and then a panic: the write is undone and the callback
-            // is not heard on a subsequent click.
+
+            // An explicit enclosing transaction abort rolls back writes made inside it.
+            game.lan.as_mut().unwrap().hub.guests.update(0, |g| {
+                g.inventory[20] = None;
+            });
+            script(Script {
+                write_dirt: true,
+                ..Script::default()
+            });
+            game.storage_scope(|game, _| {
+                click(game);
+                assert_eq!(DISPATCHES.get(), 1);
+                assert_eq!(inventory(game, 20), 2);
+                ((), false)
+            });
+            assert_eq!(inventory(game, 20), 0);
+
+            // A panic inside `menu_clicked` aborts the callback's own open transaction, poisons
+            // only that mod's `menu_clicked` callback for the session, queues an error toast
+            // notice naming the mod, and lets remaining parts run now and on subsequent clicks.
+            HEALTHY_DISPATCHES.set(0);
             script(Script {
                 write_dirt: true,
                 panic: true,
@@ -597,11 +711,36 @@ fn a_click_on_a_mod_menu_tells_the_mods_inside_an_action_and_a_failure_undoes_it
             });
             click(game);
             assert_eq!(DISPATCHES.get(), 1);
-            assert_eq!(inventory(game, 20), 0);
+            assert_eq!(
+                HEALTHY_DISPATCHES.get(),
+                1,
+                "sibling mod still runs after a panicking part"
+            );
+            assert_eq!(
+                inventory(game, 20),
+                0,
+                "the panicking callback's open transaction rolled back"
+            );
             assert!(game.transactions.is_empty());
+            assert_eq!(
+                mod_api::__private::take_hook_panics(),
+                [mod_api::__private::HookPanicReport {
+                    mod_id: "clickmod",
+                    hook: "menu_clicked",
+                }],
+            );
+
+            // Subsequent clicks skip the poisoned mod's `menu_clicked` while keeping healthy mods.
+            HEALTHY_DISPATCHES.set(0);
             script(Script::default());
             click(game);
-            assert_eq!(DISPATCHES.get(), 0);
+            assert_eq!(
+                DISPATCHES.get(),
+                0,
+                "poisoned mod is skipped for the session"
+            );
+            assert_eq!(HEALTHY_DISPATCHES.get(), 1);
+            assert!(mod_api::__private::take_hook_panics().is_empty());
         });
     });
 }
@@ -658,6 +797,9 @@ fn open_native_menu(game: &mut crate::game::Game<'_>) -> i32 {
         links: Vec::new(),
         asks_still_valid: false,
         opening_item: None,
+        opener_block: None,
+        removed: false,
+        slot_changed_seen: None,
     };
     game.lan
         .as_mut()
@@ -785,6 +927,34 @@ fn open_live_depot(game: &mut crate::game::Game<'_>) -> i32 {
     menu.window
 }
 
+#[test]
+#[ignore = "daily"]
+fn a_replaced_block_entity_makes_an_admitted_quick_move_stale() {
+    use super::native_quick_move::Admitted;
+    with_guests(|game| {
+        let window = open_depot(game);
+        let admitted = Admitted::of(game, 12, POS, 9, window).expect("the menu is open");
+        assert!(admitted.holds(game));
+        // The same values written again keep the block entity's identity: still fresh.
+        let same = game.world.block_entities.get(&POS).unwrap().clone();
+        game.world.block_entities.insert(POS, same.clone());
+        assert!(admitted.holds(game));
+        // Another instance with equal values, which a listener's command could have placed: stale.
+        game.world.block_entities.replace(POS, same);
+        assert!(!admitted.holds(game));
+        // A fresh admission on the replacement holds, and a closed window does not.
+        let admitted = Admitted::of(game, 12, POS, 9, window).unwrap();
+        assert!(admitted.holds(game));
+        game.lan
+            .as_mut()
+            .unwrap()
+            .hub
+            .guests
+            .update(0, |guest| guest.menu = None);
+        assert!(!admitted.holds(game));
+    });
+}
+
 const SECOND: (i32, i32, i32) = (2, 64, 1);
 
 /// A second mod container with the same state/layout as the depot, empty, that a listener
@@ -907,10 +1077,11 @@ fn a_mod_quick_move_is_one_action_and_a_refusal_leaves_no_prefix() {
                 take: true,
                 ..Script::default()
             });
-            let seal = game.transaction_open();
-            click(game);
-            assert_eq!(depot(game), (1, 4, 5, 0));
-            game.transaction_close(&seal, false);
+            game.storage_scope(|game, _| {
+                click(game);
+                assert_eq!(depot(game), (1, 4, 5, 0));
+                ((), false)
+            });
             assert_eq!(depot(game), (10, 0, 0, 0));
         });
     });
@@ -997,9 +1168,11 @@ fn a_panicking_live_quick_move_rolls_back_and_disables_only_its_callback() {
             assert_eq!(depot(game), (1, 4, 5, 0));
 
             // The normal toast collector names the failing mod and hook once.
-            let mut batch = sunrise_client::hud::HudBatch::scratch([640, 480]);
-            game.draw_pack_toasts(&mut batch, true, true);
-            let [(Some(toast), _)] = game.server_packs.hook_panics.as_slice() else {
+            game.add_hook_panic_toasts();
+            assert_eq!(game.toast_manager.queued.len(), 1);
+            let Some(crate::game::toast_manager::Toast::Diagnostic { toast, .. }) =
+                game.toast_manager.queued.front()
+            else {
                 panic!("expected one shared hook error toast");
             };
             assert_eq!(
@@ -1383,7 +1556,7 @@ impl mod_api::BlockPart for QuickMoveObserver {
             .unwrap();
             assert_eq!(
                 host.transaction(|host, tx| {
-                    Ok::<_, ()>(items.insert_at(host, tx, 0, &ItemResource::of(&stone), 2))
+                    items.insert_at(host, tx, 0, &ItemResource::of(&stone), 2)
                 }),
                 Ok(2)
             );
@@ -1656,7 +1829,9 @@ fn a_handled_quick_move_take_panic_after_live_slot_write_still_publishes_content
             event.stack.as_mut().unwrap().set_count(6).unwrap();
             Flow::Cancel
         }
-
+    }
+    #[mod_api::sunrise_part]
+    impl mod_api::MenuPart for TakePanicPart {
         fn menu_slot_take(&self, event: &mut MenuSlotTakeEvent<'_>) {
             assert_eq!(event.taken.count(), 4);
             let dirt =
@@ -1678,6 +1853,7 @@ fn a_handled_quick_move_take_panic_after_live_slot_write_still_publishes_content
             let kind = r.block_entity_type("depot").blocks(&[]).build();
             r.block_entity_part(&kind, TakePanicPart(self.0.clone()))
                 .unwrap();
+            r.menu_part(QUICK_MOVE_MENU, TakePanicPart(self.0.clone()));
             let stone = r.block_key("minecraft:stone");
             r.block_part(stone, TakePanicPart(self.0.clone()));
         }
@@ -1773,10 +1949,11 @@ fn an_untaken_quick_move_discards_its_transfer_and_routes_once() {
             // Aborting an enclosing transaction also undoes that click's normal routing.
             let window = open_depot(game);
             second_block(game);
-            let seal = game.transaction_open();
-            game.lan_guest_packet(12, container_click(window, 0, 1));
-            assert_eq!(stone_everywhere(game), (0, 0, 20));
-            game.transaction_close(&seal, false);
+            game.storage_scope(|game, _| {
+                game.lan_guest_packet(12, container_click(window, 0, 1));
+                assert_eq!(stone_everywhere(game), (0, 0, 20));
+                ((), false)
+            });
             assert_eq!(stone_everywhere(game), (10, 0, 10));
         });
     });
@@ -1987,7 +2164,7 @@ fn a_code_opened_menus_button_reaches_a_blocks_menu_button_only_for_its_menu_typ
                 });
                 let player = game.player(12).unwrap();
                 let key = register_test_menu(game, STATUS_MENU);
-                let window = player
+                let menu = player
                     .open_mod_menu(game, {
                         let mut request =
                             mod_api::ModMenuOpen::new(key, mod_api::Text::literal("Status"));
@@ -1997,10 +2174,8 @@ fn a_code_opened_menus_button_reaches_a_blocks_menu_button_only_for_its_menu_typ
                     })
                     .unwrap()
                     .unwrap();
-                assert_eq!(
-                    player.container_menu(game).unwrap().slot_count(game),
-                    Some(0)
-                );
+                let window = menu.container_id(game).unwrap();
+                assert_eq!(menu.slot_count(game), Some(0));
                 button(game, window, 3);
                 assert_eq!(
                     BUTTONS.get(),
@@ -2126,7 +2301,7 @@ fn a_block_menu_click_commits_only_the_replacement_or_a_fresh_default() {
                         ..Script::default()
                     });
                     game.lan_guest_packet(12, container_click(window, 0, 0));
-                    assert_eq!(decided(), 1);
+                    assert_eq!(decided(), 0);
                     assert_eq!(content(game, POS, 0), 10);
                     assert_eq!(content(game, SECOND, 0), 2);
                     assert!(game.lan.as_ref().unwrap().hub.guests[0].carried.is_none());
@@ -2162,7 +2337,7 @@ fn a_block_menu_click_commits_only_the_replacement_or_a_fresh_default() {
                             carried: None,
                         }),
                     );
-                    assert_eq!(decided(), 1, "the swap reached the click decision");
+                    assert_eq!(decided(), 0);
                     assert_eq!(content(game, POS, 0), 10);
                     assert_eq!(game.lan.as_ref().unwrap().hub.guests[0].offhand, offhand);
                     let corrections: Vec<_> = rx
@@ -2183,19 +2358,33 @@ fn a_block_menu_click_commits_only_the_replacement_or_a_fresh_default() {
                         .collect();
                     assert_eq!(corrections, [expected]);
 
+                    // Continue runs default click execution on the live menu, seeing writes made
+                    // during `menu_clicked` (10 + 2 = 12 stone picked up onto the cursor).
                     script(Script {
                         clicked: Some(Flow::Continue),
                         write_clicked_block: true,
                         ..Script::default()
                     });
                     game.lan_guest_packet(12, container_click(window, 0, 0));
-                    assert_eq!(decided(), 1);
+                    assert_eq!(decided(), 0);
+                    assert_eq!(content(game, POS, 0), 0);
                     assert_eq!(
-                        content(game, POS, 0),
-                        10,
-                        "the default's slot read set changed"
+                        count(&game.lan.as_ref().unwrap().hub.guests[0].carried),
+                        12,
+                        "default click ran on the live menu after callback writes"
                     );
 
+                    // Reset slot 0 to 10 stone and empty cursor before testing refused quick-move.
+                    game.lan.as_mut().unwrap().hub.guests.update(0, |g| {
+                        g.carried = None;
+                    });
+                    let Some(BlockEntity::Mod(depot)) = game.world.block_entities.get_mut(&POS)
+                    else {
+                        panic!("missing depot at {POS:?}");
+                    };
+                    depot.items[0] = Some(ItemStack::new("minecraft:stone", 10));
+
+                    // A refused default quick-move keeps prior unrelated `menu_clicked` writes.
                     script(Script {
                         clicked: Some(Flow::Continue),
                         write_other_block: true,
@@ -2204,20 +2393,20 @@ fn a_block_menu_click_commits_only_the_replacement_or_a_fresh_default() {
                         ..Script::default()
                     });
                     game.lan_guest_packet(12, container_click(window, 0, 1));
-                    assert_eq!(decided(), 1);
+                    assert_eq!(decided(), 0);
                     assert_eq!(DISPATCHES.get(), 1, "the quick-move listener was reached");
                     IN_ACTION.with(|seen| {
                         assert_eq!(
                             *seen.borrow(),
                             [true],
-                            "the quick move ran inside the click action"
+                            "the quick move ran inside its own storage transaction"
                         );
                     });
                     assert_eq!(content(game, POS, 0), 10);
                     assert_eq!(
                         content(game, SECOND, 0),
-                        2,
-                        "a refused default aborts the click listener's write"
+                        4,
+                        "a refused default keeps prior unrelated menu_clicked writes"
                     );
 
                     script(Script {
@@ -2227,7 +2416,7 @@ fn a_block_menu_click_commits_only_the_replacement_or_a_fresh_default() {
                     });
                     game.lan_guest_packet(12, container_click(window, 0, 0));
                     assert_eq!(content(game, POS, 0), 0);
-                    assert_eq!(content(game, SECOND, 0), 4);
+                    assert_eq!(content(game, SECOND, 0), 6);
                     assert_eq!(count(&game.lan.as_ref().unwrap().hub.guests[0].carried), 10);
                 })
             })
@@ -2245,6 +2434,148 @@ fn a_listener_for_another_menu_type_does_not_admit_a_click_decision() {
             game.lan_guest_packet(12, container_click(window, 3, 0));
             assert_eq!(decided(), 0);
         })
+    });
+}
+
+fn chest(
+    game: &mut crate::game::Game<'_>,
+    dimension: mod_api::DimensionKey,
+) -> mod_api::BlockEntityRef {
+    use sunrise_client::chunk::Chunk;
+    use sunrise_world::chunk::BlockState;
+
+    game.world
+        .chunks
+        .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+    let state = game
+        .pack
+        .assets
+        .registry
+        .resolve(&BlockState {
+            name: "minecraft:chest".into(),
+            properties: [
+                ("facing".into(), "north".into()),
+                ("type".into(), "single".into()),
+                ("waterlogged".into(), "false".into()),
+            ]
+            .into_iter()
+            .collect(),
+        })
+        .unwrap();
+    let level = mod_api::LevelRef::new(game.native_lifecycle.epoch().unwrap(), dimension);
+    let pos = [POS.0, POS.1, POS.2];
+    assert_eq!(
+        game.level_set_block(level, pos, state, mod_api::BlockUpdateFlags::NEIGHBORS),
+        Ok(true)
+    );
+    game.block_entity(level, pos).unwrap()
+}
+
+#[test]
+#[ignore = "daily"]
+fn block_and_ender_menu_providers_replace_the_live_window_only_on_commit() {
+    with_guests(|game| {
+        let chest = chest(game, mod_api::DimensionKey::OVERWORLD);
+        let player = game.player(12).unwrap();
+        let active = |game: &crate::game::Game<'_>| {
+            game.lan
+                .as_ref()
+                .unwrap()
+                .hub
+                .guest(12)
+                .unwrap()
+                .menu
+                .as_ref()
+                .map(|menu| menu.slots)
+        };
+        for commit in [false, true] {
+            let result = game.transaction(|host, _| {
+                assert_eq!(player.open_menu(host, chest), Ok(true));
+                assert_eq!(
+                    player.container_menu(host).unwrap().container_id(host),
+                    Some(0)
+                );
+                if commit { Ok(()) } else { Err(()) }
+            });
+            assert_eq!(result.is_ok(), commit);
+            assert_eq!(active(game), commit.then_some(Slots::Block(POS)));
+            assert_eq!(game.lid_openers.get(&POS).copied(), commit.then_some(1));
+        }
+        let window = player
+            .container_menu(game)
+            .unwrap()
+            .container_id(game)
+            .unwrap();
+        for commit in [false, true] {
+            let result = game.transaction(|host, _| {
+                assert_eq!(
+                    player.open_ender_chest(host, mod_api::Text::literal("Ender chest")),
+                    Ok(true)
+                );
+                assert_eq!(
+                    player.container_menu(host).unwrap().container_id(host),
+                    Some(window)
+                );
+                if commit { Ok(()) } else { Err(()) }
+            });
+            assert_eq!(result.is_ok(), commit);
+            assert_eq!(
+                active(game),
+                Some(if commit {
+                    Slots::Ender
+                } else {
+                    Slots::Block(POS)
+                })
+            );
+            assert_eq!(game.lid_openers.get(&POS).copied(), (!commit).then_some(1));
+        }
+    });
+}
+
+#[test]
+#[ignore = "daily"]
+fn a_click_replaces_another_players_container_in_its_own_level() {
+    use crate::game::Dim;
+
+    let mods: Mods = vec![ModEntry::new("clickmod", Box::new(ClickMod))].into();
+    mod_platform::testing::with_mods(mods.clone(), || {
+        crate::game::api_values::install_parts(&mods).unwrap();
+        with_guests(|game| {
+            game.lan
+                .as_mut()
+                .unwrap()
+                .hub
+                .update_guest(13, |g| {
+                    g.dimension = Dim::Nether.id().to_owned();
+                })
+                .unwrap();
+            let window = open_native_menu(game);
+            chest(game, mod_api::DimensionKey::OVERWORLD);
+            // An opener at the same coordinates in the caller's level must not be closed.
+            assert!(game.container_openers_changed(POS, true));
+            game.enter_level(Dim::Nether).unwrap();
+            let other_chest = chest(game, mod_api::DimensionKey::NETHER);
+            let other = game.player(13).unwrap();
+            assert_eq!(other.open_menu(game, other_chest), Ok(true));
+            assert_eq!(game.lid_openers.get(&POS), Some(&1));
+            game.enter_level(Dim::Overworld).unwrap();
+
+            script(Script {
+                replace_other: true,
+                ..Script::default()
+            });
+            game.lan_guest_packet(12, container_click(window, 0, 0));
+            assert_eq!(game.dim, Dim::Overworld);
+            assert_eq!(game.lid_openers.get(&POS), Some(&1));
+            let hub = &game.lan.as_ref().unwrap().hub;
+            assert_eq!(hub.guest(12).unwrap().menu.as_ref().unwrap().window, window);
+            assert_eq!(
+                hub.guest(13).unwrap().menu.as_ref().unwrap().slots,
+                Slots::Native
+            );
+            game.enter_level(Dim::Nether).unwrap();
+            assert!(!game.lid_openers.contains_key(&POS));
+        });
     });
 }
 
@@ -2271,13 +2602,14 @@ fn a_display_replacement_is_journaled_along_with_the_click() {
                 replace_display: true,
                 ..Script::default()
             });
-            let seal = game.transaction_open();
-            game.lan_guest_packet(12, container_click(window, 0, 0));
-            assert_eq!(
-                count(&game.lan.as_ref().unwrap().hub.guests[0].native_menu[0]),
-                1
-            );
-            game.transaction_close(&seal, false);
+            game.storage_scope(|game, _| {
+                game.lan_guest_packet(12, container_click(window, 0, 0));
+                assert_eq!(
+                    count(&game.lan.as_ref().unwrap().hub.guests[0].native_menu[0]),
+                    1
+                );
+                ((), false)
+            });
             assert_eq!(
                 count(&game.lan.as_ref().unwrap().hub.guests[0].native_menu[0]),
                 0

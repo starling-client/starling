@@ -1,8 +1,8 @@
 import json,hashlib,sys
 from pathlib import Path
-sys.path.insert(0,str(Path.cwd()/'tools'))
-import test_command_exec_parity as driver
-import harness_args
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_command_exec_parity as driver, harness_args
 CASES=[
  ('absent',None,None,None),
  ('break-string','can_break','{blocks:"minecraft:stone"}','{blocks:"minecraft:stone"}'),

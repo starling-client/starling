@@ -41,23 +41,27 @@ fn the_damage_hook_names_the_source() {
     use sunrise_client::health::NO_ATTACK;
     use sunrise_client::mobs::{Damage, DamageKind as K, Who};
     let source = |kind, attacker| {
-        let s = mob_source(
-            &Damage {
-                kind,
-                attacker,
-                from: None,
-                attacker_species: None,
-            },
-            &Attack {
-                attacker: 7,
-                projectile: None,
-                direct: None,
-                player_uuid: None,
-                held: Default::default(),
-                ..Default::default()
-            },
-        );
-        (s.damage_type, s.causing, s.direct)
+        let damage = Damage {
+            kind,
+            attacker,
+            from: None,
+            direct: None,
+            attacker_species: None,
+        };
+        let attack = Attack {
+            attacker: 7,
+            projectile: None,
+            direct: None,
+            player_uuid: None,
+            held: Default::default(),
+            ..Default::default()
+        };
+        let s = mob_source(&damage, &attack);
+        (
+            crate::health::source_damage_type(damage),
+            s.causing,
+            s.direct,
+        )
     };
     let zombie = Some(Who::Mob(3));
     // A registered type of a datapack reaches the hook under its own id.
@@ -68,23 +72,23 @@ fn the_damage_hook_names_the_source() {
     assert_eq!(source(K::Thorns, zombie), ("minecraft:thorns", 3, 3));
     assert_eq!(source(K::Arrow, zombie), ("minecraft:arrow", 3, 0));
     let during = |kind| {
-        let s = mob_source(
-            &Damage {
-                kind,
-                attacker: zombie,
-                from: None,
-                attacker_species: None,
-            },
-            &Attack {
-                attacker: 7,
-                projectile: Some(912),
-                direct: None,
-                player_uuid: None,
-                held: Default::default(),
-                ..Default::default()
-            },
-        );
-        (s.damage_type, s.direct)
+        let damage = Damage {
+            kind,
+            attacker: zombie,
+            from: None,
+            direct: None,
+            attacker_species: None,
+        };
+        let attack = Attack {
+            attacker: 7,
+            projectile: Some(912),
+            direct: None,
+            player_uuid: None,
+            held: Default::default(),
+            ..Default::default()
+        };
+        let s = mob_source(&damage, &attack);
+        (crate::health::source_damage_type(damage), s.direct)
     };
     // The impact's projectile is the direct entity only when the type names it.
     assert_eq!(during(K::Arrow), ("minecraft:arrow", 912));
@@ -105,6 +109,7 @@ fn the_damage_hook_names_the_source() {
         causing: 4,
         direct: 0,
         position: None,
+        direct_type: None,
     };
     let player = (2, "minecraft:player", arrow);
     assert_eq!(

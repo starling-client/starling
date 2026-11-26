@@ -7,7 +7,7 @@ use serde_json::{Map, Value, json};
 use sunrise_core::identifier::Identifier;
 
 /// Content kinds in the order the codec tries them without a `type`.
-const KINDS: [&str; 7] = [
+pub const KINDS: [&str; 7] = [
     "text",
     "translatable",
     "keybind",
@@ -404,23 +404,28 @@ fn data_source(
     let value = fields.get(source)?.as_str()?;
     match source {
         "entity" => selector_parses(value, reg).then(|| ("entity", value.into())),
-        "block" => {
-            let mut r = crate::command::Reader::new(value);
-            (crate::command::ArgType::BlockPos.parse(&mut r, reg).is_ok() && !r.can_read())
-                .then(|| ("block", value.into()))
-        }
+        "block" => block_pos_parses(value, reg).then(|| ("block", value.into())),
         "storage" => Some(("storage", Identifier::parse(value).ok()?.to_string())),
         _ => None,
     }
 }
 
+/// `BlockPosArgument.parse` on all of `source`.
+pub fn block_pos_parses(source: &str, reg: &Registries) -> bool {
+    let mut reader = crate::command::Reader::new(source);
+    crate::command::ArgType::BlockPos
+        .parse(&mut reader, reg)
+        .is_ok()
+        && !reader.can_read()
+}
+
 /// `EntitySelectorParser.parse` on all of `source`.
-fn selector_parses(source: &str, reg: &Registries) -> bool {
+pub fn selector_parses(source: &str, reg: &Registries) -> bool {
     let mut reader = crate::command::Reader::new(source);
     crate::command::selector::parse(&mut reader, reg, true).is_ok() && !reader.can_read()
 }
 
 /// `NbtPathArgument.parse` on all of `path`.
-fn path_parses(path: &str) -> bool {
+pub fn path_parses(path: &str) -> bool {
     crate::nbt_path::NbtPath::parse_prefix(path).is_ok_and(|(_, used)| used == path.len())
 }

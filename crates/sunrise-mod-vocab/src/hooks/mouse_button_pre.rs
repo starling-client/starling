@@ -1,5 +1,4 @@
 //! The `mouse_button_pre` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0116
 
 pub trait Hooks {
     /// Raw mouse button input on any screen, before dispatch; cancel skips dispatch and Post.

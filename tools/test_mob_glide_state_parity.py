@@ -5,8 +5,10 @@ import json
 from pathlib import Path
 import sys
 
-import test_command_exec_parity as driver
-from mob_glide_corpus import glide_state
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_command_exec_parity as driver
+from tools.mob_glide_corpus import glide_state
 
 if __name__ == '__main__':
     full = '--full-diagnostic' in sys.argv

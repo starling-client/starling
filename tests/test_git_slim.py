@@ -5,12 +5,12 @@ desktop's disk on 2026-11-09. The script runs where no fetch is going on; these 
 like such a checkout and look at what is left.
 """
 import os
-import shutil
 import subprocess
 import tempfile
 import time
 import unittest
 from pathlib import Path
+from tests.os_support import BASH, POSIX_BASH
 
 SCRIPT = Path(__file__).resolve().parents[1] / "tools/ci/git-slim.sh"
 # Since git 2.5x, `git commit` starts `git maintenance run --auto` in the background after every commit, and its
@@ -27,11 +27,6 @@ ENV = {
     **{f"GIT_CONFIG_{kind}_{i}": value for i, (key, val) in enumerate(NO_AUTO_MAINTENANCE.items())
        for kind, value in (("KEY", key), ("VALUE", val))},
 }
-# The bash on PATH, as in test_pr_ready: Windows' CreateProcess looks in System32 before PATH, so a bare "bash" there is
-# WSL's (#5383), which can't see the host's paths.
-BASH = shutil.which("bash")
-POSIX_BASH = BASH is not None and not (
-    os.name == "nt" and os.path.dirname(os.path.normcase(BASH)).endswith(os.path.normcase(r"\system32")))
 
 
 def git(repo, *args, check=True):

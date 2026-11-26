@@ -1,4 +1,5 @@
 use super::*;
+use crate::game::api_values::with_stack_view;
 
 /// The hook points. Each does nothing in Sunrise.
 impl Game<'_> {
@@ -10,7 +11,7 @@ impl Game<'_> {
     pub(in crate::game) fn native_on_left_click_entity(
         &mut self,
         player: u128,
-        stack: &ItemStack,
+        stack: mod_api::ItemStackView<'_>,
         entity: i32,
         kind: &str,
         canceled: &mut bool,
@@ -22,7 +23,7 @@ impl Game<'_> {
     /// Set `canceled` and no swing starts: no animation, no packet.
     pub(in crate::game) fn native_on_entity_swing(
         &mut self,
-        stack: &ItemStack,
+        stack: mod_api::ItemStackView<'_>,
         entity: Option<i32>,
         hand: Hand,
         canceled: &mut bool,
@@ -50,10 +51,15 @@ impl Game<'_> {
         if !mod_api::__private::item_listens(mod_api::HookId::OnLeftClickEntity, &stack.item) {
             return false;
         }
+        // Keep the stack which started the action while the Part has a mutable Host.
         let stack = stack.clone();
         let player = self.native_acting_id();
         let mut canceled = false;
-        self.native_on_left_click_entity(player, &stack, entity, kind, &mut canceled);
+        with_stack_view(Some(&stack), |view| {
+            if let Some(view) = view {
+                self.native_on_left_click_entity(player, view, entity, kind, &mut canceled);
+            }
+        });
         canceled
     }
     /// `ItemStack.onEntitySwing` for the player in place swinging `hand`:
@@ -76,7 +82,11 @@ impl Game<'_> {
         let stack = stack.clone();
         let entity = self.player.as_ref().map(|p| p.entity_id);
         let mut canceled = false;
-        self.native_on_entity_swing(&stack, entity, hand, &mut canceled);
+        with_stack_view(Some(&stack), |view| {
+            if let Some(view) = view {
+                self.native_on_entity_swing(view, entity, hand, &mut canceled);
+            }
+        });
         canceled
     }
 }

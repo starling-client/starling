@@ -13,5 +13,6 @@ pub(in crate::game) fn death_hurt_source(damage_type: &str, causing: u32) -> Hur
         causing: causing as i32,
         direct,
         position: None,
+        direct_type: None,
     }
 }

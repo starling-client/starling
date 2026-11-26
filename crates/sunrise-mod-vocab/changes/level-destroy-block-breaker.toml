@@ -1,0 +1,3 @@
+ids = ["handle:LevelRef::destroy_block"]
+why = "LevelRef::destroy_block adds a breaker: Option<EntityRef> parameter matching vanilla Level.destroyBlock(pos, drop, breaker, maxUpdates) so loot context and the minecraft:block_destroy game event receive the breaking entity."
+migrate = "Pass breaker (None for no breaking entity, or Some(entity)) between tool and collect in every LevelRef::destroy_block call, and rebuild native mods against the updated SDK."

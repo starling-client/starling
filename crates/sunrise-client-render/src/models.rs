@@ -276,19 +276,21 @@ pub fn load_visibility(
     root: &Path,
     registry: &BlockRegistry,
 ) -> Result<sunrise_world::block_render::FaceVisibility> {
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
     use sunrise_world::{
         block_render::{FaceVisibility, RenderDefinition, SkipRendering},
         collision::CachedCollisionRegistry,
         registry::BlockTableFile,
+        worldgen::tags::TagDefinitions,
     };
     let file = BlockTableFile::open(&root.join("occlusion.nbt"), registry)?;
     let occlusion = CachedCollisionRegistry::from_table(file.table("occlusion")?)?;
     let raw: BTreeMap<String, Value> =
         sunrise_world::json_file::read(&root.join("render-definitions.json"))?;
+    let mut needs_tags = false;
     let definitions = raw
         .into_iter()
-        .map(|(name, v)| {
+        .map(|(name, v)| -> std::result::Result<_, String> {
             let skip = match v["rule"].as_str().ok_or("missing render rule")? {
                 "never" => SkipRendering::Never,
                 "same_block" => SkipRendering::SameBlock,
@@ -296,7 +298,45 @@ pub fn load_visibility(
                 "leaves" => SkipRendering::Leaves,
                 "liquid" => SkipRendering::Liquid,
                 "mangrove_roots" => SkipRendering::MangroveRoots,
-                _ => return Err("unrecognized render rule"),
+                _ => return Err("unrecognized render rule".into()),
+            };
+            let skip_rules = match v.get("skip_rendering") {
+                None | Some(Value::Null) => None,
+                Some(raw_rules) => {
+                    let rules =
+                        sunrise_mod_package::content::parse_face_rules(raw_rules, "skip_rendering")
+                            .map_err(|e| format!("{name}: {e}"))?;
+                    if rules
+                        .iter()
+                        .any(|r| matches!(r.neighbor, mod_api::FaceNeighbor::Tag { .. }))
+                    {
+                        needs_tags = true;
+                    }
+                    Some(rules)
+                }
+            };
+            let hides_rules = match v.get("hides_neighbor_face") {
+                None | Some(Value::Null) => Vec::new(),
+                Some(raw_rules) => {
+                    let rules = sunrise_mod_package::content::parse_face_rules(
+                        raw_rules,
+                        "hides_neighbor_face",
+                    )
+                    .map_err(|e| format!("{name}: {e}"))?;
+                    if rules
+                        .iter()
+                        .any(|r| matches!(r.neighbor, mod_api::FaceNeighbor::Tag { .. }))
+                    {
+                        needs_tags = true;
+                    }
+                    rules
+                }
+            };
+            let supports_external_face_hiding = match v.get("supports_external_face_hiding") {
+                None | Some(Value::Null) => true,
+                Some(flag) => flag.as_bool().ok_or_else(|| {
+                    format!("{name}: supports_external_face_hiding: expected a boolean")
+                })?,
             };
             Ok((
                 name,
@@ -304,11 +344,42 @@ pub fn load_visibility(
                     skip,
                     can_occlude: v["can_occlude"].as_bool().ok_or("missing occlusion flag")?,
                     bars_tag: v["bars_tag"].as_bool().ok_or("missing bars tag")?,
+                    skip_rules,
+                    hides_rules,
+                    supports_external_face_hiding,
                 },
             ))
         })
-        .collect::<std::result::Result<_, &str>>()?;
-    Ok(FaceVisibility::new(&occlusion, &definitions)?)
+        .collect::<std::result::Result<BTreeMap<_, _>, String>>()?;
+    if needs_tags {
+        let tags_path = root.join("block-tags.json");
+        let bundle: Value = sunrise_world::json_file::read(&tags_path)?;
+        let mut tag_defs = TagDefinitions::default();
+        for (tag_name, text) in bundle.as_object().ok_or("invalid block tag bundle")? {
+            tag_defs.apply_json(
+                tag_name,
+                "vanilla",
+                text.as_str().ok_or("invalid block tag text")?,
+            )?;
+        }
+        let built = tag_defs.build(|block_name, _| {
+            registry
+                .default_state(block_name)
+                .map(|_| block_name.to_owned())
+        })?;
+        let block_tags: BTreeMap<String, BTreeSet<String>> = built
+            .tags
+            .into_iter()
+            .map(|(tag, members)| (tag, members.into_iter().collect()))
+            .collect();
+        Ok(FaceVisibility::new_with_tags(
+            &occlusion,
+            &definitions,
+            &block_tags,
+        )?)
+    } else {
+        Ok(FaceVisibility::new(&occlusion, &definitions)?)
+    }
 }
 
 #[cfg(test)]

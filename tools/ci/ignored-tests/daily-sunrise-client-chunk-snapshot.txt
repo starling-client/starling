@@ -1,0 +1,2 @@
+sunrise-client game::native_chunk_snapshot::tests::chunk_snapshot_shares_cow_sections_and_isolates_blocks_biomes_and_light lib daily resources
+sunrise-client game::native_chunk_snapshot::tests::chunk_snapshot_works_on_client_world lib daily resources

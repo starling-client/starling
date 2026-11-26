@@ -6,10 +6,12 @@ import json
 import random
 import struct
 
-try:
-    from . import lab, oracle_harness as harness
-except ImportError:
-    import lab, oracle_harness as harness
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, oracle_harness as harness
 
 EASINGS = ['constant', 'linear', 'in_back', 'in_bounce', 'in_circ', 'in_cubic', 'in_elastic', 'in_expo', 'in_quad',
            'in_quart', 'in_quint', 'in_sine', 'in_out_back', 'in_out_bounce', 'in_out_circ', 'in_out_cubic',

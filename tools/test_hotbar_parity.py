@@ -18,12 +18,11 @@ import os
 import random
 import subprocess
 import sys
-try:
-    from . import interaction_lab as lib, test_model_baking_parity as baking, test_rust_parity as base
-except ImportError:
-    import interaction_lab as lib
-    import test_model_baking_parity as baking
-    import test_rust_parity as base
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import interaction_lab as lib, test_model_baking_parity as baking, test_rust_parity as base
 
 VERSIONS = [None, 1343, 1344, 1451, 1519, 1631, 1976, 2200, 2504, 2586, 2730, 2975, 3105, 3218, 3337, 3465, 3578, 3698,
             3700, 3817, 3818, 3820, 3824, 3825, 3900, 4059, 4082, 4189, 4325, 4540, 4650, 4780, 4900, 5023]

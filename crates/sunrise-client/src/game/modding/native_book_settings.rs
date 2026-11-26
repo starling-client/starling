@@ -4,6 +4,7 @@ use mod_api::{
     PlayerRef,
     item::recipe_book::{RecipeBookSettings, RecipeBookTypeKey},
 };
+use sunrise_client::recipe_book::{BookFlags, placement_sync::ResourceId};
 
 impl Game<'_> {
     pub(super) fn player_synced_recipe_book_settings(
@@ -33,35 +34,44 @@ impl Game<'_> {
         if !book.is_registered() || !self.native_player_current(player) {
             return false;
         }
-        let flags = sunrise_client::recipe_book::BookFlags {
+        let flags = BookFlags {
             open: settings.open,
             filtering: settings.filtering,
         };
-        let mut result = Err(sunrise_client::recipe_book::BookError::Full);
-        let ran = self.native_as_player_handle(player, |game| {
-            result = game.level.recipe_book.custom.set(book.as_str(), flags);
-        });
-        if !ran {
+        let id = ResourceId::from_registered_book(book);
+        let mut publish = false;
+        if !self.native_as_player_handle(player, |game| {
+            if game.level.recipe_book.custom.get(id.as_str()) != flags {
+                let deferred = game.journal_player_book(player, book);
+                publish = game.level.recipe_book.custom.set(&id, flags) && !deferred;
+            }
+        }) {
             return false;
         }
-        let Ok(changed) = result else {
-            return false;
-        };
-        if changed {
-            self.sync_server_book_write(player, book, flags);
-            if mod_api::__private::listened(mod_api::HookId::PlayerRecipeBookSettingsChange)
-                && let Some(name) = self.player_name(player).map(str::to_owned)
-            {
-                self.native_player_recipe_book_settings_change(
-                    player.uuid(),
-                    &name,
-                    mod_api::RecipeBookIdentity::Custom(book.clone()),
-                    flags.open,
-                    flags.filtering,
-                );
-            }
+        if publish {
+            self.publish_player_book_settings(player, book.clone(), flags);
         }
         true
+    }
+
+    pub(super) fn publish_player_book_settings(
+        &mut self,
+        player: PlayerRef,
+        book: RecipeBookTypeKey,
+        flags: BookFlags,
+    ) {
+        self.sync_server_book_write(player, &book, flags);
+        if mod_api::__private::listened(mod_api::HookId::PlayerRecipeBookSettingsChange)
+            && let Some(name) = self.player_name(player).map(str::to_owned)
+        {
+            self.native_player_recipe_book_settings_change(
+                player.uuid(),
+                &name,
+                mod_api::RecipeBookIdentity::Custom(book),
+                flags.open,
+                flags.filtering,
+            );
+        }
     }
 
     pub(super) fn player_recipe_book_settings(

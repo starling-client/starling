@@ -86,8 +86,7 @@ fn with_pig_and_server(run: impl FnOnce(&mut Game<'_>, &Mutex<Listener>, &mut Co
                 .set_read_timeout(Some(std::time::Duration::from_secs(5)))
                 .unwrap();
             finish_login(game, &mut server);
-            game.native_lifecycle
-                .begin_open(mod_api::Authority::RemoteClient);
+            game.native_lifecycle.begin_open(None);
             game.title = None;
             game.player = Some(PlayerMotion::new(game.motion, Vec3::new(0.5, 1.0, 0.5)).unwrap());
             game.previous_position = Vec3::new(0.5, 1.0, 0.5);

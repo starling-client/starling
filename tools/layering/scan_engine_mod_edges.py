@@ -31,10 +31,9 @@ import re
 import subprocess
 import sys
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import rust_text  # noqa: E402
-
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+from tools.layering import rust_text
 STRANDS = ["loading", "host", "slots", "attachments", "content_render", "hooks"]
 # Each strand's #2534 phase; None where nothing moves: the engine keeps its Host impls (phase 2 dropped) and attachment
 # storage is already engine-layer (phase 4 dropped), owner 2026-11-10.
@@ -476,7 +475,7 @@ def main(argv=None):
     parser.add_argument("--json", help="write the full scan here")
     parser.add_argument("--map", help="write the tables docs/layering/mod-host-map.md describes to this file")
     args = parser.parse_args(argv)
-    from mod_host_map import render  # noqa: E402  (the map's tables, kept beside the scanner)
+    from tools.layering.mod_host_map import render  # the map's tables, kept beside the scanner
     result = scan()
     if args.json:
         Path(args.json).write_text(json.dumps(result, indent=1, sort_keys=True) + "\n", encoding="utf-8")

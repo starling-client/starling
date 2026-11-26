@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """Sculk placement tags survive ticking and chunk reload in both games."""
-from command_exec_corpus import cmd, group_setup, setup
-import harness_args
-import test_command_exec_parity as driver
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools.command_exec_corpus import cmd, group_setup, setup
+from tools import harness_args, test_command_exec_parity as driver
 
 
 def blocks(x, y, z):

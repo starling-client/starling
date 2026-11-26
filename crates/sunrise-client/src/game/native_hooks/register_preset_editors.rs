@@ -233,11 +233,10 @@ mod tests {
             &self,
             _: &dyn mod_api::ClientHost,
             event: &mut ScreenCharTypedPostEvent<'_>,
-        ) -> mod_api::Flow {
+        ) {
             if event.screen.id == "world_preset_editor" {
                 self.char_post.lock().unwrap().push(event.c);
             }
-            mod_api::Flow::Continue
         }
         fn screen_key_pressed_post(
             &self,
@@ -338,9 +337,11 @@ mod tests {
                 _rect: [f32; 4],
                 _draft: &mut PresetEditorDraft<'_>,
             ) {
-                draw.push_clip([8.0, 20.0, 32.0, 24.0]).unwrap();
-                draw.fill([12.0, 24.0, 10.0, 10.0], 0xFFFF00FF);
-                panic!("preset editor failed after painting");
+                draw.with_scissor([8.0, 20.0, 32.0, 24.0], &mut |draw| {
+                    draw.fill([12.0, 24.0, 10.0, 10.0], 0xFFFF00FF);
+                    panic!("preset editor failed after painting");
+                })
+                .unwrap();
             }
         }
 
@@ -420,7 +421,7 @@ mod tests {
                     assert!(!stock.vertices.is_empty());
                     game.title = Some(title);
                     game.screen = Screen::Playing;
-                    let frame = game.hud_layers(size);
+                    let frame = game.hud(size);
                     let (prefix, later) = frame.vertices.split_at(stock.vertices.len());
                     assert!(
                         prefix
@@ -437,7 +438,17 @@ mod tests {
                         "Render.Post did not paint outside the failed editor's clip"
                     );
                     // The title frame drains the report queue into the mandatory toast path.
-                    let [(Some(toast), false)] = game.server_packs.hook_panics.as_slice() else {
+                    let [
+                        crate::game::toast_manager::VisibleToast {
+                            toast:
+                                crate::game::toast_manager::Toast::Diagnostic {
+                                    toast,
+                                    hide_with_f1: false,
+                                },
+                            ..
+                        },
+                    ] = game.toast_manager.visible.as_slice()
+                    else {
                         panic!("the preset editor failure should produce one mandatory toast");
                     };
                     assert_eq!(
@@ -592,6 +603,7 @@ mod tests {
                                 state: ElementState::Pressed,
                                 repeat: false,
                                 text: None,
+                                shortcut: None,
                             },
                             |_| false,
                         );
@@ -640,8 +652,15 @@ mod tests {
                             "minecraft:the_nether".into()
                         ))
                     );
-                    game.preset_editor_key_pressed(&NoopLoop, KeyCode::Space, false)
-                        .unwrap();
+                    game.dispatch_screen_key(
+                        &NoopLoop,
+                        KeyCode::Space,
+                        true,
+                        false,
+                        None,
+                        sunrise_client::held::Source::Keyboard,
+                    )
+                    .unwrap();
                     game.screen_chars_typed(Some("z"));
                     assert_eq!(typed.lock().unwrap().as_str(), "éΩz");
                     assert_eq!(*key_post.lock().unwrap(), ["key.keyboard.q"]);
@@ -789,7 +808,7 @@ mod tests {
                     assert_eq!(press(game, left, Some(2000)), [Pre(0, false)]);
                     assert_eq!(game.title.as_ref().unwrap().mode.id(), PRESET);
                     mouse.lock().unwrap().cancel_press = false;
-                    assert!(game.key_focus_key(&NoopLoop, KeyCode::Tab));
+                    assert_eq!(game.key_focus_key(&NoopLoop, KeyCode::Tab), Some(false));
                     assert_eq!(game.pad.menu.focus.map(|t| t.rect), Some(target.rect));
                     game.pad_clear_focus();
                     game.cursor = (20.0, 30.0);

@@ -28,7 +28,7 @@ fn restored_proto_keeps_saved_biomes_when_saved_again_and_finished() {
     )
     .expect("terrain");
     let mut worker = terrain.worker();
-    let mut proto = terrain.proto(&mut worker, 0, 0);
+    let mut proto = terrain.proto(&mut worker, 0, 0).unwrap();
     let mut saved = terrain.saved_proto(&proto).expect("generated proto");
     let missing = biomes.saved_id("missing:proto_biome");
     let forest = biomes.id("minecraft:forest");

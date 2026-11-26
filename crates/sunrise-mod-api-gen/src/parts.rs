@@ -1,6 +1,5 @@
 //! Discover ordinary Parts modules, without joining their runtime bodies.
 mod installation;
-use crate::catalog::Catalog;
 use std::{fs, path::Path};
 use syn::{Item, Visibility};
 
@@ -38,10 +37,7 @@ pub(crate) fn source(root: &Path) -> Result<String, String> {
     let mut modules = String::new();
     let mut fixtures = String::new();
     let mut unions = [Vec::new(), Vec::new()];
-    for kind in Catalog::modules(&dir).map_err(|e| e.to_string())? {
-        if kind == "mod" {
-            continue;
-        }
+    for kind in sunrise_game_discovery::module_files(&dir)? {
         let path = dir.join(format!("{kind}.rs"));
         let source = fs::read_to_string(&path).map_err(|e| e.to_string())?;
         let file = syn::parse_file(&source).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -95,10 +91,7 @@ pub(crate) fn registration_source(root: &Path) -> Result<String, String> {
     }
     let mut modules = String::new();
     let mut fixtures = String::new();
-    for kind in Catalog::modules(&dir).map_err(|e| e.to_string())? {
-        if kind == "mod" {
-            continue;
-        }
+    for kind in sunrise_game_discovery::module_files(&dir)? {
         let path = dir.join(format!("{kind}.rs"));
         let source = fs::read_to_string(&path).map_err(|e| e.to_string())?;
         let file = syn::parse_file(&source).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -118,7 +111,7 @@ pub(crate) fn registration_source(root: &Path) -> Result<String, String> {
                 // Account for its discovered items when deciding re-export visibility.
                 let fragments = dir.join(format!("{kind}_fixtures"));
                 if fragments.is_dir() {
-                    for name in Catalog::modules(&fragments).map_err(|e| e.to_string())? {
+                    for name in sunrise_game_discovery::module_files(&fragments)? {
                         let path = fragments.join(format!("{name}.rs"));
                         let source = fs::read_to_string(&path).map_err(|e| e.to_string())?;
                         let file = syn::parse_file(&source)

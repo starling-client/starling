@@ -397,10 +397,16 @@ impl<'de> Deserializer<'de> for Probe<'de> {
 
     fn deserialize_newtype_struct<V: Visitor<'de>>(
         self,
-        _: &'static str,
+        name: &'static str,
         visitor: V,
     ) -> Result<V::Value, Self::Error> {
-        visitor.visit_newtype_struct(self)
+        if let Input::Value(value @ Value::Number(_)) = self.input {
+            // Numbers have no keys to walk. Let serde_json expose its scalar representation
+            // here, including the raw token requested by exact float decoders.
+            value.deserialize_newtype_struct(name, visitor)
+        } else {
+            visitor.visit_newtype_struct(self)
+        }
     }
 
     serde::forward_to_deserialize_any! {

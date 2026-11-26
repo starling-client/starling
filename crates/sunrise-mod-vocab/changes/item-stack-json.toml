@@ -1,0 +1,7 @@
+ids = [
+    "method:prelude::ItemsHost::item_to_json",
+    "method:prelude::ItemsHost::item_from_json",
+    "type:item::item_stack::ItemJsonError",
+]
+why = "Add ItemsHost::item_to_json and ItemsHost::item_from_json encoding and decoding optional ItemStacks with vanilla's ItemStack.OPTIONAL_CODEC (ItemStack.CODEC wrapped in ExtraCodecs.optionalEmptyMap) over JsonOps, returning ItemJsonError naming the failing field."
+migrate = "Additive. Call host.item_to_json(Some(&stack)) or host.item_to_json(None) to serialize an item stack or empty stack to JSON, and host.item_from_json(json) to deserialize it."

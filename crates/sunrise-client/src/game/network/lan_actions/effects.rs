@@ -4,42 +4,23 @@ impl Game<'_> {
     /// `level.playSound(player, ...)` of a guest's use it predicted (`remote::hand_operated`
     /// blocks only, as the guest decides): the others hear it now, the guest already did.
     pub(super) fn guest_use_sounds(&mut self, conn: u32, logged: usize, heard: usize) {
-        if self.lan.is_none() {
+        let Some(placer) = self.lan.as_ref().and_then(|host| host.hub.guest(conn)) else {
             return;
-        }
-        let changed: Vec<(i32, i32, i32)> = self
+        };
+        let placer = placer.entity_id as u32;
+        let changed = self
             .world
             .block_log
             .as_ref()
-            .map_or(&[][..], |log| log.get(logged..).unwrap_or(&[]))
-            .to_vec();
-        // BlockItem.place: `playSound(player, ...)`, for the others only. The
-        // placer's client plays it as its block appears. The place sound is the
-        // one the block's parts answered the placement with (`place_sound_type`).
-        let placer = self
-            .lan
-            .as_ref()
-            .and_then(|host| host.hub.guest(conn))
-            .map(|g| (g.entity_id as u32, "minecraft:player"));
-        let placed: Vec<([f64; 3], String)> = changed
-            .iter()
-            .map(|&(x, y, z)| {
-                let at = [f64::from(x) + 0.5, f64::from(y) + 0.5, f64::from(z) + 0.5];
-                let state = self.world.block(x, y, z);
-                let place = mod_api::BlockSoundCause::Place;
-                let name = self.block_sound_type([x, y, z], state, placer, place).place;
-                (at, name.trim_start_matches("minecraft:").to_owned())
-            })
-            .collect();
+            .and_then(|log| log.get(logged..))
+            .unwrap_or_default();
+        // BlockItem.place marked the selected event for everyone except the predicting player.
+        // Forward that event instead of asking the block part again after the placement.
         let mut sounds = Vec::new();
         if let Some(capture) = self.audio.capture.as_mut() {
             let mut i = heard.min(capture.len());
             while i < capture.len() {
-                let (name, at) = (&capture[i].event, &capture[i].position);
-                let place = placed
-                    .iter()
-                    .any(|(p, n)| p == at && name.trim_start_matches("minecraft:") == n.as_str());
-                if place {
+                if capture[i].except_entity == Some(placer) {
                     sounds.push(capture.remove(i));
                 } else {
                     i += 1;

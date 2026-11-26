@@ -1,0 +1,3 @@
+ids = ["handle:MenuRef::creative_catalog"]
+why = "#6144: MenuRef::slot_boxes gives InventoryMenu's slots, so on a creative item or search tab a client mod saw only the hotbar. MenuRef::creative_catalog answers the 45 catalog cells of CreativeModeInventoryScreen.ItemPickerMenu, each its box in GUI pixels and the stack it shows after scrollTo, so a recipe viewer can dim the catalog cells its search does not match. New items only."
+migrate = "Nothing to change."

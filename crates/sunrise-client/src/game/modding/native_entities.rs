@@ -1,21 +1,50 @@
 //! Entities for native server mods (docs/modding/src/how-to/native-mods.md, "Entities"): spawn
-//! any entity from its compound as `/summon` does, and move, show or remove
+//! any entity from its compound as `/summon` does through [`LevelRef::summon`], and move, show or remove
 //! the entities Sunrise keeps without simulating them (displays, markers,
-//! interactions); `native_display_refs.rs` poses displays. They act where
-//! the world is simulated, in the level in place, which each names by its
-//! `dimension` (`minecraft:overworld`) as `native_set_block` does.
-use super::{
-    Game,
-    commands::{Target, place_summoned, strip_finalize_tree},
-};
+//! interactions); `native_display_refs.rs` poses displays.
+#[cfg(test)]
+use super::commands::{data::summon_position_ok, place_summoned};
+use super::{Game, commands::Target};
+use mod_api::{EntityRef, LevelRef, LevelWriteError};
 use sunrise_core::geometry::Vec3;
-use sunrise_core::nbt::{Compound, Tag};
+use sunrise_core::nbt::Compound;
+#[cfg(test)]
+use sunrise_core::nbt::Tag;
 
 impl super::commands::OtherEntity {
     /// Physical query bounds, not display rendering/culling dimensions.
     pub(in crate::game) fn display_marker_or_interaction_bounds(
         &self,
     ) -> Option<sunrise_core::geometry::Aabb> {
+        let dimensions = self.vanilla_dimensions()?;
+        let vanilla = if let Some(settings) = self.interaction {
+            let mut interaction = super::interactions::RemoteInteraction::new([
+                self.position.x,
+                self.position.y,
+                self.position.z,
+            ]);
+            interaction.width = settings.width;
+            interaction.height = settings.height;
+            interaction.response = settings.response;
+            interaction.bounds()
+        } else {
+            // Display and Marker have zero-sized physical dimensions.
+            sunrise_core::geometry::Aabb::new(self.position, self.position)
+        };
+        Some(sunrise_client::pose::SizeAnswer::sized_box(
+            self.size_answer,
+            dimensions,
+            self.position,
+            vanilla,
+        ))
+    }
+
+    /// `Entity.getDimensions(pose)` of a display, a marker or an interaction this list holds,
+    /// the kinds whose box follows their size here: an interaction's
+    /// `EntityDimensions.scalable(width, height)`, none for a display or a marker. None for
+    /// every other kind the list keeps without simulating it (a leash knot, an eye of ender),
+    /// which isn't asked.
+    pub(in crate::game) fn vanilla_dimensions(&self) -> Option<[f32; 3]> {
         if !matches!(
             self.kind.as_str(),
             "minecraft:block_display"
@@ -26,28 +55,11 @@ impl super::commands::OtherEntity {
         ) {
             return None;
         }
-        Some(if let Some(settings) = self.interaction {
-            super::interactions::RemoteInteraction {
-                position: self.position,
-                width: settings.width,
-                height: settings.height,
-                response: settings.response,
-                vehicle: None,
-            }
-            .bounds()
-        } else {
-            // Display and Marker have zero-sized physical dimensions.
-            sunrise_core::geometry::Aabb::new(self.position, self.position)
+        Some(match self.interaction {
+            Some(settings) => [settings.width, settings.height, settings.height * 0.85],
+            None => [0.0; 3],
         })
     }
-}
-
-/// Whether a position is one `/summon` takes.
-fn position_ok(pos: [f64; 3]) -> bool {
-    pos.iter().all(|v| v.is_finite())
-        && pos[0].abs() < 30_000_000.0
-        && pos[2].abs() < 30_000_000.0
-        && (-20_000_000.0..20_000_000.0).contains(&pos[1])
 }
 
 /// The id of a summoned stack's root: its command target's, else `first`,
@@ -84,6 +96,7 @@ pub(super) fn target_id(t: Target) -> Option<u32> {
         | Target::Trident(id)
         | Target::Spawner(id)
         | Target::Cloud(id)
+        | Target::Bolt(id)
         | Target::Hook(id)
         | Target::Knot(id)
         | Target::General(id) => Some(id),
@@ -92,93 +105,91 @@ pub(super) fn target_id(t: Target) -> Option<u32> {
 }
 
 impl Game<'_> {
-    /// Whether this game simulates the level `dimension`.
-    fn native_simulates_level(&self, dimension: &str) -> bool {
-        (self.serving.is_some() || self.options.dedicated.is_some()) && dimension == self.dim.id()
-    }
     /// Spawns an entity of `kind` (`minecraft:item_display`) at `pos` in the
-    /// level in place, `dimension`, from `nbt` (its compound, as `/summon
-    /// <kind> <pos> <nbt>` takes it; passengers included): its id. None on a
-    /// client's copy of the world, for another dimension, a position outside
-    /// `/summon`'s bounds, a chunk that isn't loaded, a kind Sunrise can't
-    /// load, one a mod kept out (`native_entity_join_level`), or with the entity ids exhausted.
-    /// Inside a transaction the id comes back at once: a join a mod cancels at the root commit
-    /// leaves its handle stale.
-    pub(super) fn summon(
+    /// server level `level` names from `nbt` (its compound, as `/summon
+    /// <kind> <pos> <nbt>` takes it; passengers included): its [`EntityRef`].
+    /// Routes parked dimensions by handle and refuses with
+    /// [`LevelWriteError::InTransaction`] when summoning into a parked level
+    /// while a Host transaction is open. Returns `Ok(None)` for a position
+    /// outside `/summon`'s bounds, a chunk that isn't loaded, a kind Sunrise
+    /// can't load, one a mod kept out (`native_entity_join_level`), or with
+    /// entity ids exhausted. Inside a transaction the handle comes back at
+    /// once: a join a mod cancels at the root commit leaves its handle stale.
+    pub(super) fn level_summon(
         &mut self,
-        dimension: &str,
+        level: LevelRef,
         kind: &str,
         pos: [f64; 3],
         nbt: Compound,
-    ) -> Option<u32> {
-        if self.entity_ids_exhausted() {
-            return None;
-        }
-        if !self.native_simulates_level(dimension) || !position_ok(pos) {
-            return None;
-        }
-        let chunk = ((pos[0].floor() as i32) >> 4, (pos[2].floor() as i32) >> 4);
-        if !self.world.chunks.contains_key(&chunk) {
-            return None;
-        }
-        let mut tag = nbt;
-        tag.insert("id".into(), Tag::String(kind.into()));
-        // As `/summon <kind> <pos> <nbt>` takes it: with an NBT argument vanilla
-        // does not finalize the mob (`SummonCommand.createEntity`), so a
-        // `sunrise:finalize` in it is not the caller's to set.
-        let mut tag = Tag::Compound(tag);
-        strip_finalize_tree(&mut tag);
-        // As `/summon` does: every entity of the stack, passengers included,
-        // stands at `pos`.
-        place_summoned(&mut tag, pos);
-        let from = self.mobs.len();
-        let first = self.next_entity + 1;
-        let deferred = (self.tnts.len(), self.falling.len(), self.rockets.len());
-        let target = self.spawn_entity_from_nbt(tag);
-        // These roots take their id as they load, and a rocket has no command
-        // Target variant. Select the newly appended root, never an older waiting entity.
-        let root = match kind {
-            "minecraft:tnt" if deferred.0 < self.tnts.len() => {
-                Some(super::entity_residency::assign_resident_id!(
-                    self.tnts,
-                    deferred.0,
-                    e,
-                    &mut self.next_entity,
-                    None
-                ))
-            }
-            "minecraft:falling_block" if deferred.1 < self.falling.len() => {
-                Some(super::entity_residency::assign_resident_id!(
-                    self.falling,
-                    deferred.1,
-                    f,
-                    &mut self.next_entity,
-                    Some(&f.attachment_lifetime)
-                ))
-            }
-            "minecraft:firework_rocket" if deferred.2 < self.rockets.len() => {
-                Some(super::entity_residency::assign_resident_id!(
-                    self.rockets,
-                    deferred.2,
-                    e,
-                    &mut self.next_entity,
-                    None
-                ))
-            }
-            _ => None,
-        };
-        self.native_mobs_joined(from, false);
-        // Otherwise the root is the first entity spawned, also for kinds no
-        // command target stands for (experience orbs, end crystals, cushions). An id handed out to an
-        // entity a mod then kept out is not given back, so the root must be
-        // there.
-        root.or_else(|| {
-            root_id(target, first, |id| {
-                self.orbs.iter().any(|o| o.id == id)
-                    || self.crystals.iter().any(|c| c.id == id)
-                    || self.cushions.iter().any(|c| c.id == id)
-            })
-        })
+    ) -> Result<Option<EntityRef>, LevelWriteError> {
+        self.with_server_level_mut(
+            level,
+            LevelWriteError::Unavailable,
+            LevelWriteError::Stale,
+            Some(LevelWriteError::InTransaction),
+            |game| {
+                let epoch = game
+                    .native_lifecycle
+                    .epoch()
+                    .ok_or(LevelWriteError::Unavailable)?;
+                if game.entity_ids_exhausted() {
+                    return Ok(None);
+                }
+                let chunk = ((pos[0].floor() as i32) >> 4, (pos[2].floor() as i32) >> 4);
+                if !game.world.chunks.contains_key(&chunk) {
+                    return Ok(None);
+                }
+                let first = game.next_entity + 1;
+                let deferred = (game.tnts.len(), game.falling.len(), game.rockets.len());
+                let Ok(target) = game.summon_from_compound(kind, pos, nbt) else {
+                    return Ok(None);
+                };
+                // These roots take their id as they load, and a rocket has no command
+                // Target variant. Select the newly appended root, never an older waiting entity.
+                let root = match kind {
+                    "minecraft:tnt" if deferred.0 < game.tnts.len() => {
+                        Some(super::entity_residency::assign_resident_id!(
+                            game.tnts,
+                            deferred.0,
+                            e,
+                            &mut game.next_entity,
+                            None
+                        ))
+                    }
+                    "minecraft:falling_block" if deferred.1 < game.falling.len() => {
+                        Some(super::entity_residency::assign_resident_id!(
+                            game.falling,
+                            deferred.1,
+                            f,
+                            &mut game.next_entity,
+                            Some(&f.attachment_lifetime)
+                        ))
+                    }
+                    "minecraft:firework_rocket" if deferred.2 < game.rockets.len() => {
+                        Some(super::entity_residency::assign_resident_id!(
+                            game.rockets,
+                            deferred.2,
+                            e,
+                            &mut game.next_entity,
+                            None
+                        ))
+                    }
+                    _ => None,
+                };
+                // Otherwise the root is the first entity spawned, also for kinds no
+                // command target stands for (experience orbs, end crystals, cushions). An id handed out to an
+                // entity a mod then kept out is not given back, so the root must be
+                // there.
+                let id = root.or_else(|| {
+                    root_id(target, first, |id| {
+                        game.orbs.iter().any(|o| o.id == id)
+                            || game.crystals.iter().any(|c| c.id == id)
+                            || game.cushions.iter().any(|c| c.id == id)
+                    })
+                });
+                Ok(id.map(|id| EntityRef::new(epoch, id)))
+            },
+        )
     }
 }
 
@@ -209,8 +220,8 @@ impl Game<'_> {
     fn joins_pending(&self) -> bool {
         sunrise_client::join_seq::JoinSeq::latest() > self.persist.joined_seq
     }
-    /// Tells `native_entity_join_level` once for every entity added since the
-    /// last call, of any kind, in insertion order. A mod that cancels takes
+    /// Tells `native_entity_join_level` for every still-unannounced entity,
+    /// of any kind, in insertion order. A mod that cancels takes
     /// the entity back out here,
     /// before it ticks again, and `/summon` of it fails (`joins_canceled`).
     /// `loaded_from_disk` is for the entities that came with a chunk. Returns
@@ -227,6 +238,51 @@ impl Game<'_> {
     pub(super) fn native_joins_flush(&mut self, loaded_from_disk: bool, watch: u32) -> bool {
         self.flush_joins(loaded_from_disk, watch, &[], None)
     }
+    /// `addFreshEntity` at a call site that has a specific new row. It does not wait
+    /// for an unrelated item still being decided by `item_toss`. The level's journal
+    /// can hold the join, but construction still happens at the call.
+    pub(super) fn announce_fresh_join(
+        &mut self,
+        handle: super::entity::EntityHandle,
+        id: u32,
+    ) -> bool {
+        if self.remote.is_some() || mod_api::__private::mods().is_empty() {
+            return true;
+        }
+        if self.hold_announcement(super::transactions::Announcement::FreshJoin { handle, id }) {
+            let kind = self
+                .slot_kind_and_position(Slot::Walk(handle))
+                .0
+                .into_owned();
+            self.construct_joining(id, &kind);
+            return true;
+        }
+        self.admit_fresh_join(handle, id)
+    }
+
+    /// Admit one fresh row now, either synchronously or when its journal is told.
+    pub(in crate::game) fn admit_fresh_join(
+        &mut self,
+        handle: super::entity::EntityHandle,
+        id: u32,
+    ) -> bool {
+        if self.join_was_announced(id) {
+            return true;
+        }
+        let Some(handle) = self.refresh_entity_handle(id, handle) else {
+            return false;
+        };
+        use sunrise_client::join_seq::Joined as _;
+        let seq = super::entity::with_entity!(self, handle, e => e.join_seq());
+        if seq > self.persist.joined_seq {
+            self.persist.admitted_joins.push((seq, id));
+        }
+        self.native_lifecycle.admitting_joins.push(id);
+        let kept = self.admit_join(Slot::Walk(handle), id, false);
+        self.native_lifecycle.admitting_joins.pop();
+        kept
+    }
+
     /// [`Self::native_joins_flush`], never announcing the entities `removed` names and, with a
     /// `through`, none that joined after it: a root commit's, for the entities its transaction
     /// added and removed, each held flush keeping its own `loaded_from_disk`.
@@ -269,46 +325,81 @@ impl Game<'_> {
             self.next_unannounced(self.persist.joined_seq, removed, through)
         {
             self.persist.joined_seq = seq;
-            let (kind, at) = self.slot_kind_and_position(slot);
-            let kind = kind.into_owned();
-            let mut canceled = false;
-            let dimension = self.dim.id();
-            self.construct_joining(id, &kind);
-            self.native_entity_join_level(
-                dimension,
-                id,
-                &kind,
-                [at.x, at.y, at.z],
-                loaded_from_disk,
-                &mut canceled,
-            );
-            let spawn = self
-                .native_lifecycle
-                .pending_item_spawns
-                .iter()
-                .position(|entry| entry.0 == id)
-                .map(|index| self.native_lifecycle.pending_item_spawns.remove(index));
-            if canceled {
-                self.persist.joins_canceled += 1;
-                self.forget_entity(id);
-                // Handles are indexes: the entity is taken out before any
-                // other change to its list.
-                self.discard_slot(slot);
-                kept &= id != watch;
-            } else {
-                self.remember_join(id, kind);
-                // `addEntity` files it under its section, untold.
-                self.entity_section_joined(id, [at.x, at.y, at.z]);
-                if let Some((id, item, count, position)) = spawn {
-                    self.native_item_spawn(id, &item, count, position);
-                }
+            if !self.admit_join(slot, id, loaded_from_disk) && id == watch {
+                kept = false;
             }
         }
         // A held toss is not past yet: the mark stays before it.
         if self.native_lifecycle.held_joins.is_empty() {
             self.persist.joined_seq = self.persist.joined_seq.max(observed);
         }
+        self.persist
+            .admitted_joins
+            .retain(|&(seq, _)| seq > self.persist.joined_seq);
         kept
+    }
+
+    /// The shared `PersistentEntitySectionManager.addEntity` boundary, for a fresh
+    /// row or for a row waiting in a batch. NeoForge asks `EntityJoinLevelEvent`
+    /// before filing the entity in its section.
+    fn admit_join(&mut self, slot: Slot, id: u32, loaded_from_disk: bool) -> bool {
+        let (kind, at) = self.slot_kind_and_position(slot);
+        let kind = kind.into_owned();
+        let mut canceled = false;
+        let dimension = self.dim.id();
+        let admission = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.construct_joining(id, &kind);
+            // No lifecycle epoch means no mod is loaded to hear it.
+            if let Some(epoch) = self.native_lifecycle.epoch() {
+                self.native_entity_join_level(
+                    dimension,
+                    &kind,
+                    [at.x, at.y, at.z],
+                    loaded_from_disk,
+                    mod_api::EntityRef::new(epoch, id),
+                    &mut canceled,
+                );
+            }
+            #[cfg(test)]
+            {
+                use super::pending_births::escaping_fault::{self, At};
+                escaping_fault::reach(At::Admission, id);
+            }
+        }));
+        let spawn = self
+            .native_lifecycle
+            .pending_item_spawns
+            .iter()
+            .position(|entry| entry.0 == id)
+            .map(|index| self.native_lifecycle.pending_item_spawns.remove(index));
+        if canceled || admission.is_err() {
+            // A listener may have written other rows before unwinding. Retire this
+            // admission only, and do not use an index that may now name another row.
+            if let Some(slot) = self.refresh_join_slot(id, slot) {
+                let retained = admission.is_ok()
+                    && matches!(slot, Slot::Walk(super::entity::EntityHandle::Mob(index))
+                        if self.detach_natural_candidate(id, index));
+                if !retained {
+                    self.discard_slot(slot, id);
+                }
+            }
+            self.forget_entity(id);
+            if let Err(payload) = admission {
+                std::panic::resume_unwind(payload);
+            }
+            self.persist.joins_canceled += 1;
+            return false;
+        }
+        if self.refresh_join_slot(id, slot).is_some() {
+            // A teleported candidate already went through admission in its destination.
+            self.remember_join(id, kind);
+            // `addEntity` files it under its section, untold.
+            self.entity_section_joined(id, [at.x, at.y, at.z]);
+            if let Some((id, item, count, position)) = spawn {
+                self.native_item_spawn(id, &item, count, position);
+            }
+        }
+        true
     }
 
     /// `Entity.<init>` comes before `addFreshEntity`: an entity that started on a path that
@@ -358,14 +449,21 @@ impl Game<'_> {
         use sunrise_client::join_seq::{JoinSeq, Joined};
         let mut best: Option<(Slot, u32, JoinSeq)> = None;
         let mut offer = |slot: Slot, id: u32, seq: JoinSeq| {
-            if skipped.contains(&id) || self.persist.removals.iter().chain(self.persist.destroying_vehicles.iter()).any(|target| {
-                matches!(*target, super::commands::Target::Boat(n) | super::commands::Target::Cart(n) if n == id)
-            }) {
+            if skipped.contains(&id)
+                || self
+                    .persist
+                    .removals
+                    .iter()
+                    .chain(self.persist.destroying_vehicles.iter())
+                    .any(|target| target_id(*target) == Some(id))
+            {
                 return;
             }
             if seq > mark
                 && through.is_none_or(|through| seq <= through)
                 && best.is_none_or(|(_, _, previous)| seq < previous)
+                && !self.native_lifecycle.admitting_joins.contains(&id)
+                && !self.join_was_announced(id)
             {
                 best = Some((slot, id, seq));
             }
@@ -399,6 +497,15 @@ impl Game<'_> {
         }
         // A toss still being asked (`item_toss`) ends the flush: it and what joined after wait.
         best.filter(|&(_, id, _)| !self.native_lifecycle.held_joins.contains(&id))
+    }
+
+    fn join_was_announced(&self, id: u32) -> bool {
+        self.persist.live.binary_search_by_key(&id, |l| l.0).is_ok()
+            || self
+                .persist
+                .admitted_joins
+                .iter()
+                .any(|&(_, admitted)| admitted == id)
     }
 
     fn remember_join(&mut self, id: u32, kind: String) {
@@ -450,10 +557,52 @@ impl Game<'_> {
             ),
         }
     }
+    fn refresh_join_slot(&self, id: u32, slot: Slot) -> Option<Slot> {
+        let apart = match slot {
+            Slot::Walk(handle) => return self.refresh_entity_handle(id, handle).map(Slot::Walk),
+            Slot::Apart(Apart::Crystal(_)) => self
+                .crystals
+                .iter()
+                .position(|e| e.id == id)
+                .map(Apart::Crystal),
+            Slot::Apart(Apart::Cushion(_)) => self
+                .cushions
+                .iter()
+                .position(|e| e.id == id)
+                .map(Apart::Cushion),
+            Slot::Apart(Apart::Painting(_)) => self
+                .paintings
+                .iter()
+                .position(|e| e.id == id)
+                .map(Apart::Painting),
+            Slot::Apart(Apart::Frame(_)) => self
+                .item_frames
+                .iter()
+                .position(|e| e.id == id)
+                .map(Apart::Frame),
+            Slot::Apart(Apart::Other(_)) => self
+                .others
+                .iter()
+                .position(|e| e.id == id)
+                .map(Apart::Other),
+            Slot::Apart(Apart::Dragon) => self
+                .dragon
+                .as_ref()
+                .filter(|e| e.id == id)
+                .map(|_| Apart::Dragon),
+        };
+        apart.map(Slot::Apart)
+    }
     /// Takes the entity out of the level, before it ever ticked.
-    fn discard_slot(&mut self, slot: Slot) {
+    fn discard_slot(&mut self, slot: Slot, id: u32) {
         match slot {
-            Slot::Walk(h) => self.discard_entity(h),
+            // A listener can cause another join or a removal; resolve by id
+            // rather than discarding whatever now occupies the old index.
+            Slot::Walk(hint) => {
+                if let Some(handle) = self.refresh_entity_handle(id, hint) {
+                    self.discard_entity(handle);
+                }
+            }
             Slot::Apart(Apart::Crystal(i)) => drop(self.crystals.remove(i)),
             Slot::Apart(Apart::Cushion(i)) => drop(self.cushions.remove(i)),
             Slot::Apart(Apart::Painting(i)) => drop(self.paintings.remove(i)),
@@ -478,6 +627,9 @@ impl Game<'_> {
             }
         }
         self.persist.joined_seq = self.persist.joined_seq.max(observed);
+        self.persist
+            .admitted_joins
+            .retain(|&(seq, _)| seq > self.persist.joined_seq);
     }
     /// An entity taken out of the level without leaving it (an item through
     /// an End gateway): forgotten, not told of.
@@ -574,7 +726,7 @@ mod tests {
                 host: &mut dyn ServerHost,
                 event: &mut EntityJoinLevelEvent<'_>,
             ) -> Flow {
-                let entity = host.entity(event.entity).expect("joining handle");
+                let entity = host.entity(event.subject.id()).expect("joining handle");
                 assert_eq!(
                     entity.kind(host).and_then(|kind| kind.id(host)).as_deref(),
                     Some(event.kind)
@@ -602,6 +754,9 @@ mod tests {
         .into();
         mod_platform::testing::with_mods(mods, || {
             super::super::native_entity_refs::tests::with_game(|game| {
+                game.world
+                    .chunks
+                    .insert((0, 0), Arc::new(sunrise_client::chunk::Chunk::empty(0, 0)));
                 game.native_joins_skip();
                 let kinds = [
                     "minecraft:block_display",
@@ -670,7 +825,7 @@ mod tests {
                 );
                 // A quarantined missing-mod record shares storage, not level membership.
                 game.next_entity += 1;
-                let record = Tag::compound([(
+                let mut record = Tag::compound([(
                     "Pos",
                     Tag::List(
                         [5.0_f64, 64.0, 5.0]
@@ -678,8 +833,9 @@ mod tests {
                             .to_vec(),
                     ),
                 )]);
-                let opaque =
-                    Game::other_from_nbt(&record, game.next_entity, "missing:object").unwrap();
+                let opaque = game
+                    .other_from_nbt(&mut record, game.next_entity, "missing:object")
+                    .unwrap();
                 game.others.push(opaque);
                 game.native_joins_flush(true, 0);
                 assert_eq!(
@@ -788,12 +944,15 @@ mod tests {
                 let (Tag::Compound(tag), _) = sunrise_core::nbt::parse_snbt(nbt).unwrap() else {
                     unreachable!()
                 };
-                let id = game
-                    .summon(game.dim.id(), kind, [1.0, 70.0, 1.0], tag)
+                let level = game.level(game.dim.id()).unwrap();
+                let entity = game
+                    .level_summon(level, kind, [1.0, 70.0, 1.0], tag)
+                    .unwrap()
                     .unwrap();
+                let id = entity.id();
                 assert_eq!(id, base + 1);
                 assert_eq!(game.next_entity, base + 1);
-                assert!(game.entity(id).is_some());
+                assert_eq!(game.entity(id), Some(entity));
                 let waiting = match kind {
                     "minecraft:tnt" => game.tnts[0].id,
                     "minecraft:falling_block" => game.falling[0].id,
@@ -808,8 +967,10 @@ mod tests {
                         unreachable!()
                     };
                     let fallback = game
-                        .summon(game.dim.id(), kind, [1.0, 70.0, 1.0], unknown_state)
-                        .unwrap();
+                        .level_summon(level, kind, [1.0, 70.0, 1.0], unknown_state)
+                        .unwrap()
+                        .unwrap()
+                        .id();
                     assert_eq!(fallback, base + 2);
                     assert_eq!(game.next_entity, base + 2);
                     assert_eq!(game.falling.len(), 3);
@@ -887,7 +1048,7 @@ mod tests {
             default: || 0,
             codec: None,
             copy_on_death: false,
-            sync: false,
+            sync_codec: None,
         };
         for (kind, nbt) in [
             (
@@ -948,7 +1109,7 @@ mod tests {
                 event: &mut EntityJoinLevelEvent<'_>,
             ) -> Flow {
                 self.joins.lock().unwrap().push((
-                    event.entity,
+                    event.subject.id(),
                     event.kind.into(),
                     event.loaded_from_disk,
                 ));
@@ -1007,17 +1168,12 @@ mod tests {
                     Some(&(base + 3, "minecraft:sheep".into(), true))
                 );
 
-                game.crystals.push(super::super::dragon::Crystal {
-                    fall: Default::default(),
-                    attachment_lifetime: Default::default(),
-                    join: Default::default(),
-                    id: base + 4,
-                    position: Vec3::ZERO,
-                    show_bottom: true,
-                    time: 0,
-                    beam: None,
-                    invulnerable: false,
-                });
+                game.crystals.push(super::super::dragon::Crystal::new(
+                    base + 4,
+                    Vec3::ZERO,
+                    true,
+                    0,
+                ));
                 game.cushions.push(sunrise_client::entities::Cushion {
                     attachment_lifetime: Default::default(),
                     join: Default::default(),
@@ -1036,6 +1192,7 @@ mod tests {
                     pos: [0; 3],
                     facing: 0,
                     variant: "minecraft:kebab".into(),
+                    asset: None,
                     width: 1,
                     height: 1,
                     check_interval: 0,
@@ -1078,6 +1235,7 @@ mod tests {
                 );
                 drop(seen);
                 game.tnts.push(super::super::tnt::PrimedTnt {
+                    size_answer: None,
                     attachment_lifetime: Default::default(),
                     rotation: [0.0, 0.0],
                     join: Default::default(),
@@ -1148,8 +1306,105 @@ mod tests {
 
     #[test]
     fn summon_positions_are_summons() {
-        assert!(position_ok([0.5, 64.0, 0.5]));
-        assert!(!position_ok([3.0e7, 64.0, 0.5]));
-        assert!(!position_ok([0.5, f64::NAN, 0.5]));
+        assert!(summon_position_ok([0.5, 64.0, 0.5]));
+        assert!(summon_position_ok([-3.0e7, 64.0, 0.5]));
+        assert!(!summon_position_ok([3.0e7, 64.0, 0.5]));
+        assert!(!summon_position_ok([0.5, f64::NAN, 0.5]));
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn receiver_summon_refuses_a_tree_with_a_resident_passenger_uuid() {
+        use sunrise_client::chunk::Chunk;
+        use sunrise_core::nbt::parse_snbt;
+
+        super::super::native_entity_refs::tests::with_game(|game| {
+            game.world
+                .chunks
+                .insert((0, 0), std::sync::Arc::new(Chunk::empty(0, 0)));
+            let level = game.level(game.dim.id()).unwrap();
+            let compound = |s| match parse_snbt(s).unwrap().0 {
+                Tag::Compound(c) => c,
+                _ => panic!("expected a compound"),
+            };
+            let existing = level
+                .summon(
+                    game,
+                    "minecraft:pig",
+                    [1.5, 70.0, 1.5],
+                    compound("{UUID:[I;22,33,44,55]}"),
+                )
+                .unwrap()
+                .unwrap();
+            let next = game.next_entity;
+            let tree = compound(
+                r#"{UUID:[I;11,22,33,44],Passengers:[{id:"minecraft:pig",UUID:[I;22,33,44,55]}]}"#,
+            );
+            assert_eq!(
+                level.summon(game, "minecraft:pig", [2.5, 70.0, 1.5], tree),
+                Ok(None)
+            );
+            assert_eq!(
+                game.mobs.iter().map(|mob| mob.id).collect::<Vec<_>>(),
+                [existing.id()]
+            );
+            assert_eq!(
+                game.next_entity, next,
+                "not even the root entered construction"
+            );
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn summon_into_parked_level_uses_level_handle_and_refuses_in_transaction() {
+        use sunrise_client::chunk::Chunk;
+
+        super::super::native_entity_refs::tests::with_game(|game| {
+            game.world
+                .chunks
+                .insert((0, 0), std::sync::Arc::new(Chunk::empty(0, 0)));
+            let overworld = game.level("minecraft:overworld").unwrap();
+            let nether = super::super::Dim::Nether;
+            game.enter_command_level(nether).unwrap();
+            game.world
+                .chunks
+                .insert((0, 0), std::sync::Arc::new(Chunk::empty(0, 0)));
+
+            game.storage_scope(|game, _| {
+                assert_eq!(
+                    overworld.summon(game, "minecraft:pig", [1.5, 70.0, 1.5], Compound::new()),
+                    Err(LevelWriteError::InTransaction)
+                );
+                ((), false)
+            });
+
+            let pig = overworld
+                .summon(game, "minecraft:pig", [1.5, 70.0, 1.5], Compound::new())
+                .unwrap()
+                .expect("summoned in parked overworld");
+            assert_eq!(game.dim, nether);
+            assert!(game.mobs.is_empty());
+            assert!(
+                game.levels
+                    .parked_mobs(super::super::Dim::Overworld)
+                    .unwrap()
+                    .iter()
+                    .any(|mob| mob.id == pig.id())
+            );
+
+            let stale_epoch = mod_api::WorldEpoch::new(
+                game.native_lifecycle.epoch().unwrap().get().wrapping_add(1),
+            );
+            let stale = LevelRef::new(stale_epoch, mod_api::DimensionKey::OVERWORLD);
+            assert_eq!(
+                stale.summon(game, "minecraft:pig", [1.5, 70.0, 1.5], Compound::new()),
+                Err(LevelWriteError::Stale)
+            );
+
+            game.enter_command_level(super::super::Dim::Overworld)
+                .unwrap();
+            assert_eq!(game.entity(pig.id()), Some(pig));
+        });
     }
 }

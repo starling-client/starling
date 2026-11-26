@@ -1,0 +1,3 @@
+ids = ["method:prelude::ItemsHost::enchantments", "method:prelude::ItemsHost::enchantment_min_cost", "method:prelude::ItemsHost::enchantment_supports", "method:prelude::ItemsClientHost::enchantments", "method:prelude::ItemsClientHost::enchantment_min_cost", "method:prelude::ItemsClientHost::enchantment_supports"]
+why = "Enchantment definition reads (max level, weight, anvil cost, curse, Enchantment.getMinCost, Enchantment.isSupportedItem) move from the client host to the shared items host, so server code reads its own enchantment registry, data packs included (#5392)."
+migrate = "Call host.enchantments(), enchantment_min_cost and enchantment_supports as before: they are now on every Host. Code that named prelude::ItemsClientHost for them names prelude::ItemsHost."

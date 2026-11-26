@@ -1,4 +1,4 @@
-//! The registry repository (`horizon-rust/horizon-mods`, docs/modding/src/reference/registry-index.md):
+//! The registry repository (`sunrise-org/sunrise-mods`, docs/modding/src/reference/registry-index.md):
 //! one `mods/<id>.toml` per project, written by the submission form or by
 //! hand and reviewed in a pull request, plus `revoked.toml`. Its CI turns
 //! them into `index.json` with [`build`], reading every listed file, and
@@ -12,12 +12,13 @@ use super::{
     SunriseRelease, Version, check_stable_tag, find_release, hex64, inspect, page as rules,
     stable_tag, valid_id,
 };
+use crate::checkout::{checkout_path, read_regular};
 use crate::manifest::{parse_version, revision};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
-use std::io::{self, Read};
-use std::path::{Component, Path, PathBuf};
+use std::io;
+use std::path::{Path, PathBuf};
 
 pub mod builds;
 mod collections;
@@ -105,23 +106,8 @@ pub struct NightlySource {
     pub path: Option<String>,
 }
 
-pub(super) fn check_nightly_source(repo: &str, path: Option<&str>) -> Result<(), String> {
-    if !valid_repo(repo) {
-        return Err(format!(
-            "nightly.repo {repo:?} must be owner/name on GitHub"
-        ));
-    }
-    if let Some(path) = path
-        && (path.contains(['\\', ':'])
-            || path.chars().any(char::is_control)
-            || path.split('/').any(|part| matches!(part, "" | "." | "..")))
-    {
-        return Err(format!(
-            "nightly.path {path:?} must be a relative directory in the repository"
-        ));
-    }
-    Ok(())
-}
+pub(super) use super::check_nightly_source;
+pub use super::valid_repo;
 
 /// The page fields a project's repository may hold, in its [`PAGE_FILE`]. Only these: who owns the
 /// project, its key and its kind are decided when it is listed.
@@ -175,20 +161,6 @@ impl Cache {
             Err(e) => Err(format!("{}: {e}", path.display())),
         }
     }
-}
-
-/// `owner/name` of a GitHub repository.
-pub fn valid_repo(repo: &str) -> bool {
-    let part = |p: &str, max: usize| {
-        !p.is_empty()
-            && p.len() <= max
-            && p != "."
-            && p != ".."
-            && p.bytes()
-                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
-    };
-    repo.split_once('/')
-        .is_some_and(|(owner, name)| part(owner, 39) && part(name, 100))
 }
 
 impl Entry {
@@ -419,8 +391,8 @@ pub struct Sources<'a> {
     pub registry: &'a Path,
     /// Every listed file, named by its SHA-256 (CI downloads them there).
     pub files: &'a Path,
-    /// Where the files are published: `<files>/<id>-<version>/<file>`
-    /// ([`super::FILE_HOST`]; `file:///` for a local test registry).
+    /// The base URL for mirrored release assets, including its trailing `/`:
+    /// [`super::FILE_HOST`] for Sunrise, or an explicit base such as `file:///` for tests.
     pub release: &'a str,
     /// Where the registry's site is (its icons): `https://.../sunrise-mods/`.
     pub site: &'a str,
@@ -704,72 +676,6 @@ fn load_entries<T: DeserializeOwned>(
         }
     }
     entries
-}
-
-/// Only descend through real directories under the trusted checkout root. The same policy
-/// covers entry directories, caches, and images at any depth.
-fn checkout_path(root: &Path, relative: &Path, directory: bool) -> io::Result<PathBuf> {
-    let invalid_path = || {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            "expected a relative checkout path",
-        )
-    };
-    let mut path = root.to_owned();
-    let mut components = relative.components().peekable();
-    if components.peek().is_none() {
-        return Err(invalid_path());
-    }
-    while let Some(component) = components.next() {
-        let Component::Normal(name) = component else {
-            return Err(invalid_path());
-        };
-        // Push only a single relative name, not a prefix reinterpreted by the host filesystem.
-        if !matches!(
-            Path::new(name).components().next(),
-            Some(Component::Normal(_))
-        ) {
-            return Err(invalid_path());
-        }
-        path.push(name);
-        let meta = std::fs::symlink_metadata(&path)?;
-        let want_dir = directory || components.peek().is_some();
-        if (want_dir && !meta.is_dir()) || (!want_dir && !meta.is_file()) {
-            let expected = if want_dir { "directory" } else { "file" };
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("{} is not a regular {expected}", path.display()),
-            ));
-        }
-    }
-    Ok(path)
-}
-
-fn read_regular(root: &Path, relative: &Path, max: u64) -> io::Result<Vec<u8>> {
-    let path = checkout_path(root, relative, false)?;
-    let mut options = std::fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW);
-    }
-    let file = options.open(path)?;
-    if !file.metadata()?.is_file() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "not a regular file",
-        ));
-    }
-    let mut bytes = Vec::new();
-    file.take(max + 1).read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > max {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("exceeds {max} byte limit"),
-        ));
-    }
-    Ok(bytes)
 }
 
 fn utf8(bytes: Vec<u8>) -> io::Result<String> {

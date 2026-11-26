@@ -74,7 +74,7 @@ SimpleContainer.moveItemToEmptySlots	inline	crates/sunrise-world/src/simple_cont
 SimpleContainer.moveItemToOccupiedSlotsWithSameType	inline	crates/sunrise-world/src/simple_container.rs::SimpleContainer::add	first pass of addItem
 SimpleContainer.moveItemsBetweenStacks	inline	crates/sunrise-world/src/simple_container.rs::SimpleContainer::add	the grow and shrink with the per-stack limit
 SimpleContainer.fromItemList	inline	crates/sunrise-client/src/entity_nbt/mob_load.rs::mob_from_nbt	villager and piglin Inventory read; the piglin list is cut to 8 instead of re-added
-SimpleContainer.storeAsItemList	inline	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt	villager and piglin Inventory written
+SimpleContainer.storeAsItemList	inline	crates/sunrise-client/src/entity_nbt/mob_write.rs::mob_to_nbt	villager and piglin Inventory written
 Stopwatches.unpack	port	crates/sunrise-client/src/stopwatches.rs::Stopwatches::load
 Stopwatches.pack	port	crates/sunrise-client/src/stopwatches.rs::Stopwatches::save
 Stopwatches.add	port	crates/sunrise-client/src/stopwatches.rs::Stopwatches::create
@@ -123,7 +123,7 @@ WeatherAttributes.addBuiltinLayers	port	crates/sunrise-world/src/environment_sys
 WeatherAttributes.addLayer	port	crates/sunrise-world/src/environment_system.rs::Builder::weather_layer	rain level minus thunder level, then thunder level, each lerped by the attribute's state-change function in `weather`
 BooleanModifier.apply	port	crates/sunrise-client/src/patrol.rs::BoolTrack::apply	and, or, xor, nand, nor, xnor over the timeline track value
 ColorModifier.BlendToGray.lerp	skip:other		only lerps blend_to_gray arguments between keyframes; no timeline uses that modifier
-ListModifier.Append.apply	inline	crates/sunrise-client/src/animate_tick.rs::AnimateTables::load	a biome's ambient_particles list is its argument over an empty dimension list
+ListModifier.Append.apply	inline	crates/sunrise-world/src/environment_attributes.rs::Entry::apply	the append arm: the subject list then the argument, either one alone when the other is empty
 MobSpawnSettingsModifier.Overlay.apply	inline	crates/sunrise-client-render/src/biome.rs::Biomes::load	no dimension sets natural_mob_spawns, so the overlay over the empty default is the biome's own spawns
 ClockTimeMarker.getRepetitionCount	skip:other		no vanilla caller
 ClockTimeMarker.resolveTimeToMoveTo	port	crates/sunrise-client/src/game/interface/chat.rs::TimeMarker::resolve

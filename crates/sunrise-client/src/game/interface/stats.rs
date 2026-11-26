@@ -5,8 +5,7 @@
 use super::native_hooks::PhantomSpawnResult;
 use super::{Dim, Game};
 use std::path::PathBuf;
-use sunrise_core::geometry::Vec3;
-use sunrise_core::random::RandomSource;
+use sunrise_core::{geometry::Vec3, identifier::Identifier, random::RandomSource};
 
 pub(super) use sunrise_gameplay::stats::{Stats, locate_player_json, player_json};
 use sunrise_gameplay::stats::{namespaced, stat_registry};
@@ -57,26 +56,16 @@ impl Game<'_> {
         }
         let valid = amount >= 0
             && stat_registry(&new_ty).is_some_and(|registry| {
-                let known = |registry: &str, id: &str| {
-                    if let Some(host) = self.lan.as_ref() {
-                        use sunrise_core::identifier::Identifier;
-                        // Parsing aliases here would let counters, criteria and packets
-                        // disagree about the spelling of the same statistic.
-                        let (Some(registry), Some(id)) = (
-                            Identifier::parse_namespaced(registry),
-                            Identifier::parse_namespaced(id),
-                        ) else {
-                            return false;
-                        };
-                        return host.hub.synced_id(&registry, &id).is_some();
-                    }
-                    self.ui
-                        .registries
-                        .ids(registry)
-                        .iter()
-                        .any(|entry| entry == id)
+                // Unlike a save document, rewrites must already use the canonical spelling
+                // shared by counters, criteria and packets.
+                let (Some(ty), Some(key)) = (
+                    Identifier::parse_namespaced(&new_ty),
+                    Identifier::parse_namespaced(&new_key),
+                ) else {
+                    return false;
                 };
-                known("minecraft:stat_type", &new_ty) && known(registry, &new_key)
+                self.stat_registry_contains("minecraft:stat_type", &ty)
+                    && self.stat_registry_contains(registry, &key)
             });
         if valid {
             Some((new_ty, new_key, amount))
@@ -91,6 +80,18 @@ impl Game<'_> {
             Some((ty.to_owned(), key.to_owned(), n))
         }
     }
+    pub(super) fn stat_registry_contains(&self, registry: &str, id: &Identifier) -> bool {
+        if let Some(host) = self.lan.as_ref() {
+            return Identifier::parse_namespaced(registry)
+                .is_some_and(|registry| host.hub.synced_id(&registry, id).is_some());
+        }
+        self.ui
+            .registries
+            .ids(registry)
+            .iter()
+            .any(|entry| entry.split_once(':') == Some((id.namespace(), id.path())))
+    }
+
     fn stats_path(&self) -> Option<PathBuf> {
         Some(locate_player_json(
             &self.world_root,
@@ -163,6 +164,45 @@ impl Game<'_> {
     /// `Player.awardStat(Identifier)`: `n` more of the custom statistic `key`.
     pub(super) fn award_custom_stat(&mut self, key: &str, n: i32) {
         namespaced(key, |key| self.award_stat("custom", key, n));
+    }
+    /// `ServerPlayer.awardStat` for a causing entity, regardless of who owns the acting turn.
+    pub(in crate::game) fn award_custom_stat_for(&mut self, player: u32, key: &str, n: i32) {
+        use super::lan_actions::CombatPlayer;
+        match self.combat_player(player) {
+            Some(CombatPlayer::InPlace) => self.award_custom_stat(key, n),
+            Some(CombatPlayer::Displaced(depth, _)) => self.award_displaced_stat(depth, key, n),
+            Some(CombatPlayer::Parked(guest)) => {
+                self.as_guest(guest.conn, |g| g.award_custom_stat(key, n));
+            }
+            None => {}
+        }
+    }
+
+    pub(super) fn award_displaced_stat(&mut self, depth: usize, key: &str, n: i32) {
+        let frame = &self.lan_displaced_players[depth];
+        if frame.fake {
+            return;
+        }
+        namespaced(key, |key| {
+            self.award_stat_to(
+                "custom",
+                key,
+                n,
+                |game| {
+                    let frame = &game.lan_displaced_players[depth];
+                    frame.uuid.map(|uuid| {
+                        (
+                            uuid,
+                            frame
+                                .name
+                                .clone()
+                                .unwrap_or_else(|| super::chat::PLAYER_NAME.to_owned()),
+                        )
+                    })
+                },
+                |game| &mut game.lan_displaced_players[depth].stats,
+            );
+        });
     }
     /// The per-tick counters (`Player.tick`/`ServerPlayer.tick` awardStat).
     pub(super) fn tick_player_stat_counters(&mut self) {
@@ -294,19 +334,17 @@ impl Game<'_> {
             None => {}
         }
     }
-    /// `PhantomSpawner.tick`: tired players under an open night sky draw
-    /// phantoms. A custom spawner ticks only while `spawn_mobs` is on
-    /// (`ServerChunkCache.tickChunks`), and this one only spawns enemies
-    /// (`ServerLevel.isSpawningMonsters`: `spawn_monsters` too). Every
-    /// player of the level counts: the game's own and the hosted ones (a
-    /// server thread's players are all hosted).
-    pub(super) fn spawn_phantoms(&mut self) {
-        let rules = &self.ui.rules;
-        if !rules.bool_at(sunrise_client::gamerules::vanilla::SPAWN_MOBS)
-            || !rules.bool_at(sunrise_client::gamerules::vanilla::SPAWN_MONSTERS)
-            || !rules.bool_at(sunrise_client::gamerules::vanilla::SPAWN_PHANTOMS)
+    /// `PhantomSpawner.tick` (`ServerLevel.tickCustomSpawners`): tired players
+    /// under an open night sky draw phantoms. `spawn_enemies` is the chunk
+    /// source's stored setting, independent of Peaceful difficulty. The game's
+    /// own and hosted players count (a server thread's players are all hosted).
+    pub(super) fn tick_phantom_spawner(&mut self, spawn_enemies: bool) {
+        if !spawn_enemies
+            || !self
+                .ui
+                .rules
+                .bool_at(sunrise_client::gamerules::vanilla::SPAWN_PHANTOMS)
             || self.dim != Dim::Overworld
-            || !self.has_custom_spawner(mod_api::SpawnerKind::Phantom)
         {
             return;
         }
@@ -350,6 +388,18 @@ impl Game<'_> {
         }
         for target in players {
             self.spawn_phantoms_near(target);
+        }
+    }
+    /// Direct test entry for `PhantomSpawner.tick` with the chunk pass's eligibility check.
+    #[cfg(test)]
+    pub(super) fn spawn_phantoms(&mut self) {
+        if !self.world_debug
+            && self
+                .ui
+                .rules
+                .bool_at(sunrise_client::gamerules::vanilla::SPAWN_MOBS)
+        {
+            self.tick_phantom_spawner(self.chunk_spawn_enemies);
         }
     }
     /// One player's turn of `PhantomSpawner.tick`.

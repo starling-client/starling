@@ -1,33 +1,33 @@
 # Your first native mod
 
-A native mod is a Rust crate that implements hooks from the mod API. `cargo sunrise-mod` compiles it on your
-machine against the exact Sunrise build it is pinned to and starts the game with it: the tool is all you install. In
-this page you make a mod that greets every player who joins, compile it, run it, and test it.
+Make a mod that says hello in chat when a player joins. Unlike a [content mod](first-content-mod.md), which adds
+things from data files, this mod reacts to something that happens in the game. You'll use a **hook**: a Rust
+method Sunrise calls at a particular moment. There is still [one project folder and one `.smod` file to
+share](../concepts/how-mods-work.md).
 
-You need [rustup](https://rustup.rs) (the tool installs the Rust the SDK was built with, and says so when it does),
-and, to run the game, resources prepared from your own Minecraft: Java Edition 26.3 (step 6).
+You'll start with a working greeting, then check, build and run it with `cargo sunrise-mod`. Have
+[rustup](https://rustup.rs) ready so the mod tool can install the Rust version the SDK needs. You can check and
+build before you have the [prepared resources](#prepared-resources) needed to play.
 
 ## 1. Install the mod tool
 
-Follow [Install the mod tool](install-tool.md) for your computer. When `cargo sunrise-mod` prints its usage, come
-back here. This page needs a tool that answers `cargo sunrise-mod --version` with a commit; one that prints the usage
-instead is older, and the [newest tool from main](install-tool.md#newest-tool-from-main) replaces it.
+Follow [Install the mod tool](install-tool.md) for your computer and check `cargo sunrise-mod --version` as described
+there (it reports a commit SHA, or `commit local` for an unstamped local build). When it works, come back here.
 
 ## 2. Make the project
+
+In your terminal, start in the folder where you keep your projects. Choose the native template to get a mod
+with a Rust source file:
 
 ```sh
 cargo sunrise-mod new greeter --template native
 cd greeter
 ```
 
-```text
-Created greeter (native mod id greeter). Your editor resolves sunrise-mod-api once the SDK is in .sunrise/sdk/: `cargo sunrise-mod check` fetches it in a fresh clone. Next: cd greeter && cargo sunrise-mod build
-SDK 2d81263 (build 2d8126336e579777eabf9b2fd8b3d476236a04f2) in greeter/.sunrise/sdk
-```
-
-The tool pins the project to the build of the current Nightly (or to [`--sunrise <build>`](../reference/sdk/03-in-a-project.md#build-names)) and fetches that build's
-[SDK](../reference/sdk.md), checking its signature. It writes both pins in `sunrise-mod.toml`, the Sunrise build and
-the `horizon-mixins` tool that build names, so you never write a commit by hand:
+The tool records the current Nightly's exact Sunrise build in `sunrise-mod.toml` and fetches that build's
+signed [SDK](../reference/sdk.md), which gives your code the API it can call. To start from a different build,
+pass [`--sunrise <build>`](../reference/sdk/03-in-a-project.md#build-names) when you make the project. Open
+`greeter` in your editor:
 
 ```text
 greeter/
@@ -40,7 +40,7 @@ greeter/
 ```
 
 After a fresh clone, run `cargo sunrise-mod check` once before opening the project in an editor: it fetches
-`.sunrise/sdk/` again. `cargo sunrise-mod update` moves both pins to the newer Nightly later.
+`.sunrise/sdk/` again. To move the project to a newer Nightly later, use `cargo sunrise-mod pin`.
 
 ## 3. Read the hook
 
@@ -66,16 +66,10 @@ After a fresh clone, run `cargo sunrise-mod check` once before opening the proje
 cargo sunrise-mod check
 ```
 
-`check` applies the package rules, runs `cargo check` against the pinned SDK's API source, and lists what the mod
-uses of that build. The code check targets this computer. The expected end of the output:
-
-```text
-    Checking mod-greeter v0.1.0 (…/greeter)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in …
-greeter uses 34 items of the API (1 capability, 5 fields or variants, 1 hook, 2 hook arguments, 1 macro, 5 methods, 4 traits, 15 types). Made for 2d81263.
-```
-
-Run it after every edit. It is the quick loop; it does not link against the game.
+`check` validates the package. For this starter mod, it uses `rustc` to check your code against the pinned SDK's
+compiled API metadata for this computer. It also fetches the API source for your editor. Look for the summary
+naming your mod, what it uses from the API, and the build it was made for. Run `check` after an edit to catch
+mistakes without linking against the game.
 
 ## 5. Build against the prebuilt game
 
@@ -83,32 +77,31 @@ Run it after every edit. It is the quick loop; it does not link against the game
 cargo sunrise-mod build
 ```
 
-`build` packs the `.smod` and then compiles the crate against the prebuilt game of the pinned build, and ends with
-the library it made and the build log's path:
+`build` compiles the crate against the prebuilt game of the pinned build and then packs the source `.smod`. It ends
+with the library it made, the build log's path and the packed `.smod` path:
 
 ```text
-Downloading runtime-x86_64-unknown-linux-gnu.tar.xz (71 MB), once for every project
-…
 Compiling greeter (1/1)
-Built …/sunrise-mod/work/greeter/prebuilt-build/…/libmod_greeter.so
-Build log: …/sunrise-mod/work/greeter/build.log
+Built …/sunrise-mod/work/greeter-…/prebuilt-build/…/libmod_greeter.so
+Build log: …/sunrise-mod/work/greeter-…/build.log
+Built ./target/sunrise-mod/greeter.smod
 ```
 
-The first build downloads the pinned build's compiled slices, checks Sunrise's signature on their checksums and
-unpacks them into the tool's cache, shared by every project: `~/.cache/sunrise-mod` on Linux (`$XDG_CACHE_HOME`),
-`~/Library/Caches/sunrise-mod` on macOS, `%LOCALAPPDATA%\sunrise-mod` on Windows, or the folder
-`SUNRISE_MOD_CACHE` names. Delete that folder to clear it; the next build fetches again. It also finds the Rust the SDK
-names: through `rustup` (installing it with `--profile minimal` when missing), or the `rustc` on `PATH` when that is
-exactly the version; it never builds with another compiler.
+On a cache miss for that pinned build and target, `build` downloads the compiled slices, checks Sunrise's signature on
+their checksums and unpacks them into the tool's per-user cache, shared by every project: `~/.cache/sunrise-mod` on
+Linux (`$XDG_CACHE_HOME`), `~/Library/Caches/sunrise-mod` on macOS, `%LOCALAPPDATA%\sunrise-mod` on Windows, or the
+folder `SUNRISE_MOD_CACHE` names. Later projects pinned to the same build reuse that cache without downloading again.
+Delete that folder to clear it; the next build fetches again. It also finds the Rust the SDK names: through `rustup`
+(installing it with `--profile minimal` when missing), or the `rustc` on `PATH` when that is exactly the version; it
+never builds with another compiler.
 
 A mod with crates.io dependencies is compiled with them, as `cargo build` would, and `build` pins them in
 `Cargo.lock` the first time. After you change `Cargo.toml`, `cargo sunrise-mod build --update-lock` resolves again.
 When a build stops on a package the lock doesn't pin, its error ends with that command. The
-[build log](../how-to/native-mods/05-build-log.md) shows the compiler's output when a build fails.
+[build log](../how-to/native-mods/04-what-the-launcher-does.md#build-log) shows the compiler's output when a build fails.
 
-For publishing later, the native template also writes `.github/workflows/release.yml`, `.github/workflows/rebuild.yml`
-and their shared workflow and bootstrap action. They stay off until you opt in; you can keep developing against Nightly. See
-[Tagged native releases in GitHub Actions](../how-to/publish.md#tagged-native-releases-in-github-actions) for setup.
+The template also writes `.github/workflows/sunrise-release.yml`. To publish your mod, see
+[Releasing](../how-to/publish.md#releasing).
 
 ## 6. Run it
 
@@ -126,16 +119,22 @@ the greeting appears in chat, and the mod is listed on the game's **Mods** scree
 
 ### Prepared resources
 
-The game needs resources prepared from your own Minecraft: Java Edition 26.3. The tool never downloads or bundles
-Mojang's files. Make them once and name the folder with `--resources`:
+The game needs resources prepared from your own Minecraft: Java Edition 26.3, using Java 25 or newer
+(on `PATH`, via `JAVA_HOME`, or with `--java-home <path>`). The tool never downloads or bundles
+Mojang's files. `sunrise-prepare` is in the game download for your computer in the
+[Nightly release](https://github.com/sunrise-org/sunrise/releases/tag/nightly). Make the resources once and pass the
+folder to `--resources`:
 
-1. Play 26.3 once from the Minecraft Launcher, so its files are on your computer.
-2. Download the 26.3 server jar yourself: from `minecraft.net/download/server` while 26.3 is the current release,
-   otherwise from the address `downloads.server.url` in the Minecraft Launcher's `versions/26.3/26.3.json`.
-3. Run `sunrise-prepare --prepare --server-jar <server.jar> --output <folder>`. `sunrise-prepare` is in the game
-   download for your computer in the [Nightly release](https://github.com/sunrise-org/sunrise/releases/tag/nightly); `sunrise-prepare --help`
-   lists where it reads your copy. A Prism Launcher or MultiMC install is read with `--prism-dir` and needs no
-   server jar.
+- **Official Minecraft Launcher:**
+  1. Play Minecraft: Java Edition 26.3 once so the client files are on your computer.
+  2. Download the 26.3 server jar from `minecraft.net/download/server` while 26.3 is the current release,
+     otherwise use the address in `downloads.server.url` in your installation's `versions/26.3/26.3.json`.
+  3. Run `sunrise-prepare --prepare --server-jar <server.jar> --output <folder>`. If your client files are in a
+     non-default location, `sunrise-prepare --help` explains how to point the tool at them.
+- **Prism Launcher or MultiMC:**
+  - Run `sunrise-prepare --prepare --prism-dir <path> --output <folder>`. `--prism-dir` locates the installed
+    client jar (so it needs no separate server jar download); it does not select Prism's Java runtime, so Java 25
+    or newer is still needed via `PATH`, `JAVA_HOME`, or `--java-home <path>`.
 
 ## 7. Test it
 

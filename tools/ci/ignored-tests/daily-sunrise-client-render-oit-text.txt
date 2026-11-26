@@ -1,0 +1,6 @@
+# PACKAGE TEST TARGET daily REASON; exact logical libtest identities, sorted.
+# A resource pack's core/text under Improved Transparency (#553): GPU tests of its three stages.
+sunrise-client-render gfx::core_text::oit::tests::a_stage_past_the_device_limits_leaves_every_stage_native lib daily gpu
+sunrise-client-render gfx::core_text::oit::tests::a_stage_the_device_refuses_fails_the_load_named_by_its_pipeline lib daily gpu
+sunrise-client-render gfx::core_text::oit::tests::each_improved_transparency_stage_reads_its_own_inputs lib daily gpu
+sunrise-client-render gfx::core_text::oit::tests::the_groups_follow_new_improved_transparency_targets lib daily gpu

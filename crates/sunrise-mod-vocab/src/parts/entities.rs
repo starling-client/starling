@@ -18,49 +18,6 @@ where
 /// An entity capability provider, as the registrar keeps it.
 pub type EntityProvider<T, C = ()> = dyn EntityCapabilityProvider<T, C>;
 
-/// Whether any mod attached an entity part, so `Mob` construction asks for
-/// goals, the mob tick builds a goal read view, and the general entity tick
-/// asks its dispatch.
-pub fn has_entity_parts() -> bool {
-    !crate::mods().is_empty()
-        && installed().is_some_and(|installed| !installed.keys.entities.is_empty())
-}
-
-/// The entity parts attached to entity type `id` (`minecraft:zombie`,
-/// `mymod:robot`), in dispatch order, for the goal registration at every
-/// `Mob` construction.
-pub fn entity_parts() -> PartsRef {
-    let Some(installed) = installed() else {
-        return PartsRef::Shared(&NO_PARTS);
-    };
-    let (game_parts, game_thread) =
-        GAME_PARTS.with_borrow(|lookup| (lookup.parts.clone(), lookup.game_thread));
-    if let Some(parts) = game_parts {
-        return PartsRef::Game(parts);
-    }
-    if !game_thread {
-        let thread = std::thread::current();
-        let thread = thread.name().unwrap_or("unnamed");
-        if crate::dispatch_scope::backend()
-            .is_none_or(|backend| (backend.diagnostics.first_off_thread_warning)())
-        {
-            log::warn!(
-                "Native entity parts asked off a game thread ({thread}): a mob built there keeps no mod goals"
-            );
-        }
-    }
-    PartsRef::Shared(&installed.keys)
-}
-
-impl Parts {
-    /// The entity parts attached to entity type `id` (`minecraft:zombie`), in
-    /// dispatch order, for the goal registration at every `Mob` construction
-    ///.
-    pub fn entity_parts(&self, id: &str) -> &[Attached<dyn EntityPart>] {
-        self.entities.get(id).map_or(&[], Vec::as_slice)
-    }
-}
-
 impl HookParts {
     pub(crate) fn entity<'k>(
         &self,
@@ -70,14 +27,19 @@ impl HookParts {
     }
 }
 
-/// Whether any mod registered a provider of entity capability `key`, for any entity type: one
-/// table lookup, no allocation, so the game's own lookups skip all their work where none did.
+/// Whether any mod registered a provider for this typed capability, for any entity type.
+/// The game's own lookups skip work when no mod registered one.
 pub fn has_entity_providers<T: ?Sized + 'static, C: 'static>(
     key: &EntityCapabilityKey<T, C>,
 ) -> bool {
-    installed()
-        .and_then(|installed| installed.keys.entity_capabilities.get(key.name))
-        .is_some_and(|by_kind| !by_kind.is_empty())
+    installed().is_some_and(|installed| {
+        let keys = &installed.keys;
+        keys.entity_capabilities.contains_key(key.name)
+            && keys
+                .entity_capability_metadata
+                .get(key.name)
+                .is_some_and(|known| known.binding.0 == key.binding().0)
+    })
 }
 
 /// The providers mods registered for `key` and the type of `entity`, for the game's own
@@ -91,8 +53,13 @@ pub fn entity_providers<T: ?Sized + 'static, C: Copy + 'static>(
     context: C,
 ) -> Option<EntityProviders<T, C>> {
     let by_kind = installed()?.keys.entity_capabilities.get(key.name)?;
-    let name = entity.kind(host)?.id(host)?;
-    let parts = by_kind.get(name.as_str())?;
+    let kind = entity
+        .kind(host)
+        .and_then(crate::content::registry_keys::entity_type_name)?;
+    let parts = by_kind
+        .get(kind)
+        .map(Vec::as_slice)
+        .filter(|parts| !parts.is_empty())?;
     Some(EntityProviders {
         parts,
         entity,
@@ -105,30 +72,36 @@ pub fn entity_providers<T: ?Sized + 'static, C: Copy + 'static>(
 /// An entity's providers of one capability ([`entity_providers`]).
 // exhaustive: its fields are private, so mods cannot build or destructure it
 pub struct EntityProviders<T: ?Sized + 'static, C: 'static> {
-    pub(crate) parts: &'static [CapabilityPart<EntityProviderOf>],
+    pub(crate) parts: &'static [CapabilityPart<NativeCapabilityProvider>],
     pub(crate) entity: EntityRef,
     pub(crate) context: C,
     pub(crate) handler: PhantomData<fn() -> Box<T>>,
 }
 
 impl<T: ?Sized + 'static, C: Copy + 'static> EntityProviders<T, C> {
+    pub(crate) fn answer<'host>(
+        self,
+        host: &mut (dyn ServerHost + 'host),
+        game: impl FnOnce(&mut (dyn ServerHost + 'host)) -> bool,
+    ) -> Answer<Box<T>> {
+        let (entity, context) = (self.entity, self.context);
+        ask_providers(
+            host,
+            self.parts.iter(),
+            ("capability provider", "capability_provider"),
+            |provider, host| {
+                provider
+                    .get::<Arc<EntityProvider<T, C>>>()?
+                    .provide(host, entity, context)
+            },
+            game,
+        )
+    }
+
     /// A mod's handler where the game would answer with its own unless a mod comes first: one
     /// registered `before_game`, else, where the game has no answer (`game`), the first mod's.
     pub fn ask(self, host: &mut dyn ServerHost, game: bool) -> Option<Capability<T>> {
-        let (entity, context) = (self.entity, self.context);
-        let mut index = 0;
-        match ask_providers(
-            host,
-            || next_provider(self.parts, &mut index),
-            |provider, host| provider.get::<T, C>()?.provide(host, entity, context),
-            |_| game,
-        ) {
-            Answer::Mod(handler, owner) => Some(Capability {
-                handler,
-                owner: Some(owner),
-            }),
-            Answer::Game | Answer::Nobody => None,
-        }
+        answered(self.answer(host, |_| game), None)
     }
 }
 
@@ -142,13 +115,12 @@ impl dyn Registrar + '_ {
         self.attach_entity_part(entity, type_name::<P>(), Arc::new(part));
     }
     /// [`Self::entity_part`] for a Part with typed state (`EntityPartState`): each entity
-    /// of type `entity` keeps one `P::Data`, under `P::DATA`. Refused, and reported as the
-    /// mod's registration refusal, when `P::DATA` syncs, copies on death, holds a resource
-    /// handle, is outside the mod's namespaces, or names a key this mod already declared with
-    /// another type. The entity type is checked once every type is known, when the game
-    /// loads: only mob types (vanilla and mod) and mod general entity types keep Part state,
-    /// and `minecraft:player`, any other vanilla family and an unknown id refuse the load,
-    /// naming the type. `entity_part` itself checks no type.
+    /// of type `entity` keeps one `P::Data`, under `part.state_key()`. Refused, and reported
+    /// as the mod's registration refusal, when the key syncs, copies on death, or was not
+    /// issued in this registration pass. The entity type is checked once every type is known,
+    /// when the game loads: only mob types (vanilla and mod) and mod general entity types keep
+    /// Part state, and `minecraft:player`, any other vanilla family and an unknown id refuse
+    /// the load, naming the type. `entity_part` itself checks no type.
     pub fn entity_part_with_state<P: crate::EntityPartState>(
         &mut self,
         entity: &str,
@@ -157,7 +129,7 @@ impl dyn Registrar + '_ {
         self.declare_entity_part_state(
             entity,
             type_name::<P>(),
-            crate::PartStateDeclaration::of(P::DATA),
+            crate::PartStateDeclaration::of(part.state_key()),
         )?;
         self.entity_part(entity, part);
         Ok(())
@@ -165,18 +137,22 @@ impl dyn Registrar + '_ {
     /// Answer entity capability `key` for entity type `kind` (`mymod:robot`,
     /// `minecraft:player`) with `provider`, which gives a handler for one entity, or none:
     /// `r.entity_capability(&ENTITY_ITEMS, "mymod:robot", |_, robot, ()| Some(Box::new(Cargo(robot))))`.
-    /// Asked as `block_entity_capability`'s are.
+    /// Asked as `block_entity_capability`'s are. The capability name and entity type id must be
+    /// fully qualified resource identifiers. The entity type can be declared later in
+    /// registration; an unknown type refuses load. A key with a different handler type `T` or
+    /// context type `C` from the canonical binding refuses registration.
     pub fn entity_capability<T: ?Sized + 'static, C: 'static>(
         &mut self,
         key: &EntityCapabilityKey<T, C>,
         kind: &str,
         provider: impl Fn(&mut dyn ServerHost, EntityRef, C) -> Option<Box<T>> + Send + Sync + 'static,
     ) {
+        let provider: Arc<EntityProvider<T, C>> = Arc::new(provider);
         self.provide_entity_capability(
             key.name,
             kind,
             false,
-            EntityProviderOf::of(Arc::new(provider)),
+            NativeCapabilityProvider::of::<T, _>(provider),
         );
     }
     /// `entity_capability`, asked ahead of the game's own provider,
@@ -187,11 +163,12 @@ impl dyn Registrar + '_ {
         kind: &str,
         provider: impl Fn(&mut dyn ServerHost, EntityRef, C) -> Option<Box<T>> + Send + Sync + 'static,
     ) {
+        let provider: Arc<EntityProvider<T, C>> = Arc::new(provider);
         self.provide_entity_capability(
             key.name,
             kind,
             true,
-            EntityProviderOf::of(Arc::new(provider)),
+            NativeCapabilityProvider::of::<T, _>(provider),
         );
     }
 }
@@ -205,9 +182,8 @@ pub trait EntitiesRegistrar {
     fn attach_entity_part(&mut self, entity: &str, kind: &'static str, part: Arc<dyn EntityPart>);
 
     /// Record the state declaration of entity Part `part` on entity type `entity`, or refuse
-    /// it (as the mod's registration refusal too): see `PartStateDeclaration::check`, a key
-    /// outside this mod's namespaces, or one it declared with another Rust type name. Mods reach
-    /// it through `entity_part_with_state`.
+    /// it (as the mod's registration refusal too): see `PartStateDeclaration::check` and
+    /// `PartStateRefusal::StaleKey`. Mods reach it through `entity_part_with_state`.
     fn declare_entity_part_state(
         &mut self,
         entity: &str,
@@ -222,95 +198,6 @@ pub trait EntitiesRegistrar {
         name: &'static str,
         kind: &str,
         before_game: bool,
-        provider: EntityProviderOf,
+        provider: NativeCapabilityProvider,
     );
-
-    /// Tell `entity_tick_pre` and `entity_tick_post` for each entity of type `entity`
-    /// (`minecraft:zombie`, `mymod:golem`) alone, right before and right after its own tick
-    /// (NeoForge's `EntityTickEvent` timing), instead of once with its family. Every mod that
-    /// hooks them hears those entities alone. Name only the types that need their own moment:
-    /// each entity of a named type costs a call of its own every tick. A type that is not a
-    /// namespaced lowercase id refuses the mod's registration.
-    fn entity_tick_each(&mut self, entity: &str);
-
-    /// [`Self::entity_tick_each`] for every entity type the tick hooks observe,
-    /// as a port of a NeoForge mod that listens to `EntityTickEvent` needs.
-    fn entity_tick_each_entity(&mut self);
-}
-
-/// The entity types whose ticks are told one entity at a time, from every mod's
-/// [`EntitiesRegistrar::entity_tick_each`], resolved when the mods are installed.
-// hidden: the game reads it once at load to mark its entity types.
-// no wire: resolved on the host from the registrar's `entity_tick_each` calls, which cross on
-// their own; the set itself is never sent to a mod.
-// exhaustive: its fields are private, so mods cannot build or destructure it
-#[doc(hidden)]
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct EntityTickEach {
-    all: bool,
-    /// Sorted, without repeats.
-    kinds: Vec<String>,
-}
-
-impl EntityTickEach {
-    /// The set the declarations name, in any order: `None` names every type.
-    pub fn of(declarations: &[Option<String>]) -> Self {
-        let all = declarations.iter().any(Option::is_none);
-        let mut kinds: Vec<String> = if all {
-            Vec::new()
-        } else {
-            declarations.iter().flatten().cloned().collect()
-        };
-        kinds.sort_unstable();
-        kinds.dedup();
-        Self { all, kinds }
-    }
-    /// Whether a mod named any type.
-    pub fn any(&self) -> bool {
-        self.all || !self.kinds.is_empty()
-    }
-    /// Whether a mod named every type.
-    pub fn all(&self) -> bool {
-        self.all
-    }
-    /// Whether entities of type `kind` are told one at a time.
-    pub fn names(&self, kind: &str) -> bool {
-        self.all
-            || self
-                .kinds
-                .binary_search_by(|k| k.as_str().cmp(kind))
-                .is_ok()
-    }
-}
-
-/// The installed mods' [`EntityTickEach`], or `None` before the mods are installed, when no type
-/// is named.
-// hidden: the game reads it once at load.
-#[doc(hidden)]
-pub fn entity_tick_each() -> Option<&'static EntityTickEach> {
-    installed().map(|parts| &parts.entity_tick_each)
-}
-
-/// CapabilityProviders operations for entities.
-// hidden: per-kind lookup implementation, exposed for generated provider bindings
-#[doc(hidden)]
-pub trait EntitiesCapabilityProviders {
-    /// The next enabled provider of entity capability `name` for entity type `kind`, advancing `index`.
-    fn entity_provider(
-        &self,
-        name: &str,
-        kind: &str,
-        index: &mut u32,
-    ) -> Option<(EntityProviderOf, &'static str, bool)>;
-}
-
-impl EntitiesCapabilityProviders for InstalledProviders {
-    fn entity_provider(
-        &self,
-        name: &str,
-        kind: &str,
-        index: &mut u32,
-    ) -> Option<(EntityProviderOf, &'static str, bool)> {
-        next(&installed()?.keys.entity_capabilities, name, kind, index)
-    }
 }

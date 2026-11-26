@@ -9,56 +9,90 @@ pub mod tests {
 
     #[test]
     pub(crate) fn entity_attribute_declarations_validate_and_refuse_duplicates() {
-        let mut registrar = super::PartRegistrar::new("ruby");
-        registrar
-            .declare_entity_attributes(
-                "ghoul",
-                "minecraft:zombie",
-                vec![("minecraft:max_health".to_string(), 55.0)],
-            )
-            .unwrap();
-        // The same type twice is a duplicate, whatever declares it.
-        assert_eq!(
-            registrar.declare_entity_attributes("ghoul", "minecraft:zombie", vec![]),
-            Err(EntityAttributeError::Duplicate)
-        );
-        // The path stays in the declaring mod's namespace.
-        assert_eq!(
-            registrar.declare_entity_attributes("foreign:ghoul", "minecraft:zombie", vec![]),
-            Err(EntityAttributeError::InvalidId)
-        );
-        // A set validates itself: a duplicate attribute, a non-finite base.
-        assert_eq!(
-            registrar.declare_entity_attributes(
-                "wraith",
-                "minecraft:zombie",
-                vec![
-                    ("minecraft:max_health".to_string(), 1.0),
-                    ("minecraft:max_health".to_string(), 2.0),
-                ]
+        let data = mod_vocab::__private::RegistrationData::new(
+            [(
+                "minecraft:entity_type".into(),
+                vec!["minecraft:zombie".into()],
+            )]
+            .into(),
+            Default::default(),
+            crate::InstanceDirectory::from_path(std::path::Path::new("unused")).unwrap(),
+            crate::RuntimeEnvironment::new(
+                crate::Dist::Client,
+                "26.3".into(),
+                "test".into(),
+                false,
             ),
-            Err(EntityAttributeError::DuplicateAttribute)
         );
-        assert_eq!(
-            registrar.declare_entity_attributes(
-                "wraith",
-                "minecraft:zombie",
-                vec![("minecraft:max_health".to_string(), f64::NAN)]
-            ),
-            Err(EntityAttributeError::NotFinite)
-        );
-        // The refusals name the mod; the good declaration stands.
-        assert_eq!(registrar.entity_attributes.len(), 1);
-        assert_eq!(
-            registrar.entity_attributes[0].attributes,
-            [("minecraft:max_health".to_string(), 55.0)]
-        );
-        assert!(
+        crate::load_state::with_test_registration_data(data, || {
+            let mut registrar = super::PartRegistrar::new("ruby");
             registrar
-                .refused
-                .iter()
-                .all(|refusal| refusal.contains("mod ruby"))
-        );
+                .declare_entity_attributes(
+                    "ghoul",
+                    "minecraft:zombie",
+                    vec![("minecraft:max_health".to_string(), 55.0)],
+                )
+                .unwrap();
+            // The same type twice is a duplicate, whatever declares it.
+            assert_eq!(
+                registrar.declare_entity_attributes("ghoul", "minecraft:zombie", vec![]),
+                Err(EntityAttributeError::Duplicate)
+            );
+            // Built-in entity types refuse as duplicates; explicit unused namespaces succeed.
+            assert_eq!(
+                registrar.declare_entity_attributes("minecraft:zombie", "minecraft:zombie", vec![]),
+                Err(EntityAttributeError::Duplicate)
+            );
+            registrar
+                .declare_entity_attributes("foreign:ghoul", "minecraft:zombie", vec![])
+                .unwrap();
+            registrar
+                .declare_entity_attributes("minecraft:custom_ghoul", "minecraft:zombie", vec![])
+                .unwrap();
+            assert_eq!(
+                registrar.declare_entity_attributes("Not An Id", "minecraft:zombie", vec![]),
+                Err(EntityAttributeError::InvalidId)
+            );
+            // A set validates itself: a duplicate attribute, a non-finite base.
+            assert_eq!(
+                registrar.declare_entity_attributes(
+                    "wraith",
+                    "minecraft:zombie",
+                    vec![
+                        ("minecraft:max_health".to_string(), 1.0),
+                        ("minecraft:max_health".to_string(), 2.0),
+                    ]
+                ),
+                Err(EntityAttributeError::DuplicateAttribute)
+            );
+            assert_eq!(
+                registrar.declare_entity_attributes(
+                    "wraith",
+                    "minecraft:zombie",
+                    vec![("minecraft:max_health".to_string(), f64::NAN)]
+                ),
+                Err(EntityAttributeError::NotFinite)
+            );
+            // The refusals name the mod; the good declarations stand.
+            assert_eq!(
+                registrar
+                    .entity_attributes
+                    .iter()
+                    .map(|d| d.id.as_str())
+                    .collect::<Vec<_>>(),
+                ["ruby:ghoul", "foreign:ghoul", "minecraft:custom_ghoul"]
+            );
+            assert_eq!(
+                registrar.entity_attributes[0].attributes,
+                [("minecraft:max_health".to_string(), 55.0)]
+            );
+            assert!(
+                registrar
+                    .refused
+                    .iter()
+                    .all(|refusal| refusal.contains("mod ruby"))
+            );
+        });
     }
 
     /// Additions to existing types (`EntityAttributeModificationEvent`)
@@ -131,7 +165,7 @@ impl EntityAttributesRegistrar for PartRegistrar {
         template: &str,
         attributes: Vec<(String, f64)>,
     ) -> Result<(), crate::EntityAttributeError> {
-        let id = match self.owned_declaration_id(path) {
+        let id = match self.declaration_id(path) {
             Ok(id) => id,
             Err(reason) => {
                 self.refused.push(reason);
@@ -144,7 +178,9 @@ impl EntityAttributesRegistrar for PartRegistrar {
             if template_ns.is_empty() || template_name.is_empty() {
                 return Err(crate::EntityAttributeError::InvalidId);
             }
-            if self.entity_attributes.iter().any(|d| d.id == id) {
+            if self.entity_attributes.iter().any(|d| d.id == id)
+                || self.has_builtin_entry("minecraft:entity_type", &id)
+            {
                 return Err(crate::EntityAttributeError::Duplicate);
             }
             check_attribute_set(&attributes, |base| Some(*base))?;

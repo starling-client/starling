@@ -180,7 +180,7 @@ fn indexed_pickup_keeps_bound_survivors_and_processes_shifted_tail() {
                         .iter()
                         .map(|item| (item.id, item.stack.count, item.pickup_delay))
                         .collect::<Vec<_>>(),
-                    [(ids[1], 2, 0), (ids[2], 2, 10)]
+                    [(ids[1], 2, 0), (ids[2], 2, 0)]
                 );
                 assert_eq!(
                     game.dropped

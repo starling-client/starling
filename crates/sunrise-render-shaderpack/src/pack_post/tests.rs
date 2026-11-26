@@ -324,6 +324,7 @@ fn a_custom_texture_over_a_buffer_ends_when_its_stage_flips_it() {
         wgpu::ShaderStages::FRAGMENT,
     );
     let stand_ins = std::cell::RefCell::new(Vec::new());
+    let mismatches = std::cell::RefCell::new(std::collections::HashSet::new());
     let pack = Resources {
         textures: &textures,
         images: &[],
@@ -338,6 +339,12 @@ fn a_custom_texture_over_a_buffer_ends_when_its_stage_flips_it() {
         stand_ins: &stand_ins,
         shadow_linear: 0,
         jobs: None,
+        mod_depth_targets: &[],
+        mod_uniforms: &[],
+        mod_uniform_mismatches: &mismatches,
+        mod_depth_target: std::cell::Cell::new(None),
+        depth_compare: std::cell::Cell::new(wgpu::CompareFunction::LessEqual),
+        mod_vertex: Default::default(),
     };
     let reads = |group: Group| {
         let (_, samplers, ..) = bindings(
@@ -419,6 +426,7 @@ fn a_png_under_a_name_of_its_own_is_not_bound() {
         wgpu::ShaderStages::FRAGMENT,
     );
     let stand_ins = std::cell::RefCell::new(Vec::new());
+    let mismatches = std::cell::RefCell::new(std::collections::HashSet::new());
     let pack = Resources {
         textures: &textures,
         images: &[],
@@ -433,6 +441,12 @@ fn a_png_under_a_name_of_its_own_is_not_bound() {
         shadow_linear: 0,
         jobs: None,
         packed: [None; BUFFERS],
+        mod_depth_targets: &[],
+        mod_uniforms: &[],
+        mod_uniform_mismatches: &mismatches,
+        mod_depth_target: std::cell::Cell::new(None),
+        depth_compare: std::cell::Cell::new(wgpu::CompareFunction::LessEqual),
+        mod_vertex: Default::default(),
     };
     let (_, samplers, ..) = bindings(
         device.features(),
@@ -501,6 +515,7 @@ fn an_image_without_an_entry_reads_zero() {
         wgpu::ShaderStages::FRAGMENT,
     );
     let stand_ins = std::cell::RefCell::new(Vec::new());
+    let mismatches = std::cell::RefCell::new(std::collections::HashSet::new());
     let pack = Resources {
         textures: &[],
         images: &[],
@@ -515,6 +530,12 @@ fn an_image_without_an_entry_reads_zero() {
         stand_ins: &stand_ins,
         shadow_linear: 0,
         jobs: None,
+        mod_depth_targets: &[],
+        mod_uniforms: &[],
+        mod_uniform_mismatches: &mismatches,
+        mod_depth_target: std::cell::Cell::new(None),
+        depth_compare: std::cell::Cell::new(wgpu::CompareFunction::LessEqual),
+        mod_vertex: Default::default(),
     };
     let mut notes = Vec::new();
     let (.., images) = bindings(
@@ -624,6 +645,7 @@ fn a_composite_program_blends_onto_its_buffer() {
         wgpu::ShaderStages::FRAGMENT,
     );
     let stand_ins = std::cell::RefCell::new(Vec::new());
+    let mismatches = std::cell::RefCell::new(std::collections::HashSet::new());
     let pack = Resources {
         textures: &[],
         images: &[],
@@ -638,6 +660,12 @@ fn a_composite_program_blends_onto_its_buffer() {
         stand_ins: &stand_ins,
         shadow_linear: 0,
         jobs: None,
+        mod_depth_targets: &[],
+        mod_uniforms: &[],
+        mod_uniform_mismatches: &mismatches,
+        mod_depth_target: std::cell::Cell::new(None),
+        depth_compare: std::cell::Cell::new(wgpu::CompareFunction::LessEqual),
+        mod_vertex: Default::default(),
     };
     let draws = crate::pack_draw::DrawUniforms::new(&device);
     let mut notes = Vec::new();
@@ -652,6 +680,7 @@ fn a_composite_program_blends_onto_its_buffer() {
         &[],
         &draws.layout,
         &pack,
+        false,
         false,
     )
     .unwrap_or_else(|| panic!("the pass builds: {notes:?}"));
@@ -738,4 +767,225 @@ fn a_composite_program_blends_onto_its_buffer() {
             "{texel:?} vs {expected:?}"
         );
     }
+}
+
+/// The GLSL image format qualifiers (GLSL 4.60, 4.4.6.2).
+const QUALIFIERS: [&str; 39] = [
+    "rgba32f",
+    "rgba16f",
+    "rg32f",
+    "rg16f",
+    "r11f_g11f_b10f",
+    "r32f",
+    "r16f",
+    "rgba16",
+    "rgb10_a2",
+    "rgba8",
+    "rg16",
+    "rg8",
+    "r16",
+    "r8",
+    "rgba16_snorm",
+    "rgba8_snorm",
+    "rg16_snorm",
+    "rg8_snorm",
+    "r16_snorm",
+    "r8_snorm",
+    "rgba32i",
+    "rgba16i",
+    "rgba8i",
+    "rg32i",
+    "rg16i",
+    "rg8i",
+    "r32i",
+    "r16i",
+    "r8i",
+    "rgba32ui",
+    "rgba16ui",
+    "rgb10_a2ui",
+    "rgba8ui",
+    "rg32ui",
+    "rg16ui",
+    "rg8ui",
+    "r32ui",
+    "r16ui",
+    "r8ui",
+];
+
+/// A 16-bit normalized qualifier binds the 16-bit float texture of its channels in that
+/// texture's format (#548, decision D-3), as `r11f_g11f_b10f` binds the `RGBA16F` stand-in;
+/// every other differing pair of a qualifier and a texture format a qualifier names is refused.
+#[test]
+fn only_16_bit_normalized_qualifiers_bind_their_float_texture() {
+    let formats: Vec<T> = QUALIFIERS
+        .iter()
+        .map(|q| image_format(q).expect(q))
+        .collect();
+    let mut taken = Vec::new();
+    for (q, &declared) in QUALIFIERS.iter().zip(&formats) {
+        for &texture in &formats {
+            if declared != texture && rebinds(declared, texture) {
+                taken.push((*q, texture));
+            }
+        }
+    }
+    assert_eq!(
+        taken,
+        [
+            ("r11f_g11f_b10f", T::Rgba16Float),
+            ("rgba16", T::Rgba16Float),
+            ("rg16", T::Rg16Float),
+            ("r16", T::R16Float),
+            ("rgba16_snorm", T::Rgba16Float),
+            ("rg16_snorm", T::Rg16Float),
+            ("r16_snorm", T::R16Float),
+        ]
+    );
+    // Never the reverse, nor between unorm and snorm.
+    assert!(!rebinds(T::Rgba16Float, T::Rgba16Unorm));
+    assert!(!rebinds(T::Rgba16Unorm, T::Rgba16Snorm));
+}
+
+/// The image `rebinds` binds as its float texture declares that format; one beside it of the
+/// same declared type bound in its own format keeps it, and a refused pair is never retyped.
+#[test]
+fn a_rebound_image_declares_its_textures_format_alone() {
+    let mut module = naga::front::glsl::Frontend::default()
+        .parse(
+            &naga::front::glsl::Options::from(naga::ShaderStage::Compute),
+            "#version 450\nlayout(local_size_x = 1) in;\n\
+             layout(set = 0, binding = 1, rgba16) uniform image2D a;\n\
+             layout(set = 0, binding = 2, rgba16) uniform image2D b;\n\
+             layout(set = 0, binding = 3, rgba8) uniform image2D c;\n\
+             layout(set = 0, binding = 4, rg16_snorm) uniform image2D d;\n\
+             void main() {\n\
+             imageStore(a, ivec2(0), imageLoad(b, ivec2(0)) + imageLoad(c, ivec2(0)) \
+             + imageLoad(d, ivec2(0)));\n\
+             imageStore(d, ivec2(0), vec4(2.0));\n}\n",
+        )
+        .unwrap();
+    let entry = |binding, format| wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::StorageTexture {
+            access: wgpu::StorageTextureAccess::ReadWrite,
+            format,
+            view_dimension: wgpu::TextureViewDimension::D2,
+        },
+        count: None,
+    };
+    storage_formats_of(
+        &mut module,
+        &[
+            entry(1, T::Rgba16Float),
+            entry(2, T::Rgba16Unorm),
+            entry(3, T::Rgba16Float),
+            entry(4, T::Rg16Float),
+        ],
+    );
+    let declared = |binding| {
+        let var = module
+            .global_variables
+            .iter()
+            .find(|(_, v)| v.binding.is_some_and(|b| b.binding == binding))
+            .expect("declared")
+            .1;
+        match module.types[var.ty].inner {
+            naga::TypeInner::Image {
+                class: naga::ImageClass::Storage { format, .. },
+                ..
+            } => format,
+            ref other => panic!("{other:?}"),
+        }
+    };
+    assert_eq!(declared(1), naga::StorageFormat::Rgba16Float);
+    assert_eq!(declared(2), naga::StorageFormat::Rgba16Unorm);
+    assert_eq!(declared(3), naga::StorageFormat::Rgba8Unorm);
+    assert_eq!(declared(4), naga::StorageFormat::Rg16Float);
+    naga::valid::Validator::new(
+        naga::valid::ValidationFlags::all(),
+        naga::valid::Capabilities::all(),
+    )
+    .validate(&module)
+    .expect("the retyped module is valid");
+}
+
+/// A rebound image gets a note naming its program, the image, its qualifier and the format it
+/// binds; an image in its qualifier's format gets none; a refused pair refuses the program.
+#[test]
+fn a_rebound_image_is_noted_and_an_exact_one_is_not() {
+    let rebound = image_binding(
+        "composite70",
+        "colorimg8",
+        "rgba16",
+        T::Rgba16Unorm,
+        T::Rgba16Float,
+    )
+    .expect("bound")
+    .expect("noted");
+    for name in ["composite70", "`colorimg8`", "rgba16", "Rgba16Float"] {
+        assert!(rebound.contains(name), "{name} in {rebound}");
+    }
+    assert_eq!(
+        image_binding(
+            "composite70",
+            "colorimg8",
+            "rgba16",
+            T::Rgba16Unorm,
+            T::Rgba16Unorm
+        ),
+        Ok(None)
+    );
+    assert_eq!(
+        image_binding(
+            "composite70",
+            "colorimg8",
+            "rgba16f",
+            T::Rgba16Float,
+            T::Rgba16Float
+        ),
+        Ok(None)
+    );
+    let refused = image_binding(
+        "composite70",
+        "colorimg5",
+        "rgba8",
+        T::Rgba8Unorm,
+        T::Rgba16Unorm,
+    )
+    .expect_err("refused");
+    assert!(refused.contains("`colorimg5`"), "{refused}");
+}
+
+/// A sampler of another class than its image's texture refuses the program with a note naming
+/// the program, the image, the sampler's type and the texture's format (#5223, decision D-6);
+/// one of the texture's class reads it.
+#[test]
+fn a_sampler_of_another_class_than_its_image_refuses_the_program() {
+    let float = wgpu::TextureSampleType::Float { filterable: false };
+    let uint = wgpu::TextureSampleType::Uint;
+    let refused = sampled_image(
+        "composite73_a",
+        "img_rtwImportance2D",
+        "usampler2D",
+        "rtwImportance2D",
+        T::R32Float,
+        float,
+    )
+    .expect_err("refused");
+    for name in [
+        "composite73_a",
+        "`img_rtwImportance2D`",
+        "usampler2D",
+        "R32Float",
+    ] {
+        assert!(refused.contains(name), "{name} in {refused}");
+    }
+    let read = |ty, format, sample_type| {
+        sampled_image("composite73_a", "img", ty, "img", format, sample_type)
+    };
+    assert_eq!(read("sampler2D", T::R32Float, float), Ok(()));
+    assert_eq!(read("usampler2D", T::R32Uint, uint), Ok(()));
+    assert!(read("sampler2D", T::R32Uint, uint).is_err());
+    assert!(read("isampler2D", T::R32Uint, uint).is_err());
 }

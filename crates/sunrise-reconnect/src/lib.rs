@@ -172,7 +172,7 @@ impl Store for Setting {
     }
 }
 
-/// The switch's row in the Extras page's Multiplayer group, for
+/// The switch's row in the Gameplay page's Multiplayer group, for
 /// `sunrise_platform::pages::register`.
 pub static SECTION: Section = Section;
 

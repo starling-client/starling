@@ -1,8 +1,15 @@
 //! Reads from the actual mob loaned to the active goal, or a disjoint live mob.
-use super::super::native_living_refs::{hand_slot, lend_equipment};
+use super::super::native_living_effects::visit_mob_effects;
+use super::super::native_living_refs::{
+    hand_slot, lend_equipment, mob_attribute_modifiers, visit_attribute_modifiers,
+};
 use super::{GoalCx, Resolved};
 use crate::mobs::Mob;
-use mod_api::{ActiveEffect, EffectKey, EquipmentSlot, Hand, ItemStackView, LivingRef, Pose};
+use mod_api::{
+    ActiveEffect, AttributeModifierView, EffectKey, EntityReadError, EquipmentSlot, Hand,
+    ItemStackView, LivingRef, Pose,
+};
+use std::ops::ControlFlow;
 use sunrise_client::{
     items::EntityTypeTags,
     mobs::{finalize, villager},
@@ -32,15 +39,13 @@ impl GoalCx<'_, '_> {
         Some(super::super::native_living_effects::mob_effect(mob, e))
     }
 
-    pub(super) fn r_living_effects(&self, living: LivingRef) -> Option<Vec<ActiveEffect>> {
-        let mob = self.live_living_mob(living)?;
-        Some(
-            mob.extra
-                .effects
-                .iter()
-                .map(|e| super::super::native_living_effects::mob_effect(mob, e))
-                .collect(),
-        )
+    pub(super) fn r_living_visit_effects(
+        &self,
+        living: LivingRef,
+        visit: &mut dyn FnMut(ActiveEffect) -> ControlFlow<()>,
+    ) -> Result<ControlFlow<()>, EntityReadError> {
+        let mob = self.live_entity_for_read(living.entity())?;
+        Ok(visit_mob_effects(mob, visit))
     }
 
     pub(super) fn r_living_potion_affected(&self, living: LivingRef, effect: EffectKey) -> bool {
@@ -73,6 +78,10 @@ impl GoalCx<'_, '_> {
 
     pub(super) fn r_living_is_jumping(&self, living: LivingRef) -> Option<bool> {
         self.live_living_mob(living).map(|_| false)
+    }
+
+    pub(super) fn r_living_no_jump_delay(&self, living: LivingRef) -> Option<i32> {
+        Some(self.live_living_mob(living)?.ai.no_jump_delay)
     }
 
     pub(super) fn r_living_baby(&self, living: LivingRef) -> Option<bool> {
@@ -237,55 +246,29 @@ impl GoalCx<'_, '_> {
             })
     }
 
-    pub(super) fn r_living_attributes(
+    pub(super) fn r_living_visit_attributes(
         &self,
         living: LivingRef,
-    ) -> Option<Vec<mod_api::Identifier>> {
-        let m = self.live_living_mob(living)?;
-        let catalog = self.w.attributes;
-        Some(
-            catalog
-                .attributes()
-                .filter(|(id, _)| catalog.default_base(&m.kind.id, *id).is_some())
-                .filter_map(|(_, a)| mod_api::Identifier::parse(&a.name).ok())
-                .collect(),
-        )
+        visit: &mut dyn FnMut(&str) -> ControlFlow<()>,
+    ) -> Result<ControlFlow<()>, EntityReadError> {
+        let mob = self.live_entity_for_read(living.entity())?;
+        Ok(self
+            .w
+            .attributes
+            .attribute_names_for(&mob.kind.id)
+            .try_for_each(visit))
     }
 
-    pub(super) fn r_living_attribute_modifiers(
+    pub(super) fn r_living_visit_attribute_modifiers(
         &self,
         living: LivingRef,
         id: &str,
-    ) -> Option<Vec<mod_api::AttributeModifier>> {
-        use sunrise_world::attributes::Operation;
-        let m = self.live_living_mob(living)?;
-        m.extra
-            .live
-            .modifiers(self.w.attributes, &m.kind.id, id, || {
-                sunrise_client::entity_nbt::attribute_entries(m)
-                    .into_iter()
-                    .map(|(_, entry)| entry)
-                    .collect()
-            })
-            .map(|list| {
-                list.iter()
-                    .filter_map(|modifier| {
-                        Some(mod_api::AttributeModifier::new(
-                            mod_api::Identifier::parse(modifier.id()).ok()?,
-                            modifier.amount(),
-                            match modifier.operation() {
-                                Operation::AddValue => mod_api::AttributeOperation::AddValue,
-                                Operation::AddMultipliedBase => {
-                                    mod_api::AttributeOperation::AddMultipliedBase
-                                }
-                                Operation::AddMultipliedTotal => {
-                                    mod_api::AttributeOperation::AddMultipliedTotal
-                                }
-                            },
-                        ))
-                    })
-                    .collect()
-            })
+        visit: &mut dyn FnMut(AttributeModifierView<'_>) -> ControlFlow<()>,
+    ) -> Result<ControlFlow<()>, EntityReadError> {
+        let mob = self.live_entity_for_read(living.entity())?;
+        let modifiers = mob_attribute_modifiers(mob, self.w.attributes, id)
+            .ok_or(EntityReadError::Unavailable)?;
+        Ok(visit_attribute_modifiers(modifiers, visit))
     }
 
     pub(super) fn r_living_used_item_hand(&self, living: LivingRef) -> Option<Hand> {
@@ -312,6 +295,26 @@ impl GoalCx<'_, '_> {
             crate::mobs::Who::Player => self.w.goal_host?.mob_player_credit(mob)??,
         };
         self.lookup_entity(id)
+    }
+
+    pub(super) fn r_living_last_hurt_mob(
+        &self,
+        living: LivingRef,
+    ) -> Option<(mod_api::EntityRef, i32)> {
+        let (id, tick) = match self.resolve(living.entity()) {
+            Some(Resolved::Player) => self.w.selected_player()?.last_hurt,
+            Some(Resolved::Own) => self.m.last_hurt_mob,
+            Some(Resolved::Live(mob)) => mob.last_hurt_mob,
+            // A snapshot row carries no record, and an unavailable mob answers nothing.
+            Some(Resolved::Seen(_) | Resolved::Unavailable) => None,
+            // Holders that resolve in the ordinary game view: its raw record, resolved below.
+            Some(Resolved::Dragon(_)) | None => self.w.goal_host?.living_last_hurt_record(living),
+        }?;
+        let entity = self.lookup_entity(id)?;
+        let alive = self
+            .r_living_alive(LivingRef::new(entity))
+            .unwrap_or_else(|| self.w.side.living_target_alive(id));
+        alive.then_some((entity, tick))
     }
 
     pub(super) fn r_living_kill_credit(&self, living: LivingRef) -> Option<mod_api::EntityRef> {

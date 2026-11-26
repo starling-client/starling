@@ -1,24 +1,11 @@
 //! A packet body on its way to a client: its own bytes, or bytes several clients share.
 
 use crate::raw_payloads::connection::Epoch;
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
-};
+use std::sync::Arc;
 
-/// One already-framed attachment sync and its prepaid outbox reservation.
-/// Kept through deferred tracking callbacks and refunded when written or dropped.
-pub struct PairingPayload {
-    pub(super) bytes: Vec<u8>,
-    pub(super) epoch: Arc<Epoch>,
-    pub(super) pending: Arc<AtomicUsize>,
-    pub(super) cost: usize,
-}
-impl Drop for PairingPayload {
-    fn drop(&mut self) {
-        self.pending.fetch_sub(self.cost, Ordering::Relaxed);
-    }
-}
+/// One already-framed attachment sync and its prepaid outbox reservation, shared
+/// with the payload rules that frame it.
+pub use crate::raw_payloads::PairingPayload;
 
 /// A packet body (VarInt id and payload) on its way to one client. Entity tracking sends the
 /// same bodies to every client tracking an entity: those hold one shared copy, where a

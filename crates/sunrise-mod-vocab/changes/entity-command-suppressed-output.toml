@@ -1,0 +1,2 @@
+ids = ["handle:EntityRef::run_command", "handle:EntityRef::run_command_with_output"]
+why = "Both entity command methods take a suppress_output flag. Pass false for the previous feedback behavior, or true to silence the source without changing the command's effects."

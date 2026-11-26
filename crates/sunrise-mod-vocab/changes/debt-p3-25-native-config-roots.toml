@@ -1,0 +1,206 @@
+ids = [
+    "hook:register_configs",
+    "hook:register_configs.configs",
+    "hook:config_loading",
+    "hook:config_loading.config",
+    "hook:config_reloading",
+    "hook:config_reloading.config",
+    "hook:config_unloading",
+    "hook:config_unloading.config",
+    "method:Hooks::register_configs",
+    "method:Hooks::config_loading",
+    "method:Hooks::config_reloading",
+    "method:Hooks::config_unloading",
+    "type:RegisterConfigsEvent",
+    "type:RegisterConfigsEvent.configs",
+    "type:ConfigLoadingEvent",
+    "type:ConfigLoadingEvent.config",
+    "type:ConfigReloadingEvent",
+    "type:ConfigReloadingEvent.config",
+    "type:ConfigUnloadingEvent",
+    "type:ConfigUnloadingEvent.config",
+    "type:Config",
+    "type:Config.mod_id",
+    "type:Config.kind",
+    "type:Config.file",
+    "type:Config.default",
+    "handle:Config::new",
+    "handle:Config::file",
+    "type:ConfigFile",
+    "type:ConfigFile.mod_id",
+    "type:ConfigFile.kind",
+    "type:ConfigFile.file",
+    "type:ConfigFile.text",
+    "trait:ConfigFiles",
+    "method:ConfigFiles::read",
+    "method:ConfigFiles::write",
+    "method:ConfigFiles::list",
+    "method:ConfigFiles::stat",
+    "method:ConfigFiles::remove",
+    "type:ConfigPath",
+    "handle:ConfigPath::root",
+    "handle:ConfigPath::new",
+    "handle:ConfigPath::is_valid_name",
+    "handle:ConfigPath::as_str",
+    "handle:ConfigPath::owned_by",
+    "type:ConfigEntry",
+    "type:ConfigEntry.name",
+    "type:ConfigEntry.stat",
+    "type:ConfigEntryKind",
+    "type:ConfigEntryKind.File",
+    "type:ConfigEntryKind.Folder",
+    "type:ConfigStat",
+    "type:ConfigStat.kind",
+    "type:ConfigStat.len",
+    "type:ConfigStat.modified_millis",
+    "type:ConfigFileError",
+    "type:ConfigFileError.NoCallingMod",
+    "type:ConfigFileError.NotOwned",
+    "type:ConfigFileError.InvalidPath",
+    "type:ConfigFileError.NoWorld",
+    "type:ConfigFileError.InvalidPage",
+    "type:ConfigFileError.TooLarge",
+    "type:ConfigFileError.NotFound",
+    "type:ConfigFileError.NotAFile",
+    "type:ConfigFileError.NotAFolder",
+    "type:ConfigFileError.Symlink",
+    "type:ConfigFileError.Io",
+    "method:prelude::ConfigHost::config_files",
+    "method:prelude::ConfigHost::data_files",
+    "method:prelude::ConfigServerHost::world_data_files",
+    "method:prelude::ConfigHost::config_dir",
+    "method:ConfigContext::config_files",
+    "method:ConfigContext::config_dir",
+    "method:ClientSetupContext::config_files",
+    "method:ClientSetupContext::data_files",
+    "method:ClientSetupContext::config_dir",
+    "trait:Registrar",
+    "trait:ConfigSpecsRegistrar",
+    "method:ConfigSpecsRegistrar::register_config",
+    "type:ConfigSpec",
+    "handle:ConfigSpec::new",
+    "handle:ConfigSpec::file",
+    "type:ConfigEvent",
+    "type:ConfigEvent.Loading",
+    "type:ConfigEvent.Reloading",
+    "type:ConfigEvent.Unloading",
+    "type:ConfigSnapshot",
+    "type:ConfigSnapshot.mod_id",
+    "type:ConfigSnapshot.kind",
+    "type:ConfigSnapshot.file",
+    "type:ConfigSnapshot.path",
+    "type:ConfigSnapshot.text",
+    "type:ConfigListener",
+    "type:ConfigRegistrationError",
+    "type:ConfigRegistrationError.Duplicate",
+]
+why = """
+Native mods no longer cross a guest sandbox, so config declarations, lifecycle delivery and config-directory access now use native paths and owner-bound registrations directly.
+
+This follows NeoForge/FML 12.0.16 (`FMLPaths.CONFIGDIR` / `FMLPaths.loadAbsolutePaths`, `ModContainer.registerConfig`, `ConfigTracker.trackConfig`, `ConfigTracker.resolveBasePath`, `ConfigTracker.loadConfigs`, `ConfigTracker.unloadConfig`, `ModConfig.setConfig`, `ModConfig.getFullPath`, and `ModConfigEvent.{Loading, Reloading, Unloading}`), NeoForge's lifecycle sites (`CommonModLoader.begin` and `ServerLifecycleHooks.handleServerAboutToStart` / `handleServerStopped`), and vanilla 26.3's instance root (`net.minecraft.client.Options` working directory beside `options.txt`, and `net.minecraft.server.Main.main` / `DedicatedServerSettings` beside `server.properties`).
+
+Declarations freeze in installed dependency and registration order during `Hooks::register` with the registering mod's identity and uniqueness by registered filename spelling across mods and kinds; lifecycle events deliver only to the registered owner rather than broadcasting globally to every mod; and `ConfigContext::config_dir()`, `ClientSetupContext::config_dir()` and `Host::config_dir()` lend `&std::path::Path` for `config/` (alongside `Host::instance_dir()`, `ServerHost::world_dir()`, and `RegistrationContext::instance_dir()`) instead of proxying reads, writes, directory listings, stats and removals through `ConfigFiles` with guest ownership, symlink, cursor and size caps. Shipped verified `[runtime]` package files (`RegistrationContext::runtime_files()`) and scalar settings (`Registrar::register_setting`) remain separate.
+
+This restores the ordinary filesystem path and preserves Sunrise's existing local load points (`Client`/`Common` once on the window, `Common` once and `Server` per world on a dedicated server, `Server` per world on an integrated server, existing world `serverconfig/` overrides winning without creating a missing base file, and 1-second text-comparison reload checks) rather than claiming FML `FileWatcher` or `SYNCED` network-sync parity. Real I/O failures are logged with owner and path while keeping the last successfully read snapshot without substituting another path, retrying or latching; listener `Err` returns are logged on every invocation without disabling future deliveries, while a listener panic disables only that registration for the session without aborting server shutdown.
+"""
+migrate = """
+### 1. Register configs in `Hooks::register` instead of `Hooks::register_configs`
+
+Remove `Hooks::register_configs`, `Hooks::config_loading`, `Hooks::config_reloading`, and `Hooks::config_unloading` (and all imports of `RegisterConfigsEvent`, `ConfigLoadingEvent`, `ConfigReloadingEvent`, `ConfigUnloadingEvent`, `Config`, and `ConfigFile`).
+
+Old:
+```rust
+fn register_configs(&self, _context: &dyn ConfigContext, event: &mut RegisterConfigsEvent<'_>) {
+    event.configs.push(Config::new("mymod", ConfigKind::Server, DEFAULT_TOML).file("mymod/machines.toml"));
+}
+```
+
+New:
+```rust
+fn register(&self, r: &mut dyn Registrar, _cx: &RegistrationContext) {
+    let spec = ConfigSpec::new(ConfigKind::Server, DEFAULT_TOML).file("mymod/machines.toml");
+    if let Err(err) = r.register_config(spec, Some(Arc::new(listener))) {
+        log::error!("config registration failed: {err}");
+    }
+}
+```
+
+- The registrar supplies the owning mod ID for the default `<mod id>-<kind>.toml` filename; `.file(name)` accepts any `impl Into<PathBuf>`.
+- Pass `None` as the second argument if the file needs no lifecycle listener.
+- Handle `Err(ConfigRegistrationError::Duplicate { file, owner })` as a refused declaration; the first registration stays active.
+- Test fixtures that implement `Registrar` directly must now also implement `ConfigSpecsRegistrar`.
+
+### 2. Match `ConfigEvent` in the owner-bound `ConfigListener`
+
+Move the bodies of `config_loading`, `config_reloading`, and `config_unloading` into the registered `Arc<ConfigListener>`:
+
+```rust
+let listener = move |event: ConfigEvent<'_>, snapshot: &ConfigSnapshot| -> Result<(), String> {
+    match event {
+        ConfigEvent::Loading(context) => { /* settings and config_dir; no game host */ }
+        ConfigEvent::Reloading(host_side) => { /* live polling host, including writes */ }
+        ConfigEvent::Unloading(server_host) => { /* live stopping server host */ }
+        _ => {}
+    }
+    Ok(())
+};
+```
+
+- Remove `if config.mod_id != "mymod" { return; }` filters: only this registration's listener is called.
+- `ConfigSnapshot` replaces `ConfigFile`:
+  - `snapshot.file` (`PathBuf`) is the registered filename (for example `"mymod/machines.toml"` or `"mymod-server.toml"`).
+  - `snapshot.path` (`PathBuf`) is the actual resolved filesystem path on disk (for example `<world>/serverconfig/mymod/machines.toml` when an override is present, or `<config_dir>/mymod/machines.toml` otherwise).
+  - `snapshot.text` (`String`) is the file text read by the loader.
+- Report parse or validation failures by returning `Err(message)` from the listener: the engine logs the failure with your mod ID, operation and `snapshot.path` on every call without disabling future deliveries. Do not `unwrap()`/`panic!()` on ordinary errors, as a panic disables that listener for the rest of the session and shows an error notice.
+
+### 3. Replace `ConfigFiles` and its constants with `Host::config_dir()` and `std::fs`
+
+Remove all imports and uses of `ConfigFiles`, `ConfigPath`, `ConfigEntry`, `ConfigEntryKind`, `ConfigStat`, `ConfigFileError`, and the three removed constants `CONFIG_FILE_MAX`, `DATA_FILE_MAX`, and `CONFIG_LIST_MAX` (as well as any `Wire` encoding of those removed types).
+
+Replace `ConfigContext::config_files` and `ClientSetupContext::config_files` with their `config_dir()` method (`&std::path::Path`) and `std::fs`. In live callbacks use `Host::config_dir()`. During registration (which has no `Host`), use `cx.instance_dir()?.to_path_buf()?.join("config")` in an `Option`-returning helper. Replace `ClientSetupContext::data_files` by deriving `<instance>/sunrise-mod-data/<mod id>` from the same captured `InstanceDirectory` and retaining the path for setup.
+
+Replace each `ConfigFiles` call with ordinary `std::fs` calls (handling `std::io::Error` directly at the caller, or propagating it as `Err(e.to_string())` from a `ConfigListener`):
+
+- Read:
+  - Old: `host.config_files().read(&ConfigPath::new("mymod/extra.toml")?)?`
+  - New: `std::fs::read(host.config_dir().join("mymod/extra.toml"))?`
+- Write (create parent directories explicitly):
+  - Old: `host.config_files().write(&ConfigPath::new("mymod/extra.toml")?, bytes)?`
+  - New:
+    ```rust
+    let path = host.config_dir().join("mymod/extra.toml");
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&path, bytes)?;
+    ```
+- List directory:
+  - Old: `host.config_files().list(&ConfigPath::new("mymod")?, after, limit)?`
+  - New: `std::fs::read_dir(host.config_dir().join("mymod"))?`
+- Stat / metadata:
+  - Old: `host.config_files().stat(&ConfigPath::new("mymod/extra.toml")?)?`
+  - New: `std::fs::metadata(host.config_dir().join("mymod/extra.toml"))` (map `ErrorKind::NotFound` to `None` when checking optional files)
+- Remove file:
+  - Old: `host.config_files().remove(&ConfigPath::new("mymod/extra.toml")?)?`
+  - New: `std::fs::remove_file(host.config_dir().join("mymod/extra.toml"))` (map `ErrorKind::NotFound` to `false` if you previously checked the `bool`)
+
+### 4. Replace both bulk-data proxies with `Host::instance_dir()` and `ServerHost::world_dir()`
+
+- Instance-wide bulk data (both sides):
+  - Old: `host.data_files().read(&ConfigPath::new("tiles/0.bin")?)`
+  - New: `std::fs::read(host.instance_dir().join("sunrise-mod-data").join("mymod").join("tiles/0.bin"))`
+- World-scoped bulk data (server only; `None` when no world is open):
+  - Old: `host.world_data_files().write(&ConfigPath::new("state.bin")?, bytes)`
+  - New:
+    ```rust
+    if let Some(world_dir) = host.world_dir() {
+        let path = world_dir.join("sunrise-mod-data").join("mymod").join("state.bin");
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&path, bytes)?;
+    }
+    ```
+
+Scalar settings (`Registrar::register_setting`, `Host::setting`) and verified shipped package runtime files (`RegistrationContext::runtime_files()`) are unchanged and remain separate from `config/` and `sunrise-mod-data/`.
+"""

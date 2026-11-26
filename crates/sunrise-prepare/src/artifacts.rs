@@ -10,15 +10,16 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
-const LAUNCHER_HINT: &str = "Sunrise does not download the game: play {version} once in the launcher you play \
+const LAUNCHER_HINT: &str = "Full client preparation reads your own Minecraft files: play {version} once in the launcher you play \
 Minecraft Java Edition with so it downloads the game's files, then rerun. Sunrise reads the \
 official launcher's folder, ATLauncher's and the CurseForge app's; for Prism Launcher, MultiMC, \
 the Modrinth App or GDLauncher, prepare from the Sunrise launcher, which finds their files. If your launcher keeps \
 them in another folder, pass --minecraft-dir or set SUNRISE_MINECRAFT_DIR, or name the files with \
 --version-json, --client-jar, --libraries-dir and --assets-dir.";
-const SERVER_HINT: &str = "Sunrise does not download the game: download the {version} server jar yourself (minecraft.net/download/server \
+const SERVER_HINT: &str = "Full client preparation takes a supplied {version} server jar (minecraft.net/download/server \
 while {version} is the current release, otherwise the downloads.server.url in your launcher's \
-versions/{version}/{version}.json), then pass --server-jar PATH or set SUNRISE_SERVER_JAR.";
+versions/{version}/{version}.json), then pass --server-jar PATH or set SUNRISE_SERVER_JAR. \
+For dedicated server files only, sunrise-prepare --server downloads the pinned jar from Mojang and checks its SHA-1.";
 
 fn hint(text: &str, version: &str) -> String {
     text.replace("{version}", version)
@@ -65,7 +66,7 @@ impl Lock {
         })
     }
 
-    fn pin(&self, key: &str) -> Result<&str, String> {
+    pub(crate) fn pin(&self, key: &str) -> Result<&str, String> {
         self.json
             .get("minecraft")
             .and_then(|m| m.get(key))
@@ -1059,7 +1060,7 @@ fn extract_verified(
 }
 
 /// Modern server downloads are launchers: the game jar and its libraries are inside.
-fn unpack_server(
+pub(crate) fn unpack_server(
     server: PathBuf,
     directory: &Path,
     version: &str,

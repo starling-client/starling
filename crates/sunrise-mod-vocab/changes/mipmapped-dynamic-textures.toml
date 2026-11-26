@@ -1,0 +1,13 @@
+ids = [
+    "method:prelude::ClientRenderClientHost::create_dynamic_texture",
+    "method:prelude::ClientRenderClientHost::update_dynamic_texture_region",
+    "type:DynamicTextureError",
+    "type:DynamicTextureError.BadMipLevels",
+    "type:BindGroupLayoutError.BadMaxLod",
+    "type:BindingKind.CombinedImageSampler",
+    "handle:RenderPipeline::sampler",
+    "handle:BindGroupLayoutBuilder::sampler",
+    "type:Sampler",
+]
+why = "A dynamic texture can carry a mip chain, and a mod pipeline's sampler takes vanilla's descriptor. create_dynamic_texture gains mip_levels (1 is vanilla's DynamicTexture and the default choice, up to the full chain 32 - max(width, height).leading_zeros(); outside it is BadMipLevels, and a side past max_texture_dimension_2d stays TooLarge). The format stays RGBA8_UNORM. Levels are filled from the CPU, as vanilla's MipmapGenerator does for the block atlas, by update_dynamic_texture_region, which gains mip_level (after CommandEncoder.writeToTexture's mipLevel) and checks its bounds and exact byte length against that level; a mip_level the texture lacks is BadMipLevels. update_dynamic_texture of a new size keeps the texture's mip_levels. GuiCanvas::texture always samples level 0; a mod pipeline binds the texture by id with TextureSource::DynamicTexture and reads every level. BindGroupLayoutBuilder::sampler (and RenderPipeline::sampler) now takes one Sampler descriptor shaped like GpuDevice.createSampler: address_u, address_v, min, mag and max_lod: Option<f32>, with no separate mipmap filter and no min_lod: levels are blended linearly when max_lod is above 0.25, as vanilla's GL and Vulkan backends do. Sampler::new(filter, address) is the old behaviour. BindingKind::CombinedImageSampler holds the Sampler instead of filter and address. A negative or non-finite max_lod is BindGroupLayoutError::BadMaxLod. DynamicTextureError gained BadMipLevels last."
+migrate = "Pass 1 as mip_levels to create_dynamic_texture and 0 as mip_level to update_dynamic_texture_region. Replace .sampler(name, filter, address) with .sampler(name, Sampler::new(filter, address)); to read mip levels set max_lod on the Sampler (for example Some(3.0) for four levels). Match BindingKind::CombinedImageSampler { sampler } instead of { filter, address }."

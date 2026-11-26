@@ -7,19 +7,20 @@ pub trait Hooks {
     /// `source` and `seed` are the server's. `play_at` starts as None, and a sound left None is not
     /// played. Set it to a position in the player's level and the sound plays there, as the
     /// player's own level plays a sound packet (no distance delay), with the `volume` and `pitch`
-    /// the listeners leave and the same seed. A `play_at` that is not finite, or a volume or pitch
-    /// that is not finite and at least 0, plays nothing. Only a server of `sunrise:levels`
-    /// revision 3 sends these. A sound bound to an entity of the viewed level has that entity's
-    /// position there, and plays at `play_at` without following it. Sounds of the player's own
-    /// level ask `play_level_sound_at_position` and
-    /// `play_level_sound_at_entity`, never this hook. With no listener the sound is dropped after
+    /// the listeners leave and the same seed. A non-finite `play_at` is not a placement. Volume
+    /// and pitch are passed to the sound engine without a separate veto. Only a server of
+    /// `sunrise:levels` revision 3 sends these. A sound bound to an entity of the viewed level
+    /// has that entity's position there and plays at `play_at` without following it. Sounds of
+    /// the player's own level ask `play_level_sound_at_position` and `play_level_sound_at_entity`,
+    /// never this hook. With no listener the sound is dropped after
     /// one check, with nothing decoded or allocated. Client-side. Diverges from upstream: new
     /// hook, a Sunrise addition with no NeoForge counterpart.
     #[hook(
         dispatch = "api_carrier",
         side = "client",
         contract = "listen",
-        neoforge = "none (NeoForge has no viewed levels)"
+        neoforge = "none (NeoForge has no viewed levels)",
+        version = 2
     )]
     fn viewed_level_sound(
         level: LevelRef,

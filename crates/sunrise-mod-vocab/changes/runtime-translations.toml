@@ -1,0 +1,3 @@
+ids = ["method:prelude::ConfigClientHost::set_translations", "method:prelude::ConfigClientHost::clear_translations"]
+why = "Adds ClientHost::set_translations(code, entries) and clear_translations(): a mod sets translation entries for a language from its own data (language files outside packs), layered over the packs' entries and applied again after every resource reload and language change, so translate components resolve them everywhere."
+migrate = "Nothing to migrate. A mod that resolved its own strings itself can set them as entries instead."

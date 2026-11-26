@@ -12,8 +12,13 @@ use std::{
 pub(in crate::game) struct EntityTypeRows {
     /// Every entity type (`minecraft:boat`), namespaced as commands name it.
     pub(in crate::game) ids: Vec<String>,
+    /// Every entity type except `minecraft:player`, sorted: what `EntityLayers::entity_types`
+    /// borrows directly without allocating on every call.
+    pub(in crate::game) non_player_ids: Vec<String>,
     /// The living ones.
     living: Vec<String>,
+    /// Each type's `EntityType.getDimensions()` (width, height, eye height), by id.
+    dimensions: Vec<(String, [f32; 3])>,
 }
 
 impl EntityTypeRows {
@@ -26,16 +31,40 @@ impl EntityTypeRows {
             if row.get("attributes").is_some() {
                 out.living.push(id.clone());
             }
+            let size = |key| row.get(key).and_then(serde_json::Value::as_f64);
+            if let (Some(width), Some(height), Some(eye)) =
+                (size("width"), size("height"), size("eye_height"))
+            {
+                // The exporter writes the float fields as their shortest decimal.
+                out.dimensions
+                    .push((id.clone(), [width as f32, height as f32, eye as f32]));
+            }
             out.ids.push(id);
         }
         out.ids.sort();
         out.living.sort();
+        out.dimensions.sort_by(|a, b| a.0.cmp(&b.0));
+        out.non_player_ids = out
+            .ids
+            .iter()
+            .filter(|id| id.as_str() != "minecraft:player")
+            .cloned()
+            .collect();
         out
     }
 
     /// Whether `id` is an entity type.
     pub(in crate::game) fn contains(&self, id: &str) -> bool {
         self.ids.binary_search_by(|t| t.as_str().cmp(id)).is_ok()
+    }
+
+    /// `EntityType.getDimensions()` of `id`: its width, height and eye height.
+    pub(in crate::game) fn dimensions(&self, id: &str) -> Option<[f32; 3]> {
+        let i = self
+            .dimensions
+            .binary_search_by(|(t, _)| t.as_str().cmp(id))
+            .ok()?;
+        Some(self.dimensions[i].1)
     }
 
     /// Whether `id` is a living entity type.
@@ -67,11 +96,22 @@ mod tests {
     fn a_row_with_attributes_is_a_living_type() {
         let rows = EntityTypeRows::parse(
             br#"{"minecraft:oak_boat": {"width": 1.375},
-                 "minecraft:zombie": {"width": 0.6, "attributes": {"minecraft:armor": 2.0}},
+                 "minecraft:player": {"width": 0.6, "attributes": {}},
+                 "minecraft:zombie": {"width": 0.6, "height": 1.95, "eye_height": 1.74,
+                                      "attributes": {"minecraft:armor": 2.0}},
                  "ruby:golem": {"template": "minecraft:zombie", "attributes": {}}}"#,
         );
         assert_eq!(
             rows.ids,
+            [
+                "minecraft:oak_boat",
+                "minecraft:player",
+                "minecraft:zombie",
+                "ruby:golem",
+            ]
+        );
+        assert_eq!(
+            rows.non_player_ids,
             ["minecraft:oak_boat", "minecraft:zombie", "ruby:golem"]
         );
         assert!(rows.contains("minecraft:oak_boat"));
@@ -79,5 +119,8 @@ mod tests {
         assert!(!rows.is_living("minecraft:oak_boat"));
         assert!(rows.is_living("minecraft:zombie"));
         assert!(rows.is_living("ruby:golem"));
+        // A row without all three sizes has none.
+        assert_eq!(rows.dimensions("minecraft:zombie"), Some([0.6, 1.95, 1.74]));
+        assert_eq!(rows.dimensions("minecraft:oak_boat"), None);
     }
 }

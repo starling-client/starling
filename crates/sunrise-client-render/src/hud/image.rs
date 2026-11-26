@@ -271,6 +271,16 @@ pub(super) fn walk(source: &ResourceSource, directory: &str, out: &mut Vec<Strin
             .filter(|name| name.ends_with(".png")),
     );
 }
+/// `MissingTextureAtlasSprite.generateMissingImage`: 16x16, magenta and black quarters.
+pub(crate) fn missing_image() -> (u32, u32, Vec<u8>) {
+    let pixels = (0..256)
+        .flat_map(|i| match (i / 16 < 8) ^ (i % 16 < 8) {
+            true => [248, 0, 248, 255],
+            false => [0, 0, 0, 255],
+        })
+        .collect();
+    (16, 16, pixels)
+}
 pub(crate) fn decode_resource(source: &ResourceSource, name: &str) -> Result<(u32, u32, Vec<u8>)> {
     decode_bytes(&source.read(name)?)
 }
@@ -336,7 +346,29 @@ pub(super) fn first_frame(
 }
 /// `image` inside a one-texel border copied from its opposite edges, the
 /// texels repeat addressing reads past each edge.
-pub(super) fn wrap_border((name, w, h, data): &PackedImage) -> PackedImage {
+pub(super) fn wrap_border((name, w, h, data): &PackedImage) -> Result<PackedImage> {
+    let invalid = "sprite border exceeds the RGBA8 address space";
+    let (bw, bh) = (
+        w.checked_add(2).ok_or(invalid)?,
+        h.checked_add(2).ok_or(invalid)?,
+    );
+    let len = rgba_len([bw, bh]).ok_or(invalid)?;
+    let mut out = Vec::new();
+    out.try_reserve_exact(len)?;
+    let w = *w as usize;
+    let h = *h as usize;
+    for y in 0..bh as usize {
+        let row = (y + h - 1) % h * w;
+        for x in 0..bw as usize {
+            let at = (row + (x + w - 1) % w) * 4;
+            out.extend_from_slice(&data[at..at + 4]);
+        }
+    }
+    Ok((name.clone(), bw, bh, out))
+}
+
+/// Raw RGBA8 `w x h` image padded by a 1-texel wrap border copied from opposite edges.
+pub(super) fn wrap_border_pixels(data: &[u8], w: u32, h: u32) -> Vec<u8> {
     let (bw, bh) = (w + 2, h + 2);
     let mut out = Vec::with_capacity((bw * bh * 4) as usize);
     for y in 0..bh {
@@ -346,7 +378,94 @@ pub(super) fn wrap_border((name, w, h, data): &PackedImage) -> PackedImage {
             out.extend_from_slice(&data[at..at + 4]);
         }
     }
-    (name.clone(), bw, bh, out)
+    out
+}
+
+/// `image` inside a one-texel border clamped from its own edge texels, matching
+/// vanilla 26.3's `Stitcher` padding + `ANIMATE_SPRITE_BLIT` `CLAMP_TO_EDGE` so
+/// boundary UV samples on GPUs never read the transparent atlas gutter and discard.
+pub(super) fn clamp_border((name, w, h, data): &PackedImage) -> Result<PackedImage> {
+    let invalid = "sprite border exceeds the RGBA8 address space";
+    let (bw, bh) = (
+        w.checked_add(2).ok_or(invalid)?,
+        h.checked_add(2).ok_or(invalid)?,
+    );
+    let len = rgba_len([bw, bh]).ok_or(invalid)?;
+    let mut out = Vec::new();
+    out.try_reserve_exact(len)?;
+    let w = *w as usize;
+    let h = *h as usize;
+    for y in 0..bh as usize {
+        let row = y.saturating_sub(1).min(h - 1) * w;
+        for x in 0..bw as usize {
+            let col = x.saturating_sub(1).min(w - 1);
+            let at = (row + col) * 4;
+            out.extend_from_slice(&data[at..at + 4]);
+        }
+    }
+    Ok((name.clone(), bw, bh, out))
+}
+
+/// Raw RGBA8 `w x h` image padded by a 1-texel clamp-to-edge border on all four sides.
+pub(super) fn clamp_border_pixels(data: &[u8], w: u32, h: u32) -> Vec<u8> {
+    let (bw, bh) = (w + 2, h + 2);
+    let mut out = Vec::with_capacity((bw * bh * 4) as usize);
+    for y in 0..bh {
+        let row = y.saturating_sub(1).min(h - 1);
+        for x in 0..bw {
+            let col = x.saturating_sub(1).min(w - 1);
+            let at = ((row * w + col) * 4) as usize;
+            out.extend_from_slice(&data[at..at + 4]);
+        }
+    }
+    out
+}
+
+/// Strip a 1-texel border from `(w, h, data)` back to `(w - 2, h - 2)`.
+pub(super) fn strip_border(w: u32, h: u32, data: &[u8]) -> (u32, u32, Vec<u8>) {
+    let (iw, ih) = (w - 2, h - 2);
+    let mut out = Vec::with_capacity((iw * ih * 4) as usize);
+    for y in 0..ih {
+        let src = (((y + 1) * w + 1) * 4) as usize;
+        out.extend_from_slice(&data[src..src + (iw * 4) as usize]);
+    }
+    (iw, ih, out)
+}
+
+/// Populate the 1-texel border around a sprite placed at `(x, y)` of interior size `(w, h)`
+/// inside `pixels` (`atlas_w` wide), either wrapping opposite edges (`wrap`) or clamping.
+pub(super) fn write_atlas_border(
+    pixels: &mut [u8],
+    atlas_w: u32,
+    x: u32,
+    y: u32,
+    w: u32,
+    h: u32,
+    wrap: bool,
+) {
+    if x == 0 || y == 0 || w == 0 || h == 0 {
+        return;
+    }
+    let copy_px = |pixels: &mut [u8], sx: u32, sy: u32, dx: u32, dy: u32| {
+        let s = ((sy * atlas_w + sx) * 4) as usize;
+        let d = ((dy * atlas_w + dx) * 4) as usize;
+        let px = [pixels[s], pixels[s + 1], pixels[s + 2], pixels[s + 3]];
+        pixels[d..d + 4].copy_from_slice(&px);
+    };
+    let (src_left, src_right) = if wrap { (x + w - 1, x) } else { (x, x + w - 1) };
+    let (src_top, src_bottom) = if wrap { (y + h - 1, y) } else { (y, y + h - 1) };
+    for dy in 0..h {
+        copy_px(pixels, src_left, y + dy, x - 1, y + dy);
+        copy_px(pixels, src_right, y + dy, x + w, y + dy);
+    }
+    for dx in 0..w {
+        copy_px(pixels, x + dx, src_top, x + dx, y - 1);
+        copy_px(pixels, x + dx, src_bottom, x + dx, y + h);
+    }
+    copy_px(pixels, src_left, src_top, x - 1, y - 1);
+    copy_px(pixels, src_right, src_top, x + w, y - 1);
+    copy_px(pixels, src_left, src_bottom, x - 1, y + h);
+    copy_px(pixels, src_right, src_bottom, x + w, y + h);
 }
 
 /// The texture of every `bitmap` font provider. A provider's `file` may name

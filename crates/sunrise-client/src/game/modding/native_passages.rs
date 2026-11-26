@@ -633,7 +633,7 @@ pub(in crate::game) mod tests {
                 game.level_register_passage(level, doorway()),
                 Ok(PassageId::from_raw(1))
             );
-            game.native_levels_closing();
+            game.close_loaded_levels_for_stop();
             assert!(game.passages.index.is_empty() && game.passages.dirty.is_empty());
             assert!(!game.level_remove_passage(level, PassageId::from_raw(1)));
             game.native_level_opened(game.dim);
@@ -642,7 +642,7 @@ pub(in crate::game) mod tests {
                 assert_eq!(id, PassageId::from_raw(i + 2));
             }
             game.passages.held.insert(PassageId::from_raw(1), doorway());
-            game.native_lifecycle_world_failed("test failure");
+            game.native_lifecycle_world_closed();
             assert!(game.passages.levels.is_empty() && game.passages.index.is_empty());
             assert!(game.passages.dirty.is_empty() && game.passages.held.is_empty());
         });
@@ -875,7 +875,7 @@ pub(in crate::game) mod tests {
                 seed: 0,
                 max_players: 2,
                 integrated: true,
-                levels: game.level_shapes,
+                levels: game.level_shapes.clone(),
                 level_seeds: game.levels.runtime.seeds(),
             };
             game.lan_host(settings, net, config).unwrap();

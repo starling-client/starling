@@ -16,12 +16,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-try:
-    from . import lab
-except ImportError:
-    import lab
-
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+from tools import lab
+
 LOCAL = ROOT / '.local'
 RESOURCES = lab.RESOURCES
 SERVER = lab.GAME / 'jars' / 'server.jar'

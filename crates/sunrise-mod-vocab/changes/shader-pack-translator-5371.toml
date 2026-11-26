@@ -1,0 +1,8 @@
+ids = [
+    "type:PackOverrideState",
+    "type:PackUniformValue",
+    "method:WorldDrawContext::set_pack_uniform",
+    "method:WorldDrawContext::pack_override_state",
+]
+why = "Adds WorldDrawContext::set_pack_uniform, WorldDrawContext::pack_override_state, PackUniformValue, and PackOverrideState (#5371) so mods can supply per-frame values for registered shader-pack uniforms and observe whether an active shader pack bound a pipeline."
+migrate = "Additive only; WorldDrawContext has default implementations."

@@ -1,0 +1,3 @@
+ids = ["method:ClientSession::client_player_skins", "type:ClientPlayerSkins", "type:ClientPlayerSkin"]
+why = "Adds a client read of the listed players' skins as the Tab overlay draws them: each player's skin texture path and whether it uses the slim model."
+migrate = "Additive. Read it on the client; it is None outside a logged-in client world and reflects what the server has sent."

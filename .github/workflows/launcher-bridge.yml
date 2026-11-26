@@ -7,6 +7,10 @@ on:
         description: The launcher release to sign (X.Y.Z, left by sunrise-launcher's release.yml as an unsigned draft vX.Y.Z)
         type: string
         required: true
+      source_ref:
+        description: The launcher branch release.yml built the draft from (refs/heads/main, or a patch line's refs/heads/release/launcher-X.Y)
+        type: string
+        default: refs/heads/main
       dry_run:
         description: Check and sign with a throwaway key, but publish nothing
         type: boolean
@@ -22,6 +26,7 @@ concurrency:
 env:
   LAUNCHER_REPOSITORY: sunrise-org/sunrise-launcher
   VERSION: ${{ inputs.version }}
+  SOURCE_REF: ${{ inputs.source_ref }}
 
 jobs:
   # From main only, and the only reader of the draft: GitHub shows a draft only to a push-capable token, so this job holds the sunny App key and runs no repository code.
@@ -40,6 +45,9 @@ jobs:
           ASKED: ${{ inputs.dry_run }}
         run: |
           [[ "$GITHUB_REF" == refs/heads/main ]] || { echo "::error::the bridge runs from main only, dry runs included"; exit 1; }
+          # The launcher releases from its main, or from a patch line cut from a release tag.
+          [[ "$SOURCE_REF" == refs/heads/main || "$SOURCE_REF" =~ ^refs/heads/release/launcher-[0-9A-Za-z._-]+$ ]] ||
+            { echo "::error::source_ref must be refs/heads/main or refs/heads/release/launcher-*, not $SOURCE_REF"; exit 1; }
           echo "dry_run=$([[ "$ASKED" == false ]] && echo false || echo true)" >> "$GITHUB_OUTPUT"
       - name: The version is a stable X.Y.Z newer than launcher@1.0.1, and launcher@X.Y.Z is not here yet
         env:
@@ -90,7 +98,7 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
-  # No secret: the files are exactly SHA256SUMS's, and exactly the release record that sunrise-launcher's release.yml attested on a dispatch from main at the tag's commit.
+  # No secret: the files are exactly SHA256SUMS's, and exactly the release record that sunrise-launcher's release.yml attested on a dispatch from source_ref (main or a release/launcher-* branch) at the tag's commit.
   check:
     needs: fetch
     runs-on: ubuntu-latest
@@ -119,11 +127,11 @@ jobs:
           set -euo pipefail
           verify() {
             gh attestation verify "$1" -R "$LAUNCHER_REPOSITORY" --signer-workflow "$LAUNCHER_REPOSITORY/.github/workflows/release.yml" \
-              --source-ref refs/heads/main --source-digest "$COMMIT" --deny-self-hosted-runners --format json "${@:2}"
+              --source-ref "$SOURCE_REF" --source-digest "$COMMIT" --deny-self-hosted-runners --format json "${@:2}"
           }
           first=$(cd dist && find . -maxdepth 1 -name 'sunrise-launcher-*' -printf '%f\n' | sort | head -1)
           verify "dist/$first" --predicate-type https://playsunrise.net/attestation/launcher-release/v1 > "$RUNNER_TEMP/record.json"
-          python3 -I repo/tools/ci/check_launcher_release_record.py --attestations "$RUNNER_TEMP/record.json" --tag "v$VERSION" --commit "$COMMIT" --dist dist
+          python3 -I repo/tools/ci/check_launcher_release_record.py --attestations "$RUNNER_TEMP/record.json" --tag "v$VERSION" --commit "$COMMIT" --source-ref "$SOURCE_REF" --dist dist
           for file in dist/sunrise-launcher-*; do
             [[ "$(verify "$file" | jq -r '[.[].verificationResult.signature.certificate.buildTrigger] | unique | join(",")')" == workflow_dispatch ]] ||
               { echo "::error::$file's provenance isn't only from a dispatch"; exit 1; }

@@ -11,11 +11,11 @@ import os
 import subprocess
 import sys
 
-try:
-    from . import lab, oracle_harness as h
-except ImportError:
-    import lab
-    import oracle_harness as h
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, oracle_harness as h
 
 TEST = 'chunk_loaded_families_keep_vanilla_lookup_and_save_order'
 
@@ -54,8 +54,8 @@ def engine():
     resources = os.environ.get('SUNRISE_TEST_RESOURCES') or str(
         lab.RESOURCES)
     return subprocess.check_output([
-        'cargo', 'test', '-p', 'sunrise-client', '--lib', TEST,
-        '--', '--ignored', '--exact', f'game::persist::lookup_order_tests::{TEST}',
+        lab.parity_fixtures(), TEST,
+        '--ignored', '--exact', f'game::persist::lookup_order_tests::{TEST}',
         '--nocapture'],
         cwd=lab.ROOT, text=True, env={**os.environ, 'SUNRISE_TEST_RESOURCES': resources})
 

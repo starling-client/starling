@@ -1,12 +1,14 @@
 //! Owning-thread, load-bound numeric bridge. Workers receive prepared values instead.
 use super::{TryIntoApi, TryIntoEngine};
-use mod_api::{BlockState, BlockStateError};
+use mod_api::{BlockState, BlockStateError, LogicalSide};
 use std::{cell::RefCell, sync::Arc};
+use sunrise_client::block_entities::{ModTickerStates, Ticking};
 use sunrise_world::registry::{BlockRegistry, BlockStateId};
 
 /// A fully checked index, inert until explicitly installed by the owning game thread.
 pub(crate) struct Index {
     forward: Vec<BlockState>,
+    mod_tickers: [Arc<ModTickerStates>; 2],
     reverse: std::collections::HashMap<mod_api::BlockKey, Vec<Option<BlockStateId>>>,
     /// Each state's block key, shared with the phase views that tell who listens.
     #[cfg(test)]
@@ -91,13 +93,94 @@ pub(crate) fn prepare(registry: &BlockRegistry) -> Result<Arc<Index>, String> {
     }
     #[cfg(test)]
     let blocks = forward.iter().map(|state| state.block()).collect();
+    let mod_tickers = prepare_mod_tickers(registry, &forward);
     Ok(Arc::new(Index {
         forward,
+        mod_tickers,
         reverse,
         #[cfg(test)]
         blocks,
     }))
 }
+pub(in crate::game) fn mod_ticker_states(side: LogicalSide) -> Arc<ModTickerStates> {
+    current().map_or_else(
+        |_| Arc::default(),
+        |index| {
+            index.mod_tickers[match side {
+                LogicalSide::Server => 0,
+                LogicalSide::Client => 1,
+            }]
+            .clone()
+        },
+    )
+}
+
+/// Bake `EntityBlock.getTicker` for the registered type and every state of its accepted blocks.
+fn prepare_mod_tickers(
+    registry: &BlockRegistry,
+    values: &[BlockState],
+) -> [Arc<ModTickerStates>; 2] {
+    use sunrise_client::block_entity_types;
+    use sunrise_client::fast_hash::FxHashMap;
+    let mut tables = [ModTickerStates::default(), ModTickerStates::default()];
+    let Some(types) = block_entity_types::current() else {
+        return tables.map(Arc::new);
+    };
+    let mut by_block = FxHashMap::<_, Vec<_>>::default();
+    for (block, kind) in types.memberships() {
+        if let Some(binding) = types.registered(kind)
+            && (binding.server_ticker.is_some() || binding.client_ticker.is_some())
+        {
+            by_block.entry(block).or_default().push(binding);
+        }
+    }
+    if by_block.is_empty() {
+        return tables.map(Arc::new);
+    }
+    let metadata = mod_api::__private::block_definitions().expect("prepared block metadata");
+    let selectors: FxHashMap<_, _> = mod_api::__private::block_entity_ticker_selectors()
+        .iter()
+        .map(|selector| (selector.kind, selector))
+        .collect();
+    for (id, &state) in values.iter().enumerate() {
+        let numeric = id as u32;
+        let block = &registry
+            .state(BlockStateId(numeric))
+            .expect("registry index")
+            .name;
+        let Some(bindings) = by_block.get(block.as_str()) else {
+            continue;
+        };
+        for binding in bindings {
+            for (table, (kind, side)) in tables.iter_mut().zip([
+                (binding.server_ticker, LogicalSide::Server),
+                (binding.client_ticker, LogicalSide::Client),
+            ]) {
+                let Some(kind) = kind else {
+                    continue;
+                };
+                let selected = selectors.get(&kind).is_none_or(|selector| {
+                    selector
+                        .owner
+                        .call("block entity ticker", "ticker_when", || {
+                            (selector.select)(metadata, state, side)
+                        })
+                        .unwrap_or(false)
+                });
+                table.insert(
+                    (numeric, binding.numeric_id),
+                    if selected {
+                        Ticking::Yes
+                    } else {
+                        Ticking::Idle
+                    },
+                );
+            }
+        }
+    }
+    tables.map(Arc::new)
+}
+
 #[cfg(test)]
 #[allow(clippy::items_after_test_module)] // TODO(#2273): move the module to the end of the file.
 mod tests {

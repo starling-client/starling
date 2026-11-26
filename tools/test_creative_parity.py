@@ -26,13 +26,11 @@ import os
 import subprocess
 import sys
 
-try:
-    from . import interaction_lab as lib, lab, test_rust_parity as base, test_model_baking_parity as baking
-except ImportError:
-    import interaction_lab as lib
-    import lab
-    import test_rust_parity as base
-    import test_model_baking_parity as baking
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import interaction_lab as lib, lab, test_rust_parity as base, test_model_baking_parity as baking
 
 PARITY = lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity'
 # Players' reports (anvil, crafting table, smithing table), other blocks of the

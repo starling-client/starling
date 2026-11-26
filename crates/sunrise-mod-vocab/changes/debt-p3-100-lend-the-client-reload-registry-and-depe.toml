@@ -1,0 +1,11 @@
+ids = [
+    "method:ClientReloadListeners::get_registry",
+    "method:ClientReloadListeners::get_graph",
+    "method:ClientReloadListeners::get_last_vanilla_listener",
+    "type:ClientReloadRegistryView",
+    "type:ClientReloadGraphView",
+    "handle:ClientReloadRegistryView::iter",
+    "handle:ClientReloadGraphView::iter",
+]
+why = "Following NeoForge's AddClientReloadListenersEvent and SortedReloadListenerEvent over vanilla's ReloadableResourceManager, client reload registration now lends the live registered names (ClientReloadRegistryView), dependency edges (ClientReloadGraphView) and vanilla anchor (&Identifier) instead of cloning them on each read, matching ServerReloadListeners. Client anchor (VanillaClientListeners::model_manager()), dependency ordering and prepare/apply ownership are unchanged."
+migrate = "For read-only loops, replace `for id in listeners.get_registry()` with `for id in listeners.get_registry().iter()` (`id: &Identifier`) and `for (first, second) in listeners.get_graph()` with `for (first, second) in listeners.get_graph().iter()` (both are `&Identifier`). For loops that call `add_dependency` or `add_listener` on `listeners`, collect the needed values first so the shared borrow ends before mutation: `listeners.get_registry().iter().cloned().collect::<Vec<_>>()` for IDs, or `listeners.get_graph().iter().map(|(first, second)| (first.clone(), second.clone())).collect::<Vec<_>>()` for edges, then iterate over the owned values and make the mutable registration calls. `listeners.get_last_vanilla_listener()` now returns `&Identifier` (still `VanillaClientListeners::model_manager()`); clone it before a later mutable registration call if you need to pass the ID to `add_dependency`."

@@ -3,10 +3,12 @@
 from contextlib import nullcontext
 import signal
 
-try:
-    from . import save_fault_harness as h
-except ImportError:
-    import save_fault_harness as h
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import save_fault_harness as h
 
 NEW_SPAWN = (2, 5, 0)
 NEW_ITEM = 'gold_ingot'

@@ -1,4 +1,4 @@
-use crate::crafting::ResolvedSources;
+use crate::crafting::{ParsedStationRecipe, ResolvedSources};
 use serde_json::{Value, json};
 use sunrise_world::native_load_context::{DataLoadOrigin, LoadContext, LoadInputs};
 
@@ -69,7 +69,7 @@ fn custom_ingredient_tags_reach_the_bound_predicate() {
             };
             let sources = load(source.clone()).unwrap();
             let crate::crafting::DecodedRecipe::Station {
-                recipe: crate::stations::ParsedStationRecipe::Stonecutting(cut),
+                recipe: ParsedStationRecipe::Stonecutting(cut),
                 ..
             } = sources.recipes[0].decoded()
             else {
@@ -153,7 +153,7 @@ fn custom_ingredient_scalars_reach_hook_with_narrowest_width() {
             )
             .unwrap();
             let crate::crafting::DecodedRecipe::Station {
-                recipe: crate::stations::ParsedStationRecipe::Stonecutting(cut),
+                recipe: ParsedStationRecipe::Stonecutting(cut),
                 ..
             } = sources.recipes[0].decoded()
             else {

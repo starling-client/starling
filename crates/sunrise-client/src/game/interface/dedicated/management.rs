@@ -245,7 +245,10 @@ impl Game<'_> {
                 rpc(format!(
                     "Update simulation distance from {current} to {distance}"
                 ));
-                self.set_simulation_distance(distance);
+                // Update the live PlayerList without the mod API's input range.
+                if !self.set_simulation_distance(distance) {
+                    return json!({ "error": "no server player list" });
+                }
                 state.view.1 = distance.max(0) as u32;
                 self.store_property("simulation-distance", distance.to_string());
                 return json!({
@@ -272,7 +275,9 @@ impl Game<'_> {
                     .as_ref()
                     .map_or(0, |host| host.hub.config.view_distance);
                 rpc(format!("Update view distance from {current} to {distance}"));
-                self.set_view_distance(distance);
+                if !self.set_view_distance(distance) {
+                    return json!({ "error": "no server player list" });
+                }
                 state.view.0 = distance.max(0) as u32;
                 self.store_property("view-distance", distance.to_string());
                 return json!({
@@ -788,7 +793,7 @@ impl Game<'_> {
     }
 
     /// An `OperatorDto`: the player found, and the level and bypass when given.
-    fn management_op(&self, entry: &Value) -> Option<Op> {
+    fn management_op(&mut self, entry: &Value) -> Option<Op> {
         Some(Op {
             user: self.management_user(&entry["player"])?,
             level: entry["permissionLevel"].as_i64().map(|l| l as i32),
@@ -819,7 +824,7 @@ impl Game<'_> {
 
     /// `UserBanDto.toUserBan`: the player found, the source "Management server" unless one is given; the ban
     /// starts now.
-    fn management_ban(&self, entry: &Value) -> Option<Ban> {
+    fn management_ban(&mut self, entry: &Value) -> Option<Ban> {
         let user = self.management_user(&entry["player"])?;
         let source = entry["source"].as_str().unwrap_or("Management server");
         let reason = entry["reason"].as_str().map(str::to_owned);
@@ -833,16 +838,12 @@ impl Game<'_> {
 
     /// `MinecraftPlayerListService.getUser`: by id, the user cache, else the session service; by name, the
     /// user cache, else the profile service (an offline server's offline player).
-    fn management_user(&self, player: &Value) -> Option<NameAndId> {
+    fn management_user(&mut self, player: &Value) -> Option<NameAndId> {
         if let Some(id) = player["id"]
             .as_str()
             .and_then(|s| u128::from_str_radix(s, 16).ok())
         {
-            let cached = super::USER_CACHE
-                .lock()
-                .unwrap()
-                .as_mut()
-                .and_then(|c| c.get_by_id(id));
+            let cached = self.user_cache.as_mut().and_then(|c| c.get_by_id(id));
             return cached.or_else(|| profiles::find_by_id(&profiles::discovery_url(), id));
         }
         self.resolve_name(player["name"].as_str()?)
@@ -864,6 +865,101 @@ fn management_ip_ban(entry: &Value, ip: String) -> IpBan {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "daily"]
+    fn management_view_distance_advertises_raw_but_bounds_loading_and_tracking() {
+        use crate::game::{
+            execution_role::ExecutionRole, native_entity_refs::tests::fixture_root,
+            native_guest_turn_tests::with_guests_for_role,
+        };
+        use std::{
+            path::Path,
+            sync::{Arc, Mutex, mpsc},
+            time::Instant,
+        };
+        use sunrise_client::{
+            lan::{Out, PlayerSender},
+            server::properties::{ServerProperties, SystemEntropy},
+            server_perf::ServerPerf,
+        };
+        use sunrise_protocol::{buf::Reader, packets::play::Clientbound as C};
+
+        crate::game::in_own_process(
+            "game::dedicated::management::tests::management_view_distance_advertises_raw_but_bounds_loading_and_tracking",
+            || {
+                with_guests_for_role(fixture_root(), ExecutionRole::DedicatedServer, |game| {
+                    let directory = tempfile::tempdir().unwrap();
+                    let previous = std::env::current_dir().unwrap();
+                    std::env::set_current_dir(directory.path()).unwrap();
+                    let properties = Path::new("server.properties");
+                    std::fs::write(properties, "view-distance=10\n").unwrap();
+                    let (_console, console) = mpsc::channel();
+                    let mut state = ServerState {
+                        lists: Arc::new(Mutex::new(super::super::Lists::load())),
+                        console,
+                        empty_ticks: 0,
+                        pause_when_empty_seconds: 0,
+                        ticks: Default::default(),
+                        paused: false,
+                        broadcast_console: false,
+                        broadcast_rcon: false,
+                        op_level: 4,
+                        report: None,
+                        memory_due: None,
+                        perf: ServerPerf::new(0.0, 50.0),
+                        perf_epoch: Instant::now(),
+                        sunrise: Default::default(),
+                        view: (10, 2),
+                        max_players: 2,
+                        compression: 256,
+                        game_mode: 0,
+                        force_game_mode: false,
+                    };
+                    let (tx, received) = mpsc::channel();
+                    let hub = &mut game.lan.as_mut().unwrap().hub;
+                    hub.update_guest(12, |guest| {
+                        guest.info.view_distance = 64;
+                        guest.sender = PlayerSender::new(tx, Arc::default());
+                    })
+                    .unwrap();
+
+                    for (advertised, effective) in [(i32::MAX, 32), (1, 2)] {
+                        let result = game.management(&mut state, &format!(r#"1 {{"method":"serversettings/view_distance/set","value":{advertised}}}"#));
+                        assert_eq!(result, json!({"value": advertised}));
+                        let Out::Packet(packet) = received.try_recv().unwrap() else {
+                            panic!("expected the advertised radius packet");
+                        };
+                        let mut reader = Reader::new(&packet);
+                        let id = reader.varint().unwrap();
+                        let C::SetChunkCacheRadius(radius) = C::decode(id, reader.rest()).unwrap()
+                        else {
+                            panic!("expected SetChunkCacheRadius");
+                        };
+                        assert_eq!(radius.distance, advertised);
+                        let persisted =
+                            ServerProperties::from_file(properties, &mut SystemEntropy::default())
+                                .unwrap();
+                        assert_eq!(persisted.view_distance, advertised);
+
+                        game.update_dedicated_streaming();
+                        assert_eq!(game.streaming.radius, effective);
+                        game.lan_update_streaming();
+                        assert!(!game.streaming.extra.is_empty());
+                        assert!(
+                            game.streaming
+                                .extra
+                                .iter()
+                                .all(|&(_, radius)| radius == effective + 1)
+                        );
+                        let hub = &game.lan.as_ref().unwrap().hub;
+                        assert_eq!(hub.guest(12).unwrap().view_distance, effective);
+                    }
+                    std::env::set_current_dir(previous).unwrap();
+                })
+            },
+        );
+    }
 
     #[test]
     #[ignore = "daily"]

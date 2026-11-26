@@ -12,10 +12,11 @@ block position (`LeashData.CODEC`). The numbers in each reply are compared exact
 import re
 import sys
 
-try:
-    from . import test_locator_bar_parity as locator
-except ImportError:
-    import test_locator_bar_parity as locator
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_locator_bar_parity as locator
 
 NAME = 'leash-knot-uuid-parity'
 KNOT = '[I;7193,0,0,1]'

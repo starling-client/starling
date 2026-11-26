@@ -402,6 +402,23 @@ pub struct ItemDefaults {
 }
 
 impl ItemDefaults {
+    /// Decode the same default-component report accepted by [`read`], from in-memory bytes.
+    /// This codec does not run native load events.
+    pub fn decode(bytes: &[u8]) -> io::Result<Self> {
+        let mut entries: BTreeMap<String, Value> = serde_json::from_slice(bytes)?;
+        for components in entries.values_mut() {
+            if let Some(value) = components.get_mut(STACK_SIZE)
+                && let Some(size) = stack_size(value, VANILLA_MAX_STACK_SIZE)
+            {
+                *value = size.into();
+            }
+        }
+        Ok(Self {
+            entries,
+            generation: next_generation(),
+        })
+    }
+
     pub fn entries(&self) -> &BTreeMap<String, Value> {
         &self.entries
     }
@@ -446,19 +463,7 @@ impl ItemDefaults {
 /// vanilla's `1..=99`. This is a codec, not a native firing boundary: the owning
 /// loader calls `apply_native` once, then publishes the immutable snapshot.
 pub fn read(root: &Path) -> io::Result<ItemDefaults> {
-    let mut entries: BTreeMap<String, Value> =
-        serde_json::from_slice(&fs::read(root.join("items.json"))?)?;
-    for components in entries.values_mut() {
-        if let Some(value) = components.get_mut(STACK_SIZE)
-            && let Some(size) = stack_size(value, VANILLA_MAX_STACK_SIZE)
-        {
-            *value = size.into();
-        }
-    }
-    Ok(ItemDefaults {
-        entries,
-        generation: next_generation(),
-    })
+    ItemDefaults::decode(&fs::read(root.join("items.json"))?)
 }
 
 #[cfg(test)]

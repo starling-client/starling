@@ -432,6 +432,7 @@ mod validity_tests {
         let mut types = BlockEntityTypes::new(
             BTreeMap::new(),
             vec!["minecraft:chest".into(), "minecraft:trapped_chest".into()],
+            [],
         );
         types.template(
             "minecraft:trapped_chest".into(),

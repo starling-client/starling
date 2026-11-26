@@ -8,12 +8,17 @@ In a mod folder, `cargo sunrise-mod` does this for you from the SDK it fetched i
 - `cargo sunrise-mod build` packs the list into the package as `uses.json`, with each item's fingerprint at the
   pinned build, and each mixin target, loop and internal the manifest declares with its fingerprint there. A mod
   with a `[[native.module]]` or `[[native.bridge]]` row is made for exactly one build and gets no list.
-- `cargo sunrise-mod fits` says, one line per build, whether the mod fits the current Nightly, or each build
-  `--build` names. `cargo sunrise-mod fits greeter.smod --build nightly-2026-11-20` asks the same of a package.
+- `cargo sunrise-mod check --build nightly` asks whether the mod fits the current Nightly.
+  Repeat `--build` for a report on each named build, or pass a package:
+  `cargo sunrise-mod check greeter.smod --build nightly-2026-11-20`.
+  This is a fit report instead of the ordinary check; it takes only the build names and optional package path.
   It exits 0 when every build fits, 1 when one does not, and 2 when it cannot tell or the question does not
   apply (a mod made for one build, a content mod, or a package with no `uses.json`).
-- `cargo sunrise-mod update` prints what moving the pin breaks in this mod, item by item with the line that uses
-  it and the closest item in the new build, then moves the pin.
+- `cargo sunrise-mod pin [<build>]` reports what moving the pin breaks, where the mod uses each changed item,
+  and the closest replacement it can find, then moves the pin. With no build given it pins the current Nightly.
+  It prints the change notes (why and `migrate`) of every SDK between the two pins for the items the mod uses
+  that changed; `cargo sunrise-mod check` prints the same notes after a compile error they explain. Each SDK's
+  release page lists the notes since the SDK before it.
 - `cargo sunrise-mod hooks <text>` searches the pinned build's hooks by id, doc and their NeoForge, Fabric and
   Paper names, offline; `--all` searches every item. `cargo sunrise-mod sdk diff <build> <build>` prints what
   changed between two builds, from their small files alone, so it works for builds whose game files are pruned.
@@ -41,7 +46,7 @@ the type's trait impls and the public paths the mod writes it by. For each struc
 whether the mod builds it in full, with `..`, or not at all, and the field set when built in full. For a trait's
 member, it records every host trait in the mod's list that leads to the member's trait.
 
-`fits` exits 0 when the mod fits (`fits (N items, made for BUILD)`). It exits 1 when it does not, printing
+`sunrise-stage fits` exits 0 when the mod fits (`fits (N items, made for BUILD)`). It exits 1 when it does not, printing
 `does not fit: K of the N items it uses changed` and one line per changed item, for example
 ``the method `PlayersHost::player` (removed)`` or
 ``the type `DimensionSettings` gained the field `ultrawarm`, and `src/world.rs:12` builds it field by field``.
@@ -98,6 +103,6 @@ source cannot be judged, and the program that asked carries on. On Linux the pro
 15 seconds bound it.
 
 This by-hand check covers the mod API's items. The game code a mod declares is compared by
-`cargo sunrise-mod fits`, from the target build's build data; `sunrise-stage` refuses such a mod and such a list
-by name. A mod with a `[[native.module]]` or `[[native.bridge]]` row is made for exactly one build, and no check
+`cargo sunrise-mod check --build <name>`, from the target build's build data; `sunrise-stage` refuses such a mod
+and such a list by name. A mod with a `[[native.module]]` or `[[native.bridge]]` row is made for exactly one build, and no check
 applies to it. A mod that fits is still compiled against the target build, and the binary built is exact to that build.

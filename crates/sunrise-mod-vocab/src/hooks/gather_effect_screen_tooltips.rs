@@ -15,7 +15,8 @@ pub trait Hooks {
         side = "client",
         contract = "listen",
         neoforge = "GatherEffectScreenTooltipsEvent",
-        cancellable = false
+        cancellable = false,
+        version = 2
     )]
     fn gather_effect_screen_tooltips(
         screen: &ScreenView<'_>,

@@ -7,8 +7,11 @@ pub trait Hooks {
     /// before listeners answer; item declarations are included in those poses.
     /// Set `pose` to a vanilla or registered custom pose and it
     /// replaces what the item would give, whatever the use animation, a loaded crossbow or the
-    /// item's own `arm_pose` declaration say; leave it unset to keep those. Asked once a
-    /// tick per humanoid model and non-empty hand, never for an empty hand. A two-handed
+    /// item's own `arm_pose` declaration say; leave it unset to keep those. Asked once per
+    /// draw per humanoid model and non-empty hand (vanilla's `AvatarRenderer.extractRenderState`
+    /// → `getArmPose` runs at extraction, every frame), never for an empty hand, so the swing
+    /// `humanoid.is_swinging` reports is the one `setupAnim` poses with on that draw. Abstain
+    /// while it is set to keep a held pose from fighting the swing. A two-handed
     /// pose (`bow_and_arrow`, `crossbow_hold`, `crossbow_charge`) still poses the other hand as
     /// vanilla's does. Vanilla's `spear` pose poses an arm only for an
     /// item with a kinetic weapon. Register a custom pose with `ArmPosesRegistrar`,
@@ -20,6 +23,7 @@ pub trait Hooks {
         dispatch = "flat",
         side = "client",
         contract = "replace",
+        version = 2,
         out = "pose",
         neoforge = "IClientItemExtensions.getArmPose"
     )]

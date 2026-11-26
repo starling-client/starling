@@ -24,12 +24,12 @@ import tempfile
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import lab  # noqa: E402
-from integration_env import run_game  # noqa: E402
-from test_dedicated_server_parity import Server  # noqa: E402
-
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab
+from tools.integration_env import run_game
+from tools.test_dedicated_server_parity import Server  # noqa: E402
+
 PLAYER = 'Tester'
 PROPERTIES = {
     'online-mode': 'false',

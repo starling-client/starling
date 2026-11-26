@@ -18,7 +18,7 @@ the stack contains more than one item. Keep your `mod_api` dependency and add se
 use mod_api::{
     ClientHost, Hooks, Identifier, RegisterSpecialModelRendererEvent, RegistrationContext,
     SpecialModelCollector, SpecialModelContext, SpecialModelFactory, SpecialModelGeometry,
-    SpecialModelRenderer, SpecialModelStack, SpecialModelTints,
+    SpecialModelRenderer, SpecialModelStack, SpecialModelSubmitOptions, SpecialModelTints,
 };
 
 #[derive(serde::Deserialize)]
@@ -48,7 +48,11 @@ impl SpecialModelRenderer for Skillet {
         _context: &SpecialModelContext,
         collector: &mut SpecialModelCollector<'_>,
     ) -> Result<(), String> {
-        collector.submit_geometry(&self.pan, SpecialModelTints::Untinted)?;
+        collector.submit_model(
+            &self.pan,
+            SpecialModelTints::Untinted,
+            SpecialModelSubmitOptions::default(),
+        )?;
         if *show_food {
             let pose = [
                 1.0, 0.0, 0.0, 0.0,
@@ -56,7 +60,11 @@ impl SpecialModelRenderer for Skillet {
                 0.0, 0.0, 1.0, 0.0,
             ];
             collector.with_pose(pose, |child| {
-                child.submit_geometry(&self.food, SpecialModelTints::Untinted)
+                child.submit_model(
+                    &self.food,
+                    SpecialModelTints::Untinted,
+                    SpecialModelSubmitOptions::default(),
+                )
             })?;
         }
         Ok(())
@@ -125,10 +133,14 @@ tick. The game does not cache the renderer's draw output.
 
 ## Submit geometry and nested stacks
 
-- `submit_geometry(&lease, tints)` submits baked geometry under the current pose. Use
+- `submit_model(&lease, tints, options)` submits baked geometry under the current pose. Use
   `SpecialModelTints::Untinted`, `Uniform(argb)` for every quad, or `Indexed(palette)` with a
   shared `Arc<[u32]>` indexed by quad tint index. Colors are packed ARGB. With an indexed
-  palette, an unindexed quad or a missing entry draws white before lighting.
+  palette, an unindexed quad or a missing entry draws white before lighting. Pass
+  `SpecialModelSubmitOptions::default()` to inherit draw light, baked render type, and diffuse
+  shading, or override `packed_light` (vanilla `LightCoordsUtil` bit layout), `render_type`
+  (`Baked`, `ItemCutout`, `ItemTranslucent`, or `Custom(RenderTypeRef)`), and `lighting`
+  (`Diffuse` or `LightmapOnly`) per submission.
 - `with_pose(transform, |child| ...)` lends a collector at a child pose. The transform is a
   row-major 3×4 affine; the current pose multiplies it on the left, and the composed pose must
   be finite. Model space is in blocks from the model's corner (element coordinates divided by

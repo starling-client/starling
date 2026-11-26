@@ -1,0 +1,3 @@
+ids = ["method:LevelHost::is_raining", "method:LevelHost::sky_darken"]
+why = "The level view block parts and crop hooks receive reads the level's own weather and sky darkening (Level.isRaining, Level.getSkyDarken), so a random tick can test rain or LevelReader.getMaxLocalRawBrightness as SaplingBlock.randomTick does, in the tick and in vanilla's random order (#5317)."
+migrate = "Additive. Both return None in a callback whose level view has no weather (the friction and hit hooks)."

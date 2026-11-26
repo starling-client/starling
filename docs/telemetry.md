@@ -115,7 +115,7 @@ writes a sentence, sees the whole issue as it will be posted, and clicking Send 
 
 The game fills in the technical part itself, scrubbed as the rest of this page says (`scrub::Scrubber`): no
 account, UUID, install ID, server address, world name or coordinates. `POST /v1/report` on the telemetry server
-takes it and opens a public issue in horizon-rust/horizon:
+takes it and opens a public issue in `sunrise-org/sunrise`:
 
 | Field | Needed | What |
 |---|---|---|
@@ -154,7 +154,7 @@ notifications.
 - `GET /v1/live/history?range=24h|7d|30d|all&series=players|official`: the live count, or the configured server's, over time (above).
 - `POST /v1/report`: a bug report from the game, opened as a GitHub issue ([above](#bug-reports-from-the-game)).
 
-Public output never holds a raw hardware value, only these classes (`src/classes.rs`, the same in the website's `scripts/benchmarks.mjs`, horizon-rust/horizon-site), and a class is published only with at least 3 different installs:
+Public output never holds a raw hardware value, only these classes (`src/classes.rs`, the same in the website's `scripts/benchmarks.mjs`, `sunrise-org/sunny`), and a class is published only with at least 3 different installs:
 
 | Breakdown | Classes |
 |---|---|

@@ -12,7 +12,9 @@ use crate::{
         CausingEntity, PlayerHurtWorld, ServerPlayerHurtWorld, server_player_hurt_server,
         server_player_hurt_until_helmet,
     },
-    server_player_damage::{ServerDamageEnvironment, ServerDamageError, ServerPlayerDamage},
+    server_player_damage::{
+        PlayerBodyRead, ServerDamageEnvironment, ServerDamageError, ServerPlayerDamage,
+    },
     synced_floats::{DataError, SyncedFloats},
 };
 use std::io;
@@ -24,6 +26,25 @@ pub trait CombatEnvironment<A: HealthAttributes = EntityAttributes>:
 {
     /// Direct death flag, read only after health fails the native <= zero test.
     fn dead_flag(&self) -> bool;
+    /// [`HurtWorld::hurt_start`] with the player's body lent for reading. The default ignores it.
+    fn hurt_start_with(
+        &mut self,
+        state: &mut HurtState<<Self as HurtWorld>::Source>,
+        container: &mut DamageContainer,
+        _body: PlayerBodyRead<'_, A>,
+    ) -> Result<bool, Error<Self>> {
+        HurtWorld::hurt_start(self, state, container)
+    }
+    /// [`HurtWorld::damage_post`] with the player's body lent for reading. The default ignores
+    /// it.
+    fn damage_post_with(
+        &mut self,
+        state: &mut HurtState<<Self as HurtWorld>::Source>,
+        container: DamageContainer,
+        _body: PlayerBodyRead<'_, A>,
+    ) -> Result<(), Error<Self>> {
+        HurtWorld::damage_post(self, state, container)
+    }
 }
 pub struct ServerPlayerCombat<'a, E, A: HealthAttributes = EntityAttributes> {
     attributes: &'a mut A,
@@ -179,7 +200,13 @@ impl<A: HealthAttributes, E: CombatEnvironment<A>> HurtWorld for ServerPlayerCom
         state: &mut HurtState<Self::Source>,
         container: &mut DamageContainer,
     ) -> Result<bool, Self::Error> {
-        HurtWorld::hurt_start(self.environment, state, container)
+        let body = PlayerBodyRead {
+            attributes: &*self.attributes,
+            data: &*self.data,
+            ids: self.ids,
+        };
+        self.environment
+            .hurt_start_with(state, container, body)
             .map_err(ServerDamageError::Environment)
     }
     fn sleeping(&mut self, state: &mut HurtState<Self::Source>) -> Result<bool, Self::Error> {
@@ -322,7 +349,13 @@ impl<A: HealthAttributes, E: CombatEnvironment<A>> HurtWorld for ServerPlayerCom
         state: &mut HurtState<Self::Source>,
         container: DamageContainer,
     ) -> Result<(), Self::Error> {
-        HurtWorld::damage_post(self.environment, state, container)
+        let body = PlayerBodyRead {
+            attributes: &*self.attributes,
+            data: &*self.data,
+            ids: self.ids,
+        };
+        self.environment
+            .damage_post_with(state, container, body)
             .map_err(ServerDamageError::Environment)
     }
 }

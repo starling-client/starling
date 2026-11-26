@@ -1,5 +1,10 @@
 """Frozen-world contact via real player ticks and read-only player progress."""
-from command_exec_corpus import cmd
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools.command_exec_corpus import cmd
 
 IDS = ['h311:any', 'h311:fish_source', 'h311:wrong_source']
 

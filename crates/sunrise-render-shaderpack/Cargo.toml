@@ -20,6 +20,12 @@ sunrise-render-core = { path = "../sunrise-render-core" }
 sunrise-shaders = { path = "../sunrise-shaders" }
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "vulkan", "metal", "wgsl", "naga-ir"] }
 
+[dev-dependencies]
+# tests/spirv_dump.rs writes every program as SPIR-V and hashes it.
+naga = { version = "30.0.1", features = ["wgsl-in", "glsl-in", "hlsl-out", "spv-out"] }
+sha2 = "0.10.9"
+tempfile = "3"
+
 [lints]
 workspace = true
 

@@ -1,5 +1,4 @@
 //! The `player_teleported` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0264
 
 pub trait Hooks {
     /// A server player a command teleported (NeoForge's

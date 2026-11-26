@@ -4,8 +4,18 @@ pub trait Hooks {
     /// The authoritative tick of one general entity row of type `kind`
     /// (`mymod:robot`) in the server level's entity phase:
     /// `ServerLevel.tickNonPassenger`'s `entity.tick()` for a row the type
-    /// registry owns (#792 stage 4). The row's common bookkeeping has run
-    /// (its previous position is its current one); a rider is ticked after
+    /// registry owns (#792 stage 4). The row's `Entity.commonTick` and
+    /// `Entity.baseTick` have run first: its tick count went up, its previous
+    /// position is its current one, its boarding cooldown counted down, and
+    /// `updateFluidInteraction` refreshed its fluids (the eye is `0.85` of the
+    /// type's height above its feet), pushed its velocity by a current
+    /// (`isPushedByFluid`; a riding row's velocity is zeroed first, as
+    /// `rideTick` does, and the current then pushes it too), reset its fall
+    /// distance in water and halved it in lava. A row below the world
+    /// (`y < min_y - 64`, `checkBelowWorld`) is discarded there and hears no
+    /// tick. Nothing applies gravity or moves the row: the listener's own
+    /// gravity, drag and `move_by` do, as a vanilla `Entity` subclass's
+    /// `tick()` does. A rider is ticked after
     /// its vehicle, depth-first as `tickPassenger` recurses. A passenger
     /// dismounted before its join-order slot can tick as a root if it has
     /// not already ticked this pass. Rows that joined this tick first tick
@@ -30,7 +40,7 @@ pub trait Hooks {
         scope = "entity",
         key = "kind",
         neoforge = "none (vanilla Entity.tick has no part-scoped counterpart; NeoForge's EntityTickEvent is the global pre/post pair)",
-        version = 2
+        version = 3
     )]
     fn general_entity_tick(kind: &str, subject: mod_api::EntityServerScope<'_>);
 }

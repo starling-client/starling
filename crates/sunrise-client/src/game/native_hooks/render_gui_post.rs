@@ -1,17 +1,27 @@
 use super::*;
 
-/// The hook points. Each does nothing in Sunrise.
+/// Post-HUD hook (`RenderGuiEvent.Post`) and drawn HUD layer bounds queries.
 impl Game<'_> {
-    /// After the whole HUD walk, including under F1 (`RenderGuiEvent.Post`). Place a box with
-    /// `corners.place` (boxes stack away from their edge) and
-    /// draw it with `native_fill` and `native_text`. Skip a corner
-    /// `native_corner_shown` says is taken.
-    pub(in crate::game) fn native_render_gui_post(
+    /// After the complete in-world HUD layer walk (including under F1) and before screens,
+    /// toasts, debug overlays and IME draw (`RenderGuiEvent.Post`).
+    pub(in crate::game) fn native_render_gui_post(&self, draw: &mut HudBatch) {
+        self.fire_render_gui_post(draw);
+    }
+
+    /// Bounding rectangle `[x, y, width, height]` in GUI pixels of a HUD layer drawn
+    /// during the current HUD pass (`ScreensClientHost::hud_layer_bounds`).
+    pub(in crate::game) fn hud_layer_bounds(
         &self,
-        draw: &mut HudBatch,
-        corners: &mut Corners,
-    ) {
-        self.fire_render_gui_post(draw, corners);
+        layer: &str,
+    ) -> Result<Option<[f32; 4]>, mod_api::LevelReadError> {
+        if !self.native_window() || self.lan_acting.is_some() {
+            return Err(mod_api::LevelReadError::Unavailable);
+        }
+        Ok(self
+            .hud_layer_bounds
+            .iter()
+            .rev()
+            .find_map(|&(id, rect)| (id == layer).then_some(rect)))
     }
 }
 
@@ -22,17 +32,27 @@ mod tests {
     #[test]
     #[ignore = "daily"]
     fn panicking_hud_draw_discards_quads_and_reservations_before_next_listener() {
-        use mod_api::{ClientHost, Corner, Hooks, ModEntry, RenderGuiPostEvent};
+        use crate::game::native_entity_refs::tests::{run_fresh_cases, with_client_game};
+        use mod_api::{ClientHost, Hooks, ModEntry, RenderGuiPostEvent};
+
+        const NAME: &str = "game::native_hooks::render_gui_post::tests::panicking_hud_draw_discards_quads_and_reservations_before_next_listener";
+        if run_fresh_cases(NAME, "SUNRISE_GUI_POST_PANIC", &["run"]) {
+            return;
+        }
 
         struct Draws(bool);
         #[mod_api::__subscriptions]
         impl Hooks for Draws {
             fn render_gui_post(&self, _: &dyn ClientHost, event: &mut RenderGuiPostEvent<'_>) {
-                let (x, y) = event.corners.place(Corner::TopLeft, 12.0, 12.0);
+                let (x, y) = (2.0, 2.0);
                 if self.0 {
-                    event.draw.push_clip([x, y, 5.0, 5.0]).unwrap();
-                    event.draw.fill([x, y, 12.0, 12.0], 0xffff_0000);
-                    panic!("discard my drawing");
+                    event
+                        .draw
+                        .with_scissor([x, y, 5.0, 5.0], &mut |draw| {
+                            draw.fill([x, y, 12.0, 12.0], 0xffff_0000);
+                            panic!("discard my drawing");
+                        })
+                        .unwrap();
                 }
                 event.draw.fill([x, y, 12.0, 12.0], 0xff00_ff00);
             }
@@ -44,13 +64,13 @@ mod tests {
         ]
         .into();
         mod_platform::testing::with_mods(mods, || {
-            crate::game::native_entity_refs::tests::with_client_game(|game| {
+            with_client_game(|game| {
                 let mut batch = HudBatch::scratch([640, 480]);
-                let mut corners = Corners::new(batch.width, batch.height, 0.0);
-                game.native_render_gui_post(&mut batch, &mut corners);
+                game.native_render_gui_post(&mut batch);
                 assert_eq!(batch.vertices.len(), 6);
                 assert!(batch.vertices.iter().all(|v| v.color == 0xff00_ff00));
                 assert_eq!(batch.vertices[0].pos, [2.0, 2.0]);
+                assert!(batch.vertices.iter().any(|v| v.pos == [14.0, 14.0]));
                 assert_eq!(mod_api::__private::take_hook_panics().len(), 1);
             });
         });

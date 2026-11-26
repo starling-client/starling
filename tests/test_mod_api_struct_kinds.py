@@ -82,9 +82,47 @@ class StructKindFixtures(unittest.TestCase):
             'impl Default for A { fn default() -> Self { A { x: 0 } } }\n'
             'impl B { pub fn new(x: u8) -> Self { B { x } } pub fn x(&self) -> u8 { self.x } }\n'
             'impl C { pub fn x(&self) -> Self { todo!() } }\n'
-            'impl D { pub fn parse(s: &str) -> Option<Self> { None } }')
+            'impl D { pub fn parse(s: &str) -> Option<Self> { None } }\n'
+            'impl Const { pub const fn new() -> Self { todo!() } }\n'
+            'impl Async { pub async fn new() -> Async { todo!() } }\n'
+            'impl Unsafe { pub unsafe fn new() -> Self { todo!() } }\n'
+            'impl ConstUnsafe { pub const unsafe fn new() -> Self { todo!() } }\n'
+            'impl Restricted { pub(crate) const fn new() -> Self { todo!() } }\n'
+            'impl Method { pub const fn copy(&self) -> Self { todo!() } }\n'
+            'impl NestedConst { pub fn get(&self) -> u8 { pub const fn make() -> NestedConst { todo!() } 0 } }\n'
+            'impl NestedPlain { fn helper() { pub fn make() -> NestedPlain { todo!() } } }')
         self.assertEqual(defaults, {('', ('A',))})
-        self.assertEqual(constructors, {('', ('B',)), ('', ('D',))})
+        self.assertEqual(constructors, {('', (name,)) for name in (
+            'B', 'D', 'Const', 'Async', 'Unsafe', 'ConstUnsafe')})
+
+    def test_associated_item_macro_tokens_are_not_a_constructor(self):
+        for invocation in ('tokens!(fn);', 'tokens![fn];', 'tokens!{fn}',
+                           'tokens!(pub fn fake() -> Self {});'):
+            with self.subTest(invocation=invocation):
+                _, constructors = defaults_and_constructors(f'impl A {{ {invocation} }}')
+                self.assertEqual(constructors, set())
+
+    def test_incomplete_function_header_is_not_a_constructor(self):
+        _, constructors = defaults_and_constructors('impl A { pub fn incomplete; }')
+        self.assertEqual(constructors, set())
+
+    def test_generic_constructor_is_found(self):
+        _, constructors = defaults_and_constructors(
+            'impl A { pub fn new<T: Fn()>(f: T) -> Self { todo!() } }')
+        self.assertEqual(constructors, {('', ('A',))})
+
+    def test_constructor_param_path_is_not_a_self_receiver(self):
+        _, constructors = defaults_and_constructors(
+            'impl A { pub fn new(value: self::Input) -> Self { todo!() } }')
+        self.assertEqual(constructors, {('', ('A',))})
+
+    def test_self_receivers_are_not_constructors(self):
+        for receiver in ('self', 'mut self', 'self: Box<Self>', '&self', '&mut self',
+                         "&'static mut self", '#[allow(unused)] self'):
+            with self.subTest(receiver=receiver):
+                _, constructors = defaults_and_constructors(
+                    f'impl A {{ pub fn copy({receiver}) -> Self {{ todo!() }} }}')
+                self.assertEqual(constructors, set())
 
     def test_arrow_where_and_unrelated_built(self):
         self.assertFalse(kinds('pub struct A { pub cb: fn() -> u8, private: u8 }')['A'][2])

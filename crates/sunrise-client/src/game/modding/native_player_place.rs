@@ -1,13 +1,20 @@
 //! Placement-state reads, placement writes and the `Block.setPlacedBy` step.
-use super::{Game, api_values::block_state::block_listens, native_server::PlayerRead};
+use super::{
+    Game, api_values::block_state::block_listens, native_entity_refs::block_face_direction,
+    native_server::PlayerRead, transactions::After,
+};
 use mod_api::{
-    BlockKey, BlockUpdateFlags, HookId, LevelReadError, LevelRef, LevelWriteError, PlayerRef,
-    PlayerWorldRefusal as Refusal,
+    BlockFace, BlockKey, BlockUpdateFlags, HookId, LevelRef, LevelWriteError, PlacementStateError,
+    PlayerRef, PlayerWorldRefusal as Refusal,
 };
 use sunrise_client::{containers::BlockEntity, items::ItemStack};
 use sunrise_core::{geometry::Vec3, position::BlockPos};
 use sunrise_world::{
-    level::{PlacementContext, classes::Class},
+    level::{
+        PlacementContext,
+        classes::Class,
+        ticks::{PlacementEffect, PlacementOperation},
+    },
     registry::BlockStateId,
 };
 
@@ -30,21 +37,13 @@ impl Game<'_> {
         level: LevelRef,
         pos: [i32; 3],
         state: BlockStateId,
+        face: BlockFace,
         update_neighbour_shapes: bool,
     ) -> Result<(), Refusal> {
         if !self.is_logical_server() {
             return Err(Refusal::Client);
         }
-        let dead = match self.player_handle_read(player).ok_or(Refusal::Stale)? {
-            PlayerRead::Acting { .. } => self
-                .player
-                .as_ref()
-                .is_none_or(|p| p.health.health() <= 0.0),
-            PlayerRead::Guest(g) => g.dead,
-        };
-        if dead {
-            return Err(Refusal::Dead);
-        }
+        self.validate_placement_player(player)?;
         if self.pack.assets.registry.state(state).is_none() {
             return Err(Refusal::UnknownState);
         }
@@ -74,32 +73,144 @@ impl Game<'_> {
         {
             return Err(Refusal::Fenced);
         }
-        // The write is `level_set_block`'s, on the level as it stands (a guest's turn is not
-        // the authoritative level); only `setPlacedBy` runs in the player's turn.
-        match self.level_set_block(level, pos, state, flags) {
-            Ok(true) => {}
-            Ok(false) => return Err(Refusal::Unchanged),
-            Err(_) => return Err(Refusal::Stale),
+        let listens = mod_api::__private::listened(HookId::EntityPlace);
+        if !listens && self.transactions.is_empty() && !block_listens(HookId::SetPlacedBy, state) {
+            if !self
+                .level_set_block(level, pos, state, flags)
+                .map_err(|_| Refusal::Stale)?
+            {
+                return Err(Refusal::Unchanged);
+            }
+            return self
+                .native_as_player_handle(player, |game| {
+                    game.run_mod_placement_callback(pos, state, None);
+                })
+                .then_some(())
+                .ok_or(Refusal::Stale);
         }
-        let ran = self.native_as_player_handle(player, |game| {
-            game.run_mod_placement_callback(pos, state, None);
-        });
-        if ran { Ok(()) } else { Err(Refusal::Stale) }
+
+        self.storage_transaction(|game, _| {
+            use super::journal_level_write::JournalLevelWrite;
+            game.begin_placement_capture();
+            if !JournalLevelWrite::new(game, level)
+                .ok_or(Refusal::StaleLevel)?
+                .write_block(pos, state, flags.bits())
+            {
+                return Err(Refusal::Unchanged);
+            }
+            let mut callback = Ok(());
+            if !game.native_as_player_handle(player, |game| {
+                callback = game.stage_placement_callback(level, pos, state, None);
+            }) {
+                return Err(Refusal::Stale);
+            }
+            callback?;
+            if !listens {
+                return Ok(());
+            }
+            let writes = game.placement_footprint();
+            let (at, placed) = writes[0];
+            let [dx, dy, dz] = block_face_direction(face).opposite().normal();
+            let against = game.world.block(x + dx, y + dy, z + dz);
+            if game.placement_canceled(
+                Some(player.entity()),
+                at,
+                placed,
+                against,
+                writes[1..].iter().copied(),
+            ) {
+                return Err(Refusal::Canceled);
+            }
+            if !game.level_handle_current(level) {
+                return Err(Refusal::StaleLevel);
+            }
+            if level.dimension() != game.dim.key() {
+                return Err(Refusal::OtherLevel);
+            }
+            game.validate_placement_player(player)?;
+            if writes.into_iter().any(|(at, state)| {
+                !game.world.is_loaded_at(at.x, at.y, at.z)
+                    || game.world.carrier_fences.locks_cell(&[at.x, at.y, at.z])
+                    || game.world.block(at.x, at.y, at.z) != state
+            }) {
+                return Err(Refusal::PlacementChanged);
+            }
+            Ok(())
+        })
     }
+
+    fn validate_placement_player(&self, player: PlayerRef) -> Result<(), Refusal> {
+        let (dead, same_level) = match self.player_handle_read(player).ok_or(Refusal::Stale)? {
+            PlayerRead::Acting { body, .. } => (
+                body.is_none_or(|p| p.health.health() <= 0.0),
+                self.acting_in_level_in_place(),
+            ),
+            PlayerRead::Guest(guest) => (guest.dead, guest.dimension == self.dim.id()),
+        };
+        if dead {
+            Err(Refusal::Dead)
+        } else if !same_level {
+            Err(Refusal::OtherLevel)
+        } else {
+            Ok(())
+        }
+    }
+
+    pub(super) fn publish_placement_effect(&mut self, effect: PlacementEffect) {
+        self.with_level(|b, level, ticks| b.publish_placement_effect(level, ticks, effect));
+        let _ = self.process_level_events();
+    }
+
+    /// Run both pieces of `Block.setPlacedBy` before offering a veto. The simulation
+    /// records its ordered writes and effects; the game and Part then read those
+    /// writes and use the same savepoint for any further edits.
+    fn stage_placement_callback(
+        &mut self,
+        level: LevelRef,
+        pos: [i32; 3],
+        state: BlockStateId,
+        stack: Option<&ItemStack>,
+    ) -> Result<(), Refusal> {
+        use super::journal_level_write::JournalLevelWrite;
+        let [x, y, z] = pos;
+        let (operations, random) = self.capture_placed_by(BlockPos::new(x, y, z), state);
+        if <(u64, Option<f64>)>::from(&random) != (&*self.world.random).into() {
+            self.journal_set_level_random(random);
+        }
+        for operation in operations {
+            match operation {
+                PlacementOperation::Write(cell, state, flags) => {
+                    if !JournalLevelWrite::new(self, level)
+                        .ok_or(Refusal::StaleLevel)?
+                        .write_block([cell.x, cell.y, cell.z], state, flags)
+                    {
+                        return Err(Refusal::PlacementChanged);
+                    }
+                }
+                PlacementOperation::Effect(effect) => {
+                    self.after_commit(After::PlacementEffect(Box::new(effect)));
+                }
+            }
+        }
+        self.set_placed_by(pos, None, stack)
+            .map_err(|_| Refusal::PlacementChanged)
+    }
+
     pub(super) fn level_state_for_placement(
         &mut self,
         level: LevelRef,
         block: BlockKey,
         context: &mod_api::PlacementContext,
-    ) -> Result<Option<BlockStateId>, LevelReadError> {
+    ) -> Result<Option<BlockStateId>, PlacementStateError> {
         let world = self.native_level_world_result(level)?;
         if level.dimension() != self.dim.key() {
-            return Err(LevelReadError::Unavailable);
+            return Err(PlacementStateError::Unavailable);
         }
         let BlockPos { x, y, z } = context.pos;
+        let Some(source) = super::api_values::placement_source_into_engine(context.source) else {
+            return Ok(None);
+        };
         if !context.hit.iter().all(|n| n.is_finite())
-            || !context.yaw.is_finite()
-            || !context.pitch.is_finite()
             || !(-30_000_000..30_000_000).contains(&x)
             || !(-30_000_000..30_000_000).contains(&z)
             || !world.is_loaded_at(x, y, z)
@@ -118,7 +229,7 @@ impl Game<'_> {
             }
             None => "",
         };
-        Ok(self.preview_state_for_placement(
+        self.preview_state_for_placement(
             block,
             &PlacementContext {
                 pos: context.pos,
@@ -126,13 +237,12 @@ impl Game<'_> {
                 face: context.face,
                 hit: Vec3::new(context.hit[0], context.hit[1], context.hit[2]),
                 inside: context.inside,
-                yaw: context.yaw,
-                pitch: context.pitch,
-                sneaking: context.sneaking,
+                source,
                 item: item.to_owned(),
                 replace_clicked: context.replace_clicked,
             },
-        ))
+        )
+        .map_err(super::api_values::placement_refusal_into_api)
     }
 
     /// A chosen state written as a placement writes it, then `Block.setPlacedBy`, with no
@@ -213,6 +323,12 @@ impl Game<'_> {
         let placed = self.world.block(x, y, z);
         let behaviours = self.res.behaviours();
         if behaviours.block(placed) != behaviours.block(expected) {
+            return;
+        }
+        if self.captures_placement() {
+            if let Some(level) = self.level(self.dim.id()) {
+                let _ = self.stage_placement_callback(level, pos, placed, stack);
+            }
             return;
         }
         self.with_level(|b, level, ticks| {

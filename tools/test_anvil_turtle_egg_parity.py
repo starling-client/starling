@@ -20,10 +20,12 @@ breaks silently; one landing on stone is placed (level event 1031).
 """
 import json
 
-try:
-    from . import test_locator_bar_parity as net
-except ImportError:
-    import test_locator_bar_parity as net
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_locator_bar_parity as net
 
 STEP_SECONDS = 2.0
 EGGS = [(0, 1), (4, 2), (8, 3), (12, 4), (16, 1), (20, 2), (24, 3), (28, 4)]

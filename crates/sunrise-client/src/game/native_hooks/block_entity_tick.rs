@@ -6,12 +6,13 @@ use crate::game::{
 };
 use mod_api::{
     BlockEntityAccess, BlockEntityItemError, BlockEntityRef, BlockEntityScope, BlockEntityView,
-    ResidentBlockEntity, ServerHost, Transaction,
+    ResidentBlockEntity, ServerHost, TransactionContext, TransactionScopeError,
+    TransactionUnavailable,
 };
 use std::collections::HashMap;
 use sunrise_client::{
-    block_entities::BlockEntityLoan, chunk_map::ChunkMap, fast_hash::FxHashMap,
-    world::ModifiedChunks,
+    block_entities::BlockEntityLoan, chunk_map::ChunkMap, containers::ModBlockEntity,
+    fast_hash::FxHashMap, world::ModifiedChunks,
 };
 use sunrise_core::nbt::{Compound, JavaString, Tag};
 use sunrise_items::items::Items;
@@ -24,6 +25,11 @@ impl Game<'_> {
     /// `LevelChunk.BoundTickingBlockEntity.tick` for a resident mod block entity.
     /// Returns whether the ticker was dispatched, so skipped rows have no after-slot.
     pub(in crate::game) fn tick_mod_block_entity_loaded(&mut self, pos: Pos) -> bool {
+        use sunrise_client::block_entities::Ticking;
+
+        if !self.world.block_entities.has_states() {
+            self.bind_server_ticking_states();
+        }
         let Some(BlockEntity::Mod(entity)) = self.world.block_entities.get(&pos) else {
             return false;
         };
@@ -34,16 +40,22 @@ impl Game<'_> {
             return false;
         };
         let live_state = self.world.block(pos.0, pos.1, pos.2);
-        let block = &self.res.facts().get(live_state).name;
-        if !valid_tick_subject(block, entity) {
-            if let Some(id) = self
-                .world
-                .block_entities
-                .record_invalid_mod_tick(pos, generation)
-            {
-                log::warn!("Block entity {id} at {pos:?} cannot tick on {block}");
+        // A typed ticker is only bound to a registered type with a numeric id.
+        let numeric = entity.numeric_id().expect("registered ticker type");
+        match self.world.block_entities.mod_ticking(live_state.0, numeric) {
+            Ticking::Yes => {}
+            Ticking::Idle => return false,
+            Ticking::No => {
+                if let Some(id) = self
+                    .world
+                    .block_entities
+                    .record_invalid_mod_tick(pos, generation)
+                {
+                    let block = &self.res.facts().get(live_state).name;
+                    log::warn!("Block entity {id} at {pos:?} cannot tick on {block}");
+                }
+                return false;
             }
-            return false;
         }
         let Some(level) = self.level(self.dim.id()) else {
             return false;
@@ -68,7 +80,7 @@ impl Game<'_> {
     }
 }
 
-fn valid_tick_subject(block: &str, entity: &EngineBlockEntity) -> bool {
+fn valid_tick_subject(block: &str, entity: &ModBlockEntity) -> bool {
     sunrise_client::block_entity_types::valid(block, entity.id()) == Some(true)
 }
 
@@ -194,22 +206,37 @@ impl BlockEntityAccess for ResidentBlockEntityAccess<'_, '_> {
         self.game
     }
 
-    fn transaction(
+    fn with_current_transaction_scope(
         &mut self,
-        call: &mut dyn FnMut(&mut dyn BlockEntityAccess, &Transaction) -> bool,
-    ) {
+        callback: &mut dyn for<'loan> FnMut(
+            &'loan mut dyn BlockEntityAccess,
+            &'loan TransactionContext,
+        ),
+    ) -> Result<(), TransactionUnavailable> {
+        let frame = self
+            .game
+            .current_storage_frame()
+            .ok_or(TransactionUnavailable)?;
+        frame.lend(|tx| callback(self, tx));
+        Ok(())
+    }
+
+    fn with_transaction_scope(
+        &mut self,
+        call: &mut dyn for<'loan> FnMut(
+            &'loan mut dyn BlockEntityAccess,
+            &'loan TransactionContext,
+        ) -> bool,
+    ) -> Result<bool, TransactionScopeError> {
         let (subject, loan) = (self.subject, self.loan);
-        let committed = mod_api::run_transaction(self.game, |game, tx| {
+        let committed = self.game.scoped_storage(|game, tx| {
             let mut child = ResidentBlockEntityAccess::new(game, subject, loan);
-            if call(&mut child, tx) {
-                Ok(child.items_changed)
-            } else {
-                Err(())
-            }
-        });
-        if let Ok(changed) = committed {
+            call(&mut child, tx).then_some(child.items_changed)
+        })?;
+        if let Some(changed) = committed {
             self.items_changed |= changed;
         }
+        Ok(committed.is_some())
     }
 }
 
@@ -228,11 +255,11 @@ struct ServerBlockEntityData<'a> {
 }
 
 impl ServerBlockEntityData<'_> {
-    fn entity(&self) -> &EngineBlockEntity {
+    fn entity(&self) -> &ModBlockEntity {
         self.loan.entity
     }
 
-    fn edit(&mut self, saved: bool) -> &mut EngineBlockEntity {
+    fn edit(&mut self, saved: bool) -> &mut ModBlockEntity {
         self.dirty |= saved;
         self.journal.journal_block_entity_loan(
             self.dim,
@@ -378,12 +405,7 @@ impl ResidentBlockEntity for ServerBlockEntityData<'_> {
             **changed = true;
         }
         let entity = self.edit(true);
-        if index >= entity.items.len() {
-            entity.items.resize(slots, None);
-        }
-        if let Some(dest) = entity.item_slot_mut(index) {
-            *dest = stack;
-        }
+        *entity.item_slot_mut(index) = stack;
         Ok(true)
     }
 

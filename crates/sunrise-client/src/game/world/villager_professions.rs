@@ -6,6 +6,7 @@ impl Game<'_> {
         &self,
         root: &std::path::Path,
         items: &Items,
+        overlay: &sunrise_world::loot::PackOverlay<'_>,
         stations: &mut sunrise_client::stations::StationData,
     ) -> Result<()> {
         let declarations = self.mods.profession_declarations.get_or_init(|| {
@@ -97,6 +98,15 @@ impl Game<'_> {
                 })
                 .collect();
         }
+        // `TagLoader` binds the POI type tags against the registry: vanilla's types and the
+        // workstation types the mods declared.
+        candidate.poi_tags =
+            sunrise_world::tag_layers::load(root, "point_of_interest_type", overlay, |id| {
+                pois.resolve(id).is_some()
+            })?
+            .into_iter()
+            .map(|(tag, ids)| (tag, ids.into_iter().collect()))
+            .collect();
         candidate.pois = pois;
         stations.professions = Arc::new(candidate);
         stations.trades.professions = stations.professions.clone();

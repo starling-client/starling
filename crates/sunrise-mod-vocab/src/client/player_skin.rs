@@ -5,7 +5,7 @@ use crate::Identifier;
 #[derive(Clone, Debug, PartialEq, Eq, sunrise_mod_api_macros::Wire)]
 #[non_exhaustive]
 pub struct PlayerSkinOverride {
-    /// The identifier of a live 64×64 RGBA image uploaded with `create_dynamic_texture`.
+    /// The identifier of a live 64×64 dynamic texture made with `create_dynamic_texture`.
     pub texture: Identifier,
     /// The arm width and skin layout used to draw the texture.
     pub model: PlayerModel,

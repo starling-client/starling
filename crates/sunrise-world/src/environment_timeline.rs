@@ -4,7 +4,8 @@
 //! `Ease`).
 use crate::environment_attributes::{Attribute, Entry, Value, attribute};
 use serde_json::Value as Json;
-use sunrise_core::{geometry::trig, jmath};
+use std::collections::{BTreeMap, BTreeSet};
+use sunrise_core::{geometry::trig, identifier::Identifier, jmath};
 
 /// `Mth.square` / `Mth.cube`.
 fn square(x: f32) -> f32 {
@@ -325,6 +326,7 @@ fn solve_t_bisect(curve: Curve, x: f32, mut t: f32) -> f32 {
 }
 
 /// `AttributeTrack`: a modifier and the keyframes of its argument (`KeyframeTrack`).
+#[derive(Clone)]
 pub struct Track {
     pub attribute: &'static Attribute,
     keyframes: Vec<(i32, Entry)>,
@@ -335,17 +337,19 @@ impl Track {
     /// `AttributeTrack.createCodec`: `{"modifier"?, "keyframes": [{"ticks", "value"}],
     /// "ease"?}`, the modifier `override` by default, with `KeyframeTrack.validateKeyframes`.
     pub fn parse(attribute: &'static Attribute, json: &Json) -> Result<Self, String> {
-        let op = json
+        let obj = json.as_object().ok_or("track must be a map")?;
+        let op = obj
             .get("modifier")
             .map_or(Some("override"), Json::as_str)
             .ok_or("modifier is not a string")?;
-        let list = json
+        let list = obj
             .get("keyframes")
             .and_then(Json::as_array)
             .ok_or("no keyframes")?;
         let keyframes = list
             .iter()
             .map(|k| {
+                let k = k.as_object().ok_or("keyframe must be a map")?;
                 let ticks = k
                     .get("ticks")
                     .and_then(Json::as_i64)
@@ -501,12 +505,58 @@ impl TrackSampler {
     }
 }
 
-/// `Timeline`: tracks on one clock, optionally looping every `period_ticks`.
+/// `Timeline.TimeMarkerInfo`: a tick offset on the timeline's clock and whether `/time`
+/// suggests it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TimelineMarker {
+    pub ticks: i32,
+    pub show_in_commands: bool,
+}
+
+impl TimelineMarker {
+    /// `Timeline.TimeMarkerInfo.CODEC`: either a non-negative int (`show_in_commands = false`)
+    /// or `{"ticks": <non-negative int>, "show_in_commands"?: <bool>}`.
+    fn parse(json: &Json) -> Result<Self, String> {
+        if let Some(n) = json.as_i64() {
+            let ticks = i32::try_from(n)
+                .ok()
+                .filter(|t| *t >= 0)
+                .ok_or("time marker ticks must be non-negative")?;
+            return Ok(Self {
+                ticks,
+                show_in_commands: false,
+            });
+        }
+        let obj = json
+            .as_object()
+            .ok_or("time marker must be a non-negative integer or a map")?;
+        let ticks = obj
+            .get("ticks")
+            .and_then(Json::as_i64)
+            .and_then(|n| i32::try_from(n).ok())
+            .filter(|t| *t >= 0)
+            .ok_or("time marker ticks must be a non-negative integer")?;
+        let show_in_commands = match obj.get("show_in_commands") {
+            None => false,
+            Some(v) => v
+                .as_bool()
+                .ok_or("time marker show_in_commands must be a boolean")?,
+        };
+        Ok(Self {
+            ticks,
+            show_in_commands,
+        })
+    }
+}
+
+/// `Timeline`: tracks and time markers on one clock, optionally looping every `period_ticks`.
+#[derive(Clone)]
 pub struct Timeline {
-    /// The `WorldClock` it reads.
+    /// The canonical `WorldClock` identifier it reads.
     pub clock: String,
     pub period: Option<i32>,
     pub tracks: Vec<Track>,
+    pub time_markers: BTreeMap<String, TimelineMarker>,
 }
 
 impl Timeline {
@@ -514,12 +564,17 @@ impl Timeline {
     /// period, and every track's keyframes within it. Tracks of attributes that aren't
     /// registered fail.
     pub fn parse(json: &Json) -> Result<Self, String> {
-        let clock = json
+        let obj = json.as_object().ok_or("not a map")?;
+        let clock = obj
             .get("clock")
             .and_then(Json::as_str)
-            .ok_or("no clock")?
-            .to_owned();
-        let period = match json.get("period_ticks") {
+            .ok_or_else(|| "no clock".to_owned())
+            .and_then(|s| {
+                Identifier::parse(s)
+                    .map(|id| id.to_string())
+                    .map_err(|e| format!("invalid clock id {s}: {e}"))
+            })?;
+        let period = match obj.get("period_ticks") {
             None => None,
             Some(p) => Some(
                 p.as_i64()
@@ -529,27 +584,29 @@ impl Timeline {
             ),
         };
         let mut tracks = Vec::new();
-        for (id, track) in json
-            .get("tracks")
-            .and_then(Json::as_object)
-            .into_iter()
-            .flatten()
-        {
-            let attribute = attribute(id).ok_or_else(|| format!("unknown attribute {id}"))?;
-            tracks.push(Track::parse(attribute, track).map_err(|e| format!("{id}: {e}"))?);
+        if let Some(raw_tracks) = obj.get("tracks") {
+            let map = raw_tracks.as_object().ok_or("tracks must be a map")?;
+            for (id, track) in map {
+                let attribute = attribute(id).ok_or_else(|| format!("unknown attribute {id}"))?;
+                tracks.push(Track::parse(attribute, track).map_err(|e| format!("{id}: {e}"))?);
+            }
+        }
+        let mut time_markers = BTreeMap::new();
+        if let Some(raw_markers) = obj.get("time_markers") {
+            let map = raw_markers
+                .as_object()
+                .ok_or("time_markers must be a map")?;
+            for (id, marker) in map {
+                let key = Identifier::parse(id)
+                    .map(|id| id.to_string())
+                    .map_err(|e| format!("invalid time marker id {id}: {e}"))?;
+                let parsed = TimelineMarker::parse(marker).map_err(|e| format!("{id}: {e}"))?;
+                time_markers.insert(key, parsed);
+            }
         }
         if let Some(period) = period {
-            for (id, marker) in json
-                .get("time_markers")
-                .and_then(Json::as_object)
-                .into_iter()
-                .flatten()
-            {
-                let ticks = marker
-                    .as_i64()
-                    .or_else(|| marker.get("ticks").and_then(Json::as_i64))
-                    .unwrap_or(-1);
-                if ticks < 0 || ticks >= i64::from(period) {
+            for (id, marker) in &time_markers {
+                if marker.ticks < 0 || marker.ticks >= period {
                     return Err(format!("Time Marker {id} must be in range [0; {period})"));
                 }
             }
@@ -561,7 +618,38 @@ impl Timeline {
             clock,
             period,
             tracks,
+            time_markers,
         })
+    }
+
+    /// `Timeline.filterSyncableTracks` (`Timeline.NETWORK_CODEC`): drops tracks whose
+    /// attribute is not syncable before encoding a timeline for clients.
+    pub fn filter_syncable_json(json: &Json) -> Json {
+        let mut out = json.clone();
+        if let Some(tracks) = out.get_mut("tracks").and_then(Json::as_object_mut) {
+            tracks.retain(|id, _| attribute(id).is_some_and(Attribute::is_syncable));
+        }
+        out
+    }
+
+    /// `Timeline.validateRegistry`: no two timelines sharing a `WorldClock` may define
+    /// the same time marker. Returns `(timeline_id, error)` for each duplicate.
+    pub fn validate_registry<'a>(
+        timelines: impl IntoIterator<Item = (&'a str, &'a Timeline)>,
+    ) -> Vec<(String, String)> {
+        let mut seen: BTreeSet<(&str, &str)> = BTreeSet::new();
+        let mut errors = Vec::new();
+        for (id, timeline) in timelines {
+            for marker in timeline.time_markers.keys() {
+                if !seen.insert((timeline.clock.as_str(), marker.as_str())) {
+                    errors.push((
+                        id.to_owned(),
+                        format!("{marker} was defined multiple times in {}", timeline.clock),
+                    ));
+                }
+            }
+        }
+        errors
     }
 }
 

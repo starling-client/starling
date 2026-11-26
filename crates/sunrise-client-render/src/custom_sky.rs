@@ -107,9 +107,14 @@ impl SkyLayers for NoLayers {
     }
 }
 
+/// No custom sky layers, including in resources loaded for a server.
+pub fn empty() -> Arc<dyn SkyLayers> {
+    Arc::new(NoLayers)
+}
+
 /// The custom sky layers of the overlay at `root`, from the installed pack formats.
 pub fn load(root: &ResourceSource) -> Arc<dyn SkyLayers> {
     crate::pack_hooks::formats()
         .custom_sky(root)
-        .unwrap_or_else(|| Arc::new(NoLayers))
+        .unwrap_or_else(empty)
 }

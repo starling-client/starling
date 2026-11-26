@@ -30,7 +30,7 @@ the other dimensions' levels as `Parked` values and swaps one into place (`enter
 | `ServerLevel.players` | `Hub::here`: the guests whose `dimension` is the level in place |
 | `ServerPlayer.teleport` into another level | `server_travel.rs`: a Respawn packet, then the teleport once the destination has loaded (portals and `execute in … tp`). An End gateway teleports within the End. |
 | `PlayerList.respawn` | `guest_respawn`: into the respawn point's level, the Overworld unless the player has an anchor or a `spawnpoint` elsewhere (`Guest::respawn_elsewhere`), resolved through its block once that level has loaded |
-| `ServerLevel.noPlayersEmptyTime`, chunk unloading | `close_idle_levels`: idle built-in levels (Overworld, Nether, End) unload unticketed chunks while staying open until server shutdown; custom levels with nobody in them for 300 ticks are saved and closed |
+| `ServerLevel.noPlayersEmptyTime`, chunk unloading | `evict_idle_levels`: a level other than the Overworld with nobody in it for 300 ticks evicts its chunks and entities without closing the level |
 | `CommandSourceStack.getLevel` | `with_source` puts the source's level in place for a command (`execute in`, `execute at` a player in another level) |
 | the levels' shared `LevelData` | not swapped: game time, day time, weather, game rules, scoreboard, maps, entity ids (`next_entity`, unique across levels) |
 

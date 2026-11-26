@@ -4,22 +4,22 @@ pub fn friction_game_thread() -> Arc<std::sync::atomic::AtomicUsize> {
     struct Answer(f32, Arc<AtomicUsize>);
     #[mod_api::sunrise_part]
     impl BlockPart for Answer {
-        fn friction(&self, _: crate::LevelSide<'_>, event: &mut FrictionEvent<'_>) {
+        fn friction(&self, _: crate::LevelSide<'_>, event: &mut FrictionEvent) {
             self.1.fetch_add(1, Ordering::SeqCst);
             event.friction = self.0;
         }
     }
-    struct CopyMaterial(Arc<AtomicUsize>);
+    struct CopyMaterial(Arc<AtomicUsize>, crate::EntityTypeKey);
     #[mod_api::sunrise_part]
     impl BlockPart for CopyMaterial {
-        fn friction(&self, side: crate::LevelSide<'_>, event: &mut FrictionEvent<'_>) {
+        fn friction(&self, side: crate::LevelSide<'_>, event: &mut FrictionEvent) {
             self.0.fetch_add(1, Ordering::SeqCst);
-            if !matches!(event.entity, Some((_, "minecraft:player"))) {
-                return;
-            }
             let level = match side {
                 crate::LevelSide::Server(level) | crate::LevelSide::Client(level) => level,
             };
+            if event.entity.and_then(|entity| level.entity_kind(entity)) != Some(self.1) {
+                return;
+            }
             let pos = [event.pos.x, event.pos.y, event.pos.z];
             assert_eq!(level.block_state(pos), Some(event.state));
             // A serialized state parses back to the state it names, and the dry world has no rain.
@@ -37,34 +37,35 @@ pub fn friction_game_thread() -> Arc<std::sync::atomic::AtomicUsize> {
             }
         }
     }
-    // Asks the same state for the next entity id until the engine refuses a nested query.
+    // Asks the same state at the next position until the engine refuses a nested query.
     struct Chain(Arc<AtomicUsize>);
     #[mod_api::sunrise_part]
     impl BlockPart for Chain {
-        fn friction(&self, side: crate::LevelSide<'_>, event: &mut FrictionEvent<'_>) {
+        fn friction(&self, side: crate::LevelSide<'_>, event: &mut FrictionEvent) {
             self.0.fetch_add(1, Ordering::SeqCst);
-            let Some((id, kind)) = event.entity else {
-                return;
-            };
             let level = match side {
                 crate::LevelSide::Server(level) | crate::LevelSide::Client(level) => level,
             };
             let pos = [event.pos.x, event.pos.y, event.pos.z];
             event.friction = level
-                .friction(pos, event.state, Some((id + 1, kind)))
+                .friction([pos[0] + 1, pos[1], pos[2]], event.state, event.entity)
                 .unwrap_or(0.5);
         }
     }
     // A chest boat finds ground here; any other entity finds none.
-    struct ChestBoatsOnly(Arc<AtomicUsize>);
+    struct ChestBoatsOnly(Arc<AtomicUsize>, crate::EntityTypeKey);
     #[mod_api::sunrise_part]
     impl BlockPart for ChestBoatsOnly {
-        fn friction(&self, _: crate::LevelSide<'_>, event: &mut FrictionEvent<'_>) {
+        fn friction(&self, side: crate::LevelSide<'_>, event: &mut FrictionEvent) {
             self.0.fetch_add(1, Ordering::SeqCst);
-            event.friction = match event.entity {
-                Some((_, "minecraft:oak_chest_boat")) => 0.5,
-                _ => 0.0,
+            let level = match side {
+                crate::LevelSide::Server(level) | crate::LevelSide::Client(level) => level,
             };
+            if event.entity.and_then(|entity| level.entity_kind(entity)) == Some(self.1) {
+                event.friction = 0.5;
+            } else {
+                event.friction = 0.0;
+            }
         }
     }
     // Two parts on one block: the first changes everything it can, the second must still see
@@ -72,7 +73,7 @@ pub fn friction_game_thread() -> Arc<std::sync::atomic::AtomicUsize> {
     struct Scribble(Arc<AtomicUsize>);
     #[mod_api::sunrise_part]
     impl BlockPart for Scribble {
-        fn friction(&self, _: crate::LevelSide<'_>, event: &mut FrictionEvent<'_>) {
+        fn friction(&self, _: crate::LevelSide<'_>, event: &mut FrictionEvent) {
             self.0.fetch_add(1, Ordering::SeqCst);
             event.entity = None;
             event.pos.x += 1;
@@ -82,8 +83,8 @@ pub fn friction_game_thread() -> Arc<std::sync::atomic::AtomicUsize> {
     struct Witness(Arc<AtomicUsize>);
     #[mod_api::sunrise_part]
     impl BlockPart for Witness {
-        fn friction(&self, _: crate::LevelSide<'_>, event: &mut FrictionEvent<'_>) {
-            if event.entity == Some((100, "minecraft:player"))
+        fn friction(&self, _: crate::LevelSide<'_>, event: &mut FrictionEvent) {
+            if event.entity.is_some_and(|entity| entity.id() == 100)
                 && [event.pos.x, event.pos.y, event.pos.z] == [5, 64, 5]
                 && event.friction == 0.8
             {
@@ -97,9 +98,11 @@ pub fn friction_game_thread() -> Arc<std::sync::atomic::AtomicUsize> {
     impl Hooks for FrictionMod {
         fn register(&self, r: &mut dyn Registrar, _: &crate::RegistrationContext) {
             let copycat = r.block_key("minecraft:glass");
-            r.block_part(copycat, CopyMaterial(self.0.clone()));
+            let player = r.entity_type_key("minecraft:player");
+            r.block_part(copycat, CopyMaterial(self.0.clone(), player));
             let yellow = r.block_key("minecraft:yellow_wool");
-            r.block_part(yellow, ChestBoatsOnly(self.0.clone()));
+            let boat = r.entity_type_key("minecraft:oak_chest_boat");
+            r.block_part(yellow, ChestBoatsOnly(self.0.clone(), boat));
             let pink = r.block_key("minecraft:pink_wool");
             r.block_part(pink, Scribble(self.0.clone()));
             r.block_part(pink, Witness(self.0.clone()));

@@ -28,13 +28,15 @@ import subprocess
 import tempfile
 import time
 
-import lab
-import test_rust_parity as base
-from integration_env import game_environment
-from test_dedicated_server_parity import Server, game_time
-from test_locator_bar_parity import server_dir
+import sys
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_rust_parity as base
+from tools.integration_env import game_environment
+from tools.test_dedicated_server_parity import Server, game_time
+from tools.test_locator_bar_parity import server_dir
+
 EXE = '.exe' if os.name == 'nt' else ''
 NAME = 'SwapTester'
 # Tagged: a generated world has pigs of its own.

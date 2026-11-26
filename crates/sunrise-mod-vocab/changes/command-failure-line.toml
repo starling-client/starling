@@ -1,0 +1,3 @@
+ids = ["method:Commands::failure"]
+why = "An executor can write a red failure line to the running command's source and still return its own result, as Java's `source.sendFailure(text); return 0;`: `host.commands().failure(text)` follows `CommandSourceStack.sendFailure`'s silence and track-output rules and does not depend on `sendCommandFeedback`. Returning `Ok(0)` after it stores 0 for `execute store result` without the `Err` path of a failed command."
+migrate = "Nothing to change. A mod that returned `Err(message)` only to show a red line while meaning result 0 can call `failure(message)` and return `Ok(0)`."

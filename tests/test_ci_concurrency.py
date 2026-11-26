@@ -2,13 +2,12 @@
 import ast
 from pathlib import Path
 import re
-import sys
 import unittest
 
+from tools.ci import vendored_yaml
+
 ROOT = Path(__file__).resolve().parents[1]
-# Use the same offline parser as the repository guard, not a runner package.
-sys.path.insert(0, str(ROOT / "tools/ci/vendor/pyyaml-6.0.3.zip"))
-import yaml
+yaml = vendored_yaml.load()
 
 WORKFLOWS = [ROOT / ".github/workflows/dyna-ci.yml"]
 # The daily run's legs: called by daily.yml or dispatched by hand, never on pull requests or main pushes (owner,
@@ -29,7 +28,7 @@ def expression_value(expression, github, inputs=None, matrix=None):
             return node.value
         if isinstance(node, ast.Name):
             return {"github": github, "inputs": inputs or {}, "matrix": matrix or {},
-                    "true": True, "false": False}[node.id]
+                    "env": {}, "true": True, "false": False}[node.id]
         if isinstance(node, ast.Attribute):
             return evaluate(node.value).get(node.attr, "")
         if isinstance(node, ast.Compare) and len(node.ops) == 1 and isinstance(node.ops[0], (ast.Eq, ast.NotEq)):

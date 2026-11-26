@@ -4,6 +4,11 @@ docs/sunrise-ctl-commands.md text eol=lf
 crates/sunrise-theme/tokens.css text eol=lf
 docs/api/*-reference.md text eol=lf
 crates/sunrise-mod-api-gen/crossing-foreign.json text eol=lf
+crates/sunrise-render-shaderpack/tests/spirv_dump/** text eol=lf
+# Signed test fixtures, checked byte for byte against their signatures and hashes: never converted.
+crates/sunrise-release-sign/tests/signed/** -text
+crates/sunrise-mod-package/tests/index/** -text
+crates/cargo-sunrise-mod/src/registry_source/first-index.json* -text
 # The package layout's one number, read by Rust, Python and shell alike.
 crates/sunrise-mod-package/src/sdk/package-format text eol=lf
 

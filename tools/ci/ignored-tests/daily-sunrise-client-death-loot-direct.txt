@@ -1,0 +1,2 @@
+# Death loot reads the direct entity a real blast records (#5226).
+sunrise-client game::creatures::death_weapon::direct_tests::a_blast_records_the_entity_that_went_off lib daily resources

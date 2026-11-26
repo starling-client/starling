@@ -4,7 +4,10 @@ GitHub checks this when it expands the call, before any job runs, whatever a nes
 mismatch fails the whole run at startup (dry runs included) and cannot be seen before it reaches main."""
 import unittest
 
-from tests.test_ci_concurrency import ROOT, yaml
+from tests.test_ci_concurrency import ROOT
+from tools.ci import vendored_yaml
+
+yaml = vendored_yaml.load()
 
 WORKFLOWS = ROOT / ".github/workflows"
 LEVELS = {"none": 0, "read": 1, "write": 2}

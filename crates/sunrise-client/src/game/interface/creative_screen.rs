@@ -13,6 +13,11 @@ impl Game<'_> {
     pub(super) fn creative_tab_open(&self) -> bool {
         self.screen == Screen::Creative && !self.creative_screen.tab().inventory
     }
+    /// The stack at a resolved display slot on the active item tab, accounting for scroll.
+    pub(super) fn creative_display_stack(&self, slot: usize) -> Option<ItemStack> {
+        let shown = self.creative_screen.display_window(&self.pack.names);
+        shown.stack(slot).cloned()
+    }
     pub(super) fn creative_origin(batch: &HudBatch) -> (f32, f32) {
         let (x, y) = batch.centered_origin(Creative::WIDTH, Creative::HEIGHT);
         (x + CREATIVE_SHIFT.get(), y)
@@ -48,15 +53,12 @@ impl Game<'_> {
     /// Vanilla tooltip: dark box with a purple gradient border, laid out and
     /// drawn like an item tooltip (4 px of padding on every side).
     pub(super) fn tooltip(&self, batch: &mut HudBatch, text: &str, x: f32, y: f32) {
-        let atlas = &self.gui.atlas;
-        let lines = vec![(sunrise_client::text::Text::literal(text), u32::MAX)];
-        let screen = (batch.width, batch.height);
-        let Some(at) = self.tooltip_pre(batch, None, &lines, &[], (x, y), screen) else {
-            return;
-        };
-        let (x, y, w, h) = Self::tooltip_geometry(atlas, &lines, at, screen, [0.0; 2]);
-        self.tooltip_box(batch, None, x, y, w, h);
-        Self::tooltip_text(batch, atlas, &lines, x, y);
+        self.draw_tooltip_lines(
+            batch,
+            &[(sunrise_client::text::Text::literal(text), u32::MAX)],
+            x,
+            y,
+        );
     }
     /// `CreativeModeInventoryScreen.getTooltipFromContainerItem`: the lines
     /// that follow the item's name, none for a category tab's own grid slots
@@ -273,6 +275,7 @@ impl Game<'_> {
             }
             self.draw_hovered_slot_highlight(batch, true, ox, oy);
         } else {
+<<<<<<< HEAD
             let items = self.creative_screen.items(&self.pack.names);
             let first = self.creative_screen.first_row(&self.pack.names);
             let six = CREATIVE_SHIFT.get() != 0.0;
@@ -291,6 +294,40 @@ impl Game<'_> {
                         self.draw_slot_highlight(batch, true, x, y);
                         hovered = Some((stack.clone(), true));
                     }
+||||||| 46c00106def
+            let items = self.creative_screen.items(&self.pack.names);
+            let first = self.creative_screen.first_row(&self.pack.names);
+            for r in 0..5 {
+                for c in 0..9 {
+                    let Some(stack) = items.get((first + r) * 9 + c).filter(|s| s.count > 0) else {
+                        continue;
+                    };
+                    let (x, y) = (ox + 9.0 + c as f32 * 18.0, oy + 18.0 + r as f32 * 18.0);
+                    let over = hovered_slot == Some(Creative::DISPLAY + r * 9 + c);
+                    if over {
+                        self.draw_slot_highlight(batch, false, x, y);
+                    }
+                    self.draw_item(batch, stack, x, y);
+                    if over {
+                        self.draw_slot_highlight(batch, true, x, y);
+                        hovered = Some((stack.clone(), true));
+                    }
+=======
+            let shown = self.creative_screen.display_window(&self.pack.names);
+            for (slot, (x, y)) in Creative::display_slots() {
+                let Some(stack) = shown.stack(slot) else {
+                    continue;
+                };
+                let (x, y) = (ox + x, oy + y);
+                let over = hovered_slot == Some(slot);
+                if over {
+                    self.draw_slot_highlight(batch, false, x, y);
+                }
+                self.draw_item(batch, stack, x, y);
+                if over {
+                    self.draw_slot_highlight(batch, true, x, y);
+                    hovered = Some((stack.clone(), true));
+>>>>>>> ed6772e2118
                 }
             }
             let drag = self.drag_view();
@@ -306,9 +343,16 @@ impl Game<'_> {
                     hovered = self.inventory[c].clone().map(|s| (s, false));
                 }
             }
+<<<<<<< HEAD
             let scrollable =
                 self.creative_screen.rows(&self.pack.names) > self.creative_screen.shown_rows;
             let scroller = if scrollable {
+||||||| 46c00106def
+            let scrollable = self.creative_screen.rows(&self.pack.names) > 5;
+            let scroller = if scrollable {
+=======
+            let scroller = if shown.can_scroll() {
+>>>>>>> ed6772e2118
                 "container/creative_inventory/scroller"
             } else {
                 "container/creative_inventory/scroller_disabled"
@@ -480,7 +524,7 @@ impl Game<'_> {
             self.inv_clicks.skip_release();
             let page = self.creative_screen.page as i64 + step;
             if (0..self.creative_screen.pages() as i64).contains(&page) {
-                self.audio.play_button_click();
+                self.play_audio_button_click();
                 self.creative_screen.set_page(page as u32);
                 self.refresh_saved_hotbars();
             }

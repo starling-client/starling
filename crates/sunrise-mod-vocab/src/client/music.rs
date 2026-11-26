@@ -48,33 +48,52 @@ impl Music {
     pub fn game() -> Self {
         Self::new("minecraft:music.game", 12000, 24000, false)
     }
-    /// The built-in situations the Music page lists, in its order: the lang key
-    /// of the heading the page's group shows and the music that situation plays.
-    pub fn builtin() -> [(&'static str, Music); 7] {
-        [
-            ("sunrise.pages.music.menu", Self::menu()),
-            ("sunrise.pages.music.overworld", Self::game()),
-            ("sunrise.pages.music.creative", Self::creative()),
-            ("sunrise.pages.music.underwater", Self::under_water()),
-            ("sunrise.pages.music.end", Self::end()),
-            ("sunrise.pages.music.boss", Self::end_boss()),
-            ("sunrise.pages.music.credits", Self::credits()),
-        ]
-    }
     /// `Music.CODEC`.
     // hidden: a game-side helper, not part of the mod surface
     #[doc(hidden)]
-    pub fn parse(v: &Value) -> Option<Self> {
-        let sound = v["sound"].as_str()?;
-        let int = |k: &str| v[k].as_i64().unwrap_or(0) as i32;
-        Some(Self::new(
+    pub fn parse(v: &Value, registered: &impl Fn(&str) -> bool) -> Option<Self> {
+        let v = v.as_object()?;
+        let (sound, _) = parse_sound_event(v.get("sound")?, registered)?;
+        let delay = |name: &str| {
+            let value = i32::try_from(v.get(name)?.as_i64()?).ok()?;
+            (value >= 0).then_some(value)
+        };
+        Some(Self {
             sound,
-            int("min_delay"),
-            int("max_delay"),
-            v["replace_current_music"].as_bool().unwrap_or(false),
-        ))
+            min_delay: delay("min_delay")?,
+            max_delay: delay("max_delay")?,
+            replace_current_music: match v.get("replace_current_music") {
+                Some(value) => value.as_bool()?,
+                None => false,
+            },
+        })
     }
 }
+
+/// `SoundEvent.CODEC`: a registered holder or an inline event with an optional
+/// fixed range. Client sound instances play by identifier; the fixed range is
+/// used when the server distributes a sound, not to resolve `sounds.json`.
+// hidden: engine sound-event parser shared with client/world crates; not a mod-facing API
+#[doc(hidden)]
+pub fn parse_sound_event(
+    v: &Value,
+    registered: &impl Fn(&str) -> bool,
+) -> Option<(String, Option<f32>)> {
+    use sunrise_core::identifier::Identifier;
+
+    if let Some(name) = v.as_str() {
+        let sound = Identifier::parse(name).ok()?.to_string();
+        return registered(&sound).then_some((sound, None));
+    }
+    let v = v.as_object()?;
+    let sound = Identifier::parse(v.get("sound_id")?.as_str()?)
+        .ok()?
+        .to_string();
+    // The direct codec deliberately ignores a malformed optional range.
+    let range = v.get("range").and_then(Value::as_f64).map(|r| r as f32);
+    Some((sound, range))
+}
+
 /// A track a native mod plays over or instead of the music
 /// (`music_layers`): a sound event and its volume, 0 to 1.
 #[derive(Clone, Debug, PartialEq)]

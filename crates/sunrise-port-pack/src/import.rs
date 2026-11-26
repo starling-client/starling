@@ -207,7 +207,7 @@ fn prism_archive(
             }
             let size = entry.size();
             let bytes = budget
-                .read(entry, size, crate::fetch::MAX_JAR)
+                .read(entry, size, sunrise_jar_fetch::MAX_JAR)
                 .map_err(|e| format!("{raw}: {e}"))?;
             let sha1 = sha1_hex(&bytes);
             // A reimport can reuse identical jars without overwriting a different pack version.

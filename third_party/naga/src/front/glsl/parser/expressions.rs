@@ -30,6 +30,18 @@ impl ParsingContext<'_> {
                         meta: token.meta,
                     });
                 }
+                // GLSL 4.60 §4.1.3: a literal whose bit pattern does not fit in
+                // 32 bits is a compile-time error. A pattern that fits is kept
+                // as it is (`4294967295` is `-1` as an `int`); keeping only the
+                // low 32 bits of a wider one would give it another value.
+                if int.value > u64::from(u32::MAX) {
+                    frontend.errors.push(Error {
+                        kind: ErrorKind::SemanticError(
+                            "Integer literal does not fit in 32 bits".into(),
+                        ),
+                        meta: token.meta,
+                    });
+                }
                 if int.signed {
                     Literal::I32(int.value as i32)
                 } else {

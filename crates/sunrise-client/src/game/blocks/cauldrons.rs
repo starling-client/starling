@@ -98,7 +98,7 @@ impl Game<'_> {
             }
             return Ok(result.outcome);
         }
-        let outcome = mod_api::run_transaction(self, |game, _| {
+        let outcome = self.storage_transaction(|game, _| {
             use transactions::DeferredEffect;
             game.journal_player(player);
             let mut hand = powder_snow::HeldSlot {

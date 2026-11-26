@@ -2,7 +2,7 @@ Evoker.EvokerWololoSpellGoal.canContinueToUse	port	crates/sunrise-client/src/mob
 Evoker.EvokerWololoSpellGoal.performSpellCasting	port	crates/sunrise-client/src/game/mobs/creatures/mod.rs::Game::handle_mob_events	MobEvent::Wololo dyes the sheep red (color 14); the event is pushed from UseSpell::tick
 Illusioner.registerGoals	port	crates/sunrise-client/src/mobs/illusioner.rs::register	same goal list and priorities
 Illusioner.createAttributes	skip:data		attribute defaults (speed 0.5, follow 18, health 32) live in data tables
-Illusioner.performRangedAttack	port	crates/sunrise-client/src/mobs/undead.rs::perform_ranged_attack	bow shot at speed 1.6 with the aim and uncertainty the skeleton uses
+Illusioner.performRangedAttack	port	crates/sunrise-client/src/mobs/illusioner.rs::perform_ranged_attack	bow shot at speed 1.6 with the aim and uncertainty the skeleton uses
 Illusioner.getArmPose	port	crates/sunrise-client/src/mobs/illager.rs::arm_pose	spellcasting, bow when aggressive, else crossed
 Illusioner.IllusionerBlindnessSpellGoal.canUse	port	crates/sunrise-client/src/mobs/illusioner.rs::Spell::can_use	target id differs from last target, difficulty above normal
 Illusioner.IllusionerBlindnessSpellGoal.start	port	crates/sunrise-client/src/mobs/illusioner.rs::Spell::start	remembers the target id for the next can_use
@@ -15,17 +15,17 @@ SpellcasterIllager.getCurrentSpell	skip:other		getter; Sunrise reads extra.varia
 SpellcasterIllager.SpellcasterUseSpellGoal.canContinueToUse	port	crates/sunrise-client/src/mobs/illager.rs::UseSpell::can_continue	target alive and warm-up left
 Vindicator.registerGoals	port	crates/sunrise-client/src/mobs/illager.rs::register_vindicator	break door, open door, hold ground, melee, Johnny goal
 Vindicator.createAttributes	skip:data		attribute defaults (speed 0.35, follow 12, health 24, attack 5) live in data tables
-Vindicator.addAdditionalSaveData	inline	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt	Johnny: 1b is written while the latched flag is set, nothing otherwise
+Vindicator.addAdditionalSaveData	inline	crates/sunrise-client/src/entity_nbt/mob_write.rs::mob_to_nbt	Johnny: 1b is written while the latched flag is set, nothing otherwise
 Vindicator.readAdditionalSaveData	inline	crates/sunrise-client/src/entity_nbt/mob_load.rs::mob_from_nbt	Johnny, false when absent; a name that is Johnny latches it again on the next AI step
 Vindicator.finalizeSpawn	port	crates/sunrise-client/src/mobs/finalize.rs::Ctx::finalize	raider spawn, then equipment and enchantments; the door flag it sets each tick comes from vindicator_server_ai_step
 Vindicator.populateDefaultEquipmentSlots	port	crates/sunrise-client/src/mobs/finalize.rs::Ctx::populate	iron axe unless the mob is in a raid
 Vindicator.setCustomName	inline	crates/sunrise-client/src/mobs/illager.rs::vindicator_server_ai_step	the latch, taken from the live name each AI step: once it is Johnny it stays, which is what adds `extra.johnny`
 Vindicator.VindicatorBreakDoorGoal.canContinueToUse	port	crates/sunrise-client/src/mobs/doors.rs::BreakDoor::can_continue	still in a raid, plus the base break checks
-AbstractPiglin.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt	writes IsImmuneToZombification and TimeInOverworld
+AbstractPiglin.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_write.rs::mob_to_nbt	writes IsImmuneToZombification and TimeInOverworld
 AbstractPiglin.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_load.rs::mob_from_nbt	reads immunity, time in overworld and the pick-up flag
-Piglin.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt	CannotHunt written from the live flag; the read is in mob_from_nbt
-AbstractPiglin.customServerAiStep	port	crates/sunrise-client/src/mobs/piglin.rs::ai_step	gap: minor: zombification runs outside the Nether by the nether flag, not the PIGLINS_ZOMBIFY attribute
-AbstractPiglin.finishConversion	port	crates/sunrise-client/src/mobs/piglin.rs::ai_step	spawns the zombified piglin with nausea and removes the old one
+Piglin.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_write.rs::mob_to_nbt	CannotHunt written from the live flag; the read is in mob_from_nbt
+AbstractPiglin.customServerAiStep	port	crates/sunrise-client/src/mobs/piglin.rs::zombification_tick	counts and converts where the dimension type's piglins_zombify attribute is true, for piglins and brutes without immunity, inside server_ai_step
+AbstractPiglin.finishConversion	port	crates/sunrise-client/src/mobs/piglin.rs::zombification_tick	spawns the zombified piglin with nausea and removes the old one
 Piglin.readAdditionalSaveData	port	crates/sunrise-client/src/mobs/piglin.rs::read_guarded_anger	baby and inventory are read in entity_nbt::mob_from_nbt; the brain's minecraft:angry_at UUID and TTL come back through read_guarded_anger; CannotHunt is read in entity_nbt::mob_from_nbt's piglin branch
 Piglin.getSlot	missing		item commands stop at the open container: a piglin's own inventory slots (300 and up) are not addressable
 Piglin.defineSynchedData	skip:java		synched-data registration; Sunrise keeps baby, crossbow and dancing state in Mob fields
@@ -35,8 +35,8 @@ Piglin.finalizeSpawn	port	crates/sunrise-client/src/mobs/finalize.rs::Ctx::pigli
 Piglin.populateDefaultEquipmentSlots	port	crates/sunrise-client/src/mobs/finalize.rs::Ctx::populate	golden armour at 10 percent per adult slot
 Piglin.mobInteract	port	crates/sunrise-client/src/game/mobs/piglins.rs::Game::give_piglin	a gold ingot handed over starts admiring
 Piglin.setBaby	port	crates/sunrise-client/src/mobs/finalize.rs::set_baby	gap: minor: sets the baby age only; the speed modifier is not set in this fn
-Piglin.customServerAiStep	port	crates/sunrise-client/src/mobs/piglin.rs::ai_step	gap: minor: the brain tick is the registered goal set (register_piglin), not this fn
-Piglin.finishConversion	port	crates/sunrise-client/src/mobs/piglin.rs::ai_step	the conversion cancels the admire and drops the admired item; the rest of a piglin's carried inventory is still not scattered
+Piglin.customServerAiStep	port	crates/sunrise-client/src/mobs/ai.rs::custom_server_ai_step	brain_tick (forget_outdated_memories and the sensor in brain_start, then the goals), brain_step (the activity update), then zombification_tick, inside server_ai_step; the rest of the brain tick is the registered goal set (register_piglin)
+Piglin.finishConversion	port	crates/sunrise-client/src/mobs/piglin.rs::zombification_tick	the conversion cancels an admiring and drops the admired item, then drops the piglin's carried inventory; gap: minor: the inventory drains before an admiring that expired this tick finishes (#4824)
 Piglin.hurtServer	inline	crates/sunrise-client/src/mobs/piglin.rs::celebrate	gap: player: a hit by a player does not stop an admiring piglin or start its admiring-disabled wait; babies do not flee the attacker
 Piglin.canUseNonMeleeWeapon	port	crates/sunrise-client/src/game/mobs/piglins.rs::Game::piglin_wanted	gap: minor: checks the preferred-weapons tag only, not the usable-crossbow tag or the kinetic weapon component
 Piglin.holdInOffHand	port	crates/sunrise-client/src/mobs/piglin.rs::hold_in_offhand	equips the item (drop chance 2.0 as setItemSlotAndDropWhenKilled) and makes the piglin persistent unless it is the barter item
@@ -64,7 +64,7 @@ PiglinAi.throwItems	port	crates/sunrise-client/src/game/mobs/piglins.rs::Game::f
 PiglinAi.throwItemsTowardPos	port	crates/sunrise-client/src/game/mobs/piglins.rs::Game::piglin_throw	gap: minor: no off-hand swing animation
 PiglinAi.getBarterResponseItems	port	crates/sunrise-client/src/game/mobs/piglins.rs::Game::finish_admiring	rolls minecraft:gameplay/piglin_bartering for an adult; a baby gets the ingot back
 PiglinAi.wantsToStopRiding	port	crates/sunrise-client/src/mobs/piglin.rs::wants_to_stop_riding	a ride target that is not a baby hoglin, or one that is too far or gone
-PiglinAi.isNearestValidAttackTarget	inline	crates/sunrise-client/src/mobs/piglin.rs::ai_step	gap: minor: only drops a mob target that is dead or unseen; vanilla also re-picks the nearest valid target
+PiglinAi.isNearestValidAttackTarget	inline	crates/sunrise-client/src/mobs/piglin.rs::brain_tick	gap: minor: only drops a mob target that is dead or unseen; vanilla also re-picks the nearest valid target
 PiglinAi.isNearZombified	inline	crates/sunrise-client/src/mobs/piglin.rs::register_piglin	gap: minor: the 6-block avoid is an AvoidEntity goal; the attack target is not erased near a zombified piglin
 PiglinAi.findNearestValidAttackTarget	port	crates/sunrise-client/src/mobs/piglin.rs::hostile_to_player	gap: minor: decides player targets only; angry-at, nemesis and universal anger are not chosen here
 PiglinAi.canAdmire	port	crates/sunrise-client/src/game/mobs/piglins.rs::Game::give_piglin	adult piglin takes a gold ingot from the hand
@@ -163,5 +163,5 @@ Husk.convertsToWhenDrowning	port	crates/sunrise-client/src/mobs/undead.rs::custo
 Husk.getConversionSound	port	crates/sunrise-client/src/mobs/undead.rs::custom_server_ai_step	1041, `entity.husk.converted_to_zombie`
 ZombieVillager.convertsInWater	port	crates/sunrise-client/src/mobs/undead.rs::custom_server_ai_step	false: a zombie villager never drowns into a drowned
 SpellcasterIllager.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_load.rs::mob_from_nbt	SpellTicks binds to the existing live counter, default zero
-SpellcasterIllager.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt	SpellTicks saves the live Int counter including zero and negative values
+SpellcasterIllager.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_write.rs::mob_to_nbt	SpellTicks saves the live Int counter including zero and negative values
 Evoker.EvokerWololoSpellGoal.canUse	port	crates/sunrise-client/src/mobs/illager.rs::UseSpell::can_use	wololo branch: blue sheep range scaled by `getVisibilityPercent` (the `isInvisible` flag or the effect; 0.07 of 16, floor 2)

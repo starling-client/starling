@@ -13,8 +13,12 @@ import subprocess
 import tempfile
 import time
 
-from agent_control_e2e import Cli
-import lab
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools.agent_control_e2e import Cli
+from tools import lab
 
 
 DIMENSIONS = ('the_nether', 'the_end', 'overworld')

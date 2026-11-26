@@ -75,18 +75,18 @@ def domain_export_collisions(src):
         for domain in re.findall(r"pub use (\w+)::types::\*;", text):
             types = src / domain / "types.rs"
             for name in pub_items(types):
-                domains.setdefault(name, []).append(str(types))
+                domains.setdefault(name, []).append(types.as_posix())
         text = re.sub(r"pub use \w+::types::\*;", "", text)
         text = re.sub(r"pub use (\w+)::types::(\w+);",
                       lambda m: "" if m[1] in glob_domains and m[2] in pub_items(src / m[1] / "types.rs") else m[0], text)
         names = use_names(text, src) - {"*"}
         names |= set(re.findall(r"^pub (?:unsafe )?(?:struct|enum|union|trait|type|fn|const|static|mod) (\w+)", text, re.M))
         for name in names:
-            explicit.setdefault(name, []).append(str(path))
+            explicit.setdefault(name, []).append(path.as_posix())
     for path in sorted((src / "hooks").glob("*.rs")):
         for name in re.findall(r"^    fn (\w+)\(", path.read_text(), re.M):
             event = "".join(word[:1].upper() + word[1:] for word in name.split("_")) + "Event"
-            explicit.setdefault(event, []).append(str(path) + " (generated event)")
+            explicit.setdefault(event, []).append(path.as_posix() + " (generated event)")
     problems = []
     for name, locations in sorted(domains.items()):
         locations = locations + explicit.get(name, [])

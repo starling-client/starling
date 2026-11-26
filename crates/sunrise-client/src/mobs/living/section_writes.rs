@@ -70,6 +70,12 @@ pub fn begin(enabled: bool) {
     });
 }
 
+/// Keep the borrowed tick's pending writes across a yield without capturing the
+/// owning Game's writes, which its own section boundary has already filed.
+pub fn set_enabled(enabled: bool) {
+    STATE.with(|state| state.borrow_mut().enabled = enabled);
+}
+
 /// Capture a committed teleport while the current mob is being ticked.
 pub fn record(id: u32, join: JoinSeq, from: Vec3, to: Vec3) {
     record_with(id, join, from, to, None);

@@ -193,8 +193,8 @@ pub struct BlockCollisionScan<'w, 'c, W: BlockCollisionWorld> {
     /// the unit cube (finite bounds always make one).
     entity_shape: Option<VoxelShape>,
     only_suffocating: bool,
-    /// A boolean collision query does not need translated full-cube geometry.
-    presence_only: bool,
+    /// Position and presence queries do not consume translated full-cube geometry.
+    skip_full_cube_translation: bool,
     start: BlockPos,
     sizes: [usize; 3],
     index: usize,
@@ -239,7 +239,7 @@ impl<'w, 'c, W: BlockCollisionWorld> BlockCollisionScan<'w, 'c, W> {
             bounds,
             entity_shape: None,
             only_suffocating,
-            presence_only: false,
+            skip_full_cube_translation: false,
             start,
             sizes: sizes.map(|s| s as usize),
             index: 0,
@@ -266,8 +266,23 @@ impl<'w, 'c, W: BlockCollisionWorld> BlockCollisionScan<'w, 'c, W> {
         candidate_budget: usize,
     ) -> Result<bool, CollisionScanError<W::Error>> {
         let mut scan = Self::new(world, context, bounds, only_suffocating, candidate_budget)?;
-        scan.presence_only = true;
+        scan.skip_full_cube_translation = true;
         Ok(scan.find_next()?.is_some())
+    }
+
+    /// Walk the same accepted cells in scan order, without moving full cubes.
+    pub(crate) fn matching_positions(
+        world: &'w mut W,
+        context: CollisionContext<'c>,
+        bounds: Aabb,
+        candidate_budget: usize,
+    ) -> Result<
+        impl Iterator<Item = Result<BlockPos, CollisionScanError<W::Error>>>,
+        CollisionScanError<W::Error>,
+    > {
+        let mut scan = Self::new(world, context, bounds, false, candidate_budget)?;
+        scan.skip_full_cube_translation = true;
+        Ok(scan.map(|hit| hit.map(|hit| hit.position)))
     }
 
     /// The cells after the current one (cell `x` of its row, block x `block_x`) that are in the
@@ -477,8 +492,8 @@ impl<'w, 'c, W: BlockCollisionWorld> BlockCollisionScan<'w, 'c, W> {
                 if !self.bounds.intersects_corners(offset, top) {
                     continue;
                 }
-                if self.presence_only {
-                    VoxelShape::block()
+                if self.skip_full_cube_translation {
+                    shape
                 } else {
                     moved_block(p, offset, &shape)
                 }

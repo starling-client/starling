@@ -21,7 +21,12 @@ wall shulker's open lid and picks the shulker up (AbstractBoat.tick): the box
 query must reach the lid, one block out from the shulker's position. The level
 is frozen and stepped, so each record is at a known tick.
 """
-from command_exec_corpus import cmd, setup
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools.command_exec_corpus import cmd, setup
 
 SHULKER = '00002e65-0000-0001-0000-000000000001'
 
@@ -93,9 +98,7 @@ def stand_entity_collisions():
     # The first shulker's lid opens to 30 (ShulkerPeekGoal's idle peek) at
     # 0.05 a tick, lifting its stand each tick, then all the way and shut
     # again: the stand rides the lid up and settles back on the shell. The
-    # lid takes 20 ticks to shut. Sunrise ticks armor stands before mobs, so
-    # while it shuts the stand lands on the lid of a tick before; the records
-    # wait until the lid is shut.
+    # lid takes 20 ticks to shut; the records wait until the lid is shut.
     ticks = 20
     for peek, steps in [(30, [1] * 8), (100, [1, 1, 2, 4, 12]), (0, [21, 4])]:
         ops.append(cmd(f'/data merge entity {SHULKER} {{Peek:{peek}b}}'))
@@ -128,7 +131,7 @@ def other_faces():
     # (stand, shulker): a west wall shulker opening east, then the stand
     # beside it, and the same with the stand first; a ceiling shulker opening
     # down onto a stand on the floor, both ways; a stand on a floor shulker
-    # 0.025 under a stone ceiling, the stand first (the order Sunrise ticks).
+    # 0.025 under a stone ceiling, with the stand first.
     ops += [cmd('/setblock 19 200 1 stone'), *shulker(1, 20.5, 200, 1.5, 4), *stand(1, 21.25, 200, 1.5),
             *stand(2, 21.25, 200, 4.5), cmd('/setblock 19 200 4 stone'), *shulker(2, 20.5, 200, 4.5, 4),
             cmd('/setblock 24 203 1 stone'), *shulker(3, 24.5, 202, 1.5, 1), *stand(3, 24.5, 200, 1.5),

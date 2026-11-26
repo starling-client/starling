@@ -1,4 +1,9 @@
 //! Owned and borrowed item values. Registry-dependent validation belongs to the game's write boundary.
+#[path = "item_stack_text.rs"]
+mod text;
+#[path = "item_stack_wear.rs"]
+mod wear;
+
 use crate::ItemKey;
 use component_edits::{ComponentEdit, ItemComponentEdits};
 use std::num::NonZeroU32;
@@ -54,11 +59,11 @@ impl From<&Components> for Compound {
 /// of two stacks that still share it is a pointer comparison. An absent patch allocates nothing.
 ///
 /// An untouched mutable stack hook argument retains its engine value without
-/// write validation, even when the engine value exceeds effective maxima. Equality
-/// with the snapshot passed to the listener determines whether it changed; a changed
-/// argument is validated in full before committing any hook outputs.
-/// A refused hook output retains its captured engine value. The clicked-slot bridge also
-/// stages the slot, cursor and cancellation flags together. Independent host effects,
+/// write validation, even when the engine value exceeds effective maxima. Ordinary changed
+/// hook outputs are validated independently when the listener returns. A refused output
+/// keeps its last accepted value. A [`crate::HookList`] checks each edit that supplies a
+/// stack and leaves other edits intact on refusal. Atomic operations such as a stacked-item
+/// click still validate and apply their proposals together. Independent host effects,
 /// including storage writes, commands and messages, are not undone by output validation.
 // no wire: decoding rejects zero counts through new and validates component patches through set_components; damage is applied through set_damage.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -72,11 +77,15 @@ pub struct ItemStack {
 
 type StackMetadata = (ItemKey, NonZeroU32, Option<u32>);
 type StackProjector<'a> = dyn Fn(StackMetadata) -> Option<ItemStack> + 'a;
+type StackComponentReader<'a> = dyn Fn(&str) -> Option<Tag> + 'a;
+type LootStackProjector =
+    fn(&dyn crate::__private::LootStackAccess, StackMetadata) -> Option<ItemStack>;
 type SlotMetadata<'a> = dyn Fn(u32) -> Option<StackMetadata> + 'a;
 type SlotProjector<'a> = dyn Fn(u32, StackMetadata) -> Option<ItemStack> + 'a;
 
 /// A read-only loan of a nonempty stack. Reading its scalars does not copy the stack or
-/// encode its components. Use [`Self::project`] to retain an owned value or read its patch.
+/// encode its components. Use [`Self::get`] to read one override and [`Self::project`]
+/// to retain an owned value or read the whole patch.
 // no wire: borrows a call-scoped stack or projection callable.
 #[non_exhaustive]
 pub struct ItemStackView<'a> {
@@ -87,7 +96,12 @@ pub struct ItemStackView<'a> {
 enum StackProjection<'a> {
     Borrowed(&'a ItemStack),
     Resident(&'a StackProjector<'a>),
+    ResidentComponents(&'a StackProjector<'a>, &'a StackComponentReader<'a>),
     Slot(u32, &'a SlotProjector<'a>),
+    Loot(
+        &'a dyn crate::__private::LootStackAccess,
+        LootStackProjector,
+    ),
     PreparedDrop(
         usize,
         &'a dyn crate::block::prepared_drops::PreparedBlockDropsAccess,
@@ -111,6 +125,33 @@ impl<'a> ItemStackView<'a> {
         Self {
             metadata,
             projection: StackProjection::Resident(project),
+        }
+    }
+
+    /// Lend a resident stack with direct access to individual component overrides.
+    // hidden: the engine lends resident storage and lazy single-component lookup using metadata it has checked.
+    #[doc(hidden)]
+    pub fn resident_with_components(
+        metadata: StackMetadata,
+        project: &'a StackProjector<'a>,
+        read_override: &'a StackComponentReader<'a>,
+    ) -> Self {
+        Self {
+            metadata,
+            projection: StackProjection::ResidentComponents(project, read_override),
+        }
+    }
+
+    // hidden: the loot bridge lends the queried stack without materializing its patch.
+    #[doc(hidden)]
+    pub fn queried_loot(
+        metadata: StackMetadata,
+        source: &'a dyn crate::__private::LootStackAccess,
+        project: LootStackProjector,
+    ) -> Self {
+        Self {
+            metadata,
+            projection: StackProjection::Loot(source, project),
         }
     }
 
@@ -152,13 +193,33 @@ impl<'a> ItemStackView<'a> {
         self.metadata.2
     }
 
+    /// Read a stored component override with its typed descriptor, without consulting item
+    /// defaults. An inherited or removed component has no value to decode. If the source
+    /// cannot read individual overrides, this may project an owned stack.
+    pub fn get<C: Component>(&self, component: &C) -> Option<C::Value> {
+        let id = component.id();
+        if id == "minecraft:damage" {
+            return component.decode(&unsigned_tag(self.damage_component()?));
+        }
+        match self.projection {
+            StackProjection::Borrowed(stack) => stack.get(component),
+            StackProjection::ResidentComponents(_, read) => component.decode(&read(id)?),
+            StackProjection::Resident(_)
+            | StackProjection::Slot(..)
+            | StackProjection::Loot(..)
+            | StackProjection::PreparedDrop(..) => self.project()?.get(component),
+        }
+    }
+
     /// Copy this stack into an owned API value, including its normalized component patch.
     /// Returns `None` if the source cannot be represented as an owned [`ItemStack`].
     pub fn project(&self) -> Option<ItemStack> {
         let mut stack = match self.projection {
             StackProjection::Borrowed(stack) => stack.clone(),
-            StackProjection::Resident(project) => project(self.metadata)?,
+            StackProjection::Resident(project)
+            | StackProjection::ResidentComponents(project, _) => project(self.metadata)?,
             StackProjection::Slot(slot, project) => project(slot, self.metadata)?,
+            StackProjection::Loot(source, project) => project(source, self.metadata)?,
             StackProjection::PreparedDrop(index, access) => {
                 access.project_stack(index, self.metadata)?
             }
@@ -178,8 +239,8 @@ impl<'a> ItemStackView<'a> {
 /// The editor cannot leave the callback:
 ///
 /// ```compile_fail
-/// use mod_api::{ItemComponentEditor, ItemPlace, ServerHost, Transaction};
-/// fn keep_editor(place: &ItemPlace, host: &mut dyn ServerHost, tx: &Transaction) {
+/// use mod_api::{ItemComponentEditor, ItemPlace, ServerHost, TransactionContext};
+/// fn keep_editor(place: &ItemPlace, host: &mut dyn ServerHost, tx: &TransactionContext) {
 ///     let mut saved: Option<&mut ItemComponentEditor<'_>> = None;
 ///     let _ = place.edit(host, tx, |editor| { saved = Some(editor); });
 ///     let _ = saved;
@@ -189,8 +250,8 @@ impl<'a> ItemStackView<'a> {
 /// The callback cannot use the host already borrowed by the edit:
 ///
 /// ```compile_fail
-/// use mod_api::{ItemPlace, ServerHost, Transaction};
-/// fn reread(place: &ItemPlace, host: &mut dyn ServerHost, tx: &Transaction) {
+/// use mod_api::{ItemPlace, ServerHost, TransactionContext};
+/// fn reread(place: &ItemPlace, host: &mut dyn ServerHost, tx: &TransactionContext) {
 ///     let _ = place.edit(host, tx, |_| { let _ = place.with_stack(host, |s| s.count()); });
 /// }
 /// ```
@@ -574,6 +635,63 @@ impl crate::NoBackend for StackWriteError {
     }
 }
 
+/// Why encoding or decoding an item stack as JSON (`ItemStack.OPTIONAL_CODEC` over `JsonOps`)
+/// failed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+#[derive(sunrise_mod_api_macros::Wire)]
+pub enum ItemJsonError {
+    /// The host has no game backend available to resolve item or component registries.
+    Unavailable,
+    /// The input text is not syntactically valid JSON.
+    InvalidJson {
+        /// Parser diagnostic.
+        reason: String,
+    },
+    /// A named top-level field or component key failed codec validation or encoding.
+    InvalidField {
+        /// Failing field or component identifier (such as `"id"`, `"count"`, `"components"`,
+        /// `"minecraft:damage"`, or `"!minecraft:damage"`).
+        field: String,
+        /// Codec diagnostic for that field.
+        reason: String,
+    },
+    /// A top-level value or codec refusal not tied to one named field.
+    InvalidValue {
+        /// Codec diagnostic.
+        reason: String,
+    },
+}
+
+impl ItemJsonError {
+    /// Name of the failing field or component key, when the error belongs to one field.
+    pub fn field(&self) -> Option<&str> {
+        match self {
+            Self::InvalidField { field, .. } => Some(field.as_str()),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for ItemJsonError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unavailable => f.write_str("item JSON codec unavailable"),
+            Self::InvalidJson { reason } => write!(f, "invalid JSON: {reason}"),
+            Self::InvalidField { field, reason } => write!(f, "{field}: {reason}"),
+            Self::InvalidValue { reason } => f.write_str(reason),
+        }
+    }
+}
+
+impl std::error::Error for ItemJsonError {}
+
+impl crate::NoBackend for ItemJsonError {
+    fn no_backend() -> Self {
+        Self::Unavailable
+    }
+}
+
 /// Why an [`ItemPlace`](crate::ItemPlace) could not run the item's crafted-by processing.
 ///
 /// This is a local refusal returned by [`ItemPlace::on_crafted_by`](crate::ItemPlace::on_crafted_by),
@@ -587,10 +705,14 @@ impl crate::NoBackend for StackWriteError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum CraftedByError {
+    /// The supplied context does not identify this host's innermost open transaction.
+    InvalidContext,
     /// The place is not a menu slot or the carried stack, or it no longer holds a stack.
     NotHeld,
-    /// The host has no server game backend, or the transaction or place is no longer usable.
+    /// The host has no server game backend, or the place is no longer usable.
     Unavailable,
+    /// The host rolled back the inner replacement commit (for example after a packet refusal).
+    CommitRefused,
 }
 
 impl crate::NoBackend for CraftedByError {
@@ -916,6 +1038,17 @@ impl ItemStack {
         }
         Some(value)
     }
+    /// `ItemStack.getUseAnimation` with the mods' `use_animation` answers applied: the
+    /// animation the renderer draws while this stack is in use. A `Spear` answer for a stack
+    /// without kinetic data reads `None`, as it draws. Read from inside an
+    /// `ItemPart::use_animation` callback for a stack of the item that callback is answering
+    /// (a copy with another count or components included), it is the item's own answer: that
+    /// Part is not asked again. Another item's Parts are asked. `None` for an item the host doesn't know or a host without the engine backend.
+    pub fn use_animation(&self, host: &dyn crate::Host) -> crate::UseAnimation {
+        crate::backend_of(host)
+            .and_then(|backend| backend.item_stack_use_animation(self))
+            .unwrap_or(crate::UseAnimation::None)
+    }
 }
 
 pub(crate) fn unsigned_tag(value: u32) -> Tag {
@@ -1005,6 +1138,17 @@ mod tests {
         fn encode(&self, value: i32) -> Tag {
             Tag::Int(value)
         }
+    }
+
+    #[test]
+    fn resident_stack_view_reads_one_override_without_projecting() {
+        let view = ItemStackView::resident_with_components(
+            (ItemKey(3), NonZeroU32::MIN, None),
+            &|_| panic!("component reads must not project the stack"),
+            &|id| (id == "test:number").then_some(Tag::Int(42)),
+        );
+        assert_eq!(view.get(&Number), Some(42));
+        assert_eq!(view.get(&Other), None);
     }
 
     #[test]

@@ -23,7 +23,8 @@ pub(super) fn refresh(saved: &mut SavedModifiers, packs: &WorldgenOverrides) -> 
             super::tag_list(&tag, "values"),
             super::tag_list(&tag, "remove"),
         );
-        let old = if matches!(tag.get("replace"), Some(J::Bool(true))) {
+        let replaced = matches!(tag.get("replace"), Some(J::Bool(true)));
+        let old = if replaced {
             None
         } else {
             saved.carver_tags.get(id).map(String::as_str)
@@ -32,6 +33,7 @@ pub(super) fn refresh(saved: &mut SavedModifiers, packs: &WorldgenOverrides) -> 
         let merged = super::merge_tag(
             old,
             &layers,
+            replaced,
             id,
             &sunrise_world::conditions::LoadConditions::new(
                 saved.enabled_mods.iter().map(String::as_str),

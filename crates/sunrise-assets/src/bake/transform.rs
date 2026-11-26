@@ -2,7 +2,10 @@
 //! the pinned client's default, unfused f32 operations, including UV-lock
 //! identity detection and quaternion basis normalization error.
 use super::sin_cos;
-use crate::model::Direction;
+use crate::{
+    math::Mat4,
+    model::{Direction, RootTransform},
+};
 use std::sync::OnceLock;
 
 #[derive(Clone, Copy, Debug)]
@@ -132,12 +135,17 @@ impl Affine {
     }
 }
 
-/// A blockstate's negative XYZ quarter-turns and optional face UV locking.
+/// A blockstate's negative XYZ quarter-turns and optional face UV locking, and the root
+/// transforms of the models being baked composed after them.
 /// All 64 rotation combinations are prepared once and reused across models.
 #[derive(Clone, Copy, Debug)]
 pub struct BlockModelTransform {
     orientation: &'static Orientation,
     uv_lock: bool,
+    /// The state's whole transformation once a root transform is composed into it
+    /// (`ComposedModelState`): positions and cull faces follow it, UV locking keeps the
+    /// blockstate's own face transformations.
+    composed: Option<Mat4>,
 }
 #[derive(Debug)]
 struct Orientation {
@@ -183,6 +191,29 @@ impl BlockModelTransform {
         Self {
             orientation: &orientations[x * 16 + y * 4 + z],
             uv_lock,
+            composed: None,
+        }
+    }
+    /// `UnbakedElementsHelper.composeRootTransformIntoModelState`: this state with a model's
+    /// root transform composed after it. An identity root transform leaves the state as it is.
+    pub(crate) fn with_root(self, root: Option<&RootTransform>) -> Self {
+        let Some(root) = root.and_then(RootTransform::block_centred) else {
+            return self;
+        };
+        let state = self.composed.unwrap_or_else(|| {
+            let [a, b, c] = self.orientation.matrix.rows;
+            let mut values = [0.0; 16];
+            for (row, values) in [a, b, c, [0.0, 0.0, 0.0, 1.0]]
+                .into_iter()
+                .zip(values.chunks_mut(4))
+            {
+                values.copy_from_slice(&row);
+            }
+            Mat4::from_row_major(values)
+        });
+        Self {
+            composed: Some(state.mul(&root)),
+            ..self
         }
     }
     pub fn matrix_rows(self) -> [[f32; 4]; 3] {
@@ -199,6 +230,11 @@ impl BlockModelTransform {
         }
     }
     pub(super) fn position(self, v: [f32; 3]) -> [f32; 3] {
+        if let Some(composed) = self.composed {
+            return composed
+                .transform_position(v.map(|c| c - 0.5))
+                .map(|c| c + 0.5);
+        }
         if self.orientation.matrix.identity {
             return v;
         }
@@ -227,7 +263,11 @@ impl BlockModelTransform {
             Direction::West => [-1.0, 0.0, 0.0],
             Direction::East => [1.0, 0.0, 0.0],
         };
-        nearest(self.orientation.matrix.position(v))
+        match self.composed {
+            // `Direction.rotate(Matrix4fc, Direction)`.
+            Some(composed) => nearest(composed.transform_direction(v)),
+            None => nearest(self.orientation.matrix.position(v)),
+        }
     }
 }
 fn nearest([x, y, z]: [f32; 3]) -> Direction {

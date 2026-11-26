@@ -1,5 +1,4 @@
 //! The `entity_breed` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0199
 
 pub trait Hooks {
     /// Two mobs completed a breeding action. `child` is absent when vanilla

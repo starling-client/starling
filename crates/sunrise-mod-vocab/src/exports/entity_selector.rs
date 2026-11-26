@@ -1,1 +1,3 @@
-pub use command::entity_selector::{EntitySelectorType, SelectorBase, SelectorSort};
+pub use command::entity_selector::{
+    EntitySelectorRegistrationError, EntitySelectorType, SelectorBase, SelectorSort,
+};

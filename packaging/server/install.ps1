@@ -35,13 +35,10 @@ $VerifierSha256 = @{
     'windows-arm64' = 'ef5bbdf1440c303c0e8c6056159fc46166727257f1e6a1b98ef63def7932d1d9'
 }
 # <<< verifier pin
-$Fallback = $null
 $Architecture = $env:PROCESSOR_ARCHITEW6432
 if (-not $Architecture) { $Architecture = $env:PROCESSOR_ARCHITECTURE }
 switch ($Architecture) {
     "AMD64" { $Platform = "windows-x64"; $Asset = "sunrise-windows-x64.zip" }
-    # A release without an ARM64 build installs the x64 one, which Windows runs under emulation.
-    "ARM64" { $Platform = "windows-arm64"; $Asset = "sunrise-windows-arm64.zip"; $Fallback = "sunrise-windows-x64.zip" }
     default { throw "No Sunrise release for Windows on $Architecture yet: build it from source (docs/server.md)" }
 }
 
@@ -71,11 +68,6 @@ if ($Tag -eq "nightly" -or $Tag.StartsWith("nightly-")) {
     $Tag = $Nightly
 }
 $Item = $Release.assets | Where-Object { $_.name -eq $Asset } | Select-Object -First 1
-if (-not $Item -and $Fallback) {
-    Write-Host "Release $Tag has no ${Asset}: installing $Fallback (x64, under emulation)"
-    $Asset = $Fallback
-    $Item = $Release.assets | Where-Object { $_.name -eq $Asset } | Select-Object -First 1
-}
 if (-not $Item) { throw "Release $Tag has no $Asset" }
 $Digest = $null
 if ($Item.digest -and $Item.digest.StartsWith("sha256:")) { $Digest = $Item.digest.Substring(7) }
@@ -182,11 +174,6 @@ try {
         Write-Host "Added $Bin to your PATH: open a new terminal to use it."
     }
     Write-Host "Installed Sunrise $Tag in $Target."
-    if (-not (Get-ChildItem -Path $GameFiles -ErrorAction SilentlyContinue)) {
-        Write-Host "Next, prepare the game files from your own Minecraft 26.3 (it needs Java 25 and the game installed"
-        Write-Host "once by the official launcher; see docs/server.md):"
-        Write-Host "  sunrise-prepare --prepare --server-jar C:\path\to\server.jar"
-    }
     Write-Host "Then set up a server: mkdir my-server; cd my-server; sunrise-server init"
 } finally {
     Remove-Item -Recurse -Force $Tmp -ErrorAction SilentlyContinue

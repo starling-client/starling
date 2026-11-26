@@ -1,0 +1,33 @@
+ids = [
+    "hook:item_picked_up",
+    "hook:item_picked_up_post",
+    "hook:on_entity_item_update",
+    "handle:ItemEntityRef::set_stack",
+    "handle:ItemEntitySubjectView::pickup_delay",
+    "handle:ItemEntitySubjectView::set_stack",
+    "handle:LevelRef::spawn_item",
+    "handle:LevelRef::spawn_item_with_motion",
+    "type:ItemDrop",
+    "type:ItemDrop.pickup_delay",
+    "handle:ItemDrop::new",
+    "handle:PreparedDropView::pickup_delay",
+    "handle:PreparedDropMut::pickup_delay",
+    "handle:PreparedDropMut::set_pickup_delay",
+]
+why = "Matches vanilla 26.3 ItemEntity.setPickUpDelay, setItem, tick and addAdditionalSaveData, and NeoForge ItemEntityPickupEvent.Pre/Post at ItemEntity.playerTouch. Delay is signed in memory and narrows only at NBT save; an empty stack is omitted on save and discarded on the normal item tick. Pre vetoes without a cooldown. Default checks the live delay and target, inventory insertion uses the captured stack, and Post distinguishes its remainder from any replacement on the live entity."
+migrate = '''
+- `Hooks::on_entity_item_update` (version 3 -> 4): the scoped subject view now carries a signed pickup delay and a `set_stack` that accepts `None` or air, so an `ItemPart` callback can empty the drop mid-tick; the engine removes the entity at the end of that update. Rebuild and pin version 4; read the live stack through `with_view` after any such write.
+- `Hooks::item_picked_up` (version 2 -> 3): `False` no longer sets a cooldown; set the delay explicitly if wanted. `Default` requires exactly zero live delay and a matching or absent target. On both pickup paths `event.item` names the live entity, and an explicit nonempty stack replacement stays there even if all of the captured original fits.
+- `Hooks::item_picked_up_post` (version 4 -> 5): `event.remaining` starts as the part of `event.original` the inventory did not take; it no longer necessarily describes the live entity if Pre replaced its stack. For the live stack, use `event.item.with_stack(host, ...)`. Changing `event.remaining` overrides the live replacement.
+- `ItemEntityRef::set_stack`: wrap writes in `Some(stack)`; pass `None` or air to empty the stack for next-tick removal. Use `EntityRef::discard` or `EntityRef::remove` for immediate removal.
+- `ItemEntitySubjectView::set_stack`: wrap writes in `Some(stack)`; pass `None` or air to empty the stack for next-tick removal.
+- `ItemEntitySubjectView::pickup_delay`: read `i32` directly; drop the `.unwrap()` or pattern match on `Some`.
+- `LevelRef::spawn_item`: pass `i32` delay ticks instead of `u32`; use `32767` in place of the old `u32::MAX` sentinel.
+- `LevelRef::spawn_item_with_motion`: pass `i32` delay ticks instead of `u32`; use `32767` in place of the old `u32::MAX` sentinel.
+- `ItemDrop`: construct it with signed `pickup_delay` ticks.
+- `ItemDrop.pickup_delay`: read and write `i32` ticks instead of `u32`; `32767` is the infinite delay.
+- `ItemDrop::new`: pass `i32` delay ticks instead of `u32`; `32767` is the infinite delay.
+- `PreparedDropView::pickup_delay`: read signed `i32` ticks instead of `u32`.
+- `PreparedDropMut::pickup_delay`: read signed `i32` ticks instead of `u32`.
+- `PreparedDropMut::set_pickup_delay`: pass signed `i32` ticks instead of `u32`; `32767` is the infinite delay.
+'''

@@ -2,61 +2,89 @@
 //! `StructureTemplateManager.get`, and what `StructureTemplate.placeInWorld`
 //! would place) without placing them: a builder reads a template once, then
 //! places its blocks one at a time.
-use super::{Game, api_values::TryIntoApi};
-use mod_api::Compound;
+use super::Game;
+use core::ops::ControlFlow;
+use mod_api::{
+    Compound, LevelRef, StructureMirror, StructureRotation, StructureTemplateBlockView,
+    StructureTemplateError,
+};
 use sunrise_client::structure_block::parse_identifier;
 use sunrise_core::position::BlockPos;
 use sunrise_core::random::{LegacyRandom, RandomSource, position_seed};
 use sunrise_world::registry::BlockStateId;
 use sunrise_world::worldgen::structure::{Mirror, Rotation, StateTransforms, StructureTemplate};
 
-use mod_api::{StructureMirror, StructureRotation, StructureTemplateSnapshot};
-
 /// Game-owned placement result; numeric states never escape to mods.
 #[derive(Debug, PartialEq)]
-pub(super) struct TemplateSnapshot<'a> {
-    pub size: [i32; 3],
-    pub blocks: Vec<TemplateBlock<'a>>,
+struct TemplateSnapshot<'a> {
+    size: [i32; 3],
+    blocks: Vec<TemplateBlock<'a>>,
 }
 #[derive(Debug, PartialEq)]
-pub(super) struct TemplateBlock<'a> {
-    pub pos: [i32; 3],
-    pub state: BlockStateId,
-    pub nbt: Option<&'a Compound>,
+struct TemplateBlock<'a> {
+    pos: [i32; 3],
+    state: BlockStateId,
+    nbt: Option<&'a Compound>,
 }
 // Native mods use this; nothing in Sunrise does.
 impl Game<'_> {
-    /// For a server mod: structure template `id` (`mymod:hut`, found as
+    /// For a server mod: visit structure template `id` (`mymod:hut`, found as
     /// `StructureTemplateManager.get` finds it: the world's saved structures,
     /// then the game's and the mods' own) as `/place template id` would place
-    /// it at `at` with `rotation` and `mirror`, without placing anything. The
-    /// blocks come in vanilla's placement order (full blocks, the others, then
-    /// those with a block entity, each by y, x, z), from the palette
-    /// `/place template` picks at `at`; no processor runs, and the template's
-    /// entities are left out. None for an id that doesn't parse or has a `.`
-    /// or `..` part, a template the game doesn't have, an unknown or unavailable
-    /// state mapping (the entire snapshot is refused), and on a client.
+    /// it at `at` with `rotation` and `mirror` in this server level (active or
+    /// parked), without placing anything. Lends each transformed block in
+    /// vanilla placement order (full blocks, the others, then those with a block
+    /// entity, each by y, x, z), stopping on `ControlFlow::Break(())`, and
+    /// returns the rotated template size.
     /// API @API:structure_template@.
-    pub(super) fn structure_template(
+    pub(super) fn level_visit_structure_template(
         &mut self,
+        level: LevelRef,
         id: &str,
         at: [i32; 3],
         rotation: StructureRotation,
         mirror: StructureMirror,
-    ) -> Option<StructureTemplateSnapshot> {
-        if !self.native_authoritative() {
-            return None;
-        }
-        let rotation = engine_rotation(rotation)?;
-        let mirror = engine_mirror(mirror)?;
-        let id = template_id(id)?;
-        let entry = self.template_entry(&id)?;
-        let transforms = self.state_transforms()?;
+        visit: &mut dyn for<'a> FnMut(StructureTemplateBlockView<'a>) -> ControlFlow<()>,
+    ) -> Result<[i32; 3], StructureTemplateError> {
+        self.native_level_world_result(level)?;
+        let rotation =
+            engine_rotation(rotation).ok_or(StructureTemplateError::UnsupportedTransform)?;
+        let mirror = engine_mirror(mirror).ok_or(StructureTemplateError::UnsupportedTransform)?;
+        let id = template_id(id).ok_or(StructureTemplateError::InvalidId)?;
+        let entry = self
+            .template_entry(&id)
+            .ok_or(StructureTemplateError::NotFound)?;
+        let transforms = self
+            .state_transforms()
+            .ok_or(StructureTemplateError::Unavailable)?;
+        let index = super::api_values::block_state::current()
+            .map_err(|_| StructureTemplateError::Unavailable)?;
         let template =
             StructureTemplate::from_nbt(&entry.tag, self.pack.assets.registry, transforms);
-        placements(&template, transforms, at, rotation, mirror)
-            .try_into_api()
-            .ok()
+        let snapshot = placements(&template, transforms, at, rotation, mirror);
+        // Validate every state upfront so an unmappable template refuses whole before visiting.
+        let states = snapshot
+            .blocks
+            .iter()
+            .map(|block| {
+                index
+                    .to_api(block.state)
+                    .map_err(|_| StructureTemplateError::InvalidState)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        for (block, state) in snapshot.blocks.iter().zip(states) {
+            let view: StructureTemplateBlockView<'_> =
+                mod_api::__private::built::StructureTemplateBlockView {
+                    pos: block.pos,
+                    state,
+                    nbt: block.nbt,
+                }
+                .into();
+            if visit(view).is_break() {
+                break;
+            }
+        }
+        Ok(snapshot.size)
     }
 }
 
@@ -123,7 +151,11 @@ fn placements<'a>(
             let pos = std::array::from_fn(|i| relative[i].wrapping_add(at[i]));
             TemplateBlock {
                 pos,
-                state: transforms.rotate_at(transforms.mirror(block.state, mirror), pos, rotation),
+                state: transforms.rotate_at(
+                    transforms.mirror_at(block.state, pos, mirror),
+                    pos,
+                    rotation,
+                ),
                 nbt: block.nbt.as_deref(),
             }
         })

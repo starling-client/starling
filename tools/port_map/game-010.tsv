@@ -37,7 +37,7 @@ BreezeAttackEntitySensor.doTick	port	crates/sunrise-client/src/mobs/monster_brai
 FrogAttackablesSensor.isMatchingEntity	port	crates/sunrise-client/src/mobs/frog.rs::server_ai_step	every 20 ticks: nearest size-1 slime or magma cube within 10 blocks in line of sight
 FrogAttackablesSensor.isUnreachableAttackTarget	inline	crates/sunrise-client/src/mobs/frog.rs::server_ai_step	skips ids in the unreachable list (up to five, 100 ticks each)
 GolemSensor.checkForNearbyGolem	port	crates/sunrise-client/src/mobs/villager_brain.rs::sense_golem	an iron golem in the nearby list sets golem_detected_recently for 599 ticks
-HoglinSpecificSensor.doTick	inline	crates/sunrise-client/src/mobs/piglin.rs::hoglin_sense	hoglin_repellent runs it every 20 ticks with the repellent scan: it counts the adult piglins and hoglins in sight and keeps the nearest adult piglin and the adult hoglins; the idle activity keeps an adult hoglin 8 blocks from that piglin (AwayFrom::AdultPiglin) and piglins_outnumber_hoglins starts and ends its retreat
+HoglinSpecificSensor.doTick	inline	crates/sunrise-client/src/mobs/piglin.rs::hoglin_sense	brain_start runs it every 20 ticks with the repellent scan: it counts the adult piglins and hoglins in sight and keeps the nearest adult piglin and the adult hoglins; the idle activity keeps an adult hoglin 8 blocks from that piglin (AwayFrom::AdultPiglin) and piglins_outnumber_hoglins starts and ends its retreat
 HurtBySensor.doTick	port	crates/sunrise-client/src/mobs/villager_brain.rs::sense_hurt	last damage source forgotten after 40 ticks, attacker kept while alive
 IsInWaterSensor.doTick	inline	crates/sunrise-client/src/mobs/frog.rs::Croak::can_use	no IS_IN_WATER memory; frog goals read fluids.in_water directly
 MobSensor.doTick	inline	crates/sunrise-client/src/mobs/armadillo.rs::server_ai_step	armadillo scare sensor every fifth tick: cannot stay rolled up clears the danger, else scan
@@ -49,7 +49,7 @@ NearestLivingEntitySensor.doTick	port	crates/sunrise-client/src/mobs/brain.rs::l
 NearestVisibleLivingEntitySensor.getNearestEntity	inline	crates/sunrise-client/src/mobs/animal_brain.rs::sense_axolotl_attackables	find_closest over the visible list with the sensor's own test
 PiglinBruteSpecificSensor.doTick	inline	crates/sunrise-client/src/mobs/piglin.rs::register_brute	gap: minor: nemesis is a NearestTarget on wither skeletons only, the wither boss is not one; alerting nearby adult piglins is HurtByTarget alert
 PiglinSpecificSensor.requires	skip:java		declares which memories the sensor fills
-PiglinSpecificSensor.doTick	inline	crates/sunrise-client/src/mobs/piglin.rs::ai_step	gap: minor: only the repellent scan (every 20 ticks) is a sensor; nemesis, baby hoglin or piglin, player holding gold and adult counts are not remembered, so piglins do not attack wither skeletons or look at a player holding gold from 14 blocks
+PiglinSpecificSensor.doTick	inline	crates/sunrise-client/src/mobs/piglin.rs::brain_start	every 20 ticks: the nearest repellent, then piglin_sense remembers the visible adult piglins and their count, adult hoglins, the nearest baby hoglin, zombified piglin or zoglin, the nemesis (wither skeleton or wither) and whether the player holds a loved item; gap: minor: the first scan's delay starts from the entity id, not the entity's random (#4824)
 PiglinSpecificSensor.isValidRepellent	port	crates/sunrise-client/src/mobs/piglin.rs::find_piglin_repellent	#piglin_repellents, a soul campfire only while lit
 PlayerSensor.doTick	port	crates/sunrise-client/src/mobs/villager_brain.rs::sense_players	gap: minor: one player only, no other players of a shared level
 SecondaryPoiSensor.doTick	port	crates/sunrise-client/src/mobs/villager_secondary.rs::sense_secondary	farmer: farmland within 4 by 2 blocks; no other profession has secondary blocks
@@ -100,17 +100,17 @@ PoiSection.getFreeTickets	skip:debug		deprecated, debug only
 PoiSection.release	inline	crates/sunrise-client/src/mobs/villager_brain.rs::tickets	see PoiManager.release
 PoiSection.refresh	inline	crates/sunrise-client-render/src/poi_sections.rs::PoiSections::get	invalid sections need no refresh, the list is rebuilt from blocks
 PoiSection.Packed.unpack	skip:other		POI files are not loaded into sections
-PoiTypes.registerBlockStates	inline	crates/sunrise-client/src/save.rs::poi_type	state to POI type and max tickets in one match
-PoiTypes.bootstrap	port	crates/sunrise-client/src/save.rs::poi_type	every POI type with its tickets (bed heads of the sixteen colours only, cauldrons, bell 32); villagers use villager_brain::state_poi for jobs, beds and bell
+PoiTypes.registerBlockStates	inline	crates/sunrise-world/src/poi.rs::poi_type	state to POI type and max tickets in one match
+PoiTypes.bootstrap	port	crates/sunrise-world/src/poi.rs::poi_type	every POI type with its tickets (bed heads of the sixteen colours only, cauldrons, bell 32); villagers use villager_brain::state_poi for jobs, beds and bell
 Bat.isFlapping	port	crates/sunrise-client/src/game/blocks/sculk.rs::flaps	an awake bat flaps every tenth tick, and the movement pass posts minecraft:flap when the block below is air (a bee, every other tick in the air, shares the same fn)
 Bat.getMovementEmission	port	crates/sunrise-client/src/mobs/ai.rs::movement_sounds	EVENTS
 Bat.getAmbientSound	inline	crates/sunrise-client/src/mobs/ai.rs::play_ambient	Species::Bat arm: a resting bat is silent three times in four
 Bat.isResting	port	crates/sunrise-client/src/mobs/bat.rs::resting
-Bat.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt	BatFlags byte, bit 0 resting
+Bat.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_write.rs::mob_to_nbt	BatFlags byte, bit 0 resting
 Bat.checkBatSpawnRules	inline	crates/sunrise-client/src/mobs/spawn_rules.rs::check_spawn_rules	S::Bat arm: below the surface, coin flip, light against nextInt(4), bats_spawnable_on, mob rules
 Dolphin.finalizeSpawn	port	crates/sunrise-client/src/mobs/finalize.rs::Ctx::finalize	S::Dolphin arm: full air, pitch 0, baby chance 0.1
 Dolphin.defineSynchedData	skip:java		synched fields: got_fish is extra.flag and moistness extra.counter
-Dolphin.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt	GotFish and Moistness
+Dolphin.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_write.rs::mob_to_nbt	GotFish and Moistness
 Dolphin.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_load.rs::mob_from_nbt	GotFish and Moistness, 2400 when absent
 Dolphin.registerGoals	port	crates/sunrise-client/src/mobs/aquatic.rs::register	the Dolphin arm registers MoveToItem, PlayWithItems, FollowPlayerRidden (boats and nautiluses), an AvoidEntity of guardians and a HurtByTarget that ignores guardians
 Dolphin.createAttributes	skip:data		attributes come from the entity tables
@@ -126,7 +126,7 @@ Dolphin.MoveToItemGoal.canUse	port	crates/sunrise-client/src/mobs/dolphin.rs::Mo
 Dolphin.MoveToItemGoal.stop	port	crates/sunrise-client/src/mobs/dolphin.rs::MoveToItem::stop	drops what it holds and rests for up to 100 ticks
 Dolphin.MoveToItemGoal.start	port	crates/sunrise-client/src/mobs/dolphin.rs::MoveToItem::start	swims to it and plays the play sound
 AbstractChestedHorse.dropEquipment	port	crates/sunrise-client/src/mobs/drops.rs::die	the stored items and then a chest drop, chested cleared
-AbstractChestedHorse.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt	ChestedHorse and Items for llamas, donkeys and mules
+AbstractChestedHorse.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_write.rs::mob_to_nbt	ChestedHorse and Items for llamas, donkeys and mules
 AbstractChestedHorse.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_load.rs::mob_from_nbt	ChestedHorse and Items, 15 slots
 AbstractChestedHorse.getSlot	missing		slot 499 (horse.chest) is not mapped for mobs, so /item replace entity ... horse.chest does nothing; the mob slot names Sunrise resolves are the eight of loot::EQUIPMENT_SLOTS
 AbstractChestedHorse.equipChest	port	crates/sunrise-client/src/game/mobs/mounts.rs::Game::interact_mount	tamed donkey or mule takes a held chest with the sound; llamas do it in game/mobs/llamas.rs interact_llama

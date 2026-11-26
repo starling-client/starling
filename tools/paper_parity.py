@@ -28,11 +28,11 @@ from types import SimpleNamespace
 import zipfile
 import zlib
 
-from lra_schem import _nbt
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools.lra_schem import _nbt
 
-import lab
-import oracle_harness as oracle
-import server_bench as bench
+from tools import lab, oracle_harness as oracle, server_bench as bench
 
 FIXTURES = lab.ROOT / 'tools/fixtures'
 SCENARIOS = lab.ROOT / 'tools/paper_parity_scenarios.json'

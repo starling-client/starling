@@ -18,6 +18,17 @@ enum Node {
     General(usize, GeneralEntityRecord),
 }
 
+fn spawn_tags(tag: &Tag) -> impl Iterator<Item = String> + '_ {
+    let tags = match tag.get("Tags") {
+        Some(Tag::List(tags)) => tags.as_slice(),
+        _ => &[],
+    };
+    tags.iter().filter_map(|tag| match tag {
+        Tag::String(s) => Some(s.to_string_lossy()),
+        _ => None,
+    })
+}
+
 impl SpawnTree {
     /// `EntityType.loadPassengersRecursive`: read each supported member before
     /// its descendants. A record that cannot be decoded contributes no branch.
@@ -35,12 +46,14 @@ impl SpawnTree {
             let (node, uuid) = if let Some(mob_type) = game.res.mob_types().get(&kind) {
                 Game::normalize_loaded_mob_tags(&mut tag);
                 let (random, fresh_uuid) = sunrise_client::mobs::living_random();
-                let mob = entity_nbt::mob_from_nbt_deferred(
+                let mut mob = entity_nbt::mob_from_nbt_deferred(
                     &tag,
                     mob_type.clone(),
                     game.pack.assets.registry,
                     random,
                 );
+                entity_nbt::read_mob_variants(&mut mob, &tag, game.world_variants());
+                mob.extra.spawn_tags = spawn_tags(&tag).collect();
                 (
                     Node::Mob(Box::new(mob)),
                     entity_nbt::uuid(&tag).unwrap_or(fresh_uuid),
@@ -66,8 +79,24 @@ impl SpawnTree {
         (!members.is_empty()).then_some(Self(members))
     }
 
+    pub(in crate::game) fn root_mob(&mut self) -> Option<&mut Mob> {
+        match &mut self.0[0].node {
+            Node::Mob(mob) => Some(mob),
+            Node::General(..) => None,
+        }
+    }
+
     pub(in crate::game) fn root_uuid(&self) -> [i32; 4] {
         self.0[0].uuid
+    }
+
+    /// The spawner changes only the root before admitting the finished tree.
+    pub(in crate::game) fn root_mob_mut(&mut self) -> Option<(&mut Mob, &mut Tag)> {
+        let root = &mut self.0[0];
+        match &mut root.node {
+            Node::Mob(mob) => Some((mob, &mut root.tag)),
+            Node::General(..) => None,
+        }
     }
 
     /// `ServerLevel.tryAddFreshEntityWithPassengers`: compare the whole tree
@@ -105,7 +134,7 @@ impl SpawnTree {
         let mut ids = Vec::with_capacity(self.0.len());
         for Member {
             node,
-            tag,
+            mut tag,
             uuid,
             parent,
             resident,
@@ -117,6 +146,23 @@ impl SpawnTree {
                     game.next_entity += 1;
                     mob.id = game.next_entity;
                     mob.attach_mod_parts();
+                    let tags = std::mem::take(&mut mob.extra.spawn_tags);
+                    if !spawn_tags(&tag).eq(tags.iter().cloned())
+                        && let Tag::Compound(raw) = &mut tag
+                    {
+                        if tags.is_empty() {
+                            raw.remove(&"Tags".into());
+                        } else {
+                            raw.insert(
+                                "Tags".into(),
+                                Tag::List(
+                                    tags.into_iter()
+                                        .map(|tag| Tag::String(tag.as_str().into()))
+                                        .collect(),
+                                ),
+                            );
+                        }
+                    }
                     let id = game.install_loaded_mob(
                         (*mob, uuid),
                         tag,
@@ -140,5 +186,35 @@ impl SpawnTree {
             ids.push(id);
         }
         ids[0].expect("an admitted tree's first member joins the level")
+    }
+}
+
+impl Game<'_> {
+    pub(in crate::game) fn install_generated_mobs(
+        &mut self,
+        pack: Vec<sunrise_client::vanillagen::GeneratedMob>,
+    ) {
+        let mut ids = Vec::new();
+        for sunrise_client::vanillagen::GeneratedMob {
+            mut body,
+            uuid,
+            tag,
+        } in pack
+        {
+            let mount = body.extra.mount.and_then(|old| {
+                ids.iter()
+                    .find_map(|&(provisional, real)| (provisional == old).then_some(real))
+            });
+            let provisional = body.id;
+            body.extra.rider = None;
+            self.next_entity += 1;
+            body.id = self.next_entity;
+            let id =
+                self.install_loaded_mob((body, uuid), Tag::Compound(tag), mount, None, false, None);
+            ids.push((provisional, id));
+            if let Some(vehicle) = mount.and_then(|id| self.mob_object_mut(id)) {
+                vehicle.extra.rider.get_or_insert(id);
+            }
+        }
     }
 }

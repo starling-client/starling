@@ -1,5 +1,5 @@
 //! Native biome source adapter: the mods' `BiomeSource`s as the engine's.
-use mod_api::BiomeSource;
+use mod_api::{__private::game::CallbackOwner, BiomeSource};
 use std::sync::Arc;
 use sunrise_world::worldgen::mod_biome_sources::{
     ModBiomeSource, ModBiomeSources, install_mod_biome_sources,
@@ -9,23 +9,33 @@ use sunrise_world::worldgen::mod_biome_sources::{
 struct Adapter {
     biomes: Vec<String>,
     source: Arc<dyn BiomeSource>,
+    owner: CallbackOwner,
 }
 impl ModBiomeSource for Adapter {
     fn possible_biomes(&self) -> &[String] {
         &self.biomes
     }
-    fn noise_biome(&self, quart: [i32; 3], seed: i64) -> u16 {
-        self.source.noise_biome(quart, seed)
+    /// Sampling runs under the registering mod's owner: a panic poisons that source for the
+    /// session and is this cell's failure, not an unwind through the worker.
+    fn noise_biome(&self, quart: [i32; 3], seed: i64) -> Result<u16, String> {
+        self.owner.call("biome source", "noise_biome", || {
+            self.source.noise_biome(quart, seed)
+        })
     }
 }
 
 fn installed_biome_sources() -> ModBiomeSources {
     mod_api::__private::biome_source_declarations()
         .into_iter()
-        .map(|(id, biomes, source)| {
+        .map(|(id, biomes, source, owner)| {
+            let biomes = biomes.into_iter().map(|biome| biome.to_string()).collect();
             (
                 id,
-                Arc::new(Adapter { biomes, source }) as Arc<dyn ModBiomeSource>,
+                Arc::new(Adapter {
+                    biomes,
+                    source,
+                    owner,
+                }) as Arc<dyn ModBiomeSource>,
             )
         })
         .collect()
@@ -42,13 +52,16 @@ pub(in crate::game) fn install() {
 mod tests {
     use super::*;
     use crate::game::api_values::install_parts;
-    use mod_api::{DimensionSettings, Hooks, ModEntry, Registrar, RegistrationContext};
+    use mod_api::{BiomeKey, DimensionSettings, Hooks, ModEntry, Registrar, RegistrationContext};
 
     /// Plains and desert in stripes one quart cell wide, shifted by the seed.
     struct Stripes;
     impl BiomeSource for Stripes {
-        fn possible_biomes(&self) -> Vec<String> {
-            vec!["minecraft:plains".into(), "minecraft:desert".into()]
+        fn possible_biomes(&self) -> Vec<BiomeKey> {
+            vec![
+                BiomeKey::parse("minecraft:plains").unwrap(),
+                BiomeKey::parse("minecraft:desert").unwrap(),
+            ]
         }
         fn noise_biome(&self, [x, _, _]: [i32; 3], seed: i64) -> u16 {
             ((i64::from(x) + seed) & 1) as u16
@@ -63,7 +76,7 @@ mod tests {
         static LISTED: AtomicUsize = AtomicUsize::new(0);
         struct Counted;
         impl BiomeSource for Counted {
-            fn possible_biomes(&self) -> Vec<String> {
+            fn possible_biomes(&self) -> Vec<BiomeKey> {
                 LISTED.fetch_add(1, Ordering::Relaxed);
                 Stripes.possible_biomes()
             }
@@ -88,8 +101,8 @@ mod tests {
             );
         }
         assert_eq!(LISTED.load(Ordering::Relaxed), 1);
-        assert_eq!(stripes.noise_biome([3, 9, -4], 0), 1);
-        assert_eq!(stripes.noise_biome([3, 9, -4], 1), 0);
+        assert_eq!(stripes.noise_biome([3, 9, -4], 0), Ok(1));
+        assert_eq!(stripes.noise_biome([3, 9, -4], 1), Ok(0));
     }
 
     /// Each source a mod may not register, and a dimension naming a source
@@ -98,7 +111,7 @@ mod tests {
     fn invalid_biome_sources_refuse_registration() {
         struct Empty;
         impl BiomeSource for Empty {
-            fn possible_biomes(&self) -> Vec<String> {
+            fn possible_biomes(&self) -> Vec<BiomeKey> {
                 Vec::new()
             }
             fn noise_biome(&self, _: [i32; 3], _: i64) -> u16 {
@@ -112,6 +125,7 @@ mod tests {
                 r.register_biome_source("stripes", Stripes);
                 r.register_biome_source("stripes", Stripes);
                 r.register_biome_source("other:stripes", Stripes);
+                r.register_biome_source("minecraft:fixed", Stripes);
                 r.register_biome_source("empty", Empty);
                 r.register_dimension(
                     "pocket",
@@ -125,7 +139,7 @@ mod tests {
         let errors = install_parts(&[ModEntry::new("test", Box::new(Invalid))]).unwrap_err();
         let expected = [
             "test registered biome source test:stripes twice",
-            "test declares \"other:stripes\" in unowned namespace \"other\"",
+            "test registered biome source minecraft:fixed, which is the game's own",
             "test registered biome source test:empty, whose possible_biomes lists no biome",
             "test registered dimension test:pocket with the unknown biome source \"test:gone\"",
         ];

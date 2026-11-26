@@ -16,6 +16,10 @@ fn retained_knockback_entries_apply_hook_edits_cancel_and_delegate_once() {
         let mut file = syn::parse_file(&source).unwrap();
         // Let the fixture call both entry forms; leave signatures and bodies intact.
         for item in &mut file.items {
+            // A free helper's restricted path names a module the fixture doesn't have.
+            if let syn::Item::Fn(function) = item {
+                function.vis = syn::parse_quote!(pub(crate));
+            }
             if let syn::Item::Impl(owner) = item {
                 for item in &mut owner.items {
                     if let syn::ImplItem::Fn(function) = item {
@@ -35,6 +39,19 @@ fn retained_knockback_entries_apply_hook_edits_cancel_and_delegate_once() {
         let module = syn::Ident::new(module, proc_macro2::Span::call_site());
         modules.extend(quote!(mod #module { #file }));
     }
+    // The real movement write both entries end in (`Knock::apply`), not a second copy of it.
+    let health = fs::read_to_string(root.join("crates/sunrise-client/src/health.rs")).unwrap();
+    let knock_apply = syn::parse_file(&health)
+        .unwrap()
+        .items
+        .into_iter()
+        .find(|item| {
+            matches!(item, syn::Item::Impl(owner)
+                if owner.trait_.is_none()
+                    && matches!(&*owner.self_ty, syn::Type::Path(path) if path.path.is_ident("Knock")))
+        })
+        .expect("health.rs has `impl Knock`");
+    modules.extend(quote!(mod knock_apply { use crate::health::Knock; #knock_apply }));
     let directory = tempfile::tempdir_in(root.join("target")).unwrap();
     let source = directory.path().join("main.rs");
     let binary = directory.path().join("knockback");

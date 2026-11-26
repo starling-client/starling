@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# The linker of aarch64-apple-darwin programs on a Linux runner: clang driving the Rust toolchain's own ld64.lld (LLD's
+# Mach-O linker), against the Apple SDK in $SDKROOT. -platform_version gives the build version the hosted macOS builds
+# carry (minimum macOS 11.0, linked against SDK 15.5), and -sectcreate embeds the game's Info.plist as on a Mac.
+# ld64.lld signs ad hoc as Apple's linker does (flags ADHOC | LINKER_SIGNED).
+args=()
+while (($#)); do
+  case "$1" in
+    -arch) shift ;;
+    -mmacosx-version-min=* | --target=*) ;;
+    *) args+=("$1") ;;
+  esac
+  shift
+done
+lld="$(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/gcc-ld/ld64.lld"
+exec clang -target arm64-apple-macosx11.0 -isysroot "$SDKROOT" --ld-path="$lld" -Wl,-platform_version,macos,11.0,15.5 \
+  -F"$SDKROOT/System/Library/Frameworks" -L"$SDKROOT/usr/lib" "${args[@]}"

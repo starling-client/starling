@@ -2,7 +2,7 @@
 #[test]
 #[ignore = "daily"]
 fn remote_player_use_animation_dispatches_once() {
-    use mod_api::{ClientHost, Hooks, ItemPart, ModEntry, Mods, Registrar, UseAnimationEvent};
+    use mod_api::{Hooks, Host, ItemPart, ModEntry, Mods, Registrar, UseAnimationEvent};
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -11,7 +11,7 @@ fn remote_player_use_animation_dispatches_once() {
     struct Part(Arc<AtomicUsize>);
     #[mod_api::sunrise_part]
     impl ItemPart for Part {
-        fn use_animation(&self, _: &dyn ClientHost, event: &mut UseAnimationEvent<'_>) {
+        fn use_animation(&self, _: &dyn Host, event: &mut UseAnimationEvent<'_>) {
             self.0.fetch_add(1, Ordering::Relaxed);
             *event.animation = mod_api::UseAnimation::Drink;
         }

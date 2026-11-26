@@ -1,0 +1,2 @@
+# A sign line's inline dynamic texture draws its texels where the glyph is, and the missing texture once released.
+sunrise-client-render gfx::entity_pixel_test::dynamic_quads::a_sign_lines_inline_dynamic_texture_draws_where_the_glyph_is lib daily slow

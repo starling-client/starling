@@ -112,8 +112,8 @@ impl Game<'_> {
         // one the packet named, or the one the crosshair picked.
         let (named, distance) = match target {
             Some(t) => (Some(t.id), None),
-            None => match self.pick_entity_hit_at() {
-                Some((distance, id)) => (id, Some(distance)),
+            None => match self.crosshair_entity_hit() {
+                Some(hit) => (Some(hit.id), Some(hit.distance)),
                 None => (None, None),
             },
         };

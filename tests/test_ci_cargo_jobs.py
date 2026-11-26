@@ -8,10 +8,10 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from tools.ci import vendored_yaml
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "tools/ci/vendor/pyyaml-6.0.3.zip"))
-import yaml
+yaml = vendored_yaml.load()
 
 spec = importlib.util.spec_from_file_location("cargo_jobs", ROOT / "tools/ci/cargo_jobs.py")
 cargo_jobs = importlib.util.module_from_spec(spec)
@@ -36,8 +36,9 @@ class CargoJobsTests(unittest.TestCase):
             with self.subTest(args=args):
                 self.assertEqual(cargo_jobs.jobs(*args), expected)
 
+    @unittest.skipUnless(hasattr(os, "sysconf"), "reads a Linux runner's cgroup and the machine's memory through sysconf")
     def test_limits_read_the_runner_cgroup(self):
-        machine_cpus = len(os.sched_getaffinity(0))
+        machine_cpus = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count()
         machine_memory = os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
         small = min(machine_memory, 16 * GIB)
         cases = [

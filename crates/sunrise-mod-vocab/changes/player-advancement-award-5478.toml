@@ -1,0 +1,12 @@
+ids = [
+    "handle:PlayerRef::award_advancement",
+    "handle:PlayerRef::revoke_advancement",
+    "type:AdvancementError",
+    "type:AdvancementError.NotServer",
+    "type:AdvancementError.PlayerUnavailable",
+    "type:AdvancementError.UnknownAdvancement",
+    "type:AdvancementError.UnknownCriterion",
+    "type:AdvancementError.NoBackend",
+]
+why = "Adds PlayerRef::award_advancement and PlayerRef::revoke_advancement (#5478), mirroring PlayerAdvancements.award/revoke and AdvancementCommands.Action.GRANT/REVOKE through the engine's existing advancement path, deferring changes, rewards, messages and hooks to root commit inside an open transaction."
+migrate = "Additive methods on PlayerRef and a new AdvancementError type; no existing mod code needs to change."

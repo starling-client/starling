@@ -53,84 +53,86 @@ pub struct Banners {
     pattern_tags: HashMap<String, Vec<Arc<str>>>,
 }
 
-fn read_tag(root: &Path, name: &str, depth: u32) -> Vec<Arc<str>> {
-    if depth > 8 {
-        return Vec::new();
+/// `Identifier.parse`: an id or tag without a namespace is `minecraft`'s.
+fn namespaced(id: &str) -> String {
+    if id.contains(':') {
+        id.to_owned()
+    } else {
+        format!("minecraft:{id}")
     }
-    let path = root.join(format!(
-        "data/minecraft/tags/banner_pattern/{}.json",
-        name.trim_start_matches("minecraft:")
-    ));
-    let Some(v) = fs::read(path)
-        .ok()
-        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
-    else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    for value in v["values"].as_array().into_iter().flatten() {
-        let Some(s) = value.as_str().or_else(|| value["id"].as_str()) else {
-            continue;
-        };
-        match s.strip_prefix('#') {
-            Some(tag) => out.extend(read_tag(root, tag, depth + 1)),
-            None => out.push(Arc::from(s)),
-        }
-    }
-    out
+}
+
+/// The game's own `banner_pattern` entry `id`, read from the prepared root.
+fn prepared_pattern(root: &Path, id: &str) -> Option<Pattern> {
+    let stem = id.strip_prefix("minecraft:")?;
+    let bytes = fs::read(root.join(format!("data/minecraft/banner_pattern/{stem}.json"))).ok()?;
+    Pattern::decode(id, &serde_json::from_slice(&bytes).ok()?).ok()
 }
 
 impl Banners {
+    /// The prepared root's registry and tags, for a game with no world open.
     pub fn load(root: &Path, defaults: &sunrise_world::item_defaults::ItemDefaults) -> Self {
-        let mut banners = Self::default();
-        let mut files: Vec<_> = fs::read_dir(root.join("data/minecraft/banner_pattern"))
+        let mut stems: Vec<_> = fs::read_dir(root.join("data/minecraft/banner_pattern"))
             .into_iter()
             .flatten()
             .flatten()
             .map(|e| e.path())
             .filter(|p| p.extension().is_some_and(|e| e == "json"))
+            .filter_map(|p| Some(p.file_stem()?.to_str()?.to_owned()))
             .collect();
-        files.sort();
-        for path in files {
-            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
-                continue;
-            };
-            let Some(v) = fs::read(&path)
-                .ok()
-                .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
-            else {
-                continue;
-            };
-            if let Ok(pattern) = Pattern::decode(&format!("minecraft:{stem}"), &v) {
-                banners.patterns.push(pattern);
-            }
-        }
-        banners.no_item_required = read_tag(root, "no_item_required", 0);
-        // Every tag, `pattern_item/globe` included, for a component naming one.
-        let tags = root.join("data/minecraft/tags/banner_pattern");
-        let mut dirs = vec![tags.clone()];
-        while let Some(dir) = dirs.pop() {
-            for path in fs::read_dir(dir)
-                .into_iter()
-                .flatten()
-                .flatten()
-                .map(|e| e.path())
-            {
-                if path.is_dir() {
-                    dirs.push(path);
-                } else if path.extension().is_some_and(|e| e == "json")
-                    && let Some(name) = path
-                        .strip_prefix(&tags)
-                        .ok()
-                        .and_then(|p| p.with_extension("").to_str().map(|s| s.replace('\\', "/")))
-                {
-                    let members = read_tag(root, &name, 0);
-                    banners
-                        .pattern_tags
-                        .insert(format!("minecraft:{name}"), members);
-                }
-            }
-        }
+        stems.sort();
+        let patterns: Vec<Pattern> = stems
+            .iter()
+            .filter_map(|stem| prepared_pattern(root, &format!("minecraft:{stem}")))
+            .collect();
+        let tags = sunrise_world::tag_layers::load(
+            root,
+            "banner_pattern",
+            &sunrise_world::loot::PackOverlay::NONE,
+            |id| patterns.iter().any(|p| &*p.id == id),
+        )
+        .unwrap_or_default();
+        Self::new(patterns, tags, defaults)
+    }
+    /// The world's `banner_pattern` registry (the game's entries its packs
+    /// keep and the packs' own winners) and its bound, layered tags.
+    pub fn stage(
+        root: &Path,
+        defaults: &sunrise_world::item_defaults::ItemDefaults,
+        packed: &crate::lan::data::PackRegistryDefinitions,
+        tags: impl IntoIterator<Item = (String, Vec<String>)>,
+    ) -> Self {
+        let patterns = packed
+            .entries()
+            .filter(|(registry, _, admitted)| *admitted && *registry == "minecraft:banner_pattern")
+            .filter_map(|(_, id, _)| {
+                packed
+                    .banner_patterns()
+                    .find(|pattern| *pattern.id == *id)
+                    .cloned()
+                    .or_else(|| prepared_pattern(root, &id))
+            })
+            .collect();
+        Self::new(patterns, tags, defaults)
+    }
+    fn new(
+        patterns: Vec<Pattern>,
+        tags: impl IntoIterator<Item = (String, Vec<String>)>,
+        defaults: &sunrise_world::item_defaults::ItemDefaults,
+    ) -> Self {
+        let pattern_tags: HashMap<String, Vec<Arc<str>>> = tags
+            .into_iter()
+            .map(|(tag, members)| (tag, members.iter().map(|m| Arc::from(&**m)).collect()))
+            .collect();
+        let mut banners = Self {
+            patterns,
+            no_item_required: pattern_tags
+                .get("minecraft:no_item_required")
+                .cloned()
+                .unwrap_or_default(),
+            pattern_tags,
+            ..Self::default()
+        };
         for (item, c) in defaults.entries() {
             let id: Arc<str> = Arc::from(item.as_str());
             if let Some(dye) = c["minecraft:dye"].as_str() {
@@ -138,7 +140,8 @@ impl Banners {
             }
             match &c["minecraft:provides_banner_patterns"] {
                 Value::String(tag) if tag.starts_with('#') => {
-                    banners.provided.insert(id, read_tag(root, &tag[1..], 0));
+                    let members = banners.provides_one(tag);
+                    banners.provided.insert(id, members);
                 }
                 Value::String(single) => {
                     banners
@@ -156,14 +159,14 @@ impl Banners {
     /// `Sheets.getBannerSprite` texture name of a pattern.
     pub fn banner_texture(&self, id: &str) -> String {
         match self.pattern(id) {
-            Some(p) => format!("entity/banner/{}", p.asset),
+            Some(p) => sprite("entity/banner", &p.asset),
             None => format!("entity/banner/{}", id.trim_start_matches("minecraft:")),
         }
     }
     /// `Sheets.getShieldSprite` texture name of a pattern.
     pub fn shield_texture(&self, id: &str) -> String {
         match self.pattern(id) {
-            Some(p) => format!("entity/shield/{}", p.asset),
+            Some(p) => sprite("entity/shield", &p.asset),
             None => format!("entity/shield/{}", id.trim_start_matches("minecraft:")),
         }
     }
@@ -249,14 +252,6 @@ impl Banners {
         }
     }
     fn provides_one(&self, value: &str) -> Vec<Arc<str>> {
-        // `Identifier.parse`: an id or tag without a namespace is `minecraft`'s.
-        let namespaced = |id: &str| {
-            if id.contains(':') {
-                id.to_owned()
-            } else {
-                format!("minecraft:{id}")
-            }
-        };
         match value.strip_prefix('#') {
             Some(tag) => self
                 .pattern_tags
@@ -265,6 +260,15 @@ impl Banners {
                 .unwrap_or_default(),
             None => vec![Arc::from(namespaced(value))],
         }
+    }
+}
+
+/// `Sheets.BANNER_MAPPER`/`SHIELD_MAPPER`: an asset under `prefix`, in its own
+/// namespace when it names one (`minecraft`'s is a bare path here).
+fn sprite(prefix: &str, asset: &str) -> String {
+    match asset.split_once(':') {
+        Some((namespace, path)) => format!("{namespace}:{prefix}/{path}"),
+        None => format!("{prefix}/{asset}"),
     }
 }
 

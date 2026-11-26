@@ -35,6 +35,7 @@ pub fn install(mods: crate::Mods) {
 #[doc(hidden)]
 pub use crate::load_state::{
     RegistrationGuard, install_dependencies, install_packages, install_registration_data,
+    with_registration_open,
 };
 #[cfg(any(test, feature = "testing"))]
 #[doc(hidden)]
@@ -42,6 +43,3 @@ pub use crate::load_state::{
     with_test_dependencies, with_test_package_inventory, with_test_packages,
     with_test_registration_data,
 };
-
-#[doc(hidden)]
-pub use crate::parts::attachment_declarations;

@@ -4,14 +4,12 @@ import json
 import re
 from pathlib import Path
 
-try:
-    from . import lab, oracle_harness as oh, test_rust_parity as base
-    from .test_model_baking_parity import client_libraries
-except ImportError:
-    import lab
-    import oracle_harness as oh
-    import test_rust_parity as base
-    from test_model_baking_parity import client_libraries
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, oracle_harness as oh, test_rust_parity as base
+from tools.test_model_baking_parity import client_libraries
 
 
 def main():

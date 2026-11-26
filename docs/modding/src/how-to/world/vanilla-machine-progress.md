@@ -63,4 +63,4 @@ bottle slots at once. `host.recipes_of_type("minecraft:brewing")` lists the brew
 The game answers no capability for machine progress: NeoForge has none. A library mod that defines one (its
 key, its handler trait and its providers for the vanilla machines, built on the reads above) lets machine mods
 answer it for their own block entities and readers use one key for all of them, as in
-[A mod's own capability](../../concepts/capabilities/own-capability.md).
+[A mod's own capability](../../concepts/capabilities.md#a-mods-own-capability).

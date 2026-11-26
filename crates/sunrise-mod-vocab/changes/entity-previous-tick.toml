@@ -1,0 +1,7 @@
+ids = [
+    "handle:EntityRef::previous_position",
+    "handle:EntityRef::previous_rotation",
+    "handle:EntityRef::position_at",
+    "handle:EntityRef::is_alive",
+]
+why = "Mods can read an entity's previous tick (Entity.xo, yo, zo, yRotO, xRotO), ease its position with Entity.getPosition(partialTick), and read Entity.isAlive, on both sides: the server's bodies and a client's own player and ticked copies."

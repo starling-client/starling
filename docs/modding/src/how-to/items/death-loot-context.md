@@ -1,5 +1,36 @@
 # Death sources and weapons at the loot hook
 
+## Roll death loot without dropping it
+
+On a server host, call `entity.roll_death_loot(host, table, source, last_damage_player)`
+with an `EntityRef` for a live living entity in the current level. Pass `None` for its
+own loot table (including any saved override), or pass `Some(&table_id)` to roll a named
+table in the same `ENTITY` context. The result is owned item stacks, not item entities.
+This neither hurts the target nor drops equipment, custom death drops, or experience.
+
+```rust,ignore
+let damage_type = Identifier::parse("minecraft:player_attack")?;
+let attacker = player.entity();
+let source = LootDamageSource::new(&damage_type, Some(attacker), Some(attacker));
+let drops = entity.roll_death_loot(host, None, source, Some(player))?;
+```
+
+`LootDamageSource::new` takes the causing entity and then the direct entity. For an
+arrow hit those are the shooter and the arrow; for melee they are usually the same.
+Pass the credited player separately: it supplies `LAST_DAMAGE_PLAYER` (used by
+`killed_by_player`) and the player's luck. The attacker supplies enchantment levels
+for loot functions such as `enchanted_count_increase`. The origin is the target's
+position, and there is no `TOOL`. A roll uses the entity's nonzero death-table seed if
+set; otherwise it advances the table's random sequence or the level's random stream.
+Stale handles, non-living targets, unknown tables and unregistered damage types return a
+`DeathLootError` before any draw.
+
+The roll asks `enchanted_entity_loot` for enchantment levels, as a real death does. A
+listener of that hook that calls `roll_death_loot` rolls again inside itself, so it must
+stop its own recursion.
+
+## Read the source of an actual death
+
 `LootDrops::damage_source` carries the death's damage type and causing/direct entity IDs.
 Non-death drops have no source. Environmental deaths retain their type, with 0 for
 absent or unknown IDs. `player` is remembered kill credit, not necessarily the attacker.

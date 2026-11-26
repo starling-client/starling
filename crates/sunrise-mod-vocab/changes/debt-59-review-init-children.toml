@@ -1,0 +1,3 @@
+ids = ["hook:screen_init_post"]
+why = "ScreenEvent.Init.Post v3 runs when the screen initializes or rebuilds its children, not when it only repositions them. ScreenWidgets lists initialized children in order and lets a listener remove a listed child, including earlier accepted mounts and the native controls registered by PauseScreen. A failed listener publishes none of its additions or removals."
+migrate = "Rebuild against the new SDK. Use Init.Post to edit the child list when it is created or rebuilt; do not rely on it for panel moves or reposition-only resizes. To replace a listed child, read its handle from ScreenWidgets::children, remove it, then mount your replacement."

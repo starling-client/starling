@@ -1,7 +1,7 @@
 //! Direct hook-scoped loan of the retained original player during `player_clone`.
 
 use crate::{
-    ActiveEffect, AttachmentError, AttachmentStore, AttachmentType, Compound, Holder, Identifier,
+    ActiveEffect, AttachmentError, AttachmentKey, AttachmentStore, Compound, Holder, Identifier,
     InventoryView, LevelRef, PlayerExperience,
 };
 
@@ -98,55 +98,66 @@ impl<'a> OriginalPlayer<'a> {
         self.data.persistent_data()
     }
 
-    /// Read an attachment on the original player, returning its default without inserting it
+    /// Lend an attachment on the original player, using its default without inserting it
     /// if absent. A saved entry decodes and caches once; that cache write rolls back if an
     /// enclosing `host.transaction` aborts. Never touches the replacement player.
-    pub fn attachment<T: Clone + Send + Sync + 'static>(
+    pub fn attachment<T: Send + Sync + 'static, R>(
         &mut self,
-        key: &AttachmentType<T>,
-    ) -> Result<T, AttachmentError> {
-        Ok(key
-            .get_existing(self.data.attachments(), Holder::Level)?
-            .unwrap_or_else(key.default))
+        key: &AttachmentKey<T>,
+        read: impl FnOnce(&T) -> R,
+    ) -> Result<R, AttachmentError> {
+        let key = key.live()?;
+        key.get_existing(
+            self.data.attachments(),
+            Holder::Level,
+            |value| match value {
+                Some(value) => read(value),
+                None => read(&key.default_value()),
+            },
+        )
     }
 
     /// Whether the original player carries an entry for `key`, saved or decoded,
     /// without inserting a default.
-    pub fn has_attachment<T: Clone + Send + Sync + 'static>(
+    pub fn has_attachment<T: Send + Sync + 'static>(
         &mut self,
-        key: &AttachmentType<T>,
+        key: &AttachmentKey<T>,
     ) -> Result<bool, AttachmentError> {
-        key.has(self.data.attachments(), Holder::Level)
+        key.live()?.has(self.data.attachments(), Holder::Level)
     }
 
     /// Read an attachment on the original player only if present; a saved entry decodes
     /// and caches once without inserting a default, rolling back if an enclosing
     /// `host.transaction` aborts.
-    pub fn existing_attachment<T: Clone + Send + Sync + 'static>(
+    pub fn existing_attachment<T: Send + Sync + 'static, R>(
         &mut self,
-        key: &AttachmentType<T>,
-    ) -> Result<Option<T>, AttachmentError> {
-        key.get_existing(self.data.attachments(), Holder::Level)
+        key: &AttachmentKey<T>,
+        read: impl FnOnce(Option<&T>) -> R,
+    ) -> Result<R, AttachmentError> {
+        key.live()?
+            .get_existing(self.data.attachments(), Holder::Level, read)
     }
 
     /// Borrow an already-decoded attachment on the original player without cloning it.
     /// A raw saved entry is not decoded and no default is inserted.
-    pub fn with_decoded_attachment<T: Clone + Send + Sync + 'static, R>(
+    pub fn with_decoded_attachment<T: Send + Sync + 'static, R>(
         &mut self,
-        key: &AttachmentType<T>,
+        key: &AttachmentKey<T>,
         read: impl FnOnce(Option<&T>) -> R,
     ) -> Result<R, AttachmentError> {
-        key.with_decoded(self.data.attachments(), Holder::Level, read)
+        key.live()?
+            .with_decoded(self.data.attachments(), Holder::Level, read)
     }
 
     /// Set an attachment value on the retained original player. Never touches the
     /// replacement player, and rolls back if an enclosing `host.transaction` aborts.
-    pub fn set_attachment<T: Clone + Send + Sync + 'static>(
+    pub fn set_attachment<T: Send + Sync + 'static>(
         &mut self,
-        key: &AttachmentType<T>,
+        key: &AttachmentKey<T>,
         value: T,
     ) -> Result<(), AttachmentError> {
-        key.set(self.data.attachments(), Holder::Level, value)
+        key.live()?
+            .set(self.data.attachments(), Holder::Level, value)
     }
 
     /// Remove an attachment from the retained original player, returning its previous
@@ -154,9 +165,9 @@ impl<'a> OriginalPlayer<'a> {
     /// enclosing `host.transaction` aborts.
     pub fn remove_attachment<T: Clone + Send + Sync + 'static>(
         &mut self,
-        key: &AttachmentType<T>,
+        key: &AttachmentKey<T>,
     ) -> Result<Option<T>, AttachmentError> {
-        key.remove(self.data.attachments(), Holder::Level)
+        key.live()?.remove(self.data.attachments(), Holder::Level)
     }
 }
 
@@ -237,43 +248,47 @@ mod tests {
 
     static DECODES: AtomicUsize = AtomicUsize::new(0);
 
-    static DEFAULT_KEY: AttachmentType<i32> = AttachmentType {
-        namespace: "demo",
-        name: "counter",
-        default: || 41,
-        codec: None,
-        copy_on_death: false,
-        sync: false,
-    };
-
-    static SAVED_KEY: AttachmentType<i32> = AttachmentType {
-        namespace: "demo",
-        name: "saved",
-        default: || 0,
-        codec: Some(AttachmentCodec {
-            encode: |value| {
-                let mut tag = Compound::new();
-                tag.insert("n".into(), Tag::Int(*value));
-                Ok(tag)
-            },
-            decode: |tag| {
-                DECODES.fetch_add(1, Ordering::SeqCst);
-                match tag.get(&"n".into()) {
-                    Some(Tag::Int(n)) => Ok(*n),
-                    _ => Err(AttachmentError::Decode),
-                }
-            },
-        }),
-        copy_on_death: false,
-        sync: false,
-    };
-
     #[test]
     fn original_player_lends_state_inventory_and_normal_attachments() {
+        let (counter_record, counter) = crate::parts::registered_attachment_fixture(
+            "demo",
+            crate::AttachmentDescriptor::new("demo:counter", || 41i32),
+        );
+        let (saved_record, saved) = crate::parts::registered_attachment_fixture(
+            "demo",
+            crate::AttachmentDescriptor::new("demo:saved", || 0i32).serialize(AttachmentCodec {
+                encode: |value| {
+                    let mut tag = Compound::new();
+                    tag.insert("n".into(), Tag::Int(*value));
+                    Ok(tag)
+                },
+                decode: |tag| {
+                    DECODES.fetch_add(1, Ordering::SeqCst);
+                    match tag.get(&"n".into()) {
+                        Some(Tag::Int(n)) => Ok(*n),
+                        _ => Err(AttachmentError::Decode),
+                    }
+                },
+            }),
+        );
+        crate::parts::install_input(crate::parts::installation::InstalledInput {
+            attachment_types: std::collections::HashMap::from([(
+                "demo",
+                std::collections::HashMap::from([
+                    ("counter", counter_record),
+                    ("saved", saved_record),
+                ]),
+            )]),
+            ..Default::default()
+        });
         DECODES.store(0, Ordering::SeqCst);
         let mut seed = Attachments::default();
-        SAVED_KEY.set(&mut seed, Holder::Level, 77).unwrap();
-        let attachments = Attachments::from_nbt(seed.to_nbt());
+        saved
+            .live()
+            .unwrap()
+            .set(&mut seed, Holder::Level, 77)
+            .unwrap();
+        let attachments = Attachments::from_nbt(seed.try_to_nbt().unwrap());
 
         let mut persistent = Compound::new();
         persistent.insert("tag".into(), Tag::Int(12));
@@ -330,36 +345,48 @@ mod tests {
         assert_eq!(offhand_damage, Some(2));
 
         // Reading a default leaves the original attachment absent.
-        assert_eq!(original.attachment(&DEFAULT_KEY), Ok(41));
-        assert_eq!(original.has_attachment(&DEFAULT_KEY), Ok(false));
-        assert_eq!(original.existing_attachment(&DEFAULT_KEY), Ok(None));
+        assert_eq!(original.attachment(&counter, Clone::clone), Ok(41));
+        assert_eq!(original.has_attachment(&counter), Ok(false));
         assert_eq!(
-            original.with_decoded_attachment(&DEFAULT_KEY, |value| value.copied()),
+            original.existing_attachment(&counter, |value| value.cloned()),
+            Ok(None)
+        );
+        assert_eq!(
+            original.with_decoded_attachment(&counter, |value| value.copied()),
             Ok(None)
         );
 
         // Saved entry decodes once on existing_attachment and caches for subsequent reads.
-        assert_eq!(original.has_attachment(&SAVED_KEY), Ok(true));
+        assert_eq!(original.has_attachment(&saved), Ok(true));
         assert_eq!(
-            original.with_decoded_attachment(&SAVED_KEY, |value| value.copied()),
+            original.with_decoded_attachment(&saved, |value| value.copied()),
             Ok(None)
         );
         assert_eq!(DECODES.load(Ordering::SeqCst), 0);
-        assert_eq!(original.existing_attachment(&SAVED_KEY), Ok(Some(77)));
-        assert_eq!(DECODES.load(Ordering::SeqCst), 1);
-        assert_eq!(original.existing_attachment(&SAVED_KEY), Ok(Some(77)));
+        assert_eq!(
+            original.existing_attachment(&saved, |value| value.cloned()),
+            Ok(Some(77))
+        );
         assert_eq!(DECODES.load(Ordering::SeqCst), 1);
         assert_eq!(
-            original.with_decoded_attachment(&SAVED_KEY, |value| value.copied()),
+            original.existing_attachment(&saved, |value| value.cloned()),
+            Ok(Some(77))
+        );
+        assert_eq!(DECODES.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            original.with_decoded_attachment(&saved, |value| value.copied()),
             Ok(Some(77))
         );
 
         // Writes and removals work normally on the retained original holder.
-        assert_eq!(original.set_attachment(&DEFAULT_KEY, 99), Ok(()));
-        assert_eq!(original.existing_attachment(&DEFAULT_KEY), Ok(Some(99)));
-        assert_eq!(original.remove_attachment(&DEFAULT_KEY), Ok(Some(99)));
-        assert_eq!(original.has_attachment(&DEFAULT_KEY), Ok(false));
-        assert_eq!(original.remove_attachment(&DEFAULT_KEY), Ok(None));
+        assert_eq!(original.set_attachment(&counter, 99), Ok(()));
+        assert_eq!(
+            original.existing_attachment(&counter, |value| value.cloned()),
+            Ok(Some(99))
+        );
+        assert_eq!(original.remove_attachment(&counter), Ok(Some(99)));
+        assert_eq!(original.has_attachment(&counter), Ok(false));
+        assert_eq!(original.remove_attachment(&counter), Ok(None));
 
         // Covariance check: &'1 str and OriginalPlayer<'2> unify into one lifetime 'a.
         fn unify<'a>(_name: &'a str, _original: OriginalPlayer<'a>) {}

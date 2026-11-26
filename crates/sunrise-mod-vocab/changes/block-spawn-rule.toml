@@ -1,0 +1,3 @@
+ids = ["type:Block", "type:BlockProperties", "type:BlockProperties.spawn_rule", "type:SpawnRule"]
+why = "A block declared in code takes the same spawn_rule a content file's properties take (BlockBehaviour.Properties.isValidSpawn: vanilla's default, Blocks::always, Blocks::never, Blocks::ocelotOrParrot), so blocks declared either way can say which mobs spawn on them. The draft Wire form changes as part of the clean break."
+migrate = "A BlockProperties literal without ..Default::default() adds spawn_rule: None. A mod that matches SpawnRule adds its four arms."

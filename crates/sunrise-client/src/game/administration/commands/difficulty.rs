@@ -34,6 +34,7 @@ impl Game<'_> {
         // The level data holds the world's difficulty: it survives the
         // reopen, so it follows the command.
         self.level.set_difficulty(i);
+        self.update_mob_spawning_flags();
         self.sync_rules();
         // MinecraftServer.setDifficulty: every player, guests included, is
         // sent the new difficulty.

@@ -1,5 +1,6 @@
 //! Dropped-item, experience-orb and armor-stand immersion and currents through the shared vanilla fluid helpers.
 use super::{ArmorStand, ExperienceOrb, ItemEntity};
+use crate::mobs::living::Fluids;
 use crate::{
     motion::{FluidResources, FluidTags, LAVA, WATER},
     world::World,
@@ -39,7 +40,6 @@ struct EntityFluidWorld<'a> {
 /// block, the water's first (its first query fixes the shared cached shape);
 /// either one hitting ends the ray.
 pub fn fall_reset_hit(
-    context: &LoopContext,
     world: &World,
     fluids: &FluidResources,
     tagged: impl Fn(BlockPos) -> bool,
@@ -48,7 +48,7 @@ pub fn fall_reset_hit(
 ) -> bool {
     let to = from.add_vector(moved.normalize().scale(moved.length().min(8.0)));
     let hit = sunrise_core::geometry::traverse_blocks(from, to, 1_000_000, |p| {
-        let water = water_clip(context, world, fluids, from, to, p);
+        let water = water_clip(world, fluids, from, to, p);
         let reset = tagged(p)
             && sunrise_core::geometry::VoxelShape::block()
                 .clip(from, to, p)
@@ -61,7 +61,6 @@ pub fn fall_reset_hit(
 /// shape from the shared `FlowingFluid.shapes` cache (the first query of a
 /// fluid state fixes its height), as the player's own ray reads it.
 pub fn water_clip(
-    context: &LoopContext,
     world: &World,
     fluids: &FluidResources,
     from: Vec3,
@@ -72,22 +71,50 @@ pub fn water_clip(
     if !matches!(state.kind(), FluidKind::Water | FluidKind::FlowingWater) {
         return false;
     }
-    let mut velocity = Vec3::ZERO;
-    let mut scene = EntityFluidWorld {
-        bounds: Aabb::new(from, from),
-        position: from,
-        eye_y: from.y,
-        velocity: &mut velocity,
-        world,
-        fluids,
-        context,
-    };
+    let mut scene = FlowLevel { world, fluids };
     let Ok(mut shapes) = fluids.shapes.lock() else {
         return false;
     };
     shapes
         .shape(&mut scene, state, p)
         .is_ok_and(|shape| shape.clip(from, to, p).is_some())
+}
+/// Query budget covering every chunk, section, and block cell inside `bounds`
+/// (after `EntityFluidInteraction`'s 0.001 deflation), so legal large boxes
+/// such as radius-32 area effect clouds are never truncated.
+fn fluid_query_budget(bounds: Aabb) -> usize {
+    let deflated = bounds.deflate(Vec3::new(0.001, 0.001, 0.001));
+    let a = deflated.min_position();
+    let b = deflated.max_position();
+    if [a.x, a.y, a.z, b.x, b.y, b.z]
+        .iter()
+        .any(|v| !v.is_finite())
+    {
+        return 4096;
+    }
+    let low = [a.x.floor() as i32, a.y.floor() as i32, a.z.floor() as i32];
+    let high = [
+        (b.x.ceil() as i32).wrapping_sub(1),
+        (b.y.ceil() as i32).wrapping_sub(1),
+        (b.z.ceil() as i32).wrapping_sub(1),
+    ];
+    let span = |lo: i32, hi: i32| -> usize {
+        if hi < lo {
+            0
+        } else {
+            usize::try_from(i64::from(hi) - i64::from(lo) + 1).unwrap_or(usize::MAX)
+        }
+    };
+    let cx = span(low[0].wrapping_sub(1) >> 4, high[0].wrapping_add(1) >> 4);
+    let cz = span(low[2].wrapping_sub(1) >> 4, high[2].wrapping_add(1) >> 4);
+    let sy = span(low[1] >> 4, high[1] >> 4);
+    let chunks = cx
+        .saturating_mul(cz)
+        .saturating_mul(1_usize.saturating_add(sy));
+    let cells = span(low[0], high[0])
+        .saturating_mul(span(low[1], high[1]))
+        .saturating_mul(span(low[2], high[2]));
+    chunks.saturating_add(cells).max(4096)
 }
 /// `Entity.baseTick`'s fluid step for an entity that is pushed by fluid: its
 /// immersion heights, then the current of each fluid it sits in, added to
@@ -103,6 +130,22 @@ pub fn update_entity_fluids(
     fluids: &FluidResources,
     context: &LoopContext,
 ) -> (f64, f64, bool) {
+    let scan = scan_entity_fluids(bounds, position, eye_y, velocity, world, fluids, context);
+    (scan.water, scan.lava, scan.eye_in_water)
+}
+
+/// [`update_entity_fluids`] with everything the scan found: the water and lava heights, whether
+/// the body touches each, and whether its eye is in each. `in_lava` is the raw contact, before a
+/// kind's own `firstTick` rule.
+pub fn scan_entity_fluids(
+    bounds: Aabb,
+    position: Vec3,
+    eye_y: f64,
+    velocity: &mut Vec3,
+    world: &World,
+    fluids: &FluidResources,
+    context: &LoopContext,
+) -> Fluids {
     let mut interaction = EntityFluidInteraction::new([WATER, LAVA]);
     let mut scene = EntityFluidWorld {
         bounds,
@@ -113,14 +156,18 @@ pub fn update_entity_fluids(
         fluids,
         context,
     };
-    if interaction.update(&mut scene, false, 4096).is_err() {
-        return (0.0, 0.0, false);
+    if interaction
+        .update(&mut scene, false, fluid_query_budget(bounds))
+        .is_err()
+    {
+        return Fluids::default();
     }
     let water_height = interaction.fluid_height(&scene, WATER);
     let lava_height = interaction.fluid_height(&scene, LAVA);
     // `updateFluidOnEyes`'s answer, kept by the interaction's trackers:
     // whether the entity's eye is inside the water it scanned.
     let eye_in_water = interaction.is_eye_in_fluid(&FluidTags, WATER);
+    let eye_in_lava = interaction.is_eye_in_fluid(&FluidTags, LAVA);
     let _ = interaction.apply_current(&mut scene, WATER, 0.014);
     let _ = interaction.apply_current(
         &mut scene,
@@ -131,7 +178,15 @@ pub fn update_entity_fluids(
             0.0023333333333333335
         },
     );
-    (water_height, lava_height, eye_in_water)
+    Fluids {
+        water: water_height,
+        lava: lava_height,
+        in_water: water_height > 0.0,
+        in_lava: lava_height > 0.0,
+        eye_in_water,
+        eye_in_lava,
+        ..Fluids::default()
+    }
 }
 impl ItemEntity {
     /// `Entity.getEyeY` of an item, sampled by `EntityFluidInteraction.update`.
@@ -266,31 +321,21 @@ impl FluidInteractionWorld for EntityFluidWorld<'_> {
         Ok(self.fluids.fluid(self.world.block(p.x, p.y, p.z)))
     }
     fn fluid_height(&mut self, f: FluidState, p: BlockPos) -> Result<f32, Error> {
-        f.height_at(self, [p.x, p.y, p.z])
+        f.height_at(&mut self.fluid_level(), [p.x, p.y, p.z])
     }
     fn camera_height(&mut self, f: FluidState, p: BlockPos) -> Result<f32, Error> {
-        f.camera_height_at(self, [p.x, p.y, p.z])
+        f.camera_height_at(&mut self.fluid_level(), [p.x, p.y, p.z])
     }
     fn flow(&mut self, f: FluidState, p: BlockPos) -> Result<Vec3, Error> {
-        crate::motion::pushing_flow(
-            self.context,
-            &mut FlowLevel {
-                world: self.world,
-                fluids: self.fluids,
-            },
-            f,
-            p,
-        )
+        crate::motion::pushing_flow(self.context, &mut self.fluid_level(), f, p)
     }
 }
-impl FluidHeightWorld for EntityFluidWorld<'_> {
-    type Error = Error;
-    fn fluid(&mut self, p: [i32; 3]) -> Result<FluidState, Error> {
-        Ok(self.fluids.fluid(self.world.block(p[0], p[1], p[2])))
-    }
-    fn sturdy_down(&mut self, p: [i32; 3]) -> Result<bool, Error> {
-        let state = self.world.block(p[0], p[1], p[2]);
-        Ok(self.fluids.sturdy(state, Direction::Down))
+impl EntityFluidWorld<'_> {
+    fn fluid_level(&self) -> FlowLevel<'_> {
+        FlowLevel {
+            world: self.world,
+            fluids: self.fluids,
+        }
     }
 }
 /// `FluidState.getFlow` at `pos` as it pushes an entity there: vanilla's vector, then the
@@ -306,11 +351,47 @@ pub fn fluid_flow(
         crate::motion::pushing_flow(context, &mut FlowLevel { world, fluids }, state, pos);
     flow
 }
-/// The blocks a current reads, from a loaded world.
+/// `Entity.checkInsideBlocks` intersects the movement with the fluid's
+/// current AABB, independently of the block's inside-collision shape.
+pub fn swept_fluid_contact(
+    world: &World,
+    fluids: &FluidResources,
+    pos: BlockPos,
+    bounds: Aabb,
+    delta: Vec3,
+) -> bool {
+    let fluid = fluids.fluid(world.block(pos.x, pos.y, pos.z));
+    if fluid.kind() == FluidKind::Empty {
+        return false;
+    }
+    let height = fluid
+        .height_at(&mut FlowLevel { world, fluids }, [pos.x, pos.y, pos.z])
+        .unwrap_or_else(|never| match never {});
+    let (x, y, z) = (f64::from(pos.x), f64::from(pos.y), f64::from(pos.z));
+    let shape = Aabb::new(
+        Vec3::new(x, y, z),
+        Vec3::new(x + 1.0, y + f64::from(height), z + 1.0),
+    );
+    bounds.collided_along_vector(delta, &[shape])
+}
+
+/// The blocks a fluid reads in a loaded world.
 struct FlowLevel<'a> {
     world: &'a World,
     fluids: &'a FluidResources,
 }
+impl FluidHeightWorld for FlowLevel<'_> {
+    type Error = Error;
+    fn fluid(&mut self, p: [i32; 3]) -> Result<FluidState, Error> {
+        Ok(self.fluids.fluid(self.world.block(p[0], p[1], p[2])))
+    }
+    fn sturdy_down(&mut self, p: [i32; 3]) -> Result<bool, Error> {
+        Ok(self
+            .fluids
+            .sturdy(self.world.block(p[0], p[1], p[2]), Direction::Down))
+    }
+}
+
 impl FluidFlowWorld for FlowLevel<'_> {
     type Error = Error;
     type Block = BlockStateId;
@@ -425,6 +506,7 @@ mod tests {
         }
         let at = Vec3::new(20.5, 4.0, 20.5);
         let item = ItemEntity {
+            size_answer: None,
             attachment_lifetime: Default::default(),
             fall_distance: 0.0,
             random: sunrise_core::random::LegacyRandom::new(0),
@@ -448,6 +530,8 @@ mod tests {
             ground: Default::default(),
             vertical_collision: false,
             age: 0,
+            stack_revision: 0,
+            lifespan: ItemEntity::LIFETIME,
             pickup_delay: 0,
             bob_offset: 0.0,
             ticks: 0,
@@ -539,6 +623,7 @@ mod tests {
         }
         let at = Vec3::new(20.5, 4.0, 20.5);
         let orb = ExperienceOrb {
+            size_answer: None,
             attachment_lifetime: Default::default(),
             fall_distance: 0.0,
             rotation: [0.0, 0.0],
@@ -648,6 +733,7 @@ mod tests {
         }
         let at = Vec3::new(20.5, 4.6, 20.5);
         let mut orb = ExperienceOrb {
+            size_answer: None,
             attachment_lifetime: Default::default(),
             fall_distance: 0.0,
             rotation: [0.0, 0.0],

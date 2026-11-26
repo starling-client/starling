@@ -1,5 +1,4 @@
 //! The `player_game_mode_changed` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0253
 
 pub trait Hooks {
     /// A server player's game mode is about to change (NeoForge's

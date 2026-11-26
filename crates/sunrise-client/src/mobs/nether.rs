@@ -41,24 +41,30 @@ struct BlazeAttack {
 }
 impl Goal for BlazeAttack {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE | LOOK
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         m.ai.target
             .and_then(|t| cx.w.target_info(t))
             .is_some_and(|t| t.alive && !(t.is_player && t.creative))
     }
+    #[inline]
     fn start(&mut self, _: &mut Mob, _: &mut Cx) {
         self.step = 0;
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, _: &mut Cx) {
         m.extra.flag = false;
         self.last_seen = 0;
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         true
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.time -= 1;
         let Some(who) = m.ai.target else {
@@ -122,12 +128,15 @@ impl Goal for BlazeAttack {
                         triangle(m, zd, 2.297 * sqd),
                     ];
                     let start = Vec3::new(m.position.x, m.position.y + half + 0.5, m.position.z);
-                    cx.events.push(MobEvent::Projectile(Projectile::fireball(
-                        ProjectileKind::SmallFireball,
-                        start,
-                        Some(Who::Mob(m.id)),
-                        dir,
-                    )));
+                    cx.events.push(MobEvent::Projectile(
+                        Projectile::fireball(
+                            ProjectileKind::SmallFireball,
+                            start,
+                            Some(Who::Mob(m.id)),
+                            dir,
+                        )
+                        .facing_shooter(m.yaw, m.head_pitch),
+                    ));
                 }
             }
             m.look_at_speed([t.position.x, t.eye_y, t.position.z], 10.0, 10.0);
@@ -275,9 +284,11 @@ fn ghast_deg() -> f32 {
 struct RandomFloatAround;
 impl Goal for RandomFloatAround {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
         if !m.ai.mov.has_wanted() {
             return true;
@@ -287,9 +298,11 @@ impl Goal for RandomFloatAround {
             (x - m.position.x).powi(2) + (y - m.position.y).powi(2) + (z - m.position.z).powi(2);
         !(1.0..=3600.0).contains(&d)
     }
+    #[inline]
     fn can_continue(&mut self, _: &mut Mob, _: &mut Cx) -> bool {
         false
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, _: &mut Cx) {
         let c = m.position;
         let mut r = || f64::from(m.random.next_float() * 2.0 - 1.0) * 16.0;
@@ -305,15 +318,19 @@ impl Goal for RandomFloatAround {
 struct GhastLook;
 impl Goal for GhastLook {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         LOOK
     }
+    #[inline]
     fn can_use(&mut self, _: &mut Mob, _: &mut Cx) -> bool {
         true
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         true
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         match m.ai.target.and_then(|t| cx.w.target_info(t)) {
             None => {
@@ -338,21 +355,27 @@ struct GhastShoot {
 }
 impl Goal for GhastShoot {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         0
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
         m.ai.target.is_some()
     }
+    #[inline]
     fn start(&mut self, _: &mut Mob, _: &mut Cx) {
         self.charge = 0;
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, _: &mut Cx) {
         m.extra.flag = false;
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         true
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         let Some(who) = m.ai.target else {
             return;
@@ -397,14 +420,17 @@ impl Goal for GhastShoot {
                     m.position.y + half + 0.5,
                     m.position.z + view[1] * 4.0,
                 );
-                cx.events.push(MobEvent::Projectile(Projectile::fireball(
-                    ProjectileKind::LargeFireball {
-                        power: m.extra.ints[EXPLOSION_POWER],
-                    },
-                    start,
-                    Some(Who::Mob(m.id)),
-                    dir,
-                )));
+                cx.events.push(MobEvent::Projectile(
+                    Projectile::fireball(
+                        ProjectileKind::LargeFireball {
+                            power: m.extra.ints[EXPLOSION_POWER],
+                        },
+                        start,
+                        Some(Who::Mob(m.id)),
+                        dir,
+                    )
+                    .facing_shooter(m.yaw, m.head_pitch),
+                ));
                 self.charge = -40;
             }
         } else if self.charge > 0 {

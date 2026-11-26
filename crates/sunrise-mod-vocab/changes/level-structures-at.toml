@@ -1,0 +1,3 @@
+ids = ["handle:LevelRef::structures_with_piece_at", "handle:LevelRef::structures_at"]
+why = "#5305: LevelRef::structures_with_piece_at and LevelRef::structures_at say which structures, by id or #tag, lie at a position on a server level: inside a start's piece (StructureManager.getStructureWithPieceAt) or inside its bounding box (getStructureAt), from the loaded chunk's structure references, without loading or generating chunks. New methods only."
+migrate = "Nothing to change."

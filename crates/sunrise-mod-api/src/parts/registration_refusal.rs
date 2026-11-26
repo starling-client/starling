@@ -14,9 +14,7 @@ impl DiagnosticsRegistrar for PartRegistrar {
 impl PartRegistrar {
     pub(crate) fn registration_checkpoint(&self) -> impl FnOnce(&mut Self) + use<> {
         let parts = self.parts.clone();
-        let part_states = self.part_states.clone();
         let attachment_types = self.attachment_types.clone();
-        let attachment_owners = self.attachment_owners.clone();
         let tags = self.tags.clone();
         let keys = self.registry_keys.borrow().clone();
         let menu_screen_factories = self.menu_screen_factories.clone();
@@ -25,7 +23,6 @@ impl PartRegistrar {
         let recipe_book_fields = self.recipe_book_fields.clone();
         let recipe_book_filters = self.recipe_book_filters.clone();
         let registered = self.registered;
-        let entity_selector_bytes = self.entity_selector_bytes;
         let block_entity_transforms = self.block_entity_transforms.clone();
         // Append-only tables retain previous mods' entries without requiring
         // Clone on runtime callback objects or their eventual frozen caches.
@@ -45,16 +42,13 @@ impl PartRegistrar {
                         &mut registrar.menu_screen_factories,
                         menu_screen_factories,
                     );
-                    registrar.part_states = part_states;
                     registrar.attachment_types = attachment_types;
-                    registrar.attachment_owners = attachment_owners;
                     *registrar.registry_keys.borrow_mut() = keys;
                     registrar.menu_recipe_books = menu_recipe_books;
                     registrar.recipe_book_types = recipe_book_types;
                     registrar.recipe_book_fields = recipe_book_fields;
                     registrar.recipe_book_filters = recipe_book_filters;
                     registrar.registered = registered;
-                    registrar.entity_selector_bytes = entity_selector_bytes;
                     // The checkpoint is fully restored before destroying even one value.
                     // Drop individual owned entries, never a collection containing multiple
                     // mod destructors that could panic while unwinding the first destructor.
@@ -75,9 +69,9 @@ impl PartRegistrar {
             game_rules,
             custom_stats,
             custom_stat_owners,
-            entity_tick_each,
-            attachment_uses,
+            enchanting_table_offsets,
             block_entity_types,
+            block_entity_ticker_selectors,
             entity_attributes,
             general_entity_types,
             world_fluids,
@@ -86,15 +80,20 @@ impl PartRegistrar {
             attributes,
             attribute_widenings,
             spawn_placements,
-            entity_part_states,
             biome_regions,
             biome_modifiers,
             datapack_registries,
+            configs,
             controllers,
             arm_poses,
             consume_effects,
             structure_types,
+            pool_element_types,
+            structure_processor_types,
+            rule_test_types,
+            pos_rule_test_types,
             feature_types,
+            placement_modifier_types,
             loot_modifier_serializers,
             loot_function_types,
             loot_condition_types,
@@ -145,10 +144,12 @@ fn discard_rejected_parts(owner: &'static str, parts: Parts) {
             .flatten(),
         parts.place_providers.into_values(),
         parts.tooltip_appenders,
+        parts.config_screens,
         parts.crash_sections,
         parts.command_arguments,
         parts.recipe_serializers.into_values(),
         parts.entity_selectors,
+        parts.mod_events.into_values().flatten(),
     );
     if let Some(payloads) = parts.payloads.and_then(Arc::into_inner) {
         for row in payloads.phases.into_iter().flat_map(HashMap::into_values) {
@@ -208,9 +209,11 @@ mod tests {
             let kind = r
                 .block_entity_type("callback")
                 .blocks(&[])
-                .transform(|data: &crate::Compound, _: crate::StructureTransform| Ok(data.clone()))
+                .transform(|_: &mut crate::Compound, _: crate::StructureTransform| Ok(()))
                 .build();
             r.block_entity_part(&kind, Callback).unwrap();
+            r.register_config(crate::ConfigSpec::new(crate::ConfigKind::Common, ""), None)
+                .unwrap();
             r.refuse("bootstrap failed: café\nmissing bridge");
             r.refuse("second refusal: missing config");
             r.warn("test.warn.bridge", &["missing"]);
@@ -225,6 +228,8 @@ mod tests {
         fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
             r.declare_fluid("soup");
             r.declare_biome_region("kept", region()).unwrap();
+            r.register_config(crate::ConfigSpec::new(crate::ConfigKind::Common, ""), None)
+                .unwrap();
         }
     }
 
@@ -333,6 +338,14 @@ mod tests {
                 .map(|d| (d.mod_id.as_str(), d.id.as_str(), d.region.weight))
                 .collect::<Vec<_>>(),
             [("healthy", "healthy:kept", 5), ("later", "later:kept", 5)]
+        );
+        assert_eq!(
+            registrar
+                .configs
+                .iter()
+                .map(|config| config.mod_id())
+                .collect::<Vec<_>>(),
+            ["healthy", "later"]
         );
         assert!(registrar.block_entity_types.is_empty());
         assert!(registrar.block_entity_transforms.is_empty());

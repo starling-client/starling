@@ -241,9 +241,10 @@ pub fn layout(args: &[String]) -> ExitCode {
 fn laid_out(plan: &contract::LayoutPlan) -> Result<serde_json::Value, (&'static str, String)> {
     use sunrise_native_build::prebuilt;
     let layout = || -> Result<prebuilt::Package, String> {
-        prebuilt::check_identity(&plan.prebuilt, &plan.build, &plan.host, plan.target.into())?;
+        let sdk =
+            prebuilt::check_identity(&plan.prebuilt, &plan.build, &plan.host, plan.target.into())?;
         let _ = std::fs::remove_dir_all(&plan.out);
-        prebuilt::lay_out(&plan.prebuilt, &plan.out, true)
+        prebuilt::lay_out(&plan.prebuilt, &plan.out, true, &sdk)
     };
     layout()
         .and_then(|package| serde_json::to_value(package).map_err(|e| e.to_string()))

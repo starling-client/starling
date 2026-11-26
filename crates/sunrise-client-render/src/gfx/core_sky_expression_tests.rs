@@ -173,6 +173,7 @@ fn a_pack_sky_and_stars_read_their_expression_uniforms() {
         Some((&program, &disc)),
         Some((&program, &stars)),
     )
+    .unwrap_or_else(|e| panic!("{e}"))
     .expect("the pipelines");
     for blocks in sky.expression_blocks() {
         blocks.evaluate(&Default::default());
@@ -230,6 +231,7 @@ fn a_pack_sky_reads_poly_globals() {
         Some((&disc_program, &disc)),
         Some((&disc_program, &stars)),
     )
+    .unwrap_or_else(|e| panic!("{e}"))
     .expect("the pipelines");
     let reads: Vec<bool> = sky.expression_blocks().map(|b| b.reads_globals()).collect();
     assert_eq!(reads, [true, true]);

@@ -178,7 +178,7 @@ fn credits_respawn_is_not_subject_to_the_end_travel_veto() {
             .update(0, |g| g.seen_credits = false);
         game.handle_server_portal(2);
         let host = game.lan.as_mut().unwrap();
-        assert!(host.play[&2].won_game);
+        assert!(host.hub.guests[0].won_game);
         assert!(!host.hub.guests[0].placed);
         assert!(
             received_packets(rx)
@@ -193,7 +193,7 @@ fn credits_respawn_is_not_subject_to_the_end_travel_veto() {
         game.tick_lan_packets();
         let host = game.lan.as_ref().unwrap();
         let player = &host.hub.guests[0];
-        assert!(!host.play[&2].won_game);
+        assert!(!player.won_game);
         assert!(player.placed);
         assert_eq!(player.dimension, Dim::Nether.id());
         assert_eq!(player.position, [4.5, 98.0, 4.5]);

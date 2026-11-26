@@ -91,6 +91,11 @@ impl PlayerSelection {
         self.players.iter().find(|player| player.entity_id == id)
     }
 
+    /// Find a real player in this tick's level by UUID (`getPlayerByUUID`).
+    pub fn by_uuid(&self, uuid: [i32; 4]) -> Option<&TickPlayer> {
+        self.players.iter().find(|player| player.view.uuid == uuid)
+    }
+
     /// Find a player riding this mob, independently of the combat target.
     pub fn rider(&self, mob_id: u32) -> Option<&TickPlayer> {
         self.players
@@ -109,6 +114,18 @@ impl PlayerSelection {
             self.switched.set(true);
         }
         true
+    }
+
+    /// Run `read` with this real player selected, then restore the selection and the
+    /// switch record: a goal tests a player it has not chosen yet without redirecting
+    /// the tick. None for an unknown player.
+    pub fn peek<R>(&self, id: u32, read: impl FnOnce() -> R) -> Option<R> {
+        let index = self.players.iter().position(|p| p.entity_id == id)?;
+        let (selected, switched) = (self.selected.replace(Some(index)), self.switched.get());
+        let result = read();
+        self.selected.set(selected);
+        self.switched.set(switched);
+        Some(result)
     }
 
     /// Whether the selected player changed at least once during this tick.
@@ -152,6 +169,17 @@ mod tests {
         assert_eq!(players.initial().unwrap().entity_id, 1);
         assert_eq!(players.rider(77).unwrap().entity_id, 2);
         assert!(players.rider(88).is_none());
+    }
+
+    #[test]
+    fn a_peek_reads_another_player_and_leaves_the_selection_as_it_was() {
+        let players =
+            PlayerSelection::new(vec![player(1, None), player(2, Some(42))], Some(1)).unwrap();
+        let seen = players.peek(2, || players.selected().unwrap().entity_id);
+        assert_eq!(seen, Some(2));
+        assert_eq!(players.selected().unwrap().entity_id, 1);
+        assert!(!players.has_switched());
+        assert_eq!(players.peek(999, || ()), None);
     }
 
     #[test]

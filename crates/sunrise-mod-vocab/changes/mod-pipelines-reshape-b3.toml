@@ -1,0 +1,21 @@
+ids = [
+    "hook:register_pipeline_modifiers",
+    "method:Hooks::register_pipeline_modifiers",
+    "method:RenderAssets::pipeline_modifier",
+    "method:WorldDrawContext::with_pipeline_modifier",
+    "method:PrepareRenderBuffersContext::pipeline_quads",
+    "type:HookId",
+    "type:RenderPipeline.blend",
+    "type:RenderPipeline.depth",
+    "type:RenderPipeline.state",
+    "type:RenderPipeline.order_independent",
+    "type:PipelineBlend",
+    "type:PipelineState",
+    "type:ColorWrite",
+    "type:PolygonMode",
+    "type:PipelineModifier",
+    "type:PipelineModifierRef",
+    "type:RegisterPipelineModifiersEvent",
+]
+why = "Reshape mod render pipelines to vanilla/NeoForge 26.3's full fixed-function state vocabulary (PipelineState with Opaque blend, depth_write, cull, color_write, polygon), add data-only pipeline modifiers (Hooks::register_pipeline_modifiers, RenderAssets::pipeline_modifier, WorldDrawContext::with_pipeline_modifier), and add opt-in order-independent transparency pipeline sets (RenderPipeline::order_independent, PrepareRenderBuffersContext::pipeline_quads at OitTranslucent)."
+migrate = "Read fixed-function state from RenderPipeline.state (instead of .blend / .depth), or configure it via the builder methods (.blend, .depth, .depth_write, .cull, .color_write, .polygon, .state). Register pipeline modifiers via Hooks::register_pipeline_modifiers, resolve them with host.render_assets().pipeline_modifier(&id), and scope draws with WorldDrawContext::with_pipeline_modifier. Opt translucent or additive pipelines into OIT with .order_independent() and include <minecraft:oit.glsl>."

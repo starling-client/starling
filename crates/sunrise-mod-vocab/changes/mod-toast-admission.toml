@@ -1,0 +1,3 @@
+ids = ["hook:toast_add"]
+why = "Version 3 also observes requests submitted through ClientHost::add_toast, as ToastKind::Mod, before adding or updating a mod toast. Built-in toast admission is unchanged."
+migrate = "Keep the callback signature. Match ToastKind::Mod to filter mod notifications; returning Flow::Cancel also leaves any toast that the request would replace untouched."

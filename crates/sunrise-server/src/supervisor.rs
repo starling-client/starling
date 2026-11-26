@@ -194,12 +194,10 @@ pub fn run(dir: &Path) -> Result<(), String> {
     signals::install();
     let config = Config::load(dir)?;
     let program = launch::program(&config, dir)?;
-    let resources = launch::resources(&config, dir, Some(&program))?;
-    // Half-copied game files would only crash the engine again at every restart: name what is missing.
-    engine::check_prepared(&resources)?;
     // A game the system can't load would only crash again at every restart: say why at once.
     engine::check_starts(&program)?;
     let _lock = lock(dir)?;
+    let resources = crate::init::ensure_resources(&config, dir, Some(&program), None)?;
     let shared = Shared::new(dir);
     let _endpoint = api::start(shared.clone())?;
     if let Some(address) = crate::management::start(shared.clone())? {
@@ -237,21 +235,26 @@ pub fn run(dir: &Path) -> Result<(), String> {
     let console = console_lines();
     let mut crashes: Vec<Instant> = Vec::new();
     let mut watch: Option<Watch> = None;
-    let (mut program, mut resources) = (program, resources);
+    let mut checked = Some((program, resources));
     loop {
         // Read again before every start: edits to server.toml apply on the next restart, and so does a
         // switch to another release.
         let config = Config::load(dir)?;
-        // Queued while the game ran, stopped or was already stopping: applied before this start,
-        // whatever ended the last game, not left for some later restart.
-        if let Some(w) = apply_queued(&shared, dir, &config) {
-            watch = Some(w);
-        }
-        if let Ok(found) = launch::program_in(&config, dir, shared.install.as_ref())
-            && let Ok(found_resources) = launch::resources(&config, dir, Some(&found))
-        {
-            (program, resources) = (found, found_resources);
-        }
+        // A queued release applies before this start. Recheck the resource path even when
+        // it has not changed: a restart may be the first start on newly prepared files.
+        let queued = apply_queued(&shared, dir, &config);
+        let first = checked.take();
+        let (program, resources) = match (first, queued) {
+            (Some(pair), None) => pair,
+            (_, queued) => {
+                if let Some(w) = queued {
+                    watch = Some(w);
+                }
+                let program = launch::program_in(&config, dir, shared.install.as_ref())?;
+                let resources = crate::init::ensure_resources(&config, dir, Some(&program), None)?;
+                (program, resources)
+            }
+        };
         let written = config
             .write_properties(dir)
             .map_err(|e| format!("server.properties: {e}"))?;

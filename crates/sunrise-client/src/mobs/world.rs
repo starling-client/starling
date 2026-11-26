@@ -188,6 +188,35 @@ impl<'b> RaycastBlockCache<'b> {
     }
 }
 
+/// What `Level.precipitationAt` reads of the mobs' level.
+impl sunrise_world::level::weather::PrecipitationReads for MobWorld<'_> {
+    fn is_raining(&self) -> bool {
+        self.raining
+    }
+    fn can_see_sky(&self, pos: BlockPos) -> bool {
+        MobWorld::can_see_sky(self, pos.x, pos.y, pos.z)
+    }
+    fn motion_blocking_y(&self, pos: BlockPos) -> i32 {
+        self.motion_blocking_height(pos.x, pos.z)
+    }
+    /// `Biome.getPrecipitationAt`: none in a column not loaded or a biome without
+    /// precipitation, else snow below 0.15.
+    fn biome_precipitation(&self, pos: BlockPos) -> sunrise_world::level::PrecipitationKind {
+        use sunrise_world::level::PrecipitationKind;
+        let Some(chunk) = self.world.chunks.get(&(pos.x >> 4, pos.z >> 4)) else {
+            return PrecipitationKind::None;
+        };
+        let biome = self.biomes.get(chunk.biome(pos.x, pos.y, pos.z));
+        if !biome.precipitation {
+            PrecipitationKind::None
+        } else if biome.temperature_at(pos, self.sea_level) >= 0.15 {
+            PrecipitationKind::Rain
+        } else {
+            PrecipitationKind::Snow
+        }
+    }
+}
+
 impl MobWorld<'_> {
     /// `Level.getEntity(uuid)`: the entity a UUID a mob stored names, while it
     /// is in the level. Nothing when this world keeps no entity UUIDs, or when
@@ -302,7 +331,7 @@ impl MobWorld<'_> {
     }
     /// Membership in a prebound gameplay tag, indexed by the mob type's registry slot.
     #[inline]
-    pub fn entity_tag_bit(&self, kind: &super::MobType, bit: u8) -> bool {
+    pub fn entity_tag_bit(&self, kind: &super::MobType, bit: u32) -> bool {
         self.items.is_some_and(|items| {
             items
                 .entity_type_tags
@@ -320,20 +349,20 @@ impl MobWorld<'_> {
     }
     /// Whether the state carries `flag` ([`crate::items::BlockTagFlags`]).
     #[inline]
-    pub fn state_flag(&self, state: BlockStateId, flag: u16) -> bool {
+    pub(crate) fn state_flag(&self, state: BlockStateId, flag: u16) -> bool {
         self.state_flags(state) & flag != 0
     }
     /// Whether the block at `(x, y, z)` carries `flag`
     /// ([`crate::items::BlockTagFlags`]): [`Self::has_tag`] without the tag
     /// hash.
     #[inline]
-    pub fn block_flag(&self, x: i32, y: i32, z: i32, flag: u16) -> bool {
+    pub(crate) fn block_flag(&self, x: i32, y: i32, z: i32, flag: u16) -> bool {
         self.state_flag(self.world.block(x, y, z), flag)
     }
     /// `findBlocksInBoxByManhattanDistance(at, range_xz, range_y).filterState(..).findFirst()`:
     /// the first block `matches` accepts (given its position and name), going
     /// out from `at` by Manhattan distance as `BlockPos.withinBoxByManhattanDistance` does.
-    pub fn nearest_block(
+    pub(crate) fn nearest_block(
         &self,
         at: [i32; 3],
         range_xz: i32,
@@ -467,7 +496,7 @@ impl MobWorld<'_> {
         result.ok().flatten()
     }
     /// Level.clip with VISUAL shapes and no fluids: true on a miss.
-    pub fn visual_clear_between(&self, from: Vec3, to: Vec3) -> bool {
+    pub(crate) fn visual_clear_between(&self, from: Vec3, to: Vec3) -> bool {
         self.visual_clip(from, to) == Some(None)
     }
     /// Level.clip with VISUAL shapes and no fluids: the block the segment
@@ -487,7 +516,7 @@ impl MobWorld<'_> {
     }
     /// Level.clip with COLLIDER shapes and no fluids: where the segment
     /// first hits a block, if it does.
-    pub fn clip_block(&self, from: Vec3, to: Vec3) -> Option<Vec3> {
+    pub(crate) fn clip_block(&self, from: Vec3, to: Vec3) -> Option<Vec3> {
         let mut scene = SceneCollisions {
             world: self.world,
             binding: self.collision,
@@ -515,7 +544,7 @@ impl MobWorld<'_> {
     }
     /// Level.clip with COLLIDER shapes and no fluids: the block the segment
     /// first hits, if it does.
-    pub fn clip_block_at(&self, from: Vec3, to: Vec3) -> Option<[i32; 3]> {
+    pub(crate) fn clip_block_at(&self, from: Vec3, to: Vec3) -> Option<[i32; 3]> {
         let mut scene = SceneCollisions {
             world: self.world,
             binding: self.collision,
@@ -542,11 +571,11 @@ impl MobWorld<'_> {
         result.ok().flatten()
     }
     /// The bounds of the block's collision shape, relative to the block.
-    pub fn collision_bounds(&self, p: [i32; 3]) -> Option<sunrise_core::geometry::Aabb> {
+    pub(crate) fn collision_bounds(&self, p: [i32; 3]) -> Option<sunrise_core::geometry::Aabb> {
         self.collision_bounds_of(self.world.block(p[0], p[1], p[2]), p)
     }
     /// The same for `state` standing at `p` (a block that was there).
-    pub fn collision_bounds_of(
+    pub(crate) fn collision_bounds_of(
         &self,
         state: sunrise_world::registry::BlockStateId,
         p: [i32; 3],
@@ -605,24 +634,21 @@ impl MobWorld<'_> {
         }
         self.world.light(x, y, z) >> 4 == 15
     }
-    /// Level.precipitationAt: raining, open to the sky, nothing motion
-    /// blocking above, then the biome's precipitation at the position:
-    /// `Some(true)` rain, `Some(false)` snow, `None` nothing.
+    /// Level.precipitationAt (`sunrise_world::level::weather::precipitation_at`): raining, open
+    /// to the sky, nothing motion blocking above, then the biome's precipitation at the
+    /// position: `Some(true)` rain, `Some(false)` snow, `None` nothing.
     pub fn precipitation_at(&self, x: i32, y: i32, z: i32) -> Option<bool> {
-        if !self.raining || !self.can_see_sky(x, y, z) || self.motion_blocking_height(x, z) > y {
-            return None;
+        use sunrise_world::level::PrecipitationKind;
+        match sunrise_world::level::weather::precipitation_at(self, BlockPos::new(x, y, z)) {
+            PrecipitationKind::Rain => Some(true),
+            PrecipitationKind::Snow => Some(false),
+            PrecipitationKind::None => None,
         }
-        let chunk = self.world.chunks.get(&(x >> 4, z >> 4))?;
-        let biome = self.biomes.get(chunk.biome(x, y, z));
-        if !biome.precipitation {
-            return None;
-        }
-        Some(biome.temperature_at(BlockPos::new(x, y, z), self.sea_level) >= 0.15)
     }
     /// `Entity.isInClouds`: a dimension whose `visual/cloud_color` is
     /// transparent has no clouds, else the cloud band is the four blocks from
     /// `visual/cloud_height` up, and a box that reaches it is in the clouds.
-    pub fn in_clouds(&self, y: f64, height: f64) -> bool {
+    pub(crate) fn in_clouds(&self, y: f64, height: f64) -> bool {
         let dimension = self.dimension_type;
         if dimension.cloud_color_alpha == 0.0 {
             return false;
@@ -658,7 +684,7 @@ impl MobWorld<'_> {
     pub fn sky_darken(&self) -> i32 {
         if self.daylight { 0 } else { 11 }
     }
-    pub fn target_info(&self, who: Who) -> Option<TargetInfo> {
+    pub(crate) fn target_info(&self, who: Who) -> Option<TargetInfo> {
         if let Some((id, target)) = self.dragon
             && who == Who::Mob(id)
         {
@@ -726,7 +752,7 @@ impl MobWorld<'_> {
     }
     /// The other mobs whose boxes may meet `area` (callers test the boxes),
     /// in snapshot order: through the grid when there is one, else all.
-    pub fn others_near(&self, area: Aabb) -> NearIter<'_> {
+    pub(crate) fn others_near(&self, area: Aabb) -> NearIter<'_> {
         let mut buf = NEAR_BUF_POOL.with(|pool| {
             pool.try_borrow_mut()
                 .ok()
@@ -762,7 +788,7 @@ impl MobWorld<'_> {
     }
     /// A passenger edge can name an object refused level residency.
     /// Keep this separate from combat and spatial lookup through `seen`.
-    pub fn passenger_object(&self, id: u32) -> Option<&Seen> {
+    pub(crate) fn passenger_object(&self, id: u32) -> Option<&Seen> {
         self.seen(id)
             .or_else(|| self.passenger_objects.iter().find(|s| s.id == id))
     }
@@ -951,7 +977,7 @@ impl TestResources {
         let facts = BlockFacts::load(root, registry).unwrap();
         let motion = crate::motion::MotionResources::load(root, &assets).unwrap();
         let source = sunrise_assets::resource_source::ResourceRoot::directory(root.to_path_buf());
-        let data = super::MobData::load(&source, &facts);
+        let data = super::MobData::load(&source, facts.states.len(), false).unwrap();
         let types = super::MobTypes::load(root).unwrap();
         let biomes = crate::biome::Biomes::load(&source).unwrap();
         let defaults = sunrise_world::item_defaults::read(root).unwrap();
@@ -1095,6 +1121,7 @@ fn run_test_world(
         biomes,
         mob_griefing,
         universal_anger: false,
+        pvp: false,
         mob_drops,
         max_entity_cramming: 24,
         difficulty: super::spawning::LocalDifficulty::new(2, 18000, 0, 0.0),
@@ -1110,6 +1137,7 @@ fn run_test_world(
         asks_baby_spawn: false,
         border: None,
         section_writer: None,
+        trading_players: None,
     };
     f(&w, types);
     true
@@ -1273,11 +1301,11 @@ mod scaffolding_sight_tests {
                 assert!(!see());
                 // Opted in, the part lets this viewer through: the fast path asked it.
                 marked.set_part_states([glass]);
-                parts.begin_tick(&std::sync::Arc::new(loop_context()));
+                parts.begin_tick(&std::sync::Arc::new(loop_context()), "minecraft:overworld");
                 assert!(see());
                 // Opted in, the part keeps the shape: sight is blocked again.
                 COLLISION_ANSWER.with_borrow_mut(|answer| *answer = Some(Box::new(|_| None)));
-                parts.begin_tick(&std::sync::Arc::new(loop_context()));
+                parts.begin_tick(&std::sync::Arc::new(loop_context()), "minecraft:overworld");
                 assert!(!see());
                 marked.set_part_states([]);
             },

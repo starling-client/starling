@@ -17,7 +17,7 @@ mod owner_attachment_save_tests {
             },
         }),
         copy_on_death: true,
-        sync: false,
+        sync_codec: None,
     };
 
     /// The live value as the named owner file would hold it.
@@ -39,44 +39,81 @@ mod owner_attachment_save_tests {
             .flatten()
     }
 
+    /// Set `value` in the map of the player `conn`, as a mod's write does.
+    fn set_value(game: &mut crate::game::Game<'_>, conn: u32, value: i32) {
+        let host = game.lan.as_mut().unwrap();
+        PROGRESS
+            .set(
+                host.hub.guests.attachments_mut(conn).unwrap(),
+                sunrise_mod_runtime::attachments::Holder::Level,
+                value,
+            )
+            .unwrap();
+    }
+
+    /// An integrated host whose owner is its placed player (conn 1, uuid 1).
+    fn owned_host(game: &mut crate::game::Game<'_>) {
+        let _rx = super::super::world_spawn_sync_tests::host_for(game);
+        game.lan.as_mut().unwrap().owner = Some(crate::game::lan::Owner {
+            uuid: 1,
+            saved: None,
+        });
+    }
+
+    /// Each test loads resources, which replaces process-wide tables: it runs
+    /// in a fresh process of its own.
+    const HERE: &str =
+        "game::lan::owner_attachment_connected_statistics_save_tests::owner_attachment_save_tests";
+
     #[test]
     #[ignore = "daily"]
     fn an_autosave_writes_the_owners_live_attachments_to_the_file_it_loads() {
-        let mut resources = None;
-        let mut game = crate::game::game_tests::tests::server_game(&mut resources);
-        let _rx = super::super::world_spawn_sync_tests::host_for(&mut game);
-        let uuid = 1;
-        game.lan.as_mut().unwrap().owner = Some(crate::game::lan::Owner { uuid, saved: None });
-        // While the owner plays, its attachments are the game's, not the guest's.
-        PROGRESS
-            .set(
-                &mut game.player_state.attachments,
-                sunrise_mod_runtime::attachments::Holder::Level,
-                7,
-            )
-            .unwrap();
-        assert!(game.store_owner().is_some());
-        assert_eq!(
-            saved_value(&game),
-            Some(7),
-            "the autosave stores the live value"
+        crate::game::in_own_process(
+            &format!("{HERE}::an_autosave_writes_the_owners_live_attachments_to_the_file_it_loads"),
+            || {
+                let mut resources = None;
+                let mut game = crate::game::game_tests::tests::server_game(&mut resources);
+                owned_host(&mut game);
+                // The integrated server has no player of its own: outside a turn, where
+                // the autosave and the pause save run, the owner's map is their record's.
+                set_value(&mut game, 1, 7);
+                assert!(game.store_owner().is_some());
+                assert_eq!(
+                    saved_value(&game),
+                    Some(7),
+                    "the autosave stores the live value"
+                );
+                // A later change is what the next autosave writes.
+                set_value(&mut game, 1, 9);
+                game.store_owner();
+                assert_eq!(saved_value(&game), Some(9));
+            },
         );
-        let host = game.lan.as_ref().unwrap();
-        let g = host.hub.guests.iter().find(|g| g.uuid == uuid).unwrap();
-        assert!(
-            g.attachments.to_nbt().is_empty(),
-            "the map stays their one owner"
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn a_save_in_another_players_turn_writes_the_owners_attachments() {
+        crate::game::in_own_process(
+            &format!("{HERE}::a_save_in_another_players_turn_writes_the_owners_attachments"),
+            || {
+                let mut resources = None;
+                let mut game = crate::game::game_tests::tests::server_game(&mut resources);
+                owned_host(&mut game);
+                let other = crate::game::native_player_death::tests::new_guest(2, 2);
+                game.lan.as_mut().unwrap().hub.guests.push(other);
+                set_value(&mut game, 1, 7);
+                set_value(&mut game, 2, 5);
+                // For their turn, the other player's map is the game's.
+                let saved = game
+                    .as_guest(2, |game| {
+                        assert!(game.store_owner().is_some());
+                        saved_value(game)
+                    })
+                    .unwrap();
+                assert_eq!(saved, Some(7), "the owner's value, not the acting player's");
+            },
         );
-        // A later change is what the next autosave writes.
-        PROGRESS
-            .set(
-                &mut game.player_state.attachments,
-                sunrise_mod_runtime::attachments::Holder::Level,
-                9,
-            )
-            .unwrap();
-        game.store_owner();
-        assert_eq!(saved_value(&game), Some(9));
     }
 }
 
@@ -92,7 +129,8 @@ mod connected_statistics_save_tests {
         game.options.execution_role = ExecutionRole::DedicatedServer;
         // The command's dedicated-only guard also checks the launch mode.
         game.options.dedicated = Some(Vec::new());
-        let dir = std::env::current_dir().unwrap().join(if stale {
+        let scratch = tempfile::tempdir().unwrap();
+        let dir = scratch.path().join(if stale {
             "stats-stale"
         } else {
             "stats-missing"
@@ -194,14 +232,16 @@ mod connected_statistics_save_tests {
 mod connected_statistics_save_exclusion_tests {
 
     /// Source controls for the bounded eligibility gates; these excluded
-    /// guests are not counted as successfully saved players.
+    /// guests are not counted as successfully saved players. A placed guest of an
+    /// integrated server is saved, as on a dedicated one (#5780).
     #[test]
     #[ignore = "daily"]
     fn excluded_guest_records_are_not_invented_or_written() {
         let mut resources = None;
         let mut game = crate::game::game_tests::tests::server_game(&mut resources);
         let _rx = super::super::world_spawn_sync_tests::host_for(&mut game);
-        game.world_root = std::env::current_dir().unwrap().join("stats-excluded");
+        let scratch = tempfile::tempdir().unwrap();
+        game.world_root = scratch.path().join("stats-excluded");
         std::fs::create_dir_all(&game.world_root).unwrap();
         let path = super::super::super::stats::player_json(&game.world_root, "stats", [0, 0, 0, 1]);
         let mut host = game.lan.take().unwrap();
@@ -223,9 +263,16 @@ mod connected_statistics_save_exclusion_tests {
         assert!(!path.exists(), "no play record: no invented statistics");
         host.play.insert(1, play);
         game.lan = Some(host);
+        // An integrated server saves its connected guests too: `IntegratedPlayerList.save`
+        // keeps the owner's data for level.dat and hands every player to `PlayerList.save`,
+        // which saves their stats.
         game.options.dedicated = None;
         game.save_game_metadata().unwrap();
-        assert!(!path.exists(), "the existing dedicated gate is preserved");
+        assert!(
+            path.exists(),
+            "an integrated server writes a placed guest's statistics"
+        );
+        std::fs::remove_file(&path).unwrap();
         game.options.dedicated = Some(Vec::new());
         game.options.execution_role = crate::game::execution_role::ExecutionRole::Client;
         game.save_game_metadata().unwrap();

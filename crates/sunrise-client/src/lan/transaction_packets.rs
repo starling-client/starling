@@ -59,7 +59,9 @@ impl Packets {
                 .pending
                 .fetch_sub(packet.journal_cost, Ordering::AcqRel);
             match packet.body.take().expect("reserved body") {
-                Run::One(body) => sender.publish_reserved(body),
+                Run::One(body) => {
+                    sender.publish_reserved(body);
+                }
                 Run::Many(bodies) => sender.publish_reserved_many(bodies),
             }
         }
@@ -119,18 +121,19 @@ pub(super) fn active() -> bool {
     SCOPES.with(|s| !s.borrow().is_empty())
 }
 
+/// Returns whether an open batch admitted the packet, or gives it back if there is no batch.
 pub(super) fn capture<T: Into<Run>>(
     sender: &PlayerSender,
     body: T,
     queued: usize,
-) -> Result<(), T> {
+) -> Result<bool, T> {
     SCOPES.with(|s| {
         let mut scopes = s.borrow_mut();
         let Some(packets) = scopes.last_mut() else {
             return Err(body);
         };
         if packets.failed {
-            return Ok(());
+            return Ok(false);
         }
         let body = body.into();
         let journal_cost = JOURNAL_CHARGE
@@ -146,13 +149,14 @@ pub(super) fn capture<T: Into<Run>>(
                 cost,
                 journal_cost,
             });
+            Ok(true)
         } else {
             // Refuse the complete take even if this child is abandoned before it can merge.
             for packets in &mut *scopes {
                 packets.failed = true;
             }
+            Ok(false)
         }
-        Ok(())
     })
 }
 

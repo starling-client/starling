@@ -316,6 +316,7 @@ pub fn hurt_mobs_with_kind<'a>(
         kind,
         attacker: None,
         from: Some([position.x, position.y, position.z]),
+        direct: None,
         attacker_species: None,
     };
     for mob in mobs

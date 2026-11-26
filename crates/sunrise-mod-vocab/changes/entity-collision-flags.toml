@@ -1,0 +1,5 @@
+ids = [
+    "handle:EntityRef::horizontal_collision",
+    "handle:EntityRef::vertical_collision",
+]
+why = "Mods can read Entity.horizontalCollision and Entity.verticalCollision of a general entity row's last collided move on the server. Every Entity.move of a general row, whatever its cause, runs the fall-reset ray, writes them with the row's on_ground, runs the fall-distance check, then restituteMovementAfterCollisions (a blocked axis loses its velocity, a bouncy block bounces the row) and getBlockSpeedFactor; a row with no_physics skips all of it. The reads of tick_count, on_ground, no_gravity, no_physics, is_in_water, is_in_lava, visit_fluid_heights, eye_fluid and is_under_water, and the writes set_no_gravity, set_on_ground and set_no_physics, now return real values for a general row instead of None or false. Host methods only; no hook_version changes beyond general_entity_tick."

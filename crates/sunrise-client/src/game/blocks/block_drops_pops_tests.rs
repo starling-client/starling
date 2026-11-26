@@ -307,3 +307,26 @@ fn a_harvest_reads_the_vehicle_the_player_rides() {
     game.riding = Some(game.mobs.last().unwrap().id);
     assert_eq!(harvest(&mut game), ["minecraft:apple"]);
 }
+
+/// A harvest's `time_check` reads the level's world clock (`TimeCheck.test` on
+/// `LootContext.getLevel().clockManager()`), as the advancement and command loot paths do: a
+/// range holding the clock's ticks drops, one that misses does not.
+#[test]
+#[ignore = "daily"]
+fn a_harvest_time_check_reads_the_levels_clock() {
+    use serde_json::json;
+    let mut resources = None;
+    let pool = |min: i64, max: i64, name: &str| {
+        json!({"rolls": 1,
+            "condition": {"type": "minecraft:time_check", "clock": "minecraft:overworld",
+                "value": {"min": min, "max": max}},
+            "entries": [{"type": "minecraft:item", "name": name}]})
+    };
+    let table = json!({"type": "minecraft:block_interact", "pools": [
+        pool(1234, 1234, "minecraft:diamond"),
+        pool(0, 1233, "minecraft:coal"),
+    ]});
+    let (_published, mut game) = harvest_game(&mut resources, table);
+    game.set_command_clock_time("minecraft:overworld", 1234);
+    assert_eq!(harvest(&mut game), ["minecraft:diamond"]);
+}

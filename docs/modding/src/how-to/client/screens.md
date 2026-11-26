@@ -5,20 +5,7 @@ the sign editor is on. The two writes take the same paths as the keys the player
 sees only the packets of a normal client.
 
 ```rust
-// Escape: close whatever is open.
-if host.close_screen() {
-    // a screen was open and is now closed
-}
-
-// The inventory key, key.inventory.
-if host.open_inventory() {
-    // the inventory screen is up (or the ridden vehicle's screen was asked for)
-}
-
-// Which sign the editor is on, if any.
-if let Some(sign) = host.sign_editor() {
-    let _ = (sign.pos, sign.front);
-}
+{{#include ../../../examples/src/client_rendering.rs:screen_controls}}
 ```
 
 `ClientHost::close_screen()` follows the screen's own Escape close. A container screen closes as the
@@ -77,11 +64,11 @@ whether the event can reach gameplay mappings with no screen open. A cancelled m
 neither the editor nor Post, but a cancelled real press counts as handled. Key and character Post
 still run only for unhandled input.
 
-The control socket sends `screen_key_released_pre` to the currently open title screen, even if
-that screen did not receive the matching press. For example, when Escape closes the preset editor,
-its release goes to Create World, including when Escape is sent as a single tap. The released key
-is no longer held. If it was a modifier, its bit is already cleared in `event.modifiers` unless
-the other key for the same modifier is still held.
+The control socket sends `screen_key_released_pre` to the currently open screen, even if it did
+not receive the matching press. For example, when Escape closes the preset editor, its release
+goes to Create World, including when Escape is sent as a single tap. If the released key was a
+modifier, its bit is already cleared in `event.modifiers` unless the other key for the same
+modifier is still held.
 
 ## Drawing a dimension transition
 
@@ -180,6 +167,26 @@ factory and capture only the owned values the callbacks need.
 To draw a sprite from synchronized menu data, see
 [Draw a progress bar and a fuel gauge](menu-gauges.md).
 
+## Reading the level from a block screen
+
+In the menu screen factory, take the opening's position from `open.pos` and the verified
+mod block ID, if present, from `open.block`. Without a matching server payload, only a
+verified clicked opener supplies a position. A menu explicitly opened without a position
+gets `None`, not the world origin.
+
+Capture the position by value in `MenuScreen::with_draw(move |host, frame, draw| ...)`.
+The read-only callback runs beneath the items and labels and can use ordinary level reads
+through the client host, for example to inspect the block beneath a machine. The client view
+may lag the server; use `frame.data` for authoritative live menu values.
+
+## Reading the hovered stack
+
+In a client screen hook, `host.screen_hovered_stack()` reads the full stack under the pointer,
+including its count and components. It reads container slots and Creative catalog slots, including
+Search results. It returns `None` when no container or Creative screen is open, the screen isn't
+ready, or the pointer is over no slot, an empty slot or the Creative trash. If you only need the
+item key, call `ItemStack::item()` on the returned stack.
+
 ## What a screen draws beside its panel
 
 `ScreenView::rect` is a container screen's panel (vanilla's `leftPos`, `topPos`, `imageWidth`, `imageHeight`).
@@ -258,13 +265,19 @@ assert_eq!(host.screen_slot(MENU, 3), Some([62.0, 18.0]));
 ```
 
 `menu` is the menu type whose screen is open, so a call made for another screen refuses. Any mod can
-read, move, activate, or hide slots of the open screen for `menu`. `slot` is the index into
-`MenuScreenLayout::slots` (including slots declared `None` at open, which start inactive and can be
-activated later with `Some([x, y])`). A position is GUI pixels from the screen's top-left corner and names the item's top-left
+read, move, activate, or hide slots of the open screen for `menu`. `slot` ranges over
+`0..(container_len + player_slots)`, where `container_len` is `MenuScreenLayout::slots.len()` and
+`player_slots` is what the menu declared (`MenuScreenOpen::player_slots`, 0 for a menu with no player
+inventory). `0..container_len` indexes `MenuScreenLayout::slots` (including slots declared `None` at open, which
+start inactive and can be activated later with `Some([x, y])`). The menu's player slots follow in menu order, the
+main inventory's three rows and then the hotbar, as the menu appends them
+(`AbstractContainerMenu.addStandardInventorySlots`); each starts at its place on the `inventory_x`/`inventory_y`
+grid. A position is GUI pixels from the screen's top-left corner and names the item's top-left
 corner, as in `MenuScreenLayout::slots`; `None` hides the slot. The call takes `&self`, so a screen hook such as
 `screen_render_post` can move slots every frame; a call that repeats a slot's current place changes nothing and
-costs no layout work. The change lasts for that opening. A replacement starts from its declared layout,
-even when the server reuses the same window id without a close packet. `ClientHost::screen_slot(menu, slot)` reads where a slot will be from the next frame, `None` when it is
+costs no layout work. The change lasts for that opening, for container and player slots alike: closing the
+screen and opening it again, or a replacement even when the server reuses the same window id without a close
+packet, starts from the declared layout with every slot shown. `ClientHost::screen_slot(menu, slot)` reads where a slot will be from the next frame, `None` when it is
 hidden.
 
 From the next frame a moved slot is a vanilla slot at that position, which is what the screen reads live:
@@ -275,7 +288,7 @@ From the next frame a moved slot is a vanilla slot at that position, which is wh
 - its item, count and decorations, and its empty-slot icon, are drawn there;
 - the recipe book's ghost items are drawn there.
 
-A hidden slot is none of these: it is not hovered, drawn or listed until the mod puts it somewhere again. A move
+A hidden slot is none of these, and it is not a drag target or swapped by a number key either: it is not hovered, drawn or listed until the mod puts it somewhere again. A move
 or a hide never touches the recipe book: a bound book keeps its catalogue and its placement. The recipe book and
 `screen_room` still move the whole image, and every slot with it; a slot's own position never changes for them. A
 position outside the image is allowed and is not clamped, and a slot there takes the click instead of making it a
@@ -283,19 +296,36 @@ click outside the screen.
 
 The call is client-side only: nothing is sent, and server-side slot rules never change. A locally hidden
 slot keeps its item and a shift-click may still fill it, as a deactivated Java slot (`Slot.isActive()`)
-does. Slots declared `None` at open start inactive and can be activated later with `Some([x, y])`.
+does. The server never consults it, so a shift-click from another slot can still fill a hidden player or
+container slot: that is the menu's own quick-move answer, and the client adds no filter. Slots declared `None` at
+open start inactive and can be activated later with `Some([x, y])`.
 
 Each refusal changes nothing and is named by `ScreenSlotRefusal`:
 
 | Refusal | When |
 |---|---|
 | `NoScreen` | No mod screen is shown, or the shown one belongs to another menu type |
-| `NoSuchSlot` | `slot` is outside the menu's container backing |
+| `NoSuchSlot` | `slot` is `container_len + player_slots` or more (a menu with no player inventory has no player slots) |
 | `BadPosition` | An `x` or `y` that is NaN or infinite |
 | `Unavailable` | No game backend: screens are the client's |
 
-It moves only the slots a mod screen declares; the player's inventory stays under `inventory_x` and
-`inventory_y`.
+A hidden player slot keeps its item. The inventory label stays where the screen puts it; a screen that hides the
+player's inventory sets `own_labels` to draw its own.
+
+## Menu slot icons
+
+In the screen factory's `MenuScreenLayout::slots`, give a visible slot a
+`Some(ScreenSlot { position, no_item_icon })` entry at its backing index. Set
+`no_item_icon` to `Some("minecraft:container/slot/shield".into())` for that GUI atlas sprite,
+or `None` for a visible slot without an icon. The geometry and icon are client-side,
+including for a screen with a bound recipe book.
+
+The icon replaces an empty displayed stack at 16 × 16 pixels, like vanilla's
+`Slot.getNoItemIcon`. An item or a quick-craft preview showing an item takes its place;
+a single-slot drag hides all of the slot's contents. Custom backgrounds do not suppress
+the icon. A local slot move carries the icon with it, and a local hide suppresses it.
+Drawing uses the current GUI atlas without allocating for the lookup and uses its
+missing-texture sprite for an unknown name.
 
 ## Mod container title and inventory labels
 
@@ -312,83 +342,228 @@ for a 133-high hopper layout. Chest layouts use `height - 94`; a shulker box's
 When building a complete `MenuScreenLayout` literal, include `title_label: None` and
 `inventory_label: None`, or use `..Default::default()`.
 
-## Buttons with your own art
+## Mounting widgets on a screen
 
-Set `Button::sprites` before adding a button to your `Widgets`. With `None` (the default), the
-button uses the vanilla sprites. With `Some`, it uses the same GUI sprite names as `DrawContext::sprite`:
+Mount buttons ([`Button`]), single-line text fields ([`TextField`]), and custom widgets
+([`ScreenWidget`]) inside `Hooks::screen_init_post` (`ScreenEvent.Init.Post`) through
+`event.widgets` (`ScreenWidgets`). This works on your own mod screen (`host.mod_screen() == Some(id)`)
+and on vanilla screens alike, matching vanilla's `Screen.addRenderableWidget` and NeoForge's
+`ScreenEvent.Init.Post`.
 
 ```rust
-use mod_api::client::widgets::{Button, ButtonSprites, Widgets};
+{{#include ../../../examples/src/widget_screen.rs:widget_screen}}
+```
 
-let mut widgets = Widgets::new();
+Include `assets/widget_example/lang/en_us.json` in the example mod's resources, and use other
+language files for translations. Done uses vanilla's `gui.done`; a note echoed from the text field
+stays literal because it is player input.
+
+The engine owns drawing order (mounted widgets draw inside the screen's Pre-guarded contents pass,
+before `screen_render_foreground` and tooltips, so cancelling `screen_render_pre` skips them),
+hover, focus, unified Tab / Shift+Tab and arrow navigation across native and mounted controls,
+controller navigation, narration, and mouse/keyboard dispatch on screens, title screens, and
+overlays alike. Mounted widgets are cleared when the screen closes or rebuilds its children
+(for example on a resize that calls `Screen.rebuildWidgets`). A reposition-only resize preserves
+children and focus, and same-instance resizes preserve `MouseHandler` double-click timing. Keep
+text or selection that must survive a rebuild on your mod struct and seed the new widgets from it. Use
+`event.widgets.set_initial_focus(id)` to focus a widget mounted by your listener on open
+(`Screen.setInitialFocus`). Read `event.widgets.children()` for the ordered child list and
+use `event.widgets.remove(child.id)` to remove a listed child (`ScreenEvent.Init.removeListener`).
+The list includes earlier accepted mounts and the native controls on the pause menu and the
+title screen, in vanilla's order (on the title screen: Singleplayer, Multiplayer, Minecraft Realms,
+the Mods button while it shows, the Friends, Language and Accessibility icons, Options..., Quit Game
+and the bottom notice), each labelled with its translation key. A removed native control is neither drawn nor
+pressed until the screen initializes again. A later
+listener sees your edits only if your callback completes normally. There is no live focus setter
+or mutable lookup for built-in widgets.
+A custom widget can track its own focus via `set_focused` and read or change the state it owns.
+
+### Buttons with your own art
+
+Build an interactive button with `Button::new(rect, label, on_press)` or a disabled one with
+`Button::inactive(rect, label)`. Configure initial state with `.active(bool)`, `.visible(bool)`,
+and `.sprites(ButtonSprites)`. With no custom art (the default), the button uses the vanilla
+nine-slice sprites. With `ButtonSprites`, it uses the same GUI sprite names as
+`DrawContext::sprite`:
+
+```rust,ignore
+use mod_api::client::widgets::{Button, ButtonSprites};
+use mod_api::Text;
+
 let mut art = ButtonSprites::new("mymod:open");
 art.highlighted = Some("mymod:open_highlighted".into());
 art.disabled = Some("mymod:open_disabled".into());
 art.label_offset = [1.0, -1.0];
-let mut button = Button::new([20.0, 24.0, 80.0, 20.0], label);
-button.sprites = Some(art);
-let open = widgets.add_button(button);
+
+event.widgets.add_button(
+    Button::new([20.0, 24.0, 80.0, 20.0], Text::translate("mymod.screen.open", vec![]), |state, host| {
+        state.active = false;
+        host.mod_screen_open("mymod");
+    })
+    .sprites(art),
+);
 ```
 
-`Widgets::draw` stretches the full sprite into the button's rectangle; it doesn't nine-slice custom
-art. Inactive takes precedence over hover or focus. An omitted or unknown state sprite falls back to the
-custom normal sprite, then to the vanilla nine-slice for that state. The label offset is in GUI pixels;
-it moves the text, not the hitbox or the scrolling label's clip. The same button still registers for
-narration and controller focus, and `Widgets` handles clicks, Tab, Enter and Space as before.
-If you call `DrawContext::widget_button` directly, pass the art as `Option<&ButtonSprites>` (`None` for
-vanilla art).
+Custom art stretches the full sprite into the button's rectangle rather than nine-slicing it.
+Inactive takes precedence over hover or focus. An omitted or unknown state sprite falls back to
+the custom normal sprite, then to the vanilla nine-slice for that state. `label_offset` is in GUI
+pixels and moves only the label, not the hitbox or overflow clip. Mounted buttons register for
+narration and controller focus automatically. They activate on left click, on Enter or Space with
+keyboard focus, and through controller activation with controller focus. Controller activation
+calls the widget without dispatching screen mouse hooks. Inside `on_press`, mutate `&mut ButtonState` (`rect`, `label`, `active`, `visible`,
+`sprites`) directly.
+
+### Text fields, IME and double-click
+
+Mount a single-line text field with `TextField::new(rect, max_length)` and configure it with
+`.value(...)`, `.hint(...)`, `.editable(bool)`, `.active(bool)`, `.visible(bool)`,
+`.bordered(bool)`, `.on_change(|text, host| ...)`, and `.on_submit(|text, host| ...)`.
+`max_length` counts UTF-16 code units, following vanilla `EditBox.setMaxLength` and
+`EditBox.insertText`. An emoji represented by a surrogate pair needs two units.
+
+The engine owns the `EditBox` layout, horizontal scroll, cursor, selection, and blink state
+locally—mods never round-trip layout records or forward screen input hooks manually. Focused
+mounted text fields support:
+
+- **IME composition and commit**: enabling OS input methods while focused so preedit and committed
+  text land directly in the field (and block screen hotkeys like `E` while focused).
+- **Double-click and drag selection**: double-clicking selects the word under the cursor using
+  vanilla's 250 ms same-screen same-button `MouseHandler` rule, and dragging extends the selection.
+- **Standard editing and clipboard shortcuts**: arrow/Home/End navigation, word movement, Shift
+  selection, Backspace/Delete, and Ctrl/Cmd + A/C/V/X.
+- **Controller keyboard**: edits go to the focused mounted field. On Chat, completion and
+  suggestion/history navigation are available only when the native chat editor owns the keyboard.
+
+### Custom widgets
+
+Implement [`ScreenWidget`] for controls beyond vanilla buttons and text fields and mount them with
+`event.widgets.add_widget(Box::new(...))`. Implement `bounds(&self) -> [f32; 4]` and override only
+the callbacks you need (`visible`, `active`, `render`, `mouse_clicked`, `mouse_released`,
+`mouse_dragged`, `mouse_scrolled`, `key_pressed`, `key_released`, `char_typed`, `captures_input`,
+`set_focused`). Every input callback defaults to `false` (unhandled). A pointer press goes only
+to the first hit child; if that child declines it, focus stays where it was. Return `true` from
+`captures_input()` when a focused custom
+widget consumes typing so screen hotkeys yield to it and IME stays enabled. A panic inside a
+mounted widget callback disables that mod's widget callbacks for the session and reports an error
+naming the mod without breaking other widgets or the screen.
+
+### Opening a mod screen and synchronous transitions
+
+`ClientHost::mod_screen_open(mod_id)` follows vanilla's `Gui.setScreen` and NeoForge's
+`ScreenEvent.Opening` / `ScreenEvent.Closing`: it can replace any open vanilla screen, title
+screen, overlay (book, sign editor, dialog, or prompt), or another mod's screen. Once hooks allow
+the transition, the engine runs the replaced screen's close cleanup (closing container or creative
+menus and clearing any overlay), switches to `Screen::Mod` owned by `mod_id`, and runs
+`screen_init_post`. It returns `false` when cancelled or redirected by `screen_opening`, while a
+world or connection is loading, or without a client window.
+
+The Mods screen's **Config** button opens your screen the same way when you register a config screen factory
+([settings](../mod-settings.md#your-own-config-screen)); closing it then returns to the Mods screen.
+
+Widget callbacks (`Button` `on_press`, `TextField` `on_change` / `on_submit`, and `ScreenWidget`
+input handlers) receive `&mut dyn ClientHost` and execute screen transitions synchronously: calling
+`host.close_screen()`, `host.mod_screen_close(id)`, or `host.mod_screen_open(next_id)` transitions
+immediately, matching `Button.onPress` calling `Gui.setScreen`. If a callback switches or closes
+the screen, the engine discards the previous screen's mounted widgets once the callback returns.
+
+A dialog moving to its waiting screen or Back from a warning to a live dialog also proposes a
+screen replacement, even though both receivers have the id `dialog`. If `screen_opening` cancels,
+the current dialog's widgets and focus remain; neither `screen_closing` nor a replacement
+`screen_init_post` fires.
+
+When the server closes a container (`ClientboundContainerClosePacket`) and no screen follows,
+`screen_opening` doesn't fire and the close can't be cancelled; `screen_closing` still receives
+the container screen. When the close opens the title or the death screen instead,
+`screen_opening` fires for that screen.
+
+## Screen input Pre and Post hooks
+
+Screen mouse, keyboard, character, and preedit hooks match NeoForge's `ScreenEvent.*` Pre/Post
+contract on the **receiving screen**:
+
+- **Receiving screen**: the engine snapshots the open screen at Pre time (including
+  `event.screen.mod_screen` when a mod screen is open) and passes that same `ScreenView` to the
+  matching Post hook, even if handling closed the screen or opened another mod's screen. Read
+  `event.screen.mod_screen` in screen Post hooks rather than `host.mod_screen()`, which always
+  reports the screen currently open at the moment it is called. A dialog, prompt, book, lectern,
+  or sign editor in front of another screen is itself the receiver.
+- **Focused text-box rewrites (`screen_char_typed_pre.field`)**: `event.field` is `Some` for
+  vanilla edit boxes and for focused mounted built-in `TextField`s (whose edits and `on_change`
+  callback stay in sync), and `None` for custom `ScreenWidget`s (which own their own state).
+- **Double-click**: `screen_mouse_button_pressed_pre` and `screen_mouse_button_pressed_post` carry
+  `event.double_click`, following vanilla `MouseHandler`'s 250 ms same-screen same-button rule.
+- **Mouse press and release Post (`collect`, non-cancellable)**:
+  `screen_mouse_button_pressed_post` and `screen_mouse_button_released_post` run after mounted
+  widgets and the screen ran, whenever Pre did not cancel. `event.was_click_handled` and
+  `event.was_release_handled` are the original answer, even if an earlier listener forced a
+  different result. Set `*event.result` to `TriState::True` or `TriState::False` to force handled
+  or unhandled; `TriState::Default` uses the original answer. The press Post receives Pre's
+  `double_click` bit. The final press result determines whether it enters double-click history.
+- **Key press and release Post (unhandled-only, cancellable)**:
+  `screen_key_pressed_post` and `screen_key_released_post` fire on the receiving screen only when
+  neither mounted widgets nor the screen handled the key. Set `event.cancelled = true` (or return
+  `Flow::Cancel`) to mark the key handled so the game's key bindings skip it. A mod browser search
+  box can decline a key; the container then handles its raw bindings, including rebound inventory
+  close. A handled close or sort does not fire Post; an unhandled slot swap, pick or drop has
+  already happened by Post. A mapping reached after Post cannot dispatch a second sort. Cancel Pre
+  to prevent a slot action. Window releases, `sunrise-ctl key … up`, and the release phase of
+  `key … tap` all deliver release Pre and, if unhandled, Post.
+  - Cancelling physical release **Pre** skips the screen and Post, but still clears the device
+    key and runs mapped keyboard release cleanup.
+  - Cancelling socket release **Pre** skips the screen, Post, and the socket's normal key-up
+    handling. A held mapping can stay down.
+  - Cancelling unhandled release **Post** skips normal mapped release on either route, after the
+    screen declined the event. It does not undo device tracking. Do not cancel a release merely
+    to bypass the screen after allowing the mapped press.
+- **Unhandled-only notices (non-cancellable)**:
+  `screen_mouse_dragged_post`, `screen_mouse_scrolled_post`, `screen_char_typed_post`, and
+  `screen_preedit_post` fire on the receiving screen only when neither mounted widgets nor the
+  screen handled the input, and cannot cancel (`screen_char_typed_post` returns `()`). Printable
+  window text without a physical key and unhandled `sunrise-ctl type` text use the same character
+  hooks. Controller keyboard edits go to the focused child without emitting physical input hooks. A built-in
+  `TextField` can consume preedit; a custom `ScreenWidget` cannot, even when its `captures_input()`
+  returns `true`. A custom editor can observe the unhandled composition in `screen_preedit_post`
+  and receives committed characters through `char_typed`.
+
+## Quit Game
+
+`ClientHost::request_client_quit()` asks the local client to exit, even on the title screen with no
+world open. It takes a shared host reference. Unlike `close_screen()` or `disconnect()`, it quits
+the application rather than just closing the screen or leaving the world. The request does not save,
+disconnect, or call shutdown listeners during the hook. After dispatch, the client follows Quit
+Game: it disconnects normally and waits for any integrated server to save and release the world lock.
+Shutdown failures use the game's normal error reporting.
+
+The method returns `true` when the request is recorded, not when the client successfully shuts down.
+It returns `false` if the host has no live client or if a quit is already pending or underway.
+For example, to let the player press Q on the title screen while this mod is loaded:
+
+```rust
+{{#include ../../../examples/src/title_quit.rs:title_quit}}
+```
 
 ## Labels: wrapped text without a widget
 
-A label is text laid out in a box: measured, wrapped and placed, and nothing else. Call
-`DrawContext::text_lines` from a drawing hook with the component, the box's width, an alignment and the
-scale the label is drawn at, and draw the lines it answers with where it says:
+A label wraps and places a styled component without registering a widget. Call
+[`GuiCanvas::text_with_word_wrap`](gui-paint.md#drawing-directly-with-a-canvas) to lay it out and
+paint it in one operation, inside the current pose and scissor:
 
 ```rust
-// From a menu screen draw callback, gui_render_post or another drawing hook.
-let scale = 2.0;
-let lines = draw.text_lines(&label, 120.0, TextAlign::Centre, scale)?;
-let mut draws = Vec::with_capacity(lines.lines.len() + 2);
-draws.push(GuiDraw::Push(vec![PoseOp::Scale(scale, scale)]));
-for line in &lines.lines {
-    draws.push(GuiDraw::Text {
-        text: line.text.clone(),
-        x: (x + line.at[0] / scale) as i32,
-        y: (y + line.at[1] / scale) as i32,
-        color: 0xFFFF_FFFF,
-        shadow: false,
-    });
-}
-draws.push(GuiDraw::Pop);
-draw.gui_paint(&draws)?;
-// lines.width and lines.height size the box you reserved for it.
+{{#include ../../../examples/src/client_rendering.rs:scaled_text_lines}}
 ```
 
-The layout is measured unscaled and answered scaled: the text wraps at `120 / scale` GUI pixels, and
-every dimension and position `text_lines` answers — each line's `at` and `width`, the block's `width`
-and `height` — is in scaled GUI pixels, which is why the lines are drawn inside the same
-`PoseOp::Scale`. The positions are already post-scale coordinates, whereas coordinates inside the
-scale pose are unscaled, so the example divides each line's `at` by `scale` before drawing. A `scale` of one is the text at its own size.
+The width is in label-local GUI pixels after scaling, so the text wraps at `max_width / scale`.
+Wrapping follows `Font.split`: fitting spaces break lines, overlong words break at a character,
+and newline starts another line, including an empty line after a trailing `\n`. A width below
+one unscaled pixel still wraps at one pixel. Styles, legacy formatting, inline sprites and player
+heads are preserved. A centred line sits at `wrap_width / 2 - floor(line_width / 2)` before
+scaling, as in vanilla's `TextAlignment.CENTER.calculateLeft`.
 
-Wrapping is vanilla's: a line breaks at a space that fits, a single word wider than the box is broken at
-a character rather than dropped, and an explicit `\n` starts a new line, so a trailing `\n` leaves an
-empty last line. A width below one pixel still wraps, at one pixel, as `Font.split` does: too narrow a
-box gives one character a line rather than none, and one character alone can still make a line wider
-than the box. Leading spaces are characters like any other and stay in the line.
-
-Each line keeps its styles, and its legacy `§` codes are applied to those styles and dropped, so a line
-drawn alone draws exactly what it measured: a `§r` goes back to the style its run carried, so right
-after a break it restores the tail run's carried style (a bold run stays bold). Draw the line through `GuiDraw::Text`; `DrawContext::text` draws plain
-characters only. A centred line sits at `wrapping width / 2 - floor(line width / 2)`, as vanilla's
-`TextAlignment.CENTER.calculateLeft` floors the half line width. `height` is the last line's `at[1]`
-plus one line height, so a scroll container sizes its content from it, and an empty component has no
-line at all.
-
-It refuses, answering no line at all, a `TextLinesRefusal` naming why: a width that is not finite (or
-that dividing by `scale` overflows), a `scale` that is not finite or is zero or less, text that wraps
-into more than 512 lines, or lines holding more than 8192 characters together. This is in-process
-layout, so the serialization depth limit does not apply. Inline sprites and player heads remain
-objects in the returned lines, with their fallbacks.
+Use [`ClientHost::visit_text_lines`](styled-text-measurements.md) to measure or inspect lines
+outside drawing. Both calls return the widest line and the last line's offset plus one line height
+(or zero for empty text). A non-finite width, an overflowing `max_width / scale`, or a non-positive
+or non-finite scale refuses the layout. There is no separate limit on the number of lines or
+characters.
 
 ## An item or a model turned in 3D
 
@@ -417,12 +592,91 @@ draw.model_3d(Gui3dSubject::Model(self.mirror), Gui3dView::new([120.0, 60.0], 40
 - The view is orthographic. Both subjects have a depth of their own: a draw never intersects
   what the screen drew before or after it, and later drawing covers it in call order. An item's
   faces meet each other by depth, as a model's do, and its enchantment glint follows them. The
-  OptiFine CIT glint layers of a stack are not drawn on this path yet
-  ([#3555](https://github.com/sunrise-org/sunrise/issues/3555)). There is no z input. `push_clip` cuts both
-  as it cuts `fill`.
+  OptiFine CIT glint layers of a stack are not drawn on this path. There is no z input. Use
+  [`DrawContext::with_scissor`](#clipping-what-a-screen-draws) to clip either subject.
 - In an available draw context, a `minecraft:air` stack is a no-op (`Ok(())`) even with an
   invalid view or unreadable component overrides, matching `GuiGraphicsExtractor.item`. Refusals draw nothing: `Gui3dError::Unavailable` (no game, or a
   server), `NotFinite` (a non-finite view value or transformed corner, or a non-positive size),
   `UnknownItem` (an unknown key or an item missing from the current registry), `InvalidStack`
   (component overrides that cannot be converted for drawing), and `Model(ModelError)` (a stale
   or unknown handle).
+
+## Room beside a container
+
+`Hooks::screen_room` lets a client mod reserve room for a panel to the left or right of an open container.
+This is a layout query, not a drawing or cancellation hook. It does not add recipe properties,
+slot membership or ghost-placement APIs.
+
+```rust,ignore
+fn screen_room(&self, _: &dyn ClientHost, event: &mut ScreenRoomEvent<'_>) {
+    let panel_width_with_gap = 149.0;
+    event.right = event.right.max(panel_width_with_gap);
+    // A panel on the other side writes `event.left` the same way.
+}
+```
+
+Import `ClientHost`, `Hooks` and `ScreenRoomEvent` from `mod_api` and implement the method in your subscribed `Hooks` implementation. Keep the query pure and cheap: do not draw, mutate game state or do expensive work here.
+
+Each side's answer starts at zero. Later listeners see earlier answers and keep the maximum, not a sum. Panels asking for 80 and 149 GUI pixels reserve 149 pixels together, not 229. They share the reservation and must coordinate their own contents; the engine does not stack panels or assign per-mod offsets.
+
+The query's `event.screen.rect` is the **pre-reservation** container rectangle. Later drawing and input `ScreenView` values expose the shifted rectangle. Do not subtract the shift yourself from those later views.
+
+Left room is measured from the open recipe book's left edge, including its selected category tab, and right room from the window's right edge. When the left room, the book, the window and the right room all fit, the window and book move right by half the left room less half the right room, each half rounded down. Slots, hit boxes and effect panels follow in the same frame. Otherwise, or when a mod menu's recipe book toggle would leave the screen, nothing moves on either side. A panel should check the later window rectangle (and the book's left edge, for a left panel) plus its required room against the viewport before drawing there. A request is not a guarantee of space.
+
+A negative or non-finite final answer counts as zero. Zero and absent listeners preserve the original layout. A finite request too large to fit also preserves it. The hook runs for the inventory, containers and custom menus, but not Creative, Merchant or Beacon screens, or a narrow screen where the recipe book covers the menu.
+
+The answer is queried at most once per frame and screen and reused by every layout consumer that frame. A recursive layout query during dispatch sees zero, avoiding recursive dispatch. The next frame queries again. A geometry-changing answer rebuilds the layout that frame; unchanged geometry reuses the existing build, even if the numerical answer changed without affecting the resulting layout.
+
+## Clipping what a screen draws
+
+A scrolling list or a viewport into a larger page shows only the part inside a box.
+`DrawContext::with_scissor(rect, &mut |clipped| { ... })` cuts draws made through `clipped` to
+`[x, y, w, h]` in GUI pixels, like vanilla's `GuiGraphics.enableScissor` and `disableScissor`
+around the callback. The full drawing context is available inside, including widgets, scenes,
+items and text. The callback returns `()` and the clip does not roll back drawing; handle errors
+from draw methods inside the callback.
+
+```rust,ignore
+fn render_gui_post(&self, _: &dyn ClientHost, event: &mut RenderGuiPostEvent<'_>) {
+    let [x, y, w, h] = self.list_box;
+    let _ = event.draw.with_scissor([x, y, w, h], &mut |clipped| {
+        for (row, line) in self.lines.iter().enumerate() {
+            let top = y + row as f32 * 12.0 - self.scroll;
+            clipped.text(line, [x + 2.0, top], 0xFFFF_FFFF, false);
+        }
+    });
+}
+```
+
+- **Nesting.** An inner clip is intersected with the outer clip, so it never shows more than that
+  one. A nonpositive width or height, or a disjoint inner clip, clips everything. The enclosing
+  clip is restored on return or unwind, before any subsequent draws.
+- **Depth.** Scenes keep their own box too. Cutting an item or scene preserves depth: a cut face
+  still draws in front of or behind its neighbours as it did uncut.
+- **Refusals.** `GuiClipRefusal::NotFinite` (a coordinate, size or computed endpoint is NaN or
+  infinite) or `Unavailable` (no scissor drawing surface) leaves the enclosing clip as it was and
+  does not call the callback.
+
+For a fallible, transactional group of GUI primitives [on a canvas](gui-paint.md#drawing-directly-with-a-canvas),
+pass `Some(rect)` to `canvas.scope`. That scissor uses the child scope's pose at entry; later
+pose changes do not move it.
+
+## Hover and pointer grab
+
+A mod screen hears every pointer move through `screen_mouse_moved_pre` (vanilla's
+`Screen.mouseMoved`; it fires before `screen_mouse_dragged_pre` when a button is held). For a
+screen that wants relative motion with the cursor held (a virtual machine's display, a 3D
+preview), call `host.set_pointer_grab(true)` from your click hook and read
+`screen_pointer_motion`; `host.pointer_grabbed()` tells whether you hold it, and
+`host.set_pointer_grab(false)` releases it. The grab also ends when the screen closes, the window
+loses focus or your mod unloads, and refocusing does not bring it back: grab again. Escape reaches
+your screen like any key, so handle it yourself. The rustdoc of the hooks and `set_pointer_grab` has the contract.
+
+## Dropped files
+
+`screen_files_dropped(screen, paths)` tells a mod that files were dropped on the window while a
+screen is open, a vanilla screen or yours (vanilla's `Screen.onFilesDrop`). It fires once per drop
+with every path in the order the operating system gave them; a path that is not valid UTF-8 comes
+through unchanged, so open it as a `Path`. The game reads no file, so read the ones you want
+yourself. The hook only observes: it cannot cancel the drop, and the game's own handling of it (a
+dropped resource pack) still runs. Nothing is sent over the network.

@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Compare fancy cloud exterior/interior faces, nearest-first mesh traversal and the
 cell radius of the Cloud Distance option (independent of the render distance) with 26.3."""
-try:
-    from . import lab, oracle_harness as harness
-except ImportError:
-    import lab, oracle_harness as harness
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, oracle_harness as harness
 
 
 def make_input(build):

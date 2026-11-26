@@ -1,0 +1,18 @@
+ids = [
+    "hook:pickup_xp",
+    "hook:pickup_xp.orb",
+    "hook:pickup_xp.value",
+    "hook:pickup_xp.count",
+    "type:PickupXpEvent.orb",
+    "type:PickupXpEvent.value",
+    "type:PickupXpEvent.count",
+]
+why = "Match NeoForge PlayerXpEvent.PickupXp (getOrb()) and vanilla ExperienceOrb.playerTouch (plus ExperienceOrb.addAdditionalSaveData and ExperienceOrb.readAdditionalSaveData). pickup_xp (bumped from version 1 to 2) previously exposed mutable value and count snapshot fields beside the live orb, documented a 1..=i32::MAX clamp on value while enforcing a count.max(1) floor in guest_orbs, and copied the snapshot back by stale index after dispatch—causing divergence between event fields and direct orb edits across listeners. pickup_xp now passes the live ExperienceOrbRef as its single writable orb state: set_value preserves vanilla's signed int DATA_VALUE semantics (zero and negative values repair nothing and award no XP; surviving orbs persist Value as a signed short), set_count enforces vanilla's ExtraCodecs.POSITIVE_INT (1..=i32::MAX) without a count.max(1) floor or invented count == 0 pre-discard branch, a veto skips only the pickup continuation without rolling back listener writes to the live orb, and pickup executes in vanilla ExperienceOrb.playerTouch order (takeXpDelay = 2, take, Mending/XP for positive value, then decrement count and discard at 0). Orb NBT loading validates Count against ExtraCodecs.POSITIVE_INT (1..=i32::MAX, else 1)."
+migrate = """
+Rebuild listeners of `Hooks::pickup_xp` against version 2.
+- `event.orb` is now an `ExperienceOrbRef` instead of a `u32` entity id; replace raw id reads with `event.orb.entity().id()`.
+- Remove `event.value` and `event.count`: read live state with `event.orb.value(host)?` and `event.orb.count(host)?`, and write live state with `event.orb.set_value(host, new_value)?` and `event.orb.set_count(host, new_count)?`. Later listeners immediately observe earlier live writes through `event.orb`.
+- `event.orb.set_value(host, v)` preserves signed `i32` values (`<= 0` repairs nothing and awards 0 XP, never clamped to 1; saving truncates `Value` to `(short)`).
+- `event.orb.set_count(host, c)` enforces `1..=i32::MAX` (`ExtraCodecs.POSITIVE_INT`) and returns `Err(ExperienceOrbWriteError::InvalidCount)` for `0` or values above `i32::MAX` without mutating the orb; to discard the orb without taking a pickup or setting the 2-tick delay, call `event.orb.entity().kill(host)?`.
+- Returning `Flow::Cancel` skips the pickup continuation (`takeXpDelay` stays 0, no take packet/sound, no Mending/XP award, and no count decrement), but does not undo writes a listener already made through `event.orb`; return `Flow::Cancel` before mutating `event.orb` if you want to leave the orb unchanged.
+"""

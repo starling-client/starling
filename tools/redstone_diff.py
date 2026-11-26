@@ -27,8 +27,8 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / 'tools'))
-import lab  # noqa: E402
+sys.path.insert(0, str(ROOT))
+from tools import lab  # noqa: E402
 
 ORIGIN = (200, 250, 200)
 SPACING = 24
@@ -286,7 +286,7 @@ def clean_blocks(lines):
 # ---- vanilla -----------------------------------------------------------------------------------
 
 def run_vanilla(batch, args, work):
-    import perf_bench as pb
+    from tools import perf_bench as pb
     manifest = pb.vanilla_manifest()
     jars = pb.vanilla_classpath(manifest)
     fabric = pb.runtime.fabric_libraries()

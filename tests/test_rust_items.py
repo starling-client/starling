@@ -3,7 +3,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from rust_items import rust_fn
+from tests.rust_items import rust_fn
 
 
 class RustFnTests(unittest.TestCase):

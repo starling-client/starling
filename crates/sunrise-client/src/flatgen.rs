@@ -7,7 +7,10 @@ use {
     sunrise_core::nbt::Tag,
     sunrise_world::{
         registry::{BlockRegistry, BlockStateId},
-        worldgen::feature::{BasicFeature, FeatureBlocks, FeatureWorld},
+        worldgen::{
+            feature::{BasicFeature, FeatureBlocks, FeatureWorld},
+            generator::FlatSettings,
+        },
     },
 };
 
@@ -68,11 +71,7 @@ impl FeatureWorld for ChunkWorld<'_> {
     }
 }
 impl FlatTerrain {
-    /// The overworld generator of `world_gen_settings` (`data.dimensions`), if it
-    /// is flat. Its layers, as FlatLevelSource places them, and of the features
-    /// its settings decorate the world with, `void_start_platform`. A world that
-    /// places other features or lakes runs on the pipeline instead
-    /// ([`Self::pipeline_settings`]).
+    /// The overworld's layer generator, when its settings decode as flat.
     pub fn from_settings(
         settings: &Tag,
         registry: &BlockRegistry,
@@ -83,33 +82,79 @@ impl FlatTerrain {
             .get("dimensions")?
             .get("minecraft:overworld")?
             .get("generator")?;
-        if crate::save::text(generator.get("type"))?.trim_start_matches("minecraft:") != "flat" {
-            return None;
+        let flat = Self::decode_generator(generator).ok()??;
+        Self::from_decoded(&flat, registry, biomes, shape)
+    }
+
+    /// Decode a dimension stem's generator. Only a flat generator needs this
+    /// codec; invalid flat settings must not fall through to noise generation.
+    pub fn decode_generator(generator: &Tag) -> Result<Option<FlatSettings>, &'static str> {
+        if !matches!(
+            crate::save::text(generator.get("type")).as_deref(),
+            Some("minecraft:flat" | "flat")
+        ) {
+            return Ok(None);
         }
-        let s = generator.get("settings")?;
-        let biome = crate::save::text(s.get("biome")).unwrap_or_else(|| "minecraft:plains".into());
+        let settings = generator
+            .get("settings")
+            .ok_or("missing flat generator settings")?;
+        let layers = decode_layers(settings)
+            .ok_or("invalid flat layers or layer height sum exceeds DimensionType.Y_SIZE (4064)")?;
+        let structure_overrides = match settings.get("structure_overrides") {
+            Some(Tag::List(sets)) => sets
+                .iter()
+                .map(|set| crate::save::text(Some(set)))
+                .collect(),
+            Some(Tag::String(set)) => Some(vec![set.to_string_lossy()]),
+            _ => None,
+        };
+        let flag = |key| crate::save::number(settings.get(key)).is_some_and(|v| v != 0);
+        Ok(Some(FlatSettings {
+            layers,
+            biome: crate::save::text(settings.get("biome"))
+                .unwrap_or_else(|| "minecraft:plains".into()),
+            structure_overrides,
+            features: flag("features"),
+            lakes: flag("lakes"),
+        }))
+    }
+
+    /// The staged pipeline handles biome decoration and structure sets. The
+    /// layer generator already handles the Void preset's platform feature.
+    pub fn uses_pipeline(flat: &FlatSettings) -> bool {
+        flat.lakes
+            || (flat.biome != "minecraft:the_void"
+                && (flat.features
+                    || flat
+                        .structure_overrides
+                        .as_ref()
+                        .is_none_or(|sets| !sets.is_empty())))
+    }
+
+    /// Build the layer-only route from settings checked by `decode_generator`.
+    pub fn from_decoded(
+        flat: &FlatSettings,
+        registry: &BlockRegistry,
+        biomes: &crate::biome::Biomes,
+        shape: LevelShape,
+    ) -> Option<Self> {
         let mut layers = Vec::new();
-        if let Some(Tag::List(list)) = s.get("layers") {
-            for layer in list {
-                let block = crate::save::text(layer.get("block"))?;
-                let height = crate::save::number(layer.get("height")).unwrap_or(0).max(0);
-                let state = registry.default_state(&block)?.0;
-                layers.extend(std::iter::repeat_n(state, height as usize));
-            }
+        for (block, height) in &flat.layers {
+            let state = registry.default_state(block)?.0;
+            layers.extend(std::iter::repeat_n(state, *height as usize));
         }
-        let biome = biomes.id(&biome);
+        let biome = biomes.id(&flat.biome);
         // FlatLevelGeneratorSettings.updateLayers: every layer is Blocks.AIR.
         let void_gen = layers.iter().all(|&id| {
             registry
                 .state(BlockStateId(id))
                 .is_some_and(|s| s.name == "minecraft:air")
         });
-        let flag = |key| crate::save::number(s.get(key)).is_some_and(|v| v != 0);
         let info = biomes.get(biome);
         let void_platform = if decoration_features(
             &info.features,
-            flag("features"),
-            flag("lakes"),
+            flat.features,
+            flat.lakes,
             void_gen,
             info.name == "minecraft:the_void",
         )
@@ -164,14 +209,14 @@ impl FlatTerrain {
         }
         Some(surface)
     }
-    /// The generator of a level a mod opens with the default superflat layers (`Some(layers)`:
-    /// bedrock, two dirt, grass block, over plains) or with air alone (`None`: the void).
-    /// `None` when the registry lacks one of the blocks.
+    /// The generator of a level a mod opens with the default superflat layers (`flat = true`:
+    /// bedrock, two dirt, grass block) or with air alone (`flat = false`: the void), over
+    /// the world's resolved biome id. `None` when the registry lacks one of the blocks.
     pub fn of_layers(
         registry: &BlockRegistry,
-        biomes: &crate::biome::Biomes,
         shape: LevelShape,
         flat: bool,
+        biome: u16,
     ) -> Option<Self> {
         let names: &[&str] = if flat {
             &[
@@ -187,11 +232,6 @@ impl FlatTerrain {
             .iter()
             .map(|name| Some(registry.default_state(name)?.0))
             .collect::<Option<Vec<_>>>()?;
-        let biome = biomes.id(if flat {
-            "minecraft:plains"
-        } else {
-            "minecraft:the_void"
-        });
         let surface = Self::surface(&layers, registry, shape, biome)?;
         Some(Self {
             shape,
@@ -199,57 +239,6 @@ impl FlatTerrain {
             biome,
             surface,
             void_platform: None,
-        })
-    }
-    /// The settings of a superflat overworld that runs on the structure and feature
-    /// pipeline (`FlatLevelSource`): one that lets structure sets generate
-    /// (`createState`: no `structure_overrides` key means every set, `[]` none) or
-    /// that decorates (`features` or `lakes`, `adjustGenerationSettings`). `None` for a
-    /// world with neither, the Void preset's biome (its platform is a feature this
-    /// generator places) or one that is not superflat.
-    pub fn pipeline_settings(
-        settings: &Tag,
-    ) -> Option<sunrise_world::worldgen::generator::FlatSettings> {
-        let generator = settings
-            .get("dimensions")?
-            .get("minecraft:overworld")?
-            .get("generator")?;
-        if crate::save::text(generator.get("type"))?.trim_start_matches("minecraft:") != "flat" {
-            return None;
-        }
-        let s = generator.get("settings")?;
-        let biome = crate::save::text(s.get("biome")).unwrap_or_else(|| "minecraft:plains".into());
-        if biome == "minecraft:the_void" {
-            return None;
-        }
-        let mut layers = Vec::new();
-        if let Some(Tag::List(list)) = s.get("layers") {
-            for layer in list {
-                let block = crate::save::text(layer.get("block"))?;
-                let height = crate::save::number(layer.get("height")).unwrap_or(0).max(0) as i32;
-                layers.push((block, height));
-            }
-        }
-        let structure_overrides = match s.get("structure_overrides") {
-            Some(Tag::List(sets)) => Some(
-                sets.iter()
-                    .filter_map(|set| crate::save::text(Some(set)))
-                    .collect::<Vec<_>>(),
-            ),
-            Some(Tag::String(set)) => Some(vec![set.to_string_lossy()]),
-            _ => None,
-        };
-        let flag = |key| crate::save::number(s.get(key)).is_some_and(|v| v != 0);
-        let decorates = flag("features") || flag("lakes");
-        if structure_overrides.as_ref().is_some_and(Vec::is_empty) && !decorates {
-            return None;
-        }
-        Some(sunrise_world::worldgen::generator::FlatSettings {
-            layers,
-            biome,
-            structure_overrides,
-            features: flag("features"),
-            lakes: flag("lakes"),
         })
     }
     /// FlatLevelSource.getSpawnHeight: the top of the layers.
@@ -260,21 +249,28 @@ impl FlatTerrain {
 /// DimensionType.Y_SIZE: the most layers FlatLevelGeneratorSettings takes.
 const Y_SIZE: i64 = 4064;
 
-/// Check layer block identifiers and heights before `from_settings` expands them.
+/// Check layer block identifiers and heights before the terrain expands them.
 pub(crate) fn valid_layer_heights(settings: &Tag) -> bool {
+    decode_layers(settings).is_some()
+}
+
+fn decode_layers(settings: &Tag) -> Option<Vec<(String, i32)>> {
     let Some(Tag::List(layers)) = settings.get("layers") else {
-        return false;
+        return None;
     };
+    let mut total = 0i64;
     layers
         .iter()
-        .try_fold(0i64, |total, layer| {
-            sunrise_core::identifier::Identifier::parse(&crate::save::text(layer.get("block"))?)
-                .ok()?;
+        .map(|layer| {
+            let block = sunrise_core::identifier::Identifier::parse(&crate::save::text(
+                layer.get("block"),
+            )?)
+            .ok()?;
             let height = crate::save::number(layer.get("height"))?;
-            let total = total.checked_add(height)?;
-            (height >= 0 && total <= Y_SIZE).then_some(total)
+            total = total.checked_add(height)?;
+            (height >= 0 && total <= Y_SIZE).then(|| (block.to_string(), height as i32))
         })
-        .is_some()
+        .collect()
 }
 
 /// FlatLevelGeneratorSettings.CODEC reading a dedicated server's
@@ -384,6 +380,9 @@ pub fn settings_from_json(
 impl ChunkGenerator for FlatTerrain {
     type Worker = ();
     fn worker(&self) {}
+    fn spawn_height(&self) -> i32 {
+        FlatTerrain::spawn_height(self)
+    }
     /// FlatLevelSource's proto is already its decorated column. Keep a copy
     /// for lighting a finished neighbour outside the kept area, just as the
     /// vanilla pipeline does for FEATURES neighbours.
@@ -393,7 +392,12 @@ impl ChunkGenerator for FlatTerrain {
     fn lod_surface(&self, _: &mut (), _: i32, _: i32) -> Option<crate::columns::Surface> {
         self.surface
     }
-    fn proto(&self, _: &mut (), cx: i32, cz: i32) -> crate::streaming::Proto {
+    fn proto(
+        &self,
+        _: &mut (),
+        cx: i32,
+        cz: i32,
+    ) -> std::result::Result<crate::streaming::Proto, String> {
         let mut chunk = Chunk::with_layout(cx, cz, self.shape.column());
         for s in &mut chunk.sections {
             std::sync::Arc::make_mut(s).biomes = sunrise_core::paletted::PalettedContainer::new(
@@ -430,7 +434,7 @@ impl ChunkGenerator for FlatTerrain {
         for s in &mut chunk.sections {
             std::sync::Arc::make_mut(s).compact();
         }
-        Box::new(chunk)
+        Ok(Box::new(chunk))
     }
     /// FlatLevelSource.spawnOriginalMobs is empty: no generation-time spawns.
     fn finish(&self, proto: crate::streaming::Proto) -> Chunk {
@@ -528,7 +532,7 @@ mod tests {
             .unwrap()
         };
         let block = |terrain: &FlatTerrain, [x, y, z]: [i32; 3]| {
-            let chunk = terrain.finish(terrain.proto(&mut (), x >> 4, z >> 4));
+            let chunk = terrain.finish(terrain.proto(&mut (), x >> 4, z >> 4).unwrap());
             registry.state(chunk.block(x, y, z)).unwrap().name.clone()
         };
         // The Void preset (flat_level_generator_preset/the_void): the_void's
@@ -632,15 +636,6 @@ mod tests {
     /// `FlatLevelSource.createState`: the settings a flat world's structure sets run with.
     #[test]
     fn a_flat_world_names_the_structure_sets_that_may_generate() {
-        let world = |generator: Tag| {
-            Tag::compound([(
-                "dimensions",
-                Tag::compound([(
-                    "minecraft:overworld",
-                    Tag::compound([("generator", generator)]),
-                )]),
-            )])
-        };
         let flat = |extra: Vec<(&str, Tag)>, biome: &str| {
             let mut settings = vec![
                 ("biome", Tag::String(biome.into())),
@@ -653,57 +648,58 @@ mod tests {
                 ),
             ];
             settings.extend(extra);
-            world(Tag::compound([
+            Tag::compound([
                 ("type", Tag::String("minecraft:flat".into())),
                 ("settings", Tag::compound(settings)),
-            ]))
+            ])
         };
         // No key: every set. A list: those. An empty list: none. The void and a noise world: none.
-        let all = FlatTerrain::pipeline_settings(&flat(vec![], "minecraft:plains")).unwrap();
+        let decode = |settings| FlatTerrain::decode_generator(&settings).unwrap().unwrap();
+        let all = decode(flat(vec![], "minecraft:plains"));
         assert_eq!(all.structure_overrides, None);
         assert_eq!(all.layers, [("minecraft:stone".to_owned(), 3)]);
-        let some = FlatTerrain::pipeline_settings(&flat(
+        let some = decode(flat(
             vec![(
                 "structure_overrides",
                 Tag::List(vec![Tag::String("minecraft:villages".into())]),
             )],
             "minecraft:desert",
-        ))
-        .unwrap();
+        ));
         assert_eq!(
             some.structure_overrides,
             Some(vec!["minecraft:villages".to_owned()])
         );
         assert_eq!(some.biome, "minecraft:desert");
-        assert!(
-            FlatTerrain::pipeline_settings(&flat(
-                vec![("structure_overrides", Tag::List(vec![]))],
-                "minecraft:plains"
-            ))
-            .is_none()
-        );
+        assert!(!FlatTerrain::uses_pipeline(&decode(flat(
+            vec![("structure_overrides", Tag::List(vec![]))],
+            "minecraft:plains"
+        ))));
         // No structure set, but features or lakes to place: the pipeline, with no set.
         for key in ["features", "lakes"] {
-            let decorated = FlatTerrain::pipeline_settings(&flat(
+            let decorated = decode(flat(
                 vec![
                     ("structure_overrides", Tag::List(vec![])),
                     (key, Tag::Byte(1)),
                 ],
                 "minecraft:plains",
-            ))
-            .unwrap();
+            ));
+            assert!(FlatTerrain::uses_pipeline(&decorated));
             assert_eq!(decorated.structure_overrides, Some(vec![]), "{key}");
             assert_eq!(
                 (decorated.features, decorated.lakes),
                 (key == "features", key == "lakes")
             );
         }
-        assert!(FlatTerrain::pipeline_settings(&flat(vec![], "minecraft:the_void")).is_none());
+        assert!(!FlatTerrain::uses_pipeline(&decode(flat(
+            vec![],
+            "minecraft:the_void"
+        ))));
         assert!(
-            FlatTerrain::pipeline_settings(&world(Tag::compound([(
+            FlatTerrain::decode_generator(&Tag::compound([(
                 "type",
                 Tag::String("minecraft:noise".into())
-            )])))
+            )]))
+            .unwrap()
             .is_none()
         );
     }

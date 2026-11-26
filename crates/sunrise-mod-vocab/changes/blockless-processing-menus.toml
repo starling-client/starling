@@ -1,0 +1,14 @@
+ids = [
+    "type:OpenMenuError.OwnedSlotsWithResults",
+    "type:OpenMenuError.OwnedSlotsWithCrafting",
+    "type:MenuSlotChange",
+    "handle:MenuSlotChange::new",
+    "type:MenuSlotWrite",
+    "handle:MenuSlotWrite::new",
+    "hook:menu_slot_changed",
+    "type:MenuSlotChangedEvent",
+    "method:MenuPart::menu_slot_changed",
+    "type:HookId",
+]
+why = "Blockless owned-slot menus can now declare take-only results (for crafting-table-like and combiner-like processing menus without a block entity) while still refusing crafting grids; OpenMenuError::OwnedSlotsWithResults is renamed to OwnedSlotsWithCrafting. A new server-side MenuPart::menu_slot_changed hook (vanilla Container.setItem / AbstractContainerMenu.slotsChanged) delivers non-result container slot changes from clicks, menu_clicked overrides, menu_quick_move, transactional ItemPlace / BlockEntityRef writes, and external container writes (hoppers, commands, merge_data), batched in ascending menu slot order per click step or committed transaction, and applies validated MenuSlotWrite outputs atomically without re-firing. HookId gains its MenuSlotChanged variant."
+migrate = "Replace OpenMenuError::OwnedSlotsWithResults with OpenMenuError::OwnedSlotsWithCrafting. Implement MenuPart::menu_slot_changed on the menu type to compute result slots via event.outputs when non-result container slots change. A mod that matches HookId exhaustively adds the new arm; one with a wildcard arm compiles unchanged."

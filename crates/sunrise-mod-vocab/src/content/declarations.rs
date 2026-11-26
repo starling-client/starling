@@ -51,24 +51,28 @@ impl RuleSchema<'_> {
     /// Validate all declarations without installing any of them.
     pub fn validate(
         &self,
-        categories: &[String],
-        rules: &[GameRuleDecl],
+        categories: &[(&str, String)],
+        rules: &[(&str, GameRuleDecl)],
     ) -> Result<Vec<u32>, Vec<String>> {
         let mut slots = Vec::with_capacity(rules.len());
-        let mut names = std::collections::HashSet::new();
+        let mut seen_categories = std::collections::HashSet::with_capacity(categories.len());
+        let mut names = std::collections::HashSet::with_capacity(rules.len());
         let mut errors = Vec::new();
-        for rule in rules {
-            let owner = rule
-                .name
-                .split_once(':')
-                .map_or("unknown", |(owner, _)| owner);
-            if (self.position)(&rule.name).is_some() || !names.insert(&rule.name) {
+        for (owner, category) in categories {
+            if (self.category)(category) || !seen_categories.insert(category.as_str()) {
+                errors.push(format!("mod {owner}: Duplicate({category:?})"));
+            }
+        }
+        for (owner, rule) in rules {
+            if (self.position)(&rule.name).is_some() || !names.insert(rule.name.as_str()) {
                 errors.push(format!("mod {owner}: Duplicate({:?})", rule.name));
             } else if let GameRuleDefault::Int { default, min, max } = rule.default
                 && !(min..=max).contains(&default)
             {
                 errors.push(format!("mod {owner}: InvalidRange({:?})", rule.name));
-            } else if !(self.category)(&rule.category) && !categories.contains(&rule.category) {
+            } else if !(self.category)(&rule.category)
+                && !seen_categories.contains(rule.category.as_str())
+            {
                 errors.push(format!(
                     "mod {owner}: UnknownCategory {{ rule: {:?}, category: {:?} }}",
                     rule.name, rule.category
@@ -112,36 +116,66 @@ mod tests {
         };
         assert_eq!(
             schema.validate(
-                &["later:machines".into()],
                 &[
-                    rule("first:active", "later:machines"),
-                    rule("first:drops", "minecraft:drops"),
+                    ("later", "later:machines".into()),
+                    ("first", "minecraft:custom_cat".into()),
+                ],
+                &[
+                    ("first", rule("other:active", "later:machines")),
+                    ("first", rule("first:drops", "minecraft:drops")),
+                    (
+                        "first",
+                        rule("minecraft:custom_rule", "minecraft:custom_cat")
+                    ),
                 ]
             ),
-            Ok(vec![17, 18])
+            Ok(vec![17, 18, 19])
         );
     }
     #[test]
     fn schema_reports_all_refusals_without_partial_slots() {
         let schema = RuleSchema {
-            category: &|_| false,
-            position: &|id| (id == "game:existing").then_some(0),
+            category: &|id| id == "minecraft:drops",
+            position: &|id| (id == "minecraft:keep_inventory").then_some(0),
             rule_count: 1,
         };
         let errors = schema
             .validate(
-                &[],
                 &[
-                    rule("game:existing", "missing:category"),
-                    rule("first:bad", "missing:category"),
-                    rule("first:bad", "missing:category"),
+                    ("mod_a", "minecraft:drops".into()),
+                    ("mod_a", "shared:cat".into()),
+                    ("mod_b", "shared:cat".into()),
+                ],
+                &[
+                    ("mod_c", rule("minecraft:keep_inventory", "minecraft:drops")),
+                    ("mod_d", rule("foreign:bad", "missing:category")),
+                    ("mod_e", rule("foreign:bad", "shared:cat")),
+                    (
+                        "mod_f",
+                        GameRuleDecl {
+                            name: "other:bad_int".into(),
+                            category: "shared:cat".into(),
+                            default: GameRuleDefault::Int {
+                                default: 5,
+                                min: 0,
+                                max: 3,
+                            },
+                        },
+                    ),
                 ],
             )
             .unwrap_err();
-        assert_eq!(errors.len(), 3);
-        assert!(errors[0].contains("Duplicate"));
-        assert!(errors[1].contains("UnknownCategory") && errors[1].contains("mod first"));
-        assert!(errors[2].contains("Duplicate"));
+        assert_eq!(errors.len(), 6);
+        assert_eq!(errors[0], "mod mod_a: Duplicate(\"minecraft:drops\")");
+        assert_eq!(errors[1], "mod mod_b: Duplicate(\"shared:cat\")");
+        assert_eq!(
+            errors[2],
+            "mod mod_c: Duplicate(\"minecraft:keep_inventory\")"
+        );
+        assert!(errors[3].contains("UnknownCategory") && errors[3].contains("mod mod_d"));
+        assert!(!errors[3].contains("mod foreign"));
+        assert_eq!(errors[4], "mod mod_e: Duplicate(\"foreign:bad\")");
+        assert_eq!(errors[5], "mod mod_f: InvalidRange(\"other:bad_int\")");
     }
 }
 

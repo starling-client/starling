@@ -82,7 +82,7 @@ class AreaTests(unittest.TestCase):
             "crates/sunrise-world/src/level/redstone.rs": "blocks",
             "crates/sunrise-client/src/title/worlds.rs": "ui",
             "crates/sunrise-client-render/src/options_ui.rs": "ui",
-            "docs/api/shaders.md": "website",
+            "docs/api/launch.md": "website",
             "roadmap/roadmap.toml": "website",
         }
         for path, area in cases.items():

@@ -25,6 +25,7 @@ fn handle(id: &str, signature: &str, refs: &[&str]) -> Function {
             signature: signature.into(),
             impl_generics: String::new(),
             refs: strings(refs),
+            behaviour_versions: Default::default(),
         },
     )
 }
@@ -631,10 +632,6 @@ fn a_used_hook_whose_version_changed_is_named() {
             let mut surface = base().build();
             surface.schema = 2;
             let old_surface = surface.to_json();
-            assert!(matches!(
-                Surface::read(old_surface.as_bytes()),
-                Err(crate::ReadError::Schema(2))
-            ));
             table.pin_hook_versions(old_surface.as_bytes()).unwrap();
         }
         table
@@ -2700,6 +2697,7 @@ fn legacy_tables_match_either_hash_of_an_unchanged_method_and_function() {
             signature: "fn get(&self) -> u8".into(),
             impl_generics: "<T: Copy>".into(),
             refs: strings(&["type:Value"]),
+            behaviour_versions: Default::default(),
         },
     );
     let assemble = |method, functions| {

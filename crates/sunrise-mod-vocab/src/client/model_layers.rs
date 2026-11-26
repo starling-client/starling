@@ -11,13 +11,17 @@
 //! bakes one of them or a vanilla layer (`EntityModelSet.bakeLayer`).
 
 use crate::RegisterLayerDefinitionsEvent;
+use std::borrow::Borrow;
+use std::collections::HashMap;
+use std::hash::Hash;
+use std::ops::Range;
 use sunrise_core::geometry::Direction;
 
 /// `CubeDeformation`: how far a box grows past its size on each side, in
 /// texels, with its texture unchanged: a hat or an armour layer over a head.
 #[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, Default, PartialEq)]
 #[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
+// no wire: local client model box deformation, baked in-process.
 pub struct CubeDeformation {
     /// Growth on the x axis, in texels.
     pub grow_x: f32,
@@ -61,7 +65,7 @@ impl CubeDeformation {
 /// then y, then x, as `ModelPart.translateAndRotate` turns it) and its scale.
 #[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq)]
 #[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
+// no wire: local client model part pose, used in-process.
 pub struct PartPose {
     /// Position on the x axis, in texels.
     pub x: f32,
@@ -149,7 +153,7 @@ impl PartPose {
 /// One box of a part (`CubeDefinition`), as a [`CubeListBuilder`] adds it.
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
 #[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
+// no wire: local client model cube definition, baked in-process.
 pub struct CubeDefinition {
     /// Its corner at the least x, y and z, in texels from the part's pivot.
     pub origin: [f32; 3],
@@ -368,6 +372,7 @@ struct PartNode {
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
 #[serde(try_from = "MeshDefinitionData")]
 // exhaustive: private fields; use the builder to create the tree
+// no wire: local client model mesh definition, serialized via JSON when needed.
 pub struct MeshDefinition {
     parts: Vec<PartNode>,
 }
@@ -473,7 +478,7 @@ impl MeshDefinition {
 /// `LayerDefinition`: a mesh and the size of the texture its boxes are on.
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
 #[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
+// no wire: local client model layer definition, baked at startup.
 pub struct LayerDefinition {
     /// The model mesh to bake.
     pub mesh: MeshDefinition,
@@ -502,16 +507,14 @@ impl LayerDefinition {
 
 impl RegisterLayerDefinitionsEvent<'_> {
     /// Register a supplier for a model layer ID such as `mymod:golem#main`.
-    /// Use `<namespace>:<path>#<layer>` with both delimiters. The namespace and path follow
-    /// vanilla `Identifier` rules (including empty components), and the layer can be any string,
-    /// including empty. When multiple registrations share an ID, the last supplier wins
-    /// and overwritten suppliers never run (matching NeoForge's
-    /// `ClientHooks.registerLayerDefinition`). Exact collisions with vanilla layer keys in
-    /// `entity-models.json` fail client startup (matching vanilla's
-    /// `LayerDefinitions.createRoots`). Malformed IDs and registrations from a phase-refused
-    /// listener never call their supplier. An accepted supplier runs once at client startup to
-    /// build the frozen definition, not when the layer is baked or resources are reloaded.
-    /// Capture owned data in the supplier.
+    /// Write the model `Identifier` before the first `#` in its full `namespace:path` form,
+    /// as in `ModelLayerLocation`. Either half may be empty. The suffix after `#` is unrestricted.
+    /// Duplicate mod registrations for an ID overwrite earlier suppliers (last-writer-wins)
+    /// before freeze. Malformed IDs, collisions with existing vanilla layer definitions, or an
+    /// unavailable vanilla layer table fail startup freeze before any supplier runs or the table
+    /// publishes. Each winning supplier runs once at client startup, not on bake or reload.
+    /// A panicking supplier leaves no definition and its mod is named in the error log and toast;
+    /// it does not prevent other suppliers from running. Capture owned data in the supplier.
     pub fn register(
         &mut self,
         id: impl Into<String>,
@@ -530,15 +533,32 @@ impl RegisterLayerDefinitionsEvent<'_> {
 pub struct LayerDefinitionRegistration {
     /// The model layer ID, validated when the layer table is frozen.
     pub id: String,
-    /// The supplier called when assembling the frozen table.
-    pub supplier: Box<dyn Fn() -> LayerDefinition + Send + Sync>,
+    supplier: Box<dyn Fn() -> LayerDefinition + Send + Sync>,
+}
+
+impl LayerDefinitionRegistration {
+    /// Realize a winning supplier once at freeze, under its registering mod's identity.
+    pub fn build(&self, mod_id: &'static str) -> Option<LayerDefinition> {
+        let id = &self.id;
+        let Some(index) = crate::__private::mod_index(mod_id) else {
+            log::warn!("Model layer {id} has no installed owner {mod_id}");
+            return None;
+        };
+        if !crate::__private::mod_index_on(index) {
+            log::warn!("Model layer {id}: mod {mod_id} is disabled");
+            return None;
+        }
+        let operation = "build_layer_definition";
+        let _owner = crate::runtime::mark_mod(mod_id, operation);
+        crate::runtime::invoke_once(operation, mod_id, &self.supplier)
+    }
 }
 
 /// A corner of a baked face (`ModelPart.Vertex`): in texels in its part's
 /// frame, and where it falls on the texture, 0 to 1 across it.
 #[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq)]
 #[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
+// no wire: local client baked model vertex.
 pub struct ModelVertex {
     /// The vertex position, in texels.
     pub pos: [f32; 3],
@@ -559,7 +579,7 @@ impl ModelVertex {
 /// part's frame.
 #[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq)]
 #[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
+// no wire: local client baked model polygon.
 pub struct ModelPolygon {
     /// The four corners in winding order.
     pub vertices: [ModelVertex; 4],
@@ -577,12 +597,9 @@ impl ModelPolygon {
 /// `ModelPart`: a baked part, its children by name, and the pose a mod sets
 /// each frame before drawing it (`setupAnim`), from the pose it was baked
 /// with (`reset_pose`).
-///
-/// Wire uses JSON with at most 32 nested containers; named children consume
-/// object, list and tuple levels. Encoding preflights children before serialization.
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
 #[non_exhaustive]
-// no wire: handwritten JSON-backed Wire preflights recursive children before serde.
+// no wire: local client model tree, baked and posed in-process rather than sent as a binary wire payload.
 pub struct ModelPart {
     /// Where it sits in its parent, in texels.
     pub x: f32,
@@ -608,8 +625,22 @@ pub struct ModelPart {
     pub skip_draw: bool,
     /// Its boxes' faces.
     pub polygons: Vec<ModelPolygon>,
-    children: Vec<(String, ModelPart)>,
+    children: ModelChildren,
     initial_pose: PartPose,
+}
+
+// Keep the owned ModelPart API and serialized shape; only child destruction needs a worklist.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
+#[serde(transparent)]
+struct ModelChildren(Vec<(String, ModelPart)>);
+
+impl Drop for ModelChildren {
+    fn drop(&mut self) {
+        let mut pending = std::mem::take(&mut self.0);
+        while let Some((_, mut child)) = pending.pop() {
+            pending.append(&mut child.children.0);
+        }
+    }
 }
 
 impl ModelPart {
@@ -632,7 +663,7 @@ impl ModelPart {
             visible: true,
             skip_draw: false,
             polygons,
-            children,
+            children: ModelChildren(children),
             initial_pose: pose,
         };
         part.load_pose(pose);
@@ -642,6 +673,7 @@ impl ModelPart {
     /// Its part `name` (`getChild`).
     pub fn get_child(&self, name: &str) -> Option<&ModelPart> {
         self.children
+            .0
             .iter()
             .find(|(n, _)| n == name)
             .map(|(_, c)| c)
@@ -650,6 +682,7 @@ impl ModelPart {
     /// Its mutable child by name.
     pub fn get_child_mut(&mut self, name: &str) -> Option<&mut ModelPart> {
         self.children
+            .0
             .iter_mut()
             .find(|(n, _)| n == name)
             .map(|(_, c)| c)
@@ -657,12 +690,12 @@ impl ModelPart {
 
     /// Its parts by name, in the order they draw.
     pub fn children(&self) -> impl Iterator<Item = (&str, &ModelPart)> {
-        self.children.iter().map(|(n, c)| (n.as_str(), c))
+        self.children.0.iter().map(|(n, c)| (n.as_str(), c))
     }
 
     /// Its mutable children in drawing order.
     pub fn children_mut(&mut self) -> impl Iterator<Item = (&str, &mut ModelPart)> {
-        self.children.iter_mut().map(|(n, c)| (n.as_str(), c))
+        self.children.0.iter_mut().map(|(n, c)| (n.as_str(), c))
     }
 
     /// Whether it has no faces of its own (`isEmpty`).
@@ -713,30 +746,65 @@ impl ModelPart {
         self.load_pose(self.initial_pose);
     }
 
-    /// The path, by child index, selected by `ModelPart.createPartLookup`: `root` is this
-    /// part; other names use the first match, visiting each part's immediate children before
-    /// their descendants. `None` when no part has that name.
-    pub(crate) fn descendant_path(&self, name: &str) -> Option<Vec<u32>> {
-        if name == "root" {
-            return Some(Vec::new());
+    /// Every part under it by name (`createPartLookup`), to find a bone wherever it sits.
+    ///
+    /// `"root"` is this part. Then come its direct children, then each child's own
+    /// children and their subtrees in turn, child by child in drawing order: the
+    /// order vanilla's `addAllChildren` hands them to `putIfAbsent`. The first part
+    /// found under a name wins, so a direct child shadows a deeper part of the same
+    /// name, a part named `root` never replaces this one, and a part deep in the first
+    /// child's subtree shadows a shallower one under a later child.
+    ///
+    /// It is built once, here; [`PartLookup::get`] allocates nothing. To pose the
+    /// parts it finds, use [`Self::part_lookup_mut`].
+    pub fn part_lookup(&self) -> PartLookup<'_> {
+        PartLookup {
+            root: self,
+            paths: PartPaths::new(self, |name| name),
         }
-        if let Some(index) = self.children.iter().position(|(child, _)| child == name) {
-            return Some(vec![index as u32]);
-        }
-        self.children
-            .iter()
-            .enumerate()
-            .find_map(|(index, (_, child))| {
-                let mut path = child.descendant_path(name)?;
-                path.insert(0, index as u32);
-                Some(path)
-            })
     }
+
+    /// [`Self::part_lookup`] for posing: the same names in the same order, each part
+    /// reached mutably by [`PartLookupMut::get_mut`]. It copies the names once, here;
+    /// [`PartLookupMut::get_mut`] allocates nothing.
+    pub fn part_lookup_mut(&mut self) -> PartLookupMut<'_> {
+        let paths = PartPaths::new(self, str::to_owned);
+        PartLookupMut { root: self, paths }
+    }
+
+    /// `addAllChildren`: each direct child with its path by child index, then each
+    /// child's own children the same way, child by child.
+    fn add_all_children<'a>(
+        &'a self,
+        path: &mut Vec<u32>,
+        accept: &mut impl FnMut(&'a str, &[u32]),
+    ) {
+        for (index, (name, _)) in self.children.0.iter().enumerate() {
+            path.push(index as u32);
+            accept(name, path);
+            path.pop();
+        }
+        for (index, (_, child)) in self.children.0.iter().enumerate() {
+            path.push(index as u32);
+            child.add_all_children(path, accept);
+            path.pop();
+        }
+    }
+
+    /// The part at `path`, child index by child index.
+    fn descendant(&self, path: &[u32]) -> Option<&ModelPart> {
+        let mut part = self;
+        for &index in path {
+            part = &part.children.0.get(index as usize)?.1;
+        }
+        Some(part)
+    }
+
     /// The part at `path`, child index by child index.
     pub(crate) fn descendant_mut(&mut self, path: &[u32]) -> Option<&mut ModelPart> {
         let mut part = self;
         for &index in path {
-            part = &mut part.children.get_mut(index as usize)?.1;
+            part = &mut part.children.0.get_mut(index as usize)?.1;
         }
         Some(part)
     }
@@ -744,7 +812,7 @@ impl ModelPart {
     /// `Model.resetPose` does before each frame's `setupAnim`.
     pub fn reset_all_poses(&mut self) {
         self.reset_pose();
-        for (_, child) in &mut self.children {
+        for (_, child) in &mut self.children.0 {
             child.reset_all_poses();
         }
     }
@@ -783,6 +851,82 @@ impl ModelPart {
         self.x_scale += by[0];
         self.y_scale += by[1];
         self.z_scale += by[2];
+    }
+}
+
+/// Each name of a [`ModelPart::part_lookup`] and the path, by child index, to the
+/// part it selects; the paths share one list of steps.
+#[derive(Clone, Debug)]
+struct PartPaths<K> {
+    paths: HashMap<K, Range<usize>>,
+    steps: Vec<u32>,
+}
+
+impl<K: Borrow<str> + Eq + Hash> PartPaths<K> {
+    /// `createPartLookup`'s map: `root` first, then `addAllChildren` through `putIfAbsent`.
+    fn new<'a>(root: &'a ModelPart, key: impl Fn(&'a str) -> K) -> Self {
+        let mut paths = HashMap::new();
+        let mut steps = Vec::new();
+        paths.insert(key("root"), 0..0);
+        root.add_all_children(&mut Vec::new(), &mut |name, path| {
+            if !paths.contains_key(name) {
+                let start = steps.len();
+                steps.extend_from_slice(path);
+                paths.insert(key(name), start..steps.len());
+            }
+        });
+        Self { paths, steps }
+    }
+
+    /// The steps to the part named `name`.
+    fn path(&self, name: &str) -> Option<&[u32]> {
+        self.paths.get(name).map(|range| &self.steps[range.clone()])
+    }
+}
+
+/// The parts under a [`ModelPart`] by name, from [`ModelPart::part_lookup`]
+/// (the function vanilla's `createPartLookup()` returns).
+#[derive(Clone, Debug)]
+// exhaustive: its fields are private, so mods cannot build or destructure it
+// no wire: borrows the model it looks parts up in.
+pub struct PartLookup<'a> {
+    root: &'a ModelPart,
+    paths: PartPaths<&'a str>,
+}
+
+impl<'a> PartLookup<'a> {
+    /// The part named `name`, as [`ModelPart::part_lookup`] orders them: `"root"`
+    /// is the part it was made from. `None` when no part has that name.
+    pub fn get(&self, name: &str) -> Option<&'a ModelPart> {
+        self.root.descendant(self.paths.path(name)?)
+    }
+
+    /// The path, by child index, to the part named `name`.
+    pub(crate) fn path(&self, name: &str) -> Option<&[u32]> {
+        self.paths.path(name)
+    }
+}
+
+/// [`PartLookup`] to pose parts through, from [`ModelPart::part_lookup_mut`].
+#[derive(Debug)]
+// exhaustive: its fields are private, so mods cannot build or destructure it
+// no wire: borrows the model it looks parts up in.
+pub struct PartLookupMut<'a> {
+    root: &'a mut ModelPart,
+    paths: PartPaths<String>,
+}
+
+impl PartLookupMut<'_> {
+    /// The part named `name`, as [`PartLookup::get`] selects it.
+    pub fn get(&self, name: &str) -> Option<&ModelPart> {
+        self.root.descendant(self.paths.path(name)?)
+    }
+
+    /// The part named `name`, to pose it. The lookup keeps the places it found
+    /// when made: replacing a part whole through this method changes what the
+    /// names under it find (another child at the same place, or `None`).
+    pub fn get_mut(&mut self, name: &str) -> Option<&mut ModelPart> {
+        self.root.descendant_mut(self.paths.path(name)?)
     }
 }
 
@@ -1085,5 +1229,61 @@ mod tests {
         let mut empty = value;
         empty["parts"] = serde_json::json!([]);
         assert!(serde_json::from_value::<MeshDefinition>(empty).is_err());
+    }
+
+    #[test]
+    fn part_lookup_takes_direct_children_before_deeper_parts_in_vanilla_order() {
+        // createPartLookup: put("root", this), then addAllChildren into putIfAbsent.
+        fn part(x: f32, children: Vec<(&str, ModelPart)>) -> ModelPart {
+            let children = children
+                .into_iter()
+                .map(|(n, c)| (n.to_owned(), c))
+                .collect();
+            ModelPart::new(Vec::new(), children, PartPose::offset(x, 0.0, 0.0))
+        }
+        let mut model = part(
+            1.0,
+            vec![
+                (
+                    "body",
+                    part(
+                        2.0,
+                        vec![
+                            ("head", part(3.0, vec![])),
+                            ("arm", part(4.0, vec![("tail", part(5.0, vec![]))])),
+                            ("root", part(6.0, vec![])),
+                        ],
+                    ),
+                ),
+                ("head", part(7.0, vec![("tail", part(8.0, vec![]))])),
+            ],
+        );
+
+        let parts = model.part_lookup();
+        assert_eq!(parts.get("root").map(|p| p.x), Some(1.0));
+        // The direct child, not body's child that comes first in drawing order.
+        assert_eq!(parts.get("head").map(|p| p.x), Some(7.0));
+        assert_eq!(parts.get("arm").map(|p| p.x), Some(4.0));
+        // body's whole subtree comes before head's children.
+        assert_eq!(parts.get("tail").map(|p| p.x), Some(5.0));
+        assert_eq!(parts.path("tail"), Some(&[0, 1, 0][..]));
+        assert!(parts.get("leg").is_none());
+
+        let mut parts = model.part_lookup_mut();
+        assert_eq!(parts.get("root").map(|p| p.x), Some(1.0));
+        parts.get_mut("head").unwrap().x_rot = 0.5;
+        parts.get_mut("tail").unwrap().x_rot = 0.25;
+        assert!(parts.get_mut("leg").is_none());
+        assert_eq!(model.get_child("head").unwrap().x_rot, 0.5);
+        let body = model.get_child("body").unwrap();
+        assert_eq!(body.get_child("head").unwrap().x_rot, 0.0);
+        assert_eq!(
+            body.get_child("arm")
+                .unwrap()
+                .get_child("tail")
+                .unwrap()
+                .x_rot,
+            0.25
+        );
     }
 }

@@ -14,6 +14,8 @@ struct Hud {
 @group(0) @binding(5) var linear_sampler: sampler;
 // enchanted_glint_armor, the armour layers' GlintSampler (entity.wgsl's glint_armor_tex).
 @group(0) @binding(6) var glint_armor_tex: texture_2d<f32>;
+// The frame's 16x16 lightmap, sampled when a HUD item vertex carries explicit packed light.
+@group(0) @binding(7) var lightmap: texture_2d<f32>;
 struct Out {
     @builtin(position) clip: vec4<f32>,
     @location(0) uv: vec2<f32>,
@@ -21,8 +23,12 @@ struct Out {
     // projection_from_position(gl_Position): the End portal's texProj0.
     @location(2) proj: vec4<f32>,
     @location(3) glint_uv: vec2<f32>,
+    // Packed explicit light flags & byte lanes:
+    // bit 24: sample lightmap (bits 0..8 = block, bits 8..16 = sky);
+    // bit 25: explicit item alpha cutoff 0.1 (`ITEM_CUTOUT` / `ITEM_TRANSLUCENT`).
+    @location(4) @interpolate(flat) light: u32,
 }
-@vertex fn vs_main(@location(0) pos: vec2<f32>, @location(1) uv: vec2<f32>, @location(2) color: vec4<f32>, @location(3) depth: f32, @location(4) glint_uv: vec2<f32>) -> Out {
+@vertex fn vs_main(@location(0) pos: vec2<f32>, @location(1) uv: vec2<f32>, @location(2) color: vec4<f32>, @location(3) depth: f32, @location(4) glint_uv: vec2<f32>, @location(5) light: u32) -> Out {
     let pixels = pos * hud.size.z;
     var out: Out;
     out.clip = vec4(pixels.x / hud.size.x * 2.0 - 1.0, 1.0 - pixels.y / hud.size.y * 2.0, depth, 1.0);
@@ -30,6 +36,7 @@ struct Out {
     out.color = color;
     out.proj = vec4(out.clip.xy * 0.5 + 0.5, out.clip.zw);
     out.glint_uv = glint_uv;
+    out.light = light;
     return out;
 }
 @fragment fn fs_main(in: Out) -> @location(0) vec4<f32> {
@@ -48,11 +55,32 @@ struct Out {
         if tint.x >= 0.0 {
             glint = vec4(max(glint.r, max(glint.g, glint.b)) * tint, glint.a);
         }
-        return vec4(glint.rgb * glint.rgb, mask);
+        // The vertex colour multiplies the glint as it does the item under it: white (every
+        // glint the game draws) leaves it; a mod's tinted item (`GuiCanvas::item_tinted`) fades
+        // and colours it with the item.
+        return vec4(glint.rgb * glint.rgb * in.color.rgb * in.color.a, mask * in.color.a);
     }
-    let c = textureSample(atlas, atlas_sampler, in.uv) * in.color;
-    if c.a < 0.004 { discard; }
+    return textured(in);
+}
+// The bound texture, tinted: what `fs_main` draws below its glint markers.
+fn textured(in: Out) -> vec4<f32> {
+    var c = textureSample(atlas, atlas_sampler, in.uv) * in.color;
+    let cutoff = select(0.004, 0.1, (in.light & 0x02000000u) != 0u);
+    if c.a < cutoff { discard; }
+    if (in.light & 0x01000000u) != 0u {
+        let block_l = f32(in.light & 0xFFu);
+        let sky_l = f32((in.light >> 8u) & 0xFFu);
+        let lm_uv = clamp(vec2(block_l, sky_l) / 256.0 + 0.5 / 16.0, vec2(0.5 / 16.0), vec2(15.5 / 16.0));
+        let lm = textureSampleLevel(lightmap, linear_sampler, lm_uv, 0.0);
+        c = vec4(c.rgb * lm.rgb, c.a);
+    }
     return c;
+}
+// A standalone picture (hud/pictures.rs) with its own texture and sampler bound as `atlas`:
+// every UV is the picture's, unclamped (`innerBlit`), so a repeating picture at u >= 2 is not
+// read as a glint marker.
+@fragment fn fs_picture(in: Out) -> @location(0) vec4<f32> {
+    return textured(in);
 }
 // OptiFine CIT glint layers (hud/cit_glint.rs): every rule's texture in one array, the slot in
 // the vertex colour's red and the layer's intensity in its alpha. Masked by the item's texture

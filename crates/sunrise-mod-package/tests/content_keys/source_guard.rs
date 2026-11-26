@@ -16,12 +16,17 @@ mod manifest_reviewed;
 // Registry crates such as semver, serde_json and toml are out of scope.
 const EXTERNAL_DECLARATIONS: &[&str] = &[
     "sunrise_core::arm_pose::ArmPose",
+    "sunrise_core::geometry::Direction",
     "mod_vocab::Side",
     "mod_vocab::DependencyOrder",
     "mod_vocab::DependencyOrder::After",
     // The field's custom deserializer maps names to this vocabulary instead of deriving Serde.
     "mod_vocab::NoteInstrument",
     "mod_vocab::NoteInstrument::ALL",
+    "mod_vocab::FaceRule",
+    "mod_vocab::FaceNeighbor",
+    "mod_vocab::FaceDirections",
+    "mod_vocab::FaceFacts",
 ];
 
 // Where each such crate keeps its sources.
@@ -45,6 +50,7 @@ const NOT_DECLARATIONS: &[(&str, &str)] = &[
     ("sunrise_assets::model::CuboidModel", "asset reference check, not a declaration"),
     ("sunrise_assets::model::Loader", "asset reference check, not a declaration"),
     ("sunrise_assets::model::TextureSlot", "asset reference check, not a declaration"),
+    ("sunrise_core::identifier::Identifier::parse_namespaced", "validates attribute modifier identifiers, not a Serde declaration"),
 ];
 
 type Reviewed = (
@@ -61,7 +67,9 @@ const REVIEWED: &[Reviewed] = &[
     (("content.rs", "instrument", "deserialize_with = \"deserialize_instrument\""), &["block_full", "refused_block_bad_instrument"]),
     (("content.rs", "ignited_by_lava", "deserialize_with = \"deserialize_ignited_by_lava\""), &["block_full", "refused_block_bad_property_type"]),
     (("content.rs", "replaceable", "deserialize_with = \"deserialize_replaceable\""), &["block_full"]),
-    (("content.rs", "skip_same_block_faces", "deserialize_with = \"deserialize_skip_same_block_faces\""), &["block_full"]),
+    (("content.rs", "skip_rendering", "deserialize_with = \"face_rules::deserialize_skip_rendering\""), &["block_full", "src/content.rs:block_face_rules_parse_and_refuse_unknown_facts_and_directions"]),
+    (("content.rs", "hides_neighbor_face", "deserialize_with = \"face_rules::deserialize_hides_neighbor_face\""), &["block_full", "src/content.rs:block_face_rules_parse_and_refuse_unknown_facts_and_directions"]),
+    (("content.rs", "supports_external_face_hiding", "deserialize_with = \"face_rules::deserialize_supports_external_face_hiding\""), &["block_full", "src/content.rs:block_face_rules_parse_and_refuse_unknown_facts_and_directions"]),
     (("content.rs", "RandomTicks", "untagged"), &["block_full"]),
     (("content.rs", "BlockShapes", "impl Deserialize"), &["block_full", "keys_block_forms", "refused_block_shape_bounds"]),
     (("content.rs", "StateProperty", "tag = \"type\""), &["block_full"]),
@@ -70,6 +78,12 @@ const REVIEWED: &[Reviewed] = &[
     (("content.rs", "duration", "deserialize_with = \"deserialize_stew_duration\""), &["block_full"]),
     (("content.rs", "GateSound", "untagged"), &["block_full", "keys_block_forms", "refused_block_gate_sound_site"]),
     (("content/entity_sounds.rs", "SoundOverride", "untagged"), &["entity_type_full", "keys_entity_sounds"]),
+    (("content/entity_sounds.rs", "StepOverride", "untagged"), &["entity_type_full", "keys_entity_sounds"]),
+    (("content/entity_sounds.rs", "StepOverride", "impl Deserialize"), &["entity_type_full", "keys_entity_sounds", "refused_entity_type_step_sound_array", "src/content/entity_sounds_tests.rs:entity_sounds_admission_refuses_bad_numbers_and_step_forms_by_key"]),
+    (("content/entity_sounds.rs", "volume", "deserialize_with = \"deserialize_volume\""), &["keys_entity_sounds", "refused_entity_type_sound_volume_range"]),
+    (("content/entity_sounds.rs", "voice_pitch", "deserialize_with = \"deserialize_voice_pitch\""), &["keys_entity_sounds", "refused_entity_type_voice_pitch_range"]),
+    (("content/entity_sounds.rs", "volume", "deserialize_with = \"deserialize_step_volume\""), &["keys_entity_sounds", "refused_entity_type_nonfinite_sound"]),
+    (("content/entity_sounds.rs", "pitch", "deserialize_with = \"deserialize_step_pitch\""), &["keys_entity_sounds", "src/content/entity_sounds_tests.rs:entity_sounds_admission_refuses_bad_numbers_and_step_forms_by_key"]),
     (("content/entity_type.rs", "allowed_in_peaceful", "deserialize_with = \"deserialize_peaceful_setting\""), &["entity_type_full", "refused_entity_type_thrown_peaceful", "refused_entity_type_null_allowed_in_peaceful"]),
     (("content/entity_type.rs", "shadow_radius", "deserialize_with = \"deserialize_shadow\""), &["entity_type_full", "refused_entity_type_negative_shadow", "refused_entity_type_null_shadow_radius"]),
     (("content/entity_type.rs", "shadow_strength", "deserialize_with = \"deserialize_shadow\""), &["entity_type_full", "refused_entity_type_null_shadow_strength"]),

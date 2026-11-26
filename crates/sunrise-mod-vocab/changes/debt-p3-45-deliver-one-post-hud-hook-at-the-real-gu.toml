@@ -1,0 +1,45 @@
+ids = [
+    "hook:gui_render_post",
+    "hook:gui_render_post.batch",
+    "hook:gui_render_post.gui_hidden",
+    "hook:gui_render_post.focused",
+    "method:Hooks::gui_render_post",
+    "type:GuiRenderPostEvent",
+    "type:GuiRenderPostEvent.batch",
+    "type:GuiRenderPostEvent.gui_hidden",
+    "type:GuiRenderPostEvent.focused",
+    "hook:render_gui_post",
+    "hook:render_gui_post.corners",
+    "type:RenderGuiPostEvent.corners",
+    "type:Corner",
+    "type:Corner.TopLeft",
+    "type:Corner.TopRight",
+    "type:Corner.BottomLeft",
+    "type:Corner.BottomRight",
+    "type:Corners",
+    "handle:Corner::ALL",
+    "handle:Corner::name",
+    "handle:Corner::top",
+    "handle:Corner::left",
+    "handle:Corners::new",
+    "handle:Corners::place",
+    "method:prelude::ScreensClientHost::hud_layer_bounds",
+]
+why = "NeoForge's GuiLayerManager.render brackets the complete HUD walk with RenderGuiEvent.Pre and Post. Its renderInner still posts layer events under F1; visibility gates the original vanilla bodies, and whole-HUD cancellation skips the walk and Post. Vanilla Gui.extractRenderState and NeoForge's Hud.extractRenderState place this pass before screens such as Options over a world. The duplicate end-of-frame gui_render_post and the shared corner allocator are removed. Mods can position overlays against the geometry actually emitted by the HUD, including visible effects from Hud.extractEffects, clipped to the GUI viewport and the draw scissors used for previews."
+migrate = '''
+1. Replace `Hooks::gui_render_post(&self, host, event: &mut GuiRenderPostEvent)` with `Hooks::render_gui_post(&self, host, event: &mut RenderGuiPostEvent)` and use `event.draw` instead of `event.batch`. The callback now runs after the in-world HUD, including under F1 and before Options over a world; it is not a title or post-screen callback, and neither replay nor a canceled HUD pass reaches it. Move paint that belongs above an open screen to `Hooks::screen_render_post` with `ScreenRenderPostEvent::draw` instead.
+2. Replace `event.focused` with `host.window_focused()`. The removed `event.gui_hidden` exposed the raw hide-GUI flag; there is no raw F1 flag on the new event. To skip your paint when the effective HUD mode is hidden, use `if host.hud_mode() != HudMode::AllVisible { return; }`. `hud_mode()` includes settings a mod made through `set_hud_mode`, so it is not a record of whether F1 was pressed or whether a particular layer painted.
+3. `render_gui_pre`, `register_gui_layers`, `gui_layer_pre` and `gui_layer_post` keep their existing contracts. Under F1 the entire slot walk still runs: layer Pre and Post, inserted painters, replacements and wrappers are not gated by vanilla visibility. Visibility still applies to the original vanilla bodies, including when a wrapper calls `draw_previous()`. Apply a `hud_mode()` check to your own paint if it should hide. Canceling `render_gui_pre` skips the walk and HUD Post without canceling the open screen; replay does not run HUD Pre or Post.
+4. Delete `event.corners`, `Corners::new`, `corners.place`, and imports of `Corner`, `Corner::ALL`, or the `TopLeft`, `TopRight`, `BottomLeft`, and `BottomRight` variants. For a far edge, subtract the box size and your margin from the corresponding dimension of `event.draw.size()`; for a near edge, use your margin as the coordinate. Keep any per-corner stack offsets, names or side checks in your own mod or library instead of using `Corner::name`, `Corner::top`, and `Corner::left`. For example, to stack your own boxes below the active-effect row, start their local y offset at:
+
+   ```rust
+   let bottom = match host.hud_layer_bounds("minecraft:effects") {
+       Ok(Some([_, y, _, h])) => y + h,
+       Ok(None) => 0.0,
+       Err(_) => return,
+   };
+   let y = bottom + margin;
+   ```
+
+   `ClientHost::hud_layer_bounds` returns `Ok(None)` for layers that have not drawn visible geometry and outside the HUD pass (including screen callbacks). It returns `Err(LevelReadError::Unavailable)` outside a client window.
+'''

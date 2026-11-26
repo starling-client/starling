@@ -7,35 +7,6 @@ mod book_tests;
 #[path = "menus/screen_tests.rs"]
 mod screen_tests;
 
-/// Vanilla's 25 built-in menu types that already carry screens in `MenuScreens.SCREENS`.
-const BUILTIN_MENU_SCREENS: &[&str] = &[
-    "minecraft:generic_9x1",
-    "minecraft:generic_9x2",
-    "minecraft:generic_9x3",
-    "minecraft:generic_9x4",
-    "minecraft:generic_9x5",
-    "minecraft:generic_9x6",
-    "minecraft:generic_3x3",
-    "minecraft:crafter_3x3",
-    "minecraft:anvil",
-    "minecraft:beacon",
-    "minecraft:blast_furnace",
-    "minecraft:brewing_stand",
-    "minecraft:crafting",
-    "minecraft:enchantment",
-    "minecraft:furnace",
-    "minecraft:grindstone",
-    "minecraft:hopper",
-    "minecraft:lectern",
-    "minecraft:loom",
-    "minecraft:merchant",
-    "minecraft:shulker_box",
-    "minecraft:smithing",
-    "minecraft:smoker",
-    "minecraft:cartography_table",
-    "minecraft:stonecutter",
-];
-
 impl MenusRegistrar for PartRegistrar {
     fn register_menu_screen(
         &mut self,
@@ -48,7 +19,8 @@ impl MenusRegistrar for PartRegistrar {
             }
             crate::Identifier::parse_namespaced(menu)
                 .ok_or("menu must be a namespaced identifier")?;
-            if BUILTIN_MENU_SCREENS.contains(&menu) || self.menu_screen_factories.contains_key(menu)
+            if mod_vocab::__private::is_vanilla_menu_type(menu)
+                || self.menu_screen_factories.contains_key(menu)
             {
                 return Err("duplicate menu screen factory");
             }
@@ -81,12 +53,10 @@ impl MenusRegistrar for PartRegistrar {
             if mod_vocab::__private::parts_installation::parts_installed() {
                 return Err("registry is frozen".into());
             }
-            let menu_id =
-                crate::Identifier::parse(menu).map_err(|e| format!("invalid menu: {e:?}"))?;
-            if !menu.contains(':') || !owns_namespace(self.mod_id, menu_id.namespace()) {
-                return Err(
-                    "menu namespace must be explicit and owned by the registering mod".into(),
-                );
+            crate::Identifier::parse_namespaced(menu)
+                .ok_or("menu must be a namespaced identifier")?;
+            if mod_vocab::__private::is_vanilla_menu_type(menu) {
+                return Err("cannot bind a recipe book to a built-in menu".into());
             }
             if !self.recipe_book_types.contains_key(book.as_str()) {
                 return Err(format!("unknown recipe book {}", book.as_str()));
@@ -94,11 +64,8 @@ impl MenusRegistrar for PartRegistrar {
             if self.menu_recipe_books.contains_key(menu) {
                 return Err("duplicate menu recipe book".into());
             }
-            crate::Identifier::parse(recipe_type)
-                .map_err(|e| format!("invalid recipe type: {e:?}"))?;
-            if !recipe_type.contains(':') {
-                return Err("explicit recipe type namespace required".into());
-            }
+            crate::Identifier::parse_namespaced(recipe_type)
+                .ok_or("recipe type must be a namespaced identifier")?;
             layout.validate(i16::MAX as u16 + 1)?;
             self.menu_recipe_books.insert(
                 menu.into(),

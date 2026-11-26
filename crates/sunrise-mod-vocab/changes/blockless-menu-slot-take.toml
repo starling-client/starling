@@ -1,0 +1,13 @@
+ids = [
+    "hook:menu_slot_take",
+    "hook:menu_slot_take.kind",
+    "type:MenuSlotTakeEvent.kind",
+    "method:BlockEntityPart::menu_slot_take",
+    "method:MenuPart::menu_slot_take",
+    "hook:menu_closed",
+]
+why = "Blockless owned_slots processing menus (#4007) had no Slot.onTake: menu_slot_take was keyed by the block entity type, so a menu without a block entity could not use up its inputs, give experience or play a sound when its result was taken. menu_slot_take moves to hook version 3 on MenuPart, keyed by the menu type like menu_button version 4: subject is the same BlockEntityScope, lending the live block entity of a block-backed menu and no view on a blockless one, while host() and transaction(...) work on both. On game-routed clicks the take runs inside the click transaction, and when a listener changes the menu's non-result slots menu_slot_changed runs again before the click continues, so a repeating shift-click on a processing result sees each new result. Processing owned menus (both owned_slots and results) now close like vanilla AbstractContainerMenu.clearContainer: non-result inputs go back to the inventory (overflow dropped) on a live close and are dropped when the player is killed or disconnects, through the same MenuRemoval rule as the closing cursor; results are discarded. menu_closed moves to hook version 3 because such a menu now passes an empty owned_slots slice, so its inputs cannot be returned twice."
+migrate = '''
+- `menu_slot_take` (`hook_version = 2` -> `3`): move `fn menu_slot_take(&self, event: &mut MenuSlotTakeEvent<'_>)` from the `BlockEntityPart` of the block entity type to the `MenuPart` registered for the menu type (`registrar.menu_part(menu, part)`). `event.kind` is gone; the body is otherwise unchanged. `event.subject.with_view(...)` now also returns `None` on a blockless owned menu, whose transient slots are edited through `ItemPlace::MenuSlot` inside `event.subject.transaction(...)`.
+- `menu_closed` (`hook_version = 2` -> `3`): the signature is unchanged. For a menu declaring both `owned_slots` and `results`, `event.owned_slots` is now empty: the game returns or drops its non-result inputs itself and discards its results, so don't return them again. A menu with `owned_slots` and no `results` still receives its final contents.
+'''

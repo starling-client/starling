@@ -10,7 +10,9 @@ import json
 from pathlib import Path
 import sys
 
-import test_command_exec_parity as driver
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_command_exec_parity as driver
 
 A = '00000148-0000-0000-0000-000000000001'
 B = '00000148-0000-0000-0000-000000000002'

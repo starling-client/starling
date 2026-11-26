@@ -14,7 +14,8 @@ pub trait Hooks {
         contract = "collect",
         out = "knockback_velocity",
         neoforge = "ExplosionKnockbackEvent",
-        cancellable = false
+        cancellable = false,
+        version = 2
     )]
     fn explosion_knockback(
         dimension: &str,

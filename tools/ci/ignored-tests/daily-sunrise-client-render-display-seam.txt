@@ -1,0 +1,2 @@
+# Block display seam GPU pixel check (uses test_gpu::adapter()).
+sunrise-client-render gfx::entity_pixel_test::scrgb::block_display_83224_has_no_seam_at_x1026 lib daily gpu

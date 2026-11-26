@@ -5,6 +5,7 @@ use std::{
     collections::HashMap,
     sync::{OnceLock, RwLock},
 };
+use sunrise_world::attributes::Operation;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Category {
@@ -12,6 +13,9 @@ pub enum Category {
     Harmful,
     Neutral,
 }
+/// One `MobEffect.AttributeTemplate`: (attribute, modifier id, amount at
+/// amplifier 0, operation).
+pub type EffectModifier = (&'static str, &'static str, f64, Operation);
 /// A `MobEffect`: id (vanilla's without namespace, a mod's `<ns>:<path>`),
 /// colour, category, instantaneous.
 #[derive(Clone, Copy, Debug)]
@@ -27,6 +31,10 @@ pub struct EffectDef {
     /// `IMobEffectExtension.getSortOrder`: where the effect sits in the HUD and inventory
     /// lists. The colour, unless a content mod declared an order.
     pub sort_order: i32,
+    /// The attribute modifiers a content mod declared for its effect
+    /// (`MobEffect.addAttributeModifier`). Vanilla's effects keep theirs in
+    /// the tables of the code that applies them, so none here.
+    pub modifiers: &'static [EffectModifier],
 }
 /// The colours resource packs give effects (Polytone's `effect.<id>`), by the table's id.
 static PACK_COLORS: RwLock<Option<HashMap<String, u32>>> = RwLock::new(None);
@@ -53,6 +61,7 @@ const fn fx(index: usize, id: &'static str, color: u32, category: Category) -> E
         category,
         instant: false,
         sort_order: color as i32,
+        modifiers: &[],
     }
 }
 use Category::{Beneficial as B, Harmful as H, Neutral as N};
@@ -110,38 +119,113 @@ pub const EFFECTS: &[EffectDef] = &[
 ];
 /// The effects content mods declare, registered after vanilla's.
 static MOD_EFFECTS: OnceLock<Vec<EffectDef>> = OnceLock::new();
-/// Registers the content mods' effects, `<ns>:<path>` ids in registry order.
+/// A content mod's effect, as its declaration gives it.
+pub struct ModEffect {
+    /// `<ns>:<path>`.
+    pub id: String,
+    pub color: u32,
+    pub category: Category,
+    /// The declared sort order, none for the colour.
+    pub sort_order: Option<i32>,
+    /// The mod that declared it.
+    pub owner: String,
+    /// Its attribute modifiers: (attribute, modifier id, amount at amplifier
+    /// 0, operation), at most one per attribute.
+    pub modifiers: Vec<(String, String, f64, Operation)>,
+}
+impl ModEffect {
+    /// An effect with no sort order and no attribute modifiers.
+    pub fn new(id: &str, color: u32, category: Category, owner: &str) -> Self {
+        Self {
+            id: id.to_owned(),
+            color,
+            category,
+            sort_order: None,
+            owner: owner.to_owned(),
+            modifiers: Vec::new(),
+        }
+    }
+}
+/// Registers the content mods' effects in registry order.
 /// The list is set once per process: false when it already was, and the
-/// effects stay those of the first call until the game restarts.
-/// Each comes with its declared sort order, none for its colour.
-pub fn register_mod_effects(
-    effects: impl IntoIterator<Item = (String, u32, Category, Option<i32>, String)>,
-) -> bool {
+/// effects stay those of the first call until the game restarts. Inside an
+/// [`isolate_mod_effects`] scope it is that scope's list instead.
+pub fn register_mod_effects(effects: impl IntoIterator<Item = ModEffect>) -> bool {
+    #[cfg(any(test, feature = "test-effect-registry"))]
+    if let Some(registered) = SCOPED.with(|scoped| scoped.get()) {
+        if registered.is_some() {
+            return false;
+        }
+        let defs: &'static [EffectDef] = Box::leak(mod_effect_defs(effects).into_boxed_slice());
+        SCOPED.with(|scoped| scoped.set(Some(Some(defs))));
+        return true;
+    }
     if MOD_EFFECTS.get().is_some() {
         return false;
     }
-    let defs: Vec<EffectDef> = effects
+    MOD_EFFECTS.set(mod_effect_defs(effects)).is_ok()
+}
+#[cfg(any(test, feature = "test-effect-registry"))]
+thread_local! {
+    /// This thread's own effect registry while a test fixture's
+    /// [`isolate_mod_effects`] scope lasts: `Some(None)` before its registration.
+    static SCOPED: std::cell::Cell<Option<Option<&'static [EffectDef]>>> =
+        const { std::cell::Cell::new(None) };
+}
+/// Test fixtures: until the guard drops, this thread registers and reads its
+/// own content mod effects, empty at first, and leaves the process's alone.
+#[cfg(any(test, feature = "test-effect-registry"))]
+pub fn isolate_mod_effects() -> impl Drop {
+    struct Restore(
+        Option<Option<&'static [EffectDef]>>,
+        std::marker::PhantomData<std::rc::Rc<()>>,
+    );
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            SCOPED.with(|scoped| scoped.set(self.0));
+        }
+    }
+    Restore(
+        SCOPED.with(|scoped| scoped.replace(Some(None))),
+        std::marker::PhantomData,
+    )
+}
+/// The registry rows of the content mods' effects, after vanilla's.
+fn mod_effect_defs(effects: impl IntoIterator<Item = ModEffect>) -> Vec<EffectDef> {
+    let leak = |s: String| -> &'static str { Box::leak(s.into_boxed_str()) };
+    effects
         .into_iter()
         .enumerate()
-        .map(|(index, (id, color, category, sort_order, owner))| {
-            debug_assert!(id.contains(':'), "{id} has no namespace");
+        .map(|(index, effect)| {
+            debug_assert!(effect.id.contains(':'), "{} has no namespace", effect.id);
             let def = fx(
                 EFFECTS.len() + index,
-                Box::leak(id.into_boxed_str()),
-                color,
-                category,
+                leak(effect.id),
+                effect.color,
+                effect.category,
             );
+            let modifiers: Vec<EffectModifier> = effect
+                .modifiers
+                .into_iter()
+                .map(|(attribute, id, amount, operation)| {
+                    (leak(attribute), leak(id), amount, operation)
+                })
+                .collect();
             EffectDef {
-                sort_order: sort_order.unwrap_or(def.sort_order),
-                owner: Some(Box::leak(owner.into_boxed_str())),
+                sort_order: effect.sort_order.unwrap_or(def.sort_order),
+                owner: Some(leak(effect.owner)),
+                modifiers: Box::leak(modifiers.into_boxed_slice()),
                 ..def
             }
         })
-        .collect();
-    MOD_EFFECTS.set(defs).is_ok()
+        .collect()
 }
 /// The content mods' effects, in registry order.
 pub fn mod_effects() -> &'static [EffectDef] {
+    #[cfg(any(test, feature = "test-effect-registry"))]
+    if let Some(registered) = SCOPED.with(|scoped| scoped.get()) {
+        return registered.unwrap_or(&[]);
+    }
     MOD_EFFECTS.get().map_or(&[], Vec::as_slice)
 }
 /// Every registered effect: vanilla's, then the content mods'.
@@ -398,31 +482,29 @@ mod tests {
         assert_eq!(effects_color(std::iter::empty()), BASE_POTION_COLOR);
     }
 
-    /// The only test that registers: the registry is set once per process.
+    /// The registry is set once, here once per isolated scope.
     #[test]
     fn mod_effects_follow_vanilla_once_registered() {
+        let _scope = isolate_mod_effects();
+        let stun = (
+            "minecraft:movement_speed".to_owned(),
+            "ruby:effect/stun".to_owned(),
+            -1.0,
+            Operation::AddMultipliedTotal,
+        );
         assert!(register_mod_effects([
-            (
-                "ruby:glow".to_owned(),
-                0xFF0000,
-                Category::Neutral,
-                None,
-                "declaring-mod".into()
-            ),
-            (
-                "ruby:first".to_owned(),
-                0x0000FF,
-                Category::Neutral,
-                Some(-5),
-                "declaring-mod".into()
-            ),
+            ModEffect::new("ruby:glow", 0xFF0000, Category::Neutral, "declaring-mod"),
+            ModEffect {
+                sort_order: Some(-5),
+                modifiers: vec![stun],
+                ..ModEffect::new("ruby:first", 0x0000FF, Category::Neutral, "declaring-mod")
+            },
         ]));
-        assert!(!register_mod_effects([(
-            "ruby:late".to_owned(),
+        assert!(!register_mod_effects([ModEffect::new(
+            "ruby:late",
             1,
             Category::Harmful,
-            None,
-            "other-mod".into()
+            "other-mod"
         )]));
         let glow = effect("ruby:glow").unwrap();
         assert_eq!(glow.owner, Some("declaring-mod"));
@@ -436,6 +518,17 @@ mod tests {
         assert_eq!(effect("ruby:first").unwrap().sort_order, -5);
         assert_eq!(effect("speed").unwrap().sort_order, 3402751);
         assert!(effect("glow").is_none() && effect("ruby:late").is_none());
+        // The declared modifiers ride on the registered effect.
+        assert_eq!(
+            effect_by_index(EFFECTS.len() + 1).unwrap().modifiers,
+            [(
+                "minecraft:movement_speed",
+                "ruby:effect/stun",
+                -1.0,
+                Operation::AddMultipliedTotal
+            )]
+        );
+        assert!(glow.modifiers.is_empty() && effect("speed").unwrap().modifiers.is_empty());
         assert!(is_mod_effect(glow.id) && !is_mod_effect("speed"));
         assert!(!is_mod_effect(namespaced("speed")));
         assert_eq!(namespaced(glow.id), "ruby:glow");
@@ -443,5 +536,30 @@ mod tests {
         let ids: Vec<_> = all_effects().map(|e| e.id).collect();
         assert_eq!(ids.len(), EFFECTS.len() + 2);
         assert_eq!(ids.last(), Some(&"ruby:first"));
+    }
+
+    /// Each fixture thread's scope registers its own list, leaves the
+    /// process's alone, and ends with the scope.
+    #[test]
+    fn isolated_mod_effect_registries_are_per_thread_and_scoped() {
+        std::thread::scope(|threads| {
+            for id in ["ruby:one", "ruby:two"] {
+                threads.spawn(move || {
+                    {
+                        let _scope = isolate_mod_effects();
+                        assert!(mod_effects().is_empty());
+                        assert!(register_mod_effects([ModEffect::new(
+                            id,
+                            1,
+                            Category::Neutral,
+                            "ruby"
+                        )]));
+                        let ids: Vec<_> = mod_effects().iter().map(|e| e.id).collect();
+                        assert_eq!(ids, [id]);
+                    }
+                    assert!(effect(id).is_none());
+                });
+            }
+        });
     }
 }

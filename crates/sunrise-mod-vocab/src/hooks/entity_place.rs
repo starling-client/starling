@@ -1,8 +1,9 @@
 //! The `entity_place` hooks and helpers: declarations the mod API generator reads (see `hooks/mod.rs`).
 
 pub trait Hooks {
-    /// `BlockEvent.EntityPlaceEvent` (and `EntityMultiPlaceEvent`, which extends it): `placer` set the block `state` at `pos` against `placed_against`, before it is written. `placer` is the player for `BlockItem.place` (before the stack shrinks), or the mob for an enderman putting its carried block down and a snow golem's trail; `None` is reserved for a placement with no entity. `placement` is `Single`, or `Multi` with every block the placement writes (a bed's foot and head, a door's halves, a tall plant), where `state` and `pos` stay the primary block (the foot, the lower half). For players, `placed_against` is the state adjacent to the primary placement position opposite the clicked face, including when the clicked block is replaceable. For mobs it is the state below the placement. Cancel stops the whole placement: no block is written, the stack is kept and an enderman keeps carrying its block. Server-side. Diverges from upstream: replaces the listen-only `place_block`; a mod that stopped placements by claiming `native_use_on` cancels here.
-    #[hook(dispatch = "flat", side = "server", contract = "cancel", out = "canceled", neoforge = ["BlockEvent.EntityPlaceEvent", "BlockEvent.EntityMultiPlaceEvent"], cancellable = true)]
+    /// `BlockEvent.EntityPlaceEvent` (and `EntityMultiPlaceEvent`, which extends it): `placer` places `state` at `pos` against `placed_against`. For `BlockItem.place` and mob placement (an enderman's carried block or a snow golem's trail), the hook fires before the block write and before an item stack shrinks; `None` is reserved for a placement with no entity. `placement` is `Single`, or `Multi` with every block the placement writes (a bed's foot and head, a door's halves, a tall plant), where `state` and `pos` stay the primary block (the foot, the lower half). For players, `placed_against` is the state adjacent to the primary placement position opposite the clicked face, including when the clicked block is replaceable. For mobs it is the state below the placement. `PlayerRef::place_block` also fires this hook before commit: `placer` is that player, `placed_against` uses the supplied face, and the level already holds the tentative states and block entities, including every cell written by `Block.setPlacedBy`. Its `Multi` lists each written cell's staged state. Cancel stops the placement: no block is committed, the stack is kept and an enderman keeps carrying its block. Server-side. Diverges from upstream: replaces the listen-only `place_block`; a mod that stopped placements by claiming `native_use_on` cancels here.
+    /// A failed listener's journaled writes are discarded; a panic does not veto the placement or stop later listeners.
+    #[hook(dispatch = "flat", side = "server", contract = "cancel", out = "canceled", neoforge = ["BlockEvent.EntityPlaceEvent", "BlockEvent.EntityMultiPlaceEvent"], cancellable = true, version = 2, listener_transaction = "when_open")]
     fn entity_place(
         placer: Option<EntityRef>,
         pos: BlockPos,
@@ -11,10 +12,4 @@ pub trait Hooks {
         placement: Placement,
         canceled: &mut bool,
     );
-}
-
-/// Original upstream notes; the existing fork event above owns this moment.
-pub trait UpstreamNotes {
-    #[notes = r###"`native_block_place(player, name, stack, pos, state, cancel)`: a guest is about to place `stack` as `state` at `pos`, heard where `BlockItem.place` has found the position and state and checked survival, before anything is set (Bukkit's `BlockPlaceEvent`, NeoForge's `BlockEvent.EntityPlaceEvent`). Set `cancel` and nothing is placed or used; the client sees the blocks and its inventory as they are and `native_place_block` hears nothing. Bundles that use it need `"hooks": @API:block_place@`."###]
-    fn block_place();
 }

@@ -1,0 +1,31 @@
+ids = [
+    "type:RuntimeGenerator",
+    "type:RuntimeGenerator.Noise",
+    "type:RuntimeBiomeSource",
+    "type:RuntimeBiomeSource.Fixed",
+    "type:RuntimeBiomeSource.Checkerboard",
+    "type:RuntimeBiomeSource.MultiNoise",
+    "type:RuntimeBiomeSource.End",
+    "type:RuntimeBiomeSource.Points",
+    "type:RuntimeBiomeSource.Registered",
+    "handle:RuntimeBiomeSource::invalid_field",
+    "type:RuntimeLevel",
+    "type:RuntimeLevel.biome_source",
+    "handle:RuntimeLevel::with_biome_source",
+    "type:RuntimeLevelError",
+    "type:RuntimeLevelError.OutsideNamespace",
+    "type:RuntimeLevelError.NoiseUnsupported",
+    "type:RuntimeLevelError.CapReached",
+    "type:RuntimeLevelError.UnknownBiomeSource",
+    "type:RuntimeLevelError.InvalidBiomeSource",
+    "type:RuntimeLevelError.IncompatibleBiomeSource",
+]
+why = "Runtime levels now pair a registered chunk generator and a biome source like vanilla LevelStem.CODEC and ChunkGenerator, using FixedBiomeSource.CODEC, CheckerboardColumnBiomeSource.CODEC and HolderSetCodec (a single #tag reference or a direct list of biome ids; mixed tag-and-id lists are refused because NeoForge OrHolderSet.createSet collects into an unordered Set whose indexed order is not input order). A custom generator without vanilla stages binds only the biome catalog and preset tables without loading terrain-stage resources and samples through the empty router, as vanilla ChunkMap and ChunkGenerator.doCreateBiomes do with NoiseRouterData.none(); NeoForge LevelStem's seed override does not change that distinction. Vanilla has no runtime open or close API: Sunrise keeps its queued lifecycle and removes the unimplemented noise option, artificial count cap and caller namespace gate."
+migrate = """
+- Replace `RuntimeGenerator::Noise` with `RuntimeGenerator::Mod(id)` for a registered chunk generator, `Flat` for default superflat layers, or `Void` for air. Remove the `NoiseUnsupported`, `CapReached` and `OutsideNamespace` arms from `RuntimeLevelError` matches. Remove `sunrise-max-runtime-levels` from server configuration.
+- Start with `RuntimeLevel::new(type_id, generator, seed)`. To override its default biome source, add `.with_biome_source(RuntimeBiomeSource::Fixed(biome_id))` for `Flat` or `Void`. For `Mod(id)`, use `Fixed`, `Checkerboard { biomes, scale }` (either a single `#namespace:tag` reference or a direct list of biome ids; mixed tag-and-entry lists are refused as `InvalidBiomeSource`), `MultiNoise(preset_id)`, `End`, `Points(biome_points)` or `Registered(source_id)`. `RuntimeLevel` now implements `PartialEq`, not `Eq`, because the source may hold floating-point climate points.
+- Use `RuntimeBiomeSource::invalid_field()` to check local source fields before submitting a request, if needed. `RuntimeLevels::open` also resolves the source against the world's registries.
+- Handle `UnknownBiomeSource` for a missing biome, tag, preset or registered source, `InvalidBiomeSource` for a malformed or unsampleable source, and `IncompatibleBiomeSource` for a non-fixed source supplied to `Flat` or `Void`.
+- The signatures of `RuntimeLevels::open`, `unload` and `delete` are unchanged. None rejects an id for being outside the caller's namespace. `open` and `delete` still refuse vanilla, startup and data-pack ids as `ReservedId`; `unload` requires an open runtime level and otherwise returns `NotOpen`. Non-portable ids remain `InvalidId`. `Unavailable` means there is no open logical server world or its worldgen registries could not be loaded for the requested generator; being outside a mod callback no longer causes it.
+- Keep using `DimensionSettings::biome_source` (or `mod_biome_source`) for startup levels; it now accepts non-fixed sources with registered chunk generators too. A data-pack or saved custom stem must supply a valid `generator.biome_source`; write `{ "type": "minecraft:fixed", "biome": "minecraft:plains" }` explicitly if that is the intended source. A generator with no vanilla stages does not need `settings`; opting into stages still uses the stem's noise settings and their terrain bounds, even if the world disables structures.
+"""

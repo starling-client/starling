@@ -1,0 +1,8 @@
+ids = [
+    "method:prelude::ClientOptionsClientHost::shader_pack_state",
+    "method:RenderAssets::pipeline_pack_bound",
+    "type:ShaderPackState",
+    "type:ShaderPackShadowView",
+]
+why = "Adds ClientOptionsClientHost::shader_pack_state, which reads the active shader pack's cloud hiding, shadow pass (resolution, distance, camera-relative shadow model-view and projection for the current frame) and a generation that changes whenever a pack is loaded, switched or turned off (#5698); and RenderAssets::pipeline_pack_bound, which says whether the active pack bound a program to a pipeline's PackBinding. A pipeline with a PackBinding but no matching pack program is drawn through the mod's own shaders."
+migrate = "Additive only; both new types are #[non_exhaustive]."

@@ -20,6 +20,37 @@ registrar.fluid_interaction(FluidInteraction::new(
 ));
 ```
 
+## Testing and acting in code
+
+When a table entry can't say it, implement `FluidInteractionHandler`: NeoForge's
+`HasFluidInteraction` as `test` and its `FluidInteraction` as `interact`. Register it for the
+source fluid with `registrar.fluid_interaction_handler(lava, Arc::new(MyInteraction))`. It keeps
+its place in registration order among that fluid's table entries.
+
+```rust,ignore
+struct Quench;
+impl FluidInteractionHandler for Quench {
+    fn test(&self, level: &dyn LevelHost, at: FluidInteractionAt) -> bool {
+        let [x, y, z] = [at.relative.x, at.relative.y, at.relative.z];
+        level.block_state([x, y, z]) == level.block_state_id("ruby:frost_block")
+    }
+    fn interact(&self, level: &mut dyn LevelWriteHost, at: FluidInteractionAt) {
+        let pos = [at.pos.x, at.pos.y, at.pos.z];
+        let slag = level.block_state_id("ruby:slag").unwrap();
+        level.set_block(pos, slag, BlockUpdateFlags::NEIGHBORS | BlockUpdateFlags::CLIENTS);
+        level.level_event(1501, pos, 0);
+    }
+}
+```
+
+Each neighbour (above, north, south, west, east) is walked in turn. At each one, the first entry
+that applies runs: a table entry that matches, or a handler whose `test` answers true. That stops
+the spread. `interact` makes its own writes: nothing goes through `fluid_place_block` and no fizz
+plays unless it plays one, as in NeoForge. Handlers run on the server. A panicking callback is
+reported for its mod: its `test` counts as false, and its `interact` stops where it panicked.
+
+## As data
+
 Or as one file per interaction, `data/<mod id>/sunrise/fluid_interaction/<name>.json`, loaded
 with the mod's content (as `data/<mod id>/sunrise/fluid/` is) and not reloaded with data packs:
 
@@ -80,10 +111,7 @@ This is the question a cobblestone-generator shortcut asks (what do this lava so
 fluid beside it make?) without running the interaction on a level that records its writes:
 
 ```rust
-// Does lava here, over `below`, become something beside any of these neighbours?
-fn makes_stone(host: &dyn ServerHost, lava: FluidState, around: [BlockState; 5], below: BlockState) -> Option<BlockState> {
-    around.into_iter().find_map(|neighbour| host.fluid_interaction_result(lava, neighbour, below))
-}
+{{#include ../../../examples/src/world_helpers.rs:makes_stone}}
 ```
 
 ## Diverges from NeoForge
@@ -92,11 +120,10 @@ fn makes_stone(host: &dyn ServerHost, lava: FluidState, around: [BlockState; 5],
   into a cell, keeps vanilla's hard-coded lava check. So there a mod's interaction waits for a
   later neighbour update. Sunrise runs the table at both moments.
 - NeoForge has no pure read: a mod that wants to know the result has to run the interaction against
-  a level that records writes. `fluid_interaction_result` answers it from the table directly.
+  a level that records writes. `fluid_interaction_result` answers it from the table entries
+  directly; a handler reads and writes the live level, so the read passes over it.
 - NeoForge's `FluidPlaceBlockEvent` ignores cancellation; Sunrise's `fluid_place_block` can
   veto, as it already does.
 
-Not offered: a code predicate per check (NeoForge's `HasFluidInteraction`). The table covers
-fluid, block and tag neighbours and the block below; a predicate would be a `FluidPart` method.
 Lava flowing down into water making stone (`LavaFluid.spreadTo`) is a different vanilla rule and
 stays as it is.

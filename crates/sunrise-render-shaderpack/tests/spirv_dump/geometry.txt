@@ -1,0 +1,219 @@
+options defaults {}
+subgroups false
+  folder "" draws Attributes
+    note no program for terrain; nothing draws it
+    note no program for translucent terrain; nothing draws it
+    note shadow: uses a geometry stage (supported for the shadow pass's terrain and entities only); skipped
+    note shadow: no program; the shadow map stays clear
+    sizes 7c72221e55a2a07da8d7677f435a9e7ef2278c125c142620e28251595a4c3538
+    program 0 composite Composite
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv 019d1b59139a6e01b99e7be1e53171fa449b8a4fcf278224cc98ce2a37a2150c words 1924
+      fragment spirv b69e27b57e754b53c9f5c64fb9011f6849eb01f514a97b9fd71853d906ca8977 words 5009
+      interface e6c03d9b2493e6893e46ddfc8297942ecdbce98499ba2786fe8d4aeff1098f8c
+    program 1 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      geometry triangles 4
+      geometry-vertex spirv 9a12f0436ca34e669ca5077968f94706007d7097629e6063a33170a2c7aa6f2f words 6581
+      fragment spirv bd9492b1415b1aa0b57b0f4694f4674e603f7f9e67649c5ce55f24056629560a words 2123
+      interface accb515286113ece3440d69a0d619dba3d44559adea47ddcf0fabb4f24027bec
+    program 2 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      geometry triangles 4
+      geometry-vertex spirv 9a12f0436ca34e669ca5077968f94706007d7097629e6063a33170a2c7aa6f2f words 6581
+      fragment spirv bd9492b1415b1aa0b57b0f4694f4674e603f7f9e67649c5ce55f24056629560a words 2123
+      interface accb515286113ece3440d69a0d619dba3d44559adea47ddcf0fabb4f24027bec
+  folder "" draws Pages
+    note no program for terrain; nothing draws it
+    note no program for translucent terrain; nothing draws it
+    note shadow: uses a geometry stage (supported for the shadow pass's terrain and entities only); skipped
+    note shadow: no program; the shadow map stays clear
+    sizes 7c72221e55a2a07da8d7677f435a9e7ef2278c125c142620e28251595a4c3538
+    program 0 composite Composite
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv 019d1b59139a6e01b99e7be1e53171fa449b8a4fcf278224cc98ce2a37a2150c words 1924
+      fragment spirv b69e27b57e754b53c9f5c64fb9011f6849eb01f514a97b9fd71853d906ca8977 words 5009
+      interface e6c03d9b2493e6893e46ddfc8297942ecdbce98499ba2786fe8d4aeff1098f8c
+    program 1 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      geometry triangles 4
+      geometry-vertex spirv 9a12f0436ca34e669ca5077968f94706007d7097629e6063a33170a2c7aa6f2f words 6581
+      fragment spirv bd9492b1415b1aa0b57b0f4694f4674e603f7f9e67649c5ce55f24056629560a words 2123
+      interface accb515286113ece3440d69a0d619dba3d44559adea47ddcf0fabb4f24027bec
+    program 2 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      geometry triangles 4
+      geometry-vertex spirv 9a12f0436ca34e669ca5077968f94706007d7097629e6063a33170a2c7aa6f2f words 6581
+      fragment spirv bd9492b1415b1aa0b57b0f4694f4674e603f7f9e67649c5ce55f24056629560a words 2123
+      interface accb515286113ece3440d69a0d619dba3d44559adea47ddcf0fabb4f24027bec
+  folder "" draws Normals
+    note no program for terrain; nothing draws it
+    note no program for translucent terrain; nothing draws it
+    note shadow: uses a geometry stage (supported for the shadow pass's terrain and entities only); skipped
+    note shadow: no program; the shadow map stays clear
+    sizes 7c72221e55a2a07da8d7677f435a9e7ef2278c125c142620e28251595a4c3538
+    program 0 composite Composite
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv 019d1b59139a6e01b99e7be1e53171fa449b8a4fcf278224cc98ce2a37a2150c words 1924
+      fragment spirv b69e27b57e754b53c9f5c64fb9011f6849eb01f514a97b9fd71853d906ca8977 words 5009
+      interface e6c03d9b2493e6893e46ddfc8297942ecdbce98499ba2786fe8d4aeff1098f8c
+    program 1 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      geometry triangles 4
+      geometry-vertex spirv 9a12f0436ca34e669ca5077968f94706007d7097629e6063a33170a2c7aa6f2f words 6581
+      fragment spirv bd9492b1415b1aa0b57b0f4694f4674e603f7f9e67649c5ce55f24056629560a words 2123
+      interface accb515286113ece3440d69a0d619dba3d44559adea47ddcf0fabb4f24027bec
+    program 2 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      geometry triangles 4
+      geometry-vertex spirv 9a12f0436ca34e669ca5077968f94706007d7097629e6063a33170a2c7aa6f2f words 6581
+      fragment spirv bd9492b1415b1aa0b57b0f4694f4674e603f7f9e67649c5ce55f24056629560a words 2123
+      interface accb515286113ece3440d69a0d619dba3d44559adea47ddcf0fabb4f24027bec
+  folder "" draws Flat
+    note no program for terrain; nothing draws it
+    note no program for translucent terrain; nothing draws it
+    sizes 7c72221e55a2a07da8d7677f435a9e7ef2278c125c142620e28251595a4c3538
+    program 0 composite Composite
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv 019d1b59139a6e01b99e7be1e53171fa449b8a4fcf278224cc98ce2a37a2150c words 1924
+      fragment spirv b69e27b57e754b53c9f5c64fb9011f6849eb01f514a97b9fd71853d906ca8977 words 5009
+      interface e6c03d9b2493e6893e46ddfc8297942ecdbce98499ba2786fe8d4aeff1098f8c
+    program 1 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      geometry triangles 4
+      geometry-vertex spirv 464c615225e45ce81c9ad71641e18d56fdb4fb1c7325e72dab02c2347a907e6e words 10024
+      fragment spirv bd9492b1415b1aa0b57b0f4694f4674e603f7f9e67649c5ce55f24056629560a words 2123
+      interface accb515286113ece3440d69a0d619dba3d44559adea47ddcf0fabb4f24027bec
+    program 2 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      geometry triangles 4
+      geometry-vertex spirv 464c615225e45ce81c9ad71641e18d56fdb4fb1c7325e72dab02c2347a907e6e words 10024
+      fragment spirv bd9492b1415b1aa0b57b0f4694f4674e603f7f9e67649c5ce55f24056629560a words 2123
+      interface accb515286113ece3440d69a0d619dba3d44559adea47ddcf0fabb4f24027bec
+    program 3 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      geometry triangles 4
+      geometry-vertex spirv 464c615225e45ce81c9ad71641e18d56fdb4fb1c7325e72dab02c2347a907e6e words 10024
+      fragment spirv bd9492b1415b1aa0b57b0f4694f4674e603f7f9e67649c5ce55f24056629560a words 2123
+      interface accb515286113ece3440d69a0d619dba3d44559adea47ddcf0fabb4f24027bec
+    program 4 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      geometry triangles 4
+      geometry-vertex spirv 9a12f0436ca34e669ca5077968f94706007d7097629e6063a33170a2c7aa6f2f words 6581
+      fragment spirv bd9492b1415b1aa0b57b0f4694f4674e603f7f9e67649c5ce55f24056629560a words 2123
+      interface accb515286113ece3440d69a0d619dba3d44559adea47ddcf0fabb4f24027bec
+    program 5 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      geometry triangles 4
+      geometry-vertex spirv 9a12f0436ca34e669ca5077968f94706007d7097629e6063a33170a2c7aa6f2f words 6581
+      fragment spirv bd9492b1415b1aa0b57b0f4694f4674e603f7f9e67649c5ce55f24056629560a words 2123
+      interface accb515286113ece3440d69a0d619dba3d44559adea47ddcf0fabb4f24027bec
+subgroups true
+  folder "" draws Attributes
+    note no program for terrain; nothing draws it
+    note no program for translucent terrain; nothing draws it
+    note shadow: uses a geometry stage (supported for the shadow pass's terrain and entities only); skipped
+    note shadow: no program; the shadow map stays clear
+    sizes 7c72221e55a2a07da8d7677f435a9e7ef2278c125c142620e28251595a4c3538
+    program 0 composite Composite
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv 019d1b59139a6e01b99e7be1e53171fa449b8a4fcf278224cc98ce2a37a2150c words 1924
+      fragment spirv b69e27b57e754b53c9f5c64fb9011f6849eb01f514a97b9fd71853d906ca8977 words 5009
+      interface e6c03d9b2493e6893e46ddfc8297942ecdbce98499ba2786fe8d4aeff1098f8c
+    program 1 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      geometry triangles 4
+      geometry-vertex spirv 9a12f0436ca34e669ca5077968f94706007d7097629e6063a33170a2c7aa6f2f words 6581
+      fragment spirv bd9492b1415b1aa0b57b0f4694f4674e603f7f9e67649c5ce55f24056629560a words 2123
+      interface accb515286113ece3440d69a0d619dba3d44559adea47ddcf0fabb4f24027bec
+    program 2 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      geometry triangles 4
+      geometry-vertex spirv 9a12f0436ca34e669ca5077968f94706007d7097629e6063a33170a2c7aa6f2f words 6581
+      fragment spirv bd9492b1415b1aa0b57b0f4694f4674e603f7f9e67649c5ce55f24056629560a words 2123
+      interface accb515286113ece3440d69a0d619dba3d44559adea47ddcf0fabb4f24027bec
+  folder "" draws Pages
+    note no program for terrain; nothing draws it
+    note no program for translucent terrain; nothing draws it
+    note shadow: uses a geometry stage (supported for the shadow pass's terrain and entities only); skipped
+    note shadow: no program; the shadow map stays clear
+    sizes 7c72221e55a2a07da8d7677f435a9e7ef2278c125c142620e28251595a4c3538
+    program 0 composite Composite
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv 019d1b59139a6e01b99e7be1e53171fa449b8a4fcf278224cc98ce2a37a2150c words 1924
+      fragment spirv b69e27b57e754b53c9f5c64fb9011f6849eb01f514a97b9fd71853d906ca8977 words 5009
+      interface e6c03d9b2493e6893e46ddfc8297942ecdbce98499ba2786fe8d4aeff1098f8c
+    program 1 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      geometry triangles 4
+      geometry-vertex spirv 9a12f0436ca34e669ca5077968f94706007d7097629e6063a33170a2c7aa6f2f words 6581
+      fragment spirv bd9492b1415b1aa0b57b0f4694f4674e603f7f9e67649c5ce55f24056629560a words 2123
+      interface accb515286113ece3440d69a0d619dba3d44559adea47ddcf0fabb4f24027bec
+    program 2 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      geometry triangles 4
+      geometry-vertex spirv 9a12f0436ca34e669ca5077968f94706007d7097629e6063a33170a2c7aa6f2f words 6581
+      fragment spirv bd9492b1415b1aa0b57b0f4694f4674e603f7f9e67649c5ce55f24056629560a words 2123
+      interface accb515286113ece3440d69a0d619dba3d44559adea47ddcf0fabb4f24027bec
+  folder "" draws Normals
+    note no program for terrain; nothing draws it
+    note no program for translucent terrain; nothing draws it
+    note shadow: uses a geometry stage (supported for the shadow pass's terrain and entities only); skipped
+    note shadow: no program; the shadow map stays clear
+    sizes 7c72221e55a2a07da8d7677f435a9e7ef2278c125c142620e28251595a4c3538
+    program 0 composite Composite
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv 019d1b59139a6e01b99e7be1e53171fa449b8a4fcf278224cc98ce2a37a2150c words 1924
+      fragment spirv b69e27b57e754b53c9f5c64fb9011f6849eb01f514a97b9fd71853d906ca8977 words 5009
+      interface e6c03d9b2493e6893e46ddfc8297942ecdbce98499ba2786fe8d4aeff1098f8c
+    program 1 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      geometry triangles 4
+      geometry-vertex spirv 9a12f0436ca34e669ca5077968f94706007d7097629e6063a33170a2c7aa6f2f words 6581
+      fragment spirv bd9492b1415b1aa0b57b0f4694f4674e603f7f9e67649c5ce55f24056629560a words 2123
+      interface accb515286113ece3440d69a0d619dba3d44559adea47ddcf0fabb4f24027bec
+    program 2 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      geometry triangles 4
+      geometry-vertex spirv 9a12f0436ca34e669ca5077968f94706007d7097629e6063a33170a2c7aa6f2f words 6581
+      fragment spirv bd9492b1415b1aa0b57b0f4694f4674e603f7f9e67649c5ce55f24056629560a words 2123
+      interface accb515286113ece3440d69a0d619dba3d44559adea47ddcf0fabb4f24027bec
+  folder "" draws Flat
+    note no program for terrain; nothing draws it
+    note no program for translucent terrain; nothing draws it
+    sizes 7c72221e55a2a07da8d7677f435a9e7ef2278c125c142620e28251595a4c3538
+    program 0 composite Composite
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv 019d1b59139a6e01b99e7be1e53171fa449b8a4fcf278224cc98ce2a37a2150c words 1924
+      fragment spirv b69e27b57e754b53c9f5c64fb9011f6849eb01f514a97b9fd71853d906ca8977 words 5009
+      interface e6c03d9b2493e6893e46ddfc8297942ecdbce98499ba2786fe8d4aeff1098f8c
+    program 1 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      geometry triangles 4
+      geometry-vertex spirv 464c615225e45ce81c9ad71641e18d56fdb4fb1c7325e72dab02c2347a907e6e words 10024
+      fragment spirv bd9492b1415b1aa0b57b0f4694f4674e603f7f9e67649c5ce55f24056629560a words 2123
+      interface accb515286113ece3440d69a0d619dba3d44559adea47ddcf0fabb4f24027bec
+    program 2 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      geometry triangles 4
+      geometry-vertex spirv 464c615225e45ce81c9ad71641e18d56fdb4fb1c7325e72dab02c2347a907e6e words 10024
+      fragment spirv bd9492b1415b1aa0b57b0f4694f4674e603f7f9e67649c5ce55f24056629560a words 2123
+      interface accb515286113ece3440d69a0d619dba3d44559adea47ddcf0fabb4f24027bec
+    program 3 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      geometry triangles 4
+      geometry-vertex spirv 464c615225e45ce81c9ad71641e18d56fdb4fb1c7325e72dab02c2347a907e6e words 10024
+      fragment spirv bd9492b1415b1aa0b57b0f4694f4674e603f7f9e67649c5ce55f24056629560a words 2123
+      interface accb515286113ece3440d69a0d619dba3d44559adea47ddcf0fabb4f24027bec
+    program 4 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      geometry triangles 4
+      geometry-vertex spirv 9a12f0436ca34e669ca5077968f94706007d7097629e6063a33170a2c7aa6f2f words 6581
+      fragment spirv bd9492b1415b1aa0b57b0f4694f4674e603f7f9e67649c5ce55f24056629560a words 2123
+      interface accb515286113ece3440d69a0d619dba3d44559adea47ddcf0fabb4f24027bec
+    program 5 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      geometry triangles 4
+      geometry-vertex spirv 9a12f0436ca34e669ca5077968f94706007d7097629e6063a33170a2c7aa6f2f words 6581
+      fragment spirv bd9492b1415b1aa0b57b0f4694f4674e603f7f9e67649c5ce55f24056629560a words 2123
+      interface accb515286113ece3440d69a0d619dba3d44559adea47ddcf0fabb4f24027bec

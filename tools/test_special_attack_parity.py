@@ -18,11 +18,11 @@ from pathlib import Path
 import subprocess
 import tempfile
 
-try:
-    from . import lab, test_rust_parity as base
-except ImportError:
-    import lab
-    import test_rust_parity as base
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_rust_parity as base
 
 
 def cases():
@@ -57,34 +57,12 @@ def cases():
                 yield dict(seed=0, time=100, pos=[0, 0, 0], cells=[], items=[], entities=[], special_attack=op)
 
 
-def build_test_binary(log_path):
-    """Build the gameplay fixture for the parity runner's argument-free invocation."""
-    with log_path.open('w', encoding='utf-8') as log:
-        subprocess.run(['cargo', 'test', '--locked', '-p', 'sunrise-client', '--lib', '--no-run',
-                        '--message-format=json'], cwd=lab.ROOT, stdout=log,
-                       stderr=subprocess.STDOUT, check=True, timeout=900)
-    binaries = []
-    for line in log_path.read_text(encoding='utf-8').splitlines():
-        try:
-            message = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if (message.get('reason') == 'compiler-artifact' and message.get('executable')
-                and message.get('profile', {}).get('test')
-                and message.get('target', {}).get('name') == 'sunrise_client'
-                and message.get('target', {}).get('kind') == ['lib']):
-            binaries.append(Path(message['executable']).resolve())
-    if len(binaries) != 1:
-        raise RuntimeError('Cargo did not report exactly one gameplay test executable')
-    return binaries[0]
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--resources', type=Path,
                         default=Path(os.environ.get('SUNRISE_TEST_RESOURCES', lab.RESOURCES)))
     parser.add_argument('--test-binary', type=Path,
-                        help='Previously built sunrise-client --lib test artifact; otherwise built automatically')
+                        help='A previously built sunrise-parity-fixtures binary; otherwise built automatically')
     parser.add_argument('--work', type=Path, default=lab.LOCAL / 'special-attack-parity')
     args = parser.parse_args()
     lock, jars, libraries = base.verify_artifacts()
@@ -103,7 +81,7 @@ def main():
     source_hashes = base.source_hashes(source_paths)
     work = args.work.resolve()
     work.mkdir(parents=True, exist_ok=True)
-    binary = args.test_binary.resolve() if args.test_binary else build_test_binary(work / 'compile-rust.log')
+    binary = args.test_binary.resolve() if args.test_binary else lab.parity_fixtures()
     binary_hash = lab.digest(binary, 'sha256')
     for name in ('native.txt', 'rust.txt', 'report.json', 'differences.json', 'tail-only-target-differences.json'):
         (work / name).unlink(missing_ok=True)

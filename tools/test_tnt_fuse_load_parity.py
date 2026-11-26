@@ -8,8 +8,10 @@ import json
 from pathlib import Path
 import sys
 
-import test_command_exec_parity as runner
-from tnt_fuse_load_corpus import cases
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_command_exec_parity as runner
+from tools.tnt_fuse_load_corpus import cases
 
 
 def main():

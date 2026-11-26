@@ -26,12 +26,10 @@ impl Streaming {
             ),
             light: (
                 self.lighting.len(),
-                table(self.lighting.capacity(), size_of::<((i32, i32), u64)>())
-                    + table(
-                        self.light_snapshots.capacity(),
-                        size_of::<((i32, i32), u64)>(),
-                    )
-                    + self.light_log.capacity() * size_of::<(u64, (i32, i32, i32))>()
+                table(
+                    self.lighting.capacity(),
+                    size_of::<((i32, i32), super::LightJob)>(),
+                ) + self.light_log.capacity() * size_of::<(u64, (i32, i32, i32))>()
                     + self.light_scratch.capacity() * size_of::<(i64, i32, i32)>(),
             ),
         }

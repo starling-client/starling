@@ -17,8 +17,7 @@ impl OptionsUi {
     /// through them, so no input path can miss one.
     pub(super) fn shell(&self) -> Option<&dyn shell::Hosted> {
         match self.page() {
-            Page::Extras => Some(&self.extras),
-            page if Self::graphics_page(page).is_some() => Some(&self.graphics),
+            page if Self::sunrise_tab(page).is_some() => Some(&self.sunrise),
             Page::ControllerRadial => Some(&self.radial),
             Page::ControllerRadialPick => Some(&self.radial_pick),
             page if Self::controller_page(page).is_some() => Some(&self.controller),
@@ -28,10 +27,12 @@ impl OptionsUi {
         }
     }
     pub(super) fn shell_mut(&mut self) -> Option<&mut dyn shell::Hosted> {
-        self.graphics.screen.output = self.output;
+        self.sunrise.screen.graphics.output = self.output;
+        if Self::sunrise_tab(self.page()).is_some() {
+            self.sunrise_packs();
+        }
         match self.page() {
-            Page::Extras => Some(&mut self.extras),
-            page if Self::graphics_page(page).is_some() => Some(&mut self.graphics),
+            page if Self::sunrise_tab(page).is_some() => Some(&mut self.sunrise),
             Page::ControllerRadial => Some(&mut self.radial),
             Page::ControllerRadialPick => Some(&mut self.radial_pick),
             page if Self::controller_page(page).is_some() => Some(&mut self.controller),
@@ -39,6 +40,29 @@ impl OptionsUi {
             Page::PackOptions => Some(&mut self.pack_options),
             _ => None,
         }
+    }
+    /// The packs with Polytone options, by id with their title, for Sunrise Settings' Resource
+    /// Pack Options page: the game fills `pack_configs` and `pack_infos`.
+    fn sunrise_packs(&mut self) {
+        let with = |c: &sunrise_polytone::pack::Configs| !c.entries().is_empty();
+        let ids = self
+            .pack_configs
+            .iter()
+            .filter(|(_, c)| with(c))
+            .map(|p| p.0);
+        let known = self.sunrise.screen.packs_with_options.iter().map(|p| &p.0);
+        if ids.eq(known) {
+            return;
+        }
+        let infos = &self.pack_infos;
+        let title = |id: &str| {
+            let info = infos.iter().find(|p| p.id == id);
+            info.map_or_else(|| id.to_owned(), |p| p.title.plain())
+        };
+        let configs = self.pack_configs.iter().filter(|(_, c)| with(c));
+        let packs = &mut self.sunrise.screen.packs_with_options;
+        packs.clear();
+        packs.extend(configs.map(|(id, _)| (id.clone(), title(id))));
     }
     /// Pack Options for the pack `id`, from the pack screen: its Polytone config entries.
     pub(super) fn open_pack_options(&mut self, id: &str) {
@@ -65,9 +89,8 @@ impl OptionsUi {
             return;
         }
         // Every shell: the click may have changed the page.
-        let shells: [&mut dyn shell::Hosted; 7] = [
-            &mut self.extras,
-            &mut self.graphics,
+        let shells: [&mut dyn shell::Hosted; 6] = [
+            &mut self.sunrise,
             &mut self.controller,
             &mut self.radial,
             &mut self.radial_pick,
@@ -87,17 +110,25 @@ impl OptionsUi {
     /// The window's size, for the graphics and controller screens' rows that step an option
     /// (`Opt::cycle`, which a fullscreen resolution needs): before each input that can press one.
     pub(super) fn shell_framebuffers(&mut self) {
-        self.graphics.screen.framebuffer = self.framebuffer;
+        self.sunrise.screen.graphics.framebuffer = self.framebuffer;
         self.controller.screen.framebuffer = self.framebuffer;
     }
     /// Who and what Controller Settings is about: the game sets it before each draw.
     pub fn set_controller_context(&mut self, context: crate::controller_ui::Context) {
         self.controller.screen.context = context;
     }
-    /// The binding the screen waits on: a controller button's, else a key's.
+    /// The binding the screen waits on: a controller button's, a page's key row, or a key's.
     pub(super) fn waiting(&self) -> Option<shell::Capture> {
         let pad = self.selected_pad_action.map(shell::Capture::Pad);
-        pad.or(self.selected_key.map(shell::Capture::Key))
+        let page = self
+            .selected_page_key
+            .filter(|_| self.selected_key == Some(super::pages::PAGE_KEY))
+            .and_then(super::pages::find_page_key)
+            .map(|(page, row)| shell::Capture::Page(page, row));
+        pad.or(page).or(self
+            .selected_key
+            .filter(|k| *k != super::pages::PAGE_KEY)
+            .map(shell::Capture::Key))
     }
     /// What a shell screen's outputs do to these options.
     pub(super) fn shell_events(
@@ -110,8 +141,18 @@ impl OptionsUi {
             match output {
                 shell::Output::Event(event) => events.push(event),
                 shell::Output::Bind(shell::Capture::Key(name)) => self.selected_key = Some(name),
+                shell::Output::Bind(shell::Capture::Page(page, row)) => {
+                    self.selected_page_key = super::pages::page_key_at(page, row);
+                    self.selected_key = self.selected_page_key.map(|_| super::pages::PAGE_KEY);
+                }
                 shell::Output::Bind(shell::Capture::Pad(action)) => {
                     self.selected_pad_action = Some(action)
+                }
+                // A row of Sunrise Settings' Resource Pack Options: that pack's options.
+                shell::Output::Push(Page::PackOptions)
+                    if let Some(id) = self.sunrise.screen.take_opening() =>
+                {
+                    self.open_pack_options(&id);
                 }
                 shell::Output::Push(page) => {
                     if page == Page::HdrCalibration {
@@ -174,7 +215,6 @@ impl OptionsUi {
     /// Where the shader screen opens for `page`, if it is one of its pages.
     pub(super) fn shader_page(page: Page) -> Option<crate::shader_ui::Tab> {
         match page {
-            Page::ShaderPacks => Some(crate::shader_ui::Tab::Packs),
             Page::ShaderOptions => Some(crate::shader_ui::Tab::Screen(0)),
             _ => None,
         }

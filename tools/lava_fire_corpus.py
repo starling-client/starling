@@ -3,10 +3,12 @@
 move collects inside-block effects. Each kind below sits still in a lava pool (no gravity, no motion, no acceleration),
 beside an air control of the same kind; their Fire and presence are read after 1, 2, 5 and 20 ticks, and the
 falling block's Pos and Time (its first tick, which comes before the late pass) with the lava cell it sits in."""
-try:
-    from .command_exec_corpus import cmd, setup
-except ImportError:
-    from command_exec_corpus import cmd, setup
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools.command_exec_corpus import cmd, setup
 
 # (name, summon id, extra NBT): projectiles of every family the issue names, a falling block and an orb.
 KINDS = [

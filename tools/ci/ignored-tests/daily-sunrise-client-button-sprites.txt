@@ -1,1 +1,1 @@
-sunrise-client game::native_client_services::tests::fifty_sprite_buttons_keep_their_pixels_and_accessibility lib daily resources
+sunrise-client game::native_hooks::base::screen_widgets_tests::mounted_button_sprites_keep_their_pixels_and_accessibility lib daily child-process

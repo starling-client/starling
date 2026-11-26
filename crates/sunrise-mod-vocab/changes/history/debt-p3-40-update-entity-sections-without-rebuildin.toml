@@ -1,0 +1,4 @@
+# Engine-only: the surface diff accepts active notes only for changed catalog IDs.
+ids = []
+why = "Vanilla 26.3 PersistentEntitySectionManager.Callback.onMove uses EntitySectionStorage to file the moved entity before NeoForge posts EntityEvent.EnteringSection. Sunrise reuses the borrowed tick's mob slots when listeners leave the pass unchanged. Crossings queued during an owning callback, including a vehicle teleport's passenger writes, are told in write order with the owning Host before the pass resumes."
+migrate = "No mod source or manifest changes. Keep implementing Hooks::entity_entering_section with HostSide and EntityEnteringSectionEvent; the hook ID, arguments and declared contract are unchanged."

@@ -113,15 +113,19 @@ pub fn silverfish_hurt(m: &mut Mob, source: &Damage) {
 struct SilverfishWakeUpFriends;
 impl Goal for SilverfishWakeUpFriends {
     goal_clone!();
+    #[inline]
     fn name(&self) -> &'static str {
         "SilverfishWakeUpFriendsGoal"
     }
+    #[inline]
     fn flags(&self) -> u8 {
         0
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, _cx: &mut Cx) -> bool {
         m.extra.counter > 0
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         m.extra.counter -= 1;
         if m.extra.counter > 0 {
@@ -184,12 +188,15 @@ impl Default for SilverfishMergeWithStone {
 }
 impl Goal for SilverfishMergeWithStone {
     goal_clone!();
+    #[inline]
     fn name(&self) -> &'static str {
         "SilverfishMergeWithStoneGoal"
     }
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if m.ai.target.is_some() || !m.ai.nav.is_done() {
             return false;
@@ -223,9 +230,11 @@ impl Goal for SilverfishMergeWithStone {
         self.merge = None;
         self.stroll.can_use(m, cx)
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         self.merge.is_none() && self.stroll.can_continue(m, cx)
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         let Some(pos) = self.merge else {
             return self.stroll.start(m, cx);
@@ -239,6 +248,7 @@ impl Goal for SilverfishMergeWithStone {
             m.removed = true;
         }
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.stroll.stop(m, cx);
     }
@@ -268,14 +278,17 @@ fn dark_enough(m: &Mob, w: &MobWorld) -> bool {
 pub struct SpiderAttack(MeleeAttack);
 impl Goal for SpiderAttack {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         self.0.flags()
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         // SpiderAttackGoal.canUse: not while it is a vehicle (`isVehicle`:
         // a player or a mob on its back).
         self.0.can_use(m, cx) && m.rider.is_none() && m.extra.rider.is_none()
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if mob_brightness(m, cx.w) >= 0.5 && m.random.next_int_bound(100).unwrap_or(1) == 0 {
             m.set_ai_target(cx.w, None);
@@ -283,15 +296,19 @@ impl Goal for SpiderAttack {
         }
         self.0.can_continue(m, cx)
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.start(m, cx)
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.stop(m, cx)
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         true
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.tick(m, cx)
     }
@@ -303,25 +320,31 @@ pub struct Swell {
 }
 impl Goal for Swell {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         let close = m
             .target_info(cx.w)
             .is_some_and(|t| t.alive && m.distance_sqr(t.position) < 9.0);
         m.extra.counter > 0 || close
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, _: &mut Cx) {
         m.nav_stop();
         self.target = m.ai.target;
     }
+    #[inline]
     fn stop(&mut self, _: &mut Mob, _: &mut Cx) {
         self.target = None;
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         true
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         let dir = match self
             .target

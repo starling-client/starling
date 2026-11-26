@@ -4,7 +4,7 @@ use core::iter::Peekable;
 use pp_rs::token::{PreprocessorError, Token as PPToken, TokenValue as PPTokenValue};
 
 use super::{
-    ast::{FunctionKind, Profile, TypeQualifiers},
+    ast::{FunctionKind, Profile, TypeQualifiers, VariableReference},
     context::{Context, ExprPos},
     error::ExpectedToken,
     error::{Error, ErrorKind},
@@ -209,6 +209,9 @@ impl<'source> ParsingContext<'source> {
             frontend,
             ctx.module,
             ctx.global_expression_kind_tracker,
+            // Inside another constant expression, the names in scope are still those where
+            // the outermost one is written.
+            ctx.enclosing.unwrap_or(&ctx.symbol_table),
         )?;
 
         let res = ctx.module.to_ctx().get_const_val(const_expr);
@@ -233,8 +236,10 @@ impl<'source> ParsingContext<'source> {
         frontend: &mut Frontend,
         module: &mut Module,
         global_expression_kind_tracker: &mut crate::proc::ExpressionKindTracker,
+        enclosing: &crate::front::SymbolTable<String, VariableReference>,
     ) -> Result<(Handle<Expression>, Span)> {
         let mut ctx = Context::new(frontend, module, true, global_expression_kind_tracker)?;
+        ctx.enclosing = Some(enclosing);
 
         let mut stmt_ctx = ctx.stmt_ctx();
         let expr = self.parse_conditional(frontend, &mut ctx, &mut stmt_ctx, None)?;

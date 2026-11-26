@@ -1609,7 +1609,6 @@ impl Def {
                     | S::ZombieVillager
                     | S::ZombifiedPiglin
             ),
-            tick_alone: false,
         }
     }
     fn hostile_class(&self) -> bool {

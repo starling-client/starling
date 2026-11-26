@@ -6,7 +6,12 @@ modifier add refuses an id the instance already holds (transient or not);
 modifier remove takes it away whatever kind it is; the next setBaby
 (an IsBaby merge) puts the transient one back for a baby.
 """
-from command_exec_corpus import cmd
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools.command_exec_corpus import cmd
 
 ZOMBIE = 'NoAI:1b,NoGravity:1b,PersistenceRequired:1b,Silent:1b,Health:20f'
 ATTR = 'minecraft:movement_speed'

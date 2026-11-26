@@ -20,6 +20,9 @@ use sunrise_client::{
 /// Nothing but the entity: these predicates read only its type and components.
 struct Empty;
 impl World for Empty {
+    fn is_loaded(&self, _: [i32; 3]) -> bool {
+        false
+    }
     fn dimension(&self) -> &str {
         "minecraft:overworld"
     }
@@ -73,14 +76,43 @@ pub fn main() -> Result<()> {
         writeln!(out, "== {n}")?;
         let kind = c["type"].as_str().unwrap();
         let s = species(kind);
-        let variant = variant_index(s, c["variant"].as_str().unwrap());
+        let raw_variant = c["variant"].as_str().unwrap();
+        let components = match s {
+            Species::Wolf
+            | Species::Cat
+            | Species::Pig
+            | Species::Cow
+            | Species::Chicken
+            | Species::Frog
+            | Species::ZombieNautilus => {
+                let key = match s {
+                    Species::Wolf => "minecraft:wolf/variant",
+                    Species::Cat => "minecraft:cat/variant",
+                    Species::Pig => "minecraft:pig/variant",
+                    Species::Cow => "minecraft:cow/variant",
+                    Species::Chicken => "minecraft:chicken/variant",
+                    Species::Frog => "minecraft:frog/variant",
+                    _ => "minecraft:zombie_nautilus/variant",
+                };
+                let full = if raw_variant.contains(':') {
+                    raw_variant.to_owned()
+                } else {
+                    format!("minecraft:{raw_variant}")
+                };
+                std::iter::once((key.to_owned(), full)).collect()
+            }
+            _ => {
+                let variant = variant_index(s, raw_variant);
+                species_variant_component(s, variant)
+                    .map(|(id, v)| (id.to_owned(), v))
+                    .into_iter()
+                    .collect()
+            }
+        };
         let view = EntityView {
             kind: kind.to_owned(),
             position: [0.5, 64.0, 0.5],
-            components: species_variant_component(s, variant)
-                .map(|(id, v)| (id.to_owned(), v))
-                .into_iter()
-                .collect(),
+            components,
             ..Default::default()
         };
         for p in c["predicates"].as_array().unwrap() {

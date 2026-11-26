@@ -500,6 +500,12 @@ impl Game<'_> {
         true
     }
 
+    /// `LevelChunk.removeGameEventListener`: unregister a sculk block entity's
+    /// game-event listener when its block entity is removed.
+    pub(super) fn sculk_unregister_listener(&mut self, key: (i32, i32, i32)) {
+        self.sculk.index.remove(&key);
+    }
+
     fn sculk_sync_writes(&mut self) {
         let writes = std::mem::take(&mut self.world.watched_writes);
         for (key, old, new) in writes {
@@ -975,9 +981,10 @@ impl Game<'_> {
         if dist_sqr(source_block, key) > i64::from(radius * radius) {
             return;
         }
+        let tags = self.items().game_event_tags.clone();
         let listens = match kind {
-            SculkKind::Shrieker => sculk::shrieker_can_listen(event),
-            _ => sculk::is_vibration(event),
+            SculkKind::Shrieker => sculk::shrieker_can_listen(&tags, event),
+            _ => sculk::is_vibration(&tags, event),
         };
         // VibrationSystem.User.isValidVibration: a player sneaking past a
         // sensor, whose step it ignores, is AVOID_VIBRATION (sensors only;
@@ -987,11 +994,11 @@ impl Game<'_> {
             && ctx.source == Some(Who::Player.into())
             && !ctx.spectator
             && ctx.stepping_carefully
-            && sculk::ignored_when_sneaking(event)
+            && sculk::ignored_when_sneaking(&tags, event)
         {
             self.trigger_player("minecraft:avoid_vibration");
         }
-        if !sculk::valid_vibration(listens, event, ctx) {
+        if !sculk::valid_vibration(&tags, listens, event, ctx) {
             return;
         }
         let state = self.world.block(key.0, key.1, key.2);
@@ -1064,12 +1071,21 @@ impl Game<'_> {
         let now = self.world.game_time;
         let ctx = warden::heard_by(*ctx, &self.mob_teams(), self.mobs[index].id);
         let (occludes, world) = (&self.sculk.tables.occludes, &self.world);
-        let avoided = warden::listen(&mut self.mobs[index], now, event, pos, &ctx, |a, b| {
-            sculk::is_occluded(a, b, |p| {
-                let state = world.block(p.x, p.y, p.z);
-                occludes.get(state.0 as usize).copied().unwrap_or(false)
-            })
-        });
+        let tags = self.items().game_event_tags.clone();
+        let avoided = warden::listen(
+            &mut self.mobs[index],
+            now,
+            event,
+            pos,
+            &ctx,
+            &tags,
+            |a, b| {
+                sculk::is_occluded(a, b, |p| {
+                    let state = world.block(p.x, p.y, p.z);
+                    occludes.get(state.0 as usize).copied().unwrap_or(false)
+                })
+            },
+        );
         if avoided {
             self.trigger_player("minecraft:avoid_vibration");
         }
@@ -1081,12 +1097,14 @@ impl Game<'_> {
         let now = self.world.game_time;
         let (occludes, world) = (&self.sculk.tables.occludes, &self.world);
         let dimension = self.dim.id();
+        let tags = self.items().game_event_tags.clone();
         allay::listen(
             &mut self.mobs[index],
             now,
             event,
             pos,
             ctx,
+            &tags,
             dimension,
             |a, b| {
                 sculk::is_occluded(a, b, |p| {
@@ -1303,7 +1321,7 @@ impl Game<'_> {
                         center(relative),
                         ctx,
                     );
-                    self.audio.play(
+                    self.play_audio(
                         "minecraft:block.amethyst_block.resonate",
                         Some(center(relative)),
                         1.0,
@@ -1493,7 +1511,7 @@ impl Game<'_> {
             f64::from(offset(key.1)),
             f64::from(offset(key.2)),
         ];
-        self.audio.play(sound, Some(at), 5.0, 1.0);
+        self.play_audio(sound, Some(at), 5.0, 1.0);
     }
     /// `SpawnUtil.trySpawnMob(WARDEN, TRIGGERED, level, pos, 20, 5, 6,
     /// ON_TOP_OF_COLLIDER, false)`: every candidate spot creates a warden
@@ -1541,7 +1559,7 @@ impl Game<'_> {
                 continue;
             }
             self.mobs.push(mob);
-            self.native_mobs_joined(self.mobs.len() - 1, false);
+            self.admit_new_mobs(self.mobs.len() - 1);
             return true;
         }
         false
@@ -1606,8 +1624,7 @@ impl Game<'_> {
     }
     /// The darkness effect's blend factor at the partial tick.
     pub(super) fn darkness_blend(&self, partial: f32) -> f32 {
-        let (previous, current) = self.sculk.darkness;
-        previous + (current - previous) * partial
+        darkness_blend_at(self.sculk.darkness, partial)
     }
     /// The fog's view of the darkness effect, while it is on.
     pub(super) fn darkness_fog(&self) -> Option<f32> {
@@ -1619,12 +1636,17 @@ impl Game<'_> {
     /// `LightmapRenderStateExtractor`: (brightness taken off the gamma
     /// option, the pulsing light scale).
     pub(super) fn darkness_lighting(&self, partial: f32) -> (f32, f32) {
-        let scale = self.settings.file.double("darknessEffectScale") as f32;
+        let scale = self.darkness_effect_scale();
         let modifier = self.darkness_blend(partial) * scale;
         let pulse = ((self.visual_ticks() as f32 - partial) * std::f32::consts::PI * 0.025).cos()
             * 0.45
             * modifier;
         (modifier, pulse.max(0.0) * scale)
+    }
+
+    /// The Darkness Effect option (`darknessEffectScale`), 0..1.
+    pub(super) fn darkness_effect_scale(&self) -> f32 {
+        self.settings.file.double("darknessEffectScale") as f32
     }
 
     /// `LightmapRenderStateExtractor`: the night vision effect's intensity
@@ -1677,7 +1699,7 @@ impl Game<'_> {
         let effect =
             sunrise_client::effects::EffectInstance::new("darkness", warden::DARKNESS_DURATION, 0)
                 .with_flags(false, false);
-        self.apply_player_effect(effect);
+        self.add_player_effect(effect);
     }
 
     // ---- catalysts ----
@@ -1744,8 +1766,7 @@ impl Game<'_> {
             self.particles.add(&options, p, [0.0; 3]);
         }
         let pitch = 0.6 + self.world.random.next_float() * 0.4;
-        self.audio
-            .play("minecraft:block.sculk_catalyst.bloom", Some(c), 2.0, pitch);
+        self.play_audio("minecraft:block.sculk_catalyst.bloom", Some(c), 2.0, pitch);
     }
 
     // ---- particles ----
@@ -1760,8 +1781,7 @@ impl Game<'_> {
             if r.next_float() < 0.3 + count as f32 * 0.1 {
                 let volume = 0.15 + 0.02 * (count * count) as f32 * r.next_float();
                 let pitch = 0.4 + 0.3 * count as f32 * r.next_float();
-                self.audio
-                    .play("minecraft:block.sculk.charge", Some(c), volume, pitch);
+                self.play_audio("minecraft:block.sculk.charge", Some(c), volume, pitch);
             }
             let face_data = data & 63;
             let faces: Vec<(Direction, f32, f64)> = if face_data == 0 {
@@ -1805,8 +1825,7 @@ impl Game<'_> {
                 }
             }
         } else {
-            self.audio
-                .play("minecraft:block.sculk.charge", Some(c), 1.0, 1.0);
+            self.play_audio("minecraft:block.sculk.charge", Some(c), 1.0, 1.0);
             let solid = self
                 .res
                 .facts()
@@ -1873,7 +1892,7 @@ impl Game<'_> {
         let state = self.world.block(pos.x, pos.y, pos.z);
         if self.state_property(state, "waterlogged") != Some("true") {
             let pitch = 0.6 + self.particles.random().next_float() * 0.4;
-            self.audio.play_unshared(
+            self.play_audio_unshared(
                 "minecraft:block.sculk_shrieker.shriek",
                 Some([f64::from(pos.x) + 0.5, top, f64::from(pos.z) + 0.5]),
                 2.0,
@@ -1976,6 +1995,47 @@ impl Game<'_> {
             source: (id != 0).then_some(EventSource::Entity(id)),
             owner,
             player: owner == Some(Who::Player) || self.rides_player(owner),
+            ..Context::default()
+        };
+        self.post_game_event("minecraft:projectile_land", at, ctx);
+    }
+    /// `Projectile.onHit`: entity hits post at the ray point with no affected state;
+    /// block hits post at the block center with the post-callback block state.
+    pub(in crate::game) fn projectile_hit_landed_event(
+        &mut self,
+        id: u32,
+        owner: Option<Who>,
+        hit: sunrise_client::projectiles::Hit,
+    ) {
+        match hit {
+            sunrise_client::projectiles::Hit::Entity { at, .. } => {
+                self.projectile_landed_event(id, owner, [at.x, at.y, at.z]);
+            }
+            sunrise_client::projectiles::Hit::Block { pos, .. } => {
+                self.projectile_block_landed_event(id, owner, pos);
+            }
+            sunrise_client::projectiles::Hit::None => {}
+        }
+    }
+    /// `Projectile.onHit` on a block: `PROJECTILE_LAND` at block center with post-callback state.
+    pub(in crate::game) fn projectile_block_landed_event(
+        &mut self,
+        id: u32,
+        owner: Option<Who>,
+        pos: [i32; 3],
+    ) {
+        let state = self.world.block(pos[0], pos[1], pos[2]);
+        let at = [
+            f64::from(pos[0]) + 0.5,
+            f64::from(pos[1]) + 0.5,
+            f64::from(pos[2]) + 0.5,
+        ];
+        let ctx = Context {
+            source: (id != 0).then_some(EventSource::Entity(id)),
+            owner,
+            player: owner == Some(Who::Player) || self.rides_player(owner),
+            dampening_state: self.state_dampens(Some(state)),
+            affected_state: Some(state),
             ..Context::default()
         };
         self.post_game_event("minecraft:projectile_land", at, ctx);
@@ -2679,6 +2739,23 @@ pub(in crate::game) fn darkness_blend_tick(
     (current, next)
 }
 
+/// The darkness effect's blend factor at the partial tick, from its (previous, current)
+/// factors (`Mth.lerp(partial, previous, current)`).
+pub(in crate::game) fn darkness_blend_at((previous, current): (f32, f32), partial: f32) -> f32 {
+    previous + (current - previous) * partial
+}
+
+/// `GameRenderer.nightVisionScale` of another entity's night vision instance with `duration`
+/// ticks left: 1, or over its last 200 ticks (`MobEffectInstance.endsWithin(200)`: only -1 is
+/// infinite) a flicker on `Mth.sin`'s table, in vanilla's float order.
+pub(in crate::game) fn night_vision_scale(duration: i32, partial: f32) -> f32 {
+    if duration == -1 || duration > 200 {
+        return 1.0;
+    }
+    let angle = (duration as f32 - partial) * std::f32::consts::PI * 0.2;
+    0.7 + sunrise_core::geometry::trig::sin(f64::from(angle)) * 0.3
+}
+
 /// A new darkness instance's `BlendState`: from nothing, or, when the server
 /// asked for no blending, at once (`MobEffectInstance.skipBlending`'s
 /// `BlendState.setImmediate`).
@@ -3203,8 +3280,7 @@ mod shriek_capture_tests {
         let before = "minecraft:block.note_block.pling";
         let after = "minecraft:block.amethyst_block.chime";
         game.audio.capture = Some(Vec::new());
-        game.audio
-            .play_on(4, before, Some([1.5, 200.0, 4.5]), 1.0, 1.0);
+        game.play_audio_on(4, before, Some([1.5, 200.0, 4.5]), 1.0, 1.0);
         game.level_events.push(LevelEvent::LevelEvent {
             source: None,
             id: 3007,
@@ -3248,8 +3324,7 @@ mod shriek_capture_tests {
             assert_eq!(*position, [if i < 10 { 4.5 } else { 7.5 }, 200.5, 4.5]);
             assert_eq!(*velocity, [0.0; 3]);
         }
-        game.audio
-            .play_on(4, after, Some([2.5, 200.0, 4.5]), 0.5, 1.25);
+        game.play_audio_on(4, after, Some([2.5, 200.0, 4.5]), 0.5, 1.25);
         assert_eq!(game.audio.heard.get(before), Some(&1));
         assert_eq!(game.audio.heard.get(after), Some(&1));
         assert_eq!(game.world.game_time, clock);

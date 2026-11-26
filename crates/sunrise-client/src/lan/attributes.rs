@@ -45,11 +45,17 @@ pub fn snapshot(attribute: AttributeId, instance: &Instance) -> AttributeSnapsho
 
 /// `AttributeMap.getSyncableAttributes` of a live map (a player's).
 pub fn syncable<G: FnMut() -> i32>(map: &LiveAttributes<G>) -> Vec<AttributeSnapshot> {
+    syncable_snapshots(map).collect()
+}
+
+/// The syncable snapshots in instance order, without a temporary collection.
+pub fn syncable_snapshots<G: FnMut() -> i32>(
+    map: &LiveAttributes<G>,
+) -> impl Iterator<Item = AttributeSnapshot> {
     let catalog = map.catalog();
     map.instances()
-        .filter(|(_, key, _)| catalog.attribute(key.attribute()).syncable)
+        .filter(move |(_, key, _)| catalog.attribute(key.attribute()).syncable)
         .map(|(_, key, instance)| snapshot(key.attribute(), instance))
-        .collect()
 }
 
 /// `getAttributesToSync`, cleared once read (`ServerEntity.sendDirtyEntityData`).

@@ -10,9 +10,9 @@ impl Game<'_> {
     /// then `Commands.performPrefixedCommand`. `level` is taken as given, above
     /// or below the entity's own. `@s` is the entity, and the command runs from
     /// its position and rotation in its level. A player is answered as for their
-    /// own command (feedback and failures), and the other operators hear of it
-    /// (`broadcastToAdmins`); another entity's source is silent
-    /// (`CommandSource.NULL`). Whether the command ran: false for a line that
+    /// own command unless `suppress_output` silences the source
+    /// (`CommandSourceStack.withSuppressedOutput`); another entity's source is
+    /// always silent (`CommandSource.NULL`). Whether the command ran: false for a line that
     /// fails to parse or to run, and, with nothing run, for a stale or removed
     /// entity, an entity outside the level in place (a player in another level
     /// included: that level is parked while the hook runs), and on a client.
@@ -23,18 +23,21 @@ impl Game<'_> {
         entity: mod_api::EntityRef,
         line: &str,
         level: mod_api::PermissionLevel,
+        suppress_output: bool,
     ) -> bool {
-        self.run_entity_command(entity, line, level).0
+        self.run_entity_command(entity, line, level, suppress_output)
+            .0
     }
 
-    /// The entity command's outcome and source feedback, also delivered to the player.
+    /// The entity command's outcome and source feedback, also delivered to the player when audible.
     pub(super) fn entity_run_command_with_output(
         &mut self,
         entity: mod_api::EntityRef,
         line: &str,
         level: mod_api::PermissionLevel,
+        suppress_output: bool,
     ) -> mod_api::CommandResult {
-        let (success, lines) = self.run_entity_command(entity, line, level);
+        let (success, lines) = self.run_entity_command(entity, line, level, suppress_output);
         mod_api::CommandResult::new(success, lines.iter().map(Text::plain).collect())
     }
 
@@ -43,6 +46,7 @@ impl Game<'_> {
         entity: mod_api::EntityRef,
         line: &str,
         level: mod_api::PermissionLevel,
+        suppress_output: bool,
     ) -> (bool, Vec<Text>) {
         use super::commands::Target;
         if self.lan.is_none() {
@@ -56,7 +60,7 @@ impl Game<'_> {
         match target {
             // The acting player, in place for this turn.
             Target::Player => match self.lan_acting_uuid {
-                Some(uuid) => self.run_command_as_player(uuid, line, permission),
+                Some(uuid) => self.run_command_as_player(uuid, line, permission, suppress_output),
                 None => (false, Vec::new()),
             },
             Target::Guest(conn) => {
@@ -72,7 +76,7 @@ impl Game<'_> {
                     return (false, Vec::new());
                 };
                 self.as_guest(conn, |game| {
-                    game.run_command_as_player(uuid, line, permission)
+                    game.run_command_as_player(uuid, line, permission, suppress_output)
                 })
                 .unwrap_or_default()
             }
@@ -91,6 +95,7 @@ impl Game<'_> {
                     dimension: self.dim,
                     origin_dimension: self.dim,
                     origin_player: false,
+                    native_output: None,
                     level: None,
                     block: None,
                     cart: None,
@@ -106,6 +111,7 @@ impl Game<'_> {
         uuid: u128,
         line: &str,
         permission: u8,
+        suppress_output: bool,
     ) -> (bool, Vec<Text>) {
         use super::commands::Target;
         // `ServerPlayer.createCommandSourceStack`: the player's own position and
@@ -116,6 +122,7 @@ impl Game<'_> {
         let source = execute::Source {
             pos,
             rot: self.target_rotation(Target::Player),
+            silent: suppress_output,
             ..self.player_source()
         };
         let outer_admins = std::mem::take(&mut self.admin_feedback);
@@ -123,7 +130,7 @@ impl Game<'_> {
         for line in &lines {
             self.native_send(uuid, system_chat(line));
         }
-        self.send_admin_feedback(self.lan_acting);
+        self.send_admin_feedback();
         self.admin_feedback = outer_admins;
         (ok, lines)
     }
@@ -139,9 +146,8 @@ impl Game<'_> {
         let outer = self.command_source.replace(source);
         let filter = std::mem::replace(&mut self.native_command_filter, true);
         let console = self.console_broadcast.take();
-        // A silent nonplayer source has no recipient for captured output. In
-        // particular, say broadcasts independently of feedback: leaving capture
-        // enabled would exclude the acting guest without ever delivering its copy.
+        // A silent source has no recipient for command feedback. Do not capture
+        // explicit broadcasts such as /say; they go straight to their recipients.
         let capture = std::mem::replace(
             &mut self.chat_capture,
             if silent { None } else { Some(Vec::new()) },
@@ -168,25 +174,36 @@ mod tests {
     use mod_api::{GameMode, PermissionLevel};
     use sunrise_protocol::packets::play::Clientbound as C;
 
+    fn with_command_guests(name: &str, body: impl FnOnce(&mut Game<'_>)) {
+        crate::game::in_own_process(
+            &format!("game::native_entity_commands::tests::{name}"),
+            || {
+                with_guests(body);
+            },
+        );
+    }
+
     #[test]
     #[ignore = "daily"]
     fn silent_entity_say_reaches_every_guest_without_feedback_or_outer_capture() {
-        with_guests(|game| {
+        let name = "silent_entity_say_reaches_every_guest_without_feedback_or_outer_capture";
+        with_command_guests(name, |game| {
             game.build_registries();
             game.options.dedicated = Some(Vec::new());
             game.world.chunks.insert(
                 (0, 0),
                 std::sync::Arc::new(sunrise_client::chunk::Chunk::empty(0, 0)),
             );
-            let id = game
-                .summon(
-                    game.dim.id(),
+            let level = game.level(game.dim.id()).unwrap();
+            let stand = game
+                .level_summon(
+                    level,
                     "minecraft:armor_stand",
                     [1.5, 70.0, 1.5],
                     Default::default(),
                 )
+                .unwrap()
                 .unwrap();
-            let stand = game.entity(id).unwrap();
             let receivers: Vec<_> = [12, 13]
                 .into_iter()
                 .map(|conn| {
@@ -204,6 +221,7 @@ mod tests {
                     game,
                     "/say forbidden",
                     PermissionLevel::from_level(0),
+                    false,
                 );
                 assert!(!denied.success);
                 assert!(denied.feedback.is_empty());
@@ -214,6 +232,7 @@ mod tests {
                     game,
                     "/say silent source announcement",
                     PermissionLevel::from_level(2),
+                    false,
                 );
                 assert!(result.success);
                 assert!(result.feedback.is_empty());
@@ -249,7 +268,8 @@ mod tests {
     #[test]
     #[ignore = "daily"]
     fn player_command_returns_permission_failures_and_success_without_swallowing_chat() {
-        with_guests(|game| {
+        let name = "player_command_returns_permission_failures_and_success_without_swallowing_chat";
+        with_command_guests(name, |game| {
             game.build_registries();
             let player = game.player(12).unwrap();
             assert_eq!(player.game_mode(game), Some(GameMode::Survival));
@@ -267,10 +287,12 @@ mod tests {
                     let before = game.guest_packets.len();
                     // A surrounding command's output must stay separate from this run.
                     game.chat_capture = Some(vec![Text::literal("outer command")]);
-                    let result =
-                        player
-                            .entity()
-                            .run_command_with_output(game, "/gamemode creative", level);
+                    let result = player.entity().run_command_with_output(
+                        game,
+                        "/gamemode creative",
+                        level,
+                        false,
+                    );
                     assert_eq!(result.success, permission == 2);
                     if permission == 0 {
                         assert_eq!(
@@ -302,6 +324,74 @@ mod tests {
                 .unwrap();
             }
             assert_eq!(player.game_mode(game), Some(GameMode::Creative));
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn suppressed_player_command_changes_game_mode_without_telling_player_or_ops() {
+        let name = "suppressed_player_command_changes_game_mode_without_telling_player_or_ops";
+        with_command_guests(name, |game| {
+            use std::sync::{Arc, mpsc};
+            use sunrise_client::lan::{Out, PlayerSender};
+
+            game.build_registries();
+            let player = game.player(12).unwrap();
+            let entity = player.entity();
+            let (tx, rx) = mpsc::channel();
+            game.lan
+                .as_mut()
+                .unwrap()
+                .hub
+                .update_guest(13, |guest| {
+                    guest.permission = 2;
+                    guest.sender = PlayerSender::new(tx, Arc::default());
+                })
+                .unwrap();
+            let op_chat_count = || {
+                rx.try_iter()
+                    .filter(|out| {
+                        let Out::Packet(body) = out else { return false };
+                        let mut reader = sunrise_protocol::buf::Reader::new(body);
+                        let id = reader.varint().unwrap();
+                        matches!(C::decode(id, reader.rest()).unwrap(), C::SystemChat(_))
+                    })
+                    .count()
+            };
+            game.as_guest(12, |game| {
+                let loud = entity.run_command_with_output(
+                    game,
+                    "gamemode creative",
+                    PermissionLevel::Gamemasters,
+                    false,
+                );
+                assert!(loud.success && !loud.feedback.is_empty());
+                assert_eq!(player.game_mode(game), Some(GameMode::Creative));
+                assert_eq!(
+                    op_chat_count(),
+                    1,
+                    "the operator hears unsuppressed feedback"
+                );
+
+                let before = game.guest_packets.len();
+                let quiet = entity.run_command_with_output(
+                    game,
+                    "gamemode survival",
+                    PermissionLevel::Gamemasters,
+                    true,
+                );
+                assert!(quiet.success);
+                assert!(quiet.feedback.is_empty());
+                assert_eq!(player.game_mode(game), Some(GameMode::Survival));
+                assert!(!entity.run_command(game, "gamemode creative", PermissionLevel::All, true));
+                assert!(
+                    !game.guest_packets[before..]
+                        .iter()
+                        .any(|p| matches!(p, C::SystemChat(_)))
+                );
+                assert_eq!(op_chat_count(), 0);
+            })
+            .unwrap();
         });
     }
 }

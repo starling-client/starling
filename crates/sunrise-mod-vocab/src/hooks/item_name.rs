@@ -23,6 +23,7 @@ pub trait Hooks {
     /// `ItemPart`s attached to `stack`'s item are asked, and the last to set
     /// `name` wins; an item with none costs one table lookup and the stack
     /// isn't converted.
+    /// Read the borrowed stack with `get`; call `project` only to keep an owned copy.
     #[hook(
         side = "both",
         contract = "collect",
@@ -31,7 +32,8 @@ pub trait Hooks {
         scope = "item",
         key = "stack",
         target = "sunrise_client_lib::stations::native_item_name",
+        version = 2,
         neoforge = "Item.getName"
     )]
-    fn item_name(stack: &ItemStack, name: &mut Option<Text>);
+    fn item_name(stack: ItemStackView<'_>, name: &mut Option<Text>);
 }

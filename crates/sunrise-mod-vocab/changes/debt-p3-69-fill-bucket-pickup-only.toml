@@ -1,0 +1,6 @@
+ids = ["hook:fill_bucket"]
+why = """`fill_bucket` (version 2) fires only where vanilla `BucketItem.use` takes its pickup branch, before `BucketPickup.pickupBlock`. It used to fire for emptying too, once or twice per click, right before `bucket_empty` heard the same pour. Emptying is `bucket_empty`'s moment alone."""
+migrate = """
+- A listener that guarded pours through `fill_bucket` moves that check to `bucket_empty`, which also names the player and the fluid.
+- Rebuild against the new SDK to record the new hook version in the package's `uses` list.
+"""

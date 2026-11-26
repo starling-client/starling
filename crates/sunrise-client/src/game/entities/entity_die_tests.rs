@@ -78,6 +78,58 @@ fn with_game(f: impl FnOnce(&mut Game<'_>)) {
 
 #[test]
 #[ignore = "daily"]
+fn receiver_kill_stages_orb_removal_until_commit_and_kills_a_resident_knot_once() {
+    use super::native_entity_refs::tests::{fixture_resident_column, with_game};
+
+    with_game(|game| {
+        fixture_resident_column(&mut game.world, (0, 0));
+        let at = [4.25, 70.0, 4.75];
+        game.summon_with_nbt("minecraft:experience_orb", at, "{Value:1s}")
+            .unwrap();
+        let orb = game.entity(game.orbs[0].id).unwrap();
+
+        for commit in [false, true] {
+            capture();
+            game.storage_scope(|game, _| {
+                assert_eq!(orb.kill(game), Ok(true));
+                assert!(game.entity(orb.id()).is_none());
+                assert!(orb.position(game).is_none());
+                assert_eq!(orb.kill(game), Err(mod_api::LevelWriteError::Stale));
+                assert!(deaths().is_empty());
+                capture();
+                ((), commit)
+            });
+            assert_eq!(game.entity(orb.id()), (!commit).then_some(orb));
+            let expected = if commit { vec![at] } else { vec![] };
+            assert_eq!(
+                deaths()
+                    .into_iter()
+                    .map(|(_, pos, _)| pos)
+                    .collect::<Vec<_>>(),
+                expected
+            );
+        }
+
+        let fence = [8, 70, 8];
+        game.tie_knot(fence);
+        let knot = game.entity(game.knot_ids[&fence]).unwrap();
+        let at = knot.position(game).unwrap();
+        capture();
+        assert_eq!(knot.kill(game), Ok(true));
+        assert_eq!(knot.kill(game), Err(mod_api::LevelWriteError::Stale));
+        assert_eq!(game.natural_knot(knot.id()), None);
+        assert_eq!(
+            deaths()
+                .into_iter()
+                .map(|(_, pos, _)| pos)
+                .collect::<Vec<_>>(),
+            [at]
+        );
+    });
+}
+
+#[test]
+#[ignore = "daily"]
 fn entity_die_commands() {
     with_game(|game| {
         let at = [4.25, 200.0, 4.75];
@@ -364,10 +416,66 @@ fn unknown_painting_variant_keeps_the_default_one() {
             (default.width, default.height)
         );
         assert_eq!(&*game.paintings[2].variant, "minecraft:kebab");
-        let variant = game
-            .painting_variants
+        let variant = world_paintings!(game)
             .get(&default.variant)
             .expect("the default variant is a real one");
         assert_ne!(&*variant.id, "minecraft:nosuch");
+    });
+}
+
+#[test]
+#[ignore = "daily"]
+fn a_data_packs_placeable_painting_variant_is_placed() {
+    with_game(|game| {
+        let dir =
+            std::env::temp_dir().join(format!("sunrise-painting-pack-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let pack = dir.join("datapacks/paintings");
+        let variants = pack.join("data/test/painting_variant");
+        let tags = pack.join("data/minecraft/tags/painting_variant");
+        std::fs::create_dir_all(&variants).unwrap();
+        std::fs::create_dir_all(&tags).unwrap();
+        std::fs::write(
+            pack.join("pack.mcmeta"),
+            r#"{"pack":{"description":"fixture"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            variants.join("big_square.json"),
+            r#"{"asset_id":"test:big_square","width":2,"height":2}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            tags.join("placeable.json"),
+            r#"{"replace":true,"values":["test:big_square"]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("datapacks.json"),
+            r#"{"enabled":["file/paintings"],"disabled":[]}"#,
+        )
+        .unwrap();
+        game.world_root = dir.clone();
+        let stack = game.reload_datapacks(false, &[]).unwrap();
+        let root = game.options.resources.clone();
+        game.world_tables = game
+            .stage_world_tables(&stack, false, &root)
+            .unwrap()
+            .tables;
+        // A 2x2 wall of stone at z = 5, painted on its south face.
+        game.run_command("fill 4 200 5 5 201 5 stone");
+        let hit = super::Hit {
+            pos: [4, 200, 5],
+            face: [0, 0, 1],
+            point: [4.5, 200.5, 6.0],
+            inside: false,
+        };
+        let painting = sunrise_client::items::ItemStack::new("minecraft:painting", 1);
+        assert!(game.painting_fits(&hit, &painting));
+        assert!(game.place_painting(&hit, &painting));
+        assert_eq!(game.paintings.len(), 1);
+        assert_eq!(&*game.paintings[0].variant, "test:big_square");
+        assert_eq!((game.paintings[0].width, game.paintings[0].height), (2, 2));
+        let _ = std::fs::remove_dir_all(&dir);
     });
 }

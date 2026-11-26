@@ -13,11 +13,12 @@ scope.
 import os
 import random
 import subprocess
-try:
-    from . import lab, test_rust_parity as base
-except ImportError:
-    import lab
-    import test_rust_parity as base
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_rust_parity as base
 
 # A pig punched on flat ground, its positions on the server tick by tick (knockback 0.4 along x).
 KNOCKBACK = [(0.0, 0.0), (0.3032, 0.3608), (0.4638, 0.636), (0.6049, 0.8273), (0.7279, 0.9363), (0.8345, 0.9648),

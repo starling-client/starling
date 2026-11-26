@@ -9,7 +9,7 @@ mod anvil;
 #[path = "stations/draw.rs"]
 mod draw;
 #[path = "stations/tooltip.rs"]
-mod tooltip;
+pub(super) mod tooltip;
 use super::smithing_icons::smithing_slot_icons;
 struct EngineTooltipLines<'a>(&'a mut Vec<(sunrise_client::text::Text, u32)>);
 
@@ -98,34 +98,23 @@ impl mod_api::TooltipLinesAccess for EngineTooltipLines<'_> {
     }
 }
 
-/// Invalid measurements must not reach tooltip positioning or reserve empty space.
-fn tooltip_component_size(size: Option<[f32; 2]>) -> Option<[f32; 2]> {
-    size.filter(|size| size.iter().all(|v| v.is_finite() && *v > 0.0))
-}
-
 fn tooltip_position(
     (x, y): (f32, f32),
     (width, height): (f32, f32),
     (w, h): (f32, f32),
 ) -> (f32, f32) {
-    let mut x = (x + 12.0).round();
-    let mut y = (y - 12.0).round();
-    if x + w > width - 4.0 {
-        x = (x - 28.0 - w).max(4.0);
-    }
-    if x + w > width - 4.0 {
-        x = (width - w - 4.0).max(4.0);
-    }
-    if y + h + 3.0 > height {
-        y = height - h - 3.0;
-    }
-    y = y.max(4.0);
-    (x.round(), y.round())
+    let pos = mod_api::ClientTooltipPositioner::position_tooltip(
+        &mod_api::DefaultTooltipPositioner,
+        [width as i32, height as i32],
+        [x.round() as i32, y.round() as i32],
+        [w.ceil() as i32, h.ceil() as i32],
+    );
+    (pos[0] as f32, pos[1] as f32)
 }
 
 use super::api_values::{TryIntoApi, TryIntoEngine};
 use super::{Game, Screen};
-use mod_api::{TooltipElement, TooltipImage};
+use mod_api::TooltipElement;
 use std::cell::Cell;
 use sunrise_client::{
     block_entity_item, brewing,
@@ -987,16 +976,20 @@ impl Game<'_> {
         s.anvil.repair_item_count_cost = menu.anvil.repair_count;
         s.anvil.only_renaming = menu.anvil.only_renaming;
         s.anvil.result = s.result.clone();
-        if s.inputs[0] != s.anvil_last {
-            s.anvil_last = s.inputs[0].clone();
-            let name = s.inputs[0]
-                .as_ref()
-                .map(|i| {
-                    sunrise_client::lang::returned_to_server(|| {
-                        stations::hover_name(&self.pack.names, i)
-                    })
-                })
-                .unwrap_or_default();
+        if s.inputs[0] == s.anvil_last {
+            return;
+        }
+        // AnvilScreen.slotChanged: the box takes the input's getHoverName().getString(), a mod
+        // item's Part asked as everywhere else, as vanilla's client names it.
+        let input = s.inputs[0].clone();
+        let name = input
+            .as_ref()
+            .map(|i| {
+                sunrise_client::lang::returned_to_server(|| self.stack_hover_name_text(i).plain())
+            })
+            .unwrap_or_default();
+        if let Some(s) = self.station.as_mut() {
+            s.anvil_last = input;
             anvil::input_changed(s, name);
         }
     }
@@ -1094,7 +1087,7 @@ impl Game<'_> {
             f64::from(pos[1]) + 0.5,
             f64::from(pos[2]) + 0.5,
         ];
-        self.audio.play(sound, Some(at), volume, pitch);
+        self.play_audio(sound, Some(at), volume, pitch);
     }
     pub(super) fn give_or_drop(&mut self, stack: ItemStack) {
         if let Some(rest) = self.add_stack_to_inventory(stack)
@@ -1114,7 +1107,6 @@ impl Game<'_> {
     /// or cancel the levels, and every fifth level gained plays the level-up sound
     /// (at most every 100 ticks).
     pub(super) fn add_experience_levels(&mut self, mut levels: i32) {
-        // ServerPlayer.giveExperienceLevels
         if levels == 0 {
             return;
         }
@@ -1131,22 +1123,32 @@ impl Game<'_> {
         let level = self.experience.level;
         self.play_level_up(levels, level);
     }
-    /// `Player.onEnchantmentPerformed`: the cost leaves the level directly, not
-    /// through `giveExperienceLevels`, and the mods hear of the level change.
+    /// NeoForge's `Player.onEnchantmentPerformed` delegates the debit to
+    /// `giveExperienceLevels`; the separate enchantment seed update still follows.
     pub(super) fn enchantment_performed(&mut self, cost: i32) {
-        let old_level = self.experience.level;
-        self.experience.add_levels(-cost);
-        self.native_player_level_changed(old_level);
+        self.give_levels(-cost);
     }
     /// `Player.giveExperienceLevels`: all players near its feet hear the sound.
     pub(super) fn play_level_up(&mut self, amount: i32, level: i32) {
-        if let Some(volume) = self.level_up_sound.give_levels(amount, level) {
-            let at = self
-                .player
-                .as_ref()
-                .map(|p| [p.position.x, p.position.y, p.position.z]);
-            self.audio
-                .play("minecraft:entity.player.levelup", at, volume, 1.0);
+        let Some(volume) = self.level_up_sound.give_levels(amount, level) else {
+            return;
+        };
+        let event = "minecraft:entity.player.levelup";
+        let at = self
+            .player
+            .as_ref()
+            .map(|p| [p.position.x, p.position.y, p.position.z]);
+        if let (Some(host), Some(at)) = (self.lan.as_ref(), at) {
+            // A native write can borrow a guest's body without swapping in their level.
+            let dimension = self
+                .lan_acting
+                .and_then(|conn| host.hub.guest(conn))
+                .map_or(self.dim, |guest| super::Dim::from_id(&guest.dimension));
+            let sound = super::level_sounds::LevelSound::new(event, at, volume, 1.0)
+                .in_source(mod_api::SoundSource::Players);
+            let _ = self.queue_level_sound(dimension.id(), sound, None);
+        } else {
+            self.play_audio(event, at, volume, 1.0);
         }
     }
     /// Whether the result slot may be taken (`mayPickup`).
@@ -1363,8 +1365,7 @@ impl Game<'_> {
                 Some(*flag)
             });
             if taken {
-                self.audio
-                    .play("minecraft:ui.stonecutter.select_recipe", None, 1.0, 1.0);
+                self.play_audio("minecraft:ui.stonecutter.select_recipe", None, 1.0, 1.0);
                 self.remote_station_button(index as i32);
                 return true;
             }
@@ -1394,29 +1395,30 @@ impl Game<'_> {
         shown(self) != before
     }
     /// `StonecutterScreen.mouseScrolled`.
-    pub(super) fn station_scroll(&mut self, d: f32) {
-        self.merchant_scroll(d);
-        self.loom_scroll(d);
+    pub(super) fn station_scroll(&mut self, d: f32) -> bool {
+        let mut handled = self.merchant_scroll(d);
+        handled |= self.loom_scroll(d);
         let Some(s) = self.station.as_mut() else {
-            return;
+            return handled;
         };
         if s.kind != Kind::Stonecutter || !s.stonecutter_scrolls() {
-            return;
+            return handled;
         }
         let rows = stonecutter_offscreen_rows(s.stone.recipes.len());
         s.stonecutter_scroll_to(s.scroll - d / rows as f32);
+        true
     }
     /// The mouse moved with a button held on a station: the loom's,
     /// stonecutter's and merchant's scrollers follow it.
-    pub(super) fn station_drag(&mut self) {
-        self.loom_drag();
-        self.merchant_drag();
+    pub(super) fn station_drag(&mut self) -> bool {
+        let mut handled = self.loom_drag();
+        handled |= self.merchant_drag();
         let Some(size) = self
             .renderer
             .as_ref()
             .map(|r| [r.config.width, r.config.height])
         else {
-            return;
+            return handled;
         };
         let (_, oy) = self.inventory_origin(&self.interface_batch(size));
         let y = self.cursor.1 - oy;
@@ -1427,7 +1429,9 @@ impl Game<'_> {
             && s.stonecutter_scrolls()
         {
             s.stonecutter_scroll_to(stonecutter_drag_offs(y));
+            return true;
         }
+        handled
     }
     /// A mouse button let go: no scroller is held any more.
     pub(super) fn station_release(&mut self) -> bool {
@@ -1775,7 +1779,7 @@ impl Game<'_> {
                 &display,
                 creative,
                 |id| {
-                    let v = self.painting_variants.get(id)?;
+                    let v = world_paintings!(self).get(id)?;
                     Some(PaintingTooltip {
                         title: v.title.as_ref(),
                         author: v.author.as_ref(),
@@ -1847,6 +1851,7 @@ impl Game<'_> {
         if let Some(text) = sunrise_client::item_tooltip::bees_line(stack, &display, &translate) {
             push(&mut lines, text, gray);
         }
+        details.start("minecraft:container_loot", lines.len());
         details.start("minecraft:container", lines.len());
         // ItemContainerContents.addToTooltip.
         if display.shows("minecraft:container") {
@@ -1870,6 +1875,7 @@ impl Game<'_> {
                 );
             }
         }
+        details.start("minecraft:pot_decorations", lines.len());
         details.start("minecraft:written_book_content", lines.len());
         // WrittenBookContent.addToTooltip.
         for text in sunrise_client::item_tooltip::written_book_lines(stack, &display, &translate) {
@@ -1920,9 +1926,15 @@ impl Game<'_> {
                 }
             }
         }
+        // Fireworks and FireworkExplosion.addToTooltip.
+        let (fireworks, explosion) =
+            sunrise_client::item_tooltip::firework_component_lines(stack, &translate);
         details.start("minecraft:fireworks", lines.len());
-        // Fireworks / FireworkExplosion.addToTooltip.
-        for text in sunrise_client::item_tooltip::firework_lines(stack, &translate) {
+        for text in fireworks {
+            push(&mut lines, text, rgba(170, 170, 170, 255));
+        }
+        details.start("minecraft:firework_explosion", lines.len());
+        for text in explosion {
             push(&mut lines, text, rgba(170, 170, 170, 255));
         }
         details.start("minecraft:potion_contents", lines.len());
@@ -1936,7 +1948,7 @@ impl Game<'_> {
             };
             // PotionContents.getPotionDescription: the effect names are
             // translatable, read in the selected language like every other line.
-            for (text, cat) in brewing::tooltip(stack.potion(), scale, &translate) {
+            for (text, cat) in brewing::tooltip(stack, scale, &translate) {
                 let c = match cat {
                     brewing::Category::Beneficial => rgba(85, 85, 255, 255),
                     brewing::Category::Harmful => rgba(255, 85, 85, 255),
@@ -1998,6 +2010,7 @@ impl Game<'_> {
             let text = sunrise_client::text::Text::legacy(&text);
             lines.push((if italic { text.italic() } else { text }, gray));
         }
+        details.start("minecraft:profile", lines.len());
         details.start("minecraft:lore", lines.len());
         // ItemLore.addToTooltip: after the enchantments, before the attributes
         // (ItemStack.addDetailsToTooltip).
@@ -2006,6 +2019,7 @@ impl Game<'_> {
                 lines.push((text, u32::MAX));
             }
         }
+        details.start("minecraft:sulfur_cube_content", lines.len());
         details.start("minecraft:attribute_modifiers", lines.len());
         let attributes_shown = display.shows("minecraft:attribute_modifiers");
         let (modifier_lines, added) = self.stack_attribute_tooltip(
@@ -2020,6 +2034,7 @@ impl Game<'_> {
             push(&mut lines, text, c);
         }
         lines.extend(added);
+        details.start("minecraft:intangible_projectile", lines.len());
         details.start("minecraft:unbreakable", lines.len());
         // ItemStack.UNBREAKABLE_TOOLTIP.
         if let Some(text) =
@@ -2027,6 +2042,8 @@ impl Game<'_> {
         {
             push(&mut lines, text, rgba(85, 85, 255, 255));
         }
+        details.start("minecraft:sign_text_front", lines.len());
+        details.start("minecraft:sign_text_back", lines.len());
         details.start("minecraft:ominous_bottle_amplifier", lines.len());
         // OminousBottleAmplifier.addToTooltip.
         if let Some((text, c)) =
@@ -2094,24 +2111,28 @@ impl Game<'_> {
         // AdventureModePredicate.addToTooltip under its header, for
         // can_break and then can_place_on. A block tag's blocks are listed by
         // id, as this side keeps tags unordered.
-        for (text, c) in sunrise_client::item_tooltip::adventure_lines(
-            stack,
-            &display,
-            &|tag| {
-                let mut blocks: Vec<String> = self
-                    .items()
-                    .block_tags
-                    .get(tag)
-                    .map(|s| s.iter().cloned().collect())
-                    .unwrap_or_default();
-                blocks.sort();
-                blocks
-            },
-            &translate,
-        ) {
-            push(&mut lines, text, c);
+        for component in ["minecraft:can_break", "minecraft:can_place_on"] {
+            details.start(component, lines.len());
+            for (text, c) in sunrise_client::item_tooltip::adventure_lines(
+                stack,
+                component,
+                &display,
+                &|tag| {
+                    let mut blocks: Vec<String> = self
+                        .items()
+                        .block_tags
+                        .get(tag)
+                        .map(|s| s.iter().cloned().collect())
+                        .unwrap_or_default();
+                    blocks.sort();
+                    blocks
+                },
+                &translate,
+            ) {
+                push(&mut lines, text, c);
+            }
         }
-        details.end(lines.len());
+        details.start("minecraft:damage", lines.len());
         if display.shows("minecraft:damage")
             && let Some(info) = item_info
             && info.max_damage > 0
@@ -2132,6 +2153,7 @@ impl Game<'_> {
                 u32::MAX,
             ));
         }
+        details.end(lines.len());
         // ItemStack.addDetailsToTooltipTail: with advanced tooltips the item id
         // and how many components the stack has.
         if advanced {
@@ -2180,7 +2202,7 @@ impl Game<'_> {
                 ));
             }
         }
-        // RegisterTooltipAppendersEvent: each registered appender's lines, where its placement puts them.
+        // ItemTooltipHandler: each registered appender's lines, in the sorted order.
         if !appenders.is_empty() {
             sunrise_client::item_tooltip::add_appender_lines(
                 &mut lines,
@@ -2201,7 +2223,7 @@ impl Game<'_> {
                 },
                 appenders
                     .iter()
-                    .map(|p| (p.component(), p.placement(), p.enabled(), p.appender())),
+                    .map(|p| (p.component(), p.slot(), p.enabled(), p.appender())),
             );
         }
         // ItemTooltipEvent, once the tooltip vanilla shows is complete.
@@ -2257,19 +2279,27 @@ impl Game<'_> {
         lines: &[(T, u32)],
         x: f32,
         y: f32,
-    ) {
-        if lines.is_empty() {
-            return;
-        }
-        let lines = Self::resolved(lines);
-        let screen = (batch.width, batch.height);
-        let Some(at) = self.tooltip_pre(batch, None, &lines, &[], (x, y), screen) else {
-            return;
-        };
-        let atlas = &self.gui.atlas;
-        let (x, y, w, h) = Self::tooltip_geometry(atlas, &lines, at, screen, [0.0; 2]);
-        self.tooltip_box(batch, None, x, y, w, h);
-        Self::tooltip_text(batch, atlas, &lines, x, y);
+    ) -> Option<[f32; 4]> {
+        self.draw_tooltip_lines_positioned(
+            batch,
+            lines,
+            tooltip::quantize_tooltip_anchor((x, y)),
+            &mod_api::DefaultTooltipPositioner,
+        )
+    }
+
+    pub(super) fn draw_tooltip_lines_positioned<T: Clone + Into<sunrise_client::text::Text>>(
+        &self,
+        batch: &mut HudBatch,
+        lines: &[(T, u32)],
+        anchor: [i32; 2],
+        positioner: &dyn mod_api::ClientTooltipPositioner,
+    ) -> Option<[f32; 4]> {
+        let mut components: Vec<tooltip::PreparedTooltipItem> = Self::resolved(lines)
+            .into_iter()
+            .map(|(text, color)| tooltip::PreparedTooltipItem::Text { text, color })
+            .collect();
+        self.draw_prepared_tooltip(batch, None, &mut components, anchor, positioner, true)
     }
     /// A tooltip's lines with their legacy codes resolved and their colours.
     fn resolved<T: Clone + Into<sunrise_client::text::Text>>(
@@ -2282,30 +2312,6 @@ impl Game<'_> {
                 (text.resolve_legacy(), *color)
             })
             .collect()
-    }
-    /// The tooltip's text's top-left corner and the box's size: beside the
-    /// cursor, kept on screen. `extra` is [minimum width, height after the text].
-    pub(super) fn tooltip_geometry(
-        atlas: &sunrise_client::hud::HudAtlas,
-        lines: &[(sunrise_client::text::Text, u32)],
-        (x, y): (f32, f32),
-        (width, height): (f32, f32),
-        extra: [f32; 2],
-    ) -> (f32, f32, f32, f32) {
-        let w = lines
-            .iter()
-            .map(|(t, _)| atlas.font.width_text(t))
-            .fold(0.0, f32::max)
-            .max(extra[0]);
-        let text_h = match lines.len() {
-            0 => 0.0,
-            1 => 8.0,
-            n => 8.0 + 2.0 + (n - 1) as f32 * 10.0,
-        };
-        let h = text_h + extra[1];
-        let (w, h) = (w.ceil(), h.ceil());
-        let (x, y) = tooltip_position((x, y), (width, height), (w, h));
-        (x, y, w, h)
     }
     /// The box around a tooltip's contents at `x`, `y`, `w` × `h`: solid fills, or the
     /// background and frame sprites of the tooltip style a mod names.
@@ -2320,7 +2326,11 @@ impl Game<'_> {
     ) {
         let (mut background, mut border_top, mut border_bottom) =
             (0xf0100010, 0x505000ff, 0x5028007f);
-        let mut texture = None;
+        // `itemStack.get(DataComponents.TOOLTIP_STYLE)`, the style the hook starts from.
+        let mut texture = stack
+            .and_then(|s| s.data())
+            .and_then(|d| sunrise_client::save::text(d.other("minecraft:tooltip_style")))
+            .and_then(|style| mod_api::Identifier::parse(&style).ok());
         self.native_render_tooltip_texture(
             stack,
             &mut texture,
@@ -2364,19 +2374,6 @@ impl Game<'_> {
             border_bottom,
         );
     }
-    pub(super) fn tooltip_text(
-        batch: &mut HudBatch,
-        atlas: &sunrise_client::hud::HudAtlas,
-        lines: &[(sunrise_client::text::Text, u32)],
-        x: f32,
-        y: f32,
-    ) {
-        let mut ty = y;
-        for (i, (text, color)) in lines.iter().enumerate() {
-            batch.text_styled(atlas, text, x, ty, *color, true);
-            ty += if i == 0 { 12.0 } else { 10.0 };
-        }
-    }
     /// `ClientBundleTooltip.extractSelectedItemTooltip`: the selected item's
     /// name in a box of its own, centred over the grid (less 12) and 15 above
     /// the component, placed by `DefaultTooltipPositioner` (+12, -12, kept on
@@ -2388,6 +2385,7 @@ impl Game<'_> {
         x: f32,
         y: f32,
         w: f32,
+        default_font: &str,
     ) {
         let Some((_, stack)) = layout.selected.and_then(|i| layout.slots.get(i)) else {
             return;
@@ -2395,30 +2393,27 @@ impl Game<'_> {
         let name = self.styled_stack_name(stack);
         let lines = Self::resolved(&[(name, self.rarity_color(stack))]);
         let atlas = &self.gui.atlas;
-        let tw = atlas.font.width_text(&lines[0].0);
+        let tw = atlas.font.width_text_with_font(&lines[0].0, default_font);
         let center = x + (w / 2.0).floor() - 12.0;
-        let mut px = center - (tw / 2.0).floor() + 12.0;
-        let mut py = y - 15.0 - 12.0;
-        if px + tw > batch.width {
-            px = (px - 24.0 - tw).max(4.0);
-        }
-        if py + 8.0 + 3.0 > batch.height {
-            py = batch.height - 8.0 - 3.0;
-        }
+        let (px, py) = tooltip_position(
+            (center - (tw / 2.0).floor(), y - 15.0),
+            (batch.width, batch.height),
+            (tw, 8.0),
+        );
         self.tooltip_box(batch, Some(stack), px, py, tw, 8.0);
-        Self::tooltip_text(batch, atlas, &lines, px, py);
+        batch.text_styled_with_font(atlas, &lines[0].0, [px, py], lines[0].1, true, default_font);
     }
     /// `ClientBundleTooltip.extractImage`: the slots, the count past them and
     /// the progress bar.
     fn draw_bundle_tooltip(
-        &mut self,
+        &self,
         batch: &mut HudBatch,
         layout: &sunrise_client::bundle::TooltipLayout,
+        default_font: &str,
     ) {
         for (i, (at, stack)) in layout.slots.iter().enumerate() {
             let selected = layout.selected == Some(i);
             let sprite = |name: &str| format!("container/bundle/{name}");
-            // Each draw takes the atlas on its own: the item's needs `&mut self`.
             sunrise_client::ui::nine_slice(
                 batch,
                 &self.gui.atlas,
@@ -2433,9 +2428,8 @@ impl Game<'_> {
                 24.0,
                 u32::MAX,
             );
-            let stack = stack.clone();
             let [x, y] = *at;
-            self.draw_item(batch, &stack, x + 4.0, y + 4.0);
+            self.draw_item(batch, stack, x + 4.0, y + 4.0);
             if selected {
                 sunrise_client::ui::nine_slice(
                     batch,
@@ -2452,14 +2446,14 @@ impl Game<'_> {
         let atlas = &self.gui.atlas;
         if let Some((at, hidden)) = layout.overflow {
             let label = sunrise_client::text::Text::literal(format!("+{hidden}"));
-            let w = atlas.font.width_text(&label);
-            batch.text_styled(
+            let w = atlas.font.width_text_with_font(&label, default_font);
+            batch.text_styled_with_font(
                 atlas,
                 &label,
-                at[0] + 12.0 - (w / 2.0).floor(),
-                at[1] + 10.0,
+                [at[0] + 12.0 - (w / 2.0).floor(), at[1] + 10.0],
                 u32::MAX,
                 true,
+                default_font,
             );
         }
         if let Some((at, description)) = layout
@@ -2468,8 +2462,18 @@ impl Game<'_> {
         {
             let text = sunrise_client::text::Text::translate(description, &[]);
             let mut ty = at[1];
-            for line in atlas.font.split_lines(&text, layout.width) {
-                batch.text_styled(atlas, &line.0, at[0], ty, 0xFFAA_AAAA, false);
+            for line in atlas
+                .font
+                .split_formatted_with_font(&text, layout.width, default_font)
+            {
+                batch.text_styled_with_font(
+                    atlas,
+                    &line,
+                    [at[0], ty],
+                    0xFFAA_AAAA,
+                    false,
+                    default_font,
+                );
                 ty += 9.0;
             }
         }
@@ -2501,26 +2505,32 @@ impl Game<'_> {
         );
         if let Some(key) = layout.label {
             let label = sunrise_client::text::Text::translate(key, &[]);
-            let w = atlas.font.width_text(&label);
-            batch.text_styled(
+            let w = atlas.font.width_text_with_font(&label, default_font);
+            batch.text_styled_with_font(
                 atlas,
                 &label,
-                bx + 48.0 - (w / 2.0).floor(),
-                by + 3.0,
+                [bx + 48.0 - (w / 2.0).floor(), by + 3.0],
                 u32::MAX,
                 true,
+                default_font,
             );
         }
     }
     /// `AbstractContainerScreen.showTooltipWithItemInHand`: a hovered stack's
-    /// tooltip shows while a stack is carried only when its image says so, as
-    /// a bundle's contents do (`ClientBundleTooltip`).
+    /// tooltip shows while a stack is carried only when its prepared tooltip
+    /// component says so, as a bundle's contents do (`ClientBundleTooltip`).
     pub(super) fn tooltip_with_carried(&self, stack: &ItemStack) -> bool {
-        self.carried.is_none()
-            || sunrise_client::bundle::Contents::of(self.items(), stack).is_some()
+        if self.carried.is_none() {
+            return true;
+        }
+        self.tooltip_image_shows_with_carried(stack)
     }
     /// Hovered-slot tooltip on the plain inventory, crafting and container screens.
     pub(super) fn draw_slot_tooltip(&mut self, batch: &mut HudBatch) {
+        // An item dragged off the item panel covers the slot under it.
+        if self.mod_browser_dragging() {
+            return;
+        }
         let Some(slot) = self.slot_at(batch, self.cursor.0, self.cursor.1) else {
             return;
         };
@@ -2571,32 +2581,49 @@ impl Game<'_> {
         let (mut out, due) = b.tick_to_brew(
             &world_stations!(self).brewing,
             world_items!(self),
-            self.res.providers(),
+            world_providers!(self),
             &|s| fuel.resolve(world_items!(self), s),
         );
         let started = was_idle && b.brew_time > 0;
         let ingredient = started.then(|| b.ingredient.clone()).flatten();
-        let hooked = !mod_api::__private::mods().is_empty();
-        let stacks = (due && hooked).then(|| b.items.clone());
         let at = [pos.0, pos.1, pos.2];
-        let mut post = false;
         if due {
-            // `doBrew`, with PotionBrewEvent.Pre before it and .Post after.
-            let asked = stacks.map(|mut stacks| {
+            let pre = mod_api::__private::listened(mod_api::HookId::PotionBrewPre)
+                .then(|| b.items.clone());
+            let replacement = pre.and_then(|mut stacks| {
                 let mut cancel = false;
                 self.native_potion_brew_pre(at, &mut stacks, &mut cancel);
-                (stacks, cancel)
+                cancel.then_some(stacks)
             });
-            // A cancelled Pre fires Post itself, with the slots the mods left.
-            let cancelled = matches!(asked, Some((_, true)));
-            let rest = self.brewing_ingredient_remainder(pos, cancelled);
             let Some(BlockEntity::Brewing(b)) = self.world.block_entities.get_mut(&pos) else {
                 return Ok(());
             };
-            let brewing = &world_stations!(self).brewing;
-            b.brew_after_pre(asked, brewing, &|_| rest.clone(), &mut out);
+            // `EventHooks.onPotionAttemptBrew` still posts after cancellation
+            // if any slot matches its prior value. Otherwise `doBrew` posts
+            // after replacing the bottles, with the captured ingredient intact.
+            let (ingredient, post) = if let Some(stacks) = replacement {
+                let post = b.items.iter().zip(&stacks).any(|(old, new)| old == new);
+                b.items = stacks;
+                (None, post)
+            } else {
+                let ingredient = b.brew_bottles(&world_stations!(self).brewing);
+                let post = ingredient.is_some();
+                (ingredient, post)
+            };
+            if post && mod_api::__private::listened(mod_api::HookId::PotionBrewPost) {
+                let mut stacks = b.items.clone();
+                self.native_potion_brew_post(at, &mut stacks);
+                if let Some(BlockEntity::Brewing(b)) = self.world.block_entities.get_mut(&pos) {
+                    b.items = stacks;
+                }
+            }
+            if let Some(ingredient) = ingredient {
+                let rest = self.crafting_remainder(&ingredient);
+                if let Some(BlockEntity::Brewing(b)) = self.world.block_entities.get_mut(&pos) {
+                    b.finish_brew(ingredient, rest, &mut out);
+                }
+            }
             self.world.modified.insert((pos.0 >> 4, pos.2 >> 4));
-            post = hooked && (out.brewed || cancelled);
         }
         if out.fuel_taken
             && let Some(item) = fuel_item
@@ -2617,17 +2644,7 @@ impl Game<'_> {
             self.drop_item_stack_containers(at, d);
         }
         if out.brewed {
-            self.native_brewing_complete(at);
             self.play_at("minecraft:block.brewing_stand.brew", at, 1.0, 1.0);
-        }
-        // PotionBrewEvent.Post ends `doBrew`, after its sound and the
-        // ingredient's remainder; the bottles' block state follows it.
-        if post && let Some(BlockEntity::Brewing(b)) = self.world.block_entities.get(&pos) {
-            let mut stacks = b.items.clone();
-            self.native_potion_brew_post(at, &mut stacks);
-            if let Some(BlockEntity::Brewing(b)) = self.world.block_entities.get_mut(&pos) {
-                b.items = stacks;
-            }
         }
         let Some(BlockEntity::Brewing(b)) = self.world.block_entities.get_mut(&pos) else {
             return Ok(());
@@ -2885,6 +2902,94 @@ mod tests {
             });
         });
     }
+    /// A mod's own anvil menu runs the `anvil_update` listeners (#5610), as
+    /// `CommonHooks.onAnvilUpdate`: they see the menu's inputs and costs as vanilla's, for the
+    /// player it names, and their edits come back; a cancel is None, and a listener that asks
+    /// again from inside gets None instead of running them again.
+    #[test]
+    #[ignore = "daily"]
+    fn a_mods_anvil_menu_runs_the_anvil_update_listeners() {
+        use mod_api::item::menu::{AnvilUpdateEdits, AnvilUpdateInputs};
+        use mod_api::{
+            AnvilUpdateEvent, Flow, Hooks, HostSide, ItemStack as ApiStack, ModEntry, StackResult,
+        };
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Default)]
+        struct Heard {
+            /// The menu's player, which the listener asks again from inside.
+            player: Option<mod_api::PlayerRef>,
+            /// The player, the position, and what an inner `anvil_update` answered.
+            calls: Vec<(u128, [i32; 3], Option<AnvilUpdateEdits>)>,
+        }
+        struct Recipes(Arc<Mutex<Heard>>);
+        #[mod_api::__subscriptions]
+        impl Hooks for Recipes {
+            fn anvil_update(&self, host: HostSide<'_>, event: &mut AnvilUpdateEvent<'_>) -> Flow {
+                let HostSide::Server(host) = host else {
+                    return Flow::Continue;
+                };
+                let player = self.0.lock().unwrap().player.unwrap();
+                let inner = player.anvil_update(host, event.pos, event.inputs);
+                self.0
+                    .lock()
+                    .unwrap()
+                    .calls
+                    .push((event.player, event.pos, inner));
+                if event.inputs.name == Some("cancel") {
+                    return Flow::Cancel;
+                }
+                event.edits.output = StackResult::Set(Some(ApiStack::of(event.inputs.left.item())));
+                event.edits.xp_cost = event.inputs.vanilla_xp_cost * 2;
+                event.edits.material_cost = 0;
+                Flow::Continue
+            }
+        }
+
+        let heard = Arc::new(Mutex::new(Heard::default()));
+        let mods = vec![ModEntry::new("recipes", Box::new(Recipes(heard.clone())))].into();
+        mod_platform::testing::with_mods(mods, || {
+            super::super::native_entity_refs::tests::with_game(|game| {
+                let (player, ..) =
+                    crate::game::native_server::fake_action_tests::fake(game, None, 0);
+                heard.lock().unwrap().player = Some(player);
+                let left =
+                    ApiStack::of(mod_api::__private::item_key("minecraft:iron_sword").unwrap());
+                let inputs = |name| AnvilUpdateInputs {
+                    left: &left,
+                    right: None,
+                    name: Some(name),
+                    vanilla_output: None,
+                    vanilla_xp_cost: 3,
+                    vanilla_material_cost: 1,
+                };
+                let edits = player.anvil_update(game, [7, 64, 7], &inputs("upgraded"));
+                assert_eq!(
+                    heard.lock().unwrap().calls.len(),
+                    1,
+                    "the listener ran once"
+                );
+                assert_eq!(
+                    edits,
+                    Some(AnvilUpdateEdits {
+                        output: StackResult::Set(Some(left.clone())),
+                        xp_cost: 6,
+                        material_cost: 0,
+                    })
+                );
+                assert_eq!(
+                    player.anvil_update(game, [7, 64, 7], &inputs("cancel")),
+                    None
+                );
+                assert_eq!(
+                    heard.lock().unwrap().calls,
+                    [(2, [7, 64, 7], None), (2, [7, 64, 7], None)],
+                    "the player and position reach the listener; an inner call declines"
+                );
+            });
+        });
+    }
+
     #[test]
     #[ignore = "daily"]
     fn anvil_update_validates_only_a_changed_output() {
@@ -3124,11 +3229,12 @@ mod tests {
         struct Part(Arc<Mutex<Vec<TooltipAppendContext>>>);
         #[mod_api::sunrise_part]
         impl ItemPart for Part {
-            fn tooltip(&self, _: &dyn ClientHost, event: &mut TooltipEvent<'_>) {
+            fn tooltip(&self, _: &dyn ClientHost, event: &mut TooltipEvent<'_, '_>) {
                 self.0.lock().unwrap().push(*event.context);
                 event
                     .lines
-                    .push((mod_api::Text::literal("context"), u32::MAX));
+                    .push((mod_api::Text::literal("context"), u32::MAX))
+                    .unwrap();
             }
         }
         struct Mod(Part);
@@ -3260,9 +3366,12 @@ mod tests {
         struct Lore;
         #[mod_api::sunrise_part]
         impl ItemPart for Lore {
-            fn tooltip(&self, _: &dyn ClientHost, event: &mut TooltipEvent<'_>) {
+            fn tooltip(&self, _: &dyn ClientHost, event: &mut TooltipEvent<'_, '_>) {
                 assert!(event.lines.is_empty());
-                event.lines.push((mod_api::Text::literal("part"), u32::MAX));
+                event
+                    .lines
+                    .push((mod_api::Text::literal("part"), u32::MAX))
+                    .unwrap();
             }
         }
         struct Mod;
@@ -3429,23 +3538,54 @@ mod tests {
             });
         });
     }
-    /// `render_tooltip_gather_components` gets the lines and the part's image as one list before
-    /// anything is wrapped or measured: unset, `max_width` leaves the lines alone; a mod that sets
-    /// it wraps them with `Font.split`, can add an image of its own, and a cancel draws nothing.
+    /// `render_tooltip_gather_components` gets the lines and the part's component as one list
+    /// before anything is wrapped or prepared: unset, `max_width` leaves fitting lines alone; a
+    /// mod that sets it wraps them with `Font.split`, can add a custom component of its own, and
+    /// a cancel draws nothing.
     #[test]
     #[ignore = "daily"]
     fn gathered_tooltip_components_wrap_only_when_a_mod_sets_the_width() {
         use mod_api::{
-            self, ClientHost, Hooks, ModEntry, Mods, RenderTooltipGatherComponentsEvent,
-            TooltipElement, TooltipImage,
+            self, __private::game::RegistrationContextNew, ClientHost, ClientTooltipComponent,
+            Hooks, ModEntry, Mods, RegisterClientTooltipComponentFactoriesEvent,
+            RegistrationContext, RenderTooltipGatherComponentsEvent, TooltipComponent,
+            TooltipComponentData, TooltipElement, TooltipFont,
         };
         use std::sync::atomic::{AtomicU8, Ordering};
-        use sunrise_client::text::Text;
+        use sunrise_client::{
+            text::Text,
+            tooltip_components::{TooltipComponentFactories, with_test_factories},
+        };
+
+        struct KnownData(i32, i32);
+        impl TooltipComponentData for KnownData {}
+
+        struct UnknownData;
+        impl TooltipComponentData for UnknownData {}
+
+        struct KnownClient(i32, i32);
+        impl ClientTooltipComponent for KnownClient {
+            fn width(&self, _: &dyn TooltipFont) -> i32 {
+                self.0
+            }
+            fn height(&self, _: &dyn TooltipFont) -> i32 {
+                self.1
+            }
+        }
 
         static MODE: AtomicU8 = AtomicU8::new(0);
         struct Mod;
         #[mod_api::__subscriptions]
         impl Hooks for Mod {
+            fn register_client_tooltip_component_factories(
+                &self,
+                _: &RegistrationContext,
+                event: &mut RegisterClientTooltipComponentFactoriesEvent<'_>,
+            ) {
+                event
+                    .factories
+                    .register::<KnownData, KnownClient>(|d| KnownClient(d.0, d.1));
+            }
             fn render_tooltip_gather_components(
                 &self,
                 _: &dyn ClientHost,
@@ -3462,15 +3602,15 @@ mod tests {
                         event.max_width = 40;
                         event.elements.insert(
                             1,
-                            TooltipElement::Image(TooltipImage {
-                                source: mod_api::TooltipImageSource::ItemPart(event.stack.clone()),
-                                size: [16.0, 8.0],
-                            }),
+                            TooltipElement::Component(TooltipComponent::custom(KnownData(16, 8))),
                         );
-                        event.elements.push(TooltipElement::Image(TooltipImage {
-                            source: mod_api::TooltipImageSource::ItemPart(event.stack.clone()),
-                            size: [f32::NAN, 8.0],
-                        }));
+                    }
+                    4 => {
+                        event
+                            .elements
+                            .push(TooltipElement::Component(TooltipComponent::custom(
+                                UnknownData,
+                            )));
                     }
                     3 => {
                         let mut name = mod_api::Text::literal("Name");
@@ -3479,10 +3619,7 @@ mod tests {
                         }
                         *event.elements = vec![
                             TooltipElement::Text(name, u32::MAX),
-                            TooltipElement::Image(TooltipImage {
-                                source: mod_api::TooltipImageSource::ItemPart(event.stack.clone()),
-                                size: [12.0, 16.0],
-                            }),
+                            TooltipElement::Component(TooltipComponent::custom(KnownData(12, 16))),
                             TooltipElement::Text(mod_api::Text::literal("Second"), u32::MAX),
                             TooltipElement::Text(mod_api::Text::literal("Third"), u32::MAX),
                         ];
@@ -3493,101 +3630,122 @@ mod tests {
                 mod_api::Flow::Continue
             }
         }
+
         let mods: Mods = vec![ModEntry::new("gather", Box::new(Mod))].into();
         mod_platform::testing::with_mods(mods, || {
-            super::super::native_entity_refs::tests::with_game(|game| {
-                let stick = super::ItemStack::new("minecraft:stick", 1);
-                let long = Text::literal("one two three four five six seven eight");
-                let lines = vec![(long.clone(), u32::MAX)];
-                let gather = |game: &super::Game<'_>| {
-                    game.gather_tooltip_components(
-                        &stick,
-                        lines.clone(),
-                        Vec::new(),
-                        (320.0, 240.0),
-                    )
-                };
-                MODE.store(0, Ordering::Relaxed);
-                let plain = gather(game).unwrap();
-                assert_eq!(plain.len(), 1);
-                assert!(matches!(plain[0], tooltip::Element::Text(_, _)));
-                MODE.store(1, Ordering::Relaxed);
-                let elements = gather(game).unwrap();
-                let wrapped: Vec<_> = elements
-                    .iter()
-                    .filter_map(|e| match e {
-                        tooltip::Element::Text(t, c) => Some((t, c)),
-                        _ => None,
-                    })
-                    .collect();
-                let images: Vec<_> = elements
-                    .iter()
-                    .filter_map(|e| match e {
-                        tooltip::Element::Image(i) => Some(i),
-                        _ => None,
-                    })
-                    .collect();
-                let font = &game.gui.atlas.font;
-                let expected = font.split(&long, 40.0);
-                assert!(expected.len() > 1);
-                assert_eq!(
-                    wrapped.iter().map(|(t, _)| t.plain()).collect::<Vec<_>>(),
-                    expected.iter().map(Text::plain).collect::<Vec<_>>()
+            let mut factories = TooltipComponentFactories::default();
+            {
+                super::Game::native_register_client_tooltip_component_factories(
+                    &RegistrationContext::new(),
+                    &mut factories,
                 );
-                assert!(wrapped.iter().all(|(t, _)| font.width_text(t) <= 40.0));
-                // The invalid image is dropped, the valid one stays.
-                assert_eq!(images.len(), 1);
-                assert_eq!(images[0].size, [16.0, 8.0]);
-                // Wrapping expands text in place, never moving the image behind later text.
-                assert!(matches!(elements.last(), Some(tooltip::Element::Image(_))));
-                MODE.store(3, Ordering::Relaxed);
-                let mixed = gather(game).unwrap();
-                assert_eq!(mixed.len(), 4);
-                assert!(
-                    matches!(&mixed[0], tooltip::Element::Text(text, _) if text.plain() == "Name")
-                );
-                assert!(matches!(mixed[1], tooltip::Element::Image(_)));
-                assert!(matches!(mixed[2], tooltip::Element::Text(_, _)));
-                assert!(matches!(mixed[3], tooltip::Element::Text(_, _)));
-                MODE.store(2, Ordering::Relaxed);
-                assert!(gather(game).is_none());
+            }
+            with_test_factories(factories, || {
+                super::super::native_entity_refs::tests::with_game(|game| {
+                    let stick = super::ItemStack::new("minecraft:stick", 1);
+                    let long = Text::literal("one two three four five six seven eight");
+                    let lines = vec![(long.clone(), u32::MAX)];
+                    let gather = |game: &super::Game<'_>| {
+                        game.gather_tooltip_components(&stick, lines.clone(), 10, (320.0, 240.0))
+                    };
+                    MODE.store(0, Ordering::Relaxed);
+                    let plain = gather(game).unwrap_ready();
+                    assert_eq!(plain.len(), 1);
+                    assert!(plain[0].as_text().is_some());
+                    MODE.store(1, Ordering::Relaxed);
+                    let elements = gather(game).unwrap_ready();
+                    let wrapped: Vec<_> = elements
+                        .iter()
+                        .filter_map(|e| e.as_text().map(|(text, color)| (text.clone(), color)))
+                        .collect();
+                    let custom: Vec<_> = elements
+                        .iter()
+                        .filter_map(|e| e.downcast_ref::<KnownClient>())
+                        .collect();
+                    let font = &game.gui.atlas.font;
+                    let expected = font.split_formatted(&long, 40.0);
+                    assert!(expected.len() > 1);
+                    assert_eq!(
+                        wrapped.iter().map(|(t, _)| t.plain()).collect::<Vec<_>>(),
+                        expected.iter().map(Text::plain).collect::<Vec<_>>()
+                    );
+                    assert!(wrapped.iter().all(|(t, _)| font.width_text(t) <= 40.0));
+                    assert_eq!(custom.len(), 1);
+                    assert_eq!((custom[0].0, custom[0].1), (16, 8));
+                    // Wrapping expands text in place, never moving the component behind later text.
+                    assert!(
+                        elements
+                            .last()
+                            .and_then(|e| e.downcast_ref::<KnownClient>())
+                            .is_some()
+                    );
+                    // Unregistered custom component aborts preparation with MissingFactory.
+                    MODE.store(4, Ordering::Relaxed);
+                    assert!(matches!(
+                        gather(game),
+                        super::tooltip::GatheredTooltip::PrepareError(
+                            sunrise_client::tooltip_components::TooltipComponentPrepareError::MissingFactory {
+                                owner: Some("gather"),
+                                ..
+                            }
+                        )
+                    ));
+                    MODE.store(3, Ordering::Relaxed);
+                    let mixed = gather(game).unwrap_ready();
+                    assert_eq!(mixed.len(), 4);
+                    assert!(
+                        matches!(mixed[0].as_text(), Some((text, _)) if text.plain() == "Name")
+                    );
+                    assert!(mixed[1].downcast_ref::<KnownClient>().is_some());
+                    assert!(mixed[2].as_text().is_some());
+                    assert!(mixed[3].as_text().is_some());
+                    MODE.store(2, Ordering::Relaxed);
+                    assert!(matches!(
+                        gather(game),
+                        super::tooltip::GatheredTooltip::Cancelled
+                    ));
+                });
             });
         });
     }
     #[test]
     fn measured_image_tooltips_position_the_whole_box() {
         use super::tooltip_position;
+        let vanilla = |cursor: [i32; 2], screen: [i32; 2], size: [i32; 2]| {
+            let [x, y] = mod_api::ClientTooltipPositioner::position_tooltip(
+                &mod_api::DefaultTooltipPositioner,
+                screen,
+                cursor,
+                size,
+            );
+            (x as f32, y as f32)
+        };
         assert_eq!(
             tooltip_position((50.0, 90.0), (200.0, 160.0), (40.0, 8.0)),
             (62.0, 78.0)
+        );
+        assert_eq!(
+            tooltip_position((50.0, 90.0), (200.0, 160.0), (40.0, 8.0)),
+            vanilla([50, 90], [200, 160], [40, 8])
         );
         // A wide image makes the whole tooltip move to the other side.
         assert_eq!(
             tooltip_position((90.0, 90.0), (200.0, 160.0), (128.0, 42.0)),
             (4.0, 78.0)
         );
+        assert_eq!(
+            tooltip_position((90.0, 90.0), (200.0, 160.0), (128.0, 42.0)),
+            vanilla([90, 90], [200, 160], [128, 42])
+        );
         // Its height participates in the existing bottom-edge adjustment too.
         assert_eq!(
             tooltip_position((90.0, 90.0), (200.0, 80.0), (128.0, 42.0)),
             (4.0, 35.0)
         );
-    }
-    #[test]
-    fn image_tooltip_measurements_are_finite_and_nonempty() {
-        use super::tooltip_component_size;
-        assert_eq!(tooltip_component_size(None), None);
         assert_eq!(
-            tooltip_component_size(Some([128.0, 32.0])),
-            Some([128.0, 32.0])
+            tooltip_position((90.0, 90.0), (200.0, 80.0), (128.0, 42.0)),
+            vanilla([90, 90], [200, 80], [128, 42])
         );
-        for size in [
-            [0.0, 32.0],
-            [32.0, -1.0],
-            [f32::NAN, 32.0],
-            [32.0, f32::INFINITY],
-        ] {
-            assert_eq!(tooltip_component_size(Some(size)), None);
-        }
     }
     use super::*;
 
@@ -3676,7 +3834,6 @@ mod tests {
             Arc,
             atomic::{AtomicBool, Ordering},
         };
-        use sunrise_core::nbt::Tag;
 
         if run_fresh_cases(
             "game::stations::tests::item_tooltip_invalid_edit_keeps_other_listeners_lines",
@@ -3706,7 +3863,7 @@ mod tests {
         impl Hooks for InvalidListener {
             fn item_tooltip(&self, _: &dyn ClientHost, event: &mut ItemTooltipEvent<'_>) {
                 let mut malformed = Text::literal("invalid");
-                malformed.metadata = Tag::Int(7);
+                malformed.metadata = mod_api::Tag::Int(7);
                 assert_eq!(
                     event.lines.push(malformed.clone(), u32::MAX),
                     Err(TextFormError::Malformed)
@@ -3786,16 +3943,21 @@ mod cycling_tests {
         assert_eq!(smithing_slot_icons(None).3, 0);
     }
 
-    /// `render_tooltip_pre` sees a tooltip's lines, stack and screen, can move the point it hangs
-    /// from, and cancels it; with no mod the point is the cursor's.
+    /// `render_tooltip_pre` sees a tooltip's prepared components, stack, positioner, font and
+    /// screen, can move the point it hangs from, and cancels it; with no mod the point is the
+    /// cursor's.
     #[test]
     #[ignore = "daily"]
     fn a_tooltip_pre_answer_moves_or_cancels_the_tooltip() {
-        use mod_api::{
-            self, ClientHost, Hooks, ModEntry, Mods, RenderTooltipPreEvent, TooltipElement,
-        };
+        if crate::game::native_entity_refs::tests::run_fresh_cases(
+            "game::stations::cycling_tests::a_tooltip_pre_answer_moves_or_cancels_the_tooltip",
+            "SUNRISE_TOOLTIP_PRE_ANSWER_CASE",
+            &["pre"],
+        ) {
+            return;
+        }
+        use mod_api::{self, ClientHost, Hooks, Identifier, ModEntry, Mods, RenderTooltipPreEvent};
         use std::sync::atomic::{AtomicU8, Ordering};
-        use sunrise_client::text::Text;
 
         static MODE: AtomicU8 = AtomicU8::new(0);
         struct Mod;
@@ -3806,12 +3968,21 @@ mod cycling_tests {
                 _: &dyn ClientHost,
                 event: &mut RenderTooltipPreEvent<'_>,
             ) -> mod_api::Flow {
-                assert_eq!(event.elements.len(), 1);
+                assert_eq!(event.components.len(), 1);
                 assert!(
-                    matches!(&event.elements[0], TooltipElement::Text(t, _) if *t == mod_api::Text::literal("Tip"))
+                    matches!(event.components[0].as_text(), Some((t, _)) if *t == mod_api::Text::literal("Tip"))
                 );
                 assert_eq!((event.place.x, event.place.y), (10, 20));
-                assert_eq!((event.screen_width, event.screen_height), (320, 240));
+                assert_eq!(event.screen, [320.0, 240.0]);
+                assert_eq!(*event.font, Identifier::parse("minecraft:default").unwrap());
+                assert_eq!(
+                    event.positioner.position_tooltip(
+                        [320, 240],
+                        [event.place.x, event.place.y],
+                        [60, 20]
+                    ),
+                    [22, 8]
+                );
                 match MODE.load(Ordering::Relaxed) {
                     1 => {
                         event.place.x = 50;
@@ -3829,24 +4000,41 @@ mod cycling_tests {
                         );
                         return mod_api::Flow::Cancel;
                     }
+                    3 => {
+                        *event.font = Identifier::parse("minecraft:alt").unwrap();
+                    }
                     _ => {}
                 }
                 mod_api::Flow::Continue
             }
         }
-        let lines = vec![(Text::literal("Tip"), u32::MAX)];
+        let default_font = Identifier::parse("minecraft:default").unwrap();
+        let alt_font = Identifier::parse("minecraft:alt").unwrap();
+        let mut components = vec![super::tooltip::PreparedTooltipItem::Text {
+            text: Text::literal("Tip"),
+            color: u32::MAX,
+        }];
         let mods: Mods = vec![ModEntry::new("pre", Box::new(Mod))].into();
         mod_platform::testing::with_mods(mods, || {
-            super::super::native_entity_refs::tests::with_game(|game| {
+            super::super::native_entity_refs::tests::with_client_game(|game| {
                 let mut batch = HudBatch::scratch([320, 240]);
+                let anchor = super::tooltip::quantize_tooltip_anchor((10.6, 20.4));
                 let mut pre = |game: &super::Game<'_>| {
-                    game.tooltip_pre(&mut batch, None, &lines, &[], (10.6, 20.4), (320.0, 240.0))
+                    game.tooltip_pre_components(
+                        &mut batch,
+                        None,
+                        &mut components,
+                        anchor,
+                        &mod_api::DefaultTooltipPositioner,
+                    )
+                    .map(|(anchor, font)| (anchor, font.into_owned()))
                 };
                 MODE.store(0, Ordering::Relaxed);
-                // Unmoved, the cursor's own fractional point stays.
-                assert_eq!(pre(game), Some((10.6, 20.4)));
+                assert_eq!(pre(game), Some(([10, 20], default_font.clone())));
                 MODE.store(1, Ordering::Relaxed);
-                assert_eq!(pre(game), Some((50.0, 60.0)));
+                assert_eq!(pre(game), Some(([50, 60], default_font.clone())));
+                MODE.store(3, Ordering::Relaxed);
+                assert_eq!(pre(game), Some(([10, 20], alt_font.clone())));
                 MODE.store(2, Ordering::Relaxed);
                 assert_eq!(pre(game), None);
                 assert!(
@@ -3862,18 +4050,18 @@ mod cycling_tests {
         let (x, y) = tooltip_position((10.3, 20.7), (640.0, 360.0), (100.0, 20.0));
         assert_eq!((x, y), (22.0, 9.0));
 
-        // When overflowing right boundary, flips to left
+        // When overflowing right boundary, flips to left (DefaultTooltipPositioner: x - 24 - w)
         let (x, _y) = tooltip_position((600.0, 50.0), (640.0, 360.0), (100.0, 20.0));
-        assert_eq!(x, 484.0);
+        assert_eq!(x, 488.0);
 
         // Clamps to min 4.0 margin
         let (x, y) = tooltip_position((50.0, 50.0), (100.0, 100.0), (120.0, 20.0));
         assert_eq!(x, 4.0);
         assert_eq!(y, 38.0);
 
-        // Near top screen edge
+        // Near top screen edge (vanilla DefaultTooltipPositioner applies no top clamp)
         let (_x, y) = tooltip_position((50.0, 5.0), (640.0, 360.0), (100.0, 20.0));
-        assert_eq!(y, 4.0);
+        assert_eq!(y, -7.0);
     }
 }
 

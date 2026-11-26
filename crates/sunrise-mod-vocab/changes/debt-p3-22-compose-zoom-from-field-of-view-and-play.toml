@@ -1,0 +1,23 @@
+ids = [
+    "hook:zoom",
+    "method:Hooks::zoom",
+    "type:Zoom",
+    "type:ZoomEvent",
+    "hook:player_turn",
+    "method:Hooks::player_turn",
+    "type:PlayerTurnEvent",
+    "hook:compute_fov_modifier",
+    "hook:compute_fov",
+]
+why = """
+The dedicated zoom hook, its types and its zoom-factor and turn-scale caps are gone. Compose zoom from regular client input and camera hooks instead.
+Vanilla Camera.tickFov calls AbstractClientPlayer.getFieldOfViewModifier on the actual camera player (including RemotePlayer), returning 0.1 before Mth.lerp when scoping with a spyglass in first person; NeoForge patches only that final Mth.lerp return for ComputeFovModifierEvent. Sunrise now uses that player's movement attribute and item use, preserves the first-person spyglass early return before dispatching compute_fov_modifier, and skips the hook for a non-player camera instead of calling it on the local spectator.
+Following Camera.calculateFov and NeoForge's ViewportEvent.ComputeFov, the world projection hook gets the calculated angle without a separate engine zoom pass.
+The new player_turn adjusts the relative Entity.turn input from any device; NeoForge's CalculatePlayerTurnEvent remains specific to MouseHandler.turnPlayer.
+"""
+migrate = """
+Remove Hooks::zoom, ZoomEvent and Zoom. Read your key with host.mod_key_mapping_is_down(mapping) while host.playing(), and keep the held and animation state in your mod.
+Replace Zoom.factor and Zoom.smooth with event.modifier /= factor on ComputeFovModifierEvent in Hooks::compute_fov_modifier for vanilla camera easing, or event.degrees /= factor on ComputeFovEvent in Hooks::compute_fov for an immediate angle change. compute_fov no longer receives an engine-prezoomed angle; apply your zoom in one place.
+ComputeFovModifierEvent.player now describes the effective camera player, not always the local player, and the hook is bypassed when that player is scoping with a spyglass in first person (returning 0.1, as in AbstractClientPlayer.getFieldOfViewModifier) or when the camera follows a non-player. Move state updates that must still run in those cases to Hooks::client_tick_pre or Hooks::client_tick_post. In Hooks::compute_fov or Hooks::player_turn, if you want a local first-person spyglass to take precedence over your own zoom or turn scaling, check host.camera_type().is_first_person(), read host.local_item_use() for its hand, and inspect that stack with LivingRef::with_hand_item; ItemUse alone does not identify the item.
+Replace Zoom.turn with event.x *= turn_scale and event.y *= turn_scale on PlayerTurnEvent in Hooks::player_turn (Entity.turn units; 1.0 is 0.15 degrees). Use Hooks::calculate_player_turn only for mouse sensitivity or cinematic smoothing.
+"""

@@ -15,12 +15,11 @@ from pathlib import Path
 import platform
 import subprocess
 
-try:
-    from . import lab, oracle_harness as oh, test_rust_parity as base
-except ImportError:
-    import lab
-    import oracle_harness as oh
-    import test_rust_parity as base
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, oracle_harness as oh, test_rust_parity as base
 
 NAME = 'server-files-parity'
 U1 = '069a79f4-44e9-4726-a5be-fca90e38aaf5'

@@ -1,4 +1,3 @@
-#![cfg(test)]
 use crate::game::native_entity_refs::tests::with_game;
 use mod_api::*;
 use std::sync::{

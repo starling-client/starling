@@ -1,0 +1,4 @@
+# PACKAGE TEST TARGET daily REASON; exact logical libtest identities, sorted.
+# A pack's block ids from compact and wide terrain, and their sources' lifetime (#794).
+sunrise-client-render gfx::arena::source_tests::terrain_sources_move_recycle_and_live_only_while_read lib daily gpu
+sunrise-client-render gfx::pack_atlas_tests::compact_source_test::a_pack_reads_each_faces_own_block_from_compact_and_wide_terrain lib daily gpu

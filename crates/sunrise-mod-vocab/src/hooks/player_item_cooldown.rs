@@ -1,5 +1,4 @@
 //! The `player_item_cooldown` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0290
 
 pub trait Hooks {
     /// An item cooldown is about to start for a server player. `item` is the item id and `ticks` its

@@ -1,0 +1,3 @@
+ids = ["method:prelude::ScreensClientHost::screen_hovered_item", "method:prelude::ScreensClientHost::screen_hovered_stack"]
+why = "screen_hovered_stack replaces screen_hovered_item: a recipe viewer needs the hovered slot's whole stack (enchantments, potion contents, custom name, damage), not only its item key, and the creative item and search tabs' catalog slots now answer too. MenuRef::slot_boxes also answers on the creative screen, with InventoryMenu's slots where selectTab places them."
+migrate = "Call host.screen_hovered_stack() and read the key with ItemStack::item() where only the item was used."

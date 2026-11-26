@@ -1,0 +1,85 @@
+ids = [
+    "type:DeclarationError",
+    "type:DeclarationError.UnownedNamespace",
+    "type:GameRuleError",
+    "type:GameRuleError.ForeignNamespace",
+    "handle:BiomeRegion::MAX_WEIGHT",
+    "hook:blocks",
+    "hook:items",
+    "hook:component_types",
+    "hook:recipe_property_sets",
+    "method:GeneralTypesRegistrar::declare_general_entity",
+    "type:GeneralEntityRegistrationError",
+    "method:TicketsRegistrar::register_ticket_controller",
+    "hook:menu_button",
+    "hook:menu_button_valid",
+    "hook:use_duration",
+    "hook:block_entity_ticks",
+    "hook:block_entity_tick",
+    "hook:block_entity_on_load",
+    "hook:block_entity_view_distance",
+]
+why = """
+Code registry identifiers are independent of package file namespaces, matching NeoForge
+RegisterEvent.register and vanilla 26.3 MappedRegistry.register. Use the actual registry
+for built-in and duplicate checks, and record the declaring package separately. Save,
+network, ticking, native item use, block entity capabilities, recipe codecs and menu
+button dispatch now recognize admitted keys instead of inferring ownership or kind
+from the namespace. `served_by` still controls file delegation and namespace-supplier
+side checks. Startup still refuses duplicate stock-screen registrations, exact vanilla
+model-layer collisions and render-pipeline duplicates under their existing rules.
+
+The recipe-property hook still unions contributors and keeps the first one's provenance,
+but distinguishes actual vanilla RecipeManager property keys from custom `minecraft:`
+keys. Biome modifier load uses one effective resource per key, following
+ResourceManagerRegistryLoadTask.load; code cannot register that same key. Sunrise's
+own biome-region selector drops the arbitrary weight cap but retains positive weights
+and checked i32 total arithmetic.
+"""
+migrate = """
+Keep `BlocksEvent::register`, `ItemsEvent::register` and `ComponentTypesEvent::register`.
+Update `hook:blocks` and `hook:items` pins from 4 to 5 and `hook:component_types` from 3 to 4.
+Keep `RecipePropertySetsEvent::register`; update `hook:recipe_property_sets` pins from 3 to 4.
+Continue using the full namespaced ID for custom property sets; bare names are built-in only.
+
+For `DeclarationError`, remove matches for `DeclarationError::UnownedNamespace`; use
+`InvalidId` for malformed keys and `Rejected` for registry-specific refusals.
+For `GameRuleError`, remove matches for `GameRuleError::ForeignNamespace`; use `InvalidId`
+for malformed keys and `Duplicate` for built-in or previously registered keys. Replace
+`BiomeRegion::MAX_WEIGHT` with `i32::MAX as u32`; total weight in each dimension must also fit in i32.
+
+Hook versions that change with this note: `menu_button` 5, `menu_button_valid` 2, `use_duration` 2,
+`block_entity_ticks` 2, `block_entity_tick` 6, `block_entity_on_load` 3 and `block_entity_view_distance` 2.
+Rebuild listeners of each against that version. Their recipients change as follows. `menu_button` and
+`menu_button_valid` are delivered to the package that declared the custom menu (or verified the stock
+opener block), no longer to the presentation-only package; a package pinned to the old version that
+only presented the menu stops receiving them. `use_duration` and the four block-entity hooks are also
+delivered for admitted native `minecraft:` subjects, not only for keys in the mod's own namespaces.
+
+Keep `Registrar::block_entity_part`, `Registrar::block_entity_part_with_state`,
+`DefaultCapabilitiesRegistrar::block_container`, `DefaultCapabilitiesRegistrar::block_fluids`
+and `DefaultCapabilitiesRegistrar::block_energy`. No saved key or Part signature changes;
+`block_entity_ticks`, `block_entity_tick`, `block_entity_on_load`, `block_entity_view_distance`
+and `use_duration` now also apply where appropriate to admitted native `minecraft:` keys.
+
+Keep `MenusRegistrar::menu_recipe_book` with the exact custom menu ID. To handle
+`menu_button` or `menu_button_valid`, attach gameplay to the package that declared the
+custom menu or verified stock opener block, not the presentation-only package. Stock menu
+factories still refuse duplicates and do not resolve by opener.
+
+Keep `GameRulesRegistrar::game_rule_category`, `GameRulesRegistrar::game_rule_bool`,
+`GameRulesRegistrar::game_rule_int` and `BiomeModifiersRegistrar::declare_biome_modifier`;
+unused valid explicit namespaces are accepted. If an effective modifier file and code share
+a key, give them distinct keys or remove one declaration. For a file crafting remainder,
+use an actual vanilla item, your own item, or an admitted item from a `served_by` partner.
+Keep `GeneralTypesRegistrar::declare_general_entity` with its `EntityTypeKey` return and
+`FeatureFlag` requirements, and `TicketsRegistrar::register_ticket_controller` with its
+opaque `TicketController` return and validator. Bare names still use the declaring mod's ID;
+pass a valid `namespace:path` unchanged. Entity keys that fail identifier validation return
+`GeneralEntityRegistrationError::InvalidId`; a built-in or previously registered entity key
+returns `Duplicate`. There is no additional length limit on the key. A duplicate ticket
+controller key is refused rather than resolving to the earlier handle.
+
+Keep existing saved keys and serializer IDs. Payloads still reserve `minecraft:*` and the
+engine's built-in `sunrise:*` channels.
+"""

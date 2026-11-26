@@ -45,11 +45,15 @@ running them. This work does not run on the tick. Server world tables, including
 Contributions share a list, so a failed contributed file cannot be attributed to a particular mod.
 The original pack trees remain separate from the launcher's code-only horizon-mixins input.
 
-Client-side asset reads use [client asset reload listeners](https://github.com/sunrise-org/sunrise/blob/main/crates/sunrise-mod-vocab/src/client/client_reload.rs); server
-listeners cannot read `assets/`. Client listeners return the same once-only action, which runs on
-the game thread, on the declared side of model publication. With no dependency linking
-it to the vanilla anchor, a mod listener runs after model publication by default.
-Packaged assets also participate in the game's normal resource packs.
+Client-side asset reads use [client asset reload listeners](https://github.com/sunrise-org/sunrise/blob/main/crates/sunrise-mod-vocab/src/client/client_reload.rs)
+through `Hooks::add_client_reload_listeners`; server listeners cannot read `assets/`. During
+registration, `event.listeners.get_registry().iter()`, `event.listeners.get_graph().iter()` and
+`event.listeners.get_last_vanilla_listener()` borrow the live names, explicit dependency edges and
+client vanilla anchor (`VanillaClientListeners::model_manager()`) in the same way as the server
+registry. Client listeners return the same once-only action, which runs on the game thread, on the
+declared side of model publication. With no dependency linking it to the vanilla anchor, a mod
+listener runs after model publication by default. Packaged assets also participate in the game's
+normal resource packs.
 
 When registering a listener on either side, construct its converter with
 `FileToIdConverter::json("machines")` for JSON or `FileToIdConverter::new("machines", ".bin")`
@@ -71,34 +75,84 @@ succeeds. A [failed registration callback](../../concepts/load-phases.md#reloadi
 of its listeners, edges or retained entries; later mods can still register. This applies to the
 initial client load as well as later client and server reloads.
 
-Outside a listener, `host.resource(pack_type, &identifier)` reads one file from the selected
-stack: `PackType::ServerData` takes `mymod:machines/furnace.json` from `data/`, and
+Use `host.open_resource(pack_type, &identifier)` on a `Host` or `ReloadContext` to open one file
+from the published stack: `PackType::ServerData` takes `mymod:machines/furnace.json` from `data/`, and
 `PackType::ClientResources` takes `mymod:models/block/furnace.json` from `assets/`. As with
-`ResourceManager.getResource`, the highest selected pack that supplies the file wins; filters,
-a world's datapacks and a mod's own root data all apply. The answer is the winning bytes, or
-`None` for a missing, unreadable or over-64-MiB file. Use a reload listener for a whole folder
-or for parsing at reload time; a single read does not reload packs. Directory-pack
-symlinks follow vanilla pack behavior: linked resource files are read through the pack.
+`ResourceManager.getResource`, each selected pack in priority order first gets to supply its own
+file, then its `filter.block` can hide lower files. Opening reads the original file, not a merged
+file such as the language table. It never reloads packs or substitutes a lower pack's file if
+the winner fails.
+
+- `Ok(Some(reader))` gives a `std::io::Read` scoped to the host's published pack generation. Pass it
+  to a streaming decoder, or call `reader.read_to_end(&mut bytes)` to fill a `Vec<u8>` when you need owned bytes.
+  Opening does not load the whole resource or set a file-size limit; apply your codec's own limits
+  when reading. The reader can report I/O or archive decoding errors, and the consumer reports its
+  own format errors.
+- `Ok(None)` means no matching resource or pack stack, including a resource hidden by a pack filter.
+- `Err(error)` means lookup or opening failed. `ResourceOpenError::Io` preserves the original error.
+
+`host.resource_stack(pack_type, &identifier)` gives every selected pack's copy of a file instead,
+lowest first and the highest pack's last (`ResourceManager.getResourceStack`), as bytes: a copy that
+cannot be read or is over 64 MiB is left out. `host.list_resources(pack_type, "textures/item", ".png")`
+names the files under that folder of every namespace that end in the suffix, in identifier order
+(`ResourceManager.listResources`); metadata files (`.mcmeta`) are never listed. Use a reload
+listener for parsing at reload time; these reads never reload packs.
+
+Use a reload listener to process a whole folder or parse resources when the packs change. Directory
+packs follow vanilla's symlink behavior: linked resource files are read through the pack.
 
 ## Embedded data
 
-Generate code-only tables as Rust source before packaging and include them under `src/`.
-The launcher refuses mod build scripts with `E_NATIVE_BUILD_SCRIPT`. Embedded tables do not
-participate in resource reloads.
+Generate code-only tables as Rust source before packaging and include them under `src/`, or have a
+build script generate them. Embedded tables do not participate in resource reloads.
 
 ## Package contents
 
-A native package holds the manifest, an optional `icon.png`, the root `Cargo.toml`, `Cargo.lock` and `build.rs`,
-the `.rs` and `.toml` files under `src/`, `assets/` and `data/`, a `runtime/` folder listed in `[runtime]`, and root
-text files (`README*`, `LICENSE*`, `LICENCE*`, `COPYING*`, `NOTICE*`). Source and resource size limits are checked
-separately.
+A native package holds the manifest, an optional `icon.png`, `assets/` and `data/`, a `runtime/` folder listed in
+`[runtime]`, and the crate's source: the files `cargo package` would put in the crate, with these differences:
 
-Packing a project folder takes only these files. Any other file in it (a `module.toml`, `tools/generate.rs`,
-`.cargo/config.toml`, `rust-toolchain.toml`) is left out unread, and the native build, which works on the packed
-files, never sees it. `cargo sunrise-mod check` runs Cargo in the folder itself, so the folder's Cargo configuration
-and toolchain file apply there as they do to plain `cargo`. A few old input paths still refuse a folder:
-`sunrise-native.json`, `horizon-mixin.toml`, and a root `native/` or `rust/`. In an archive, a file outside this
-layout refuses the package ([the manifest](../../reference/manifest.md)).
+- Only the folder's root `.gitignore` is read, and there is no Git index: a file the root `.gitignore` does not ignore
+  is packaged whether or not it is tracked.
+- Files and folders whose name starts with `.` are skipped unless `[package] include` is set (then only `include`
+  decides). `.git/`, `.cargo/` and `.sunrise/` are never packaged.
+- The root `page.toml` and `page/` are your [mod's page](../publish.md#your-mods-page), not source: `build` writes
+  them to `<id>.page.tar`, never into the `.smod`. A `src/page/` folder is source as usual.
+- Only the root `target/` is skipped.
+- A symlink is refused, not followed.
+- A `path` dependency that leaves the package, or names a folder the package leaves out, is refused by manifest and
+  path (the SDK's `.sunrise/` path stays allowed: the native build replaces it).
+- Two file names that differ only by case are refused, since a Windows or macOS extraction keeps only one.
+- A file or folder name ending in `.` or a space is refused, since a Windows extraction drops it.
+
+A root `rust-toolchain` or `rust-toolchain.toml` may stay in the package, but the staged build leaves it out: the
+build runs the toolchain it pins.
+
+Source and resource size limits are checked separately.
+
+Packing a project folder takes the whole folder, not only `src/`, and any kind of file: Rust, C and its headers,
+data a build script reads. Then `[package] include` in `Cargo.toml` keeps only the files its patterns match, or else
+`[package] exclude` drops the files its patterns match; both are gitignore-style patterns, as Cargo reads them.
+`Cargo.toml` and `Cargo.lock` are always packaged. A file left out is never read, and the native build, which works
+on the packed files, never sees it. `cargo sunrise-mod check` runs Cargo in the folder itself, so the folder's Cargo
+configuration applies there as it does to plain `cargo`. A few old input paths still refuse a folder:
+`sunrise-native.json`, `horizon-mixin.toml`, and a root `native/` or `rust/`.
+
+The tools that read source out of an archive (the registry's checks, the launcher's build) count the source entries
+and add up their declared sizes from the archive's directory before inflating any, and refuse more than the source
+file and size limits allow; they also refuse an entry that is not the manifest, `uses.json`, `icon.png`, `runtime/`,
+`assets/`, `data/` or a source file (a `target/` or `.cargo/` entry), by name. A root `page.toml` or `page/` entry,
+which `build` packed as source for a while from Nov 25, is left out unread, with a warning naming the mod and the
+entry; this lasts until no published package carries one, and ends by 26.3-0.1.0 at the latest. The tools of builds
+before Nov 25 knew a shorter list of source names (`Cargo.toml`, `Cargo.lock`, `build.rs`, `src/**/*.rs` and
+`.toml`, and root `README*`, `LICENSE*`, `COPYING*` and `NOTICE*` files) and refuse any other entry as `unexpected
+package path`: rebuild a mod with the current tool to drop its page files before checking it against such a build.
+The game does neither: it never reads or compiles the source, so it does not check this list when it loads a
+package. It reads the manifest, the icon, the content and the runtime files, and skips the rest.
+
+A package does not carry prebuilt object code. A source file whose header is an ELF, Mach-O (also universal),
+PE or WebAssembly file, or an `ar` archive (`.a`, `.lib`), is refused by name when the package is packed or read by the
+tools, whatever the file is called: ship the source and let the build compile it. The check catches prebuilt object
+code by its header; it is not a security boundary, since a `build.rs` runs code.
 
 A package may also carry `uses.json`, generated metadata that `cargo sunrise-mod build` writes from a scan of the
 same source files it packs. It is never read from the folder. The build leaves it out for a mod made for exactly one
@@ -135,14 +189,7 @@ A mod that turns other packages' files into what it registers (a script host who
 package, your own included, and gives a handle you may keep and use from any thread:
 
 ```rust
-fn scripts(cx: &mod_api::RegistrationContext) -> Result<Vec<Vec<u8>>, Box<dyn std::error::Error>> {
-    let files = cx.package_files("lumen_demo")?;
-    let mut scripts = Vec::new();
-    for path in files.list("data/lumen_demo/lumen/") {
-        scripts.push(files.read(path)?);
-    }
-    Ok(scripts)
-}
+{{#include ../../../examples/src/entity_and_native.rs:read_scripts}}
 ```
 
 The file list is fixed when startup admits the package. Declaration and resource loading use that same list and reader.

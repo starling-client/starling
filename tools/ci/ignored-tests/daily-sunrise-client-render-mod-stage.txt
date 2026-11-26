@@ -1,0 +1,3 @@
+sunrise-client-render gfx::pack_post::mod_stage_tests::after_opaque_blocks_depth_tests_against_pack_terrain_and_runs_before_final lib daily gpu
+sunrise-client-render gfx::pack_post::mod_stage_tests::pack_boundaries_fire_in_order_and_draw_pack_custom_depth_tests_mod_pipelines lib daily gpu
+sunrise-client-render gfx::pack_post::mod_stage_tests::post_pack_world_depth_export_depth_tests_against_pack_terrain lib daily gpu

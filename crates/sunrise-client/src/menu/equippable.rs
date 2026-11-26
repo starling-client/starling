@@ -1,32 +1,44 @@
 //! `DataComponents.EQUIPPABLE` as a menu reads it from a stack: its slot and the entity types that
 //! may wear it (`LivingEntity.isEquippableInSlot`), then the parts of its item
 //! (`IItemExtension.canEquip`).
-use super::{Env, Menu};
+use super::{Env, Kind, MAIN, Menu, Slot};
 use crate::items::ItemStack;
 use crate::mobs::equip::equippable_in_slot;
 
 /// The equipment slots of `Role::Armor`, by `EquipmentSlot.getIndex` (feet first).
 pub(super) const ARMOR_SLOTS: [&str; 4] = ["feet", "legs", "chest", "head"];
 
+/// Enforce the backing container's bound without asking placement again.
+pub(super) fn limit_slot_max_for(
+    kind: Kind,
+    s: usize,
+    slot: Slot,
+    container_limit: Option<u32>,
+    max: u32,
+) -> u32 {
+    if let Kind::Mod(layout) = kind
+        && let Some(limit) = layout.owned_slots.as_ref().and_then(|limits| limits.get(s))
+    {
+        return max.min(u32::from(*limit));
+    }
+    if slot.container == MAIN {
+        container_limit.map_or(max, |limit| max.min(limit))
+    } else {
+        max
+    }
+}
+
 impl Menu {
     /// Apply the backing container's bound without asking placement again.
     pub(super) fn limit_slot_max(&self, s: usize, max: u32) -> u32 {
-        if let super::Kind::Mod(layout) = self.state.kind
-            && let Some(limit) = layout.owned_slots.as_ref().and_then(|limits| limits.get(s))
-        {
-            return max.min(u32::from(*limit));
-        }
         let slot = self.state.slots[s];
-        if slot.container == super::MAIN {
-            self.state
-                .container_limits
-                .get(slot.index)
-                .copied()
-                .flatten()
-                .map_or(max, |limit| max.min(limit))
-        } else {
-            max
-        }
+        let container_limit = self
+            .state
+            .container_limits
+            .get(slot.index)
+            .copied()
+            .flatten();
+        limit_slot_max_for(self.state.kind, s, slot, container_limit, max)
     }
 
     /// `ArmorSlot.mayPlace`: `LivingEntity.isEquippableInSlot` for the player of `env`, armour
@@ -49,13 +61,6 @@ impl Menu {
             ),
             _ => data,
         }
-    }
-
-    /// A mount's equipment slot `slot` (`body`, `saddle`): `LivingEntity.isEquippableInSlot`
-    /// for the mount the menu belongs to.
-    pub(super) fn mount_may_place(&self, env: &Env, slot: &str, stack: &ItemStack) -> bool {
-        (self.state.mount.as_deref())
-            .is_some_and(|mount| equippable_in_slot(env.items, stack, slot, mount))
     }
 }
 

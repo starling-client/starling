@@ -1,0 +1,3 @@
+ids = ["method:prelude::ClientInputClientHost::is_mouse_grabbed", "method:prelude::ClientInputClientHost::set_mouse_grabbed"]
+why = "A client mod reads whether the window holds the pointer and grabs or releases it as vanilla does (MouseHandler.isMouseGrabbed, grabMouse, releaseMouse): grabbing does nothing when the window is inactive, the pointer is already grabbed, no player is in a world, the game is connecting or loading, or the death screen is open, and otherwise closes the open screen and takes the pointer, releasing does nothing when it is not grabbed."
+migrate = "Additive: nothing to change."

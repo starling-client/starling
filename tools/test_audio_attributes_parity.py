@@ -8,10 +8,12 @@ dimension type and biome and prints `BACKGROUND_MUSIC` (all three tracks and
 `MUSIC_VOLUME` and `AMBIENT_SOUNDS` (loop, mood, additions), plus the
 `Musics` constants. Sunrise's `MusicTables` and `AmbientTables` answer the same.
 """
-try:
-    from . import audio_harness as h
-except ImportError:
-    import audio_harness as h
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import audio_harness as h
 
 
 def fixtures():

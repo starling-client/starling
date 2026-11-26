@@ -38,6 +38,40 @@ mod variables;
 
 type Result<T> = core::result::Result<T, Error>;
 
+/// The locations a stage's interface may take, from the device that will run it
+/// (`wgpu::Limits`). The entry point makes one argument or result member for each location-bound
+/// element (each scalar, vector or matrix, through arrays and structs), so these limits also
+/// bound that work: a stage whose variables of one direction take more is an
+/// [`ErrorKind::InterfaceTooLarge`], at the variable that passes the limit, before any argument
+/// is made. Such a stage could never build a pipeline on that device.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InterfaceLimits {
+    /// `max_inter_stage_shader_variables`: a vertex stage's outputs, a fragment stage's inputs.
+    pub inter_stage_variables: u32,
+    /// `max_vertex_attributes`: a vertex stage's inputs.
+    pub vertex_attributes: u32,
+}
+
+impl InterfaceLimits {
+    /// `wgpu::Limits::default()`'s values (wgpu-types 30.0.1, `limits.rs:444` and `:446`: 16 and
+    /// 16), for a caller that has no device.
+    pub const WGPU_DEFAULT: Self = Self {
+        inter_stage_variables: 16,
+        vertex_attributes: 16,
+    };
+}
+
+impl Default for InterfaceLimits {
+    fn default() -> Self {
+        Self::WGPU_DEFAULT
+    }
+}
+
+/// The locations a fragment stage's outputs may take on any device: wgpu-hal's
+/// `MAX_COLOR_ATTACHMENTS` (8, `lib.rs:328`), to which every backend's `max_color_attachments`
+/// is capped (`auxil/mod.rs:141`).
+pub const MAX_FRAGMENT_OUTPUTS: u32 = 8;
+
 /// Per-shader options passed to [`parse`](Frontend::parse).
 ///
 /// The [`From`] trait is implemented for [`ShaderStage`] to provide a quick way
@@ -58,6 +92,8 @@ pub struct Options {
     /// ```
     /// for each key value pair in the map.
     pub defines: FastHashMap<String, String>,
+    /// The locations the stage's interface may take: the device's, when the caller has one.
+    pub interface_limits: InterfaceLimits,
 }
 
 impl From<ShaderStage> for Options {
@@ -65,6 +101,7 @@ impl From<ShaderStage> for Options {
         Options {
             stage,
             defines: FastHashMap::default(),
+            interface_limits: InterfaceLimits::default(),
         }
     }
 }
@@ -180,6 +217,9 @@ pub struct Frontend {
 
     /// Globals and struct fields accessed by atomic functions, whose types become atomic.
     atomic_upgrades: crate::front::atomic_upgrade::Upgrades,
+
+    /// The parse's [`Options::interface_limits`].
+    interface_limits: InterfaceLimits,
 }
 
 impl Frontend {
@@ -204,6 +244,7 @@ impl Frontend {
         source: &str,
     ) -> core::result::Result<Module, ParseErrors> {
         self.reset(options.stage);
+        self.interface_limits = options.interface_limits;
 
         let lexer = lex::Lexer::new(source, &options.defines);
         let mut ctx = ParsingContext::new(lexer);

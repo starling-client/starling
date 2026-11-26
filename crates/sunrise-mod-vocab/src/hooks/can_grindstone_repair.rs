@@ -22,6 +22,7 @@ pub trait Hooks {
     /// the stack isn't converted. The contract beyond the method's name and parameters is
     /// Sunrise's reading, not checked against NeoForge's. Diverges from upstream: new hook.
     /// A client without this mod predicts vanilla here; the server corrects it.
+    /// Read the borrowed stack with `get`; call `project` only to keep an owned copy.
     #[hook(
         side = "both",
         contract = "listen",
@@ -30,7 +31,8 @@ pub trait Hooks {
         key = "stack",
         cancellable = false,
         target = "sunrise_client_lib::stations::native_can_grindstone_repair",
+        version = 2,
         neoforge = "IItemExtension.canGrindstoneRepair"
     )]
-    fn can_grindstone_repair(stack: &mod_api::ItemStack, can_repair: &mut bool);
+    fn can_grindstone_repair(stack: mod_api::ItemStackView<'_>, can_repair: &mut bool);
 }

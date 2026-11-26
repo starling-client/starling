@@ -5,8 +5,10 @@ import json
 from pathlib import Path
 import sys
 
-import test_command_exec_parity as driver
-from world_test_def_corpus import PACK_TESTS, world_test_def
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_command_exec_parity as driver
+from tools.world_test_def_corpus import PACK_TESTS, world_test_def
 
 _install = driver.install_datapack_fixtures
 

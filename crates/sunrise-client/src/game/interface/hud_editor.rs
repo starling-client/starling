@@ -65,7 +65,8 @@ impl Game<'_> {
             from_options,
             ..HudEditor::default()
         });
-        self.activate_screen(Screen::HudEditor);
+        self.screen = Screen::HudEditor;
+        self.commit_screen_transition();
         self.capture(false);
     }
     pub(in crate::game) fn close_hud_editor(&mut self) {
@@ -74,7 +75,8 @@ impl Game<'_> {
         if from_options {
             self.open_options_at(false, sunrise_client::options_ui::Page::Pvp);
         } else {
-            self.activate_screen(Screen::Playing);
+            self.screen = Screen::Playing;
+            self.commit_screen_transition();
             self.capture(true);
         }
     }
@@ -173,12 +175,12 @@ impl Game<'_> {
                 0..4 => STYLE[i].cycle(pvp, back),
                 4 => pvp.layout = Layout::default(),
                 _ => {
-                    self.audio.play_button_click();
+                    self.play_audio_button_click();
                     self.close_hud_editor();
                     return true;
                 }
             }
-            self.audio.play_button_click();
+            self.play_audio_button_click();
             self.settings.save(&Self::options_path());
             return true;
         }
@@ -196,12 +198,12 @@ impl Game<'_> {
         false
     }
     /// The cursor moved: the held widget follows, snapping to edges near it.
-    pub(super) fn hud_editor_drag(&mut self) {
+    pub(super) fn hud_editor_drag(&mut self) -> bool {
         let Some((id, dx, dy)) = self.pvp.editor.as_ref().and_then(|e| e.drag) else {
-            return;
+            return false;
         };
         let Some(&(_, [_, _, w, h])) = self.pvp.boxes.iter().find(|(b, _)| *b == id) else {
-            return;
+            return false;
         };
         let screen = self.gui_size();
         let others = || self.pvp.boxes.iter().filter(|(b, _)| *b != id);
@@ -214,6 +216,7 @@ impl Game<'_> {
         if let Some(e) = &mut self.pvp.editor {
             e.guides = (gx, gy);
         }
+        true
     }
     pub(super) fn hud_editor_release(&mut self) -> bool {
         if let Some(e) = &mut self.pvp.editor
@@ -226,9 +229,9 @@ impl Game<'_> {
         false
     }
     /// The wheel over a widget resizes it by 10%.
-    pub(super) fn hud_editor_scroll(&mut self, amount: f64) {
+    pub(super) fn hud_editor_scroll(&mut self, amount: f64) -> bool {
         let Some((id, _)) = self.widget_under_cursor() else {
-            return;
+            return false;
         };
         let place = self.settings.extras.pvp.layout.get_mut(id);
         let (lo, hi) = pvp_hud::SCALES;
@@ -238,6 +241,7 @@ impl Game<'_> {
             place.scale.saturating_sub(10).max(lo)
         };
         self.settings.save(&Self::options_path());
+        true
     }
 }
 

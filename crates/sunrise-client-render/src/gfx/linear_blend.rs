@@ -1,6 +1,6 @@
-//! A shader API 0.2 pack's `[frame] blend = "linear"` (docs/design/hdr-linear-light.md, How the
-//! frame stores the picture): its float frame holds linear light instead of vanilla's gamma, so
-//! glass, water and smoke blend as light does. The pack's material, sky and weather stages store
+//! A shader API 0.2 pack's `[frame] blend = "linear"`: its float frame holds linear light instead
+//! of vanilla's gamma, so glass, water and smoke blend as light does. The pack's material, sky and
+//! weather stages store
 //! their results as they are. Sunrise's own draws into the frame decode theirs at the end of
 //! their shaders (hdr_light.wgsl's `frame_stored`), so a solid surface looks as under `"gamma"`.
 //! What the pack reads of the frame (`scene_color`, `opaque_color`, the water mirror) is copied

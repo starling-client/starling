@@ -8,7 +8,8 @@ behaviour, the disabled block is inert rather than inheriting its vanilla templa
   to any Part, including enabled Parts. Re-enabling the owner dispatches each held occurrence once,
   with its original deadline, priority and order.
 - `can_be_hydrated` leaves the farmland's moisture and block state unchanged on random ticks
-  unless an enabled mod's session water ticket or an earlier enabled Part waters it. Rain does not
+  unless an active session water ticket (tickets attributed to a disabled mod are cleared on
+  disable) or an earlier enabled Part waters it. Rain does not
   wet held farmland, and holding does not prevent trampling. Moisture and dry-out checks resume
   when the owner is switched back on. Farmland without a hydration Part from its owner follows
   its usual rules.

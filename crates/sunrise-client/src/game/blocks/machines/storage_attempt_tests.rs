@@ -83,22 +83,23 @@ impl ResourceHandler<ItemResource> for Storage {
     fn insert_at(
         &self,
         _: &mut dyn ServerHost,
-        _: &Transaction,
+        _: &TransactionContext,
         _: usize,
         _: &ItemResource,
         _: u32,
-    ) -> u32 {
+    ) -> Result<u32, TransactionError<Overanswered>> {
         panic!("automation must use the storage's indexless insertion")
     }
     fn insert(
         &self,
         host: &mut dyn ServerHost,
-        tx: &Transaction,
+        tx: &TransactionContext,
         resource: &ItemResource,
         amount: u32,
-    ) -> Result<u32, Overanswered> {
+    ) -> Result<u32, TransactionError<Overanswered>> {
         assert_eq!(amount, 1);
-        assert_eq!(host.transaction_depth(tx), Some(0));
+        assert_eq!(tx.depth(), 0);
+        assert!(host.transaction_matches(Some(tx)));
         let item = mod_api::__private::item_key_id(resource.as_stack().item()).unwrap();
         self.probe
             .trace
@@ -141,13 +142,14 @@ impl ResourceHandler<ItemResource> for Storage {
     fn extract_at(
         &self,
         host: &mut dyn ServerHost,
-        tx: &Transaction,
+        tx: &TransactionContext,
         slot: usize,
         resource: &ItemResource,
         amount: u32,
-    ) -> u32 {
+    ) -> Result<u32, TransactionError<Overanswered>> {
         assert_eq!(amount, 1);
-        assert_eq!(host.transaction_depth(tx), Some(0));
+        assert_eq!(tx.depth(), 0);
+        assert!(host.transaction_matches(Some(tx)));
         self.probe
             .trace
             .lock()
@@ -163,10 +165,10 @@ impl ResourceHandler<ItemResource> for Storage {
             )
         };
         if refuse {
-            return 0;
+            return Ok(0);
         }
         let Some(stack) = self.stack(host, slot) else {
-            return 0;
+            return Ok(0);
         };
         assert_eq!(ItemResource::of(&stack), *resource);
         let remaining = stack.shrink(1);
@@ -185,12 +187,12 @@ impl ResourceHandler<ItemResource> for Storage {
                 .capability(host, &ITEMS, [8, 64, 8], None)
                 .unwrap();
             let held = hopper.resource(host, 0).unwrap();
-            assert_eq!(hopper.extract_at(host, tx, 0, &held, 63), 63);
+            assert_eq!(hopper.extract_at(host, tx, 0, &held, 63), Ok(63));
         }
         if notify {
             entity.set_changed(host).unwrap();
         }
-        1
+        Ok(1)
     }
 }
 
@@ -228,7 +230,7 @@ impl BlockPart for Probe {
                 let sink = event.level.capability(host, &ITEMS, OTHER, None).unwrap();
                 host.transaction(|host, tx| {
                     if let Some(resource) = source.resource(host, 0) {
-                        let taken = source.extract_at(host, tx, 0, &resource, 1);
+                        let taken = source.extract_at(host, tx, 0, &resource, 1).unwrap();
                         assert_eq!(sink.insert(host, tx, &resource, taken), Ok(taken));
                     }
                     if self.rules.lock().unwrap().replace_source_on_notice {
@@ -239,8 +241,8 @@ impl BlockPart for Probe {
                             )
                             .unwrap(),
                         );
-                        assert_eq!(sink.extract_at(host, tx, 0, &stick, 1), 1);
-                        assert_eq!(source.insert_at(host, tx, 0, &stick, 1), 1);
+                        assert_eq!(sink.extract_at(host, tx, 0, &stick, 1), Ok(1));
+                        assert_eq!(source.insert_at(host, tx, 0, &stick, 1), Ok(1));
                     }
                     Ok::<_, ()>(())
                 })
@@ -283,7 +285,7 @@ impl BlockPart for CommitMover {
         if let Some(resource) = source.resource(host, 0) {
             let other = event.level.capability(host, &ITEMS, OTHER, None).unwrap();
             host.transaction(|host, tx| {
-                assert_eq!(source.extract_at(host, tx, 0, &resource, 1), 1);
+                assert_eq!(source.extract_at(host, tx, 0, &resource, 1), Ok(1));
                 assert_eq!(other.insert(host, tx, &resource, 1), Ok(1));
                 Ok::<_, ()>(())
             })
@@ -526,9 +528,9 @@ fn item_capability_presence_does_not_open_loot_or_load_chunks() {
                 )
                 .unwrap(),
             );
-            let aborted: Result<(), ()> = mod_api::run_transaction(game, |game, _| {
-                mod_api::run_transaction(game, |game, tx| {
-                    assert_eq!(cap.insert_at(game, tx, 0, &stick, 3), 3);
+            let aborted: Result<(), ()> = game.storage_transaction(|game, _| {
+                game.storage_transaction(|game, tx| {
+                    assert_eq!(cap.insert_at(game, tx, 0, &stick, 3), Ok(3));
                     assert_eq!(cap.amount(game, 0), 3);
                     Ok(())
                 })?;
@@ -536,9 +538,9 @@ fn item_capability_presence_does_not_open_loot_or_load_chunks() {
             });
             assert_eq!(aborted, Err(()));
             assert!(spill::saved_entity(&game.world, empty_pot).is_none());
-            mod_api::run_transaction(game, |game, tx| {
-                assert_eq!(cap.insert_at(game, tx, 0, &stick, 3), 3);
-                assert_eq!(cap.extract_at(game, tx, 0, &stick, 2), 2);
+            game.storage_transaction(|game, tx| {
+                assert_eq!(cap.insert_at(game, tx, 0, &stick, 3), Ok(3));
+                assert_eq!(cap.extract_at(game, tx, 0, &stick, 2), Ok(2));
                 Ok::<_, ()>(())
             })
             .unwrap();
@@ -602,12 +604,12 @@ fn a_committed_pot_write_in_another_level_survives_the_parent_abort() {
             .unwrap(),
         );
 
-        let aborted: Result<(), ()> = mod_api::run_transaction(game, |game, _| {
+        let aborted: Result<(), ()> = game.storage_transaction(|game, _| {
             game.enter_level(Dim::Nether).unwrap();
             let level = game.level(game.dim.id()).unwrap();
             let pot = level.capability(game, &ITEMS, pos, None).unwrap();
-            mod_api::run_transaction(game, |game, tx| {
-                assert_eq!(pot.extract_at(game, tx, 0, &stone, 1), 1);
+            game.storage_transaction(|game, tx| {
+                assert_eq!(pot.extract_at(game, tx, 0, &stone, 1), Ok(1));
                 Ok(())
             })?;
             game.enter_level(Dim::Overworld).unwrap();
@@ -856,8 +858,8 @@ fn aborting_a_pot_insert_restores_its_named_loot_sequence() {
             use crate::game::api_values::TryIntoApi;
             let stick =
                 ItemResource::of(&ItemStack::new("minecraft:stick", 1).try_into_api().unwrap());
-            let insert = |game: &mut Game<'_>, tx: &Transaction| {
-                assert_eq!(items.insert_at(game, tx, 0, &stick, 1), 1);
+            let insert = |game: &mut Game<'_>, tx: &TransactionContext| {
+                assert_eq!(items.insert_at(game, tx, 0, &stick, 1), Ok(1));
                 let amount = items.amount(game, 0);
                 assert!(
                     (3..=10).contains(&amount),
@@ -870,18 +872,20 @@ fn aborting_a_pot_insert_restores_its_named_loot_sequence() {
                 assert_ne!(after, before);
                 (materialized, after)
             };
-            let tentative = run_transaction(game, |game, _| {
-                let tentative =
-                    run_transaction(game, |game, tx| Ok::<_, ()>(insert(game, tx))).unwrap();
-                Err::<(), _>(tentative)
-            })
-            .unwrap_err();
+            let tentative = game
+                .storage_transaction(|game, _| {
+                    let tentative = game
+                        .storage_transaction(|game, tx| Ok::<_, ()>(insert(game, tx)))
+                        .unwrap();
+                    Err::<(), _>(tentative)
+                })
+                .unwrap_err();
             assert_eq!(spill::saved_entity(&game.world, pos), Some(tag));
             assert_eq!(game.rand_sequences.to_nbt(), before);
             assert_eq!(game.world.random.state(), level_before);
 
             assert_eq!(
-                run_transaction(game, |game, tx| Ok::<_, ()>(insert(game, tx))),
+                game.storage_transaction(|game, tx| Ok::<_, ()>(insert(game, tx))),
                 Ok(tentative)
             );
         },

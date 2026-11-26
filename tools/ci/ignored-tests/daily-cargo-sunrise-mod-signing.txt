@@ -1,6 +1,0 @@
-cargo-sunrise-mod ci_unlocks_an_encrypted_key_only_with_its_explicit_passphrase test:signing daily child-process
-cargo-sunrise-mod keygen_preserves_a_dangling_output_symlink test:signing daily child-process
-cargo-sunrise-mod keygen_rejects_destinations_inside_package_inputs test:signing daily child-process
-cargo-sunrise-mod keygen_writes_registry_key_and_refuses_to_replace_either_file test:signing daily child-process
-cargo-sunrise-mod signing_paths_refuse_a_symlinked_ancestor test:signing daily child-process
-cargo-sunrise-mod the_registry_verifies_the_detached_signature_of_the_exact_file test:signing daily child-process

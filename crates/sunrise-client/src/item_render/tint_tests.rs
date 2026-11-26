@@ -171,7 +171,7 @@ fn a_registered_source_tints_each_stack_in_hand_and_in_the_inventory() {
             let state = renderer.resolve(&stack(count), DisplayContext::Gui, None, None, 0, &env);
             let mut batch = crate::hud::HudBatch::scratch([64, 64]);
             gui::draw(
-                &state, &renderer, &sprites, &NoHost, &mut batch, 0.0, 0.0, 0.0, 0.0, 0.0,
+                &state, &renderer, &sprites, &NoHost, &mut batch, 0.0, 0.0, 0, 0.0, 0.0,
             );
             let mut colors: Vec<_> = batch.vertices.iter().map(|v| v.color).collect();
             colors.dedup();

@@ -24,6 +24,11 @@ ROOT = Path(__file__).resolve().parents[1]
 CONTRACT = 1
 # The oldest launcher that may install a build of this contract.
 LAUNCHER_MIN = "1.0.0"
+# The first launcher that reads an SDK index listing an asset kind it doesn't know: it skips the kind and refuses only a
+# route that needs it. Empty until that launcher is released. A build's SDK lists a kind newer than its launchers
+# (`programs`) only once LAUNCHER_MIN reaches it, since every launcher that may install the build reads its sdk.json
+# (tools/prebuilt_game.py `lists_programs`).
+UNKNOWN_KINDS_LAUNCHER = ""
 CHANNELS = ("nightly", "dev", "stable")
 # A stable release's build is its tag, `<target>-<semver>` (tools/release_train.py STABLE_TAG).
 STABLE_BUILD = r"\d+\.\d+(?:\.\d+)?-(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"

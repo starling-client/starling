@@ -95,7 +95,15 @@ impl TryIntoEngine<()> for mod_api::BlockProperties {
             instrument: self.instrument,
             ignited_by_lava: self.ignited_by_lava,
             replaceable: self.replaceable,
-            skip_same_block_faces: self.skip_same_block_faces,
+            skip_rendering: self.skip_rendering.clone(),
+            hides_neighbor_face: self.hides_neighbor_face.clone(),
+            supports_external_face_hiding: self.supports_external_face_hiding,
+            spawn_rule: self.spawn_rule.map(|rule| match rule {
+                mod_api::SpawnRule::Default => engine::SpawnRule::Default,
+                mod_api::SpawnRule::Always => engine::SpawnRule::Always,
+                mod_api::SpawnRule::Never => engine::SpawnRule::Never,
+                mod_api::SpawnRule::OcelotOrParrot => engine::SpawnRule::OcelotOrParrot,
+            }),
             vegetation: self.vegetation,
         })
     }
@@ -187,6 +195,7 @@ impl TryIntoEngine<()> for mod_api::Block {
                 .collect(),
             default_state: self.default_state.clone(),
             item: self.item,
+            own_item_name: !self.use_block_description_prefix,
             open_sound: self
                 .open_sound
                 .as_ref()
@@ -512,6 +521,24 @@ mod tests {
     }
 
     #[test]
+    fn spawn_rule_declarations_share_json_values() {
+        for (rule, json) in [
+            (mod_api::SpawnRule::Default, "default"),
+            (mod_api::SpawnRule::Always, "always"),
+            (mod_api::SpawnRule::Never, "never"),
+            (mod_api::SpawnRule::OcelotOrParrot, "ocelot_or_parrot"),
+        ] {
+            let draft = BlockProperties {
+                spawn_rule: Some(rule),
+                ..Default::default()
+            };
+            let expected: engine::BlockProperties =
+                serde_json::from_str(&format!(r#"{{"spawn_rule":"{json}"}}"#)).unwrap();
+            assert_eq!(draft.try_into_engine(&()).unwrap(), expected);
+        }
+    }
+
+    #[test]
     fn declaration_conversion_preserves_admission_outcomes() {
         // Independent engine records: errors must match by kind, id and reason, not just reject.
         for (id, template, light, hardness, item) in [
@@ -810,7 +837,15 @@ impl TryIntoEngine<()> for (String, mod_api::WorldFluid) {
                 slope_find_distance: fluid.slope_find_distance,
                 source_conversion: fluid.source_conversion,
                 bucket: fluid.bucket,
+                flowing: fluid.flowing.clone(),
+                block: fluid.block.clone(),
             }),
+            // Named here, the generated bucket keeps its id over a fluid file's `bucket_item`.
+            bucket_item: fluid
+                .bucket_item
+                .clone()
+                .or_else(|| fluid.bucket.then(|| format!("{id}_bucket"))),
+            measures: Default::default(),
         })
     }
 }

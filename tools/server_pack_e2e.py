@@ -44,11 +44,10 @@ import time
 import zipfile
 import zlib
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import lab  # noqa: E402
-import net_capture  # noqa: E402
-import test_rust_parity as base  # noqa: E402
-from test_dedicated_server_parity import Server, free_port  # noqa: E402
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, net_capture, test_rust_parity as base
+from tools.test_dedicated_server_parity import Server, free_port  # noqa: E402
 
 # ServerboundResourcePackPacket.Action, by ordinal.
 ACTIONS = ['successfully_loaded', 'declined', 'failed_download', 'accepted', 'downloaded', 'invalid_url',

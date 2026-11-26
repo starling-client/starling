@@ -1,5 +1,4 @@
 //! The `block_damage_abort` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0173
 
 pub trait Hooks {
     /// A server player stopped digging `pos` before the block broke, after

@@ -58,6 +58,8 @@ if mode == "error":
     print(json.dumps({"reason": "compiler-message", "message": {
         "level": "error", "rendered": "error: type mismatch\\n"}}))
 print(json.dumps({"reason": "compiler-artifact", "fresh": True}))
+print(json.dumps({"reason": "build-script-executed", "package_id": "member"}))
+print(json.dumps({"note": "a record without a reason"}))
 print("finished all crates", file=sys.stderr)
 sys.exit(17 if mode == "error" else 0)
 ''')
@@ -85,6 +87,8 @@ sys.exit(17 if mode == "error" else 0)
                         self.assertEqual(args, [kind, "--keep-going", "--message-format=json-diagnostic-rendered-ansi",
                                                 *tail, *(["--cap-lints=warn"] if kind == "clippy" else [])])
                         self.assertNotIn('"compiler-artifact"', result.stdout)
+                        self.assertNotIn('"build-script-executed"', result.stdout)
+                        self.assertIn('{"note": "a record without a reason"}', result.stdout)
                         if mode == "warning":
                             self.assertIn("warning: lint in lower", result.stdout)
                             self.assertIn("warning: lint in upper", result.stdout)

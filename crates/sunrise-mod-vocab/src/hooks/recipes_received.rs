@@ -1,10 +1,8 @@
 //! The `recipes_received` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0124
 
 pub trait Hooks {
     /// The server's recipes of `recipe_types` arrived (NeoForge's
-    /// `RecipesReceivedEvent`): from now on the recipe helpers
-    /// (`native_recipes`, `native_recipes_of_type`) give the server's recipes
+    /// `RecipesReceivedEvent`): `host.recipes_of_type` reads the server's recipes
     /// of those types in place of the window's own, so rebuild what you made
     /// of them. Vanilla serializers expose resolved candidates, not native
     /// ingredient predicates; matching on the server remains authoritative.

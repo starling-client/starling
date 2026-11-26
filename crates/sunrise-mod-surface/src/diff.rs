@@ -945,6 +945,27 @@ impl Diff {
         stale
     }
 
+    /// The changed id a note most likely meant by `id`, which did not change: the same name under another record kind,
+    /// else the closest by edit distance, within a third of `id`'s length.
+    pub fn nearest(&self, id: &str) -> Option<&str> {
+        let known = || {
+            self.changes
+                .iter()
+                .flat_map(|c| std::iter::once(&c.id).chain(&c.members))
+                .map(String::as_str)
+        };
+        fn name(id: &str) -> &str {
+            id.split_once(':').map_or(id, |(_, name)| name)
+        }
+        known().find(|k| name(k) == name(id)).or_else(|| {
+            known()
+                .map(|k| (edit_distance(k, id), k))
+                .filter(|(distance, _)| *distance <= id.len() / 3)
+                .min()
+                .map(|(_, k)| k)
+        })
+    }
+
     /// The breaking changes no note declares.
     pub fn undeclared(&self) -> impl Iterator<Item = &Change> {
         self.changes
@@ -1032,6 +1053,24 @@ impl Diff {
         }
         text
     }
+}
+
+/// The Levenshtein distance between `a` and `b`, by character.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut diagonal = row[0];
+        row[0] = i + 1;
+        for (j, &cb) in b.iter().enumerate() {
+            let above = row[j + 1];
+            row[j + 1] = (above + 1)
+                .min(row[j] + 1)
+                .min(diagonal + usize::from(ca != cb));
+            diagonal = above;
+        }
+    }
+    row[b.len()]
 }
 
 #[cfg(test)]

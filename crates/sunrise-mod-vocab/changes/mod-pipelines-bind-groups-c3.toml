@@ -1,0 +1,21 @@
+ids = [
+    "handle:DrawBindings::EMPTY",
+    "type:BindGroupLayout",
+    "type:BindGroupLayoutBuilder",
+    "type:BindGroupLayoutError",
+    "type:BindEntry",
+    "type:BindingKind",
+    "type:SamplerFilter",
+    "type:SamplerAddress",
+    "type:TexelBufferFormat",
+    "type:BufferError",
+    "type:UniformBufferRef",
+    "trait:UniformBufferContext",
+    "type:UniformValue",
+    "type:TextureSource",
+    "type:BindingValue",
+    "type:DrawBindings",
+    "method:prelude::ClientRenderClientHost::create_uniform_buffer",
+]
+why = "Add mod-declared set-1 BindGroupLayout (UniformBuffer, CombinedImageSampler, TexelBuffer, and <= 128 B push constants via inline std140 uniform), retained GPU UniformBufferRef handles (create_uniform_buffer on ClientHost, write/release on UniformBufferRef), TextureSource (AtlasSprite, DynamicTexture, StandaloneTexture, WorldDepth, WorldColor, Lightmap), and populated DrawBindings for mod render pipelines."
+migrate = "Additive API. Set 0 remains vanilla's shared BindGroupLayouts.java bindings; declare custom set-1 resources on RenderPipeline via bind_group_layout/uniform_buffer/sampler/texel_buffer/push_constant_size and supply per-draw values in DrawBindings. DrawBindings::EMPTY continues to work for pipelines with no custom bindings."

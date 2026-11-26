@@ -1,0 +1,18 @@
+# PACKAGE TEST TARGET daily REASON; exact logical libtest identities, sorted.
+# A shaders/ pack's terrain normal from the normal stream where per-section draws read no pages
+# (#432): pixel assertions through the real Renderer under with_xvfb.py, each test re-running itself
+# in a child process with throwaway homes; and the arena's stream through grows and moves.
+sunrise-client-render gfx::arena::normal_tests::normal_stream_counts_in_the_move_budgets lib daily gpu
+sunrise-client-render gfx::arena::normal_tests::normal_stream_counts_toward_a_shrink lib daily gpu
+sunrise-client-render gfx::arena::normal_tests::normal_stream_grows_and_moves_with_its_pages lib daily gpu
+sunrise-client-render pack_terrain_normals_flat_from_start test:pack_terrain_normals daily child-process
+sunrise-client-render pack_terrain_normals_pages_from_start test:pack_terrain_normals daily child-process
+sunrise-client-render pack_terrain_normals_pending_packed test:pack_terrain_normals daily child-process
+sunrise-client-render pack_terrain_normals_pending_post_only test:pack_terrain_normals daily child-process
+sunrise-client-render pack_terrain_normals_pending_refused test:pack_terrain_normals daily child-process
+sunrise-client-render pack_terrain_normals_stream_after_flat_draws test:pack_terrain_normals daily child-process
+sunrise-client-render pack_terrain_normals_stream_from_start test:pack_terrain_normals daily child-process
+sunrise-client-render pack_terrain_normals_stream_in_the_shadow_pass test:pack_terrain_normals daily child-process
+sunrise-client-render pack_terrain_normals_stream_where_pages_dont_fit test:pack_terrain_normals daily child-process
+sunrise-client-render pack_terrain_normals_water_only test:pack_terrain_normals daily child-process
+sunrise-client-render pack_terrain_normals_without_vertex_storage test:pack_terrain_normals daily child-process

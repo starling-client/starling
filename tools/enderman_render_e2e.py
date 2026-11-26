@@ -13,10 +13,14 @@ import subprocess
 import tempfile
 import time
 
-import lab
-from integration_env import game_environment
-from test_dedicated_server_parity import Server
-from test_rust_parity import verify_artifacts
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab
+from tools.integration_env import game_environment
+from tools.test_dedicated_server_parity import Server
+from tools.test_rust_parity import verify_artifacts
 
 
 def main():

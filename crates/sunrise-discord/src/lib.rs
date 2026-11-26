@@ -153,7 +153,7 @@ impl Store for Setting {
     }
 }
 
-/// The switch's row in the Extras page's Multiplayer group, for
+/// The switch's row in Sunrise Settings' Gameplay page, in its Multiplayer group, for
 /// `sunrise_platform::pages::register`.
 pub static SECTION: Section = Section;
 
@@ -727,7 +727,7 @@ mod tests {
         assert_eq!(limit.wait(t + WINDOW), Duration::from_secs(1));
     }
 
-    /// The switch as the player's settings and the Extras page see it. The only test that
+    /// The switch as the player's settings and the Gameplay page see it. The only test that
     /// touches the presence's statics.
     #[test]
     fn the_switch_clears_the_activity_at_once() {

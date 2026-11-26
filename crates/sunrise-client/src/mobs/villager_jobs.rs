@@ -77,8 +77,8 @@ pub(super) fn poi_matches(
     let employed = profession != usize::from(crate::mobs::villager::NONE)
         && profession != usize::from(crate::mobs::villager::NITWIT);
     match (f, p) {
-        (PoiFilter::Held, p) if p.is_job() => employed && table.accepts(profession, p, true),
-        (PoiFilter::Acquirable, p) if p.is_job() => table.accepts(profession, p, false),
+        (PoiFilter::Held, p) => employed && table.accepts(profession, p, true),
+        (PoiFilter::Acquirable, p) => table.accepts(profession, p, false),
         (PoiFilter::Home, Poi::Vanilla(PoiType::Home))
         | (PoiFilter::Meeting, Poi::Vanilla(PoiType::Meeting)) => true,
         _ => false,

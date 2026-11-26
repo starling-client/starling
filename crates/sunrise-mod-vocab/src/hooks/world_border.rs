@@ -1,5 +1,5 @@
 //! Border reads carried from upstream through a level handle.
 pub trait Notes {
-    #[notes = r#"`native_world_border(dimension)`, the bounds of a level's world border as the server enforces it (one border for every level in Sunrise today). Bundles need "hooks": @API:world_border@."#]
+    #[notes = r#"`level.world_border(host)` reads the bounds of the resident server level named by `level`, without opening or switching levels."#]
     fn world_border();
 }

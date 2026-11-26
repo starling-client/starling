@@ -33,15 +33,13 @@ import time
 import zipfile
 from pathlib import Path
 
-try:
-    from . import lab, test_rust_parity as base
-    from .test_dedicated_server_parity import Server, free_port, game_time
-    from .test_server_world_gen_parity import escape
-except ImportError:
-    import lab
-    import test_rust_parity as base
-    from test_dedicated_server_parity import Server, free_port, game_time
-    from test_server_world_gen_parity import escape
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_rust_parity as base
+from tools.test_dedicated_server_parity import Server, free_port, game_time
+from tools.test_server_world_gen_parity import escape
 
 X0, Z0, Y = 512, 512, 101
 REPEATERS = [(f'r{d}', X0 + 2 + 3 * d, Z0 + 4, d) for d in (1, 2, 3, 4)]

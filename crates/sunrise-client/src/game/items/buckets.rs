@@ -2,6 +2,9 @@
 use super::*;
 
 #[cfg(test)]
+#[path = "tests/bucket_hook_moment_tests.rs"]
+mod bucket_hook_moment_tests;
+#[cfg(test)]
 #[path = "tests/filled_bucket_stat_tests.rs"]
 mod filled_bucket_stat_tests;
 

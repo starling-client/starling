@@ -45,8 +45,10 @@ pub(crate) fn request_adapter(
     }
 }
 
+/// Whether the daily GPU lane asks every GPU test to run (`SUNRISE_GPU_TESTS_REQUIRE_ADAPTER=1`),
+/// so a test that cannot run there fails instead of skipping.
 #[cfg(test)]
-fn require_adapter() -> bool {
+pub(crate) fn require_adapter() -> bool {
     std::env::var_os("SUNRISE_GPU_TESTS_REQUIRE_ADAPTER").is_some_and(|value| value == "1")
 }
 
@@ -76,6 +78,28 @@ pub(crate) fn optional_device_with(
 }
 
 #[cfg(test)]
+/// A device with Improved Transparency (`oit::features`), or none (said on stderr).
+pub(crate) fn oit_device() -> Option<(wgpu::Device, wgpu::Queue)> {
+    let adapter = adapter()?;
+    let features = crate::gfx::oit::features(&adapter);
+    if !features.contains(wgpu::Features::FLOAT32_BLENDABLE) {
+        eprintln!(
+            "skipped: no Improved Transparency on {:?}",
+            adapter.get_info()
+        );
+        return None;
+    }
+    eprintln!("adapter {:?}", adapter.get_info());
+    optional_device_with(
+        &adapter,
+        &wgpu::DeviceDescriptor {
+            required_features: features,
+            ..Default::default()
+        },
+    )
+}
+
+#[cfg(test)]
 /// Check format usages before constructing a pipeline that needs them.
 pub(crate) fn supports_texture_usage(
     adapter: &wgpu::Adapter,
@@ -92,20 +116,6 @@ pub(crate) fn supports_texture_usage(
     let info = adapter.get_info();
     eprintln!(
         "skipped: {} / {:?} lacks {format:?} {usage:?}",
-        info.name, info.backend
-    );
-    false
-}
-
-#[cfg(test)]
-/// Naga's GLSL writer cannot lower depth textureLoad (no downlevel flag describes it).
-pub(crate) fn supports_depth_load(adapter: &wgpu::Adapter) -> bool {
-    let info = adapter.get_info();
-    if info.backend != wgpu::Backend::Gl {
-        return true;
-    }
-    eprintln!(
-        "skipped: {} / {:?} lacks depth textureLoad in GLSL",
         info.name, info.backend
     );
     false

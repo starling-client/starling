@@ -10,7 +10,7 @@ ColorMapColorUtil.get	port	crates/sunrise-client-render/src/biome.rs::sample	col
 EntityBasedExplosionDamageCalculator.getBlockExplosionResistance	port	crates/sunrise-client/src/game/entities/explosion.rs::Game::exploded_positions	the blast source's own override: one block's resistance is passed in (the respawn anchor's water-like block), a dangerous wither skull caps a destroyable block at 0.8 and a TNT minecart spares rails
 ExplosionDamageCalculator.getEntityDamageAmount	inline	crates/sunrise-client/src/game/entities/explosion.rs::Game::explosion_hurt_entities	damage formula inline; the player copy is in explosion_hurt_player
 LevelSettings.copy	skip:java		immutable record copy; Sunrise keeps level fields on its own struct
-LevelSettings.parse	port	crates/sunrise-client/src/save.rs::Level::read	reads difficulty, lock, allowCommands and game type from level.dat
+LevelSettings.parse	port	crates/sunrise-client/src/save/level.rs::Level::read	reads difficulty, lock, allowCommands and game type from level.dat
 LevelSettings.withAllowCommands	skip:java		immutable record builder
 LevelSettings.withDataConfiguration	skip:java		immutable record builder
 LevelSettings.withDifficulty	skip:java		immutable record builder
@@ -40,7 +40,7 @@ TicketStorage.removeTicketWithRadius	port	crates/sunrise-client/src/ticket_level
 TicketStorage.replaceTicketLevelOfType	skip:other		re-levels stored tickets; ticket_levels.rs computes levels from positions
 TicketStorage.shouldKeepDimensionActive	port	crates/sunrise-client/src/game/world/levels.rs::Game::levels_to_tick	a dimension with a portal ticket keeps ticking with no player in it
 TicketStorage.updateChunkForced	inline	crates/sunrise-client/src/game/administration/commands/terrain_cmds.rs::Game::cmd_forceload	the per-chunk add or remove of a forced chunk
-TicketStorage.updateForcedChunks	inline	crates/sunrise-client/src/save.rs::SaveDir::load_forced_chunks	gap: minor: restores the saved forced set on load; no forced-chunk packet is sent here
+TicketStorage.updateForcedChunks	inline	crates/sunrise-client/src/save/dir.rs::SaveDir::load_forced_chunks	gap: minor: restores the saved forced set on load; no forced-chunk packet is sent here
 BiomeSpecialEffects.Builder.build	skip:java		builder for biome effects; Sunrise reads the effects from biome data (biome.rs)
 CheckerboardColumnBiomeSource.getNoiseBiome	port	crates/sunrise-world/src/worldgen/biome_source.rs::CheckerboardBiomeSource::noise_biome	checkerboard column pick
 FeatureSorter.buildFeaturesPerStep	port	crates/sunrise-world/src/worldgen/feature_sort.rs::build_features_per_step

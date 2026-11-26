@@ -184,7 +184,7 @@ mod tests {
         let rx = host_a_viewer(&mut game);
         // The handles carry the open's epoch.
         game.native_lifecycle
-            .begin_open(mod_api::Authority::IntegratedServer);
+            .begin_open(Some(mod_api::Authority::IntegratedServer));
         let player = game.player(2).expect("the viewer is online");
         // Levels not loaded yet: an area loads them.
         let epoch = player.entity().epoch();

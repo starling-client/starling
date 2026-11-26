@@ -4,21 +4,31 @@ use crate::sdk_fetch::PinnedSdk;
 use mod_source::mod_uses::{self, ReadError};
 use mod_surface::child::ChildEntry;
 use mod_surface::uses::{Built, ManifestFacts, Origin, Uses, UsesTable, uses_contained};
-use mod_surface::{Surface, leaf};
+use mod_surface::{ReadError as SurfaceError, Surface, leaf};
 use std::collections::BTreeMap;
 use std::path::Path;
 use sunrise_mod_package::Manifest;
 use sunrise_native_build::game_uses;
 
-/// The surface export a fetched SDK holds.
+/// The surface export a fetched SDK holds. A schema this tool does not read names the two ways
+/// out: a build this tool reads, or the tool that SDK's release ships.
 pub(crate) fn surface_of(sdk: &PinnedSdk) -> Result<Surface, String> {
-    read_surface(&sdk.surface)
+    read_surface(sdk)?.map_err(|e| match e {
+        SurfaceError::Schema(_) => format!(
+            "{}: {e}. Pin the mod to a build this tool reads with `cargo sunrise-mod pin <build>`, or use the tool in sdk-{}",
+            sdk.surface.display(),
+            sdk.build
+        ),
+        _ => format!("{}: {e}", sdk.surface.display()),
+    })
 }
 
-/// A surface file read and checked.
-fn read_surface(path: &Path) -> Result<Surface, String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    Surface::read(&bytes).map_err(|e| format!("{}: {e}", path.display()))
+/// A fetched SDK's surface export as this tool reads it: the outer error is the file's, the inner
+/// one the surface's.
+pub(crate) fn read_surface(sdk: &PinnedSdk) -> Result<Result<Surface, SurfaceError>, String> {
+    let bytes =
+        std::fs::read(&sdk.surface).map_err(|e| format!("{}: {e}", sdk.surface.display()))?;
+    Ok(Surface::read(&bytes))
 }
 
 /// What the scan of a mod folder found.
@@ -35,7 +45,7 @@ pub(crate) enum Scanned {
 }
 
 /// The sources of the mod folder at `root`, or what the scan can answer without them.
-fn read(
+pub(crate) fn read(
     root: &Path,
     manifest: &Manifest,
 ) -> Result<Result<Vec<(String, String)>, Scanned>, String> {
@@ -84,18 +94,30 @@ pub(crate) fn scan(
     )
 }
 
-/// The table the mod at `root`, pinned to `sdk`, packs: what the scan found, then the game code
+/// The table the mod pinned to `sdk` packs: what the scan found, then the game code
 /// its manifest declares, each with its hash at the pinned build ([`game_uses::entries`]). The
-/// build data is fetched only for a mod that declares some.
+/// build data is fetched only for a mod that declares some, from the signed SDK itself into a
+/// private folder: the project's own cache is the checkout's to edit, so neither packing nor a fit
+/// verdict reads it.
 pub(crate) fn table(
     uses: &Uses,
-    root: &Path,
     manifest: &Manifest,
     sdk: &PinnedSdk,
 ) -> Result<UsesTable, String> {
     let mut table = uses.table(sdk.build.clone());
     if game_uses::declared(manifest) {
-        let data = crate::sdk_fetch::build_data(root, &sdk.build)?;
+        let staging = tempfile::tempdir().map_err(|e| format!("build data: {e}"))?;
+        crate::sdk_fetch::release_data(
+            &crate::sdk_fetch::Base::from_env(),
+            &crate::sdk_fetch::keys(),
+            &sdk.build,
+            staging.path(),
+            true,
+        )?;
+        let data = staging
+            .path()
+            .join(&sdk.build)
+            .join(crate::sdk_fetch::BUILD_DATA);
         // An item the pinned build lacks is refused by the build, by name, and one its build data
         // cannot fingerprint is never shown unchanged; the list records the rest.
         table.entries.extend(

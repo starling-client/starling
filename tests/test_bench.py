@@ -22,10 +22,58 @@ class ParserTests(unittest.TestCase):
         self.assertIsNone(bench.parse_tick_query(lines[:1]))
 
     def test_gametime_and_tps(self):
-        self.assertEqual(bench.parse_gametime(['x', 'The time is 4200']), 4200)
-        self.assertIsNone(bench.parse_gametime(['nothing']))
+        # The console logs vanilla's commands.time.query.gametime: "The game time is %s tick(s)".
+        self.assertEqual(bench.parse_gametime(['[12:00:01] [Server thread/INFO]: The game time is 4200 tick(s)']), 4200)
+        self.assertIsNone(bench.parse_gametime(['nothing', 'The time is 4200']))
         self.assertEqual(bench.tps(1000, 2200, 60), 20.0)
-        self.assertIsNone(bench.tps(None, 2200, 60))
+        with self.assertRaises(ValueError):
+            bench.tps(1000, 2200, 0)
+
+    def test_a_server_without_a_query_reports_it_as_unsupported(self):
+        self.assertFalse(bench.SERVERS['pumpkin']['tick_query'])
+        self.assertTrue(all(bench.SERVERS[k].values() for k in ('sunrise', 'vanilla')))
+        run = bench.summarize('pumpkin', args(), None, [], [], None, 60, {}, 1.0, 100)
+        self.assertEqual((run['tps'], run['mspt']['p99'], run['mspt_worst_p99'], run['tick_queries']), ('unsupported',) * 4)
+        self.assertIn('| TPS | unsupported |', bench.table([run]))
+        self.assertIn('| MSPT p99 (worst query) | unsupported |', bench.table([run]))
+
+    def test_a_supported_query_is_measured_and_none_is_omitted(self):
+        ticks = [{'average': 10.0, 'p50': 9.0, 'p95': 15.0, 'p99': 20.0}]
+        run = bench.summarize('sunrise', args(), ticks, [], [], (1000, 2200), 60, {}, 1.0, 100)
+        self.assertEqual((run['tps'], run['mspt']['p99'], run['tick_queries']), (20.0, 20.0, 1))
+
+    def test_ask_raises_when_the_console_gives_no_parseable_answer(self):
+        class Console:
+            """A server console that answers every command with the given line."""
+            def __init__(self, server, reply):
+                self.server, self.reply = server, reply
+
+            def write(self, text):
+                self.server.lines.append(self.reply)
+
+            def flush(self):
+                pass
+
+        def server_answering(reply):
+            server = object.__new__(bench.Server)
+            server.lines, server.lock = [], bench.threading.Lock()
+            server.process = types.SimpleNamespace(stdin=Console(server, reply))
+            return server
+
+        old = server_answering('[12:00:01] [Server thread/INFO]: The time is 4200')
+        with self.assertRaisesRegex(RuntimeError, r'`time query gametime` got no parseable answer'):
+            old.ask('time query gametime', bench.parse_gametime, timeout=0.2)
+        real = server_answering('[12:00:02] [Server thread/INFO]: The game time is 4200 tick(s)')
+        self.assertEqual(real.ask('time query gametime', bench.parse_gametime), 4200)
+
+    def test_ask_raises_when_the_console_is_closed(self):
+        class Stdin:
+            def write(self, text): raise BrokenPipeError('closed')
+
+        server = object.__new__(bench.Server)
+        server.lines, server.lock, server.process = [], bench.threading.Lock(), types.SimpleNamespace(stdin=Stdin())
+        with self.assertRaisesRegex(RuntimeError, 'could not be sent'):
+            server.ask('tick query', bench.parse_tick_query)
 
     def test_cpu_seconds_and_percentile(self):
         self.assertEqual(bench.cpu_seconds('1-00:00:01.5'), 86401.5)

@@ -1,11 +1,12 @@
-/// What a mod's [`Hooks::register`](crate::Hooks::register) attaches its parts with, and
-/// declares its block entity types and ticket controllers on. A thing takes one part of each
+/// What a mod uses in [`Hooks::register`](crate::Hooks::register) to attach Parts and declare
+/// block entity types, ticket controllers and config files. A thing takes one Part of each
 /// kind: the same kind twice on one thing refuses the mods at startup, naming both.
 ///
 /// Mods call the generic methods on `dyn Registrar` after requesting registry keys.
 pub trait Registrar {}
-/// How a lookup reads the capability providers mods registered, in the order they are asked
-/// (those registered `before_game`, then the others, each in registration order).
+/// Published capability metadata, default stock storage declarations, and place providers
+/// exposed to lookups and game helpers; provider lists themselves are traversed directly from
+/// the installed registry.
 // hidden: a lookup's view of the registrar's table, not part of the mod surface
 #[doc(hidden)]
 pub trait CapabilityProviders {}

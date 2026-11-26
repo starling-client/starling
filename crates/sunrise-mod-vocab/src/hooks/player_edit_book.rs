@@ -1,5 +1,4 @@
 //! The `player_edit_book` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0285
 
 pub trait Hooks {
     /// A server player's book edit or signing packet is about to be applied. `pages` is its page

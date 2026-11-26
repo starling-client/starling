@@ -63,7 +63,7 @@ pub trait LevelSpawningBackendMut {
     /// - [`SpawnBody::Thrown`]: `Projectile.spawnProjectile`, the route a
     ///   thrown snowball takes. The owner is set before it joins, as
     ///   `Projectile.setOwner` (hit credit, `Owner`, and the shot keeps clear
-    ///   of its owner until it leaves the owner's box); `projectile_launch`
+    ///   of its owner until it leaves the owner's box); `entity_join_level`
     ///   fires. It carries `item` (`ThrowableItemProjectile.setItem`), checked
     ///   as `ServerHost::spawn_projectile_from_rotation` checks its stack. The
     ///   owner is a player, a mob, a boat or a minecart: the shot needs its
@@ -82,15 +82,16 @@ pub trait LevelSpawningBackendMut {
     ///   pitch, which it has no state for.
     /// - [`SpawnBody::General`]: a new row of the general type, with a fresh
     ///   UUID and the type's declared payload version, through the insertion
-    ///   `/summon` and chunk loading share. The owner is kept on the row and
+    ///   `/summon` and chunk loading share. The world must enable the type's
+    ///   required Minecraft feature flags. The owner is kept on the row and
     ///   saved (`Owner`); [`EntityRef::owner`] reads it back, for the type's
     ///   own tick to skip its shooter and credit its damage. The row's state is
     ///   its attachments: write them on the returned handle in the same
     ///   transaction, and the join and the first tracking snapshot see them.
     ///
     /// Velocity is set before the entity joins (`Entity.setDeltaMovement`).
-    /// The level's spawn limits, flags and spawn rules don't apply, as they
-    /// don't to `/summon`; nor does a general type's `summonable`, which is
+    /// The level's natural spawning limits, spawn flags and spawn rules don't
+    /// apply, as they don't to `/summon`; nor does a general type's `summonable`, which is
     /// `/summon`'s alone (`EntityType.canSummon`). The new entity as a handle.
     /// None, with nothing spawned and no random drawn, for a kind that isn't
     /// of `spawn.body`'s family, a position, velocity or rotation that isn't
@@ -111,6 +112,38 @@ pub trait LevelSpawningBackendMut {
         spawn: &EntitySpawn,
     ) -> Option<EntityRef>;
     /// Side: server.
+    /// Spawns a falling block (`FallingBlockEntity`) of `state` at `pos` (its bottom centre)
+    /// with initial `velocity` (blocks a tick, `Entity.setDeltaMovement`) in the level,
+    /// without altering the block at `pos`: it falls, lands and places itself as sand does, or
+    /// drops as an item where it cannot. `falling` controls item dropping (`drop_item`) and
+    /// anvil-style landing damage (`hurts`, 2 a block fallen up to 40). The live entity keeps
+    /// the exact `velocity` (network packets quantize through `LpVec3` on send), accepts any
+    /// valid block state including air (which vanilla discards on its first tick in
+    /// `FallingBlockEntity.tick`), and imposes no per-level count cap.
+    ///
+    /// Uses the named open server level, including one that is parked. A chunk need not
+    /// be loaded, and the call does not load it: section visibility and ticking decide
+    /// when the entity becomes active, not whether it can join (`ServerLevel.addFreshEntity`).
+    /// In the destination level, the returned handle works before the entity is
+    /// discoverable in level lookups.
+    ///
+    /// Returns `Err(LevelWriteError::Stale)` for a stale handle or closed level,
+    /// `Err(LevelWriteError::Unavailable)` on a client,
+    /// and `Err(LevelWriteError::InvalidState(_))` for an unknown block state.
+    /// Returns `Ok(None)` for a non-finite position or velocity, exhausted entity ids,
+    /// or a join veto in `entity_join_level`. Outside a transaction in the destination
+    /// level, the join decision is made before this call returns. Within that level's
+    /// transaction the returned handle is provisional: the join waits for the root commit
+    /// and the handle becomes stale on abort or a veto at commit.
+    fn level_spawn_falling_block(
+        &mut self,
+        level: LevelRef,
+        state: BlockState,
+        pos: [f64; 3],
+        velocity: [f64; 3],
+        falling: Falling,
+    ) -> Result<Option<EntityRef>, LevelWriteError>;
+    /// Side: server.
     /// Sets the level's natural spawning limits ([`SpawnLimits`]), from the next
     /// spawn pass on. They hold until the world closes, while the level is
     /// parked and across its closing and opening again, and are not saved: the
@@ -123,4 +156,28 @@ pub trait LevelSpawningBackendMut {
     /// ([`SpawnFlags`]), from the next spawn pass on. Kept and refused as
     /// `set_spawn_limits`.
     fn level_set_spawn_flags(&mut self, level: LevelRef, flags: SpawnFlags) -> bool;
+    /// Side: server.
+    /// Spawns an entity of `kind` (`minecraft:item_display`) at `pos` in the
+    /// server level `level` names from `nbt` (its compound, as `/summon
+    /// <kind> <pos> <nbt>` takes it — vanilla `SummonCommand.createEntity` /
+    /// `ServerLevel.tryAddFreshEntityWithPassengers`, passengers included): its
+    /// [`EntityRef`]. Routes parked dimensions by handle; returns
+    /// `Err(LevelWriteError::InTransaction)` when summoning into a parked
+    /// dimension while a Host transaction is open, `Err(LevelWriteError::Stale)`
+    /// for a stale or closed level handle, and `Err(LevelWriteError::Unavailable)`
+    /// on a client or outside the world phase. Returns `Ok(None)` for a position
+    /// outside `/summon`'s bounds, an unloaded chunk, a kind Sunrise cannot load or
+    /// admit in Peaceful, exhausted entity ids, or an entity a mod kept out
+    /// (`entity_join_level`). If a UUID of the summon tree is already present in
+    /// the level, no member of the tree is added and the result is `Ok(None)`.
+    /// Inside a transaction its join waits for the root commit, so a mod keeping
+    /// it out is not known at the call: the handle is returned and reads stale
+    /// from the commit on.
+    fn level_summon(
+        &mut self,
+        level: LevelRef,
+        kind: &str,
+        pos: [f64; 3],
+        nbt: Compound,
+    ) -> Result<Option<EntityRef>, LevelWriteError>;
 }

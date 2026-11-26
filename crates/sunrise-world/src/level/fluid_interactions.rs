@@ -53,6 +53,23 @@ pub struct FluidInteraction {
     pub flowing: Option<BlockStateId>,
 }
 
+/// One entry of a source fluid's interactions: a table rule, or an interaction a native mod
+/// implements (NeoForge's `InteractionInformation` built from its own `HasFluidInteraction` and
+/// `FluidInteraction`), named by the index the engine registered it under.
+#[derive(Clone, Debug)]
+pub enum Entry {
+    Table(FluidInteraction),
+    Handler(u32),
+}
+
+/// What the first applying entry does: make the liquid cell a block, or run a native handler
+/// against the neighbour at that index of the walk.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Matched {
+    Becomes(BlockStateId),
+    Handler { handler: u32, neighbour: usize },
+}
+
 /// A cell beside the liquid block: its fluid state's fluid and its block.
 #[derive(Clone, Copy, Debug)]
 pub struct Cell {
@@ -79,22 +96,36 @@ impl FluidInteraction {
     }
 }
 
-/// What the liquid cell becomes: the result of the first interaction that applies and has one
-/// for the cell's state, by neighbour (`neighbours`, in the order given: vanilla's is above,
-/// north, south, west, east, never below), then by interaction, as
-/// `FluidInteractionRegistry.canInteract` walks them.
+/// The first entry that applies, by neighbour (`neighbours`, in the order given: vanilla's is
+/// above, north, south, west, east, never below), then by entry, as
+/// `FluidInteractionRegistry.canInteract` walks them. A table rule applies when it matches the
+/// cell and has a result for the liquid cell's state; a native handler when `handler_applies`
+/// (its `HasFluidInteraction.test`) answers true for that neighbour's index.
 pub fn first_match(
-    interactions: &[FluidInteraction],
+    interactions: &[Entry],
     neighbours: impl IntoIterator<Item = Cell>,
     below: BlockId,
     source_cell: bool,
-) -> Option<BlockStateId> {
-    neighbours.into_iter().find_map(|cell| {
-        interactions
-            .iter()
-            .filter(|it| it.applies(cell, below))
-            .find_map(|it| it.result(source_cell))
-    })
+    mut handler_applies: impl FnMut(u32, usize) -> bool,
+) -> Option<Matched> {
+    neighbours
+        .into_iter()
+        .enumerate()
+        .find_map(|(neighbour, cell)| {
+            interactions.iter().find_map(|entry| match entry {
+                Entry::Table(rule) => rule
+                    .applies(cell, below)
+                    .then(|| rule.result(source_cell))
+                    .flatten()
+                    .map(Matched::Becomes),
+                Entry::Handler(handler) => {
+                    handler_applies(*handler, neighbour).then_some(Matched::Handler {
+                        handler: *handler,
+                        neighbour,
+                    })
+                }
+            })
+        })
 }
 
 /// Both forms of a fluid, source and flowing; none for the empty fluid.
@@ -111,7 +142,7 @@ fn forms(kind: FluidKind) -> Vec<FluidKind> {
     }
 }
 
-type Entries = Arc<[FluidInteraction]>;
+type Entries = Arc<[Entry]>;
 
 /// The interactions of every fluid, by the exact fluid of the liquid block: vanilla's kinds by
 /// their registry index, a mod fluid's two forms by its id. Within a fluid they keep the order
@@ -127,11 +158,11 @@ impl FluidInteractions {
     /// fluid, and the entry applies to its source and its flowing form alike.
     pub fn new(
         builtin: impl IntoIterator<Item = (FluidKind, FluidInteraction)>,
-        declared: impl IntoIterator<Item = (FluidKind, FluidInteraction)>,
+        declared: impl IntoIterator<Item = (FluidKind, Entry)>,
     ) -> Self {
-        let mut vanilla: [Vec<FluidInteraction>; 5] = Default::default();
-        let mut mods: Vec<[Vec<FluidInteraction>; 2]> = Vec::new();
-        let mut push = |kind: FluidKind, interaction: FluidInteraction| match kind.mod_fluid() {
+        let mut vanilla: [Vec<Entry>; 5] = Default::default();
+        let mut mods: Vec<[Vec<Entry>; 2]> = Vec::new();
+        let mut push = |kind: FluidKind, interaction: Entry| match kind.mod_fluid() {
             Some(fluid) => {
                 if mods.len() <= fluid.index() {
                     mods.resize_with(fluid.index() + 1, Default::default);
@@ -146,7 +177,7 @@ impl FluidInteractions {
             }
         };
         for (kind, interaction) in builtin {
-            push(kind, interaction);
+            push(kind, Entry::Table(interaction));
         }
         for (kind, interaction) in declared {
             for form in forms(kind) {
@@ -212,8 +243,9 @@ impl Behaviours {
             .collect()
     }
     /// What a liquid cell of `source` becomes against the one `neighbour` cell, with `below`
-    /// under it: the table `should_spread_liquid` walks, for one neighbour. A pure read: it
-    /// changes no world, asks no hook and plays nothing. `None` is no interaction. The
+    /// under it: the table rules `should_spread_liquid` walks, for one neighbour. A pure read: it
+    /// changes no world, asks no hook and plays nothing, so a native mod's handler, which reads
+    /// and writes the live level, is passed over. `None` is no table interaction. The
     /// neighbour's fluid is read through its block state, as a waterlogged block holds water.
     pub fn fluid_interaction_result(
         &self,
@@ -226,7 +258,16 @@ impl Behaviours {
             fluid: self.fluid(neighbour).kind(),
             block: self.block(neighbour),
         };
-        first_match(&interactions, [cell], self.block(below), source.is_source())
+        match first_match(
+            &interactions,
+            [cell],
+            self.block(below),
+            source.is_source(),
+            |_, _| false,
+        )? {
+            Matched::Becomes(state) => Some(state),
+            Matched::Handler { .. } => None,
+        }
     }
     /// The fluids of the `minecraft:water` and `minecraft:lava` fluid tags the prepared data
     /// gives.
@@ -344,7 +385,17 @@ mod tests {
         below: BlockId,
         source: bool,
     ) -> Option<u32> {
-        first_match(rules, cells, below, source).map(|state| state.0)
+        let entries = table(rules);
+        becomes(first_match(&entries, cells, below, source, |_, _| false))
+    }
+    fn table(rules: &[FluidInteraction]) -> Vec<Entry> {
+        rules.iter().cloned().map(Entry::Table).collect()
+    }
+    fn becomes(matched: Option<Matched>) -> Option<u32> {
+        matched.map(|matched| match matched {
+            Matched::Becomes(state) => state.0,
+            Matched::Handler { .. } => panic!("no handler entries here"),
+        })
     }
 
     #[test]
@@ -357,9 +408,9 @@ mod tests {
 
     #[test]
     fn one_cell_walks_the_same_table_as_the_five_around_a_liquid() {
-        let rules = vanilla();
+        let rules = table(&vanilla());
         let one = |cell: Cell, below, source| {
-            first_match(&rules, [cell], below, source).map(|state| state.0)
+            becomes(first_match(&rules, [cell], below, source, |_, _| false))
         };
         let flowing_water = cell(FluidKind::FlowingWater, AIR);
         assert_eq!(one(flowing_water, STONE, true), Some(OBSIDIAN.0));
@@ -371,7 +422,7 @@ mod tests {
         );
         assert_eq!(one(cell(FluidKind::Empty, BLUE_ICE), STONE, true), None);
         // No neighbour at all is no interaction.
-        assert_eq!(first_match(&rules, [], STONE, true), None);
+        assert_eq!(first_match(&rules, [], STONE, true, |_, _| false), None);
     }
 
     #[test]
@@ -444,6 +495,29 @@ mod tests {
         assert_eq!(made(&rules, water, AIR, true), Some(OBSIDIAN.0));
     }
 
+    #[test]
+    fn a_handler_answers_at_its_place_in_the_walk_and_a_refusing_one_falls_through() {
+        let mut entries = vec![Entry::Handler(7)];
+        entries.extend(table(&vanilla()));
+        let water_north = around(&[(1, cell(FluidKind::Water, AIR))]);
+        let mut asked = Vec::new();
+        let matched = first_match(&entries, water_north, STONE, true, |handler, at| {
+            asked.push((handler, at));
+            false
+        });
+        assert_eq!(becomes(matched), Some(OBSIDIAN.0));
+        // Above is asked first and finds nothing; north asks the handler before the table.
+        assert_eq!(asked, [(7, 0), (7, 1)]);
+        let matched = first_match(&entries, water_north, STONE, true, |_, at| at == 1);
+        assert_eq!(
+            matched,
+            Some(Matched::Handler {
+                handler: 7,
+                neighbour: 1
+            })
+        );
+    }
+
     fn stone_entry() -> FluidInteraction {
         FluidInteraction {
             neighbour: Neighbour::Blocks(BlockMatch::Block(STONE)),
@@ -477,8 +551,8 @@ mod tests {
             // Vanilla's rules for flowing lava alone, as a lava tag holding only it would give.
             vanilla().into_iter().map(|it| (FluidKind::FlowingLava, it)),
             [
-                (FluidKind::Lava, stone_entry()),
-                (FluidKind::Water, stone_entry()),
+                (FluidKind::Lava, Entry::Table(stone_entry())),
+                (FluidKind::Water, Entry::Table(stone_entry())),
             ],
         );
         assert!(table.of(FluidKind::Lava).is_some_and(|l| l.len() == 1));
@@ -497,7 +571,10 @@ mod tests {
         // A built-in comes before a declared entry of the same fluid.
         let rules = table.of(FluidKind::FlowingLava).unwrap();
         let ice = around(&[(0, cell(FluidKind::Empty, STONE))]);
-        assert_eq!(made(rules, ice, AIR, true), Some(MOD_STONE.0));
+        assert_eq!(
+            becomes(first_match(rules, ice, AIR, true, |_, _| false)),
+            Some(MOD_STONE.0)
+        );
         assert!(FluidInteractions::default().of(FluidKind::Lava).is_none());
     }
 
@@ -509,7 +586,7 @@ mod tests {
         }
         slot.install(FluidInteractions::new(
             [],
-            [(FluidKind::Lava, stone_entry())],
+            [(FluidKind::Lava, Entry::Table(stone_entry()))],
         ));
         assert!(slot.may_have(FluidKind::Lava));
         assert!(slot.may_have(FluidKind::FlowingLava));

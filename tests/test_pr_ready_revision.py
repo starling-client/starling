@@ -1,6 +1,8 @@
 """Self-check orchestration contracts; all check execution is mocked, no Cargo."""
 import contextlib
 import io
+import shlex
+import sys
 import unittest
 import subprocess
 import tempfile
@@ -20,16 +22,17 @@ class RevisionOrchestration(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             subprocess.run(["git", "init", "-q", directory], check=True)
-            # Reuse the real guard/parser while the guard inspects only this private repo.
-            (root / "tools").symlink_to(pr_ready.ROOT / "tools", target_is_directory=True)
+            # Run the real guard/parser, which inspects only the repository it is started in.
+            _, script = shlex.split(hygiene.command)
+            command = [sys.executable, str(pr_ready.ROOT / script)]
             bad = root / "bad.txt"
             bad.write_text("[" + "truncated" + "]\n")
             subprocess.run(["git", "add", "bad.txt"], cwd=root, check=True)
-            failed = subprocess.run(hygiene.command, cwd=root, shell=True, capture_output=True, text=True)
+            failed = subprocess.run(command, cwd=root, capture_output=True, text=True)
             self.assertNotEqual(failed.returncode, 0)
             self.assertIn("repository hygiene", failed.stderr)
             bad.write_text("complete authored content\n")
-            passed = subprocess.run(hygiene.command, cwd=root, shell=True, capture_output=True, text=True)
+            passed = subprocess.run(command, cwd=root, capture_output=True, text=True)
             self.assertEqual(passed.returncode, 0, passed.stderr)
 
     def test_starting_identity_survives_concurrent_commit_and_dirty_commit(self):

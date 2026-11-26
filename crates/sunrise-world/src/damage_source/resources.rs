@@ -28,7 +28,9 @@ pub fn resource_files(root: &Path, kind: &str) -> io::Result<BTreeMap<String, Ve
             Err(e) => return Err(e),
         };
         for file in &folder.files {
-            files.insert(format!("{ns}:{}", file.name), file.bytes()?.to_vec());
+            if crate::json_folder::valid_resource_path(&ns, &file.name) {
+                files.insert(format!("{ns}:{}", file.name), file.bytes()?.to_vec());
+            }
         }
     }
     Ok(files)
@@ -43,6 +45,12 @@ pub fn resource_tags<T: Clone + Ord>(
     lookup: impl FnMut(&str, bool) -> Option<T>,
 ) -> io::Result<BTreeMap<String, Vec<T>>> {
     let mut files: BTreeMap<String, Vec<Vec<u8>>> = BTreeMap::new();
+    for (id, json) in crate::tag_layers::convention::json_entries("damage_type") {
+        files
+            .entry(id.clone())
+            .or_default()
+            .push(json.as_bytes().to_vec());
+    }
     let exported = root.join("damage-tags.json");
     if exported.exists() {
         let value: Value = serde_json::from_slice(&fs::read(exported)?)?;
@@ -189,6 +197,14 @@ impl Catalog {
             .into_iter()
             .flatten()
             .map(|id| self.definitions[id.0].name.as_str())
+    }
+
+    /// Names of every bound damage-type tag holding at least one entry, for `neoforge:tag_empty`.
+    pub fn non_empty_tags(&self) -> impl Iterator<Item = &str> {
+        self.tags
+            .iter()
+            .filter(|(_, members)| !members.is_empty())
+            .map(|(tag, _)| tag.as_str())
     }
 
     /// RegistryDataLoader's world-load snapshot. Existing local definition

@@ -1,6 +1,5 @@
 //! `WitherBoss.hurtServer` and `Shulker.hurtServer` inspect the direct AbstractArrow,
 //! not the damage type: ThrownTrident extends AbstractArrow but /damage does not.
-#![cfg(test)]
 use crate::game::Game;
 use crate::game::api_values::TryIntoApi;
 use crate::game::native_entity_refs::tests::{bind_local_player, with_game};
@@ -55,7 +54,10 @@ impl Hooks for Probe {
         self.0.lock().unwrap().incoming.push(Hit::new(
             event.entity as u32,
             event.source,
-            event.weapon,
+            event
+                .weapon
+                .and_then(mod_api::ItemStackView::project)
+                .as_ref(),
         ));
         Flow::Continue
     }

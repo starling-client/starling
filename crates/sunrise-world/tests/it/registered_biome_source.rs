@@ -15,8 +15,8 @@ impl ModBiomeSource for Bands {
     fn possible_biomes(&self) -> &[String] {
         &self.0
     }
-    fn noise_biome(&self, [x, _, _]: [i32; 3], seed: i64) -> u16 {
-        (i64::from(x) + seed).rem_euclid(4) as u16
+    fn noise_biome(&self, [x, _, _]: [i32; 3], seed: i64) -> Result<u16, String> {
+        Ok((i64::from(x) + seed).rem_euclid(4) as u16)
     }
 }
 
@@ -63,7 +63,7 @@ fn the_noise_generators_codec_reads_a_registered_source() {
     };
     // Seed 3 starts quart x 0 on the fourth band.
     let row: Vec<&str> = (0..4)
-        .map(|x| level.noise_biome([x, 0, 0]).as_str())
+        .map(|x| level.noise_biome([x, 0, 0]).unwrap().as_str())
         .collect();
     assert_eq!(
         row,

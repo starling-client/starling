@@ -2,9 +2,9 @@
 //! `cargo run -p sunrise-mod-host --example native_gui_overlay_probe --
 //! --resources PATH --world OverlayProbe --creative --world-frames 120`.
 //! Every world frame turns the camera 90 degrees; GUI callbacks assert that
-//! ClientHost::camera already sees that frame. A magenta square stays above menus/F1.
+//! ClientHost::camera already sees that frame. A magenta square draws in the post-HUD pass.
 use mod_api::{
-    CameraPoseEvent, ClientHost, GuiRenderPostEvent, Hooks, ModEntry, RenderGuiPostEvent,
+    ClientHost, ComputeCameraAnglesEvent, Hooks, HudMode, ModEntry, RenderGuiPostEvent,
     ScreenRenderPostEvent,
 };
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -43,30 +43,29 @@ impl Probe {
 
 #[mod_api::__subscriptions]
 impl Hooks for Probe {
-    fn camera_pose(&self, _: &dyn ClientHost, event: &mut CameraPoseEvent<'_>) {
+    fn compute_camera_angles(&self, _: &dyn ClientHost, event: &mut ComputeCameraAnglesEvent) {
         let frame = self.frame.fetch_add(1, Ordering::SeqCst);
         event.yaw = [0.0_f32, 90.0, 180.0, -90.0][frame as usize % 4];
         self.yaw.store(event.yaw.to_bits(), Ordering::SeqCst);
     }
 
-    fn render_gui_post(&self, host: &dyn ClientHost, _: &mut RenderGuiPostEvent<'_>) {
-        self.observe(host, "render_gui_post", None);
+    fn render_gui_post(&self, host: &dyn ClientHost, event: &mut RenderGuiPostEvent<'_>) {
+        let [w, h] = event.draw.size();
+        event
+            .draw
+            .fill([w * 0.5 - 8.0, h - 24.0, 16.0, 16.0], 0xffff00ff);
+        self.observe(
+            host,
+            "render_gui_post",
+            Some((
+                host.hud_mode() != HudMode::AllVisible,
+                host.window_focused(),
+            )),
+        );
     }
 
     fn screen_render_post(&self, host: &dyn ClientHost, event: &mut ScreenRenderPostEvent<'_>) {
         self.observe(host, event.screen.id, None);
-    }
-
-    fn gui_render_post(&self, host: &dyn ClientHost, event: &mut GuiRenderPostEvent<'_>) {
-        let [w, h] = event.batch.size();
-        event
-            .batch
-            .fill([w * 0.5 - 8.0, h - 24.0, 16.0, 16.0], 0xffff00ff);
-        self.observe(
-            host,
-            "gui_render_post",
-            Some((event.gui_hidden, event.focused)),
-        );
     }
 }
 

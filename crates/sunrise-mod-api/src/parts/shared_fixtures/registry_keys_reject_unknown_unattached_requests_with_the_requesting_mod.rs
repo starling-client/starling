@@ -20,7 +20,7 @@ pub(crate) fn registry_keys_reject_unknown_unattached_requests_with_the_requesti
         ["mod lookup requested unknown block absent:block"]
     );
     assert_eq!(
-        mod_vocab::__private::resolve_effects(std::iter::empty(), |_| None).unwrap_err(),
+        mod_vocab::__private::resolve_effects(std::iter::empty(), |_| None, |_| true).unwrap_err(),
         ["mod lookup requested unknown effect absent:effect"]
     );
 }

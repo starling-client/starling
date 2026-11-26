@@ -1,0 +1,35 @@
+ids = [
+    "hook:recipe_book_place",
+    "hook:recipe_book_place.ghost",
+    "hook:recipe_book_place.placement",
+    "hook:recipe_book_ghost",
+    "hook:menu_links",
+    "hook:recipe_sources",
+    "hook:player_recipe_book_click",
+    "type:RecipeBookPlaceEvent.ghost",
+    "type:RecipeBookPlaceEvent.placement",
+    "type:RecipeBookPlacement",
+    "trait:ServerHost",
+    "trait:prelude::RecipesServerHost",
+    "method:prelude::RecipesServerHost::place_recipe_in_grid",
+    "hook:player_recipe_book_settings_change",
+    "type:RecipeBookPlacement.Nothing",
+    "type:RecipeBookPlacement.Ghost",
+    "type:RecipeBookPlacement.Grid",
+]
+why = """
+Recipe-book clicks follow vanilla 26.3 ServerGamePacketListenerImpl.handlePlaceRecipe and RecipeBookMenu.handlePlacement: the general event observes both vanilla and mod books, before the live menu acts. ServerPlaceRecipe.testClearGrid preflights only inputs, while clearGrid clears the separate list, as AbstractFurnaceMenu.handlePlacement demonstrates. An unsuccessful placement sends the selected server display, and the client resolves each ghost slot independently as CraftingRecipeBookComponent.fillGhostRecipe, FurnaceRecipeBookComponent.fillGhostRecipe and GhostSlots.setSlot do. Recipe sources and linked containers resolve in order without truncation.
+
+Recipe-book, filter-sprite and menu-binding identifiers share Identifier::parse_namespaced. Saved settings follow vanilla RecipeBookSettings.TypeSettings.codec and NeoForge CommonHooks.makeModdedRecipeBookTypesSettingsCodec. CompoundTag.write uses DataOutput.writeUTF for keys, so registration refuses actual persisted names that cannot round-trip rather than letting NbtIo.StringFallbackDataOutput.writeUTF replace them. As in NeoForge CommonHooks.MODDED_RECIPE_BOOK_TYPES_SETTINGS_STREAM_CODEC, settings are only exchanged on a connection that supports the extension. Sunrise advertises the versioned channel regardless of brand and negotiates settings and placement before exchanging data, without client retry timers or synthetic acknowledgements. RecipeBookManager.init is the NeoForge anchor for extending the book's presentation.
+
+RecipeBookLayout::Mod and MenuPart::recipe_book_place use a placement decision instead of a detached snapshot and a single-use Host call. Each part gets an isolated candidate output and nested Host transaction. A panic rolls back its writes, including saved recipe book flags, and discards its candidate. Only a panic disables that callback for the session and names its mod in the log and error toast. Book, ghost, recipe-source and menu-link helpers no longer impose synthetic count or text quotas; actual storage and packet formats still apply.
+"""
+migrate = """
+Remove imports of RecipesServerHost and calls to host.place_recipe_in_grid(...) or MenuRef::place_recipe_in_grid(...). In MenuPart::recipe_book_place (hook_version = 2, RecipeBookLayout::Mod), replace `event.ghost = host.place_recipe_in_grid(event.recipe, width, height, slots, clear, event.use_max_items)?` with `*event.placement = RecipeBookPlacement::Grid { width, height, slots, clear }`. Apply Shift (`event.use_max_items`) and creative (`event.creative`) only if handling placement yourself; the canonical placer already uses both. `slots` and `clear` are physical container slot indices. The survival inventory room check applies to `slots`, not the extra entries in `clear`. Replace manual `event.ghost = true` with `*event.placement = RecipeBookPlacement::Ghost`. Leave `*event.placement = RecipeBookPlacement::Nothing` when using ordinary Host operations to do the placement yourself or when doing nothing.
+
+Keep `Hooks::player_recipe_book_click` with the same arguments and request hook_version = 2 if pinned. It now runs for both mod and vanilla book clicks, before the menu-specific `recipe_book_place`. Use `MenuPart::recipe_book_place` for a menu's own decision, not for observing the general click. Keep `Hooks::recipe_sources` and `Hooks::menu_links` signatures and request hook_version = 2 for both if pinned: append all candidate positions rather than truncating to 64; distinct live lendable containers are used in first-seen order, skipping the opening block, duplicates and non-lendable blocks.
+
+For RecipeBooksRegistrar::recipe_book_type, recipe_book_type_with_fields, recipe_book_filter_look and MenusRegistrar::menu_recipe_book, pass explicit nonempty `namespace:path` identifiers accepted by Identifier::parse_namespaced. `your_mod:kitchen/pot` is valid; `..:pot`, `:cooking`, `your_mod:` and whitespace padding are not. Remove workaround truncation/count checks for 1,024 books or 256-byte IDs, field names, sprites or tooltips. Each emitted NBT key must fit 65,535 modified UTF-8 bytes (NUL takes two bytes and a supplementary character six): use a shorter extension book ID or shorter explicit flat field name if it exceeds that width. A flat-field book's ID is not an NBT key. The separate Identifier.STREAM_CODEC 32,767-byte wire width and packet framing still apply. Representable existing names keep their save layout.
+
+Rebuild listeners of `Hooks::player_recipe_book_settings_change` against hook version 2: a set followed by a restore inside one transaction used to notify twice and now notifies nothing, because delivery happens only at outermost commit, once per changed pair. Keep `PlayerRef::set_recipe_book_settings(host, &book, settings)`; false means the player or key is unavailable. Within a transaction, read the tentative value through the Host if needed, but expect client sync and `player_recipe_book_settings_change` only for each final changed pair at the outermost commit. An abort restores the original saved entry and sends no update. Keep `MenuPart::recipe_book_ghost` and request hook_version = 2 if pinned: provide ghosts for actual visible physical slots with no 256-ghost truncation; the last nonempty resolved display for a repeated slot wins, while an unresolved empty display does not erase an earlier ghost. Upgrade both peers for private book protocol version 2. Do not gate support on brand or wait for Busy/Resnapshot/Frame::Reply; use the negotiated settings snapshot, normal menu sync and the actual ghost response.
+"""

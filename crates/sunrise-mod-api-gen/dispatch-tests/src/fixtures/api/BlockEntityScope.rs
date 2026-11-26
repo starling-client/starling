@@ -13,8 +13,8 @@ impl BlockEntityScope<'_> {
     pub fn transaction<T, E>(
         &mut self,
         f: impl FnOnce(&mut BlockEntityScope<'_>, &()) -> Result<T, E>,
-    ) -> Result<T, E> {
+    ) -> Result<T, super::super::item::transaction::TransactionError<E>> {
         let mut scope = self.reborrow();
-        f(&mut scope, &())
+        f(&mut scope, &()).map_err(super::super::item::transaction::TransactionError::Aborted)
     }
 }

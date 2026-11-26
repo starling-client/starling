@@ -1,0 +1,2 @@
+ids = ["handle:PlayerRef::break_canceled", "handle:PlayerRef::place_canceled"]
+why = "A mod that changes blocks itself can ask whether the player's break or placement would be refused or canceled, as CommonHooks.fireBlockBreak and EventHooks.onBlockPlace are asked, without changing the level."

@@ -150,7 +150,7 @@ fn loot_stack_edits_leave_custom_drop_age_attached() {
         fn loot_drops(
             &self,
             _: &mut dyn mod_api::ServerHost,
-            event: &mut mod_api::LootDropsEvent<'_>,
+            event: &mut mod_api::LootDropsEvent<'_, '_>,
         ) {
             let star = ItemStack::new("minecraft:nether_star", 1)
                 .try_into_api()
@@ -162,11 +162,18 @@ fn loot_stack_edits_leave_custom_drop_age_attached() {
             let stone = ItemStack::new("minecraft:stone", 1).try_into_api().unwrap();
             let dirt = ItemStack::new("minecraft:dirt", 1).try_into_api().unwrap();
             match self.edit {
-                Edit::Replace => *event.drops = vec![stone],
+                Edit::Replace => {
+                    event.drops.clear();
+                    event.drops.push(stone).unwrap();
+                }
                 Edit::Remove => event.drops.clear(),
                 Edit::Reorder => {
-                    event.drops.extend([stone, dirt]);
-                    event.drops.reverse();
+                    event.drops.push(stone).unwrap();
+                    event.drops.push(dirt).unwrap();
+                    let len = event.drops.len();
+                    for i in 0..len / 2 {
+                        assert!(event.drops.swap(i, len - 1 - i));
+                    }
                 }
             }
         }

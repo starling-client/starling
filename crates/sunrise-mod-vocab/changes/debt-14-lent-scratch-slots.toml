@@ -1,0 +1,75 @@
+ids = [
+    "type:ItemPlace.Scratch",
+    "type:ItemPlace.ScratchSlots",
+    "hook:dispense_item",
+    "hook:dispense_method",
+    "type:ScratchSlot",
+    "type:ScratchScopeError",
+    "type:ScratchScopeError.Transaction",
+    "type:ScratchScopeError.Stack",
+    "type:ScratchError",
+    "type:ScratchError.Unavailable",
+    "type:ScratchError.Stack",
+    "type:ScratchError.Aborted",
+    "type:ScratchError.CommitRefused",
+    "method:ServerHost::with_scratch_stack_scope",
+    "method:ServerHost::with_scratch_slots_scope",
+    "method:HostTransaction::scratch_stack",
+    "method:HostTransaction::scratch_slots",
+    "method:prelude::ItemsServerHost::scratch_stack",
+    "method:prelude::ItemsServerHost::scratch_take",
+    "method:prelude::ItemsServerHost::scratch_slots",
+    "method:prelude::ItemsServerHost::scratch_take_slots",
+]
+why = "Scratch item places are now lent for one transaction scope instead of parked by ID across calls, following NeoForge 26.3's ItemAccess.forStack (StackItemAccess), ItemAccess.oneByOne (OneByOneItemAccess), and DispenseFluidContainer (ItemStacksResourceHandler(2) with ItemAccess.forHandlerIndex(handler, 0).oneByOne()). ItemsServerHost::scratch_stack, scratch_take, scratch_slots, scratch_take_slots, and the separate ItemPlace::ScratchSlots variant are removed. ItemPlace is process-local and has no Wire encoding. HostTransaction::scratch_stack and HostTransaction::scratch_slots open a scoped transaction (nested when one is already open), lend an opaque process-unique ItemPlace::Scratch(ScratchSlot) that cannot cross Wire, preserve oversized initial stack counts while capping subsequent inserts at the item's max stack size, restore lent slots before fallback when a nested transaction aborts, keep committed nested writes provisional until the enclosing scope commits, keep closed loans out of longer-lived outer journals, and publish the resulting stack or slot pair only on commit. ItemPlace::OneByOne now caps both inserts and extracts at one item. Following NeoForge's DispenseFluidContainer.execute and vanilla's DefaultDispenseItemBehavior.execute and spawnItem, fluid_util::dispense_container keeps the actual count of detached stacks through transfer and default dispense, and defers remainder drops and slot notices in the source level. DispenserBlockEntity.insertItem calls setItem for an empty slot but not for a merge; DispenserBlock.dispenseFrom skips setItem for NOOP, so an inert Part or refused reply does not write or notify. An actual replacement follows BaseContainerBlockEntity.setItem and ItemInstance.getMaxStackSize: apply the container limit and the stack's effective component, which defaults to one when absent. NeoForge DispenseFluidContainer.execute passes the dispenser's source level to its transfer; nested transfers keep their writes provisional while that level has a transaction open and publish block updates, fluid ticks, and effects at that level’s root commit. A refused mod reply is reported without running another behaviour on the original stack."
+migrate = '''
+Import `mod_api::{HostTransaction, ScratchError, ServerHost}`.
+
+For a single fixed-item scratch slot (`ItemAccess.forStack`), replace:
+```rust
+let place = host.scratch_stack(tx, stack)?.ok_or(err)?;
+// work on `place` using `tx`
+let final_stack = host.scratch_take(tx, &place);
+```
+with:
+```rust
+let (value, final_stack) = host.scratch_stack(stack, |host, tx, place| {
+    // work on `place` using `host` and `tx`
+    Ok(value)
+})?;
+```
+
+For a two-slot dispenser scratch copy (`DispenseFluidContainer`), replace:
+```rust
+let place = host.scratch_slots(tx, stack)?.ok_or(err)?;
+// work on `place` using `tx`
+let (first, second) = host.scratch_take_slots(tx, &place).ok_or(err)?;
+```
+with:
+```rust
+let (value, (first, second)) = host.scratch_slots(stack, |host, tx, place| {
+    // work on `place` using `host` and `tx`
+    Ok(value)
+})?;
+```
+
+Handle `ScratchError<E>` from both methods:
+- `ScratchError::Unavailable` when the host could not open a transaction (closure did not run);
+- `ScratchError::Stack(StackWriteError)` when the initial stack failed write validation (e.g. `UnknownItem` or `InvalidMaximum`; oversized initial counts are preserved, and the closure did not run on error);
+- `ScratchError::CommitRefused` when the closure requested commit, but the host rolled back its writes;
+- `ScratchError::Aborted(error)` when the closure returned `Err(error)` (writes rolled back and slots discarded).
+
+Update matches on `ItemPlace`: `ItemPlace::Scratch` now carries an opaque `ScratchSlot` instead of `u64`, `ItemPlace::ScratchSlots` is removed, and `ItemPlace` has no `Wire` implementation. Do not retain or send lent scratch handles outside their callback scope.
+
+Note two related behavioural alignments:
+- With `ItemPlace::OneByOne`, treat `place.insert(host, tx, &resource, amount)` as accepting at most one item, even when `amount` is greater than one. Use the returned count (0 or 1) for the number accepted; pass 1 explicitly when transferring one item. `extract` still takes at most one per call.
+- Return `fluid_util::dispense_container(host, event)` directly from your `dispense_item` Part. Propagate its `None` as no override instead of calling `dispense_default` again: the helper already runs default dispense when no fluid moves. Return the detached remainder with its actual count, including from `host.dispense_default`; do not clamp or consume it again. The final dispenser slot write applies its own limit. For a hand-built `Dispensed`, return a valid item and component patch: a refused reply neither replaces the active slot nor triggers vanilla's behaviour on the original stack.
+- Keep calling `host.dispense_with_remainder(dimension, pos, facing, stack, remainder)` with the same arguments. You can use its returned detached active-slot remainder immediately in the transaction. Treat any insertion into another slot as provisional; do not rely on any slot notice, overflow drop, click, or smoke before the outermost transaction in the dispenser’s level commits. Aborting it restores the inserted slot and publishes none of those effects; an open transaction in another level does not defer or undo them.
+
+For a custom `ServerHost` test double that supports lent scratch slots, implement `ServerHost::with_scratch_stack_scope` and `ServerHost::with_scratch_slots_scope`:
+- return `Ok(Some(...))` when the callback commits,
+- return `Ok(None)` when the callback aborts,
+- return `Err(ScratchScopeError::Transaction(TransactionScopeError::Unavailable))` when no transaction can open (the default implementations return this),
+- return `Err(ScratchScopeError::Transaction(TransactionScopeError::CommitRefused))` when a requested commit rolled back, or
+- return `Err(ScratchScopeError::Stack(error))` when the initial stack fails validation.
+'''

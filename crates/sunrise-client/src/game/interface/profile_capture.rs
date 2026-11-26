@@ -135,6 +135,15 @@ impl MemorySchedule {
     }
 }
 
+/// What an iteration of the game loop did, waiting for its wall time: the interval from its
+/// start to the next iteration's, which only that iteration knows. It books the frame with it,
+/// so a slow frame is recorded with its own work, never with the frame after it.
+pub(super) struct UnbookedFrame {
+    pub(super) cpu_ms: f32,
+    pub(super) gpu_ms: Option<f32>,
+    pub(super) spans: Vec<Span>,
+}
+
 /// The game's capture state: the health history, the running capture and who is waiting on it.
 pub(super) struct Profile {
     /// The server thread's health history and its side of a capture; set on its own Game only.
@@ -164,6 +173,8 @@ pub(super) struct Profile {
     env_tried: bool,
     /// What the running capture asks the renderer to time.
     gpu: GpuSwitch,
+    /// What the last iteration did, when it has a renderer to time it.
+    pub(super) unbooked: Option<UnbookedFrame>,
     /// The guests' requests to this server and the capture they ask of it (perf_remote.rs).
     pub(super) served: Served,
     /// This client's capture on the server it is connected to.
@@ -200,6 +211,7 @@ impl Profile {
             hardware_warmed: false,
             env_tried: false,
             gpu: GpuSwitch::Off,
+            unbooked: None,
             served: Served::default(),
             server_link: Link::default(),
             server_reply: None,
@@ -1006,7 +1018,8 @@ impl Game<'_> {
         }
     }
 
-    /// One rendered frame: `wall_ms` long, `cpu_ms` of it the CPU's own work.
+    /// One iteration of the game loop, rendered or not: `wall_ms` long, `cpu_ms` of it the
+    /// CPU's own work, ending at `t`.
     pub(super) fn record_perf_frame(
         &mut self,
         wall_ms: f32,

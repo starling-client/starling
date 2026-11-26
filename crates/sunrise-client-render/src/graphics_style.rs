@@ -552,17 +552,21 @@ mod tests {
             let mut batch = HudBatch::scratch([640, 480]);
             draw(&mut batch, &atlas, rect, &long);
             assert!(batch.vertices.len() > base, "{name}: long label drawn");
-            // The widget's own fill, track and handle also draw: only the label's vertices count.
+            // The widget's own fill, track and handle also draw: only the label's quads count.
+            let widget: Vec<_> = plain.quad_scissors().map(|(bounds, _)| bounds).collect();
             let label = batch
-                .vertices
-                .iter()
-                .filter(|v| !plain.vertices.iter().any(|p| p.pos == v.pos));
-            for v in label {
+                .quad_scissors()
+                .zip(batch.visible_quads())
+                .filter(|((bounds, _), _)| !widget.contains(bounds))
+                .filter_map(|(_, visible)| visible);
+            for [x0, y0, x1, y1] in label {
                 assert!(
-                    (rect[0]..=rect[0] + rect[2]).contains(&v.pos[0])
-                        && (rect[1]..=rect[1] + rect[3]).contains(&v.pos[1]),
+                    rect[0] <= x0
+                        && x1 <= rect[0] + rect[2]
+                        && rect[1] <= y0
+                        && y1 <= rect[1] + rect[3],
                     "{name}: {:?} outside the widget",
-                    v.pos
+                    [x0, y0, x1, y1]
                 );
             }
             // The label's own glyphs (past the widget's fill) start centred.

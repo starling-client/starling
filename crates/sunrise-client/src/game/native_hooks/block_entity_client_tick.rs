@@ -1,18 +1,32 @@
 //! Client ticks of mod block entities (`ClientLevel.tickBlockEntities`): the client's own
-//! ticker list, made from `native_block_entity_client_ticks`.
+//! ticker list, bound from its registered type and state.
 use super::*;
 use crate::game::api_values::TryIntoApi;
 use mod_api::{
     BlockEntityClientAccess, BlockEntityClientScope, BlockEntityReadView, BlockEntityRef,
     ClientHost, ResidentBlockEntityReadOnly,
 };
-use sunrise_client::{block_entities::Ticking, containers::BlockEntity};
+use sunrise_client::animate_tick::campfire_particle_tick;
+use sunrise_client::{
+    block_entities::Ticking,
+    containers::{BlockEntity, ModBlockEntity},
+};
 use sunrise_core::nbt::Compound;
 
 /// Shared read-only resident view backing for client and level-load block-entity scopes.
-pub(super) struct ResidentReadBlockEntity<'a> {
-    pub entity: &'a EngineBlockEntity,
+pub(in crate::game) struct ResidentReadBlockEntity<'a> {
+    pub entity: &'a ModBlockEntity,
     pub slot_count: usize,
+}
+
+impl<'a> ResidentReadBlockEntity<'a> {
+    /// Lend exactly the modeled slots in a stored row, even if it has left its level.
+    pub(in crate::game) fn stored(entity: &'a ModBlockEntity) -> Self {
+        Self {
+            entity,
+            slot_count: entity.items.len(),
+        }
+    }
 }
 
 impl ResidentBlockEntityReadOnly for ResidentReadBlockEntity<'_> {
@@ -102,16 +116,6 @@ impl BlockEntityClientAccess for ClientBlockEntityAccess<'_, '_> {
 }
 
 impl Game<'_> {
-    /// Whether block `block`'s block entity ticks on the client
-    /// (`EntityBlock.getTicker` asked with the client level): set `ticks` when
-    /// it is yours, and `native_block_entity_client_tick` runs for it once per
-    /// client tick. Asked once for each mod block, for all of its states,
-    /// the first time a client level ticks with a part that has a client tick.
-    /// Set `ticks` to true to make it tick, and never clear a value an earlier mod or mixin set.
-    pub(in crate::game) fn native_block_entity_client_ticks(&self, block: &str, ticks: &mut bool) {
-        self.fire_block_entity_client_ticks(block, ticks);
-    }
-
     /// A client tick of this client's resident mod block entity (`ClientLevel.tickBlockEntities`):
     /// the scope lends read-only views of the resident copy sequentially with the mutable
     /// `ClientHost`. Never called on a server, and never again once removed or unloaded.
@@ -124,31 +128,44 @@ impl Game<'_> {
 
 impl Game<'_> {
     /// `ClientLevel.tickBlockEntities` on a server's client, for the block entities with a client
-    /// ticker: spawners, trial spawners, vaults and mod ones. The client's ticker list
+    /// ticker: spawners, trial spawners, vaults, the animated ones, campfires, beacons, potent
+    /// sulfur and mod ones. The client's ticker list
     /// (`Level.blockEntityTickers`, kept in its world's block entities as a server keeps its own)
     /// is taken once, at the tick's start, so a ticker made during the tick waits for the next;
     /// each live one inside the world border then ticks in its order, as they all draw from the
     /// one level random. A mod one is told only while a part has a client tick and there is a
     /// client level.
     pub(in crate::game) fn tick_client_block_entities(&mut self) {
-        if !self.world.block_entities.has_states() {
-            let states = self.client_ticking_states();
-            self.world.block_entities.set_states(states);
-        }
+        self.ensure_client_ticking_states();
         let level = mod_api::__private::has_part_hook(mod_api::HookId::BlockEntityClientTick)
             .then(|| self.native_client_level())
             .flatten();
         let tickers = self.world.block_entity_tickers();
+        let mut anim = self.begin_block_entity_anims();
         for &ticker in tickers.iter() {
-            let key @ (x, _, z) = ticker.0;
-            // Ticks before this one can remove it (`TickingBlockEntity.isRemoved`), and one
-            // outside the border waits (`LevelChunk.isTicking`).
-            if !self.world.block_entities.is_live(ticker)
-                || !self.border.contains(f64::from(x), f64::from(z))
-            {
+            let key @ (x, y, z) = ticker.0;
+            // Ticks before this one can remove it (`TickingBlockEntity.isRemoved`).
+            if !self.world.block_entities.is_live(ticker) {
+                continue;
+            }
+            // A mod's block entity ticks by its own type, whatever its block is named
+            // (`BlockEntityTicker` of the registered type): never a vanilla animation.
+            let animated = match self.world.block_entities.get(&key) {
+                Some(BlockEntity::Mod(_)) => None,
+                _ => self.be_anims.ticker(self.world.block(x, y, z).0),
+            };
+            // One outside the border waits (`LevelChunk.isTicking`).
+            if !self.border.contains(f64::from(x), f64::from(z)) {
+                continue;
+            }
+            if let Some(kind) = animated {
+                self.tick_block_entity_anim([x, y, z], kind, &mut anim);
                 continue;
             }
             match self.world.block_entities.get(&key) {
+                Some(BlockEntity::Beacon(_)) => self.client_tick_beacon(key),
+                Some(BlockEntity::Campfire(_)) => self.client_tick_campfire(key),
+                Some(BlockEntity::PotentSulfur(_)) => self.client_tick_potent_sulfur(key),
                 Some(BlockEntity::Spawner(_)) => self.client_tick_spawner(key),
                 Some(BlockEntity::TrialSpawner(_)) => self.client_tick_trial_spawner(key),
                 // VaultBlock.getTicker on the client: VaultBlockEntity.Client.tick.
@@ -161,7 +178,24 @@ impl Game<'_> {
                 _ => {}
             }
         }
+        self.finish_block_entity_anims();
         self.forget_spawner_displays();
+    }
+    /// `CampfireBlockEntity.particleTick` of the campfire at `key`.
+    fn client_tick_campfire(&mut self, (x, y, z): (i32, i32, i32)) {
+        let cooking = match self.world.block_entities.get(&(x, y, z)) {
+            Some(BlockEntity::Campfire(c)) => c.items.each_ref().map(Option::is_some),
+            _ => return,
+        };
+        let state = self.world.block(x, y, z).0;
+        campfire_particle_tick(
+            self.res.animate(),
+            &mut self.particles,
+            self.pack.assets.registry,
+            [x, y, z],
+            state,
+            cooking,
+        );
     }
 
     /// The client tick of the resident mod copy at `pos`, lending its storage directly.
@@ -173,10 +207,11 @@ impl Game<'_> {
         else {
             return;
         };
-        if !mod_api::__private::block_entity_type_listens(
-            mod_api::HookId::BlockEntityClientTick,
-            entity.id(),
-        ) {
+        let state = self.world.block(x, y, z);
+        if !entity
+            .numeric_id()
+            .is_some_and(|kind| block_entities.mod_ticking(state.0, kind) == Ticking::Yes)
+        {
             return;
         }
         let subject = mod_api::__private::game::block_entity_ref(level, [x, y, z], generation);
@@ -186,34 +221,63 @@ impl Game<'_> {
         };
         Self::native_block_entity_client_tick(BlockEntityClientScope::new(&mut access));
     }
+    /// Builds the table of the states that tick on the client (once), so a block entity's
+    /// ticker is decided when its block changes (`LevelChunk.updateBlockEntityTicker`).
+    pub(in crate::game) fn ensure_client_ticking_states(&mut self) {
+        if !self.world.block_entities.has_states() {
+            self.world.block_entities.set_mod_ticker_states(
+                super::super::api_values::block_state::mod_ticker_states(
+                    mod_api::LogicalSide::Client,
+                ),
+            );
+            let states = self.client_ticking_states();
+            self.world.block_entities.set_states(states);
+        }
+    }
 
-    /// `BlockState.getTicker` with the client level, for every block state: spawners, trial
-    /// spawners and vaults always, a mod block's states when a part with a client tick says so
-    /// (asked once per block), every other state never.
+    /// `BlockState.getTicker` with the client level, for every vanilla block state: spawners, trial
+    /// spawners, vaults, beacons, the animated block entities, lit campfires and non-dry potent
+    /// sulfur. Mod block entities select from their separate type-and-state table.
     fn client_ticking_states(&self) -> Vec<Ticking> {
         let registry = self.pack.assets.registry;
-        let mod_ticks = mod_api::__private::has_part_hook(mod_api::HookId::BlockEntityClientTick);
-        let mut asked: std::collections::HashMap<&str, bool> = std::collections::HashMap::new();
         (0..registry.len())
             .map(|i| {
                 let name: &str = &self.res.facts().get(BlockStateId(i as u32)).name;
                 if name.starts_with("minecraft:") {
+                    let property = |key| {
+                        registry
+                            .state(BlockStateId(i as u32))
+                            .and_then(|s| s.properties.get(key))
+                            .map(String::as_str)
+                    };
                     return match name {
-                        "minecraft:spawner" | "minecraft:trial_spawner" | "minecraft:vault" => {
-                            Ticking::Yes
+                        "minecraft:spawner"
+                        | "minecraft:trial_spawner"
+                        | "minecraft:vault"
+                        | "minecraft:beacon" => Ticking::Yes,
+                        // CampfireBlock.getTicker: the particles of a lit one.
+                        "minecraft:campfire" | "minecraft:soul_campfire" => {
+                            if property("lit") == Some("true") {
+                                Ticking::Yes
+                            } else {
+                                Ticking::Idle
+                            }
                         }
+                        // Every state but dry has a ticker.
+                        "minecraft:potent_sulfur" => {
+                            if property("potent_sulfur_state") == Some("dry") {
+                                Ticking::Idle
+                            } else {
+                                Ticking::Yes
+                            }
+                        }
+                        // Chests, shulker boxes, bells, conduits, the enchanting table, the
+                        // gateway and dragon and piglin heads.
+                        _ if self.be_anims.ticker(i as u32).is_some() => Ticking::Yes,
                         _ => Ticking::No,
                     };
                 }
-                if !mod_ticks {
-                    return Ticking::No;
-                }
-                let ticks = *asked.entry(name).or_insert_with(|| {
-                    let mut ticks = false;
-                    self.native_block_entity_client_ticks(name, &mut ticks);
-                    ticks
-                });
-                if ticks { Ticking::Yes } else { Ticking::No }
+                Ticking::No
             })
             .collect()
     }

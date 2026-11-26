@@ -209,13 +209,13 @@ impl DragonSlot {
         }
         let mut table = self.table.borrow_mut();
         if old != 0 {
-            for part in old + 1..=old + 8 {
-                table.remove(part);
+            for part in 0..8 {
+                table.remove(crate::game::dragon::dragon_part_id(old, part));
             }
         }
         if id != 0 {
-            for part in id + 1..=id + 8 {
-                table.insert(part);
+            for part in 0..8 {
+                table.insert(crate::game::dragon::dragon_part_id(id, part));
             }
         }
     }

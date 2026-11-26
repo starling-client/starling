@@ -1,0 +1,3 @@
+ids = ["handle:PlayerRef::repair_items_with_xp"]
+why = "A server mod that takes over experience orb pickup can run vanilla's Mending for the points it awards (`ExperienceOrb.repairPlayerItems`). The repair draws a damaged Mending piece, applies the `xp_repair_ratio` hook, fires `player_item_mend` and returns the points left over for `PlayerRef::give_experience_points`."
+migrate = "Nothing to change."

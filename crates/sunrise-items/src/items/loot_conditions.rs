@@ -29,19 +29,11 @@ impl<R: RandomSource> LootContext<'_, R> {
         }
     }
 
-    /// A pool's or an entry's `condition` (`LootPool.CODEC`,
-    /// `LootPoolEntryContainer.CODEC`) and the `conditions` list old pack data
-    /// writes instead, all of which must hold.
+    /// A pool's, an entry's or a conditional function's `condition` (`LootPool.CODEC`,
+    /// `LootPoolEntryContainer.CODEC`, `LootItemConditionalFunction`'s codec). Those codecs have
+    /// no `conditions` field: the list old pack data writes is ignored, as vanilla ignores any
+    /// unknown field.
     pub(super) fn conditions(&self, o: &Value, random: &mut R) -> bool {
-        if let Some(c) = o.get("condition")
-            && !self.condition(c, random)
-        {
-            return false;
-        }
-        o.get("conditions")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .all(|c| self.condition(c, random))
+        o.get("condition").is_none_or(|c| self.condition(c, random))
     }
 }

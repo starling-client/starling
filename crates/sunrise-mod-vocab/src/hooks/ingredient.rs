@@ -1,5 +1,4 @@
 //! The `ingredient` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0226
 
 pub trait Hooks {
     /// Define one occurrence of a custom ingredient named by a non-`minecraft:` recipe entry.

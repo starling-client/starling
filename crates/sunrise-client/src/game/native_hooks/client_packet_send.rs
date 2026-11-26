@@ -15,7 +15,7 @@ impl Game<'_> {
     /// Play-phase pongs pass through this hook; mods cancel by returning `Flow::Cancel`.
     pub(in crate::game) fn native_client_packet_send(
         &self,
-        packet: &ClientPacket,
+        packet: &ClientPacket<'_>,
         canceled: &mut bool,
     ) {
         self.fire_client_packet_send(packet, canceled);

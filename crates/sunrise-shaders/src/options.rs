@@ -344,6 +344,26 @@ pub fn apply(text: &str, chosen: &BTreeMap<String, String>) -> String {
     out
 }
 
+/// Sets option `name` to `value` in `chosen` as the options screen does: a value the option doesn't
+/// list, or an option the pack doesn't have, is ignored (`false`); the option's default takes it
+/// out of `chosen`.
+pub fn choose(
+    chosen: &mut BTreeMap<String, String>,
+    options: &BTreeMap<String, PackOption>,
+    name: &str,
+    value: String,
+) -> bool {
+    let Some(option) = options.get(name).filter(|o| o.values.contains(&value)) else {
+        return false;
+    };
+    if value == option.default {
+        chosen.remove(name);
+    } else {
+        chosen.insert(name.to_owned(), value);
+    }
+    true
+}
+
 /// The file the player's choices for pack `name` are kept in, beside it in `shaderpacks/`.
 pub fn chosen_file(name: &str) -> String {
     format!("{name}.txt")

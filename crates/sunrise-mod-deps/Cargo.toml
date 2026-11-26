@@ -5,10 +5,10 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 publish = false
-description = "Registry crates native mods may depend on (docs/native-mods.md). Nothing depends on this crate and every dependency is optional, so no build compiles them."
+description = "Registry crates native mods may depend on (docs/modding/src/how-to/native-mods.md). Nothing depends on this crate and every dependency is optional, so no build compiles them."
 
 # Cargo.lock lists every optional dependency of a workspace member, so these are in the lock
-# (and in the allow list of docs/native-mods.md) without being built. The lock records a crate's
+# (and in the allow list of docs/modding/src/how-to/native-mods.md) without being built. The lock records a crate's
 # dependencies only for the features something enables, so each entry names the features mods may
 # use. TLS goes through the rustls + ring already in the lock. One feature per crate; `all` builds
 # the lot (`cargo check -p sunrise-mod-deps --features all`).

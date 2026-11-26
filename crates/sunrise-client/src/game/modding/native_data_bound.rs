@@ -69,7 +69,7 @@ mod tests {
         let _ = sunrise_world::native_load_hooks::install(
             sunrise_world::native_load_hooks::NativeLoadHooks {
                 item_ability_default: sunrise_items::item_abilities::vanilla_can_perform,
-                loot_ability: |_, _, _| {},
+                loot_ability: |_, _, _, _| {},
                 loot_table_load: |_, _, _| {},
                 modify_default_components: |context, item, components| {
                     if !mod_api::__private::listened(mod_api::HookId::ModifyDefaultComponents) {
@@ -143,7 +143,6 @@ mod tests {
                     game.res.clone(),
                     game.pack.clone(),
                     game.options.clone(),
-                    game.settings.clone(),
                     Arc::new(sunrise_world::datafix::progress::UpgradeProgress::new()),
                 )
                 .unwrap();

@@ -8,7 +8,8 @@
 pub enum ScreenSlotRefusal {
     /// No mod screen is open, or the open one is for another menu type.
     NoScreen,
-    /// The slot is outside the menu's container backing.
+    /// The slot is outside the menu's slots: `slot >= container_len + player_slots`, where
+    /// `player_slots` is 0 for a menu that declared no player inventory.
     NoSuchSlot,
     /// A position that is not finite.
     BadPosition,
@@ -20,7 +21,7 @@ impl std::fmt::Display for ScreenSlotRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::NoScreen => "no mod screen is open for that menu type",
-            Self::NoSuchSlot => "the screen declared no such slot",
+            Self::NoSuchSlot => "the menu has no such slot",
             Self::BadPosition => "the position is not finite",
             Self::Unavailable => "screens are on the client",
         })

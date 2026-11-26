@@ -338,6 +338,7 @@ impl Kind {
 /// An animal's brain.
 #[derive(Clone, Debug)]
 pub struct Brain {
+    pub(super) generation: u64,
     pub kind: Kind,
     pub mem: Memories,
     sensors: Vec<(Sensor, i64)>,
@@ -398,7 +399,9 @@ pub fn init(m: &mut Mob, shuffle_seed: i64) {
         .iter()
         .map(|s| (*s, i64::from(m.random.next_int_bound(20).unwrap_or(0))))
         .collect();
+    let generation = m.next_brain_generation();
     let mut b = Brain {
+        generation,
         kind,
         mem: Memories::default(),
         sensors,
@@ -412,32 +415,20 @@ pub fn init(m: &mut Mob, shuffle_seed: i64) {
         Kind::CopperGolem => copper_golem_package(shuffle_seed),
         Kind::Tadpole => tadpole_package(shuffle_seed),
     };
-    // The parts' behaviors join before the sort, so each lands after
-    // vanilla's of its priority (#824); the stable sort keeps vanilla's own
-    // hand-written order. Nothing joins a type no part attached to, and
-    // nothing is asked or built then.
-    let before = b.list.len();
-    attach_behaviors(&m.kind.id, &mut b.list);
-    if b.list.len() > before {
-        b.list.sort_by_key(|e| {
-            (
-                e.prio,
-                match e.act {
-                    Act::Core => 1,
-                    Act::Dig => 3,
-                    Act::Idle => 5,
-                    Act::Sniff => 6,
-                    Act::Fight => 14,
-                    Act::PlayDead => 15,
-                    Act::Panic => 15,
-                },
-            )
-        });
-    }
     if let Some(c) = cooldown {
         b.mem.transport_items_cooldown_ticks.set(c);
     }
     m.extra.animal_brain = Some(Box::new(b));
+    m.stage_brain_behaviors(super::mod_behaviors::BehaviorTarget::Animal(generation));
+}
+
+/// Ensure the animal's brain is initialized before a brain tick so any staged
+/// `register_behaviors` dispatch can run on the owning `Game` first.
+pub fn ensure_brain(m: &mut Mob) {
+    if brain(m).is_none() {
+        let seed = i64::from(m.id);
+        init(m, seed);
+    }
 }
 
 /// A copper golem's `TRANSPORT_ITEMS_COOLDOWN_TICKS`, or none for 0.
@@ -532,14 +523,23 @@ pub struct Bx<'a, 'w, 'l> {
     pub now: i64,
 }
 
-/// `Brain.tick` then `updateActivity` (from `customServerAiStep`).
+/// Runs the animal brain without an owning Game to handle breeding in place.
 pub fn tick(m: &mut Mob, w: &MobWorld, level: &mut DamageLevel<'_>, events: &mut Vec<MobEvent>) {
+    let _ = tick_until_birth(m, w, level, events, false);
+}
+
+/// `Brain.tick` then `updateActivity` (from `customServerAiStep`).
+pub(super) fn tick_until_birth(
+    m: &mut Mob,
+    w: &MobWorld,
+    level: &mut DamageLevel<'_>,
+    events: &mut Vec<MobEvent>,
+    breed: bool,
+) -> Option<(Box<MobEvent>, BrainBreed)> {
     if brain(m).is_none() {
         let seed = i64::from(m.id);
         init(m, seed);
-        if brain(m).is_none() {
-            return;
-        }
+        brain(m)?;
     }
     // forgetOutdatedMemories
     mem(m).tick();
@@ -557,13 +557,57 @@ pub fn tick(m: &mut Mob, w: &MobWorld, level: &mut DamageLevel<'_>, events: &mut
             e.b.try_start(m, &mut cx);
         }
     }
-    for e in list.iter_mut() {
-        if e.b.running() {
-            e.b.tick_or_stop(m, &mut cx);
+    brain_mut(m).list = list;
+    tick_running(m, &mut cx, 0, breed)
+}
+
+#[derive(Debug)]
+pub(super) struct BrainBreed(usize);
+
+pub(super) fn resume_after_birth(
+    m: &mut Mob,
+    w: &MobWorld,
+    level: &mut DamageLevel<'_>,
+    events: &mut Vec<MobEvent>,
+    paused: BrainBreed,
+) -> Option<(Box<MobEvent>, BrainBreed)> {
+    tick_running(
+        m,
+        &mut Bx {
+            w,
+            level,
+            events,
+            now: w.game_time,
+        },
+        paused.0,
+        true,
+    )
+}
+
+fn tick_running(
+    m: &mut Mob,
+    cx: &mut Bx<'_, '_, '_>,
+    start: usize,
+    breed: bool,
+) -> Option<(Box<MobEvent>, BrainBreed)> {
+    let mut list = std::mem::take(&mut brain_mut(m).list);
+    for (slot, e) in list.iter_mut().enumerate().skip(start) {
+        if !e.b.running() {
+            continue;
+        }
+        let before = cx.events.len();
+        e.b.tick_or_stop(m, cx);
+        if breed
+            && cx.events.len() > before
+            && matches!(cx.events.last(), Some(MobEvent::Breed { .. }))
+        {
+            let event = Box::new(cx.events.pop().unwrap());
+            brain_mut(m).list = list;
+            return Some((event, BrainBreed(slot + 1)));
         }
     }
     brain_mut(m).list = list;
-    update_activity(m, w);
+    update_activity(m, cx.w);
     m.ai.panicking = is_panicking(m);
     if m.species() == Species::Axolotl {
         m.extra.axolotl.playing_dead = mem(m)
@@ -572,6 +616,7 @@ pub fn tick(m: &mut Mob, w: &MobWorld, level: &mut DamageLevel<'_>, events: &mut
             .is_some_and(|ticks| ticks > 0);
         m.ai.target = mem(m).attack_target.value();
     }
+    None
 }
 
 /// `SnifferAi.updateActivity` / `HappyGhastAi.updateActivity`:
@@ -1657,9 +1702,15 @@ impl B {
                     && now >= *spawn_at
                 {
                     // spawnChildFromBreeding: spawn the egg/baby and rest both parents.
+                    // When baby_entity_spawn has listeners on a live-baby route, defer the
+                    // initiating parent's cooldown until Game::breed so an uncanceled empty
+                    // slot does not leave the parent cooled down.
                     let Who::Mob(id) = partner else { return };
-                    m.extra.in_love = 0;
-                    m.extra.age = 6000;
+                    let listened_birth = cx.w.asks_live_birth(m.species());
+                    if !listened_birth {
+                        m.extra.in_love = 0;
+                        super::finalize::set_age(m, 6000, Some(cx.w));
+                    }
                     cx.events.push(MobEvent::Breed {
                         parent: m.id,
                         partner: id,
@@ -1682,7 +1733,10 @@ impl B {
                         cx.events
                             .push(MobEvent::Sound("block.sniffer_egg.plop", at, 1.0, pitch));
                     }
-                    mem(m).breed_target.clear();
+                    // AnimalMakeLove clears both memories after the breeding action returns.
+                    if !listened_birth {
+                        mem(m).breed_target.clear();
+                    }
                 }
             }
             B::FollowTemptation {
@@ -2441,8 +2495,11 @@ fn sense_axolotl_attackables(m: &mut Mob, w: &MobWorld) {
         super::axolotl::prey_eligible(
             m.distance_sqr(s.position),
             s.in_water,
-            w.entity_has("minecraft:axolotl_always_hostiles", &s.kind.id),
-            w.entity_has("minecraft:axolotl_hunt_targets", &s.kind.id),
+            w.entity_tag_bit(
+                &s.kind,
+                crate::items::EntityTypeTags::AXOLOTL_ALWAYS_HOSTILES,
+            ),
+            w.entity_tag_bit(&s.kind, crate::items::EntityTypeTags::AXOLOTL_HUNT_TARGETS),
             cooldown,
             s.alive && !s.playing_dead,
         )
@@ -2792,31 +2849,54 @@ fn tadpole_package(seed: i64) -> Vec<Entry> {
 
 // ---- Mod behaviors ------------------------------------------------------
 
-/// The parts' behaviors for this brain (#824): each joins the list with its
-/// activity and priority, refused where this brain has no such activity.
-fn attach_behaviors(mob_id: &str, list: &mut Vec<Entry>) {
-    struct Reg<'a> {
-        list: &'a mut Vec<Entry>,
-        mob_id: &'a str,
+/// Validate that this brain keeps a slot for `activity`.
+pub(super) fn validate_activity(
+    activity: mod_api::Activity,
+) -> Result<(), mod_api::BehaviorRefusal> {
+    act_of(activity).map(|_| ())
+}
+
+/// Apply staged mod behaviors to the animal brain if it is still the same
+/// `generation` instance; otherwise discard them safely and return `false`.
+pub(super) fn apply_staged(
+    m: &mut Mob,
+    generation: u64,
+    staged: Vec<mod_api::RegisteredBehavior>,
+) -> bool {
+    let Some(b) = m.extra.animal_brain.as_deref_mut() else {
+        super::mod_behaviors::discard_registrations(staged);
+        return false;
+    };
+    if b.generation != generation {
+        super::mod_behaviors::discard_registrations(staged);
+        return false;
     }
-    impl mod_api::BehaviorRegistrarBackend for Reg<'_> {
-        fn add_behavior(
-            &mut self,
-            r: mod_api::RegisteredBehavior,
-        ) -> Result<(), mod_api::BehaviorRefusal> {
-            let act = act_of(r.activity)?;
-            self.list.push(Entry {
-                prio: r.priority,
-                act,
-                b: B::Mod(super::mod_behaviors::ModBehavior::new(r)),
-            });
-            Ok(())
-        }
-        fn mob_id(&self) -> &str {
-            self.mob_id
-        }
+    let before = b.list.len();
+    for r in staged {
+        let act = act_of(r.activity).expect("staged activity was validated on add");
+        b.list.push(Entry {
+            prio: r.priority,
+            act,
+            b: B::Mod(super::mod_behaviors::ModBehavior::new(r)),
+        });
     }
-    super::mod_behaviors::attach(mob_id, &mut Reg { list, mob_id });
+    if b.list.len() > before {
+        b.list.sort_by_key(|e| {
+            (
+                e.prio,
+                match e.act {
+                    Act::Core => 1,
+                    Act::Dig => 3,
+                    Act::Idle => 5,
+                    Act::Sniff => 6,
+                    Act::Fight => 14,
+                    Act::PlayDead => 15,
+                    Act::Panic => 15,
+                },
+            )
+        });
+    }
+    true
 }
 
 /// This brain's slot for a mod-api activity.
@@ -3077,6 +3157,7 @@ mod axolotl_parity_tests {
     use super::*;
     fn empty_brain() -> Brain {
         Brain {
+            generation: 0,
             kind: Kind::Axolotl,
             mem: Memories::default(),
             sensors: Vec::new(),
@@ -3101,6 +3182,8 @@ mod axolotl_parity_tests {
         ));
         let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
         kind.id = "test:custom_prey".into();
+        // Its place in the registry IDs above, as a content type's is set at load.
+        kind.flags.entity_tag_slot = Some(0);
         kind.species = Species::Cod;
         let mut prey = Mob::new(2, Arc::new(kind), Vec3::new(2.0, 80.0, 0.0), 0.0);
         prey.fluids.in_water = true;

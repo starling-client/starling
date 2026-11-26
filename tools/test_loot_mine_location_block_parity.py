@@ -1,8 +1,8 @@
 import hashlib,json,sys
 from pathlib import Path
-sys.path.insert(0,str(Path.cwd()/'tools'))
-import test_command_exec_parity as driver
-import harness_args
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_command_exec_parity as driver, harness_args
 TABLE={'type':'minecraft:block','pools':[
  {'rolls':1,'entries':[{'type':'minecraft:item','name':'minecraft:emerald','modifier':{'type':'minecraft:set_count','count':2}}]},
  {'rolls':1,'condition':{'type':'minecraft:location_check','offsetX':1,'predicate':{'block':{'blocks':'minecraft:oak_log','state':{'axis':'x'}}}},'entries':[{'type':'minecraft:item','name':'minecraft:diamond'}]}

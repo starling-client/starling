@@ -125,8 +125,8 @@ loot tables are resource identifiers. Compostability is boolean.
 
 Builtin reads return canonical NBT compounds with the field above, rather than the
 input's shorthand: distances are `Float`, frequencies `Int`, compostability `Byte`, and
-identifiers `String`. Infinity remains an NBT Float, never JSON null. Biome values
-are queryable through `BiomeKey`; typed game-event coverage remains in #4199.
+identifiers `String`. Infinity remains an NBT Float, never JSON null. Use `BiomeKey`
+to query biome values and `GameEventKey` to query game-event values.
 Registering these stores and firing `data_maps_updated` does not sync them to clients.
 
 The gameplay readers and structure generation use immutable world-owned snapshots.
@@ -173,19 +173,25 @@ it must be a boolean. An invalid target or flag skips the whole file layer, even
 Sunrise still derives its axe steps from the inverse maps, not from `generate_block_transform`.
 `neoforge:transformables` and `block_transform_appenders` are not read.
 
-`host.biome_key("minecraft:plains")` resolves a `BiomeKey` in the installed
-server world registry. Its `id(host)` borrows the canonical name from the installed snapshot
-(`Result<&str, BiomeKeyError>`): use `key.id(host)?` directly, or copy the result only to retain
-it beyond the host borrow. The borrow does not affect the result of `data(host, &map)`: it still
-returns an owned value from maps whose `DataMap::Entry` is `BiomeKey`, including
-`neoforge:villager_types` in `minecraft:worldgen/biome`. Missing entries return
-`Ok(None)`. Lookup returns `None` on clients and before world data is installed;
-data maps there return `DataMapError::Unavailable`. Reacquire biome keys after
-reload: tokens from earlier generations or another world return
-`BiomeKeyError::WrongGeneration` from `id`, or `DataMapError::InvalidKey` from
-`data`. An unavailable host returns `BiomeKeyError::Unavailable` from `id`.
-Validation uses the receiving host’s installed snapshot, so a mod retaining a
-key across reload receives an error without panicking the server.
+`BiomeKey` is the persistent registered biome identifier in `minecraft:worldgen/biome`
+(vanilla's `ResourceKey<Biome>`). Construct one with `BiomeKey::new(identifier)` or
+`BiomeKey::parse("minecraft:plains")`, or keep `view.key().clone()` from a scoped view. It
+survives reloads and uses the mod `Wire` format for `Identifier` (a length-prefixed namespace
+and a length-prefixed path); this is not the vanilla `ResourceKey.streamCodec` network format.
+
+`host.biome("minecraft:plains")` (or `key.view(host)`) resolves a scoped, generation-bound
+`BiomeView<'_>` (vanilla's `Holder<Biome>`) borrowing from the installed server world registry.
+Its `id()` borrows the canonical name (`&str`) directly from the snapshot and `key()` borrows
+its `BiomeKey`, with no wire codec and no way to outlive the host borrow. Both
+`key.data(host, &map)` and `view.data(host, &map)` return an owned value from maps whose
+`DataMap::Entry` is `BiomeKey`, including `neoforge:villager_types` in
+`minecraft:worldgen/biome`. Missing entries return `Ok(None)`. Lookups return
+`BiomeKeyError::Unavailable` (and `data` returns `DataMapError::Unavailable`) on clients,
+before world data is installed, or in phases that forbid world-data reads. An invalid identifier
+returns `BiomeKeyError::InvalidIdentifier`; an unregistered biome returns
+`BiomeKeyError::UnknownBiome` (or `DataMapError::InvalidKey` from `data`), and
+a view checked against another host or generation returns `BiomeKeyError::WrongGeneration`
+(or `DataMapError::InvalidKey` from `data`).
 
 Game events use `GameEventKey`, resolved with `host.game_event_key("minecraft:step")`
 after startup registry completion. The key is load-owned and survives world data

@@ -25,7 +25,18 @@ gameplay attributes) as a `LevelDimensionType`: the build range, `coordinate_sca
 level on a vanilla type returns that type's values, a registered dimension returns what its
 `DimensionSettings` set, and a data pack's dimension type counts the same way. It returns `None` for
 a stale handle. On a client, it reads the displayed level's received dimension type,
-including custom types sent by another server.
+including custom types sent by another server. Text fields and the timeline slice borrow
+the type while scalar settings are values. Copy a string or use `timelines.to_vec()`
+only if you need the data after the host borrow ends.
+
+## Reading saved maps
+
+`level.visit_map_data(host, id, &mut visit)` reads a world map through any current server
+level, including a parked one. On `Ok(Some(()))` the callback ran once with a
+`MapState<'_>`; its dimension ID and colour bytes are borrowed for that call. Read them
+in place, or use `map.dimension.to_owned()` and `map.colors.to_vec()` if retaining them.
+A missing map returns `Ok(None)`. A stale handle or unavailable side, phase or backend
+returns `LevelReadError`. Neither a missing map nor a refusal calls the visitor.
 
 ## Registering a dimension
 
@@ -86,11 +97,13 @@ The level's biomes are the one `biome` everywhere unless `biome_source` says oth
 erosion, depth and weirdness, and an `offset` from 0 to 1. The biome whose point is nearest to the level's
 climate at a position wins, as in a data pack's `minecraft:multi_noise` source with an inline `biomes` list;
 the biomes can be the mod's own or vanilla's. A mod's points shape its own level only: placing a mod's biomes
-among vanilla's in the Overworld or the Nether is a [biome region](../content-mods/biome-regions.md). Only `Fixed` suits a chunk
-generator of the mod's own. `mod_biome_source` names a [biome source](#biome-sources) a
-mod registered instead, for either generator.
+among vanilla's in the Overworld or the Nether is a [biome region](../content-mods/biome-regions.md).
+Any valid `biome_source` (`Fixed`, `Checkerboard`, `MultiNoise`, `End`, `Points`) or a registered
+`mod_biome_source` ([biome sources](#biome-sources)) composes with either `minecraft:noise` or a
+chunk generator of a mod's own.
 
-A dimension in an unowned namespace, an empty name, a name that is not a folder of the world
+A bare name uses the registering mod's namespace; an explicit valid `namespace:path` keeps its
+namespace. An empty or malformed name, a name that is not a folder of the world
 (lowercase letters, digits and `_ . -` only, with `/` between segments that are not empty, `.` or
 `..`), a vanilla level's id, an id registered twice, a build height the dimension type codec refuses
 (`min_y` and `height` are multiples of 16, and the level stays between -2032 and 2031) and a
@@ -99,8 +112,10 @@ may come from a mod that loads later.
 
 A registered dimension is the level stem and dimension type a data pack would give, below every
 data pack: a pack with `data/mymod/dimension/pocket.json` or `data/mymod/dimension_type/pocket.json`
-replaces that half of it, in the worlds that have the pack.
-
+replaces that half of it, in the worlds that have the pack. A `minecraft:flat` stem uses the
+resolved dimension's build range and the world pack's biome registry. Its `features`, `lakes` and
+`structure_overrides` use the same generator as a flat Overworld. Invalid layer heights fail
+world loading with the dimension id in the error.
 
 ## Sending a player to a dimension
 
@@ -112,15 +127,16 @@ trident, a firework and the thrown items and fireballs a chunk saves. The entity
 set it first with `entity.set_velocity` to stop or turn it.
 
 Bind a [server command](../entities/server-commands.md) in `Hooks::register_commands`.
-This executor accepts a player source and returns `Some(1)` when the move is queued:
+This executor accepts a player source and returns `Ok(1)` when the move is queued:
 
 ```rust,ignore
 event.commands.push(Command::new("pocket").executes(|host, source, _| {
     let CommandSource::Player { player, .. } = source else {
-        return None;
+        return Err(Text::translate("mymod.commands.player_required", vec![]).into());
     };
     player.entity().teleport_to_level(host, "mymod:pocket", [8.5, 100.0, 8.5], None)
         .then_some(1)
+        .ok_or_else(|| Text::translate("mymod.commands.teleport_failed", vec![]).into())
 }));
 ```
 
@@ -155,11 +171,30 @@ its sky, its spawning and its beds follow that clock, and `/time` in the level s
 `level.clock_marker_time(host, &marker)` gives the next time the level's own clock reaches a time marker, as
 `/time set <marker>` moves it. Only the Overworld's clock defines markers today, so any other clock answers None.
 
+To give a dimension a clock of its own, register a `WorldClock` with `r.register_world_clock("dungeon")` in
+`register` and name it in the dimension's settings, `DimensionSettings { clock: Some("mymod:dungeon".into()), .. }`:
+the dimension type takes it as its `default_clock` in place of `day_cycle`'s, and every level of that type follows it.
+A registered clock is an entry of the world's `minecraft:world_clock` registry, sent to players, and runs from the
+world's first tick like the vanilla clocks. `level.clock(host)` gives the level's clock as a `WorldClockRef`
+(`None` for a level without one), whose writes are `ServerClockManager`'s: `set_total_ticks(host, ticks)` sets its
+time, `set_rate(host, rate)` the ticks it counts each game tick, and `set_paused(host, paused)` stops or restarts it,
+so a paused clock gives the level a fixed time.
+
 When enough players have slept, `sleep_finished_time` hands its listeners a `ClockAdjustment` for the level's own
 clock: `Absolute(time)`, `Relative(ticks)` from the time now, or `Marker(id)`. It starts as vanilla's
 `Marker(minecraft:wake_up_from_sleep)`, a later mod reads what an earlier one set, and the game resolves it once
 after all of them. A time before now or past `i64::MAX`, or a marker the clock does not define, is refused and the
 clock moves to the morning instead; `new_time` is that morning, read only.
+
+Before any of that, `sleep_skip_night` is asked once each tick that enough players have slept, with the
+`players_sleeping_percentage` rule and how many players sleep and count. Canceling it keeps the night for that tick:
+the clock does not move, nobody is woken and the rain goes on, and `sleep_finished_time` is not asked.
+
+How many is enough is `sleepers_needed`'s: it arrives with vanilla's count (the rule's share of the players that
+count, rounded up, at least 1) and a listener may set its own for the level and tick. The night-skip check and the
+"n/m players sleeping" line both use the answer; below 1 counts as 1.
+
+`sleep_status_announce` is asked when the game is about to show everyone the action-bar line "n/m players sleeping" or "Sleeping through this night". It sees the counts and the needed number, may replace `line`, and canceling it sends nobody the line; who sleeps and when the night skips do not change.
 
 ## Which level a hook is in
 
@@ -212,14 +247,91 @@ for player in recipients {
 For typed payloads, `ToClient::send_in_level` and `ToClient::send_near` already handle
 collecting recipients before sending.
 
-Obtain a chunk with `host.chunk(level, pos)`, then call `chunk.watchers(host)` to ask which
-players were sent it and have it inside their view distance; fake players watch nothing.
+Obtain a chunk with `level.chunk_ref(host, pos)`, then call
+`chunk.visit_watchers(host, &mut visit)` to visit the players it was sent to and whose view
+still contains it, in server order. Fake players watch nothing. A valid parked level uses
+its own tracking rows; a valid unwatched chunk completes without calling the visitor.
+
+`level.visit_loaded_chunks(host, &mut visit)` visits resident chunks in x-then-z order,
+without loading anything. `level.visit_forced_chunks(host, &mut visit)` visits commanded
+chunk positions in `/forceload query` order. `level.visit_mod_forced_chunks(host, controller,
+&mut visit)` visits the issued controller's tickets in ticket order, passing the owner,
+position and natural-spawning flag separately. These visits use the same `ControlFlow` and
+`LevelReadError` convention as the online-player visit. The handle authorizes the read
+regardless of the calling mod; an invalid handle or one from another registration table
+returns `Unavailable`.
 
 `level.find_nearest_structure(host, structure, StructureSearch::new(origin, radius))` searches
 for a structure id or `#tag` and returns its structure and locate position. This is a
 synchronous, `/locate`-cost search, not a cheap loaded-chunk lookup: cache results and avoid
-per-tick use. The radius counts placement-cell rings (at most 100); stronghold rings are
-checked regardless of radius. It does not load or generate chunks.
+per-tick use. The radius counts placement-cell rings (nonnegative; `/locate` uses 100);
+stronghold rings are checked regardless of radius. It does not load or generate chunks.
+
+## Chunk tickets
+
+Register a named ticket controller once at startup in `Hooks::register` with
+`r.register_ticket_controller("quarry", validator)`. Keep the returned `TicketController`
+handle (for example in a `OnceLock`) and pass it to `chunk.set_mod_forced` and
+`level.mod_forced_chunks`. Active reads and writes authorize by the registry-issued handle
+itself rather than the current caller, so helpers or shared subsystems that hold the handle
+can manage that controller's tickets directly while separate controllers stay isolated.
+
+Pass `Some(Arc::new(...))` to bind a `LoadingValidationCallback` that prunes stale saved
+tickets when a level opens, or `None` to restore saved tickets without validation:
+
+```rust,ignore
+use std::sync::{Arc, OnceLock};
+use mod_api::{
+    Hooks, LevelRef, Registrar, RegistrationContext, ServerHost, TicketController,
+    TicketOwner, TicketValidation,
+};
+
+pub static QUARRY_TICKETS: OnceLock<TicketController> = OnceLock::new();
+
+#[mod_api::sunrise_mod]
+impl Hooks for MyMod {
+    fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
+        let quarry_block = r.block_key("mymod:quarry");
+        let controller = r.register_ticket_controller(
+            "quarry",
+            Some(Arc::new(
+                move |host: &mut dyn ServerHost,
+                      level: LevelRef,
+                      tickets: &mut dyn TicketValidation| {
+                    let stale: Vec<[i32; 3]> = tickets
+                        .block_tickets()
+                        .keys()
+                        .copied()
+                        .filter(|&pos| level.block(host, pos) != Some(quarry_block))
+                        .collect();
+                    for pos in stale {
+                        tickets.remove_block_tickets(pos);
+                    }
+                },
+            )),
+        );
+        let _ = QUARRY_TICKETS.set(controller);
+    }
+}
+
+pub fn hold_quarry_chunk(host: &mut dyn ServerHost, level: LevelRef, pos: [i32; 3]) -> bool {
+    let Some(&controller) = QUARRY_TICKETS.get() else {
+        return false;
+    };
+    let Some(chunk) = level.chunk_ref(host, [pos[0] >> 4, pos[2] >> 4]) else {
+        return false;
+    };
+    chunk.set_mod_forced(host, controller, TicketOwner::Block(pos), true, false)
+}
+```
+
+`tickets.block_tickets()` and `tickets.entity_tickets()` borrow read-only `BTreeMap` views
+of the controller's original saved tickets for the whole callback even after removals, while
+`remove_block_tickets`, `remove_block_ticket`, `remove_entity_tickets` and
+`remove_entity_ticket` stage removals that publish only when the validator completes successfully. Use `level.dimension().id(host)`
+when the validator needs the opening level's dimension name. See
+[Validating saved chunk tickets](runtime-levels.md#validating-saved-chunk-tickets) for
+startup and runtime-level validation timing and panic handling.
 
 ## Watered-area tickets
 
@@ -227,18 +339,25 @@ On the server, `level.add_water_ticket(host, min, max)` returns an `Option<Water
 for a sprinkler's watered area. Bounds are integer and half-open on **all three axes**:
 `min` is included, `max` is excluded. For 5×1×5 farmland beginning at `[4, 64, 4]`,
 use `[4, 64, 4]` and `[9, 65, 9]`; `[8, 64, 8]` is inside, `[9, 64, 4]` is outside.
-Empty or reversed boxes and boxes covering more than 65,536 x/z chunks are refused.
+Empty or reversed boxes are refused; any nonempty box is accepted without a column cap.
 
-Keep the handle, then call `ticket.remove(host)` when the sprinkler stops or breaks.
-Removal returns whether that ticket was removed; overlapping tickets remain independent.
-Only the mod that added a ticket can remove it. `level.has_water_ticket(host, pos)` tests
-whether any ticket covers a block. Both calls reach active or parked server levels without
-loading chunks; unavailable/stale handles and clients answer `false` (adding answers `None`).
-Adding requires an enabled mod call.
+`WaterTicket` is an in-process handle and does not implement `Wire` — never serialize or
+persist it. Retain the handle in memory, then call `ticket.remove(host)` when the sprinkler
+stops or breaks. Removal returns whether that ticket was removed; overlapping tickets remain
+independent. Any holder with the `WaterTicket` handle can remove it without consulting the
+current caller. `level.has_water_ticket(host, pos)` tests whether any ticket covers a block.
+Both calls reach active or parked server levels without loading chunks; unavailable/stale
+handles and clients answer `false` (adding answers `None`).
 
-Tickets are chunk-indexed, in memory only, and never force chunks to load. They are removed
-on explicit removal, level unload, or their owner's disable; re-enabling does not restore
-them. A reopened world starts empty: re-add from `level_load` or a block entity's load
+Tickets are indexed by enclosing x/z chunk tile in memory only, never force chunks to load,
+and queries test matching tiles without calling mod predicates. Each ticket attaches to the
+covered chunk closest to its horizontal center (its master chunk, matching NeoForge's
+`FarmlandWaterManager.addAABBTicket`): unloading that chunk on the server invalidates the
+ticket (`FarmlandWaterManager.removeTickets`), while unloading other covered chunks leaves it
+active. Tickets are also removed on explicit removal or level unload; when added during an
+enabled mod call, the ticket is attributed to that mod and cleared if that mod is disabled
+(calling from a disabled installed mod is refused, and re-enabling does not restore old
+tickets). A reopened world starts empty: re-add from `level_load` or a block entity's load
 listener. Several boxes can describe a shape without a per-position mod predicate.
 Farmland checks the ticket before its vanilla water scan, so dry farmland inside moistens
 to 7. Removing the last covering ticket restores normal drying, while nearby water and
@@ -258,6 +377,42 @@ Inside a hook, use `level.request_save(host)`, not a synchronous `save-all` comm
 While an entity pass or held-out row is borrowed, synchronous saving refuses with vanilla's
 `commands.save.failed` feedback and a failed command result, without writing a partial snapshot.
 Requested saves wait for a settled start-of-tick boundary.
+
+## Resolve an entity by UUID
+
+In a server hook, wrap a saved `u128` in `EntityUuid` and ask the level that
+should hold the entity with `LevelRef::entity_by_uuid`. The level may be the one
+in place or a parked one; the lookup returns `None` if the entity is unloaded or
+in another level. To search every level, do as vanilla's
+`ServerLevel.getEntityInAnyDimension` does: ask the hook's own level first, then
+each other level `host.levels()` lists.
+
+```rust,ignore
+use mod_api::prelude::*;
+use mod_api::{EntityRef, EntityUuid, LevelRef, ServerHost};
+
+fn find_saved_entity(host: &dyn ServerHost, level: LevelRef, saved_uuid: u128) -> Option<EntityRef> {
+    level.entity_by_uuid(host, EntityUuid(saved_uuid))
+}
+
+fn find_in_any_level(host: &dyn ServerHost, own: LevelRef, saved_uuid: u128) -> Option<EntityRef> {
+    let uuid = EntityUuid(saved_uuid);
+    own.entity_by_uuid(host, uuid).or_else(|| {
+        let levels = host.levels().list_levels();
+        levels
+            .into_iter()
+            .filter(|level| *level != own)
+            .find_map(|level| level.entity_by_uuid(host, uuid))
+    })
+}
+
+fn entity_identity(host: &mut dyn ServerHost, entity: EntityRef) -> Option<EntityUuid> {
+    entity.uuid(host).map(EntityUuid)
+}
+```
+
+`EntityRef::uuid` returns the raw `u128`. Use `EntityUuid(raw_uuid)` to pass
+that value back into the lookup.
 
 ## Chunk generators
 
@@ -280,9 +435,22 @@ the level's `min_y` and `height`, and borrowed immutable `metadata()`. Resolve `
 placed block. `set_block` skips a position outside the chunk or build height and answers whether
 it wrote. The chunk starts as air; invalid state ordinals are refused rather than written.
 
+`set_block_entity_nbt(nbt)` is vanilla's `ChunkAccess.setBlockEntityNbt`: a block entity's data
+from generation on, such as a chest's `LootTable` and `LootTableSeed`, at the block the tag's `x`,
+`y` and `z` name. It waits as the chunk's pending data and becomes the block's block entity before
+the chunk first loads, as a structure's chest does; data with no `id`, or for a block that has no
+block entity by then, is dropped.
+
+`create_biomes(chunk)` is vanilla's `ChunkGenerator.createBiomes`, run at the biome step before the
+terrain: `chunk.fill_biomes_from_noise(&mut |[qx, qy, qz]| ...)` gives each 4×4×4 cell the
+`BiomeKey` its quart position resolves to, as `ChunkAccess.fillBiomesFromNoise` does. The chunk
+keeps those biomes; structure placement and carvers still ask the level stem's biome source, as in
+vanilla. A generator that does not answer keeps the source's biomes.
+
 By default the generator gives terrain only: the level has no surface, carvers, structures or
-features, every chunk has the stem's one biome, unless its stem names a
-[biome source](#biome-sources) a mod registered, and `noise_settings` means nothing to it.
+features, and its biomes come from the level stem's biome source. It does not need
+`noise_settings`. As in vanilla's `ChunkMap` for non-noise generators, any climate or erosion
+that the source samples is zero (`NoiseRouterData.none()`).
 
 `vanilla_stages` asks for vanilla's stages around the terrain, as `VanillaStages` with the fields
 `surface`, `carvers`, `structures` and `features`; it is asked once, at registration. They run in
@@ -292,16 +460,18 @@ carvers, as vanilla's noise generator runs them after its noise fill, then the s
 and the biomes' placed features. The material rule, the carvers' aquifer and the height a structure
 starts at come from the level's `noise_settings`, not from the generator's terrain, and so does its
 sea level. With any stage, `ChunkAccess`'s `min_y` and `height` are the noise settings' range and
-`set_block` writes only inside it, as vanilla's noise fill does. A world with its structures turned
-off gets none. A level whose stem names no noise settings or ones the world lacks, one that asks for
+`set_block` writes only inside it, as vanilla's noise fill does. Turning off structures for the
+world skips structure generation without changing those terrain bounds. A level whose stem names no noise settings or ones the world lacks, one that asks for
 structures in a world with no structure sets or for structures or features in one with no placed
 features, and one that asks for features the game cannot place yet, refuses to open with a message
 naming the generator and what is missing; the surface and the carvers alone need neither. A level that asks for none of them costs
 what it did before; one that asks for any runs on vanilla's generator, with the mod's terrain in
 place of the noise.
 
-A generator in an unowned namespace, an empty name, a name that is not a folder of the world (as
-for a dimension), an id registered twice and `minecraft:noise` stop the game at startup with a
+A bare name uses the registering mod's namespace; an explicit valid `namespace:path` keeps its
+namespace. An empty or malformed name, a name that is not a folder of the world (as
+for a dimension), an id registered twice and built-in chunk generators (`minecraft:noise`,
+`minecraft:flat`, `minecraft:debug`) stop the game at startup with a
 message naming the mod.
 
 A level stem naming a generator nobody registered, say after its mod was removed, is an error for
@@ -320,8 +490,9 @@ startup, and name it from a dimension's `mod_biome_source`, or from a data pack'
 {{#include ../../../examples/src/worldgen.rs:biome_source}}
 ```
 
-`possible_biomes` lists the biome ids the source places, vanilla's, a data pack's or the mod's own;
-it is asked once, at registration. `noise_biome` answers for one quart cell (a block position >> 2,
+`possible_biomes` lists the registered `BiomeKey`s the source places, vanilla's, a data pack's
+or the mod's own; it is asked once, at registration. `noise_biome` answers for one quart cell
+(a block position >> 2,
 `[x, y, z]`) of a world with `seed`, with an index into that list; an index past the end wraps
 around it. It runs on the worldgen worker threads for every 4x4x4 cell of every chunk generated, with
 no `Host`, so it is `Send + Sync`, keeps no mutable state and does not allocate. The same seed and
@@ -332,9 +503,12 @@ biomes as they read a vanilla source's, and a chunk generator of a mod's own, wh
 get its biomes cell by cell instead of one biome. The biomes are saved with the chunks, by name, as
 any other.
 
-A source in another mod's namespace, an empty name, a name that is not a folder of the world (as
-for a dimension), an id registered twice and an empty `possible_biomes` stop the game at startup
-with a message naming the mod, and so does a dimension whose `mod_biome_source` nobody registered.
+A bare name uses the registering mod's namespace; an explicit valid `namespace:path` keeps its
+namespace. An empty or malformed name, a name that is not a folder of the world (as
+for a dimension), built-in biome sources (`minecraft:fixed`, `minecraft:multi_noise`,
+`minecraft:checkerboard`, `minecraft:the_end`), an id registered twice and an empty `possible_biomes`
+stop the game at startup with a message naming the mod, and so does a dimension whose
+`mod_biome_source` nobody registered.
 The source may come from a mod that loads later. A level whose world lacks one of the possible
 biomes refuses to open, naming the source and the biome, as does a level stem naming a source that
 is gone.

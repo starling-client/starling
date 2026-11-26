@@ -301,10 +301,16 @@ impl Game<'_> {
         ui.overlay = None;
         ui.presentation = Some(presentation);
     }
+    /// A mod menu's book toggle, `[left, right]`, before the mods' room moves it; none
+    /// without a mod menu's book.
+    pub(in crate::game) fn mod_book_toggle_span(&self, batch: &HudBatch) -> Option<[f32; 2]> {
+        let (open, _) = self.mod_book_flags()?;
+        Some(self.mod_book_layout(batch.width, open)?.toggle_span())
+    }
     fn mod_book_button(&self, batch: &HudBatch) -> (f32, f32) {
         self.mod_book_layout(batch.width, self.mod_book_open())
             .map_or((0.0, 0.0), |layout| {
-                layout.shifted_toggle(self.screen_room_shift(batch))
+                layout.shifted_toggle(self.screen_room_offset(batch))
             })
     }
     pub(super) fn draw_mod_book(&mut self, batch: &mut HudBatch) -> Option<Vec<(Text, u32)>> {
@@ -389,17 +395,32 @@ impl Game<'_> {
         self.paint_book(batch, &calls)
     }
     pub(super) fn mod_book_click(&mut self, right: bool) -> bool {
-        self.native_net.placement.client.click();
-        self.recipe_ui.ghost.clear();
         self.refresh_mod_book();
         let Some((open, filtering)) = self.mod_book_flags() else {
             return false;
         };
-        self.native_net.placement.deadline = None;
         let Some(batch) = self.batch_for_size() else {
             return false;
         };
-        let (bx, by) = self.mod_book_button(&batch);
+        let cursor = self.cursor;
+        let consumed = self.mod_book_click_panel(&batch, open, filtering, right);
+        if !consumed
+            && self
+                .slot_at(&batch, cursor.0, cursor.1)
+                .is_some_and(|slot| slot >= 300)
+        {
+            self.recipe_ui.ghost.clear();
+        }
+        consumed
+    }
+    fn mod_book_click_panel(
+        &mut self,
+        batch: &HudBatch,
+        open: bool,
+        filtering: bool,
+        right: bool,
+    ) -> bool {
+        let (bx, by) = self.mod_book_button(batch);
         let cursor = self.cursor;
         if inside(cursor, bx, by, 20.0, 18.0) {
             if let Some(book) = self.native_screen_book().cloned() {
@@ -420,7 +441,7 @@ impl Game<'_> {
         if self.spectator() {
             return narrow;
         }
-        let (xo, yo) = self.book_origin(&batch);
+        let (xo, yo) = self.book_origin(batch);
         if self.consume_mod_book_overlay(right) {
             return true;
         }

@@ -15,12 +15,11 @@ import os
 from pathlib import Path
 import subprocess
 
-try:
-    from . import lab, test_rust_parity as base, test_server_knockback_parity as net
-except ImportError:
-    import lab
-    import test_rust_parity as base
-    import test_server_knockback_parity as net
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_rust_parity as base, test_server_knockback_parity as net
 
 NAME = 'item-use-order-parity'
 
@@ -43,12 +42,12 @@ def cases():
     return result
 
 
-def shown(lines):
+def shown(lines, scenarios):
     result = {}
     for line in lines:
         who, step, text = line.split(' ', 2)
         step = step.removeprefix('step=')
-        if step in net.CASES and text.startswith(('wind source', 'error', 'disconnected')):
+        if step in scenarios and text.startswith(('wind source', 'error', 'disconnected')):
             result.setdefault(step, []).append(f'{who} {text}')
     return result
 
@@ -79,18 +78,19 @@ def main():
     net.PLAYERS = ('Alice',)
     net.PROPERTIES['allow-flight'] = 'true'  # the scripted client holds its airborne position
     net.SETUP = ['cmd Alice gamerule spawn_mobs false']
-    net.CASES = cases()
+    scenarios = cases()
     world = net.generate_world(vanilla_server, build)
-    native = net.run_side('vanilla', vanilla_server, client, build, world)
-    rust = net.run_side('sunrise', sunrise_server, client, build, world)
-    expected = {case: ['Alice wind source x=0 vx=0'] for case in net.CASES}
-    assert shown(native) == expected, f'vanilla did not exercise the old source: {shown(native)}'
+    native = net.run_side('vanilla', vanilla_server, client, build, world, scenarios)
+    rust = net.run_side('sunrise', sunrise_server, client, build, world, scenarios)
+    expected = {case: ['Alice wind source x=0 vx=0'] for case in scenarios}
+    actual_native, actual_rust = shown(native, scenarios), shown(rust, scenarios)
+    assert actual_native == expected, f'vanilla did not exercise the old source: {actual_native}'
     assert any('step=gliding gliding true' in line for line in native), 'vanilla never started gliding'
     assert any('step=gliding gliding true' in line for line in rust), 'Sunrise never started gliding'
-    assert shown(rust) == expected, f'item use overtaken by a move: {shown(rust)}'
-    lab.write_json(report, dict(schema=1, minecraft=lock['minecraft']['version'], cases=len(net.CASES),
+    assert actual_rust == expected, f'item use overtaken by a move: {actual_rust}'
+    lab.write_json(report, dict(schema=1, minecraft=lock['minecraft']['version'], cases=len(scenarios),
                                scope=__doc__, output_sha256=lab.digest(build / 'sunrise.txt', 'sha256')))
-    print(f'item use order: {len(net.CASES)} cases match vanilla')
+    print(f'item use order: {len(scenarios)} cases match vanilla')
 
 
 if __name__ == '__main__':

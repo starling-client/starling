@@ -1,5 +1,4 @@
 //! The `map_decorations` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0146
 
 pub trait Hooks {
     /// Icons a mod puts on map `map` each time it is drawn: held, in an

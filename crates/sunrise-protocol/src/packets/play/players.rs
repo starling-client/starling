@@ -4,7 +4,9 @@
 use super::ChatTypeBound;
 use crate::{
     Result,
-    buf::{Byte, BytesN, Codec, List, Long, Nbt, Opt, Reader, Str, StrN, Uuid, VarInt},
+    buf::{
+        Byte, BytesN, Codec, List, Long, Opt, Reader, Str, StrN, TrustedComponent, Uuid, VarInt,
+    },
     packet,
     packets::login::PropertyCodec,
 };
@@ -37,6 +39,12 @@ impl Codec<Vec<u8>> for Signature {
     fn write(v: &Vec<u8>, w: &mut Writer) {
         w.bytes(v)
     }
+    fn validate(v: &Vec<u8>) -> Result<()> {
+        if v.len() != crate::secure_chat::SIGNATURE_BYTES {
+            return Err(crate::Error::new("invalid MessageSignature width"));
+        }
+        Ok(())
+    }
 }
 /// FilterMask: 0 pass-through, 1 fully filtered, 2 partially (with a BitSet).
 pub struct FilterMask;
@@ -68,7 +76,7 @@ packet!(PlayerChat {
     timestamp: i64 => Long,
     salt: i64 => Long,
     last_seen: Vec<(i32, Option<Vec<u8>>)> => List<PackedSignature>,
-    unsigned_content: Option<Tag> => Opt<Nbt>,
+    unsigned_content: Option<Tag> => Opt<TrustedComponent>,
     filter: (i32, Vec<i64>) => FilterMask,
     chat_type: ChatTypeBound => ChatTypeBound,
 });
@@ -132,7 +140,7 @@ impl Codec<PlayerInfoUpdate> for PlayerInfoUpdate {
                 e.latency = Some(r.varint()?);
             }
             if actions & 32 != 0 {
-                e.display_name = Some(if r.bool()? { Some(r.nbt()?) } else { None });
+                e.display_name = Some(Opt::<TrustedComponent>::read(r)?);
             }
             if actions & 64 != 0 {
                 e.list_order = Some(r.varint()?);
@@ -223,6 +231,18 @@ impl Codec<Vec<(String, Vec<u8>)>> for ArgumentSignatures {
             w.string(name);
             w.bytes(signature);
         }
+    }
+    fn validate(v: &Vec<(String, Vec<u8>)>) -> Result<()> {
+        // ArgumentSignatures.STREAM_CODEC is a ByteBufCodecs.list(8),
+        // with Entry.STREAM_CODEC using stringUtf8(16) and MessageSignature.
+        if v.len() > 8 {
+            return Err(crate::Error::new("more than 8 signed command arguments"));
+        }
+        for (name, signature) in v {
+            StrN::<16>::validate(name)?;
+            Signature::validate(signature)?;
+        }
+        Ok(())
     }
 }
 packet!(ChatCommandSigned {

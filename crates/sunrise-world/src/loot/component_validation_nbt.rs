@@ -100,7 +100,11 @@ pub fn validate_loot_condition_tag(value: &Tag) -> Result<(), String> {
             entity(field(predicate, "direct_entity"))?;
             entity(field(predicate, "source_entity"))
         }
-        "location_check" => validate_item_predicate_tag(field(field(value, "predicate"), "block")),
+        "location_check" => {
+            super::location_offset_tag(value)?;
+            validate_item_predicate_tag(field(field(value, "predicate"), "block"))
+        }
+        "match_block" => validate_item_predicate_tag(value),
         "random_chance" => super::number_validation::number_tag(field(value, "chance")),
         "int_value_check" | "float_value_check" => {
             super::number_validation::number_tag(field(value, "value"))?;

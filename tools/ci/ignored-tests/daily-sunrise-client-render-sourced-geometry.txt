@@ -1,0 +1,4 @@
+sunrise-client-render gfx::sourced_geometry::gpu::tests::near_and_far_water_keep_their_order_through_the_split lib daily gpu
+sunrise-client-render gfx::sourced_geometry::gpu::tests::the_gpu_path_draws_the_cpu_paths_image lib daily gpu
+sunrise-client-render gfx::sourced_geometry::gpu::tests::the_residency_draws_the_cpu_paths_image lib daily gpu
+sunrise-client-render gfx::sourced_geometry::gpu::tests::the_water_keeps_its_place_when_the_table_comes_late lib daily gpu

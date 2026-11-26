@@ -155,7 +155,7 @@ fn check_layers(kind: &str, replace_allowed: bool, malformed_jar: bool) {
         &[],
         &[],
     );
-    let collected = crate::game::functions::overlay_files(&stack, Vec::new());
+    let collected = crate::game::functions::overlay_files(&stack.data_packs(Vec::new()));
     let files = &collected.files;
     let layers = &collected.priority_layers;
     assert_eq!(

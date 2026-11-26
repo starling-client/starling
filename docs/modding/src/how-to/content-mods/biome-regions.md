@@ -12,9 +12,10 @@ In `register`, call `declare_biome_region(path, region)` once per region. This m
 {{#include ../../../examples/src/biome_regions.rs:regions}}
 ```
 
-- **`path`** is the region's id in the mod's namespace: `frostlands` becomes `<your mod id>:frostlands`.
+- **`path`** is the region's id: a bare path uses the declaring mod's namespace (`frostlands` becomes
+  `<your mod id>:frostlands`), while an explicit valid `namespace:path` keeps its namespace.
 - **`dimension`** is `minecraft:overworld` or `minecraft:nether`.
-- **`weight`** is 1 to 1000, against vanilla's 10. A weight of 5 makes the region about half as common as vanilla's
+- **`weight`** is 1 to `i32::MAX`, against vanilla's 10. A weight of 5 makes the region about half as common as vanilla's
   layout; with two mods at 1 and 3 and vanilla at 10, they own about 1/14 and 3/14 of the areas.
 - **`points`** are the region's biomes by climate, the same `BiomePoint`s as a mod dimension's `Points` source
   ([dimension shape](../world/dimension-shape.md)). The point nearest to the climate at a position wins, among
@@ -26,7 +27,7 @@ whatever region owns it: give oceans an ocean biome (low continentalness, here `
 under water. Areas are about 512 blocks wide, and a region border changes the surface blocks and carvers, not the
 height of the ground.
 
-A malformed or repeated id, an id outside the mod's namespace, another dimension, a weight outside 1 to 1000, no
+A malformed or repeated id, another dimension, a weight outside 1 to `i32::MAX`, no
 points, or a point with no biome, an interval outside -2 to 2 or the wrong way round, or an offset outside 0 to 1 is
 refused. The call returns the `BiomeRegionError`, and the mods stop at startup with a message naming the mod.
 

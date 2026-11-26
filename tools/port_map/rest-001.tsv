@@ -87,14 +87,14 @@ Advancement.Builder.display	skip:data		datagen builder; Sunrise reads advancemen
 Advancement.Builder.rewards	skip:data		datagen builder; Sunrise reads advancement JSON
 Advancement.Builder.requirements	skip:data		datagen builder; Sunrise reads advancement JSON
 AdvancementHolder.equals	skip:java		Java equality by id
-AdvancementNode.getRoot	skip:other		no upward root walk: Sunrise walks down from each root (Tree::visible, Tree::layout, advancements_screen tabs)
+AdvancementNode.getRoot	inline	crates/sunrise-client/src/game/interface/advancements/mod.rs::RemoteTree::widget_links	resolves each packet node's insertion-time root before mapping to its current tab ID
 AdvancementNode.equals	skip:java		Java equality by holder
 AdvancementProgress.hasProgress	inline	crates/sunrise-client/src/advancements.rs::Progress::to_json	the save keeps only advancements with a criterion obtained (empty entries are skipped)
 AdvancementProgress.grantProgress	port	crates/sunrise-client/src/advancements.rs::Progress::grant	records the criterion date; false when already obtained
 AdvancementProgress.revokeProgress	port	crates/sunrise-client/src/advancements.rs::Progress::revoke	removes the criterion; false when not obtained
 AdvancementProgress.isCriterionDone	port	crates/sunrise-client/src/advancements.rs::Progress::has	criterion obtained
-AdvancementProgress.getPercent	port	crates/sunrise-client/src/game/interface/advancements_screen.rs::Game::adv_draw_hover	obtained over total requirement groups, drives the progress bar and icon frame
-AdvancementProgress.getProgressText	port	crates/sunrise-client/src/game/interface/advancements_screen.rs::Game::adv_draw_hover	advancements.progress text, only when there are more than one group
+AdvancementProgress.getPercent	port	crates/sunrise-client/src/game/interface/advancements_screen.rs::Game::adv_draw_hover	obtained over total groups; packet widgets use the requirements received with their progress
+AdvancementProgress.getProgressText	port	crates/sunrise-client/src/game/interface/advancements_screen.rs::Game::adv_draw_hover	advancements.progress text, only when the progress has criteria and more than one group
 AdvancementProgress.getRemainingCriteria	missing		minor: /advancement test is not implemented; cmd_advancement only grants and revokes
 AdvancementProgress.getCompletedCriteria	missing		minor: /advancement test is not implemented; cmd_advancement only grants and revokes
 AdvancementProgress.getFirstProgressDate	skip:java		used only by compareTo, which has no caller
@@ -106,8 +106,9 @@ AdvancementRequirements.validate	missing		minor: shipped advancement requirement
 AdvancementRequirements.names	skip:java		builds a name set to pre-create progress entries; Sunrise creates them on grant
 AdvancementRewards.grant	port	crates/sunrise-client/src/game/interface/advancements/mod.rs::Game::award	function reward wired through run_advancement_reward_function; existing XP/recipe/loot paths retained, loot-context gap H292 remains
 AdvancementRewards.Builder.build	skip:data		datagen builder; rewards come from advancement JSON
-AdvancementTree.remove	inline	crates/sunrise-client/src/game/interface/advancements/mod.rs::Game::remote_advancements	gap: minor: removes the ids the server lists; children are not walked here
-AdvancementTree.tryInsert	inline	crates/sunrise-client/src/advancements.rs::Tree::children	the pass that inserts an advancement once its parent is in
+AdvancementTree.remove	inline	crates/sunrise-client/src/game/interface/advancements/mod.rs::Game::update_remote_advancement_tree	walks insertion-time child links, removing each visited ID without erasing client progress
+AdvancementTree.addAll	inline	crates/sunrise-client/src/game/interface/advancements/mod.rs::Game::update_remote_advancement_tree	retries out-of-order additions while their parents can be admitted; unresolved nodes stay out of the tree
+AdvancementTree.tryInsert	inline	crates/sunrise-client/src/game/interface/advancements/mod.rs::Game::update_remote_advancement_tree	admits a node when its parent is present or absent by definition; replacing an ID keeps the older node's links
 AdvancementTree.get	port	crates/sunrise-client/src/advancements.rs::Tree::get	lookup by id
 AdvancementType.createAnnouncement	inline	crates/sunrise-client/src/game/interface/advancements/mod.rs::Game::award	the chat line is built in award from the frame's key
 DisplayInfo.serializeToNetwork	port	crates/sunrise-client/src/lan/advancements.rs::ServerAdvancements::write_advancement	writes title, description, icon, frame, flags and background

@@ -194,6 +194,55 @@ impl Game<'_> {
         Some(stack)
     }
 
+    /// `BlockState.getCloneItemStack` at `pos` as the server answers the acting player: the
+    /// block's own stack, or a block Part's `clone_item_stack` answer in its place. With no
+    /// player acting, no Part is asked.
+    pub(super) fn acting_clone_stack(
+        &self,
+        pos: [i32; 3],
+        include_data: bool,
+    ) -> Option<ItemStack> {
+        let stack = self.clone_stack(pos, include_data);
+        let Some(player) = self.native_acting_player() else {
+            return stack;
+        };
+        let state = self.world.block(pos[0], pos[1], pos[2]);
+        let mut replacement = None;
+        self.native_clone_item_stack(
+            self.dim.level(),
+            sunrise_core::position::BlockPos::new(pos[0], pos[1], pos[2]),
+            state,
+            include_data,
+            player,
+            &mut replacement,
+        );
+        replacement.or(stack)
+    }
+
+    /// `PlayerRef::clone_item_stack`: [`Self::acting_clone_stack`] with `player` acting, in
+    /// the level in place. None on a client, for a stale or dead player, another level and an
+    /// unloaded position.
+    pub(super) fn player_clone_item_stack(
+        &mut self,
+        player: mod_api::PlayerRef,
+        level: mod_api::LevelRef,
+        pos: [i32; 3],
+        include_data: bool,
+    ) -> Option<ItemStack> {
+        if !self.is_logical_server()
+            || self.native_level_read_world(level).is_none()
+            || level.dimension() != self.dim.key()
+            || !self.world.is_loaded_at(pos[0], pos[1], pos[2])
+        {
+            return None;
+        }
+        let mut answer = None;
+        self.native_as_player_handle(player, |game| {
+            answer = game.acting_clone_stack(pos, include_data);
+        });
+        answer
+    }
+
     /// `ServerGamePacketListenerImpl.addBlockDataToItem`: the block entity at
     /// `pos`, if any, onto `stack` (`BlockItem.setBlockEntityData`, then
     /// `ItemStack.applyComponents(collectComponents())`).
@@ -292,7 +341,7 @@ impl Game<'_> {
             Some(BlockEntity::Mod(_))
         );
         if !mod_entity
-            && (include_data || banner || pot || statue)
+            && (banner || pot || statue)
             && let Some(saved) = self.saved_block_entity(key, false)
         {
             let mut picked = block_entity_item::pick(&saved);
@@ -746,6 +795,115 @@ mod tests {
             assert_eq!(picked(2).as_deref(), Some("minecraft:diamond"));
             assert_eq!(picked(3).as_deref(), Some("pick_test:plain"));
             assert_eq!(picked(4), None);
+        });
+    }
+
+    /// A player's pick-block read gives what a pick takes: the block's own item (a crop's
+    /// seed), a block Part's answer in its place, and nothing for air, an unloaded position
+    /// or a player who is not here.
+    #[test]
+    #[ignore = "daily"]
+    fn the_clone_item_stack_read_gives_the_pick_answer() {
+        use crate::game::native_entity_refs::tests::run_fresh_cases;
+        use crate::game::native_guest_turn_tests::with_guests;
+        use mod_api::{BlockPart, CloneItemStackEvent, Hooks, Host, ItemStack, Registrar};
+        use std::sync::Arc;
+        use sunrise_client::chunk::Chunk;
+
+        if run_fresh_cases(
+            "game::block_items::tests::the_clone_item_stack_read_gives_the_pick_answer",
+            "SUNRISE_CLONE_STACK_READ_CHILD",
+            &["read"],
+        ) {
+            return;
+        }
+        /// Stone picks as a diamond, except with its data.
+        struct Diamond;
+        #[mod_api::sunrise_part]
+        impl BlockPart for Diamond {
+            fn clone_item_stack(
+                &self,
+                _: &dyn Host,
+                event: &mut CloneItemStackEvent<'_>,
+            ) -> Option<ItemStack> {
+                (!event.include_data).then(|| {
+                    ItemStack::new(
+                        mod_api::__private::item_key("minecraft:diamond").unwrap(),
+                        1,
+                    )
+                    .unwrap()
+                })
+            }
+        }
+        struct Mod;
+        #[mod_api::__subscriptions]
+        impl Hooks for Mod {
+            fn register(&self, r: &mut dyn Registrar, _: &mod_api::RegistrationContext) {
+                let stone = r.block_key("minecraft:stone");
+                r.block_part(stone, Diamond);
+            }
+        }
+        let mods: mod_api::Mods = vec![mod_api::ModEntry::new("picker", Box::new(Mod))].into();
+        crate::game::api_values::install_parts(&mods).unwrap();
+        mod_platform::testing::with_mods(mods, || {
+            with_guests(|game| {
+                game.world
+                    .chunks
+                    .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+                let state = |name| game.pack.assets.registry.default_state(name).unwrap();
+                game.world.set(0, 64, 0, state("minecraft:wheat")).unwrap();
+                game.world.set(1, 64, 0, state("minecraft:stone")).unwrap();
+                game.world.set(3, 64, 0, state("minecraft:chest")).unwrap();
+                let player = game.player(12).unwrap();
+                let level = player.level(&*game).unwrap();
+                let pick = |game: &mut crate::game::Game<'_>,
+                            player: mod_api::PlayerRef,
+                            pos: [i32; 3],
+                            include_data: bool| {
+                    let stack = player.clone_item_stack(game, level, pos, include_data)?;
+                    let item = mod_api::__private::item_key_id(stack.item()).unwrap();
+                    Some((item.to_owned(), stack.count()))
+                };
+                let item = |id: &str| Some((id.to_owned(), 1));
+                assert_eq!(
+                    pick(game, player, [0, 64, 0], false),
+                    item("minecraft:wheat_seeds")
+                );
+                assert_eq!(
+                    pick(game, player, [1, 64, 0], false),
+                    item("minecraft:diamond")
+                );
+                assert_eq!(
+                    pick(game, player, [1, 64, 0], true),
+                    item("minecraft:stone")
+                );
+                // A chest's items and name stay off the read's stack with data:
+                // addBlockDataToItem comes after getCloneItemStack.
+                let mut items = vec![None; 27];
+                items[0] = Some(sunrise_client::items::ItemStack::new("minecraft:stone", 5));
+                game.world.block_entities.insert(
+                    (3, 64, 0),
+                    sunrise_client::containers::BlockEntity::Chest(items),
+                );
+                game.world
+                    .block_names
+                    .insert((3, 64, 0), sunrise_core::nbt::Tag::String("Loot".into()));
+                let chest = player
+                    .clone_item_stack(game, level, [3, 64, 0], true)
+                    .unwrap();
+                assert_eq!(
+                    mod_api::__private::item_key_id(chest.item()),
+                    Some("minecraft:chest")
+                );
+                assert!(chest.components().is_none(), "no block data");
+                assert_eq!(pick(game, player, [2, 64, 0], false), None, "air");
+                assert_eq!(pick(game, player, [4000, 64, 0], false), None, "unloaded");
+                let gone = mod_api::__private::game::player_ref(
+                    mod_api::EntityRef::new(player.entity().epoch(), player.entity().id() + 100),
+                    player.uuid(),
+                );
+                assert_eq!(pick(game, gone, [0, 64, 0], false), None, "stale");
+            });
         });
     }
 }

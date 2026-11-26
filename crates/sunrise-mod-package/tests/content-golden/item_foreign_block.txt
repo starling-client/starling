@@ -1,0 +1,71 @@
+manifest:
+Manifest {
+    id: "item_foreign_block",
+    name: "Item foreign block",
+    version: Version {
+        major: 1,
+        minor: 2,
+        patch: 3,
+    },
+    description: "",
+    authors: [],
+    license: "",
+    license_url: None,
+    credits: "",
+    homepage: None,
+    issues: None,
+    api: "0.2",
+    side: Client,
+    capabilities: [
+        Registries,
+    ],
+    namespaces: [],
+    served_by: None,
+    dependencies: {},
+    incompatible: {},
+    discouraged: {},
+    load_before: [],
+    jar: [],
+    native: None,
+    runtime: None,
+    internals: [],
+    properties: {},
+}
+
+icon:
+None
+
+content:
+Content {
+    source: Dir(
+        "tests/content-corpus/item_foreign_block",
+    ),
+    files: [
+        "data/item_foreign_block/sunrise/item/sample.json",
+    ],
+    blocks: [],
+    items: [
+        Item {
+            id: "item_foreign_block:sample",
+            template: "minecraft:stick",
+            max_stack_size: None,
+            rarity: None,
+            components: {},
+            crafting_remainder: None,
+            block: Some(
+                "other_mod:stone",
+            ),
+            arm_pose: None,
+        },
+    ],
+    effects: [],
+    creative_tabs: [],
+    fluids: [],
+    fluid_interactions: [],
+    entity_types: [],
+    block_entity_types: [],
+    menu_types: [],
+    namespaces: [
+        "item_foreign_block",
+    ],
+}

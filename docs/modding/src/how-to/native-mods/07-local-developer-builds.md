@@ -48,18 +48,18 @@ cd greeter
 cargo sunrise-mod check
 cargo sunrise-mod hooks player_logged_in
 cargo sunrise-mod build
-cargo sunrise-mod fits
-cargo sunrise-mod update --sunrise "$commit"
+cargo sunrise-mod check --build "$commit"
+cargo sunrise-mod pin "$commit"
 cargo sunrise-mod check
 cargo check
 ```
 
 `new` pins the mod to the commit and unpacks the SDK's API source into `.sunrise/sdk/api`. The
 generated `Cargo.toml` points there, so plain `cargo check` and your editor can use it without linking
-the game. In a fresh clone or after `update`, run `cargo sunrise-mod check` to fetch the pinned source
+the game. In a fresh clone or after `pin`, run `cargo sunrise-mod check` to fetch the pinned source
 again. `build` links against the compiled SDK and writes the `.smod` under `target/sunrise-mod/`.
 
-Here `fits` and `update` check the mod's existing pin. To compare two builds, their SDKs must be
+Here `check --build` and `pin` name the same build the mod already pins. To compare two builds, their SDKs must be
 available from the same `SUNRISE_SDK_BASE`. Each invocation uses one base and trusts at most one
 extra key. This recipe makes a separate base and key for each local SDK, so it cannot compare two
 independently built local SDKs as they are.

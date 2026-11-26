@@ -1,0 +1,4 @@
+sunrise-client-render gfx::mod_pipelines::tests::custom_blend_invert_produces_exact_inverted_pixels lib daily gpu
+sunrise-client-render gfx::mod_pipelines::tests::depth_bias_lifts_coplanar_quad_over_wall_and_strict_greater_rejects_without_bias lib daily gpu
+sunrise-client-render gfx::mod_pipelines::tests::depthless_triangles_and_debug_lines_draw_expected_pixels lib daily gpu
+sunrise-client-render gfx::mod_pipelines::tests::strip_pipeline_with_quads_modifier_draws_on_a_shader_pack_target lib daily gpu

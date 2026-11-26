@@ -6,7 +6,6 @@ last `--work-dir` wins, so an extra pair appended after `--work-dir=/tmp/x`
 would send the run somewhere the caller did not ask for.
 """
 import contextlib
-import importlib.util
 import io
 import json
 import runpy
@@ -17,10 +16,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-TOOLS = Path(__file__).resolve().parents[1] / 'tools'
-_spec = importlib.util.spec_from_file_location('harness_args', TOOLS / 'harness_args.py')
-harness_args = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(harness_args)
+import tools
+from tools import harness_args
+
+TOOLS = Path(tools.__path__[0])
 
 DEFAULT = Path('/scratch/default')
 
@@ -64,7 +63,7 @@ class FreshCaptureHarnessTest(unittest.TestCase):
                 legacy.write_bytes(b'earlier oracle evidence\n')
                 captures = []
                 mismatch = []
-                driver = types.ModuleType('test_command_exec_parity')
+                driver = types.ModuleType('tools.test_command_exec_parity')
                 driver.corpus_module = types.SimpleNamespace()
 
                 def capture():
@@ -79,8 +78,9 @@ class FreshCaptureHarnessTest(unittest.TestCase):
                 driver.main = capture
                 script = TOOLS / f'test_{name}_parity.py'
                 explicit = Path('chosen capture').resolve()
-                with mock.patch.dict(sys.modules, {'harness_args': harness_args,
-                                                  'test_command_exec_parity': driver}), \
+                # The scripts import the driver as tools.test_command_exec_parity: the package attribute is what
+                # `from tools import ...` reads.
+                with mock.patch.object(tools, 'test_command_exec_parity', driver, create=True), \
                         mock.patch.object(sys, 'path', sys.path.copy()), \
                         contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                     for extra in [[], [], [f'--work-dir={explicit}']]:

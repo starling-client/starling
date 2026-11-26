@@ -1,5 +1,5 @@
 use super::*;
-use sunrise_world::native_load_context::DataLoadOrigin;
+use sunrise_world::native_load_context::SettingsCapture;
 
 type SettingsSnapshot = Arc<[(String, Arc<[(String, String)]>)]>;
 
@@ -36,48 +36,68 @@ impl From<ExecutionRole> for LoadRole {
 }
 
 impl OwningLoad {
-    fn context(
+    /// The settings one load captures: the startup load keeps registration's publication and
+    /// reads only the registered keys it lacks, a later load reads the files again.
+    fn capture(
         self,
-        origin: DataLoadOrigin,
-        inputs: Arc<LoadInputs>,
+        settings_root: &Path,
         ids: &[&str],
+        registered: &[(&str, &str)],
         registration: Option<SettingsSnapshot>,
-    ) -> LoadContext {
+    ) -> SettingsCapture {
         if let Self::Startup = self
             && let Some(settings) = registration
         {
-            return LoadContext::from_settings_snapshot(
-                origin,
-                inputs,
+            return SettingsCapture::from_registration(
+                settings_root,
                 ids.iter().copied(),
                 settings,
+                registered.iter().copied(),
             );
         }
-        LoadContext::new(origin, inputs, ids.iter().copied())
+        SettingsCapture::new(
+            settings_root,
+            ids.iter().copied(),
+            registered.iter().copied(),
+        )
     }
 }
 
-/// Capture load inputs at the resource-generation boundary, before workers share them.
-pub(in super::super) fn load_item_data(
+/// Capture a load's settings at the resource-generation boundary, once, before anything that
+/// reads them is built: the reload listeners registered for the generation and its item data
+/// are given this one capture (`load_item_data`), so none of them reads a file the others
+/// did not.
+pub(in super::super) fn capture_load_settings(
     root: &Path,
     role: ExecutionRole,
     owning_load: OwningLoad,
-) -> sunrise_client::Result<ItemData> {
-    let _ = role;
-    let inputs = LoadInputs::new(builtin_registry_names(root)?, Game::mod_data_root());
+) -> sunrise_client::Result<SettingsCapture> {
     let inventory = sunrise_mod_package::enabled::EnabledMods::read(root)?;
+    // EnabledMods yields ids in sorted order. Keep this generation scoped to its side.
     let ids: Vec<_> = if role.is_logical_server() {
         inventory.server_ids().collect()
     } else {
         inventory.client_ids().collect()
     };
-    let context = owning_load.context(
-        role.data_load_origin(),
-        Arc::new(inputs),
+    let registered: Vec<_> = crate::game::native_hooks::mod_settings::registered_setting_keys()
+        .filter(|(owner, _)| ids.binary_search(owner).is_ok())
+        .collect();
+    Ok(owning_load.capture(
+        &Game::mod_data_root(),
         &ids,
+        &registered,
         mod_api::__private::RegistrationData::initial_settings_snapshot(),
-    );
+    ))
+}
 
+/// Load the item data over a settings capture taken at the generation boundary.
+pub(in super::super) fn load_item_data(
+    root: &Path,
+    role: ExecutionRole,
+    capture: SettingsCapture,
+) -> sunrise_client::Result<ItemData> {
+    let inputs = LoadInputs::new(builtin_registry_names(root)?, Game::mod_data_root());
+    let context = LoadContext::with_capture(role.data_load_origin(), Arc::new(inputs), capture);
     Ok(ItemData::load(root, context)?)
 }
 
@@ -91,47 +111,41 @@ mod tests {
         let reader = directory.path().join("reader");
         std::fs::create_dir(&reader).unwrap();
         std::fs::write(reader.join("count"), "3").unwrap();
-        let inputs = Arc::new(LoadInputs::new(BTreeMap::new(), directory.path().into()));
         let settings: SettingsSnapshot =
             sunrise_world::native_load_context::capture_settings(directory.path(), ["reader"])
                 .into_iter()
                 .map(|(id, values)| (id, values.into_iter().collect()))
                 .collect();
-        let make = |role: OwningLoad| {
-            role.context(
-                DataLoadOrigin::ServerDataLoad,
-                inputs.clone(),
-                &["reader"],
-                Some(settings.clone()),
-            )
+        let make = |role: OwningLoad, ids: &[&str], registration: Option<SettingsSnapshot>| {
+            role.capture(directory.path(), ids, &[], registration)
         };
         assert_eq!(
-            make(OwningLoad::Startup).setting("reader", "count"),
+            make(OwningLoad::Startup, &["reader"], Some(settings.clone()))
+                .setting("reader", "count"),
             Some("3")
         );
         std::fs::write(reader.join("count"), "7").unwrap();
         assert_eq!(
-            make(OwningLoad::Later).setting("reader", "count"),
+            make(OwningLoad::Later, &["reader"], Some(settings.clone())).setting("reader", "count"),
             Some("7")
         );
         // Another initial consumer still has the registration publication.
         assert_eq!(
-            make(OwningLoad::Startup).setting("reader", "count"),
+            make(OwningLoad::Startup, &["reader"], Some(settings.clone()))
+                .setting("reader", "count"),
             Some("3")
         );
-        assert_eq!(make(OwningLoad::Later).setting("reader", "absent"), None);
+        assert_eq!(
+            make(OwningLoad::Later, &["reader"], Some(settings.clone()))
+                .setting("reader", "absent"),
+            None
+        );
         for role in [OwningLoad::Startup, OwningLoad::Later] {
-            let context = role.context(
-                DataLoadOrigin::ClientPreload,
-                inputs.clone(),
-                &["silent"],
-                Some(settings.clone()),
-            );
-            assert_eq!(context.setting("silent", "count"), None);
-            assert_eq!(context.registry("minecraft:item"), None);
+            let capture = make(role, &["silent"], Some(settings.clone()));
+            assert_eq!(capture.setting("silent", "count"), None);
+            assert_eq!(capture.setting("reader", "count"), None);
         }
-        let fallback =
-            OwningLoad::Startup.context(DataLoadOrigin::ClientPreload, inputs, &["reader"], None);
+        let fallback = make(OwningLoad::Startup, &["reader"], None);
         assert_eq!(fallback.setting("reader", "count"), Some("7"));
     }
 }

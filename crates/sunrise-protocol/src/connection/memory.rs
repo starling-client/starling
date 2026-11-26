@@ -89,6 +89,10 @@ impl Pipe {
             incoming.notify();
         }
     }
+    pub(super) fn is_closed(&self) -> bool {
+        self.end.incoming.state.lock().unwrap().1
+    }
+
     /// Close both directions: reads at either end then see the end of the stream.
     pub fn shutdown(&self) {
         self.end.incoming.close();

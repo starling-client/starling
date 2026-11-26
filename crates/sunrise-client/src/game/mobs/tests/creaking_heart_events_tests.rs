@@ -173,6 +173,8 @@ fn shearing_a_copper_golem_posts_shear_at_the_golem() {
         let p = game.mobs[index].position;
         [p.x, p.y, p.z]
     };
+    game.inventory[game.selected] =
+        Some(sunrise_client::items::ItemStack::new("minecraft:shears", 1));
     let events = posted(&mut game, |g| {
         assert!(g.interact_copper_golem(index, "minecraft:shears"));
     });

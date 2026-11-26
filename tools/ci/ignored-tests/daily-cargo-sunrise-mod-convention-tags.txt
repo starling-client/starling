@@ -1,0 +1,1 @@
+cargo-sunrise-mod two_separately_built_native_mods_interoperate_through_c_convention_tags test:convention_tags daily own-sdk # Builds two independent native mods and starts the daily head's game; book-quickstart.yml supplies its SDK and server profile.

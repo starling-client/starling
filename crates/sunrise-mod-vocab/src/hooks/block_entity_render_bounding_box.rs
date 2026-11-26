@@ -1,5 +1,4 @@
 //! The `block_entity_render_bounding_box` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0081
 
 pub trait Hooks {
     /// Where the mod block entity at `pos` draws, for culling
@@ -9,11 +8,13 @@ pub trait Hooks {
     /// `block_entity_submit` draws further (a tall shaft, a beam), or
     /// set an infinite value for one never culled. Asked once a frame for each
     /// within its view distance (`block_entity_view_distance`) whose chunk is drawn.
+    /// `entity` borrows the same resident data as `block_entity_submit`.
     #[hook(
         target = "sunrise_client::game::native_hooks::base::Game<'_>::native_block_entity_render_bounding_box",
         receiver = "read",
         dispatch = "flat",
         side = "client",
+        version = 2,
         contract = "collect",
         out = "bounds",
         scope = "block_entity",
@@ -24,7 +25,7 @@ pub trait Hooks {
         pos: [i32; 3],
         block: &str,
         state: BlockState,
-        entity: &ModBlockEntity,
+        entity: BlockEntityDataView<'_>,
         bounds: &mut [f32; 6],
     );
 }

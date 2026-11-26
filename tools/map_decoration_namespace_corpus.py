@@ -1,5 +1,10 @@
 """Map decoration resource IDs through the live item component codec, without MapData."""
-from command_exec_corpus import cmd
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools.command_exec_corpus import cmd
 
 
 def map_decoration_namespaces(empty_diagnostic=False):

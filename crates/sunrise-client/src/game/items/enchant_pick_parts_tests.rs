@@ -66,7 +66,8 @@ impl ItemPart for Part {
             let tags = host.tags();
             let swords = tags
                 .key(&mod_api::Identifier::parse("minecraft:swords").unwrap())
-                .unwrap();
+                .unwrap()
+                .typed();
             let answer = tags.is_in_tag(sword, swords);
             seen.lock().unwrap().push(answer);
             let enabled = self

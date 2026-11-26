@@ -50,21 +50,27 @@ pub fn register(m: &mut Mob) {
 struct FollowWhenStanding(FollowParent);
 impl Goal for FollowWhenStanding {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         self.0.flags()
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         !refuse_to_move(m) && self.0.can_use(m, cx)
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         self.0.can_continue(m, cx)
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.start(m, cx);
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.stop(m, cx);
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.tick(m, cx);
     }
@@ -357,22 +363,27 @@ fn sound(m: &Mob, name: &'static str, events: &mut Vec<MobEvent>) {
 struct CamelPanic(Panic);
 impl Goal for CamelPanic {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         self.0.flags()
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         // CamelHusk.isMobControlled: not with a mob on its back either.
         m.rider.is_none()
             && !(m.species() == super::Species::CamelHusk && m.extra.rider.is_some())
             && self.0.can_use(m, cx)
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         self.0.can_continue(m, cx)
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         stand_up_instantly(m);
         self.0.start(m, cx);
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.stop(m, cx);
     }
@@ -382,9 +393,11 @@ impl Goal for CamelPanic {
 struct RandomSitting;
 impl Goal for RandomSitting {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         // `CamelAi.RandomSitting` checkExtraStartConditions: not leashed, no
         // controlling passenger (a driver on a saddled camel, or a mob on its
@@ -400,9 +413,11 @@ impl Goal for RandomSitting {
             && can_change_pose(m, cx.w)
             && m.random.next_int_bound(4).unwrap_or(1) == 0
     }
+    #[inline]
     fn can_continue(&mut self, _m: &mut Mob, _cx: &mut Cx) -> bool {
         false
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         if sitting(m) {
             stand_up(m, cx.events);
@@ -643,6 +658,7 @@ mod tests {
     fn camel() -> Mob {
         let model = Arc::new(Part::parse("root", &json!({"children": {"head": {}}})));
         let kind = Arc::new(MobType {
+            type_key: Default::default(),
             shadow: None,
             id: "minecraft:camel".into(),
             species: Species::Camel,

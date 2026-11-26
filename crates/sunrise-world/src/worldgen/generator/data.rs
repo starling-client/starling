@@ -5,10 +5,70 @@ pub(in crate::worldgen) struct FeatureResources {
     pub(in crate::worldgen) features: BTreeMap<String, String>,
     pub(in crate::worldgen) placed: BTreeMap<String, String>,
     pub(in crate::worldgen) feature_tags: BTreeMap<String, String>,
+    pub(in crate::worldgen) placed_tags: TagDefinitions,
     pub(in crate::worldgen) fluid_tags: BTreeMap<String, Vec<String>>,
     pub(in crate::worldgen) state_providers: BTreeMap<String, String>,
     /// Block properties, support, collision and survival for placement checks.
     pub(in crate::worldgen) blocks: Option<super::super::generator_blocks::BlockBehavior>,
+}
+
+/// Registry inputs for the same feature codecs at biome admission and during generation.
+pub(in crate::worldgen) struct FeatureCodecContext<'a> {
+    pub registry: &'static BlockRegistry,
+    pub integers: &'a BTreeSet<(String, String)>,
+    pub block_tags: &'a BTreeMap<String, Vec<String>>,
+    pub fluid_tags: &'a BTreeMap<String, Vec<String>>,
+    pub biome_ids: &'a BTreeMap<String, BiomeId>,
+    pub biome_tags: &'a BTreeMap<String, Vec<String>>,
+    pub structures: Option<&'a Arc<super::super::structure::StructureResources>>,
+    pub blocks: Option<&'a super::super::generator_blocks::BlockBehavior>,
+    pub state_providers: &'a BTreeMap<String, String>,
+}
+
+impl FeatureCodecContext<'_> {
+    pub fn bind(
+        self,
+        base: super::super::block_feature::FeatureBlockBindings<'static>,
+    ) -> Result<super::super::block_feature::FeatureBlockBindings<'static>, DecodeError> {
+        use super::super::{
+            biome_predicate::BiomePredicateBindings,
+            state_provider::{StateProviderBindings, StateProviderCatalog},
+        };
+        use crate::block_placement::BlockPlacementBindings;
+        let biomes = Arc::new(BiomePredicateBindings::new(
+            self.biome_ids,
+            self.biome_tags,
+        )?);
+        let mut bindings = base
+            .with_fluid_tags(self.fluid_tags)?
+            .with_biomes(biomes.clone());
+        if let Some(structures) = self.structures {
+            bindings = bindings.with_structures(structures.clone());
+        }
+        if let Some(blocks) = self.blocks {
+            bindings = bindings
+                .with_block_properties(&blocks.properties)?
+                .with_state_providers(
+                    StateProviderBindings::new(
+                        self.registry,
+                        self.integers.clone(),
+                        self.block_tags,
+                    )?
+                    .with_block_properties(&blocks.properties)?
+                    .with_fluid_tags(self.fluid_tags)?
+                    .with_biomes(biomes),
+                    StateProviderCatalog::from_resources(self.state_providers)?,
+                    BlockPlacementBindings::new(
+                        self.registry,
+                        &blocks.properties,
+                        &blocks.double_plants,
+                        &blocks.mossy_carpets,
+                    )
+                    .map_err(|error| DecodeError::Registry(error.to_string()))?,
+                )?;
+        }
+        Ok(bindings)
+    }
 }
 
 /// Raw structure, structure-set and template-pool resources.
@@ -45,10 +105,13 @@ pub struct GeneratorData {
     pub(super) conditions: MaterialConditionRegistry,
     pub(super) source_catalog: BiomeSourceCatalog,
     pub(super) biome_names: Vec<Arc<str>>,
+    /// The validated registry key at each resolver slot, in the same order as `biome_names`.
+    pub(super) biome_keys: Vec<mod_api::BiomeKey>,
     pub(super) biome_ids: BTreeMap<String, BiomeId>,
     pub(super) biome_json: Vec<String>,
     pub(super) temperatures: Vec<BiomeTemperatureSettings>,
     pub(super) biome_carvers: Vec<Vec<Arc<WorldCarver>>>,
+    admitted_biomes: Option<super::super::biome::AdmittedBiomeGeneration>,
     carvers: CarverCatalog,
     accepted_registries: OnceLock<RegistryCache>,
     decoded_structures: OnceLock<Option<super::super::structure::start::StructureRegistry>>,
@@ -112,12 +175,94 @@ fn read_optional_bundle(
         Ok(None)
     }
 }
+
+/// A registry can have pack entries without a corresponding prepared bundle.
+pub(in crate::worldgen) fn read_registry_bundle(
+    dir: &Path,
+    overrides: &WorldgenOverrides,
+    name: &str,
+) -> Result<Option<Bundle>, GeneratorError> {
+    let prepared = read_optional_bundle(dir, overrides, name)?;
+    Ok(prepared.or_else(|| {
+        overrides.entries(name).next()?;
+        Some(overrides.apply(name, BTreeMap::new()))
+    }))
+}
+
+/// A registry's tags are independent of its element bundle. Bind them only
+/// against actual holders, after applying the pack layers in priority order.
+pub(in crate::worldgen) fn registry_tag_definitions(
+    dir: &Path,
+    overrides: &WorldgenOverrides,
+    registry: &str,
+    bundle: &str,
+) -> Result<TagDefinitions, GeneratorError> {
+    let mut tags = TagDefinitions::default();
+    if let Some(root) = dir.parent() {
+        let data = root.join("data");
+        for namespace in crate::json_folder::namespaces(&data) {
+            let folder = data.join(&namespace).join("tags/worldgen").join(registry);
+            match crate::json_folder::read(&folder) {
+                Ok(folder) => {
+                    for file in &folder.files {
+                        let id = format!("{namespace}:{}", file.name);
+                        let result = file
+                            .bytes()
+                            .and_then(|bytes| std::str::from_utf8(bytes).map_err(io::Error::other))
+                            .and_then(|text| {
+                                tags.apply_json(&id, "prepared data", text)
+                                    .map_err(io::Error::other)
+                            });
+                        if let Err(error) = result {
+                            log::warn!("{}: {error}", file.path.display());
+                        }
+                    }
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+    for (id, pack, json) in overrides.tags(bundle) {
+        if let Err(error) = tags.apply_json(id, pack, json) {
+            log::warn!("{pack}: {registry} tag {id}: {error}");
+        }
+    }
+    Ok(tags)
+}
+
+pub(in crate::worldgen) fn load_carvers(
+    dir: &Path,
+    overrides: &WorldgenOverrides,
+) -> Result<CarverCatalog, GeneratorError> {
+    let carvers = read_registry_bundle(dir, overrides, "carvers")?.unwrap_or_default();
+    Ok(
+        CarverCatalog::from_json(&carvers)?.with_tags(&registry_tag_definitions(
+            dir,
+            overrides,
+            "carver",
+            "carver_tags",
+        )?),
+    )
+}
+
 /// The tags of the bundle `name`, the data packs' tag files after the
 /// prepared ones. A tag naming what is not there fails on its own, as
 /// vanilla's TagLoader leaves it out. Without packs the prepared tags must
 /// all resolve; with them (a pack's tag can also break a prepared tag that
 /// includes it), each failed tag goes into `dropped` for the log.
-pub(super) fn build_tags(
+pub(in crate::worldgen) fn build_tags(
+    raw: &Bundle,
+    overrides: &WorldgenOverrides,
+    name: &str,
+    dropped: &mut Vec<String>,
+    known: impl Fn(&str) -> bool,
+) -> Result<BTreeMap<String, Vec<String>>, GeneratorError> {
+    build_tags_with_base(&[], raw, overrides, name, dropped, known)
+}
+
+fn build_tags_with_base(
+    base: &[(String, String)],
     raw: &Bundle,
     overrides: &WorldgenOverrides,
     name: &str,
@@ -125,6 +270,9 @@ pub(super) fn build_tags(
     known: impl Fn(&str) -> bool,
 ) -> Result<BTreeMap<String, Vec<String>>, GeneratorError> {
     let mut definitions = TagDefinitions::default();
+    for (tag_id, json) in base {
+        definitions.apply_json(tag_id, "sunrise:convention", json)?;
+    }
     for (name, json) in raw {
         definitions.apply_json(name, "vanilla", json)?;
     }
@@ -154,6 +302,174 @@ pub(super) fn build_tags(
     }
     Ok(built.tags)
 }
+
+/// Seed-independent biome, biome-tag and preset tables for binding biome sources
+/// without loading terrain-stage resources (`settings.json`, `noises.json`, `block_flags.json`, ...).
+pub struct BiomeSourceData {
+    source_catalog: BiomeSourceCatalog,
+    presets: BTreeMap<String, String>,
+    warnings: Vec<String>,
+}
+
+/// Shared biome, biome-tag and preset loader used by both [`BiomeSourceData`] and [`GeneratorData`].
+fn load_biome_sources(
+    dir: &Path,
+    ov: &WorldgenOverrides,
+    require_biome_tags: bool,
+    warnings: &mut Vec<String>,
+) -> Result<
+    (
+        Bundle,
+        BTreeMap<String, Vec<String>>,
+        BTreeMap<String, String>,
+        BiomeSourceCatalog,
+    ),
+    GeneratorError,
+> {
+    let biomes = read_bundle(dir, ov, "biomes")?;
+    let biome_tags = load_biome_tags(dir, ov, require_biome_tags, warnings, |id| {
+        biomes.contains_key(id)
+    })?;
+    let biome_set = biomes.keys().cloned().collect::<BTreeSet<_>>();
+    let mut presets = read_optional_bundle(dir, ov, "presets")?.unwrap_or_default();
+    let reports = dir.join("biome_parameters");
+    if reports.is_dir() {
+        for entry in fs::read_dir(&reports)? {
+            let path = entry?.path();
+            let Some(stem) = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .filter(|_| path.extension().is_some_and(|e| e == "json"))
+            else {
+                continue;
+            };
+            presets
+                .entry(format!("minecraft:{stem}"))
+                .or_insert(quantize_parameter_report(&fs::read_to_string(&path)?)?);
+        }
+    }
+    // A parameter list file names one of the two built-in presets
+    // (`MultiNoiseBiomeSourceParameterList.Preset.CODEC`) and gives its table to the
+    // list's id, whichever tables the other lists hold.
+    let built_in = presets.clone();
+    for (id, json) in ov.entries(overrides::PARAMETER_LISTS) {
+        let list: Value = serde_json::from_str(json)?;
+        let preset = list["preset"]
+            .as_str()
+            .and_then(|name| super::super::density::identifier(name).ok())
+            .filter(|name| matches!(name.as_str(), "minecraft:overworld" | "minecraft:nether"))
+            .ok_or_else(|| resource(format!("parameter list {id}: unknown preset")))?;
+        let table = built_in
+            .get(&preset)
+            .ok_or_else(|| resource(format!("parameter list {id}: no table for {preset}")))?;
+        presets.insert(id.to_owned(), table.clone());
+    }
+    let source_catalog =
+        BiomeSourceCatalog::new(&biome_set, &biome_tags, &presets.keys().cloned().collect())?;
+    Ok((biomes, biome_tags, presets, source_catalog))
+}
+
+impl BiomeSourceData {
+    /// Load only the biome, biome-tag and multi-noise preset tables needed to bind biome sources.
+    pub fn load_with(dir: &Path, ov: &WorldgenOverrides) -> Result<Arc<Self>, GeneratorError> {
+        let mut warnings = Vec::new();
+        let (_, _, presets, source_catalog) = load_biome_sources(dir, ov, false, &mut warnings)?;
+        Ok(Arc::new(Self {
+            source_catalog,
+            presets,
+            warnings,
+        }))
+    }
+    /// Bind a custom stem's source to this world's biome, tag and preset registries.
+    pub fn resolve_mod_biome_source(
+        &self,
+        json: &str,
+        seed: i64,
+    ) -> Result<ResolvedBiomeSource, crate::worldgen::biome_source::BiomeSourceError> {
+        self.source_catalog
+            .bind_custom_source(json, &self.presets, seed)
+    }
+    /// What loading the data packs' biome-tag entries left out, for the log.
+    pub fn warnings(&self) -> &[String] {
+        &self.warnings
+    }
+}
+
+pub(in crate::worldgen) fn load_fluid_tags(
+    dir: &Path,
+    overrides: &WorldgenOverrides,
+    warnings: &mut Vec<String>,
+) -> Result<BTreeMap<String, Vec<String>>, GeneratorError> {
+    let raw = read_registry_bundle(dir, overrides, "fluid_tags")?.unwrap_or_default();
+    build_tags_with_base(
+        crate::tag_layers::convention::json_entries("fluid"),
+        &raw,
+        overrides,
+        "fluid_tags",
+        warnings,
+        |id| {
+            matches!(
+                id,
+                "minecraft:water"
+                    | "minecraft:flowing_water"
+                    | "minecraft:lava"
+                    | "minecraft:flowing_lava"
+                    | "minecraft:empty"
+            )
+        },
+    )
+}
+
+pub(in crate::worldgen) fn load_biome_tags(
+    dir: &Path,
+    overrides: &WorldgenOverrides,
+    required: bool,
+    warnings: &mut Vec<String>,
+    known: impl Fn(&str) -> bool,
+) -> Result<BTreeMap<String, Vec<String>>, GeneratorError> {
+    let entries = if required {
+        read_bundle(dir, overrides, "biome_tags")?
+    } else {
+        read_registry_bundle(dir, overrides, "biome_tags")?.unwrap_or_default()
+    };
+    let mut tags = TagDefinitions::default();
+    for (id, json) in crate::tag_layers::convention::json_entries("worldgen/biome") {
+        tags.apply_json(id, "sunrise:convention", json)?;
+    }
+    for (id, json) in entries {
+        tags.apply_json(&id, "vanilla", &json)?;
+    }
+    for (id, pack, json) in overrides.tags("biome_tags") {
+        tags.apply_json(id, pack, json)?;
+    }
+    let bound = tags.bind(|id, _| known(id).then(|| id.to_owned()));
+    for (tag, missing) in bound.missing {
+        warnings.push(format!("biome tag {tag} has missing entries: {missing:?}"));
+    }
+    Ok(bound.tags)
+}
+
+pub(in crate::worldgen) fn load_structure_resources(
+    dir: &Path,
+    registry: &'static BlockRegistry,
+    tags: &BTreeMap<String, Vec<String>>,
+    overrides: &WorldgenOverrides,
+) -> Result<Option<Arc<super::super::structure::StructureResources>>, GeneratorError> {
+    let Ok(json) = fs::read_to_string(dir.join("blocks/structure-blocks.json")) else {
+        return Ok(None);
+    };
+    Ok(Some(Arc::new(
+        super::super::structure::StructureResources::new(
+            registry,
+            super::super::structure::StateTransforms::from_json(&json, registry.len())?,
+            &dir.join("structure"),
+            read_optional_bundle(dir, overrides, "processor_lists")?.unwrap_or_default(),
+            tags,
+        )
+        .with_templates(overrides.templates().clone()),
+    )))
+}
+
 impl GeneratorData {
     /// Load a worldgen bundle directory. Required files are JSON objects mapping
     /// resource identifiers to the resource's JSON text: `noises`, `densities`,
@@ -176,31 +492,29 @@ impl GeneratorData {
         ov: &WorldgenOverrides,
     ) -> Result<Arc<Self>, GeneratorError> {
         let mut warnings = Vec::new();
+        let (biomes, biome_tags, presets, source_catalog) =
+            load_biome_sources(dir, ov, true, &mut warnings)?;
+        let biome_keys = biomes
+            .keys()
+            .map(|name| {
+                mod_api::__private::parse_registered_biome_key(name)
+                    .map_err(|error| resource(format!("biome registry entry {name:?}: {error}")))
+            })
+            .collect::<Result<_, _>>()?;
         let flags: Vec<(bool, bool)> =
             serde_json::from_str(&fs::read_to_string(dir.join("block_flags.json"))?)?;
         if flags.len() != registry.len() {
             return Err(resource("block_flags.json does not match the registry"));
         }
-        let block_tags = build_tags(
+        let block_tags = build_tags_with_base(
+            crate::tag_layers::convention::json_entries("block"),
             &read_bundle(dir, ov, "block_tags")?,
             ov,
             "block_tags",
             &mut warnings,
             |id| registry.default_state(id).is_some(),
         )?;
-        let fluid_tags = match read_optional_bundle(dir, ov, "fluid_tags")? {
-            Some(raw) => build_tags(&raw, ov, "fluid_tags", &mut warnings, |id| {
-                matches!(
-                    id,
-                    "minecraft:water"
-                        | "minecraft:flowing_water"
-                        | "minecraft:lava"
-                        | "minecraft:flowing_lava"
-                        | "minecraft:empty"
-                )
-            })?,
-            None => BTreeMap::new(),
-        };
+        let fluid_tags = load_fluid_tags(dir, ov, &mut warnings)?;
         // The three biggest reads (the block tables, the structure templates
         // and the block behaviours) need only the tags: they run on threads of
         // their own while this one reads the rest. A new world's first chunks
@@ -213,21 +527,7 @@ impl GeneratorData {
         })?;
         let structures = loading({
             let (dir, tags, ov) = (dir.to_owned(), block_tags.clone(), ov.clone());
-            move || -> Result<_, GeneratorError> {
-                let Ok(json) = fs::read_to_string(dir.join("blocks/structure-blocks.json")) else {
-                    return Ok(None);
-                };
-                Ok(Some(Arc::new(
-                    super::super::structure::StructureResources::new(
-                        registry,
-                        super::super::structure::StateTransforms::from_json(&json, registry.len())?,
-                        &dir.join("structure"),
-                        read_optional_bundle(&dir, &ov, "processor_lists")?.unwrap_or_default(),
-                        &tags,
-                    )
-                    .with_templates(ov.templates().clone()),
-                )))
-            }
+            move || load_structure_resources(&dir, registry, &tags, &ov)
         })?;
         let behaviours = loading({
             let root = dir.parent().map(Path::to_owned);
@@ -260,40 +560,13 @@ impl GeneratorData {
             })
             .collect::<Vec<_>>();
         let integers = super::super::block_feature::integer_properties(registry);
-        let biomes = read_bundle(dir, ov, "biomes")?;
-        let biome_tags = build_tags(
-            &read_bundle(dir, ov, "biome_tags")?,
-            ov,
-            "biome_tags",
-            &mut warnings,
-            |id| biomes.contains_key(id),
-        )?;
         let biome_set = biomes.keys().cloned().collect::<BTreeSet<_>>();
         let conditions = MaterialConditionRegistry::from_json_with_biome_tags(
             &read_bundle(dir, ov, "conditions")?,
             &biome_set,
             &biome_tags,
         )?;
-        let mut presets = read_optional_bundle(dir, ov, "presets")?.unwrap_or_default();
-        let reports = dir.join("biome_parameters");
-        if reports.is_dir() {
-            for entry in fs::read_dir(&reports)? {
-                let path = entry?.path();
-                let Some(stem) = path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .filter(|_| path.extension().is_some_and(|e| e == "json"))
-                else {
-                    continue;
-                };
-                presets
-                    .entry(format!("minecraft:{stem}"))
-                    .or_insert(quantize_parameter_report(&fs::read_to_string(&path)?)?);
-            }
-        }
-        let source_catalog =
-            BiomeSourceCatalog::new(&biome_set, &biome_tags, &presets.keys().cloned().collect())?;
-        let carvers = CarverCatalog::from_json(&read_bundle(dir, ov, "carvers")?)?;
+        let carvers = load_carvers(dir, ov)?;
         let mut biome_names = Vec::new();
         let mut biome_ids = BTreeMap::new();
         let mut biome_json = Vec::new();
@@ -303,8 +576,17 @@ impl GeneratorData {
             biome_ids.insert(name.clone(), BiomeId(biome_names.len() as u32));
             biome_names.push(Arc::<str>::from(name.as_str()));
             temperatures.push(BiomeTemperatureSettings::from_json(json)?);
-            let value: Value = serde_json::from_str(json)?;
-            biome_carvers.push(carvers.decode_set(&value["carvers"].to_string())?);
+            let decoded = ov
+                .admitted_biome_generation
+                .as_ref()
+                .and_then(|admitted| admitted.get(name));
+            biome_carvers.push(match decoded {
+                Some(decoded) => decoded.carvers.clone(),
+                None => {
+                    let value: Value = serde_json::from_str(json)?;
+                    carvers.decode_set(&value["carvers"].to_string())?
+                }
+            });
             biome_json.push(json.clone());
         }
         let carving_blocks = CarvingBlocks::from_registry(
@@ -315,20 +597,31 @@ impl GeneratorData {
                 .collect(),
         )
         .map_err(|e| resource(format!("carving blocks: {e}")))?;
-        let feature_resources = match (
-            read_optional_bundle(dir, ov, "features")?,
-            read_optional_bundle(dir, ov, "placed_features")?,
-        ) {
-            (Some(features), Some(placed)) => Some(FeatureResources {
-                features,
-                placed,
+        let features = read_registry_bundle(dir, ov, "features")?;
+        let placed = read_registry_bundle(dir, ov, "placed_features")?;
+        let has_admitted_features = ov
+            .admitted_biome_generation
+            .as_ref()
+            .is_some_and(|biomes| biomes.has_features());
+        let feature_resources = if (features.is_some() && placed.is_some()) || has_admitted_features
+        {
+            Some(FeatureResources {
+                features: features.unwrap_or_default(),
+                placed: placed.unwrap_or_default(),
                 feature_tags: read_optional_bundle(dir, ov, "feature_tags")?.unwrap_or_default(),
+                placed_tags: registry_tag_definitions(
+                    dir,
+                    ov,
+                    "placed_feature",
+                    "placed_feature_tags",
+                )?,
                 blocks: joined(blocks)?,
                 fluid_tags,
-                state_providers: read_optional_bundle(dir, ov, "state_providers")?
+                state_providers: read_registry_bundle(dir, ov, "state_providers")?
                     .unwrap_or_default(),
-            }),
-            _ => None,
+            })
+        } else {
+            None
         };
         let structures = joined(structures)?;
         let structure_resources = match (
@@ -349,7 +642,7 @@ impl GeneratorData {
             structure_resources,
             structures,
             registry,
-            states: GenBlockStates(states.into()),
+            states: GenBlockStates::new(states),
             integers,
             noises: read_bundle(dir, ov, "noises")?,
             densities: read_bundle(dir, ov, "densities")?,
@@ -363,10 +656,12 @@ impl GeneratorData {
             conditions,
             source_catalog,
             biome_names,
+            biome_keys,
             biome_ids,
             biome_json,
             temperatures,
             biome_carvers,
+            admitted_biomes: ov.admitted_biome_generation.clone(),
             carvers,
             accepted_registries: OnceLock::new(),
             decoded_structures: OnceLock::new(),
@@ -453,6 +748,15 @@ impl GeneratorData {
             .resolve(&self.presets, 0)
             .map_err(|e| resource(format!("biome source: {e}")))?;
         self.decoration_for(&source_json, &source).map(drop)
+    }
+    /// Bind a custom stem's source to this world's biome, tag and preset registries.
+    pub fn resolve_mod_biome_source(
+        &self,
+        json: &str,
+        seed: i64,
+    ) -> Result<ResolvedBiomeSource, crate::worldgen::biome_source::BiomeSourceError> {
+        self.source_catalog
+            .bind_custom_source(json, &self.presets, seed)
     }
     pub fn registry(&self) -> &'static BlockRegistry {
         self.registry
@@ -557,9 +861,52 @@ impl GeneratorData {
     pub fn biome_json(&self, id: BiomeId) -> &str {
         &self.biome_json[id.0 as usize]
     }
-    pub(in crate::worldgen) fn integers(&self) -> &BTreeSet<(String, String)> {
-        &self.integers
+    pub(in crate::worldgen) fn biome_feature_steps(
+        &self,
+        id: BiomeId,
+        catalog: &super::super::feature_catalog::FeatureCatalog,
+    ) -> Result<super::super::feature_catalog::BiomeFeatureSteps, DecodeError> {
+        if let Some(admitted) = self
+            .admitted_biomes
+            .as_ref()
+            .and_then(|table| table.get(self.biome_name(id)))
+        {
+            return Ok(admitted
+                .features
+                .iter()
+                .map(|step| {
+                    step.iter()
+                        .map(|feature| (feature.holder.clone(), Some(feature.definition.clone())))
+                        .collect()
+                })
+                .collect());
+        }
+        let biome: Value = serde_json::from_str(self.biome_json(id))?;
+        Ok(catalog
+            .biome_steps(&biome["features"], &|_| Ok(()))?
+            .into_iter()
+            .map(|step| step.into_iter().map(|holder| (holder, None)).collect())
+            .collect())
     }
+
+    pub(in crate::worldgen) fn geometry_feature_bindings(
+        &self,
+        resources: &FeatureResources,
+    ) -> Result<super::super::block_feature::FeatureBlockBindings<'static>, DecodeError> {
+        FeatureCodecContext {
+            registry: self.registry,
+            integers: &self.integers,
+            block_tags: &self.block_tags,
+            fluid_tags: &resources.fluid_tags,
+            biome_ids: &self.biome_ids,
+            biome_tags: &self.biome_tags,
+            structures: self.structures.as_ref(),
+            blocks: resources.blocks.as_ref(),
+            state_providers: &resources.state_providers,
+        }
+        .bind(self.feature_block_bindings()?)
+    }
+
     /// Feature block bindings over this data's blocks and block tags. The tags'
     /// state sets are bound once and shared: each binding held 5 MB of them.
     pub(in crate::worldgen) fn feature_block_bindings(
@@ -690,7 +1037,14 @@ impl GeneratorData {
                 .processor_lists
                 .iter()
                 .filter_map(|(name, json)| {
-                    resources.processor_list(json, &bindings).ok()?;
+                    if let Err(error) =
+                        super::super::structure::processor::ProcessorList::decode_named(
+                            name, json, resources, &bindings,
+                        )
+                    {
+                        log::warn!("Sunrise: processor list {name} is left out: {error}");
+                        return None;
+                    }
                     super::super::density::identifier(name).ok()
                 })
                 .collect(),
@@ -762,19 +1116,29 @@ impl GeneratorData {
         })
     }
 
-    /// `HolderLookup.listElementIds` from the same table used by `registry_contains`.
-    pub fn registry_ids(&self, registry: &str) -> Option<Vec<&str>> {
+    /// Visit `HolderLookup.listElementIds` from the same table used by `registry_contains`.
+    pub fn visit_registry_ids(
+        &self,
+        registry: &str,
+        visit: &mut dyn FnMut(&str) -> std::ops::ControlFlow<()>,
+    ) -> Option<std::ops::ControlFlow<()>> {
         Some(match registry {
-            "minecraft:worldgen/biome" => self.biome_names.iter().map(AsRef::as_ref).collect(),
-            "minecraft:worldgen/carver" => self.carvers.names().collect(),
-            "minecraft:worldgen/material_condition" => {
-                self.conditions.entries().map(|(id, _)| id).collect()
-            }
+            "minecraft:worldgen/biome" => self
+                .biome_names
+                .iter()
+                .map(AsRef::as_ref)
+                .try_for_each(visit),
+            "minecraft:worldgen/carver" => self.carvers.names().try_for_each(visit),
+            "minecraft:worldgen/material_condition" => self
+                .conditions
+                .entries()
+                .map(|(id, _)| id)
+                .try_for_each(visit),
             _ => self
                 .named_registry(registry)?
                 .iter()
                 .map(String::as_str)
-                .collect(),
+                .try_for_each(visit),
         })
     }
 

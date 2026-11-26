@@ -137,10 +137,9 @@ fn a_restored_wind_charge_with_a_huge_rotation_turns_back_into_range() {
             ("acceleration_power", Tag::Double(0.0f64.to_bits())),
         ]);
         let mut p = fireball_from_nbt(&tag, None).unwrap();
-        // Vanilla's `setXRot` would load the pitch as `clamp(MAX % 360, -90,
-        // 90)` = 0; Sunrise's loader keeps it unclamped (as on main), and
-        // `shift_by_turns` reduces it to that same 0 on the first turn.
-        assert_eq!(p.yaw, 1.0e30, "{id}");
+        // Entity.load runs setYRot, setXRot, then setRot(yRot % 360, xRot % 360):
+        // 1.0e30 % 360 == 120.0 and clamp(f32::MAX % 360, -90, 90) == 0.0 (26.3 witness).
+        assert_eq!([p.yaw, p.pitch], [120.0, 0.0], "{id}");
         let mut seen = Vec::new();
         for _ in 0..3 {
             p.tick(&Air);
@@ -155,6 +154,11 @@ fn a_restored_wind_charge_with_a_huge_rotation_turns_back_into_range() {
             ],
             "{id}"
         );
+        // Direct huge yaw via Entity.setYRot also stays finite and turns cleanly via shift_by_turns.
+        let mut huge = fireball_from_nbt(&tag, None).unwrap();
+        huge.set_yaw(1.0e30);
+        huge.tick(&Air);
+        assert_eq!([huge.yaw, huge.pitch], [114.0_f32, -1.525_878_9e-6], "{id}");
     }
 }
 

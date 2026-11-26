@@ -140,11 +140,11 @@ fn a_horizon_dimension_keeps_its_attachments_and_saves_them_under_sunrise() {
     )
     .unwrap();
     let mut attachments = save.load_attachments();
-    assert_eq!(Tag::Compound(attachments.to_nbt()), saved(9));
+    assert_eq!(Tag::Compound(attachments.try_to_nbt().unwrap()), saved(9));
     // Emptied by its mods, it stays empty: the Horizon file is not read again.
     attachments = Default::default();
     save.save_attachments(&attachments).unwrap();
     let reopened = save.load_attachments();
     let _ = fs::remove_dir_all(&dir);
-    assert!(reopened.to_nbt().is_empty());
+    assert!(reopened.try_to_nbt().unwrap().is_empty());
 }

@@ -1,5 +1,4 @@
 //! The `living_entity_use_item_tick` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0132
 
 pub trait Hooks {
     /// Each living tick that `entity` may still use `stack` in `hand`.
@@ -29,7 +28,8 @@ pub trait Hooks {
         contract = "cancel",
         out = "canceled",
         neoforge = "LivingEntityUseItemEvent.Tick",
-        cancellable = true
+        cancellable = true,
+        version = 2
     )]
     fn living_entity_use_item_tick(
         stack: &ItemStack,

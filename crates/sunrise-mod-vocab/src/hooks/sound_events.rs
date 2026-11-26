@@ -4,15 +4,17 @@ pub trait Hooks {
     /// `starting` is true for starts and loop replays, false for a live channel refresh.
     /// A ticking sound's live refresh applies volume, pitch and `effects` transiently; a refresh
     /// for a category volume change applies volume and pitch. `None` stops the channel.
-    /// Invalid edited numeric values refuse that refresh, `effects` by `SoundEffects::valid`.
-    /// A sound is about to play (`PlaySoundEvent`, vanilla's `SoundEngine.play`): `original` is the sound as asked for, `sound` starts as a copy of it. Edit `sound` (its volume, pitch, source, position, identifier, looping, delay, attenuation, relativeness or `effects`) to change what plays, or set it to `None` to play nothing. `effects` (`SoundEffects`) is the mixer's DSP for this one sound: its gain, a low-pass and a high-pass on the direct sound and sends to the shared `room`, `hall` and `cavern` reverbs, each in a fixed range (`SoundEffects::valid`: a value out of range, NaN or an infinity refuses the play, never clamped). A sound that doesn't tick keeps the effects it started with. It is asked before the engine's own checks (output open, sound resolved, volume, channel pool), for every sound the client plays, so answer fast; later mods see earlier mods' edits in `sound` and the sound as asked for in `original`. A new `identifier` is resolved again, with its own weighted pick. `context` is the client's `LoopContext`: no game is at hand inside the sound engine. Client-side only; a server has no sound.
+    /// Base volume and pitch edits, including zero, negative and infinite values, go through
+    /// `SoundEngine.calculateVolume` and `calculatePitch`, as they do in `play_local_sound`,
+    /// at a start and at a live refresh alike. Invalid `effects` (`SoundEffects::valid`) refuse playback.
+    /// A sound is about to play (`PlaySoundEvent`, vanilla's `SoundEngine.play`): `original` is the sound as asked for, `sound` starts as a copy of it. Edit `sound` (its volume, pitch, source, position, identifier, looping, delay, attenuation, relativeness or `effects`) to change what plays, or set it to `None` to play nothing. `effects` (`SoundEffects`) is the mixer's DSP for this one sound: its gain, a low-pass and a high-pass on the direct sound and sends to the shared `room`, `hall` and `cavern` reverbs, each in a fixed range (`SoundEffects::valid`: a value out of range, NaN or an infinity refuses the play, never clamped). A sound that doesn't tick keeps the effects it started with. It is asked before the engine's own checks (output open, sound resolved, volume, channel pool), for every sound the client plays through the sound engine, so answer fast; later mods see earlier mods' edits in `sound` and the sound as asked for in `original`. A new `identifier` is resolved again, with its own weighted pick. The listener gets the `ClientHost`. A start fires inside the play call itself and plays at once with the answer, as vanilla's `SoundEngine.play` does; a live refresh fires once per audio tick and applies at that tick. Client-side only; a server has no sound.
     #[hook(
         side = "client",
         contract = "listen",
-        context = "loop",
         neoforge = "PlaySoundEvent",
         cancellable = false,
-        target = "sunrise_client_render::sound_engine::hooks::native_play_sound"
+        target = "sunrise_client::game::native_hooks::play_sound::Game<'_>::native_play_sound",
+        version = 3
     )]
     /// `instance` is an engine-local sound instance id, unchanged across its live updates.
     fn play_sound(

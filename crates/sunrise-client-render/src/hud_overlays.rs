@@ -8,6 +8,7 @@
 //! sleep overlay and the subtitles (`SubtitleOverlay`).
 use crate::{
     font::Font,
+    hud::{HudAtlas, HudBatch},
     hud_layout::{Blend, GuiDraw, PoseOp, color_from_float, fill, multiply, white, width},
     text::{Style, Text},
 };
@@ -793,10 +794,10 @@ pub fn sidebar(
 
 /// What `GuiGraphicsExtractor.itemDecorations` draws over a stack.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct ItemDecorations {
+pub struct ItemDecorations<'a> {
     pub count: u32,
     /// The text shown instead of the count, if any.
-    pub count_text: Option<String>,
+    pub count_text: Option<&'a str>,
     /// `isBarVisible`: `getBarWidth` and `getBarColor` (RGB).
     pub bar: Option<(i32, u32)>,
     /// `ItemCooldowns.getCooldownPercent` of the stack.
@@ -808,32 +809,108 @@ pub fn damage_bar(damage: i32, max_damage: i32) -> Option<(i32, u32)> {
     sunrise_items::properties::damage_bar(damage, max_damage).map(|bar| (bar.width, bar.color))
 }
 
-/// `GuiGraphicsExtractor.itemDecorations` for a non-empty stack at (x, y):
-/// the durability bar, the cooldown shade and the count.
-pub fn item_decorations(x: i32, y: i32, d: &ItemDecorations, font: &Font) -> Vec<GuiDraw> {
+/// Format a stack size, optionally with the yellow quick-craft prefix, in caller-owned storage.
+/// The buffer holds ten decimal digits and the UTF-8 `§e` prefix.
+pub fn item_count_text(mut count: u32, capped: bool, buf: &mut [u8; 13]) -> &str {
+    let mut at = buf.len();
+    loop {
+        at -= 1;
+        buf[at] = b'0' + (count % 10) as u8;
+        count /= 10;
+        if count == 0 {
+            break;
+        }
+    }
+    if capped {
+        at -= "§e".len();
+        buf[at..at + "§e".len()].copy_from_slice("§e".as_bytes());
+    }
+    std::str::from_utf8(&buf[at..]).unwrap()
+}
+
+enum ItemDecoration<'a> {
+    Rect([i32; 4], u32),
+    Count(&'a str, i32, i32),
+}
+
+impl ItemDecorations<'_> {
+    /// GuiGraphicsExtractor.itemDecorations, in extraction order. The count's backing
+    /// bytes are lent just for the callback, including the default decimal stack size.
+    fn visit(&self, x: i32, y: i32, font: &Font, mut draw: impl FnMut(ItemDecoration<'_>)) {
+        if let Some((width, color)) = self.bar {
+            // GuiGraphicsExtractor.itemBar forms its endpoints with Java int arithmetic.
+            let (left, top) = (x.wrapping_add(2), y.wrapping_add(13));
+            draw(ItemDecoration::Rect(
+                [left, top, left.wrapping_add(13), top.wrapping_add(2)],
+                0xFF00_0000,
+            ));
+            draw(ItemDecoration::Rect(
+                [left, top, left.wrapping_add(width), top.wrapping_add(1)],
+                color | 0xFF00_0000,
+            ));
+        }
+        if self.cooldown > 0.0 {
+            let top = y.wrapping_add(crate::hud_layout::floor(16.0 * (1.0 - self.cooldown)));
+            let bottom = top.wrapping_add(crate::hud_layout::ceil(16.0 * self.cooldown));
+            draw(ItemDecoration::Rect(
+                [x, top, x.wrapping_add(16), bottom],
+                0x7FFF_FFFF,
+            ));
+        }
+        if self.count != 1 || self.count_text.is_some() {
+            let mut buf = [0; 13];
+            let amount = match self.count_text {
+                Some(text) => text,
+                None => item_count_text(self.count, false, &mut buf),
+            };
+            let width = font.width(amount) as i32;
+            draw(ItemDecoration::Count(
+                amount,
+                x.wrapping_add(17).wrapping_sub(width),
+                y.wrapping_add(9),
+            ));
+        }
+    }
+}
+
+/// Paint the standard slot decorations at a GUI origin without collecting a replay list.
+pub fn paint_item_decorations(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    [x, y]: [f32; 2],
+    decorations: &ItemDecorations<'_>,
+) {
+    let start = batch.vertices.len();
+    decorations.visit(0, 0, &atlas.font, |draw| match draw {
+        ItemDecoration::Rect(rect, color) => {
+            crate::hud_layout::paint_fill_endpoints(batch, atlas, rect, color);
+        }
+        ItemDecoration::Count(amount, x, y) => {
+            batch.text(atlas, amount, x as f32, y as f32, u32::MAX, true);
+        }
+    });
+    if [x, y] != [0.0; 2] {
+        for vertex in &mut batch.vertices[start..] {
+            vertex.pos[0] += x;
+            vertex.pos[1] += y;
+        }
+    }
+}
+
+/// Record the same primitives for the HUD parity probe.
+pub fn item_decorations(x: i32, y: i32, d: &ItemDecorations<'_>, font: &Font) -> Vec<GuiDraw> {
     let mut out = vec![GuiDraw::Push(Vec::new())];
-    if let Some((width, color)) = d.bar {
-        let (left, top) = (x + 2, y + 13);
-        out.push(fill(left, top, left + 13, top + 2, 0xFF00_0000));
-        out.push(fill(left, top, left + width, top + 1, color | 0xFF00_0000));
-    }
-    if d.cooldown > 0.0 {
-        let top = y + crate::hud_layout::floor(16.0 * (1.0 - d.cooldown));
-        let bottom = top + crate::hud_layout::ceil(16.0 * d.cooldown);
-        out.push(fill(x, top, x + 16, bottom, 0x7FFF_FFFF));
-    }
-    if d.count != 1 || d.count_text.is_some() {
-        let amount = d.count_text.clone().unwrap_or_else(|| d.count.to_string());
-        let w = font.width(&amount) as i32;
-        text(
+    d.visit(x, y, font, |draw| match draw {
+        ItemDecoration::Rect([x0, y0, x1, y1], color) => out.push(fill(x0, y0, x1, y1, color)),
+        ItemDecoration::Count(amount, x, y) => text(
             &mut out,
             Text::literal(amount),
-            x + 19 - 2 - w,
-            y + 6 + 3,
+            x,
+            y,
             crate::hud_layout::WHITE,
             true,
-        );
-    }
+        ),
+    });
     out.push(GuiDraw::Pop);
     out
 }

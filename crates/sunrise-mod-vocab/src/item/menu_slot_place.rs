@@ -1,7 +1,7 @@
 //! Storage that is not a block entity behind a mod menu's slots (arismoko/horizon#3385):
 //! NeoForge 26.3's `StackCopySlot` (a stack held inside another item) and `ResourceHandlerSlot`
-//! (an index of an item handler). A mod opens its menu type with `PlayerRef::open_mod_menu`
-//! (#3384) and then backs its container slots with [`PlayerRef::back_mod_menu_slots`]; a click
+//! (an index of an item handler). A mod opens its menu type with [`PlayerRef::open_mod_menu`]
+//! (#3384) and then backs its container slots with [`crate::MenuRef::back_slots`]; a click
 //! or shift-click on such a slot, and an [`ItemPlace::MenuSlot`] write to it, go through that
 //! storage's own handler in one journalled transaction, as a block entity's slots do.
 use crate::{
@@ -38,13 +38,13 @@ pub enum MenuSlotPlace {
     },
 }
 
-/// Why [`PlayerRef::back_mod_menu_slots`] backed nothing; the menu and its slots stay as they
+/// Why [`crate::MenuRef::back_slots`] backed nothing; the menu and its slots stay as they
 /// were.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, sunrise_mod_api_macros::Wire)]
 pub enum MenuSlotBackRefusal {
-    /// The player is not online here (also a host with no game behind it), or `window` is not
-    /// the menu they have open.
+    /// The player is not online here (also a host with no game behind it), or the menu handle is
+    /// stale or no longer the menu they have open.
     NoPlayerOrWindow,
     /// The open menu cannot show another storage: it is not a blockless mod menu, or
     /// its container slots are declared as transient, menu-owned storage.
@@ -74,23 +74,23 @@ impl MenuSlotPlace {
         host: &mut dyn ServerHost,
         player: PlayerRef,
     ) -> Option<(Capability<dyn ResourceHandler<ItemResource>>, usize)> {
-        match self {
+        let (handler, index) = match self {
             Self::HeldItem { hand, slot } => {
                 let held = ItemPlace::PlayerHand {
                     player: player.uuid(),
                     hand,
                 };
-                Some((held.capability(host, &ITEM_ITEMS)?, slot))
+                (held.capability(host, &ITEM_ITEMS)?, slot)
             }
             Self::EntityItems { entity, slot } => {
-                Some((entity.capability(host, &ENTITY_ITEMS, ())?, slot))
+                (entity.capability(host, &ENTITY_ITEMS, ())?, slot)
             }
-        }
+        };
+        (index < handler.size(host)).then_some((handler, index))
     }
 
     /// Whether this place still names storage, for the menu of `player`: false closes the menu.
     pub fn resolves(self, host: &mut dyn ServerHost, player: PlayerRef) -> bool {
-        self.handler(host, player)
-            .is_some_and(|(handler, slot)| slot < handler.size(host))
+        self.handler(host, player).is_some()
     }
 }

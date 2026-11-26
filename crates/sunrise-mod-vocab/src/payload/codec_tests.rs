@@ -55,7 +55,7 @@ fn the_canonical_enum_encoding_has_a_new_negotiated_fingerprint() {
 #[test]
 fn both_codecs_of_a_typed_body_refuse_excess_allocation_before_reserving() {
     // One byte per None in the body, but a Vec entry large enough to cross the
-    // allocation budget. Exactly 4096 entries meets the distinct collection cap.
+    // allocation budget: 4096 entries of 2049 bytes pass 8 MiB.
     type Wide = Vec<Option<[u8; 2048]>>;
     let mut bytes = vec![0, 0x10, 0, 0];
     bytes.resize(4 + 4096, 0);
@@ -64,6 +64,123 @@ fn both_codecs_of_a_typed_body_refuse_excess_allocation_before_reserving() {
         encode_payload(&vec![None::<[u8; 2048]>; 4096], PAYLOAD_DECODE_BUDGET),
         Err(WireError::Budget)
     );
+}
+
+#[test]
+fn a_zero_width_list_counts_each_entry_as_one_byte_in_both_codecs() {
+    // `()` has no encoded bytes, so its count alone could ask for any length; each entry is
+    // charged one byte against the rest of the body, the same rule as every other list.
+    assert_eq!(
+        decode_payload::<Vec<()>>(&[3, 0, 0, 0]),
+        Err(WireError::Length)
+    );
+    assert_eq!(
+        encode_payload(&vec![(); 3], PAYLOAD_DECODE_BUDGET),
+        Err(WireError::Length)
+    );
+    // Followed by three bytes, the same count fits in both codecs.
+    let value = (vec![(); 3], [1u8, 2, 3]);
+    let body = encode_payload(&value, PAYLOAD_DECODE_BUDGET).unwrap();
+    assert_eq!(body, [3, 0, 0, 0, 1, 2, 3]);
+    assert_eq!(decode_payload(&body), Ok(value));
+}
+
+#[test]
+fn identifier_payloads_keep_the_ordinary_wire_layout_and_string_framing() {
+    use crate::Identifier;
+
+    // Two little-endian u32 string lengths, each immediately followed by its UTF-8 bytes.
+    let bytes: &[u8] = b"\x04\0\0\0test\x09\0\0\0path/leaf";
+    let id = Identifier::parse("test:path/leaf").unwrap();
+    let mut ordinary = Writer::new();
+    ordinary.put(&id);
+    assert_eq!(ordinary.bytes(), bytes);
+    assert_eq!(payload_schema::<Identifier>(), 0xd160_f755_be5c_4eb7);
+    assert_eq!(encode_payload(&id, bytes.len()).unwrap(), bytes);
+    assert_eq!(decode_payload::<Identifier>(bytes), Ok(id.clone()));
+    assert_eq!(encode_payload(&id, bytes.len() - 1), Err(WireError::Length));
+    assert_eq!(
+        decode_payload::<Identifier>(b"\x04\0\0\0Test\x09\0\0\0path/leaf"),
+        Err(WireError::Invalid("invalid identifier"))
+    );
+    assert_eq!(
+        decode_payload::<Identifier>(b"\x04\0\0\0test\x01\0\0\0\xff"),
+        Err(WireError::Utf8)
+    );
+    assert_eq!(
+        decode_payload::<Identifier>(&bytes[..bytes.len() - 1]),
+        Err(WireError::Length)
+    );
+
+    // Each component uses the typed string bound, while ordinary Wire still has its old layout.
+    let at_limit = "a".repeat(PAYLOAD_MAX_STRING_BYTES);
+    let over_limit = "a".repeat(PAYLOAD_MAX_STRING_BYTES + 1);
+    let boundary = Identifier::from_parts(&at_limit, &at_limit).unwrap();
+    let typed = encode_payload(&boundary, PAYLOAD_DECODE_BUDGET).unwrap();
+    assert_eq!(decode_payload::<Identifier>(&typed), Ok(boundary));
+    for (namespace, path) in [(&over_limit, &at_limit), (&at_limit, &over_limit)] {
+        let id = Identifier::from_parts(namespace, path).unwrap();
+        ordinary.clear();
+        ordinary.put(&id);
+        assert_eq!(
+            Reader::decode::<Identifier>(ordinary.bytes()),
+            Ok(id.clone())
+        );
+        assert_eq!(
+            decode_payload::<Identifier>(ordinary.bytes()),
+            Err(WireError::Length)
+        );
+        assert_eq!(
+            encode_payload(&id, PAYLOAD_DECODE_BUDGET),
+            Err(WireError::Length)
+        );
+    }
+}
+
+#[test]
+fn identifier_payloads_charge_for_both_the_text_and_its_shared_storage() {
+    use crate::Identifier;
+
+    // Leave exactly enough room for the UTF-8 bytes, but not the owned identifier that holds them.
+    let id = Identifier::from_parts("test", &"a".repeat(252)).unwrap();
+    let mut ordinary = Writer::new();
+    ordinary.put(&id);
+
+    let mut input = Reader::for_payload(ordinary.bytes());
+    input.charge::<u8>(PAYLOAD_DECODE_BUDGET - 256).unwrap();
+    assert_eq!(input.take::<Identifier>(), Err(WireError::Budget));
+    let mut out = Writer::for_payload(PAYLOAD_DECODE_BUDGET);
+    assert!(out.charge::<u8>(PAYLOAD_DECODE_BUDGET - 256));
+    out.put(&id);
+    assert_eq!(out.finish_payload(), Err(WireError::Budget));
+}
+
+#[test]
+fn identifier_payload_budget_includes_the_separator_byte() {
+    use crate::Identifier;
+
+    // The owned `namespace:path` text is one byte longer than the two wire strings, and the
+    // shared storage is a 48-byte allocation (two counts, a boxed string, a colon index, a hash).
+    let id = Identifier::from_parts("test", "path").unwrap();
+    let exact = 48 + "test".len() + "path".len() + 1;
+    let mut ordinary = Writer::new();
+    ordinary.put(&id);
+
+    for (spare, fits) in [(exact, true), (exact - 1, false)] {
+        let mut input = Reader::for_payload(ordinary.bytes());
+        input.charge::<u8>(PAYLOAD_DECODE_BUDGET - spare).unwrap();
+        let expected = if fits {
+            Ok(id.clone())
+        } else {
+            Err(WireError::Budget)
+        };
+        assert_eq!(input.take::<Identifier>(), expected);
+
+        let mut out = Writer::for_payload(PAYLOAD_DECODE_BUDGET);
+        assert!(out.charge::<u8>(PAYLOAD_DECODE_BUDGET - spare));
+        out.put(&id);
+        assert_eq!(out.finish_payload().is_ok(), fits);
+    }
 }
 
 #[test]
@@ -204,32 +321,29 @@ fn writer_resets_do_not_refund_spent_payload_budget() {
 fn arc_counts_are_charged_even_for_zero_width_values() {
     use std::sync::Arc;
 
-    type Rows = Vec<Vec<Arc<()>>>;
+    // The trailing 4096 bytes are what lets each row's count of zero-width entries through.
+    type Rows = (Vec<Vec<Arc<()>>>, [u8; 4096]);
     // Sharing here keeps the fixture cheap; the receiver constructs a new Arc per entry.
     let shared = Arc::new(());
     let row = vec![shared; 4096];
     // Each decoded row retains 4096 handles and two refcounts per handle: 98,304 bytes on
     // 64-bit, although the encoded row is only its 4-byte length.
-    let rows = vec![row; 100];
+    let rows: Rows = (vec![row; 100], [0; 4096]);
     let mut bytes = vec![100, 0, 0, 0];
     bytes.extend([0, 0x10, 0, 0].repeat(100));
+    bytes.extend([0; 4096]);
     assert_eq!(encode_payload(&rows, bytes.len()), Err(WireError::Budget));
     assert_eq!(decode_payload::<Rows>(&bytes), Err(WireError::Budget));
 
-    assert_eq!(
-        encode_payload(&rows[..2].to_vec(), 12).unwrap(),
-        [2, 0, 0, 0, 0, 0x10, 0, 0, 0, 0x10, 0, 0]
-    );
-    assert_eq!(
-        decode_payload::<Rows>(&[2, 0, 0, 0, 0, 0x10, 0, 0, 0, 0x10, 0, 0]).unwrap(),
-        rows[..2]
-    );
+    let two: Rows = (rows.0[..2].to_vec(), [0; 4096]);
+    let mut body = vec![2, 0, 0, 0, 0, 0x10, 0, 0, 0, 0x10, 0, 0];
+    body.extend([0; 4096]);
+    assert_eq!(encode_payload(&two, body.len()).unwrap(), body);
+    assert_eq!(decode_payload::<Rows>(&body).unwrap(), two);
 }
 
 #[test]
 fn typed_forms_with_unmetered_conversions_are_refused() {
-    use crate::{MeshDefinition, ModelPart, PartPose};
-
     fn ordinary_only<T: Wire>(value: &T) {
         let mut writer = Writer::new();
         writer.put(value);
@@ -243,17 +357,13 @@ fn typed_forms_with_unmetered_conversions_are_refused() {
         assert_eq!(input.rest(), writer.bytes());
     }
 
-    ordinary_only(&MeshDefinition::new());
-    ordinary_only(&ModelPart::new(Vec::new(), Vec::new(), PartPose::ZERO));
     ordinary_only(&serde_json::json!({"field": []}));
     ordinary_only(&serde_json::Map::<String, serde_json::Value>::new());
     ordinary_only(&crate::LegacyRandomSource::new(42)); // a #[wire(via = ...)] conversion
-    let level = crate::LevelKey::parse("test:dimension").unwrap();
+    // A built-in name keeps the ordinary round trip out of the global level-key interner.
+    let level = crate::LevelKey::OVERWORLD;
     ordinary_only(&level);
     ordinary_only(&crate::LevelDimension::Custom(level));
-    ordinary_only(&crate::Identifier::parse("test:item").unwrap());
-    ordinary_only(&crate::SpawnerKey::new("test:spawner").unwrap());
-    ordinary_only(&crate::CustomSpawners::vanilla());
     assert_eq!(
         decode_payload::<String>(&[1, 0, 0, 0, b'a']),
         Ok("a".to_owned())
@@ -419,10 +529,6 @@ fn checked_decoders_do_not_share_the_raw_representations_fingerprint() {
     assert_ne!(
         payload_schema::<serde_json::Map<String, serde_json::Value>>(),
         payload_schema::<serde_json::Value>()
-    );
-    assert_ne!(
-        payload_schema::<crate::ModelPart>(),
-        payload_schema::<String>()
     );
 }
 

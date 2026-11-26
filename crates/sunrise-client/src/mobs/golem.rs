@@ -31,13 +31,16 @@ pub struct ResetUniversalAnger {
 }
 impl Goal for ResetUniversalAnger {
     goal_clone!();
+    #[inline]
     fn name(&self) -> &'static str {
         "ResetUniversalAngerTargetGoal"
     }
+    #[inline]
     fn flags(&self) -> u8 {
         0
     }
     /// The rule and `wasHurtByPlayer`.
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         cx.w.universal_anger
             && m.ai.last_hurt_by == Some(Who::Player)
@@ -45,6 +48,7 @@ impl Goal for ResetUniversalAnger {
     }
     /// `NeutralMob.forgetCurrentTargetAndRefreshUniversalAnger`:
     /// `stopBeingAngry`, then `startPersistentAngerTimer`.
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.timestamp = m.ai.last_hurt_by_time;
         // setLastHurtByMob(null) also stamps the time.
@@ -240,9 +244,11 @@ fn towards_poi(m: &mut Mob, cx: &mut Cx) -> Option<[f64; 3]> {
 struct DefendVillage;
 impl Goal for DefendVillage {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         super::goals::TARGET
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         let Some(p) = cx.w.selected_player() else {
             return false;
@@ -275,6 +281,7 @@ impl Goal for DefendVillage {
         });
         bad && m.sees(cx.w, Who::Player)
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         let spares = m.spares_players(cx.w);
         m.target_info(cx.w).is_some_and(|t| {
@@ -283,9 +290,11 @@ impl Goal for DefendVillage {
                 && m.position.distance_squared(t.position) <= 64.0 * 64.0
         })
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         m.set_ai_target(cx.w, Some(Who::Player));
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         m.set_ai_target(cx.w, None);
     }
@@ -300,9 +309,11 @@ struct MoveTowardsTarget {
 }
 impl Goal for MoveTowardsTarget {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         let Some(t) = m.ai.target.and_then(|t| cx.w.target_info(t)) else {
             return false;
@@ -324,10 +335,12 @@ impl Goal for MoveTowardsTarget {
         self.wanted = p;
         true
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         // MoveTowardsTargetGoal.start: `PathNavigation.moveTo(x, y, z, speed)`.
         m.nav_move_to(cx.w, self.wanted, self.speed);
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         !m.ai.nav.is_done()
             && m.ai
@@ -335,6 +348,7 @@ impl Goal for MoveTowardsTarget {
                 .and_then(|t| cx.w.target_info(t))
                 .is_some_and(|t| t.alive && m.distance_sqr(t.position) < self.within * self.within)
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, _: &mut Cx) {
         m.nav_stop();
     }
@@ -380,9 +394,11 @@ struct OfferFlower {
 }
 impl Goal for OfferFlower {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE | LOOK
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if !bright_outside(cx.w) || m.random.next_int_bound(8000).unwrap_or(1) != 0 {
             return false;
@@ -390,9 +406,11 @@ impl Goal for OfferFlower {
         self.villager = gift_candidate(m, cx.w);
         self.villager.is_some()
     }
+    #[inline]
     fn can_continue(&mut self, _: &mut Mob, _: &mut Cx) -> bool {
         self.ticks > 0
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         // adjustedTickDelay(400): the goal ticks every other game tick.
         self.ticks = reduced(400);
@@ -400,6 +418,7 @@ impl Goal for OfferFlower {
         // IronGolem.offerFlower(true): entity event 11.
         entity_event(m, 11, cx);
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         m.extra.counter = 0;
         // IronGolem.offerFlower(false): entity event 34.
@@ -428,6 +447,7 @@ impl Goal for OfferFlower {
         }
         self.villager = None;
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         if let Some(v) = self.villager.and_then(|v| cx.w.seen(v)) {
             m.look_at_speed([v.position.x, v.eye_y, v.position.z], 30.0, 30.0);

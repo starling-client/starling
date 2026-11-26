@@ -1,0 +1,3 @@
+ids = ["hook:player_login_profile", "type:PlayerLoginProfileEvent", "type:HookId"]
+why = "Adds the server collect hook player_login_profile, version 1: an admitted login's profile properties, offered before LoginFinished sends them and used for login success and the player list; a list the login packet can't carry (ByteBufCodecs.GAME_PROFILE_PROPERTIES) is refused whole."
+migrate = "Implement player_login_profile to add, change or remove properties such as textures. A mod that matches HookId exhaustively adds the new arm; one with a wildcard arm compiles unchanged."

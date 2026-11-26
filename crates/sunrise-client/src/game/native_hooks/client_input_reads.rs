@@ -5,7 +5,7 @@ use mod_api::{MappingError, VanillaKeyMappingRef};
 /// Helpers for native mods, kept as stable as the hook points.
 // Native mods use these; nothing in Sunrise does.
 impl Game<'_> {
-    /// Playing, with nothing over the world: keys and zoom apply.
+    /// Playing, with nothing over the world: in-game keys and camera effects apply.
     pub(in crate::game) fn playing(&self) -> bool {
         self.screen == Screen::Playing
             && self.title.is_none()

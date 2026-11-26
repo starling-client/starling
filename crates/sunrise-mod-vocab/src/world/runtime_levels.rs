@@ -1,5 +1,7 @@
 //! Levels a mod opens while the server runs: what it asks for and why a request is refused.
 
+use super::dimension::BiomePoint;
+
 /// What a runtime level is generated with.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -9,15 +11,81 @@ pub enum RuntimeGenerator {
     Flat,
     /// Nothing but air.
     Void,
-    /// A chunk generator a native mod registered (`register_chunk_generators`), by its name
+    /// A chunk generator a native mod registered (`register_chunk_generator`), by its name
     /// (`mymod:arena`). The level's seed is the generator's `ChunkAccess::seed`.
     Mod(String),
-    /// A noise generator. Not built yet: [`RuntimeLevelError::NoiseUnsupported`].
-    Noise,
+}
+
+/// The biome source of a runtime level, paired with its generator the way vanilla's
+/// `LevelStem` pairs a `ChunkGenerator` and `BiomeSource`.
+///
+/// [`RuntimeGenerator::Flat`] and [`RuntimeGenerator::Void`] follow vanilla's `FlatLevelSource`,
+/// which holds a fixed biome: they accept only [`Self::Fixed`] (or `None` for plains /
+/// `minecraft:the_void`). [`RuntimeGenerator::Mod`] accepts any variant.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+#[derive(sunrise_mod_api_macros::Wire)]
+pub enum RuntimeBiomeSource {
+    /// One biome everywhere (`minecraft:fixed`).
+    Fixed(String),
+    /// Biomes in repeating squares (`minecraft:checkerboard`). `scale` is `0..=62`; vanilla
+    /// `CheckerboardColumnBiomeSource` shifts quart coordinates right by `scale + 2`, with
+    /// Java's masked shift distance.
+    Checkerboard {
+        /// Either a single `#namespace:tag` reference or one or more biome ids (vanilla
+        /// `HolderSetCodec` direct list); mixing `#tag` references with other entries is
+        /// refused. The resolved holder set must contain a biome.
+        biomes: Vec<String>,
+        /// Square size exponent (`0..=62`).
+        scale: u32,
+    },
+    /// A multi-noise biome preset holder (`minecraft:multi_noise`), such as
+    /// `minecraft:overworld` or `minecraft:nether`.
+    MultiNoise(String),
+    /// The End's island and void biome source (`minecraft:the_end`).
+    End,
+    /// Custom multi-noise biome points (`minecraft:multi_noise` parameter list).
+    Points(Vec<BiomePoint>),
+    /// A biome source a native mod registered (`register_biome_source`), by its name
+    /// (`mymod:rings`).
+    Registered(String),
+}
+
+impl RuntimeBiomeSource {
+    /// An invalid local field, if any. A world resolves the source's registry references
+    /// and checks whether its holder set can be sampled when admitting the request.
+    pub fn invalid_field(&self) -> Option<String> {
+        let reason = match self {
+            Self::Fixed(biome) if biome.is_empty() => "a fixed biome source needs a biome id",
+            Self::Checkerboard { biomes, .. } if biomes.is_empty() => {
+                "a checkerboard needs at least one biome"
+            }
+            Self::Checkerboard { biomes, .. }
+                if biomes.len() > 1 && biomes.iter().any(|entry| entry.starts_with('#')) =>
+            {
+                "a checkerboard holds either a single #tag reference or a list of biome ids"
+            }
+            Self::Checkerboard { scale, .. } if *scale > 62 => "biome_scale must be 0 to 62",
+            Self::Points(points) if points.is_empty() => {
+                "a points biome source needs at least one biome point"
+            }
+            Self::Points(points) if !points.iter().all(BiomePoint::is_valid) => {
+                "a biome point needs a biome, six climate intervals from -2 to 2 with min not above max, and an offset from 0 to 1"
+            }
+            Self::MultiNoise(preset) if preset.is_empty() => {
+                "a multi-noise biome source needs a preset id"
+            }
+            Self::Registered(id) if id.is_empty() => {
+                "a registered biome source needs a biome source id"
+            }
+            _ => return None,
+        };
+        Some(reason.to_owned())
+    }
 }
 
 /// A level a mod opens at run time.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 #[derive(sunrise_mod_api_macros::Wire)]
 pub struct RuntimeLevel {
@@ -27,19 +95,31 @@ pub struct RuntimeLevel {
     pub dimension_type: String,
     /// What generates the level's chunks.
     pub generator: RuntimeGenerator,
+    /// The biome source paired with `generator`. `None` uses `minecraft:plains` for
+    /// [`RuntimeGenerator::Flat`], `minecraft:the_void` for [`RuntimeGenerator::Void`], and
+    /// for [`RuntimeGenerator::Mod`] the biome source of `dimension_type`'s registered stem
+    /// (or `minecraft:plains` if none).
+    pub biome_source: Option<RuntimeBiomeSource>,
     /// The level's own seed: it reaches the mod generator, the level's block-tick and level
-    /// randoms and the hashed seed clients are sent. Not structures or biomes.
+    /// randoms and the hashed seed clients are sent.
     pub seed: i64,
 }
 
 impl RuntimeLevel {
-    /// A level of dimension type `dimension_type` generated by `generator`, with `seed`.
+    /// A level of dimension type `dimension_type` generated by `generator`, with `seed` and
+    /// the generator's default biome source.
     pub fn new(dimension_type: impl Into<String>, generator: RuntimeGenerator, seed: i64) -> Self {
         Self {
             dimension_type: dimension_type.into(),
             generator,
+            biome_source: None,
             seed,
         }
+    }
+    /// Set the biome source paired with this level's generator.
+    pub fn with_biome_source(mut self, biome_source: RuntimeBiomeSource) -> Self {
+        self.biome_source = Some(biome_source);
+        self
     }
 }
 
@@ -48,26 +128,29 @@ impl RuntimeLevel {
 #[non_exhaustive]
 #[derive(sunrise_mod_api_macros::Wire)]
 pub enum RuntimeLevelError {
-    /// There is no server world, or the call was made outside a mod's code.
+    /// There is no open logical server world, or the world's generation registries could
+    /// not be loaded for a registered chunk generator.
     Unavailable,
     /// The id is not `namespace:path` with a folder-safe namespace and path.
     InvalidId,
-    /// The id's namespace is not the calling mod's.
-    OutsideNamespace,
     /// The id is a vanilla level or a level registered at startup.
     ReservedId,
     /// The id is open, or a request to open it is waiting.
     AlreadyOpen,
-    /// No level of that id is open for this mod to unload.
+    /// No runtime level of that id is open to unload.
     NotOpen,
     /// The dimension type is neither vanilla nor registered at startup.
     UnknownDimensionType,
     /// No mod registered a chunk generator of that name.
     UnknownGenerator,
-    /// Noise-generated runtime levels are not built yet.
-    NoiseUnsupported,
-    /// The server already has as many runtime levels open as it allows.
-    CapReached,
+    /// The world has no matching biome, biome tag, biome preset or registered source.
+    UnknownBiomeSource,
+    /// The biome source failed validation (an empty holder set, out-of-range checkerboard
+    /// scale or invalid climate point, for example).
+    InvalidBiomeSource,
+    /// The biome source cannot pair with the chosen generator (for example a non-fixed biome
+    /// source on [`RuntimeGenerator::Flat`] or [`RuntimeGenerator::Void`]).
+    IncompatibleBiomeSource,
     /// A player, or an arrival not yet landed, is in the level.
     PlayersInside,
     /// `delete` of a level that has levels below it: an id that continues it with `/`

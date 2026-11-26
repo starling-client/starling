@@ -20,6 +20,7 @@ fn derived(record: &str, field: &str) -> bool {
     matches!(
         (record, field),
         ("Parts", "hooks")
+            | ("Attached", "panicked")
             | (
                 "Installed",
                 "epoch"
@@ -30,6 +31,56 @@ fn derived(record: &str, field: &str) -> bool {
                     | "entity_type_defaults"
             )
     )
+}
+
+// The generator has syntax but no trait resolver. Recognize the Copy types this
+// storage schema uses, including compositions of those types.
+fn is_copy(ty: &Type) -> bool {
+    match ty {
+        Type::Reference(reference) => reference.mutability.is_none(),
+        Type::Tuple(tuple) => tuple.elems.iter().all(is_copy),
+        Type::Path(path) if path.qself.is_none() => {
+            let segments = &path.path.segments;
+            let last = segments.last().unwrap();
+            match segments.len() {
+                1 if last.ident == "Option" => {
+                    matches!(&last.arguments, syn::PathArguments::AngleBracketed(args)
+                        if args.args.len() == 1
+                            && matches!(args.args.first(), Some(syn::GenericArgument::Type(inner)) if is_copy(inner)))
+                }
+                1 => matches!(
+                    last.ident.to_string().as_str(),
+                    "bool"
+                        | "char"
+                        | "usize"
+                        | "isize"
+                        | "u8"
+                        | "u16"
+                        | "u32"
+                        | "u64"
+                        | "u128"
+                        | "i8"
+                        | "i16"
+                        | "i32"
+                        | "i64"
+                        | "i128"
+                        | "f32"
+                        | "f64"
+                        | "HandlerThread"
+                        | "PayloadProtocol"
+                        | "PayloadDirection"
+                        | "VanillaStages"
+                ),
+                3 => {
+                    segments[0].ident == "std"
+                        && segments[1].ident == "any"
+                        && last.ident == "TypeId"
+                }
+                _ => false,
+            }
+        }
+        _ => false,
+    }
 }
 
 impl Schema {
@@ -74,11 +125,7 @@ impl Schema {
                             if !matches!(item.vis, Visibility::Public(_))
                                 || matches!(
                                     name.as_str(),
-                                    "Attached"
-                                        | "Parts"
-                                        | "OwnProvider"
-                                        | "TooltipAppenderPart"
-                                        | "Payloads"
+                                    "Attached" | "Parts" | "TooltipAppenderPart" | "Payloads"
                                 )
                             {
                                 let target_name = if name == "Installed" {
@@ -261,14 +308,7 @@ impl Schema {
                 fields.push(quote!(#(#attrs)* pub #field_name: #ty));
                 let converted = self.convert(quote!(input.#field_name), &field.ty)?;
                 conversions.push(quote!(#field_name: #converted));
-                let copied = matches!(&field.ty, Type::Reference(_))
-                    || matches!(&field.ty,
-                    Type::Path(path) if path.path.segments.len() == 1 && matches!(
-                        path.path.segments[0].ident.to_string().as_str(),
-                        "bool" | "char" | "usize" | "isize" | "u8" | "u16" | "u32" | "u64" | "u128" |
-                        "i8" | "i16" | "i32" | "i64" | "i128" | "f32" | "f64" | "HandlerThread" | "PayloadProtocol" | "PayloadDirection" |
-                        "VanillaStages"
-                    ));
+                let copied = is_copy(&field.ty);
                 reverse.push(if copied {
                     quote!(#field_name: input.#field_name)
                 } else {
@@ -418,7 +458,7 @@ pub(super) fn source(root: &Path) -> Result<String, String> {
     let mut factories = TokenStream::new();
     if directory.exists() {
         crate::rerun_if_changed(&directory.display());
-        for name in crate::catalog::Catalog::modules(&directory).map_err(|e| e.to_string())? {
+        for name in sunrise_game_discovery::module_files(&directory)? {
             let path = directory
                 .join(format!("{name}.rs"))
                 .to_string_lossy()

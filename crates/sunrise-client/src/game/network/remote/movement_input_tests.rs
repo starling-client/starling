@@ -62,7 +62,7 @@ fn connect(game: &mut Game<'_>) -> sunrise_protocol::connection::Pipe {
 }
 
 fn tick(game: &mut Game<'_>) {
-    if let Some(input) = game.tick_local_player(Vec::new(), 7).unwrap() {
+    if let Some(input) = game.tick_local_player(Vec::new(), 7, None).unwrap() {
         game.remote_send_state(input);
     }
 }
@@ -160,7 +160,7 @@ fn native_movement_input_keys_axes_and_sprint() {
             assert!(!game.player.as_ref().unwrap().sprinting);
             reset_player(game, 20);
             game.inventory[0] = Some(sunrise_client::items::ItemStack::new("minecraft:apple", 1));
-            game.using = Some((0, 0));
+            assert!(game.start_using_item());
             tick(game);
             assert!(!game.player.as_ref().unwrap().sprinting);
 

@@ -9,10 +9,7 @@ use sunrise_client::{
     hud::{EndPortalFill, HudBatch},
     win_screen::{Key, WinScreen},
 };
-use winit::{
-    event::{ElementState, KeyEvent},
-    keyboard::{KeyCode, PhysicalKey},
-};
+use winit::keyboard::KeyCode;
 
 /// What closing the screen does (`WinScreen.onFinished`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -93,21 +90,19 @@ impl Game<'_> {
         self.draw_screen_phase(batch, sunrise_client::screen_draw::RenderPhase::Foreground);
     }
     /// `WinScreen.keyPressed` / `keyReleased`; Escape closes it (`onClose`).
-    pub(super) fn win_key(&mut self, event: &KeyEvent) -> Result<()> {
-        let PhysicalKey::Code(code) = event.physical_key else {
-            return Ok(());
-        };
-        let pressed = event.state == ElementState::Pressed;
+    pub(super) fn win_key(&mut self, code: KeyCode, pressed: bool) -> Result<bool> {
         if code == KeyCode::Escape && pressed {
-            return self.close_win_screen();
+            self.close_win_screen()?;
+            return Ok(true);
         }
         let Some(key) = Key::from_code(code) else {
-            return Ok(());
+            return Ok(false);
         };
         if let Some(win) = self.win.as_mut() {
             win.screen.key(key, pressed);
+            return Ok(true);
         }
-        Ok(())
+        Ok(false)
     }
     /// `WinScreen.tick`: done once everything has rolled past the top.
     pub(super) fn tick_win_screen(&mut self) -> Result<()> {

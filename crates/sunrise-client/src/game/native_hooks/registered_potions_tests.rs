@@ -1,5 +1,4 @@
 //! `ItemsClientHost::potions` lists vanilla's potions in registry order with their ids.
-#![cfg(test)]
 use super::registered_potions::registered_potions;
 
 /// The list is `Potions`' registration order, namespaced, and built once.

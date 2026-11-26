@@ -28,8 +28,8 @@ pub(super) fn component(kind: i32, r: &mut Reader) -> Result<()> {
         8 | 31 | 42 | 43 | 44 | 46 | 65 | 75 | 88..=108 | 110..=117 | 121 => varint(r),
         // FLOAT: minimum_attack_charge, potion_duration_scale.
         7 | 54 => f32(r),
-        // Identifier.STREAM_CODEC: tooltip_style, note_block_sound.
-        35 | 73 => ident(r),
+        // Identifier.STREAM_CODEC: note_block_sound.
+        73 => ident(r),
         // UseEffects: canSprint, interactVibrations, speedMultiplier.
         5 => {
             r.bool()?;

@@ -1,27 +1,33 @@
-//! Buttons and text fields for a mod's own screens (`ClientHost::mod_screen_open`), kept by the
-//! mod and driven by the screen hooks it already listens to: draw them in
-//! `screen_render_post`, and hand them the presses, releases, drags, keys and typed characters of
-//! `screen_mouse_button_pressed_pre`, `screen_mouse_button_released_pre`,
-//! `screen_mouse_dragged_pre`, `screen_key_pressed_pre` and `screen_char_typed_pre`. Each input
-//! call answers an [`Outcome`](crate::client::widgets::Outcome): set the hook's `canceled` when it
-//! [`Outcome::handled`](crate::client::widgets::Outcome::handled) the input.
+//! Mounted widgets for vanilla and mod screens (`ScreenEvent.Init.Post`).
 //!
-//! They behave as vanilla's `Button` and `EditBox` do: the game draws them with its own sprites,
-//! label and caret (`DrawContext::widget_button`, `DrawContext::widget_text_field`), so they get
-//! its narration and controller support, and a text field edits with the same core as the
-//! game's own ([`TextEdit`](crate::TextEdit)). Everything else is plain Rust in the mod.
+//! Mods add buttons ([`Button`]), single-line text fields ([`TextField`]), and custom widgets
+//! ([`ScreenWidget`]) through [`ScreenWidgets`] during `Hooks::screen_init_post`
+//! (`Screen.addRenderableWidget`), rather than drawing widgets manually or forwarding screen input
+//! hooks by hand. The engine owns drawing, hover, focus, Tab traversal, controller navigation,
+//! narration, and mouse/keyboard dispatch for mounted widgets on every screen, clearing and
+//! rebuilding them when the screen initializes or rebuilds its children, not on a layout-only resize.
+//!
+//! Built-in buttons and text fields match vanilla's `Button` (`Button.Builder` / `Button.OnPress`)
+//! and `EditBox`, sharing the same editing core ([`TextEdit`]) as the game's own fields.
 //!
 //! ```
-//! use mod_api::client::widgets::{Button, Outcome, TextField, Widgets};
+//! use mod_api::client::widgets::{Button, TextField};
 //! use mod_api::Text;
-//! let mut widgets = Widgets::new();
-//! let name = widgets.add_text_field(TextField::new([20.0, 20.0, 150.0, 20.0], 32));
-//! let done = widgets.add_button(Button::new([20.0, 50.0, 150.0, 20.0], Text::literal("Done")));
-//! widgets.text_field_mut(name).unwrap().set_value("Steve");
-//! assert_eq!(widgets.text_field(name).unwrap().value(), "Steve");
-//! assert!(widgets.button(done).unwrap().active);
+//! let _name = TextField::new([20.0, 20.0, 150.0, 20.0], 32)
+//!     .value("Steve")
+//!     .hint(Text::translate("mymod.screen.player_name", vec![]));
+//! let done = Button::new(
+//!     [20.0, 50.0, 150.0, 20.0],
+//!     Text::translate("gui.done", vec![]),
+//!     |state, _host| {
+//!         state.active = false;
+//!     },
+//! );
+//! assert!(done.state().active);
 //! ```
-use crate::{ClientHost, DrawContext, SoundPlay, Text};
+
+use crate::{ClientHost, DrawContext, ItemStack, Text};
+use std::fmt;
 
 #[path = "widgets_text_edit.rs"]
 mod text_edit;
@@ -29,50 +35,6 @@ pub use text_edit::{
     EditKey, TextEdit, byte_index, char_len, filter_text, is_allowed_chat_character,
     java_whitespace, multiline_word_position, utf16_len, utf16_prefix, word_position,
 };
-
-/// GLFW's Shift bit in the screen hooks' `modifiers`.
-const SHIFT: u32 = 1;
-/// GLFW's Control bit.
-const CONTROL: u32 = 2;
-/// GLFW's Super bit: the edit modifier on macOS (`Minecraft.ON_OSX`).
-const SUPER: u32 = 8;
-/// `MouseHandler`'s double click: a second press of the same button within 250 ms.
-const DOUBLE_CLICK_MS: u64 = 250;
-/// `EditBox`'s caret blinks on and off every 300 ms from when it last moved.
-const BLINK_MS: u64 = 300;
-/// `EditBox.textColor` and `textColorUneditable`.
-const TEXT_COLOR: u32 = 0xFFE0_E0E0;
-const TEXT_COLOR_INACTIVE: u32 = 0xFF70_7070;
-
-/// A widget of a [`Widgets`] group, as it answered when added.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-// exhaustive: an index into its group; mods only compare and pass it back
-#[derive(sunrise_mod_api_macros::Wire)]
-pub struct WidgetId(usize);
-
-/// What a widget made of an input.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
-pub enum Outcome {
-    /// No widget took it: leave the hook's `canceled` alone.
-    Ignored,
-    /// A widget took it (a focus change, a caret move, a drag) with nothing else to report.
-    Handled,
-    /// The button was pressed: a left click, or Enter or Space while it has the focus.
-    Pressed(WidgetId),
-    /// The text field's text changed.
-    Changed(WidgetId),
-    /// Enter was pressed in the text field.
-    Submitted(WidgetId),
-}
-
-impl Outcome {
-    /// Whether a widget took the input, so the hook should set `canceled`.
-    pub fn handled(self) -> bool {
-        self != Self::Ignored
-    }
-}
 
 /// Custom GUI art for a [`Button`], using the sprite ids accepted by [`DrawContext::sprite`].
 #[derive(Clone, Debug, PartialEq, sunrise_mod_api_macros::Wire)]
@@ -101,567 +63,579 @@ impl ButtonSprites {
     }
 }
 
-/// A push button (`Button`): a label on a vanilla or custom sprite.
+/// Identifier of a child on the current screen during `Hooks::screen_init_post`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+// no wire: screen-local widget handle issued by the engine during `screen_init_post`, never serialized.
+// exhaustive: opaque per-screen handle whose inner value is private; mods only compare and pass it back.
+pub struct ScreenWidgetId(u64);
+
+impl ScreenWidgetId {
+    /// Build a widget identifier from an engine-assigned raw id.
+    // hidden: only the engine assigns mounted widget identifiers during `screen_init_post`.
+    #[doc(hidden)]
+    pub const fn from_raw(raw: u64) -> Self {
+        Self(raw)
+    }
+
+    /// Read the engine-assigned raw id.
+    // hidden: only the engine maps widget identifiers back to its mounted widget table.
+    #[doc(hidden)]
+    pub const fn raw(self) -> u64 {
+        self.0
+    }
+}
+
+/// Mutable state of a mounted [`Button`], passed to its [`ButtonPress`] callback.
 #[derive(Clone, Debug, PartialEq)]
+// no wire: live mounted-button state mutated in-process by its press callback.
 #[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
-pub struct Button {
+pub struct ButtonState {
     /// Where it is, `[x, y, width, height]` in GUI pixels (vanilla's are 20 high).
+    /// A press callback's non-finite rectangle is ignored, retaining the previous bounds.
     pub rect: [f32; 4],
-    /// Its label, centred and scrolled when it doesn't fit.
+    /// Its label, centred and scrolled when it does not fit.
     pub label: Text,
     /// An inactive button is greyed out, takes no press and is skipped by Tab.
     pub active: bool,
+    /// A hidden button is neither drawn nor interactive.
+    pub visible: bool,
     /// Custom art; `None` draws vanilla sprites with no label offset.
     pub sprites: Option<ButtonSprites>,
 }
 
+/// Press callback for a mounted [`Button`] (`Button.OnPress`).
+// no wire: in-process callback invoked by the client when a mounted button is pressed.
+pub type ButtonPress = dyn FnMut(&mut ButtonState, &mut dyn ClientHost) + Send + 'static;
+
+/// A push button (`Button`) mounted on a screen during `Hooks::screen_init_post`.
+// no wire: owns an in-process press callback (`ButtonPress`).
+// exhaustive: its fields are private; mods build it with `Button::new` or `Button::inactive`.
+pub struct Button {
+    state: ButtonState,
+    on_press: Option<Box<ButtonPress>>,
+}
+
 impl Button {
-    /// An active button with vanilla art.
-    pub fn new(rect: [f32; 4], label: Text) -> Self {
+    /// An active, visible button with vanilla art and a press callback (`Button.Builder`).
+    pub fn new(
+        rect: [f32; 4],
+        label: impl Into<Text>,
+        on_press: impl FnMut(&mut ButtonState, &mut dyn ClientHost) + Send + 'static,
+    ) -> Self {
         Self {
-            rect,
-            label,
-            active: true,
-            sprites: None,
+            state: ButtonState {
+                rect,
+                label: label.into(),
+                active: true,
+                visible: true,
+                sprites: None,
+            },
+            on_press: Some(Box::new(on_press)),
         }
+    }
+
+    /// An inactive, visible button with no press callback and vanilla art.
+    pub fn inactive(rect: [f32; 4], label: impl Into<Text>) -> Self {
+        Self {
+            state: ButtonState {
+                rect,
+                label: label.into(),
+                active: false,
+                visible: true,
+                sprites: None,
+            },
+            on_press: None,
+        }
+    }
+
+    /// Set whether the button accepts presses and Tab focus.
+    pub fn active(mut self, active: bool) -> Self {
+        self.state.active = active;
+        self
+    }
+
+    /// Set whether the button is drawn and interactive.
+    pub fn visible(mut self, visible: bool) -> Self {
+        self.state.visible = visible;
+        self
+    }
+
+    /// Use custom GUI art instead of vanilla's button sprites.
+    pub fn sprites(mut self, sprites: ButtonSprites) -> Self {
+        self.state.sprites = Some(sprites);
+        self
+    }
+
+    /// Inspect the button's configured state before mounting it.
+    pub fn state(&self) -> &ButtonState {
+        &self.state
+    }
+
+    /// Unpack the button into its state and press callback for the engine's widget store.
+    // hidden: only the engine's screen widget store unpacks a `Button` when mounted.
+    #[doc(hidden)]
+    pub fn into_parts(self) -> (ButtonState, Option<Box<ButtonPress>>) {
+        (self.state, self.on_press)
     }
 }
 
-/// A single-line text field (`EditBox`).
-#[derive(Clone, Debug, PartialEq)]
+impl fmt::Debug for Button {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Button")
+            .field("state", &self.state)
+            .field("has_on_press", &self.on_press.is_some())
+            .finish()
+    }
+}
+
+/// Change or submit callback for a mounted [`TextField`].
+// no wire: in-process callback invoked by the client when a mounted text field changes or submits.
+pub type TextFieldCallback = dyn FnMut(&str, &mut dyn ClientHost) + Send + 'static;
+
+/// Extracted fields of a [`TextField`] for the engine's screen widget store.
+// no wire: engine-only handoff record carrying in-process callbacks.
+// hidden: only the engine's screen widget store unpacks a `TextField` when mounted.
+#[doc(hidden)]
 #[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
-pub struct TextField {
+pub struct TextFieldParts {
     /// Where it is, `[x, y, width, height]` in GUI pixels (vanilla's are 20 high).
     pub rect: [f32; 4],
-    /// The text, cursor and selection.
-    pub edit: TextEdit,
-    /// An inactive field shows its text greyed out, takes no input and is skipped by Tab.
+    /// Initial text content.
+    pub value: String,
+    /// Optional hint text shown when the field is empty (`EditBox.setHint`).
+    pub hint: Option<Text>,
+    /// Maximum number of UTF-16 code units accepted (`EditBox.setMaxLength`, `insertText`).
+    pub max_length: usize,
+    /// Whether the player may edit the text (`EditBox.setEditable`).
+    pub editable: bool,
+    /// Whether the field is active and accepts Tab focus.
     pub active: bool,
-    /// Drawn on the `widget/text_field` sprite with a 4-pixel margin; without, the bare text.
+    /// Whether the field is drawn and interactive.
+    pub visible: bool,
+    /// Whether the vanilla `widget/text_field` frame is drawn (`EditBox.setBordered`).
     pub bordered: bool,
-    /// The text's colour, ARGB (`EditBox.setTextColor`).
-    pub text_color: u32,
-    /// Grey text shown after the end of the text (`EditBox.setSuggestion`).
-    pub suggestion: Option<String>,
-    /// What the narrator calls it (`EditBox`'s message: `<message> edit box: <text>`).
-    pub message: String,
-    /// The first character shown, as the game left it after the last draw.
-    scroll: usize,
-    /// The x of each shown character boundary after the last draw.
-    edges: Vec<f32>,
-    /// `host.millis()` when the caret last moved: it blinks from there.
-    moved_at: u64,
+    /// Called whenever the field's text changes (`EditBox.setResponder`).
+    pub on_change: Option<Box<TextFieldCallback>>,
+    /// Called when Enter is pressed while the field is focused.
+    pub on_submit: Option<Box<TextFieldCallback>>,
+}
+
+/// A single-line text field (`EditBox`) mounted on a screen during `Hooks::screen_init_post`.
+/// The controller keyboard edits the focused field without forwarding completion
+/// or suggestion/history navigation to a native Chat editor behind it.
+// no wire: owns in-process change and submit callbacks (`TextFieldCallback`).
+// exhaustive: its fields are private; mods build it with `TextField::new`.
+pub struct TextField {
+    rect: [f32; 4],
+    value: String,
+    hint: Option<Text>,
+    max_length: usize,
+    editable: bool,
+    active: bool,
+    visible: bool,
+    bordered: bool,
+    on_change: Option<Box<TextFieldCallback>>,
+    on_submit: Option<Box<TextFieldCallback>>,
 }
 
 impl TextField {
-    /// An empty, active, bordered field that takes up to `max_length` characters.
+    /// An empty, editable, active, visible, bordered text field taking up to `max_length`
+    /// UTF-16 code units (`EditBox.setMaxLength` and `EditBox.insertText`).
     pub fn new(rect: [f32; 4], max_length: usize) -> Self {
         Self {
             rect,
-            edit: TextEdit::new(max_length),
+            value: String::new(),
+            hint: None,
+            max_length,
+            editable: true,
             active: true,
+            visible: true,
             bordered: true,
-            text_color: TEXT_COLOR,
-            suggestion: None,
-            message: String::new(),
-            scroll: 0,
-            edges: Vec::new(),
-            moved_at: 0,
+            on_change: None,
+            on_submit: None,
         }
     }
 
-    /// The text.
-    pub fn value(&self) -> &str {
-        &self.edit.value
+    /// Set the initial text content (`EditBox.setValue`).
+    pub fn value(mut self, value: impl Into<String>) -> Self {
+        self.value = value.into();
+        self
     }
 
-    /// `EditBox.setValue`: the text, cut to the maximum length, with the cursor at its end.
-    pub fn set_value(&mut self, value: &str) {
-        self.edit.set_value(value);
-        self.scroll_to_cursor();
+    /// Set hint text drawn while the field is empty (`EditBox.setHint`).
+    pub fn hint(mut self, hint: impl Into<Text>) -> Self {
+        self.hint = Some(hint.into());
+        self
     }
 
-    /// `EditBox.scrollTo` without the font: back to the cursor when it is left of what shows,
-    /// and about a field's width back when it is on the first shown character (all the way, and
-    /// the game scrolls forward until the cursor is at the right edge when it draws).
-    fn scroll_to_cursor(&mut self) {
-        self.scroll = self.scroll.min(char_len(&self.edit.value));
-        if self.edit.cursor == self.scroll && self.scroll > 0 {
-            self.scroll = 0;
-        } else if self.edit.cursor < self.scroll {
-            self.scroll = self.edit.cursor;
-        }
+    /// Set whether typing and edits can modify the field's text (`EditBox.setEditable`).
+    pub fn editable(mut self, editable: bool) -> Self {
+        self.editable = editable;
+        self
     }
 
-    /// `EditBox.findClickedPositionInText`: the character boundary under GUI `x`, from the
-    /// boundaries the last draw left.
-    fn position_at(&self, x: f32) -> usize {
-        let x = x.floor();
-        let shown = self
-            .edges
-            .iter()
-            .skip(1)
-            .take_while(|&&edge| edge <= x)
-            .count();
-        self.scroll + shown
+    /// Set whether the field is active and accepts Tab focus.
+    pub fn active(mut self, active: bool) -> Self {
+        self.active = active;
+        self
     }
 
-    /// The caret moved: scroll back to it and restart its blink.
-    fn moved(&mut self, now: u64) {
-        self.scroll_to_cursor();
-        self.moved_at = now;
+    /// Set whether the field is drawn and interactive.
+    pub fn visible(mut self, visible: bool) -> Self {
+        self.visible = visible;
+        self
     }
 
-    /// What the game draws.
-    fn view(&self, focused: bool, now: u64) -> TextFieldView {
-        TextFieldView {
+    /// Set whether the vanilla `widget/text_field` frame is drawn (`EditBox.setBordered`).
+    pub fn bordered(mut self, bordered: bool) -> Self {
+        self.bordered = bordered;
+        self
+    }
+
+    /// Install a callback invoked whenever the field's text changes (`EditBox.setResponder`).
+    pub fn on_change(
+        mut self,
+        callback: impl FnMut(&str, &mut dyn ClientHost) + Send + 'static,
+    ) -> Self {
+        self.on_change = Some(Box::new(callback));
+        self
+    }
+
+    /// Install a callback invoked when Enter is pressed while the field is focused.
+    pub fn on_submit(
+        mut self,
+        callback: impl FnMut(&str, &mut dyn ClientHost) + Send + 'static,
+    ) -> Self {
+        self.on_submit = Some(Box::new(callback));
+        self
+    }
+
+    /// Unpack the text field into its fields and callbacks for the engine's widget store.
+    // hidden: only the engine's screen widget store unpacks a `TextField` when mounted.
+    #[doc(hidden)]
+    pub fn into_parts(self) -> TextFieldParts {
+        TextFieldParts {
             rect: self.rect,
-            value: self.edit.value.clone(),
-            cursor: self.edit.cursor,
-            highlight: self.edit.highlight,
-            max_length: self.edit.max_length,
-            scroll: self.scroll,
-            focused,
-            caret_shown: focused
-                && (now.saturating_sub(self.moved_at) / BLINK_MS).is_multiple_of(2),
+            value: self.value,
+            hint: self.hint,
+            max_length: self.max_length,
+            editable: self.editable,
+            active: self.active,
+            visible: self.visible,
             bordered: self.bordered,
-            text_color: if self.active {
-                self.text_color
-            } else {
-                TEXT_COLOR_INACTIVE
-            },
-            suggestion: self.suggestion.clone(),
-            message: self.message.clone(),
+            on_change: self.on_change,
+            on_submit: self.on_submit,
         }
     }
 }
 
-/// A text field as [`DrawContext::widget_text_field`] draws it: the game's `EditBox` look,
-/// filled in by [`Widgets`].
-#[derive(Clone, Debug, PartialEq)]
-#[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
-pub struct TextFieldView {
-    /// Where it is, `[x, y, width, height]` in GUI pixels.
-    pub rect: [f32; 4],
-    /// The text.
-    pub value: String,
-    /// The cursor and the other end of the selection, in characters.
-    pub cursor: usize,
-    /// The selection's anchor.
-    pub highlight: usize,
-    /// The field's maximum length: a full field shows a bar for its caret.
-    pub max_length: usize,
-    /// The first character shown, from the last draw.
-    pub scroll: usize,
-    /// It has the keyboard focus: highlighted sprite, caret, narration.
-    pub focused: bool,
-    /// The caret is in the visible half of its blink.
-    pub caret_shown: bool,
-    /// On the `widget/text_field` sprite with a 4-pixel margin.
-    pub bordered: bool,
-    /// The text's colour, ARGB.
-    pub text_color: u32,
-    /// Grey text after the end of the text.
-    pub suggestion: Option<String>,
-    /// The narrator's name for it.
-    pub message: String,
-}
-
-/// What [`DrawContext::widget_text_field`] drew: the first character shown (after scrolling to
-/// the cursor) and the GUI x of each shown character boundary, from the start of the shown
-/// text to its end, so a press maps to the character it is on.
-#[derive(Clone, Debug, PartialEq, Default)]
-#[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
-pub struct TextFieldLayout {
-    /// The first character shown.
-    pub scroll: usize,
-    /// The x of each shown character boundary, left to right.
-    pub edges: Vec<f32>,
-}
-
-impl TextFieldLayout {
-    /// The layout a draw answers.
-    pub fn new(scroll: usize, edges: Vec<f32>) -> Self {
-        Self { scroll, edges }
+impl fmt::Debug for TextField {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TextField")
+            .field("rect", &self.rect)
+            .field("value", &self.value)
+            .field("hint", &self.hint)
+            .field("max_length", &self.max_length)
+            .field("editable", &self.editable)
+            .field("active", &self.active)
+            .field("visible", &self.visible)
+            .field("bordered", &self.bordered)
+            .field("has_on_change", &self.on_change.is_some())
+            .field("has_on_submit", &self.on_submit.is_some())
+            .finish()
     }
 }
 
-/// A widget of a group.
-#[derive(Clone, Debug, PartialEq)]
+/// What a context menu entry runs when the player picks it (`ClientHost::open_context_menu`).
+// no wire: in-process callback invoked by the client when a context menu action is picked.
+pub type ContextMenuAction = dyn FnOnce(&mut dyn ClientHost) + Send + 'static;
+
+/// One row of a context menu: an action, a nested menu, or a separator line.
+// no wire: the entries hold the mod's closures and stay in this process.
 #[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
-pub enum Widget {
-    /// A button.
-    Button(Button),
-    /// A text field.
-    TextField(TextField),
+pub enum ContextMenuEntry {
+    /// A row the player can pick: the menu closes, then `on_select` runs.
+    Action {
+        /// The row's text.
+        label: Text,
+        /// An item drawn before the label.
+        icon: Option<ItemStack>,
+        /// A disabled row is drawn greyed and can't be picked.
+        enabled: bool,
+        /// Runs once when the player picks the row, after the menu closed.
+        on_select: Box<ContextMenuAction>,
+    },
+    /// A row that opens `entries` beside it (hover, the right arrow key, or Enter).
+    Submenu {
+        /// The row's text, drawn with an arrow after it.
+        label: Text,
+        /// An item drawn before the label.
+        icon: Option<ItemStack>,
+        /// A disabled row is drawn greyed and doesn't open.
+        enabled: bool,
+        /// The nested menu's rows; an empty list doesn't open.
+        entries: Vec<ContextMenuEntry>,
+    },
+    /// A thin line between groups of rows.
+    Separator,
 }
 
-impl Widget {
-    fn rect(&self) -> [f32; 4] {
+impl ContextMenuEntry {
+    /// An enabled action with no icon.
+    pub fn action(
+        label: impl Into<Text>,
+        on_select: impl FnOnce(&mut dyn ClientHost) + Send + 'static,
+    ) -> Self {
+        Self::Action {
+            label: label.into(),
+            icon: None,
+            enabled: true,
+            on_select: Box::new(on_select),
+        }
+    }
+    /// An enabled nested menu with no icon.
+    pub fn submenu(label: impl Into<Text>, entries: Vec<ContextMenuEntry>) -> Self {
+        Self::Submenu {
+            label: label.into(),
+            icon: None,
+            enabled: true,
+            entries,
+        }
+    }
+    /// A separator line.
+    pub fn separator() -> Self {
+        Self::Separator
+    }
+    /// The same row with `stack` drawn before its label (nothing for a separator).
+    pub fn icon(mut self, stack: ItemStack) -> Self {
+        if let Self::Action { icon, .. } | Self::Submenu { icon, .. } = &mut self {
+            *icon = Some(stack);
+        }
+        self
+    }
+    /// The same row enabled or disabled (nothing for a separator).
+    pub fn enabled(mut self, on: bool) -> Self {
+        if let Self::Action { enabled, .. } | Self::Submenu { enabled, .. } = &mut self {
+            *enabled = on;
+        }
+        self
+    }
+}
+
+impl std::fmt::Debug for ContextMenuEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Button(button) => button.rect,
-            Self::TextField(field) => field.rect,
+            Self::Action { label, enabled, .. } => f
+                .debug_struct("Action")
+                .field("label", label)
+                .field("enabled", enabled)
+                .finish_non_exhaustive(),
+            Self::Submenu {
+                label,
+                enabled,
+                entries,
+                ..
+            } => f
+                .debug_struct("Submenu")
+                .field("label", label)
+                .field("enabled", enabled)
+                .field("entries", entries)
+                .finish_non_exhaustive(),
+            Self::Separator => f.write_str("Separator"),
         }
     }
+}
 
+/// A custom widget mounted on a screen during `Hooks::screen_init_post`
+/// (`Renderable` + `GuiEventListener`).
+///
+/// The engine owns focus, hover, Tab traversal, drawing order, and input dispatch for mounted
+/// widgets. Override the methods the widget reacts to; every input handler defaults to `false`
+/// (unhandled). A pointer press goes only to the first hit child; returning `false` from
+/// `mouse_clicked` leaves focus unchanged.
+// no wire: in-process custom widget trait object owned by the client screen while it stays open.
+pub trait ScreenWidget: Send + 'static {
+    /// Where the widget is, `[x, y, width, height]` in GUI pixels.
+    fn bounds(&self) -> [f32; 4];
+
+    /// Whether the widget is drawn and receives pointer/keyboard input. Defaults to `true`.
+    fn visible(&self) -> bool {
+        true
+    }
+
+    /// Whether the widget is interactive and eligible for Tab focus. Defaults to `true`.
     fn active(&self) -> bool {
-        match self {
-            Self::Button(button) => button.active,
-            Self::TextField(field) => field.active,
-        }
-    }
-}
-
-/// `AbstractWidget.isMouseOver`.
-fn over([x, y, w, h]: [f32; 4], [px, py]: [f32; 2]) -> bool {
-    px >= x && py >= y && px < x + w && py < y + h
-}
-
-/// The widgets of one screen in focus order, and which one has the keyboard focus.
-#[derive(Clone, Debug, Default, PartialEq)]
-// exhaustive: every field is private; mods build it with `Widgets::new`
-#[derive(sunrise_mod_api_macros::Wire)]
-pub struct Widgets {
-    widgets: Vec<Widget>,
-    focus: Option<usize>,
-    /// The left button went down on the focused widget and is still held (`Screen.isDragging`).
-    dragging: bool,
-    /// The last left press's time, for double clicks.
-    last_press: Option<u64>,
-}
-
-impl Widgets {
-    /// An empty group.
-    pub fn new() -> Self {
-        Self::default()
+        true
     }
 
-    /// Adds `button` after the others; Tab reaches it in that order.
-    pub fn add_button(&mut self, button: Button) -> WidgetId {
-        self.widgets.push(Widget::Button(button));
-        WidgetId(self.widgets.len() - 1)
-    }
-
-    /// Adds `field` after the others; Tab reaches it in that order.
-    pub fn add_text_field(&mut self, field: TextField) -> WidgetId {
-        self.widgets.push(Widget::TextField(field));
-        WidgetId(self.widgets.len() - 1)
-    }
-
-    /// The widget `id`.
-    pub fn widget(&self, id: WidgetId) -> Option<&Widget> {
-        self.widgets.get(id.0)
-    }
-
-    /// Button `id`, if it is one.
-    pub fn button(&self, id: WidgetId) -> Option<&Button> {
-        match self.widgets.get(id.0) {
-            Some(Widget::Button(button)) => Some(button),
-            _ => None,
-        }
-    }
-
-    /// Button `id`, to change its label or make it inactive.
-    pub fn button_mut(&mut self, id: WidgetId) -> Option<&mut Button> {
-        match self.widgets.get_mut(id.0) {
-            Some(Widget::Button(button)) => Some(button),
-            _ => None,
-        }
-    }
-
-    /// Text field `id`, if it is one.
-    pub fn text_field(&self, id: WidgetId) -> Option<&TextField> {
-        match self.widgets.get(id.0) {
-            Some(Widget::TextField(field)) => Some(field),
-            _ => None,
-        }
-    }
-
-    /// Text field `id`, to read or set its text.
-    pub fn text_field_mut(&mut self, id: WidgetId) -> Option<&mut TextField> {
-        match self.widgets.get_mut(id.0) {
-            Some(Widget::TextField(field)) => Some(field),
-            _ => None,
-        }
-    }
-
-    /// The widget with the keyboard focus.
-    pub fn focused(&self) -> Option<WidgetId> {
-        self.focus.map(WidgetId)
-    }
-
-    /// Gives `id` the keyboard focus (an inactive widget can't take it), or clears it.
-    pub fn set_focus(&mut self, host: &dyn ClientHost, id: Option<WidgetId>) {
-        self.focus_index(id.map(|id| id.0), host.millis());
-    }
-
-    /// The focused widget while it is active: a widget made inactive after taking the focus
-    /// keeps it (Tab moves on from there) but takes no input (`AbstractButton.keyPressed`,
-    /// `EditBox.canConsumeInput`).
-    fn active_focus(&self) -> Option<usize> {
-        self.focus
-            .filter(|&i| self.widgets.get(i).is_some_and(Widget::active))
-    }
-
-    fn focus_index(&mut self, index: Option<usize>, now: u64) {
-        let index = index.filter(|&i| self.widgets.get(i).is_some_and(Widget::active));
-        if index != self.focus
-            && let Some(Widget::TextField(field)) = index.and_then(|i| self.widgets.get_mut(i))
-        {
-            field.moved_at = now;
-        }
-        self.focus = index;
-    }
-
-    /// Draws every widget, the one under `mouse` (the screen's `mouse`) or with the focus
-    /// highlighted, in the order added. Returns a refusal if a label cannot cross the text boundary.
-    pub fn draw(
+    /// Draw the widget during screen rendering (`Renderable.render`).
+    fn render(
         &mut self,
+        host: &dyn ClientHost,
         draw: &mut dyn DrawContext,
-        host: &dyn ClientHost,
         mouse: [f32; 2],
-    ) -> Result<(), crate::text::TextFormError> {
-        let now = host.millis();
-        for (index, widget) in self.widgets.iter_mut().enumerate() {
-            let focused = self.focus == Some(index);
-            match widget {
-                Widget::Button(button) => {
-                    let highlighted = button.active && (focused || over(button.rect, mouse));
-                    draw.widget_button(
-                        button.rect,
-                        &button.label,
-                        button.active,
-                        highlighted,
-                        button.sprites.as_ref(),
-                    )?;
-                }
-                Widget::TextField(field) => {
-                    let layout = draw.widget_text_field(&field.view(focused, now));
-                    field.scroll = layout.scroll;
-                    field.edges = layout.edges;
-                }
-            }
-        }
-        Ok(())
+        hovered: bool,
+        focused: bool,
+        partial_tick: f32,
+    ) {
+        let _ = (host, draw, mouse, hovered, focused, partial_tick);
     }
 
-    /// A mouse button went down at `at` (the screen's `mouse`): `Screen.mouseClicked`. Only the
-    /// left button clicks widgets (`isValidClickButton`). The widget under it takes the focus
-    /// and a button is pressed (with its click sound), or a field's cursor goes there, Shift
-    /// extending the selection and a double click selecting the word. A left press over no
-    /// widget clears the focus and is `Ignored`.
-    pub fn mouse_pressed(
+    /// Handle a mouse button press (`GuiEventListener.mouseClicked`).
+    ///
+    /// Return `true` when the widget handled the click.
+    fn mouse_clicked(
         &mut self,
-        host: &dyn ClientHost,
-        at: [f32; 2],
+        host: &mut dyn ClientHost,
+        mouse: [f32; 2],
         button: i32,
         modifiers: u32,
-    ) -> Outcome {
-        if button != 0 {
-            return Outcome::Ignored;
-        }
-        let now = host.millis();
-        let double = self
-            .last_press
-            .is_some_and(|then| now.saturating_sub(then) < DOUBLE_CLICK_MS);
-        let Some(index) = self
-            .widgets
-            .iter()
-            .position(|widget| widget.active() && over(widget.rect(), at))
-        else {
-            self.focus_index(None, now);
-            return Outcome::Ignored;
-        };
-        // `MouseHandler.onButton` keeps the time only of a click the screen took.
-        self.last_press = Some(now);
-        self.focus_index(Some(index), now);
-        self.dragging = true;
-        match &mut self.widgets[index] {
-            Widget::Button(_) => {
-                click_sound(host);
-                Outcome::Pressed(WidgetId(index))
-            }
-            Widget::TextField(field) => {
-                let pos = field.position_at(at[0]);
-                if double {
-                    let (start, end) = field.edit.word_at(pos);
-                    field.edit.set_cursor(start, false);
-                    field.edit.set_cursor(end, true);
-                } else {
-                    field.edit.set_cursor(pos, modifiers & SHIFT != 0);
-                }
-                field.moved(now);
-                Outcome::Handled
-            }
-        }
+        double_click: bool,
+    ) -> bool {
+        let _ = (host, mouse, button, modifiers, double_click);
+        false
     }
 
-    /// A mouse button went up: a drag that began on a widget ends.
-    pub fn mouse_released(&mut self, button: i32) -> Outcome {
-        if button == 0 && std::mem::take(&mut self.dragging) {
-            Outcome::Handled
-        } else {
-            Outcome::Ignored
-        }
+    /// Handle a mouse button release (`GuiEventListener.mouseReleased`).
+    ///
+    /// Return `true` when the widget handled the release.
+    fn mouse_released(
+        &mut self,
+        host: &mut dyn ClientHost,
+        mouse: [f32; 2],
+        button: i32,
+        modifiers: u32,
+    ) -> bool {
+        let _ = (host, mouse, button, modifiers);
+        false
     }
 
-    /// The pointer moved to `at` with `button` held (`EditBox.onDrag`): the selection of the
-    /// focused field the press began on follows it.
-    pub fn mouse_dragged(&mut self, host: &dyn ClientHost, at: [f32; 2], button: i32) -> Outcome {
-        if button != 0 || !self.dragging {
-            return Outcome::Ignored;
-        }
-        let now = host.millis();
-        match self.active_focus().and_then(|i| self.widgets.get_mut(i)) {
-            Some(Widget::TextField(field)) => {
-                let pos = field.position_at(at[0]);
-                field.edit.set_cursor(pos, true);
-                field.moved(now);
-                Outcome::Handled
-            }
-            Some(_) => Outcome::Handled,
-            None => Outcome::Ignored,
-        }
+    /// Handle pointer motion while a mouse button is held (`GuiEventListener.mouseDragged`).
+    ///
+    /// Return `true` when the widget handled the drag.
+    fn mouse_dragged(
+        &mut self,
+        host: &mut dyn ClientHost,
+        mouse: [f32; 2],
+        button: i32,
+        delta: [f32; 2],
+        modifiers: u32,
+    ) -> bool {
+        let _ = (host, mouse, button, delta, modifiers);
+        false
     }
 
-    /// A key went down (or repeated), named as `screen_key_pressed_pre` names it
-    /// (`key.keyboard.tab`). Tab and Shift+Tab move the focus in the order added
-    /// (`FocusNavigationEvent.TabNavigation`, wrapping round); Enter or Space presses the
-    /// focused button; the focused field edits with Backspace, Delete, the arrows, Home and End
-    /// (Ctrl for a word, Shift to select), Ctrl+A/C/V/X through the clipboard, and answers
-    /// Enter with [`Outcome::Submitted`]. Escape and other keys are `Ignored`.
-    pub fn key_pressed(&mut self, host: &dyn ClientHost, key: &str, modifiers: u32) -> Outcome {
-        let now = host.millis();
-        let shift = modifiers & SHIFT != 0;
-        let ctrl =
-            modifiers & CONTROL != 0 || (cfg!(target_os = "macos") && modifiers & SUPER != 0);
-        if key == "key.keyboard.tab" {
-            return self.tab(!shift, now);
-        }
-        let Some(index) = self.active_focus() else {
-            return Outcome::Ignored;
-        };
-        let id = WidgetId(index);
-        match &mut self.widgets[index] {
-            Widget::Button(_) => match key {
-                "key.keyboard.enter" | "key.keyboard.keypad.enter" | "key.keyboard.space" => {
-                    click_sound(host);
-                    Outcome::Pressed(id)
-                }
-                _ => Outcome::Ignored,
-            },
-            Widget::TextField(field) => {
-                let before = field.edit.value.clone();
-                let edit_key = match key {
-                    "key.keyboard.enter" | "key.keyboard.keypad.enter" => {
-                        return Outcome::Submitted(id);
-                    }
-                    "key.keyboard.backspace" => Some(EditKey::Backspace),
-                    "key.keyboard.delete" => Some(EditKey::Delete),
-                    "key.keyboard.left" => Some(EditKey::Left),
-                    "key.keyboard.right" => Some(EditKey::Right),
-                    "key.keyboard.home" => Some(EditKey::Home),
-                    "key.keyboard.end" => Some(EditKey::End),
-                    "key.keyboard.a" if ctrl => Some(EditKey::SelectAll),
-                    _ => None,
-                };
-                let handled = match edit_key {
-                    Some(edit_key) => field.edit.key(edit_key, ctrl, shift),
-                    None if ctrl => match key {
-                        "key.keyboard.c" => {
-                            host.set_clipboard_text(&field.edit.selected_text());
-                            true
-                        }
-                        "key.keyboard.x" => {
-                            host.set_clipboard_text(&field.edit.selected_text());
-                            field.edit.insert_text("");
-                            true
-                        }
-                        "key.keyboard.v" => {
-                            if let Some(text) = host.clipboard_text() {
-                                field.edit.insert_text(&text);
-                            }
-                            true
-                        }
-                        _ => false,
-                    },
-                    None => false,
-                };
-                if !handled {
-                    return Outcome::Ignored;
-                }
-                field.moved(now);
-                if field.edit.value != before {
-                    Outcome::Changed(id)
-                } else {
-                    Outcome::Handled
-                }
-            }
-        }
+    /// Handle a mouse wheel scroll (`GuiEventListener.mouseScrolled`).
+    ///
+    /// Return `true` when the widget handled the scroll.
+    fn mouse_scrolled(
+        &mut self,
+        host: &mut dyn ClientHost,
+        mouse: [f32; 2],
+        scroll: [f64; 2],
+        modifiers: u32,
+    ) -> bool {
+        let _ = (host, mouse, scroll, modifiers);
+        false
     }
 
-    /// A character was typed (`screen_char_typed_pre`): the focused field takes it
-    /// (`EditBox.charTyped`) when it is one a chat line may hold.
-    pub fn char_typed(&mut self, host: &dyn ClientHost, c: char) -> Outcome {
-        let Some(index) = self.active_focus() else {
-            return Outcome::Ignored;
-        };
-        let Some(Widget::TextField(field)) = self.widgets.get_mut(index) else {
-            return Outcome::Ignored;
-        };
-        if !is_allowed_chat_character(c) {
-            return Outcome::Ignored;
-        }
-        let before = field.edit.value.clone();
-        field.edit.insert_text(c.encode_utf8(&mut [0; 4]));
-        field.moved(host.millis());
-        if field.edit.value != before {
-            Outcome::Changed(WidgetId(index))
-        } else {
-            Outcome::Handled
-        }
+    /// Handle a key press (`GuiEventListener.keyPressed`).
+    ///
+    /// Return `true` when the widget handled the key.
+    fn key_pressed(
+        &mut self,
+        host: &mut dyn ClientHost,
+        key: &str,
+        repeat: bool,
+        modifiers: u32,
+    ) -> bool {
+        let _ = (host, key, repeat, modifiers);
+        false
     }
 
-    /// `FocusNavigationEvent.TabNavigation`: the next (or previous) active widget after the
-    /// focused one, wrapping round; from no focus, the first (or the last).
-    fn tab(&mut self, forward: bool, now: u64) -> Outcome {
-        let count = self.widgets.len();
-        if count == 0 {
-            return Outcome::Ignored;
-        }
-        let start = match (self.focus, forward) {
-            (Some(i), true) => i + 1,
-            (Some(i), false) => i + count - 1,
-            (None, true) => 0,
-            (None, false) => count - 1,
-        };
-        let next = (0..count)
-            .map(|step| {
-                if forward {
-                    (start + step) % count
-                } else {
-                    (start + count - step) % count
-                }
-            })
-            .find(|&i| self.widgets[i].active());
-        match next {
-            Some(i) => {
-                self.focus_index(Some(i), now);
-                Outcome::Handled
-            }
-            None => Outcome::Ignored,
-        }
+    /// Handle a key release (`GuiEventListener.keyReleased`).
+    ///
+    /// Return `true` when the widget handled the key release.
+    fn key_released(&mut self, host: &mut dyn ClientHost, key: &str, modifiers: u32) -> bool {
+        let _ = (host, key, modifiers);
+        false
+    }
+
+    /// Handle a typed character (`GuiEventListener.charTyped`).
+    ///
+    /// Return `true` when the widget handled the character.
+    fn char_typed(&mut self, host: &mut dyn ClientHost, c: char, modifiers: u32) -> bool {
+        let _ = (host, c, modifiers);
+        false
+    }
+
+    /// Whether this widget wants text input focus priority over screen hotkeys (such as `E` to
+    /// close inventory screens) while focused. This does not consume IME preedit; custom widgets
+    /// receive committed characters via [`Self::char_typed`]. Defaults to `false`.
+    fn captures_input(&self) -> bool {
+        false
+    }
+
+    /// Called when this widget gains or loses keyboard focus (`GuiEventListener.setFocused`).
+    fn set_focused(&mut self, focused: bool) {
+        let _ = focused;
     }
 }
 
-/// `AbstractButton.playDownSound`.
-fn click_sound(host: &dyn ClientHost) {
-    host.play_local_sound(&SoundPlay::ui("minecraft:ui.button.click"), 0);
+/// An initialized child listed by [`ScreenWidgets::children`].
+#[derive(Clone, Debug, PartialEq)]
+// no wire: live screen-local child snapshot containing an opaque ScreenWidgetId.
+#[non_exhaustive]
+pub struct ScreenChild {
+    /// The screen-local handle used to remove the child.
+    pub id: ScreenWidgetId,
+    /// `[x, y, width, height]` in GUI pixels at registration.
+    pub rect: [f32; 4],
+    /// The child's label, if it supplies one.
+    pub label: Option<Text>,
+}
+
+impl ScreenChild {
+    /// Build the value exposed by the engine's registrar.
+    // hidden: only the engine issues ScreenWidgetId handles for initialized children.
+    #[doc(hidden)]
+    pub fn new(id: ScreenWidgetId, rect: [f32; 4], label: Option<Text>) -> Self {
+        Self { id, rect, label }
+    }
+}
+
+/// Screen-scoped widget registrar passed to `Hooks::screen_init_post` (`ScreenEvent.Init.Post`).
+///
+/// Widgets added here live as long as the current screen stays open and are cleared and rebuilt
+/// whenever the screen re-initializes (for example on a resize that rebuilds children).
+/// Mounting a widget with non-finite bounds returns an ID that is not present in the screen.
+// no wire: borrowed registrar scoped to a single `screen_init_post` dispatch.
+pub trait ScreenWidgets {
+    /// Registered children in initialization order (`ScreenEvent.Init.getListenersList`).
+    /// Includes earlier listeners' accepted edits and this listener's staged edits. The pause
+    /// screen (`PauseScreen.init`) and the title screen (`TitleScreen.init`, with the engine's
+    /// own buttons after Minecraft Realms and its bottom notice last) list their own controls
+    /// first, each labelled with its translation key.
+    fn children(&self) -> &[ScreenChild];
+
+    /// Mount a vanilla-style push button on the screen (`Screen.addRenderableWidget`).
+    fn add_button(&mut self, button: Button) -> ScreenWidgetId;
+
+    /// Mount a vanilla-style single-line text field on the screen (`Screen.addRenderableWidget`).
+    fn add_text_field(&mut self, field: TextField) -> ScreenWidgetId;
+
+    /// Mount a custom widget on the screen (`Screen.addRenderableWidget`).
+    fn add_widget(&mut self, widget: Box<dyn ScreenWidget>) -> ScreenWidgetId;
+
+    /// Ask the screen to focus `id` when initialization completes (`Screen.setInitialFocus`).
+    ///
+    /// Returns `true` when `id` names a widget this listener mounted that can take focus.
+    fn set_initial_focus(&mut self, id: ScreenWidgetId) -> bool;
+
+    /// Remove a listed child (`ScreenEvent.Init.removeListener`), including one registered by
+    /// the game or mounted by an earlier listener. Returns `true` if the child was present.
+    /// This listener's removals take effect only if it completes normally.
+    fn remove(&mut self, id: ScreenWidgetId) -> bool;
 }
 
 #[cfg(test)]

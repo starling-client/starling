@@ -27,8 +27,8 @@ Font.PreparedTextBuilder.getShadowColor	inline	crates/sunrise-client-render/src/
 Font.PreparedTextBuilder.bounds	skip:other		bounds of prepared text for vanilla hit tests; Sunrise hit-tests by advance
 Gui.update	inline	crates/sunrise-client/src/game/interface/narrator.rs::Game::narrate_screen	once a turn after the frame's widgets were read: ScreenNarrator::frame runs the narration handleDelayedNarration makes due and a new screen's
 Gui.isPausing	port	crates/sunrise-client/src/game/interface/pointer_capture.rs::Game::pauses_game	gap: minor: checks the open screen only, not the overlay part
-Gui.addSocialInteractionsToast	skip:service		social interactions are not offered by Sunrise
-Gui.handleKeybinds	port	crates/sunrise-client/src/game/interface/play_keys.rs::Game::key_pressed	gap: minor: the social interactions key has no port (see addSocialInteractionsToast)
+Gui.addSocialInteractionsToast	inline	crates/sunrise-client/src/game/interface/tutorial.rs::Game::tick_tutorial	queues the timed social interactions hint on the first multiplayer session
+Gui.handleKeybinds	port	crates/sunrise-client/src/game/interface/play_keys.rs::Game::handle_play_keybinds	only the available social interactions key dismisses its hint; the unavailable key notifies the player
 Gui.openChatScreen	port	crates/sunrise-client/src/game/interface/chat.rs::Game::open_chat
 Gui.openChatAndAddText	port	crates/sunrise-client/src/game/interface/chat.rs::Game::open_chat	the text is passed as the initial input
 Gui.buildInitialScreens	port	crates/sunrise-client/src/title.rs::Title::next_ban_notice	the queue ban_notice::initial_notices fills (from Title::poll_account) is popped one notice at a time, the title last

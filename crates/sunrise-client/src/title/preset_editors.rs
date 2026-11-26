@@ -308,12 +308,13 @@ impl WorldOptions {
     pub(super) fn preset_label(&self) -> String {
         preset_label(self.preset_id())
     }
-    /// Reload Create World's selected pack resources, retaining a still-available choice.
-    pub(super) fn refresh_presets(
-        &mut self,
+    /// The worldgen files of the selected packs, the mod data layer below them: what the Create
+    /// World screen's preset lists read (`RegistryDataLoader` over the enabled packs).
+    pub(super) fn selected_overrides(
+        &self,
         root: &Path,
         mod_data: Option<&crate::datapack::DataPack>,
-    ) {
+    ) -> sunrise_world::worldgen::overrides::WorldgenOverrides {
         let packs = self.available_packs(root);
         let mut selected: Vec<_> = self
             .data_packs
@@ -323,34 +324,33 @@ impl WorldOptions {
         if let Some(mod_data) = mod_data {
             selected.insert(0, mod_data);
         }
+        let data = crate::datapack::DataPacks::new(&selected);
+        crate::datapack::worldgen_overrides_over(
+            &[],
+            &data,
+            &sunrise_world::conditions::LoadConditions::vanilla(),
+        )
+        .0
+    }
+    /// Reload Create World's selected pack resources, retaining a still-available choice.
+    pub(super) fn refresh_presets(
+        &mut self,
+        root: &Path,
+        mod_data: Option<&crate::datapack::DataPack>,
+    ) {
+        use sunrise_world::worldgen::overrides::WORLD_PRESET_TAGS;
+        let overrides = self.selected_overrides(root, mod_data);
         self.presets.clear();
-        for pack in &selected {
-            for file in pack.list_kinds(&["worldgen/world_preset"]) {
-                let Some((namespace, path)) =
-                    file.strip_prefix("data/").and_then(|f| f.split_once('/'))
-                else {
-                    continue;
-                };
-                let Some(path) = path
-                    .strip_prefix("worldgen/world_preset/")
-                    .and_then(|p| p.strip_suffix(".json"))
-                else {
-                    continue;
-                };
-                let id = format!("{namespace}:{path}");
-                if !sunrise_core::level_id::valid_level_id(&id) {
-                    continue;
-                }
-                let Some(json) = pack
-                    .read(&file)
-                    .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
-                else {
-                    continue;
-                };
-                let dimensions = crate::save::json_tag(&json["dimensions"]);
-                if valid_dimensions(&dimensions) {
-                    self.presets.insert(id, dimensions);
-                }
+        for (id, json) in overrides.entries("world_presets") {
+            if !sunrise_core::level_id::valid_level_id(id) {
+                continue;
+            }
+            let Ok(json) = serde_json::from_str::<serde_json::Value>(json) else {
+                continue;
+            };
+            let dimensions = crate::save::json_tag(&json["dimensions"]);
+            if valid_dimensions(&dimensions) {
+                self.presets.insert(id.to_owned(), dimensions);
             }
         }
         let mut tags = sunrise_world::worldgen::tags::TagDefinitions::default();
@@ -364,26 +364,9 @@ impl WorldOptions {
             &serde_json::json!({"values": defaults}).to_string(),
         )
         .unwrap();
-        for pack in selected {
-            for file in pack.list_kinds(&["tags/worldgen/world_preset"]) {
-                let Some((namespace, path)) =
-                    file.strip_prefix("data/").and_then(|f| f.split_once('/'))
-                else {
-                    continue;
-                };
-                let Some(path) = path
-                    .strip_prefix("tags/worldgen/world_preset/")
-                    .and_then(|p| p.strip_suffix(".json"))
-                else {
-                    continue;
-                };
-                let Some(json) = pack.read(&file).and_then(|b| String::from_utf8(b).ok()) else {
-                    continue;
-                };
-                if let Err(error) = tags.apply_json(&format!("{namespace}:{path}"), &pack.id, &json)
-                {
-                    log::warn!("Invalid world preset tag {file}: {error}");
-                }
+        for (id, pack, json) in overrides.tags(WORLD_PRESET_TAGS) {
+            if let Err(error) = tags.apply_json(id, pack, json) {
+                log::warn!("Invalid world preset tag {id} of {pack}: {error}");
             }
         }
         let all_presets = defaults

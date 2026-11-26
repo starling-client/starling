@@ -1,7 +1,8 @@
 //! A mod's registered mapping read through the client host, fed by the control socket as by the
 //! window: a tap is one click and one `input_key` press, each repeat one more click, a screen or
 //! overlay opening drops them at once, a binding's modifier must be held, a rebinding moves the
-//! mapping, and a mouse press counts for a mapping on its button.
+//! mapping, a mouse press counts for a mapping on its button, and the window losing its focus
+//! lets go of a held mapping.
 use super::event_loop::EventLoopCtl;
 use super::{Game, Screen};
 use crate::game::native_entity_refs::tests::{run_fresh_cases, with_client_game};
@@ -185,6 +186,57 @@ fn a_control_socket_key_counts_as_a_window_key() {
                 Err(ModKeyRefusal::NotRegistered)
             );
         }
+    });
+}
+
+/// The window losing its focus lets go of a held mod mapping, on a key or on a mouse button, as
+/// GLFW's releases let go of vanilla's (#4476); a click counted before stays to be consumed.
+#[test]
+#[ignore = "daily"]
+fn a_window_losing_focus_lets_go_of_a_mod_mapping() {
+    if run_fresh_cases(
+        "game::native_key_mappings_tests::a_window_losing_focus_lets_go_of_a_mod_mapping",
+        "SUNRISE_MOD_KEYS_FOCUS_CHILD",
+        &["game"],
+    ) {
+        return;
+    }
+    let mods: Mods = vec![ModEntry::new("keys", Box::new(Keys))].into();
+    mod_platform::testing::with_mods(mods.clone(), || {
+        crate::game::api_values::install_parts(&mods).unwrap();
+        with_client_game(|game| {
+            game.apply_settings();
+            game.set_screen(Screen::Playing);
+            let zoom = ClientInputClientHost::mod_key_mapping(game, "keys", "zoom").unwrap();
+            let grab = ClientInputClientHost::mod_key_mapping(game, "keys", "grab").unwrap();
+            let raw = sunrise_client::keybinds::raw_key_code(winit::keyboard::PhysicalKey::Code(
+                winit::keyboard::KeyCode::KeyZ,
+            ));
+            let z = Some("key.keyboard.z");
+            game.key_input(z, z, raw, KeyAction::Press, 0);
+            game.mod_keys.input(
+                "key.mouse.left",
+                sunrise_client::keymapping::KeyAction::Press,
+                true,
+                false,
+                0,
+            );
+            assert!(zoom.is_down(game).unwrap());
+            assert!(grab.is_down(game).unwrap());
+
+            game.handle_window_event_inner(
+                &NoLoop,
+                winit::event::WindowEvent::Focused(false),
+                None,
+                None,
+            );
+            assert!(!zoom.is_down(game).unwrap());
+            assert!(!grab.is_down(game).unwrap());
+            assert!(zoom.consume_click(game).unwrap());
+            assert!(!zoom.consume_click(game).unwrap());
+            assert!(grab.consume_click(game).unwrap());
+            assert!(!grab.consume_click(game).unwrap());
+        });
     });
 }
 

@@ -119,7 +119,7 @@ impl Sections {
 /// The sections of `sections` that `view` sees within `radius` chunks of its own camera, with its
 /// own frustum and nothing more, nearest its camera first, into `out`; their origins relative to
 /// the frame's camera, `frame_camera`. `far`: the frame's far plane.
-fn view_sections<T>(
+pub(super) fn view_sections<T>(
     sections: &resident::Resident<T>,
     view: &native_render::WorldView,
     frame_camera: DVec3,
@@ -297,5 +297,26 @@ mod tests {
         let keys: Vec<SectionKey> = out.iter().map(|v| v.key).collect();
         assert_eq!(keys, [(0, 10, 2), (0, 10, 1)]);
         assert_eq!(out[0].origin, [-8.0, -8.0, 132.0]);
+    }
+
+    #[test]
+    fn extreme_y_world_view_does_not_overflow() {
+        let at = DVec3::new(8.0, f64::from(i32::MAX), 8.0);
+        let view = native_render::WorldView::new(1, at, 0.0, 90.0, 70.0, [200, 120]);
+        let out = walk(view, &[(0, 0, 0), (0, 23, 0)], DVec3::ZERO);
+        assert!(out.iter().all(|v| v.key.1 == 23));
+    }
+
+    #[test]
+    fn a_view_respects_vertical_render_distance() {
+        let at = DVec3::new(0.5, 301.620015, 0.5);
+        let view = native_render::WorldView::new(1, at, 0.0, 90.0, 70.0, [1280, 800]);
+        let mut sections = resident::Resident::default();
+        for y in [4, 15, 20] {
+            sections.insert((0, y, 0), ());
+        }
+        let mut out = Vec::new();
+        view_sections(&sections, &view, at, 192.0, 2, &mut out);
+        assert_eq!(out.iter().map(|v| v.key).collect::<Vec<_>>(), [(0, 20, 0)]);
     }
 }

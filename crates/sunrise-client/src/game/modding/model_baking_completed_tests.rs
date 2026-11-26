@@ -1,7 +1,7 @@
 //! `model_baking_completed` heard by a trait mod through the game's own hooks: once per
 //! successful model load, after both atlases and before `client_setup` or
 //! `client_resources_reloaded`, with the new store's standalone models resolvable inside it.
-use super::native_entity_refs::tests::with_client_game;
+use super::native_entity_refs::tests::{run_fresh_cases, with_client_game};
 use super::packs::ReloadKind;
 use mod_api::{
     __private::game::RegistrationContextNew, ClientHost, ClientReloadHost,
@@ -257,6 +257,14 @@ fn standalone_bakers_resolve_as_one_model_and_republish_after_resource_reload() 
 #[test]
 #[ignore = "daily"]
 fn pack_reload_runs_listeners_on_both_sides_of_model_manager() {
+    // Other model loads in this process would also see the installed baker.
+    if run_fresh_cases(
+        "game::model_baking_completed_tests::pack_reload_runs_listeners_on_both_sides_of_model_manager",
+        "SUNRISE_MODEL_MANAGER_RELOAD_CASE",
+        &["reload"],
+    ) {
+        return;
+    }
     use super::{Progress, packs::stage_pack};
     use mod_api::{
         AddClientReloadListenersEvent, ClientReloadContext, ClientReloadListener,
@@ -387,7 +395,11 @@ fn pack_reload_runs_listeners_on_both_sides_of_model_manager() {
                         &[],
                         &[],
                         &game.mods,
-                        game.register_client_reload_listeners(),
+                        game.register_client_reload_listeners(
+                            &game
+                                .capture_candidate_settings(&game.options.resources)
+                                .unwrap(),
+                        ),
                         &[],
                         &game.pack.assets,
                         &game.res,
@@ -456,7 +468,11 @@ fn a_failed_reload_fires_no_model_baking_completed() {
                 &[],
                 &[],
                 &game.mods,
-                game.register_client_reload_listeners(),
+                game.register_client_reload_listeners(
+                    &game
+                        .capture_candidate_settings(&game.options.resources)
+                        .unwrap(),
+                ),
                 &[],
                 &game.pack.assets,
                 &game.res,

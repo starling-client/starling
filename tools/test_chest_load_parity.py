@@ -3,10 +3,11 @@
 import json
 import os
 from pathlib import Path
-try:
-    from . import lab, oracle_harness as harness, test_rust_parity as base
-except ImportError:
-    import lab, oracle_harness as harness, test_rust_parity as base
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, oracle_harness as harness, test_rust_parity as base
 
 
 def cases():
@@ -40,6 +41,7 @@ def main():
     sources = [Path(__file__), lab.ROOT / 'tools/lab.py', lab.ROOT / 'tools/oracle_harness.py',
                lab.ROOT / 'tools/test_rust_parity.py', lab.ROOT / 'Cargo.toml', lab.ROOT / 'Cargo.lock',
                lab.ROOT / 'crates/sunrise-client/src/save.rs',
+               lab.ROOT / 'crates/sunrise-client/src/save/block_entity_decode.rs',
                lab.ROOT / 'crates/sunrise-client-core/src/identifier.rs',
                lab.ROOT / 'crates/sunrise-client/examples/probe/chest_load_fixture.rs',
                lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaChestLoadOracle.java',

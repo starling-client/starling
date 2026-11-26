@@ -18,6 +18,32 @@ impl mod_api::Hooks for Logouts {
     }
 }
 
+/// A mod whose logout listener enters a new turn for guest 13 via `set_game_mode`.
+/// Its inner callback panics in `player_game_mode_changed`, but the dispatch boundary
+/// catches it before the turn unwinds.
+struct PanicsInShutdown;
+#[mod_api::__subscriptions]
+impl mod_api::Hooks for PanicsInShutdown {
+    fn player_logged_out(
+        &self,
+        host: &mut dyn mod_api::ServerHost,
+        event: &mut mod_api::PlayerLoggedOutEvent<'_>,
+    ) {
+        if event.player == 13 {
+            host.player(13)
+                .expect("guest 13 was online")
+                .set_game_mode(host, mod_api::GameMode::Creative);
+        }
+    }
+    fn player_game_mode_changed(
+        &self,
+        _: &mut dyn mod_api::ServerHost,
+        _: &mut mod_api::PlayerGameModeChangedEvent<'_>,
+    ) -> mod_api::Flow {
+        panic!("mod panic in a new turn");
+    }
+}
+
 fn player_file(root: &Path, uuid: u128) -> PathBuf {
     sunrise_client::lan::playerdata::path(root, uuid)
 }
@@ -44,10 +70,12 @@ enum Interruption {
     Single,
     Nested,
     AfterFirstCheckpoint,
+    ModePanic,
 }
 
 /// Run the real turn helpers and save path, including a turn interrupted after
-/// shutdown has already decided which players to skip once.
+/// shutdown has already decided which players to skip once, and a contained
+/// callback panic during logout that is not an interrupted turn.
 fn scenario(interruption: Interruption) {
     with_guests(|game| {
         game.options.execution_role = ExecutionRole::DedicatedServer;
@@ -126,6 +154,7 @@ fn scenario(interruption: Interruption) {
         };
         assert_eq!(game.interrupted_turns, initially_interrupted);
 
+        let mode_panic = matches!(interruption, Interruption::ModePanic);
         if matches!(interruption, Interruption::AfterFirstCheckpoint) {
             // Reproduce the state left by an engine error in a new turn after the first
             // shutdown checkpoint. The final save must refresh the earlier exclusion.
@@ -138,21 +167,36 @@ fn scenario(interruption: Interruption) {
             assert_eq!(message, "engine panic in a turn");
             assert!(game.lan_guest_swaps.is_empty() && game.lan_acting.is_none());
             assert_eq!(game.interrupted_turns, [12, 13]);
-            game.finish_server_save(false, Some(&message)).unwrap();
+            game.finish_server_save(true, false).unwrap();
         } else {
             let logouts = std::sync::Arc::new(Mutex::new(Vec::new()));
-            let entry = mod_api::ModEntry::new("logouts", Box::new(Logouts(logouts.clone())));
+            let entry = if mode_panic {
+                mod_api::ModEntry::new("panics", Box::new(PanicsInShutdown))
+            } else {
+                mod_api::ModEntry::new("logouts", Box::new(Logouts(logouts.clone())))
+            };
             mod_platform::testing::with_mods(vec![entry].into(), || {
-                game.run_server_lifecycle(true, |_, began| {
-                    *began = true;
-                    Ok(())
-                })
-                .unwrap();
+                game.run_server_lifecycle(true, |_| Ok(super::ServerRunOutcome::Orderly))
+                    .unwrap();
+                let panics = mod_api::__private::take_hook_panics();
+                if mode_panic {
+                    assert_eq!(
+                        panics,
+                        [mod_api::__private::HookPanicReport {
+                            mod_id: "panics",
+                            hook: "player_game_mode_changed",
+                        }]
+                    );
+                } else {
+                    assert!(panics.is_empty());
+                }
             });
-            // An interrupted player stays online: each login still gets its one logout.
-            let mut left = logouts.lock().unwrap();
-            left.sort_unstable();
-            assert_eq!(*left, [12, 13]);
+            if !mode_panic {
+                // An interrupted player stays online: each login still gets its one logout.
+                let mut left = logouts.lock().unwrap();
+                left.sort_unstable();
+                assert_eq!(*left, [12, 13]);
+            }
         }
 
         assert_eq!(
@@ -164,7 +208,10 @@ fn scenario(interruption: Interruption) {
             game.boats.iter().any(|b| b.id == boat),
             "the interrupted player's boat stays in the world, not in a file nobody writes"
         );
-        if !matches!(interruption, Interruption::Single) {
+        if matches!(
+            interruption,
+            Interruption::Nested | Interruption::AfterFirstCheckpoint
+        ) {
             assert_eq!(
                 read(13),
                 before_13,
@@ -186,4 +233,5 @@ fn a_crash_save_keeps_the_files_of_players_whose_turn_a_panic_interrupted() {
     scenario(Interruption::Single);
     scenario(Interruption::Nested);
     scenario(Interruption::AfterFirstCheckpoint);
+    scenario(Interruption::ModePanic);
 }

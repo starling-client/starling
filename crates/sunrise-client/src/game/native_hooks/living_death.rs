@@ -17,10 +17,13 @@ impl Game<'_> {
     }
 }
 /// `native_living_incoming_damage`'s entity, entity type and source for a hit.
-pub(in crate::game) fn hurt_server_args<'a>(
+pub(in crate::game) fn hurt_server_args<'a, 'b>(
     hurting: Hurting<'a>,
-    attack: &Attack,
-) -> (i32, &'a str, HurtSource<'a>) {
+    attack: &'b Attack,
+) -> (i32, &'a str, HurtSource<'b>)
+where
+    'a: 'b,
+{
     match hurting {
         Hurting::Player(entity, source) => (entity, "minecraft:player", source),
         Hurting::Mob(mob, damage) => (
@@ -57,6 +60,32 @@ pub(super) fn capture_hit(
 }
 
 impl Game<'_> {
+    /// `LivingEntity.die` for the ender dragon: its killing blow reaches `die` as any living
+    /// entity's does (`EnderDragon.reallyHurt` → `LivingEntity.hurtServer`), and only its
+    /// `handleKillingBlow` differs (the dying flight). Fires `living_death` with the blow and
+    /// its saved weapon; true when a listener cancelled, which skips the dying transition, the
+    /// kill credit and the post hook, as a cancelled `LivingDeathEvent` returns from `die`.
+    pub(in crate::game) fn dragon_death_canceled(
+        &mut self,
+        dragon: u32,
+        source: &HurtSource<'_>,
+        weapon: Option<&sunrise_client::items::ItemStack>,
+    ) -> bool {
+        if !mod_api::__private::enabled_listened(mod_api::HookId::LivingDeath) {
+            return false;
+        }
+        let weapon = weapon.and_then(|stack| stack.try_into_api().ok());
+        let mut cancel = false;
+        self.native_living_death(
+            dragon,
+            "minecraft:ender_dragon",
+            source,
+            weapon.as_ref(),
+            &mut cancel,
+        );
+        cancel
+    }
+
     /// `LivingEntity.die`: a veto skips its whole tail, without supplying revive health.
     pub(in crate::game) fn mob_death_canceled(&mut self, mob: &sunrise_client::mobs::Mob) -> bool {
         if mob.death_canceled {
@@ -77,6 +106,7 @@ impl Game<'_> {
                 causing: 0,
                 direct: 0,
                 position: None,
+                direct_type: None,
             },
             |(damage, _)| mob_source(&damage, &attack),
         );

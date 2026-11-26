@@ -12,8 +12,8 @@ use mod_api::__private::native::BuiltMod;
 use mod_api::Side;
 use mod_api::{
     Block, BlockEntityPart, BlockEntityTickEvent, BlockPart, BlockState, BlocksEvent,
-    EntityTickListenedEvent, EntityTickPostEvent, EntityTickPreEvent, Hooks, HostSide, ModEntry,
-    Registrar, RegistrationContext, ServerHost, ServerStartedEvent,
+    EntityTickPostEvent, EntityTickPreEvent, Hooks, HostSide, ModEntry, Registrar,
+    RegistrationContext, ServerHost, ServerStartedEvent,
 };
 use sunrise_client::game::{
     HotPathsMods, hot_paths_next_block_entity, note_hot_paths_listener_call,
@@ -53,10 +53,9 @@ impl Hooks for Listener {
         }
     }
 
-    fn entity_tick_listened(&self, _: HostSide<'_>, event: &mut EntityTickListenedEvent) {
-        event.listened = true;
+    fn entity_tick_pre(&self, _: HostSide<'_>, _: &mut EntityTickPreEvent<'_>) -> mod_api::Flow {
+        mod_api::Flow::Continue
     }
-    fn entity_tick_pre(&self, _: HostSide<'_>, _: &mut EntityTickPreEvent<'_>) {}
     fn entity_tick_post(&self, _: HostSide<'_>, _: &mut EntityTickPostEvent<'_>) {}
 }
 
@@ -103,12 +102,9 @@ struct FanoutListener(usize);
 
 #[mod_api::__subscriptions]
 impl Hooks for FanoutListener {
-    fn entity_tick_listened(&self, _: HostSide<'_>, event: &mut EntityTickListenedEvent) {
-        event.listened = true;
-    }
-
-    fn entity_tick_pre(&self, _: HostSide<'_>, _: &mut EntityTickPreEvent<'_>) {
+    fn entity_tick_pre(&self, _: HostSide<'_>, _: &mut EntityTickPreEvent<'_>) -> mod_api::Flow {
         note_hot_paths_listener_call(self.0);
+        mod_api::Flow::Continue
     }
 
     fn server_started(&self, _: &mut dyn ServerHost, _: &mut ServerStartedEvent) {

@@ -1,0 +1,9 @@
+ids = [
+    "method:prelude::WorldEditServerHost::upgrade_block_entity_nbt",
+    "method:prelude::WorldEditServerHost::upgrade_entity_nbt",
+    "method:prelude::DatafixHost::upgrade_nbt",
+    "type:NbtDataType",
+    "type:NbtUpgradeError.NegativeVersion",
+]
+why = "The standalone data fixer is available on both sides and accepts item stacks, block states, block entities, entities and entity trees. Malformed data and unsupported versions have typed refusals instead of an unchanged value."
+migrate = "Replace host.upgrade_block_entity_nbt(version, nbt) with host.upgrade_nbt(NbtDataType::BlockEntity, version, nbt) and host.upgrade_entity_nbt(version, nbt) with host.upgrade_nbt(NbtDataType::EntityTree, version, nbt). Match UnsupportedVersion instead of NegativeVersion."

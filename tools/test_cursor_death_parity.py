@@ -14,10 +14,11 @@ including incorrect slot and cursor hashes and a patch that only restates the it
 import json
 import sys
 
-try:
-    from . import test_locator_bar_parity as locator
-except ImportError:
-    import test_locator_bar_parity as locator
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_locator_bar_parity as locator
 
 NAME = 'cursor-death-parity'
 # The player dies only to the scripted /kill, not to slimes in the flat world.

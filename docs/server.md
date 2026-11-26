@@ -436,32 +436,26 @@ CI lints the same build. `sunrise-server` runs `sunrise-engine` when it is besid
 and copy `target/release/sunrise-client` as `sunrise-engine`. macOS and Windows have no such libraries to
 avoid, so they keep the one archive.
 
-**Game files: the owner's own copy, as with `prepare`.** Nothing of Mojang's is redistributed and nothing is
-downloaded on the owner's behalf. `sunrise-server` looks for prepared resources in this order:
+**Game files.** Sunrise redistributes no Mojang files or data derived from them. `sunrise-server` looks for
+prepared resources in this order:
 
-1. `[engine] resources` in `server.toml`;
+1. `[engine] resources` in `server.toml`, which `init --resources DIR` can set;
 2. `resources/` in the server folder;
-3. `.local/sunrise-client/26.3` beside the engine or up to four folders above it: a release folder, the
-   installer's `game-files` (below), or a checkout.
+3. the server-only profile in `game-files/sunrise-client/26.3-server`, then the full `26.3` profile. It checks
+   the server folder, the installer's shared `game-files` and release or checkout paths by the engine (including
+   `.local/sunrise-client`).
 
-If none is found, `init` says where it looked. Today the owner runs `sunrise-prepare --prepare --server-jar
-PATH` from the release folder (it needs a JDK and the client files, as for playing), or copies a folder
-prepared on their own computer to the server (`scp -r`). Planned wrappers:
+If no folder is found, `init` runs `sunrise-prepare --server` after the EULA answer. It downloads the pinned
+free `server.jar` from Mojang, checks SHA-1 and prepares only server data. If needed, a release can download
+Mojang's Java runtime, with files checked against the runtime manifest. Use `init --server-jar PATH` to pass
+an existing, pinned jar. Client files do not enter this preparation; only the launcher downloads those for a
+signed-in account that owns Minecraft.
 
-- **On this machine:** `sunrise-server prepare --server-jar PATH` runs `sunrise-prepare` on the owner's own
-  server jar plus their launcher install.
-- **Prepared elsewhere:** `sunrise-server import-resources DIR` copies a folder prepared on the owner's own
-  computer, for example by the launcher, to a headless machine. It first checks the folder: `sunrise-resources.json`
-  is there and names Minecraft 26.3, the derived files match their checksums, and the font and texture folders
-  aren't empty; otherwise it lists what is wrong and changes nothing. It copies next to the destination and
-  renames the copy in, so a failure partway keeps the old copy. The destination is the first place the server
-  reads: `[engine] resources` when set, else `resources/` in the server folder when it exists or the server
-  wasn't installed by `install.sh`, else the installer's `game-files/sunrise-client/26.3` (where the release's
-  `.local/sunrise-client` points). It ends by saying to start or restart the server.
-
-A server-only `prepare` (from `server.jar` alone, without the client jar or a JDK) is the follow-up that
-removes the last Java step. It needs a list of which prepared files the server really reads, and that list
-comes out of the headless-engine work.
+For offline setup, prepare on another computer and use `sunrise-server import-resources DIR` to copy the
+folder into place. It checks the version and files first, stages a copy next to the destination and preserves
+the previous copy on failure. The font and texture folders are required only for a full preparation. The
+destination is `[engine] resources` if specified, otherwise the server folder's `resources/` (or the
+installer's shared game files if `resources/` doesn't exist).
 
 **One-command install** (`packaging/server/`):
 
@@ -520,7 +514,7 @@ the container exits and says why. `docker stop` sends SIGTERM, which saves and s
 3. **Port.** 25565 by default, checked free right away.
 4. **Players.** It asks whether to use a whitelist (yes by default, as vanilla) and who to add first, then
    offers to make the first player an operator.
-5. **Game files.** It finds or explains the prepared resources (see above).
+5. **Game files.** It uses existing prepared resources or downloads and prepares the server-only profile.
 6. It writes `server.toml`, shows the panel address and the commands to start it in the background
    (`sunrise-server start`) or as a service.
 
@@ -624,11 +618,12 @@ sunrise-server update --archive FILE --version NAME     an archive you have (you
 sunrise-server mcp                       MCP server on stdio (section 8)
 sunrise-server import-resources <dir>    copy game files prepared elsewhere into place (checked first)
 
-Planned:
-sunrise-server prepare --server-jar PATH
 ```
 
 - Every command takes `--dir` (the server folder; default: the current folder).
+- Managed game files are prepared on setup or startup when missing or stale. For explicitly configured files,
+  use the profile-specific [re-prepare command](hosting.md#2-prepare-the-game-files); full output v7 must be
+  re-prepared for the current game.
 - While the server runs, management commands go through the control API, so the engine applies them as
   vanilla's console would and its lists stay right. While it's stopped, `op`, `deop`, `whitelist`, `ban`,
   `pardon`, `ban-ip` and `pardon-ip` edit the vanilla files directly with the same code the engine uses
@@ -979,7 +974,6 @@ machine, then published in `benchmarks/`; and item 5.
 
 - the Nether and End for remote players;
 - the headless engine and its RAM win;
-- a server-only prepare without a JDK;
 - a Windows service, hot reload, modpacks in the panel;
 
 Online mode works, so a public server can check accounts. An offline server should still run only on a

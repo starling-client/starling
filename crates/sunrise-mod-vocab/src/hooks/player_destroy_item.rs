@@ -1,5 +1,4 @@
 //! The `player_destroy_item` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0250
 
 pub trait Hooks {
     /// The player's item was used up or broke. `original` is the complete

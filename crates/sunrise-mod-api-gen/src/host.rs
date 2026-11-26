@@ -35,15 +35,16 @@ pub(super) const GOAL_VIEW_READS: &[&str] = &[
     "entity_dismount_location",
     "entity_root_vehicle",
     "entity_is_passenger_of_same_vehicle",
-    "entity_passengers",
+    "entity_visit_passengers",
     "entity_is_vehicle",
-    "entity_indirect_passengers",
+    "entity_visit_indirect_passengers",
     "entity_controlling_passenger",
     "entity_on_block",
     "entity_entities_team_damage_allowed",
     "living_can_use_portal",
     "entity_tags",
     "entity_name",
+    "entity_custom_name",
     "entity_added_to_level",
     "entity_portal_cooldown",
     "entity_invulnerable_to_damage",
@@ -63,8 +64,8 @@ pub(super) const GOAL_VIEW_READS: &[&str] = &[
     "entity_pick",
     "living_attribute_value",
     "living_attribute_base",
-    "living_attributes",
-    "living_attribute_modifiers",
+    "living_visit_attributes",
+    "living_visit_attribute_modifiers",
     "living_used_item_hand",
     "mob_can_use_portal",
     "mob_target",
@@ -92,16 +93,17 @@ pub(super) const GOAL_VIEW_READS: &[&str] = &[
     "entity_tick_count",
     "entity_is_invisible",
     "entity_is_multipart",
-    "entity_parts",
+    "entity_visit_parts",
     "entity_dimensions",
     "living_effect",
-    "living_effects",
+    "living_visit_effects",
     "living_potion_affected",
     "living_gliding_ticks",
     "living_is_gliding",
     "living_is_sleeping",
     "living_sleeping_pos",
     "living_is_jumping",
+    "living_no_jump_delay",
     "living_baby",
     "living_equipment",
     "living_hand_item",
@@ -119,6 +121,7 @@ pub(super) const GOAL_VIEW_READS: &[&str] = &[
     "mob_navigation_speed",
     "mob_pathfinding_malus",
     "mob_is_aggressive",
+    "mob_is_in_sitting_pose",
     "mob_persistence_required",
     "mob_requires_custom_persistence",
     "mob_no_ai",
@@ -143,6 +146,7 @@ const GOAL_VIEW_ENTITY_ARGS: &[&str] = &[
     "MobRef",
     "PlayerRef",
     "ItemEntityRef",
+    "ExperienceOrbRef",
     "MerchantRef",
 ];
 
@@ -165,7 +169,7 @@ pub(super) const AREAS_OUTPUT: &str = "mod_api_host_areas.rs";
 
 /// The traits an area file may hold, each a part of one of the unions.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
-enum Tier {
+pub(crate) enum Tier {
     Host,
     ServerHost,
     ClientHost,
@@ -221,17 +225,26 @@ impl Tier {
 }
 
 /// A method of an area trait, as the file declares it.
-struct Entry {
-    name: String,
-    sig: syn::Signature,
-    attrs: Vec<syn::Attribute>,
+pub(crate) struct Entry {
+    pub(crate) name: String,
+    pub(crate) sig: syn::Signature,
+    pub(crate) attrs: Vec<syn::Attribute>,
+}
+
+impl Entry {
+    /// `#[goal_view]`: a mob's goal tick answers this read from its own view for every holder,
+    /// players included, and resolves the entity the answer names there too, so a mob lent to
+    /// the tick stays visible. Unmarked reads in [`GOAL_VIEW_READS`] send players to the game.
+    fn goal_view(&self) -> bool {
+        self.attrs.iter().any(|a| a.path().is_ident("goal_view"))
+    }
 }
 
 /// One area file: its traits by tier.
-struct Area {
-    stem: String,
-    camel: String,
-    tiers: BTreeMap<Tier, Vec<Entry>>,
+pub(crate) struct Area {
+    pub(crate) stem: String,
+    pub(crate) camel: String,
+    pub(crate) tiers: BTreeMap<Tier, Vec<Entry>>,
     /// The backend tiers the game answers from a borrowed view of its read-only tables, not
     /// from `Game`, declared by `#[table_backend("path")]` on the trait: the view carries the
     /// reads and implements the trait once, and `Game` forwards to it.
@@ -282,6 +295,12 @@ fn area_tiers(camel: &str, file: syn::File) -> Result<BTreeMap<Tier, Vec<Entry>>
                         | "BlockEntityDrawContext"
                         | "WorldDrawContext"
                         | "CameraDrawContext"
+                        | "WorldPassDrawContext"
+                        | "WorldOitPassDrawContext"
+                        | "RenderLevelStageContext"
+                        | "PrepareRenderBuffersContext"
+                        | "FrameGraphContext"
+                        | "OffscreenDrawContext"
                 ) | (
                     "Services",
                     "ClientSession"
@@ -289,6 +308,7 @@ fn area_tiers(camel: &str, file: syn::File) -> Result<BTreeMap<Tier, Vec<Entry>>
                         | "Levels"
                         | "Messages"
                         | "Players"
+                        | "Profiles"
                         | "RuntimeLevels"
                         | "RenderAssets"
                         | "InstanceGroups"
@@ -342,11 +362,11 @@ fn table_backends(camel: &str, file: &syn::File) -> Result<BTreeMap<Tier, String
     Ok(tables)
 }
 
-/// The area files, `base` first and then by name, as the catalog's are.
-fn load(root: &Path) -> Result<Vec<Area>, String> {
+/// The area files, sorted by name, as the catalog's are.
+pub(crate) fn load(root: &Path) -> Result<Vec<Area>, String> {
     let dir = root.join(DIRECTORY);
     let mut areas = Vec::new();
-    for stem in catalog::Catalog::modules(&dir)? {
+    for stem in sunrise_game_discovery::module_files(&dir)? {
         let path = dir.join(format!("{stem}.rs"));
         crate::rerun_if_changed(&path.display());
         let source = fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -422,7 +442,7 @@ pub(super) fn areas_source(root: &Path) -> Result<String, String> {
                 } else {
                     format!("self, {args}")
                 };
-                let value = refusal(&entry.sig, name)?;
+                let value = refusal(entry)?;
                 let refused = if args.is_empty() {
                     format!("{sig} {{ {value} }}")
                 } else {
@@ -543,7 +563,7 @@ pub(super) fn game_forwarders(root: &Path) -> Result<String, String> {
                         let sig = entry.sig.to_token_stream();
                         let args = signature_args(&entry.sig, name)?;
                         code.push_str(&format!(
-                            "{sig} {{ mod_api::__private::{}({args}) }}\n",
+                            "#[inline]\n{sig} {{ mod_api::__private::{}({args}) }}\n",
                             read.to_token_stream()
                         ));
                         continue;
@@ -573,13 +593,29 @@ pub(super) fn game_forwarders(root: &Path) -> Result<String, String> {
                         format!("self, {args}")
                     };
                     let sig = entry.sig.to_token_stream();
-                    let call = if entry.attrs.iter().any(|a| a.path().is_ident("service")) {
+                    let game_method = entry
+                        .attrs
+                        .iter()
+                        .find(|attr| attr.path().is_ident("game_method"))
+                        .map(|attr| {
+                            attr.parse_args::<syn::Ident>()
+                                .map(|method| method.to_string())
+                        })
+                        .transpose()
+                        .map_err(|error| format!("{name}: {error}"))?;
+                    let is_service = entry.attrs.iter().any(|a| a.path().is_ident("service"));
+                    let call = if is_service {
                         "self".into()
                     } else if via_game {
                         let table = table.unwrap_or_default();
                         format!("{table}::of(self).{name}({view_args})")
                     } else {
-                        format!("{target}::{name}({args})")
+                        let method = if target == "Game" {
+                            game_method.as_deref().unwrap_or(name)
+                        } else {
+                            name
+                        };
+                        format!("{target}::{method}({args})")
                     };
                     let keeps_api_output = entry
                         .attrs
@@ -619,7 +655,7 @@ pub(super) fn game_forwarders(root: &Path) -> Result<String, String> {
                             call
                         }
                     } else if checked_write {
-                        if crosses_output
+                        if converted_output.is_some_and(|ty| contains_value(ty, &["BlockState"]))
                             && result_error(&entry.sig.output)
                                 .is_some_and(|error| outer_type(error, "LevelWriteError"))
                         {
@@ -634,6 +670,11 @@ pub(super) fn game_forwarders(root: &Path) -> Result<String, String> {
                             Some(error) if outer_type(error, "LevelReadError") => format!(
                                 "{call}.try_into_api().unwrap_or(Err(mod_api::LevelReadError::Unavailable))"
                             ),
+                            // The placement-state read refuses an unrepresentable state as
+                            // other level reads do.
+                            Some(error) if outer_type(error, "PlacementStateError") => format!(
+                                "{call}.try_into_api().unwrap_or(Err(mod_api::PlacementStateError::Unavailable))"
+                            ),
                             Some(error) if outer_type(error, "GameRuleReadError") => format!(
                                 "{call}.try_into_api().expect(\"game rule values convert infallibly\")"
                             ),
@@ -645,7 +686,16 @@ pub(super) fn game_forwarders(root: &Path) -> Result<String, String> {
                     } else {
                         call
                     };
-                    code.push_str(&format!("{sig} {{ {setup} {call} }}\n"));
+                    let call = match name.as_str() {
+                        // The scheduler splits delegation at the sites where it takes or gives
+                        // back ownership of a task's captures.
+                        "schedule_task" | "cancel_task" => call,
+                        _ if is_service || borrows_caller_callback(&entry.sig) => call,
+                        _ => format!(
+                            "mod_api::__private::game::CallbackOwner::call_host(move || {{ {call} }})"
+                        ),
+                    };
+                    code.push_str(&format!("#[inline]\n{sig} {{ {setup} {call} }}\n"));
                 }
                 code.push_str("}\n");
             }
@@ -657,10 +707,51 @@ pub(super) fn game_forwarders(root: &Path) -> Result<String, String> {
     Ok(prettyplease::unparse(&parsed))
 }
 
+/// Whether `sig` takes a borrowed callable the engine invokes synchronously on the caller's
+/// behalf. Those methods stay inside the caller's retained panic scope so a panic in the
+/// caller's closure still blames that caller.
+fn borrows_caller_callback(sig: &syn::Signature) -> bool {
+    sig.inputs.iter().any(|input| {
+        let FnArg::Typed(arg) = input else {
+            return false;
+        };
+        is_borrowed_callable(&arg.ty)
+    })
+}
+
+fn is_borrowed_callable(mut ty: &Type) -> bool {
+    while let Type::Paren(paren) = ty {
+        ty = &paren.elem;
+    }
+    let Type::Reference(reference) = ty else {
+        return false;
+    };
+    let mut elem = &*reference.elem;
+    while let Type::Paren(paren) = elem {
+        elem = &paren.elem;
+    }
+    matches!(
+        elem,
+        Type::TraitObject(object)
+            if object.bounds.iter().any(|bound| {
+                matches!(
+                    bound,
+                    syn::TypeParamBound::Trait(trait_bound)
+                        if trait_bound.path.segments.last().is_some_and(|segment| {
+                            matches!(
+                                segment.ident.to_string().as_str(),
+                                "Fn" | "FnMut" | "FnOnce"
+                            )
+                        })
+                )
+            })
+    )
+}
+
 /// API records whose game representation is owned by another crate. Conversions are
 /// implemented once by the game; this rule only selects the boundary, never its behaviour.
 fn text_value(ty: &Type) -> bool {
-    contains_value(ty, &["Text", "GuiDraw"])
+    contains_value(ty, &["Text"])
 }
 
 fn boundary_value(ty: &Type) -> bool {
@@ -874,8 +965,17 @@ fn signature_args(sig: &syn::Signature, name: &str) -> Result<String, String> {
 }
 
 /// A backend read's typed answer where there is no backend to ask.
-fn refusal(sig: &syn::Signature, name: &str) -> Result<&'static str, String> {
-    let syn::ReturnType::Type(_, ty) = &sig.output else {
+fn refusal(entry: &Entry) -> Result<&'static str, String> {
+    let name = &entry.name;
+    let syn::ReturnType::Type(_, ty) = &entry.sig.output else {
+        if entry
+            .attrs
+            .iter()
+            .any(|attr| attr.path().is_ident("decline_unavailable"))
+        {
+            // The caller's callback is not invoked; the refusal body returns implicit `()`.
+            return Ok("");
+        }
         return Err(format!("{name}: a backend read returns a value"));
     };
     let syn::Type::Path(path) = &**ty else {
@@ -885,6 +985,7 @@ fn refusal(sig: &syn::Signature, name: &str) -> Result<&'static str, String> {
     match last.as_deref() {
         Some("Option") => Ok("None"),
         Some("bool") => Ok("false"),
+        Some("EntityResidency") => Ok("EntityResidency::Gone"),
         Some("Result") => Ok("Err(NoBackend::no_backend())"),
         Some("u64" | "u32" | "i32" | "u16" | "u8" | "usize") => Ok("0"),
         _ => Err(format!("{name}: cannot refuse its backend return type")),
@@ -941,6 +1042,7 @@ fn handle_method(
     };
     let mut args = String::new();
     let mut rest = vec![syn::parse_quote!(self), host];
+    let mut transaction_arg = None;
     for arg in entry.sig.inputs.iter().skip(2) {
         let mut arg = arg.clone();
         let FnArg::Typed(typed) = &mut arg else {
@@ -951,13 +1053,25 @@ fn handle_method(
         };
         pat.mutability = None;
         args.push_str(&format!(", {}", pat.ident));
+        if matches!(&*typed.ty, Type::Reference(reference)
+            if matches!(&*reference.elem, Type::Path(path) if path.path.is_ident("TransactionContext")))
+        {
+            if !mutable || tier.client() {
+                return Err(format!(
+                    "{name}: transaction loans require a mutable server host"
+                ));
+            }
+            transaction_arg = Some(pat.ident.clone());
+        }
         rest.push(arg);
     }
     sig.inputs = rest.into_iter().collect();
     let mut docs = doc_comments(&entry.attrs, name, true)?;
     // The reads a mob's goal tick answers from its view carry the snapshot rule where a mod reads
     // them (#1077).
-    if GOAL_VIEW_READS.contains(&name) {
+    if entry.goal_view() {
+        docs.push_str("///\n/// In a mob's goal tick ([`GoalContext::host`](crate::GoalContext::host)) this reads\n/// the tick's own view for every holder, and the entity it names resolves there too.\n");
+    } else if GOAL_VIEW_READS.contains(&name) {
         docs.push_str("///\n/// In a mob's goal tick ([`GoalContext::host`](crate::GoalContext::host)) this reads\n/// the active mob or a disjoint live mob when available; player reads use the\n/// game host. Other unsupported reads retain their typed refusal.\n");
     }
     let backend = match (mutable, tier.client()) {
@@ -969,13 +1083,26 @@ fn handle_method(
         matches!(&sig.output, syn::ReturnType::Type(_, ty) if matches!(&**ty, syn::Type::Path(path)
             if path.path.segments.last().is_some_and(|seg| seg.ident == ident)))
     };
+    let check_transaction = if let Some(tx) = transaction_arg {
+        let Some(error) = result_error(&sig.output) else {
+            return Err(format!(
+                "{name}: a transaction write needs a Result refusal"
+            ));
+        };
+        format!(
+            "if !host.transaction_matches(Some({tx})) {{ return Err(<{}>::InvalidContext); }} ",
+            error.to_token_stream()
+        )
+    } else {
+        String::new()
+    };
     let call = format!("{name}(self{args})");
     let body = if returns("Option") {
         format!("{backend}(host)?.{call}")
     } else if returns("bool") {
         format!("{backend}(host).map(|backend| backend.{call}).unwrap_or(false)")
-    } else if returns("CommandResult") {
-        // An unresolved command source has neither a successful run nor feedback.
+    } else if returns("CommandResult") || returns("EntityResidency") {
+        // Without a backend, a command fails with no feedback and an entity is gone.
         format!("{backend}(host).map(|backend| backend.{call}).unwrap_or_default()")
     } else if returns("Result") {
         format!(
@@ -983,12 +1110,15 @@ fn handle_method(
         )
     } else {
         return Err(format!(
-            "{name}: a {receiver} helper returns Option, bool, CommandResult or Result, the value a host without a backend refuses"
+            "{name}: a {receiver} helper returns Option, bool, CommandResult, EntityResidency or Result, the value a host without a backend refuses"
         ));
     };
     Ok(Some((
         handle,
-        format!("{docs}pub {} {{ {body} }}\n", sig.to_token_stream()),
+        format!(
+            "{docs}pub {} {{ {check_transaction}{body} }}\n",
+            sig.to_token_stream()
+        ),
     )))
 }
 
@@ -1074,7 +1204,7 @@ pub(super) fn generate(root: &Path) -> Result<String, String> {
         supertraits("ClientBackendMut"),
     );
     let host = format!(
-        "// @generated by cargo run -p xtask -- mod-api; do not edit.\nuse super::*;\n{imports}/// Services supplied by the game to trait mods.\n/// Each method's default panics with its name, so a test double implements only what its test calls; the game implements every one.\n/// The backend accessors are the exception: they default to None, so a double without a backend answers every handle's typed refusal.\n/// Its methods are declared by area in `host/<area>.rs`; `use mod_api::prelude::*` names every area trait.\npub trait Host: {host_supers} {{\n#[doc(hidden)] fn backend(&self) -> Option<BackendRef<'_>> {{ None }}\n#[doc(hidden)] fn capability_providers(&self) -> &'static dyn CapabilityProviders {{ &InstalledProviders }}\n}}\n/// What only the server's hooks are given: writes to the world.\npub trait ServerHost: Host + {server_supers} {{\n#[doc(hidden)] fn backend_mut(&mut self) -> Option<BackendMutRef<'_>> {{ None }}\n}}\n/// What only the client's hooks are given: the client's own services.\npub trait ClientHost: Host + {client_supers} {{\n#[doc(hidden)] fn client_backend_mut(&mut self) -> Option<ClientBackendMutRef<'_>> {{ None }}\n}}\n{sides}#[doc(hidden)] pub trait Backend: {backend_supers} {{}}\n#[doc(hidden)] pub trait BackendMut: {backend_mut_supers} {{}}\n#[doc(hidden)] pub trait ClientBackendMut: {client_backend_mut_supers} {{}}\n{methods}"
+        "// @generated by cargo run -p xtask -- mod-api; do not edit.\nuse super::*;\n{imports}/// Services supplied by the game to trait mods.\n/// Each method's default panics with its name, so a test double implements only what its test calls; the game implements every one.\n/// The backend accessors are the exception: they default to None, so a double without a backend answers every handle's typed refusal.\n/// Its methods are declared by area in `host/<area>.rs`; `use mod_api::prelude::*` names every area trait.\npub trait Host: {host_supers} {{\n#[doc(hidden)] fn backend(&self) -> Option<BackendRef<'_>> {{ None }}\n#[doc(hidden)] fn capability_providers(&self) -> &'static dyn CapabilityProviders {{ &InstalledProviders }}\n}}\n/// What only the server's hooks are given: writes to the world.\npub trait ServerHost: Host + {server_supers} {{\n#[doc(hidden)] fn backend_mut(&mut self) -> Option<BackendMutRef<'_>> {{ None }}\n/// Runs `callback` inside one scoped transaction on this host, committing on `true` and aborting on `false` or unwind.\n/// Returns `Ok(true)` on commit and `Ok(false)` on callback abort. `Err` distinguishes a scope that could not open from a refused commit.\n/// Most callers use [`HostTransaction::transaction`], which wraps this in a typed `Result<T, TransactionError<E>>`.\nfn with_transaction_scope(&mut self, _callback: &mut dyn for<'loan> FnMut(&'loan mut dyn ServerHost, &'loan TransactionContext) -> bool) -> Result<bool, TransactionScopeError> {{ Err(TransactionScopeError::Unavailable) }}\n/// Runs `callback` inside one scoped transaction with a lent single-slot scratch [`ItemPlace`] initialised from `stack`, committing on `true` and aborting on `false` or unwind.\n/// Returns `Ok(Some(final_stack))` on commit, `Ok(None)` on abort, or a typed `Err` when opening or committing is refused or `stack` fails write validation.\n/// Most callers use [`HostTransaction::scratch_stack`], which wraps this in a typed `Result<(T, Option<ItemStack>), ScratchError<E>>`.\nfn with_scratch_stack_scope(&mut self, _stack: ItemStack, _callback: &mut dyn for<'loan> FnMut(&'loan mut dyn ServerHost, &'loan TransactionContext, &'loan ItemPlace) -> bool) -> Result<Option<Option<ItemStack>>, ScratchScopeError> {{ Err(ScratchScopeError::Transaction(TransactionScopeError::Unavailable)) }}\n/// Runs `callback` inside one scoped transaction with a lent two-slot scratch [`ItemPlace`] initialised with `stack` in its first slot, committing on `true` and aborting on `false` or unwind.\n/// Returns `Ok(Some((first, second)))` on commit, `Ok(None)` on abort, or a typed `Err` when opening or committing is refused or `stack` fails write validation.\n/// Most callers use [`HostTransaction::scratch_slots`], which wraps this in a typed `Result<(T, (Option<ItemStack>, Option<ItemStack>)), ScratchError<E>>`.\nfn with_scratch_slots_scope(&mut self, _stack: ItemStack, _callback: &mut dyn for<'loan> FnMut(&'loan mut dyn ServerHost, &'loan TransactionContext, &'loan ItemPlace) -> bool) -> Result<Option<(Option<ItemStack>, Option<ItemStack>)>, ScratchScopeError> {{ Err(ScratchScopeError::Transaction(TransactionScopeError::Unavailable)) }}\n/// Borrows the already-open innermost transaction without closing it or opening a new frame.\n/// Returns `Err(TransactionUnavailable)` if there is no transaction to borrow.\nfn with_current_transaction_scope(&mut self, _callback: &mut dyn for<'loan> FnMut(&'loan mut dyn ServerHost, &'loan TransactionContext)) -> Result<(), TransactionUnavailable> {{ Err(TransactionUnavailable) }}\n/// Whether `tx` names the innermost open transaction on this host (`None` matching when no transaction is open).\nfn transaction_matches(&self, tx: Option<&TransactionContext>) -> bool {{ tx.is_none() }}\n}}\n/// What only the client's hooks are given: the client's own services.\npub trait ClientHost: Host + {client_supers} {{\n#[doc(hidden)] fn client_backend_mut(&mut self) -> Option<ClientBackendMutRef<'_>> {{ None }}\n}}\n{sides}#[doc(hidden)] pub trait Backend: {backend_supers} {{}}\n#[doc(hidden)] pub trait BackendMut: {backend_mut_supers} {{}}\n#[doc(hidden)] pub trait ClientBackendMut: {client_backend_mut_supers} {{}}\n{methods}"
     );
     syn::parse_file(&host).map_err(|e| format!("generated Host: {e}"))?;
     Ok(host)
@@ -1117,24 +1247,26 @@ fn goal_view(
             entry.name.as_str(),
             signature_args(&entry.sig, &entry.name)?,
         );
-        let refusal = refusal(&entry.sig, name)?;
+        let refusal = refusal(entry)?;
         let mut sig = entry.sig.clone();
         sig.ident = syn::parse_str(name).map_err(|e| format!("{name}: {e}"))?;
-        // Entity data answers the tick's view; everything else forwards to the real backend the
-        // view carries.
-        let entity_data = matches!(
-            entry.sig.inputs.iter().skip(1).find_map(|arg| match arg {
-                FnArg::Typed(arg) => Some(&*arg.ty),
-                FnArg::Receiver(_) => None,
-            }),
-            Some(syn::Type::Path(ty))
-                if ty.path.segments.len() == 1
-                    && GOAL_VIEW_ENTITY_ARGS
-                        .contains(&ty.path.segments[0].ident.to_string().as_str())
-        );
+        // Entity data answers the tick's view; residency and non-entity reads forward to the real
+        // backend the view carries (a lent mob is `EntityResidency::Busy`, not `Gone`).
+        let entity_data = name != "entity_residency"
+            && matches!(
+                entry.sig.inputs.iter().skip(1).find_map(|arg| match arg {
+                    FnArg::Typed(arg) => Some(&*arg.ty),
+                    FnArg::Receiver(_) => None,
+                }),
+                Some(syn::Type::Path(ty))
+                    if ty.path.segments.len() == 1
+                        && GOAL_VIEW_ENTITY_ARGS
+                            .contains(&ty.path.segments[0].ident.to_string().as_str())
+            );
         // How a forwarded read answers a host without a backend: its typed refusal.
         let forwarded = match refusal {
             "None" => ".flatten()".to_string(),
+            "" => ".unwrap_or_default()".to_string(),
             // A `Result` read's no-backend answer is its error type's own `NoBackend` value,
             // wrapped back in the `Err`.
             refusal if refusal.starts_with("Err(") => {
@@ -1142,7 +1274,7 @@ fn goal_view(
             }
             refusal => format!(".unwrap_or({refusal})"),
         };
-        let body = if GOAL_VIEW_READS.contains(&name) {
+        let body = if entry.goal_view() || GOAL_VIEW_READS.contains(&name) {
             format!("self.r_{name}({args})")
         } else if entity_data {
             if args.is_empty() {
@@ -1179,14 +1311,13 @@ fn goal_view(
                 let name = pat.ident.to_string();
                 match ty.as_str() {
                     "EntityRef" => Some(name),
-                    "LivingRef" | "PlayerRef" | "MobRef" | "ItemEntityRef" | "MerchantRef" => {
-                        Some(format!("{name}.entity()"))
-                    }
+                    "LivingRef" | "PlayerRef" | "MobRef" | "ItemEntityRef" | "ExperienceOrbRef"
+                    | "MerchantRef" => Some(format!("{name}.entity()")),
                     _ => None,
                 }
             })
             .collect();
-        let body = if entity_data && !game_entities.is_empty() {
+        let body = if entity_data && !game_entities.is_empty() && !entry.goal_view() {
             let all_available = game_entities
                 .iter()
                 .map(|entity| format!("self.is_game_entity({entity})"))
@@ -1200,12 +1331,12 @@ fn goal_view(
         };
         impls.add(
             area.trait_name(*tier),
-            format!("{} {{ {body} }}\n", sig.to_token_stream()),
+            format!("#[inline]\n{} {{ {body} }}\n", sig.to_token_stream()),
         );
     }
     code.push_str(&impls.take());
     code.push_str(
-        "/// The same view as a host: the entity lookups answer the tick's own rules\n/// (the ticking mob, the player it sees, the snapshot, else None), the mutable\n/// methods stay out of reach of the shared host the view holds, and everything\n/// else - the level, its blocks, tags, recipes and settings - forwards to the\n/// game host the view carries.\nimpl Host for super::GoalCx<'_, '_> {\n#[doc(hidden)]\nfn backend(&self) -> Option<BackendRef<'_>> { Some(mod_api::__private::backend_ref(self)) }\n}\n",
+        "/// The same view as a host: the entity lookups answer the tick's own rules\n/// (the ticking mob, the player it sees, the snapshot, else None), the mutable\n/// methods stay out of reach of the shared host the view holds, and everything\n/// else - the level, its blocks, tags, recipes and settings - forwards to the\n/// game host the view carries.\nimpl Host for super::GoalCx<'_, '_> {\n#[doc(hidden)]\n#[inline]\nfn backend(&self) -> Option<BackendRef<'_>> { Some(mod_api::__private::backend_ref(self)) }\n}\n",
     );
     // An area whose host methods all write has nothing to forward, but the view still implements it.
     for area in areas
@@ -1232,7 +1363,7 @@ fn goal_view(
         };
         impls.add(
             area.trait_name(Tier::Host),
-            format!("{} {{ {body} }}\n", sig.to_token_stream()),
+            format!("#[inline]\n{} {{ {body} }}\n", sig.to_token_stream()),
         );
     }
     code.push_str(&impls.take());
@@ -1267,6 +1398,13 @@ mod state_write_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_backend_can_forward_to_a_distinct_game_method() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let generated = game_forwarders(&root).unwrap();
+        assert!(generated.contains("Game::native_level_can_survive(self, level, pos, state)"));
+    }
 
     fn entry(source: &str) -> Entry {
         let method: syn::TraitItemFn = syn::parse_str(source).unwrap();
@@ -1359,14 +1497,24 @@ mod tests {
         assert!(code.contains("client_backend_mut_of(host)"));
         // A command result refuses with an unsuccessful run and no feedback.
         let command = entry(
-            "fn entity_run_command_with_output(&mut self, entity: EntityRef, line: &str, level: PermissionLevel) -> CommandResult;",
+            "fn entity_run_command_with_output(&mut self, entity: EntityRef, line: &str, level: PermissionLevel, suppress_output: bool) -> CommandResult;",
         );
         let (handle, code) = handle_method(&command, Tier::BackendMut, &handles)
             .unwrap()
             .unwrap();
         assert_eq!(handle, "EntityRef");
         assert!(code.contains(
-            "backend_mut_of(host).map(|backend| backend.entity_run_command_with_output(self, line, level)).unwrap_or_default()"
+            "backend_mut_of(host).map(|backend| backend.entity_run_command_with_output(self, line, level, suppress_output)).unwrap_or_default()"
+        ));
+        // A residency read defaults to `EntityResidency::Gone` without a backend.
+        let residency = entry("fn entity_residency(&self, entity: EntityRef) -> EntityResidency;");
+        let (handle, code) = handle_method(&residency, Tier::Backend, &handles)
+            .unwrap()
+            .unwrap();
+        assert_eq!(handle, "EntityRef");
+        assert!(code.contains("pub fn residency (self , host : & dyn Host) -> EntityResidency"));
+        assert!(code.contains(
+            "backend_of(host).map(|backend| backend.entity_residency(self)).unwrap_or_default()"
         ));
         // A `Result` method refuses with its error's `NoBackend` value on a host without a game.
         let tried = entry("fn level_attempt(&mut self, level: LevelRef) -> Result<u8, Refused>;");
@@ -1431,7 +1579,7 @@ mod tests {
             (
                 "fn entity_x(&self, entity: EntityRef);",
                 Tier::Backend,
-                "returns Option, bool, CommandResult or Result",
+                "returns Option, bool, CommandResult, EntityResidency or Result",
             ),
             (
                 "fn entity_x(&mut self, entity: EntityRef) -> bool;",
@@ -1642,6 +1790,22 @@ mod tests {
     }
 
     #[test]
+    fn goal_view_forwards_entity_residency_to_the_host_backend() {
+        let method = entry("fn entity_residency(&self, entity: EntityRef) -> EntityResidency;");
+        let area = Area {
+            stem: "entities".into(),
+            camel: "Entities".into(),
+            tiers: BTreeMap::new(),
+            tables: BTreeMap::new(),
+        };
+        let code = goal_view(&[], &[(&area, Tier::Backend, &method)], &[]).unwrap();
+        assert!(code.contains(
+            "mod_api::__private::backend_read(self.host, |backend| backend.entity_residency(entity)).unwrap_or(EntityResidency::Gone)"
+        ));
+        assert!(!code.contains("is_game_entity"));
+    }
+
+    #[test]
     fn every_area_file_of_the_checkout_loads() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let areas = load(&root).unwrap();
@@ -1652,5 +1816,21 @@ mod tests {
                 .filter(|area| area.tiers.is_empty())
                 .all(|area| matches!(area.stem.as_str(), "draw" | "services"))
         );
+    }
+
+    #[test]
+    fn only_synchronous_borrowed_callbacks_stay_in_caller_scope() {
+        assert!(!borrows_caller_callback(
+            &entry("fn living_heal(&mut self, living: LivingRef, amount: f32) -> bool;").sig
+        ));
+        assert!(!borrows_caller_callback(
+            &entry("fn schedule_task(&mut self, delay: u32, task: Box<dyn FnOnce(&mut dyn ServerHost)>) -> Result<TaskId, ScheduleError>;").sig
+        ));
+        assert!(borrows_caller_callback(
+            &entry("fn level_visit_all_entities(&self, level: LevelRef, visit: &mut dyn FnMut(EntityRef) -> core::ops::ControlFlow<()>) -> Result<core::ops::ControlFlow<()>, LevelReadError>;").sig
+        ));
+        assert!(borrows_caller_callback(
+            &entry("fn player_read_inventory(&self, player: PlayerRef, read: &mut dyn for<'a> FnMut(InventoryView<'a>)) -> Option<()>;").sig
+        ));
     }
 }

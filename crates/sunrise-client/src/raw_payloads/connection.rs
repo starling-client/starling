@@ -2,6 +2,8 @@
 mod payload_queue;
 pub(crate) use payload_queue::PayloadTurn;
 #[cfg(test)]
+pub(crate) mod test_hooks;
+#[cfg(test)]
 mod tests;
 use super::{Local, Peer, Side};
 use mod_api::{PayloadSendError, PlayerRef};
@@ -34,6 +36,19 @@ impl Epoch {
     }
     pub fn active(&self) -> bool {
         self.active.load(Ordering::Acquire)
+    }
+    /// The send test of this epoch, before any bytes: still active, and `id` declared, in this
+    /// direction and negotiated with the peer for its phase.
+    pub fn can_send(&self, id: &mod_api::PayloadId) -> Result<(), PayloadSendError> {
+        if !self.active() {
+            return Err(PayloadSendError::StaleEpoch);
+        }
+        self.peer.can_send(self.phase, id)
+    }
+    /// Whether [`Self::can_send`] passes, decided the same way without building its error:
+    /// nothing is allocated, also when the answer is no.
+    pub fn sends(&self, id: &str) -> bool {
+        self.active() && self.peer.send_refusal(self.phase, id).is_none()
     }
     /// Atomically publish against invalidation. The closure may only perform nonblocking
     /// queue publication, never user callbacks, waits or connection-state operations.
@@ -92,22 +107,27 @@ pub struct IngressLease {
     _permit: byte_channel::Permit<()>,
     pub(super) owned_bytes: usize,
 }
-// Four slots cover Vec's initial growth and later geometric staging. Provider
-// queue storage is separately charged by the typed ingress channel. This charge
-// covers both main routes and network-staged work, including boxed identities.
-const INGRESS_RECORD_OVERHEAD: usize = 4
-    * (std::mem::size_of::<crate::lan::NetEvent>()
-        + std::mem::size_of::<crate::lan::hub::HostEvent>()
-        + std::mem::size_of::<crate::net::Event>()
-        + std::mem::size_of::<super::Incoming>())
-    + std::mem::size_of::<super::Delivery>()
-    + 128;
+/// The retained-ingress margin one side pays per staged record. Four slots cover
+/// `Vec`'s initial growth and later geometric staging; provider queue storage is
+/// separately charged by the typed ingress channel. This charge covers both main
+/// routes and network-staged work, including boxed identities, so the side passes
+/// the event unions it can stage and nothing else knows their layout.
+pub const fn record_overhead(event_sizes: &[usize]) -> usize {
+    let mut events = std::mem::size_of::<super::Incoming>();
+    let mut i = 0;
+    while i < event_sizes.len() {
+        events += event_sizes[i];
+        i += 1;
+    }
+    4 * events + std::mem::size_of::<super::Delivery>() + 128
+}
 const INGRESS_BUDGET: usize = 16 << 20;
 
 /// Allocate only for a nonempty local installation; unmodded connections need no dispatch state.
 pub struct Connection {
     local: Arc<Local>,
     side: Side,
+    record_overhead: usize,
     current: Mutex<Current>,
     ingress: byte_channel::Sender<()>,
     _ingress_receiver: byte_channel::Receiver<()>,
@@ -143,7 +163,7 @@ impl Connection {
             ),
         }
     }
-    pub fn new(local: Arc<Local>, side: Side) -> Arc<Self> {
+    pub fn new(local: Arc<Local>, side: Side, record_overhead: usize) -> Arc<Self> {
         let (ingress, receiver) = byte_channel::channel(INGRESS_BUDGET).unwrap();
         let droppable = local.has_droppable().then(|| {
             let budgets = local.budgets;
@@ -155,6 +175,7 @@ impl Connection {
             }
         });
         Arc::new(Self {
+            record_overhead,
             droppable,
             ingress,
             _ingress_receiver: receiver,
@@ -179,7 +200,7 @@ impl Connection {
             return Err(PayloadSendError::Disconnected);
         }
         let charge = owned_bytes
-            .checked_add(INGRESS_RECORD_OVERHEAD)
+            .checked_add(self.record_overhead)
             .ok_or(PayloadSendError::Backpressure)?;
         self.ingress
             .reserve(charge)

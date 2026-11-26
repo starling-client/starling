@@ -1,9 +1,9 @@
 //! `register_entity_renderers` for experience orbs (#1296): a renderer registered for
 //! `minecraft:experience_orb` draws in place of the billboarded orb quad, reading the orb's
-//! value; with no renderer the family's own geometry is unchanged; a failing renderer leaves that
-//! quad until a resource reload resolves it again.
+//! value; with no renderer the family's own geometry is unchanged, and an `Err` leaves its quad
+//! for just that draw.
 use super::Game;
-use super::native_entity_renderers::EntityRendererTable;
+use super::native_entity_renderers::{EntityRendererTable, RegisteredEntityRenderer};
 use mod_api::{
     BlockEntityDrawContext, EntityRenderState, EntityRenderer, Hooks, RegisterEntityRenderersEvent,
     RegistrationContext,
@@ -96,6 +96,7 @@ fn verts(out: &[Vertex]) -> Vec<([f32; 3], [f32; 2], u32, u32, u32, [i8; 4], [f3
 fn hanging(id: u32, previous: Vec3) -> ExperienceOrb {
     let at = Vec3::new(FEET[0], FEET[1], FEET[2]);
     ExperienceOrb {
+        size_answer: None,
         attachment_lifetime: Default::default(),
         fall_distance: 0.0,
         rotation: [90.0, -10.0],
@@ -154,7 +155,7 @@ fn an_experience_orb_registration_resolves_to_the_orb_slot() {
     }
     let registered = std::collections::BTreeMap::from([(
         "minecraft:experience_orb".to_owned(),
-        Arc::new(Mark) as Arc<dyn EntityRenderer>,
+        RegisteredEntityRenderer::new(Arc::new(Mark), None),
     )]);
     let (table, unknown) = EntityRendererTable::resolve(
         &registered,
@@ -317,26 +318,30 @@ fn an_unregistered_experience_orb_is_byte_identical_to_the_vanilla_route() {
     });
 }
 
-/// A failing renderer falls back to the quad and is asked no more; only a reload's fresh table
-/// asks it again.
+/// A renderer returning `Err` falls back to the quad for that frame only and stays active for
+/// later frames and after a resource reload.
 #[test]
 #[ignore = "daily"]
-fn a_failed_experience_orb_renderer_draws_the_quad_until_a_resource_reload() {
+fn a_failed_experience_orb_renderer_falls_back_to_the_quad_for_that_frame_only() {
     in_scene(
-        "a_failed_experience_orb_renderer_draws_the_quad_until_a_resource_reload",
+        "a_failed_experience_orb_renderer_falls_back_to_the_quad_for_that_frame_only",
         |game, _, flaky| {
-            for frame_name in ["the failing frame", "the next frame"] {
-                let drawn = orb_frame(game, 93);
-                assert!(!drawn.is_empty(), "{frame_name}: its own quad");
-                assert!(
-                    drawn.iter().all(|v| above(v) < 2.0),
-                    "{frame_name}: no quad kept: {drawn:?}"
-                );
-                assert_eq!(flaky.calls(), 1, "{frame_name}: asked once, then no more");
-            }
+            let drawn = orb_frame(game, 93);
+            assert!(!drawn.is_empty(), "the failing frame: its own quad");
+            assert!(
+                drawn.iter().all(|v| above(v) < 2.0),
+                "the failing frame: no quad kept: {drawn:?}"
+            );
+            assert_eq!(flaky.calls(), 1);
+
+            let drawn = orb_frame(game, 93);
+            assert_eq!(flaky.calls(), 2, "asked again on the next frame");
+            assert_eq!(drawn.len(), 4, "one quad and no orb: {drawn:?}");
+            assert!(drawn.iter().all(|v| (400.0..=401.0).contains(&above(v))));
+
             super::model_baking_completed_tests::reload(game);
             let drawn = orb_frame(game, 93);
-            assert_eq!(flaky.calls(), 2, "the reload resolved it again");
+            assert_eq!(flaky.calls(), 3, "the reload resolved it again");
             assert_eq!(drawn.len(), 4, "one quad and no orb: {drawn:?}");
             assert!(drawn.iter().all(|v| (400.0..=401.0).contains(&above(v))));
         },

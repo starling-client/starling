@@ -1,0 +1,3 @@
+ids = ["handle:EntityRef::is_sitting"]
+why = "#5499: EntityRef::is_sitting reads whether an entity sits by its own vanilla test (Panda.isSitting, Camel.isCamelSitting, Fox.isSitting, TamableAnimal.isInSittingPose), on both sides; a client answers from the synced flags. None for a kind with no sitting test. New method only."
+migrate = "Nothing to change. A mod that guessed sitting from EntityRef::pose reads is_sitting instead."

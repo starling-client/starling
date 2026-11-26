@@ -1,0 +1,16 @@
+ids = [
+    "type:StorageBufferRef",
+    "type:StorageBufferSlice",
+    "type:StorageBufferDescriptor",
+    "type:BindingKind",
+    "type:BindingValue",
+    "type:BufferError",
+    "type:BindGroupLayoutError",
+    "type:DrawBindings",
+    "method:prelude::ClientRenderClientHost::create_storage_buffer",
+    "handle:StorageBufferRef::write_range",
+    "handle:StorageBufferRef::size",
+    "handle:StorageBufferRef::release",
+]
+why = """Add retained GPU storage buffers (vanilla's GpuBuffer): ClientHost::create_storage_buffer(&StorageBufferDescriptor), StorageBufferRef::{write_range, size, release, slice}, BindingKind::StorageBuffer { read_only, min_size } for a std430 block in a mod pipeline's set 1, BindingValue::StorageBuffer(StorageBufferSlice) and DrawBindings::storage_buffer. A buffer is capped at the device's max_buffer_size; a binding takes a range (GpuBufferSlice) of at most max_storage_buffer_binding_size bytes at an offset aligned to min_storage_buffer_offset_alignment. write_range is queued and applied in call order before the frame, as dynamic texture updates are. The buffer survives a resource reload and a world close and is freed by release or when its mod unloads. A writable block in the vertex stage needs VERTEX_WRITABLE_STORAGE, as wgpu gates it. A range shorter than the entry's min_size (non-zero, at most max_storage_buffer_binding_size; mirrors UniformBuffer) is refused with BufferError::BelowMinSize, as the layout's min_binding_size would otherwise fail inside the render pass. BufferError gains ExceedsBindingLimit and BelowMinSize; BindGroupLayoutError gains ZeroStorageSize."""
+migrate = """Additive API. Create a buffer with `host.create_storage_buffer(&StorageBufferDescriptor::new(size))`, fill ranges with `buffer.write_range(host, offset, bytes)`, declare `BindEntry::new(name, BindingKind::StorageBuffer { read_only, min_size })` in the pipeline's layout (the GLSL `readonly` qualifier must agree; `min_size` is the block's smallest valid binding, e.g. 16 for `vec4[]`), and bind `DrawBindings::new().storage_buffer(name, buffer.slice(offset, length))`. Free it with `buffer.release(host)`."""

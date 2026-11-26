@@ -12,11 +12,11 @@ import os
 import random
 import subprocess
 from pathlib import Path
-try:
-    from . import lab, test_rust_parity as base
-except ImportError:
-    import lab
-    import test_rust_parity as base
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_rust_parity as base
 
 # Blocks whose updateShape needs a full level (portal frames) are skipped.
 SKIP = {'minecraft:nether_portal', 'minecraft:moving_piston'}

@@ -1,0 +1,8 @@
+ids = [
+    "trait:BlockEntityTransform",
+    "method:BlockEntityTransform::transform",
+    "type:StructureTransform",
+    "type:TransformRefusal",
+]
+why = "Vanilla 26.3 StructureTemplate.processBlockInfos makes placement-local block infos, which StructureProcessor.processBlock and NeoForge StructureProcessor.process work on. StructureTemplate.placeInWorld loads the working tag directly with BlockEntity.loadWithComponents, without a trial network encoding. Sunrise now lends that compound to the retained transform in the same order as before (after the placed state and loot seed, before load), preserves template reuse and the saved identity fields, and leaves NBT limits to the actual disk or packet writer. Refusals are logged each time; only panics disable a callback and also notify the error toast."
+migrate = "Change `BlockEntityTransform::transform(&self, data: &Compound, transform: StructureTransform) -> Result<Compound, TransformRefusal>` to `fn transform(&self, data: &mut Compound, transform: StructureTransform) -> Result<(), TransformRefusal>`. For closures passed to `.transform(...)`, change the same argument and return type. Replace `let mut out = data.clone(); out.insert(key, value); Ok(out)` with `data.insert(key, value); Ok(())`. Remove fields with `data.remove(&key)` when intended. Validate before writing if `Err(TransformRefusal::new(reason))` should leave the tag unchanged: neither a refusal nor a panic rolls back writes. `StructureTransform` and `TransformRefusal` are local values, not `Wire`; if sent in a custom payload, encode the `rotation` and `mirror` fields and the refusal's `reason` string rather than these records."

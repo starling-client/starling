@@ -1,5 +1,5 @@
 //! The `can_grindstone_repair` fixture: the first `ItemPart` method with `context = "loop"`.
-//! The generated method takes the loop context and no `Host`, its key is the `&ItemStack`,
+//! The generated method takes the loop context and no `Host`, its key is the borrowed `ItemStackView`,
 //! and the dispatch looks the parts up by the stack's item (`item_listens`'s table), each
 //! starting from the answer before it.
 
@@ -19,7 +19,7 @@ impl ItemPart for GrindstoneProbe {
         self.1
             .lock()
             .unwrap()
-            .push((context.side(), event.stack.count, event.can_repair));
+            .push((context.side(), event.stack.count(), event.can_repair));
         event.can_repair = self.0;
     }
 }
@@ -34,13 +34,14 @@ fn item_loop_parts_get_the_context_and_start_from_vanillas_answer() {
             .into(),
         ..Default::default()
     });
-    let stick = ItemStack {
+    let stack = ItemStack {
         item: "fixture:stick".into(),
         count: 2,
     };
+    let stick = || ItemStackView(&stack);
     for vanilla in [false, true] {
         let mut can_repair = vanilla;
-        dispatch_can_grindstone_repair(&Loop("server"), &stick, &mut can_repair);
+        dispatch_can_grindstone_repair(&Loop("server"), stick(), &mut can_repair);
         // The second part is given the first part's answer, and its own is the last word.
         assert!(!can_repair);
         assert_eq!(
@@ -51,7 +52,7 @@ fn item_loop_parts_get_the_context_and_start_from_vanillas_answer() {
     // With no part installed the answer stays vanilla's.
     install_parts(Parts::default());
     let mut can_repair = true;
-    dispatch_can_grindstone_repair(&Loop("client"), &stick, &mut can_repair);
+    dispatch_can_grindstone_repair(&Loop("client"), stick(), &mut can_repair);
     assert!(can_repair);
     assert!(heard.lock().unwrap().is_empty());
 }

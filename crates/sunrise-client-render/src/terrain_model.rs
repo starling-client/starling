@@ -10,9 +10,9 @@ fn same_sprite(left: &str, right: &str) -> bool {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum NativeModelMaterial {
     /// Use each baked quad's material: solid and cutout ones the terrain's, a translucent one the
-    /// sorted translucent material (vanilla's `translucent_moving_block`).
-    /// Tripwire quads fail the whole call. A `color` alpha below 255 puts every quad in the
-    /// translucent material, whatever the policy.
+    /// sorted translucent material (vanilla's `translucent_moving_block`). Quads with an unknown or
+    /// tripwire render type are skipped individually. A `color` alpha below 255 puts every quad in
+    /// the translucent material, whatever the policy.
     #[default]
     Model,
     Solid,
@@ -112,70 +112,48 @@ pub fn multiply_draw_color(color: u32, draw: u32) -> u32 {
     crate::hud_layout::multiply(color, crate::hud_layout::abgr(draw))
 }
 
-/// A whole draw validates before its first vertex. No temporary geometry allocation, resource
-/// scans, partial fallback or change to the ordinary native model helper.
+/// Emit each valid quad of `faces` individually without a preflight rollback scan.
+/// Missing sprites fall back to `minecraft:missingno` when present in `sprite` (matching vanilla
+/// `TextureAtlas.getSprite`), an unmatched `uv_shift.source_sprite` is a no-op, and invalid
+/// primitives (unsupported render types, non-finite coordinates or UVs, or unrepresentable sprite
+/// layers above `u16::MAX`) are skipped individually. Returning `false` from `emit` stops further
+/// emission (for example at a buffer limit).
 pub fn draw_model(
     faces: &[BakedFace],
     pose: Mat4,
     light: u32,
     options: NativeModelRenderOptions<'_>,
     sprite: impl Fn(&str) -> Option<u32>,
-    mut emit: impl FnMut(Vertex),
-) -> bool {
-    if !pose.is_finite()
-        || !options.uv_shrink_ratio.is_finite()
-        || !(0.0..=1.0).contains(&options.uv_shrink_ratio)
-    {
-        return false;
+    mut emit: impl FnMut([Vertex; 4]) -> bool,
+) {
+    if !pose.is_finite() {
+        return;
     }
     let normal_pose = Mat3::from_mat4(pose).inverse().transpose();
-    if !normal_pose.is_finite() {
-        return false;
-    }
-    let shift = match options.uv_shift {
-        Some(shift) => {
-            if shift
-                .scale
-                .iter()
-                .chain(&shift.offset)
-                .any(|v| !v.is_finite())
-            {
-                return false;
-            }
-            let (Some(source), Some(target)) =
-                (sprite(shift.source_sprite), sprite(shift.target_sprite))
-            else {
-                return false;
-            };
-            if source > u16::MAX.into() || target > u16::MAX.into() {
-                return false;
-            }
-            if !faces
-                .iter()
-                .any(|face| same_sprite(&face.quad.material.sprite, shift.source_sprite))
-            {
-                return false;
-            }
-            Some((source, target, shift))
-        }
-        None => None,
-    };
-    let faces = faces.iter().filter(|face| {
-        !face
+    let normal_pose = normal_pose.is_finite().then_some(normal_pose);
+    let mut missing_layer: Option<Option<u32>> = None;
+    let shift = options.uv_shift.map(|shift| {
+        let target = sprite(shift.target_sprite)
+            .or_else(|| *missing_layer.get_or_insert_with(|| sprite("minecraft:missingno")))
+            .filter(|&l| l <= u16::MAX.into());
+        (target, shift)
+    });
+    let faded = options.color >> 24 != 0xff;
+    for face in faces {
+        if face
             .quad
             .cull
             .is_some_and(|side| options.hidden_faces >> side as u8 & 1 != 0)
-    });
-    let vertices = |face: &BakedFace| -> Option<[Vertex; 4]> {
-        let quad = &face.quad;
-        let route = route(face, options.material, options.color >> 24 != 0xff)?;
-        let mut layer = sprite(&quad.material.sprite)?;
-        if layer > u16::MAX.into() || layer != face.layer {
-            return None;
+        {
+            continue;
         }
+        let quad = &face.quad;
+        let Some(route) = route(face, options.material, faded) else {
+            continue;
+        };
         let mut uv = quad.uv;
         if uv.iter().flatten().any(|v| !v.is_finite()) {
-            return None;
+            continue;
         }
         if options.uv_shrink_ratio != 0.0 {
             let center = std::array::from_fn::<_, 2, _>(|i| {
@@ -187,13 +165,32 @@ pub fn draw_model(
                 *p = std::array::from_fn(|i| p[i] + options.uv_shrink_ratio * (center[i] - p[i]));
             }
         }
-        if let Some((_, target, shift)) = shift
-            && same_sprite(&quad.material.sprite, shift.source_sprite)
-        {
-            layer = target;
+        let shifted = shift.filter(|(_, s)| same_sprite(&quad.material.sprite, s.source_sprite));
+        let layer = if let Some((target, shift)) = shifted {
+            let Some(target) = target else {
+                continue;
+            };
             for p in &mut uv {
                 *p = std::array::from_fn(|i| p[i] * shift.scale[i] + shift.offset[i]);
             }
+            target
+        } else {
+            let Some(layer) = sprite(&quad.material.sprite)
+                .or_else(|| *missing_layer.get_or_insert_with(|| sprite("minecraft:missingno")))
+                .filter(|&l| l <= u16::MAX.into())
+            else {
+                continue;
+            };
+            layer
+        };
+        if uv.iter().flatten().any(|v| !v.is_finite()) {
+            continue;
+        }
+        let positions = quad
+            .positions
+            .map(|p| pose.transform_point3(Vec3::from_array(p)));
+        if positions.iter().any(|p| !p.is_finite()) {
+            continue;
         }
         let shaded = match options.shade {
             NativeModelShade::Model => quad.shade,
@@ -201,12 +198,21 @@ pub fn draw_model(
             NativeModelShade::Entity => true,
         };
         let normal = if shaded {
-            let p = quad.positions.map(Vec3::from_array);
-            let n = (p[1] - p[0]).cross(p[2] - p[0]).normalize_or_zero();
-            // Baked model normals are signed bytes before the instance's normal matrix.
-            // Keep the transformed normal as floats; quantizing it again changes rotated faces.
-            let n = n.map(|v| ((v * 127.0) as i8) as f32 / 127.0);
-            (normal_pose * n).normalize_or_zero()
+            let n = if let Some(normal_pose) = normal_pose {
+                let p = quad.positions.map(Vec3::from_array);
+                let n = (p[1] - p[0]).cross(p[2] - p[0]).normalize_or_zero();
+                // Baked model normals are signed bytes before the instance's normal matrix.
+                // Keep the transformed normal as floats; quantizing it again changes rotated faces.
+                let n = n.map(|v| ((v * 127.0) as i8) as f32 / 127.0);
+                (normal_pose * n).normalize_or_zero()
+            } else {
+                // Singular/flattened pose: derive the transformed face normal directly;
+                // degenerate faces stay unshaded (Vec3::ZERO) rather than refusing the draw.
+                (positions[1] - positions[0])
+                    .cross(positions[2] - positions[0])
+                    .normalize_or_zero()
+            };
+            if n.is_finite() { n } else { Vec3::ZERO }
         } else {
             Vec3::ZERO
         };
@@ -227,13 +233,7 @@ pub fn draw_model(
         let light = (light & 0xff).max(u32::from(quad.light[1]) * 16)
             | ((light >> 8 & 0xff).max(u32::from(quad.light[0].max(quad.light_emission)) * 16)
                 << 8);
-        let positions = quad
-            .positions
-            .map(|p| pose.transform_point3(Vec3::from_array(p)));
-        if positions.iter().any(|p| !p.is_finite()) || uv.iter().flatten().any(|v| !v.is_finite()) {
-            return None;
-        }
-        Some(match route {
+        let quad_vertices = match route {
             Route::Terrain(overlay) => std::array::from_fn(|i| Vertex {
                 pos: positions[i].to_array(),
                 uv: uv[i],
@@ -261,17 +261,11 @@ pub fn draw_model(
                     glint_uv: [0.0; 2],
                 })
             }
-        })
-    };
-    if faces.clone().any(|face| vertices(face).is_none()) {
-        return false;
-    }
-    for face in faces {
-        for vertex in vertices(face).expect("validated immutable model") {
-            emit(vertex);
+        };
+        if !emit(quad_vertices) {
+            return;
         }
     }
-    true
 }
 
 #[cfg(test)]

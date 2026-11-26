@@ -51,5 +51,9 @@ test = false
 name = "world_probe"
 path = "examples/probe/main.rs"
 
+[dev-dependencies]
+tar = { version = "0.4", default-features = false }
+ureq = { version = "2", default-features = false, features = ["tls"] }
+
 [lints]
 workspace = true

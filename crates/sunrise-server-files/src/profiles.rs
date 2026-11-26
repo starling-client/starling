@@ -73,12 +73,19 @@ pub fn find_by_id(discovery: &str, id: u128) -> Option<NameAndId> {
     found(&answer, &name).filter(|user| user.id == id)
 }
 
+/// Authlib's `ServicesKeySet`, with the keys kept separate by purpose.
+#[derive(Debug, Default)]
+pub struct ServicesKeySet {
+    /// `ServicesKeyType.PROFILE_KEY`: signs players' chat certificates.
+    pub player_certificate_keys: Vec<RsaPublicKey>,
+    /// `ServicesKeyType.PROFILE_PROPERTY`: signs profile properties such as textures.
+    pub profile_property_keys: Vec<RsaPublicKey>,
+}
+
 /// MinecraftServicesKeyInfo.get: the services' public keys from the
-/// discovery document's `authentication` / `getPublicKeys` endpoint. The
-/// profile-key keys (`playerCertificateKeys`, ServicesKeyType.PROFILE_KEY)
-/// sign the players' chat keys; secure chat checks them. The error is the
-/// line vanilla logs, after which it has no keys.
-pub fn fetch_profile_key_keys(discovery: &str) -> Result<Vec<RsaPublicKey>, &'static str> {
+/// discovery document's `authentication` / `getPublicKeys` endpoint.
+/// The error is the line vanilla logs, after which it has no keys.
+pub fn fetch_profile_key_keys(discovery: &str) -> Result<ServicesKeySet, &'static str> {
     const FAILED: &str = "Failed to request Minecraft Services public key";
     let agent = ureq::AgentBuilder::new()
         .timeout(Duration::from_secs(15))
@@ -95,7 +102,7 @@ pub fn fetch_profile_key_keys(discovery: &str) -> Result<Vec<RsaPublicKey>, &'st
 /// The key set answer: `{"profilePropertyKeys": [...], "playerCertificateKeys":
 /// [...]}`, each `{"publicKey": base64 X.509}`. One bad key makes the whole
 /// answer malformed (parseList throws).
-pub fn profile_key_keys(answer: &str) -> Result<Vec<RsaPublicKey>, &'static str> {
+pub fn profile_key_keys(answer: &str) -> Result<ServicesKeySet, &'static str> {
     use base64::Engine;
     const MALFORMED: &str = "Received malformed Minecraft Services public key data";
     let doc = json::parse(answer, true).map_err(|_| MALFORMED)?;
@@ -120,8 +127,10 @@ pub fn profile_key_keys(answer: &str) -> Result<Vec<RsaPublicKey>, &'static str>
             })
             .collect()
     };
-    list("profilePropertyKeys")?;
-    list("playerCertificateKeys")
+    Ok(ServicesKeySet {
+        profile_property_keys: list("profilePropertyKeys")?,
+        player_certificate_keys: list("playerCertificateKeys")?,
+    })
 }
 
 /// MinecraftServicesDiscoveryService.getUrl(service, endpoint).
@@ -179,9 +188,12 @@ mod tests {
             r#"{{"profilePropertyKeys":[{{"publicKey":"{key}"}}],"playerCertificateKeys":[{{"publicKey":"{key}"}},{{"publicKey":"{key}"}}]}}"#
         );
         let keys = profile_key_keys(&answer).unwrap();
-        assert_eq!(keys.len(), 2);
-        assert_eq!(keys[0].size(), 128);
-        assert_eq!(profile_key_keys("{}").unwrap().len(), 0);
+        assert_eq!(keys.player_certificate_keys.len(), 2);
+        assert_eq!(keys.profile_property_keys.len(), 1);
+        assert_eq!(keys.profile_property_keys[0].size(), 128);
+        let empty = profile_key_keys("{}").unwrap();
+        assert!(empty.player_certificate_keys.is_empty());
+        assert!(empty.profile_property_keys.is_empty());
         let bad = r#"{"profilePropertyKeys":[{"publicKey":"AAAA"}],"playerCertificateKeys":[]}"#;
         assert!(profile_key_keys(bad).is_err());
         assert!(profile_key_keys("not json").is_err());

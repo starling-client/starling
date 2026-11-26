@@ -23,8 +23,4 @@ pub struct Flags {
     /// Hurt by water (endermen, blazes, striders out of lava, snow golems).
     pub water_sensitive: bool,
     pub animal: bool,
-    /// Told `entity_tick_pre` and `entity_tick_post` alone, right before and after its own
-    /// tick: a mod named the type (`Registrar::entity_tick_each`). Set when the game loads its
-    /// mob types; false for a type no mod names.
-    pub tick_alone: bool,
 }

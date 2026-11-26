@@ -1,5 +1,4 @@
 //! The `datapack_sync` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0123
 
 pub trait Hooks {
     /// Collect recipe types once the joining player exists, after admission

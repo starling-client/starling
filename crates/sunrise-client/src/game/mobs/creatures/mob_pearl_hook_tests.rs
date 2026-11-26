@@ -81,6 +81,10 @@ impl Hooks for PlayerPearlProbe {
 #[test]
 #[ignore = "daily"]
 fn player_pearl_keeps_acting_context_cancellation_and_mutable_damage() {
+    run_player_pearl_keeps_acting_context_cancellation_and_mutable_damage();
+}
+
+pub(in crate::game) fn run_player_pearl_keeps_acting_context_cancellation_and_mutable_damage() {
     use sunrise_client::motion::PlayerMotion;
     let mode = Arc::new(AtomicU8::new(0));
     let mods: mod_api::Mods = vec![ModEntry::new(
@@ -151,6 +155,11 @@ fn player_pearl_keeps_acting_context_cancellation_and_mutable_damage() {
 #[test]
 #[ignore = "daily"]
 fn mob_pearls_use_the_hook_and_recheck_listener_writes_without_player_side_effects() {
+    run_mob_pearls_use_the_hook_and_recheck_listener_writes_without_player_side_effects();
+}
+
+pub(in crate::game) fn run_mob_pearls_use_the_hook_and_recheck_listener_writes_without_player_side_effects()
+ {
     let mode = Arc::new(AtomicU8::new(0));
     let owners = Arc::new(Mutex::new(Vec::new()));
     let command_teleports = Arc::new(Mutex::new(Vec::new()));

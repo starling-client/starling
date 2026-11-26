@@ -1,0 +1,3 @@
+ids = ["handle:ItemResource::durability_to_repair_from_xp"]
+why = "#5350: ItemResource::durability_to_repair_from_xp reads the durability a stack's enchantments repair for a number of experience points (EnchantmentHelper.modifyDurabilityToRepairFromXp), by the loaded repair_with_xp effects, data packs' included; with no such effect the points come back unchanged, as in vanilla. It does not apply the xp_repair_ratio hook. New method only."
+migrate = "Nothing to change. A mod that hardcoded Mending's x2 calls durability_to_repair_from_xp instead."

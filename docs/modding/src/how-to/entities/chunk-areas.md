@@ -1,6 +1,6 @@
 # Chunk areas for a player
 
-A server mod can keep squares of chunks loaded, or ticking, for one player, in any level, and the engine sends them to that player's client. This is what a portal that shows another place needs, as Immersive Portals' `ChunkLoader` does. A level besides the player's own reaches only a Sunrise client that can view it; it keeps that level's chunks and updates beside its own world, and nothing is drawn yet.
+A server mod can keep squares of chunks loaded, or ticking, for one player, in any level, and the engine sends them to that player's client. This is what a portal that shows another place needs, as Immersive Portals' `ChunkLoader` does. A level besides the player's own reaches only a Sunrise client that can view it; it keeps that level's chunks and updates beside its own world, and nothing is drawn yet. In the player's own level, an area reaches past the view (below).
 
 ```rust,ignore
 let nether = host.level("minecraft:the_nether").expect("the server has the Nether");
@@ -25,7 +25,7 @@ let _ = player.set_chunk_areas(host, &[]);
 - **Each call replaces the calling mod's areas** for that player. Other mods' areas stay. An empty slice withdraws them. A chunk no area covers any more stays on the client for 52 ticks, then is forgotten; when none of a level is left, the client drops that world.
 - **Not a player.** An area is a chunk ticket. It counts as no player for natural spawning, mob caps, despawning, spawners, sleeping, raids, the dragon fight or the random-tick rules that look for a player nearby. Terrain generated for an area is saved like any other.
 - **Lifetime.** Areas are never saved. They end when the player leaves.
-- **The player's own level.** An area there holds its ticket, but its chunks are sent only within the player's normal view.
+- **The player's own level.** An area there holds its ticket, and its chunks reach the client wherever they are, thousands of blocks past the player's view included, as a portal to a far place of the same level needs. They come after the view's chunks in the same batches, centre first, and are tracked as the view's are: their block changes, their entities within each one's tracking range of an area's centre, and their [passages](../passages.md) reach the client, and the server lets the player cross into them. Such a chunk stays on the client however the player moves. One no area covers any more stays 52 ticks, then is forgotten unless the player's view holds it. The client keeps them, meshed, until then: a [`WorldView`](../client/client-effects.md#drawing-a-second-world-camera) near them draws them. Only a Sunrise client of this version is sent them; to vanilla's or an older Sunrise client's, the area holds its ticket and nothing past the view is sent.
 - **A level opened after the player logged in** (a [runtime level](../world/runtime-levels.md#players-and-clients)) is viewed like any other by a client of this version. An older Sunrise client cannot name it: an area there is kept, but nothing of the level is sent to it. When a runtime level closes, the clients that viewed it drop its world.
 - **Refusals.** A call that breaks a limit changes nothing; the areas asked before stay. `ChunkAreaRefusal` names the limit and its value:
   - `NotOnline`: the player is not online on this server.
@@ -44,3 +44,9 @@ let _ = player.set_chunk_areas(host, &[]);
   | `LoadedPerLevel` | `max_viewed_loaded_chunks_per_level`, every player together | 16384 |
   | `TickingPerLevel` | `max_viewed_ticking_chunks_per_level`, every player together | 3528 |
 - **Cost.** With no area on the server, a level pass costs one integer compare.
+
+To read what is actually resident after the tickets take effect, use
+`level.visit_loaded_chunks(host, &mut visit)`. To see who watches a resident chunk,
+use `chunk.visit_watchers(host, &mut visit)`. Neither read loads chunks or changes
+areas. See [players, structures and chunk watchers](../world/dimension-shape.md#players-structures-and-chunk-watchers)
+for order and refusals.

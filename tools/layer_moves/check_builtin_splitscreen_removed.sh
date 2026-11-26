@@ -14,10 +14,10 @@ ordinary=(
     split_by_dimension_chunk_and_span split_by_entity_sums_to_the_functions_total
     split_by_slow_separates_the_slow_ticks_samples split_by_state_sums_to_the_node_total_of_the_wall_samples
     split_by_thread_id_divides_by_the_named_threads_own_ticks split_child split_controls split_count
-    split_cube_children split_dead_cube split_directive split_dispatch_fixtures split_file_order_is_stable_and_validated
+    split_cube_children split_dead_cube split_directive
     split_first split_first_chunk split_first_mut split_flags split_for_impl split_formatted split_frame
     split_hover split_id split_inclusive split_last split_limit split_line split_lines split_list split_loot_stacks
-    split_name split_narrows_to_a_span_or_a_context_value split_native_hooks split_off split_once split_part_fixtures
+    split_name split_narrows_to_a_span_or_a_context_value split_off split_once split_part_fixtures
     split_paths split_points split_ranges split_registry_data split_rows split_rows_keep_their_wire_names
     split_sampler split_scene split_secret split_solid split_style split_t split_terrain split_tests split_top
     split_top_level split_type split_url split_uses_parent_random_and_width_for_both_cube_types split_variant

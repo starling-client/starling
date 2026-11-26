@@ -60,6 +60,7 @@ fn a_baby_rabbit_takes_a_parents_colour_or_a_fresh_biome_variant() {
             None,
             None,
             sunrise_client::mobs::BreedExperience::Deferred,
+            true,
         );
         let child = game
             .mobs

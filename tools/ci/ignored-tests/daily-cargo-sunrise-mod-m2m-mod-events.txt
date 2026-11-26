@@ -1,0 +1,1 @@
+cargo-sunrise-mod two_separately_built_mods_cross_a_mod_event_in_a_real_game test:m2m_mod_events daily own-sdk # Builds two mods and starts the daily head's dedicated server; book-quickstart.yml supplies its SDK and the server resources.

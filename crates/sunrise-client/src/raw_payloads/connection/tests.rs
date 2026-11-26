@@ -1,20 +1,7 @@
 use super::*;
+use crate::raw_payloads::{TEST_RECORD_OVERHEAD, Transport};
 use std::{sync::mpsc, time::Duration};
 use sunrise_protocol::payload_negotiation::{Flow, Manifest, RegistrationPhase};
-
-thread_local! {
-    static PAYLOAD_WAIT_ENTERED: std::cell::RefCell<Option<mpsc::Sender<()>>> = const {
-        std::cell::RefCell::new(None)
-    };
-}
-
-pub(super) fn notify_payload_wait_entered() {
-    PAYLOAD_WAIT_ENTERED.with_borrow_mut(|sender| {
-        if let Some(sender) = sender.take() {
-            let _ = sender.send(());
-        }
-    });
-}
 
 fn connection() -> Arc<Connection> {
     let mut manifest = Manifest::builder();
@@ -28,7 +15,7 @@ fn connection() -> Arc<Connection> {
         )
         .unwrap();
     let local = Arc::new(Local::new(manifest.finish().unwrap(), None));
-    let connection = Connection::new(local.clone(), Side::Client);
+    let connection = Connection::new(local.clone(), Side::Client, TEST_RECORD_OVERHEAD);
     connection.accept(local.manifest.entries()).unwrap();
     connection
 }
@@ -81,78 +68,9 @@ fn close_releases_a_waiting_configuration_without_running_queued_work() {
 }
 
 #[test]
-fn epoch_end_wakes_a_dedicated_payload_receiver_before_the_main_root_finishes() {
-    use crate::lan::{NetEvent, PlayerSender};
-    use crate::raw_payloads::{
-        Classified, Endpoint, Incoming, MainQueue, dispatch,
-        raw_channel_tests::{CHANNEL, serverbound, with_vanilla_peer},
-    };
-
-    with_vanilla_peer(|transport| {
-        let epoch = transport.epoch().unwrap();
-        let Classified::Raw(deliveries) =
-            Incoming::classify(&transport, Phase::Play, serverbound(CHANNEL, 1)).unwrap()
-        else {
-            panic!("expected one delivery per raw-channel listener");
-        };
-        let [first, later]: [Incoming; 2] = deliveries.try_into().ok().unwrap();
-        let first_lease = Arc::downgrade(&first.lease);
-        let later_lease = Arc::downgrade(&later.lease);
-        let (sender, _) = PlayerSender::payload_executor_test_sender(transport.clone());
-        let endpoint = Endpoint::server(sender);
-        let (events, receiver) = crate::lan::event_channel();
-
-        dispatch(
-            first,
-            endpoint.clone(),
-            MainQueue::Server {
-                events: events.clone(),
-                endpoint: endpoint.clone(),
-                conn: Some(1),
-            },
-        );
-        let mut turn = receiver.take_turn().into_iter();
-        let (NetEvent::RawPayload(held), _credit) = turn.next().unwrap().into_parts() else {
-            panic!("expected the main root");
-        };
-        assert!(turn.next().is_none());
-
-        let (entered, parked) = mpsc::channel();
-        let (done, result) = mpsc::channel();
-        let worker = std::thread::spawn(move || {
-            PAYLOAD_WAIT_ENTERED.with_borrow_mut(|sender| *sender = Some(entered));
-            dispatch(
-                later,
-                endpoint.clone(),
-                MainQueue::Server {
-                    events,
-                    endpoint,
-                    conn: None,
-                },
-            );
-            let _ = done.send(());
-        });
-        let bound = Duration::from_secs(2);
-        parked
-            .recv_timeout(bound)
-            .expect("the dedicated waiter parks");
-        transport.begin_configuration();
-        result
-            .recv_timeout(bound)
-            .expect("epoch invalidation wakes the receiver while the main root is held");
-        assert!(!epoch.active());
-        assert!(first_lease.upgrade().is_some());
-        assert!(later_lease.upgrade().is_none());
-        assert!(receiver.take_turn().is_empty(), "old work was canceled");
-        drop(held);
-        worker.join().unwrap();
-    });
-}
-
-#[test]
 fn ingress_leases_survive_phase_churn_and_refund_outside_queues() {
     let connection = connection();
-    let cost = INGRESS_RECORD_OVERHEAD + byte_channel::message_overhead::<()>();
+    let cost = TEST_RECORD_OVERHEAD + byte_channel::message_overhead::<()>();
     let snapshot_charge = connection.ingress.stats().reserved_bytes;
     let mut leases = Vec::new();
     for _ in 0..(INGRESS_BUDGET - snapshot_charge) / cost {
@@ -258,7 +176,7 @@ fn publication_gate_orders_close_and_isolates_replaced_epochs() {
 
 #[test]
 fn empty_transport_has_no_mutable_connection_or_ingress_budget() {
-    let transport = super::super::transport::Transport::empty();
+    let transport = Transport::empty();
     assert!(transport.connection.is_none());
     assert!(transport.player().is_none());
     assert!(matches!(

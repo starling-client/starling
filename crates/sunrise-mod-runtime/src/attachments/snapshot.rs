@@ -1,7 +1,7 @@
 //! Read-only generations of a holder's synced bindings, detached from the holder itself.
 use super::{
     AttachmentEntry, AttachmentError, AttachmentKeyView, AttachmentType, Attachments,
-    index::AttachmentKey,
+    CheckedAttachmentType, index::AttachmentKey,
 };
 use std::{fmt, sync::Arc};
 
@@ -19,7 +19,7 @@ impl SyncedAttachmentSnapshot {
         let entries: Vec<Binding> = holder
             .entries
             .iter()
-            .filter(|(_, binding)| binding.is_synced() && binding.synced_value().is_some())
+            .filter(|(_, binding)| binding.synced_value().is_some())
             .map(|(key, binding)| (key.clone(), Arc::clone(binding)))
             .collect();
         Self(entries.into())
@@ -37,6 +37,22 @@ impl SyncedAttachmentSnapshot {
             })
             .ok()
             .map(|i| self.0[i].1.read(key))
+            .transpose()
+    }
+
+    /// Read a captured binding with an issued type, scoping cached decodes to its installation.
+    pub fn get_checked<T: Send + Sync + 'static>(
+        &self,
+        key: &CheckedAttachmentType<T>,
+        epoch: u64,
+    ) -> Result<Option<&T>, AttachmentError> {
+        let lookup = (key.namespace(), key.name());
+        self.0
+            .binary_search_by(|(key, _)| {
+                (key as &dyn AttachmentKeyView).cmp(&lookup as &dyn AttachmentKeyView)
+            })
+            .ok()
+            .map(|i| self.0[i].1.read_in_installation(key.as_type(), Some(epoch)))
             .transpose()
     }
 }
@@ -67,22 +83,21 @@ impl PartialEq for SyncedAttachmentSnapshot {
 mod tests {
     use super::*;
     use crate::attachments::{AttachmentCodec, AttachmentSync, Holder};
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use sunrise_core::nbt::{Compound, Tag};
 
     static FUEL: AttachmentType<i32> = AttachmentType {
         namespace: "test",
         name: "fuel",
         default: || 99,
-        codec: Some(AttachmentCodec {
+        codec: None,
+        copy_on_death: false,
+        sync_codec: Some(AttachmentCodec {
             encode: |n| Ok([("n".into(), Tag::Int(*n))].into()),
             decode: |tag| match tag.get(&"n".into()) {
                 Some(Tag::Int(n)) => Ok(*n),
                 _ => Err(AttachmentError::Decode),
             },
         }),
-        sync: true,
-        copy_on_death: false,
     };
 
     fn sync(holder: &mut Attachments, key: &str, value: Option<Compound>) {
@@ -162,41 +177,46 @@ mod tests {
     }
 
     #[test]
-    fn snapshots_of_decoded_bindings_share_the_entry_without_redecoding() {
-        static DECODES: AtomicUsize = AtomicUsize::new(0);
+    fn snapshots_keep_replica_bytes_after_promotion_but_skip_local_values() {
         static CODEC: AttachmentType<i32> = AttachmentType {
             namespace: "test",
             name: "fuel",
             default: || 0,
             codec: Some(AttachmentCodec {
-                encode: |n| Ok([("n".into(), Tag::Int(*n))].into()),
-                decode: |c| {
-                    DECODES.fetch_add(1, Ordering::Relaxed);
-                    match c.get(&"n".into()) {
-                        Some(Tag::Int(n)) => Ok(*n),
-                        _ => Err(AttachmentError::Decode),
-                    }
+                encode: |n| Ok([("disk".into(), Tag::Int(*n))].into()),
+                decode: |_| panic!("render snapshot must use sync_codec, not persistence codec"),
+            }),
+            copy_on_death: false,
+            sync_codec: Some(AttachmentCodec {
+                encode: |n| Ok([("n".into(), Tag::Int(n / 10))].into()),
+                decode: |c| match c.get(&"n".into()) {
+                    Some(Tag::Int(n)) => Ok(*n * 10),
+                    _ => Err(AttachmentError::Decode),
                 },
             }),
-            sync: true,
-            copy_on_death: false,
         };
         let mut holder = Attachments::default();
         CODEC.set(&mut holder, Holder::Level, 27).unwrap();
-        let frame = SyncedAttachmentSnapshot::capture(&holder);
-        assert!(Arc::ptr_eq(
-            &frame.0[0].1,
-            holder.entry("test", "fuel").unwrap().unwrap()
-        ));
-        assert_eq!(frame.get(&CODEC), Ok(Some(&27)));
-        assert_eq!(DECODES.load(Ordering::Relaxed), 0);
+        let capture = |holder: &Attachments| SyncedAttachmentSnapshot::capture(holder);
+        assert_eq!(capture(&holder).get(&CODEC), Ok(None));
 
-        let mut raw = Attachments::default();
-        sync(&mut raw, "fuel", Some([("n".into(), Tag::Int(27))].into()));
-        assert_eq!(frame, SyncedAttachmentSnapshot::capture(&raw));
-        assert_eq!(
-            SyncedAttachmentSnapshot::default(),
-            SyncedAttachmentSnapshot::capture(&Attachments::default())
+        sync(
+            &mut holder,
+            "fuel",
+            Some([("n".into(), Tag::Int(2))].into()),
         );
+        assert_eq!(CODEC.get_existing(&mut holder, Holder::Level), Ok(Some(20)));
+        let frame = capture(&holder);
+        assert_eq!(frame.get(&CODEC), Ok(Some(&20)));
+        let checked = CheckedAttachmentType::new(AttachmentType {
+            namespace: "test",
+            name: "fuel",
+            default: || 0,
+            codec: None,
+            copy_on_death: false,
+            sync_codec: CODEC.sync_codec,
+        })
+        .unwrap();
+        assert_eq!(frame.get_checked(&checked, 1), Ok(Some(&20)));
     }
 }

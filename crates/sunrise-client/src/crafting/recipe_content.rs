@@ -1,13 +1,7 @@
 //! NeoForge's full recipe-content route, separate from vanilla book displays.
 use super::{
-    DecodedRecipe, Ingredient, IngredientInput, Recipes, ResolvedRecipe, ResolvedSources, Special,
+    DecodedRecipe, Ingredient, ParsedStationRecipe, Recipes, ResolvedRecipe, Smithing, Special,
     qualified,
-};
-use crate::{
-    Result,
-    items::Items,
-    recipe_book::RecipeIndex,
-    stations::{ParsedStationRecipe, Smithing},
 };
 use serde_json::{Map, Value, json};
 use sunrise_core::identifier::Identifier;
@@ -33,43 +27,6 @@ impl Recipes {
                 }
             })
             .collect()
-    }
-
-    /// Decode the incoming recipes once. Local recipes of other types keep their
-    /// existing resolved ingredients and loaded native serializer values.
-    pub fn with_recipe_content(
-        &self,
-        items: &Items,
-        received: Vec<(String, Value)>,
-        types: &[String],
-    ) -> Result<(Self, RecipeIndex)> {
-        let received = received
-            .into_iter()
-            .map(|(id, file)| {
-                let id = match id.strip_prefix("minecraft:") {
-                    Some(name) => name.to_owned(),
-                    None => id,
-                };
-                (id, file)
-            })
-            .collect();
-        let mut sources = ResolvedSources::decode(received, items, IngredientInput::Network(types));
-        sources.check()?;
-        sources.property_additions = self.property_additions.clone();
-        sources.recipes.extend(
-            self.sources
-                .iter()
-                .filter(|recipe| {
-                    !recipe
-                        .recipe_type
-                        .as_ref()
-                        .is_some_and(|kind| types.contains(kind))
-                })
-                .cloned(),
-        );
-        let recipes = Self::from_decoded(items, self.curses.clone(), &sources);
-        let index = RecipeIndex::from_recipes(&recipes);
-        Ok((recipes, index))
     }
 }
 

@@ -79,7 +79,7 @@ impl Game<'_> {
         }
         if self.dialog_open() {
             let before = self.dialog_screen_key();
-            if let Err(e) = self.dialog_key(KeyCode::Escape, None, None) {
+            if let Err(e) = self.dialog_key(KeyCode::Escape, None) {
                 log::warn!("Sunrise: closing the dialog: {e:#}");
             }
             return Some(!self.dialog_open() || self.dialog_screen_key() != before);
@@ -122,7 +122,7 @@ impl Game<'_> {
 }
 
 #[cfg(test)]
-mod client_screen_tests {
+pub(in crate::game) mod client_screen_tests {
     use super::*;
     use crate::game::books::BookScreen;
     use crate::game::native_entity_refs::tests::with_client_game;
@@ -319,6 +319,137 @@ mod client_screen_tests {
                 sent(&mut reader).is_empty(),
                 "Escape in the editor sends no edit and no menu close"
             );
+        });
+    }
+
+    /// Vanilla 26.3 `BookEditScreen` Done (`saveChanges`) matches the witness recorded by `tools/test_writable_book_parity.py`.
+    #[test]
+    #[ignore = "run by tools/test_writable_book_parity.py"]
+    fn done_on_an_unedited_book_sends_it_and_drops_its_filtered_text() {
+        run_done_on_an_unedited_book_sends_it_and_drops_its_filtered_text();
+    }
+
+    pub(in crate::game) fn run_done_on_an_unedited_book_sends_it_and_drops_its_filtered_text() {
+        use std::fmt::Write as _;
+        #[derive(serde::Deserialize)]
+        struct Witness {
+            minecraft: String,
+            book_edit_cases: Vec<BookEditCase>,
+        }
+        #[derive(serde::Deserialize)]
+        struct BookEditCase {
+            name: String,
+            slot: usize,
+            input_snbt: String,
+            screen_closed: bool,
+            sent_edit_book_packets: Vec<EditBookPacket>,
+            after_raw_pages: Vec<String>,
+            after_filtered_pages: Vec<Option<String>>,
+            after_component_canon: String,
+            after_stack_canon: String,
+        }
+        #[derive(serde::Deserialize)]
+        struct EditBookPacket {
+            slot: i32,
+            pages: Vec<String>,
+            title: Option<String>,
+            wire_hex: String,
+        }
+
+        let witness_path = std::env::var_os("SUNRISE_WRITABLE_BOOK_WITNESS").unwrap_or_else(|| {
+            panic!(
+                "SUNRISE_WRITABLE_BOOK_WITNESS is unset; run tools/test_writable_book_parity.py, which records the witness"
+            )
+        });
+        let witness_path = std::path::PathBuf::from(witness_path);
+        let witness_path = if witness_path.is_dir() {
+            witness_path.join("writable_book.json")
+        } else {
+            witness_path
+        };
+        let witness_raw = std::fs::read_to_string(&witness_path).unwrap_or_else(|e| {
+            panic!(
+                "failed to read witness {} (record via tools/test_writable_book_parity.py): {e}",
+                witness_path.display()
+            )
+        });
+        let witness: Witness = serde_json::from_str(&witness_raw).unwrap();
+        assert_eq!(witness.minecraft, "26.3");
+        with_client_game(|game| {
+            let mut reader = logged_in(game);
+            for case in &witness.book_edit_cases {
+                game.selected = case.slot;
+                let book = sunrise_items::item_data::parse_stack(&case.input_snbt)
+                    .unwrap()
+                    .unwrap();
+                *game.held_mut() = Some(book.clone());
+                assert!(
+                    game.remote_use_book(&book),
+                    "the editor opened ({})",
+                    case.name
+                );
+                sent(&mut reader);
+                game.save_book(false);
+                assert_eq!(game.book.is_none(), case.screen_closed, "{}", case.name);
+                let edits: Vec<_> = sent(&mut reader)
+                    .into_iter()
+                    .filter(|p| matches!(p, S::EditBook(_)))
+                    .collect();
+                let expected_edits: Vec<_> = case
+                    .sent_edit_book_packets
+                    .iter()
+                    .map(|p| {
+                        S::EditBook(play::EditBook {
+                            slot: p.slot,
+                            pages: p.pages.clone(),
+                            title: p.title.clone(),
+                        })
+                    })
+                    .collect();
+                assert_eq!(edits, expected_edits, "{}", case.name);
+                for (sent_pkt, expected) in edits.iter().zip(&case.sent_edit_book_packets) {
+                    let S::EditBook(edit) = sent_pkt else {
+                        unreachable!();
+                    };
+                    let mut w = sunrise_core::vanilla_bytes::Writer::new();
+                    <play::EditBook as sunrise_protocol::buf::Codec<play::EditBook>>::write(
+                        edit, &mut w,
+                    );
+                    let mut hex = String::with_capacity(w.data.len() * 2);
+                    for b in &w.data {
+                        write!(&mut hex, "{b:02x}").unwrap();
+                    }
+                    assert_eq!(
+                        hex, expected.wire_hex,
+                        "wire_hex mismatch for {}",
+                        case.name
+                    );
+                }
+                let held = game.held().expect("book stays in hand");
+                let data = held.data().expect("book keeps pages");
+                assert_eq!(data.writable_pages, case.after_raw_pages, "{}", case.name);
+                let expected_filtered = if case.after_filtered_pages.iter().all(Option::is_none) {
+                    Vec::new()
+                } else {
+                    case.after_filtered_pages.clone()
+                };
+                assert_eq!(data.writable_filtered, expected_filtered, "{}", case.name);
+                let saved = sunrise_items::item_data::component_snapshot(held).unwrap();
+                assert_eq!(
+                    sunrise_items::item_data::canon_tag(
+                        saved.get("minecraft:writable_book_content").unwrap()
+                    ),
+                    case.after_component_canon,
+                    "{}",
+                    case.name
+                );
+                assert_eq!(
+                    sunrise_items::item_data::canon_stack(Some(held), game.res.items()),
+                    case.after_stack_canon,
+                    "{}",
+                    case.name
+                );
+            }
         });
     }
 

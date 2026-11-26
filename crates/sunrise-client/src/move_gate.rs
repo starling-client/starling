@@ -17,7 +17,7 @@ use sunrise_world::block_collision_scan::BlockCollisionWorld;
 use sunrise_world::collision_context::CollisionContext;
 use sunrise_world::entity_move::MoverType;
 use sunrise_world::move_gate::MoveGate;
-use sunrise_world::native_load_context::{LoopContext, LoopSide};
+use sunrise_world::native_load_context::LoopContext;
 use sunrise_world::world_movement::EntityMovementWorld;
 
 /// The `entity_move` hook's target (#2414): the generated dispatch the
@@ -85,27 +85,42 @@ pub fn arm_with<'k>(
     cause: MoverType,
     delta: Vec3,
 ) {
+    arm_with_controlled(gate, context, entity, kind, cause, delta, false);
+}
+
+/// [`arm_with`] with an explicit `client_controlled` flag for a body a client
+/// controls (a player, or a vehicle a player is driving): `side = "server"`
+/// listeners are skipped for those bodies.
+#[inline(never)]
+pub fn arm_with_controlled<'k>(
+    gate: &mut MoveGate,
+    context: &LoopContext,
+    entity: u32,
+    kind: impl FnOnce() -> Cow<'k, str>,
+    cause: MoverType,
+    delta: Vec3,
+    client_controlled: bool,
+) {
     // The requested delta is the floor every listener result falls back to:
     // armed first, the decision replaced only by a result that passes
     // validation — the request stays what `overridden` measures against.
     gate.arm(entity, cause, delta);
-    if context.side() != LoopSide::Server {
-        return;
-    }
     if !mod_api::__private::listened(mod_api::HookId::EntityMove) {
         return;
     }
     let kind = kind();
+    let client_controlled = client_controlled || &*kind == "minecraft:player";
     let mut replaced = [delta.x, delta.y, delta.z];
     let mut canceled = false;
     let reader = sunrise_client_render::api_context::LoopReader(context);
-    mod_api::dispatch_entity_move(
+    mod_api::dispatch_entity_move_for(
         &reader.context(),
         entity,
         &kind,
         cause_of(cause),
         &mut replaced,
         &mut canceled,
+        client_controlled,
     );
     if canceled {
         gate.skip();
@@ -143,6 +158,52 @@ pub fn arm(
     delta: Vec3,
 ) {
     arm_with(gate, context, entity, || Cow::Borrowed(kind), cause, delta);
+}
+
+/// [`arm_with_controlled`] for a mover whose type name is already a borrowed `&str`.
+#[inline]
+pub fn arm_controlled(
+    gate: &mut MoveGate,
+    context: &LoopContext,
+    entity: u32,
+    kind: &str,
+    cause: MoverType,
+    delta: Vec3,
+    client_controlled: bool,
+) {
+    arm_with_controlled(
+        gate,
+        context,
+        entity,
+        || Cow::Borrowed(kind),
+        cause,
+        delta,
+        client_controlled,
+    );
+}
+
+/// [`arm_with_controlled`] for a fresh gate, in one line at a move site whose
+/// type name would cost a string to build.
+#[inline]
+pub fn armed_with_controlled<'k>(
+    context: &LoopContext,
+    entity: u32,
+    kind: impl FnOnce() -> Cow<'k, str>,
+    cause: MoverType,
+    delta: Vec3,
+    client_controlled: bool,
+) -> MoveGate {
+    let mut gate = MoveGate::new();
+    arm_with_controlled(
+        &mut gate,
+        context,
+        entity,
+        kind,
+        cause,
+        delta,
+        client_controlled,
+    );
+    gate
 }
 
 /// [`arm_with`] for a fresh gate, in one line at a move site whose type name

@@ -330,8 +330,7 @@ impl Game<'_> {
         this.tick_container_reach();
         this.ensure_stateful_entity_table();
         if !this.world.block_entities.has_states() {
-            let states = this.ticking_states();
-            this.world.block_entities.set_states(states);
+            this.bind_server_ticking_states();
             let containers = this.native_containers();
             this.world.block_entities.set_mod_containers(containers);
             let fluids = this.native_fluid_tables();
@@ -392,7 +391,7 @@ impl Game<'_> {
             let Some((kind, mod_type)) = TickedKind::with_type(entity) else {
                 continue;
             };
-            if matches!(entity, BlockEntity::Mod(m) if mod_api::__private::content_owner_disabled(m.id()))
+            if matches!(entity, BlockEntity::Mod(m) if mod_api::__private::block_entity_owner_disabled(m.id()))
             {
                 continue;
             }
@@ -549,6 +548,14 @@ impl Game<'_> {
             .shulkers
             .extend(self.be_anims.shulkers.iter().map(|(p, s)| (*p, s.clone())));
     }
+    pub(in crate::game) fn bind_server_ticking_states(&mut self) {
+        self.world.block_entities.set_mod_ticker_states(
+            super::api_values::block_state::mod_ticker_states(mod_api::LogicalSide::Server),
+        );
+        let states = self.ticking_states();
+        self.world.block_entities.set_states(states);
+    }
+
     /// `BlockState.getTicker` of every state, for the block entities ticked
     /// here. A creaking heart keeps its slot while uprooted (see
     /// `tick_creaking_heart`).
@@ -591,7 +598,6 @@ impl Game<'_> {
                         if record { Ticking::Yes } else { Ticking::Idle }
                     }
                     n if FurnaceKind::from_block(n).is_some() => Ticking::Yes,
-                    _ if !name.starts_with("minecraft:") && self.native_ticks(name) => Ticking::Yes,
                     _ => Ticking::No,
                 }
             })
@@ -1066,7 +1072,7 @@ mod add_blocks_tests {
                 }
                 let states = game.ticking_states();
                 assert_eq!(states[state.0 as usize], Ticking::Yes);
-                game.world.block_entities.set_states(states);
+                game.bind_server_ticking_states();
                 assert!(
                     game.world
                         .block_entity_tickers()
@@ -1787,7 +1793,7 @@ mod own_block_entity_tests {
     use sunrise_client::containers::{BlockEntity, ModBlockEntity};
     use sunrise_core::geometry::Vec3;
 
-    const A: &str = "own_a:machine";
+    const A: &str = "minecraft:p3_machine";
     const B: &str = "own_b:machine";
     const DETECTOR: &str = "minecraft:daylight_detector";
 
@@ -1810,7 +1816,10 @@ mod own_block_entity_tests {
     #[mod_api::__subscriptions]
     impl Hooks for Machines {
         fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
-            let kind = r.block_entity_type("machine").blocks(&[self.block]).build();
+            let kind = r
+                .block_entity_type(self.block)
+                .blocks(&[self.block])
+                .build();
             r.block_entity_part(&kind, Ticks(self.block)).unwrap();
             if let Some(other) = self.also_on {
                 let keys = (kind, r.block_key(other));
@@ -1839,11 +1848,6 @@ mod own_block_entity_tests {
     impl BlockPart for Ticks {}
     #[mod_api::sunrise_part]
     impl BlockEntityPart for Ticks {
-        fn block_entity_ticks(&self, _: &dyn Host, event: &mut BlockEntityTicksEvent<'_>) {
-            if event.block == self.0 {
-                event.ticks = true;
-            }
-        }
         fn block_entity_tick(&self, event: &mut BlockEntityTickEvent<'_>) {
             event.subject.with_view(|mut entity| {
                 let mut data = entity.data_slots().to_vec();
@@ -1960,6 +1964,22 @@ mod own_block_entity_tests {
         let hopper = (7, 64, 1);
         let placed = [(a, A), (b, B), (c, A), (hopper, "minecraft:hopper")];
         with_machines(mods, &placed, |game| {
+            // Both registered keys take the native save and NBT paths, independent of namespace.
+            for (pos, kind) in [(a, A), (b, B)] {
+                let entity = game.world.block_entities.get(&pos).unwrap();
+                let saved = sunrise_client::save::block_entity_encode::encode(
+                    pos,
+                    entity,
+                    kind,
+                    game.items(),
+                );
+                assert!(sunrise_client::block_entity_nbt::canonical(&saved).is_some());
+                let (at, decoded) =
+                    sunrise_client::save::decode_block_entity_for_block(&saved, kind).unwrap();
+                assert_eq!(at, pos);
+                assert!(matches!(decoded, BlockEntity::Mod(ref native) if native.id() == kind));
+                game.world.block_entities.insert(pos, decoded);
+            }
             // Mod B's entity on mod A's block.
             let d = (9, 64, 1);
             assert!(sunrise_client::block_entity_types::additional_valid(A, B));
@@ -1981,6 +2001,8 @@ mod own_block_entity_tests {
             assert_eq!(own_a.mine, [a, a, c, c]);
             assert_eq!(own_b.mine, [b, b, d, d]);
             assert_eq!(missing.mine, []);
+            assert_eq!(ticks_of(game, a), [1, 1]);
+            assert_eq!(ticks_of(game, b), [2, 2]);
         });
     }
 
@@ -2028,6 +2050,128 @@ mod own_block_entity_tests {
             assert_eq!(own_a.mine, [a, a]);
             assert_eq!(own_b.mine, [b, b, d, d]);
             assert_eq!(ticks_of(game, d), [2, 2]);
+        });
+    }
+
+    /// `LevelRef::block_entities` names each block entity's own type: vanilla ones (chest-backed
+    /// ones by their block, a copper chest's being a chest's), mod B's on its own block and on a daylight detector (an additional
+    /// valid type the detector's factory doesn't make), before and while each is taken out, even
+    /// when the block there is replaced meanwhile, and a moving piston's. Entries a chunk saved but hasn't made live are
+    /// not listed. It reads the level parked too, and answers None for a stale handle or on a
+    /// client.
+    #[test]
+    #[ignore = "daily"]
+    fn level_block_entities_name_each_type_while_taken_out_or_parked() {
+        // The content root freezes the process's block entity types.
+        if run_fresh_cases(
+            "game::block_entity_ticks::own_block_entity_tests::level_block_entities_name_each_type_while_taken_out_or_parked",
+            "SUNRISE_OWN_BLOCK_ENTITIES_CHILD",
+            &["run"],
+        ) {
+            return;
+        }
+        let mods: Mods = vec![ModEntry::new(
+            "own_b",
+            Box::new(Machines::new(B, Some(DETECTOR))),
+        )]
+        .into();
+        let on_detector = (5, 64, 1);
+        let placed = [
+            ((3, 64, 1), B),
+            ((7, 64, 1), DETECTOR),
+            ((9, 64, 1), "minecraft:chest"),
+            ((11, 64, 1), "minecraft:barrel"),
+            ((13, 64, 1), "minecraft:copper_chest"),
+        ];
+        with_machines(mods, &placed, |game| {
+            place_mod_entity(game, on_detector, DETECTOR, B);
+            // Saved in chunk (1, 0) but not made live: never listed.
+            let mut pending = sunrise_client::chunk::Chunk::empty(1, 0);
+            pending
+                .block_entities
+                .push(((20, 64, 1), BlockEntity::Chest(vec![None; 27])));
+            game.world.chunks.insert((1, 0), Arc::new(pending));
+            // Pistons mid-extension restored with their chunks, before the copy collision reads
+            // is refreshed: one here, one in chunk (2, 0), which is not loaded.
+            let stone = game
+                .pack
+                .assets
+                .registry
+                .default_state("minecraft:stone")
+                .unwrap();
+            for pos in [(15, 64, 1), (40, 64, 1)]
+                .map(|(x, y, z)| sunrise_core::position::BlockPos::new(x, y, z))
+            {
+                let piston = sunrise_world::level::pistons::MovingPiston {
+                    moved_state: stone,
+                    direction: sunrise_core::geometry::Direction::East,
+                    extending: true,
+                    source: false,
+                    progress: 0.5,
+                    progress_o: 0.5,
+                    last_ticked: 0,
+                    death_ticks: 0,
+                    id: 0,
+                };
+                game.block_ticks.load_moving_piston(pos, piston);
+            }
+            let level = game.level(game.dim.id()).unwrap();
+            let (min, max) = ([0, 64, 0], [48, 65, 16]);
+            let listed = |game: &Game<'_>| {
+                let mut found: Vec<([i32; 3], String)> = level
+                    .block_entities(game, min, max)
+                    .unwrap()
+                    .into_iter()
+                    .map(|at| (at.pos, at.kind.id(game).unwrap().to_string()))
+                    .collect();
+                found.sort();
+                found
+            };
+            let expected: Vec<([i32; 3], String)> = [
+                ([3, 64, 1], B),
+                ([5, 64, 1], B),
+                ([7, 64, 1], DETECTOR),
+                ([9, 64, 1], "minecraft:chest"),
+                ([11, 64, 1], "minecraft:barrel"),
+                ([13, 64, 1], "minecraft:chest"),
+                ([15, 64, 1], "minecraft:piston"),
+            ]
+            .map(|(pos, kind)| (pos, kind.to_string()))
+            .into();
+            assert_eq!(listed(game), expected);
+            let air = game
+                .pack
+                .assets
+                .registry
+                .default_state("minecraft:air")
+                .unwrap();
+            for (pos, _) in placed.iter().copied().chain([(on_detector, DETECTOR)]) {
+                let (lease, taken) = game.world.block_entities.take(&pos).unwrap();
+                assert_eq!(listed(game), expected, "{pos:?} taken out");
+                if !matches!(taken, BlockEntity::Chest(_)) {
+                    // Its block replaced while it is out, as a removal callback sees it.
+                    let block = game.world.block(pos.0, pos.1, pos.2);
+                    game.world.set(pos.0, pos.1, pos.2, air).unwrap();
+                    assert_eq!(listed(game), expected, "{pos:?} out, its block replaced");
+                    game.world.set(pos.0, pos.1, pos.2, block).unwrap();
+                }
+                assert!(game.world.block_entities.put(lease, taken));
+            }
+            game.enter_level(crate::game::Dim::Nether).unwrap();
+            assert_eq!(listed(game), expected, "parked");
+            game.enter_level(crate::game::Dim::Overworld).unwrap();
+            let stale = LevelRef::new(WorldEpoch::new(level.epoch().get() + 1), level.dimension());
+            assert_eq!(stale.block_entities(game, min, max), None);
+            // A moving piston gone from the ticks is gone from the list at once.
+            game.block_ticks
+                .moving_pistons
+                .retain(|(pos, _)| pos.x != 15);
+            let mut without = expected.clone();
+            without.retain(|(pos, _)| *pos != [15, 64, 1]);
+            assert_eq!(listed(game), without);
+            game.options.execution_role = crate::game::execution_role::ExecutionRole::Client;
+            game.options.dedicated = None;
+            assert_eq!(level.block_entities(game, min, max), None);
         });
     }
 

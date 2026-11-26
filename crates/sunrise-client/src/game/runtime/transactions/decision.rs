@@ -10,7 +10,7 @@
 #![allow(dead_code)]
 
 use super::After as Effect;
-use mod_api::{EntityRef, WorldEpoch};
+use mod_api::{__private::TransactionFrame, EntityRef, WorldEpoch};
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 use sunrise_client::items::ItemStack;
 
@@ -167,7 +167,7 @@ pub(in crate::game) struct Reads {
 
 struct Proposed<T, R, P> {
     identity: Identity,
-    savepoint: u64,
+    savepoint: TransactionFrame,
     target: T,
     reads: R,
     plan: P,
@@ -439,7 +439,7 @@ impl<H: ActionHost> ActionTarget<H> for Menu {
 /// Process abort and failed rollback are not caught.
 struct ActionGuard<'a, H: ActionHost> {
     host: &'a mut H,
-    savepoint: u64,
+    savepoint: TransactionFrame,
     closed: bool,
 }
 

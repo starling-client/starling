@@ -102,7 +102,7 @@ pub(super) fn write_report(resources: PathBuf, output: PathBuf) -> sunrise_clien
             }
         }
 
-        let bytes = encoder.body_in(chunk, &world);
+        let bytes = encoder.body_in(chunk, &world)?;
         let mut packet = Reader::new(&bytes);
         assert_eq!(packet.varint()?, LEVEL_CHUNK_WITH_LIGHT);
         assert_eq!((packet.i32()?, packet.i32()?), (0, 0));

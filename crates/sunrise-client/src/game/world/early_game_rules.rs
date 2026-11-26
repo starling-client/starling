@@ -13,7 +13,6 @@ impl Game<'_> {
             &self.res,
             &self.pack,
             &self.options,
-            &self.settings,
             &sunrise_world::datafix::progress::UpgradeProgress::new(),
         )?;
         self.load_opening_game_rules(&prepared);

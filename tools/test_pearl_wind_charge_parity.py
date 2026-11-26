@@ -9,22 +9,25 @@ LocatorBarClient (a player made of vanilla's protocol code) throws an ender pear
 (`onRedirectProjectile`, AIM_DEFLECT) and gives it acceleration power 0.1 (`AbstractHurtingProjectile.onDeflection`),
 which `applyInertia` adds each tick: a second later it is 35 to 47 blocks up, past where a speed of 1 would take it.
 
-The pearl's inaccuracy is random, so only the height of the teleport, to the block, is compared, with vanilla's
-answer to whether the charge is in that band.
+The pearl's inaccuracy is random. The charge's lower face lies within the pearl's second-tick sweep across
+that spread. Placing it near the end of that sweep can let a slower pearl miss on tick two and start tick
+three inside the newly inflated box, where the entry-face clip misses again. Compare the teleport height
+to the block, along with vanilla's answer to whether the charge is in the band.
 """
 import sys
 
-try:
-    from . import test_locator_bar_parity as locator
-except ImportError:
-    import test_locator_bar_parity as locator
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_locator_bar_parity as locator
 
 NAME = 'pearl-wind-charge-parity'
 # server_dir and generate_world write these server.properties.
 locator.PROPERTIES = dict(locator.PROPERTIES, gamemode='survival')
 SCRIPT = [
     ('setup', ['chat on', 'cmd Alice give @s minecraft:ender_pearl',
-               'cmd Alice execute at @s run summon minecraft:wind_charge ~ ~4.5 ~']),
+               'cmd Alice execute at @s run summon minecraft:wind_charge ~ ~4 ~']),
     ('throw', ['use Alice -90']),
     ('asked', ['cmd Alice execute if entity @e[type=minecraft:wind_charge,x=-8,y=-30,z=-8,dx=16,dy=40,dz=16]']),
 ]

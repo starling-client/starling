@@ -7,7 +7,9 @@ pub(crate) struct Options {
     pub(super) resources: PathBuf,
     pub(super) distance: i32,
     pub(super) distance_override: Option<i32>,
-    pub(super) seed: i64,
+    /// `--seed`: the seed of a world `--world` creates; without it the world gets a random
+    /// one, as a new world with an empty seed field does (`WorldOptions.randomSeed`).
+    pub(super) seed: Option<i64>,
     pub(super) developer_single_player: bool,
     pub(super) creative: bool,
     pub(super) test_terrain: bool,
@@ -194,7 +196,7 @@ impl Options {
             },
             distance: 12,
             distance_override: None,
-            seed: 0,
+            seed: None,
             developer_single_player: false,
             creative: false,
             test_terrain: false,
@@ -299,7 +301,7 @@ impl Options {
                                 }
                             }
                             "--seed" => {
-                                o.seed = value.parse().unwrap_or_else(|_| {
+                                o.seed = Some(value.parse().unwrap_or_else(|_| {
                                     // Text seeds hash like String.hashCode.
                                     value
                                         .encode_utf16()
@@ -307,7 +309,7 @@ impl Options {
                                             h.wrapping_mul(31).wrapping_add(i32::from(c))
                                         })
                                         .into()
-                                })
+                                }))
                             }
                             "--frames" => o.frames = Some(value.parse()?),
                             "--world-frames" => {
@@ -414,5 +416,22 @@ mod tests {
             limit(&["--frames", "10", "--timeout-seconds", "30"]),
             secs(30)
         );
+    }
+
+    /// #5304: a world `--world` creates without `--seed` gets a random seed, not seed 0;
+    /// a given seed reads as a number or, as `WorldOptions.parseSeed`, as text's hash.
+    #[test]
+    fn world_seed_is_left_to_the_new_world_unless_given() {
+        let seed = |args: &[&str]| {
+            Options::parse(args.iter().map(|arg| arg.to_string()))
+                .unwrap()
+                .unwrap()
+                .seed
+        };
+        assert_eq!(seed(&["--world", "W"]), None);
+        assert_eq!(seed(&["--world", "W", "--seed", "0"]), Some(0));
+        assert_eq!(seed(&["--world", "W", "--seed", "-12345"]), Some(-12345));
+        // "abc".hashCode() in Java.
+        assert_eq!(seed(&["--world", "W", "--seed", "abc"]), Some(96354));
     }
 }

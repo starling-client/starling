@@ -119,7 +119,7 @@ fn the_four_party_effects_sync_their_own_particle_types() {
     assert_eq!(meta.len(), 1, "not every effect is ambient: no ambience id");
     assert_eq!(meta[0].0, 10, "LivingEntity.DATA_EFFECT_PARTICLES");
     let particles = match &meta[0].2 {
-        Value::Particles(list) => list.clone(),
+        Value::Particles(list) => list.to_vec(),
         other => panic!("not a particle list: {other:?}"),
     };
     let simple = |id| Particle { id, data: None };

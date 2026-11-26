@@ -196,12 +196,11 @@ fn a_recipe_with_eight_displays_sends_eight_entries() {
     assert_eq!(distinct.len(), 8);
 }
 
-// Added after the baseline (the authorized adapter): a recipe with several
-// displays still has no ghost (PlaceRecipe is unchanged), and an ordinary
-// recipe's ghost is still sent.
-fn ghosts(rx: &mpsc::Receiver<sunrise_client::lan::Out>) -> usize {
+fn ghosts(
+    rx: &mpsc::Receiver<sunrise_client::lan::Out>,
+) -> Vec<sunrise_protocol::packets::recipes::PlaceGhostRecipe> {
     use sunrise_protocol::packets::play::Clientbound as C;
-    let mut n = 0;
+    let mut out_ghosts = Vec::new();
     for out in rx.try_iter() {
         let bodies = match out {
             sunrise_client::lan::Out::Packet(body) => vec![body],
@@ -211,24 +210,239 @@ fn ghosts(rx: &mpsc::Receiver<sunrise_client::lan::Out>) -> usize {
         for body in bodies {
             let mut reader = sunrise_protocol::buf::Reader::new(&body);
             let id = reader.varint().unwrap();
-            if let Ok(C::PlaceGhostRecipe(_)) = C::decode(id, reader.rest()) {
-                n += 1;
+            if let Ok(C::PlaceGhostRecipe(ghost)) = C::decode(id, reader.rest()) {
+                out_ghosts.push(ghost);
             }
         }
     }
-    n
+    out_ghosts
 }
 
 #[test]
 #[ignore = "daily"]
-fn control_a_multi_display_recipe_still_has_no_ghost() {
+fn clicked_multi_display_recipe_sends_exact_ghost_and_ordinary_placement_sends_none() {
+    use sunrise_client::recipe_book::{BookType, PacketNames, ghost_from_display};
+    use sunrise_protocol::packets::{
+        play::Serverbound as S,
+        recipes::{PlaceRecipe, RecipeDisplay},
+    };
     let mut resources = None;
     let (mut game, rx) = game(&mut resources);
+    assert!(game.run_command("setblock 12 100 11 minecraft:crafting_table"));
+    game.lan.as_mut().unwrap().hub.guests.update(0, |g| {
+        g.game_mode = 0;
+        g.recipe_book.recipes.insert("minecraft:map_cloning".into());
+        g.recipe_book
+            .recipes
+            .insert("minecraft:crafting_table".into());
+    });
+    game.lan_open_crafting(2, [12, 100, 11]);
+    let window = game
+        .lan
+        .as_ref()
+        .unwrap()
+        .menus
+        .get(&2)
+        .and_then(|m| m.crafting.table.as_ref().map(|(w, ..)| *w))
+        .expect("crafting table window open");
     let _ = ghosts(&rx);
-    let hub = &mut game.lan.as_mut().unwrap().hub;
-    hub.send_ghost_recipe(2, 0, "minecraft:map_cloning");
-    assert_eq!(ghosts(&rx), 0, "no ghost for eight displays");
-    let hub = &mut game.lan.as_mut().unwrap().hub;
-    hub.send_ghost_recipe(2, 0, "minecraft:crafting_table");
-    assert_eq!(ghosts(&rx), 1, "the ordinary recipe's ghost");
+
+    let cloning_ids = world_stations!(game)
+        .recipe_index
+        .display_ids("minecraft:map_cloning");
+    assert_eq!(cloning_ids.len(), 8);
+    // Display #3 is 1 filled map + 4 empty maps (5 ingredients), distinct from display #0 (2).
+    let chosen_display = cloning_ids.start + 3;
+    game.lan_guest_packet(
+        2,
+        S::PlaceRecipe(PlaceRecipe {
+            container: window,
+            recipe: chosen_display,
+            use_max: false,
+        }),
+    );
+    let sent = ghosts(&rx);
+    assert_eq!(sent.len(), 1, "missing ingredients sends one ghost packet");
+    assert_eq!(sent[0].container, window);
+    let RecipeDisplay::Shapeless { ingredients, .. } = &sent[0].display else {
+        panic!(
+            "expected shapeless map_cloning display, got {:?}",
+            sent[0].display
+        );
+    };
+    assert_eq!(
+        ingredients.len(),
+        5,
+        "ghost carries the clicked non-first display variant"
+    );
+    // Client ghost projection reads p.display directly (1 result + 5 input grid cells).
+    let sync = game.lan.as_ref().unwrap().hub.sync_data();
+    let item = |id: i32| {
+        sync.builtin
+            .get("minecraft:item")
+            .and_then(|ids| ids.name(id))
+            .map(str::to_owned)
+    };
+    let category = |id: i32| {
+        sync.builtin
+            .get("minecraft:recipe_book_category")
+            .and_then(|ids| ids.name(id))
+            .map(str::to_owned)
+    };
+    let tag = |name: &str| {
+        game.items()
+            .item_tag_order
+            .get(name)
+            .cloned()
+            .unwrap_or_default()
+    };
+    let projected = ghost_from_display(
+        &sent[0].display,
+        &PacketNames {
+            item: &item,
+            category: &category,
+            component: &|_| None,
+            tag: &tag,
+        },
+        BookType::Crafting,
+        3,
+        true,
+        game.items(),
+        |stack| item(stack.item).map(|id| ItemStack::new(&id, stack.count as u32)),
+    );
+    assert_eq!(projected.len(), 6);
+
+    // Wrong container window does not place or send a ghost.
+    game.lan_guest_packet(
+        2,
+        S::PlaceRecipe(PlaceRecipe {
+            container: 0,
+            recipe: chosen_display,
+            use_max: false,
+        }),
+    );
+    assert!(ghosts(&rx).is_empty());
+
+    // Ordinary placement moves real items into the crafting grid and emits no ghost packet.
+    let crafting_display = world_stations!(game)
+        .recipe_index
+        .display_ids("minecraft:crafting_table")
+        .start;
+    game.lan.as_mut().unwrap().hub.guests.update(0, |g| {
+        g.inventory[0] = Some(sunrise_client::items::ItemStack::new(
+            "minecraft:oak_planks",
+            4,
+        ));
+    });
+    game.lan_guest_packet(
+        2,
+        S::PlaceRecipe(PlaceRecipe {
+            container: window,
+            recipe: crafting_display,
+            use_max: false,
+        }),
+    );
+    assert!(
+        ghosts(&rx).is_empty(),
+        "ordinary placement emits no ghost packet"
+    );
+    let placed_count: usize = game
+        .lan
+        .as_ref()
+        .unwrap()
+        .menus
+        .get(&2)
+        .and_then(|m| m.crafting.table.as_ref())
+        .map(|(_, _, menu, _)| {
+            (1..=9)
+                .filter(|&slot| {
+                    menu.slot(slot)
+                        .is_some_and(|s| s.item.as_ref() == "minecraft:oak_planks")
+                })
+                .count()
+        })
+        .unwrap_or(0);
+    assert_eq!(placed_count, 4);
+}
+
+/// A writable recipe-click listener that replaces the crafting window with a chest: the click's
+/// placement must not move the ingredients into the crafting grid it named, nor send a ghost.
+#[test]
+#[ignore = "daily"]
+fn a_recipe_click_listener_replacing_the_menu_stops_the_placement() {
+    use sunrise_protocol::packets::{play::Serverbound as S, recipes::PlaceRecipe};
+    struct Replacer;
+    #[mod_api::__subscriptions]
+    impl mod_api::Hooks for Replacer {
+        fn player_recipe_book_click(
+            &self,
+            host: &mut dyn mod_api::ServerHost,
+            event: &mut mod_api::PlayerRecipeBookClickEvent<'_>,
+        ) {
+            let player = host.player(event.player).unwrap();
+            player
+                .open_chest_menu(
+                    host,
+                    1,
+                    mod_api::Text::literal("Replacement"),
+                    Vec::new(),
+                    mod_api::MenuReplace::InPlace,
+                )
+                .unwrap();
+        }
+    }
+    let mods: mod_api::Mods = vec![mod_api::ModEntry::new("replacer", Box::new(Replacer))].into();
+    mod_platform::testing::with_mods(mods, || {
+        crate::game::native_guest_turn_tests::with_guests(|game| {
+            let (tx, rx) = mpsc::channel();
+            game.world
+                .chunks
+                .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+            let table = game
+                .pack
+                .assets
+                .registry
+                .default_state("minecraft:crafting_table")
+                .unwrap();
+            game.world.set(3, 64, 6, table).unwrap();
+            game.lan.as_mut().unwrap().hub.guests.update(0, |g| {
+                g.sender = PlayerSender::new(tx, Arc::default());
+                g.game_mode = 0;
+                g.recipe_book
+                    .recipes
+                    .insert("minecraft:crafting_table".into());
+                g.inventory[0] = Some(sunrise_client::items::ItemStack::new(
+                    "minecraft:oak_planks",
+                    4,
+                ));
+            });
+            game.lan_open_crafting(12, [3, 64, 6]);
+            let window = game
+                .lan
+                .as_ref()
+                .unwrap()
+                .menus
+                .get(&12)
+                .and_then(|m| m.crafting.table.as_ref().map(|(w, ..)| *w))
+                .expect("crafting table window open");
+            let _ = ghosts(&rx);
+            let display = world_stations!(game)
+                .recipe_index
+                .display_ids("minecraft:crafting_table")
+                .start;
+            game.lan_guest_packet(
+                12,
+                S::PlaceRecipe(PlaceRecipe {
+                    container: window,
+                    recipe: display,
+                    use_max: false,
+                }),
+            );
+            let planks = game.lan.as_ref().unwrap().hub.guests[0].inventory[0]
+                .as_ref()
+                .map(|s| s.count);
+            assert_eq!(planks, Some(4), "no ingredient left the inventory");
+            assert!(ghosts(&rx).is_empty(), "no ghost for the replaced menu");
+        });
+    });
 }

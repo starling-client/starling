@@ -243,7 +243,7 @@ fn valid_and_malformed_wire_bodies_are_handled_in_both_directions() {
             .handler("test:labelled", PayloadProtocol::Play, direction)
             .unwrap();
         for body in [
-            // 4097 labels, one past the list bound.
+            // 4097 labels of at least 4 bytes each, with no bytes left to hold them.
             vec![7, 0, 0, 0, 1, 0x10, 0, 0],
             // Each next link adds an option and a box to the depth.
             nested(33),
@@ -289,14 +289,10 @@ fn ordinary_only_wire_forms_refuse_registration_before_a_channel_exists() {
     let mut payloads = (&mut registrar as &mut dyn Registrar).payload_handlers();
     let mut view = payloads.registrar("1");
     let ids = [
-        refused::<crate::ModelPart>(&mut view, "test:model"),
         refused::<Option<serde_json::Value>>(&mut view, "test:json"),
         refused::<crate::LegacyRandomSource>(&mut view, "test:converted"),
         refused::<crate::LevelKey>(&mut view, "test:level_key"),
         refused::<crate::LevelDimension>(&mut view, "test:dimension"),
-        refused::<Option<crate::Identifier>>(&mut view, "test:identifier"),
-        refused::<crate::SpawnerKey>(&mut view, "test:spawner"),
-        refused::<crate::CustomSpawners>(&mut view, "test:spawners"),
     ];
     drop(view);
     assert!(registrar.parts.payloads.is_none());
@@ -395,4 +391,121 @@ fn a_callback_that_panicked_is_never_invoked_again() {
         ));
     }
     assert_eq!(*CALLS.lock().unwrap(), 1);
+}
+
+#[test]
+fn call_owned_work_is_disposed_under_the_receiving_registration() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct Work {
+        panic_run: bool,
+        ran: Arc<AtomicBool>,
+        attributed_drop: Arc<AtomicBool>,
+    }
+    impl PayloadWork for Work {
+        fn run(&self, _: &mut dyn IPayloadContext) -> Result<(), String> {
+            self.ran.store(true, Ordering::Relaxed);
+            if self.panic_run {
+                panic!("work run panicked");
+            }
+            Err("work refused before its destructor panicked".into())
+        }
+    }
+    impl Drop for Work {
+        fn drop(&mut self) {
+            self.attributed_drop.store(
+                mod_vocab::__private::game::retained_callback_active(),
+                Ordering::Relaxed,
+            );
+            panic!("work drop panicked");
+        }
+    }
+
+    for panic_run in [false, true] {
+        let mut registrar = PartRegistrar::new("payload_work_disposal");
+        (&mut registrar as &mut dyn Registrar)
+            .payload_handlers()
+            .registrar("1")
+            .play_to_server_typed::<Counter>(PayloadId("test:work".into()), ignore);
+        let table = frozen(&registrar);
+        let receiver = table
+            .handler(
+                "test:work",
+                PayloadProtocol::Play,
+                PayloadDirection::ToServer,
+            )
+            .unwrap();
+        let make = || {
+            let ran = Arc::new(AtomicBool::new(false));
+            let attributed_drop = Arc::new(AtomicBool::new(false));
+            let work = Arc::new(Work {
+                panic_run,
+                ran: ran.clone(),
+                attributed_drop: attributed_drop.clone(),
+            });
+            (work, ran, attributed_drop)
+        };
+        let (work, ran, attributed_drop) = make();
+        assert!(matches!(
+            receiver.run_work(work, &mut Unreached),
+            Err(CallbackFailure::Panicked)
+        ));
+        assert!(ran.load(Ordering::Relaxed));
+        assert!(attributed_drop.load(Ordering::Relaxed));
+        assert!(receiver.poisoned());
+
+        // A quarantined registration still disposes of call-owned work without running it.
+        let (work, ran, attributed_drop) = make();
+        assert!(matches!(
+            receiver.run_work(work, &mut Unreached),
+            Err(CallbackFailure::Panicked)
+        ));
+        assert!(!ran.load(Ordering::Relaxed));
+        assert!(attributed_drop.load(Ordering::Relaxed));
+    }
+}
+
+#[test]
+fn a_million_byte_list_crosses_clientbound_and_a_count_its_bytes_cannot_hold_is_refused() {
+    // Vanilla bounds a list only by its packet: `ByteBufCodecs.collection` has no count
+    // limit of its own, and this body is under `ClientboundCustomPayloadPacket`'s 1,048,576.
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let client = seen.clone();
+    let mut registrar = PartRegistrar::new("test");
+    let _token = (&mut registrar as &mut dyn Registrar)
+        .payload_handlers()
+        .registrar("1")
+        .play_to_client_typed(
+            PayloadId("test:sections".into()),
+            move |value: Vec<u8>, _| {
+                client.lock().unwrap().push(value);
+                Ok(())
+            },
+        );
+    let table = frozen(&registrar);
+    let receiver = table
+        .handler(
+            "test:sections",
+            PayloadProtocol::Play,
+            PayloadDirection::ToClient,
+        )
+        .unwrap();
+    let sent: Vec<u8> = (0..1_000_000u32).map(|i| (i % 251) as u8).collect();
+    let body = crate::encode_payload(&sent, 1_048_576).unwrap();
+    assert_eq!(body.len(), 4 + 1_000_000);
+    receiver.handle(PayloadBytes(body), &mut Unreached).unwrap();
+    assert_eq!(*seen.lock().unwrap(), [sent]);
+
+    // A count of 2^32 - 1 one-byte entries with three bytes left: refused before reserving.
+    let CallbackFailure::Refused(refused) = receiver
+        .handle(
+            PayloadBytes(vec![0xff, 0xff, 0xff, 0xff, 1, 2, 3]),
+            &mut Unreached,
+        )
+        .unwrap_err()
+    else {
+        panic!("an impossible count did not produce a codec refusal");
+    };
+    assert!(refused.contains("test:sections"), "{refused}");
+    assert_eq!(seen.lock().unwrap().len(), 1);
 }

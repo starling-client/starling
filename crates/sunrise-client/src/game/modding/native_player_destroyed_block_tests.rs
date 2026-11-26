@@ -5,7 +5,7 @@ use super::native_entity_refs::tests::{collect_all_entities, with_game};
 use sunrise_client::{command::args::GameMode, items::ItemStack, motion::PlayerMotion};
 use sunrise_core::{geometry::Vec3, position::BlockPos};
 
-use mod_api::{BreakBlockEvent, Flow, Hooks, PlayerDestroyedBlockEvent, ServerHost};
+use mod_api::{BreakBlockEvent, Flow, Hooks, HostSide, PlayerDestroyedBlockEvent, ServerHost};
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -41,11 +41,10 @@ impl Hooks for Probe {
             Flow::Continue
         }
     }
-    fn player_destroyed_block(
-        &self,
-        host: &mut dyn ServerHost,
-        event: &mut PlayerDestroyedBlockEvent,
-    ) {
+    fn player_destroyed_block(&self, host: HostSide<'_>, event: &mut PlayerDestroyedBlockEvent) {
+        let HostSide::Server(host) = host else {
+            panic!("these breaks run on the server");
+        };
         // The state is the block's default state, which the test placed.
         let name = ["minecraft:stone", "minecraft:chest"]
             .into_iter()
@@ -243,16 +242,20 @@ fn items(host: &dyn mod_api::Host) -> usize {
 }
 
 /// Experience points in the orbs within 3 blocks of `pos`.
-fn orb_points(host: &dyn ServerHost, pos: [i32; 3]) -> i64 {
+fn orb_points(host: &dyn mod_api::Host, pos: [i32; 3]) -> i64 {
+    let level = host.level("minecraft:overworld").expect("the overworld");
     let at = pos.map(f64::from);
-    host.experience_orbs(
-        "minecraft:overworld",
-        at.map(|v| v - 3.0),
-        at.map(|v| v + 4.0),
-    )
-    .iter()
-    .map(|orb| i64::from(orb.value) * i64::from(orb.count))
-    .sum()
+    let mut total = 0i64;
+    let visit = level
+        .visit_experience_orbs(host, at.map(|v| v - 3.0), at.map(|v| v + 4.0), &mut |orb| {
+            let value = orb.value(host).expect("live orb value");
+            let count = orb.count(host).expect("live orb count");
+            total += i64::from(value) * i64::from(count);
+            core::ops::ControlFlow::Continue(())
+        })
+        .expect("experience orb visit");
+    assert_eq!(visit, core::ops::ControlFlow::Continue(()));
+    total
 }
 
 /// Gives every break 7 experience points, and records and optionally rewrites what
@@ -288,11 +291,10 @@ impl Hooks for OrderProbe {
         }
         Flow::Continue
     }
-    fn player_destroyed_block(
-        &self,
-        host: &mut dyn ServerHost,
-        event: &mut PlayerDestroyedBlockEvent,
-    ) {
+    fn player_destroyed_block(&self, host: HostSide<'_>, event: &mut PlayerDestroyedBlockEvent) {
+        let HostSide::Server(host) = host else {
+            panic!("these breaks run on the server");
+        };
         let acting = host.players().acting_player();
         let seen = Seen {
             pos: event.pos,
@@ -644,7 +646,11 @@ fn mob_block_drops_lend_the_original_entity_after_a_loot_listener_replaces_it() 
     struct Replace(Arc<Mutex<Option<mod_api::BlockEntityRef>>>);
     #[mod_api::__subscriptions]
     impl Hooks for Replace {
-        fn loot_drops(&self, host: &mut dyn ServerHost, event: &mut mod_api::LootDropsEvent<'_>) {
+        fn loot_drops(
+            &self,
+            host: &mut dyn ServerHost,
+            event: &mut mod_api::LootDropsEvent<'_, '_>,
+        ) {
             let Some((pos, _)) = event.context.block else {
                 return;
             };
@@ -939,9 +945,12 @@ fn block_drops_ignores_a_replacement_block_entity_placed_after_removal() {
     impl Hooks for ReplacementPlacer {
         fn player_destroyed_block(
             &self,
-            host: &mut dyn ServerHost,
+            host: HostSide<'_>,
             event: &mut PlayerDestroyedBlockEvent,
         ) {
+            let HostSide::Server(host) = host else {
+                panic!("these breaks run on the server");
+            };
             set(host, event.pos, "minecraft:chest");
             let level = host.level("minecraft:overworld").expect("the overworld");
             assert!(
@@ -1027,6 +1036,107 @@ fn block_drops_ignores_a_replacement_block_entity_placed_after_removal() {
                 "a broken block with no block entity must not expose a replacement's handle"
             );
             assert!(handle.lock().unwrap().is_none());
+        });
+    });
+}
+
+/// What the client listener heard: whether the host was the client's, the position, the state's
+/// block name and whether a block entity came with it.
+type HeardOnClient = (bool, [i32; 3], String, bool);
+
+struct ClientProbe(Arc<Mutex<Vec<HeardOnClient>>>);
+
+#[mod_api::__subscriptions]
+impl Hooks for ClientProbe {
+    fn player_destroyed_block(&self, host: HostSide<'_>, event: &mut PlayerDestroyedBlockEvent) {
+        let client = matches!(host, HostSide::Client(_));
+        let host: &dyn mod_api::Host = match &host {
+            HostSide::Server(host) => &**host,
+            HostSide::Client(host) => &**host,
+        };
+        let name = host.block_state_string(event.state).unwrap_or_default();
+        self.0
+            .lock()
+            .unwrap()
+            .push((client, event.pos, name, event.block_entity.is_some()));
+    }
+}
+
+/// The local player's survival break of a torch, which is instant: through the real attack
+/// click, so the restriction checks that come before the prediction apply.
+#[test]
+#[ignore = "daily"]
+fn the_breaking_client_hears_its_predicted_break_with_a_client_host() {
+    use super::native_entity_refs::tests::with_client_game;
+    use crate::game::{Hit, remote::RemoteDimensionEntry};
+    use sunrise_protocol::{connection::Pipe, packets::play::SpawnInfo};
+
+    let heard = Arc::new(Mutex::new(Vec::new()));
+    let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
+        "client-destroyed",
+        Box::new(ClientProbe(heard.clone())),
+    )]
+    .into();
+    mod_platform::testing::with_mods(mods, || {
+        with_client_game(|game| {
+            let (client, _server) = Pipe::pair();
+            game.connect_local(client, "DestroyedBlock").unwrap();
+            let spawn = SpawnInfo {
+                dimension_type: 0,
+                dimension: "minecraft:overworld".into(),
+                seed: 0,
+                game_type: 0,
+                previous_game_type: None,
+                debug: false,
+                flat: true,
+                last_death: None,
+                portal_cooldown: 0,
+                sea_level: 63,
+            };
+            game.enter_remote_dimension(
+                &spawn,
+                RemoteDimensionEntry::Login,
+                sunrise_client::level_loading::Reason::Other,
+            );
+            game.remote.as_mut().unwrap().logged_in = true;
+            game.world
+                .chunks
+                .insert((0, 0), Arc::new(sunrise_client::chunk::Chunk::empty(0, 0)));
+            let torch_pos = [1, 64, 1];
+            let torch = game
+                .pack
+                .assets
+                .registry
+                .default_state("minecraft:torch")
+                .unwrap();
+            game.selected = 0;
+            game.inventory[0] = Some(ItemStack::new("minecraft:diamond_pickaxe", 1));
+            game.forced_hit = Some(Hit {
+                pos: torch_pos,
+                face: [0, 1, 0],
+                point: [1.5, 65.0, 1.5],
+                inside: false,
+            });
+
+            // Adventure with a pickaxe that has no `can_break`: the break is refused before it
+            // is predicted, so nothing is heard and the torch stays.
+            game.set_local_mode(GameMode::Adventure);
+            game.world
+                .set(torch_pos[0], torch_pos[1], torch_pos[2], torch)
+                .unwrap();
+            game.remote_start_attack();
+            assert_eq!(block(game, torch_pos), "minecraft:torch");
+            assert!(heard.lock().unwrap().is_empty());
+
+            // Survival: the predicted removal succeeds and is heard once, by the client's host,
+            // with the state that was there and no block entity.
+            game.set_local_mode(GameMode::Survival);
+            game.remote_start_attack();
+            assert_eq!(block(game, torch_pos), "minecraft:air");
+            assert_eq!(
+                *heard.lock().unwrap(),
+                [(true, torch_pos, "minecraft:torch".to_owned(), false)],
+            );
         });
     });
 }

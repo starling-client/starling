@@ -1897,6 +1897,7 @@ mod tests {
         block_entity_types::install(BlockEntityTypes::new(
             [("example:crate".into(), "example:crate".into())].into(),
             vec!["example:crate".into()],
+            ["example:crate".into()],
         ))
         .unwrap();
         assert_eq!(check("{id:\"example:crate\",Tank:1}"), Ok(()));

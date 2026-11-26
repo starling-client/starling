@@ -1,0 +1,20 @@
+[package]
+name = "sunrise-glsl"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "One GLSL program and a description of its inputs as validated naga modules"
+
+[dependencies]
+naga = { version = "30.0.1", features = ["glsl-in"] }
+# `ShaderStages`, the stages that read a binding: the type wgpu takes for a layout entry.
+wgpu-types = "30.0.1"
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+# The preprocessor naga's GLSL frontend runs (the same version), which the directives
+# replaced: `directives_tests` compares the two.
+pp-rs = "0.2.1"

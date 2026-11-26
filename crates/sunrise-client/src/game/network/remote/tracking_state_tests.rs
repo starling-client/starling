@@ -46,7 +46,9 @@ fn tracking_emitters_follow_the_packet_target() {
     .unwrap();
     let (client, _server) = sunrise_protocol::connection::Pipe::pair();
     game.connect_local(client, "EmitterTest").unwrap();
-    game.remote.as_mut().unwrap().entity_id = 7;
+    let remote = game.remote.as_mut().unwrap();
+    remote.entity_id = 7;
+    remote.logged_in = true;
     game.player = Some(PlayerMotion::new(game.motion, Vec3::new(0.0, 64.0, 0.0)).unwrap());
     game.particles.seed_randoms(42, 43, 44);
 
@@ -157,11 +159,18 @@ fn any_tracked_passenger_makes_its_vehicle_a_vehicle() {
     let tracked = |kind: &str| Tracked {
         kind: kind.to_owned(),
         position: [0.0, 64.0, 0.0],
+        previous: [0.0, 64.0, 0.0],
+        yaw: 0.0,
+        pitch: 0.0,
+        previous_yaw: 0.0,
+        previous_pitch: 0.0,
         codec_base: [0.0, 64.0, 0.0],
         on_fire: false,
         mod_fire_immune: false,
         silent: false,
         vehicle: None,
+        tick_count: 0,
+        size_answer: None,
     };
     let mut entities = HashMap::from([
         (42, tracked("minecraft:player")),

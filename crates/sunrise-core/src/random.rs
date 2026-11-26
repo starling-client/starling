@@ -409,6 +409,20 @@ mod tests {
         }
     }
 
+    /// A draw where `f64::ln` was 1 ulp off HotSpot's `Math.log` (#308 item 1).
+    /// Expected bits from vanilla 26.3's `XoroshiroRandomSource`.
+    #[test]
+    fn gaussian_matches_vanilla_where_ln_rounded_differently() {
+        let mut rng = XoroshiroRandom::new(-4_064_299_097_425_015_850);
+        rng.next_int();
+        rng.next_int();
+        let mut fork = rng.fork();
+        fork.next_long();
+        fork.next_int_bound(1000).unwrap();
+        // XoroshiroRandomSource.fork().nextGaussian()
+        assert_eq!(fork.next_gaussian().to_bits(), 0x3fd4_6420_f960_f7c7);
+    }
+
     #[test]
     fn zero_state_fallback_and_reseed() {
         let mut a = XoroshiroRandom::from_state(0, 0);

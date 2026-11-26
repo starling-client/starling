@@ -6,10 +6,12 @@ clamp (only `setAbsorptionAmount` does), and `addAdditionalSaveData` writes it b
 are summoned with several amounts, the world is saved and reloaded (tools/entity_save_reload.py),
 and each pig's `AbsorptionAmount` is read with `/data get` on vanilla's server and Sunrise's.
 """
-try:
-    from . import entity_save_reload as harness
-except ImportError:
-    import entity_save_reload as harness
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import entity_save_reload as harness
 
 # (tag, saved AbsorptionAmount or None for the field absent)
 CASES = [('absent', None), ('zero', '0.0f'), ('negative', '-1.0f'), ('small', '3.5f'), ('huge', '1.0E30f')]

@@ -1,5 +1,4 @@
 //! The `player_shear_entity` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0308
 
 pub trait Hooks {
     /// A player shearing a mob is about to do so. Set `cancel` to leave the mob and shears unchanged.

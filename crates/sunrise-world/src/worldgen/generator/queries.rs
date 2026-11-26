@@ -59,12 +59,12 @@ pub fn out_from_origin(origin: i32, lower: i32, upper: i32, step: i32) -> Vec<i3
 /// `BlockPos.spiralAround(ZERO, radius, EAST, SOUTH)` as (x, z) offsets.
 pub fn spiral_around(radius: i32) -> impl Iterator<Item = [i32; 2]> {
     const DIRS: [[i32; 2]; 4] = [[1, 0], [0, 1], [-1, 0], [0, -1]];
-    let legs = 4 * radius;
-    let (mut leg, mut leg_size, mut leg_index) = (-1i32, 0i32, 0i32);
-    let mut last = [0, 1];
+    let legs = 4 * i64::from(radius);
+    let (mut leg, mut leg_size, mut leg_index) = (-1i64, 0i64, 0i64);
+    let mut last = [0i32, 1i32];
     std::iter::from_fn(move || {
         let d = DIRS[((leg + 4) % 4) as usize];
-        let cursor = [last[0] + d[0], last[1] + d[1]];
+        let cursor = [last[0].wrapping_add(d[0]), last[1].wrapping_add(d[1])];
         last = cursor;
         if leg_index >= leg_size {
             if leg >= legs {
@@ -77,6 +77,21 @@ pub fn spiral_around(radius: i32) -> impl Iterator<Item = [i32; 2]> {
         leg_index += 1;
         Some(cursor)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::spiral_around;
+
+    #[test]
+    fn spiral_around_handles_zero_negative_and_max_radius_without_overflow() {
+        assert_eq!(spiral_around(0).collect::<Vec<_>>(), vec![[0, 0]]);
+        assert!(spiral_around(-1).next().is_none());
+        assert_eq!(
+            spiral_around(i32::MAX).take(5).collect::<Vec<_>>(),
+            vec![[0, 0], [1, 0], [1, 1], [0, 1], [-1, 1]]
+        );
+    }
 }
 
 /// Counters from one FEATURES pass.

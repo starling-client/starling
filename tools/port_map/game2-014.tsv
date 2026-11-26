@@ -1,8 +1,8 @@
-HoneyBlock.doesEntityDoHoneyBlockSlideEffects	inline	crates/sunrise-client/src/motion.rs::MotionWorld::honey_block_inside	gap: minor: only the player slides here; boats, minecarts, TNT and mobs get no slide sound or event
+HoneyBlock.doesEntityDoHoneyBlockSlideEffects	inline	crates/sunrise-client/src/motion/integrate.rs::MotionWorld::honey_block_inside	gap: minor: only the player slides here; boats, minecarts, TNT and mobs get no slide sound or event
 HoneyBlock.fallOn	port	crates/sunrise-world/src/block_landing.rs::BlockLandingRegistry::fall_on	honey rule: slide sound, entity event 54, fall damage 0.2, fall sound
 HoneyBlock.isSlidingDown	inline	crates/sunrise-client/src/entities.rs::ArmorStand::apply_honey_slide	stand side-slide after travel; player motion, mob ai and ItemEntity retain their separate existing honey paths
 HoneyBlock.maybeDoSlideAchievement	port	crates/sunrise-client/src/game/interface/advancements/mod.rs::Game::trigger_honey_slide	gap: minor: the every-20-ticks check sits in the caller, Game::tick
-HoneyBlock.doSlideMovement	inline	crates/sunrise-client/src/motion.rs::MotionWorld::honey_block_inside	velocity damping and fall distance reset
+HoneyBlock.doSlideMovement	inline	crates/sunrise-client/src/motion/integrate.rs::MotionWorld::honey_block_inside	velocity damping and fall distance reset
 HoneyBlock.showParticles	port	crates/sunrise-client/src/game/blocks/block_particles.rs::Game::honey_slide_particles	five honey block particles at the entity
 IceBlock.randomTick	port	crates/sunrise-world/src/level/tick.rs::Sim::random_tick_block	melts through Sim::ice_melt when block light is above 11 minus dampening
 InfestedBlock.spawnInfestation	inline	crates/sunrise-client/src/game.rs::Game::break_block_as_player	silverfish at the broken block's bottom centre when blocks drop and there is no silk touch; poof via mob_poof

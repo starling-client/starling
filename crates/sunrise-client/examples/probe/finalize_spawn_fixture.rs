@@ -5,7 +5,13 @@
 //! oracle's format.
 //!
 //! usage: finalize_spawn_fixture RESOURCES INPUT OUTPUT HALLOWEEN
-use std::{collections::HashMap, fmt::Write as _, fs, path::Path, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::Write as _,
+    fs,
+    path::Path,
+    sync::Arc,
+};
 use sunrise_client::{
     assets::Assets,
     blocks::BlockFacts,
@@ -14,7 +20,7 @@ use sunrise_client::{
     mobs::{
         Mob, MobTypes, Species,
         data::MobData,
-        finalize::{self, Attr, Ctx, FinalizeLevel, SpawnData, SpawnRegistries},
+        finalize::{self, Attr, Ctx, FinalizeLevel, SpawnData},
         gear,
         render::{DYE_NAMES, VILLAGER_TYPES},
         spawn_rules::Reason,
@@ -30,7 +36,8 @@ use sunrise_world::loot::PackOverlay;
 struct Level<'a> {
     types: &'a MobTypes,
     data: &'a MobData,
-    registries: &'a SpawnRegistries,
+    structure_tags: &'a HashMap<String, HashSet<String>>,
+    variants: &'a sunrise_client::mobs::variants::VariantTables,
     enchantments: &'a Enchantments,
     items: &'a Items,
     camel_husk_size: (f32, f32),
@@ -70,6 +77,11 @@ impl FinalizeLevel for Level<'_> {
             }
             _ => Vec::new(),
         }
+    }
+    fn structure_tag(&self, tag: &str, structure: &str) -> bool {
+        self.structure_tags
+            .get(tag)
+            .is_some_and(|s| s.contains(structure))
     }
     fn moon_phase(&self, _pos: [i32; 3]) -> usize {
         self.phase
@@ -119,7 +131,7 @@ impl FinalizeLevel for Level<'_> {
     }
     fn spawn_data(&self) -> SpawnData<'_> {
         SpawnData {
-            registries: self.registries,
+            variants: self.variants,
             enchantments: self.enchantments,
             items: self.items,
             camel_husk_size: self.camel_husk_size,
@@ -166,40 +178,98 @@ const MEMORIES: [&str; 7] = [
     "home",
 ];
 
-fn variant(m: &Mob, regs: &SpawnRegistries, v: &mut Vec<String>) {
+fn variant(m: &Mob, variants: &sunrise_client::mobs::variants::VariantTables, v: &mut Vec<String>) {
     use Species as S;
     let s = m.species();
-    let named = |reg: &finalize::VariantRegistry, i: Option<u8>| {
-        let name = i.map_or("classic", |i| {
-            reg.names.get(i as usize).map_or("?", |n| n.as_str())
-        });
-        format!("minecraft:{name}")
-    };
-    let var = format!("minecraft:{}", finalize::variant_name(s, m.extra.variant));
     match s {
         S::Pig => {
+            let var = m
+                .pig_variant(&variants.pig)
+                .and_then(|r| variants.pig.id(r))
+                .unwrap_or("minecraft:temperate")
+                .to_owned();
+            let snd = m
+                .pig_sound_variant(&variants.pig_sound)
+                .and_then(|r| variants.pig_sound.id(r))
+                .unwrap_or("minecraft:classic")
+                .to_owned();
             v.push(var);
-            v.push(named(&regs.pig_sound, m.extra.sound_variant));
+            v.push(snd);
         }
         S::Cow => {
+            let var = m
+                .cow_variant(&variants.cow)
+                .and_then(|r| variants.cow.id(r))
+                .unwrap_or("minecraft:temperate")
+                .to_owned();
+            let snd = m
+                .cow_sound_variant(&variants.cow_sound)
+                .and_then(|r| variants.cow_sound.id(r))
+                .unwrap_or("minecraft:classic")
+                .to_owned();
             v.push(var);
-            v.push(named(&regs.cow_sound, m.extra.sound_variant));
+            v.push(snd);
         }
         S::Mooshroom => v.push(if m.extra.variant == 0 { "red" } else { "brown" }.into()),
         S::Chicken => {
+            let var = m
+                .chicken_variant(&variants.chicken)
+                .and_then(|r| variants.chicken.id(r))
+                .unwrap_or("minecraft:temperate")
+                .to_owned();
+            let snd = m
+                .chicken_sound_variant(&variants.chicken_sound)
+                .and_then(|r| variants.chicken_sound.id(r))
+                .unwrap_or("minecraft:classic")
+                .to_owned();
             v.push(var);
-            v.push(named(&regs.chicken_sound, m.extra.sound_variant));
+            v.push(snd);
             v.push(format!("jockey={}", m.extra.jockey));
         }
         S::Cat => {
+            let var = m
+                .cat_variant(&variants.cat)
+                .and_then(|r| variants.cat.id(r))
+                .unwrap_or("minecraft:black")
+                .to_owned();
+            let snd = m
+                .cat_sound_variant(&variants.cat_sound)
+                .and_then(|r| variants.cat_sound.id(r))
+                .unwrap_or("minecraft:classic")
+                .to_owned();
             v.push(var);
-            v.push(named(&regs.cat_sound, m.extra.sound_variant));
+            v.push(snd);
         }
         S::Wolf => {
+            let var = m
+                .wolf_variant(&variants.wolf)
+                .and_then(|r| variants.wolf.id(r))
+                .unwrap_or("minecraft:pale")
+                .to_owned();
+            let snd = m
+                .wolf_sound_variant(&variants.wolf_sound)
+                .and_then(|r| variants.wolf_sound.id(r))
+                .unwrap_or("minecraft:classic")
+                .to_owned();
             v.push(var);
-            v.push(named(&regs.wolf_sound, m.extra.sound_variant));
+            v.push(snd);
         }
-        S::Frog | S::ZombieNautilus => v.push(var),
+        S::Frog => {
+            let var = m
+                .frog_variant(&variants.frog)
+                .and_then(|r| variants.frog.id(r))
+                .unwrap_or("minecraft:temperate")
+                .to_owned();
+            v.push(var);
+        }
+        S::ZombieNautilus => {
+            let var = m
+                .zombie_nautilus_variant(&variants.zombie_nautilus)
+                .and_then(|r| variants.zombie_nautilus.id(r))
+                .unwrap_or("minecraft:temperate")
+                .to_owned();
+            v.push(var);
+        }
         S::Sheep => v.push(DYE_NAMES[m.extra.color as usize & 15].into()),
         S::Horse => v.push(format!(
             "{}/{}",
@@ -276,7 +346,11 @@ fn variant(m: &Mob, regs: &SpawnRegistries, v: &mut Vec<String>) {
     }
 }
 
-fn describe(m: &Mob, all: &[Mob], regs: &SpawnRegistries) -> String {
+fn describe(
+    m: &Mob,
+    all: &[Mob],
+    variants: &sunrise_client::mobs::variants::VariantTables,
+) -> String {
     let mut t = vec![m.kind.id.clone()];
     let vehicle = m
         .extra
@@ -402,7 +476,7 @@ fn describe(m: &Mob, all: &[Mob], regs: &SpawnRegistries) -> String {
         t.push(format!("mem={}", mem.join(",")));
     }
     let mut v = Vec::new();
-    variant(m, regs, &mut v);
+    variant(m, variants, &mut v);
     if !v.is_empty() {
         t.push(format!("v={}", v.join(" ").replace(' ', "_")));
     }
@@ -421,13 +495,17 @@ pub fn main() -> sunrise_client::Result<()> {
     let facts = BlockFacts::load(root, assets.registry)?;
     let mob_data = MobData::load(
         &sunrise_assets::resource_source::ResourceRoot::directory(root.to_path_buf()),
-        &facts,
-    );
+        facts.states.len(),
+        false,
+    )?;
     let defaults = sunrise_world::item_defaults::read(root)?;
     let items = Items::tags_only(root, &PackOverlay::NONE, &defaults)?;
     let enchantments = Enchantments::load(root, &defaults)?;
     let types = MobTypes::load(root)?;
-    let registries = SpawnRegistries::load(root);
+    let structure_tags =
+        sunrise_client::items::load_tags(root, "worldgen/structure", &PackOverlay::NONE)
+            .unwrap_or_default();
+    let variants = sunrise_client::mobs::variants::VariantTables::load_prepared(root);
     let camel = &types.types["minecraft:camel_husk"];
     let camel_husk_size = (camel.width as f32, camel.height as f32);
     let mut out = format!("halloween {halloween}\n");
@@ -472,7 +550,8 @@ pub fn main() -> sunrise_client::Result<()> {
         let mut level = Level {
             types: &types,
             data: &mob_data,
-            registries: &registries,
+            structure_tags: &structure_tags,
+            variants: &variants,
             enchantments: &enchantments,
             items: &items,
             camel_husk_size,
@@ -543,7 +622,7 @@ pub fn main() -> sunrise_client::Result<()> {
             }
         }
         all.sort_by_key(|m| m.id);
-        let mut parts: Vec<String> = all.iter().map(|m| describe(m, &all, &registries)).collect();
+        let mut parts: Vec<String> = all.iter().map(|m| describe(m, &all, &variants)).collect();
         for m in &mut all {
             parts.push(format!("rng {}", m.random.next_long()));
         }

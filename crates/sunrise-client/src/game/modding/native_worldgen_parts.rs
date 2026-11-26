@@ -37,8 +37,8 @@ fn published() -> Option<Published> {
 }
 
 /// Runs `f` with the server's worldgen context as a mod reads it: its registries, settings and
-/// `state_with_property`, which answers None before the server published its index. None before
-/// a server published its context.
+/// `state_with_property` and `state_property`, which answer None before the server published its
+/// index. None before a server published its context.
 pub(in crate::game) fn with_host<R>(
     f: impl FnOnce(&mod_api::OwningWorldgen<'_>) -> R,
 ) -> Option<R> {
@@ -51,9 +51,19 @@ pub(in crate::game) fn with_host<R>(
         let set = super::native_hooks::with_property(registry, engine, key, value)?;
         index.to_api(set).ok()
     };
+    let state_property = |state: mod_api::BlockState, key: &str| {
+        let (index, registry) = published.as_ref()?;
+        let engine = index.to_engine(state).ok()?;
+        registry
+            .state(engine)?
+            .properties
+            .get(key)
+            .map(|v| v.to_string())
+    };
     Some(f(&mod_api::OwningWorldgen::new(
         &reader,
         &state_with_property,
+        &state_property,
     )))
 }
 

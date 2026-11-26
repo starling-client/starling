@@ -433,7 +433,11 @@ impl Game<'_> {
             Slot::Contents(..) => None,
             Slot::ContentItem(parent, component, index) => {
                 let stack = self.slot_get(parent)?;
-                component.items(&stack).get(*index).cloned().flatten()
+                component
+                    .items(self.res.items(), &stack)
+                    .get(*index)
+                    .cloned()
+                    .flatten()
             }
             Slot::Guest(conn, slot) => self
                 .for_player(Target::Guest(*conn), |g| g.slot_get(slot))
@@ -500,7 +504,7 @@ impl Game<'_> {
     }
     fn block_slot_set(&mut self, p: [i32; 3], i: usize, stack: Option<ItemStack>) -> bool {
         let key = (p[0], p[1], p[2]);
-        let Some(size) = self.block_container_size(p).filter(|&size| i < size) else {
+        let Some(_) = self.block_container_size(p).filter(|&size| i < size) else {
             return false;
         };
         self.unpack_loot(crate::game::container_loot::LootTarget::Block(key), None);
@@ -542,10 +546,7 @@ impl Game<'_> {
                 c.items[i] = stack;
             }
             Some(BlockEntity::Mod(m)) => {
-                if m.items.len() < size {
-                    m.items.resize(size, None);
-                }
-                *m.item_slot_mut(i).unwrap() = stack;
+                *m.item_slot_mut(i) = stack;
             }
             Some(entity) => entity.slots_mut()[i] = stack,
             None => return false,
@@ -634,12 +635,12 @@ impl Game<'_> {
                 let Some(mut outer) = self.slot_get(parent) else {
                     return false;
                 };
-                let mut slots = component.items(&outer);
+                let mut slots = component.items(self.res.items(), &outer);
                 let Some(slot) = slots.get_mut(*index) else {
                     return false;
                 };
                 *slot = stack;
-                component.store(&mut outer, slots);
+                component.store(self.res.items(), &mut outer, slots);
                 self.slot_set(parent, Some(outer))
             }
             Slot::Guest(conn, slot) => self
@@ -1266,7 +1267,10 @@ impl Game<'_> {
             return Ok(0);
         };
         let modifier = self.item_modifier_arg(ctx, "modifier")?;
-        let source = self.command_source.unwrap_or_else(|| self.player_source());
+        let source = self
+            .command_source
+            .clone()
+            .unwrap_or_else(|| self.player_source());
         let view = source.entity.map(|t| self.entity_view_asked(t, &modifier));
         let seed = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1430,7 +1434,10 @@ impl Game<'_> {
             // ItemCommands.applyModifier on each source stack.
             if ctx.get("modifier").is_some() {
                 let modifier = self.item_modifier_arg(ctx, "modifier")?;
-                let source = self.command_source.unwrap_or_else(|| self.player_source());
+                let source = self
+                    .command_source
+                    .clone()
+                    .unwrap_or_else(|| self.player_source());
                 let view = source.entity.map(|t| self.entity_view_asked(t, &modifier));
                 let mut rng = sunrise_core::random::LegacyRandom::new(0);
                 found = found
@@ -2783,13 +2790,12 @@ mod registered_slot_source_read_tests {
     #[test]
     #[ignore = "daily"]
     fn registered_first_three_reads_match_inline_and_keep_the_chest() {
+        let directory = tempfile::tempdir().unwrap();
         let mut resources = None;
         let mut game = crate::game::game_tests::tests::server_game(&mut resources);
         game.build_registries();
         game.set_allow_commands(true);
-        let root = std::env::current_dir()
-            .unwrap()
-            .join("registered-slot-read-world");
+        let root = directory.path().join("registered-slot-read-world");
         assert!(!root.exists());
         let pack = root.join("datapacks/parity");
         std::fs::create_dir_all(pack.join("data/parity/slot_source")).unwrap();
@@ -2882,12 +2888,11 @@ mod registered_slot_source_preservation_tests {
 
     fn scene<'a>(
         resources: &'a mut Option<std::sync::Arc<crate::game::Resources>>,
-        name: &str,
+        root: std::path::PathBuf,
     ) -> (Game<'a>, std::path::PathBuf) {
         let mut game = crate::game::game_tests::tests::server_game(resources);
         game.build_registries();
         game.set_allow_commands(true);
-        let root = std::env::current_dir().unwrap().join(name);
         assert!(!root.exists());
         let mut high = std::path::PathBuf::new();
         for (pack, limit) in [("a-low", 1), ("parity", 3)] {
@@ -2918,8 +2923,10 @@ mod registered_slot_source_preservation_tests {
     fn loaded_snapshot_changes_only_on_existing_reload_with_pack_precedence() {
         let mut resources = None;
         let directory = tempfile::tempdir().unwrap();
-        let world = directory.path().join("slot-source-snapshot-world");
-        let (mut game, file) = scene(&mut resources, world.to_str().unwrap());
+        let (mut game, file) = scene(
+            &mut resources,
+            directory.path().join("slot-source-snapshot-world"),
+        );
         let before = game.block_entity_nbt([0, 100, 0]).unwrap();
         let clock = game.world.game_time;
         count(&mut game, 3); // Higher-priority pack overrides the same id.
@@ -2929,9 +2936,11 @@ mod registered_slot_source_preservation_tests {
             .unwrap();
         count(&mut game, 2);
         std::fs::write(file, "{").unwrap();
-        game.reload_datapacks(true, &game.level.enabled_features.clone())
-            .unwrap();
-        count(&mut game, 1); // Existing policy: invalid higher JSON is skipped.
+        assert!(
+            game.reload_datapacks(true, &game.level.enabled_features.clone())
+                .is_err()
+        );
+        count(&mut game, 2); // A refused reload keeps the loaded data (ReloadableServerRegistries).
         assert!(!game.run_command("execute if slots block 0 100 0 first_three"));
         assert_eq!(game.block_entity_nbt([0, 100, 0]).as_ref(), Some(&before));
         assert_eq!(game.world.game_time, clock);
@@ -2941,7 +2950,11 @@ mod registered_slot_source_preservation_tests {
     #[ignore = "daily"]
     fn admitted_absent_executor_sources_fail_without_player_fallback() {
         let mut resources = None;
-        let (mut game, _) = scene(&mut resources, "slot-source-unsupported-world");
+        let directory = tempfile::tempdir().unwrap();
+        let (mut game, _) = scene(
+            &mut resources,
+            directory.path().join("slot-source-unsupported-world"),
+        );
         let path = game
             .world_root
             .join("datapacks/parity/data/parity/slot_source/this.json");
@@ -2999,7 +3012,11 @@ mod registered_slot_source_preservation_tests {
     #[ignore = "daily"]
     fn quoted_holders_resolve_and_a_non_int_limit_fails_to_parse() {
         let mut resources = None;
-        let (mut game, _) = scene(&mut resources, "slot-source-quoted-world");
+        let directory = tempfile::tempdir().unwrap();
+        let (mut game, _) = scene(
+            &mut resources,
+            directory.path().join("slot-source-quoted-world"),
+        );
         let before = game.block_entity_nbt([0, 100, 0]).unwrap();
         let clock = game.world.game_time;
         count(&mut game, 3);
@@ -3039,7 +3056,11 @@ mod registered_slot_source_preservation_tests {
     #[ignore = "daily"]
     fn a_byte_or_fractional_limit_selects_its_int_value() {
         let mut resources = None;
-        let (mut game, _) = scene(&mut resources, "slot-source-numeric-limit-world");
+        let directory = tempfile::tempdir().unwrap();
+        let (mut game, _) = scene(
+            &mut resources,
+            directory.path().join("slot-source-numeric-limit-world"),
+        );
         let source = |limit: &str| {
             format!(
                 "{{type:\"limit_slots\",limit:{limit},slot_source:{{type:\"slot_range\",slots:\"container.*\"}}}}"
@@ -3090,7 +3111,11 @@ mod registered_slot_source_preservation_tests {
     #[ignore = "daily"]
     fn a_command_the_player_types_binds_this_to_them() {
         let mut resources = None;
-        let (mut game, _) = scene(&mut resources, "slot-source-player-this-world");
+        let directory = tempfile::tempdir().unwrap();
+        let (mut game, _) = scene(
+            &mut resources,
+            directory.path().join("slot-source-player-this-world"),
+        );
         game.player = Some(
             sunrise_client::motion::PlayerMotion::new(
                 game.motion,

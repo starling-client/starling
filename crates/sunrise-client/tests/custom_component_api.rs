@@ -15,16 +15,25 @@ use sunrise_protocol::{
 #[test]
 fn registration_limits_and_defaults_are_bound_to_the_connection() {
     assert_eq!(
-        custom::install(122, vec!["minecraft:no".into()]),
+        custom::install(122, vec!["minecraft:Bad".into()]),
         Err(InstallError::InvalidName)
     );
     assert_eq!(
         custom::install(122, vec!["sample:x".into(), "sample:x".into()]),
         Err(InstallError::DuplicateName)
     );
-    custom::install(122, vec!["sample:z".into(), "sample:a".into()]).unwrap();
-    assert_eq!(custom::id("sample:a"), Some(122));
-    assert_eq!(custom::id("sample:z"), Some(123));
+    custom::install(
+        122,
+        vec![
+            "sample:z".into(),
+            "minecraft:custom_tag".into(),
+            "sample:a".into(),
+        ],
+    )
+    .unwrap();
+    assert_eq!(custom::id("minecraft:custom_tag"), Some(122));
+    assert_eq!(custom::id("sample:a"), Some(123));
+    assert_eq!(custom::id("sample:z"), Some(124));
     assert_eq!(
         custom::install(122, vec![]),
         Err(InstallError::AlreadyInstalled)

@@ -6,6 +6,21 @@ use sunrise_hooks::title::Button as AddedButton;
 /// selected without asking again whether it shows.
 pub(super) const ADDED_IDS: u8 = sunrise_hooks::title::FIRST_ID;
 
+/// The main menu's id for its bottom notice (`TitleScreen.init`'s `PlainTextButton`), which is
+/// drawn and pressed apart from [`Title::buttons`].
+pub(super) const CREDITS_ID: u8 = 9;
+
+/// The bottom notice's translation key.
+const CREDITS_KEY: &str = "sunrise.title.not_affiliated";
+
+/// The bottom notice and its bounds on a main menu `w` by `h`: `TitleScreen.init`'s
+/// `PlainTextButton`, the text's width wide and 10 high at `height - 10`, 2 from the right edge.
+pub(super) fn credits_notice(atlas: &HudAtlas, w: f32, h: f32) -> (String, [f32; 4]) {
+    let notice = lang::get_or(CREDITS_KEY, "Not affiliated with Mojang or Microsoft");
+    let tw = HudBatch::text_width(atlas, &notice).ceil();
+    (notice, [w - tw - 2.0, h - 10.0, tw, 10.0])
+}
+
 /// Where the logo and edition banner end (`draw_logo`: the banner's top 67, 14 rows).
 const BANNER_BOTTOM: f32 = 81.0;
 
@@ -73,25 +88,173 @@ impl Title {
         }
         top.min(h - 128.0 - 24.0 * added as f32)
     }
+    /// `TitleScreen.init`'s widgets as `ScreenEvent.Init.Post` lists them (`Screen.children()`),
+    /// in registration order: Singleplayer, Multiplayer, Minecraft Realms, the buttons crates
+    /// above the engine add, the icon row (Friends, Language..., Accessibility Settings...),
+    /// Options..., Quit Game and the bottom notice. Each is its id, its bounds on a main menu `w`
+    /// by `h`, and its label's translation key. Empty off the main menu.
+    pub fn init_children(
+        &self,
+        atlas: &HudAtlas,
+        w: f32,
+        h: f32,
+    ) -> Vec<(u8, [f32; 4], &'static str)> {
+        if !matches!(self.mode, Mode::Main) {
+            return Vec::new();
+        }
+        let (w, h) = (w.ceil(), h.ceil());
+        let key = |id: u8| match id {
+            1 => "menu.singleplayer",
+            4 => "menu.multiplayer",
+            8 => "menu.online",
+            3 => "menu.options",
+            2 => "menu.quit",
+            5 => "gui.friends.open",
+            6 => "options.language",
+            7 => "options.accessibility",
+            id => registered()[usize::from(id - ADDED_IDS)].label(),
+        };
+        let (icons, rows): (Vec<_>, Vec<_>) = self
+            .main_buttons(w, h)
+            .into_iter()
+            .map(|b| (b.id, [b.x, b.y, b.w, 20.0], key(b.id), b.icon.is_some()))
+            .partition(|&(.., icon)| icon);
+        // Options... and Quit Game are added after the icon row.
+        let menu = rows.len().saturating_sub(2);
+        let (_, credits) = credits_notice(atlas, w, h);
+        rows[..menu]
+            .iter()
+            .chain(&icons)
+            .chain(&rows[menu..])
+            .map(|&(id, rect, key, _)| (id, rect, key))
+            .chain([(CREDITS_ID, credits, CREDITS_KEY)])
+            .collect()
+    }
+    /// The main menu's widgets a mod removed at `ScreenEvent.Init.Post`, by their
+    /// [`Title::init_children`] ids, until the next init: none is drawn, pressed or focused.
+    pub fn set_removed_children(&mut self, removed: Vec<u8>) {
+        if self.focused_button.is_some_and(|id| removed.contains(&id)) {
+            self.focused_button = None;
+        }
+        self.removed_children = removed;
+    }
+    /// Whether a mod removed any of the main menu's widgets at its last init.
+    pub fn has_removed_children(&self) -> bool {
+        !self.removed_children.is_empty()
+    }
+    /// Whether a mod removed the main menu's widget `id` ([`Title::init_children`]'s id) at its
+    /// last init.
+    pub fn child_removed(&self, id: u8) -> bool {
+        self.removed_children.contains(&id)
+    }
+    /// The main menu's buttons as `TitleScreen.init` makes them on a `w` by `h` screen (whole
+    /// pixels), the ones a mod removed included.
+    fn main_buttons(&self, w: f32, h: f32) -> Vec<Button> {
+        let b = button;
+        let cx = (w / 2.0).floor();
+        let added = self.added_buttons(h);
+        // Each added button takes a row below Minecraft Realms; the rows after move down.
+        let below = 24.0 * added.len() as f32;
+        let y = Self::main_menu_top(h, added.len());
+        let mut buttons = vec![
+            b(
+                cx - 100.0,
+                y,
+                200.0,
+                &lang::get_or("menu.singleplayer", "Singleplayer"),
+                true,
+                1,
+            ),
+            b(
+                cx - 100.0,
+                y + 24.0,
+                200.0,
+                &lang::get_or("menu.multiplayer", "Multiplayer"),
+                self.allows_multiplayer,
+                4,
+            ),
+            b(
+                cx - 100.0,
+                y + 48.0,
+                200.0,
+                &lang::get_or("menu.online", "Minecraft Realms"),
+                // TitleScreen.createNormalMenuOptions: Realms is off when
+                // multiplayer is.
+                self.allows_multiplayer,
+                8,
+            ),
+            b(
+                cx - 100.0,
+                y + 96.0 + below,
+                98.0,
+                &lang::get_or("menu.options", "Options..."),
+                true,
+                3,
+            )
+            .does(crate::widgets::Action::Options),
+            b(
+                cx + 2.0,
+                y + 96.0 + below,
+                98.0,
+                &lang::get_or("menu.quit", "Quit Game"),
+                true,
+                2,
+            )
+            .does(crate::widgets::Action::Exit),
+        ];
+        // After Minecraft Realms, so they come before the icon row and Options... for
+        // the keyboard and the narrator too.
+        for (i, (id, button)) in added.into_iter().enumerate() {
+            buttons.insert(
+                3 + i,
+                b(
+                    cx - 100.0,
+                    y + 72.0 + 24.0 * i as f32,
+                    200.0,
+                    &lang::get(button.label()),
+                    true,
+                    id,
+                ),
+            );
+        }
+        // CommonButtons' icon buttons; Sunrise's Join a Friend (an
+        // invite code) sits behind vanilla's Friends button.
+        for (i, (key, plain, id, icon)) in [
+            ("gui.friends.open", "Friends", 5, "friends/friends"),
+            ("options.language", "Language...", 6, "icon/language"),
+            (
+                "options.accessibility",
+                "Accessibility Settings...",
+                7,
+                "icon/accessibility",
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut button = b(
+                cx - 34.0 + i as f32 * 24.0,
+                y + 72.0 + below,
+                20.0,
+                &lang::get_or(key, plain),
+                id != 5 || crate::net::joins_friends(),
+                id,
+            );
+            button.icon = Some((icon, 15.0));
+            buttons.push(button);
+        }
+        buttons
+    }
     pub(super) fn buttons(&self, w: f32, h: f32) -> Vec<Button> {
         // The game rules draw and press their own.
         if self.rules.borrow().is_some() {
             return Vec::new();
         }
         let (w, h) = (w.ceil(), h.ceil());
-        let b = |x: f32, y: f32, w: f32, label: &str, enabled: bool, id: u8| Button {
-            x,
-            y,
-            w,
-            label: label.into(),
-            enabled,
-            id,
-            icon: None,
-            trailing: None,
-            action: None,
-        };
+        let b = button;
         match &self.mode {
             Mode::Main => {
+<<<<<<< HEAD
                 let cx = (w / 2.0).floor();
                 let added = self.added_buttons(h);
                 // Each added button takes a row below Minecraft Realms; the rows after move down.
@@ -192,6 +355,103 @@ impl Title {
                 }
                 // Starling on Android: the way back to the launcher is the control hub's "H"
                 // (android_control_ui's Launcher), from any screen.
+||||||| 46c00106def
+                let cx = (w / 2.0).floor();
+                let added = self.added_buttons(h);
+                // Each added button takes a row below Minecraft Realms; the rows after move down.
+                let below = 24.0 * added.len() as f32;
+                let y = Self::main_menu_top(h, added.len());
+                let mut buttons = vec![
+                    b(
+                        cx - 100.0,
+                        y,
+                        200.0,
+                        &lang::get_or("menu.singleplayer", "Singleplayer"),
+                        true,
+                        1,
+                    ),
+                    b(
+                        cx - 100.0,
+                        y + 24.0,
+                        200.0,
+                        &lang::get_or("menu.multiplayer", "Multiplayer"),
+                        self.allows_multiplayer,
+                        4,
+                    ),
+                    b(
+                        cx - 100.0,
+                        y + 48.0,
+                        200.0,
+                        &lang::get_or("menu.online", "Minecraft Realms"),
+                        // TitleScreen.createNormalMenuOptions: Realms is off when
+                        // multiplayer is.
+                        self.allows_multiplayer,
+                        8,
+                    ),
+                    b(
+                        cx - 100.0,
+                        y + 96.0 + below,
+                        98.0,
+                        &lang::get_or("menu.options", "Options..."),
+                        true,
+                        3,
+                    )
+                    .does(crate::widgets::Action::Options),
+                    b(
+                        cx + 2.0,
+                        y + 96.0 + below,
+                        98.0,
+                        &lang::get_or("menu.quit", "Quit Game"),
+                        true,
+                        2,
+                    )
+                    .does(crate::widgets::Action::Exit),
+                ];
+                // After Minecraft Realms, so they come before the icon row and Options... for
+                // the keyboard and the narrator too.
+                for (i, (id, button)) in added.into_iter().enumerate() {
+                    buttons.insert(
+                        3 + i,
+                        b(
+                            cx - 100.0,
+                            y + 72.0 + 24.0 * i as f32,
+                            200.0,
+                            &lang::get(button.label()),
+                            true,
+                            id,
+                        ),
+                    );
+                }
+                // CommonButtons' icon buttons; Sunrise's Join a Friend (an
+                // invite code) sits behind vanilla's Friends button.
+                for (i, (key, plain, id, icon)) in [
+                    ("gui.friends.open", "Friends", 5, "friends/friends"),
+                    ("options.language", "Language...", 6, "icon/language"),
+                    (
+                        "options.accessibility",
+                        "Accessibility Settings...",
+                        7,
+                        "icon/accessibility",
+                    ),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    let mut button = b(
+                        cx - 34.0 + i as f32 * 24.0,
+                        y + 72.0 + below,
+                        20.0,
+                        &lang::get_or(key, plain),
+                        id != 5 || crate::net::joins_friends(),
+                        id,
+                    );
+                    button.icon = Some((icon, 15.0));
+                    buttons.push(button);
+                }
+=======
+                let mut buttons = self.main_buttons(w, h);
+                buttons.retain(|button| !self.removed_children.contains(&button.id));
+>>>>>>> ed6772e2118
                 buttons
             }
             Mode::Select { worlds, selected } => {
@@ -439,6 +699,28 @@ impl Title {
                         &lang::get_or("gui.back", "Back"),
                         true,
                         95,
+                    )
+                    .does(crate::widgets::Action::Back),
+                ]
+            }
+            Mode::PackValidationFailed { .. } => {
+                let y = confirm_top(h, 0) + 41.0;
+                vec![
+                    b(
+                        (w / 2.0).floor() - 152.0,
+                        y,
+                        150.0,
+                        &lang::get_or("dataPack.validation.back", "Back to Pack Selection"),
+                        true,
+                        104,
+                    ),
+                    b(
+                        (w / 2.0).floor() + 2.0,
+                        y,
+                        150.0,
+                        &lang::get_or("dataPack.validation.reset", "Reset to Default"),
+                        true,
+                        105,
                     )
                     .does(crate::widgets::Action::Back),
                 ]
@@ -745,5 +1027,20 @@ impl Title {
                 })
                 .collect(),
         }
+    }
+}
+
+/// A plain 20-pixel-high button at `x`, `y`, `w` wide.
+fn button(x: f32, y: f32, w: f32, label: &str, enabled: bool, id: u8) -> Button {
+    Button {
+        x,
+        y,
+        w,
+        label: label.into(),
+        enabled,
+        id,
+        icon: None,
+        trailing: None,
+        action: None,
     }
 }

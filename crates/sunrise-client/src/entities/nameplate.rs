@@ -35,6 +35,31 @@ impl Mob {
         attributes.below_name_distance = distances.below_name;
     }
 
+    /// Stores `CAMERA_DISTANCE` from a server attribute update.
+    pub fn set_camera_distance(&mut self, value: f64) {
+        self.extra
+            .attributes
+            .get_or_insert_with(Default::default)
+            .camera_distance = Some(value);
+    }
+
+    /// `LivingEntity.getScale` and `getAttributeValue(CAMERA_DISTANCE)` as `Camera.alignWithEntity` reads them.
+    pub fn camera_scale_and_distance(&self) -> (f32, f64) {
+        let distance = self
+            .extra
+            .attributes
+            .as_ref()
+            .and_then(|a| a.camera_distance)
+            .or_else(|| {
+                self.kind
+                    .attributes
+                    .get("minecraft:camera_distance")
+                    .copied()
+            })
+            .unwrap_or(4.0);
+        (self.model_scale(), distance)
+    }
+
     /// Stores `NAME_TAG_DISTANCE` from a server attribute update.
     pub fn set_name_tag_distance(&mut self, value: f64) {
         self.extra

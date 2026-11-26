@@ -1,0 +1,7 @@
+ids = ["type:MenuDataRefusal.WrongOwner"]
+why = """
+`MenuRef::set_data_slot` no longer checks the calling native mod against the menu type's registering mod, so `MenuDataRefusal::WrongOwner` is removed. Following vanilla `AbstractContainerMenu.setData` and `broadcastChanges`, data slot writes operate on the live server menu instance with window, slot-index, server-authority and transaction/broadcast checks rather than caller-based ownership.
+"""
+migrate = """
+Remove `MenuDataRefusal::WrongOwner` match arms when handling `MenuRef::set_data_slot`. Any server caller with the live `MenuRef` can now update a declared data slot on a blockless mod menu; `MenuDataRefusal::Unsupported`, `Stale` and `InvalidIndex` remain unchanged.
+"""

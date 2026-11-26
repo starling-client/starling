@@ -86,6 +86,34 @@ impl Game<'_> {
             _ => None,
         }
     }
+    /// `LivingEntity.startFallFlying`: sets the glide flag, so the next tick glides.
+    /// The raw flag write: the caller owns the canGlide checks. True for a player, a
+    /// guest or a mob; false for an armor stand or the dragon.
+    pub(super) fn living_start_gliding(&mut self, living: LivingRef) -> bool {
+        match self.native_living_target(living) {
+            Some(Target::Player) => {
+                let Some(p) = self.player.as_mut() else {
+                    return false;
+                };
+                p.fall_flying = true;
+                true
+            }
+            Some(Target::Guest(conn)) => self
+                .lan
+                .as_mut()
+                .and_then(|h| h.hub.update_guest(conn, |g| g.fall_flying = true))
+                .is_some(),
+            Some(Target::Mob(id)) => {
+                let Some(m) = self.mobs.iter_mut().find(|m| m.id == id && !m.removed) else {
+                    return false;
+                };
+                m.extra.fall_flying = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// `LivingEntity.stopFallFlying`: clears the glide flag, so the glide's
     /// wear and sound stop and the next fall is a fall. The players around
     /// learn it with the entity's next flag sync, as they do when a glide
@@ -205,7 +233,7 @@ impl Game<'_> {
     /// entity slept; false for a fake player, another mob, an armor stand
     /// or the dragon. Normal server guests in the level in place use the
     /// same wake-up path; guests in another level are refused.
-    pub(super) fn living_stop_sleeping(&mut self, living: LivingRef) -> bool {
+    pub(in crate::game) fn living_stop_sleeping(&mut self, living: LivingRef) -> bool {
         match self.native_living_target(living) {
             Some(target @ (Target::Player | Target::Guest(_))) => {
                 self.native_player_sleep_write(target, |game| {
@@ -287,6 +315,16 @@ impl Game<'_> {
             Target::Player => Some(self.player.as_ref()?.jumping),
             Target::Guest(_) => Some(false),
             Target::Mob(_) => Some(false),
+            _ => None,
+        }
+    }
+    /// `LivingEntity.noJumpDelay`: ticks before a held jump can jump again.
+    pub(super) fn living_no_jump_delay(&self, living: LivingRef) -> Option<i32> {
+        match self.native_living_read_target(living)? {
+            Target::Player => Some(self.player.as_ref()?.no_jump_delay),
+            Target::Mob(id) if self.is_logical_server() => {
+                Some(self.mobs.iter().find(|m| m.id == id)?.ai.no_jump_delay)
+            }
             _ => None,
         }
     }
@@ -437,11 +475,12 @@ impl ClimbingWorld for FlagClimbing<'_> {
 #[cfg(test)]
 pub(in crate::game) mod tests {
     use super::super::Game;
-    use super::super::native_entity_refs::tests::{record_key, with_game};
+    use super::super::native_entity_refs::tests::{fixture_resident_column, record_key, with_game};
     use mod_api::{
         BlockPart, EntityRef, Hooks, LivingRef, LoopContext, MakesOpenTrapdoorAboveClimbableEvent,
         Registrar, WorldEpoch,
     };
+    use sunrise_client::entities::ArmorStand;
     use sunrise_client::mobs::{Mob, villager};
     use sunrise_client::motion::{MotionWorld, PlayerMotion};
     use sunrise_core::geometry::Vec3;
@@ -449,10 +488,40 @@ pub(in crate::game) mod tests {
 
     /// A live cow `id` at `(5.5, 64, 5.5)`, with its handle.
     fn cow(game: &mut Game<'_>, id: u32) -> LivingRef {
+        fixture_resident_column(&mut game.world, (0, 0));
         let kind = game.res.mob_types().get("minecraft:cow").unwrap().clone();
         game.mobs
             .push(Mob::new(id, kind, Vec3::new(5.5, 64.0, 5.5), 0.0));
         game.living(game.entity(id).unwrap()).unwrap()
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn start_gliding_sets_the_live_flag_and_refuses_other_kinds() {
+        with_game(|game| {
+            let mob = cow(game, 12);
+            let game = &mut *game;
+            assert_eq!(game.living_is_gliding(mob), Some(false));
+            assert!(game.living_start_gliding(mob));
+            assert!(game.mobs[0].extra.fall_flying);
+            assert_eq!(game.living_is_gliding(mob), Some(true));
+            // An armor stand has no glide state, so the write changes nothing.
+            game.armor_stands.push(ArmorStand::new(13, Vec3::ZERO, 0.0));
+            let living = game.living(game.entity(13).unwrap()).unwrap();
+            assert!(!game.living_start_gliding(living));
+            // The player in place and a guest start their own body's flag.
+            game.player = Some(PlayerMotion::new(game.motion, Vec3::ZERO).unwrap());
+            crate::game::native_entity_refs::tests::bind_local_player(game, 20, 20);
+            let player = game.living(game.entity(20).unwrap()).unwrap();
+            assert!(game.living_start_gliding(player));
+            assert!(game.player.as_ref().unwrap().fall_flying);
+            guest_server(game, false, true);
+            let (guest, _rx) = guest(game, 21);
+            assert!(game.living_start_gliding(guest));
+            assert!(game.command_guest(21).unwrap().fall_flying);
+            assert!(game.living_stop_gliding(guest));
+            assert!(!game.command_guest(21).unwrap().fall_flying);
+        })
     }
 
     #[test]
@@ -566,7 +635,8 @@ pub(in crate::game) mod tests {
                 event: &mut EntityJoinLevelEvent<'_>,
             ) -> Flow {
                 if event.kind == "minecraft:zombie"
-                    && let Some(er) = mod_api::prelude::EntitiesHost::entity(&*host, event.entity)
+                    && let Some(er) =
+                        mod_api::prelude::EntitiesHost::entity(&*host, event.subject.id())
                     && let Some(m) = mod_api::prelude::MobsHost::mob(&*host, er)
                 {
                     let _ = m.set_persistence_required(&mut *host);
@@ -580,6 +650,7 @@ pub(in crate::game) mod tests {
             vec![ModEntry::new("join_persist", Box::new(Joiner))].into(),
             || {
                 with_game(|game| {
+                    fixture_resident_column(&mut game.world, (0, 0));
                     let before = game.mobs.len();
                     game.spawn_mob_spawned(
                         "zombie",
@@ -643,7 +714,7 @@ pub(in crate::game) mod tests {
             seed: 0,
             max_players: 2,
             integrated: !dedicated,
-            levels: game.level_shapes,
+            levels: game.level_shapes.clone(),
             level_seeds: game.levels.runtime.seeds(),
         };
         game.lan_host(settings, net, config).unwrap();
@@ -1024,7 +1095,7 @@ pub(in crate::game) mod tests {
         sleeping: bool,
         jumping: Option<bool>,
         bed: Option<[i32; 3]>,
-        timer: u32,
+        timer: i32,
         spawn: Option<Vec3>,
         woke_from: Option<[i32; 3]>,
         awaiting_teleport: Option<(i32, [f64; 3])>,
@@ -1371,6 +1442,63 @@ pub(in crate::game) mod tests {
                 (true, Some(BlockPos::new(5, 64, 5)))
             );
         });
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn a_block_part_decides_whether_a_block_is_scaffolding_to_a_sneaking_player() {
+        // The fixture's parts: a ladder is scaffolding, and scaffolding is not.
+        mod_platform::__private::part_tests::scaffolding_game_thread();
+        crate::entry::install_client_hooks();
+        with_game(|game| {
+            game.world.chunks.insert(
+                (0, 0),
+                std::sync::Arc::new(sunrise_client::chunk::Chunk::empty(0, 0)),
+            );
+            let registry = game.pack.assets.registry;
+            let state = |name: &str| registry.default_state(name).unwrap();
+            let (ladder, vine, scaffolding) = (
+                state("minecraft:ladder"),
+                state("minecraft:vine"),
+                state("minecraft:scaffolding"),
+            );
+            // A sneaking player moving down at -0.3 in the block at (5, 64, 5): the climb
+            // limits it to -0.15, and the slide stops (0.0) unless the block is scaffolding.
+            // A ladder with the part keeps sliding, as in real scaffolding.
+            game.world.set(5, 64, 5, ladder).unwrap();
+            assert_eq!(sneaking_slide(game), -0.15f32 as f64);
+            // A vine with no part stops the slide as before.
+            game.world.set(5, 64, 5, vine).unwrap();
+            assert_eq!(sneaking_slide(game), 0.0);
+            // Scaffolding whose part answers false stops it too.
+            game.world.set(5, 64, 5, scaffolding).unwrap();
+            assert_eq!(sneaking_slide(game), 0.0);
+        });
+    }
+
+    /// The vertical velocity left to a sneaking player at `(5.5, 64, 5.5)` falling at -0.3
+    /// after `handle_on_climbable`.
+    fn sneaking_slide(game: &mut Game<'_>) -> f64 {
+        let mut player = PlayerMotion::new(game.motion, Vec3::new(5.5, 64.0, 5.5)).unwrap();
+        player.shift_key_down = true;
+        let side = game_side!(game);
+        let mut world = MotionWorld {
+            side: &side,
+            entities: &[],
+            player: &mut player,
+            scene: &mut game.world,
+            assets: &game.pack.assets,
+            collision_binding: game.collision,
+            resources: game.motion,
+            health: &game.health_resources,
+            tag_items: Some(game.res.items()),
+            loop_context: &game.loop_context,
+            damage_hooks: &game.damage_hooks,
+            block_registries: Some(&game.ui.registries),
+        };
+        sunrise_world::living_air::handle_on_climbable(&mut world, Vec3::new(0.0, -0.3, 0.0))
+            .unwrap()
+            .y
     }
 
     /// Whether the player, as entity `id` at `(5.5, 64, 5.5)`, climbs by its own motion, and the

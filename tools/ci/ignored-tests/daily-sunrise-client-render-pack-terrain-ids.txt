@@ -1,0 +1,9 @@
+# PACKAGE TEST TARGET daily REASON; exact logical libtest identities, sorted.
+# A shaders/ pack's mc_Entity and at_midBlock on terrain in flat and per-section draws (#5015):
+# pixel assertions through the real Renderer under with_xvfb.py, each test re-running itself in a
+# child process with throwaway homes; and the source sidecar counted in an arena's move budget, on
+# a GPU.
+sunrise-client-render gfx::arena::source_tests::source_sidecar_counts_in_the_move_budget lib daily gpu
+sunrise-client-render pack_terrain_ids test:pack_terrain_ids daily child-process
+sunrise-client-render pack_terrain_ids_from_the_stream test:pack_terrain_ids daily child-process
+sunrise-client-render pack_terrain_ids_without_flat_draws test:pack_terrain_ids daily child-process

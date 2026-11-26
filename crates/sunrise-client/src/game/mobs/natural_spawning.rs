@@ -1,10 +1,9 @@
 //! The game's side of `NaturalSpawner` (`mobs::spawn_selection`): the level
 //! it reads, the spawning chunks and caps of `ServerChunkCache.tickChunks`,
 //! and the mobs it adds (finalized with the game's `finalizeSpawn`).
-use super::{Dim, Game, creatures::Finalized};
+use super::{Dim, Game};
 use mod_api::{SpawnCheck, SpawnFlags, SpawnLimits};
 use std::collections::HashMap;
-use sunrise_client::vanillagen::VanillaTerrain;
 use sunrise_client::{
     biome::{BiomeInfo, SpawnEntry},
     blocks::BlockFacts,
@@ -16,10 +15,14 @@ use sunrise_client::{
         spawn_rules::{Reason, SpawnLevel},
         spawn_selection::{
             self, Category, Counted, Heightmap, NaturalLevel, PlayerSquares, SpawnBuffers,
-            SpawnCost, SpawnPlayer, SpawnRequest, SpawnState, Spawned, StructureAt,
+            SpawnCluster, SpawnCost, SpawnPlayer, SpawnRequest, SpawnState, StructureAt,
             StructureSpawns,
         },
     },
+};
+use sunrise_client::{
+    join_seq::JoinSeq,
+    vanillagen::{GeneratedMob, VanillaTerrain},
 };
 use sunrise_core::{
     geometry::{Aabb, COLLISION_EPSILON, Vec3, VoxelShape},
@@ -27,10 +30,14 @@ use sunrise_core::{
     random::{LegacyRandom, LevelRandom, RandomSource, WorldgenRandom, XoroshiroRandom},
 };
 use sunrise_world::dimension_type::DimensionFacts;
-use {
-    sunrise_core::nbt::{Compound, Tag},
-    sunrise_world::registry::BlockStateId,
-};
+use sunrise_world::registry::BlockStateId;
+
+/// The primary candidate survives the insertion attempt as an owning row (possibly
+/// restored with a new ID in another level) or as a detached body after a veto or transfer.
+pub(super) enum NaturalAdmission {
+    Placed { level: Dim, id: u32, join: JoinSeq },
+    Detached(Box<Mob>),
+}
 
 /// A level's natural spawning policy, as mods set it through its `LevelRef`
 /// (`Game::spawn_policies`): the categories' caps and which may spawn.
@@ -68,7 +75,16 @@ pub(super) struct SpawnScratch {
     stale: Vec<bool>,
     /// The spawn state's allocations, reused across passes.
     spawn_buffers: SpawnBuffers,
+    pass: NaturalPassScratch,
 }
+
+#[derive(Default)]
+struct NaturalPassScratch {
+    players: SearchPlayers,
+    costed: Vec<String>,
+    ids: HashMap<u32, u32>,
+}
+
 impl SpawnScratch {
     fn chunk(p: &LevelPlayer) -> (i32, i32) {
         (
@@ -324,17 +340,37 @@ impl<'p> NearestPlayers<'p> {
 
 /// Up to this many players, a spawn start measures to every one.
 const PLAYERS_SCANNED: usize = 8;
+/// Owned search data that survives the world's immutable borrow being released
+/// for each admission. A mod may move players during admission.
+#[derive(Default)]
+struct SearchPlayers {
+    players: Vec<LevelPlayer>,
+    nearest: Vec<[f64; 3]>,
+    squares: std::cell::OnceCell<PlayerSquares>,
+}
+
+impl SearchPlayers {
+    fn refresh(&mut self, game: &Game<'_>) {
+        self.players.clear();
+        self.players.extend(game.level_players_iter());
+        let positions = self
+            .players
+            .iter()
+            .filter(|p| !p.spectator)
+            .map(|p| [p.position.x, p.position.y, p.position.z]);
+        if !self.nearest.iter().copied().eq(positions.clone()) {
+            self.nearest.clear();
+            self.nearest.extend(positions);
+            self.squares.take();
+        }
+    }
+}
+
 /// The game level as natural spawning reads it.
 pub(super) struct GameLevel<'g, 'a> {
     pub(super) game: &'g Game<'a>,
     pub(super) w: MobWorld<'g>,
-    /// Every player in the level ([`Game::level_players`]).
-    pub(super) players: Vec<LevelPlayer>,
-    /// Where the non-spectators among them are (`getNearestPlayer`).
-    pub(super) nearest: Vec<[f64; 3]>,
-    /// `nearest` by square, built when a spawn start first asks with more
-    /// than [`PLAYERS_SCANNED`] players.
-    pub(super) player_squares: std::cell::OnceCell<PlayerSquares>,
+    search: SearchPlayers,
     /// Mobs accepted during this pass, not yet inserted in the game's lists.
     pending: std::cell::RefCell<Vec<PendingMob>>,
     /// UUIDs reserved by configured spawner trees in this pass (both families).
@@ -355,21 +391,38 @@ pub(super) struct GameLevel<'g, 'a> {
     /// The entity types some biome of the level gives a spawn cost (the
     /// nether's few): for any other the cost is none wherever it stands, and
     /// spawning asks for one for every loaded mob each tick.
-    pub(super) costed: Vec<&'g str>,
+    costed: Option<&'g [String]>,
     /// The spawner block whose tick this pass is, told to the spawn checks;
     /// None for natural spawning and the other passes.
     pub(super) spawner: Option<mod_api::Spawner>,
+    /// What the spawner tick decided `isNearPlayer` is, a mod's `spawner_active` included: the
+    /// spawner's own `serverTick` reads it rather than asking again. None outside a spawner tick.
+    pub(super) spawner_active: Option<bool>,
     /// The mob a listened position check created and lent, which the spawn
     /// that follows takes rather than creating it again ([`Checked`]).
     checked: std::cell::RefCell<Option<Checked>>,
+    /// Single-entry cache of the last looked-up chunk: natural spawning makes
+    /// dozens of block, heightmap, light, biome and structure queries in the
+    /// same chunk per pass.
+    last_chunk: std::cell::Cell<Option<((i32, i32), Option<&'g sunrise_client::chunk::Chunk>)>>,
 }
 /// The mob a listened `mob_spawn_position_check` created for its lend, held
 /// until the spawn takes it, and the provisional count before it was
 /// created: a refused check drops the mob and gives the id back, so a refused
 /// attempt leaves the pass as an unlistened one would.
 struct Checked {
-    mob: Mob,
+    body: CheckedBody,
     provisional: u32,
+}
+enum CheckedBody {
+    Fresh(Mob),
+    Identified(Mob, [i32; 4]),
+    Configured(super::persist::SpawnTree),
+}
+struct NaturalSpawn {
+    primary: (Mob, [i32; 4]),
+    passengers: Vec<(Mob, [i32; 4])>,
+    veto_admission: bool,
 }
 const SCANNED_QUERIES: u32 = 8;
 struct PendingMob {
@@ -418,7 +471,23 @@ impl MobBoxes {
             .chain(all.into_iter().flatten().copied())
     }
 }
-impl GameLevel<'_, '_> {
+impl<'g> GameLevel<'g, '_> {
+    /// Every player in the level ([`Game::level_players`]).
+    pub(super) fn players(&self) -> &[LevelPlayer] {
+        &self.search.players
+    }
+    #[inline]
+    fn chunk_at(&self, cx: i32, cz: i32) -> Option<&'g sunrise_client::chunk::Chunk> {
+        let key = (cx, cz);
+        if let Some((cached, chunk)) = self.last_chunk.get()
+            && cached == key
+        {
+            return chunk;
+        }
+        let chunk = self.w.world.chunk_at(cx, cz);
+        self.last_chunk.set(Some((key, chunk)));
+        chunk
+    }
     /// The mobs not removed whose boxes may meet `area` (callers test them).
     fn mobs_near(&self, area: Aabb) -> Box<dyn Iterator<Item = MobBox> + '_> {
         let asked = self.box_queries.get() + 1;
@@ -477,16 +546,22 @@ impl GameLevel<'_, '_> {
         true
     }
     fn biome(&self, x: i32, y: i32, z: i32) -> Option<&BiomeInfo> {
-        Some(world_biomes!(self.game).get(self.game.world.noise_biome(x, y, z)?))
+        Some(self.w.biomes.get(self.noise_biome(x, y, z)?))
     }
-    /// The block whose noise cell `BiomeManager.getBiome` reads.
-    fn zoomed(&self, x: i32, y: i32, z: i32) -> [i32; 3] {
-        let zoom = self.game.streaming.biome_zoom;
-        let [qx, qy, qz] = zoom.quart_at_block(sunrise_core::position::BlockPos::new(x, y, z));
-        [qx << 2, qy << 2, qz << 2]
+    #[inline]
+    fn noise_biome(&self, x: i32, y: i32, z: i32) -> Option<u16> {
+        self.w
+            .world
+            .noise_biome_with_chunk(x, y, z, self.chunk_at(x >> 4, z >> 4))
+    }
+    #[inline]
+    fn light(&self, x: i32, y: i32, z: i32) -> u8 {
+        self.w
+            .world
+            .light_with_chunk(x, y, z, self.chunk_at(x >> 4, z >> 4))
     }
     fn zoomed_biome(&self, x: i32, y: i32, z: i32) -> Option<&BiomeInfo> {
-        let [x, y, z] = self.zoomed(x, y, z);
+        let [x, y, z] = self.game.zoomed_spawn_cell([x, y, z]);
         self.biome(x, y, z)
     }
     /// A provisional id, distinct within the pass and mapped to a real one
@@ -505,62 +580,69 @@ impl GameLevel<'_, '_> {
     /// is the one asked for (`entity` at `position`, facing `yaw`): the spawn
     /// goes on with it rather than creating it again.
     pub(super) fn take_checked(&self, entity: &str, position: [f64; 3], yaw: f32) -> Option<Mob> {
-        let Checked { mob, .. } = self.checked.take()?;
+        let CheckedBody::Fresh(mob) = self.checked.take()?.body else {
+            return None;
+        };
         let at = [mob.position.x, mob.position.y, mob.position.z];
         (mob.kind.id == entity && at == position && mob.yaw == yaw).then_some(mob)
     }
-    /// Creates a mob the spawner accepted, finalized the game's way
-    /// (`finalizeSpawn` on this pass's level, its draws on the spawner's own
-    /// random, between its position draws, as vanilla interleaves them); the
-    /// caller adds it with [`Game::add_spawned`].
+    pub(super) fn take_checked_tree(&self) -> Option<super::persist::SpawnTree> {
+        match self.checked.take()?.body {
+            CheckedBody::Configured(tree) => Some(tree),
+            _ => None,
+        }
+    }
+    fn identified_candidate(
+        &self,
+        entity: &str,
+        [x, y, z]: [f64; 3],
+        yaw: f32,
+    ) -> Option<(Mob, [i32; 4])> {
+        let kind = self.game.res.mob_types().get(entity)?.clone();
+        let (random, uuid) = sunrise_client::mobs::living_random();
+        let mob = Mob::with_random(self.provisional_id(), kind, Vec3::new(x, y, z), yaw, random);
+        Some((mob, uuid))
+    }
+    /// Finalize the actual natural candidate and keep every admitted body's
+    /// constructor identity with it until the level accepts that body.
     fn finalize_spawned<R: RandomSource>(
         &self,
         r: &SpawnRequest,
-        pending: &mut Vec<Mob>,
         random: &mut R,
-    ) -> Option<Spawned> {
-        let mut mob = match self.take_checked(r.entity, r.position, r.yaw) {
-            Some(mob) => mob,
-            None => {
-                let kind = self.game.res.mob_types().get(r.entity)?.clone();
-                let [x, y, z] = r.position;
-                Mob::new(self.provisional_id(), kind, Vec3::new(x, y, z), r.yaw)
-            }
+    ) -> Option<NaturalSpawn> {
+        let (mut mob, uuid) = match self.checked.take().map(|checked| checked.body) {
+            Some(CheckedBody::Identified(mob, uuid)) => (mob, uuid),
+            _ => self.identified_candidate(r.entity, r.position, r.yaw)?,
         };
-        // No group data is threaded through the pack yet: each member starts
-        // without, and finalization reads what a listener leaves.
+        // Live packs do not yet thread group data through their members.
         let mut group = None;
         let (outcome, difficulty) = self
             .game
             .finalize_spawn_event(&mut mob, r.reason, None, &mut group);
-        match outcome {
-            Finalized::Cancelled => return None,
-            Finalized::Skipped => {}
-            Finalized::Done => {
-                let mut level = PassLevel::new(self);
-                let mut cx = sunrise_client::mobs::finalize::Ctx {
-                    level: &mut level,
-                    random,
-                    difficulty,
-                    created: Vec::new(),
-                    jockey_rider: None,
-                };
-                sunrise_client::mobs::finalize::finalize(&mut cx, &mut mob, r.reason, group);
-                for m in cx.created {
-                    self.record_pending(&m);
-                    self.spawned.borrow_mut().push(m);
-                }
-            }
+        let mut passengers = Vec::new();
+        if !outcome.skip_initialization {
+            let mut level = PassLevel::new(self);
+            level.constructor_uuids = Some(Vec::new());
+            let mut cx = sunrise_client::mobs::finalize::Ctx {
+                level: &mut level,
+                random,
+                difficulty,
+                created: Vec::new(),
+                jockey_rider: None,
+            };
+            sunrise_client::mobs::finalize::finalize(&mut cx, &mut mob, r.reason, group);
+            let created = cx.created;
+            let constructed = level.constructor_uuids.unwrap();
+            passengers.extend(created.into_iter().map(|body| {
+                // Finalization can discard a proposal or admit it as a vehicle.
+                let uuid = constructed.iter().find(|(id, _)| *id == body.id).unwrap().1;
+                (body, uuid)
+            }));
         }
-        let vanilla = spawn_selection::max_cluster_size(r.species);
-        let cluster_size = self
-            .game
-            .spawn_cluster_size(&mut mob, r.reason, None, vanilla);
-        self.record_pending(&mob);
-        pending.push(mob);
-        Some(Spawned {
-            school: true,
-            cluster_size,
+        Some(NaturalSpawn {
+            primary: (mob, uuid),
+            passengers,
+            veto_admission: outcome.veto_admission,
         })
     }
 }
@@ -570,10 +652,15 @@ impl GameLevel<'_, '_> {
 /// for [`Game::add_spawned`], as the pass holds the game immutably.
 pub(super) struct PassLevel<'a, 'g, 'h> {
     l: &'a GameLevel<'g, 'h>,
+    /// Only an admission path consuming constructor identities needs this list.
+    constructor_uuids: Option<Vec<(u32, [i32; 4])>>,
 }
 impl<'a, 'g, 'h> PassLevel<'a, 'g, 'h> {
     pub(super) fn new(l: &'a GameLevel<'g, 'h>) -> Self {
-        Self { l }
+        Self {
+            l,
+            constructor_uuids: None,
+        }
     }
 }
 impl sunrise_client::mobs::finalize::FinalizeLevel for PassLevel<'_, '_, '_> {
@@ -597,10 +684,39 @@ impl sunrise_client::mobs::finalize::FinalizeLevel for PassLevel<'_, '_, '_> {
         let Some(b) = self.l.biome(pos[0], pos[1], pos[2]) else {
             return false;
         };
+        if let Some(tags) = self
+            .l
+            .game
+            .world_tables
+            .as_ref()
+            .and_then(|t| t.pack_tags.get("worldgen/biome"))
+        {
+            return tags
+                .get(tag)
+                .is_some_and(|members| members.contains(&b.name));
+        }
         self.l.game.res.mob_data().biome_has(tag, &b.name)
     }
     fn structures_with_piece_at(&self, pos: [i32; 3]) -> Vec<String> {
         self.l.game.structures_at(pos)
+    }
+    fn structure_tag(&self, tag: &str, structure: &str) -> bool {
+        if let Some(tags) = self
+            .l
+            .game
+            .world_tables
+            .as_ref()
+            .and_then(|t| t.pack_tags.get("worldgen/structure"))
+        {
+            return tags
+                .get(tag)
+                .is_some_and(|members| members.contains(structure));
+        }
+        self.l
+            .game
+            .structure_tag(tag)
+            .iter()
+            .any(|m| m == structure)
     }
     fn moon_phase(&self, _: [i32; 3]) -> usize {
         self.l.game.finalize_moon_phase()
@@ -632,18 +748,21 @@ impl sunrise_client::mobs::finalize::FinalizeLevel for PassLevel<'_, '_, '_> {
             return None;
         }
         let t = t.clone();
-        Some(Mob::new(
-            self.l.provisional_id(),
-            t,
-            sunrise_core::geometry::Vec3::ZERO,
-            0.0,
-        ))
+        let id = self.l.provisional_id();
+        Some(if let Some(uuids) = &mut self.constructor_uuids {
+            let (random, uuid) = sunrise_client::mobs::living_random();
+            uuids.push((id, uuid));
+            Mob::with_random(id, t, Vec3::ZERO, 0.0, random)
+        } else {
+            Mob::new(id, t, Vec3::ZERO, 0.0)
+        })
     }
     fn spawn_data(&self) -> sunrise_client::mobs::finalize::SpawnData<'_> {
         self.l.game.finalize_spawn_data()
     }
 }
 impl SpawnLevel for GameLevel<'_, '_> {
+    #[inline]
     fn placement_check(
         &self,
         entity: &str,
@@ -664,7 +783,6 @@ impl SpawnLevel for GameLevel<'_, '_> {
                 pos: BlockPos::new(at[0], at[1], at[2]),
                 default_result,
                 level: self.level_ref(),
-                spawner: self.spawner,
                 random,
                 result: &mut result,
             },
@@ -675,131 +793,166 @@ impl SpawnLevel for GameLevel<'_, '_> {
             _ => default_result,
         }
     }
+    #[inline]
     fn within_world_border(&self, x: i32, z: i32) -> bool {
         self.game
             .border
             .geometry()
             .is_within_bounds(f64::from(x), f64::from(z), 0.0)
     }
+    #[inline]
     fn state(&self, x: i32, y: i32, z: i32) -> BlockStateId {
-        self.w.state(x, y, z)
+        self.w
+            .world
+            .block_with_chunk(x, y, z, self.chunk_at(x >> 4, z >> 4))
     }
+    #[inline]
     fn facts(&self) -> &BlockFacts {
         self.w.facts
     }
+    #[inline]
     fn mob_data(&self) -> &MobData {
         self.w.data
     }
+    #[inline]
     fn block_tag(&self, tag: &str, block: &str) -> bool {
         self.w.block_tag(tag, block)
     }
     // Level.getBiome: the zoomed biome.
+    #[inline]
     fn biome_tag(&self, tag: &str, x: i32, y: i32, z: i32) -> bool {
-        let [x, y, z] = self.zoomed(x, y, z);
-        self.w.biome_tag(tag, x, y, z)
+        let [x, y, z] = self.game.zoomed_spawn_cell([x, y, z]);
+        self.w.spawn_biome_tag(tag, self.noise_biome(x, y, z))
     }
+    #[inline]
     fn sky_light(&self, x: i32, y: i32, z: i32) -> i32 {
-        self.w.sky_light(x, y, z)
+        self.w.spawn_sky_light(|| self.light(x, y, z))
     }
+    #[inline]
     fn block_light(&self, x: i32, y: i32, z: i32) -> i32 {
-        self.w.block_light(x, y, z)
+        sunrise_client::mobs::spawn_rules::spawn_block_light(self.light(x, y, z))
     }
+    #[inline]
     fn sky_darken(&self) -> i32 {
         SpawnLevel::sky_darken(&self.w)
     }
+    #[inline]
     fn thundering(&self) -> bool {
         self.w.thundering
     }
+    #[inline]
     fn sea_level(&self) -> i32 {
         self.w.sea_level()
     }
+    #[inline]
     fn world_surface(&self, x: i32, z: i32) -> i32 {
-        self.w.world_surface(x, z)
+        self.w
+            .spawn_world_surface(x, z, self.chunk_at(x >> 4, z >> 4))
     }
+    #[inline]
     fn peaceful(&self) -> bool {
         self.w.peaceful()
     }
+    #[inline]
     fn dimension_type(&self) -> &DimensionFacts {
         self.game.dimension_type()
     }
+    #[inline]
     fn surface_slime_chance(&self, x: i32, y: i32, z: i32) -> f32 {
         self.w.surface_slime_chance(x, y, z)
     }
+    #[inline]
     fn world_seed(&self) -> i64 {
         self.w.world_seed
     }
     /// `getNearestPlayer(x, y, z, distance, true)`, over every player.
+    #[inline]
     fn player_near(&self, x: f64, y: f64, z: f64, distance: f64) -> bool {
-        self.players.iter().any(|p| {
+        self.search.players.iter().any(|p| {
             p.alive && !p.creative && !p.spectator && p.distance_sqr(x, y, z) < distance * distance
         })
     }
 }
 impl NaturalLevel for GameLevel<'_, '_> {
+    #[inline]
     fn spawn_hooks(&self) -> bool {
         !mod_api::__private::mods().is_empty()
     }
-    /// Vanilla creates the mob before its position checks, so with a listener
-    /// the mob a fresh spawn is about to create is created here, the way the
-    /// spawn creates it, lent to the listeners, and handed on to the spawn
-    /// ([`GameLevel::take_checked`]); a refused check drops it
-    /// ([`NaturalLevel::position_refused`]). Creating it draws nothing from
-    /// the level's random. A site that does not create the mob fresh (a
-    /// spawner's entity data, chunk generation's packs) lends its kind and
-    /// position only. With no listener nothing is created.
+    /// Lend the actual candidate, then hand it on to the spawn or drop it on refusal.
+    /// Constructing the body does not draw from the level's random.
+    #[inline]
     fn position_check(
         &self,
         entity: &str,
         reason: Reason,
         at: [f64; 3],
-        pending: spawn_selection::Pending,
+        pending: spawn_selection::Pending<'_>,
     ) -> SpawnCheck {
         let mut result = SpawnCheck::Default;
-        if !mod_api::__private::listened(mod_api::HookId::MobSpawnPositionCheck) {
+        let listened = mod_api::__private::listened(mod_api::HookId::MobSpawnPositionCheck);
+        let identified = matches!(reason, Reason::Natural | Reason::ChunkGeneration);
+        if !listened && !identified {
             return result;
         }
         // An earlier check's mob that no spawn took is not this one.
         self.checked.take();
         let provisional = self.provisional.get();
-        let mut mob = pending
-            .fresh
-            .then(|| self.game.res.mob_types().get(entity))
-            .flatten()
-            .map(|kind| {
+        let body = if let Some(tag) = pending.configured {
+            self.game
+                .decode_spawner_tree(tag, at, pending.yaw)
+                .map(CheckedBody::Configured)
+        } else if identified {
+            self.identified_candidate(entity, at, pending.yaw)
+                .map(|(mob, uuid)| CheckedBody::Identified(mob, uuid))
+        } else {
+            self.game.res.mob_types().get(entity).map(|kind| {
                 let [x, y, z] = at;
-                Mob::new(
+                CheckedBody::Fresh(Mob::new(
                     self.provisional_id(),
                     kind.clone(),
                     Vec3::new(x, y, z),
                     pending.yaw,
-                )
-            });
-        let level = self.level_ref();
-        self.game
-            .lend_unspawned(entity, at, mob.as_mut(), |handle, _| {
-                self.game.native_mob_spawn_position_check(
-                    mod_api::__private::MobSpawnPositionCheckCall {
-                        dimension: self.game.dim.id(),
-                        kind: entity,
-                        reason,
-                        pos: at,
-                        level,
-                        spawner: self.spawner,
-                        mob: handle,
-                        result: &mut result,
-                    },
-                );
-            });
-        if let Some(mob) = mob {
-            *self.checked.borrow_mut() = Some(Checked { mob, provisional });
+                ))
+            })
+        };
+        let Some(mut body) = body else {
+            return SpawnCheck::Fail;
+        };
+        if !listened {
+            *self.checked.borrow_mut() = Some(Checked { body, provisional });
+            return result;
         }
+        let mob = match &mut body {
+            CheckedBody::Fresh(mob) | CheckedBody::Identified(mob, _) => mob,
+            CheckedBody::Configured(tree) => match tree.root_mob() {
+                Some(mob) => mob,
+                None => return SpawnCheck::Fail,
+            },
+        };
+        let level = self.level_ref();
+        let at = [mob.position.x, mob.position.y, mob.position.z];
+        let borrowed = self.game.borrowed_unspawned_mob(entity, at, Some(mob));
+        self.game
+            .native_mob_spawn_position_check(mod_api::__private::MobSpawnPositionCheckCall {
+                dimension: self.game.dim.id(),
+                kind: entity,
+                reason,
+                pos: at,
+                level,
+                spawner: self.spawner,
+                mob: mod_api::UnspawnedMobView::new(&borrowed),
+                result: &mut result,
+            });
+        *self.checked.borrow_mut() = Some(Checked { body, provisional });
         result
     }
+    #[inline]
     fn position_refused(&self) {
         if let Some(refused) = self.checked.take() {
             self.provisional.set(refused.provisional);
         }
     }
+    #[inline]
     fn potential_spawns(&self, category: Category, pos: [i32; 3], entries: &mut Vec<SpawnEntry>) {
         let mut canceled = false;
         self.game.native_potential_spawns(
@@ -815,35 +968,41 @@ impl NaturalLevel for GameLevel<'_, '_> {
     }
     // `Level.getMinY` and `getMaxY`: the level's own range (0..255 in vanilla's
     // Nether and End), not the widened column its chunks hold.
+    #[inline]
     fn min_y(&self) -> i32 {
         self.w.world.shape.min_y
     }
+    #[inline]
     fn max_y(&self) -> i32 {
         self.w.world.shape.max_y() - 1
     }
+    #[inline]
     fn ambient_light(&self) -> f32 {
         self.game.dimension_type().ambient_light
     }
+    #[inline]
     fn has_ceiling(&self) -> bool {
         self.w.world.shape.has_ceiling
     }
+    #[inline]
     fn mob_type(&self, entity: &str) -> Option<&MobType> {
         self.game.res.mob_types().get(entity).map(|t| t.as_ref())
     }
     // The `natural_mob_spawns` attribute reads the zoomed biome
     // (fullResolutionBiomes), the spawn probability the noise cell.
+    #[inline]
     fn biome_spawns(&self, x: i32, y: i32, z: i32) -> Option<&HashMap<String, Vec<SpawnEntry>>> {
         self.zoomed_biome(x, y, z).map(|b| &b.spawns)
     }
+    #[inline]
     fn spawn_cost(&self, entity: &str, x: i32, y: i32, z: i32) -> Option<SpawnCost> {
-        if !self.costed.contains(&entity) {
-            return None;
-        }
-        self.zoomed_biome(x, y, z)?.spawn_costs.get(entity).copied()
+        self.game.spawn_cost_at(self.costed, entity, [x, y, z])
     }
+    #[inline]
     fn creature_probability(&self, x: i32, y: i32, z: i32) -> f32 {
         self.biome(x, y, z).map_or(0.1, |b| b.creature_probability)
     }
+    #[inline]
     fn structures_at(
         &self,
         x: i32,
@@ -851,6 +1010,12 @@ impl NaturalLevel for GameLevel<'_, '_> {
         z: i32,
         wanted: &dyn Fn(&str) -> bool,
     ) -> Vec<StructureAt> {
+        if self
+            .chunk_at(x >> 4, z >> 4)
+            .is_none_or(|c| c.structure_refs.is_empty())
+        {
+            return Vec::new();
+        }
         self.game
             .structures_reaching_where([x, y, z], wanted)
             .into_iter()
@@ -861,20 +1026,27 @@ impl NaturalLevel for GameLevel<'_, '_> {
             })
             .collect()
     }
+    #[inline]
     fn structure_spawns(&self) -> &StructureSpawns {
         &self.game.structure_spawns
     }
+    #[inline]
     fn nearest_player_positions(&self) -> &[[f64; 3]] {
-        &self.nearest
+        &self.search.nearest
     }
+    #[inline]
     fn player_positions_near(&self, x: f64, z: f64, extent: f64, out: &mut Vec<[f64; 3]>) {
-        if self.nearest.len() <= PLAYERS_SCANNED {
-            out.extend_from_slice(&self.nearest);
+        let search = &self.search;
+        if search.nearest.len() <= PLAYERS_SCANNED {
+            out.extend_from_slice(&search.nearest);
             return;
         }
-        let squares = (self.player_squares).get_or_init(|| PlayerSquares::new(&self.nearest));
+        let squares = search
+            .squares
+            .get_or_init(|| PlayerSquares::new(&search.nearest));
         squares.near(x, z, extent, out);
     }
+    #[inline]
     fn respawn(&self) -> Option<[i32; 3]> {
         // The world spawn point lives in the overworld.
         if self.game.dim != Dim::Overworld {
@@ -889,11 +1061,13 @@ impl NaturalLevel for GameLevel<'_, '_> {
         })
     }
     /// `ServerLevel.canSpawnEntitiesInChunk`: the whole chunk is inside the border.
+    #[inline]
     fn can_spawn_in_chunk(&self, cx: i32, cz: i32) -> bool {
-        self.game.world.chunks.contains_key(&(cx, cz))
+        self.chunk_at(cx, cz).is_some()
             && self.within_world_border(cx << 4, cz << 4)
             && self.within_world_border((cx << 4).wrapping_add(15), (cz << 4).wrapping_add(15))
     }
+    #[inline]
     fn no_collision(&self, bounds: Aabb) -> bool {
         self.game.no_spawn_collision(bounds, |query| {
             self.mobs_near(query)
@@ -907,6 +1081,7 @@ impl NaturalLevel for GameLevel<'_, '_> {
     }
     /// `EntityGetter.isUnobstructed`: the fresh mob cannot already have a
     /// shared root vehicle or be a candidate in the level's entity query.
+    #[inline]
     fn unobstructed(&self, bounds: Aabb) -> bool {
         let Ok(shape) = VoxelShape::from_box(bounds) else {
             return false;
@@ -917,6 +1092,7 @@ impl NaturalLevel for GameLevel<'_, '_> {
         let obstructs = |bounds| spawn_selection::blocks_spawn_shape(&shape, query, bounds);
         let entities = crate::game::entity::entity_lists_of!(self.game);
         !self
+            .search
             .players
             .iter()
             .any(|p| !p.spectator && obstructs(p.bounds))
@@ -938,6 +1114,7 @@ impl NaturalLevel for GameLevel<'_, '_> {
                 )
                 .any(obstructs)
     }
+    #[inline]
     fn spawn_mobs(&self) -> bool {
         self.game
             .ui
@@ -947,13 +1124,14 @@ impl NaturalLevel for GameLevel<'_, '_> {
     /// WORLD_SURFACE (every spawn attempt's) is the chunk's kept heightmap.
     /// The others are scanned down the column: sections of air alone are
     /// skipped (air counts for no heightmap). An unloaded column reads as air.
+    #[inline]
     fn heightmap(&self, kind: Heightmap, x: i32, z: i32) -> i32 {
         let world = self.w.world;
         // A heightmap reads at least the level's minimum Y (an empty column of a level
         // narrower than its chunks' column would read the column's bottom).
         let min_y = world.shape.min_y;
         if kind == Heightmap::WorldSurface {
-            return self.w.world_surface(x, z).max(min_y);
+            return self.world_surface(x, z).max(min_y);
         }
         world
             .chunks
@@ -965,6 +1143,7 @@ impl NaturalLevel for GameLevel<'_, '_> {
             })
             .map_or(min_y, |y| (y + 1).max(min_y))
     }
+    #[inline]
     fn pathfindable_land(&self, x: i32, y: i32, z: i32) -> bool {
         self.w
             .data
@@ -973,18 +1152,29 @@ impl NaturalLevel for GameLevel<'_, '_> {
 }
 impl sunrise_client::mobs::spawner::SpawnerLevel for GameLevel<'_, '_> {
     /// `Level.hasNearbyAlivePlayer`, over every player.
+    #[inline]
     fn alive_player_near(&self, x: f64, y: f64, z: f64, range: f64) -> bool {
-        self.players.iter().any(|p| p.alive_near(x, y, z, range))
+        self.search
+            .players
+            .iter()
+            .any(|p| p.alive_near(x, y, z, range))
     }
+    #[inline]
+    fn spawner_active(&self, near: bool) -> bool {
+        self.spawner_active.unwrap_or(near)
+    }
+    #[inline]
     fn spawner_blocks_work(&self) -> bool {
         self.game
             .ui
             .rules
             .bool_at(sunrise_client::gamerules::vanilla::SPAWNER_BLOCKS_WORK)
     }
+    #[inline]
     fn spawner_type(&self, id: &str) -> Option<sunrise_client::mobs::spawner::SpawnerTypeFacts> {
         self.game.res.rest().spawner_types.get(id).copied()
     }
+    #[inline]
     fn count_entities(&self, id: &str, bounds: Aabb) -> usize {
         let mobs = self
             .mobs_near(bounds)
@@ -999,16 +1189,19 @@ impl sunrise_client::mobs::spawner::SpawnerLevel for GameLevel<'_, '_> {
         mobs + pending
     }
 }
-/// Every entity type with a spawn cost in some biome, each once.
-fn spawn_cost_types(biomes: &sunrise_client::biome::Biomes) -> Vec<&str> {
-    let mut types: Vec<&str> = Vec::new();
-    for t in biomes.list.iter().flat_map(|b| b.spawn_costs.keys()) {
-        if !types.contains(&t.as_str()) {
-            types.push(t);
-        }
+fn remap_spawn_links(mob: &mut Mob, links: &HashMap<u32, u32>) {
+    if let Some(mount) = mob.extra.mount.as_mut()
+        && let Some(&id) = links.get(mount)
+    {
+        *mount = id;
     }
-    types
+    if let Some(rider) = mob.extra.rider.as_mut()
+        && let Some(&id) = links.get(rider)
+    {
+        *rider = id;
+    }
 }
+
 impl<'a> Game<'a> {
     /// `CollisionGetter.noCollision(AABB)`: with no source there is no border
     /// shape. `EntityGetter.getEntityCollisions` queries the inflated area.
@@ -1054,19 +1247,53 @@ impl<'a> Game<'a> {
             .copied()
             .unwrap_or_default()
     }
+    fn spawn_biome(&self, [x, y, z]: [i32; 3]) -> Option<&BiomeInfo> {
+        Some(world_biomes!(self).get(self.world.noise_biome(x, y, z)?))
+    }
+
+    /// The block whose noise cell `BiomeManager.getBiome` reads.
+    fn zoomed_spawn_cell(&self, [x, y, z]: [i32; 3]) -> [i32; 3] {
+        let [qx, qy, qz] = self
+            .streaming
+            .biome_zoom
+            .quart_at_block(BlockPos::new(x, y, z));
+        [qx << 2, qy << 2, qz << 2]
+    }
+
+    fn zoomed_spawn_biome(&self, block: [i32; 3]) -> Option<&BiomeInfo> {
+        self.spawn_biome(self.zoomed_spawn_cell(block))
+    }
+
+    fn spawn_cost_at(
+        &self,
+        costed: Option<&[String]>,
+        entity: &str,
+        block: [i32; 3],
+    ) -> Option<SpawnCost> {
+        if costed.is_some_and(|types| !types.iter().any(|kind| kind == entity)) {
+            return None;
+        }
+        self.zoomed_spawn_biome(block)?
+            .spawn_costs
+            .get(entity)
+            .copied()
+    }
+
     pub(super) fn natural_level(&self) -> GameLevel<'_, 'a> {
-        let players = self.level_players();
-        let nearest = players
-            .iter()
-            .filter(|p| !p.spectator)
-            .map(|p| [p.position.x, p.position.y, p.position.z])
-            .collect();
+        let mut search = SearchPlayers::default();
+        search.refresh(self);
+        self.natural_search_level(search, None)
+    }
+
+    fn natural_search_level<'g>(
+        &'g self,
+        search: SearchPlayers,
+        costed: Option<&'g [String]>,
+    ) -> GameLevel<'g, 'a> {
         GameLevel {
             game: self,
             w: self.mob_world_base(&[]),
-            players,
-            nearest,
-            player_squares: Default::default(),
+            search,
             pending: Default::default(),
             pending_uuids: Default::default(),
             spawned: Default::default(),
@@ -1074,9 +1301,11 @@ impl<'a> Game<'a> {
             provisional: Default::default(),
             boxes: Default::default(),
             box_queries: Default::default(),
-            costed: spawn_cost_types(world_biomes!(self)),
+            costed,
             spawner: None,
+            spawner_active: None,
             checked: Default::default(),
+            last_chunk: Default::default(),
         }
     }
     /// Gives a spawn pass's provisional mobs (the `u32::MAX - n` ids
@@ -1090,26 +1319,12 @@ impl<'a> Game<'a> {
         rides: &[(u32, u32)],
     ) -> HashMap<u32, u32> {
         let mut links: HashMap<u32, u32> = HashMap::new();
-        for group in groups.iter_mut() {
-            for mob in group.iter_mut() {
-                self.next_entity += 1;
-                links.insert(mob.id, self.next_entity);
-                mob.id = self.next_entity;
-            }
-        }
-        for group in groups.iter_mut() {
-            for mob in group.iter_mut() {
-                if let Some(m) = mob.extra.mount.as_mut()
-                    && let Some(&id) = links.get(m)
-                {
-                    *m = id;
-                }
-                if let Some(m) = mob.extra.rider.as_mut()
-                    && let Some(&id) = links.get(m)
-                {
-                    *m = id;
-                }
-            }
+        self.assign_spawn_ids(
+            groups.iter_mut().flat_map(|group| group.iter_mut()),
+            &mut links,
+        );
+        for mob in groups.iter_mut().flat_map(|group| group.iter_mut()) {
+            remap_spawn_links(mob, &links);
         }
         for (chicken, rider) in rides {
             let rider = links.get(rider).copied().unwrap_or(*rider);
@@ -1120,17 +1335,30 @@ impl<'a> Game<'a> {
         }
         links
     }
+    fn assign_spawn_ids<'m>(
+        &mut self,
+        bodies: impl Iterator<Item = &'m mut Mob>,
+        links: &mut HashMap<u32, u32>,
+    ) {
+        for body in bodies {
+            self.next_entity += 1;
+            links.insert(body.id, self.next_entity);
+            body.id = self.next_entity;
+        }
+    }
+
     /// Adds the mobs a spawn pass created: ids and the links that need them
     /// (finalizeSpawn's mounts ride by id, and its chickens carry their
     /// zombie). Every mob arrives with a provisional id; real ones are
     /// assigned in spawn order and the links rewritten.
+    #[cfg(test)]
     pub(super) fn add_spawned(
         &mut self,
         pending: Vec<Mob>,
         created: Vec<Mob>,
         rides: Vec<(u32, u32)>,
         persistent: bool,
-    ) {
+    ) -> Vec<u32> {
         let _save_lease = sunrise_client::join_seq::visibility::PassLease::enter();
         let mut pending = pending;
         let mut created = created;
@@ -1138,14 +1366,16 @@ impl<'a> Game<'a> {
             m.persistent = persistent;
         }
         self.resolve_spawn_ids([&mut pending, &mut created], &rides);
+        let ids = pending.iter().map(|m| m.id).collect();
         for mob in pending {
             self.mobs.push(mob);
-            self.native_mobs_joined(self.mobs.len() - 1, true);
+            self.admit_new_mobs(self.mobs.len() - 1);
         }
         for mob in created {
             self.mobs.push(mob);
-            self.native_mobs_joined(self.mobs.len() - 1, true);
+            self.admit_new_mobs(self.mobs.len() - 1);
         }
+        ids
     }
     /// Every player in the level in place: the local player, and the LAN
     /// guests or server players in it.
@@ -1296,14 +1526,18 @@ impl<'a> Game<'a> {
         }
         let from = self.lan_synced_from();
         sunrise_client::spans::time("spawn_raids", || self.tick_raids());
-        sunrise_client::spans::time("spawn_natural", || self.spawn_natural());
-        // ServerChunkCache.tickChunks: the custom spawners tick only with spawn_mobs.
-        if self
-            .ui
-            .rules
-            .bool_at(sunrise_client::gamerules::vanilla::SPAWN_MOBS)
-        {
-            sunrise_client::spans::time("spawn_custom", || self.tick_custom_spawners());
+        // `ServerChunkCache.tickChunks` skips the entire chunk-spawning phase
+        // (natural spawning and custom spawners) in debug worlds.
+        if !self.world_debug {
+            sunrise_client::spans::time("spawn_natural", || self.spawn_natural());
+            // ServerChunkCache.tickChunks: the custom spawners tick only with spawn_mobs.
+            if self
+                .ui
+                .rules
+                .bool_at(sunrise_client::gamerules::vanilla::SPAWN_MOBS)
+            {
+                sunrise_client::spans::time("spawn_custom", || self.tick_custom_spawners());
+            }
         }
         self.lan_synced_since(from);
     }
@@ -1345,10 +1579,22 @@ impl<'a> Game<'a> {
             &mut self.world.random,
             sunrise_core::random::LevelRandom::for_level(LegacyRandom::new(0)),
         );
-        let mut pending = Vec::new();
-        let last_state;
-        let extras = {
-            let level = self.natural_level();
+        scratch.pass.players.refresh(self);
+        scratch.pass.costed.clear();
+        for kind in world_biomes!(self)
+            .list
+            .iter()
+            .flat_map(|b| b.spawn_costs.keys())
+        {
+            if !scratch.pass.costed.contains(kind) {
+                scratch.pass.costed.push(kind.clone());
+            }
+        }
+        let (mut state, categories) = {
+            let level = self.natural_search_level(
+                std::mem::take(&mut scratch.pass.players),
+                Some(&scratch.pass.costed),
+            );
             laps.lap("sn_level");
             let counted: Vec<Counted> = self
                 .mobs
@@ -1366,7 +1612,7 @@ impl<'a> Game<'a> {
                         || sunrise_client::mobs::ai::requires_custom_persistence(m),
                 })
                 .collect();
-            let players = players
+            let spawn_players: Vec<SpawnPlayer> = players
                 .iter()
                 .map(|p| SpawnPlayer {
                     position: [p.position.x, p.position.y, p.position.z],
@@ -1375,54 +1621,274 @@ impl<'a> Game<'a> {
                 .collect();
             laps.lap("sn_materialize");
             let buffers = std::mem::take(&mut scratch.spawn_buffers);
-            let mut state = self.natural_spawn_state(&level, spawnable, players, buffers, &counted);
+            let state =
+                self.natural_spawn_state(&level, spawnable, spawn_players, buffers, &counted);
+            scratch.pass.players = level.search;
             laps.lap("sn_state");
-            last_state = state.counts();
             let categories = self.natural_categories(&state);
             laps.lap("sn_categories");
-            // Util.shuffle.
-            for i in (1..scratch.candidates.len()).rev() {
-                let j = random.next_int_bound(i as i32 + 1).unwrap_or(0) as usize;
-                scratch.candidates.swap(i, j);
-            }
-            laps.lap("sn_shuffle");
-            spawn_selection::attempt_counters(false);
-            if !categories.is_empty() {
-                for chunk in scratch.candidates.drain(..) {
-                    // ServerChunkCache.tickSpawningChunk gates the initial chunk too.
-                    if !level.can_spawn_in_chunk(chunk.0, chunk.1) {
-                        continue;
-                    }
-                    let mut spawn = |l: &GameLevel, r: &SpawnRequest, rng: &mut LevelRandom| {
-                        l.finalize_spawned(r, &mut pending, rng)
-                    };
-                    sunrise_threads::work::set_chunk(chunk.0, chunk.1);
-                    spawn_selection::spawn_for_chunk(
-                        &level,
-                        &mut random,
-                        &mut state,
-                        &categories,
-                        chunk,
-                        &mut spawn,
-                        &mut |_| {},
-                    );
-                }
-            }
-            scratch.spawn_buffers = state.into_parts().1;
-            let created = std::mem::take(&mut *level.spawned.borrow_mut());
-            let rides = std::mem::take(&mut *level.rides.borrow_mut());
-            (created, rides)
+            (state, categories)
         };
+        // ServerChunkCache.lastSpawnState, for the debug overlay.
+        let last_state = state.counts();
+        // Util.shuffle.
+        for i in (1..scratch.candidates.len()).rev() {
+            let j = random.next_int_bound(i as i32 + 1).unwrap_or(0) as usize;
+            scratch.candidates.swap(i, j);
+        }
+        laps.lap("sn_shuffle");
+        spawn_selection::attempt_counters(false);
+        let pass = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if !categories.is_empty() {
+                self.run_natural_spawn_pass(
+                    &categories,
+                    scratch.candidates.drain(..),
+                    &mut random,
+                    &mut state,
+                    &mut scratch.pass,
+                );
+            }
+        }));
         sunrise_threads::work::clear_work();
         spawn_selection::attempt_counters(true);
         laps.lap("sn_attempts");
         self.world.random = random;
-        // ServerChunkCache.lastSpawnState, for the debug overlay.
         self.spawn_counts.insert(self.dim, last_state);
-        let (created, rides) = extras;
-        self.add_spawned(pending, created, rides, false);
+        scratch.spawn_buffers = state.into_parts().1;
         self.spawn_scratch = scratch;
+        if let Err(payload) = pass {
+            std::panic::resume_unwind(payload);
+        }
         laps.lap("sn_finalize");
+    }
+
+    /// Resume the same chunk/category search after each admission, borrowing a single view for
+    /// all attempts that fail before insertion. A join can change the world's rows and blocks.
+    fn run_natural_spawn_pass(
+        &mut self,
+        categories: &[Category],
+        mut chunks: impl Iterator<Item = (i32, i32)>,
+        random: &mut LevelRandom,
+        state: &mut SpawnState,
+        scratch: &mut NaturalPassScratch,
+    ) {
+        let mut chunk = (0, 0);
+        let mut category_index = categories.len();
+        let mut cluster: Option<SpawnCluster> = None;
+        let mut provisional = 0;
+        let may_edit_players = mod_api::__private::listened(mod_api::HookId::EntityJoinLevel)
+            || mod_api::__private::listened(mod_api::HookId::EntityConstructing)
+            || mod_api::__private::listened(mod_api::HookId::FinalizeSpawn)
+            || mod_api::__private::listened(mod_api::HookId::MobSpawnPlacementCheck)
+            || mod_api::__private::listened(mod_api::HookId::MobSpawnPositionCheck);
+        let mut trace = |_: spawn_selection::Event<'_>| {};
+        let _save_lease = sunrise_client::join_seq::visibility::PassLease::enter();
+        loop {
+            let next = {
+                let level = self.natural_search_level(
+                    std::mem::take(&mut scratch.players),
+                    Some(&scratch.costed),
+                );
+                level.provisional.set(provisional);
+                let next = loop {
+                    if let Some(search) = cluster.as_mut() {
+                        if let Some(candidate) =
+                            search.next_candidate(&level, random, state, &mut trace)
+                        {
+                            if let Some(spawn) =
+                                level.finalize_spawned(&search.request(candidate), random)
+                            {
+                                provisional = level.provisional.get();
+                                break Some((candidate, spawn));
+                            }
+                            continue;
+                        }
+                        cluster.take().unwrap().finish(state);
+                    }
+                    if let Some(&category) = categories.get(category_index) {
+                        category_index += 1;
+                        if state.can_spawn_local(category, chunk.0, chunk.1) {
+                            let start = spawn_selection::spawn_start(&level, random, chunk);
+                            if start[1] > level.min_y() {
+                                cluster = SpawnCluster::new(&level, state, category, chunk, start);
+                            }
+                        }
+                    } else {
+                        let Some(next) = chunks.find(|&(x, z)| level.can_spawn_in_chunk(x, z))
+                        else {
+                            break None;
+                        };
+                        chunk = next;
+                        category_index = 0;
+                        sunrise_threads::work::set_chunk(chunk.0, chunk.1);
+                    }
+                };
+                scratch.players = level.search;
+                let rides = level.rides.into_inner();
+                next.map(|(candidate, spawn)| (candidate, spawn, rides))
+            };
+            let Some((candidate, spawn, rides)) = next else {
+                break;
+            };
+            self.complete_natural_spawn(
+                cluster.as_mut().unwrap(),
+                candidate,
+                spawn,
+                &rides,
+                &mut scratch.ids,
+                random,
+                state,
+                &scratch.costed,
+            );
+            if may_edit_players {
+                scratch.players.refresh(self);
+            }
+        }
+    }
+
+    /// Natural spawns still need the primary body after a veto or a transfer out of this level.
+    /// Take ownership of just that row before clearing its live state.
+    pub(super) fn detach_natural_candidate(&mut self, id: u32, index: usize) -> bool {
+        if !matches!(
+            self.creatures.natural_admission.as_ref(),
+            Some(NaturalAdmission::Placed { id: candidate, .. }) if *candidate == id
+        ) {
+            return false;
+        }
+        let mut mob = self.mobs.remove(index);
+        mob.extra.spawn_tags = self.tags_of(super::commands::Target::Mob(id));
+        mob.join = JoinSeq::UNJOINED;
+        self.creatures.natural_admission = Some(NaturalAdmission::Detached(Box::new(mob)));
+        true
+    }
+
+    /// NaturalSpawner.spawnCategoryForPosition: perform admission, then the spawn state's
+    /// callback, then ask the actual candidate for the cluster limit before resuming the search.
+    #[allow(clippy::too_many_arguments)]
+    fn complete_natural_spawn(
+        &mut self,
+        cluster: &mut SpawnCluster,
+        candidate: spawn_selection::SpawnCandidate,
+        spawn: NaturalSpawn,
+        rides: &[(u32, u32)],
+        ids: &mut HashMap<u32, u32>,
+        random: &mut LevelRandom,
+        state: &mut SpawnState,
+        costed: &[String],
+    ) {
+        let NaturalSpawn {
+            primary: (mut mob, uuid),
+            mut passengers,
+            veto_admission,
+        } = spawn;
+        mob.persistent = false;
+        let provisional = mob.id;
+        ids.clear();
+        if passengers.is_empty() {
+            self.next_entity += 1;
+            mob.id = self.next_entity;
+        } else {
+            self.assign_spawn_ids(
+                std::iter::once(&mut mob).chain(passengers.iter_mut().map(|(body, _)| body)),
+                ids,
+            );
+            for body in std::iter::once(&mut mob).chain(passengers.iter_mut().map(|(body, _)| body))
+            {
+                remap_spawn_links(body, ids);
+            }
+        }
+        let id = mob.id;
+        // A real Host callback reads and writes the level stream between selection draws.
+        std::mem::swap(&mut self.world.random, random);
+        let saved = self.creatures.natural_admission.take();
+        let admitted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // ServerLevelAccessor.addFreshEntityWithPassengers inserts one body at a time.
+            // Until its turn, a passenger is only owned by this iterator.
+            for (body, uuid) in std::iter::once((mob, uuid)).chain(passengers) {
+                let body_id = body.id;
+                if body_id == id && veto_admission {
+                    self.creatures.natural_admission =
+                        Some(NaturalAdmission::Detached(Box::new(body)));
+                    continue;
+                }
+                let index = self.mobs.len();
+                self.persist.uuids.insert(body_id, uuid);
+                self.mobs.push(body);
+                let join = self.mobs[index].join;
+                if body_id == id {
+                    self.creatures.natural_admission = Some(NaturalAdmission::Placed {
+                        level: self.dim,
+                        id,
+                        join,
+                    });
+                }
+                for &(chicken, rider) in rides {
+                    let resolved = if rider == provisional {
+                        Some(id)
+                    } else {
+                        ids.get(&rider).copied()
+                    };
+                    if resolved == Some(body_id)
+                        && let Some(chicken) = self.mobs.iter_mut().find(|m| m.id == chicken)
+                    {
+                        chicken.extra.jockey = true;
+                        chicken.extra.rider = Some(body_id);
+                    }
+                }
+                self.join_spawn_tags(index);
+                self.native_joins_flush(false, 0);
+            }
+            let outcome = self
+                .creatures
+                .natural_admission
+                .take()
+                .expect("primary was offered");
+            let view = match &outcome {
+                NaturalAdmission::Placed { level, id, join } if *level == self.dim => {
+                    let mob = if join.is_joined() {
+                        self.mobs.locate(*join).map(|i| &self.mobs[i])
+                    } else {
+                        self.persist
+                            .off_level
+                            .get(id)
+                            .and_then(super::persist::OffLevel::as_mob)
+                    };
+                    mob.map(|mob| (mob, Some(*id)))
+                }
+                NaturalAdmission::Placed { level, id, join } => self
+                    .levels
+                    .parked
+                    .get(level)
+                    .and_then(|owner| owner.natural_spawn_mob(*id, *join))
+                    .map(|(mob, _)| (mob, Some(*id))),
+                NaturalAdmission::Detached(mob) => Some((mob.as_ref(), Some(mob.id))),
+            };
+            if let Some((mob, mob_id)) = view {
+                let at = [mob.position.x, mob.position.y, mob.position.z];
+                let kind = mob.kind.id.clone();
+                let vanilla = spawn_selection::max_cluster_size(mob.species());
+                cluster.after_spawn(
+                    |entity, block| self.spawn_cost_at(Some(costed), entity, block),
+                    state,
+                    candidate,
+                    at.map(|x| x.floor() as i32),
+                    &mut |_| {},
+                );
+                let mob_ref = mod_api::MobRef::new(mod_api::EntityRef::new(
+                    self.lend_epoch(),
+                    mob_id.unwrap_or(id),
+                ));
+                let limit = self.spawn_cluster_size(mob_ref, &kind, vanilla);
+                cluster.check_limit(candidate, limit, true);
+            } else {
+                log::error!("natural spawn admission lost candidate {id}");
+            }
+        }));
+        self.creatures.natural_admission = saved;
+        std::mem::swap(&mut self.world.random, random);
+        if let Err(payload) = admitted {
+            std::panic::resume_unwind(payload);
+        }
     }
     /// `NoiseBasedChunkGenerator.spawnOriginalMobs`: creature packs for a
     /// freshly generated chunk, from the biome at its corner column's top,
@@ -1457,8 +1923,8 @@ impl<'a> Game<'a> {
         } else {
             return;
         };
-        for nbt in added {
-            self.load_mob(Tag::Compound(nbt), None);
+        for pack in added {
+            self.install_generated_mobs(pack);
         }
     }
     fn generation_creatures<Q: RandomSource + Clone + 'static>(
@@ -1467,7 +1933,7 @@ impl<'a> Game<'a> {
         cz: i32,
         terrain: &VanillaTerrain,
         region: &mut Q,
-    ) -> Vec<Compound> {
+    ) -> Vec<Vec<GeneratedMob>> {
         let mut random = WorldgenRandom::new(LegacyRandom::new(0));
         random.set_decoration_seed(self.level.seed, cx * 16, cz * 16);
         let mut added = Vec::new();
@@ -1482,10 +1948,30 @@ impl<'a> Game<'a> {
             let [x, y, z] = r.position;
             let (bx, by, bz) = (x.floor() as i32, y.floor() as i32, z.floor() as i32);
             let biome = l.zoomed_biome(bx, by, bz).map_or("", |b| b.name.as_str());
-            let at = Vec3::new(x, y, z);
-            match terrain.spawn_generated(r.entity, at, r.yaw, biome, region, &mut group) {
-                Some(nbt) => {
-                    added.push(nbt);
+            let Some((mob, uuid)) = (match l.checked.take().map(|c| c.body) {
+                Some(CheckedBody::Identified(mob, uuid)) => Some((mob, uuid)),
+                _ => l.identified_candidate(r.entity, r.position, r.yaw),
+            }) else {
+                return false;
+            };
+            match terrain.spawn_generated(
+                mob,
+                uuid,
+                biome,
+                region,
+                &mut group,
+                |mob, difficulty, group| {
+                    l.game.finalize_spawn_with_difficulty(
+                        mob,
+                        Reason::ChunkGeneration,
+                        None,
+                        difficulty,
+                        group,
+                    )
+                },
+            ) {
+                Some(pack) => {
+                    added.push(pack);
                     true
                 }
                 None => false,
@@ -1511,6 +1997,7 @@ mod spawn_obstruction_fixture;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sunrise_core::nbt::{Compound, Tag};
 
     /// `Level.hasNearbyAlivePlayer` as spawners ask it, against the same
     /// test on every player's full record (`level_players`).
@@ -1659,11 +2146,11 @@ mod tests {
                 (0, 0),
                 std::sync::Arc::new(sunrise_client::chunk::Chunk::empty(0, 0)),
             );
-            game.border.set_center([8.0, 8.0]);
-            game.border.set_size(16.0);
+            game.border.set_center([8.0, 8.0]).unwrap();
+            game.border.set_size(16.0).unwrap();
             assert!(game.natural_level().can_spawn_in_chunk(0, 0));
             assert!(!game.natural_level().can_spawn_in_chunk(1, 0)); // unloaded
-            game.border.set_size(15.5);
+            game.border.set_size(15.5).unwrap();
             assert!(!game.natural_level().can_spawn_in_chunk(0, 0)); // partial
             assert!(game.natural_level().within_world_border(1, 1));
             assert!(!game.natural_level().within_world_border(0, 0));
@@ -1671,7 +2158,7 @@ mod tests {
                 assert!(level.within_world_border(BlockPos::new(1, 64, 1)));
                 assert!(!level.within_world_border(BlockPos::new(0, 64, 0)));
             });
-            game.border.set_size(16.5);
+            game.border.set_size(16.5).unwrap();
             assert!(game.natural_level().can_spawn_in_chunk(0, 0));
             assert!(game.mob_world_base(&[]).within_world_border(0, 0));
             assert!(!game.mob_world_base(&[]).within_world_border(17, 0));
@@ -1700,8 +2187,8 @@ mod tests {
             }
             game.tickets.update(None);
             game.player = Some(PlayerMotion::new(game.motion, Vec3::new(8.5, 64.0, 8.5)).unwrap());
-            game.border.set_center([8.0, 8.0]);
-            game.border.set_size(2.0);
+            game.border.set_center([8.0, 8.0]).unwrap();
+            game.border.set_size(2.0).unwrap();
             let mut scratch = SpawnScratch::default();
             game.spawning_chunks(&game.level_players(), &mut scratch);
             assert_eq!(scratch.candidates, vec![(0, 0)]);
@@ -1712,7 +2199,7 @@ mod tests {
             );
             // A contained chunk must actually reach the spawning pass, so an
             // empty category list cannot satisfy the rejected-chunk assertion.
-            game.border.set_size(64.0);
+            game.border.set_size(64.0).unwrap();
             game.world.random.set_seed(12345);
             game.spawn_natural();
             assert_ne!(
@@ -1720,7 +2207,7 @@ mod tests {
                 LegacyRandom::new(12345).next_long()
             );
             game.world.inhabited.clear();
-            game.border.set_size(2.0);
+            game.border.set_size(2.0).unwrap();
             game.world.random.set_seed(12345);
             game.spawn_natural();
             // No shuffle draw for one candidate, and no attempt draws for a
@@ -1988,7 +2475,7 @@ mod tests {
                     [8.5, 64.0, 8.5],
                     spawn_selection::Pending {
                         yaw: 0.0,
-                        fresh: true,
+                        configured: None,
                     },
                     || {
                         random.next_int();
@@ -2049,7 +2536,24 @@ mod tests {
         kind: String,
         level: mod_api::LevelRef,
         spawner: Option<mod_api::Spawner>,
+        cart: Option<CartReads>,
         mob: Option<MobReads>,
+    }
+    type CartReads = (Option<String>, Option<[f64; 3]>);
+    fn cart_reads(
+        host: &dyn mod_api::Host,
+        spawner: Option<mod_api::Spawner>,
+    ) -> Option<CartReads> {
+        let mod_api::Spawner::Minecart { entity } = spawner? else {
+            return None;
+        };
+        Some((
+            entity
+                .kind(host)
+                .and_then(|key| key.id(host))
+                .map(|id| id.as_str().to_owned()),
+            entity.position(host),
+        ))
     }
     type MobReads = (
         Result<mod_api::Identifier, mod_api::UnspawnedMobError>,
@@ -2074,7 +2578,8 @@ mod tests {
                 hook: "placement",
                 kind: event.kind.to_owned(),
                 level: event.level,
-                spawner: event.spawner,
+                spawner: None,
+                cart: None,
                 mob: None,
             });
         }
@@ -2085,9 +2590,9 @@ mod tests {
         ) {
             let mob = event.mob;
             let reads = (
-                mob.kind(host),
-                mob.position(host),
-                mob.equipment(host, mod_api::EquipmentSlot::Head)
+                mob.kind(),
+                mob.position(),
+                mob.equipment(mod_api::EquipmentSlot::Head)
                     .map(|e| e.is_none()),
             );
             self.log.lock().unwrap().push(Heard {
@@ -2095,9 +2600,34 @@ mod tests {
                 kind: event.kind.to_owned(),
                 level: event.level,
                 spawner: event.spawner,
+                cart: cart_reads(host, event.spawner),
                 mob: Some(reads),
             });
             *event.result = self.answer;
+        }
+        fn finalize_spawn(
+            &self,
+            host: &dyn mod_api::Host,
+            event: &mut mod_api::FinalizeSpawnEvent<'_>,
+        ) -> mod_api::Flow {
+            let level = host.level(event.dimension).unwrap();
+            let reads = (
+                event.mob.kind(),
+                event.mob.position(),
+                event
+                    .mob
+                    .equipment(mod_api::EquipmentSlot::Head)
+                    .map(|e| e.is_none()),
+            );
+            self.log.lock().unwrap().push(Heard {
+                hook: "finalize",
+                kind: event.kind.to_owned(),
+                level,
+                spawner: event.spawner,
+                cart: cart_reads(host, event.spawner),
+                mob: Some(reads),
+            });
+            mod_api::Flow::Continue
         }
     }
     /// Gives every natural monster position one entry: the sulfur cube, whose spawn predicate
@@ -2186,7 +2716,18 @@ mod tests {
     #[test]
     #[ignore = "daily"]
     fn natural_spawn_checks_lend_the_mob_and_keep_the_draws() {
-        use super::super::native_entity_refs::tests::with_game;
+        use super::super::native_entity_refs::tests::{run_fresh_cases, with_game};
+        use sunrise_client::random_source::set_thread_uniquifier;
+        if run_fresh_cases(
+            &format!(
+                "{}::natural_spawn_checks_lend_the_mob_and_keep_the_draws",
+                module_path!().split_once("::").unwrap().1
+            ),
+            "SUNRISE_TEST_SEEDS",
+            &["1"],
+        ) {
+            return;
+        }
         with_game(|game| {
             spawn_check_world(game, Vec3::new(0.5, 64.0, 0.5));
             let stone = game.pack.assets.registry.default_state("minecraft:stone");
@@ -2197,9 +2738,11 @@ mod tests {
             }
             let level = level_of(game);
             let attempt = |game: &mut Game<'_>| {
+                set_thread_uniquifier(12345).unwrap();
                 let mut random = LegacyRandom::new(42);
                 let natural = game.natural_level();
                 let players = natural
+                    .search
                     .players
                     .iter()
                     .map(|p| SpawnPlayer {
@@ -2210,7 +2753,10 @@ mod tests {
                 let mut state = SpawnState::new(&natural, 289, players, &[], |_, _| true);
                 let mut pending = Vec::new();
                 let mut spawn = |l: &GameLevel, r: &SpawnRequest, rng: &mut LegacyRandom| {
-                    l.finalize_spawned(r, &mut pending, rng)
+                    let (mob, _) = l.finalize_spawned(r, rng)?.primary;
+                    l.record_pending(&mob);
+                    pending.push(mob);
+                    Some(spawn_selection::Spawned { school: true })
                 };
                 spawn_selection::spawn_category_for_position(
                     &natural,
@@ -2220,12 +2766,12 @@ mod tests {
                     (2, 2),
                     [40, 64, 40],
                     &mut spawn,
+                    &mut |_, _, vanilla| vanilla,
                     &mut |_| {},
                 );
                 assert!(natural.checked.borrow().is_none(), "no created mob is left");
                 let used = natural.provisional.get();
                 drop(natural);
-                assert!(game.lent_mobs.borrow().is_empty(), "every lend ended");
                 (
                     pending.iter().map(snap).collect::<Vec<_>>(),
                     used,
@@ -2274,16 +2820,29 @@ mod tests {
         });
     }
 
-    /// A spawner block: both checks hear `Spawner::Block` at the block; a `Default` listener on
-    /// the position check leaves the draws, the real ids and the mobs that join as with none
-    /// (the lent mob is the one that joins); a `Fail` adds no mob, uses no entity id and leaves
-    /// no tracking entry. Spawn data with entity data lends the kind and position only.
+    /// A spawner block and a spawner minecart: placement checks carry no spawner (NeoForge's
+    /// `SpawnPlacementCheck`), while position checks (`PositionCheck.getSpawner`) and
+    /// `finalize_spawn` (`FinalizeSpawnEvent.getSpawner`) carry `Spawner::Block` for a block
+    /// spawner and `Spawner::Minecart` for a spawner minecart; a `Default` listener on the
+    /// position check leaves the draws, the real ids and the mobs that join as with none (the lent
+    /// mob is the one that joins); a `Fail` adds no mob, uses no entity id and leaves no tracking
+    /// entry. Configured spawn data lends a fully loaded mob.
     #[test]
     #[ignore = "daily"]
     fn spawner_checks_tell_the_block_and_keep_the_draws() {
-        use super::super::native_entity_refs::tests::with_game;
+        use super::super::native_entity_refs::tests::{run_fresh_cases, with_game};
         use sunrise_client::chunk::block_entity::Next;
         use sunrise_client::mobs::spawner::{SpawnData, SpawnDataExt};
+        if run_fresh_cases(
+            &format!(
+                "{}::spawner_checks_tell_the_block_and_keep_the_draws",
+                module_path!().split_once("::").unwrap().1
+            ),
+            "SUNRISE_BLOCK_SPAWNER_CHECKS",
+            &["checks"],
+        ) {
+            return;
+        }
         with_game(|game| {
             spawn_check_world(game, Vec3::new(0.5, 70.0, 0.5));
             let level = level_of(game);
@@ -2307,7 +2866,6 @@ mod tests {
                 };
                 game.server_tick_spawner_of(key, &mut spawner, None)
                     .unwrap();
-                assert!(game.lent_mobs.borrow().is_empty(), "every lend ended");
                 let added: Vec<Snap> = game.mobs[mobs..].iter().map(snap).collect();
                 let out = (
                     added,
@@ -2327,10 +2885,17 @@ mod tests {
                 with_checks(Some(SpawnCheck::Default), Vec::new, || tick(game, None));
             assert_eq!(listened, unlistened, "same draws, ids and mobs");
             assert!(heard.iter().any(|h| h.hook == "placement"));
+            assert!(heard.iter().any(|h| h.hook == "position"));
+            assert!(heard.iter().any(|h| h.hook == "finalize"));
             for h in &heard {
+                let expected = if h.hook == "placement" {
+                    None
+                } else {
+                    Some(block)
+                };
                 assert_eq!(
                     (h.kind.as_str(), h.level, h.spawner),
-                    (SULFUR_CUBE, level, Some(block))
+                    (SULFUR_CUBE, level, expected)
                 );
                 if let Some(reads) = &h.mob {
                     assert_eq!(reads.2, Ok(true), "a fresh spawn lends the whole mob");
@@ -2351,29 +2916,139 @@ mod tests {
                 (0, 0, 0),
                 "no mob, no entity id, no tracking entry"
             );
-            // Entity data: the mob is loaded after the tick, so the lend is its kind and position.
-            let health = || Some(("Health", Tag::Float(5.0f32.to_bits())));
-            let (_, heard) =
-                with_checks(Some(SpawnCheck::Default), Vec::new, || tick(game, health()));
-            let lent: Vec<_> = heard.iter().filter_map(|h| h.mob.clone()).collect();
-            assert!(!lent.is_empty());
-            for (kind, position, head) in lent {
-                assert_eq!(kind, Ok(mod_api::Identifier::parse(SULFUR_CUBE).unwrap()));
+            let helmet = || {
+                Some((
+                    "equipment",
+                    Tag::compound([(
+                        "head",
+                        Tag::compound([
+                            ("id", Tag::String("minecraft:iron_helmet".into())),
+                            ("count", Tag::Int(1)),
+                        ]),
+                    )]),
+                ))
+            };
+            let (configured, heard) =
+                with_checks(Some(SpawnCheck::Default), Vec::new, || tick(game, helmet()));
+            assert!(!configured.0.is_empty());
+            // The configured entity is loaded before the position check, so the check reads the
+            // equipment its data gave, as the finalization does.
+            for (hook, expected) in [("position", Ok(false)), ("finalize", Ok(false))] {
+                let event = heard.iter().find(|h| h.hook == hook).unwrap();
+                let (kind, position, head) = event.mob.as_ref().unwrap();
+                assert_eq!(*kind, Ok(mod_api::Identifier::parse(SULFUR_CUBE).unwrap()));
                 assert!(position.is_ok());
-                assert_eq!(head, Err(mod_api::UnspawnedMobError::Unsupported));
+                assert_eq!(*head, expected);
+                assert_eq!(event.spawner, Some(block));
             }
+            let cancel = || {
+                vec![mod_api::ModEntry::new(
+                    "cancel-configured",
+                    Box::new(FinalizeMod(FinalizeAnswer::StopSpawn)),
+                )]
+            };
+            let (cancelled, heard) =
+                with_checks(Some(SpawnCheck::Default), cancel, || tick(game, helmet()));
+            assert!(heard.iter().any(|h| h.hook == "finalize"));
+            assert_eq!((cancelled.0.len(), cancelled.1, cancelled.2), (0, 0, 0));
         });
     }
 
-    /// A trial spawner: the position check (obstruction only) and the placement check hear
-    /// `Spawner::Trial` at the block; a `Default` listener leaves the draws, ids and mob as with
-    /// none; a `Fail` adds no mob and no tracking entry.
+    #[test]
+    #[ignore = "daily"]
+    fn spawner_minecart_hooks_read_the_joined_cart_during_its_tick() {
+        use super::super::native_entity_refs::tests::with_game;
+        use sunrise_client::chunk::block_entity::Next;
+        use sunrise_client::mobs::spawner::{SpawnData, SpawnDataExt, Spawner};
+        use sunrise_client::ticket_levels::{Sources, ViewedTicket};
+        with_game(|game| {
+            spawn_check_world(game, Vec3::new(0.5, 70.0, 0.5));
+            game.tickets.update(Some(Sources {
+                viewed: vec![ViewedTicket {
+                    center: (0, 0),
+                    radius: 0,
+                    ticking: true,
+                }],
+                ..Default::default()
+            }));
+            let start = [2.5, 70.0, 2.5];
+            let cart_kind = "minecraft:spawner_minecart";
+            let Some(super::super::commands::Target::Cart(id)) =
+                game.summon_with_nbt(cart_kind, start, "{}").unwrap()
+            else {
+                panic!("spawner minecart joined");
+            };
+            let owner = game.entity(id).unwrap();
+            let entity = [
+                ("id".into(), Tag::String(SULFUR_CUBE.into())),
+                (
+                    "Pos".into(),
+                    Tag::List(
+                        [4.5f64, 70.0, 4.5]
+                            .map(|n| Tag::Double(n.to_bits()))
+                            .to_vec(),
+                    ),
+                ),
+                (
+                    "equipment".into(),
+                    Tag::compound([(
+                        "head",
+                        Tag::compound([
+                            ("id", Tag::String("minecraft:iron_helmet".into())),
+                            ("count", Tag::Int(1)),
+                        ]),
+                    )]),
+                ),
+            ]
+            .into();
+            game.carts.update(0, |cart| {
+                cart.spawner = Some(Box::new(Spawner {
+                    spawn_delay: 0,
+                    spawn_count: 1,
+                    next: Some(Next::Own(SpawnData::new(entity, None, None))),
+                    ..Default::default()
+                }));
+            });
+            game.world.random.set_seed(7);
+            let (_, heard) = with_checks(Some(SpawnCheck::Default), Vec::new, || game.tick_carts());
+            let position = game.carts[0].position.components();
+            assert_ne!(position, start, "the cart moved before its spawner ticked");
+            for hook in ["position", "finalize"] {
+                let event = heard.iter().find(|h| h.hook == hook).unwrap();
+                assert_eq!(
+                    event.spawner,
+                    Some(mod_api::Spawner::Minecart { entity: owner })
+                );
+                assert_eq!(event.cart, Some((Some(cart_kind.into()), Some(position))));
+            }
+            // The configured entity's equipment is readable in the position check, on the
+            // minecart path too: the tree the spawner loaded is the one lent.
+            let event = heard.iter().find(|h| h.hook == "position").unwrap();
+            assert_eq!(event.mob.as_ref().unwrap().2, Ok(false), "a helmet is worn");
+        });
+    }
+
+    /// A trial spawner: `mob_spawn_placement_check` runs with no spawner (NeoForge's
+    /// `SpawnPlacementCheck`), `mob_spawn_position_check` does not run (NeoForge's `TrialSpawner`
+    /// is not a `BaseSpawner`), and `finalize_spawn` hears `Spawner::Trial` at the block; a
+    /// `Default` listener leaves the draws, ids and mob as with none; a `Fail` placement check
+    /// adds no mob and no tracking entry.
     #[test]
     #[ignore = "daily"]
     fn trial_spawner_checks_tell_the_block_and_keep_the_draws() {
-        use super::super::native_entity_refs::tests::with_game;
+        use super::super::native_entity_refs::tests::{run_fresh_cases, with_game};
         use sunrise_client::mobs::spawner::{SpawnData, SpawnDataExt};
         use sunrise_client::mobs::trial_spawner::{TrialSpawner, TrialState};
+        if run_fresh_cases(
+            &format!(
+                "{}::trial_spawner_checks_tell_the_block_and_keep_the_draws",
+                module_path!().split_once("::").unwrap().1
+            ),
+            "SUNRISE_TRIAL_SPAWNER_CHECKS",
+            &["checks"],
+        ) {
+            return;
+        }
         with_game(|game| {
             spawn_check_world(game, Vec3::new(0.5, 70.0, 0.5));
             let level = level_of(game);
@@ -2381,19 +3056,21 @@ mod tests {
             let trial = mod_api::Spawner::Trial {
                 pos: mod_api::BlockPos::new(2, 70, 2),
             };
-            let tick = |game: &mut Game<'_>| {
+            let tick = |game: &mut Game<'_>, configured: bool| {
                 let (mobs, entities, tracked) =
                     (game.mobs.len(), game.next_entity, game.persist.uuids.len());
                 game.world.random.set_seed(9);
                 let mut entity = Compound::default();
                 entity.insert("id".into(), Tag::String(SULFUR_CUBE.into()));
+                if configured {
+                    entity.insert("Health".into(), Tag::Float(5.0f32.to_bits()));
+                }
                 let mut spawner = TrialSpawner {
                     next_spawn_data: Some(SpawnData::new(entity, None, None)),
                     ..Default::default()
                 };
                 game.server_tick_trial_spawner(key, &mut spawner, TrialState::Active, false)
                     .unwrap();
-                assert!(game.lent_mobs.borrow().is_empty(), "every lend ended");
                 let added: Vec<Snap> = game.mobs[mobs..].iter().map(snap).collect();
                 let out = (
                     added,
@@ -2407,31 +3084,161 @@ mod tests {
                 game.next_entity = entities;
                 out
             };
-            let (unlistened, _) = with_checks(None, Vec::new, || tick(game));
+            let (unlistened, _) = with_checks(None, Vec::new, || tick(game, false));
             assert_eq!(unlistened.0.len(), 1, "the trial spawner spawns one mob");
             assert!(unlistened.0[0].4, "a trial spawner's mob is persistent");
-            let (listened, heard) = with_checks(Some(SpawnCheck::Default), Vec::new, || tick(game));
+            let (listened, heard) =
+                with_checks(Some(SpawnCheck::Default), Vec::new, || tick(game, false));
             assert_eq!(listened, unlistened, "same draws, ids and mob");
-            let lent = (
-                Ok(mod_api::Identifier::parse(SULFUR_CUBE).unwrap()),
-                Ok(unlistened.0[0].2),
-                Ok(true),
-            );
-            assert!(heard.iter().any(|h| h.mob.as_ref() == Some(&lent)));
+            assert!(heard.iter().all(|h| h.hook != "position"));
             assert!(heard.iter().any(|h| h.hook == "placement"));
+            assert!(
+                !heard.iter().any(|h| h.hook == "position"),
+                "trial spawners do not fire PositionCheck"
+            );
+            assert!(heard.iter().any(|h| h.hook == "finalize"));
             for h in &heard {
+                let expected = if h.hook == "finalize" {
+                    Some(trial)
+                } else {
+                    None
+                };
                 assert_eq!(
                     (h.kind.as_str(), h.level, h.spawner),
-                    (SULFUR_CUBE, level, Some(trial))
+                    (SULFUR_CUBE, level, expected)
                 );
             }
-            let (refused, heard) = with_checks(Some(SpawnCheck::Fail), Vec::new, || tick(game));
-            assert!(heard.iter().any(|h| h.hook == "position"));
+            // A trial spawner has no position event, so only a placement refusal stops it.
+            let refuse = || {
+                vec![mod_api::ModEntry::new(
+                    "refuse-placement",
+                    Box::new(ChecksMod(SpawnCheck::Fail)),
+                )]
+            };
+            let (refused, heard) =
+                with_checks(Some(SpawnCheck::Default), refuse, || tick(game, false));
+            assert!(!heard.is_empty());
+            assert!(heard.iter().all(|h| h.hook == "placement"));
             assert_eq!(
                 (refused.0.len(), refused.1, refused.2),
                 (0, 0, 0),
                 "no mob, no entity id, no tracking entry"
             );
+            let (configured, heard) =
+                with_checks(Some(SpawnCheck::Default), Vec::new, || tick(game, true));
+            assert_eq!(configured.0.len(), 1);
+            assert!(
+                configured.0[0].4,
+                "a configured trial mob is persistent too"
+            );
+            let event = heard.iter().find(|h| h.hook == "finalize").unwrap();
+            assert_eq!(event.spawner, Some(trial));
+            assert_eq!(event.mob.as_ref().unwrap().2, Ok(true));
+        });
+    }
+
+    type NameLog = std::sync::Arc<std::sync::Mutex<Vec<(&'static str, Option<mod_api::Text>)>>>;
+
+    struct ConfiguredMobListener {
+        veto: bool,
+        heard: NameLog,
+    }
+
+    #[mod_api::__subscriptions]
+    impl mod_api::Hooks for ConfiguredMobListener {
+        fn mob_spawn_position_check(
+            &self,
+            _: &dyn mod_api::Host,
+            event: &mut mod_api::MobSpawnPositionCheckEvent<'_>,
+        ) {
+            self.heard
+                .lock()
+                .unwrap()
+                .push(("position", event.mob.custom_name().unwrap()));
+        }
+
+        fn finalize_spawn(
+            &self,
+            _: &dyn mod_api::Host,
+            event: &mut mod_api::FinalizeSpawnEvent<'_>,
+        ) -> mod_api::Flow {
+            self.heard
+                .lock()
+                .unwrap()
+                .push(("finalize", event.mob.custom_name().unwrap()));
+            event
+                .mob
+                .set_custom_name(Some(mod_api::Text::literal("edited")))
+                .unwrap();
+            event.spawn_cancelled = self.veto;
+            mod_api::Flow::Continue
+        }
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn configured_spawner_lends_and_finalizes_its_loaded_body() {
+        use super::super::native_entity_refs::tests::{run_fresh_cases, with_game};
+        use sunrise_client::chunk::block_entity::Next;
+        use sunrise_client::mobs::spawner::{SpawnData, SpawnDataExt};
+        const FLAG: &str = "SUNRISE_CONFIGURED_SPAWNER_LEND";
+        if run_fresh_cases(
+            &format!(
+                "{}::configured_spawner_lends_and_finalizes_its_loaded_body",
+                module_path!().split_once("::").unwrap().1
+            ),
+            FLAG,
+            &["keep", "veto"],
+        ) {
+            return;
+        }
+        let veto = std::env::var(FLAG).unwrap() == "veto";
+        with_game(|game| {
+            spawn_check_world(game, Vec3::new(0.5, 70.0, 0.5));
+            game.world.random.set_seed(7);
+            let before = game.mobs.len();
+            let uuid_count = game.persist.uuids.len();
+            let mut entity = Compound::default();
+            entity.insert("id".into(), Tag::String(SULFUR_CUBE.into()));
+            entity.insert("CustomName".into(), Tag::String("configured".into()));
+            entity.insert("Health".into(), Tag::Float(5.0_f32.to_bits()));
+            let mut spawner = sunrise_client::mobs::spawner::Spawner {
+                spawn_delay: 0,
+                spawn_count: 1,
+                next: Some(Next::Own(SpawnData::new(entity, None, None))),
+                ..Default::default()
+            };
+            let heard = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            mod_platform::testing::with_mods(
+                vec![mod_api::ModEntry::new(
+                    "configured-spawner",
+                    Box::new(ConfiguredMobListener {
+                        veto,
+                        heard: heard.clone(),
+                    }),
+                )]
+                .into(),
+                || {
+                    game.server_tick_spawner_of((2, 70, 2), &mut spawner, None)
+                        .unwrap()
+                },
+            );
+            let name = || Some(mod_api::Text::literal("configured"));
+            assert_eq!(
+                *heard.lock().unwrap(),
+                [("position", name()), ("finalize", name())]
+            );
+            if veto {
+                assert_eq!(game.mobs.len(), before);
+                assert_eq!(game.persist.uuids.len(), uuid_count);
+            } else {
+                assert_eq!(game.mobs.len(), before + 1);
+                let mob = &game.mobs[before];
+                assert_eq!(mob.custom_name.as_deref(), Some("edited"));
+                // No `Size`: AbstractCubeMob.readAdditionalSaveData sets size 1, whose maximum
+                // health of 4 clamps the saved 5 (LivingEntity.setHealth).
+                assert_eq!(mob.health.to_bits(), 4.0_f32.to_bits());
+            }
         });
     }
 
@@ -2441,6 +3248,8 @@ mod tests {
         Pass,
         SkipFinalize,
         StopSpawn,
+        StopAgeableSpawn,
+        SkipAndStop,
     }
     struct FinalizeMod(FinalizeAnswer);
     #[mod_api::__subscriptions]
@@ -2454,58 +3263,297 @@ mod tests {
                 FinalizeAnswer::Pass => {}
                 FinalizeAnswer::SkipFinalize => return mod_api::Flow::Cancel,
                 FinalizeAnswer::StopSpawn => event.spawn_cancelled = true,
+                FinalizeAnswer::StopAgeableSpawn => {
+                    let mut group = mod_api::AgeableGroup::new(false, 0.0);
+                    group.size = i32::MAX;
+                    *event.group = Some(mod_api::SpawnGroup::Ageable(group));
+                    event.spawn_cancelled = true;
+                }
+                FinalizeAnswer::SkipAndStop => {
+                    event.spawn_cancelled = true;
+                    return mod_api::Flow::Cancel;
+                }
             }
             mod_api::Flow::Continue
         }
     }
 
+    /// On spawners, `spawn_cancelled` vetoes admission after vanilla finalization
+    /// (when unconfigured and not cancelled with `Flow::Cancel`), trial persistence,
+    /// and any configured equipment table roll (NeoForge's
+    /// `EventHooks.finalizeMobSpawnSpawner`, `BaseSpawner.serverTick`,
+    /// `TrialSpawner.spawnMob`, and `NeoForgeEventHandler.builtinMobSpawnBlocker`).
+    #[test]
+    #[ignore = "daily"]
+    fn configured_spawner_veto_rolls_equipment_without_joining() {
+        use super::super::native_entity_refs::tests::with_game;
+        use sunrise_client::chunk::block_entity::{CustomSpawnRules, Next};
+        use sunrise_client::mobs::spawner::{SpawnData, SpawnDataExt, Spawner};
+        use sunrise_client::mobs::trial_spawner::{TrialSpawner, TrialState};
+        use sunrise_client::random_sequences::RandomSequences;
+
+        with_game(|game| {
+            spawn_check_world(game, Vec3::new(0.5, 70.0, 0.5));
+            game.load_server_loot();
+            game.level.seed = 42;
+            let key = (2, 70, 2);
+            let equipment = Tag::compound([
+                (
+                    "loot_table",
+                    Tag::String("minecraft:equipment/trial_chamber_melee".into()),
+                ),
+                ("slot_drop_chances", Tag::Float(0.0f32.to_bits())),
+            ]);
+            let empty_sequences = RandomSequences::default().to_nbt();
+
+            let run_block = |game: &mut Game<'_>,
+                             kind: &str,
+                             configured: bool,
+                             with_equipment: bool,
+                             answer: Option<FinalizeAnswer>| {
+                let (mobs, entities, tracked) =
+                    (game.mobs.len(), game.next_entity, game.persist.uuids.len());
+                game.rand_sequences = RandomSequences::default();
+                game.world.random.set_seed(7);
+                let mut entity = Compound::default();
+                entity.insert("id".into(), Tag::String(kind.into()));
+                if configured {
+                    entity.insert("Health".into(), Tag::Float(5.0f32.to_bits()));
+                }
+                // BaseSpawner.serverTick uses custom light rules in place of regular spawn rules.
+                // Use the full SpawnData.CustomSpawnRules.LIGHT_RANGE for the cow fixture.
+                let rules = (kind == "minecraft:cow").then_some(CustomSpawnRules {
+                    block: (0, 15),
+                    sky: (0, 15),
+                });
+                let mut spawner = Spawner {
+                    spawn_delay: 0,
+                    spawn_count: 1,
+                    next: Some(Next::Own(SpawnData::new(
+                        entity,
+                        rules,
+                        with_equipment.then(|| equipment.clone()),
+                    ))),
+                    ..Default::default()
+                };
+                let mut go = |game: &mut Game<'_>| {
+                    game.server_tick_spawner_of(key, &mut spawner, None)
+                        .unwrap();
+                };
+                match answer {
+                    None => go(game),
+                    Some(a) => mod_platform::testing::with_mods(
+                        vec![mod_api::ModEntry::new("finalize", Box::new(FinalizeMod(a)))].into(),
+                        || go(game),
+                    ),
+                }
+                let out = (
+                    game.mobs.len() - mobs,
+                    game.next_entity - entities,
+                    game.persist.uuids.len() - tracked,
+                    game.rand_sequences.to_nbt(),
+                    game.world.random.next_int(),
+                );
+                for m in game.mobs.drain(mobs..) {
+                    game.persist.uuids.remove(&m.id);
+                }
+                game.next_entity = entities;
+                out
+            };
+
+            let joined = run_block(game, SULFUR_CUBE, true, true, None);
+            assert_eq!(joined.0, 1, "configured block spawner spawns one mob");
+            assert_ne!(
+                joined.3, empty_sequences,
+                "configured equipment table rolled its random sequence"
+            );
+            let vetoed = run_block(
+                game,
+                SULFUR_CUBE,
+                true,
+                true,
+                Some(FinalizeAnswer::StopSpawn),
+            );
+            assert_eq!(
+                (vetoed.0, vetoed.1, vetoed.2),
+                (0, 0, 0),
+                "spawn_cancelled vetoes admission"
+            );
+            assert_eq!(
+                vetoed.3, joined.3,
+                "spawn_cancelled preserves the configured equipment table roll"
+            );
+
+            // Unconfigured block spawner: `spawn_cancelled` alone still runs vanilla
+            // finalization before admission veto; `Flow::Cancel` skips finalization.
+            let plain_joined = run_block(game, SULFUR_CUBE, false, false, None);
+            assert_eq!(plain_joined.0, 1);
+            let plain_vetoed = run_block(
+                game,
+                SULFUR_CUBE,
+                false,
+                false,
+                Some(FinalizeAnswer::StopSpawn),
+            );
+            assert_eq!((plain_vetoed.0, plain_vetoed.1, plain_vetoed.2), (0, 0, 0));
+            assert_eq!(
+                plain_vetoed.4, plain_joined.4,
+                "spawn_cancelled without Flow::Cancel preserves vanilla finalization draws"
+            );
+            let plain_skipped = run_block(
+                game,
+                SULFUR_CUBE,
+                false,
+                false,
+                Some(FinalizeAnswer::SkipAndStop),
+            );
+            assert_eq!(
+                (plain_skipped.0, plain_skipped.1, plain_skipped.2),
+                (0, 0, 0)
+            );
+            assert_ne!(
+                plain_skipped.4, plain_joined.4,
+                "Flow::Cancel skips vanilla finalization draws"
+            );
+
+            let cow_joined = run_block(game, "minecraft:cow", false, false, None);
+            assert_eq!(cow_joined.0, 1);
+            let cow_vetoed = run_block(
+                game,
+                "minecraft:cow",
+                false,
+                false,
+                Some(FinalizeAnswer::StopAgeableSpawn),
+            );
+            assert_eq!((cow_vetoed.0, cow_vetoed.1, cow_vetoed.2), (0, 0, 0));
+            assert_eq!(
+                cow_vetoed.4, cow_joined.4,
+                "an ageable group at the Java int limit still finalizes before the veto"
+            );
+
+            let run_trial = |game: &mut Game<'_>, answer: Option<FinalizeAnswer>| {
+                let (mobs, entities, tracked) =
+                    (game.mobs.len(), game.next_entity, game.persist.uuids.len());
+                game.rand_sequences = RandomSequences::default();
+                game.world.random.set_seed(9);
+                let mut entity = Compound::default();
+                entity.insert("id".into(), Tag::String(SULFUR_CUBE.into()));
+                entity.insert("Health".into(), Tag::Float(5.0f32.to_bits()));
+                let mut spawner = TrialSpawner {
+                    next_spawn_data: Some(SpawnData::new(entity, None, Some(equipment.clone()))),
+                    ..Default::default()
+                };
+                let mut go = |game: &mut Game<'_>| {
+                    game.server_tick_trial_spawner(key, &mut spawner, TrialState::Active, false)
+                        .unwrap();
+                };
+                match answer {
+                    None => go(game),
+                    Some(a) => mod_platform::testing::with_mods(
+                        vec![mod_api::ModEntry::new("finalize", Box::new(FinalizeMod(a)))].into(),
+                        || go(game),
+                    ),
+                }
+                let out = (
+                    game.mobs.len() - mobs,
+                    game.next_entity - entities,
+                    game.persist.uuids.len() - tracked,
+                    spawner.total_mobs_spawned,
+                    spawner.current_mobs.len(),
+                    game.rand_sequences.to_nbt(),
+                );
+                for m in game.mobs.drain(mobs..) {
+                    game.persist.uuids.remove(&m.id);
+                }
+                game.next_entity = entities;
+                out
+            };
+
+            let trial_joined = run_trial(game, None);
+            assert_eq!((trial_joined.0, trial_joined.3, trial_joined.4), (1, 1, 1));
+            assert_ne!(
+                trial_joined.5, empty_sequences,
+                "trial spawner equipment table rolled its random sequence"
+            );
+            let trial_vetoed = run_trial(game, Some(FinalizeAnswer::StopSpawn));
+            assert_eq!(
+                (
+                    trial_vetoed.0,
+                    trial_vetoed.1,
+                    trial_vetoed.2,
+                    trial_vetoed.3,
+                    trial_vetoed.4,
+                ),
+                (0, 0, 0, 0, 0),
+                "trial spawner spawn_cancelled vetoes admission"
+            );
+            assert_eq!(
+                trial_vetoed.5, trial_joined.5,
+                "trial spawner spawn_cancelled preserves the configured equipment table roll"
+            );
+        });
+    }
+
     /// No listener and a listener that changes nothing finalize and draw as vanilla; a cancel
     /// skips finalization and its draws, the mob still spawning; `spawn_cancelled` adds no mob.
+    /// The veto is an admission decision, independent of the three draws and the
+    /// follow-range bonus from `Mob.finalizeSpawn` (the silverfish has no override).
     #[test]
     #[ignore = "daily"]
     fn finalize_spawn_cancels_pin_the_draws_and_the_outcome() {
-        use super::super::native_entity_refs::tests::with_game;
+        use super::super::creatures::SpawnSite;
+        use super::super::native_entity_refs::tests::{run_fresh_cases, with_game};
+        if run_fresh_cases(
+            "game::natural_spawning::tests::finalize_spawn_cancels_pin_the_draws_and_the_outcome",
+            "SUNRISE_FINALIZE_CANCEL_CASE",
+            &["independent"],
+        ) {
+            return;
+        }
         with_game(|game| {
-            let kind = game
-                .res
-                .mob_types()
-                .get("minecraft:zombie")
-                .cloned()
-                .unwrap();
-            let run = |game: &mut Game<'_>, answer: Option<FinalizeAnswer>| {
-                game.world.random.set_seed(5);
-                let mut mob = Mob::new(1, kind.clone(), Vec3::new(8.5, 64.0, 8.5), 0.0);
-                let go = |game: &mut Game<'_>, mob: &mut Mob| {
-                    game.finalize_with(mob, Reason::Natural, None)
+            for (skip, veto) in [(false, true), (true, false), (true, true)] {
+                game.world.random = LevelRandom::for_level(LegacyRandom::new(5));
+                let answer = match (skip, veto) {
+                    (false, false) => FinalizeAnswer::Pass,
+                    (true, false) => FinalizeAnswer::SkipFinalize,
+                    (false, true) => FinalizeAnswer::StopSpawn,
+                    (true, true) => FinalizeAnswer::SkipAndStop,
                 };
-                let outcome = match answer {
-                    None => go(game, &mut mob),
-                    Some(a) => mod_platform::testing::with_mods(
-                        vec![mod_api::ModEntry::new("finalize", Box::new(FinalizeMod(a)))].into(),
-                        || go(game, &mut mob),
-                    ),
-                };
-                let tag = match outcome {
-                    Finalized::Done => "done",
-                    Finalized::Skipped => "skipped",
-                    Finalized::Cancelled => "cancelled",
-                };
-                (
-                    tag,
+                let mods = vec![mod_api::ModEntry::new(
+                    "finalize",
+                    Box::new(FinalizeMod(answer)),
+                )];
+                let spawned = mod_platform::testing::with_mods(mods.into(), || {
+                    game.spawn_mob(
+                        "minecraft:silverfish",
+                        [8.5, 64.0, 8.5],
+                        false,
+                        SpawnSite::Finalizing(Reason::Command),
+                    )
+                });
+                assert_eq!(spawned.is_none(), veto);
+                let mut expected = LegacyRandom::new(5);
+                if !skip {
+                    let _ = (
+                        expected.next_double(),
+                        expected.next_double(),
+                        expected.next_float(),
+                    );
+                }
+                assert_eq!(
                     game.world.random.next_int(),
-                    mob.random.clone().next_int(),
-                )
-            };
-            let none = run(game, None);
-            assert_eq!(none.0, "done");
-            assert_eq!(run(game, Some(FinalizeAnswer::Pass)), none, "pass-through");
-            let fresh = LegacyRandom::new(5).next_int();
-            let skipped = run(game, Some(FinalizeAnswer::SkipFinalize));
-            assert_eq!(skipped.0, "skipped");
-            assert_eq!(skipped.1, fresh, "a skipped finalization draws nothing");
-            let stopped = run(game, Some(FinalizeAnswer::StopSpawn));
-            assert_eq!(stopped.0, "cancelled");
-            assert_eq!(stopped.1, fresh, "a stopped spawn draws nothing");
+                    expected.next_int(),
+                    "skip={skip}, veto={veto}"
+                );
+                if let Some(id) = spawned {
+                    let mob = game.mobs.iter().find(|mob| mob.id == id).unwrap();
+                    assert!(!mob.extra.attributes.as_ref().is_some_and(|a| {
+                        a.modifiers
+                            .iter()
+                            .any(|m| m.id == "minecraft:random_spawn_bonus")
+                    }));
+                }
+            }
         });
     }
 
@@ -2740,45 +3788,236 @@ mod tests {
         });
     }
 
-    /// Answers the group size limit of a type, reading the mob it is lent.
+    const NATURAL_HORSE: &str = "minecraft:zombie_horse";
+    const NATURAL_RIDER: &str = "minecraft:zombie";
+    // Independent Java LCG calculation: successive wrapping seed-uniquifier steps
+    // from 12345, followed by Entity.<init>'s two nextLongs and UUID masks.
+    const HORSE_UUID: u128 = 0x5725645a0d694163_8ea9477e028e0fc3;
+    const RIDER_UUID: u128 = 0xd5f0a5e475f54728_8649f20043164fd8;
+
+    struct HorseIdentityMod {
+        veto: bool,
+        joined: std::sync::Arc<std::sync::Mutex<Vec<(u32, Option<u32>)>>>,
+    }
+
+    #[mod_api::__subscriptions]
+    impl mod_api::Hooks for HorseIdentityMod {
+        fn potential_spawns(
+            &self,
+            _: &dyn mod_api::Host,
+            event: &mut mod_api::PotentialSpawnsEvent<'_>,
+        ) -> mod_api::Flow {
+            if event.category == "monster" {
+                *event.entries = vec![SpawnEntry {
+                    entity: NATURAL_HORSE.into(),
+                    weight: 1,
+                    min: 1,
+                    max: 1,
+                    constant: true,
+                }];
+            }
+            mod_api::Flow::Continue
+        }
+
+        fn mob_spawn_placement_check(
+            &self,
+            _: &dyn mod_api::Host,
+            event: &mut mod_api::MobSpawnPlacementCheckEvent<'_>,
+        ) {
+            *event.result = SpawnCheck::Succeed;
+        }
+
+        fn mob_spawn_position_check(
+            &self,
+            _: &dyn mod_api::Host,
+            event: &mut mod_api::MobSpawnPositionCheckEvent<'_>,
+        ) {
+            *event.result = SpawnCheck::Succeed;
+        }
+
+        fn entity_join_level(
+            &self,
+            host: &mut dyn mod_api::ServerHost,
+            event: &mut mod_api::EntityJoinLevelEvent<'_>,
+        ) -> mod_api::Flow {
+            let expected = match event.kind {
+                NATURAL_HORSE => HORSE_UUID,
+                NATURAL_RIDER => RIDER_UUID,
+                _ => return mod_api::Flow::Continue,
+            };
+            let resolved = host
+                .level(event.dimension)
+                .and_then(|level| level.entity_by_uuid(host, mod_api::EntityUuid(expected)))
+                .map(|entity| entity.id());
+            self.joined
+                .lock()
+                .unwrap()
+                .push((event.subject.id(), resolved));
+            if self.veto && event.kind == NATURAL_RIDER {
+                mod_api::Flow::Cancel
+            } else {
+                mod_api::Flow::Continue
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn natural_admission_publishes_primary_and_passenger_constructor_uuids() {
+        use super::super::native_entity_refs::tests::{run_fresh_cases, with_game};
+        if run_fresh_cases(
+            &format!(
+                "{}::natural_admission_publishes_primary_and_passenger_constructor_uuids",
+                module_path!().split_once("::").unwrap().1
+            ),
+            "SUNRISE_TEST_SEEDS",
+            &["1"],
+        ) {
+            return;
+        }
+        for veto in [false, true] {
+            with_game(|game| {
+                spawn_check_world(game, Vec3::new(0.5, 64.0, 0.5));
+                let stone = game
+                    .pack
+                    .assets
+                    .registry
+                    .default_state("minecraft:stone")
+                    .unwrap();
+                for x in 32..48 {
+                    for z in 32..48 {
+                        game.world.set(x, 63, z, stone).unwrap();
+                    }
+                }
+                let joined = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+                let mods = vec![mod_api::ModEntry::new(
+                    "natural-uuids",
+                    Box::new(HorseIdentityMod {
+                        veto,
+                        joined: joined.clone(),
+                    }),
+                )];
+                mod_platform::testing::with_mods(mods.into(), || {
+                    use sunrise_client::lan::playerdata::uuid_ints;
+                    sunrise_client::random_source::set_thread_uniquifier(12345).unwrap();
+                    let mut random = LevelRandom::for_level(LegacyRandom::new(42));
+                    let (mut cluster, mut state, candidate, spawn) = {
+                        let level = game.natural_level();
+                        let players = vec![SpawnPlayer {
+                            position: [0.5, 64.0, 0.5],
+                            spectator: false,
+                        }];
+                        let mut state = SpawnState::new(&level, 289, players, &[], |_, _| true);
+                        let mut cluster = SpawnCluster::new(
+                            &level,
+                            &mut state,
+                            Category::Monster,
+                            (2, 2),
+                            [40, 64, 40],
+                        )
+                        .unwrap();
+                        let candidate = cluster
+                            .next_candidate(&level, &mut random, &mut state, &mut |_| {})
+                            .unwrap();
+                        let spawn = level
+                            .finalize_spawned(&cluster.request(candidate), &mut random)
+                            .unwrap();
+                        (cluster, state, candidate, spawn)
+                    };
+                    game.complete_natural_spawn(
+                        &mut cluster,
+                        candidate,
+                        spawn,
+                        &[],
+                        &mut HashMap::new(),
+                        &mut random,
+                        &mut state,
+                        &[],
+                    );
+                    let seen = joined.lock().unwrap();
+                    let [(horse, visible_horse), (rider, visible_rider)] = seen.as_slice() else {
+                        panic!("expected one horse and its rider, saw {seen:?}");
+                    };
+                    assert_eq!(*visible_horse, Some(*horse));
+                    assert_eq!(*visible_rider, Some(*rider));
+                    assert_eq!(game.persist.uuids.get(horse), Some(&uuid_ints(HORSE_UUID)));
+                    let rider_uuid = uuid_ints(RIDER_UUID);
+                    assert_eq!(
+                        game.persist.uuids.get(rider),
+                        (!veto).then_some(&rider_uuid)
+                    );
+                    let level = game.level_ref(game.lend_epoch(), game.dim.key());
+                    assert_eq!(
+                        level
+                            .entity_by_uuid(game, mod_api::EntityUuid(RIDER_UUID))
+                            .map(|r| r.id()),
+                        (!veto).then_some(*rider)
+                    );
+                    if !veto {
+                        let mob = game.mobs.iter().find(|m| m.id == *rider).unwrap();
+                        assert_eq!(mob.extra.mount, Some(*horse));
+                    }
+                });
+            });
+        }
+    }
+
+    /// Doubles the group size limit of a type, reading the resident mob.
     struct ZombieClusters;
     #[mod_api::sunrise_part]
     impl mod_api::EntityPart for ZombieClusters {
         fn spawn_cluster_size(
             &self,
             host: &dyn mod_api::Host,
-            mob: mod_api::UnspawnedMobRef,
-            reason: mod_api::SpawnReason,
-            _: Option<mod_api::SpawnSource>,
-            vanilla: u32,
-        ) -> Option<u32> {
-            assert_eq!(mob.kind(host).unwrap().to_string(), "minecraft:zombie");
-            Some(if reason == mod_api::SpawnReason::Natural {
-                vanilla * 2
-            } else {
-                1
-            })
+            event: &mut mod_api::SpawnClusterSizeEvent,
+        ) {
+            assert!(
+                event.mob.entity().kind(host).is_some(),
+                "the mob is resident"
+            );
+            event.size = event.vanilla * 2;
         }
     }
-    /// A second part on the same type: asked only when the first does not answer.
+    /// A second part on the same type: it sees the size the first left and adds one.
     struct LaterClusters;
     #[mod_api::sunrise_part]
     impl mod_api::EntityPart for LaterClusters {
         fn spawn_cluster_size(
             &self,
             _: &dyn mod_api::Host,
-            _: mod_api::UnspawnedMobRef,
-            _: mod_api::SpawnReason,
-            _: Option<mod_api::SpawnSource>,
-            _: u32,
-        ) -> Option<u32> {
-            Some(9)
+            event: &mut mod_api::SpawnClusterSizeEvent,
+        ) {
+            event.size += 1;
         }
     }
-    /// A part that leaves the limit to vanilla.
+    /// A part that leaves the size alone.
     struct SilentClusters;
     #[mod_api::sunrise_part]
     impl mod_api::EntityPart for SilentClusters {}
+    const JOINED_POSITION: [f64; 3] = [42.5, 65.0, 42.5];
+    const SPAWN_CLUSTER_CASE: &str = "SUNRISE_SPAWN_CLUSTER_CHILD";
+    static JOINED_CANDIDATE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    static CLUSTER_QUERIES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    struct JoinedClusters;
+    #[mod_api::sunrise_part]
+    impl mod_api::EntityPart for JoinedClusters {
+        fn spawn_cluster_size(
+            &self,
+            host: &dyn mod_api::Host,
+            event: &mut mod_api::SpawnClusterSizeEvent,
+        ) {
+            let id = JOINED_CANDIDATE.load(std::sync::atomic::Ordering::Relaxed);
+            if std::env::var(SPAWN_CLUSTER_CASE).as_deref() == Ok("valid") {
+                assert_eq!(event.mob.entity().id(), id);
+                assert_eq!(event.mob.entity().position(host), Some(JOINED_POSITION));
+                let tags = event.mob.entity().tags(host).unwrap();
+                assert!(tags.contains("after-admission"));
+                assert_eq!(tags.iter_utf16().count(), 1);
+            }
+            CLUSTER_QUERIES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            event.size = 1;
+        }
+    }
     struct ClusterMod;
     #[mod_api::__subscriptions]
     impl mod_api::Hooks for ClusterMod {
@@ -2786,24 +4025,95 @@ mod tests {
             r.entity_part("minecraft:zombie", ZombieClusters);
             r.entity_part("minecraft:zombie", LaterClusters);
             r.entity_part("minecraft:skeleton", SilentClusters);
+            r.entity_part(SULFUR_CUBE, JoinedClusters);
+        }
+        fn entity_join_level(
+            &self,
+            host: &mut dyn mod_api::ServerHost,
+            event: &mut mod_api::EntityJoinLevelEvent<'_>,
+        ) -> mod_api::Flow {
+            if event.kind != SULFUR_CUBE || event.dimension != "minecraft:overworld" {
+                return mod_api::Flow::Continue;
+            }
+            let id = event.subject.id();
+            let entity = host.entity(id).unwrap();
+            assert!(entity.add_tag(host, "after-admission"));
+            JOINED_CANDIDATE.store(id, std::sync::atomic::Ordering::Relaxed);
+            match std::env::var(SPAWN_CLUSTER_CASE).unwrap().as_str() {
+                "unwind" => {} // The engine checkpoint fires after this callback returns.
+                "move" => {
+                    assert!(entity.teleport_to_level(
+                        host,
+                        "minecraft:the_nether",
+                        JOINED_POSITION,
+                        None
+                    ));
+                }
+                case => {
+                    assert!(entity.teleport_to(host, JOINED_POSITION, None));
+                    if case == "reject" {
+                        return mod_api::Flow::Cancel;
+                    }
+                }
+            }
+            mod_api::Flow::Continue
         }
     }
 
-    /// The parts of the new mob's type answer the group size limit: a part's answer replaces
-    /// vanilla's for its type and reason (the first part to answer wins), a part that does not
-    /// answer, and a type with no part, leave it to vanilla.
+    /// The parts of the new mob's type edit one signed size in turn: the second sees the first's
+    /// answer (4 doubled, then one more), a part that leaves it alone and a type with no part
+    /// keep vanilla's. The mob they are told of is resident, so the first part reads it.
+    #[test]
+    #[ignore = "daily"]
+    fn entity_parts_compose_on_the_spawn_cluster_size() {
+        use super::super::native_entity_refs::tests::with_game;
+        let entries = vec![mod_api::ModEntry::new("clusters", Box::new(ClusterMod))];
+        mod_platform::testing::with_mods(entries.into(), || {
+            with_game(|game| {
+                game.resolve_parts().unwrap();
+                let ids: Vec<(&str, u32)> =
+                    ["minecraft:zombie", "minecraft:skeleton", "minecraft:cow"]
+                        .into_iter()
+                        .map(|kind| {
+                            let id = game
+                                .spawn_mob(
+                                    kind,
+                                    [8.5, 64.0, 8.5],
+                                    false,
+                                    super::super::creatures::SpawnSite::Plain,
+                                )
+                                .unwrap();
+                            (kind, id)
+                        })
+                        .collect();
+                let game: &Game<'_> = game;
+                let ask = |kind: &str| {
+                    let (_, id) = ids.iter().find(|(k, _)| *k == kind).unwrap();
+                    let mob = mod_api::MobRef::new(mod_api::EntityRef::new(game.lend_epoch(), *id));
+                    game.spawn_cluster_size(mob, kind, 4)
+                };
+                assert_eq!(ask("minecraft:zombie"), 9);
+                assert_eq!(ask("minecraft:skeleton"), 4);
+                assert_eq!(ask("minecraft:cow"), 4);
+            })
+        });
+    }
+
     #[test]
     #[ignore = "daily"]
     fn entity_parts_answer_the_spawn_cluster_size() {
         use super::super::native_entity_refs::tests::{run_fresh_cases, with_game};
         if run_fresh_cases(
             "game::natural_spawning::tests::entity_parts_answer_the_spawn_cluster_size",
-            "SUNRISE_SPAWN_CLUSTER_CHILD",
-            &["valid"],
+            SPAWN_CLUSTER_CASE,
+            &["valid", "reject", "move", "unwind"],
         ) {
             return;
         }
-        let entries = vec![mod_api::ModEntry::new("clusters", Box::new(ClusterMod))];
+        let entries = vec![
+            mod_api::ModEntry::new("clusters", Box::new(ClusterMod)),
+            mod_api::ModEntry::new("sulfur-cubes", Box::new(SulfurCubesOnly)),
+        ];
         mod_platform::__private::install(entries.into());
         crate::game::api_values::install_parts(&[mod_api::ModEntry::new(
             "clusters",
@@ -2812,25 +4122,253 @@ mod tests {
         .unwrap();
         with_game(|game| {
             game.resolve_parts().unwrap();
-            let mob = |id: &str| {
-                let kind = game.res.mob_types().get(id).unwrap().clone();
-                Mob::new(1, kind, Vec3::ZERO, 0.0)
+            spawn_check_world(game, Vec3::new(0.5, 64.0, 0.5));
+            let stone = game
+                .pack
+                .assets
+                .registry
+                .default_state("minecraft:stone")
+                .unwrap();
+            for x in 32..48 {
+                for z in 32..48 {
+                    game.world.set(x, 63, z, stone).unwrap();
+                }
+            }
+            let mut random = LevelRandom::for_level(LegacyRandom::new(42));
+            let (mut cluster, mut state, candidate, primary) = {
+                let level = game.natural_level();
+                let players = vec![SpawnPlayer {
+                    position: [0.5, 64.0, 0.5],
+                    spectator: false,
+                }];
+                let mut state = SpawnState::new(&level, 289, players, &[], |_, _| true);
+                let mut cluster =
+                    SpawnCluster::new(&level, &mut state, Category::Monster, (2, 2), [40, 64, 40])
+                        .unwrap();
+                let candidate = cluster
+                    .next_candidate(&level, &mut random, &mut state, &mut |_| {})
+                    .unwrap();
+                let mob = level
+                    .finalize_spawned(&cluster.request(candidate), &mut random)
+                    .unwrap();
+                (cluster, state, candidate, mob)
             };
-            let ask = |id: &str, reason| game.spawn_cluster_size(&mut mob(id), reason, None, 4);
-            assert_eq!(
-                ask("minecraft:zombie", mod_api::SpawnReason::Natural),
-                Some(8)
+            let case = std::env::var(SPAWN_CLUSTER_CASE).unwrap();
+            if case == "unwind" {
+                let first = game.next_entity + 1;
+                let mut primary = primary;
+                primary.passengers = ["minecraft:cow", "minecraft:pig"]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, name)| {
+                        let kind = game.res.mob_types().get(name).unwrap().clone();
+                        let (random, uuid) = sunrise_client::mobs::living_random();
+                        (
+                            Mob::with_random(
+                                u32::MAX - 1 - index as u32,
+                                kind,
+                                Vec3::ZERO,
+                                0.0,
+                                random,
+                            ),
+                            uuid,
+                        )
+                    })
+                    .collect();
+                use crate::game::pending_births::escaping_fault::{self, At};
+                escaping_fault::expect(At::Admission, first, || {
+                    game.complete_natural_spawn(
+                        &mut cluster,
+                        candidate,
+                        primary,
+                        &[],
+                        &mut HashMap::new(),
+                        &mut random,
+                        &mut state,
+                        &[],
+                    );
+                });
+                assert_eq!(
+                    JOINED_CANDIDATE.load(std::sync::atomic::Ordering::Relaxed),
+                    first,
+                    "primary reached its join listener before the engine fault"
+                );
+                game.native_joins_flush(false, 0);
+                assert!(
+                    game.mobs
+                        .iter()
+                        .all(|m| !(first..=first + 2).contains(&m.id))
+                );
+                assert!(game.creatures.natural_admission.is_none());
+                return;
+            }
+            game.complete_natural_spawn(
+                &mut cluster,
+                candidate,
+                primary,
+                &[],
+                &mut HashMap::new(),
+                &mut random,
+                &mut state,
+                &[],
             );
+            let id = JOINED_CANDIDATE.load(std::sync::atomic::Ordering::Relaxed);
+            assert_ne!(id, 0);
+            assert_eq!(game.mobs.iter().any(|m| m.id == id), case == "valid");
+            if case == "move" {
+                let moved = game.levels.parked_mobs(Dim::Nether).unwrap();
+                assert!(moved.iter().any(|m| {
+                    m.species() == Species::SulfurCube
+                        && m.id != id
+                        && [m.position.x, m.position.y, m.position.z] == JOINED_POSITION
+                }));
+            }
             assert_eq!(
-                ask("minecraft:zombie", mod_api::SpawnReason::Spawner),
-                Some(1)
+                CLUSTER_QUERIES.load(std::sync::atomic::Ordering::Relaxed),
+                1
             );
-            assert_eq!(
-                ask("minecraft:skeleton", mod_api::SpawnReason::Natural),
-                None
+            assert_eq!(state.counts().1.into_iter().sum::<i32>(), 1);
+            assert!(
+                cluster
+                    .next_candidate(&game.natural_level(), &mut random, &mut state, &mut |_| {})
+                    .is_none(),
+                "the live candidate's part limits the cluster to one"
             );
-            assert_eq!(ask("minecraft:cow", mod_api::SpawnReason::Natural), None);
         });
+    }
+
+    const SILVERFISH: &str = "minecraft:silverfish";
+    const MOVED_PLAYER: [f64; 3] = [42.5, 64.0, 38.5];
+    const RESUMPTION_PLAYER: u32 = 10;
+    struct SilverfishPack {
+        move_player: bool,
+    }
+
+    #[mod_api::__subscriptions]
+    impl mod_api::Hooks for SilverfishPack {
+        fn potential_spawns(
+            &self,
+            _: &dyn mod_api::Host,
+            event: &mut mod_api::PotentialSpawnsEvent<'_>,
+        ) -> mod_api::Flow {
+            if event.category == "monster" {
+                *event.entries = vec![SpawnEntry {
+                    entity: SILVERFISH.into(),
+                    weight: 1,
+                    min: 4,
+                    max: 4,
+                    constant: true,
+                }];
+            }
+            mod_api::Flow::Continue
+        }
+
+        fn entity_join_level(
+            &self,
+            host: &mut dyn mod_api::ServerHost,
+            event: &mut mod_api::EntityJoinLevelEvent<'_>,
+        ) -> mod_api::Flow {
+            if self.move_player && event.kind == SILVERFISH {
+                let player = host.entity(RESUMPTION_PLAYER).unwrap();
+                assert!(player.teleport_to(host, MOVED_PLAYER, None));
+            }
+            mod_api::Flow::Continue
+        }
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn resuming_the_natural_spawn_pass_keeps_the_constructor_streams() {
+        use super::super::native_entity_refs::tests::{
+            bind_local_player, run_fresh_cases, with_game,
+        };
+        if run_fresh_cases(
+            &format!(
+                "{}::resuming_the_natural_spawn_pass_keeps_the_constructor_streams",
+                module_path!().split_once("::").unwrap().1
+            ),
+            "SUNRISE_TEST_SEEDS",
+            &["1"],
+        ) {
+            return;
+        }
+        // Independent Java LCG calculation from NaturalSpawner.getRandomPosWithin and
+        // spawnCategoryForPosition: seed 1099 starts at (42, 64, 38). This pack picks
+        // one weighted entry and its constant count. Every silverfish passes the
+        // stone-floor predicate without drawing, then consumes one level yaw and
+        // Mob.finalizeSpawn's two doubles and one float. The per-mob states after
+        // construction are the wrapping uniquifier steps from 12345 (nextLong
+        // twice for Entity.<init>'s UUID and nextFloat for LivingEntity.<init>'s yaw).
+        const EXPECTED: [([f64; 3], u32, u64); 4] = [
+            ([44.5, 64.0, 37.5], 0x42bb_ed1c, 0xb901_cbf7_095f),
+            ([48.5, 64.0, 39.5], 0x4397_91e0, 0x1965_53db_d76b),
+            ([45.5, 64.0, 40.5], 0x430f_0a9a, 0xca79_aeb8_d527),
+            ([45.5, 64.0, 38.5], 0x42cd_912f, 0x287f_9289_3a33),
+        ];
+        for move_player in [false, true] {
+            let mods = vec![mod_api::ModEntry::new(
+                "silverfish-pack",
+                Box::new(SilverfishPack { move_player }),
+            )];
+            mod_platform::testing::with_mods(mods.into(), || {
+                with_game(|game| {
+                    let player = [0.5, 64.0, 0.5];
+                    spawn_check_world(game, Vec3::new(player[0], player[1], player[2]));
+                    bind_local_player(game, RESUMPTION_PLAYER, 10);
+                    let stone = game
+                        .pack
+                        .assets
+                        .registry
+                        .default_state("minecraft:stone")
+                        .unwrap();
+                    for x in 24..64 {
+                        for z in 24..64 {
+                            game.world.set(x, 63, z, stone).unwrap();
+                        }
+                    }
+                    let players = vec![SpawnPlayer {
+                        position: player,
+                        spectator: false,
+                    }];
+                    let mut state =
+                        SpawnState::new(&game.natural_level(), 289, players, &[], |_, _| true);
+                    let mut scratch = NaturalPassScratch::default();
+                    scratch.players.refresh(game);
+                    let mut random = LevelRandom::for_level(LegacyRandom::new(1099));
+                    sunrise_client::random_source::set_thread_uniquifier(12345).unwrap();
+                    game.run_natural_spawn_pass(
+                        &[Category::Monster],
+                        std::iter::once((2, 2)),
+                        &mut random,
+                        &mut state,
+                        &mut scratch,
+                    );
+                    let actual: Vec<_> = game
+                        .mobs
+                        .iter()
+                        .filter(|mob| mob.kind.id == SILVERFISH)
+                        .map(|mob| {
+                            (
+                                [mob.position.x, mob.position.y, mob.position.z],
+                                mob.yaw.to_bits(),
+                                mob.random.state(),
+                            )
+                        })
+                        .collect();
+                    if move_player {
+                        let pos = game.player.as_ref().unwrap().position;
+                        assert_eq!([pos.x, pos.y, pos.z], MOVED_PLAYER);
+                        // The join moved the player before the next search: every remaining
+                        // attempt is within 24 blocks and only consumes the offsets.
+                        assert_eq!(actual, EXPECTED[..1]);
+                        assert_eq!(random.next_int(), 260_227_472);
+                    } else {
+                        assert_eq!(actual, EXPECTED);
+                        assert_eq!(random.next_int(), 273_362_771);
+                    }
+                })
+            });
+        }
     }
 
     /// `ServerLevel.tick` ticks the raids before the chunk source spawns

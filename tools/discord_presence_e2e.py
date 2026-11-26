@@ -32,12 +32,10 @@ import threading
 import time
 from pathlib import Path
 
-try:
-    from . import lab
-except ImportError:
-    import lab
-
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab
+
 HANDSHAKE, FRAME, CLOSE = 0, 1, 2
 
 
@@ -208,16 +206,19 @@ def lan(bins):
 
 
 def extras_row(game, label):
-    """The Extras page's row whose label starts with `label`, scrolling the list down to it: only
-    the rows on screen are widgets."""
-    first = game.ctl_run('ui')['widgets'][0]['bounds']
+    """Sunrise Settings' Gameplay page's row whose label starts with `label`, scrolling the list down to it: only
+    the rows on screen are widgets. The wheel goes over the plate's list (right of the search field), not the
+    page list under the search field, which scrolls on its own."""
+    widgets = game.ctl_run('ui')['widgets']
+    field = next(w['bounds'] for w in widgets if w['id'] == 'field-0')
+    first = next(w['bounds'] for w in widgets if w['bounds'][0] > field[0] + field[2])
     for _ in range(20):
         found = [w for w in game.ctl_run('ui')['widgets'] if (w.get('label') or '').startswith(label)]
         if found:
             return found[0]
         game.ctl_run('scroll-at', str(first[0] + 5), str(first[1] + 5), '-5')
         time.sleep(0.3)
-    raise AssertionError(f'no {label!r} row on the Extras page')
+    raise AssertionError(f'no {label!r} row on the Gameplay page')
 
 
 def setting(bins):

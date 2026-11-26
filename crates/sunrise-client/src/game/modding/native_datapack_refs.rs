@@ -1,12 +1,14 @@
 //! Datapack registry reads through a level handle.
 use super::Game;
-use mod_api::LevelRef;
+use mod_api::{DatapackReadError, LevelRef};
+use std::ops::ControlFlow;
 
 impl Game<'_> {
     /// The datapack registry set of this level's world session: on the logical server, the
     /// server's own set for both the active dimension and any parked loaded dimension
-    /// (matching vanilla `Level.registryAccess()` on `ServerLevel`); on a client, the set its
-    /// server sent at the join for the active client level.
+    /// (matching vanilla `Level.registryAccess()` on `ServerLevel`); on a client, the
+    /// synchronized set its connection received (also available for the constructing level
+    /// during `client_level_load` before installation).
     fn level_datapack_set(
         &self,
         level: LevelRef,
@@ -15,27 +17,25 @@ impl Game<'_> {
             self.native_level_world(level)?;
             self.mods.datapack_registries.clone()
         } else {
-            if !self.level_handle_current(level) || level.dimension() != self.native_level_key() {
-                return None;
+            let remote = self.remote.as_ref()?;
+            if self.client_own_level() != Some(level) {
+                remote.constructing(level)?;
             }
-            sunrise_client::datapack_net::received()
+            remote.datapacks.received().cloned()
         }
     }
 
-    /// The entry ids of a mod's datapack registry as the world last loaded it.
-    pub(super) fn level_datapack_entries(
+    /// Visit the IDs of a mod's datapack registry as the world last loaded them.
+    pub(super) fn level_visit_datapack_entries(
         &self,
         level: LevelRef,
         registry: &str,
-    ) -> Option<Vec<String>> {
-        let entries = self
-            .level_datapack_set(level)?
-            .entries(registry)
-            .ok()?
-            .into_iter()
-            .map(str::to_owned)
-            .collect();
-        Some(entries)
+        visit: &mut dyn FnMut(&str) -> ControlFlow<()>,
+    ) -> Result<ControlFlow<()>, DatapackReadError> {
+        let set = self
+            .level_datapack_set(level)
+            .ok_or(DatapackReadError::UnknownRegistry)?;
+        Ok(set.entries(registry)?.try_for_each(visit))
     }
 
     /// Visit the published entry `entry` of `registry`.
@@ -45,12 +45,12 @@ impl Game<'_> {
         registry: &str,
         entry: &str,
         visit: &mut dyn FnMut(&mod_api::DatapackEntry),
-    ) -> Result<(), mod_api::DatapackReadError> {
+    ) -> Result<(), DatapackReadError> {
         let set = self
             .level_datapack_set(level)
-            .ok_or(mod_api::DatapackReadError::UnknownRegistry)?;
+            .ok_or(DatapackReadError::UnknownRegistry)?;
         if !set.registry_available(registry) {
-            return Err(mod_api::DatapackReadError::UnknownRegistry);
+            return Err(DatapackReadError::UnknownRegistry);
         }
         visit(set.get(registry, entry)?);
         Ok(())
@@ -60,6 +60,7 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use mod_api::{DatapackReadError as E, *};
+    use std::ops::ControlFlow;
 
     #[test]
     #[ignore = "daily"]
@@ -95,6 +96,7 @@ mod tests {
                                     format!(r#"{{"power":{power}}}"#).into_bytes(),
                                 )],
                             )],
+                            &mut mod_api::__private::NoVanillaValueDecoder,
                         )
                         .unwrap()
                     };
@@ -102,8 +104,11 @@ mod tests {
                         DatapackRegistrySet::from_candidate(candidate(7)),
                     ));
                     assert_eq!(
-                        game.level_datapack_entries(level, "example:spell"),
-                        Some(vec!["addon:fire".into()])
+                        game.level_visit_datapack_entries(level, "example:spell", &mut |id| {
+                            assert_eq!(id, "addon:fire");
+                            ControlFlow::Break(())
+                        }),
+                        Ok(ControlFlow::Break(()))
                     );
                     let mut visited_refusal = false;
                     let mut unexpected_visit = |_: &DatapackEntry| visited_refusal = true;
@@ -111,7 +116,14 @@ mod tests {
                         LevelRef::new(WorldEpoch::new(level.epoch().get() + 1), level.dimension()),
                         LevelRef::new(level.epoch(), DimensionKey::NETHER),
                     ] {
-                        assert_eq!(game.level_datapack_entries(invalid, "example:spell"), None);
+                        assert_eq!(
+                            game.level_visit_datapack_entries(
+                                invalid,
+                                "example:spell",
+                                &mut |_| { panic!("unavailable level visited") }
+                            ),
+                            Err(E::UnknownRegistry)
+                        );
                         assert_eq!(
                             game.level_datapack_read(
                                 invalid,
@@ -134,8 +146,11 @@ mod tests {
                     game.enter_level(crate::game::Dim::Overworld).unwrap();
                     let parked = LevelRef::new(level.epoch(), DimensionKey::NETHER);
                     assert_eq!(
-                        game.level_datapack_entries(parked, "example:spell"),
-                        Some(vec!["addon:fire".into()])
+                        game.level_visit_datapack_entries(parked, "example:spell", &mut |id| {
+                            assert_eq!(id, "addon:fire");
+                            ControlFlow::Break(())
+                        }),
+                        Ok(ControlFlow::Break(()))
                     );
                     let mut parked_visits = 0;
                     game.level_datapack_read(parked, "example:spell", "addon:fire", &mut |entry| {

@@ -1,6 +1,6 @@
 //! Scoped real registration/classification for resource-free actor routing tests.
 //! This supplies application handlers, never a fake payload context or World.
-use super::{Classified, Delivery, Endpoint, Incoming, Side, Transport};
+use super::{Side, Transport};
 use mod_api::{
     Hooks, IPayloadContext, IPayloadHandler, ModEntry, PayloadBytes, PayloadId, Registrar,
 };
@@ -34,7 +34,9 @@ pub(crate) fn with_peer<R>(run: impl FnOnce(Arc<Transport>) -> R) -> R {
             // Use the real registrar/installer before freezing this connection.
             mod_platform::__private::part_tests::install_parts_fixture(mod_api::__private::mods())
                 .unwrap();
-            let transport = Transport::capture(Side::Server).unwrap();
+            let transport =
+                Transport::capture(Side::Server, crate::raw_payloads::TEST_RECORD_OVERHEAD)
+                    .unwrap();
             assert!(
                 transport.local.owns(CHANNEL),
                 "fixture declaration was not installed"
@@ -54,30 +56,10 @@ pub(crate) fn with_client<R>(run: impl FnOnce(Arc<Transport>) -> R) -> R {
         || {
             mod_platform::__private::part_tests::install_parts_fixture(mod_api::__private::mods())
                 .unwrap();
-            run(Transport::capture(Side::Client).unwrap())
+            run(
+                Transport::capture(Side::Client, crate::raw_payloads::TEST_RECORD_OVERHEAD)
+                    .unwrap(),
+            )
         },
     )
-}
-pub(crate) fn delivery(
-    conn: u32,
-    sender: crate::lan::PlayerSender,
-    bytes: Vec<u8>,
-) -> Box<Delivery> {
-    let classified = Incoming::classify(
-        sender.payload_transport(),
-        sunrise_protocol::payload_negotiation::Phase::Play,
-        sunrise_protocol::packets::configuration::CustomPayload {
-            channel: CHANNEL.into(),
-            data: bytes,
-        },
-    )
-    .unwrap();
-    let Classified::Application(incoming) = classified else {
-        panic!("fixture registration must classify as application");
-    };
-    Box::new(Delivery {
-        conn: Some(conn),
-        endpoint: Endpoint::server(sender),
-        incoming,
-    })
 }

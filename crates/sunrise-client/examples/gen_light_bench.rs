@@ -78,9 +78,9 @@ struct Simulated {
 impl ChunkGenerator for Simulated {
     type Worker = ();
     fn worker(&self) {}
-    fn proto(&self, _worker: &mut (), x: i32, z: i32) -> Proto {
+    fn proto(&self, _worker: &mut (), x: i32, z: i32) -> std::result::Result<Proto, String> {
         thread::sleep(self.proto);
-        Box::new((x, z))
+        Ok(Box::new((x, z)))
     }
     fn decorates(&self) -> bool {
         true

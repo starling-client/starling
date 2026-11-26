@@ -2,28 +2,69 @@
 //! tab-completion for one kind of value in a `Command` usage.
 //!
 //! A client that does not know the type still parses the command: the wire tree sends the
-//! argument as a Brigadier string (one word, or the rest of the line) and asks the server for its
-//! completions. Fabric instead registers the type in the command-argument registry, whose id an
-//! unmodded client cannot read and whose node it drops; the string keeps a vanilla tree valid.
+//! argument as a vanilla parser of the declared shape (a Brigadier string of one word, a word or
+//! quoted phrase, or the rest of the line, or `minecraft:resource_location` for an identifier) and
+//! asks the server for its completions. The tree never exposes the mod's parser or provider to the
+//! client, so a vanilla client reads the tree.
 
-use crate::{PermissionLevel, Text};
-use std::sync::Arc;
+use crate::{PermissionLevel, Suggestion, Text};
 
 /// How much of the command line a custom argument's value takes.
 ///
 /// The server and a client that does not know the type parse the value as this before the mod's
 /// own parser sees it, so the type must say it up front, when it is registered.
+///
+/// The same bounded numbers are kinds of a usage: `<amount:integer(0,1000)>`, `<total:long>`,
+/// `<total:long(0,)>` (see [`Command`](crate::Command)).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 #[derive(sunrise_mod_api_macros::Wire)]
 pub enum CommandArgumentKind {
     /// One word, as Brigadier's `word` string: ASCII letters and digits, and `_ - . +`. The word
     /// ends at the first other character, a space included, so a value containing `:` or `/`
-    /// needs [`Greedy`](Self::Greedy) as the usage's last argument.
+    /// needs [`Id`](Self::Id), [`Greedy`](Self::Greedy) as the usage's last argument, or
+    /// [`Quotable`](Self::Quotable) with the value in quotes.
     #[default]
     Word,
     /// The rest of the line, spaces included: the argument must be the usage's last.
     Greedy,
+    /// One unquoted word or one quoted phrase, as Brigadier's `StringArgumentType.string()`
+    /// (`QUOTABLE_PHRASE`, `StringReader.readString`): a word of [`Word`](Self::Word)'s
+    /// characters, or text between `"` or `'` quotes, empty included, in which only the active
+    /// quote and `\` may follow a `\`. Other arguments may follow it, so `"#main" @a` reads
+    /// `#main` and then a player. [`parse`](CommandArgumentType::parse) receives the decoded text,
+    /// without its quotes; [`suggest`](CommandArgumentType::suggest) receives the prefix as typed,
+    /// an opening quote included. A bad escape is refused with Brigadier's `parsing.quote.escape`
+    /// and an unclosed phrase with `parsing.quote.expected.end`, before the parser runs. It goes
+    /// to clients as `brigadier:string` in its quotable mode, so an unmodded client reads the
+    /// phrase too.
+    Quotable,
+    /// A whole number in `i32` with optional bounds, as Brigadier's
+    /// `IntegerArgumentType.integer(min, max)` (NeoForge registers the same Brigadier type in
+    /// `RegisterCommandsEvent`). It goes to clients as `brigadier:integer` with the bounds
+    /// vanilla's `IntegerArgumentInfo` sends (a bound at `i32::MIN` or `i32::MAX` is left out, as
+    /// `None` is), so an unmodded client refuses an out-of-range value too. The server refuses
+    /// one with Brigadier's `argument.integer.low` / `argument.integer.big` before the mod's
+    /// [`parse`](CommandArgumentType::parse) sees the digits it accepted.
+    Integer {
+        /// The smallest value accepted; `None` for `i32::MIN`.
+        min: Option<i32>,
+        /// The largest value accepted; `None` for `i32::MAX`.
+        max: Option<i32>,
+    },
+    /// A whole number in `i64` with optional bounds, as Brigadier's
+    /// `LongArgumentType.longArg(min, max)`: `brigadier:long` on the wire, refused out of range
+    /// with `argument.long.low` / `argument.long.big`. Otherwise as [`Integer`](Self::Integer).
+    Long {
+        /// The smallest value accepted; `None` for `i64::MIN`.
+        min: Option<i64>,
+        /// The largest value accepted; `None` for `i64::MAX`.
+        max: Option<i64>,
+    },
+    /// A vanilla identifier (`minecraft:resource_location`), reading `a-z`, `0-9`, `_`, `-`,
+    /// `.`, `:` and `/` through the first other character. It can precede other arguments.
+    /// The parser receives the original text, not the canonical identifier. `#` tags are not read.
+    Id,
 }
 
 /// Why a custom argument's parser refused the text a player wrote.
@@ -61,59 +102,90 @@ impl From<CommandArgumentError> for Text {
     }
 }
 
-/// One completion a custom argument offers for the text being typed.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// One argument the engine parsed before the one being completed: its name from the command's
+/// usage and the text the player wrote for it.
+///
+/// The text is what the engine accepted for that argument, not the line around it; a completer
+/// that needs a value it can use compares the text itself.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 #[derive(sunrise_mod_api_macros::Wire)]
-pub struct CommandSuggestion {
-    /// The text that replaces the typed prefix, or the part of it
-    /// [`replace_start`](Self::replace_start) sends the replacement from.
+pub struct TypedArgument {
+    /// The name between the brackets of the usage, `<name:kind>`.
+    pub name: String,
+    /// The text the engine parsed for that argument.
     pub text: String,
-    /// An optional explanation shown beside the completion.
-    pub tooltip: Option<String>,
-    /// The byte offset into the prefix where the replacement starts; `None` replaces the whole
-    /// prefix, as a completion does by default.
-    ///
-    /// A greedy text argument holds several tokens, and a player typing the last of them wants
-    /// one completion for it, not a rewrite of the rest: for the prefix `stone st` and an offset
-    /// of 6, the suggestion `stone` replaces `st` and keeps `stone ` in front of it. The offset
-    /// must be inside the prefix and on a character boundary; a suggestion this build cannot
-    /// apply is refused (reported, and left out) rather than panicking on the player's input.
-    pub replace_start: Option<usize>,
 }
 
-impl CommandSuggestion {
-    /// A completion without a tooltip that replaces the whole typed prefix.
-    pub fn new(text: impl Into<String>) -> Self {
+impl TypedArgument {
+    /// An argument named `name`, parsed from `text`.
+    pub fn new(name: impl Into<String>, text: impl Into<String>) -> Self {
         Self {
+            name: name.into(),
             text: text.into(),
-            tooltip: None,
-            replace_start: None,
+        }
+    }
+}
+
+/// What [`CommandArgumentType::suggest`] is asked for one argument being completed.
+///
+/// Returned [`Suggestion::range`] values are byte offsets `(start, end)` within [`prefix`](Self::prefix)
+/// (default `(0, self.prefix.len())`), preserving arbitrary sub-token cursor ranges, tooltips, and
+/// numeric sort values ([`Suggestion::int_value`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+#[derive(sunrise_mod_api_macros::Wire)]
+pub struct SuggestionRequest {
+    /// The text typed for this argument so far, without the words before it.
+    pub prefix: String,
+    /// The arguments the engine parsed before this one, in parse order.
+    pub arguments: Vec<TypedArgument>,
+    /// The player asking, or `None` when no player asks: the console, a command block, and a
+    /// client completing its own commands before its profile is known.
+    pub sender: Option<CommandSender>,
+}
+
+impl SuggestionRequest {
+    /// The request the engine builds for one argument, from what its dispatcher parsed.
+    pub fn new(
+        prefix: impl Into<String>,
+        arguments: Vec<TypedArgument>,
+        sender: Option<CommandSender>,
+    ) -> Self {
+        Self {
+            prefix: prefix.into(),
+            arguments,
+            sender,
         }
     }
 
-    /// A completion with an explanation.
-    pub fn with_tooltip(text: impl Into<String>, tooltip: impl Into<String>) -> Self {
-        Self {
-            text: text.into(),
-            tooltip: Some(tooltip.into()),
-            replace_start: None,
-        }
+    /// Build a completion replacing the whole typed prefix (`(0, self.prefix.len())`).
+    pub fn suggest(&self, text: impl Into<String>) -> Suggestion {
+        Suggestion::new((0, self.prefix.len()), text)
     }
 
-    /// The same completion, replacing the prefix from byte `replace_start` on.
-    pub fn replacing_from(mut self, replace_start: usize) -> Self {
-        self.replace_start = Some(replace_start);
-        self
+    /// Build a completion replacing the whole typed prefix, with an explanation tooltip.
+    pub fn suggest_with_tooltip(
+        &self,
+        text: impl Into<String>,
+        tooltip: impl Into<String>,
+    ) -> Suggestion {
+        self.suggest(text).with_tooltip(tooltip)
+    }
+
+    /// Build a completion replacing the typed prefix from byte offset `start` to its end
+    /// (`(start, self.prefix.len())`).
+    pub fn suggest_from(&self, start: usize, text: impl Into<String>) -> Suggestion {
+        Suggestion::new((start, self.prefix.len()), text)
     }
 }
 
 /// The player a completion is for: the one typing, with the level they run commands at.
 ///
-/// [`CommandArgumentType::suggest`] receives it, so a provider that completes from a mod's own
+/// [`SuggestionRequest::sender`] carries it, so a completer that completes from a mod's own
 /// registry answers with what that sender may use and nothing else. The game keeps the answer as
-/// it comes: it does not filter a provider's completions, and a provider that ignores the sender
-/// offers everything to everyone.
+/// it comes: it does not filter a completer's suggestions by permission, and a completer that
+/// ignores the sender offers everything to everyone.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 #[derive(sunrise_mod_api_macros::Wire)]
@@ -169,51 +241,41 @@ pub trait CommandArgumentType: Send + Sync + 'static {
 
     /// Validate the text a client wrote and return the value the command executor receives.
     ///
-    /// `input` is one word (see [`CommandArgumentKind::Word`] for its characters), or the rest
-    /// of the line for [`CommandArgumentKind::Greedy`]. Return the canonical text to deliver (an
-    /// id, a lower-cased name, `"3"` for `"03"`), or the message shown to the player when the
-    /// input is not valid.
+    /// `input` is one word (see [`CommandArgumentKind::Word`] for its characters), the
+    /// identifier as typed for [`CommandArgumentKind::Id`], the rest of the line for
+    /// [`CommandArgumentKind::Greedy`], or the decoded word or phrase for
+    /// [`CommandArgumentKind::Quotable`] (`"a \"b\""` arrives as `a "b"`). Return the canonical
+    /// text to deliver (an id, a lower-cased name, `"3"` for `"03"`), or the message shown to the
+    /// player when the input is not valid.
     fn parse(&self, input: &str) -> Result<String, CommandArgumentError>;
 
-    /// The completions for the text `prefix` being typed at this argument, for `sender`.
+    /// The completions for `request` at this argument, on both server and client commands.
     ///
-    /// `prefix` is the text the argument holds so far: one word's worth for
-    /// [`Word`](CommandArgumentKind::Word), and the whole tail of the line up to the cursor for
-    /// [`Greedy`](CommandArgumentKind::Greedy). Return the values that match, in the order the
-    /// chat should show them; the game keeps each suggestion's replacement range and tooltip. A
-    /// suggestion replaces the whole prefix unless it names a
-    /// [`replace_start`](CommandSuggestion::replace_start), which is how a type completes the
-    /// token being typed inside a longer greedy text. An empty list leaves the input as typed.
+    /// `request.prefix` is the text the argument holds so far: one word's worth for
+    /// [`Word`](CommandArgumentKind::Word) or [`Id`](CommandArgumentKind::Id), the whole tail of the
+    /// line up to the cursor for [`Greedy`](CommandArgumentKind::Greedy), and the raw typed text for
+    /// [`Quotable`](CommandArgumentKind::Quotable), often mid-quote (`"Some Ti`), as Brigadier
+    /// hands a provider. A quotable type returns insertable syntax: a candidate that is not one
+    /// word is quoted (`"Some Title"`), as NeoForge's `EntityCommand` quotes its ids.
+    /// `request.arguments` lists every argument parsed before this one in parse order, and
+    /// `request.sender` is the player asking (or `None` when no player asks: the console, a
+    /// command block, or a client completing its own commands before its profile is known).
     ///
-    /// `sender` is the player asking, with their permission level: a provider that completes names
-    /// from a mod's registry returns only the entries that sender may use, because the game keeps
-    /// its answer unfiltered. It is `None` when no player asks: the console, and a client
-    /// completing its own client commands before its own profile is known.
+    /// Returned [`Suggestion::range`] values are byte offsets `(start, end)` within
+    /// `request.prefix` (use [`SuggestionRequest::suggest`] for `(0, request.prefix.len())`,
+    /// [`SuggestionRequest::suggest_from`] for a tail replacement, or
+    /// [`Suggestion::with_range`] for an arbitrary sub-token span). Tooltips
+    /// ([`Suggestion::with_tooltip`]) and numeric sort values ([`Suggestion::with_int_value`])
+    /// are preserved through Brigadier's merge and sort. A suggestion whose range is out of
+    /// bounds or splits a UTF-8 character is skipped individually with a warning without
+    /// discarding valid siblings.
     ///
-    /// The vanilla packet limits apply: completion text may contain
-    /// at most 32767 UTF-16 code units; a literal tooltip may occupy at most 65535 bytes in
-    /// Java modified UTF-8 (the NBT string limit). If any result exceeds either limit, the
-    /// engine reports the refusal and discards the callback's results, rather than truncating
-    /// player-visible text. A panicking native callback is also refused.
-    ///
-    /// A type that declares a [`suggestion_provider`](Self::suggestion_provider) is not asked
-    /// this way for its arguments: the engine asks that provider instead.
-    fn suggest(&self, sender: Option<&CommandSender>, prefix: &str) -> Vec<CommandSuggestion>;
-
-    /// The suggestion provider this type declares for its arguments, or `None`.
-    ///
-    /// Read once, when the command tree is built: a usage that names this type as an argument's
-    /// kind gets the node's ask-the-server marker, and a player's client asks the server for that
-    /// argument, so no mod code runs on a client. The server then asks
-    /// [`SuggestionProvider::suggest`] with the text typed for the argument, the arguments parsed
-    /// before it and the sender, and keeps the candidates that match the typed text by the game's
-    /// own rules. [`suggest`](Self::suggest) is not called for those arguments.
-    ///
-    /// The default declares no provider, which leaves the argument completed by
-    /// [`suggest`](Self::suggest) alone.
-    fn suggestion_provider(&self) -> Option<Arc<dyn crate::SuggestionProvider>> {
-        None
-    }
+    /// Vanilla's packet framing limits (32,767 UTF-16 code units for text, 65,535 bytes of Java
+    /// modified UTF-8 for a literal NBT tooltip, and vanilla's post-sort 1,000-entry limit) apply
+    /// per entry at the `ClientboundCommandSuggestionsPacket` boundary for server completions;
+    /// local client completions are not artificially dropped by server packet bounds. A panicking
+    /// callback answers no suggestions and is reported against the argument type.
+    fn suggest(&self, request: &SuggestionRequest) -> Vec<Suggestion>;
 }
 
 /// A ready argument type that takes one of a fixed set of words: NeoForge's `EnumArgument`.
@@ -257,11 +319,11 @@ impl CommandArgumentType for ChoiceArgument {
         )))
     }
 
-    fn suggest(&self, _: Option<&CommandSender>, prefix: &str) -> Vec<CommandSuggestion> {
+    fn suggest(&self, request: &SuggestionRequest) -> Vec<Suggestion> {
         self.choices
             .iter()
-            .filter(|choice| choice.starts_with(prefix))
-            .map(CommandSuggestion::new)
+            .filter(|choice| choice.starts_with(request.prefix.as_str()))
+            .map(|choice| request.suggest(choice))
             .collect()
     }
 }
@@ -283,9 +345,10 @@ mod tests {
             arguments,
             &vec![Text::literal("low, high"), Text::literal("med")]
         );
+        let request = SuggestionRequest::new("h", Vec::new(), None);
         assert_eq!(
-            mode.suggest(None, "h"),
-            vec![CommandSuggestion::new("high")]
+            mode.suggest(&request),
+            vec![Suggestion::new((0, 1), "high")]
         );
     }
 
@@ -302,15 +365,53 @@ mod tests {
     }
 
     #[test]
-    fn a_suggestion_crosses_the_wire_with_its_replacement_start() {
-        for suggestion in [
-            CommandSuggestion::new("stone"),
-            CommandSuggestion::with_tooltip("stone", "a block").replacing_from(6),
-        ] {
+    fn a_vec2_value_crosses_the_wire() {
+        use super::super::CommandArgumentValue;
+        let value = CommandArgumentValue::Vec2([5.5, -2.25]);
+        let mut out = crate::wire::Writer::new();
+        out.put(&value);
+        assert_eq!(
+            crate::wire::Reader::decode::<CommandArgumentValue>(out.bytes()).unwrap(),
+            value
+        );
+    }
+
+    #[test]
+    fn suggestion_request_and_builders_preserve_ranges_tooltips_and_int_values() {
+        let request = SuggestionRequest::new(
+            "stone st",
+            vec![TypedArgument::new("mode", "use")],
+            Some(CommandSender {
+                uuid: 7,
+                name: "Simon".into(),
+                permission: PermissionLevel::Gamemasters,
+            }),
+        );
+        let mut out = crate::wire::Writer::new();
+        out.put(&request);
+        assert_eq!(
+            crate::wire::Reader::decode::<SuggestionRequest>(out.bytes()).unwrap(),
+            request
+        );
+
+        let full = request.suggest_with_tooltip("stone", "a block");
+        assert_eq!(full.range, (0, 8));
+        assert_eq!(full.text, "stone");
+        assert_eq!(full.tooltip.as_deref(), Some("a block"));
+        assert_eq!(full.int_value, None);
+
+        let tail = request.suggest_from(6, "stone").with_int_value(42);
+        assert_eq!(tail.range, (6, 8));
+        assert_eq!(tail.int_value, Some(42));
+
+        let sub = request.suggest("dirt").with_range((0, 5));
+        assert_eq!(sub.range, (0, 5));
+
+        for suggestion in [full, tail, sub] {
             let mut out = crate::wire::Writer::new();
             out.put(&suggestion);
             assert_eq!(
-                crate::wire::Reader::decode::<CommandSuggestion>(out.bytes()).unwrap(),
+                crate::wire::Reader::decode::<Suggestion>(out.bytes()).unwrap(),
                 suggestion
             );
         }

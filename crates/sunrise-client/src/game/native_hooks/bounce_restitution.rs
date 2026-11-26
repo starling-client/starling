@@ -114,7 +114,7 @@ const RESTITUTION_HOOKS: sunrise_client::block_contact::RestitutionHooks =
             )
         },
         restitution: |level, c, factor| {
-            FrictionView(level)
+            FrictionView(level, None)
                 .native_bounce_restitution(c.entity, c.kind, c.state, c.position, factor);
         },
     };

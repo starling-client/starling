@@ -31,8 +31,7 @@ impl Game<'_> {
             mob.silent,
         );
         let except = except_actor.then(|| self.native_acting_entity());
-        self.audio
-            .play_bound(event, source, volume, pitch, entity, except);
+        self.play_audio_bound(event, source, volume, pitch, entity, except);
     }
 
     fn sound_player_id(&self) -> u32 {
@@ -65,7 +64,7 @@ impl Game<'_> {
         };
         let entity = SoundEntity::new(id, state.position, state.silent);
         entity.update(state);
-        self.audio.play_bound(
+        self.play_audio_bound(
             event,
             source,
             volume,

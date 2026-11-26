@@ -1,5 +1,5 @@
 //! Engine owners of detached placement and publication use the same frozen plan.
-use super::super::{Role, Slot};
+use super::super::Role;
 use super::{Kind, Menu, custom_plan::MenuPlacement};
 impl MenuPlacement {
     /// Physical slots whose old contents the placement operation may return.
@@ -23,9 +23,10 @@ impl Menu {
             return;
         };
         self.touch();
+        let layout = self.state.kind;
         for (index, slot) in self.state.slots[..kind.slots].iter_mut().enumerate() {
             if slot.role == Role::Hidden {
-                slot.role = Slot::mod_menu(kind, index).role;
+                slot.role = layout.slot(index).unwrap().role;
             }
         }
         for slot in unlinked {

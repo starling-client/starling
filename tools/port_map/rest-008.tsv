@@ -124,7 +124,7 @@ PotionsPredicate.matches	port	crates/sunrise-client/src/advancements.rs::potions
 WritableBookPredicate.matches	missing		ignored by `advancements.rs::item`; no shipped data uses one — only minecraft:enchantments, map_id and jukebox_playable appear as item predicates in the 1866 advancements and the 1447 loot tables
 WrittenBookPredicate.matches	missing		ignored by `advancements.rs::item`; no shipped data uses one — only minecraft:enchantments, map_id and jukebox_playable appear as item predicates in the 1866 advancements and the 1447 loot tables
 BoatDispenseItemBehavior.execute	port	crates/sunrise-client/src/game/blocks/dispenser.rs::Game::dispense_boat
-DefaultDispenseItemBehavior.dispense	port	crates/sunrise-client/src/game/blocks/dispenser.rs::Game::dispense_default	the click and dispense events of dispense_default
+DefaultDispenseItemBehavior.dispense	port	crates/sunrise-client/src/game/blocks/dispenser.rs::Game::dispense_default_in_level	the default execution and its click and smoke events
 DefaultDispenseItemBehavior.addToInventoryOrDispense	port	crates/sunrise-client/src/game/blocks/dispenser.rs::Game::consume_with_remainder
 EquipmentDispenseItemBehavior.execute	inline	crates/sunrise-client/src/game/blocks/dispenser.rs::Game::dispense_default_method	the equippable branch of dispense_default_method
 FlintAndSteelDispenseItemBehavior.execute	port	crates/sunrise-client/src/game/blocks/dispenser.rs::Game::dispense_flint_and_steel

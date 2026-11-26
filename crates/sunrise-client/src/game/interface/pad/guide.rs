@@ -301,7 +301,7 @@ impl Game<'_> {
         let glider = self.glider_worn();
         let hands_busy = self.hands_busy();
         let riding = self.riding.is_some();
-        let vehicle_jumps = self.jumpable_mount();
+        let vehicle_jumps = self.jumpable_mount().is_some();
         let using = self.pad_guide_active();
         let blind = self.potions.effects.get("blindness").is_some();
         let latching = self.settings.controller.toggle_sneak || self.settings.toggle_crouch;
@@ -373,7 +373,7 @@ impl Game<'_> {
     fn pad_guide_target(&mut self, spectator: bool) -> (Target, Option<super::super::Hit>, bool) {
         let attack = self.pick_entity_hit();
         let object = self
-            .remote_object_hit(false)
+            .remote_object_hit()
             .filter(|hit| self.before_block(hit.distance))
             .filter(|hit| self.mob_hit().is_none_or(|(_, d, _)| hit.distance < d));
         let mob = self
@@ -389,7 +389,7 @@ impl Game<'_> {
             };
             let picked = attack
                 .flatten()
-                .and_then(|id| self.entity_pick_result(id))
+                .and_then(|id| self.pick_result_of(id))
                 .is_some_and(|stack| self.pad_guide_can_pick(&stack));
             let target = Target::Entity {
                 attackable: attack.is_some(),

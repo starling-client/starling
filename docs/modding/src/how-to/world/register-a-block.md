@@ -19,8 +19,7 @@ struct Mod;
 impl Hooks for Mod {
     fn blocks(&self, _: &RegistrationContext, event: &mut BlocksEvent<'_>) {
         let tile = Block::new("mymod:blue_tile", "minecraft:stone");
-        // A malformed ID or a namespace the manifest doesn't own returns an error;
-        // startup reports the refusal either way.
+        // A malformed ID returns an error; startup reports the refusal.
         let _ = event.register(tile);
     }
 }

@@ -1,0 +1,3 @@
+ids = ["hook:on_place", "method:BlockPart::on_place", "type:HookId"]
+why = "BlockPart::on_place adds a server-side notice at BlockBehaviour.onPlace, called from LevelChunk.setBlockState for every new state (a player placement, /setblock, /fill, a structure, a piston). It carries the dimension, position, new state, old state and moved_by_piston, is dispatched only to the parts on the new state and gets the level writer neighbor_changed gets (LevelWriteHost), before the block's own onPlace handling."
+migrate = "No existing hook version changes. A part that queued its position to fix its block at the end of the tick implements on_place and sets the block in the call."

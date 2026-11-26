@@ -18,11 +18,9 @@ only the exact recipe pairs.
 import json
 from pathlib import Path
 import sys
-try:
-    from . import lab, oracle_harness as harness
-except ImportError:
-    import lab
-    import oracle_harness as harness
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, oracle_harness as harness
 
 POTION_ITEMS = ['potion', 'splash_potion', 'lingering_potion']
 

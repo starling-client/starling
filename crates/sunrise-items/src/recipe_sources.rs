@@ -91,13 +91,17 @@ pub fn sources_collecting(
         .conditions
         .with_mod_inventory(inventory.server_ids());
     for file in &sunrise_world::json_folder::read(&root.join("data/minecraft/recipe"))?.files {
-        sources.push((file.name.clone(), file.bytes()?.to_vec()));
+        if sunrise_world::json_folder::valid_resource_path("minecraft", &file.name) {
+            sources.push((file.name.clone(), file.bytes()?.to_vec()));
+        }
     }
     for namespace in crate::content_namespaces::namespaces(root) {
         let dir = root.join(format!("data/{namespace}/recipe"));
         if dir.is_dir() {
             for file in &sunrise_world::json_folder::read(&dir)?.files {
-                sources.push((format!("{namespace}:{}", file.name), file.bytes()?.to_vec()));
+                if sunrise_world::json_folder::valid_resource_path(&namespace, &file.name) {
+                    sources.push((format!("{namespace}:{}", file.name), file.bytes()?.to_vec()));
+                }
             }
         }
     }

@@ -18,3 +18,9 @@ fn external_area_macros_implement_host_unions() {
     let _: &dyn mod_api::ClientHost = &Host;
     assert!(std::hint::black_box(INCLUDED));
 }
+
+#[test]
+fn client_quit_refuses_host_without_live_client() {
+    let host: &dyn mod_api::ClientHost = &Host;
+    assert!(!host.request_client_quit());
+}

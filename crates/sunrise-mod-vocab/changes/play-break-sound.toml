@@ -1,0 +1,3 @@
+ids = ["hook:play_break_sound", "type:PlayBreakSoundEvent", "type:HookId"]
+why = "Adds the client BlockPart hook play_break_sound, version 1: NeoForge's IClientBlockExtensions.playBreakSound, asked before level event 2001 plays a block's break sound, so a block Part can play its own sound or none. HookId gains its variant."
+migrate = "Nothing to migrate. A mod that matches HookId exhaustively adds the new arm; one with a wildcard arm compiles unchanged."

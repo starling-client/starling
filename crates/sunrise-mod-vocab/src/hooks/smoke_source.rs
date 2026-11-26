@@ -1,5 +1,4 @@
 //! The `smoke_source` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0216
 
 pub trait Hooks {
     /// `CampfireBlock.isSmokeSource` on both sides for the

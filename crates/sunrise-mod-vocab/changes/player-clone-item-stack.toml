@@ -1,0 +1,2 @@
+ids = ["handle:PlayerRef::clone_item_stack"]
+why = "#5289: a server mod reads the stack Pick Block gives a player for the block at a position (`BlockState.getCloneItemStack`), the same answer the pick packet takes: the block's own item unless a block Part's `clone_item_stack` answers in its place. Block-entity data is not copied onto it, and reach and game mode are not checked."

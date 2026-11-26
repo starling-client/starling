@@ -4,9 +4,13 @@ use super::{
     Change, DimensionKey, Event, Identity, IdentityDetails, Journal, Kind, Owner, SavedUuidUpdate,
 };
 
+#[path = "table/spatial.rs"]
+mod spatial;
 #[path = "table/uuid_index.rs"]
 mod uuid_index;
 use crate::join_seq::JoinSeq;
+use spatial::SpatialIndex;
+pub use spatial::{SectionCandidate, SectionKey, SectionSearch};
 use std::{
     collections::{BTreeSet, hash_map::Entry},
     num::NonZeroU32,
@@ -55,6 +59,7 @@ struct ResidentRow {
     /// section it is filed in), or its last crossing (`Callback.onMove` adds it
     /// at the end of the section it entered).
     entry: JoinSeq,
+    section: Option<SectionKey>,
 }
 
 // Lookup membership ordered by admission, not by current section entry.
@@ -69,6 +74,7 @@ pub struct EntityTable {
     uuids: UuidIndex,
     rows: FxHashMap<NonZeroU32, ResidentRow>,
     level_admissions: LevelAdmissions,
+    spatial: SpatialIndex,
     extracted: FxHashMap<NonZeroU32, Location>,
     lifted: FxHashMap<Owner, usize>,
 }
@@ -82,6 +88,7 @@ impl EntityTable {
             uuids: UuidIndex::default(),
             rows: FxHashMap::default(),
             level_admissions: FxHashMap::default(),
+            spatial: SpatialIndex::default(),
             extracted: FxHashMap::default(),
             lifted: FxHashMap::default(),
         }
@@ -139,6 +146,7 @@ impl EntityTable {
             &mut self.rows,
             &mut self.uuids,
             &mut self.level_admissions,
+            &mut self.spatial,
             id,
             location,
         );
@@ -181,6 +189,7 @@ impl EntityTable {
                         details: identity.details,
                         admission,
                         entry: old.map_or(admission, |row| row.entry),
+                        section: old.and_then(|row| row.section),
                     };
                     if let Some(old) = self.rows.insert(identity.id, row) {
                         debug_assert_eq!(old.location, location, "duplicate loaded entity id");
@@ -195,6 +204,7 @@ impl EntityTable {
                                 .entry(location.owner.dimension)
                                 .or_default()
                                 .insert((row.admission, identity.id));
+                            self.spatial.unfile(identity.id, row);
                         }
                     }
                     self.extracted.remove(&identity.id);
@@ -205,6 +215,7 @@ impl EntityTable {
                         &mut self.rows,
                         &mut self.uuids,
                         &mut self.level_admissions,
+                        &mut self.spatial,
                         identity.id,
                         location,
                     );
@@ -328,11 +339,50 @@ impl EntityTable {
     /// happens, so the order of the calls is the order of the moves: a move out
     /// and back is two entries, and a passenger moved after its vehicle enters
     /// after it.
-    pub fn entered_section(&mut self, id: u32) {
+    pub fn entered_section(&mut self, id: u32, at: [f64; 3]) {
         self.drain();
-        if let Some(row) = NonZeroU32::new(id).and_then(|id| self.rows.get_mut(&id)) {
+        if let Some(id) = NonZeroU32::new(id)
+            && let Some(row) = self.rows.get_mut(&id)
+        {
+            let old = (row.entry, id);
             row.entry = JoinSeq::next();
+            if row.location.owner.kind != Kind::DragonPart {
+                self.spatial.cross(id, row, old, at);
+            }
         }
+    }
+
+    /// Whether some row of `dimension` waits for a query to resolve its position.
+    pub fn has_unfiled_section_members(&mut self, dimension: DimensionKey) -> bool {
+        self.drain();
+        self.spatial.has_unfiled(dimension)
+    }
+
+    /// Copy an unfiled ID; source position resolution must happen outside the table borrow.
+    pub fn unfiled_section_candidate_after(
+        &mut self,
+        dimension: DimensionKey,
+        after: Option<NonZeroU32>,
+    ) -> Option<NonZeroU32> {
+        self.drain();
+        self.spatial.unfiled_after(dimension, after)
+    }
+
+    /// File a still-resident unfiled row at its resolved live position.
+    pub fn file_section_member(&mut self, id: NonZeroU32, position: [f64; 3]) {
+        if let Some(row) = self.rows.get_mut(&id) {
+            self.spatial.file(id, row, position);
+        }
+    }
+
+    /// Copy one ordinary candidate in section/entry order without lending the bucket.
+    pub fn level_section_candidate_after(
+        &self,
+        dimension: DimensionKey,
+        search: SectionSearch,
+        after: Option<SectionCandidate>,
+    ) -> Option<SectionCandidate> {
+        self.spatial.candidate_after(dimension, search, after)
     }
 
     /// Each admitted id's place in its section (`EntitySection` keeps its
@@ -355,6 +405,7 @@ impl EntityTable {
         self.uuids = UuidIndex::default();
         self.rows.clear();
         self.level_admissions.clear();
+        self.spatial = SpatialIndex::default();
         self.extracted.clear();
         self.lifted.clear();
     }
@@ -363,6 +414,7 @@ fn forget_row(
     rows: &mut FxHashMap<NonZeroU32, ResidentRow>,
     uuids: &mut UuidIndex,
     level_admissions: &mut LevelAdmissions,
+    spatial: &mut SpatialIndex,
     id: NonZeroU32,
     location: Location,
 ) {
@@ -370,6 +422,7 @@ fn forget_row(
         && row.location == location
     {
         uuids.retire(id, row);
+        spatial.retire(id, row);
         if location.owner.kind != Kind::DragonPart
             && let Entry::Occupied(mut level) = level_admissions.entry(location.owner.dimension)
         {

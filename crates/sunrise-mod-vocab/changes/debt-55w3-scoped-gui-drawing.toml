@@ -1,0 +1,76 @@
+ids = [
+    "method:DrawContext::gui_paint",
+    "method:DrawContext::draw_gui",
+    "method:DrawContext::push_clip",
+    "method:DrawContext::pop_clip",
+    "method:DrawContext::with_scissor",
+    "type:GuiClipRefusal",
+    "type:GuiClipRefusal.NoneOpen",
+    "type:GuiClipRefusal.TooDeep",
+    "type:GuiClipRefusal.Unavailable",
+    "type:GuiDraw",
+    "type:GuiDraw.Sprite",
+    "type:GuiDraw.AtlasSprite",
+    "type:GuiDraw.Blit",
+    "type:GuiDraw.Fill",
+    "type:GuiDraw.FillGradient",
+    "type:GuiDraw.Text",
+    "type:GuiDraw.Item",
+    "type:GuiDraw.PlayerFace",
+    "type:GuiDraw.Texture",
+    "type:GuiDraw.Push",
+    "type:GuiDraw.Pop",
+    "type:GuiPaintError",
+    "type:GuiPaintError.Text",
+    "type:GuiPaintError.ItemSlot",
+    "type:GuiPaintError.ItemNotFinite",
+    "type:GuiPaintError.BlitTexture",
+    "type:GuiPaintError.BlitSize",
+    "type:GuiPaintError.Sprite",
+    "type:GuiPaintError.SpriteRegion",
+    "type:GuiPaintError.SpriteBlend",
+    "type:GuiPaintError.TextureSize",
+    "type:client::hud_layout::PoseOp",
+    "type:client::hud_layout::Blend",
+    "trait:GuiCanvas",
+    "method:GuiCanvas::size",
+    "method:GuiCanvas::scope",
+    "method:GuiCanvas::fill",
+    "method:GuiCanvas::fill_gradient",
+    "method:GuiCanvas::text",
+    "method:GuiCanvas::item",
+    "method:GuiCanvas::item_decorations",
+    "method:GuiCanvas::blit_sprite",
+    "method:GuiCanvas::atlas_sprite",
+    "method:GuiCanvas::blit",
+    "type:GuiBlitRegion",
+    "type:GuiBlitRegion.uv",
+    "type:GuiBlitRegion.src",
+    "type:GuiBlitRegion.tex",
+    "type:GuiSpriteRegion",
+    "type:GuiSpriteRegion.size",
+    "type:GuiSpriteRegion.offset",
+    "type:GuiDrawError",
+    "type:GuiDrawError.Unavailable",
+    "type:GuiDrawError.Abort",
+    "type:GuiDrawError.NotFinite",
+    "type:GuiDrawError.Text",
+    "type:GuiDrawError.Stack",
+    "type:GuiDrawError.UnknownSprite",
+    "type:GuiDrawError.UnsupportedSpriteBlend",
+    "type:GuiDrawError.BadSpriteRegion",
+    "type:GuiDrawError.UnknownTexture",
+    "type:GuiDrawError.BadBlitRegion",
+]
+why = "Mods now draw directly into the GUI batch. Closures pair pose and clip scopes without a replay buffer or a manual pop, and a checked group can still commit all its drawing or none of it."
+migrate = '''
+Replace `draw.gui_paint(&ops)` with `draw.draw_gui(&mut |canvas| { ...; Ok(()) })`. Replace each `Push(ops)` through its matching `Pop` with `canvas.scope(&ops, None, &mut |child| { ...; Ok(()) })`, drawing on `child` inside. Use `Some([x, y, w, h])` for a scissor in the child pose. `PoseOp` and `Blend` keep their paths and variants; pass them directly instead of encoding or decoding them with `Wire`.
+
+Use f32 GUI pixels for destinations. Convert `Fill` or `FillGradient` corners to `[x0, y0, x1 - x0, y1 - y0]` and call `fill(rect, color)` or `fill_gradient(rect, top, bottom)`. Replace `Text` with `canvas.text(&text, [x, y], color, shadow)` to preserve component styles; `DrawContext::text` still takes a plain `&str`. Replace `Sprite` with `canvas.blit_sprite(&sprite, dst, region.map(|[sw, sh, u, v]| GuiSpriteRegion { size: [sw, sh], offset: [u, v] }), color, blend)`, `AtlasSprite` with `canvas.atlas_sprite(&sprite, dst, color)`, `Blit` with `canvas.blit(&texture, dst, GuiBlitRegion { uv, src, tex }, color, blend)`, and `Texture` with `canvas.texture(&id, dst, GuiBlitRegion { uv, src, tex }, color)`, where `dst` is `[x, y, w, h]`.
+
+For `Item`, get the displayed stack from `host.local_player().and_then(|player| player.with_inventory(host, |inv| inv.get(slot)?.project())).flatten()`; find slot 0 through 8 or 40 (off hand), and skip an absent stack. Draw the model with `canvas.scope(&[PoseOp::Translate(px, py), PoseOp::Scale(sx, sy), PoseOp::Translate(-px, -py)], None, &mut |model| model.item(&stack, [x, y], seed))?` using the old pivot and scale. Then call `canvas.item_decorations(&stack, [x, y], None)?` on the surrounding canvas, outside the squeeze. Use `canvas.item(&stack, at, seed)` alone for a model with no decorations; it forwards the seed as the ordinary hotbar does.
+
+Match `GuiDrawError` at the failing call instead of `GuiPaintError` and its command index. `Text` remains `Text`; `ItemNotFinite` and non-finite `BlitSize` coordinates become `NotFinite`, a non-finite `Texture` uv becomes `NotFinite`, invalid whole-sprite sizes become `BadSpriteRegion`, and a zero texture-axis divisor (`BlitSize` or `TextureSize`) becomes `BadBlitRegion` (signed raw source extents, including mirrored blits, still work). `SpriteBlend` becomes `UnsupportedSpriteBlend`, and absent sprites or textures become `UnknownSprite` or `UnknownTexture`. Skip an absent inventory slot instead of matching `ItemSlot`; `Stack` means a stack could not be read for drawing. Use `?` to discard the enclosing group, or return `Err(GuiDrawError::Abort)` to discard it explicitly. Handling a refused call or child scope lets the parent keep its other successful draws.
+
+Replace `draw.push_clip(rect)?; ...; draw.pop_clip()?` with `draw.with_scissor(rect, &mut |clipped| { ... })?` and draw through `clipped`. This lends the full `DrawContext`, with no draw rollback, so handle draw errors inside the `()` callback. `NoneOpen` and `TooDeep` are gone: the clip is lexical and vanilla’s scissor stack has no depth cap. Match `NotFinite` (including a computed endpoint that is not finite) or `Unavailable` on `with_scissor`, and leave a wildcard for the non-exhaustive error. A custom `DrawContext` implements `with_scissor` instead of `push_clip` and `pop_clip`. Use `draw_gui` with a scissored `canvas.scope` when the clipped draws are a fallible group.
+'''

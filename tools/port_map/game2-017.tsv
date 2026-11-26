@@ -6,7 +6,7 @@ BellBlockEntity.isRaiderWithinRange	inline	crates/sunrise-client-render/src/bloc
 BlockEntity.validateBlockState	skip:other		guard that throws on a wrong block state; no player behaviour
 BlockEntity.getPosFromTag	port	crates/sunrise-world/src/chunk.rs::block_entity_pos	the saved x/y/z, with x and z moved into the chunk that saved the entity when the tag names another one (vanilla warns and keeps each coordinate's low four bits); the chunk decoder applies it to every saved block entity
 BlockEntity.saveCustomOnly	port	crates/sunrise-client/src/block_entity_item.rs::custom_only	saved NBT without id, position and components
-BlockEntity.loadStatic	port	crates/sunrise-client/src/save.rs::decode_block_entity	creates the block entity from its saved tag
+BlockEntity.loadStatic	port	crates/sunrise-client/src/save/block_entity_decode.rs::decode_block_entity	creates the block entity from its saved tag
 BlockEntity.fillCrashReportCategory	skip:debug		crash report detail
 BlockEntity.applyComponents	inline	crates/sunrise-client/src/block_entity_item.rs::place	implicit components applied as part of placing the item's data
 BlockEntity.collectComponents	port	crates/sunrise-client/src/block_entity_item.rs::collected_components	explicit plus implicit components for picked items and creative shulker drops
@@ -24,7 +24,7 @@ CalibratedSculkSensorBlockEntity.VibrationUser.canReceiveVibration	port	crates/s
 CampfireBlockEntity.markUpdated	port	crates/sunrise-client/src/game/blocks/campfire.rs::Game::tick_campfire	`use_on_campfire` marks the block entity updated (chunk modified, clients synced) and `tick_campfire` marks a moved timer, as `setChanged` + `sendBlockUpdated` do
 CampfireBlockEntity.applyImplicitComponents	port	crates/sunrise-client/src/block_entity_item.rs::place	container components applied when the item's data is placed
 CampfireBlockEntity.collectImplicitComponents	port	crates/sunrise-client/src/block_entity_item.rs::collect	container component collected from Items
-ChestBlockEntity.loadAdditional	port	crates/sunrise-client/src/save.rs::decode_block_entity	Items (or loot table, via the chunk)
+ChestBlockEntity.loadAdditional	port	crates/sunrise-client/src/save/block_entity_decode.rs::decode_block_entity	Items (or loot table, via the chunk)
 ChestBlockEntity.saveAdditional	port	crates/sunrise-client/src/save/block_entity_encode.rs::encode	Items
 ChestBlockEntity.stopOpen	port	crates/sunrise-client/src/game/blocks/block_entity_anims.rs::Game::container_opener_event	opener count down (close side), spectators excluded
 ChestBlockEntity.swapContents	missing		only `UpgradeData.BlockFixers` (the old-world upgrade of a double chest) asks for it, and the chunk upgrade does not swap chest halves
@@ -56,7 +56,7 @@ CrafterBlockEntity.slotCanBeDisabled	port	crates/sunrise-client-render/src/conta
 CreakingHeartBlockEntity.updateCreakingState	inline	crates/sunrise-client/src/mobs/creaking_heart.rs::server_tick	creaking_heart_state set in server_tick
 CreakingHeartBlockEntity.setCreakingInfo	inline	crates/sunrise-client/src/mobs/creaking_heart.rs::protector	uuid reset and ticks reset inside protector
 CreakingHeartBlockEntity.isProtector	port	crates/sunrise-client/src/mobs/creaking_heart.rs::protector
-CreakingHeartBlockEntity.loadAdditional	port	crates/sunrise-client/src/save.rs::decode_block_entity	creaking uuid
+CreakingHeartBlockEntity.loadAdditional	port	crates/sunrise-client/src/save/block_entity_decode.rs::decode_block_entity	creaking uuid
 CreakingHeartBlockEntity.saveAdditional	port	crates/sunrise-client/src/save/block_entity_encode.rs::encode	creaking uuid
 DecoratedPotBlockEntity.saveAdditional	port	crates/sunrise-client/src/game/blocks/decorated_pot.rs::Game::pot_data	Command NBT uses the existing canonical codec and authoritative saved tag without unpacking loot; gap: major: save/reopen, components and other entry points remain unverified.
 DecoratedPotBlockEntity.loadAdditional	port	crates/sunrise-client/src/game/blocks/decorated_pot.rs::Game::set_pot_data	Command NBT uses the existing canonical codec and authoritative saved tag without unpacking loot; gap: major: save/reopen, components and other entry points remain unverified.
@@ -65,12 +65,12 @@ DecoratedPotBlockEntity.applyImplicitComponents	port	crates/sunrise-client/src/b
 DecoratedPotBlockEntity.splitTheItem	missing		`decorated_pot.rs` has no split-count step for the pot's item
 DecoratedPotBlockEntity.wobble	port	crates/sunrise-client/src/game/blocks/decorated_pot.rs::Game::use_decorated_pot	wobble event sent on a hit
 DispenserBlockEntity.insertItem	port	crates/sunrise-client/src/game/blocks/machines/mod.rs::Game::add_item	slot-by-slot insert, as hoppers use it
-DispenserBlockEntity.loadAdditional	port	crates/sunrise-client/src/save.rs::decode_block_entity	Items (9 slots)
+DispenserBlockEntity.loadAdditional	port	crates/sunrise-client/src/save/block_entity_decode.rs::decode_block_entity	Items (9 slots)
 DispenserBlockEntity.saveAdditional	port	crates/sunrise-client/src/save/block_entity_encode.rs::encode	Items (9 slots)
 EnderChestBlockEntity.startOpen	port	crates/sunrise-client/src/game/blocks/block_entity_anims.rs::Game::container_opener_event	opener count up (open side)
 EnderChestBlockEntity.stopOpen	port	crates/sunrise-client/src/game/blocks/block_entity_anims.rs::Game::container_opener_event	opener count down (close side)
 EnderChestBlockEntity.recheckOpen	missing		no player opener recount when the block beside an ender chest changes: the openers are counted at open and close only (`container_openers_changed`)
-HopperBlockEntity.loadAdditional	port	crates/sunrise-client/src/save.rs::decode_block_entity	gap: minor: TransferCooldown is not saved (transient state in machines.rs)
+HopperBlockEntity.loadAdditional	port	crates/sunrise-client/src/save/block_entity_decode.rs::decode_block_entity	gap: minor: TransferCooldown is not saved (transient state in machines.rs)
 HopperBlockEntity.saveAdditional	port	crates/sunrise-client/src/save/block_entity_encode.rs::encode	gap: minor: TransferCooldown is not saved (transient state in machines.rs)
 HopperBlockEntity.setItem	port	crates/sunrise-client/src/game/blocks/machines/mod.rs::Game::try_move_in_item	gap: minor: unpackLootTable(null) on set is not done here
 HopperBlockEntity.inventoryFull	inline	crates/sunrise-client/src/game/blocks/machines/mod.rs::Game::hopper_try_move_items	all-slots-at-max check before sucking
@@ -84,7 +84,7 @@ HopperBlockEntity.entityInside	inline	crates/sunrise-client/src/game/blocks/mach
 JigsawBlockEntity.generate	port	crates/sunrise-client/src/game/administration/jigsaw_blocks.rs::Game::generate_jigsaw_block
 JukeboxBlockEntity.notifyItemChangedInJukebox	port	crates/sunrise-client/src/game/blocks/jukebox.rs::Game::set_has_record	the `has_record` state with update flag 2, and `minecraft:block_change` at the box (the sculk sensors hear a disc coming or going)
 JukeboxBlockEntity.getComparatorOutput	port	crates/sunrise-client/src/game/blocks/jukebox.rs::jukebox_signals	comparator value of the song
-JukeboxBlockEntity.loadAdditional	port	crates/sunrise-client/src/save.rs::decode_block_entity	RecordItem and ticks
+JukeboxBlockEntity.loadAdditional	port	crates/sunrise-client/src/save/block_entity_decode.rs::decode_block_entity	RecordItem and ticks
 JukeboxBlockEntity.saveAdditional	port	crates/sunrise-client/src/save/block_entity_encode.rs::encode	RecordItem and ticks
 JukeboxBlockEntity.setTheItem	port	crates/sunrise-client/src/game/blocks/jukebox.rs::Game::jukebox_inserted	a disc a hopper or dropper feeds into the slot starts the song, with the block state, the level event and the neighbour and comparator updates
 JukeboxBlockEntity.canPlaceItem	port	crates/sunrise-client/src/game/blocks/machines/mod.rs::Containers::can_place	a playable disc into the empty single slot (`Jukebox.items`, which `BlockEntity.slots` now exposes), so a hopper reaches a jukebox
@@ -94,10 +94,10 @@ LecternBlockEntity.hasBook	inline	crates/sunrise-client/src/game/interface/books
 LecternBlockEntity.onBookItemRemove	port	crates/sunrise-client/src/game/interface/books.rs::Game::lectern_menu_done	book gone: has_book off, container changed
 LecternBlockEntity.resolveBook	missing		`books.rs::view_pages` reads a written book's pages for the lectern's screen as they are: no selector, score or translatable resolution
 LecternBlockEntity.createCommandSourceStack	missing		only `resolveBook` builds it; a page's RunCommand goes through `click_command`, which has no lectern source, so a relative coordinate resolves at the player
-LecternBlockEntity.loadAdditional	port	crates/sunrise-client/src/save.rs::decode_block_entity	Book and Page, the page clamped to the book's first and last page
+LecternBlockEntity.loadAdditional	port	crates/sunrise-client/src/save/block_entity_decode.rs::decode_block_entity	Book and Page, the page clamped to the book's first and last page
 LecternBlockEntity.saveAdditional	port	crates/sunrise-client/src/save/block_entity_encode.rs::encode	Book and Page
 SculkCatalystBlockEntity.CatalystListener.tryAwardItSpreadsAdvancement	port	crates/sunrise-client/src/game/mobs/creatures/mod.rs::Game::mob_die	kill_mob_near_sculk_catalyst fires when the catalyst takes a mob's experience
-SculkShriekerBlockEntity.loadAdditional	port	crates/sunrise-client/src/save.rs::decode_block_entity	shrieker state from the sculk arm
+SculkShriekerBlockEntity.loadAdditional	port	crates/sunrise-client/src/save/block_entity_decode.rs::decode_block_entity	shrieker state from the sculk arm
 SculkShriekerBlockEntity.saveAdditional	port	crates/sunrise-client/src/save/block_entity_encode.rs::encode	shrieker state from the sculk arm
 SculkShriekerBlockEntity.tryGetPlayer	inline	crates/sunrise-client/src/game/blocks/sculk.rs::Game::sculk_listen	ctx.player flag decides whether a player set it off
 SculkShriekerBlockEntity.tryToWarn	port	crates/sunrise-client/src/game/blocks/sculk.rs::Game::try_to_warn

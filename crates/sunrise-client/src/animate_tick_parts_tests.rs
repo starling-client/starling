@@ -46,6 +46,7 @@ fn each_loaded_pick_is_told_to_the_block_parts_after_its_vanilla_effects() {
         creaking_active: false,
         sky_darken: 0,
         marker: None,
+        ambient_particles: None,
         model_offset: &|_, _, _| None,
         gateway_particles: &|_, _| 0,
         thundering: false,
@@ -69,7 +70,10 @@ fn each_loaded_pick_is_told_to_the_block_parts_after_its_vanilla_effects() {
     let mut sampling = AnimateSampling::new([8, 64, 8]);
     assert!(!sampling.started());
     let mut stops = 0;
-    while let Some((state, pos)) = sampling.run(&tables, &mut stepped, &ctx) {
+    while let Some(step) = sampling.run(&tables, &mut stepped, &ctx) {
+        let AnimateStep::BlockPart(state, pos) = step else {
+            panic!("the context has no ambient sources");
+        };
         assert!(sampling.started());
         assert_eq!(state, torch);
         assert_eq!(world.block(pos[0], pos[1], pos[2]), torch);

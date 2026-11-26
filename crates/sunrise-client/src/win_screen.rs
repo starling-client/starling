@@ -327,7 +327,6 @@ impl WinScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
 
     /// A resource root with only the credits texts: every glyph is the
     /// missing one, 6 pixels wide.
@@ -477,10 +476,7 @@ mod tests {
     #[test]
     fn the_screen_ends_once_everything_rolled_past() {
         let mut s = screen(false, "", CREDITS, "");
-        let atlas = HudAtlas::fonts(&sunrise_assets::resource_source::ResourceSource::directory(
-            (Path::new("/nonexistent")).to_owned(),
-        ))
-        .unwrap();
+        let atlas = HudAtlas::boot();
         let mut batch = HudBatch::scratch([640, 480]);
         let h = batch.height;
         let end = (s.total_scroll_length as f32 + 2.0 * h + 24.0) / 0.75;

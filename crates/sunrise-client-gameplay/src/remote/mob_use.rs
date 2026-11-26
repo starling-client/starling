@@ -17,8 +17,8 @@ pub fn iron_golem_takes(item: &str, health: f32, max_health: f32) -> bool {
 /// `CopperGolem.mobInteract` on a client: an empty hand makes the golem throw
 /// what it holds, and shears answer only when `readyForShearing`. Honeycomb and
 /// axes return `PASS` here because the waxing and scraping run on the server.
-pub fn copper_golem_takes(item: &str, holding: bool, shearable: bool) -> bool {
-    (item.is_empty() && holding) || (item == "minecraft:shears" && shearable)
+pub fn copper_golem_takes(item: &str, shears: bool, holding: bool, shearable: bool) -> bool {
+    (item.is_empty() && holding) || (shears && shearable)
 }
 
 /// `AbstractHorse.handleEating` (and the llama and camel variants): this

@@ -12,7 +12,8 @@ pub trait Hooks {
         out = "cancel",
         host = "read",
         neoforge = "BlockEvent.BlockToolModificationEvent",
-        cancellable = true
+        cancellable = true,
+        version = 2
     )]
     fn block_tool_modification(
         stack: &ItemStack,

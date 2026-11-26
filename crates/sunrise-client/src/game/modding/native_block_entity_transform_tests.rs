@@ -1,8 +1,10 @@
 //! Placement exercises the real processor and the game-side registration bridge.
 use super::native_block_entity_transform::prepare;
 use std::sync::{Arc, Mutex};
-use sunrise_core::nbt::{Compound, Limits, Tag, write_network};
+use sunrise_core::nbt::{Compound, Limits, NamedTag, Tag, write_network};
 use sunrise_world::{
+    compression::Compression,
+    region::ChunkRecord,
     registry::{BlockRegistry, BlockStateId},
     worldgen::{
         anchor::WorldGenerationContext,
@@ -22,65 +24,76 @@ impl mod_api::Hooks for Registration {
     fn register(&self, r: &mut dyn mod_api::Registrar, _: &mod_api::RegistrationContext) {
         let calls = self.0.clone();
         r.block_entity_type("machine")
-            .transform(move |data: &Compound, t: mod_api::StructureTransform| {
-                calls.lock().unwrap().push(t);
-                let mut data = data.clone();
-                let facing = match data.get(&"facing".into()) {
-                    Some(Tag::String(s)) => s.to_string().unwrap(),
-                    _ => return Err(mod_api::TransformRefusal::new("missing facing")),
-                };
-                let facing = match (t.mirror, facing.as_str()) {
-                    (mod_api::StructureMirror::LeftRight, "north") => "south",
-                    (mod_api::StructureMirror::LeftRight, "south") => "north",
-                    (mod_api::StructureMirror::FrontBack, "east") => "west",
-                    (mod_api::StructureMirror::FrontBack, "west") => "east",
-                    (_, f) => f,
-                };
-                let directions = ["north", "east", "south", "west"];
-                let index = directions.iter().position(|f| *f == facing).unwrap();
-                let turns = match t.rotation {
-                    mod_api::StructureRotation::None => 0,
-                    mod_api::StructureRotation::Clockwise90 => 1,
-                    mod_api::StructureRotation::Clockwise180 => 2,
-                    mod_api::StructureRotation::Counterclockwise90 => 3,
-                    _ => unreachable!(),
-                };
-                data.insert(
-                    "facing".into(),
-                    Tag::String(directions[(index + turns) % 4].into()),
-                );
-                Ok(data)
-            })
+            .transform(
+                move |data: &mut mod_api::Compound, t: mod_api::StructureTransform| {
+                    calls.lock().unwrap().push(t);
+                    let facing = match data.get(&"facing".into()) {
+                        Some(Tag::String(s)) => s.to_string().unwrap(),
+                        _ => return Err(mod_api::TransformRefusal::new("missing facing")),
+                    };
+                    let facing = match (t.mirror, facing.as_str()) {
+                        (mod_api::StructureMirror::LeftRight, "north") => "south",
+                        (mod_api::StructureMirror::LeftRight, "south") => "north",
+                        (mod_api::StructureMirror::FrontBack, "east") => "west",
+                        (mod_api::StructureMirror::FrontBack, "west") => "east",
+                        (_, f) => f,
+                    };
+                    let directions = ["north", "east", "south", "west"];
+                    let index = directions.iter().position(|f| *f == facing).unwrap();
+                    let turns = match t.rotation {
+                        mod_api::StructureRotation::None => 0,
+                        mod_api::StructureRotation::Clockwise90 => 1,
+                        mod_api::StructureRotation::Clockwise180 => 2,
+                        mod_api::StructureRotation::Counterclockwise90 => 3,
+                        _ => unreachable!(),
+                    };
+                    data.insert(
+                        "facing".into(),
+                        Tag::String(directions[(index + turns) % 4].into()),
+                    );
+                    Ok(())
+                },
+            )
             .build();
         r.block_entity_type("hostile")
-            .transform(|_: &Compound, _: mod_api::StructureTransform| {
-                Ok([
-                    ("id".into(), Tag::String("minecraft:chest".into())),
-                    ("facing".into(), Tag::String("east".into())),
-                ]
-                .into())
-            })
+            .transform(
+                |data: &mut mod_api::Compound, _: mod_api::StructureTransform| {
+                    data.clear();
+                    data.insert("id".into(), Tag::String("minecraft:chest".into()));
+                    data.insert("x".into(), Tag::Int(-1));
+                    data.insert("facing".into(), Tag::String("east".into()));
+                    Ok(())
+                },
+            )
             .build();
         r.block_entity_type("plain").build();
         r.block_entity_type("refuses")
-            .transform(|_: &Compound, _: mod_api::StructureTransform| {
-                Err(mod_api::TransformRefusal::new("fixture refusal"))
-            })
+            .transform(
+                |data: &mut mod_api::Compound, _: mod_api::StructureTransform| {
+                    data.insert("visited".into(), Tag::Byte(1));
+                    Err(mod_api::TransformRefusal::new("fixture refusal"))
+                },
+            )
             .build();
-        r.block_entity_type("too_deep")
-            .transform(|_: &Compound, _: mod_api::StructureTransform| {
-                let mut tag = Tag::Byte(1);
-                for _ in 0..514 {
-                    tag = Tag::Compound([("child".into(), tag)].into());
-                }
-                Ok([("nested".into(), tag)].into())
-            })
+        r.block_entity_type("deep")
+            .transform(
+                |data: &mut mod_api::Compound, _: mod_api::StructureTransform| {
+                    let mut tag = Tag::Byte(1);
+                    // Deeper than vanilla NbtAccounter.MAX_STACK_DEPTH (512).
+                    for _ in 0..514 {
+                        tag = Tag::Compound([("child".into(), tag)].into());
+                    }
+                    data.insert("nested".into(), tag);
+                    Ok(())
+                },
+            )
             .build();
         r.block_entity_type("panics")
             .transform(
-                |_: &Compound,
+                |data: &mut mod_api::Compound,
                  _: mod_api::StructureTransform|
-                 -> Result<Compound, mod_api::TransformRefusal> {
+                 -> Result<(), mod_api::TransformRefusal> {
+                    data.insert("visited".into(), Tag::Byte(1));
                     panic!("fixture panic")
                 },
             )
@@ -204,6 +217,11 @@ fn place_block(
         ),
     ]
     .into();
+    let template = template(resources, block, &data);
+    (place_template(resources, &template, rotation, mirror), data)
+}
+
+fn template(resources: &StructureResources, block: &str, data: &Compound) -> StructureTemplate {
     let tag = Tag::compound([
         ("size", Tag::List(vec![Tag::Int(1); 3])),
         (
@@ -219,7 +237,15 @@ fn place_block(
             ])]),
         ),
     ]);
-    let template = StructureTemplate::from_nbt(&tag, resources.registry, &resources.transforms);
+    StructureTemplate::from_nbt(&tag, resources.registry, &resources.transforms)
+}
+
+fn place_template(
+    resources: &StructureResources,
+    template: &StructureTemplate,
+    rotation: Rotation,
+    mirror: Mirror,
+) -> World {
     let mut world = World {
         state: BlockStateId(0),
         stored: None,
@@ -232,7 +258,7 @@ fn place_block(
         place_in_world(
             &mut world,
             resources,
-            &template,
+            template,
             [3, 64, 5],
             [3, 64, 5],
             &mut settings,
@@ -241,7 +267,7 @@ fn place_block(
         )
         .unwrap()
     );
-    (world, data)
+    world
 }
 struct Capture(Mutex<Vec<String>>);
 impl log::Log for Capture {
@@ -406,13 +432,7 @@ fn structure_transform_placement_rotations_mirrors_unset_and_refusal() {
             );
             assert!(calls.lock().unwrap().pop().is_some());
         }
-        for id in [
-            "test:plain",
-            "test:too_deep",
-            "test:refuses",
-            "test:panics",
-            "minecraft:chest",
-        ] {
+        for id in ["test:plain", "minecraft:chest"] {
             let (world, original) =
                 place(&resources, id, "north", Rotation::Clockwise90, Mirror::None);
             let stored = world.stored.unwrap();
@@ -423,15 +443,57 @@ fn structure_transform_placement_rotations_mirrors_unset_and_refusal() {
             );
             assert!(calls.lock().unwrap().is_empty());
         }
+        for (kind, visited) in [
+            ("test:refuses", true),
+            ("test:refuses", true),
+            ("test:panics", true),
+            ("test:panics", false),
+        ] {
+            let (world, mut expected) =
+                place(&resources, kind, "north", Rotation::None, Mirror::None);
+            if visited {
+                expected.insert("visited".into(), Tag::Byte(1));
+            }
+            assert_eq!(world.stored, Some(expected));
+        }
+        // Poison is per callback, not per mod.
+        let (world, _) = place(
+            &resources,
+            "test:machine",
+            "north",
+            Rotation::Clockwise90,
+            Mirror::None,
+        );
+        assert_eq!(
+            world.stored.unwrap().get(&"facing".into()),
+            Some(&Tag::String("east".into()))
+        );
         let logs = LOG.0.lock().unwrap();
-        assert!(logs.iter().any(|line| line.contains("test:refuses")
-            && line.contains("fixture refusal")
-            && line.contains("64")
-            && line.contains("3")
-            && line.contains("5")));
-        assert!(
+        assert_eq!(
             logs.iter()
-                .any(|line| line.contains("test:panics") && line.contains("keeping original data"))
+                .filter(
+                    |line| line.contains("mod test: block entity test:refuses at [3, 64, 5]")
+                        && line.contains("fixture refusal")
+                )
+                .count(),
+            2
+        );
+        assert_eq!(
+            logs.iter()
+                .filter(
+                    |line| line.contains("mod test panicked in hook block_entity_transform")
+                        && line.contains("fixture panic")
+                        && line.contains("disabled")
+                )
+                .count(),
+            1
+        );
+        assert_eq!(
+            mod_api::__private::take_hook_panics(),
+            [mod_api::__private::HookPanicReport {
+                mod_id: "test",
+                hook: "block_entity_transform",
+            }]
         );
     });
 }
@@ -488,6 +550,122 @@ fn structure_transform_hostile_output_keeps_original_identity() {
                 ("facing".into(), Tag::String("east".into())),
             ]
             .into()
+        );
+    });
+}
+
+#[test]
+fn structure_transform_reuses_the_unedited_template() {
+    let calls = Calls::default();
+    let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
+        "test",
+        Box::new(Registration(calls.clone())),
+    )]
+    .into();
+    mod_platform::testing::with_mods(mods.clone(), || {
+        mod_platform::__private::part_tests::install_parts_fixture(&mods).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let resources = resources(dir.path());
+        prepare(resources.registry);
+        let input = [
+            ("id".into(), Tag::String("test:machine".into())),
+            ("facing".into(), Tag::String("north".into())),
+            ("persistent".into(), Tag::Int(42)),
+        ]
+        .into();
+        let template = template(&resources, "test:north", &input);
+        for (rotation, state, facing) in [
+            (Rotation::Clockwise90, BlockStateId(3), "east"),
+            (Rotation::Clockwise180, BlockStateId(4), "south"),
+        ] {
+            let world = place_template(&resources, &template, rotation, Mirror::None);
+            assert_eq!(world.state, state);
+            assert_eq!(
+                world.stored,
+                Some(
+                    [
+                        ("id".into(), Tag::String("test:machine".into())),
+                        ("facing".into(), Tag::String(facing.into())),
+                        ("persistent".into(), Tag::Int(42)),
+                    ]
+                    .into()
+                )
+            );
+        }
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![
+                mod_api::StructureTransform::new(
+                    mod_api::StructureRotation::Clockwise90,
+                    mod_api::StructureMirror::None
+                ),
+                mod_api::StructureTransform::new(
+                    mod_api::StructureRotation::Clockwise180,
+                    mod_api::StructureMirror::None
+                ),
+            ]
+        );
+    });
+}
+
+#[test]
+fn structure_transform_leaves_nbt_limits_to_serialization() {
+    let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
+        "test",
+        Box::new(Registration(Calls::default())),
+    )]
+    .into();
+    mod_platform::testing::with_mods(mods.clone(), || {
+        mod_platform::__private::part_tests::install_parts_fixture(&mods).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let resources = resources(dir.path());
+        prepare(resources.registry);
+        let (world, _) = place(
+            &resources,
+            "test:deep",
+            "north",
+            Rotation::None,
+            Mirror::None,
+        );
+        let tag = Tag::Compound(world.stored.unwrap());
+        let mut nested = tag.get("nested").unwrap();
+        for _ in 0..514 {
+            nested = nested.get("child").unwrap();
+        }
+        assert_eq!(nested, &Tag::Byte(1));
+        // Placement accepts the live data. The depth rules belong to the actual packet
+        // and disk writers.
+        assert!(
+            <sunrise_protocol::buf::OptionalCompoundTag as sunrise_protocol::buf::Codec<_>>::validate(
+                &tag
+            )
+            .is_err(),
+            "chunk block-entity codec refuses over-depth NBT"
+        );
+        assert!(
+            sunrise_protocol::packets::play::Clientbound::BlockEntityData(
+                sunrise_protocol::packets::play::BlockEntityData {
+                    pos: [3, 64, 5],
+                    kind: 0,
+                    tag: tag.clone(),
+                },
+            )
+            .try_encode()
+            .is_err(),
+            "block-entity update packet refuses over-depth NBT"
+        );
+        assert!(write_network(&tag, Limits::network()).is_err());
+        assert!(
+            ChunkRecord::from_nbt(
+                &NamedTag {
+                    name: "".into(),
+                    tag
+                },
+                Compression::None,
+                0,
+                Limits::default(),
+            )
+            .is_ok()
         );
     });
 }

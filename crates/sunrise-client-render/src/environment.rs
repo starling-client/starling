@@ -3,11 +3,11 @@
 //! have weather, the rain and thunder layers, sampled into the sky state the renderer draws.
 use crate::Result;
 use serde_json::Value as Json;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, LazyLock, OnceLock, RwLock};
 use sunrise_assets::resource_source::ResourceSource;
 use sunrise_world::environment_attributes::{
-    Attribute, AttributeMap, Entry, Kind, Value, attribute,
+    AMBIENT_PARTICLES, Attribute, AttributeMap, Entry, Kind, Value, attribute,
 };
 use sunrise_world::environment_system::{BiomeBlend, Builder, Conditions, System};
 use sunrise_world::environment_timeline::Timeline;
@@ -29,10 +29,56 @@ pub struct Environment {
     packs: PackModifiers,
 }
 
-/// The dimension types (their `attributes` and `timelines`) of the levels a mod or a data pack
-/// added, by level id, and the environment each makes over the Overworld's the first time it is asked for
-/// (`None` when its attributes are refused, which falls back to the Overworld's).
-type LevelAttributes = HashMap<String, &'static (Json, OnceLock<Option<Environment>>)>;
+/// A world's `minecraft:timeline` registry and its bound `minecraft:timeline` tags, supplied
+/// either by the server's world tables or by the client's synchronized registries.
+#[derive(Clone, Default)]
+pub struct TimelineTable {
+    pub timelines: BTreeMap<String, Arc<Timeline>>,
+    pub tags: BTreeMap<String, Vec<String>>,
+}
+
+impl TimelineTable {
+    /// Reads the timelines of a resource source (standalone dimension loads and parity probes).
+    pub fn from_source(root: &ResourceSource) -> Self {
+        let mut timelines = BTreeMap::new();
+        for file in root.list_under("data", &["timeline"]) {
+            let Some((namespace, path)) = file
+                .strip_prefix("data/")
+                .and_then(|s| s.split_once("/timeline/"))
+                .and_then(|(namespace, s)| Some((namespace, s.strip_suffix(".json")?)))
+            else {
+                continue;
+            };
+            let id = format!("{namespace}:{path}");
+            match root
+                .read(&file)
+                .map_err(|e| e.to_string())
+                .and_then(|bytes| serde_json::from_slice::<Json>(&bytes).map_err(|e| e.to_string()))
+                .and_then(|t| Timeline::parse(&t))
+            {
+                Ok(timeline) => {
+                    timelines.insert(id, Arc::new(timeline));
+                }
+                Err(e) => log::warn!("timeline {id}: {e}"),
+            }
+        }
+        let tags = crate::pack_tags::bind(root, "timeline", |id| timelines.contains_key(id))
+            .into_iter()
+            .collect();
+        Self { timelines, tags }
+    }
+}
+
+struct LevelEntry {
+    attributes: Json,
+    timelines: Arc<TimelineTable>,
+    made: OnceLock<Option<Environment>>,
+}
+
+/// The dimension types (their `attributes` and `timelines`) and world timeline table of every
+/// level in the open world, by level id, and the environment each makes the first time it is asked
+/// for (`None` when its attributes are refused, which falls back to the base environment).
+type LevelAttributes = HashMap<String, &'static LevelEntry>;
 static LEVELS: LazyLock<RwLock<LevelAttributes>> = LazyLock::new(Default::default);
 
 #[derive(Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -54,6 +100,9 @@ pub struct Sky {
     /// Environmental fog (`visual/fog_start_distance` / `fog_end_distance`).
     pub fog_start: f32,
     pub fog_end: f32,
+    /// `visual/sky_fog_end_distance`.
+    #[serde(default)]
+    pub sky_fog_end: f32,
     /// `visual/cloud_fog_end_distance`.
     pub cloud_fog_end: f32,
     /// `visual/cloud_height`.
@@ -335,7 +384,7 @@ fn as_number(value: &Value) -> f64 {
         Value::Argb([r, g, b, a]) => {
             f64::from((byte(*a) << 24 | byte(*r) << 16 | byte(*g) << 8 | byte(*b)) as i32)
         }
-        Value::Other(_) => 0.0,
+        Value::AmbientParticles(_) | Value::Other(_) => 0.0,
     }
 }
 
@@ -839,13 +888,9 @@ impl Resolver {
     }
 }
 
-/// The dimension's timeline selection, applying ordered tag members in place.
-fn timeline_ids(root: &ResourceSource, json: &Json) -> Vec<String> {
-    let timeline_path = |id: &str| {
-        let (namespace, path) = id.split_once(':').unwrap_or(("minecraft", id));
-        format!("data/{namespace}/timeline/{path}.json")
-    };
-    let tags = crate::pack_tags::bind(root, "timeline", |id| root.contains(&timeline_path(id)));
+/// The dimension's timeline selection, applying ordered tag members in place from the world's
+/// bound `minecraft:timeline` tags.
+fn timeline_ids(tags: &BTreeMap<String, Vec<String>>, json: &Json) -> Vec<String> {
     let entries = match json {
         Json::Array(items) => items.as_slice(),
         entry => std::slice::from_ref(entry),
@@ -866,7 +911,11 @@ fn timeline_ids(root: &ResourceSource, json: &Json) -> Vec<String> {
             };
             members.as_slice()
         } else {
-            direct = id.to_owned();
+            let Ok(parsed) = sunrise_core::identifier::Identifier::parse(id) else {
+                log::warn!("timeline {id}: not an identifier");
+                continue;
+            };
+            direct = parsed.to_string();
             std::slice::from_ref(&direct)
         };
         for member in members {
@@ -902,7 +951,8 @@ impl Environment {
         dimension: &str,
         packs: &PackModifiers,
     ) -> Result<Self> {
-        Self::load_dimension_attributes(root, dimension, packs, &Json::Null)
+        let timelines = TimelineTable::from_source(root);
+        Self::load_dimension_attributes(root, dimension, packs, &Json::Null, &timelines)
     }
 
     /// Builds the data attributes first, then applies the selected resource packs.
@@ -911,6 +961,7 @@ impl Environment {
         dimension: &str,
         packs: &PackModifiers,
         extra: &Json,
+        timelines: &TimelineTable,
     ) -> Result<Self> {
         let mut json: Json = serde_json::from_slice(
             &root.read(&format!("data/minecraft/dimension_type/{dimension}.json"))?,
@@ -999,20 +1050,14 @@ impl Environment {
             biomes.insert(name, map);
         }
         builder.biome_layer(biomes.values());
-        for id in timeline_ids(root, &json["timelines"]) {
-            let (namespace, path) = id.split_once(':').unwrap_or(("minecraft", &id));
-            let file = format!("data/{namespace}/timeline/{path}.json");
-            match root
-                .read(&file)
-                .map_err(|e| e.to_string())
-                .and_then(|bytes| serde_json::from_slice::<Json>(&bytes).map_err(|e| e.to_string()))
-                .map_err(|e| e.to_string())
-                .and_then(|t| Timeline::parse(&t))
-            {
-                Ok(timeline) => {
-                    builder.timeline_layer(&timeline);
-                }
-                Err(e) => log::warn!("timeline {id}: {e}"),
+        // Ambient emission uses the active level's registry, including synchronized biomes.
+        builder
+            .biome_attribute(attribute(AMBIENT_PARTICLES).expect("registered ambient particles"));
+        for id in timeline_ids(&timelines.tags, &json["timelines"]) {
+            if let Some(timeline) = timelines.timelines.get(&id) {
+                builder.timeline_layer(timeline);
+            } else {
+                log::warn!("timeline {id}: not in world timeline table");
             }
         }
         let weather = json["has_skylight"].as_bool() == Some(true)
@@ -1056,62 +1101,93 @@ impl Environment {
         !self.post.is_empty()
     }
 
-    /// Replaces the levels' own dimension types (their `attributes` and `timelines`), at a world's
-    /// load. The table is leaked: one small entry per level and world load.
-    pub fn set_level_attributes(levels: Vec<(String, Json)>) {
+    /// Replaces every level's dimension type overrides and the world's timeline table, at a
+    /// world's load. The table is leaked: one small entry per level and world load.
+    pub fn set_level_attributes(levels: Vec<(String, Json)>, timelines: TimelineTable) {
+        let timelines = Arc::new(timelines);
         let table = levels
             .into_iter()
             .map(|(id, attributes)| {
-                let entry = Box::leak(Box::new((attributes, OnceLock::new())));
+                let entry = Box::leak(Box::new(LevelEntry {
+                    attributes,
+                    timelines: Arc::clone(&timelines),
+                    made: OnceLock::new(),
+                }));
                 (id, &*entry)
             })
             .collect();
         *LEVELS.write().unwrap_or_else(|e| e.into_inner()) = table;
     }
 
-    /// `base` with the attributes a level's dimension type set over it, for a level a mod or a
-    /// data pack added; `base` itself for any other, or when the attributes are refused.
+    /// `base` with the attributes and world timelines of `level`, for every level registered at
+    /// world open; `base` itself when the level is not registered or its attributes are refused.
     pub fn for_level<'a>(level: &str, base: &'a Environment) -> &'a Environment {
         let entry = LEVELS
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .get(level)
             .copied();
-        let Some((attributes, made)) = entry else {
+        let Some(entry) = entry else {
             return base;
         };
-        made.get_or_init(|| {
-            Self::load_dimension_attributes(&base.source, &base.dimension, &base.packs, attributes)
+        entry
+            .made
+            .get_or_init(|| {
+                Self::load_dimension_attributes(
+                    &base.source,
+                    &base.dimension,
+                    &base.packs,
+                    &entry.attributes,
+                    &entry.timelines,
+                )
                 .map_err(|e| log::warn!("dimension {level}: attributes refused: {e}"))
                 .ok()
-        })
-        .as_ref()
-        .unwrap_or(base)
+            })
+            .as_ref()
+            .unwrap_or(base)
     }
 
-    /// `base` with the `attributes` and `timelines` of the dimension type `extra` over it, owned:
-    /// what a client of a server keeps for the level the server's type describes. A timeline the
-    /// client has no file for is skipped with a warning. None when the type's attributes are
-    /// refused.
-    pub fn with_type(base: &Environment, extra: &Json) -> Option<Environment> {
-        Self::load_dimension_attributes(&base.source, &base.dimension, &base.packs, extra)
-            .map_err(|e| log::warn!("the server's dimension type: attributes refused: {e}"))
-            .ok()
+    /// `base` with the `attributes` and `timelines` of the dimension type `extra` over it, owned,
+    /// reading timelines from `timelines` (the server's synced table or the world table): what a
+    /// client of a server keeps for the level the server's type describes. A timeline absent from
+    /// `timelines` is skipped with a warning. None when the type's attributes are refused.
+    pub fn with_type(
+        base: &Environment,
+        extra: &Json,
+        timelines: &TimelineTable,
+    ) -> Option<Environment> {
+        Self::load_dimension_attributes(
+            &base.source,
+            &base.dimension,
+            &base.packs,
+            extra,
+            timelines,
+        )
+        .map_err(|e| log::warn!("the server's dimension type: attributes refused: {e}"))
+        .ok()
     }
 
     /// `EnvironmentAttributeSystem.getValue` of one attribute, or its dimension value without
     /// a biome.
     pub fn value(&self, id: &str, at: &Sample) -> Option<Value> {
-        let attribute = attribute(id)?;
+        self.value_at(attribute(id)?, at, &|_| at.day_time)
+    }
+
+    /// Sample a known attribute with the level's clock values.
+    pub fn value_at(
+        &self,
+        attribute: &Attribute,
+        at: &Sample,
+        clock: &dyn Fn(&str) -> i64,
+    ) -> Option<Value> {
         let biome = |_full_resolution: bool| at.biome;
-        let clock = |_clock: &str| at.day_time;
         let post_biome = |_full_resolution: bool| at.post_biome;
         let conditions = Conditions {
             rain: at.rain,
             thunder: at.thunder,
             blend: at.blend,
             biome: &biome,
-            clock: &clock,
+            clock,
             post_blend: at.post_blend,
             post_biome: Some(&post_biome),
         };
@@ -1123,15 +1199,21 @@ impl Environment {
 
     /// The sky state the renderer draws.
     pub fn sample(&self, at: &Sample) -> Sky {
-        let float = |id: &str| match self.value(id, at) {
+        self.sample_with_clock(at, &|_| at.day_time)
+    }
+
+    /// The sky state the renderer draws, reading each timeline's own `WorldClock`.
+    pub fn sample_with_clock(&self, at: &Sample, clock: &dyn Fn(&str) -> i64) -> Sky {
+        let value = |id: &str| attribute(id).and_then(|attr| self.value_at(attr, at, clock));
+        let float = |id: &str| match value(id) {
             Some(Value::Float(f)) => f,
             _ => 0.0,
         };
-        let rgb = |id: &str| match self.value(id, at) {
+        let rgb = |id: &str| match value(id) {
             Some(Value::Rgb(c)) => c,
             _ => [0.0; 3],
         };
-        let argb = |id: &str| match self.value(id, at) {
+        let argb = |id: &str| match value(id) {
             Some(Value::Argb(c)) => c,
             _ => [0.0; 4],
         };
@@ -1151,6 +1233,7 @@ impl Environment {
             sky_light_level: float("gameplay/sky_light_level"),
             fog_start: float("visual/fog_start_distance"),
             fog_end: float("visual/fog_end_distance"),
+            sky_fog_end: float("visual/sky_fog_end_distance"),
             cloud_fog_end: float("visual/cloud_fog_end_distance"),
             cloud_height: float("visual/cloud_height"),
         }
@@ -1159,15 +1242,27 @@ impl Environment {
 
 /// `Level.updateSkyBrightness`'s darkening: from the sky light level, a dimension value.
 pub fn sky_darken(environment: &Environment, day_time: i64, rain: f32, thunder: f32) -> i32 {
-    let level = match environment.value(
-        "gameplay/sky_light_level",
-        &Sample {
-            day_time,
-            rain,
-            thunder,
-            ..Sample::default()
-        },
-    ) {
+    sky_darken_with_clock(environment, rain, thunder, &|_| day_time)
+}
+
+/// `Level.updateSkyBrightness`'s darkening, reading each timeline's own `WorldClock`.
+pub fn sky_darken_with_clock(
+    environment: &Environment,
+    rain: f32,
+    thunder: f32,
+    clock: &dyn Fn(&str) -> i64,
+) -> i32 {
+    let level = match attribute("gameplay/sky_light_level").and_then(|attr| {
+        environment.value_at(
+            attr,
+            &Sample {
+                rain,
+                thunder,
+                ..Sample::default()
+            },
+            clock,
+        )
+    }) {
         Some(Value::Float(level)) => level,
         _ => 0.0,
     };
@@ -1595,10 +1690,13 @@ mod tests {
         let id = "test:env_pocket";
         let darken = |e: &Environment| sky_darken(e, 0, 0.0, 0.0);
         assert!(std::ptr::eq(Environment::for_level(id, &base), &base));
-        Environment::set_level_attributes(vec![(
-            id.to_owned(),
-            serde_json::json!({"attributes": {"minecraft:gameplay/sky_light_level": 4.0}}),
-        )]);
+        Environment::set_level_attributes(
+            vec![(
+                id.to_owned(),
+                serde_json::json!({"attributes": {"minecraft:gameplay/sky_light_level": 4.0}}),
+            )],
+            TimelineTable::default(),
+        );
         let own = Environment::for_level(id, &base);
         assert!(!std::ptr::eq(own, &base));
         assert_eq!((darken(&base), darken(own)), (0, 11));
@@ -1606,7 +1704,7 @@ mod tests {
             Environment::for_level("test:other", &base),
             &base
         ));
-        Environment::set_level_attributes(Vec::new());
+        Environment::set_level_attributes(Vec::new(), TimelineTable::default());
         assert!(std::ptr::eq(Environment::for_level(id, &base), &base));
     }
 
@@ -1625,16 +1723,21 @@ mod tests {
         let own = Environment::with_type(
             &base,
             &serde_json::json!({"attributes": {"minecraft:gameplay/sky_light_level": 4.0}}),
+            &TimelineTable::default(),
         )
         .unwrap();
         assert_eq!((darken(&base), darken(&own)), (0, 11));
-        // Timelines the client has no file for are skipped, not refused.
+        // Timelines absent from the synced table are skipped, not refused.
         assert!(
-            Environment::with_type(&base, &serde_json::json!({"timelines": ["test:none"]}))
-                .is_some()
+            Environment::with_type(
+                &base,
+                &serde_json::json!({"timelines": ["test:none"]}),
+                &TimelineTable::default(),
+            )
+            .is_some()
         );
         let bad = serde_json::json!({"attributes": {"minecraft:visual/not_an_attribute": 1}});
-        assert!(Environment::with_type(&base, &bad).is_none());
+        assert!(Environment::with_type(&base, &bad, &TimelineTable::default()).is_none());
     }
 
     /// Attributes the game refuses leave the level on the Overworld's environment.
@@ -1647,15 +1750,68 @@ mod tests {
             Resource::bytes(br#"{"attributes":{}}"#.to_vec()),
         )]));
         let base = Environment::load(&source).unwrap();
-        Environment::set_level_attributes(vec![(
-            "test:bad_env".to_owned(),
-            serde_json::json!({"attributes": {"minecraft:visual/not_an_attribute": 1}}),
-        )]);
+        Environment::set_level_attributes(
+            vec![(
+                "test:bad_env".to_owned(),
+                serde_json::json!({"attributes": {"minecraft:visual/not_an_attribute": 1}}),
+            )],
+            TimelineTable::default(),
+        );
         assert!(std::ptr::eq(
             Environment::for_level("test:bad_env", &base),
             &base
         ));
-        Environment::set_level_attributes(Vec::new());
+        Environment::set_level_attributes(Vec::new(), TimelineTable::default());
+    }
+
+    /// Built-in vanilla levels (`minecraft:overworld`, not only mod- or pack-added levels)
+    /// read timelines from the world table published through `set_level_attributes`.
+    #[test]
+    fn a_vanilla_level_reads_world_timelines_through_set_level_attributes() {
+        let _turn = LEVEL_TABLE.lock().unwrap_or_else(|e| e.into_inner());
+        use sunrise_assets::resource_source::Resource;
+        let source = ResourceSource::indexed(std::collections::BTreeMap::from([
+            (
+                "data/minecraft/dimension_type/overworld.json".into(),
+                Resource::bytes(
+                    br##"{"timelines":"#minecraft:in_overworld","attributes":{"minecraft:gameplay/sky_light_level":15.0}}"##.to_vec(),
+                ),
+            ),
+            (
+                "data/minecraft/tags/timeline/in_overworld.json".into(),
+                Resource::bytes(br#"{"values":["minecraft:day"]}"#.to_vec()),
+            ),
+            (
+                "data/minecraft/timeline/day.json".into(),
+                Resource::bytes(
+                    br#"{"clock":"minecraft:overworld","period_ticks":24000,"tracks":{"minecraft:gameplay/sky_light_level":{"keyframes":[{"ticks":0,"value":15.0}]}}}"#.to_vec(),
+                ),
+            ),
+        ]));
+        let base = Environment::load(&source).unwrap();
+        assert_eq!(sky_darken(&base, 6000, 0.0, 0.0), 0);
+
+        let overridden = Timeline::parse(&serde_json::json!({
+            "clock": "minecraft:overworld",
+            "period_ticks": 24000,
+            "tracks": {
+                "minecraft:gameplay/sky_light_level": {
+                    "keyframes": [{"ticks": 0, "value": 5.0}]
+                }
+            }
+        }))
+        .unwrap();
+        let table = TimelineTable {
+            timelines: BTreeMap::from([("minecraft:day".into(), Arc::new(overridden))]),
+            tags: BTreeMap::from([(
+                "minecraft:in_overworld".into(),
+                vec!["minecraft:day".into()],
+            )]),
+        };
+        Environment::set_level_attributes(vec![("minecraft:overworld".into(), Json::Null)], table);
+        let world_overworld = Environment::for_level("minecraft:overworld", &base);
+        assert_eq!(sky_darken(world_overworld, 6000, 0.0, 0.0), 10);
+        Environment::set_level_attributes(Vec::new(), TimelineTable::default());
     }
 
     #[test]

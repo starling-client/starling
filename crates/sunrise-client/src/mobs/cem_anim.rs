@@ -687,12 +687,7 @@ fn params(m: &Mob, s: &State, frame: &Frame, rule_index: f32, slots: &mut [f32])
             ThirdPersonReversed => flag(frame.third_person_reversed),
             RightHanded => flag(!m.main_arm_left()),
             // The tamed animals' DATA_FLAGS_ID, and the species that keep their own.
-            Sitting => flag(match m.species() {
-                super::Species::Fox => super::fox::flag(m, super::fox::SITTING),
-                super::Species::Panda => super::panda::is_sitting(m),
-                super::Species::Camel | super::Species::CamelHusk => super::camel::sitting(m),
-                _ => m.extra.sitting_pose,
-            }),
+            Sitting => flag(m.sitting().unwrap_or(m.extra.sitting_pose)),
             Tamed => flag(m.extra.tame),
             Sprinting => flag(m.extra.sprinting),
             Sneaking => flag(m.extra.crouching),
@@ -726,6 +721,7 @@ mod tests {
             pose: [1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
             polygons: Vec::new(),
             children,
+            layer: None,
         }
     }
     fn pairs(list: &[(&str, &str)]) -> Vec<(String, String)> {
@@ -944,6 +940,7 @@ mod tests {
             baby: true,
             partial: 0.25,
             observer: None,
+            data: None,
         };
         let model = bone("root", vec![]);
         let animation = animate(
@@ -993,6 +990,7 @@ mod tests {
             baby: false,
             partial: 0.0,
             observer: None,
+            data: None,
         }
     }
 
@@ -1073,6 +1071,7 @@ mod tests {
     fn a_fox_sits_by_its_own_flags() {
         let mut m = mob();
         m.kind = std::sync::Arc::new(crate::mobs::MobType {
+            type_key: Default::default(),
             species: crate::mobs::Species::Fox,
             ..(*m.kind).clone()
         });

@@ -1,0 +1,3 @@
+ids = ["method:prelude::ClientRenderClientHost::set_section_dirty", "method:prelude::ClientRenderClientHost::set_blocks_dirty"]
+why = "A client mod that changes how blocks look (a tint or texture toggle, an overlay, a chunk-reload command) asks the mesher to rebuild loaded sections, as LevelExtractor.setSectionDirty, ClientLevel.setSectionDirtyWithNeighbors and ClientLevel.setBlocksDirty do, without unloading chunks or listening to section_visibility (#5646)."
+migrate = "Nothing to change: additive."

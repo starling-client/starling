@@ -1,5 +1,4 @@
 //! The `tnt_primed` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0268
 
 pub trait Hooks {
     /// TNT at `pos` is about to be lit (primed): a flint and steel or a fire

@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Compare World Options packet payloads with the pinned vanilla codecs."""
-try:
-    from . import lab, oracle_harness as harness
-except ImportError:
-    import lab, oracle_harness as harness
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, oracle_harness as harness
 
 
 def cases(build):

@@ -15,7 +15,7 @@ pub fn empty_map() -> Tag {
 pub fn boolean(b: bool) -> Tag {
     Tag::Byte(i8::from(b))
 }
-pub fn int_list(values: &[i32]) -> Tag {
+pub(crate) fn int_list(values: &[i32]) -> Tag {
     Tag::IntArray(values.to_vec())
 }
 
@@ -104,10 +104,10 @@ pub fn as_number(tag: &Tag) -> Option<Number> {
 pub fn as_int(tag: Option<&Tag>, default: i32) -> i32 {
     tag.and_then(as_number).map_or(default, Number::int_value)
 }
-pub fn as_long(tag: Option<&Tag>, default: i64) -> i64 {
+pub(crate) fn as_long(tag: Option<&Tag>, default: i64) -> i64 {
     tag.and_then(as_number).map_or(default, Number::long_value)
 }
-pub fn as_double(tag: Option<&Tag>, default: f64) -> f64 {
+pub(crate) fn as_double(tag: Option<&Tag>, default: f64) -> f64 {
     tag.and_then(as_number)
         .map_or(default, Number::double_value)
 }
@@ -141,7 +141,7 @@ pub fn stream(tag: Option<&Tag>) -> Vec<Tag> {
         _ => Vec::new(),
     }
 }
-pub fn is_list(tag: Option<&Tag>) -> bool {
+pub(crate) fn is_list(tag: Option<&Tag>) -> bool {
     matches!(
         tag,
         Some(Tag::List(_) | Tag::ByteArray(_) | Tag::IntArray(_) | Tag::LongArray(_))
@@ -214,7 +214,12 @@ pub fn update(tag: &mut Tag, field: &str, f: impl FnOnce(Tag) -> Tag) {
 }
 /// `Dynamic.renameAndFixField`: the fixed value under the new name, removed when
 /// the fix gives nothing.
-pub fn rename_and_fix(tag: &mut Tag, from: &str, to: &str, f: impl FnOnce(Tag) -> Option<Tag>) {
+pub(crate) fn rename_and_fix(
+    tag: &mut Tag,
+    from: &str,
+    to: &str,
+    f: impl FnOnce(Tag) -> Option<Tag>,
+) {
     if let Some(v) = remove(tag, from)
         && let Some(v) = f(v)
     {
@@ -222,18 +227,18 @@ pub fn rename_and_fix(tag: &mut Tag, from: &str, to: &str, f: impl FnOnce(Tag) -
     }
 }
 /// `Dynamic.copyField`.
-pub fn copy_field(from: &Tag, field: &str, to: &mut Tag, to_field: &str) {
+pub(crate) fn copy_field(from: &Tag, field: &str, to: &mut Tag, to_field: &str) {
     if let Some(v) = from.get(field) {
         set(to, to_field, v.clone());
     }
 }
 /// `Dynamic.equals(emptyMap())`: the map a record remembers it was read from
 /// (see `datafix::mark_read`) is not part of the value.
-pub fn is_empty_map(tag: &Tag) -> bool {
+pub(crate) fn is_empty_map(tag: &Tag) -> bool {
     matches!(tag, Tag::Compound(c) if c.keys().all(|k| *k == key(super::LAST_READ)))
 }
 /// `Dynamic.orElseEmptyMap` of an optional field.
-pub fn or_empty_map(tag: Option<&Tag>) -> Tag {
+pub(crate) fn or_empty_map(tag: Option<&Tag>) -> Tag {
     tag.cloned().unwrap_or_else(empty_map)
 }
 /// `NamespacedSchema.ensureNamespaced`.
@@ -246,7 +251,7 @@ pub fn namespaced(id: &str) -> String {
 
 /// `Dynamic.asLongStreamOpt` over `NbtOps`: a long array, or a list or array
 /// whose elements are all numbers.
-pub fn as_long_stream(tag: Option<&Tag>) -> Option<Vec<i64>> {
+pub(crate) fn as_long_stream(tag: Option<&Tag>) -> Option<Vec<i64>> {
     match tag? {
         Tag::LongArray(v) => Some(v.clone()),
         t if is_list(Some(t)) => stream(Some(t))
@@ -268,7 +273,7 @@ pub fn as_int_stream(tag: Option<&Tag>) -> Option<Vec<i32>> {
     }
 }
 /// `Dynamic.asByteBufferOpt` over `NbtOps`.
-pub fn as_byte_buffer(tag: Option<&Tag>) -> Option<Vec<u8>> {
+pub(crate) fn as_byte_buffer(tag: Option<&Tag>) -> Option<Vec<u8>> {
     match tag? {
         Tag::ByteArray(v) => Some(v.clone()),
         t if is_list(Some(t)) => stream(Some(t))

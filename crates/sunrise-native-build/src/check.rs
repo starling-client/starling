@@ -1,10 +1,12 @@
 //! How native mods stand against one game build before anything compiles: each mod's refusal and fit (SDK design §10), and the route the usable ones take.
 use crate::{api, game_uses, prebuilt, scan_bundles};
 use serde::{Deserialize, Serialize};
+use std::cell::OnceCell;
 use std::collections::BTreeSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use sunrise_mod_package::Manifest;
 use sunrise_mod_package::mod_surface::{
     self,
     uses::{self, Change, Fit, Misfit, UsesError, UsesTable},
@@ -79,76 +81,138 @@ pub fn table(dir: &Path) -> Result<UsesTable, Unlisted> {
     })
 }
 
-/// How `project` stands against build `build`, whose surface `surface` gives (asked for only when the mod was made for another build), and where the game code the mod declares is as `game` says ([`game_uses::entries`], asked for only when it declares some).
-pub fn judge<E>(
-    project: &api::Project<'_>,
-    build: &str,
+/// What one build makes of a native mod: its verdict, and what the verdict leaves out.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Judged<E> {
+    pub verdict: Verdict,
+    /// Entries of a list written before the surface's schema 3 that only the compile can judge ([`uses::FitReport::deferred`]): shown beside the verdict, never a refusal.
+    pub deferred: Option<String>,
+    /// With [`Verdict::DoesNotFit`]: why the game code the mod declares could not be compared too.
+    pub uncompared: Option<E>,
+    /// The ids of declared game code the build data cannot show unchanged: with nothing known to have changed, they make the verdict [`Verdict::Exact`].
+    pub unjudged: Vec<String>,
+    /// With [`Unlisted::HookVersions`]: why the build the mod was made for could not give the hook versions the list lacks.
+    pub unpinned: Option<E>,
+}
+
+/// The builds a fit compares: the one a mod was made for, the one it is judged against, and the horizon-mixins revision that one's tool builds with.
+#[derive(Clone, Copy, Debug)]
+pub struct Builds<'a> {
+    pub made_for: &'a str,
+    pub build: &'a str,
+    pub mixins_rev: &'a str,
+}
+
+/// How the native mod `manifest` stands against `builds.build`, by `table`, the list of what it uses (or why it has none this tool reads). `surface` gives the build's surface, and `game` where the game code the mod declares is in it ([`game_uses::entries`]). `made_for_surface`, when at hand, gives the `surface.json` of the build the mod was made for, whose hook versions complete a list an older tool wrote, into the table. Each is asked for only when the verdict needs it; `Err` is what `surface` or `game` returned, and then the verdict is not known. A made-for surface that cannot be had or read leaves the hooks unversioned, and says why in [`Judged::unpinned`].
+pub fn judge<'t, E: From<String>>(
+    manifest: &Manifest,
+    builds: Builds<'_>,
+    table: impl FnOnce() -> Result<&'t mut UsesTable, Unlisted>,
     surface: &mut dyn FnMut() -> Result<Rc<mod_surface::Surface>, E>,
     game: &mut dyn FnMut() -> Result<Vec<(String, game_uses::Now)>, E>,
-) -> Result<Verdict, E> {
-    let made_for = project.bundle.native().sunrise.clone();
-    if made_for == build {
-        return Ok(Verdict::MadeFor);
-    }
-    if let Some(why) = game_uses::unjudged(&project.bundle.manifest) {
-        return Ok(Verdict::Exact { made_for, why });
-    }
-    let unlisted = |why, hooks| Verdict::NoList {
-        made_for: made_for.clone(),
-        why,
-        hooks,
+    made_for_surface: Option<&mut dyn FnMut() -> Result<Vec<u8>, E>>,
+) -> Result<Judged<E>, E> {
+    let Builds {
+        made_for,
+        build,
+        mixins_rev,
+    } = builds;
+    let made_for = made_for.to_owned();
+    let verdict = |verdict| Judged {
+        verdict,
+        deferred: None,
+        uncompared: None,
+        unjudged: Vec::new(),
+        unpinned: None,
     };
-    let table = match table(&project.bundle.dir) {
+    if made_for == build {
+        return Ok(verdict(Verdict::MadeFor));
+    }
+    if let Some(why) = game_uses::unjudged(manifest) {
+        return Ok(verdict(Verdict::Exact { made_for, why }));
+    }
+    let table = match table() {
         Ok(table) if table.made_for == made_for => table,
-        Ok(_) => return Ok(unlisted(Unlisted::OtherBuild, Vec::new())),
-        Err(why) => return Ok(unlisted(why, Vec::new())),
+        why => {
+            let why = why.map_or_else(|why| why, |_| Unlisted::OtherBuild);
+            return Ok(verdict(Verdict::NoList {
+                made_for,
+                why,
+                hooks: Vec::new(),
+            }));
+        }
     };
     // The mod API's items are judged by the surface, the game code the mod declares by the build data: one list holds both.
-    let (declared, api): (Vec<_>, Vec<_>) = table
-        .entries
-        .iter()
-        .partition(|entry| entry.id.starts_with(game_uses::PREFIX));
-    let (mut misfits, mut unversioned) = match table.fits(api, surface()?.as_ref()).verdict {
-        Fit::Fits => (Vec::new(), Vec::new()),
-        Fit::DoesNotFit(misfits) => (misfits, Vec::new()),
-        // The build the list was made for, which has the versions, is not at hand here.
-        Fit::Unversioned(hooks) => (Vec::new(), hooks),
+    let surface = surface()?;
+    let api = |table: &UsesTable| {
+        let entries = table.entries.iter();
+        table.fits(
+            entries.filter(|entry| !entry.id.starts_with(game_uses::PREFIX)),
+            &surface,
+        )
     };
-    // A build with this tool refuses a mod that pins another horizon-mixins revision than the tool's.
-    misfits.extend(game_uses::tool(&project.bundle.manifest, crate::MIXINS_REV));
-    let mut compared = game_uses::Compared::default();
-    if game_uses::declared(&project.bundle.manifest) {
-        match game() {
-            Ok(now) => compared = game_uses::compare(&declared, now),
-            // What is already known to have changed is said, whatever the build data would add.
-            Err(_) if !misfits.is_empty() => {}
-            Err(lack) => return Err(lack),
+    let mut report = api(table);
+    // A list an older tool wrote holds no hook versions, and the build it was made for has them: asked for whenever the list leaves a hook unjudged, whatever the game code shows, so a misfit they reveal is named beside the rest. A surface that gives none leaves the list as it was.
+    let mut unpinned = None;
+    if matches!(report.verdict, Fit::Unversioned(_))
+        && table.schema < uses::PLAIN_SCHEMA
+        && let Some(made_for_surface) = made_for_surface
+    {
+        let pinned = made_for_surface().and_then(|bytes| {
+            table
+                .pin_hook_versions(&bytes)
+                .map_err(|e| E::from(e.to_string()))
+        });
+        match pinned {
+            Ok(()) => report = api(table),
+            Err(why) => unpinned = Some(why),
         }
     }
+    let (mut compared, uncompared) = game_uses::compare_declared(manifest, table, mixins_rev, game);
+    let mut misfits = match &mut report.verdict {
+        Fit::DoesNotFit(misfits) => std::mem::take(misfits),
+        Fit::Fits | Fit::Unversioned(_) => Vec::new(),
+    };
     misfits.append(&mut compared.misfits);
-    if !misfits.is_empty() {
-        misfits.sort();
-        return Ok(Verdict::DoesNotFit { made_for, misfits });
+    // What is already known to have changed is said, whatever the build data would add.
+    if misfits.is_empty()
+        && let Some(lack) = uncompared
+    {
+        return Err(lack);
     }
-    // Code the build data cannot fingerprint is never shown unchanged.
-    if let Some(id) = compared.unjudged.first() {
+    let verdict = if !misfits.is_empty() {
+        misfits.sort();
+        Verdict::DoesNotFit { made_for, misfits }
+    } else if let Some(id) = compared.unjudged.first() {
+        // Code the build data cannot fingerprint is never shown unchanged.
         let why = if id.starts_with("game:loop:") {
             "[[native.loop]]"
         } else {
             "internals"
         };
-        return Ok(Verdict::Exact { made_for, why });
-    }
-    if compared.unrecorded {
-        return Ok(unlisted(Unlisted::GameCode, Vec::new()));
-    }
-    if !unversioned.is_empty() {
-        return Ok(unlisted(
-            Unlisted::HookVersions,
-            std::mem::take(&mut unversioned),
-        ));
-    }
-    Ok(Verdict::Fits { made_for })
+        Verdict::Exact { made_for, why }
+    } else if compared.unrecorded {
+        Verdict::NoList {
+            made_for,
+            why: Unlisted::GameCode,
+            hooks: Vec::new(),
+        }
+    } else if let Fit::Unversioned(hooks) = report.verdict {
+        Verdict::NoList {
+            made_for,
+            why: Unlisted::HookVersions,
+            hooks,
+        }
+    } else {
+        Verdict::Fits { made_for }
+    };
+    Ok(Judged {
+        verdict,
+        deferred: report.deferred,
+        uncompared,
+        unjudged: compared.unjudged,
+        unpinned,
+    })
 }
 
 /// What `cargo sunrise-mod native-check` checks: the first line of standard input.
@@ -164,8 +228,9 @@ pub struct Plan {
     /// The build's `surface.json`; absent, a mod that needs it says so (`needs`).
     #[serde(default)]
     pub surface: Option<PathBuf>,
-    /// The build's unpacked build data (`functions.json`, `internals.json`, `loops.json`);
-    /// absent, a mod that needs it says so. Same-build mixins need `functions.json` too.
+    /// The build's complete unpacked build data (`functions.json`, `internals.json`, `loops.json`).
+    /// A mod that needs it reports `needs` if it is absent. Same-build mixins and loops need it too.
+    /// When read, missing files or a wrong build are errors even if a misfit is already known.
     #[serde(default)]
     pub build_data: Option<PathBuf>,
 }
@@ -197,11 +262,28 @@ enum Lack {
     Refused(String),
 }
 
+impl From<String> for Lack {
+    fn from(why: String) -> Self {
+        Self::Unread(why)
+    }
+}
+
 /// Checks `plan`'s mods against its build.
 pub fn check(plan: &Plan) -> Result<Reply, String> {
     let found = scan_bundles(&plan.mods)?;
     let mut surface: Option<Rc<mod_surface::Surface>> = None;
-    let mut functions = None;
+    // One set of published inputs for this check, opened only if a verdict needs it.
+    let build_data = OnceCell::new();
+    let data = || {
+        let dir = plan
+            .build_data
+            .as_deref()
+            .ok_or(Lack::Needs("build-data"))?;
+        build_data
+            .get_or_init(|| game_uses::Data::read(dir, &plan.build))
+            .as_ref()
+            .map_err(|error| Lack::Unread(error.to_string()))
+    };
     let mut mods = Vec::new();
     let mut usable = Vec::new();
     for bundle in &found {
@@ -228,16 +310,12 @@ pub fn check(plan: &Plan) -> Result<Reply, String> {
             continue;
         }
         let native = bundle.native();
-        let judged = if native.sunrise == plan.build && !native.mixin.is_empty() {
-            (|| {
-                let dir = plan.build_data.as_ref().ok_or(Lack::Needs("build-data"))?;
-                let index = match &functions {
-                    Some(index) => index,
-                    None => functions
-                        .insert(game_uses::function_index(dir, &plan.build).map_err(Lack::Unread)?),
-                };
+        let judged = if native.sunrise == plan.build
+            && (!native.mixin.is_empty() || !native.r#loop.is_empty())
+        {
+            data().and_then(|data| {
                 for row in &native.mixin {
-                    if let Some(refused) = game_uses::mixin_refusal(index, &row.target) {
+                    if let Some(refused) = data.mixin_refusal(&row.target) {
                         return Err(Lack::Refused(format!(
                             "{}: {id}:{}: {}: {}",
                             refused.code.name(),
@@ -247,12 +325,23 @@ pub fn check(plan: &Plan) -> Result<Reply, String> {
                         )));
                     }
                 }
+                for row in &native.r#loop {
+                    data.loops.require(&id, row).map_err(Lack::Refused)?;
+                }
                 Ok(Verdict::MadeFor)
-            })()
+            })
         } else {
+            // Read only when the verdict needs it.
+            let mut read = None;
+            let read = &mut read;
             judge(
-                &project,
-                &plan.build,
+                &bundle.manifest,
+                Builds {
+                    made_for: &native.sunrise,
+                    build: &plan.build,
+                    mixins_rev: crate::MIXINS_REV,
+                },
+                move || read.insert(table(&bundle.dir)).as_mut().map_err(|why| *why),
                 &mut || {
                     if let Some(read) = &surface {
                         return Ok(read.clone());
@@ -267,11 +356,14 @@ pub fn check(plan: &Plan) -> Result<Reply, String> {
                     surface = Some(read.clone());
                     Ok(read)
                 },
-                &mut || {
-                    let dir = plan.build_data.as_ref().ok_or(Lack::Needs("build-data"))?;
-                    game_uses::entries(&bundle.manifest, dir, &plan.build).map_err(Lack::Unread)
-                },
+                &mut || Ok(data()?.entries(&bundle.manifest)),
+                // The plan gives no surface of the build the mod was made for.
+                None,
             )
+            .and_then(|judged| match judged.uncompared {
+                Some(Lack::Unread(why)) => Err(Lack::Unread(why)),
+                _ => Ok(judged.verdict),
+            })
         };
         match judged {
             Ok(mut verdict) => {

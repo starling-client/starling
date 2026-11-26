@@ -122,6 +122,18 @@ pub enum ErrorKind {
     /// A variable with the same name already exists in the current scope.
     #[error("Variable already declared: {0}")]
     VariableAlreadyDeclared(String),
+    /// A type (an array, a struct or a block) whose size in bytes passes
+    /// [`MAX_TYPE_SIZE`](crate::valid::MAX_TYPE_SIZE), so it can't be laid out.
+    #[error("Type is larger than {} bytes", crate::valid::MAX_TYPE_SIZE)]
+    TypeTooLarge,
+    /// A stage whose interface variables of one direction take more locations than `limit`
+    /// ([`InterfaceLimits`](super::InterfaceLimits), [`MAX_FRAGMENT_OUTPUTS`](super::MAX_FRAGMENT_OUTPUTS)).
+    #[error("Interface variables take more than {limit} locations")]
+    InterfaceTooLarge { limit: u32 },
+    /// An interface variable whose elements or members, each taking the next location after its
+    /// `layout(location = N)`, take one past `u32::MAX`.
+    #[error("Interface variable takes a location past {}", u32::MAX)]
+    LocationTooLarge,
     /// A semantic error was detected in the shader.
     #[error("{0}")]
     SemanticError(Cow<'static, str>),

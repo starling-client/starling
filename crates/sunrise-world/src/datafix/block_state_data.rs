@@ -1,7 +1,7 @@
 //! `BlockStateData`: the table that maps the 1.12 block states (`blockId << 4 | data`)
 //! to 1.13 block states, and the 1.12 `Name` + `Properties` tags to those ids.
 //! The table is vanilla's `register` calls, one line each in call order, from the
-//! prepared resources (`tables::tables().block_state_data`, exported from the
+//! prepared resources (`tables::block_state_data()`, exported from the
 //! player's jar). A line is tab separated: the 1.12 id (`blockId << 4 | data`), the
 //! 1.13 state's name and properties, then the name and properties of each 1.12 state
 //! that maps to it; properties are `key=value` joined by `;`, sorted by key.
@@ -87,59 +87,85 @@ pub struct Data {
     id_by_old_name: HashMap<String, i32>,
 }
 
-fn parse_props(s: &str) -> Vec<(String, String)> {
+fn parse_props(s: &str) -> std::io::Result<Vec<(String, String)>> {
     if s.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     s.split(';')
         .map(|kv| {
-            let (k, v) = kv.split_once('=').unwrap_or((kv, ""));
-            (k.to_owned(), v.to_owned())
+            let (k, v) = kv.split_once('=').ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "invalid block state property",
+                )
+            })?;
+            Ok((k.to_owned(), v.to_owned()))
         })
         .collect()
 }
 
-pub fn data() -> &'static Data {
-    static DATA: OnceLock<Data> = OnceLock::new();
-    DATA.get_or_init(|| {
-        let mut map: Vec<Option<u32>> = vec![None; 4096];
-        let mut defaults: Vec<Option<u32>> = vec![None; 256];
-        let mut instances = Vec::new();
-        let mut id_by_old = HashMap::new();
-        let mut id_by_old_name: HashMap<String, i32> = HashMap::new();
-        for line in super::tables::tables().block_state_data {
-            let f: Vec<&str> = line.split('\t').collect();
-            let id: usize = f[0].parse().expect("id");
-            let instance = instances.len() as u32;
-            instances.push(State {
-                name: f[1].to_owned(),
-                props: parse_props(f.get(2).copied().unwrap_or("")),
-            });
-            map[id] = Some(instance);
-            if defaults[id >> 4].is_none() {
-                defaults[id >> 4] = Some(instance);
-            }
-            for pair in f[3..].chunks(2) {
-                let old = State {
-                    name: pair[0].to_owned(),
-                    props: parse_props(pair.get(1).copied().unwrap_or("")),
-                };
-                id_by_old_name.entry(old.name.clone()).or_insert(id as i32);
-                id_by_old.insert(old, id as i32);
-            }
+fn parse_data(lines: &[&str]) -> std::io::Result<Data> {
+    let mut map: Vec<Option<u32>> = vec![None; 4096];
+    let mut defaults: Vec<Option<u32>> = vec![None; 256];
+    let mut instances = Vec::new();
+    let mut id_by_old = HashMap::new();
+    let mut id_by_old_name = HashMap::new();
+    let invalid = || {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "invalid block state registration",
+        )
+    };
+    for line in lines {
+        let fields: Vec<_> = line.split('\t').collect();
+        let [id, name, props, old @ ..] = fields.as_slice() else {
+            return Err(invalid());
+        };
+        let id = id.parse::<usize>().map_err(|_| invalid())?;
+        let slot = map.get_mut(id).ok_or_else(invalid)?;
+        let (pairs, remainder) = old.as_chunks::<2>();
+        if name.is_empty() || !remainder.is_empty() {
+            return Err(invalid());
         }
-        for (i, slot) in map.iter_mut().enumerate() {
-            if slot.is_none() {
-                *slot = defaults[i >> 4];
-            }
+        let instance = instances.len() as u32;
+        instances.push(State {
+            name: (*name).to_owned(),
+            props: parse_props(props)?,
+        });
+        *slot = Some(instance);
+        defaults[id >> 4].get_or_insert(instance);
+        for &[name, props] in pairs {
+            let old = State {
+                name: name.to_owned(),
+                props: parse_props(props)?,
+            };
+            id_by_old_name.entry(old.name.clone()).or_insert(id as i32);
+            id_by_old.insert(old, id as i32);
         }
-        Data {
-            instances,
-            map,
-            id_by_old,
-            id_by_old_name,
+    }
+    if map[0].is_none() {
+        return Err(invalid());
+    }
+    for (i, slot) in map.iter_mut().enumerate() {
+        if slot.is_none() {
+            *slot = defaults[i >> 4];
         }
+    }
+    Ok(Data {
+        instances,
+        map,
+        id_by_old,
+        id_by_old_name,
     })
+}
+
+pub(super) fn data() -> super::tables::Result<&'static Data> {
+    use super::tables;
+    static DATA: OnceLock<tables::Result<Data>> = OnceLock::new();
+    let lines = tables::block_state_data()?;
+    DATA.get_or_init(|| Ok(parse_data(lines)?))
+        .as_ref()
+        .map_err(Clone::clone)
 }
 
 impl Data {
@@ -157,56 +183,45 @@ impl Data {
 }
 
 /// `BlockStateData.getTag`.
-pub fn get_tag(id: i32) -> Tag {
-    let d = data();
-    d.state(d.instance(id)).to_tag()
+pub(super) fn get_tag(id: i32) -> super::tables::Result<Tag> {
+    let d = data()?;
+    Ok(d.state(d.instance(id)).to_tag())
 }
 
 /// `BlockStateData.upgradeBlockStateTag`.
-pub fn upgrade_block_state_tag(old: &Tag) -> Tag {
-    let d = data();
-    match State::from_tag(old).and_then(|s| d.id_by_old.get(&s).copied()) {
-        Some(id) if (0..4096).contains(&id) => match d.map[id as usize] {
-            Some(i) => d.state(i).to_tag(),
-            None => old.clone(),
+pub(super) fn upgrade_block_state_tag(old: &Tag) -> super::tables::Result<Tag> {
+    let d = data()?;
+    Ok(
+        match State::from_tag(old).and_then(|s| d.id_by_old.get(&s).copied()) {
+            Some(id) if (0..4096).contains(&id) => match d.map[id as usize] {
+                Some(i) => d.state(i).to_tag(),
+                None => old.clone(),
+            },
+            _ => old.clone(),
         },
-        _ => old.clone(),
-    }
-}
-
-/// `BlockStateData.upgradeBlockStateTag` on a state given as a `State` (its properties sorted): the 1.13 state a
-/// 1.12 one becomes, or the state itself when the table has none.
-pub fn upgrade_state(old: &State) -> State {
-    let d = data();
-    match d.id_by_old.get(old).copied() {
-        Some(id) if (0..4096).contains(&id) => match d.map[id as usize] {
-            Some(i) => d.state(i).clone(),
-            None => old.clone(),
-        },
-        _ => old.clone(),
-    }
+    )
 }
 
 /// `BlockStateData.upgradeBlock(String)`.
-pub fn upgrade_block_name(old: &str) -> String {
-    let d = data();
-    match d.id_by_old_name.get(old) {
+pub(super) fn upgrade_block_name(old: &str) -> super::tables::Result<String> {
+    let d = data()?;
+    Ok(match d.id_by_old_name.get(old) {
         Some(&id) if (0..4096).contains(&id) => match d.map[id as usize] {
             Some(i) => d.state(i).name.clone(),
             None => old.to_owned(),
         },
         _ => old.to_owned(),
-    }
+    })
 }
 
 /// `BlockStateData.upgradeBlock(int)`.
-pub fn upgrade_block_id(id: i32) -> String {
-    let d = data();
-    match usize::try_from(id).ok().filter(|i| *i < 4096) {
+pub(super) fn upgrade_block_id(id: i32) -> super::tables::Result<String> {
+    let d = data()?;
+    Ok(match usize::try_from(id).ok().filter(|i| *i < 4096) {
         Some(i) => match d.map[i] {
             Some(inst) => d.state(inst).name.clone(),
             None => "minecraft:air".to_owned(),
         },
         None => "minecraft:air".to_owned(),
-    }
+    })
 }

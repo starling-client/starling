@@ -303,7 +303,7 @@ struct Well {
 
 impl Well {
     fn new(fluid: &mod_api::FluidStack) -> Self {
-        let id = mod_api::__private::fluid_identity_name(fluid.fluid);
+        let id = mod_api::__private::fluid_identity_name(&fluid.fluid);
         let look = sunrise_client::mod_content::fluid_look(&id);
         let tint = fluid_tint(&id, look.as_ref().and_then(|l| l.tint));
         let amount = format!("{} mB", fluid.amount);
@@ -647,15 +647,9 @@ impl Game<'_> {
                 sunrise_client::text::Text::literal(warning.clone()).resolve_legacy(),
                 rgba(255, 100, 100, 255),
             )];
-            let (x, y, w, h) = Self::tooltip_geometry(
-                &self.gui.atlas,
-                &lines,
-                cursor,
-                (batch.width, batch.height),
-                [0.0; 2],
-            );
-            sunrise_client::widgets::record(&warning, [x, y, w, h], false);
-            self.draw_tooltip_lines(batch, &lines, cursor.0, cursor.1);
+            if let Some(rect) = self.draw_tooltip_lines(batch, &lines, cursor.0, cursor.1) {
+                sunrise_client::widgets::record(&warning, rect, false);
+            }
         }
     }
 
@@ -789,20 +783,17 @@ impl Game<'_> {
             if let Some(p) = self.panel.recipes.as_mut() {
                 p.page = to;
             }
-            self.audio
-                .play("minecraft:ui.button.click", None, 0.25, 1.0);
+            self.play_audio("minecraft:ui.button.click", None, 0.25, 1.0);
             self.panel_event(owner, BrowserEvent::Page(starts[to] as u32));
             return true;
         }
         if let Some((tab, _, _)) = self.recipe_tab_hovered(layout) {
-            self.audio
-                .play("minecraft:ui.button.click", None, 0.25, 1.0);
+            self.play_audio("minecraft:ui.button.click", None, 0.25, 1.0);
             self.panel_event(owner, BrowserEvent::Tab(tab as u32));
             return true;
         }
         if inside(cursor, self.back_button(layout).0) {
-            self.audio
-                .play("minecraft:ui.button.click", None, 0.25, 1.0);
+            self.play_audio("minecraft:ui.button.click", None, 0.25, 1.0);
             self.panel_event(owner, BrowserEvent::Back);
             return true;
         }
@@ -825,8 +816,7 @@ impl Game<'_> {
         });
         if let Some((i, _)) = action {
             if pages.recipes[i].action == Some(true) {
-                self.audio
-                    .play("minecraft:ui.button.click", None, 0.25, 1.0);
+                self.play_audio("minecraft:ui.button.click", None, 0.25, 1.0);
                 self.panel_event(owner, BrowserEvent::Action(i as u32));
             }
             return true;
@@ -959,10 +949,8 @@ mod tests {
 
     #[test]
     fn an_unresolved_fluid_uses_the_unknown_label() {
-        mod_platform::__private::initialize().unwrap();
-        let handle = mod_api::__private::intern_unresolved_fluid("missing:panel_fluid").unwrap();
         let well = Well::new(&mod_api::FluidStack {
-            fluid: mod_api::FluidIdentity::Unresolved(handle),
+            fluid: mod_api::FluidIdentity::of_name("missing:panel_fluid").unwrap(),
             amount: 250,
             components: None,
         });

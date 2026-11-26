@@ -83,6 +83,7 @@ impl EntityRenderLayer for Layer {
         entity: &EntityRenderState,
         model: Option<&dyn FrameModel>,
         draw: &mut dyn BlockEntityDrawContext,
+        _: &mut dyn mod_api::StockLayerDraw,
     ) -> Result<(), String> {
         let event = format!("layer {} model {}", entity.id, model.is_some());
         self.0.lock().unwrap().events.push(event);
@@ -300,27 +301,33 @@ fn a_canceled_living_pre_skips_a_registered_renderer() {
     );
 }
 
-/// A failing renderer leaves the type its model and is asked no more; only a reload's fresh table
-/// asks it again.
+/// A renderer returning `Err` falls back to the type's own model for that frame only and stays
+/// active for later frames and after a resource reload.
 #[test]
 #[ignore = "daily"]
-fn a_failed_renderer_draws_the_types_model_until_a_resource_reload() {
+fn a_failed_renderer_falls_back_to_the_model_for_that_frame_only() {
     in_scene(
-        "a_failed_renderer_draws_the_types_model_until_a_resource_reload",
+        "a_failed_renderer_falls_back_to_the_model_for_that_frame_only",
         |game, _, skeleton| {
-            for frame_name in ["the failing frame", "the next frame"] {
-                let drawn = frame(game, "minecraft:skeleton", 93);
-                assert!(!drawn.is_empty(), "{frame_name}: its own model");
-                assert!(
-                    drawn.iter().all(|v| above(v) < 3.0),
-                    "{frame_name}: no quad kept: {drawn:?}"
-                );
-                let calls = skeleton.calls.load(Ordering::Relaxed);
-                assert_eq!(calls, 1, "{frame_name}: asked once, then no more");
-            }
+            let drawn = frame(game, "minecraft:skeleton", 93);
+            assert!(!drawn.is_empty(), "the failing frame: its own model");
+            assert!(
+                drawn.iter().all(|v| above(v) < 3.0),
+                "the failing frame: no quad kept: {drawn:?}"
+            );
+            assert_eq!(skeleton.calls.load(Ordering::Relaxed), 1);
+
+            let drawn = frame(game, "minecraft:skeleton", 93);
+            assert_eq!(
+                skeleton.calls.load(Ordering::Relaxed),
+                2,
+                "asked again on the next frame"
+            );
+            assert_eq!(quads(&drawn), [400.0], "its quad alone, no bow or model");
+
             super::model_baking_completed_tests::reload(game);
             let drawn = frame(game, "minecraft:skeleton", 93);
-            assert_eq!(skeleton.calls.load(Ordering::Relaxed), 2, "resolved again");
+            assert_eq!(skeleton.calls.load(Ordering::Relaxed), 3, "resolved again");
             assert_eq!(quads(&drawn), [400.0], "its quad alone, no bow or model");
         },
     );
@@ -341,7 +348,8 @@ fn a_sleeping_or_baby_frame_reads_as_the_model_lays_it() {
         // A baby asleep in a bed facing east.
         villager.extra.age = -24000;
         villager.extra.ints[1] = 4;
-        let state = super::native_mob_draw::entity_render_state(&villager, 94, 0.5);
+        let state =
+            super::native_mob_draw::entity_render_state(&villager, 94, 0.5, glam::DVec3::ZERO);
         let living = state.living.unwrap();
         assert_eq!(living.pose, Pose::Sleeping);
         assert_eq!(living.bed_orientation, Some(mod_api::Direction::East));
@@ -371,7 +379,7 @@ fn own_yaw_is_independent_of_body_rotation_across_a_wrap() {
         mob.body_yaw = 50.0;
         mob.previous_head_yaw = 70.0;
         mob.head_yaw = 90.0;
-        let state = super::native_mob_draw::entity_render_state(&mob, 95, 0.5);
+        let state = super::native_mob_draw::entity_render_state(&mob, 95, 0.5, glam::DVec3::ZERO);
         assert_eq!(state.yaw, 360.0); // The shortest interpolation reaches 0 degrees modulo 360.
         assert_eq!(state.living.unwrap().body_rot, 40.0);
         assert_eq!(state.living.unwrap().y_rot, 40.0);
@@ -402,7 +410,7 @@ fn extracted_living_signs_death_time_and_hurt_overlay_are_literal() {
         mob.previous_head_pitch = 15.0;
         mob.custom_name = Some("Dinnerbone".into());
         let frame = |mob: &Mob| {
-            super::native_mob_draw::entity_render_state(mob, 96, 0.5)
+            super::native_mob_draw::entity_render_state(mob, 96, 0.5, glam::DVec3::ZERO)
                 .living
                 .unwrap()
         };

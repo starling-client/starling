@@ -4,7 +4,7 @@
 //! client's copy, and only on the level in place.
 use super::Game;
 use super::cauldron_contents::{self, CauldronContent, CauldronContents, EMPTY_CAULDRON};
-use mod_api::{BlockSide, FluidStack, Transaction};
+use mod_api::{BlockSide, FluidStack, TransactionContext};
 use std::sync::Arc;
 use sunrise_client::containers::{BlockEntity, ModFluidTanks};
 use sunrise_core::geometry::Direction;
@@ -78,12 +78,9 @@ impl CauldronFluids {
 /// The tanks of a mod block its side `side` reaches (none: every tank), in the order the side
 /// numbers them for the fluid capability.
 fn side_tanks(tanks: &ModFluidTanks, side: Option<Direction>) -> impl Iterator<Item = usize> + '_ {
-    let n = tanks.tanks.len();
-    let face = side.map(|face| &tanks.faces[face as usize]);
-    (0..face.map_or(n, Vec::len)).filter_map(move |i| {
-        let tank = face.map_or(i, |face| face[i]);
-        (tank < n).then_some(tank)
-    })
+    let face = side.map(|face| tanks.faces[face as usize].as_slice());
+    let len = face.map_or(tanks.tanks.len(), <[usize]>::len);
+    (0..len).map(move |i| face.map_or(i, |face| face[i]))
 }
 
 /// Whether the tanks at `at` take `fluid`. A mod block's saved tanks keep an id and an amount,
@@ -107,13 +104,7 @@ fn fluid_identity(id: &[u16]) -> Option<mod_api::FluidIdentity> {
     if let Some(key) = mod_api::__private::fluid_key_utf16(id) {
         return Some(mod_api::FluidIdentity::Resolved(key));
     }
-    mod_api::__private::lookup_unresolved_fluid_utf16(id)
-        .map(mod_api::FluidIdentity::Unresolved)
-        .or_else(|| {
-            static WARNED: std::sync::Once = std::sync::Once::new();
-            WARNED.call_once(|| log::warn!("An unrecognized live fluid id is unavailable"));
-            None
-        })
+    mod_api::FluidIdentity::of_name(&String::from_utf16_lossy(id))
 }
 
 /// A capability amount in the fluid helpers' millibuckets.
@@ -136,18 +127,23 @@ fn read_tanks(nbt: &Compound, n: usize) -> Vec<Tank> {
         .iter()
         .take(n)
         .map(|tag| match tag {
-            Tag::Compound(map) => (
-                match map.get(&JavaString::from("Fluid")) {
-                    Some(Tag::String(fluid)) if fluid.to_string_lossy() != "minecraft:empty" => {
-                        Some(fluid.to_string_lossy())
-                    }
-                    _ => None,
-                },
-                match map.get(&JavaString::from("Amount")) {
-                    Some(Tag::Int(amount)) => *amount,
+            Tag::Compound(map) => {
+                let amount = match map.get(&JavaString::from("Amount")) {
+                    Some(Tag::Int(amount)) if *amount > 0 => *amount,
                     _ => 0,
-                },
-            ),
+                };
+                let fluid = (amount > 0)
+                    .then(|| match map.get(&JavaString::from("Fluid")) {
+                        Some(Tag::String(fluid))
+                            if fluid.to_string_lossy() != "minecraft:empty" =>
+                        {
+                            Some(fluid.to_string_lossy())
+                        }
+                        _ => None,
+                    })
+                    .flatten();
+                (fluid, amount)
+            }
             _ => (None, 0),
         })
         .collect();
@@ -251,16 +247,20 @@ impl Game<'_> {
         let Some(entry) = list.get(index) else {
             return Some((None, 0));
         };
-        let id = match entry.get("Fluid") {
-            Some(Tag::String(id)) if !id.0.iter().copied().eq("minecraft:empty".encode_utf16()) => {
-                Some(id)
-            }
-            _ => None,
-        };
         let amount = match entry.get("Amount") {
-            Some(Tag::Int(amount)) => *amount,
+            Some(Tag::Int(amount)) if *amount > 0 => *amount,
             _ => 0,
         };
+        let id = (amount > 0)
+            .then(|| match entry.get("Fluid") {
+                Some(Tag::String(id))
+                    if !id.0.iter().copied().eq("minecraft:empty".encode_utf16()) =>
+                {
+                    Some(id)
+                }
+                _ => None,
+            })
+            .flatten();
         Some((id, amount))
     }
 
@@ -351,10 +351,10 @@ impl Game<'_> {
         at: BlockSide,
         tank: usize,
         fluid: FluidStack,
-        tx: &Transaction,
+        tx: &TransactionContext,
     ) -> Option<FluidStack> {
-        if !self.transaction_holds(tx) {
-            return Some(fluid).filter(|fluid| fluid.amount > 0);
+        if !self.transaction_context_is_current(tx) {
+            return Some(fluid);
         }
         if fluid.amount == 0 {
             return None;
@@ -374,18 +374,19 @@ impl Game<'_> {
                 };
                 if current > 0
                     && !held.is_some_and(|held| {
-                        mod_api::__private::fluid_identity_matches_utf16(fluid.fluid, &held.0)
+                        mod_api::__private::fluid_identity_matches_utf16(&fluid.fluid, &held.0)
                     })
                 {
                     return Some(fluid);
                 }
-                let add = (tanks.tanks[real] - current).clamp(0, amount);
+                let room = i64::from(tanks.tanks[real].max(0)) - i64::from(current);
+                let add = room.clamp(0, i64::from(amount)) as i32;
                 if add > 0 {
                     let Some(mut state) = self.tank_state(at.pos, tanks.tanks.len()) else {
                         return Some(fluid);
                     };
                     state[real] = (
-                        Some(mod_api::__private::fluid_identity_name(fluid.fluid)),
+                        Some(mod_api::__private::fluid_identity_name(&fluid.fluid)),
                         current + add,
                     );
                     self.set_tank_state(at.pos, &state);
@@ -413,9 +414,9 @@ impl Game<'_> {
         at: BlockSide,
         tank: usize,
         max: u32,
-        tx: &Transaction,
+        tx: &TransactionContext,
     ) -> Option<FluidStack> {
-        if !self.transaction_holds(tx) {
+        if !self.transaction_context_is_current(tx) {
             return None;
         }
         let max = mb(max);
@@ -773,14 +774,14 @@ mod tests {
                 }
                 let handler = handler.unwrap();
                 let extract = |game: &mut Game<'_>, resource: &FluidResource, amount| {
-                    game.transaction(|host, tx| {
-                        Ok::<_, ()>(handler.extract_at(host, tx, 0, resource, amount))
+                    game.storage_transaction(|host, tx| {
+                        handler.extract_at(host, tx, 0, resource, amount)
                     })
                     .unwrap()
                 };
                 let insert = |game: &mut Game<'_>, resource: &FluidResource, amount| {
-                    game.transaction(|host, tx| {
-                        Ok::<_, ()>(handler.insert_at(host, tx, 0, resource, amount))
+                    game.storage_transaction(|host, tx| {
+                        handler.insert_at(host, tx, 0, resource, amount)
                     })
                     .unwrap()
                 };
@@ -959,52 +960,52 @@ mod tests {
         fn insert_at(
             &self,
             host: &mut dyn ServerHost,
-            _: &Transaction,
+            _: &TransactionContext,
             index: usize,
             resource: &mod_api::FluidResource,
             amount: u32,
-        ) -> u32 {
+        ) -> Result<u32, mod_api::TransactionError<mod_api::Overanswered>> {
             if !self.is_valid(host, index, resource) {
-                return 0;
+                return Ok(0);
             }
             let mut state = self.state(host);
             let entry = &mut state[self.reached[index]];
             if entry.1 > 0 && entry.0.as_deref() != Some("minecraft:water") {
-                return 0;
+                return Ok(0);
             }
             let took = amount.min((4000 - entry.1).max(0).unsigned_abs());
             if took == 0 {
-                return 0;
+                return Ok(0);
             }
             entry.0 = Some("minecraft:water".into());
             entry.1 += took as i32;
-            if self.write(host, &state) { took } else { 0 }
+            Ok(if self.write(host, &state) { took } else { 0 })
         }
         fn extract_at(
             &self,
             host: &mut dyn ServerHost,
-            _: &Transaction,
+            _: &TransactionContext,
             index: usize,
             resource: &mod_api::FluidResource,
             amount: u32,
-        ) -> u32 {
+        ) -> Result<u32, mod_api::TransactionError<mod_api::Overanswered>> {
             let Some(&real) = self.reached.get(index) else {
-                return 0;
+                return Ok(0);
             };
             if self.resource(host, index).as_ref() != Some(resource) {
-                return 0;
+                return Ok(0);
             }
             let mut state = self.state(host);
             let entry = &mut state[real];
             let took = amount.min(entry.1.max(0).unsigned_abs());
             if took == 0 {
-                return 0;
+                return Ok(0);
             }
             entry.1 -= took as i32;
             if entry.1 == 0 {
                 entry.0 = None;
             }
-            if self.write(host, &state) { took } else { 0 }
+            Ok(if self.write(host, &state) { took } else { 0 })
         }
     }
 
@@ -1127,21 +1128,34 @@ mod tests {
                 ));
                 assert_eq!(source.capacity(game, 0, Some(&empty)), 0);
                 assert_eq!(
-                    game.transaction(|host, tx| Ok::<_, ()>(
+                    game.storage_transaction(|host, tx| {
                         source.insert_at(host, tx, 0, &empty, 1000)
-                    )),
+                    }),
                     Ok(0)
                 );
                 assert_eq!(source.resource(game, 0), None);
-                for id in ["mystery", "minecraft:mystery"] {
+                assert_eq!(mod_api::FluidIdentity::of_name("minecraft:empty"), None);
+                let water_identity = mod_api::FluidIdentity::Resolved(
+                    mod_api::__private::fluid_key("minecraft:water").unwrap(),
+                );
+                assert_eq!(
+                    mod_api::FluidIdentity::of_name("minecraft:water"),
+                    Some(water_identity.clone())
+                );
+                assert_eq!(
+                    mod_api::FluidIdentity::of_name("water"),
+                    Some(water_identity)
+                );
+                for id in ["minecraft:unavailable_native", "unavailable_native"] {
                     game.set_tank_state(from, &tanks(&[(Some(id), 1000), (None, 0)]));
-                    assert!(source.resource(game, 0).is_none());
-                    assert_eq!(
-                        game.tank_state(from, 2).unwrap()[0],
-                        (Some(id.to_owned()), 1000)
-                    );
+                    let unresolved = source.resource(game, 0).unwrap();
+                    let mod_api::FluidIdentity::Unresolved(name) = unresolved.fluid() else {
+                        panic!("an unregistered saved name stays unresolved");
+                    };
+                    assert_eq!(name.id().as_str(), "minecraft:unavailable_native");
+                    assert_eq!(source.amount(game, 0), 1000);
                 }
-                let handle = mod_api::__private::intern_unresolved_fluid("othermod:fluid").unwrap();
+                let handle = mod_api::FluidIdentity::of_name("othermod:fluid").unwrap();
                 game.set_tank_state(from, &tanks(&[(Some("othermod:fluid"), 1000), (None, 0)]));
                 let pipe_target = [4, 64, 0];
                 assert_eq!(
@@ -1157,7 +1171,7 @@ mod tests {
                 );
                 let target = level.capability(game, &FLUIDS, pipe_target, None).unwrap();
                 assert_eq!(
-                    game.transaction(|host, tx| move_resources(
+                    game.storage_transaction(|host, tx| move_resources(
                         host,
                         &source,
                         &target,
@@ -1183,7 +1197,7 @@ mod tests {
                     sunrise_client::save::LevelShape::OVERWORLD,
                     Some(Default::default()),
                 );
-                disk.enable_trusted_fluid_load();
+                disk.mark_server_owned();
                 disk.save(
                     &[Arc::new(saved)],
                     game.pack.assets.registry,
@@ -1201,19 +1215,16 @@ mod tests {
                     (Some("othermod:fluid".into()), 300)
                 );
                 let unresolved = source.resource(game, 0).unwrap();
-                assert_eq!(
-                    *unresolved.fluid(),
-                    mod_api::FluidIdentity::Unresolved(handle)
-                );
+                assert_eq!(*unresolved.fluid(), handle);
                 assert_eq!(source.amount(game, 0), 700);
                 assert_eq!(
-                    game.transaction(|host, tx| Ok::<_, ()>(source.extract_at(
+                    game.storage_transaction(|host, tx| source.extract_at(
                         host,
                         tx,
                         0,
                         &unresolved,
                         200
-                    ))),
+                    )),
                     Ok(200)
                 );
                 assert_eq!(
@@ -1224,17 +1235,17 @@ mod tests {
                 assert_eq!(source.resource(game, 0), Some(water.clone()));
                 assert_eq!(source.amount(game, 0), 1000);
                 assert_eq!(
-                    game.transaction(|host, tx| Ok::<_, ()>(
+                    game.storage_transaction(|host, tx| {
                         source.extract_at(host, tx, 0, &water, 1000)
-                    )),
+                    }),
                     Ok(1000)
                 );
                 assert_eq!(source.resource(game, 0), None);
                 assert!(source.is_valid(game, 0, &chocolate));
                 assert_eq!(
-                    game.transaction(|host, tx| Ok::<_, ()>(
+                    game.storage_transaction(|host, tx| {
                         source.insert_at(host, tx, 0, &chocolate, 1000)
-                    )),
+                    }),
                     Ok(1000)
                 );
                 assert_eq!(source.resource(game, 0), Some(chocolate.clone()));
@@ -1251,9 +1262,9 @@ mod tests {
                     assert_eq!(target.capacity(game, index, Some(&chocolate)), 4000);
                     assert!(!target.is_valid(game, index, &chocolate));
                     assert_eq!(
-                        game.transaction(|host, tx| Ok::<_, ()>(
+                        game.storage_transaction(|host, tx| {
                             target.insert_at(host, tx, index, &chocolate, 500)
-                        )),
+                        }),
                         Ok(0)
                     );
                 }
@@ -1262,7 +1273,7 @@ mod tests {
                 assert_eq!(target.amount(game, 1), 0);
                 assert_eq!(target.resource(game, 1), None);
                 assert_eq!(
-                    game.transaction(|host, tx| move_resources(
+                    game.storage_transaction(|host, tx| move_resources(
                         host,
                         &source,
                         &target,
@@ -1279,16 +1290,16 @@ mod tests {
                 // Water is valid but cannot replace another fluid; it can fill the empty tank.
                 assert!(target.is_valid(game, 0, &water));
                 assert_eq!(
-                    game.transaction(|host, tx| Ok::<_, ()>(
+                    game.storage_transaction(|host, tx| {
                         target.insert_at(host, tx, 0, &water, 500)
-                    )),
+                    }),
                     Ok(0)
                 );
                 assert!(target.is_valid(game, 1, &water));
                 assert_eq!(
-                    game.transaction(|host, tx| Ok::<_, ()>(
+                    game.storage_transaction(|host, tx| {
                         target.insert_at(host, tx, 1, &water, 500)
-                    )),
+                    }),
                     Ok(500)
                 );
                 assert_eq!(target.resource(game, 1), Some(water.clone()));
@@ -1300,20 +1311,20 @@ mod tests {
                 assert_eq!(sided.amount(game, 0), 500);
                 // A drain does not consult acceptance, so an old refused fluid is recoverable.
                 assert_eq!(
-                    game.transaction(|host, tx| Ok::<_, ()>(
+                    game.storage_transaction(|host, tx| {
                         target.extract_at(host, tx, 0, &chocolate, 100)
-                    )),
+                    }),
                     Ok(100)
                 );
                 assert_eq!(target.amount(game, 0), 900);
                 assert_eq!(
-                    game.transaction(|host, tx| Ok::<_, ()>(
+                    game.storage_transaction(|host, tx| {
                         source.insert_at(host, tx, 1, &water, 1000)
-                    )),
+                    }),
                     Ok(1000)
                 );
                 assert_eq!(
-                    game.transaction(|host, tx| move_resources(
+                    game.storage_transaction(|host, tx| move_resources(
                         host,
                         &source,
                         &target,
@@ -1325,8 +1336,8 @@ mod tests {
                 );
                 assert_eq!(source.amount(game, 1), 800);
                 assert_eq!(target.amount(game, 1), 700);
-                let abort: Result<(), ()> = game.transaction(|host, tx| {
-                    assert_eq!(target.insert_at(host, tx, 1, &water, 200), 200);
+                let abort: Result<(), ()> = game.storage_transaction(|host, tx| {
+                    assert_eq!(target.insert_at(host, tx, 1, &water, 200), Ok(200));
                     Err(())
                 });
                 assert!(abort.is_err());
@@ -1364,6 +1375,16 @@ mod tests {
         // A tank the save never heard of reads as empty, not as gone.
         let longer = read_tanks(&nbt, 3);
         assert_eq!(longer[2], (None, 0));
+        // Malformed negative saved amounts decode as empty at the decoding boundary.
+        let mut bad = Compound::new();
+        bad.insert(
+            JavaString::from("fluids"),
+            Tag::List(vec![Tag::compound([
+                ("Fluid", Tag::String(JavaString::from("minecraft:water"))),
+                ("Amount", Tag::Int(i32::MIN)),
+            ])]),
+        );
+        assert_eq!(read_tanks(&bad, 1), vec![(None, 0)]);
         // Anything else under `fluids` is the mod's own, not a tank list.
         nbt.insert(JavaString::from("fluids"), Tag::Int(0));
         assert_eq!(read_tanks(&nbt, 2), vec![(None, 0), (None, 0)]);

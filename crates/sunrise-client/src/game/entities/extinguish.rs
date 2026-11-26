@@ -4,6 +4,7 @@
 use super::Game;
 use sunrise_client::motion::MotionEvent;
 use sunrise_core::position::BlockPos;
+use sunrise_world::registry::BlockStateId;
 
 impl Game<'_> {
     /// `ServerLevel.mayInteract` for the player whose turn it is: a player
@@ -48,11 +49,16 @@ impl Game<'_> {
         if self.remote.is_some() || !self.may_interact_at(pos) {
             return;
         }
+        self.cauldron_extinguish_at(pos, self.world.block(pos.x, pos.y, pos.z));
+    }
+    /// `LayeredCauldronBlock.handleEntityOnFireInside` takes the encountered state,
+    /// not a new block read at flush. The caller runs the swept entity's `mayInteract`.
+    pub(super) fn cauldron_extinguish_at(&mut self, pos: BlockPos, state: BlockStateId) {
         let at = [pos.x, pos.y, pos.z];
         let registry = self.pack.assets.registry;
-        let judged = self.world.block(at[0], at[1], at[2]);
+        let judged = self.world.block(pos.x, pos.y, pos.z);
         let Some(old) = registry
-            .state(judged)
+            .state(state)
             .filter(|s| {
                 matches!(
                     s.name.as_str(),
@@ -90,8 +96,8 @@ impl Game<'_> {
         ) {
             return;
         }
-        // The listener may have changed the block it heard about: the same
-        // block id and properties as judged, or nothing changes.
+        // The cauldron level change listener may have changed the block during
+        // this call. Earlier inside callbacks are not part of that check.
         if self.world.block(at[0], at[1], at[2]) != judged {
             return;
         }

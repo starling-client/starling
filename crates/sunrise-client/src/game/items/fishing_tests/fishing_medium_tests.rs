@@ -3,7 +3,7 @@
 //! its checked table; the client keeps only the surface; the first mod in order wins.
 // Included as fishing's child so fixtures can construct its private hook state.
 use super::*;
-use crate::game::native_entity_refs::tests::{with_client_game, with_game};
+use crate::game::native_entity_refs::tests::{run_fresh_cases, with_client_game, with_game};
 use std::sync::{Arc, Mutex};
 use sunrise_client::motion::PlayerMotion;
 
@@ -22,6 +22,7 @@ const FISH: [&str; 4] = [
 struct Probe {
     /// None answers no medium; otherwise the surface is the caster's feet less 4.
     table: Option<Option<String>>,
+    lure_ticks: Option<[i32; 2]>,
     asks: usize,
     told: Option<(
         mod_api::LevelRef,
@@ -50,13 +51,14 @@ impl mod_api::Hooks for Medium {
         Some(mod_api::FishingMedium {
             surface: event.owner_position.unwrap_or(FEET)[1] - 4.0,
             loot_table: table,
-            lure_ticks: Some([20, 60]),
+            lure_ticks: probe.lure_ticks,
         })
     }
 }
 fn probe(table: Option<Option<&str>>) -> Arc<Mutex<Probe>> {
     Arc::new(Mutex::new(Probe {
         table: table.map(|t| t.map(str::to_owned)),
+        lure_ticks: Some([20, 60]),
         ..Default::default()
     }))
 }
@@ -90,7 +92,9 @@ fn caster(game: &mut Game<'_>) {
 /// Cast a bobber at (5.5, 66, 0.5), over the air, and tick it `ticks` times: its id.
 fn cast(game: &mut Game<'_>, ticks: usize) -> u32 {
     let id = game.take_entity_id();
-    game.install_fishing_hook(Hook::remote(id, Vec3::new(5.5, 66.0, 0.5), [0; 4]));
+    let mut bobber = Hook::remote(id, Vec3::new(5.5, 66.0, 0.5), [0; 4]);
+    bobber.random = LegacyRandom::new(1);
+    game.install_fishing_hook(bobber);
     for _ in 0..ticks {
         game.tick_fishing();
     }
@@ -116,7 +120,17 @@ fn with_no_listener_the_bobber_falls() {
 #[test]
 #[ignore = "daily"]
 fn a_mods_medium_floats_the_bobber_and_its_catch_rolls_the_checked_table() {
+    if run_fresh_cases(
+        "game::fishing::fishing_medium_tests::a_mods_medium_floats_the_bobber_and_its_catch_rolls_the_checked_table",
+        "SUNRISE_FISHING_MEDIUM_CASE",
+        &["float-and-catch"],
+    ) {
+        return;
+    }
     let medium = probe(None);
+    // FishingHook.catchingFish waits at least 100 ticks before the approach starts. Keep that
+    // vanilla wait for the float check; a bite deliberately plunges the bobber below the surface.
+    medium.lock().unwrap().lure_ticks = None;
     mod_platform::testing::with_mods(mods(&[("medium", &medium)]), || {
         with_game(|game| {
             let scratch = tempfile::tempdir().unwrap();
@@ -132,6 +146,7 @@ fn a_mods_medium_floats_the_bobber_and_its_catch_rolls_the_checked_table() {
             medium.lock().unwrap().table = Some(Some(JUNK.into()));
             let id = cast(game, 100);
             assert_eq!(game.hook_status().unwrap()["state"], "Bobbing");
+            assert_eq!(game.hook.as_mut().unwrap().nibble, 0);
             let y = bobber_y(game);
             assert!((59.0..61.0).contains(&y), "floats at {y}");
             assert_eq!(game.hook_status().unwrap()["loot_table"], JUNK);

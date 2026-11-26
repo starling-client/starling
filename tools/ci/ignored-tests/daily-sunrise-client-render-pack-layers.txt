@@ -1,0 +1,6 @@
+# PACKAGE TEST TARGET daily REASON; exact logical libtest identities, sorted.
+# A shaders/ pack's layer.* rules through the real mesher (#341).
+sunrise-client-render mesher::layer_override_tests::cutout_clears_the_opaque_bit_of_the_named_state_only lib daily resources
+sunrise-client-render mesher::layer_override_tests::no_moved_state_meshes_to_the_byte lib daily resources
+sunrise-client-render mesher::layer_override_tests::rules_win_over_the_sprite_and_the_options lib daily resources
+sunrise-client-render mesher::layer_override_tests::translucent_moves_only_the_named_state lib daily resources

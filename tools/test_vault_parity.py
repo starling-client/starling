@@ -29,12 +29,11 @@ from pathlib import Path
 import platform
 import random
 import subprocess
-try:
-    from . import lab, test_rust_parity as base, test_natural_spawn_parity as natural
-except ImportError:
-    import lab
-    import test_rust_parity as base
-    import test_natural_spawn_parity as natural
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_rust_parity as base, test_natural_spawn_parity as natural
 
 box = natural.box
 STATES = ['inactive', 'active', 'unlocking', 'ejecting']

@@ -53,12 +53,14 @@ Content {
             category: Neutral,
             color: 37,
             sort_order: None,
+            attribute_modifiers: [],
         },
         MobEffect {
             id: "mob_effect_full:rested",
             category: Beneficial,
             color: 174253,
             sort_order: None,
+            attribute_modifiers: [],
         },
         MobEffect {
             id: "mob_effect_full:startled",
@@ -67,6 +69,26 @@ Content {
             sort_order: Some(
                 -8,
             ),
+            attribute_modifiers: [
+                EffectAttributeModifier {
+                    attribute: "minecraft:movement_speed",
+                    id: "mob_effect_full:effect/startled_speed",
+                    amount: -1.0,
+                    operation: AddMultipliedTotal,
+                },
+                EffectAttributeModifier {
+                    attribute: "minecraft:jump_strength",
+                    id: "mob_effect_full:effect/startled_jump",
+                    amount: -0.5,
+                    operation: AddMultipliedBase,
+                },
+                EffectAttributeModifier {
+                    attribute: "minecraft:max_absorption",
+                    id: "mob_effect_full:effect/startled_absorption",
+                    amount: 1.0,
+                    operation: AddValue,
+                },
+            ],
         },
     ],
     creative_tabs: [],

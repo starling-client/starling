@@ -133,7 +133,7 @@ pub(crate) fn is_software(kind: wgpu::DeviceType) -> bool {
     kind == wgpu::DeviceType::Cpu
 }
 /// A device and what it came from.
-pub(crate) struct Opened {
+pub struct Opened {
     pub(crate) instance: wgpu::Instance,
     pub(crate) surface: Option<wgpu::Surface<'static>>,
     pub(crate) adapter: wgpu::Adapter,
@@ -144,6 +144,29 @@ pub(crate) struct Opened {
     /// surface's capabilities on `adapter`. None offscreen.
     pub(crate) configured: Option<(wgpu::SurfaceConfiguration, wgpu::SurfaceCapabilities)>,
 }
+impl Opened {
+    pub async fn for_window(
+        window: &Arc<Window>,
+        offscreen: bool,
+        api: GraphicsApi,
+        layers: u32,
+    ) -> Result<Self> {
+        let _step = crate::spans::startup::step("renderer.open_device");
+        open_device(window, offscreen, api, layers).await
+    }
+
+    pub fn max_atlas_size(&self) -> u32 {
+        self.device.limits().max_texture_dimension_2d
+    }
+}
+
+/// Which device owns a new renderer and its textures.
+pub enum RendererDevice<'a> {
+    New,
+    Opened(Box<Opened>),
+    Reuse(&'a Renderer),
+}
+
 /// Logs the adapter and records it for crash reports.
 #[derive(Clone, Debug, Default)]
 pub struct Adapter {
@@ -266,9 +289,9 @@ pub(crate) fn draws_frame(format: wgpu::TextureFormatFeatures) -> bool {
     )
 }
 
-/// The frame of a renderer made under `SUNRISE_HDR_FRAME=float` (docs/design/hdr-linear-light.md)
-/// with a shader API 0.2 pack picked, or with HDR on and no pack: float, so values over 1
-/// survive from the world to the tonemap and the HDR pass.
+/// The frame of a renderer made under `SUNRISE_HDR_FRAME=float` with a shader API 0.2 pack picked,
+/// or with HDR on and no pack: float, so values over 1 survive from the world to the tonemap and
+/// the HDR pass.
 pub(crate) const LINEAR_FRAME: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
 /// Opens a device on the first of `backend_order`'s backends that gives one.

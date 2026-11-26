@@ -11,11 +11,11 @@ from pathlib import Path
 import re
 import subprocess
 import tempfile
-try:
-    from . import lab, test_rust_parity as base
-except ImportError:
-    import lab
-    import test_rust_parity as base
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_rust_parity as base
 
 TEST = 'game::end::cooldown_tests::gateway_counters_match_actual_vanilla_methods'
 
@@ -54,14 +54,7 @@ def main():
     env = lab.game_env(inherited, SUNRISE_TELEMETRY_URL="off", SUNRISE_PORTAL_REFERENCE=reference.resolve(),
                        SUNRISE_PORTAL_REPORT=(build / 'native.json').resolve(),
                        SUNRISE_TEST_RESOURCES=args.resources.resolve(strict=True))
-    run(['cargo', 'test', '-p', 'sunrise-client', '--lib', '--no-run',
-         '--message-format=json'], 'build-native', env)
-    records = (json.loads(line) for line in (build / 'build-native.log').read_text(encoding='utf-8').splitlines()
-               if line.startswith('{'))
-    executables = [row['executable'] for row in records if row.get('reason') == 'compiler-artifact'
-                   and row.get('executable') and row.get('profile', {}).get('test')]
-    if len(executables) != 1:
-        raise SystemExit(f'expected one production test binary, got {executables}')
+    executables = [lab.parity_fixtures()]
     with tempfile.TemporaryDirectory(prefix='sunrise-portal-cooldown-') as scratch:
         with (build / 'native.log').open('w', encoding='utf-8') as log:
             subprocess.run([executables[0], TEST, '--ignored', '--exact', '--nocapture'],

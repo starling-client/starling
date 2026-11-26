@@ -19,9 +19,10 @@ use sha2::{Digest, digest::Output};
 use std::{
     collections::HashMap,
     fs,
-    io::{self, Read, Write},
+    io::Read,
     path::{Path, PathBuf},
 };
+use sunrise_jar_fetch::hash_reader;
 
 /// Hosts a Modrinth pack may download from (the `.mrpack` format's list).
 const HOSTS: [&str; 4] = [
@@ -30,8 +31,6 @@ const HOSTS: [&str; 4] = [
     "https://raw.githubusercontent.com/",
     "https://gitlab.com/",
 ];
-/// No mod jar is this large; a bigger answer is not one.
-pub(crate) const MAX_JAR: u64 = 512 << 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -243,35 +242,6 @@ pub(crate) fn download(
     store_download(response.into_reader(), sha1, dest, overwrite).map_err(|e| format!("{url}: {e}"))
 }
 
-/// Hash and copy a jar stream, refusing inputs larger than 512 MiB.
-/// Pass [`io::sink()`] as the writer when only the digest is needed.
-pub fn hash_reader<D: Digest>(
-    mut reader: impl Read,
-    mut writer: impl Write,
-) -> io::Result<Output<D>> {
-    let mut hash = D::new();
-    let mut size = 0u64;
-    let mut buf = [0u8; 65536];
-    loop {
-        let n = match reader.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => n,
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-            Err(e) => return Err(e),
-        };
-        size += n as u64;
-        if size > MAX_JAR {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "jar exceeds 512 MiB",
-            ));
-        }
-        hash.update(&buf[..n]);
-        writer.write_all(&buf[..n])?;
-    }
-    Ok(hash.finalize())
-}
-
 /// Stream into a private temporary file, publishing only after verification.
 pub(crate) fn store_download(
     reader: impl Read,
@@ -416,35 +386,7 @@ pub fn curseforge_names(instance: &Value) -> HashMap<(u64, u64), String> {
 mod tests {
     use super::*;
     use serde_json::json;
-
-    #[test]
-    #[ignore = "daily"]
-    fn jar_hashing_accepts_512_mib_and_refuses_one_extra_byte() {
-        let limit = 512 * 1024 * 1024;
-        assert!(hash_reader::<sha2::Sha512>(io::repeat(0).take(limit), io::sink()).is_ok());
-        let error =
-            hash_reader::<sha2::Sha512>(io::repeat(0).take(limit + 1), io::sink()).unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-    }
-
-    #[test]
-    fn hashing_and_copying_share_the_digest_for_each_algorithm() {
-        let mut copied = Vec::new();
-        let hash = hash_reader::<Sha1>(&b"abc"[..], &mut copied).unwrap();
-        assert_eq!(
-            format!("{hash:x}"),
-            "a9993e364706816aba3e25717850c26c9cd0d89d"
-        );
-        assert_eq!(copied, b"abc");
-        let hash = hash_reader::<sha2::Sha512>(&b"abc"[..], io::sink()).unwrap();
-        assert_eq!(
-            format!("{hash:x}"),
-            concat!(
-                "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a",
-                "2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f"
-            )
-        );
-    }
+    use std::io::Write;
 
     #[test]
     fn sha1_stream_is_verified_before_atomic_publication() {

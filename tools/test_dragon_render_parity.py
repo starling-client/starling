@@ -7,12 +7,12 @@ This harness captures real vanilla ray triangles, not a reimplementation.
 import json
 import os
 
-try:
-    from . import lab, oracle_harness as harness, test_rust_parity as base
-    from . import test_model_baking_parity as baking
-except ImportError:
-    import lab, oracle_harness as harness, test_rust_parity as base
-    import test_model_baking_parity as baking
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, oracle_harness as harness, test_rust_parity as base, test_model_baking_parity as baking
 
 
 def main():
@@ -26,8 +26,8 @@ def main():
     harness.java_run(build, classes, dependencies, 'VanillaDragonRenderOracle', [build / 'client.json'], 'client')
     (build / 'rust.json').unlink(missing_ok=True)
     harness.run_logged(
-        ['cargo', 'test', '--locked', '-p', 'sunrise-client', '--lib',
-         'game::dragon::tests::', '--', '--include-ignored'],
+        [lab.parity_fixtures(),
+         'game::dragon::tests::dragon_render_parity_fixture', '--exact'],
         build, 'rust', env=dict(os.environ, SUNRISE_DRAGON_RENDER_OUTPUT=str(build / 'rust.json'),
                                 SUNRISE_TEST_RESOURCES=os.environ.get('SUNRISE_TEST_RESOURCES', str(lab.RESOURCES))))
     expected = json.loads((build / 'client.json').read_text())

@@ -8,35 +8,44 @@ pub trait Hooks {
     #[notes = r#"## Texture atlases
 
 `register_texture_atlases` receives a registration context. Call `event.register(atlas)`
-with a `TextureAtlasRegistration` giving an atlas id in the mod's own namespace
-(`mymod:icons`) and its definition (`mymod:icons` reads
-`assets/mymod/atlases/icons.json`). The definition is a `sources` list like
-vanilla's atlas definitions, and resource packs change it the same way.
+with a `TextureAtlasRegistration` giving an atlas id (`mymod:icons`) and its definition
+(`mymod:icons` reads `assets/mymod/atlases/icons.json`). The definition is a `sources`
+list like vanilla's atlas definitions, and resource packs change it the same way.
 
-Sunrise packs vanilla's atlases into two, so a registered atlas's sprites are
-stitched into the GUI atlas, each under `TextureAtlasRegistration::sprite_name`:
+Each registered atlas has its own texture, stitched independently from the base
+HUD and other registered atlases. Its sprites are exposed in the GUI lookup under
+`TextureAtlasRegistration::sprite_name`:
 sprite `mymod:heart` of `mymod:icons` is `mymod:gui/atlases/icons/mymod/heart`.
 Look it up with `gui_sprite` in `texture_atlas_stitched` for `TextureAtlas::Gui`
 and draw it with `DrawContext::sprite` by that name. Every reload lists the
 sprites again from the definition as the packs now give it.
 
 The hook runs at client startup and on the game-owning thread before reload
-staging; re-submit the atlases on each call. The game's own atlases never
-change: atlases in the `minecraft` or `sunrise` namespace are refused. The load
-accepts up to 32 atlases and 4096 of their sprites across all mods. The first
-registration of an atlas id wins; an unknown or malformed definition, a
-duplicate atlas and sprites past the budget are logged and skipped. A pack file
-already at a sprite's name wins over the sprite."#]
+staging; re-submit the atlases on each call. Any namespace is allowed, including
+`minecraft:` and `sunrise:`. Collisions with vanilla 26.3's built-in engine
+atlases (`AtlasManager.KNOWN_ATLASES`, such as `minecraft:blocks` or
+`minecraft:gui`) on either `definition` or `atlas`, and duplicate `definition`
+or `atlas` ids, are logged as errors naming the registering mod and earlier
+owner, keeping the first registration (matching NeoForge's
+`ClientHooks.gatherTextureAtlases` and `RegisterTextureAtlasesEvent.register`).
+There is no synthetic atlas or sprite count cap; only the GPU device's actual
+`max_texture_dimension_2d` limit applies, with per-atlas isolation and
+diagnostics so an overflowing or bad atlas never shrinks unrelated model
+textures or discards other atlases or sprites. A registered atlas sprite
+replaces a raw pack file at the same staged path with a warning (matching
+vanilla's `TextureManager.register`); if two registered atlases stage the same
+sprite path, the first stands and a warning names both."#]
     #[hook(
         receiver = "associated",
         dispatch = "flat",
         side = "client",
         contract = "collect",
         out = "atlases",
+        answered_by = "mod",
         registration_append = "register",
         context = "registration",
         neoforge = "RegisterTextureAtlasesEvent",
-        version = 3
+        version = 4
     )]
-    fn register_texture_atlases(atlases: &mut Vec<TextureAtlasRegistration>);
+    fn register_texture_atlases(atlases: &mut Vec<Answered<TextureAtlasRegistration>>);
 }

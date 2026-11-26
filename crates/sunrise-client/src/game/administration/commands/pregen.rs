@@ -242,8 +242,8 @@ impl Game<'_> {
 
     /// Keep the workers fed until `until`: collect what they finished and
     /// hand them the next jobs as soon as each one is done, rather than once
-    /// a tick.
-    pub(in crate::game) fn pump_chunks(&mut self, until: Instant, paused: bool) {
+    /// a tick. Return time spent waiting for workers, not running chunk tasks.
+    pub(in crate::game) fn pump_chunks(&mut self, until: Instant, paused: bool) -> Duration {
         // Force-loaded chunks too, a mod's held ones as `/forceload`'s: decorating in vanilla's order, a chunk
         // waits for its neighbours far more often than once a tick allows.
         // And the players' chunks while they load, as vanilla's server runs
@@ -256,6 +256,7 @@ impl Game<'_> {
         // A viewed area's chunks (#3716) as the forced ones.
         let players = !paused && self.spawn_wait.is_empty();
         let viewed = self.viewed_level(self.dim).is_some();
+        let mut idle = Duration::ZERO;
         while self.pregen_runs_here()
             || ((players || viewed || !self.streaming.forced.is_empty()) && self.streaming.busy())
         {
@@ -263,10 +264,12 @@ impl Game<'_> {
             if now >= until {
                 break;
             }
-            self.streaming
+            idle += self
+                .streaming
                 .wait((until - now).min(Duration::from_millis(5)));
             self.update_world();
         }
+        idle
     }
 
     /// The console and the player who started the task get the progress.

@@ -1,0 +1,8 @@
+ids = [
+    "behaviour:play_packet_holds",
+    "type:HoldError.NoOwner",
+    "type:HoldError.WrongOwner",
+    "type:HoldError.Limit",
+]
+why = "The global hold introduced in de94789afa9f kept engine and mod packets ordered, but a second holder was refused and an invented size limit silently flushed the first. Sunrise now gives holds to individual mods and retains the writer's real send credit. The FIFO and close rules follow vanilla Connection.send, flushQueue and disconnect. NeoForge's Connection patch and IClientCommonPacketListenerExtension.send/disconnect do not add play holds."
+migrate = "Keep using host.hold_packets() to obtain a HoldId, but store it in the starting mod and end it from that mod: host.release_held(id) or host.drop_held(id). Do not interpret a second hold as an error. Replace HoldError::Limit handling with handling SendPacketError::Backpressure at host.send_packet(packet); there is no overflow flush or sticky error to clear. A live ID from another mod returns WrongOwner; a call without a native owner returns NoOwner; expired IDs return Unknown in the owning mod's calls. Starting without a joined physical Play connection or using a Host without a backend returns NoWorld. Release returns the count newly queued to the writer, which can be zero with another hold active. Drop discards packets covered by that hold, including overlapping packets, without ending other holds. Read HoldError::Send { sent, error } as the queued prefix and its transport failure, not as a count of packets delivered to the server."

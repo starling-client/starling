@@ -1,4 +1,5 @@
-//! The depth and reach bounds `JigsawStructure`'s codec puts on a structure.
+//! The depth and reach bounds `JigsawStructure`'s codec and `verifyRange` put
+//! on a structure.
 //! A structure carrying others is not registered by vanilla, so it must not
 //! place pieces here either.
 use serde_json::{Value, json};
@@ -9,12 +10,17 @@ fn kind(fields: Value) -> StructureKind {
     let mut structure = json!({
         "type": "minecraft:jigsaw",
         "start_pool": "x:pool",
+        "size": 1,
         "start_height": {"absolute": 64},
         "biomes": "#minecraft:is_overworld",
         "step": "surface_structures",
     });
+    // A null field is left out of the structure.
     for (key, value) in fields.as_object().expect("an object of fields") {
-        structure[key] = value.clone();
+        match value {
+            Value::Null => _ = structure.as_object_mut().unwrap().remove(key),
+            _ => structure[key] = value.clone(),
+        }
     }
     let structures = BTreeMap::from([("x:test".to_owned(), structure.to_string())]);
     let registry = StructureRegistry::new(
@@ -32,14 +38,14 @@ fn places(fields: Value) -> bool {
     matches!(kind(fields), StructureKind::Jigsaw(_))
 }
 
-/// `JigsawStructure.CODEC` reads `size` with `Codec.intRange(0, 20)`.
+/// `JigsawStructure.CODEC` reads `size` with a required
+/// `Codec.intRange(0, 20)`.
 #[test]
-fn a_jigsaw_structures_size_stops_at_twenty() {
+fn a_jigsaw_structures_size_is_required_and_stops_at_twenty() {
     assert!(places(json!({"size": 0})));
     assert!(places(json!({"size": 20})));
-    // Absent, the field is read as a depth of 0, as before.
-    assert!(places(json!({})));
     for bad in [
+        json!({"size": null}),
         json!({"size": 21}),
         json!({"size": 200}),
         json!({"size": -1}),
@@ -70,6 +76,32 @@ fn a_jigsaw_structures_reach_stays_inside_vanillas() {
         json!({"max_distance_from_center": {"horizontal": 0, "vertical": 100}}),
         json!({"max_distance_from_center": {"horizontal": 64, "vertical": 0}}),
         json!({"max_distance_from_center": {"horizontal": 128, "vertical": 4065}}),
+    ] {
+        assert!(!places(bad.clone()), "{bad}");
+    }
+}
+
+/// `JigsawStructure.verifyRange`: the horizontal reach plus the 12 blocks any
+/// terrain adaptation but `none` needs stays within
+/// `MAX_TOTAL_STRUCTURE_RANGE` (128).
+#[test]
+fn a_jigsaw_structures_reach_leaves_room_for_its_terrain_adaptation() {
+    for good in [
+        json!({"max_distance_from_center": 116, "terrain_adaptation": "beard_thin"}),
+        json!({"max_distance_from_center": 116, "terrain_adaptation": "encapsulate"}),
+        json!({"max_distance_from_center": 128, "terrain_adaptation": "none"}),
+        json!({"max_distance_from_center": 128}),
+        json!({"max_distance_from_center": {"horizontal": 116, "vertical": 4064},
+            "terrain_adaptation": "bury"}),
+    ] {
+        assert!(places(good.clone()), "{good}");
+    }
+    for bad in [
+        json!({"max_distance_from_center": 117, "terrain_adaptation": "beard_thin"}),
+        json!({"max_distance_from_center": 120, "terrain_adaptation": "beard_box"}),
+        json!({"max_distance_from_center": 128, "terrain_adaptation": "bury"}),
+        json!({"max_distance_from_center": {"horizontal": 117, "vertical": 1},
+            "terrain_adaptation": "encapsulate"}),
     ] {
         assert!(!places(bad.clone()), "{bad}");
     }

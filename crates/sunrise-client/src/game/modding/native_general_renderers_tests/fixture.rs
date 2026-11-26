@@ -1,30 +1,45 @@
 //! The general entity renderer used by the integrated scene.
 use mod_api::{
-    AttachmentCodec, AttachmentError, AttachmentType, BlockEntityDrawContext, EntityRenderState,
-    EntityRenderer, EntityRenderers, GeneralEntityCategory, GeneralSavePolicy, Registrar, Tag,
+    AttachmentCodec, AttachmentDescriptor, AttachmentError, AttachmentKey, BlockEntityDrawContext,
+    EntityRenderState, EntityRenderer, EntityRenderers, GeneralEntityCategory, GeneralSavePolicy,
+    Registrar, Tag,
 };
+use std::sync::Mutex;
 
 pub const KIND: &str = "general_render_fixture:render_probe";
 
-pub static FUEL: AttachmentType<i32> = AttachmentType {
-    namespace: "general_render_fixture",
-    name: "render_fuel",
-    default: || 0,
-    codec: Some(AttachmentCodec {
-        encode: |n| Ok([("n".into(), Tag::Int(*n))].into()),
-        decode: |tag| match tag.get(&"n".into()) {
-            Some(Tag::Int(n)) => Ok(*n),
-            _ => Err(AttachmentError::Decode),
-        },
-    }),
-    copy_on_death: false,
-    sync: true,
+const FUEL_CODEC: AttachmentCodec<i32> = AttachmentCodec {
+    encode: |n| Ok([("n".into(), Tag::Int(*n))].into()),
+    decode: |tag| match tag.get(&"n".into()) {
+        Some(Tag::Int(n)) => Ok(*n),
+        _ => Err(AttachmentError::Decode),
+    },
 };
 
-pub fn register(registrar: &mut dyn Registrar) {
-    registrar
-        .register_attachment_type("general_render_fixture:render_fuel", true)
+#[derive(Default)]
+pub struct Keys {
+    fuel: Mutex<Option<AttachmentKey<i32>>>,
+}
+
+impl Keys {
+    pub fn fuel(&self) -> AttachmentKey<i32> {
+        self.fuel
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("general_render_fixture:render_fuel registered")
+    }
+}
+
+pub fn register(registrar: &mut dyn Registrar, keys: &Keys) {
+    let fuel = registrar
+        .register_attachment_type(
+            AttachmentDescriptor::new("general_render_fixture:render_fuel", || 0i32)
+                .serialize(FUEL_CODEC)
+                .sync(FUEL_CODEC),
+        )
         .unwrap();
+    *keys.fuel.lock().unwrap() = Some(fuel);
     registrar
         .declare_general_entity(
             "render_probe",
@@ -35,6 +50,7 @@ pub fn register(registrar: &mut dyn Registrar) {
             GeneralSavePolicy::Save,
             true,
             false,
+            false,
             None,
             8,
             1,
@@ -44,11 +60,16 @@ pub fn register(registrar: &mut dyn Registrar) {
         .unwrap();
 }
 
-pub fn register_renderer(renderers: &mut dyn EntityRenderers) {
-    renderers.register(KIND.into(), std::sync::Arc::new(Probe));
+pub fn register_renderer(renderers: &mut dyn EntityRenderers, keys: &Keys) {
+    renderers.register(
+        KIND.into(),
+        std::sync::Arc::new(Probe { fuel: keys.fuel() }),
+    );
 }
 
-struct Probe;
+struct Probe {
+    fuel: AttachmentKey<i32>,
+}
 impl EntityRenderer for Probe {
     fn submit(
         &self,
@@ -59,7 +80,7 @@ impl EntityRenderer for Probe {
             .attachments
             .as_ref()
             .ok_or("missing render snapshot")?
-            .get(&FUEL)
+            .get(&self.fuel)
             .map_err(|e| format!("{e:?}"))?
             .copied()
             .ok_or("missing fuel")? as f32;

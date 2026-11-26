@@ -120,9 +120,9 @@ impl Game<'_> {
     /// shared `Entity.id` counter) and UUID, whether or not anyone tracks
     /// it. A fence that already has one keeps it. Call
     /// [`Self::forget_untied_knots`] before the tie.
-    pub(super) fn tie_knot(&mut self, fence: [i32; 3]) {
-        if self.knot_ids.contains_key(&fence) {
-            return;
+    pub(super) fn tie_knot(&mut self, fence: [i32; 3]) -> u32 {
+        if let Some(&id) = self.knot_ids.get(&fence) {
+            return id;
         }
         self.next_entity += 1;
         let id = self.next_entity;
@@ -132,8 +132,14 @@ impl Game<'_> {
             id,
             join: Default::default(),
             fence,
+            fire_ticks: 0,
+            invulnerable: false,
+            no_gravity: false,
+            silent: false,
+            glowing: false,
         });
         self.uuid_for(id);
+        id
     }
     /// The authoritative fence of an active natural knot, until a last-holder
     /// notification or the tracking cleanup retires its physical owner.
@@ -152,6 +158,49 @@ impl Game<'_> {
         let index = self.resident_entities.knots.locate(location.join)?;
         Some(self.resident_entities.knots[index].fence)
     }
+    /// `BlockAttachedEntity.kill`: retire a natural knot before notifying its holders.
+    /// Unlike vanilla's object references, this level's leash links name the fence.
+    pub(super) fn kill_natural_knot(&mut self, id: u32) -> bool {
+        let Some(fence) = self.natural_knot(id) else {
+            return false;
+        };
+        let holder = Some(Holder::Knot(fence));
+        let mobs: Vec<_> = self
+            .mobs
+            .iter()
+            .filter(|mob| !mob.removed && mob.extra.leash == holder)
+            .map(|mob| mob.id)
+            .collect();
+        let boats: Vec<_> = self
+            .boats
+            .iter()
+            .filter(|boat| boat.leash == holder)
+            .map(|boat| boat.id)
+            .collect();
+        self.knot_ids.remove(&fence);
+        self.resident_entities.knots.retain(|knot| knot.id != id);
+        for id in mobs {
+            if self
+                .mobs
+                .iter()
+                .any(|mob| mob.id == id && mob.extra.leash == holder)
+            {
+                self.detach_leash(Target::Mob(id), true);
+            }
+        }
+        for id in boats {
+            if self
+                .boats
+                .iter()
+                .any(|boat| boat.id == id && boat.leash == holder)
+            {
+                self.detach_leash(Target::Boat(id), true);
+            }
+        }
+        self.native_entity_left(id);
+        true
+    }
+
     /// Actual natural knot owners, without allocating or inferring membership from leashes.
     pub(super) fn natural_knot_id_iter(&self) -> impl Iterator<Item = u32> + '_ {
         self.resident_entities.knots.iter().map(|knot| knot.id)
@@ -198,8 +247,7 @@ impl Game<'_> {
         }
     }
     pub(super) fn lead_sound(&mut self, sound: &str, at: [f64; 3]) {
-        self.audio
-            .play(&format!("minecraft:item.lead.{sound}"), Some(at), 1.0, 1.0);
+        self.play_audio(&format!("minecraft:item.lead.{sound}"), Some(at), 1.0, 1.0);
     }
     /// `Leashable.canHaveALeashAttachedTo` for the mob at `index` and a
     /// holder whose box centre is `center`: within the species' snapping
@@ -225,10 +273,15 @@ impl Game<'_> {
         to: Holder,
         skip: Option<usize>,
     ) -> bool {
+        let knot_id = match to {
+            Holder::Knot(fence) => self.knot_ids.get(&fence).copied(),
+            _ => None,
+        };
         let mut any = false;
         for j in self.player_leashed(center) {
             if Some(j) != skip && self.can_attach_lead(j, center) {
                 self.mobs[j].extra.leash = Some(to);
+                self.mobs[j].extra.leash_knot_id = knot_id;
                 any = true;
             }
         }
@@ -320,6 +373,10 @@ impl Game<'_> {
         holder: Holder,
         player: Option<[i32; 4]>,
     ) -> bool {
+        let knot_id = match holder {
+            Holder::Knot(fence) => self.knot_ids.get(&fence).copied(),
+            _ => None,
+        };
         match target {
             Target::Mob(id) => {
                 let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) else {
@@ -327,6 +384,7 @@ impl Game<'_> {
                 };
                 let old = m.extra.leash;
                 m.extra.leash = Some(holder);
+                m.extra.leash_knot_id = knot_id;
                 m.extra.leash_player = player;
                 m.extra.leash_pending = None;
                 if old != Some(holder) {
@@ -341,6 +399,7 @@ impl Game<'_> {
                 let old = self.boats[i].leash;
                 self.boats.update(i, |b| {
                     b.leash = Some(holder);
+                    b.leash_knot_id = knot_id;
                     b.leash_player = player;
                     b.leash_pending = None;
                 });
@@ -439,9 +498,66 @@ impl Game<'_> {
             }
         }
     }
+    /// `LeashFenceKnotEntity.hurtServer` -> `kill` and `dropItem` for a natural or explicit knot.
+    pub(super) fn break_leash_knot(&mut self, id: u32, source: Option<Target>) -> bool {
+        if let Some(fence) = self.natural_knot(id) {
+            let at = leash::knot_state(fence).position.components();
+            self.knot_ids.remove(&fence);
+            self.resident_entities.knots.retain(|k| k.id != id);
+            if !self.broken_knots.contains(&fence) {
+                self.broken_knots.push(fence);
+            }
+            self.entity_killed_event_by(at, source);
+            self.lead_sound("untied", at);
+            return true;
+        }
+        if let Some(i) = self
+            .others
+            .iter()
+            .position(|o| o.id == id && o.kind == "minecraft:leash_knot")
+        {
+            let knot = self.others.remove(i);
+            let at = knot.position.components();
+            self.entity_killed_event_by(at, source);
+            self.lead_sound("untied", at);
+            return true;
+        }
+        false
+    }
     /// Holders read from a save become real once the entity is found; a
     /// holder that never shows up drops the lead after 100 ticks.
     pub(super) fn tick_leads(&mut self) {
+        if !self.broken_knots.is_empty() {
+            let fences = std::mem::take(&mut self.broken_knots);
+            let drop = self
+                .ui
+                .rules
+                .bool_at(sunrise_client::gamerules::vanilla::ENTITY_DROPS);
+            for fence in fences {
+                let live_id = self.knot_ids.get(&fence).copied();
+                let mobs: Vec<u32> = self
+                    .mobs
+                    .iter()
+                    .filter(|m| {
+                        !m.removed
+                            && m.extra.leash == Some(Holder::Knot(fence))
+                            && (live_id.is_none() || m.extra.leash_knot_id != live_id)
+                    })
+                    .map(|m| m.id)
+                    .collect();
+                for mob_id in mobs {
+                    self.break_leash(mob_id, drop, false);
+                }
+                let boats: Vec<usize> = self
+                    .boats_on(Holder::Knot(fence))
+                    .into_iter()
+                    .filter(|&i| live_id.is_none() || self.boats[i].leash_knot_id != live_id)
+                    .collect();
+                for boat_idx in boats {
+                    self.release_stored_boat_leash(boat_idx, drop);
+                }
+            }
+        }
         // A corpse gone without dropping its lead takes its killer along.
         // Only this level's: the others' mobs aren't in place.
         if !self.lead_killers.is_empty() {
@@ -479,19 +595,26 @@ impl Game<'_> {
             if let Some((Holder::Knot(_), _)) = holder {
                 self.forget_untied_knots();
             }
-            let m = &mut self.mobs[i];
             if let Some((h, player)) = holder {
+                let knot_id = if let Holder::Knot(fence) = h {
+                    Some(self.tie_knot(fence))
+                } else {
+                    None
+                };
+                let m = &mut self.mobs[i];
                 if h == Holder::Player {
                     m.extra.leash_player = player;
                 }
                 m.extra.leash = Some(h);
+                m.extra.leash_knot_id = knot_id;
                 m.extra.leash_pending = None;
-                if let Holder::Knot(fence) = h {
-                    self.tie_knot(fence);
-                }
-            } else if m.age > 100 {
-                m.extra.leash_pending = None;
-                let at = [m.position.x, m.position.y, m.position.z];
+            } else if self.mobs[i].age > 100 {
+                self.mobs[i].extra.leash_pending = None;
+                let at = [
+                    self.mobs[i].position.x,
+                    self.mobs[i].position.y,
+                    self.mobs[i].position.z,
+                ];
                 self.drop_lead_item(at);
             }
         }
@@ -544,7 +667,7 @@ impl Game<'_> {
                 return Some(LeashInteraction::WithoutItem);
             }
         }
-        if item == "minecraft:shears" {
+        if self.held_shears(super::item_abilities::ability::SHEARS_HARVEST) {
             let mut dropped = false;
             if self.mobs[index].extra.leash.is_some() {
                 self.break_leash_used(id, true);
@@ -565,8 +688,7 @@ impl Game<'_> {
             self.drop_boat_leashes(&boats);
             if dropped {
                 self.lead_game_event("minecraft:shear", at);
-                self.audio
-                    .play("minecraft:item.shears.snip", Some(at), 1.0, 1.0);
+                self.play_audio("minecraft:item.shears.snip", Some(at), 1.0, 1.0);
                 self.damage_held_tool();
                 return Some(LeashInteraction::WithItem);
             }
@@ -644,14 +766,13 @@ impl Game<'_> {
         let held_item = self.held().map(|s| s.item.to_string());
         let sneaking = self.held_mapping(Action::Sneak);
         // Shears snip every lead on the knot.
-        if knot_hit && held_item.as_deref() == Some("minecraft:shears") {
+        if knot_hit && self.held_shears(super::item_abilities::ability::SHEARS_HARVEST) {
             for i in existing {
                 let id = self.mobs[i].id;
                 self.break_leash_used(id, true);
             }
             self.drop_boat_leashes(&existing_boats);
-            self.audio
-                .play("minecraft:item.shears.snip", Some(at), 1.0, 1.0);
+            self.play_audio("minecraft:item.shears.snip", Some(at), 1.0, 1.0);
             self.damage_held_tool();
             return true;
         }
@@ -676,14 +797,24 @@ impl Game<'_> {
         }
         self.forget_untied_knots();
         let mut attached = self.tie_player_boats(center, Holder::Knot(knot_pos));
+        let mut attached_mobs = Vec::new();
         for j in in_hand {
             if self.can_attach_lead(j, center) {
                 self.mobs[j].extra.leash = Some(Holder::Knot(knot_pos));
+                attached_mobs.push(j);
                 attached = true;
             }
         }
         if attached {
-            self.tie_knot(knot_pos);
+            let knot_id = self.tie_knot(knot_pos);
+            for j in attached_mobs {
+                self.mobs[j].extra.leash_knot_id = Some(knot_id);
+            }
+            for i in self.boats_on(Holder::Knot(knot_pos)) {
+                if self.boats[i].leash_knot_id.is_none() {
+                    self.boats.update(i, |b| b.leash_knot_id = Some(knot_id));
+                }
+            }
         }
         if !attached && !sneaking && knot_hit {
             let player = self.player_center();
@@ -743,7 +874,7 @@ impl Game<'_> {
             if let Some(holder) = m.extra.leash {
                 // A mob a mod's pre hook canceled draws no lead (it is part of the mob's own
                 // render), but the fence knot it hangs from is an entity of its own.
-                if self.render_canceled(m.id) {
+                if self.render_canceled(m.id) || self.hides_as_camera(m.id) {
                     if let Holder::Knot(p) = holder
                         && !knots.contains(&p)
                     {
@@ -763,6 +894,14 @@ impl Game<'_> {
         }
         for b in &self.boats {
             if let Some(holder) = b.leash {
+                if self.hides_as_camera(b.id) {
+                    if let Holder::Knot(p) = holder
+                        && !knots.contains(&p)
+                    {
+                        knots.push(p);
+                    }
+                    continue;
+                }
                 ropes.push(Rope {
                     holder,
                     here: lerp3(b.previous, b.position),
@@ -914,6 +1053,13 @@ impl Game<'_> {
             return;
         };
         for p in knots {
+            if self
+                .remote_knots
+                .iter()
+                .any(|(&id, &pos)| pos == p && self.hides_as_camera(id))
+            {
+                continue;
+            }
             let state = leash::knot_state(p);
             let at =
                 glam::DVec3::new(state.position.x, state.position.y, state.position.z) - camera;

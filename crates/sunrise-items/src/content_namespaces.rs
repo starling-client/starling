@@ -31,6 +31,7 @@ pub fn tag_namespaces(root: &Path) -> Vec<String> {
     let mut out = vec!["minecraft".to_owned()];
     if !mods.is_empty() {
         out.push("c".to_owned());
+        out.push("neoforge".to_owned());
         out.extend(mods);
     }
     out

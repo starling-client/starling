@@ -78,10 +78,8 @@ fn a_player_who_won_the_game_is_respawned_alive_as_the_button_does() {
             game.lan
                 .as_mut()
                 .unwrap()
-                .play
-                .entry(13)
-                .or_default()
-                .won_game = true;
+                .hub
+                .update_guest(13, |guest| guest.won_game = true);
             assert!(!is_dead(game, 13));
             assert_eq!(b.respawn(game), Ok(()));
             assert_eq!(*heard.lock().unwrap(), [(13, "guest13".to_owned(), true)]);

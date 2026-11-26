@@ -5,7 +5,7 @@ use super::{Frustum, SectionKey};
 use crate::fast_hash::FxHashMap;
 use glam::{DVec3, Mat4, Vec3, Vec4};
 
-pub use sunrise_render_core::{Cull, Frusta, JoinedFrusta};
+pub use sunrise_render_core::{Cull, JoinedFrusta};
 /// A shader pack's shadow camera's box, and with `casters` only what can shade the camera's view
 /// (`shadow_casters`): a box must meet all of them.
 #[derive(Clone, Copy, Debug)]
@@ -101,6 +101,9 @@ impl Cull for ShadowCull {
     /// Our probe's Iris 1.11.7 maps fit testing the casters' whole sections (a guess that matched).
     fn tight(&self) -> bool {
         self.casters.is_none()
+    }
+    fn vertical_clamp(&self) -> bool {
+        false
     }
 }
 /// The block entities of `sections` whose box, a block wider on every side, comes within the

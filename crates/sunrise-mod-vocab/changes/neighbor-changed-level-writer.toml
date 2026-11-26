@@ -1,0 +1,3 @@
+ids = ["hook:neighbor_changed", "method:BlockPart::neighbor_changed"]
+why = "neighbor_changed version 3 gives its listener the level writer vanilla's Block.neighborChanged gets: BlockPart::neighbor_changed takes a &mut dyn LevelWriteHost instead of a &mut dyn LevelTicksHost, so a part can set blocks in the call, as RedstoneLampBlock.neighborChanged lights itself at once. A write's neighbour updates run next, before the rest of the update that delivered the call, as Level.setBlock from inside neighborChanged runs them."
+migrate = "Change the host parameter of the neighbor_changed implementation to &mut dyn LevelWriteHost; signal reads and tick scheduling work as before. A part that scheduled a tick only to set its own block can now set it in neighbor_changed."

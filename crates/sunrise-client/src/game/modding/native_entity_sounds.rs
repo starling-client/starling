@@ -36,7 +36,11 @@ impl Game<'_> {
     /// phantoms, shulkers, slimes and a killer bunny are `Hostile`; dropped
     /// items and experience orbs `Ambient`; every other entity `Neutral`.
     pub(super) fn entity_sound_source(&self, entity: EntityRef) -> Option<SoundSource> {
-        Some(match self.native_entity_target(entity)? {
+        self.target_sound_source(self.native_entity_target(entity)?)
+    }
+
+    pub(super) fn target_sound_source(&self, target: Target) -> Option<SoundSource> {
+        Some(match target {
             Target::Player | Target::Guest(_) => SoundSource::Players,
             Target::Mob(id) => {
                 let m = self.mobs.iter().find(|m| m.id == id)?;
@@ -61,8 +65,7 @@ impl Game<'_> {
     /// the entity under its sound source, for the players within range. A
     /// silent mob plays nothing, as vanilla's check is `isSilent`; a player
     /// (`Player.playSound`) doesn't hear it themself, their own client plays
-    /// it. True means queued, not heard; false for an unknown `minecraft:`
-    /// event or a volume or pitch that isn't a finite non-negative number.
+    /// it. True means queued, not heard. Registered events go by ID and other valid keys by name.
     pub(super) fn entity_play_sound(
         &mut self,
         entity: EntityRef,
@@ -99,6 +102,8 @@ impl Game<'_> {
             pitch,
             except,
             entity: None,
+            inline_range: None,
+            seed: None,
         })
     }
     /// `Entity.gameEvent(event)`: game event `event` (`minecraft:step`...)
@@ -167,6 +172,18 @@ impl Game<'_> {
     /// `Entity.isSpectator`: true for a player in spectator mode, false for
     /// every other entity.
     pub(super) fn entity_spectator(&self, entity: EntityRef) -> Option<bool> {
+        if self.remote.is_some() {
+            // `AbstractClientPlayer.gameMode`: the player's `PlayerInfo`, mirrored onto a
+            // tracked player as its spectator flag.
+            return Some(match self.native_entity_read_target(entity)? {
+                Target::Player => self.own_player_is_spectator(),
+                Target::Mob(id) => {
+                    let mob = self.mobs.iter().find(|m| m.id == id)?;
+                    &*mob.kind.id == "minecraft:player" && mob.extra.spectator
+                }
+                _ => false,
+            });
+        }
         Some(match self.native_entity_target(entity)? {
             Target::Player => self.spectator(),
             Target::Guest(conn) => self.command_guest(conn)?.game_mode == 3,
@@ -178,7 +195,7 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use super::super::dispense_fixture;
-    use super::super::native_entity_refs::tests::with_game;
+    use super::super::native_entity_refs::tests::{fixture_resident_column, with_game};
     use mod_api::{EntityRef, SoundSource, WorldEpoch};
     use sunrise_client::command::args::GameMode;
     use sunrise_client::mobs::Mob;
@@ -233,6 +250,7 @@ mod tests {
     #[ignore = "daily"]
     fn play_sound_queues_at_the_entity_in_its_source() {
         super::super::native_guest_turn_tests::with_guests(|game| {
+            fixture_resident_column(&mut game.world, (0, 0));
             let cow = spawn(game, 10, "minecraft:cow");
             assert!(game.entity_play_sound(cow, "minecraft:entity.cow.ambient", 0.5, 1.5));
             let sound = &game.creatures.lan_sounds[0];
@@ -240,11 +258,11 @@ mod tests {
             assert_eq!(sound.at, [1.5, 64.0, 2.5]);
             assert_eq!(sound.source as usize, SoundSource::Neutral.index());
             assert_eq!((sound.volume, sound.pitch, sound.except), (0.5, 1.5, None));
-            // A silent mob plays nothing; a bad pitch is refused.
+            // A silent mob plays nothing; a malformed event key is refused.
             game.mobs[0].silent = true;
             assert!(!game.entity_play_sound(cow, "minecraft:entity.cow.ambient", 1.0, 1.0));
             game.mobs[0].silent = false;
-            assert!(!game.entity_play_sound(cow, "minecraft:entity.cow.ambient", 1.0, f32::NAN));
+            assert!(!game.entity_play_sound(cow, "invalid key", 1.0, 1.0));
             assert_eq!(game.creatures.lan_sounds.len(), 1);
             // A player doesn't hear their own sound, silent or not.
             game.as_guest(12, |game| {

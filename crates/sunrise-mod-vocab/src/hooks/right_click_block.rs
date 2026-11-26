@@ -1,5 +1,4 @@
 //! The `right_click_block` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0039
 
 pub trait Hooks {
     /// A player right clicks a block (NeoForge's

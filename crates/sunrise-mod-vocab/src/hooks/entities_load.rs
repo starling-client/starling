@@ -1,5 +1,4 @@
 //! The `entities_load` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0196
 
 pub trait Hooks {
     /// A server player's or mob's ender pearl is about to teleport its `owner`
@@ -42,12 +41,14 @@ pub trait Hooks {
         hit_at: [f64; 3],
     );
     /// Entities from `chunk` finished loading into the server world. `count`
-    /// is the number of saved entity records read.
+    /// is the number of saved entity records read. This is an entity-storage
+    /// notice; the terrain need not be loaded for the same column.
     #[hook(
         target = "sunrise_client::game::native_hooks::base::Game<'_>::native_entities_load",
         dispatch = "flat",
         side = "server",
         contract = "listen",
+        version = 2,
         neoforge = "none (NeoForge has no such event)"
     )]
     fn entities_load(dimension: &str, chunk: [i32; 2], count: usize);

@@ -154,11 +154,7 @@ fn entity(s: &Value) -> (CameraEntity, Option<FovPlayer>) {
         }),
         dead: s["dead"].as_i64().map(|t| t as i32),
     });
-    let mount = if player {
-        s["mount"].as_array().map(|a| (db(&a[0]) as f32, db(&a[1])))
-    } else {
-        None
-    };
+    let mount = s["mount"].as_array().map(|a| (db(&a[0]) as f32, db(&a[1])));
     (
         CameraEntity {
             position: vec3(&s["pos"]),

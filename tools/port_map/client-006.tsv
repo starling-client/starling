@@ -94,14 +94,14 @@ ModelLayers.registerArmorSet	skip:data		layer id registry; Sunrise uses string k
 ModelPart.storePose	skip:other		no callers in vanilla; a snapshot of the current pose that nothing reads
 ModelPart.loadPose	port	crates/sunrise-client/src/mobs/model.rs::Part::parse	reads the pose from the model data; the reset per frame is Poses::reset
 ModelPart.getChild	port	crates/sunrise-client-render/src/block_entity_render.rs::ModelPart::child	named child lookup (Option instead of a throw)
-ModelPart.compile	port	crates/sunrise-client/src/mobs/render.rs::draw_normals	emits each polygon with the posed transform; skipDraw gating
+ModelPart.compile	port	crates/sunrise-client/src/mobs/render.rs::compile_part	emits each polygon with the posed transform, replaceable by a native mod; skipDraw gating in draw_normals
 ModelPart.offsetRotation	port	crates/sunrise-client/src/mobs/keyframes.rs::Animation::apply	Target::Rotation channel adds to xRot/yRot/zRot
 ModelPart.offsetScale	port	crates/sunrise-client/src/mobs/keyframes.rs::Animation::apply	Target::Scale channel adds to the scale
 ModelPart.getAllParts	inline	crates/sunrise-client/src/mobs/anim.rs::Poses::reset	the part list Model.resetPose walks; Poses::reset refills the whole name map instead
 ModelPart.createPartLookup	inline	crates/sunrise-client/src/mobs/anim.rs::Poses::reset	gap: minor: duplicate part names keep the last part here, the first in vanilla (the name map is built by the same walk)
 ModelPart.addAllChildren	inline	crates/sunrise-client/src/mobs/anim.rs::Poses::reset	gap: minor: duplicate part names keep the last part here, the first in vanilla (the name map is built by the same walk)
 ModelPart.Cube.<init>	skip:data		geometry baked into entity-models.json, which Sunrise loads as a resource (cube faces are precomputed polygons)
-ModelPart.Cube.compile	port	crates/sunrise-client/src/mobs/render.rs::draw_normals	six faces emitted from the posed part (polygons in Sunrise)
+ModelPart.Cube.compile	port	crates/sunrise-client/src/mobs/render.rs::push_polygons	six faces emitted from the posed part (polygons in Sunrise)
 ModelPart.Polygon.<init>	skip:data		geometry baked into entity-models.json, which Sunrise loads as a resource (polygons are precomputed)
 ModelPart.Vertex.remap	skip:data		UV normalisation done when entity-models.json is generated
 PartPose.offsetAndRotation	skip:data		pose builder; baked poses come from entity-models.json

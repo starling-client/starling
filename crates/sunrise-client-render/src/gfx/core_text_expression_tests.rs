@@ -42,6 +42,16 @@ fn core_text(
     shaders: &crate::gfx::core_text::TextShaders,
     glyphs: [u8; 4],
 ) -> Option<CoreText> {
+    try_core_text(device, queue, shaders, glyphs).unwrap_or_else(|e| panic!("{e}"))
+}
+
+/// [`core_text`], or the device's refusal of one of its pipelines.
+fn try_core_text(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    shaders: &crate::gfx::core_text::TextShaders,
+    glyphs: [u8; 4],
+) -> Result<Option<CoreText>, String> {
     let atlas = super::tests::texture(device, queue, glyphs);
     let lightmap = super::tests::texture(device, queue, [0; 4]);
     let sampler = device.create_sampler(&Default::default());
@@ -134,13 +144,13 @@ fn a_pack_world_and_see_through_text_read_poly_globals() {
     assert_eq!(draw(&text, true), [0, 255, 0, 255]);
 }
 
-/// Each world text pipeline is refused on its own: a see-through program reading 13 expression
-/// blocks in its fragment stage, past the device's 12 uniform blocks a stage
-/// (`max_uniform_buffers_per_shader_stage`'s default), leaves the see-through text native while
-/// the world text, reading one, keeps the pack's pipeline.
+/// A see-through program reading 13 expression blocks in its fragment stage, past wgpu's default
+/// 12 uniform blocks a stage (`max_uniform_buffers_per_shader_stage`), which vanilla's device
+/// isn't held to: the see-through text draws natively and the pack stays, the note naming the
+/// stage, its 13 blocks and the limit; the world text, reading one, keeps the pack's pipeline.
 #[test]
 #[ignore = "daily"]
-fn a_world_text_pipeline_over_the_block_limit_is_refused_alone() {
+fn a_world_text_pipeline_over_the_block_limit_draws_natively() {
     let _gpu = crate::gfx::test_gpu::lock();
     let Some((_, device, queue)) = crate::gfx::test_gpu::optional_device() else {
         eprintln!("skipped: no adapter");
@@ -171,8 +181,20 @@ fn a_world_text_pipeline_over_the_block_limit_is_refused_alone() {
         (expressions.world.len(), expressions.see_through.len()),
         (1, 13)
     );
+    let see_through = shaders
+        .see_through
+        .as_deref()
+        .expect("the see-through program");
+    assert_eq!(
+        see_through.past_device_limit(&device.limits(), &[wgpu::TextureFormat::Rgba8Unorm]),
+        Some(sunrise_glsl::PastDeviceLimit::UniformBlocks {
+            stage: wgpu::ShaderStages::FRAGMENT,
+            blocks: 13,
+            limit: 12
+        })
+    );
     let text = core_text(&device, &queue, &shaders, [0; 4]).expect("the world text's pipeline");
-    assert!(text.polygon_offset.is_some());
+    assert!(text.world.is_some());
     assert!(text.see_through.is_none());
 }
 

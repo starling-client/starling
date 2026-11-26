@@ -1,0 +1,4 @@
+# Platform (Rust target_os), then one linker argument as passed to rustc's -C link-arg.
+linux -Wl,--disable-new-dtags
+linux -Wl,-rpath,$ORIGIN
+macos -Wl,-rpath,@loader_path

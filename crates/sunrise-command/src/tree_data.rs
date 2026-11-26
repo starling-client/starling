@@ -1,6 +1,6 @@
 //! The `/data` and `/tag` command trees (DataCommands, TagCommand).
 use super::{
-    Dispatcher,
+    Dispatcher, RegistryId,
     args::ArgType,
     vanilla::{ENTITIES, GAMEMASTERS},
 };
@@ -55,7 +55,7 @@ pub fn register(d: &mut Dispatcher, root: usize) {
         let p = d.argument(
             f,
             "provider",
-            ArgType::ResourceOrId("minecraft:context_float_provider"),
+            ArgType::ResourceOrId(RegistryId::from_static("minecraft:context_float_provider")),
         );
         d.executes(p, "compute");
         let scale = d.argument(
@@ -71,7 +71,7 @@ pub fn register(d: &mut Dispatcher, root: usize) {
         let p = d.argument(
             i,
             "provider",
-            ArgType::ResourceOrId("minecraft:context_int_provider"),
+            ArgType::ResourceOrId(RegistryId::from_static("minecraft:context_int_provider")),
         );
         d.executes(p, "compute");
     });
@@ -150,7 +150,11 @@ pub fn register(d: &mut Dispatcher, root: usize) {
                     ("integer", "minecraft:context_int_provider"),
                 ] {
                     let k = d.literal(node, kind);
-                    let p = d.argument(k, "provider", ArgType::ResourceOrId(registry));
+                    let p = d.argument(
+                        k,
+                        "provider",
+                        ArgType::ResourceOrId(RegistryId::from_static(registry)),
+                    );
                     d.executes(p, "data.modify");
                 }
             });

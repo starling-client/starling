@@ -1,0 +1,3 @@
+ids = ["type:FoundStructure.pool_pieces"]
+why = "A structure type can now return jigsaw pieces it laid out by hand from the data pack's template pools, which the game saves, loads and places like assemble_jigsaw's pieces."
+migrate = "A mod that builds FoundStructure with a full literal adds `pool_pieces: Vec::new()` or ends the literal with `..Default::default()`."

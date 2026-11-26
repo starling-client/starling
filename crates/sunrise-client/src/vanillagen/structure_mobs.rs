@@ -8,7 +8,7 @@ use crate::{
     items::Items,
     mobs::{
         Mob, MobType, MobTypes,
-        finalize::{self, Ctx, FinalizeLevel, Group, SpawnRegistries},
+        finalize::{self, Ctx, FinalizeLevel, Group},
         spawn_rules::Reason,
         spawning::{LocalDifficulty, MOON_BRIGHTNESS},
     },
@@ -36,7 +36,8 @@ use {
 struct Data {
     types: HashMap<String, Arc<MobType>>,
     biome_tags: HashMap<String, HashSet<String>>,
-    registries: SpawnRegistries,
+    structure_tags: HashMap<String, HashSet<String>>,
+    variants: crate::mobs::variants::VariantTables,
     enchantments: Enchantments,
     items: Items,
     camel_husk: (f32, f32),
@@ -53,7 +54,13 @@ fn load(root: &std::path::Path, defaults: &ItemDefaults) -> Option<Data> {
             &sunrise_world::loot::PackOverlay::NONE,
         )
         .unwrap_or_default(),
-        registries: SpawnRegistries::load(root),
+        structure_tags: crate::items::load_tags(
+            root,
+            "worldgen/structure",
+            &sunrise_world::loot::PackOverlay::NONE,
+        )
+        .unwrap_or_default(),
+        variants: crate::mobs::variants::VariantTables::load_prepared(root),
         enchantments: Enchantments::load(root, defaults).ok()?,
         items: Items::catalog(root, &sunrise_world::loot::PackOverlay::NONE, defaults).ok()?,
         camel_husk,
@@ -126,6 +133,8 @@ struct Level<'a> {
     difficulty: u8,
     day_time: i64,
     next_id: u32,
+    /// Chunk-generation candidates stay live; structure template records do not.
+    generated_uuids: Option<Vec<(u32, [i32; 4])>>,
 }
 impl FinalizeLevel for Level<'_> {
     fn mob_maps(&self) -> &crate::neoforge_mob_maps::NeoForgeMobMaps {
@@ -142,6 +151,12 @@ impl FinalizeLevel for Level<'_> {
     }
     fn structures_with_piece_at(&self, _: [i32; 3]) -> Vec<String> {
         self.structures.to_vec()
+    }
+    fn structure_tag(&self, tag: &str, structure: &str) -> bool {
+        self.data
+            .structure_tags
+            .get(tag)
+            .is_some_and(|s| s.contains(structure))
     }
     fn moon_phase(&self, _: [i32; 3]) -> usize {
         self.day_time.div_euclid(24000).rem_euclid(8) as usize
@@ -171,11 +186,17 @@ impl FinalizeLevel for Level<'_> {
         }
         let t = t.clone();
         self.next_id += 1;
-        Some(Mob::new(self.next_id, t, Vec3::ZERO, 0.0))
+        Some(if let Some(uuids) = &mut self.generated_uuids {
+            let (random, uuid) = crate::mobs::living_random();
+            uuids.push((self.next_id, uuid));
+            Mob::with_random(self.next_id, t, Vec3::ZERO, 0.0, random)
+        } else {
+            Mob::new(self.next_id, t, Vec3::ZERO, 0.0)
+        })
     }
     fn spawn_data(&self) -> finalize::SpawnData<'_> {
         finalize::SpawnData {
-            registries: &self.data.registries,
+            variants: &self.data.variants,
             enchantments: &self.data.enchantments,
             items: &self.data.items,
             camel_husk_size: self.data.camel_husk,
@@ -206,15 +227,62 @@ fn run<R: RandomSource>(
     cx.created
 }
 
-/// The saved compound of mob `i` with the mobs riding it under `Passengers`.
-fn tree(mobs: &[(Mob, Option<Tag>)], i: usize, dimension: &str, items: &Items) -> Compound {
-    let (m, raw) = &mobs[i];
+fn run_with_region_random(
+    level: &mut Level<'_>,
+    random: &mut dyn PieceRandom,
+    difficulty: LocalDifficulty,
+    mob: &mut Mob,
+    reason: Reason,
+    group: &mut Option<Group>,
+) -> Option<Vec<Mob>> {
+    let any = random.as_any();
+    if let Some(r) = any.downcast_mut::<LegacyRandom>() {
+        Some(run(level, r, difficulty, mob, reason, group))
+    } else if let Some(r) = any.downcast_mut::<XoroshiroRandom>() {
+        Some(run(level, r, difficulty, mob, reason, group))
+    } else {
+        log::error!("Sunrise: unknown region random, structure mobs are finalized when loaded");
+        None
+    }
+}
+
+/// A body coming from chunk generation, with the same save state and constructor identity.
+pub struct GeneratedMob {
+    pub body: Mob,
+    pub uuid: [i32; 4],
+    pub tag: Compound,
+}
+
+fn saved_mob(
+    m: &Mob,
+    raw: Option<&Tag>,
+    dimension: &str,
+    items: &Items,
+    variants: &crate::mobs::variants::VariantTables,
+    uuid: [i32; 4],
+) -> Compound {
     // No block registry here: a carried block stays as the template had it.
-    let saved = entity_nbt::mob_to_nbt(m, [0; 4], raw.as_ref(), None, |_| None, items);
+    let mut retained = raw
+        .cloned()
+        .unwrap_or_else(|| Tag::Compound(Compound::new()));
+    entity_nbt::write_ai_paused(m.ai.ai_paused, &mut retained);
+    let mut out = entity_nbt::EntityTagWriter::from_saved(retained);
+    entity_nbt::write_mob(
+        m,
+        uuid,
+        &mut out,
+        None,
+        |_| None,
+        items,
+        entity_nbt::MobSave {
+            variants: Some(variants),
+            ..Default::default()
+        },
+    );
+    let saved = out.finish();
     let Tag::Compound(mut c) = saved else {
         return Compound::new();
     };
-    c.remove(&"UUID".into());
     // Keys in vanilla's templates that no entity reads: the chunk keeps the
     // entity as its save writes it (ProtoChunk.addEntity), without them.
     for key in [
@@ -228,9 +296,23 @@ fn tree(mobs: &[(Mob, Option<Tag>)], i: usize, dimension: &str, items: &Items) -
         c.remove(&key.into());
     }
     crate::mobs::brain::put_brain(&mut c, m, dimension);
+    c
+}
+
+/// The saved compound of mob `i` with the mobs riding it under `Passengers`.
+fn tree(
+    mobs: &[(Mob, Option<Tag>)],
+    i: usize,
+    dimension: &str,
+    items: &Items,
+    variants: &crate::mobs::variants::VariantTables,
+) -> Compound {
+    let (m, raw) = &mobs[i];
+    let mut c = saved_mob(m, raw.as_ref(), dimension, items, variants, [0; 4]);
+    c.remove(&"UUID".into());
     let riders: Vec<Tag> = (0..mobs.len())
         .filter(|&j| mobs[j].0.extra.mount == Some(m.id))
-        .map(|j| Tag::Compound(tree(mobs, j, dimension, items)))
+        .map(|j| Tag::Compound(tree(mobs, j, dimension, items, variants)))
         .collect();
     if !riders.is_empty() {
         c.insert("Passengers".into(), Tag::List(riders));
@@ -253,10 +335,11 @@ impl StructureMobs for StructureMobFinalizer {
         if let Tag::Compound(c) = &mut raw {
             c.remove(&"sunrise:finalize".into());
         }
-        let Some(m) = entity_nbt::mob_from_nbt(&raw, &data.types, 1, None) else {
+        let Some(mut m) = entity_nbt::mob_from_nbt(&raw, &data.types, 1, None) else {
             // Not a mob: vanilla finalizes only Mob instances.
             return true;
         };
+        entity_nbt::read_mob_variants(&mut m, &raw, &data.variants);
         let reason = Reason::Structure;
         match self.finish(
             data,
@@ -296,22 +379,117 @@ impl StructureMobFinalizer {
             load(&root, item_data.defaults())
         });
     }
-    /// A mob chunk generation spawns (`spawnOriginalMobs`): a new one of
-    /// `kind` finalized as a structure mob is, as the chunk saves it; `group`
-    /// carries a pack's group data from one member to the next.
+    /// Finalize the candidate that passed the generation position check, and return
+    /// the same bodies for admission, in vehicle-before-passenger order.
+    #[allow(clippy::too_many_arguments)]
     pub fn spawn_generated(
         &self,
-        kind: &str,
-        position: Vec3,
-        yaw: f32,
+        mut mob: Mob,
+        uuid: [i32; 4],
         biome: &str,
         random: &mut dyn PieceRandom,
         group: &mut Option<Group>,
-    ) -> Option<Compound> {
+        prepare: impl FnOnce(
+            &mut Mob,
+            LocalDifficulty,
+            &mut Option<Group>,
+        ) -> (finalize::SpawnEvent, LocalDifficulty),
+    ) -> Option<Vec<GeneratedMob>> {
         let data = self.data()?;
-        let m = Mob::new(1, data.types.get(kind)?.clone(), position, yaw);
-        let reason = Reason::ChunkGeneration;
-        self.finish(data, m, None, biome, &[], random, reason, group)
+        let maps = Arc::clone(&self.mob_maps.read().unwrap());
+        let (mut level, difficulty) = self.context(data, &maps, biome, &[]);
+        // The finalizer uses local ids; the primary's provisional id came from the
+        // level running position checks and cannot alias a generated passenger.
+        level.next_id = 1;
+        level.generated_uuids = Some(Vec::new());
+        let (event, difficulty) = prepare(&mut mob, difficulty, group);
+        let created = if event.skip_initialization {
+            *group = None;
+            Vec::new()
+        } else {
+            run_with_region_random(
+                &mut level,
+                random,
+                difficulty,
+                &mut mob,
+                Reason::ChunkGeneration,
+                group,
+            )?
+        };
+        let mut uuids = level.generated_uuids.unwrap();
+        let primary_id = mob.id;
+        uuids.push((primary_id, uuid));
+        let mut bodies = created;
+        if !event.veto_admission {
+            bodies.push(mob);
+        }
+        let mut admitted = Vec::with_capacity(bodies.len());
+        while !bodies.is_empty() {
+            let index = bodies
+                .iter()
+                .position(|body| {
+                    body.extra
+                        .mount
+                        .is_none_or(|mount| !bodies.iter().any(|other| other.id == mount))
+                })
+                .expect("finalization creates acyclic mount links");
+            let mut body = bodies.remove(index);
+            if event.veto_admission {
+                if body.extra.mount == Some(primary_id) {
+                    body.extra.mount = None;
+                }
+                if body.extra.rider == Some(primary_id) {
+                    body.extra.rider = None;
+                }
+            }
+            let uuid = uuids.iter().find(|(id, _)| *id == body.id).unwrap().1;
+            let mut tag = saved_mob(
+                &body,
+                None,
+                &self.dimension,
+                &data.items,
+                &data.variants,
+                uuid,
+            );
+            if !body.extra.spawn_tags.is_empty() {
+                tag.insert(
+                    "Tags".into(),
+                    Tag::List(
+                        std::mem::take(&mut body.extra.spawn_tags)
+                            .into_iter()
+                            .map(|tag| Tag::String(tag.as_str().into()))
+                            .collect(),
+                    ),
+                );
+            }
+            admitted.push(GeneratedMob { body, uuid, tag });
+        }
+        // WorldGenRegion can refuse residency without making NaturalSpawner retry the member.
+        Some(admitted)
+    }
+
+    fn context<'a>(
+        &self,
+        data: &'a Data,
+        mob_maps: &'a crate::neoforge_mob_maps::NeoForgeMobMaps,
+        biome: &'a str,
+        structures: &'a [String],
+    ) -> (Level<'a>, LocalDifficulty) {
+        let base = self.difficulty.load(Ordering::Relaxed);
+        let day_time = self.day_time.load(Ordering::Relaxed);
+        let level = Level {
+            data,
+            mob_maps,
+            biome,
+            structures,
+            difficulty: base,
+            day_time,
+            next_id: 1,
+            generated_uuids: None,
+        };
+        let moon = MOON_BRIGHTNESS[level.moon_phase([0; 3])];
+        // WorldGenRegion.getCurrentDifficultyAt: no inhabited time.
+        (level, LocalDifficulty::new(base, day_time, 0, moon))
     }
     #[allow(clippy::too_many_arguments)]
     fn finish(
@@ -325,38 +503,24 @@ impl StructureMobFinalizer {
         reason: Reason,
         group: &mut Option<Group>,
     ) -> Option<Compound> {
-        let base = self.difficulty.load(Ordering::Relaxed);
-        let day_time = self.day_time.load(Ordering::Relaxed);
         // Release the publication lock before any finalize body runs.
-        let mob_maps = Arc::clone(&self.mob_maps.read().unwrap());
-        let mut level = Level {
-            data,
-            mob_maps: &mob_maps,
-            biome,
-            structures,
-            difficulty: base,
-            day_time,
-            next_id: 1,
-        };
-        let moon = MOON_BRIGHTNESS[level.moon_phase([0; 3])];
-        // WorldGenRegion.getCurrentDifficultyAt: no inhabited time.
-        let difficulty = LocalDifficulty::new(base, day_time, 0, moon);
-        let any = random.as_any();
-        let created = if let Some(r) = any.downcast_mut::<LegacyRandom>() {
-            run(&mut level, r, difficulty, &mut m, reason, group)
-        } else if let Some(r) = any.downcast_mut::<XoroshiroRandom>() {
-            run(&mut level, r, difficulty, &mut m, reason, group)
-        } else {
-            log::error!("Sunrise: unknown region random, structure mobs are finalized when loaded");
-            return None;
-        };
+        let maps = Arc::clone(&self.mob_maps.read().unwrap());
+        let (mut level, difficulty) = self.context(data, &maps, biome, structures);
+        let created =
+            run_with_region_random(&mut level, random, difficulty, &mut m, reason, group)?;
         let mut mobs = vec![(m, raw)];
         mobs.extend(created.into_iter().map(|c| (c, None)));
         let root = mobs
             .iter()
             .position(|(m, _)| m.extra.mount.is_none())
             .unwrap_or(0);
-        Some(tree(&mobs, root, &self.dimension, &data.items))
+        Some(tree(
+            &mobs,
+            root,
+            &self.dimension,
+            &data.items,
+            &data.variants,
+        ))
     }
 }
 
@@ -643,7 +807,9 @@ mod tests {
                 .unwrap();
         let mut worker = terrain.worker();
         let mut region: [Proto; 9] = std::array::from_fn(|i| {
-            terrain.proto(&mut worker, x + i as i32 % 3 - 1, z + i as i32 / 3 - 1)
+            terrain
+                .proto(&mut worker, x + i as i32 % 3 - 1, z + i as i32 / 3 - 1)
+                .unwrap()
         });
         terrain.decorate(&mut worker, &mut region);
         let center = std::mem::replace(&mut region[4], Box::new(()));

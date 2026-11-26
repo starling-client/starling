@@ -1,0 +1,2 @@
+cargo-sunrise-mod builds_emit_an_identical_ustar_with_only_page_files test:content_project daily child-process
+cargo-sunrise-mod page::tests::tags_include_the_mod_id_only_in_a_git_repository_subfolder bin:cargo-sunrise-mod daily child-process

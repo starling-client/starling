@@ -2,10 +2,18 @@
 """Compare real model-shaped breaking geometry and projected UVs with vanilla 26.3."""
 import json
 import itertools
-try:
-    from . import lab, oracle_harness as harness, test_model_baking_parity as baking, test_rust_parity as base, test_section_mesh_parity as mesh
-except ImportError:
-    import lab, oracle_harness as harness, test_model_baking_parity as baking, test_rust_parity as base, test_section_mesh_parity as mesh
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import (
+    lab,
+    oracle_harness as harness,
+    test_model_baking_parity as baking,
+    test_rust_parity as base,
+    test_section_mesh_parity as mesh,
+)
 
 BLOCKS = ["stone", "oak_slab", "stone_slab", "oak_stairs", "stone_stairs", "oak_fence", "iron_bars", "glass_pane", "white_stained_glass_pane", "glass", "tinted_glass", "cobblestone_wall", "oak_fence_gate", "oak_trapdoor", "iron_trapdoor", "oak_door", "white_carpet", "moss_carpet", "pale_moss_carpet", "snow", "cake", "candle", "sea_pickle", "dandelion", "tall_grass", "bamboo", "torch", "wall_torch", "lantern", "chain", "end_rod", "lightning_rod", "lever", "stone_button", "repeater", "comparator", "farmland", "enchanting_table", "lectern", "scaffolding", "anvil", "brewing_stand", "hopper", "cauldron", "composter", "potted_fern", "lily_pad", "sunflower", "chest", "air", "water"]
 

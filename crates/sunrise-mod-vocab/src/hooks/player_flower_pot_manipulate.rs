@@ -1,5 +1,4 @@
 //! The `player_flower_pot_manipulate` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0252
 
 pub trait Hooks {
     /// A server player put a plant into a flower pot, after the potted block state was stored and the

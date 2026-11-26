@@ -94,8 +94,8 @@ impl PayloadRegistrar<'_> {
     /// 32,767-byte limit), on the main thread. Several mods may declare one raw
     /// channel; each receives it once, in mod load order. A handler that fails loses only its own delivery (logged, its
     /// staged work rolled back): the player stays connected and the other mods'
-    /// copies still run. `minecraft:` and `sunrise:` ids, and an id a typed
-    /// payload uses, refuse load.
+    /// copies still run. `minecraft:` ids, built-in engine `sunrise:` channels,
+    /// and an id a typed payload uses refuse load.
     pub fn play_raw(
         &mut self,
         id: PayloadId,

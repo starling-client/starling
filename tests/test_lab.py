@@ -395,5 +395,28 @@ class GameEnvScreenTests(unittest.TestCase):
                 self.assertNotIn("VSCREEN", env)
 
 
+class FreePortTests(unittest.TestCase):
+    def test_a_port_another_process_has_claimed_is_skipped(self):
+        with tempfile.TemporaryDirectory() as temp, mock.patch.object(lab.tempfile, "gettempdir", return_value=temp), \
+                mock.patch.object(lab, "_PORT_LOCKS", []) as held:
+            first = lab.free_port()
+            claimed = Path(temp).glob("sunrise-harness-ports-*/" + str(first))
+            self.assertEqual(len(list(claimed)), 1)
+            # The OS hands out the claimed number again, then another one: the claimed number is not returned.
+            real = lab.socket.socket
+            answers = iter([first, first])
+
+            class Sock(real):
+                def bind(self, address):
+                    return super().bind(("127.0.0.1", next(answers, 0)))
+
+            with mock.patch.object(lab.socket, "socket", Sock):
+                second = lab.free_port()
+            self.assertNotEqual(second, first)
+            self.assertEqual(len(held), 2)
+            for handle in held:
+                handle.close()
+
+
 if __name__ == "__main__":
     unittest.main()

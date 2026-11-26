@@ -1,21 +1,27 @@
-//! Static, manifest-owned loot map-codec declarations.
+//! Static loot map-codec declarations.
 use super::*;
 #[cfg(test)]
 #[path = "loot_types/tests.rs"]
 mod tests;
 
+/// Built-in NeoForge loot condition types handled directly by the engine.
+const BUILTIN_NEOFORGE_LOOT_CONDITIONS: &[&str] = &[
+    "neoforge:loot_table_id",
+    "neoforge:can_item_perform_ability",
+];
+
 impl PartRegistrar {
     fn loot_type_id(&mut self, id: &crate::Identifier, condition: bool) -> Option<String> {
-        let id = match self.owned_declaration_id(&id.to_string()) {
-            Ok(id) => id,
-            Err(reason) => {
-                self.refused.push(reason);
-                return None;
-            }
+        let id = id.to_string();
+        let builtin = if condition {
+            BUILTIN_NEOFORGE_LOOT_CONDITIONS.contains(&id.as_str())
+                || self.has_builtin_entry("minecraft:loot_condition_type", &id)
+        } else {
+            self.has_builtin_entry("minecraft:loot_function_type", &id)
         };
-        if id.starts_with("minecraft:") || id.starts_with("neoforge:") {
+        if builtin {
             self.refused.push(format!(
-                "mod {} claimed reserved loot type {id}",
+                "mod {} claimed built-in loot type {id}",
                 self.mod_id
             ));
             return None;
@@ -45,7 +51,7 @@ impl LootTypesRegistrar for PartRegistrar {
     fn add_loot_function_type(
         &mut self,
         id: &crate::Identifier,
-        codec: Arc<dyn crate::ModLootFunction>,
+        codec: Arc<dyn crate::ModLootFunctionCodec>,
     ) {
         let Some(id) = self.loot_type_id(id, false) else {
             return;
@@ -53,14 +59,17 @@ impl LootTypesRegistrar for PartRegistrar {
         self.loot_function_types.push(LootFunctionTypeInfo {
             id,
             owner: self.mod_id,
-            owner_index: self.mod_index,
+            callback_owner: mod_vocab::__private::parts_installation::callback_owner_for_index(
+                self.mod_id,
+                self.mod_index,
+            ),
             codec,
         });
     }
     fn add_loot_condition_type(
         &mut self,
         id: &crate::Identifier,
-        codec: Arc<dyn crate::ModLootCondition>,
+        codec: Arc<dyn crate::ModLootConditionCodec>,
     ) {
         let Some(id) = self.loot_type_id(id, true) else {
             return;
@@ -68,7 +77,10 @@ impl LootTypesRegistrar for PartRegistrar {
         self.loot_condition_types.push(LootConditionTypeInfo {
             id,
             owner: self.mod_id,
-            owner_index: self.mod_index,
+            callback_owner: mod_vocab::__private::parts_installation::callback_owner_for_index(
+                self.mod_id,
+                self.mod_index,
+            ),
             codec,
         });
     }

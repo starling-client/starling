@@ -5,8 +5,10 @@ use sunrise_world::stepped_interpolation::{Path, PosRot, Start, SteppedInterpola
 pub(super) enum MovePacket {
     /// `handleMoveEntity`: always interpolated.
     Move,
-    /// `handleEntityPositionSync`.
+    /// `handleEntityPositionSync` for a ticking entity.
     PositionSync,
+    /// `handleEntityPositionSync` for a non-ticking entity (`snapTo` unconditionally).
+    PositionSyncSnap,
     /// `handleTeleportEntity` (`setValuesFromPositionPacket`).
     Teleport,
 }
@@ -24,6 +26,7 @@ impl MovePacket {
     ) -> bool {
         let from = match self {
             MovePacket::Move => return false,
+            MovePacket::PositionSyncSnap => return true,
             MovePacket::PositionSync => entity.position,
             MovePacket::Teleport => handler.heading(entity).position,
         };

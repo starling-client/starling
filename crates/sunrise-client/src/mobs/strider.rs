@@ -118,15 +118,19 @@ fn lava_target(w: &MobWorld, p: [i32; 3]) -> bool {
 struct GoToLava(MoveToBlock);
 impl Goal for GoToLava {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE | JUMP
     }
+    #[inline]
     fn name(&self) -> &'static str {
         "StriderGoToLavaGoal"
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         true
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if m.fluids.in_lava {
             return false;
@@ -138,14 +142,17 @@ impl Goal for GoToLava {
         self.0.next_start = reduced(200 + m.random.next_int_bound(200).unwrap_or(0));
         self.0.find_nearest(m, cx.w, lava_target)
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         !m.fluids.in_lava && lava_target(cx.w, self.0.block)
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.start(m, cx.w);
     }
     /// `MoveToBlockGoal.tick` towards `getMoveToTarget()` (the lava block),
     /// recomputing the path every 20 ticks (`shouldRecalculatePath`).
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         let b = self.0.block;
         let center = [

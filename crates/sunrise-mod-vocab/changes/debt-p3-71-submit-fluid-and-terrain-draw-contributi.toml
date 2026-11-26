@@ -1,0 +1,16 @@
+ids = [
+  "type:FluidBoxError",
+  "type:TerrainModelError",
+  "method:BlockEntityDrawContext::fluid_box",
+  "method:BlockEntityDrawContext::terrain_model",
+]
+why = """
+`BlockEntityDrawContext::fluid_box` and `BlockEntityDrawContext::terrain_model` previously enforced invented geometry budgets (1,048,576-block fluid coordinates, 65,536-quad cap, `uv_shrink_ratio` clamped to `0.0..=1.0`, singular-pose refusal, unmatched `uv_shift` refusal) and ran atomic preflight scans that discarded the entire draw on any single invalid primitive. Vanilla 26.3 (`FluidRenderer.tesselate`, `FluidStateModelSet.missingModel`, `TextureAtlas.getSprite`, `BlockModelFeatureRenderer.render`, `OrderedSubmitNodeCollector.submitModelPart`, `PoseStack`) and NeoForge (`CustomFluidRenderer`, `AddSectionGeometryEvent`) emit valid geometry per quad with `minecraft:missingno` sprite fallback and no arbitrary coordinate or quad budgets.
+
+`FluidBoxError` and `TerrainModelError` are removed. `BlockEntityDrawContext::fluid_box` now returns `()`, drawing nothing for empty/unresolved fluids or reversed/non-finite bounds, falling back to `minecraft:missingno` when a registered fluid has no look or sprite, skipping provably overflowing posed spans before face traversal, and submitting valid quads individually through the renderer's scoped entity quad sink up to the active device's vertex and index buffer capacity for the combined entity batch. `BlockEntityDrawContext::terrain_model` now returns `Result<(), ModelError>` (matching `BlockEntityDrawContext::model`), failing only on stale or unknown handles while emitting valid quads individually through the same device-bounded sink with `minecraft:missingno` fallback for missing sprites and treating an unmatched `uv_shift.source_sprite` as a no-op.
+"""
+migrate = """
+Remove `?` and error handling on `BlockEntityDrawContext::fluid_box(...)`, which now returns `()` directly, and delete references to `FluidBoxError`.
+
+Update callers of `BlockEntityDrawContext::terrain_model(...)` to handle `Result<(), ModelError>` instead of `Result<(), TerrainModelError>` (for example, replace `TerrainModelError::Model(err)` matches with `err: ModelError` and remove `TerrainModelError::Refused` arms). Delete references to `TerrainModelError`.
+"""

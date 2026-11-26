@@ -6,10 +6,12 @@ sending a final paddle packet. Clients must receive the false transitions.
 A boat with two players is driven by its first rider only: the second rider's
 paddle packets leave the metadata alone.
 """
-try:
-    from . import test_locator_bar_parity as net
-except ImportError:
-    import test_locator_bar_parity as net
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_locator_bar_parity as net
 
 SCRIPT = [('setup', ['boats on', 'cmd Alice gamerule spawn_mobs false'])]
 EXPECTED = []

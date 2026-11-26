@@ -14,10 +14,12 @@ fn reload_resolves_parts_against_reloaded_tags() {
         ) {
         }
     }
-    struct ReloadMod;
+    let reload_tag = std::sync::Arc::new(std::sync::OnceLock::new());
+    struct ReloadMod(std::sync::Arc<std::sync::OnceLock<mod_api::TagKey>>);
     #[mod_api::__subscriptions]
     impl Hooks for ReloadMod {
         fn register(&self, registrar: &mut dyn Registrar, _: &mod_api::RegistrationContext) {
+            let _ = self.0.set(registrar.tag_key("test:reload"));
             registrar.block_part_tag("test:reload", TagPart);
         }
         fn data_pack_files(&self, _: &mut dyn ServerHost, event: &mut DataPackFilesEvent<'_>) {
@@ -27,7 +29,11 @@ fn reload_resolves_parts_against_reloaded_tags() {
             ));
         }
     }
-    let mods: mod_api::Mods = vec![mod_api::ModEntry::new("reload", Box::new(ReloadMod))].into();
+    let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
+        "reload",
+        Box::new(ReloadMod(reload_tag.clone())),
+    )]
+    .into();
     crate::game::api_values::install_parts(&mods).unwrap();
     mod_platform::__private::install(mods);
     super::native_entity_refs::tests::with_game(|game| {
@@ -35,11 +41,21 @@ fn reload_resolves_parts_against_reloaded_tags() {
         let name = stone_key.id(game).expect("stone is registered").to_owned();
         let dir = std::env::temp_dir().join(format!("sunrise-key-tags-{}", std::process::id()));
         game.session_lock = Some(sunrise_client::save::SessionLock::acquire(&dir).unwrap());
-        assert_eq!(game.block_in_tag(stone_key, "test:reload"), Some(false));
-        assert_eq!(
-            game.block_in_tag(stone_key, "base_stone_overworld"),
-            Some(true)
-        );
+        let reload_tag = (*reload_tag.get().unwrap()).typed();
+        let base_stone_tag = mod_api::Tags::key(
+            &*game,
+            &mod_api::Identifier::parse("base_stone_overworld").unwrap(),
+        )
+        .unwrap()
+        .typed();
+        let logs_tag = mod_api::Tags::key(
+            &*game,
+            &mod_api::Identifier::parse("minecraft:logs").unwrap(),
+        )
+        .unwrap()
+        .typed();
+        assert_eq!(stone_key.is_in_tag(&*game, reload_tag), Some(false));
+        assert_eq!(stone_key.is_in_tag(&*game, base_stone_tag), Some(true));
         game.load_server_loot();
         let stack = super::functions::pack_stack(
             &game.world_root,
@@ -52,7 +68,12 @@ fn reload_resolves_parts_against_reloaded_tags() {
         );
         let root = game.options.resources.clone();
         let previous = std::sync::Arc::new(mod_api::DatapackRegistrySet::from_candidate(
-            mod_api::DatapackCandidate::build(&[], &[]).unwrap(),
+            mod_api::DatapackCandidate::build(
+                &[],
+                &[],
+                &mut mod_api::__private::NoVanillaValueDecoder,
+            )
+            .unwrap(),
         ));
         sunrise_client::datapack_net::serve(Some(previous.clone()));
         let prepared = game.prepare_world_reload(&stack, &root).unwrap();
@@ -70,12 +91,9 @@ fn reload_resolves_parts_against_reloaded_tags() {
             stone_key,
             mod_platform::__private::part_tests::block_key("minecraft:stone")
         );
-        assert_eq!(game.block_in_tag(stone_key, "test:reload"), Some(true));
-        assert_eq!(game.block_in_tag(stone_key, "minecraft:logs"), Some(false));
-        assert_eq!(
-            game.block_in_tag(stone_key, "base_stone_overworld"),
-            Some(true)
-        );
+        assert_eq!(stone_key.is_in_tag(&*game, reload_tag), Some(true));
+        assert_eq!(stone_key.is_in_tag(&*game, logs_tag), Some(false));
+        assert_eq!(stone_key.is_in_tag(&*game, base_stone_tag), Some(true));
         let stone = game.block_state_default(stone_key).unwrap();
         assert!(api_values::block_state::block_listens(
             mod_api::HookId::AnalogOutput,
@@ -167,11 +185,19 @@ fn client_input_options_follow_settings() {
 
 #[test]
 fn weather_follows_the_dimension_type_not_the_id() {
-    use super::level_can_have_weather as w;
-    assert!(w(true, false, false)); // open sky
-    assert!(!w(true, true, false)); // ceiling (Nether, overworld_caves)
-    assert!(!w(false, false, false)); // no sky light
-    assert!(!w(true, false, true)); // the End is named by id
+    use sunrise_client::chunk::LevelShape;
+
+    let open = LevelShape::OVERWORLD;
+    assert!(open.can_have_weather(false));
+    assert!(!open.with_ceiling(true).can_have_weather(false));
+    assert!(
+        !LevelShape {
+            sky_light: false,
+            ..open
+        }
+        .can_have_weather(false)
+    );
+    assert!(!open.can_have_weather(true)); // the End is named by id
 }
 
 use super::*;
@@ -595,6 +621,7 @@ fn screen_ids_are_distinct_and_stable() {
         Screen::BlockEditor,
         Screen::ServerLinks,
         Screen::ConfirmLink,
+        Screen::DemoIntro,
         Screen::DialogWarning,
         Screen::Win,
         Screen::Mod,
@@ -787,6 +814,7 @@ fn a_mod_screen_on_a_machine_menu_takes_the_stock_layout_out() {
 fn a_falling_block_keeps_its_model_offset() {
     let at = Vec3::new(3.5, 70.25, -1.5);
     let falling = FallingBlock {
+        size_answer: None,
         ground: Default::default(),
         fire_ticks: 0,
         sync_velocity: false,
@@ -934,20 +962,6 @@ fn a_dialog_releases_held_keys_like_a_screen() {
     toggles.screen_closed(options);
     assert!(toggles.is_down(SNEAK));
 }
-/// A key bound to key.pickItem clones over a container screen, as the
-/// middle button does; a key bound to attack or use does nothing there (#5378).
-#[test]
-fn a_key_bound_to_pick_block_clones_behind_a_container_screen() {
-    assert!(container_key_clones(MouseButton::Middle, KeyAction::Press));
-    assert!(container_key_clones(MouseButton::Middle, KeyAction::Repeat));
-    assert!(!container_key_clones(
-        MouseButton::Middle,
-        KeyAction::Release
-    ));
-    for button in [MouseButton::Left, MouseButton::Right] {
-        assert!(!container_key_clones(button, KeyAction::Press));
-    }
-}
 #[test]
 fn sleep_fade_lasts_ten_ticks_after_waking() {
     let alpha = |timer| match hud_overlays::sleep_overlay(320, 240, timer).first() {
@@ -956,25 +970,30 @@ fn sleep_fade_lasts_ten_ticks_after_waking() {
         _ => panic!("sleep overlay must be a full-screen fill"),
     };
     assert_eq!(tick_sleep_timer(0, false), 0);
+    assert_eq!(tick_sleep_timer(-2, false), -2);
+    assert_eq!(tick_sleep_timer(-2, true), -1);
+    assert_eq!(tick_sleep_timer(110, false), 0);
+    assert_eq!(tick_sleep_timer(110, true), 100);
+    assert_eq!(tick_sleep_timer(i32::MAX, true), i32::MIN);
     let mut timer = 0;
     for _ in 0..50 {
         timer = tick_sleep_timer(timer, true);
     }
-    assert_eq!(alpha(timer as i32), 110);
+    assert_eq!(alpha(timer), 110);
     for _ in 0..100 {
         timer = tick_sleep_timer(timer, true);
     }
     assert_eq!(timer, 100);
-    assert_eq!(alpha(timer as i32), 220);
+    assert_eq!(alpha(timer), 220);
     for _ in 0..5 {
         timer = tick_sleep_timer(timer, false);
     }
-    assert_eq!(alpha(timer as i32), 110);
+    assert_eq!(alpha(timer), 110);
     for _ in 0..5 {
         timer = tick_sleep_timer(timer, false);
     }
     assert_eq!(timer, 0);
-    assert!(hud_overlays::sleep_overlay(320, 240, timer as i32).is_empty());
+    assert!(hud_overlays::sleep_overlay(320, 240, timer).is_empty());
 }
 
 #[test]
@@ -1200,32 +1219,32 @@ fn quit_shortcut_blocks_window_close_when_option_disabled() {
 
 #[test]
 fn integrated_server_save_persists_owner_player_data() {
+    use sunrise_client::lan::playerdata;
+
     let dir = std::env::temp_dir().join(format!(
         "sunrise-integrated-player-save-{}",
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&dir);
 
-    // Initial world creation writes `level.dat` before the player spawns.
+    // Initial world creation writes the profile reference before the player spawns.
+    let owner = 12;
     let mut level = Level {
         name: "Creative".into(),
         creative: true,
         game_mode: 1,
+        player_uuid: Some(playerdata::uuid_ints(owner)),
         ..Level::default()
     };
-    level.write(&dir, &Default::default()).unwrap();
+    level.write_keeping_player(&dir).unwrap();
 
     // The integrated server stores the owner's state in `level` and saves the world.
     level.position = Some([128.5, 72.0, -64.25]);
     level.inventory = vec![(0, "minecraft:diamond_pickaxe".into(), 1, 0)];
-    write_level_for_role(
-        &mut level,
-        &dir,
-        execution_role::ExecutionRole::IntegratedServer,
-        &Default::default(),
-        false,
-    )
-    .unwrap();
+    level.write_player(&dir, &Default::default()).unwrap();
+    level.write_without_player(&dir).unwrap();
+    let player_file = playerdata::path(&dir, owner);
+    let player_bytes = std::fs::read(&player_file).unwrap();
 
     let reopened = Level::read(&dir).unwrap();
     assert_eq!(reopened.position, Some([128.5, 72.0, -64.25]));
@@ -1240,14 +1259,8 @@ fn integrated_server_save_persists_owner_player_data() {
         day_time: 6000,
         ..Level::default()
     };
-    write_level_for_role(
-        &mut dedicated,
-        &dir,
-        execution_role::ExecutionRole::DedicatedServer,
-        &Default::default(),
-        false,
-    )
-    .unwrap();
+    dedicated.write_without_player(&dir).unwrap();
+    assert_eq!(std::fs::read(&player_file).unwrap(), player_bytes);
 
     let reopened = Level::read(&dir).unwrap();
     assert_eq!(reopened.day_time, 6000);

@@ -13,7 +13,9 @@ pub trait Hooks {
     /// `causing_weapon` is the causing living entity's current main-hand weapon
     /// (`getEntity().getWeaponItem`), read at hit time, not a projectile's saved
     /// weapon; None for an absent, unknown or non-living cause, or once the shooter
-    /// is gone. It is an addition: NeoForge's `LivingIncomingDamageEvent` doesn't
+    /// is gone. Both weapon views lend the hit-time state. A melee hit can lend the
+    /// same view for both fields; unavailable weapons do not suppress the event.
+    /// `causing_weapon` is an addition: NeoForge's `LivingIncomingDamageEvent` doesn't
     /// carry it, and mods there read the source entity's main hand themselves.
     /// `container` is a live mutable borrow of the hit's damage container before any
     /// reduction; engine sequencing and normalization remain game-owned. Change its
@@ -34,7 +36,7 @@ pub trait Hooks {
         out = "canceled",
         host = "hit",
         neoforge = "LivingIncomingDamageEvent",
-        version = 4,
+        version = 6,
         target = "sunrise_client::game::native_hooks::base::HitLevel<'_>::native_living_incoming_damage"
     )]
     fn living_incoming_damage(
@@ -42,8 +44,8 @@ pub trait Hooks {
         kind: &str,
         source: &HurtSource<'_>,
         victim: &Victim,
-        weapon: Option<&ItemStack>,
-        causing_weapon: Option<&ItemStack>,
+        weapon: Option<&ItemStackView<'_>>,
+        causing_weapon: Option<&ItemStackView<'_>>,
         container: mod_api::DamageContainer<'_>,
         canceled: &mut bool,
     );

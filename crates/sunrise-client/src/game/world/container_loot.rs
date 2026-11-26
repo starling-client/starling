@@ -1,10 +1,7 @@
 //! First-access loot shared by blocks and chest vehicles.
 use super::Game;
 use sunrise_client::{containers::BlockEntity, save::PendingContainerLoot};
-use sunrise_core::{
-    nbt::Tag,
-    random::{LegacyRandom, RandomSource},
-};
+use sunrise_core::{nbt::Tag, random::LegacyRandom};
 
 #[derive(Clone, Copy)]
 pub(super) enum LootTarget {
@@ -13,6 +10,14 @@ pub(super) enum LootTarget {
     Boat(u32),
 }
 impl Game<'_> {
+    /// Whether the container at `key` still waits with a loot table.
+    pub(super) fn block_loot_pending(&self, key: (i32, i32, i32)) -> bool {
+        self.world
+            .chunks
+            .get(&(key.0 >> 4, key.2 >> 4))
+            .and_then(|c| c.saved.as_ref())
+            .is_some_and(|s| s.pending_loot.contains_key(&key))
+    }
     pub(super) fn loot_inventory_item(
         &mut self,
         key: (i32, i32, i32),
@@ -69,12 +74,7 @@ impl Game<'_> {
                 let Some(pending) = take_block_pending(&mut self.world, key) else {
                     return;
                 };
-                // Keep the block-container rule: a table coexisting with items is dropped.
-                if self.world.block_entities[&key]
-                    .slots()
-                    .iter()
-                    .any(Option::is_some)
-                {
+                if mixed_state_dropped(&self.world.block_entities[&key]) {
                     return;
                 }
                 (pending, key)
@@ -152,11 +152,6 @@ impl Game<'_> {
         } else {
             0.0
         };
-        let context = sunrise_world::loot::ContainerLootContext {
-            biome: Some(&biome),
-            luck,
-            entity: entity.as_ref(),
-        };
         let Some(mut slots) = (match target {
             LootTarget::Block(key) => self
                 .world
@@ -189,16 +184,40 @@ impl Game<'_> {
         };
         let mut random = self.world.random.clone();
         let mut sequences = std::mem::take(&mut self.rand_sequences);
-        fill_with_random(
-            &pending,
-            &mut slots,
-            &loot,
-            &mut random,
-            &mut sequences,
-            self.level.seed,
-            context,
-            |items| self.container_fill_hook(&table, target, origin, player, items),
-        );
+        // ORIGIN is the container's centre (a vehicle's position); its location checks
+        // read the level.
+        let rolled = {
+            let level = crate::game::advancements::View(&*self);
+            let read = |predicate: &serde_json::Value, at: [f64; 3]| {
+                sunrise_client::advancements::location(predicate, at, &level)
+            };
+            let context = sunrise_world::loot::ContainerLootContext {
+                biome: Some(&biome),
+                location: Some(sunrise_client::advancements::loot_location(origin, &read)),
+                luck,
+                entity: entity.as_ref(),
+            };
+            roll_fill(
+                &pending,
+                &loot,
+                &mut random,
+                &mut sequences,
+                self.level.seed,
+                context,
+            )
+        };
+        if let Some((mut items, source)) = rolled {
+            self.container_fill_hook(&table, target, origin, player, &mut items);
+            place_fill(
+                items,
+                &mut slots,
+                &loot,
+                source,
+                &mut random,
+                &mut sequences,
+                self.level.seed,
+            );
+        }
         self.world.random = random;
         self.rand_sequences = sequences;
         match target {
@@ -269,62 +288,72 @@ pub(super) fn take_block_pending(
     pending
 }
 
-/// Vanilla LootContext.Builder: explicit seed, named sequence, then level random.
-fn fill_with_random(
+/// Keep the block-container rule: a vanilla container's table coexisting with items is
+/// dropped. A mod container reaches that state through `RandomizableContainer.setLootTable` on
+/// a filled container, which vanilla rolls as usual: `LootTable.fill` fills the empty slots.
+fn mixed_state_dropped(entity: &BlockEntity) -> bool {
+    !matches!(entity, BlockEntity::Mod(_)) && entity.slots().iter().any(Option::is_some)
+}
+
+/// The random a container's loot drew from (`LootContext.Builder.create`: the explicit seed,
+/// the table's named random sequence, then the level random), kept for the slot shuffle.
+enum FillRandom {
+    Seeded(LegacyRandom),
+    Sequence(String),
+    Level,
+}
+
+/// `LootTable.fill`'s roll of the pending table (`getRandomItems` with the stack splitter),
+/// with `context` read by its conditions. None for a missing table, which draws nothing.
+fn roll_fill(
     pending: &PendingContainerLoot,
-    slots: &mut [Option<sunrise_client::items::ItemStack>],
     loot: &sunrise_world::loot::LootData,
     level_random: &mut LegacyRandom,
     sequences: &mut sunrise_client::random_sequences::RandomSequences,
     world_seed: i64,
     context: sunrise_world::loot::ContainerLootContext<'_>,
-    mut hook: impl FnMut(&mut Vec<sunrise_world::loot::LootStack>),
-) {
+) -> Option<(Vec<sunrise_world::loot::LootStack>, FillRandom)> {
+    let table = pending.table_id();
     if let Some(seed) = pending.seed_value().filter(|seed| *seed != 0) {
-        unpack_slots(
-            pending,
-            slots,
-            loot,
-            &mut LegacyRandom::new(seed),
-            context,
-            &mut hook,
-        );
-    } else if let Some(id) = loot.random_sequence(&pending.table_id()) {
-        unpack_slots(
-            pending,
-            slots,
-            loot,
-            sequences.get(id, world_seed),
-            context,
-            &mut hook,
-        );
+        let mut random = LegacyRandom::new(seed);
+        let items = loot.roll_container_with(&table, &mut random, context)?;
+        Some((items, FillRandom::Seeded(random)))
+    } else if let Some(id) = loot.random_sequence(&table) {
+        let items = loot.roll_container_with(&table, sequences.get(id, world_seed), context)?;
+        Some((items, FillRandom::Sequence(id.to_owned())))
     } else {
-        unpack_slots(pending, slots, loot, level_random, context, &mut hook);
+        let items = loot.roll_container_with(&table, level_random, context)?;
+        Some((items, FillRandom::Level))
     }
 }
 
-/// The single roll/placement implementation used by Game and its mutable level adapter.
-fn unpack_slots<R: RandomSource + Clone>(
-    pending: &PendingContainerLoot,
+/// `LootTable.fill`'s placement into the free slots, drawing on from the random the roll
+/// used. Entry points discard a pre-existing mixed state; items added by the player's
+/// advancement rewards keep their slots while this fills the free ones.
+fn place_fill(
+    items: Vec<sunrise_world::loot::LootStack>,
     slots: &mut [Option<sunrise_client::items::ItemStack>],
     loot: &sunrise_world::loot::LootData,
-    random: &mut R,
-    context: sunrise_world::loot::ContainerLootContext<'_>,
-    mut hook: impl FnMut(&mut Vec<sunrise_world::loot::LootStack>),
+    random: FillRandom,
+    level_random: &mut LegacyRandom,
+    sequences: &mut sunrise_client::random_sequences::RandomSequences,
+    world_seed: i64,
 ) {
-    // Entry points discard a pre-existing mixed state. Items added by the
-    // player's advancement rewards keep their slots while this roll fills free ones.
-    let Some(mut items) = loot.roll_container_with(&pending.table_id(), random, context) else {
-        return;
-    };
-    hook(&mut items);
     let mut placed = vec![None; slots.len()];
     let free = slots
         .iter()
         .enumerate()
         .filter_map(|(i, s)| s.is_none().then_some(i))
         .collect();
-    loot.place_container_loot(items, &mut placed, free, random);
+    match random {
+        FillRandom::Seeded(mut random) => {
+            loot.place_container_loot(items, &mut placed, free, &mut random)
+        }
+        FillRandom::Sequence(id) => {
+            loot.place_container_loot(items, &mut placed, free, sequences.get(&id, world_seed))
+        }
+        FillRandom::Level => loot.place_container_loot(items, &mut placed, free, level_random),
+    }
     for (slot, stack) in slots.iter_mut().zip(placed) {
         if let Some(stack) = stack {
             *slot = Some(sunrise_client::structure_blocks::loot_item_with_components(
@@ -368,27 +397,38 @@ impl super::GameLevel<'_> {
             let loot = loot.clone();
             let mut random = self.world.random.clone();
             let mut sequences = std::mem::take(self.rand_sequences);
-            fill_with_random(
-                &pending,
-                &mut slots,
-                &loot,
-                &mut random,
-                &mut sequences,
-                self.seed,
-                sunrise_world::loot::ContainerLootContext {
+            let origin = [p.x, p.y, p.z];
+            let rolled = {
+                let level = self.location_view();
+                let read = |predicate: &serde_json::Value, at: [f64; 3]| {
+                    sunrise_client::advancements::location(predicate, at, &level)
+                };
+                let context = sunrise_world::loot::ContainerLootContext {
                     biome: biome.as_deref(),
+                    location: Some(sunrise_client::advancements::loot_location(origin, &read)),
                     ..Default::default()
-                },
-                |items| {
-                    self.container_fill_hook(
-                        &pending.table_id(),
-                        target,
-                        [p.x, p.y, p.z],
-                        player,
-                        items,
-                    )
-                },
-            );
+                };
+                roll_fill(
+                    &pending,
+                    &loot,
+                    &mut random,
+                    &mut sequences,
+                    self.seed,
+                    context,
+                )
+            };
+            if let Some((mut items, source)) = rolled {
+                self.container_fill_hook(&pending.table_id(), target, origin, player, &mut items);
+                place_fill(
+                    items,
+                    &mut slots,
+                    &loot,
+                    source,
+                    &mut random,
+                    &mut sequences,
+                    self.seed,
+                );
+            }
             self.world.random = random;
             *self.rand_sequences = sequences;
             self.carts.update(i, |cart| cart.items = slots);
@@ -415,34 +455,45 @@ impl super::GameLevel<'_> {
         let Some(entity) = self.world.block_entities.get(&key) else {
             return;
         };
-        if entity.slots().iter().any(Option::is_some) {
+        if mixed_state_dropped(entity) {
             return;
         }
         let mut slots = entity.slots().to_vec();
         let loot = loot.clone();
         let mut random = self.world.random.clone();
         let mut sequences = std::mem::take(self.rand_sequences);
-        fill_with_random(
-            &pending,
-            &mut slots,
-            &loot,
-            &mut random,
-            &mut sequences,
-            self.seed,
-            sunrise_world::loot::ContainerLootContext {
+        let origin = [key.0, key.1, key.2].map(|c| f64::from(c) + 0.5);
+        let rolled = {
+            let level = self.location_view();
+            let read = |predicate: &serde_json::Value, at: [f64; 3]| {
+                sunrise_client::advancements::location(predicate, at, &level)
+            };
+            let context = sunrise_world::loot::ContainerLootContext {
                 biome: biome.as_deref(),
+                location: Some(sunrise_client::advancements::loot_location(origin, &read)),
                 ..Default::default()
-            },
-            |items| {
-                self.container_fill_hook(
-                    &pending.table_id(),
-                    target,
-                    [key.0 as f64 + 0.5, key.1 as f64 + 0.5, key.2 as f64 + 0.5],
-                    player,
-                    items,
-                )
-            },
-        );
+            };
+            roll_fill(
+                &pending,
+                &loot,
+                &mut random,
+                &mut sequences,
+                self.seed,
+                context,
+            )
+        };
+        if let Some((mut items, source)) = rolled {
+            self.container_fill_hook(&pending.table_id(), target, origin, player, &mut items);
+            place_fill(
+                items,
+                &mut slots,
+                &loot,
+                source,
+                &mut random,
+                &mut sequences,
+                self.seed,
+            );
+        }
         self.world.random = random;
         *self.rand_sequences = sequences;
         if let Some(entity) = self.world.block_entities.get_mut(&key) {

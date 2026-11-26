@@ -14,7 +14,12 @@ import os
 import subprocess
 import time
 
-from boat_health import api, genuine_failure, recovery_reason
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+from tools.ci.boat_health import api, genuine_failure, recovery_reason
 
 
 def eligible(run, repo, workflow):

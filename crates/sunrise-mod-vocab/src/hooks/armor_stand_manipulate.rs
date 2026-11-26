@@ -1,5 +1,4 @@
 //! The `armor_stand_manipulate` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0239
 
 pub trait Hooks {
     /// A player takes an item from an armor stand or puts one on it

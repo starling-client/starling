@@ -1,0 +1,2 @@
+ids = ["handle:BlockEntityRef::remove"]
+why = "Mods need vanilla's Level.removeBlockEntity to strip a resident block entity in place without changing its block or running preRemoveSideEffects (e.g. stateful block property transitions or dismantling a structure without dropping container contents) (#5548)."

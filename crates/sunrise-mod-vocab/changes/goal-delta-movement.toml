@@ -1,0 +1,2 @@
+ids = ["handle:GoalContext::delta_movement", "handle:GoalContext::set_delta_movement", "handle:GoalContext::add_delta_movement"]
+why = "Adds GoalContext::set_delta_movement, add_delta_movement and delta_movement (#3926): a goal sets, adds to and reads its own mob's velocity (Entity.setDeltaMovement, addDeltaMovement, getDeltaMovement), as LeapAtTargetGoal and DolphinJumpGoal do. The write applies at once inside the mob's AI step, so the same tick's travel uses it; a component that is not finite returns false and leaves the velocity unchanged, with no clamp."

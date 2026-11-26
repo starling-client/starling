@@ -2,11 +2,10 @@
 //! per-frame culling walk: a column whose box misses the frustum or lies past
 //! the render distance rejects all of its sections with one test, and the
 //! sections that remain are reached by index rather than by hashing keys.
-#[cfg(test)]
-use super::Frustum;
-use super::{Cull, SectionKey};
+use super::{Cull, Frustum, SectionKey};
 use crate::{
     fast_hash::{FxHashMap, FxHashSet},
+    section_mask::SectionMask,
     streaming::in_view_distance,
 };
 use glam::{DVec3, Vec3};
@@ -43,6 +42,8 @@ pub(crate) trait ResidentSize {
 pub struct Resident<T> {
     /// The minimum Y of section index 0 (the level's column).
     min_y: i32,
+    /// Number of vertical sections in the level's column (`Level.getSectionsCount`).
+    sections: i32,
     items: Vec<(SectionKey, T)>,
     bounds: Vec<Option<[Vec3; 2]>>,
     /// Per slot, whether the section is marked: within the render distance,
@@ -64,6 +65,7 @@ impl<T> Default for Resident<T> {
     fn default() -> Self {
         Self {
             min_y: crate::chunk::MIN_Y,
+            sections: crate::chunk::SECTIONS as i32,
             items: Vec::new(),
             bounds: Vec::new(),
             marked: Vec::new(),
@@ -146,6 +148,10 @@ impl<T> Resident<T> {
     /// Sections from now on count from `min_y` (a level of another column).
     pub fn set_min_y(&mut self, min_y: i32) {
         self.min_y = min_y;
+    }
+    /// Sets the level's vertical section count for vanilla's vertical render-distance clamp.
+    pub fn set_sections(&mut self, sections: i32) {
+        self.sections = sections;
     }
     /// The minimum Y of section index 0.
     pub fn min_y(&self) -> i32 {
@@ -369,23 +375,133 @@ pub struct Visible {
 /// The camera-relative origin of the section at `key`.
 pub(super) fn origin(key: SectionKey, min_y: i32, camera: DVec3) -> DVec3 {
     DVec3::new(
-        f64::from(key.0 * 16),
-        f64::from(min_y + key.1 * 16),
-        f64::from(key.2 * 16),
+        (i64::from(key.0) * 16) as f64,
+        (i64::from(min_y) + i64::from(key.1) * 16) as f64,
+        (i64::from(key.2) * 16) as f64,
     ) - camera
 }
 
 /// The camera's chunk column.
 pub(super) fn camera_column(camera: DVec3) -> (i32, i32) {
     (
-        (camera.x.floor() as i32) >> 4,
-        (camera.z.floor() as i32) >> 4,
+        sunrise_core::mth::floor(camera.x) >> 4,
+        sunrise_core::mth::floor(camera.z) >> 4,
     )
+}
+
+/// Converts a block Y coordinate to a 0-based section Y index without subtracting in block space.
+pub(super) fn block_to_section_y(block_y: i32, min_y: i32) -> i32 {
+    (block_y >> 4) - (min_y >> 4)
+}
+
+/// Camera's 0-based section Y index (`SectionPos.blockToSectionCoord(Mth.floor(y)) - minSectionY`).
+pub(super) fn camera_section_y(camera: DVec3, min_y: i32) -> i32 {
+    block_to_section_y(sunrise_core::mth::floor(camera.y), min_y)
+}
+
+/// Vanilla 26.3 inclusive 0-based section Y range `[lo, hi]` for `SectionOcclusionGraph`.
+pub(super) fn vertical_section_range(
+    cam_sy: i32,
+    radius: i32,
+    sections: i32,
+) -> Option<(i32, i32)> {
+    if sections <= 0 || radius < 0 {
+        return None;
+    }
+    let last = sections - 1;
+    let lo = cam_sy.saturating_sub(radius).clamp(0, last);
+    let hi = cam_sy.saturating_add(radius).clamp(0, last);
+    Some((lo, hi))
+}
+
+/// Per-column Octree leaf-parent branch classification for outside-height seeds.
+pub(super) const BRANCH_OUTSIDE: u32 = 0;
+pub(super) const BRANCH_INTERSECT: u32 = 1;
+pub(super) const BRANCH_INSIDE: u32 = 2;
+
+/// Vanilla `Octree` leaf-parent branch geometry when outside-height seeds lie outside the root's Y span.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct OutsideHeightTree {
+    root_x0: i32,
+    root_z0: i32,
+    size: i32,
+    branch_y0_blocks: i64,
+    branch_span_blocks: i32,
+}
+
+impl OutsideHeightTree {
+    /// Classifies the leaf-parent branch holding column `(x, z)` against `frustum`.
+    pub(super) fn branch_state(&self, x: i32, z: i32, camera: DVec3, frustum: &impl Cull) -> u32 {
+        let step = self.size.min(2);
+        let mask = !(step - 1);
+        let bx =
+            i64::from(self.root_x0) + i64::from((x - self.root_x0).clamp(0, self.size - 1) & mask);
+        let bz =
+            i64::from(self.root_z0) + i64::from((z - self.root_z0).clamp(0, self.size - 1) & mask);
+        let min = DVec3::new(
+            (bx * 16) as f64 - camera.x,
+            self.branch_y0_blocks as f64 - camera.y,
+            (bz * 16) as f64 - camera.z,
+        )
+        .as_vec3();
+        let max = min + Vec3::splat(self.branch_span_blocks as f32);
+        if !frustum.intersects(min, max) {
+            BRANCH_OUTSIDE
+        } else if frustum.contains(min, max) {
+            BRANCH_INSIDE
+        } else {
+            BRANCH_INTERSECT
+        }
+    }
+}
+
+/// Returns the vanilla `Octree` branch geometry when the camera is far enough outside build height
+/// that the clamped boundary seed row sits outside the octree root's Y range.
+pub(super) fn outside_height_tree(
+    camera: DVec3,
+    min_y: i32,
+    sections: i32,
+    radius: i32,
+) -> Option<OutsideHeightTree> {
+    if sections <= 0 || radius < 0 || !camera.is_finite() {
+        return None;
+    }
+    let diameter = (2 * radius + 1).max(1) as u32;
+    let size = diameter.next_power_of_two() as i32;
+    if size >= sections {
+        return None;
+    }
+    let abs_cam_sy = sunrise_core::mth::floor(camera.y) >> 4;
+    let cam_sy = abs_cam_sy - (min_y >> 4);
+    let (lo, hi) = vertical_section_range(cam_sy, radius, sections)?;
+    if lo != hi {
+        return None;
+    }
+    let root_y0 = i64::from(cam_sy) - i64::from(radius);
+    let seed_y = i64::from(lo);
+    if seed_y >= root_y0 && seed_y < root_y0 + i64::from(size) {
+        return None;
+    }
+    let branch_span = size.min(2);
+    let abs_root_y0 = i64::from(abs_cam_sy) - i64::from(radius);
+    let branch_abs_sy = if seed_y < root_y0 {
+        abs_root_y0
+    } else {
+        abs_root_y0 + i64::from(size - branch_span)
+    };
+    let (cam_cx, cam_cz) = camera_column(camera);
+    Some(OutsideHeightTree {
+        root_x0: cam_cx - radius,
+        root_z0: cam_cz - radius,
+        size,
+        branch_y0_blocks: branch_abs_sy * 16,
+        branch_span_blocks: branch_span * 16,
+    })
 }
 
 /// The world AABB (min, max) of a section from its origin and optional tight bounds.
 #[inline]
-fn section_box(min: Vec3, bounds: Option<[Vec3; 2]>) -> (Vec3, Vec3) {
+pub(super) fn section_box(min: Vec3, bounds: Option<[Vec3; 2]>) -> (Vec3, Vec3) {
     match bounds {
         Some([bmin, bmax]) => (min + bmin, min + bmax),
         None => (min, min + Vec3::splat(16.0)),
@@ -411,6 +527,14 @@ fn in_view_with_bounds(
     bounds: Option<[Vec3; 2]>,
 ) -> Option<(f64, Vec3)> {
     if !in_view_distance(camera_column(camera), radius, key.0, key.2) {
+        return None;
+    }
+    let (lo_y, hi_y) = vertical_section_range(
+        camera_section_y(camera, crate::chunk::MIN_Y),
+        radius,
+        crate::chunk::SECTIONS as i32,
+    )?;
+    if key.1 < lo_y || key.1 > hi_y {
         return None;
     }
     in_frustum(key, crate::chunk::MIN_Y, camera, frustum, false, bounds)
@@ -460,7 +584,7 @@ impl<T> Resident<T> {
         beyond: impl Fn(i32, i32) -> bool,
         out: &mut Vec<Visible>,
     ) {
-        self.walk(camera, radius, frustum, reachable, beyond, false, out);
+        self.walk(camera, radius, frustum, reachable, beyond, false, out, None);
     }
     /// `visible`, less the sections within the render distance that are not
     /// marked (`insert_marked`) when `marked_only_near`, in the same order: GPU
@@ -475,80 +599,250 @@ impl<T> Resident<T> {
         beyond: impl Fn(i32, i32) -> bool,
         marked_only_near: bool,
         out: &mut Vec<Visible>,
+        mut primary: Option<PrimarySelection<'_>>,
     ) {
         let from = camera_column(camera);
-        for column in &self.columns {
-            let near = in_view_distance(from, radius, column.x, column.z);
-            if !near && !beyond(column.x, column.z) {
-                continue;
+        let world_y = |y: i32| (i64::from(self.min_y) + i64::from(y) * 16) as f64 - camera.y;
+        let clamp_y = frustum.vertical_clamp();
+        let vertical = if clamp_y {
+            vertical_section_range(camera_section_y(camera, self.min_y), radius, self.sections)
+        } else {
+            Some((i32::MIN, i32::MAX))
+        };
+        let outside_tree = clamp_y
+            .then(|| outside_height_tree(camera, self.min_y, self.sections, radius))
+            .flatten();
+        let tree_frustum = outside_tree.and_then(|_| frustum.offset_for_camera_cube(camera, 8));
+        let primary_vertical =
+            vertical_section_range(camera_section_y(camera, self.min_y), radius, self.sections);
+        let primary_outside_tree = primary
+            .as_ref()
+            .and_then(|_| outside_height_tree(camera, self.min_y, self.sections, radius));
+        let primary_tree_frustum = primary.as_ref().and_then(|p| {
+            primary_outside_tree.and_then(|_| p.frustum.offset_for_camera_cube(camera, 8))
+        });
+        // The primary and draw lists share distance, reachability, column mesh bounds and
+        // per-section tests. Mirror-only sections and GPU-list marks affect only the draw list.
+        let detail = primary.as_ref().map(|p| p.detail_columns);
+        let mut column_walk = |x: i32, z: i32, column: Option<&Column>, mut air: SectionMask| {
+            let near = in_view_distance(from, radius, x, z);
+            if !near && !beyond(x, z) {
+                return;
             }
-            let list = if marked_only_near && near {
-                &column.marked
+            let draw_y_range = if near {
+                vertical
             } else {
-                &column.sections
+                Some((i32::MIN, i32::MAX))
             };
-            if list.is_empty() {
-                continue;
-            }
-            let ox = f64::from(column.x * 16) - camera.x;
-            let oz = f64::from(column.z * 16) - camera.z;
-            let min_x = ox as f32;
-            let min_z = oz as f32;
-            let low_oy = (f64::from(self.min_y + column.low * 16) - camera.y) as f32;
-            let high_oy = (f64::from(self.min_y + column.high * 16) - camera.y) as f32;
-            let min = Vec3::new(min_x, low_oy, min_z);
-            let max = Vec3::new(min_x + 16.0, high_oy + 16.0, min_z + 16.0);
-            let inside = frustum.contains(min, max);
-            if !inside && !frustum.intersects(min, max) {
-                continue;
-            }
+            let primary_y_range = if near {
+                primary_vertical
+            } else {
+                Some((i32::MIN, i32::MAX))
+            };
+            let ox = (i64::from(x) * 16) as f64 - camera.x;
+            let oz = (i64::from(z) * 16) as f64 - camera.z;
+            let x0 = ox as f32;
+            let z0 = oz as f32;
             let dx8 = ox + 8.0;
             let dz8 = oz + 8.0;
             let xz_sq = dx8 * dx8 + dz8 * dz8;
-
-            if inside {
-                for &(y, slot) in list {
-                    let key = (column.x, y, column.z);
-                    if near && !reachable(key) {
-                        continue;
-                    }
-                    let oy = f64::from(self.min_y + y * 16) - camera.y;
-                    let min = Vec3::new(min_x, oy as f32, min_z);
-                    let dy8 = oy + 8.0;
-                    let distance = xz_sq + dy8 * dy8;
-                    out.push(Visible {
-                        distance: distance.to_bits(),
-                        key,
-                        slot,
-                        origin: min.to_array(),
-                    });
+            let distance = |oy: f64| {
+                let dy8 = oy + 8.0;
+                (xz_sq + dy8 * dy8).to_bits()
+            };
+            let use_draw_tree = near && outside_tree.is_some();
+            let draw_tree_state = if let Some(tree) = outside_tree.filter(|_| near) {
+                match &tree_frustum {
+                    Some(offset) => tree.branch_state(x, z, camera, offset),
+                    None => tree.branch_state(x, z, camera, frustum),
                 }
             } else {
-                for &(y, slot) in list {
-                    let key = (column.x, y, column.z);
+                BRANCH_INTERSECT
+            };
+            let use_primary_tree = near && primary_outside_tree.is_some();
+            let primary_tree_state = if let Some(p) = primary.as_ref()
+                && let Some(tree) = primary_outside_tree.filter(|_| near)
+            {
+                match &primary_tree_frustum {
+                    Some(offset) => tree.branch_state(x, z, camera, offset),
+                    None => tree.branch_state(x, z, camera, p.frustum),
+                }
+            } else {
+                BRANCH_INTERSECT
+            };
+            if let Some(column) = column {
+                let list = if marked_only_near && near && primary.is_none() {
+                    &column.marked
+                } else {
+                    &column.sections
+                };
+                let (draws_column, draws_inside, draw_lo, draw_hi) =
+                    if list.is_empty() || draw_tree_state == BRANCH_OUTSIDE {
+                        (false, false, 0, -1)
+                    } else if let Some((lo, hi)) = draw_y_range
+                        && column.high >= lo
+                        && column.low <= hi
+                    {
+                        let col_low = column.low.max(lo);
+                        let col_high = column.high.min(hi);
+                        let cmin = Vec3::new(x0, world_y(col_low) as f32, z0);
+                        let cmax = Vec3::new(x0 + 16.0, world_y(col_high) as f32 + 16.0, z0 + 16.0);
+                        let (visible, inside) = if draw_tree_state == BRANCH_INSIDE {
+                            (true, true)
+                        } else if use_draw_tree && let Some(offset) = &tree_frustum {
+                            let whole = offset.contains(cmin, cmax);
+                            (whole || offset.intersects(cmin, cmax), whole)
+                        } else {
+                            let whole = frustum.contains(cmin, cmax);
+                            (whole || frustum.intersects(cmin, cmax), whole)
+                        };
+                        (visible, inside, lo, hi)
+                    } else {
+                        (false, false, 0, -1)
+                    };
+                let primary_column = primary.as_ref().and_then(|p| {
+                    if list.is_empty() || primary_tree_state == BRANCH_OUTSIDE {
+                        return None;
+                    }
+                    let (lo, hi) = primary_y_range?;
+                    if column.high < lo || column.low > hi {
+                        return None;
+                    }
+                    let col_low = column.low.max(lo);
+                    let col_high = column.high.min(hi);
+                    let cmin = Vec3::new(x0, world_y(col_low) as f32, z0);
+                    let cmax = Vec3::new(x0 + 16.0, world_y(col_high) as f32 + 16.0, z0 + 16.0);
+                    let (visible, inside) = if primary_tree_state == BRANCH_INSIDE {
+                        (true, true)
+                    } else if use_primary_tree && let Some(offset) = &primary_tree_frustum {
+                        let whole = offset.contains(cmin, cmax);
+                        (whole || offset.intersects(cmin, cmax), whole)
+                    } else {
+                        let whole = p.frustum.contains(cmin, cmax);
+                        (whole || p.frustum.intersects(cmin, cmax), whole)
+                    };
+                    visible.then_some((inside, lo, hi))
+                });
+                if draws_column || primary_column.is_some() {
+                    for &(y, slot) in list {
+                        let draw_in_y = draws_column && (!near || (y >= draw_lo && y <= draw_hi));
+                        let primary_in_y =
+                            primary_column.is_some_and(|(_, lo, hi)| !near || (y >= lo && y <= hi));
+                        if !draw_in_y && !primary_in_y {
+                            continue;
+                        }
+                        let key = (x, y, z);
+                        if near && !reachable(key) {
+                            continue;
+                        }
+                        let oy = world_y(y);
+                        let pos = Vec3::new(x0, oy as f32, z0);
+                        let raw_bounds = self.bounds[slot as usize];
+                        if draw_in_y && (!marked_only_near || !near || self.marked[slot as usize]) {
+                            let seen = if draws_inside {
+                                true
+                            } else {
+                                let bounds =
+                                    raw_bounds.filter(|_| frustum.tight() && !use_draw_tree);
+                                let (bmin, bmax) = section_box(pos, bounds);
+                                if use_draw_tree && let Some(offset) = &tree_frustum {
+                                    offset.intersects(bmin, bmax)
+                                } else {
+                                    frustum.intersects(bmin, bmax)
+                                }
+                            };
+                            if seen {
+                                out.push(Visible {
+                                    distance: distance(oy),
+                                    key,
+                                    slot,
+                                    origin: pos.to_array(),
+                                });
+                            }
+                        }
+                        if primary_in_y
+                            && let Some(primary) = &mut primary
+                            && let Some((inside, _, _)) = primary_column
+                        {
+                            let seen = if inside {
+                                true
+                            } else {
+                                let bounds = raw_bounds
+                                    .filter(|_| primary.frustum.tight() && !use_primary_tree);
+                                let (bmin, bmax) = section_box(pos, bounds);
+                                if use_primary_tree && let Some(offset) = &primary_tree_frustum {
+                                    offset.intersects(bmin, bmax)
+                                } else {
+                                    primary.frustum.intersects(bmin, bmax)
+                                }
+                            };
+                            if seen {
+                                primary.out.push((distance(oy), key, Some(slot)));
+                            }
+                        }
+                    }
+                }
+                if !air.is_empty() {
+                    for &(y, _) in &column.sections {
+                        air.remove(y as usize);
+                    }
+                }
+            }
+            if let Some(primary) = &mut primary
+                && primary_tree_state != BRANCH_OUTSIDE
+                && let Some((lo, hi)) = primary_y_range
+            {
+                for y in air.iter().map(|y| y as i32) {
+                    if near && (y < lo || y > hi) {
+                        continue;
+                    }
+                    let key = (x, y, z);
                     if near && !reachable(key) {
                         continue;
                     }
-                    let oy = f64::from(self.min_y + y * 16) - camera.y;
-                    let min = Vec3::new(min_x, oy as f32, min_z);
-                    let bounds = self.bounds[slot as usize].filter(|_| frustum.tight());
-                    let (bmin, bmax) = section_box(min, bounds);
-                    if !frustum.intersects(bmin, bmax) {
-                        continue;
+                    let oy = world_y(y);
+                    let (min, max) = section_box(Vec3::new(x0, oy as f32, z0), None);
+                    let seen = if primary_tree_state == BRANCH_INSIDE {
+                        true
+                    } else if use_primary_tree && let Some(offset) = &primary_tree_frustum {
+                        offset.intersects(min, max)
+                    } else {
+                        primary.frustum.intersects(min, max)
+                    };
+                    if seen {
+                        primary.out.push((distance(oy), key, None));
                     }
-                    let dy8 = oy + 8.0;
-                    let distance = xz_sq + dy8 * dy8;
-                    out.push(Visible {
-                        distance: distance.to_bits(),
-                        key,
-                        slot,
-                        origin: min.to_array(),
-                    });
+                }
+            }
+        };
+        for column in &self.columns {
+            let air = detail
+                .and_then(|detail| detail.get(&(column.x, column.z)))
+                .copied()
+                .unwrap_or_default();
+            column_walk(column.x, column.z, Some(column), air);
+        }
+        if let Some(detail) = detail {
+            // Empty compiled columns have no resident GPU entry to visit.
+            for (&(x, z), &air) in detail {
+                if !self.column_index.contains_key(&(x, z)) {
+                    column_walk(x, z, None, air);
                 }
             }
         }
         out.sort_unstable_by_key(|v| (v.distance, v.key));
+        if let Some(primary) = primary {
+            primary
+                .out
+                .sort_unstable_by_key(|&(distance, key, _)| (distance, key));
+        }
     }
+}
+
+pub struct PrimarySelection<'a> {
+    pub frustum: &'a Frustum,
+    pub detail_columns: &'a FxHashMap<(i32, i32), SectionMask>,
+    pub out: &'a mut Vec<(u64, SectionKey, Option<u32>)>,
 }
 
 #[cfg(test)]
@@ -556,6 +850,12 @@ mod tests {
     use super::*;
 
     impl ResidentSize for () {
+        fn census_bytes(&self) -> (u64, usize) {
+            (0, 0)
+        }
+    }
+
+    impl ResidentSize for bool {
         fn census_bytes(&self) -> (u64, usize) {
             (0, 0)
         }
@@ -918,7 +1218,16 @@ mod tests {
             for radius in [3, 7, 12] {
                 let (mut all, mut marked) = (Vec::new(), Vec::new());
                 r.visible(camera, radius, &view, reachable, beyond, &mut all);
-                r.walk(camera, radius, &view, reachable, beyond, true, &mut marked);
+                r.walk(
+                    camera,
+                    radius,
+                    &view,
+                    reachable,
+                    beyond,
+                    true,
+                    &mut marked,
+                    None,
+                );
                 let from = camera_column(camera);
                 let near = |v: &Visible| in_view_distance(from, radius, v.key.0, v.key.2);
                 let expected: Vec<Visible> = all
@@ -1022,6 +1331,113 @@ mod tests {
             out.len(),
             1,
             "full 16x16x16 bounds intersect frustum and are accepted"
+        );
+    }
+
+    #[test]
+    fn extreme_y_camera_does_not_overflow() {
+        let mut r = Resident::default();
+        r.insert((0, 0, 0), ());
+        r.insert((0, 23, 0), ());
+        let all = Frustum::from_planes([glam::Vec4::W; 6]);
+        let mut out = Vec::new();
+        r.visible(
+            DVec3::new(8.0, f64::from(i32::MAX), 8.0),
+            2,
+            &all,
+            |_| true,
+            |_, _| false,
+            &mut out,
+        );
+        assert_eq!(out.iter().map(|v| v.key).collect::<Vec<_>>(), [(0, 23, 0)]);
+        out.clear();
+        r.visible(
+            DVec3::new(8.0, f64::from(i32::MIN), 8.0),
+            2,
+            &all,
+            |_| true,
+            |_, _| false,
+            &mut out,
+        );
+        assert_eq!(out.iter().map(|v| v.key).collect::<Vec<_>>(), [(0, 0, 0)]);
+    }
+
+    #[test]
+    fn outside_height_octree_culls_off_axis_seeds() {
+        let mut r = Resident::default();
+        for x in -2..=2 {
+            for z in -2..=2 {
+                r.insert((x, 23, z), ());
+            }
+        }
+        let camera = DVec3::new(0.0, 400.0, 0.0);
+        let projection = super::super::world_projection(70.0, 1.0, 192.0);
+        let frustum = Frustum::from_planes(super::super::frustum(
+            projection * crate::camera::view_matrix(0.0, 90.0),
+        ));
+        let mut out = Vec::new();
+        r.visible(camera, 2, &frustum, |_| true, |_, _| false, &mut out);
+        let kept: HashSet<SectionKey> = out.iter().map(|v| v.key).collect();
+        assert!(kept.contains(&(0, 23, 0)), "center seed stays visible");
+        assert!(
+            !kept.contains(&(2, 23, 0)),
+            "off-axis seed whose octree branch misses the frustum is culled"
+        );
+
+        // Intersecting outside-height branch tests the full 16x16x16 section box (as vanilla's
+        // Octree.Leaf does), not tight mesh bounds: from (0, -160, 0) looking up at 39° with rd 2,
+        // section (2, -4, 0) (0-based y=0) stays kept even when its mesh is confined to X=46..47.
+        let mut below = Resident::default();
+        let tight = [Vec3::new(14.0, 0.0, 0.0), Vec3::new(15.0, 16.0, 16.0)];
+        below.insert_with_bounds((2, 0, 0), (), Some(tight));
+        let camera = DVec3::new(0.0, -160.0, 0.0);
+        let projection = super::super::world_projection(39.0, 1.0, 192.0);
+        let frustum = Frustum::from_planes(super::super::frustum(
+            projection * crate::camera::view_matrix(0.0, -90.0),
+        ));
+        let offset = frustum.offset_to_fully_include_camera_cube(camera, 8);
+        let sec_min = origin((2, 0, 0), crate::chunk::MIN_Y, camera).as_vec3();
+        assert!(
+            !offset.intersects(sec_min + tight[0], sec_min + tight[1]),
+            "tight X=46..47 bounds alone miss the offset frustum"
+        );
+        out.clear();
+        below.visible(camera, 2, &frustum, |_| true, |_, _| false, &mut out);
+        assert_eq!(
+            out.iter().map(|v| v.key).collect::<Vec<_>>(),
+            [(2, 0, 0)],
+            "intersecting outside-height branch keeps (2, -4, 0) by its full section box"
+        );
+    }
+
+    #[test]
+    fn nether_vertical_bound_excludes_row_above_top() {
+        // Nether height: min_y = 0, 16 sections (y = 0..=15); camera at top section y = 15, rd = 3.
+        let camera = DVec3::new(8.5, 248.5, 8.5);
+        let all = Frustum::from_planes([glam::Vec4::W; 6]);
+        let mut nether = Resident::default();
+        nether.set_min_y(0);
+        nether.set_sections(16);
+        for y in 0..=16 {
+            nether.insert((0, y, 0), ());
+        }
+        let mut out = Vec::new();
+        nether.visible(camera, 3, &all, |_| true, |_, _| false, &mut out);
+        let mut ys: Vec<i32> = out.iter().map(|v| v.key.1).collect();
+        ys.sort_unstable();
+        assert_eq!(ys, [12, 13, 14, 15]);
+
+        // Without set_sections(16), the default 24-section height would leak row y = 16.
+        let mut default_height = Resident::default();
+        default_height.set_min_y(0);
+        for y in 0..=16 {
+            default_height.insert((0, y, 0), ());
+        }
+        out.clear();
+        default_height.visible(camera, 3, &all, |_| true, |_, _| false, &mut out);
+        assert!(
+            out.iter().any(|v| v.key == (0, 16, 0)),
+            "row y=16 catches omitting set_sections(16)"
         );
     }
 

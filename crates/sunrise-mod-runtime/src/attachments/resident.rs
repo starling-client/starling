@@ -101,7 +101,7 @@ mod tests {
             default: || 0,
             codec: None,
             copy_on_death: false,
-            sync: false,
+            sync_codec: None,
         };
         let index = Arc::new(Mutex::new(AttachmentIndex::<u32>::default()));
         let mut map = Attachments::default();

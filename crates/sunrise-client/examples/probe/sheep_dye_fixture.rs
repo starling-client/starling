@@ -10,6 +10,7 @@ use sunrise_core::nbt::Tag;
 
 fn kind() -> Arc<MobType> {
     Arc::new(MobType {
+        type_key: Default::default(),
         shadow: None,
         id: "minecraft:sheep".into(),
         species: Species::Sheep,
@@ -48,6 +49,7 @@ fn kind() -> Arc<MobType> {
             pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
             polygons: Vec::new(),
             children: Vec::new(),
+            layer: None,
         }),
         layers: Default::default(),
         texture: String::new(),

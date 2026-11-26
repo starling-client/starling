@@ -164,12 +164,15 @@ impl BreakDoor {
 }
 impl Goal for BreakDoor {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         if self.vindicator { MOVE } else { 0 }
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         true
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if self.vindicator {
             return raider::has_active_raid(m)
@@ -178,6 +181,7 @@ impl Goal for BreakDoor {
         }
         m.extra.can_break_doors && self.can_break(m, cx.w)
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         (!self.vindicator || raider::has_active_raid(m))
             && self.break_time <= DOOR_BREAK_TIME
@@ -185,12 +189,14 @@ impl Goal for BreakDoor {
             && closer_to_center(self.interact.door, m.position, 2.0)
             && self.valid_difficulty(cx.w)
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, _cx: &mut Cx) {
         self.break_time = 0;
         if self.vindicator {
             m.ai.no_action_time = 0;
         }
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         cx.events.push(MobEvent::DestroyProgress {
             mob: m.id,
@@ -198,6 +204,7 @@ impl Goal for BreakDoor {
             progress: -1,
         });
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         let door = self.interact.door;
         if m.random.next_int_bound(20).unwrap_or(1) == 0 {
@@ -238,21 +245,27 @@ pub struct RaiderOpenDoor {
 }
 impl Goal for RaiderOpenDoor {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         0
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         true
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         self.interact.can_use(m, cx.w) && raider::has_active_raid(m)
     }
+    #[inline]
     fn can_continue(&mut self, _m: &mut Mob, _cx: &mut Cx) -> bool {
         false
     }
+    #[inline]
     fn start(&mut self, _m: &mut Mob, cx: &mut Cx) {
         self.interact.set_open(cx, true);
     }
+    #[inline]
     fn stop(&mut self, _m: &mut Mob, cx: &mut Cx) {
         self.interact.set_open(cx, false);
     }
@@ -299,21 +312,26 @@ impl InteractWithDoor {
 }
 impl Goal for InteractWithDoor {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         0
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, _cx: &mut Cx) -> bool {
         m.ai.nav
             .path
             .as_ref()
             .is_some_and(|p| p.next > 0 && !p.is_done())
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         self.can_use(m, cx)
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         true
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         let Some(path) =
             m.ai.nav

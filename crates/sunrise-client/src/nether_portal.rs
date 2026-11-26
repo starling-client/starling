@@ -97,6 +97,24 @@ impl PortalState {
         }
         None
     }
+    /// A tick of a living entity standing in the portal at `inside`, if any:
+    /// `Entity.handlePortal` in `baseTick`, then `setAsInsidePortal` from
+    /// `LivingEntity.aiStep`'s block effects. A portal found this tick is
+    /// processed from the next one, and an entity still on its cooldown
+    /// inside a portal ends the tick on the full `delay`.
+    pub fn tick_inside(
+        &mut self,
+        inside: Option<BlockPos>,
+        allowed: bool,
+        transition_time: i32,
+        delay: i32,
+    ) -> Option<BlockPos> {
+        let entry = self.handle(allowed, transition_time, delay);
+        if let Some(pos) = inside {
+            self.set_inside(pos, delay);
+        }
+        entry
+    }
 }
 
 #[cfg(test)]
@@ -172,6 +190,25 @@ mod tests {
             tag.get("PortalCooldown"),
             Some(&sunrise_core::nbt::Tag::Int(0))
         );
+    }
+
+    #[test]
+    fn a_player_standing_in_a_portal_keeps_its_full_cooldown_and_waits_from_the_next_tick() {
+        let portal = BlockPos::new(0, 64, 0);
+        // Just arrived through a portal: Player.getDimensionChangingDelay is 10.
+        let mut arrived = PortalState {
+            cooldown: 10,
+            process: None,
+        };
+        for _ in 0..80 {
+            assert_eq!(arrived.tick_inside(Some(portal), true, 80, 10), None);
+            assert_eq!(arrived.cooldown, 10);
+        }
+        // Off cooldown, the portal found on tick 0 is first processed on
+        // tick 1, so a transition time of 80 sends the player on tick 81.
+        let mut waiting = PortalState::default();
+        let trip = (0..100).find(|_| waiting.tick_inside(Some(portal), true, 80, 10).is_some());
+        assert_eq!(trip, Some(81));
     }
 
     #[test]

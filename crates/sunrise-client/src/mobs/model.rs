@@ -30,6 +30,8 @@ impl Polygon {
 
 /// ModelPart uses a separate normal stack: uniform scaling keeps normal lengths,
 /// while nonuniform scaling requires normalization after the complete part transform.
+/// [`render::compile_part`](super::render::compile_part) gets a part's, to pack its polygons'
+/// normals with ([`Polygon`]'s `vertex_normal`).
 #[derive(Clone, Copy)]
 pub struct ModelNormals {
     pub(super) matrix: glam::Mat3,
@@ -139,8 +141,29 @@ pub struct Part {
     pub pose: [f32; 9],
     pub polygons: Vec<Polygon>,
     pub children: Vec<Part>,
+    /// The model layer the tree was baked from (`minecraft:player#main`), on the root of a
+    /// layer read from `entity-models.json` ([`Part::parse_layer`]); None on its children and
+    /// on a model built another way. [`render::compile_part`](super::render::compile_part)
+    /// and [`render::takes_part`](super::render::takes_part) are asked with it.
+    pub layer: Option<std::sync::Arc<str>>,
 }
 impl Part {
+    /// The model layer `key` (`minecraft:player#main`) of `entity-models.json`, as
+    /// [`Part::parse`] bakes its root, recording the layer on it.
+    #[cfg(test)]
+    pub(super) fn parse_layer(key: &str, v: &Value) -> Self {
+        let mut part = Self::parse("root", v);
+        part.layer = Some(key.into());
+        part
+    }
+    /// The direct child named `name` as a model of its own (`PlayerModel.rightArm` drawn alone),
+    /// keeping the layer this tree was baked from: its parts are asked about and drawn as the
+    /// layer's.
+    pub fn detached_child(&self, name: &str) -> Option<Part> {
+        let mut child = self.children.iter().find(|c| c.name == name)?.clone();
+        child.layer.clone_from(&self.layer);
+        Some(child)
+    }
     /// Marks every polygon as drawn by a back-face-culling render type.
     pub(super) fn set_cull_back(&mut self) {
         for poly in &mut self.polygons {
@@ -150,76 +173,94 @@ impl Part {
             child.set_cull_back();
         }
     }
-    pub(super) fn parse(name: &str, v: &Value) -> Self {
-        let pose: Vec<f32> = v["pose"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .map(|x| x.as_f64().unwrap_or(0.0) as f32)
-            .collect();
-        let mut p = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
-        for (i, x) in pose.iter().enumerate().take(9) {
-            p[i] = *x;
+    pub(super) fn empty(name: &str) -> Self {
+        Self {
+            name: name.to_owned(),
+            pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            polygons: Vec::new(),
+            children: Vec::new(),
+            layer: None,
         }
-        let polygons: Vec<Polygon> = v["polygons"]
-            .as_array()
+    }
+
+    #[cfg(test)]
+    pub(super) fn parse(name: &str, value: &Value) -> Self {
+        Self::decode(name, value.clone()).expect("valid test model part")
+    }
+
+    pub(super) fn decode(name: &str, value: Value) -> Result<Self, String> {
+        fn field<T: serde::de::DeserializeOwned>(
+            fields: &mut serde_json::Map<String, Value>,
+            key: &str,
+        ) -> Result<Option<T>, String> {
+            fields
+                .remove(key)
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|error| format!("{key}: {error}"))
+        }
+
+        let Value::Object(mut fields) = value else {
+            return Err("model part must be an object".into());
+        };
+        let mut part = Self::empty(name);
+        if let Some(pose) = field::<Vec<f32>>(&mut fields, "pose")? {
+            // The prepared exporter writes ModelPart.loadPose's three offsets, angles and scales.
+            if pose.len() > part.pose.len() || pose.iter().any(|x| !x.is_finite()) {
+                return Err("invalid model pose".into());
+            }
+            part.pose[..pose.len()].copy_from_slice(&pose);
+        }
+        // Vanilla ModelPart.Cube exports quads; ModelPart.Vertex has xyz and uv.
+        let polygons: Vec<[[f32; 5]; 4]> = field(&mut fields, "polygons")?.unwrap_or_default();
+        let normals: Option<Vec<[f32; 3]>> = field(&mut fields, "normals")?;
+        if normals
+            .as_ref()
+            .is_some_and(|normals| normals.len() != polygons.len())
+        {
+            return Err("normal count differs from polygon count".into());
+        }
+        if polygons.iter().flatten().flatten().any(|x| !x.is_finite())
+            || normals.iter().flatten().flatten().any(|x| !x.is_finite())
+        {
+            return Err("non-finite model geometry".into());
+        }
+        part.polygons = polygons
             .into_iter()
-            .flatten()
             .enumerate()
-            .filter_map(|(index, poly)| {
-                let verts: Vec<[f32; 5]> = poly
-                    .as_array()?
-                    .iter()
-                    .map(|vx| {
-                        let a: Vec<f32> = vx
-                            .as_array()
-                            .into_iter()
-                            .flatten()
-                            .map(|x| x.as_f64().unwrap_or(0.0) as f32)
-                            .collect();
-                        [a[0], a[1], a[2], a[3], a[4]]
-                    })
-                    .collect();
-                (verts.len() == 4).then(|| Polygon {
-                    normal: v["normals"][index].as_array().map_or_else(
-                        || {
-                            // shortcut: collapsed legacy faces have no recoverable normal; re-prepare resources.
-                            let p = verts
-                                .iter()
-                                .map(|v| glam::Vec3::new(v[0], v[1], v[2]))
-                                .collect::<Vec<_>>();
-                            (p[1] - p[0])
-                                .cross(p[2] - p[0])
-                                .normalize_or_zero()
-                                .to_array()
-                        },
-                        |n| std::array::from_fn(|i| n[i].as_f64().unwrap_or(0.0) as f32),
-                    ),
-                    vertices: [verts[0], verts[1], verts[2], verts[3]],
+            .map(|(index, vertices)| {
+                let normal = normals.as_ref().map_or_else(
+                    || {
+                        // Legacy exports omitted normals; collapsed faces need re-preparation.
+                        let [a, b, c, _] = vertices.map(|[x, y, z, ..]| glam::Vec3::new(x, y, z));
+                        (b - a).cross(c - a).normalize_or_zero().to_array()
+                    },
+                    |normals| normals[index],
+                );
+                Polygon {
+                    vertices,
+                    normal,
                     cull_back: false,
-                })
+                }
             })
             .collect();
-        let mut children: Vec<Part> = v["children"]
-            .as_object()
-            .into_iter()
-            .flatten()
-            .map(|(k, c)| Part::parse(k, c))
-            .collect();
-        children.sort_by(|a, b| a.name.cmp(&b.name));
+        if let Some(children) = fields.remove("children") {
+            let Value::Object(children) = children else {
+                return Err("children: expected an object".into());
+            };
+            for (name, child) in children {
+                part.children.push(
+                    Self::decode(&name, child).map_err(|error| format!("child {name}: {error}"))?,
+                );
+            }
+            part.children.sort_by(|a, b| a.name.cmp(&b.name));
+        }
         // A model whose root holds a part also named "root" (allay, vex,
         // frog...): that inner part is what `root.getChild("root")` and the
         // keyframe bones mean, so the outer one gives up the name.
-        let name = if name == "root" && children.iter().any(|c| c.name == "root") {
-            ""
-        } else {
-            name
-        };
-        Self {
-            name: name.to_owned(),
-            pose: p,
-            polygons,
-            children,
+        if name == "root" && part.children.iter().any(|c| c.name == "root") {
+            part.name.clear();
         }
+        Ok(part)
     }
 }

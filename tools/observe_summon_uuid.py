@@ -11,9 +11,12 @@ from pathlib import Path
 import re
 import time
 
-import lab
-import test_rust_parity as base
-from test_dedicated_server_parity import Server, free_port, game_time
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_rust_parity as base
+from tools.test_dedicated_server_parity import Server, free_port, game_time
 
 
 def main():

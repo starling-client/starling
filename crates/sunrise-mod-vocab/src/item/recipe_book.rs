@@ -6,7 +6,7 @@ pub mod saved_fields;
 pub use placement::PlacementInfo;
 #[path = "recipe_book_layout.rs"]
 mod layout;
-pub use layout::RecipeBookLayout;
+pub use layout::{RecipeBookLayout, RecipeBookPlacement};
 #[path = "recipe_book_filter.rs"]
 mod filter;
 pub use filter::RecipeBookFilterLook;
@@ -66,17 +66,24 @@ pub enum RecipeTransferResult {
 }
 
 /// The server's answer to `transfer_recipe_check`: what the transfer would
-/// do, and with `Missing`, the recipe's cells nothing fills.
+/// do, the recipe's cells nothing fills, and the ones the menu could craft.
 #[derive(Clone, Debug, PartialEq, Eq)]
 // exhaustive: the game builds it with a literal; mods only read it
 #[derive(sunrise_mod_api_macros::Wire)]
 pub struct RecipeTransferCheck {
     /// What the transfer would do.
     pub result: RecipeTransferResult,
-    /// With `Missing`, the recipe's cells no item fills: indices into its
-    /// slots (width by height for a shaped recipe, else its ingredients in
-    /// order). Empty otherwise.
+    /// The recipe's cells no item fills: indices into its slots (width by
+    /// height for a shaped recipe, else its ingredients in order), each once,
+    /// ascending. The game's own grid transfer names them with `Missing` only;
+    /// a mod menu's `menu_transfer` part may name them with any answer.
+    /// Empty when nothing says.
     pub missing_cells: Vec<u32>,
+    /// The recipe's cells the open mod menu lacks but could craft (a storage
+    /// network's autocrafting), as its `menu_transfer` part names them, in the
+    /// same order as `missing_cells`. Always empty for the game's own grid
+    /// transfer.
+    pub craftable_cells: Vec<u32>,
 }
 
 /// A namespaced custom recipe book identity returned during registration.

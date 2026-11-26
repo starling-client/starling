@@ -1,4 +1,4 @@
-//! Observe the complete species invulnerability predicate once per living hit attempt.
+//! Observe base/species invulnerability once per living hit attempt, before equipment.
 use super::*;
 
 impl Mob {
@@ -20,11 +20,20 @@ impl Mob {
             .is_some_and(|attacker| wither::shielded_from(self.species(), attacker))
     }
 
+    /// Observe the complete attempt once; an explicit allow overrides an initial refusal.
     pub(super) fn invulnerable_to_attempt(
         &self,
         level: &mut DamageLevel<'_>,
         source: &Damage,
-    ) -> bool {
+    ) -> (bool, bool) {
+        let vanilla = self.base_damage_immune(level, source);
+        let immune =
+            level.invulnerability_check(crate::health::Hurting::Mob(self, source), vanilla);
+        (immune, vanilla && !immune)
+    }
+
+    /// `Entity.isInvulnerableToBase`, with the species' short-circuit rules.
+    pub(super) fn base_damage_immune(&self, level: &DamageLevel<'_>, source: &Damage) -> bool {
         use sunrise_world::damage_immunity::ImmunityTag;
 
         let bypasses = source.kind.bypasses_invulnerability();
@@ -34,7 +43,7 @@ impl Mob {
             self.species() == Species::Warden && warden::digging_or_emerging(self) && !bypasses;
         // Ghast.isInvulnerableTo can short-circuit the shared living predicate.
         let flagged_ghast = self.species() == Species::Ghast && self.is_invulnerable_to(source);
-        let vanilla = digging
+        digging
             || if reflected || flagged_ghast {
                 self.removed || flagged_ghast
             } else {
@@ -44,9 +53,10 @@ impl Mob {
                     creative_source: self.creative_attacker,
                     fire_immune: self.fire_immune(),
                     fall_immune: items.is_some_and(|items| {
-                        items
-                            .enchantments
-                            .entity_in_tag(&self.kind.id, "minecraft:fall_damage_immune")
+                        items.entity_type_tags.has_bit(
+                            self.kind.flags.entity_tag_slot,
+                            crate::items::EntityTypeTags::FALL_DAMAGE_IMMUNE,
+                        )
                     }),
                     source_has_tag: |tag| match tag {
                         ImmunityTag::BypassesInvulnerability => bypasses,
@@ -59,52 +69,40 @@ impl Mob {
                     },
                 }
                 .vanilla()
-            };
-        if level.invulnerability_check(crate::health::Hurting::Mob(self, source), vanilla) {
-            return true;
-        }
-        // LivingEntity adds active equipment immunity after the base predicate.
-        // A ghast skips the living predicate for its reflected fireball.
-        !reflected
-            && items.is_some_and(|items| {
-                let attacker = (source.attacker == Some(Who::Player)).then_some("minecraft:player");
-                let is_direct = level.attack().is_direct(source);
-                let context = crate::enchant::EffectContext {
-                    items: Some(items),
-                    damage_type: Some(crate::health::source_damage_type(*source)),
-                    is_direct,
-                    this: Some(&self.kind.id),
-                    attacker,
-                    direct_attacker: attacker.filter(|_| is_direct),
-                    ..Default::default()
-                };
-                use sunrise_items::equipment::{BODY, SADDLE, SLOT_NAMES};
-                // Mob hands and armor keep their effective levels in Gear;
-                // body and saddle use their retained stacks.
-                let gear = gear::gear(self);
-                let equipment = [
-                    gear::MAIN,
-                    gear::OFF,
-                    gear::FEET,
-                    gear::LEGS,
-                    gear::CHEST,
-                    gear::HEAD,
-                ]
-                .into_iter()
-                .map(|slot| gear.map_or(&[][..], |gear| gear.slots[slot].as_slice()))
-                .chain([BODY, SADDLE].map(|slot| {
-                    self.extra
-                        .equipment
-                        .get(slot)
-                        .map_or(&[][..], crate::items::ItemStack::enchantments)
-                }))
-                .zip(SLOT_NAMES);
-                let enchantments = &items.enchantments;
-                enchantments.is_damage_immune(
-                    enchantments.damage_immunities(equipment),
-                    &context,
-                    level.random(),
-                )
-            })
+            }
+    }
+
+    /// `EnchantmentHelper.isImmuneToDamage`: evaluate active enchantments in worn slots.
+    pub(super) fn enchantment_immune(&self, level: &mut DamageLevel<'_>, source: &Damage) -> bool {
+        use sunrise_items::equipment::{HEAD, SLOT_NAMES};
+
+        let Some(items) = level.tags() else {
+            return false;
+        };
+        let attack = level.attack();
+        let source = crate::health::mob_source(source, attack);
+        let context = attack.enchantment_context(source, &self.kind.id);
+        let gear = gear::gear(self);
+        let equipment = SLOT_NAMES
+            .into_iter()
+            .enumerate()
+            .filter_map(|(slot, name)| {
+                let stack = self
+                    .extra
+                    .slot_stack(slot)
+                    .filter(|stack| stack.count != 0)?;
+                let levels = gear
+                    .filter(|_| slot <= HEAD)
+                    .map(|gear| gear.slots[finalize::gear_slot(slot)].as_slice())
+                    .filter(|levels| !levels.is_empty())
+                    .unwrap_or_else(|| stack.enchantments());
+                Some((levels, name))
+            });
+        let enchantments = &items.enchantments;
+        enchantments.is_damage_immune(
+            enchantments.damage_immunities(equipment),
+            &context,
+            level.random(),
+        )
     }
 }

@@ -99,7 +99,7 @@ impl Missing {
         let Some(renderer) = &mut self.renderer else {
             return;
         };
-        match renderer.render(&loading_frame(&batch)) {
+        match renderer.render(&loading_frame(&batch), None) {
             Ok(true) => return,
             Ok(false) => {}
             Err(e) => log::warn!("Sunrise: frame failed: {e}"),

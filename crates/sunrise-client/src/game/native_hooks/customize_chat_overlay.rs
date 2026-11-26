@@ -18,6 +18,7 @@ impl Game<'_> {
 
 #[cfg(test)]
 mod customize_chat_overlay_tests {
+    use crate::game::native_entity_refs::tests::with_client_game;
     use mod_api::{ClientHost, CustomizeChatOverlayEvent, Hooks, ModEntry};
     use mod_platform::testing::with_mods;
     use std::sync::{Arc, Mutex};
@@ -60,8 +61,7 @@ mod customize_chat_overlay_tests {
     fn a_client_mod_moves_the_chat() {
         let message = Text::literal("hello from the chat test");
         let mut plain = None;
-        crate::game::native_entity_refs::tests::with_game(|game| {
-            game.options.execution_role = super::ExecutionRole::Client;
+        with_client_game(|game| {
             game.system_message(message.clone());
             plain = chat_top(game).0;
         });
@@ -70,8 +70,7 @@ mod customize_chat_overlay_tests {
         let mods: mod_api::Mods =
             vec![ModEntry::new("lift", Box::new(Lift(Arc::clone(&seen))))].into();
         with_mods(mods, || {
-            crate::game::native_entity_refs::tests::with_game(|game| {
-                game.options.execution_role = super::ExecutionRole::Client;
+            with_client_game(|game| {
                 game.system_message(message.clone());
                 let (moved, scale) = chat_top(game);
                 let moved = moved.expect("the message is drawn");

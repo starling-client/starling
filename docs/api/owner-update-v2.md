@@ -1,10 +1,16 @@
 # What the registry's `owner-update` workflow must check (trailer v2)
 
-The registry repository (horizon-rust/horizon-mods) merges an owner's update on its own when the pull request carries
-an `owner-update` trailer that the submission service (`crates/sunrise-mod-registry`, `update_trailer`) signed with
-`REGISTRY_UPDATE_KEY`. Its workflow and `scripts/owner_update.py` live in that repository, not here. Since owner IDs,
-the trailer is v2, and the workflow must check all of the following before it merges. Any check that fails leaves the
-pull request to a reviewer (remove the label, comment why); it never merges partly.
+This is the `owner-update` contract for the old registry index. It does not apply to the new release route,
+where a reviewer must approve every release pull request.
+
+The submission service (`crates/sunrise-mod-registry`) opens owner updates in
+[sunrise-org/sunrise-mods](https://github.com/sunrise-org/sunrise-mods). Every registry pull request, owner updates
+included, is reviewed before it merges, and the review looks only for malware, dangerous patterns and suspicious or
+obfuscated code in the release (never for licences, provenance or copyright). `update_trailer` signs the
+`owner-update` trailer with `REGISTRY_UPDATE_KEY`. The trailer is an ownership check: it says who submitted the
+update and that they own the project, and it never replaces the review. The checks below belong to the registry
+repository's workflow (`scripts/owner_update.py`), not here, and every one must pass before the review's approval
+can merge. Any check that fails leaves the pull request to a reviewer (comment why).
 
 ## The trailer
 
@@ -45,23 +51,22 @@ owner-update-v2\n<id>\n<version>\n<sha256>\n<file>\n<submitter>\n<submitter_id>
    for one added `[[versions]]` entry, first, whose `version`, `sha256` and `file` are the trailer's. `owners`,
    `owner_ids`, `key`, `kind`, `repo` and the page fields are identical (the service already only signs such updates;
    check again, since the pull request branch can be pushed to after it opened).
-6. **The file.** `staging` holds `<sha256>.<extension>` and its SHA-256 is `sha256`; the usual CI checks
-   (`cargo sunrise-mod registry check`, a signature when the entry has a `key`) pass at the head
-   that is merged.
+6. **The file.** `staging` holds `<sha256>.<extension>` and its SHA-256 is `sha256`. The registry
+   repository's CI checks for the old index, including signature verification when the entry has a `key`,
+   pass at the head that is merged.
 7. **The head merged is the head checked.** Merge with the head SHA the checks ran on (`gh pr merge --match-head-commit
    <sha>`), so a push between check and merge can't slip in.
 
 ## Today
 
-The registry repository has no `owner-update` workflow yet (checked at sunrise-mods `e53ad82`): every owner update
-waits for a reviewer, whatever its trailer says. Nothing merges on its own until a workflow doing every check above is
-written there. Until then the v2 trailer and `owner_ids` only make the review's notes and the service's refusals
-decide by ID.
+Every owner update waits for a reviewer's approval, whatever its trailer says. The checks above only confirm who
+submitted the update and what it changes; the v2 trailer and `owner_ids` make the review's notes and the service's
+refusals decide by ID.
 
 ## Order of deployment
 
 1. In the registry repository: update `scripts/owner_update.py` and the workflow to the checks above, accepting v2
-   only; deploy the CI's `cargo sunrise-mod` from a Sunrise commit that knows `owner_ids` (older ones refuse the field).
+   only. Keep CI's pinned tool on a revision that supports both `owner_ids` and building the old index.
 2. Once a maintainer has read `tools/registry_backfill_owner_ids.py`, run it on a checkout (dry run, then `--write`)
    and merge its pull request by hand.
 3. Deploy the submission service with this change. Until step 1 is live, its v2 trailers fail verification and the

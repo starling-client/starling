@@ -1,5 +1,6 @@
 {
   "DatapackField": "generic 32; wire/depth_tests.rs",
   "DatapackFieldKind": "generic 32; wire/depth_tests.rs",
-  "DatapackValue": "generic 32; wire/depth_tests.rs"
+  "DatapackValue": "generic 32; wire/depth_tests.rs",
+  "DatapackVariant": "generic 32; wire/depth_tests.rs"
 }

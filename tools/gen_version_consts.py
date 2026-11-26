@@ -16,10 +16,9 @@ import json
 from pathlib import Path
 import sys
 
-try:
-    from . import lab
-except ImportError:
-    import lab
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab
 
 OUT = lab.ROOT / "crates/sunrise-core/src/version.rs"
 

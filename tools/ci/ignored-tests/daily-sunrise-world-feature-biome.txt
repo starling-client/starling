@@ -1,0 +1,2 @@
+# A mod feature reads the biome at a position (FeatureContext::biome, WorldGenLevel.getBiome).
+sunrise-world worldgen::generator::mod_terrain::tests::a_mod_feature_places_by_the_biome_it_reads lib daily resources

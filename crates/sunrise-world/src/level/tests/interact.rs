@@ -65,9 +65,11 @@ fn a_cactus_flower_follows_a_shulker_boxs_live_support_shape() {
             face,
             hit: sunrise_core::geometry::Vec3::new(0.5, 2.0, 0.5),
             inside: false,
-            yaw: 0.0,
-            pitch: 0.0,
-            sneaking: false,
+            source: PlacementSource::Player {
+                yaw: 0.0,
+                pitch: 0.0,
+                sneaking: false,
+            },
             item: "minecraft:cactus_flower".into(),
             can_use_game_master_blocks: false,
         };

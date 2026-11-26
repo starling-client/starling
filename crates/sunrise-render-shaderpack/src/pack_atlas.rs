@@ -591,15 +591,18 @@ uvec2 hz_record_rest(uvec3 hz_lo, uvec3 hz_hi, uint hz_k) {\n    \
     return uvec2((hz_hi.x & 0xffffu) | (hz_pl << 16u), hz_c);\n\
 }\n";
 
-/// GLSL: a flat-drawn vertex's inputs, and its quad's four corners' positions (`hz_cp0`..) and
-/// UV words (`hz_uv0`..), pulled from the arena page as terrain.wgsl's `vs_section_flat` pulls
-/// them (`CORNER_FN`): a record is read once for all four, and only the vertex's own light and
-/// colour are worked out. `hz_slot`: the slot its block is found by (`hz_block_slots`, 256 a
-/// block). The colour as the vertex fetch converts a Unorm8x4 (terrain.wgsl's `unorm8x4`).
-const PULL_FLAT: &str = "    uint hz_qv = uint(gl_VertexIndex);\n    \
+/// GLSL: a terrain vertex's quad's four corners' positions (`hz_cp0`..) and UV words
+/// (`hz_uv0`..), pulled from the arena page (`hz_vertices`) by the vertex's index as terrain.wgsl's
+/// `vs_section_flat` pulls them (`CORNER_FN`): a record is read once for all four. `hz_own`: the
+/// vertex's corner. `hz_slot`: the arena slot that names its quad, its record's or its first
+/// vertex's: in flat draws, its block is found by it (`hz_block_slots`, 256 a block), and its
+/// source sits at it (`hz_sources`, one per slot). Per-section draws (`TerrainDraws::Pages`) index
+/// the page as flat ones do: a draw's base vertex is its range's start, a whole number of quads
+/// into the page.
+const PULL_CORNERS: &str = "    uint hz_qv = uint(gl_VertexIndex);\n    \
     uint hz_own = hz_qv & 3u;\n    \
     uint hz_av = hz_qv & ~3u;\n    \
-    uint hz_slot = hz_qv;\n    \
+    uint hz_slot = hz_av;\n    \
     bool hz_rec = false;\n    \
     uvec3 hz_lo = uvec3(0u);\n    \
     uvec3 hz_hi = uvec3(0u);\n    \
@@ -613,18 +616,25 @@ const PULL_FLAT: &str = "    uint hz_qv = uint(gl_VertexIndex);\n    \
     }\n    \
     uvec3 hz_cp0; uvec3 hz_cp1; uvec3 hz_cp2; uvec3 hz_cp3;\n    \
     uint hz_uv0; uint hz_uv1; uint hz_uv2; uint hz_uv3;\n    \
-    uvec2 hz_rest;\n    \
     if (hz_rec) {\n        \
         hz_record_corner(hz_lo, hz_hi, 0u, hz_cp0, hz_uv0);\n        \
         hz_record_corner(hz_lo, hz_hi, 1u, hz_cp1, hz_uv1);\n        \
         hz_record_corner(hz_lo, hz_hi, 2u, hz_cp2, hz_uv2);\n        \
-        hz_record_corner(hz_lo, hz_hi, 3u, hz_cp3, hz_uv3);\n        \
-        hz_rest = hz_record_rest(hz_lo, hz_hi, hz_own);\n    \
+        hz_record_corner(hz_lo, hz_hi, 3u, hz_cp3, hz_uv3);\n    \
     } else {\n        \
         hz_arena_corner(hz_av, hz_cp0, hz_uv0);\n        \
         hz_arena_corner(hz_av + 1u, hz_cp1, hz_uv1);\n        \
         hz_arena_corner(hz_av + 2u, hz_cp2, hz_uv2);\n        \
-        hz_arena_corner(hz_av + 3u, hz_cp3, hz_uv3);\n        \
+        hz_arena_corner(hz_av + 3u, hz_cp3, hz_uv3);\n    \
+    }\n";
+
+/// GLSL: a flat-drawn vertex's own inputs, after `PULL_CORNERS`: its corner's position and UV,
+/// and only its own light and colour worked out. The colour as the vertex fetch converts a
+/// Unorm8x4 (terrain.wgsl's `unorm8x4`).
+const PULL_FLAT: &str = "    uvec2 hz_rest;\n    \
+    if (hz_rec) {\n        \
+        hz_rest = hz_record_rest(hz_lo, hz_hi, hz_own);\n    \
+    } else {\n        \
         uint hz_ow = (hz_av + hz_own) * 6u;\n        \
         hz_rest = uvec2(hz_vertices[hz_ow + 4u], hz_vertices[hz_ow + 5u]);\n    \
     }\n    \
@@ -637,8 +647,10 @@ const PULL_FLAT: &str = "    uint hz_qv = uint(gl_VertexIndex);\n    \
     hz_v_color = vec4(float(hz_vr.z & 255u), float((hz_vr.z >> 8u) & 255u), float((hz_vr.z >> 16u) & 255u),\n        \
         float(hz_vr.z >> 24u)) * (1.0 / 255.0);\n";
 
-/// GLSL: the face normal and tangent of a flat-drawn vertex, from its quad's first three corners
-/// (`PULL_FLAT`'s corners: four consecutive vertex indices, in either layout).
+/// GLSL: the face normal and tangent of a terrain vertex, from its quad's first three corners
+/// (`PULL_CORNERS`' corners: four consecutive vertex indices, in either layout), the same in flat
+/// and per-section draws that read their page. A quad of no area keeps the constant normal, and
+/// one whose UVs span no area the constant tangent.
 const FACE: &str = "    vec3 hz_p0 = uintBitsToFloat(hz_cp0);\n    \
     vec3 hz_p1 = uintBitsToFloat(hz_cp1);\n    \
     vec3 hz_p2 = uintBitsToFloat(hz_cp2);\n    \
@@ -646,10 +658,6 @@ const FACE: &str = "    vec3 hz_p0 = uintBitsToFloat(hz_cp0);\n    \
     vec2 hz_t0 = vec2(hz_w.x & 65535u, hz_w.x >> 16u);\n    \
     vec2 hz_d1 = vec2(hz_w.y & 65535u, hz_w.y >> 16u) - hz_t0;\n    \
     vec2 hz_d2 = vec2(hz_w.z & 65535u, hz_w.z >> 16u) - hz_t0;\n    \
-    uint hz_w3 = hz_uv3;\n    \
-    vec2 hz_t3 = vec2(hz_w3 & 65535u, hz_w3 >> 16u);\n    \
-    hz_mid = (clamp(hz_t0 * hz_uv_scale, 0.0, 1.0) + clamp((hz_t0 + hz_d1) * hz_uv_scale, 0.0, 1.0)\n        \
-        + clamp((hz_t0 + hz_d2) * hz_uv_scale, 0.0, 1.0) + clamp(hz_t3 * hz_uv_scale, 0.0, 1.0)) * 0.25;\n    \
     vec3 hz_e1 = hz_p1 - hz_p0;\n    \
     vec3 hz_e2 = hz_p2 - hz_p0;\n    \
     vec3 hz_n = cross(hz_e1, hz_e2);\n    \
@@ -663,6 +671,41 @@ const FACE: &str = "    vec3 hz_p0 = uintBitsToFloat(hz_cp0);\n    \
             hz_tangent = vec4(hz_t, dot(cross(hz_t, hz_Normal), hz_b) < 0.0 ? -1.0 : 1.0);\n        \
         }\n    \
     }\n";
+
+/// GLSL: the face normal and tangent of a terrain vertex from the normal stream
+/// ([`TerrainDraws::Normals`]), which holds `FACE`'s, constants included, in signed normalized
+/// bytes: made unit length again. And its quad's source as `SOURCE` works it out, its id looked
+/// up at upload (`hz_v_source`, [`NORMAL_ATTRIBUTES`]).
+const NORMALS: &str = "    hz_Normal = normalize(hz_v_normal.xyz);\n    \
+    hz_tangent = vec4(normalize(hz_v_tangent.xyz), hz_v_tangent.w);\n    \
+    uvec2 hz_source = hz_v_source;\n    \
+    bool hz_known_source = (hz_source.y & 8192u) != 0u;\n    \
+    int hz_material = int(hz_source.x);\n";
+
+/// GLSL: set 3, in terrain programs that read their arena page (flat draws, and per-section ones
+/// of [`TerrainDraws::Pages`]): each slot's quad source (`hz_sources`, a page's sidecar or one
+/// unknown source), the page's vertices, and the immutable table of sprite rectangles and the
+/// running pack's ids of source states (`pack_post::terrain_tables`).
+const PAGES: &str = "layout(set = 3, binding = 0) readonly buffer HzQuadSources { uvec2 hz_sources[]; };\n\
+layout(set = 3, binding = 1) readonly buffer HzVertices { uint hz_vertices[]; };\n\
+layout(set = 3, binding = 2) readonly buffer HzTerrainTables { int hz_tables[]; };\n";
+
+/// GLSL: a terrain vertex's quad's source (`hz_source`: its state, and its cell, fluid and valid
+/// flags and emitted light), read at the slot naming the quad (`PULL_CORNERS`' `hz_slot`), and
+/// its `mc_Entity` id (`hz_material`): the state's model or fluid id from the table, -1 for an
+/// unknown source or a state past the table.
+const SOURCE: &str = "    uvec2 hz_source = uvec2(0u);\n    \
+    if (hz_slot < uint(hz_sources.length())) hz_source = hz_sources[hz_slot];\n    \
+    bool hz_known_source = (hz_source.y & 8192u) != 0u;\n    \
+    int hz_material = -1;\n    \
+    if (hz_known_source && hz_source.x < uint(hz_tables[1])) hz_material = hz_tables[2u + uint(hz_tables[0]) + 2u * hz_source.x + ((hz_source.y >> 12u) & 1u)];\n";
+
+/// GLSL: a flat-drawn vertex's quad's middle in its sprite (`mc_midTexCoord`), from its four
+/// corners' UVs, after `FACE`.
+const MID: &str = "    uint hz_w3 = hz_uv3;\n    \
+    vec2 hz_t3 = vec2(hz_w3 & 65535u, hz_w3 >> 16u);\n    \
+    hz_mid = (clamp(hz_t0 * hz_uv_scale, 0.0, 1.0) + clamp((hz_t0 + hz_d1) * hz_uv_scale, 0.0, 1.0)\n        \
+        + clamp((hz_t0 + hz_d2) * hz_uv_scale, 0.0, 1.0) + clamp(hz_t3 * hz_uv_scale, 0.0, 1.0)) * 0.25;\n";
 
 /// GLSL: whether a terrain vertex's quad is solid terrain rather than cutout. Solid: the quads
 /// over opaque texels and opaque leaves (`mesher::OPAQUE_LAYER`), as vanilla picks
@@ -748,28 +791,191 @@ pub fn game_inputs(
     }
 }
 
+/// [`game_inputs`] as tools load a pack without a device or an atlas (the shader fuzzer, the
+/// SPIR-V dump): terrain drawn as `draws` says from an atlas of 1024 x 1024 pixels in 16-pixel
+/// sprites, 64 a row (its size only reaches the GLSL as constants), the pack's `separateAo`
+/// setting the terrain colour's alpha as the game sets it, lava on sprite layers 3 and 4, and
+/// the largest stage interface limits real devices have instead of a device's.
+pub fn deviceless_game_inputs(
+    separate_ao: bool,
+    draws: TerrainDraws,
+) -> sunrise_shaders::GameInputs {
+    let terrain = PackAtlas::terrain_inputs_sized([1024, 1024], 64, 16, separate_ao, draws);
+    sunrise_shaders::GameInputs {
+        interface_limits: sunrise_shaders::DEVICELESS_INTERFACE_LIMITS,
+        ..game_inputs(Some(terrain), draws == TerrainDraws::Flat, &[3, 4])
+    }
+}
+
+/// How the game's terrain draws give a pack's terrain program its vertices.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TerrainDraws {
+    /// Per-section draws: each vertex as its attributes alone, its quad's other corners and
+    /// source out of reach, so its normal and tangent are the constant ones, its `mc_Entity`
+    /// (-1, 0) and its `at_midBlock` zero. Where the pack's programs fit the vertex stage
+    /// neither with the pages ([`TerrainBindings::pages_fit`]) nor with the normal stream
+    /// ([`TerrainBindings::normals_fit`]).
+    Attributes,
+    /// Per-section draws whose program also reads its quad's corners and source from the arena
+    /// page (set 3's `hz_vertices` and `hz_sources`, `PULL_CORNERS`): the face normal and
+    /// tangent (`FACE`), and `mc_Entity` and `at_midBlock` (`SOURCE`), as flat draws give them.
+    Pages,
+    /// Flat draws: each vertex pulled from the arena page (`PULL_CORNERS`, `PULL_FLAT`).
+    Flat,
+    /// Per-section draws whose vertices also carry their quad's normal and tangent, and its
+    /// source with its block id, in a vertex buffer of their own beside the arena's vertices
+    /// ([`NORMAL_ATTRIBUTES`], `NORMALS`): worked out at upload as `FACE` and `SOURCE` work them
+    /// out. Where per-section draws read no pages.
+    Normals,
+}
+
+impl TerrainDraws {
+    /// Flat draws, or per-section ones as attributes alone.
+    pub fn flat(flat: bool) -> Self {
+        if flat { Self::Flat } else { Self::Attributes }
+    }
+
+    /// The program binds the arena page at set 3 (`pack_post`'s `Geometry::pages`).
+    pub fn reads_pages(self) -> bool {
+        matches!(self, Self::Pages | Self::Flat)
+    }
+}
+
+/// Bytes a vertex has in the normal stream ([`TerrainDraws::Normals`]): its normal, its
+/// tangent and its quad's source as [`NORMAL_ATTRIBUTES`] read them.
+pub const NORMAL_BYTES: u64 = 16;
+
+/// The normal stream's vertex attributes ([`TerrainDraws::Normals`]), the third vertex buffer of
+/// a per-section terrain draw: the normal (w 0) and the tangent (w its handedness, -1 or 1), each
+/// as four signed normalized bytes, the format of vanilla 26.3's own vertex normals
+/// (`DefaultVertexFormat`'s `Normal` element is `GpuFormat.RGBA8_SNORM`); then the quad's source
+/// as `SOURCE` reads it: its `mc_Entity` id under the pack's `block.properties` (-1 for none) and
+/// the word flat draws read in `hz_sources` (cell, fluid and valid flags, emitted light; 0 for
+/// none).
+pub const NORMAL_ATTRIBUTES: [wgpu::VertexAttribute; 3] =
+    wgpu::vertex_attr_array![6 => Snorm8x4, 7 => Snorm8x4, 8 => Uint32x2];
+
+/// Storage buffers a terrain program reading its page binds in its vertex stage for it: set 3's
+/// three (`pack_post::block_ids`'s layout), which the program reads (`PAGES`).
+const PAGES_STORAGE: u32 = 3;
+/// Uniform buffers every terrain program's vertex stage binds: set 0's binding 0 (the pack's
+/// uniforms, `pack_post::entry`'s visibility) and set 2's draw uniform (`pack_draw`).
+const TERRAIN_UNIFORMS: u32 = 2;
+/// Vertex buffers of a per-section terrain draw: its vertices and its section's origin (the
+/// renderer's `TERRAIN_ATTRIBUTES` and instance layouts).
+const TERRAIN_VERTEX_BUFFERS: u32 = 2;
+/// Bind groups wgpu-core counts for a terrain program's pipeline: the six entries of the layout
+/// `pack_post::construction` gives every gbuffers program, sets 0 to 5, the empty ones among
+/// them (its textures and uniforms, flat draws' tables, the draw uniform, set 3, the pack's
+/// buffer objects and a geometry stage's indices).
+const TERRAIN_GROUPS: u32 = 6;
+
+/// What a pack's per-section terrain programs bind in their vertex stage besides the game's
+/// own: its storage buffers (`bufferObject.<n>`, set 4). A geometry stage's index buffer (set 5)
+/// is not among them: only flat draws give terrain a geometry stage (`game_inputs`'s
+/// `terrain_geometry`), so a `.gsh` binds nothing in a per-section terrain pipeline.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TerrainBindings {
+    /// Its `bufferObject.<n>` entries: set 4 holds every one of them.
+    pub buffer_objects: u32,
+}
+
+impl TerrainBindings {
+    /// The bindings of a pack of `properties`.
+    pub fn of(properties: &sunrise_shaders::Properties) -> Self {
+        let buffer_objects = properties
+            .entries
+            .iter()
+            .filter(|e| {
+                e.key
+                    .strip_prefix("bufferObject.")
+                    .is_some_and(|n| n.parse::<u32>().is_ok())
+            })
+            .count() as u32;
+        Self { buffer_objects }
+    }
+
+    /// Whether terrain programs that read their page in per-section draws
+    /// ([`TerrainDraws::Pages`]) fit the vertex stage of a device of `limits` and `gpu`: set 3
+    /// on top of the pack's own storage buffers, which the vertex stage sees where it writes
+    /// storage (`pack_post::Gpu::storage_stages`), under `max_storage_buffers_per_shader_stage`,
+    /// and with the uniform and vertex buffers under
+    /// `max_buffers_and_acceleration_structures_per_shader_stage` (wgpu-core checks both when it
+    /// makes the pipeline). Where they don't fit, per-section draws take
+    /// [`TerrainDraws::Normals`] where [`Self::normals_fit`] holds, whose pipelines bind no set 3
+    /// and one vertex buffer more, and [`TerrainDraws::Attributes`] otherwise.
+    pub fn pages_fit(self, limits: &wgpu::Limits, gpu: crate::pack_post::Gpu) -> bool {
+        if !gpu.vertex_reads {
+            return false;
+        }
+        let own = if gpu.vertex_storage {
+            self.buffer_objects
+        } else {
+            0
+        };
+        let storage = own.saturating_add(PAGES_STORAGE);
+        storage <= limits.max_storage_buffers_per_shader_stage
+            && storage.saturating_add(TERRAIN_UNIFORMS + TERRAIN_VERTEX_BUFFERS)
+                <= limits.max_buffers_and_acceleration_structures_per_shader_stage
+    }
+
+    /// Whether terrain programs drawn per section with the normal stream
+    /// ([`TerrainDraws::Normals`]) fit the vertex stage of a device of `limits` and `gpu`: one
+    /// vertex buffer more than [`TerrainDraws::Attributes`] takes, on top of the pack's own
+    /// storage buffers (seen in the vertex stage where it writes storage), its uniform buffers and
+    /// the other two vertex buffers, under
+    /// `max_buffers_and_acceleration_structures_per_shader_stage`; with every bind group, under
+    /// `max_bind_groups_plus_vertex_buffers`; and under `max_vertex_buffers` (wgpu-core checks
+    /// each when it makes the pipeline). wgpu-core also checks the attributes against
+    /// `max_vertex_attributes`: 9 here (5 of the vertices, 1 of the origin, 3 of the stream),
+    /// under the 16 of every wgpu limits tier (`Limits::downlevel_webgl2_defaults` too), so that
+    /// check can't fail. Where they don't fit, per-section draws take
+    /// [`TerrainDraws::Attributes`], as a pack whose programs load without the stream must not
+    /// be refused for it.
+    pub fn normals_fit(self, limits: &wgpu::Limits, gpu: crate::pack_post::Gpu) -> bool {
+        // Summed in u64: a count past `u32::MAX` must not pass a limit of `u32::MAX`.
+        let own = if gpu.vertex_storage {
+            u64::from(self.buffer_objects)
+        } else {
+            0
+        };
+        let vertex_buffers = TERRAIN_VERTEX_BUFFERS + 1;
+        own + u64::from(TERRAIN_UNIFORMS + vertex_buffers)
+            <= u64::from(limits.max_buffers_and_acceleration_structures_per_shader_stage)
+            && TERRAIN_GROUPS + vertex_buffers <= limits.max_bind_groups_plus_vertex_buffers
+            && vertex_buffers <= limits.max_vertex_buffers
+    }
+}
+
 impl PackAtlas {
     /// The vertex inputs of a gbuffers program drawing terrain (`TerrainVertex`, terrain.wgsl's
     /// `vs_terrain` or, for `flat` draws, `vs_terrain_flat`), in atlas coordinates.
     pub fn terrain_inputs(&self, flat: bool) -> sunrise_shaders::GbuffersInputs {
+        self.terrain_inputs_for(TerrainDraws::flat(flat))
+    }
+
+    /// [`Self::terrain_inputs`] for terrain drawn as `draws` says.
+    pub fn terrain_inputs_for(&self, draws: TerrainDraws) -> sunrise_shaders::GbuffersInputs {
         Self::terrain_inputs_sized(
             self.size(),
             self.columns,
             self.sprite,
             self.separate_ao,
-            flat,
+            draws,
         )
     }
 
-    /// [`Self::terrain_inputs`] of an atlas of `size` pixels, `columns` sprites of `sprite` pixels
-    /// a row (in grid draws) and `separate_ao`, without the atlas: only these reach the GLSL.
+    /// [`Self::terrain_inputs_for`] of an atlas of `size` pixels, `columns` sprites of `sprite`
+    /// pixels a row (in grid draws) and `separate_ao`, without the atlas: only these reach the
+    /// GLSL.
     pub fn terrain_inputs_sized(
         size: [u32; 2],
         columns: u32,
         sprite: u32,
         separate_ao: bool,
-        flat: bool,
+        draws: TerrainDraws,
     ) -> sunrise_shaders::GbuffersInputs {
+        let flat = draws == TerrainDraws::Flat;
         // Flat draws pull their vertices from the arena page (`PULL_FLAT`), which may hold
         // solid quads in the compact layout; others read them as vertex attributes.
         let mut declarations = if flat {
@@ -788,17 +994,22 @@ impl PackAtlas {
                 "layout(set = 1, binding = 0) readonly buffer HzBlockSlots { uint hz_block_slots[]; };\n\
                  layout(set = 1, binding = 1) readonly buffer HzSlotOrigins { vec4 hz_slot_origins[]; };\n",
             );
-            // Source metadata follows each quad in its arena page. The immutable table
-            // holds sprite rectangles and the current pack's ids of source states.
-            declarations.push_str(
-                "layout(set = 3, binding = 0) readonly buffer HzQuadSources { uvec2 hz_sources[]; };\n\
-                 layout(set = 3, binding = 1) readonly buffer HzVertices { uint hz_vertices[]; };\n\
-                 layout(set = 3, binding = 2) readonly buffer HzTerrainTables { int hz_tables[]; };\n",
-            );
+            declarations.push_str(PAGES);
             declarations.push_str(CORNER_FN);
             "hz_slot_origins[hz_block_slots[hz_slot >> 8u]]"
         } else {
             declarations.push_str("layout(location = 5) in vec4 hz_v_origin;\n");
+            if draws == TerrainDraws::Pages {
+                // Its quad's corners and source, by the same bindings as flat draws.
+                declarations.push_str(PAGES);
+                declarations.push_str(CORNER_FN);
+            }
+            if draws == TerrainDraws::Normals {
+                declarations.push_str(
+                    "layout(location = 6) in vec4 hz_v_normal;\nlayout(location = 7) in vec4 hz_v_tangent;\n\
+                     layout(location = 8) in uvec2 hz_v_source;\n",
+                );
+            }
             "hz_v_origin"
         };
         let [width, height] = size;
@@ -850,24 +1061,35 @@ impl PackAtlas {
             scale[0], scale[1],
         );
         let mut body = body;
+<<<<<<< HEAD
         // Developers' aid: `SUNRISE_SHADER_PACK_NO_FACE=1` leaves the faces' normal and tangent
         // out (wrong lighting), to time what working them out per vertex costs.
         if flat && std::env::var_os("SUNRISE_SHADER_PACK_NO_FACE").is_none() {
             body.insert_str(0, PULL_FLAT);
+||||||| 46c00106def
+        if flat {
+            body.insert_str(0, PULL_FLAT);
+=======
+        if draws == TerrainDraws::Pages {
+            body.insert_str(0, PULL_CORNERS);
+>>>>>>> ed6772e2118
             body.push_str(FACE);
-            body.push_str(
-                "    uint hz_quad = uint(gl_VertexIndex) / 4u;\n    \
-                 uvec2 hz_source = uvec2(0u);\n    \
-                 if (hz_quad < uint(hz_sources.length())) hz_source = hz_sources[hz_quad];\n    \
-                 bool hz_known_source = (hz_source.y & 8192u) != 0u;\n    \
-                 int hz_material = -1;\n    \
-                 if (hz_known_source && hz_source.x < uint(hz_tables[1])) hz_material = hz_tables[2u + uint(hz_tables[0]) + 2u * hz_source.x + ((hz_source.y >> 12u) & 1u)];\n",
-            );
+            body.push_str(SOURCE);
+        }
+        if draws == TerrainDraws::Normals {
+            body.push_str(NORMALS);
+        }
+        if flat {
+            body.insert_str(0, &format!("{PULL_CORNERS}{PULL_FLAT}"));
+            body.push_str(FACE);
+            body.push_str(MID);
+            body.push_str(SOURCE);
         }
         declarations.push_str(
             "vec2 hz_cell; vec2 hz_scale; vec2 hz_mid; float hz_uv_scale; vec4 hz_tangent;
 ",
         );
+<<<<<<< HEAD
         let mut after = String::new();
         let prepass_uv = super::pack_post::prepass_wanted();
         if prepass_uv {
@@ -877,13 +1099,20 @@ impl PackAtlas {
             );
         }
         let entity = if flat {
+||||||| 46c00106def
+        let entity = if flat {
+=======
+        // Every draw that reaches its quad's source (`SOURCE`, `NORMALS`).
+        let sourced = draws != TerrainDraws::Attributes;
+        let entity = if sourced {
+>>>>>>> ed6772e2118
             "vec4(float(hz_material), hz_known_source ? float((hz_source.y >> 12u) & 1u) : 0.0, 0.0, 0.0)"
         } else {
             "vec4(-1.0, 0.0, 0.0, 0.0)"
         };
         // The mesher's owning cell, even for inset, offset, multipart or extended faces;
         // w is the source's emitted light, independent of sprite and smooth light.
-        let mid_block = if flat {
+        let mid_block = if sourced {
             "(hz_known_source ? vec4((vec3(float(hz_source.y & 15u), float((hz_source.y >> 4u) & 15u), float((hz_source.y >> 8u) & 15u)) + 0.5 - hz_v_pos) * 64.0, float((hz_source.y >> 14u) & 15u)) : vec4(0.0))"
         } else {
             "vec4(0.0)"
@@ -1327,5 +1556,151 @@ mod tests {
                 .body
                 .contains("hz_Color = vec4(hz_v_color.rgb, hz_v_color.a);")
         );
+    }
+
+    /// A device with storage in its vertex stage: written there (`vertex_storage`) or not.
+    fn gpu(vertex_storage: bool) -> crate::pack_post::Gpu {
+        crate::pack_post::Gpu {
+            compute: true,
+            fragment_storage: true,
+            vertex_storage,
+            vertex_reads: true,
+            clear: true,
+            adapter_formats: false,
+        }
+    }
+
+    /// Per-section terrain reads its pages exactly while the vertex stage holds set 3's three
+    /// storage buffers on top of the pack's own (its 3 buffer objects: 6), and, with its 2
+    /// uniform and 2 vertex buffers, 10 buffers in all.
+    #[test]
+    fn pages_fit_predicate_takes_pages_up_to_the_last_buffer() {
+        let bindings = TerrainBindings { buffer_objects: 3 };
+        let limits = |storage: u32, buffers: u32| wgpu::Limits {
+            max_storage_buffers_per_shader_stage: storage,
+            max_buffers_and_acceleration_structures_per_shader_stage: buffers,
+            ..Default::default()
+        };
+        assert!(bindings.pages_fit(&limits(6, 10), gpu(true)));
+        assert!(!bindings.pages_fit(&limits(5, 10), gpu(true)));
+        assert!(!bindings.pages_fit(&limits(6, 9), gpu(true)));
+        // The pack's own buffers are bound in fragment stages alone where vertex shaders write
+        // no storage: set 3 alone, and its uniform and vertex buffers.
+        assert!(bindings.pages_fit(&limits(3, 7), gpu(false)));
+        assert!(!bindings.pages_fit(&limits(2, 7), gpu(false)));
+        assert!(!bindings.pages_fit(&limits(3, 6), gpu(false)));
+        // No storage read in vertex shaders (`SUNRISE_SHADER_PACK_WITHOUT=vertex-storage` too).
+        let mut without = gpu(true);
+        without.vertex_reads = false;
+        assert!(!bindings.pages_fit(&limits(100, 100), without));
+    }
+
+    /// The normal stream fits exactly while the vertex stage holds the pack's own storage
+    /// buffers (3 buffer objects, where vertex shaders write storage), 2 uniform buffers and 3
+    /// vertex buffers (8 in all), 6 bind groups and 3 vertex buffers (9), and 3 vertex buffers.
+    #[test]
+    fn normals_fit_predicate_takes_the_stream_up_to_the_last_buffer() {
+        let bindings = TerrainBindings { buffer_objects: 3 };
+        let limits = |buffers: u32, groups_and_vertex: u32, vertex: u32| wgpu::Limits {
+            max_buffers_and_acceleration_structures_per_shader_stage: buffers,
+            max_bind_groups_plus_vertex_buffers: groups_and_vertex,
+            max_vertex_buffers: vertex,
+            ..Default::default()
+        };
+        assert!(bindings.normals_fit(&limits(8, 9, 3), gpu(true)));
+        assert!(!bindings.normals_fit(&limits(7, 9, 3), gpu(true)));
+        assert!(!bindings.normals_fit(&limits(8, 8, 3), gpu(true)));
+        assert!(!bindings.normals_fit(&limits(8, 9, 2), gpu(true)));
+        // Where vertex shaders write no storage the pack's own buffers stay out of the vertex
+        // stage: 2 uniform and 3 vertex buffers.
+        assert!(bindings.normals_fit(&limits(5, 9, 3), gpu(false)));
+        assert!(!bindings.normals_fit(&limits(4, 9, 3), gpu(false)));
+        // Reading no storage in vertex shaders keeps the stream
+        // (`SUNRISE_SHADER_PACK_WITHOUT=vertex-storage` too).
+        let mut without = gpu(false);
+        without.vertex_reads = false;
+        assert!(bindings.normals_fit(&limits(5, 9, 3), without));
+        // Past any device's buffers: no stream.
+        let crowded = TerrainBindings {
+            buffer_objects: u32::MAX,
+        };
+        assert!(!crowded.normals_fit(&limits(u32::MAX, u32::MAX, 8), gpu(true)));
+    }
+
+    /// Only the normal stream's programs read locations 6 to 8, and they take the stream's
+    /// normal, tangent and source where the others keep the constants or work them out from
+    /// the page.
+    #[test]
+    fn normal_stream_inputs_read_the_stream() {
+        let inputs = |draws| PackAtlas::terrain_inputs_sized([64, 32], 4, 16, false, draws);
+        let normals = inputs(TerrainDraws::Normals);
+        assert!(
+            normals
+                .declarations
+                .contains("layout(location = 6) in vec4 hz_v_normal;")
+        );
+        assert!(
+            normals
+                .declarations
+                .contains("layout(location = 7) in vec4 hz_v_tangent;")
+        );
+        assert!(
+            normals
+                .declarations
+                .contains("layout(location = 8) in uvec2 hz_v_source;")
+        );
+        assert!(normals.body.ends_with(NORMALS));
+        assert!(!normals.declarations.contains("hz_vertices"));
+        assert!(!TerrainDraws::Normals.reads_pages());
+        for other in [
+            TerrainDraws::Attributes,
+            TerrainDraws::Pages,
+            TerrainDraws::Flat,
+        ] {
+            let inputs = inputs(other);
+            assert!(!inputs.declarations.contains("hz_v_normal"), "{other:?}");
+            assert!(!inputs.declarations.contains("hz_v_source"), "{other:?}");
+            assert!(!inputs.body.contains(NORMALS), "{other:?}");
+        }
+    }
+
+    /// A pack's bindings, read from a pack on disk: each `bufferObject.<n>` entry counts, and
+    /// `bufferObject.x` doesn't; a geometry stage (`.gsh`), in its root or a dimension's folder,
+    /// binds nothing in per-section terrain and counts for nothing. At the limits where 6
+    /// buffer objects just fit, set 3 (pages: 9 storage, 13 buffers) and then the stream (11
+    /// buffers) take the device exactly to its last buffer, the `.gsh` beside them.
+    #[test]
+    fn terrain_bindings_of_a_pack_with_buffer_objects_and_a_geometry_stage() {
+        let root = tempfile::tempdir().unwrap();
+        let shaders = root.path().join("shaders");
+        std::fs::create_dir_all(shaders.join("world-1")).unwrap();
+        let mut properties = String::from("bufferObject.x=4\nscreen=A\n");
+        for n in [0, 1, 2, 5, 6, 9] {
+            properties.push_str(&format!("bufferObject.{n}=64\n"));
+        }
+        std::fs::write(shaders.join("shaders.properties"), properties).unwrap();
+        std::fs::write(shaders.join("shadow.gsh"), "#version 330\n").unwrap();
+        std::fs::write(
+            shaders.join("world-1/gbuffers_terrain.gsh"),
+            "#version 330\n",
+        )
+        .unwrap();
+        let pack = sunrise_shaders::Pack::open(root.path()).unwrap();
+        let mut macros = sunrise_shaders::Macros::standard();
+        let (properties, _) = sunrise_shaders::read_properties(&pack, &mut macros);
+        let bindings = TerrainBindings::of(&properties);
+        assert_eq!(bindings, TerrainBindings { buffer_objects: 6 });
+        let limits = |storage: u32, buffers: u32| wgpu::Limits {
+            max_storage_buffers_per_shader_stage: storage,
+            max_buffers_and_acceleration_structures_per_shader_stage: buffers,
+            ..Default::default()
+        };
+        // Pages: 6 + 3 storage buffers, and 2 uniform and 2 vertex buffers.
+        assert!(bindings.pages_fit(&limits(9, 13), gpu(true)));
+        assert!(!bindings.pages_fit(&limits(8, 13), gpu(true)));
+        assert!(!bindings.pages_fit(&limits(9, 12), gpu(true)));
+        // The stream: 6 storage, 2 uniform and 3 vertex buffers.
+        assert!(bindings.normals_fit(&limits(6, 11), gpu(true)));
+        assert!(!bindings.normals_fit(&limits(6, 10), gpu(true)));
     }
 }

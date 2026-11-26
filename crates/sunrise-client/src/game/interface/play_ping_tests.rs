@@ -62,6 +62,23 @@ fn pass(game: &mut Game<'_>, conn: u32, packet: S) {
                 .push_back(sunrise_client::lan::guest::InboxItem::Packet(packet, None));
         })
         .unwrap();
+    complete_sender_tick(game);
+    let world_clock = game.world.game_time;
+    println!("actual sender completion conn={conn} world_clock={world_clock}");
+    assert!(
+        game.lan
+            .as_ref()
+            .unwrap()
+            .hub
+            .guest(conn)
+            .unwrap()
+            .inbox
+            .is_empty(),
+        "decoded request was drained by the actual Hub"
+    );
+}
+
+fn complete_sender_tick(game: &mut Game<'_>) {
     // Already registered connections: this is a second level pass, without polling sockets.
     game.level_pass.first = false;
     game.level_pass.packets_drained = false;
@@ -81,21 +98,9 @@ fn pass(game: &mut Game<'_>, conn: u32, packet: S) {
         game.world.game_time, clock_before,
         "sender completion adds no world tick"
     );
-    println!("actual sender completion conn={conn} world_clock={clock_before}");
     assert!(
         game.level_pass.packets_drained,
         "real Game packet phase completed"
-    );
-    assert!(
-        game.lan
-            .as_ref()
-            .unwrap()
-            .hub
-            .guest(conn)
-            .unwrap()
-            .inbox
-            .is_empty(),
-        "decoded request was drained by the actual Hub"
     );
 }
 
@@ -162,6 +167,127 @@ pub(in crate::game) fn fixture(
     });
     game.lan.as_mut().unwrap().hub.ticks = 123;
     (game, receivers)
+}
+
+#[test]
+#[ignore = "daily"]
+fn player_pong_observes_order_and_sends_typed_ping() {
+    use crate::game::native_entity_refs::tests::run_fresh_cases;
+    use mod_api::{
+        EntityRef, Hooks, ModEntry, Mods, PlayerPingRefusal, PlayerPongEvent, ServerHost,
+    };
+    use std::sync::{Mutex, atomic::Ordering};
+    use sunrise_client::lan::guest::InboxItem;
+    use sunrise_protocol::packets::configuration::Ping;
+
+    const CHILD: &str = "SUNRISE_PLAYER_PONG_CHILD";
+    if run_fresh_cases(
+        "game::play_ping_tests::player_pong_observes_order_and_sends_typed_ping",
+        CHILD,
+        &["placed", "respawning"],
+    ) {
+        return;
+    }
+
+    type Observation = (u128, String, i32, bool);
+    struct Observer(Arc<Mutex<Vec<Observation>>>);
+    #[mod_api::__subscriptions]
+    impl Hooks for Observer {
+        fn player_pong(&self, host: &mut dyn ServerHost, event: &mut PlayerPongEvent<'_>) {
+            let mut seen = self.0.lock().unwrap();
+            let player = event.player;
+            if seen.is_empty() {
+                assert_eq!(player.send_ping(host, -123), Ok(()));
+                let leaving = host.player(2).unwrap();
+                assert_eq!(
+                    leaving.send_ping(host, 45),
+                    Err(PlayerPingRefusal::NoConnection)
+                );
+                // Guest 2's UUID with guest 1's entity identity must not resolve by UUID alone.
+                let stale = mod_api::__private::game::player_ref(
+                    EntityRef::new(player.entity().epoch(), player.entity().id()),
+                    leaving.uuid(),
+                );
+                assert_eq!(stale.send_ping(host, 46), Err(PlayerPingRefusal::Stale));
+            }
+            seen.push((
+                player.uuid(),
+                event.name.to_owned(),
+                event.id,
+                player.text_filtering(host).unwrap(),
+            ));
+        }
+    }
+    /// Runs first and rewrites its own event: the observer still hears what the client sent.
+    struct Tamper;
+    #[mod_api::__subscriptions]
+    impl Hooks for Tamper {
+        fn player_pong(&self, _: &mut dyn ServerHost, event: &mut PlayerPongEvent<'_>) {
+            event.id = 99;
+            event.name = "tampered";
+        }
+    }
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let mods: Mods = vec![
+        ModEntry::new("tamper", Box::new(Tamper)),
+        ModEntry::new("observer", Box::new(Observer(seen.clone()))),
+    ]
+    .into();
+    mod_platform::__private::install(mods);
+
+    let mut resources = None;
+    let (mut game, receivers) = fixture(&mut resources);
+    let guests = &mut game.lan.as_mut().unwrap().hub.guests;
+    guests
+        .update_connection(2, |guest| guest.disconnect_pending = true)
+        .unwrap();
+    guests
+        .update_connection(1, |guest| {
+            if std::env::var(CHILD).as_deref() == Ok("respawning") {
+                guest.placed = false;
+                guest.respawning = true;
+            }
+            guest.latency.store(37, Ordering::Relaxed);
+            let mut filtering = ClientInformation::new(2);
+            filtering.text_filtering = true;
+            guest.inbox.extend(
+                [
+                    S::ClientInformation(filtering),
+                    S::Pong(Ping { id: i32::MIN }),
+                    S::PingRequest(status::Ping { time: i64::MIN }),
+                    S::ClientInformation(ClientInformation::new(2)),
+                    // An action between pong boundaries: a respawning player's is discarded.
+                    S::SetCarriedItem(sunrise_protocol::packets::play::SetCarriedItem { slot: 4 }),
+                    S::Pong(Ping { id: i32::MIN }),
+                    S::Pong(Ping { id: -7 }),
+                ]
+                .into_iter()
+                .map(|packet| InboxItem::Packet(decode(packet).0, None)),
+            );
+        })
+        .unwrap();
+
+    complete_sender_tick(&mut game);
+
+    assert_eq!(
+        *seen.lock().unwrap(),
+        [
+            (1, "PingGuest1".to_owned(), i32::MIN, true),
+            (1, "PingGuest1".to_owned(), i32::MIN, false),
+            (1, "PingGuest1".to_owned(), -7, false),
+        ]
+    );
+    assert!(
+        matches!(output(&receivers[0]).as_slice(), [C::Ping(ping), C::PongResponse(pong)]
+        if ping.id == -123 && pong.time == i64::MIN)
+    );
+    assert!(output(&receivers[1]).is_empty());
+    let guest = game.lan.as_ref().unwrap().hub.guest(1).unwrap();
+    assert_eq!(guest.latency.load(Ordering::Relaxed), 37);
+    let respawning = std::env::var(CHILD).as_deref() == Ok("respawning");
+    assert_eq!(guest.selected, if respawning { 0 } else { 4 });
+    assert_eq!(guest.last_action_tick, if respawning { 7 } else { 123 });
+    assert!(guest.inbox.is_empty());
 }
 
 #[test]

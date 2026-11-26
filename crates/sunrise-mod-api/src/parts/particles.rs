@@ -24,7 +24,7 @@ impl ParticlesRegistrar for PartRegistrar {
         codec: Arc<dyn mod_vocab::__private::ParticleCodec>,
     ) -> crate::ParticleKey {
         let result = (|| {
-            let id = self.owned_declaration_id(id)?;
+            let id = self.declaration_id(id)?;
             let packages = crate::load_state::current_packages();
             let namespace = id.split_once(':').map_or("", |(namespace, _)| namespace);
             if let Some(package) = packages.iter().find(|p| {

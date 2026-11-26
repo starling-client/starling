@@ -5,15 +5,14 @@ use sunrise_core::geometry::Vec3;
 /// The hook points. Each does nothing in Sunrise.
 impl Game<'_> {
     pub(in crate::game) fn item_update_round(&mut self) -> native_ticks::TickRound {
-        // EntityTickEvent.Pre for the items about to tick, and the Post after them.
         let mut round = self.native_tick_round();
         let merging = self.remote.is_none();
         // One read says whether any item part listens; with none, no stack is looked at.
         let update_hook =
             merging && mod_api::__private::has_part_hook(mod_api::HookId::OnEntityItemUpdate);
-        // Items a mod named (`entity_tick_each`) hear their Pre, and then their part, alone in
-        // their own turn (`tick_dropped_items`).
-        if (round.listening() || update_hook) && !round.alone_kind(native_ticks::ITEM) {
+        // When entity tick hooks are subscribed, each item hears its Pre and then its part in its
+        // own turn (`tick_dropped_items`). Without tick hooks, run `on_entity_item_update` here.
+        if !round.told_listening() && update_hook {
             let ticking = self.entity_ticking_area();
             let mut i = 0;
             while let Some(item) = self.dropped.get(i) {
@@ -22,26 +21,13 @@ impl Game<'_> {
                     item.position.x.floor() as i32,
                     item.position.z.floor() as i32,
                 );
-                if !(merging && self.joined_during_entity_pass(id)) && ticking(x, z) {
-                    if round.listening() {
-                        round.add(id, native_ticks::TickKind::Fixed(native_ticks::ITEM));
-                    } else if update_hook && self.item_update_halts(i) {
-                        round.halt(id);
-                    }
+                if !(merging && self.joined_during_entity_pass(id))
+                    && ticking(x, z)
+                    && self.item_update_halts(i)
+                {
+                    round.halt(id);
                 }
                 i += 1;
-            }
-            self.native_tick_pre_batch(&mut round);
-            // Each item the Pre let through, in order, hears its part.
-            let (mut n, mut from) = (0, 0);
-            while update_hook && let Some(id) = round.let_through(n) {
-                if let Some(i) = native_ticks::place(&self.dropped, from, |item| item.id == id) {
-                    if self.item_update_halts(i) {
-                        round.halt(id);
-                    }
-                    from = i + 1;
-                }
-                n += 1;
             }
         }
         round
@@ -112,13 +98,8 @@ impl mod_api::ResidentItemEntity for ResidentDroppedItem<'_, '_> {
         let project = |metadata| project_stack(stack, metadata).ok();
         call(mod_api::ItemStackView::resident(metadata, &project));
     }
-    fn pickup_delay(&self) -> Option<i32> {
-        let delay = self.game.dropped[self.index].pickup_delay;
-        if delay == i64::from(u32::MAX) {
-            Some(i32::from(i16::MAX))
-        } else {
-            i32::try_from(delay).ok()
-        }
+    fn pickup_delay(&self) -> i32 {
+        self.game.dropped[self.index].pickup_delay
     }
     fn age(&self) -> i32 {
         self.game.dropped[self.index].age
@@ -131,13 +112,14 @@ impl mod_api::ResidentItemEntity for ResidentDroppedItem<'_, '_> {
     fn owner(&self) -> Option<mod_api::EntityRef> {
         self.game.item_entity_owner(self.subject)
     }
-    fn set_stack(&mut self, stack: mod_api::ItemStack) -> Result<bool, mod_api::StackWriteError> {
+    fn set_stack(
+        &mut self,
+        stack: Option<mod_api::ItemStack>,
+    ) -> Result<bool, mod_api::StackWriteError> {
         use crate::game::api_values::TryIntoEngine;
         let stack = stack.try_into_engine(self.game.res.items())?;
-        if stack.count == 0 || &*stack.item == "minecraft:air" {
-            return Ok(false);
-        }
-        Ok(self.game.journal_set_item_entity_at(self.index, stack))
+        self.game.journal_set_item_entity_at(self.index, stack);
+        Ok(true)
     }
     fn set_pickup_delay(&mut self, ticks: i32) -> bool {
         self.game.journal_set_item_pickup_delay(self.index, ticks);
@@ -188,6 +170,41 @@ impl mod_api::ItemEntityServerAccess for ItemEntityTickAccess<'_, '_> {
 
     fn host(&mut self) -> &mut dyn mod_api::ServerHost {
         self.game
+    }
+
+    fn with_current_transaction_scope(
+        &mut self,
+        callback: &mut dyn for<'loan> FnMut(
+            &'loan mut dyn mod_api::ItemEntityServerAccess,
+            &'loan mod_api::TransactionContext,
+        ),
+    ) -> Result<(), mod_api::TransactionUnavailable> {
+        let frame = self
+            .game
+            .current_storage_frame()
+            .ok_or(mod_api::TransactionUnavailable)?;
+        frame.lend(|tx| callback(self, tx));
+        Ok(())
+    }
+
+    fn with_transaction_scope(
+        &mut self,
+        callback: &mut dyn for<'loan> FnMut(
+            &'loan mut dyn mod_api::ItemEntityServerAccess,
+            &'loan mod_api::TransactionContext,
+        ) -> bool,
+    ) -> Result<bool, mod_api::TransactionScopeError> {
+        let (subject, index) = (self.subject, self.index);
+        self.game
+            .scoped_storage(|game, tx| {
+                let mut child = ItemEntityTickAccess {
+                    game,
+                    subject,
+                    index,
+                };
+                callback(&mut child, tx).then_some(())
+            })
+            .map(|settled| settled.is_some())
     }
 }
 
@@ -245,7 +262,7 @@ mod on_entity_item_update_tests {
         }
     }
 
-    struct Mod(Vec<Update>, bool);
+    struct Mod(Vec<Update>);
 
     thread_local! { static ORDER: std::cell::RefCell<Vec<(u32, &'static str)>> = const { std::cell::RefCell::new(Vec::new()) }; }
 
@@ -259,31 +276,22 @@ mod on_entity_item_update_tests {
 
     #[mod_api::__subscriptions]
     impl Hooks for Mod {
-        fn entity_tick_listened(
-            &self,
-            _: mod_api::HostSide<'_>,
-            event: &mut mod_api::EntityTickListenedEvent,
-        ) {
-            event.listened = true;
-        }
         fn entity_tick_pre(
             &self,
             _: mod_api::HostSide<'_>,
             event: &mut mod_api::EntityTickPreEvent<'_>,
-        ) {
-            told(event.entities, "pre");
+        ) -> mod_api::Flow {
+            told(std::slice::from_ref(&event.entity), "pre");
+            mod_api::Flow::Continue
         }
         fn entity_tick_post(
             &self,
             _: mod_api::HostSide<'_>,
             event: &mut mod_api::EntityTickPostEvent<'_>,
         ) {
-            told(event.entities, "post");
+            told(std::slice::from_ref(&event.entity), "post");
         }
         fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
-            if self.1 {
-                r.entity_tick_each("minecraft:item");
-            }
             for part in &self.0 {
                 let key = r.item_key(part.item);
                 r.item_part(key, part.clone());
@@ -295,7 +303,7 @@ mod on_entity_item_update_tests {
     fn floor(game: &mut Game<'_>) {
         game.options.dedicated = Some(Vec::new());
         game.native_lifecycle
-            .begin_open(mod_api::Authority::IntegratedServer);
+            .begin_open(Some(mod_api::Authority::IntegratedServer));
         game.world = sunrise_client::world::World::new(game.res.facts().air, 1);
         game.world
             .chunks
@@ -338,20 +346,11 @@ mod on_entity_item_update_tests {
     fn a_canceling_part_holds_its_own_item_and_nothing_else() {
         crate::game::in_own_process(
             "game::native_hooks::on_entity_item_update::on_entity_item_update_tests::a_canceling_part_holds_its_own_item_and_nothing_else",
-            || a_canceling_part_holds_its_own_item_and_nothing_else_isolated(false),
+            a_canceling_part_holds_its_own_item_and_nothing_else_isolated,
         );
     }
 
-    #[test]
-    #[ignore = "daily"]
-    fn a_named_item_still_hears_post_when_its_part_halts_physics() {
-        crate::game::in_own_process(
-            "game::native_hooks::on_entity_item_update::on_entity_item_update_tests::a_named_item_still_hears_post_when_its_part_halts_physics",
-            || a_canceling_part_holds_its_own_item_and_nothing_else_isolated(true),
-        );
-    }
-
-    fn a_canceling_part_holds_its_own_item_and_nothing_else_isolated(named: bool) {
+    fn a_canceling_part_holds_its_own_item_and_nothing_else_isolated() {
         let iron = Update {
             item: "minecraft:iron_ingot",
             cancels: true,
@@ -368,27 +367,24 @@ mod on_entity_item_update_tests {
         };
         let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
             "item_update",
-            Box::new(Mod(
-                vec![
-                    iron.clone(),
-                    gold.clone(),
-                    Update {
-                        item: "minecraft:emerald",
-                        cancels: false,
-                        remove: true,
-                        mixed: false,
-                        heard: Default::default(),
-                    },
-                    Update {
-                        item: "minecraft:copper_ingot",
-                        cancels: true,
-                        remove: false,
-                        mixed: true,
-                        heard: Default::default(),
-                    },
-                ],
-                named,
-            )),
+            Box::new(Mod(vec![
+                iron.clone(),
+                gold.clone(),
+                Update {
+                    item: "minecraft:emerald",
+                    cancels: false,
+                    remove: true,
+                    mixed: false,
+                    heard: Default::default(),
+                },
+                Update {
+                    item: "minecraft:copper_ingot",
+                    cancels: true,
+                    remove: false,
+                    mixed: true,
+                    heard: Default::default(),
+                },
+            ])),
         )]
         .into();
         mod_platform::testing::with_mods(mods.clone(), || {
@@ -513,35 +509,48 @@ mod on_entity_item_update_tests {
                         );
                         let result = scope.transaction(|scope, _| {
                             assert_eq!(
-                                scope.with_view(|mut view| view.set_stack(earlier.clone())),
+                                scope.with_view(|mut view| view.set_stack(Some(earlier.clone()))),
                                 Some(Ok(true))
                             );
-                            scope.transaction(|scope, _| {
-                                scope
-                                    .with_view(|mut view| {
-                                        assert_eq!(view.set_stack(later.clone()), Ok(true));
-                                        assert!(view.set_pickup_delay(7));
-                                        assert!(view.set_target(Some(8)));
-                                        assert!(view.set_velocity([9.0; 3]));
-                                        STACK_PROJECTIONS.set(0);
-                                        assert_eq!(view.with_stack(|stack| stack.count()), Some(3));
-                                        assert_eq!(STACK_PROJECTIONS.get(), 0);
-                                        assert_eq!(
-                                            view.with_stack(|stack| stack.project()).flatten(),
-                                            Some(later.clone())
-                                        );
-                                        assert_eq!(STACK_PROJECTIONS.get(), 1);
-                                    })
-                                    .unwrap();
-                                assert_eq!(
-                                    peer.set_stack(scope.host(), peer_stack.clone()),
-                                    Ok(true)
-                                );
-                                Ok::<_, ()>(())
-                            })?;
+                            scope
+                                .transaction(|scope, _| {
+                                    scope
+                                        .with_view(|mut view| {
+                                            assert_eq!(
+                                                view.set_stack(Some(later.clone())),
+                                                Ok(true)
+                                            );
+                                            assert!(view.set_pickup_delay(7));
+                                            assert!(view.set_target(Some(8)));
+                                            assert!(view.set_velocity([9.0; 3]));
+                                            STACK_PROJECTIONS.set(0);
+                                            assert_eq!(
+                                                view.with_stack(|stack| stack.count()),
+                                                Some(3)
+                                            );
+                                            assert_eq!(STACK_PROJECTIONS.get(), 0);
+                                            assert_eq!(
+                                                view.with_stack(|stack| stack.project()).flatten(),
+                                                Some(later.clone())
+                                            );
+                                            assert_eq!(STACK_PROJECTIONS.get(), 1);
+                                        })
+                                        .unwrap();
+                                    assert_eq!(
+                                        peer.set_stack(scope.host(), Some(peer_stack.clone())),
+                                        Ok(true)
+                                    );
+                                    Ok::<_, ()>(())
+                                })
+                                .unwrap();
                             commit.then_some(()).ok_or(())
                         });
-                        assert_eq!(result, commit.then_some(()).ok_or(()));
+                        assert_eq!(
+                            result,
+                            commit
+                                .then_some(())
+                                .ok_or(mod_api::TransactionError::Aborted(()))
+                        );
                         let item = &game.dropped[0];
                         assert_eq!(
                             (

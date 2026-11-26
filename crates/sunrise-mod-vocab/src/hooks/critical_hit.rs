@@ -1,5 +1,4 @@
 //! The `critical_hit` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0192
 
 pub trait Hooks {
     /// NeoForge's `CriticalHitEvent`: a player's melee hit on a living
@@ -11,11 +10,15 @@ pub trait Hooks {
     /// particles); `damage_multiplier` starts at 1.5 for vanilla's critical and
     /// 1.0 otherwise, and scales the damage only while `critical` ends true. Not fired for a
     /// target that is no living entity (a dragon part) or when the hit does
-    /// no damage. Fires on the Game that runs the attack.
+    /// no damage. Fires on the Game that runs the attack, and on the attacking
+    /// client, which only asks: once for each melee attack the local player
+    /// sends on a living entity, with `vanilla_critical` from what the client
+    /// knows; what a listener writes there changes no packet, no server
+    /// decision and nothing drawn.
     #[hook(
         target = "sunrise_client::game::native_hooks::base::Game<'_>::native_critical_hit",
         dispatch = "flat",
-        side = "server",
+        side = "both",
         contract = "listen",
         neoforge = "CriticalHitEvent",
         cancellable = false

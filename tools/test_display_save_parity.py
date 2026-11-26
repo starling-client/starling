@@ -3,10 +3,14 @@
 import json
 import sys
 
-from command_exec_corpus import cmd
-import harness_args
-from parity_fuzz import read_data
-import test_command_exec_parity as driver
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools.command_exec_corpus import cmd
+from tools import harness_args
+from tools.parity_fuzz import read_data
+from tools import test_command_exec_parity as driver
 
 
 CHUNK = 256

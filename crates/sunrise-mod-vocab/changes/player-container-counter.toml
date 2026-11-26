@@ -1,0 +1,5 @@
+ids = [
+    "handle:PlayerRef::container_counter",
+    "handle:PlayerRef::next_container_counter",
+]
+why = "Adds vanilla 26.3's `ServerPlayer.containerCounter` and `nextContainerCounter` for mods. `PlayerRef::container_counter` reads the window id the player's last opened menu took (0 before the first), so the next open takes `counter % 100 + 1`, the id a Java `MenuProvider.createMenu` is handed. `PlayerRef::next_container_counter` advances it as every open does and returns the new id, opening and closing nothing: a mod modelling `ServerPlayer.openMenu` where no window follows (a `createMenu` that answers null) keeps the player's later window ids where vanilla's are."

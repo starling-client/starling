@@ -1,0 +1,2 @@
+ids = ["method:prelude::NetworkClientHost::chat_history_limit", "method:prelude::NetworkClientHost::set_chat_history_limit"]
+why = "A client mod reads and raises the chat history cap (ChatComponent.MAX_CHAT_HISTORY, 100) for the stored messages, wrapped lines and sent-message history, as chat-history and chat-tab mods do (#5598)."

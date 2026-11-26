@@ -47,7 +47,7 @@ pub use buffet::State as BuffetEditor;
 pub use create_world::{DIFFICULTIES, WorldOptions};
 pub use flat::{FlatLayer, FlatSettings, State as FlatEditor};
 pub use onboarding::Onboarding;
-use preset_buttons::ADDED_IDS;
+use preset_buttons::{ADDED_IDS, CREDITS_ID, credits_notice};
 use preset_editors::PresetEditorFactories;
 use world_toast::WorldToast;
 
@@ -178,72 +178,8 @@ pub enum StemIssue {
     Experimental,
 }
 
-#[derive(Clone, Debug)]
-pub struct WorldEntry {
-    pub folder: String,
-    pub name: String,
-    /// `GameType`: 0 survival, 1 creative, 2 adventure, 3 spectator.
-    pub game_mode: i32,
-    pub hardcore: bool,
-    pub modified: std::time::SystemTime,
-    pub commands: bool,
-    pub version: String,
-    /// `LevelSummary.isLocked`: another running copy has the world open.
-    pub locked: bool,
-    /// `LevelSummary.CorruptedLevelSummary`: level.dat did not read, so the row
-    /// only knows its folder and offers recovery instead of play.
-    pub corrupted: bool,
-    /// `LevelSummary.isCompatible` false: the saved game version's name, for a world
-    /// from another series.
-    pub incompatible: Option<String>,
-    /// `LevelSummary.requiresFileFixing`: opening the world upgrades its files first.
-    pub file_fixing: bool,
-    /// `BackupStatus.DOWNGRADE`: a newer version saved the world.
-    pub downgrade: bool,
-    /// `LevelSummary.isExperimental`: an experimental feature flag is enabled.
-    pub experimental: bool,
-}
-impl WorldEntry {
-    /// `LevelSummary.isCompatible`: the saved series is this build's.
-    fn compatible(&self) -> bool {
-        self.incompatible.is_none()
-    }
-    /// `LevelSummary.isDisabled`.
-    fn disabled(&self) -> bool {
-        self.locked || !self.compatible()
-    }
-    /// `LevelSummary.primaryActionActive`: a corrupted world offers recovery.
-    fn can_play(&self) -> bool {
-        self.corrupted || !self.disabled()
-    }
-    /// `LevelSummary.canEdit` and `canRecreate`.
-    fn can_edit(&self) -> bool {
-        !self.corrupted && !self.disabled() && !self.file_fixing
-    }
-    /// `BackupStatus.shouldBackup`: the world needs its files fixed or comes from
-    /// a newer version.
-    fn should_backup(&self) -> bool {
-        self.file_fixing || self.downgrade
-    }
-    /// `CorruptedLevelSummary`: named after its folder, nothing else known.
-    fn corrupted(folder: String, modified: std::time::SystemTime) -> Self {
-        Self {
-            name: folder.clone(),
-            folder,
-            game_mode: 0,
-            hardcore: false,
-            modified,
-            commands: false,
-            version: String::new(),
-            locked: false,
-            corrupted: true,
-            incompatible: None,
-            file_fixing: false,
-            downgrade: false,
-            experimental: false,
-        }
-    }
-}
+pub use crate::save::{WorldEntry, list_worlds};
+
 /// The AlertScreen an `Error` shows in place of the access failure.
 #[derive(Clone, Copy, Debug)]
 pub enum Alert {
@@ -341,6 +277,11 @@ pub enum Mode {
         /// An AlertScreen, not the access failure.
         alert: Option<Alert>,
     },
+    /// `CreateWorldScreen.applyNewPackConfig`'s ConfirmScreen when the selected packs fail to
+    /// load: Back reopens the Data Packs screen with the selection it had, Reset with the default.
+    PackValidationFailed {
+        return_to: Box<Mode>,
+    },
     Multiplayer(crate::multiplayer::Screen),
     /// Starling's profiles (`accounts`): signing in, switching, the game's files.
     Account(account::Screen),
@@ -410,6 +351,8 @@ pub enum Action {
     },
     Connect {
         address: String,
+        /// The saved server list row's name, when the join came from that row.
+        name: Option<String>,
         lan: bool,
         realm: bool,
     },
@@ -458,6 +401,9 @@ pub struct Title {
     warning_check: Cell<[f32; 4]>,
     /// The bottom notice's `PlainTextButton` as last drawn: x, y, width, height.
     credits_button: Cell<[f32; 4]>,
+    /// The main menu's own widgets a mod removed at `ScreenEvent.Init.Post`, by id
+    /// ([`Title::init_children`]): neither drawn, pressed nor focused until the next init.
+    removed_children: Vec<u8>,
     /// `Minecraft.allowsMultiplayer()` once the account's attributes are known.
     pub allows_multiplayer: bool,
     account_identity: Option<String>,
@@ -490,7 +436,6 @@ pub struct Title {
     /// A Realm's checked address, once the Realms screen's join came back.
     connect_request: Option<String>,
     /// EditWorldScreen's and WorldOpenFlows' `SystemToast` and its slide.
-    toast: Option<crate::toasts::SystemToast>,
     pending_toast: Option<WorldToast>,
     icons: RefCell<std::collections::HashMap<PathBuf, (std::time::SystemTime, Option<Vec<u8>>)>>,
     splash: Option<String>,
@@ -513,6 +458,20 @@ pub struct Title {
     preparing: bool,
     /// The confirm screen's Back: the Data Packs screen reopens.
     reopen_data_packs: bool,
+    /// The selection the Data Packs screen reopens with when it is not the Create screen's own
+    /// (`WorldDataConfiguration.DEFAULT` after Reset).
+    reopen_selected: Option<Vec<String>>,
+    /// The selection before the read that validates a new one (`dataPack.validation.working`);
+    /// `None` while the read is the Create screen's first.
+    pack_validation: Option<(Vec<String>, PackScreen)>,
+    /// The screen the failed selection came from, for the confirm's answer.
+    pack_validation_from: PackScreen,
+}
+/// The screen whose Done started a selection change: `onAbort` reopens it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum PackScreen {
+    DataPacks,
+    Experiments,
 }
 pub(crate) struct Button {
     x: f32,
@@ -598,6 +557,7 @@ pub fn parse_seed(text: &str) -> Option<i64> {
         )
     }))
 }
+<<<<<<< HEAD
 /// The latest `LastPlayed` kept: the end of year 9999, in milliseconds. A later time does not fit a
 /// Windows `SystemTime`, and adding it panics.
 const MAX_LAST_PLAYED_MILLIS: u64 = 253_402_300_799_000;
@@ -692,6 +652,98 @@ fn experimental_features(data: &sunrise_core::nbt::Tag) -> bool {
         EXPERIMENTAL.contains(&id.as_str())
     })
 }
+||||||| 46c00106def
+/// The latest `LastPlayed` kept: the end of year 9999, in milliseconds. A later time does not fit a
+/// Windows `SystemTime`, and adding it panics.
+const MAX_LAST_PLAYED_MILLIS: u64 = 253_402_300_799_000;
+
+/// The time a world's `LastPlayed` (milliseconds since the epoch) names, clamped so that a damaged
+/// or hostile `level.dat` cannot panic the world list.
+fn last_played(millis: u64) -> std::time::SystemTime {
+    std::time::UNIX_EPOCH + std::time::Duration::from_millis(millis.min(MAX_LAST_PLAYED_MILLIS))
+}
+
+pub fn list_worlds(saves: &Path) -> Vec<WorldEntry> {
+    let since_epoch = |time: std::time::SystemTime| {
+        time.duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+    };
+    // Sorted by the time as saved: the clamped time shown would make far-off ones tie.
+    let mut worlds: Vec<(std::time::Duration, WorldEntry)> = std::fs::read_dir(saves)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let path = e.path();
+            // findLevelCandidates: a folder with a level.dat or a level.dat_old.
+            let file = |name: &str| std::fs::metadata(path.join(name)).ok().filter(|m| m.is_file());
+            // getFileModificationTime: level.dat's, else level.dat_old's.
+            let file = file("level.dat").or_else(|| file("level.dat_old"))?;
+            let modified = file.modified().unwrap_or(std::time::UNIX_EPOCH);
+            let folder = e.file_name().to_string_lossy().into_owned();
+            // readLevelSummary reads level.dat alone; when it fails the world is
+            // still listed, as a CorruptedLevelSummary named after its folder.
+            let level = Level::read_summary(&path);
+            let root = crate::save::read_dat(&path.join("level.dat"));
+            let (Some(level), Some(root)) = (level, root) else {
+                return Some((since_epoch(modified), WorldEntry::corrupted(folder, modified)));
+            };
+            let data = root.get("Data")?;
+            let (played, modified) = match data.get("LastPlayed") {
+                Some(sunrise_core::nbt::Tag::Long(millis)) if *millis >= 0 => {
+                    (std::time::Duration::from_millis(*millis as u64), last_played(*millis as u64))
+                }
+                _ => (since_epoch(modified), modified),
+            };
+            Some((played, WorldEntry {
+                folder,
+                name: level.name,
+                game_mode: level.game_mode,
+                hardcore: level.hardcore,
+                modified,
+                commands: matches!(data.get("allowCommands"), Some(sunrise_core::nbt::Tag::Byte(v)) if *v != 0),
+                version: data.get("Version").and_then(|v| v.get("Name"))
+                    .and_then(|v| match v { sunrise_core::nbt::Tag::String(s) => Some(s.to_string_lossy()), _ => None })
+                    .unwrap_or_else(|| lang::get_or("selectWorld.versionUnknown", "Unknown")),
+                locked: crate::save::SessionLock::is_locked(&path),
+                corrupted: false,
+                incompatible: crate::save::incompatible_version(&path),
+                file_fixing: crate::save::needs_file_fixes(&path),
+                downgrade: crate::save::downgraded_from(&path).is_some(),
+                experimental: experimental_features(data),
+            }))
+        })
+        .collect();
+    worlds.sort_by_key(|(played, _)| std::cmp::Reverse(*played));
+    worlds.into_iter().map(|(_, world)| world).collect()
+}
+/// `FeatureFlags.isExperimental` of `LevelStorageSource.parseFeatureFlagsFromSummary`:
+/// level.dat's `enabled_features` name a known flag other than `minecraft:vanilla`
+/// (unknown names are dropped).
+fn experimental_features(data: &sunrise_core::nbt::Tag) -> bool {
+    const EXPERIMENTAL: [&str; 3] = [
+        "minecraft:trade_rebalance",
+        "minecraft:redstone_experiments",
+        "minecraft:minecart_improvements",
+    ];
+    let Some(sunrise_core::nbt::Tag::List(flags)) = data.get("enabled_features") else {
+        return false;
+    };
+    flags.iter().any(|flag| {
+        let sunrise_core::nbt::Tag::String(name) = flag else {
+            return false;
+        };
+        let name = name.to_string_lossy();
+        let id = if name.contains(':') {
+            name
+        } else {
+            format!("minecraft:{name}")
+        };
+        EXPERIMENTAL.contains(&id.as_str())
+    })
+}
+=======
+>>>>>>> ed6772e2118
 /// LevelSummary.createInfo: a hardcore world's mode in red (CommonColors.RED),
 /// else `gameMode.` + its GameType name, then commands and the version.
 fn world_info(world: &WorldEntry) -> crate::text::Text {
@@ -817,6 +869,7 @@ impl Mode {
             Self::Recover { .. } => "world_recover",
             Self::Recovered { .. } => "world_recovered",
             Self::Error { .. } => "error",
+            Self::PackValidationFailed { .. } => "pack_validation_failed",
             Self::Multiplayer(screen) => screen.id(),
             Self::MultiplayerWarning { .. } => "multiplayer_warning",
             Self::Onboarding(_) => "onboarding",
@@ -891,7 +944,9 @@ impl Title {
                     options.rules.rebind_registry(registry.clone())
                 }
                 Mode::CreatePreset { parent, .. } => rebind(parent, registry),
-                Mode::Error { return_to, .. } => rebind(return_to, registry),
+                Mode::Error { return_to, .. } | Mode::PackValidationFailed { return_to } => {
+                    rebind(return_to, registry)
+                }
                 _ => {}
             }
         }
@@ -948,6 +1003,7 @@ impl Title {
             message_lines: Cell::new(1),
             warning_check: Cell::new([0.0; 4]),
             credits_button: Cell::new([0.0; 4]),
+            removed_children: Vec::new(),
             allows_multiplayer: true,
             account_identity: None,
             mods: 0,
@@ -963,7 +1019,6 @@ impl Title {
             erase_check: Cell::new([0.0; 4]),
             open_request: None,
             connect_request: None,
-            toast: None,
             pending_toast: None,
             icons: RefCell::new(std::collections::HashMap::new()),
             splash: choose_splash(splashes, splash_index, (today.month(), today.day())),
@@ -976,6 +1031,9 @@ impl Title {
             confirm_experiments: RefCell::new(None),
             preparing: false,
             reopen_data_packs: false,
+            reopen_selected: None,
+            pack_validation: None,
+            pack_validation_from: PackScreen::DataPacks,
         }
     }
     /// Retain additional repository sources across world-creation screens.
@@ -1197,6 +1255,7 @@ impl Title {
     /// filled in after the data packs changed (`openCreateWorldScreen`).
     pub fn finish_preparing(&mut self) {
         self.preparing = false;
+        self.pack_validation = None;
         if !matches!(self.mode, Mode::Create { .. }) {
             self.set_mode(self.new_world());
         }
@@ -1255,9 +1314,56 @@ impl Title {
                     &self.additional_data_packs,
                 ));
         } else {
-            self.set_data_packs(ids);
-            self.preparing = true;
+            self.apply_data_packs(ids, PackScreen::DataPacks);
         }
+    }
+    /// `applyNewPackConfig`: the selection applies and its data is read again, the old selection
+    /// kept for a failed read.
+    fn apply_data_packs(&mut self, ids: Vec<String>, from: PackScreen) {
+        self.pack_validation = Some((self.data_packs(), from));
+        self.set_data_packs(ids);
+        self.preparing = true;
+    }
+    /// The read of a new selection failed: the Create screen has the old selection back, and
+    /// `dataPack.validation.failed` asks where to go. False when the read was not a selection's.
+    pub fn pack_validation_failed(&mut self) -> bool {
+        let Some((previous, from)) = self.pack_validation.take() else {
+            return false;
+        };
+        self.preparing = false;
+        self.set_data_packs(previous);
+        self.pack_validation_from = from;
+        let return_to = Box::new(self.mode.clone());
+        self.set_mode(Mode::PackValidationFailed { return_to });
+        true
+    }
+    /// The confirm's answer (`onAbort`): Back reopens the Data Packs screen with the selection it
+    /// had, Reset with the default.
+    fn answer_pack_validation(&mut self, back: bool) {
+        let Mode::PackValidationFailed { return_to } = &self.mode else {
+            return;
+        };
+        let create = *return_to.clone();
+        self.set_mode(create);
+        let selected = if back {
+            self.data_packs()
+        } else {
+            vec!["vanilla".to_owned()]
+        };
+        match self.pack_validation_from {
+            PackScreen::DataPacks => {
+                self.reopen_data_packs = true;
+                self.reopen_selected = (!back).then_some(selected);
+            }
+            PackScreen::Experiments => self.open_experiments(&selected),
+        }
+    }
+    /// `CreateWorldScreen.openExperimentsScreen`: the feature packs the jar ships, switched on
+    /// or off as `selected` has them.
+    fn open_experiments(&mut self, selected: &[String]) {
+        let flags =
+            experiments::repository_flags(&self.resources, selected, &self.additional_data_packs);
+        *self.experiments.get_mut() = Some(experiments::ExperimentsScreen::new(flags));
     }
     /// Whether the confirm screen declined: the Data Packs screen reopens.
     pub fn take_reopen_data_packs(&mut self) -> bool {
@@ -1272,7 +1378,9 @@ impl Title {
         let (dir, selected) = match &self.mode {
             Mode::Create { options, .. } => (
                 options.pack_dir.clone().unwrap_or_default(),
-                options.data_packs.clone(),
+                self.reopen_selected
+                    .take()
+                    .unwrap_or_else(|| options.data_packs.clone()),
             ),
             _ => (Default::default(), Vec::new()),
         };
@@ -1327,7 +1435,7 @@ impl Title {
         Some((row as usize, (x - left - 2.0, y - content_y)))
     }
     /// The pointer moved with the button held (`mouseDragged`).
-    pub fn drag(&mut self, cursor: (f32, f32), size: (f32, f32)) {
+    pub fn drag(&mut self, cursor: (f32, f32), size: (f32, f32)) -> bool {
         if let Some(rules) = self.rules.get_mut() {
             return rules.drag(cursor.1, size.1.ceil());
         }
@@ -1338,22 +1446,22 @@ impl Title {
             return screen.drag(cursor.1, size);
         }
         if let Mode::CreateFlat { flat, .. } = &mut self.mode {
-            flat::drag(flat, cursor, size);
-            return;
+            return flat::drag(flat, cursor, size);
         }
         if let Mode::CreateBuffet { buffet, .. } = &mut self.mode {
-            buffet::drag(buffet, cursor, size);
-            return;
+            return buffet::drag(buffet, cursor, size);
         }
-        if self.drag_missing_mods(cursor, size) {
-            return;
+        if matches!(self.mode, Mode::MissingMods { .. }) {
+            return self.drag_missing_mods(cursor, size);
         }
         if let Mode::Select { worlds, .. } = &self.mode {
             let (top, bottom, _, content) = self.world_list(worlds, size);
             let mut scroll = self.scroll.get();
-            scroll.drag(cursor.1, top, bottom, content);
+            let handled = scroll.drag(cursor.1, top, bottom, content);
             self.scroll.set(scroll);
+            return handled;
         }
+        false
     }
     /// The button was released (`onRelease`).
     pub fn release(&mut self) -> bool {
@@ -1378,7 +1486,7 @@ impl Title {
         scroll.release();
         handled
     }
-    /// Mouse wheel over the classic world and server lists, or cycle buttons. Returns true if a button was cycled.
+    /// Mouse wheel over the classic world and server lists, or cycle buttons. Returns true if a child accepted it.
     pub fn scroll_worlds(&mut self, delta: f32, cursor: (f32, f32), size: (f32, f32)) -> bool {
         self.scroll_worlds_with(delta, cursor, size, true)
     }
@@ -1390,27 +1498,22 @@ impl Title {
         cycle: bool,
     ) -> bool {
         if let Some(rules) = self.rules.get_mut() {
-            rules.wheel(delta, size.1.ceil());
-            return false;
+            return rules.wheel_at(delta, cursor.1, size.1.ceil());
         }
         if let Mode::Multiplayer(screen) = &mut self.mode {
-            screen.wheel(delta, cursor, size);
-            return false;
+            return screen.wheel(delta, cursor, size);
         }
         if let Mode::Realms(screen) = &mut self.mode {
-            screen.wheel(delta, cursor, size);
-            return false;
+            return screen.wheel(delta, cursor, size);
         }
         if let Mode::CreateFlat { flat, .. } = &mut self.mode {
-            flat::wheel(flat, delta, cursor, size);
-            return false;
+            return flat::wheel(flat, delta, cursor, size);
         }
         if let Mode::CreateBuffet { buffet, .. } = &mut self.mode {
-            buffet::wheel(buffet, delta, cursor, size);
-            return false;
+            return buffet::wheel(buffet, delta, cursor, size);
         }
-        if self.wheel_missing_mods(delta, size) {
-            return false;
+        if matches!(self.mode, Mode::MissingMods { .. }) {
+            return self.wheel_missing_mods(delta, cursor.1, size);
         }
         // CycleButton.mouseScrolled reads only the vertical wheel.
         if let Mode::Create {
@@ -1451,7 +1554,7 @@ impl Title {
         let mut scroll = self.scroll.get();
         scroll.wheel(delta, ROW_HEIGHT / 2.0, top, bottom, content);
         self.scroll.set(scroll);
-        false
+        true
     }
     pub fn failed(&mut self, error: impl std::fmt::Display) {
         let return_to = Box::new(self.mode.clone());
@@ -1467,26 +1570,7 @@ impl Title {
         let (title, message) = self.pending_toast.take()?.text();
         Some(crate::toasts::SystemToast::new(title, Some(message)))
     }
-    /// Apply a toast accepted by the game's toast admission hook.
-    pub fn apply_toast(&mut self, toast: crate::toasts::SystemToast) {
-        self.toast = Some(toast);
-    }
-    /// `ToastManager.update` for the system toast: slides it in, keeps it
-    /// for 5 s times the notification display time, slides it out. The
-    /// sound of a new visibility (`Toast.Visibility`), if any.
-    pub fn update_toast(&mut self, multiplier: f32) -> Option<&'static str> {
-        let (sound, finished) = self.toast.as_mut()?.update(f64::from(multiplier));
-        if finished {
-            self.toast = None;
-        }
-        sound.map(|show| {
-            if show {
-                "minecraft:ui.toast.in"
-            } else {
-                "minecraft:ui.toast.out"
-            }
-        })
-    }
+
     /// The server list's narration of LAN worlds found since the last call
     /// (`JoinMultiplayerScreen.tick`'s `updateNetworkServers`).
     pub fn lan_found_narrations(&self, size: (f32, f32)) -> Vec<Text> {
@@ -1494,10 +1578,6 @@ impl Title {
             Mode::Multiplayer(screen) => screen.lan_found_narrations(size),
             _ => Vec::new(),
         }
-    }
-    /// Whether the system toast holds the `ToastManager`'s first slot.
-    pub fn has_toast(&self) -> bool {
-        self.toast.is_some()
     }
     /// The world a finished backup made before its upgrade opens next.
     /// The Realms screen's workers: a join that came back connects (`GetServerDetailsTask`
@@ -1514,6 +1594,7 @@ impl Title {
         let address = self.connect_request.take()?;
         Some(Action::Connect {
             address,
+            name: None,
             lan: false,
             realm: true,
         })
@@ -1629,7 +1710,7 @@ impl Title {
         if !stem_asked {
             let issue = if crate::save::is_old_customized_world(&dir) {
                 Some(StemIssue::Customized)
-            } else if crate::save::world_gen_unstable(&dir) {
+            } else if crate::save::world_gen_unstable(&dir, &crate::save::world_data_packs(&dir)) {
                 Some(StemIssue::Experimental)
             } else {
                 None
@@ -2136,6 +2217,13 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                     join(&[&get("recover_world.done.title", "Recovery done"), &message]),
                 )
             }
+            Mode::PackValidationFailed { .. } => ScreenInfo::new(
+                "pack_validation_failed",
+                get(
+                    "dataPack.validation.failed",
+                    "Failed to validate selected data packs!",
+                ),
+            ),
             Mode::Error { message, alert, .. } => {
                 let title = match alert {
                     Some(Alert::Incompatible) => {
@@ -2404,7 +2492,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 return (Action::None, true, true);
             }
         }
-        if matches!(self.mode, Mode::Main) {
+        if matches!(self.mode, Mode::Main) && !self.removed_children.contains(&CREDITS_ID) {
             let [bx, by, bw, bh] = self.credits_button.get();
             if (bx..bx + bw).contains(&x) && (by..by + bh).contains(&y) {
                 return (Action::Credits, true, true);
@@ -2540,6 +2628,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                     }
                     crate::realms::Outcome::Connect(address) => Action::Connect {
                         address,
+                        name: None,
                         lan: false,
                         realm: true,
                     },
@@ -2565,8 +2654,9 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                     self.set_mode(Mode::Main);
                     Action::None
                 }
-                crate::multiplayer::Outcome::Connect { address, lan } => Action::Connect {
+                crate::multiplayer::Outcome::Connect { address, name, lan } => Action::Connect {
                     address,
+                    name,
                     lan,
                     realm: false,
                 },
@@ -2849,6 +2939,10 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 self.escape();
                 Action::None
             }
+            (Mode::PackValidationFailed { .. }, Some(id @ (104 | 105))) => {
+                self.answer_pack_validation(id == 104);
+                Action::None
+            }
             (Mode::Error { return_to, .. }, Some(39)) => {
                 let back = *return_to.clone();
                 self.set_mode(back);
@@ -2900,7 +2994,10 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
             ) if options.custom_preset.is_none()
                 && options.world_type == crate::save::WorldPreset::Flat =>
             {
-                let flat = flat::State::new(&self.resources, options.flat_settings.clone());
+                let overrides =
+                    options.selected_overrides(&self.resources, self.preset_data.as_deref());
+                let flat =
+                    flat::State::new(&self.resources, options.flat_settings.clone(), &overrides);
                 let mode = Mode::CreateFlat {
                     name: name.clone(),
                     seed: seed.clone(),
@@ -2924,12 +3021,8 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
             // CreateWorldScreen.openExperimentsScreen: the feature packs the
             // jar ships, switched on or off.
             (Mode::Create { options, .. }, Some(30)) => {
-                let flags = experiments::repository_flags(
-                    &self.resources,
-                    &options.data_packs,
-                    &options.additional_data_packs,
-                );
-                *self.experiments.get_mut() = Some(experiments::ExperimentsScreen::new(flags));
+                let selected = options.data_packs.clone();
+                self.open_experiments(&selected);
                 Action::None
             }
             (Mode::Create { .. }, Some(21)) => self.create_or_upload(),
@@ -3069,7 +3162,8 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
         }
     }
     /// A left press after `click` focused a field: the cursor goes under the
-    /// pointer (`EditBox.onClick`).
+    /// pointer (`EditBox.onClick`). Returns `true` when the click hit the
+    /// focused field.
     pub fn press_field(
         &mut self,
         atlas: &HudAtlas,
@@ -3101,18 +3195,25 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
         false
     }
     /// The pointer moved with the button held (`EditBox.onDrag`).
-    pub fn drag_field(&mut self, atlas: &HudAtlas, x: f32) {
+    pub fn drag_field(&mut self, atlas: &HudAtlas, x: f32) -> bool {
         if self.rules.get_mut().is_some() {
-            return;
+            return false;
         }
         let secret = matches!(&self.mode, Mode::Account(screen) if screen.password_masked());
         if let Some(field) = caret_field(&mut self.mode, self.search_focused, &mut self.search) {
+<<<<<<< HEAD
             if secret {
                 self.caret.get_mut().drag_password(atlas, field, x);
             } else {
                 self.caret.get_mut().drag(atlas, field, x);
             }
+||||||| 46c00106def
+            self.caret.get_mut().drag(atlas, field, x);
+=======
+            return self.caret.get_mut().drag(atlas, field, x);
+>>>>>>> ed6772e2118
         }
+        false
     }
     /// The button was released: drags stop selecting.
     pub fn release_field(&mut self) -> bool {
@@ -3172,6 +3273,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 crate::realms::Outcome::Connect(address) => (
                     Action::Connect {
                         address,
+                        name: None,
                         lan: false,
                         realm: true,
                     },
@@ -3200,13 +3302,14 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
         }
         match &self.mode {
             Mode::Multiplayer(screen) => match screen.confirm() {
-                crate::multiplayer::Outcome::Connect { address, lan } => {
+                crate::multiplayer::Outcome::Connect { address, name, lan } => {
                     if matches!(screen, crate::multiplayer::Screen::Direct { .. }) {
                         crate::multiplayer::remember_direct_join(&self.saves, &address);
                     }
                     (
                         Action::Connect {
                             address,
+                            name,
                             lan,
                             realm: false,
                         },
@@ -3653,8 +3756,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                     // their data is read again (`applyNewPackConfig`'s load
                     // screen).
                     if let Some(pending) = pending {
-                        self.set_data_packs(pending);
-                        self.preparing = true;
+                        self.apply_data_packs(pending, PackScreen::DataPacks);
                     }
                     return (true, true);
                 }
@@ -3703,6 +3805,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                     // ExperimentsScreen.onDone: the other packs keep their
                     // order, the selected features are appended in reverse
                     // screen order. Cancel drops the switches.
+                    let previous = self.data_packs();
                     if outcome == experiments::Outcome::Done
                         && let Mode::Create { options, .. } = &mut self.mode
                         && let Some(flags) = self.experiments.borrow().as_ref().map(|s| {
@@ -3723,6 +3826,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                     // `applyNewPackConfig`'s load screen: the data is read
                     // again for the packs the screen picked (Done only).
                     if outcome == experiments::Outcome::Done {
+                        self.pack_validation = Some((previous, PackScreen::Experiments));
                         self.preparing = true;
                     }
                     return (true, true);
@@ -3889,6 +3993,8 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 let folder = world.folder.clone();
                 self.return_to_list(Some(&folder));
             }
+            // ConfirmScreen.keyPressed: Escape runs the callback with false, Reset.
+            Mode::PackValidationFailed { .. } => self.answer_pack_validation(false),
             Mode::Error { return_to, .. } => self.set_mode(*return_to.clone()),
             Mode::CreateFlat { .. } => {
                 if matches!(&self.mode, Mode::CreateFlat { flat, .. } if flat.page == flat::Page::Presets)
@@ -4570,50 +4676,5 @@ mod classic_tests {
                     .any(|v| v.color == rgba(255, 255, 0, 255))
             );
         }
-    }
-}
-
-#[cfg(test)]
-mod last_played_tests {
-    use super::*;
-    use std::time::{Duration, UNIX_EPOCH};
-    use sunrise_core::nbt::Tag;
-
-    /// A `LastPlayed` too far ahead for a Windows `SystemTime` is clamped to the end of year 9999
-    /// instead of panicking the Singleplayer list; an ordinary one is kept as it is.
-    #[test]
-    fn a_last_played_too_far_ahead_is_clamped_not_a_panic() {
-        let end = UNIX_EPOCH + Duration::from_millis(253_402_300_799_000);
-        assert_eq!(last_played(i64::MAX as u64), end);
-        assert_eq!(last_played(1_000_000_000_000_000), end);
-        assert_eq!(last_played(253_402_300_799_000), end);
-        assert_eq!(
-            last_played(1_700_000_000_000),
-            UNIX_EPOCH + Duration::from_millis(1_700_000_000_000)
-        );
-    }
-
-    #[test]
-    fn worlds_played_past_the_clamp_keep_the_newest_first() {
-        let saves =
-            std::env::temp_dir().join(format!("sunrise-last-played-order-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&saves);
-        // Both later than the clamp, the older one first in the folder.
-        for (folder, millis) in [("A", i64::MAX - 1), ("B", i64::MAX)] {
-            crate::save::write_dat(
-                &saves.join(folder).join("level.dat"),
-                Tag::compound([(
-                    "Data",
-                    Tag::compound([
-                        ("LevelName", Tag::String("Twin".into())),
-                        ("LastPlayed", Tag::Long(millis)),
-                    ]),
-                )]),
-            )
-            .unwrap();
-        }
-        let folders: Vec<String> = list_worlds(&saves).into_iter().map(|w| w.folder).collect();
-        assert_eq!(folders, ["B", "A"]);
-        std::fs::remove_dir_all(&saves).unwrap();
     }
 }

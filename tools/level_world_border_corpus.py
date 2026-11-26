@@ -6,7 +6,12 @@ and reads all three after each change, from the server's own source and
 through /execute in. It includes failed commands (no change, a size out of
 range) and restoration controls (each level set back to the default).
 """
-from command_exec_corpus import cmd
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools.command_exec_corpus import cmd
 
 LEVELS = ['minecraft:overworld', 'minecraft:the_nether', 'minecraft:the_end']
 

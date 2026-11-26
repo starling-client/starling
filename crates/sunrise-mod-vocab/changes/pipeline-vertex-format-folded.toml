@@ -1,0 +1,3 @@
+ids = ["type:PipelineVertexFormat", "type:RenderPipeline.vertex_format"]
+why = "PipelineVertexFormat was a one-variant enum beside VertexFormat, and RenderPipeline::vertex_format held it without anything reading it: a pipeline's vertex data is its vertex_bindings, which default to binding 0 of VertexFormat::position_tex_color(). The enum and the field are removed, so the format is named once."
+migrate = "Delete any use of PipelineVertexFormat and of RenderPipeline::vertex_format. To draw the default position, texture coordinate and colour data declare nothing, or declare it with .vertex_binding(0, VertexFormat::position_tex_color()); read a pipeline's formats with RenderPipeline::effective_vertex_bindings."

@@ -47,6 +47,10 @@ fn depart(game: &mut Game<'_>, id: u32, restart_waiting: bool) -> Vec3 {
 #[test]
 #[ignore = "daily"]
 fn portal_arrival_effects_merge_items_before_their_first_tick() {
+    run_portal_arrival_effects_merge_items_before_their_first_tick();
+}
+
+pub(in crate::game) fn run_portal_arrival_effects_merge_items_before_their_first_tick() {
     for (incoming, waiting, incoming_age, waiting_age, restart) in [
         (3, 5, 5999, 41, false),
         (5, 3, 7, 41, true),
@@ -144,6 +148,10 @@ pub(in crate::game) fn assert_tnt_blast(game: &mut Game<'_>, protected: bool) {
 #[test]
 #[ignore = "daily"]
 fn portal_arrival_effects_tnt_protection_is_live_but_not_saved() {
+    run_portal_arrival_effects_tnt_protection_is_live_but_not_saved();
+}
+
+pub(in crate::game) fn run_portal_arrival_effects_tnt_protection_is_live_but_not_saved() {
     for restart_waiting in [false, true] {
         with_game(|game| {
             prepare(game);
@@ -214,7 +222,11 @@ impl Hooks for RemoveOnArrival {
     ) -> Flow {
         if event.kind == "minecraft:item" && self.armed.swap(false, Ordering::SeqCst) {
             let victim = self.victim.load(Ordering::SeqCst);
-            let victim = if victim == 0 { event.entity } else { victim };
+            let victim = if victim == 0 {
+                event.subject.id()
+            } else {
+                victim
+            };
             assert!(host.entity(victim).unwrap().discard(host));
             self.calls.fetch_add(1, Ordering::SeqCst);
         }
@@ -254,6 +266,10 @@ fn complete_callback_arrival(game: &mut Game<'_>, id: u32, portal: bool, at: Vec
 #[test]
 #[ignore = "daily"]
 fn portal_arrival_effects_join_removals_cannot_consume_live_stacks() {
+    run_portal_arrival_effects_join_removals_cannot_consume_live_stacks();
+}
+
+pub(in crate::game) fn run_portal_arrival_effects_join_removals_cannot_consume_live_stacks() {
     for portal in [true, false] {
         for remove_incoming in [false, true] {
             let armed = Arc::new(AtomicBool::new(false));
@@ -327,14 +343,12 @@ impl SpawnDuringArrival {
         let Tag::Compound(nbt) = nbt else {
             unreachable!()
         };
+        let level = host.level("minecraft:the_nether").unwrap();
         assert!(
-            host.summon(
-                "minecraft:the_nether",
-                "minecraft:item",
-                *self.at.lock().unwrap(),
-                nbt,
-            )
-            .is_some()
+            level
+                .summon(host, "minecraft:item", *self.at.lock().unwrap(), nbt)
+                .unwrap()
+                .is_some()
         );
         self.calls.fetch_add(1, Ordering::SeqCst);
     }
@@ -366,6 +380,10 @@ impl Hooks for SpawnDuringArrival {
 #[test]
 #[ignore = "daily"]
 fn portal_arrival_effects_nested_spawns_do_not_hide_the_real_arrival() {
+    run_portal_arrival_effects_nested_spawns_do_not_hide_the_real_arrival();
+}
+
+pub(in crate::game) fn run_portal_arrival_effects_nested_spawns_do_not_hide_the_real_arrival() {
     for portal in [true, false] {
         let armed = Arc::new(AtomicBool::new(false));
         let calls = Arc::new(AtomicU32::new(0));

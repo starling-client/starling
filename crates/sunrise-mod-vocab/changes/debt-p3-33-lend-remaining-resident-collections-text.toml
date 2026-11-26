@@ -1,0 +1,237 @@
+ids = [
+    "handle:LevelRef::map_data",
+    "handle:LevelRef::visit_map_data",
+    "type:MapState",
+    "type:MapState.dimension",
+    "type:MapState.colors",
+    "handle:LevelRef::block_property",
+    "handle:LevelRef::dimension_type",
+    "type:LevelDimensionType",
+    "type:LevelDimensionType.id",
+    "type:LevelDimensionType.infiniburn",
+    "type:LevelDimensionType.skybox",
+    "type:LevelDimensionType.cardinal_light",
+    "type:LevelDimensionType.timelines",
+    "type:LevelDimensionType.default_clock",
+    "type:LevelDimensionType.bed_can_sleep",
+    "type:LevelDimensionType.bed_can_set_spawn",
+    "type:LevelDimensionType.straw_bed_can_sleep",
+    "type:LevelDimensionType.straw_bed_can_set_spawn",
+    "method:prelude::KeysHost::registry_entries",
+    "method:prelude::KeysHost::visit_registry_entries",
+    "type:RegistryReadError",
+    "type:RegistryReadError.UnknownRegistry",
+    "type:RegistryReadError.Unavailable",
+    "handle:LevelRef::datapack_entries",
+    "handle:LevelRef::visit_datapack_entries",
+    "handle:DatapackRegistrySet::entries",
+    "handle:EntityRef::passengers",
+    "handle:EntityRef::visit_passengers",
+    "handle:EntityRef::indirect_passengers",
+    "handle:EntityRef::visit_indirect_passengers",
+    "handle:EntityRef::parts",
+    "handle:EntityRef::visit_parts",
+    "type:EntityReadError",
+    "type:EntityReadError.Stale",
+    "type:EntityReadError.Unavailable",
+    "handle:EntityRef::fluid_heights",
+    "handle:EntityRef::visit_fluid_heights",
+    "handle:EntityRef::eye_fluid",
+    "handle:LivingRef::effects",
+    "handle:LivingRef::visit_effects",
+    "handle:LivingRef::attributes",
+    "handle:LivingRef::visit_attributes",
+    "handle:LivingRef::attribute_modifiers",
+    "handle:LivingRef::visit_attribute_modifiers",
+    "type:AttributeModifierView",
+    "type:AttributeModifierView.id",
+    "type:AttributeModifierView.amount",
+    "type:AttributeModifierView.operation",
+    "handle:EntityRef::trackers",
+    "handle:EntityRef::visit_trackers",
+    "handle:ChunkRef::watchers",
+    "handle:ChunkRef::visit_watchers",
+    "type:PayloadSendError",
+    "type:PayloadSendError.Unavailable",
+    "handle:LevelRef::loaded_chunks",
+    "handle:LevelRef::visit_loaded_chunks",
+    "handle:LevelRef::forced_chunks",
+    "handle:LevelRef::visit_forced_chunks",
+    "handle:LevelRef::mod_forced_chunks",
+    "handle:LevelRef::visit_mod_forced_chunks",
+    "handle:LevelRef::game_rules",
+    "handle:LevelRef::visit_game_rules",
+    "method:prelude::ConfigServerHost::game_rules",
+    "method:prelude::ConfigServerHost::visit_game_rules",
+    "method:prelude::ConfigServerHost::tick_times",
+    "method:prelude::ConfigServerHost::visit_tick_times",
+    "method:Levels::list_levels",
+    "method:Levels::visit_levels",
+    "type:ServerReadError",
+    "type:ServerReadError.Unavailable",
+    "method:prelude::ScoreboardServerHost::objectives",
+    "method:prelude::ScoreboardServerHost::visit_objectives",
+    "method:prelude::ScoreboardServerHost::teams",
+    "method:prelude::ScoreboardServerHost::visit_teams",
+    "handle:ObjectiveRef::name",
+    "handle:ObjectiveRef::criteria",
+    "handle:ObjectiveRef::scores",
+    "handle:ObjectiveRef::visit_scores",
+    "handle:ObjectiveRef::slots",
+    "handle:ObjectiveRef::visit_slots",
+    "handle:TeamRef::name",
+    "handle:DisplaySlot::name",
+    "type:ScoreEntry",
+    "type:ScoreEntry.holder",
+    "handle:ScoreEntry::new",
+    "type:ObjectiveReadError",
+    "type:ObjectiveReadError.Stale",
+    "type:ObjectiveReadError.Unavailable",
+    "handle:LevelRef::raids",
+    "handle:LevelRef::visit_raids",
+    "handle:RaidRef::raiders",
+    "handle:RaidRef::visit_raiders",
+    "handle:RaidRef::wave_raiders",
+    "handle:RaidRef::visit_wave_raiders",
+    "handle:RaidRef::heroes",
+    "handle:RaidRef::visit_heroes",
+    "type:RaidReadError",
+    "type:RaidReadError.Stale",
+    "type:RaidReadError.Unavailable",
+    "handle:PlayerRef::discovered_recipes",
+    "handle:PlayerRef::visit_discovered_recipes",
+    "method:prelude::ScoreboardClientHost::client_scoreboard",
+    "type:ClientSessionReadError",
+    "type:ClientSessionReadError.Unavailable",
+    "type:ClientScoreboard",
+    "type:ClientScoreboard.objectives",
+    "type:ClientScoreboard.teams",
+    "handle:ClientScoreboard::new",
+    "handle:ClientScoreboard::in_slot",
+    "trait:ClientScoreboard",
+    "method:ClientScoreboard::visit_objectives",
+    "method:ClientScoreboard::visit_teams",
+    "method:ClientScoreboard::with_slot",
+    "type:ClientObjective",
+    "type:ClientObjective.name",
+    "type:ClientObjective.display_name",
+    "type:ClientObjective.render_type",
+    "type:ClientObjective.number_format",
+    "type:ClientObjective.slots",
+    "type:ClientObjective.scores",
+    "handle:ClientObjective::new",
+    "trait:ClientObjective",
+    "method:ClientObjective::name",
+    "method:ClientObjective::render_type",
+    "method:ClientObjective::visit_slots",
+    "method:ClientObjective::visit_scores",
+    "method:ClientObjective::copy_display_name",
+    "method:ClientObjective::copy_number_format",
+    "type:ClientScore",
+    "type:ClientScore.holder",
+    "type:ClientScore.value",
+    "type:ClientScore.display",
+    "type:ClientScore.number_format",
+    "handle:ClientScore::new",
+    "trait:ClientScore",
+    "method:ClientScore::holder",
+    "method:ClientScore::value",
+    "method:ClientScore::copy_display",
+    "method:ClientScore::copy_number_format",
+    "type:ClientTeam",
+    "type:ClientTeam.name",
+    "type:ClientTeam.display_name",
+    "type:ClientTeam.color",
+    "type:ClientTeam.prefix",
+    "type:ClientTeam.suffix",
+    "type:ClientTeam.friendly_fire",
+    "type:ClientTeam.see_friendly_invisibles",
+    "type:ClientTeam.name_tag_visibility",
+    "type:ClientTeam.collision_rule",
+    "type:ClientTeam.members",
+    "handle:ClientTeam::new",
+    "trait:ClientTeam",
+    "method:ClientTeam::name",
+    "method:ClientTeam::color",
+    "method:ClientTeam::friendly_fire",
+    "method:ClientTeam::see_friendly_invisibles",
+    "method:ClientTeam::name_tag_visibility",
+    "method:ClientTeam::collision_rule",
+    "method:ClientTeam::visit_members",
+    "method:ClientTeam::copy_display_name",
+    "method:ClientTeam::copy_prefix",
+    "method:ClientTeam::copy_suffix",
+    "method:ClientSession::client_tab_list",
+    "type:ClientTabList",
+    "type:ClientTabList.entries",
+    "type:ClientTabList.header",
+    "type:ClientTabList.footer",
+    "handle:ClientTabList::new",
+    "trait:ClientTabList",
+    "method:ClientTabList::visit_entries",
+    "method:ClientTabList::copy_header",
+    "method:ClientTabList::copy_footer",
+    "type:ClientTabListEntry",
+    "type:ClientTabListEntry.name",
+    "type:ClientTabListEntry.uuid",
+    "type:ClientTabListEntry.game_mode",
+    "type:ClientTabListEntry.latency",
+    "type:ClientTabListEntry.display",
+    "handle:ClientTabListEntry::new",
+    "trait:ClientTabListEntry",
+    "method:ClientTabListEntry::name",
+    "method:ClientTabListEntry::uuid",
+    "method:ClientTabListEntry::game_mode",
+    "method:ClientTabListEntry::latency",
+    "method:ClientTabListEntry::copy_display",
+]
+why = """
+These reads lend the data the game already holds instead of building owned copies for every caller.
+
+Map reads distinguish a missing map (vanilla ServerLevel.getMapData/MapItemSavedData) from a refused level read. Registry reads follow Level.registryAccess, RegistryAccess.lookup and MappedRegistry.keySet/listElements. NeoForge NewDatapackRegistryEvent.worldRegistry covers startup-only registry loading, NewDatapackRegistryEvent.reloadableRegistry covers registries also loaded on reload, and IRegistryExtension.getDataMap is the separate data-map anchor. The built-in registry report parser rejects repeated entry names before the JSON map can overwrite them, and rejects different spellings of the same canonical entry ID, following vanilla and NeoForge MappedRegistry.register. Configuration registry IDs are validated before publication, following vanilla FriendlyByteBuf.readIdentifier and Identifier.isValidNamespace. Pack IDs are admitted when packs publish. Vanilla PathPackResources.listPath and FilePackResources.listResources are the pack enumeration sites.
+
+Resident riding handles follow vanilla Entity.addPassenger and Entity.getPassengers order, Entity.getIndirectPassengers pre-order, and ClientPacketListener.handleSetEntityPassengersPacket seat order. Body reads follow ServerLevel.getEntity and ClientLevel.getEntity; a parked server body or a client entity awaiting projection cannot supply body state, but packet-tracked seats have their own read. Parts follow vanilla EnderDragon.getSubEntities and NeoForge IEntityExtension.getParts. Fluid reads lend the sampled state behind vanilla Entity.getFluidHeight and Entity.isEyeInFluid and NeoForge IEntityExtension.getFluidTypeHeight, getMaxHeightFluidType and getFirstEyeInFluidType. Living collections come from LivingEntity.getActiveEffects, LivingEntity.getAttributes and AttributeInstance.getModifiers.
+
+Level, tracking, tick and rule visits read the resident state behind MinecraftServer.getAllLevels and getTickTimesNanos, ChunkMap.TrackedEntity.seenBy, ChunkMap.getPlayers(pos, false) and ChunkMap.getVisibleChunkIfPresent, ServerLevel.getForceLoadedChunks and ForceLoadCommand.listForceLoad, and the feature-filtered GameRules.availableRules. NeoForge PacketDistributor.sendToPlayersTrackingEntity, sendToPlayersTrackingEntityAndSelf and sendToPlayersTrackingChunk use the same membership and distinguish an invalid send from having no trackers. NeoForge TicketController.forceChunk scopes mod tickets by controller and owner.
+
+Server scoreboard reads follow vanilla Scoreboard.getObjectives, getPlayerTeams, listPlayerScores and getDisplayObjective. Borrowed names follow Objective.getName/getCriteria, PlayerTeam.getName and DisplaySlot.getSerializedName. Raid visits use the per-level map behind Raids.get and Raids.tick and the members and heroes behind Raid.getAllRaiders, groupRaiderMap and heroesOfTheVillage; NeoForge Raid.spawnGroup changes how raider types are supplied, not those reads. Recipe visits read the book behind ServerRecipeBook.known and contains.
+
+Client scoreboard reads follow ClientLevel.getScoreboard, the same resident Scoreboard queries, and ClientPacketListener.handleAddObjective, handleSetDisplayObjective, handleSetScore and handleSetPlayerTeamPacket. An objective can arrive before it has a slot and occupy several slots afterward; even hidden scores and teams sent by the server are readable. The tab view follows ClientPacketListener.getListedOnlinePlayers rather than the unfiltered getOnlinePlayers, and PlayerTabOverlay.getPlayerInfos/getNameForDisplay for order, cap and names, with GameType.byId for the game-mode value. NeoForge ServerPlayer.getTabListDisplayName and EventHooks.getPlayerTabListDisplayName can change what the server sends; the client reads the name it received. Client text and format copies are opt-in, so one unrepresentable field does not prevent unrelated reads.
+"""
+migrate = """
+- Import `std::ops::ControlFlow`. For collection visitors that return a `Result`, return `ControlFlow::Break(())` to stop and get `Ok(ControlFlow::Break(()))`. `Ok(ControlFlow::Continue(()))` means the visit completed, possibly without a call. Refusals return `Err` without calling the visitor. If you need an owned list, collect only what you retain inside the callback, copying borrowed fields there. The client board and tab collection visitors return plain `ControlFlow<()>`.
+- Replace `level.map_data(host, id)` with `level.visit_map_data(host, id, &mut visit)`. A found map calls `visit` once and returns `Ok(Some(()))`; a missing map returns `Ok(None)`. Handle `Err(LevelReadError::Stale)` for a retired level or world generation and `Err(LevelReadError::Unavailable)` for an unreadable side or backend. `MapState<'_>::dimension` is now `&str` and `colors` is `&[u8]`; copy with `.to_owned()` or `.to_vec()` inside the visit to retain them. For Wire use an owned record of the fields you need.
+- `level.block_property(host, pos, key)` now returns `Option<&str>`. Drop `.as_deref()` and copy with `.map(str::to_owned)` only if keeping the result beyond the host borrow.
+- `level.dimension_type(host)` now returns `Option<LevelDimensionType<'_>>`. The `id`, `infiniburn`, `skybox`, `cardinal_light`, `bed_can_sleep`, `bed_can_set_spawn`, `straw_bed_can_sleep` and `straw_bed_can_set_spawn` fields are `&str`; `default_clock` is `Option<&str>` and `timelines` is `&[String]`. Copy only the fields you retain. `LevelDimensionType<'_>` has no Wire form; put the needed values into your own owned Wire record.
+- Replace `host.registry_entries(registry)` with `host.visit_registry_entries(registry, &mut |id| { /* use id: &str */ ControlFlow::Continue(()) })`. It lends canonical IDs in numeric order for protocol registries and lexical order for name-keyed registries. If retaining a typed key, parse `Identifier::parse(id)` inside the visitor. `RegistryReadError::UnknownRegistry` means an unknown or unexposed registry; `Unavailable` means no live session on the current side. A known empty registry completes without any calls.
+- Replace `level.datapack_entries(host, registry)` with `level.visit_datapack_entries(host, registry, &mut |id| { /* use id: &str */ ControlFlow::Continue(()) })`. IDs are lexical; use `id.to_owned()` inside the visitor to keep one. A declared client registry omitted from the received set has no IDs to visit. No set, an unknown registry or a stale or unloaded level returns `DatapackReadError::UnknownRegistry`; no world backend returns `Unavailable`.
+- `set.entries(registry)` on `DatapackRegistrySet` now returns a borrowing iterator in `Result`, not a `Vec`. Call `set.entries(registry)?` and iterate directly; append `.collect::<Vec<_>>()` only if you need the list of borrows. Use `.map(str::to_owned).collect::<Vec<_>>()` to retain IDs beyond the set. A known empty registry yields an empty iterator; an unknown registry returns `DatapackReadError::UnknownRegistry`.
+- Keep `level.datapack_read(host, registry, entry_id, &mut visit)`, and handle `Err(DatapackReadError::Unavailable)` for a missing world backend. `UnknownRegistry` means the level, publication or exposed registry is absent; `MissingEntry` means a readable registry has no such entry. Only success calls `visit` once.
+- Replace `entity.passengers(host)` with `entity.visit_passengers(host, &mut |rider| { /* read rider */ ControlFlow::Continue(()) })`. The visit is available on either side and omits riders without a resident handle.
+- Replace `entity.indirect_passengers(host)` with `entity.visit_indirect_passengers(host, &mut |rider| { /* read rider */ ControlFlow::Continue(()) })`. This remains server-only and still finds resident riders below a retained, off-level intermediary.
+- Replace `entity.parts(host)` with `entity.visit_parts(host, &mut |part| { /* read part */ ControlFlow::Continue(()) })`. Non-multipart entities complete without a call; a multipart read resolves all parts before the first call.
+- Replace an old `None` check with `Err(EntityReadError::Stale)` for a retired handle, or `Err(EntityReadError::Unavailable)` when the side, backend or view cannot supply the read. A parked body is unavailable, not retired. On the client, packet tracking can supply seats before it supplies a projected body for parts. Neither refusal visits an entry.
+- Replace `entity.fluid_heights(host)` with `entity.visit_fluid_heights(host, &mut |id, depth| { /* use id: &str and depth: f64 */ ControlFlow::Continue(()) })`. The first visit is the deepest contact (water before lava on a tie); break there if you only need that contact. `entity.eye_fluid(host)` still returns `Some(None)` in air and `None` without a readable body, but its inner value is now `&'static str`, not `String`. Use `.map(|fluid| fluid.map(str::to_owned))` only if you need to keep the old owned return type.
+- Replace `living.effects(host)` with `living.visit_effects(host, &mut |effect| { /* use or retain this ActiveEffect */ ControlFlow::Continue(()) })`. Entries are still passed by value, in effect-store order.
+- Replace `living.attributes(host)` with `living.visit_attributes(host, &mut |id| { /* use id: &str */ ControlFlow::Continue(()) })`. If you need to retain an id, call `id.to_owned()` inside the visitor. The visitor uses registry order.
+- Replace `living.attribute_modifiers(host, id)` with `living.visit_attribute_modifiers(host, id, &mut |m| { /* use m.id, m.amount and m.operation */ ControlFlow::Continue(()) })`. The `AttributeModifierView` borrows its `id` for the call. To retain a writable modifier, parse `m.id` with `Identifier::parse` inside the visitor and store `AttributeModifier::new(parsed_id, m.amount, m.operation)` on success. The owned write type and write methods are unchanged. An unknown or unsupported attribute is `Err(EntityReadError::Unavailable)`, not a successful empty visit.
+- Replace `entity.trackers(host)` with `entity.visit_trackers(host, &mut |player| { /* use PlayerRef */ ControlFlow::Continue(()) })`. A stale entity returns `EntityReadError::Stale`; the current side, backend or level may refuse with `EntityReadError::Unavailable`. Replace `chunk.watchers(host)` with `chunk.visit_watchers(host, &mut |player| { /* use PlayerRef */ ControlFlow::Continue(()) })`. A parked server level still supplies its own chunk watchers.
+- `ToClient::send_tracking_chunk` and `ToClient::send_tracking_entity` now return `Err(PayloadSendError::Unavailable)` if the current host or world view cannot supply recipients, before sending anything. Keep handling `Ok(0)` for stale targets or successful sends with no recipients. Add a `PayloadSendError::Unavailable` arm to exhaustive matches. This variant changes the Wire schema of every typed payload containing `PayloadSendError`, even if it is never sent. Update both endpoints of each affected typed channel together, or use your own Wire type with the original payload schema to keep that channel compatible.
+- Replace `level.loaded_chunks(host)` with `level.visit_loaded_chunks(host, &mut |chunk| { /* use ChunkRef */ ControlFlow::Continue(()) })`. The visit does not load anything. Replace `level.forced_chunks(host)` with `level.visit_forced_chunks(host, &mut |pos| { /* use [i32; 2] */ ControlFlow::Continue(()) })`. Replace `level.mod_forced_chunks(host, controller)` with `level.visit_mod_forced_chunks(host, controller, &mut |owner, pos, natural| { /* use TicketOwner, [i32; 2], bool */ ControlFlow::Continue(()) })`. For these visits and chunk watchers, handle `LevelReadError::Stale` for a stale level or `LevelReadError::Unavailable` for an unreadable side or backend (also for an invalid or foreign-table controller handle). An issued controller handle authorizes the visit regardless of the calling mod. A valid empty set completes with `Ok(ControlFlow::Continue(()))` and no callback.
+- Replace `level.game_rules(host)` with `level.visit_game_rules(host, &mut |id, value| { /* use &str and GameRuleValue */ ControlFlow::Continue(()) })`, keeping the same level refusal handling. Replace `host.game_rules()` with `host.visit_game_rules(&mut |id, value| { /* use &str and GameRuleValue */ ControlFlow::Continue(()) })`. Keep only the rules you need; call `id.to_owned()` inside the visitor if you retain its name.
+- Replace `host.levels().list_levels()` with `host.levels().visit_levels(&mut |level| { /* use LevelRef */ ControlFlow::Continue(()) })`; before a world opens there is nothing to visit. Replace `host.tick_times()` with `host.visit_tick_times(&mut |nanos| { /* use u64 */ ControlFlow::Continue(()) })`; if sorting or indexing is needed, push each duration into your own `Vec`. Server-wide visits return `ServerReadError::Unavailable` when they cannot be supplied by the current host, not an empty visit.
+- Replace `host.objectives()` and `host.teams()` with `host.visit_objectives(&mut |objective| { /* use ObjectiveRef */ ControlFlow::Continue(()) })` and `host.visit_teams(&mut |team| { /* use TeamRef */ ControlFlow::Continue(()) })`. An unreadable server board returns `Err(ServerReadError::Unavailable)` rather than an empty list.
+- Replace `objective.slots(host)` with `objective.visit_slots(host, &mut |slot| { /* use DisplaySlot */ ControlFlow::Continue(()) })`. Replace `objective.scores(host)` with `objective.visit_scores(host, &mut |row| { /* use row.holder and row.value */ ControlFlow::Continue(()) })`. An old `None` becomes `Err(ObjectiveReadError::Stale)` for a removed or earlier-open objective, or `Err(ObjectiveReadError::Unavailable)` if the board cannot be read. Neither calls the visitor.
+- `ScoreEntry<'_>::holder` is `&str`, not `ScoreHolder::Name(String)`; compare it directly. To retain a score-holder key for a later write, store `ScoreHolder::Name(entry.holder.to_owned())` inside the visitor (where `entry` is its `ScoreEntry<'_>` parameter). Replace `ScoreEntry::new(ScoreHolder::Name(key), value)` with `ScoreEntry::new(key.as_str(), value)` for a borrowed row in a fixture. `ScoreEntry` no longer implements Wire; for typed payloads use your own owned `#[derive(Wire)]` type with a `String` key and `i32` value.
+- `objective.name(host)`, `objective.criteria(host)` and `team.name(host)` now return `Option<&str>`. Drop `.as_deref()` from their results and add `.map(str::to_owned)` only when you need an owned value. `slot.name()` returns `&'static str`: use `map.get(slot.name())` for lookup, or `map.insert(slot.name().to_owned(), value)` for an owned map key.
+- Replace `level.raids(host)` with `level.visit_raids(host, &mut |raid| { /* use RaidRef */ ControlFlow::Continue(()) })`; distinguish a stale level from unavailable raid data with `LevelReadError`. Stopped entries still visit until the next raid tick removes them. Replace `raid.raiders(host)`, `raid.wave_raiders(host, wave)` and `raid.heroes(host)` with `raid.visit_raiders(host, &mut visit)`, `raid.visit_wave_raiders(host, wave, &mut visit)` and `raid.visit_heroes(host, &mut visit)`. The visitors take `EntityRef`, `EntityRef` and `u128`, respectively. Replace `None` handling with `RaidReadError::Stale` for a gone raid or level, and `RaidReadError::Unavailable` for an unreadable side, backend or map.
+- Replace `player.discovered_recipes(host)` with `player.visit_discovered_recipes(host, &mut |id| { /* use id: &str */ ControlFlow::Continue(()) })`. Call `id.to_owned()` inside the visitor to retain a key. Replace the old `None` check with `EntityReadError::Stale` for a stale player or `EntityReadError::Unavailable` when there is no readable server backend. An empty recipe book is a successful visit with no callbacks.
+- Client `host.client_scoreboard()` now returns `Result<Option<&dyn ClientScoreboard>, ClientSessionReadError>`. Treat `Ok(None)` as no logged-in world and `Err(ClientSessionReadError::Unavailable)` as a refused read. A logged-in client with nothing on its board still has a view.
+- Replace `board.objectives` and `board.teams` iteration with `board.visit_objectives(&mut |objective| { /* read the view */ ControlFlow::Continue(()) })` and `board.visit_teams(&mut |team| { /* read the view */ ControlFlow::Continue(()) })`. Replace `board.in_slot(slot)` with `board.with_slot(slot, &mut |objective| { /* read the view */ })`; it returns `None` without a callback for an empty slot.
+- On a client objective, replace `name` and `render_type` field access with `name()` and `render_type()`, and iterate `slots` and `scores` via `visit_slots(&mut |slot| { /* use DisplaySlot */ ControlFlow::Continue(()) })` and `visit_scores(&mut |row| { /* use &dyn ClientScore */ ControlFlow::Continue(()) })`. Replace its `display_name` and `number_format` fields with `copy_display_name()` and `copy_number_format()`.
+- On a client score, replace `holder` and `value` with `holder()` and `value()`, and `display` and `number_format` with `copy_display()` and `copy_number_format()`.
+- On a client team, replace `name`, `color`, `friendly_fire`, `see_friendly_invisibles`, `name_tag_visibility` and `collision_rule` by calls of the same names. Replace `members` iteration with `visit_members(&mut |name| { /* use &str */ ControlFlow::Continue(()) })`, and `display_name`, `prefix` and `suffix` with `copy_display_name()`, `copy_prefix()` and `copy_suffix()`.
+- Client-board visitors return plain `ControlFlow<()>` (not `Result`); return `ControlFlow::Break(())` to stop. Copy a borrowed name with `.to_owned()` inside its callback if you retain it. Text and format copies each return their own `TextFormError`; optional fields return `Ok(None)` only when absent. `ClientScoreboard::new`, `ClientObjective::new`, `ClientScore::new` and `ClientTeam::new` and their Wire forms are gone. For saved values, fixtures or payloads, collect the needed fields into your own owned records, deriving `Wire` there only if you encode them.
+- `host.client_session().client_tab_list()` now returns `Result<Option<&dyn ClientTabList>, ClientSessionReadError>`. Handle an unavailable session service with `Err(ClientSessionReadError::Unavailable)`, no logged-in world with `Ok(None)`, and an empty logged-in Tab overlay with a view whose visit completes without a call.
+- Replace `list.entries` iteration with `list.visit_entries(&mut |entry| { /* read the row */ ControlFlow::Continue(()) })`; only the overlay's listed top 80 can be visited. Return `ControlFlow::Break(())` to stop and get `Break(())` back. Replace `entry.name`, `entry.uuid`, `entry.game_mode` and `entry.latency` with `entry.name()`, `entry.uuid()`, `entry.game_mode()` and `entry.latency()`. Copy `entry.name().to_owned()` in the callback only if retaining it. Replace `entry.display` with `entry.copy_display()`, and `list.header` and `list.footer` with `list.copy_header()` and `list.copy_footer()`. Missing or cleared header/footer return `Ok(None)`. Each rich-text copy can return `TextFormError` independently, without a plaintext replacement; it does not fail the session read or the row visit. `ClientTabList::new`, `ClientTabListEntry::new` and both Wire forms are gone; use your own owned records for the fields you keep or encode.
+"""

@@ -1,4 +1,4 @@
-//! The `level_fluids` area: fluid states, shapes, heights and their flow step. Host method declarations; access defaults and game forwarders are generated.
+//! The `level_fluids` area: fluid states, shapes, heights and their flow step. Handle reads' backend declarations; access defaults and game forwarders are generated.
 #![allow(unused_variables)]
 use crate::*;
 /// The handles' reads of the `level_fluids` area, implemented by the game and reached through [`Backend`].

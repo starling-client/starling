@@ -1,0 +1,3 @@
+ids = ["method:prelude::ScreensClientHost::set_toasts_held"]
+why = "A client mod holds new toasts back in the queue, as vanilla's wait for a free slot (ToastManager.freeSlotCount), and lets them show later, where toast_add can only drop them; Dynamic FPS holds them while the window is in the background (#5552)."
+migrate = "Nothing to change: additive."

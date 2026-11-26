@@ -113,6 +113,7 @@ void main() {
             material_maps: false,
             ids: None,
             cull: false,
+            pages: false,
         }),
         block_ids: &[],
         celestial: None,

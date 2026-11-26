@@ -421,8 +421,11 @@ impl Game<'_> {
             self.previous_position = Vec3::new(at[0], at[1], at[2]);
         }
         self.clear_device_keys();
+        // The oracle sets the new player's shift state for every scenario.
         if s.sneak {
             self.insert_device_key(KeyCode::ShiftLeft);
+        } else {
+            self.remove_device_key(&KeyCode::ShiftLeft);
         }
         self.sculk.tracker = WardenSpawnTracker::default();
         if let Some(level) = s.warning {

@@ -1,10 +1,9 @@
 //! Retain the live observer's two allocations across borrowed creature passes.
 use super::{EntitySections, LiveSectionObserver, Scope};
-use crate::mobs::living::section_writes::Observer;
 use std::{cell::RefCell, rc::Rc};
 
 type SharedSections = Rc<RefCell<EntitySections>>;
-type SharedObserver = Rc<RefCell<LiveSectionObserver>>;
+pub(in crate::game) type SharedObserver = Rc<RefCell<LiveSectionObserver>>;
 
 #[derive(Default)]
 pub(crate) struct ObserverCache {
@@ -17,7 +16,7 @@ impl ObserverCache {
         &mut self,
         sections: &mut EntitySections,
         scope: Option<Scope>,
-    ) -> (Option<SharedSections>, Option<Observer>) {
+    ) -> (Option<SharedSections>, Option<SharedObserver>) {
         let shared = self.sections.get_or_insert_with(Default::default);
         std::mem::swap(sections, &mut shared.borrow_mut());
         let observer = scope.map(|scope| {
@@ -27,8 +26,12 @@ impl ObserverCache {
                     scope,
                 )))
             });
-            observer.borrow_mut().scope = scope;
-            Rc::clone(observer) as Observer
+            {
+                let mut live = observer.borrow_mut();
+                live.scope = scope;
+                live.current = None;
+            }
+            Rc::clone(observer)
         });
         (Some(Rc::clone(shared)), observer)
     }

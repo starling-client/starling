@@ -2,14 +2,14 @@
 //! armour and chests, mounting, the rider's control and jump bar
 //! (`LocalPlayer.aiStep`'s riding jump), positioning, dismounting, and the
 //! mount's health and jump bar on the HUD.
-use super::Game;
+use super::{Game, item_abilities::ability};
 use sunrise_client::actions::Action;
 use sunrise_client::{
     blocks::Fluid,
     first_person::Hand,
     hud::HudBatch,
     items::{EntityTypeTags, ItemStack},
-    mobs::{Mob, MobEvent, Species, Who, equine},
+    mobs::{Mob, MobEvent, Species, Who, equine, equip::equippable_in_slot},
     motion::{MotionWorld, PlayerMotion},
     pose::{Dimensions, Pose},
     sprint::Keys,
@@ -123,7 +123,7 @@ impl Game<'_> {
     /// / `Mob.shearItem`: the saddle of a `#can_equip_saddle` mob comes off
     /// before its mobInteract can ride it, with the saddle's shearing sound.
     /// An occupied mount is not sheared: its mobInteract runs instead.
-    pub(super) fn shear_saddle(&mut self, index: usize, item: &str) -> Option<bool> {
+    pub(super) fn shear_saddle(&mut self, index: usize) -> Option<bool> {
         let m = &self.mobs[index];
         // EntityTypeTags.CAN_EQUIP_SADDLE.
         let saddleable = matches!(
@@ -140,7 +140,11 @@ impl Game<'_> {
                 | Species::Nautilus
                 | Species::ZombieNautilus
         );
-        if item != "minecraft:shears" || !saddleable || m.is_baby() || !m.alive() {
+        if !self.held_shears(ability::SHEARS_REMOVE_ARMOR)
+            || !saddleable
+            || m.is_baby()
+            || !m.alive()
+        {
             return None;
         }
         let id = m.id;
@@ -162,10 +166,14 @@ impl Game<'_> {
         }
         // attemptToShearEquipment takes the body slot before the saddle: horse
         // and nautilus armor come off first (not modelled here).
-        if m.extra
-            .body_id()
-            .is_some_and(|b| b.ends_with("_horse_armor") || b.ends_with("_nautilus_armor"))
-        {
+        if m.extra.body_stack().is_some_and(|body| {
+            equippable_in_slot(
+                self.items(),
+                body,
+                "body",
+                sunrise_client::mobs::species::vanilla_id(m.species()),
+            )
+        }) {
             return None;
         }
         let saddle = m.saddle_item()?;
@@ -185,7 +193,7 @@ impl Game<'_> {
         self.trigger_item_entity("minecraft:player_sheared_equipment", &saddle, &target);
         // attemptToShearEquipment: playSound(equippable.shearingSound()).
         if !silent {
-            self.audio.play(
+            self.play_audio(
                 "minecraft:item.saddle.unequip",
                 Some([at.x, at.y, at.z]),
                 1.0,
@@ -210,7 +218,7 @@ impl Game<'_> {
                 "minecraft:entity.pig.saddle"
             };
             self.mobs[index].set_saddle(held.map(|s| ItemStack { count: 1, ..s }));
-            self.audio.play(sound, Some(at), 1.0, 1.0);
+            self.play_audio(sound, Some(at), 1.0, 1.0);
             self.consume_held();
             let id = self.mobs[index].id;
             let pos = self.mobs[index].position;
@@ -350,6 +358,15 @@ impl Game<'_> {
         if self.feed_mount(index, item) {
             return true;
         }
+        // Mob.isEquippableInSlot(stack, BODY): the held stack's component, for this type.
+        let wears_body = held.as_ref().is_some_and(|stack| {
+            equippable_in_slot(
+                self.items(),
+                stack,
+                "body",
+                sunrise_client::mobs::species::vanilla_id(species),
+            )
+        });
         let m = &mut self.mobs[index];
         if m.is_baby() {
             return false;
@@ -364,11 +381,7 @@ impl Game<'_> {
                 Species::CamelHusk => "minecraft:entity.camel_husk.saddle",
                 _ => "minecraft:entity.horse.saddle",
             })
-        } else if item.ends_with("_horse_armor")
-            && species == Species::Horse
-            && tamed
-            && m.extra.body_id().is_none()
-        {
+        } else if wears_body && tamed && m.extra.body_id().is_none() {
             m.extra
                 .set_body_stack(held.map(|s| ItemStack { count: 1, ..s }));
             Some("minecraft:entity.horse.armor")
@@ -409,8 +422,8 @@ impl Game<'_> {
             let feet = [m.position.x, m.position.y, m.position.z];
             if !silent {
                 match seed {
-                    Some(seed) => self.audio.play_seeded(sound, Some(feet), 1.0, pitch, seed),
-                    None => self.audio.play(sound, Some(feet), 1.0, pitch),
+                    Some(seed) => self.play_audio_seeded(sound, Some(feet), 1.0, pitch, seed),
+                    None => self.play_audio(sound, Some(feet), 1.0, pitch),
                 }
             }
             self.consume_held();
@@ -454,7 +467,11 @@ impl Game<'_> {
             loved = true;
         }
         if m.health < m.attrs.max_health && heal > 0.0 {
-            m.heal(&self.loop_context, heal);
+            m.heal(
+                &self.loop_context,
+                &|| crate::game::entity::hit_reads_of!(self),
+                heal,
+            );
             used = true;
         }
         if m.is_baby() && age_up > 0 && !m.extra.age_locked {
@@ -504,7 +521,7 @@ impl Game<'_> {
                 _ => "minecraft:entity.horse.eat",
             };
             let pitch = (m.random.next_float() - m.random.next_float()) * 0.2 + 1.0;
-            self.audio.play(sound, Some(at), 1.0, pitch);
+            self.play_audio(sound, Some(at), 1.0, pitch);
         }
         // gameEvent(GameEvent.EAT): at the mount, from the mount.
         let ctx = self.who_context(Some(Who::Mob(id)), None);
@@ -609,7 +626,7 @@ impl Game<'_> {
                 // playJumpSound, which the server broadcasts for a guest.
                 let sound = format!("minecraft:{}", equine::jump_sound(m));
                 let at = m.center();
-                self.audio.play(&sound, Some(at), 0.4, 1.0);
+                self.play_audio(&sound, Some(at), 0.4, 1.0);
             }
         }
         let sprint = keys.sprint || self.held_mapping(Action::Sprint);
@@ -1021,11 +1038,23 @@ impl Game<'_> {
     fn jumps(species: Species) -> bool {
         equine::is_equine(species) || sunrise_client::mobs::nautilus::is_nautilus(species)
     }
-    /// `Player.jumpableVehicle`: a saddled mount that jumps (not a pig or a
-    /// strider, which a saddle only steers).
-    pub(super) fn jumpable_mount(&self) -> bool {
-        self.mount_index()
-            .is_some_and(|i| self.mobs[i].extra.saddled() && Self::jumps(self.mobs[i].species()))
+    /// `LocalPlayer.jumpableVehicle`: the vehicle the player controls (`getControlledVehicle`:
+    /// the player is its first passenger and it is saddled, `AbstractHorse` and
+    /// `AbstractNautilus.getControllingPassenger`) when it can jump now
+    /// (`PlayerRideableJumping.canJump`: saddled, and a camel neither sitting nor getting up or
+    /// down; a pig or a strider never jumps), by its entity id. Unlike the ridden movement's
+    /// `drives`, it does not ask whether the mount is alive: vanilla doesn't. The HUD's jump
+    /// bar and `ClientViewClientHost::jumpable_vehicle` both read this decision.
+    pub(super) fn jumpable_mount(&self) -> Option<u32> {
+        if !self.remote.as_ref().is_some_and(|r| r.first_passenger) {
+            return None;
+        }
+        let mount = &self.mobs[self.mount_index()?];
+        let can_jump = Self::jumps(mount.species())
+            && mount.extra.saddled()
+            && !(matches!(mount.species(), Species::Camel | Species::CamelHusk)
+                && sunrise_client::mobs::camel::refuse_to_move(mount));
+        can_jump.then_some(mount.id)
     }
     /// `willPrioritizeJumpInfo`: charging a jump or recharging.
     pub(super) fn mount_jumping(&self) -> bool {
@@ -1767,7 +1796,7 @@ mod tests {
         .ok()?;
         game.reset_entity_residency();
         game.native_lifecycle
-            .begin_open(mod_api::Authority::IntegratedServer);
+            .begin_open(Some(mod_api::Authority::IntegratedServer));
         game.creative = false;
         game.options.dedicated = Some(Vec::new());
         game.world.chunks.insert(
@@ -2233,7 +2262,7 @@ mod strider_lava_boarding_tests;
 
 #[cfg(test)]
 #[path = "tests/steerable_boarding_tests.rs"]
-mod steerable_boarding_tests;
+pub(in crate::game) mod steerable_boarding_tests;
 
 #[cfg(test)]
 #[path = "tests/ride_dismount_tests.rs"]

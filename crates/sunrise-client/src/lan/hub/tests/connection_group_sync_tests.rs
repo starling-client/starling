@@ -8,8 +8,11 @@ use sunrise_protocol::{
 };
 
 fn transport(with_groups: bool) -> Arc<crate::raw_payloads::Transport> {
-    let transport =
-        crate::raw_payloads::Transport::capture(crate::raw_payloads::Side::Server).unwrap();
+    let transport = crate::raw_payloads::Transport::capture(
+        crate::raw_payloads::Side::Server,
+        crate::lan::PAYLOAD_RECORD_OVERHEAD,
+    )
+    .unwrap();
     let entries: Vec<_> = transport
         .local
         .manifest

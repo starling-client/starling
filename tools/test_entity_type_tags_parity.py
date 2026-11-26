@@ -15,11 +15,10 @@ import sys
 import tempfile
 import zipfile
 
-from test_dedicated_server_parity import Server, free_port, write_server_dir
-import lab
-import oracle_harness as oh
-import test_command_exec_parity as commands
-import test_rust_parity as base
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools.test_dedicated_server_parity import Server, free_port, write_server_dir
+from tools import lab, oracle_harness as oh, test_command_exec_parity as commands, test_rust_parity as base
 
 TAG = 'minecraft:burn_in_daylight'
 PROBE_TYPES = ('minecraft:zombie', 'minecraft:husk')

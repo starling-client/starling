@@ -10,8 +10,24 @@ use crate::{
         token::{Token, TokenValue},
         Error, ErrorKind, Frontend, Result,
     },
+    proc::LayoutErrorInner,
     AddressSpace, ArraySize, Handle, Span, Type, TypeInner,
 };
+
+/// Lays out the module's types not laid out yet. A type that can't be (one larger than
+/// [`MAX_TYPE_SIZE`](crate::valid::MAX_TYPE_SIZE)) is an error at that type's span.
+fn lay_out(frontend: &mut Frontend, ctx: &mut Context) -> Result<()> {
+    frontend
+        .layouter
+        .update(ctx.module.to_ctx())
+        .map_err(|e| Error {
+            kind: match e.inner {
+                LayoutErrorInner::TooLarge => ErrorKind::TypeTooLarge,
+                _ => ErrorKind::InternalError("a type could not be laid out"),
+            },
+            meta: ctx.module.types.get_span(e.ty),
+        })
+}
 
 impl ParsingContext<'_> {
     /// Parses an optional array_specifier returning whether or not it's present
@@ -52,7 +68,7 @@ impl ParsingContext<'_> {
                 ArraySize::Constant(size)
             };
 
-            frontend.layouter.update(ctx.module.to_ctx()).unwrap();
+            lay_out(frontend, ctx)?;
             let stride = frontend.layouter[*ty].to_stride();
             *ty = ctx.module.types.insert(
                 Type {
@@ -65,6 +81,9 @@ impl ParsingContext<'_> {
                 },
                 *span,
             );
+            // Lay the new array out now, so one too large to lay out is refused where it is
+            // declared rather than at the next array specifier.
+            lay_out(frontend, ctx)?;
 
             Ok(true)
         } else {

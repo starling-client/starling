@@ -100,10 +100,7 @@ pub fn install_input(input: super::installation::InstalledInput) {
     let mut installed: Installed = input.into();
     static EPOCHS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     installed.epoch = EPOCHS.fetch_add(1, Ordering::Relaxed);
-    installed.namespace_authority = crate::parts::current_namespace_authority();
-    installed
-        .keys
-        .index_hooks(&installed.menu_recipe_books, &installed.namespace_authority);
+    installed.keys.index_hooks();
     installed.hook_bits = installed.keys.hooks.iter().map(Option::is_some).collect();
     installed.tag_hook_bits = vec![false; HOOK_COUNT];
     for (_, part) in &installed.tags.blocks {

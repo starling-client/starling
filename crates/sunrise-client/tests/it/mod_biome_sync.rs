@@ -17,6 +17,8 @@ impl Drop for Scratch {
     }
 }
 
+const BASE_BIOME: &str = r##"{"has_precipitation":true,"temperature":0.5,"downfall":0.5,"effects":{"water_color":"#0000ff"},"carvers":[],"features":[]}"##;
+
 /// A resource folder with the built-in biomes plains and river and 1x1 colormaps, and the
 /// biome bundle `bundle` when there is one.
 fn write_root(root: &std::path::Path, bundle: Option<&str>) {
@@ -36,7 +38,7 @@ fn write_root(root: &std::path::Path, bundle: Option<&str>) {
         writer.write_image_data(&[1, 2, 3]).unwrap();
     }
     for name in ["plains", "river"] {
-        std::fs::write(biome_dir.join(format!("{name}.json")), "{}").unwrap();
+        std::fs::write(biome_dir.join(format!("{name}.json")), BASE_BIOME).unwrap();
     }
     if let Some(bundle) = bundle {
         std::fs::create_dir_all(root.join("worldgen")).unwrap();
@@ -56,8 +58,8 @@ fn load(root: &std::path::Path) -> Biomes {
 const BUNDLE: &str = r##"{
     "minecraft:plains": "{}",
     "minecraft:river": "{}",
-    "zinc:foo": "{\"effects\":{\"grass_color\":\"#445566\"},\"attributes\":{\"minecraft:visual/ambient_particles\":{\"argument\":[{\"particle\":{\"type\":\"minecraft:ash\"},\"probability\":0.25}]}}}",
-    "alpha:zed": "{\"effects\":{\"grass_color\":\"#778899\"}}"
+    "zinc:foo": "{\"has_precipitation\":true,\"temperature\":0.5,\"downfall\":0.5,\"effects\":{\"water_color\":\"#0000ff\",\"grass_color\":\"#445566\"},\"carvers\":[],\"features\":[],\"attributes\":{\"minecraft:visual/ambient_particles\":[{\"particle\":{\"type\":\"minecraft:ash\"},\"probability\":0.25}]}}",
+    "alpha:zed": "{\"has_precipitation\":true,\"temperature\":0.5,\"downfall\":0.5,\"effects\":{\"water_color\":\"#0000ff\",\"grass_color\":\"#778899\"},\"carvers\":[],\"features\":[]}"
 }"##;
 
 fn server_load() -> sunrise_world::native_load_context::LoadContext {
@@ -77,9 +79,10 @@ fn sync_of(root: &std::path::Path) -> SyncData {
         &defaults,
     )
     .unwrap();
-    SyncData::load(
+    SyncData::load_with(
         root,
         &sunrise_world::loot::PackOverlay::NONE,
+        Some(&load(root)),
         &defaults,
         &sunrise_client::crafting::ResolvedSources::load(
             root,
@@ -113,19 +116,35 @@ fn mod_biomes_follow_the_builtin_ones_and_leave_their_ids_alone() {
     assert_eq!(with.id("zinc:foo"), 2);
     assert_eq!(with.id("alpha:zed"), 3);
     assert_eq!(with.get(2).grass, 0x445566);
-    let particles = &with.get(2).ambient_particles;
+    let ambient_attr = sunrise_world::environment_attributes::attribute(
+        sunrise_world::environment_attributes::AMBIENT_PARTICLES,
+    )
+    .unwrap();
+    let Some(sunrise_world::environment_attributes::Entry::Override(
+        sunrise_world::environment_attributes::Value::AmbientParticles(particles),
+    )) = with.get(2).attributes.get(ambient_attr)
+    else {
+        panic!("mod biome zinc:foo must carry visual/ambient_particles");
+    };
     assert_eq!(particles.len(), 1);
-    assert_eq!(particles[0].0.name(), "ash");
-    assert_eq!(particles[0].1, 0.25);
+    assert_eq!(
+        *particles[0].particle,
+        sunrise_world::particle_options::ParticleOptions::Simple(
+            sunrise_world::particle_type::ParticleType::Ash,
+        )
+    );
+    assert_eq!(particles[0].probability, 0.25);
     assert_eq!(with.name(3), "alpha:zed");
     // The tables that read a biome's file see the mod's, and never a built-in's.
     assert!(with.pack_file("zinc:foo").is_some());
     assert!(with.pack_file("minecraft:plains").is_none());
     // A world's packs go over the same table: a new pack biome joins after the mods'.
     let pack: serde_json::Value = serde_json::from_str("{}").unwrap();
-    let world = with.with_packs([("pack:late", &pack), ("zinc:foo", &pack)]);
+    let world = with
+        .with_packs([("pack:late", &pack), ("zinc:foo", &pack)])
+        .unwrap();
     assert_eq!(world.id("zinc:foo"), 2);
-    assert!(world.get(2).ambient_particles.is_empty());
+    assert!(world.get(2).attributes.get(ambient_attr).is_none());
     assert_eq!(world.id("pack:late"), 4);
 }
 
@@ -160,13 +179,19 @@ fn a_server_sends_mod_biomes_with_data_to_a_client_that_has_the_vanilla_pack() {
         .iter()
         .map(|e| (e.id.clone(), e.data.clone()))
         .collect();
-    let table = client_biomes(&load(&client), &received).expect("the mods' biomes are new");
+    let table = client_biomes(&load(&client), &received)
+        .unwrap()
+        .expect("the mods' biomes are new");
     assert_eq!(table.id("minecraft:plains"), 0);
     assert_eq!(table.id("zinc:foo"), 2);
     assert_eq!(table.get(2).grass, 0x445566);
+    let ambient_attr = sunrise_world::environment_attributes::attribute(
+        sunrise_world::environment_attributes::AMBIENT_PARTICLES,
+    )
+    .unwrap();
     assert_eq!(
-        table.get(2).ambient_particles,
-        load(&server).get(2).ambient_particles
+        table.get(2).attributes.get(ambient_attr),
+        load(&server).get(2).attributes.get(ambient_attr)
     );
     assert_eq!(table.id("alpha:zed"), 3);
 
@@ -174,7 +199,7 @@ fn a_server_sends_mod_biomes_with_data_to_a_client_that_has_the_vanilla_pack() {
     let modded = std::env::temp_dir().join(format!("sunrise-mod-sync-m-{}", std::process::id()));
     let _scratch = Scratch(modded.clone());
     write_root(&modded, Some(BUNDLE));
-    assert!(client_biomes(&load(&modded), &received).is_none());
+    assert!(client_biomes(&load(&modded), &received).unwrap().is_none());
 }
 
 #[test]

@@ -31,7 +31,12 @@ fn the_first_tick_after_a_join_is_not_heard_and_the_second_is() {
     let mut hub = standing(true, vec![]);
     hub.guests.update(0, |g| g.placed = false);
     let conn = hub.guests[0].conn;
-    with_input_context(|ctx| hub.place_new_player(conn, ctx));
+    with_input_context(|ctx| {
+        if let Some(i) = hub.begin_player_join(conn, ctx) {
+            hub.send_commands(i, hub.commands_packet(hub.guests[i].permission));
+            hub.finish_player_join(i, ctx);
+        }
+    });
     assert_eq!(
         hub.guests[0].level_entered, 10,
         "it entered its level at tick 10"
@@ -67,7 +72,11 @@ fn a_report_later_in_the_level_after_a_join_is_heard_like_any_other() {
 fn the_first_tick_after_a_level_change_is_not_heard_and_the_second_is() {
     let mut hub = standing(true, vec![]);
     let conn = hub.guests[0].conn;
-    with_input_context(|ctx| hub.change_level(0, [0.0, 64.0, 0.0], 0.0, None, false, 0, ctx));
+    with_input_context(|ctx| {
+        let change = hub.begin_level_change(0, [0.0, 64.0, 0.0], 0.0, None, 0, ctx);
+        hub.send_commands(0, hub.commands_packet(hub.guests[0].permission));
+        hub.finish_level_change(0, change, false, ctx);
+    });
     assert_eq!(hub.guests[0].level_entered, 10);
     hub.ticks = 11;
     let confirmation = confirm(&hub, 0.0);
@@ -119,7 +128,11 @@ fn a_respawn_is_a_teleport_not_a_first_tick_and_the_first_report_after_it_is_hea
     let mut hub = standing(true, vec![]);
     let conn = hub.guests[0].conn;
     hub.remove_player_for_respawn(0);
-    with_input_context(|ctx| hub.respawn(0, [0.5, 64.0, 0.5], Some([0.0; 2]), false, ctx));
+    with_input_context(|ctx| {
+        hub.begin_respawn(0, [0.5, 64.0, 0.5], Some([0.0; 2]), false, ctx);
+        hub.send_commands(0, hub.commands_packet(hub.guests[0].permission));
+        hub.finish_respawn(0);
+    });
     assert_eq!(hub.guests[0].level_entered, 0, "the same level");
     hub.guests.update(0, |g| g.load_timeout = 0);
     hub.ticks = 11;
@@ -271,9 +284,17 @@ fn the_baseline_is_the_destination_of_every_server_side_teleport() {
     hub.resend_teleport(0, Some([11.5, 71.0, 11.5]));
     assert_eq!(baseline(&hub), ([11.5, 71.0, 11.5], [0.0, 0.0]), "a resend");
     hub.remove_player_for_respawn(0);
-    with_input_context(|ctx| hub.respawn(0, [0.5, 64.0, 0.5], Some([30.0, 5.0]), false, ctx));
+    with_input_context(|ctx| {
+        hub.begin_respawn(0, [0.5, 64.0, 0.5], Some([30.0, 5.0]), false, ctx);
+        hub.send_commands(0, hub.commands_packet(hub.guests[0].permission));
+        hub.finish_respawn(0);
+    });
     assert_eq!(baseline(&hub), ([0.5, 64.0, 0.5], [30.0, 5.0]), "a respawn");
-    with_input_context(|ctx| hub.change_level(0, [100.5, 49.0, 0.5], 90.0, None, false, 0, ctx));
+    with_input_context(|ctx| {
+        let change = hub.begin_level_change(0, [100.5, 49.0, 0.5], 90.0, None, 0, ctx);
+        hub.send_commands(0, hub.commands_packet(hub.guests[0].permission));
+        hub.finish_level_change(0, change, false, ctx);
+    });
     assert_eq!(
         baseline(&hub),
         ([100.5, 49.0, 0.5], [90.0, 5.0]),
@@ -289,7 +310,12 @@ fn the_baseline_is_where_the_player_joined() {
         g.last_reported = ([9.0; 3], [9.0; 2]);
     });
     let conn = hub.guests[0].conn;
-    with_input_context(|ctx| hub.place_new_player(conn, ctx));
+    with_input_context(|ctx| {
+        if let Some(i) = hub.begin_player_join(conn, ctx) {
+            hub.send_commands(i, hub.commands_packet(hub.guests[i].permission));
+            hub.finish_player_join(i, ctx);
+        }
+    });
     let g = &hub.guests[0];
     assert_eq!(g.last_reported, (g.position, [g.yaw, g.pitch]));
 }

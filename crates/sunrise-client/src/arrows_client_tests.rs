@@ -124,7 +124,7 @@ fn run_in(
     std::fs::create_dir(&root).unwrap();
     std::fs::write(
         root.join("gameplay-facts.json"),
-        serde_json::json!({"states":(0..states.len()).map(|id|serde_json::json!({"id":id})).collect::<Vec<_>>()} ).to_string(),
+        serde_json::json!({"states":(0..states.len()).map(|id|serde_json::json!({"id":id,"sound":{"identity":"other"}})).collect::<Vec<_>>()} ).to_string(),
     )
     .unwrap();
     let behaviours = serde_json::json!({"states":(0..states.len()).map(|id|if id==1||id==20{[63,0]}else{[0,0]}).collect::<Vec<_>>(),"blocks":(["air","stone","water","bubble_column","tnt"].iter().map(|name|serde_json::json!({"name":format!("minecraft:{name}"),"class":["Block"]})).collect::<Vec<_>>())});

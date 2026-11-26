@@ -1,4 +1,4 @@
-# Entity items
+# Entity capabilities
 
 Use `entity.capability(host, &ENTITY_ITEMS, ())` to access an entity's items as a
 `ResourceHandler<ItemResource>`. This is NeoForge's `Capabilities.Item.ENTITY`.
@@ -37,7 +37,9 @@ provider; ordinary providers run after it. Within each group, registration order
 applies and the first handler returned wins.
 
 Give, take and count player items through this capability. For example, this
-trade aborts if an offer changes or either recipient lacks room:
+trade aborts if an offer changes or either recipient lacks room. The caller gets
+`TransactionError::Aborted(())` for those failures, or `TransactionError::Unavailable`
+if the scope can't be opened:
 
 ```rust,ignore
 // A trade: each offer is (index, the exact stack it must still hold). A stale offer or no
@@ -50,8 +52,8 @@ host.transaction(|host, tx| {
             let still = from.resource(host, *index).as_ref() == Some(&offered)
                 && from.amount(host, *index) == stack.count();
             if !still
-                || from.extract_at(host, tx, *index, &offered, stack.count()) != stack.count()
-                || to.insert(host, tx, &offered, stack.count()) != stack.count()
+                || from.extract_at(host, tx, *index, &offered, stack.count()) != Ok(stack.count())
+                || to.insert(host, tx, &offered, stack.count()) != Ok(stack.count())
             {
                 return Err(());
             }
@@ -65,3 +67,46 @@ Cauldron interactions outside a transaction retain vanilla's effect order.
 Inside a transaction, statistics (including `player_stat_award`), sounds and
 overflow item tosses or spawns wait for the outermost successful commit. An abort
 emits none of those effects.
+
+## Entity automation
+
+Use `entity.capability(host, &ENTITY_AUTOMATION, side)` to access the inventory an
+entity exposes to hoppers and droppers. This is NeoForge's
+`Capabilities.Item.ENTITY_AUTOMATION`, distinct from the broader `ENTITY_ITEMS` capability.
+
+Register a provider with
+`r.entity_capability(&ENTITY_AUTOMATION, "mymod:robot", |host, robot, side| …)`.
+Use `r.entity_capability_before_game` to answer ahead of the game's provider for
+a minecart or boat. The context is `Option<Direction>`; `None` means no particular side.
+
+- Chest and hopper minecarts and chest boats expose their container slots.
+- Players and chested donkeys, mules and llamas have no game-provided automation handler.
+- A pushing hopper requests the side it reaches the entity from (`Up` when the
+  hopper is above it). A pulling hopper requests `Down` from the entity above it.
+  A dropper requests the side it drops onto.
+- At a target, automation chooses randomly among the game's container entities
+  and entities whose mod providers answer this capability, using vanilla's
+  `getEntityContainer` selection draw.
+- A mod handler takes the container's place. Automation moves one item per
+  transfer in a transaction, as it does through a block's `ITEMS` handler.
+
+## Entity energy and fluids
+
+Look up an entity's handlers with `entity.capability(host, &ENTITY_ENERGY, side)`
+or `entity.capability(host, &ENTITY_FLUIDS, side)`. Register providers with
+`r.entity_capability(&ENTITY_ENERGY, "mymod:robot", |host, robot, side| …)`
+and the equivalent call for `ENTITY_FLUIDS`. Neither key has a game-provided handler.
+
+| Key | Handler | NeoForge counterpart |
+| --- | --- | --- |
+| `ENTITY_ENERGY` | `EnergyHandler` | `Capabilities.Energy.ENTITY` |
+| `ENTITY_FLUIDS` | `ResourceHandler<FluidResource>` | `Capabilities.Fluid.ENTITY` |
+
+The context is `Option<Direction>`: `Some(direction)` identifies the side reached
+by the lookup, and `None` requests no particular side. Your provider receives this
+context and can return a different handler for each side. `ENTITY_AUTOMATION`
+uses the same context; `ENTITY_ITEMS` uses `()`.
+
+Use `move_energy` or `resource_util::move_resources` inside a [transaction](../transactions.md)
+to transfer between entity, block and item handlers. Pass its borrowed `tx` to `move_energy`,
+or `Some(tx)` to `move_resources`.

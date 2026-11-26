@@ -423,10 +423,10 @@ impl Game<'_> {
                     && count < max
                     && m.extra.mount.is_none()
                     && m.width() < super::boats::WIDTH as f32
-                    && !self
-                        .items()
-                        .entity_type_tags
-                        .contains("minecraft:cannot_be_pushed_onto_boats", &m.kind.id);
+                    && !self.items().entity_type_tags.has_bit(
+                        m.kind.flags.entity_tag_slot,
+                        sunrise_client::items::EntityTypeTags::CANNOT_BE_PUSHED_ONTO_BOATS,
+                    );
                 if boards {
                     // startRiding fails quietly (no push) while the mob's
                     // boarding cooldown runs (Entity.canRide) or the boat
@@ -584,10 +584,10 @@ impl Game<'_> {
                         (true, true) => 90.0,
                         (true, false) => 270.0,
                     };
-                    let turns = !self
-                        .items()
-                        .entity_type_tags
-                        .contains("minecraft:can_turn_in_boats", &m.kind.id);
+                    let turns = !self.items().entity_type_tags.has_bit(
+                        m.kind.flags.entity_tag_slot,
+                        sunrise_client::items::EntityTypeTags::CAN_TURN_IN_BOATS,
+                    );
                     (
                         j,
                         offset,
@@ -798,6 +798,10 @@ mod tests {
         impl mod_api::Hooks for Resize {}
 
         with_game(|game| {
+            super::super::native_entity_refs::tests::fixture_resident_column(
+                &mut game.world,
+                (0, 0),
+            );
             let kind = game.res.mob_types().get("minecraft:cow").unwrap().clone();
             let mut cow = Mob::new(77, kind, Vec3::ZERO, 0.0);
             sunrise_client::mobs::finalize::set_baby(&mut cow, true);
@@ -970,6 +974,10 @@ mod off_level_tests {
     #[ignore = "daily"]
     fn retained_boat_passenger_occupies_a_seat_without_being_positioned() {
         crate::game::native_entity_refs::tests::with_game(|game| {
+            crate::game::native_entity_refs::tests::fixture_resident_column(
+                &mut game.world,
+                (0, 0),
+            );
             let pig = game.res.mob_types().get("minecraft:pig").unwrap().clone();
             let boat = Boat::new(71, "oak".into(), Vec3::new(1.0, 80.0, 0.5), 0.0);
             let mut ghost = sunrise_client::mobs::Mob::new(72, pig.clone(), Vec3::ZERO, 0.0);
@@ -1047,6 +1055,10 @@ mod boat_callback_review_tests {
         .into();
         mod_platform::testing::with_mods(mods, || {
             super::super::native_entity_refs::tests::with_game(|game| {
+                super::super::native_entity_refs::tests::fixture_resident_column(
+                    &mut game.world,
+                    (0, 0),
+                );
                 game.options.dedicated = Some(Vec::new());
                 game.boats.push(super::super::boats::Boat::new(
                     71,
@@ -1089,6 +1101,10 @@ mod boat_callback_review_tests {
         .into();
         mod_platform::testing::with_mods(mods, || {
             super::super::native_entity_refs::tests::with_game(|game| {
+                super::super::native_entity_refs::tests::fixture_resident_column(
+                    &mut game.world,
+                    (0, 0),
+                );
                 game.options.dedicated = Some(Vec::new());
                 game.boats.push(super::super::boats::Boat::new(
                     71,

@@ -1,5 +1,4 @@
 //! The `player_stat_award` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0310
 
 pub trait Hooks {
     /// A statistic is about to be awarded to a server player, before its count and scoreboard criteria

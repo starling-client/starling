@@ -1,5 +1,4 @@
 //! Cancelled guest bodies survive turn reconstruction without repeating die.
-#![cfg(test)]
 use crate::game::{Game, native_entity_refs::tests::with_game};
 use mod_api::{Flow, Hooks, HostSide, LivingDeathEvent, ModEntry, PlayerTickPreEvent, ServerHost};
 use std::sync::{Arc, Mutex};

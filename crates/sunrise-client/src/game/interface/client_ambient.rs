@@ -9,7 +9,7 @@ use sunrise_client::blocks::RenderShape;
 use sunrise_client::effects::effect_particle;
 use sunrise_client::mobs::MobEvent;
 use sunrise_client::motion::{LAVA, WATER};
-use sunrise_client::particles::{ParticleEngine, ParticleOptions, ParticleType};
+use sunrise_client::particles::{ParticleEngine, ParticleLevel, ParticleOptions, ParticleType};
 use sunrise_client::pose::Pose;
 use sunrise_client_gameplay::mob_ambient as ambient;
 use sunrise_core::{geometry::Vec3, random::RandomSource};
@@ -59,8 +59,7 @@ impl Game<'_> {
                 }
                 // Each guest of a LAN host makes its own.
                 MobEvent::LocalSound(name, at, volume, pitch) => {
-                    self.audio
-                        .play_unshared(&format!("minecraft:{name}"), Some(at), volume, pitch)
+                    self.play_audio_unshared(&format!("minecraft:{name}"), Some(at), volume, pitch)
                 }
                 _ => {}
             }
@@ -266,6 +265,7 @@ impl Game<'_> {
         // are kept per type here, and this resolves them once (it returns at
         // once after).
         self.ensure_item_particle_sprites();
+        let level = ParticleLevel::new(&self.world, self.res.facts(), self.collision);
         if let Some(p) = self.player.as_ref() {
             let effects = &self.potions.effects.list;
             let list: Vec<_> = effects
@@ -281,7 +281,7 @@ impl Game<'_> {
             );
             swirl(
                 &mut self.particles,
-                &self.world,
+                &level,
                 p.position,
                 size,
                 &list,
@@ -309,7 +309,7 @@ impl Game<'_> {
                     .collect();
                 swirl(
                     &mut self.particles,
-                    &self.world,
+                    &level,
                     m.position,
                     size,
                     &list,
@@ -321,7 +321,7 @@ impl Game<'_> {
                 let ambient = m.extra.effect_ambient;
                 swirl(
                     &mut self.particles,
-                    &self.world,
+                    &level,
                     m.position,
                     size,
                     list,
@@ -338,7 +338,7 @@ impl Game<'_> {
 /// effects are ambient) of one of the particles at a random spot of the box.
 fn swirl(
     particles: &mut ParticleEngine,
-    world: &sunrise_client::world::World,
+    level: &ParticleLevel<'_>,
     feet: Vec3,
     size: (f64, f64),
     list: &[ParticleOptions],
@@ -358,7 +358,7 @@ fn swirl(
     let x = feet.x + size.0 * (2.0 * r.next_double() - 1.0) * 0.5;
     let y = feet.y + size.1 * r.next_double();
     let z = feet.z + size.0 * (2.0 * r.next_double() - 1.0) * 0.5;
-    particles.add_with_world(Some(world), &list[pick], [x, y, z], [1.0; 3], false, false);
+    particles.add_with(Some(level), &list[pick], [x, y, z], [1.0; 3], false, false);
 }
 
 #[cfg(test)]

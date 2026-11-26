@@ -1,20 +1,27 @@
 # Drawing on the HUD and in screens
 
 A HUD layer, a screen or a tooltip hook draws through the `DrawContext` it is handed, in GUI pixels. Each call
-is one of vanilla's `GuiGraphics` calls: `fill`, `text`, `sprite`, `item_stack` and the others. `gui_paint`
-takes a buffer of `GuiDraw` ops for the same calls, with `Push` / `Pop` for the pose.
+is one of vanilla's `GuiGraphics` calls: `fill`, `text`, `sprite`, `item_stack` and the others.
+[Draw through a canvas](gui-paint.md#drawing-directly-with-a-canvas) with `draw_gui` to group
+fills, styled text, blits and seeded items with their decorations in lexical pose and scissor scopes.
+See [status rows and fixed text positions](#status-rows-and-fixed-text-positions) to draw at the
+original layer or reserve space for overlays.
 
 `ClientHost::debug_overlay_visible()` reports whether the client draws its debug overlay this frame. In
-`render_gui_post`, use it to leave space for the overlay. Always-on debug entries can make it visible with
-F3 off. F1 hides the overlay unless a screen is open. The read is available only on the client host.
-An unfinished `render_gui_post` or `gui_render_post` callback leaves no drawing in the batch;
-its corner reservations do not affect the next listener.
+`render_gui_post`, use it to leave space for the overlay, and use `ClientHost::hud_layer_bounds(layer)`
+to read the `[x, y, width, height]` rectangle in GUI pixels of a layer drawn earlier in the current
+HUD pass, clipped to the viewport and its scissors. For example, use `"minecraft:effects"` to place
+an overlay below the visible effect icons, with each overlay's offset managed by the mod itself.
+`Ok(None)` means the layer did not paint visible geometry or the HUD pass is not running; screen hooks
+never see the earlier HUD's bounds. Always-on debug entries can make the debug overlay visible with
+F3 off. F1 hides the debug overlay unless a screen is open. A panicking `render_gui_post` listener
+leaves no drawing in the batch.
 
 ## Registering a HUD layer
 
 In `Hooks::register_gui_layers`, call `event.layers.register(id, placement, Box::new(draw))` on the
 `GuiLayerRegistrar`. Registration runs once at client startup.
-Use your own namespaced ID and a `GuiLayerPlacement`: below or above all layers, or immediately
+Use any unused namespaced ID and a `GuiLayerPlacement`: below or above all layers, or immediately
 below or above a vanilla anchor or a layer already registered. The client logs and refuses
 invalid IDs, duplicate IDs and unknown anchors; `register` returns whether it accepted the layer
 into the callback's pending order. Later calls in the same callback can anchor to that layer.
@@ -63,17 +70,37 @@ event.layers.wrap_layer("minecraft:hotbar", Box::new(|ctx| {
 ```
 
 `gui_layer_pre` and `gui_layer_post` fire once per slot, not per wrapper. Post still fires if the
-wrapper omitted the previous body. If a retained painter or wrapper panics or is refused, its
-paint is discarded. A wrapper's completed `draw_previous()` calls keep their paint in order,
-without being called again. A panic disables just the offending callback for this session and
-reports the mod in the error log and the shared error toast. Callback failure toasts remain visible under F1, except for audio stream notices. A refusal is reported without disabling the callback. A disabled wrapper leaves the
-previous body to draw directly. If Pre cancels the slot, neither the
-installed body nor Post runs. For work that must happen even when the HUD is hidden, use the independent foreground
-`gui_render_post` hook.
+wrapper omitted the previous body. If a retained painter or wrapper panics, any open clips from
+that draw scope close and completed primitives stay in the batch without rolling back or replaying
+earlier bodies. The shared error log and toast name the mod, only that callback is disabled for the
+session, and later layers still draw. A disabled wrapper leaves the previous body to draw directly.
+Callback failure toasts remain visible under F1, except for audio stream notices. Draw errors such
+as malformed `gui_paint` buffers are returned to the caller without disabling the callback or
+changing previously submitted paint. If Pre cancels the slot, neither the installed body nor Post
+runs.
 
-`render_gui_post` runs after the complete HUD walk and before the open screen. Focused chat
-paints separately in its screen. The original subtitle layer can defer paint to a screen
-background without running its hooks again. Cancel that layer to suppress scheduled paint.
+`render_gui_post` runs after the complete HUD walk, including under F1, and before screens, toasts,
+debug overlays and IME. It does not run on the title, during replay, or after a canceled
+`render_gui_pre`. Use `host.window_focused()` to check focus, and `Hooks::screen_render_post` to
+paint above an open screen. Focused chat paints separately in its screen. The original subtitle layer
+can defer paint to a screen background without running its hooks again. Cancel that layer to suppress
+scheduled paint.
+
+### Editing the hotbar attack indicator
+
+Use `hotbar_attack_indicator_progress` to edit `event.progress` without replacing
+`minecraft:hotbar`. The hook receives a read-only `ClientHost`. It runs inside the original
+hotbar body after the items, and starts from the local player's attack charge at partial tick
+zero, even when the camera follows a different player. It runs even at full charge, so setting
+progress below `1.0` can make the indicator visible. Setting it to `1.0` hides the indicator.
+
+Listeners see the last accepted progress. A non-finite value or one outside `0.0..=1.0` is
+refused without erasing earlier accepted edits or disabling the listener. The change applies
+only to this draw: it does not change the crosshair indicator, attack charge, or combat.
+
+The hook runs only in Hotbar indicator mode with the HUD visible and a player camera outside
+spectator mode. It does not run if Pre cancels the hotbar, a replacement takes over, or a
+wrapper skips the original body. A wrapper that delegates to the original body reaches it.
 
 ## Status rows and fixed text positions
 
@@ -101,25 +128,62 @@ cancelled or replaced. The status slots still run their layer hooks and installe
 in creative or spectator mode, and off a mount. The original bodies check HUD visibility and the
 conditions for the row: survival or adventure for the player's rows, a mount with hearts for vehicle
 health. To hide your own paint under F1, check `host.hud_mode() == mod_api::HudMode::AllVisible`.
-A `Flow::Cancel` from `render_gui_pre` skips the whole walk, including Post, even under F1. To replace all
-rows formerly drawn by `health_hud`, replace or wrap `player_health`, `armor_level`, `food_level`
-and `air_level`; `vehicle_health` is separate.
-You can keep a `GuiDraw` list: pass it to `draw.gui_paint(&draws)` and handle its returned error.
+A `Flow::Cancel` from `render_gui_pre` skips the whole walk, including Post, even under F1.
+It does not suppress toasts, which draw after the active screen or overlay. F1 hides ordinary
+toasts and audio stream failure notices, but not other callback error toasts.
+To replace all rows formerly drawn by `health_hud`, replace or wrap `player_health`,
+`armor_level`, `food_level` and `air_level`; `vehicle_health` is separate.
+Use [`draw.draw_gui`](gui-paint.md#drawing-directly-with-a-canvas) in the installed body to group
+fallible draws with a scoped pose or scissor.
 Sunrise's radial overlay keeps clear of the actual paint from installed status-layer bodies,
 including replacements and wrappers.
+
+To sit on a row, read how far the status rows reach: `host.gui_status_heights()` gives the left
+and right columns' heights above the bottom edge (NeoForge's `Hud.leftHeight` and `rightHeight`),
+as they stand when your layer starts. Both are 39 before the hearts; each vanilla row adds its
+height as it draws, so a layer `Below("minecraft:food_level".into())` sees the height the food row
+draws at and one `Above` it the height after it. A row that is hidden, cancelled or replaced adds
+nothing, and a replacement does not reserve space for the rows after it. Outside the HUD layers
+the read is `None`.
+
+To make room for a row of your own, raise a column with
+`host.set_gui_status_heights([left, right])` (assigning NeoForge's `Hud.leftHeight` and
+`rightHeight`). The vanilla rows that draw after your layer start from the new heights and add
+their own on top: a layer `Above("minecraft:armor_level".into())` that draws a row and raises the
+left column by its height moves the rows drawn after it. A wrapper that sets the heights before
+`ctx.draw_previous()` moves the row it wraps as well. Rows already drawn stay where they are, both
+columns go back to 39 at the start of each HUD pass, and the call returns false, setting nothing,
+outside the HUD layers.
 
 Adding a taller status bar does not move the selected item name or the action bar. The name starts
 59 GUI pixels from the bottom (45 outside survival and adventure); the action bar is centred 68
 pixels from the bottom. A mod that needs to move either can cancel and redraw its layer:
 `minecraft:selected_item_name` or `minecraft:overlay_message`.
 
+## Showing an action-bar line
+
+A client mod puts a line over the hotbar with `host.set_overlay_message(line, animate_color)`, as
+`Hud.setOverlayMessage` does in Java. No player handle or connection is needed: it is this window's
+HUD. Each call replaces the current line (empty text too) and restarts the stock timer and fade;
+`animate_color` cycles the colour like a jukebox's "Now Playing" line. The game's own lines use the
+same slot, so a server's action-bar packet or a jukebox message replaces a mod's line, and the other
+way round. Nothing is added to chat, narrated or sent. Text the boundary refuses returns
+`Err(TextFormError)` and the previous line stays. A server mod sends a player's action bar with
+`player_action_bar` instead.
+
+```rust
+{{#include ../../../examples/src/client_rendering.rs:tool_mode_changed}}
+```
+
 ## Registering F3 text
 
 Push a `DebugEntry::text(id, group, lines)` in `Hooks::register_debug_entries` at client
 startup. Use any valid `<namespace>:<path>` ID (including custom `minecraft:<path>` IDs that do
 not collide with built-in vanilla entries); it identifies the entry in the debug options and
-saved profile. The group says which vanilla lines yours join; the closure receives the current
-client host and appends to the entry's lines.
+saved profile. The group says which vanilla lines yours join, or `DebugGroup::Named(id)` puts
+them in a group of your own that every entry naming the same ID shares (`minecraft:memory` is
+vanilla's memory group). The closure receives the current client host and appends to the
+entry's lines.
 
 ```rust,ignore
 use mod_api::{DebugEntry, DebugGroup, RegisterDebugEntriesEvent, RegistrationContext};
@@ -141,13 +205,16 @@ on the `DebugEntry` to keep it allowed under reduced debug info.
 
 ## Registering world-space debug renderers
 
-In `Hooks::register_debug_renderers`, push `DebugRenderer::new(draw)` for each renderer that
-should run until the next refresh. To gate a renderer on a debug options switch, register
+In `Hooks::register_debug_renderers` (hook version 4), push `DebugRenderer::new(draw)` for each
+renderer that should run until the next refresh. Callbacks run after `submit_custom_geometry` and
+share its deferred geometry and submission rules. To gate a renderer on a debug options switch, register
 `DebugEntry::renderer(id)` at startup in `Hooks::register_debug_entries` (or reference a
 built-in vanilla entry such as `"minecraft:chunk_borders"`) and check
 `event.is_debug_entry_enabled(id)` before pushing. Unconditional renderers require no switch
-entry. Use the callback's `ClientHost`, `WorldRenderView` and `WorldDrawContext` to draw, and
-capture any per-refresh state specific to this renderer.
+entry. Use the callback's `ClientHost`, `WorldRenderView<'_>` (lending the frame's `Camera`,
+world `partial_tick`, `game_time`, `improved_transparency` state, and visible
+`RenderableSection` slice), and `WorldDrawContext` to draw, and capture any per-refresh state
+specific to this renderer.
 
 ```rust,ignore
 use mod_api::{
@@ -176,8 +243,9 @@ The client collects a fresh list at startup, login, the first world view and the
 after a selection rebuild or respawn. Every submitted renderer from an enabled mod is kept in
 registration order, with no ID-based filtering or deduplication. Keep per-refresh state in the
 new callbacks. Only installed callbacks run in a world view, as their registering mods, after
-`submit_custom_geometry` and within its shared draw limits. A panic disables only that
-callback for the rest of the session, including after a selection refresh.
+`submit_custom_geometry`, sharing its deferred `WorldDrawContext` (which grows dynamically and
+draws at the end of the world pass). A panic disables only that callback for the rest of the
+session, including after a selection refresh.
 
 ## Block overlays
 
@@ -248,33 +316,99 @@ fade out. The current HUD shader discards interpolated alpha below 0.004, not ju
 fragments can therefore differ from vanilla's exact-zero discard.
 
 ```rust,ignore
-fn gui_render_post(&self, _: &dyn ClientHost, event: &mut GuiRenderPostEvent<'_>) {
+fn render_gui_post(&self, _: &dyn ClientHost, event: &mut RenderGuiPostEvent<'_>) {
     // A panel shaded from dark purple at the top to black at the bottom.
-    event.batch.fill_gradient([20.0, 20.0, 120.0, 60.0], 0xF010_0010, 0xF000_0000);
+    event.draw.fill_gradient([20.0, 20.0, 120.0, 60.0], 0xF010_0010, 0xF000_0000);
     // A shade that fades out downwards.
-    event.batch.fill_gradient([20.0, 80.0, 120.0, 10.0], 0x8000_0000, 0x0000_0000);
+    event.draw.fill_gradient([20.0, 80.0, 120.0, 10.0], 0x8000_0000, 0x0000_0000);
 }
 ```
 
-In a `gui_paint` buffer the same call is the op `GuiDraw::FillGradient { x0, y0, x1, y1, top, bottom }`, with
-vanilla's corner arguments: `top` stays on the `y0` edge and `bottom` on the `y1` edge.
+`GuiCanvas::fill_gradient` takes the same arguments and follows the canvas's current pose and scissor.
 
-- **Pose and clip.** A gradient follows the current pose (a `gui_paint` buffer's `Push`) and the hook call's
-  clip (`push_clip`), as `fill` does. A clip that cuts the rectangle keeps the colour ramp: the cut edge has the
-  colour that was there.
+- **Clip.** A clip from `DrawContext::with_scissor` or `GuiCanvas::scope` keeps the colour ramp:
+  the cut edge has the colour that was there.
 - **Empty or inverted.** Zero width or height draws nothing, as does inversion on exactly one axis.
-  Inverting both axes (`w < 0` and `h < 0`, or `x1 < x0` and `y1 < y0`) draws sorted bounds with the
-  colours flipped: the first colour stays on its input y edge, now the lower edge. This preserves vanilla's
-  visible winding and colour placement. A `fill_gradient` rectangle with a NaN or infinite coordinate draws nothing.
+  Inverting both axes (`w < 0` and `h < 0`) draws sorted bounds with the colours flipped: the first
+  colour stays on its input y edge, now the lower edge. This preserves vanilla's visible winding
+  and colour placement. A non-finite rectangle draws nothing; the canvas reports `NotFinite`.
   Zero-area calls are culled here; vanilla can retain their layering bounds without drawing pixels.
 - **Cost.** One quad on the GUI batch, as `fill`; nothing is drawn or kept when a mod doesn't call it.
+
+## Player faces
+
+`GuiCanvas::player_face(uuid, at, size, hat, flip, argb)` inside `DrawContext::draw_gui` draws a player's skin
+head as vanilla's `PlayerFaceExtractor` does, the head the player list, a team screen or a waystone's owner
+line shows: the face, then the hat layer when `hat`, each `size` GUI pixels square at `at`, tinted by the ARGB
+`argb` (`0xFFFF_FFFF` for none).
+
+```rust,ignore
+use mod_api::{DrawContext, GuiDrawError};
+
+fn draw_member(draw: &mut dyn DrawContext, member: u128, x: f32, y: f32) -> Result<(), GuiDrawError> {
+    draw.draw_gui(&mut |canvas| {
+        canvas.player_face(member, [x, y], 8.0, true, false, 0xFFFF_FFFF)
+    })
+}
+```
+
+- **Which skin.** A player with an entry on the connection's player list (`PlayerInfo`) draws the skin the
+  player list draws. Any other UUID, an offline team member say, draws its profile's skin, looked up by id the
+  way a player head's profile is: the lookup starts in the background the first time and is kept as heads keep
+  theirs. Until the skin is downloaded and in the atlas, and when the profile has none, the face is the UUID's
+  default skin (`DefaultPlayerSkin.get`). The call never waits, so draw it every frame and the real skin appears
+  when it is ready; new skin requests wait for the outer `draw_gui` group to commit.
+- **Upside down.** `flip` draws the face upside down. The call never guesses it from a name: vanilla's player
+  list flips Dinnerbone and Grumm only while their player is in the level, so set it yourself if you want that.
+- **Pose and clip.** The face follows the canvas's pose and scissor (`GuiCanvas::scope` and
+  `DrawContext::with_scissor`), as `blit` does; the hat layer is drawn under the same pose, scissor and tint as
+  the face.
+
+## Standalone textures
+
+`GuiCanvas::texture(id, dst, region, argb)` inside `DrawContext::draw_gui` is vanilla's
+`GuiGraphicsExtractor.blit` with a texture's `Identifier`: a picture that isn't in the GUI atlas, such as a
+guide book's chapter art. Unlike `blit`, which takes a GUI-atlas name and a `Blend`, it takes a resource
+`Identifier` and no blend: the quad at `dst = [x, y, w, h]` in GUI pixels, showing `region.src` texels from
+`region.uv` of an image `region.tex` texels big, tinted by the ARGB `argb`.
+
+```rust,ignore
+use mod_api::{DrawContext, GuiBlitRegion, GuiDrawError, Identifier};
+
+fn draw_chapter(draw: &mut dyn DrawContext, art: &Identifier) -> Result<(), GuiDrawError> {
+    // `art` is `mymod:textures/book/chapter.png`, parsed once at load.
+    draw.draw_gui(&mut |canvas| {
+        let region = GuiBlitRegion::new([0.0, 0.0], [256, 128], [256, 128]);
+        canvas.texture(art, [20.0, 20.0, 128.0, 64.0], region, 0xFFFF_FFFF)
+    })
+}
+```
+
+- **Which file.** `id` is the exact resource, `assets/<namespace>/<path>`, from the active resource stack:
+  any namespace, a mod's own included, and a resource pack can replace it. Nothing is added to it, so name the
+  `textures/` folder and the `.png` yourself. Only packed resources are read: not files, URLs or dynamic
+  textures.
+- **When it loads.** The image is decoded and uploaded the first time it is drawn and kept until the next resource
+  reload, which loads the new one, even while no screen draws it. Drawing it every frame costs one quad.
+- **Coordinates.** The quad samples from `uv / tex` to `(uv + src) / tex`, as `innerBlit` does, without
+  clamping: past 1 the image repeats (or clamps, below), and a negative `src` or `tex` flips that axis.
+- **Sampler.** As the image's `.png.mcmeta` says, from the image's pack or a pack above it: `"blur": true`
+  filters linearly, `"clamp": true` clamps to the edge; otherwise nearest and repeat. No mipmaps.
+- **Missing images.** An id that names no image in the stack and no live dynamic texture when you call is refused
+  (below). One that is there but doesn't decode, or one whose `.png.mcmeta` isn't valid JSON or
+  has a `texture` section vanilla's codec refuses, draws vanilla's magenta and black missing texture in its place, in
+  order with the other draws. The call isn't refused for it.
+- **Refused.** A NaN or infinite `uv` returns `GuiDrawError::NotFinite`, a `tex` with a zero side
+  `GuiDrawError::BadBlitRegion`, and an id that names nothing `GuiDrawError::UnknownTexture`; the call draws nothing.
+- **Pose and clip.** The quad follows the canvas's pose and scissor (`GuiCanvas::scope` and
+  `DrawContext::with_scissor`), as `blit` does.
 
 ## Scaled text
 
 `DrawContext::text_scaled(text, at, scale, argb, shadow)` draws `text` as `text` does, scaled by `scale` about
-`at`, its top-left corner: what vanilla's HUD draws with `PoseStack.scale` around a line, without a `gui_paint`
-buffer of `Push`, `Text` and `Pop`. A half-size line under a label is `scale` 0.5, starting a quarter of its
-unscaled width left of where it is centred.
+`at`, its top-left corner. A half-size line under a label uses `scale` 0.5, starting a quarter of its
+unscaled width left of where it is centred. This is plain text; for a styled `Text`, draw with
+`GuiCanvas::text` inside a scope that translates to `at`, scales, and translates back.
 
 ```rust,ignore
 use mod_api::{GuiLayerPlacement, RegisterGuiLayersEvent, RegistrationContext};

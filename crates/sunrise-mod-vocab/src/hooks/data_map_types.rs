@@ -1,5 +1,4 @@
 //! The `data_map_types` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0150
 
 pub trait Hooks {
     /// The server is assembling its data tables, as for

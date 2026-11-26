@@ -5,12 +5,12 @@ Initial default delivery is observational; flags never stand in for a typed Pose
 import argparse,hashlib,json,os,re,time
 from pathlib import Path
 PARITY_MANUAL = "a proof run by hand: --work-dir DIR --reference-only for the Java side, then --work-dir DIR2 --reference-dir DIR --binary BIN"  # not a harness: tools/parity.py leaves it out
-try:
-    from . import net_capture,test_locator_bar_parity as net
-    from .test_builtin_component_delivery_parity import Commands,generate,offline,uuid_words
-except ImportError:
-    import net_capture,test_locator_bar_parity as net
-    from test_builtin_component_delivery_parity import Commands,generate,offline,uuid_words
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import net_capture, test_locator_bar_parity as net
+from tools.test_builtin_component_delivery_parity import Commands, generate, offline, uuid_words
 
 PHASES=(('initial',None,None),('crouch-change','on','CROUCHING'),('crouch-repeat','on','CROUCHING'),('stand-change','off','STANDING'),('stand-repeat','off','STANDING'))
 

@@ -1,8 +1,8 @@
 import json,sys,hashlib,tempfile,uuid
 from pathlib import Path
-sys.path.insert(0,str(Path.cwd()/'tools'))
-import test_command_exec_parity as driver
-import harness_args
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_command_exec_parity as driver, harness_args
 Z={'type':'minecraft:random_chance','chance':0.0};O={'type':'minecraft:random_chance','chance':1.0}
 P={'h122:zero':Z,'h122:one':O,'h122:not_zero':{'type':'minecraft:inverted','term':Z},'h122:not_one':{'type':'minecraft:inverted','term':O},'h122:all_true':{'type':'minecraft:all_of','terms':[O,O]},'h122:all_false':{'type':'minecraft:all_of','terms':[Z,O]},'h122:any_true':{'type':'minecraft:any_of','terms':[O,Z]},'h122:any_false':{'type':'minecraft:any_of','terms':[Z,Z]},'h122:pig':{'type':'minecraft:entity_properties','entity':'this','predicate':{'minecraft:entity_type':'minecraft:pig'}}}
 UID=str(uuid.UUID(int=(122<<96)|1))

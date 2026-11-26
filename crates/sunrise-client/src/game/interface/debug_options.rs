@@ -11,8 +11,7 @@ use sunrise_client::{
     text::Text,
     ui::{self, EditBox, Scroll},
 };
-use winit::event::{ElementState, KeyEvent};
-use winit::keyboard::{KeyCode, PhysicalKey};
+use winit::keyboard::KeyCode;
 
 /// `HeaderAndFooterLayout(this, 61, 33)`.
 const HEADER: f32 = 61.0;
@@ -393,7 +392,7 @@ impl Game<'_> {
                 let status = self.debug_entries.status(entry.path);
                 for ((status_of, _, _), x) in BUTTONS.into_iter().zip(button_xs(left + 2.0)) {
                     if status != status_of && ui::hovered(self.cursor, x, cy, BUTTON, 16.0) {
-                        clicked = Some((entry.path, status_of));
+                        clicked = Some((entry.path.to_owned(), status_of));
                     }
                 }
             }
@@ -402,8 +401,8 @@ impl Game<'_> {
         self.debug_options = Some(s);
         if let Some((path, status)) = clicked {
             // OptionEntry.setValue.
-            self.audio.play_button_click();
-            self.debug_entries.set_status(path, status);
+            self.play_audio_button_click();
+            self.debug_entries.set_status(&path, status);
             return true;
         }
         let (xs, fy) = footer(w, h);
@@ -422,32 +421,37 @@ impl Game<'_> {
                 if self.debug_entries.is_using_profile(profile) {
                     return search;
                 }
-                self.audio.play_button_click();
+                self.play_audio_button_click();
                 self.debug_entries.load_profile(profile);
             }
             2 => {
-                self.audio.play_button_click();
+                self.play_audio_button_click();
                 self.cycle_debug_gui_scale(shift);
             }
             _ => {
-                self.audio.play_button_click();
+                self.play_audio_button_click();
                 self.close_debug_options();
             }
         }
         true
     }
     /// The mouse wheel over the list (`scrollRate`: half a row).
-    pub(super) fn debug_options_scroll(&mut self, delta: f32) {
+    pub(super) fn debug_options_scroll(&mut self, delta: f32) -> bool {
         let (_, h) = self.gui_size();
-        if let Some(s) = &mut self.debug_options {
+        let scroll = self.pad_stick_scroll()
+            || self.pad_step_scroll()
+            || (HEADER..h - FOOTER).contains(&self.cursor.1);
+        if scroll && let Some(s) = &mut self.debug_options {
             let content =
                 content_height(rows(&self.registered_debug_entries, &s.search.value).len());
             s.scroll
                 .wheel(delta, ITEM / 2.0, HEADER, h - FOOTER, content);
+            return true;
         }
+        false
     }
     /// The pointer moved while the list's scrollbar is held.
-    pub(super) fn debug_options_drag(&mut self) {
+    pub(super) fn debug_options_drag(&mut self) -> bool {
         let (_, h) = self.gui_size();
         let y = self.cursor.1;
         if let Some(s) = &mut self.debug_options
@@ -456,7 +460,9 @@ impl Game<'_> {
             let content =
                 content_height(rows(&self.registered_debug_entries, &s.search.value).len());
             s.scroll.drag(y, HEADER, h - FOOTER, content);
+            return true;
         }
+        false
     }
     /// The button came up: the scrollbar lets go.
     pub(super) fn debug_options_release(&mut self) -> bool {
@@ -467,34 +473,25 @@ impl Game<'_> {
         })
     }
     /// A key the debug keys left: Escape closes, the rest edits the search.
-    pub(super) fn debug_options_key(&mut self, event: &KeyEvent) {
-        if event.state != ElementState::Pressed {
-            return;
-        }
-        let PhysicalKey::Code(key) = event.physical_key else {
-            return;
-        };
+    pub(super) fn debug_options_key(
+        &mut self,
+        key: KeyCode,
+        shortcut: Option<sunrise_client::clipboard::EditShortcut>,
+    ) -> bool {
         if key == KeyCode::Escape {
             self.close_debug_options();
-            return;
+            return true;
         }
-        let shortcut = self.edit_shortcut(event);
         let ctrl = self.has_control_down_with_quirk();
         let shift = self.has_shift_down();
-        let types_text = self.types_text();
-        let Some(s) = &mut self.debug_options else {
-            return;
+        let Some(s) = self.debug_options.as_mut().filter(|s| s.search.focused) else {
+            return false;
         };
-        if !s.search.focused {
-            return;
-        }
         if let Some(shortcut) = shortcut {
             s.search.shortcut(shortcut, &mut self.clipboard);
-        } else if !s.search.key(key, ctrl, shift)
-            && types_text
-            && let Some(text) = event.text.as_deref()
-        {
-            self.debug_options_type(text);
+            true
+        } else {
+            s.search.key(key, ctrl, shift)
         }
     }
     /// One character off the search box, for the controller's on-screen keyboard.
@@ -541,6 +538,7 @@ fn debug_options_interrupts(screen: Screen, playing_overlay: bool) -> bool {
         | Screen::Social
         | Screen::ServerLinks
         | Screen::ConfirmLink
+        | Screen::DemoIntro
         | Screen::DialogWarning
         | Screen::Mod => true,
         Screen::Chat
@@ -556,7 +554,7 @@ fn debug_options_interrupts(screen: Screen, playing_overlay: bool) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+pub(in crate::game) mod tests {
     use super::*;
 
     #[test]
@@ -643,14 +641,14 @@ mod tests {
             &settings,
             Instant::now(),
             false,
-            execution_role::ExecutionRole::IntegratedServer,
+            execution_role::ExecutionRole::Client,
             &Progress::new(),
             &mut |_, _| unreachable!(),
         )
         .unwrap();
         let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
         options.resources = root.clone();
-        options.execution_role = execution_role::ExecutionRole::IntegratedServer;
+        options.execution_role = execution_role::ExecutionRole::Client;
         let res = resources.insert(loaded.resources);
         let mut game = Game::new(
             res,
@@ -671,6 +669,10 @@ mod tests {
     #[test]
     #[ignore = "daily"]
     fn title_debug_overlay_draws_without_a_level() {
+        run_title_debug_overlay_draws_without_a_level();
+    }
+
+    pub(in crate::game) fn run_title_debug_overlay_draws_without_a_level() {
         use mod_api::prelude::ScreensClientHost;
         use sunrise_client::debug_keys::KeyAction;
         let mut resources = None;
@@ -712,6 +714,10 @@ mod tests {
     #[test]
     #[ignore = "daily"]
     fn title_debug_options_open_draw_and_return_without_a_level() {
+        run_title_debug_options_open_draw_and_return_without_a_level();
+    }
+
+    pub(in crate::game) fn run_title_debug_options_open_draw_and_return_without_a_level() {
         use sunrise_client::debug_keys::KeyAction;
         let mut resources = None;
         let mut game = title_game(&mut resources);

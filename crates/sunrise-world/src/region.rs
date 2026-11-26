@@ -285,15 +285,17 @@ impl RegionFile {
             used: Vec::new(),
             first_free: 0,
         };
-        region.force(0, 2);
-        for offset in offsets.into_iter().filter(|&o| o != 0) {
-            region.force((offset >> 8) as usize, (offset & 255) as usize);
+        if writable {
+            region.force(0, 2);
+            for offset in offsets.into_iter().filter(|&o| o != 0) {
+                region.force((offset >> 8) as usize, (offset & 255) as usize);
+            }
+            region.first_free = region
+                .used
+                .iter()
+                .position(|&u| !u)
+                .unwrap_or(region.used.len());
         }
-        region.first_free = region
-            .used
-            .iter()
-            .position(|&u| !u)
-            .unwrap_or(region.used.len());
         Ok(region)
     }
 

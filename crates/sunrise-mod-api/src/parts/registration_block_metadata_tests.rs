@@ -27,6 +27,13 @@ mod tests {
         ) -> Result<BlockState, BlockStateError> {
             self.0.with(state, name, value)
         }
+        fn block_metadata_visit_properties(
+            &self,
+            state: BlockState,
+            visit: &mut dyn FnMut(&str, &str),
+        ) -> Result<(), BlockStateError> {
+            self.0.visit_properties(state, visit)
+        }
         fn block_metadata_of(
             &self,
             block: BlockKey,
@@ -44,6 +51,78 @@ mod tests {
     struct Empty;
     impl Host for Empty {}
     crate::impl_host_areas!(Empty);
+
+    #[test]
+    fn metadata_enumerates_a_states_properties_in_name_order() {
+        crate::__private::part_tests::install_parts_fixture(&[]).unwrap();
+        let state = |facing: &str, lit: &str| {
+            std::collections::BTreeMap::from([
+                ("facing".to_string(), facing.to_string()),
+                ("lit".to_string(), lit.to_string()),
+            ])
+        };
+        let states = [
+            state("north", "false"),
+            state("north", "true"),
+            state("south", "false"),
+            state("south", "true"),
+        ];
+        let plain = std::collections::BTreeMap::new();
+        crate::__private::resolve_block_keys(["probe:furnace", "probe:plain"], |name| {
+            let states: Vec<_> = if name == "probe:plain" {
+                vec![&plain]
+            } else {
+                states.iter().collect()
+            };
+            sunrise_mod_runtime::block_definitions::BlockDefinition::new(&states, 0)
+                .map_err(|e| format!("{e:?}"))
+        })
+        .unwrap();
+        let host = MetadataHost(crate::__private::block_definitions().unwrap());
+        let metadata = host.block_states();
+        let furnace = crate::__private::block_key("probe:furnace").unwrap();
+        let lit_south = metadata
+            .of(
+                furnace,
+                &[
+                    StateConstraint::new("facing", "south"),
+                    StateConstraint::new("lit", "true"),
+                ],
+            )
+            .unwrap();
+        let mut seen = Vec::new();
+        lit_south
+            .visit_properties(&metadata, &mut |name, value| {
+                seen.push((name.to_string(), value.to_string()))
+            })
+            .unwrap();
+        assert_eq!(
+            seen,
+            [
+                ("facing".to_string(), "south".to_string()),
+                ("lit".to_string(), "true".to_string())
+            ]
+        );
+        let plain = metadata
+            .of(crate::__private::block_key("probe:plain").unwrap(), &[])
+            .unwrap();
+        let mut visited = 0;
+        plain
+            .visit_properties(&metadata, &mut |_, _| visited += 1)
+            .unwrap();
+        assert_eq!(visited, 0);
+        assert_eq!(
+            lit_south.visit_properties(&Empty.block_states(), &mut |_, _| {}),
+            Err(BlockStateError::Unavailable)
+        );
+        assert_eq!(
+            metadata.visit_properties(
+                crate::__private::block_state_from_ordinal(furnace, 9),
+                &mut |_, _| {}
+            ),
+            Err(BlockStateError::UnknownState)
+        );
+    }
 
     #[test]
     fn metadata_service_reads_edits_and_refuses_invalid_states() {

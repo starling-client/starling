@@ -7,32 +7,70 @@ use crate::*;
 #[sunrise_mod_api_macros::host_area]
 pub trait LevelCollisionBackend {
     /// Side: both.
+    /// Visit the block's empty-context collision shape (`BlockState.getCollisionShape`,
+    /// `VoxelShape.forAllBoxes`). Each box is block-local
+    /// `[min_x, min_y, min_z, max_x, max_y, max_z]`. Returning `Break(())` stops the
+    /// walk and is returned to the caller. No chunk is loaded and an unloaded block
+    /// or unavailable shape yields no boxes. Works in resident server levels and
+    /// the client's current and viewed levels.
+    fn level_visit_block_collision(
+        &self,
+        level: LevelRef,
+        pos: [i32; 3],
+        visit: &mut dyn FnMut([f64; 6]) -> core::ops::ControlFlow<()>,
+    ) -> Result<core::ops::ControlFlow<()>, LevelReadError>;
+    /// Side: both.
     /// `BlockGetter.getBlockFloorHeight` with the normal collision shapes and an empty
     /// entity context. The result is relative to the block: negative infinity means no floor.
     /// None for a stale level, an unloaded column or a position outside build height.
     /// Reads parked server levels and the current client level without loading chunks.
     fn level_block_floor_height(&self, level: LevelRef, pos: [i32; 3]) -> Option<f64>;
     /// Side: both.
-    /// The supplied state's block-local outline or collision boxes at `pos`,
-    /// with an empty context (`BlockState.getShape` / `getCollisionShape`).
-    /// The state need not be the block stored there; level-dependent shapes
-    /// still read the real level. Pass `block_state(host, pos)` to query the
-    /// state at that position. Interaction, visual, occlusion and support shapes
-    /// are not exposed. Reads open server levels and the current client level.
+    /// Visit the supplied state's block-local outline, collision or visual boxes at `pos`,
+    /// with an empty context (`BlockState.getShape` / `getCollisionShape` /
+    /// `getVisualShape`). The state need not be the block stored there; level-dependent
+    /// shapes still read the real level. Pass `block_state(host, pos)` to query the
+    /// state at that position. Interaction, occlusion and support shapes are not exposed. Reads open server levels and the current client level.
     /// Returns None for an unknown state, a stale handle or an unavailable level.
     /// Collision errors return no boxes.
-    fn level_block_shape(
+    /// A visitor break ends the walk immediately.
+    fn level_visit_block_shape(
         &self,
         level: LevelRef,
         state: BlockState,
         pos: [i32; 3],
         kind: BlockShapeKind,
-    ) -> Option<Vec<[f64; 6]>>;
+        visit: &mut dyn FnMut([f64; 6]) -> core::ops::ControlFlow<()>,
+    ) -> Option<core::ops::ControlFlow<()>>;
     /// Side: both.
-    /// Clip an empty-context ray against collider or outline shapes, without fluids.
-    /// None on failed reads, dynamic shapes, invalid rays or traversal limits, and for a ray
-    /// that enters a column the level doesn't hold. On a client, the level it shows or a
-    /// viewed one (`host.level`), each through its own world.
+    /// Clip a ray from `from` to `to` against collider, outline or visual shapes
+    /// (`ClipContext.Block.COLLIDER`, `OUTLINE`, `VISUAL`) and fluids (`BlockGetter.clip` /
+    /// `BlockGetter.clipWithInteractionOverride`, not `CollisionGetter.clipIncludingBorder`).
+    /// `fluids` selects which fluid states stop the ray (`ClipFluid`), using
+    /// `FluidState.getShape` with neighbour-dependent height; in each cell, block and fluid hits
+    /// compare squared distance at the actual hit point and the block wins a tie. No traversal
+    /// cell cap or length limit is applied.
+    ///
+    /// `context` is the collision context block shapes answer to: `CollisionContext::Empty` is
+    /// `CollisionContext.empty()`, `CollisionContext::Entity(entity)` is
+    /// `CollisionContext.of(entity)`, so scaffolding, powder snow and a mod's
+    /// `BlockPart::collision_shape` answer for that entity. Collider mode reads dynamic collision
+    /// shapes too (bamboo, shulker boxes, moving pistons, published block-entity shapes).
+    ///
+    /// Reads the named resident world and loads nothing. Cells above or below build height read
+    /// as air (`BlockGetter.getBlockState`). A cell in a column that is not loaded stops the
+    /// ray at once with [`ClipOutcome::Unloaded`], naming that cell: it is neither a miss nor
+    /// air. This holds on a client (including a viewed level from `host.level`) and on a
+    /// server (including a parked level). Collider mode uses the full collision registry;
+    /// visual mode reads `BlockState.getVisualShape` (see `ClipBlock::Visual`): a block that
+    /// keeps vanilla's default clips as in collider mode, a block whose visual shape is its
+    /// outline as in outline mode.
+    ///
+    /// `Err(ClipError::NonFiniteRay)` when an endpoint is NaN or infinite.
+    /// `Err(ClipError::StaleLevel)` for a stale or unreadable level or a stale entity in
+    /// `context`, and for a ray that reaches
+    /// a shape the level cannot answer (outline mode on a block with dynamic outline geometry
+    /// and no outline implementation, or a shape query error): no miss is invented for it.
     fn level_clip(
         &self,
         level: LevelRef,
@@ -40,7 +78,8 @@ pub trait LevelCollisionBackend {
         to: [f64; 3],
         blocks: ClipBlock,
         fluids: ClipFluid,
-    ) -> Option<ClipHit>;
+        context: CollisionContext,
+    ) -> Result<ClipOutcome, ClipError>;
     /// Side: both.
     /// `BlockState.isFaceSturdy` in an open server level or the current client level,
     /// including shapes published by local block entities. None for stale or unavailable
@@ -53,20 +92,38 @@ pub trait LevelCollisionBackend {
         support: SupportType,
     ) -> Option<bool>;
     /// Side: both.
-    /// World-space block collision boxes under an empty collision context, without entities or border. Refuses a stale or nonresident level and invalid or overlarge boxes.
-    /// On a client, the level it shows or a viewed one (`host.level`), each through its own
-    /// world; None where the walk reaches a column the client doesn't hold.
-    fn level_collision_boxes(&self, level: LevelRef, aabb: [f64; 6]) -> Option<Vec<[f64; 6]>>;
+    /// Visit intersecting block collision shapes in `CollisionGetter.getBlockCollisions`
+    /// order, with an empty collision context, without entities or the world border.
+    /// `aabb` is `[min_x, min_y, min_z, max_x, max_y, max_z]`. Each borrowed shape is
+    /// in world coordinates and is not clipped to `aabb`. Clone it only if it must outlive
+    /// the callback.
+    ///
+    /// Reads the named world, including a parked server level or a viewed client level.
+    /// Skips missing chunks without loading them. `Some(Continue(()))` means the scan
+    /// finished, including when empty; `Some(Break(()))` stops at the visitor's first
+    /// break with no further reads. `None` means invalid bounds (including ones outside
+    /// vanilla `Cursor3D`'s positive signed-int domain), unavailable world access (such as
+    /// a stale handle), or a query error. On a query error, earlier visits stand.
+    fn level_visit_block_collisions(
+        &self,
+        level: LevelRef,
+        aabb: [f64; 6],
+        visit: &mut dyn FnMut(&VoxelShape) -> std::ops::ControlFlow<()>,
+    ) -> Option<std::ops::ControlFlow<()>>;
     /// Side: server.
-    /// Whether nothing solid lies on the segment `from`..`to`, as
-    /// `LivingEntity.hasLineOfSight` clips between two eyes (`ClipContext.Block.COLLIDER`,
-    /// `ClipContext.Fluid.NONE`): `clip`'s miss. Fluids, entities and the border don't block it.
-    /// None as for `clip`.
+    /// Whether nothing solid lies on the segment `from`..`to`: delegates to
+    /// [`LevelRef::clip`] with `ClipBlock::Collider`, `ClipFluid::None` and
+    /// `CollisionContext::Empty`: true for `ClipOutcome::Miss`, false for a hit. This
+    /// two-position empty-context query has no 128-block entity distance check (unlike
+    /// `LivingEntity.hasLineOfSight(Entity)`). Fluids, entities and the world border do not
+    /// block it; out-of-height cells read as air. Returns `None` when `clip` returns an error
+    /// or `ClipOutcome::Unloaded`: an unloaded column is not an answer either way.
     fn level_line_of_sight(&self, level: LevelRef, from: [f64; 3], to: [f64; 3]) -> Option<bool>;
     /// Side: both.
-    /// Whether any block collision shape shares volume with `aabb` (`[min_x, min_y, min_z, max_x,
-    /// max_y, max_z]`): the block half of `CollisionGetter.noCollision(aabb)`, negated. The same
-    /// walk and limits as `collision_boxes`, stopping at the first shape it finds; entities and
-    /// the world border are not counted. None as for `collision_boxes`.
+    /// Whether the block collision walk finds a shape for `aabb` (`[min_x, min_y, min_z,
+    /// max_x, max_y, max_z]`): `CollisionGetter.noBlockCollision(null, aabb)`, negated.
+    /// Like [`LevelRef::visit_block_collisions`], it skips missing chunks, ignores entities
+    /// and the world border, and returns `None` for unavailable levels, invalid bounds or
+    /// query errors. Stops at the first hit without lending or collecting geometry.
     fn level_has_collisions(&self, level: LevelRef, aabb: [f64; 6]) -> Option<bool>;
 }

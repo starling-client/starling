@@ -25,8 +25,6 @@ use sunrise_world::{
 };
 
 const CACHE: usize = 1024;
-/// Chunks waiting for decoration: enough batches to keep every thread busy.
-const REQUESTS: usize = 1024;
 /// Chunks a side a decoration batch emits. Each needs a two-chunk border of
 /// proto chunks, which the batch shares: 4 built four protos per chunk, 8
 /// builds 2.25, and the protos (noise, surface) are most of far decoration.
@@ -36,11 +34,34 @@ fn batch_origin((x, z): (i32, i32)) -> (i32, i32) {
 }
 #[derive(Default)]
 struct Requests {
-    chunks: FxHashSet<(i32, i32)>,
-    center: [i32; 2],
+    /// What the far terrain wants decorated now (`Builder::request`), nearest
+    /// first, short of what is built or being built: the threads take their
+    /// batches from the front.
+    wanted: VecDeque<(i32, i32)>,
     /// The batches the decoration threads are working on.
     current: FxHashSet<(i32, i32)>,
     finished: FxHashSet<(i32, i32)>,
+}
+impl Requests {
+    /// `wanted` becomes `chunks` nearest `center` first, short of the
+    /// chunks built and the batches being built.
+    fn replace_wanted(&mut self, chunks: &[(i32, i32)], center: [i32; 2]) {
+        let Self {
+            wanted,
+            current,
+            finished,
+        } = self;
+        wanted.clear();
+        wanted.extend(
+            chunks
+                .iter()
+                .copied()
+                .filter(|&key| !finished.contains(&key) && !current.contains(&batch_origin(key))),
+        );
+        wanted
+            .make_contiguous()
+            .sort_unstable_by_key(|&key| (distance(key, center), key));
+    }
 }
 struct Shared {
     requests: Mutex<Requests>,
@@ -115,19 +136,17 @@ impl Builder {
                 loop {
                     let key = {
                         let mut requests = worker.requests.lock().unwrap();
-                        while requests.chunks.is_empty() && !worker.stop.load(Ordering::Relaxed) {
+                        let origin = loop {
+                            if worker.stop.load(Ordering::Relaxed) {
+                                break None;
+                            }
+                            if let Some(&key) = requests.wanted.front() {
+                                break Some(batch_origin(key));
+                            }
                             requests = worker.wake.wait(requests).unwrap();
-                        }
-                        if worker.stop.load(Ordering::Relaxed) {
-                            break;
-                        }
-                        let key = *requests
-                            .chunks
-                            .iter()
-                            .min_by_key(|&&key| (distance(key, requests.center), key))
-                            .unwrap();
-                        let origin = batch_origin(key);
-                        requests.chunks.retain(|&key| batch_origin(key) != origin);
+                        };
+                        let Some(origin) = origin else { break };
+                        requests.wanted.retain(|&key| batch_origin(key) != origin);
                         requests.current.insert(origin);
                         origin
                     };
@@ -157,22 +176,18 @@ impl Builder {
             })
             .expect("far decoration worker")
     }
+    /// The chunks the far terrain draws without their detail now. `Lod`
+    /// asks again for all it still misses every few hundred milliseconds, so
+    /// a request stands for the whole of what the view wants: chunks earlier
+    /// ones asked for and this one leaves out (flown past, out of view, under
+    /// the near chunks) are not built.
     fn request(&self, chunks: &[(i32, i32)], center: [i32; 2]) {
         if self.shared.stop.load(Ordering::Relaxed) {
             return;
         }
         let mut requests = self.shared.requests.lock().unwrap();
-        requests.center = center;
-        for &key in chunks {
-            if !requests.current.contains(&batch_origin(key)) && !requests.finished.contains(&key) {
-                requests.chunks.insert(key);
-            }
-        }
-        if requests.chunks.len() > REQUESTS {
-            let mut sorted: Vec<_> = requests.chunks.iter().copied().collect();
-            sorted.sort_unstable_by_key(|&key| (distance(key, center), key));
-            requests.chunks = sorted.into_iter().take(REQUESTS).collect();
-        }
+        requests.replace_wanted(chunks, center);
+        drop(requests);
         self.shared.wake.notify_all();
     }
 }
@@ -715,6 +730,35 @@ mod tests {
     }
 
     use super::*;
+    /// Flying on, the decoration threads build what the view wants now, nearest
+    /// first: what an earlier request asked for is not kept. The builder has no
+    /// threads here: the test reads the queue they take from.
+    #[test]
+    fn decoration_takes_the_latest_request_nearest_first() {
+        let builder = Builder {
+            shared: Arc::new(Shared {
+                requests: Mutex::new(Requests::default()),
+                wake: Condvar::new(),
+                stop: AtomicBool::new(false),
+            }),
+            results: mpsc::channel().1,
+            threads: Vec::new(),
+        };
+        let wanted = || Vec::from(builder.shared.requests.lock().unwrap().wanted.clone());
+        builder.request(&[(-3, 0), (-2, 1), (20, 0)], [0, 0]);
+        {
+            // A thread builds the batch at 24..32 and has emitted (17, 2) already.
+            let mut requests = builder.shared.requests.lock().unwrap();
+            requests.current.insert((24, 0));
+            requests.finished.insert((17, 2));
+        }
+        // The player flew east: the request leaves the chunks behind out.
+        builder.request(&[(40, 5), (25, 3), (17, 2), (20, 0), (30, 1)], [320, 0]);
+        assert_eq!(wanted(), [(20, 0), (40, 5)]);
+        // The view wants nothing: nothing is left to build.
+        builder.request(&[], [0, 0]);
+        assert!(wanted().is_empty());
+    }
     #[test]
     #[ignore = "daily"]
     fn decorated_lod_refines_real_seed_canopies_and_all_dimensions() -> crate::Result<()> {

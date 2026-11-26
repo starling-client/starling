@@ -6,9 +6,18 @@
 extern crate self as sunrise_client;
 pub use sunrise_client_lib::carrier_store;
 pub use sunrise_client_lib::*;
+<<<<<<< HEAD
 #[cfg(target_os = "android")]
 pub mod android;
 // Horizon Android 0.7.8's launcher, before the game (ha_launcher/mod.rs).
+||||||| 46c00106def
+=======
+// The parity fixtures' build compiles the lib test's helpers without the tests that use most of them.
+#[cfg_attr(
+    sunrise_parity_fixtures,
+    allow(dead_code, unused_imports, unused_macros)
+)]
+>>>>>>> ed6772e2118
 #[doc(hidden)]
 pub mod entry;
 #[cfg(target_os = "android")]
@@ -21,6 +30,10 @@ pub mod ha_launcher;
 #[cfg(not(feature = "system-allocator"))]
 #[global_allocator]
 static ALLOCATOR: sunrise_threads::GameAllocator = sunrise_threads::GAME_ALLOCATOR;
+#[cfg_attr(
+    sunrise_parity_fixtures,
+    allow(dead_code, unused_imports, unused_macros)
+)]
 pub mod game;
 
 pub mod diagnostics;
@@ -28,3 +41,9 @@ pub mod orb_limits;
 pub mod performance;
 #[cfg(test)]
 mod test_game_dir;
+
+/// The parity harnesses' fixtures program: crates/sunrise-parity-fixtures compiles this file as its root.
+#[cfg(sunrise_parity_fixtures)]
+fn main() {
+    game::parity_fixtures::main();
+}

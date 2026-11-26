@@ -42,7 +42,7 @@ BundleContents.Mutable.tryInsert	port	crates/sunrise-items/src/bundle.rs::Conten
 BundleContents.Mutable.tryTransfer	port	crates/sunrise-client/src/menu/bundle.rs::Menu::carried_bundle_click	the slot's stack moves in as far as it fits; the slot's own take rules apply
 BundleContents.Mutable.toggleSelectedItem	port	crates/sunrise-items/src/bundle.rs::toggle_selected	selects the index, or clears the selection when it is selected already or out of range
 BundleContents.Mutable.indexIsOutsideAllowedBounds	inline	crates/sunrise-items/src/bundle.rs::toggle_selected	the bounds test is the inside check
-BundleContents.Mutable.getStackedWeight	port	crates/sunrise-items/src/bundle.rs::Weight::times	weight times a count
+BundleContents.Mutable.getStackedWeight	port	crates/sunrise-items/src/bundle.rs::stacked	weight.multiplyBy(getFraction(count, 1)), checked
 BundleContents.Mutable.setItem	missing		minor: a slot write into a bundle (container setItem, reached by /item replace) skips the weight limit and merge; Sunrise's /item command has no bundle handling
 BundleContents.Mutable.addSlotWithItem	inline	crates/sunrise-items/src/bundle.rs::try_insert	the append with its weight check and merge lives in try_insert; the /item command's container write still does not go through it
 BundleContents.Mutable.getWeightWithAddedItems	inline	crates/sunrise-items/src/bundle.rs::Contents::try_insert	the weight after adding must stay at or below one, computed from room_for

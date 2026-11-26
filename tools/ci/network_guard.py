@@ -56,7 +56,9 @@ def run(invocation, env, timed, shim, run_one):
         result["network_operations"] = operations
         if f"loaded {result.get('pid')}" not in markers or operations:
             detail = ", ".join(operations) if operations else "guard library did not load"
-            result["status"] = f"network guard: {detail}"
+            # A hung binary keeps its named failure beside the violation.
+            result["status"] = f"{result['status']}; network guard: {detail}" if result.get("hung") \
+                else f"network guard: {detail}"
             result["output"].write(f"\n::error::network guard: {binary['label']}: {detail}; "
                                    'mark it #[ignore = "daily"] and add its daily row, reason network '
                                    '(tools/ci/move_to_daily.py)\n')

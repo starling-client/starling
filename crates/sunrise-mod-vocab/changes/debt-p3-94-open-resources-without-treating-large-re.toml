@@ -1,0 +1,10 @@
+ids = [
+    "method:prelude::ResourcesHost::resource",
+    "method:prelude::ResourcesHost::open_resource",
+    "type:ResourceOpenError",
+    "type:ResourceOpenError.Io",
+]
+why = """Vanilla FallbackResourceManager.getResource checks each pack's own file before its filter can hide lower files; Resource.open asks only that file's IoSupplier for a stream, and MinecraftServer.reloadResources publishes the selection after loading it. NeoForge MultiPackResourceManager couples namespace and path filters, and JarContentsPackResources.getResource opens the selected entry lazily. The native API no longer allocates the entire file on lookup, imposes the old guest reply limit MAX_RESOURCE_BYTES, returns a renderer's merged bytes, or conflates I/O failure with absence. `resource_stack` still reads merged layers under the old limit until it reads the original packs the same way.
+
+Vanilla FallbackResourceManager.getResourceStack returns every pack's copy of a resource and Resource.open reads each with no size limit; NeoForge does not add one. resource_stack now reads every copy in full, as open_resource does, and MAX_RESOURCE_BYTES, the old guest reply limit it kept, is removed. A copy that can't be read is still left out."""
+migrate = """Replace host.resource(pack_type, &id) with host.open_resource(pack_type, &id). Handle Err(error) separately from Ok(None); ResourceOpenError::Io contains the original I/O error. In Ok(Some(mut reader)), use std::io::Read while the host is borrowed. For owned bytes, use let mut bytes = Vec::new(); reader.read_to_end(&mut bytes)?; and handle read errors. Remove MAX_RESOURCE_BYTES imports and checks; apply any required limits in your own decoder."""

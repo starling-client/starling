@@ -16,6 +16,7 @@ fn inventory_label_default_follows_image_height_not_inventory_slots() {
                     window: 1,
                     generation,
                     name: "test:menu".into(),
+                    title: None,
                     block: Some("test:block".into()),
                     pos: None,
                     mod_type: None,
@@ -24,6 +25,7 @@ fn inventory_label_default_follows_image_height_not_inventory_slots() {
                 layout_revision: 0,
                 slot_moves: Default::default(),
                 shown: true,
+                detached: false,
                 screen: mod_api::__private::OwnedMenuScreen::new(
                     "test",
                     0,

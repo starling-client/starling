@@ -1,10 +1,14 @@
 //! Static serializer resources adapted to the owning server loot generation.
-use super::api_values::{TryIntoApi, TryIntoEngine};
 use mod_api::{
     GlobalLootModifier, GlobalLootModifierSerializer, Identifier, LootModifierError,
     LootModifierSettings,
 };
-use std::{collections::HashMap, path::Path, sync::Arc};
+use std::{
+    any::{Any, TypeId},
+    collections::HashMap,
+    path::Path,
+    sync::Arc,
+};
 use sunrise_assets::resource_source::ResourceSource;
 use sunrise_world::{
     loot::{
@@ -28,10 +32,21 @@ impl Serializers {
     }
     fn decode(
         &self,
+        id: &str,
         kind: &str,
         data: &serde_json::Value,
         load: &LoadContext,
+        loot: &loot::LootData,
     ) -> Result<(DecodedModifier, Arc<dyn GlobalLootModifier>), String> {
+        let prepare_condition = |condition: Option<serde_json::Value>| {
+            condition
+                .map(|value| {
+                    loot.bindings()
+                        .prepare_condition(value, &format!("loot_modifier {id} $.condition"))
+                        .map_err(|error| error.to_string())
+                })
+                .transpose()
+        };
         if kind == "neoforge:add_table" {
             let settings = LootModifierSettings::decode(data).map_err(|error| error.to_string())?;
             let table = data
@@ -41,7 +56,7 @@ impl Serializers {
             let table = Identifier::parse(table).map_err(|error| format!("table: {error}"))?;
             let decoded = DecodedModifier {
                 priority: settings.priority,
-                condition: settings.condition.clone(),
+                condition: prepare_condition(settings.condition.clone())?,
                 apply: Arc::new(AddTableModifier {
                     table: table.to_string(),
                 }),
@@ -56,9 +71,10 @@ impl Serializers {
         let instance = serializer
             .decode(data, &reader.context())
             .map_err(|error| error.to_string())?;
+        let condition = instance.condition().map_err(|error| error.to_string())?;
         let decoded = DecodedModifier {
             priority: instance.priority().map_err(|error| error.to_string())?,
-            condition: instance.condition().map_err(|error| error.to_string())?,
+            condition: prepare_condition(condition)?,
             apply: Arc::new(Adapter(instance.clone())),
         };
         Ok((decoded, instance))
@@ -68,6 +84,7 @@ impl Serializers {
         files: Vec<ModifierFile>,
         conditions: &sunrise_world::conditions::LoadConditions,
         load: &LoadContext,
+        loot: &loot::LootData,
     ) -> Result<
         (
             Arc<GlobalLootModifiers>,
@@ -81,7 +98,7 @@ impl Serializers {
             files,
             conditions,
             |id, kind, data| {
-                let (decoded, instance) = self.decode(kind, data, load)?;
+                let (decoded, instance) = self.decode(id, kind, data, load, loot)?;
                 instances.borrow_mut().insert(id.to_owned(), instance);
                 Ok(decoded)
             },
@@ -119,12 +136,9 @@ impl GlobalLootModifier for ApiAddTable {
     fn apply(
         &self,
         context: &mut dyn mod_api::LootModifierContext,
-        generated: Vec<mod_api::LootStack>,
-    ) -> Result<Vec<mod_api::LootStack>, LootModifierError> {
-        let appended = context.roll_raw(&self.table)?;
-        Ok(sunrise_world::loot::global_modifiers::append_raw(
-            &generated, appended,
-        ))
+        generated: &mut mod_api::LootList<'_>,
+    ) -> Result<(), LootModifierError> {
+        context.append_raw(&self.table, generated)
     }
 }
 
@@ -133,37 +147,28 @@ impl ModifierApply for Adapter {
     fn apply(
         &self,
         roll: &mut dyn ModifierRoll,
-        generated: &[loot::LootStack],
-    ) -> Result<Vec<loot::LootStack>, String> {
-        let snapshot = roll
-            .facts()
-            .try_into_api()
-            .map_err(|error| format!("context: {error:?}"))?;
-        let generated = generated
-            .iter()
-            .map(TryIntoApi::try_into_api)
-            .collect::<Result<_, _>>()
-            .map_err(|error| format!("generated: {error:?}"))?;
-        let mut context = RollAdapter { roll, snapshot };
+        generated: &mut dyn loot::LootListAccess,
+    ) -> Result<(), String> {
+        let active = &*generated as &dyn Any;
+        let mut context = RollAdapter {
+            roll,
+            list_type: Any::type_id(active),
+            list_address: std::ptr::from_ref(active).cast::<()>(),
+        };
+        let mut list = super::api_values::loot_values::loot_list(generated);
         self.0
-            .apply(&mut context, generated)
-            .map_err(|error| error.to_string())?
-            .iter()
-            .map(|stack| {
-                stack
-                    .try_into_engine(&())
-                    .map_err(|error| format!("output: {error:?}"))
-            })
-            .collect()
+            .apply(&mut context, &mut list)
+            .map_err(|error| error.to_string())
     }
 }
 struct RollAdapter<'a> {
     roll: &'a mut dyn ModifierRoll,
-    snapshot: mod_api::LootContext,
+    list_type: TypeId,
+    list_address: *const (),
 }
 impl mod_api::LootModifierContext for RollAdapter<'_> {
-    fn snapshot(&self) -> mod_api::LootContext {
-        self.snapshot.clone()
+    fn params(&self) -> mod_api::LootParamsView<'_> {
+        super::api_values::loot_values::loot_params(self.roll.facts())
     }
     fn random(&mut self) -> &mut dyn mod_api::RandomSource {
         self
@@ -171,17 +176,34 @@ impl mod_api::LootModifierContext for RollAdapter<'_> {
     fn roll_raw(
         &mut self,
         table: &Identifier,
-    ) -> Result<Vec<mod_api::LootStack>, LootModifierError> {
+        visit: &mut dyn FnMut(mod_api::LootStackView<'_>),
+    ) -> Result<(), LootModifierError> {
         self.roll
-            .roll_raw(&table.to_string())
-            .map_err(|error| LootModifierError::new("roll_raw", error))?
-            .iter()
-            .map(|stack| {
-                stack
-                    .try_into_api()
-                    .map_err(|error| LootModifierError::new("roll_raw", format!("{error:?}")))
+            .roll_raw(&table.to_string(), &mut |stack| {
+                visit(super::api_values::loot_values::loot_stack_view(stack));
             })
-            .collect()
+            .map_err(|error| LootModifierError::new("roll_raw", error))
+    }
+    fn append_raw(
+        &mut self,
+        table: &Identifier,
+        generated: &mut mod_api::LootList<'_>,
+    ) -> Result<(), LootModifierError> {
+        let target = generated.access_mut();
+        let backing = &*target as &dyn Any;
+        // Check the actual evaluator's loan without calling through a mod's vtable.
+        if Any::type_id(backing) != self.list_type
+            || !std::ptr::eq(std::ptr::from_ref(backing).cast::<()>(), self.list_address)
+        {
+            return Err(LootModifierError::new(
+                "append_raw",
+                "foreign loot output list",
+            ));
+        }
+        mod_api::__private::game::CallbackOwner::call_engine(|| {
+            self.roll.append_raw(&table.to_string(), target)
+        })
+        .map_err(|error| LootModifierError::new("append_raw", error))
     }
 }
 impl mod_api::RandomSource for RollAdapter<'_> {
@@ -330,9 +352,23 @@ pub(super) fn bind_retained(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game::loot_types;
     use mod_api::{
-        __private::game::ServerReloadListenersOrder, ServerListenerRegistry, ServerReloadListeners,
+        __private::game::ServerReloadListenersOrder, DataLoadContext, Hooks, LootList,
+        LootModifierContext, LootStack, LootStackEditError, ModEntry, Registrar,
+        RegistrationContext, ServerListenerRegistry, ServerReloadListeners,
     };
+    use serde_json::json;
+    use std::{
+        collections::BTreeMap,
+        path::PathBuf,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
+    use sunrise_core::{
+        nbt::Tag,
+        random::{LegacyRandom, RandomSource as _},
+    };
+    use sunrise_world::native_load_context::{DataLoadOrigin, LoadInputs};
 
     #[test]
     fn reload_views_follow_the_registered_loot_anchor() {
@@ -362,6 +398,483 @@ mod tests {
                 .map(|entry| entry.id)
                 .collect::<Vec<_>>(),
             [functions, loot, mod_listener]
+        );
+    }
+
+    #[derive(Clone, Copy)]
+    enum ChainStage {
+        First,
+        RefuseAfterEdit,
+        Last,
+    }
+
+    struct ChainMod;
+    #[mod_api::__subscriptions]
+    impl Hooks for ChainMod {
+        fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
+            r.item_key("minecraft:stick");
+            r.item_key("minecraft:diamond");
+            r.item_key("minecraft:gold_ingot");
+            r.register_global_loot_modifier_serializer("step", ChainMod);
+        }
+    }
+    impl GlobalLootModifierSerializer for ChainMod {
+        fn decode(
+            &self,
+            data: &serde_json::Value,
+            _: &dyn DataLoadContext,
+        ) -> Result<Arc<dyn GlobalLootModifier>, LootModifierError> {
+            let settings = LootModifierSettings::decode(data)?;
+            let stage = match data.get("stage").and_then(serde_json::Value::as_str) {
+                Some("first") => ChainStage::First,
+                Some("err") => ChainStage::RefuseAfterEdit,
+                Some("last") => ChainStage::Last,
+                _ => return Err(LootModifierError::new("stage", "unknown stage")),
+            };
+            Ok(Arc::new(ChainStep { settings, stage }))
+        }
+    }
+    struct ChainStep {
+        settings: LootModifierSettings,
+        stage: ChainStage,
+    }
+    impl GlobalLootModifier for ChainStep {
+        fn priority(&self) -> Result<i32, LootModifierError> {
+            Ok(self.settings.priority)
+        }
+        fn condition(&self) -> Result<Option<serde_json::Value>, LootModifierError> {
+            Ok(self.settings.condition.clone())
+        }
+        fn apply(
+            &self,
+            context: &mut dyn LootModifierContext,
+            generated: &mut LootList<'_>,
+        ) -> Result<(), LootModifierError> {
+            match self.stage {
+                ChainStage::First => {
+                    assert_eq!(context.params().queried_table_id(), "test:root");
+                    assert_eq!(
+                        generated.iter().map(|s| s.count()).collect::<Vec<_>>(),
+                        [64, 64, 2]
+                    );
+                    assert_eq!(
+                        context.random().next_long(),
+                        LegacyRandom::new(31).next_long()
+                    );
+                    let raw_id = Identifier::parse("test:raw").unwrap();
+                    let mut inspected = Vec::new();
+                    context.roll_raw(&raw_id, &mut |stack| {
+                        inspected.push((stack.item_id().to_owned(), stack.count()));
+                    })?;
+                    assert_eq!(inspected, [("minecraft:gold_ingot".to_owned(), 200)]);
+                    {
+                        let mut first = generated.get_mut(0).unwrap();
+                        first.set_count(-3);
+                        first.push_component("minecraft:custom_data", Tag::Int(42))?;
+                    }
+                    generated.truncate(1);
+                    // A second list of the same engine type is still not the
+                    // evaluator's active loan, even if its caller supplied it.
+                    let mut foreign = loot::LootStacks::default();
+                    let mut foreign_list =
+                        super::super::api_values::loot_values::loot_list(&mut foreign);
+                    let error = context.append_raw(&raw_id, &mut foreign_list).unwrap_err();
+                    assert_eq!(error.field, "append_raw");
+                    assert_eq!(error.reason, "foreign loot output list");
+                    assert!(foreign.0.is_empty());
+                    context.append_raw(&raw_id, generated)?;
+                    assert!(generated.reorder(1, 0));
+
+                    let stick = mod_api::__private::item_key("minecraft:stick").unwrap();
+                    assert_eq!(generated.insert(99, LootStack::new(stick, 1)), Ok(false));
+                    assert_eq!(generated.replace(99, LootStack::new(stick, 1)), Ok(false));
+                    assert!(!generated.remove(99));
+                    assert!(!generated.reorder(0, 99));
+                    let mut bad = LootStack::new(stick, 1);
+                    bad.components
+                        .push(("minecraft:custom_data".into(), Some(Tag::End)));
+                    assert_eq!(generated.push(bad), Err(LootStackEditError::InvalidPatch));
+                    assert_eq!(generated.insert(1, LootStack::new(stick, 5)), Ok(true));
+                    assert_eq!(generated.replace(1, LootStack::new(stick, 7)), Ok(true));
+                    assert_eq!(generated.get(1).unwrap().count(), 7);
+                    assert!(generated.remove(1));
+                    Ok(())
+                }
+                ChainStage::RefuseAfterEdit => {
+                    generated.get_mut(0).unwrap().set_count(205);
+                    assert!(generated.reorder(0, 2));
+                    context.random().next_long();
+                    context.append_raw(&Identifier::parse("test:missing").unwrap(), generated)
+                }
+                ChainStage::Last => {
+                    assert_eq!(
+                        generated
+                            .iter()
+                            .map(|s| (s.item_id(), s.count()))
+                            .collect::<Vec<_>>(),
+                        [
+                            ("minecraft:diamond", -3),
+                            ("minecraft:gold_ingot", 200),
+                            ("minecraft:gold_ingot", 205),
+                        ]
+                    );
+                    assert_eq!(
+                        generated.get(0).unwrap().components().last(),
+                        Some(("minecraft:custom_data", Some(&Tag::Int(42))))
+                    );
+                    let mut expected = LegacyRandom::new(31);
+                    expected.next_long();
+                    expected.next_long();
+                    assert_eq!(context.random().next_long(), expected.next_long());
+                    Ok(())
+                }
+            }
+        }
+    }
+
+    fn modifier_file(id: &str, value: serde_json::Value) -> ModifierFile {
+        let bytes = serde_json::to_vec(&value).unwrap();
+        ModifierFile {
+            id: id.into(),
+            pack: "test".into(),
+            path: format!("{id}.json"),
+            read: Box::new(move || Ok(bytes)),
+        }
+    }
+
+    fn load_context() -> LoadContext {
+        LoadContext::new(
+            DataLoadOrigin::ServerDataLoad,
+            Arc::new(LoadInputs::new(BTreeMap::new(), PathBuf::new())),
+            std::iter::empty::<&str>(),
+        )
+    }
+
+    #[test]
+    fn scoped_global_modifiers_edit_reorder_append_and_preserve_edits_across_error() {
+        let defaults = sunrise_world::item_defaults::ItemDefaults::decode(
+            br#"{"minecraft:diamond":{"minecraft:max_stack_size":64},"minecraft:gold_ingot":{"minecraft:max_stack_size":64},"minecraft:stick":{"minecraft:max_stack_size":64}}"#,
+        )
+        .unwrap();
+        let root_table = json!({
+            "pools": [{"rolls": 1, "entries": [{"type": "minecraft:item", "name": "minecraft:diamond"}]}],
+            "modifier": [
+                {"type": "minecraft:set_count", "count": 130},
+                {"type": "minecraft:set_components", "components": {"minecraft:max_stack_size": 64}}
+            ]
+        });
+        let raw_table = json!({
+            "pools": [
+                {"rolls": 1, "entries": [{"type": "minecraft:loot_table", "value": "test:raw"}]},
+                {"rolls": 1, "entries": [{"type": "minecraft:item", "name": "minecraft:gold_ingot", "modifier": {"type": "minecraft:set_count", "count": 200}}]}
+            ]
+        });
+        let overlay = [
+            (
+                "loot_table/test:root".to_owned(),
+                vec![serde_json::to_vec(&root_table).unwrap()],
+            ),
+            (
+                "loot_table/test:raw".to_owned(),
+                vec![serde_json::to_vec(&raw_table).unwrap()],
+            ),
+        ];
+
+        mod_platform::testing::with_mods(
+            vec![ModEntry::new("chain", Box::new(ChainMod))].into(),
+            || {
+                mod_platform::__private::part_tests::install_parts_fixture(
+                    mod_api::__private::mods(),
+                )
+                .unwrap();
+                mod_api::__private::resolve_items([
+                    "minecraft:stick",
+                    "minecraft:diamond",
+                    "minecraft:gold_ingot",
+                ])
+                .unwrap();
+
+                let mut data = loot::LootData::load_with_types(
+                    Path::new("scoped-glm-overlay"),
+                    &loot::PackOverlay::new(&overlay),
+                    &defaults,
+                    loot_types::capture(),
+                )
+                .unwrap();
+                let serializers = Serializers::capture();
+                let files = vec![
+                    modifier_file(
+                        "chain:first",
+                        json!({"type": "chain:step", "stage": "first", "priority": 1002}),
+                    ),
+                    modifier_file(
+                        "chain:add",
+                        json!({"type": "neoforge:add_table", "table": "test:raw", "priority": 1001}),
+                    ),
+                    modifier_file(
+                        "chain:err",
+                        json!({"type": "chain:step", "stage": "err", "priority": 1000}),
+                    ),
+                    modifier_file(
+                        "chain:last",
+                        json!({"type": "chain:step", "stage": "last", "priority": 999}),
+                    ),
+                ];
+                let (generation, manager) = serializers
+                    .prepare(
+                        files,
+                        &sunrise_world::conditions::LoadConditions::vanilla(),
+                        &load_context(),
+                        &data,
+                    )
+                    .unwrap();
+                data.set_global_modifiers(generation);
+
+                let mut expected_rng = LegacyRandom::new(31);
+                expected_rng.next_long();
+                expected_rng.next_long();
+                expected_rng.next_long();
+
+                let mut world_rng = LegacyRandom::new(31);
+                let world_out = data.roll_split("test:root", &mut world_rng);
+                assert_eq!(
+                    world_out
+                        .iter()
+                        .map(|s| (s.item.as_str(), s.count))
+                        .collect::<Vec<_>>(),
+                    [
+                        ("minecraft:diamond", -3),
+                        ("minecraft:gold_ingot", 200),
+                        ("minecraft:gold_ingot", 205),
+                    ]
+                );
+                assert_eq!(
+                    world_out[0].components.last(),
+                    Some(&("minecraft:custom_data".into(), Some(Tag::Int(42))))
+                );
+                assert_eq!(
+                    <(u64, Option<f64>)>::from(&world_rng),
+                    <(u64, Option<f64>)>::from(&expected_rng)
+                );
+
+                let mut items = sunrise_items::items::Items::for_tests(HashMap::new());
+                items.set_loot_data(&data);
+                let mut items_rng = LegacyRandom::new(31);
+                let items_out = items.loot_table("test:root", false, None, &mut items_rng);
+                assert_eq!(
+                    items_out
+                        .iter()
+                        .map(|s| (&*s.item, s.count))
+                        .collect::<Vec<_>>(),
+                    [
+                        ("minecraft:diamond", 0),
+                        ("minecraft:gold_ingot", 200),
+                        ("minecraft:gold_ingot", 205),
+                    ]
+                );
+                assert_eq!(
+                    <(u64, Option<f64>)>::from(&items_rng),
+                    <(u64, Option<f64>)>::from(&expected_rng)
+                );
+
+                // The retained ApiAddTable instance uses the same engine append_raw path.
+                let api_add = manager
+                    .get(&Identifier::parse("chain:add").unwrap())
+                    .unwrap();
+                let api_generation = Arc::new(GlobalLootModifiers::load(
+                    [modifier_file(
+                        "chain:api_add",
+                        json!({"type": "chain:api_add"}),
+                    )],
+                    &sunrise_world::conditions::LoadConditions::vanilla(),
+                    |_, _, _| {
+                        Ok(DecodedModifier {
+                            priority: 1000,
+                            condition: None,
+                            apply: Arc::new(Adapter(api_add.clone())),
+                        })
+                    },
+                    |error| panic!("{error}"),
+                ));
+                data.set_global_modifiers(api_generation);
+                let api_out = data.roll_split("test:root", &mut LegacyRandom::new(31));
+                assert_eq!(
+                    api_out
+                        .iter()
+                        .map(|s| (s.item.as_str(), s.count))
+                        .collect::<Vec<_>>(),
+                    [
+                        ("minecraft:diamond", 64),
+                        ("minecraft:diamond", 64),
+                        ("minecraft:diamond", 2),
+                        ("minecraft:gold_ingot", 200),
+                    ]
+                );
+            },
+        );
+    }
+
+    #[derive(Clone)]
+    struct PanicGlmMod {
+        decode_calls: Arc<AtomicUsize>,
+        apply_calls: Arc<AtomicUsize>,
+    }
+    #[mod_api::__subscriptions]
+    impl Hooks for PanicGlmMod {
+        fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
+            r.register_global_loot_modifier_serializer("boom", self.clone());
+        }
+    }
+    impl GlobalLootModifierSerializer for PanicGlmMod {
+        fn decode(
+            &self,
+            _: &serde_json::Value,
+            _: &dyn DataLoadContext,
+        ) -> Result<Arc<dyn GlobalLootModifier>, LootModifierError> {
+            self.decode_calls.fetch_add(1, Ordering::Relaxed);
+            Ok(Arc::new(self.clone()))
+        }
+    }
+    impl GlobalLootModifier for PanicGlmMod {
+        fn apply(
+            &self,
+            _: &mut dyn LootModifierContext,
+            _: &mut LootList<'_>,
+        ) -> Result<(), LootModifierError> {
+            self.apply_calls.fetch_add(1, Ordering::Relaxed);
+            panic!("glm registration panic");
+        }
+    }
+
+    #[derive(Clone)]
+    struct HealthyGlmMod(Arc<AtomicUsize>);
+    #[mod_api::__subscriptions]
+    impl Hooks for HealthyGlmMod {
+        fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
+            r.register_global_loot_modifier_serializer("bump", self.clone());
+        }
+    }
+    impl GlobalLootModifierSerializer for HealthyGlmMod {
+        fn decode(
+            &self,
+            _: &serde_json::Value,
+            _: &dyn DataLoadContext,
+        ) -> Result<Arc<dyn GlobalLootModifier>, LootModifierError> {
+            Ok(Arc::new(self.clone()))
+        }
+    }
+    impl GlobalLootModifier for HealthyGlmMod {
+        fn apply(
+            &self,
+            _: &mut dyn LootModifierContext,
+            generated: &mut LootList<'_>,
+        ) -> Result<(), LootModifierError> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            if let Some(mut first) = generated.get_mut(0) {
+                let next = first.view().count() + 10;
+                first.set_count(next);
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn panicking_global_modifier_stays_poisoned_across_reloads_while_others_run() {
+        let defaults = sunrise_world::item_defaults::ItemDefaults::decode(
+            br#"{"minecraft:stick":{"minecraft:max_stack_size":64}}"#,
+        )
+        .unwrap();
+        let table = json!({"pools":[{"rolls":1,"entries":[{"type":"minecraft:item","name":"minecraft:stick"}]}]});
+        let overlay = [(
+            "loot_table/test:root".to_owned(),
+            vec![serde_json::to_vec(&table).unwrap()],
+        )];
+        let panic_decodes = Arc::new(AtomicUsize::new(0));
+        let panic_applies = Arc::new(AtomicUsize::new(0));
+        let healthy_applies = Arc::new(AtomicUsize::new(0));
+
+        mod_platform::testing::with_mods(
+            vec![
+                ModEntry::new(
+                    "panicglm",
+                    Box::new(PanicGlmMod {
+                        decode_calls: panic_decodes.clone(),
+                        apply_calls: panic_applies.clone(),
+                    }),
+                ),
+                ModEntry::new("goodglm", Box::new(HealthyGlmMod(healthy_applies.clone()))),
+            ]
+            .into(),
+            || {
+                mod_platform::__private::part_tests::install_parts_fixture(
+                    mod_api::__private::mods(),
+                )
+                .unwrap();
+                let mut data = loot::LootData::load_with_types(
+                    Path::new("scoped-glm-panic-overlay"),
+                    &loot::PackOverlay::new(&overlay),
+                    &defaults,
+                    loot_types::capture(),
+                )
+                .unwrap();
+                let (generation, _) = Serializers::capture()
+                    .prepare(
+                        vec![
+                            modifier_file(
+                                "panicglm:a",
+                                json!({"type": "panicglm:boom", "priority": 1002}),
+                            ),
+                            modifier_file(
+                                "panicglm:b",
+                                json!({"type": "panicglm:boom", "priority": 1001}),
+                            ),
+                            modifier_file(
+                                "goodglm:add",
+                                json!({"type": "goodglm:bump", "priority": 1000}),
+                            ),
+                        ],
+                        &sunrise_world::conditions::LoadConditions::vanilla(),
+                        &load_context(),
+                        &data,
+                    )
+                    .unwrap();
+                assert_eq!(panic_decodes.load(Ordering::Relaxed), 2);
+                data.set_global_modifiers(generation);
+
+                // First roll panics in panicglm:a, poisons the shared registration owner so
+                // panicglm:b does not run, while goodglm:add still runs.
+                let first = data.roll_split("test:root", &mut LegacyRandom::new(1));
+                assert_eq!(first[0].count, 11);
+                assert_eq!(panic_applies.load(Ordering::Relaxed), 1);
+                assert_eq!(healthy_applies.load(Ordering::Relaxed), 1);
+
+                // Recapturing serializers on reload preserves the poisoned owner:
+                // panicglm:boom is skipped without invoking decode, goodglm:add loads and runs.
+                let (reloaded, manager) = Serializers::capture()
+                    .prepare(
+                        vec![
+                            modifier_file(
+                                "panicglm:a",
+                                json!({"type": "panicglm:boom", "priority": 1002}),
+                            ),
+                            modifier_file(
+                                "goodglm:add",
+                                json!({"type": "goodglm:bump", "priority": 1000}),
+                            ),
+                        ],
+                        &sunrise_world::conditions::LoadConditions::vanilla(),
+                        &load_context(),
+                        &data,
+                    )
+                    .unwrap();
+                assert_eq!(panic_decodes.load(Ordering::Relaxed), 2);
+                assert_eq!(manager.modifiers().len(), 1);
+                data.set_global_modifiers(reloaded);
+                let second = data.roll_split("test:root", &mut LegacyRandom::new(1));
+                assert_eq!(second[0].count, 11);
+                assert_eq!(panic_applies.load(Ordering::Relaxed), 1);
+                assert_eq!(healthy_applies.load(Ordering::Relaxed), 2);
+            },
         );
     }
 }

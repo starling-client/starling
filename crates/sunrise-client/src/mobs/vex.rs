@@ -59,12 +59,15 @@ fn set_wanted(m: &mut Mob, at: [f64; 3], speed: f64) {
 struct Charge;
 impl Goal for Charge {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         true
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         let Some(t) = m.target_info(cx.w).filter(|t| t.alive) else {
             return false;
@@ -73,9 +76,11 @@ impl Goal for Charge {
             && m.random.next_int_bound(reduced(7)).unwrap_or(1) == 0
             && m.distance_sqr(t.position) > 4.0
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         has_wanted(m) && m.extra.flag && m.target_info(cx.w).is_some_and(|t| t.alive)
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         if let Some(t) = m.target_info(cx.w) {
             set_wanted(m, [t.position.x, t.eye_y, t.position.z], 1.0);
@@ -88,9 +93,11 @@ impl Goal for Charge {
             1.0,
         ));
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, _cx: &mut Cx) {
         m.extra.flag = false;
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         let (Some(who), Some(t)) = (m.ai.target, m.target_info(cx.w)) else {
             return;
@@ -108,15 +115,19 @@ impl Goal for Charge {
 struct RandomMove;
 impl Goal for RandomMove {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, _cx: &mut Cx) -> bool {
         !has_wanted(m) && m.random.next_int_bound(reduced(7)).unwrap_or(1) == 0
     }
+    #[inline]
     fn can_continue(&mut self, _m: &mut Mob, _cx: &mut Cx) -> bool {
         false
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         // Ticked once: the goal never continues.
         let origin = m.extra.home.unwrap_or([
@@ -166,9 +177,11 @@ pub fn owner(m: &Mob, lookup: Option<&dyn super::WhoLookup>) -> Option<u32> {
 struct CopyOwnerTarget;
 impl Goal for CopyOwnerTarget {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         super::goals::TARGET
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         let seen = owner(m, cx.w.who_lookup).and_then(|owner| {
             cx.w.others
@@ -178,9 +191,11 @@ impl Goal for CopyOwnerTarget {
         });
         seen.is_some_and(|t| t != Who::Mob(m.id) && copyable(cx.w, t))
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         m.target_info(cx.w).is_some_and(|t| t.alive)
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         let target = owner(m, cx.w.who_lookup).and_then(|owner| {
             cx.w.others
@@ -241,11 +256,11 @@ pub fn travel(m: &mut Mob, w: &super::MobWorld) {
         w.section_writer.clone(),
     );
     let y = m.velocity.y - m.effective_gravity();
-    m.velocity = Vec3::new(
+    m.set_velocity(Vec3::new(
         m.velocity.x * f64::from(0.91_f32),
         y * f64::from(0.98_f32),
         m.velocity.z * f64::from(0.91_f32),
-    );
+    ));
     m.ground.on_ground = false;
 }
 /// `Vex.tick`: the limited life costs a heart a second once spent.

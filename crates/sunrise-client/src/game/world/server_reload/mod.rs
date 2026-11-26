@@ -11,7 +11,7 @@ use mod_api::{
     FileToIdConverter, HookId, Identifier, ServerReloadContext, ServerReloadListener,
     ServerReloadResources,
 };
-use sunrise_client::datapack::DataStore;
+use sunrise_client::datapack::{DataPacks, DataStore};
 
 pub(super) type PreparedReload = PreparedStep<Box<DataStore>>;
 
@@ -32,14 +32,16 @@ impl PreparedServerReload {
     }
 }
 
-/// Loads the vanilla function library from `stack`, logging per-file failures.
-fn functions_store(stack: &PackStack) -> DataStore {
+/// Loads the vanilla function library from `stack`, logging per-file failures
+/// (`ServerFunctionLibrary`). A predicate, item modifier or slot source its codec
+/// refuses fails the load, every one listed (`RegistryDataLoader.logErrors`).
+fn functions_store(stack: &PackStack) -> Result<DataStore, ReloadStageError> {
     let packs: Vec<_> = stack.builtin.iter().chain(stack.enabled_packs()).collect();
-    let store = DataStore::load(&packs);
+    let store = DataStore::load(&DataPacks::new(&packs));
     for (id, e) in &store.errors {
         log::warn!("Sunrise: failed to load function {id}: {e}");
     }
-    store
+    Ok(store)
 }
 
 impl PackStack {
@@ -76,7 +78,7 @@ impl Game<'_> {
             ordered.listeners,
             HookId::AddServerReloadListeners,
             "server_reload_prepare",
-            || Ok::<_, ReloadStageError>(Box::new(functions_store(stack))),
+            || functions_store(stack).map(Box::new),
             |id, converter| stack.reload_context(id, converter),
             ServerReloadListener::prepare,
         )?;
@@ -89,7 +91,6 @@ impl Game<'_> {
     pub(super) fn apply_server_reload(
         &mut self,
         prepared: PreparedServerReload,
-        stack: &PackStack,
         enabled_features: &[String],
     ) {
         let skipped = apply_listeners(
@@ -98,7 +99,7 @@ impl Game<'_> {
             "server_reload_apply",
             |store| {
                 self.build_native_commands(enabled_features);
-                self.admit_store(*store, stack);
+                self.admit_store(*store);
                 Ok::<_, std::convert::Infallible>(())
             },
         )

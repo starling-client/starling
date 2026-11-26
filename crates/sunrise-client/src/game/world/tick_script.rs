@@ -27,7 +27,9 @@ impl Game<'_> {
                 return;
             };
             self.tick_script.start(script);
-            self.send_signed_chat_input("/wire-mark");
+            if self.chat_abilities().allows("/wire-mark") {
+                let _ = self.send_server_command("wire-mark");
+            }
         }
         let Some((lines, finished)) = self.tick_script.advance() else {
             return;

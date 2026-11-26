@@ -34,6 +34,16 @@ impl Hooks for SkinPicker {
     }
 }
 
+/// The atlas sprite a selected dynamic texture is copied into: its skin slot (placing it is
+/// idempotent).
+fn skin_slot_name(game: &mut crate::game::Game<'_>, texture: &Identifier) -> String {
+    let (slot, _) = game
+        .skin_slots
+        .place(format!("dynamic:{texture}"))
+        .expect("a skin slot");
+    format!("sunrise/skin{slot}")
+}
+
 #[test]
 #[ignore = "daily"]
 fn live_skin_selection_reaches_the_hand_body_and_preview_and_restores_vanilla() {
@@ -72,11 +82,23 @@ fn live_skin_selection_reaches_the_hand_body_and_preview_and_restores_vanilla() 
                 };
                 {
                     let _call = edit_texture();
-                    game.create_dynamic_texture(&wide, 64, 64, &[255, 0, 0, 255].repeat(64 * 64))
-                        .unwrap();
-                    game.create_dynamic_texture(&slim, 64, 64, &[0, 0, 255, 255].repeat(64 * 64))
-                        .unwrap();
-                    game.create_dynamic_texture(&wrong_size, 32, 64, &[255; 32 * 64 * 4])
+                    game.create_dynamic_texture(
+                        &wide,
+                        64,
+                        64,
+                        1,
+                        &[255, 0, 0, 255].repeat(64 * 64),
+                    )
+                    .unwrap();
+                    game.create_dynamic_texture(
+                        &slim,
+                        64,
+                        64,
+                        1,
+                        &[0, 0, 255, 255].repeat(64 * 64),
+                    )
+                    .unwrap();
+                    game.create_dynamic_texture(&wrong_size, 32, 64, 1, &[255; 32 * 64 * 4])
                         .unwrap();
                 }
 
@@ -109,11 +131,13 @@ fn live_skin_selection_reaches_the_hand_body_and_preview_and_restores_vanilla() 
                 assert!(!vanilla_hand.is_empty(), "the vanilla arm draws");
                 choice.lock().unwrap().selection =
                     Some(PlayerSkinOverride::new(wide.clone(), PlayerModel::Wide));
-                assert_eq!(draw(game, &wide.to_string()).0, vanilla_hand);
+                let wide_name = skin_slot_name(game, &wide);
+                assert_eq!(draw(game, &wide_name).0, vanilla_hand);
 
                 choice.lock().unwrap().selection =
                     Some(PlayerSkinOverride::new(slim.clone(), PlayerModel::Slim));
-                let slim_hand = draw(game, &slim.to_string()).0;
+                let slim_name = skin_slot_name(game, &slim);
+                let slim_hand = draw(game, &slim_name).0;
                 assert!(!slim_hand.is_empty(), "the new texture draws on the arm");
                 assert_ne!(
                     slim_hand, vanilla_hand,
@@ -122,7 +146,7 @@ fn live_skin_selection_reaches_the_hand_body_and_preview_and_restores_vanilla() 
 
                 game.apply_camera_type(CameraType::ThirdPersonBack);
                 game.screen = Screen::Inventory;
-                let (_, body, preview) = draw(game, &slim.to_string());
+                let (_, body, preview) = draw(game, &slim_name);
                 assert!(body, "the world avatar uses the selection");
                 assert!(preview, "the inventory avatar uses that same selection");
 
@@ -145,7 +169,7 @@ fn live_skin_selection_reaches_the_hand_body_and_preview_and_restores_vanilla() 
                     Some(PlayerSkinOverride::new(slim.clone(), PlayerModel::Slim));
                 {
                     let _call = edit_texture();
-                    game.free_dynamic_texture(&slim).unwrap();
+                    game.release_dynamic_texture(&slim).unwrap();
                 }
                 assert_eq!(
                     draw(game, vanilla).0,

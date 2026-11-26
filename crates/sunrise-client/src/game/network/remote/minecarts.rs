@@ -139,3 +139,102 @@ impl Game<'_> {
             }));
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{CartLerp, CartStep, Vec3};
+    use crate::game::{
+        minecarts::{CartKind, Minecart, SEAT},
+        native_entity_refs::tests::{run_fresh_cases, with_client_game},
+    };
+    use mod_api::{CameraPositionEvent, ClientHost, ComputeCameraAnglesEvent, Hooks, ModEntry};
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
+    use sunrise_client::motion::PlayerMotion;
+    use sunrise_protocol::connection::Pipe;
+
+    struct CameraCalls {
+        angles: Arc<AtomicUsize>,
+        positions: Arc<Mutex<Vec<[f64; 3]>>>,
+    }
+
+    #[mod_api::__subscriptions]
+    impl Hooks for CameraCalls {
+        fn compute_camera_angles(&self, _: &dyn ClientHost, event: &mut ComputeCameraAnglesEvent) {
+            self.angles.fetch_add(1, Ordering::Relaxed);
+            event.roll = 90.0;
+        }
+
+        fn camera_position(&self, _: &dyn ClientHost, event: &mut CameraPositionEvent<'_>) {
+            self.positions
+                .lock()
+                .unwrap()
+                .push(event.position.coordinates());
+        }
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn interpolating_local_rider_skips_angles_but_lends_placed_position() {
+        if run_fresh_cases(
+            "game::remote::minecarts::tests::interpolating_local_rider_skips_angles_but_lends_placed_position",
+            "SUNRISE_CAMERA_MINECART_CHILD",
+            &["cart"],
+        ) {
+            return;
+        }
+        let angles = Arc::new(AtomicUsize::new(0));
+        let positions = Arc::new(Mutex::new(Vec::new()));
+        let mods = vec![ModEntry::new(
+            "cart-camera",
+            Box::new(CameraCalls {
+                angles: angles.clone(),
+                positions: positions.clone(),
+            }),
+        )];
+        mod_platform::testing::with_mods(mods.into(), || {
+            with_client_game(|game| {
+                let (client, _server) = Pipe::pair();
+                game.connect_local(client, "CartCameraTest").unwrap();
+                game.remote.as_mut().unwrap().features =
+                    Arc::from(["minecraft:minecart_improvements".to_owned()]);
+                game.player = Some(PlayerMotion::new(game.motion, Vec3::ZERO).unwrap());
+                game.title = None;
+                game.screen = crate::game::Screen::Playing;
+                game.camera_type = mod_api::CameraType::FirstPerson;
+                game.view.eye_height = 1.0;
+                game.view.eye_height_old = 1.0;
+
+                let id = 31;
+                let mut cart = Minecart::new(id, CartKind::Rideable, Vec3::new(16.0, 64.0, 24.0));
+                let mut lerp = CartLerp::new();
+                lerp.pending.push(CartStep {
+                    position: Vec3::new(24.0, 68.0, 40.0),
+                    movement: Vec3::ZERO,
+                    yaw: 0.0,
+                    pitch: 0.0,
+                    weight: 1.0,
+                });
+                assert!(lerp.tick(&mut cart));
+                game.carts.push(cart);
+                game.remote
+                    .as_mut()
+                    .unwrap()
+                    .cart_lerps
+                    .insert(id as i32, lerp);
+                game.riding = Some(id);
+
+                // A quarter of the way from the old cart position to its first queued step,
+                // plus the seat and the local player's interpolated eye height.
+                let expected = [18.0, (65.0 + SEAT) + 1.0, 28.0];
+                let (position, _, _, roll) = game.frame_camera(0.75).unwrap();
+                assert_eq!(position.to_array(), expected);
+                assert_eq!(roll, 0.0);
+                assert_eq!(angles.load(Ordering::Relaxed), 0);
+                assert_eq!(*positions.lock().unwrap(), [expected]);
+            });
+        });
+    }
+}

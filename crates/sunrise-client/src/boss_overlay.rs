@@ -141,7 +141,7 @@ impl BossOverlay {
         if self.should_darken() {
             self.darken = (self.darken + 0.05).min(1.0);
         } else if self.darken > 0.0 {
-            self.darken = (self.darken - 0.0125).max(0.0);
+            self.darken -= 0.0125;
         }
     }
     /// `GameRenderer.bossOverlayWorldDarkening`.

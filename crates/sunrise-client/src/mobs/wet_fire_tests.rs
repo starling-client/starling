@@ -162,33 +162,20 @@ fn wet_fire_damage_and_extinguishing_follow_the_full_mob_tick() {
             // Check the RNG state at the actual contact/extinguish boundary:
             // silent new ignition consumes no pitch draws; an existing burn
             // consumes exactly the two draws used by vanilla's hiss.
-            let mut rain = w.clone();
-            rain.raining = true;
-            for x in [7.5, 12.5] {
+            for block in ["lava", "fire"] {
                 for fire in [0, 1, 20] {
-                    let mut mob = pig(types, true, false, fire);
-                    mob.position = Vec3::new(x, 64.2, 2.5);
-                    mob.previous = mob.position;
-                    assert!(in_rain(&mob, &rain));
-                    let mut events = Vec::new();
-                    let was_on_fire = base_tick(
-                        &mut mob,
-                        &rain,
-                        &mut crate::health::TestLevel::new(0).level(),
-                        &mut events,
-                    )
-                    .was_on_fire();
-                    assert_eq!(was_on_fire, fire > 1);
-                    let mut expected_random = mob.random.clone();
+                    let mut dry = pig(types, true, false, fire);
+                    let mut wet = dry.clone();
+                    let (dry_hp, _, _) = step(&mut dry, w, &format!("{block}_dry"));
                     let sounds = usize::from(fire > 1);
+                    assert_eq!(
+                        step(&mut wet, w, &format!("{block}_rain")),
+                        (dry_hp, 0, sounds)
+                    );
                     for _ in 0..sounds * 2 {
-                        expected_random.next_float();
+                        dry.random.next_float();
                     }
-                    events.clear();
-                    extinguish_if_wet(&mut mob, &rain, was_on_fire, &mut events);
-                    assert_eq!(mob.fire_ticks, 0);
-                    assert_eq!(events.len(), sounds);
-                    assert_eq!(mob.random.next_long(), expected_random.next_long());
+                    assert_eq!(wet.random.state(), dry.random.state());
                 }
             }
         }

@@ -136,7 +136,7 @@ impl Interaction for Syrup {
                     BlockUpdateFlags::NEIGHBORS | BlockUpdateFlags::CLIENTS,
                 )
                 .map_err(|_| ())?;
-            if hand.exchange(host, tx, &replacement, 1) != 1 {
+            if hand.exchange(host, tx, &replacement, 1) != Ok(1) {
                 return Err(());
             }
             Ok(())

@@ -210,9 +210,9 @@ pub struct BiomeModifier {
 #[non_exhaustive]
 #[derive(sunrise_mod_api_macros::Wire)]
 pub enum BiomeModifierError {
-    /// The modifier's own id is empty or in a namespace the declaring mod does not own.
+    /// The modifier's own id is empty or not a valid identifier.
     InvalidId,
-    /// Another modifier of the mod has the id.
+    /// Another modifier already uses the id.
     Duplicate,
     /// A list that must name something is empty.
     EmptyList,
@@ -466,20 +466,21 @@ impl BiomeModifier {
                             .collect(),
                     );
                 }
+                let sound_event = |sound: &str| json!({"sound_id": sound});
                 let mut sounds = serde_json::Map::new();
                 if let Some(sound) = ambient_loop {
-                    sounds.insert("loop".into(), json!(sound));
+                    sounds.insert("loop".into(), sound_event(sound));
                 }
                 if let Some(list) = ambient_additions {
-                    let additions = list
-                        .iter()
-                        .map(|a| json!({"sound": a.sound, "tick_chance": a.tick_chance}));
+                    let additions = list.iter().map(
+                        |a| json!({"sound": sound_event(&a.sound), "tick_chance": a.tick_chance}),
+                    );
                     sounds.insert("additions".into(), additions.collect());
                 }
                 if let Some(m) = ambient_mood {
                     sounds.insert(
                         "mood".into(),
-                        json!({"sound": m.sound, "tick_delay": m.tick_delay,
+                        json!({"sound": sound_event(&m.sound), "tick_delay": m.tick_delay,
                             "block_search_extent": m.block_search_extent, "offset": m.offset}),
                     );
                 }
@@ -492,7 +493,7 @@ impl BiomeModifier {
                 if let Some(m) = background_music {
                     attributes.insert(
                         "minecraft:audio/background_music".into(),
-                        json!({"default": {"sound": m.sound, "min_delay": m.min_delay,
+                        json!({"default": {"sound": sound_event(&m.sound), "min_delay": m.min_delay,
                             "max_delay": m.max_delay}}),
                     );
                 }
@@ -717,13 +718,13 @@ mod tests {
                 "minecraft:visual/ambient_particles":
                     [{"particle": {"type": "minecraft:ash"}, "probability": 0.25}],
                 "minecraft:audio/ambient_sounds": {
-                    "loop": "minecraft:ambient.warped_forest.loop",
-                    "additions": [{"sound": "minecraft:ambient.warped_forest.additions",
+                    "loop": {"sound_id": "minecraft:ambient.warped_forest.loop"},
+                    "additions": [{"sound": {"sound_id": "minecraft:ambient.warped_forest.additions"},
                         "tick_chance": -0.5}],
-                    "mood": {"sound": "minecraft:ambient.warped_forest.mood", "tick_delay": 6000,
+                    "mood": {"sound": {"sound_id": "minecraft:ambient.warped_forest.mood"}, "tick_delay": 6000,
                         "block_search_extent": 8, "offset": 2.0},
                 },
-                "minecraft:audio/background_music": {"default": {"sound": "huts:music.dunes",
+                "minecraft:audio/background_music": {"default": {"sound": {"sound_id": "huts:music.dunes"},
                     "min_delay": 25000, "max_delay": 24000}},
                 "minecraft:audio/music_volume": 0.5,
             })

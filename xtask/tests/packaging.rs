@@ -50,14 +50,7 @@ fn client_and_server_layouts_require_and_ship_companion_programs() {
             "fixture",
         ],
     );
-    for target in [
-        "linux",
-        "linux-musl",
-        "windows",
-        "windows-arm64",
-        "macos",
-        "macos-x64",
-    ] {
+    for target in ["linux", "windows", "macos"] {
         let source = root.join(target);
         fs::create_dir_all(&source).unwrap();
         let suffix = if target.starts_with("windows") {
@@ -68,7 +61,6 @@ fn client_and_server_layouts_require_and_ship_companion_programs() {
         for name in [
             "sunrise-client",
             "sunrise-ctl",
-            "sunrise-perf",
             "sunrise-server",
             "sunrise-port-pack",
         ] {
@@ -112,6 +104,27 @@ fn client_and_server_layouts_require_and_ship_companion_programs() {
             for notice in ["LICENSE", "LICENSES/MIT-Horizon.txt"] {
                 assert_eq!(fs::read(out.join(notice)).unwrap(), b"fixture");
             }
+            // `--no-game`: the same folder without the game program, the SDK's `programs` slice.
+            let programs = root.join(format!("{target}-{task}-programs"));
+            let packed = Command::new(env!("CARGO_BIN_EXE_xtask"))
+                .args([task, "--no-game"])
+                .arg(source.join(format!("sunrise-client{suffix}")))
+                .arg(&programs)
+                .current_dir(&root)
+                .output()
+                .unwrap();
+            assert!(
+                packed.status.success(),
+                "{}",
+                String::from_utf8_lossy(&packed.stderr)
+            );
+            assert!(!programs.join(format!("{engine}{suffix}")).exists());
+            assert_eq!(
+                fs::read(programs.join(format!("sunrise-prepare{suffix}"))).unwrap(),
+                b"program"
+            );
+            assert!(programs.join("exporters/manifest.json").is_file());
+            assert_eq!(fs::read(programs.join("LICENSE")).unwrap(), b"fixture");
             fs::remove_file(source.join(format!("sunrise-prepare{suffix}"))).unwrap();
         }
     }

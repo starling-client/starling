@@ -1,7 +1,7 @@
 MessageArgument.getMessage	port	crates/sunrise-client/src/game/administration/commands/mod.rs::Game::expand_selectors	gap: minor: plain text only, no chat signing
 MessageArgument.resolveChatMessage	port	crates/sunrise-client/src/game/administration/commands/mod.rs::Game::cmd_say	gap: minor: no chat signing or decorator
 MessageArgument.resolveSignedMessage	missing		minor: no signed chat (signature, ChatDecorator); /say sends plain text
-MessageArgument.resolveDisguisedMessage	inline	crates/sunrise-client/src/lan/hub/chat.rs::Hub::console_say	the /say of a source with no player: a disguised chat of type say_command named after the source
+MessageArgument.resolveDisguisedMessage	inline	crates/sunrise-client/src/game/network/lan_chat.rs::Game::lan_broadcast_command_chat	the /say of a source with no player: a disguised chat of type say_command named after the source
 MessageArgument.filterPlainText	skip:service		external chat filter service (text-filtering-config); Sunrise has no text filter
 MessageArgument.Message.toComponent	port	crates/sunrise-client/src/game/administration/commands/mod.rs::Game::expand_selectors	@-selector expansion into names
 NbtPathArgument.readUnquotedName	port	crates/sunrise-world/src/nbt_path.rs::parse_node	unquoted node name read in the bare-name arm of parse_node

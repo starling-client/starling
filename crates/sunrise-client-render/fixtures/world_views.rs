@@ -263,15 +263,16 @@ fn fixture(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
         &[],
         &[],
         (&white, 16, 16),
+        None,
         (&zero, 1, 1),
         (&zero, 1, 1),
         (&zero, 1),
         Arc::new(client::gfx::panorama::Faces::colour([0, 0, 0, 255])),
         None,
-        None,
+        sunrise_client_render::gfx::RendererDevice::New,
         GraphicsApi::Vulkan,
         false,
-        true,
+        (true, false),
         &client::graphics::Graphics::default(),
         Default::default(),
         Default::default(),
@@ -345,7 +346,7 @@ fn fixture(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
     // then the frame drawn with them.
     let camera = DVec3::new(8.0, 104.0, 0.5);
     let entity_frusta = |renderer: &mut Renderer| {
-        renderer.camera_frustum(camera, 85.0, 0.0, 0.0, glam::Mat4::IDENTITY, 1000.0)
+        renderer.camera_frustum(camera, 85.0, 0.0, 0.0, 0.0, glam::Mat4::IDENTITY, 1000.0)
     };
     let shot = |renderer: &mut Renderer, name: &str, views: Vec<WorldView>| {
         *VIEWS.lock().unwrap() = views;
@@ -361,7 +362,7 @@ fn fixture(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
         let asked = ASKED.load(std::sync::atomic::Ordering::Relaxed);
         for _ in 0..2 {
             entity_frusta(renderer);
-            renderer.render(&frame).unwrap();
+            renderer.render(&frame, None).unwrap();
         }
         let asked = ASKED.load(std::sync::atomic::Ordering::Relaxed) - asked;
         assert_eq!(asked, 2, "the mod is asked once a frame");
@@ -479,7 +480,7 @@ fn fixture(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
     let mut frame = fixture_frame(&hud);
     frame.entities = &entity;
     entity_frusta(&mut renderer);
-    renderer.render(&frame).unwrap();
+    renderer.render(&frame, None).unwrap();
     renderer.wait_submissions();
     assert_eq!(
         *PUSHED.lock().unwrap(),
@@ -798,7 +799,7 @@ fn bench(renderer: &mut Renderer, out: &Path) -> Result<(), Box<dyn std::error::
         frame.depth_far = 2000.0;
         frame.cave_culling = true;
         for _ in 0..30 {
-            renderer.render(&frame).unwrap();
+            renderer.render(&frame, None).unwrap();
             DRAWN.lock().unwrap().clear();
         }
         client::spans::take();
@@ -807,7 +808,7 @@ fn bench(renderer: &mut Renderer, out: &Path) -> Result<(), Box<dyn std::error::
         let (mut cpu, mut walk, mut views_walk) = (0.0, 0.0, 0.0);
         for _ in 0..FRAMES {
             let started = std::time::Instant::now();
-            renderer.render(&frame).unwrap();
+            renderer.render(&frame, None).unwrap();
             cpu += started.elapsed().as_secs_f64() * 1000.0;
             for span in client::spans::take() {
                 match span.name {
@@ -901,22 +902,26 @@ fn fixture_frame(hud: &HudBatch) -> Frame<'_> {
         camera: glam::DVec3::new(8.0, 104.0, 0.5),
         yaw: 0.0,
         pitch: 0.0,
+        roll: 0.0,
         fov_degrees: 85.0,
+        cull_fov_degrees: 85.0,
         eye: glam::DVec3::new(8.0, 104.0, 0.5),
         eye_rotation: [0.0, 0.0],
         first_person: true,
         bob: glam::Mat4::IDENTITY,
+        view_transform: glam::Mat4::IDENTITY,
         spin: glam::Mat4::IDENTITY,
         sky: client::environment::Sky::default(),
         shadow_scene_revision: (0, 0),
         shadow_cache: false,
         distance: 128.0,
         detail_distance: 128.0,
+        shadow_distance: None,
         depth_far: 1000.0,
         underwater: false,
-        water_plane: None,
         cave_culling: false,
         title: false,
+        sky_pass: false,
         sky_blocked: false,
         skybox: false,
         end_sky: false,

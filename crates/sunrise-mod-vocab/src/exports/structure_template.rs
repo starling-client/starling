@@ -1,4 +1,4 @@
 pub use world::structure_template::{
-    StructureMirror, StructureRotation, StructureTemplateBlock, StructureTemplateSnapshot,
+    StructureMirror, StructureRotation, StructureTemplateBlockView, StructureTemplateError,
     StructureTemplateSource,
 };

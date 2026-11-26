@@ -51,6 +51,21 @@ impl Game<'_> {
         }
         r.menu.set(menu);
         r.set_menu_title(title);
+        if self
+            .native_net
+            .placement
+            .client
+            .window()
+            .is_some_and(|window| !self.native_book_placement_window_matches(window))
+            || self
+                .native_net
+                .placement
+                .view
+                .as_ref()
+                .is_some_and(|view| !self.native_book_placement_catalog_matches(&view.identity))
+        {
+            self.clear_mod_book_placement_screen();
+        }
     }
     /// The server's open menu: its window id and menu type (0, "inventory"
     /// when none is open).
@@ -68,6 +83,11 @@ impl Game<'_> {
     /// engine doesn't model sends the clicks unpredicted. False when the batch
     /// cannot be submitted.
     pub(in crate::game) fn remote_menu_ops(&mut self, ops: &[(Option<usize>, i32, Input)]) -> bool {
+        // A displayed native screen whose server menu was already closed stays
+        // visible until removed, but cannot submit clicks to window 0.
+        if self.shown_native_screen().is_some() && self.active_native_screen().is_none() {
+            return false;
+        }
         // CrafterScreen.slotClicked: a slot toggle goes out before the click.
         if let [(Some(slot), button, input)] = ops {
             self.crafter_slot_clicked(*slot, *button, *input);
@@ -135,7 +155,7 @@ impl Game<'_> {
             });
         }
         match prepared {
-            Some(Ok((predicted, packets))) => self.send_clicks(&predicted, packets),
+            Some(Ok((predicted, packets))) => self.send_clicks(predicted, packets),
             other => {
                 if let Some(Err(error)) = other {
                     log::warn!("Sending menu clicks without prediction: {error}");
@@ -187,157 +207,144 @@ impl Game<'_> {
             }
         }
 
-        let seal = self.transaction_open();
         let saved_craft_grid = self.craft_grid.clone();
         let saved_craft_result = self.remote.as_ref().and_then(|r| r.craft_result.clone());
         let tracks_craft_result = matches!(
             self.remote_menu().1.as_str(),
             "inventory" | "minecraft:crafting"
         );
-        let mut all_predicted: Vec<Predicted> = Vec::with_capacity(clicks.len());
-        let mut threw = false;
+        let outcome = self.storage_scope(|game, _| {
+            let mut all_predicted: Vec<Predicted> = Vec::with_capacity(clicks.len());
+            let mut threw = false;
 
-        for gesture in gestures {
-            let mut found = None;
-            let mut engine_threw = false;
-            let modeled = self.menu_session(|menu, env, _| {
-                let (last, prefix) = gesture.split_last()?;
-                for &(slot, button, input) in prefix {
-                    if menu.click(env, i32::from(slot), button, input).is_err() {
-                        engine_threw = true;
-                        return Some(false);
+            for gesture in gestures {
+                let mut found = None;
+                let mut engine_threw = false;
+                let modeled = game.menu_session(|menu, env, _| {
+                    let (last, prefix) = gesture.split_last()?;
+                    for &(slot, button, input) in prefix {
+                        if menu.click(env, i32::from(slot), button, input).is_err() {
+                            engine_threw = true;
+                            return Some(false);
+                        }
                     }
+                    found = menu.stacked_click(env, i32::from(last.0), last.1, last.2);
+                    Some(false)
+                });
+                if !modeled || engine_threw {
+                    return (Err(None), false);
                 }
-                found = menu.stacked_click(env, i32::from(last.0), last.1, last.2);
-                Some(false)
-            });
-            if !modeled || engine_threw {
-                self.transaction_close(&seal, false);
-                self.craft_grid = saved_craft_grid;
-                if let Some(r) = self.remote.as_mut() {
-                    r.craft_result = saved_craft_result;
-                }
-                return None;
-            }
 
-            if let Some(frozen) = found.filter(|f| Self::stacked_listens_for_side(false, f)) {
-                let (carried, resolved_slot, primary) =
-                    (frozen.carried.clone(), frozen.slot, frozen.primary);
-                let mut step_result: Option<(Vec<Predicted>, bool)> = None;
-                let pickup = self.stacked_pickup(
-                    local_pickup_id(),
-                    frozen.clone(),
-                    move |game| (game.carried == carried).then(|| frozen.clone()),
-                    |game, carried, clicked| {
-                        let mut took = false;
-                        let _ = game.menu_session(|menu, env, _| {
-                            if let Some((_, prefix)) = gesture.split_last() {
-                                for &(slot, button, input) in prefix {
-                                    if menu.click(env, i32::from(slot), button, input).is_err() {
-                                        return Some(false);
+                if let Some(frozen) = found.filter(|f| Self::stacked_listens_for_side(false, f)) {
+                    let (carried, resolved_slot, primary) =
+                        (frozen.carried.clone(), frozen.slot, frozen.primary);
+                    let mut step_result: Option<(Vec<Predicted>, bool)> = None;
+                    let pickup = game.stacked_pickup(
+                        local_pickup_id(),
+                        frozen.clone(),
+                        move |game| (game.carried == carried).then(|| frozen.clone()),
+                        |game, carried, clicked| {
+                            let mut took = false;
+                            let _ = game.menu_session(|menu, env, _| {
+                                if let Some((_, prefix)) = gesture.split_last() {
+                                    for &(slot, button, input) in prefix {
+                                        if menu.click(env, i32::from(slot), button, input).is_err()
+                                        {
+                                            return Some(false);
+                                        }
                                     }
                                 }
+                                took = menu.probe_carried_vanilla_override(
+                                    env,
+                                    resolved_slot,
+                                    primary,
+                                    carried,
+                                    clicked,
+                                );
+                                Some(false)
+                            });
+                            took
+                        },
+                        |game, answer| {
+                            let player = game.native_acting_id();
+                            game.journal_player(player);
+                            if let Some(key) = game.container {
+                                game.journal_block_entity(key);
                             }
-                            took = menu.probe_carried_vanilla_override(
-                                env,
-                                resolved_slot,
-                                primary,
-                                carried,
-                                clicked,
-                            );
-                            Some(false)
-                        });
-                        took
-                    },
-                    |game, answer| {
-                        let player = game.native_acting_id();
-                        game.journal_player(player);
-                        if let Some(key) = game.container {
-                            game.journal_block_entity(key);
-                        }
-                        game.menu_session_with_game(|_, m, env, _| {
-                            let Some(predicted) = predict_clicks_with(m, env, gesture, answer)
-                            else {
-                                return Some(false);
-                            };
-                            step_result = Some(predicted);
-                            Some(true)
-                        });
-                    },
-                );
-                if pickup == Pickup::Refused {
-                    self.transaction_close(&seal, false);
-                    self.craft_grid = saved_craft_grid;
-                    if let Some(r) = self.remote.as_mut() {
-                        r.craft_result = saved_craft_result;
+                            game.menu_session(|m, env, _| {
+                                let Some(predicted) = predict_clicks_with(m, env, gesture, answer)
+                                else {
+                                    return Some(false);
+                                };
+                                step_result = Some(predicted);
+                                Some(true)
+                            });
+                        },
+                    );
+                    if pickup == Pickup::Refused {
+                        return (Err(Some(false)), false);
                     }
-                    return Some(false);
-                }
-                let Some((predicted, dropped)) = step_result else {
-                    self.transaction_close(&seal, false);
-                    self.craft_grid = saved_craft_grid;
-                    if let Some(r) = self.remote.as_mut() {
-                        r.craft_result = saved_craft_result;
-                    }
-                    return None;
-                };
-                if tracks_craft_result && let Some(r) = self.remote.as_mut() {
-                    for (.., changed, _) in &predicted {
-                        if let Some((_, result)) = changed.iter().find(|(slot, _)| *slot == 0) {
-                            r.craft_result = result.clone();
-                        }
-                    }
-                }
-                all_predicted.extend(predicted);
-                threw |= dropped;
-            } else {
-                let player = self.native_acting_id();
-                self.journal_player(player);
-                if let Some(key) = self.container {
-                    self.journal_block_entity(key);
-                }
-                let mut step_result: Option<(Vec<Predicted>, bool)> = None;
-                let modeled = self.menu_session_with_game(|_, m, env, _| {
-                    let Some(predicted) = predict_clicks(m, env, gesture) else {
-                        return Some(false);
+                    let Some((predicted, dropped)) = step_result else {
+                        return (Err(None), false);
                     };
-                    step_result = Some(predicted);
-                    Some(true)
-                });
-                let Some((predicted, dropped)) = step_result.filter(|_| modeled) else {
-                    self.transaction_close(&seal, false);
-                    self.craft_grid = saved_craft_grid;
-                    if let Some(r) = self.remote.as_mut() {
-                        r.craft_result = saved_craft_result;
-                    }
-                    return None;
-                };
-                if tracks_craft_result && let Some(r) = self.remote.as_mut() {
-                    for (.., changed, _) in &predicted {
-                        if let Some((_, result)) = changed.iter().find(|(slot, _)| *slot == 0) {
-                            r.craft_result = result.clone();
+                    if tracks_craft_result && let Some(r) = game.remote.as_mut() {
+                        for (.., changed, _) in &predicted {
+                            if let Some((_, result)) = changed.iter().find(|(slot, _)| *slot == 0) {
+                                r.craft_result = result.clone();
+                            }
                         }
                     }
+                    all_predicted.extend(predicted);
+                    threw |= dropped;
+                } else {
+                    let player = game.native_acting_id();
+                    game.journal_player(player);
+                    if let Some(key) = game.container {
+                        game.journal_block_entity(key);
+                    }
+                    let mut step_result: Option<(Vec<Predicted>, bool)> = None;
+                    let modeled = game.menu_session(|m, env, _| {
+                        let Some(predicted) = predict_clicks(m, env, gesture) else {
+                            return Some(false);
+                        };
+                        step_result = Some(predicted);
+                        Some(true)
+                    });
+                    let Some((predicted, dropped)) = step_result.filter(|_| modeled) else {
+                        return (Err(None), false);
+                    };
+                    if tracks_craft_result && let Some(r) = game.remote.as_mut() {
+                        for (.., changed, _) in &predicted {
+                            if let Some((_, result)) = changed.iter().find(|(slot, _)| *slot == 0) {
+                                r.craft_result = result.clone();
+                            }
+                        }
+                    }
+                    all_predicted.extend(predicted);
+                    threw |= dropped;
                 }
-                all_predicted.extend(predicted);
-                threw |= dropped;
             }
-        }
 
-        let packets = match self.prepare_clicks(container, &all_predicted) {
-            Ok(packets) => packets,
-            Err(error) => {
-                log::warn!("Refused menu click: {error}");
-                self.transaction_close(&seal, false);
+            let packets = match game.prepare_clicks(container, &all_predicted) {
+                Ok(packets) => packets,
+                Err(error) => {
+                    log::warn!("Refused menu click: {error}");
+                    return (Err(Some(false)), false);
+                }
+            };
+            (Ok((all_predicted, packets, threw)), true)
+        });
+        let (all_predicted, packets, threw) = match outcome {
+            Ok(ready) => ready,
+            Err(early) => {
                 self.craft_grid = saved_craft_grid;
                 if let Some(r) = self.remote.as_mut() {
                     r.craft_result = saved_craft_result;
                 }
-                return Some(false);
+                return early;
             }
         };
-        self.transaction_close(&seal, true);
-        self.send_clicks(&all_predicted, packets);
+        self.send_clicks(all_predicted, packets);
         if threw {
             self.swing_hand(Hand::Main, SwingAnimation::DEFAULT);
         }
@@ -417,7 +424,7 @@ impl Game<'_> {
             });
         }
         match prepared {
-            Some(Ok(packets)) => self.send_clicks(&sent, packets),
+            Some(Ok(packets)) => self.send_clicks(sent, packets),
             Some(Err(error)) => {
                 log::warn!("Sending quick moves without prediction: {error}");
                 self.send_unpredicted_clicks(
@@ -484,7 +491,7 @@ impl Game<'_> {
 
     pub(in crate::game) fn send_clicks(
         &mut self,
-        clicks: &[Predicted],
+        clicks: Vec<Predicted>,
         packets: Vec<play::ContainerClick>,
     ) {
         // A result the engine claims to have changed is the one the server
@@ -495,7 +502,7 @@ impl Game<'_> {
             "inventory" | "minecraft:crafting"
         ) && let Some(r) = self.remote.as_mut()
         {
-            for (.., changed, _) in clicks {
+            for (.., changed, _) in &clicks {
                 if let Some((_, result)) = changed.iter().find(|(slot, _)| *slot == 0) {
                     r.craft_result = result.clone();
                 }
@@ -570,8 +577,11 @@ impl Game<'_> {
     /// one of it) is dropped through `handleCreativeModeItemDrop`, a SetCreativeModeSlot to slot
     /// -1, and the hand swings as `Player.drop` predicts.
     pub(in crate::game) fn remote_creative_drop(&mut self, right: bool) {
+        if !self.drop_spam_throttler.is_under_threshold() {
+            return;
+        }
         let one = right && !self.creative_inventory_open();
-        let Some(carried) = self.carried.as_mut() else {
+        let Some(carried) = self.carried.as_mut().filter(|s| !s.is_empty()) else {
             return;
         };
         let thrown = if one && carried.count > 1 {
@@ -583,21 +593,49 @@ impl Game<'_> {
         } else {
             self.carried.take().expect("carried")
         };
+        self.creative_screen_drop(thrown);
+    }
+
+    /// The creative screen calls `Player.drop` before `handleCreativeModeItemDrop`;
+    /// its predicted swing is not conditional on whether a packet can go out.
+    pub(in crate::game) fn creative_screen_drop(&mut self, thrown: ItemStack) {
+        if !thrown.is_empty() {
+            self.swing_hand(Hand::Main, SwingAnimation::DEFAULT);
+        }
         self.remote_creative_throw(thrown);
     }
-    /// `MultiPlayerGameMode.handleCreativeModeItemDrop`: a stack thrown out of the creative
-    /// screen goes to the server as a SetCreativeModeSlot to slot -1, which drops it from the
-    /// player's hand; the client only swings (`Player.drop` on a client).
-    pub(in crate::game) fn remote_creative_throw(&mut self, thrown: ItemStack) {
-        if !self.creative {
-            return;
+
+    fn creative_drop_features(&self) -> Option<&Arc<[String]>> {
+        // Screen::Inventory covers the non-creative AbstractContainerScreens.
+        (self.creative && self.remote.is_some() && self.screen != Screen::Inventory)
+            .then(|| self.enabled_feature_ids())
+    }
+
+    /// Single admission path for `MultiPlayerGameMode.handleCreativeModeItemDrop`:
+    /// resolves mode/screen/feature checks, `client_packet_send`, and transport acceptance
+    /// before charging `drop_spam_throttler`.
+    pub(in crate::game) fn try_send_creative_drop_packet(&self, thrown: &ItemStack) -> bool {
+        let Some(flags) = self.creative_drop_features() else {
+            return false;
+        };
+        if thrown.is_empty() || !self.creative_screen.catalog().item_enabled(thrown, flags) {
+            return false;
         }
-        self.swing_arm();
-        let item = self.to_network(&Some(thrown));
-        self.send(S::SetCreativeModeSlot(play::SetCreativeModeSlot {
+        let Some(item) = self.to_network(&Some(thrown.clone())) else {
+            return false;
+        };
+        self.send_play(S::SetCreativeModeSlot(play::SetCreativeModeSlot {
             slot: -1,
-            item,
-        }));
+            item: Some(item),
+        })) == crate::game::native_net::PlaySend::Admitted
+    }
+
+    /// `MultiPlayerGameMode.handleCreativeModeItemDrop`: the click site, not
+    /// this sender, checks the threshold. Only an accepted send incurs a charge.
+    pub(in crate::game) fn remote_creative_throw(&mut self, thrown: ItemStack) {
+        if self.try_send_creative_drop_packet(&thrown) {
+            self.drop_spam_throttler.increment();
+        }
     }
     pub(in crate::game) fn remote_close_container(&mut self) {
         let id = self
@@ -642,6 +680,11 @@ impl Game<'_> {
         self.send(S::ContainerClose(play::ContainerClose { container }));
     }
     pub(in crate::game) fn remote_close_local(&mut self) {
+        self.remote_set_menu(None, None);
+        self.remove_remote_menu_screen();
+    }
+
+    pub(in crate::game) fn remove_remote_menu_screen(&mut self) {
         // `Gui.setScreen` clears the focus of the screen it takes down: the
         // container's keyboard focus must not outlive it (a Tab bound to the
         // inventory moves the focus and closes the container in one press).
@@ -650,8 +693,11 @@ impl Game<'_> {
         if self.mod_screen.take().is_some() {
             self.clear_mod_book_placement_screen();
             self.screen_state.build.reopened();
+        } else if self.native_net.placement.client.window().is_some()
+            || self.native_net.placement.view.is_some()
+        {
+            self.clear_mod_book_placement_screen();
         }
-        self.remote_set_menu(None, None);
         self.mount_menu_reset();
         // The client's menu has no level access: what it holds is the server's.
         self.station = None;
@@ -778,14 +824,27 @@ impl Game<'_> {
         }
         if menu == "minecraft:merchant" {
             // A trading window: its offers follow in a MerchantOffers packet.
-            let title = plain(
-                &p.title,
-                &self
-                    .remote
-                    .as_ref()
-                    .map(|r| r.lang.clone())
-                    .unwrap_or_default(),
-            );
+            let title = {
+                let empty;
+                let session = match self.remote.as_ref() {
+                    Some(r) => r.lang.as_ref(),
+                    None => {
+                        empty = Language::default();
+                        &empty
+                    }
+                };
+                if sunrise_client::lang::has_mod_entries() {
+                    let current = sunrise_client::lang::current();
+                    plain_with(&p.title, |key| {
+                        current
+                            .as_deref()
+                            .and_then(|published| published.mod_entry(key))
+                            .or_else(|| session.get(key).map(String::as_str))
+                    })
+                } else {
+                    plain(&p.title, session)
+                }
+            };
             self.remote_open_merchant(p.container, title, menu_title(&p.title));
             return;
         }
@@ -880,30 +939,56 @@ impl Game<'_> {
             self.capture(false);
         }
     }
-    /// `ClientPacketListener.handleMountScreenOpen`: a horse's or llama's
-    /// inventory; for another entity the window is closed again.
-    pub(in crate::game) fn remote_open_mount(&mut self, p: play::MountScreenOpen) {
+    /// `ClientPacketListener.handleMountScreenOpen`: only horses and nautiluses
+    /// open a menu. A missing or different entity leaves the current menu alone.
+    pub(in crate::game) fn remote_open_mount(&mut self, p: play::MountScreenOpen) -> Result<()> {
+        use crate::game::{inventory_slots::MOD_MENU_SLOT_BASE, mount_menu::CHEST};
+        // `new SimpleContainer(getInventorySize(inventoryColumns))` is built before
+        // the entity is looked at, so it throws for any entity: a size that comes
+        // out negative, as Java's `int` wraps, ends the connection. `HorseInventoryMenu`
+        // lays out `inventoryColumns` chest slots only when that is positive, a
+        // `NautilusInventoryMenu` has none; the chest's slots must end below the mod
+        // menus' base, and a chest that does not fit ends the connection, as the
+        // exception does.
+        let size = p.columns.wrapping_mul(3);
+        if size < 0 {
+            return self.refuse_remote_input("the mount menu's chest has a negative size");
+        }
+        let columns = usize::try_from(p.columns).unwrap_or(0);
+        if columns > (MOD_MENU_SLOT_BASE - CHEST) / 3 {
+            return self.refuse_remote_input("the mount menu's chest does not fit its slot range");
+        }
+        let mut items = Vec::new();
+        if items.try_reserve_exact(size as usize).is_err() {
+            return self.refuse_remote_input("the mount menu's chest does not fit its slot range");
+        }
+        let entity = p.entity as u32;
+        let Some(species) = self
+            .mobs
+            .iter()
+            .find(|m| m.id == entity)
+            .map(sunrise_client::mobs::Mob::species)
+            .filter(|&s| crate::game::mount_menu::has_mount_menu(s))
+        else {
+            return Ok(());
+        };
         if self.mod_screen.is_some() {
             self.remote_close_local();
         }
-        let columns = usize::try_from(p.columns).unwrap_or(0).min(5);
-        let record = |game: &mut Self| {
-            game.remote_set_menu(Some((p.container, format!("{MOUNT_MENU}{columns}"))), None);
+        // `HorseInventoryMenu` lays out its chest slots only `if (inventoryColumns > 0)`
+        // and a `NautilusInventoryMenu` has none: no chest slot addresses the container then.
+        let chest = if sunrise_client::mobs::nautilus::is_nautilus(species) || columns == 0 {
+            0
+        } else {
+            size as usize
         };
-        // With a screen hook listening, the window is recorded before the
-        // screen opens, so a mod's answer that replaces it closes this window
-        // (a rejection clears it again); otherwise after, as vanilla's order.
-        let staged = self.screen_hooks_heard();
-        if staged {
-            record(self);
-        }
-        if !self.open_remote_mount_menu(p.entity as u32, columns) {
-            self.remote_reject_container(p.container);
-            return;
-        }
-        if !staged {
-            record(self);
-        }
+        items.resize(chest, None);
+        let columns = if chest == 0 { 0 } else { columns };
+        // Install the window before opening its screen, including when a mod
+        // replaces the requested screen with the player's own inventory.
+        self.remote_set_menu(Some((p.container, format!("{MOUNT_MENU}{columns}"))), None);
+        self.open_remote_mount_menu(entity, species, items);
+        Ok(())
     }
     /// The type of the menu a server opened (`MenuType`'s id).
     pub(in crate::game) fn remote_menu_type(&self) -> Option<&str> {
@@ -919,7 +1004,7 @@ impl Game<'_> {
         if let Some(lang) = sunrise_client::lang::current()
             && let Some(r) = self.remote.as_mut()
         {
-            r.lang = Arc::new(lang.map().clone());
+            r.lang = Arc::new(lang.pack_map());
         }
     }
     /// A server's chest-like menu (`MenuType.GENERIC_9xN`): its rows and title.

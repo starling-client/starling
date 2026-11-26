@@ -6,14 +6,12 @@ import os
 import tempfile
 from pathlib import Path
 
-try:
-    from . import lab, oracle_harness, test_rust_parity as base
-    from .integration_env import game_environment
-except ImportError:
-    import lab
-    import oracle_harness
-    import test_rust_parity as base
-    from integration_env import game_environment
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, oracle_harness, test_rust_parity as base
+from tools.integration_env import game_environment
 
 LIVE_TEST = ('game::commands::world_cmds::registered_damage_tests::'
              'live_damage_and_blast_creaking_reactions_and_timed_player_credit')
@@ -75,14 +73,14 @@ def main():
         return
     env = game_environment(os.environ, run)
     env.update(SUNRISE_TEST_RESOURCES=str(lab.RESOURCES.resolve()), SUNRISE_CREAKING_HIT_ORDER_OUTPUT=str(rust))
-    oracle_harness.run_logged(['cargo', 'test', '--locked', '-p', 'sunrise-client', '--lib', LIVE_TEST,
-                               '--', '--ignored', '--exact'], run, 'rust', env=env)
+    oracle_harness.run_logged([lab.parity_fixtures(), LIVE_TEST,
+                               '--ignored', '--exact'], run, 'rust', env=env)
     if json.loads(rust.read_text()) != arrow_expected:
         raise AssertionError('Creaking arrow hit and next tick differ from vanilla')
     borrowed_result = run / 'rust-borrowed.json'
     env.update(SUNRISE_BORROWED_CREAKING_CASE='expiry', SUNRISE_CREAKING_BORROWED_OUTPUT=str(borrowed_result))
-    oracle_harness.run_logged(['cargo', 'test', '--locked', '-p', 'sunrise-client', '--lib', BORROWED_TEST,
-                               '--', '--ignored', '--exact'], run, 'rust-borrowed', env=env)
+    oracle_harness.run_logged([lab.parity_fixtures(), BORROWED_TEST,
+                               '--ignored', '--exact'], run, 'rust-borrowed', env=env)
     if json.loads(borrowed_result.read_text()) != borrowed_expected:
         raise AssertionError('Creaking remembered-player wall hurt and resumed tick differ from vanilla')
     print('creaking_hit_order: PASS')

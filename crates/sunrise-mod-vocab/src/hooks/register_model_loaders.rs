@@ -8,11 +8,11 @@ pub trait Hooks {
     /// replace the cuboid geometry unless the loader explicitly delegates to the cuboid decoder.
     /// An absent required loader rejects its declaring model file. A reference to that file uses
     /// the missing model at that link without discarding a descendant's own geometry.
-    /// Duplicates and collisions with built-ins (`neoforge:composite`, `neoforge:obj`,
+    /// Duplicates and collisions with built-ins (`neoforge:composite`, `neoforge:obj`, `neoforge:empty`,
     /// `fusion:model`) are registration errors.
     #[notes = r#"## Model loaders
 
-A model JSON may name a `loader`: NeoForge's `neoforge:composite` and `neoforge:obj` are built in, and a mod
+A model JSON may name a `loader`: NeoForge's `neoforge:composite`, `neoforge:obj` and `neoforge:empty` are built in, and a mod
 registers one of its own (NeoForge's `ModelEvent.RegisterLoaders`) once at client startup via
 `Hooks::register_model_loaders`. Call `event.register(id, schema, loader)` to bind a loader identifier to
 its schema and bake callback. `ModelLoaderSchema::Custom` leaves every model field except `loader` to your
@@ -52,7 +52,7 @@ in block units, and the blockstate variant's rotation moves them whole. A model 
 baked once per load, even when several variants reference them.
 
 Any valid `<namespace>:<path>` identifier (including `minecraft:`) is accepted. Duplicate registrations and
-collisions with `neoforge:composite`, `neoforge:obj` or `fusion:model` are registration errors; the first
+collisions with `neoforge:composite`, `neoforge:obj`, `neoforge:empty` or `fusion:model` are registration errors; the first
 registration stands. A loader ID written as a string, or as an object with `id` and no `optional` flag,
 is required. When the loader is absent, only `"loader": {"id":"example:pillar","optional":true}` uses
 ordinary cuboid geometry. An absent required loader rejects its declaring file and logs the error.
@@ -71,7 +71,7 @@ that isn't finite, or a texture key the model doesn't define, is skipped by itse
         answered_by = "mod",
         registration_append = "custom",
         neoforge = "ModelEvent.RegisterLoaders",
-        version = 2
+        version = 3
     )]
     fn register_model_loaders(loaders: &mut Vec<Answered<ModelLoaderRegistration>>);
 }

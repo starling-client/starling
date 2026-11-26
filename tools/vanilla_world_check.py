@@ -22,10 +22,11 @@ import sys
 import threading
 import time
 
-try:
-    from . import lab
-except ImportError:
-    import lab
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab
 
 SUSPICIOUS = re.compile(
     r'(ERROR|login failed|Exception|Couldn\'t load|Failed to|Skipping|Invalid|Unknown|corrupt|'
@@ -46,6 +47,19 @@ DISCOVERY_DETAILS = {
     DISCOVERY_EXCEPTION + 'Services are unavailable',
     f'Caused by: java.net.UnknownHostException: {DISCOVERY_HOST}',
 }
+# The startup system report (CrashReport.preload) reads the server's process through OSHI. On a Windows
+# machine whose performance counter names are missing from the registry, OSHI finds no process and
+# SystemReport logs each detail it skips.
+SYSTEM_REPORT_WARNINGS = re.compile(
+    r'\[ServerMain/ERROR\]: Unable to locate English counter names in registry Perflib \d+\. '
+    r'Counters may need to be rebuilt: ?'
+    r'|\[ServerMain/WARN\]: Unable to locate English counter names in registry Perflib \d+\. '
+    r'Assuming English counters\. Error 0x[0-9A-Fa-f]+\. See \S+'
+    r'|\[ServerMain/WARN\]: Failed to get system info for Process [^:]+')
+SYSTEM_REPORT_DETAILS = re.compile(
+    r'com\.sun\.jna\.platform\.win32\.Win32Exception: .+'
+    r'|java\.lang\.NullPointerException: Cannot invoke "oshi\.software\.os\.OSProcess\.\w+\(\)" '
+    r'because "process" is null')
 JAVA_STACK_LINE = re.compile(r'[ \t]+(?:at .+|\.\.\. \d+ more)')
 RANDOM_HARDWARE_ADDRESS = re.compile(
     r'\[Server thread/WARN\]: Failed to find a usable hardware address from the network interfaces; '
@@ -55,19 +69,26 @@ RANDOM_HARDWARE_ADDRESS = re.compile(
 def log_problems(lines, *, suspicious=SUSPICIOUS, benign=BENIGN):
     """Find problems in an offline fixture's console output."""
     problems = []
-    discovery = False
+    details = None
     for line in lines:
         if timestamp := LOG_TIME.match(line):
             message = line[timestamp.end():]
-            discovery = message in DISCOVERY_WARNINGS
-            # Auth discovery is optional in offline mode. Netty's random address
-            # only identifies its channels; it cannot change the saved world.
-            if discovery or RANDOM_HARDWARE_ADDRESS.fullmatch(message):
+            # Auth discovery is optional in offline mode, and the system report only
+            # describes the machine: each may be followed by its exception and stack.
+            # Netty's random address only identifies its channels. None of them can
+            # change the saved world.
+            if message in DISCOVERY_WARNINGS:
+                details = DISCOVERY_DETAILS.__contains__
+            elif SYSTEM_REPORT_WARNINGS.fullmatch(message):
+                details = SYSTEM_REPORT_DETAILS.fullmatch
+            else:
+                details = None
+            if details or RANDOM_HARDWARE_ADDRESS.fullmatch(message):
                 continue
-        elif discovery:
-            if line in DISCOVERY_DETAILS or JAVA_STACK_LINE.fullmatch(line):
+        elif details:
+            if details(line) or JAVA_STACK_LINE.fullmatch(line):
                 continue
-            discovery = False
+            details = None
         if line != PUBLIC_KEY_FAILURE and suspicious.search(line) and not benign.search(line):
             problems.append(line)
     return problems
@@ -121,8 +142,7 @@ def main():
             time.sleep(float(command.split()[1]))
             continue
         if command.startswith('login '):
-            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-            import vanilla_login
+            from tools import vanilla_login
             _, name, seconds = command.split()
 
             def run(name=name, seconds=float(seconds)):

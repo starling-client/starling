@@ -1,0 +1,2 @@
+sunrise-client-render gfx::core_text::tests::pack_world_text_hdr_mark_marks_only_drawn_fragments lib daily gpu
+sunrise-client-render gfx::core_text::tests::pack_world_text_shades_both_normal_and_polygon_offset_depth_modes lib daily gpu

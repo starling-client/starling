@@ -48,8 +48,7 @@ pub struct PayloadTooLarge {
     pub limit: usize,
 }
 
-/// ServerboundCustomPayloadPacket.MAX_PAYLOAD_SIZE in vanilla 26.3.
-pub const SERVERBOUND_LIMIT: usize = 32_767;
+pub use sunrise_core::vanilla_bytes::SERVERBOUND_CUSTOM_PAYLOAD_LIMIT as SERVERBOUND_LIMIT;
 /// ClientboundCustomPayloadPacket.MAX_PAYLOAD_SIZE in vanilla 26.3.
 pub const CLIENTBOUND_LIMIT: usize = 1_048_576;
 
@@ -104,9 +103,11 @@ fn uses_registered_payload_codec(channel: &str, play: bool, clientbound: bool) -
 }
 
 /// Channels owned by engine services or transport control, not mod registrations
-/// or the generic mod packet API. Reuse the codec authority in every direction.
+/// or the generic mod packet API. Shares the engine-channel authority with mod
+/// registration (`sunrise_mod_runtime::engine_channels`) alongside channels that
+/// carry registered protocol codecs (such as `minecraft:brand`).
 pub fn is_reserved_channel(channel: &str) -> bool {
-    channel == crate::payload_negotiation::CHANNEL
+    sunrise_mod_runtime::engine_channels::is_reserved_engine_channel(channel)
         || [false, true].into_iter().any(|play| {
             [false, true]
                 .into_iter()
@@ -280,6 +281,11 @@ mod tests {
             assert!(ServerboundPayload::check(channel, 32_768, None).is_err());
             assert!(ClientboundPayload::check(channel, 1_048_577, None).is_err());
         }
+        assert!(is_reserved_channel("sunrise:recipe_check"));
+        assert!(is_reserved_channel("sunrise:datapack_registries"));
+        assert!(is_reserved_channel("sunrise:datapack_offer"));
+        assert!(is_reserved_channel("sunrise:perf"));
+        assert!(!is_reserved_channel("sunrise:not_registered"));
     }
 
     #[test]
@@ -379,7 +385,7 @@ mod tests {
 
     #[test]
     fn custom_book_capability_requires_exact_version_in_configuration() {
-        for bytes in [vec![], vec![0], vec![2], vec![1, 0], vec![1; 1_048_577]] {
+        for bytes in [vec![], vec![0], vec![1], vec![2, 0], vec![2; 1_048_577]] {
             let payload = CustomPayload {
                 channel: crate::custom_book::CHANNEL.into(),
                 data: bytes,

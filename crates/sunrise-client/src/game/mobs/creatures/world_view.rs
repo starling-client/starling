@@ -13,6 +13,7 @@ impl Game<'_> {
             side: self,
             mob_maps: self.mob_maps(),
             section_writer: None,
+            trading_players: Some(self),
             professions: self.stations().professions.as_ref(),
             loop_context: &self.loop_context,
             world: &self.world,
@@ -64,6 +65,10 @@ impl Game<'_> {
                 .ui
                 .rules
                 .bool_at(sunrise_client::gamerules::vanilla::MOB_DROPS),
+            pvp: self
+                .ui
+                .rules
+                .bool_at(sunrise_client::gamerules::vanilla::PVP),
             max_entity_cramming: self
                 .ui
                 .rules
@@ -82,6 +87,7 @@ impl Game<'_> {
             mob_hooks: (self.native_authoritative()
                 && ([
                     mod_api::HookId::EndermanAnger,
+                    mod_api::HookId::GazeDisguise,
                     mod_api::HookId::EntityMobGriefing,
                     mod_api::HookId::LivingVisibility,
                     mod_api::HookId::LivingChangeTarget,
@@ -97,7 +103,12 @@ impl Game<'_> {
                     .any(mod_api::__private::has_scoped_hook)))
             .then_some(self as &dyn sunrise_client::mobs::MobHooks),
             goal_host: (self.native_authoritative()
-                && (mod_api::__private::has_entity_parts()
+                && ([
+                    mod_api::HookId::RegisterGoals,
+                    mod_api::HookId::RegisterBehaviors,
+                ]
+                .into_iter()
+                .any(mod_api::__private::has_scoped_hook)
                     || mod_api::__private::listened(mod_api::HookId::LivingChangeTarget)))
             .then_some(self as &dyn sunrise_client::mobs::part_goals::GoalHost),
             asks_animal_tame: self.remote.is_none()

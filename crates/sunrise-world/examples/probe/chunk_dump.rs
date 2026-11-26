@@ -278,9 +278,13 @@ pub fn main() -> Result<(), Error> {
     }
     // SUNRISE_FLAT: a flat_level_generator_preset id; the overworld is that superflat world.
     let generator = match std::env::var("SUNRISE_FLAT") {
-        Ok(preset) => {
-            OverworldGenerator::flat(data.clone(), seed, &flat_preset(&resources, &preset)?, true)?
-        }
+        Ok(preset) => OverworldGenerator::flat(
+            data.clone(),
+            seed,
+            &flat_preset(&resources, &preset)?,
+            true,
+            None,
+        )?,
         Err(_) => {
             OverworldGenerator::for_dimension(data.clone(), seed, "minecraft:normal", &dimension)?
         }

@@ -1,5 +1,9 @@
 use super::*;
 
+#[cfg(test)]
+#[path = "boss_darken_tests.rs"]
+mod boss_darken_tests;
+
 /// `ClientClockManager.tick` for one clock: it moves on by `delta` game ticks at its rate, the
 /// part of a tick it makes carried to the next. None, and the clock left as it was, when its total
 /// would pass the range of a long: a server's times must not wrap or panic the client.
@@ -64,6 +68,7 @@ impl Game<'_> {
         self.tick_sign_editor();
         self.track_experience_display();
         self.tick_enchanting_book();
+        self.tick_inventory_screen();
         // Leaving a slot clears its bundle's selection here and on the server.
         self.tick_bundle_hover();
         // Options.broadcastOptions: a changed render distance or Chat option

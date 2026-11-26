@@ -2,7 +2,9 @@
 """Folder pack metadata admission using real independent functions."""
 import hashlib,json,sys,tempfile
 from pathlib import Path
-import test_command_exec_parity as driver
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_command_exec_parity as driver
 PACKS={
  'broken':'{', 'root_empty':'{}', 'root_array':'[]',
  'pack_empty':'{"pack":{}}', 'pack_string':'{"pack":"bad"}',

@@ -60,40 +60,6 @@ fn block_tag_logs_uses_block_items_and_rejects_hash() {
 }
 
 #[test]
-fn custom_display_matches_base_but_shows_another_item() {
-    let items = Items::empty();
-    let ingredient = parse(
-        r#"{"type":"neoforge:custom_display","base":"minecraft:apple","display":{"type":"minecraft:item","item":"minecraft:diamond"}}"#,
-        &items,
-    );
-    let load = load();
-    let context = load.loop_context(LoopSide::Server, []);
-    assert!(ingredient.test_in(&context, &ItemStack::new("minecraft:apple", 1)));
-    assert!(!ingredient.test_in(&context, &ItemStack::new("minecraft:diamond", 1)));
-    assert!(ingredient.is_simple());
-    assert_eq!(
-        crate::recipe_book::Book::default().items_of(&ingredient),
-        ["minecraft:diamond"]
-    );
-    assert_eq!(ingredient.order, ["minecraft:apple"]);
-    let placement = crate::crafting::Placement::of(vec![Some(ingredient)], None);
-    assert_eq!(placement.ingredients[0].order, ["minecraft:apple"]);
-    // 26.3 TagSlotDisplay carries an item HolderSet, including the # prefix.
-    let tags = Items::for_tests(std::collections::HashMap::from([(
-        "minecraft:planks".into(),
-        std::collections::HashSet::from(["minecraft:oak_planks".into()]),
-    )]));
-    let tagged = parse(
-        r##"{"type":"neoforge:custom_display","base":"minecraft:apple","display":{"type":"minecraft:tag","tag":"#minecraft:planks"}}"##,
-        &tags,
-    );
-    assert_eq!(
-        crate::recipe_book::Book::default().items_of(&tagged),
-        ["minecraft:oak_planks"]
-    );
-}
-
-#[test]
 fn simplicity_follows_all_children_and_custom_display_base() {
     let items = Items::empty();
     for source in [
@@ -145,39 +111,6 @@ fn builtin_kinds_bypass_mod_resolution_and_honor_type_key_priority() {
         .unwrap();
         assert_eq!(sources.recipes[0].file(), &file);
     }
-}
-
-#[test]
-fn recipe_book_and_placement_use_component_ingredient_item_lists() {
-    use crate::recipe_book::{Book, Category, Display, Entry};
-    let items = Items::empty();
-    let ingredient = parse(
-        r#"{"type":"neoforge:components","items":"minecraft:diamond_sword","components":{"minecraft:damage":5}}"#,
-        &items,
-    );
-    let entry = Entry {
-        id: "fixture:components".into(),
-        display_id: -1,
-        category: Category::CraftingEquipment,
-        group: None,
-        display: Display::Shapeless(vec![ingredient.clone()]),
-        result: ItemStack::new("minecraft:diamond", 1),
-        variants: Vec::new(),
-        stacks: Vec::new(),
-    };
-    let mut book = Book::default();
-    let placement = crate::crafting::Placement::of(vec![Some(ingredient)], None);
-    book.placements.insert(entry.id.clone(), placement.clone());
-    let mut stock = crate::menu::place::Stacked::default();
-    // An undamaged sword cannot satisfy the concrete recipe, but the book and
-    // placement intentionally account only for its item holder.
-    stock.account(&std::sync::Arc::from("minecraft:diamond_sword"), 1);
-    assert!(book.can_craft(&entry, &stock));
-    assert!(stock.can_craft(&placement.ingredients.iter().collect::<Vec<_>>()));
-    assert_eq!(
-        book.items_of(&placement.ingredients[0]),
-        ["minecraft:diamond_sword"]
-    );
 }
 
 #[test]

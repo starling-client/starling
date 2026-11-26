@@ -153,7 +153,7 @@ fn expanded_calls_continue_across_lines_and_keep_original_file_origins() {
         fragment.diagnostics
     );
     assert!(fragment.warnings.is_empty(), "{:?}", fragment.warnings);
-    let lines: Vec<_> = fragment.code.lines().collect();
+    let lines: Vec<_> = fragment.code().lines().collect();
     let value = lines
         .iter()
         .position(|l| l.contains("float value"))
@@ -167,10 +167,16 @@ fn expanded_calls_continue_across_lines_and_keep_original_file_origins() {
         .position(|l| l.contains("gl_FragColor"))
         .unwrap();
     assert_eq!(fragment.locate(color), "final.fsh:7");
-    assert_eq!(fragment.files, ["final.fsh", "lib/dispatch.glsl"]);
+    assert_eq!(fragment.files(), ["final.fsh", "lib/dispatch.glsl"]);
 
     let vertex = preprocess(&pack, "final.vsh", &Macros::default());
-    let program = translate_composite(&vertex, &fragment, Target::Window).unwrap();
+    let program = translate_composite(
+        &vertex,
+        &fragment,
+        Target::Window,
+        naga::front::glsl::InterfaceLimits::WGPU_DEFAULT,
+    )
+    .unwrap();
     for module in [&program.vertex, &program.fragment] {
         let info = naga::valid::Validator::new(
             naga::valid::ValidationFlags::all(),
@@ -191,7 +197,7 @@ fn continuation_detection_does_not_consume_preprocessor_directives() {
     let output = preprocess(&original.open(), "final.fsh", &Macros::default());
     assert!(output.diagnostics.is_empty());
     assert_eq!(
-        output.code.lines().collect::<Vec<_>>(),
+        output.code().lines().collect::<Vec<_>>(),
         ["", "", "OFFSET(", "", "9", ")"]
     );
     assert_eq!(output.locate(4), "final.fsh:5");
@@ -206,7 +212,7 @@ fn an_expanded_callable_can_take_an_opening_parenthesis_from_the_next_line() {
     let output = preprocess(&original.open(), "final.fsh", &Macros::default());
     assert!(output.diagnostics.is_empty());
     assert_eq!(
-        output.code.lines().collect::<Vec<_>>(),
+        output.code().lines().collect::<Vec<_>>(),
         ["", "", "9", "", "", "float after;"]
     );
     assert_eq!(output.locate(2), "final.fsh:3");

@@ -1,6 +1,6 @@
 //! Real-game regressions for native handles used during a guest's turn.
 
-use super::lan::LanSettings;
+use super::{execution_role::ExecutionRole, lan::LanSettings};
 use mod_api::{
     __private::{HookPanicReport, take_hook_panics},
     EntityMoveEvent, Flow, Hooks, LoopContext, MoveCause,
@@ -22,11 +22,31 @@ pub(in crate::game) fn with_guests(test: impl FnOnce(&mut super::Game<'_>)) {
     with_guests_at(super::native_entity_refs::tests::fixture_root(), test);
 }
 
+/// [`with_guests`] with column (0, 0) and its neighbours loaded and ticking, as
+/// `with_resident_game` does: a body pushed at the origin is found.
+pub(in crate::game) fn with_resident_guests(test: impl FnOnce(&mut super::Game<'_>)) {
+    with_guests(|game| {
+        super::native_entity_refs::tests::prepare_entity_ticking_neighborhood(
+            game,
+            sunrise_core::position::ChunkPos::new(0, 0),
+        );
+        test(game);
+    });
+}
+
 pub(in crate::game) fn with_guests_at(
     root: std::path::PathBuf,
     test: impl FnOnce(&mut super::Game<'_>),
 ) {
-    super::native_entity_refs::tests::with_game_at(root, |game| {
+    with_guests_for_role(root, ExecutionRole::IntegratedServer, test);
+}
+
+pub(in crate::game) fn with_guests_for_role(
+    root: std::path::PathBuf,
+    role: ExecutionRole,
+    test: impl FnOnce(&mut super::Game<'_>),
+) {
+    super::native_entity_refs::tests::with_game_role(root, role, |game| {
         let settings = LanSettings {
             port: 0,
             guest_commands: false,
@@ -49,12 +69,14 @@ pub(in crate::game) fn with_guests_at(
             allow_flight: true,
             seed: 0,
             max_players: 2,
-            integrated: true,
-            levels: game.level_shapes,
+            integrated: role == ExecutionRole::IntegratedServer,
+            levels: game.level_shapes.clone(),
             level_seeds: game.levels.runtime.seeds(),
         };
         game.lan_host(settings, net, config).unwrap();
         for id in [12, 13] {
+            // These guests bypass login's entity ID allocation; reserve their IDs before spawning.
+            game.next_entity = game.next_entity.max(id);
             let (tx, _rx) = std::sync::mpsc::channel();
             let mut guest = Guest::new(
                 Joined {
@@ -111,7 +133,6 @@ pub(in crate::game) fn register_test_menu(
 #[test]
 #[ignore = "daily"]
 fn player_dimensions_validate_identity_on_both_server_roles() {
-    use super::execution_role::ExecutionRole;
     let previous_extra = super::EXTRA_DIMS.read().unwrap().clone();
     with_guests(|game| {
         super::Dim::add_extra("test:pocket");
@@ -637,22 +658,160 @@ fn another_guests_menu_and_push_work_during_a_turn() {
     });
 }
 
+#[test]
+#[ignore = "daily"]
+fn velocity_writes_send_only_the_owning_player_the_replacement_motion() {
+    use std::sync::mpsc;
+    use sunrise_client::lan::Out;
+    use sunrise_protocol::{buf::Reader, packets::play::Clientbound};
+
+    if super::native_entity_refs::tests::run_fresh_cases(
+        "game::native_guest_turn_tests::velocity_writes_send_only_the_owning_player_the_replacement_motion",
+        "SUNRISE_PLAYER_VELOCITY_CHILD",
+        &["players"],
+    ) {
+        return;
+    }
+    with_guests(|game| {
+        let [a_packets, b_packets] = [12, 13].map(|conn| {
+            let (tx, rx) = mpsc::channel();
+            game.lan
+                .as_mut()
+                .unwrap()
+                .hub
+                .update_guest(conn, |guest| {
+                    guest.sender = PlayerSender::new(tx, Arc::default());
+                })
+                .unwrap();
+            game.as_guest(conn, |game| {
+                let body = game.player.as_mut().unwrap();
+                body.velocity = Vec3::new(4.0, 8.0, 16.0);
+                body.ground.on_ground = false;
+            })
+            .unwrap();
+            rx
+        });
+        let take_motion = |rx: &mpsc::Receiver<Out>| -> Vec<_> {
+            rx.try_iter()
+                .flat_map(|out| match out {
+                    Out::Packet(body) => vec![body],
+                    Out::Packets(bodies) => bodies,
+                    Out::Disconnect(_) => Vec::new(),
+                })
+                .filter_map(|body| {
+                    let mut reader = Reader::new(&body);
+                    let id = reader.varint().unwrap();
+                    match Clientbound::decode(id, reader.rest()).unwrap() {
+                        Clientbound::SetEntityMotion(packet) => Some((packet.id, packet.velocity)),
+                        _ => None,
+                    }
+                })
+                .collect()
+        };
+        let a = game.player(12).unwrap().entity();
+        let b = game.player(13).unwrap().entity();
+        let stale = mod_api::EntityRef::new(mod_api::WorldEpoch::new(a.epoch().get() + 1), a.id());
+        game.as_guest(12, |game| {
+            assert!(!a.set_velocity(game, [0.0, f64::INFINITY, 0.0]));
+            assert!(!stale.set_velocity(game, [0.0; 3]));
+            assert_eq!(
+                game.player.as_ref().unwrap().velocity,
+                Vec3::new(4.0, 8.0, 16.0)
+            );
+            assert!(a.set_velocity(game, [1.0, 0.0, -1.0]));
+            assert!(a.push(game, [0.0, 1.0, 0.0]));
+            assert!(b.set_velocity(game, [-2.0, 0.0, 2.0]));
+            assert_eq!(
+                game.player.as_ref().unwrap().velocity,
+                Vec3::new(1.0, 1.0, -1.0)
+            );
+            game.as_guest(13, |game| {
+                assert_eq!(
+                    game.player.as_ref().unwrap().velocity,
+                    Vec3::new(-2.0, 0.0, 2.0)
+                );
+                assert!(!a.set_velocity(game, [0.0; 3]));
+            })
+            .unwrap();
+            assert_eq!(
+                game.player.as_ref().unwrap().velocity,
+                Vec3::new(1.0, 1.0, -1.0)
+            );
+        })
+        .unwrap();
+        // The player's own level can be parked while the mod runs in another one.
+        game.enter_level(super::Dim::Nether).unwrap();
+        let living = game.living(b).unwrap();
+        assert!(living.knockback(game, 1.0, [0.0, 1.0]));
+        let b_body = game.command_guest(13).unwrap().motion.as_ref().unwrap();
+        assert_eq!(b_body.velocity, Vec3::new(-1.0, 0.0, 0.0));
+        assert_eq!(game.dim, super::Dim::Nether);
+        // A direction too short to normalise is retried from the player's own random
+        // (`Entity.random`), never the level's.
+        use sunrise_core::random::RandomSource;
+        let mut own = b_body.random.clone();
+        let mut level = game
+            .levels
+            .parked_mut(super::Dim::Overworld)
+            .unwrap()
+            .world
+            .random
+            .clone();
+        let (x, z) = loop {
+            let x = (own.next_double() - own.next_double()) * 0.01;
+            let z = (own.next_double() - own.next_double()) * 0.01;
+            if x * x + z * z >= f64::from(1.0e-5_f32) {
+                break (x, z);
+            }
+        };
+        assert!(living.knockback(game, 1.0, [0.0, 0.0]));
+        let b_body = game.command_guest(13).unwrap().motion.as_ref().unwrap();
+        let length = (x * x + z * z).sqrt();
+        assert_eq!(
+            b_body.velocity,
+            Vec3::new(-1.0 / 2.0 - x / length, 0.0, 0.0 / 2.0 - z / length)
+        );
+        assert_eq!(b_body.random.clone().next_long(), own.next_long());
+        assert_eq!(
+            game.levels
+                .parked_mut(super::Dim::Overworld)
+                .unwrap()
+                .world
+                .random
+                .clone()
+                .next_long(),
+            level.next_long()
+        );
+
+        assert_eq!(
+            take_motion(&a_packets),
+            [(12, [1.0, 0.0, -1.0]), (12, [1.0, 1.0, -1.0])]
+        );
+        // The zero-direction push sends B a third motion packet; its encoding rounds the
+        // random direction, so only the owner is compared.
+        let b_motion = take_motion(&b_packets);
+        assert_eq!(b_motion.len(), 3);
+        assert_eq!(
+            b_motion[..2],
+            [(13, [-2.0, 0.0, 2.0]), (13, [-1.0, 0.0, 0.0])]
+        );
+        assert_eq!(b_motion[2].0, 13);
+    });
+}
+
 /// Native services can reach B during A's turn without exposing displaced
 /// inventories or changing ordinary command resolution during nested turns.
 #[test]
 #[ignore = "daily"]
 fn another_guests_services_work_during_a_turn() {
-    use super::{
-        commands::Target,
-        native_inventories::NativeInventoryKind::{Ender, Player},
-    };
+    use super::commands::Target;
     use mod_api::{CriterionContext, CriterionTest, CriterionTestError, TriggerCriterionError};
     use sunrise_client::{advancements as adv, command::args::Selector, items::ItemStack};
 
     struct Accept;
     impl CriterionTest for Accept {
-        fn test(&self, criterion: &dyn CriterionContext) -> Result<bool, CriterionTestError> {
-            assert_eq!(criterion.conditions_json(), "null");
+        fn test(&mut self, criterion: &dyn CriterionContext) -> Result<bool, CriterionTestError> {
+            assert!(criterion.conditions().is_null());
             Ok(true)
         }
     }
@@ -671,6 +830,7 @@ fn another_guests_services_work_during_a_turn() {
                 name: "seen".into(),
                 trigger: "turns:probe".into(),
                 conditions: serde_json::Value::Null.into(),
+                player: None,
             }],
             requirements: vec![vec!["seen".into()]],
             rewards: Default::default(),
@@ -682,14 +842,11 @@ fn another_guests_services_work_during_a_turn() {
             guest.advancements_loaded = true;
         });
         let stone = ItemStack::new("minecraft:stone", 4);
-        game.lan
-            .as_mut()
-            .unwrap()
-            .hub
-            .update_guest(13, |guest| guest.inventory[0] = Some(stone.clone()))
-            .unwrap();
+        let stone_stack = super::api_values::test_snapshot(&stone);
         let a = game.player(12).unwrap();
         let b = game.player(13).unwrap();
+        b.set_inventory_slot(game, 0, Some(stone_stack.clone()))
+            .unwrap();
         game.as_guest(12, |game| {
             assert_eq!(game.native_entity_target(a.entity()), Some(Target::Player));
             assert_eq!(
@@ -699,30 +856,22 @@ fn another_guests_services_work_during_a_turn() {
                 }),
                 [Target::Player]
             );
-            assert!(game.native_inventory(12, Player).is_err());
+            let read_slot =
+                |view: mod_api::InventoryView<'_>| view.get(0).and_then(|s| s.project());
             assert_eq!(
-                game.native_inventory(13, Player).unwrap().slots[0],
-                Some(stone.clone())
+                b.with_inventory(game, read_slot),
+                Some(Some(stone_stack.clone()))
             );
-            game.native_move_stack((13, Player, 0), &stone, (13, Ender))
-                .unwrap();
-            assert_eq!(game.native_inventory(13, Player).unwrap().slots[0], None);
+            b.set_ender_chest_slot(game, 0, Some(stone_stack)).unwrap();
+            b.set_inventory_slot(game, 0, None).unwrap();
+            assert_eq!(b.with_inventory(game, read_slot), Some(None));
+            assert!(b.with_ender_chest(game, read_slot).flatten().is_some());
             assert_eq!(
-                game.native_inventory(13, Ender).unwrap().slots[0],
-                Some(stone.clone())
+                a.trigger_criterion(game, &vanilla_trigger, &mut Accept),
+                Err(TriggerCriterionError::BuiltinTrigger)
             );
-            assert_eq!(
-                a.trigger_criterion(game, &vanilla_trigger, Arc::new(Accept)),
-                Err(TriggerCriterionError::InvalidTrigger)
-            );
-            assert_eq!(
-                b.trigger_criterion(game, &trigger, Arc::new(Accept)),
-                Ok(())
-            );
-            assert_eq!(
-                a.trigger_criterion(game, &trigger, Arc::new(Accept)),
-                Ok(())
-            );
+            assert_eq!(b.trigger_criterion(game, &trigger, &mut Accept), Ok(()));
+            assert_eq!(a.trigger_criterion(game, &trigger, &mut Accept), Ok(()));
             assert!(game.native_run_command("give guest13 minecraft:diamond 2"));
             assert!(game.native_run_command("give @a[name=guest13] minecraft:diamond 1"));
             assert!(game.native_run_command(
@@ -734,10 +883,9 @@ fn another_guests_services_work_during_a_turn() {
                 Some(ItemStack::new("minecraft:apple", 1))
             );
             game.as_guest(13, |game| {
-                assert!(game.native_inventory(12, Player).is_err());
-                assert!(game.native_inventory(13, Player).is_err());
+                assert_eq!(a.with_inventory(game, read_slot), None);
                 assert_eq!(
-                    a.trigger_criterion(game, &trigger, Arc::new(Accept)),
+                    a.trigger_criterion(game, &trigger, &mut Accept),
                     Err(TriggerCriterionError::PlayerUnavailable)
                 );
                 assert!(!game.native_run_command("give guest12 minecraft:dirt 1"));
@@ -841,6 +989,70 @@ fn nested_guest_turns_restore_each_equipment_store() {
             game.lan.as_ref().unwrap().hub.guest(13).unwrap().equipment[SADDLE],
             stack("minecraft:saddle")
         );
+    });
+}
+
+/// `with_own_record` exposes a guest's own ender chest during both their active
+/// turn and a nested turn where their inventory is loaned to the inner record.
+#[test]
+#[ignore = "daily"]
+fn with_own_record_swaps_ender_items_across_nested_turns() {
+    use sunrise_client::items::ItemStack;
+
+    with_guests(|game| {
+        let host_item = Some(ItemStack::new("minecraft:dirt", 1));
+        let outer_item = Some(ItemStack::new("minecraft:diamond", 2));
+        let inner_item = Some(ItemStack::new("minecraft:emerald", 3));
+        let added_item = Some(ItemStack::new("minecraft:gold_ingot", 4));
+
+        game.ender_items[0] = host_item.clone();
+        for (conn, item) in [(12, outer_item.clone()), (13, inner_item.clone())] {
+            game.lan
+                .as_mut()
+                .unwrap()
+                .hub
+                .update_guest(conn, |guest| guest.ender_items[0] = item)
+                .unwrap();
+        }
+
+        game.as_guest(12, |game| {
+            let gi12 = game.guest_index(12).unwrap();
+            let active = game.with_own_record(gi12, |host, _, _| {
+                Some(host.hub.guests[gi12].ender_items[0].clone())
+            });
+            assert_eq!(active, Some(outer_item.clone()));
+
+            game.as_guest(13, |game| {
+                let gi12 = game.guest_index(12).unwrap();
+                let gi13 = game.guest_index(13).unwrap();
+                let suspended = game.with_own_record(gi12, |host, _, _| {
+                    let seen = host.hub.guests[gi12].ender_items[0].clone();
+                    host.hub
+                        .guests
+                        .update(gi12, |g| g.ender_items[1] = added_item.clone());
+                    Some(seen)
+                });
+                assert_eq!(suspended, Some(outer_item.clone()));
+
+                let inner = game.with_own_record(gi13, |host, _, _| {
+                    Some(host.hub.guests[gi13].ender_items[0].clone())
+                });
+                assert_eq!(inner, Some(inner_item.clone()));
+            })
+            .unwrap();
+
+            assert_eq!(game.ender_items[0], outer_item);
+            assert_eq!(game.ender_items[1], added_item);
+        })
+        .unwrap();
+
+        assert_eq!(game.ender_items[0], host_item);
+        assert_eq!(game.ender_items[1], None);
+        let host = game.lan.as_ref().unwrap();
+        assert_eq!(host.hub.guest(12).unwrap().ender_items[0], outer_item);
+        assert_eq!(host.hub.guest(12).unwrap().ender_items[1], added_item);
+        assert_eq!(host.hub.guest(13).unwrap().ender_items[0], inner_item);
+        assert_eq!(host.hub.guest(13).unwrap().ender_items[1], None);
     });
 }
 
@@ -1063,7 +1275,7 @@ fn server_services_preserve_identity_and_message_delivery() {
         assert!(game.commands().run_command("list"));
         game.chat_capture = Some(Vec::new());
         game.commands()
-            .feedback(Text::literal("command answer"))
+            .feedback(Text::literal("command answer"), false)
             .unwrap();
         assert_eq!(
             game.chat_capture.take().unwrap()[0].plain(),
@@ -1514,6 +1726,7 @@ fn guest_damage_unwind_restores_and_next_same_connection_hit_lands() {
                     super::lan_pvp::Victim::Guest(13),
                     &super::lan_pvp::Strike::test_blow(12),
                 )
+                .is_some()
             };
             assert!(hit(game));
             assert_eq!(health(game), before - 1.0);
@@ -1588,6 +1801,7 @@ fn guest_message_capture_is_restored_after_a_real_native_panic() {
                     super::lan_pvp::Victim::Guest(12),
                     &super::lan_pvp::Strike::test_blow(13),
                 )
+                .is_some()
             };
             assert_eq!(game.as_guest_messaged(13, hit), Some(true));
             assert_eq!(
@@ -1731,15 +1945,10 @@ fn summon_stand(game: &mut super::Game<'_>) -> mod_api::EntityRef {
     else {
         unreachable!()
     };
-    let id = game
-        .summon(
-            game.dim.id(),
-            "minecraft:armor_stand",
-            [1.5, 70.0, 1.5],
-            tag,
-        )
-        .unwrap();
-    game.entity(id).unwrap()
+    let level = game.level(game.dim.id()).unwrap();
+    game.level_summon(level, "minecraft:armor_stand", [1.5, 70.0, 1.5], tag)
+        .unwrap()
+        .unwrap()
 }
 
 /// Whether anything the server sent the acting player since `before` is a chat line.
@@ -1750,6 +1959,12 @@ fn told_since(game: &super::Game<'_>, before: usize) -> bool {
         .any(|p| matches!(p, C::SystemChat(_)))
 }
 
+fn with_command_guests(name: &str, body: impl FnOnce(&mut super::Game<'_>)) {
+    crate::game::in_own_process(&format!("game::native_guest_turn_tests::{name}"), || {
+        with_guests(body);
+    });
+}
+
 /// `withPermission(level)`: the line is checked at the level the mod gives, whatever the
 /// entity's own (a guest's is 0 here), with no ceiling. `TickCommand` needs admins (3), so game
 /// masters (2) are refused it and admins run it; `GiveCommand` needs game masters.
@@ -1758,17 +1973,17 @@ fn told_since(game: &super::Game<'_>, before: usize) -> bool {
 fn run_command_checks_the_line_at_the_level_given() {
     use mod_api::PermissionLevel::{Admins, All, Gamemasters, Owners};
 
-    with_guests(|game| {
+    with_command_guests("run_command_checks_the_line_at_the_level_given", |game| {
         game.build_registries();
         let a = game.player(12).unwrap().entity();
-        assert!(!a.run_command(game, "give @s minecraft:diamond 1", All));
-        assert!(a.run_command(game, "give @s minecraft:diamond 1", Gamemasters));
-        assert!(!a.run_command(game, "tick query", Gamemasters));
-        assert!(a.run_command(game, "tick query", Admins));
-        assert!(a.run_command(game, "tick query", Owners));
+        assert!(!a.run_command(game, "give @s minecraft:diamond 1", All, false));
+        assert!(a.run_command(game, "give @s minecraft:diamond 1", Gamemasters, false));
+        assert!(!a.run_command(game, "tick query", Gamemasters, false));
+        assert!(a.run_command(game, "tick query", Admins, false));
+        assert!(a.run_command(game, "tick query", Owners, false));
         let stand = summon_stand(game);
-        assert!(!stand.run_command(game, "tick query", Gamemasters));
-        assert!(stand.run_command(game, "tick query", Admins));
+        assert!(!stand.run_command(game, "tick query", Gamemasters, false));
+        assert!(stand.run_command(game, "tick query", Admins, false));
     });
 }
 
@@ -1778,33 +1993,40 @@ fn run_command_checks_the_line_at_the_level_given() {
 #[test]
 #[ignore = "daily"]
 fn run_command_runs_as_the_entity_from_where_it_is() {
-    use super::native_inventories::NativeInventoryKind::Player;
     use mod_api::PermissionLevel::Gamemasters;
     use sunrise_client::items::ItemStack;
 
-    with_guests(|game| {
+    with_command_guests("run_command_runs_as_the_entity_from_where_it_is", |game| {
         game.build_registries();
         let a = game.player(12).unwrap().entity();
         let b = game.player(13).unwrap().entity();
-        let holds = |game: &super::Game<'_>, uuid: u128, item: &str| {
+        let holds = |game: &super::Game<'_>, conn: u32, item: &str| {
             let stack = ItemStack::new(item, 1);
-            let slots = game.native_inventory(uuid, Player).unwrap().slots;
-            slots.iter().flatten().any(|s| *s == stack)
+            game.lan
+                .as_ref()
+                .unwrap()
+                .hub
+                .guest(conn)
+                .unwrap()
+                .inventory
+                .iter()
+                .flatten()
+                .any(|s| *s == stack)
         };
         let stand = summon_stand(game);
         let guest = |game: &super::Game<'_>, conn: u32| {
             game.lan.as_ref().unwrap().hub.guest(conn).unwrap().position
         };
 
-        assert!(stand.run_command(game, "/tp @s ~2 ~ ~-1", Gamemasters));
+        assert!(stand.run_command(game, "/tp @s ~2 ~ ~-1", Gamemasters, false));
         assert_eq!(stand.position(game), Some([3.5, 70.0, 0.5]));
         assert_eq!(guest(game, 12), [3.0, 64.0, 5.0]);
         assert_eq!(guest(game, 13), [3.0, 64.0, 5.0]);
 
-        assert!(a.run_command(game, "give @s minecraft:diamond 1", Gamemasters));
+        assert!(a.run_command(game, "give @s minecraft:diamond 1", Gamemasters, false));
         game.as_guest(12, |game| {
-            assert!(a.run_command(game, "give @s minecraft:apple 1", Gamemasters));
-            assert!(b.run_command(game, "give @s minecraft:stick 1", Gamemasters));
+            assert!(a.run_command(game, "give @s minecraft:apple 1", Gamemasters, false));
+            assert!(b.run_command(game, "give @s minecraft:stick 1", Gamemasters, false));
         })
         .unwrap();
         assert!(holds(game, 12, "minecraft:diamond"));
@@ -1823,17 +2045,18 @@ fn run_command_runs_as_the_entity_from_where_it_is() {
 fn run_command_answers_a_player_and_no_one_for_another_entity() {
     use mod_api::PermissionLevel::Admins;
 
-    with_guests(|game| {
+    let name = "run_command_answers_a_player_and_no_one_for_another_entity";
+    with_command_guests(name, |game| {
         game.build_registries();
         let a = game.player(12).unwrap().entity();
         let stand = summon_stand(game);
         game.as_guest(12, |game| {
             for (line, ran) in [("tick query", true), ("kill @e[type=minecraft:pig]", false)] {
                 let before = game.guest_packets.len();
-                assert_eq!(a.run_command(game, line, Admins), ran, "{line}");
+                assert_eq!(a.run_command(game, line, Admins, false), ran, "{line}");
                 assert!(told_since(game, before), "the player is told: {line}");
                 let before = game.guest_packets.len();
-                assert_eq!(stand.run_command(game, line, Admins), ran, "{line}");
+                assert_eq!(stand.run_command(game, line, Admins, false), ran, "{line}");
                 assert!(!told_since(game, before), "no one is told: {line}");
             }
         })
@@ -1848,7 +2071,8 @@ fn run_command_answers_a_player_and_no_one_for_another_entity() {
 fn run_command_answers_false_for_a_bad_line_or_a_stale_handle() {
     use mod_api::PermissionLevel::Owners;
 
-    with_guests(|game| {
+    let name = "run_command_answers_false_for_a_bad_line_or_a_stale_handle";
+    with_command_guests(name, |game| {
         game.build_registries();
         let a = game.player(12).unwrap().entity();
         let stand = summon_stand(game);
@@ -1861,13 +2085,13 @@ fn run_command_answers_false_for_a_bad_line_or_a_stale_handle() {
                 "tp @s ~ ~ ~ ~ ~ ~ ~",
                 "kill @e[type=minecraft:pig]",
             ] {
-                assert!(!entity.run_command(game, line, Owners), "{line:?}");
+                assert!(!entity.run_command(game, line, Owners, false), "{line:?}");
             }
         }
         let stale = mod_api::EntityRef::new(mod_api::WorldEpoch::new(a.epoch().get() + 1), a.id());
-        assert!(!stale.run_command(game, "tick query", Owners));
-        assert!(stand.run_command(game, "kill @s", Owners));
-        assert!(!stand.run_command(game, "tick query", Owners));
+        assert!(!stale.run_command(game, "tick query", Owners, false));
+        assert!(stand.run_command(game, "kill @s", Owners, false));
+        assert!(!stand.run_command(game, "tick query", Owners, false));
     });
 }
 
@@ -1878,11 +2102,11 @@ fn run_command_answers_false_for_a_bad_line_or_a_stale_handle() {
 #[test]
 #[ignore = "daily"]
 fn run_command_refuses_a_player_whose_level_is_parked() {
-    use super::native_inventories::NativeInventoryKind::Player;
     use mod_api::PermissionLevel::Owners;
     use sunrise_client::{gamerules::vanilla::SEND_COMMAND_FEEDBACK, items::ItemStack};
 
-    with_guests(|game| {
+    let name = "run_command_refuses_a_player_whose_level_is_parked";
+    with_command_guests(name, |game| {
         game.build_registries();
         let b = game.player(13).unwrap().entity();
         let move_to = |game: &mut super::Game<'_>, dimension: &str| {
@@ -1895,19 +2119,27 @@ fn run_command_refuses_a_player_whose_level_is_parked() {
         };
         let has_stick = |game: &super::Game<'_>| {
             let stick = ItemStack::new("minecraft:stick", 1);
-            let slots = game.native_inventory(13, Player).unwrap().slots;
-            slots.iter().flatten().any(|s| *s == stick)
+            game.lan
+                .as_ref()
+                .unwrap()
+                .hub
+                .guest(13)
+                .unwrap()
+                .inventory
+                .iter()
+                .flatten()
+                .any(|s| *s == stick)
         };
         assert!(game.ui.rules.bool_at(SEND_COMMAND_FEEDBACK));
 
         move_to(game, "minecraft:the_nether");
-        assert!(!b.run_command(game, "give @s minecraft:stick 1", Owners));
-        assert!(!b.run_command(game, "gamerule send_command_feedback false", Owners));
+        assert!(!b.run_command(game, "give @s minecraft:stick 1", Owners, false));
+        assert!(!b.run_command(game, "gamerule send_command_feedback false", Owners, false));
         assert!(game.ui.rules.bool_at(SEND_COMMAND_FEEDBACK));
 
         move_to(game, "minecraft:overworld");
         assert!(!has_stick(game));
-        assert!(b.run_command(game, "give @s minecraft:stick 1", Owners));
+        assert!(b.run_command(game, "give @s minecraft:stick 1", Owners, false));
         assert!(has_stick(game));
     });
 }
@@ -1923,7 +2155,8 @@ fn run_command_runs_from_the_players_own_place_inside_an_outer_command() {
     use super::commands::execute::Source;
     use mod_api::PermissionLevel::Gamemasters;
 
-    with_guests(|game| {
+    let name = "run_command_runs_from_the_players_own_place_inside_an_outer_command";
+    with_command_guests(name, |game| {
         game.build_registries();
         let a = game.player(12).unwrap().entity();
         let b = game.player(13).unwrap().entity();
@@ -1939,9 +2172,9 @@ fn run_command_runs_from_the_players_own_place_inside_an_outer_command() {
             ..game.server_source()
         };
         game.with_source(outer, |game| {
-            assert!(b.run_command(game, "tp @s ~1 ~ ~ ~10 ~", Gamemasters));
+            assert!(b.run_command(game, "tp @s ~1 ~ ~ ~10 ~", Gamemasters, false));
             game.as_guest(12, |game| {
-                assert!(a.run_command(game, "tp @s ~1 ~ ~ ~10 ~", Gamemasters));
+                assert!(a.run_command(game, "tp @s ~1 ~ ~ ~10 ~", Gamemasters, false));
             })
             .unwrap();
         });

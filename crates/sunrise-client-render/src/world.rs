@@ -6,7 +6,10 @@ use crate::{
     section_mask::SectionMask,
 };
 use std::sync::{Arc, OnceLock};
-use sunrise_core::random::{LegacyRandom, LevelRandom};
+use sunrise_core::{
+    identifier::Identifier,
+    random::{LegacyRandom, LevelRandom},
+};
 use sunrise_world::registry::BlockStateId;
 
 mod extra_models;
@@ -103,11 +106,13 @@ pub struct World {
     path_type_cache: OnceLock<path_type_cache::PathTypeCache>,
     /// The dimension type's fire-source tag, resolved at entry and data reload.
     pub infiniburn: Option<Arc<sunrise_world::level::data::BlockSet>>,
+    /// `sunrise:golem_heads`, resolved with the mods' and data packs' members at entry and on every tag install.
+    pub golem_heads: Option<Arc<sunrise_world::level::data::BlockSet>>,
     /// Server-owned mod data attached to this dimension.
     pub attachments: sunrise_mod_runtime::attachments::Attachments,
     /// Mod-owned watered areas; never serialized with the world.
     pub water_tickets: sunrise_mod_runtime::water_tickets::WaterTickets,
-    /// The holders lent to mods since the last flush, whose synced changes
+    /// The holders with accepted sync updates since the last flush, whose changes
     /// `flush_attachment_sync` sends.
     pub attachment_syncs: FxHashSet<sunrise_mod_runtime::attachments::Holder>,
     /// Block entities a moving piston landed since the last flush, whose
@@ -120,6 +125,9 @@ pub struct World {
     /// chunks hold `shape.column()`.
     pub shape: LevelShape,
     pub fast_lava: bool,
+    /// The id of the chunk generator the server built this level with, as
+    /// `BuiltInRegistries.CHUNK_GENERATOR` names its codec; None on a client.
+    pub generator_type: Option<Identifier>,
     pub chunks: crate::chunk_map::ChunkMap,
     /// The light the columns that left the level keep (`light_border.rs`).
     pub border: crate::fast_hash::FxHashMap<(i32, i32), crate::light_border::Border>,
@@ -201,6 +209,9 @@ pub struct World {
     /// The chunks changed in bulk (`edit_runs`) since the log was last
     /// drained, kept while `block_log` is: sent to the players whole.
     pub bulk_log: FxHashSet<(i32, i32)>,
+    /// Explicit resends with their light-completion markers (`ChunkResend`). Unlike bulk edits,
+    /// these do not refresh far terrain for a client that hasn't received the chunk.
+    pub chunk_resends: FxHashMap<(i32, i32), ChunkResend>,
     /// The sections whose light changed since the log was last drained, as
     /// a bit per section of each column, kept while `block_log` is
     /// (`ChunkHolder.sectionLightChanged`).
@@ -219,6 +230,12 @@ pub struct World {
     /// (`ShulkerBoxBlockEntity.getBoundingBox`), as `moving_pistons` for pistons.
     pub shulkers: FxHashMap<[i32; 3], crate::block_entity_anim::Shulker>,
 }
+/// `Level.isRaining` and `isThundering` compare interpolated float strengths to doubles.
+/// Use zero strengths for a level that cannot have weather.
+pub fn weather_flags((rain, thunder): (f32, f32)) -> (bool, bool) {
+    (f64::from(rain) > 0.2, f64::from(thunder) > 0.9)
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Weather {
     pub clear_time: i32,
@@ -230,6 +247,15 @@ pub struct Weather {
     pub thunder_level: (f32, f32),
 }
 impl Weather {
+    /// `MinecraftServer.getWeatherData` is shared; the Level interpolants are not.
+    pub fn copy_parameters_from(&mut self, weather: Self) {
+        self.clear_time = weather.clear_time;
+        self.rain_time = weather.rain_time;
+        self.thunder_time = weather.thunder_time;
+        self.raining = weather.raining;
+        self.thundering = weather.thundering;
+    }
+
     /// The timers of `advanceWeatherCycle`, which run only while
     /// `advance_weather` is on.
     pub fn tick_timers(&mut self, random: &mut sunrise_core::random::LegacyRandom) {
@@ -275,13 +301,21 @@ impl Weather {
         self.rain_level.1 =
             (self.rain_level.1 + if self.raining { 0.01 } else { -0.01 }).clamp(0.0, 1.0);
     }
+    /// `Level.setRainLevel` and `Level.setThunderLevel`: clamp both strengths to
+    /// `[0, 1]` and set both the previous and current interpolants.
+    pub fn set_levels(&mut self, rain: f32, thunder: f32) {
+        let rain = rain.clamp(0.0, 1.0);
+        let thunder = thunder.clamp(0.0, 1.0);
+        self.rain_level = (rain, rain);
+        self.thunder_level = (thunder, thunder);
+    }
+
     /// The levels at their targets at once (rain 1 while it rains, else 0, and thunder the
     /// same), both halves, so the frame shows them at any partial tick: a frozen world under
     /// `SUNRISE_STILL`, which would otherwise have to run about a hundred ticks to fade them.
     pub fn settle_levels(&mut self) {
         let target = |on: bool| if on { 1.0 } else { 0.0 };
-        self.rain_level = (target(self.raining), target(self.raining));
-        self.thunder_level = (target(self.thundering), target(self.thundering));
+        self.set_levels(target(self.raining), target(self.thundering));
     }
     /// Level.getRainLevel / getThunderLevel (thunder scales with rain).
     pub fn levels(&self, partial: f32) -> (f32, f32) {
@@ -357,6 +391,7 @@ impl World {
         Self {
             path_type_cache: OnceLock::new(),
             infiniburn: None,
+            golem_heads: None,
             shape: LevelShape::OVERWORLD,
             chunks: Default::default(),
             border: Default::default(),
@@ -366,6 +401,7 @@ impl World {
             health_rules: HealthRules::default(),
             air,
             fast_lava: false,
+            generator_type: None,
             dirty_sections: Default::default(),
             dirty_light: Default::default(),
             light_edits: Vec::new(),
@@ -397,6 +433,7 @@ impl World {
             group_lifetime: None,
             path_writes: None,
             bulk_log: Default::default(),
+            chunk_resends: Default::default(),
             light_log: None,
             moving_piston_fallback: Vec::new(),
             moving_pistons: Vec::new(),
@@ -475,13 +512,44 @@ impl World {
     pub fn below_world_y(&self) -> f64 {
         f64::from(self.shape.min_y - 64)
     }
+    #[inline]
+    pub fn chunk_at(&self, cx: i32, cz: i32) -> Option<&Chunk> {
+        self.chunks.get(&(cx, cz)).map(Arc::as_ref)
+    }
+
     /// The biome table index of the noise cell at a block (`ChunkAccess.getNoiseBiome`): a
     /// cell above or below the level reads its top or bottom cells, not the cells the chunks'
     /// widened column holds there (vanilla's Nether and End save none, and read back they
     /// hold the table's first biome). `None` where the chunk isn't loaded.
     pub fn noise_biome(&self, x: i32, y: i32, z: i32) -> Option<u16> {
+        self.noise_biome_with_chunk(x, y, z, self.chunk_at(x >> 4, z >> 4))
+    }
+
+    /// Reads the noise biome with the caller's lookup result for this column.
+    #[inline]
+    pub fn noise_biome_with_chunk(
+        &self,
+        x: i32,
+        y: i32,
+        z: i32,
+        chunk: Option<&Chunk>,
+    ) -> Option<u16> {
         let y = y.clamp(self.shape.min_y, self.shape.max_y() - 1);
-        Some(self.chunks.get(&(x >> 4, z >> 4))?.biome(x, y, z))
+        Some(chunk?.biome(x, y, z))
+    }
+    /// `LevelReader.getBiome` (`BiomeManager.getBiome`): the biome table index of the noise cell
+    /// `zoom` picks for the block, one of the eight quarts around it and perhaps in a
+    /// neighbouring chunk, read as [`noise_biome`](Self::noise_biome) reads it. `None` where that
+    /// cell's chunk isn't loaded.
+    pub fn biome_at(
+        &self,
+        zoom: sunrise_core::biome::BiomeZoom,
+        x: i32,
+        y: i32,
+        z: i32,
+    ) -> Option<u16> {
+        let [qx, qy, qz] = zoom.quart_at_block(sunrise_core::position::BlockPos::new(x, y, z));
+        self.noise_biome(qx << 2, qy << 2, qz << 2)
     }
     /// One above the highest block Y the level's chunks hold.
     pub fn top_y(&self) -> i32 {
@@ -735,8 +803,19 @@ impl World {
     /// block that isn't `air`, or the column's minimum Y (also where the chunk
     /// isn't loaded).
     pub fn world_surface(&self, x: i32, z: i32, air: impl Fn(BlockStateId) -> bool) -> i32 {
-        let bottom = self.layout().min_y();
-        self.chunks.get(&(x >> 4, z >> 4)).map_or(bottom, |chunk| {
+        self.world_surface_with_chunk(x, z, self.chunk_at(x >> 4, z >> 4), air)
+    }
+
+    /// Reads WORLD_SURFACE with the caller's lookup result for this column.
+    #[inline]
+    pub fn world_surface_with_chunk(
+        &self,
+        x: i32,
+        z: i32,
+        chunk: Option<&Chunk>,
+        air: impl Fn(BlockStateId) -> bool,
+    ) -> i32 {
+        chunk.map_or(self.bottom_y(), |chunk| {
             chunk.world_surface(x, z, |v| air(BlockStateId(v)))
         })
     }
@@ -751,9 +830,13 @@ impl World {
     }
     #[inline]
     pub fn block(&self, x: i32, y: i32, z: i32) -> BlockStateId {
-        self.chunks
-            .get(&(x >> 4, z >> 4))
-            .map_or(self.air, |chunk| chunk.block(x & 15, y, z & 15))
+        self.block_with_chunk(x, y, z, self.chunk_at(x >> 4, z >> 4))
+    }
+
+    /// Reads a block with the caller's lookup result for this column.
+    #[inline]
+    pub fn block_with_chunk(&self, x: i32, y: i32, z: i32, chunk: Option<&Chunk>) -> BlockStateId {
+        chunk.map_or(self.air, |chunk| chunk.block(x & 15, y, z & 15))
     }
     /// Whether a block of the box `lo..=hi` may match, from the palettes of
     /// the sections it reaches (a palette of the whole registry may hold
@@ -807,7 +890,13 @@ impl World {
     /// no sky layer (`LevelLightEngine.getRawBrightness`). Never loads a chunk.
     #[inline]
     pub fn light(&self, x: i32, y: i32, z: i32) -> u8 {
-        match self.chunks.get(&(x >> 4, z >> 4)).and_then(|chunk| {
+        self.light_with_chunk(x, y, z, self.chunk_at(x >> 4, z >> 4))
+    }
+
+    /// Reads published light with the caller's lookup result for this column.
+    #[inline]
+    pub fn light_with_chunk(&self, x: i32, y: i32, z: i32, chunk: Option<&Chunk>) -> u8 {
+        match chunk.and_then(|chunk| {
             let s = chunk.section_index(y)?;
             Some(chunk.sections[s].light(crate::chunk::index(x, y, z)))
         }) {
@@ -816,14 +905,14 @@ impl World {
         }
     }
     /// The light of a position no section holds: past a loaded column's sections, or in a column that
-    /// is not loaded ([`Self::border_light`]), without sky in a level without it. It takes the same
-    /// arguments as [`Self::light`] and looks the column up again, so the hot read keeps nothing live
-    /// for it; a read inside a column of a level without skylight is already without it (its
-    /// sections' sky is 0).
+    /// is not loaded ([`Self::border_light`]), without sky in a level without it. A read inside a
+    /// section of a level without skylight already has sky set to 0. It looks the column up again,
+    /// among the columns the client chunk cache hides too (light belongs to the level, not to the
+    /// cache's current view), so the hot read keeps nothing live for it.
     #[cold]
     #[inline(never)]
     fn light_outside(&self, x: i32, y: i32, z: i32) -> u8 {
-        let light = match self.chunks.get(&(x >> 4, z >> 4)) {
+        let light = match self.chunks.resident_get(&(x >> 4, z >> 4)) {
             Some(chunk) => chunk.light(x & 15, y, z & 15),
             None => self.border_light((x >> 4, z >> 4), x, y, z),
         };
@@ -841,6 +930,7 @@ impl World {
     pub fn unload_chunk(&mut self, key: (i32, i32)) -> Option<Arc<Chunk>> {
         self.capability_generations.unload_chunk(key);
         let chunk = self.chunks.remove(&key)?;
+        self.chunk_resends.remove(&key);
         // A surviving quad may join across any side or corner of the dropped column.
         for &cell in chunk.connection_groups.keys() {
             let (x, y, z) = chunk.dynamic_cell_coords(cell);
@@ -862,6 +952,52 @@ impl World {
     /// Never loads a chunk.
     pub fn is_loaded_at(&self, x: i32, y: i32, z: i32) -> bool {
         self.shape.contains_y(y) && self.loaded(x, z)
+    }
+    /// The block entities of loaded chunks (taken-out ones included) in the box from `min`
+    /// (inclusive) to `max` (exclusive) and the build height, in no order. Empty for a box of
+    /// zero volume; None for reversed bounds. Walks the box's columns or the loaded chunks,
+    /// whichever are fewer, so no corner overflows or makes it scan past what is loaded.
+    pub fn block_entities_in_box(
+        &self,
+        min: [i32; 3],
+        max: [i32; 3],
+    ) -> Option<Vec<crate::block_entities::Pos>> {
+        if (0..3).any(|axis| min[axis] > max[axis]) {
+            return None;
+        }
+        if (0..3).any(|axis| min[axis] == max[axis]) {
+            return Some(Vec::new());
+        }
+        // `max > min` on every axis, so `max - 1` cannot overflow.
+        let (x0, x1) = (min[0] >> 4, (max[0] - 1) >> 4);
+        let (z0, z1) = (min[2] >> 4, (max[2] - 1) >> 4);
+        let span = (i64::from(x1 - x0) + 1) * (i64::from(z1 - z0) + 1);
+        let columns: Vec<(i32, i32)> = if span <= self.chunks.len() as i64 {
+            (x0..=x1)
+                .flat_map(|x| (z0..=z1).map(move |z| (x, z)))
+                .filter(|key| self.chunks.contains_key(key))
+                .collect()
+        } else {
+            self.chunks
+                .keys()
+                .copied()
+                .filter(|&(x, z)| (x0..=x1).contains(&x) && (z0..=z1).contains(&z))
+                .collect()
+        };
+        Some(
+            columns
+                .into_iter()
+                .flat_map(|chunk| self.block_entities.in_chunk(chunk))
+                .copied()
+                .filter(|&(x, y, z)| self.in_box(min, max, [x, y, z]))
+                .collect(),
+        )
+    }
+    /// Whether `pos` lies in the box from `min` (inclusive) to `max` (exclusive) and the build
+    /// height.
+    pub fn in_box(&self, min: [i32; 3], max: [i32; 3], pos: [i32; 3]) -> bool {
+        (0..3).all(|axis| (min[axis]..max[axis]).contains(&pos[axis]))
+            && self.shape.contains_y(pos[1])
     }
     /// Persisted container capacity override; absence preserves vanilla capacity.
     pub fn container_stack_limit(&self, key: (i32, i32, i32)) -> Option<u32> {
@@ -967,6 +1103,36 @@ impl World {
             extras.pending_loot.remove(&key);
         });
     }
+    /// Drops the live block entity's auxiliary fields (`block_entity_sources`, `pending_loot`,
+    /// `container_stack_limits`) without marking the chunk unsaved and without touching
+    /// unmodelled `saved.block_entities`.
+    ///
+    /// Vanilla's `LevelChunk.removeBlockEntity` does not call `markUnsaved()` and does not
+    /// touch `pendingBlockEntities` (only `ProtoChunk.removeBlockEntity` clears those); in
+    /// Sunrise, `block_entity_sources` and `pending_loot` hold fields of the already-loaded
+    /// block entity (such as `lock` and `LootTable`) that live on the `BlockEntity` instance
+    /// itself in vanilla, so they leave with it without dirtying the chunk.
+    pub fn forget_block_entity_source_unmodified(&mut self, key: (i32, i32, i32)) {
+        let chunk_key = (key.0 >> 4, key.2 >> 4);
+        let Some(chunk) = self.chunks.get_mut(&chunk_key) else {
+            return;
+        };
+        let has_extras = chunk.saved.as_ref().is_some_and(|extras| {
+            extras.block_entity_sources.iter().any(|(p, _)| *p == key)
+                || extras.pending_loot.contains_key(&key)
+        });
+        let has_limit = chunk.container_stack_limits.contains_key(&key);
+        if !has_extras && !has_limit {
+            return;
+        }
+        let chunk = Arc::make_mut(chunk);
+        if has_extras && let Some(saved) = chunk.saved.as_mut() {
+            let extras = Arc::make_mut(saved);
+            extras.block_entity_sources.retain(|(p, _)| *p != key);
+            extras.pending_loot.remove(&key);
+        }
+        chunk.container_stack_limits.remove(&key);
+    }
     /// Run `f` on the keep-as-loaded data of the chunk holding `key`, put back
     /// for the next save (`block_entity_sources` is where Sunrise restores the
     /// block entity fields its model does not hold).
@@ -1006,6 +1172,22 @@ impl World {
         chunk.saved = Some(Arc::new(extras));
         self.modified.insert(chunk_key);
     }
+}
+
+/// Completion boundary for an explicit chunk resend (`ChunkMap.waitForLightBeforeSending` /
+/// `ThreadedLevelLightEngine.waitForPendingTasks`): tracks only the light work that preceded
+/// the resend request, so later light checks do not keep the resend queued indefinitely.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChunkResend {
+    /// Preceding light work for this column is complete; ready to send on the next broadcast.
+    Ready,
+    /// Waiting for the prefix of `World::light_edits` already queued for the next light pass.
+    WaitingEdits { through: usize },
+    /// Waiting for the whole-column light job for this column that covers the request: the
+    /// running job when nothing was queued after it, else the first job submitted after the
+    /// request (`from_seq` and later). That job's light is published when it returns, even
+    /// if a newer request has since queued another job; later requests never extend the wait.
+    WaitingLight { from_seq: u64 },
 }
 
 /// The game rules and difficulty a player's health reads (`Player.isInvulnerableTo`,
@@ -1051,6 +1233,68 @@ mod tests {
         assert_eq!(world.block(16, 64, 0), BlockStateId(0));
         assert_eq!(world.chunks.len(), count);
         assert!(!world.loaded(16, 0));
+    }
+
+    #[test]
+    fn block_entities_in_box_reads_loaded_chunks_inside_the_build_height() {
+        use crate::containers::BlockEntity;
+        let mut world = World::new(BlockStateId(0), 0);
+        for key in [(0, 0), (-1, 0)] {
+            world
+                .chunks
+                .insert(key, Arc::new(Chunk::empty(key.0, key.1)));
+        }
+        let inside = [(1, 64, 1), (-16, -64, 15), (15, 319, 0)];
+        for pos in inside.into_iter().chain([(0, 320, 0), (40, 64, 40)]) {
+            world
+                .block_entities
+                .insert(pos, BlockEntity::Campfire(Box::default()));
+        }
+        // Above the build height, and in chunk (2, 2), which is not loaded: never listed.
+        let sorted = |found: Option<Vec<_>>| {
+            let mut found = found.unwrap();
+            found.sort_unstable();
+            found
+        };
+        let mut expected = inside.to_vec();
+        expected.sort_unstable();
+        let all = [i32::MIN; 3];
+        let top = [i32::MAX; 3];
+        assert_eq!(sorted(world.block_entities_in_box(all, top)), expected);
+        assert_eq!(
+            sorted(world.block_entities_in_box([-16, -64, 0], [16, 320, 16])),
+            expected,
+            "the box's own columns"
+        );
+        // A block entity taken out for its tick is still listed.
+        let taken = world.block_entities.take(&(1, 64, 1)).unwrap();
+        assert_eq!(
+            world.block_entities_in_box([1, 64, 1], [2, 65, 2]),
+            Some(vec![(1, 64, 1)])
+        );
+        assert_eq!(
+            world.block_entities.taken_type(&(1, 64, 1)),
+            Some(crate::block_entities::TakenType::Vanilla(
+                "minecraft:campfire"
+            ))
+        );
+        assert!(world.block_entities.put(taken.0, taken.1));
+        assert_eq!(world.block_entities.taken_type(&(1, 64, 1)), None);
+        // The maximum is exclusive on every axis; the build height clips the box.
+        for max in [[1, 65, 2], [2, 64, 2], [2, 65, 1]] {
+            assert_eq!(world.block_entities_in_box([0, 63, 0], max), Some(vec![]));
+        }
+        assert_eq!(
+            world.block_entities_in_box([0, 320, 0], [16, top[1], 16]),
+            Some(vec![])
+        );
+        assert_eq!(
+            world.block_entities_in_box([32, 0, 32], [48, 100, 48]),
+            Some(vec![])
+        );
+        assert_eq!(world.block_entities_in_box(top, top), Some(vec![]));
+        assert_eq!(world.block_entities_in_box([2, 0, 0], [1, 10, 10]), None);
+        assert_eq!(world.block_entities_in_box(top, all), None);
     }
 
     #[test]
@@ -1207,6 +1451,31 @@ mod tests {
             assert_eq!(world.noise_biome(9, y, 9), Some(biome), "y {y}");
         }
         assert_eq!(world.noise_biome(16, 0, 0), None);
+    }
+
+    /// `BiomeManager.getBiome` reads the noise cell the zoom picks, not the block's own: at world
+    /// seed 12345, block (16, 64, 8) lies in chunk 1 0's quart 4 16 2, but the zoom picks quart
+    /// 3 15 1, which chunk 0 0 holds; block (17, 64, 8) keeps to chunk 1 0 (quart 4 15 1).
+    #[test]
+    fn biome_at_reads_the_quart_the_zoom_picks() {
+        use sunrise_core::biome::{BiomeZoom, obfuscate_seed};
+        let mut world = World::new(BlockStateId(0), 12345);
+        for (cx, biome) in [(0, 1), (1, 2)] {
+            let mut chunk = Chunk::empty(cx, 0);
+            for qy in 0..SECTIONS as i32 * 4 {
+                for qz in 0..4 {
+                    for qx in 0..4 {
+                        chunk.set_biome_cell(qx, qy, qz, biome);
+                    }
+                }
+            }
+            world.chunks.insert((cx, 0), Arc::new(chunk));
+        }
+        let zoom = BiomeZoom::new(obfuscate_seed(12345));
+        assert_eq!(world.noise_biome(16, 64, 8), Some(2));
+        assert_eq!(world.biome_at(zoom, 16, 64, 8), Some(1));
+        assert_eq!(world.biome_at(zoom, 17, 64, 8), Some(2));
+        assert_eq!(world.biome_at(zoom, 40, 64, 8), None);
     }
 
     /// A box misses a state only where no section it reaches lists it, and

@@ -5,10 +5,11 @@ import os
 import subprocess
 import tempfile
 
-try:
-    from . import lab
-except ImportError:
-    import lab
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab
 
 
 def game_environment(base, root):
@@ -32,10 +33,7 @@ def run_game(command, **kwargs):
 @contextmanager
 def suite_lock():
     """Real-client CI suites share a GPU, even when parity.py runs harnesses in parallel."""
-    try:
-        from . import file_lock
-    except ImportError:
-        import file_lock
+    from tools import file_lock
     with (Path(tempfile.gettempdir()) / 'sunrise-integration-gpu.lock').open('a') as handle:
         file_lock.lock(handle)
         yield

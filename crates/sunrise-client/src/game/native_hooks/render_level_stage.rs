@@ -3,13 +3,13 @@ use super::*;
 /// The hook points. Each does nothing in Sunrise.
 impl Game<'_> {
     /// One stage of a world view (NeoForge's `RenderLevelStageEvent`), asked for each stage in
-    /// frame order as the view is extracted; what `draw` takes is drawn at `stage`.
+    /// frame order with the active stage capability (`StageSurface`).
     pub(in crate::game) fn native_render_level_stage(
         &self,
         stage: mod_api::RenderLevelStage,
-        view: &mod_api::WorldRenderView,
-        draw: &mut sunrise_client::world_geometry::WorldGeometry,
+        view: &mod_api::WorldRenderView<'_>,
+        context: &mut sunrise_client::world_geometry::StageSurface<'_>,
     ) {
-        self.fire_render_level_stage(stage, view, draw);
+        self.fire_render_level_stage(stage, view, context);
     }
 }

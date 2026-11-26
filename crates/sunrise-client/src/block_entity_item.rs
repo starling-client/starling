@@ -662,6 +662,7 @@ mod tests {
             ]
             .into(),
             vec!["example:crate".into(), "example:tank".into()],
+            ["example:crate".into(), "example:tank".into()],
         ))
         .unwrap();
         // A named crate: its custom name is its own component patch.

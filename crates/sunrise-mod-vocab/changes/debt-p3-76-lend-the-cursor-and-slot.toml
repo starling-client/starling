@@ -1,0 +1,42 @@
+ids = [
+    "hook:item_stacked_on_other",
+    "type:StackedOnOther",
+    "handle:StackedOnOther::carried",
+    "handle:StackedOnOther::set_carried",
+    "handle:StackedOnOther::clicked",
+    "handle:StackedOnOther::set_clicked",
+    "handle:StackedOnOther::take_clicked",
+    "type:StackedOnOther.action",
+    "type:StackedOnOther.handled",
+    "type:StackedOnOther.primary",
+    "type:StackedOnOther.carried",
+    "type:StackedOnOther.clicked",
+    "type:StackedOnOtherResult",
+    "type:ClickedStackResult",
+    "type:ClickAction",
+    "type:StackedOnOtherDirection",
+    "handle:StackedOnOther::new",
+    "handle:StackedOnOther::with_direction",
+    "hook:item_stacked_on_other.event",
+    "hook:item_stacked_on_other.result",
+    "method:Hooks::item_stacked_on_other",
+    "method:ItemPart::item_stacked_on_other",
+    "type:ItemStackedOnOtherEvent",
+    "type:ItemStackedOnOtherEvent.event",
+    "type:ItemStackedOnOtherEvent.result",
+]
+why = """`item_stacked_on_other` (version 7) lends the click's cursor and clicked slot, as NeoForge's `ItemStackedOnOtherEvent` gives `getCarriedSlotAccess` and `getSlot`, instead of cloned stacks and a separate answer.
+
+- `StackedOnOther` is now a scoped loan with `carried()` / `set_carried`, `clicked()` / `set_clicked` and `take_clicked(count)`. Reads see what earlier phases and the call itself changed, and the edits apply in the order they were made, each take running the slot's take side effects in turn.
+- `StackedOnOtherResult` and `ClickedStackResult` are removed. `handled` moves onto the click and starts `true`, as NeoForge's cancellation result does; only global listeners read it.
+- An `ItemPart` answers with its `Flow` alone, as vanilla's `Item.overrideStackedOnOther` / `overrideOtherStackedOnMe` return a boolean. The contradictory-answer refusal is gone.
+- `primary` becomes `action: ClickAction` (vanilla's `ClickAction`).
+- `take_clicked(count)` is `Slot.safeTake(count, count, player)`: a count above what the slot holds takes all of it, and a take of 0 or from an empty slot answers `None` and records nothing, where `ClickedStackResult::Take` refused the click for both.
+- `StackedOnOther` and `StackedOnOtherDirection` are no longer Wire: they are read only from the lent click within one call, and `ClickAction` has no Wire form."""
+migrate = """
+- Replace `event.event.carried` / `event.event.clicked` with `event.click.carried()` / `event.click.clicked()`, and `event.event.direction` with `event.click.direction`.
+- Replace `event.result.carried = StackResult::Set(s)` with `event.click.set_carried(s)`, `event.result.clicked = ClickedStackResult::Set(s)` with `event.click.set_clicked(s)`, and `ClickedStackResult::Take(n)` with `event.click.take_clicked(n)`.
+- `event.event.primary` is `event.click.action == ClickAction::Primary`.
+- In an `ItemPart`, return `Flow::Cancel` to take the click and `Flow::Continue` to go on; drop any `handled` writes. A global listener that cancels without wanting the click done sets `event.click.handled = false`, since it now starts `true`.
+- Rebuild against the new SDK to record the new hook version in the package's `uses` list.
+"""

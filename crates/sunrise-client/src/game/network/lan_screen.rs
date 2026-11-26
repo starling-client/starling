@@ -15,11 +15,17 @@ use sunrise_client::{
     widgets::{self, Narratable, join_for_narration},
 };
 use sunrise_protocol::packets::play::{self, Serverbound as S};
+<<<<<<< HEAD
 use winit::{event::KeyEvent, keyboard::PhysicalKey};
 #[path = "lan_screen/starling.rs"]
 mod starling;
 #[allow(unused_imports)]
 pub use self::starling::*;
+||||||| 46c00106def
+use winit::{event::KeyEvent, keyboard::PhysicalKey};
+=======
+use winit::keyboard::KeyCode;
+>>>>>>> ed6772e2118
 
 pub(super) struct WorldOptions {
     remote: bool,
@@ -149,6 +155,11 @@ impl WorldOptions {
         self.locked = locked || self.hardcore;
         self.initial.difficulty = self.difficulty;
         self.initial.locked = self.locked;
+    }
+    /// `WorldOptionsScreen.updatePersonalGameModeButton`: refresh both value and baseline.
+    fn update_personal_mode(&mut self, mode: i32) {
+        self.personal_mode = mode;
+        self.initial.personal_mode = mode;
     }
     /// `WorldOptionsScreen.updatePortControlsState`: the port box takes an
     /// edit only with LAN on; it stays focusable either way, so its value can
@@ -689,6 +700,30 @@ impl Game<'_> {
         self.set_screen(Screen::Paused);
     }
 
+    /// `WorldOptionsScreen.updatePersonalGameModeButton`: update both the displayed
+    /// personal mode and its baseline without discarding unrelated edits.
+    pub(in crate::game) fn update_world_options_personal_mode(&mut self, mode: i32) {
+        if self.screen == Screen::WorldOptions
+            && let Some(o) = self.world_options.as_mut()
+        {
+            o.update_personal_mode(mode);
+        }
+    }
+
+    #[cfg(test)]
+    pub(in crate::game) fn world_options_personal_state(&self) -> Option<(i32, i32, u8)> {
+        self.world_options
+            .as_ref()
+            .map(|o| (o.personal_mode, o.initial.personal_mode, o.difficulty))
+    }
+
+    #[cfg(test)]
+    pub(in crate::game) fn set_world_options_difficulty_for_test(&mut self, difficulty: u8) {
+        if let Some(o) = self.world_options.as_mut() {
+            o.difficulty = difficulty;
+        }
+    }
+
     /// Escape: the question and RestrictionsScreen return to the options
     /// (their onClose), which close; the game rules ask first.
     pub(super) fn world_options_escape(&mut self) {
@@ -1099,29 +1134,29 @@ impl Game<'_> {
     }
 
     /// The mouse wheel over the screen (ScrollableLayout, 10 pixels a step).
-    pub(super) fn world_options_scroll(&mut self, delta: f32) {
+    pub(super) fn world_options_scroll(&mut self, delta: f32) -> bool {
         let (w, h) = self.gui_size();
         let stick_scroll = self.pad_stick_scroll();
         match self.world_options.as_mut() {
             Some(o) if o.view == View::Options => {
-                let hit_btn = o.hit(self.cursor, (w, h)).or(o.focused_button);
+                let hit_btn = o.hit(self.cursor, (w, h));
                 if let Some(btn) = hit_btn.filter(|_| !stick_scroll) {
                     let step = if delta > 0.0 { -1 } else { 1 };
                     match btn {
                         Button::DefaultMode => {
                             o.default_mode = (o.default_mode + step).rem_euclid(4);
-                            self.audio.play_button_click();
-                            return;
+                            self.play_audio_button_click();
+                            return true;
                         }
                         Button::PersonalMode => {
                             o.personal_mode = (o.personal_mode + step).rem_euclid(4);
-                            self.audio.play_button_click();
-                            return;
+                            self.play_audio_button_click();
+                            return true;
                         }
                         Button::Difficulty => {
                             o.difficulty = ((o.difficulty as i32 + step).rem_euclid(4)) as u8;
-                            self.audio.play_button_click();
-                            return;
+                            self.play_audio_button_click();
+                            return true;
                         }
                         Button::Cheats => {
                             o.cheats = !o.cheats;
@@ -1129,49 +1164,56 @@ impl Game<'_> {
                                 o.default_mode = o.initial.default_mode;
                                 o.personal_mode = o.default_mode;
                             }
-                            self.audio.play_button_click();
-                            return;
+                            self.play_audio_button_click();
+                            return true;
                         }
                         Button::Lan => {
                             o.lan = !o.lan;
                             o.port.focused = false;
-                            self.audio.play_button_click();
-                            return;
+                            self.play_audio_button_click();
+                            return true;
                         }
                         Button::CommandAccess => {
                             o.guest_commands = !o.guest_commands;
-                            self.audio.play_button_click();
-                            return;
+                            self.play_audio_button_click();
+                            return true;
                         }
                         Button::Force => {
                             o.force = !o.force;
-                            self.audio.play_button_click();
-                            return;
+                            self.play_audio_button_click();
+                            return true;
                         }
                         _ => {}
                     }
                 }
-                o.scroll = (o.scroll - delta * 10.0).clamp(0.0, o.scroll_limit(h));
+                if stick_scroll || (HEADER..h - FOOTER).contains(&self.cursor.1) {
+                    o.scroll = (o.scroll - delta * 10.0).clamp(0.0, o.scroll_limit(h));
+                    return true;
+                }
             }
             Some(o) => {
-                if let Some(rules) = o.rules.as_mut() {
-                    rules.wheel(delta, h);
-                }
+                return o
+                    .rules
+                    .as_mut()
+                    .is_some_and(|rules| rules.wheel_at(delta, self.cursor.1, h));
             }
             None => {}
         }
+        false
     }
 
     /// The pointer moved while a list's scrollbar is held: the game rules'
     /// list follows it (AbstractSelectionList.mouseDragged).
-    pub(super) fn world_options_drag(&mut self) {
+    pub(super) fn world_options_drag(&mut self) -> bool {
         let h = self.gui_size().1;
         if let Some(o) = self.world_options.as_mut()
             && o.view == View::GameRules
             && let Some(rules) = o.rules.as_mut()
         {
             rules.drag(self.cursor.1, h);
+            return true;
         }
+        false
     }
 
     /// The button came up: a held scrollbar lets go (onRelease).
@@ -1193,13 +1235,16 @@ impl Game<'_> {
             View::Options => {}
             View::GameRules => {
                 let atlas = &self.gui.atlas;
-                let (exit, handled) = o.rules.as_mut().map_or((None, false), |rules| {
-                    if rules.clicks_button(atlas, self.cursor, (w, h)) {
-                        self.audio.play_button_click();
-                    }
-                    rules.click(atlas, self.cursor, (w, h))
-                });
+                let (clicked, exit, handled) =
+                    o.rules.as_mut().map_or((false, None, false), |rules| {
+                        let clicked = rules.clicks_button(atlas, self.cursor, (w, h));
+                        let (exit, handled) = rules.click(atlas, self.cursor, (w, h));
+                        (clicked, exit, handled)
+                    });
                 self.world_options = Some(o);
+                if clicked {
+                    self.play_audio_button_click();
+                }
                 if let Some(exit) = exit {
                     self.close_game_rules(exit);
                 }
@@ -1212,7 +1257,7 @@ impl Game<'_> {
                     .iter()
                     .position(|&(bx, by)| ui::hovered(self.cursor, bx, by, POPUP_BUTTON, 20.0));
                 if hit.is_some() {
-                    self.audio.play_button_click();
+                    self.play_audio_button_click();
                 }
                 match hit {
                     // Yes: apply, then back to the pause menu; No: back to the options.
@@ -1236,7 +1281,7 @@ impl Game<'_> {
                 let (dx, dy) = Restrictions::done(w, h);
                 let done = ui::hovered(self.cursor, dx, dy, 200.0, 20.0);
                 if action || done {
-                    self.audio.play_button_click();
+                    self.play_audio_button_click();
                     o.view = View::Options;
                 }
                 self.world_options = Some(o);
@@ -1262,7 +1307,7 @@ impl Game<'_> {
         let hit = o.hit(self.cursor, (w, h));
         if let Some(b) = hit {
             o.focused_button = Some(b);
-            self.audio.play_button_click();
+            self.play_audio_button_click();
         }
         match hit {
             Some(Button::DefaultMode) => o.default_mode = (o.default_mode + 1) % 4,
@@ -1327,42 +1372,27 @@ impl Game<'_> {
         self.system_message(message);
     }
 
-    pub(super) fn world_options_key(&mut self, event: &KeyEvent) {
-        if event.state != winit::event::ElementState::Pressed {
-            return;
-        }
-        let PhysicalKey::Code(key) = event.physical_key else {
-            return;
-        };
+    pub(super) fn world_options_key(
+        &mut self,
+        key: KeyCode,
+        shortcut: Option<sunrise_client::clipboard::EditShortcut>,
+    ) -> bool {
         let ctrl = self.has_control_down_with_quirk();
-        let shortcut = self.edit_shortcut(event);
-        let types_text = self.types_text();
         let shift = self.has_shift_down();
         let (w, h) = self.gui_size();
         let chat_vis = self.settings.chat_visibility;
         let Some(o) = self.world_options.as_mut() else {
-            return;
+            return false;
         };
         if let Some(rules) = o.rules.as_mut().filter(|r| r.typing()) {
-            match shortcut {
-                Some(shortcut) => rules.edit(|b| {
+            let mut handled = true;
+            rules.edit(|b| match shortcut {
+                Some(shortcut) => {
                     b.shortcut(shortcut, &mut self.clipboard);
-                }),
-                None => {
-                    let mut handled = false;
-                    rules.edit(|b| handled = b.key(key, ctrl, false));
-                    // Only a key with text types: a `None` text is a
-                    // backspace to `world_options_text`, which is the
-                    // control socket's `\b`, not a key's.
-                    if !handled
-                        && types_text
-                        && let Some(text) = event.text.as_deref()
-                    {
-                        self.world_options_text(Some(text));
-                    }
                 }
-            }
-            return;
+                None => handled = b.key(key, ctrl, false),
+            });
+            return handled;
         }
         if o.view == View::LockQuestion {
             match key {
@@ -1389,19 +1419,21 @@ impl Game<'_> {
                 winit::keyboard::KeyCode::Enter
                 | winit::keyboard::KeyCode::NumpadEnter
                 | winit::keyboard::KeyCode::Space => {
-                    self.audio.play_button_click();
                     let yes = o.popup_focus == Some(0);
+                    self.play_audio_button_click();
                     let mut o = self.world_options.take().unwrap();
                     if yes {
-                        return self.apply_and_close_world_options(o);
+                        self.apply_and_close_world_options(o);
+                        return true;
                     } else {
                         o.view = View::Options;
                         self.world_options = Some(o);
                     }
+                    return true;
                 }
                 _ => {}
             }
-            return;
+            return false;
         }
         if o.view == View::Restrictions {
             let r = Restrictions::new(&self.gui.atlas.font, chat_vis, (w, h));
@@ -1435,20 +1467,21 @@ impl Game<'_> {
                 winit::keyboard::KeyCode::Enter
                 | winit::keyboard::KeyCode::NumpadEnter
                 | winit::keyboard::KeyCode::Space => {
-                    self.audio.play_button_click();
                     let action = r.action.is_some() && o.popup_focus == Some(0);
                     o.view = View::Options;
+                    self.play_audio_button_click();
                     if action {
                         self.open_options_at(false, sunrise_client::options_ui::Page::Chat);
                         self.options_to_world_options = true;
                     }
+                    return true;
                 }
                 _ => {}
             }
-            return;
+            return false;
         }
         if o.view != View::Options {
-            return;
+            return false;
         }
         if o.port.focused {
             if key == winit::keyboard::KeyCode::Tab {
@@ -1458,21 +1491,13 @@ impl Game<'_> {
                 } else {
                     o.focused_button = Some(Button::CommandAccess);
                 }
-                return;
+                return false;
             }
             if let Some(shortcut) = shortcut {
                 o.port.shortcut(shortcut, &mut self.clipboard);
-                return;
+                return true;
             }
-            // Only a key with text types (a `None` is a backspace to
-            // `world_options_text`, the control socket's `\b`).
-            if !o.port.key(key, ctrl, false)
-                && types_text
-                && let Some(text) = event.text.as_deref()
-            {
-                self.world_options_text(Some(text));
-            }
-            return;
+            return o.port.key(key, ctrl, false);
         }
         let visible = o.visible_buttons(w);
         let footer = WorldOptions::footer(w, h);
@@ -1483,7 +1508,7 @@ impl Game<'_> {
             .chain(footer.iter().filter(|b| o.active(b.0)).map(|b| b.0))
             .collect();
         if active_buttons.is_empty() {
-            return;
+            return false;
         }
         match key {
             winit::keyboard::KeyCode::Tab => {
@@ -1494,12 +1519,12 @@ impl Game<'_> {
                             if !reverse && cur == Button::Lan {
                                 o.port.focused = true;
                                 o.focused_button = None;
-                                return;
+                                return false;
                             }
                             if reverse && cur == Button::CommandAccess {
                                 o.port.focused = true;
                                 o.focused_button = None;
-                                return;
+                                return false;
                             }
                         }
                         if let Some(pos) = active_buttons.iter().position(|&b| b == cur) {
@@ -1581,7 +1606,7 @@ impl Game<'_> {
             | winit::keyboard::KeyCode::NumpadEnter
             | winit::keyboard::KeyCode::Space => {
                 if let Some(btn) = o.focused_button {
-                    self.audio.play_button_click();
+                    self.play_audio_button_click();
                     let mut o = self.world_options.take().unwrap();
                     match btn {
                         Button::DefaultMode => o.default_mode = (o.default_mode + 1) % 4,
@@ -1614,18 +1639,23 @@ impl Game<'_> {
                         Button::Cancel => {
                             self.world_options = Some(o);
                             self.close_world_options();
-                            return;
+                            return true;
                         }
                         Button::Apply if o.locked != o.initial.locked => {
                             o.view = View::LockQuestion
                         }
-                        Button::Apply => return self.apply_and_close_world_options(o),
+                        Button::Apply => {
+                            self.apply_and_close_world_options(o);
+                            return true;
+                        }
                     }
                     self.world_options = Some(o);
+                    return true;
                 }
             }
             _ => {}
         }
+        false
     }
     /// Whether a World Options text box has focus (the port or a game rule box).
     pub(super) fn world_options_typing(&self) -> bool {
@@ -2060,5 +2090,27 @@ mod tests {
         assert!(o.port.editable);
         assert!(o.port.key(KeyCode::Backspace, false, false));
         assert_eq!(o.port.value, "2555");
+    }
+
+    /// `WorldOptionsScreen.updatePersonalGameModeButton`: external local-mode updates refresh
+    /// both `personal_mode` and its baseline without discarding unrelated edits.
+    #[test]
+    fn updating_personal_mode_refreshes_baseline_without_discarding_other_edits() {
+        let mut o = options(false, false);
+        assert_eq!((o.personal_mode, o.initial.personal_mode), (1, 1));
+        assert!(!o.active(Button::Apply));
+        o.difficulty = 3;
+        assert!(o.active(Button::Apply));
+        o.update_personal_mode(0);
+        assert_eq!((o.personal_mode, o.initial.personal_mode), (0, 0));
+        assert_eq!(o.difficulty, 3);
+        assert!(o.active(Button::Apply));
+        o.difficulty = o.initial.difficulty;
+        assert!(!o.active(Button::Apply));
+        o.personal_mode = 2;
+        assert!(o.active(Button::Apply));
+        o.update_personal_mode(3);
+        assert_eq!((o.personal_mode, o.initial.personal_mode), (3, 3));
+        assert!(!o.active(Button::Apply));
     }
 }

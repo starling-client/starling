@@ -3,9 +3,9 @@
 //! only inside a transaction.
 use crate::{
     Backend, BackendRef, Capability, Host, HostTransaction, ItemStack, ItemStackView, ServerHost,
-    Tag, Transaction, backend_of,
+    StorageSlot, Tag, TransactionContext, TransactionError, backend_of,
 };
-use std::fmt;
+use std::{fmt, ops::Range};
 use sunrise_core::nbt::JavaString;
 
 /// A data component's id, `namespace:path` (`minecraft:damage`, `mymod:charge`), checked once
@@ -176,7 +176,9 @@ pub struct ItemResource(pub(crate) ItemStack);
 impl ItemResource {
     /// What `stack` is, whatever its count.
     pub fn of(stack: &ItemStack) -> Self {
-        let mut stack = stack.clone();
+        Self::from_owned_stack(stack.clone())
+    }
+    pub(crate) fn from_owned_stack(mut stack: ItemStack) -> Self {
         stack.set_count(1).expect("one item is nonempty");
         Self(stack)
     }
@@ -204,8 +206,10 @@ impl ItemResource {
             && self.0.damage_component() == stack.damage_component()
             && stack.project().is_some_and(|stack| self.matches(&stack))
     }
-    /// This item's own value of component `id` in its patch, as saved (`minecraft:damage` on a
-    /// worn sword); none where it keeps the item's default or has the component removed.
+    /// This item's own value of component `id` in its patch as an API tag; none where it keeps
+    /// the item's default or has the component removed. A live patch can include unsaved
+    /// components, such as a pending `minecraft:map_post_processing` (`Tag::Int(0)` for lock,
+    /// `Tag::Int(1)` for scale).
     pub fn component(&self, id: &ComponentId) -> Option<Tag> {
         if id.as_str() == "minecraft:damage" {
             return self
@@ -300,8 +304,9 @@ impl ItemResource {
         backend_of(host)?.item_resource_creator_mod_id(&self.0)
     }
     /// `ItemStack.isBarVisible`, `getBarWidth` and `getBarColor`: the visible
-    /// vanilla durability or bundle bar, after effective components. None when
-    /// no bar is visible. Client drawing hooks can later replace this bar.
+    /// vanilla durability or bundle bar from the effective stack components
+    /// (item defaults, sets and removals). None when no bar is visible.
+    /// Client drawing hooks can later replace this bar.
     pub fn bar(&self, host: &dyn Host) -> Option<ItemBar> {
         backend_of(host)?.item_resource_bar(&self.0)
     }
@@ -376,6 +381,23 @@ impl ItemResource {
         Ok(backend
             .item_resource_enchant_randomly(&self.0, level, power, pool)?
             .map(Self))
+    }
+    /// The durability this item's enchantments repair for `points` experience points
+    /// (`EnchantmentHelper.modifyDurabilityToRepairFromXp`): every `minecraft:repair_with_xp`
+    /// value effect on the stack, by the enchantments' definitions as loaded, data packs'
+    /// included, run over `points`, at least 0. Where no enchantment on it has the effect the
+    /// points come back unchanged, as in vanilla: ask
+    /// [`has_enchantment_effect`](Self::has_enchantment_effect) first, as an experience orb's
+    /// pick does.
+    ///
+    /// The item's own `xp_repair_ratio` hook is not applied: an experience orb takes that step
+    /// after this one. Conditions on an effect that draw randomness draw from the active level's
+    /// random, as vanilla's do from the server level's, so a repeated call may answer
+    /// differently. 0 where no game answers.
+    pub fn durability_to_repair_from_xp(&self, host: &mut dyn ServerHost, points: i32) -> u32 {
+        crate::backend_mut_of(host).map_or(0, |backend| {
+            backend.item_resource_durability_to_repair_from_xp(&self.0, points)
+        })
     }
     /// Whether an enchantment on this item has effect `effect` (`EnchantmentHelper.has`), by the
     /// enchantments' definitions, data packs' included, not their ids.
@@ -533,23 +555,49 @@ impl fmt::Debug for ItemResource {
 /// and its state is the game's (slots, a saved compound, attachments, a stack's components), so
 /// the transaction `tx` a write runs in puts it back on an abort. Amounts never exceed what was
 /// asked; a handler answering more is a mod bug, and the move it was part of is aborted.
+/// A write requires the innermost context on this host. Pass that context to delegated writes,
+/// or use the child context if you open a nested transaction.
 pub trait ResourceHandler<R> {
     /// Set the container limit transactionally, accepting 1..=99 (vanilla's upper bound).
     /// Existing oversized stacks remain extractable. The game persists this with block entity data.
     /// On the default block `ITEMS` handler, a successful call queues the backing container's
     /// change notice at root commit, even if no items moved.
-    /// Unsupported handlers return false without mutation.
+    /// Unsupported handlers return `Ok(false)` without mutation. A mismatched `tx` returns
+    /// `Err(TransactionError::InvalidContext)`.
     fn set_max_stack_size(
         &self,
-        _host: &mut dyn ServerHost,
-        _tx: &Transaction,
+        host: &mut dyn ServerHost,
+        tx: &TransactionContext,
         _limit: u32,
-    ) -> bool {
-        false
+    ) -> Result<bool, TransactionError<()>> {
+        if !host.transaction_matches(Some(tx)) {
+            return Err(TransactionError::InvalidContext);
+        }
+        Ok(false)
     }
 
     /// How many indices it has.
     fn size(&self, host: &mut dyn ServerHost) -> usize;
+    /// The first candidate index in the given in-bounds range, or `None` if none remain.
+    /// With `None` for `inserting`, skip only indices known to hold nothing. With
+    /// `Some(resource)`, skip only indices known not to accept an insertion of that resource.
+    /// The default tries every index. Sparse handlers can override this to skip gaps, and
+    /// handlers that wrap another one should forward the query with the indices remapped.
+    fn next_transfer_index(
+        &self,
+        _host: &mut dyn ServerHost,
+        indices: Range<usize>,
+        _inserting: Option<&R>,
+    ) -> Option<usize> {
+        (!indices.is_empty()).then_some(indices.start)
+    }
+    /// The exclusive end of a nonempty prefix of the given in-bounds range with uniform slot
+    /// rules. `capacity` (for any given resource, or no resource) and `is_valid` must return the
+    /// same answers throughout the prefix. Its contents can still differ. The default promises
+    /// just the first slot; a wrapper can forward the query with remapped indices.
+    fn uniform_slots_end(&self, _host: &mut dyn ServerHost, indices: Range<usize>) -> usize {
+        indices.start.saturating_add(1).min(indices.end)
+    }
     /// What index `index` holds, if anything.
     fn resource(&self, host: &mut dyn ServerHost, index: usize) -> Option<R>;
     /// How much of it.
@@ -572,86 +620,214 @@ pub trait ResourceHandler<R> {
     fn is_valid(&self, host: &mut dyn ServerHost, index: usize, resource: &R) -> bool {
         self.capacity(host, index, Some(resource)) > 0
     }
+    /// The block container slot index `index` is backed by, if this handler addresses one: two
+    /// indices of one handler, or of handlers reached from different positions or sides, that
+    /// report an equal [`StorageSlot`] hold the same stack (a double chest's halves, a
+    /// multiblock's blocks and a furnace's sides each report the slot they share). The game's own
+    /// block `ITEMS` handler reports it for each slot its side reaches; a mod's handler that
+    /// fronts a container reports the container's own position and slot. Default `None`: a
+    /// handler not backed by a block container slot, or one that does not say, is never given
+    /// an identity made up from the position it was asked at.
+    fn backing(&self, _host: &mut dyn ServerHost, _index: usize) -> Option<StorageSlot> {
+        None
+    }
     /// Puts up to `amount` of `resource` into index `index`: how much went in.
+    /// A mismatched `tx` returns `Err(TransactionError::InvalidContext)` without consulting the
+    /// handler; an overanswer returns `Err(TransactionError::Aborted(Overanswered))`.
     fn insert_at(
         &self,
         host: &mut dyn ServerHost,
-        tx: &Transaction,
+        tx: &TransactionContext,
         index: usize,
         resource: &R,
         amount: u32,
-    ) -> u32;
+    ) -> Result<u32, TransactionError<Overanswered>>;
+    /// Attempt the insertion at `indices.start` in a nonempty candidate range. Returns the
+    /// amount inserted and the next index to consider, strictly past the attempted index and
+    /// no later than `indices.end`. Advance farther only on a refusal known to apply to the
+    /// intervening slots too. The default attempts just one slot with [`Self::insert_at`].
+    fn insert_at_in_range(
+        &self,
+        host: &mut dyn ServerHost,
+        tx: &TransactionContext,
+        indices: Range<usize>,
+        resource: &R,
+        amount: u32,
+    ) -> Result<(u32, usize), TransactionError<Overanswered>> {
+        if !host.transaction_matches(Some(tx)) {
+            return Err(TransactionError::InvalidContext);
+        }
+        if indices.is_empty() {
+            return Ok((0, indices.end));
+        }
+        Ok((
+            self.insert_at(host, tx, indices.start, resource, amount)?,
+            indices.start + 1,
+        ))
+    }
     /// Takes up to `amount` of `resource` out of index `index`: how much came out. None of
-    /// another resource.
+    /// another resource. A mismatched `tx` returns `Err(TransactionError::InvalidContext)` without
+    /// consulting the handler; an overanswer returns `Err(TransactionError::Aborted(Overanswered))`.
     fn extract_at(
         &self,
         host: &mut dyn ServerHost,
-        tx: &Transaction,
+        tx: &TransactionContext,
         index: usize,
         resource: &R,
         amount: u32,
-    ) -> u32;
-    /// Puts up to `amount` of `resource` in wherever it goes: by default index by index from 0.
+    ) -> Result<u32, TransactionError<Overanswered>>;
+    /// Puts up to `amount` of `resource` wherever it goes: by default in candidate index order.
     /// Prefer this to `insert_at` unless targeting a specific index. The default runs in its
-    /// own journal and rolls back with [`Overanswered`] if an index answers more than requested.
+    /// own journal and rolls back with `TransactionError::Aborted(Overanswered)` if an index
+    /// answers more than requested. An invalid loan returns `TransactionError::InvalidContext`
+    /// before querying the handler; a refused savepoint returns `TransactionError::Unavailable`.
     fn insert(
         &self,
         host: &mut dyn ServerHost,
-        tx: &Transaction,
+        tx: &TransactionContext,
         resource: &R,
         amount: u32,
-    ) -> Result<u32, Overanswered> {
-        let size = self.size(host);
-        in_turn(host, tx, amount, 0..size, |host, tx, index, left| {
-            Ok(self.insert_at(host, tx, *index, resource, left))
+    ) -> Result<u32, TransactionError<Overanswered>> {
+        if !host.transaction_matches(Some(tx)) {
+            return Err(TransactionError::InvalidContext);
+        }
+        if amount == 0 {
+            return Ok(0);
+        }
+        let mut indices = 0..self.size(host);
+        host.transaction(|host, tx| {
+            let mut done = 0;
+            while done < amount {
+                let Some(index) = advance_transfer_index(self, host, &mut indices, Some(resource))
+                else {
+                    break;
+                };
+                let left = amount - done;
+                let (wrote, next) =
+                    insert_candidate(self, host, tx, index..indices.end, resource, left)?;
+                indices.start = next;
+                done += checked_transfer(wrote, left).map_err(TransactionError::Aborted)?;
+            }
+            Ok(done)
         })
+        .map_err(TransactionError::flatten)
     }
     /// Takes up to `amount` of `resource` out from wherever it is: by default index by index
-    /// from 0. Prefer this to `extract_at` unless targeting a specific index. Overanswers are
-    /// handled as in [`Self::insert`].
+    /// from 0, with empty gaps skipped by sparse handlers. Prefer this to `extract_at` unless
+    /// targeting a specific index. Overanswers are handled as in [`Self::insert`].
     fn extract(
         &self,
         host: &mut dyn ServerHost,
-        tx: &Transaction,
+        tx: &TransactionContext,
         resource: &R,
         amount: u32,
-    ) -> Result<u32, Overanswered> {
-        let size = self.size(host);
-        in_turn(host, tx, amount, 0..size, |host, tx, index, left| {
-            Ok(self.extract_at(host, tx, *index, resource, left))
-        })
+    ) -> Result<u32, TransactionError<Overanswered>> {
+        if !host.transaction_matches(Some(tx)) {
+            return Err(TransactionError::InvalidContext);
+        }
+        let mut indices = 0..self.size(host);
+        in_turn(
+            host,
+            amount,
+            |host| advance_transfer_index(self, host, &mut indices, None),
+            |host, tx, index, left| self.extract_at(host, tx, index, resource, left),
+        )
+    }
+}
+
+/// Ask the handler for a candidate in the remaining range and advance past it. A mod's
+/// out-of-range answer must not make the cursor loop or overflow, even in a wrapper.
+pub(crate) fn advance_transfer_index<R>(
+    handler: &(impl ResourceHandler<R> + ?Sized),
+    host: &mut dyn ServerHost,
+    indices: &mut Range<usize>,
+    inserting: Option<&R>,
+) -> Option<usize> {
+    if Range::is_empty(indices) {
+        return None;
+    }
+    let index = handler.next_transfer_index(host, indices.clone(), inserting)?;
+    if !indices.contains(&index) {
+        log::warn!("Resource handler returned transfer index {index} outside {indices:?}");
+        return None;
+    }
+    indices.start = index + 1;
+    Some(index)
+}
+
+/// Finish the current insertion step, skipping a refused suffix only within the walk's bounds.
+pub(crate) fn insert_candidate<R>(
+    handler: &(impl ResourceHandler<R> + ?Sized),
+    host: &mut dyn ServerHost,
+    tx: &TransactionContext,
+    indices: Range<usize>,
+    resource: &R,
+    amount: u32,
+) -> Result<(u32, usize), TransactionError<Overanswered>> {
+    let (wrote, next) = handler.insert_at_in_range(host, tx, indices.clone(), resource, amount)?;
+    if next > indices.start && next <= indices.end {
+        Ok((wrote, next))
+    } else {
+        log::warn!("Resource handler returned insertion cursor {next} outside {indices:?}");
+        Ok((wrote, indices.start + 1))
+    }
+}
+
+/// The end of the next run of equal slot rules, validated at the handler boundary.
+pub(crate) fn uniform_slots_end<R>(
+    handler: &(impl ResourceHandler<R> + ?Sized),
+    host: &mut dyn ServerHost,
+    indices: Range<usize>,
+) -> usize {
+    let end = handler.uniform_slots_end(host, indices.clone());
+    if end > indices.start && end <= indices.end {
+        end
+    } else {
+        log::warn!("Resource handler returned uniform slot end {end} outside {indices:?}");
+        indices.start + 1
     }
 }
 
 /// A slot-less transfer owns its journal, so an overanswer cannot leave part of it committed.
 pub(crate) fn in_turn<P>(
     host: &mut dyn ServerHost,
-    tx: &Transaction,
     amount: u32,
-    parts: impl IntoIterator<Item = P>,
-    ask: impl FnMut(&mut dyn ServerHost, &Transaction, &P, u32) -> Result<u32, Overanswered>,
-) -> Result<u32, Overanswered> {
-    if amount == 0 || host.transaction_current().as_ref() != Some(tx) {
+    next: impl FnMut(&mut dyn ServerHost) -> Option<P>,
+    ask: impl FnMut(
+        &mut dyn ServerHost,
+        &TransactionContext,
+        P,
+        u32,
+    ) -> Result<u32, TransactionError<Overanswered>>,
+) -> Result<u32, TransactionError<Overanswered>> {
+    if amount == 0 {
         return Ok(0);
     }
-    host.transaction(|host, tx| try_in_turn(host, tx, amount, parts, ask))
+    host.transaction(|host, tx| try_in_turn(host, tx, amount, next, ask))
+        .map_err(TransactionError::flatten)
 }
 
 /// Asks each part for the full remaining amount. The owning transaction aborts on `Err`.
 pub(crate) fn try_in_turn<P>(
     host: &mut dyn ServerHost,
-    tx: &Transaction,
+    tx: &TransactionContext,
     amount: u32,
-    parts: impl IntoIterator<Item = P>,
-    mut ask: impl FnMut(&mut dyn ServerHost, &Transaction, &P, u32) -> Result<u32, Overanswered>,
-) -> Result<u32, Overanswered> {
+    mut next: impl FnMut(&mut dyn ServerHost) -> Option<P>,
+    mut ask: impl FnMut(
+        &mut dyn ServerHost,
+        &TransactionContext,
+        P,
+        u32,
+    ) -> Result<u32, TransactionError<Overanswered>>,
+) -> Result<u32, TransactionError<Overanswered>> {
     let mut done = 0;
-    for part in parts {
-        let left = amount - done;
-        if left == 0 {
+    while done < amount {
+        let Some(part) = next(host) else {
             break;
-        }
-        done += checked_transfer(ask(host, tx, &part, left)?, left)?;
+        };
+        let left = amount - done;
+        done += checked_transfer(ask(host, tx, part, left)?, left)
+            .map_err(TransactionError::Aborted)?;
     }
     Ok(done)
 }
@@ -696,34 +872,48 @@ pub(crate) fn move_once<A: ?Sized, B: ?Sized, N: Copy + PartialOrd + Default>(
     host: &mut dyn ServerHost,
     ends: Ends<'_, A, B>,
     want: N,
-    extract: impl Fn(&mut dyn ServerHost, &Transaction, N) -> N,
-    insert: impl Fn(&mut dyn ServerHost, &Transaction, N) -> Result<N, Overanswered>,
-) -> Result<N, Overanswered> {
+    extract: impl Fn(
+        &mut dyn ServerHost,
+        &TransactionContext,
+        N,
+    ) -> Result<N, TransactionError<Overanswered>>,
+    insert: impl Fn(
+        &mut dyn ServerHost,
+        &TransactionContext,
+        N,
+    ) -> Result<N, TransactionError<Overanswered>>,
+) -> Result<N, TransactionError<Overanswered>> {
     let Ends { from, to, at } = ends;
-    // `Err(Ok(took))`: `to` took only that much; `Err(Err(_))`: a handler answered more than it
-    // was asked.
+    // `Err(Ok(took))`: `to` took only that much; `Err(Err(_))`: the transfer failed.
     let step = |host: &mut dyn ServerHost, want: N| {
         host.transaction(|host, tx| {
-            let Some(out) = from.checked(extract(host, tx, want), want, at) else {
-                return Err(Err(Overanswered {
+            let extracted = extract(host, tx, want).map_err(Err)?;
+            let Some(out) = from.checked(extracted, want, at) else {
+                return Err(Err(TransactionError::Aborted(Overanswered {
                     owner: Some(from.owner()),
-                }));
+                })));
             };
             let took = insert(host, tx, out).map_err(Err)?;
             match to.checked(took, out, at) {
-                None => Err(Err(Overanswered {
+                None => Err(Err(TransactionError::Aborted(Overanswered {
                     owner: Some(to.owner()),
-                })),
+                }))),
                 Some(took) if took == out && took > N::default() => Ok(out),
                 Some(took) => Err(Ok(took)),
             }
         })
     };
     match step(host, want) {
-        Err(Ok(took)) if took > N::default() => step(host, took),
+        Err(crate::TransactionError::Aborted(Ok(took))) if took > N::default() => step(host, took),
         answer => answer,
     }
-    .or_else(|answer| answer.map(|_| N::default()))
+    .or_else(|error| match error {
+        TransactionError::InvalidContext => Err(TransactionError::InvalidContext),
+        TransactionError::Unavailable => Err(TransactionError::Unavailable),
+        TransactionError::CommitRefused => Err(TransactionError::CommitRefused),
+        TransactionError::Aborted(Ok(_)) => Ok(N::default()),
+        TransactionError::Aborted(Err(error)) => Err(error),
+    })
 }
 
 #[cfg(test)]

@@ -27,6 +27,12 @@ pub struct Illusions {
 pub const MIRROR: u8 = 4;
 pub const BLINDNESS_SPELL: u8 = 5;
 
+/// `Illusioner.performRangedAttack`: the skeleton's arrow (`undead::bow_shot`), shot from
+/// `BowAttack`. Not through the skeleton's replaceable `undead::perform_ranged_attack`, which
+/// a mod's row on `AbstractSkeleton.performRangedAttack` takes.
+pub(super) fn perform_ranged_attack(m: &mut Mob, who: Who, cx: &mut Cx, power: f32) {
+    super::undead::bow_shot(m, who, cx, power);
+}
 /// `Illusioner.registerGoals`.
 pub fn register(m: &mut Mob) {
     let g = &mut m.ai.goals;
@@ -99,9 +105,11 @@ impl Spell {
 }
 impl Goal for Spell {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         0
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if !m.target_info(cx.w).is_some_and(|t| t.alive)
             || m.extra.counter > 0
@@ -115,9 +123,11 @@ impl Goal for Spell {
             m.ai.target != self.last_target && cx.w.difficulty.effective > 2.0
         }
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         m.target_info(cx.w).is_some_and(|t| t.alive) && self.warmup > 0
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         let (casting, interval, sound) = self.timing();
         self.warmup = reduced(20);
@@ -129,6 +139,7 @@ impl Goal for Spell {
             self.last_target = m.ai.target;
         }
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.warmup -= 1;
         if self.warmup != 0 {

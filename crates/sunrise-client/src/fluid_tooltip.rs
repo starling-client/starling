@@ -35,7 +35,7 @@ pub fn fluid_name(fluid: &str) -> String {
 /// The lines of `stack`'s tooltip: its name, its amount in millibuckets and, when `advanced`
 /// (F3+H), its id in dark grey. A fluid no mod provides is named "Unknown fluid".
 pub fn lines(stack: &FluidStack, advanced: bool) -> Vec<(Text, u32)> {
-    let id = mod_api::__private::fluid_identity_name(stack.fluid);
+    let id = mod_api::__private::fluid_identity_name(&stack.fluid);
     let name = if stack.key().is_some() {
         let (key, fallback) = name_parts(&id);
         Text::translate_with_fallback(&key, &fallback, &[])

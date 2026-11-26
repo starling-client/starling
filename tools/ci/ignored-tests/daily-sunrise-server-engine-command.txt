@@ -1,0 +1,1 @@
+sunrise-server init_prepares_the_pending_slot_without_changing_existing_settings test:engine_command daily child-process # Runs the real supervisor CLI against a packaged preparer stub.

@@ -10,7 +10,7 @@ use crate::text::Style;
 pub fn visual_characters(
     text: &Text,
     mut same_style: impl FnMut(&Style, &Style) -> bool,
-) -> Vec<(char, &Style, u32)> {
+) -> impl Iterator<Item = (char, &Style, u32)> {
     let chars: Vec<_> = text.chars().map(|(c, _)| c).collect();
     let styles: Vec<_> = text
         .chars()
@@ -39,11 +39,8 @@ pub fn visual_characters(
         absolute += length;
         local += length as u32;
     }
-    order
-        .into_iter()
-        .map(|(c, at, _)| {
-            let (style, index) = offsets[at];
-            (c, style, index)
-        })
-        .collect()
+    order.into_iter().map(move |(c, at, _)| {
+        let (style, index) = offsets[at];
+        (c, style, index)
+    })
 }

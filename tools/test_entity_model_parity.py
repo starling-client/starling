@@ -31,10 +31,9 @@ import re
 import subprocess
 import sys
 
-try:
-    from . import lab, test_rust_parity as base, test_model_baking_parity as baking
-except ImportError:
-    import lab, test_rust_parity as base, test_model_baking_parity as baking
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_rust_parity as base, test_model_baking_parity as baking
 
 CLIENT = lab.GAME / 'sources' / 'client' / 'net' / 'minecraft' / 'client'
 

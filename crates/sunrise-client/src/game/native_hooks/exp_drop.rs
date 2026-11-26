@@ -95,26 +95,7 @@ impl Game<'_> {
         *experience = self.with_level(|_, level, _| {
             let pos = BlockPos::new(pos[0], pos[1], pos[2]);
             let block_entity = level.resident_block_entity(pos);
-            let amount = level
-                .part_break_experience(pos, state, breaker, tool.as_ref(), block_entity)
-                .unwrap_or_else(|| {
-                    sunrise_world::level::removal::break_experience(
-                        &mut level.world.random,
-                        &level.facts.get(state).name,
-                    )
-                    .unwrap_or(0)
-                });
-            Some(
-                if tool
-                    .as_ref()
-                    .is_some_and(|tool| tool.enchantment_level("minecraft:silk_touch") > 0)
-                    && &*level.facts.get(state).name != "minecraft:spawner"
-                {
-                    0
-                } else {
-                    amount
-                },
-            )
+            Some(level.block_break_experience(pos, state, breaker, tool.as_ref(), block_entity))
         });
     }
 }

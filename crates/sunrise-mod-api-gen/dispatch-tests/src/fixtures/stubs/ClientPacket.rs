@@ -1,1 +1,1 @@
-pub(super) struct ClientPacket;
+pub(super) struct ClientPacket<'a>(pub &'a ());

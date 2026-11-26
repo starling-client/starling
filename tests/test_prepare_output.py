@@ -62,6 +62,18 @@ class PrepareOutputTests(unittest.TestCase):
             (Path(tmp) / 'b/assets/minecraft/lang/en_us.json').write_bytes(b'{}')
             self.assertNotEqual(first, prepare_output.digest(Path(tmp) / 'b'))
 
+    def test_server_profile_digest_covers_its_resource_inventory(self):
+        manifest = {'profile': 'server', 'server_files': ['facts.json']}
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = self.preparation(Path(tmp), {
+                prepare_output.MANIFEST: json.dumps(manifest).encode(),
+                'facts.json': b'{}',
+            })
+            before = prepare_output.digest(folder)
+            manifest['server_files'] = []
+            (folder / prepare_output.MANIFEST).write_text(json.dumps(manifest))
+            self.assertNotEqual(before, prepare_output.digest(folder))
+
     def test_the_versions_file_ends_at_the_constant(self):
         versions = prepare_output.parse_versions('# comment\n1 aa\n2 bb\n')
         self.assertEqual(versions, [(1, 'aa'), (2, 'bb')])

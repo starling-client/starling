@@ -26,12 +26,10 @@ import shutil
 import subprocess
 import sys
 
-try:
-    from . import lab
-    from .test_dedicated_server_parity import Server, free_port
-except ImportError:
-    import lab
-    from test_dedicated_server_parity import Server, free_port
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab
+from tools.test_dedicated_server_parity import Server, free_port
 
 CONSOLE_LINE = re.compile(r'^\[\d\d:\d\d:\d\d\] \[([^\]]+)\]: (.*)$')
 # Lines a loaded server logs by itself, between a command and its marker.

@@ -104,6 +104,8 @@ pub enum Kind {
     Slider { value: f32, track: [f32; 2] },
     /// A text field: A focuses it and opens an on-screen keyboard.
     Field,
+    /// A native mod's mounted widget: its screen-local identity and whether it is a field.
+    Mounted { id: u64, field: bool },
     /// A list row (worlds, servers, packs, languages): A selects it.
     Row,
     /// An inventory slot: A/X/Y click, right click and quick-move it.
@@ -119,6 +121,19 @@ pub struct Target {
     pub kind: Kind,
 }
 impl Target {
+    /// Mounted targets retain their identity even where their bounds coincide or move.
+    pub fn same_focus_target(self, other: Self) -> bool {
+        match (self.kind, other.kind) {
+            (Kind::Mounted { id: a, .. }, Kind::Mounted { id: b, .. }) => a == b,
+            (Kind::Mounted { .. }, _) | (_, Kind::Mounted { .. }) => false,
+            _ => self
+                .rect
+                .iter()
+                .zip(other.rect)
+                .all(|(a, b)| (a - b).abs() < 0.5),
+        }
+    }
+
     pub fn center(&self) -> (f32, f32) {
         let [x, y, w, h] = self.rect;
         (x + w / 2.0, y + h / 2.0)
@@ -230,10 +245,15 @@ pub fn declare_action(action: Action, rect: [f32; 4], enabled: bool) {
 /// The buttons of the last drawn frame that declared their job, if it drew `screen`: until the
 /// screen just opened is drawn, the one it replaced can't be pressed.
 pub fn last_actions(screen: u64) -> Vec<DeclaredAction> {
-    if ACTION_SCREENS.get().1 != screen {
+    if !last_input_screen_is(screen) {
         return Vec::new();
     }
     ACTIONS.with_borrow(|(_, last)| last.clone())
+}
+
+/// Whether the last drawn input targets belong to this screen.
+pub fn last_input_screen_is(screen: u64) -> bool {
+    ACTION_SCREENS.get().1 == screen
 }
 
 /// The frame being drawn shows `screen` (the controller's own key for it).
@@ -298,6 +318,21 @@ pub fn clip_targets(mark: usize, y0: f32, y1: f32) {
 pub fn frame_mark() -> (usize, usize) {
     let labelled = WIDGETS.with_borrow(|(current, _, _)| current.len());
     (labelled, targets_mark())
+}
+
+/// Keep a mounted child's draw registrations distinct from vanilla controls.
+pub fn mark_mounted((labelled, targets): (usize, usize), id: u64, field: bool) {
+    let kind = Kind::Mounted { id, field };
+    WIDGETS.with_borrow_mut(|(current, _, _)| {
+        for widget in current.iter_mut().skip(labelled) {
+            widget.kind = kind;
+        }
+    });
+    TARGETS.with_borrow_mut(|(current, _, _)| {
+        for target in current.iter_mut().skip(targets) {
+            target.kind = kind;
+        }
+    });
 }
 
 /// Drop the labelled widgets and targets since `mark` whose middle isn't in `y0..y1` (GUI pixels):
@@ -1250,9 +1285,9 @@ impl Kind {
     /// The kind's name in the control socket's `ui` reply.
     pub fn name(self) -> &'static str {
         match self {
-            Kind::Button => "button",
+            Kind::Button | Kind::Mounted { field: false, .. } => "button",
             Kind::Slider { .. } => "slider",
-            Kind::Field => "field",
+            Kind::Field | Kind::Mounted { field: true, .. } => "field",
             Kind::Row => "row",
             Kind::Slot => "slot",
             Kind::Tab(_) => "tab",

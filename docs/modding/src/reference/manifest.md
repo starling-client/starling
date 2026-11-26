@@ -7,9 +7,11 @@ reads its code.
 ## The zip
 
 - A zip archive. Entries are stored or deflate-compressed, the only methods the readers support.
-- A path is relative and `/`-separated: no `\`, no `:`, no empty, `.` or `..` part, and it doesn't start with `/`.
+- A path is relative and `/`-separated: no `\`, no `:`, no empty, `.` or `..` part, no part ending in `.` or a space
+  (a Windows extraction drops it), and it doesn't start with `/`.
   Files must be regular files, not symlinks, devices or executables. Executable payloads are refused even under
-  resource paths.
+  resource paths: by extension, by the executable bit, and by header (prebuilt object code, any `MZ` file, or a
+  `#!` script).
 - Each path appears once. Directory entries carry no payload.
 
 ## Project and archive layout
@@ -30,16 +32,21 @@ my_mod.smod
   against the pinned prebuilt game; mixins compile into a separate function-replacement patch library. The game itself does not compile. Its resources load through the same content reader as a content mod's.
 - **Runtime files:** a native package may carry a `runtime/` folder of data its code opens beside
   itself, listed in a top-level `[runtime]` table (below). A content mod has none.
-- Inconsistent code declarations or executable files in the archive refuse the package.
+- Inconsistent code declarations in a project folder, or an executable file among the assets, data or icon,
+  refuse the package.
 - The full native layout is in [Package contents](../how-to/native-mods/03-data-files.md#package-contents). Packing
-  a project folder takes those files and leaves every other file out; in an archive, a file outside the layout
-  refuses the package.
+  a project folder takes the files `cargo package` would carry, with differences: only the root `.gitignore` is read
+  (no Git index), dot-files and dot-folders are skipped unless `include` is set, symlinks are refused, path
+  dependencies outside the package are refused, and names that differ only by case are refused. In an archive, any
+  file outside the package's own names is source. The packer and the tools that read source refuse prebuilt object
+  code (ELF, Mach-O, PE, WebAssembly, `ar`) among the source by its header, never by its name; that is a check of
+  the header, not a security boundary, since `build.rs` runs code. The game reads only what it uses of an archive (below) and skips every
+  other entry, without a check of the file list.
 
 There is no mod-id directory level inside the archive. `sunrise-mod.toml` is the only manifest and the only
 source of the mod's id and version; Cargo's package name and version are not mod identity. IDs are plain
-`[a-z0-9_]{1,64}` names, also used as resource namespaces. The launcher writes `horizon-mixin.toml` in its
-staging area when needed. Hand-written tool manifests, `sunrise-native.json`, and input `native/` or `rust/`
-folders are unsupported.
+`[a-z0-9_]{1,64}` names, also used as resource namespaces. The native builder writes its own tool manifest
+in its staging area when needed.
 
 ## `sunrise-mod.toml`
 
@@ -67,7 +74,13 @@ file that receives it, a `name` that is a Rust module identifier, and a `source`
 `"pub"` or `"pub(crate)"`, the default. See [Support modules](../concepts/native-route/5-support-modules.md).
 
 Native source edits use `[[native.mixin]]` with `id`, `target`, uppercase `kind`, `helper` and the
-other horizon-mixins options ([Mixins](../concepts/native-route/2-mixins.md)). This package reads only `id`, `target`, `kind` and `helper` of a row (and refuses `hook` and `hook_version`) and forwards every other key to the tool as written; the tool then refuses a key it does not know, so an unknown key on a mixin row fails at build time, not when the manifest is read. The same holds for the keys of `[[native.bridge]]` and `[[native.state]]` rows. An `OVERWRITE` row must carry the tool's `fingerprint`. `[[native.loop]]`, `[[native.bridge]]` and `[[native.module]]` complete the route; `[[native.state]]` is refused. See [The native route](../concepts/native-route.md) for every table, its fields and its refusals.
+other horizon-mixins options ([Mixins](../concepts/native-route/2-mixins.md)). The package reader checks
+`id`, `target`, `kind` and `helper`, refuses `hook` and `hook_version`, and forwards the other keys as
+written. An unknown mixin option fails at build time, when the tool reads it. The tool also validates
+forwarded `[[native.bridge]]` options. An `OVERWRITE` row must carry the tool's `fingerprint`.
+`[[native.loop]]`, `[[native.bridge]]` and `[[native.module]]` complete the route. The package reader
+refuses `[[native.state]]` with `E_MIXIN_STATE_LAYOUT`; it is never forwarded to the tool.
+See [The native route](../concepts/native-route.md) for each table and its fields.
 
 ### `[runtime]`: data files beside the code
 
@@ -116,10 +129,11 @@ missing/version/order checks at startup. A missing required dependency, incompat
 version or dispatch cycle refuses loading; an absent optional dependency is allowed. Content and
 native manifests share the installed-set rule resolver.
 
-**Physical linking is separate from dispatch policy.** Native builds wire only supplied code
-packages; a content-only target has no Cargo alias. At startup, the loader and compiled package
-inventory enforce physical requirements. Dispatch order, side filters and instance overrides cannot
-remove those requirements or bypass ABI and build identity checks.
+**Physical linking is separate from dispatch policy.** The build wires supplied native dependencies
+by their actual root Cargo package, not a separate API declaration. A content-only target has no Cargo
+alias. At startup, the loader and compiled package inventory enforce physical requirements. Dispatch
+order, side filters and instance overrides cannot remove those requirements or bypass ABI and build
+identity checks.
 See [Dependencies between mods](../concepts/dependencies.md).
 
 Top-level `served_by = "<native_mod_id>"` lets a content package delegate code-side namespace authority to an opting-in native runtime mod (for example a bytecode or script host that compiles once and serves generated `.smod` packages). Both sides opt in:
@@ -225,13 +239,15 @@ every owner of a shared missing file. The game never downloads jars.
 
 ## Source paths
 
-A code package contains root `Cargo.toml`, optional `Cargo.lock` and `build.rs`, `.rs` and `.toml` files under `src/`,
-and root text files named `README*`, `LICENSE*`, `LICENCE*`, `COPYING*` or `NOTICE*`.
+A code package contains root `Cargo.toml` and the rest of the crate as `cargo package` would list it, with C and
+other source files allowed ([Package contents](../how-to/native-mods/03-data-files.md#package-contents)).
 Your root `impl Hooks` uses `#[mod_api::sunrise_mod]`; the attribute generates the factory
 ([Writing hooks](../start/writing-hooks.md)).
 
-Folder packaging selects source and resource files, excluding `.git/` and `target/`. It validates selected
-files before copying them. Whole archives are checked, not treated as source folders with ignored extra entries.
+Folder packaging selects source and resource files by Cargo's rule for a crate, which leaves out `.git/` and
+`target/`. It validates selected files before copying them. The game reads an archive's manifest, `icon.png`,
+`assets/` and `data/` files and listed `runtime/` files, and skips every other entry unread; it still refuses an
+entry whose path is absolute, has a `..` part or repeats another, and one that is a symbolic link.
 
 ## Content paths and icon
 

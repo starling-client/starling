@@ -64,9 +64,13 @@ impl Game<'_> {
     }
 
     pub(super) fn reset_client_world(&mut self, seed: i64) {
+        self.install_client_world(Game::world_for_mods(self.res.facts().air, seed));
+    }
+
+    pub(super) fn install_client_world(&mut self, world: sunrise_client::world::World) {
         self.destroying.clear();
         self.mining = None;
-        self.world = Game::world_for_mods(self.res.facts().air, seed);
+        self.world = world;
     }
 }
 
@@ -125,6 +129,8 @@ mod tests {
                     BlockPos::new(p.x + 1, p.y, p.z),
                     BlockPos::new(p.x + 8, p.y, p.z),
                     BlockPos::new(p.x + 9, p.y, p.z),
+                    BlockPos::new(p.x + 20, p.y, p.z),
+                    BlockPos::new(p.x + 40, p.y, p.z),
                     BlockPos::new(p.x + 8, p.y + 8, p.z),
                     BlockPos::new(i32::MIN, i32::MAX, i32::MIN),
                 ]);
@@ -259,6 +265,14 @@ mod tests {
                     "an unsubscribed state is not dispatched"
                 );
                 game.destroy_block_progress(11, [9, 64, 4], -1);
+                for chunk_x in 1..=2 {
+                    game.world
+                        .chunks
+                        .insert((chunk_x, 0), Arc::new(Chunk::empty(chunk_x, 0)));
+                }
+                for far in [[24, 64, 4], [44, 64, 4]] {
+                    game.world.set(far[0], far[1], far[2], stone).unwrap();
+                }
                 invalid.store(true, Ordering::Relaxed);
                 game.destroy_block_progress(10, pos, 5);
                 let drawn = game.crack_stages();
@@ -275,9 +289,30 @@ mod tests {
                     drawn.contains(&([12, 64, 4], 5)),
                     "eight-block boundary is included"
                 );
-                assert!(!drawn.iter().any(|(p, _)| {
-                    [[13, 64, 4], [12, 72, 4], [i32::MIN, i32::MAX, i32::MIN]].contains(p)
-                }));
+                for far in [
+                    [13, 64, 4],
+                    [24, 64, 4],
+                    [44, 64, 4],
+                    [12, 72, 4],
+                    [i32::MIN, i32::MAX, i32::MIN],
+                ] {
+                    assert!(
+                        drawn.contains(&(far, 5)),
+                        "an extra may be anywhere in the level: {far:?}"
+                    );
+                }
+                // A mod block entity's `crumbling_stage` reads this: the origin and each extra
+                // have the stage, any other position has none.
+                let stages = game.crack_stage_map();
+                assert_eq!(stages.get(&pos), Some(&5));
+                assert_eq!(stages.get(&[24, 64, 4]), Some(&5));
+                assert_eq!(stages.get(&[100, 64, 4]), None);
+                // Drawing still keeps vanilla's 32-block camera distance: 20 blocks away draws,
+                // 40 does not, and the far extra costs nothing.
+                let rendered = game.cracks(camera);
+                assert_eq!(rendered.len(), 5);
+                assert!(rendered.iter().any(|(p, _)| *p == [24, 64, 4]));
+                assert!(!rendered.iter().any(|(p, _)| *p == [44, 64, 4]));
                 game.world.game_time += 100;
                 let calls_before = calls.lock().unwrap().len();
                 game.destroy_block_progress(10, pos, 5);

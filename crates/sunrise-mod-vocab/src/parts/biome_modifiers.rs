@@ -1,11 +1,13 @@
 use super::*;
-/// A biome modifier declared in code: its id (`mymod:ruby_ore`) and what it does. The game
-/// applies every declared modifier once, when the world's biome tables build.
+/// A biome modifier declared in code: the declaring mod, its id (`mymod:ruby_ore`) and what it
+/// does. The game applies every declared modifier once, when the world's biome tables build.
 #[derive(Clone, Debug, PartialEq)]
 // exhaustive: only registration builds it; the game reads it
 #[derive(sunrise_mod_api_macros::Wire)]
 pub struct BiomeModifierDeclaration {
-    /// The modifier's id, in the declaring mod's namespace.
+    /// The declaring mod's id, kept separate from the modifier's namespace.
+    pub mod_id: String,
+    /// The modifier's namespaced id.
     pub id: String,
     /// The biomes it applies to and the change.
     pub modifier: crate::BiomeModifier,
@@ -26,9 +28,13 @@ pub fn biome_modifier_declarations() -> &'static [BiomeModifierDeclaration] {
 
 /// Registrar operations for biome modifiers.
 pub trait BiomeModifiersRegistrar {
-    /// Declare a biome modifier `path` (`no_zombies` or `mymod:no_zombies`) in code: the same
-    /// operations as the data files in `data/<ns>/neoforge/biome_modifier/` (add and remove
-    /// features, add and remove spawns, add and remove spawn costs) on the biomes it names.
+    /// Declare a biome modifier `path` (`no_zombies` or `mymod:no_zombies`) in code: a bare name
+    /// uses this mod's namespace, while an explicit valid `namespace:path` keeps its namespace.
+    /// It performs the same operations as the data files in `data/<ns>/neoforge/biome_modifier/`
+    /// (add and remove features, add and remove spawns, add and remove spawn costs) on the biomes
+    /// it names.
+    /// Code declarations share keys with effective `data/<ns>/neoforge/biome_modifier/` files;
+    /// declaring a key that already has an effective file refuses the registration.
     /// The game applies it with the data-file modifiers, once, when the world's tables build:
     /// every addition first, then every removal, then every `ModifyBiome`, each in mod and
     /// registration order. A world
@@ -39,8 +45,7 @@ pub trait BiomeModifiersRegistrar {
     /// A modifier naming a biome, feature or entity type the world lacks (another mod's, a
     /// convention tag) is skipped with a line in the log, as a data file is.
     ///
-    /// An id outside the mod's owned namespaces (its manifest namespaces or a content package it
-    /// serves via `served_by`), a repeated id, an empty list, a name that is not
+    /// A malformed id, a repeated id, an empty list, a name that is not
     /// namespaced, an unknown generation step, a spawner of weight 0 or with its smallest group
     /// above its largest, a spawn cost that is not finite, and a climate number that is not finite, a colour above
     /// 0xFFFFFF or a temperature modifier other than `none` or `frozen` refuse the mods, naming the mod.

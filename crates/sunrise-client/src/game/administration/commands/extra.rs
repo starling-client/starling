@@ -181,7 +181,7 @@ fn civil(secs: i64) -> (i64, i64, i64, i64, i64, i64) {
 impl Game<'_> {
     /// CommandSourceStack.getPlayerOrException.
     pub(super) fn source_player(&self) -> R<Target> {
-        match self.command_source.map(|s| s.entity) {
+        match self.command_source.as_ref().map(|s| s.entity) {
             None | Some(Some(Target::Player)) => Ok(Target::Player),
             _ => Err(err("permissions.requires.player", &[])),
         }
@@ -838,7 +838,7 @@ impl Game<'_> {
                 key: NameOrId::Name(name.clone()),
                 kind: "name",
                 argument: Text::literal(name),
-                source: self.command_source,
+                source: self.command_source.clone(),
             });
             return Ok(1);
         }
@@ -853,7 +853,7 @@ impl Game<'_> {
                 key: NameOrId::Id(id),
                 kind: "id",
                 argument: Text::literal(sunrise_protocol::crypto::uuid_string(id)),
-                source: self.command_source,
+                source: self.command_source.clone(),
             });
             return Ok(1);
         }
@@ -1143,7 +1143,7 @@ impl Game<'_> {
         };
         for line in lines {
             out.push_str(&format!("{}[C] {line}", indent(depth + 1)));
-            match self.execute_line(line, source) {
+            match self.execute_line(line, source.clone()) {
                 Ok(v) => out.push_str(&format!(" -> {v}\n")),
                 Err(e) => {
                     out.push('\n');
@@ -1237,10 +1237,10 @@ impl Game<'_> {
     }
     /// `VersionCommand`.
     pub(super) fn cmd_version(&mut self) -> R<i32> {
-        if !self.command_source.is_some_and(|s| s.silent) {
-            self.system_message(Text::translate("commands.version.header", &[]));
+        if !self.command_source.as_ref().is_some_and(|s| s.silent) {
+            self.command_system_message(Text::translate("commands.version.header", &[]));
             for line in self.version_lines() {
-                self.system_message(line);
+                self.command_system_message(line);
             }
         }
         Ok(1)

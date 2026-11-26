@@ -1,0 +1,92 @@
+ids = [
+    "type:HookId",
+    "hook:tooltip_component",
+    "method:ItemPart::tooltip_component",
+    "type:TooltipComponentEvent",
+    "hook:tooltip_component_draw",
+    "method:ItemPart::tooltip_component_draw",
+    "type:TooltipComponentDrawEvent",
+    "type:TooltipImage",
+    "type:TooltipImage.size",
+    "type:TooltipImageSource",
+    "type:TooltipElement",
+    "hook:render_tooltip_gather_components",
+    "hook:render_tooltip_pre",
+    "hook:render_tooltip_pre.screen_width",
+    "hook:render_tooltip_pre.screen_height",
+    "hook:render_tooltip_pre.elements",
+    "hook:render_tooltip_pre.components",
+    "hook:render_tooltip_pre.screen",
+    "hook:render_tooltip_pre.positioner",
+    "hook:render_tooltip_pre.font",
+    "type:RenderTooltipPreEvent.screen_width",
+    "type:RenderTooltipPreEvent.screen_height",
+    "type:RenderTooltipPreEvent.elements",
+    "type:RenderTooltipPreEvent.components",
+    "type:RenderTooltipPreEvent.screen",
+    "type:RenderTooltipPreEvent.positioner",
+    "type:RenderTooltipPreEvent.font",
+    "hook:register_client_tooltip_component_factories",
+    "method:Hooks::register_client_tooltip_component_factories",
+    "type:RegisterClientTooltipComponentFactoriesEvent",
+    "hook:tooltip_image",
+    "method:ItemPart::tooltip_image",
+    "type:TooltipImageEvent",
+    "trait:TooltipComponentData",
+    "type:TooltipComponent",
+    "handle:TooltipComponent::bundle",
+    "handle:TooltipComponent::custom",
+    "handle:TooltipComponent::as_bundle",
+    "handle:TooltipComponent::downcast_ref",
+    "handle:TooltipComponent::type_id",
+    "handle:TooltipComponent::type_name",
+    "trait:TooltipFont",
+    "trait:ClientTooltipComponent",
+    "method:ClientTooltipComponent::width",
+    "method:ClientTooltipComponent::height",
+    "method:ClientTooltipComponent::draw_text",
+    "method:ClientTooltipComponent::draw_image",
+    "method:ClientTooltipComponent::show_tooltip_with_item_in_hand",
+    "type:TooltipComponentFactory",
+    "handle:TooltipComponentFactory::new",
+    "trait:ClientTooltipComponentFactoriesRegistrar",
+    "handle:ClientTooltipComponentFactoriesRegistrar::register",
+    "trait:ClientTooltipPositioner",
+    "type:DefaultTooltipPositioner",
+    "type:PreparedTooltipComponent",
+    "handle:PreparedTooltipComponent::width",
+    "handle:PreparedTooltipComponent::height",
+    "handle:PreparedTooltipComponent::show_tooltip_with_item_in_hand",
+    "handle:PreparedTooltipComponent::as_text",
+    "handle:PreparedTooltipComponent::as_bundle",
+    "handle:PreparedTooltipComponent::downcast_ref",
+    "method:ClientItemExtensions::tooltip_font",
+    "method:DrawContext::text_with_font",
+    "handle:DrawContext::with_tooltip_font",
+]
+why = "Tooltip components now measure and draw themselves as typed in-process ClientTooltipComponent implementations after Gather, replacing item-keyed size/draw calls and closed TooltipImage records. NeoForge 26.3 RegisterClientTooltipComponentFactoriesEvent and ClientTooltipComponentManager supply the factory model; ClientHooks.getTooltipFont and gatherTooltipComponentsFromElements use the item font and vanilla Font.width(FormattedText) for logical wrapping before visual ordering. RenderTooltipEvent.Pre lends the prepared components and positioner and can replace the font without rewrapping; RenderTooltipEvent.Texture stays before paint. Unknown font IDs use missing glyphs (vanilla FontManager.getFontSetRaw). BundleItem.getTooltipImage selects the visible bundle source once and the unchanged source is prepared only after Gather. AbstractContainerScreen.extractTooltip checks carried-item visibility only for hovered slots, not previews (StonecutterScreen.extractTooltip and MerchantScreen.TradeOfferButton.extractToolTip). GuiGraphicsExtractor.tooltip measures before painting and runs the text pass before the image pass even for zero-size components. Each pass queries the current component height after drawing it to advance, rather than using the height measured for the background. Failed preparation or measurement aborts the tooltip; a failed pass discards its entire background and component paint, not Pre listener paint. A panic in retained tooltip data, a factory or its captures, or a renderer disables the owning callback for the session and reports the mod in a log entry and error toast. Only explicit listener cancellation cancels the event; failed input conversion does not cancel vanilla's tooltip."
+migrate = '''
+Replace `ItemPart::tooltip_component` and `ItemPart::tooltip_component_draw` with a typed `TooltipComponentData` payload and a `ClientTooltipComponent` renderer:
+
+1. Define your payload struct implementing `TooltipComponentData` and your client renderer struct implementing `ClientTooltipComponent` (`width`, `height`, optional `show_tooltip_with_item_in_hand`, `draw_text`, and `draw_image` receiving `&dyn TooltipFont` and `&mut dyn DrawContext`, with `DrawContext::text_with_font` available for formatted text in the active font).
+2. In `Hooks::register_client_tooltip_component_factories(&self, _cx, event)`, register the factory once at client startup with `event.factories.register::<MyData, MyClient>(|data| MyClient::from(data))`. A later registration for the same data type replaces the earlier one.
+3. On your `ItemPart`, replace `tooltip_component` and `tooltip_component_draw` with `ItemPart::tooltip_image(&self, host, event) -> Option<TooltipComponent>`, returning `Some(TooltipComponent::custom(my_data))` (or `Some(TooltipComponent::bundle(stack))`), or `None` to keep vanilla's tooltip image. To keep a bundle's built-in contents tooltip AND add a custom component beside it, leave `tooltip_image` returning `None` (so vanilla inserts the bundle component) and insert your custom `TooltipElement::Component(TooltipComponent::custom(my_data))` in `render_tooltip_gather_components` without removing the bundle element.
+4. To supply an item-owned tooltip font used for Gather wrapping and as `render_tooltip_pre`'s initial font (`IClientItemExtensions.getFont`), override `ClientItemExtensions::tooltip_font(&self, host, stack) -> Option<Identifier>`.
+
+Update `ItemPart::tooltip_image` (version 2): a callback or retained payload destructor panic disables only the publishing item-part registration, not other image providers from that mod.
+
+Update `Hooks::render_tooltip_gather_components` (version 4):
+- A panic dropping retained custom data disables the listener that first published it. Reordering or cloning data in another listener does not transfer ownership.
+- Replace `TooltipElement::Image(TooltipImage { source: TooltipImageSource::Bundle(stack), .. })` with `TooltipElement::Component(TooltipComponent::bundle(stack))` and `TooltipElement::Image(TooltipImage { source: TooltipImageSource::ItemPart(..), .. })` with `TooltipElement::Component(TooltipComponent::custom(data))`. Remove all references to `TooltipImage` and `TooltipImageSource`. `TooltipElement` is no longer `Wire`.
+- Text lines now wrap using NeoForge's screen-edge wrapping logic in the item's tooltip font before preparation. To tighten that width, assign a positive value with `event.max_width = width`.
+- Every custom `TooltipComponent` remaining after Gather must have a factory registered in `register_client_tooltip_component_factories`; an unregistered custom type aborts that tooltip before `render_tooltip_pre`, `render_tooltip_texture`, or painting with an error log.
+
+Update `Hooks::render_tooltip_pre` (version 3):
+- Cursor anchors truncate to whole GUI pixels (rather than rounding), before wrapping or Pre. Beacon buttons lend their active widget positioner to Pre and use that same positioner for drawing; previously all tooltips used the default cursor positioner.
+- The item font is now queried again after Gather and component preparation; previously Pre received the same font that wrapped the lines. The new font never changes existing line breaks.
+- Replace `event.elements` with `event.components: &[PreparedTooltipComponent]`. Inspect entries via `as_text()`, `as_bundle()`, or `downcast_ref::<MyClient>()`.
+- Replace reads of `TooltipImage.size` with `event.draw.with_tooltip_font(event.font, |font| Some([component.width(font)?, component.height(font)?]))` on a prepared entry in Pre. `None` means measurement failed; `Some(0)` is a valid dimension. Gather only has unprepared data. Instead of supplying `TooltipImage.size` when creating a payload, implement `ClientTooltipComponent::width` and `ClientTooltipComponent::height` to return the component's size in the supplied font. The dimensions passed to `draw_image` are the size of the entire tooltip's content box, not the component.
+- Replace `event.screen_width: i32` and `event.screen_height: i32` with `event.screen: [f32; 2]` (`event.screen[0]` / `event.screen[1]`, or `[event.screen[0] as i32, event.screen[1] as i32]` when passing integer screen dimensions to `event.positioner.position_tooltip`).
+- Use `event.positioner` (`&dyn ClientTooltipPositioner`) to compute placement if needed, and modify `*event.font` (`&mut Identifier`, seeded from `ClientItemExtensions::tooltip_font` or `minecraft:default`) to measure and draw the tooltip with a replacement font without rewrapping already-split lines.
+- `event.place`, `event.stack`, `event.draw`, `Flow::Cancel`, and `Hooks::render_tooltip_texture` keep their existing roles.
+'''

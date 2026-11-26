@@ -54,5 +54,6 @@ mod respawn;
 mod sleep;
 mod tick;
 mod turns;
+pub(super) use interaction::Struck;
 pub(super) use turns::{CombatPlayer, DisplacedPlayer};
 include!("shared.rs");

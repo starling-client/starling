@@ -1,0 +1,3 @@
+ids = ["hook:block_interaction_range", "type:BlockInteractionRangeEvent", "type:HookId"]
+why = "Adds the server hook block_interaction_range (vanilla Player.isWithinBlockInteractionRange): a listener may let a player reach a block further away, or keep them from one in reach, where the server asks it of a block: use, break and pick-block requests, and the still-valid check of an open container, crafting table, station or lectern menu, a sign editor and a lectern's book. A remote-access block needs it to let a player use the blocks around it from afar. New hook: no existing hook version changes."
+migrate = "Additive. A mod that matches HookId exhaustively adds the BlockInteractionRange arm."

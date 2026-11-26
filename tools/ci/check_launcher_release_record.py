@@ -7,7 +7,8 @@ import sys
 from pathlib import Path
 
 PREDICATE = "https://playsunrise.net/attestation/launcher-release/v1"
-SIGNER = "https://github.com/sunrise-org/sunrise-launcher/.github/workflows/release.yml@refs/heads/main"
+# The release workflow, signing from the branch the bridge was told it built on (main or a release/launcher-* patch line).
+SIGNER = "https://github.com/sunrise-org/sunrise-launcher/.github/workflows/release.yml"
 
 
 def files_in(dist: Path) -> dict[str, str]:
@@ -20,7 +21,7 @@ def sums_in(text: str) -> dict[str, str]:
     return {name.lstrip("*"): digest for digest, name in (line.split(maxsplit=1) for line in text.splitlines() if line.strip())}
 
 
-def check(results: list, tag: str, commit: str, files: dict[str, str], sums: dict[str, str]) -> None:
+def check(results: list, tag: str, commit: str, source_ref: str, files: dict[str, str], sums: dict[str, str]) -> None:
     """Raises SystemExit unless every attested release record for `tag` (one, or a re-run's identical ones) matches `files` and `sums`."""
     records = [r for r in results
                if r["verificationResult"]["statement"].get("predicateType") == PREDICATE
@@ -28,10 +29,10 @@ def check(results: list, tag: str, commit: str, files: dict[str, str], sums: dic
     if not records:
         raise SystemExit(f"no attested release record names {tag}")
     for found in records:
-        check_one(found, tag, commit, files, sums)
+        check_one(found, tag, commit, source_ref, files, sums)
 
 
-def check_one(found: dict, tag: str, commit: str, files: dict[str, str], sums: dict[str, str]) -> None:
+def check_one(found: dict, tag: str, commit: str, source_ref: str, files: dict[str, str], sums: dict[str, str]) -> None:
     statement = found["verificationResult"]["statement"]
     certificate = found["verificationResult"]["signature"]["certificate"]
     predicate = statement["predicate"]
@@ -39,7 +40,7 @@ def check_one(found: dict, tag: str, commit: str, files: dict[str, str], sums: d
     if {key: predicate.get(key) for key in wanted} != wanted:
         raise SystemExit(f"the release record says {predicate}, not {wanted}")
     built_by = {key: certificate.get(key) for key in ("buildTrigger", "buildSignerURI", "sourceRepositoryRef", "sourceRepositoryDigest", "runnerEnvironment")}
-    expected = {"buildTrigger": "workflow_dispatch", "buildSignerURI": SIGNER, "sourceRepositoryRef": "refs/heads/main",
+    expected = {"buildTrigger": "workflow_dispatch", "buildSignerURI": f"{SIGNER}@{source_ref}", "sourceRepositoryRef": source_ref,
                 "sourceRepositoryDigest": commit, "runnerEnvironment": "github-hosted"}
     if built_by != expected:
         raise SystemExit(f"the release record was made by {built_by}, not {expected}")
@@ -55,10 +56,11 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--attestations", type=Path, required=True, help="gh attestation verify --format json output")
     parser.add_argument("--tag", required=True)
     parser.add_argument("--commit", required=True)
+    parser.add_argument("--source-ref", required=True, help="the launcher branch release.yml built on")
     parser.add_argument("--dist", type=Path, required=True)
     args = parser.parse_args(argv)
     files = files_in(args.dist)
-    check(json.loads(args.attestations.read_text()), args.tag, args.commit, files, sums_in((args.dist / "SHA256SUMS").read_text()))
+    check(json.loads(args.attestations.read_text()), args.tag, args.commit, args.source_ref, files, sums_in((args.dist / "SHA256SUMS").read_text()))
     print(f"{args.tag}: the draft's {len(files)} files are exactly the release record release.yml attested at {args.commit}")
     return 0
 

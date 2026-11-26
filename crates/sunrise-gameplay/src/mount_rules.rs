@@ -1,5 +1,7 @@
 //! The horse inventory's common rules (`AbstractHorse`, `AbstractNautilus`, `HorseInventoryMenu`).
-use sunrise_client::mobs::{Mob, Species, equine, llama, nautilus};
+use sunrise_client::items::{ItemStack, Items};
+use sunrise_client::mobs::equip::equippable_in_slot;
+use sunrise_client::mobs::{Mob, Species, equine, llama, nautilus, species};
 
 /// `AbstractChestedHorse.getInventoryColumns`.
 pub const COLUMNS: usize = 5;
@@ -39,14 +41,8 @@ pub fn shows_body(species: Species) -> bool {
 pub fn can_wear_horse_armor(species: Species) -> bool {
     matches!(species, Species::Horse | Species::ZombieHorse)
 }
-/// Whether `item` fits the body slot of the species (`isEquippableInSlot`).
-pub fn body_armor_fits(species: Species, item: &str) -> bool {
-    if llama::is_llama(species) {
-        return item.ends_with("_carpet");
-    }
-    // EntityTypeTags.CAN_WEAR_NAUTILUS_ARMOR: the nautilus armours.
-    if nautilus::is_nautilus(species) {
-        return item.ends_with("_nautilus_armor");
-    }
-    can_wear_horse_armor(species) && item.ends_with("_horse_armor")
+/// Whether `stack` fits the body slot of the species: `Mob.isEquippableInSlot(stack, BODY)`, the
+/// stack's `equippable` component naming the `body` slot and allowing the species' entity type.
+pub fn body_armor_fits(items: &Items, species: Species, stack: &ItemStack) -> bool {
+    equippable_in_slot(items, stack, "body", species::vanilla_id(species))
 }

@@ -1,0 +1,18 @@
+ids = [
+    "type:BundleConfig",
+    "type:BundleMetrics",
+    "type:BundleReadError",
+    "handle:BundleConfig::vanilla",
+    "handle:BundleConfig::custom",
+    "handle:BundleConfig::with_filter_tag",
+    "handle:BundleConfig::slots",
+    "handle:BundleConfig::room_for",
+    "handle:BundleConfig::try_insert",
+    "handle:BundleConfig::extract",
+    "handle:BundleConfig::metrics",
+    "handle:BundleItems::with_config",
+    "handle:BundleItems::config",
+    "handle:BundleMetrics::new",
+]
+why = "Generalize bundle-like item containers to registered custom data components with capacity multipliers and optional item tag filters via BundleConfig, BundleMetrics, BundleReadError, and BundleItems::with_config. Exact weights, nesting overhead, bees weight and fullness bars follow vanilla 26.3 BundleContents/BundleItem, with weights in vanilla's int Fraction arithmetic (commons-lang3, checked; an overflow is BundleReadError::ExcessiveWeight, vanilla's \"Excessive total bundle weight\"); each read computes the weight once and every metric comes from it. Capacity multipliers above 1 and stack splitting at each item's max_stack are Sunrise-specific extensions. Custom components use one Tag::List schema of ItemStack.CODEC entries read by the engine's persistent-stack decoder (item_nbt::item_from_persistent_nbt) plus the item registry check (registry-backed non-air item id, numeric count truncated by Number.intValue and kept in 1..=99, persistent components, no refused consume effects; unmentioned entry keys ignored and dropped on re-encode like vanilla ItemStack.MAP_CODEC) and refuse non-list payloads, malformed or unknown-item entries, or nested malformed custom containers with BundleReadError::UnsupportedFormat without overwriting them."
+migrate = "Additive public surface (BundleConfig, BundleMetrics, BundleReadError, BundleItems::with_config). Register a custom component whose default value is an empty Tag::List ([]), build a BundleConfig, and handle Result<..., BundleReadError> (Unavailable, UnsupportedFormat, ExcessiveWeight) from all five BundleConfig helpers (slots, room_for, try_insert, extract, metrics). Existing vanilla BundleItems::new callers require no changes."

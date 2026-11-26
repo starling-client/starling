@@ -12,9 +12,9 @@ use std::{collections::HashSet, path::Path};
 use sunrise_world::loot::PackOverlay;
 
 pub use sunrise_client_core::potions::{
-    BASE_POTION_COLOR, Category, EFFECTS, EffectDef, POTIONS, PotionDef, all_effects,
-    description_id, effect, is_mod_effect, mod_effects, namespaced, potion, potion_color,
-    register_mod_effects, set_pack_colors,
+    BASE_POTION_COLOR, Category, EFFECTS, EffectDef, EffectModifier, ModEffect, POTIONS, PotionDef,
+    all_effects, description_id, effect, is_mod_effect, mod_effects, namespaced, potion,
+    potion_color, register_mod_effects, set_pack_colors,
 };
 /// `MobEffectUtil.formatDuration` at 20 TPS.
 pub fn format_duration(ticks: i32) -> String {
@@ -149,22 +149,26 @@ pub fn contents_empty(stack: &ItemStack) -> bool {
                 })
         })
 }
-/// Roman amplifier suffix (`potion.potency.N`) and duration lines of a potion.
+/// Roman amplifier suffix (`potion.potency.N`) and duration lines of a
+/// potion stack's `PotionContents.getAllEffects`: its potion's effects, then
+/// its `custom_effects`. "No Effects" for a potion with neither; nothing for
+/// a stack with no potion and no custom effect.
 pub fn tooltip(
-    potion: Option<&str>,
+    stack: &ItemStack,
     scale: f32,
     translate: &dyn Fn(&str) -> Option<String>,
 ) -> Vec<(String, Category)> {
-    let Some(def) = potion.and_then(self::potion) else {
-        return vec![];
-    };
-    if def.effects.is_empty() {
+    let effects = contents_effects(stack);
+    if effects.is_empty() {
+        if stack.potion().and_then(self::potion).is_none() {
+            return vec![];
+        }
         return vec![(
             translate("effect.none").unwrap_or_else(|| "No Effects".into()),
             Category::Neutral,
         )];
     }
-    effect_lines(def.effects.iter().copied(), scale, translate)
+    effect_lines(effects, scale, translate)
 }
 /// `PotionContents.addPotionTooltip`'s line per effect: its name, potency and
 /// scaled duration, for (effect id, duration, amplifier) entries.
@@ -495,33 +499,22 @@ impl BrewingStand {
             && (self.fuel > 0 || self.items[4].is_none())
             && self.last_bottles == Some(bottles)
     }
-    /// `doBrew` once `PotionBrewEvent.Pre` asked the mods with `asked`, a
-    /// copy of the five slots, and whether they cancelled: a cancel puts the
-    /// mods' slots in and skips the brew (the caller then fires Post);
-    /// otherwise vanilla brews and the copy is dropped. Without mods (`None`)
-    /// this is `doBrew`.
-    pub fn brew_after_pre(
-        &mut self,
-        asked: Option<([Option<ItemStack>; 5], bool)>,
-        brewing: &Brewing,
-        remainder: &dyn Fn(&ItemStack) -> Option<ItemStack>,
-        out: &mut BrewTick,
-    ) {
-        match asked {
-            Some((stacks, true)) => self.items = stacks,
-            _ => self.brew(brewing, remainder, out),
-        }
-    }
-    /// `BrewingStandBlockEntity.doBrew`.
+    /// `BrewingStandBlockEntity.doBrew` without engine listeners.
     pub fn brew(
         &mut self,
         brewing: &Brewing,
         remainder: &dyn Fn(&ItemStack) -> Option<ItemStack>,
         out: &mut BrewTick,
     ) {
-        let Some(ingredient) = self.items[3].clone() else {
-            return;
-        };
+        if let Some(ingredient) = self.brew_bottles(brewing) {
+            let rest = remainder(&ingredient);
+            self.finish_brew(ingredient, rest, out);
+        }
+    }
+    /// `doBrew` through the bottle replacements, before NeoForge's `onPotionBrewed`.
+    /// Returns the captured ingredient, which is consumed after the event.
+    pub fn brew_bottles(&mut self, brewing: &Brewing) -> Option<ItemStack> {
+        let ingredient = self.items[3].clone()?;
         for slot in 0..3 {
             if let Some(input) = &self.items[slot]
                 && let Some(r) = brewing.find(input, &ingredient)
@@ -529,13 +522,29 @@ impl BrewingStand {
                 self.items[slot] = Some(r.output.clone());
             }
         }
-        let remainder = remainder(&ingredient);
-        if let Some(i) = self.items[3].as_mut() {
-            i.count -= 1;
-            if i.count == 0 {
+        Some(ingredient)
+    }
+    /// The rest of `doBrew`, using the original ingredient even when Post
+    /// replaced slot 3. Only an unchanged slot is shrunk; a remainder from an
+    /// exhausted ingredient is written to the slot as in vanilla.
+    pub fn finish_brew(
+        &mut self,
+        mut ingredient: ItemStack,
+        remainder: Option<ItemStack>,
+        out: &mut BrewTick,
+    ) {
+        let unchanged = self.items[3].as_ref() == Some(&ingredient);
+        ingredient.count -= 1;
+        if ingredient.count == 0 {
+            if unchanged || remainder.is_some() {
                 self.items[3] = remainder;
-            } else if let Some(r) = remainder {
-                out.drops.push(r);
+            }
+        } else {
+            if unchanged {
+                self.items[3] = Some(ingredient);
+            }
+            if let Some(rest) = remainder {
+                out.drops.push(rest);
             }
         }
         out.brewed = true;
@@ -814,7 +823,8 @@ mod tests {
         assert_eq!(format_duration(1800), "01:30");
         assert_eq!(format_duration(72000), "01:00:00");
         assert_eq!(format_tick_duration(9600, 40.0), "04:00");
-        let t = tooltip(Some("minecraft:strong_poison"), 1.0, &|_| None);
+        let poison = ItemStack::new("minecraft:potion", 1).with_potion("minecraft:strong_poison");
+        let t = tooltip(&poison, 1.0, &|_| None);
         assert_eq!(t[0].0, "poison II (00:21)");
         assert_eq!(POTIONS.len(), 46);
     }
@@ -967,16 +977,16 @@ mod tests {
         }
         let ru = crate::lang::Language::load(&[&root], "ru_ru");
         let translate = |key: &str| ru.get(key).map(str::to_owned);
-        let lines = tooltip(Some("minecraft:turtle_master"), 0.125, &translate);
+        let arrow =
+            ItemStack::new("minecraft:tipped_arrow", 1).with_potion("minecraft:turtle_master");
+        let lines = tooltip(&arrow, 0.125, &translate);
         assert_eq!(lines.len(), 2);
         assert!(lines[0].0.starts_with("Замедление IV ("), "{lines:?}");
         assert!(lines[1].0.starts_with("Сопротивление III ("), "{lines:?}");
     }
 
-    /// Cancelled pre-hook slots replace the brew without consuming an ingredient.
-    /// Uncancelled pre-hook edits are discarded before vanilla brewing runs.
     #[test]
-    fn a_cancelled_brew_takes_the_mods_slots_and_an_uncancelled_one_brews() {
+    fn post_sees_new_bottles_and_the_unconsumed_ingredient() {
         let set = |ids: &[&str]| ids.iter().map(|s| (*s).to_owned()).collect();
         let brewing = Brewing {
             reagents: set(&["minecraft:nether_wart"]),
@@ -994,41 +1004,23 @@ mod tests {
                 output: ItemStack::new("minecraft:potion", 1).with_potion("minecraft:awkward"),
             }],
         };
-        let items = sunrise_items::items::Items::for_tests(Default::default());
         let water = ItemStack::new("minecraft:potion", 1).with_potion("minecraft:water");
         let awkward = ItemStack::new("minecraft:potion", 1).with_potion("minecraft:awkward");
-        let fresh = || {
-            let mut stand = BrewingStand::new();
-            stand.items[0] = Some(water.clone());
-            stand.items[3] = Some(ItemStack::new("minecraft:nether_wart", 2));
-            stand
-        };
-        for cancel in [true, false] {
-            let mut stand = fresh();
-            let mut edited = stand.items.clone();
-            edited[0] = Some(ItemStack::new("minecraft:diamond", 1));
-            let mut out = BrewTick::default();
-            stand.brew_after_pre(
-                Some((edited, cancel)),
-                &brewing,
-                &|s| data_remainder(&items, s),
-                &mut out,
-            );
-            assert_eq!(out.brewed, !cancel);
-            assert_eq!(
-                stand.items[0],
-                Some(if cancel {
-                    ItemStack::new("minecraft:diamond", 1)
-                } else {
-                    awkward.clone()
-                })
-            );
-            assert!(stand.items[1].is_none());
-            assert_eq!(
-                stand.items[3].as_ref().map(|s| s.count),
-                Some(if cancel { 2 } else { 1 })
-            );
-        }
+        let mut stand = BrewingStand::new();
+        stand.items[0] = Some(water);
+        stand.items[3] = Some(ItemStack::new("minecraft:nether_wart", 2));
+        let ingredient = stand.brew_bottles(&brewing).unwrap();
+        assert_eq!(stand.items[0], Some(awkward));
+        assert_eq!(stand.items[3].as_ref().unwrap().count, 2);
+        // A Post listener can replace the slot without shrinking the replacement.
+        let replacement = ItemStack::new("minecraft:diamond", 5);
+        stand.items[3] = Some(replacement.clone());
+        let remainder = ItemStack::new("minecraft:stick", 1);
+        let mut out = BrewTick::default();
+        stand.finish_brew(ingredient, Some(remainder.clone()), &mut out);
+        assert_eq!(stand.items[3], Some(replacement));
+        assert_eq!(out.drops, [remainder]);
+        assert!(out.brewed);
     }
 
     #[test]

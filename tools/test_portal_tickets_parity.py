@@ -5,11 +5,12 @@ a save and a restart keep."""
 import json
 import re
 
-try:
-    from . import lab, oracle_harness as harness
-except ImportError:
-    import lab
-    import oracle_harness as harness
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, oracle_harness as harness
 
 
 def portal(x, z, level=30, left=None, kind='portal'):
@@ -97,6 +98,8 @@ def main():
         'ChunkTickets through a real chunk_tickets.dat. Excludes level propagation, streaming '
         'readiness and other ticket types than FORCED beside PORTAL.',
         sources=[lab.ROOT / 'crates/sunrise-client/src/save.rs',
+                 lab.ROOT / 'crates/sunrise-client/src/save/dir.rs',
+                 lab.ROOT / 'crates/sunrise-client/src/save/tickets.rs',
                  lab.ROOT / 'crates/sunrise-client/src/ticket_levels.rs'],
         expected_lines=len(CASES))
 

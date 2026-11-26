@@ -412,6 +412,7 @@ pub fn sting(m: &mut Mob, who: Who, cx: &mut Cx) {
         kind: DamageKind::Sting,
         attacker: Some(Who::Mob(m.id)),
         from: Some(from),
+        direct: None,
         attacker_species: Some(Species::Bee),
     };
     cx.events.push(cx.w.route_player_event(MobEvent::Sting {
@@ -621,27 +622,35 @@ fn calm(m: &Mob, w: &MobWorld) -> bool {
 struct BeeAttack(MeleeAttack);
 impl Goal for BeeAttack {
     goal_clone!();
+    #[inline]
     fn name(&self) -> &'static str {
         "BeeAttackGoal"
     }
+    #[inline]
     fn flags(&self) -> u8 {
         self.0.flags()
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         self.0.can_use(m, cx) && can_target(m, cx.w)
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         self.0.can_continue(m, cx) && can_target(m, cx.w)
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.start(m, cx);
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.stop(m, cx);
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         self.0.every_tick()
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.tick(m, cx);
     }
@@ -669,21 +678,27 @@ impl BecomeAngryTarget {
 }
 impl Goal for BecomeAngryTarget {
     goal_clone!();
+    #[inline]
     fn name(&self) -> &'static str {
         "BeeBecomeAngryTargetGoal"
     }
+    #[inline]
     fn flags(&self) -> u8 {
         self.0.flags()
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         self.0.can_use(m, cx)
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         can_target(m, cx.w) && m.ai.target.is_some() && self.0.can_continue(m, cx)
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.start(m, cx);
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.stop(m, cx);
     }
@@ -694,12 +709,15 @@ impl Goal for BecomeAngryTarget {
 struct EnterHive;
 impl Goal for EnterHive {
     goal_clone!();
+    #[inline]
     fn name(&self) -> &'static str {
         "BeeEnterHiveGoal"
     }
+    #[inline]
     fn flags(&self) -> u8 {
         0
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         let close = get(m).and_then(|b| b.hive).is_some_and(|h| {
             let d = |i: usize, v: f64| f64::from(h[i]) + 0.5 - v;
@@ -716,9 +734,11 @@ impl Goal for EnterHive {
         }
         enter && calm(m, cx.w)
     }
+    #[inline]
     fn can_continue(&mut self, _m: &mut Mob, _cx: &mut Cx) -> bool {
         false
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         if let Some(hive) = get(m).and_then(|b| b.hive).filter(|_| hive_valid(m, cx.w)) {
             cx.events.push(MobEvent::EnterHive { mob: m.id, hive });
@@ -733,19 +753,24 @@ struct ValidateHive {
 }
 impl Goal for ValidateHive {
     goal_clone!();
+    #[inline]
     fn name(&self) -> &'static str {
         "ValidateHiveGoal"
     }
+    #[inline]
     fn flags(&self) -> u8 {
         0
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         let cooldown = get(m).map_or(0, |b| b.validate_hive_cooldown);
         cx.w.game_time > self.last + i64::from(cooldown) && calm(m, cx.w)
     }
+    #[inline]
     fn can_continue(&mut self, _m: &mut Mob, _cx: &mut Cx) -> bool {
         false
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         if let Some(h) = get(m).and_then(|b| b.hive)
             && cx.w.world.loaded(h[0], h[2])
@@ -764,19 +789,24 @@ struct ValidateFlower {
 }
 impl Goal for ValidateFlower {
     goal_clone!();
+    #[inline]
     fn name(&self) -> &'static str {
         "ValidateFlowerGoal"
     }
+    #[inline]
     fn flags(&self) -> u8 {
         0
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         let cooldown = get(m).map_or(0, |b| b.validate_flower_cooldown);
         cx.w.game_time > self.last + i64::from(cooldown) && calm(m, cx.w)
     }
+    #[inline]
     fn can_continue(&mut self, _m: &mut Mob, _cx: &mut Cx) -> bool {
         false
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         if let Some(f) = get(m).and_then(|b| b.flower)
             && cx.w.world.loaded(f[0], f[2])
@@ -837,12 +867,15 @@ impl Pollinate {
 }
 impl Goal for Pollinate {
     goal_clone!();
+    #[inline]
     fn name(&self) -> &'static str {
         "BeePollinateGoal"
     }
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         let usable =
             if get(m).is_some_and(|b| b.flower_cooldown > 0) || has_nectar(m) || cx.w.raining {
@@ -863,6 +896,7 @@ impl Goal for Pollinate {
             };
         usable && calm(m, cx.w)
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         let go = if !pollinating(m) || get(m).is_none_or(|b| b.flower.is_none()) || cx.w.raining {
             false
@@ -873,6 +907,7 @@ impl Goal for Pollinate {
         };
         go && calm(m, cx.w)
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, _cx: &mut Cx) {
         self.successful = 0;
         self.ticks = 0;
@@ -880,6 +915,7 @@ impl Goal for Pollinate {
         set_pollinating(m, true);
         st(m).ticks_without_nectar = 0;
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, _cx: &mut Cx) {
         if self.long_enough() {
             set_has_nectar(m, true);
@@ -888,9 +924,11 @@ impl Goal for Pollinate {
         m.nav_stop();
         st(m).flower_cooldown = 200;
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         true
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, _cx: &mut Cx) {
         let Some(f) = get(m).and_then(|b| b.flower) else {
             return;
@@ -951,21 +989,26 @@ impl Goal for Pollinate {
 struct LocateHive;
 impl Goal for LocateHive {
     goal_clone!();
+    #[inline]
     fn name(&self) -> &'static str {
         "BeeLocateHiveGoal"
     }
+    #[inline]
     fn flags(&self) -> u8 {
         0
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         let b = get(m);
         let usable = b.is_some_and(|b| b.hive_cooldown == 0 && b.hive.is_none())
             && wants_to_enter_hive(m, cx.w);
         usable && calm(m, cx.w)
     }
+    #[inline]
     fn can_continue(&mut self, _m: &mut Mob, _cx: &mut Cx) -> bool {
         false
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         st(m).hive_cooldown = 200;
         let hives = hives_with_space(m, cx.w);
@@ -979,6 +1022,17 @@ impl Goal for LocateHive {
         }
         b.hive = pick.or_else(|| hives.first().copied()).or(b.hive);
     }
+}
+
+/// `PoiTypeTags.BEE_HOME`: whether the block at `p` is a point of interest of that tag.
+fn is_bee_home(w: &MobWorld, p: [i32; 3]) -> bool {
+    w.registry
+        .state(w.world.block(p[0], p[1], p[2]))
+        .and_then(sunrise_world::poi::saved_poi)
+        .is_some_and(|poi| {
+            w.professions
+                .poi_in_tag(super::villager::professions::BEE_HOME, poi.into())
+        })
 }
 
 /// `findNearbyHivesWithSpace`: the bee homes (`PoiTypeTags.BEE_HOME`)
@@ -997,9 +1051,7 @@ fn hives_with_space(m: &Mob, w: &MobWorld) -> Vec<[i32; 3]> {
             crate::containers::BlockEntity::Beehive(h) if !h.full() => Some([x, y, z]),
             _ => None,
         })
-        .filter(|p| {
-            dist(p) <= 20 * 20 && w.has_tag("minecraft:beehives", w.block_name(p[0], p[1], p[2]))
-        })
+        .filter(|p| dist(p) <= 20 * 20 && is_bee_home(w, *p))
         .collect();
     hives.sort_by_key(|p| (dist(p), *p));
     hives
@@ -1041,12 +1093,15 @@ impl GoToHive {
 }
 impl Goal for GoToHive {
     goal_clone!();
+    #[inline]
     fn name(&self) -> &'static str {
         "BeeGoToHiveGoal"
     }
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         let usable = get(m).and_then(|b| b.hive).is_some_and(|h| {
             !too_far(m, h)
@@ -1059,16 +1114,19 @@ impl Goal for GoToHive {
         });
         usable && calm(m, cx.w)
     }
+    #[inline]
     fn start(&mut self, _m: &mut Mob, _cx: &mut Cx) {
         self.travelling = 0;
         self.stuck = 0;
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, _cx: &mut Cx) {
         self.travelling = 0;
         self.stuck = 0;
         m.nav_stop();
         m.ai.nav.max_visited_multiplier = 1.0;
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         let Some(h) = get(m).and_then(|b| b.hive) else {
             return;
@@ -1112,12 +1170,15 @@ struct GoToKnownFlower {
 }
 impl Goal for GoToKnownFlower {
     goal_clone!();
+    #[inline]
     fn name(&self) -> &'static str {
         "BeeGoToKnownFlowerGoal"
     }
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         let usable = get(m).is_some_and(|b| {
             b.flower.is_some_and(|f| {
@@ -1126,14 +1187,17 @@ impl Goal for GoToKnownFlower {
         });
         usable && calm(m, cx.w)
     }
+    #[inline]
     fn start(&mut self, _m: &mut Mob, _cx: &mut Cx) {
         self.travelling = 0;
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, _cx: &mut Cx) {
         self.travelling = 0;
         m.nav_stop();
         m.ai.nav.max_visited_multiplier = 1.0;
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         let Some(f) = get(m).and_then(|b| b.flower) else {
             return;
@@ -1156,12 +1220,15 @@ impl Goal for GoToKnownFlower {
 struct GrowCrop;
 impl Goal for GrowCrop {
     goal_clone!();
+    #[inline]
     fn name(&self) -> &'static str {
         "BeeGrowCropGoal"
     }
+    #[inline]
     fn flags(&self) -> u8 {
         0
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         // The 0.3 roll comes only after the crop count: it draws randomness.
         let usable = get(m).is_none_or(|b| b.crops_grown < 10)
@@ -1170,6 +1237,7 @@ impl Goal for GrowCrop {
             && hive_valid(m, cx.w);
         usable && calm(m, cx.w)
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         if m.random.next_int_bound(reduced(30)).unwrap_or(1) != 0 {
             return;
@@ -1238,18 +1306,23 @@ fn grown(w: &MobWorld, p: [i32; 3]) -> Option<sunrise_world::registry::BlockStat
 struct Wander;
 impl Goal for Wander {
     goal_clone!();
+    #[inline]
     fn name(&self) -> &'static str {
         "BeeWanderGoal"
     }
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, _cx: &mut Cx) -> bool {
         m.ai.nav.is_done() && m.random.next_int_bound(10).unwrap_or(1) == 0
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, _cx: &mut Cx) -> bool {
         m.ai.nav.is_in_progress()
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         // Back towards a valid hive farther than 24 blocks, else ahead.
         let far_hive = get(m)

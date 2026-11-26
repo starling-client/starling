@@ -18,8 +18,7 @@ fn server_context() -> sunrise_world::native_load_context::LoopContext {
     .loop_context(LoopSide::Server, [])
 }
 
-/// The same context on the client's side, whose own prediction the hook
-/// must leave alone (#2414: no client-side prediction of a custom travel).
+/// The same context on the client's side, whose own prediction the hook fires for too.
 fn client_context() -> sunrise_world::native_load_context::LoopContext {
     LoadContext::new(
         DataLoadOrigin::ServerDataLoad,
@@ -40,6 +39,57 @@ enum Answer {
 
 /// What the probe heard: entity, mode, and the resolved input and velocity.
 type Heard = Vec<(u32, TravelMode, [f64; 3], [f64; 3])>;
+
+/// A `side = "server"` mod's `living_travel` listener fires for a zombie and
+/// not for a player or a player-driven mount.
+#[test]
+fn server_only_mod_hears_zombie_and_skips_player_and_driven_mount() {
+    let heard = Arc::new(Mutex::new(Vec::<String>::new()));
+    struct KindProbe(Arc<Mutex<Vec<String>>>);
+    #[mod_api::__subscriptions]
+    impl Hooks for KindProbe {
+        fn living_travel(&self, _: &dyn LoopContext, event: &mut LivingTravelEvent<'_>) -> Flow {
+            self.0.lock().unwrap().push(event.kind.to_owned());
+            Flow::Continue
+        }
+    }
+    let mods: mod_api::Mods = vec![mod_api::__private::with_mod_side(
+        mod_api::ModEntry::new("server-only", Box::new(KindProbe(Arc::clone(&heard)))),
+        mod_api::Side::Server,
+    )]
+    .into();
+    let context = server_context();
+    mod_platform::testing::with_mods(mods, || {
+        let mut input = Vec3::ZERO;
+        let mut velocity = Vec3::ZERO;
+        assert!(sunrise_client::travel_gate::decide(
+            &context,
+            1,
+            "minecraft:zombie",
+            || sunrise_world::travel::TravelMode::Air,
+            &mut input,
+            &mut velocity,
+        ));
+        assert!(sunrise_client::travel_gate::decide(
+            &context,
+            2,
+            "minecraft:player",
+            || sunrise_world::travel::TravelMode::Air,
+            &mut input,
+            &mut velocity,
+        ));
+        assert!(sunrise_client::travel_gate::decide_controlled(
+            &context,
+            3,
+            "minecraft:horse",
+            || sunrise_world::travel::TravelMode::Air,
+            &mut input,
+            &mut velocity,
+            true,
+        ));
+    });
+    assert_eq!(*heard.lock().unwrap(), vec!["minecraft:zombie"]);
+}
 
 /// A listener that records the travel it heard and answers `Answer`.
 struct Probe {
@@ -162,43 +212,62 @@ fn cancel_skips_the_invocation() {
     assert_eq!(log.lock().unwrap().len(), 1);
 }
 
-/// A replacement supplies the branch's starting values: both the input and
-/// the velocity, at the budgets' edges (input 1.0, velocity -64.0 — signed
-/// components inside the budget are valid; design #2308).
+/// A replacement supplies the branch's starting values, including magnitudes
+/// beyond the removed synthetic budgets (input > 1.0, velocity > 64.0).
 #[test]
 fn a_replacement_supplies_the_starting_values() {
     let (_, input, velocity, _, _) = decided_with(
         Answer::Replace {
-            input: [-1.0, 1.0, 0.0],
-            velocity: [64.0, -64.0, 0.0],
+            input: [-2.5, 1.5, 0.0],
+            velocity: [80.0, -70.0, 0.0],
         },
         &server_context(),
     );
-    assert_eq!(input, Vec3::new(-1.0, 1.0, 0.0));
-    assert_eq!(velocity, Vec3::new(64.0, -64.0, 0.0));
+    assert_eq!(input, Vec3::new(-2.5, 1.5, 0.0));
+    assert_eq!(velocity, Vec3::new(80.0, -70.0, 0.0));
 }
 
-/// A replacement with a component outside its budget — an input component
-/// beyond 1.0 or 1.01, a velocity component beyond 64.0 or 64.5, a NaN or an
-/// infinity — is refused whole: both values stand as the game resolved them
-/// (design #2308: reject, never clamp).
+/// Cancellation is independent of any edited input or velocity, even when a
+/// listener writes a non-finite component before returning `Flow::Cancel`.
 #[test]
-fn a_malformed_replacement_is_refused_whole() {
-    for (input, velocity) in [
-        ([1.01, 0.0, 0.0], [0.0, 0.0, 0.0]),
-        ([0.0, f64::NAN, 0.0], [0.0, 0.0, 0.0]),
-        ([0.0, 0.0, 0.0], [64.5, 0.0, 0.0]),
-        ([0.0, 0.0, 0.0], [0.0, -65.0, 0.0]),
-        ([0.0, 0.0, 0.0], [0.0, 0.0, f64::INFINITY]),
-    ] {
-        let (_, got_input, got_velocity, _, _) =
-            decided_with(Answer::Replace { input, velocity }, &server_context());
-        assert_eq!(
-            (got_input, got_velocity),
-            (Vec3::new(0.216, 0.0, 0.0), Vec3::new(1.0, -0.078_4, 0.0)),
-            "both resolved values stand: input {input:?}, velocity {velocity:?}"
-        );
+fn cancellation_is_independent_of_non_finite_edits() {
+    struct CancelWithNaN;
+    #[mod_api::__subscriptions]
+    impl mod_api::Hooks for CancelWithNaN {
+        fn living_travel(
+            &self,
+            _: &dyn mod_api::LoopContext,
+            event: &mut mod_api::LivingTravelEvent<'_>,
+        ) -> mod_api::Flow {
+            *event.input = [f64::NAN, 0.0, 0.0];
+            *event.velocity = [80.0, 0.0, 0.0];
+            mod_api::Flow::Cancel
+        }
     }
+
+    let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
+        "cancel-nan",
+        Box::new(CancelWithNaN),
+    )]
+    .into();
+    mod_platform::testing::with_mods(mods, || {
+        let mut input = Vec3::new(0.216, 0.0, 0.0);
+        let mut velocity = Vec3::new(1.0, -0.078_4, 0.0);
+        let runs = sunrise_client::travel_gate::decide(
+            &server_context(),
+            7,
+            "minecraft:zombie",
+            || sunrise_world::travel::TravelMode::Air,
+            &mut input,
+            &mut velocity,
+        );
+        assert!(!runs, "non-finite edits must not roll back cancellation");
+        assert_eq!(
+            (input, velocity),
+            (Vec3::new(0.216, 0.0, 0.0), Vec3::new(1.0, -0.078_4, 0.0)),
+            "a cancelled travel still leaves caller vectors untouched"
+        );
+    });
 }
 
 /// A listener that unwinds keeps the **resolved** values — its writes die
@@ -286,18 +355,49 @@ fn a_panic_after_a_replacement_keeps_the_accepted_values() {
     });
 }
 
-/// A client's own prediction asks nobody: the hook fires on the
-/// authoritative side only (#2414: no client-side prediction until PR 3),
-/// and the mode closure never runs for it.
+/// A client's own prediction asks the same listeners as the server's travel: it hears the same
+/// inputs, applies a replacement, and a cancellation skips the client's predicted branch.
 #[test]
-fn a_client_side_travel_asks_nobody() {
-    let (_, input, velocity, heard, mode_calls) = decided_with(Answer::Continue, &client_context());
-    assert!(heard.is_empty(), "a client travel fires nobody");
-    assert_eq!(mode_calls, 0, "the mode is not built without a dispatch");
+fn a_client_side_travel_asks_the_listeners_and_applies_their_edits() {
+    let (_, input, velocity, heard, mode_calls) = decided_with(
+        Answer::Replace {
+            input: [0.5, 0.0, 0.0],
+            velocity: [2.0, 0.0, 0.0],
+        },
+        &client_context(),
+    );
+    assert_eq!(
+        heard,
+        [(
+            7,
+            TravelMode::Water,
+            [0.216, 0.0, 0.0],
+            [1.0, -0.078_4, 0.0]
+        )]
+    );
+    assert_eq!(mode_calls, 1);
     assert_eq!(
         (input, velocity),
-        (Vec3::new(0.216, 0.0, 0.0), Vec3::new(1.0, -0.078_4, 0.0))
+        (Vec3::new(0.5, 0.0, 0.0), Vec3::new(2.0, 0.0, 0.0))
     );
+    let (log, mods) = install(Answer::Cancel);
+    let mut input = Vec3::new(0.216, 0.0, 0.0);
+    let mut velocity = Vec3::new(1.0, 0.0, 0.0);
+    let runs = mod_platform::testing::with_mods(mods, || {
+        sunrise_client::travel_gate::decide(
+            &client_context(),
+            7,
+            "minecraft:player",
+            || sunrise_world::travel::TravelMode::Air,
+            &mut input,
+            &mut velocity,
+        )
+    });
+    assert!(
+        !runs,
+        "a client's cancelled travel skips its predicted branch"
+    );
+    assert_eq!(log.lock().unwrap().len(), 1);
 }
 
 /// With no listener the mode closure never runs: the resolved values stand
@@ -392,11 +492,26 @@ fn a_poisoned_travel_listener_keeps_its_move_hook() {
     assert_eq!(*travels.lock().unwrap(), 1);
 }
 
-/// Each listener's pair is checked as it returns: a malformed pair is
-/// dropped alone, the earlier valid pair stands, and a later listener hears
-/// that accepted pair rather than the malformed proposal.
+/// Listeners see each earlier listener's edits directly without rollback, and a
+/// listener registered with `#[listener(receive_cancelled)]` may clear a
+/// cancellation so later listeners and the travel branch still run.
 #[test]
-fn a_refused_pair_keeps_the_preceding_valid_pair_and_is_never_heard() {
+fn sequential_edits_stand_and_receive_cancelled_can_clear_cancellation() {
+    struct ClearCancel;
+    #[mod_api::__subscriptions]
+    impl mod_api::Hooks for ClearCancel {
+        #[listener(receive_cancelled)]
+        fn living_travel(
+            &self,
+            _: &dyn mod_api::LoopContext,
+            event: &mut mod_api::LivingTravelEvent<'_>,
+        ) -> mod_api::Flow {
+            assert!(event.cancelled);
+            event.cancelled = false;
+            mod_api::Flow::Continue
+        }
+    }
+
     let heard = Arc::new(Mutex::new(Vec::new()));
     let probe = |name: &'static str, answer, heard: &Arc<Mutex<Heard>>| {
         mod_api::ModEntry::new(
@@ -409,21 +524,15 @@ fn a_refused_pair_keeps_the_preceding_valid_pair_and_is_never_heard() {
     };
     let mods: mod_api::Mods = vec![
         probe(
-            "valid",
+            "edit",
             Answer::Replace {
-                input: [0.5, 0.0, 0.0],
-                velocity: [9.0, 0.0, 0.0],
+                input: [2.0, 0.0, 0.0],
+                velocity: [70.0, 0.0, 0.0],
             },
             &Arc::default(),
         ),
-        probe(
-            "malformed",
-            Answer::Replace {
-                input: [1.01, 0.0, 0.0],
-                velocity: [2.0, 0.0, 0.0],
-            },
-            &Arc::default(),
-        ),
+        probe("cancel", Answer::Cancel, &Arc::default()),
+        mod_api::ModEntry::new("clear", Box::new(ClearCancel)),
         probe("later", Answer::Continue, &heard),
     ]
     .into();
@@ -438,16 +547,15 @@ fn a_refused_pair_keeps_the_preceding_valid_pair_and_is_never_heard() {
             &mut input,
             &mut velocity,
         );
-        assert!(runs);
+        assert!(runs, "clearing cancellation lets the travel branch run");
         assert_eq!(
             (input, velocity),
-            (Vec3::new(0.5, 0.0, 0.0), Vec3::new(9.0, 0.0, 0.0)),
-            "the valid pair stands; the malformed one, velocity 2.0 included, is gone"
+            (Vec3::new(2.0, 0.0, 0.0), Vec3::new(70.0, 0.0, 0.0)),
         );
     });
     assert_eq!(
         *heard.lock().unwrap(),
-        vec![(7, TravelMode::Air, [0.5, 0.0, 0.0], [9.0, 0.0, 0.0])],
-        "the later listener hears the accepted pair"
+        vec![(7, TravelMode::Air, [2.0, 0.0, 0.0], [70.0, 0.0, 0.0])],
+        "the later listener hears the preceding edits once cancellation is cleared"
     );
 }

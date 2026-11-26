@@ -26,7 +26,7 @@ impl Game<'_> {
         stack: ItemStack,
         at: [f64; 3],
         motion: Option<[f64; 3]>,
-        pickup_delay: u32,
+        pickup_delay: i32,
     ) -> Option<EntityRef> {
         // `spawn_item` takes the next id.
         let id = self.next_entity + 1;
@@ -68,10 +68,10 @@ impl Game<'_> {
     }
     /// Spawns `stack` as an item entity at `x y z` (`new ItemEntity(level, x,
     /// y, z, stack)` and `addFreshEntity`): its own random motion (up 0.2, up
-    /// to 0.1 either way across), with `pickup_delay` ticks before it can be
-    /// picked up, as `ItemEntity.setPickupDelay` at construction (vanilla
-    /// passes 10 for a block's drop, 40 for a player's throw and 32767 for
-    /// never). None, with nothing
+    /// to 0.1 either way across), with signed `pickup_delay` ticks before it
+    /// can be picked up, as `ItemEntity.setPickUpDelay` at construction
+    /// (vanilla passes 10 for a block's drop, 40 for a player's throw and
+    /// 32767 for never). None, with nothing
     /// spawned, for an empty stack or an unknown item, a value that isn't
     /// finite, on a client, for a stale handle, a level not in place, or an
     /// item a mod kept out (`native_entity_join_level`).
@@ -82,15 +82,15 @@ impl Game<'_> {
         y: f64,
         z: f64,
         stack: ItemStack,
-        pickup_delay: u32,
+        pickup_delay: i32,
     ) -> Option<EntityRef> {
         self.spawn_item_at(level, x, y, z, stack, None, pickup_delay)
     }
     /// `spawn_item` with the item entity's motion set to
     /// `motion` (blocks a tick), as `new ItemEntity(level, x, y, z, stack,
-    /// deltaX, deltaY, deltaZ)`, and the same `pickup_delay` ticks before it
-    /// can be picked up (`ItemEntity.setPickupDelay`). None in the same
-    /// cases, and for a motion that isn't finite.
+    /// deltaX, deltaY, deltaZ)`, and the same signed `pickup_delay` ticks
+    /// before it can be picked up (`ItemEntity.setPickUpDelay`). None in the
+    /// same cases, and for a motion that isn't finite.
     pub(super) fn level_spawn_item_with_motion(
         &mut self,
         level: LevelRef,
@@ -99,7 +99,7 @@ impl Game<'_> {
         z: f64,
         stack: ItemStack,
         motion: [f64; 3],
-        pickup_delay: u32,
+        pickup_delay: i32,
     ) -> Option<EntityRef> {
         self.spawn_item_at(level, x, y, z, stack, Some(motion), pickup_delay)
     }
@@ -111,7 +111,7 @@ impl Game<'_> {
         z: f64,
         stack: ItemStack,
         motion: Option<[f64; 3]>,
-        pickup_delay: u32,
+        pickup_delay: i32,
     ) -> Option<EntityRef> {
         if self.entity_ids_exhausted() {
             return None;
@@ -210,6 +210,26 @@ mod tests {
                     .is_some()
             );
             assert_eq!(game.dropped.last().unwrap().pickup_delay, 32767);
+            // Signed negative and > i16::MAX delays pass straight through in memory;
+            // only NBT save narrows to (short), matching ItemEntity.setPickUpDelay.
+            assert!(
+                game.level_spawn_item(level, 1.5, 70.0, 2.5, stone(), -5)
+                    .is_some()
+            );
+            assert_eq!(game.dropped.last().unwrap().pickup_delay, -5);
+            assert!(
+                game.level_spawn_item_with_motion(
+                    level,
+                    1.5,
+                    70.0,
+                    2.5,
+                    stone(),
+                    [0.0, 0.2, 0.0],
+                    40_000,
+                )
+                .is_some()
+            );
+            assert_eq!(game.dropped.last().unwrap().pickup_delay, 40_000);
             assert!(
                 game.level_spawn_item(level, f64::NAN, 70.0, 2.5, stone(), 0)
                     .is_none()
@@ -293,6 +313,7 @@ mod tests {
                 let orb = |id, x, value, ticks| {
                     let p = Vec3::new(x, 70.0, 0.5);
                     ExperienceOrb {
+                        size_answer: None,
                         attachment_lifetime: Default::default(),
                         fall_distance: 0.0,
                         rotation: [0.0, 0.0],

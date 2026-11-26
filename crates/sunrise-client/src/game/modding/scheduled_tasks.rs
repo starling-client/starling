@@ -72,26 +72,32 @@ impl ScheduledTasks {
         delay_ticks: u32,
         task: ServerTask,
     ) -> Result<TaskId, ScheduleError> {
-        let waiting = if let Some(mod_id) = owner {
-            let count = self.pending.entry(mod_id).or_insert(0);
-            if *count >= MAX_PENDING_TASKS {
-                log::warn!(
-                    "mod `{mod_id}` reached MAX_PENDING_TASKS ({MAX_PENDING_TASKS}) pending scheduled tasks"
-                );
-                return Err(ScheduleError::TooMany);
+        // Until admission succeeds, captures belong to the caller. In particular, a
+        // refusal must drop them under the retained mod callback, not the engine scope.
+        let mut task = Some(task);
+        CallbackOwner::call_host(|| {
+            let waiting = if let Some(mod_id) = owner {
+                let count = self.pending.entry(mod_id).or_insert(0);
+                if *count >= MAX_PENDING_TASKS {
+                    log::warn!(
+                        "mod `{mod_id}` reached MAX_PENDING_TASKS ({MAX_PENDING_TASKS}) pending scheduled tasks"
+                    );
+                    return Err(ScheduleError::TooMany);
+                }
+                Some(count)
+            } else {
+                None
+            };
+            let id = allocate_task_id().ok_or(ScheduleError::Unavailable)?;
+            if let Some(count) = waiting {
+                *count += 1;
             }
-            Some(count)
-        } else {
-            None
-        };
-        let id = allocate_task_id().ok_or(ScheduleError::Unavailable)?;
-        if let Some(count) = waiting {
-            *count += 1;
-        }
-        let due = self.now.saturating_add(u64::from(delay_ticks));
-        self.queue.insert((due, id), (owner, task));
-        self.due.insert(id, due);
-        Ok(id)
+            let due = self.now.saturating_add(u64::from(delay_ticks));
+            self.queue
+                .insert((due, id), (owner, task.take().expect("new task")));
+            self.due.insert(id, due);
+            Ok(id)
+        })
     }
 
     /// Withdraw `id` if it is still waiting. `TaskId` is an opaque capability, so holding it

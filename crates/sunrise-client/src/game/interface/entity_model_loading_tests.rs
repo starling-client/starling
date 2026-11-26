@@ -152,7 +152,10 @@ fn optimized(root: &Path) -> BTreeMap<String, Part> {
         );
     }
     for (slot, part) in armor.player {
-        models.insert(format!("player/{slot}"), part);
+        models.insert(
+            format!("player/{slot}"),
+            std::sync::Arc::unwrap_or_clone(part),
+        );
     }
     for (model, part) in [
         ("armor_stand", armor.main),

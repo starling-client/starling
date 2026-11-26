@@ -115,16 +115,21 @@ impl Game<'_> {
     /// Consumes the fitted count, leaving the offered item and components in `stack`.
     /// Returns true if some of the count remains.
     pub(super) fn insert_stack_into_inventory(&mut self, stack: &mut ItemStack) -> bool {
-        let tutorial_item = matches!(
-            self.tutorial.step,
-            tutorial::Step::FindTree | tutorial::Step::PunchTree | tutorial::Step::CraftPlanks
-        )
-        .then(|| stack.clone());
         let max = self
             .res
             .items()
             .get(&stack.item)
             .map_or(64, |i| i.max_stack);
+        self.insert_stack_up_to(stack, max)
+    }
+
+    /// `insert_stack_into_inventory` with `max` the stack's own maximum.
+    pub(super) fn insert_stack_up_to(&mut self, stack: &mut ItemStack, max: u32) -> bool {
+        let tutorial_item = matches!(
+            self.tutorial.step,
+            tutorial::Step::FindTree | tutorial::Step::PunchTree | tutorial::Step::CraftPlanks
+        )
+        .then(|| stack.clone());
         let before = stack.count;
         let left = inventory_add(
             &mut self.inventory,

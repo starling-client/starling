@@ -5,8 +5,8 @@
 //! prepared resources.
 use crate::game::native_guest_turn_tests::with_guests;
 use mod_api::{
-    BlockEntityPart, BlockPart, Hooks, MenuContainer, MenuPart, MenuQuickMoveEvent,
-    MenuSlotRulesEvent, ModEntry, Mods, Registrar,
+    BlockEntityPart, BlockPart, Hooks, MenuContainer, MenuPart, MenuPickAllEvent,
+    MenuQuickMoveEvent, MenuSlotRulesEvent, ModEntry, Mods, Registrar,
 };
 use std::{
     cell::{Cell, RefCell},
@@ -61,11 +61,33 @@ thread_local! {
     /// The clicked stack the override was given.
     static QUICK_MOVE_SOURCE: Cell<Option<u32>> = const { Cell::new(None) };
     static QUICK_MOVE_CONSUME: Cell<Option<usize>> = const { Cell::new(None) };
+    static LINK_CHANGE: Cell<Option<LinkChange>> = const { Cell::new(None) };
+    static LINK_CHANGED: Cell<bool> = const { Cell::new(false) };
+    /// The pot slot `menu_pick_all` keeps out of a gather, if any.
+    static PICK_ALL_KEEPS: Cell<Option<usize>> = const { Cell::new(None) };
+    /// Every `menu_pick_all` question: slot, its count and the cursor's count.
+    static PICK_ALL_ASKED: RefCell<Vec<(usize, u32, u32)>> = const { RefCell::new(Vec::new()) };
+}
+
+#[derive(Clone, Copy, Debug)]
+enum LinkChange {
+    Insert,
+    Remove,
 }
 
 struct Pot;
 #[mod_api::sunrise_part]
 impl MenuPart for Pot {
+    fn menu_pick_all(&self, _: &dyn mod_api::Host, event: &mut MenuPickAllEvent<'_>) {
+        if event.container == MenuContainer::Main {
+            PICK_ALL_ASKED.with_borrow_mut(|asked| {
+                asked.push((event.slot, event.stack.count(), event.carried.count()))
+            });
+            if PICK_ALL_KEEPS.get() == Some(event.slot) {
+                event.allowed = false;
+            }
+        }
+    }
     fn menu_slot_rules(&self, _: &dyn mod_api::Host, event: &mut MenuSlotRulesEvent<'_>) {
         let item = mod_api::__private::item_key_id(event.stack.item())
             .unwrap()
@@ -95,6 +117,21 @@ impl MenuPart for Pot {
             event.may_place = false;
         }
         event.may_pickup &= event.slot != KEEPS;
+        if event.container == mod_api::MenuContainer::Main
+            && event.slot == 0
+            && event
+                .context
+                .slot(mod_api::MenuContainer::Grid, 0)
+                .is_some()
+        {
+            event.may_pickup &= event
+                .context
+                .slot(mod_api::MenuContainer::Result, 0)
+                .is_some_and(|stack| {
+                    mod_api::__private::item_key_id(stack.item()) == Some("minecraft:oak_planks")
+                        && stack.count() == 4
+                });
+        }
     }
 }
 /// The pot block's shift-click: usually left to the game, unless the fixture supplies a remainder.
@@ -115,6 +152,52 @@ impl BlockEntityPart for PotBlock {
                         .with_view(|mut view| view.set_item_slot(slot as u32, None)),
                     Some(Ok(true))
                 );
+            }
+            if let Some(change) = LINK_CHANGE.take() {
+                use mod_api::{
+                    BlockState, BlockUpdateFlags, HostBlockStates, ITEMS, ItemResource,
+                    ResourceHandler,
+                };
+                let mut moved = source.clone();
+                moved.set_count(source.count() - left).unwrap();
+                assert_eq!(
+                    event
+                        .subject
+                        .with_view(|mut view| view.set_item_slot(0, Some(moved))),
+                    Some(Ok(true))
+                );
+                let pos = [LINK.0, LINK.1, LINK.2];
+                match change {
+                    LinkChange::Insert => {
+                        let result: Result<(), mod_api::TransactionError<()>> =
+                            event.subject.transaction(|scope, tx| {
+                                let host = scope.host();
+                                let level = host.level("minecraft:overworld").unwrap();
+                                let items = level.capability(host, &ITEMS, pos, None).unwrap();
+                                assert_eq!(
+                                    items.insert_at(host, tx, 0, &ItemResource::of(source), 1),
+                                    Ok(1)
+                                );
+                                Ok(())
+                            });
+                        result.unwrap();
+                    }
+                    LinkChange::Remove => {
+                        let host = event.subject.host();
+                        let level = host.level("minecraft:overworld").unwrap();
+                        let air = BlockState::of(
+                            &host.block_states(),
+                            mod_api::__private::block_key("minecraft:air").unwrap(),
+                            &[],
+                        )
+                        .unwrap();
+                        assert_eq!(
+                            level.set_block(host, pos, air, BlockUpdateFlags::KNOWN_SHAPE),
+                            Ok(true)
+                        );
+                    }
+                }
+                LINK_CHANGED.set(true);
             }
             if left == 0 {
                 *event.stack = None;
@@ -203,6 +286,7 @@ fn with_pot_mod(
             // The block's container shows its slots to the menu.
             let container = Arc::new(ModContainer {
                 slots: SLOTS,
+                inputs: vec![0],
                 ..Default::default()
             });
             let state = game.world.block(POS.0, POS.1, POS.2).0;
@@ -618,6 +702,51 @@ fn a_handled_quick_move_writes_its_remainder_to_the_link_not_the_owner() {
             game.world.block_entities.get(&POS).unwrap().slots()[LINKED_SLOT],
             stone(2)
         );
+    });
+}
+
+#[test]
+#[ignore = "daily"]
+fn a_quick_move_rolls_back_both_ends_if_its_linked_source_changes() {
+    with_pot(|game, rx| {
+        link_pot(game);
+        let generation = game.world.block_entities.generation(&LINK).unwrap();
+        let block = game.world.block(LINK.0, LINK.1, LINK.2);
+        for change in [LinkChange::Insert, LinkChange::Remove] {
+            QUICK_MOVE_LEFT.set(Some(3));
+            LINK_CHANGE.set(Some(change));
+            click(
+                game,
+                rx,
+                (LINKED_SLOT as i32, 0, Input::QuickMove),
+                Vec::new(),
+                None,
+            );
+            assert!(
+                LINK_CHANGED.take(),
+                "the callback reached the source: {change:?}"
+            );
+            assert_eq!(QUICK_MOVE_SOURCE.take(), Some(7));
+            assert_eq!(game.world.block(LINK.0, LINK.1, LINK.2), block);
+            assert_eq!(
+                game.world.block_entities.generation(&LINK),
+                Some(generation)
+            );
+            assert_eq!(
+                game.world.block_entities.get(&LINK).unwrap().slots()[0],
+                stone(7)
+            );
+            assert_eq!(
+                game.world.block_entities.get(&POS).unwrap().slots()[0],
+                None
+            );
+            assert!(
+                game.lan.as_ref().unwrap().hub.guests[0]
+                    .inventory
+                    .iter()
+                    .all(Option::is_none)
+            );
+        }
     });
 }
 
@@ -1100,6 +1229,39 @@ fn pick_all_on_a_refusing_slot_gathers_from_the_others_and_skips_it() {
 
 #[test]
 #[ignore = "daily"]
+fn a_menu_part_keeps_a_slot_out_of_pick_all() {
+    with_pot(|game, rx| {
+        // The pot keeps slot 0 out of a gather: a double click on an empty slot gathers the stone
+        // of slot 5 and leaves slot 0's, in the prediction and on the server alike.
+        PICK_ALL_KEEPS.set(Some(0));
+        PICK_ALL_ASKED.take();
+        let mut menu = prediction(&[(0, stone(3)), (5, stone(2))], stone(1));
+        serve(game, &menu);
+        menu.click(&game.menu_env(), 6, 0, Input::PickupAll)
+            .unwrap();
+        assert_eq!(menu.slot(0).map(|s| s.count), Some(3));
+        assert_eq!(menu.slot(5), None);
+        assert_eq!(menu.carried.as_ref().map(|c| c.count), Some(3));
+        // The part heard the slots the gather would take, with the cursor gathering into.
+        let heard = PICK_ALL_ASKED.take();
+        assert!(heard.contains(&(0, 3, 1)), "{heard:?}");
+        assert!(heard.contains(&(5, 2, 1)), "{heard:?}");
+        let cursor = claim(game, 3);
+        let sent = click(game, rx, (6, 0, Input::PickupAll), vec![(5, None)], cursor);
+        assert!(sent.is_empty(), "{sent:?}");
+        assert_eq!(served(game), predicted(&menu));
+        // Without the part's refusal both slots are gathered.
+        PICK_ALL_KEEPS.set(None);
+        let mut menu = prediction(&[(0, stone(3)), (5, stone(2))], stone(1));
+        menu.click(&game.menu_env(), 6, 0, Input::PickupAll)
+            .unwrap();
+        assert_eq!((menu.slot(0), menu.slot(5)), (None, None));
+        assert_eq!(menu.carried.as_ref().map(|c| c.count), Some(6));
+    });
+}
+
+#[test]
+#[ignore = "daily"]
 fn a_drag_that_ends_on_one_slot_is_a_pickup_click_and_asks() {
     with_pot(|game, rx| {
         // Eight stone dragged onto a slot that takes stone but gives nothing up, holding five:
@@ -1219,5 +1381,52 @@ fn a_drag_and_a_creative_clone_never_ask_the_pickup_rule() {
         assert_eq!(menu.carried.as_ref().map(|c| c.count), Some(64));
         assert_eq!(served(game), predicted(&menu));
         assert!(asked().is_empty());
+    });
+}
+
+#[test]
+#[ignore = "daily"]
+fn quick_move_and_live_rules_see_the_same_prepared_result_until_the_grid_changes() {
+    with_pot(|game, rx| {
+        let craft = ModCrafting {
+            grid: 5,
+            size: 2,
+            result: RESULT,
+        };
+        let input = stone(1);
+        let entity = game.world.block_entities.get_mut(&POS).unwrap();
+        entity.slots_mut()[0] = stone(8);
+        entity.slots_mut()[craft.grid] = input.clone();
+        game.lan.as_mut().unwrap().hub.guests.update(0, |guest| {
+            let menu = guest.menu.as_mut().unwrap();
+            menu.mod_type = Some(Box::leak(Box::new(ModMenuType {
+                crafting: Some(craft),
+                ..pot_type().clone()
+            })));
+            menu.craft = Some(ModCraft {
+                grid: vec![input, None, None, None],
+                result: Some(ItemStack::new("minecraft:diamond", 1)),
+            });
+        });
+        let player = game.player(12).unwrap();
+        let menu = player.container_menu(game).unwrap();
+        let result = menu.slot(game, RESULT).unwrap().unwrap();
+        assert_eq!(
+            mod_api::__private::item_key_id(result.item()),
+            Some("minecraft:diamond")
+        );
+        assert_eq!(menu.slot_gives(game, 0), Some(false));
+        MOVED.with(|moved| moved.borrow_mut().clear());
+        click(game, rx, (0, 0, Input::QuickMove), vec![], None);
+        assert!(MOVED.with(|moved| moved.borrow().is_empty()));
+        assert_eq!(served(game)[0], Some(("minecraft:stone".to_owned(), 8)));
+
+        // Before the next sync, the live grid crafts oak planks, not the old preview.
+        game.world.block_entities.get_mut(&POS).unwrap().slots_mut()[5] =
+            Some(ItemStack::new("minecraft:oak_log", 1));
+        assert_eq!(menu.slot_gives(game, 0), Some(true));
+        click(game, rx, (0, 0, Input::QuickMove), vec![], None);
+        assert!(MOVED.with(|moved| moved.borrow().as_slice() == [0]));
+        assert_eq!(served(game)[0], None);
     });
 }

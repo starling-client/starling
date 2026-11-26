@@ -6,7 +6,9 @@ from pathlib import Path
 import sys
 import tempfile
 
-import test_command_exec_parity as driver
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_command_exec_parity as driver
 
 CASES = [('first-populated','container.0',False),('first-empty','container.0',True),('invalid99','container.99',False),('invalid54','container.54',False),('wildcard','container.*',False),('global-last','container.53',False)]
 POPULATED = '[{Slot:0b,id:"minecraft:stone",count:3},{Slot:5b,id:"minecraft:apple",count:2}]'

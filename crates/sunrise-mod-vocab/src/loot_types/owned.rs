@@ -1,129 +1,125 @@
-//! Attribute every codec call to its owning mod, including load-time metadata.
+//! Attribute every codec and bound-rule call to its registration's shared `CallbackOwner`.
 use super::*;
-use std::sync::{Arc, atomic::AtomicBool};
+use crate::callback_owner::{CallbackOwner, CallbackValue};
+use std::sync::Arc;
 
-pub(crate) fn function(
-    owner: &'static str,
-    index: usize,
-    codec: Arc<dyn ModLootFunction>,
-) -> Arc<dyn ModLootFunction> {
-    let poisoned = AtomicBool::new(false);
-    let metadata = crate::callback_owner::call(
+pub(crate) fn function_codec(
+    owner: CallbackOwner,
+    codec: Arc<dyn ModLootFunctionCodec>,
+) -> Arc<dyn ModLootFunctionCodec> {
+    let codec = CallbackValue::new(
         owner,
-        index,
-        &poisoned,
         "loot function type",
-        "loot_function_metadata",
-        || (codec.referenced_context_params(), codec.conditional()),
-    );
-    Arc::new(Function {
-        owner,
-        index,
+        "loot_function_codec_drop",
         codec,
-        poisoned,
-        metadata,
-    })
+    );
+    let conditional = codec
+        .owner()
+        .call("loot function type", "loot_function_metadata", || {
+            codec.value().conditional()
+        });
+    Arc::new(FunctionCodec { codec, conditional })
 }
-pub(crate) fn condition(
-    owner: &'static str,
-    index: usize,
-    codec: Arc<dyn ModLootCondition>,
-) -> Arc<dyn ModLootCondition> {
-    let poisoned = AtomicBool::new(false);
-    let metadata = crate::callback_owner::call(
+
+pub(crate) fn condition_codec(
+    owner: CallbackOwner,
+    codec: Arc<dyn ModLootConditionCodec>,
+) -> Arc<dyn ModLootConditionCodec> {
+    Arc::new(ConditionCodec(CallbackValue::new(
         owner,
-        index,
-        &poisoned,
         "loot condition type",
-        "loot_condition_metadata",
-        || codec.referenced_context_params(),
-    );
-    Arc::new(Condition {
-        owner,
-        index,
+        "loot_condition_codec_drop",
         codec,
-        poisoned,
-        metadata,
-    })
+    )))
 }
-struct Function {
-    owner: &'static str,
-    index: usize,
-    codec: Arc<dyn ModLootFunction>,
-    poisoned: AtomicBool,
-    metadata: Result<(Vec<Identifier>, bool), String>,
+
+struct FunctionCodec {
+    codec: CallbackValue<Arc<dyn ModLootFunctionCodec>>,
+    conditional: Result<bool, String>,
 }
-impl ModLootFunction for Function {
-    fn validate(&self, data: &LootEntryData) -> Result<(), String> {
-        self.metadata.as_ref().map_err(Clone::clone)?;
-        crate::callback_owner::call(
-            self.owner,
-            self.index,
-            &self.poisoned,
+impl ModLootFunctionCodec for FunctionCodec {
+    fn decode(&self, data: &serde_json::Value) -> Result<Arc<dyn ModLootFunction>, String> {
+        self.conditional.as_ref().map_err(Clone::clone)?;
+        let owner = self.codec.owner();
+        let rule = owner
+            .call("loot function type", "loot_function_decode", || {
+                self.codec.value().decode(data)
+            })?
+            .map_err(|reason| format!("mod {}: {reason}", owner.id()))?;
+        let rule = CallbackValue::new(
+            owner.clone(),
             "loot function type",
-            "loot_function_validate",
-            || self.codec.validate(data),
-        )?
-    }
-    fn referenced_context_params(&self) -> Vec<Identifier> {
-        self.metadata
-            .as_ref()
-            .map(|m| m.0.clone())
-            .unwrap_or_default()
+            "loot_function_drop",
+            rule,
+        );
+        let params = owner.call("loot function type", "loot_function_metadata", || {
+            rule.value().referenced_context_params()
+        })?;
+        Ok(Arc::new(OwnedFunction { rule, params }))
     }
     fn conditional(&self) -> bool {
-        self.metadata.as_ref().map(|m| m.1).unwrap_or(true)
+        self.conditional.as_ref().copied().unwrap_or(true)
+    }
+}
+
+struct OwnedFunction {
+    rule: CallbackValue<Arc<dyn ModLootFunction>>,
+    params: Vec<Identifier>,
+}
+impl ModLootFunction for OwnedFunction {
+    fn referenced_context_params(&self) -> Vec<Identifier> {
+        self.params.clone()
     }
     fn apply(
         &self,
-        data: &LootEntryData,
-        stack: LootStack,
+        stack: &mut LootStackEditor<'_>,
         context: &mut dyn LootTypeContext,
-    ) -> Result<LootStack, String> {
-        crate::callback_owner::call(
-            self.owner,
-            self.index,
-            &self.poisoned,
-            "loot function type",
-            "loot_function_apply",
-            || self.codec.apply(data, stack, context),
-        )?
+    ) -> Result<(), String> {
+        let owner = self.rule.owner();
+        owner
+            .call("loot function type", "loot_function_apply", || {
+                self.rule.value().apply(stack, context)
+            })?
+            .map_err(|reason| format!("mod {}: {reason}", owner.id()))
     }
 }
-struct Condition {
-    owner: &'static str,
-    index: usize,
-    codec: Arc<dyn ModLootCondition>,
-    poisoned: AtomicBool,
-    metadata: Result<Vec<Identifier>, String>,
-}
-impl ModLootCondition for Condition {
-    fn validate(&self, data: &LootEntryData) -> Result<(), String> {
-        self.metadata.as_ref().map_err(Clone::clone)?;
-        crate::callback_owner::call(
-            self.owner,
-            self.index,
-            &self.poisoned,
+
+struct ConditionCodec(CallbackValue<Arc<dyn ModLootConditionCodec>>);
+impl ModLootConditionCodec for ConditionCodec {
+    fn decode(&self, data: &serde_json::Value) -> Result<Arc<dyn ModLootCondition>, String> {
+        let owner = self.0.owner();
+        let rule = owner
+            .call("loot condition type", "loot_condition_decode", || {
+                self.0.value().decode(data)
+            })?
+            .map_err(|reason| format!("mod {}: {reason}", owner.id()))?;
+        let rule = CallbackValue::new(
+            owner.clone(),
             "loot condition type",
-            "loot_condition_validate",
-            || self.codec.validate(data),
-        )?
+            "loot_condition_drop",
+            rule,
+        );
+        let params = owner.call("loot condition type", "loot_condition_metadata", || {
+            rule.value().referenced_context_params()
+        })?;
+        Ok(Arc::new(OwnedCondition { rule, params }))
     }
+}
+
+struct OwnedCondition {
+    rule: CallbackValue<Arc<dyn ModLootCondition>>,
+    params: Vec<Identifier>,
+}
+impl ModLootCondition for OwnedCondition {
     fn referenced_context_params(&self) -> Vec<Identifier> {
-        self.metadata.clone().unwrap_or_default()
+        self.params.clone()
     }
-    fn test(
-        &self,
-        data: &LootEntryData,
-        context: &mut dyn LootTypeContext,
-    ) -> Result<bool, String> {
-        crate::callback_owner::call(
-            self.owner,
-            self.index,
-            &self.poisoned,
-            "loot condition type",
-            "loot_condition_test",
-            || self.codec.test(data, context),
-        )?
+    fn test(&self, context: &mut dyn LootTypeContext) -> Result<bool, String> {
+        let owner = self.rule.owner();
+        owner
+            .call("loot condition type", "loot_condition_test", || {
+                self.rule.value().test(context)
+            })?
+            .map_err(|reason| format!("mod {}: {reason}", owner.id()))
     }
 }

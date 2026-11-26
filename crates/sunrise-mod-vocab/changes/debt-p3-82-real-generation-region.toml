@@ -1,0 +1,103 @@
+ids = [
+    "type:FeatureError",
+    "type:FeatureError.0",
+    "handle:FeatureError::new",
+    "type:StructureError",
+    "type:StructureError.0",
+    "handle:StructureError::new",
+    "trait:FeatureContext",
+    "method:FeatureContext::ensure_can_write",
+]
+why = """
+Native feature and structure callbacks now run directly against the real generation region (or
+live level) with vanilla write admissibility and native error causes, instead of a staged
+all-or-nothing work order with an invented 65,536-unit work budget, frozen heightmaps,
+own-block-only block-entity placement, or disable-on-Err latching. Feature config codecs and
+structure save/data-file codecs are unchanged.
+
+Following vanilla `Feature.place`, `WorldGenRegion.ensureCanWrite`, `WorldGenRegion.setBlock`,
+`WorldGenRegion.getBlockEntity`, `WorldGenRegion.getHeight`, `ChunkPyramid.FEATURES`
+(`ChunkPyramid.GENERATION_PYRAMID`), `ProtoChunk.getHeightAccessorForGeneration`,
+`BelowZeroRetrogen.UPGRADE_HEIGHT_ACCESSOR`, `ImposterProtoChunk`, `BlockEntity.loadWithComponents`
+and `Level.setBlock`, registered feature types borrow the caller's world and random directly.
+`FEATURES` admits writes in the center chunk and its eight neighbors, restricted throughout by the
+center's generation height when upgrading, while reads cover `ChunkPyramid.GENERATION_PYRAMID`'s
+eight-chunk `STRUCTURE_STARTS` dependency radius (distance 2..=8 logs `warnIfReadOutsideWriteZone`
+and serves resident columns or empty `STRUCTURE_STARTS` holders when no resident proto or full
+column exists); `ensure_can_write` exposes that admission check, `set_block` returns the owning
+world's result immediately, reads (`block`, `block_in_tag`, `height`) observe completed writes,
+and `block_entity` validates against the current block without requiring this call to have placed
+it (while keeping read-only full chunks immutable). Returned `FeatureError`s
+preserve their native cause chain, log the registering mod, feature type and origin each time,
+and end only that invocation without undoing writes or draws or disabling later invocations. Only
+a callback panic disables that registered callback for the session with a log and error toast.
+
+Following vanilla `Structure.generate`, `Structure.findValidGenerationPoint`,
+`StructureStart.placeInChunk`, `StructurePiece.placeBlock`, `StructurePiece.getBoundingBox`,
+`StructurePiece.createTag`, `StructurePieceType`, `PiecesContainer.load` and NeoForge
+`RegisterEvent` on the built-in worldgen type registries (`FEATURE_TYPE`, `STRUCTURE_TYPE`,
+`STRUCTURE_PIECE`), `StructureError` preserves its native cause chain without `Wire` encoding.
+Each registered structure operation (`find_generation_point`, `load_piece`, `bounding_box`,
+`beardifier`, `add_additional_save_data`, `post_process`, `after_place`) holds its own callback
+owner bound to the registering mod so a panic disables only that operation for that registration
+with a log and error toast while leaving other operations and structure types active. Returned
+`StructureError`s log the registering mod, structure type (and chunk for placement) and full
+native source chain each time and end only that piece load or invocation without undoing
+completed writes or draws or disabling later pieces, `after_place` or later chunks. Piece
+`bounding_box` and `beardifier` are queried once at generation or load, failed saves emit no
+partial tag, and `PieceContext` write/entity/block-entity failures log position and cause while
+keeping chunk-box clipping and unchanged-state results quiet.
+"""
+migrate = """
+Error wrappers (`type:FeatureError`, `type:FeatureError.0`, `handle:FeatureError::new`,
+`type:StructureError`, `type:StructureError.0`, `handle:StructureError::new`,
+`type:BlockStateError`):
+- Replace `FeatureError(message)` with `FeatureError::new(std::io::Error::other(message))` and
+  `StructureError(message)` with `StructureError::new(std::io::Error::other(message))`.
+- When you already have a typed error implementing `std::error::Error + Send + Sync + 'static`,
+  pass it directly with `.map_err(FeatureError::new)?` or `.map_err(StructureError::new)?`
+  instead of formatting it. `BlockStateError` now implements `Display` and `std::error::Error`
+  (its variants and encoding are unchanged).
+- Replace `FeatureError::from((id, reason))` with
+  `FeatureError::new(std::io::Error::other(format!("{id}: {reason}")))` (or a typed error
+  carrying the ID); do the same with `StructureError::new` for structures.
+- Replace `.0` field access or tuple destructuring with `error.to_string()` for diagnostics or
+  `std::error::Error::source(&error)` to inspect or downcast the underlying cause.
+- Remove any `Wire` encoding or decoding of `FeatureError` or `StructureError`; return them
+  directly from the in-process callbacks.
+
+Feature placement (`trait:FeatureContext`, `method:FeatureContext::ensure_can_write`, and
+behavior-only `method:FeatureType::place`, `method:FeatureContext::block`,
+`method:FeatureContext::block_in_tag`, `method:FeatureContext::set_block`,
+`method:FeatureContext::height`, `method:FeatureContext::block_entity`):
+- Call `context.ensure_can_write(pos)` to preflight the region's write policy before writing
+  (it is an admission check, not a guarantee of a state change). During `FEATURES`, writes are
+  admitted within one chunk horizontally of the center chunk, restricted throughout to Y=-64..-1
+  when the center is performing a below-zero upgrade (`BelowZeroRetrogen.UPGRADE_HEIGHT_ACCESSOR`).
+- Handle `context.set_block(pos, state, flags)`'s immediate boolean result directly: `false` is
+  an ordinary per-operation refusal and never cancels prior writes or disables the callback. An
+  unchanged state can return `true` in a generation region and `false` on the live level.
+- `context.block(pos)`, `context.block_in_tag(pos, tag)` and `context.height(kind, x, z)` read
+  the current world state including completed writes from this call; read before modifying if you
+  need the previous value.
+- `context.block_entity(pos, nbt)` validates and applies NBT to the current block at `pos` (even
+  if already present before this call); remove any preliminary `set_block` done only to mark the
+  block as yours. Read-only full chunks and invalid or mismatched NBT return `false`.
+- In `FeatureType::place`, return `Ok(false)` for no placement and `Err(FeatureError::new(...))`
+  for a logged, non-latching error. Do not rely on `Err` or refused writes to roll back completed
+  writes/draws or disable the type; perform preconditions before mutating. Only a panic disables
+  that registered callback for the session (with a log and error toast).
+
+Structure callbacks (behavior-only `method:StructureType::find_generation_point`,
+`method:StructureType::load_piece`, `method:StructureType::after_place`,
+`method:StructurePiece::bounding_box`, `method:StructurePiece::beardifier`,
+`method:StructurePiece::post_process`, `method:StructurePiece::add_additional_save_data`):
+- Do not rely on returning `Err(StructureError::new(...))` from `post_process` or `after_place`
+  to undo completed writes or random draws or to stop later pieces, `after_place` or later chunks.
+- Returning `Err` from `load_piece` omits only that saved piece and logs the cause chain without
+  disabling later loads.
+- `bounding_box` and `beardifier` are queried once when a piece is generated or loaded and cached
+  on the engine piece; unordered beardifier bounds are warned and add no terrain adjustment.
+- Panics are isolated per operation per registration and disable only that operation for the
+  session with a log and error toast; a panic in `add_additional_save_data` emits no partial tag.
+"""

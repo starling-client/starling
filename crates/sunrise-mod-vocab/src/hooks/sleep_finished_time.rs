@@ -1,5 +1,4 @@
 //! The `sleep_finished_time` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0331
 
 pub trait Hooks {
     /// Enough players have slept through the night in level `dimension`
@@ -21,11 +20,9 @@ pub trait Hooks {
     /// the morning. Only the Overworld's clock defines markers today, so on
     /// any other clock every `Marker`, vanilla's included, falls back to the
     /// morning. When even the morning is past `i64::MAX`, `new_time` is
-    /// `current` and the clock stays. On the server, only when the `advance_time` rule is on;
-    /// `time_skip` then hears the jump to the resolved time and may
-    /// still cancel it. The players wake and the weather resets as usual
-    /// either way. Set `canceled` and the clock is left where it is, as
-    /// NeoForge's cancel leaves it: `time_skip` is not asked either.
+    /// `current` and the clock stays. On the server, only when the `advance_time`
+    /// rule is on. Set `canceled` to leave the clock where it is; the players wake
+    /// and weather resets as usual either way. This is the only wake-up clock event.
     #[hook(
         target = "sunrise_client::game::native_hooks::base::Game<'_>::native_sleep_finished_time",
         dispatch = "flat",
@@ -34,7 +31,7 @@ pub trait Hooks {
         out = "canceled",
         neoforge = "SleepFinishedTimeEvent",
         cancellable = true,
-        version = 2
+        version = 3
     )]
     fn sleep_finished_time(
         dimension: &str,

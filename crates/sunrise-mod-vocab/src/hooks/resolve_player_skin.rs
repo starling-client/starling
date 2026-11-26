@@ -9,7 +9,8 @@ pub trait Hooks {
     ///
     /// `selection` starts at `None`. Listeners share it in dispatch order: leave it
     /// unchanged, replace it, or clear it. The final answer applies only to this
-    /// frame. An absent, freed or non-64×64 dynamic texture keeps both vanilla values.
+    /// frame. An absent, released or non-64×64 dynamic texture keeps both vanilla values. The game copies
+    /// the texture's pixels into the player's skin slot on the GPU each frame it is selected.
     #[hook(
         receiver = "read",
         dispatch = "flat",

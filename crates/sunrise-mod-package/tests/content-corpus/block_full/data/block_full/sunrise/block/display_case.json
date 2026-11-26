@@ -3,6 +3,7 @@
   "shapes_from_block_entity": true,
   "properties": {
     "render_shape": "ENTITYBLOCK_ANIMATED",
-    "push_reaction": "IMMOVEABLE"
+    "push_reaction": "IMMOVEABLE",
+    "spawn_rule": "always"
   }
 }

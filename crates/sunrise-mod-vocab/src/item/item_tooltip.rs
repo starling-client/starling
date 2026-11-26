@@ -12,16 +12,6 @@ pub struct TooltipDisplay<'a> {
     pub(crate) ominous_banner: bool,
 }
 impl<'a> TooltipDisplay<'a> {
-    // hidden: a constructor for generated wire code, not for mods
-    /// Reconstruct the read-only projection transported by the mod boundary.
-    #[doc(hidden)]
-    pub fn __wire_from_fields(component: Option<&'a Tag>, ominous_banner: bool) -> Self {
-        Self {
-            component,
-            ominous_banner,
-        }
-    }
-
     /// Read tooltip visibility from an owned API stack's effective component patch.
     /// The game supplies this stack only after the tooltip subscription guard.
     pub fn for_stack(stack: &'a ItemStack) -> Self {

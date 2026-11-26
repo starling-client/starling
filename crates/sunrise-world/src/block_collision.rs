@@ -234,6 +234,26 @@ impl<'r> BlockCollisionRegistry<'r> {
         }
         self.cached.cached_shape(state)
     }
+    /// The state's shape with an empty collision context when that shape is the same at every
+    /// position: the cached shape, or for scaffolding and powder snow, which have no cached shape,
+    /// what [`DynamicSupport`] gives them with no entity (the stable scaffold shape; nothing).
+    /// None where it depends on the position or a part may answer for it, as for
+    /// [`Self::static_shape`].
+    pub fn empty_context_shape(&self, state: BlockStateId) -> io::Result<Option<VoxelShape>> {
+        if let Some(shape) = self.static_shape(state)? {
+            return Ok(Some(shape.clone()));
+        }
+        if self.has_positioned_collision(state) || self.has_part(state) {
+            return Ok(None);
+        }
+        Ok(match self.contextual.get(&state) {
+            Some(ContextualRule::Scaffolding(_)) => {
+                Some(crate::dynamic_support::scaffolding_stable_shape())
+            }
+            Some(ContextualRule::PowderSnow) => Some(VoxelShape::empty()),
+            _ => None,
+        })
+    }
     /// Whether `state` can have a collision shape: false for states whose shape is always
     /// empty, whatever the context. States outside the registry count.
     pub fn may_collide(&self, state: BlockStateId) -> bool {

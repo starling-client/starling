@@ -39,14 +39,18 @@ import tempfile
 import threading
 import time
 
-try:
-    from . import lab
-except ImportError:
-    import lab
-
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+from tools import lab
+
 EXE = '.exe' if os.name == 'nt' else ''
-SERVERS = ('sunrise', 'vanilla', 'pumpkin')
+# Which console queries each server has; a figure it lacks is reported as UNSUPPORTED, one it has but never answers fails the run.
+SERVERS = {
+    'sunrise': {'gametime': True, 'tick_query': True},
+    'vanilla': {'gametime': True, 'tick_query': True},
+    'pumpkin': {'gametime': True, 'tick_query': False},
+}
+UNSUPPORTED = 'unsupported'
 
 PROPERTIES = {
     'level-seed': '12345',
@@ -100,7 +104,7 @@ enabled = false
 DONE = re.compile(r'Done|listening|Server started', re.IGNORECASE)
 TICK_AVERAGE = re.compile(r'Average time per tick: ([0-9.]+) ?ms')
 TICK_PERCENTILES = re.compile(r'P50: ([0-9.]+) ?ms P95: ([0-9.]+) ?ms P99: ([0-9.]+) ?ms')
-GAMETIME = re.compile(r'The time is (-?\d+)')
+GAMETIME = re.compile(r'The game time is (-?\d+) tick\(s\)')
 
 
 def free_port():
@@ -123,7 +127,7 @@ def parse_tick_query(lines):
 
 
 def parse_gametime(lines):
-    """The game time `time query gametime` printed, or None."""
+    """The game time `time query gametime` printed ("The game time is N tick(s)"), or None until it is there."""
     for line in lines:
         if m := GAMETIME.search(line):
             return int(m.group(1))
@@ -131,9 +135,9 @@ def parse_gametime(lines):
 
 
 def tps(start_ticks, end_ticks, seconds):
-    """Game ticks per wall-clock second over the window, or None when a query went unanswered."""
-    if start_ticks is None or end_ticks is None or seconds <= 0:
-        return None
+    """Game ticks per wall-clock second over the window."""
+    if seconds <= 0:
+        raise ValueError(f'a window of {seconds} s has no tick rate')
     return round((end_ticks - start_ticks) / seconds, 2)
 
 
@@ -244,19 +248,19 @@ class Server:
         raise RuntimeError(f'the server was not up within {timeout} s')
 
     def ask(self, command, parse, timeout=5):
-        """Sends a console command and returns parse(its output lines), or None if nothing parsed in time."""
+        """Sends a console command and returns parse(its output lines); raises when nothing parsed in time."""
         start = self.count()
         try:
             self.process.stdin.write(command + '\n')
             self.process.stdin.flush()
-        except (BrokenPipeError, OSError):
-            return None
+        except OSError as e:
+            raise RuntimeError(f'`{command}` could not be sent to the server: {e}') from e
         deadline = time.time() + timeout
         while time.time() < deadline:
             if (value := parse(self.since(start))) is not None:
                 return value
             time.sleep(0.05)
-        return None
+        raise RuntimeError(f'`{command}` got no parseable answer within {timeout} s; its output: {self.since(start)}')
 
     def stop(self):
         if self.process.poll() is None:
@@ -312,9 +316,10 @@ def summarize(kind, args, ticks, rss, cpu, gametime, window_seconds, summary, st
         'bots': args.bots,
         'behaviour': args.behaviour,
         'start_seconds': start_seconds,
-        'tps': tps(*gametime, window_seconds),
-        'mspt': {k: mean([t[k] for t in ticks]) for k in ('average', 'p50', 'p95', 'p99')},
-        'mspt_worst_p99': max((t['p99'] for t in ticks), default=None),
+        'tps': UNSUPPORTED if gametime is None else tps(*gametime, window_seconds),
+        'mspt': {k: UNSUPPORTED if ticks is None else mean([t[k] for t in ticks])
+                 for k in ('average', 'p50', 'p95', 'p99')},
+        'mspt_worst_p99': UNSUPPORTED if ticks is None else max((t['p99'] for t in ticks), default=None),
         'rss_mb': {'mean': mean([r / 1e6 for r in rss]), 'max': round(max(rss) / 1e6, 1) if rss else None},
         'cpu_percent': mean(cpu),
         'bytes_per_player_second': bandwidth,
@@ -322,7 +327,7 @@ def summarize(kind, args, ticks, rss, cpu, gametime, window_seconds, summary, st
         'bots_joined': summary.get('joined'),
         'bots_failed': [b for b in summary.get('per_bot', []) if b.get('error')],
         'chunks_total': summary.get('chunks'),
-        'tick_queries': len(ticks),
+        'tick_queries': UNSUPPORTED if ticks is None else len(ticks),
     }
 
 
@@ -343,9 +348,11 @@ def run_once(kind, args, out):
         bot_lines = []
         threading.Thread(target=lambda: bot_lines.extend(bot_process.stdout), daemon=True).start()
         time.sleep(args.bots * args.join_every + args.warmup)
-        first_time = server.ask('time query gametime', parse_gametime)
+        supports = SERVERS[kind]
+        first_time = server.ask('time query gametime', parse_gametime) if supports['gametime'] else None
         began = time.time()
-        rss, cpu, ticks = [], [], []
+        rss, cpu = [], []
+        ticks = [] if supports['tick_query'] else None
         usage = tree_usage(server.process.pid)
         last_cpu, last_time = (usage[1] if usage else 0), time.time()
         next_query = time.time()
@@ -356,16 +363,15 @@ def run_once(kind, args, out):
                 rss.append(u[0])
                 cpu.append((u[1] - last_cpu) / (now - last_time) * 100)
                 last_cpu, last_time = u[1], now
-            if now >= next_query:
-                if (t := server.ask('tick query', parse_tick_query)) is not None:
-                    ticks.append(t)
+            if ticks is not None and now >= next_query:
+                ticks.append(server.ask('tick query', parse_tick_query))
                 next_query = now + 5
         window = time.time() - began
-        last = server.ask('time query gametime', parse_gametime)
+        last = server.ask('time query gametime', parse_gametime) if supports['gametime'] else None
         bot_process.wait(timeout=total + 120)
         time.sleep(0.5)
         _, summary = split_bot_output(list(bot_lines))
-        result.update(summarize(kind, args, ticks, rss, cpu, (first_time, last), window, summary, start_seconds,
+        result.update(summarize(kind, args, ticks, rss, cpu, (first_time, last) if supports['gametime'] else None, window, summary, start_seconds,
                                 total))
     except Exception as e:  # a failed run is reported, and the next one still runs
         result['error'] = str(e)

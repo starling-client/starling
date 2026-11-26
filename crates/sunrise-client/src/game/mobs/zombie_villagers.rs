@@ -41,8 +41,7 @@ impl Game<'_> {
             && let Some(sunrise_client::mobs::MobEvent::Sound(name, at, volume, pitch)) =
                 zombie_villager::cure_sound(m)
         {
-            self.audio
-                .play_unshared(&format!("minecraft:{name}"), Some(at), volume, pitch);
+            self.play_audio_unshared(&format!("minecraft:{name}"), Some(at), volume, pitch);
         }
     }
 
@@ -132,9 +131,27 @@ impl Game<'_> {
                 .random
                 .next_int_bound(zombie_villager::WAIT_SPREAD)
                 .unwrap_or(0);
-        let mut events = Vec::new();
-        zombie_villager::start_converting(&mut self.mobs[index], starter, time, &mut events);
-        let _ = self.handle_mob_events(events);
+        let id = self.mobs[index].id;
+        let at = [
+            self.mobs[index].position.x,
+            self.mobs[index].position.y,
+            self.mobs[index].position.z,
+        ];
+        sunrise_client::mobs::villager::ext_mut(&mut self.mobs[index]).cure =
+            Some(zombie_villager::Cure { time, starter });
+        if let Some(def) = sunrise_client::brewing::effect("weakness") {
+            self.remove_mob_effect_by_index(id, def.index);
+        }
+        self.add_mob_effect(
+            id,
+            sunrise_client::effects::EffectInstance::new("strength", time, 0),
+            None,
+        );
+        let _ = self.handle_mob_events(vec![sunrise_client::mobs::MobEvent::EntityEvent {
+            mob: id,
+            event: 16,
+            at,
+        }]);
         self.swing_arm();
         true
     }
@@ -208,9 +225,11 @@ impl Game<'_> {
             });
         }
         // The nausea comes after the advancement criterion (finishConversion).
-        if let Some(v) = self.mobs.iter_mut().find(|m| m.id == vid) {
-            v.add_effect("minecraft:nausea", 200, 0);
-        }
+        self.add_mob_effect(
+            vid,
+            sunrise_client::effects::EffectInstance::new("nausea", 200, 0),
+            None,
+        );
         if !old.silent {
             self.level_event_at(
                 1027,
@@ -250,7 +269,7 @@ impl Game<'_> {
                 this: Some(e),
                 origin,
                 tool: None,
-                block_pos: None,
+                event_block: None,
                 target: None,
                 interacting: None,
             };
@@ -426,6 +445,7 @@ mod tests {
         use sunrise_client::mobs::{Anim, Brain, MobType, Part};
         use sunrise_core::geometry::Vec3;
         let kind = MobType {
+            type_key: Default::default(),
             shadow: None,
             id: name.into(),
             species,
@@ -469,6 +489,7 @@ mod tests {
                 pose: [0.0; 9],
                 polygons: Vec::new(),
                 children: Vec::new(),
+                layer: None,
             }),
             layers: Default::default(),
             texture: String::new(),

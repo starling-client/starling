@@ -336,7 +336,7 @@ fn primed_tnt_block_state(cx: &mut Cx) {
         if let Some(fuse) = e.get("Fuse").cloned() {
             set(e, "fuse", fuse);
         }
-        reread(k, e);
+        reread(k, e)
     });
 }
 
@@ -359,7 +359,7 @@ fn projectile_stored_item(cx: &mut Cx) {
                 rename(e, "Trident", "item");
                 super::drop_typed(e, "Trident");
             }
-            return;
+            return Ok(());
         };
         let stack = Tag::compound([("id", string(item)), ("Count", Tag::Int(1))]);
         set(e, "item", stack);
@@ -367,7 +367,7 @@ fn projectile_stored_item(cx: &mut Cx) {
         if let Some(s) = e.get_mut("item") {
             items::add_names(s);
         }
-        reread(k, e);
+        reread(k, e)
     });
 }
 
@@ -483,7 +483,7 @@ fn horse_body_armor(cx: &mut Cx, id: &str, field: &str, clear_armor_items: bool)
     let k = cx.k;
     cx.entity(id, |e| {
         horse_body_armor_entity(e, field, clear_armor_items);
-        reread(k, e);
+        reread(k, e)
     });
 }
 
@@ -830,7 +830,7 @@ fn tipped_arrow_potion(cx: &mut Cx) {
     let k = cx.k;
     cx.entity("minecraft:arrow", |e| {
         tipped_arrow_potion_entity(e);
-        reread(k, e);
+        reread(k, e)
     });
 }
 

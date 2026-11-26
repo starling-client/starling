@@ -74,13 +74,23 @@ fn entity_impact_includes_items_and_cancel_skips_hooking() {
                 assert_eq!(hits[0].entity, Some(id));
                 assert_eq!(hits[0].entity_kind, kind);
                 point(hits[0].at, [x, 64.5, 0.5]);
+                drop(hits);
                 let h = game.hook.as_ref().unwrap();
+                // FishingHook.onHitEntity sets hookedIn, then the current flying tick
+                // still moves. The next tick freezes and enters HOOKED_IN_ENTITY.
+                assert_eq!(h.state, State::Flying);
+                assert_eq!(h.position.x, 4.5);
                 if matches!(action, Action::Cancel) {
-                    assert_eq!(h.state, State::Flying);
-                    assert!((h.position.x - 4.5).abs() < 1.0e-6);
+                    assert_eq!(h.hooked_in(), None);
                 } else {
+                    assert_eq!(h.hooked_in(), Some(id));
+                    assert_eq!(h.position, Vec3::new(4.5, 64.5, 0.5));
+                    game.tick_fishing();
+                    let h = game.hook.as_ref().unwrap();
                     assert_eq!(h.state, State::Hooked(id));
-                    assert_eq!(h.position, Vec3::new(0.5, 64.5, 0.5));
+                    assert_eq!(h.velocity, Vec3::ZERO);
+                    assert_eq!(h.position, Vec3::new(4.5, 64.5, 0.5));
+                    assert_eq!(observed.hits.lock().unwrap().len(), 1);
                 }
             });
         }

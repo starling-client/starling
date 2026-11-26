@@ -5,10 +5,9 @@ import json
 from pathlib import Path
 import shutil
 import sys
-try:
-    from . import test_command_exec_parity as driver
-except ImportError:
-    import test_command_exec_parity as driver
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_command_exec_parity as driver
 STACKS = [
     ('zero', 'diamond_sword', None), ('below', 'diamond_sword', 3),
     ('edge', 'diamond_sword', 4), ('above', 'diamond_sword', 5),

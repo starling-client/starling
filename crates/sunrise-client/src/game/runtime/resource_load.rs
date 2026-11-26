@@ -1,7 +1,7 @@
 //! The startup's resource load: the stages the loading screen shows, the
 //! scoped threads each step runs on, and the core, gameplay and pack tables
 //! read from the prepared resources.
-use super::*;
+use super::{resource_tables::PackParts, *};
 
 #[cfg(test)]
 #[path = "incoming_tests/resource_load_scope.rs"]
@@ -187,11 +187,14 @@ pub(super) struct GameplayTables {
 /// environment need no block facts and load beside them. The outer error
 /// fails the load; the inner one is the packs' (the registry or the block
 /// models), which [`load_resources_for_mods`] rolls back from.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn load_core(
     resources: &sunrise_assets::resource_source::ResourceRoot,
     additional_data: &[Arc<sunrise_client::datapack::DataPack>],
     conditions: &sunrise_world::conditions::LoadConditions,
+    emissive_sprites: &[mod_api::Answered<mod_api::EmissiveSpriteRegistration>],
     load_role: mods::LoadRole,
+    captured: sunrise_world::native_load_context::SettingsCapture,
     parallel: bool,
     progress: &Progress,
     launch_world: Option<&str>,
@@ -230,7 +233,7 @@ pub(super) fn load_core(
     };
     progress.set(1);
     let item_data =
-        Arc::new(mods::load_item_data(root, role, load_role.owning).map_err(|e| e.to_string())?);
+        Arc::new(mods::load_item_data(root, role, captured).map_err(|e| e.to_string())?);
     let registry = assets.registry;
     let entity_models_for_render = entity_models.clone();
     let (render, gameplay, visibility, biomes, environment, collision) = std::thread::scope(
@@ -245,9 +248,9 @@ pub(super) fn load_core(
                     if headless {
                         assets.reload_for_server(resources)
                     } else if let Some(parsed) = parsed_models {
-                        assets.reload_with_models(resources, parsed)
+                        assets.reload_with_models_and_emissive(resources, parsed, emissive_sprites)
                     } else {
-                        assets.reload(resources)
+                        assets.reload_with_emissive(resources, emissive_sprites)
                     }
                 })
                 .map_err(|e| e.to_string())?;
@@ -303,10 +306,11 @@ pub(super) fn load_core(
                     world_loading::preload_launch_world(
                         folder,
                         root,
+                        resources.data(),
                         resources.data_changes(),
                         registry,
-                        biomes.clone(),
                         additional_data,
+                        conditions.clone(),
                     );
                 }
                 Ok::<_, String>(biomes)
@@ -432,6 +436,12 @@ pub(super) fn gameplay_tables(
                     modifications,
                 )?);
             }
+            // #4473: then the attributes the content mods' effects declare
+            // modifiers on, which the complete catalog knows.
+            check_effect_modifier_attributes(
+                &motion.attributes,
+                sunrise_client::brewing::mod_effects(),
+            )?;
             Ok::<_, Box<dyn std::error::Error>>(motion)
         })
         .map_err(|e| e.to_string());
@@ -559,6 +569,26 @@ pub(super) fn with_mod_attribute_additions(
     Ok(catalog)
 }
 
+/// Refuses the load when a content mod's effect declares a modifier on an
+/// attribute the catalog does not have, vanilla's and the mods' declared ones
+/// included (#4473), naming the effect and the attribute.
+pub(super) fn check_effect_modifier_attributes(
+    catalog: &sunrise_world::attributes::entity::Catalog,
+    effects: &[sunrise_client::brewing::EffectDef],
+) -> std::result::Result<(), String> {
+    for effect in effects {
+        for &(attribute, ..) in effect.modifiers {
+            if catalog.id(attribute).is_none() {
+                return Err(format!(
+                    "mob effect {}: attribute_modifiers: unknown attribute {attribute}",
+                    effect.id
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Each mob type mods added attributes to takes its grown catalog row
 /// (`with_mod_attribute_additions`) as its attribute map and spawn fields, as
 /// a declared set's type does (#845), so a new mob of the type spawns with
@@ -566,7 +596,7 @@ pub(super) fn with_mod_attribute_additions(
 /// its map from the catalog alone.
 pub(super) fn take_modified_attribute_rows(
     types: &mut HashMap<String, sunrise_client::mobs::MobType>,
-    catalog: &sunrise_world::attributes::entity::Catalog,
+    catalog: &Arc<sunrise_world::attributes::entity::Catalog>,
     modifications: &[mod_api::__private::EntityAttributeModification],
 ) {
     let modified: std::collections::BTreeSet<&str> = modifications
@@ -670,6 +700,44 @@ pub(super) fn load_resources_for_mods(
     clear_pack_selection: &mut dyn FnMut() -> Result<()>,
     mod_sources: &mods::ModsState,
 ) -> Result<Loaded> {
+    let default_limit = Arc::new(AtomicU32::new(sunrise_client::hud::MAX_ATLAS_SIZE));
+    load_resources_for_mods_with_limit(
+        roots,
+        additional_data,
+        launch_world,
+        vanilla_root,
+        settings,
+        started,
+        menu,
+        role,
+        progress,
+        &default_limit,
+        &mut |ui, root, _| publish(ui, root),
+        clear_pack_selection,
+        mod_sources,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn load_resources_for_mods_with_limit(
+    roots: packs::PackRoots,
+    additional_data: Vec<Arc<sunrise_client::datapack::DataPack>>,
+    launch_world: Option<&str>,
+    vanilla_root: &std::path::Path,
+    settings: &Settings,
+    started: Instant,
+    menu: bool,
+    role: impl Into<mods::LoadRole>,
+    progress: &Progress,
+    max_atlas_size: &Arc<AtomicU32>,
+    publish: &mut dyn FnMut(
+        UiResources,
+        &std::path::Path,
+        &sunrise_assets::resource_source::ResourceSource,
+    ),
+    clear_pack_selection: &mut dyn FnMut() -> Result<()>,
+    mod_sources: &mods::ModsState,
+) -> Result<Loaded> {
     let load_role: mods::LoadRole = role.into();
     let role = load_role.execution;
     let packs::PackRoots {
@@ -692,12 +760,16 @@ pub(super) fn load_resources_for_mods(
     };
     let root = base.prepared().to_path_buf();
     let headless = !role.is_client();
-    let texture_atlases = if headless {
-        Vec::new()
+    let (texture_atlases, emissive_sprites) = if headless {
+        (Vec::new(), Vec::new())
     } else {
-        client_reload::collect_texture_atlases()
+        (
+            client_reload::collect_texture_atlases(),
+            client_reload::collect_emissive_sprites(),
+        )
     };
-    let mut resolved = client_reload::stage_texture_atlases(resolved, &texture_atlases);
+    let stage = |root| client_reload::stage_texture_atlases(root, &texture_atlases);
+    let mut resolved = stage(resolved);
     let threads = settings.sunrise.worker_threads();
     // One pool of workers for every level's streaming, the client's and the
     // server thread's (sunrise_threads::jobs), sized before any world opens.
@@ -707,14 +779,17 @@ pub(super) fn load_resources_for_mods(
     // Stage A: the menu bundle (atlas and panorama). With a loading screen it is
     // published at once so the title screen can appear while the world bundle
     // loads; the synchronous launch instead carries it in `Loaded`.
-    // A dedicated server builds only the font (UiResources::server), as the
-    // integrated server's game does: the full atlas and panorama are 144 MB.
+    // A dedicated server has no font metrics or atlas; give its game only
+    // the shared empty UI structures.
     let load_ui = |source: &sunrise_assets::resource_source::ResourceSource| {
         let _step = startup::step("ui.load");
-        if headless {
+        if role.is_dedicated_server() {
+            UiResources::server(&sunrise_assets::resource_source::ResourceSource::default())
+        } else if headless {
             UiResources::server(source)
         } else {
-            UiResources::load(source, vanilla_root).map(|ui| {
+            let limit = max_atlas_size.load(Ordering::Relaxed);
+            UiResources::load_with_limit(source, vanilla_root, limit).map(|ui| {
                 ui.with_splashes(
                     source,
                     vanilla_root,
@@ -728,13 +803,15 @@ pub(super) fn load_resources_for_mods(
     // either clears the client selection, not required mod resources (NeoForge's
     // `Minecraft.rollbackResourcePacks`).
     let parallel = threads > 1;
-    let mut offer = |ui: UiResources, root: &std::path::Path| {
+    let mut offer = |ui: UiResources,
+                     root: &std::path::Path,
+                     source: &sunrise_assets::resource_source::ResourceSource| {
         if menu {
             log::info!(
                 "Sunrise: UI bundle ready after {} ms",
                 started.elapsed().as_millis()
             );
-            publish(ui, root);
+            publish(ui, root, source);
             None
         } else {
             Some(ui)
@@ -742,9 +819,13 @@ pub(super) fn load_resources_for_mods(
     };
     let inventory = sunrise_mod_package::enabled::EnabledMods::read(&root)?;
     let conditions = super::load_conditions::conditions_for_mods(mod_sources, &inventory)?;
+    // The generation's settings, captured once before its reload listeners register: they and
+    // the item data read this capture, never the files again.
+    let captured = mods::capture_load_settings(&root, role, load_role.owning)?;
     let (core, loaded_gui, resolved, client_applies) = loop {
-        let listeners = (!headless)
-            .then(|| client_reload::register_startup_client_reload_listeners(Some(settings)));
+        let listeners = (!headless).then(|| {
+            client_reload::register_startup_client_reload_listeners(Some(settings), &captured)
+        });
         let (ui, core) = std::thread::scope(|scope| {
             let core = |_unit: &()| {
                 // A failed pack starts core again from the game's own
@@ -757,7 +838,9 @@ pub(super) fn load_resources_for_mods(
                             &resolved,
                             &additional_data,
                             &conditions,
+                            &emissive_sprites,
                             load_role,
+                            captured.clone(),
                             parallel,
                             progress,
                             early,
@@ -775,7 +858,7 @@ pub(super) fn load_resources_for_mods(
             #[cfg(test)]
             let core = mod_api::testing::inherit_mods(core);
             let core = Step::spawn(scope, parallel, "core", || core(&()));
-            let ui = load_ui(resolved.source()).map(|ui| offer(ui, &root));
+            let ui = load_ui(resolved.source()).map(|ui| offer(ui, &root, resolved.source()));
             (ui, core.join())
         });
         // A cloud texture vanilla would read past fails its reload (`CloudRenderer.prepare`),
@@ -803,8 +886,7 @@ pub(super) fn load_resources_for_mods(
             (Err(e), Ok(_), _, None) => return Err(e),
             (Ok(_), Ok(_), Err(e), None) => return Err(e.into()),
         };
-        resolved =
-            client_reload::stage_texture_atlases(recover(&failure, &required)?, &texture_atlases);
+        resolved = stage(recover(&failure, &required)?);
         pack_error = Some(failure);
     };
     // The same prepared gameplay root supplies entity keys and spawner facts,
@@ -851,10 +933,11 @@ pub(super) fn load_resources_for_mods(
         world_loading::preload_launch_world(
             folder,
             &root,
+            resolved.data(),
             resolved.data_changes(),
             assets.registry,
-            biomes.clone(),
             &additional_data,
+            conditions.clone(),
         );
     }
     api_values::resolve_block_definitions(assets.registry)?;
@@ -873,12 +956,15 @@ pub(super) fn load_resources_for_mods(
     let pack_step = startup::step("pack.assemble");
     let mut pack = PackResources::assemble(
         &resolved,
-        assets.clone(),
-        render,
-        tables,
-        item_renderer,
-        biomes.clone(),
-        Arc::new(light),
+        PackParts {
+            assets: assets.clone(),
+            render,
+            tables,
+            item_renderer,
+            biomes: biomes.clone(),
+            light: Arc::new(light),
+        },
+        !role.is_dedicated_server(),
     )?;
     pack.additional_data = additional_data.into();
     drop(pack_step);
@@ -906,7 +992,7 @@ pub(super) fn load_resources_for_mods(
             collision,
             motion,
             suffocation,
-            spawn_registries: sunrise_client::mobs::finalize::SpawnRegistries::load(&root),
+            variants: Arc::new(sunrise_client::mobs::variants::VariantTables::load_prepared(&root)),
             threads,
         },
         rest: std::sync::OnceLock::new(),
@@ -1008,6 +1094,7 @@ pub(super) fn load_resources_for_mods(
                     &resolved,
                     entity_models.as_deref(),
                     pack.render.model_library.as_deref().ok(),
+                    !role.is_dedicated_server(),
                 )
             });
             (game_cpu, textures.map(Step::join))

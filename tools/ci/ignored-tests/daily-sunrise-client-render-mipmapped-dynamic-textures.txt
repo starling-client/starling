@@ -1,0 +1,2 @@
+sunrise-client-render gfx::mod_pipelines::tests::a_mipmapped_dynamic_texture_sampled_at_a_distance_shows_level_two lib daily gpu
+sunrise-client-render hud::dynamic_gui_gpu_tests::a_mipmapped_dynamic_texture_minified_in_the_gui_shows_level_zero lib daily gpu

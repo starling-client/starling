@@ -1,0 +1,3 @@
+ids = ["hook:living_incoming_damage", "hook:living_damage_pre", "hook:living_damage_post"]
+why = "living_incoming_damage version 5, living_damage_pre and living_damage_post version 4: their HitHost now lends the hit's victim and causing entity (HitHost::victim, HitHost::causing), and through it the attachments of those two holders read (has, get_existing) where they answered MissingHolder before, while their writes answer AttachmentError::ReadOnlyHolder and write nothing. A listener that never calls victim() or causing() sees this on those holders too."
+migrate = "Rebuild against this SDK. A listener that treated MissingHolder on the victim's or causer's holder as absent handles the value or ReadOnlyHolder instead; writes to those holders during the hit are refused."

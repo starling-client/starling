@@ -23,17 +23,8 @@ use sunrise_core::{
 };
 use sunrise_world::level::Ticks;
 
-pub(super) struct Bolt {
-    /// The entity id a server's players know it by (0 until it has one).
-    pub id: u32,
-    pub at: [f64; 3],
-    life: i32,
-    flashes: i32,
-    seed: i64,
-    /// The bolt's own random (`Entity.random`): its seed, flashes, flash
-    /// timing, fire spots and thunder pitch draw from it, never the level's.
-    random: LegacyRandom,
-    visual_only: bool,
+#[derive(Default)]
+struct StrikeState {
     /// Mooshrooms and copper golems change once per bolt.
     converted: Vec<u32>,
     /// The mobs it has struck (`hitEntities`).
@@ -43,11 +34,132 @@ pub(super) struct Bolt {
     /// Items a cushion dropped under it, spared for 20 ticks
     /// (`Cushion.dropItem`: `setInvulnerableTime(20)`).
     spared: Vec<u32>,
+}
+
+pub(super) struct Bolt {
+    /// Entity-owned registration metadata; content clones are detached.
+    pub(super) attachment_lifetime: sunrise_mod_runtime::attachments::AttachmentLifetime,
+    pub(in crate::game) join: sunrise_client::join_seq::JoinSeq,
+    /// The entity id a server's players know it by (0 until it has one).
+    pub id: u32,
+    pub at: [f64; 3],
+    pub velocity: Vec3,
+    pub rotation: [f32; 2],
+    pub fall_distance: f64,
+    pub fire_ticks: i32,
+    pub air: i32,
+    pub on_ground: bool,
+    pub invulnerable: bool,
+    pub invulnerable_time: i32,
+    pub portal_cooldown: i32,
+    pub custom_name: Option<sunrise_core::nbt::Tag>,
+    pub custom_name_visible: bool,
+    pub silent: bool,
+    pub no_gravity: bool,
+    pub glowing: bool,
+    pub ticks_frozen: i32,
+    pub has_visual_fire: bool,
+    /// Vehicle entity id when this bolt rides a serializable entity (`Entity.vehicle`).
+    pub mount: Option<u32>,
+    pub vehicle_order: i64,
+    life: i32,
+    flashes: i32,
+    seed: i64,
+    /// The bolt's own random (`Entity.random`): UUID, then seed, flashes, flash
+    /// timing and fire spots draw from it, never the level's.
+    random: LegacyRandom,
+    visual_only: bool,
+    strike: StrikeState,
     /// Blocks it set on fire (`blocksSetOnFire`).
     fires: i32,
     /// The player who channelled it (`LightningBolt.cause`): `Some(None)` for
     /// the host, `Some(Some(conn))` for a guest.
     pub cause: Option<Option<u32>>,
+}
+
+sunrise_client::impl_joined!(Bolt);
+sunrise_mod_runtime::impl_attachment_lifetime!(Bolt);
+
+impl Bolt {
+    /// `LightningBolt.<init>`: `Entity.<init>` draws the UUID first, then `seed` and `flashes`.
+    fn new(id: u32, at: [f64; 3], visual_only: bool) -> (Self, [i32; 4]) {
+        let mut random = random_source::entity();
+        let uuid = sunrise_client::save::insecure_uuid(&mut random);
+        let seed = random.next_long();
+        let flashes = random.next_int_bound(3).unwrap_or(0) + 1;
+        (
+            Self {
+                attachment_lifetime: Default::default(),
+                join: Default::default(),
+                id,
+                at,
+                velocity: Vec3::ZERO,
+                rotation: [0.0; 2],
+                fall_distance: 0.0,
+                fire_ticks: 0,
+                air: 300,
+                on_ground: false,
+                invulnerable: false,
+                invulnerable_time: 0,
+                portal_cooldown: 0,
+                custom_name: None,
+                custom_name_visible: false,
+                silent: false,
+                no_gravity: false,
+                glowing: false,
+                ticks_frozen: 0,
+                has_visual_fire: false,
+                mount: None,
+                vehicle_order: 0,
+                life: 2,
+                flashes,
+                seed,
+                random,
+                visual_only,
+                strike: StrikeState::default(),
+                fires: 0,
+                cause: None,
+            },
+            uuid,
+        )
+    }
+
+    /// `Entity.load` inherited fields (`LightningBolt.readAdditionalSaveData` is empty).
+    pub(super) fn apply_nbt(&mut self, tag: &sunrise_core::nbt::Tag) {
+        use sunrise_client::{entity_nbt, nbt_path::int_value, save::float};
+        if let Some(pos) = entity_nbt::position(tag) {
+            self.at = [
+                pos.x.clamp(-3.000_051_2e7, 3.000_051_2e7),
+                pos.y.clamp(-2.0e7, 2.0e7),
+                pos.z.clamp(-3.000_051_2e7, 3.000_051_2e7),
+            ];
+        }
+        self.velocity = entity_nbt::loaded_motion(tag);
+        self.rotation = entity_nbt::loaded_rotation(tag);
+        self.fall_distance = float(tag.get("fall_distance")).unwrap_or(0.0);
+        self.fire_ticks = i32::from(
+            tag.get("Fire")
+                .and_then(int_value)
+                .map_or(0_i16, |v| v as i16),
+        );
+        self.air = tag.get("Air").and_then(int_value).unwrap_or(300);
+        self.on_ground = entity_nbt::flag(tag, "OnGround");
+        self.invulnerable = entity_nbt::flag(tag, "Invulnerable");
+        self.invulnerable_time = tag
+            .get("invulnerable_time")
+            .and_then(int_value)
+            .unwrap_or(0);
+        self.portal_cooldown = tag.get("PortalCooldown").and_then(int_value).unwrap_or(0);
+        self.custom_name = tag
+            .get("CustomName")
+            .and_then(entity_nbt::validated_component);
+        self.custom_name_visible = entity_nbt::flag(tag, "CustomNameVisible");
+        self.silent = entity_nbt::flag(tag, "Silent");
+        self.no_gravity = entity_nbt::flag(tag, "NoGravity");
+        self.glowing = entity_nbt::flag(tag, "Glowing");
+        self.ticks_frozen = tag.get("TicksFrozen").and_then(int_value).unwrap_or(0);
+        self.has_visual_fire = entity_nbt::flag(tag, "HasVisualFire");
+    }
 }
 /// The box `LightningBolt.tick` collects the `LightningStrikeTrigger` bystanders from: 15 blocks
 /// around the bolt, 15 down and `6 + 15` up.
@@ -70,17 +182,34 @@ impl Bolt {
     /// A spent bolt at `at`, for tests that call `thunder_hit` directly.
     pub(in crate::game) fn struck_at(id: u32, at: [f64; 3]) -> Self {
         Self {
+            attachment_lifetime: Default::default(),
+            join: Default::default(),
             id,
             at,
+            velocity: Vec3::ZERO,
+            rotation: [0.0; 2],
+            fall_distance: 0.0,
+            fire_ticks: 0,
+            air: 300,
+            on_ground: false,
+            invulnerable: false,
+            invulnerable_time: 0,
+            portal_cooldown: 0,
+            custom_name: None,
+            custom_name_visible: false,
+            silent: false,
+            no_gravity: false,
+            glowing: false,
+            ticks_frozen: 0,
+            has_visual_fire: false,
+            mount: None,
+            vehicle_order: 0,
             life: 0,
             flashes: 0,
             seed: 0,
             random: LegacyRandom::new(0),
             visual_only: false,
-            converted: Vec::new(),
-            hit: Vec::new(),
-            hit_items: Vec::new(),
-            spared: Vec::new(),
+            strike: StrikeState::default(),
             fires: 0,
             cause: None,
         }
@@ -271,31 +400,11 @@ impl Game<'_> {
         Some([x, top.y, z])
     }
     pub(super) fn spawn_bolt(&mut self, at: [f64; 3], visual_only: bool) {
-        if !visual_only {
-            let ctx = sunrise_client::sculk::Context::default();
-            self.post_game_event("minecraft:lightning_strike", at, ctx);
-        }
-        // The LightningBolt constructor: `seed`, then `flashes`.
-        let mut random = random_source::entity();
-        let seed = random.next_long();
-        let flashes = random.next_int_bound(3).unwrap_or(0) + 1;
-        self.lightning_seen[0] += 1;
         let id = self.take_entity_id();
-        self.bolts.push(Bolt {
-            id,
-            at,
-            life: 2,
-            flashes,
-            seed,
-            random,
-            visual_only,
-            converted: Vec::new(),
-            hit: Vec::new(),
-            hit_items: Vec::new(),
-            spared: Vec::new(),
-            fires: 0,
-            cause: None,
-        });
+        let (bolt, uuid) = Bolt::new(id, at, visual_only);
+        self.persist.uuids.insert(id, uuid);
+        self.lightning_seen[0] += 1;
+        self.bolts.push(bolt);
     }
     pub(super) fn lightning_strike_allowed(
         &mut self,
@@ -307,30 +416,180 @@ impl Game<'_> {
         self.native_lightning_strike(player, pos, cause, &mut cancel);
         !cancel
     }
+    /// Load a `minecraft:lightning_bolt` from NBT (`/summon`, `/execute summon`, or a `Passengers` entry).
+    pub(in crate::game) fn load_bolt(
+        &mut self,
+        mut tag: sunrise_core::nbt::Tag,
+        mount: Option<u32>,
+        from_command: bool,
+    ) -> Option<u32> {
+        let pos = sunrise_client::entity_nbt::position(&tag).unwrap_or(Vec3::ZERO);
+        let at = [
+            pos.x.clamp(-3.000_051_2e7, 3.000_051_2e7),
+            pos.y.clamp(-2.0e7, 2.0e7),
+            pos.z.clamp(-3.000_051_2e7, 3.000_051_2e7),
+        ];
+        if from_command {
+            let block = at.map(|v| v.floor() as i32);
+            if !self.lightning_strike_allowed(self.lan_acting_uuid, block, "command") {
+                return None;
+            }
+        }
+        Self::normalize_loaded_mob_tags(&mut tag);
+        let id = self.take_entity_id();
+        let (mut bolt, constructor_uuid) = Bolt::new(id, at, false);
+        bolt.apply_nbt(&tag);
+        let uuid = sunrise_client::entity_nbt::entity_uuid(&tag).unwrap_or(constructor_uuid);
+        if self.is_loaded_uuid_in_level(uuid) {
+            return None;
+        }
+        if let Some(vehicle) = mount {
+            bolt.mount = Some(vehicle);
+            bolt.vehicle_order = i64::from(id);
+            if let Some(seat) = self.vehicle_passenger_pos(vehicle) {
+                bolt.at = seat;
+            }
+        }
+        let mut kept = sunrise_core::nbt::Compound::new();
+        if let Some(tags @ sunrise_core::nbt::Tag::List(_)) = tag.get("Tags") {
+            kept.insert("Tags".into(), tags.clone());
+        }
+        if let Some(data @ sunrise_core::nbt::Tag::Compound(d)) = tag.get("data")
+            && !d.is_empty()
+        {
+            kept.insert("data".into(), data.clone());
+        }
+        if let Some(team) = tag.get("Team") {
+            kept.insert("Team".into(), team.clone());
+        }
+        self.remember(id, Some(uuid), sunrise_core::nbt::Tag::Compound(kept));
+        self.lightning_seen[0] += 1;
+        self.bolts.push(bolt);
+        Some(id)
+    }
+    /// Remove a live bolt and release its UUID and scoreboard membership.
+    pub(in crate::game) fn remove_bolt(&mut self, id: u32) {
+        let uuid = self.persist.uuid_of(id);
+        let before = self.bolts.len();
+        self.bolts.retain(|b| b.id != id);
+        if self.bolts.len() != before {
+            if let Some(uuid) = uuid {
+                self.score
+                    .board
+                    .entity_removed(&sunrise_client::save::uuid_text(uuid));
+            }
+            self.forget_entity(id);
+        }
+    }
+    /// `Entity.saveWithoutId` for a live bolt (`/data get` and `NbtPredicate`, never chunk saves).
+    pub(in crate::game) fn bolt_tag(
+        &self,
+        b: &Bolt,
+        uuid: [i32; 4],
+        include_id: bool,
+    ) -> sunrise_core::nbt::Tag {
+        use sunrise_core::nbt::{Compound, Tag};
+        let double = |v: f64| Tag::Double(if v == 0.0 { 0 } else { v.to_bits() });
+        let float = |v: f32| Tag::Float(if v == 0.0 { 0 } else { v.to_bits() });
+        let pos = if let Some(vehicle) = b.mount
+            && let Some(vp) = self.vehicle_position_by_id(vehicle)
+        {
+            [vp[0], b.at[1], vp[2]]
+        } else {
+            b.at
+        };
+        let mut c = Compound::new();
+        if include_id {
+            c.insert("id".into(), Tag::String("minecraft:lightning_bolt".into()));
+        }
+        c.insert("Pos".into(), Tag::List(pos.map(double).to_vec()));
+        c.insert(
+            "Motion".into(),
+            Tag::List(
+                [b.velocity.x, b.velocity.y, b.velocity.z]
+                    .map(double)
+                    .to_vec(),
+            ),
+        );
+        c.insert("Rotation".into(), Tag::List(b.rotation.map(float).to_vec()));
+        c.insert("fall_distance".into(), double(b.fall_distance));
+        c.insert("Fire".into(), Tag::Short(b.fire_ticks as i16));
+        c.insert("Air".into(), Tag::Short(b.air as i16));
+        c.insert("OnGround".into(), Tag::Byte(i8::from(b.on_ground)));
+        c.insert("Invulnerable".into(), Tag::Byte(i8::from(b.invulnerable)));
+        c.insert("PortalCooldown".into(), Tag::Int(b.portal_cooldown));
+        if b.invulnerable_time > 0 {
+            c.insert("invulnerable_time".into(), Tag::Int(b.invulnerable_time));
+        }
+        c.insert("UUID".into(), Tag::IntArray(uuid.to_vec()));
+        if let Some(name) = &b.custom_name {
+            c.insert("CustomName".into(), name.clone());
+        }
+        if b.custom_name_visible {
+            c.insert("CustomNameVisible".into(), Tag::Byte(1));
+        }
+        if b.silent {
+            c.insert("Silent".into(), Tag::Byte(1));
+        }
+        if b.no_gravity {
+            c.insert("NoGravity".into(), Tag::Byte(1));
+        }
+        if b.glowing {
+            c.insert("Glowing".into(), Tag::Byte(1));
+        }
+        if b.ticks_frozen > 0 {
+            c.insert("TicksFrozen".into(), Tag::Int(b.ticks_frozen));
+        }
+        if b.has_visual_fire {
+            c.insert("HasVisualFire".into(), Tag::Byte(1));
+        }
+        if let Some(raw) = self.persist.raw.get(&b.id) {
+            if let Some(Tag::List(tags)) = raw.get("Tags")
+                && !tags.is_empty()
+            {
+                c.insert("Tags".into(), Tag::List(tags.clone()));
+            }
+            if let Some(Tag::Compound(data)) = raw.get("data")
+                && !data.is_empty()
+            {
+                c.insert("data".into(), Tag::Compound(data.clone()));
+            }
+        }
+        Tag::Compound(c)
+    }
+    fn vehicle_position_by_id(&self, vehicle: u32) -> Option<[f64; 3]> {
+        if let Some(target) = self.level_entity(vehicle as i32) {
+            return self.target_position(target);
+        }
+        self.player
+            .as_ref()
+            .filter(|p| p.entity_id as u32 == vehicle)
+            .map(|p| [p.position.x, p.position.y, p.position.z])
+    }
+    fn vehicle_passenger_pos(&self, vehicle: u32) -> Option<[f64; 3]> {
+        if let Some(seat) = self.seat(vehicle) {
+            let p = seat.passenger_position(0.0);
+            return Some([p.x, p.y, p.z]);
+        }
+        if let Some(mob) = self.mobs.iter().find(|m| m.id == vehicle && !m.removed) {
+            let y = mob.position.y + f64::from(mob.height());
+            return Some([mob.position.x, y, mob.position.z]);
+        }
+        if let Some(boat) = self.boats.iter().find(|b| b.id == vehicle) {
+            return Some([boat.position.x, boat.position.y + 0.35, boat.position.z]);
+        }
+        if let Some(cart) = self.carts.iter().find(|c| c.id == vehicle) {
+            return Some([cart.position.x, cart.position.y, cart.position.z]);
+        }
+        self.vehicle_position_by_id(vehicle)
+    }
     /// `ClientLevel.addEntity` for a server's lightning bolt: on a client it
     /// only flashes, sounds and draws (`LightningBolt.tick` off the server).
     pub(super) fn spawn_remote_bolt(&mut self, id: u32, at: [f64; 3]) {
         self.bolts.retain(|b| b.id != id);
-        // The client's own copy, constructed as on the server.
-        let mut random = random_source::entity();
-        let seed = random.next_long();
-        let flashes = random.next_int_bound(3).unwrap_or(0) + 1;
+        let (bolt, _) = Bolt::new(id, at, true);
         self.lightning_seen[0] += 1;
-        self.bolts.push(Bolt {
-            id,
-            at,
-            life: 2,
-            flashes,
-            seed,
-            random,
-            visual_only: true,
-            converted: Vec::new(),
-            hit: Vec::new(),
-            hit_items: Vec::new(),
-            spared: Vec::new(),
-            fires: 0,
-            cause: None,
-        });
+        self.bolts.push(bolt);
     }
     /// `spawnFire`: fire at the strike point and `extra` random neighbours
     /// (from the bolt's own `random`), wherever `BaseFireBlock.getState` fire
@@ -380,74 +639,193 @@ impl Game<'_> {
     /// `LightningBolt.tick` for every bolt.
     pub(super) fn tick_bolts(&mut self) {
         let _save_lease = sunrise_client::join_seq::visibility::PassLease::enter();
-        let mut bolts = std::mem::take(&mut self.bolts);
-        bolts.retain_mut(|b| {
-            if b.life == 2 {
-                // A client's bolt draws the pitches from its own random. Here one
-                // bolt stands for both copies, and both randoms are unseeded.
-                let pitch = 0.8 + b.random.next_float() * 0.2;
-                self.audio.play(
-                    "minecraft:entity.lightning_bolt.thunder",
-                    Some(b.at),
-                    10000.0,
-                    pitch,
-                );
-                let pitch = 0.5 + b.random.next_float() * 0.2;
-                self.audio.play(
-                    "minecraft:entity.lightning_bolt.impact",
-                    Some(b.at),
-                    2.0,
-                    pitch,
-                );
-                if !b.visual_only {
+        let server = self.remote.is_none();
+        let ticking = self.entity_ticking_area();
+        let ids: Vec<u32> = self.bolts.iter().map(|b| b.id).collect();
+        for id in ids {
+            let Some(i) = self.bolts.iter().position(|b| b.id == id) else {
+                continue;
+            };
+            let mut at = self.bolts[i].at;
+            if server {
+                // ServerLevel.tick: only entities in entity-ticking chunks tick.
+                if !ticking(at[0].floor() as i32, at[2].floor() as i32) {
+                    continue;
+                }
+                let mount = self.bolts[i].mount;
+                let mount_gone = mount.is_some_and(|vehicle| {
+                    self.level_entity(vehicle as i32).is_none()
+                        && !self
+                            .player
+                            .as_ref()
+                            .is_some_and(|p| p.entity_id as u32 == vehicle)
+                });
+                let below_world = at[1] < f64::from(self.world.bottom_y() - 64);
+                self.bolts.update(i, |b| {
+                    // Entity.rideTick clears deltaMovement before Entity.tick.
+                    if b.mount.is_some() {
+                        b.velocity = Vec3::ZERO;
+                    }
+                    // Entity.commonTick: invulnerableTime counts down.
+                    if b.invulnerable_time > 0 {
+                        b.invulnerable_time -= 1;
+                    }
+                    // Entity.baseTick: dismount if vehicle left, portal cooldown, Fire countdown.
+                    if mount_gone {
+                        b.mount = None;
+                    }
+                    if b.portal_cooldown > 0 {
+                        b.portal_cooldown -= 1;
+                    }
+                    if b.fire_ticks > 0 {
+                        b.fire_ticks -= 1;
+                    }
+                });
+                if below_world {
+                    self.remove_bolt(id);
+                    continue;
+                }
+            }
+            let (life, silent, visual_only, seed) = {
+                let b = &self.bolts[i];
+                (b.life, b.silent, b.visual_only, b.seed)
+            };
+            if life == 2 {
+                if !silent {
+                    // Separate client sound pitch draws from the server bolt's RNG stream.
+                    let (thunder_pitch, impact_pitch) = if server {
+                        let mut sound_rng = LegacyRandom::new(seed);
+                        (
+                            0.8 + sound_rng.next_float() * 0.2,
+                            0.5 + sound_rng.next_float() * 0.2,
+                        )
+                    } else {
+                        self.bolts.update(i, |b| {
+                            (
+                                0.8 + b.random.next_float() * 0.2,
+                                0.5 + b.random.next_float() * 0.2,
+                            )
+                        })
+                    };
+                    self.play_audio(
+                        "minecraft:entity.lightning_bolt.thunder",
+                        Some(at),
+                        10000.0,
+                        thunder_pitch,
+                    );
+                    self.play_audio(
+                        "minecraft:entity.lightning_bolt.impact",
+                        Some(at),
+                        2.0,
+                        impact_pitch,
+                    );
+                }
+                if server {
                     // Only Normal and Hard start fires with the strike itself.
-                    if self.ui.difficulty >= 2 {
-                        let set = self.bolt_fire(b.at, 4, &mut b.random);
-                        b.fires += set;
+                    if !visual_only && self.ui.difficulty >= 2 {
+                        let mut rng = self.bolts[i].random.clone();
+                        let set = self.bolt_fire(at, 4, &mut rng);
+                        if let Some(i) = self.bolts.iter().position(|b| b.id == id) {
+                            self.bolts.update(i, |b| {
+                                b.random = rng;
+                                b.fires += set;
+                            });
+                        }
                     }
-                    self.strike_rod(b.at);
-                }
-                // LightningBolt.tick runs clearCopperOnLightningStrike for
-                // every server bolt, a skeleton trap's visual one included;
-                // a client's copy of a server bolt (spawn_remote_bolt) only
-                // flashes.
-                if self.remote.is_none() {
-                    self.bolt_clear_copper(b.at);
+                    // LightningBolt.tick runs powerLightningRod, clearCopperOnLightningStrike,
+                    // then gameEvent(LIGHTNING_STRIKE) with the bolt as its source.
+                    self.strike_rod(at);
+                    self.bolt_clear_copper(at);
+                    let ctx = self.entity_event_context(id, None);
+                    self.post_game_event("minecraft:lightning_strike", at, ctx);
                 }
             }
-            b.life -= 1;
-            if b.life < 0 {
-                if b.flashes == 0 {
-                    self.lightning_strike_triggers(b);
-                    return false;
-                }
-                if b.life < -b.random.next_int_bound(10).unwrap_or(0) {
-                    b.flashes -= 1;
-                    b.life = 1;
-                    b.seed = b.random.next_long();
-                    if !b.visual_only {
-                        let set = self.bolt_fire(b.at, 0, &mut b.random);
-                        b.fires += set;
+            let Some(i) = self.bolts.iter().position(|b| b.id == id) else {
+                continue;
+            };
+            enum Step {
+                Discard,
+                Reflash,
+                Active,
+                Idle,
+            }
+            let step = self.bolts.update(i, |b| {
+                b.life -= 1;
+                if b.life < 0 {
+                    if b.flashes == 0 {
+                        return Step::Discard;
+                    }
+                    if b.life < -b.random.next_int_bound(10).unwrap_or(0) {
+                        b.flashes -= 1;
+                        b.life = 1;
+                        b.seed = b.random.next_long();
+                        return Step::Reflash;
                     }
                 }
+                if b.life >= 0 {
+                    Step::Active
+                } else {
+                    Step::Idle
+                }
+            });
+            match step {
+                Step::Discard => {
+                    if server {
+                        let (fires, hit, hit_items) = {
+                            let b = &self.bolts[i];
+                            (b.fires, b.strike.hit.clone(), b.strike.hit_items.clone())
+                        };
+                        self.lightning_strike_triggers(at, fires, &hit, &hit_items);
+                    }
+                    self.remove_bolt(id);
+                    continue;
+                }
+                Step::Reflash => {
+                    if server && !visual_only {
+                        let mut rng = self.bolts[i].random.clone();
+                        let set = self.bolt_fire(at, 0, &mut rng);
+                        if let Some(i) = self.bolts.iter().position(|b| b.id == id) {
+                            self.bolts.update(i, |b| {
+                                b.random = rng;
+                                b.fires += set;
+                            });
+                        }
+                    }
+                }
+                Step::Active | Step::Idle => {}
             }
-            if b.life >= 0 {
+            if matches!(step, Step::Reflash | Step::Active) {
                 if self.flash == 0 {
                     self.lightning_seen[1] += 1;
                 }
                 self.flash = 2;
-                if !b.visual_only {
-                    let struck = self.thunder_hit(b);
-                    if let Some(cause) = b.cause {
+                if server && !visual_only {
+                    let Some(i) = self.bolts.iter().position(|b| b.id == id) else {
+                        continue;
+                    };
+                    let (mut strike, cause) = self
+                        .bolts
+                        .update(i, |b| (std::mem::take(&mut b.strike), b.cause));
+                    let struck = self.thunder_hit_state(id, at, &mut strike);
+                    if let Some(i) = self.bolts.iter().position(|b| b.id == id) {
+                        self.bolts.update(i, |b| b.strike = strike);
+                    }
+                    if let Some(cause) = cause {
                         let who = cause.map_or(Target::Player, Target::Guest);
                         self.for_player(who, |g| g.trigger_channeled_lightning(&struck));
                     }
                 }
             }
-            true
-        });
-        bolts.append(&mut self.bolts);
-        self.bolts = bolts;
+            // Entity.rideTick: vehicle.positionRider(this).
+            if server
+                && let Some(i) = self.bolts.iter().position(|b| b.id == id)
+                && let Some(vehicle) = self.bolts[i].mount
+                && let Some(seat) = self.vehicle_passenger_pos(vehicle)
+            {
+                at = seat;
+                self.bolts.update(i, |b| b.at = at);
+            }
+        }
     }
     /// `LightningRodBlock.onLightningStrike`: powered for 8 ticks.
     fn strike_rod(&mut self, at: [f64; 3]) {
@@ -501,18 +879,23 @@ impl Game<'_> {
     }
     /// `LightningStrikeTrigger` at the bolt's discard: every player within 256
     /// blocks, with the mobs in its 30-block box that it did not hit.
-    fn lightning_strike_triggers(&mut self, b: &Bolt) {
-        let at = b.at;
+    fn lightning_strike_triggers(
+        &mut self,
+        at: [f64; 3],
+        fires: i32,
+        hit: &[u32],
+        hit_items: &[u32],
+    ) {
         let bolt = EntityView {
             kind: "minecraft:lightning_bolt".into(),
             position: at,
-            blocks_set_on_fire: b.fires,
+            blocks_set_on_fire: fires,
             ..Default::default()
         };
         let viewers: Vec<EntityView> = self
             .mobs
             .iter()
-            .filter(|m| m.alive() && !b.hit.contains(&m.id))
+            .filter(|m| m.alive() && !hit.contains(&m.id))
             .filter(|m| in_viewer_box(at, [m.position.x, m.position.y, m.position.z]))
             .map(|m| self.mob_entity(m))
             .collect();
@@ -521,7 +904,7 @@ impl Game<'_> {
         viewers.extend(
             self.dropped
                 .iter()
-                .filter(|e| !b.hit_items.contains(&e.id))
+                .filter(|e| !hit_items.contains(&e.id))
                 .filter(|e| in_viewer_box(at, [e.position.x, e.position.y, e.position.z]))
                 .map(|e| self.item_entity_view(e)),
         );
@@ -575,8 +958,16 @@ impl Game<'_> {
     /// `CHANNELED_LIGHTNING` counts them. Boats, minecarts and experience
     /// orbs are hit too (`VehicleEntity.hurtServer` adds 5 x 10 > 40 and
     /// destroys them; an orb has 5 health).
+    #[cfg(test)]
     pub(in crate::game) fn thunder_hit(&mut self, b: &mut Bolt) -> Vec<EntityView> {
-        let at = b.at;
+        self.thunder_hit_state(b.id, b.at, &mut b.strike)
+    }
+    fn thunder_hit_state(
+        &mut self,
+        bolt: u32,
+        at: [f64; 3],
+        state: &mut StrikeState,
+    ) -> Vec<EntityView> {
         let strike = Aabb::new(
             Vec3::new(at[0] - 3.0, at[1] - 3.0, at[2] - 3.0),
             Vec3::new(at[0] + 3.0, at[1] + 9.0, at[2] + 3.0),
@@ -592,10 +983,10 @@ impl Game<'_> {
         let damage = Damage {
             kind: DamageKind::Generic,
             attacker: None,
-            from: Some(b.at),
+            from: Some(at),
+            direct: None,
             attacker_species: None,
         };
-        let bolt = b.id;
         let mut struck = Vec::new();
         let mut powered = Vec::new();
         let peaceful = self.ui.difficulty == 0;
@@ -617,7 +1008,7 @@ impl Game<'_> {
                 Species::Villager if !peaceful => Some("minecraft:witch"),
                 _ => None,
             };
-            b.hit.push(self.mobs[i].id);
+            state.hit.push(self.mobs[i].id);
             if !self.lightning_may_strike(self.mobs[i].id, bolt) {
                 continue;
             }
@@ -638,11 +1029,10 @@ impl Game<'_> {
             let at = [m.position.x, m.position.y, m.position.z];
             match m.species() {
                 Species::Mooshroom => {
-                    if !b.converted.contains(&m.id) {
-                        b.converted.push(m.id);
+                    if !state.converted.contains(&m.id) {
+                        state.converted.push(m.id);
                         m.extra.variant = 1 - m.extra.variant.min(1);
-                        self.audio
-                            .play("minecraft:entity.mooshroom.convert", Some(at), 2.0, 1.0);
+                        self.play_audio("minecraft:entity.mooshroom.convert", Some(at), 2.0, 1.0);
                     }
                     continue;
                 }
@@ -667,8 +1057,8 @@ impl Game<'_> {
                 // CopperGolem.thunderHit (after Entity.thunderHit's fire and
                 // damage): once per bolt, an oxidized golem goes back one step
                 // and its weathering timer (or wax, -2) is reset to -1.
-                Species::CopperGolem if !b.converted.contains(&m.id) => {
-                    b.converted.push(m.id);
+                Species::CopperGolem if !state.converted.contains(&m.id) => {
+                    state.converted.push(m.id);
                     if m.extra.variant > 0 {
                         m.extra.vector[0] = -1.0;
                         m.extra.variant =
@@ -713,7 +1103,9 @@ impl Game<'_> {
             {
                 let before = self.dropped.len();
                 self.break_cushion(i, false);
-                b.spared.extend(self.dropped[before..].iter().map(|e| e.id));
+                state
+                    .spared
+                    .extend(self.dropped[before..].iter().map(|e| e.id));
             }
         }
         // Vehicles, then orbs: `VehicleEntity.hurtServer` for 5 damage (x 10
@@ -744,6 +1136,7 @@ impl Game<'_> {
                         causing: bolt as i32,
                         direct: bolt as i32,
                         position: Some(at),
+                        direct_type: None,
                     };
                     let vanilla = self.saved_refuses_damage(id, "minecraft:lightning_bolt", false);
                     if !self.native_nonliving_invulnerable(id, &kind, source, vanilla) {
@@ -757,6 +1150,7 @@ impl Game<'_> {
                         causing: bolt as i32,
                         direct: bolt as i32,
                         position: Some(at),
+                        direct_type: None,
                     };
                     let vanilla = self.saved_refuses_damage(id, "minecraft:lightning_bolt", false);
                     if !self.native_nonliving_invulnerable(id, kind, source, vanilla) {
@@ -770,6 +1164,7 @@ impl Game<'_> {
                         causing: bolt as i32,
                         direct: bolt as i32,
                         position: Some(at),
+                        direct_type: None,
                     };
                     let vanilla = self.saved_refuses_damage(id, "minecraft:lightning_bolt", false);
                     if !self.native_nonliving_invulnerable(
@@ -819,7 +1214,7 @@ impl Game<'_> {
             }
             left -= 1;
             let e = &self.dropped[i];
-            b.hit_items.push(e.id);
+            state.hit_items.push(e.id);
             if !self.lightning_may_strike(e.id, bolt) {
                 continue;
             }
@@ -829,7 +1224,7 @@ impl Game<'_> {
                 e.fire_ticks = 160;
             }
             // Cushion spare stands in for vanilla's invulnerableTime window.
-            if e.age < 20 && b.spared.contains(&e.id) {
+            if e.age < 20 && state.spared.contains(&e.id) {
                 continue;
             }
             let id = e.id;
@@ -837,7 +1232,7 @@ impl Game<'_> {
                 id,
                 5.0,
                 "minecraft:lightning_bolt",
-                Some(Target::Other(bolt)),
+                Some(Target::Bolt(bolt)),
                 None,
                 Some(at),
             );
@@ -857,8 +1252,10 @@ impl Game<'_> {
         self.bolts
             .iter()
             .filter(|b| {
-                let at = glam::DVec3::new(b.at[0], b.at[1], b.at[2]);
-                at.distance_squared(camera) < range * range
+                !self.hides_as_camera(b.id) && {
+                    let at = glam::DVec3::new(b.at[0], b.at[1], b.at[2]);
+                    at.distance_squared(camera) < range * range
+                }
             })
             .map(|b| sunrise_client::gfx::lightning::Bolt {
                 at: b.at,
@@ -1007,6 +1404,7 @@ mod tests {
     #[test]
     #[ignore = "daily"]
     fn conversion_post_reads_original_and_lightning_outcome() {
+        use super::super::native_entity_refs::tests::{fixture_resident_column, with_game};
         use mod_api::{
             EntityJoinLevelEvent, EquipmentSlot, Flow, Hooks, LivingConversionPostEvent,
             LivingConversionPreEvent,
@@ -1108,7 +1506,9 @@ mod tests {
             }),
         )]);
         install(mods);
-        super::super::native_entity_refs::tests::with_game(|game| {
+        with_game(|game| {
+            fixture_resident_column(&mut game.world, (0, 0));
+            fixture_resident_column(&mut game.world, (6, 6));
             let piglin_type = game
                 .res
                 .mob_types()
@@ -1151,21 +1551,7 @@ mod tests {
                 0.0,
             ));
             game.ui.difficulty = 2;
-            let mut bolt = Bolt {
-                id: 0,
-                at: [0.0, 64.0, 0.0],
-                life: 0,
-                flashes: 0,
-                seed: 0,
-                random: LegacyRandom::new(0),
-                visual_only: false,
-                converted: Vec::new(),
-                hit: Vec::new(),
-                hit_items: Vec::new(),
-                spared: Vec::new(),
-                fires: 0,
-                cause: None,
-            };
+            let mut bolt = Bolt::struck_at(0, [0.0, 64.0, 0.0]);
             game.thunder_hit(&mut bolt);
             assert!(game.entity(pig_id).is_none());
             let mushroom_type = game
@@ -1194,7 +1580,8 @@ mod tests {
                         .unwrap()
                     );
                 } else {
-                    assert!(game.shear_entity((x, 64, 0)).unwrap());
+                    let shears = sunrise_client::items::ItemStack::new("minecraft:shears", 1);
+                    assert!(game.shear_entity((x, 64, 0), &shears).unwrap());
                 }
             }
             assert_eq!(pre.load(Ordering::SeqCst), 4);
@@ -1274,6 +1661,7 @@ mod tests {
     fn a_baby_pig_hit_by_lightning_becomes_a_baby_zombified_piglin() {
         let make_pig = |baby: bool| {
             let kind = Arc::new(MobType {
+                type_key: Default::default(),
                 shadow: None,
                 id: "minecraft:pig".into(),
                 species: Species::Pig,
@@ -1312,6 +1700,7 @@ mod tests {
                     pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
                     polygons: Vec::new(),
                     children: Vec::new(),
+                    layer: None,
                 }),
                 layers: Default::default(),
                 texture: String::new(),
@@ -1392,21 +1781,7 @@ mod tests {
                     game.mobs
                         .push(Mob::new(id, pig.clone(), Vec3::new(x, 64.0, 0.0), 0.0));
                 }
-                let mut bolt = Bolt {
-                    id: 77,
-                    at: [0.5, 64.0, 0.5],
-                    life: 0,
-                    flashes: 0,
-                    seed: 0,
-                    random: LegacyRandom::new(0),
-                    visual_only: false,
-                    converted: Vec::new(),
-                    hit: Vec::new(),
-                    hit_items: Vec::new(),
-                    spared: Vec::new(),
-                    fires: 0,
-                    cause: None,
-                };
+                let mut bolt = Bolt::struck_at(77, [0.5, 64.0, 0.5]);
                 game.thunder_hit(&mut bolt);
                 let kind = |game: &Game<'_>, id| {
                     game.mobs
@@ -1425,8 +1800,8 @@ mod tests {
                 let mut heard = heard.lock().unwrap().clone();
                 heard.sort();
                 assert_eq!(heard, [(spared, 77), (struck, 77)]);
-                bolt.hit.sort();
-                assert_eq!(bolt.hit, [spared, struck]);
+                bolt.strike.hit.sort();
+                assert_eq!(bolt.strike.hit, [spared, struck]);
             });
         });
     }

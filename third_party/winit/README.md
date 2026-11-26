@@ -13,7 +13,12 @@ winit = "0.30.13"
 
 ## [Documentation](https://docs.rs/winit)
 
+<<<<<<< HEAD
 For features _within_ the scope of winit, see [FEATURES.md](FEATURES.md).
+||||||| 46c00106def
+=======
+For features _within_ the scope of winit, see [FEATURES.md](https://github.com/rust-windowing/winit/blob/v0.30.13/FEATURES.md).
+>>>>>>> ed6772e2118
 
 For features _outside_ the scope of winit, see [Are we GUI Yet?](https://areweguiyet.com/) and [Are we game yet?](https://arewegameyet.rs/), depending on what kind of project you're looking to do.
 

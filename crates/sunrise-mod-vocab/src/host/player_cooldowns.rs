@@ -26,11 +26,12 @@ pub trait PlayerCooldownsBackendMut {
     /// Side: server.
     /// `ItemCooldowns.addCooldown(group, ticks)`: starts (or restarts) the
     /// group's cooldown, and the player's client draws it on every item of the
-    /// group (`ServerItemCooldowns.onCooldownStarted`).
+    /// group (`ServerItemCooldowns.onCooldownStarted`). A resident dead player can still be edited.
     fn player_set_item_cooldown(&mut self, player: PlayerRef, group: &str, ticks: i32) -> bool;
     /// Side: server.
     /// `ItemCooldowns.removeCooldown(group)`: ends the group's cooldown now,
-    /// on the client too (`ServerItemCooldowns.onCooldownEnded`).
+    /// on the client too (`ServerItemCooldowns.onCooldownEnded`), even while the resident
+    /// player is dead.
     fn player_remove_item_cooldown(&mut self, player: PlayerRef, group: &str) -> bool;
     /// Side: server.
     /// Sets the player's `WardenSpawnTracker.cooldownTicks`: sculk shriekers

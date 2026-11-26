@@ -73,33 +73,33 @@ fn observed_overlay_prefers_first_open_screen() {
     );
 }
 
-/// A mod's own screen opens only over the world, never over another
-/// screen, an overlay (the title screen, a book, loading, no window) or
-/// another mod's; opening it again is a no-op.
+/// A mod's own screen refuses only when the client window is unavailable (no
+/// renderer, acting for a guest, neither a player nor a title screen, or
+/// loading); when available, opening the same mod's already-visible screen is a
+/// no-op (`Some(true)`), and opening over playing, another vanilla screen, an
+/// overlay (`owner: None`), or another mod's screen proceeds (`None`).
 #[test]
-fn a_mod_screen_opens_only_over_the_world() {
+fn a_mod_screen_opens_when_client_window_is_available() {
     use super::{Screen, mod_screen_opens};
     assert_eq!(mod_screen_opens(Screen::Playing, false, None, "a"), None);
-    assert_eq!(
-        mod_screen_opens(Screen::Playing, true, None, "a"),
-        Some(false)
-    );
     for other in [
         Screen::Paused,
         Screen::Inventory,
+        Screen::Creative,
         Screen::Chat,
         Screen::Options,
     ] {
-        assert_eq!(mod_screen_opens(other, false, None, "a"), Some(false));
+        assert_eq!(mod_screen_opens(other, false, None, "a"), None);
     }
     assert_eq!(
         mod_screen_opens(Screen::Mod, false, Some("a"), "a"),
         Some(true)
     );
-    assert_eq!(
-        mod_screen_opens(Screen::Mod, false, Some("b"), "a"),
-        Some(false)
-    );
+    assert_eq!(mod_screen_opens(Screen::Mod, false, Some("b"), "a"), None);
+    assert_eq!(mod_screen_opens(Screen::Mod, false, None, "a"), None);
+    for screen in [Screen::Playing, Screen::Paused, Screen::Mod] {
+        assert_eq!(mod_screen_opens(screen, true, Some("a"), "a"), Some(false));
+    }
 }
 
 /// A mod container opens a slot grid or a furnace's menu, by its slot

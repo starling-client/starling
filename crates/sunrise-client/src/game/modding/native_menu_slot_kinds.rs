@@ -269,6 +269,28 @@ mod tests {
     }
 
     #[test]
+    fn owned_processing_layout_roles() {
+        let content = ModMenuType {
+            id: "test:processor",
+            owner: "test",
+            slots: 3,
+            player_inventory: true,
+            data_slots: 0,
+            owned_slots: Some(vec![64, 64, 64]),
+            results: vec![2],
+            inputs: vec![0, 1],
+            crafting: None,
+            links: None,
+        };
+        let mut expected = vec![Input, Input, Result];
+        expected.extend(PLAYER);
+        assert_eq!(
+            layout_kinds("test:processor", 39, Some(&content), |_| None),
+            expected
+        );
+    }
+
+    #[test]
     #[ignore = "daily"]
     fn live_menu_validation_and_creative() {
         super::super::native_entity_refs::tests::with_client_game(|game| {

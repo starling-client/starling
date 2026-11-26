@@ -2,7 +2,9 @@
 //! `11 x 1`, which saves unchanged and pays 11 once on pickup.
 use crate::game::native_entity_refs::tests::with_game;
 use crate::game::native_item_places::tests::{guest, open_to_lan};
-use mod_api::{ExperienceOrbCanMergeEvent, ExperienceOrbMergeEvent, Flow, Hooks, ServerHost};
+use mod_api::{
+    ExperienceOrbCanMergeEvent, ExperienceOrbMergeEvent, ExperienceOrbRef, Flow, Hooks, ServerHost,
+};
 use sunrise_client::entities::ExperienceOrb;
 use sunrise_client::entity_nbt::{orb_to_nbt, orbs_from_nbt};
 use sunrise_core::geometry::Vec3;
@@ -10,6 +12,7 @@ use sunrise_core::geometry::Vec3;
 fn orb(id: u32, x: f64, value: i32, count: u32) -> ExperienceOrb {
     let at = Vec3::new(x, 70.0, 0.5);
     ExperienceOrb {
+        size_answer: None,
         attachment_lifetime: Default::default(),
         fall_distance: 0.0,
         rotation: [0.0, 0.0],
@@ -39,6 +42,13 @@ fn open(game: &mut crate::game::Game<'_>) {
     game.lan.as_mut().unwrap().hub.guests.push(g);
 }
 
+fn orb_handle(host: &dyn ServerHost, id: u32) -> ExperienceOrbRef {
+    let entity = host.entity(id).expect("live orb entity");
+    host.experience_orb(entity)
+        .expect("server orb lookup")
+        .expect("experience orb handle")
+}
+
 /// Forced merge of different values, then the exact total written back.
 struct Normalize;
 #[mod_api::__subscriptions]
@@ -62,7 +72,9 @@ impl Hooks for Normalize {
             event.from_count,
         ) == (3, 2, 5, 1)
         {
-            assert!(host.set_experience_orb(event.dimension, event.into, Some(11), Some(1), None));
+            let into = orb_handle(&*host, event.into);
+            assert_eq!(into.set_value(host, 11), Ok(()));
+            assert_eq!(into.set_count(host, 1), Ok(()));
         }
         Flow::Continue
     }
@@ -84,7 +96,10 @@ impl Hooks for Cancel {
         host: &mut dyn ServerHost,
         event: &mut ExperienceOrbMergeEvent<'_>,
     ) -> Flow {
-        assert!(host.set_experience_orb(event.dimension, event.into, Some(11), Some(1), Some(99)));
+        let into = orb_handle(&*host, event.into);
+        assert_eq!(into.set_value(host, 11), Ok(()));
+        assert_eq!(into.set_count(host, 1), Ok(()));
+        assert_eq!(into.set_age(host, 99), Ok(()));
         Flow::Cancel
     }
 }
@@ -133,8 +148,11 @@ impl Hooks for Stale {
         host: &mut dyn ServerHost,
         event: &mut ExperienceOrbMergeEvent<'_>,
     ) -> Flow {
-        assert!(host.set_experience_orb(event.dimension, event.into, Some(11), Some(1), None));
-        assert!(host.set_experience_orb(event.dimension, event.from, Some(6), None, None));
+        let into = orb_handle(&*host, event.into);
+        assert_eq!(into.set_value(host, 11), Ok(()));
+        assert_eq!(into.set_count(host, 1), Ok(()));
+        let from = orb_handle(&*host, event.from);
+        assert_eq!(from.set_value(host, 6), Ok(()));
         Flow::Continue
     }
 }

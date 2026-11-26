@@ -3,6 +3,7 @@
 //! the game's own routing.
 use super::api_values::{TryIntoApi, TryIntoEngine};
 use super::native_hooks::ResidentBlockEntityAccess;
+use super::slot_changes::{SlotChangedBacking, SlotChangedMenu, SlotSnapshots};
 use super::{BlockStateId, Game, transactions::After};
 use mod_api::{BlockEntityRef, BlockEntityScope, BlockEntityTypeKey};
 use sunrise_client::{
@@ -54,7 +55,7 @@ enum Source {
     Linked {
         pos: Pos,
         slot: usize,
-        generation: Option<u64>,
+        generation: u64,
     },
     CraftingResult(ModCrafting),
 }
@@ -128,11 +129,11 @@ impl Game<'_> {
             .and_then(|t| t.links)
             .is_some_and(|link| link.slots().contains(&slot))
         {
-            let (pos, slot) = menu.slots.held_block_slot(&self.world, g, slot)?;
+            let (pos, slot) = menu.linked_slots(&self.world)?.backing(slot)??;
             Source::Linked {
                 pos,
                 slot,
-                generation: self.world.block_entities.generation(&pos),
+                generation: self.world.block_entities.generation(&pos)?,
             }
         } else {
             match at {
@@ -202,10 +203,27 @@ impl Game<'_> {
             held: clicked,
         } = quick_move;
         let live = |game: &Self| {
-            admitted.holds(game)
-                && game.native_block_entity_write_key(subject) == Some(pos)
-                && !matches!(&source, Source::Linked { pos, generation, .. }
-                    if game.world.block_entities.generation(pos) != *generation)
+            let Some(open) = admitted.menu(game) else {
+                return false;
+            };
+            if game.native_block_entity_write_key(subject) != Some(pos) {
+                return false;
+            }
+            match source {
+                Source::Linked {
+                    pos: link_pos,
+                    slot: link_slot,
+                    generation,
+                } => {
+                    game.world.block_entities.generation(&link_pos) == Some(generation)
+                        && open
+                            .linked_slots(&game.world)
+                            .and_then(|links| links.backing(slot))
+                            .flatten()
+                            == Some((link_pos, link_slot))
+                }
+                _ => true,
+            }
         };
         if !live(self) {
             return QuickMoveOutcome::Rejected;
@@ -220,9 +238,19 @@ impl Game<'_> {
             }
         };
         let original = held.clone();
+        // `AbstractContainerMenu.slotsChanged`: a mod menu type listening to `menu_slot_changed`
+        // recomputes its outputs from the settled move, inside the same transaction.
+        let changed_menu = take_menu.filter(|menu| {
+            mod_api::__private::menu_listens(mod_api::HookId::MenuSlotChanged, menu.id)
+        });
         let (result, notices) = self.collect_quick_move_notices(|game| {
-            mod_api::run_transaction(game, |game, _| {
+            game.storage_transaction(|game, _| {
                 game.transactions.last_mut().unwrap().menu_click_active = Some(conn);
+                // Only a listening menu pays for the snapshot.
+                let before = changed_menu.and_then(|_| match game.world.block_entities.get(&pos) {
+                    Some(BlockEntity::Mod(entity)) => Some(entity.items.clone()),
+                    _ => None,
+                });
                 let mut handled = false;
                 let mut access = ResidentBlockEntityAccess::for_handle(game, subject, state);
                 let panicked = Self::native_menu_quick_move(
@@ -335,6 +363,36 @@ impl Game<'_> {
                 if changed {
                     game.after_commit(After::Changed(pos));
                 }
+                // The listener sees the move with its source settled, and an invalid output or a
+                // failed listener aborts the whole move with this transaction.
+                if let Some(layout) = changed_menu
+                    && let Some(before) = before
+                    && let Some(uuid) = game
+                        .lan
+                        .as_ref()
+                        .and_then(|host| host.hub.guest(conn))
+                        .map(|guest| guest.uuid)
+                    && let Some(BlockEntity::Mod(entity)) = game.world.block_entities.get(&pos)
+                {
+                    let after = entity.items.clone();
+                    let menu = SlotChangedMenu {
+                        conn,
+                        uuid,
+                        window,
+                        layout,
+                        backing: SlotChangedBacking::Block {
+                            pos,
+                            generation: admitted.generation,
+                        },
+                    };
+                    let snapshots = SlotSnapshots {
+                        before: &before,
+                        after: &after,
+                    };
+                    if !game.mod_menu_slot_changed(&menu, None, snapshots) {
+                        return Err(QuickMoveOutcome::Rejected);
+                    }
+                }
                 Ok(take)
             })
         });
@@ -348,7 +406,7 @@ impl Game<'_> {
             && self.native_block_entity_write_key(subject) == Some(pos)
         {
             let player = self.native_acting_id();
-            let _ = self.mod_menu_slot_take(pos, player, menu, &take);
+            let _ = self.mod_menu_slot_take(Some(pos), player, menu, &take);
         }
         QuickMoveOutcome::Handled
     }
@@ -416,23 +474,25 @@ impl Admitted {
     /// Whether the same window, guest mode and original backing generation are still admitted.
     /// Callers separately check the level-bound holder before settling the clicked slot.
     pub(super) fn holds(&self, game: &Game<'_>) -> bool {
-        let Some(guest) = game.lan.as_ref().and_then(|host| host.hub.guest(self.conn)) else {
-            return false;
-        };
-        guest.menu_generation == self.menu_generation
-            && guest.menu.as_ref().is_some_and(|m| {
-                m.window == self.window
-                    && m.slots == Slots::Block(self.pos)
-                    && m.size == self.size
-                    && m.drag.is_none()
-            })
+        self.menu(game).is_some()
+    }
+
+    fn menu<'a>(&self, game: &'a Game<'_>) -> Option<&'a sunrise_client::lan::menu::Menu> {
+        let guest = game.lan.as_ref()?.hub.guest(self.conn)?;
+        let open = guest.menu.as_ref()?;
+        (guest.menu_generation == self.menu_generation
+            && open.window == self.window
+            && open.slots == Slots::Block(self.pos)
+            && open.size == self.size
+            && open.drag.is_none()
             && !guest.spectator()
             && !guest.dead
             && game
                 .world
                 .block_entities
                 .generation(&self.pos)
-                .is_none_or(|now| Some(now) == self.generation)
+                .is_none_or(|now| Some(now) == self.generation))
+        .then_some(open)
     }
 }
 

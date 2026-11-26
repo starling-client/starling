@@ -1,8 +1,10 @@
 """Generic Mob home codec and one real fence-leash home, independent of AI motion."""
-try:
-    from .command_exec_corpus import cmd, setup
-except ImportError:
-    from command_exec_corpus import cmd, setup
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools.command_exec_corpus import cmd, setup
 
 
 def mob_home(holder_removal_diagnostic=False, late_detach_control=False):

@@ -5,10 +5,10 @@
 //! synched data that differs from the defaults), and who rides what.
 use super::Game;
 use sunrise_client::lan::{
-    entity::{EntityState, Riding, States},
+    entity::{DisplayTracking, EntityState, Riding, States},
     playerdata::ints_uuid,
 };
-use sunrise_protocol::entity_data::{Value, serializer};
+use sunrise_protocol::entity_data::{PaintingHolder, PaintingVariant, Value, serializer};
 use {sunrise_core::nbt::Tag, sunrise_world::registry::BlockStateId};
 
 /// Allocate once: a native summon may need its id before the tracking tick.
@@ -265,6 +265,17 @@ impl Game<'_> {
                 mixed.insert(vehicle);
             }
         }
+        for b in &self.bolts {
+            if let Some(vehicle) = b.mount
+                && !self
+                    .persist
+                    .removals
+                    .contains(&super::commands::Target::Bolt(b.id))
+            {
+                riding.add(vehicle as i32, b.id as i32);
+                mixed.insert(vehicle);
+            }
+        }
         for vehicle in mixed {
             let seats = self.seated_passengers(vehicle);
             if let Some(passengers) = riding.passengers.get_mut(&(vehicle as i32)) {
@@ -378,8 +389,6 @@ impl Game<'_> {
                     let empty = Tag::String("".into());
                     e.defaults
                         .push((13, serializer::STRING, Value::String(String::new())));
-                    e.defaults
-                        .push((14, serializer::COMPONENT, Value::Text(empty)));
                     if !c.synced_command.is_empty() {
                         e.meta.push((
                             13,
@@ -387,20 +396,20 @@ impl Game<'_> {
                             Value::String(c.synced_command.clone()),
                         ));
                     }
-                    if !c.synced_output.is_empty() {
-                        e.meta.push((
-                            14,
-                            serializer::COMPONENT,
-                            Value::Text(Tag::String(c.synced_output.as_str().into())),
-                        ));
+                    if let Some(output) = &c.synced_output
+                        && *output != empty
+                    {
+                        e.meta
+                            .push((14, serializer::COMPONENT, Value::Text(output.clone())));
                     }
+                    e.defaults
+                        .push((14, serializer::COMPONENT, Value::Text(empty)));
                 }
                 _ => {}
             }
         });
         for a in self.armor_stands.iter().filter(|a| a.id > after) {
             let p = a.position;
-            let attributes = self.stand_attributes(&a.live);
             let e = add_state(
                 out,
                 a.id,
@@ -409,7 +418,7 @@ impl Game<'_> {
                 a.yaw,
                 a.ground.on_ground,
             );
-            e.head_yaw = a.yaw;
+            e.head_yaw = a.head_yaw;
             e.velocity = [a.velocity.x, a.velocity.y, a.velocity.z];
             let mut flags = 0i8;
             if a.is_on_fire() {
@@ -471,7 +480,7 @@ impl Game<'_> {
                     e.equipment.push((slot as u8, host.hub.stack(item)));
                 }
             }
-            e.attributes = attributes;
+            self.stand_attributes(&a.live, &mut e.attributes);
         }
         for f in self.item_frames.iter().filter(|f| f.id > after) {
             // ItemFrame.getAddEntityPacket: the block it hangs in and its direction.
@@ -552,8 +561,32 @@ impl Game<'_> {
                 .registry_id("minecraft:painting_variant", &p.variant)
                 && id != 0
             {
-                e.meta
-                    .push((9, serializer::PAINTING_VARIANT, Value::Id(id + 1)));
+                let asset_id = p
+                    .asset
+                    .as_deref()
+                    .map(|a| {
+                        if a.contains(':') {
+                            a.to_owned()
+                        } else {
+                            format!("minecraft:{a}")
+                        }
+                    })
+                    .unwrap_or_else(|| p.variant.to_string());
+                e.meta.push((
+                    9,
+                    serializer::PAINTING_VARIANT,
+                    Value::PaintingVariant(PaintingHolder::Reference {
+                        id,
+                        name: p.variant.to_string(),
+                        variant: PaintingVariant {
+                            width: p.width,
+                            height: p.height,
+                            asset_id,
+                            title: None,
+                            author: None,
+                        },
+                    }),
+                ));
             }
         }
         for c in self.cushions.iter().filter(|c| c.id > after) {
@@ -582,6 +615,9 @@ impl Game<'_> {
                 0.0,
                 false,
             );
+            if o.synced_fire {
+                e.meta.push((0, serializer::BYTE, Value::Byte(1)));
+            }
             e.meta.push((
                 8,
                 serializer::ITEM_STACK,
@@ -598,161 +634,13 @@ impl Game<'_> {
             let e = add_state(out, o.id, &o.kind, [p.x, p.y, p.z], o.yaw, false);
             e.pitch = o.pitch;
             e.head_yaw = o.yaw;
-            if let Some(tag) = self.persist.raw.get(&o.id)
-                && let Some(item) = self.lan_display_data_kept(o.id, tag, e)
-                && let Some((_, _, Value::Item(stack))) =
-                    e.meta.iter_mut().find(|(index, _, _)| *index == 23)
-            {
-                *stack = self
-                    .lan
-                    .as_mut()
-                    .and_then(|host| host.hub.stack(&Some(item)));
+            if o.eye.as_ref().is_some_and(|eye| eye.synced_fire) {
+                e.meta.push((0, serializer::BYTE, Value::Byte(1)));
             }
+            e.display = o.display.as_ref().map(|display| {
+                DisplayTracking::new(display, self.lan.as_ref().map(|lan| &lan.hub))
+            });
         }
-        // Only this level's displays: the others are kept for their own level's pass.
-        KEPT_DISPLAYS.with(|kept| {
-            let mut kept = kept.borrow_mut();
-            let Some(kept) = kept.get_mut(&self.dim) else {
-                return;
-            };
-            if kept.len() > self.others.len() + 64 {
-                let ids: sunrise_client::fast_hash::FxHashSet<u32> =
-                    self.others.iter().map(|o| o.id).collect();
-                kept.retain(|id, _| ids.contains(id));
-            }
-        });
-    }
-    /// [`Self::lan_display_data`] for the display `id`, built again only when
-    /// its compound changed: a server's holograms and menus are text displays
-    /// whose text, item and transformation were parsed again every tick.
-    fn lan_display_data_kept(
-        &self,
-        id: u32,
-        tag: &Tag,
-        e: &mut EntityState,
-    ) -> Option<sunrise_client::items::ItemStack> {
-        if !matches!(
-            e.kind.as_str(),
-            "minecraft:text_display" | "minecraft:block_display" | "minecraft:item_display"
-        ) {
-            return self.lan_display_data(tag, e);
-        }
-        // Block states are read through the pack's registry: a kept build is
-        // only the same for the same one.
-        let registry = std::ptr::from_ref(self.pack.assets.registry) as usize;
-        KEPT_DISPLAYS.with(|kept| {
-            let mut kept = kept.borrow_mut();
-            let kept = kept.entry(self.dim).or_default();
-            let same =
-                |k: &KeptDisplay| k.registry == registry && k.kind == e.kind && k.tag == *tag;
-            if let Some(k) = kept.get(&id).filter(|k| same(k)) {
-                e.meta.clone_from(&k.meta);
-                e.defaults.clone_from(&k.defaults);
-                return k.item.clone();
-            }
-            let item = self.lan_display_data(tag, e);
-            kept.insert(
-                id,
-                KeptDisplay {
-                    registry,
-                    kind: e.kind.clone(),
-                    tag: tag.clone(),
-                    meta: e.meta.clone(),
-                    defaults: e.defaults.clone(),
-                    item: item.clone(),
-                },
-            );
-            item
-        })
-    }
-}
-
-/// A display's synched data as [`Game::lan_display_data`] built it from
-/// `tag`, kept for the display's id on the thread that tracks entities, per
-/// level: a server thread tracks each dimension's `others` in turn.
-struct KeptDisplay {
-    registry: usize,
-    kind: String,
-    tag: Tag,
-    meta: Vec<(u8, i32, Value)>,
-    defaults: Vec<(u8, i32, Value)>,
-    /// An item display's item and the index in `meta` its stack goes in.
-    item: Option<sunrise_client::items::ItemStack>,
-}
-thread_local! {
-    static KEPT_DISPLAYS: std::cell::RefCell<
-        sunrise_client::fast_hash::FxHashMap<super::Dim, sunrise_client::fast_hash::FxHashMap<u32, KeptDisplay>>,
-    > = Default::default();
-}
-
-impl Game<'_> {
-    /// The synched data of a text, block or item display kept unsimulated,
-    /// from its compound (`Display.readAdditionalSaveData`), with the
-    /// defaults to send when a value goes back to one.
-    fn lan_display_data(
-        &self,
-        tag: &Tag,
-        e: &mut EntityState,
-    ) -> Option<sunrise_client::items::ItemStack> {
-        use sunrise_client::text_display::{display_data, text_display_data};
-        let mut item_stack = None;
-        let empty = Tag::Compound(Default::default());
-        let (meta, defaults) = match e.kind.as_str() {
-            "minecraft:text_display" => (
-                text_display_data(tag, false),
-                text_display_data(&empty, true),
-            ),
-            "minecraft:block_display" => {
-                // DATA_BLOCK_STATE_ID, air by default.
-                let state = |t: Option<BlockStateId>| {
-                    (
-                        23,
-                        serializer::BLOCK_STATE,
-                        Value::Id(t.map_or(0, |s| s.0 as i32)),
-                    )
-                };
-                let air = self.pack.assets.registry.default_state("minecraft:air");
-                let shown = tag.get("block_state").and_then(|t| self.state_from_nbt(t));
-                (vec![state(shown.or(air))], vec![state(air)])
-            }
-            "minecraft:item_display" => {
-                // DATA_ITEM_STACK and DATA_ITEM_DISPLAY_ID (`ItemDisplayContext`).
-                item_stack = tag
-                    .get("item")
-                    .and_then(sunrise_client::save::item_from_nbt);
-                let context = match tag.get("item_display") {
-                    Some(Tag::String(s)) => match s.to_string_lossy().as_str() {
-                        "thirdperson_lefthand" => 1,
-                        "thirdperson_righthand" => 2,
-                        "firstperson_lefthand" => 3,
-                        "firstperson_righthand" => 4,
-                        "head" => 5,
-                        "gui" => 6,
-                        "ground" => 7,
-                        "fixed" => 8,
-                        "on_shelf" => 9,
-                        _ => 0,
-                    },
-                    _ => 0,
-                };
-                (
-                    vec![
-                        (23, serializer::ITEM_STACK, Value::Item(None)),
-                        (24, serializer::BYTE, Value::Byte(context)),
-                    ],
-                    vec![
-                        (23, serializer::ITEM_STACK, Value::Item(None)),
-                        (24, serializer::BYTE, Value::Byte(0)),
-                    ],
-                )
-            }
-            _ => return None,
-        };
-        e.meta = display_data(tag, false);
-        e.meta.extend(meta);
-        e.defaults = display_data(&empty, true);
-        e.defaults.extend(defaults);
-        item_stack
     }
 
     /// `ClientboundAddEntityPacket(Entity, ServerEntity, int)`: the entity's
@@ -812,9 +700,7 @@ impl Game<'_> {
         assign_resident_ids!(self.tridents, t, next, None);
         assign_resident_ids!(self.rockets, r, next, None);
         assign_resident_ids!(self.crystals, c, next, None);
-        self.bolts.iter_mut().for_each(|b| {
-            assign_entity_id(next, &mut b.id);
-        });
+        assign_resident_ids!(self.bolts, b, next, Some(&b.attachment_lifetime));
         assign_resident_ids!(self.ominous_spawners, o, next, None);
         self.potions.thrown_ids().for_each(|id| {
             assign_entity_id(next, id);
@@ -828,9 +714,12 @@ impl Game<'_> {
     /// A mod's general entity rows (#792), as the tracker reads them. Their type key is no
     /// entity type a client knows, so pairing introduces them on `sunrise:general_entity`
     /// (`lan/entity.rs`), to Sunrise clients only; their own data are their synced attachments.
+    /// Their custom name, its visibility and their no-gravity flag go as vanilla's
+    /// `Entity.DATA_CUSTOM_NAME`, `DATA_CUSTOM_NAME_VISIBLE` and `DATA_NO_GRAVITY` (entries 2, 3
+    /// and 5 of the base `Entity` block), never in that payload.
     /// Only these states are marked general: a quarantined record, which keeps its type's key,
     /// is no row and is tracked as an unknown kind (never paired).
-    fn lan_general_states(&self, out: &mut States, after: u32) {
+    pub(in crate::game) fn lan_general_states(&self, out: &mut States, after: u32) {
         let catalog = super::general::general_type_catalog();
         let rows = self.resident_entities.general.rows.iter();
         for row in rows.filter(|row| row.id > after) {
@@ -846,6 +735,41 @@ impl Game<'_> {
             [e.yaw, e.pitch] = row.rotation;
             e.head_yaw = row.rotation[0];
             e.general = Some(catalog.tracking(row.type_slot));
+            if let Some(name) = &row.custom_name {
+                e.meta.push((
+                    2,
+                    serializer::OPTIONAL_COMPONENT,
+                    Value::OptText(Some(sunrise_client::scoreboard::json_to_tag(
+                        &name.component(),
+                    ))),
+                ));
+            }
+            if row.custom_name_visible {
+                e.meta.push((3, serializer::BOOLEAN, Value::Bool(true)));
+            }
+            // `Entity.DATA_SHARED_FLAGS_ID`: bit 0 is on fire (`Entity.isOnFire`), bit 6 glowing.
+            let on_fire = row.base.fire_ticks > 0 && !catalog.fire_immune(row.type_slot);
+            let flags = u8::from(on_fire) | (u8::from(row.base.glowing) << 6);
+            if flags != 0 {
+                e.meta.push((0, serializer::BYTE, Value::Byte(flags as i8)));
+            }
+            // `Entity.DATA_SILENT` (4) and `DATA_NO_GRAVITY` (5), sent while set.
+            if row.base.silent {
+                e.meta.push((4, serializer::BOOLEAN, Value::Bool(true)));
+            }
+            if row.base.no_gravity {
+                e.meta.push((5, serializer::BOOLEAN, Value::Bool(true)));
+            }
+            e.defaults.push((0, serializer::BYTE, Value::Byte(0)));
+            // A name taken away or hidden again is sent as none / false.
+            e.defaults
+                .push((2, serializer::OPTIONAL_COMPONENT, Value::OptText(None)));
+            e.defaults
+                .push((3, serializer::BOOLEAN, Value::Bool(false)));
+            e.defaults
+                .push((4, serializer::BOOLEAN, Value::Bool(false)));
+            e.defaults
+                .push((5, serializer::BOOLEAN, Value::Bool(false)));
         }
     }
 
@@ -856,17 +780,69 @@ impl Game<'_> {
             return;
         };
         let hub = &mut host.hub;
+        let chunks = &self.world.chunks;
         let owner = |who: Option<sunrise_client::mobs::Who>| match who {
             Some(sunrise_client::mobs::Who::Mob(id)) => id as i32,
             Some(sunrise_client::mobs::Who::Player) | None => 0,
         };
         let at = |p: sunrise_core::geometry::Vec3| [p.x, p.y, p.z];
         for f in self.fangs.list.iter().filter(|f| f.id > after) {
-            add_state(out, f.id, "minecraft:evoker_fangs", f.pos, f.yaw, false);
+            let e = add_state(out, f.id, "minecraft:evoker_fangs", f.pos, f.yaw, false);
+            if f.synced_fire {
+                e.meta.push((0, serializer::BYTE, Value::Byte(1)));
+            }
         }
-        // LightningBolt: each client draws and flashes its own.
+        // LightningBolt: each client draws and flashes its own; sync inherited Entity data.
         for b in self.bolts.iter().filter(|b| b.id > after) {
-            add_state(out, b.id, "minecraft:lightning_bolt", b.at, 0.0, false);
+            let e = add_state(
+                out,
+                b.id,
+                "minecraft:lightning_bolt",
+                b.at,
+                b.rotation[0],
+                b.on_ground,
+            );
+            e.pitch = b.rotation[1];
+            e.velocity = at(b.velocity);
+            let flags =
+                i8::from(b.fire_ticks > 0 || b.has_visual_fire) | (i8::from(b.glowing) << 6);
+            if flags != 0 {
+                e.meta.push((0, serializer::BYTE, Value::Byte(flags)));
+            }
+            if b.air != 300 {
+                e.meta.push((1, serializer::INT, Value::Int(b.air)));
+            }
+            if let Some(name) = &b.custom_name {
+                e.meta.push((
+                    2,
+                    serializer::OPTIONAL_COMPONENT,
+                    Value::OptText(Some(name.clone())),
+                ));
+            }
+            if b.custom_name_visible {
+                e.meta.push((3, serializer::BOOLEAN, Value::Bool(true)));
+            }
+            if b.silent {
+                e.meta.push((4, serializer::BOOLEAN, Value::Bool(true)));
+            }
+            if b.no_gravity {
+                e.meta.push((5, serializer::BOOLEAN, Value::Bool(true)));
+            }
+            if b.ticks_frozen != 0 {
+                e.meta
+                    .push((7, serializer::INT, Value::Int(b.ticks_frozen)));
+            }
+            e.defaults.push((0, serializer::BYTE, Value::Byte(0)));
+            e.defaults.push((1, serializer::INT, Value::Int(300)));
+            e.defaults
+                .push((2, serializer::OPTIONAL_COMPONENT, Value::OptText(None)));
+            e.defaults
+                .push((3, serializer::BOOLEAN, Value::Bool(false)));
+            e.defaults
+                .push((4, serializer::BOOLEAN, Value::Bool(false)));
+            e.defaults
+                .push((5, serializer::BOOLEAN, Value::Bool(false)));
+            e.defaults.push((7, serializer::INT, Value::Int(0)));
         }
         for t in self.tnts.iter().filter(|t| t.id > after) {
             let e = add_state(
@@ -996,6 +972,7 @@ impl Game<'_> {
             // to the next tick's send_changes so impact updates (e.g. point-blank wall
             // collision) arrive after the client's first tick has completed.
             if !hub.tracks(p.id as i32)
+                && super::native_entity_refs::entity_section_accessible(chunks, at(p.position))
                 && let Some(a) = p.arrow.as_deref()
                 && let (Some(spawn_pos), Some(spawn_vel), Some((pitch, yaw))) =
                     (a.spawn_pos, a.spawn_velocity, a.spawn_rot)
@@ -1087,7 +1064,7 @@ impl Game<'_> {
             let plain = &*r.item.item == "minecraft:firework_rocket"
                 && r.item.count == 1
                 && r.item.extra.is_none();
-            let item = (!plain).then(|| hub.stack(&Some(r.item.clone())));
+            let item = (!plain).then(|| hub.stack(&Some(r.item.as_ref().clone())));
             let boosted = match r.guest {
                 Some(conn) => hub
                     .guests
@@ -1200,6 +1177,8 @@ fn push_arrow_meta(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sunrise_client::lan::entity::{Entities, Tracker, Viewer};
+    use sunrise_protocol::{buf::Reader, packets::play::Clientbound};
 
     // NBT constructors assign ids. Reinstall unbound owners to exercise delayed tracking.
     macro_rules! pending {
@@ -1417,55 +1396,71 @@ mod tests {
 
     #[test]
     #[ignore = "daily"]
-    fn kept_display_data_is_what_a_build_gives() {
+    fn resident_display_metadata_matches_the_loaded_fields() {
+        use sunrise_protocol::item::Stack;
+
         crate::game::native_entity_refs::tests::with_game(|game| {
-            let snbt = |s: &str| sunrise_client::command::snbt::parse_fully(s).unwrap();
-            let displays: [(&str, Tag, Tag); 3] = [
+            let stairs = game
+                .block_state_id("minecraft:oak_stairs[facing=east]")
+                .unwrap();
+            let glass = game.block_state_id("minecraft:glass").unwrap();
+            let cases = [
                 (
                     "minecraft:text_display",
-                    snbt(r#"{text:{text:"Shop",color:"gold"},billboard:"center",line_width:120}"#),
-                    snbt(r#"{text:{text:"Sold out",bold:1b},billboard:"center",background:0}"#),
+                    r#"{text:{text:"Shop",color:"gold"},billboard:"center",line_width:120}"#,
+                    (24, serializer::INT, Value::Int(120)),
+                    r#"{text:{text:"Sold out",bold:1b},billboard:"center",background:0}"#,
+                    (25, serializer::INT, Value::Int(0)),
                 ),
                 (
                     "minecraft:block_display",
-                    snbt(
-                        r#"{block_state:{Name:"minecraft:oak_stairs",Properties:{facing:"east"}}}"#,
-                    ),
-                    snbt(r#"{block_state:{Name:"minecraft:glass"},brightness:{sky:15,block:3}}"#),
+                    r#"{block_state:{Name:"minecraft:oak_stairs",Properties:{facing:"east"}}}"#,
+                    (23, serializer::BLOCK_STATE, Value::Id(stairs.0 as i32)),
+                    r#"{block_state:{Name:"minecraft:glass"},brightness:{sky:15,block:3}}"#,
+                    (23, serializer::BLOCK_STATE, Value::Id(glass.0 as i32)),
                 ),
                 (
                     "minecraft:item_display",
-                    snbt(r#"{item:{id:"minecraft:diamond",count:3},item_display:"gui"}"#),
-                    snbt(
-                        r#"{item:{id:"minecraft:apple",count:1},item_display:"head",glow_color_override:255}"#,
+                    r#"{item:{id:"minecraft:diamond",count:3},item_display:"gui"}"#,
+                    (
+                        23,
+                        serializer::ITEM_STACK,
+                        Value::Item(Some(Stack::new(1, 3))),
+                    ),
+                    r#"{item:{id:"minecraft:apple",count:1},item_display:"head",glow_color_override:255}"#,
+                    (
+                        23,
+                        serializer::ITEM_STACK,
+                        Value::Item(Some(Stack::new(2, 1))),
                     ),
                 ),
             ];
-            let state = |kind: &str| EntityState {
-                kind: kind.into(),
-                ..Default::default()
-            };
-            for (id, (kind, first, second)) in displays.iter().enumerate() {
-                let id = 900 + id as u32;
-                // Ticks with the first compound, then the second, then the first
-                // again: each answer is a fresh build's.
-                for tag in [first, first, first, second, second, first] {
-                    let mut built = state(kind);
-                    let built_item = game.lan_display_data(tag, &mut built);
-                    assert!(!built.meta.is_empty(), "{kind}");
-                    let mut kept = state(kind);
-                    let kept_item = game.lan_display_data_kept(id, tag, &mut kept);
-                    assert_eq!(format!("{kept_item:?}"), format!("{built_item:?}"));
-                    assert_eq!(
-                        format!("{:?}", kept.meta),
-                        format!("{:?}", built.meta),
-                        "{kind}"
-                    );
-                    assert_eq!(
-                        format!("{:?}", kept.defaults),
-                        format!("{:?}", built.defaults),
-                        "{kind}"
-                    );
+            for (kind, first, first_meta, second, second_meta) in cases {
+                for (nbt, expected) in [
+                    (first, &first_meta),
+                    (second, &second_meta),
+                    (first, &first_meta),
+                ] {
+                    let tag = sunrise_client::command::snbt::parse_fully(nbt).unwrap();
+                    let display = game.read_display_nbt(kind, &tag).unwrap();
+                    // Each new viewer gets the live fields, even when pairing is repeated.
+                    for _ in 0..2 {
+                        let mut metadata = Vec::new();
+                        display.append_metadata(
+                            None,
+                            false,
+                            |stack| {
+                                let id = match &*stack.item {
+                                    "minecraft:diamond" => 1,
+                                    "minecraft:apple" => 2,
+                                    item => panic!("unexpected stack {item}"),
+                                };
+                                Some(Stack::new(id, stack.count as i32))
+                            },
+                            &mut metadata,
+                        );
+                        assert!(metadata.contains(expected), "{kind}: {metadata:?}");
+                    }
                 }
             }
         });
@@ -1502,6 +1497,149 @@ mod tests {
         );
         let plain = sunrise_client::entities::ArmorStand::new(1, Default::default(), 0.0);
         assert!(stand_poses(&plain).is_empty());
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn a_stands_add_entity_packet_keeps_head_yaw_separate_from_view_yaw() {
+        use crate::game::native_entity_refs::tests::run_fresh_cases;
+        use sunrise_client::entities::ArmorStand;
+        use sunrise_core::geometry::Vec3;
+
+        if run_fresh_cases(
+            "game::lan_entities::tests::a_stands_add_entity_packet_keeps_head_yaw_separate_from_view_yaw",
+            "SUNRISE_STAND_PAIR_TEST",
+            &["pair"],
+        ) {
+            return;
+        }
+        crate::game::native_guest_turn_tests::with_guests(|game| {
+            let at = [3.0, 64.0, 5.0];
+            let mut stand = ArmorStand::new(40, Vec3::new(at[0], at[1], at[2]), 45.0);
+            stand.head_yaw = 90.0;
+            game.armor_stands.push(stand);
+            let packet = track_stands(game, &mut Entities::default(), &mut Tracker::default())
+                .into_iter()
+                .find_map(|packet| match packet {
+                    Clientbound::AddEntity(p) if p.id == 40 => Some(p),
+                    _ => None,
+                })
+                .expect("the tracker sent the stand's AddEntity");
+            assert_eq!([packet.yaw, packet.head_yaw], [32, 64]);
+        });
+    }
+
+    /// Track from a guest's chunk for one stand update interval. This lets the
+    /// test observe both initial pairing and updates to that same viewer.
+    fn track_stands(
+        game: &mut Game<'_>,
+        level: &mut Entities,
+        tracker: &mut Tracker,
+    ) -> Vec<Clientbound> {
+        let mut rows = States::default();
+        game.lan_object_states(&mut rows, false, 0);
+        let rows: Vec<_> = rows.as_slice().iter().collect();
+        let mut out = Vec::new();
+        let chunks = [(0, 0)].into_iter().collect();
+        let sync = game.lan.as_ref().unwrap().hub.sync_data();
+        let mut viewers = [Viewer {
+            entity_id: 12,
+            spectator: false,
+            permission: 0,
+            sunrise: false,
+            general_entity: false,
+            moved: false,
+            position: [3.0, 64.0, 5.0],
+            view_distance: 2,
+            chunks: &chunks,
+            sources: None,
+            far: &[],
+            attachment_sender: None,
+            tracker,
+            out: &mut out,
+        }];
+        let riding = Riding::default();
+        for _ in 0..sunrise_client::lan::tracking::settings("minecraft:armor_stand").1 {
+            level.tick(&rows, &riding, &mut viewers, None, |kind| {
+                sync.id("minecraft:entity_type", kind)
+            });
+        }
+        out.iter()
+            .map(|body| {
+                let mut reader = Reader::new(body);
+                Clientbound::decode(reader.varint().unwrap(), reader.rest()).unwrap()
+            })
+            .collect()
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn stand_rotation_commands_update_the_head_for_an_already_paired_viewer() {
+        use crate::game::native_entity_refs::tests::run_fresh_cases;
+
+        if run_fresh_cases(
+            "game::lan_entities::tests::stand_rotation_commands_update_the_head_for_an_already_paired_viewer",
+            "SUNRISE_STAND_COMMAND_YAW_TEST",
+            &["rotate", "teleport", "teleport_without_rotation"],
+        ) {
+            return;
+        }
+        let case = std::env::var("SUNRISE_STAND_COMMAND_YAW_TEST").unwrap();
+        crate::game::native_guest_turn_tests::with_guests(|game| {
+            game.options.dedicated = Some(Vec::new());
+            game.world.chunks.insert(
+                (0, 0),
+                std::sync::Arc::new(sunrise_client::chunk::Chunk::empty(0, 0)),
+            );
+            let run = |game: &mut Game<'_>, command| {
+                game.chat_capture = Some(Vec::new());
+                let ok = game.as_console_in_spawn_level(|g| g.run_command(command));
+                let feedback = game.chat_capture.take().unwrap();
+                assert!(
+                    ok,
+                    "{command}: {:?}",
+                    feedback.iter().map(|m| m.plain()).collect::<Vec<_>>()
+                );
+            };
+            let stand = game
+                .summon_with_nbt(
+                    "minecraft:armor_stand",
+                    [3.0, 64.0, 5.0],
+                    r#"{Tags:["turn_me"],Rotation:[45f,0f]}"#,
+                )
+                .unwrap();
+            let Some(crate::game::commands::Target::Stand(id)) = stand else {
+                panic!("the loaded entity was not an armor stand");
+            };
+            let id = id as i32;
+            let (command, expected) = match case.as_str() {
+                "rotate" => ("rotate @e[tag=turn_me,limit=1] 90 0", [64, 64]),
+                "teleport" => ("teleport @e[tag=turn_me,limit=1] 4 64 5 135 0", [96, 96]),
+                "teleport_without_rotation" => {
+                    // The head can be turned independently of view before /tp.
+                    game.armor_stands.iter_mut().next().unwrap().head_yaw = 90.0;
+                    ("teleport @e[tag=turn_me,limit=1] 4 64 5", [32, 32])
+                }
+                _ => unreachable!(),
+            };
+            let mut level = Entities::default();
+            let mut tracker = Tracker::default();
+            let paired = track_stands(game, &mut level, &mut tracker);
+            assert!(
+                paired
+                    .iter()
+                    .any(|p| matches!(p, Clientbound::AddEntity(a) if a.id == id))
+            );
+            run(game, command);
+            let packets = track_stands(game, &mut level, &mut tracker);
+            assert!(packets.iter().any(|p| {
+                matches!(p, Clientbound::RotateHead(r) if r.id == id && r.head_yaw == expected[1])
+            }), "no RotateHead with yaw {} after {command}", expected[1]);
+            let late = track_stands(game, &mut Entities::default(), &mut Tracker::default());
+            assert!(late.iter().any(|p| {
+                matches!(p, Clientbound::AddEntity(a) if a.id == id && [a.yaw, a.head_yaw] == expected)
+            }), "no AddEntity with yaw {expected:?} after {command}");
+        });
     }
 
     /// Issue #8050: a cart's custom display block and offset reach clients

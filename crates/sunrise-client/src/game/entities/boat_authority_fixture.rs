@@ -24,7 +24,7 @@ struct Case {
 struct Attack {
     yaw: f32,
     sprint: bool,
-    ticks: u32,
+    ticks: i32,
     player_velocity: [f64; 3],
     #[serde(default)]
     knockback: u8,

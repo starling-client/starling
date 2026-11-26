@@ -127,6 +127,10 @@ fn spawn_member<L: PatrolLevel, R: RandomSource>(
     if !spawn_rules::patrolling_monster_rules(pillager.species, level, Reason::Patrol, x, y, z) {
         return false;
     }
+    // EntityType.create checks canSpawn after the patrol's placement predicate.
+    if level.peaceful() && !pillager.allowed_in_peaceful() {
+        return false;
+    }
     spawn(level, Member { pos, leader }, random)
 }
 
@@ -188,8 +192,12 @@ impl BoolTrack {
 pub const CAN_PILLAGER_PATROL_SPAWN: &str = "minecraft:gameplay/can_pillager_patrol_spawn";
 pub const CAN_START_RAID: &str = "minecraft:gameplay/can_start_raid";
 impl GameplayAttributes {
-    /// Reads the dimension types, biomes and timelines under `root/data`.
-    pub fn load(root: &std::path::Path) -> Self {
+    /// Reads the dimension types, biomes and timelines under `root/data`, and the timeline
+    /// tags from `root` and the world's packs (`overlay`).
+    pub fn load(
+        root: &std::path::Path,
+        overlay: &sunrise_world::loot::PackOverlay,
+    ) -> std::io::Result<Self> {
         use serde_json::Value;
         let data = root.join("data/minecraft");
         let read = |p: std::path::PathBuf| -> Option<Value> {
@@ -214,16 +222,9 @@ impl GameplayAttributes {
         let mut out = Self::default();
         let timelines: std::collections::HashMap<String, Value> =
             list("timeline").into_iter().collect();
-        let tags = sunrise_world::tag_layers::load(
-            root,
-            "timeline",
-            &sunrise_world::loot::PackOverlay::NONE,
-            |id| timelines.contains_key(id),
-        )
-        .unwrap_or_else(|error| {
-            log::warn!("Sunrise: timeline tags unavailable: {error}");
-            Default::default()
-        });
+        let tags = sunrise_world::tag_layers::load(root, "timeline", overlay, |id| {
+            timelines.contains_key(id)
+        })?;
         for (dim, v) in list("dimension_type") {
             for key in keys {
                 if let Some(b) = v["attributes"][key].as_bool() {
@@ -291,7 +292,7 @@ impl GameplayAttributes {
                 }
             }
         }
-        out
+        Ok(out)
     }
     /// The attribute in a dimension type and biome at an overworld clock time.
     pub fn value(&self, key: &str, dimension: &str, biome: &str, clock: i64) -> bool {
@@ -346,9 +347,51 @@ mod tag_cycle_tests {
                 serde_json::json!({"timelines":format!("#minecraft:{tag}")}),
             );
         }
-        let attributes = GameplayAttributes::load(root.path());
+        let attributes =
+            GameplayAttributes::load(root.path(), &sunrise_world::loot::PackOverlay::NONE).unwrap();
         for dimension in ["minecraft:one", "minecraft:two"] {
             assert!(!attributes.value(CAN_PILLAGER_PATROL_SPAWN, dimension, "minecraft:plains", 0));
         }
+    }
+
+    /// A data pack's timeline tag file binds like the game's own: the raid code's attribute for a
+    /// dimension type that names the tag follows the pack's entry (`TagLoader.load`).
+    #[test]
+    fn a_pack_timeline_tag_reaches_the_raid_attributes() {
+        let root = tempfile::tempdir().unwrap();
+        let write = |path: &str, value: serde_json::Value| {
+            let path = root.path().join(format!("data/minecraft/{path}.json"));
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, value.to_string()).unwrap();
+        };
+        write(
+            "timeline/blocked",
+            serde_json::json!({"tracks":{(CAN_PILLAGER_PATROL_SPAWN):{"keyframes":[{"ticks":0,"value":false}]}}}),
+        );
+        write(
+            "dimension_type/one",
+            serde_json::json!({"timelines":"#minecraft:from_pack"}),
+        );
+        let attributes = |files: &[(String, Vec<Vec<u8>>)]| {
+            GameplayAttributes::load(root.path(), &sunrise_world::loot::PackOverlay::new(files))
+                .unwrap()
+        };
+        let value = |attributes: &GameplayAttributes| {
+            attributes.value(
+                CAN_PILLAGER_PATROL_SPAWN,
+                "minecraft:one",
+                "minecraft:plains",
+                0,
+            )
+        };
+        assert!(value(&attributes(&[])));
+        let files = [(
+            "tags/minecraft:timeline/from_pack".to_owned(),
+            vec![
+                br#"{"values":["minecraft:blocked",{"id":"minecraft:absent","required":false}]}"#
+                    .to_vec(),
+            ],
+        )];
+        assert!(!value(&attributes(&files)));
     }
 }

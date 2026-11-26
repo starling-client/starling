@@ -1,0 +1,10 @@
+ids = [
+    "hook:screen_files_dropped",
+    "method:Hooks::screen_files_dropped",
+    "type:ScreenFilesDroppedEvent",
+    "type:ScreenFilesDroppedEvent.screen",
+    "type:ScreenFilesDroppedEvent.paths",
+    "type:HookId",
+]
+why = "#5788: a mod screen that takes files (a virtual machine's disk image, a script, a picture for a monitor) needs the drop. screen_files_dropped is vanilla's Screen.onFilesDrop, which MouseHandler.onDrop calls once with the whole list for whichever screen is open; NeoForge's ScreenEvent has no event for it. It only observes: the game's own handling always runs and the game reads no file. The paths come as the operating system gave them, in order, and a path that is not UTF-8 is passed through. HookId gains its variant."
+migrate = "Nothing to migrate. A mod that matches HookId exhaustively adds the new arm; one with a wildcard arm compiles unchanged."

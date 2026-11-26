@@ -22,6 +22,7 @@ use sunrise_client::{
     item_render::{self, ItemRenderState, SpecialHost, WorldSink},
     items::ItemStack,
     mesher::Vertex,
+    skins::HeadSkinJournal,
 };
 use sunrise_core::geometry::{Aabb, Vec3};
 
@@ -41,7 +42,7 @@ impl sunrise_client::hud_kit::icon::IconPainter for IconPainter<'_, '_> {
     fn item(&self, batch: &mut HudBatch, id: &str, [x, y, size]: [f32; 3]) -> bool {
         let start = batch.vertices.len();
         self.game
-            .draw_item_model(batch, &ItemStack::new(id, 1), x, y);
+            .draw_item_model(batch, &ItemStack::new(id, 1), x, y, 0);
         let scale = size / sunrise_client::hud_kit::icon::ITEM_SIZE;
         batch.scale_since(start, x, y, scale, scale);
         batch.vertices.len() > start
@@ -66,6 +67,16 @@ impl item_render::ItemDrawEnv for Env<'_, '_> {
         context: &sunrise_assets::item_model::Context<'_>,
     ) -> Option<item_render::SpecialModelInput<'_>> {
         super::native_special_renderers::draw_input(self.game, stack, context)
+    }
+
+    fn render_type(
+        &self,
+        handle: mod_api::RenderTypeRef,
+    ) -> Result<
+        sunrise_client_render::mod_pipelines::ResolvedRenderType<'static>,
+        mod_api::RenderTypeError,
+    > {
+        self.game.pack.render.mod_pipelines.render_type_slot(handle)
     }
 
     fn special_model_stack(
@@ -367,6 +378,7 @@ pub(super) struct Host<'a> {
     sprites: &'a HashMap<String, Rect>,
     skins: &'a RefCell<sunrise_client::skins::Downloader>,
     profiles: &'a RefCell<sunrise_client::skins::Resolver>,
+    head_skins: Option<&'a HeadSkinJournal>,
 }
 impl SpecialHost for Host<'_> {
     fn banner_texture(&self, pattern: &str) -> Option<String> {
@@ -384,11 +396,12 @@ impl SpecialHost for Host<'_> {
         // accepts a texture property without a signature, unlike the tab list.
         // A `Dynamic` profile (a name or id only) resolves through the
         // services (`PlayerSkinRenderCache.getOrDefault`).
-        Some(sunrise_client::skins::head_skin(
+        Some(sunrise_client::skins::head_skin_with_journal(
             profile,
             &mut self.profiles.borrow_mut(),
             &mut self.skins.borrow_mut(),
             |location| self.sprites.contains_key(location),
+            self.head_skins,
         ))
     }
 }
@@ -470,6 +483,7 @@ impl Game<'_> {
             sprites: &self.gui.atlas.sprites,
             skins: &self.skin_downloads,
             profiles: &self.skin_profiles,
+            head_skins: None,
         }
     }
     /// The client level as item models read it: worked out once a frame (a
@@ -664,21 +678,71 @@ impl Game<'_> {
         }
         state
     }
-    /// `GuiGraphics.renderItem(player, level, stack, x, y, 0)`.
-    pub(super) fn draw_item_model(&self, batch: &mut HudBatch, stack: &ItemStack, x: f32, y: f32) {
+    /// `GuiGraphics.renderItem(player, level, stack, x, y, seed)`.
+    pub(super) fn draw_item_model(
+        &self,
+        batch: &mut HudBatch,
+        stack: &ItemStack,
+        x: f32,
+        y: f32,
+        seed: i32,
+    ) {
+        self.draw_item_model_with_skins(batch, stack, [x, y], seed, None);
+    }
+
+    /// The seeded GUI item draw, with optional deferral for a transactional canvas.
+    pub(in crate::game) fn draw_item_model_with_skins(
+        &self,
+        batch: &mut HudBatch,
+        stack: &ItemStack,
+        [x, y]: [f32; 2],
+        seed: i32,
+        head_skins: Option<&HeadSkinJournal>,
+    ) {
         let owner = self.player_owner(Some(stack));
-        let state = self.resolve_item(stack, DisplayContext::Gui, Some(&owner), 0);
-        item_render::gui::draw(
+        self.draw_item_model_with_owner_and_skins(
+            batch,
+            stack,
+            [x, y],
+            seed,
+            Some(&owner),
+            head_skins,
+        );
+    }
+    /// `GuiGraphicsExtractor.item`: `fakeItem` uses the same model draw with no owner.
+    pub(super) fn draw_item_model_with_owner(
+        &self,
+        batch: &mut HudBatch,
+        stack: &ItemStack,
+        x: f32,
+        y: f32,
+        owner: Option<&OwnerState>,
+    ) {
+        self.draw_item_model_with_owner_and_skins(batch, stack, [x, y], 0, owner, None);
+    }
+    fn draw_item_model_with_owner_and_skins(
+        &self,
+        batch: &mut HudBatch,
+        stack: &ItemStack,
+        [x, y]: [f32; 2],
+        seed: i32,
+        owner: Option<&OwnerState>,
+        head_skins: Option<&HeadSkinJournal>,
+    ) {
+        let state = self.resolve_item(stack, DisplayContext::Gui, owner, seed);
+        let host = Host {
+            head_skins,
+            ..self.item_host()
+        };
+        item_render::gui::draw_with_frame(
             &state,
             &self.pack.item_renderer,
             &self.gui.atlas.sprites,
-            &self.item_host(),
+            &host,
             batch,
             x,
             y,
-            self.glint_frame.millis / 1000.0,
-            self.glint_frame.speed,
-            self.glint_frame.alpha,
+            self.glint_frame,
         );
     }
     /// An item under `pose` (GUI pixels), cut by no slot and with a depth of its own: what
@@ -708,12 +772,8 @@ impl Game<'_> {
     /// frame, not per item (`GameRenderer.extractOptions`).
     pub(super) fn capture_glint_frame(&self) -> item_render::GlintFrame {
         item_render::GlintFrame {
-            millis: if self.clock.still() {
-                self.visual_millis() as f32
-            } else {
-                self.started.elapsed().as_secs_f32() * 1000.0
-            },
-            speed: self.settings.file.double("glintSpeed") as f32,
+            millis: self.visual_millis(),
+            speed: self.settings.file.double("glintSpeed"),
             alpha: self.settings.file.double("glintStrength") as f32,
             sprite: self
                 .gui
@@ -722,9 +782,9 @@ impl Game<'_> {
                 .contains_key("misc/enchanted_glint_item"),
         }
     }
-    /// The `ENTITY_GLINT_TEXTURING` inputs of this frame.
+    /// The `GLINT_TEXTURING` inputs of this frame (`WorldSink` picks `ENTITY_SCALE` per quad).
     pub(super) fn glint(&self) -> Option<item_render::Glint> {
-        self.glint_frame.glint(0.5)
+        self.glint_frame.glint(item_render::Glint::ITEM_SCALE)
     }
     /// Submit a resolved item under `pose` (camera-relative) at `light`
     /// (packed lightmap coordinates).
@@ -737,6 +797,30 @@ impl Game<'_> {
     ) {
         let lights = diffuse_lights(self.nether_lighting());
         self.submit_item_lit(state, pose, light, lights, out);
+    }
+    /// [`Self::submit_item_world`] preserving JOML `Matrix4f` rounding through baked quads.
+    pub(super) fn submit_item_world_joml(
+        &self,
+        state: &ItemRenderState,
+        pose: sunrise_client::camera::joml::Mat4,
+        light: u32,
+        out: &mut Vec<Vertex>,
+    ) {
+        let lights = diffuse_lights(self.nether_lighting());
+        let mut sink = WorldSink {
+            out,
+            light: item_hdr_light(state, light),
+            lights: (state.hdr_light == 0).then_some(lights),
+            glint: self.glint(),
+            tier: state.hdr_tier,
+        };
+        state.submit_joml(
+            &self.pack.item_renderer,
+            &self.gui.atlas.sprites,
+            &self.item_host(),
+            pose,
+            &mut sink,
+        );
     }
     /// [`Self::submit_item_world`] shaded by other diffuse lights (a
     /// `Lighting.Entry` other than the level's), in the pose's output space.
@@ -861,20 +945,23 @@ impl Game<'_> {
         out: &mut Vec<Vertex>,
         run: std::ops::Range<usize>,
     ) {
-        let live = self.dropped[run].iter().map(|item| {
-            let (p, q) = (item.previous, item.position);
-            let at = [
-                p.x + (q.x - p.x) * alpha,
-                p.y + (q.y - p.y) * alpha,
-                p.z + (q.z - p.z) * alpha,
-            ];
-            ItemEntityDraw {
-                item,
-                at,
-                partial: alpha as f32,
-                entity: true,
-            }
-        });
+        let live = self.dropped[run]
+            .iter()
+            .filter(|item| !self.hides_as_camera(item.id))
+            .map(|item| {
+                let (p, q) = (item.previous, item.position);
+                let at = [
+                    p.x + (q.x - p.x) * alpha,
+                    p.y + (q.y - p.y) * alpha,
+                    p.z + (q.z - p.z) * alpha,
+                ];
+                ItemEntityDraw {
+                    item,
+                    at,
+                    partial: alpha as f32,
+                    entity: true,
+                }
+            });
         self.item_entity_geometry(camera, live, out);
     }
 
@@ -951,7 +1038,8 @@ impl Game<'_> {
             let age = item.age as f32 + partial;
             let (lo, hi) = state.bounding_box();
             let min_offset_y = -lo.y + 0.0625;
-            let bob = (age / 10.0 + item.bob_offset).sin() * 0.1 + 0.1;
+            let motion = self.dropped_stack_motion(&item.stack);
+            let bob = item_render::item_bob(age, item.bob_offset, motion.bob);
             let spin = item_render::item_spin(age, item.bob_offset);
             let pose = glam::Mat4::from_translation(pos.as_vec3())
                 * glam::Mat4::from_translation(glam::Vec3::new(0.0, bob + min_offset_y, 0.0))
@@ -981,11 +1069,12 @@ impl Game<'_> {
             };
             let seed = i64::from(self.item_number(&item.stack.item).unwrap_or(0))
                 + i64::from(item.stack.damage);
-            let copies = item_render::cluster_poses_with_depth(
+            let copies = item_render::dropped_copy_poses(
                 pose,
                 item_render::rendered_amount(item.stack.count),
                 seed,
                 hi.z - lo.z,
+                motion.spread,
             );
             // Use the same animated, spun, clustered transforms as the draw.
             // ItemEntity's collision box is only 0.25 blocks and cannot prove
@@ -1068,41 +1157,14 @@ fn item_hdr_light(state: &ItemRenderState, light: u32) -> u32 {
 }
 
 #[cfg(test)]
-mod tests {
+#[path = "spawn_border_tests.rs"]
+mod spawn_border_tests;
+
+#[cfg(test)]
+pub(in crate::game) mod tests {
     use super::*;
     use mod_api::ClientHost;
     use serde_json::json;
-
-    /// `ClientLevel.setRespawnData`: the client keeps the packet's level beside its position,
-    /// so the spawn compass's target names the level the world spawn is in.
-    #[test]
-    #[ignore = "daily"]
-    fn the_spawn_compass_target_keeps_the_world_spawn_level() {
-        use sunrise_protocol::{
-            connection::Pipe,
-            packets::play::{self, Clientbound as C},
-        };
-        super::super::native_entity_refs::tests::with_client_game(|game| {
-            let (client, _server) = Pipe::pair();
-            game.connect_local(client, "spawn-compass").unwrap();
-            for (dimension, pos) in [
-                ("minecraft:the_nether", [3, 40, 9]),
-                ("minecraft:overworld", [-7, 90, 12]),
-            ] {
-                game.handle_packet(C::SetDefaultSpawnPosition(play::SetDefaultSpawnPosition {
-                    pos: play::GlobalPos {
-                        dimension: dimension.into(),
-                        pos,
-                    },
-                    yaw: 0.0,
-                    pitch: 0.0,
-                }))
-                .unwrap();
-                let respawn = game.level_state_now("minecraft:overworld").respawn.unwrap();
-                assert_eq!((respawn.dimension.as_str(), respawn.pos), (dimension, pos));
-            }
-        });
-    }
 
     /// The resolver skips a mod that leaves `item_model_property` at its default;
     /// a mod that implements it is asked on every resolve.
@@ -1683,5 +1745,277 @@ mod tests {
         assert_eq!(use_duration(ComponentsView::of(&bow)), 72_000);
         // Anything else is not used at all.
         assert_eq!(use_duration(ComponentsView::of(&Components::new())), 0);
+    }
+
+    /// 26.3 parity: `Game::submit_item_world`, `Game::submit_item_unlit`, and
+    /// `Game::draw_item_model` emit bit-exact vanilla glint UVs for genpvp EID 83245
+    /// (`minecraft:end_crystal`, `DisplayContext::Gui` & `Ground`, `GLINT_TEXTURING` 8.0 +
+    /// `items` atlas UV) and for an enchanted shield (`ENTITY_GLINT_TEXTURING` 0.5 +
+    /// `shield_patterns` atlas UV).
+    #[test]
+    #[ignore = "daily"]
+    fn item_display_end_crystal_world_submit_uses_vanilla_glint_scale_and_atlas_uv_26_3() {
+        run_item_display_end_crystal_world_submit_uses_vanilla_glint_scale_and_atlas_uv_26_3();
+    }
+
+    pub(in crate::game) fn run_item_display_end_crystal_world_submit_uses_vanilla_glint_scale_and_atlas_uv_26_3()
+     {
+        crate::game::in_own_process(
+            "game::item_draw::tests::item_display_end_crystal_world_submit_uses_vanilla_glint_scale_and_atlas_uv_26_3",
+            || {
+                let witness_path = std::env::var_os("SUNRISE_ITEM_GLINT_WITNESS")
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(|| {
+                        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                            .join("../../.local/witness/26.3/glint/witness.json")
+                    });
+                let witness_text = std::fs::read_to_string(&witness_path).unwrap_or_else(|e| {
+                    panic!(
+                        "failed to read item glint witness {} (generate with tools/test_glint_parity.py --record-only): {e}",
+                        witness_path.display()
+                    )
+                });
+                let witness: Value =
+                    serde_json::from_str(&witness_text).expect("valid 26.3 item_glint witness");
+                let root = std::env::var_os("SUNRISE_TEST_RESOURCES")
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(|| {
+                        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                            .join("../../.local/sunrise-client/26.3")
+                    });
+                fn parse_pos(v: &Value) -> [[u32; 3]; 4] {
+                    let arr = v.as_array().unwrap();
+                    std::array::from_fn(|i| {
+                        let p = arr[i].as_array().unwrap();
+                        [
+                            p[0].as_u64().unwrap() as u32,
+                            p[1].as_u64().unwrap() as u32,
+                            p[2].as_u64().unwrap() as u32,
+                        ]
+                    })
+                }
+                fn parse_quad(v: &Value) -> [[u32; 2]; 4] {
+                    let arr = v.as_array().unwrap();
+                    std::array::from_fn(|i| {
+                        let p = arr[i].as_array().unwrap();
+                        [p[0].as_u64().unwrap() as u32, p[1].as_u64().unwrap() as u32]
+                    })
+                }
+                fn assert_extruded_match(
+                    verts: &[Vertex],
+                    quads: &[item_render::ItemQuad],
+                    expected: &[Value],
+                    label: &str,
+                ) {
+                    assert_eq!(verts.len(), expected.len() * 4, "{label} vertex count");
+                    assert_eq!(quads.len(), expected.len(), "{label} quad count");
+                    let extract = |idx: usize| {
+                        let vq = &verts[idx * 4..(idx + 1) * 4];
+                        let q = &quads[idx];
+                        let pos: [[u32; 3]; 4] = std::array::from_fn(|i| {
+                            let bits = vq[i].pos.map(f32::to_bits);
+                            assert_eq!(q.pos[i].to_array().map(f32::to_bits), bits);
+                            assert_eq!(q.uv[i].map(f32::to_bits), vq[i].uv.map(f32::to_bits));
+                            bits
+                        });
+                        let uv0 = q.gui_glint_uv.unwrap().map(|p| p.map(f32::to_bits));
+                        let glint_uv: [[u32; 2]; 4] =
+                            std::array::from_fn(|i| vq[i].glint_uv.map(f32::to_bits));
+                        (pos, uv0, glint_uv)
+                    };
+                    // Front/back faces `[0..2]` match by index.
+                    for i in 0..2 {
+                        let (pos, uv0, glint_uv) = extract(i);
+                        assert_eq!(
+                            pos,
+                            parse_pos(&expected[i]["pos_bits"]),
+                            "{label} q[{i}] pos"
+                        );
+                        assert_eq!(
+                            uv0,
+                            parse_quad(&expected[i]["uv0_bits"]),
+                            "{label} q[{i}] uv0"
+                        );
+                        assert_eq!(
+                            glint_uv,
+                            parse_quad(&expected[i]["glint_uv_t123456_bits"]),
+                            "{label} q[{i}] glint_uv"
+                        );
+                    }
+                    // Side faces `[2..]` match 1-to-1 by `(pos_bits, uv0_bits)`; fail on dup/unmatched.
+                    let mut witness_sides: HashMap<([[u32; 3]; 4], [[u32; 2]; 4]), &Value> =
+                        HashMap::with_capacity(expected.len() - 2);
+                    for w in &expected[2..] {
+                        let key = (parse_pos(&w["pos_bits"]), parse_quad(&w["uv0_bits"]));
+                        assert!(
+                            witness_sides.insert(key, w).is_none(),
+                            "{label} duplicate witness side key"
+                        );
+                    }
+                    let mut seen: std::collections::HashSet<([[u32; 3]; 4], [[u32; 2]; 4])> =
+                        std::collections::HashSet::with_capacity(quads.len() - 2);
+                    for i in 2..quads.len() {
+                        let (pos, uv0, glint_uv) = extract(i);
+                        let key = (pos, uv0);
+                        assert!(seen.insert(key), "{label} duplicate Sunrise side key");
+                        let w = witness_sides
+                            .remove(&key)
+                            .unwrap_or_else(|| panic!("{label} unmatched Sunrise side key"));
+                        assert_eq!(pos, parse_pos(&w["pos_bits"]), "{label} side pos");
+                        assert_eq!(uv0, parse_quad(&w["uv0_bits"]), "{label} side uv0");
+                        assert_eq!(
+                            glint_uv,
+                            parse_quad(&w["glint_uv_t123456_bits"]),
+                            "{label} side glint_uv"
+                        );
+                    }
+                    assert!(
+                        witness_sides.is_empty(),
+                        "{label} {} unmatched witness side faces",
+                        witness_sides.len()
+                    );
+                }
+                super::super::native_entity_refs::tests::with_game_role(
+                    root,
+                    super::super::execution_role::ExecutionRole::Client,
+                    |game| {
+                        game.pack
+                            .item_renderer
+                            .prepare_glint_atlas(16384, (0, 2))
+                            .unwrap();
+                        game.glint_frame = item_render::GlintFrame {
+                            millis: 123_456,
+                            speed: 0.5,
+                            alpha: 0.75,
+                            sprite: true,
+                        };
+                        let crystal = ItemStack::new("minecraft:end_crystal", 1);
+                        // Exact `DisplayRenderer.ItemDisplayRenderer` pose for EID 83245 (`CENTER` billboard).
+                        let mut eid_p = joml::Mat4::IDENTITY;
+                        eid_p.rotate(joml::Quat::rotation_yxz(
+                            (-std::f64::consts::PI / 180.0) as f32 * -180.0,
+                            0.0,
+                            0.0,
+                        ));
+                        eid_p.translate(-0.945, 0.3885, -4.2);
+                        eid_p.rotate(joml::Quat {
+                            x: 0.0,
+                            y: 1.0,
+                            z: 0.0,
+                            w: 0.0,
+                        });
+                        eid_p.scale(0.525, 0.525, 0.525);
+                        eid_p.rotate_y(std::f32::consts::PI);
+                        let eid_pose = eid_p.to_glam();
+                        let eid_quads = witness["end_crystal_item_display"]["quads"]
+                            .as_array()
+                            .unwrap();
+
+                        let state_gui =
+                            game.resolve_item(&crystal, DisplayContext::Gui, None, 83245);
+                        let mut world_out = Vec::new();
+                        game.submit_item_world(&state_gui, eid_pose, 0xF0F0, &mut world_out);
+                        assert!(world_out.iter().all(|v| (v.layer & 0xFFFF) == 7));
+                        let mut world_quads = Vec::new();
+                        state_gui.submit(
+                            &game.pack.item_renderer,
+                            &game.gui.atlas.sprites,
+                            &game.item_host(),
+                            eid_pose,
+                            &mut world_quads,
+                        );
+                        assert_extruded_match(
+                            &world_out,
+                            &world_quads,
+                            eid_quads,
+                            "26.3 Game::submit_item_world end_crystal EID 83245",
+                        );
+
+                        let ground_quads_want =
+                            witness["contexts"]["ground"]["quads"].as_array().unwrap();
+                        let state_ground =
+                            game.resolve_item(&crystal, DisplayContext::Ground, None, 83245);
+                        let mut unlit_out = Vec::new();
+                        game.submit_item_unlit(
+                            &state_ground,
+                            glam::Mat4::IDENTITY,
+                            0xF0F0,
+                            &mut unlit_out,
+                        );
+                        let mut unlit_quads = Vec::new();
+                        state_ground.submit(
+                            &game.pack.item_renderer,
+                            &game.gui.atlas.sprites,
+                            &game.item_host(),
+                            glam::Mat4::IDENTITY,
+                            &mut unlit_quads,
+                        );
+                        assert_extruded_match(
+                            &unlit_out,
+                            &unlit_quads,
+                            ground_quads_want,
+                            "26.3 Game::submit_item_unlit end_crystal ground",
+                        );
+
+                        // GUI draw_item_model must not lose millis precision via `/ 1000.0 * 1000.0`.
+                        let mut batch = HudBatch::scratch([64, 64]);
+                        game.draw_item_model(&mut batch, &crystal, 0.0, 0.0, 0);
+                        let want_front = parse_quad(&eid_quads[0]["glint_uv_t123456_bits"]);
+                        let mut seen = [false; 4];
+                        for v in batch.vertices.iter().filter(|v| v.uv[0] >= 2.0) {
+                            let corner = match v.pos {
+                                [0.0, 0.0] => 0,
+                                [0.0, 16.0] => 1,
+                                [16.0, 16.0] => 2,
+                                [16.0, 0.0] => 3,
+                                p => panic!("unexpected end_crystal GUI corner {p:?}"),
+                            };
+                            assert_eq!(
+                                v.glint_uv.map(f32::to_bits),
+                                want_front[corner],
+                                "26.3 Game::draw_item_model end_crystal GUI corner[{corner}]"
+                            );
+                            seen[corner] = true;
+                        }
+                        assert!(seen.into_iter().all(|ok| ok));
+
+                        // Enchanted shield in world submit must keep ENTITY_GLINT_TEXTURING (0.5).
+                        let mut shield = ItemStack::new("minecraft:shield", 1);
+                        shield.data_mut().set_other(
+                            "minecraft:enchantment_glint_override",
+                            Some(sunrise_core::nbt::Tag::Byte(1)),
+                        );
+                        let state_shield =
+                            game.resolve_item(&shield, DisplayContext::Ground, None, 0);
+                        let mut shield_out = Vec::new();
+                        game.submit_item_world(
+                            &state_shield,
+                            glam::Mat4::IDENTITY,
+                            0xF0F0,
+                            &mut shield_out,
+                        );
+                        let mut want_shield: Vec<[[u32; 2]; 4]> = witness["special_models"]["shield_plain"]
+                    ["ground"]["models"][0]["quads"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|q| parse_quad(&q["glint_uv_t123456_bits"]))
+                    .collect();
+                        want_shield.sort();
+                        let mut got_shield: Vec<[[u32; 2]; 4]> = shield_out
+                            .as_chunks::<4>()
+                            .0
+                            .iter()
+                            .map(|quad| std::array::from_fn(|i| quad[i].glint_uv.map(f32::to_bits)))
+                            .collect();
+                        got_shield.sort();
+                        assert_eq!(
+                            got_shield, want_shield,
+                            "26.3 Game::submit_item_world enchanted shield"
+                        );
+                    },
+                );
+            },
+        );
     }
 }

@@ -31,11 +31,11 @@ from pathlib import Path
 import platform
 import random
 import subprocess
-try:
-    from . import lab, test_rust_parity as base
-except ImportError:
-    import lab
-    import test_rust_parity as base
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_rust_parity as base
 
 PROFESSIONS = ['armorer', 'butcher', 'cartographer', 'cleric', 'farmer', 'fisherman', 'fletcher', 'leatherworker',
                'librarian', 'mason', 'shepherd', 'toolsmith', 'weaponsmith']
@@ -183,6 +183,36 @@ def corpus(wants):
     cases.append('price b3 seed=5 v=fisherman:plains:1 gossip=major_positive:100 hero=4')
     cases.append('price b4 seed=5 v=shepherd:plains:1 gossip=major_positive:100 gossip=major_positive:100 '
                  'hero=1 uses=0:3 uses=1:3')
+    # A restock while the trading screen is open (the offers the screen shows are the live ones), before and
+    # after the screen closes: exhausted offers, the second restock of a day, a new day's demand catch-up,
+    # trades made in the screen first, and reputation / Hero of the Village prices refreshed by the restock.
+    pay = 'inv=0:minecraft:emerald*64,1:minecraft:paper*64,2:minecraft:wheat*64,3:minecraft:coal*64'
+    for k in range(int(os.environ.get('TRADING_RESTOCK_OPEN', '60'))):
+        m = spec(rng, rng.choice([1, 2, 3]))
+        trades = ','.join(f'select:{i},click:2:0:quick_move' for i in range(rng.randint(0, 3)))
+        times = [rng.choice([2000, 2401, 2600, 6000, 12001, 13000, 30000]) for _ in range(rng.randint(1, 3))]
+        steps = [trades] if trades else []
+        closed = rng.random() < 0.5
+        for i, t in enumerate(times):
+            if closed and i == 1:
+                steps.append('close')
+            steps.append(f'restock:{t}:{t // 24000 + rng.choice([0, 0, 1])}')
+            if rng.random() < 0.5:
+                steps.append('tick')
+        steps.append('close' if not closed else 'tick')
+        kv = [f'seed={rng.randrange(-2**63, 2**63)}', f'vseed={rng.randrange(-2**47, 2**47)}', f'v={m}', pay,
+              f'steps={",".join(steps)}', f'uses=0:{rng.randint(1, 12)}', f'uses=1:{rng.randint(1, 12)}',
+              f'demand=0:{rng.randint(-5, 20)}']
+        if rng.random() < 0.6:
+            kv.append(f'gossip={rng.choice(GOSSIP)}:{rng.randint(1, 100)}')
+        if rng.random() < 0.4:
+            kv.append(f'hero={rng.randrange(3)}')
+        if rng.random() < 0.5:
+            kv.append(f'lastrestock={rng.randrange(0, 40000)}')
+            kv.append(f'restocks={rng.randrange(3)}')
+        cases.append(f'trade o{k} ' + ' '.join(kv))
+    cases.append('trade o_a seed=3 vseed=1 v=farmer:plains:1 inv=0:minecraft:emerald*64 uses=0:12 uses=1:12 '
+                 'gossip=major_positive:100 hero=1 steps=restock:2000:0,close,restock:5000:0,tick')
     # Signed Java int extremes, both price limits, and finite floats whose product overflows.
     lo, hi = -(2**31), 2**31 - 1
     for i, (base, uses, cap, demand, multiplier, special, delta, xp, start) in enumerate([

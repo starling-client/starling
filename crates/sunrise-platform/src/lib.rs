@@ -80,6 +80,15 @@ pub mod mod_rows {
     pub use sunrise_hooks::mod_rows::{Row, register};
 }
 
+/// Vanilla's own item catalogs, as the engine loaded them (docs/layers.md, "Item catalog").
+pub mod items {
+    pub use sunrise_hooks::items::creative_order;
+}
+
+/// Proxy selection and connection pooling for HTTP requests to caller-supplied URLs.
+#[cfg(feature = "http-proxy")]
+pub use sunrise_proxy as proxy;
+
 /// The game's own release: [`release::VERSION`] is what its Mods screen row shows.
 pub use sunrise_core::release;
 

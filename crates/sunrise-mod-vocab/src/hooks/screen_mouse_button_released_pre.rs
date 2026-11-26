@@ -1,5 +1,4 @@
 //! The `screen_mouse_button_released_pre` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0094
 
 pub trait Hooks {
     /// A mouse button went up over the open screen
@@ -19,6 +18,7 @@ pub trait Hooks {
         receiver = "read",
         dispatch = "flat",
         side = "client",
+        version = 2,
         contract = "cancel",
         out = "canceled",
         neoforge = "ScreenEvent.MouseButtonReleased.Pre",

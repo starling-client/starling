@@ -10,8 +10,7 @@ use sunrise_core::profile::AccountProperty;
 #[non_exhaustive]
 #[derive(sunrise_mod_api_macros::Wire)]
 pub enum EntityAttributeError {
-    /// The entity type's id is invalid or empty, or, for a declared set, in a
-    /// namespace the declaring mod does not own.
+    /// The entity type's id is malformed or empty.
     InvalidId,
     /// The set names the same attribute twice.
     DuplicateAttribute,
@@ -29,10 +28,9 @@ pub enum EntityAttributeError {
 pub enum AttributeRegistrationError {
     /// Only both-side packages may change the attribute registry.
     WrongSide,
-    /// The attribute's id is malformed, empty or in a namespace the
-    /// declaring mod does not own (a vanilla attribute's included).
+    /// The attribute's id is malformed or empty.
     InvalidId,
-    /// Another declaration already covers the attribute.
+    /// Another declaration or built-in entry already covers the attribute.
     Duplicate,
     /// The default or a bound is not finite.
     NotFinite,
@@ -88,6 +86,15 @@ impl TryFrom<u32> for DamageTypeKey {
 // exhaustive: incoming scalar slots are checked against the host's registry
 pub struct EntityTypeKey(pub(crate) u32);
 
+impl EntityTypeKey {
+    /// `EntityType.getCategory()` of this registered type, on either side and with no entity
+    /// spawned: `minecraft:zombie` is `Monster`, a mod mob its declared category. See
+    /// `KeysHost::entity_type_category`; a live entity's is `EntityRef::classification`.
+    pub fn category(self, host: &dyn crate::Host) -> Option<crate::MobCategory> {
+        crate::backend_of(host)?.entity_type_category(self)
+    }
+}
+
 impl From<&EntityTypeKey> for u32 {
     fn from(key: &EntityTypeKey) -> Self {
         key.0
@@ -112,38 +119,63 @@ pub struct ChannelRef {
     pub id: u64,
 }
 
-/// A player on the server, as a server hook sees them.
-#[derive(Clone, Debug, PartialEq)]
-#[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
-pub struct ServerPlayer {
-    /// The player's UUID.
-    pub uuid: u128,
-    /// The player's name.
-    pub name: String,
-    /// The operator level, 0 to 4 (`ops.json`; single player's owner with
-    /// cheats on is 4).
-    pub permission: u8,
-    /// `minecraft:overworld`, `minecraft:the_nether`, `minecraft:the_end`.
-    pub dimension: String,
-    /// The player's position in blocks.
-    pub position: [f64; 3],
-    /// 0 survival, 1 creative, 2 adventure, 3 spectator.
-    pub game_mode: i32,
-    /// Health points, 20 at full; 0 once dead.
-    pub health: f32,
-    /// Where they look, in degrees (`yRot`, `xRot`), as their last move told
-    /// the server.
-    pub yaw: f32,
-    /// The player's pitch in degrees.
-    pub pitch: f32,
-    /// The network entity id the player has this session, the one hooks that only know entity ids
-    /// (`living_incoming_damage`, `living_knockback`) give for the player; 0 when not known.
-    /// API @API:server_player_entity_id@.
-    pub entity_id: i32,
-    /// The IP address the player connects from, without the port (empty
-    /// when not known).
-    pub address: String,
+/// The client-supplied login destination returned by [`PlayerRef::virtual_host`].
+/// This is neither the peer address nor a verified server name.
+#[derive(Clone, Debug, PartialEq, Eq, sunrise_mod_api_macros::Wire)]
+// exhaustive: the destination consists of exactly a host and a port.
+pub struct VirtualHost {
+    /// The host string from the handshake, before its first NUL character.
+    pub host: String,
+    /// The unsigned port from the same handshake.
+    pub port: u16,
+}
+
+/// An armor stand's six pose rotations (`ArmorStand.DATA_HEAD_POSE` to `DATA_RIGHT_LEG_POSE`,
+/// vanilla's `Rotations`): x, y and z in degrees, as `getHeadPose` ... `getRightLegPose` give them.
+#[derive(Clone, Copy, Debug, PartialEq, sunrise_mod_api_macros::Wire)]
+// exhaustive: the game builds it with a literal; mods only read it
+pub struct ArmorStandPose {
+    /// `ArmorStand.headPose`: x, y and z rotation in degrees.
+    pub head: [f32; 3],
+    /// `ArmorStand.bodyPose`: x, y and z rotation in degrees.
+    pub body: [f32; 3],
+    /// `ArmorStand.leftArmPose`: x, y and z rotation in degrees.
+    pub left_arm: [f32; 3],
+    /// `ArmorStand.rightArmPose`: x, y and z rotation in degrees.
+    pub right_arm: [f32; 3],
+    /// `ArmorStand.leftLegPose`: x, y and z rotation in degrees.
+    pub left_leg: [f32; 3],
+    /// `ArmorStand.rightLegPose`: x, y and z rotation in degrees.
+    pub right_leg: [f32; 3],
+}
+
+/// A new armor stand's pose (`ArmorStand.DEFAULT_HEAD_POSE` to `DEFAULT_RIGHT_LEG_POSE`).
+impl Default for ArmorStandPose {
+    fn default() -> Self {
+        Self {
+            head: [0.0, 0.0, 0.0],
+            body: [0.0, 0.0, 0.0],
+            left_arm: [-10.0, 0.0, -10.0],
+            right_arm: [-15.0, 0.0, 10.0],
+            left_leg: [-1.0, 0.0, -1.0],
+            right_leg: [1.0, 0.0, 1.0],
+        }
+    }
+}
+
+/// An armor stand's client flags (`ArmorStand.DATA_CLIENT_FLAGS`).
+/// The default is vanilla's: no flag set.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, sunrise_mod_api_macros::Wire)]
+// exhaustive: the game builds it with a literal; mods only read it
+pub struct ArmorStandFlags {
+    /// `ArmorStand.isSmall`.
+    pub small: bool,
+    /// `ArmorStand.showArms`.
+    pub show_arms: bool,
+    /// `ArmorStand.showBasePlate`.
+    pub show_base_plate: bool,
+    /// `ArmorStand.isMarker`.
+    pub marker: bool,
 }
 
 /// A persistent entity UUID in the same bit order as the value from `EntityRef::uuid`.
@@ -163,6 +195,15 @@ pub struct EntityUuid(pub u128);
 /// of an entity that is gone, or used on a client. `Host::entity` makes a server
 /// handle from an event's entity id; `ClientHost::crosshair_target` supplies a
 /// client handle for an entity hit.
+///
+/// The base state vanilla gives every `Entity` is read and written through one rule for
+/// every kind: the remaining fire ticks and `isOnFire`, `fireImmune`, `isSilent`,
+/// `hasGlowingTag`, `isNoGravity` and `isInvulnerable`, saved as `Fire`, `Silent`,
+/// `Glowing`, `NoGravity` and `Invulnerable` as `Entity.saveWithoutId` writes them. `None`
+/// or `false` from them means a stale handle, a non-finite input or the wrong side. The
+/// exceptions are a fishing bobber, a leash knot and a dragon's part, which keep no entity
+/// data: they read the defaults and refuse writes. Kinds the game keeps as saved data hold
+/// `Fire` as the saved short.
 #[derive(sunrise_mod_api_macros::Wire, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 // exhaustive: its fields are private, so mods cannot build or destructure it
 pub struct EntityRef {
@@ -185,23 +226,28 @@ impl EntityRef {
     pub fn epoch(self) -> WorldEpoch {
         self.epoch
     }
-    /// A float from the entity's own random (`Entity.getRandom().nextFloat()`), drawn from the
-    /// actual stream, which keeps it. None where the hit does not lend the entity.
-    pub fn next_float(self, hit: &mut dyn HitHost) -> Option<f32> {
-        hit.entity_next_float(self)
+    /// Where the entity is `partial` of the way through its current tick
+    /// (`Entity.getPosition(float)`): on each axis `Mth.lerp(partial, xo, x)`, from
+    /// [`Self::previous_position`] to [`Self::position`], the position a renderer draws the
+    /// entity at with the frame's partial tick. NeoForge mods call the same vanilla method.
+    /// Side: both. None when either read is None.
+    pub fn position_at(self, host: &dyn Host, partial: f32) -> Option<[f64; 3]> {
+        let old = self.previous_position(host)?;
+        let now = self.position(host)?;
+        let delta = f64::from(partial);
+        Some(std::array::from_fn(|axis| {
+            old[axis] + delta * (now[axis] - old[axis])
+        }))
     }
-    /// A double from the entity's own random, as [`Self::next_float`] draws.
-    pub fn next_double(self, hit: &mut dyn HitHost) -> Option<f64> {
-        hit.entity_next_double(self)
-    }
-    /// A boolean from the entity's own random, as [`Self::next_float`] draws.
-    pub fn next_bool(self, hit: &mut dyn HitHost) -> Option<bool> {
-        hit.entity_next_bool(self)
-    }
-    /// An int from 0 up to `bound` from the entity's own random, as [`Self::next_float`] draws.
-    /// None as well for a `bound` of 0 or less.
-    pub fn next_int(self, hit: &mut dyn HitHost, bound: i32) -> Option<i32> {
-        hit.entity_next_int(self, bound)
+    /// Use the entity's live `Entity.getRandom` stream for `draw`. The hit leaves the
+    /// draws in the stream in listener order. Returns `None` without running `draw`
+    /// if this hit does not lend the entity.
+    pub fn with_random<T>(
+        self,
+        hit: &mut dyn HitHost,
+        draw: impl FnOnce(&mut dyn crate::RandomSource) -> T,
+    ) -> Option<T> {
+        crate::world::random::with_random_draw(draw, |draw| hit.lend_entity_random(self, draw))
     }
 }
 
@@ -309,8 +355,9 @@ pub enum AttributeOperation {
     AddMultipliedTotal,
 }
 
-/// An attribute modifier (vanilla's `AttributeModifier`): its id, which is
-/// unique on one attribute of one entity, the amount and the operation.
+/// An owned attribute modifier (vanilla's `AttributeModifier`) used for writes: its id,
+/// which is unique on one attribute of one entity, the amount and the operation.
+/// Read modifiers through [`LivingRef::visit_attribute_modifiers`].
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, sunrise_mod_api_macros::Wire)]
 pub struct AttributeModifier {
@@ -333,6 +380,19 @@ impl AttributeModifier {
     }
 }
 
+/// A modifier lent by [`LivingRef::visit_attribute_modifiers`].
+// no wire: the id is borrowed from an in-process attribute map
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AttributeModifierView<'a> {
+    /// The canonical modifier id (`mymod:sprint_boost`), borrowed for this visit.
+    pub id: &'a str,
+    /// The amount the operation applies.
+    pub amount: f64,
+    /// How it applies.
+    pub operation: AttributeOperation,
+}
+
 /// Whether an attribute modifier is saved with its entity
 /// (`AttributeInstance.addPermanentModifier`) or lasts until the entity
 /// unloads (`addTransientModifier`), as the modifiers of worn items and
@@ -347,9 +407,8 @@ pub enum ModifierLifetime {
 }
 
 /// A living entity's active effect (vanilla's `MobEffectInstance`), as
-/// [`LivingRef`] reads its effects and as `add_effect` gives one: the
-/// effect's id, an [`Identifier`] namespaced as the registry has it
-/// (`minecraft:speed`, a content mod's `mod:custom`),
+/// [`LivingRef::visit_effects`] reads each effect and as `add_effect` gives one: the
+/// effect's load-owned [`EffectKey`],
 /// the ticks left (-1 is infinite), the amplifier from 0, and the flags a
 /// beacon-style effect carries: `ambient` (an ambient one gives no
 /// particles), `visible` (whether its particles show) and `show_icon`
@@ -428,67 +487,6 @@ impl MobRef {
     /// The same entity as a living handle.
     pub fn living(self) -> LivingRef {
         LivingRef::new(self.0)
-    }
-}
-
-/// A mob the game has made but not yet added to a level (`finalize_spawn`'s and
-/// `mob_spawn_position_check`'s mob), lent to one hook call. It is not an [`EntityRef`]: the
-/// mob is in no level yet, so no entity lookup finds it. Pending-child editors borrow the
-/// action's actual owned mob; they do not clone it or authorize residency. Each listener and
-/// nested action expires those borrows; reacquire a child from its collection afterward.
-/// Reads take `&dyn Host`
-/// (`mob.kind(host)`); where a hook hands out an [`UnspawnedMobEdits`] with it, that makes the
-/// edits. Every read and edit after the hook returns, or with another lend's handle,
-/// is refused with [`UnspawnedMobError::Expired`], so a copy kept past the call changes nothing.
-#[derive(sunrise_mod_api_macros::Wire, Clone, Copy, Debug, PartialEq, Eq, Hash)]
-// exhaustive: its fields are private, so mods cannot build or destructure it
-pub struct UnspawnedMobRef {
-    pub(crate) epoch: WorldEpoch,
-    pub(crate) lend: u64,
-    pub(crate) action: u64,
-    pub(crate) slot: u32,
-}
-
-impl UnspawnedMobRef {
-    /// Create a handle for the game.
-    // hidden: a game-side helper, not part of the mod surface
-    #[doc(hidden)]
-    pub fn new(epoch: WorldEpoch, lend: u64) -> Self {
-        Self {
-            epoch,
-            lend,
-            action: 0,
-            slot: 0,
-        }
-    }
-    /// Names a callback borrow of an action-owned child. All numbers are checked by the engine.
-    // hidden: engine transport only; arena validation grants authority
-    #[doc(hidden)]
-    pub fn pending(epoch: WorldEpoch, action: u64, lease: u64, slot: u32) -> Self {
-        Self {
-            epoch,
-            lend: lease,
-            action,
-            slot,
-        }
-    }
-    /// Pending arena identity; `None` for a standalone spawning lend.
-    // hidden: engine transport only; arena validation grants authority
-    #[doc(hidden)]
-    pub fn pending_parts(self) -> Option<(u64, u64, u32)> {
-        (self.action != 0).then_some((self.action, self.lend, self.slot))
-    }
-    /// The open of the world the handle belongs to.
-    // hidden: a game-side helper, not part of the mod surface
-    #[doc(hidden)]
-    pub fn epoch(self) -> WorldEpoch {
-        self.epoch
-    }
-    /// Which of that world's lends it names.
-    // hidden: a game-side helper, not part of the mod surface
-    #[doc(hidden)]
-    pub fn lend(self) -> u64 {
-        self.lend
     }
 }
 
@@ -804,6 +802,43 @@ impl ItemEntityRef {
     }
 }
 
+/// An experience orb of the open world (vanilla's `ExperienceOrb`), narrowed with
+/// `host.experience_orb`.
+#[derive(sunrise_mod_api_macros::Wire, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+// exhaustive: its fields are private, so mods cannot build or destructure it
+pub struct ExperienceOrbRef(pub(crate) EntityRef);
+
+impl ExperienceOrbRef {
+    /// Create a handle for the game.
+    // hidden: a game-side helper, not part of the mod surface
+    #[doc(hidden)]
+    pub fn new(entity: EntityRef) -> Self {
+        Self(entity)
+    }
+    /// The same entity as an [`EntityRef`].
+    pub fn entity(self) -> EntityRef {
+        self.0
+    }
+}
+
+/// Why a write to an [`ExperienceOrbRef`] was refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, sunrise_mod_api_macros::Wire)]
+#[non_exhaustive]
+pub enum ExperienceOrbWriteError {
+    /// The handle is stale, removed, or temporarily held out of lookup.
+    Stale,
+    /// World access is unavailable, or the call ran on a client.
+    Unavailable,
+    /// The count is 0 or exceeds `i32::MAX` (vanilla `ExperienceOrb.count`, `ExtraCodecs.POSITIVE_INT`).
+    InvalidCount,
+}
+
+impl crate::NoBackend for ExperienceOrbWriteError {
+    fn no_backend() -> Self {
+        Self::Unavailable
+    }
+}
+
 /// A display entity of the open world (`block_display`, `item_display` or
 /// `text_display`), narrowed with `host.display`.
 #[derive(sunrise_mod_api_macros::Wire, Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -820,6 +855,19 @@ impl DisplayRef {
     /// The same entity as an [`EntityRef`].
     pub fn entity(self) -> EntityRef {
         self.0
+    }
+
+    /// Lends the current `ItemDisplay.getItemStack` without copying its components.
+    /// Use [`ItemStackView::project`] if you need the components or an owned stack
+    /// that can outlive this call. Returns `None` without calling `read` when the
+    /// stack is empty, this is not a live item display, or the read is unavailable.
+    pub fn with_item<R>(
+        self,
+        host: &dyn Host,
+        read: impl for<'a> FnOnce(ItemStackView<'a>) -> R,
+    ) -> Option<R> {
+        let backend = crate::backend_of(host)?;
+        read_stack_view(read, |lend| backend.display_item_stack(self, lend))
     }
 }
 
@@ -1063,8 +1111,6 @@ pub enum CollisionExclusionsError {
     Stale,
     /// The entity is not a player: only players keep collision exclusions.
     NotAPlayer,
-    /// More than 64 boxes.
-    TooMany,
     /// A coordinate that is NaN or infinite.
     NotFinite,
     /// A box whose minimum is above its maximum on an axis.
@@ -1324,9 +1370,9 @@ pub struct PlayerFood {
     pub exhaustion: f32,
 }
 
-// no wire: borrows the connected player's profile from the host.
+// no wire: borrows a profile from the host.
 /// A player's borrowed game profile (authlib's `GameProfile`): UUID, name and login
-/// properties, such as `textures` (the skin). A custom test host can lend one using
+/// properties, such as `textures` (the skin) when available. A custom test host can lend one using
 /// `mod_api::testing::GameProfileFixture` with the `testing` feature enabled.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -1340,7 +1386,7 @@ pub struct GameProfile<'a> {
 
 impl<'a> GameProfile<'a> {
     /// Read the profile's properties in login order without copying the text.
-    /// An offline-mode player has no properties.
+    /// Offline-mode players and profiles from the user cache have no properties.
     pub fn properties(&self) -> impl ExactSizeIterator<Item = ProfileProperty<'a>> + use<'a> {
         self.properties.iter().map(|property| ProfileProperty {
             name: &property.name,
@@ -1381,15 +1427,17 @@ pub struct ProfileProperty<'a> {
 }
 
 // no wire: An in-process result of a native menu open, not a transported payload.
-/// Why [`PlayerRef::open_mod_menu`] opened nothing.
+/// Why [`PlayerRef::open_mod_menu`], [`PlayerRef::open_chest_menu`], or
+/// [`PlayerRef::open_ender_chest`] opened nothing.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum OpenMenuError {
     /// The menu type is not a content mod's (`data/<id>/sunrise/menu/`).
     NotModMenu,
-    /// A menu with `owned_slots` also declares a take-only or crafting result.
-    OwnedSlotsWithResults,
-    /// Opening a new window is not possible during the active menu click action.
+    /// A menu with `owned_slots` also declares a crafting grid.
+    OwnedSlotsWithCrafting,
+    /// A speculative quick move or merchant action still owns a window.
+    /// An ordinary `menu_clicked` callback does not cause this refusal.
     ClickInProgress,
     /// The player is stale, dead, disconnecting, has no supported client, or their turn
     /// is unavailable for the open veto. Also returned by a host without a game.
@@ -1403,6 +1451,8 @@ pub enum OpenMenuError {
     DataCountMismatch,
     /// The title cannot be encoded as vanilla network NBT.
     TitleNotEncodable,
+    /// One of the stacks was refused at the game's item conversion boundary.
+    Stack(StackWriteError),
 }
 
 impl From<crate::text::TextFormError> for OpenMenuError {
@@ -1411,9 +1461,34 @@ impl From<crate::text::TextFormError> for OpenMenuError {
     }
 }
 
+impl From<StackWriteError> for OpenMenuError {
+    fn from(error: StackWriteError) -> Self {
+        Self::Stack(error)
+    }
+}
+
 impl NoBackend for OpenMenuError {
     fn no_backend() -> Self {
         Self::PlayerUnavailable
+    }
+}
+
+/// Why [`PlayerRef::send_ping`] did not queue a play ping.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+#[derive(sunrise_mod_api_macros::Wire)]
+pub enum PlayerPingRefusal {
+    /// The handle no longer identifies a player on this server.
+    Stale,
+    /// The player has no open play connection of their own.
+    NoConnection,
+    /// The ping could not be encoded or admitted to the outbound queue or transaction batch.
+    SendFailed,
+}
+
+impl NoBackend for PlayerPingRefusal {
+    fn no_backend() -> Self {
+        Self::Stale
     }
 }
 
@@ -1445,23 +1520,69 @@ impl NoBackend for RespawnRefusal {
     }
 }
 
-/// Why `menu_set_items` replaced nothing. Nothing is sent when one comes back.
+/// Where a player would respawn now, as [`PlayerRef::respawn_target`] finds it: the transition
+/// `ServerPlayer.findRespawnPositionAndUseSpawnBlock(false, DO_NOTHING)` gives.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
+#[derive(sunrise_mod_api_macros::Wire)]
+pub struct RespawnTarget {
+    /// The level: the respawn point's, or the world spawn's (`MinecraftServer.findRespawnDimension`).
+    pub level: LevelRef,
+    /// The feet position in that level.
+    pub position: [f64; 3],
+    /// The yaw the player faces: toward the bed or anchor, else the world spawn's.
+    pub yaw: f32,
+    /// The pitch the player faces: level at a bed or anchor, else the world spawn's.
+    pub pitch: f32,
+    /// The player had a respawn point whose bed or anchor no longer gives a position
+    /// (`TeleportTransition.missingRespawnBlock`): the target is the world spawn, and a respawn
+    /// there would tell them `block.minecraft.spawn.not_valid`.
+    pub missing_respawn_block: bool,
+}
+
+/// Why [`PlayerRef::respawn_target`] found no target now. The checks run in the order the
+/// variants are listed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+#[derive(sunrise_mod_api_macros::Wire)]
+pub enum RespawnTargetUnavailable {
+    /// The handle no longer identifies a player on this server: it is stale, or they left.
+    Stale,
+    /// A player's state is swapped in (the call came from inside a player's hook, such as a
+    /// command or a packet handler) and the target is in a level not in place, which the call
+    /// would have to put in place to read; call it from `server_tick`.
+    InPlayerHook,
+    /// The world spawn's column search (`PlayerSpawnFinder`) waits for a chunk to load, as the
+    /// End exit's search does; the call asked for it. Ask again on a later tick.
+    Loading,
+}
+
+impl NoBackend for RespawnTargetUnavailable {
+    fn no_backend() -> Self {
+        Self::Stale
+    }
+}
+
+/// Why [`MenuRef::set_items`] replaced nothing. Nothing is sent when one comes back.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 #[derive(sunrise_mod_api_macros::Wire)]
 pub enum MenuItemsRefusal {
     /// The call was made on a client; menus are the server's.
     Client,
-    /// No player of that UUID is online and placed.
+    /// The menu's player is not online and placed.
     NoPlayer,
-    /// The window is not the player's open `open_menu` menu: another window, a menu the game
-    /// opened (a chest, a trade), or none open.
+    /// The handle does not name the player's open [`PlayerRef::open_chest_menu`] or
+    /// [`PlayerRef::open_mod_menu`] window: a stale handle, a menu the game opened (a chest, a
+    /// trade), or the inventory menu.
     NotOpen,
     /// One of the stacks was refused at the game's item conversion boundary: an item the world
     /// lacks, a count or damage the item does not allow.
     Stack(StackWriteError),
     /// The window owns its slots. Write them through [`ItemPlace::MenuSlot`](crate::ItemPlace::MenuSlot).
     OwnedSlots,
+    /// The call is not available in this phase or host state.
+    Unavailable,
 }
 
 impl From<StackWriteError> for MenuItemsRefusal {
@@ -1472,7 +1593,7 @@ impl From<StackWriteError> for MenuItemsRefusal {
 
 impl NoBackend for MenuItemsRefusal {
     fn no_backend() -> Self {
-        Self::NoPlayer
+        Self::Unavailable
     }
 }
 
@@ -1685,8 +1806,8 @@ pub enum MoveCause {
     /// `MoverType.SHULKER`: a shulker mob's opening lid pushes it away.
     Shulker,
     /// Sunrise's own: a moving collider (an entity's `set_collider`) carries a body standing on
-    /// it or shoves a body swept by its translation, after the level's entities tick. Vanilla
-    /// has no such mover.
+    /// it or shoves a body in the swept path of its translation and rotation, after the level's
+    /// entities tick. Vanilla has no such mover.
     Carried,
 }
 
@@ -1733,6 +1854,34 @@ pub(crate) fn refused_move_output(
     Ok(())
 }
 
+/// A `living_travel_moved` listener's proposed velocity: any finite vector is accepted
+/// (`Entity.setDeltaMovement`), a changed non-finite one is refused.
+pub(crate) fn refused_velocity_output(
+    accepted: &[f64; 3],
+    velocity: &[f64; 3],
+) -> Result<(), &'static str> {
+    if accepted.map(f64::to_bits) != velocity.map(f64::to_bits)
+        && velocity.iter().any(|component| !component.is_finite())
+    {
+        return Err("velocity");
+    }
+    Ok(())
+}
+
+#[test]
+fn travel_velocity_proposals_accept_finite_vectors_and_refuse_a_changed_non_finite_one() {
+    let accepted = [65.0, -66.0, 67.0];
+    assert_eq!(refused_velocity_output(&[1.0; 3], &accepted), Ok(()));
+    for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let mut proposed = accepted;
+        proposed[1] = value;
+        assert_eq!(
+            refused_velocity_output(&accepted, &proposed),
+            Err("velocity")
+        );
+    }
+}
+
 #[test]
 fn move_replacements_accept_finite_components_without_an_axis_limit() {
     let accepted = [65.0, -66.0, 67.0];
@@ -1744,27 +1893,6 @@ fn move_replacements_accept_finite_components_without_an_axis_limit() {
             assert_eq!(refused_move_output(&accepted, &proposed), Err("delta"));
         }
     }
-}
-
-/// Check each replaced vector against its own budget, without applying mod-output
-/// limits to untouched game values. Bit comparisons preserve signed zero and NaN payloads.
-pub(crate) fn refused_travel_output(
-    accepted_input: &[f64; 3],
-    accepted_velocity: &[f64; 3],
-    input: &[f64; 3],
-    velocity: &[f64; 3],
-) -> Result<(), &'static str> {
-    for (accepted, proposed, limit, field) in [
-        (accepted_input, input, 1.0, "input"),
-        (accepted_velocity, velocity, 64.0, "velocity"),
-    ] {
-        if accepted.map(f64::to_bits) != proposed.map(f64::to_bits)
-            && !proposed.iter().all(|v| v.abs() <= limit)
-        {
-            return Err(field);
-        }
-    }
-    Ok(())
 }
 
 /// How a declared attribute's modifier lines read on item tooltips: NeoForge's
@@ -1814,50 +1942,5 @@ pub enum WantedPositionError {
 impl NoBackend for WantedPositionError {
     fn no_backend() -> Self {
         Self::Unavailable
-    }
-}
-
-#[cfg(test)]
-mod travel_tests {
-    use super::refused_travel_output;
-
-    #[test]
-    fn a_travel_output_is_refused_by_the_first_field_outside_its_budget() {
-        let ok = [0.0; 3];
-        assert_eq!(
-            refused_travel_output(&ok, &ok, &[-1.0, 1.0, 0.0], &[64.0, -64.0, 0.0]),
-            Ok(())
-        );
-        for bad in [1.01, f64::NAN, f64::INFINITY] {
-            assert_eq!(
-                refused_travel_output(&ok, &ok, &[0.0, bad, 0.0], &ok),
-                Err("input")
-            );
-        }
-        for bad in [64.5, -65.0, f64::NAN, f64::NEG_INFINITY] {
-            assert_eq!(
-                refused_travel_output(&ok, &ok, &ok, &[0.0, 0.0, bad]),
-                Err("velocity")
-            );
-        }
-    }
-
-    #[test]
-    fn an_untouched_vector_is_exempt_from_the_replacement_budget() {
-        let input = [0.0; 3];
-        let velocity = [65.0, f64::from_bits(0x7ff8_0000_0000_0001), -0.0];
-        assert_eq!(
-            refused_travel_output(&input, &velocity, &input, &velocity),
-            Ok(())
-        );
-        assert_eq!(
-            refused_travel_output(&input, &velocity, &[1.0, 0.0, 0.0], &velocity),
-            Ok(())
-        );
-        assert_eq!(
-            refused_travel_output(&input, &velocity, &input, &[65.0, velocity[1], 0.0]),
-            Err("velocity"),
-            "changing only the sign bit still proposes a replacement"
-        );
     }
 }

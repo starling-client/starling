@@ -15,18 +15,27 @@ import unittest
 from unittest import mock
 
 from tools import pr_ready
+from tests.os_support import POSIX_BASH
 
 PACKAGES = {"sunrise-core": "crates/sunrise-core", "sunrise-client": "crates/sunrise-client",
             "sunrise-theme": "crates/sunrise-theme", "xtask": "xtask"}
 LIBRARIES = set(PACKAGES) - {"xtask"}
 DEPENDENCIES = {"sunrise-client": {"sunrise-core"}}
+# The crates sunrise-stage depends on, as cargo metadata gives them (sunrise-mod-package reaches the vocabulary and
+# the core, the vocabulary its API crates); sunrise-theme and sunrise-client are outside that closure.
+SURFACE_PACKAGES = {**PACKAGES, **{name: f"crates/{name}" for name in (
+    "sunrise-stage", "sunrise-mod-api-gen", "sunrise-game-discovery", "sunrise-mod-package", "sunrise-mod-source",
+    "sunrise-mod-surface", "sunrise-mod-vocab", "sunrise-mod-api", "sunrise-mod-api-macros")}}
+SURFACE_DEPENDENCIES = {
+    **DEPENDENCIES,
+    "sunrise-stage": {"sunrise-mod-api-gen", "sunrise-mod-package", "sunrise-mod-source", "sunrise-mod-surface"},
+    "sunrise-mod-api-gen": {"sunrise-game-discovery", "sunrise-mod-source", "sunrise-mod-surface"},
+    "sunrise-game-discovery": {"sunrise-mod-source"},
+    "sunrise-mod-package": {"sunrise-mod-vocab", "sunrise-core"},
+    "sunrise-mod-vocab": {"sunrise-mod-api", "sunrise-mod-api-macros"},
+}
 MODS = ""
 CLIPPY = f'status=0\n{pr_ready.CI_CLIPPY} || status=$?\n{pr_ready.CI_CLIPPY_SERVER} || status=$?\nexit "$status"'
-# The bash on PATH: Windows' CreateProcess looks in System32 before PATH, so a bare "bash" there is WSL's
-# (#5383), which has none of the host's paths. Git Bash on PATH runs the launcher's snippets as on Linux.
-BASH = shutil.which("bash")
-POSIX_BASH = BASH is not None and not (
-    os.name == "nt" and os.path.dirname(os.path.normcase(BASH)).endswith(os.path.normcase(r"\system32")))
 
 
 def args(host="local", quick=False, harnesses=False):
@@ -213,6 +222,9 @@ class PrReadyTests(unittest.TestCase):
             popen.return_value.__enter__.return_value.stdout = []
             popen.return_value.__enter__.return_value.wait.return_value = 0
             popen.return_value.__enter__.return_value.returncode = 0
+            # No Windows job object: on Windows the reaper hands `job` to ctypes, which would follow a mock's
+            # `_as_parameter_` without end.
+            popen.return_value.__enter__.return_value.job = None
             pr_ready.run_windows([step], False)
         self.assertEqual(popen.call_args.args[0],
                          ["cargo", "test", "--manifest-path", "a/Cargo.toml", "--locked"])
@@ -253,7 +265,8 @@ class PrReadyTests(unittest.TestCase):
         self.assertFalse(pr_ready.workspace_rust("crates/sunrise-client/README.md"))
 
     def test_crate_checks_do_not_link_unrelated_examples(self):
-        with mock.patch.object(pr_ready, "affected_here", return_value=[]):
+        with mock.patch.object(pr_ready, "affected_here", return_value=[]), \
+                mock.patch.object(pr_ready, "holds_loop", return_value=False):
             steps = pr_ready.plan(args(quick=True), "origin/main", {"crates/sunrise-client/src/game.rs"}, PACKAGES, LIBRARIES, DEPENDENCIES)
         by_name = {step.name: step for step in steps}
         self.assertEqual(by_name["clippy"].command, CLIPPY)
@@ -271,7 +284,8 @@ class PrReadyTests(unittest.TestCase):
 
     def test_content_root_tests_run_only_when_what_they_load_changes(self):
         def content_step(path):
-            with mock.patch.object(pr_ready, "affected_here", return_value=[]):
+            with mock.patch.object(pr_ready, "affected_here", return_value=[]), \
+                    mock.patch.object(pr_ready, "holds_loop", return_value=False):
                 steps = pr_ready.plan(args(quick=True), "origin/main", {path}, PACKAGES, LIBRARIES, DEPENDENCIES)
             return {step.name: step for step in steps}["content root tests"]
         self.assertEqual(content_step("crates/sunrise-client/src/game.rs").skip, "content root untouched")
@@ -310,6 +324,114 @@ class PrReadyTests(unittest.TestCase):
         by_name = suite_steps("crates/sunrise-core/src/lib.rs")
         self.assertEqual(by_name["dispatch tests clippy"].skip, "dispatch surface untouched")
         self.assertEqual(by_name["mod registry tests tests"].skip, "mod registry untouched")
+
+    def surface_step(self, changed, name="posix", packages=SURFACE_PACKAGES, dependencies=SURFACE_DEPENDENCIES):
+        with mock.patch.object(pr_ready, "affected_here", return_value=[]), \
+                mock.patch.object(pr_ready.os, "name", name):
+            steps = pr_ready.plan(args(quick=True), "origin/main", set(changed), packages, LIBRARIES, dependencies,
+                                  merge_base="abc123")
+        names = [step.name for step in steps]
+        self.assertGreater(names.index("Surface report"), names.index("doc tests"))
+        return steps[names.index("Surface report")]
+
+    def test_surface_report_runs_when_the_mod_api_sources_change(self):
+        # No git here: none of these is a game file.
+        for path in ["crates/sunrise-mod-vocab/changes/hook-note.toml", "crates/sunrise-mod-vocab/src/hooks/block.rs",
+                     "crates/sunrise-mod-api/src/lib.rs", "crates/sunrise-mod-api-gen/src/lib.rs",
+                     "crates/sunrise-mod-api-macros/src/lib.rs", "crates/sunrise-mod-surface/src/diff.rs",
+                     "crates/sunrise-stage/src/main.rs", "crates/sunrise-game-discovery/src/lib.rs",
+                     "crates/sunrise-mod-package/src/manifest.rs", "crates/sunrise-mod-source/src/lib.rs",
+                     "crates/sunrise-core/src/lib.rs", "Cargo.toml", "tools/ci/surface_report.py",
+                     "tools/ci/surface.toml", "tools/ci/surface-schema-3-reset.json"]:
+            with self.subTest(path=path):
+                step = self.surface_step({path})
+                self.assertIsNone(step.skip)
+                self.assertEqual(step.where, "host")
+                self.assertEqual(step.command, "python3 tools/ci/surface_report.py --base abc123")
+        for path in ["crates/sunrise-theme/src/lib.rs", "crates/sunrise-client/src/lib.rs", "tools/ci/check_layers.py",
+                     "README.md"]:
+            with self.subTest(path=path):
+                self.assertEqual(self.surface_step({path}).skip, "mod API surface untouched")
+        self.assertIn("CI's verify reports it",
+                      self.surface_step({"crates/sunrise-mod-vocab/changes/hook-note.toml"}, name="nt").skip)
+        self.assertEqual(self.surface_step({"README.md"}, name="nt").skip, "mod API surface untouched")
+
+    def test_the_surface_crates_are_what_sunrise_stage_depends_on(self):
+        self.assertEqual(pr_ready.surface_crates(SURFACE_DEPENDENCIES),
+                         ["sunrise-core", "sunrise-game-discovery", "sunrise-mod-api", "sunrise-mod-api-gen",
+                          "sunrise-mod-api-macros", "sunrise-mod-package", "sunrise-mod-source",
+                          "sunrise-mod-surface", "sunrise-mod-vocab", "sunrise-stage"])
+        # A branch with no Rust has no dependency map: the tool alone, and no folder to match.
+        self.assertEqual(pr_ready.surface_crates({}), ["sunrise-stage"])
+
+    def test_a_branch_without_rust_runs_the_surface_report_for_its_own_files_and_notes_only(self):
+        for path in ("tools/ci/surface_report.py", "tools/ci/surface.toml", "crates/sunrise-mod-vocab/changes/a.toml"):
+            with self.subTest(path=path):
+                self.assertIsNone(self.surface_step({path}, packages={}, dependencies={}).skip)
+        self.assertEqual(self.surface_step({"README.md"}, packages={}, dependencies={}).skip,
+                         "mod API surface untouched")
+
+    def test_game_files_run_the_surface_report_only_when_they_hold_a_loop(self):
+        loop = 'impl Game<\'_> {\n    #[sunrise_mod_api_macros::sunrise_loop(name = "a.tick", side = "server")]\n}\n'
+        ticks = "crates/sunrise-client/src/game/blocks/block_entity_ticks.rs"
+        plain = "crates/sunrise-client/src/game/items/combat.rs"
+        gone = "crates/sunrise-client/src/game/blocks/gone.rs"
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(pr_ready, "ROOT", Path(directory)), \
+                mock.patch.object(pr_ready.subprocess, "run") as run:
+            for path, text in ((ticks, loop), (plain, "impl Game<'_> { fn attack(&mut self) {} }\n")):
+                (Path(directory) / path).parent.mkdir(parents=True, exist_ok=True)
+                (Path(directory) / path).write_text(text)
+            # The file holds a loop now: no need to ask git.
+            self.assertIsNone(self.surface_step({ticks, plain}).skip)
+            run.assert_not_called()
+            # No loop now, none at the merge base.
+            run.return_value = subprocess.CompletedProcess([], 1, b"", b"")
+            self.assertEqual(self.surface_step({plain}).skip, "mod API surface untouched")
+            self.assertEqual(run.call_args.args[0], ["git", "grep", "-l", "-F", "sunrise_loop", "abc123", "--",
+                                                     f":(literal){plain}"])
+            # A file with none now that held one at the merge base: deleted, or the attribute removed.
+            run.return_value = subprocess.CompletedProcess([], 0, f"abc123:{gone}\n".encode(), b"")
+            self.assertIsNone(self.surface_step({gone}).skip)
+            self.assertIsNone(self.surface_step({plain}).skip)
+            # A base git cannot read is not an answer: the report runs.
+            run.return_value = subprocess.CompletedProcess([], 128, b"", b"fatal")
+            self.assertIsNone(self.surface_step({plain}).skip)
+            # Only Rust files of the game module are read, and the module's root file is one.
+            run.reset_mock()
+            run.return_value = subprocess.CompletedProcess([], 1, b"", b"")
+            self.assertEqual(self.surface_step({"crates/sunrise-client/src/game/data.json"}).skip,
+                             "mod API surface untouched")
+            run.assert_not_called()
+            self.assertEqual(self.surface_step({"crates/sunrise-client/src/game.rs"}).skip,
+                             "mod API surface untouched")
+            self.assertEqual(run.call_count, 1)
+
+    def test_surface_report_summary_names_the_verdict_and_what_failed(self):
+        passing = ("CI does not compare listed internals; use surface_report.py --with-internals for a local audit.\n"
+                   "Surface: additive (0 breaking, 0 conditional, 2 additive; 0 breaking without a note)\n"
+                   "Old aaaa, new bbbb\n\nAdditive (2)\n- fn:a (added)\n"
+                   "Base 1111; fetch 0.1s, total 2.0s\n")
+        self.assertEqual(pr_ready.surface_summary(passing),
+                         "Surface: additive (0 breaking, 0 conditional, 2 additive; 0 breaking without a note)")
+        failing = ("Surface: breaking (1 breaking, 0 conditional, 0 additive; 1 breaking without a note)\n"
+                   "Old aaaa, new bbbb\n\nBreaking (1)\n- type:HookId (changed)\n"
+                   "change note old.toml names fn:gone, which did not change\n"
+                   "change note typo.toml names fn:hokid, which did not change; did you mean type:HookId?\n"
+                   "breaking change without a change note: type:HookId\n")
+        self.assertEqual(pr_ready.surface_summary(failing),
+                         "Surface: breaking (1 breaking, 0 conditional, 0 additive; 1 breaking without a note); "
+                         "change note old.toml names fn:gone, which did not change; "
+                         "change note typo.toml names fn:hokid, which did not change; did you mean type:HookId?; "
+                         "breaking change without a change note: type:HookId")
+        self.assertEqual(pr_ready.surface_summary("sunrise-stage: change note a.toml has no `why`\n"),
+                         "sunrise-stage: change note a.toml has no `why`")
+        self.assertEqual(pr_ready.surface_summary("No surface report: no base for a local run.\n"),
+                         "No surface report: no base for a local run.")
+        step = pr_ready.Step("Surface report", "x", summary=pr_ready.surface_summary)
+        step.status, step.output = "fail", failing
+        with contextlib.redirect_stderr(io.StringIO()):
+            pr_ready.finish(step, verbose=False)
+        self.assertIn("breaking change without a change note: type:HookId", step.detail)
 
     def test_shared_rust_configuration_keeps_workspace_coverage(self):
         for path in sorted(pr_ready.ROOT_RUST | {".cargo/config.toml", "crates/unknown/src/lib.rs"}):

@@ -30,10 +30,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from tools.ci import ignored_inventory, ignored_shards, ignored_tests, rust_tests
+from tools.ci import ignored_inventory, ignored_shards, ignored_tests, rust_tests, vendored_yaml
 
-sys.path.insert(0, str(Path(__file__).with_name("vendor") / "pyyaml-6.0.3.zip"))
-import yaml
+yaml = vendored_yaml.load()
 
 ROOT = Path(__file__).resolve().parents[2]
 WINDOWS_WORKFLOW = ".github/workflows/windows-runtime-leases.yml"

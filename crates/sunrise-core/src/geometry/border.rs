@@ -9,7 +9,12 @@ pub enum BorderError {
 }
 impl std::fmt::Display for BorderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {Self::InvalidParameters=>f.write_str("border requires finite nonnegative sizes, finite centers and nonnegative limits/duration"),Self::Shape(e)=>e.fmt(f)}
+        match self {
+            Self::InvalidParameters => f.write_str(
+                "border requires finite sizes and centers and nonnegative limits/duration",
+            ),
+            Self::Shape(e) => e.fmt(f),
+        }
     }
 }
 impl std::error::Error for BorderError {}
@@ -48,11 +53,7 @@ pub struct BorderGeometry {
 }
 impl BorderGeometry {
     pub fn new(center: [f64; 2], size: f64, absolute_max: i32) -> Result<Self, BorderError> {
-        if !center.into_iter().all(f64::is_finite)
-            || !size.is_finite()
-            || size < 0.0
-            || absolute_max < 0
-        {
+        if !center.into_iter().all(f64::is_finite) || !size.is_finite() || absolute_max < 0 {
             return Err(BorderError::InvalidParameters);
         }
         Ok(Self {
@@ -79,14 +80,20 @@ impl BorderGeometry {
             clamp(center[1] + size / 2.0, lower, limit),
         ]
     }
-    fn shape_for([min_x, min_z, max_x, max_z]: [f64; 4]) -> Result<VoxelShape, ShapeError> {
+    /// `Shapes.box` checks the rounded corners before `Aabb::new` can sort them.
+    fn shape_box([min_x, min_z, max_x, max_z]: [f64; 4]) -> Result<Aabb, ShapeError> {
+        let min = Vec3::new(min_x.floor(), f64::NEG_INFINITY, min_z.floor());
+        let max = Vec3::new(max_x.ceil(), f64::INFINITY, max_z.ceil());
+        if min.x > max.x || min.z > max.z {
+            return Err(ShapeError::InvalidBounds);
+        }
+        Ok(Aabb::new(min, max))
+    }
+    fn shape_for(bounds: [f64; 4]) -> Result<VoxelShape, ShapeError> {
+        let inside = VoxelShape::from_box(Self::shape_box(bounds)?)?;
         let infinity = VoxelShape::from_box(Aabb::new(
             Vec3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY),
             Vec3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY),
-        ))?;
-        let inside = VoxelShape::from_box(Aabb::new(
-            Vec3::new(min_x.floor(), f64::NEG_INFINITY, min_z.floor()),
-            Vec3::new(max_x.ceil(), f64::INFINITY, max_z.ceil()),
         ))?;
         infinity.join(&inside, ShapeOp::ONLY_FIRST)
     }
@@ -100,9 +107,7 @@ impl BorderGeometry {
         if !center.into_iter().all(f64::is_finite) {
             return Err(BorderError::InvalidParameters);
         }
-        if let Extent::Static { size, .. } = self.extent {
-            self.extent = Self::stationary(center, size, self.absolute_max)?;
-        }
+        self.update_shape_bounds(center, self.absolute_max)?;
         self.center = center;
         Ok(())
     }
@@ -110,14 +115,28 @@ impl BorderGeometry {
         if limit < 0 {
             return Err(BorderError::InvalidParameters);
         }
-        if let Extent::Static { size, .. } = self.extent {
-            self.extent = Self::stationary(self.center, size, limit)?;
-        }
+        self.update_shape_bounds(self.center, limit)?;
         self.absolute_max = limit;
         Ok(())
     }
+    fn update_shape_bounds(&mut self, center: [f64; 2], limit: i32) -> Result<(), BorderError> {
+        match self.extent {
+            Extent::Static { size, .. } => self.extent = Self::stationary(center, size, limit)?,
+            Extent::Moving {
+                previous, size, to, ..
+            } => {
+                // The smallest diameter gives the tightest rounded shape for this centre.
+                Self::shape_box(Self::extent_bounds(
+                    center,
+                    previous.min(size).min(to),
+                    limit,
+                ))?;
+            }
+        }
+        Ok(())
+    }
     pub fn set_size(&mut self, size: f64) -> Result<(), BorderError> {
-        if !size.is_finite() || size < 0.0 {
+        if !size.is_finite() {
             return Err(BorderError::InvalidParameters);
         }
         self.extent = Self::stationary(self.center, size, self.absolute_max)?;
@@ -131,13 +150,21 @@ impl BorderGeometry {
         to: f64,
         duration: i64,
     ) -> Result<(), BorderError> {
-        if !from.is_finite() || !to.is_finite() || from < 0.0 || to < 0.0 || duration < 0 {
+        if !from.is_finite() || !to.is_finite() || duration < 0 {
             return Err(BorderError::InvalidParameters);
         }
         if from == to {
             return self.set_size(to);
         }
         let size = Self::moving_size(from, to, duration, duration);
+        if !size.is_finite() {
+            return Err(BorderError::InvalidParameters);
+        }
+        Self::shape_box(Self::extent_bounds(
+            self.center,
+            size.min(to),
+            self.absolute_max,
+        ))?;
         self.extent = Extent::Moving {
             from,
             to,
@@ -166,11 +193,13 @@ impl BorderGeometry {
             previous,
         } = &mut self.extent
         {
-            *remaining = remaining.wrapping_sub(1);
-            *previous = *size;
-            *size = Self::moving_size(*from, *to, *duration, *remaining);
-            if *remaining <= 0 {
+            let left = *remaining - 1;
+            if left <= 0 {
                 self.extent = Self::stationary(self.center, *to, self.absolute_max)?;
+            } else {
+                *remaining = left;
+                *previous = *size;
+                *size = Self::moving_size(*from, *to, *duration, left);
             }
         }
         Ok(())
@@ -252,12 +281,43 @@ impl BorderGeometry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn border_size_acceptance_uses_the_rounded_collision_box() {
+        let mut border = BorderGeometry::new([0.5, 0.5], 2.0, 100).unwrap();
+        // A size of -0.5 has raw edges 0.75 and 0.25, but Shapes.box sees 0 and 1.
+        border.set_size(-0.5).unwrap();
+        assert_eq!(border.size(), -0.5);
+        assert_eq!(border.bounds(0.0), [0.75, 0.75, 0.25, 0.25]);
+        assert!(matches!(
+            border.set_size(-4.0),
+            Err(BorderError::Shape(ShapeError::InvalidBounds))
+        ));
+        assert_eq!(border.size(), -0.5);
+
+        border.lerp_size_between(-0.5, 2.0, 2).unwrap();
+        border.tick().unwrap();
+        assert_eq!(border.size(), 0.75);
+        border.tick().unwrap();
+        assert!(matches!(
+            border.lerp_size_between(2.0, -4.0, 2),
+            Err(BorderError::Shape(ShapeError::InvalidBounds))
+        ));
+        assert_eq!(border.size(), 2.0);
+        assert_eq!(border.lerp_time(), 0);
+        border.lerp_size_between(2.0, -0.5, 2).unwrap();
+        border.tick().unwrap();
+        border.tick().unwrap();
+        assert_eq!(border.size(), -0.5);
+        assert_eq!(border.lerp_time(), 0);
+    }
+
     #[test]
     fn invalid_parameters_leave_existing_extent_unchanged() {
         let mut border = BorderGeometry::new([1.0, 2.0], 10.0, 100).unwrap();
         let bounds = border.bounds(0.0);
         assert!(border.set_center([f64::NAN, 0.0]).is_err());
-        assert!(border.set_size(-1.0).is_err());
+        assert!(border.set_size(-4.0).is_err());
         assert!(border.set_size(f64::INFINITY).is_err());
         assert!(border.set_absolute_max(-1).is_err());
         assert!(border.lerp_size_between(10.0, 20.0, -1).is_err());

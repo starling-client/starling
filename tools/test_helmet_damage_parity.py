@@ -7,10 +7,11 @@ import re
 import subprocess
 import tempfile
 
-try:
-    from . import lab, test_rust_parity as base, integration_env
-except ImportError:
-    import lab, test_rust_parity as base, integration_env
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_rust_parity as base, integration_env
 
 PARITY_RUST_SCOPE = [
     'crates/sunrise-world/src/living_hurt.rs',
@@ -64,8 +65,8 @@ def main():
         run(['java', '-Xmx768m', '-Djava.awt.headless=true', '-cp',
              str(classes) + os.pathsep + dependencies, 'dev.sunriselab.parity.VanillaHelmetDamageOracle',
              fixtures, build / 'server.txt'], 'server', cwd=scratch, env=env)
-        run(['cargo', 'test', '--locked', '-p', 'sunrise-client', '--lib',
-             TEST, '--', '--exact', '--ignored', '--nocapture'], 'rust', env=env)
+        run([lab.parity_fixtures(),
+             TEST, '--exact', '--ignored', '--nocapture'], 'rust', env=env)
     records = [line for line in (build / 'rust.log').read_text(encoding='utf-8').splitlines()
                if re.fullmatch(r'HELMET \d+ -?\d+ -?\d+ [0-9a-f]{8} -?\d+', line)]
     (build / 'rust.txt').write_text('\n'.join(records) + '\n', encoding='utf-8')

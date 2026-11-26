@@ -13,14 +13,11 @@ import json
 from pathlib import Path
 import subprocess
 
-try:
-    from . import lab, oracle_harness as harness, test_rust_parity as base
-    from . import test_model_baking_parity as baking
-except ImportError:
-    import lab
-    import oracle_harness as harness
-    import test_rust_parity as base
-    import test_model_baking_parity as baking
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, oracle_harness as harness, test_rust_parity as base, test_model_baking_parity as baking
 
 
 def main():
@@ -48,9 +45,9 @@ def main():
                        SUNRISE_CRACK_TRACE=build / 'rust.json')
     with (build / 'rust.log').open('w') as log:
         subprocess.run(
-            ['cargo', 'test', '-p', 'sunrise-client', '--lib',
+            [lab.parity_fixtures(),
              'crack_packets_follow_start_clock_and_strict_observer_radius',
-             '--', '--ignored', '--nocapture'],
+             '--ignored', '--nocapture'],
             cwd=lab.ROOT, env=env, stdout=log, stderr=subprocess.STDOUT,
             check=True, timeout=1800)
     java = json.loads((build / 'java.json').read_text())

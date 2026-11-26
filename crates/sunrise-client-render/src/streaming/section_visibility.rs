@@ -3,16 +3,21 @@ use super::{Job, MeshSettings, MeshUpload, Streaming, WorkerContext};
 use crate::fast_hash::{FxHashMap, FxHashSet};
 use crate::mesher::{
     ANSWER_BYTES, Lease, MAX_RESIDENT_VISIBILITY_BYTES, PLAN_BYTES, Region, SectionAnswer,
-    SectionVisibilityPlan, plan_section,
+    SectionVisibilityPlan, capture_input, plan_section,
 };
 use crate::section_mask::SectionMask;
 use crate::world::World;
-use mod_api::{BiomeId, CellVisibility, MAX_CELL_RECORDS, SECTION_INPUT_CELLS, SectionCell};
+use mod_api::{
+    BlockState, CellVisibility, MAX_CELL_RECORDS, SECTION_INPUT_CELLS, SectionCell,
+    SectionVisibilityInput,
+};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-const SNAPSHOT_BYTES: usize = SECTION_INPUT_CELLS
-    * (size_of::<SectionCell>() + size_of::<u8>() + size_of::<Option<BiomeId>>());
+// The registry belongs to the already shared worker context. Capture allocates only these
+// three arrays and retains a reference to the existing keys, with no palette scratch.
+const SNAPSHOT_BYTES: usize = size_of::<SectionVisibilityInput>()
+    + SECTION_INPUT_CELLS * (size_of::<SectionCell>() + size_of::<u8>() + size_of::<Option<u16>>());
 const WORKER_BYTES: usize = PLAN_BYTES + size_of::<Region>() + size_of::<FrozenPlan>();
 const HALO_BYTES: usize = size_of::<HaloAnswers>();
 const CACHE_BYTES: usize = ANSWER_BYTES + size_of::<HeldAnswer>() - size_of::<SectionAnswer>();
@@ -77,6 +82,13 @@ pub struct VisibilityRequest {
     settings: MeshSettings,
     context: Arc<WorkerContext>,
     lease: Lease,
+}
+
+impl VisibilityRequest {
+    /// Capture input using this request's immutable region and the worker's own biome table.
+    pub fn capture_input(&self, state_of: impl FnMut(u32) -> BlockState) -> SectionVisibilityInput {
+        capture_input(&self.region, self.key.1, state_of, &self.context.biomes)
+    }
 }
 
 impl SectionPreparation {
@@ -387,7 +399,7 @@ pub(super) mod tests {
         impl ChunkGenerator for RemoteOnly {
             type Worker = ();
             fn worker(&self) {}
-            fn proto(&self, _: &mut (), _: i32, _: i32) -> Proto {
+            fn proto(&self, _: &mut (), _: i32, _: i32) -> Result<Proto, String> {
                 panic!("a remote level never generates locally")
             }
             fn finish(&self, _: Proto) -> Chunk {
@@ -506,10 +518,48 @@ pub(super) mod tests {
         mod_api::__private::block_key("minecraft:air").unwrap()
     }
 
+    /// `Streaming::meshed_columns` (#5911): a column is listed once its sections are meshed and
+    /// leaves the list when it unloads.
+    #[test]
+    #[ignore = "daily"]
+    fn a_meshed_column_is_listed_until_it_unloads() {
+        use crate::mesher::SectionPlanBuilder;
+
+        mod_platform::testing::with_mods(Vec::new().into(), || {
+            let (mut world, mut streaming, stone) = fixture();
+            let base = world.bottom_y();
+            let mut centre = Chunk::empty(0, 0);
+            centre.set(8, base + 4, 8, stone);
+            streaming.insert_remote(&mut world, centre);
+            assert!(streaming.meshed_columns().next().is_none());
+            streaming.refresh_section_visibility(&mut world, true);
+            let mut meshed = false;
+            for _ in 0..100 {
+                let (uploads, _) = streaming.update(&mut world);
+                for request in streaming.take_visibility_requests() {
+                    let plan = SectionPlanBuilder::new().finish();
+                    streaming.submit_visibility_answer(&mut world, request, plan);
+                }
+                meshed |= uploads.iter().any(|upload| upload.key == CENTRE);
+                streaming.free(uploads);
+                if meshed {
+                    break;
+                }
+                streaming.wait(Duration::from_millis(20));
+            }
+            assert!(meshed, "the centre column was meshed");
+            assert!(streaming.meshed_columns().any(|column| column == (0, 0)));
+            let gone = [(0, 0)].into_iter().collect();
+            Streaming::take_remote_columns(&mut world, &gone);
+            streaming.forget_columns(&mut world, &gone);
+            assert!(!streaming.meshed_columns().any(|column| column == (0, 0)));
+        });
+    }
+
     #[test]
     #[ignore = "daily"]
     fn remote_column_arrival_and_unload_remesh_the_actual_halo() {
-        use crate::mesher::{SectionPlanBuilder, capture_input};
+        use crate::mesher::SectionPlanBuilder;
         use mod_api::SectionCell;
 
         mod_platform::testing::with_mods(Vec::new().into(), || {
@@ -535,7 +585,7 @@ pub(super) mod tests {
                     for request in streaming.take_visibility_requests() {
                         let mut builder = SectionPlanBuilder::new();
                         if request.key == CENTRE {
-                            let input = capture_input(&request.region, 0, state);
+                            let input = request.capture_input(state);
                             assert_eq!(input.cell([16, 4, 8]), Ok(expected));
                             captured = true;
                         } else if request.key == (1, 0, 0) {
@@ -589,7 +639,7 @@ pub(super) mod tests {
     #[test]
     #[ignore = "daily"]
     fn a_neighbours_interior_edit_stops_a_mesh_using_its_old_border_answer() {
-        use crate::mesher::{SectionPlanBuilder, capture_input};
+        use crate::mesher::SectionPlanBuilder;
         use mod_api::SectionCell;
 
         const EAST: (i32, i32, i32) = (1, 0, 0);
@@ -622,7 +672,7 @@ pub(super) mod tests {
                     for request in streaming.take_visibility_requests() {
                         let mut answer = SectionPlanBuilder::new();
                         if request.key == EAST
-                            && capture_input(&request.region, EAST.1, state).cell([8, 4, 8])
+                            && request.capture_input(state).cell([8, 4, 8])
                                 == Ok(SectionCell::State(state(marker.0)))
                         {
                             answer.restrict([0, 4, 8], false, false, 0);

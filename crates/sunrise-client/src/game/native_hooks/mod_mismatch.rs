@@ -185,7 +185,7 @@ mod tests {
         #[mod_api::__subscriptions]
         impl Hooks for Migrator {
             fn mod_mismatch(&self, _: HostSide, event: &mut ModMismatchEvent<'_>) {
-                event.resolved.push("gone".to_owned().into());
+                event.mark_resolved("gone");
             }
         }
         let dir = world_with_gone_mod("resolved-missing-mod");

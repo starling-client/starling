@@ -87,19 +87,24 @@ impl Game<'_> {
         }
         true
     }
-    /// `LivingEntity.getItemBlockingWith` and the inputs of `applyItemBlocking`
-    /// for an attack from `from` (`DamageSource.getSourcePosition`).
+    /// `LivingEntity.getItemBlockingWith`: the blocking component of the active
+    /// item after its use delay, shared by damage and the player's body turn.
+    pub(super) fn player_blocking_component(
+        &self,
+    ) -> Option<std::borrow::Cow<'_, sunrise_client::items::BlocksAttacks>> {
+        let (slot, ticks) = self.using?;
+        let component = self.blocks_attacks(self.stack_in(slot)?)?;
+        block_delay_passed(&component, ticks).then_some(component)
+    }
+
+    /// Inputs of `applyItemBlocking` for an attack from `from` (`DamageSource.getSourcePosition`).
     pub(super) fn player_blocking(
         &self,
         from: Option<[f64; 3]>,
         damage_type: &str,
         pierce: bool,
     ) -> Option<Blocking> {
-        let (slot, ticks) = self.using?;
-        let component = self.blocks_attacks(self.stack_in(slot)?)?;
-        if !block_delay_passed(&component, ticks) {
-            return None;
-        }
+        let component = self.player_blocking_component()?;
         let tags = &self.stations().enchantments.damage_tags;
         let matches = |spec: &str| match spec.strip_prefix('#') {
             Some(tag) => tags.get(tag).is_some_and(|t| t.contains(damage_type)),
@@ -169,7 +174,7 @@ impl Game<'_> {
             && let Some(sound) = &component.block_sound
         {
             let pitch = 0.8 + self.world.random.next_float() * 0.4;
-            self.audio.play(sound, at, 1.0, pitch);
+            self.play_audio(sound, at, 1.0, pitch);
         }
         // BlocksAttacks.hurtBlockingItem counts use even when nothing is blocked.
         if !outcome.blocking_item_used {
@@ -335,7 +340,7 @@ impl Game<'_> {
             self.stop_active_item_use();
             if let Some(sound) = &component.disabled_sound {
                 let pitch = 0.8 + self.world.random.next_float() * 0.4;
-                self.audio.play(sound, at, 0.8, pitch);
+                self.play_audio(sound, at, 0.8, pitch);
             }
         }
     }
@@ -374,6 +379,7 @@ mod durability_tests {
                     causing: 0,
                     direct: 0,
                     position: None,
+                    direct_type: None,
                 },
                 &sunrise_client::health::NO_ATTACK,
             );
@@ -411,6 +417,7 @@ mod durability_tests {
                         causing: 0,
                         direct: 0,
                         position: None,
+                        direct_type: None,
                     },
                     &sunrise_client::health::NO_ATTACK,
                 );
@@ -446,6 +453,7 @@ mod blocked_hit_use_tests {
             causing: 1,
             direct: 1,
             position: None,
+            direct_type: None,
         };
         let outcome = BlockOutcome {
             blocking_item_used: true,

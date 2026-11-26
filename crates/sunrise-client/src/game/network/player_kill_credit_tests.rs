@@ -4,7 +4,7 @@
 //! wither's kill leaves where they fell.
 use super::{chat::PLAYER_NAME, native_entity_refs::tests::run_fresh_cases, *};
 use mod_api::{Flow, Hooks, PlayerStatAwardEvent, ServerHost, StatType};
-use std::sync::{Arc, atomic::AtomicI32, mpsc};
+use std::sync::{Arc, Mutex, atomic::AtomicI32, mpsc};
 use sunrise_client::{
     chunk::Chunk,
     lan::{Joined, NetConfig, PlayerSender, guest::Guest, hub::HubConfig},
@@ -125,13 +125,13 @@ fn kill(game: &mut Game<'_>, attacker: Attacker, ty: &str) {
         let known = match attacker {
             Attacker::Player(id, name) => {
                 g.note_player_attacker(ty, id, Text::literal(name), None);
-                None
+                crate::game::creatures::KnownCause::None
             }
-            Attacker::Mob(id) => Some(id),
-            Attacker::None => None,
+            Attacker::Mob(id) => crate::game::creatures::KnownCause::Entity(id),
+            Attacker::None => crate::game::creatures::KnownCause::None,
         };
         assert!(
-            g.hurt_player_from(100.0, Some([22.5, 100.0, 9.5]), ty, Some(known), false),
+            g.hurt_player_from(100.0, Some([22.5, 100.0, 9.5]), ty, known, false),
             "the guest is hurt"
         );
         assert_eq!(g.player.as_ref().unwrap().health.health(), 0.0);
@@ -373,6 +373,136 @@ fn a_guest_killing_another_guest_while_displaced_credits_the_kill() {
     });
 }
 
+/// The arrow's causal player is displaced when the mob resists the shot.
+#[test]
+#[ignore = "daily"]
+fn a_displaced_archer_receives_resistance_credit() {
+    use sunrise_client::{
+        mobs::{Damage, Who},
+        projectiles::{Projectile, ProjectileKind},
+    };
+
+    if fresh("a_displaced_archer_receives_resistance_credit", &["nested"]) {
+        return;
+    }
+    let mut resources = None;
+    let mut game = game(&mut resources);
+    add_guest_killer(&mut game);
+    assert!(game.run_command("summon pig 7.5 100 6.5 {NoAI:1b,NoGravity:1b}"));
+    assert!(
+        game.run_command("effect give @e[type=pig,limit=1] minecraft:resistance infinite 0 true")
+    );
+    let pig = game.mobs.last().unwrap().id;
+    let mut arrow = Projectile::new(
+        ProjectileKind::Arrow {
+            base_damage: 2.0,
+            critical: false,
+            effect: None,
+        },
+        Vec3::new(5.5, 100.0, 6.5),
+        Some(Who::Player),
+    );
+    arrow.id = game.take_entity_id();
+    arrow.guest = Some(KILLER_CONN);
+    let source = Damage {
+        kind: game.projectile_damage_kind(&arrow),
+        attacker: arrow.owner,
+        from: Some(arrow.position.components()),
+        direct: None,
+        attacker_species: None,
+    };
+    let stat = "minecraft:damage_dealt_resisted";
+    game.as_guest(KILLER_CONN, |g| {
+        g.as_guest(CONN, |g| {
+            assert!(matches!(
+                g.combat_player(KILLER_ID),
+                Some(super::lan_actions::CombatPlayer::Displaced(..))
+            ));
+            assert!(g.damage_projectile_with_weapon(&arrow, pig, 5.25, source, None));
+            assert_eq!(g.stats.get("custom", stat), 0);
+        })
+        .unwrap();
+        assert_eq!(g.stats.get("custom", stat), 11);
+    })
+    .unwrap();
+    assert_eq!(guest_stats(&game, KILLER_CONN).get("custom", stat), 11);
+    assert_eq!(guest_stats(&game, CONN).get("custom", stat), 0);
+}
+
+struct ResistanceOrder(Arc<Mutex<Vec<&'static str>>>);
+
+#[mod_api::__subscriptions]
+impl Hooks for ResistanceOrder {
+    fn player_stat_award(
+        &self,
+        _: &mut dyn ServerHost,
+        event: &mut PlayerStatAwardEvent<'_>,
+    ) -> Flow {
+        if event.stat.as_str() == "minecraft:damage_dealt_resisted" {
+            self.0.lock().unwrap().push("award");
+        }
+        Flow::Continue
+    }
+
+    fn living_damage_pre(
+        &self,
+        _: &mut dyn mod_api::HitHost,
+        _: &mut mod_api::LivingDamagePreEvent<'_>,
+    ) {
+        self.0.lock().unwrap().push("pre");
+    }
+
+    fn living_damage_post(
+        &self,
+        _: &mut dyn mod_api::HitHost,
+        _: &mut mod_api::LivingDamagePostEvent<'_>,
+    ) {
+        self.0.lock().unwrap().push("post");
+    }
+}
+
+#[test]
+#[ignore = "daily"]
+fn surviving_mob_hit_awards_resistance_before_pre_and_post() {
+    use sunrise_client::mobs::Damage;
+
+    if fresh(
+        "surviving_mob_hit_awards_resistance_before_pre_and_post",
+        &["native"],
+    ) {
+        return;
+    }
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let mods = vec![mod_api::ModEntry::new(
+        "resistance_order",
+        Box::new(ResistanceOrder(Arc::clone(&order))),
+    )]
+    .into();
+    mod_platform::testing::with_mods(mods, || {
+        let mut resources = None;
+        let mut game = game(&mut resources);
+        assert!(game.run_command("summon pig 7.5 100 6.5 {NoAI:1b,NoGravity:1b}"));
+        assert!(
+            game.run_command(
+                "effect give @e[type=pig,limit=1] minecraft:resistance infinite 0 true"
+            )
+        );
+        let pig = game.mobs.last().unwrap().id;
+        game.as_guest(CONN, |game| {
+            assert!(game.mob_hits_mob(pig, 2.5, Damage::player([5.5, 100.0, 6.5])));
+            let victim = game.mob_object(pig).unwrap();
+            assert!(victim.alive());
+            assert_eq!(victim.health, 8.0);
+        })
+        .unwrap();
+        assert_eq!(&*order.lock().unwrap(), &["award", "pre", "post"]);
+        assert_eq!(
+            guest_stats(&game, CONN).get("custom", "minecraft:damage_dealt_resisted"),
+            5
+        );
+    });
+}
+
 struct ReadKillerBeforeAward;
 
 #[mod_api::__subscriptions]
@@ -483,6 +613,7 @@ fn a_victim_advancement_matches_the_displaced_killers_facts() {
                     }
                 }
             }] }).into(),
+            player: None,
         }],
         requirements: vec![vec!["killed".into()]],
         rewards: Rewards::default(),

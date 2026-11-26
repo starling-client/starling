@@ -1,5 +1,4 @@
 //! The `creative_slot` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0242
 
 pub trait Hooks {
     /// A creative-mode player sets a slot of their inventory from the

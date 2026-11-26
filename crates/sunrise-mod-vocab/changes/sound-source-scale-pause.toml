@@ -1,0 +1,3 @@
+ids = ["method:prelude::EffectsClientHost::set_sound_source_scale", "method:prelude::EffectsClientHost::sound_source_scale", "method:prelude::EffectsClientHost::set_sounds_paused"]
+why = "A client mod scales a sound source's volume with the sounds already playing (music, records) included, as the volume sliders update live channels (SoundEngine.updateCategoryVolume), and pauses and resumes every sound (Channel.pause, unpause), for example lowering or stopping the sound while the window is in the background (#5551)."
+migrate = "Nothing to change: additive."

@@ -2,7 +2,7 @@
 
 pub trait Hooks {
     /// The friction of `state` at `pos` (`IBlockExtension.getFriction`), for
-    /// an optional entity (its id and type). The state need not occupy that position.
+    /// an optional entity handle. The state need not occupy that position.
     /// The read-only level host reads the side that made the query: blocks, states, light,
     /// fluids, weather, enabled features, tags and resident block entities, as the other
     /// level hosts do, without loading chunks. It has no container, shape or signal view and
@@ -15,7 +15,7 @@ pub trait Hooks {
     #[notes = r#"## Block friction
 
 `BlockPart::friction` answers NeoForge's `IBlockExtension.getFriction` for a state at a position,
-with an optional entity. It runs for ground travel, ground drag, boat ground friction and lead
+with an optional `EntityRef`; `level.entity_kind(entity)` reads its type key. It runs for ground travel, ground drag, boat ground friction and lead
 angular friction, and for explicit `LevelRef::friction` queries. The read-only `LevelSide` host
 can read the level or ask for another state's answer at the same position, for example a block
 taking its material's friction. The queried state need not be what the level holds at that position.
@@ -41,10 +41,10 @@ replay agree."#]
         scope = "block",
         key = "state",
         host = "level",
-        version = 2,
+        version = 3,
         event_per_listener = true,
         target = "sunrise_client::game::native_hooks::friction::FrictionView<'_>::native_friction",
         neoforge = "IBlockExtension.getFriction"
     )]
-    fn friction(pos: BlockPos, state: BlockState, entity: Option<(u32, &str)>, friction: &mut f32);
+    fn friction(pos: BlockPos, state: BlockState, entity: Option<EntityRef>, friction: &mut f32);
 }

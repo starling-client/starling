@@ -242,6 +242,8 @@ fn an_armour_stands_name_ignores_f1_and_team_visibility() {
 fn a_trades_title_draws_the_names_style() {
     let mut resources = None;
     let mut game = game(&mut resources);
+    // This test draws the merchant screen; the server fixture only has font metrics.
+    game.gui = UiResources::load(&game.pack.source, &game.options.resources).unwrap();
     // `MerchantScreen.extractLabels` draws the menu's title, the merchant's
     // `getDisplayName()`: a name with a colour keeps it, instead of coming out
     // in the screen's grey (-12566464).

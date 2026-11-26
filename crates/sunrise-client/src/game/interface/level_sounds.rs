@@ -6,7 +6,6 @@ use std::borrow::Cow;
 use mod_api::{HookId, Identifier, SoundSource};
 
 use super::Game;
-use super::native_hooks::level_sound_playable;
 
 /// A sound the server's level is about to play, as vanilla asked for it.
 pub(super) struct LevelSound<'a> {
@@ -94,7 +93,7 @@ impl Game<'_> {
             return;
         };
         match entity {
-            Some(entity) => self.audio.play_entity_seeded(
+            Some(entity) => self.play_audio_entity_seeded(
                 &heard.name,
                 heard.source.index(),
                 heard.volume,
@@ -102,7 +101,7 @@ impl Game<'_> {
                 seed,
                 entity,
             ),
-            None => self.audio.play_on_seeded(
+            None => self.play_audio_on_seeded(
                 heard.source.index(),
                 &heard.name,
                 Some(at),
@@ -119,7 +118,7 @@ impl Game<'_> {
         let seed = self.audio.next_sound_seed();
         let at = sound.at;
         if let Some(heard) = self.ask_level_sound(self.dim.id(), sound) {
-            self.audio.play_on_seeded(
+            self.play_audio_on_seeded(
                 heard.source.index(),
                 &heard.name,
                 Some(at),
@@ -156,8 +155,7 @@ impl Game<'_> {
         emitter: u32,
         except: Option<u32>,
     ) {
-        self.audio
-            .play_unshared(sound.name, Some(sound.at), sound.volume, sound.pitch);
+        self.play_audio_unshared(sound.name, Some(sound.at), sound.volume, sound.pitch);
         // Kept while the level's sounds are captured for others, as
         // `Audio.play` keeps the rest.
         if self.audio.capture.is_some() {
@@ -188,6 +186,12 @@ impl Game<'_> {
         }
     }
 
+    /// A synchronous level sound, not captured again at the end of the tick.
+    pub(super) fn play_immediate_level_sound(&mut self, sound: LevelSound<'_>) {
+        self.play_audio_unshared(sound.name, Some(sound.at), sound.volume, sound.pitch);
+        self.send_level_sound(sound, None);
+    }
+
     /// `Level.playSound`'s packet for the players near the sound's position in
     /// the level in place, but the player on connection `except`, once the
     /// mods allowed it.
@@ -212,9 +216,8 @@ impl Game<'_> {
     /// `ServerLevel.playSeededSound`'s `EventHooks.onPlaySoundAtEntity` or
     /// `onPlaySoundAtPosition`: `play_level_sound_at_entity` when the sound's
     /// emitter is an entity a mod can name, `play_level_sound_at_position`
-    /// otherwise. None when a mod cancels it or leaves it unplayable (a volume
-    /// or pitch that isn't finite and at least 0). With no listener, the sound
-    /// as asked, borrowed.
+    /// otherwise. The hook can cancel playback; the sound engine interprets the
+    /// returned volume and pitch. With no listener, the sound as asked, borrowed.
     pub(super) fn ask_level_sound<'a>(
         &mut self,
         dimension: &str,
@@ -299,7 +302,7 @@ impl Game<'_> {
             }
         }
         drop(guard);
-        if cancel || !level_sound_playable(at, volume_now, pitch_now) {
+        if cancel {
             return None;
         }
         Some(HeardSound {
@@ -314,7 +317,7 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use super::super::lan::LanSettings;
-    use super::super::native_entity_refs::tests::with_game;
+    use super::super::native_entity_refs::tests::{fixture_resident_column, with_game};
     use super::super::native_sound_refs::tests::{guest, packets};
     use mod_api::{HostSide, SoundSource};
     use std::sync::{Arc, Mutex};
@@ -383,7 +386,7 @@ mod tests {
             seed: 0,
             max_players: 3,
             integrated: true,
-            levels: game.level_shapes,
+            levels: game.level_shapes.clone(),
             level_seeds: game.levels.runtime.seeds(),
         };
         let settings = LanSettings {
@@ -392,6 +395,75 @@ mod tests {
             force_game_mode: false,
         };
         game.lan_host(settings, net, config).unwrap();
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn experience_level_up_reaches_only_the_gaining_players_level() {
+        with_game(|game| {
+            host(game);
+            let overworld = game.dim;
+            let nether = crate::game::Dim::Nether;
+            game.enter_level(nether).unwrap();
+            game.enter_level(overworld).unwrap();
+
+            let at = [1.0, 64.0, 2.0];
+            let (mut target, rx_target) = guest(21, 21, at);
+            target.dimension = nether.id().into();
+            target.xp_level = 4;
+            let (mut nearby, rx_nearby) = guest(22, 22, at);
+            nearby.dimension = nether.id().into();
+            let (caller, rx_caller) = guest(23, 23, at);
+            game.lan
+                .as_mut()
+                .unwrap()
+                .hub
+                .guests
+                .extend([target, nearby, caller]);
+            game.as_guest(21, |game| {
+                for _ in 0..101 {
+                    game.level_up_sound.tick();
+                }
+            })
+            .unwrap();
+
+            let target = game.player(21).unwrap();
+            assert!(target.give_experience_points(game, 15));
+            assert_eq!(target.experience(game).unwrap().level, 5);
+            assert_eq!(game.dim, overworld);
+            game.lan_broadcast_effects();
+            game.flush_native_sounds();
+            let id = game
+                .lan
+                .as_ref()
+                .unwrap()
+                .hub
+                .sync_data()
+                .id("minecraft:sound_event", "minecraft:entity.player.levelup")
+                .unwrap();
+
+            for rx in [&rx_target, &rx_nearby] {
+                let sounds: Vec<_> = packets(rx)
+                    .into_iter()
+                    .filter_map(|packet| match packet {
+                        Clientbound::Sound(sound) => Some(sound),
+                        _ => None,
+                    })
+                    .collect();
+                let [sound] = sounds.as_slice() else {
+                    panic!("expected one nether sound")
+                };
+                assert_eq!(sound.sound, (id, None));
+                assert_eq!((sound.x, sound.y, sound.z), (8, 512, 16));
+                assert_eq!((sound.volume, sound.pitch), (0.125, 1.0));
+                assert_eq!(sound.source, SoundSource::Players.index() as i32);
+            }
+            assert!(
+                !packets(&rx_caller)
+                    .iter()
+                    .any(|p| matches!(p, Clientbound::Sound(_)))
+            );
+        });
     }
 
     /// Vanilla's `playSound(except, entity, ...)` sites ask
@@ -410,6 +482,7 @@ mod tests {
         mod_platform::testing::with_mods(mods, || {
             with_game(|game| {
                 host(game);
+                fixture_resident_column(&mut game.world, (0, 0));
                 let (a, rx) = guest(21, 21, [1.0, 64.0, 2.0]);
                 game.lan.as_mut().unwrap().hub.guests.push(a);
                 let mob = |game: &mut super::Game<'_>, id, kind: &str, x| {
@@ -431,7 +504,8 @@ mod tests {
                 );
                 game.handle_mob_events(vec![ram]).unwrap();
                 // SnowGolem.shear from a dispenser: BLOCKS.
-                assert!(game.shear_entity((4, 64, 2)).unwrap());
+                let shears = sunrise_client::items::ItemStack::new("minecraft:shears", 1);
+                assert!(game.shear_entity((4, 64, 2), &shears).unwrap());
                 assert!(
                     heard.lock().unwrap().is_empty(),
                     "asked at the end of the tick"
@@ -506,7 +580,7 @@ mod tests {
                     seed: 0,
                     max_players: 3,
                     integrated: true,
-                    levels: game.level_shapes,
+                    levels: game.level_shapes.clone(),
                     level_seeds: game.levels.runtime.seeds(),
                 };
                 let settings = LanSettings {

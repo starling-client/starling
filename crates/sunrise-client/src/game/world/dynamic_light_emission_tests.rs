@@ -163,7 +163,7 @@ fn with_lights_sides(
     with_game_role(root, role, |game| {
         let _server = client.then(|| {
             let server = logged_client(game);
-            game.native_lifecycle.begin_open(Authority::RemoteClient);
+            game.native_lifecycle.begin_open(None);
             // The remote dimension's key, not the client's legacy Dim field, names its level.
             let remote = game.remote.as_mut().unwrap();
             remote.level = "lights:remote".into();
@@ -251,7 +251,7 @@ fn light_query_reads_live_answers_in_the_named_level_without_publication() {
             game.world
                 .set_with_notification(1, 70, 2, fixed, false)
                 .unwrap();
-            game.ask_edited_light_emission();
+            game.ask_edited_light_emission(game.dim);
             game.world.light_edits.clear();
             assert_eq!(answer(game, 70), Some(5));
             assert_eq!(level.brightness(game, LightLayer::Block, pos), Some(0));
@@ -316,7 +316,7 @@ fn light_providers_can_delegate_but_an_active_cycle_refuses() {
             game.world
                 .set_with_notification(1, 66, 2, placed, false)
                 .unwrap();
-            game.ask_edited_light_emission();
+            game.ask_edited_light_emission(game.dim);
             assert_eq!(
                 calls.load(Ordering::Relaxed),
                 3,
@@ -354,7 +354,7 @@ fn a_dynamic_light_part_answers_by_position_for_declared_blocks_only() {
             game.world
                 .set_with_notification(1, 68, 2, plain, false)
                 .unwrap();
-            game.ask_edited_light_emission();
+            game.ask_edited_light_emission(game.dim);
             assert_eq!(
                 depth.take(),
                 [[1, -10, 2], [1, 64, 2], [1, 65, 2], [1, 66, 2], [1, 67, 2]],
@@ -403,6 +403,94 @@ fn a_dynamic_light_part_answers_by_position_for_declared_blocks_only() {
     );
 }
 
+#[test]
+#[ignore = "daily"]
+fn an_edit_pending_when_its_level_parks_uses_that_levels_dynamic_emission() {
+    with_lights(
+        "game::dynamic_light_emission_tests::an_edit_pending_when_its_level_parks_uses_that_levels_dynamic_emission",
+        |game, overworld, States { lamp, .. }, depth| {
+            depth.glow.store(11, Ordering::Relaxed);
+            game.world
+                .set_with_notification(1, 70, 2, lamp, false)
+                .unwrap();
+            assert!(depth.take().is_empty());
+            game.enter_level(Dim::Nether).unwrap();
+            game.levels
+                .parked_mut(Dim::Overworld)
+                .unwrap()
+                .streaming
+                .paused = false;
+
+            game.update_parked_light(&[Dim::Nether]);
+
+            assert_eq!(game.dim, Dim::Nether);
+            assert_eq!(depth.take(), [[1, 70, 2]]);
+            assert_eq!(
+                game.level_brightness(overworld, LightLayer::Block, [1, 70, 2]),
+                Some(11)
+            );
+        },
+    );
+}
+
+#[test]
+#[ignore = "daily"]
+fn a_full_read_prepares_a_saved_columns_dynamic_light() {
+    use sunrise_client::{
+        level_loading::Status,
+        save::{Persistent, SaveDir},
+        streaming::Streaming,
+        testgen::TestTerrain,
+    };
+
+    with_lights(
+        "game::dynamic_light_emission_tests::a_full_read_prepares_a_saved_columns_dynamic_light",
+        |game, _, States { lamp, .. }, depth| {
+            let scratch = tempfile::tempdir().unwrap();
+            let registry = game.pack.assets.registry;
+            let biomes = game.res.biomes();
+            let save = Arc::new(SaveDir::new(
+                scratch.path().to_owned(),
+                game.world.shape,
+                Some(game.res.shared_items()),
+            ));
+            let column = (20, 22);
+            let [x, y, z] = [column.0 * 16 + 1, 64, column.1 * 16 + 2];
+            let mut chunk = Chunk::empty(column.0, column.1);
+            chunk.set(1, y, 2, lamp.0);
+            assert!(!chunk.lit);
+            save.save(&[Arc::new(chunk)], registry, biomes).unwrap();
+            let mut streaming = Streaming::new(
+                Arc::new(Persistent {
+                    inner: Arc::new(TestTerrain::new(registry, biomes).unwrap()),
+                    save,
+                    registry: game.pack.assets.clone(),
+                    biomes: biomes.clone(),
+                }),
+                game.pack.context.clone(),
+                1,
+            );
+            streaming.radius = -1;
+            streaming.mesh = false;
+            let previous = std::mem::replace(&mut game.streaming, streaming);
+
+            assert!(!game.world.chunks.contains_key(&column));
+            assert!(game.load_full_column(column));
+            assert_eq!(
+                game.streaming
+                    .latest_status(&game.world, column.0, column.1),
+                Some(Status::Full)
+            );
+            assert_eq!(game.world.light(x, y, z) & 15, 12);
+            assert_eq!(game.world.light(x + 1, y, z) & 15, 11);
+            assert_eq!(depth.take(), [[x, y, z]]);
+            game.ask_loaded_light_emission(0);
+            assert!(depth.take().is_empty());
+            game.streaming = previous;
+        },
+    );
+}
+
 /// `check_light` asks a declared block's part again once at the next update however often it
 /// is called, and asks nothing of an undeclared block; it is refused on a client and for another
 /// dimension's handle. A server's light update asks a client's part again, for the changed
@@ -420,7 +508,7 @@ fn check_light_and_a_light_update_ask_the_part_again() {
             game.world
                 .set_with_notification(1, 71, 2, plain, false)
                 .unwrap();
-            game.ask_edited_light_emission();
+            game.ask_edited_light_emission(game.dim);
             assert_eq!(depth.take(), [[1, 70, 2]]);
             assert_eq!(answer(game, 70), Some(5));
             game.world.light_edits.clear();
@@ -437,7 +525,7 @@ fn check_light_and_a_light_update_ask_the_part_again() {
                 "repeated checks queue one edit"
             );
             assert_eq!(answer(game, 70), Some(5));
-            game.ask_edited_light_emission();
+            game.ask_edited_light_emission(game.dim);
             assert_eq!(
                 depth.take(),
                 [[1, 70, 2]],

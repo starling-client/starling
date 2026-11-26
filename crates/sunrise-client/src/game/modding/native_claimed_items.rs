@@ -7,9 +7,6 @@ use mod_api::{
 };
 use std::sync::Arc;
 
-/// The farthest a ray along the view reaches, in blocks.
-pub(crate) const RAYCAST_MAX: f32 = 1024.0;
-
 /// Client input captured by a main-hand item behavior, not a living entity's item use.
 pub(super) struct ActiveClientItemUse {
     mod_id: &'static str,
@@ -24,33 +21,130 @@ pub(super) struct ActiveClientItemUse {
 }
 
 impl Game<'_> {
-    /// The first block along the view within `distance` (at most 1024), in loaded chunks only; `None` on a miss.
+    /// The first block along the view within `distance`, in loaded chunks only;
+    /// `None` on a miss or a nonpositive or non-finite `distance`.
     pub(super) fn raycast(&self, distance: f32) -> Option<mod_api::Hit> {
-        let (d, hit) = self.view_hit()?;
-        (d <= distance.clamp(0.0, RAYCAST_MAX)).then_some(hit)
+        let (_, hit) = self.cast_view_ray(Some(f64::from(distance)))?;
+        Some(hit)
     }
-    /// The first block along the view within `RAYCAST_MAX`, in loaded chunks only, and its distance; `None` on a miss.
+    /// The first block along the view across loaded chunks only, and its distance; `None` on a miss.
     pub(super) fn view_hit(&self) -> Option<(f32, mod_api::Hit)> {
-        self.player.as_ref()?;
+        self.cast_view_ray(None)
+    }
+    fn cast_view_ray(&self, max_distance: Option<f64>) -> Option<(f32, mod_api::Hit)> {
+        use sunrise_client::collisions::SceneCollisions;
+        use sunrise_core::geometry::{Axis, Vec3, traverse_blocks_window};
+        use sunrise_world::{
+            collision_context::{
+                CollisionContext, CollisionEntity, CollisionItem, EntityContextKind,
+            },
+            entity_obstruction::EntityIdentity,
+            world_ray::{RayBlockMode, RayWorld, clip_with_interaction},
+        };
+        let player = self.player.as_ref()?;
         let eye = self.eye_position()?;
         let dir = super::view_vector(self.yaw, self.pitch);
-        let reach = f64::from(RAYCAST_MAX);
-        let hit = self.clip_ray(eye, dir, reach)?;
-        let (pos, point) = (hit.pos, hit.point);
-        let state = self.world.block(pos[0], pos[1], pos[2]);
-        let distance = (0..3)
-            .map(|i| (point[i] - eye[i]).powi(2))
-            .sum::<f64>()
-            .sqrt();
+        let (t_start, t_end) = loaded_ray_segment(
+            self.world.chunks.keys().copied(),
+            self.world.bottom_y(),
+            self.world.top_y(),
+            eye,
+            dir,
+            max_distance,
+        )?;
+        let clip_from = Vec3::new(eye[0], eye[1], eye[2]);
+        let direction = Vec3::new(dir[0], dir[1], dir[2]);
+        let ray_at = |t| clip_from.add_vector(direction.scale(t));
+        let clip_to = max_distance.map(ray_at);
+        let axis = Axis::ALL.into_iter().fold(Axis::X, |best, next| {
+            if direction.component(next).abs() > direction.component(best).abs() {
+                next
+            } else {
+                best
+            }
+        });
+        // The walk keeps the whole segment's nudge, stepping state and candidate order; the loaded
+        // span only says where its visits begin and end.
+        let total = max_distance.unwrap_or(t_end);
+        let walk_to = ray_at(total);
+        let window = (t_start / total, t_end / total);
+        let mut rays = super::explosion::ColliderRays {
+            scene: SceneCollisions {
+                world: &self.world,
+                binding: self.collision,
+                subject: None,
+            },
+            context: CollisionContext::for_entity(
+                CollisionEntity {
+                    identity: EntityIdentity(0),
+                    kind: EntityContextKind::Player,
+                    y: player.position.y,
+                    descending: false,
+                    main_hand: Some(CollisionItem::EMPTY),
+                },
+                false,
+            ),
+            clip_data: Some(super::explosion::ClipData {
+                facts: self.res.facts(),
+                behaviours: self.res.behaviours(),
+                tables: &self.pack.context.tables,
+                registry: self.pack.assets.registry,
+            }),
+            report_unloaded: false,
+        };
+        let (bottom_y, top_y) = (self.world.bottom_y(), self.world.top_y());
+        let (state, hit) = traverse_blocks_window(clip_from, walk_to, window, usize::MAX, |p| {
+            if !(bottom_y..top_y).contains(&p.y)
+                || !self.world.chunks.contains_key(&(p.x >> 4, p.z >> 4))
+            {
+                return None;
+            }
+            let state = self.world.block(p.x, p.y, p.z);
+            if self.res.facts().is_air(state) {
+                return None;
+            }
+            match rays
+                .block_shape(state, p, RayBlockMode::Outline)
+                .and_then(|shape| {
+                    let clip_to = if let Some(to) = clip_to {
+                        to
+                    } else {
+                        let Some(bounds) = shape.bounds() else {
+                            return Ok(None);
+                        };
+                        // VoxelShape.clip derives its inside probe from the segment length.
+                        // With no caller endpoint, extend past the candidate's voxel and outline
+                        // along the dominant axis: AABB.clip excludes the segment endpoint.
+                        // This is a bound for the shape clip, not a cap on traversal.
+                        let d = direction.component(axis);
+                        let block = Vec3::from_block(p).component(axis);
+                        let face = if d > 0.0 {
+                            bounds.max(axis).max(1.0)
+                        } else {
+                            bounds.min(axis).min(0.0)
+                        };
+                        let axial_distance = (block + face - clip_from.component(axis)).abs();
+                        ray_at((axial_distance + 1.0) / d.abs())
+                    };
+                    clip_with_interaction(&mut rays, clip_from, clip_to, p, &shape, state)
+                }) {
+                Ok(Some(hit)) => Some(Ok((state, hit))),
+                Ok(None) => None,
+                Err(error) => Some(Err(error)),
+            }
+        })
+        .ok()??
+        .ok()?;
+        let distance = clip_from.distance_squared(hit.location).sqrt();
         Some((
             distance as f32,
             mod_api::Hit {
-                block_x: pos[0],
-                block_y: pos[1],
-                block_z: pos[2],
-                x: point[0],
-                y: point[1],
-                z: point[2],
+                block_x: hit.block.x,
+                block_y: hit.block.y,
+                block_z: hit.block.z,
+                x: hit.location.x,
+                y: hit.location.y,
+                z: hit.location.z,
                 block: mod_api::__private::block_key(&self.res.facts().get(state).name)?,
             },
         ))
@@ -198,5 +292,122 @@ impl Game<'_> {
             part: Some("ClientItemUseBehavior"),
         });
         invoke(self);
+    }
+}
+
+/// Intersect ray `eye + t * dir` (`t >= 0`, optionally bounded by `max_distance`)
+/// with the padded bounding box of the loaded chunks.
+/// Returns `None` when no chunks are loaded, inputs are non-finite, `max_distance`
+/// is nonpositive or non-finite, or the ray misses the loaded extent.
+fn loaded_ray_segment(
+    chunks: impl IntoIterator<Item = (i32, i32)>,
+    bottom_y: i32,
+    top_y: i32,
+    eye: [f64; 3],
+    dir: [f64; 3],
+    max_distance: Option<f64>,
+) -> Option<(f64, f64)> {
+    if !eye.iter().all(|v| v.is_finite()) || !dir.iter().all(|v| v.is_finite()) {
+        return None;
+    }
+    let mut t_min = 0.0_f64;
+    let mut t_max = match max_distance {
+        Some(limit) if limit.is_finite() && limit > 0.0 => limit,
+        Some(_) => return None,
+        None => f64::INFINITY,
+    };
+    let mut iter = chunks.into_iter();
+    let (first_cx, first_cz) = iter.next()?;
+    let (mut min_cx, mut max_cx) = (first_cx, first_cx);
+    let (mut min_cz, mut max_cz) = (first_cz, first_cz);
+    for (cx, cz) in iter {
+        min_cx = min_cx.min(cx);
+        max_cx = max_cx.max(cx);
+        min_cz = min_cz.min(cz);
+        max_cz = max_cz.max(cz);
+    }
+    // Pad by one block on each side so a ray entering a boundary chunk's outer face
+    // starts outside that block and steps cleanly across the face.
+    let bounds = [
+        (
+            f64::from(min_cx) * 16.0 - 1.0,
+            (f64::from(max_cx) + 1.0) * 16.0 + 1.0,
+        ),
+        (f64::from(bottom_y) - 1.0, f64::from(top_y) + 1.0),
+        (
+            f64::from(min_cz) * 16.0 - 1.0,
+            (f64::from(max_cz) + 1.0) * 16.0 + 1.0,
+        ),
+    ];
+    for axis in 0..3 {
+        let (lo, hi) = bounds[axis];
+        if dir[axis] == 0.0 {
+            if eye[axis] < lo || eye[axis] > hi {
+                return None;
+            }
+            continue;
+        }
+        let inv = 1.0 / dir[axis];
+        let a = (lo - eye[axis]) * inv;
+        let b = (hi - eye[axis]) * inv;
+        let (near, far) = if a < b { (a, b) } else { (b, a) };
+        t_min = t_min.max(near);
+        t_max = t_max.min(far);
+        if t_min > t_max {
+            return None;
+        }
+    }
+    if !t_min.is_finite() || !t_max.is_finite() || t_max <= t_min {
+        return None;
+    }
+    Some((t_min, t_max))
+}
+
+#[cfg(test)]
+mod ray_extent_tests {
+    use super::loaded_ray_segment;
+
+    #[test]
+    fn loaded_ray_segment_spans_loaded_chunks_past_1024_and_rejects_invalid_limits() {
+        let chunks = [(0, 0), (0, 100)];
+        let eye = [0.5, 100.0, 0.5];
+        let dir = [0.0, 0.0, 1.0];
+
+        assert_eq!(
+            loaded_ray_segment(chunks, -64, 320, eye, dir, None),
+            Some((0.0, 1616.5))
+        );
+        assert_eq!(
+            loaded_ray_segment(chunks, -64, 320, eye, dir, Some(2000.0)),
+            Some((0.0, 1616.5))
+        );
+        assert_eq!(
+            loaded_ray_segment(chunks, -64, 320, eye, dir, Some(1500.0)),
+            Some((0.0, 1500.0))
+        );
+        // Entering loaded extent from far outside starts at the near face.
+        assert_eq!(
+            loaded_ray_segment([(0, 100)], -64, 320, eye, dir, None),
+            Some((1598.5, 1616.5))
+        );
+        assert_eq!(
+            loaded_ray_segment([(0, 100)], -64, 320, eye, dir, Some(1500.0)),
+            None
+        );
+        // Empty chunk set, misses, and nonpositive or non-finite limits return None.
+        assert_eq!(
+            loaded_ray_segment(std::iter::empty(), -64, 320, eye, dir, None),
+            None
+        );
+        assert_eq!(
+            loaded_ray_segment(chunks, -64, 320, [40.5, 100.0, 0.5], [0.0, -1.0, 0.0], None),
+            None
+        );
+        for bad in [0.0, -1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(
+                loaded_ray_segment(chunks, -64, 320, eye, dir, Some(bad)),
+                None
+            );
+        }
     }
 }

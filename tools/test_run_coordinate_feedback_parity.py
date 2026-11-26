@@ -11,10 +11,12 @@ import os
 from pathlib import Path
 import time
 
-import net_capture
-import test_locator_bar_parity as net
-import test_hostile_sound_categories_parity as sound
-from test_dedicated_server_parity import Server, game_time
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import net_capture, test_locator_bar_parity as net, test_hostile_sound_categories_parity as sound
+from tools.test_dedicated_server_parity import Server, game_time
 
 KEYS = ['commands.test.summary', 'commands.test.summary.all_required_passed',
         'test.player.coordinates', 'test.run.coordinates']

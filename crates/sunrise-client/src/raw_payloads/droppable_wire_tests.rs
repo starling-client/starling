@@ -40,7 +40,9 @@ fn with_server<R>(run: impl FnOnce(Arc<Transport>) -> R) -> R {
         || {
             mod_platform::__private::part_tests::install_parts_fixture(mod_api::__private::mods())
                 .unwrap();
-            let transport = Transport::capture(Side::Server).unwrap();
+            let transport =
+                Transport::capture(Side::Server, crate::raw_payloads::TEST_RECORD_OVERHEAD)
+                    .unwrap();
             transport
                 .accept(transport.local.manifest.entries())
                 .unwrap();

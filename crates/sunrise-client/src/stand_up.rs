@@ -58,13 +58,13 @@ pub struct StandUpLevel<'a, 'r> {
 }
 
 impl StandUpLevel<'_, '_> {
-    fn name(&self, p: [i32; 3]) -> &str {
+    pub(crate) fn name(&self, p: [i32; 3]) -> &str {
         &self.facts.get(self.world.block(p[0], p[1], p[2])).name
     }
     fn tagged(&self, tag: &str, block: &str) -> bool {
         self.block_tags.get(tag).is_some_and(|s| s.contains(block))
     }
-    fn prop(&self, state: BlockStateId, key: &str) -> Option<&str> {
+    pub(crate) fn prop(&self, state: BlockStateId, key: &str) -> Option<&str> {
         self.registry
             .state(state)
             .and_then(|s| s.properties.get(key))

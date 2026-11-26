@@ -1,6 +1,9 @@
 //! Server-thread task queues and progress shared with each connection worker.
 use super::config_payloads::ConfigSender;
-use crate::raw_payloads::{Endpoint, Transport, connection::Epoch};
+use crate::{
+    raw_payloads::{Endpoint, Transport, connection::Epoch},
+    world_spawn::PlayerSpawnFinder,
+};
 use mod_api::{
     __private::RegisteredConfigurationTask, ConfigurationConnection, ConfigurationTaskError,
     PayloadId, PayloadSendError,
@@ -119,6 +122,27 @@ impl Tasks {
             .remove(&id)
             .map_or_else(Vec::new, |entry| entry.queue)
     }
+    /// `getChunkRangeFuture` keeps the requested generation work alive apart from the ticket's age.
+    pub fn loading_spawns(&self, dimension: &'static str) -> impl Iterator<Item = (i32, i32)> + '_ {
+        self.sessions.values().filter_map(move |entry| {
+            let state = entry
+                .session
+                .state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            match state.spawn.as_ref() {
+                Some(SpawnTask::Load(spawn))
+                    if spawn.level.id == dimension
+                        && !state.closed
+                        && !entry.session.transport().closed() =>
+                {
+                    Some(spawn.chunk())
+                }
+                _ => None,
+            }
+        })
+    }
+
     /// Visit the next session without retaining a borrow across a task callback.
     pub fn next_session(
         &self,
@@ -140,8 +164,59 @@ impl Tasks {
             })
     }
 }
+/// The particular open of the destination level, not just its dimension name.
+#[derive(Clone, Copy, Debug)]
+pub struct SpawnLevel {
+    pub id: &'static str,
+    pub generation: u32,
+}
+
+/// The prepared place and angle survive the configuration acknowledgement.
+#[derive(Clone, Copy, Debug)]
+pub struct PreparedSpawn {
+    pub level: SpawnLevel,
+    pub position: [f64; 3],
+    pub rotation: [f32; 2],
+}
+impl PreparedSpawn {
+    pub fn chunk(self) -> (i32, i32) {
+        (
+            (self.position[0].floor() as i32) >> 4,
+            (self.position[2].floor() as i32) >> 4,
+        )
+    }
+}
+
+/// Keeps PrepareSpawnTask.Ready alive until game-thread placement, or until
+/// the connection or join is dropped.
+pub struct Configured(pub(crate) Arc<Session>);
+impl Configured {
+    pub fn session(&self) -> &Session {
+        &self.0
+    }
+}
+impl Drop for Configured {
+    fn drop(&mut self) {
+        self.0.close();
+    }
+}
+
+pub enum SpawnTask {
+    Start(u128),
+    Find {
+        level: SpawnLevel,
+        suggestion: [i32; 3],
+        rotation: [f32; 2],
+        finder: Option<PlayerSpawnFinder>,
+    },
+    Load(PreparedSpawn),
+    Ready(PreparedSpawn),
+}
+
 #[derive(Default)]
 struct State {
+    spawn: Option<SpawnTask>,
+    prepared_spawn: Option<PreparedSpawn>,
     task_types: Option<Vec<mod_api::Identifier>>,
     at: usize,
     started: bool,
@@ -150,6 +225,9 @@ struct State {
     closed: bool,
 }
 impl State {
+    fn tasks_done(&self) -> bool {
+        self.task_types.as_ref().map(Vec::len) == Some(self.at)
+    }
     fn running(&self, ordinal: usize) -> bool {
         self.task_types
             .as_ref()
@@ -167,15 +245,52 @@ pub struct Turn {
 }
 
 pub struct Session {
+    needs_spawn: bool,
     state: Mutex<State>,
     sender: ConfigSender,
 }
 impl Session {
+    #[cfg(test)]
     pub fn new(sender: ConfigSender) -> Arc<Self> {
+        Self::new_for_player(sender, None)
+    }
+    pub(crate) fn new_for_player(sender: ConfigSender, player: Option<u128>) -> Arc<Self> {
         Arc::new(Self {
-            state: Mutex::new(State::default()),
+            needs_spawn: player.is_some(),
+            state: Mutex::new(State {
+                spawn: player.map(SpawnTask::Start),
+                ..State::default()
+            }),
             sender,
         })
+    }
+
+    /// `ServerConfigurationPacketListenerImpl.returnToWorld`: prepare after the preceding tasks.
+    pub fn take_spawn(&self) -> Option<SpawnTask> {
+        if !self.needs_spawn {
+            return None;
+        }
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.closed || state.failure.is_some() || !state.tasks_done() {
+            return None;
+        }
+        state.spawn.take()
+    }
+
+    pub fn advance_spawn(&self, task: SpawnTask) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.prepared_spawn = match &task {
+            SpawnTask::Ready(spawn) => Some(*spawn),
+            _ => None,
+        };
+        state.spawn = Some(task);
+    }
+
+    pub fn prepared_spawn(&self) -> Option<PreparedSpawn> {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .prepared_spawn
     }
     pub(crate) fn register(&self, task_types: Vec<mod_api::Identifier>) {
         self.state
@@ -319,13 +434,29 @@ impl Session {
         if let Some(error) = &state.failure {
             return Some(Err(error.clone()));
         }
-        (state.task_types.as_ref().map(Vec::len) == Some(state.at)).then_some(Ok(()))
+        (state.tasks_done() && (!self.needs_spawn || state.prepared_spawn.is_some()))
+            .then_some(Ok(()))
     }
     pub fn close(&self) {
         self.state.lock().unwrap_or_else(|e| e.into_inner()).closed = true;
     }
     pub fn closed(&self) -> bool {
         self.transport().closed() || self.state.lock().unwrap_or_else(|e| e.into_inner()).closed
+    }
+}
+
+impl crate::raw_payloads::ConfigurationTask for Session {
+    fn running_ordinal_for_type(
+        &self,
+        task_type: &mod_api::Identifier,
+    ) -> Result<usize, ConfigurationTaskError> {
+        Session::running_ordinal_for_type(self, task_type)
+    }
+    fn finish_ordinal_under_epoch(&self, ordinal: usize) {
+        Session::finish_ordinal_under_epoch(self, ordinal)
+    }
+    fn finish_type(&self, task_type: &mod_api::Identifier) -> Result<(), ConfigurationTaskError> {
+        Session::finish_type(self, task_type)
     }
 }
 
@@ -513,6 +644,46 @@ mod tests {
                 );
             },
         );
+    }
+
+    #[test]
+    fn configuration_finishes_after_tasks_and_spawn_and_keeps_the_ready_spawn_until_acknowledged() {
+        use crate::lan::config_payloads::ConfigIo;
+        use sunrise_protocol::connection::{Connection, Pipe};
+
+        let (_peer, server) = Pipe::pair();
+        let mut server = Connection::local(server);
+        let transport = Transport::empty();
+        let (events, _receiver) = crate::lan::event_channel_with_capacity(1 << 20);
+        let mut io = ConfigIo::new(&mut server, transport.clone(), events).unwrap();
+        let session = Session::new_for_player(io.task_sender(transport).unwrap(), Some(123));
+        session.register(vec![mod_api::Identifier::parse("demo:task").unwrap()]);
+        assert!(session.take_spawn().is_none());
+        let turn = session.turn().1.unwrap();
+        session.finish_current(turn.ordinal);
+        session.turn();
+        assert!(matches!(session.take_spawn(), Some(SpawnTask::Start(123))));
+        assert!(session.result().is_none());
+        let prepared = PreparedSpawn {
+            level: SpawnLevel {
+                id: "minecraft:the_nether",
+                generation: 0,
+            },
+            position: [-0.5, 67.0, 48.5],
+            rotation: [135.0, -20.0],
+        };
+        session.advance_spawn(SpawnTask::Load(prepared));
+        assert!(session.result().is_none());
+        assert!(matches!(session.take_spawn(), Some(SpawnTask::Load(_))));
+        session.advance_spawn(SpawnTask::Ready(prepared));
+        assert!(matches!(session.take_spawn(), Some(SpawnTask::Ready(_))));
+        assert_eq!(session.result(), Some(Ok(())));
+        assert_eq!(
+            session.prepared_spawn().unwrap().position,
+            prepared.position
+        );
+        session.close();
+        assert!(session.take_spawn().is_none());
     }
 
     #[test]

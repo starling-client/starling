@@ -1,5 +1,4 @@
 //! The `block_burn` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0171
 
 pub trait Hooks {
     /// On an authoritative server, fire is about to burn the block at `pos`

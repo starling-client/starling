@@ -43,6 +43,13 @@ pub trait PlayersServerHost {
 #[sunrise_mod_api_macros::host_area]
 pub trait PlayersClientHost {
     /// Side: client.
+    /// For a client mod: sets the local player's fall-flying flag (`LivingEntity.startFallFlying`)
+    /// from `player_tick_pre`, so the tick's own glide detection sends `START_FALL_FLYING` as a
+    /// jump-started glide does. This is the raw flag write, not `tryToStartFallFlying`: it does
+    /// not check the glider, the ground, levitation or a liquid. `false`, and nothing changes,
+    /// with no player of its own.
+    fn start_local_player_gliding(&mut self) -> bool;
+    /// Side: client.
     /// For a client mod: a push added to the local player's velocity, in blocks a tick, as an
     /// explosion's knockback is (the window's player moves itself, as vanilla's client does). Each component is
     /// clamped to -4..4; a spectator, or a value that is not a number, is left alone.
@@ -164,4 +171,23 @@ pub trait PlayersClientBackendMut {
         book: &RecipeBookTypeKey,
         settings: RecipeBookSettings,
     ) -> bool;
+    /// Side: client.
+    /// Creative mode only: puts `stack`, components and all, into the local player's
+    /// inventory as `Inventory.add` does: onto matching stacks (the selected slot, the off
+    /// hand, the hotbar, then the main inventory), then into empty slots, up to the stack's
+    /// effective maximum (`minecraft:max_stack_size` included). Every slot it changed goes to
+    /// the server at once as `MultiPlayerGameMode.handleCreativeModeItemAdd` does
+    /// (`ServerboundSetCreativeModeSlotPacket`; the off hand is slot 45), even while a
+    /// container menu is open. `Ok(Some(remainder))` is what did not fit; nothing is dropped.
+    /// Refuses outside a client world (`Unavailable`), for a stale or non-local handle
+    /// (`Stale`), outside creative mode (`NotCreative`), or for a stack the item boundary
+    /// refuses (`Stack`). A [`CreativeGiveError`] gives nothing (including `FeatureDisabled` when
+    /// the connected server does not enable the item's required feature flags).
+    #[forward_api_inputs]
+    #[forward_api_output]
+    fn player_give_creative(
+        &mut self,
+        player: PlayerRef,
+        stack: &ItemStack,
+    ) -> Result<Option<ItemStack>, CreativeGiveError>;
 }

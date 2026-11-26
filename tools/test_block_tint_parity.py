@@ -7,10 +7,12 @@ vanilla does not (or the other way round) only shows up in that sweep.
 Geometry and framebuffer are separate checks.
 """
 import json
-try:
-    from . import lab, oracle_harness as harness, test_section_mesh_parity as mesh
-except ImportError:
-    import lab, oracle_harness as harness, test_section_mesh_parity as mesh
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, oracle_harness as harness, test_section_mesh_parity as mesh
 
 BLOCKS = """large_fern tall_grass fern short_grass potted_fern bush grass_block
 pink_petals wildflowers spruce_leaves birch_leaves oak_leaves jungle_leaves

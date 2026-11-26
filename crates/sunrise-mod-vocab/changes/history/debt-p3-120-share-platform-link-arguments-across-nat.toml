@@ -1,0 +1,17 @@
+# SDK build history only: these functions are not in the mod API surface.
+ids = [
+    "fn:sunrise_native_build::prebuilt::rustc_with",
+    "fn:sunrise_native_build::registry_compile::compile",
+]
+why = """
+The Sunrise SDK uses one set of library search flags for direct and registry builds, and the release
+smoke build uses that same list for its two mod libraries. On macOS, the registry patch and smoke
+libraries now find dependencies beside themselves instead of relative to the executable. On Linux,
+all three builds use the library-relative search path for transitive dependencies. The registry
+patch also reuses the SDK's existing mod_vocab binding. There is no vanilla or NeoForge counterpart
+for this SDK linker policy.
+"""
+migrate = """
+No changes to Rust source, Cargo.toml or sunrise-mod.toml. Use the target build's SDK tool as before
+and install its returned libraries together beside the executable.
+"""

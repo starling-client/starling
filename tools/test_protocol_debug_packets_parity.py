@@ -2,12 +2,12 @@
 """Debug packet wire parity, including invalid subscriptions, unknown sample kinds and long arrays."""
 import json
 import os
-try:
-    from . import lab, test_rust_parity as base, oracle_harness as harness
-except ImportError:
-    import lab
-    import test_rust_parity as base
-    import oracle_harness as harness
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_rust_parity as base, oracle_harness as harness
 
 
 def main():

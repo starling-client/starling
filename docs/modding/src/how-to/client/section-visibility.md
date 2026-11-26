@@ -33,8 +33,10 @@ fn section_visibility(&self, _: &dyn ClientHost, event: &mut SectionVisibilityEv
 -1 to 16 on each axis, with each cell's sky and block light, stored biome and deterministic model seed. A cell
 is the world's canonical `BlockState`, before any visibility answer, so an ore a
 `block_render_visibility` part hides still reads as the ore. A column that is not
-loaded reads `SectionCell::Missing`: not air, but neither occluding nor matching anything. `cell` refuses a read
-beyond the border with `SectionVisibilityRefusal::OutsideInput`.
+loaded reads `SectionCell::Missing`: not air, but neither occluding nor matching anything. `input.biome(local)`
+returns `Ok(Some(&BiomeKey))` for a registered biome, before biome zoom and blending. It returns `Ok(None)` for a
+missing column or for an unresolved biome slot in a loaded column, such as a save's biome from an absent pack.
+It never substitutes a rendering default. Reads beyond the border return `SectionVisibilityRefusal::OutsideInput`.
 
 ## What the answer does
 

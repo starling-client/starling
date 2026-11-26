@@ -1,0 +1,52 @@
+ids = [
+    "hook:world_lifecycle",
+    "hook:world_lifecycle.context",
+    "hook:world_lifecycle.phase",
+    "hook:world_lifecycle.error_text",
+    "method:Hooks::world_lifecycle",
+    "type:WorldLifecycleEvent",
+    "type:WorldLifecycleEvent.context",
+    "type:WorldLifecycleEvent.phase",
+    "type:WorldLifecycleEvent.error_text",
+    "type:WorldPhase",
+    "type:WorldPhase.WorldOpenFailed",
+    "type:WorldPhase.WorldCloseFinal",
+    "type:WorldPhase.WorldCloseFailed",
+    "type:HookId.WorldLifecycle",
+    "hook:server_about_to_start",
+    "hook:server_starting",
+    "hook:server_started",
+    "hook:level_load",
+    "behaviour:server_level_creation_order",
+    "behaviour:client_level_lifecycle_reads",
+    "hook:server_stopping",
+    "hook:server_stopped",
+    "hook:level_save",
+    "hook:level_unload",
+    "hook:level_tick_pre",
+    "hook:level_tick_post",
+    "hook:create_spawn_position",
+    "hook:world_saved",
+    "hook:config_unloading",
+    "hook:client_level_load",
+    "hook:client_level_unload",
+    "hook:player_save_to_file",
+]
+why = "Follow vanilla 26.3's MinecraftServer.runServer, stopServer, createLevels, setInitialSpawn, saveEverything and saveAllChunks, PrepareSpawnTask.start, DedicatedServer.initServer and IntegratedServer.initServer. createLevels walks WorldDimensions.bake's completed MappedRegistry.entrySet after opening the Overworld; tickChildren, saveAllChunks and stopServer use the resulting getAllLevels order, and NeoForge posts LevelTickEvent.Pre and Post in that walk. IntegratedServer.initServer saves with the single-player profile before PlayerList holds a player. ClientPacketListener.handleConfigurationStart clears the old level before switching listeners, and ClientConfigurationPacketListenerImpl.handleConfigurationFinished hands off the next configuration's registries. ClientLevel gets its own configuration's registry access in the constructor; NeoForge posts Load there and Unload before Minecraft.setLevel, clearClientLevel or disconnect discards the old level. NeoForge posts its server lifecycle events, LevelEvent.Load/Save/Unload and CreateSpawnPosition at the corresponding server sites; ServerLifecycleHooks.handleServerStopped posts Stopped before unloading synced configs. Keeping a second world_lifecycle callback and separate failure phases would duplicate those events and expose a failure phase NeoForge does not have. A port bind failure now returns an initialization error after Stopped without opening the world. Mod panics are handled by the shared listener boundary so they cannot be mistaken for save or level-close failures. The server discards the listener's writes only to the extent the existing Host transaction journal covers them."
+migrate = """
+Remove Hooks::world_lifecycle, WorldLifecycleEvent, WorldPhase, and HookId::WorldLifecycle. Replace the hook selection with server_stopped for unconditional server teardown or level_unload for a level's successful close.
+- WorldLifecycleEvent.phase / WorldPhase::WorldCloseFinal -> Hooks::server_stopped(&self, host: &mut dyn ServerHost, event: &mut ServerStoppedEvent) for server cleanup, or Hooks::level_unload with LevelUnloadEvent.dimension for per-level cleanup after a successful close. Do not expect a level unload when the final save or the level's own close fails.
+- WorldPhase::WorldOpenFailed and WorldPhase::WorldCloseFailed -> delete the failure-only branches; clean up in server_stopped and diagnose errors from the engine log or startup error, not a callback. WorldLifecycleEvent.error_text -> delete the read; there is no replacement event field.
+- WorldLifecycleEvent.context -> use ServerStoppedEvent.dedicated instead of context.authority to distinguish dedicated from integrated, or LevelUnloadEvent.dimension for the level being closed. Remove reads of context.epoch and context.tick from lifecycle callbacks; those values are not carried by the stop or unload events. If needed, allocate your state in server_about_to_start or level_load and release it in server_stopped or level_unload respectively.
+- server_about_to_start (v2) -> same signature; do not expect it on a dedicated bind failure. server_stopped (v2) -> same signature; it now covers failures even before AboutToStart. Cleanup must tolerate a server that never opened a world. Server configs are still loaded in the final level_save, level_unload and server_stopped callbacks; config_unloading (v5) -> same signature, now runs after server_stopped.
+- server_starting (v3) -> keep the callback for work after startup's level loading, spawn preparation and initial save. Move work that must precede integrated level creation to server_about_to_start. server_stopping (v2) -> keep for orderly shutdown while players and levels are still present. Move cleanup that must also run on failed init or after tick errors to server_stopped. Fabric SERVER_STOPPING has no exact equivalent at stopServer entry on failures.
+- level_load (v4) -> initialize state for event.dimension; the Overworld opens first, initializes its world spawn if needed, then the remaining configured stems load in registry traversal. Do not depend on any fixed order among those stems. create_spawn_position (v2) -> same signature; on a normal fresh world it runs between the Overworld Load and the other levels' Loads. Remove any expectation that this fires for Debug worlds; vanilla sets their fixed spawn without the hook.
+- level_save (v2) and world_saved (v2) -> same signatures; the integrated startup save can run before server_starting, and final saves occur after network admission and players have been retired. A world save runs level_save in creation order, not active-level first. The integrated pre-login save names a known profile in a new world's metadata without creating a player file; existing owner files, profile references and legacy player data stay intact. level_unload (v3) -> same signature: close notifications follow a successful final save and per-level close, in creation order. Idle chunk/entity eviction does not fire level_save or level_unload or a second level_load on revisit.
+- level_tick_pre and level_tick_post (v2) -> keep both callback signatures. On servers, eligible levels now tick in the same creation order returned by host.levels().list_levels(); remove assumptions that built-in levels tick before all custom levels.
+- client_level_load (v2) -> same signature; use host.level(event.dimension) to get the freshly constructed level before installation. The returned handle still names the same level after installation. client_level_unload (v3) -> same signature; use host.level(event.dimension) or your retained handle to read the retiring level before its chunks and handles go away. A replacement in the same configuration still runs Load before Unload. Use Unload for cleanup on replacement, reconfiguration, ordinary leave and quitting; integrated quit unloads the client level before halting the server.
+- Behavior only (`handle:LevelRef::datapack_entries`, `handle:LevelRef::datapack_read`) -> keep level.datapack_entries(host, registry) and level.datapack_read(host, registry, entry, visitor). Resolve level with host.level(event.dimension) in each client callback. Load reads the entering level's synchronized set without waiting for chunks; Unload reads the retiring configuration, even if the next one has already arrived. The retiring LevelRef becomes stale after Unload.
+- server_started (v2) -> same signature; it sees all prepared levels and, on the integrated server, the completed initial world save before any player joins. This save is not part of a listener's journal.
+- Lifecycle callbacks -> same signatures. Stop treating a panicking notice as a server save, close or client transition failure. Only the failing callback is disabled for the session; other callbacks keep running. Keep server writes in host.transaction when writing through it: committed child writes still roll back if the surrounding callback panics. Manage effects outside that journal, including client-only edits and your own files, yourself.
+- player_save_to_file (v2) -> same signature; move logic that needs every full-save player file to level_save or world_saved, which now follow the player writes and their notifications. Do not expect player_save_to_file from the pre-login integrated world save.
+- Behavior only (`method:Levels::list_levels`) -> same call, but use the returned creation order rather than assuming a fixed Nether/End order or putting the active level first. Behavior only (`method:prelude::EntitiesHost::level`) -> same call; on a client use the callback's event.dimension to resolve its specific entering or retiring level.
+"""

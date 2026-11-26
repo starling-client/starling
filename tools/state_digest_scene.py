@@ -12,7 +12,9 @@ import threading
 import time
 from pathlib import Path
 
-import lab
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab
 
 GATE = os.environ.get('SUNRISE_SCENE_GATE')  # optional script that exits 0 when the machine is free to run
 PROPERTIES = {

@@ -1,5 +1,10 @@
 """Real connected-owner trade extractions and crafted statistics, without world ticks."""
-from command_exec_corpus import cmd
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools.command_exec_corpus import cmd
 
 OWNER = [-1608632253, -450807400, -1786055591, -2146546415]
 

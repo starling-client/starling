@@ -1,4 +1,3 @@
-#![cfg(test)]
 use crate::game::{
     execution_role::ExecutionRole,
     native_entity_refs::tests::{run_fresh_cases, with_game_role},
@@ -268,13 +267,14 @@ fn piston_push_reaction_parts_cache_reload_and_replay() {
                 let fixed_api = host.block_state_id("test:fixed").unwrap();
                 let torch = host.block_state_id("minecraft:torch").unwrap();
                 // The callback view exposes the same table, without needing a resident block.
-                let level = crate::game::native_level_signals::ReadLevel {
+                let level = crate::game::native_level_signals::ReadLevel::new(
                     game,
-                    level: LevelRef::new(
+                    LevelRef::new(
                         game.native_lifecycle.epoch().unwrap(),
                         DimensionKey::OVERWORLD,
                     ),
-                };
+                    &game.world,
+                );
                 for facts in [host.block_states(), level.block_states()] {
                     for (state, expected) in [
                         (torch, PushReaction::Popped),
@@ -989,7 +989,7 @@ fn piston_push_reaction_position_state_opens_ticks_and_saves() {
                     .find(|(p, _)| *p == at)
                     .unwrap()
                     .1;
-                let saved = game.saved_moving_piston(at, &moving);
+                let saved = game.saved_moving_piston(at, &moving).unwrap();
                 game.world.block_entities.discard_carried(&to);
                 let mut extras = sunrise_client::save::ChunkExtras::default();
                 extras.block_entities.push(saved);

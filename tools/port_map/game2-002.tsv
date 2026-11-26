@@ -53,7 +53,7 @@ Blaze.setCharged	inline	crates/sunrise-client/src/mobs/nether.rs::BlazeAttack::t
 Creeper.registerGoals	port	crates/sunrise-client/src/mobs/hostile.rs::register
 Creeper.getMaxFallDistance	port	crates/sunrise-client/src/mobs/nav.rs::comfortable_fall_distance	the creeper's own override, comfortable_fall_distance(health - 1.0)
 Creeper.defineSynchedData	skip:other		swell, powered and ignited are Mob fields
-Creeper.addAdditionalSaveData	inline	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt	gap: minor: Fuse and ExplosionRadius are written as constants 30 and 3, not the creeper's values
+Creeper.addAdditionalSaveData	inline	crates/sunrise-client/src/entity_nbt/mob_write.rs::mob_to_nbt	gap: minor: Fuse and ExplosionRadius are written as constants 30 and 3, not the creeper's values
 Creeper.thunderHit	port	crates/sunrise-client/src/game/entities/lightning.rs::Game::thunder_hit
 Creeper.spawnLingeringCloud	port	crates/sunrise-client/src/mobs/hostile.rs::creeper_tick	MobEvent::LingeringCloud after the Explode: radius 2.5, wait 10, 300 ticks, -radius/duration a tick, the creeper's effects at 0.25 of their duration with their ambient and visible flags (game/items/potions.rs::spawn_creeper_cloud); a mob keeps ambient_effects now (NBT, /effect, expiry, conversion, the synchronized particles)
 ElderGuardian.createAttributes	skip:data		attribute defaults come from data tables
@@ -63,7 +63,7 @@ Enderman.setTarget	inline	crates/sunrise-client/src/mobs/enderman.rs::custom_ser
 Enderman.defineSynchedData	skip:other		carried block, creepy and stared-at state are Mob extra fields
 Enderman.playStareSound	inline	crates/sunrise-client/src/mobs/enderman.rs::LookForPlayer::tick	gap: minor: the 400-tick throttle of the stare sound is not seen
 Enderman.onSyncedDataUpdated	skip:other		client sync hook; the stare sound is played server-side from LookForPlayer
-Enderman.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt	the carried block is written as carriedBlockState and removed when there is none
+Enderman.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_write.rs::mob_to_nbt	the carried block is written as carriedBlockState and removed when there is none
 Enderman.readAdditionalSaveData	inline	crates/sunrise-client/src/entity_nbt/mob_load.rs::mob_from_nbt	the same state round-trips through the registry
 Enderman.canRandomlyTeleportTo	port	crates/sunrise-client/src/mobs/enderman.rs::teleport_to	the water check on the ground block
 Enderman.repeatedlyTryToTeleport	port	crates/sunrise-client/src/mobs/enderman.rs::ai_step	pending teleports retry up to 64 times
@@ -89,7 +89,7 @@ Guardian.getActiveAttackTarget	inline	crates/sunrise-client/src/mobs/guardian.rs
 Guardian.checkGuardianSpawnRules	port	crates/sunrise-client/src/mobs/spawn_rules.rs::check_spawn_rules	the Guardian and ElderGuardian arm
 Guardian.GuardianAttackGoal.canContinueToUse	port	crates/sunrise-client/src/mobs/guardian.rs::GuardianAttack::can_continue
 Guardian.GuardianAttackSelector.test	inline	crates/sunrise-client/src/mobs/guardian.rs::register	the selector is the player, squid and axolotl beyond 9 filters in register
-Monster.updateNoActionTime	port	crates/sunrise-client/src/mobs/ai.rs::server_ai_step	the idle counter is counted up there and read by the despawn path in raids.rs
+Monster.updateNoActionTime	port	crates/sunrise-client/src/mobs/ai.rs::ai_step	the outer +2 in brightness (always for raiders), not the +1 at the start of server_ai_step; the despawn path in raids.rs reads the counter
 Monster.getProjectile	port	crates/sunrise-client/src/game/items/crossbow.rs::Game::mob_vanilla_ammo	the weapon's supported stack from the off hand then the main hand, else a new arrow; the ProjectileWeaponItem guard and the per-weapon supported set are not kept (an arrow or a firework rocket for a crossbow)
 PatrollingMonster.addAdditionalSaveData	port	crates/sunrise-client/src/mobs/raider.rs::write_nbt
 PatrollingMonster.readAdditionalSaveData	port	crates/sunrise-client/src/mobs/raider.rs::read_nbt
@@ -99,7 +99,7 @@ Phantom.registerGoals	port	crates/sunrise-client/src/mobs/phantom.rs::register
 Phantom.updatePhantomSizeInfo	port	crates/sunrise-client/src/mobs/phantom.rs::set_size	the size clamps to 0..64, sets the attack damage base to 6 plus the size, and the box is scaled by it (mobs/living.rs::Mob::dims)
 Phantom.finalizeSpawn	inline	crates/sunrise-client/src/mobs/phantom.rs::register	the anchor 5 blocks above is set at creation; size 0
 Phantom.readAdditionalSaveData	inline	crates/sunrise-client/src/entity_nbt/mob_load.rs::mob_from_nbt	size is read as setPhantomSize; anchor_pos is read as the circling anchor (extra.home), absent or unreadable is none
-Phantom.addAdditionalSaveData	inline	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt	size is written, and anchor_pos only for a phantom that has an anchor (storeNullable)
+Phantom.addAdditionalSaveData	inline	crates/sunrise-client/src/entity_nbt/mob_write.rs::mob_to_nbt	size is written, and anchor_pos only for a phantom that has an anchor (storeNullable)
 Phantom.getDefaultDimensions	inline	crates/sunrise-client/src/mobs/living.rs::Mob::dims	the box, height and eye height scale by 1 + 0.15 per size
 Phantom.PhantomBodyRotationControl.clientTick	inline	crates/sunrise-client/src/mobs/phantom.rs::move_control	the head yaw follows the body yaw there
 Phantom.PhantomMoveTargetGoal.touchingTarget	inline	crates/sunrise-client/src/mobs/phantom.rs::CircleAroundAnchor::tick	the squared distance under 4 check near the move target
@@ -107,7 +107,7 @@ Phantom.PhantomSweepAttackGoal.canContinueToUse	port	crates/sunrise-client/src/m
 Ravager.registerGoals	port	crates/sunrise-client/src/mobs/ravager.rs::register
 Ravager.updateControlFlags	inline	crates/sunrise-client/src/mobs/riders.rs::drive	raider controllers permit MOVE/JUMP/LOOK/TARGET; other mob controllers disable them; gap: minor: a ravager in a boat keeps its JUMP goals
 Ravager.createAttributes	skip:data		attribute defaults come from data tables
-Ravager.addAdditionalSaveData	inline	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt	AttackTick, StunTick and RoarTick are written there
+Ravager.addAdditionalSaveData	inline	crates/sunrise-client/src/entity_nbt/mob_write.rs::mob_to_nbt	AttackTick, StunTick and RoarTick are written there
 Ravager.readAdditionalSaveData	inline	crates/sunrise-client/src/entity_nbt/mob_load.rs::mob_from_nbt	the same three tick values are read there
 Ravager.stunEffect	port	crates/sunrise-client/src/mobs/ravager.rs::ai_step	the stun particle is emitted from ai_step
 Ravager.hasLineOfSight	missing		`ravager::immobile` knows the biting, stunned and roaring states, but no target goal is gated on it, so an immobile ravager still sees and takes targets
@@ -117,7 +117,7 @@ Ravager.addRoarParticleEffects	inline	crates/sunrise-client/src/mobs/ravager.rs:
 Shulker.registerGoals	port	crates/sunrise-client/src/mobs/shulker.rs::register	gap: minor: no defense target goal (priority 3)
 Shulker.defineSynchedData	skip:other		attach face, peek and colour are Mob extra fields
 Shulker.readAdditionalSaveData	inline	crates/sunrise-client/src/entity_nbt/mob_load.rs::mob_from_nbt	AttachFace wraps through Direction.from3DDataValue, Peek and Color are raw getByteOr bytes
-Shulker.addAdditionalSaveData	inline	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt	AttachFace, Peek and Color are written there
+Shulker.addAdditionalSaveData	inline	crates/sunrise-client/src/entity_nbt/mob_write.rs::mob_to_nbt	AttachFace, Peek and Color are written there
 Shulker.findNewAttachment	inline	crates/sunrise-client/src/mobs/shulker.rs::tick	keeps its face or teleports in tick, through attachable and teleport
 Shulker.makeBoundingBox	port	crates/sunrise-client/src/mobs/shulker.rs::progress_aabb
 Shulker.getDefaultDimensions	port	crates/sunrise-client/src/mobs/shulker.rs::peek_height_scale	a shell on Direction.DOWN grows `(1, 1 + currentPeekAmount)` tall as its lid opens, applied last in Mob::awake_dims_in

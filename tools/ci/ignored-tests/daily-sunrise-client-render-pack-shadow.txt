@@ -1,0 +1,1 @@
+sunrise-client-render gfx::pack_post::mod_pack_binding_tests::mod_shadow_pass_geometry_is_drawn_and_invalidates_the_shadow_cache lib daily gpu

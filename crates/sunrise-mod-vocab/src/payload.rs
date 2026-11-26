@@ -2,8 +2,8 @@
 #[path = "payload/codec.rs"]
 mod codec;
 pub use codec::{
-    PAYLOAD_DECODE_BUDGET, PAYLOAD_MAX_DEPTH, PAYLOAD_MAX_LIST_ENTRIES, PAYLOAD_MAX_STRING_BYTES,
-    PAYLOAD_SCHEMA_MARKER, decode_payload, encode_payload, payload_schema, typed_payload_version,
+    PAYLOAD_DECODE_BUDGET, PAYLOAD_MAX_DEPTH, PAYLOAD_MAX_STRING_BYTES, PAYLOAD_SCHEMA_MARKER,
+    decode_payload, encode_payload, payload_schema, typed_payload_version,
 };
 #[path = "payload/registrar.rs"]
 mod registrar;
@@ -14,7 +14,10 @@ pub use registrar::{
 mod typed;
 pub use typed::{PayloadToken, ToClient, ToServer};
 
-use crate::{ClientHost, ConfigurationTaskError, PlayerRef, ServerHost, Text};
+use crate::{
+    ClientHost, ConfigurationTaskError, PlayerRef, ServerHost, Text, TransactionContext,
+    TransactionError, TransactionScopeError, TransactionUnavailable,
+};
 use std::sync::Arc;
 
 /// Opaque application bytes. The transport never prepends a mod envelope.
@@ -207,6 +210,8 @@ pub enum PayloadSendError {
     StaleToken(PayloadId),
     /// `IPayloadContext::send_to` is for `Droppable` channels only.
     NotDroppable(PayloadId),
+    /// The current side, phase or world view cannot supply tracking recipients.
+    Unavailable,
 }
 
 impl crate::NoBackend for PayloadSendError {
@@ -270,10 +275,16 @@ pub trait IPayloadHandler: Send + Sync + 'static {
 
 /// Work scheduled on the logical receiving main thread. It retains the handler's owner and
 /// disablement guard: a panic aborts the work's transaction and disables that receiving callback
-/// for the session, without disconnecting the peer. Later deliveries to that callback
-/// follow the same rules as a panic in [`IPayloadHandler::handle`].
+/// for the session, without disconnecting the peer. The engine disposes of its work reference
+/// under that same policy, including when work is refused or cancelled. A panicking destructor
+/// is reported even for an already disabled callback; a destructor panic in the current
+/// delivery aborts its staged effects. Later deliveries to that callback follow the same
+/// rules as a panic in [`IPayloadHandler::handle`].
 pub trait PayloadWork: Send + Sync + 'static {
     /// Execute with the same connection-derived context and transaction rules.
+    /// A panic disables the receiving callback for the session and reports the owning mod
+    /// in the error log and client error toast, even if the handler aborts a child transaction
+    /// and handles its error. The abort only undoes work covered by the journal.
     fn run(&self, context: &mut dyn IPayloadContext) -> Result<(), String>;
 }
 
@@ -342,9 +353,78 @@ pub trait IPayloadContext {
     /// also discards any staged configuration task completion from this handler.
     fn disconnect(&mut self, reason: Text);
     /// Run now on the main thread or schedule there from the network executor.
-    /// Failure of the work is reported as a named session failure.
+    /// A main-thread failure returns an error to the caller. An unhandled failure is reported
+    /// with the delivery; a panic is always reported by the receiving callback's owner boundary.
     fn enqueue_work(
         &mut self,
         work: Arc<dyn PayloadWork>,
     ) -> Result<PayloadWorkStatus, PayloadContextError>;
+    /// Lends the current scope without opening or settling a transaction.
+    fn with_current_transaction_scope(
+        &mut self,
+        _callback: &mut dyn for<'loan> FnMut(
+            &'loan mut dyn IPayloadContext,
+            &'loan TransactionContext,
+        ),
+    ) -> Result<(), TransactionUnavailable> {
+        Err(TransactionUnavailable)
+    }
+
+    /// Runs `callback` inside one scoped transaction on this payload context (server main
+    /// thread only), committing on `true` and aborting on `false` or unwind. Returns
+    /// `Ok(true)` on commit, `Ok(false)` on callback abort, or a [`TransactionScopeError`]
+    /// when opening or committing is refused.
+    /// Most callers use [`IPayloadContext::transaction`].
+    fn with_transaction_scope(
+        &mut self,
+        _callback: &mut dyn for<'loan> FnMut(
+            &'loan mut dyn IPayloadContext,
+            &'loan TransactionContext,
+        ) -> bool,
+    ) -> Result<bool, TransactionScopeError> {
+        Err(TransactionScopeError::Unavailable)
+    }
+}
+
+impl dyn IPayloadContext + '_ {
+    /// Borrows an already-open innermost transaction without opening or closing a frame.
+    /// Returns `None` without calling `f` if there is no current transaction to borrow.
+    pub fn current_transaction<T>(
+        &mut self,
+        f: impl for<'loan> FnOnce(&'loan mut dyn IPayloadContext, &'loan TransactionContext) -> T,
+    ) -> Option<T> {
+        let mut f = Some(f);
+        let mut value = None;
+        self.with_current_transaction_scope(&mut |access, tx| {
+            if let Some(f) = f.take() {
+                value = Some(f(access, tx));
+            }
+        })
+        .ok()?;
+        value
+    }
+
+    /// Runs `f` in a scoped transaction on this payload context (server main thread only).
+    /// `Ok` commits into the surrounding transaction (or for good at the root). A closure error
+    /// becomes [`TransactionError::Aborted`] and, like an unwind, rolls back writes made inside
+    /// `f`. Returns [`TransactionError::Unavailable`] without calling `f` when this context
+    /// cannot open a transaction.
+    pub fn transaction<T, E>(
+        &mut self,
+        f: impl for<'loan> FnOnce(
+            &'loan mut dyn IPayloadContext,
+            &'loan TransactionContext,
+        ) -> Result<T, E>,
+    ) -> Result<T, TransactionError<E>> {
+        let mut f = Some(f);
+        let mut result = None;
+        let settled = self.with_transaction_scope(&mut |context, tx| {
+            let Some(f) = f.take() else { return false };
+            let outcome = f(context, tx);
+            let commit = outcome.is_ok();
+            result = Some(outcome);
+            commit
+        });
+        crate::item::transaction::finish_scope(settled, result)
+    }
 }

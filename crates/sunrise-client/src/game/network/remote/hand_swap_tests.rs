@@ -84,8 +84,29 @@ fn joining_a_server_empties_the_off_hand_too() {
     game.inventory[0] = stack();
     game.armor[0] = stack();
     game.offhand = stack();
+    game.equipment.set(sunrise_items::equipment::BODY, stack());
+    game.equipment
+        .set(sunrise_items::equipment::SADDLE, stack());
     let (second, _second_server) = sunrise_protocol::connection::Pipe::pair();
     game.connect_local(second, "HopTest").unwrap();
     assert!(game.inventory[0].is_none() && game.armor[0].is_none());
     assert!(game.offhand.is_none());
+    assert!(game.equipment.get(sunrise_items::equipment::BODY).is_none());
+    assert!(
+        game.equipment
+            .get(sunrise_items::equipment::SADDLE)
+            .is_none()
+    );
+
+    // Replacing the remote LocalPlayer (handleRespawn / handleLogin) also resets extra equipment.
+    game.equipment.set(sunrise_items::equipment::BODY, stack());
+    game.equipment
+        .set(sunrise_items::equipment::SADDLE, stack());
+    game.drop_remote_player();
+    assert!(game.equipment.get(sunrise_items::equipment::BODY).is_none());
+    assert!(
+        game.equipment
+            .get(sunrise_items::equipment::SADDLE)
+            .is_none()
+    );
 }

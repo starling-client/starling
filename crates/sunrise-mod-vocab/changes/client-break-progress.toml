@@ -1,0 +1,3 @@
+ids = ["hook:client_break_progress", "type:ClientBreakProgressEvent", "type:HookId"]
+why = "Adds the client hook client_break_progress (vanilla ClientLevel.destroyBlockProgress): the client level was told a breaker's crack stage on a block, from the server's block destruction packet or the local player's own dig, so a client mod can follow how far a block has cracked, the player's own block on a server that runs mining itself included. New hook: no existing hook version changes."
+migrate = "Additive. Listen on the client; keep the listener cheap, as a dig tells its stage every tick."

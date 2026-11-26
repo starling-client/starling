@@ -7,7 +7,7 @@ static VALUE: AttachmentType<i32> = AttachmentType {
     default: || 0,
     codec: None,
     copy_on_death: false,
-    sync: false,
+    sync_codec: None,
 };
 
 const P: Pos = (1, 64, 1);
@@ -143,4 +143,37 @@ fn a_lease_from_another_store_cannot_consume_the_current_lease() {
     assert!(!second.put(foreign, old));
     assert!(second.put(current, new));
     assert!(matches!(second.get(&P), Some(BlockEntity::Chest(items)) if items.len() == 2));
+}
+
+#[test]
+fn restoring_a_taken_lease_after_aborted_removal_accepts_the_original_put() {
+    let mut entities = level();
+    entities.insert(P, BlockEntity::Mod(Box::default()));
+    VALUE
+        .set(entities.attachments_mut(P).unwrap(), Holder::Level, 7)
+        .unwrap();
+    entities.defer_retirement();
+    let (lease, taken) = entities.take(&P).unwrap();
+    let snapshot = entities.taken_lease_snapshot(&P).unwrap();
+    let generation = entities.generation(&P);
+    let attachments = entities.attachments(P).cloned();
+
+    entities.remove(&P);
+    entities.insert(P, chest(2));
+    assert_ne!(entities.generation(&P), generation);
+    assert!(entities.mods_near(0.0, 0.0, 64.0).next().is_none());
+
+    entities.remove(&P);
+    entities.restore_taken_lease(P, snapshot);
+    entities.put_back_attachments(P, generation, attachments);
+    entities.publish_retirement();
+
+    assert_eq!(entities.generation(&P), generation);
+    assert_eq!(entities.mods_near(0.0, 0.0, 64.0).next(), Some(&P));
+    assert!(entities.put(lease, taken));
+    assert_eq!(
+        VALUE.get(entities.attachments_mut(P).unwrap(), Holder::Level),
+        Ok(7)
+    );
+    assert!(matches!(entities.get(&P), Some(BlockEntity::Mod(_))));
 }

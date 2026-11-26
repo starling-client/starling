@@ -1,0 +1,3 @@
+ids = ["method:RenderAssets::atlas_sprite_pixels", "type:AtlasSpritePixels", "type:AtlasSpriteError"]
+why = "#4601: a client mod reads a blocks-atlas sprite's pixels on the CPU. RenderAssets::atlas_sprite_pixels takes the SpriteRef that texture_sprites and block_sprites return (vanilla's TextureAtlas.getSprite is per atlas, and a SpriteRef names the blocks atlas) and answers the sprite's first frame, untinted, as RGBA8 at the sprite's own size (SpriteContents), with no GPU readback. Frame 0 only: a frame index has no consumer yet and can be added later. AtlasSpriteError is NoSuchSprite or NotReady. New items only."
+migrate = "Nothing to change."

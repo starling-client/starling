@@ -129,14 +129,32 @@ impl PayloadReceiver {
                 crate::callback_owner::CallbackFailure::Refused(error)
             })
     }
-    /// Scheduled work retains its original receiving owner and enable guard.
+    /// Run and then dispose of call-owned work under its receiving owner's panic policy.
+    /// Contain run and disposal separately so both may panic without a double unwind.
     pub fn run_work(
         &self,
-        work: &dyn crate::PayloadWork,
+        work: Arc<dyn crate::PayloadWork>,
         context: &mut dyn crate::IPayloadContext,
     ) -> Result<(), crate::callback_owner::CallbackFailure> {
-        self.call("payload work", || work.run(context))?
-            .map_err(crate::callback_owner::CallbackFailure::Refused)
+        let result = self
+            .call("payload work", || work.run(context))
+            .and_then(|result| result.map_err(crate::callback_owner::CallbackFailure::Refused));
+        // A destructor panic must not turn into a protocol failure if `run` refused.
+        self.dispose_work(work).and(result)
+    }
+    /// Dispose of call-owned work under the same registration even if it is quarantined.
+    pub fn dispose_work(
+        &self,
+        work: Arc<dyn crate::PayloadWork>,
+    ) -> Result<(), crate::callback_owner::CallbackFailure> {
+        crate::callback_owner::dispose_typed(
+            self.owner,
+            self.owner_index,
+            &self.panicked,
+            "payload",
+            "payload work drop",
+            work,
+        )
     }
     fn call<T>(
         &self,
@@ -340,7 +358,8 @@ pub trait PayloadsRegistrar {
         client: Option<Arc<dyn IPayloadHandler>>,
     ) -> PayloadToken;
     /// Declare a raw play channel by exact id, with an optional server receiver.
-    /// Reserved namespaces, a second declaration by the same mod and an id a
-    /// typed payload uses refuse startup, naming the mods involved.
+    /// The `minecraft` namespace, built-in engine `sunrise:` channels, a second
+    /// declaration by the same mod and an id a typed payload uses refuse startup,
+    /// naming the mods involved.
     fn add_raw_payload(&mut self, id: PayloadId, server: Option<Arc<dyn IPayloadHandler>>);
 }

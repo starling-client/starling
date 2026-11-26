@@ -139,6 +139,16 @@ impl GameTests for GameTestEdits<'_> {
         {
             return Err("expected namespaced function id");
         }
+        if [
+            &definition.structure,
+            &definition.environment,
+            &definition.dimension,
+        ]
+        .into_iter()
+        .any(|field| crate::Identifier::parse(field).is_err())
+        {
+            return Err("invalid structure, environment or dimension id");
+        }
         if self.pending.definitions.contains_key(id)
             || self
                 .published
@@ -387,6 +397,21 @@ mod tests {
         let mut invalid = definition;
         invalid.max_ticks = 0;
         assert!(registry.register_test("example:invalid", invalid).is_err());
+        for field in ["structure", "environment", "dimension"] {
+            let mut malformed =
+                GameTestDefinition::new("minecraft:empty".into(), "example:pass".into());
+            match field {
+                "structure" => malformed.structure = "My Struct".into(),
+                "environment" => malformed.environment = "My Env".into(),
+                _ => malformed.dimension = "My Dim".into(),
+            }
+            assert!(
+                registry
+                    .register_test("example:malformed", malformed)
+                    .is_err(),
+                "{field}"
+            );
+        }
         let bare = GameTestDefinition::new("example:structure".into(), "pass".into());
         assert_eq!(
             registry.register_test("example:bare", bare),

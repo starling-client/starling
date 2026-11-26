@@ -1,10 +1,12 @@
 //! `/effect` (EffectCommands) and `/enchant` (EnchantCommand).
 use super::{Arg, Context, Game, R, Target, err, texts};
+use mod_api::EquipmentSlot;
 use sunrise_client::{
     brewing::{self, namespaced},
     effects::EffectInstance,
     text::{self, Style, Text},
 };
+use sunrise_items::equipment::MAINHAND;
 
 /// `CommandResponseTracker` over targets: elements with a non-zero result.
 #[derive(Default)]
@@ -61,6 +63,13 @@ impl Game<'_> {
             None if effect.instant => 1,
             None => 600,
         };
+        let source = self.source_entity().and_then(|t| {
+            let id = match t {
+                Target::Player => self.own_entity_id() as u32,
+                other => self.network_entity_id(other)? as u32,
+            };
+            self.entity(id)
+        });
         let mut tracker = Tracker::default();
         for t in self.living_targets(ctx)? {
             let changed = match t {
@@ -68,44 +77,14 @@ impl Game<'_> {
                     // `new MobEffectInstance(effect, duration, amplifier, false, particles)`.
                     let instance = EffectInstance::new(effect.id, duration, amplifier)
                         .with_flags(false, particles);
-                    self.for_player(t, |g| g.add_player_effect(instance))
+                    self.for_player(t, |g| g.add_player_effect_from(instance, source))
                         .unwrap_or(false)
                 }
                 Target::Mob(id) => {
-                    let Some(kind) = self
-                        .mobs
-                        .iter()
-                        .find(|m| m.id == id && !m.removed)
-                        .map(|m| m.kind.id.clone())
-                    else {
-                        tracker.track(t, false);
-                        continue;
-                    };
-                    let name = namespaced(effect.id);
-                    // `LivingEntity.addEffect` refuses what the mob cannot
-                    // be affected by.
-                    if !self.can_be_affected(Some(id as i32), &kind, name) {
-                        false
-                    } else {
-                        match self.mobs.iter_mut().find(|m| m.id == id) {
-                            Some(m) => {
-                                let new = !m.has_effect(name);
-                                // `new MobEffectInstance(effect, duration, amplifier, false, particles)`.
-                                let changed =
-                                    m.add_effect_with(name, duration, amplifier, false, particles);
-                                if new
-                                    && changed
-                                    && let Some(sound) = super::super::potions::sound_on_added(name)
-                                {
-                                    let at = [m.position.x, m.position.y, m.position.z];
-                                    self.audio.play(sound, Some(at), 1.0, 1.0);
-                                }
-                                self.mod_effect_added(name, Some(id as i32), amplifier, new);
-                                changed
-                            }
-                            None => false,
-                        }
-                    }
+                    // `new MobEffectInstance(effect, duration, amplifier, false, particles)`.
+                    let instance = EffectInstance::new(effect.id, duration, amplifier)
+                        .with_flags(false, particles);
+                    self.add_mob_effect(id, instance, source)
                 }
                 _ => continue,
             };
@@ -180,93 +159,45 @@ impl Game<'_> {
         self.feedback(message);
         Ok(tracker.total)
     }
-    /// `EnchantCommand.enchant` (mobs hold bare item ids, so only the player's
-    /// main hand item can carry the enchantment).
+    /// `EnchantCommand.enchant`: enchant each living target's main-hand stack.
     pub(super) fn cmd_enchant(&mut self, ctx: &Context) -> R<i32> {
-        let Some(Arg::Resource(id)) = ctx.get("enchantment").cloned() else {
+        let Some(Arg::Resource(id)) = ctx.get("enchantment") else {
             return Ok(0);
         };
         let level = Self::int(ctx, "level").unwrap_or(1);
-        let enchantments = &self.stations().enchantments;
-        let Some(def) = enchantments.get(&id) else {
+        let Some(def) = self.stations().enchantments.get(id) else {
             return Err(err(
                 "argument.resource.not_found",
-                &[&id, &"minecraft:enchantment"],
+                &[id, &"minecraft:enchantment"],
             ));
         };
         let max = def.max_level as i32;
+        let targets = self.entities(ctx, "targets", false)?;
         if level > max {
             return Err(err("commands.enchant.failed.level", &[&level, &max]));
         }
-        let targets = self.entities(ctx, "targets", false)?;
+        let level = level as u32; // The command's integer argument starts at zero.
         let single = targets.len() == 1;
         let mut tracker = Tracker::default();
         for t in targets {
-            match t {
-                Target::Player => {
-                    let Some(stack) = self.inventory[self.selected].clone() else {
-                        if single {
-                            return Err(err(
-                                "commands.enchant.failed.itemless",
-                                &[&self.target_name(t).plain()],
-                            ));
-                        }
-                        continue;
-                    };
-                    let e = &self.stations().enchantments;
-                    let compatible = e.can_enchant(self.items(), &id, &stack.item)
-                        && stack
-                            .crafting_enchantments()
-                            .iter()
-                            .all(|(other, _)| e.compatible(other, &id));
-                    if compatible {
-                        if let Some(s) = self.inventory[self.selected].as_mut() {
-                            s.enchant(&id, level.max(0) as u32);
-                        }
-                        tracker.track(t, true);
-                    } else if single {
-                        // getHoverName().getString(): the custom or item name, no brackets.
-                        return Err(err(
-                            "commands.enchant.failed.incompatible",
-                            &[&stack
-                                .custom_name()
-                                .unwrap_or_else(|| self.pack.names.item(&stack.item).to_string())],
-                        ));
-                    }
-                }
-                Target::Mob(mob) => {
-                    let held = self
-                        .mobs
-                        .iter()
-                        .find(|m| m.id == mob)
-                        .and_then(|m| m.extra.main_hand_id().map(str::to_owned));
-                    if single {
-                        return Err(match held {
-                            None => err(
-                                "commands.enchant.failed.itemless",
-                                &[&self.target_name(t).plain()],
-                            ),
-                            Some(item) => err(
-                                "commands.enchant.failed.incompatible",
-                                &[&self.pack.names.item(&item)],
-                            ),
-                        });
-                    }
+            let changed = match t {
+                Target::Player | Target::Guest(_) => self.for_player(t, |g| {
+                    g.enchant_main_hand(Target::Player, id, level, single)
+                }),
+                Target::Mob(_) | Target::Stand(_) | Target::Dragon(_) => {
+                    self.in_target_level(t, |g| g.enchant_main_hand(t, id, level, single))
                 }
                 _ if single => {
-                    return Err(err(
-                        "commands.enchant.failed.entity",
-                        &[&self.target_name(t).plain()],
-                    ));
+                    let name = self
+                        .in_target_level(t, |g| g.target_name(t))
+                        .unwrap_or_else(|| self.target_name(t));
+                    return Err(err("commands.enchant.failed.entity", &[&name.plain()]));
                 }
-                _ => {}
-            }
+                _ => None,
+            };
+            tracker.track(t, changed.transpose()?.unwrap_or(false));
         }
-        let (name, curse) = self
-            .res
-            .stations()
-            .enchantments
-            .full_name(&id, level.max(0) as u32);
+        let (name, curse) = self.stations().enchantments.full_name(id, level);
         let style = Style {
             color: Some(if curse { text::RED } else { text::GRAY }),
             ..Style::default()
@@ -274,10 +205,15 @@ impl Game<'_> {
         let full = Text::styled(name, style);
         let message = match tracker.changed.as_slice() {
             [] => return Err(err("commands.enchant.failed", &[])),
-            [one] => Text::translate(
-                "commands.enchant.success.single",
-                &[full, self.target_name(*one)],
-            ),
+            [one] => {
+                let target = if one.is_player() {
+                    self.target_name(*one)
+                } else {
+                    self.in_target_level(*one, |g| g.target_name(*one))
+                        .unwrap_or_else(|| self.target_name(*one))
+                };
+                Text::translate("commands.enchant.success.single", &[full, target])
+            }
             many => Text::translate(
                 "commands.enchant.success.multiple",
                 &texts(&[full, Text::literal(many.len().to_string())]),
@@ -285,5 +221,71 @@ impl Game<'_> {
         };
         self.feedback(message);
         Ok(tracker.total)
+    }
+
+    /// Change components in the hand itself, without an equip event. The next
+    /// inventory and equipment syncs publish the updated stack as usual.
+    fn enchant_main_hand(&mut self, t: Target, id: &str, level: u32, single: bool) -> R<bool> {
+        let stack = match t {
+            // Include enchantments kept in the mob's gear as well as in the stack.
+            Target::Mob(id) => self
+                .mobs
+                .iter()
+                .find(|m| m.id == id)
+                .and_then(|m| sunrise_client::mobs::finalize::item_stack(m, MAINHAND)),
+            _ => self
+                .equipment_stack_for(t, EquipmentSlot::MainHand)
+                .map(|stack| stack.project().into_owned()),
+        };
+        let Some(mut stack) = stack.filter(|s| s.count != 0 && &*s.item != "minecraft:air") else {
+            return if single {
+                Err(err(
+                    "commands.enchant.failed.itemless",
+                    &[&self.target_name(t).plain()],
+                ))
+            } else {
+                Ok(false)
+            };
+        };
+        let enchantments = &self.stations().enchantments;
+        if !enchantments.can_enchant(self.items(), id, &stack.item)
+            || !stack
+                .crafting_enchantments()
+                .iter()
+                .all(|(other, _)| enchantments.compatible(other, id))
+        {
+            return if single {
+                Err(err(
+                    "commands.enchant.failed.incompatible",
+                    &[&self.stack_hover_name(&stack)],
+                ))
+            } else {
+                Ok(false)
+            };
+        }
+        stack.enchant(id, level);
+        match t {
+            Target::Player => self.inventory[self.selected] = Some(stack),
+            Target::Mob(id) => {
+                let Some(mob) = self.mobs.iter_mut().find(|m| m.id == id) else {
+                    return Ok(false);
+                };
+                mob.set_equipment_stack(MAINHAND, Some(stack));
+            }
+            Target::Stand(id) => {
+                let Some(stand) = self.armor_stands.iter_mut().find(|a| a.id == id) else {
+                    return Ok(false);
+                };
+                stand.equipment[MAINHAND] = Some(stack);
+            }
+            Target::Dragon(id) => {
+                let Some(dragon) = self.dragon.as_mut().filter(|d| d.id == id) else {
+                    return Ok(false);
+                };
+                dragon.equipment[MAINHAND] = Some(stack);
+            }
+            _ => return Ok(false),
+        }
+        Ok(true)
     }
 }

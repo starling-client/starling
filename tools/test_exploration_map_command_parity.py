@@ -6,12 +6,14 @@ absolute clocks are retained. Named loot and renderer repairs are outside scope.
 """
 import argparse, gzip, hashlib, io, json, os, shutil, subprocess, time
 from pathlib import Path
-import anvil_dump as nbt
-import net_capture
-import test_locator_bar_parity as net
-from test_disconnect_crafting_parity import offline, uuid_words
-from test_machine_recipe_placement_parity import Commands, dump
-from test_dedicated_server_parity import game_time
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import anvil_dump as nbt, net_capture, test_locator_bar_parity as net
+from tools.test_disconnect_crafting_parity import offline, uuid_words
+from tools.test_machine_recipe_placement_parity import Commands, dump
+from tools.test_dedicated_server_parity import game_time
 
 PLAYER='MapAlice'
 MODIFIER='{type:"minecraft:exploration_map",destination:"#minecraft:on_ocean_monument_maps",decoration:"minecraft:monument",zoom:2,skip_existing_chunks:false}'

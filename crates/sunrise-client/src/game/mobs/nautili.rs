@@ -3,7 +3,10 @@
 //! nautilus a drowned with a trident sometimes rides.
 use super::Game;
 use sunrise_client::actions::Action;
-use sunrise_client::{items::ItemStack, mobs::nautilus};
+use sunrise_client::{
+    items::ItemStack,
+    mobs::{equip::equippable_in_slot, nautilus},
+};
 use sunrise_core::random::RandomSource;
 
 impl Game<'_> {
@@ -30,8 +33,7 @@ impl Game<'_> {
     }
     fn nautilus_sound(&mut self, index: usize, sound: &str) {
         let at = self.mobs[index].center();
-        self.audio
-            .play(&format!("minecraft:{sound}"), Some(at), 1.0, 1.0);
+        self.play_audio(&format!("minecraft:{sound}"), Some(at), 1.0, 1.0);
     }
     /// `AbstractNautilus.interact` (`super.interact` is `Mob.interact`): any
     /// click on a nautilus, used or not, makes it persistent before its own
@@ -124,13 +126,25 @@ impl Game<'_> {
                     .and_then(|i| i.food.as_ref())
                     .map(|f| f.0 as i32);
                 let m = &mut self.mobs[index];
-                m.heal(&self.loop_context, nautilus::feed_heal(nutrition));
+                m.heal(
+                    &self.loop_context,
+                    &|| crate::game::entity::hit_reads_of!(self),
+                    nautilus::feed_heal(nutrition),
+                );
                 self.use_nautilus_food(item);
                 self.nautilus_sound(index, sound);
                 return true;
             }
             // Equippable.equipOnInteract: a saddle or nautilus armour on a
             // tame adult.
+            let wears_body = self.inventory[self.selected].as_ref().is_some_and(|stack| {
+                equippable_in_slot(
+                    self.items(),
+                    stack,
+                    "body",
+                    sunrise_client::mobs::species::vanilla_id(self.mobs[index].species()),
+                )
+            });
             let m = &mut self.mobs[index];
             if item == "minecraft:saddle" && tame && !m.extra.saddled() {
                 let held = self.inventory[self.selected].clone();
@@ -143,7 +157,7 @@ impl Game<'_> {
                 self.mob_equip_event(id, [pos.x, pos.y, pos.z], true);
                 return true;
             }
-            if item.ends_with("_nautilus_armor") && tame && m.extra.body_id().is_none() {
+            if wears_body && tame && m.extra.body_id().is_none() {
                 let held = self.inventory[self.selected].clone();
                 m.extra
                     .set_body_stack(held.map(|s| ItemStack { count: 1, ..s }));

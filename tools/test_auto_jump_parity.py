@@ -13,12 +13,17 @@ import platform
 import random
 import subprocess
 
-try:
-    from . import lab, oracle_harness as harness, test_rust_parity as base, test_model_baking_parity as baking, \
-        test_native_client as client
-except ImportError:
-    import lab, oracle_harness as harness, test_rust_parity as base, test_model_baking_parity as baking
-    import test_native_client as client
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import (
+    lab,
+    oracle_harness as harness,
+    test_rust_parity as base,
+    test_model_baking_parity as baking,
+    test_native_client as client,
+)
 
 
 BLOCKS = [
@@ -126,7 +131,8 @@ def main():
                parity / (oracle + '.java'), parity / 'VanillaSceneCollisionOracle.java',
                parity / 'VanillaRegistryCollisionScanOracle.java', lab.ROOT / 'Cargo.lock',
                lab.ROOT / 'crates/sunrise-client/examples/probe/auto_jump_probe.rs',
-               lab.ROOT / 'crates/sunrise-client/src/auto_jump.rs', lab.ROOT / 'crates/sunrise-client/src/motion.rs']
+               lab.ROOT / 'crates/sunrise-client/src/auto_jump.rs', lab.ROOT / 'crates/sunrise-client/src/motion.rs',
+               lab.ROOT / 'crates/sunrise-client/src/motion/integrate.rs']
     tested = base.source_hashes(sources)
     fixtures = list(cases(random.Random(0x4155544f)))
     inputs = build / 'cases.jsonl'

@@ -67,7 +67,11 @@ impl Game<'_> {
                 .extra
                 .mount
                 .and_then(|mount| self.vehicle_loot_entity(mount));
-            return Some(sunrise_client::mobs::drops::loot_entity(mob, vehicle));
+            return Some(sunrise_client::mobs::drops::loot_entity_with_variants(
+                mob,
+                vehicle,
+                Some(self.world_variants()),
+            ));
         }
         if let Some(boat) = self.boats.iter().find(|boat| boat.id == id) {
             return Some(LootEntity {

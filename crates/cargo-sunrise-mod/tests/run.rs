@@ -60,11 +60,18 @@ impl mod_api::Hooks for Greeter {
     .unwrap();
 
     // Run the actual game through registration, then exit from the hook before a world or a
-    // window opens. Registration only needs the resource marker and the registry names table.
+    // window opens. A current full-profile marker and empty registry names table are enough.
     let resources = root.join("resources");
     fs::create_dir(&resources).unwrap();
-    for name in ["sunrise-resources.json", "registries.json"] {
-        fs::write(resources.join(name), "{}").unwrap();
+    for (name, json) in [
+        (
+            "sunrise-resources.json",
+            r#"{"schema":7,"minecraft":"26.3"}"#,
+        ),
+        ("sunrise-prepare.json", r#"{"output_version":9}"#),
+        ("registries.json", "{}"),
+    ] {
+        fs::write(resources.join(name), json).unwrap();
     }
     let game = project.join("target/sunrise-mod/run/game");
     fs::create_dir_all(&game).unwrap();

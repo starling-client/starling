@@ -16,9 +16,9 @@ impl Game<'_> {
     /// `MobSpawnEvent.PositionCheck`: the freshly created mob of type `kind`
     /// may stand at `pos` in `level` for `reason` (`Mob.checkSpawnRules` and
     /// `checkSpawnObstruction`). `spawner` is the block that asked, if one
-    /// did; `mob` is the mob itself, lent for the call. `result` starts as
-    /// `Default`: vanilla's two checks decide; `Succeed` or `Fail` skips them.
-    /// Server-side.
+    /// did; `mob` is a scoped read-only [`mod_api::UnspawnedMobView`] of the
+    /// mob itself. `result` starts as `Default`: vanilla's two checks decide;
+    /// `Succeed` or `Fail` skips them. Server-side.
     pub(in crate::game) fn native_mob_spawn_position_check(
         &self,
         call: mod_api::__private::MobSpawnPositionCheckCall<'_>,

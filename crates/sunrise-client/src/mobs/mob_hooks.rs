@@ -21,6 +21,12 @@ pub trait MobHooks {
     ) -> Option<PathType> {
         default
     }
+    /// `gaze_disguise` (`IItemExtension.isGazeDisguise`): whether `player`'s head item
+    /// disguises their gaze from mob `observer`, `disguised` (vanilla's tag test) unless a
+    /// mod says otherwise.
+    fn gaze_disguise(&self, _observer: u32, _player: &PlayerView, disguised: bool) -> bool {
+        disguised
+    }
     /// `EnderManAngerEvent`: whether a mod keeps enderman `enderman` calm
     /// though `player` stares at it.
     fn enderman_anger_suppressed(&self, enderman: u32, player: &PlayerView) -> bool;

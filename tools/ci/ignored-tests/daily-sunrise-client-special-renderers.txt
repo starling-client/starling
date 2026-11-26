@@ -1,6 +1,6 @@
 # Special item model renderers (#876) in a real game: the renderer never asked inside a tick's lifted
-# pass, saves refused in an action savepoint, and built-in scenes costing nothing more (matrix rows 6, 7 and 13 of
-# docs/design/mod-api/resource-renderers.md). Each boots the game in its own process. Rows: PACKAGE TEST TARGET daily REASON, sorted.
+# pass, saves refused in an action savepoint, and built-in scenes costing nothing more. Each boots
+# the game in its own process. Rows: PACKAGE TEST TARGET daily REASON, sorted.
 sunrise-client game::native_special_renderers::cost_tests::built_in_scenes_cost_nothing_more_without_a_listener lib daily game-boot
 sunrise-client game::native_special_renderers::frame_tests::a_special_renderer_is_never_asked_inside_a_lifted_pass lib daily game-boot
 sunrise-client game::transactions::decision::game_tests::a_save_is_refused_in_an_action_savepoint_a_special_item_is_drawn_in lib daily game-boot

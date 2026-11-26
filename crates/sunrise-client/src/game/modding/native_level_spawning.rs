@@ -151,10 +151,7 @@ impl Game<'_> {
             None => shot.update_rotation(),
         }
         shot.item = Some(carried);
-        let id = self.spawn_owned_projectile(owner.map(|(_, target)| target), shot, stack)?;
-        // The join as any fresh spawn's: told now, so a mod's veto refuses
-        // the call, or at the root commit inside a transaction.
-        self.native_joins_flush(false, id).then_some(id)
+        self.spawn_owned_projectile(owner.map(|(_, target)| target), shot, stack)
     }
     /// A new row of the general type `kind` at `pos`: a fresh UUID, the type's
     /// declared payload version and no payload bytes, through the insertion
@@ -171,12 +168,23 @@ impl Game<'_> {
     ) -> Option<u32> {
         let catalog = general_type_catalog();
         let slot = catalog.slot(kind)?;
+        // `EntityType.canSpawn`: refuse types whose required Minecraft feature flags are not
+        // enabled in this world.
+        let features = mod_api::FeatureFlags::new(self.level.enabled_features.as_arc().clone());
+        if !catalog.is_enabled(slot, &features) {
+            return None;
+        }
         let record = GeneralEntityRecord {
             position: pos,
             velocity,
             rotation: rotation.unwrap_or([0.0; 2]),
             uuid: sunrise_client::save::insecure_uuid(&mut sunrise_client::random_source::entity()),
             owner,
+            custom_name: None,
+            custom_name_visible: false,
+            base: Default::default(),
+            on_ground: false,
+            fall_distance: 0.0,
             envelope: GeneralTypeEnvelope {
                 type_key: kind.to_owned(),
                 payload_version: catalog.payload_version(slot),
@@ -486,17 +494,17 @@ mod tests {
             );
             // An owner the shot has no collision identity for refuses.
             game.options.dedicated = Some(Vec::new());
-            let dimension = game.dim.id();
             let stand = game
-                .summon(
-                    dimension,
+                .level_summon(
+                    level,
                     "minecraft:armor_stand",
                     [9.5, 64.0, 8.5],
                     Default::default(),
                 )
+                .unwrap()
                 .unwrap();
-            spawn.owner = game.entity(stand);
-            assert!(spawn.owner.is_some());
+            assert_eq!(game.entity(stand.id()), Some(stand));
+            spawn.owner = Some(stand);
             let projectiles = game.creatures.projectiles.len();
             assert_eq!(
                 game.level_spawn_entity(level, "minecraft:snowball", [8.5, 65.5, 8.5], &spawn),

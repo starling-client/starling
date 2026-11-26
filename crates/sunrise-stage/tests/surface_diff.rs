@@ -12,6 +12,7 @@ fn function(path: &str) -> Function {
             signature: format!("fn {path}()"),
             impl_generics: String::new(),
             refs: vec![],
+            behaviour_versions: Default::default(),
         },
     )
 }

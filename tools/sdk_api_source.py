@@ -11,9 +11,10 @@ features and all kept features) and refuses when they differ between those build
 carries exactly the source files rustc read for its library (its dep-info), its manifest with workspace keys
 resolved and no dev- or build-dependencies, and, for a crate whose build script runs the generator, a build script
 that copies `generated/` into `OUT_DIR`. The generated files name source files by absolute path; the checkout's
-root is written as ROOT_TOKEN and the build script puts the API source's own root in its place. `build` runs on a
-POSIX host (CI's Linux leg): it relocates `/`-separated paths only. `Cargo.lock` pins
-the versions the game's lockfile has. Same commit, same bytes.
+root is written as ROOT_TOKEN and the build script puts the API source's own root in its place. `build` runs on
+Linux and on Windows (fn-replace-windows.yml): the checkout's root is matched in its `/`-separated form, which is how
+the generated files name it on every host, and the build script writes the API source's root `/`-separated too.
+`Cargo.lock` pins the versions the game's lockfile has. Same commit, same bytes.
 """
 
 import argparse
@@ -35,12 +36,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 # Beside this file: a module of the `tools` package when imported, a plain module when run as a script.
-if __package__:
-    from . import prebuilt_game
-else:
-    import prebuilt_game
-
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+from tools import prebuilt_game
+
 API = "sunrise-mod-api"
 GENERATED = "generated"
 ROOT_TOKEN = "{sunrise-api-source-root}"
@@ -315,7 +314,7 @@ def dep_info(path: Path) -> list[str]:
 
 def root_forms(roots: list[Path], crate: Crate) -> list[str]:
     """How the in-tree build script names the checkout: through the crate (`<root>/<crate>/../..`) or directly."""
-    forms = {f"{root}/{crate.directory}/../.." for root in roots} | {str(root) for root in roots}
+    forms = {f"{root.as_posix()}/{crate.directory}/../.." for root in roots} | {root.as_posix() for root in roots}
     return sorted(forms, key=len, reverse=True)
 
 

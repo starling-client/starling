@@ -16,8 +16,8 @@ impl BoundingBox {
     }
     pub fn moved(self, d: [i32; 3]) -> Self {
         Self {
-            min: std::array::from_fn(|i| self.min[i] + d[i]),
-            max: std::array::from_fn(|i| self.max[i] + d[i]),
+            min: std::array::from_fn(|i| self.min[i].wrapping_add(d[i])),
+            max: std::array::from_fn(|i| self.max[i].wrapping_add(d[i])),
         }
     }
     pub fn is_inside(&self, p: [i32; 3]) -> bool {
@@ -38,11 +38,16 @@ impl BoundingBox {
             max: [self.max[0] + xz, self.max[1] + y, self.max[2] + xz],
         }
     }
+    /// `getXSpan`, `getYSpan`, `getZSpan`, in Java's wrapping `int` arithmetic.
     pub fn span(&self) -> [i32; 3] {
-        std::array::from_fn(|i| self.max[i] - self.min[i] + 1)
+        std::array::from_fn(|i| self.max[i].wrapping_sub(self.min[i]).wrapping_add(1))
     }
+    /// `getCenter`, in Java's wrapping `int` arithmetic.
     pub fn center(&self) -> [i32; 3] {
-        std::array::from_fn(|i| self.min[i] + (self.max[i] - self.min[i] + 1) / 2)
+        std::array::from_fn(|i| {
+            let span = self.max[i].wrapping_sub(self.min[i]).wrapping_add(1);
+            self.min[i].wrapping_add(span / 2)
+        })
     }
     pub fn corners(&self) -> [[i32; 3]; 8] {
         let (a, b) = (self.min, self.max);

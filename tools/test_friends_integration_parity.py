@@ -9,9 +9,10 @@ from pathlib import Path
 import subprocess
 import sys
 
-import lab
-import test_friends
-from integration_env import suite_lock
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_friends
+from tools.integration_env import suite_lock
 
 
 if __name__ == '__main__':

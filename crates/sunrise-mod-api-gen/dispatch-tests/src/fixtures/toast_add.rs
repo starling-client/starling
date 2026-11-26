@@ -33,6 +33,8 @@ fn toast_add_passes_kind_and_text_edits_and_stops_on_cancel() {
         &mut Text,
         &mut description,
         &mut cancel,
+        &mut |_| Ok(()),
+        &mut |_| Ok(()),
     );
     assert!(cancel);
     assert!(description.is_none());

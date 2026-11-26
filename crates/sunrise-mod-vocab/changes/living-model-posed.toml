@@ -1,0 +1,3 @@
+ids = ["hook:living_model_posed", "type:HookId"]
+why = "New client hook living_model_posed, the RETURN of vanilla's EntityModel.setupAnim: it fires once for each model posed for a living draw (the body, and each armour or equipment model that runs its own setup), with the entity's render state, the model's ModelLayerLocation and a FrameModelPoseEdit that writes a part's position, rotation and scale or resets it to its bind pose. It takes the client's loop context and no Host."
+migrate = "Nothing to migrate. Write a final pose in living_model_posed instead of a mixin on setupAnim; keep hiding in render_living_pre and the mid-setup inputs in humanoid_setup_anim."

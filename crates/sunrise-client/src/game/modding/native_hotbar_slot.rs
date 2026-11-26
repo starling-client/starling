@@ -89,6 +89,9 @@ pub(super) mod hotbar_slot_tests {
             relatives: 0,
         }))
         .unwrap();
+        if let Some(remote) = game.remote.as_mut() {
+            remote.joined = true;
+        }
         sent(&mut reader);
         reader
     }

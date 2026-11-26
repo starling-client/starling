@@ -12,10 +12,12 @@ stream/preload/type fields and the instance random's next draw. Sunrise's
 import json
 import random
 
-try:
-    from . import audio_harness as h
-except ImportError:
-    import audio_harness as h
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import audio_harness as h
 
 
 def fixtures():

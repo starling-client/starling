@@ -1,88 +1,92 @@
 //! Cold, all-or-nothing preparation of typed bulk edit values.
-use super::{TryIntoApi, TryIntoEngine, block_metadata_table};
-use mod_api::BlockMetadata;
-use sunrise_command::args::BlockInput;
-use sunrise_world::registry::BlockStateId;
+use super::{TryIntoEngine, block_metadata_table};
+use mod_api::{BlockEditError, BlockMetadata, BlockStateError, StateConstraint, StatePredicate};
+use std::{
+    borrow::Cow,
+    collections::{HashMap, HashSet},
+};
+use sunrise_world::registry::{BlockRegistry, BlockStateId};
 
-pub(in crate::game) struct PreparedBlockEdit {
+pub(in crate::game) struct PreparedBlockEdit<'a> {
     pub(in crate::game) palette: Vec<u32>,
-    pub(in crate::game) filters: Vec<BlockInput>,
+    pub(in crate::game) filters: Vec<CompiledBlockFilter<'a>>,
 }
 
 /// Resolve every palette state and compile every filter before a world mutation is possible.
-pub(in crate::game) fn prepare(edit: &mod_api::BlockEdit) -> Result<PreparedBlockEdit, String> {
-    if edit.filters.len() > 65_536 {
-        return Err("more than 65536 filters".into());
-    }
+pub(in crate::game) fn prepare(
+    edit: &mod_api::BlockEdit,
+) -> Result<PreparedBlockEdit<'_>, BlockEditError> {
     let palette = edit
         .palette
         .iter()
-        .enumerate()
-        .map(|(index, state)| {
-            let state: BlockStateId = state
-                .try_into_engine(&())
-                .map_err(|error| format!("palette entry {index}: {error:?}"))?;
+        .map(|state| {
+            let state: BlockStateId = state.try_into_engine(&())?;
             Ok(state.0)
         })
-        .collect::<Result<Vec<_>, String>>()?;
+        .collect::<Result<Vec<_>, BlockEditError>>()?;
     let filters = edit
         .filters
         .iter()
-        .enumerate()
-        .map(|(index, predicate)| {
-            compile_filter(predicate).map_err(|error| format!("filter {index}: {error}"))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+        .map(compile_filter)
+        .collect::<Result<Vec<_>, BlockEditError>>()?;
     Ok(PreparedBlockEdit { palette, filters })
 }
 
-/// Compile into the existing command matcher; do not create a second predicate algorithm.
-fn compile_filter(predicate: &mod_api::StatePredicate) -> Result<BlockInput, String> {
-    let metadata = block_metadata_table().map_err(|error| format!("block metadata: {error:?}"))?;
-    mod_api::__private::validate_state_predicate(metadata, predicate)
-        .map_err(|error| format!("predicate: {error:?}"))?;
-    let record = mod_api::StatePredicateRecord::from(predicate);
-    let (id, tag) = match record.target {
-        mod_api::StatePredicateTarget::Block(key) => (
-            metadata
-                .name(key)
-                .map_err(|error| format!("block: {error:?}"))?
-                .to_owned(),
-            false,
-        ),
-        mod_api::StatePredicateTarget::Tag(key) => (
-            mod_api::__private::with_tag_name(key, |name| name.map(str::to_owned))
-                .ok_or("block tag is unavailable")?,
-            true,
-        ),
-    };
-    Ok(BlockInput {
-        id,
-        properties: record
-            .constraints
-            .into_iter()
-            .map(|constraint| (constraint.name, constraint.value))
-            .collect(),
-        tag,
-        nbt: None,
-    })
+/// A resolved name and the predicate's original, already validated constraints.
+pub(in crate::game) struct CompiledBlockFilter<'a> {
+    id: Cow<'static, str>,
+    tag: bool,
+    constraints: &'a [StateConstraint],
 }
 
-/// Convert only the distinct numeric palette entries, preserving complete property states.
-pub(in crate::game) fn column_palette(
-    palette: Vec<BlockStateId>,
-) -> Result<Vec<mod_api::BlockState>, String> {
-    palette
-        .try_into_api()
-        .map_err(|error| format!("column palette: {error:?}"))
+impl CompiledBlockFilter<'_> {
+    pub(in crate::game) fn matches(
+        &self,
+        registry: &BlockRegistry,
+        tags: [&HashMap<String, HashSet<String>>; 2],
+        state: BlockStateId,
+    ) -> bool {
+        crate::game::commands::block_predicate_matches_state(
+            registry,
+            tags,
+            &self.id,
+            self.tag,
+            self.constraints
+                .iter()
+                .map(|constraint| (constraint.name.as_str(), constraint.value.as_str())),
+            state,
+        )
+    }
+}
+
+fn compile_filter(predicate: &StatePredicate) -> Result<CompiledBlockFilter<'_>, BlockEditError> {
+    let (id, tag) = if let Some(key) = predicate.block_key() {
+        let name = block_metadata_table()?
+            .name(key)
+            .map_err(|error| match error {
+                BlockStateError::Unavailable => BlockEditError::Unavailable,
+                _ => BlockEditError::InvalidPredicate,
+            })?;
+        (Cow::Borrowed(name), false)
+    } else {
+        // Only the tag's name is retained here; membership is read when applying the edit.
+        let name = predicate
+            .tag_key()
+            .and_then(|key| mod_api::__private::with_tag_name(key, |name| name.map(str::to_owned)))
+            .ok_or(BlockEditError::InvalidPredicate)?;
+        (Cow::Owned(name), true)
+    };
+    Ok(CompiledBlockFilter {
+        id,
+        tag,
+        constraints: predicate.constraints(),
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mod_api::{StateConstraint, StatePredicate, StatePredicateRecord, StatePredicateTarget};
-    use std::collections::{HashMap, HashSet};
-    use sunrise_world::registry::BlockRegistry;
+    use crate::game::api_values::TryIntoApi;
 
     fn registry() -> BlockRegistry {
         mod_platform::__private::part_tests::install_parts_fixture(&[]).unwrap();
@@ -91,89 +95,60 @@ mod tests {
         super::super::resolve_block_definitions(&registry).unwrap();
         registry
     }
-    struct Tags;
-    impl mod_api::Tags for Tags {}
 
     #[test]
     fn typed_bulk_sparse_predicates_use_existing_matcher_and_unknown_tag_properties_never_match() {
         let registry = registry();
-        let metadata = block_metadata_table().unwrap();
         let state = BlockStateId(2).try_into_api().unwrap();
-        let exact = StatePredicate::block(
-            metadata,
-            state.block(),
-            &[StateConstraint::new("left", "true")],
-        )
-        .unwrap();
+        let exact =
+            StatePredicate::block(state.block(), &[StateConstraint::new("left", "true")]).unwrap();
         let filter = compile_filter(&exact).unwrap();
         let tags = HashMap::from([(
             "stairs".to_owned(),
             HashSet::from(["minecraft:stairs".to_owned()]),
         )]);
-        let matches = |filter: &BlockInput, id| {
-            crate::game::commands::block_input_matches(
-                &registry,
-                [&tags, &tags],
-                filter,
-                BlockStateId(id),
-            )
+        let tags = [&tags, &tags];
+        assert!(filter.matches(&registry, tags, BlockStateId(2)));
+        assert!(!filter.matches(&registry, tags, BlockStateId(1)));
+        let wildcard = StatePredicate::block(state.block(), &[]).unwrap();
+        let wildcard = compile_filter(&wildcard).unwrap();
+        assert!(wildcard.matches(&registry, tags, BlockStateId(1)));
+        assert!(wildcard.matches(&registry, tags, BlockStateId(2)));
+
+        // Use resolved tag names and local membership, without interning test keys process-wide.
+        let tag_matches = |id: &'static str, constraints: &[StateConstraint], state| {
+            CompiledBlockFilter {
+                id: Cow::Borrowed(id),
+                tag: true,
+                constraints,
+            }
+            .matches(&registry, tags, BlockStateId(state))
         };
-        assert!(matches(&filter, 2));
-        assert!(!matches(&filter, 1));
-        let wildcard =
-            compile_filter(&StatePredicate::block(metadata, state.block(), &[]).unwrap()).unwrap();
-        assert!(matches(&wildcard, 1));
-        assert!(matches(&wildcard, 2));
-        let tag =
-            mod_api::__private::tag_key(&mod_api::Identifier::parse("minecraft:stairs").unwrap())
-                .unwrap();
-        let tag_filter = |constraints: &[StateConstraint]| {
-            compile_filter(&StatePredicate::tag(metadata, &Tags, tag, constraints).unwrap())
-                .unwrap()
-        };
-        assert!(matches(&tag_filter(&[]), 2));
-        assert!(!matches(&tag_filter(&[]), 0));
-        // ASSERTION mutant: discarding unknown tag constraints would make this match.
-        assert!(!matches(
-            &tag_filter(&[StateConstraint::new("unknown", "anything")]),
-            2
-        ));
-        assert!(!matches(
-            &tag_filter(&[StateConstraint::new("left", "invalid")]),
-            2
-        ));
-        let empty = mod_api::__private::tag_key(&mod_api::Identifier::parse("test:empty").unwrap())
-            .unwrap();
-        let empty = StatePredicate::tag(
-            metadata,
-            &Tags,
-            empty,
+        assert!(tag_matches("minecraft:stairs", &[], 2));
+        assert!(!tag_matches("minecraft:stairs", &[], 0));
+        assert!(!tag_matches(
+            "minecraft:stairs",
             &[StateConstraint::new("unknown", "anything")],
-        )
-        .unwrap();
-        assert!(!matches(&compile_filter(&empty).unwrap(), 2));
+            2,
+        ));
+        assert!(!tag_matches(
+            "minecraft:stairs",
+            &[StateConstraint::new("left", "invalid")],
+            2,
+        ));
+        assert!(!tag_matches("test:empty", &[], 2));
     }
 
     #[test]
     fn typed_bulk_preparation_rejects_late_bad_values_before_any_write() {
         let _registry = registry();
         let state = BlockStateId(2).try_into_api().unwrap();
-        let good =
-            StatePredicate::block(block_metadata_table().unwrap(), state.block(), &[]).unwrap();
-        let bad = StatePredicate::from(StatePredicateRecord::new(
-            StatePredicateTarget::Block(state.block()),
-            vec![StateConstraint::new("unknown", "true")],
-        ));
+        let good = StatePredicate::block(state.block(), &[]).unwrap();
         let mut edit = mod_api::BlockEdit {
             palette: vec![state],
-            filters: vec![good, bad],
+            filters: vec![good],
             runs: vec![],
         };
-        assert!(
-            prepare(&edit).is_err(),
-            "late bad filter must refuse the whole prepared edit"
-        );
-        edit.filters.pop();
         let prepared = prepare(&edit).unwrap();
         assert_eq!(prepared.palette, [2]);
         assert_eq!(prepared.filters.len(), 1);
@@ -183,28 +158,8 @@ mod tests {
                 u16::MAX,
             ));
         assert!(
-            prepare(&edit).is_err(),
+            matches!(prepare(&edit), Err(BlockEditError::InvalidState(_))),
             "late bad palette state must refuse the whole prepared edit"
-        );
-        let palette = column_palette(vec![BlockStateId(1), BlockStateId(2)]).unwrap();
-        assert_eq!(
-            palette
-                .iter()
-                .map(|state| state.ordinal())
-                .collect::<Vec<_>>(),
-            [0, 1]
-        );
-        assert_eq!(
-            palette[0]
-                .property(block_metadata_table().unwrap(), "left")
-                .unwrap(),
-            Some("false")
-        );
-        assert_eq!(
-            palette[1]
-                .property(block_metadata_table().unwrap(), "right")
-                .unwrap(),
-            Some("true")
         );
     }
 }

@@ -1,0 +1,2 @@
+ids = ["method:prelude::ClientViewClientHost::gui_status_heights"]
+why = "ClientHost::gui_status_heights reads the HUD status columns' heights (NeoForge's Hud.leftHeight and rightHeight) as they stand when the current HUD layer starts, so a layer can sit on the vanilla rows."

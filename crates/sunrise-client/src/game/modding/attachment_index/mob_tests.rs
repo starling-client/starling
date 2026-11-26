@@ -1,7 +1,8 @@
 use super::*;
 use crate::game::native_entity_refs::tests::with_game;
-use mod_api::{AttachmentQueries, AttachmentQueriesMut, AttachmentType};
+use mod_api::{AttachmentDescriptor, AttachmentKey, AttachmentQueries, AttachmentQueriesMut};
 use sunrise_core::nbt::Tag;
+use sunrise_mod_runtime::attachments::AttachmentType;
 
 static VALUE: AttachmentType<i32> = AttachmentType {
     namespace: "test",
@@ -9,8 +10,38 @@ static VALUE: AttachmentType<i32> = AttachmentType {
     default: || 0,
     codec: None,
     copy_on_death: false,
-    sync: false,
+    sync_codec: None,
 };
+
+struct ManaMod(Arc<Mutex<Option<AttachmentKey<i32>>>>);
+#[mod_api::__subscriptions]
+impl mod_api::Hooks for ManaMod {
+    fn register(&self, r: &mut dyn mod_api::Registrar, _: &mod_api::RegistrationContext) {
+        let key = r
+            .register_attachment_type(AttachmentDescriptor::new("test:mana", || 0i32))
+            .unwrap();
+        *self.0.lock().unwrap() = Some(key);
+    }
+}
+
+fn with_mana_game(test: impl FnOnce(&mut Game<'_>, &AttachmentKey<i32>)) {
+    let key_slot = Arc::new(Mutex::new(None));
+    let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
+        "test",
+        Box::new(ManaMod(key_slot.clone())),
+    )]
+    .into();
+    mod_platform::testing::with_mods(mods, || {
+        with_game(|game| {
+            let key = key_slot
+                .lock()
+                .unwrap()
+                .clone()
+                .expect("ManaMod registered");
+            test(game, &key);
+        });
+    });
+}
 
 fn mob(uuid: [i32; 4]) -> Tag {
     Tag::compound([
@@ -40,7 +71,7 @@ fn mob(uuid: [i32; 4]) -> Tag {
 #[test]
 #[ignore = "daily"]
 fn saved_mob_binding_survives_store_back_and_retires_at_sweep() {
-    with_game(|game| {
+    with_mana_game(|game, value_key| {
         game.options.dedicated = Some(Vec::new());
         game.native_level_opened(Dim::Overworld);
         let uuid = [17, 18, 19, 20];
@@ -49,8 +80,8 @@ fn saved_mob_binding_survives_store_back_and_retires_at_sweep() {
         let index = game.attachment_indexes[&Dim::Overworld].clone();
         let key = ("test".into(), "mana".into());
         assert_eq!(index.lock().unwrap().snapshot(&key).len(), 1);
-        VALUE.set(game, Holder::Entity(id), 7).unwrap();
-        let old = game.query_mut(&VALUE).unwrap();
+        value_key.set(game, Holder::Entity(id), 7).unwrap();
+        let old = game.query_mut(value_key).unwrap();
         let row = old.iter().try_next().unwrap().unwrap();
         let work = index.lock().unwrap().work_count();
         let replacement = game.mobs[0].clone();
@@ -59,9 +90,9 @@ fn saved_mob_binding_survives_store_back_and_retires_at_sweep() {
         let after = index.lock().unwrap().work_count();
         assert_eq!(after, work);
         assert_eq!(index.lock().unwrap().snapshot(&key).len(), 1);
-        assert_eq!(VALUE.get(game, Holder::Entity(id)), Ok(7));
+        assert_eq!(value_key.get(game, Holder::Entity(id), Clone::clone), Ok(7));
         assert_eq!(
-            game.query(&VALUE)
+            game.query(value_key)
                 .unwrap()
                 .iter()
                 .try_next()
@@ -96,7 +127,7 @@ fn saved_mob_binding_survives_store_back_and_retires_at_sweep() {
 #[test]
 #[ignore = "daily"]
 fn saved_mob_binding_tracks_serialized_transfer_and_parked_levels() {
-    with_game(|game| {
+    with_mana_game(|game, value_key| {
         game.options.dedicated = Some(Vec::new());
         game.native_level_opened(Dim::Overworld);
         let uuid = [21, 22, 23, 24];
@@ -104,13 +135,16 @@ fn saved_mob_binding_tracks_serialized_transfer_and_parked_levels() {
         let source = game.attachment_indexes[&Dim::Overworld].clone();
         let key = ("test".into(), "mana".into());
         assert_eq!(source.lock().unwrap().snapshot(&key).len(), 1);
-        VALUE.set(game, Holder::Entity(id), 11).unwrap();
-        let batch = game.query_mut(&VALUE).unwrap();
+        value_key.set(game, Holder::Entity(id), 11).unwrap();
+        let batch = game.query_mut(value_key).unwrap();
         let row = batch.iter().try_next().unwrap().unwrap();
         game.enter_level(Dim::Nether).unwrap();
         assert_eq!(source.lock().unwrap().snapshot(&key).len(), 1);
         game.enter_level(Dim::Overworld).unwrap();
-        assert_eq!(VALUE.get(game, Holder::Entity(id)), Ok(11));
+        assert_eq!(
+            value_key.get(game, Holder::Entity(id), Clone::clone),
+            Ok(11)
+        );
         // Serialized portals discard the source owner before destination load.
         let state = game.take_transferred_entity_state(id);
         game.mobs.retain(|m| m.id != id);
@@ -129,7 +163,10 @@ fn saved_mob_binding_tracks_serialized_transfer_and_parked_levels() {
                 .len(),
             1
         );
-        assert_eq!(VALUE.get(game, Holder::Entity(moved)), Ok(11));
+        assert_eq!(
+            value_key.get(game, Holder::Entity(moved), Clone::clone),
+            Ok(11)
+        );
         assert_eq!(
             row.set(game, 12),
             Err(mod_api::AttachmentRowError::StaleHolder)
@@ -153,12 +190,12 @@ fn saved_mob_binding_tracks_serialized_transfer_and_parked_levels() {
 #[test]
 #[ignore = "daily"]
 fn saved_mob_binding_rebinds_retained_id_with_a_new_generation() {
-    with_game(|game| {
+    with_mana_game(|game, value_key| {
         game.options.dedicated = Some(Vec::new());
         game.native_level_opened(Dim::Overworld);
         let id = game.load_mob(mob([25, 26, 27, 28]), None).unwrap();
-        VALUE.set(game, Holder::Entity(id), 13).unwrap();
-        let batch = game.query_mut(&VALUE).unwrap();
+        value_key.set(game, Holder::Entity(id), 13).unwrap();
+        let batch = game.query_mut(value_key).unwrap();
         let row = batch.iter().try_next().unwrap().unwrap();
         let holder = game.entity(id).unwrap();
         let source = game.attachment_indexes[&Dim::Overworld].clone();
@@ -200,8 +237,8 @@ fn saved_mob_binding_rebinds_retained_id_with_a_new_generation() {
 #[test]
 #[ignore = "daily"]
 fn mob_first_store_binds_and_nested_rollback_retires_authority() {
-    use mod_api::{AttachmentError, HostTransaction};
-    with_game(|game| {
+    use mod_api::AttachmentError;
+    with_mana_game(|game, value_key| {
         game.options.dedicated = Some(Vec::new());
         game.native_level_opened(Dim::Overworld);
         let uuid = [71, 72, 73, 74];
@@ -211,10 +248,13 @@ fn mob_first_store_binds_and_nested_rollback_retires_authority() {
         tag.remove(&sunrise_mod_runtime::attachments::ATTACHMENTS_KEY.into());
         let id = game.load_mob(Tag::Compound(tag), None).unwrap();
         let holder = Holder::Entity(id);
-        assert_eq!(VALUE.get_existing(game, holder), Ok(None));
+        assert_eq!(
+            value_key.get_existing(game, holder, |value| value.cloned()),
+            Ok(None)
+        );
         assert!(!game.mobs[0].attachment_lifetime.is_bound());
-        let result: Result<(), AttachmentError> = game.transaction(|host, _| {
-            VALUE.set(host, holder, 7)?;
+        let result: Result<(), AttachmentError> = game.storage_transaction(|host, _| {
+            value_key.set(host, holder, 7)?;
             let index = host.attachment_indexes[&Dim::Overworld].clone();
             assert_eq!(
                 index
@@ -224,14 +264,17 @@ fn mob_first_store_binds_and_nested_rollback_retires_authority() {
                     .len(),
                 1
             );
-            let inner: Result<(), AttachmentError> = host.transaction(|host, _| {
-                VALUE.set(host, holder, 8)?;
+            let inner: Result<(), AttachmentError> = host.storage_transaction(|host, _| {
+                value_key.set(host, holder, 8)?;
                 Err(AttachmentError::MissingHolder)
             });
             assert!(inner.is_err());
-            assert_eq!(VALUE.get_existing(host, holder), Ok(Some(7)));
-            let committed: Result<(), AttachmentError> = host.transaction(|host, _| {
-                VALUE.set(host, holder, 9)?;
+            assert_eq!(
+                value_key.get_existing(host, holder, |value| value.cloned()),
+                Ok(Some(7))
+            );
+            let committed: Result<(), AttachmentError> = host.storage_transaction(|host, _| {
+                value_key.set(host, holder, 9)?;
                 Ok(())
             });
             committed?;
@@ -248,10 +291,10 @@ fn mob_first_store_binds_and_nested_rollback_retires_authority() {
                 .snapshot(&("test".into(), "mana".into()))
                 .is_empty()
         );
-        VALUE.set(game, holder, 11).unwrap();
+        value_key.set(game, holder, 11).unwrap();
         assert!(game.mobs[0].attachment_lifetime.is_bound());
         assert_eq!(
-            game.query(&VALUE)
+            game.query(value_key)
                 .unwrap()
                 .iter()
                 .try_next()
@@ -267,7 +310,7 @@ fn mob_first_store_binds_and_nested_rollback_retires_authority() {
 #[ignore = "daily"]
 fn mob_taken_store_refuses_without_writing_and_missing_store_refuses() {
     use mod_api::AttachmentError;
-    with_game(|game| {
+    with_mana_game(|game, value_key| {
         game.options.dedicated = Some(Vec::new());
         game.native_level_opened(Dim::Overworld);
         let uuid = [81, 82, 83, 84];
@@ -278,7 +321,7 @@ fn mob_taken_store_refuses_without_writing_and_missing_store_refuses() {
         let id = game.load_mob(Tag::Compound(tag), None).unwrap();
         let taken = game.mobs.lift();
         assert_eq!(
-            VALUE.set(game, Holder::Entity(id), 1),
+            value_key.set(game, Holder::Entity(id), 1),
             Err(AttachmentError::HolderBusy)
         );
         assert!(
@@ -291,10 +334,13 @@ fn mob_taken_store_refuses_without_writing_and_missing_store_refuses() {
             taken,
             sunrise_client::join_seq::RestoreOrder::SurvivorsFirst,
         );
-        assert_eq!(VALUE.get_existing(game, Holder::Entity(id)), Ok(None));
+        assert_eq!(
+            value_key.get_existing(game, Holder::Entity(id), |value| value.cloned()),
+            Ok(None)
+        );
         for id in [0, u32::MAX] {
             assert_eq!(
-                VALUE.set(game, Holder::Entity(id), 1),
+                value_key.set(game, Holder::Entity(id), 1),
                 Err(AttachmentError::MissingHolder)
             );
         }
@@ -304,22 +350,22 @@ fn mob_taken_store_refuses_without_writing_and_missing_store_refuses() {
 #[test]
 #[ignore = "daily"]
 fn tnt_with_real_lifetime_accepts_first_store() {
-    with_game(|game| {
+    with_mana_game(|game, value_key| {
         game.options.dedicated = Some(Vec::new());
         game.native_level_opened(Dim::Overworld);
         game.summon_with_nbt("minecraft:tnt", [0.5, 70.0, 0.5], "{}")
             .unwrap();
         game.lan_assign_ids();
         let id = game.tnts[0].id;
-        assert_eq!(VALUE.set(game, Holder::Entity(id), 7), Ok(()));
+        assert_eq!(value_key.set(game, Holder::Entity(id), 7), Ok(()));
     });
 }
 
 #[test]
 #[ignore = "daily"]
 fn mob_inner_first_binding_commit_outer_abort_invalidates_retained_row() {
-    use mod_api::{AttachmentError, HostTransaction};
-    with_game(|game| {
+    use mod_api::AttachmentError;
+    with_mana_game(|game, value_key| {
         game.options.dedicated = Some(Vec::new());
         game.native_level_opened(Dim::Overworld);
         let uuid = [91, 92, 93, 94];
@@ -330,15 +376,15 @@ fn mob_inner_first_binding_commit_outer_abort_invalidates_retained_row() {
         let id = game.load_mob(Tag::Compound(tag), None).unwrap();
         let holder = Holder::Entity(id);
         let mut retained = None;
-        let result: Result<(), AttachmentError> = game.transaction(|host, _| {
-            let parent_query = host.query(&VALUE).unwrap();
-            let inner: Result<(), AttachmentError> = host.transaction(|host, _| {
+        let result: Result<(), AttachmentError> = game.storage_transaction(|host, _| {
+            let parent_query = host.query(value_key).unwrap();
+            let inner: Result<(), AttachmentError> = host.storage_transaction(|host, _| {
                 assert!(matches!(
                     parent_query.iter().try_next(),
                     Err(mod_api::AttachmentRowError::OutsideTransaction)
                 ));
-                VALUE.set(host, holder, 13)?;
-                let query = host.query_mut(&VALUE).unwrap();
+                value_key.set(host, holder, 13)?;
+                let query = host.query_mut(value_key).unwrap();
                 let row = query.iter().try_next().unwrap().unwrap();
                 assert_eq!(
                     row.with_value(host.attachment_read_scope().unwrap(), |value| *value),
@@ -362,11 +408,14 @@ fn mob_inner_first_binding_commit_outer_abort_invalidates_retained_row() {
             batch.iter().try_next(),
             Err(mod_api::AttachmentRowError::OutsideTransaction)
         ));
-        VALUE.set(game, holder, 17).unwrap();
+        value_key.set(game, holder, 17).unwrap();
         assert!(matches!(
             batch.iter().try_next(),
             Err(mod_api::AttachmentRowError::OutsideTransaction)
         ));
-        assert_eq!(VALUE.get_existing(game, holder), Ok(Some(17)));
+        assert_eq!(
+            value_key.get_existing(game, holder, |value| value.cloned()),
+            Ok(Some(17))
+        );
     });
 }

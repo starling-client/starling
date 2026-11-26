@@ -13,7 +13,7 @@ use std::{
         atomic::{AtomicU64, Ordering},
     },
 };
-use zip::{CompressionMethod, ZipArchive};
+use zip::{CompressionMethod, ZipArchive, result::ZipError};
 
 /// The most one entry inflates to: far above any real pack file, but a zip
 /// bomb stops here. Java's `ZipFile` does not hold an entry to the size its
@@ -33,13 +33,19 @@ pub struct Zip {
     entries: BTreeMap<String, usize>,
     /// Folder entries (`name/`) by their name without the slash.
     folders: BTreeMap<String, usize>,
-    /// The archive's length: no size an entry claims can be bigger.
+    /// The open archive's length, used by the fingerprint policy.
     len: usize,
     /// The bytes left for every entry together, drawn down as they are read.
     budget: AtomicU64,
 }
-fn invalid(e: impl std::fmt::Display) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, e.to_string())
+fn invalid(message: &'static str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message)
+}
+fn zip_io_error(error: ZipError) -> io::Error {
+    match error {
+        ZipError::Io(error) => error,
+        format => format.into(),
+    }
 }
 /// `file`'s bytes at `at`, which any number of readers may do at once: the
 /// file has no cursor for them to share.
@@ -174,13 +180,13 @@ impl Zip {
     }
     fn new(reader: Reader) -> io::Result<Self> {
         let len = (reader.tail_at + reader.tail.len() as u64) as usize;
-        let archive = ZipArchive::new(reader).map_err(invalid)?;
+        let archive = ZipArchive::new(reader).map_err(zip_io_error)?;
         let (mut entries, mut folders) = (BTreeMap::new(), BTreeMap::new());
         for i in 0..archive.len() {
             let Some(name) = archive.name_for_index(i) else {
                 continue;
             };
-            let name = name.map_err(invalid)?.replace('\\', "/");
+            let name = name.map_err(zip_io_error)?.replace('\\', "/");
             match name.strip_suffix('/') {
                 Some(folder) => folders.insert(folder.to_owned(), i),
                 None => entries.insert(name, i),
@@ -216,6 +222,43 @@ impl Zip {
     pub fn contains(&self, name: &str) -> bool {
         self.index(name).is_some()
     }
+    /// Open the entry without allocating its compressed or decompressed contents.
+    /// Like Java's `ZipFile`, don't use the uncompressed size or verify the CRC.
+    pub(crate) fn open_entry(&self, name: &str) -> io::Result<Option<Box<dyn Read>>> {
+        let Some(index) = self.index(name) else {
+            return Ok(None);
+        };
+        let entry = self.archive.by_index_data(index).map_err(zip_io_error)?;
+        let mut reader = self.archive.clone().into_inner();
+        reader.position = entry.header_start();
+        // Read the fixed local header ourselves: by_index_raw classifies a
+        // short read as InvalidArchive, losing the underlying UnexpectedEof.
+        // ZipFileInputStream.initDataOffset uses the local name and extra lengths,
+        // even when they disagree with the central directory.
+        let mut local = [0; 30];
+        reader.read_exact(&mut local)?;
+        if !local.starts_with(b"PK\x03\x04") {
+            return Err(ZipError::InvalidArchive("invalid local file header".into()).into());
+        }
+        let size = entry.compressed_size();
+        let header_size =
+            local.len() as u64 + u64::from(u16_at(&local, 26)) + u64::from(u16_at(&local, 28));
+        reader.position = entry
+            .header_start()
+            .checked_add(header_size)
+            .filter(|start| start.checked_add(size).is_some())
+            .ok_or_else(|| ZipError::InvalidArchive("ZIP entry end offset overflows u64".into()))?;
+        let raw = reader.take(size);
+        match entry.compression() {
+            CompressionMethod::Stored => Ok(Some(Box::new(raw))),
+            // Java's ZipFile ignores inaccurate uncompressed sizes and bytes
+            // past the end of the deflate stream.
+            CompressionMethod::Deflated => {
+                Ok(Some(Box::new(flate2::read::DeflateDecoder::new(raw))))
+            }
+            _ => Err(ZipError::UnsupportedArchive("unsupported zip compression").into()),
+        }
+    }
     pub fn read(&self, name: &str) -> io::Result<Vec<u8>> {
         self.read_within(name, &self.budget)
     }
@@ -239,45 +282,26 @@ impl Zip {
         self.read_prefix(name, max.min(MAX_ENTRY as u64 + 1))
     }
     fn read_prefix(&self, name: &str, max: u64) -> io::Result<Vec<u8>> {
-        let index = self
-            .index(name)
+        let from = self
+            .open_entry(name)?
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, name.to_owned()))?;
-        let mut archive = self.archive.clone();
-        let entry = archive.by_index_raw(index).map_err(invalid)?;
-        let capacity = entry.compressed_size().min(self.len as u64).min(max) as usize;
-        let mut bytes = Vec::with_capacity(capacity);
-        match entry.compression() {
-            CompressionMethod::Stored => entry.take(max).read_to_end(&mut bytes)?,
-            CompressionMethod::Deflated => {
-                // Java's ZipFile ignores inaccurate uncompressed sizes and bytes
-                // after the deflate stream. Decode the stream directly so header
-                // reads need neither the whole compressed entry nor its output.
-                flate2::read::DeflateDecoder::new(entry)
-                    .take(max)
-                    .read_to_end(&mut bytes)
-                    .map_err(|_| invalid("corrupt deflate stream"))?
-            }
-            _ => return Err(invalid("unsupported zip compression")),
-        };
+        let mut bytes = Vec::new();
+        from.take(max).read_to_end(&mut bytes)?;
         Ok(bytes)
     }
     /// What [`Self::read`] reads, written to `out` a piece at a time as it inflates, each piece
     /// taken from `budget`: the bytes left for everything sharing it. Past the budget it stops
     /// with [`io::ErrorKind::FileTooLarge`], `out` holding part of the entry; the entry's own
-    /// limit ([`MAX_ENTRY`]) still applies. Memory stays at the compressed entry and one piece,
-    /// whatever the entry inflates to. The bytes written.
+    /// limit ([`MAX_ENTRY`]) still applies. Returns the number of bytes written.
     pub fn copy_to(
         &self,
         name: &str,
         out: &mut impl io::Write,
         budget: &AtomicU64,
     ) -> io::Result<u64> {
-        let (method, raw) = self.raw(name)?;
-        let mut from: Box<dyn Read + '_> = match method {
-            CompressionMethod::Stored => Box::new(raw.as_slice()),
-            CompressionMethod::Deflated => Box::new(inflate(&raw)),
-            _ => return Err(invalid("unsupported zip compression")),
-        };
+        let mut from = self
+            .open_entry(name)?
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, name.to_owned()))?;
         let mut piece = vec![0; 64 << 10];
         let mut total = 0u64;
         loop {
@@ -285,7 +309,7 @@ impl Zip {
                 Ok(0) => return Ok(total),
                 Ok(n) => n,
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-                Err(_) => return Err(invalid("corrupt deflate stream")),
+                Err(error) => return Err(error),
             };
             total += n as u64;
             if total > MAX_ENTRY as u64 {
@@ -294,20 +318,6 @@ impl Zip {
             take(budget, n as u64)?;
             out.write_all(&piece[..n])?;
         }
-    }
-    /// The entry `name` as stored: its compression and its bytes.
-    fn raw(&self, name: &str) -> io::Result<(CompressionMethod, Vec<u8>)> {
-        let index = self
-            .index(name)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, name.to_owned()))?;
-        // A clone shares the reader's data and the central directory: reading
-        // needs `&mut`.
-        let mut archive = self.archive.clone();
-        let mut entry = archive.by_index_raw(index).map_err(invalid)?;
-        let method = entry.compression();
-        let mut raw = Vec::with_capacity((entry.compressed_size() as usize).min(self.len));
-        entry.read_to_end(&mut raw)?;
-        Ok((method, raw))
     }
 }
 
@@ -326,16 +336,6 @@ fn take(budget: &AtomicU64, n: u64) -> io::Result<()> {
             Err(now) => left = now,
         }
     }
-}
-
-/// A deflated entry's bytes as they inflate. Java's ZipFile trusts neither size an entry
-/// declares: it inflates the stream to its end and keeps what comes out. Packs in the wild (a
-/// Nexo-generated one served through Dropbox, for one) carry central-directory sizes that point
-/// at other files, and miniz_oxide, which refuses input past the stream's end, failed whole
-/// entries with "corrupt deflate stream" and with them the whole pack. Only the size limits
-/// stand between the archive and a zip bomb.
-fn inflate(raw: &[u8]) -> flate2::read::DeflateDecoder<&[u8]> {
-    flate2::read::DeflateDecoder::new(raw)
 }
 
 /// The 22 fixed bytes of the end-of-central-directory record.
@@ -371,6 +371,18 @@ fn find_end(data: &[u8]) -> Option<usize> {
 /// or empty.
 fn normalize_end(data: &mut [u8]) {
     let Some(end) = find_end(data) else { return };
+    // The Zip64 record and locator sit between the directory and END, so `END - cenlen`
+    // can land inside the directory. Keep the END markers the archive reader needs to find
+    // the real counts. Match `zip`'s `may_be_zip64`: a ZIP32 entry comment can mimic the
+    // locator signature, but it doesn't put a Zip64 marker in the END record.
+    if end >= 20
+        && data[end - 20..end - 16] == *b"PK\x06\x07"
+        && (u16_at(data, end + 10) == u16::MAX
+            || u32_at(data, end + 12) == u32::MAX
+            || u32_at(data, end + 16) == u32::MAX)
+    {
+        return;
+    }
     // The directory's real position and length, as Java derives them; the
     // recorded offset is relative to the archive's start.
     let cenlen = u32_at(data, end + 12) as usize;
@@ -443,12 +455,98 @@ mod tests {
     }
     #[test]
     fn a_file_is_opened_past_end_counts_java_ignores() {
-        let mut bytes = archive();
+        use std::io::Write as _;
+        let body = b"hello hello hello hello";
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        writer
+            .start_file("pack.mcmeta", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(b"{\"pack\":{}}").unwrap();
+        let commented = zip::write::FullFileOptions::default()
+            .compression_method(CompressionMethod::Deflated)
+            .with_file_comment("PK\u{0006}\u{0007}zip32-entry-note");
+        writer.start_file("a/b.txt", commented).unwrap();
+        writer.write_all(body).unwrap();
+        let mut bytes = writer.finish().unwrap().into_inner();
         let end = bytes.len() - END_HEADER;
+        assert_eq!(&bytes[end - 20..end - 16], b"PK\x06\x07");
         bytes[end + 4..end + 6].fill(0xFF);
         bytes[end + 8..end + 12].fill(0);
         let zip = opened("end-counts", &bytes).unwrap();
-        assert_eq!(zip.read("a/b.txt").unwrap(), b"hello hello hello hello");
+        assert_eq!(zip.read("a/b.txt").unwrap(), body);
+    }
+    /// A pack of more entries than the ZIP32 record counts (CraftEngine's, with its many generated
+    /// files) opens as an archive of its entries, not an empty one: `pack.mcmeta` is read.
+    #[test]
+    fn a_zip64_archive_opens_with_all_its_entries() {
+        use std::io::Write as _;
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let options =
+            zip::write::SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+        writer.start_file("pack.mcmeta", options).unwrap();
+        writer.write_all(b"{\"pack\":{}}").unwrap();
+        for i in 0..65_537 {
+            writer
+                .start_file(format!("assets/ruby/{i}.json"), options)
+                .unwrap();
+        }
+        let mut bytes = writer.finish().unwrap().into_inner();
+        // As Java's `ZipOutputStream` writes the END record of a Zip64 archive: the directory's real
+        // size and offset (the `zip` crate writes all ones there), the counts all ones.
+        let end = bytes.len() - END_HEADER;
+        let record = end - 76;
+        assert_eq!(bytes[record..record + 4], [0x50, 0x4b, 0x06, 0x06]);
+        let (size, offset) = (
+            bytes[record + 40..record + 48].to_vec(),
+            bytes[record + 48..record + 56].to_vec(),
+        );
+        bytes[end + 12..end + 16].copy_from_slice(&size[..4]);
+        bytes[end + 16..end + 20].copy_from_slice(&offset[..4]);
+        let zip = opened("zip64-open", &bytes).unwrap();
+        assert_eq!(zip.names().count(), 65_538);
+        assert_eq!(zip.read("pack.mcmeta").unwrap(), b"{\"pack\":{}}");
+        let zip = Zip::from_bytes(bytes).unwrap();
+        assert_eq!(zip.read("pack.mcmeta").unwrap(), b"{\"pack\":{}}");
+    }
+    /// A Zip64 archive whose misaligned recount would find an entry (a fake directory header planted where
+    /// `END - cenlen` starts) still opens with all its entries: the Zip64 record's counts are not rewritten.
+    #[test]
+    fn a_zip64_archive_is_not_rewritten_by_a_faked_directory_header() {
+        use std::io::Write as _;
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let options =
+            zip::write::SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+        // A long entry comment, where the planted header sits: comments are free bytes no reader parses.
+        let commented = zip::write::FullFileOptions::default()
+            .compression_method(CompressionMethod::Stored)
+            .with_file_comment("c".repeat(200));
+        writer.start_file("pack.mcmeta", commented).unwrap();
+        writer.write_all(b"{\"pack\":{}}").unwrap();
+        for i in 0..65_537 {
+            writer
+                .start_file(format!("assets/ruby/{i}.json"), options)
+                .unwrap();
+        }
+        let mut bytes = writer.finish().unwrap().into_inner();
+        let end = bytes.len() - END_HEADER;
+        let record = end - 76;
+        let size = u64::from_le_bytes(bytes[record + 40..record + 48].try_into().unwrap()) as usize;
+        let offset =
+            u64::from_le_bytes(bytes[record + 48..record + 56].try_into().unwrap()) as usize;
+        // As Java writes the END record: the directory's real size and offset, counts all ones.
+        bytes[end + 12..end + 16].copy_from_slice(&(size as u32).to_le_bytes());
+        bytes[end + 16..end + 20].copy_from_slice(&(offset as u32).to_le_bytes());
+        // `END - cenlen`, where the misaligned recount starts: a fake header there, with no fields after it.
+        let planted = end - size;
+        assert!(
+            planted > offset + 57 && planted + 46 < offset + 57 + 200,
+            "planted in the comment"
+        );
+        bytes[planted..planted + 46].fill(0);
+        bytes[planted..planted + 4].copy_from_slice(&[0x50, 0x4b, 0x01, 0x02]);
+        let zip = Zip::from_bytes(bytes).unwrap();
+        assert_eq!(zip.names().count(), 65_538);
+        assert_eq!(zip.read("pack.mcmeta").unwrap(), b"{\"pack\":{}}");
     }
     #[test]
     fn a_file_is_opened_with_equal_nonzero_disk_numbers() {
@@ -540,6 +638,75 @@ mod tests {
         assert_eq!(zip.read("pack.mcmeta").unwrap(), b"{\"pack\":{}}");
         assert_eq!(zip.read("a/b.txt").unwrap(), b"hello hello hello hello");
         assert!(zip.read("missing").is_err());
+    }
+
+    #[test]
+    fn opened_entries_stream_bytes_and_report_deflate_errors() {
+        let mut bytes = archive_of(&[
+            ("stored", b"plain", false),
+            ("deflated", b"inflated", true),
+            ("broken", b"data", true),
+        ]);
+        let central = central_header(&bytes, "broken");
+        let local = u32_at(&bytes, central + 42) as usize;
+        // The first deflate block uses the reserved block type (BTYPE = 3).
+        bytes[local + 30 + "broken".len()] = 0b0000_0111;
+        let zip = Zip::from_bytes(bytes).unwrap();
+
+        for (name, expected) in [("stored", b"plain".as_slice()), ("deflated", b"inflated")] {
+            let mut read = Vec::new();
+            zip.open_entry(name)
+                .unwrap()
+                .unwrap()
+                .read_to_end(&mut read)
+                .unwrap();
+            assert_eq!(read, expected);
+        }
+        let mut broken = zip.open_entry("broken").unwrap().unwrap();
+        assert!(broken.read_to_end(&mut Vec::new()).is_err());
+    }
+
+    #[test]
+    #[cfg(any(unix, windows))]
+    fn truncated_local_header_preserves_the_io_error() {
+        let path = std::env::temp_dir().join(format!(
+            "sunrise-zip-{}-truncated-header.zip",
+            std::process::id()
+        ));
+        // Put the local header outside the cached tail.
+        let bytes = archive_of(&[("entry", &vec![0; 1 << 17], false)]);
+        fs::write(&path, bytes).unwrap();
+        let zip = Zip::open(&path).unwrap();
+        fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&path)
+            .unwrap();
+        let opened = zip.open_entry("entry");
+        let owned = zip.read_head("entry", 1);
+        drop(zip);
+        fs::remove_file(path).unwrap();
+        assert!(matches!(opened, Err(error) if error.kind() == io::ErrorKind::UnexpectedEof));
+        assert_eq!(owned.unwrap_err().kind(), io::ErrorKind::UnexpectedEof);
+    }
+
+    #[test]
+    fn invalid_local_header_keeps_the_structured_archive_error() {
+        let mut bytes = archive_of(&[("good", b"file", false), ("broken", b"file", false)]);
+        let central = central_header(&bytes, "broken");
+        let local = u32_at(&bytes, central + 42) as usize;
+        bytes[local] = 0;
+        let zip = Zip::from_bytes(bytes).unwrap();
+        let Err(error) = zip.open_entry("broken") else {
+            panic!("invalid local header was not reported");
+        };
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(matches!(
+            error
+                .get_ref()
+                .and_then(|source| source.downcast_ref::<ZipError>()),
+            Some(ZipError::InvalidArchive(_))
+        ));
     }
 
     /// A per-entry cap is not a total one: an archive whose entries together

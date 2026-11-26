@@ -1,14 +1,36 @@
-//! Validate ownership and freeze crafting-kind registrations.
+//! Validate and freeze crafting-kind registrations.
 use super::*;
+
+/// Vanilla 26.3 `RecipeType` built-ins (`BuiltInRegistries.RECIPE_TYPE`).
+const VANILLA_RECIPE_TYPES: &[&str] = &[
+    "minecraft:crafting",
+    "minecraft:smelting",
+    "minecraft:blasting",
+    "minecraft:smoking",
+    "minecraft:campfire_cooking",
+    "minecraft:stonecutting",
+    "minecraft:smithing",
+    "minecraft:brewing",
+];
+
 impl RecipeSerializersRegistrar for PartRegistrar {
     fn register_recipe_type(&mut self, name: &str) {
-        let id = match self.owned_declaration_id(name) {
+        let id = match self.declaration_id(name) {
             Ok(id) => id,
             Err(error) => {
                 self.refused.push(error);
                 return;
             }
         };
+        if VANILLA_RECIPE_TYPES.contains(&id.as_str())
+            || self.has_builtin_entry("minecraft:recipe_type", &id)
+        {
+            self.refused.push(format!(
+                "{} registered built-in recipe type {id}",
+                self.mod_id
+            ));
+            return;
+        }
         if self.parts.recipe_types.contains_key(id.as_str()) {
             self.refused
                 .push(format!("{} registered recipe type {id} twice", self.mod_id));
@@ -23,13 +45,20 @@ impl RecipeSerializersRegistrar for PartRegistrar {
         recipe_type: &str,
         handler: RegisteredRecipeSerializer,
     ) {
-        let id = match self.owned_declaration_id(name) {
+        let id = match self.declaration_id(name) {
             Ok(id) => id,
             Err(error) => {
                 self.refused.push(error);
                 return;
             }
         };
+        if self.has_builtin_entry("minecraft:recipe_serializer", &id) {
+            self.refused.push(format!(
+                "{} registered built-in recipe serializer {id}",
+                self.mod_id
+            ));
+            return;
+        }
         if self.parts.recipe_serializers.contains_key(id.as_str()) {
             self.refused.push(format!(
                 "{} registered recipe serializer {id} twice",
@@ -49,10 +78,10 @@ mod tests {
     use super::*;
     struct Context;
     impl crate::LoopContext for Context {
-        fn is_in_tag(&self, _: crate::ItemKey, _: crate::TagKey) -> Option<bool> {
+        fn is_in_tag(&self, _: crate::ItemKey, _: crate::TagKey<crate::ItemKey>) -> Option<bool> {
             None
         }
-        fn items_in_tag(&self, _: crate::TagKey) -> Option<&[crate::ItemKey]> {
+        fn items_in_tag(&self, _: crate::TagKey<crate::ItemKey>) -> Option<&[crate::ItemKey]> {
             None
         }
         fn side(&self) -> crate::LoopSide {
@@ -240,5 +269,73 @@ mod identity_tests {
                 .any(|e| e.contains("machine:grinder_json twice")),
             "{errors:?}"
         );
+    }
+
+    #[test]
+    fn explicit_namespaces_stand_and_builtin_recipe_types_and_serializers_refuse() {
+        let data = mod_vocab::__private::RegistrationData::new(
+            [
+                (
+                    "minecraft:recipe_type".into(),
+                    vec![
+                        "minecraft:crafting".into(),
+                        "minecraft:custom_builtin".into(),
+                    ],
+                ),
+                (
+                    "minecraft:recipe_serializer".into(),
+                    vec!["minecraft:crafting_shaped".into()],
+                ),
+            ]
+            .into(),
+            Default::default(),
+            crate::InstanceDirectory::from_path(std::path::Path::new("unused")).unwrap(),
+            crate::RuntimeEnvironment::new(
+                crate::Dist::Client,
+                "26.3".into(),
+                "test".into(),
+                false,
+            ),
+        );
+        crate::load_state::with_test_registration_data(data, || {
+            let mut registrar = super::PartRegistrar::new("machine");
+            let r = &mut registrar as &mut dyn crate::Registrar;
+            r.register_recipe_type("other:grinding");
+            r.register_recipe_type("minecraft:grinding");
+            r.register_raw_recipe_serializer("other:grinding_json", "other:grinding");
+            r.register_raw_recipe_serializer("minecraft:grinding_json", "minecraft:grinding");
+            assert!(registrar.refused.is_empty(), "{:?}", registrar.refused);
+            assert!(registrar.parts.recipe_types.contains_key("other:grinding"));
+            assert!(
+                registrar
+                    .parts
+                    .recipe_types
+                    .contains_key("minecraft:grinding")
+            );
+            assert!(
+                registrar
+                    .parts
+                    .recipe_serializers
+                    .contains_key("other:grinding_json")
+            );
+            assert!(
+                registrar
+                    .parts
+                    .recipe_serializers
+                    .contains_key("minecraft:grinding_json")
+            );
+
+            let r = &mut registrar as &mut dyn crate::Registrar;
+            r.register_recipe_type("minecraft:smelting");
+            r.register_recipe_type("minecraft:custom_builtin");
+            r.register_raw_recipe_serializer("minecraft:crafting_shaped", "other:grinding");
+            assert_eq!(registrar.refused.len(), 3, "{:?}", registrar.refused);
+            assert!(registrar.refused[0].contains("built-in recipe type minecraft:smelting"));
+            assert!(registrar.refused[1].contains("built-in recipe type minecraft:custom_builtin"));
+            assert!(
+                registrar.refused[2]
+                    .contains("built-in recipe serializer minecraft:crafting_shaped")
+            );
+        });
     }
 }

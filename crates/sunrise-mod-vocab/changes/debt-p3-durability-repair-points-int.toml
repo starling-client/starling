@@ -1,0 +1,3 @@
+ids = ["handle:ItemResource::durability_to_repair_from_xp"]
+why = "The experience points taken by ItemResource::durability_to_repair_from_xp are an i32, as vanilla 26.3's EnchantmentHelper.modifyDurabilityToRepairFromXp(ServerLevel, ItemStack, int) takes a signed int; the u32 parameter could not pass what vanilla passes."
+migrate = "Pass the points as an i32."

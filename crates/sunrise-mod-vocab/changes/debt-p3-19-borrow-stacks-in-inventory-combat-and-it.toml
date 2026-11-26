@@ -1,0 +1,59 @@
+ids = [
+    "hook:get_enchantment_level",
+    "hook:get_enchantment_level.stack",
+    "type:GetEnchantmentLevelEvent.stack",
+    "hook:item_attribute_modifier",
+    "hook:item_attribute_modifier.stack",
+    "type:ItemAttributeModifierEvent.stack",
+    "hook:can_grindstone_repair",
+    "hook:can_grindstone_repair.stack",
+    "type:CanGrindstoneRepairEvent.stack",
+    "hook:is_combine_repairable",
+    "hook:is_combine_repairable.stack",
+    "type:IsCombineRepairableEvent.stack",
+    "hook:can_fit_inside_container_items",
+    "hook:can_fit_inside_container_items.stack",
+    "type:CanFitInsideContainerItemsEvent.stack",
+    "hook:item_name",
+    "hook:item_name.stack",
+    "type:ItemNameEvent.stack",
+    "hook:crafting_remainder",
+    "hook:crafting_remainder.stack",
+    "type:CraftingRemainderEvent.stack",
+    "hook:inventory_tick",
+    "hook:inventory_tick.stack",
+    "type:InventoryTickEvent.stack",
+    "hook:inventory_tick.item",
+    "type:InventoryTickEvent.item",
+    "hook:inventory_tick.place",
+    "type:InventoryTickEvent.place",
+    "hook:on_left_click_entity",
+    "hook:on_left_click_entity.stack",
+    "type:OnLeftClickEntityEvent.stack",
+    "hook:on_entity_swing",
+    "hook:on_entity_swing.stack",
+    "type:OnEntitySwingEvent.stack",
+    "hook:hurt_enemy",
+    "hook:hurt_enemy.stack",
+    "type:HurtEnemyEvent.stack",
+    "hook:living_incoming_damage.weapon",
+    "type:LivingIncomingDamageEvent.weapon",
+    "hook:living_incoming_damage.causing_weapon",
+    "type:LivingIncomingDamageEvent.causing_weapon",
+]
+why = "Lend the stack at the subscribed lookup, recipe or combat callback; a listener reading scalars does not encode any component patch. Inventory tick addresses the live slot and hurt_enemy uses the target type’s registered namespace. A weapon that cannot be represented never suppresses the incoming-damage callback."
+migrate = '''
+- `get_enchantment_level` / `GetEnchantmentLevelEvent`: version 2 lends `event.stack` as `ItemStackView<'_>`; use `item()`, `count()`, `damage()` and `get(&component)` to read it, or `project()` to obtain an optional owned `ItemStack`.
+- `item_attribute_modifier` / `ItemAttributeModifierEvent`: version 2 lends `event.stack` as `ItemStackView<'_>`; use `item()`, `count()`, `damage()` and `get(&component)` to read it, or `project()` to obtain an optional owned `ItemStack`.
+- `can_grindstone_repair` / `CanGrindstoneRepairEvent`: version 2 lends `event.stack` as `ItemStackView<'_>`; use `item()`, `count()`, `damage()` and `get(&component)` to read it, or `project()` to obtain an optional owned `ItemStack`.
+- `is_combine_repairable` / `IsCombineRepairableEvent`: version 2 lends `event.stack` as `ItemStackView<'_>`; use `item()`, `count()`, `damage()` and `get(&component)` to read it, or `project()` to obtain an optional owned `ItemStack`.
+- `can_fit_inside_container_items` / `CanFitInsideContainerItemsEvent`: version 2 lends `event.stack` as `ItemStackView<'_>`; use `item()`, `count()`, `damage()` and `get(&component)` to read it, or `project()` to obtain an optional owned `ItemStack`.
+- `item_name` / `ItemNameEvent`: version 2 lends `event.stack` as `ItemStackView<'_>`; use `item()`, `count()`, `damage()` and `get(&component)` to read it, or `project()` to obtain an optional owned `ItemStack`.
+- `crafting_remainder` / `CraftingRemainderEvent`: version 3 lends `event.stack` as `ItemStackView<'_>`; use `item()`, `count()`, `damage()` and `get(&component)` to read it, or `project()` to obtain an optional owned `ItemStack`. Replacement `event.remainder` remains owned.
+- `inventory_tick` / `InventoryTickEvent`: version 2 removes `event.stack`; `event.item` is the item key captured for Part routing. Use `event.place.with_stack(host, |stack| ...)` to borrow the current stack; use `event.place.edit(host, tx, ...)` in a transaction to edit components. `event.place` remains the original slot even if its stack is replaced.
+- `on_left_click_entity` / `OnLeftClickEntityEvent`: version 2 lends `event.stack` as `ItemStackView<'_>`; use `item()`, `count()`, `damage()` and `get(&component)` to read it, or `project()` to obtain an optional owned `ItemStack`.
+- `on_entity_swing` / `OnEntitySwingEvent`: version 2 lends `event.stack` as `ItemStackView<'_>`; use `item()`, `count()`, `damage()` and `get(&component)` to read it, or `project()` to obtain an optional owned `ItemStack`.
+- `hurt_enemy` / `HurtEnemyEvent`: version 2 lends `event.stack` as `ItemStackView<'_>`; use `item()`, `count()`, `damage()` and `get(&component)` to read it, or `project()` to obtain an optional owned `ItemStack`. Read `event.kind` without adding a prefix; mod-owned targets retain their own namespace.
+- `living_incoming_damage` / `LivingIncomingDamageEvent`: version 5 changes `event.weapon` and `event.causing_weapon` to `Option<&ItemStackView<'_>>`. Read the scalars or call `get(&component)`; to keep the old optional owned value use `event.weapon.and_then(ItemStackView::project)` (likewise for `causing_weapon`).
+- Rebuild against the new SDK so the package reads its new hook versions.
+'''

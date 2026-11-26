@@ -1,5 +1,4 @@
 //! The `loot_drops` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0088
 
 pub trait Hooks {
     /// A block broke or a mob died, and `drops` are the items about to drop, in
@@ -39,7 +38,7 @@ pub trait Hooks {
         contract = "collect",
         out = "drops",
         neoforge = "LivingDropsEvent, BlockDropsEvent",
-        version = 2
+        version = 3
     )]
     fn loot_drops(context: &LootDrops<'_>, drops: &mut Vec<ItemStack>);
 }

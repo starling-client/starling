@@ -12,9 +12,10 @@ impl Game<'_> {
     pub(in crate::game) fn native_texture_atlas_stitched(&mut self, atlas: mod_api::TextureAtlas) {
         mod_api::dispatch_texture_atlas_stitched(
             |call| {
-                let seal = self.transaction_open();
-                let commit = call(self);
-                self.transaction_close(&seal, commit);
+                self.storage_scope(|game, _| {
+                    let commit = call(game);
+                    ((), commit)
+                });
             },
             atlas,
         );

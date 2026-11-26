@@ -46,6 +46,24 @@ def uuid(n):
     return f'00000ad5-0000-0000-0000-00000000000{n}'
 
 
+def low_health_uuid(n):
+    return f'00000ad5-0000-0001-0000-00000000000{n}'
+
+
+# (name, UUID tail, x, summon SNBT without UUID/Rotation/Motion)
+LOW_HEALTH_CASES = [
+    ('weak_0_3', 1, 2, '{Health:0.3f,NoGravity:1b}'),
+    ('weak_0_5', 2, 6, '{Health:0.5f,NoGravity:1b,equipment:{mainhand:{id:"minecraft:cobblestone",count:1}}}'),
+    ('dead_0', 3, 10, '{Health:0.0f,NoGravity:1b,equipment:{mainhand:{id:"minecraft:stone",count:1}}}'),
+    ('dead_19', 4, 14, '{Health:0.0f,DeathTime:19s,NoGravity:1b,equipment:{mainhand:{id:"minecraft:gold_ingot",count:1}}}'),
+    ('burning_low_0_3', 5, 18, '{Health:0.3f,Fire:40s,NoGravity:1b,equipment:{mainhand:{id:"minecraft:copper_ingot",count:1}}}'),
+    ('burn_to_0_5', 6, 22, '{Health:4.5f,Fire:20s,NoGravity:1b,equipment:{mainhand:{id:"minecraft:emerald",count:1}}}'),
+    ('weak_0_3_damage', 7, 26, '{Health:0.3f,NoGravity:1b,equipment:{mainhand:{id:"minecraft:iron_ingot",count:1}}}'),
+]
+LOW_HEALTH_TICKS = (0, 1, 19, 20, 40)
+LOW_HEALTH_DAMAGES = ('minecraft:on_fire', 'minecraft:in_fire', 'minecraft:in_fire')
+
+
 def stand_command_hurt(full=False):
     ops = []
 
@@ -139,4 +157,82 @@ def stand_command_hurt(full=False):
     cmd('/execute store result score now h_r run time query gametime', 'diag-clock-now',
         admission=False, diagnostic=True)
     cmd('/scoreboard players operation now h_r -= start h_r', 'clock', 0)
+    return ops
+
+
+def stand_low_health(full=False):
+    """Low-health and DeathTime=19..20 armor stands stepped tick by tick in vanilla 26.3."""
+    ops = []
+
+    def cmd(text, label, result=None, admission=True, diagnostic=False, witness=None):
+        op = {'op': 'cmd', 'cmd': text, 'label': label, 'admission': admission}
+        if result is not None:
+            op['expect_result'] = result
+        if diagnostic and not full:
+            op.update(record=False, trace=True)
+        if witness is not None:
+            op['witness'] = witness
+        ops.append(op)
+
+    def step(n, label):
+        cmd(f'/tick step {n}', label)
+        ops.append({'op': 'tick', 'n': n})
+
+    def probe(name, n, x, nbt, tag, step_name):
+        uid = low_health_uuid(n)
+        near = f'x={x + 0.5},y={Y + 0.75},z={Z + 0.5},distance=..1.8'
+        cmd(f'/execute if entity {uid}', f'{name}-{tag}-alive', admission=False,
+            witness=(name, nbt, tag, step_name, 'alive'))
+        cmd(f'/data get entity {uid} Health', f'{name}-{tag}-health', admission=False,
+            witness=(name, nbt, tag, step_name, 'health'))
+        cmd(f'/data get entity {uid} DeathTime', f'{name}-{tag}-deathtime', admission=False,
+            witness=(name, nbt, tag, step_name, 'deathtime'))
+        cmd(f'/execute if entity @e[type=item,{near}]', f'{name}-{tag}-drops', admission=False,
+            witness=(name, nbt, tag, step_name, 'drops'))
+        cmd(f'/data get entity @e[type=item,limit=1,{near}] Item', f'{name}-{tag}-drop-item', admission=False,
+            witness=(name, nbt, tag, step_name, 'drop_item'))
+
+    cmd('/tick freeze', 'freeze')
+    for rule, value in [('random_tick_speed', '0'), ('spawn_mobs', 'false'), ('advance_time', 'false'),
+                        ('advance_weather', 'false'), ('mob_griefing', 'true')]:
+        cmd(f'/gamerule {rule} {value}', 'rule-' + rule, admission=False)
+    cmd('/forceload add 0 0 31 15', 'force', 2)
+    ops.append({'op': 'settle', 'required_chunks': [[0, 0], [1, 0]]})
+    for cx in range(2):
+        cmd(f'/execute if loaded {cx * 16 + 8} {Y} {Z}', f'loaded-{cx}', 1)
+    cmd(f'/fill 0 {Y - 1} 0 31 {Y - 1} 15 stone', 'floor', 512)
+    cmd(f'/fill 0 {Y} 0 31 {Y + 3} 15 air', 'clear', admission=False)
+    cmd('/kill @e[type=!player]', 'clear-entities', admission=False, diagnostic=True)
+    cmd('/kill @e[type=item]', 'clear-items', admission=False, diagnostic=True)
+    cmd('/execute if entity @e[type=item]', 'no-items-before')
+    cmd('/scoreboard objectives add lh_t dummy', 'objective-time')
+    cmd('/execute store result score start lh_t run time query gametime', 'diag-clock-start',
+        admission=False, diagnostic=True)
+
+    for name, n, x, nbt in LOW_HEALTH_CASES:
+        assert nbt.startswith('{') and nbt.endswith('}')
+        summon_nbt = f'{nbt[:-1]},Rotation:[0f,0f],Motion:[0d,0d,0d],UUID:[I;2773,1,0,{n}]}}'
+        cmd(f'/summon armor_stand {x + 0.5} {Y} {Z + 0.5} {summon_nbt}', f'{name}-summon', admission=False)
+        cmd(f'/execute as {low_health_uuid(n)} if entity @s[type=armor_stand,x={x + 0.5},y={Y},z={Z + 0.5},distance=..0.01]',
+            f'{name}-at', 1)
+
+    elapsed = 0
+    for target_tick in LOW_HEALTH_TICKS:
+        delta = target_tick - elapsed
+        if delta:
+            step(delta, f'step-{target_tick}')
+            elapsed = target_tick
+        cases = LOW_HEALTH_CASES if target_tick <= 1 else LOW_HEALTH_CASES[:-1]
+        for name, n, x, nbt in cases:
+            probe(name, n, x, nbt, f't{target_tick}', f'tick:{target_tick}')
+        if target_tick == 1:
+            name, n, x, nbt = LOW_HEALTH_CASES[-1]
+            uid = low_health_uuid(n)
+            for idx, dmg in enumerate(LOW_HEALTH_DAMAGES, 1):
+                cmd(f'/damage {uid} 1 {dmg}', f'{name}-dmg{idx}', admission=False)
+                probe(name, n, x, nbt, f'd{idx}', f'damage:{dmg}')
+
+    cmd('/execute store result score now lh_t run time query gametime', 'diag-clock-now',
+        admission=False, diagnostic=True)
+    cmd('/scoreboard players operation now lh_t -= start lh_t', 'clock', LOW_HEALTH_TICKS[-1])
     return ops

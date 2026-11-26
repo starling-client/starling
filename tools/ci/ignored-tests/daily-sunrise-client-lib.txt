@@ -108,7 +108,7 @@ sunrise-client-lib mobs::ai::hurt_teleport_contact_tests::a_campfire_and_a_berry
 sunrise-client-lib mobs::ai::hurt_teleport_contact_tests::a_dead_endermans_refused_hurt_still_draws_its_chance lib daily resources
 sunrise-client-lib mobs::ai::hurt_teleport_contact_tests::a_magma_teleport_leaves_the_block_scan_on_the_old_path lib daily resources
 sunrise-client-lib mobs::ai::hurt_teleport_contact_tests::a_move_through_powder_snow_freezes_a_zombie_that_ends_outside_it lib daily resources
-sunrise-client-lib mobs::ai::hurt_teleport_contact_tests::freezing_cramming_and_a_mod_hurt_each_teleport_inside_the_hurt lib daily resources
+sunrise-client-lib mobs::ai::hurt_teleport_contact_tests::freezing_and_cramming_each_teleport_inside_the_hurt lib daily resources
 sunrise-client-lib mobs::ai::hurt_teleport_contact_tests::powder_snow_from_last_tick_does_not_carry_over lib daily resources
 sunrise-client-lib mobs::ai::hurt_teleport_contact_tests::the_walks_powder_snow_outlasts_a_teleport_out_of_it lib daily resources
 sunrise-client-lib mobs::ai::hurt_teleport_contact_tests::two_effect_hurts_in_a_tick_each_teleport_inside_the_hurt lib daily resources
@@ -116,8 +116,8 @@ sunrise-client-lib mobs::ai::hurt_teleport_contact_tests::two_hurts_in_a_tick_ea
 sunrise-client-lib mobs::ai::inside_walk_tests::a_parts_add_effect_write_merges_into_one_instance lib daily child-process
 sunrise-client-lib mobs::ai::iron_golem_push_tests::a_held_weapon_adds_its_attack_damage_to_the_melee_hit lib daily resources
 sunrise-client-lib mobs::ai::iron_golem_push_tests::an_iron_golem_targets_the_monster_that_bumps_it lib daily resources
-sunrise-client-lib mobs::ai::nautilus_noai_air_tests::noai_nautilus_keeps_superclass_refill_in_both_media lib daily resources
-sunrise-client-lib mobs::ai::nautilus_noai_air_tests::normal_nautilus_keeps_its_custom_handler lib daily resources
+sunrise-client-lib mobs::ai::noai_breather_air_tests::noai_nautilus_keeps_superclass_refill_in_both_media lib daily resources
+sunrise-client-lib mobs::ai::noai_breather_air_tests::normal_nautilus_keeps_its_custom_handler lib daily resources
 sunrise-client-lib mobs::ai::noai_species_step_tests::a_saved_noai_bee_with_extreme_hive_and_anger_ticks lib daily resources
 sunrise-client-lib mobs::ai::noai_species_step_tests::a_saved_noai_bee_with_extreme_ticks_frozen_thaws_like_vanilla lib daily resources
 sunrise-client-lib mobs::ai::noai_species_step_tests::noai_mobs_still_run_their_own_ai_step lib daily resources
@@ -327,7 +327,9 @@ sunrise-client-lib mobs::tame::pet_pose_tests::ordering_a_pet_to_sit_in_water_le
 sunrise-client-lib mobs::tame::tamable_panic_tests::tamable_animals_panic_from_the_damage_they_fear lib daily resources
 sunrise-client-lib mobs::tame::tests::a_cat_stops_fleeing_when_it_is_tamed lib daily resources
 sunrise-client-lib mobs::tame::tests::a_leashed_or_riding_pet_stays_put lib daily resources
+sunrise-client-lib mobs::tame::tests::a_pet_avenges_its_owner_on_a_player_when_pvp_allows_it lib daily resources
 sunrise-client-lib mobs::tame::tests::a_pet_does_not_avenge_its_owner_on_a_dead_attacker lib daily resources
+sunrise-client-lib mobs::tame::tests::a_pet_targets_the_player_its_owner_hurt_when_pvp_allows_it lib daily resources
 sunrise-client-lib mobs::tame::tests::a_sitting_tame_mob_still_looks_for_a_mate lib daily resources
 sunrise-client-lib mobs::tame::tests::a_spectator_holding_a_bone_does_not_make_a_wolf_beg lib daily resources
 sunrise-client-lib mobs::tame::tests::cat_bed_check_matches_the_full_scan lib daily resources
@@ -448,7 +450,6 @@ sunrise-client-lib realms::client::tests::the_join_answer_reads_vanillas_field_n
 sunrise-client-lib realms::client::tests::the_tier_configuration_names_both_ranges_and_their_default lib daily network
 sunrise-client-lib realms::client::tests::world_templates_are_asked_for_by_page_and_world_type lib daily network
 sunrise-client-lib save::biome_tests::an_exhausted_biome_table_refuses_every_save_before_touching_the_world lib daily slow
-sunrise-client-lib save::chunk_disk_tests::save_refused_during_open_action_savepoint_runs_no_callback_and_keeps_disk_7 lib daily child-process
 sunrise-client-lib save::tests::native_saved_ids_must_match_the_declared_block_membership lib daily child-process
 sunrise-client-lib save::tests::saved_light_matches_reference_for_layers_and_metadata lib daily slow
 sunrise-client-lib save::writes::saved_portals::tests::saved_portal_blocks_follow_each_save_of_their_chunk lib daily resources

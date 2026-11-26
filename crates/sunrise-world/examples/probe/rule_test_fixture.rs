@@ -33,11 +33,13 @@ fn fixture(
                 for state in f["states"].as_array().unwrap() {
                     let y = heights[index % heights.len()].as_i64().unwrap() as i32;
                     index += 1;
-                    let result = rule.test(
-                        BlockStateId(state.as_u64().unwrap() as u32),
-                        [17, y, -33],
-                        &mut random,
-                    );
+                    let result = rule
+                        .test(
+                            BlockStateId(state.as_u64().unwrap() as u32),
+                            [17, y, -33],
+                            &mut random,
+                        )
+                        .map_err(io::Error::other)?;
                     writeln!(out, "test {result} {}", random.next_long())?;
                 }
             }

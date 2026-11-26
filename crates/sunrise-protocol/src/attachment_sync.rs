@@ -7,10 +7,9 @@
 //! namespace and name and its value as an NBT compound, or no tag for a
 //! removal.
 //!
-//! The channel is an engine declaration in the negotiated payload table
-//! (docs/design/mod-api/typed-payloads.md): only a peer that offers it at
-//! [`VERSION`] is sent anything, and a message is bounded by the connection's
-//! frame limits, not by a body cap of its own.
+//! The channel is an engine declaration in the negotiated payload table:
+//! only a peer that offers it at [`VERSION`] is sent anything, and a message
+//! is bounded by the connection's frame limits, not by a body cap of its own.
 use {
     sunrise_core::{nbt, nbt::Tag},
     sunrise_mod_runtime::attachments::{AttachmentSync, Holder},
@@ -52,6 +51,26 @@ pub struct Message {
 /// [`MAX_NAME`], or a value that is not an encodable compound. Its size is the
 /// sending connection's to bound (its frame limits).
 pub fn encode(message: &Message) -> Result<Vec<u8>> {
+    encode_changes(message, |_, error| Err(error)).map(|(body, _)| body)
+}
+
+/// Report each refused change without dropping its holder's other changes. An empty replace
+/// still goes out; a delta with no accepted changes has no message.
+pub fn encode_retaining(
+    message: &Message,
+    mut refused: impl FnMut(&AttachmentSync, Error),
+) -> Result<Option<Vec<u8>>> {
+    let (body, count) = encode_changes(message, |change, error| {
+        refused(change, error);
+        Ok(())
+    })?;
+    Ok((message.replace || count != 0).then_some(body))
+}
+
+fn encode_changes(
+    message: &Message,
+    mut refused: impl FnMut(&AttachmentSync, Error) -> Result<()>,
+) -> Result<(Vec<u8>, usize)> {
     let mut w = Writer::new();
     match message.holder {
         Holder::Entity(id) => {
@@ -74,30 +93,51 @@ pub fn encode(message: &Message) -> Result<Vec<u8>> {
         _ => return Err(Error::new("attachment sync: unknown holder")),
     }
     w.bool(message.replace);
-    w.varint(message.changes.len() as i32);
+    let total = message.changes.len();
+    let count_start = w.data.len();
+    w.varint(total as i32);
+    let count_end = w.data.len();
+    let mut count = 0;
     for change in &message.changes {
-        for name in [&change.namespace, &change.name] {
-            let name = name
-                .to_string()
-                .map_err(|_| Error::new("attachment sync: name is not UTF-16"))?;
-            if name.encode_utf16().count() > MAX_NAME {
-                return Err(Error::new(format!(
-                    "attachment sync: name {name} is too long"
-                )));
+        let start = w.data.len();
+        match write_change(&mut w, change) {
+            Ok(()) => count += 1,
+            Err(error) => {
+                w.data.truncate(start);
+                refused(change, error)?;
             }
-            w.string(&name);
-        }
-        match &change.value {
-            Some(value) => {
-                let tag = Tag::Compound(value.clone());
-                let bytes = nbt::write_network(&tag, value_limits())
-                    .map_err(|e| Error::new(format!("attachment sync: value: {e}")))?;
-                w.bytes(&bytes);
-            }
-            None => w.bytes(&[0]),
         }
     }
-    Ok(w.data)
+    if count != total {
+        let mut accepted = Writer::new();
+        accepted.varint(count as i32);
+        drop(w.data.splice(count_start..count_end, accepted.data));
+    }
+    Ok((w.data, count))
+}
+
+fn write_change(w: &mut Writer, change: &AttachmentSync) -> Result<()> {
+    for name in [&change.namespace, &change.name] {
+        let name = name
+            .to_string()
+            .map_err(|_| Error::new("attachment sync: name is not UTF-16"))?;
+        if name.encode_utf16().count() > MAX_NAME {
+            return Err(Error::new(format!(
+                "attachment sync: name {name} is too long"
+            )));
+        }
+        w.string(&name);
+    }
+    match &change.value {
+        Some(value) => {
+            let tag = Tag::Compound(value.clone());
+            let bytes = nbt::write_network(&tag, value_limits())
+                .map_err(|e| Error::new(format!("attachment sync: value: {e}")))?;
+            w.bytes(&bytes);
+        }
+        None => w.bytes(&[0]),
+    }
+    Ok(())
 }
 
 /// A payload's message, materialized immediately by callers that don't queue it.
@@ -344,6 +384,39 @@ mod tests {
         };
         message.changes[0].value = Some(deep);
         assert!(encode(&message).is_err(), "unwritable value");
+    }
+
+    #[test]
+    fn encoding_refusals_are_local_to_the_change_and_keep_replace_markers() {
+        let bad = AttachmentSync {
+            namespace: "fixture".into(),
+            name: "bad".into(),
+            value: Some([("s".into(), Tag::String("x".repeat(65_536).as_str().into()))].into()),
+        };
+        for replace in [true, false] {
+            let healthy = changes();
+            let mut message = Message {
+                holder: Holder::Entity(17),
+                replace,
+                changes: vec![healthy[0].clone(), bad.clone(), healthy[1].clone()],
+            };
+            let mut refused = Vec::new();
+            let body = encode_retaining(&message, |change, _| refused.push(change.name.clone()))
+                .unwrap()
+                .unwrap();
+            assert_eq!(refused.as_slice(), std::slice::from_ref(&bad.name));
+            message.changes = healthy;
+            assert_eq!(decode(&body).unwrap(), message);
+
+            message.changes = vec![bad.clone()];
+            let body = encode_retaining(&message, |_, _| {}).unwrap();
+            if replace {
+                message.changes.clear();
+                assert_eq!(decode(&body.unwrap()).unwrap(), message);
+            } else {
+                assert!(body.is_none());
+            }
+        }
     }
 
     #[test]

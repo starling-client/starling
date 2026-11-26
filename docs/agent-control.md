@@ -138,8 +138,8 @@ passes on without checking it).
 | Open to LAN | Pause > Open to LAN | yes | yes | `lan open\|close\|status` |
 | Play with Friends: host, stop, status | Pause | yes | yes | `friends host\|stop\|status` |
 | Vanilla options, every page | Options | yes | yes | `options-get`, `options-set` (all of options.txt, typed) |
-| Sunrise Settings: Extras, PvP & HUD, AI Agent; the graphics screen (Video Settings); Controller (Controls) | Sunrise Settings, Video Settings, Controls | yes | yes | `options sunrise\|graphics\|extras\|agent...`, then `ui`/`click`/`set` |
-| Agent control on or off, status, connection details | Sunrise Settings > AI Agent | yes | yes | `options sunrise`, the page's widgets (`ai-agent`) |
+| Sunrise Settings: its graphics pages, Gameplay (the extras), Tools (Replay Studio, AI Agent), Extras (PvP & HUD); Controller (Controls) | Sunrise Settings, Controls | yes | yes | `options sunrise\|graphics\|extras\|agent...`, then `ui`/`click`/`set` |
+| Agent control on or off, status, connection details | Sunrise Settings > Tools > AI Agent | yes | yes | `options agent`, or `options sunrise`, the Tools tab (`tools`), then its row (`ai-agent`) |
 | Key binds | Controls > Key Binds | yes | yes | `options-set key_key.jump key.keyboard.j` |
 | Resource packs | Options > Resource Packs | yes | yes | `options packs`, then `ui` rows and `click`; `options-set resourcePacks` |
 | Chat and commands | Chat | yes | yes | `chat`, `command`, `messages`, `chat-log` |
@@ -176,7 +176,7 @@ The switch is in three places: Settings > AI in the launcher, Sunrise Settings i
 
 | Surface | What happens |
 | --- | --- |
-| Game | opens no control socket, even with `--control` (it logs the refusal); Sunrise Settings hides AI Agent...; turning it on in a running game closes the socket at once |
+| Game | opens no control socket, even with `--control` (it logs the refusal); Sunrise Settings' AI Agent page shows No AI alone; turning it on in a running game closes the socket at once |
 | `sunrise-ctl` | every command refuses: exit status 4, `{"error": REFUSAL, "kind": "denied"}` |
 | `sunrise-ctl mcp` | refuses to start (exit 4, REFUSAL on stderr); a session already running refuses each call |
 | `sunrise-launcher mcp` | refuses to start; a running session answers each `tools/call` with error -32000 and REFUSAL |
@@ -199,7 +199,7 @@ turn the switch off.
   - **Test the connection** (`agents::self_test`) starts `<exe> mcp`, lists its tools and says
     how many answered.
   - `sunrise-launcher agent-config [--client ID] [--json] [--test]` prints the same thing.
-- **Game, Sunrise Settings > AI Agent:**
+- **Game, Sunrise Settings > Tools > AI Agent:**
   - **Agent Control** (`agentControl` in sunrise-extras.txt, off by default) opens the default
     endpoint (`$SUNRISE_CONTROL`, else `sunrise-control.sock` in the runtime directory, or
     `sunrise-control.json` in the temporary directory on Windows) in a game the player started.
@@ -442,15 +442,15 @@ of the frame ([#8750](https://github.com/horizon-rust/horizon/issues/8750)).
   using an item, riding, running out of air.
 - A shader pack's own buffers, kept from frame to frame, take `sunrise-ctl screenshot-sequence
   FRAMES STEP_MS PATH`: the pack starts over (its buffers, images, shadow maps, smoothed values and
-  custom uniforms, or a Sunrise pack's `history` and eased values) and draws FRAMES frames on a set
+  custom uniforms) and draws FRAMES frames on a set
   clock, frame n at n frames and (n - 1) × STEP_MS milliseconds (0 since the frame before on frame
   1, STEP_MS after; a decimal, `16.666667` for 60 fps). The last is written as `screenshot PATH`
   writes it (with its `-hdr.png` under HDR output), and the reply, once it is, names the pack and
   the last frame's clock. Without a pack it draws the frames all the same. It needs the world
   frozen, far terrain (LOD Distance), TAA, frame generation and the shadow cache off and chunk fade
   0, and says so otherwise. While it runs, commands that would change the scene are refused, a
-  change to the camera, the world, the settings, the pack or the window's size ends it with an
-  error, `screenshot-sequence cancel` stops it and `quit` quits.
+  change to the camera (compared with the first extracted frame), the world, the settings, the pack
+  or the window's size ends it with an error, `screenshot-sequence cancel` stops it and `quit` quits.
 - Not covered: temporal AA and frame generation (they build on earlier frames: turn them off),
   custom entity model animations, native mods, and what eases on the wall clock for a moment
   (toasts, the boss bar's fill, chunks fading in, the spyglass): wait for them to settle. Frame
@@ -463,7 +463,7 @@ of the frame ([#8750](https://github.com/horizon-rust/horizon/issues/8750)).
     network annotations;
   - the launcher: generated tools, `confirm`, the reference, the agent configs;
   - `sunrise_core::no_ai`;
-  - `options_ui`: the AI Agent page, and that No AI hides it;
+  - `options_ui`: the AI Agent page, and that with No AI on it shows No AI alone;
   - `input_trace`: origins, the ring, the intrusion rule, `input-log` and the recording writer;
   - `repro`: the format's round trip, the folder slug and the world copy.
 - **`tools/agent_control_e2e.py`** drives a real game, offscreen on macOS and on a virtual screen

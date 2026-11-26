@@ -14,10 +14,12 @@ trapped and copper chests, barrels, shulker boxes of every colour,
 dispensers, droppers and hoppers.
 """
 import argparse
-try:
-    from . import interaction_lab as lib
-except ImportError:
-    import interaction_lab as lib
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import interaction_lab as lib
 
 COLOURS = ['white', 'orange', 'magenta', 'light_blue', 'yellow', 'lime', 'pink', 'gray', 'light_gray', 'cyan',
            'purple', 'blue', 'brown', 'green', 'red', 'black']

@@ -35,8 +35,9 @@ pub struct ExplosionSettings {
     /// (scaling 0.5) and `minecraft:smoke`, one each. An empty list
     /// scatters none.
     pub block_particles: Option<Vec<ExplosionBlockParticle>>,
-    /// The sound event (`mymod:fuel_tank_burst`); `None` is
-    /// `minecraft:entity.generic.explode`.
+    /// The sound event's namespaced key (`mymod:fuel_tank_burst`); `None` is
+    /// `minecraft:entity.generic.explode`. Registered events are sent by ID, other valid keys
+    /// by name. A client without the event's resources does not play it.
     pub sound: Option<String>,
 }
 
@@ -112,12 +113,10 @@ impl Default for ExplosionBlockParticle {
 #[non_exhaustive]
 #[derive(sunrise_mod_api_macros::Wire)]
 pub enum ExplodeError {
-    /// A client, a parked level or a stale handle, a `source` that is stale,
-    /// names no entity or is in another level, or a centre in a chunk that
-    /// isn't loaded.
+    /// A client, a parked level or a stale handle, or a `source` that is stale,
+    /// names no entity or is in another level.
     Unavailable,
-    /// The centre is outside the world or not finite, or the radius or the
-    /// knockback multiplier is not finite.
+    /// The centre, the radius or the knockback multiplier is not finite.
     InvalidBlast,
     /// The damage type is not registered.
     UnknownDamageType,
@@ -128,8 +127,7 @@ pub enum ExplodeError {
     /// that is not finite, or the block particles' weights total past
     /// `i32::MAX`.
     InvalidParticle,
-    /// The sound is not a sound event id, or is a `minecraft:` one the
-    /// server does not have.
+    /// The sound is not a valid namespaced sound event key.
     UnknownSound,
 }
 

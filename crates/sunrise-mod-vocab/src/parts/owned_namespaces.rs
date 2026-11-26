@@ -3,7 +3,7 @@ use crate::{
     __private::{DeclarationKind, DeclarationRefusal},
     Answered, DeclarationError,
 };
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
 
 /// Pre-resolved namespace ownership table derived once from the package inventory at load.
 // hidden: engine- and vocab-internal indexed authority, not a mod authoring surface.
@@ -101,30 +101,8 @@ impl NamespaceAuthority {
 }
 
 /// The package inventory carries the same namespace set as content files and
-/// the package loader's collision fence. A package always owns its own ID,
-/// and a code mod also owns the namespaces of any installed content package
-/// whose manifest declares `served_by = "<owner>"`.
-pub(crate) fn owns_namespace_in(
-    packages: &crate::LoadedMods,
-    owner: &str,
-    namespace: &str,
-) -> bool {
-    packages.authority.owns(owner, namespace)
-}
-
-/// The frozen indexed namespace authority for the current package inventory.
-pub(crate) fn current_namespace_authority() -> Arc<NamespaceAuthority> {
-    #[cfg(test)]
-    if let Some(authority) = crate::world::phase::test_namespace_authority() {
-        return authority;
-    }
-    crate::dispatch_scope::backend()
-        .map(|backend| (backend.namespace_authority)())
-        .unwrap_or_default()
-}
-
-/// The package inventory carries the same namespace set as content files and
-/// the package loader's collision fence. A package always owns its own ID.
+/// the package loader's collision fence. A package always owns its own ID;
+/// a code mod also serves the file namespaces delegated to it by `served_by`.
 pub fn owns_namespace(owner: &str, namespace: &str) -> bool {
     if owner == namespace {
         return true;
@@ -148,22 +126,15 @@ pub fn qualified(owner: &str, name: &str) -> String {
     }
 }
 
-/// Validate and qualify a declaration using the package namespace inventory.
-pub fn owned_declaration_id(owner: &str, name: &str) -> Result<String, String> {
-    validate_owned_id(owner, qualified(owner, name))
+/// Qualify a bare declaration name with the mod ID and validate the resulting identifier.
+pub fn declaration_id(owner: &str, name: &str) -> Result<String, String> {
+    validate_declaration_id(qualified(owner, name))
         .map_err(|error| format!("mod {owner} declares {error}"))
 }
 
-fn validate_owned_id(owner: &str, id: String) -> Result<String, DeclarationError> {
-    let Some(parsed) = crate::Identifier::parse_namespaced(&id) else {
+fn validate_declaration_id(id: String) -> Result<String, DeclarationError> {
+    if crate::Identifier::parse_namespaced(&id).is_none() {
         return Err(DeclarationError::InvalidId { id });
-    };
-    let namespace = parsed.namespace();
-    if !owns_namespace(owner, namespace) {
-        return Err(DeclarationError::UnownedNamespace {
-            id,
-            namespace: namespace.to_owned(),
-        });
     }
     Ok(id)
 }
@@ -233,7 +204,7 @@ pub(crate) fn submit_declaration<D: Declaration>(
     }
     let result = (|| {
         let (id, references) = declaration.names();
-        *id = validate_owned_id(mod_id, qualified(mod_id, id))?;
+        *id = validate_declaration_id(qualified(mod_id, id))?;
         for reference in references.into_iter().flatten() {
             *reference = qualified(mod_id, reference);
         }
@@ -264,7 +235,7 @@ pub(crate) fn declaration_listener(
     accepted
 }
 
-/// The engine consumes block/item declaration ownership refusals before loading
+/// The engine consumes block/item declaration refusals before loading
 /// resources.
 // hidden: engine admission plumbing, re-exported through __private for the loader.
 #[doc(hidden)]

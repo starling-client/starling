@@ -899,7 +899,7 @@ impl Game<'_> {
         if self.world.carrier_fences.locks_cell(&pos) {
             return Err("a carrier transfer holds this cell".into());
         }
-        self.player_break_block(pos).map(|_| ())
+        self.player_break_block(pos, None).map(|_| ())
     }
 
     /// Recovers the world's carrier store at open, before any chunk

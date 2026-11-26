@@ -33,15 +33,33 @@ impl Game<'_> {
         delta: Vec3,
     ) -> MoveGate {
         let entity = self.move_who_id(who);
+        let client_controlled = self.move_who_client_controlled(who);
         // The type name is built only if a listener asks for it (#2414: a
         // move nobody listens to costs one branch and no string).
-        sunrise_client::move_gate::armed_with(
+        sunrise_client::move_gate::armed_with_controlled(
             &self.loop_context,
             entity,
             || self.move_who_kind(who),
             cause,
             delta,
+            client_controlled,
         )
+    }
+
+    /// Whether `who` is a body a client controls (a player, or a vehicle a
+    /// player is driving): `side = "server"` movement listeners skip these.
+    fn move_who_client_controlled(&self, who: MoveWho) -> bool {
+        match who {
+            MoveWho::Player | MoveWho::Guest(_) => true,
+            MoveWho::Entity(EntityHandle::Mob(i)) => {
+                sunrise_client::mobs::equine::controlled(&self.mobs[i])
+            }
+            MoveWho::Entity(EntityHandle::Boat(i)) => {
+                let id = self.boats[i].id;
+                self.controls_boat(id) || self.ridden_by_guest(id)
+            }
+            MoveWho::Entity(_) => false,
+        }
     }
 
     /// The entity id a move is for; the player window's own id for it.

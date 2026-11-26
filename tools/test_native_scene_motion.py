@@ -8,12 +8,11 @@ import platform
 import random
 import struct
 import subprocess
-try:
-    from . import lab, test_rust_parity as base, test_native_client as client
-except ImportError:
-    import lab
-    import test_rust_parity as base
-    import test_native_client as client
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_rust_parity as base, test_native_client as client
 
 def bits(value): return struct.pack('>d', value).hex()
 def single(value): return struct.pack('>f', value).hex()
@@ -838,8 +837,7 @@ def main():
     args=parser.parse_args()
     lock,jars,libraries=base.verify_artifacts()
     if args.sprint_input:
-        try:from . import test_model_baking_parity as baking
-        except ImportError:import test_model_baking_parity as baking
+        from tools import test_model_baking_parity as baking
         libraries=baking.client_libraries();jars={'client':jars['client']}
     build=lab.LOCAL/('rust-native-flight-scene' if args.flight_only else 'rust-native-sprint-scene' if args.sprint_input else 'rust-native-scene-motion');build.mkdir(exist_ok=True)
     report=build/'report.json';report.unlink(missing_ok=True)

@@ -12,10 +12,11 @@ import os
 from pathlib import Path
 import tempfile
 
-try:
-    from . import lab, oracle_harness as h, test_model_baking_parity as baking, integration_env
-except ImportError:
-    import lab, oracle_harness as h, test_model_baking_parity as baking, integration_env
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, oracle_harness as h, test_model_baking_parity as baking, integration_env
 
 
 def main():
@@ -53,8 +54,8 @@ def main():
             SUNRISE_SOURCE_SILENCE_OUTPUT=scratch,
             CARGO_BUILD_JOBS=os.environ.get('CARGO_BUILD_JOBS', '2'),
             RUST_TEST_THREADS='2')
-        h.run_logged(['cargo', 'test', '--locked', '-p', 'sunrise-client', '--lib',
-            'game::tnt::tests::silent_', '--', '--include-ignored', '--nocapture'], build, 'rust', env=env)
+        h.run_logged([lab.parity_fixtures(),
+            'game::tnt::tests::silent_', '--include-ignored', '--nocapture'], build, 'rust', env=env)
         rust = build / 'rust.txt'
         rust.write_text(''.join((Path(scratch) / f'{name}.txt').read_text()
             for name in ('explosion', 'potions', 'bottles')), encoding='utf-8')

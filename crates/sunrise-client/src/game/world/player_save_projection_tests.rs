@@ -46,7 +46,8 @@ fn raw(marker: &str, grace: i32, particles: bool) -> Tag {
 #[ignore = "daily"]
 fn actual_player_save_tracks_mutable_body_and_keeps_guest_context() {
     crate::game::native_entity_refs::tests::with_game(|game| {
-        game.world_root = std::env::current_dir().unwrap().join("h157-owner");
+        let scratch = tempfile::tempdir().unwrap();
+        game.world_root = scratch.path().join("h157-owner");
         std::fs::create_dir_all(&game.world_root).unwrap();
         game.world
             .chunks

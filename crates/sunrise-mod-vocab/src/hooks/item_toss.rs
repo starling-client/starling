@@ -13,9 +13,3 @@ pub trait Hooks {
     )]
     fn item_toss(player: u128, item: ItemEntityRef, canceled: &mut bool);
 }
-
-/// Original upstream notes; the existing fork event above owns this moment.
-pub trait UpstreamNotes {
-    #[notes = r###"`native_item_dropped_v2(player, stack, cancel)`: an additive, cancellable version of `native_item_dropped` (NeoForge's `ItemTossEvent`) with the whole stack thrown, its components included (enchantments, unbreakable, attribute modifiers...). Heard just before v1, which keeps its signature and firing point. Set `cancel` and nothing is thrown: the stack goes back into the player's inventory (what does not fit is thrown, unheard) and v1 hears nothing. Bundles that use it need `"hooks": @API:item_dropped_v2@`."###]
-    fn item_dropped_v2();
-}

@@ -231,7 +231,7 @@ pub struct FireworksRequest {
     /// The rocket's velocity in blocks per tick, which the sparks carry.
     pub velocity: [f64; 3],
     /// The explosions, one every other tick in this order; none puffs a little smoke, as a
-    /// rocket without stars does. At most 256, as vanilla's fireworks component.
+    /// rocket without stars does.
     pub explosions: Vec<FireworkExplosion>,
     /// The blast, and the crackle of a twinkling explosion, play; false bursts silently, as a
     /// silent rocket does (`!FireworkRocketEntity.isSilent()`).

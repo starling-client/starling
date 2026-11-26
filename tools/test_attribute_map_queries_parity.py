@@ -8,13 +8,16 @@ import platform
 import subprocess
 import random
 import struct
-try:
-    from . import lab, test_rust_parity as base, test_stored_effect_attributes_parity as stored_base, test_stored_effect_notifications_parity as notifications
-except ImportError:
-    import lab
-    import test_rust_parity as base
-    import test_stored_effect_attributes_parity as stored_base
-    import test_stored_effect_notifications_parity as notifications
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import (
+    lab,
+    test_rust_parity as base,
+    test_stored_effect_attributes_parity as stored_base,
+    test_stored_effect_notifications_parity as notifications,
+)
 
 
 def corpus():

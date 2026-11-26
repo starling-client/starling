@@ -71,6 +71,21 @@ pub fn pig_thunder_hit(from: &mut Mob, to: &mut Mob) {
     to.persistent = true;
 }
 
+/// The state [`single`] reads that the rest of a mob's tick changes after a conversion it made
+/// inside its AI step (`Mob.convertTo` runs then, before `travel`): `source` takes its
+/// position, rotation and motion from `at`, the mob as it was when it converted.
+pub fn motion_at(source: &mut Mob, at: &Mob) {
+    source.position = at.position;
+    source.yaw = at.yaw;
+    source.head_yaw = at.head_yaw;
+    source.head_pitch = at.head_pitch;
+    source.body_yaw = at.body_yaw;
+    source.velocity = at.velocity;
+    source.fall_distance = at.fall_distance;
+    source.extra.fall_flying = at.extra.fall_flying;
+    source.ground.on_ground = at.ground.on_ground;
+}
+
 /// `ConversionType.SINGLE.convert` and `ConversionType.convertCommon`: `to`
 /// is a fresh mob (`EntityType.create(level, CONVERSION)`, no spawn
 /// finalization) that takes `from`'s place, motion, ride, lead, equipment,

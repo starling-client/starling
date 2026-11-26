@@ -1,5 +1,4 @@
 //! The `tooltip` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0036
 
 pub trait Hooks {
     /// `Item.appendHoverText`: an item's own lines in its tooltip, after its
@@ -26,7 +25,7 @@ pub trait Hooks {
         scope = "item",
         key = "stack",
         neoforge = "ItemTooltipEvent",
-        version = 2
+        version = 3
     )]
     fn tooltip(
         stack: &ItemStack,

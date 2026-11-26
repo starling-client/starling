@@ -36,12 +36,13 @@ import difflib
 import json
 import math
 from pathlib import Path
+import struct
 
-try:
-    from . import client_packet_routes, wire_stream
-except ImportError:
-    import client_packet_routes
-    import wire_stream
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import client_packet_routes, wire_stream
 
 MOVES = wire_stream.MOVES
 # Packets the server's timing decides, or that only the network thread sends: never per tick.
@@ -53,6 +54,10 @@ COUNT_SLACK = 2
 MANIFEST_KEYS = ("recording", "settings", "course", "routes", "server_jar")
 # Serverbound packets whose payload is an id the server picked: checked by keep_alive_problems, not as rows.
 SERVER_IDS = {"keep_alive", "pong"}
+# Schema header for recorded vanilla 26.3 X11 mouse-look witnesses.
+LOOK_WITNESS_FORMAT = {"format": "sunrise-x11-mouse-look-witness", "version": 1, "minecraft": "26.3"}
+# Focused 26.3 X11 mouse-look routes compared in raw IEEE-754 float bits.
+DEFAULT_LOOK_ROUTES = ("look_x", "look_y", "look_counts", "regrab")
 
 
 def load(path):
@@ -408,6 +413,338 @@ def describe(rep):
     return "\n".join(lines)
 
 
+def float_bits_hex(value):
+    """Big-endian IEEE-754 32-bit float bits formatted as 0xXXXXXXXX."""
+    return f"0x{struct.unpack('>I', struct.pack('>f', value))[0]:08x}"
+
+
+def _raw_u32_hex(reader):
+    raw = reader.take(4)
+    return f"0x{struct.unpack('>I', raw)[0]:08x}", struct.unpack(">f", raw)[0]
+
+
+def _decode_raw_look_packet(name, payload_hex):
+    """Exact rotation and look-dependent action bits straight from the serverbound wire payload."""
+    if not payload_hex:
+        return None
+    try:
+        data = bytes.fromhex(payload_hex)
+    except ValueError:
+        return None
+    r = wire_stream.Reader(data)
+    try:
+        if name == "move_player_rot":
+            yaw_bits, yaw = _raw_u32_hex(r)
+            pitch_bits, pitch = _raw_u32_hex(r)
+            r.ubyte()
+            if r.pos != len(data):
+                return None
+            return {"rotation": {"packet": name, "yaw": yaw, "pitch": pitch,
+                                 "yaw_bits": yaw_bits, "pitch_bits": pitch_bits}, "action": None}
+        if name == "move_player_pos_rot":
+            r.double()
+            r.double()
+            r.double()
+            yaw_bits, yaw = _raw_u32_hex(r)
+            pitch_bits, pitch = _raw_u32_hex(r)
+            r.ubyte()
+            if r.pos != len(data):
+                return None
+            return {"rotation": {"packet": name, "yaw": yaw, "pitch": pitch,
+                                 "yaw_bits": yaw_bits, "pitch_bits": pitch_bits}, "action": None}
+        if name == "use_item":
+            hand = r.varint()
+            r.varint()
+            yaw_bits, yaw = _raw_u32_hex(r)
+            pitch_bits, pitch = _raw_u32_hex(r)
+            if r.pos != len(data):
+                return None
+            return {
+                "rotation": {"packet": name, "yaw": yaw, "pitch": pitch,
+                             "yaw_bits": yaw_bits, "pitch_bits": pitch_bits},
+                "action": {"packet": name, "hand": hand, "yaw_bits": yaw_bits, "pitch_bits": pitch_bits},
+            }
+        if name == "use_item_on":
+            hand = r.varint()
+            pos = r.pos_long()
+            face = r.varint()
+            cursor_bits = [_raw_u32_hex(r)[0] for _ in range(3)]
+            inside = r.bool()
+            world_border = r.bool()
+            r.varint()
+            if r.pos != len(data):
+                return None
+            return {
+                "rotation": None,
+                "action": {"packet": name, "hand": hand, "pos": pos, "face": face,
+                           "cursor_bits": cursor_bits, "inside": inside, "world_border": world_border},
+            }
+        if name == "player_action":
+            action = r.varint()
+            pos = r.pos_long()
+            direction = r.ubyte()
+            r.varint()
+            if r.pos != len(data):
+                return None
+            return {"rotation": None,
+                    "action": {"packet": name, "action": action, "pos": pos, "direction": direction}}
+    except ValueError:
+        return None
+    return None
+
+
+def _decoded_look_packet(name, fields):
+    """Fallback look extraction from decoded fields when synthetic ticks have no binary wire bytes."""
+    if not isinstance(fields, dict):
+        return None
+    rotation = None
+    action = None
+    if "yaw" in fields and "pitch" in fields:
+        yaw, pitch = fields["yaw"], fields["pitch"]
+        yaw_bits, pitch_bits = float_bits_hex(yaw), float_bits_hex(pitch)
+        rotation = {"packet": name, "yaw": yaw, "pitch": pitch, "yaw_bits": yaw_bits, "pitch_bits": pitch_bits}
+    if name == "use_item" and rotation is not None:
+        action = {"packet": name, "hand": fields["hand"],
+                  "yaw_bits": rotation["yaw_bits"], "pitch_bits": rotation["pitch_bits"]}
+    elif name == "use_item_on":
+        action = {"packet": name, "hand": fields["hand"], "pos": fields["pos"], "face": fields["face"],
+                  "cursor_bits": [float_bits_hex(c) for c in fields["cursor"]],
+                  "inside": fields["inside"], "world_border": fields["world_border"]}
+    elif name == "player_action":
+        action = {"packet": name, "action": fields["action"], "pos": fields["pos"], "direction": fields["direction"]}
+    if rotation is None and action is None:
+        return None
+    return {"rotation": rotation, "action": action}
+
+
+def _look_matches_decoded(raw_obs, fields):
+    """Checks that raw binary decoding agrees with wire_stream's decoded fields before trusting it."""
+    if fields is None:
+        return True
+    rot = raw_obs["rotation"]
+    if rot is not None and ("yaw" in fields and "pitch" in fields):
+        if float_bits_hex(fields["yaw"]) != rot["yaw_bits"] or float_bits_hex(fields["pitch"]) != rot["pitch_bits"]:
+            return False
+    act = raw_obs["action"]
+    if act is not None:
+        if act["packet"] == "use_item_on" and (act["pos"] != fields.get("pos") or act["face"] != fields.get("face")):
+            return False
+        if act["packet"] == "player_action" and (act["action"] != fields.get("action")
+                                                 or act["pos"] != fields.get("pos")
+                                                 or act["direction"] != fields.get("direction")):
+            return False
+    return True
+
+
+def look_observations(ticks):
+    """Ordered distinct (yaw_bits, pitch_bits) rotations and exact look-dependent actions for one route."""
+    rotations, actions = [], []
+    for tick in ticks:
+        decoded = {}
+        for where in ("packets", "frame"):
+            for name, fields in tick[where]:
+                decoded.setdefault((where, name), []).append(fields)
+        stream = tick.get("raw")
+        if stream:
+            items = []
+            for where, name, payload in stream:
+                queue = decoded.get((where, name))
+                fields = queue.pop(0) if queue else None
+                obs = _decode_raw_look_packet(name, payload)
+                if obs is None or not _look_matches_decoded(obs, fields):
+                    obs = _decoded_look_packet(name, fields)
+                if obs is not None:
+                    items.append(obs)
+        else:
+            items = [obs for where in ("packets", "frame") for name, fields in tick[where]
+                     if (obs := _decoded_look_packet(name, fields)) is not None]
+        for obs in items:
+            rot = obs["rotation"]
+            if rot is not None:
+                if not rotations or (rotations[-1]["yaw_bits"], rotations[-1]["pitch_bits"]) != (
+                        rot["yaw_bits"], rot["pitch_bits"]):
+                    rotations.append(rot)
+            if obs["action"] is not None:
+                actions.append(obs["action"])
+    return {"rotations": rotations, "actions": actions}
+
+
+def _rotation_bits(obs):
+    return [(r["yaw_bits"], r["pitch_bits"]) for r in obs["rotations"]]
+
+
+def _collect_run_problems(run_sets):
+    problems = []
+    for runs, name in run_sets:
+        if not runs:
+            problems.append({"kind": "no_runs", "client": name})
+        for r in runs:
+            problems += [dict(p, run=r["run"]) for p in r["problems"]]
+            problems += [dict(p, run=r["run"]) for p in r["keep_alive"]]
+    notes = [p for p in problems if p["kind"] == "keep_alive_pending"]
+    problems = [p for p in problems if p["kind"] != "keep_alive_pending"]
+    for runs, name in run_sets:
+        if len({r["manifest"].get("client_build") for r in runs if r["manifest"]}) > 1:
+            problems.append({"kind": "client_builds_differ", "client": name})
+    return problems, notes
+
+
+def compare_look_runs(a, b, routes=DEFAULT_LOOK_ROUTES, names=("vanilla", "sunrise")):
+    """Bit-exact 26.3 rotation and look-dependent action comparison across paired runs of two clients."""
+    routes = list(routes)
+    problems, notes = _collect_run_problems(((a, names[0]), (b, names[1])))
+    if not routes:
+        problems.append({"kind": "no_routes"})
+    manifests = [r["manifest"] for r in a + b if r["manifest"]]
+    for key in MANIFEST_KEYS:
+        if len({json.dumps(m.get(key), sort_keys=True) for m in manifests}) > 1:
+            problems.append({"kind": "manifests_differ", "key": key})
+    pairs = ({r["number"]: r for r in a}, {r["number"]: r for r in b})
+    for number in sorted(set(pairs[0]) ^ set(pairs[1])):
+        problems.append({"kind": "unpaired", "number": number})
+    differences, compared = [], []
+    for number in sorted(set(pairs[0]) & set(pairs[1])):
+        ra, rb = pairs[0][number], pairs[1][number]
+        fixtures = [{p["route"]: p.get("fixture") for p in r["manifest"].get("played", [])} for r in (ra, rb)]
+        for route in routes:
+            if route not in ra["ticks"] or route not in rb["ticks"]:
+                missing = [r["run"] for r in (ra, rb) if route not in r["ticks"]]
+                problems.append({"kind": "route_missing", "route": route, "runs": missing})
+                continue
+            if fixtures[0].get(route) != fixtures[1].get(route):
+                problems.append({"kind": "fixture_differs", "route": route, "runs": [ra["run"], rb["run"]]})
+            oa, ob = look_observations(ra["ticks"][route]), look_observations(rb["ticks"][route])
+            if not oa["rotations"] or not ob["rotations"]:
+                problems.append({"kind": "no_rotations", "route": route, "runs": [ra["run"], rb["run"]],
+                                 "counts": [len(oa["rotations"]), len(ob["rotations"])]})
+            rot_match = _rotation_bits(oa) == _rotation_bits(ob) and bool(oa["rotations"])
+            act_match = oa["actions"] == ob["actions"]
+            entry = {"route": route, "runs": [ra["run"], rb["run"]], "match": rot_match and act_match,
+                     "rotations": [oa["rotations"], ob["rotations"]], "actions": [oa["actions"], ob["actions"]]}
+            compared.append(entry)
+            if not entry["match"]:
+                differences.append(entry)
+    return {"bit_exact": not problems and not differences, "minecraft": "26.3", "routes": routes,
+            "problems": problems, "differences": differences, "notes": notes, "pairs": compared}
+
+
+def build_look_witness(vanilla_runs, routes=DEFAULT_LOOK_ROUTES, recording_path=None, recording_file_sha256=None,
+                       java_version=None):
+    """Builds a 26.3 X11 mouse-look witness from finished vanilla runs after verifying they agree bit-for-bit."""
+    routes = list(routes)
+    problems, _ = _collect_run_problems(((vanilla_runs, "vanilla"),))
+    if not routes:
+        problems.append({"kind": "no_routes"})
+    manifests = [r["manifest"] for r in vanilla_runs if r["manifest"]]
+    for key in MANIFEST_KEYS:
+        if len({json.dumps(m.get(key), sort_keys=True) for m in manifests}) > 1:
+            problems.append({"kind": "manifests_differ", "key": key})
+    if problems:
+        raise ValueError(f"cannot record 26.3 witness: {problems}")
+    ref = vanilla_runs[0]
+    ref_fixtures = {p["route"]: p.get("fixture") for p in ref["manifest"].get("played", [])}
+    route_data = {}
+    for route in routes:
+        if route not in ref["ticks"]:
+            raise ValueError(f"cannot record 26.3 witness: route {route!r} missing in {ref['run']}")
+        ref_obs = look_observations(ref["ticks"][route])
+        if not ref_obs["rotations"]:
+            raise ValueError(f"cannot record 26.3 witness: route {route!r} has no rotations in {ref['run']}")
+        for other in vanilla_runs[1:]:
+            if route not in other["ticks"]:
+                raise ValueError(f"cannot record 26.3 witness: route {route!r} missing in {other['run']}")
+            other_fixtures = {p["route"]: p.get("fixture") for p in other["manifest"].get("played", [])}
+            if other_fixtures.get(route) != ref_fixtures.get(route):
+                raise ValueError(f"cannot record 26.3 witness: fixture differs on {route!r} in {other['run']}")
+            other_obs = look_observations(other["ticks"][route])
+            if _rotation_bits(other_obs) != _rotation_bits(ref_obs) or other_obs["actions"] != ref_obs["actions"]:
+                raise ValueError(f"cannot record 26.3 witness: vanilla runs disagree on {route!r}: "
+                                 f"{ref['run']} vs {other['run']}")
+        route_data[route] = {"fixture": ref_fixtures.get(route),
+                             "rotations": ref_obs["rotations"], "actions": ref_obs["actions"]}
+    m = ref["manifest"]
+    return {
+        **LOOK_WITNESS_FORMAT,
+        "recording": recording_path,
+        "recording_file_sha256": recording_file_sha256,
+        "recording_digest": m.get("recording"),
+        "settings_digest": m.get("settings"),
+        "course_digest": m.get("course"),
+        "vanilla_server_jar_sha256": m.get("server_jar"),
+        "vanilla_client_jar_sha256": m.get("client_build"),
+        "java_version": java_version,
+        "runs_verified": len(vanilla_runs),
+        "routes": route_data,
+    }
+
+
+def compare_look_against_witness(runs, witness, client_name="sunrise"):
+    """Bit-exact comparison of captured client runs against a recorded vanilla 26.3 X11 mouse-look witness."""
+    problems, notes = _collect_run_problems(((runs, client_name),))
+    if {k: witness.get(k) for k in LOOK_WITNESS_FORMAT} != LOOK_WITNESS_FORMAT:
+        problems.append({"kind": "bad_witness_header", "expected": LOOK_WITNESS_FORMAT})
+    witness_routes = witness.get("routes") if isinstance(witness.get("routes"), dict) else {}
+    if not witness_routes:
+        problems.append({"kind": "no_routes"})
+    manifest_checks = (("recording", "recording_digest"), ("settings", "settings_digest"),
+                       ("server_jar", "vanilla_server_jar_sha256"))
+    differences, compared = [], []
+    for r in runs:
+        m = r["manifest"]
+        if m:
+            for mkey, wkey in manifest_checks:
+                if witness.get(wkey) is not None and m.get(mkey) != witness.get(wkey):
+                    problems.append({"kind": "manifests_differ", "key": mkey, "run": r["run"]})
+        fixtures = {p["route"]: p.get("fixture") for p in m.get("played", [])}
+        for route, expected in witness_routes.items():
+            if route not in r["ticks"]:
+                problems.append({"kind": "route_missing", "route": route, "runs": [r["run"]]})
+                continue
+            if expected.get("fixture") is not None and fixtures.get(route) != expected.get("fixture"):
+                problems.append({"kind": "fixture_differs", "route": route, "runs": ["witness-26.3", r["run"]]})
+            actual = look_observations(r["ticks"][route])
+            exp_obs = {"rotations": expected.get("rotations", []), "actions": expected.get("actions", [])}
+            if not actual["rotations"] or not exp_obs["rotations"]:
+                problems.append({"kind": "no_rotations", "route": route, "runs": ["witness-26.3", r["run"]],
+                                 "counts": [len(exp_obs["rotations"]), len(actual["rotations"])]})
+            rot_match = _rotation_bits(actual) == _rotation_bits(exp_obs) and bool(actual["rotations"])
+            act_match = actual["actions"] == exp_obs["actions"]
+            entry = {"route": route, "runs": ["witness-26.3", r["run"]], "match": rot_match and act_match,
+                     "rotations": [exp_obs["rotations"], actual["rotations"]],
+                     "actions": [exp_obs["actions"], actual["actions"]]}
+            compared.append(entry)
+            if not entry["match"]:
+                differences.append(entry)
+    return {"bit_exact": not problems and not differences, "minecraft": "26.3", "routes": list(witness_routes),
+            "problems": problems, "differences": differences, "notes": notes, "pairs": compared}
+
+
+def describe_look(rep):
+    """Human-readable hex-bit report for compare_look_runs / compare_look_against_witness."""
+    lines = []
+    for p in rep["problems"]:
+        lines.append(f"problem: {json.dumps(p)}")
+    for n in rep["notes"]:
+        lines.append(f"note: {json.dumps(n)}")
+    for pair in rep["pairs"]:
+        ra, rb = pair["runs"]
+        xa, xb = pair["rotations"]
+        status = "match" if pair["match"] else "DIFFER"
+        lines.append(f"{ra} vs {rb} {pair['route']}: {status} ({len(xa)} vs {len(xb)})")
+        pad = max(len(xa), len(xb))
+        for i in range(pad):
+            x = xa[i] if i < len(xa) else None
+            y = xb[i] if i < len(xb) else None
+            lx = f"{x['packet']} ({x['yaw']!r}, {x['pitch']!r}) {x['yaw_bits']} {x['pitch_bits']}" if x else "-"
+            ly = f"{y['packet']} ({y['yaw']!r}, {y['pitch']!r}) {y['yaw_bits']} {y['pitch_bits']}" if y else "-"
+            lines.append(f"    {lx:64} {ly}")
+        aa, ab = pair["actions"]
+        if aa != ab:
+            lines.append(f"    actions differ: {aa!r} vs {ab!r}")
+    lines.append(f"RESULT ({rep['minecraft']}): {'bit for bit' if rep['bit_exact'] else 'DIFFERENT'}")
+    return "\n".join(lines)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("runs", type=Path)
@@ -415,7 +752,24 @@ def main():
     parser.add_argument("--b", default="sunrise")
     parser.add_argument("--json", type=Path)
     parser.add_argument("--strict", action="store_true", help="exit 1 unless every packet of every route matches")
+    parser.add_argument("--look", action="store_true",
+                        help="26.3 exact float-bits rotation and look-dependent action comparison; exits 1 on mismatch")
+    parser.add_argument("--look-route", action="append", help="route to include with --look (default: 4 mouse-look routes)")
+    parser.add_argument("--witness", type=Path, help="recorded 26.3 look witness JSON to compare --b against")
     args = parser.parse_args()
+    if args.look or args.witness:
+        if args.witness:
+            witness = json.loads(args.witness.read_text(encoding="utf-8"))
+            rep = compare_look_against_witness(runs_of(args.runs, args.b), witness, args.b)
+        else:
+            routes = args.look_route or list(DEFAULT_LOOK_ROUTES)
+            rep = compare_look_runs(runs_of(args.runs, args.a), runs_of(args.runs, args.b), routes, (args.a, args.b))
+        if args.json:
+            args.json.write_text(json.dumps(rep, indent=1))
+        print(describe_look(rep))
+        if not rep["bit_exact"]:
+            raise SystemExit(1)
+        return
     rep = report_runs(args.runs, (args.a, args.b))
     if args.json:
         args.json.write_text(json.dumps(rep, indent=1))

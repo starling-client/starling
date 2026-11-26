@@ -8,11 +8,12 @@ submissions. This compares order, not frustum culling, fire, pixels or GPU draw 
 import json
 import os
 
-try:
-    from . import lab, oracle_harness
-except ImportError:
-    import lab
-    import oracle_harness
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, oracle_harness
 
 
 def snapshots(path):
@@ -40,8 +41,8 @@ def main():
         CARGO_TARGET_DIR=lab.LOCAL / "parity-target",
     )
     oracle_harness.run_logged(
-        ["cargo", "test", "--locked", "-p", "sunrise-client", "--lib",
-         "entity_draw_order_after_client_packets", "--", "--ignored", "--nocapture"],
+        [lab.parity_fixtures(),
+         "entity_draw_order_after_client_packets", "--ignored", "--nocapture"],
         build, "rust", env=env, timeout=2400)
     expected, actual = snapshots(build / "vanilla.log"), snapshots(build / "rust.log")
     frames = scene.read_text().splitlines().count("frame")

@@ -1,0 +1,3 @@
+ids = ["hook:on_item_use_first", "hook:use_item_on", "hook:use_without_item", "method:ItemPart::on_item_use_first", "method:BlockPart::use_item_on", "method:BlockPart::use_without_item"]
+why = "The held item's first refusal and the clicked state's two block behaviours now run on both logical sides (version 2). Clients can replace prediction without suppressing the authoritative request."
+migrate = "Take HostSide in all three Part methods. Match HostSide::Server for writes. On HostSide::Client return None to let the template predict or return a replacement result; only Success swings locally. The empty-hand method runs only after a main-hand TryWithEmptyHand, even if the hand holds an item."

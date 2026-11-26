@@ -1,0 +1,3 @@
+ids = ["hook:player_handshake", "type:PlayerHandshakeEvent", "type:HookId"]
+why = "New server hook player_handshake runs on the server thread for a login or allowed transfer, after the protocol and transfer checks and before the login hello. Listeners may rewrite the requested host, which each later listener sees, or cancel the login with a reason. The requested port, protocol version and peer address are each listener's own copy of the handshake's values. A reason that fails Text validation or does not fit the login disconnect packet falls back to the standard Disconnected text. HookId gains its variant."
+migrate = "Nothing to migrate. A mod that matches HookId exhaustively adds the new arm; one with a wildcard arm compiles unchanged."

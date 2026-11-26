@@ -288,8 +288,9 @@ fn one_scroll_path_moves_the_list_for_wheel_and_stick_alike() {
     let mut s = Settings::default();
     let mut shell = Shell::<Probe>::default();
     let rate = SCROLL_RATE;
-    // The wheel away from any row, and `scroll`, which a stick and a D-pad use.
-    shell.wheel(&mut s, SIZE, (0.0, 0.0), -1.0);
+    // Wheel over the list and `scroll`, which a stick and a D-pad use.
+    let over_list = middle_of(&mut shell, CHOICE, SIZE);
+    assert!(shell.wheel(&mut s, SIZE, over_list, -1.0).0);
     assert_eq!(shell.scroll.amount, rate);
     shell.scroll(&s, SIZE, -2.0);
     assert_eq!(shell.scroll.amount, 3.0 * rate);
@@ -307,13 +308,14 @@ fn the_wheel_steps_a_row_only_with_the_extra_on_and_only_where_the_screen_says()
     assert_eq!(shell.scroll.amount, SCROLL_RATE);
     s.extras.wheel_cycles_settings = true;
     shell.scroll.amount = 0.0;
-    let outputs = shell.wheel(&mut s, SIZE, over_choice, -1.0);
+    let (handled, outputs) = shell.wheel(&mut s, SIZE, over_choice, -1.0);
+    assert!(handled);
     assert_eq!(outputs, vec![CHANGED]);
     assert_eq!(shell.screen.choice, 1);
     assert_eq!(shell.scroll.amount, 0.0);
     // A row the screen doesn't step scrolls, the greyed one too.
     let over_grey = middle_of(&mut shell, GREY, SIZE);
-    assert!(shell.wheel(&mut s, SIZE, over_grey, -1.0).is_empty());
+    assert!(shell.wheel(&mut s, SIZE, over_grey, -1.0).1.is_empty());
     assert_eq!(shell.scroll.amount, SCROLL_RATE);
 }
 
@@ -839,4 +841,247 @@ fn the_right_button_steps_no_choice_as_vanillas_cycle_button() {
             .is_empty()
     );
     assert!(shell.screen.pressed.is_empty());
+}
+
+/// A screen of `PAGES` + 1 pages under no section line: more than a short view's page list has
+/// room for.
+#[derive(Default)]
+struct Flat;
+impl Screen for Flat {
+    type Page = u8;
+    type Row = u32;
+    fn title(&self) -> &'static str {
+        "Flat"
+    }
+    fn stamp(&self, _: &Settings) -> u64 {
+        0
+    }
+    fn sheets(&self, _: &Settings) -> Vec<Sheet<u8, u32>> {
+        let page = |i: u8| {
+            let row = Row::new(u32::from(i), format!("Row {i}"), Value::Press);
+            let group = Group {
+                name: "G",
+                rows: vec![row],
+            };
+            Sheet::new(i, format!("Page {i}"), String::new(), vec![group])
+        };
+        (HOME..=PAGES).map(page).collect()
+    }
+    fn press(&mut self, _: &mut Settings, _: u32, _: bool) -> Vec<Output> {
+        vec![CHANGED]
+    }
+    fn undoes(&self) -> bool {
+        true
+    }
+}
+
+/// A page list with no section line that doesn't fit scrolls instead of collapsing: the pages
+/// in view are tabs one under another above Undo, the wheel over them scrolls them, a click
+/// under them picks nothing, the keys step on to a page out of view and scroll it in, and a
+/// page opened out of view is scrolled in.
+#[test]
+fn a_page_list_with_no_sections_that_does_not_fit_scrolls() {
+    let mut s = Settings::default();
+    let mut shell = Shell::<Flat>::default();
+    let size = drawn(&mut shell, &s, SHORT_WINDOW);
+    let cols = Columns::of(size.0, size.1);
+    let room = cols.page_room();
+    assert!(room < usize::from(PAGES) + 1, "the list must not fit");
+    let shown =
+        |shell: &Shell<Flat>| -> Vec<u8> { shell.page_places().iter().map(|p| p.0).collect() };
+    assert_eq!(shown(&shell), (0..room as u8).collect::<Vec<_>>());
+    assert_eq!(shell.strip_ends(), None, "no collapsed row");
+    for (_, [x, y, w, h], part) in shell.page_places() {
+        assert_eq!(part, Part::Tab);
+        assert!(x >= cols.side_x && x + w <= cols.side_x + style::CONTROL_W);
+        assert!(
+            y + h <= cols.button(1)[1],
+            "every tab in view is above Undo"
+        );
+    }
+    // A click where the next page would be, under the last in view, picks nothing.
+    let below = cols.page(room);
+    shell.click(&mut s, middle(below), size, false, false, false);
+    assert_eq!(shell.open_page(), None);
+    // The wheel over the tabs scrolls them by one; over the plate's list it scrolls that.
+    let over_tabs = middle(cols.page(0));
+    assert!(shell.wheel(&mut s, size, over_tabs, -1.0).0);
+    drawn(&mut shell, &s, SHORT_WINDOW);
+    assert_eq!(shown(&shell), (1..=room as u8).collect::<Vec<_>>());
+    assert!(shell.wheel(&mut s, size, over_tabs, 1.0).0);
+    drawn(&mut shell, &s, SHORT_WINDOW);
+    assert_eq!(shown(&shell)[0], 0);
+    // The keys: from the last tab in view, Down goes on to the next and scrolls it in.
+    let last = room as u8 - 1;
+    shell.set_focus(Some(Target::Page(last)));
+    shell.key(&mut s, K::ArrowDown, None, false, size);
+    assert_eq!(shell.focused(), Some(Target::Page(last + 1)));
+    drawn(&mut shell, &s, SHORT_WINDOW);
+    assert!(shown(&shell).contains(&(last + 1)));
+    // A page opened out of view is in view, lit, once drawn.
+    shell.show(PAGES);
+    drawn(&mut shell, &s, SHORT_WINDOW);
+    assert_eq!(shell.lit_page(), Some(PAGES));
+    assert_eq!(shown(&shell).last(), Some(&PAGES));
+}
+
+/// Pages out of a scrolled page list's view take no spatial step: Down from the search field
+/// lands on the first page in view, and Up from Done on Undo, not on a page hidden there.
+#[test]
+fn the_arrow_keys_never_land_on_a_page_out_of_view() {
+    let mut s = Settings::default();
+    let mut shell = Shell::<Flat>::default();
+    let size = drawn(&mut shell, &s, SHORT_WINDOW);
+    let cols = Columns::of(size.0, size.1);
+    let over_tabs = middle(cols.page(0));
+    shell.wheel(&mut s, size, over_tabs, -1.0);
+    shell.wheel(&mut s, size, over_tabs, -1.0);
+    drawn(&mut shell, &s, SHORT_WINDOW);
+    let first = shell.page_places()[0].0;
+    assert_eq!(first, 2, "scrolled by two");
+    shell.set_focus(Some(Target::Search));
+    shell.key(&mut s, K::ArrowDown, None, false, size);
+    assert_eq!(shell.focused(), Some(Target::Page(first)));
+    // A change shows Undo over Done; Up from Done goes to it.
+    // The open page is the first, scrolled out of the page list: its row is in the plate.
+    let at = shell.point_at(&s, size, u32::from(HOME));
+    assert!(
+        !shell
+            .click(&mut s, at, size, false, false, false)
+            .is_empty()
+    );
+    drawn(&mut shell, &s, SHORT_WINDOW);
+    shell.set_focus(Some(Target::Done));
+    shell.key(&mut s, K::ArrowUp, None, false, size);
+    assert_eq!(shell.focused(), Some(Target::Undo));
+}
+
+/// A controller's focus on the last page in a scrolled page list's view scrolls the next page in,
+/// the list moving up a place; on the first, the one before scrolls in, the list moving down.
+#[test]
+fn a_controllers_focus_at_a_page_lists_end_scrolls_the_next_page_in() {
+    let s = Settings::default();
+    let mut shell = Shell::<Flat>::default();
+    let size = drawn(&mut shell, &s, SHORT_WINDOW);
+    let places = shell.page_places();
+    let room = places.len();
+    let (_, last, _) = places[room - 1];
+    assert_eq!(Hosted::reveal(&mut shell, &s, size, last), Some(-PAGE_STEP));
+    drawn(&mut shell, &s, SHORT_WINDOW);
+    let shown: Vec<u8> = shell.page_places().iter().map(|p| p.0).collect();
+    assert_eq!(shown, (1..=room as u8).collect::<Vec<_>>());
+    let (_, first, _) = shell.page_places()[0];
+    assert_eq!(Hosted::reveal(&mut shell, &s, size, first), Some(PAGE_STEP));
+    drawn(&mut shell, &s, SHORT_WINDOW);
+    assert_eq!(shell.page_places()[0].0, 0);
+    // At the list's top there is nothing before it: the focus stays, nothing moves.
+    let (_, first, _) = shell.page_places()[0];
+    assert_eq!(Hosted::reveal(&mut shell, &s, size, first), None);
+}
+
+/// A controller's bumpers on a page list that scrolls step through every page in list order,
+/// those out of view too, each scrolled into view where the returned tab is, and wrap: RB from
+/// the first round to it, LB the other way.
+#[test]
+#[ignore = "daily"]
+fn the_bumpers_walk_every_page_of_a_scrolling_list_and_wrap() {
+    let s = Settings::default();
+    let mut shell = Shell::<Flat>::default();
+    let size = drawn(&mut shell, &s, SHORT_WINDOW);
+    let all: Vec<u8> = (HOME..=PAGES).collect();
+    for (next, order) in [
+        (
+            true,
+            all.iter()
+                .skip(1)
+                .chain([&HOME])
+                .copied()
+                .collect::<Vec<_>>(),
+        ),
+        (false, all.iter().rev().copied().collect()),
+    ] {
+        let mut walked = Vec::new();
+        for _ in 0..all.len() {
+            let rect = Hosted::step_page(&mut shell, &s, size, next).expect("a scrolling list");
+            drawn(&mut shell, &s, SHORT_WINDOW);
+            let page = shell.open_page().unwrap();
+            walked.push(page);
+            let place = shell.page_places().into_iter().find(|p| p.0 == page);
+            assert_eq!(
+                place.map(|p| p.1),
+                Some(rect),
+                "page {page} where it was said to be"
+            );
+        }
+        assert_eq!(walked, order, "next {next}");
+    }
+}
+
+/// Up (or Shift Tab) from the first page in view of a scrolled list goes on to the page before
+/// it, out of view, and scrolls it in.
+#[test]
+fn up_from_the_first_page_in_view_scrolls_the_one_before_in() {
+    let mut s = Settings::default();
+    let mut shell = Shell::<Flat>::default();
+    let size = drawn(&mut shell, &s, SHORT_WINDOW);
+    let over_tabs = middle(Columns::of(size.0, size.1).page(0));
+    shell.wheel(&mut s, size, over_tabs, -1.0);
+    shell.wheel(&mut s, size, over_tabs, -1.0);
+    drawn(&mut shell, &s, SHORT_WINDOW);
+    for (key, shift) in [(K::ArrowUp, false), (K::Tab, true)] {
+        let first = shell.page_places()[0].0;
+        assert!(first > 0);
+        shell.set_focus(Some(Target::Page(first)));
+        shell.key(&mut s, key, None, shift, size);
+        assert_eq!(shell.focused(), Some(Target::Page(first - 1)), "{key:?}");
+        drawn(&mut shell, &s, SHORT_WINDOW);
+        assert_eq!(shell.page_places()[0].0, first - 1);
+    }
+}
+
+/// The wheel taking the focused page out of view moves the focus to the nearest page in view.
+#[test]
+fn a_focused_page_the_wheel_scrolls_away_hands_the_focus_on() {
+    let mut s = Settings::default();
+    let mut shell = Shell::<Flat>::default();
+    let size = drawn(&mut shell, &s, SHORT_WINDOW);
+    shell.set_focus(Some(Target::Page(HOME)));
+    let over_tabs = middle(Columns::of(size.0, size.1).page(0));
+    shell.wheel(&mut s, size, over_tabs, -1.0);
+    drawn(&mut shell, &s, SHORT_WINDOW);
+    let first = shell.page_places()[0].0;
+    assert_eq!(first, 1);
+    assert_eq!(shell.focused(), Some(Target::Page(first)));
+}
+
+/// While searching, the bumpers pass over the pages with no matches, wrapping; and the wheel
+/// hands a focused page it scrolls away to the nearest page in view with matches, not the
+/// nearest one.
+#[test]
+fn while_searching_the_bumpers_and_the_wheel_pass_over_pages_without_matches() {
+    let mut s = Settings::default();
+    let mut shell = Shell::<Flat>::default();
+    // "Row 1", "Row 10", "Row 11" and "Row 12".
+    shell.set_search("Row 1");
+    let size = drawn(&mut shell, &s, SHORT_WINDOW);
+    assert_eq!(shell.lit_page(), Some(1));
+    let mut walked = Vec::new();
+    for _ in 0..4 {
+        Hosted::step_page(&mut shell, &s, size, true).unwrap();
+        drawn(&mut shell, &s, SHORT_WINDOW);
+        walked.push(shell.lit_page().unwrap());
+    }
+    assert_eq!(walked, [10, 11, 12, 1]);
+    // Page 10 focused, the list at its top: one notch down shows pages 1 to 6, of which only
+    // page 1 has matches.
+    let over_tabs = middle(Columns::of(size.0, size.1).page(0));
+    while shell.page_places()[0].0 != 0 {
+        shell.wheel(&mut s, size, over_tabs, 1.0);
+        drawn(&mut shell, &s, SHORT_WINDOW);
+    }
+    shell.set_focus(Some(Target::Page(10)));
+    shell.wheel(&mut s, size, over_tabs, -1.0);
+    drawn(&mut shell, &s, SHORT_WINDOW);
+    assert_eq!(shell.page_places()[0].0, 1);
+    assert_eq!(shell.focused(), Some(Target::Page(1)));
 }

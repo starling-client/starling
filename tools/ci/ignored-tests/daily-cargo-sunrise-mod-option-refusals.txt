@@ -1,1 +1,3 @@
+cargo-sunrise-mod check_fit_refuses_project_options_before_fetching_an_sdk test:option_refusals daily child-process
+cargo-sunrise-mod pin_in_a_content_mod_is_refused_before_any_build_is_resolved test:option_refusals daily child-process
 cargo-sunrise-mod update_lock_is_refused_for_a_content_mod test:option_refusals daily child-process

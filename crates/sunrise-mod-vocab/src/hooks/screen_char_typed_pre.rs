@@ -1,5 +1,4 @@
 //! The `screen_char_typed_pre` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0109
 
 pub trait Hooks {
     /// A character was typed at the open screen
@@ -7,9 +6,10 @@ pub trait Hooks {
     /// `screen` is the screen it is, `c` the character, `modifiers` GLFW's
     /// bits (shift 1, control 2, alt 4, super 8), and `field` a copy of the
     /// focused text box. Set `canceled` and that one character never reaches
-    /// a text box.
+    /// the focused child or text box.
     ///
-    /// `field` is `None` with no box focused, and for the boxes that keep
+    /// `field` is `None` for custom mounted widgets, with no box focused, and
+    /// for the vanilla boxes that keep
     /// their own validators: Options' and World Options' fields, the game
     /// rules' and the block editor's. `cursor` and `highlight` count Unicode
     /// scalar characters, and a character sees the box as the one before it
@@ -20,7 +20,7 @@ pub trait Hooks {
     /// name) follows it. `max_length`, `multiline` and whether `field` is
     /// `None` stay the box's: a change to them does nothing.
     ///
-    /// It fires once per printable character of a key press's text and once
+    /// It fires once per printable character (even with no physical key) and once
     /// per character of the input method's committed text, never for a control
     /// character (Enter, Backspace, Tab, Delete, Escape, a Control letter):
     /// those are keys, and the game reads them as keys, not as text. A key's
@@ -34,13 +34,14 @@ pub trait Hooks {
     /// cancelled `KeyPressed.Pre`: the characters left reach the text box
     /// without the key's own effects. Cancelling one character drops only that
     /// one. The control socket's `type` fires it too, but not for its `\b`
-    /// backspace. Same screens as the key press, and it fires with no text box
-    /// focused (there is nothing to take the character then).
+    /// backspace. Same receiving screens as the key press, including overlays;
+    /// it also fires with no text box focused.
     #[hook(
         target = "sunrise_client::game::native_hooks::base::Game<'_>::native_screen_char_typed_pre",
         receiver = "read",
         dispatch = "flat",
         side = "client",
+        version = 2,
         contract = "cancel",
         out = "canceled",
         neoforge = "ScreenEvent.CharacterTyped.Pre",

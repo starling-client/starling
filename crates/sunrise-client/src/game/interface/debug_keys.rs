@@ -88,6 +88,29 @@ impl Game<'_> {
             _ => OpenScreen::Other,
         }
     }
+    /// Clear held debug modifier and F3+C crash countdown on release without firing debug or
+    /// screen actions while a context menu is modal or owns this key's press.
+    #[inline(always)]
+    pub(super) fn debug_key_release_cleanup(&mut self, key: KeyCode) {
+        if !self.debug_keys.modifier_down && self.debug_keys.crash_key_time <= 0 {
+            return;
+        }
+        let Some(name) = keybinds::key_name(key) else {
+            return;
+        };
+        if name == self.settings.keys.get("key.debug.modifier") {
+            self.debug_keys.modifier_down = false;
+            self.debug_keys.used_debug_key_as_modifier = false;
+        }
+        if self.debug_keys.crash_key_time > 0 {
+            let crash_down = keybinds::key_code(self.settings.keys.get("key.debug.crash"))
+                .is_some_and(|k| self.physical_keys.contains(&k));
+            if !crash_down || !self.debug_keys.modifier_down {
+                self.debug_keys.crash_key_time = -1;
+            }
+        }
+    }
+
     /// A physical key event (already in `physical_keys`) before the game's
     /// own handling. Returns true when it is used up (a debug combination,
     /// F3 itself, F3+Escape).
@@ -97,6 +120,12 @@ impl Game<'_> {
         };
         let pressed = action != KeyAction::Release;
         let switcher_open = self.screen == Screen::GameModeSwitcher;
+        if switcher_open && self.context_menu_open() {
+            if !pressed {
+                self.debug_key_release_cleanup(key);
+            }
+            return false;
+        }
         if switcher_open && pressed {
             if name == self.settings.keys.get("key.debug.switchGameMode") {
                 if let Some(switcher) = &mut self.gamemode_switcher {
@@ -478,14 +507,55 @@ impl Game<'_> {
                 )
             });
         d.priority(format!(
-            "{} fps{generated} T: {}{present} @{refresh}Hz",
+            "{} fps{generated} T: {}{present} @{refresh}Hz{}",
             self.fps.round() as i32,
             if limit == 260 {
                 "inf".into()
             } else {
                 limit.to_string()
             },
+            self.debug_fps_suffix(),
         ));
+    }
+
+    /// The mods' texts for the frame rate line, each after a space, in mod load order (the order
+    /// `set_debug_fps_text` keeps them in); a disabled mod's is left out. Written straight into
+    /// the line, with nothing collected first.
+    fn debug_fps_suffix(&self) -> impl std::fmt::Display + '_ {
+        struct Suffix<'a>(std::cell::Ref<'a, Vec<(&'static str, String)>>);
+        impl std::fmt::Display for Suffix<'_> {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                for (id, text) in self.0.iter() {
+                    if mod_api::__private::mod_index(id)
+                        .is_some_and(mod_api::__private::mod_index_on)
+                    {
+                        write!(f, " {text}")?;
+                    }
+                }
+                Ok(())
+            }
+        }
+        Suffix(self.debug_fps_texts.borrow())
+    }
+
+    /// `DebugEntryFps.display` with a mod's own text after vanilla's, as Dynamic FPS adds its
+    /// state there: `text` replaces what the calling mod set before, and `None` or an empty text
+    /// takes it away. Line breaks become spaces, as the line is one line. The texts are kept in
+    /// mod load order, so the line is drawn without sorting. False, setting nothing, when no
+    /// mod is calling.
+    pub(in crate::game) fn set_debug_fps_text(&self, text: Option<&str>) -> bool {
+        let Some(id) = mod_api::content::crash::current_native_mod() else {
+            return false;
+        };
+        let mut texts = self.debug_fps_texts.borrow_mut();
+        texts.retain(|(owner, _)| *owner != id);
+        if let Some(text) = text.filter(|text| !text.is_empty()) {
+            let index = mod_api::__private::mod_index(id);
+            let at =
+                texts.partition_point(|(owner, _)| mod_api::__private::mod_index(owner) <= index);
+            texts.insert(at, (id, text.replace(['\n', '\r'], " ")));
+        }
+        true
     }
     /// `DebugEntrySimplePerformanceImpactors`.
     pub(super) fn debug_performance_lines(&self, d: &mut debug_overlay::Displayer) {
@@ -497,7 +567,7 @@ impl Game<'_> {
             } else {
                 ""
             },
-            match s.clouds.as_str() {
+            match self.effective_clouds() {
                 "false" => "",
                 "fast" => "fast-clouds ",
                 _ => "fancy-clouds ",
@@ -756,7 +826,7 @@ impl Game<'_> {
             DebugAction::Spectate => {
                 if self.player.is_none() || !self.gamemaster() {
                     self.debug_translated("debug.creative_spectator.error");
-                } else if self.mode != GameMode::Spectator {
+                } else if !self.own_player_is_spectator() {
                     self.change_game_mode(GameMode::Spectator);
                 } else {
                     let back = self.previous_mode.unwrap_or(GameMode::Creative);
@@ -870,11 +940,23 @@ impl Game<'_> {
                 let dir = sunrise_client::logging::player_dir()
                     .join("screenshots")
                     .join("debug");
-                match self
+                let atlas = self
                     .gui
                     .atlas
-                    .dump_contents(&dir, "minecraft_textures_atlas_gui")
+                    .dump_contents(&dir, "minecraft_textures_atlas_gui");
+                // Each client mod's dynamic texture is a GPU texture of its own
+                // (`DynamicTexture.dumpContents`), read back beside the atlas.
+                if let Some(renderer) = &self.renderer
+                    && let Err(e) = renderer.hud.dynamic().dump_contents(
+                        &renderer.device,
+                        &renderer.queue,
+                        self.dynamic_textures.live(),
+                        &dir,
+                    )
                 {
+                    log::error!("Failed to dump mod dynamic textures: {e}");
+                }
+                match atlas {
                     Ok(_) => {
                         log::info!("Dumped dynamic textures to {}", dir.display());
                         let link = Text::styled(
@@ -1080,12 +1162,12 @@ impl Game<'_> {
         self.bounding_box_gizmos(camera, &mut g);
         self.debug_renderer_gizmos(&mut g);
         if self.debug_entry("chunk_borders")
-            && let Some(p) = &self.player
+            && let Some(pos) = self.camera_entity_position()
         {
             let block = [
-                p.position.x.floor() as i32,
-                p.position.y.floor() as i32,
-                p.position.z.floor() as i32,
+                pos[0].floor() as i32,
+                pos[1].floor() as i32,
+                pos[2].floor() as i32,
             ];
             let min_y = self.world.bottom_y();
             g.chunk_borders(block, min_y, min_y + self.world.layout().height() - 1);
@@ -1093,10 +1175,21 @@ impl Game<'_> {
         if !self.debug_entry("entity_hitboxes") {
             return g;
         }
+        let hide_camera = self
+            .camera_type
+            .is_first_person()
+            .then(|| {
+                self.remote
+                    .as_ref()
+                    .filter(|r| r.detached_camera.is_none())
+                    .and_then(|r| r.camera)
+                    .map(|id| id as u32)
+            })
+            .flatten();
         let lerp = |a: f64, b: f64| a + f64::from(alpha) * (b - a);
         let lerpf = |a: f32, b: f32| a + alpha * (b - a);
         for m in self.mobs.iter() {
-            if m.removed || m.is_invisible() {
+            if m.removed || m.is_invisible() || hide_camera == Some(m.id) {
                 continue;
             }
             let pos = [
@@ -1116,14 +1209,24 @@ impl Game<'_> {
                 view,
             );
         }
+        // A client's copy of the server's entity: the size its `entity_size` answer gave it
+        // (`refreshDimensions`), else its kind's.
+        let sized = |id: u32, size: (f32, f32), eye: f32| match self.client_copy_answer(id) {
+            Some([width, height, eye]) => ((width, height), eye),
+            None => (size, eye),
+        };
         for item in &self.dropped {
+            if hide_camera == Some(item.id) {
+                continue;
+            }
             let pos = [
                 lerp(item.previous.x, item.position.x),
                 lerp(item.previous.y, item.position.y),
                 lerp(item.previous.z, item.position.z),
             ];
             // EntityType.ITEM: 0.25 by 0.25, eyes at 0.2125.
-            g.hitbox(pos, (0.25, 0.25), 0.2125, false, (0.0, 0.0));
+            let (size, eye) = sized(item.id, (0.25, 0.25), 0.2125);
+            g.hitbox(pos, size, eye, false, (0.0, 0.0));
         }
         // The other entities (EntityTypes sizes; eyes at 0.85 of the height
         // unless the type sets one). `at` is the interpolated position.
@@ -1135,35 +1238,61 @@ impl Game<'_> {
             ]
         };
         for p in &self.paintings {
+            if hide_camera == Some(p.id) {
+                continue;
+            }
             let (min, max) = p.bounds();
             let centre = std::array::from_fn(|i| (min[i] + max[i]) / 2.0);
             g.entity_box(min, max, centre, 0.425, false, step_view(p.step()));
         }
-        for f in self.item_frames.iter().filter(|f| !f.invisible) {
+        for f in self
+            .item_frames
+            .iter()
+            .filter(|f| !f.invisible && hide_camera != Some(f.id))
+        {
             let (min, max) = f.bounds();
             let centre = std::array::from_fn(|i| (min[i] + max[i]) / 2.0);
             g.entity_box(min, max, centre, 0.0, false, step_view(f.step()));
         }
         for c in &self.cushions {
+            if hide_camera == Some(c.id) {
+                continue;
+            }
             let (min, max) = c.bounds();
             let p = c.position;
             g.entity_box(min, max, [p.x, p.y, p.z], 0.2125, false, (0.0, c.yaw));
         }
-        // Interaction: EntityDimensions.scalable(width, height), so its eyes
-        // are at 0.85 of the height. Its rotation is not kept here.
-        for i in self.interactions.values() {
-            let b = i.bounds();
-            let p = i.position;
+        for (&id, i) in &self.interactions {
+            if hide_camera == Some(id as u32) {
+                continue;
+            }
+            let pos = at(i.previous, i.position);
+            // Its `entity_size` answer's size on a client's copy, else its synched one.
+            let (width, height, eye) = self
+                .client_copy_answer(id as u32)
+                .map_or((i.width, i.height, i.eye_height()), |[w, h, e]| (w, h, e));
+            let half = f64::from(width) / 2.0;
+            let b = sunrise_core::geometry::Aabb::new(
+                Vec3::new(pos[0] - half, pos[1], pos[2] - half),
+                Vec3::new(pos[0] + half, pos[1] + f64::from(height), pos[2] + half),
+            );
             g.entity_box(
                 [b.min(Axis::X), b.min(Axis::Y), b.min(Axis::Z)],
                 [b.max(Axis::X), b.max(Axis::Y), b.max(Axis::Z)],
-                [p.x, p.y, p.z],
-                i.height.max(0.0) * 0.85,
+                pos,
+                eye,
                 false,
-                (0.0, 0.0),
+                (
+                    lerpf(i.previous_pitch, i.pitch),
+                    lerpf(i.previous_yaw, i.yaw),
+                ),
             );
         }
-        for a in self.armor_stands.iter().filter(|a| !a.invisible) {
+        for a in self
+            .armor_stands
+            .iter()
+            .filter(|a| !a.invisible && hide_camera != Some(a.id))
+        {
             // ArmorStand.getDimensions: a marker has none, a small one is
             // half scale with its eyes at 0.9875.
             let (size, eye) = match (a.marker, a.small) {
@@ -1171,6 +1300,7 @@ impl Game<'_> {
                 (_, true) => ((0.25, 0.9875), 0.9875),
                 _ => ((0.5, 1.975), 1.7775),
             };
+            let (size, eye) = sized(a.id, size, eye);
             g.hitbox(
                 at(a.previous, a.position),
                 size,
@@ -1180,60 +1310,57 @@ impl Game<'_> {
             );
         }
         for b in &self.boats {
+            if hide_camera == Some(b.id) {
+                continue;
+            }
             let h = super::boats::HEIGHT as f32;
-            g.hitbox(
-                at(b.previous, b.position),
-                (super::boats::WIDTH as f32, h),
-                h,
-                false,
-                (0.0, b.yaw),
-            );
+            let (size, eye) = sized(b.id, (super::boats::WIDTH as f32, h), h);
+            g.hitbox(at(b.previous, b.position), size, eye, false, (0.0, b.yaw));
         }
         for c in &self.carts {
+            if hide_camera == Some(c.id) {
+                continue;
+            }
             let (w, h) = (
                 super::minecarts::WIDTH as f32,
                 super::minecarts::HEIGHT as f32,
             );
-            g.hitbox(
-                at(c.previous, c.position),
-                (w, h),
-                h * 0.85,
-                false,
-                (0.0, c.yaw),
-            );
+            let (size, eye) = sized(c.id, (w, h), h * 0.85);
+            g.hitbox(at(c.previous, c.position), size, eye, false, (0.0, c.yaw));
         }
         for o in &self.orbs {
-            g.hitbox(
-                at(o.previous, o.position),
-                (0.5, 0.5),
-                0.425,
-                false,
-                (0.0, 0.0),
-            );
+            if hide_camera == Some(o.id) {
+                continue;
+            }
+            let (size, eye) = sized(o.id, (0.5, 0.5), 0.425);
+            g.hitbox(at(o.previous, o.position), size, eye, false, (0.0, 0.0));
         }
         for f in &self.falling {
-            g.hitbox(
-                at(f.previous, f.position),
-                (0.98, 0.98),
-                0.833,
-                false,
-                (0.0, 0.0),
-            );
+            if hide_camera == Some(f.id) {
+                continue;
+            }
+            let (size, eye) = sized(f.id, (0.98, 0.98), 0.833);
+            g.hitbox(at(f.previous, f.position), size, eye, false, (0.0, 0.0));
         }
         for t in &self.tnts {
-            g.hitbox(
-                at(t.previous, t.position),
-                (0.98, 0.98),
-                0.15,
-                false,
-                (0.0, 0.0),
-            );
+            if hide_camera == Some(t.id) {
+                continue;
+            }
+            let (size, eye) = sized(t.id, (0.98, 0.98), 0.15);
+            g.hitbox(at(t.previous, t.position), size, eye, false, (0.0, 0.0));
         }
         for c in &self.crystals {
+            if hide_camera == Some(c.id) {
+                continue;
+            }
             let p = c.position;
-            g.hitbox([p.x, p.y, p.z], (2.0, 2.0), 1.7, false, (0.0, 0.0));
+            let (size, eye) = sized(c.id, (2.0, 2.0), 1.7);
+            g.hitbox([p.x, p.y, p.z], size, eye, false, (0.0, 0.0));
         }
         for p in &self.creatures.projectiles {
+            if hide_camera == Some(p.id) {
+                continue;
+            }
             use sunrise_client::projectiles::ProjectileKind as K;
             let (size, eye) = match p.kind {
                 K::Arrow { .. } | K::Trident => (0.5, 0.13),
@@ -1250,19 +1377,24 @@ impl Game<'_> {
                 K::WindCharge | K::BreezeWindCharge => (0.3125, 0.0),
                 K::LargeFireball { .. } | K::DragonFireball => (1.0, 0.85),
             };
+            let (size, eye) = sized(p.id, (size, size), eye);
             g.hitbox(
                 at(p.previous, p.position),
-                (size, size),
+                size,
                 eye,
                 false,
                 (p.pitch, p.yaw),
             );
         }
         for t in &self.tridents {
+            if hide_camera == Some(t.id) {
+                continue;
+            }
+            let (size, eye) = sized(t.id, (0.5, 0.5), 0.13);
             g.hitbox(
                 at(t.previous, t.position),
-                (0.5, 0.5),
-                0.13,
+                size,
+                eye,
                 false,
                 (t.pitch, t.yaw),
             );
@@ -1279,17 +1411,15 @@ impl Game<'_> {
             );
         }
         for r in &self.rockets {
+            if hide_camera == Some(r.id) {
+                continue;
+            }
             // Projectile.updateRotation: the look follows the motion.
             let v = r.velocity;
             let yaw = v.x.atan2(v.z).to_degrees() as f32;
             let pitch = v.y.atan2(v.x.hypot(v.z)).to_degrees() as f32;
-            g.hitbox(
-                at(r.previous, r.position),
-                (0.25, 0.25),
-                0.2125,
-                false,
-                (pitch, yaw),
-            );
+            let (size, eye) = sized(r.id, (0.25, 0.25), 0.2125);
+            g.hitbox(at(r.previous, r.position), size, eye, false, (pitch, yaw));
         }
         for h in self
             .hook
@@ -1305,10 +1435,11 @@ impl Game<'_> {
         // AreaEffectCloud.getDimensions: diameter follows synced radius,
         // height is 0.5; EntityDimensions.scalable gives eyes at 85% height.
         for c in &self.potions.clouds {
-            g.hitbox(c.at, (c.radius * 2.0, 0.5), 0.425, false, (0.0, 0.0));
+            let (size, eye) = sized(c.id, (c.radius * 2.0, 0.5), 0.425);
+            g.hitbox(c.at, size, eye, false, (0.0, 0.0));
         }
         // The dragon: 16 by 8, a living entity; its parts follow.
-        if let Some(d) = self.dragon.as_ref() {
+        if let Some(d) = self.dragon.as_ref().filter(|d| hide_camera != Some(d.id)) {
             g.hitbox(
                 at(d.previous, d.position),
                 (16.0, 8.0),
@@ -1329,7 +1460,7 @@ impl Game<'_> {
             }
         }
         // The player's own, unless the camera is in its head.
-        if !self.camera_type.is_first_person()
+        if (!self.camera_type.is_first_person() || !self.controls_camera())
             && let Some(p) = &self.player
         {
             let d = p.dimensions;
@@ -1443,6 +1574,59 @@ impl DensityCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A mod's text follows F3's frame rate line, several in mod load order; `None` takes it
+    /// away, and a call outside a mod sets nothing.
+    #[test]
+    #[ignore = "daily"]
+    fn mods_add_their_text_to_the_frame_rate_line() {
+        use mod_api::{Hooks, ModEntry};
+        use sunrise_client::crash::{ModCall, enter_native_mod};
+        struct Quiet;
+        #[mod_api::__subscriptions]
+        impl Hooks for Quiet {}
+        let as_mod = |id: &'static str, f: &mut dyn FnMut()| {
+            let _call = enter_native_mod(ModCall {
+                id,
+                hook: "client_tick_post",
+                part: None,
+            });
+            f()
+        };
+        let mods = vec![
+            ModEntry::new("first", Box::new(Quiet)),
+            ModEntry::new("second", Box::new(Quiet)),
+        ];
+        mod_platform::testing::with_mods(mods.into(), || {
+            crate::game::native_entity_refs::tests::with_client_game(|game| {
+                let line = |game: &Game<'_>| {
+                    let mut d = debug_overlay::Displayer::default();
+                    game.debug_fps_line(&mut d);
+                    let (left, _) = d.columns(&[]);
+                    left.into_iter().next().unwrap()
+                };
+                let vanilla = line(game);
+                assert!(!game.set_debug_fps_text(Some("outside")));
+                assert_eq!(line(game), vanilla);
+                as_mod("second", &mut || {
+                    assert!(game.set_debug_fps_text(Some("§c(2 fps)\nidle")));
+                });
+                as_mod("first", &mut || {
+                    assert!(game.set_debug_fps_text(Some("one")));
+                });
+                assert_eq!(line(game), format!("{vanilla} one §c(2 fps) idle"));
+                as_mod("first", &mut || {
+                    assert!(game.set_debug_fps_text(None));
+                });
+                assert_eq!(line(game), format!("{vanilla} §c(2 fps) idle"));
+                // An empty text takes the mod's text away too, as `None` does.
+                as_mod("second", &mut || {
+                    assert!(game.set_debug_fps_text(Some("")));
+                });
+                assert_eq!(line(game), vanilla);
+            });
+        });
+    }
 
     fn block(x: i32) -> QueryReply {
         QueryReply::Block {

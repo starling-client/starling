@@ -407,6 +407,9 @@ trait Source: Sized {
     /// `Number.floatValue`.
     fn float(&self) -> Option<f32>;
     fn tag(&self) -> Tag;
+    fn nbt(&self) -> Option<&Tag> {
+        None
+    }
 }
 
 impl Source for Tag {
@@ -457,6 +460,9 @@ impl Source for Tag {
     }
     fn tag(&self) -> Tag {
         self.clone()
+    }
+    fn nbt(&self) -> Option<&Tag> {
+        Some(self)
     }
 }
 
@@ -509,11 +515,14 @@ pub enum Reference {
     Tag(String),
 }
 
+type PersistentText<'a> = dyn Fn(&Tag) -> Option<Tag> + 'a;
+
 /// The registries shared by the dialog and its text components.
 struct Reader<'a> {
     registries: &'a Registries,
     item: &'a dyn Fn(&str) -> bool,
     references: RefCell<Vec<Reference>>,
+    persistent_text: Option<&'a PersistentText<'a>>,
 }
 
 /// The path of a failing field: its name, then the path inside it.
@@ -608,7 +617,13 @@ impl Reader<'_> {
     fn dialog_nbt<S: Source>(&self, t: &S) -> Result<Tag, String> {
         let dialog = self.dialog(
             t,
-            |v| self.text(v, |click| click.encode("action")),
+            |v| {
+                if let Some(component) = self.persistent_text {
+                    component(v.nbt().ok_or_default()?).ok_or_default()
+                } else {
+                    self.text(v, |click| click.encode("action"))
+                }
+            },
             || Tag::compound([("translate", Tag::String("gui.ok".into()))]),
         )?;
         Ok(dialog.encode())
@@ -787,7 +802,7 @@ impl Reader<'_> {
     /// `Dialog.CODEC`: an id of the dialog registry, or the dialog itself.
     fn holder<S: Source>(&self, t: &S) -> Result<Tag, String> {
         if t.is_map() {
-            return self.dialog_nbt(t);
+            return sunrise_core::nbt::with_tree_stack(|| self.dialog_nbt(t));
         }
         let id = identifier(t)?;
         self.references.borrow_mut().push(Reference::Id(id.clone()));
@@ -1078,6 +1093,23 @@ impl<T> OkOrDefault<T> for Option<T> {
     }
 }
 
+/// Read and encode the `Dialog.CODEC` holder in a persistent text component,
+/// retaining registry references by id and using the caller's NBT text codec.
+pub fn persistent_holder(
+    tag: &Tag,
+    registries: &Registries,
+    item: &dyn Fn(&str) -> bool,
+    text: &dyn Fn(&Tag) -> Option<Tag>,
+) -> Option<Tag> {
+    let reader = Reader {
+        registries,
+        item,
+        references: RefCell::default(),
+        persistent_text: Some(text),
+    };
+    sunrise_core::nbt::with_tree_stack(|| reader.holder(tag).ok())
+}
+
 impl Dialog {
     /// Decode a packet dialog against the dynamic registry of the phase that sent it.
     pub fn parse_in_registry(
@@ -1111,6 +1143,7 @@ impl Dialog {
             registries,
             item,
             references: RefCell::default(),
+            persistent_text: None,
         };
         let dialog = reader
             .dialog(
@@ -1161,6 +1194,7 @@ impl Dialog {
             registries,
             item,
             references: RefCell::default(),
+            persistent_text: None,
         };
         let dialog = reader.dialog_nbt(value)?;
         Ok((dialog, reader.references.into_inner()))
@@ -1428,6 +1462,7 @@ mod tests {
                 registries: &Registries::default(),
                 item: &|_| true,
                 references: RefCell::default(),
+                persistent_text: None,
             };
             reader.action(&action).ok().and_then(|a| a.click(&[], &[]))
         };

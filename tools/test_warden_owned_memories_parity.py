@@ -1,8 +1,8 @@
 import hashlib,json,sys,uuid
 from pathlib import Path
-sys.path.insert(0,str(Path.cwd()/'tools'))
-import test_command_exec_parity as driver
-import harness_args
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_command_exec_parity as driver, harness_args
 CASES=[('ai-finite',0,'{memories:{"minecraft:is_emerging":{value:{},ttl:2L},"minecraft:dig_cooldown":{value:{},ttl:1200L}}}'),('noai-finite',1,'{memories:{"minecraft:is_emerging":{value:{},ttl:2L},"minecraft:dig_cooldown":{value:{},ttl:1200L},"minecraft:sniff_cooldown":{value:{},ttl:17L}}}'),('ai-absent',0,None),('noai-empty',1,'{memories:{}}'),('noai-permanent',1,'{memories:{"minecraft:is_emerging":{value:{}},"minecraft:dig_cooldown":{value:{}}}}')]
 TIMES=[0,1,2,3,5]
 def program():

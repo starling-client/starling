@@ -1,0 +1,2 @@
+ids = ["method:SettingsRegistrar::register_config_screen", "trait:ConfigScreenFactory", "method:ConfigScreenFactory::create_screen"]
+why = "A mod can give the Mods screen's Config button its own screen, as NeoForge's IConfigScreenFactory does: Config shows for the mod even without settings, opens the mod's screen over the Mods screen, and closing that screen returns to the Mods screen with the mod still selected."

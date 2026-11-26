@@ -1,6 +1,7 @@
 //! Library identities are produced by compilation, then hashed at publication.
 use serde::{Deserialize, Serialize};
-use std::{fs, path::Path};
+use std::{collections::HashMap, fs, path::Path};
+use sunrise_mod_package::index::registry::builds::library_identity;
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Library {
@@ -12,7 +13,45 @@ pub struct Library {
     pub identity: String,
 }
 
-pub fn stamp(path: &Path, build: &str, id: &str, version: &str, patch: bool) -> Result<(), String> {
+/// The recorded identity of each library built so far, by mod id: what its dependents are built
+/// against.
+#[derive(Default)]
+pub struct Identities(HashMap<String, String>);
+
+impl Identities {
+    /// Mod `id`'s library identity as its entry exports it, without the panic strategy the library
+    /// appends: built for `build` from the files `source` digests, against the native mods among
+    /// `linked` built before it.
+    pub fn next<'a>(
+        &mut self,
+        build: &str,
+        id: &str,
+        version: &str,
+        source: &str,
+        linked: impl IntoIterator<Item = &'a str>,
+    ) -> String {
+        let exported = library_identity(
+            [build, id, version, crate::rust::VERSION],
+            source,
+            linked.into_iter().filter_map(|dependency| {
+                self.0
+                    .get(dependency)
+                    .map(|identity| (dependency, identity.as_str()))
+            }),
+        );
+        // Every library, the patch library too, is built with `unwind`: the game unwinds a
+        // refused Host call through the mod's frames, and the loader refuses `abort` by name.
+        self.0.insert(id.to_owned(), format!("{exported} unwind"));
+        exported
+    }
+
+    /// The identity mod `id`'s library records, as the build record keeps it.
+    pub fn recorded(&self, id: &str) -> &str {
+        &self.0[id]
+    }
+}
+
+pub fn stamp(path: &Path, id: &str, identity: &str, patch: bool) -> Result<(), String> {
     let row = Library {
         file: path
             .file_name()
@@ -22,14 +61,7 @@ pub fn stamp(path: &Path, build: &str, id: &str, version: &str, patch: bool) -> 
         sha256: String::new(),
         kind: if patch { "patch" } else { "mod" }.into(),
         mod_id: id.into(),
-        // Every library, the patch library too, names its panic strategy as its entry's export
-        // does; the loader refuses `abort` by name.
-        identity: sunrise_mod_package::index::registry::builds::library_identity(
-            build,
-            id,
-            version,
-            crate::rust::VERSION,
-        ),
+        identity: identity.into(),
     };
     fs::write(
         path.with_extension("identity.json"),
@@ -110,7 +142,7 @@ mod tests {
         for path in [&mod_library, &shared] {
             fs::write(path, b"abc").unwrap();
         }
-        stamp(&mod_library, "build", "one", "1", false).unwrap();
+        stamp(&mod_library, "one", "build one 1", false).unwrap();
         let rows = collect(&[mod_library, shared]).unwrap();
         assert_eq!(
             rows.iter().map(|r| r.file.as_str()).collect::<Vec<_>>(),
@@ -127,14 +159,8 @@ mod tests {
             .collect();
         for (i, p) in paths.iter().enumerate() {
             fs::write(p, b"abc").unwrap();
-            stamp(
-                p,
-                "build",
-                ["dependency", "sunrise_patch", "dependent"][i],
-                "1",
-                i == 1,
-            )
-            .unwrap();
+            let id = ["dependency", "sunrise_patch", "dependent"][i];
+            stamp(p, id, &format!("identity of {id}"), i == 1).unwrap();
         }
         let rows = collect(&paths).unwrap();
         assert_eq!(
@@ -148,14 +174,39 @@ mod tests {
         let json = serde_json::to_value(&rows).unwrap();
         assert_eq!(json[0]["mod"], "dependency");
         assert_eq!(json[2]["kind"], "patch");
-        // The patch library's identity is the five fields the loader reads, as a mod's is.
+        assert_eq!(rows[2].identity, "identity of sunrise_patch");
+    }
+
+    /// A library's identity names the identity of each native mod it links, so a rebuilt
+    /// dependency, or a rebuilt dependency of a dependency, gives its dependents another identity.
+    #[test]
+    fn an_identity_follows_its_dependencies_transitively() {
+        let identities = |base_source: &str| {
+            let mut built = Identities::default();
+            let mut exported = Vec::new();
+            for (id, source, linked) in [
+                ("base", base_source, &[][..]),
+                ("library", "s2", &["base"][..]),
+                // `absent` was not built: an optional dependency left out links nothing.
+                ("dependent", "s3", &["library", "absent"][..]),
+            ] {
+                exported.push(built.next("build", id, "1", source, linked.iter().copied()));
+            }
+            (exported, built)
+        };
+        let (exported, built) = identities("s1");
+        let rust = crate::rust::VERSION;
+        assert_eq!(exported[0], format!("build base 1 {rust} s1 none"));
+        assert_eq!(built.recorded("base"), format!("{} unwind", exported[0]));
+        let hash = |text: &str| sunrise_mod_package::index::sha256(text.as_bytes());
         assert_eq!(
-            rows[2].identity,
-            format!("build sunrise_patch 1 {} unwind", crate::rust::VERSION)
+            exported[2],
+            format!(
+                "build dependent 1 {rust} s3 library={}",
+                hash(built.recorded("library"))
+            )
         );
-        assert_eq!(
-            rows[0].identity,
-            format!("build dependency 1 {} unwind", crate::rust::VERSION)
-        );
+        let (rebuilt, _) = identities("s1b");
+        assert!(exported.iter().zip(&rebuilt).all(|(a, b)| a != b));
     }
 }

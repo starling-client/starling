@@ -22,12 +22,10 @@ import sys
 import zipfile
 from pathlib import Path, PurePosixPath
 
-try:
-    from . import lab
-except ImportError:
-    import lab
-
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab
+
 GAME = lab.GAME
 MAC = sys.platform == "darwin"
 LIBRARY_SUFFIXES = {"linux": ".so", "osx": ".dylib", "windows": ".dll"}

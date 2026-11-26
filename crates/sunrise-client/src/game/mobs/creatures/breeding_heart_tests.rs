@@ -22,6 +22,7 @@ fn a_bred_turtle_posts_no_heart_burst_but_a_bred_frog_does() {
             None,
             None,
             sunrise_client::mobs::BreedExperience::Deferred,
+            true,
         );
         let burst = game
             .lan_entity_events

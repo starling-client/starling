@@ -1,0 +1,3 @@
+ids = ["hook:gaze_disguise", "type:GazeDisguiseEvent", "type:HookId"]
+why = "Adds the server hook gaze_disguise (NeoForge IItemExtension.isGazeDisguise, vanilla PLAYER_NOT_WEARING_DISGUISE_ITEM), asked by an enderman's stare check and an awake creaking's look check: a mod may say a head item disguises the player's gaze, or that one vanilla treats as a disguise (a carved pumpkin) does not. enderman_anger could only suppress a stare, never count one the head-item test had hidden. New hook: no existing hook version changes."
+migrate = "Additive. A mod that matches HookId exhaustively adds the GazeDisguise arm."

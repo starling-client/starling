@@ -10,11 +10,12 @@ its cost and the item's name component are outside scope.
 import os
 import random
 import subprocess
-try:
-    from . import lab, test_rust_parity as base
-except ImportError:
-    import lab
-    import test_rust_parity as base
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_rust_parity as base
 
 # Characters the names are drawn from: every Java space char and whitespace, their neighbours, and others.
 POOL = ([chr(c) for c in range(0x00, 0x21)] + ['\x7f', '\x85', '\xa0', '\xa7', ' ', '᠎', '​',

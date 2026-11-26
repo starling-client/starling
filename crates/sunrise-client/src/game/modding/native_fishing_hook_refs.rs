@@ -65,7 +65,7 @@ mod tests {
             default: || 0,
             codec: None,
             copy_on_death: false,
-            sync: false,
+            sync_codec: None,
         };
         with_game(|game| {
             game.options.dedicated = Some(Vec::new());

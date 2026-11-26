@@ -1,0 +1,4 @@
+{"category": "neutral", "color": 1, "attribute_modifiers": [
+  {"attribute": "minecraft:armor", "id": "refused_mob_effect_attribute_twice:first", "amount": 1, "operation": "add_value"},
+  {"attribute": "minecraft:armor", "id": "refused_mob_effect_attribute_twice:second", "amount": 2, "operation": "add_value"}
+]}

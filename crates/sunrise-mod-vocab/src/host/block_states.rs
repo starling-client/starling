@@ -44,31 +44,6 @@ pub trait BlockStatesHost {
     /// None for an item that places no block, and for an unknown item.
     fn item_block(&self, item: ItemKey) -> Option<BlockKey>;
 }
-/// The server host's methods of the `block_states` area, implemented by the game and reached through [`ServerHost`].
-#[sunrise_mod_api_macros::host_area]
-pub trait BlockStatesServerHost {
-    /// Side: server.
-    /// Sets property `key` of the block at `pos` to `value`, as a furnace's
-    /// tick sets its `lit` (`Level.setBlock` with `UPDATE_ALL`: neighbours
-    /// and clients are told); true when the block changed, false when the
-    /// block has no such property or value, or the property already has
-    /// `value` (as `Level.setBlock` for an unchanged state). The block
-    /// entity stays.
-    fn set_block_property(&mut self, pos: [i32; 3], key: &str, value: &str) -> bool;
-    /// Side: server.
-    /// `native_set_block_property` with `Level.setBlock`'s `flags`, as a
-    /// brewing stand's tick sets its bottles with `flags::UPDATE_CLIENTS`.
-    /// Players get the write when `UPDATE_CLIENTS` is set; false when this
-    /// window isn't a server, and in each case `native_set_block_property`
-    /// returns false.
-    fn set_block_property_with(
-        &mut self,
-        pos: [i32; 3],
-        key: &str,
-        value: &str,
-        flags: i32,
-    ) -> bool;
-}
 /// The handles' reads of the `block_states` area, implemented by the game and reached through [`Backend`].
 // hidden: a handle's backend, reached through `Backend`; mods call the handle, never this trait
 #[doc(hidden)]
@@ -102,6 +77,15 @@ pub trait BlockStatesBackend {
         name: &str,
     ) -> Result<Option<&str>, BlockStateError>;
     /// Side: both.
+    /// Visit each property of this `BlockState` with its serialized value, in name order, from
+    /// immutable block metadata.
+    #[forward_api_inputs]
+    fn block_metadata_visit_properties(
+        &self,
+        state: BlockState,
+        visit: &mut dyn FnMut(&str, &str),
+    ) -> Result<(), BlockStateError>;
+    /// Side: both.
     /// Return a `BlockState` with one property changed, without a world write.
     #[forward_api_inputs]
     #[forward_api_output]
@@ -119,6 +103,18 @@ pub trait BlockStatesBackend {
         block: BlockKey,
         properties: &[StateConstraint],
     ) -> Result<BlockState, BlockStateError>;
+    /// Side: both.
+    /// The key of the block registered as `id`, read by `BlockMetadata::key`.
+    fn block_metadata_key(&self, id: &str) -> Option<BlockKey>;
+    /// Side: both.
+    /// The properties of `block`, read by `BlockMetadata::state_definition`.
+    fn block_metadata_state_definition(
+        &self,
+        block: BlockKey,
+    ) -> Result<StateProperties<'_>, BlockStateError>;
+    /// Side: both.
+    /// The owned metadata read by `BlockStates::metadata`.
+    fn block_metadata_snapshot(&self) -> Option<std::sync::Arc<dyn BlockMetadata + Send + Sync>>;
     /// Side: both.
     /// `BlockState.canBeReplaced()`: whether placing a block where this state stands
     /// replaces it (air, grass, water, snow layers). None for an unknown state.
@@ -150,8 +146,10 @@ pub trait BlockStatesBackend {
     /// addition: vanilla only reads it per position.
     fn block_state_explosion_resistance(&self, state: BlockState) -> Option<f32>;
     /// Side: both.
-    /// `BlockState.getSoundType()`: its volume, pitch and the sound events for breaking,
-    /// stepping on, placing, hitting and falling on it. None for an unknown state.
+    /// `BlockState.getSoundType()`: its identity, volume, pitch and the sound events for breaking,
+    /// stepping on, placing, hitting and falling on it. The keys describe the base state,
+    /// not the contextual answer of a block part or the events in the loaded sound resources.
+    /// None for an unknown state.
     fn block_state_sound(&self, state: BlockState) -> Option<BlockSoundType>;
     /// Side: both.
     /// `BlockState.hasBlockEntity()`. None for an unknown state.
@@ -175,10 +173,62 @@ pub trait BlockStatesBackend {
     /// for slime. None for an unknown state.
     fn block_state_friction(&self, state: BlockState) -> Option<f32>;
     /// Side: both.
+    /// The speed factor of the state's block (`Block.getSpeedFactor`, its
+    /// `BlockBehaviour.Properties.speedFactor`): 1.0 for most blocks, 0.4 for soul sand and
+    /// honey. The declared value, not what the block's parts answer in a level. None for an
+    /// unknown state.
+    fn block_state_speed_factor(&self, state: BlockState) -> Option<f32>;
+    /// Side: both.
+    /// The jump factor of the state's block (`Block.getJumpFactor`, its
+    /// `BlockBehaviour.Properties.jumpFactor`): 1.0 for most blocks, 0.5 for honey. The
+    /// declared value, not what the block's parts answer in a level. None for an unknown state.
+    fn block_state_jump_factor(&self, state: BlockState) -> Option<f32>;
+    /// Side: both.
+    /// The state's collision boxes with an empty collision context, in block-local
+    /// coordinates (`[min_x, min_y, min_z, max_x, max_y, max_z]`; a box may leave the cell, as a
+    /// fence's reaches y 1.5), and whether they hold at every position ([`StateCollision`]).
+    /// None for an unknown state.
+    fn block_state_collision(&self, state: BlockState) -> Option<StateCollision>;
+    /// Side: both.
+    /// The bounce restitution and fall-distance reduction the state's block declares
+    /// (`BlockBehaviour.Properties.bounceRestitution`, `fallDistanceReduction`): 0.75 and 0.5 for
+    /// beds and the shelf mushroom, a bounce of 1.0 for slime, 0 for most blocks. The static
+    /// properties only: neither a block part's `bounce_restitution` nor a custom `fallOn` (hay's
+    /// 0.2 fall damage multiplier). None for an unknown state.
+    fn block_state_landing(&self, state: BlockState) -> Option<BlockLanding>;
+    /// Side: both.
+    /// The state's walking path type (`WalkNodeEvaluator.getPathTypeFromState`) after the block
+    /// parts' `isPathfindable` answers: `Blocked`, `Open`, `Fire`, `Damaging`, `Lava`, `Water`,
+    /// `StickyHoney`, `PowderSnow`, `Fence`, doors, trapdoors, leaves. The state alone: neither the
+    /// per-position `block_path_type` hook nor the neighbour rules (`checkNeighbourBlocks`:
+    /// `FireInNeighbor`, `DamagingInNeighbor`) apply. None for an unknown state.
+    fn block_state_path_type(&self, state: BlockState) -> Option<PathType>;
+    /// Side: both.
     /// `BlockState.isSolidRender()`: whether the state is a full, occluding cube for rendering
     /// and light (stone yes; glass, leaves and slabs no). Not `isSolid` and not full collision.
     /// None for an unknown state.
     fn block_state_is_solid_render(&self, state: BlockState) -> Option<bool>;
+    /// Side: both.
+    /// `BlockState.isSolid()`, the cached `legacySolid`, read by `BlockStates::is_solid`.
+    fn block_state_is_solid(&self, state: BlockState) -> Option<bool>;
+    /// Side: both.
+    /// The cached `isCollisionShapeFullBlock`, read by `BlockStates::collision_is_full_block`.
+    fn block_state_collision_is_full_block(&self, state: BlockState) -> Option<bool>;
+    /// Side: both.
+    /// `PoiTypes.forState`: the point of interest type the state belongs to (`minecraft:home`
+    /// for a bed's head, `minecraft:librarian` for a lectern, `minecraft:meeting` for a bell),
+    /// the states mods add with `extend_poi_types` included. None for a state that is in no
+    /// POI type and for an unknown state.
+    fn block_state_poi_type(&self, state: BlockState) -> Option<Identifier>;
+    /// Side: both.
+    /// `BlockState.propagatesSkylightDown()`: whether sky light passes down through the state
+    /// unchanged, the block's own answer included (glass, barriers and vegetation override the
+    /// shape's). None for an unknown state.
+    fn block_state_propagates_skylight_down(&self, state: BlockState) -> Option<bool>;
+    /// Side: both.
+    /// `BlockState.isAir()`: air, cave air and void air, by the block's own flag rather than
+    /// the `#minecraft:air` tag a data pack may change. None for an unknown state.
+    fn block_state_is_air(&self, state: BlockState) -> Option<bool>;
     /// Side: both.
     /// `BlockState.isRedstoneConductor` for a state alone. None if the state is unknown
     /// or the predicate needs a level and position.
@@ -190,6 +240,12 @@ pub trait BlockStatesBackend {
         state: BlockState,
         class: BlockClass,
     ) -> Result<Option<bool>, LevelReadError>;
+    /// Side: both.
+    /// The read of `BlockStates::is_liquid_block_container`.
+    fn block_state_is_liquid_block_container(&self, state: BlockState) -> Option<bool>;
+    /// Side: both.
+    /// The read of `BlockStates::is_simple_waterlogged`.
+    fn block_state_is_simple_waterlogged(&self, state: BlockState) -> Option<bool>;
     /// Side: both.
     /// The resolved reaction read by `BlockStates::piston_push_reaction`.
     #[forward_api_inputs]
@@ -227,6 +283,53 @@ pub trait BlockStatesBackend {
     /// fluid, an amount above 8, a zero amount for anything but the empty fluid, or a source
     /// that isn't full) and without a resolved registry.
     fn fluid_legacy_block(&self, state: FluidState) -> Option<BlockState>;
+    /// Side: both.
+    /// The outline of `state` as `BlockState.getShape` answers it with an empty getter at the
+    /// origin (`EmptyBlockGetter.INSTANCE`, `BlockPos.ZERO`): its boxes, each `[min x, y, z,
+    /// max x, y, z]` in the block's own space, with no random offset and none of a world's
+    /// context (a state that reads its neighbours or block entity answers what its state alone
+    /// gives). Empty for a state with no outline, such as air. None for an id no state has.
+    fn block_state_outline(&self, state: BlockState)
+    -> Result<Option<&[[f64; 6]]>, LevelReadError>;
+    /// Side: both.
+    /// The fluid state `state` holds (`BlockState.getFluidState`): water for a waterlogged state,
+    /// the empty fluid for most. None for an id no state has.
+    fn block_state_fluid_state(
+        &self,
+        state: BlockState,
+    ) -> Result<Option<FluidState>, LevelReadError>;
+    /// Side: both.
+    /// Whether `fluid` and `other` are the same fluid (`Fluid.isSame`): a source and its
+    /// flowing form are, so `minecraft:water` and `minecraft:flowing_water` are the same, water
+    /// and lava not. False when either key has no world fluid.
+    fn fluid_is_same(&self, fluid: FluidKey, other: FluidKey) -> Result<bool, LevelReadError>;
+    /// Side: both.
+    /// The bucket item that picks `fluid` up (`Fluid.getBucket`), `minecraft:water_bucket` for
+    /// water and flowing water, and for a mod's fluid, tank-only or not, the `bucket_item` it
+    /// names (a world fluid's generated `<id>_bucket` by default). None for `minecraft:empty`,
+    /// whose bucket is air, for a key with no bucket, for a named item no item has, and for one
+    /// of the game's own buckets that would not keep it: the empty bucket, another fluid's or a
+    /// mob's.
+    fn fluid_bucket(&self, fluid: FluidKey) -> Result<Option<ItemKey>, LevelReadError>;
+    /// Side: both.
+    /// The fluid a filled bucket the game registers holds (`BucketItem.content`), the inverse of
+    /// [`fluid_bucket`](Self::fluid_bucket) for those buckets: `minecraft:water` for
+    /// `minecraft:water_bucket`, `minecraft:lava` for `minecraft:lava_bucket`, a mod world
+    /// fluid's source for its generated bucket. None for any other item, the empty bucket and an
+    /// item a mod declares itself among them.
+    fn bucket_fluid(&self, bucket: ItemKey) -> Result<Option<FluidKey>, LevelReadError>;
+    /// Side: both.
+    /// The sound event a bucket plays as it picks `fluid` up (`Fluid.getPickupSound`),
+    /// `minecraft:item.bucket.fill_lava` for lava and flowing lava, `minecraft:item.bucket.fill`
+    /// for water and a mod's fluid with a bucket. None for `minecraft:empty`, which has none,
+    /// and for a tank-only fluid that names no bucket.
+    fn fluid_pickup_sound(&self, fluid: FluidKey) -> Result<Option<&'static str>, LevelReadError>;
+    /// Side: both.
+    /// The sound event a bucket plays as it empties `fluid` (`BucketItem.playEmptySound`, the
+    /// `BUCKET_EMPTY` sound of NeoForge's `FluidType`), `minecraft:item.bucket.empty_lava` for
+    /// lava and flowing lava and `minecraft:item.bucket.empty` for water and a mod's fluid with
+    /// a bucket. None for `minecraft:empty` and for a tank-only fluid that names no bucket.
+    fn fluid_empty_sound(&self, fluid: FluidKey) -> Result<Option<&'static str>, LevelReadError>;
     /// Side: both.
     /// Validate partial property constraints in input order with indexed errors.
     /// An unavailable or tank-only definition returns NoWorldState.

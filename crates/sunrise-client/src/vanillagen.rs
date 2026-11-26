@@ -15,13 +15,14 @@ use sunrise_core::{
 use {
     sunrise_core::nbt::Tag,
     sunrise_world::{
-        heightmap::HeightmapType,
+        heightmap::{HeightmapState, HeightmapType},
         item_defaults::ItemData,
-        registry::BlockRegistry,
+        registry::{BlockRegistry, BlockStateId},
         worldgen::{
             biome_source::regions::RegionLayout,
             generator::{
-                GeneratorData, GeneratorWorker, OverworldGenerator, ProtoChunk, SurfaceSample,
+                BiomeSourceData, DecorationDependencies, GenBlockStates, GeneratorData,
+                GeneratorWorker, OverworldGenerator, ProtoChunk, SurfaceSample,
             },
             overrides::WorldgenOverrides,
             structure::legacy::PieceRandom,
@@ -32,7 +33,93 @@ use {
 mod lod;
 mod structure_mobs;
 use lod::VanillaLodSampler;
+pub use structure_mobs::GeneratedMob;
 use structure_mobs::StructureMobFinalizer;
+
+/// Read-only view of resident `Arc<Chunk>` columns in the `FEATURES`
+/// `STRUCTURE_STARTS` dependency ring (Chebyshev distance `2..=8`).
+struct OuterColumns<'a>(&'a [Arc<Chunk>]);
+
+impl OuterColumns<'_> {
+    fn chunk(&self, cx: i32, cz: i32) -> Option<&Chunk> {
+        self.0
+            .iter()
+            .find(|c| c.x == cx && c.z == cz)
+            .map(Arc::as_ref)
+    }
+}
+
+impl DecorationDependencies for OuterColumns<'_> {
+    fn resident_block(&self, [x, y, z]: [i32; 3]) -> Option<BlockStateId> {
+        let chunk = self.chunk(x >> 4, z >> 4)?;
+        Some(chunk.block(x, y, z))
+    }
+    fn resident_height(
+        &self,
+        kind: HeightmapType,
+        x: i32,
+        z: i32,
+        build: (i32, i32),
+        properties: &GenBlockStates,
+    ) -> Option<i32> {
+        let (min_y, max_y) = build;
+        let chunk = self.chunk(x >> 4, z >> 4)?;
+        let low = min_y.max(chunk.min_y());
+        let high = max_y.min(chunk.max_y());
+        for y in (low..high).rev() {
+            let props = properties.get(chunk.block(x, y, z));
+            if !props.is_air_block() && kind.is_opaque(props) {
+                return Some(y + 1);
+            }
+        }
+        Some(min_y)
+    }
+}
+
+impl VanillaTerrain {
+    fn decorate_region(
+        &self,
+        worker: &mut GeneratorWorker,
+        region: &mut [Proto; 9],
+        dependencies: Option<&dyn DecorationDependencies>,
+    ) {
+        let taken: Vec<Box<VanillaProto>> = region
+            .iter_mut()
+            .map(|p| {
+                std::mem::replace(p, Box::new(()))
+                    .downcast::<VanillaProto>()
+                    .expect("vanilla proto")
+            })
+            .collect();
+        let all_ready = taken.iter().all(|p| matches!(**p, VanillaProto::Ready(_)));
+        if all_ready {
+            let (chunks, saved_biomes): (Vec<ProtoChunk>, Vec<Option<SavedBiomeCells>>) = taken
+                .into_iter()
+                .map(|p| match *p {
+                    VanillaProto::Ready(c) => (c.terrain_chunk, c.saved_biomes),
+                    VanillaProto::Failed(..) => unreachable!(),
+                })
+                .unzip();
+            let mut array: [ProtoChunk; 9] = match chunks.try_into() {
+                Ok(a) => a,
+                Err(_) => unreachable!(),
+            };
+            if let Err(e) = worker.decorate_with_dependencies(&mut array, dependencies) {
+                log::warn!("Sunrise: decorating chunk failed: {e}");
+            }
+            for ((slot, chunk), saved_biomes) in region.iter_mut().zip(array).zip(saved_biomes) {
+                *slot = Box::new(VanillaProto::Ready(Box::new(ResidentProto {
+                    terrain_chunk: chunk,
+                    saved_biomes,
+                })));
+            }
+        } else {
+            for (slot, p) in region.iter_mut().zip(taken) {
+                *slot = p;
+            }
+        }
+    }
+}
 
 /// The references a saved chunk keeps for its structure start: `(structure, chunk x, chunk z)`.
 pub type SavedReferences = std::sync::Arc<dyn Fn(&str, i32, i32) -> i32 + Send + Sync>;
@@ -285,15 +372,38 @@ impl VanillaTerrain {
         flat: &sunrise_world::worldgen::generator::FlatSettings,
         structures: bool,
     ) -> crate::Result<Self> {
-        let data: Arc<GeneratorData> = shared_resource_data(resources, overrides)?;
-        let generator = OverworldGenerator::flat(data, seed, flat, structures)?;
-        let mut terrain = Self::assemble(
+        Self::for_flat_level(
             resources,
-            generator,
+            overrides,
             seed,
-            "minecraft:normal",
+            flat,
+            structures,
             "minecraft:overworld",
+            None,
+        )
+    }
+
+    /// `FlatLevelSource` for a resolved level stem: the layers start at this
+    /// dimension's build minimum, and its structure references belong to it.
+    pub fn for_flat_level(
+        resources: TerrainResources<'_>,
+        overrides: &WorldgenOverrides,
+        seed: i64,
+        flat: &sunrise_world::worldgen::generator::FlatSettings,
+        structures: bool,
+        dimension: &str,
+        shape: Option<crate::chunk::LevelShape>,
+    ) -> crate::Result<Self> {
+        let data: Arc<GeneratorData> = shared_resource_data(resources, overrides)?;
+        let generator = OverworldGenerator::flat(
+            data,
+            seed,
+            flat,
+            structures,
+            shape.map(|s| (s.min_y, s.height)),
         )?;
+        let mut terrain =
+            Self::assemble(resources, generator, seed, "minecraft:normal", dimension)?;
         terrain.flat = true;
         Ok(terrain)
     }
@@ -302,16 +412,17 @@ impl VanillaTerrain {
     /// the save gives it). `structures` is the world's `generate_structures`.
     pub fn for_mod(
         resources: TerrainResources<'_>,
-        overrides: &WorldgenOverrides,
+        data: Arc<GeneratorData>,
         seed: i64,
         dimension: &str,
         stem: &serde_json::Value,
         generator: Arc<dyn sunrise_world::worldgen::mod_generators::ModChunkGenerator>,
+        source: Arc<sunrise_world::worldgen::biome_source::ResolvedBiomeSource>,
         structures: bool,
     ) -> crate::Result<Self> {
-        let data: Arc<GeneratorData> = shared_resource_data(resources, overrides)?;
-        let generator =
-            OverworldGenerator::for_mod(data, seed, dimension, stem, generator, structures)?;
+        let generator = OverworldGenerator::for_mod(
+            data, seed, dimension, stem, generator, source, structures,
+        )?;
         let mut terrain =
             Self::assemble(resources, generator, seed, "minecraft:normal", dimension)?;
         terrain.mod_terrain = true;
@@ -385,9 +496,6 @@ impl VanillaTerrain {
                 );
             }
         }
-        if let Some(root) = dir.parent() {
-            crate::mobs::trial_spawner::load_registry(root);
-        }
         let mut tick_blocks = Vec::with_capacity(registry.len());
         let mut tick_states = Vec::new();
         let mut block_entity_types = Vec::with_capacity(registry.len());
@@ -446,6 +554,11 @@ impl VanillaTerrain {
     pub fn set_mob_maps(&self, snapshot: &Arc<crate::neoforge_mob_maps::NeoForgeMobMaps>) {
         self.structure_mobs.set_mob_maps(snapshot);
     }
+    /// Publish this world's biome keys to the mod features its chunks decorate with
+    /// (`FeatureContext::biome`), from the next decoration on.
+    pub fn set_biome_keys(&self, keys: &Arc<mod_api::__private::BiomeKeys>) {
+        self.generator.mod_biome_keys().publish(Arc::clone(keys));
+    }
     /// Reads what generated mobs are finalized with on a thread of its own
     /// (`StructureMobFinalizer::load_behind`).
     pub fn load_structure_mobs_behind(&self) {
@@ -455,19 +568,26 @@ impl VanillaTerrain {
     pub fn region_random(&self, cx: i32, cz: i32) -> Box<dyn PieceRandom> {
         self.generator.region_random(ChunkPos::new(cx, cz))
     }
-    /// A mob chunk generation spawns, as the chunk saves it
-    /// (`StructureMobFinalizer::spawn_generated`).
+    /// Finalize a chunk-generation candidate for admission.
+    #[allow(clippy::too_many_arguments)]
     pub fn spawn_generated(
         &self,
-        kind: &str,
-        position: sunrise_core::geometry::Vec3,
-        yaw: f32,
+        mob: crate::mobs::Mob,
+        uuid: [i32; 4],
         biome: &str,
         random: &mut dyn PieceRandom,
         group: &mut Option<crate::mobs::finalize::Group>,
-    ) -> Option<sunrise_core::nbt::Compound> {
+        prepare: impl FnOnce(
+            &mut crate::mobs::Mob,
+            crate::mobs::spawning::LocalDifficulty,
+            &mut Option<crate::mobs::finalize::Group>,
+        ) -> (
+            crate::mobs::finalize::SpawnEvent,
+            crate::mobs::spawning::LocalDifficulty,
+        ),
+    ) -> Option<Vec<GeneratedMob>> {
         self.structure_mobs
-            .spawn_generated(kind, position, yaw, biome, random, group)
+            .spawn_generated(mob, uuid, biome, random, group, prepare)
     }
     /// Only the generated range of a proto chunk (the Nether is 0..256)
     /// is copied into a column.
@@ -762,22 +882,93 @@ impl VanillaTerrain {
         let worker = worker.get_or_insert_with(|| self.generator.worker());
         worker.noise_biomes(quarts)
     }
-    /// Exact undecorated surface queries, sharing the generator's bounded query worker.
-    /// Custom terrain without a noise surface has no answer. No gameplay chunk is allocated.
-    pub fn terrain_surfaces(&self, columns: &[(i32, i32)]) -> Vec<Option<crate::columns::Surface>> {
-        if self.mod_terrain {
-            return vec![None; columns.len()];
+    /// Create a fresh per-thread generator worker with structure-mob bindings.
+    pub fn new_worker(&self) -> GeneratorWorker {
+        <Self as ChunkGenerator>::worker(self)
+    }
+    /// Exact undecorated surface query using a caller-owned worker (no shared query lock).
+    /// Custom terrain without a noise surface returns `None`.
+    pub fn detached_surface(
+        &self,
+        worker: &mut GeneratorWorker,
+        x: i32,
+        z: i32,
+    ) -> Option<crate::columns::Surface> {
+        <Self as ChunkGenerator>::lod_surface(self, worker, x, z)
+    }
+    /// Generate one detached chunk purely in memory up to `stage` using a caller-owned worker,
+    /// without touching `World`, `Streaming`, or `SaveDir`. Returns `(chunk, has_light)`.
+    pub fn detached_chunk(
+        &self,
+        worker: &mut GeneratorWorker,
+        pos: [i32; 2],
+        stage: mod_api::GenerationStage,
+        light_tables: &crate::light::LightTables,
+        sky_light: bool,
+    ) -> std::result::Result<(Chunk, bool), String> {
+        use mod_api::GenerationStage;
+        use sunrise_world::worldgen::generator::ProtoStage;
+
+        let proto_stage = match stage {
+            GenerationStage::Biomes => Some(ProtoStage::Biomes),
+            GenerationStage::Noise => Some(ProtoStage::Noise),
+            GenerationStage::Surface => Some(ProtoStage::Surface),
+            GenerationStage::Carvers => Some(ProtoStage::Carvers),
+            GenerationStage::Features | GenerationStage::Light => None,
+            _ => return Err("unsupported generation stage".to_owned()),
+        };
+        if let Some(proto_stage) = proto_stage {
+            let proto = worker
+                .generate_proto_stage(ChunkPos::new(pos[0], pos[1]), proto_stage)
+                .map_err(|e| e.to_string())?;
+            return Ok((self.column(&proto), false));
         }
-        let mut worker = self.query.lock().unwrap_or_else(|e| e.into_inner());
-        let worker = worker.get_or_insert_with(|| self.generator.worker());
-        columns
-            .iter()
-            .map(|&(x, z)| {
-                worker
-                    .surface_sample(x, z)
-                    .map(|surface| self.client_surface(surface))
-            })
-            .collect()
+
+        // Features / Light: generate a 3x3 detached scratch neighbourhood and decorate center.
+        let mut protos = Vec::with_capacity(9);
+        for dz in -1..=1 {
+            for dx in -1..=1 {
+                let p = ChunkPos::new(pos[0].wrapping_add(dx), pos[1].wrapping_add(dz));
+                protos.push(
+                    worker
+                        .generate_proto_stage(p, ProtoStage::Carvers)
+                        .map_err(|e| e.to_string())?,
+                );
+            }
+        }
+        let mut region: [ProtoChunk; 9] = protos.try_into().map_err(|_| "3x3 region size")?;
+        worker.decorate(&mut region).map_err(|e| e.to_string())?;
+
+        if stage == GenerationStage::Features {
+            return Ok((self.column(&region[4]), false));
+        }
+
+        // Light: run Sunrise's real light engine over the detached 3x3 neighbourhood.
+        let mut center = self.column(&region[4]);
+        let neighbors: [Option<Chunk>; 9] = std::array::from_fn(|i| {
+            if i == 4 {
+                None
+            } else {
+                Some(self.block_column(&region[i]))
+            }
+        });
+        let grid: [[Option<&Chunk>; 3]; 3] = [
+            [
+                neighbors[0].as_ref(),
+                neighbors[1].as_ref(),
+                neighbors[2].as_ref(),
+            ],
+            [neighbors[3].as_ref(), Some(&center), neighbors[5].as_ref()],
+            [
+                neighbors[6].as_ref(),
+                neighbors[7].as_ref(),
+                neighbors[8].as_ref(),
+            ],
+        ];
+        let lights = crate::light::light_chunk(&grid, light_tables, sky_light);
+        crate::light::apply_lighting(&mut center, lights);
+        center.lit = true;
+        Ok((center, true))
     }
     /// `/place jigsaw`: `JigsawPlacement.addPieces`.
     pub fn jigsaw_pieces(
@@ -849,24 +1040,22 @@ impl VanillaTerrain {
 pub fn biome_modifiers_over_packs(
     dir: &Path,
     overrides: &WorldgenOverrides,
-) -> Option<WorldgenOverrides> {
-    let root = dir.parent()?;
-    // The modifiers code mods declared: they register after the content root is built.
+) -> crate::Result<Option<WorldgenOverrides>> {
+    let Some(root) = dir.parent() else {
+        return Ok(None);
+    };
     let declared: Vec<[String; 3]> = mod_api::__private::biome_modifier_declarations()
         .iter()
-        .filter_map(|d| {
-            let (mod_id, _) = d.id.split_once(':')?;
-            Some([mod_id.to_owned(), d.file(), d.modifier.json()])
-        })
+        .map(|d| [d.mod_id.clone(), d.file(), d.modifier.json()])
         .collect();
-    crate::mod_content::biome_modifiers_over_packs(root, overrides, &declared).unwrap_or_else(|e| {
-        log::warn!("Sunrise: biome modifiers over data packs: {e}");
-        None
-    })
+    crate::mod_content::biome_modifiers_over_packs(root, overrides, &declared)
 }
 /// A bundle directory, the data packs over it, and what loading them gave.
 type SharedEntry = (std::path::PathBuf, WorldgenOverrides, Arc<GeneratorData>);
 static SHARED_DATA: std::sync::Mutex<Vec<SharedEntry>> = std::sync::Mutex::new(Vec::new());
+type SharedBiomeEntry = (std::path::PathBuf, WorldgenOverrides, Arc<BiomeSourceData>);
+static SHARED_BIOME_DATA: std::sync::Mutex<Vec<SharedBiomeEntry>> =
+    std::sync::Mutex::new(Vec::new());
 /// Bundles with data packs kept besides the plain ones: a world's dimensions
 /// share one, and returning to a world finds it.
 const SHARED_WITH_PACKS: usize = 2;
@@ -877,8 +1066,38 @@ pub fn forget_shared_data() {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clear();
+    SHARED_BIOME_DATA
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
 }
-fn shared_resource_data(
+/// The biome, biome-tag and preset tables at `dir` with `overrides`, loaded once without
+/// terrain-stage inputs (`settings.json`, `noises.json`, `block_flags.json`, ...).
+pub fn shared_biome_source_data(
+    dir: &Path,
+    overrides: &WorldgenOverrides,
+) -> crate::Result<Arc<BiomeSourceData>> {
+    let mut cache = SHARED_BIOME_DATA.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, _, data)) = cache
+        .iter()
+        .find(|(path, o, _)| path == dir && o == overrides)
+    {
+        return Ok(data.clone());
+    }
+    let data = BiomeSourceData::load_with(dir, overrides)?;
+    for warning in data.warnings() {
+        log::warn!("Sunrise: data pack worldgen: {warning}");
+    }
+    if !overrides.is_empty()
+        && cache.iter().filter(|e| !e.1.is_empty()).count() >= SHARED_WITH_PACKS
+    {
+        let oldest = cache.iter().position(|e| !e.1.is_empty());
+        cache.remove(oldest.expect("counted"));
+    }
+    cache.push((dir.to_owned(), overrides.clone(), data.clone()));
+    Ok(data)
+}
+pub fn shared_resource_data(
     resources: TerrainResources<'_>,
     overrides: &WorldgenOverrides,
 ) -> crate::Result<Arc<GeneratorData>> {
@@ -895,24 +1114,31 @@ pub fn shared_data_from(
     source: &sunrise_assets::resource_source::ResourceSource,
 ) -> crate::Result<Arc<GeneratorData>> {
     let mut resolved = overrides.clone();
-    {
-        for name in source.list_under("data", &["structure"]) {
-            if let Some((namespace, path)) = name
-                .strip_prefix("data/")
-                .and_then(|rest| rest.split_once("/structure/"))
-                .and_then(|(ns, path)| Some((ns, path.strip_suffix(".nbt")?)))
-            {
-                let id = format!("{namespace}:{path}");
-                if !resolved.templates().contains_key(&id) {
-                    resolved.set_template(
-                        id,
-                        sunrise_assets::resource_source::Resource::file(source.clone(), name),
-                    );
-                }
+    add_passive_structure_templates(&mut resolved, source);
+    shared_data_with(dir, &resolved, registry)
+}
+
+/// Passive templates sit below selected packs; admission and generation use
+/// the same template lookup when decoding configured features.
+pub fn add_passive_structure_templates(
+    overrides: &mut WorldgenOverrides,
+    source: &sunrise_assets::resource_source::ResourceSource,
+) {
+    for name in source.list_under("data", &["structure"]) {
+        if let Some((namespace, path)) = name
+            .strip_prefix("data/")
+            .and_then(|rest| rest.split_once("/structure/"))
+            .and_then(|(ns, path)| Some((ns, path.strip_suffix(".nbt")?)))
+        {
+            let id = format!("{namespace}:{path}");
+            if !overrides.templates().contains_key(&id) {
+                overrides.set_template(
+                    id,
+                    sunrise_assets::resource_source::Resource::file(source.clone(), name),
+                );
             }
         }
     }
-    shared_data_with(dir, &resolved, registry)
 }
 /// The worldgen bundle at `dir`, loaded once and shared by every generator
 /// and by live feature placement (sapling growth, bone meal).
@@ -937,7 +1163,11 @@ pub fn shared_data_with(
         return Ok(data.clone());
     }
     let started = std::time::Instant::now();
-    let modified = biome_modifiers_over_packs(dir, overrides);
+    let modified = if overrides.has_admitted_biome_generation() {
+        None
+    } else {
+        biome_modifiers_over_packs(dir, overrides)?
+    };
     let data = GeneratorData::load_with(dir, registry, modified.as_ref().unwrap_or(overrides))?;
     log::info!("Sunrise: worldgen data loaded in {:?}", started.elapsed());
     for warning in data.warnings() {
@@ -954,6 +1184,9 @@ pub fn shared_data_with(
 }
 impl ChunkGenerator for VanillaTerrain {
     type Worker = GeneratorWorker;
+    fn spawn_height(&self) -> i32 {
+        self.generator.flat_spawn_height().unwrap_or(64)
+    }
     fn set_saved_starts(
         &self,
         source: Arc<sunrise_world::worldgen::generator::SavedStructureStarts>,
@@ -1002,12 +1235,17 @@ impl ChunkGenerator for VanillaTerrain {
             worker.structure_starts(ChunkPos::new(x, z));
         }
     }
-    fn proto(&self, worker: &mut GeneratorWorker, x: i32, z: i32) -> Proto {
+    fn proto(
+        &self,
+        worker: &mut GeneratorWorker,
+        x: i32,
+        z: i32,
+    ) -> std::result::Result<Proto, String> {
         self.last_proto.store(
             self.elapsed_ms().max(1),
             std::sync::atomic::Ordering::Relaxed,
         );
-        match worker.generate_proto(ChunkPos::new(x, z)) {
+        Ok(match worker.generate_proto(ChunkPos::new(x, z)) {
             Ok(chunk) => Box::new(VanillaProto::Ready(Box::new(ResidentProto {
                 terrain_chunk: chunk,
                 saved_biomes: None,
@@ -1016,7 +1254,7 @@ impl ChunkGenerator for VanillaTerrain {
                 log::warn!("Sunrise: generating chunk {x} {z} failed: {e}");
                 Box::new(VanillaProto::Failed(x, z))
             }
-        }
+        })
     }
     fn decorates(&self) -> bool {
         true
@@ -1028,7 +1266,7 @@ impl ChunkGenerator for VanillaTerrain {
     /// chunk's blocks over it, so that features read and write it as they do
     /// the chunks around it (`ChunkAccess` of a full chunk in the region).
     fn proto_beside_final(&self, worker: &mut GeneratorWorker, snapshot: &Chunk) -> Option<Proto> {
-        let mut proto = self.proto(worker, snapshot.x, snapshot.z);
+        let mut proto = self.proto(worker, snapshot.x, snapshot.z).ok()?;
         self.restore_proto(
             &mut proto,
             SavedProto {
@@ -1090,68 +1328,23 @@ impl ChunkGenerator for VanillaTerrain {
             .collect()
     }
     fn decorate(&self, worker: &mut GeneratorWorker, region: &mut [Proto; 9]) {
-        let taken: Vec<Box<VanillaProto>> = region
-            .iter_mut()
-            .map(|p| {
-                std::mem::replace(p, Box::new(()))
-                    .downcast::<VanillaProto>()
-                    .expect("vanilla proto")
-            })
-            .collect();
-        let all_ready = taken.iter().all(|p| matches!(**p, VanillaProto::Ready(_)));
-        if all_ready {
-            let (chunks, saved_biomes): (Vec<ProtoChunk>, Vec<Option<SavedBiomeCells>>) = taken
-                .into_iter()
-                .map(|p| match *p {
-                    VanillaProto::Ready(c) => (c.terrain_chunk, c.saved_biomes),
-                    VanillaProto::Failed(..) => unreachable!(),
-                })
-                .unzip();
-            let mut array: [ProtoChunk; 9] = match chunks.try_into() {
-                Ok(a) => a,
-                Err(_) => unreachable!(),
-            };
-            if let Err(e) = worker.decorate(&mut array) {
-                log::warn!("Sunrise: decorating chunk failed: {e}");
-            }
-            for ((slot, chunk), saved_biomes) in region.iter_mut().zip(array).zip(saved_biomes) {
-                *slot = Box::new(VanillaProto::Ready(Box::new(ResidentProto {
-                    terrain_chunk: chunk,
-                    saved_biomes,
-                })));
-            }
+        self.decorate_region(worker, region, None);
+    }
+    fn decorate_with_outer(
+        &self,
+        worker: &mut GeneratorWorker,
+        region: &mut [Proto; 9],
+        outer: &[Arc<Chunk>],
+    ) {
+        if outer.is_empty() {
+            self.decorate_region(worker, region, None);
         } else {
-            for (slot, p) in region.iter_mut().zip(taken) {
-                *slot = p;
-            }
+            let columns = OuterColumns(outer);
+            self.decorate_region(worker, region, Some(&columns));
         }
     }
     fn is_decorated(&self, proto: &Proto) -> bool {
         matches!(proto.downcast_ref::<VanillaProto>(), Some(VanillaProto::Ready(c)) if c.is_decorated())
-    }
-    fn proto_status(&self, proto: &Proto) -> Option<sunrise_world::chunk_status::ChunkStatus> {
-        let VanillaProto::Ready(chunk) = proto.downcast_ref::<VanillaProto>()? else {
-            return None;
-        };
-        Some(if chunk.is_decorated() {
-            sunrise_world::chunk_status::ChunkStatus::Features
-        } else {
-            sunrise_world::chunk_status::ChunkStatus::Terrain
-        })
-    }
-    fn proto_block(&self, proto: &Proto, [x, y, z]: [i32; 3]) -> Option<u32> {
-        let VanillaProto::Ready(chunk) = proto.downcast_ref::<VanillaProto>()? else {
-            return None;
-        };
-        let position = chunk.position();
-        if x.div_euclid(16) != position.x
-            || z.div_euclid(16) != position.z
-            || y < chunk.terrain.min_y()
-            || y >= chunk.terrain.min_y() + chunk.terrain.height()
-        {
-            return None;
-        }
-        Some(chunk.block(x, y, z).0)
     }
     fn light_view(&self, proto: &Proto) -> Option<Chunk> {
         match proto.downcast_ref::<VanillaProto>() {
@@ -1311,31 +1504,14 @@ impl ChunkGenerator for VanillaTerrain {
             VanillaProto::Failed(x, z) => return Chunk::with_layout(x, z, self.layout()),
         };
         let mut out = chunk.column(self);
-        let (block_entities, pending_loot) = crate::structure_blocks::block_entities(&chunk);
-        out.block_entities = block_entities;
-        // The block entities Sunrise does not model (decorated pots with their
-        // sherds and loot table) stay as placed, like a
-        // loaded chunk's.
-        let mut unmodelled: Vec<Tag> = chunk
-            .block_entities
-            .iter()
-            .filter(|(pos, _)| {
-                !out.block_entities
-                    .iter()
-                    .any(|(p, _)| *p == (pos[0], pos[1], pos[2]))
-            })
-            .filter_map(|(pos, nbt)| {
-                let id = crate::lan::chunks::block_entity_type(
-                    chunk.block_name(pos[0], pos[1], pos[2]),
-                )?;
-                let mut nbt = nbt.clone();
-                nbt.insert("id".into(), Tag::String(id.into()));
-                for (key, v) in ["x", "y", "z"].into_iter().zip(pos) {
-                    nbt.insert(key.into(), Tag::Int(*v));
-                }
-                Some(Tag::Compound(nbt))
-            })
-            .collect();
+        let crate::structure_blocks::Promoted {
+            modelled,
+            pending_loot,
+            mut unmodelled,
+        } = crate::structure_blocks::promote(&chunk.block_entities, |[x, y, z]| {
+            chunk.block_name(x, y, z)
+        });
+        out.block_entities = modelled;
         add_default_block_entities(&self.block_entity_types, &mut out, &mut unmodelled);
         if !unmodelled.is_empty() || !pending_loot.is_empty() {
             let mut extras = out

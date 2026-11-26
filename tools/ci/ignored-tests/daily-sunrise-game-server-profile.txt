@@ -1,0 +1,1 @@
+sunrise-game dedicated_walk::a_server_profile_can_reload_and_reopen_a_world_with_a_placed_boat test:it daily child-process # Boots, reloads and reopens a world using a server-only preparation.

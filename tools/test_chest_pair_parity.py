@@ -14,10 +14,12 @@ the block on either side.
 """
 import argparse
 import json
-try:
-    from . import interaction_lab as lib
-except ImportError:
-    import interaction_lab as lib
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import interaction_lab as lib
 
 CHESTS = ['chest', 'trapped_chest', 'copper_chest', 'exposed_copper_chest', 'weathered_copper_chest',
           'oxidized_copper_chest', 'waxed_copper_chest', 'waxed_exposed_copper_chest',

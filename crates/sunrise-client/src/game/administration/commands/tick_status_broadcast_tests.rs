@@ -38,7 +38,7 @@ fn flush_to_operator(
     game: &mut Game<'_>,
     receiver: &mpsc::Receiver<sunrise_client::lan::Out>,
 ) -> Vec<serde_json::Value> {
-    game.send_admin_feedback(None);
+    game.send_admin_feedback();
     for g in &game.lan.as_ref().unwrap().hub.guests {
         g.sender.flush();
     }
@@ -111,7 +111,10 @@ fn lan_game<'a>(
     guest.placed = true;
     guest.loaded = true;
     guest.permission = 2;
-    game.lan.as_mut().unwrap().hub.guests.push(guest);
+    let hub = &mut game.lan.as_mut().unwrap().hub;
+    // An operator (`PlayerList.isOp`): listed in ops.json.
+    hub.ops.insert(7, 2);
+    hub.guests.push(guest);
     (game, rx)
 }
 

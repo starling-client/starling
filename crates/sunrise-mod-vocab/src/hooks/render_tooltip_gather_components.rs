@@ -2,16 +2,23 @@
 
 pub trait Hooks {
     /// `RenderTooltipEvent.GatherComponents`: the elements of `stack`'s
-    /// tooltip (`ItemStack.getTooltipLines` as text lines, then the image
-    /// component its item's `tooltip_component` part answered), once
-    /// `item_tooltip` has run and before any wrapping or measuring. Add,
-    /// change, reorder or remove elements; the lines draw in order, then the
-    /// images in order, under any bundle's contents. `max_width` starts at -1,
-    /// no limit, which leaves the lines as they are; a mod that sets it
-    /// wraps every line wider than that, in GUI pixels. Set `cancel` and
-    /// nothing is drawn, and no `render_tooltip_texture` is asked. Asked each frame
-    /// the tooltip shows, never for one the stack hides. Text is used in memory without
-    /// serialized component limits. Client-side.
+    /// tooltip (`ItemStack.getTooltipLines` as `TooltipElement::Text` lines,
+    /// plus any `TooltipElement::Component(TooltipComponent)` supplied by the
+    /// built-in bundle tooltip or the item's `ItemPart::tooltip_image`), once
+    /// `item_tooltip` has run and before any wrapping, factory preparation, or
+    /// measuring. Add, change, reorder or remove elements; each element is then
+    /// prepared into a `PreparedTooltipComponent` (custom components via
+    /// factories registered in `register_client_tooltip_component_factories`)
+    /// before `render_tooltip_pre` runs. Gather wraps logical text in the item's
+    /// tooltip font when it cannot fit on either side of the cursor. Assign a positive
+    /// GUI-pixel width to `event.max_width` to further constrain wrapping (`-1` by
+    /// default). Return `Flow::Cancel` and nothing is drawn; neither
+    /// `render_tooltip_pre` nor `render_tooltip_texture` is asked.
+    /// A panicking destructor of custom data published here disables this listener
+    /// for the session without disabling other listeners.
+    /// Asked each frame the tooltip shows, never for one the stack hides. An input
+    /// conversion refusal skips Gather and preserves the unwrapped engine tooltip.
+    /// Text is used in memory without serialized component limits. Client-side.
     #[hook(
         receiver = "read",
         dispatch = "flat",
@@ -20,10 +27,10 @@ pub trait Hooks {
         out = "cancel",
         neoforge = "RenderTooltipEvent.GatherComponents",
         cancellable = true,
-        version = 2
+        version = 4
     )]
     fn render_tooltip_gather_components(
-        stack: &ItemStack,
+        stack: &mod_api::ItemStack,
         screen_width: i32,
         screen_height: i32,
         elements: &mut Vec<TooltipElement>,

@@ -42,6 +42,7 @@ fn with_hanging_in(game: &mut super::Game<'_>) {
         pos: [4, 70, 6],
         facing: 0,
         variant: "minecraft:kebab".into(),
+        asset: None,
         width: 1,
         height: 1,
         check_interval: 0,
@@ -171,5 +172,43 @@ fn a_client_turns_its_painting_with_the_servers_direction() {
         // Back to south, the default the server sends: 0.
         game.remote_object_data(PAINTING as i32, &direction(3));
         assert_eq!(game.paintings[0].facing, 0);
+    });
+}
+
+/// `Entity.setInvisible` on an item frame (#5358): the handle reads and writes the frame's flag,
+/// the tracker sends it in the shared flags (entry 0, bit `0x20`), and a painting, which keeps no
+/// flag, is refused.
+#[test]
+#[ignore = "daily"]
+fn a_frame_is_hidden_and_shown_through_its_handle() {
+    use sunrise_protocol::entity_data::Value;
+    super::native_guest_turn_tests::with_guests(|game| {
+        game.options.dedicated = Some(Vec::new());
+        with_hanging_in(game);
+        let frame = game.entity(FRAME).expect("the frame's handle");
+        let painting = game.entity(PAINTING).expect("the painting's handle");
+        let tracked_flags = |game: &mut super::Game<'_>| {
+            let mut states = sunrise_client::lan::entity::States::default();
+            game.lan_object_states(&mut states, false, 0);
+            let state = states
+                .as_slice()
+                .iter()
+                .find(|e| e.id == FRAME as i32)
+                .expect("the frame is tracked");
+            state.meta.iter().find_map(|m| match m {
+                (0, _, Value::Byte(flags)) => Some(*flags),
+                _ => None,
+            })
+        };
+        assert_eq!(game.entity_is_invisible(frame), Some(false));
+        assert!(game.entity_set_invisible(frame, true));
+        assert!(game.item_frames[0].invisible);
+        assert_eq!(game.entity_is_invisible(frame), Some(true));
+        assert_eq!(tracked_flags(game), Some(0x20));
+        assert!(game.entity_set_invisible(frame, false));
+        assert_eq!(game.entity_is_invisible(frame), Some(false));
+        assert_eq!(tracked_flags(game), None);
+        assert!(!game.entity_set_invisible(painting, true));
+        assert_eq!(game.entity_is_invisible(painting), None);
     });
 }

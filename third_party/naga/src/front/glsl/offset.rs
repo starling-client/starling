@@ -16,9 +16,9 @@ use alloc::vec::Vec;
 use super::{
     ast::StructLayout,
     error::{Error, ErrorKind},
-    Span,
+    Result, Span,
 };
-use crate::{proc::Alignment, Handle, Scalar, Type, TypeInner, UniqueArena};
+use crate::{proc::Alignment, valid::MAX_TYPE_SIZE, Handle, Scalar, Type, TypeInner, UniqueArena};
 
 /// Struct with information needed for defining a struct member.
 ///
@@ -40,13 +40,20 @@ pub struct TypeAlignSpan {
 /// The functions returns a [`TypeAlignSpan`] which has a `ty` member this
 /// should be used as the struct member type because for example arrays may have
 /// to change the stride and as such need to have a different type.
+///
+/// A member whose size in this layout passes [`MAX_TYPE_SIZE`] is an
+/// [`ErrorKind::TypeTooLarge`] at `meta`.
 pub fn calculate_offset(
     mut ty: Handle<Type>,
     meta: Span,
     layout: StructLayout,
     types: &mut UniqueArena<Type>,
     errors: &mut Vec<Error>,
-) -> TypeAlignSpan {
+) -> Result<TypeAlignSpan> {
+    let too_large = || Error {
+        kind: ErrorKind::TypeTooLarge,
+        meta,
+    };
     // When using the std430 storage layout, shader storage blocks will be laid out in buffer storage
     // identically to uniform and shader storage blocks using the std140 layout, except
     // that the base alignment and stride of arrays of scalars and vectors in rule 4 and of
@@ -72,7 +79,7 @@ pub fn calculate_offset(
         // to rules (1), (2), and (3), and rounded up to the base alignment of a vec4.
         // TODO: Matrices array
         TypeInner::Array { base, size, .. } => {
-            let info = calculate_offset(base, meta, layout, types, errors);
+            let info = calculate_offset(base, meta, layout, types, errors)?;
 
             let name = types[ty].name.clone();
 
@@ -85,7 +92,11 @@ pub fn calculate_offset(
             };
 
             let span = match size {
-                crate::ArraySize::Constant(size) => size.get() * stride,
+                crate::ArraySize::Constant(size) => size
+                    .get()
+                    .checked_mul(stride)
+                    .filter(|&span| span <= MAX_TYPE_SIZE)
+                    .ok_or_else(too_large)?,
                 crate::ArraySize::Pending(_) => unreachable!(),
                 crate::ArraySize::Dynamic => stride,
             };
@@ -152,7 +163,7 @@ pub fn calculate_offset(
             let name = types[ty].name.clone();
 
             for member in members.iter_mut() {
-                let info = calculate_offset(member.ty, meta, layout, types, errors);
+                let info = calculate_offset(member.ty, meta, layout, types, errors)?;
 
                 let member_alignment = info.align;
                 span = member_alignment.round_up(span);
@@ -161,10 +172,10 @@ pub fn calculate_offset(
                 member.ty = info.ty;
                 member.offset = span;
 
-                span += info.span;
+                span = member_end(span, info.span).ok_or_else(too_large)?;
             }
 
-            span = align.round_up(span);
+            span = struct_span(span, align).ok_or_else(too_large)?;
 
             let ty_span = types.get_span(ty);
             ty = types.insert(
@@ -186,5 +197,16 @@ pub fn calculate_offset(
         }
     };
 
-    TypeAlignSpan { ty, align, span }
+    Ok(TypeAlignSpan { ty, align, span })
+}
+
+/// Where a member at `offset` taking `span` bytes ends, if that is within [`MAX_TYPE_SIZE`].
+pub fn member_end(offset: u32, span: u32) -> Option<u32> {
+    offset.checked_add(span).filter(|&end| end <= MAX_TYPE_SIZE)
+}
+
+/// The size of a struct whose members end at `end` (at most [`MAX_TYPE_SIZE`], so the rounding
+/// can't overflow), rounded up to its alignment, if that is within [`MAX_TYPE_SIZE`].
+pub fn struct_span(end: u32, align: Alignment) -> Option<u32> {
+    Some(align.round_up(end)).filter(|&span| span <= MAX_TYPE_SIZE)
 }

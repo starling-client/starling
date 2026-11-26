@@ -1,3 +1,3 @@
 pub use client::terrain_draw::{
-    TerrainMaterial, TerrainModelError, TerrainModelOptions, TerrainShade, TerrainUvShift,
+    TerrainMaterial, TerrainModelOptions, TerrainShade, TerrainUvShift,
 };

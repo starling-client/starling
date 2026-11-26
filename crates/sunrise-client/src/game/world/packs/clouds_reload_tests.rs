@@ -30,7 +30,7 @@ fn png(w: u32, h: u32, filled: &[[u32; 2]]) -> Vec<u8> {
 
 /// `resourcepacks/<name>`: a pack with its own `core/sky` (a visible override, which the atlas
 /// loads) and a 4 by 6 cloud texture with `cells` filled.
-fn write_pack(name: &str, cells: &[[u32; 2]]) {
+pub(super) fn write_pack(name: &str, cells: &[[u32; 2]]) {
     write_pack_with(name, cells, &[]);
 }
 
@@ -77,7 +77,7 @@ const OIT_ONLY_BROKEN_FSH: &str = "#version 330\nlayout(location = 0) in float v
 
 /// A tall texture vanilla reads inside (`tall_inner` of the Java comparison) and one with a cell
 /// in its first column, whose west neighbour vanilla reads at (5, 2).
-const INNER: &[[u32; 2]] = &[[1, 0], [2, 1], [1, 3], [2, 5]];
+pub(super) const INNER: &[[u32; 2]] = &[[1, 0], [2, 1], [1, 3], [2, 5]];
 const PAST: &[[u32; 2]] = &[[0, 2], [2, 1]];
 
 #[test]
@@ -150,7 +150,11 @@ fn startup_rollback_waits_for_world_resources() {
         game.settings.resource_packs = vec!["file/inner".into()];
         game.selection_reload_failed("device refused the clouds pipeline");
         assert!(game.settings.resource_packs.is_empty());
-        assert!(game.server_packs.load_fail.is_some());
+        assert!(
+            game.toast_manager
+                .system_mut(crate::game::toast_manager::SystemToastId::PackLoadFailure)
+                .is_some()
+        );
         assert!(game.pending_pack_reload);
         assert!(game.pack_reload.is_none());
         game.resume_world_entry().unwrap();
@@ -172,7 +176,7 @@ fn startup_rollback_waits_for_world_resources() {
 /// the reload (Improved Transparency off, as it is by default): the selection is cleared and
 /// saved, the game reloads its own resources (no pack sky, vanilla's clouds, no pack clouds
 /// shader), and the load-failure toast shows, as vanilla's reload does.
-fn a_reload_fails_and_drops_the_selection(refused: &str) {
+pub(super) fn a_reload_fails_and_drops_the_selection(refused: &str) {
     with_client_game(|game| {
         let vanilla_clouds = game.pack.clouds.clone();
         game.settings.resource_packs = vec!["file/inner".into()];
@@ -191,7 +195,9 @@ fn a_reload_fails_and_drops_the_selection(refused: &str) {
         );
         assert_eq!(game.pack.clouds, vanilla_clouds);
         assert!(
-            game.server_packs.load_fail.is_some(),
+            game.toast_manager
+                .system_mut(crate::game::toast_manager::SystemToastId::PackLoadFailure)
+                .is_some(),
             "resourcePack.load_fail"
         );
     });

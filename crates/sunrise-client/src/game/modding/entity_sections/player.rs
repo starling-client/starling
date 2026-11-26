@@ -2,7 +2,7 @@
 
 use super::{EntitySections, Game, PlayerMoveState, Scope, SectionWriter, tell_live};
 use crate::game::native_lifecycle::NativeLifecycle;
-use mod_api::{EntityRef, PlayerRef};
+use mod_api::{EntityRef, EntityResidency, PlayerRef};
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
@@ -19,6 +19,7 @@ pub(in crate::game) struct PlayerSectionScope {
     id: u32,
     body_id: i32,
     local_player: Option<PlayerRef>,
+    residency: EntityResidency,
     server: bool,
 }
 
@@ -45,6 +46,7 @@ impl PositionObserver for PlayerSectionObserver {
             &self.sections,
             SectionWriter {
                 entity: EntityRef::new(active.scope.epoch, active.id),
+                residency: active.residency,
                 position: to,
                 player: Some(PlayerMoveState {
                     local_player: active.local_player,
@@ -93,11 +95,13 @@ impl Game<'_> {
         let id = u32::try_from(self.own_entity_id())
             .ok()
             .filter(|id| *id != 0)?;
+        let entity = EntityRef::new(scope.epoch, id);
         Some(PlayerSectionScope {
             scope,
             id,
             body_id: self.player.as_ref()?.entity_id,
             local_player: self.local_player(),
+            residency: self.entity_residency(entity),
             server: self.is_logical_server(),
         })
     }

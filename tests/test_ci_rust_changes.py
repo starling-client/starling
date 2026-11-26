@@ -192,8 +192,12 @@ class RustChangesTests(unittest.TestCase):
             (docs / "old.md").rename(docs / "renamed.md")
             (docs / "added.md").write_text("added\n")
             (docs / "type.md").unlink()
-            (docs / "type.md").symlink_to("modified.md")
             git("add", "-A")
+            # type.md becomes the entry git stores for a symbolic link (mode 120000, its target as content), made
+            # without one on disk.
+            link = subprocess.run(["git", "-C", directory, "hash-object", "-w", "--stdin"], input=b"modified.md",
+                                  capture_output=True, check=True).stdout.decode().strip()
+            git("update-index", "--add", "--cacheinfo", f"120000,{link},docs/type.md")
             git(*commit)
             previous = Path.cwd()
             try:
@@ -291,9 +295,9 @@ class RustChangesTests(unittest.TestCase):
                     self.assertFalse(needs_rust([path]))
 
     def test_this_repositorys_gated_helpers_select_their_steps(self):
-        # The boundary check runs only under rust_required; the shards script prepares the Rust test setup.
-        # The formatting driver runs only under rust_required, so a change to it alone runs it.
-        for path in ["tools/ci/check_api_boundary.py", "tools/ci/ignored_shards.py", "tools/ci/format_scan.py"]:
+        # The boundary check, the test binaries' runner and the formatting driver run only under rust_required, so a
+        # change to one alone runs it.
+        for path in ["tools/ci/check_api_boundary.py", "tools/ci/run_test_binaries.py", "tools/ci/format_scan.py"]:
             with self.subTest(path=path):
                 self.assertTrue(selections([("M", path)])["rust_required"])
         self.assertFalse(selections([("M", "tools/parity.py")])["rust_required"])

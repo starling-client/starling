@@ -1,4 +1,4 @@
-pub use world::chunk_generator::{ChunkAccess, ChunkGenerator, VanillaStages};
+pub use world::chunk_generator::{ChunkAccess, ChunkBiomes, ChunkGenerator, VanillaStages};
 mod __private {
     /// The chunk generators the mods registered, for the executable to hand to
     /// the engine before any world opens.

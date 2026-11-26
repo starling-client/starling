@@ -1,0 +1,3 @@
+version = 1
+doc = "ChunkDiskData::transaction restores the prior encoded attachments if its callback returns Err. A typed operation's refusal does not poison the savepoint or the disk job: a callback that handles the refusal can commit unrelated accepted edits."
+tests = ["crates/sunrise-mod-vocab/src/chunk_disk/tests.rs::codec_failure_is_local_to_its_typed_operation"]

@@ -1,5 +1,4 @@
 //! The `player_container_open` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0163
 
 pub trait Hooks {
     /// `player` (`name`) opened a menu (NeoForge's `PlayerContainerEvent.Open`,

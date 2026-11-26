@@ -82,11 +82,11 @@ MinecraftServer.computeNextAutosaveInterval	port	crates/sunrise-client/src/game/
 MinecraftServer.onTickRateChanged	port	crates/sunrise-client/src/game/world/autosave.rs::Game::on_tick_rate_changed	/tick rate and the end of a /tick sprint recompute the wait and shorten the one already running when it asks for less; the server_tick_rate_changed hook fires first
 MinecraftServer.buildPlayerStatus	port	crates/sunrise-client/src/lan/mod.rs::Shared::status_json	up to 12 sampled player names in the status JSON
 MinecraftServer.updateEffectiveRespawnData	inline	crates/sunrise-client/src/game/world/initial_spawn.rs::Game::spawn_finder	gap: minor: no cached respawn data; the radius is clamped to the border when the spawn is found
-MinecraftServer.forceGameTimeSynchronization	port	crates/sunrise-client/src/lan/hub.rs::Hub::sync_world	game time sent to guests with SetTime
+MinecraftServer.forceGameTimeSynchronization	port	crates/sunrise-client/src/lan/hub/tracking.rs::Hub::sync_world	game time sent to guests with SetTime
 MinecraftServer.fillSystemReport	skip:debug		system report for crash and debug output
 MinecraftServer.setDifficulty	port	crates/sunrise-client/src/game/administration/commands/mod.rs::Game::cmd_difficulty	gap: player: LAN guests are not sent ChangeDifficulty when /difficulty changes; they get it on join, respawn or dimension change
 MinecraftServer.updateMobSpawningFlags	inline	crates/sunrise-client/src/game/mobs/natural_spawning.rs::Game::spawn_natural	rules are read at each spawn; no cached spawn flag
-MinecraftServer.sendDifficultyUpdate	inline	crates/sunrise-client/src/lan/hub.rs::Hub::place_new_player	gap: player: sent when a guest joins, respawns or changes dimension; see setDifficulty
+MinecraftServer.sendDifficultyUpdate	inline	crates/sunrise-client/src/lan/hub.rs::Hub::begin_player_join	gap: player: sent when a guest joins, respawns or changes dimension; see setDifficulty
 MinecraftServer.enforceGameTypeForPlayers	inline	crates/sunrise-client/src/game/network/lan/mod.rs::enforce_guest_game_mode	applies the default mode to online players when force game mode is enabled
 MinecraftServer.executeIfPossible	skip:java		rejects tasks during shutdown
 MinecraftServer.reloadResources	port	crates/sunrise-client/src/game/administration/functions.rs::Game::cmd_reload	gap: minor: data packs only, via reload_datapacks
@@ -98,7 +98,7 @@ MinecraftServer.findRespawnDimension	port	crates/sunrise-client/src/game/network
 MinecraftServer.setRespawnData	port	crates/sunrise-client/src/game/administration/commands/mod.rs::Game::cmd_setworldspawn	gap: minor: the new spawn is not sent to guests here; they get it on join
 MinecraftServer.getCommandStorage	skip:java		getter for the command storage
 MinecraftServer.getStopwatches	skip:java		getter for the stopwatches
-MinecraftServer.setWeatherParameters	port	crates/sunrise-client/src/game/administration/commands/mod.rs::Game::cmd_weather	sets the weather timers and state
+MinecraftServer.setWeatherParameters	port	crates/sunrise-client/src/game/world/weather.rs::Game::set_weather_parameters	sets the server-wide weather timers and flags together
 MinecraftServer.getAverageTickTimeNanos	port	crates/sunrise-client/src/clock.rs::FixedStep::average_nanos	average of the recent tick times
 MinecraftServer.saveDebugReport	skip:debug		debug report output
 MinecraftServer.dumpMiscStats	skip:debug		debug report output
@@ -122,7 +122,7 @@ PlayerAdvancements.asData	inline	crates/sunrise-client/src/game/interface/advanc
 PlayerAdvancements.revoke	port	crates/sunrise-client/src/game/interface/advancements/mod.rs::Game::revoke_advancement	revokes one criterion or all of them
 PlayerAdvancements.markForVisibilityUpdate	inline	crates/sunrise-client/src/lan/advancements.rs::ServerAdvancements::update	visibility is recomputed for the whole tree on each update
 PlayerAdvancements.unregisterListeners	skip:other		no per-criterion listener map; trigger() tests every criterion when an event fires
-PlayerAdvancements.setSelectedTab	port	crates/sunrise-client/src/lan/hub.rs::Hub::process_inbox	the SeenAdvancements arm: a root with a display is kept as Guest::selected_tab, anything else clears it, and the tab is sent back when it changed; ServerAdvancements::selectable decides
+PlayerAdvancements.setSelectedTab	port	crates/sunrise-client/src/lan/hub/moves.rs::Hub::process_inbox	the SeenAdvancements arm: a root with a display is kept as Guest::selected_tab, anything else clears it, and the tab is sent back when it changed; ServerAdvancements::selectable decides
 PlayerAdvancements.getOrStartProgress	skip:java		map get-or-create
 PlayerAdvancements.startProgress	skip:java		initialises progress for an advancement
 PlayerAdvancements.updateTreeVisibility	port	crates/sunrise-client/src/advancements.rs::Tree::visible	gap: minor: returns the visible flags; the added and removed lists are built in lan/advancements.rs

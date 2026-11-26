@@ -96,6 +96,7 @@ fn conditional_base_tag_does_not_gate_later_accepted_layers() {
                     values: more.as_slice(),
                     remove: &[],
                 }],
+                false,
                 "conditional",
                 &sunrise_world::conditions::LoadConditions::new(if enabled {
                     vec!["code_only"]
@@ -128,6 +129,7 @@ fn tags_merge_without_repeats() {
                 values: more.as_slice(),
                 remove: &[],
             }],
+            false,
             "t",
             &sunrise_world::conditions::LoadConditions::vanilla(),
         )
@@ -192,6 +194,7 @@ fn removals_follow_the_tag_file_and_a_replace_drops_them() {
                 values: &ids(&["test:ruby"]),
                 remove: &ids(&["minecraft:dirt"]),
             }],
+            false,
             "t",
             &LoadConditions::vanilla(),
         )
@@ -244,6 +247,7 @@ fn a_higher_mod_adds_back_what_a_lower_one_removed() {
         &merge_tag(
             Some(r#"{"values": ["minecraft:stone", "minecraft:sand"]}"#),
             &merge.layers(),
+            false,
             "t",
             &LoadConditions::vanilla(),
         )
@@ -373,4 +377,104 @@ fn no_vanilla_tag_folder_keeps_vanilla_references() {
         serde_json::json!(["#minecraft:fixture/unlisted"])
     );
     assert!(warnings.is_empty(), "{warnings:?}");
+}
+
+#[test]
+fn content_mod_worldgen_bundles_and_additions_evaluate_load_conditions() {
+    let scratch = tempfile::tempdir().unwrap();
+    let base = resources(scratch.path());
+    fs::create_dir_all(base.join("worldgen")).unwrap();
+    fs::write(base.join("worldgen/features.json"), "{}").unwrap();
+    fs::write(
+        base.join("worldgen/template_pools.json"),
+        serde_json::json!({
+            "minecraft:test_pool": r#"{"name":"minecraft:test_pool","fallback":"minecraft:empty","elements":[]}"#
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let package = folder_mod(
+        &scratch.path().join("mod"),
+        &[
+            ("sunrise-mod.toml", &manifest("boiler", "")),
+            (
+                "data/boiler/worldgen/feature/gated_ore.json",
+                r#"{"neoforge:conditions":[{"type":"neoforge:mod_loaded","modid":"chemlib"}],"type":"minecraft:no_op","config":{}}"#,
+            ),
+            (
+                "data/boiler/worldgen/template_pool/pool_add.json",
+                r#"{"neoforge:conditions":[{"type":"neoforge:mod_loaded","modid":"chemlib"}],"sunrise:add_to":"minecraft:test_pool","elements":[{"weight":1,"element":{"element_type":"minecraft:empty_pool_element"}}]}"#,
+            ),
+        ],
+    );
+    let inventory_on = sunrise_mod_package::enabled::EnabledMods::new([
+        ("boiler".into(), mod_api::Side::Both),
+        ("chemlib".into(), mod_api::Side::Both),
+    ]);
+    let out_on = scratch.path().join("out_on");
+    super::super::build_with_conditions(
+        &base,
+        Path::new(""),
+        std::slice::from_ref(&package),
+        &out_on,
+        &inventory_on,
+        &LoadConditions::new(["boiler", "chemlib"]),
+    )
+    .unwrap();
+    let features_on: serde_json::Value =
+        serde_json::from_slice(&fs::read(out_on.join("worldgen/features.json")).unwrap()).unwrap();
+    assert!(features_on.get("boiler:gated_ore").is_some());
+    let pools_on: serde_json::Value =
+        serde_json::from_slice(&fs::read(out_on.join("worldgen/template_pools.json")).unwrap())
+            .unwrap();
+    let pool_on: serde_json::Value =
+        serde_json::from_str(pools_on["minecraft:test_pool"].as_str().unwrap()).unwrap();
+    assert_eq!(pool_on["elements"].as_array().unwrap().len(), 1);
+
+    let inventory_off =
+        sunrise_mod_package::enabled::EnabledMods::new([("boiler".into(), mod_api::Side::Both)]);
+    let out_off = scratch.path().join("out_off");
+    super::super::build_with_conditions(
+        &base,
+        Path::new(""),
+        std::slice::from_ref(&package),
+        &out_off,
+        &inventory_off,
+        &LoadConditions::new(["boiler"]),
+    )
+    .unwrap();
+    let features_off: serde_json::Value =
+        serde_json::from_slice(&fs::read(out_off.join("worldgen/features.json")).unwrap()).unwrap();
+    assert!(features_off.get("boiler:gated_ore").is_none());
+    let pools_off: serde_json::Value =
+        serde_json::from_slice(&fs::read(out_off.join("worldgen/template_pools.json")).unwrap())
+            .unwrap();
+    let pool_off: serde_json::Value =
+        serde_json::from_str(pools_off["minecraft:test_pool"].as_str().unwrap()).unwrap();
+    assert_eq!(pool_off["elements"].as_array().unwrap().len(), 0);
+
+    // Malformed condition JSON fails atomically.
+    let broken = folder_mod(
+        &scratch.path().join("broken_mod"),
+        &[
+            ("sunrise-mod.toml", &manifest("broken", "")),
+            (
+                "data/broken/worldgen/feature/bad.json",
+                r#"{"neoforge:conditions":[{"type":"unknown:bogus"}],"type":"minecraft:no_op","config":{}}"#,
+            ),
+        ],
+    );
+    let out_err = scratch.path().join("out_err");
+    let err = super::super::build_with_conditions(
+        &base,
+        Path::new(""),
+        std::slice::from_ref(&broken),
+        &out_err,
+        &sunrise_mod_package::enabled::EnabledMods::new([("broken".into(), mod_api::Side::Both)]),
+        &LoadConditions::new(["broken"]),
+    );
+    assert!(
+        err.is_err(),
+        "unknown condition in content-mod worldgen must fail atomically"
+    );
 }

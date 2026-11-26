@@ -21,12 +21,11 @@ import os
 import random
 import subprocess
 import sys
-try:
-    from . import interaction_lab as lib, test_model_baking_parity as baking, test_rust_parity as base
-except ImportError:
-    import interaction_lab as lib
-    import test_model_baking_parity as baking
-    import test_rust_parity as base
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import interaction_lab as lib, test_model_baking_parity as baking, test_rust_parity as base
 
 TABS = {'crafting': 5, 'furnace': 4, 'blast_furnace': 3, 'smoker': 2}
 TYPES = {'crafting': ('minecraft:crafting_shaped', 'minecraft:crafting_shapeless'), 'furnace': ('minecraft:smelting',),

@@ -8,11 +8,8 @@
 //! the custom providers are the same code on both sides); any other node
 //! (another server's or a mod's) gets the type its parser and properties
 //! describe.
-use super::{ArgType, Dispatcher, Node, NodeKind, Suggests};
-use std::{
-    collections::{HashSet, VecDeque},
-    sync::{Mutex, OnceLock},
-};
+use super::{ArgType, Dispatcher, Node, NodeKind, RegistryId, Suggests};
+use std::collections::{HashSet, VecDeque};
 use sunrise_protocol::packets::play::{ARGUMENT_TYPES, ArgumentProperties, Commands};
 
 /// The command id of every executable node of a server's tree: the chat
@@ -23,6 +20,11 @@ pub const SERVER_COMMAND: &str = "server";
 /// (vanilla's), whose matching nodes lend their types and providers, not executor bindings.
 pub fn from_packet(packet: &Commands, local: &Dispatcher) -> Dispatcher {
     let count = packet.nodes.len();
+    // A decoded packet always names a root node (`Commands::read`); a tree built in process
+    // without one has nothing to convert.
+    if count == 0 {
+        return Dispatcher::new();
+    }
     let root = usize::try_from(packet.root)
         .ok()
         .filter(|&r| r < count)
@@ -99,9 +101,7 @@ pub fn from_packet(packet: &Commands, local: &Dispatcher) -> Dispatcher {
         });
     }
     let mut d = Dispatcher::new();
-    if count > 0 {
-        d.nodes = nodes.into_iter().flatten().collect();
-    }
+    d.nodes = nodes.into_iter().flatten().collect();
     d
 }
 
@@ -114,39 +114,6 @@ fn provider(id: &str) -> Option<Suggests> {
     }
 }
 
-/// The longest registry id kept, and how many distinct ones: a game knows a few hundred
-/// registries, with ids far shorter.
-const MAX_NAME: usize = 256;
-const MAX_NAMES: usize = 1024;
-
-/// A registry name kept for the life of the game (argument types hold
-/// `&'static str`): each distinct name is stored once. The names come from the server's command
-/// tree, so a server sending trees of new 32 KiB names packet after packet leaked memory until
-/// the client ran out: a name too long, not a resource location, or past [`MAX_NAMES`] is kept
-/// as "" instead (no suggestions for that argument), where vanilla's tree frees its keys anyway.
-fn intern(name: &str) -> &'static str {
-    static NAMES: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
-    let mut names = NAMES
-        .get_or_init(Default::default)
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    intern_in(&mut names, name)
-}
-fn intern_in(names: &mut HashSet<&'static str>, name: &str) -> &'static str {
-    if let Some(&n) = names.get(name) {
-        return n;
-    }
-    let resource_location = name
-        .bytes()
-        .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-' | b'.' | b'/' | b':'));
-    if name.len() > MAX_NAME || !resource_location || names.len() >= MAX_NAMES {
-        return "";
-    }
-    let n: &'static str = Box::leak(name.to_owned().into_boxed_str());
-    names.insert(n);
-    n
-}
-
 /// The argument type a parser and its properties describe
 /// (ArgumentTypeInfo.Template.instantiate).
 pub fn argument_type(id: i32, props: &[u8]) -> ArgType {
@@ -154,9 +121,14 @@ pub fn argument_type(id: i32, props: &[u8]) -> ArgType {
         return ArgType::Word;
     };
     let p = ArgumentProperties::decode(id, props).unwrap_or(ArgumentProperties::None);
-    let registry = || match &p {
-        ArgumentProperties::Registry(r) => intern(r),
-        _ => "",
+    // The property decoder reads the name in vanilla's STRING_UTF8 frame. An invalid name
+    // resolves no registry entries, just like a missing registry property.
+    let registry = || {
+        let parsed = match &p {
+            ArgumentProperties::Registry(name) => RegistryId::parse(name),
+            _ => None,
+        };
+        parsed.unwrap_or_else(|| RegistryId::from_static(""))
     };
     match *name {
         "brigadier:bool" => ArgType::Bool,
@@ -170,16 +142,14 @@ pub fn argument_type(id: i32, props: &[u8]) -> ArgType {
                 max: i32::MAX,
             },
         },
-        // No long type of its own: a double over the same bounds reads
-        // the same digits.
         "brigadier:long" => match p {
-            ArgumentProperties::Long { min, max } => ArgType::Double {
-                min: min.map_or(f64::MIN, |v| v as f64),
-                max: max.map_or(f64::MAX, |v| v as f64),
+            ArgumentProperties::Long { min, max } => ArgType::Long {
+                min: min.unwrap_or(i64::MIN),
+                max: max.unwrap_or(i64::MAX),
             },
-            _ => ArgType::Double {
-                min: f64::MIN,
-                max: f64::MAX,
+            _ => ArgType::Long {
+                min: i64::MIN,
+                max: i64::MAX,
             },
         },
         "brigadier:float" => match p {
@@ -224,7 +194,7 @@ pub fn argument_type(id: i32, props: &[u8]) -> ArgType {
         "minecraft:block_pos" => ArgType::BlockPos,
         "minecraft:column_pos" => ArgType::ColumnPos,
         "minecraft:vec3" => ArgType::Vec3 { center: true },
-        "minecraft:vec2" => ArgType::Vec2,
+        "minecraft:vec2" => ArgType::Vec2 { center: true },
         "minecraft:block_state" => ArgType::BlockState,
         "minecraft:block_predicate" => ArgType::BlockPredicate,
         "minecraft:item_stack" => ArgType::Item,
@@ -280,16 +250,26 @@ pub fn argument_type(id: i32, props: &[u8]) -> ArgType {
             "ocean_floor",
         ]),
         "minecraft:swing_animation" => ArgType::Enum(&["none", "whack", "stab"]),
-        "minecraft:loot_table" => ArgType::ResourceOrId("minecraft:loot_table"),
-        "minecraft:loot_predicate" => ArgType::ResourceOrId("minecraft:predicate"),
-        "minecraft:loot_modifier" => ArgType::ResourceOrId("minecraft:item_modifier"),
-        "minecraft:context_float_provider" => {
-            ArgType::ResourceOrId("minecraft:context_float_provider")
+        "minecraft:loot_table" => {
+            ArgType::ResourceOrId(RegistryId::from_static("minecraft:loot_table"))
         }
-        "minecraft:context_int_provider" => ArgType::ResourceOrId("minecraft:context_int_provider"),
+        "minecraft:loot_predicate" => {
+            ArgType::ResourceOrId(RegistryId::from_static("minecraft:predicate"))
+        }
+        "minecraft:loot_modifier" => {
+            ArgType::ResourceOrId(RegistryId::from_static("minecraft:item_modifier"))
+        }
+        "minecraft:context_float_provider" => {
+            ArgType::ResourceOrId(RegistryId::from_static("minecraft:context_float_provider"))
+        }
+        "minecraft:context_int_provider" => {
+            ArgType::ResourceOrId(RegistryId::from_static("minecraft:context_int_provider"))
+        }
         "minecraft:slot_source" => ArgType::SlotSource,
-        "minecraft:dialog" => ArgType::ResourceOrId("minecraft:dialog"),
-        "minecraft:feature" => ArgType::ResourceOrId("minecraft:worldgen/feature"),
+        "minecraft:dialog" => ArgType::ResourceOrId(RegistryId::from_static("minecraft:dialog")),
+        "minecraft:feature" => {
+            ArgType::ResourceOrId(RegistryId::from_static("minecraft:worldgen/feature"))
+        }
         "minecraft:uuid" => ArgType::Uuid,
         _ => ArgType::Word,
     }
@@ -299,32 +279,56 @@ pub fn argument_type(id: i32, props: &[u8]) -> ArgType {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_servers_registry_names_are_kept_within_bounds() {
-        // A set of its own: the game's is shared with every other test.
-        let mut names = HashSet::new();
-        let item = intern_in(&mut names, "minecraft:item");
-        assert_eq!(item, "minecraft:item");
-        assert!(std::ptr::eq(item, intern_in(&mut names, "minecraft:item")));
-        // Too long, or not a resource location: not kept.
-        assert_eq!(intern_in(&mut names, &"a".repeat(32767)), "");
-        assert_eq!(intern_in(&mut names, "Not A Registry"), "");
-        // However many distinct names a server sends, the set stops growing.
-        for i in 0..2 * MAX_NAMES {
-            intern_in(&mut names, &format!("evil:registry_{i}"));
-        }
-        assert_eq!(names.len(), MAX_NAMES);
-        assert_eq!(intern_in(&mut names, "evil:one_more_after_the_cap"), "");
-        assert!(
-            std::ptr::eq(item, intern_in(&mut names, "minecraft:item")),
-            "kept names stay"
-        );
-    }
     use sunrise_core::vanilla_bytes::Writer;
     use sunrise_protocol::{
         buf::{Codec, Reader},
         packets::play::CommandNode,
     };
+
+    #[test]
+    fn registry_properties_are_owned_and_use_the_vanilla_string_frame() {
+        let id = ARGUMENT_TYPES
+            .iter()
+            .position(|&name| name == "minecraft:resource")
+            .unwrap() as i32;
+        let decode = |name: &str| {
+            let mut props = Writer::new();
+            props.string(name);
+            let ArgType::Res(registry) = argument_type(id, &props.data) else {
+                panic!("expected a resource argument");
+            };
+            registry
+        };
+        for i in 0..1025 {
+            let name = format!("test:registry_{i}");
+            assert_eq!(decode(&name).as_str(), name);
+        }
+        let mut long = format!(
+            "test:registry/{}",
+            "r".repeat(32767 - "test:registry/".len())
+        );
+        let first = decode(&long);
+        let second = decode(&long);
+        assert_eq!(first.as_str(), long);
+        assert_eq!(second.as_str(), long);
+        assert_ne!(first.as_ptr(), second.as_ptr(), "no shared global interner");
+        long.push('r');
+        assert!(decode(&long).is_empty());
+
+        for invalid in [
+            "",
+            "item",
+            "test:",
+            ":item",
+            "test:a:b",
+            "te/st:item",
+            "Test:item",
+            "..:item",
+            "test:é",
+        ] {
+            assert!(decode(invalid).is_empty(), "{invalid:?}");
+        }
+    }
 
     fn literal(name: &str, children: Vec<i32>, executable: bool) -> CommandNode {
         CommandNode {
@@ -537,6 +541,73 @@ mod tests {
         );
         assert!(signable("spawn").is_empty());
         assert!(signable("unknown words").is_empty());
+
+        // A server that hides a signable root (`player_commands_sent`) leaves the client
+        // nothing to sign it by, as NeoForge's `ClientPacketListener.sendCommand` does with its
+        // own tree: the command is sent unsigned, and the server's secure-chat policy decides.
+        let mut hidden = packet;
+        hidden.nodes[6].children = vec![3, 5];
+        let d = from_packet(&hidden, super::super::vanilla::dispatcher());
+        assert!(
+            d.parse("msg Steve hi there", &reg)
+                .signable_arguments(&d)
+                .is_empty()
+        );
+        assert_eq!(
+            d.parse("shout hello", &reg).signable_arguments(&d),
+            vec![("text".to_owned(), "hello".to_owned())]
+        );
+    }
+
+    /// A server's `brigadier:long` node parses as Brigadier's long on the client, not as a
+    /// double over the same bounds: a fraction is refused, and so is a value past a bound, with
+    /// `argument.long.low` / `big`, as the server will refuse it.
+    #[test]
+    fn a_servers_long_argument_is_a_long_on_the_client() {
+        let mut bounds = Writer::new();
+        bounds.u8(3);
+        bounds.i64(-5);
+        bounds.i64(9_000_000_000);
+        let packet = Commands {
+            nodes: vec![
+                literal("bank", vec![2], false),
+                CommandNode {
+                    kind: 0,
+                    executable: false,
+                    restricted: false,
+                    children: vec![0],
+                    redirect: None,
+                    name: String::new(),
+                    parser: None,
+                    suggestions: None,
+                },
+                argument("total", "brigadier:long", bounds.data, true),
+            ],
+            root: 1,
+        };
+        let d = from_packet(&packet, &Dispatcher::new());
+        let reg = crate::Registries::default();
+        let parsed = d.parse("bank 9000000000", &reg);
+        let (context, _) = parsed.executable().unwrap();
+        assert_eq!(context.get("total"), Some(&crate::Arg::Long(9_000_000_000)));
+        for (input, key, args) in [
+            ("bank 1.5", "parsing.long.invalid", vec!["1.5".to_owned()]),
+            (
+                "bank 9000000001",
+                "argument.long.big",
+                vec!["9000000000".to_owned(), "9000000001".to_owned()],
+            ),
+            (
+                "bank -6",
+                "argument.long.low",
+                vec!["-5".to_owned(), "-6".to_owned()],
+            ),
+        ] {
+            let error = d.parse(input, &reg).executable().unwrap_err();
+            let args: Vec<&dyn std::fmt::Display> =
+                args.iter().map(|a| a as &dyn std::fmt::Display).collect();
+            assert_eq!(error.message, crate::Text::tr(key, &args), "{input}");
+        }
     }
 
     #[test]

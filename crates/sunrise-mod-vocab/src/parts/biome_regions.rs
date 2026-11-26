@@ -28,22 +28,24 @@ pub fn biome_region_declarations() -> &'static [BiomeRegionDeclaration] {
 
 /// Registrar operations for biome regions.
 pub trait BiomeRegionsRegistrar {
-    /// Declare a biome region `path` (`highlands` or `mymod:highlands`): the mod's own biomes,
+    /// Declare a biome region `path` (`highlands` or `namespace:highlands`): the mod's own biomes,
     /// laid out by climate in `region.points`, in a share of the Overworld or the Nether set by
     /// `region.weight` against vanilla's whole layout at 10. Each area belongs to one region,
     /// and the nearest-point search runs among that region's points only, so a region never
     /// competes with another's points.
     ///
+    /// A bare `path` uses the declaring mod's namespace, while an explicit valid `namespace:path`
+    /// keeps its namespace; the declaring mod stays recorded separately as the region's owner.
     /// The declared weight is the default a new world records; a world's saved layout, not the
     /// mod, decides its regions from then on, and an existing world takes a new or changed
     /// region only when its owner opts in. Regions are ordered by declaring mod id, then
     /// region id.
     ///
-    /// An id outside the mod's namespaces, a malformed or repeated id, a dimension other than
-    /// `minecraft:overworld` or `minecraft:nether`, a weight of 0 or above 1000, no points, or
-    /// a point with no biome, an interval outside -2 to 2 or inverted, or an offset outside 0 to
-    /// 1 refuses the mods, naming the mod. Biome existence and ownership are not checked
-    /// here; world setup must resolve names and refuse missing biomes.
+    /// A malformed or repeated id, a dimension other than `minecraft:overworld` or
+    /// `minecraft:nether`, a weight of 0 or above `i32::MAX`, no points, or a point with no
+    /// biome, an interval outside -2 to 2 or inverted, or an offset outside 0 to 1 refuses the
+    /// mods, naming the mod. Biome existence and ownership are not checked here; world setup
+    /// must resolve names and refuse missing biomes.
     fn declare_biome_region(
         &mut self,
         path: &str,

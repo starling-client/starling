@@ -26,7 +26,7 @@ impl Game<'_> {
         .with_source(&stack.item)
     }
     /// `LivingEntity.spawnItemParticles(stack, count)` for the local player,
-    /// drawing from the world random as its eating sounds do.
+    /// drawing from the entity random as its eating sounds do.
     pub(super) fn eat_particles(&mut self, stack: &ItemStack, count: u32) {
         let Some(p) = self.player.as_ref().map(|p| p.position) else {
             return;
@@ -35,7 +35,7 @@ impl Game<'_> {
         let options = self.item_particle(stack);
         let mut spawned = Vec::new();
         particles::item_use_particles(
-            &mut self.world.random,
+            &mut self.player.as_mut().expect("spawning player").random,
             self.pitch,
             self.yaw,
             [p.x, p.y, p.z],
@@ -116,7 +116,7 @@ impl Game<'_> {
             _ => return,
         };
         let pitch = 0.8 + self.world.random.next_float() * 0.4;
-        self.audio.play_unshared(&sound, Some(at), 0.8, pitch);
+        self.play_audio_unshared(&sound, Some(at), 0.8, pitch);
     }
     /// The slime ball, snowball and cobweb models behind `item_slime`,
     /// `item_snowball` and `item_cobweb`, resolved on first use.

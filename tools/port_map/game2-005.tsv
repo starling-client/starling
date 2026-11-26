@@ -1,5 +1,5 @@
 ZombieVillager.defineSynchedData	skip:java		SynchedEntityData definitions; Sunrise keeps the fields on Mob and sets them at spawn
-ZombieVillager.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt	zombie villager save arm; cure and gossip go through zombie_villager::write_nbt
+ZombieVillager.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_write.rs::mob_to_nbt	zombie villager save arm; cure and gossip go through zombie_villager::write_nbt
 ZombieVillager.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_load.rs::mob_from_nbt	load arm; cure and gossip go through zombie_villager::read_nbt
 ZombieVillager.finalizeSpawn	port	crates/sunrise-client/src/mobs/finalize.rs::Ctx::finalize	ZombieVillager arm: villager type, then profession, then zombie spawn
 ZombieVillager.initializeZombieVillagerData	port	crates/sunrise-client/src/mobs/finalize.rs::Ctx::finalize	profession drawn in the same arm, from a seeded fresh RNG rather than the mob random
@@ -20,14 +20,14 @@ CatSpawner.spawnInHut	port	crates/sunrise-gameplay/src/cat_spawner.rs::hut_takes
 CatSpawner.spawnCat	port	crates/sunrise-gameplay/src/cat_spawner.rs::spawn_cat	black variant inside cats_spawn_as_black structures; persistence flag from the caller
 InventoryCarrier.pickUpItem	port	crates/sunrise-client/src/game/mobs/villagers.rs::Game::villager_pickups	gap: minor: villager arm only; piglins, sulfur cubes, pandas and others have their own pickup fns
 AbstractVillager.finalizeSpawn	port	crates/sunrise-client/src/mobs/finalize.rs::Ctx::finalize	villager arm: type, then the baby group
-AbstractVillager.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt	Offers; Villager inventory via villager::write_nbt, WanderingTrader inventory via extra.inventory, including empty
+AbstractVillager.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_write.rs::mob_to_nbt	Offers; Villager inventory via villager::write_nbt, WanderingTrader inventory via extra.inventory, including empty
 AbstractVillager.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_load.rs::mob_from_nbt	Offers via read_villager; Villager inventory via villager::read_nbt, WanderingTrader via eight-slot extra.inventory; aggregation gap retained
 AbstractVillager.getSlot	missing		minor: commands cannot address a villager inventory slot (container.N); mob slot names cover weapon, armour and saddle only
 AbstractVillager.addOffersFromItemListings	port	crates/sunrise-client/src/merchant.rs::Trades::offers_from_set	the allow_duplicates path: a picked trade stays in the pool
 AbstractVillager.addOffersFromItemListingsWithoutDuplicates	port	crates/sunrise-client/src/merchant.rs::Trades::offers_from_set	the no-duplicates path: a picked trade leaves the pool
 AbstractVillager.getRopeHoldPosition	skip:ui		lead rope drawing point only; the lead is drawn by leash_geometry in game.rs
 AbstractVillager.stillValid	port	crates/sunrise-client/src/game/network/lan_trading.rs::Game::lan_merchant_tick	closes when the trader is gone or dead, or the guest passes the interaction range plus 4 (7 blocks survival, 9 creative); lan_e2e merchant-close covers the host and guest screens
-Villager.ageBoundaryReached	port	crates/sunrise-client/src/mobs/villager_brain.rs::age_boundary_reached	a villager that grows up rebuilds its brain from its memories, so the adult schedule and its work activity take hold
+Villager.ageBoundaryReached	port	crates/sunrise-client/src/mobs/villager_brain/schedules.rs::age_boundary_reached	a villager that grows up rebuilds its brain from its memories, so the adult schedule and its work activity take hold
 Villager.startTrading	port	crates/sunrise-client/src/game/items/trading.rs::Game::interact_trader	opens the trade screen for the player
 Villager.resetSpecialPrices	port	crates/sunrise-client/src/merchant.rs::update_special_prices	recomputes special prices from scratch, which drops the old diff
 Villager.needsToRestock	inline	crates/sunrise-client/src/merchant.rs::Trader::should_restock	any offer with uses left
@@ -35,7 +35,7 @@ Villager.allowedToRestock	inline	crates/sunrise-client/src/merchant.rs::Trader::
 Villager.catchUpDemand	inline	crates/sunrise-client/src/merchant.rs::Trader::should_restock	missed demand updates on a new day
 Villager.defineSynchedData	skip:java		synched data definitions; Sunrise keeps the fields on Mob
 Villager.createDefaultVillagerData	skip:data		default type, profession and level; the spawn defaults of the Sunrise mob fields
-Villager.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt	villager arm: data, xp, restocks, offers; food, gossip and decay via villager::write_nbt
+Villager.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_write.rs::mob_to_nbt	villager arm: data, xp, restocks, offers; food, gossip and decay via villager::write_nbt
 Villager.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::read_villager	data and offers here; food, gossip, decay and inventory via villager::read_nbt
 Villager.getAmbientSound	port	crates/sunrise-client/src/mobs/ai.rs::play_ambient	gap: minor: the trade ambient sound is not played while trading
 Villager.rewardTradeXp	port	crates/sunrise-client/src/merchant.rs::Session::notify_trade	gap: minor: no 10 second Regeneration on the villager at level-up; accepted Game::merchant_traded records the actual trader for the next eligible mob AI phase
@@ -62,7 +62,7 @@ VillagerProfession.bootstrap	skip:data		registry bootstrap of professions; Sunri
 VillagerType.bootstrap	skip:data		registry bootstrap of villager types; Sunrise reads them from data tables
 WanderingTrader.registerGoals	port	crates/sunrise-client/src/mobs/trader.rs::register	the trader goal set; the shared register in mobs/ai.rs is not repeated here
 WanderingTrader.updateTrades	port	crates/sunrise-client/src/game/items/trading.rs::Game::ensure_offers	the buying, uncommon and common sets of the wandering branch
-WanderingTrader.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt	DespawnDelay and wander_target are written with the trader
+WanderingTrader.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_write.rs::mob_to_nbt	DespawnDelay and wander_target are written with the trader
 WanderingTrader.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::read_villager	DespawnDelay and wander_target are read back
 WanderingTrader.rewardTradeXp	port	crates/sunrise-client/src/merchant.rs::Session::notify_trade	the orb for offers that reward experience; the trader gets no villager XP
 WanderingTrader.WanderToPositionGoal.isTooFarAway	port	crates/sunrise-client/src/mobs/trader.rs::too_far
@@ -81,7 +81,7 @@ Inventory.getSuitableHotbarSlot	port	crates/sunrise-world/src/player_inventory.r
 Inventory.removeItem	port	crates/sunrise-world/src/player_inventory.rs::PlayerInventory::remove	slots past the main inventory address equipment
 Inventory.removeItemNoUpdate	port	crates/sunrise-world/src/player_inventory.rs::PlayerInventory::remove_no_update
 Inventory.setItem	port	crates/sunrise-world/src/player_inventory.rs::PlayerInventory::set	slots past the main inventory address equipment
-Inventory.save	port	crates/sunrise-client/src/save.rs::Level::player_tag	writes the non-empty slots of the Inventory list
+Inventory.save	port	crates/sunrise-client/src/save/level.rs::Level::player_tag	writes the non-empty slots of the Inventory list
 Inventory.isEmpty	port	crates/sunrise-world/src/player_inventory.rs::PlayerInventory::is_empty
 Inventory.getItem	port	crates/sunrise-world/src/player_inventory.rs::PlayerInventory::get	slots past the main inventory address equipment
 Inventory.replaceWith	port	crates/sunrise-world/src/player_inventory.rs::PlayerInventory::replace_with
@@ -96,8 +96,8 @@ Player.getWeaponItem	missing		the riptide spin attack keeps only `auto_spin_atta
 Player.destroyVanishingCursedItems	port	crates/sunrise-client/src/game/item_entities.rs::Game::drop_inventory	vanishing-curse stacks are removed from the death drops
 Player.hasCorrectToolForDrops	port	crates/sunrise-client/src/game.rs::Game::tick_mining	the correct-tool test for harvest drops
 Player.canDropItems	inline	crates/sunrise-client/src/lan/menu.rs::click	THROW is not acted on while the client has dropped items too fast
-Player.readAdditionalSaveData	port	crates/sunrise-client/src/save.rs::Level::read_player
-Player.addAdditionalSaveData	port	crates/sunrise-client/src/save.rs::Level::player_tag
+Player.readAdditionalSaveData	port	crates/sunrise-client/src/save/level.rs::Level::read_player
+Player.addAdditionalSaveData	port	crates/sunrise-client/src/save/level.rs::Level::player_tag
 Player.hurtHelmet	port	crates/sunrise-client/src/game.rs::Game::hurt_helmet
 Player.isAboveGround	inline	crates/sunrise-world/src/edge_backoff.rs::back_off_from_edge	the on-the-edge test before backing off
 Player.canFallAtLeast	inline	crates/sunrise-world/src/edge_backoff.rs::back_off_from_edge	the no-collision drop test at the edge

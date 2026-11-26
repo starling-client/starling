@@ -9,10 +9,11 @@ import subprocess
 import zipfile
 from pathlib import Path
 
-try:
-    from . import lab
-except ImportError:
-    import lab
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab
 
 SOURCE = lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity/SeedAgent.java'
 ENV = {'SUNRISE_TEST_SEEDS': '1'}

@@ -24,7 +24,8 @@ pub trait Hooks {
         inert = "signal",
         key = "state",
         host = "read",
-        neoforge = "IBlockExtension.getToolModifiedState"
+        neoforge = "IBlockExtension.getToolModifiedState",
+        version = 2
     )]
     fn tool_modified_state(
         state: BlockState,

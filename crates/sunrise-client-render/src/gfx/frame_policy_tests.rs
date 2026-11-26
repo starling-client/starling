@@ -118,13 +118,10 @@ fn a_0_2_pack_without_the_hud_layer_finishes_on_the_swapchains_8_bits() {
 #[test]
 fn one_tone_curve_runs_on_the_layered_world() {
     use super::sunrise_tone_curve;
-    // No pack, or a 0.2 pack without `[tonemap]`: Sunrise's curve.
-    assert!(sunrise_tone_curve(true, true, false));
-    // A pack's `[tonemap]` mapped it already; never both.
-    assert!(!sunrise_tone_curve(true, true, true));
+    assert!(sunrise_tone_curve(true, true));
     // No world (the title screen), or no layered frame (SDR, the compatibility frames).
-    assert!(!sunrise_tone_curve(true, false, false));
-    assert!(!sunrise_tone_curve(false, true, false));
+    assert!(!sunrise_tone_curve(true, false));
+    assert!(!sunrise_tone_curve(false, true));
 }
 
 #[test]

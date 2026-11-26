@@ -13,11 +13,11 @@
 //! also move on their rider's client when saddled and steered with the right stick.
 //! A minecart
 //! moves on the server with the rider's input, and the rider sits in it.
-use super::{Game, Keys, ray_box, remote::Remote};
+use super::{Game, Keys, remote::Remote};
 use std::collections::HashMap;
 use sunrise_client::mobs::{Mob, equine, happy_ghast};
 use sunrise_client::{keybinds, text::Text};
-use sunrise_core::geometry::{Aabb, Vec3};
+use sunrise_core::geometry::Vec3;
 use sunrise_protocol::packets::play::{self, Serverbound as S};
 use sunrise_world::stepped_interpolation::PosRot;
 
@@ -76,6 +76,17 @@ impl Remote {
             .filter_map(move |(&id, seat)| (seat.vehicle == vehicle).then_some((id, seat.index)))
     }
 
+    /// The lowest packet seat index strictly after `after` (or the first seat).
+    pub(super) fn next_passenger_seat(
+        &self,
+        vehicle: u32,
+        after: Option<usize>,
+    ) -> Option<(u32, usize)> {
+        self.passenger_seats(vehicle)
+            .filter(|&(_, index)| after.is_none_or(|after| index > after))
+            .min_by_key(|&(_, index)| index)
+    }
+
     pub(super) fn has_passengers(&self, vehicle: u32) -> bool {
         self.passenger_seats(vehicle).next().is_some()
     }
@@ -91,65 +102,48 @@ pub(super) struct ObjectHit {
 }
 
 impl Game<'_> {
-    /// BlockAttachedEntity.isPickable: the nearest fence knot's box the view meets, with its id,
-    /// distance and position. Its box is wider than the post inside it, so the crosshair meets it
-    /// first and LeashFenceKnotEntity.interact takes the click. The fence block behind only ties
-    /// the player's own mobs (LeadItem.useOn), it never takes one back.
-    fn remote_knot_hit(&self) -> Option<(i32, f64, [f64; 3])> {
-        let mut pick = crate::game::pick_accumulator::PickAccumulator::new(self.entity_reach);
-        self.remote_knot_hit_with_pick(&mut pick)
-    }
-    fn remote_knot_hit_with_pick(
-        &self,
-        pick: &mut crate::game::pick_accumulator::PickAccumulator,
-    ) -> Option<(i32, f64, [f64; 3])> {
-        if let Some(hit) = self.cached_entity_pick() {
-            let (entity, distance, _) = hit?;
-            let block = *self.remote_knots.get(&entity.id())?;
-            let p = sunrise_client::mobs::leash::knot_state(block).position;
-            return Some((entity.id() as i32, distance, [p.x, p.y, p.z]));
-        }
-        let (eye, dir) = self.aim()?;
-        self.remote_knots
-            .iter()
-            .filter_map(|(&id, &block)| {
-                let knot = sunrise_client::mobs::leash::knot_state(block);
-                let p = knot.position;
-                let half = knot.width / 2.0;
-                let bounds = Aabb::new(
-                    Vec3::new(p.x - half, p.y, p.z - half),
-                    Vec3::new(p.x + half, p.y + knot.height, p.z + half),
-                );
-                ray_box(eye, dir, self.entity_reach, bounds)
-                    .filter(|&d| pick.consider(self, id, d))
-                    .map(|d| (id as i32, d, [p.x, p.y, p.z]))
-            })
-            .last()
-    }
-
-    /// Whether a use starts on an entity: the crosshair's `EntityHitResult`, or a fence knot.
-    /// Only a use: Sunrise's attacks still go to the fence behind a knot.
+    /// Whether a use starts on an entity (`Minecraft.hitResult` is an `EntityHitResult`).
     pub(super) fn remote_use_targets_entity(&self) -> bool {
-        if self.uses_stored_pick() {
-            return self.entity_targeted();
-        }
         self.entity_targeted()
-            || self
-                .remote_knot_hit()
-                .is_some_and(|(_, d, _)| self.before_block(d))
     }
 
-    /// The nearest pickable non-mob object the view hits within reach; also fence knots when
-    /// using.
-    pub(super) fn remote_object_hit(&self, attacking: bool) -> Option<ObjectHit> {
-        let mut pick = crate::game::pick_accumulator::PickAccumulator::new(self.entity_reach);
-        self.remote_object_hit_with_pick(attacking, &mut pick)
+    fn pick_object_origin(&self, id: u32) -> Option<[f64; 3]> {
+        if let Some((_, _, origin)) = self.object_target(id as i32) {
+            return Some(origin);
+        }
+        if let Some(row) = self
+            .remote
+            .as_ref()
+            .and_then(|r| r.general.rows.get(&(id as i32)))
+        {
+            return Some(row.position);
+        }
+        if let Some(&block) = self.remote_knots.get(&id) {
+            let p = sunrise_client::mobs::leash::knot_state(block).position;
+            return Some([p.x, p.y, p.z]);
+        }
+        if let Some(k) = self.resident_entities.knots.iter().find(|k| k.id == id) {
+            let p = sunrise_client::mobs::leash::knot_state(k.fence).position;
+            return Some([p.x, p.y, p.z]);
+        }
+        if let Some(crystal) = self.crystals.iter().find(|c| c.id == id) {
+            let p = crystal.position;
+            return Some([p.x, p.y, p.z]);
+        }
+        if let Some(d) = self
+            .dragon
+            .as_ref()
+            .filter(|d| d.id != 0 || self.remote.is_some())
+            && let Some(part) = super::dragon::dragon_part_index(d.id, id)
+        {
+            let p = d.parts[part].0;
+            return Some([p.x, p.y, p.z]);
+        }
+        None
     }
-    pub(super) fn remote_object_hit_with_pick(
-        &self,
-        attacking: bool,
-        pick: &mut crate::game::pick_accumulator::PickAccumulator,
-    ) -> Option<ObjectHit> {
+
+    /// The nearest pickable non-mob object the view hits within reach.
+    pub(super) fn remote_object_hit(&self) -> Option<ObjectHit> {
         if let Some(hit) = self.cached_entity_pick() {
             let (entity, distance, point) = hit?;
             if self.mobs.iter().any(|m| m.id == entity.id())
@@ -161,131 +155,27 @@ impl Game<'_> {
             {
                 return None;
             }
-            let origin = self.entity_position(entity)?;
+            let origin = self
+                .pick_object_origin(entity.id())
+                .or_else(|| self.entity_position(entity))?;
             return Some(ObjectHit {
                 id: entity.id() as i32,
                 distance,
                 location: std::array::from_fn(|i| point[i] - origin[i]),
             });
         }
-        let (eye, dir) = self.aim()?;
-        let at = |d: f64| {
-            [
-                eye[0] + dir[0] * d,
-                eye[1] + dir[1] * d,
-                eye[2] + dir[2] * d,
-            ]
-        };
-        let block_centre = |p: [i32; 3]| {
-            [
-                f64::from(p[0]) + 0.5,
-                f64::from(p[1]) + 0.5,
-                f64::from(p[2]) + 0.5,
-            ]
-        };
-        let mut hit: Option<(i32, f64, [f64; 3])> = None;
-        if let Some((i, d)) = self.painting_hit_with_pick(pick) {
-            let p = &self.paintings[i];
-            hit = Some((p.id as i32, d, block_centre(p.pos)));
-        }
-        if let Some((i, d)) = self.frame_hit_with_pick(pick) {
-            let f = &self.item_frames[i];
-            hit = Some((f.id as i32, d, block_centre(f.pos)));
-        }
-        if let Some((i, d, _)) = self.armor_stand_hit_with_pick(pick) {
-            let a = &self.armor_stands[i];
-            let p = a.position;
-            hit = Some((a.id as i32, d, [p.x, p.y, p.z]));
-        }
-        if let Some((i, d, _)) = self.cushion_hit_with_pick(pick) {
-            let c = &self.cushions[i];
-            let p = c.position;
-            hit = Some((c.id as i32, d, [p.x, p.y, p.z]));
-        }
-        if let Some((i, d)) = self.boat_hit_with_pick(pick) {
-            let p = self.boats[i].position;
-            hit = Some((self.boats[i].id as i32, d, [p.x, p.y, p.z]));
-        }
-        if let Some((i, d)) = self.cart_hit_with_pick(pick) {
-            let p = self.carts[i].position;
-            hit = Some((self.carts[i].id as i32, d, [p.x, p.y, p.z]));
-        }
-        // Interaction.isPickable: an invisible box the server clicks through
-        // to its scripts, for both uses and attacks.
-        let reach = self.entity_reach;
-        for (&id, i) in &self.interactions {
-            if let Some(d) =
-                ray_box(eye, dir, reach, i.bounds()).filter(|&d| pick.consider(self, id as u32, d))
-            {
-                let p = i.position;
-                hit = Some((id, d, [p.x, p.y, p.z]));
-            }
-        }
-        if let Some(remote) = &self.remote {
-            let catalog = crate::game::general::general_type_catalog();
-            for (&id, row) in &remote.general.rows {
-                if catalog.pickable(row.type_slot)
-                    && let Ok(entity) = u32::try_from(id)
-                    && let Some(distance) = ray_box(eye, dir, reach, row.bounds())
-                    && pick.consider(self, entity, distance)
-                {
-                    hit = Some((id, distance, row.position));
-                }
-            }
-        }
-        if (!attacking || self.client_pick.ray.is_some())
-            && let Some((id, d, p)) = self.remote_knot_hit_with_pick(pick)
+        let hit = self.pick_entity_hit_unified()?;
+        if self.mobs.iter().any(|m| m.id == hit.id)
+            || self.creatures.projectiles.iter().any(|p| p.id == hit.id)
         {
-            hit = Some((id, d, p));
+            return None;
         }
-        // A right click on a crystal interacts with it too (MultiPlayerGameMode.interact
-        // sends the packet), then passes on to the item (Entity.interact).
-        if let Some((i, d)) = self.crystal_hit_with_pick(eye, dir, pick) {
-            let p = self.crystals[i].position;
-            hit = Some((self.crystals[i].id as i32, d, [p.x, p.y, p.z]));
-        }
-        // EnderDragonPart.isPickable: the server's dragon hurts by part, and
-        // a right click on one passes as a crystal's does.
-        if let Some(part) = self.remote_dragon_part_hit_with_pick(eye, dir, reach, pick) {
-            hit = Some(part);
-        }
-        let (id, distance, origin) = hit?;
-        let point = at(distance);
+        let origin = self.pick_object_origin(hit.id)?;
         Some(ObjectHit {
-            id,
-            distance,
-            location: [
-                point[0] - origin[0],
-                point[1] - origin[1],
-                point[2] - origin[2],
-            ],
+            id: hit.id as i32,
+            distance: hit.distance_sq.sqrt(),
+            location: std::array::from_fn(|i| hit.point[i] - origin[i]),
         })
-    }
-
-    /// `EndCrystal.isPickable`: the nearest crystal the view hits within reach, by its
-    /// 2 x 2 box, with the server's entity id (not special_targets' local projectile
-    /// target id).
-    pub(super) fn crystal_hit(&self) -> Option<(usize, f64)> {
-        let (eye, dir) = self.aim()?;
-        let mut pick = super::pick_accumulator::PickAccumulator::new(self.entity_reach);
-        self.crystal_hit_with_pick(eye, dir, &mut pick)
-    }
-
-    fn crystal_hit_with_pick(
-        &self,
-        eye: [f64; 3],
-        dir: [f64; 3],
-        pick: &mut super::pick_accumulator::PickAccumulator,
-    ) -> Option<(usize, f64)> {
-        let mut hit = None;
-        for (i, crystal) in self.crystals.iter().enumerate().filter(|(_, c)| c.id != 0) {
-            if let Some(d) = ray_box(eye, dir, self.entity_reach, crystal.bounds())
-                .filter(|&d| pick.consider(self, crystal.id, d))
-            {
-                hit = Some((i, d));
-            }
-        }
-        hit
     }
 
     /// `ClientPacketListener.handleSetEntityPassengersPacket`: who rides
@@ -494,26 +384,51 @@ impl Game<'_> {
         }
     }
 
-    /// Camera.alignWithEntity's NewMinecartBehavior branch: sample the
-    /// vehicle's curved path at this frame, then apply the player's seat
-    /// attachment. Camera's own eye-height interpolation still runs afterwards.
-    pub(super) fn remote_minecart_rider_position(&self, partial: f32) -> Option<[f64; 3]> {
+    /// `Camera.alignWithEntity`'s `NewMinecartBehavior` branch: sample the
+    /// vehicle's curved path at `partial`, then apply the camera entity's seat
+    /// and vehicle attachment offsets. Camera's eye-height lerp runs afterwards.
+    pub(super) fn remote_minecart_camera_position(
+        &self,
+        subject: &super::remote_camera::ResolvedCameraEntity,
+        partial: f32,
+    ) -> Option<[f64; 3]> {
         if !self.minecart_improvements() {
             return None;
         }
-        let id = self.riding?;
-        self.carts
-            .iter()
-            .find(|c| c.id == id && c.kind == super::minecarts::CartKind::Rideable)?;
+        let id = if subject.is_local_player {
+            self.riding?
+        } else {
+            self.remote
+                .as_ref()
+                .filter(|r| r.detached_camera.is_none())?
+                .passenger_vehicle(subject.entity_id)?
+        };
+        self.carts.iter().find(|c| c.id == id)?;
         let (mut position, _, _) = self.remote_minecart_lerp(id, partial)?;
-        position[1] += super::minecarts::SEAT;
+        let seat_offset = if subject.is_local_player {
+            let scale = f64::from(subject.camera.living.map_or(1.0, |l| l.scale));
+            sunrise_gameplay::minecart_seat::PASSENGER_Y - 0.6 * scale
+        } else if let Some(m) = self.mob_index.get_ref(&self.mobs, subject.entity_id) {
+            sunrise_gameplay::minecart_seat::cart_seat_offset(
+                m.species(),
+                sunrise_client::mobs::riders::vehicle_attachment(m, 0.98),
+            )
+        } else {
+            sunrise_gameplay::minecart_seat::PASSENGER_Y
+        };
+        position[1] += seat_offset;
         Some(position)
     }
 
-    /// AbstractBoat.getControllingPassenger: only the first player steers a boat.
-    /// A non-remote world retains its existing local movement ownership.
-    pub(super) fn controls_boat(&self, id: u32) -> bool {
+    fn controls_vehicle(&self, id: u32) -> bool {
         self.riding == Some(id) && self.remote.as_ref().is_none_or(|r| r.first_passenger)
+    }
+
+    /// AbstractBoat.getControllingPassenger: `id` is a boat this client's player rides as its
+    /// first passenger, the only one who steers it. Another vehicle is never a driven boat. A
+    /// non-remote world retains its existing local movement ownership.
+    pub(super) fn controls_boat(&self, id: u32) -> bool {
+        self.controls_vehicle(id) && self.boats.iter().any(|b| b.id == id)
     }
 
     /// Tick the local player's vehicle before the player tick:
@@ -840,7 +755,7 @@ impl Game<'_> {
     /// the synched bubble time, followed by the oars on boats this client does not drive.
     pub(super) fn tick_remote_boat_bubbles(&mut self) {
         for i in 0..self.boats.len() {
-            let driven = self.controls_boat(self.boats[i].id);
+            let driven = self.controls_vehicle(self.boats[i].id);
             if !driven {
                 // `AbstractBoat.tick`: the non-authoritative copy carries no
                 // cached motion into the next time this player drives it.
@@ -943,17 +858,14 @@ impl Game<'_> {
         let hooks = self.damage_hooks.client_side();
         {
             let world = self.mob_world_base(&[]);
-            let mut level = sunrise_client::health::DamageLevel::lent(
-                &self.world,
-                self.pack.assets.registry,
-                &mut lent,
-                None,
-                None,
-                &hooks,
-            )
-            .on_client(true);
+            let mut level = self.predicting_damage_level(&mut lent, &hooks);
             mob.tick(&world, &mut level, &mut events);
         }
+        // LivingEntity.baseTick's tickEffects, inside the mount's own tick (#3948).
+        super::potions::client_tick_effects(
+            &mut mob.extra.client_effects,
+            &mut mob.extra.darkness_blend,
+        );
         // Only the server's packets take the mount away.
         mob.removed = false;
         lent.give_back(&mut self.world);
@@ -994,6 +906,24 @@ impl Game<'_> {
         });
         // #4821: footstep, gallop, breathe, splash and landing sounds from mob.tick
         let _ = self.handle_mob_events(events);
+    }
+
+    /// The level a mount this client predicts is hurt in, with the client's hooks (`hooks`)
+    /// and the tags its server sent, so its tag view answers the server's membership.
+    pub(super) fn predicting_damage_level<'a>(
+        &'a self,
+        lent: &'a mut sunrise_client::health::LentLevel,
+        hooks: &'a sunrise_client::health::DamageHooks,
+    ) -> sunrise_client::health::DamageLevel<'a> {
+        sunrise_client::health::DamageLevel::lent(
+            &self.world,
+            self.pack.assets.registry,
+            lent,
+            self.remote.as_ref().and_then(|r| r.tags.as_ref()),
+            None,
+            hooks,
+        )
+        .on_client(true)
     }
 }
 
@@ -1041,7 +971,11 @@ fn mount_move(m: &Mob, at: PosRot) -> S {
 }
 
 /// Avatar's VEHICLE attachment scales independently of the vehicle's seat.
-fn generic_player_seat(at: glam::DVec3, before: glam::DVec3, scale: f32) -> (Vec3, Vec3) {
+pub(super) fn generic_player_seat(
+    at: glam::DVec3,
+    before: glam::DVec3,
+    scale: f32,
+) -> (Vec3, Vec3) {
     let offset = 0.6 * f64::from(scale);
     (
         Vec3::new(at.x, at.y - offset, at.z),
@@ -1050,7 +984,7 @@ fn generic_player_seat(at: glam::DVec3, before: glam::DVec3, scale: f32) -> (Vec
 }
 
 #[cfg(test)]
-mod tests {
+pub(in crate::game) mod tests {
     #[test]
     fn local_player_on_block_display_and_interaction() {
         for kind in ["minecraft:block_display", "minecraft:interaction"] {
@@ -1074,6 +1008,39 @@ mod tests {
 
     use super::*;
     use sunrise_client::mobs::MobTypes;
+
+    /// `AbstractBoat.getControllingPassenger` (#6003): only a boat the player rides first is
+    /// the boat this client steers; a ridden minecart is not, though the player rides it first.
+    #[test]
+    #[ignore = "daily"]
+    fn only_a_boat_is_the_driven_boat() {
+        crate::game::native_entity_refs::tests::with_client_game(|game| {
+            use super::super::boats::Boat;
+            use super::super::minecarts::{CartKind, Minecart};
+            game.carts.push(Minecart::new(
+                5,
+                CartKind::Rideable,
+                Vec3::new(0.5, 64.0, 0.5),
+            ));
+            game.boats
+                .push(Boat::new(6, "oak".into(), Vec3::new(2.5, 64.0, 0.5), 0.0));
+            for (riding, cart, boat) in [
+                (None, false, false),
+                (Some(5), false, false),
+                (Some(6), false, true),
+            ] {
+                game.riding = riding;
+                assert_eq!(game.controls_boat(5), cart, "the cart, riding {riding:?}");
+                assert_eq!(game.controls_boat(6), boat, "the boat, riding {riding:?}");
+            }
+            assert!(game.driven_boat().is_some(), "riding the boat steers it");
+            game.riding = Some(5);
+            assert!(
+                game.driven_boat().is_none(),
+                "riding the cart steers no boat"
+            );
+        });
+    }
 
     /// handleTeleportEntity and handleMoveVehicle for the vehicle this client moves (a saddled pig steered with a
     /// carrot on a stick): a relative teleport counts from where the pig is on this client and eases it there,
@@ -1141,6 +1108,10 @@ mod tests {
     #[test]
     #[ignore = "requires prepared resources and the vanilla mount-control reference"]
     fn steering_mount_control_matches_vanilla() {
+        run_steering_mount_control_matches_vanilla();
+    }
+
+    pub(in crate::game) fn run_steering_mount_control_matches_vanilla() {
         use super::super::{
             Audio, Options, Progress, Settings, execution_role::ExecutionRole, load_resources,
         };
@@ -1502,14 +1473,14 @@ mod plugin_seat_tests {
             &settings,
             std::time::Instant::now(),
             false,
-            crate::game::execution_role::ExecutionRole::IntegratedServer,
+            crate::game::execution_role::ExecutionRole::Client,
             &Progress::new(),
             &mut |_, _| unreachable!(),
         )
         .unwrap();
         let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
         options.resources = root.clone();
-        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        options.execution_role = crate::game::execution_role::ExecutionRole::Client;
         let mut game = Game::new(
             &loaded.resources,
             loaded.pack,

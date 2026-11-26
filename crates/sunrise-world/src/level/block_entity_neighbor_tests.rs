@@ -43,7 +43,7 @@ fn block_entity_neighbor_notices_and_weak_changes() {
         }
 
         fn observe_neighbor_changed(
-            &self,
+            &mut self,
             _: &mut Ticks,
             pos: BlockPos,
             _: BlockStateId,

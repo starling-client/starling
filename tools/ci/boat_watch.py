@@ -5,7 +5,12 @@ import subprocess
 import time
 from datetime import datetime, timezone
 
-from boat_health import api, recovery_reason, user_step_started
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+from tools.ci.boat_health import api, recovery_reason, user_step_started
 
 
 def main():

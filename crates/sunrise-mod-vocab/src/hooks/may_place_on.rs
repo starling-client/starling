@@ -1,5 +1,4 @@
 //! The `may_place_on` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0079
 
 pub trait Hooks {
     /// `VegetationBlock.mayPlaceOn` for the plant `state` on `ground` at

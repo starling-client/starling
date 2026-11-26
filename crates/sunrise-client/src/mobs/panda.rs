@@ -644,30 +644,39 @@ struct When<G> {
 }
 impl<G: Goal + Clone + 'static> Goal for When<G> {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         self.goal.flags()
     }
+    #[inline]
     fn name(&self) -> &'static str {
         self.goal.name()
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         (self.when)(m, cx.w) && self.goal.can_use(m, cx)
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         self.goal.can_continue(m, cx)
     }
+    #[inline]
     fn interruptable(&self) -> bool {
         self.goal.interruptable()
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.goal.start(m, cx)
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.goal.stop(m, cx)
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         self.goal.every_tick()
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.goal.tick(m, cx)
     }
@@ -684,15 +693,19 @@ fn avoids(m: &Mob, w: &MobWorld) -> bool {
 struct PandaPanic(Panic);
 impl Goal for PandaPanic {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE
     }
+    #[inline]
     fn name(&self) -> &'static str {
         "Panic"
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         environmental(m) && self.0.can_use(m, cx)
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if is_sitting(m) {
             m.nav_stop();
@@ -701,9 +714,11 @@ impl Goal for PandaPanic {
             self.0.can_continue(m, cx)
         }
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.start(m, cx)
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.stop(m, cx)
     }
@@ -741,12 +756,15 @@ impl PandaBreed {
 }
 impl Goal for PandaBreed {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE | LOOK
     }
+    #[inline]
     fn name(&self) -> &'static str {
         "Breed"
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if !self.breed.can_use(m, cx) || st(m).unhappy != 0 {
             return false;
@@ -763,12 +781,15 @@ impl Goal for PandaBreed {
         }
         false
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         self.breed.can_continue(m, cx)
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.breed.stop(m, cx)
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.breed.tick(m, cx)
     }
@@ -779,15 +800,19 @@ impl Goal for PandaBreed {
 struct PandaHurtBy(HurtByTarget);
 impl Goal for PandaHurtBy {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         self.0.flags()
     }
+    #[inline]
     fn name(&self) -> &'static str {
         self.0.name()
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         self.0.can_use(m, cx)
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         let s = st(m);
         if s.got_bamboo || s.did_bite {
@@ -797,9 +822,11 @@ impl Goal for PandaHurtBy {
             self.0.can_continue(m, cx)
         }
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.start(m, cx)
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.stop(m, cx)
     }
@@ -822,9 +849,11 @@ struct PandaSit {
 }
 impl Goal for PandaSit {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if self.cooldown > i64::from(m.age)
             || m.is_baby()
@@ -836,14 +865,17 @@ impl Goal for PandaSit {
         }
         m.extra.main_hand_id().is_some() || st(m).food_near
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
         rest_goes_on(m)
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, _: &mut Cx) {
         if !is_sitting(m) && m.extra.main_hand_id().is_some() {
             try_to_sit(m);
         }
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         if m.extra.main_hand_id().is_none() {
             if let Some(at) = st(m).food_at {
@@ -854,6 +886,7 @@ impl Goal for PandaSit {
         }
         self.cooldown = 0;
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         if let Some(item) = super::finalize::item(m, super::finalize::MAINHAND) {
             let count = held_count(m);
@@ -882,19 +915,24 @@ struct PandaLieOnBack {
 }
 impl Goal for PandaLieOnBack {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         0
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         self.cooldown < i64::from(m.age) && is_lazy(m) && acts(m, cx.w) && rnd(m, reduced(400)) == 1
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
         rest_goes_on(m)
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, _: &mut Cx) {
         set_flag(m, FLAG_ON_BACK, true);
         self.cooldown = 0;
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, _: &mut Cx) {
         set_flag(m, FLAG_ON_BACK, false);
         self.cooldown = i64::from(m.age) + 200;
@@ -906,9 +944,11 @@ impl Goal for PandaLieOnBack {
 struct PandaSneeze;
 impl Goal for PandaSneeze {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         0
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if !(m.is_baby() && acts(m, cx.w)) {
             return false;
@@ -919,9 +959,11 @@ impl Goal for PandaSneeze {
             rnd(m, reduced(6000)) == 1
         }
     }
+    #[inline]
     fn can_continue(&mut self, _: &mut Mob, _: &mut Cx) -> bool {
         false
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, _: &mut Cx) {
         sneeze(m, true);
     }
@@ -951,12 +993,15 @@ impl PandaLook {
 }
 impl Goal for PandaLook {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         LOOK
     }
+    #[inline]
     fn name(&self) -> &'static str {
         "LookAtPlayer"
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if m.random.next_float() >= 0.02 {
             return false;
@@ -967,18 +1012,22 @@ impl Goal for PandaLook {
         }
         acts(m, cx.w) && st(m).look_at.is_some()
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         let Some((at, _)) = Self::target(m, cx) else {
             return false;
         };
         m.distance_sqr(at) <= 36.0 && self.look_time > 0
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, _: &mut Cx) {
         self.look_time = reduced(40 + rnd(m, 40));
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, _: &mut Cx) {
         st(m).look_at = None;
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         if let Some((at, eye)) = Self::target(m, cx) {
             m.look_at([at.x, eye, at.z]);
@@ -993,9 +1042,11 @@ impl Goal for PandaLook {
 struct PandaRoll;
 impl Goal for PandaRoll {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE | LOOK | JUMP
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if !((m.is_baby() || is_playful(m)) && m.ground.on_ground) || !acts(m, cx.w) {
             return false;
@@ -1017,12 +1068,15 @@ impl Goal for PandaRoll {
             rnd(m, reduced(500)) == 1
         }
     }
+    #[inline]
     fn can_continue(&mut self, _: &mut Mob, _: &mut Cx) -> bool {
         false
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, _: &mut Cx) {
         set_flag(m, FLAG_ROLL, true);
     }
+    #[inline]
     fn interruptable(&self) -> bool {
         false
     }

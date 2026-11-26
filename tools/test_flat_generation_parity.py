@@ -23,11 +23,11 @@ import random
 import subprocess
 import sys
 
-try:
-    from . import lab, test_chunk_generation_parity as chunks
-except ImportError:
-    import lab
-    import test_chunk_generation_parity as chunks
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_chunk_generation_parity as chunks
 
 # The three presets that decorate (Overworld with lakes too), then three that only place their layers
 # and structures: Snowy Kingdom's snow is a FillLayerFeature, the others check the structure steps.

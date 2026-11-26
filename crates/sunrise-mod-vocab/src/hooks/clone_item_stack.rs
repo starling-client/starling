@@ -17,7 +17,7 @@ pub trait Hooks {
         key = "state",
         host = "read",
         neoforge = "IBlockExtension.getCloneItemStack",
-        version = 2
+        version = 3
     )]
     fn clone_item_stack(
         dimension: LevelDimension,

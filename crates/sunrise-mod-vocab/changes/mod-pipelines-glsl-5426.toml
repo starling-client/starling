@@ -1,0 +1,11 @@
+ids = [
+    "hook:register_render_pipelines",
+    "type:RenderPipeline.vertex_shader",
+    "type:RenderPipeline.defines",
+    "handle:RenderPipeline::vertex_shader",
+    "handle:RenderPipeline::define",
+    "handle:RenderPipeline::define_value",
+    "handle:RenderPipeline::validate_defines",
+]
+why = "Mod render pipelines now use vanilla-style GLSL core shaders (assets/<ns>/shaders/core/<path>.vsh and .fsh) translated through sunrise-glsl instead of single-stage WGSL fragment files (#5426, #5177, #5178). RenderPipeline gains optional vertex_shader reuse (.vertex_shader) and preprocessor defines (.define / .define_value), and shaders work in vanilla gamma space with automatic linear-light decode on linear frames."
+migrate = "Move each assets/<ns>/shaders/pipeline/<path>.wgsl file to GLSL core shaders under assets/<ns>/shaders/core/<path>.vsh and .fsh (or reuse .vertex_shader(Identifier::parse(\"minecraft:core/position_tex_color\").unwrap())), update the shader id passed to RenderPipeline::new to <ns>:core/<path>, replace pipeline_texture(uv) with #include <sunrise:pipeline_sprite.glsl> and sampleSprite(texCoord0), and write colours in vanilla gamma space."

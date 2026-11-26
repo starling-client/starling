@@ -73,7 +73,7 @@ fn a_riders_move_takes_the_look_of_the_tick_and_leaves_it_off_the_ground() {
                 game.yaw = yaw;
                 game.clear_device_keys();
                 game.insert_device_key(KeyCode::KeyW);
-                game.tick_local_player(Vec::new(), 7).unwrap();
+                game.tick_local_player(Vec::new(), 7, None).unwrap();
                 let player = game.player.as_ref().unwrap();
                 collided.push(player.collision.horizontal);
                 // `Entity.rideTick` zeroes the rider's motion and `LivingEntity.travelInAir` adds
@@ -87,6 +87,84 @@ fn a_riders_move_takes_the_look_of_the_tick_and_leaves_it_off_the_ground() {
             }
             assert_eq!(collided, [true, false]);
             server.shutdown();
+        });
+    });
+}
+
+/// `LocalPlayer.rideTick` -> `Entity.rideTick` -> `LocalPlayer.aiStep`: a mounted client with a
+/// Spectator controller, Adventure PlayerInfo, `may_fly = true`, and `flying = false` transitions
+/// to `flying = true` and sends `ServerboundPlayerAbilitiesPacket` without altering vehicle control.
+#[test]
+#[ignore = "daily"]
+fn mounted_local_spectator_forces_flight_and_sends_abilities() {
+    mod_platform::testing::with_mods(Vec::new().into(), || {
+        with_client_game(|game| {
+            let (mut peer, _writer) = super::tests::connect_menu_test(game);
+            peer.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let uuid = 0x1122_3344_5566_7788_99aa_bbcc_ddee_ff00_u128;
+            {
+                let remote = game.remote.as_mut().unwrap();
+                remote.logged_in = true;
+                remote.loaded_sent = true;
+                remote.joined = true;
+                remote.first_passenger = false;
+                remote.entity_id = 42;
+                remote.profile = uuid;
+                remote.profile_name = "SpectatorRider".into();
+                remote.level_load.finish();
+            }
+            game.screen = Screen::Playing;
+            game.boats
+                .push(Boat::new(71, "oak".into(), Vec3::new(2.5, 64.0, 2.5), 0.0));
+            game.riding = Some(71);
+
+            let mut player = PlayerMotion::new(game.motion, Vec3::new(2.5, 64.0, 2.5)).unwrap();
+            player.client_side = true;
+            game.player = Some(player);
+
+            game.handle_packet(C::PlayerInfoUpdate(play::PlayerInfoUpdate {
+                actions: 0x01 | 0x04 | 0x08,
+                entries: vec![play::PlayerInfo {
+                    uuid,
+                    name: Some("SpectatorRider".into()),
+                    game_mode: Some(2),
+                    listed: Some(true),
+                    ..play::PlayerInfo::default()
+                }],
+            }))
+            .unwrap();
+            game.handle_packet(C::GameEvent(play::GameEvent {
+                event: 3,
+                param: 3.0,
+            }))
+            .unwrap();
+            game.handle_packet(C::PlayerAbilities(play::PlayerAbilities {
+                flags: 0x04,
+                flying_speed: 0.05,
+                walking_speed: 0.10,
+            }))
+            .unwrap();
+            assert!(game.spectator());
+            assert!(!game.own_player_is_spectator());
+            assert!(!game.player.as_ref().unwrap().flying);
+
+            game.tick_local_player(Vec::new(), 7, None).unwrap();
+
+            assert!(game.player.as_ref().unwrap().flying);
+            assert!(game.remote_abilities().unwrap().flying);
+            assert!(!game.remote.as_ref().unwrap().first_passenger);
+
+            game.send(S::ClientTickEnd(Empty));
+            let mut sent_flying = Vec::new();
+            while let Ok((id, bytes)) = peer.recv() {
+                match S::decode(id, &bytes) {
+                    Ok(S::ClientTickEnd(_)) => break,
+                    Ok(S::PlayerAbilities(a)) => sent_flying.push(a.flags & 2 != 0),
+                    _ => {}
+                }
+            }
+            assert_eq!(sent_flying, vec![true]);
         });
     });
 }

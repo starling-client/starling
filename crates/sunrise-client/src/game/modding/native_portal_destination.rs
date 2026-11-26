@@ -370,12 +370,13 @@ mod tests {
                 );
             }
             // Not inside a transaction.
-            let seal = game.transaction_open();
-            assert_eq!(
-                game.level_find_or_create_portal_exit(overworld, ENTRY, SIZE),
-                Err(PortalError::InTransaction)
-            );
-            game.transaction_close(&seal, false);
+            game.storage_scope(|game, _| {
+                assert_eq!(
+                    game.level_find_or_create_portal_exit(overworld, ENTRY, SIZE),
+                    Err(PortalError::InTransaction)
+                );
+                ((), false)
+            });
             // Find or create builds one, and the read then finds it.
             let built = game
                 .level_find_or_create_portal_exit(overworld, ENTRY, SIZE)

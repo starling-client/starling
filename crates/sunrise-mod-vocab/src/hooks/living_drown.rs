@@ -1,5 +1,4 @@
 //! The `living_drown` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0345
 
 pub trait Hooks {
     /// An entity that can't breathe and has no air (`LivingDrownEvent`, posted

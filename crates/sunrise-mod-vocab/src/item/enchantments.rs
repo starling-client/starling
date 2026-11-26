@@ -1,5 +1,5 @@
 //! The target of `get_enchantment_level` (`GetEnchantmentLevelEvent`).
-use crate::item::item_stack::ItemStack;
+use crate::item::item_stack::ItemStackView;
 #[allow(unused_imports)]
 use crate::*;
 /// `GetEnchantmentLevelEvent`: the enchantments gameplay sees on `stack`,
@@ -14,7 +14,7 @@ use crate::*;
 /// times a tick, on the server and on a client (its tooltip modifiers).
 #[inline(never)]
 pub fn native_get_enchantment_level(
-    stack: &ItemStack,
+    stack: ItemStackView<'_>,
     target: Option<&Identifier>,
     enchantments: &mut ItemEnchantments,
 ) {

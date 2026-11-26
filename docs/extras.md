@@ -18,7 +18,7 @@ again restores vanilla's behaviour completely.
 | Mouse Tweaks-style controls, sort buttons | `crates/sunrise-client/src/game/interface/extras/mouse_tweaks.rs`, `game/interface/extras/sorting.rs` |
 | Sort order and its clicks | `crates/sunrise-client/src/inv_sort.rs` (pure, unit tested) |
 | The music page's rows, and the pools it filters | `options_ui.rs` (`Page::Music`), `crates/sunrise-client/src/music.rs` (`track_groups`, `MusicManager::set_off`), `sound_events.rs` (`sound_except`) |
-| The settings page | `options_ui.rs` (`Page::Extras`): **Options → Sunrise Settings... → Extras...**; fullbright, dynamic lights and hiding block-break particles are on the graphics screen's Quality page instead (`graphics_ui.rs`, **Options → Video Settings...**) |
+| The settings page | `extras_ui.rs`, shown as **Options → Sunrise Settings... → Gameplay** (`sunrise_ui.rs`); fullbright, dynamic lights and hiding block-break particles are on its Quality page instead (`graphics_ui.rs`), the shader pack key on its Shaders page, No AI on its AI Agent page (Tools) |
 
 The settings are grouped by extra, under a header each, one to a row, and the strip
 under the list says what the row in focus or under the pointer does. An
@@ -35,7 +35,7 @@ extras stay out of the way of other input and options work.
 the folder. Unknown or broken lines fall back to the defaults.
 
 Extras' keys (the sort key) are Sunrise settings stored in that file and bound on
-the Extras page, not in vanilla's Key Binds screen: Sunrise has no Sunrise category
+Sunrise Settings' Gameplay page, not in vanilla's Key Binds screen: Sunrise has no Sunrise category
 in Controls, and adding one would put a non-vanilla mapping into `options.txt`.
 
 ## The extras
@@ -85,8 +85,8 @@ The **FPS counter**, **Keystrokes** and **Zoom** are official native mods now (i
 horizon-rust/horizon-mods under `native/<name>/`, [mods.md](modding/src/players/installing-mods.md#sunrises-own-mods)), with the same look and
 options. Players install them from the launcher's Mods page, and the launcher builds them into the game
 ([modding/src/how-to/native-mods.md](modding/src/how-to/native-mods.md)). The game keeps
-the hook points they use (`crates/sunrise-client/src/game/native_hooks/`). The Extras page keeps a **Zoom** row: the mod's switch and Settings button when
-it is built in, else a note saying to install it from the Mods page.
+the hook points they use (`crates/sunrise-client/src/game/native_hooks/`). Sunrise Settings' Gameplay page keeps a **Zoom** group while the
+mod is built in: its switch and Settings button.
 
 ### Own name tag (`ownNameTag`, default off)
 - In third person (F5, either view), the player's own name shows above its head,
@@ -171,7 +171,7 @@ and the container screen tests are unchanged).
   chests, shulker boxes, hoppers, dispensers, a mount's chest, a mod menu
   type's linked slots) and one right of the "Inventory" line (the main
   inventory; the hotbar is left alone), crafting tables and workstations
-  included. The key, when bound on the Extras page, sorts the part under the
+  included. The key, when bound on the Gameplay page, sorts the part under the
   cursor (the storage when over no slot).
 - Partial stacks of one item merge, then the stacks go in creative tab order
   (the search tab's), then by name; full stacks before the partial one,
@@ -182,7 +182,7 @@ and the container screen tests are unchanged).
 
 ### Shader pack key (`shaderPackKey`, `K` by default; `lastShaderPack`, none picked)
 
-- The Extras page's key for the Shader Packs pick: press it and the running pack turns off, press it again and
+- The key on Sunrise Settings' Shaders page for the shader pack pick: press it and the running pack turns off, press it again and
   the same pack runs again. Click the row, then press a key to rebind it (Escape unbinds); it is not a vanilla
   key binding, so it never collides with one (Replay Studio keeps physical `K` for its camera keyframe).
 - Turning off writes the pick to `lastShaderPack`, so the pack stays off across restarts until the key is
@@ -233,7 +233,7 @@ Splitscreen is temporarily unavailable; it returns as an official mod.
   `sound_events.rs`), the manager is `music.rs`, and the page is in `options_ui.rs`.
 
 ### Modded splashes (`skipModdedSplashesIfVanillaModified`, default on)
-- NeoForge's client setting of the same name, with no Extras page entry. On, a
+- NeoForge's client setting of the same name, with no Gameplay page entry. On, a
   resource pack or a mod that provides `minecraft:texts/splashes.txt` replaces
   the title screen's whole splash pool; off, every namespace's
   `texts/splashes.txt` joins it (`crates/sunrise-client/src/splashes.rs`). Read

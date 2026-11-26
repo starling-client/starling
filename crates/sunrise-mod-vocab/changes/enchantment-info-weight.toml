@@ -1,0 +1,3 @@
+ids = ["handle:EnchantmentInfo::new", "type:EnchantmentInfo", "type:EnchantmentInfo.weight", "type:EnchantmentInfo.anvil_cost"]
+why = "EnchantmentInfo carries the enchantment's selection weight (Enchantment.getWeight) and base anvil cost (Enchantment.getAnvilCost), so EnchantmentInfo::new takes them after max_level and the record's wire layout gains two u32 fields. On a server the enchantment reads (enchantments, enchantment_min_cost, enchantment_supports) answer from the registry the server synced, which includes a data pack's enchantments."
+migrate = "Pass the weight and anvil cost to EnchantmentInfo::new after max_level: EnchantmentInfo::new(id, max_level, weight, anvil_cost, curse). Rebuild against this SDK."

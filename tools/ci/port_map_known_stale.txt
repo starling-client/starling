@@ -30,8 +30,6 @@ tools/port_map/client-002.tsv	ClientPacketListener.handleOpenScreen	crates/sunri
 tools/port_map/client-002.tsv	ClientPacketListener.isAcceptingMessages	crates/sunrise-client/src/game/network/remote/mod.rs::Game::send_chat
 tools/port_map/client-002.tsv	MultiPlayerGameMode.handleCreativeModeItemDrop	crates/sunrise-client/src/game/network/remote/mod.rs::Game::remote_creative_drop
 tools/port_map/client-003.tsv	BlockStatePredictionHandler.updateKnownServerState	crates/sunrise-client/src/game/network/remote/mod.rs::Game::server_block
-tools/port_map/client-003.tsv	ChatListener.handleMessage	crates/sunrise-client/src/game/network/remote/mod.rs::handle_player_chat
-tools/port_map/client-003.tsv	ChatListener.showMessageToPlayer	crates/sunrise-client/src/game/network/remote/mod.rs::Game::chat_line
 tools/port_map/client-004.tsv	HumanoidMobRenderer.getEquipmentIfRenderable	crates/sunrise-client/src/mobs/render.rs::humanoid_armor
 tools/port_map/client-005.tsv	HumanoidArmorLayer.getArmorModel	crates/sunrise-client/src/mobs/render.rs::humanoid_armor
 tools/port_map/client-005.tsv	HumanoidArmorLayer.renderArmorPiece	crates/sunrise-client/src/mobs/render.rs::humanoid_armor
@@ -135,18 +133,12 @@ tools/port_map/client2-019.tsv	SelectWorldScreen.init	crates/sunrise-client/src/
 tools/port_map/client2-019.tsv	SelectWorldScreen.updateButtonStatus	crates/sunrise-client/src/title.rs::Title::buttons
 tools/port_map/final-001.tsv	ServerStatsCounter.toJson	crates/sunrise-client/src/game/interface/stats.rs::Stats::write
 tools/port_map/game-001.tsv	BlockDestructionProgress.compareTo	crates/sunrise-client/src/game/frame_geometry.rs::Game::cracks
-tools/port_map/game-001.tsv	ChunkHolder.broadcastBlockEntity	crates/sunrise-client/src/lan/hub.rs::Hub::broadcast_block_changes
-tools/port_map/game-001.tsv	ChunkHolder.hasChangesToBroadcast	crates/sunrise-client/src/lan/hub.rs::Hub::broadcast_block_changes
-tools/port_map/game-001.tsv	ChunkMap.getPlayers	crates/sunrise-client/src/lan/hub.rs::Hub::broadcast_block_changes
-tools/port_map/game-001.tsv	ChunkMap.isChunkTracked	crates/sunrise-client/src/lan/hub.rs::Hub::broadcast_block_changes
 tools/port_map/game-001.tsv	ChunkMap.isExistingChunkFull	crates/sunrise-client-render/src/streaming.rs::Streaming::save_checked_out
 tools/port_map/game-001.tsv	ChunkMap.processUnloads	crates/sunrise-client/src/game/world_update.rs::Game::update_world
 tools/port_map/game-001.tsv	ChunkMap.saveAllChunks	crates/sunrise-client/src/game/saving.rs::Game::save_level
 tools/port_map/game-001.tsv	ChunkMap.saveChunkIfNeeded	crates/sunrise-client/src/game.rs::Game::save_chunks_eagerly
 tools/port_map/game-001.tsv	ChunkMap.saveChunksEagerly	crates/sunrise-client/src/game.rs::Game::save_chunks_eagerly
 tools/port_map/game-001.tsv	ChunkMap.scheduleUnload	crates/sunrise-client/src/game/world_update.rs::Game::update_world
-tools/port_map/game-002.tsv	ServerChunkCache.broadcastChangedChunks	crates/sunrise-client/src/lan/hub.rs::Hub::broadcast_block_changes
-tools/port_map/game-002.tsv	ServerChunkCache.onLightUpdate	crates/sunrise-client/src/lan/hub.rs::Hub::broadcast_light_changes
 tools/port_map/game-002.tsv	ServerLevel.getDestroyType	crates/sunrise-client/src/game/explosion.rs::Game::explode
 tools/port_map/game-002.tsv	ServerLevel.save	crates/sunrise-client/src/game.rs::Game::save_level
 tools/port_map/game-002.tsv	ServerLevel.unload	crates/sunrise-client/src/game.rs::Game::update_world
@@ -159,7 +151,6 @@ tools/port_map/game-003.tsv	ClockTimeMarker.occursAt	crates/sunrise-client/src/g
 tools/port_map/game-003.tsv	ClockTimeMarker.resolveTimeToMoveTo	crates/sunrise-client/src/game/interface/chat.rs::TimeMarker::resolve
 tools/port_map/game-003.tsv	ServerClockManager.getInstance	crates/sunrise-client/src/game/administration/commands/mod.rs::Game::command_clock_time
 tools/port_map/game-003.tsv	ServerPlayerGameMode.destroyAndAck	crates/sunrise-client/src/game/network/lan_actions/mod.rs::Game::lan_guest_packet
-tools/port_map/game-004.tsv	Display.setTransformation	crates/sunrise-client/src/game/modding/native_entities.rs::Game::native_set_display
 tools/port_map/game-004.tsv	InfestedMobEffect.spawnSilverfish	crates/sunrise-client/src/game/items/potions.rs::Game::infested_hurt
 tools/port_map/game-004.tsv	MobEffectInstance.onMobHurt	crates/sunrise-client/src/game/items/potions.rs::Game::infested_hurt
 tools/port_map/game-005.tsv	Entity.canCollideWith	crates/sunrise-client/src/game/mobs/ghasts.rs::Game::player_entity_collisions
@@ -187,8 +178,6 @@ tools/port_map/game-006.tsv	Mob.attemptToShearEquipment	crates/sunrise-client/sr
 tools/port_map/game-006.tsv	Mob.enchantSpawnedEquipment	crates/sunrise-client/src/game/mobs/mob_gear.rs::Game::enchant_slot
 tools/port_map/game-006.tsv	Mob.shearItem	crates/sunrise-client/src/game/mobs/mounts.rs::Game::shear_pig_saddle
 tools/port_map/game-007.tsv	GoAndGiveItemsToTarget.tick	crates/sunrise-client/src/game/mobs/allays.rs::allay_deliver
-tools/port_map/game-010.tsv	PoiTypes.bootstrap	crates/sunrise-client/src/save.rs::poi_type
-tools/port_map/game-010.tsv	PoiTypes.registerBlockStates	crates/sunrise-client/src/save.rs::poi_type
 tools/port_map/game-010.tsv	VillagerHostilesSensor.isClose	crates/sunrise-client/src/mobs/villager_brain.rs::hostile_distance
 tools/port_map/game-011.tsv	AbstractHorse.setOffspringAttribute	crates/sunrise-client/src/mobs/equine.rs::inherit
 tools/port_map/game-011.tsv	Salmon.getDefaultDimensions	crates/sunrise-client/src/mobs/living.rs::Mob::awake_dims_in
@@ -289,7 +278,6 @@ tools/port_map/game2-017.tsv	CrafterBlockEntity.setSlotState	crates/sunrise-clie
 tools/port_map/game2-019.tsv	ChunkGeneratorStructureState.createForFlat	crates/sunrise-world/src/worldgen/generator.rs::OverworldGenerator::flat
 tools/port_map/game2-020.tsv	SectionStorage.flushAll	crates/sunrise-client/src/game/saving.rs::Game::save_level
 tools/port_map/game2-020.tsv	SectionStorage.setDirty	crates/sunrise-client/src/game/world_update.rs::Game::update_world
-tools/port_map/game2-020.tsv	SimpleRegionStorage.write	crates/sunrise-client/src/save.rs::SaveDir::queue
 tools/port_map/game2-023.tsv	LootTable.getAvailableSlots	crates/sunrise-world/src/loot.rs::LootData::fill_with
 tools/port_map/gui-inventory-1.tsv	AbstractContainerScreen.onMouseClickAction	crates/sunrise-client/src/game.rs::Game::menu_ops
 tools/port_map/gui-inventory-1.tsv	AbstractContainerScreen.recalculateQuickCraftRemaining	crates/sunrise-client/src/menu.rs::Menu::quick_craft_preview
@@ -301,7 +289,6 @@ tools/port_map/rest-003.tsv	OptionInstance.OptionInstanceSliderButton.applyValue
 tools/port_map/rest-004.tsv	BlockColors.getTintSource	crates/sunrise-client-render/src/mesher.rs::Mesher::tint
 tools/port_map/rest-004.tsv	BlockTintSources.constant	crates/sunrise-client-render/src/mesher.rs::Mesher::tint
 tools/port_map/rest-004.tsv	LocalPlayer.closeContainer	crates/sunrise-client/src/game/network/remote/mod.rs::Game::remote_close_container
-tools/port_map/rest-004.tsv	LocalPlayer.isSuppressingSlidingDownLadder	crates/sunrise-client/src/motion.rs::MotionWorld::suppressing_ladder_slide
 tools/port_map/rest-004.tsv	LocalPlayer.startUsingItem	crates/sunrise-client/src/game.rs::Game::use_hand
 tools/port_map/rest-004.tsv	net/minecraft/client/main/Main#getQuickPlayVariant	crates/sunrise-client/src/game/launch_options.rs::Options::read
 tools/port_map/rest-004.tsv	net/minecraft/client/main/Main#parseArgument	crates/sunrise-client/src/game/launch_options.rs::Options::parse
@@ -324,12 +311,9 @@ tools/port_map/rest-006.tsv	ColumnPosArgument.getColumnPos	crates/sunrise-client
 tools/port_map/rest-007.tsv	CommandFunction.parseCommand	crates/sunrise-client/src/game/functions.rs::Game::admit_store
 tools/port_map/rest-009.tsv	SpellParticleOption.create	crates/sunrise-client-render/src/particles.rs::ParticleOptions::colored
 tools/port_map/rest-010.tsv	net/minecraft/network/Connection#isConnected	crates/sunrise-client/src/net.rs::Session::send
-tools/port_map/rest-012.tsv	ClientboundBlockEntityDataPacket.create	crates/sunrise-client/src/lan/hub.rs::Hub::broadcast_block_changes
-tools/port_map/rest-012.tsv	ClientboundSectionBlocksUpdatePacket.<init>	crates/sunrise-client/src/lan/hub.rs::Hub::broadcast_block_changes
 tools/port_map/rest-013.tsv	MinecraftServer.setDifficulty	crates/sunrise-client/src/game/administration/commands/mod.rs::Game::cmd_difficulty
 tools/port_map/rest-014.tsv	DifficultyCommand.setDifficulty	crates/sunrise-client/src/game/administration/commands/mod.rs::Game::cmd_difficulty
 tools/port_map/rest-017.tsv	DedicatedServer.setDifficulty	crates/sunrise-client/src/game/administration/commands/mod.rs::Game::cmd_difficulty
-tools/port_map/rest-018.tsv	ServerGamePacketListenerImpl.isEntityCollidingWithAnythingNew	crates/sunrise-client/src/lan/hub.rs::Hub::collide
 tools/port_map/rest-020.tsv	ServerStatsCounter.parse	crates/sunrise-client/src/game/interface/stats.rs::Stats::read
 tools/port_map/rest-020.tsv	StatsCounter.getValue	crates/sunrise-client/src/game/interface/stats.rs::Stats::get
 tools/port_map/rest-020.tsv	StatsCounter.increment	crates/sunrise-client/src/game/interface/stats.rs::Stats::add

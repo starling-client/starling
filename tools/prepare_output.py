@@ -9,11 +9,13 @@ bumped by hand; this tool catches a change to the output without a bump.
 crates/sunrise-prepare/output-versions.txt lists every `OUTPUT_VERSION` with the digest of what it prepares.
 It only grows: the last line is the current version, and a change to the output appends a line.
 
-    python3 tools/prepare_output.py digest [RESOURCES]          the digest of a preparation
-    python3 tools/prepare_output.py check [--base SHA] [--cache] [RESOURCES]
+    python3 tools/prepare_output.py digest [--server] [RESOURCES]          the digest of a preparation
+    python3 tools/prepare_output.py check [--server] [--base SHA] [--cache] [RESOURCES]
         fails when RESOURCES (default: this checkout's .local/sunrise-client/<version>, as CI prepares it) is
         not what the last line says, or when the file changed other than by appending since SHA. --cache keeps
-        the digest beside RESOURCES (CI: a preparation never changes once made; it takes ~30 s to compute)
+        the digest beside RESOURCES (CI: a preparation never changes once made; it takes ~30 s to compute).
+        --server checks the independent server-output-versions.txt, defaulting to
+        game-files/sunrise-client/<version>-server as sunrise-prepare --server does.
 
 The digest covers every file of the preparation, canonicalised where the preparer is not deterministic between
 runs (verified across the CI runners): JSON is compared as data (key order, the order of each `tags` list of
@@ -37,6 +39,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 VERSIONS = 'crates/sunrise-prepare/output-versions.txt'
+SERVER_VERSIONS = 'crates/sunrise-prepare/server-output-versions.txt'
 LIB = 'crates/sunrise-prepare/src/lib.rs'
 MANIFEST = 'sunrise-resources.json'
 # The OUTPUT_VERSION that made the preparation (crates/sunrise-prepare/src/check.rs), for --check.
@@ -51,6 +54,7 @@ LAUNCHER_FILES = ('assets/minecraft/sounds.json', 'assets/pack.mcmeta', 'asset-i
 FROM_ELSEWHERE = ('sunrise-sprites.cache', DATA_FILE, STAMP, LOCK)
 LAMBDA = re.compile(r'\$\$Lambda/0x[0-9a-fA-F]+')
 CONSTANT = re.compile(r'^pub const OUTPUT_VERSION: u32 = (\d+);', re.M)
+SERVER_CONSTANT = re.compile(r'^pub const SERVER_OUTPUT_VERSION: u32 = (\d+);', re.M)
 
 
 def canonical_json(value, key=''):
@@ -74,6 +78,8 @@ def canonical(rel: str, data: bytes) -> bytes:
     if rel == MANIFEST:
         manifest = json.loads(data)
         scalars = {k: v for k, v in manifest.items() if not isinstance(v, (dict, list))}
+        if manifest.get('profile') == 'server':
+            scalars['server_files'] = manifest['server_files']
         return json.dumps(scalars, sort_keys=True).encode()
     if rel.endswith('.json'):
         try:
@@ -128,32 +134,45 @@ def parse_versions(text: str) -> list[tuple[int, str]]:
     return out
 
 
-def problems(versions: list[tuple[int, str]], constant: int | None) -> list[str]:
+def problems(versions: list[tuple[int, str]], constant: int | None,
+             versions_path: str = VERSIONS, name: str = 'OUTPUT_VERSION') -> list[str]:
     found = []
     if not versions:
-        return [f'{VERSIONS} lists no version']
+        return [f'{versions_path} lists no version']
     if [n for n, _ in versions] != list(range(1, len(versions) + 1)):
-        found.append(f'{VERSIONS}: the versions must be 1, 2, 3... in order')
+        found.append(f'{versions_path}: the versions must be 1, 2, 3... in order')
     if len({d for _, d in versions}) != len(versions):
-        found.append(f'{VERSIONS}: two versions with the same digest')
+        found.append(f'{versions_path}: two versions with the same digest')
     if constant != versions[-1][0]:
-        found.append(f'{LIB} says OUTPUT_VERSION = {constant}, {VERSIONS} ends at {versions[-1][0]}')
+        found.append(f'{LIB} says {name} = {constant}, {versions_path} ends at {versions[-1][0]}')
     return found
 
 
-def default_resources() -> Path:
+def default_resources(server: bool = False) -> Path:
     lock = json.loads((ROOT / 'research-lock.json').read_text())
-    return ROOT / '.local/sunrise-client' / lock['minecraft']['version']
+    version = lock['minecraft']['version']
+    if server:
+        return ROOT / 'game-files/sunrise-client' / f'{version}-server'
+    return ROOT / '.local/sunrise-client' / version
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     parser.add_argument('command', choices=['digest', 'check'])
     parser.add_argument('resources', nargs='?', type=Path)
+    parser.add_argument('--server', action='store_true', help='select the server-only preparation profile')
     parser.add_argument('--base', help='the commit the change is based on (check: the file only grew since)')
     parser.add_argument('--cache', action='store_true', help='keep the digest beside the preparation')
-    args = parser.parse_args()
-    resources = (args.resources or default_resources()).resolve()
+    args = parser.parse_intermixed_args()
+    resources = (args.resources or default_resources(args.server)).resolve()
+    manifest = resources / MANIFEST
+    if not manifest.is_file():
+        raise SystemExit(f'{resources} is not a preparation: no {MANIFEST}')
+    server = json.loads(manifest.read_bytes()).get('profile') == 'server'
+    if server != args.server:
+        raise SystemExit(f'{resources}: wrong prepared profile' + ('; pass --server' if server else ''))
+    versions_path = SERVER_VERSIONS if server else VERSIONS
+    name = 'SERVER_OUTPUT_VERSION' if server else 'OUTPUT_VERSION'
     tool = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:16]
     cache = resources.parent / f'.output-digest-{resources.name}-{tool}'
     if args.cache and cache.is_file():
@@ -166,32 +185,32 @@ def main() -> int:
         print(value)
         return 0
 
-    versions = parse_versions((ROOT / VERSIONS).read_text())
-    match = CONSTANT.search((ROOT / LIB).read_text())
-    found = problems(versions, int(match.group(1)) if match else None)
+    versions = parse_versions((ROOT / versions_path).read_text())
+    match = (SERVER_CONSTANT if server else CONSTANT).search((ROOT / LIB).read_text())
+    found = problems(versions, int(match.group(1)) if match else None, versions_path, name)
     if args.base:
-        shown = subprocess.run(['git', 'show', f'{args.base}:{VERSIONS}'], cwd=ROOT, capture_output=True, text=True)
+        shown = subprocess.run(['git', 'show', f'{args.base}:{versions_path}'], cwd=ROOT, capture_output=True, text=True)
         if shown.returncode == 0:
             before = parse_versions(shown.stdout)
             if versions[:len(before)] != before:
-                found.append(f'{VERSIONS} changed lines it already had (since {args.base[:12]}): '
+                found.append(f'{versions_path} changed lines it already had (since {args.base[:12]}): '
                              'a new output gets a new version, appended')
     current = versions[-1] if versions else (0, '')
     if value != current[1]:
         known = [n for n, d in versions if d == value]
         if known:
-            found.append(f'the preparation is OUTPUT_VERSION {known[0]}\'s output, but OUTPUT_VERSION is {current[0]}')
+            found.append(f'the preparation is {name} {known[0]}\'s output, but {name} is {current[0]}')
         else:
             found.append(
-                f'the prepared output changed ({count} files, digest {value}) but OUTPUT_VERSION is still '
+                f'the prepared output changed ({count} files, digest {value}) but {name} is still '
                 f'{current[0]}. Players would keep resources prepared by the old preparer. Bump it:\n'
-                f'  set `pub const OUTPUT_VERSION: u32 = {current[0] + 1};` in {LIB}\n'
-                f'  append `{current[0] + 1} {value}` to {VERSIONS}\n'
+                f'  set `pub const {name}: u32 = {current[0] + 1};` in {LIB}\n'
+                f'  append `{current[0] + 1} {value}` to {versions_path}\n'
                 '  (if the change is only a nondeterminism this tool should ignore, teach canonical() instead)')
     for problem in found:
         print(f'::error::{problem}' if os.environ.get('GITHUB_ACTIONS') else f'error: {problem}', file=sys.stderr)
     if not found:
-        print(f'prepared output: OUTPUT_VERSION {current[0]} ({count} files, {value[:16]})')
+        print(f'prepared output: {name} {current[0]} ({count} files, {value[:16]})')
     return 1 if found else 0
 
 

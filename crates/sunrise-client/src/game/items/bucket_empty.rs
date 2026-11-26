@@ -1,7 +1,6 @@
 //! Emptying a filled bucket from a player's hand: the `empty_contents` Part's say, the guest's
 //! sounds and the client's prediction.
 use super::{Game, Hit};
-use mod_api::HostTransaction;
 use sunrise_client::first_person::UseResult;
 use sunrise_client::items::ItemStack;
 use sunrise_core::{geometry::Direction, position::BlockPos};
@@ -35,7 +34,7 @@ impl Game<'_> {
         // The decision's preconditions: the hand's slot and its whole stack.
         let slot = self.held_slot();
         let held = self.stack_in(slot).cloned();
-        let used = self.transaction(|game, _| {
+        let used = self.storage_transaction(|game, _| {
             match game.native_empty_contents_event(pos, Some((clicked, face)), stack) {
                 None => return Ok(None),
                 Some(false) => return Ok(Some(UseResult::Fail)),

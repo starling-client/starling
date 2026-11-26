@@ -83,9 +83,19 @@ fn horizontal(button: Button) -> bool {
 /// What `nav` does, `focus` being the focused target (the one a click
 /// focused counts) among `targets`.
 pub(super) fn act(nav: Nav, focus: Option<Target>, targets: &[Target], ctx: Context) -> Act {
+    act_with_tab_groups(nav, focus, targets, ctx, |_| 0)
+}
+
+pub(super) fn act_with_tab_groups(
+    nav: Nav,
+    focus: Option<Target>,
+    targets: &[Target],
+    ctx: Context,
+    group: impl Fn(&Target) -> i32,
+) -> Act {
     match (nav, focus) {
         (Nav::Tab { forward }, _) => {
-            tab_step(targets, focus.map(|t| t.rect), forward).map_or(Act::Pass, Act::Focus)
+            grouped_tab_step(targets, focus, forward, group).map_or(Act::Pass, Act::Focus)
         }
         // EditBox.keyPressed takes left and right for its caret.
         (
@@ -118,7 +128,7 @@ pub(super) fn act(nav: Nav, focus: Option<Target>, targets: &[Target], ctx: Cont
         (Nav::Select, _) if ctx.typing => Act::Pass,
         (Nav::Select, None) => Act::Pass,
         (Nav::Select, Some(t)) => match t.kind {
-            Kind::Field => Act::Pass,
+            Kind::Field | Kind::Mounted { .. } => Act::Pass,
             Kind::Row if ctx.rows_take_enter => Act::Pass,
             Kind::Slider { .. } => Act::ToggleSlider,
             _ => Act::Press,
@@ -136,14 +146,9 @@ fn edge((w, h): (f32, f32), button: Button) -> Rect {
     }
 }
 
-/// Whether the screen still gets the key after `act`. `Screen.keyPressed`
-/// moves the focus on Tab or an arrow and returns false, so a container
-/// screen goes on to `checkHotbarKeyPressed` (`AbstractContainerScreen
-/// .keyPressed`): Tab bound to the off hand both moves the focus and swaps.
-/// Sunrise's other screens handle these keys themselves, so only containers
-/// pass them on.
-pub(super) fn passes_on(act: Act, container: bool) -> bool {
-    container && matches!(act, Act::Focus(_) | Act::Step(_))
+/// `Screen.keyPressed` changes focus on Tab or an arrow but returns false.
+pub(super) fn moves_focus(act: Act) -> bool {
+    matches!(act, Act::Focus(_) | Act::Step(_))
 }
 
 /// `AbstractSliderButton.setFocused`: the arrows change a slider's value
@@ -152,30 +157,23 @@ pub(super) fn slider_edit_on_focus(nav: Nav) -> bool {
     matches!(nav, Nav::Tab { .. })
 }
 
-fn same(a: Rect, b: Rect) -> bool {
-    a.iter().zip(b).all(|(p, q)| (p - q).abs() < 0.5)
+/// Tab or Shift+Tab through children of the default group, in insertion order.
+pub(super) fn tab_step(targets: &[Target], from: Option<Target>, forward: bool) -> Option<usize> {
+    grouped_tab_step(targets, from, forward, |_| 0)
 }
 
-/// The tab order (`children()` sorted by `getTabOrderGroup`): the order
-/// vanilla added the widgets in, which its layouts do row by row. Sunrise
-/// has no widget tree (a screen registers buttons and other targets
-/// separately), so this is reading order: top to bottom, then left to right,
-/// ties in the order they were drawn.
-pub(super) fn tab_order(targets: &[Target]) -> Vec<usize> {
-    let mut order: Vec<usize> = (0..targets.len()).collect();
-    let key = |t: &Target| (t.rect[1].round() as i32, t.rect[0].round() as i32);
-    order.sort_by_key(|&i| key(&targets[i]));
-    order
-}
-
-/// Tab or Shift+Tab from `from` (none focused: from the start or the end),
-/// wrapping as `Screen.keyPressed` does (no next one: `clearFocus`, then
-/// again). A list's rows are one stop, as vanilla's list is one widget: Tab
-/// enters it on its first row (Shift+Tab on its last) and leaves it at once.
-pub(super) fn tab_step(targets: &[Target], from: Option<Rect>, forward: bool) -> Option<usize> {
-    // The stops in tab order: a run of rows is one.
+/// Walk children sorted stably by tab group. Wrap as `Screen.keyPressed` does.
+/// A list's rows are one stop: Tab enters at its first row, Shift+Tab at its last.
+fn grouped_tab_step(
+    targets: &[Target],
+    from: Option<Target>,
+    forward: bool,
+    group: impl Fn(&Target) -> i32,
+) -> Option<usize> {
+    let mut order: Vec<_> = (0..targets.len()).collect();
+    order.sort_by_key(|&i| group(&targets[i]));
     let mut stops: Vec<Vec<usize>> = Vec::new();
-    for i in tab_order(targets) {
+    for i in order {
         let row = targets[i].kind == Kind::Row;
         match stops.last_mut() {
             Some(stop) if row && targets[stop[0]].kind == Kind::Row => stop.push(i),
@@ -185,10 +183,10 @@ pub(super) fn tab_step(targets: &[Target], from: Option<Rect>, forward: bool) ->
     if stops.is_empty() {
         return None;
     }
-    let at = from.and_then(|r| {
+    let at = from.and_then(|from| {
         stops
             .iter()
-            .position(|s| s.iter().any(|&i| same(targets[i].rect, r)))
+            .position(|s| s.iter().any(|&i| targets[i].same_focus_target(from)))
     });
     let n = stops.len();
     let next = match at {
@@ -210,13 +208,16 @@ pub(super) fn tab_step(targets: &[Target], from: Option<Rect>, forward: bool) ->
 pub(super) fn drawn_targets() -> Vec<Target> {
     let mut targets: Vec<Target> = widgets::last()
         .iter()
-        .filter(|w| w.enabled)
+        .filter(|w| w.enabled && !matches!(w.kind, Kind::Mounted { .. }))
         .map(|w| Target {
             rect: [w.x, w.y, w.w, w.h],
             kind: Kind::Button,
         })
         .collect();
     for t in widgets::last_targets() {
+        if matches!(t.kind, Kind::Mounted { .. }) {
+            continue;
+        }
         // A button can be both a labelled button and a target.
         if let Some(same) = targets.iter_mut().find(|o| o.rect == t.rect) {
             same.kind = t.kind;
@@ -354,30 +355,40 @@ mod tests {
     /// Tab bound to key.swapOffhand in an inventory: the focus moves and the
     /// screen still checks its hotbar keys; a press stays the widget's.
     #[test]
-    fn containers_still_get_tab_and_arrows_after_the_focus_moves() {
-        assert!(passes_on(Act::Focus(0), true));
-        assert!(passes_on(Act::Step(Button::DPadDown), true));
-        assert!(!passes_on(Act::Press, true));
-        assert!(!passes_on(Act::ToggleSlider, true));
-        assert!(!passes_on(Act::Nudge(1.0), true));
-        assert!(!passes_on(Act::Focus(0), false));
-        assert!(!passes_on(Act::Step(Button::DPadDown), false));
+    fn changing_focus_is_distinct_from_activating_the_child() {
+        assert!(moves_focus(Act::Focus(0)));
+        assert!(moves_focus(Act::Step(Button::DPadDown)));
+        assert!(!moves_focus(Act::Press));
+        assert!(!moves_focus(Act::ToggleSlider));
+        assert!(!moves_focus(Act::Nudge(1.0)));
     }
 
-    /// The title screen's rows (TitleScreen.init's add order).
     #[test]
-    fn tab_order_reads_rows_top_to_bottom_then_left_to_right() {
-        let targets = [
-            button(164.0, 108.0), // Options
-            button(266.0, 108.0), // Quit
-            button(164.0, 60.0),  // Singleplayer
-            Target {
-                rect: [140.0, 84.0, 20.0, 20.0],
-                kind: Kind::Button,
-            }, // Friends
-            button(164.0, 84.0),  // Realms
-        ];
-        assert_eq!(tab_order(&targets), vec![2, 3, 4, 0, 1]);
+    fn tab_walks_groups_in_order_and_mounted_children_in_insertion_order() {
+        let bottom = Target {
+            kind: Kind::Mounted {
+                id: 1,
+                field: false,
+            },
+            ..button(10.0, 100.0)
+        };
+        let top = Target {
+            kind: Kind::Mounted {
+                id: 2,
+                field: false,
+            },
+            ..button(10.0, 20.0)
+        };
+        let warning = button(240.0, 120.0);
+        let targets = [bottom, warning, top];
+        let group = |target: &Target| if *target == warning { -10 } else { 0 };
+        let next = |from, forward| grouped_tab_step(&targets, from, forward, group);
+        assert_eq!(next(None, true), Some(1));
+        assert_eq!(next(Some(warning), true), Some(0));
+        assert_eq!(next(Some(bottom), true), Some(2));
+        assert_eq!(next(None, false), Some(2));
+        assert_eq!(next(Some(top), false), Some(0));
+        assert_eq!(next(Some(bottom), false), Some(1));
     }
 
     #[test]
@@ -385,12 +396,36 @@ mod tests {
         let targets = [button(0.0, 0.0), button(0.0, 30.0), button(0.0, 60.0)];
         assert_eq!(tab_step(&targets, None, true), Some(0));
         assert_eq!(tab_step(&targets, None, false), Some(2));
-        assert_eq!(tab_step(&targets, Some(targets[0].rect), true), Some(1));
-        assert_eq!(tab_step(&targets, Some(targets[2].rect), true), Some(0));
-        assert_eq!(tab_step(&targets, Some(targets[0].rect), false), Some(2));
-        // A rect no longer there: from the start.
-        assert_eq!(tab_step(&targets, Some([9.0; 4]), true), Some(0));
+        assert_eq!(tab_step(&targets, Some(targets[0]), true), Some(1));
+        assert_eq!(tab_step(&targets, Some(targets[2]), true), Some(0));
+        assert_eq!(tab_step(&targets, Some(targets[0]), false), Some(2));
+        // A target no longer there: from the start.
+        assert_eq!(tab_step(&targets, Some(button(9.0, 9.0)), true), Some(0));
         assert_eq!(tab_step(&[], None, true), None);
+    }
+
+    #[test]
+    fn tab_visits_coincident_native_and_mounted_children_independently() {
+        let native = button(10.0, 20.0);
+        let first = Target {
+            kind: Kind::Mounted {
+                id: 1,
+                field: false,
+            },
+            ..native
+        };
+        let second = Target {
+            kind: Kind::Mounted {
+                id: 2,
+                field: false,
+            },
+            ..native
+        };
+        let targets = [native, first, second];
+        assert_eq!(tab_step(&targets, Some(native), true), Some(1));
+        assert_eq!(tab_step(&targets, Some(first), true), Some(2));
+        assert_eq!(tab_step(&targets, Some(second), true), Some(0));
+        assert_eq!(act(Nav::Select, Some(second), &targets, CTX), Act::Pass);
     }
 
     #[test]
@@ -398,11 +433,11 @@ mod tests {
         let search = field();
         let targets = [search, row(40.0), row(76.0), row(112.0), button(0.0, 200.0)];
         // Into the list on its first row, then out of it.
-        assert_eq!(tab_step(&targets, Some(search.rect), true), Some(1));
-        assert_eq!(tab_step(&targets, Some(targets[2].rect), true), Some(4));
+        assert_eq!(tab_step(&targets, Some(search), true), Some(1));
+        assert_eq!(tab_step(&targets, Some(targets[2]), true), Some(4));
         // Backwards: in on the last row, out to the search box.
-        assert_eq!(tab_step(&targets, Some(targets[4].rect), false), Some(3));
-        assert_eq!(tab_step(&targets, Some(targets[1].rect), false), Some(0));
+        assert_eq!(tab_step(&targets, Some(targets[4]), false), Some(3));
+        assert_eq!(tab_step(&targets, Some(targets[1]), false), Some(0));
     }
 
     #[test]
@@ -533,9 +568,9 @@ mod tests {
         let moved = button(0.0, 4.0);
         let far = button(200.0, 100.0);
         assert_eq!(follow(a, &[far, moved]), Some(moved));
-        // Gone (another screen): the first in tab order.
+        // Gone (another screen): the first in tab order (insertion order in default group).
         let first = button(0.0, 50.0);
-        assert_eq!(follow(a, &[far, first]), Some(first));
+        assert_eq!(follow(a, &[far, first]), Some(far));
         assert_eq!(follow(a, &[]), None);
     }
 

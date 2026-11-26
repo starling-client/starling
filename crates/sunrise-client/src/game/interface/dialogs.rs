@@ -17,7 +17,7 @@ use sunrise_client::{
     multiline_edit::MultiLineEdit,
     text::{ClickEvent, Text},
     ui,
-    widgets::{self, ScreenInfo},
+    widgets::{self, Kind as WidgetKind, ScreenInfo, Target},
 };
 use sunrise_core::nbt::Tag;
 use sunrise_protocol::registry::Dynamic;
@@ -42,7 +42,7 @@ struct Open {
     local: bool,
     /// The number range input whose slider is held.
     dragging: Option<usize>,
-    /// The multiline input the pointer is selecting in.
+    /// The text input the pointer is selecting in.
     selecting: Option<usize>,
 }
 
@@ -128,16 +128,22 @@ fn cycle(open: &mut Open, input: usize, delta: i32) {
     }
 }
 
-fn warning_texts() -> (Text, Text, [Text; 2]) {
-    let t = |key: &str| Text::translate(key, &[]);
-    (
-        t("menu.custom_screen_info.title"),
-        t("menu.custom_screen_info.contents"),
-        [t("menu.disconnect"), t("gui.back")],
-    )
-}
-
 impl Game<'_> {
+    /// `DialogScreen.WarningScreen` uses the local-server disconnect label.
+    fn warning_texts(&self) -> (Text, Text, [Text; 2]) {
+        let t = |key: &str| Text::translate(key, &[]);
+        let disconnect = if self.external_server() {
+            "menu.disconnect"
+        } else {
+            "menu.returnToMenu"
+        };
+        (
+            t("menu.custom_screen_info.title"),
+            t("menu.custom_screen_info.contents"),
+            [t(disconnect), t("gui.back")],
+        )
+    }
+
     /// Whether a dialog screen takes the input.
     pub(super) fn dialog_open(&self) -> bool {
         let d = &self.dialogs;
@@ -161,6 +167,68 @@ impl Game<'_> {
         }
         self.dialog_layout().map(|layout| layout.warning)
     }
+    /// The focused dialog input, including the initial keyboard focus before any click.
+    pub(super) fn dialog_navigation_focus(&self) -> Option<[f32; 4]> {
+        if self.dialogs.warning || self.dialogs.waiting.is_some() {
+            return None;
+        }
+        let open = self.dialogs.open.as_ref()?;
+        let focus = open.focus?;
+        self.dialog_layout()?
+            .placed(open.scroll.amount)
+            .find_map(|(part, _)| match part {
+                Part::Field { input, rect } | Part::Slider { input, rect } if input == focus => {
+                    Some(rect)
+                }
+                _ => None,
+            })
+    }
+
+    /// Dialog body controls are added before the footer; the warning button
+    /// is added last, but has its own earlier tab group.
+    pub(super) fn dialog_navigation_order(&self) -> Option<Vec<[f32; 4]>> {
+        let warning = self.dialog_warning_icon()?;
+        let open = self.dialogs.open.as_ref()?;
+        let layout = self.dialog_layout()?;
+        let order = layout
+            .placed(open.scroll.amount)
+            .filter_map(|(part, _)| match part {
+                Part::Field { rect, .. }
+                | Part::Check { rect, .. }
+                | Part::Slider { rect, .. }
+                | Part::Cycle { rect, .. }
+                | Part::Button { rect, .. } => Some(rect),
+                _ => None,
+            });
+        Some(order.chain([warning]).collect())
+    }
+
+    /// Apply a focus path without clicking the dialog's editor or changing its caret.
+    pub(super) fn set_dialog_navigation_focus(&mut self, target: Target) {
+        let focus = if matches!(target.kind, WidgetKind::Field | WidgetKind::Slider { .. }) {
+            self.dialogs.open.as_ref().and_then(|open| {
+                self.dialog_layout()?
+                    .placed(open.scroll.amount)
+                    .find_map(|(part, _)| match part {
+                        Part::Field { input, rect } | Part::Slider { input, rect }
+                            if rect == target.rect =>
+                        {
+                            Some(input)
+                        }
+                        _ => None,
+                    })
+            })
+        } else {
+            None
+        };
+        if !self.dialogs.warning
+            && self.dialogs.waiting.is_none()
+            && let Some(open) = self.dialogs.open.as_mut()
+        {
+            open.focus = focus;
+        }
+    }
+
     /// The dialog itself shows, with a text input to start on.
     pub(super) fn dialog_starts_typing(&self) -> bool {
         !self.dialogs.warning && self.dialogs.waiting.is_none() && self.dialog_has_text_field()
@@ -307,7 +375,7 @@ impl Game<'_> {
     /// returns to what was open before it).
     pub(super) fn clear_dialog(&mut self) {
         if self.dialogs.open.take().is_some() && !self.dialog_open() {
-            self.dialog_closed();
+            self.dialog_receiver_changed();
         }
     }
 
@@ -319,8 +387,13 @@ impl Game<'_> {
         };
     }
 
-    fn dialog_closed(&mut self) {
-        if self.player.is_some() && self.screen == super::Screen::Playing && self.title.is_none() {
+    fn dialog_receiver_changed(&mut self) {
+        self.refresh_screen_widgets();
+        if self.player.is_some()
+            && self.screen == super::Screen::Playing
+            && !self.screen_over_playing()
+            && self.title.is_none()
+        {
             self.capture(true);
         }
     }
@@ -357,14 +430,8 @@ impl Game<'_> {
             }
             return Ok(());
         }
-        // openSendConfirmationWindow's `currentScreen`: a command that asks
-        // first still has this dialog to go back to.
-        let closing = match (&click, &after) {
-            (Some(Click::RunCommand(_)), AfterAction::Close | AfterAction::WaitForResponse) => {
-                self.dialogs.open.take()
-            }
-            _ => None,
-        };
+        let before = self.dialog_screen_key();
+        let mut wait = after == AfterAction::WaitForResponse;
         let configuration = match click {
             Some(Click::ShowDialog(_)) => self
                 .dialogs
@@ -373,12 +440,11 @@ impl Game<'_> {
                 .and_then(|o| o.configuration.clone()),
             _ => None,
         };
-        match after {
-            AfterAction::None => {}
-            AfterAction::Close => self.dialogs.open = None,
-            AfterAction::WaitForResponse => {
-                self.dialogs.open = None;
-                self.dialogs.waiting = Some(Instant::now());
+        let mut closing = None;
+        if after == AfterAction::Close {
+            let open = self.dialogs.open.take();
+            if matches!(&click, Some(Click::RunCommand(_))) {
+                closing = open;
             }
         }
         match click {
@@ -393,7 +459,16 @@ impl Game<'_> {
             Some(Click::RunCommand(command)) => {
                 // In configuration there is nothing to run it (vanilla warns).
                 if self.player.is_some() {
-                    self.send_unattended_command(&command);
+                    let sent = self.send_unattended_command(&command);
+                    if wait {
+                        // openSendConfirmationWindow's `currentScreen`: Back
+                        // returns to this dialog, not the screen after the command.
+                        let prompted = self.command_prompt.is_some();
+                        if prompted {
+                            closing = self.dialogs.open.take();
+                        }
+                        wait = sent || prompted;
+                    }
                     if let Some(open) = closing {
                         self.command_prompt_returns_to(Behind::Dialog(ClosedDialog(Box::new(
                             open,
@@ -403,17 +478,24 @@ impl Game<'_> {
                     log::warn!(
                         "Sunrise: commands are not supported in configuration, trying to run '{command}'"
                     );
+                    wait = false;
                 }
             }
             Some(Click::ShowDialog(dialog)) => {
-                self.show_dialog_ref_in_phase(&dialog, configuration)
+                // showDialog opens its own receiver, not the waiting screen.
+                self.show_dialog_ref_in_phase(&dialog, configuration);
+                wait = false;
             }
             Some(Click::CopyToClipboard(value)) => {
                 use sunrise_client::clipboard::Clipboard;
                 self.clipboard.set(&value);
             }
-            // ConfirmLinkScreen over the screen the dialog leaves.
-            Some(Click::OpenUrl(url)) => self.click_url(url),
+            // ConfirmLinkScreen over the screen the dialog leaves. If the
+            // confirmation was vetoed, neither it nor its return screen opens.
+            Some(Click::OpenUrl(url)) => {
+                self.click_url(url);
+                wait &= self.link_prompt.is_some();
+            }
             // defaultHandleClickEvent: `activeScreen.insertText(command, true)`.
             // Only the chat screen (opened under the dialog) takes text.
             Some(Click::SuggestCommand(command)) => {
@@ -431,8 +513,20 @@ impl Game<'_> {
             Some(other) => log::error!("Don't know how to handle {other:?}"),
             None => {}
         }
-        if !self.dialog_open() {
-            self.dialog_closed();
+        if wait {
+            let start_waiting = |game: &mut Self| {
+                game.dialogs.open = None;
+                game.dialogs.waiting = Some(Instant::now());
+            };
+            if self.command_prompt.is_some() || self.link_prompt.is_some() {
+                // The confirmation already became the receiver. Stage only
+                // the screen it can return to; do not mount it under the prompt.
+                start_waiting(self);
+            } else {
+                self.open_screen_overlay("dialog", start_waiting);
+            }
+        } else if self.dialog_screen_key() != before {
+            self.dialog_receiver_changed();
         }
         Ok(())
     }
@@ -504,7 +598,7 @@ impl Game<'_> {
         let atlas = &self.gui.atlas;
         draw_background(batch, atlas, self.player.is_some());
         if self.dialogs.warning {
-            let (title, message, [disconnect, back]) = warning_texts();
+            let (title, message, [disconnect, back]) = self.warning_texts();
             // DialogScreen.WarningScreen, a ConfirmScreen: its title and its
             // message.
             widgets::begin_screen(|| {
@@ -516,6 +610,7 @@ impl Game<'_> {
             let mut confirm = Confirm::new(&atlas.font, (w, h), &title, &message);
             confirm.declare_no();
             confirm.draw(batch, atlas, cursor, [&disconnect, &back]);
+            self.draw_overlay_mounted_widgets(batch, "dialog");
             return;
         }
         if let Some(since) = self.dialogs.waiting {
@@ -555,6 +650,7 @@ impl Game<'_> {
                     hover,
                 );
             }
+            self.draw_overlay_mounted_widgets(batch, "dialog");
             return;
         }
         let Some(layout) = self.dialog_layout() else {
@@ -774,7 +870,7 @@ impl Game<'_> {
                         continue;
                     };
                     // ItemDisplayWidget: the item at its corner, then its decorations.
-                    self.draw_item_model(batch, &stack, x, y);
+                    self.draw_item_model(batch, &stack, x, y, 0);
                     if *show_decorations {
                         self.draw_item_decorations(batch, &stack, x, y, None);
                     }
@@ -823,6 +919,8 @@ impl Game<'_> {
                 open.scroll.amount,
             );
         }
+        self.dialogs.open = Some(open);
+        self.draw_overlay_mounted_widgets(batch, "dialog");
         if warn_hover {
             tooltip = Some(Text::translate("menu.custom_screen_info.tooltip", &[]));
         }
@@ -835,7 +933,6 @@ impl Game<'_> {
                 .collect();
             ui::tooltip(batch, atlas, &lines, cursor);
         }
-        self.dialogs.open = Some(open);
         if let Some(stack) = item_tip {
             self.draw_stack_tooltip(batch, &stack, cursor.0, cursor.1);
         }
@@ -844,26 +941,32 @@ impl Game<'_> {
         }
     }
 
+    /// `DialogScreen.WarningScreen`: Back opens its return dialog if still live.
+    fn return_from_dialog_warning(&mut self) {
+        if self.dialogs.open.is_some() || self.dialogs.waiting.is_some() {
+            self.open_screen_overlay("dialog", |game| game.dialogs.warning = false);
+        } else {
+            self.dialogs.warning = false;
+            self.dialog_receiver_changed();
+        }
+    }
+
     /// A left click on a dialog screen.
     pub(super) fn dialog_click(&mut self) -> Result<bool> {
         let cursor = self.cursor;
         if self.dialogs.warning {
-            let (title, message, _) = warning_texts();
+            let (title, message, _) = self.warning_texts();
             let answer = Confirm::new(&self.gui.atlas.font, self.gui_size(), &title, &message)
                 .answer_at(cursor);
             match answer {
                 Some(true) => {
-                    self.audio.play_button_click();
+                    self.play_audio_button_click();
                     let reason = Text::translate("menu.custom_screen_info.disconnect", &[]);
                     self.leave_server(Some(reason))?;
-                    return Ok(true);
                 }
                 Some(false) => {
-                    self.audio.play_button_click();
-                    self.dialogs.warning = false;
-                    if !self.dialog_open() {
-                        self.dialog_closed();
-                    }
+                    self.play_audio_button_click();
+                    self.return_from_dialog_warning();
                 }
                 None => {}
             }
@@ -877,9 +980,9 @@ impl Game<'_> {
                 ((h - 53.0) / 2.0).trunc() + 33.0,
             );
             if active && ui::hovered(cursor, bx, by, 200.0, 20.0) {
-                self.audio.play_button_click();
+                self.play_audio_button_click();
                 self.dialogs.waiting = None;
-                self.dialog_closed();
+                self.dialog_receiver_changed();
                 return Ok(true);
             }
             return Ok(false);
@@ -888,10 +991,20 @@ impl Game<'_> {
             return Ok(false);
         };
         let [wx, wy, ww, wh] = layout.warning;
+<<<<<<< HEAD
         let local = self.dialogs.open.as_ref().is_some_and(|o| o.local);
         if !local && ui::hovered(cursor, wx, wy, ww, wh) {
             self.audio.play_button_click();
             self.dialogs.warning = true;
+||||||| 46c00106def
+        if ui::hovered(cursor, wx, wy, ww, wh) {
+            self.audio.play_button_click();
+            self.dialogs.warning = true;
+=======
+        if ui::hovered(cursor, wx, wy, ww, wh) {
+            self.play_audio_button_click();
+            self.open_screen_overlay("dialog", |game| game.dialogs.warning = true);
+>>>>>>> ed6772e2118
             return Ok(true);
         }
         let shift = self.modifiers.shift_key();
@@ -928,6 +1041,7 @@ impl Game<'_> {
                         Some(Some(Field::Line(edit))) => {
                             edit.focused = true;
                             edit.click(&self.gui.atlas, cursor.0, false, false);
+                            open.selecting = Some(input);
                         }
                         Some(Some(Field::Multi(edit))) => {
                             [edit.x, edit.y, edit.width, edit.height] = [x, y, w, h];
@@ -988,6 +1102,7 @@ impl Game<'_> {
             }
         }
         let Some(action) = action else {
+            let focused = open.focus.is_some();
             // A text click runs its event (DialogScreen.runAction) with no button sound.
             let click = match text_click {
                 Some(ClickEvent::OpenUrl(url)) => Click::OpenUrl(url),
@@ -1003,14 +1118,14 @@ impl Game<'_> {
                     payload: payload.map(std::sync::Arc::unwrap_or_clone),
                 },
                 Some(ClickEvent::OpenFile(_) | ClickEvent::Profiler(_)) | None => {
-                    return Ok(open.focus.is_some());
+                    return Ok(focused);
                 }
             };
             let after = open.dialog.after_action;
             self.run_dialog_action(Some(click), after)?;
             return Ok(true);
         };
-        self.audio.play_button_click();
+        self.play_audio_button_click();
         let Some(index) = action else {
             return Ok(true);
         };
@@ -1030,9 +1145,9 @@ impl Game<'_> {
 
     /// The mouse wheel over a dialog: a cycle button under it takes the
     /// step, else the body scrolls 10 a step.
-    pub(super) fn dialog_scroll(&mut self, delta: f32) {
+    pub(super) fn dialog_scroll(&mut self, delta: f32) -> bool {
         let Some(layout) = self.dialog_layout() else {
-            return;
+            return false;
         };
         let cursor = self.cursor;
         let stick_scroll = self.pad_stick_scroll();
@@ -1054,7 +1169,7 @@ impl Game<'_> {
                 if let Some(input) = hovered_cycle.filter(|_| !stick_scroll) {
                     // CycleButton.mouseScrolled: up goes back.
                     cycle(open, input, if delta > 0.0 { -1 } else { 1 });
-                    return;
+                    return true;
                 }
                 // AbstractScrollArea.mouseScrolled: a multiline box takes the wheel.
                 let text = layout
@@ -1081,32 +1196,42 @@ impl Game<'_> {
                     .and_then(|i| open.fields.get_mut(i))
                 {
                     edit.wheel(delta);
-                    return;
+                    return true;
                 }
             }
-            open.scroll.wheel(delta, 10.0, ay, ay + ah, layout.content);
+            let [ax, _, aw, _] = layout.area;
+            if stick_scroll || step_scroll || ui::hovered(cursor, ax, ay, aw, ah) {
+                open.scroll.wheel(delta, 10.0, ay, ay + ah, layout.content);
+                return true;
+            }
         }
+        false
     }
 
-    /// The pointer moved with a slider held (`AbstractSliderButton.onDrag`).
-    pub(super) fn dialog_drag(&mut self) {
+    /// The pointer moved with a text field or slider held.
+    pub(super) fn dialog_drag(&mut self) -> bool {
+        if self.dialogs.warning || self.dialogs.waiting.is_some() {
+            return false;
+        }
         let (cursor, shift) = (self.cursor, self.modifiers.shift_key());
         if let Some(open) = self.dialogs.open.as_mut()
-            && let Some(Some(Field::Multi(edit))) =
-                open.selecting.and_then(|i| open.fields.get_mut(i))
+            && let Some(Some(field)) = open.selecting.and_then(|i| open.fields.get_mut(i))
         {
-            // MultiLineEditBox.onDrag.
-            edit.drag(&self.gui.atlas.font, cursor, shift);
+            match field {
+                Field::Line(edit) => edit.drag_to(&self.gui.atlas, cursor.0),
+                Field::Multi(edit) => edit.drag(&self.gui.atlas.font, cursor, shift),
+            }
+            return true;
         }
         let Some(input) = self.dialogs.open.as_ref().and_then(|o| o.dragging) else {
-            return;
+            return false;
         };
         let Some(layout) = self.dialog_layout() else {
-            return;
+            return false;
         };
         let x = self.cursor.0;
         let Some(open) = self.dialogs.open.as_mut() else {
-            return;
+            return false;
         };
         let slider = layout.body.iter().find_map(|p| match p {
             Part::Slider { input: i, rect } if *i == input => Some(*rect),
@@ -1114,82 +1239,70 @@ impl Game<'_> {
         });
         if let (Some([sx, _, sw, _]), Some(value)) = (slider, open.values.get_mut(input)) {
             *value = InputValue::Slider(ui::slider_value(sx, sw, x) as f32);
-        }
-    }
-
-    /// The left button released: a held slider lets go and clicks.
-    pub(super) fn dialog_release(&mut self) -> bool {
-        if let Some(open) = self.dialogs.open.as_mut() {
-            let selecting = open.selecting.take();
-            if let Some(Some(Field::Multi(edit))) = selecting.and_then(|i| open.fields.get_mut(i)) {
-                edit.release();
-            }
-            if open.dragging.take().is_some() {
-                self.audio.play_button_click();
-                return true;
-            }
-            return selecting.is_some();
+            return true;
         }
         false
     }
 
-    /// A key pressed on a dialog screen: Escape closes what allows it, Tab
-    /// moves between the text inputs, the rest goes to the focused one
-    /// (`shortcut`: the press as an edit shortcut; `text`: what it types).
+    /// The left button released: a held slider lets go and clicks.
+    pub(super) fn dialog_release(&mut self) -> bool {
+        if self.dialogs.warning || self.dialogs.waiting.is_some() {
+            return false;
+        }
+        if let Some(open) = self.dialogs.open.as_mut() {
+            if let Some(selecting) = open.selecting.take() {
+                if let Some(Some(Field::Multi(edit))) = open.fields.get_mut(selecting) {
+                    edit.release();
+                }
+                return true;
+            }
+            if open.dragging.take().is_some() {
+                self.play_audio_button_click();
+                return true;
+            }
+        }
+        false
+    }
+
+    /// A key pressed on a dialog screen: Escape closes what allows it, the
+    /// rest goes to the focused input before the screen's shared navigation
+    /// (`shortcut`: the press as an edit shortcut).
     pub(super) fn dialog_key(
         &mut self,
         key: KeyCode,
         shortcut: Option<EditShortcut>,
-        text: Option<&str>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let escape = key == KeyCode::Escape;
         if self.dialogs.warning {
             if escape {
-                self.dialogs.warning = false;
-                if !self.dialog_open() {
-                    self.dialog_closed();
-                }
+                self.return_from_dialog_warning();
             }
-            return Ok(());
+            return Ok(escape);
         }
         if let Some(since) = self.dialogs.waiting {
             // shouldCloseOnEsc: once Back works.
             if escape && waiting_button((since.elapsed().as_millis() / 50) as u32).2 {
                 self.dialogs.waiting = None;
-                self.dialog_closed();
+                self.dialog_receiver_changed();
+                return Ok(true);
             }
-            return Ok(());
+            return Ok(false);
         }
         let ctrl = self.modifiers.control_key() || self.modifiers.super_key();
         let shift = self.modifiers.shift_key();
         let Some(open) = self.dialogs.open.as_mut() else {
-            return Ok(());
+            return Ok(false);
         };
         if escape {
             if !open.dialog.can_close_with_escape {
-                return Ok(());
+                return Ok(false);
             }
             // onClose: the cancel action, and the screen closes.
             Self::dialog_values(open);
             let d = &open.dialog;
             let click = d.on_cancel().and_then(|a| a.click(&d.inputs, &open.values));
-            return self.run_dialog_action(click, AfterAction::Close);
-        }
-        if key == KeyCode::Tab {
-            let texts: Vec<usize> = (0..open.fields.len())
-                .filter(|&i| open.fields[i].is_some())
-                .collect();
-            if !texts.is_empty() {
-                let at = open.focus.and_then(|f| texts.iter().position(|&i| i == f));
-                let next = match at {
-                    None if shift => texts.len() - 1,
-                    None => 0,
-                    Some(p) if shift => (p + texts.len() - 1) % texts.len(),
-                    Some(p) => (p + 1) % texts.len(),
-                };
-                open.focus = Some(texts[next]);
-            }
-            return Ok(());
+            self.run_dialog_action(click, AfterAction::Close)?;
+            return Ok(true);
         }
         if let Some(focus) = open.focus
             && let Some(input) = open.dialog.inputs.get(focus)
@@ -1215,28 +1328,17 @@ impl Game<'_> {
                 -delta
             };
             *val = (*val + step_sign).clamp(0.0, 1.0);
-            return Ok(());
+            return Ok(true);
         }
         let Some(Some(edit)) = open.focus.and_then(|f| open.fields.get_mut(f)) else {
-            return Ok(());
+            return Ok(false);
         };
         let font = &self.gui.atlas.font;
         if let Some(shortcut) = shortcut {
             edit.shortcut(font, shortcut, &mut self.clipboard);
-            return Ok(());
+            return Ok(true);
         }
-        if edit.key(font, key, ctrl, shift) {
-            return Ok(());
-        }
-        let typed: String = text
-            .unwrap_or_default()
-            .chars()
-            .filter(|c| !c.is_control())
-            .collect();
-        if !typed.is_empty() {
-            edit.insert_text(font, &typed);
-        }
-        Ok(())
+        Ok(edit.key(font, key, ctrl, shift))
     }
 
     /// Whether the open dialog has a text input.
@@ -1293,6 +1395,43 @@ fn draw_background(batch: &mut HudBatch, atlas: &sunrise_client::hud::HudAtlas, 
     // Screen.extractBackground draws the panorama and blur before this menu overlay.
     // The frame renderer already supplies them while a server is configuring.
     ui::menu_background(batch, atlas, 0.0, 0.0, w, h, in_world);
+}
+
+#[cfg(test)]
+mod warning_tests {
+    use crate::game::{
+        in_own_process,
+        integrated::{Integrated, Serving},
+        native_entity_refs::tests::with_client_game,
+    };
+    use sunrise_protocol::connection::Pipe;
+
+    #[test]
+    #[ignore = "daily"]
+    fn warning_disconnect_label_follows_server_ownership() {
+        in_own_process(
+            "game::dialogs::warning_tests::warning_disconnect_label_follows_server_ownership",
+            || {
+                with_client_game(|game| {
+                    let (client, _server) = Pipe::pair();
+                    game.connect_local(client, "DialogWarning").unwrap();
+
+                    let (_, _, [disconnect, back]) = game.warning_texts();
+                    assert_eq!(disconnect.translation_key(), Some("menu.disconnect"));
+                    assert_eq!(back.translation_key(), Some("gui.back"));
+
+                    // The same client connection backs singleplayer, even after publishing to LAN.
+                    for port in [0, 25565] {
+                        let serving = Serving::fixture(port);
+                        game.integrated = Some(Integrated::fixture_for(&serving));
+                        let (_, _, [disconnect, back]) = game.warning_texts();
+                        assert_eq!(disconnect.translation_key(), Some("menu.returnToMenu"));
+                        assert_eq!(back.translation_key(), Some("gui.back"));
+                    }
+                });
+            },
+        );
+    }
 }
 
 #[cfg(test)]

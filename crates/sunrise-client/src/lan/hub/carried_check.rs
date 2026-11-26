@@ -1,5 +1,5 @@
-//! The move check of a player a moving collider carries (docs/modding/src/how-to/native-mods.md,
-//! "Moving colliders").
+//! The move check of a player a moving collider carries
+//! (docs/modding/src/how-to/entities/collision-exclusions.md, "Moving colliders").
 //!
 //! A client moves its player with the collider as it last heard of it, so the position it reports
 //! is in a frame that is some ticks old. The server keeps each collider's recent transforms

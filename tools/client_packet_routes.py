@@ -14,10 +14,11 @@ import argparse
 import re
 from pathlib import Path
 
-try:
-    from . import input_recording
-except ImportError:
-    import input_recording
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import input_recording
 
 PLAYER = "Steve"
 # The opponent of the PvP routes: tools/client_packet_parity.py joins it as sunrise-bots --behaviour stand.
@@ -59,6 +60,9 @@ class Events:
 
     def wheel(self, t, dy):
         self.list.append({"t": START + t, "type": "wheel", "dy": dy})
+
+    def rel(self, t, dx, dy):
+        self.list.append({"t": START + t, "type": "rel", "dx": dx, "dy": dy})
 
 
 def cell(index):
@@ -413,10 +417,46 @@ def pvp_strafe(e):
     e.button(2.6)
 
 
+@route("look_x", 29)
+def look_x(e):
+    # Vanilla 26.3 X11 mouse-look parity: post-marker first move, two equal +40 X deltas, then -80 back.
+    e.rel(0.3, 40, 0)
+    e.rel(1.2, 40, 0)
+    e.rel(2.1, 40, 0)
+    e.rel(3.0, -80, 0)
+
+
+@route("look_y", 30)
+def look_y(e):
+    # Vanilla 26.3 X11 mouse-look parity: post-marker first move, two equal +40 Y deltas, then -80 back.
+    e.rel(0.3, 0, 40)
+    e.rel(1.2, 0, 40)
+    e.rel(2.1, 0, 40)
+    e.rel(3.0, 0, -80)
+
+
+@route("look_counts", 31)
+def look_counts(e):
+    # Vanilla 26.3 X11 mouse-look parity: six single (+1, -1) counts, the mouse's smallest step.
+    for i in range(6):
+        e.rel(0.3 + 0.2 * i, 1, -1)
+
+
+@route("regrab", 32)
+def regrab(e):
+    # Vanilla 26.3 X11 mouse-look parity: inventory releases, Escape re-grabs and warps, then X and Y moves.
+    e.key(0.3, "KEY_E")
+    e.key(1.3, "KEY_ESC")
+    e.rel(2.3, 40, 0)
+    e.rel(3.2, 0, 20)
+    e.rel(4.1, 40, 0)
+
+
 # By cell index. Lava sets the player alight; the swim route right after it puts the fire out.
 ORDER = sorted(ROUTES, key=lambda name: ROUTES[name]["index"])
 assert [ROUTES[name]["index"] for name in ORDER] == list(range(len(ORDER)))
 PVP = [name for name in ORDER if name.startswith("pvp_")]
+MOUSE_LOOK = ["look_x", "look_y", "look_counts", "regrab"]
 
 
 def course_bounds():

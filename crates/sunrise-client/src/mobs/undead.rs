@@ -268,9 +268,20 @@ pub(super) fn drowned_travel(
     pause: bool,
 ) -> ControlFlow<super::living::TravelPause> {
     m.move_relative(0.01, input);
-    m.travel_move(w, level, events, pause, |m, _, _, _| {
-        m.velocity = Vec3::new(m.velocity.x * 0.9, m.velocity.y * 0.9, m.velocity.z * 0.9);
-    })
+    m.travel_move(
+        w,
+        level,
+        events,
+        pause,
+        sunrise_world::travel::TravelMode::Water,
+        |m, _, _, _| {
+            m.set_velocity(Vec3::new(
+                m.velocity.x * 0.9,
+                m.velocity.y * 0.9,
+                m.velocity.z * 0.9,
+            ));
+        },
+    )
 }
 /// `RangedAttackMob.rangedAttackUncertainty`: 14 on peaceful, four less per
 /// difficulty step, so a hard drowned throws its trident almost straight.
@@ -282,7 +293,10 @@ fn ranged_attack_uncertainty(difficulty: u8) -> f32 {
 /// The trident throw of `Drowned.performRangedAttack`: a `ThrownTrident` of
 /// the held trident (a plain one when it holds none), owned by the drowned,
 /// which cannot be picked up and does not return (`AbstractArrow` constructor:
-/// only a player's projectile is `Pickup.ALLOWED`).
+/// only a player's projectile is `Pickup.ALLOWED`). A native mod takes the throw here
+/// through `[[native.mixin]]`, where a Java mod's mixin on `Drowned.performRangedAttack`
+/// cancels or delays it (#4678).
+#[sunrise_mod_api_macros::replaceable]
 fn drowned_throw(m: &mut Mob, who: Who, _power: f32, cx: &mut Cx) {
     let Some(t) = cx.w.target_info(who) else {
         return;
@@ -323,15 +337,19 @@ fn drowned_throw(m: &mut Mob, who: Who, _power: f32, cx: &mut Cx) {
 struct DrownedTridentAttack(super::witch::RangedAttack);
 impl Goal for DrownedTridentAttack {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         self.0.flags()
     }
+    #[inline]
     fn name(&self) -> &'static str {
         "DrownedTridentAttackGoal"
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         self.0.can_use(m, cx) && m.extra.main_hand_id() == Some("minecraft:trident")
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         // `RangedAttackGoal.canContinueToUse` asks `canUse()` again: the
         // trident test is re-checked, and the goal only falls back to a target
@@ -339,17 +357,21 @@ impl Goal for DrownedTridentAttack {
         self.0.can_use(m, cx)
             && (m.extra.main_hand_id() == Some("minecraft:trident") || !m.ai.nav.is_done())
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.start(m, cx);
         m.ai.aggressive = true;
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.stop(m, cx);
         m.ai.aggressive = false;
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         self.0.every_tick()
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.tick(m, cx)
     }
@@ -359,27 +381,35 @@ impl Goal for DrownedTridentAttack {
 struct DrownedAttack(MeleeAttack);
 impl Goal for DrownedAttack {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         self.0.flags()
     }
+    #[inline]
     fn name(&self) -> &'static str {
         "DrownedAttackGoal"
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         self.0.can_use(m, cx) && drowned_ok_target(m, cx.w)
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         self.0.can_continue(m, cx) && drowned_ok_target(m, cx.w)
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.start(m, cx)
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.stop(m, cx)
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         self.0.every_tick()
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.tick(m, cx)
     }
@@ -400,15 +430,19 @@ fn beach_target(w: &super::MobWorld, p: [i32; 3]) -> bool {
 }
 impl Goal for DrownedGoToBeach {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE | super::goals::JUMP
     }
+    #[inline]
     fn name(&self) -> &'static str {
         "DrownedGoToBeachGoal"
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         true
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         // MoveToBlockGoal.canUse, then the drowned's conditions.
         if self.0.next_start > 0 {
@@ -421,13 +455,16 @@ impl Goal for DrownedGoToBeach {
             && m.fluids.in_water
             && m.position.y >= f64::from(cx.w.sea_level - 3)
     }
+    #[inline]
     fn can_continue(&mut self, _m: &mut Mob, cx: &mut Cx) -> bool {
         self.0.can_continue(cx.w, beach_target)
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         m.extra.flag2 = false;
         self.0.start(m, cx.w);
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.tick(m, cx.w);
     }
@@ -439,25 +476,32 @@ struct DrownedSwimUp {
 }
 impl Goal for DrownedSwimUp {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         0
     }
+    #[inline]
     fn name(&self) -> &'static str {
         "DrownedSwimUpGoal"
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         !cx.w.daylight && m.fluids.in_water && m.position.y < f64::from(cx.w.sea_level - 2)
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         self.can_use(m, cx) && !self.stuck
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, _cx: &mut Cx) {
         m.extra.flag2 = true;
         self.stuck = false;
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, _cx: &mut Cx) {
         m.extra.flag2 = false;
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         let sea = f64::from(cx.w.sea_level);
         if m.position.y < sea - 1.0 && (m.ai.nav.is_done() || drowned_close_to_next_pos(m)) {
@@ -588,7 +632,7 @@ fn skeleton_freezing(m: &mut Mob, cx: &mut Cx) {
         if m.extra.counter2 == 0 {
             // ConversionTracker.doConversion: convertTo(STRAY,
             // ConversionParams.single(this, true, true)).
-            convert(m, "minecraft:stray", cx);
+            convert(m, "minecraft:stray", cx, true);
             // levelEvent 1048: the conversion sound at the stray, unless it
             // is silent.
             if !m.silent {
@@ -610,13 +654,17 @@ fn skeleton_freezing(m: &mut Mob, cx: &mut Cx) {
 }
 /// `Mob.convertTo(kind, ConversionParams.single(this, true, true))`: the
 /// mob is discarded and a new one of `kind` takes its place with its
-/// equipment, name, effects and flags (`MobEvent::Convert`).
-fn convert(m: &mut Mob, kind: &'static str, cx: &mut Cx) {
+/// equipment, name, effects and flags (`MobEvent::Convert`). `before_travel`:
+/// vanilla's `ConversionTracker.tick` comes before the tick's travel
+/// (`Skeleton.tick` runs it before `super.tick()`), not after (`Zombie.tick`
+/// runs it after).
+fn convert(m: &mut Mob, kind: &'static str, cx: &mut Cx, before_travel: bool) {
     cx.events.push(MobEvent::Convert {
         from: Box::new(m.clone()),
         kind,
         params: super::conversion::Params::KEEP_ALL,
         after: super::conversion::After::None,
+        before_travel,
     });
     m.removed = true;
 }
@@ -644,7 +692,7 @@ pub fn custom_server_ai_step(m: &mut Mob, cx: &mut Cx) {
                 // ConversionTracker.doConversion: convertTo(type,
                 // ConversionParams.single(this, true, true)); levelEvent
                 // 1040 or 1041 unless the new mob is silent.
-                convert(m, kind, cx);
+                convert(m, kind, cx, false);
                 if !m.silent {
                     cx.events.push(MobEvent::Sound(sound, m.center(), 1.0, 1.0));
                 }
@@ -685,9 +733,11 @@ impl SkeletonWeapon {
 }
 impl Goal for SkeletonWeapon {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE | LOOK
     }
+    #[inline]
     fn name(&self) -> &'static str {
         if self.use_bow {
             "BowAttack"
@@ -695,6 +745,7 @@ impl Goal for SkeletonWeapon {
             "AbstractSkeleton$1"
         }
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         if self.use_bow {
             self.bow.every_tick()
@@ -702,6 +753,7 @@ impl Goal for SkeletonWeapon {
             self.melee.every_tick()
         }
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         // The goal registered for the weapon in hand.
         self.use_bow = holding_bow(m);
@@ -723,6 +775,7 @@ impl Goal for SkeletonWeapon {
             self.melee.can_use(m, cx)
         }
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         // Changing weapons removes the running goal.
         if self.use_bow != holding_bow(m) {
@@ -734,6 +787,7 @@ impl Goal for SkeletonWeapon {
             self.melee.can_continue(m, cx)
         }
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         if self.use_bow {
             self.bow.start(m, cx)
@@ -741,6 +795,7 @@ impl Goal for SkeletonWeapon {
             self.melee.start(m, cx)
         }
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         if self.use_bow {
             self.bow.stop(m, cx)
@@ -748,6 +803,7 @@ impl Goal for SkeletonWeapon {
             self.melee.stop(m, cx)
         }
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         if self.use_bow {
             self.bow.tick(m, cx)
@@ -756,7 +812,7 @@ impl Goal for SkeletonWeapon {
         }
     }
 }
-/// RangedBowAttackGoal for skeletons.
+/// RangedBowAttackGoal for skeletons and the illusioner.
 #[derive(Clone, Debug)]
 pub struct BowAttack {
     speed: f64,
@@ -789,27 +845,34 @@ fn holding_bow(m: &Mob) -> bool {
 }
 impl Goal for BowAttack {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE | LOOK
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
         m.ai.target.is_some() && holding_bow(m)
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         (self.can_use(m, cx) || !m.ai.nav.is_done()) && holding_bow(m)
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, _: &mut Cx) {
         m.ai.aggressive = true;
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, _: &mut Cx) {
         m.ai.aggressive = false;
         self.see_time = 0;
         self.attack_time = -1;
         m.extra.using_item = 0;
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         true
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         let Some(who) = m.ai.target else { return };
         let Some(t) = cx.w.target_info(who) else {
@@ -868,7 +931,13 @@ impl Goal for BowAttack {
                 let pull = m.extra.using_item;
                 if pull >= 20 {
                     m.extra.using_item = 0;
-                    perform_ranged_attack(m, who, cx, bow_power(pull));
+                    // `RangedAttackMob.performRangedAttack`: the illusioner's own or the
+                    // skeleton family's.
+                    if m.species() == Species::Illusioner {
+                        super::illusioner::perform_ranged_attack(m, who, cx, bow_power(pull));
+                    } else {
+                        perform_ranged_attack(m, who, cx, bow_power(pull));
+                    }
                     self.attack_time = self.interval_min;
                 }
             }
@@ -928,9 +997,17 @@ pub fn bow_power(ticks: i32) -> f32 {
     let t = ticks as f32 / 20.0;
     ((t * t + t * 2.0) / 3.0).min(1.0)
 }
-/// AbstractSkeleton.performRangedAttack: aim 20% above the target's lower
-/// third, speed 1.6, uncertainty 14 - 4 * difficulty.
+/// `AbstractSkeleton.performRangedAttack`: the skeleton family's [`bow_shot`]. A native mod
+/// takes the shot here through `[[native.mixin]]`, where a Java mod's mixin on
+/// `AbstractSkeleton.performRangedAttack` cancels or delays it (#4678). The illusioner shoots
+/// the same arrow through its own `performRangedAttack`, which doesn't come through here.
+#[sunrise_mod_api_macros::replaceable]
 pub fn perform_ranged_attack(m: &mut Mob, who: Who, cx: &mut Cx, power: f32) {
+    bow_shot(m, who, cx, power);
+}
+/// The bow shot of `AbstractSkeleton.performRangedAttack` and `Illusioner.performRangedAttack`:
+/// aim 20% above the target's lower third, speed 1.6, uncertainty 14 - 4 * difficulty.
+pub(super) fn bow_shot(m: &mut Mob, who: Who, cx: &mut Cx, power: f32) {
     let Some(t) = cx.w.target_info(who) else {
         return;
     };
@@ -1009,10 +1086,12 @@ pub struct DrownedGoToWater {
 }
 impl Goal for DrownedGoToWater {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE
     }
     /// `Drowned.DrownedGoToWaterGoal.canUse`.
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if !cx.w.daylight || m.fluids.in_water {
             return false;
@@ -1041,9 +1120,11 @@ impl Goal for DrownedGoToWater {
         }
         false
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
         !m.ai.nav.is_done()
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         m.nav_move_to(cx.w, self.wanted, 1.0);
     }
@@ -1082,10 +1163,12 @@ impl MoveThroughVillage {
 }
 impl Goal for MoveThroughVillage {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE
     }
     /// `MoveThroughVillageGoal.canUse`.
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if !can_navigate_ground(m) {
             return false;
@@ -1167,6 +1250,7 @@ impl Goal for MoveThroughVillage {
         self.path.is_some()
     }
     /// `MoveThroughVillageGoal.canContinueToUse`.
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
         !m.ai.nav.is_done()
             && !closer_to_center(
@@ -1176,11 +1260,13 @@ impl Goal for MoveThroughVillage {
             )
     }
     /// `MoveThroughVillageGoal.start`.
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         m.nav_move_to_path(cx.w, self.path.clone(), self.speed);
     }
     /// `MoveThroughVillageGoal.stop`: a point reached (or the walk ended) is
     /// visited.
+    #[inline]
     fn stop(&mut self, m: &mut Mob, _: &mut Cx) {
         if m.ai.nav.is_done() || closer_to_center(self.poi, m.position, f64::from(self.distance)) {
             self.visited.push(self.poi);
@@ -1213,13 +1299,16 @@ fn turtle_egg_target(w: &super::MobWorld, mob: u32, p: [i32; 3]) -> bool {
 }
 impl Goal for AttackTurtleEgg {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE | super::goals::JUMP
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         true
     }
     /// RemoveBlockGoal.canUse
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if !cx.w.can_grief(m.id) {
             return false;
@@ -1245,18 +1334,22 @@ impl Goal for AttackTurtleEgg {
             super::goals::reduced(200 + m.random.next_int_bound(200).unwrap_or(0));
         false
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         let id = m.id;
         self.base
             .can_continue(cx.w, |w, p| turtle_egg_target(w, id, p))
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.base.start(m, cx.w);
         self.since_reached = 0;
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, _cx: &mut Cx) {
         m.fall_distance = 1.0;
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.base.tick_within(m, cx.w, 1.14);
         let at = [

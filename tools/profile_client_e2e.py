@@ -7,14 +7,10 @@ import sys
 import time
 from pathlib import Path
 
-try:
-    from . import agent_control_e2e as ac
-    from . import lab
-except ImportError:
-    import agent_control_e2e as ac
-    import lab
-
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import agent_control_e2e as ac, lab
+
 RUN_S = 3.0
 PATTERN = 'profile-*.hzperf'
 

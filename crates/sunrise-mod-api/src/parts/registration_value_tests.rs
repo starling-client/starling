@@ -1,6 +1,6 @@
 #![cfg(test)]
 use super::*;
-use crate::testing::FakeHost;
+use crate::{HookList, HookListJournal, HookListStorage, testing::FakeHost};
 use std::sync::Mutex;
 
 #[test]
@@ -161,7 +161,9 @@ fn server_services_forward_commands_messages_and_player_identity() {
     assert!(result.success);
     assert!(result.feedback.is_empty());
     assert!(!host.commands().run_command_with_output("missing").success);
-    host.commands().feedback(Text::literal("answer")).unwrap();
+    host.commands()
+        .feedback(Text::literal("answer"), false)
+        .unwrap();
     host.messages()
         .broadcast(Text::literal("everyone"))
         .unwrap();
@@ -489,6 +491,28 @@ fn player_turn_mods_receive_identity_and_chain_changes() {
 }
 
 #[test]
+fn player_turn_deltas_receive_identity_and_chain_changes() {
+    struct ScaleTurn;
+    #[mod_api::__subscriptions]
+    impl Hooks for ScaleTurn {
+        fn player_turn(&self, _host: &dyn ClientHost, event: &mut PlayerTurnEvent) {
+            assert_eq!((event.player_entity_id, event.player_uuid), (42, 123));
+            event.x *= 0.5;
+            event.y += 2.0;
+        }
+    }
+    let host = FakeHost::new();
+    let mods: Vec<ModEntry> = vec![
+        ModEntry::new("turn-1", Box::new(ScaleTurn)),
+        ModEntry::new("turn-2", Box::new(ScaleTurn)),
+    ];
+    install(mods.into());
+    let (mut x, mut y) = (8.0, -1.0);
+    dispatch_player_turn(&host, 42, 123, &mut x, &mut y);
+    assert_eq!((x, y), (2.0, 3.0));
+}
+
+#[test]
 fn a_part_reads_the_clicked_block_and_tells_the_acting_player() {
     // Another test installs parts with tags: a dispatch must run on a game thread.
     mark_game_thread();
@@ -616,10 +640,15 @@ fn an_inventory_tick_reaches_only_the_parts_of_the_ticked_item() {
     let mut host = FakeHost::new();
     let stone = crate::__private::part_tests::stack("minecraft:stone", 1, 0);
     let diamond = crate::__private::part_tests::stack("minecraft:diamond", 1, 0);
-    dispatch_inventory_tick(&mut host, &stick(), 4, true);
-    dispatch_inventory_tick(&mut host, &stone, -106, false);
-    dispatch_inventory_tick(&mut host, &stick(), 100, false);
-    dispatch_inventory_tick(&mut host, &diamond, 0, false);
+    for (item, slot, selected) in [
+        (stick().item(), 4, true),
+        (stone.item(), -106, false),
+        (stick().item(), 100, false),
+        (diamond.item(), 0, false),
+    ] {
+        let place = crate::ItemPlace::PlayerSlot { player: 1, slot };
+        dispatch_inventory_tick(&mut host, item, &place, slot, selected);
+    }
     assert_eq!(*sticks.0.lock().unwrap(), [(4, true), (100, false)]);
     assert_eq!(*stones.0.lock().unwrap(), [(-106, false)]);
 }
@@ -737,8 +766,8 @@ fn an_item_update_reaches_only_the_parts_of_the_ticked_item_and_cancels_for_its_
             [0.0; 3]
         }
         fn with_stack(&self, _: &mut dyn for<'a> FnMut(crate::ItemStackView<'a>)) {}
-        fn pickup_delay(&self) -> Option<i32> {
-            Some(0)
+        fn pickup_delay(&self) -> i32 {
+            0
         }
         fn age(&self) -> i32 {
             0
@@ -749,7 +778,7 @@ fn an_item_update_reaches_only_the_parts_of_the_ticked_item_and_cancels_for_its_
         fn owner(&self) -> Option<EntityRef> {
             None
         }
-        fn set_stack(&mut self, _: ItemStack) -> Result<bool, crate::StackWriteError> {
+        fn set_stack(&mut self, _: Option<ItemStack>) -> Result<bool, crate::StackWriteError> {
             Ok(false)
         }
         fn set_pickup_delay(&mut self, _: i32) -> bool {
@@ -1013,15 +1042,11 @@ impl Hooks for Recorder {
 
 #[test]
 fn game_rule_change_reports_optional_actor() {
-    struct ActorRecorder(Arc<Mutex<Vec<Option<(u128, i32, String)>>>>);
+    struct ActorRecorder(Arc<Mutex<Vec<Option<PlayerRef>>>>);
     #[mod_api::__subscriptions]
     impl Hooks for ActorRecorder {
         fn game_rule_changed(&self, _: &mut dyn ServerHost, event: &mut GameRuleChangedEvent<'_>) {
-            self.0.lock().unwrap().push(
-                event
-                    .actor
-                    .map(|actor| (actor.uuid, actor.entity_id, actor.name.to_owned())),
-            );
+            self.0.lock().unwrap().push(event.actor);
         }
     }
     let seen = Arc::new(Mutex::new(Vec::new()));
@@ -1031,16 +1056,12 @@ fn game_rule_change_reports_optional_actor() {
     )];
     install(mods.into());
     let mut host = FakeHost::new();
-    let actor = GameRuleActor {
-        uuid: 123,
-        entity_id: 42,
-        name: "Alex",
-    };
+    let actor = crate::__private::game::player_ref(EntityRef::new(WorldEpoch::new(1), 42), 123);
     dispatch_game_rule_changed(
         &mut host,
         "minecraft:keep_inventory",
         GameRuleValue::Bool(true),
-        Some(&actor),
+        Some(actor),
     );
     dispatch_game_rule_changed(
         &mut host,
@@ -1048,10 +1069,7 @@ fn game_rule_change_reports_optional_actor() {
         GameRuleValue::Bool(false),
         None,
     );
-    assert_eq!(
-        *seen.lock().unwrap(),
-        [Some((123, 42, "Alex".into())), None]
-    );
+    assert_eq!(*seen.lock().unwrap(), [Some(actor), None]);
 }
 
 /// API dispatch preserves each accepted rule's id and typed value for every mod.
@@ -1113,7 +1131,7 @@ struct CodKeeper;
 
 #[mod_api::__subscriptions]
 impl Hooks for CodKeeper {
-    fn item_fished(&self, _host: &mut dyn ServerHost, event: &mut ItemFishedEvent<'_>) -> Flow {
+    fn item_fished(&self, _host: &mut dyn ServerHost, event: &mut ItemFishedEvent<'_, '_>) -> Flow {
         event.rod_damage = 4;
         let cod = event
             .drops
@@ -1128,7 +1146,11 @@ struct Unreached;
 
 #[mod_api::__subscriptions]
 impl Hooks for Unreached {
-    fn item_fished(&self, _host: &mut dyn ServerHost, _event: &mut ItemFishedEvent<'_>) -> Flow {
+    fn item_fished(
+        &self,
+        _host: &mut dyn ServerHost,
+        _event: &mut ItemFishedEvent<'_, '_>,
+    ) -> Flow {
         panic!("asked after a cancel");
     }
 }
@@ -1148,16 +1170,13 @@ fn a_fishing_catch_keeps_the_mods_rod_damage_and_its_cancel() {
         let mut drops = vec![crate::__private::part_tests::stack(item, 1, 0)];
         let fished = mod_vocab::__private::parts_installation::item_fished(9, [0.5, 62.0, 0.5]);
         let (mut rod_damage, mut cancel) = (1, false);
-        dispatch_item_fished(
-            host,
-            7,
-            3,
-            &fished,
-            &mut rod_damage,
-            &mut cancel,
-            &mut drops,
-            &mut |_: &Vec<crate::ItemStack>| -> Result<(), crate::StackWriteError> { Ok(()) },
+        let mut journal = HookListJournal::new(
+            HookListStorage::Resizable(&mut drops),
+            |value: &crate::ItemStack| Some(value.clone()),
+            |value| Ok(value.clone()),
         );
+        let mut list = HookList::new(&mut journal, "item_fished", "drops");
+        dispatch_item_fished(host, 7, 3, &fished, &mut rod_damage, &mut cancel, &mut list);
         (rod_damage, cancel)
     };
     assert_eq!(ask(&mut host, "minecraft:cod"), (4, true));
@@ -1170,6 +1189,12 @@ fn a_fishing_catch_keeps_the_mods_rod_damage_and_its_cancel() {
     )];
     let fished = mod_vocab::__private::parts_installation::item_fished(9, [0.5, 62.0, 0.5]);
     let (mut rod_damage, mut cancel) = (2, false);
+    let mut journal = HookListJournal::new(
+        HookListStorage::Resizable(&mut drops),
+        |value: &crate::ItemStack| Some(value.clone()),
+        |value| Ok(value.clone()),
+    );
+    let mut list = HookList::new(&mut journal, "item_fished", "drops");
     dispatch_item_fished(
         &mut host,
         7,
@@ -1177,8 +1202,7 @@ fn a_fishing_catch_keeps_the_mods_rod_damage_and_its_cancel() {
         &fished,
         &mut rod_damage,
         &mut cancel,
-        &mut drops,
-        &mut |_: &Vec<crate::ItemStack>| -> Result<(), crate::StackWriteError> { Ok(()) },
+        &mut list,
     );
     assert_eq!((rod_damage, cancel), (4, false));
 }
@@ -1194,7 +1218,12 @@ fn an_ability_question_reaches_only_the_parts_of_the_asked_item_and_names_the_ab
     }
     #[mod_api::sunrise_part]
     impl ItemPart for Abilities {
-        fn can_perform_action(&self, _: &dyn Host, event: &mut CanPerformActionEvent<'_>) {
+        fn can_perform_action(
+            &self,
+            _: &ItemAbilityContext<'_>,
+            event: &mut CanPerformActionEvent<'_>,
+        ) {
+            assert_eq!(event.stack.count(), 1);
             self.asked.lock().unwrap().push(event.ability.to_owned());
             if event.ability == self.granted {
                 event.can_perform = true;
@@ -1236,7 +1265,23 @@ fn an_ability_question_reaches_only_the_parts_of_the_asked_item_and_names_the_ab
     let diamond = crate::parts::tests::stack("minecraft:diamond", 1, 0);
     let ask = |stack: &ItemStack, ability: &str, vanilla: bool| {
         let mut can_perform = vanilla;
-        dispatch_can_perform_action(&host, stack, ability, &mut can_perform);
+        let context = ItemAbilityContext::new((&host as &dyn crate::Host).tags());
+        let project = |_| -> Option<ItemStack> {
+            panic!("ability routing and scalar reads must not project the stack")
+        };
+        let metadata = (
+            stack.item(),
+            std::num::NonZeroU32::new(stack.count()).unwrap(),
+            None,
+        );
+        dispatch_can_perform_action(
+            &context,
+            crate::__private::CanPerformActionCall {
+                stack: ItemStackView::resident(metadata, &project),
+                ability,
+                can_perform: &mut can_perform,
+            },
+        );
         can_perform
     };
     // The part answers per ability: a grant, a denial and what it leaves alone.
@@ -1443,8 +1488,8 @@ fn scoped_views_reborrow_and_invalidate_after_removal() {
             self.velocity
         }
         fn with_stack(&self, _: &mut dyn for<'a> FnMut(crate::ItemStackView<'a>)) {}
-        fn pickup_delay(&self) -> Option<i32> {
-            Some(self.pickup_delay)
+        fn pickup_delay(&self) -> i32 {
+            self.pickup_delay
         }
         fn age(&self) -> i32 {
             12
@@ -1455,7 +1500,7 @@ fn scoped_views_reborrow_and_invalidate_after_removal() {
         fn owner(&self) -> Option<EntityRef> {
             Some(self.owner)
         }
-        fn set_stack(&mut self, _: ItemStack) -> Result<bool, crate::StackWriteError> {
+        fn set_stack(&mut self, _: Option<ItemStack>) -> Result<bool, crate::StackWriteError> {
             Ok(false)
         }
         fn set_pickup_delay(&mut self, ticks: i32) -> bool {
@@ -1509,7 +1554,7 @@ fn scoped_views_reborrow_and_invalidate_after_removal() {
         assert!(view.set_pickup_delay(7));
         view.pickup_delay()
     });
-    assert_eq!(delay, Some(Some(7)));
+    assert_eq!(delay, Some(7));
     let _ = item_scope.host();
     assert!(item_scope.with_view(|_| ()).is_none());
 }

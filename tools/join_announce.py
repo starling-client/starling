@@ -23,13 +23,12 @@ import tempfile
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import lab  # noqa: E402
-import net_capture  # noqa: E402
-import test_rust_parity as base  # noqa: E402
-from server_pack_e2e import Game  # noqa: E402
-from test_dedicated_server_parity import Server, free_port  # noqa: E402
-from vanilla_wire_e2e import PROPERTIES  # noqa: E402
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, net_capture, test_rust_parity as base
+from tools.server_pack_e2e import Game
+from tools.test_dedicated_server_parity import Server, free_port
+from tools.vanilla_wire_e2e import PROPERTIES  # noqa: E402
 
 PLAYER = 'Steve'
 PLAY_SECONDS = 5.0
@@ -52,7 +51,7 @@ class Headless(Game):
 
 
 def vanilla_client(address, work, log):
-    import vanilla_client
+    from tools import vanilla_client
     args = argparse.Namespace(name=PLAYER, join=address, world=None, game_dir=work / 'client', assets=None,
                               heap='2G', width=854, height=480, lan_port=None, backend=None)
     args.game_dir.mkdir(parents=True)

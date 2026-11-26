@@ -172,17 +172,19 @@ fn an_already_discarded_trident_is_not_ticked_before_sweep() {
     let journaled = std::env::var(CASE).as_deref() == Ok("journaled");
     with_probe(Action::Allow, true, |game, observed| {
         let handle = aim_trident_at_wall(game);
-        let seal = journaled.then(|| game.transaction_open());
-        assert!(game.entity_discard(handle));
-        assert!(game.entity(71).is_none());
-        let (age, at) = (game.tridents[0].age, game.tridents[0].position);
-        game.tick_tridents();
-        assert_eq!((game.tridents[0].age, game.tridents[0].position), (age, at));
+        let scope = game.storage_scope_guard(journaled);
+        let actor = &mut *scope.game;
+        assert!(actor.entity_discard(handle));
+        assert!(actor.entity(71).is_none());
+        let (age, at) = (actor.tridents[0].age, actor.tridents[0].position);
+        actor.tick_tridents();
+        assert_eq!(
+            (actor.tridents[0].age, actor.tridents[0].position),
+            (age, at)
+        );
         assert!(observed.hits.lock().unwrap().is_empty());
         assert_eq!(observed.lands.load(Ordering::Relaxed), 0);
-        if let Some(seal) = seal {
-            game.transaction_close(&seal, true);
-        }
+        scope.close(true);
         game.native_removals_flush();
         assert!(game.tridents.is_empty());
         assert_eq!(*observed.leaves.lock().unwrap(), [71]);

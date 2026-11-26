@@ -1,0 +1,20 @@
+ids = [
+    "hook:register_render_pipelines",
+    "handle:RegisterRenderPipelinesEvent::compute_pipeline",
+    "method:RenderAssets::compute_pipeline",
+    "method:FrameGraphContext::add_compute_pass",
+    "type:ComputePipeline",
+    "type:ComputePipelineBuilder",
+    "type:ComputePipelineRef",
+    "type:ComputePipelineError",
+    "type:ComputePassDescriptor",
+    "trait:ComputeDispatchContext",
+    "type:ComputeDispatchError",
+    "type:RenderCapabilities",
+]
+why = """Add compute pipelines as the fourth render primitive: a GLSL `.csh` shader under `assets/<ns>/shaders/compute/` registered on the existing register_render_pipelines registrar (version 6) with `event.compute_pipeline(..)`, resolved through RenderAssets::compute_pipeline into a generational ComputePipelineRef, and dispatched from a frame-graph compute node (FrameGraphContext::add_compute_pass) through ComputeDispatchContext::dispatch and dispatch_indirect. The bind group is the same BindGroupLayout and DrawBindings a draw uses (storage buffers, storage images, texel buffers, uniforms, samplers). The workgroup size, workgroup storage and binding counts are checked against the device when the pipeline builds, a subgroup shader is refused with UnsupportedFeature on an adapter without subgroups, and every refusal is an Err rather than a device error. RenderCapabilities gains `subgroup` and `indirect_first_instance`. Vanilla 26.3 has no compute pass in its render API, so the registrar follows NeoForge's RegisterRenderPipelinesEvent."""
+migrate = """
+- `Hooks::register_render_pipelines` is at version 6; listeners keep using `event.register(..)` and `event.register_render_type(..)`; call `event.compute_pipeline(ComputePipeline::builder(id, shader).bind_group_layout(layout).build())` to register a compute shader.
+- Resolve the handle with `host.render_assets().compute_pipeline(&id)` in `client_setup` and `client_resources_reloaded`, and dispatch it from `frame_graph_setup` with `graph.add_compute_pass(ComputePassDescriptor::new(\"name\"), &mut |ctx| { ctx.dispatch(pipeline, &bindings, [x, y, z]).ok(); })`.
+- Code that builds `RenderCapabilities` by hand adds the `subgroup` and `indirect_first_instance` fields.
+"""

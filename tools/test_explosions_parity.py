@@ -16,10 +16,9 @@ from pathlib import Path
 import subprocess
 import sys
 
-try:
-    from .command_exec_corpus import cmd, setup
-except ImportError:
-    from command_exec_corpus import cmd, setup
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools.command_exec_corpus import cmd, setup
 
 # Far from the player and from each other: a group's blast never reaches another group's chunk.
 X, Y, Z = 8192, 260, 8192

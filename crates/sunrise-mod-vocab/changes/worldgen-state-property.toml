@@ -1,0 +1,3 @@
+ids = ["method:WorldgenHost::state_property"]
+why = "A `BlockPart::rotate` part can read the property it turns: `WorldgenHost::state_property(state, key)` is vanilla's `BlockState.getValue`, the value as the block's state definition spells it (`north`, `true`, `3`), and None for a key the block does not have, a state this game does not have, or a context with no block states at hand. Before, a part probed every value with `state_with_property` to find the current one."
+migrate = "Nothing to change; a part that probed values with `state_with_property` can read the value with `state_property` instead."

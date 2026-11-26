@@ -1,7 +1,12 @@
-/// The test mods, their parts installed, on a thread that runs a game.
+/// Install the test mods for this thread. API unit tests run against fake hosts;
+/// the exported fixture for the prepared game admits only its real subjects.
 pub fn game_thread() -> crate::Mods {
+    install_shared_parts(cfg!(test))
+}
+
+pub(crate) fn install_shared_parts(mock_subjects: bool) -> crate::Mods {
     let mods: crate::Mods = vec![
-        ModEntry::new("doubler", Box::new(Doubler)),
+        ModEntry::new("doubler", Box::new(Doubler { mock_subjects })),
         ModEntry::new("chemist", Box::new(Chemist)),
         ModEntry::new("test", Box::new(FixtureContent)),
     ]

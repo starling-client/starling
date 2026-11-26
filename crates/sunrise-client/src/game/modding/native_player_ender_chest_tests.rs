@@ -65,7 +65,7 @@ fn ender_chest_slots_are_read_and_written() {
 }
 
 /// Each refusal has its own name and writes nothing: a slot past 26 (never a panic), a stack
-/// the item does not allow, a dead player, and a handle whose player has left.
+/// the item does not allow, and a handle whose player has left.
 #[test]
 #[ignore = "daily"]
 fn each_ender_chest_refusal_has_its_own_name_and_writes_nothing() {
@@ -100,21 +100,15 @@ fn each_ender_chest_refusal_has_its_own_name_and_writes_nothing() {
             .unwrap()
             .hub
             .guests
-            .update_connection(13, |g| g.dead = true);
+            .update_connection(13, |g| {
+                g.dead = true;
+                g.health = 0.0;
+            });
+        assert_eq!(b.set_ender_chest_slot(game, 0, Some(book.clone())), Ok(()));
         assert_eq!(
-            b.set_ender_chest_slot(game, 0, Some(book.clone())),
-            Err(PlayerDataRefusal::Dead)
+            b.with_ender_chest(game, |view| view.get(0).map(|s| s.count())),
+            Some(Some(1))
         );
-        assert_eq!(
-            b.with_ender_chest(game, |view| view.iter().next().is_none()),
-            Some(true)
-        );
-        game.lan
-            .as_mut()
-            .unwrap()
-            .hub
-            .guests
-            .update_connection(13, |g| g.dead = false);
         let index = game
             .lan
             .as_ref()

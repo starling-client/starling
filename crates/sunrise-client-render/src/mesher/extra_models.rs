@@ -101,7 +101,16 @@ pub(super) fn add(
                     full = true;
                     break 'models;
                 }
-                mesher.model_face(pad, groups, tints, out, at, state, face, false);
+                mesher.model_face(
+                    pad,
+                    groups,
+                    tints,
+                    out,
+                    at,
+                    state,
+                    face,
+                    super::Pass::Own { force_solid: false },
+                );
             }
         }
         if mesher.shader_pack {

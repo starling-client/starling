@@ -1,0 +1,2 @@
+ids = ["method:Tags::damage_type_in_tag"]
+why = "Adds Tags::damage_type_in_tag: DamageSource.is(TagKey) for mods. A damage listener tests a hit's HurtSource::damage_type against a damage type tag through its host's tags (host.tags().damage_type_in_tag(source.damage_type, tag)), as the tags were bound at the last data reload; a client reads the damage registry and tags its server sent, and a custom loot function or condition the evaluation's bound ones. An unknown tag is Some(false); an unknown damage type, or a tag service without damage type data, None."

@@ -1,7 +1,7 @@
 use super::{visual_characters as visual_characters_by_style, *};
 
 fn visual_characters(text: &Text) -> Vec<(char, &Style, u32)> {
-    visual_characters_by_style(text, PartialEq::eq)
+    visual_characters_by_style(text, PartialEq::eq).collect()
 }
 
 // Expected records were read from a real 26.3 client FormattedCharSink using

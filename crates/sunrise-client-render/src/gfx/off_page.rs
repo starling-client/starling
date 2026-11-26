@@ -6,30 +6,34 @@ use super::*;
 /// until the next range would pass `budget` bytes (it keeps what is left; the
 /// first range moves whatever its size, so none keeps the page closed), the
 /// copies into `encoder`, the ranges' flat draw ids (`flat`) and, in the
-/// section arena, GPU culling's records (`records`) along. False when the other
-/// pages have no room left.
+/// section arena, GPU culling's records (`records`, by `SectionGpu::gpu_id`) and sourced
+/// geometry's (`sourced_records`, by the id each mesh comes with: a tile's own mesh's
+/// `lod::Tile::gpu_id`, never its stand-in's) along. False when the other pages have no room
+/// left.
 pub(super) fn move_off_page<'a>(
     arena: &mut arena::Arena,
     encoder: &mut wgpu::CommandEncoder,
     mut flat: Option<(&mut flat::Flat, &wgpu::Device, &mut upload::Uploads)>,
     mut records: Option<&mut gpu_culling::Records>,
-    meshes: impl Iterator<Item = &'a mut SectionGpu>,
+    mut sourced_records: Option<&mut gpu_culling::Records>,
+    meshes: impl Iterator<Item = (&'a mut SectionGpu, Option<u32>)>,
     page: u32,
     part: Part,
     budget: &mut u64,
 ) -> bool {
     debug_assert!(
-        records.is_none() || matches!(part, Part::Section { .. }),
+        (records.is_none() && sourced_records.is_none()) || matches!(part, Part::Section { .. }),
         "records follow the section arena's ranges"
     );
     let mut moved = false;
-    for s in meshes {
+    for (s, sourced_id) in meshes {
         // Nothing of a mesh here: split, one without solid quads (its (0, 0) is no
         // range of page 0); in the other arenas, one without translucent quads.
         let Some((_, start, vertices)) = part.of(s).filter(|r| r.0 == page) else {
             continue;
         };
-        let bytes = vertices * arena.stride();
+        // With the normal stream, a move copies its entries too (`Arena::copy`).
+        let bytes = vertices * arena.vertex_bytes();
         if moved && bytes > *budget {
             break;
         }
@@ -49,6 +53,11 @@ pub(super) fn move_off_page<'a>(
         // Its solid quads start the range in either layout.
         if let (Part::Section { .. }, Some(records), Some(id)) =
             (part, records.as_deref_mut(), s.gpu_id)
+        {
+            records.relocate(id, to.0, u64::from(s.solid_base()));
+        }
+        if let (Part::Section { .. }, Some(records), Some(id)) =
+            (part, sourced_records.as_deref_mut(), sourced_id)
         {
             records.relocate(id, to.0, u64::from(s.solid_base()));
         }

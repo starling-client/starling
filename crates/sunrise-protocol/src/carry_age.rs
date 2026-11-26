@@ -1,11 +1,11 @@
-//! The age a Sunrise client carried its player on (docs/modding/src/how-to/native-mods.md,
-//! "Moving colliders"): sent just before a position report while a moving collider carries the
-//! player. A client moves its player with the collider as it last heard of it, so its position
-//! fits the collider's transform from some ticks back; this says how many ticks stale the
-//! client's copy was. The server uses it only as where its search of the recent transforms
-//! starts, clamped into its own window, and still checks the position against them, so the
-//! hint cannot move a player anywhere the server would not let it stand. A vanilla client
-//! never sends it.
+//! The age a Sunrise client carried its player on
+//! (docs/modding/src/how-to/entities/collision-exclusions.md, "Moving colliders"): sent just before
+//! a position report while a moving collider carries the player. A client moves its player with the
+//! collider as it last heard of it, so its position fits the collider's transform from some ticks
+//! back; this says how many ticks stale the client's copy was. The server uses it only as where its
+//! search of the recent transforms starts, clamped into its own window, and still checks the
+//! position against them, so the hint cannot move a player anywhere the server would not let it
+//! stand. A vanilla client never sends it.
 use crate::{Error, Result, buf::Reader};
 use sunrise_core::vanilla_bytes::Writer;
 

@@ -34,6 +34,15 @@ pub(crate) const PROPERTY_SETS: &[(&str, &str, &[&str])] = &[
     ("brewing_reagent", "minecraft:brewing", &["reagent"]),
 ];
 
+/// The short internal key for an exact built-in property set on the wire.
+pub fn vanilla_property_set(id: &str) -> Option<&str> {
+    let key = id.strip_prefix("minecraft:")?;
+    PROPERTY_SETS
+        .iter()
+        .any(|(set, ..)| *set == key)
+        .then_some(key)
+}
+
 /// One ingredient projected for recipe-book wire encoding (`HolderSet` / `TagSlotDisplay`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BookIngredient {
@@ -323,16 +332,7 @@ fn project_book_recipe(recipe: &ResolvedRecipe) -> BookRecipe {
     }
 }
 
-/// For each item, the packet's matching holder-set entries in button order. Values are
-/// actual server recipe IDs, not a promise that the item's full stack passes the predicate.
-#[derive(Debug, Default, PartialEq)]
-pub struct StonecutterButtons(HashMap<Arc<str>, Vec<Arc<str>>>);
-
-impl StonecutterButtons {
-    pub fn recipe(&self, input: &str, index: usize) -> Option<&str> {
-        self.0.get(input)?.get(index).map(AsRef::as_ref)
-    }
-}
+pub use crate::menu::StonecutterButtons;
 
 /// The packet's payload and its stonecutter button map, built directly from
 /// the decoded recipes in `sources`.
@@ -681,8 +681,124 @@ pub fn decode_transfer_reply(data: &[u8]) -> sunrise_protocol::Result<Option<(i3
 /// payload advertises it. A request is the menu id, a tag the client picks and
 /// the recipe's id; the reply is the menu id, the tag, the result as
 /// `TRANSFER_CHANNEL` sends it (`result_byte`) and, for `Missing`, the count
-/// of the recipe's cells nothing fills then each cell as a byte.
+/// of the recipe's cells nothing fills then each cell as a byte. A reply that
+/// says more than that (a mod menu's `menu_transfer` cells) goes on with, for
+/// a result other than `Missing`, the missing cells as `Missing` gives them,
+/// then the count of the craftable cells and each as a byte
+/// (`encode_check_reply`); one with no such cells ends as before.
 pub const CHECK_CHANNEL: &str = "sunrise:recipe_check";
+
+/// The cells a check can name: one byte each on `CHECK_CHANNEL`, so a
+/// recipe's cell count when the game can't place the recipe (a mod's own
+/// type) and the most a reply carries.
+pub const MAX_CHECK_CELLS: usize = 256;
+
+/// How many cells a check names for a recipe of type `kind` whose placement
+/// (`Recipes::placement`) has `placement` slots: the recipe's known layout
+/// (`RecipeTransferCheck`'s cell order). A stonecutting recipe has its one
+/// input and a smithing recipe its template, base and addition, though
+/// neither has a placement; a recipe the game can't inspect (a mod's own
+/// type, a custom recipe whose placement is empty, or an unknown id) keeps
+/// `MAX_CHECK_CELLS`.
+pub fn recipe_cells(kind: Option<&str>, placement: Option<usize>) -> usize {
+    match (kind, placement) {
+        (Some("minecraft:stonecutting"), _) => 1,
+        (Some("minecraft:smithing_transform" | "minecraft:smithing_trim"), _) => 3,
+        (_, Some(slots)) if slots > 0 => slots.min(MAX_CHECK_CELLS),
+        _ => MAX_CHECK_CELLS,
+    }
+}
+
+/// The recipe cells a `menu_transfer` part named, as a check keeps them: the
+/// ones below `count` (the recipe's cells, at most `MAX_CHECK_CELLS`), each
+/// once, in ascending order.
+pub fn clamp_cells(cells: &[u32], count: usize) -> Vec<u32> {
+    let count = count.min(MAX_CHECK_CELLS);
+    let mut kept: Vec<u32> = (cells.iter().copied())
+        .filter(|&cell| (cell as usize) < count)
+        .collect();
+    kept.sort_unstable();
+    kept.dedup();
+    kept
+}
+
+/// A `CHECK_CHANNEL` reply: window `container`, the request's `tag` and the
+/// check. Cells past a byte are left out.
+pub fn encode_check_reply(
+    container: i32,
+    tag: i32,
+    check: &mod_api::RecipeTransferCheck,
+) -> Vec<u8> {
+    fn cells(w: &mut Writer, cells: &[u32]) {
+        let bytes: Vec<u8> = (cells.iter())
+            .filter_map(|&c| u8::try_from(c).ok())
+            .collect();
+        w.varint(bytes.len() as i32);
+        for c in bytes {
+            w.u8(c);
+        }
+    }
+    let missing = check.result == mod_api::RecipeTransferResult::Missing;
+    let mut w = Writer::new();
+    w.varint(container);
+    w.varint(tag);
+    w.u8(result_byte(check.result));
+    if missing {
+        cells(&mut w, &check.missing_cells);
+    }
+    // The rest only when it says something, so the game's own answers keep their old form.
+    if !check.craftable_cells.is_empty() || (!missing && !check.missing_cells.is_empty()) {
+        if !missing {
+            cells(&mut w, &check.missing_cells);
+        }
+        cells(&mut w, &check.craftable_cells);
+    }
+    w.data
+}
+
+/// A `CHECK_CHANNEL` reply as `encode_check_reply` writes it: the window,
+/// the tag and the check, each cell list once per cell and ascending. None
+/// for a reply that doesn't read whole or counts a list below 0 or past
+/// `MAX_CHECK_CELLS`.
+pub fn decode_check_reply(data: &[u8]) -> Option<(i32, i32, mod_api::RecipeTransferCheck)> {
+    fn cells(reader: &mut sunrise_protocol::buf::Reader<'_>) -> Option<Vec<u32>> {
+        let n = usize::try_from(reader.varint().ok()?).ok()?;
+        if n > MAX_CHECK_CELLS {
+            return None;
+        }
+        let mut cells = (0..n)
+            .map(|_| reader.u8().ok().map(u32::from))
+            .collect::<Option<Vec<u32>>>()?;
+        cells.sort_unstable();
+        cells.dedup();
+        Some(cells)
+    }
+    let mut reader = sunrise_protocol::buf::Reader::new(data);
+    let (container, tag) = (reader.varint().ok()?, reader.varint().ok()?);
+    let result = byte_result(reader.u8().ok()?)?;
+    let missing = result == mod_api::RecipeTransferResult::Missing;
+    let mut missing_cells = if missing {
+        cells(&mut reader)?
+    } else {
+        Vec::new()
+    };
+    let mut craftable_cells = Vec::new();
+    if reader.remaining() != 0 {
+        if !missing {
+            missing_cells = cells(&mut reader)?;
+        }
+        craftable_cells = cells(&mut reader)?;
+    }
+    (reader.remaining() == 0).then_some((
+        container,
+        tag,
+        mod_api::RecipeTransferCheck {
+            result,
+            missing_cells,
+            craftable_cells,
+        },
+    ))
+}
 
 /// Whether `channel` is one of the recipe viewer's (`TRANSFER_CHANNEL`,
 /// `CHECK_CHANNEL`).
@@ -1092,16 +1208,13 @@ mod content_tests {
                     items.iter().map(|i| (*i).to_owned()).collect(),
                 )
             };
-            event.additions.push(add(
+            event.register(add(
                 "minecraft:furnace_input",
                 &["minecraft:emerald", "minecraft:air"],
             ));
-            event
-                .additions
-                .push(add("minecraft:no_such_set", &["minecraft:dirt"]));
-            event
-                .additions
-                .push(add("brewing_reagent", &["minecraft:diamond"]));
+            event.register(add("minecraft:no_such_set", &["minecraft:dirt"]));
+            event.register(add("unknown_bare_set", &["minecraft:dirt"]));
+            event.register(add("brewing_reagent", &["minecraft:diamond"]));
         }
     }
 
@@ -1129,6 +1242,8 @@ mod content_tests {
             assert!(!added.adds("furnace_input", "minecraft:air"));
             assert!(added.adds("brewing_reagent", "minecraft:diamond"));
             assert!(added.get("no_such_set").is_none());
+            assert!(added.adds("minecraft:no_such_set", "minecraft:dirt"));
+            assert!(added.get("unknown_bare_set").is_none());
             assert!(!added.adds("smoker_input", "minecraft:emerald"));
         });
     }
@@ -1235,7 +1350,7 @@ mod content_tests {
                 &resolved,
             )
             .unwrap();
-            let _ = crate::stations::StationRecipes::from_sources(root.path(), &items, &resolved);
+            let _ = crate::stations::StationRecipes::from_sources(&items, &resolved);
             let types = [
                 "minecraft:crafting",
                 "minecraft:smelting",
@@ -1475,6 +1590,145 @@ mod content_tests {
 }
 
 #[cfg(test)]
+mod check_reply_tests {
+    use super::*;
+    use mod_api::{RecipeTransferCheck, RecipeTransferResult as R};
+
+    fn check(result: R, missing: &[u32], craftable: &[u32]) -> RecipeTransferCheck {
+        RecipeTransferCheck {
+            result,
+            missing_cells: missing.to_vec(),
+            craftable_cells: craftable.to_vec(),
+        }
+    }
+
+    /// A part's cells are kept below the recipe's count, once each, in order;
+    /// a recipe the game can't place keeps what a reply can carry.
+    #[test]
+    fn cells_are_clamped_to_the_recipe() {
+        assert_eq!(clamp_cells(&[8, 3, 9, 3, 0, 42], 9), [0, 3, 8]);
+        assert_eq!(clamp_cells(&[1, 2], 0), Vec::<u32>::new());
+        assert_eq!(clamp_cells(&[], 9), Vec::<u32>::new());
+        assert_eq!(clamp_cells(&[300, 255, 256, u32::MAX], usize::MAX), [255]);
+    }
+
+    /// The game's own answers keep the reply's old bytes; the cells a part
+    /// adds come back whole, with any result.
+    #[test]
+    fn a_reply_carries_both_cell_lists() {
+        let old = |result: u8, cells: &[u8]| {
+            let mut w = Writer::new();
+            w.varint(7);
+            w.varint(3);
+            w.u8(result);
+            if result == 1 {
+                w.varint(cells.len() as i32);
+                for &c in cells {
+                    w.u8(c);
+                }
+            }
+            w.data
+        };
+        assert_eq!(
+            encode_check_reply(7, 3, &check(R::Moves, &[], &[])),
+            old(0, &[])
+        );
+        assert_eq!(
+            encode_check_reply(7, 3, &check(R::Missing, &[2, 3], &[])),
+            old(1, &[2, 3])
+        );
+        for sent in [
+            check(R::Moves, &[], &[]),
+            check(R::Missing, &[2, 3], &[]),
+            check(R::Missing, &[0, 4], &[1, 5]),
+            check(R::Moves, &[], &[2]),
+            check(R::NoRoom, &[6], &[]),
+            check(R::NotIntoMenu, &[1], &[0, 8]),
+        ] {
+            assert_eq!(
+                decode_check_reply(&encode_check_reply(7, 3, &sent)),
+                Some((7, 3, sent.clone())),
+                "{sent:?}"
+            );
+        }
+        // A cell past a byte is never sent; a reply with bytes left over is refused.
+        let wide = encode_check_reply(1, 1, &check(R::Missing, &[1, 256], &[]));
+        assert_eq!(decode_check_reply(&wide).unwrap().2.missing_cells, [1]);
+        let mut extra = old(1, &[2]);
+        extra.extend([1, 2, 9]);
+        assert_eq!(decode_check_reply(&extra), None);
+        assert_eq!(decode_check_reply(&old(9, &[])), None);
+    }
+
+    /// A reply's cell list counted below 0 or past `MAX_CHECK_CELLS` is
+    /// refused whole; the cells of one that reads reach mods once each, in
+    /// ascending order, whatever order the server wrote them in.
+    #[test]
+    fn a_reply_is_refused_outside_the_counts_and_its_cells_come_sorted() {
+        let reply = |result: u8, lists: &[(i32, &[u8])]| {
+            let mut w = Writer::new();
+            w.varint(7);
+            w.varint(3);
+            w.u8(result);
+            for &(count, cells) in lists {
+                w.varint(count);
+                for &c in cells {
+                    w.u8(c);
+                }
+            }
+            w.data
+        };
+        // Missing (1) with a count of -1, 257 or i32::MAX: refused.
+        assert_eq!(decode_check_reply(&reply(1, &[(-1, &[])])), None);
+        let all: Vec<u8> = (0..=255).chain([0]).collect();
+        assert_eq!(decode_check_reply(&reply(1, &[(257, &all)])), None);
+        assert_eq!(decode_check_reply(&reply(1, &[(i32::MAX, &[])])), None);
+        // Moves (0) with a craftable count of -5 or 300 in the trailer: refused.
+        assert_eq!(decode_check_reply(&reply(0, &[(0, &[]), (-5, &[])])), None);
+        assert_eq!(decode_check_reply(&reply(0, &[(0, &[]), (300, &[])])), None);
+        // 256 cells, every byte once, is the most a list holds.
+        let every: Vec<u8> = (0..=255).rev().collect();
+        let (_, _, wide) = decode_check_reply(&reply(1, &[(256, &every)])).unwrap();
+        assert_eq!(wide.missing_cells, (0..=255).collect::<Vec<u32>>());
+        // Out of order and repeated: sorted, each once, in both lists.
+        assert_eq!(
+            decode_check_reply(&reply(1, &[(5, &[8, 2, 8, 0, 2]), (4, &[6, 1, 6, 3])])),
+            Some((7, 3, check(R::Missing, &[0, 2, 8], &[1, 3, 6])))
+        );
+        assert_eq!(
+            decode_check_reply(&reply(0, &[(2, &[4, 4]), (3, &[9, 5, 9])])),
+            Some((7, 3, check(R::Moves, &[4], &[5, 9])))
+        );
+    }
+
+    /// A check names cells by the recipe's known layout: one input for
+    /// stonecutting, three for smithing, the placement's slots otherwise,
+    /// and `MAX_CHECK_CELLS` for a recipe the game can't inspect.
+    #[test]
+    fn a_recipes_cells_follow_its_known_layout() {
+        assert_eq!(recipe_cells(Some("minecraft:stonecutting"), None), 1);
+        assert_eq!(recipe_cells(Some("minecraft:smithing_transform"), None), 3);
+        assert_eq!(recipe_cells(Some("minecraft:smithing_trim"), None), 3);
+        assert_eq!(recipe_cells(Some("minecraft:crafting_shaped"), Some(6)), 6);
+        assert_eq!(recipe_cells(Some("minecraft:smelting"), Some(1)), 1);
+        // A custom recipe's empty placement, a mod's own type, an unknown id.
+        assert_eq!(
+            recipe_cells(Some("minecraft:crafting_special_firework_rocket"), Some(0)),
+            256
+        );
+        assert_eq!(recipe_cells(Some("mymod:crusher"), None), 256);
+        assert_eq!(recipe_cells(None, None), 256);
+        // Both lists are kept to that count: one stonecutting cell is cell 0.
+        let cut = recipe_cells(Some("minecraft:stonecutting"), None);
+        assert_eq!(clamp_cells(&[2, 0, 1], cut), [0]);
+        assert_eq!(
+            clamp_cells(&[300, 255, 7], recipe_cells(Some("mymod:crusher"), None)),
+            [7, 255]
+        );
+    }
+}
+
+#[cfg(test)]
 mod per_player_tests {
     use super::*;
 
@@ -1619,4 +1873,53 @@ fn empty_ingredient_network_consumers_exclude_whole_unplaceable_recipes() {
         assert_eq!(buttons.recipe("minecraft:stone", 1), None);
         assert!(packet.properties.iter().all(|(_, ids)| ids.is_empty()));
     }
+}
+
+#[cfg(test)]
+#[test]
+fn native_minecraft_serializer_preserves_opaque_ingredient_through_projection_and_decode() {
+    use crate::items::Items;
+    use serde_json::json;
+    use std::path::Path;
+
+    const KIND: &str = "minecraft:grinding_opaque";
+    mod_platform::testing::with_recipe_types(&[KIND], || {
+        let recipe = json!({
+            "type": KIND,
+            "ingredient": {"opaque_step": 3, "catalyst": "powder"},
+            "result": "minecraft:iron_ingot",
+        });
+        let catalog = Items::for_tests(Default::default());
+        let overlay = sunrise_world::loot::PackOverlay::NONE;
+        let context = crate::test_resources::server_load();
+        let server = crate::crafting::Recipes::from_sources(
+            Path::new(""),
+            &catalog,
+            &overlay,
+            vec![("test:ore".into(), recipe.clone())],
+            &context,
+        )
+        .unwrap();
+        let types = [KIND.to_owned()];
+        let projected = server.recipe_content(&types);
+        assert_eq!(projected, [("test:ore".to_owned(), recipe.clone())]);
+        let payloads = encode_content(&types, &projected, false);
+        assert_eq!(payloads.len(), 1);
+        let part = ContentPart::decode(&payloads[0]).unwrap();
+        let empty = crate::crafting::Recipes::from_sources(
+            Path::new(""),
+            &catalog,
+            &overlay,
+            Vec::new(),
+            &context,
+        )
+        .unwrap();
+        let (decoded, _) = empty
+            .with_recipe_content(&catalog, part.recipes, &types)
+            .unwrap();
+        let entries = &decoded.by_type[KIND];
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, "test:ore");
+        assert_eq!(&*entries[0].json, &recipe);
+    });
 }

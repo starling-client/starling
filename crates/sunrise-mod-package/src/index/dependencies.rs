@@ -1,5 +1,6 @@
 //! Dependency facts shared by readers, publishers and the install planner.
 use super::{Dependency, Kind, Project, Version};
+#[cfg(feature = "index")]
 use mod_vocab::Side;
 use semver::VersionReq;
 use std::collections::HashSet;
@@ -14,6 +15,7 @@ impl Dependency {
         })
     }
 
+    #[cfg(feature = "index")]
     pub(super) fn applies(&self, side: Side) -> bool {
         side == Side::Both || self.side.is_none_or(|s| s == Side::Both || s == side)
     }
@@ -50,6 +52,7 @@ pub(super) fn check_shape(p: &Project, v: &Version) -> Result<(), String> {
 }
 
 /// Iterative depth-first traversal: index size and graph depth are input, not stack limits.
+#[cfg(feature = "index")]
 pub(super) fn required_cycle(edges: &[Vec<usize>]) -> Option<Vec<usize>> {
     enum Mark {
         New,

@@ -1,0 +1,3 @@
+ids = ["hook:client_take_item_entity", "type:ClientTakeItemEntityEvent", "type:HookId"]
+why = "Adds the client hook client_take_item_entity (vanilla ClientPacketListener.handleTakeItemEntity): a client of a server hears which tracked item, orb, arrow or trident was picked up, by which entity and how many, before it shrinks or removes it, so a client-only mod can show pickups on any server. The server-side pickup hooks never run on such a client. New hook: no existing hook version changes."
+migrate = "Additive. A mod that matches HookId exhaustively adds the ClientTakeItemEntity arm."

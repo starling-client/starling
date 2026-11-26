@@ -1,5 +1,5 @@
 //! Every block state's facts and looks by its id, for a client mod drawing blocks or a map off the main thread
-//! (`native_block_states`; docs/native-mods.md): what the game knows of each state, what its model draws on each side
+//! (`native_block_states`; docs/modding/src/how-to/native-mods.md): what the game knows of each state, what its model draws on each side
 //! and the texture behind each of those sprites. A copy, so the game's own tables can change shape under it.
 use crate::{
     block_sprites::{BlockSprites, Lookup, SpriteRef},

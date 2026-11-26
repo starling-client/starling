@@ -159,6 +159,8 @@ pub fn constructor_draws(m: &mut Mob) {
             super::villager::ProfessionState::from_index(constructor_profession(m));
     }
     let _yaw = m.random.next_float();
+    // `LivingEntity.<init>` makes the brain right after the yaw.
+    super::piglin::brain_sensor_draws(m);
 }
 /// The subclass fields after `Zombie.addAdditionalSaveData` and `VillagerData`.
 pub fn write_nbt(
@@ -316,8 +318,10 @@ mod tests {
         let motion = crate::motion::MotionResources::load(&root, &assets).unwrap();
         let data = super::super::MobData::load(
             &sunrise_assets::resource_source::ResourceRoot::directory(root.to_path_buf()),
-            &facts,
-        );
+            facts.states.len(),
+            false,
+        )
+        .unwrap();
         let types = super::super::MobTypes::load(&root).unwrap();
         let biomes = crate::biome::Biomes::load(
             &sunrise_assets::resource_source::ResourceRoot::directory(root.to_path_buf()),
@@ -383,6 +387,7 @@ mod tests {
             biomes: &biomes,
             mob_griefing: true,
             universal_anger: false,
+            pvp: false,
             mob_drops: true,
             max_entity_cramming: 24,
             difficulty: super::super::spawning::LocalDifficulty::new(2, 18000, 0, 0.0),
@@ -398,6 +403,7 @@ mod tests {
             asks_baby_spawn: false,
             border: None,
             section_writer: None,
+            trading_players: None,
         };
         for no_ai in [false, true] {
             let kind = std::sync::Arc::new(types.types["minecraft:zombie_villager"].clone());

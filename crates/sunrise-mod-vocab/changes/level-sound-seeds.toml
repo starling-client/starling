@@ -1,0 +1,6 @@
+ids = [
+    "handle:LevelRef::next_sound_seed",
+    "handle:LevelRef::play_seeded_sound",
+    "handle:EntityRef::play_seeded_bound_sound",
+]
+why = "Adds the two halves of vanilla 26.3's `Level.playSound`, which draws `soundSeedGenerator.nextLong()` and then calls `playSeededSound` with it. `LevelRef::next_sound_seed` draws the next seed of the stream `LevelRef::play_sound` and the game's own sounds take theirs from, without playing a sound: at the call, inside a transaction too, and an abort does not undo it (as `LevelRef::with_random`). `LevelRef::play_seeded_sound` is `ServerLevel.playSeededSound(except, x, y, z, ...)` and `EntityRef::play_seeded_bound_sound` is its entity overload `playSeededSound(except, entity, ...)`: they send the caller's seed and draw nothing, with `play_sound`'s and `play_bound_sound`'s checks, level-sound hooks and transaction rules. A mod that models a `playSound` call can then decide after the draw whether the sound plays, and the stream has moved exactly as vanilla's would."

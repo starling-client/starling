@@ -1,0 +1,22 @@
+ids = [
+    "hook:entity_entering_section",
+]
+why = """
+`entity_entering_section` listeners now get the owning Host for a crossing queued by a nested write
+or told after a mob row is restored, so they can read resident entities that the position-only Host of
+a borrowed write refuses. The borrowed Host also answers `EntityResidency::Busy` for the crossing
+mob where it answered `Gone` before. The contract is described by which Host the write has. Vanilla
+26.3 `PersistentEntitySectionManager.Callback.onMove` files the entity before NeoForge posts
+`EntityEvent.EnteringSection`. A queued crossing also keeps the placement of the move that filed
+it, which `Callback.onMove` posts before any later write: a read of the crossing entity's position
+answers that placement, and a later move or removal neither rewrites nor deletes the crossing.
+"""
+migrate = """
+Pin `entity_entering_section` at `hook_version = 2` instead of `1`. A listener that treated
+`EntityResidency::Gone` from the borrowed Host as "no information" must also accept `Busy` for the
+crossing entity. Do not assume the Host can read other entities: a listener must work with the
+position-only Host, and may read resident entities only when it gets the owning Host. A crossing
+queued by a write inside a listener is told after that listener returns; read the crossing entity's
+position from the host and it answers where that move put it, even if a later move already happened.
+A move followed by the entity's removal still tells its crossing.
+"""

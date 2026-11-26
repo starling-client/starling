@@ -8,8 +8,12 @@ pub(super) struct BookLayout {
 }
 impl BookLayout {
     /// Keep the validated toggle anchored to the window when room moves it.
-    pub(super) fn shifted_toggle(&self, room_shift: f32) -> (f32, f32) {
-        (self.toggle.0 - room_shift, self.toggle.1)
+    pub(super) fn shifted_toggle(&self, room_offset: f32) -> (f32, f32) {
+        (self.toggle.0 + room_offset, self.toggle.1)
+    }
+    /// The toggle's left and right edges before room moves it: 20 wide, as `layout` fits it.
+    pub(super) fn toggle_span(&self) -> [f32; 2] {
+        [self.toggle.0, self.toggle.0 + 20.0]
     }
 }
 pub(super) fn layout(
@@ -105,9 +109,9 @@ mod tests {
         assert_eq!(from_menu, (130.0, 72.0));
     }
     #[test]
-    fn closed_gutter_and_declared_anchor_follow_the_room_shift() {
+    fn closed_gutter_and_declared_anchor_follow_the_room_offset() {
         let gutter = layout([427.0, 240.0], [176.0, 166.0], None, false).unwrap();
-        assert_eq!(gutter.shifted_toggle(74.0), (231.0, 42.0));
+        assert_eq!(gutter.shifted_toggle(-74.0), (231.0, 42.0));
         let anchor = layout(
             [427.0, 240.0],
             [176.0, 166.0],
@@ -115,7 +119,7 @@ mod tests {
             false,
         )
         .unwrap();
-        assert_eq!(anchor.shifted_toggle(74.0), (59.0, 43.0));
+        assert_eq!(anchor.shifted_toggle(-74.0), (59.0, 43.0));
     }
     #[test]
     fn narrow_overlay_rejects_covered_gutters() {

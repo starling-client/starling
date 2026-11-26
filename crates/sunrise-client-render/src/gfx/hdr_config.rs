@@ -26,9 +26,8 @@ impl Renderer {
     }
     /// This renderer's output as applied, with what its destination offers and reports.
     pub fn output(&self) -> output::EffectiveOutput {
-        let native = self.native.as_ref().map(|n| n.frame.api);
         self.output
-            .with_pack(self.shader_pack_kind() == Some("iris"), native)
+            .with_pack(self.shader_pack_kind() == Some("iris"))
     }
     /// What this renderer's display last reported: a renderer made again for the window
     /// starts from it (`Renderer::new`'s `display`).

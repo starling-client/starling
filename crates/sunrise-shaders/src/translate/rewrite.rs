@@ -138,7 +138,7 @@ impl Stage<'_> {
             .collect();
         let old = self.pp.version.as_ref().is_none_or(|(v, _)| *v < 400);
         let fragment = self.kind == ShaderStage::Fragment;
-        let mut out = String::with_capacity(self.pp.code.len() + 1024);
+        let mut out = String::with_capacity(self.pp.code().len() + 1024);
         // Per open bracket: the function called, and the closing text to add.
         let mut calls: Vec<(&str, &str, usize)> = Vec::new();
         // Sampler parameters of the function being written: name → type.

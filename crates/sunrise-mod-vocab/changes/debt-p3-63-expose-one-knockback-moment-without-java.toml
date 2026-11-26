@@ -1,0 +1,31 @@
+ids = [
+    "hook:living_knockback",
+    "hook:living_knockback.attacker_main",
+    "hook:living_knockback.attacker_off",
+    "hook:living_knockback.kill_credit_main",
+    "hook:living_knockback.entry",
+    "type:LivingKnockbackEvent.attacker_main",
+    "type:LivingKnockbackEvent.attacker_off",
+    "type:LivingKnockbackEvent.kill_credit_main",
+    "type:LivingKnockbackEvent.entry",
+    "hook:living_knockback.strength",
+    "type:LivingKnockbackEvent.strength",
+    "type:KnockbackEntry",
+    "type:KnockbackEntry.Short",
+    "type:KnockbackEntry.Full",
+]
+why = "Match vanilla LivingEntity.knockback and NeoForge CommonHooks.onLivingKnockBack / LivingKnockBackEvent: living_knockback (bumped from version 2 to 3) removes the Java overload discriminator `entry` (`KnockbackEntry::Short`/`Full`) and fires once when a push reaches the living implementation. It lends `attacker_main`, `attacker_off`, and `kill_credit_main` lazily as `Option<ItemStackView<'_>>` so unrelated component projection failures or empty/unknown items never skip the event. Vanilla Player.doSweepAttack and LivingEntity.dealDefaultKnockback use the short overload, which still reaches SulfurCube.knockback; a body item and a causing entity keep that launch out of the living event regardless of the effect multiplier. SulfurCubeArchetype supplies vanilla's default launch settings if no archetype matches. EnderDragon.knockback delegates to the living implementation when not sitting, unlike the dragon's wing push (EnderDragon.knockBack)."
+migrate = '''
+### `living_knockback` (version 3)
+- `hook:living_knockback`: Apply each strength, direction, or cancellation edit once per `LivingKnockbackEvent`. A sulfur cube's own launch doesn't fire the event; a dragon's default knockback can fire it when not sitting, but its wing push cannot. Rebuild so the package's `uses` list records version `3`.
+- `hook:living_knockback.entry`: Remove replay of the short/full overload distinction; there is no replacement field.
+- `type:LivingKnockbackEvent.entry`: Remove reads of `event.entry`.
+- `type:KnockbackEntry`: Remove imports of the enum.
+- `type:KnockbackEntry.Short`: Remove the short-overload match arm and any second application of an edit.
+- `type:KnockbackEntry.Full`: Remove the full-overload match arm; apply the edit directly to the event.
+- `hook:living_knockback.attacker_main` and `type:LivingKnockbackEvent.attacker_main`: Read `event.attacker_main.as_ref()` as an optional `ItemStackView` borrow instead of an optional `&ItemStack`.
+- `hook:living_knockback.attacker_off` and `type:LivingKnockbackEvent.attacker_off`: Read `event.attacker_off.as_ref()` as an optional `ItemStackView` borrow instead of an optional `&ItemStack`.
+- `hook:living_knockback.kill_credit_main` and `type:LivingKnockbackEvent.kill_credit_main`: Read `event.kill_credit_main.as_ref()` as an optional `ItemStackView` borrow instead of an optional `&ItemStack`.
+- `hook:living_knockback.strength` and `type:LivingKnockbackEvent.strength`: The strength is an `f32`, as NeoForge's `LivingEntity.knockback` casts it to float before `CommonHooks.onLivingKnockBack` and widens the edited result afterward. Change `*event.strength = x as f64` style edits to `f32`; the listener sees `(strength as f32)`, so a neutral listener leaves the push unchanged at the float's precision. X and Z stay `f64`.
+- Read scalar metadata via `view.item()`, `view.count()`, `view.damage()`, or `view.damage_component()`. Call `view.project()` only for components or an owned `ItemStack`, and handle `None` on projection failure. Empty or unrepresentable stacks omit only the affected field, not the event.
+'''

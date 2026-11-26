@@ -1,0 +1,2 @@
+ids = ["handle:text::Text::translate_with_fallback"]
+why = "Mods build a translatable Text with a fallback template (Component.translatableWithFallback), so a language without the key shows the fallback formatted with the arguments instead of the raw key (#5389)."

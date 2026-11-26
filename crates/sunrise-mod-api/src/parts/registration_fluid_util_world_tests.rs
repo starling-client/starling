@@ -25,11 +25,14 @@ mod tests {
         host.registries
             .resolve_fluids(["minecraft:empty", "minecraft:water", "minecraft:lava"])
             .unwrap();
-        host.registries.fluid_sounds(
-            "minecraft:lava",
-            "minecraft:item.bucket.fill_lava",
-            "minecraft:item.bucket.empty_lava",
-        );
+        host.registries
+            .fluid_sounds(
+                "minecraft:lava",
+                "minecraft:item.bucket.fill_lava",
+                "minecraft:item.bucket.empty_lava",
+            )
+            .fluid_bucket("minecraft:water", "minecraft:water_bucket")
+            .fluid_bucket("minecraft:lava", "minecraft:lava_bucket");
         host.level.block_entity(TANK).tanks = vec![FakeTank::new(8000)];
         host.join(PLAYER, 70).slots.insert(0, stack(item, count));
         host
@@ -137,7 +140,7 @@ mod tests {
         let mut host = host("minecraft:bucket", 1);
         host.level.block_entity(TANK).tanks[0].held = Some(fluid("minecraft:lava", 2500));
         let server: &mut dyn ServerHost = &mut host;
-        let aborted: Result<(), ()> = server.transaction(|host, _| {
+        let aborted: Result<(), crate::TransactionError<()>> = server.transaction(|host, _| {
             let player = host.player(PLAYER).unwrap();
             let level = player.level(host).unwrap();
             let bucket = held(host);
@@ -158,7 +161,7 @@ mod tests {
         let mut host = host("minecraft:bucket", 1);
         host.level.block_entity(TANK).tanks[0].held = Some(fluid("minecraft:lava", 2500));
         let server: &mut dyn ServerHost = &mut host;
-        let committed: Result<(), ()> = server.transaction(|host, _| {
+        let committed: Result<(), crate::TransactionError<()>> = server.transaction(|host, _| {
             let player = host.player(PLAYER).unwrap();
             let level = player.level(host).unwrap();
             let bucket = held(host);

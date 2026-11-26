@@ -1,0 +1,34 @@
+ids = [
+    "type:ServerPlayer",
+    "type:ServerPlayer.uuid",
+    "type:ServerPlayer.name",
+    "type:ServerPlayer.permission",
+    "type:ServerPlayer.dimension",
+    "type:ServerPlayer.position",
+    "type:ServerPlayer.game_mode",
+    "type:ServerPlayer.health",
+    "type:ServerPlayer.yaw",
+    "type:ServerPlayer.pitch",
+    "type:ServerPlayer.entity_id",
+    "type:ServerPlayer.address",
+]
+why = "Remove the unproduced ServerPlayer snapshot, its hidden builder and the remaining direct Game adapters superseded by typed handles. Remove the unused hidden TooltipDisplay transport constructor; the tooltip hook still lends its display. Keep the checks at the stack boundary and read the resolved stack directly for item bars, as vanilla ItemStack.isBarVisible, Item.getBarWidth/getBarColor and BundleItem.isBarVisible/getBarWidth/getBarColor do. NeoForge leaves that bar path on the stack; its ItemStackResourceHandler.getResource likewise reads the backing stack. The retired Sunrise-only adapters have no vanilla counterparts."
+migrate = """
+- Replace `mod_api::ServerPlayer` (and construction through `mod_api::__private::built::ServerPlayer`) with `PlayerRef` from `host.player(uuid)`, `host.players().player_by_name(name)` or `host.players().acting_player()`.
+- Replace `ServerPlayer.uuid` with `player.uuid()`.
+- Replace `ServerPlayer.name` with `player.name(host)`.
+- Replace `ServerPlayer.permission` with `player.permission_level(host)`.
+- Replace `ServerPlayer.dimension` with `player.dimension(host)`.
+- Replace `ServerPlayer.position` with `player.position(host)`.
+- Replace `ServerPlayer.game_mode` with `player.game_mode(host)`.
+- Replace `ServerPlayer.health` with `host.living(player.entity()).and_then(|living| living.health(host))`.
+- Replace `ServerPlayer.yaw` with the first entry of `player.entity().rotation(host)`.
+- Replace `ServerPlayer.pitch` with the second entry of `player.entity().rotation(host)`.
+- Replace `ServerPlayer.entity_id` with `player.entity().id()`.
+- Replace `ServerPlayer.address` with `player.address(host)`. Check the handle's `Option` answers when a body or connection is unavailable.
+- Keep calling `ItemResource::bar(host)` unchanged; it now reads the same effective components as the inventory bar, including prototype bundle contents and explicit patches.
+- Do not construct a tooltip display through `TooltipDisplay::__wire_from_fields`. Use the display the `item_tooltip` callback lends, or call `TooltipDisplay::for_stack(&stack)` to read an owned API stack's effective display.
+- Replace private Game mirror calls with named levels and typed handles. Use `level.spawn_mob(host, kind, pos, reason)` and `level.visit_all_entities(host, &mut visit)` with `host.mob(entity)` for mobs; use `level.visit_entities_in(host, min, max, &mut visit)` with `host.item_entity(entity)` and `item.with_stack(host, read)` for dropped items. For recipes use `host.recipes_of_type(kind)` or `level.recipe_for(host, &kind, &input)`; recipe-book display IDs still come from `host.recipe_book_ids(recipe_id)`.
+- For live player inventory reads use `player.with_inventory(host, read)` or `player.with_ender_chest(host, read)`, and for writes use `player.set_inventory_slot(host, slot, stack)` or `player.set_ender_chest_slot(host, slot, stack)`. Use `host.transaction` if a write to one slot depends on another. The private offline file adapter has no replacement. Use `host.set_display_slot(DisplaySlot::Sidebar, Some(objective))` for an objective on the server scoreboard; it is not a private client-only sidebar.
+- Replace `native_data(\"data/mymod/machines.json\")` with `host.resource(PackType::ServerData, &Identifier::parse(\"mymod:machines.json\")?)` on the server. Replace private component helpers with `ItemResource::value/with_component/without_component` or use `ItemPlace::edit` for resident stacks. Use `BlockEntityRef::replace_data` for saved block-entity payload writes and `host.chat_line(text)` for local chat. In a draw callback use `draw.size()` for the GUI dimensions. The retired click/frame counters and private physical window query have no 1.0 equivalents.
+"""

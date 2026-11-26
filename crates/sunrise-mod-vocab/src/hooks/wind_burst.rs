@@ -5,6 +5,7 @@ pub trait Hooks {
         side = "server",
         contract = "collect",
         out = "blocks",
+        version = 2,
         neoforge = "none (vanilla wind-charge block interaction; NeoForge adds no event)"
     )]
     fn wind_burst(dimension: &str, center: [f64; 3], blocks: &mut Vec<[i32; 3]>);

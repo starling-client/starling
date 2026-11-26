@@ -37,31 +37,31 @@ mod values;
 pub use biomes::{
     category as biome_category, pack_id as biome_pack_id, precipitation as biome_precipitation,
 };
-pub use block_ids::BlockIds;
+pub use block_ids::{BlockIds, BlockLayers, LayerMatch, RenderLayer};
 pub use condition::{Conditionals, eval_condition, resolve_defined};
 pub use config::{
     BUFFERS, Buffer, Config, Format, HALF_LIVES, Kind, SHADOW_COLORS, Shadow, buffer_index,
     draw_buffers, shadow_color,
 };
 pub use custom::{Custom, Val};
-pub use discover::{Found, discover};
+pub use discover::{Found, candidates, discover};
 pub use lang::Lang;
 pub use macros::{MC_VERSION, Macros, RENDER_STAGES, render_stage};
 pub use options::{
-    PackOption, apply as apply_options, chosen_file, chosen_text, options, parse_chosen,
-    properties_macros, read_properties, switches_on, value_options, with_options,
+    PackOption, apply as apply_options, choose as choose_option, chosen_file, chosen_text, options,
+    parse_chosen, properties_macros, read_properties, switches_on, value_options, with_options,
 };
 pub use pack::{Pack, PackError};
 pub use post::{
-    Blend, BufferObject, BufferSize, CELESTIAL_BLEND, CustomImage, Factor, GameInputs, Group,
-    ImageSize,
+    Blend, BufferObject, BufferSize, CELESTIAL_BLEND, CustomImage, DEVICELESS_INTERFACE_LIMITS,
+    Factor, GameInputs, Group, ImageSize, ModPackProgram, ModPackProgramRequest,
 };
 pub use post::{
     Post, PostProgram, STARS_BLEND, ShadowCulling, Skipped, SkySwitches, TRANSLUCENT_BLEND,
     dimension_folder, dimension_folder_named, load_post,
 };
 pub use preprocess::{Diagnostic, Origin, Preprocessed, preprocess};
-pub use properties::{Entry, Note, Properties};
+pub use properties::{Entry, Note, Properties, Tonemap};
 pub use screens::{Item as ScreenItem, Screens};
 pub use textures::{
     CustomTexture, Dim as TextureDim, EVERY_STAGE, PngError, Texels, Texture, TextureSource,

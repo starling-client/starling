@@ -5,6 +5,8 @@ import unittest
 import tempfile
 from unittest import mock
 
+from tests.os_support import needs_symlinks
+
 with mock.patch.object(sys, 'path', [*sys.path, str(Path(__file__).resolve().parents[1] / 'tools')]):
     from check_mod_vocabulary_state import declarations, violations, unsafe_violations, expansion_violations, symlink_violations
 
@@ -34,6 +36,7 @@ class VocabularyStateGate(unittest.TestCase):
             errors = expansion_violations({'lib.rs': source, 'socket.rs': ''})
             self.assertTrue(any('inline module directory' in error for error in errors))
 
+    @needs_symlinks
     def test_directory_and_file_symlinks_are_refused_before_scanning(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / 'src'

@@ -1,0 +1,53 @@
+ids = [
+    "handle:AttachedStacks::new",
+    "type:StackList",
+    "method:ResourceHandler::next_transfer_index",
+    "method:ResourceHandler::uniform_slots_end",
+    "method:ResourceHandler::insert_at_in_range",
+    "type:AttachmentError.StackEncoding",
+]
+why = """
+NeoForge's StacksResourceHandler constructors size the handler by its backing storage, as used by
+ItemStacksResourceHandler and FluidStacksResourceHandler. NeoForge's ResourceHandler.extract and
+ResourceHandlerUtil.moveInternal and moveFirstInternal transfer in index order, and vanilla's
+HopperBlockEntity.ejectItems skips empty slots in that order. Sunrise stores occupied slots only, so
+bulk transfers follow the same order without scanning unallocated empty gaps; bulk insertion skips
+an attached range that cannot accept the resource. Vanilla's ContainerHelper.loadAllItems reads saved
+indices without sizing storage by the largest index. The stock codecs keep the existing Slot and
+amount fields as signed NBT Ints, and vanilla's ListTag.write uses a signed Int for the serialized
+list length. Attachment sync keeps its existing payload limits.
+NeoForge's ResourceHandlerUtil.isFull and isValid are independent queries. Uniform attached
+ranges answer them without walking each empty slot. NeoForge's FluidUtil.tryPickupFluid,
+tryPlaceFluid and getFirstStackContained walk source tanks in order. Those walks and the
+STORAGE adapter skip known empty gaps; the adapter retains vanilla SimpleContainer.addItem's
+matching-stacks-before-empty-slots order. A refused attachment write skips only the affected
+handler's indices, including a suffix outside the existing signed NBT Int slot encoding
+(vanilla's IntTag.write).
+"""
+migrate = """
+Replace `AttachedItems::new(&KEY, holder, size, capacity, valid)?` or `.unwrap()` on that
+constructor with `AttachedItems::new(&KEY, holder, size, capacity, valid)`; do the same for
+`AttachedFluids::new` and `AttachedStacks::new`. There is no `None` case. `single` is unchanged.
+For an `AttachmentType<StackList<R>>`, replace `default: Vec::new` with
+`default: StackList::new`. If you work with the stored value or write a custom codec, replace
+`list.get(index).and_then(Option::as_ref)` with `list.get(&index)`, setting a `Some((resource,
+amount))` with `list.insert(index, (resource, amount))`, and setting `None` with
+`list.remove(&index)`. Iterate `for (&index, (resource, amount)) in &list` for occupied slots;
+use the handler's `size(host)`, not `list.len()`, for the logical slot count. Keep using
+`ITEM_STACKS` and `FLUID_STACKS` with the new map; existing saved data needs no conversion.
+Calls to `insert`, `extract`, and the transfer and query helpers stay the same. Dense handler
+implementations need no changes. For a delegating handler, add `next_transfer_index(host, range,
+inserting)` and forward it to the wrapped handler (mapping bounds and the returned index if needed).
+For a custom sparse handler, implement it to return the earliest candidate in the supplied range:
+with `None`, skip slots that hold nothing; with `Some(&resource)`, skip slots that cannot insert
+that resource. Return `None` when no candidate remains.
+For delegating implementations, also forward `uniform_slots_end(host, range)` and
+`insert_at_in_range(host, tx, range, resource, amount)`, remapping the range and returned
+exclusive end or next index as needed. A custom handler can override `uniform_slots_end`
+only where `capacity` and `is_valid` agree throughout a range, and can return a next index
+past the next slot from `insert_at_in_range` only on a refusal shared by the skipped slots.
+If you match `AttachmentError::Encode` from `ITEM_STACKS` or `FLUID_STACKS`, match
+`AttachmentError::StackEncoding { index }` for stock slot or stack encoding refusals instead.
+Calls to `resource_util::is_full`, `resource_util::is_valid`, `fluid_util::try_pickup_fluid`,
+`fluid_util::try_place_fluid`, `fluid_util::first_stack_contained` and `STORAGE` stay the same.
+"""

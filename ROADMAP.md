@@ -596,7 +596,7 @@ Villages and fights behaving as in vanilla: iron golems defending villages, vill
 
 <details><summary>Technical</summary>
 
-Villages: iron golem village goals, villager memories across saves, villager age, job-site claiming on dedicated servers, flower offers ([#1639](https://github.com/horizon-rust/horizon/issues/1639) is one report). Combat: the mobs' `attack_knockback` attribute, mace smash logic, the hit knockback source on the host, the fire burnout biome tag. Each is checked against vanilla by a harness ([docs/rust-parity.md](docs/rust-parity.md)).
+Villages: iron golem village goals, villager memories across saves, villager age, job-site claiming on dedicated servers, flower offers ([#1639](https://github.com/horizon-rust/horizon/issues/1639) is one report). Combat: the mobs' `attack_knockback` attribute, mace smash logic, the hit knockback source on the host, the fire burnout biome tag. Each is checked against vanilla by a harness ([docs/status.md](docs/status.md)).
 
 </details>
 
@@ -646,11 +646,11 @@ Not implemented ([docs/graphics.md](docs/graphics.md)). Anisotropic filtering ne
 
 #### Well-known shader looks, rewritten for Sunrise
 
-Popular shader packs rewritten in Sunrise's format, so good packs exist from the start. Only packs whose licence is open source and compatible with ours are rewritten, never anything else.
+Popular shader packs rewritten as Iris/OptiFine-format packs, so good packs exist from the start. Only packs whose licence is open source and compatible with ours are rewritten, never anything else.
 
 <details><summary>Technical</summary>
 
-The first candidates are Photon, Chocapic13 and MakeUp Ultra Fast, each only after its licence is read and recorded: a pack is rewritten only if it is open source and compatible with Sunrise's licence, and the rewrite is written from the shader format's documentation and the look on screen, not from anyone's code. Today only the Golden Hour example exists (`[crates/sunrise-shader-api/packs/golden_hour](crates/sunrise-shader-api/packs/golden_hour)`).
+The first candidates are Photon, Chocapic13 and MakeUp Ultra Fast, each only after its licence is read and recorded: a pack is rewritten only if it is open source and compatible with Sunrise's licence, and the rewrite is written from the shader format's documentation and the look on screen, not from anyone's code.
 
 More: [docs/shaders.md](docs/shaders.md)
 
@@ -708,7 +708,7 @@ On a system Sunrise has no download for, such as FreeBSD, the launcher offers to
 
 Issue [#4354](https://github.com/horizon-rust/horizon/issues/4354): when no release asset matches the platform, the launcher fetches the tagged source and runs the same pinned-toolchain `cargo build --locked` its native-mod builds use, with a warning about the time it takes. The build is unsigned, so the launcher marks the version as built locally.
 
-More: [docs/native-mods.md](docs/native-mods.md)
+More: [docs/modding/src/how-to/native-mods.md](docs/modding/src/how-to/native-mods.md)
 
 </details>
 
@@ -718,7 +718,7 @@ A native Sunrise for Windows on ARM computers, such as Snapdragon laptops.
 
 <details><summary>Technical</summary>
 
-Releases are x64 for Windows and Linux and arm64 for macOS. Needs an aarch64-pc-windows-msvc build in the release workflow and a machine to test on.
+Releases are x64 for Windows and Linux and arm64 for macOS, the SDK's three platforms. Windows ARM64 returns only with its own SDK ([https://github.com/sunrise-org/sunrise/issues/4556](https://github.com/sunrise-org/sunrise/issues/4556)): a game build, the SDK's slices and a machine to test on.
 
 More: [docs/release-flow.md](docs/release-flow.md)
 
@@ -742,7 +742,7 @@ Builds of the game and the launcher for Macs with an Intel processor.
 
 <details><summary>Technical</summary>
 
-x86_64 game and launcher builds, picked per processor ([#1171](https://github.com/horizon-rust/horizon/issues/1171)). Before it ships it needs a run on a real Intel Mac: Rosetta on Apple Silicon only proves the CPU code. Requests: [#1161](https://github.com/horizon-rust/horizon/issues/1161), [#1792](https://github.com/horizon-rust/horizon/issues/1792).
+x86_64 game builds return only with their own SDK ([https://github.com/sunrise-org/sunrise/issues/4556](https://github.com/sunrise-org/sunrise/issues/4556)), and need a run on a real Intel Mac: Rosetta on Apple Silicon only proves the CPU code. Requests: [#1161](https://github.com/horizon-rust/horizon/issues/1161), [#1792](https://github.com/horizon-rust/horizon/issues/1792).
 
 </details>
 
@@ -899,7 +899,6 @@ More: [https://playsunrise.net/docs/performance](https://playsunrise.net/docs/pe
 - **Chat settings and team prefixes** (v0.2.67): The Hidden and Commands Only chat settings should hide chat, and team prefixes should appear before names in chat. [#1376](https://github.com/horizon-rust/horizon/issues/1376) · [#1378](https://github.com/horizon-rust/horizon/issues/1378) · [#1932](https://github.com/horizon-rust/horizon/issues/1932) · [#1841](https://github.com/horizon-rust/horizon/issues/1841)
 - **Cooldowns drawn on items** (v0.2.67): After you throw an ender pearl, its slot should show the cooldown sweeping away, as in vanilla. [#1763](https://github.com/horizon-rust/horizon/issues/1763) · [#1933](https://github.com/horizon-rust/horizon/issues/1933)
 - **Pre-generate an area with /pregen** (v0.2.67): A /pregen command that builds an area of the world ahead of time, so players don't wait for new terrain when they explore. [#1805](https://github.com/horizon-rust/horizon/issues/1805)
-- **Sunrise's own shader format and kit** (v0.2.70): Sunrise's own way to make shader packs, with tools to write and test them. Every pack is checked before it runs, and the registry will list them. [#1820](https://github.com/horizon-rust/horizon/issues/1820) · [#1822](https://github.com/horizon-rust/horizon/issues/1822) · [#1861](https://github.com/horizon-rust/horizon/issues/1861) · [#1863](https://github.com/horizon-rust/horizon/issues/1863) · [#1855](https://github.com/horizon-rust/horizon/issues/1855) · [docs/shaders.md](docs/shaders.md) · [docs/api/shaders.md](docs/api/shaders.md)
 - **Server dialogs and login screens** (v0.2.67): Servers that show dialogs, such as the register and login screens of AuthMe, will work in Sunrise. [#1720](https://github.com/horizon-rust/horizon/issues/1720) · [#1734](https://github.com/horizon-rust/horizon/issues/1734) · [#1735](https://github.com/horizon-rust/horizon/issues/1735)
 - **Microsoft sign-in** (launcher@0.2.17): Sign in with your Microsoft account in the launcher to play on online-mode servers. [docs/microsoft-account.md](docs/microsoft-account.md) · [#2879](https://github.com/horizon-rust/horizon/issues/2879)
 - **HDR monitors** (v0.2.74): Output for HDR monitors: brighter highlights and richer colour where your screen supports it. [#1441](https://github.com/horizon-rust/horizon/issues/1441) · [#2021](https://github.com/horizon-rust/horizon/issues/2021) · [#2292](https://github.com/horizon-rust/horizon/issues/2292)

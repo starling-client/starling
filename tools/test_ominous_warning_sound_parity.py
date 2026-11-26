@@ -7,8 +7,12 @@ from pathlib import Path
 import re
 import time
 
-import test_locator_bar_parity as net
-from test_dedicated_server_parity import Server, game_time
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_locator_bar_parity as net
+from tools.test_dedicated_server_parity import Server, game_time
 
 PLAYER = 'Alice'
 SPAWNER = '00000080-0000-0000-0000-000000000001'

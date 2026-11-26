@@ -15,6 +15,120 @@ use sunrise_client::mobs::{Damage, DamageKind, Mob};
 use sunrise_client::motion::PlayerMotion;
 use sunrise_core::{geometry::Vec3, random::RandomSource};
 
+const SLEEPING_BED: [i32; 3] = [4, 100, 4];
+
+struct ObserveBedDuringDamage(Arc<Mutex<Vec<&'static str>>>);
+
+impl ObserveBedDuringDamage {
+    fn observe(&self, level: &dyn HitHost, phase: &'static str) {
+        let state = level.block_state(SLEEPING_BED).unwrap();
+        assert_eq!(level.state_block(state), Some("minecraft:red_bed"));
+        assert_eq!(
+            level.state_with_property(state, "occupied", "false"),
+            Some(state)
+        );
+        self.0.lock().unwrap().push(phase);
+    }
+}
+
+#[mod_api::__subscriptions]
+impl Hooks for ObserveBedDuringDamage {
+    fn living_damage_pre(&self, level: &mut dyn HitHost, _: &mut LivingDamagePreEvent<'_>) {
+        self.observe(level, "pre");
+    }
+
+    fn living_damage_post(&self, level: &mut dyn HitHost, _: &mut LivingDamagePostEvent<'_>) {
+        self.observe(level, "post");
+    }
+}
+
+#[test]
+#[ignore = "daily"]
+fn brainless_villager_wakes_before_damage_listeners() {
+    use super::native_entity_refs::tests::{prepare_entity_ticking_neighborhood, run_fresh_cases};
+    use sunrise_client::mobs::{villager, villager_brain};
+    use sunrise_core::{nbt::Tag, position::ChunkPos};
+
+    if run_fresh_cases(
+        "game::native_damage_tests::brainless_villager_wakes_before_damage_listeners",
+        "SUNRISE_TEST_BRAINLESS_VILLAGER_DAMAGE",
+        &["brainless"],
+    ) {
+        return;
+    }
+
+    let heard = Arc::new(Mutex::new(Vec::new()));
+    let mods = vec![mod_api::ModEntry::new(
+        "observe_bed",
+        Box::new(ObserveBedDuringDamage(Arc::clone(&heard))),
+    )]
+    .into();
+    mod_platform::testing::with_mods(mods, || {
+        with_game(|game| {
+            game.build_registries();
+            game.set_allow_commands(true);
+            prepare_entity_ticking_neighborhood(game, ChunkPos::new(0, 0));
+            assert!(game.run_command("fill 0 99 0 7 99 7 stone"));
+            assert!(game.run_command(
+                "setblock 4 100 4 red_bed[part=head,facing=north,occupied=false] strict"
+            ));
+            assert!(game.run_command(
+                "setblock 4 100 5 red_bed[part=foot,facing=north,occupied=false] strict"
+            ));
+            let id = game.take_entity_id();
+            let kind = game
+                .res
+                .mob_types()
+                .get("minecraft:villager")
+                .unwrap()
+                .clone();
+            game.mobs
+                .push(Mob::new(id, kind, Vec3::new(3.5, 100.0, 4.5), 0.0));
+            let mob = game.mobs.last_mut().unwrap();
+            let job = [2, 100, 4];
+            let meeting = [3, 100, 4];
+            mob.extra.bed = Some(SLEEPING_BED);
+            mob.extra.home = Some(job);
+            mob.extra.meeting = Some(meeting);
+            let epoch = game.native_lifecycle.epoch().unwrap();
+            let living = mod_api::LivingRef::new(mod_api::EntityRef::new(epoch, id));
+            game.world.game_time = 37;
+            assert!(game.living_start_sleeping(living, SLEEPING_BED));
+            let ext = villager::ext(game.mob_object(id).unwrap()).unwrap();
+            assert!(ext.brain.is_none() && ext.saved_memories.is_none());
+            assert_eq!(ext.last_slept, Some(37));
+
+            game.world.game_time = 89;
+            assert!(game.run_command(
+                "damage @e[type=villager,limit=1] 2 minecraft:generic at 2.5 100 4.5"
+            ));
+            assert_eq!(&*heard.lock().unwrap(), &["pre", "post"]);
+            let mob = game.mobs.last_mut().unwrap();
+            assert_eq!(mob.health, 18.0);
+            assert!(!villager::sleeping(mob));
+            assert!(villager::ext(mob).unwrap().brain.is_none());
+
+            villager_brain::init(mob, 89, 14000, i64::from(id));
+            let mut written = Vec::new();
+            villager::write_memories(mob, &mut written);
+            let memories = Tag::compound(written);
+            let memory = |key| memories.get(key).and_then(|tag| tag.get("value"));
+            assert_eq!(memory("minecraft:last_slept"), Some(&Tag::Long(37)));
+            assert_eq!(memory("minecraft:last_woken"), Some(&Tag::Long(89)));
+            for (key, pos) in [
+                ("minecraft:home", SLEEPING_BED),
+                ("minecraft:job_site", job),
+                ("minecraft:meeting_point", meeting),
+            ] {
+                assert_eq!(
+                    memory(key).and_then(|tag| tag.get("pos")),
+                    Some(&Tag::IntArray(pos.to_vec()))
+                );
+            }
+        });
+    });
+}
+
 /// What the probe heard: Pre's entity, original damage, new damage and armor's reduction, and
 /// Post's health damage, then its entity, health damage, absorption reduction and blocked damage.
 #[derive(Debug, Default, PartialEq)]
@@ -34,6 +148,7 @@ struct HitSource {
     entity: i32,
     causing: i32,
     direct: i32,
+    direct_type: Option<String>,
 }
 
 impl Heard {
@@ -44,6 +159,7 @@ impl Heard {
             entity,
             causing: source.causing,
             direct: source.direct,
+            direct_type: source.direct_type.map(str::to_owned),
         });
     }
 }
@@ -63,7 +179,7 @@ impl Hooks for Probe {
             .lock()
             .unwrap()
             .source("incoming", event.entity, event.source);
-        let item_id = |stack: Option<&mod_api::ItemStack>| {
+        let item_id = |stack: Option<&mod_api::ItemStackView<'_>>| {
             stack.and_then(|s| mod_api::__private::item_key_id(s.item()).map(str::to_owned))
         };
         let direct = item_id(event.weapon);
@@ -301,7 +417,13 @@ fn post_fires_for_a_player_hit_that_absorption_took_whole() {
             )
             .unwrap();
         player.set_health(2.0, true).unwrap();
-        assert!(game.hurt_player_from(2.0, None, "minecraft:generic", Some(None), false));
+        assert!(game.hurt_player_from(
+            2.0,
+            None,
+            "minecraft:generic",
+            crate::game::creatures::KnownCause::None,
+            false
+        ));
         let health = &game.player.as_ref().unwrap().health;
         assert_eq!((health.health(), health.absorption()), (20.0, 0.0));
     });
@@ -313,7 +435,13 @@ fn post_fires_for_a_player_hit_that_absorption_took_whole() {
 fn post_fires_for_a_player_hit_a_shield_blocked_whole() {
     let heard = heard(|game| {
         survival_player(game, 227002);
-        game.hurt_player_from(2.0, None, "minecraft:generic", Some(None), false);
+        game.hurt_player_from(
+            2.0,
+            None,
+            "minecraft:generic",
+            crate::game::creatures::KnownCause::None,
+            false,
+        );
         assert_eq!(game.player.as_ref().unwrap().health.health(), 20.0);
     });
     assert_eq!(heard.post_values, [(227002, 0.0, 0.0, 2.0)]);
@@ -378,6 +506,7 @@ struct DeathOrder {
     cancel: std::sync::atomic::AtomicBool,
     revive: std::sync::atomic::AtomicBool,
     clear_cooldown: bool,
+    refuse_main_protection: bool,
     dry_out_velocity: Mutex<Option<[f64; 3]>>,
 }
 
@@ -424,7 +553,11 @@ impl Hooks for DeathProbe {
             .lock()
             .unwrap()
             .push(("totem", i64::from(event.entity)));
-        mod_api::Flow::Continue
+        if self.0.refuse_main_protection && event.hand == mod_api::Hand::Main {
+            mod_api::Flow::Cancel
+        } else {
+            mod_api::Flow::Continue
+        }
     }
     fn living_death_post(
         &self,
@@ -558,7 +691,13 @@ fn guest_strike_posts_before_returning_from_the_authoritative_death() {
                 .update(0, |guest| guest.load_timeout = 0);
             let entity = i64::from(game.lan.as_ref().unwrap().hub.guests[0].entity_id);
             game.guest_struck_by(1, |game| {
-                assert!(game.hurt_player_from(100.0, None, "minecraft:generic", Some(None), false));
+                assert!(game.hurt_player_from(
+                    100.0,
+                    None,
+                    "minecraft:generic",
+                    crate::game::creatures::KnownCause::None,
+                    false
+                ));
                 assert_eq!(game.player.as_ref().unwrap().health.health(), 5.0);
                 assert_eq!(
                     *trace.heard.lock().unwrap(),
@@ -571,7 +710,13 @@ fn guest_strike_posts_before_returning_from_the_authoritative_death() {
                 );
                 trace.cancel.store(false, Relaxed);
                 // A stronger hit in the same turn can kill the now-living body.
-                assert!(game.hurt_player_from(200.0, None, "minecraft:generic", Some(None), false));
+                assert!(game.hurt_player_from(
+                    200.0,
+                    None,
+                    "minecraft:generic",
+                    crate::game::creatures::KnownCause::None,
+                    false
+                ));
                 assert!(game.lan.as_ref().unwrap().hub.guests[0].dead);
                 assert_eq!(trace.heard.lock().unwrap().last(), Some(&("post", entity)));
             })
@@ -940,6 +1085,7 @@ fn a_falling_block_finishes_each_hit_before_the_next_victim() {
             game.mobs.push(first);
             game.mobs.push(second);
             let mut anvil = super::FallingBlock {
+                size_answer: None,
                 attachment_lifetime: Default::default(),
                 rotation: [0.0; 2],
                 join: Default::default(),
@@ -1001,21 +1147,21 @@ struct PufferfishProbe {
 
 fn active_poison(host: &dyn mod_api::ServerHost, victim: mod_api::LivingRef) -> Vec<(i32, i32)> {
     let poison = host.effect_key("minecraft:poison").unwrap();
-    victim
-        .effects(host)
-        .unwrap()
-        .into_iter()
-        .filter(|effect| effect.id == poison)
-        .map(|effect| (effect.duration, effect.amplifier))
-        .collect()
+    let mut effects = Vec::new();
+    assert_eq!(
+        victim.visit_effects(host, &mut |effect| {
+            if effect.id == poison {
+                effects.push((effect.duration, effect.amplifier));
+            }
+            core::ops::ControlFlow::Continue(())
+        }),
+        Ok(core::ops::ControlFlow::Continue(()))
+    );
+    effects
 }
 
 #[mod_api::__subscriptions]
 impl Hooks for PufferfishProbe {
-    fn register(&self, r: &mut dyn mod_api::Registrar, _: &mod_api::RegistrationContext) {
-        r.entity_tick_each("minecraft:pufferfish");
-    }
-
     fn living_incoming_damage(
         &self,
         _: &mut dyn HitHost,
@@ -1061,20 +1207,12 @@ impl Hooks for PufferfishProbe {
         }
     }
 
-    fn entity_tick_listened(
-        &self,
-        _: mod_api::HostSide<'_>,
-        event: &mut mod_api::EntityTickListenedEvent,
-    ) {
-        event.listened = true;
-    }
-
     fn entity_tick_post(
         &self,
         host: mod_api::HostSide<'_>,
         event: &mut mod_api::EntityTickPostEvent<'_>,
     ) {
-        if event.entities == [self.fish]
+        if event.entity == self.fish
             && let mod_api::HostSide::Server(host) = host
         {
             let victim = host.living(host.entity(self.first).unwrap()).unwrap();
@@ -1493,7 +1631,10 @@ fn borrowed_mod_effect_posts_before_the_next_action() {
 #[ignore = "daily"]
 fn guest_protection_consumes_the_item_and_posts_inside_the_hit() {
     use crate::game::native_player_death::tests::add_guest;
-    let trace = Arc::new(DeathOrder::default());
+    let trace = Arc::new(DeathOrder {
+        refuse_main_protection: true,
+        ..Default::default()
+    });
     let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
         "death-order",
         Box::new(DeathProbe(trace.clone())),
@@ -1502,21 +1643,37 @@ fn guest_protection_consumes_the_item_and_posts_inside_the_hit() {
     mod_platform::testing::with_mods(mods, || {
         with_game(|game| {
             add_guest(game);
+            let main = ItemStack::new("minecraft:totem_of_undying", 1);
+            let mut off = ItemStack::new("minecraft:stick", 2);
+            off.data_mut().set_other(
+                "minecraft:death_protection",
+                Some(sunrise_core::nbt::Tag::compound(
+                    [] as [(&str, sunrise_core::nbt::Tag); 0]
+                )),
+            );
             game.lan.as_mut().unwrap().hub.guests.update(0, |guest| {
                 guest.load_timeout = 0;
-                guest.inventory[guest.selected] =
-                    Some(ItemStack::new("minecraft:totem_of_undying", 1));
+                guest.inventory[guest.selected] = Some(main.clone());
+                guest.offhand = Some(off);
             });
             let entity = i64::from(game.lan.as_ref().unwrap().hub.guests[0].entity_id);
             game.guest_struck_by(1, |game| {
-                assert!(game.hurt_player_from(100.0, None, "minecraft:generic", Some(None), false));
-                assert!(game.inventory[game.selected].is_none());
+                assert!(game.hurt_player_from(
+                    100.0,
+                    None,
+                    "minecraft:generic",
+                    crate::game::creatures::KnownCause::None,
+                    false
+                ));
+                assert_eq!(game.inventory[game.selected].as_ref(), Some(&main));
+                assert_eq!(game.offhand.as_ref().unwrap().count, 1);
                 assert_eq!(game.player.as_ref().unwrap().health.health(), 1.0);
                 assert_eq!(
                     *trace.heard.lock().unwrap(),
                     [
                         ("incoming", entity),
                         ("pre", entity),
+                        ("totem", entity),
                         ("totem", entity),
                         ("post", entity)
                     ]
@@ -1645,20 +1802,12 @@ impl Hooks for MobLandingProbe {
         }
     }
 
-    fn entity_tick_listened(
-        &self,
-        _: mod_api::HostSide<'_>,
-        event: &mut mod_api::EntityTickListenedEvent,
-    ) {
-        event.listened = true;
-    }
-
     fn entity_tick_post(
         &self,
         host: mod_api::HostSide<'_>,
         event: &mut mod_api::EntityTickPostEvent<'_>,
     ) {
-        if event.entities.contains(&self.id)
+        if event.entity == self.id
             && let mod_api::HostSide::Server(host) = host
         {
             let entity = host.entity(self.id).unwrap();
@@ -1746,8 +1895,9 @@ fn borrowed_mob_landing_posts_before_the_travel_tail() {
                     Some([0.0, -0.5, 0.0]),
                 ),
                 MobLandingMoment::Post,
-                MobLandingMoment::NextHit,
+                // The pig's EntityTickEvent.Post closes its own turn, before the next mob's.
                 MobLandingMoment::TickFinished(Some(mod_api::Tag::Double(0))),
+                MobLandingMoment::NextHit,
             ]);
             assert_eq!(*trace.lock().unwrap(), expected);
             let pig = &game.mobs[0];
@@ -2194,7 +2344,13 @@ fn player_pre_keeps_live_damage_when_resistance_does_not_record_a_reduction() {
         player.status.resistance = Some(4);
         game.player = Some(player);
         game.set_game_mode(GameMode::Survival);
-        assert!(game.hurt_player_from(10.0, None, "minecraft:magic", Some(None), false));
+        assert!(game.hurt_player_from(
+            10.0,
+            None,
+            "minecraft:magic",
+            crate::game::creatures::KnownCause::None,
+            false
+        ));
         assert_eq!(game.player.as_ref().unwrap().health.health(), 19.0);
     });
     assert_eq!(heard.post, [(225033, 1.0)]);
@@ -2246,7 +2402,7 @@ fn player_melee_hit_preserves_the_attackers_position_and_direct_entity() {
             8.0,
             Some([0.0, 0.0, -2.0]),
             "minecraft:mob_attack",
-            Some(Some(42)),
+            crate::game::creatures::KnownCause::Entity(42),
             false,
         ));
         assert_eq!(
@@ -2262,6 +2418,7 @@ fn player_melee_hit_preserves_the_attackers_position_and_direct_entity() {
             entity: 225020,
             causing: 42,
             direct: 42,
+            direct_type: None,
         })
     );
     assert_eq!(
@@ -2283,9 +2440,10 @@ fn arrow_hits_name_the_projectile_on_players_mobs_and_the_dragon() {
 
     for (target, owner, gone, entity, causing) in [
         (Who::Player, Some(Who::Mob(42)), false, 7, 42),
-        (Who::Player, None, false, 7, 0),
+        // AbstractArrow.onHitEntity: an ownerless arrow causes its own hit.
+        (Who::Player, None, false, 7, 912),
         (Who::Mob(43), Some(Who::Player), false, 43, 7),
-        (Who::Mob(43), None, false, 43, 0),
+        (Who::Mob(43), None, false, 43, 912),
         (Who::Mob(SPECIAL), Some(Who::Player), false, 44, 7),
         (Who::Mob(43), Some(Who::Mob(42)), true, 43, 42),
     ] {
@@ -2361,6 +2519,7 @@ fn arrow_hits_name_the_projectile_on_players_mobs_and_the_dragon() {
             entity,
             causing,
             direct: 912,
+            direct_type: None,
         });
         assert_eq!(
             heard.sources, expected,
@@ -2485,6 +2644,7 @@ fn snapshot_crosses_the_real_damage_hook_with_reductions() {
                     causing: 0,
                     direct: 0,
                     position: None,
+                    direct_type: None,
                 },
             ),
             &mut container,
@@ -2496,4 +2656,316 @@ fn snapshot_crosses_the_real_damage_hook_with_reductions() {
         );
     });
     assert_eq!(log.pre, [(225003, 10.0, 2.0, 3.5)]);
+}
+
+/// `ServerExplosion.hurtEntities` lends the player the same source it lends a mob: the
+/// exploding entity as the direct entity, the blast's centre as its position.
+#[test]
+#[ignore = "daily"]
+fn a_player_blast_names_its_direct_entity_and_centre() {
+    let heard = heard(|game| {
+        let mut player = PlayerMotion::new(game.motion, Vec3::ZERO).unwrap();
+        player.entity_id = 225020;
+        game.player = Some(player);
+        game.set_game_mode(GameMode::Survival);
+        let kind = game
+            .res
+            .mob_types()
+            .get("minecraft:creeper")
+            .unwrap()
+            .clone();
+        game.mobs
+            .push(Mob::new(42, kind, Vec3::new(10.0, 0.0, 0.0), 0.0));
+        game.combat.explosion_source = Some(42);
+        let blast = super::explosion::ExplosionSource::default().with_entity(
+            42,
+            "minecraft:creeper",
+            sunrise_client::health::DirectEntity::Living,
+        );
+        game.explode(Some(42), [1.0, 0.0, 0.0], 1.5, blast).unwrap();
+        game.combat.explosion_source = None;
+        assert!(
+            game.player.as_ref().unwrap().health.health() < 20.0,
+            "the blast hurts the player"
+        );
+    });
+    assert_eq!(
+        heard.sources,
+        ["incoming", "pre", "post"].map(|phase| HitSource {
+            phase,
+            entity: 225020,
+            causing: 42,
+            direct: 42,
+            direct_type: None,
+        })
+    );
+    assert_eq!(
+        heard.positions,
+        ["incoming", "pre", "post"].map(|phase| (phase, Some([1.0, 0.0, 0.0])))
+    );
+}
+
+/// The mob branch of the same blast keeps the direct entity and centre it had.
+#[test]
+#[ignore = "daily"]
+fn a_mob_blast_keeps_its_direct_entity_and_centre() {
+    let heard = heard(|game| {
+        game.player = None;
+        let kind = game
+            .res
+            .mob_types()
+            .get("minecraft:creeper")
+            .unwrap()
+            .clone();
+        game.mobs
+            .push(Mob::new(42, kind, Vec3::new(10.0, 0.0, 0.0), 0.0));
+        let kind = game.res.mob_types().get("minecraft:pig").unwrap().clone();
+        game.mobs
+            .push(Mob::new(43, kind, Vec3::new(0.0, 0.0, 0.0), 0.0));
+        game.combat.explosion_source = Some(42);
+        let blast = super::explosion::ExplosionSource::default().with_entity(
+            42,
+            "minecraft:creeper",
+            sunrise_client::health::DirectEntity::Living,
+        );
+        game.explode(Some(42), [0.0, 0.0, 0.0], 3.0, blast).unwrap();
+        game.combat.explosion_source = None;
+        assert!(game.mobs.iter().any(|m| m.id == 43 && m.health < 10.0));
+    });
+    assert_eq!(
+        heard.sources,
+        ["incoming", "pre", "post"].map(|phase| HitSource {
+            phase,
+            entity: 43,
+            causing: 42,
+            direct: 42,
+            direct_type: None,
+        })
+    );
+    assert_eq!(
+        heard.positions,
+        ["incoming", "pre", "post"].map(|phase| (phase, Some([0.0, 0.0, 0.0])))
+    );
+}
+
+/// A lingering cloud and a splash potion name themselves as the direct entity, apart from
+/// their owner, for mobs and players alike.
+#[test]
+#[ignore = "daily"]
+fn lingering_and_splash_potions_name_themselves_as_the_direct_entity() {
+    use crate::game::potions::Victim;
+
+    let cloud = heard(|game| {
+        game.player = None;
+        let kind = game.res.mob_types().get("minecraft:pig").unwrap().clone();
+        game.mobs.push(Mob::new(43, kind, Vec3::ZERO, 0.0));
+        game.cloud_affect(
+            Victim::Mob(43),
+            &[("instant_damage", 1, 0)],
+            (&[], &[], 1.0),
+            [0.0, 0.0, 0.0],
+            &sunrise_client::text::Text::literal("Cloud"),
+            (Some(sunrise_client::mobs::Who::Mob(50)), None),
+            Some(900),
+        );
+    });
+    assert_eq!(
+        cloud.sources,
+        ["incoming", "pre", "post"].map(|phase| HitSource {
+            phase,
+            entity: 43,
+            causing: 50,
+            direct: 900,
+            direct_type: Some("minecraft:area_effect_cloud".into()),
+        })
+    );
+
+    let cloud_player = heard(|game| {
+        let mut player = PlayerMotion::new(game.motion, Vec3::ZERO).unwrap();
+        player.entity_id = 225020;
+        game.player = Some(player);
+        game.set_game_mode(GameMode::Survival);
+        game.cloud_affect(
+            Victim::Player(super::dragon::FightWho::Host),
+            &[("instant_damage", 1, 0)],
+            (&[], &[], 1.0),
+            [0.0, 0.0, 0.0],
+            &sunrise_client::text::Text::literal("Cloud"),
+            (Some(sunrise_client::mobs::Who::Mob(50)), None),
+            Some(900),
+        );
+        assert!(
+            game.player.as_ref().unwrap().health.health() < 20.0,
+            "the cloud hurts the player"
+        );
+    });
+    assert_eq!(
+        cloud_player.sources,
+        ["incoming", "pre", "post"].map(|phase| HitSource {
+            phase,
+            entity: 225020,
+            causing: 50,
+            direct: 900,
+            direct_type: Some("minecraft:area_effect_cloud".into()),
+        })
+    );
+    assert_eq!(
+        cloud_player.positions,
+        ["incoming", "pre", "post"].map(|phase| (phase, Some([0.0, 0.0, 0.0])))
+    );
+
+    let splash = heard(|game| {
+        game.player = None;
+        let kind = game.res.mob_types().get("minecraft:pig").unwrap().clone();
+        game.mobs.push(Mob::new(43, kind, Vec3::ZERO, 0.0));
+        let mut potion = ItemStack::new("minecraft:splash_potion", 1);
+        potion.data_mut().potion = Some("minecraft:harming".into());
+        let owner = game.potion_owner(Some(sunrise_client::mobs::Who::Mob(50)));
+        game.splash(
+            &potion,
+            Vec3::ZERO,
+            None,
+            None,
+            0,
+            912,
+            &owner,
+            true,
+            Vec3::ZERO,
+        );
+    });
+    assert_eq!(
+        splash.sources,
+        ["incoming", "pre", "post"].map(|phase| HitSource {
+            phase,
+            entity: 43,
+            causing: 50,
+            direct: 912,
+            direct_type: Some("minecraft:splash_potion".into()),
+        })
+    );
+
+    let splash_player = heard(|game| {
+        let mut player = PlayerMotion::new(game.motion, Vec3::ZERO).unwrap();
+        player.entity_id = 225020;
+        game.player = Some(player);
+        game.set_game_mode(GameMode::Survival);
+        let mut potion = ItemStack::new("minecraft:splash_potion", 1);
+        potion.data_mut().potion = Some("minecraft:harming".into());
+        let owner = game.potion_owner(Some(sunrise_client::mobs::Who::Mob(50)));
+        game.splash(
+            &potion,
+            Vec3::ZERO,
+            None,
+            None,
+            0,
+            912,
+            &owner,
+            true,
+            Vec3::ZERO,
+        );
+        assert!(
+            game.player.as_ref().unwrap().health.health() < 20.0,
+            "the splash potion hurts the player"
+        );
+    });
+    assert_eq!(
+        splash_player.sources,
+        ["incoming", "pre", "post"].map(|phase| HitSource {
+            phase,
+            entity: 225020,
+            causing: 50,
+            direct: 912,
+            direct_type: Some("minecraft:splash_potion".into()),
+        })
+    );
+    assert_eq!(
+        splash_player.positions,
+        ["incoming", "pre", "post"].map(|phase| (phase, Some([0.0, 0.0, 0.0])))
+    );
+}
+
+/// `/damage` and `EntityRef::hurt` keep a causing entity that is not a mob.
+#[test]
+#[ignore = "daily"]
+fn damage_by_a_non_mob_cause_keeps_the_causing_entity() {
+    let heard = heard(|game| {
+        let mut player = PlayerMotion::new(game.motion, Vec3::ZERO).unwrap();
+        player.entity_id = 225020;
+        game.player = Some(player);
+        game.set_game_mode(GameMode::Survival);
+        let mut dragon = Dragon::new(Vec3::ZERO, 0.0, 0);
+        dragon.id = 44;
+        game.dragon.replace(dragon);
+        assert!(game.hurt_target(
+            crate::game::commands::Target::Player,
+            2.0,
+            "minecraft:generic",
+            Some(crate::game::commands::Target::Dragon(44)),
+            Some(crate::game::commands::Target::Dragon(44)),
+            Some([0.0, 0.0, -2.0]),
+        ));
+    });
+    assert_eq!(
+        heard.sources,
+        ["incoming", "pre", "post"].map(|phase| HitSource {
+            phase,
+            entity: 225020,
+            causing: 44,
+            direct: 44,
+            direct_type: Some("minecraft:ender_dragon".into()),
+        })
+    );
+}
+
+/// A wither skull whose wither died or left before impact deals `magic()` with no causing
+/// entity, even though the projectile's enclosing attack still holds the dead shooter.
+#[test]
+#[ignore = "daily"]
+fn an_ownerless_wither_skull_has_no_causing_entity() {
+    use sunrise_client::mobs::Who;
+    use sunrise_client::projectiles::{Hit, Projectile, ProjectileKind};
+
+    let heard = heard(|game| {
+        let mut player = PlayerMotion::new(game.motion, Vec3::ZERO).unwrap();
+        player.entity_id = 225020;
+        game.player = Some(player);
+        game.set_game_mode(GameMode::Survival);
+        // Mob 50 is absent, so `Projectile.getOwner` is none; the skull's own attack
+        // still carries the id it was fired with.
+        let mut skull = Projectile::new(
+            ProjectileKind::WitherSkull { dangerous: false },
+            Vec3::ZERO,
+            Some(Who::Mob(50)),
+        );
+        skull.id = 913;
+        game.projectile_hit(
+            &skull,
+            Hit::Entity {
+                who: Who::Player,
+                at: Vec3::ZERO,
+            },
+        )
+        .unwrap();
+        assert!(
+            game.player.as_ref().unwrap().health.health() < 20.0,
+            "the skull hurts the player"
+        );
+    });
+    // The skull's own `magic()` hit names neither entity; its blast that
+    // follows still names no causing entity.
+    assert_eq!(
+        heard.sources[..3],
+        ["incoming", "pre", "post"].map(|phase| HitSource {
+            phase,
+            entity: 225020,
+            causing: 0,
+            direct: 0,
+            direct_type: None,
+        })
+    );
+    assert!(
+        heard.sources.iter().all(|hit| hit.causing == 0),
+        "no phase names the dead wither: {:?}",
+        heard.sources
+    );
 }

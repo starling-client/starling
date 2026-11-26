@@ -108,12 +108,15 @@ impl RaidGarden {
 }
 impl Goal for RaidGarden {
     goal_clone!();
+    #[inline]
     fn name(&self) -> &'static str {
         "RaidGardenGoal"
     }
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE | JUMP
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         // MoveToBlockGoal.canUse draws the next delay only once the last one ran out.
         if self.block.next_start > 0 {
@@ -136,6 +139,7 @@ impl Goal for RaidGarden {
         self.can_raid = found.get();
         target
     }
+    #[inline]
     fn can_continue(&mut self, _: &mut Mob, cx: &mut Cx) -> bool {
         let (wants, raid) = (self.wants_to_raid, self.can_raid);
         self.can_raid
@@ -143,12 +147,15 @@ impl Goal for RaidGarden {
                 .block
                 .can_continue(cx.w, |w, p| raid_target(w, p, wants, raid))
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.block.start(m, cx.w);
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         true
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.block.tick(m, cx.w);
         let b = self.block.block;
@@ -210,24 +217,31 @@ impl RabbitAvoid {
 }
 impl Goal for RabbitAvoid {
     goal_clone!();
+    #[inline]
     fn name(&self) -> &'static str {
         "RabbitAvoidEntityGoal"
     }
+    #[inline]
     fn flags(&self) -> u8 {
         self.0.flags()
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         m.extra.variant != EVIL && self.0.can_use(m, cx)
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         self.0.can_continue(m, cx)
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.start(m, cx)
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.stop(m, cx)
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.tick(m, cx)
     }
@@ -492,6 +506,7 @@ mod tests {
             &json!({"children": {"head": {}, "left_hind_foot": {}}}),
         ));
         let kind = Arc::new(MobType {
+            type_key: Default::default(),
             shadow: None,
             id: "minecraft:rabbit".into(),
             species: Species::Rabbit,

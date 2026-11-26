@@ -138,6 +138,48 @@ const SCREENQUAD_VSH: &str = "#version 330\nlayout(location = 0) out vec2 texCoo
     void main() {\n    vec2 uv = vec2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2);\n\
         gl_Position = vec4(uv * vec2(2, 2) + vec2(-1, -1), 0, 1);\n    texCoord = uv;\n}\n";
 
+/// A `LightmapInfo` with a member past 26.3's (an older one's shape): vanilla's builder takes it
+/// (it checks a descriptor's name, type and dimension, not a block's size), and the pipeline is
+/// made with the block bound at the shader's size, the member reading zero beside the values
+/// `Lightmap.render` writes: the texture is the one [`PROBE_FSH`] draws, `Older` adding nothing.
+#[test]
+#[ignore = "daily"]
+fn a_pack_lightmap_with_an_older_larger_info_block_draws() {
+    let _gpu = crate::gfx::test_gpu::lock();
+    let Some((device, queue)) = device() else {
+        eprintln!("skipped: no adapter");
+        return;
+    };
+    let fsh = PROBE_FSH
+        .replace(
+            "vec3 NightVisionColor;\n",
+            "vec3 NightVisionColor;\n    vec4 Older;\n",
+        )
+        .replace(
+            "lightmapInfo.NightVisionColor.g);",
+            "lightmapInfo.NightVisionColor.g + lightmapInfo.Older.x);",
+        );
+    let program = crate::core_shader::translate_core_with(
+        SCREENQUAD_VSH,
+        &fsh,
+        &[],
+        &|_| None,
+        &GLUE,
+        &|b| b == INFO_BLOCK,
+    )
+    .expect("the shaders translate");
+    let mut core = lightmap_for(&device, Some(&program), &[])
+        .unwrap_or_else(|e| panic!("{e}"))
+        .expect("the lightmap pipeline");
+    core.set_readback(&device, true);
+    let pixels = draw(&device, &queue, &mut core, &PROBE);
+    for (sky, block) in [(0usize, 0usize), (3, 5), (15, 15)] {
+        let got = &pixels[(sky * 16 + block) * 4..][..4];
+        let want = [block as u8 * 17, sky as u8 * 17, 153, 102];
+        assert_eq!(got, want, "sky {sky} block {block}");
+    }
+}
+
 /// The pack's shader covers the whole texture with row `n` at sky level `n` and column `n` at
 /// block level `n` (GL's rows run from the bottom), reads `LightmapInfo` where `Lightmap.render`
 /// writes it, and its pixels come back for F3's lightmap chart.
@@ -211,9 +253,11 @@ fn resources() -> std::path::PathBuf {
 /// as a unorm target stores it. The states are picked so that every channel of every texel is
 /// at least 0.005 of a byte from a rounding tie, far past float32's error, so a driver that
 /// stores a unorm byte as the nearest one (lavapipe, which the daily GPU lane runs) stores these
-/// bytes. Vulkan lets a driver's float-to-unorm conversion stray a little from the nearest byte:
-/// this machine's RADV stores 196 for state 0's texel at sky 0, block 3 (196.574 here), so the
-/// test is exact under lavapipe (`VK_ICD_FILENAMES=.../lvp_icd.json`).
+/// bytes. Vulkan only says a driver *should* store the nearest byte (spec, "Conversion from
+/// Floating-Point to Normalized Fixed-Point"): RADV packs the colour to half floats rounded
+/// toward zero before storing it, so it stores 196 for state 0's texel at sky 0, block 3
+/// (196.574 here), and NVIDIA's driver to half floats rounded to nearest, so it stores 224 for
+/// the green at sky 0, block 5 (224.546). [`stores_the_nearest_byte`] tells them apart.
 fn vanilla_textures() -> [[u8; 16 * 16 * 4]; 2] {
     let mut out = [[0u8; 16 * 16 * 4]; 2];
     let mut state = 0;
@@ -237,9 +281,48 @@ fn vanilla_textures() -> [[u8; 16 * 16 * 4]; 2] {
     out
 }
 
+/// A shader storing 224.505 of 255 in red (0.8804118) and 224.495 in blue (0.8803725): 0.005
+/// of a byte either side of the 224.5 tie, the smallest margin any texel of [`STATES`] keeps from
+/// a tie (state 1, sky 12, block 9: green 154.4943). The nearest byte stores 225 and 224. A half
+/// float, a 10-bit or a 12-bit intermediate cannot tell the two apart and stores them alike.
+/// `SkyFactor` in green keeps `LightmapInfo` read.
+const ROUNDING_FSH: &str = "#version 330\nlayout(std140) uniform LightmapInfo {\n\
+    float SkyFactor;\n} lightmapInfo;\n\
+    layout(location = 0) in vec2 texCoord;\nlayout(location = 0) out vec4 fragColor;\n\
+    void main() {\n    fragColor = vec4(0.8804118, lightmapInfo.SkyFactor, 0.8803725, 1.0);\n}\n";
+
+/// Whether the adapter stores a unorm byte as the nearest one to the float32 colour to within the
+/// margin [`STATES`] needs, as [`vanilla_textures`] does: lavapipe, which the daily GPU lane runs,
+/// does; RADV and NVIDIA's driver go through half floats first.
+fn stores_the_nearest_byte(device: &wgpu::Device, queue: &wgpu::Queue) -> bool {
+    let program = crate::core_shader::translate_core_with(
+        SCREENQUAD_VSH,
+        ROUNDING_FSH,
+        &[],
+        &|_| None,
+        &GLUE,
+        &|b| b == INFO_BLOCK,
+    )
+    .expect("the shaders translate");
+    let mut core = CoreLightmap::new(device, &program, &[]).expect("the lightmap pipeline");
+    core.set_readback(device, true);
+    let pixels = draw(device, queue, &mut core, &PROBE);
+    match (pixels[0], pixels[2]) {
+        (225, 224) => true,
+        (above @ (224 | 225), below @ (224 | 225)) => {
+            eprintln!("224.505 and 224.495 of 255 stored as {above} and {below}");
+            false
+        }
+        other => panic!("224.505 and 224.495 of 255 stored as {other:?}"),
+    }
+}
+
 /// Vanilla's own `screenquad` and `lightmap` through the pack path draw vanilla's light texture
 /// exactly, all 256 texels, in two lighting states ([`vanilla_textures`]), row by sky level and
-/// column by block level.
+/// column by block level. An adapter that does not store the nearest byte (RADV, NVIDIA) skips
+/// it, as its conversion, not the shader's math, moves some texels down a step; under
+/// `SUNRISE_GPU_TESTS_REQUIRE_ADAPTER=1` (the daily GPU lane) it fails instead, so the lane
+/// never passes with no texel checked.
 #[test]
 #[ignore = "daily"]
 fn vanillas_lightmap_shaders_draw_vanillas_light_texture() {
@@ -266,6 +349,14 @@ fn vanillas_lightmap_shaders_draw_vanillas_light_texture() {
     let Some((device, queue)) = device() else {
         return;
     };
+    if !stores_the_nearest_byte(&device, &queue) {
+        assert!(
+            !crate::gfx::test_gpu::require_adapter(),
+            "the required adapter does not store a unorm byte as the nearest one"
+        );
+        eprintln!("skipped: this adapter does not store a unorm byte as the nearest one");
+        return;
+    }
     let mut core = CoreLightmap::new(&device, &program, &[]).expect("the lightmap pipeline");
     core.set_readback(&device, true);
     let expected = vanilla_textures();
@@ -347,7 +438,7 @@ fn the_light_texture_is_read_back_only_while_f3_charts_it() {
 /// them) and whose fragment stage reads `F0`, `F1`, ... (`fragment`), with every one's
 /// expression from its `shader_modifiers` file, resolved as the atlas resolves them. The
 /// fragment writes `F0` in red, `SkyFactor` in green and `F1` in blue.
-fn expression_lightmap(vertex: usize, fragment: usize) -> (CoreProgram, Vec<ExpressionUniform>) {
+fn expression_lightmap(vertex: usize, fragment: usize) -> (Translated, Vec<ExpressionUniform>) {
     let block =
         |name: String| format!("layout(std140) uniform {name} {{\n    float {name}v;\n}};\n");
     let blocks = |prefix: &str, n: usize| -> String {
@@ -494,8 +585,10 @@ fn a_lightmap_shader_reads_poly_globals() {
 
 /// A device binds at most `max_uniform_buffers_per_shader_stage` blocks to each stage (12 by
 /// default): each block counts only for the stages that read it. Seven expression uniforms in
-/// each stage are drawn (seven and eight with `LightmapInfo`); twelve in the fragment stage
-/// beside `LightmapInfo` are refused when the pipeline is built, so the texture stays native.
+/// each stage are drawn (seven and eight with `LightmapInfo`), and eleven in the fragment stage
+/// beside `LightmapInfo`; twelve there are past wgpu's default limit, which vanilla's device
+/// isn't held to: the light texture is computed natively and the pack stays, the note naming
+/// the stage, its 13 blocks and the limit.
 #[test]
 #[ignore = "daily"]
 fn a_lightmap_shaders_blocks_count_for_the_stages_that_read_them() {
@@ -504,12 +597,27 @@ fn a_lightmap_shaders_blocks_count_for_the_stages_that_read_them() {
         return;
     };
     assert_eq!(device.limits().max_uniform_buffers_per_shader_stage, 12);
-    let (program, expressions) = expression_lightmap(7, 7);
-    assert!(CoreLightmap::new(&device, &program, &expressions).is_some());
-    let (program, expressions) = expression_lightmap(0, 11);
-    assert!(CoreLightmap::new(&device, &program, &expressions).is_some());
-    let (program, expressions) = expression_lightmap(0, 12);
-    assert!(CoreLightmap::new(&device, &program, &expressions).is_none());
+    let made = |vertex, fragment| {
+        let (program, expressions) = expression_lightmap(vertex, fragment);
+        let past = program.past_device_limit(&device.limits(), &[wgpu::TextureFormat::Rgba8Unorm]);
+        let made = lightmap_for(&device, Some(&program), &expressions)
+            .unwrap_or_else(|e| panic!("{e}"))
+            .is_some();
+        (made, past)
+    };
+    assert_eq!(made(7, 7), (true, None));
+    assert_eq!(made(0, 11), (true, None));
+    assert_eq!(
+        made(0, 12),
+        (
+            false,
+            Some(sunrise_glsl::PastDeviceLimit::UniformBlocks {
+                stage: wgpu::ShaderStages::FRAGMENT,
+                blocks: 13,
+                limit: 12
+            })
+        )
+    );
 }
 
 /// What F3's lightmap chart paints across the chart closing and opening again and fullbright

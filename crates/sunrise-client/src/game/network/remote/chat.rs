@@ -1,4 +1,5 @@
 use super::*;
+use sunrise_client::chat::{ChatSource, Tag as ChatTag};
 
 /// `ChatType`'s two decorations: how a message shows in the chat, and what the narrator says of it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,21 +56,18 @@ pub(super) fn chat_type_decorate(
 }
 
 /// `ChatTrustLevel`; a modified message keeps the signed content it was changed from.
-pub(in super::super) enum ChatTrust {
+pub(super) enum ChatTrust {
     Secure,
     Modified(String),
     NotSecure,
-    /// `GuiMessageTag.chatError`: the line `ChatListener.handleChatMessageError` adds.
-    Error,
 }
 impl ChatTrust {
     /// `ChatTrustLevel.createTag`.
-    pub(super) fn tag(&self) -> Option<sunrise_client::chat::Tag> {
+    fn tag(&self) -> Option<ChatTag> {
         match self {
             Self::Secure => None,
-            Self::Modified(original) => Some(sunrise_client::chat::Tag::modified(original)),
-            Self::NotSecure => Some(sunrise_client::chat::Tag::not_secure()),
-            Self::Error => Some(sunrise_client::chat::Tag::chat_error()),
+            Self::Modified(original) => Some(ChatTag::modified(original)),
+            Self::NotSecure => Some(ChatTag::not_secure()),
         }
     }
 }
@@ -78,33 +76,29 @@ impl Game<'_> {
     /// A line in the connection's chat, with its styles, click and hover
     /// events (ChatComponent.addMessage). The lines the Chat option hides
     /// are dropped there (its `visibleMessageFilter`).
-    pub(in crate::game) fn add_chat_line(
-        &mut self,
-        content: sunrise_client::text::Text,
-        source: sunrise_client::chat::ChatSource,
-    ) -> bool {
-        self.signed_chat_line(content, source, None, ChatTrust::Secure)
-    }
-    /// `chat_line` of a player message, keeping its signature for a
-    /// deletion (`GuiMessage.signature`).
-    pub(super) fn signed_chat_line(
-        &mut self,
-        content: sunrise_client::text::Text,
-        source: sunrise_client::chat::ChatSource,
-        signature: Option<Signature>,
-        trust: ChatTrust,
-    ) -> bool {
+    pub(in crate::game) fn add_chat_line(&mut self, content: Text, source: ChatSource) -> bool {
         if !self.ui.chat.shows(source) {
             return false;
         }
+        self.push_chat_line(content, source, None, None);
+        true
+    }
+    /// Record a visible line, keeping a player message's signature for deletion.
+    fn push_chat_line(
+        &mut self,
+        content: Text,
+        source: ChatSource,
+        signature: Option<Signature>,
+        tag: Option<ChatTag>,
+    ) {
         let text = content.plain();
         let focused = self.screen == Screen::Chat;
-        if source == sunrise_client::chat::ChatSource::Player {
+        if source == ChatSource::Player {
             self.ui.chat.add_signed(
                 &self.gui.atlas,
                 content,
                 signature,
-                trust.tag(),
+                tag,
                 self.visual_ticks(),
                 focused,
             );
@@ -128,77 +122,48 @@ impl Game<'_> {
                 r.chat.remove(0);
             }
         }
-        true
     }
-    /// `ChatListener.handleMessage` for player and disguised chat: held in the
-    /// queue while Chat Delay is set, shown at once otherwise. `narration` is
-    /// the chat type's narration of it (`decorateNarration`).
-    pub(super) fn handle_player_chat(&mut self, chat: QueuedChat) {
-        if self.chat_delay_ms() > 0 {
-            if let Some(r) = self.remote.as_mut() {
-                r.chat_queue.push_back(chat);
-            }
-        } else {
-            self.accept_chat(chat);
-        }
-    }
-    /// `ChatListener.handleChatMessageError`: a message that fails validation shows as the red,
-    /// italic `chat.validation_error` in its chat type (queued under Chat Delay as any
-    /// message). Its signature counts as processed but not shown, for the acknowledgement the
-    /// client sends the server. Vanilla also
-    /// skips a blocked sender and one restricted to friends (not kept here either) and
-    /// narrates the line.
+    /// `ChatListener.handleChatMessageError`: a validation failure queues a
+    /// red italic error line and acknowledges the invalid signature on acceptance.
     pub(super) fn handle_chat_message_error(
         &mut self,
-        chat_type: &play::ChatTypeBound,
-        signature: Option<&Signature>,
+        sender: u128,
+        chat_type: play::ChatTypeBound,
+        signature: Option<Signature>,
     ) {
-        if let Some(signature) = signature {
-            self.mark_message_processed(signature, false);
-        }
-        let error = serde_json::json!({
-            "translate": "chat.validation_error",
-            "color": "red",
-            "italic": true,
-        });
-        let line = self.decorate_chat(chat_type, &error, Decoration::Chat);
-        // saySystemChatQueued(boundChatType.decorateNarration(CHAT_VALIDATION_ERROR)).
-        let narration = self
-            .decorate_chat(chat_type, &error, Decoration::Narration)
-            .plain();
-        self.handle_player_chat(QueuedChat {
-            line,
-            signature: None,
-            trust: ChatTrust::Error,
-            narration,
-            sender: 0,
-            chat_type: chat_type.chat_type,
-            player: None,
+        self.enqueue_chat(QueuedChat {
+            signature,
+            sender,
+            kind: QueuedChatKind::Error { chat_type },
         });
     }
     /// `ChatTrustLevel.evaluate` of a player message, with
     /// `ChatListener.evaluateTrustLevel`: the player's own message on their
-    /// own server is secure. `decorated` is the line shown, `unsigned` the
-    /// server's replacement for the signed content.
+    /// own server is secure. `decorated` is the acceptance-time chat decoration
+    /// before applying the server's filter mask.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn chat_trust(
         &self,
         sender: u128,
         signed: bool,
         timestamp: i64,
-        content: &str,
-        unsigned: Option<&Tag>,
-        decorated: &sunrise_client::text::Text,
+        signed_content: &str,
+        unsigned_content: Option<&Tag>,
+        decorated: &Text,
+        received_ms: i64,
     ) -> ChatTrust {
         use sunrise_client::scoreboard::{comp_text, tag_to_json};
-        if self.integrated.is_some() && self.remote.as_ref().is_some_and(|r| r.profile == sender) {
+        if self.integrated.is_some()
+            && self
+                .remote
+                .as_ref()
+                .is_some_and(|r| r.has_logical_player && r.profile == sender)
+        {
             return ChatTrust::Secure;
         }
         // PlayerChatMessage.hasExpiredClient: MESSAGE_EXPIRES_AFTER_CLIENT is
         // the server's five minutes and two more.
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_millis() as i64);
-        let expired = now
+        let expired = received_ms
             > timestamp.saturating_add(
                 sunrise_protocol::secure_chat::EXPIRES_AFTER_SERVER + 2 * 60 * 1000,
             );
@@ -207,7 +172,7 @@ impl Game<'_> {
         }
         // ChatTrustLevel.isModified: the signed content is not in the line, or
         // the replacement uses a font other than the default.
-        let font_changed = unsigned.is_some_and(|tag| {
+        let font_changed = unsigned_content.is_some_and(|tag| {
             comp_text(&tag_to_json(tag)).spans.iter().any(|span| {
                 span.style
                     .font
@@ -215,8 +180,8 @@ impl Game<'_> {
                     .is_some_and(|font| font != "minecraft:default")
             })
         });
-        if !decorated.plain().contains(content) || font_changed {
-            ChatTrust::Modified(content.to_owned())
+        if !decorated.plain().contains(signed_content) || font_changed {
+            ChatTrust::Modified(signed_content.to_owned())
         } else {
             ChatTrust::Secure
         }
@@ -235,10 +200,7 @@ impl Game<'_> {
             return self.leave_server(Some(reason));
         };
         r.secure_chat.ignore_pending(&signature);
-        let queued = r.chat_queue.len();
-        r.chat_queue
-            .retain(|chat| chat.signature.as_ref() != Some(&signature));
-        if r.chat_queue.len() == queued {
+        if !r.remove_queued_chat(&signature) {
             let ticks = self.visual_ticks();
             self.ui
                 .chat
@@ -246,50 +208,122 @@ impl Game<'_> {
         }
         Ok(())
     }
-    /// A message's `accept`: shown, it is narrated (`narrateChatMessage`) and
-    /// starts the Chat Delay wait again.
-    pub(super) fn accept_chat(&mut self, chat: QueuedChat) -> bool {
-        let signature = chat.signature;
-        let shown = self.player_chat_line(chat);
-        if let Some(signature) = &signature {
-            self.mark_message_processed(signature, shown);
-        }
-        if shown && let Some(r) = self.remote.as_mut() {
-            r.chat_previous = Some(Instant::now());
-        }
-        shown
-    }
-    /// `showMessageToPlayer`: the line joins the chat if Only Show Secure
-    /// Chat, mods and the Chat option let it through, and the narrator says
-    /// it (`sayChatQueued`).
-    pub(super) fn player_chat_line(&mut self, chat: QueuedChat) -> bool {
+    /// `ChatListener.showMessageToPlayer`, `handleDisguisedChatMessage` and
+    /// `handleChatMessageError`: check the current restrictions before presentation.
+    pub(super) fn show_queued_chat(&mut self, chat: QueuedChat) -> bool {
         let QueuedChat {
-            mut line,
             signature,
-            trust,
-            narration,
             sender,
-            chat_type,
-            player,
+            kind,
         } = chat;
-        // ChatListener.showMessageToPlayer: Only Show Secure Chat drops what is not secure.
-        if matches!(trust, ChatTrust::NotSecure) && self.settings.file.bool("onlyShowSecureChat") {
+        let has_player = self.remote.as_ref().is_some_and(|r| r.has_logical_player);
+        let source = ChatSource::Player;
+        let visible = self.ui.chat.shows(source);
+        let (chat_type, mut line, narration, tag, info) = match kind {
+            QueuedChatKind::Filtered => return false,
+            QueuedChatKind::Player {
+                chat_type,
+                signed,
+                timestamp,
+                received_ms,
+                only_show_secure,
+                displayed,
+                signed_content,
+                unsigned_content,
+                filter,
+                info,
+            } => {
+                // `showMessageToPlayer`: the display, decorated with what receipt
+                // picked, and the narration, `message.decoratedContent()`, are
+                // decorated here, in the language of now; trust is evaluated with
+                // the receipt time, against the line as it reads now
+                // (`ChatTrustLevel.isModified`).
+                let mut line = self.decorate_chat(&chat_type, &displayed, Decoration::Chat);
+                let decorated = unsigned_content.as_ref().map_or_else(
+                    || serde_json::Value::from(signed_content.as_str()),
+                    sunrise_client::scoreboard::tag_to_json,
+                );
+                let trust = self.chat_trust(
+                    sender,
+                    signed,
+                    timestamp,
+                    &signed_content,
+                    unsigned_content.as_ref(),
+                    &line,
+                    received_ms,
+                );
+                if (only_show_secure && matches!(trust, ChatTrust::NotSecure))
+                    || self.social_hides(sender)
+                {
+                    return false;
+                }
+                let filtered = if filter.0 == 2 {
+                    let Some(filtered) =
+                        sunrise_client::chat::filtered_message(&signed_content, &filter)
+                    else {
+                        return false;
+                    };
+                    Some(filtered)
+                } else {
+                    None
+                };
+                if !has_player || !visible {
+                    return false;
+                }
+                let narration = if let Some(filtered) = filtered {
+                    line = self.decorate_chat(&chat_type, &filtered, Decoration::Chat);
+                    self.decorate_chat(&chat_type, &filtered, Decoration::Narration)
+                } else {
+                    self.decorate_chat(&chat_type, &decorated, Decoration::Narration)
+                };
+                (chat_type, line, narration, trust.tag(), info)
+            }
+            QueuedChatKind::Disguised { chat_type, message } => {
+                if !has_player || !visible {
+                    return false;
+                }
+                let content = sunrise_client::scoreboard::tag_to_json(&message);
+                (
+                    chat_type.clone(),
+                    self.decorate_chat(&chat_type, &content, Decoration::Chat),
+                    self.decorate_chat(&chat_type, &content, Decoration::Narration),
+                    Some(ChatTag::system()),
+                    None,
+                )
+            }
+            QueuedChatKind::Error { chat_type } => {
+                // Validation errors use the player channel but no signature or mod event.
+                if self.social_hides(sender) || !has_player || !visible {
+                    return false;
+                }
+                let error = serde_json::json!({
+                    "translate": "chat.validation_error",
+                    "color": "red",
+                    "italic": true,
+                });
+                let line = self.decorate_chat(&chat_type, &error, Decoration::Chat);
+                self.push_chat_line(line, source, None, Some(ChatTag::chat_error()));
+                self.say_system_chat_queued(&self.decorate_chat(
+                    &chat_type,
+                    &error,
+                    Decoration::Narration,
+                ));
+                return true;
+            }
+        };
+        if !self.chat_received(
+            false,
+            false,
+            sender,
+            Some(chat_type.chat_type),
+            info.as_deref(),
+            &mut line,
+        ) {
             return false;
         }
-        // handleChatMessageError says its line as system chat, and mods are not told of it.
-        let error = matches!(trust, ChatTrust::Error);
-        let (system, kind, player) = (false, Some(chat_type), player.as_ref());
-        if !error && !self.chat_received(system, false, sender, kind, player, &mut line) {
-            return false;
-        }
-        let source = sunrise_client::chat::ChatSource::Player;
-        let shown = self.signed_chat_line(line, source, signature, trust);
-        if shown && error {
-            self.say_system_chat_queued(&sunrise_client::text::Text::untrusted(&narration));
-        } else if shown {
-            self.say_chat_queued(&narration);
-        }
-        shown
+        self.push_chat_line(line, source, signature, tag);
+        self.say_chat_queued(&narration.plain());
+        true
     }
     /// The server's last `n` chat lines, newest first.
     pub(in crate::game) fn remote_chat(&self, n: usize) -> Option<Vec<String>> {
@@ -316,32 +350,21 @@ impl Game<'_> {
     /// ClientPacketListener.sendChat / sendCommand, signed with a chat
     /// session (game/network/remote_chat.rs). The Chat option's Hidden and System
     /// levels keep chat out and Hidden keeps the commands out (ChatAbilities).
-    pub(in crate::game) fn send_signed_chat_input(&mut self, message: &str) {
-        let message = message.trim();
+    pub(in crate::game) fn send_signed_chat_input(
+        &mut self,
+        message: &str,
+    ) -> Option<crate::game::native_server::ClientCommandOutcome> {
         if message.is_empty() || !self.chat_abilities().allows(message) {
-            return;
+            return None;
         }
         if let Some(command) = message.strip_prefix('/') {
-            if self.studio_command(command) {
-                return;
+            match self.send_command(command) {
+                Ok(outcome) => return outcome,
+                Err(error) => log::warn!("Command input could not be sent: {error}"),
             }
-            self.send_command(command);
-        } else {
-            self.send_signed_chat(message);
+        } else if let Err(error) = self.send_chat(message) {
+            log::warn!("Chat input could not be sent: {error}");
         }
-    }
-    /// ChatScreen.handleChatInput fires the client event for chat, not commands.
-    pub(in crate::game) fn send_chat_from_screen(&mut self, message: &str) {
-        if message.starts_with('/') || !mod_api::__private::listened(mod_api::HookId::ClientChat) {
-            self.send_signed_chat_input(message);
-        } else if let Some(uuid) = self.remote.as_ref().map(|r| r.profile) {
-            let id = self.own_entity_id();
-            let sent = chat_after_event(message, |outgoing, cancel| {
-                self.native_client_chat(id, uuid, message, outgoing, cancel);
-            });
-            if let Some(outgoing) = sent {
-                self.send_signed_chat(&outgoing);
-            }
-        }
+        None
     }
 }

@@ -1,12 +1,13 @@
 use crate::game::native_entity_refs::tests::{run_fresh_cases, with_client_game};
 use mod_api::prelude::NetworkClientHost;
-use mod_api::{ContainerClickRequest, PacketBuildError};
+use mod_api::{ContainerClickRequest, PacketBuildError, PlayPacketRequest};
 use sunrise_core::nbt::{Compound, Tag};
 use sunrise_protocol::{
     buf::Reader,
     connection::Pipe,
+    ids::play::serverbound as sb,
     item::{Component, Hashed, NoNames, Stack},
-    packets::play::{ContainerClick, Serverbound},
+    packets::play::{Attack, ContainerClick, Serverbound},
     registry::Builtin,
 };
 
@@ -41,6 +42,14 @@ fn client_host_hashes_plain_stacks_with_added_and_removed_components() {
         let (client, _server) = Pipe::pair();
         game.connect_local(client, "PacketBuilder").unwrap();
         game.remote.as_mut().unwrap().builtin = std::sync::Arc::new(Builtin::parse(r#"{"minecraft:item":{"entries":{"minecraft:stick":{"protocol_id":4}}},"minecraft:data_component_type":{"entries":{"minecraft:damage":{"protocol_id":3},"minecraft:lore":{"protocol_id":11}}}}"#).unwrap());
+        let attack =
+            NetworkClientHost::build_play_packet(game, &PlayPacketRequest::Attack { entity: 7 })
+                .unwrap();
+        assert_eq!(attack.id.to_string(), "minecraft:attack");
+        assert_eq!(
+            Serverbound::decode(sb::ATTACK, &attack.body).unwrap(),
+            Serverbound::Attack(Attack { id: 7 })
+        );
         let got = NetworkClientHost::container_click(game, &request).unwrap();
         let network = Stack {
             added: vec![(3, Component::Int(7))],

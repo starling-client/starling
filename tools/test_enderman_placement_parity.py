@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Run the isolated live Enderman goal/Game placement contract (no random timing comparison)."""
 import sys
-import harness_args
-import test_command_exec_parity as driver
-from enderman_placement_corpus import enderman_placement
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import harness_args, test_command_exec_parity as driver
+from tools.enderman_placement_corpus import enderman_placement
 
 if __name__ == '__main__':
     diagnostic = '--selector-position-diagnostic' in sys.argv

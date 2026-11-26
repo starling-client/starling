@@ -52,7 +52,7 @@ pub trait AllayLevel: MobLevel {
         stack: ItemStack,
         position: [f64; 3],
         velocity: [f64; 3],
-        pickup_delay: u32,
+        pickup_delay: i32,
     );
 }
 

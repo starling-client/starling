@@ -1,60 +1,82 @@
-//! Resolve predicate/item-modifier tags once, without entering codec-owned payloads.
+//! Resolve holder sets and tags without entering codec-owned payloads.
+use super::super::loot_tags::BoundTags as Tags;
 use super::*;
+
 impl super::super::LootData {
-    /// Edit and validate private table replacements before the one publication.
-    /// A refused replacement leaves this snapshot and its retained codecs intact.
-    pub fn apply_native_table_loads(
+    pub(in crate::loot) fn prepare_types(
         &mut self,
-        context: &crate::native_load_context::LoadContext,
+        types: &Types,
+        native: Option<&crate::native_load_context::LoadContext>,
     ) -> io::Result<()> {
         let mut ids: Vec<_> = self.tables.ids().collect();
-        ids.sort();
-        let mut tables = HashMap::new();
+        ids.sort_unstable();
+        let mut tables = HashMap::with_capacity(ids.len());
         for id in ids {
             let mut table = self.tables[id].clone();
-            super::super::native_loot_table_load(context, id, &mut table);
-            super::super::validate_loot_table(&table).map_err(|reason| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("native loot_table {id}: {reason}"),
-                )
-            })?;
+            if let Some(context) = native {
+                super::super::native_loot_table_load(context, id, &mut table);
+                super::super::validate_loot_table(&table).map_err(|reason| {
+                    invalid(&format!("native loot_table {id}"), "loot_table", reason)
+                })?;
+            }
+            let path = if native.is_some() {
+                format!("native loot_table {id}")
+            } else {
+                resource("loot_table", id)
+            };
             self.holder_sets
-                .walk(&format!("native loot_table {id}"), &mut table, &self.tags)?;
-            table_fields(&mut table, &self.tags, &self.types);
-            tables.insert(id.to_owned(), table);
-        }
-        self.types.validate(
-            tables.iter().map(|(id, value)| (id.as_str(), value)),
-            &self.predicates,
-            &self.modifiers,
-        )?;
-        self.tables = Arc::new(tables.into_iter().collect());
-        self.refresh_copy_requirements();
-        Ok(())
-    }
-    pub(in crate::loot) fn prepare_types(&mut self) -> io::Result<()> {
-        let tags = &self.tags;
-        let types = &self.types;
-        let mut tables = HashMap::new();
-        for id in self.tables.ids() {
-            let mut table = self.tables[id].clone();
-            table_fields(&mut table, tags, types);
+                .walk(&path, &mut table, &self.tags, types, None)?;
+            table_fields(&mut table, &self.tags, types);
             tables.insert(id.to_owned(), table);
         }
         self.tables = Arc::new(tables.into_iter().collect());
         for value in Arc::make_mut(&mut self.predicates).values_mut() {
-            typed(value, false, tags, types);
+            typed(value, false, &self.tags, types);
         }
-        for value in self.modifiers.values_mut() {
-            typed(value, true, tags, types);
+        for value in Arc::make_mut(&mut self.modifiers).values_mut() {
+            typed(value, true, &self.tags, types);
         }
-        self.validate_types()?;
+        for enchantment in &mut self.enchantments {
+            for effect in Arc::make_mut(&mut enchantment.effects)
+                .get_mut("minecraft:equipment_drops")
+                .and_then(Value::as_array_mut)
+                .into_iter()
+                .flatten()
+            {
+                if let Some(req) = effect
+                    .get_mut("requirements")
+                    .filter(|value| !value.is_null())
+                {
+                    typed(req, false, &self.tags, types);
+                }
+            }
+        }
+        self.bindings = types.bind_generation(
+            self.tables.clone(),
+            self.predicates.clone(),
+            self.modifiers.clone(),
+            self.enchantments
+                .iter()
+                .map(|e| (e.name.clone(), e.effects.clone()))
+                .collect(),
+            Normalization {
+                holder_sets: self.holder_sets.clone(),
+                tags: self.tags.clone(),
+            },
+        )?;
         self.refresh_copy_requirements();
         Ok(())
     }
 }
-use super::super::loot_tags::BoundTags as Tags;
+
+pub(super) fn normalize_table(value: &mut Value, tags: &Tags, types: &Types) {
+    table_fields(value, tags, types);
+}
+
+pub(super) fn normalize_condition(value: &mut Value, tags: &Tags, types: &Types) {
+    typed(value, false, tags, types);
+}
+
 fn table_fields(value: &mut Value, tags: &Tags, types: &Types) {
     fields(value, tags, types);
     for pool in value
@@ -117,7 +139,7 @@ fn typed(value: &mut Value, function: bool, tags: &Tags, types: &Types) {
     let kind = value["type"].as_str().unwrap_or("");
     let conditional = shapes::contains(kind, true) || types.conditional(kind);
     // Locate only schema-owned edges; scalar/text decoding belongs to the
-    // validation pass, and registered payloads remain opaque.
+    // binding pass, and registered payloads remain opaque.
     let children = shapes::children(value, function, kind)
         .into_iter()
         .map(|child| (child.kind, child.pointer))

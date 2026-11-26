@@ -2,7 +2,9 @@
 """Actual Mob command body/saddle access with independent saved equipment controls."""
 import hashlib,json,sys,tempfile,uuid
 from pathlib import Path
-import test_command_exec_parity as driver
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_command_exec_parity as driver
 CASES=[('husk_body','husk',20,'armor.body','diamond_chestplate'),
  ('pig_body','pig',10,'armor.body','diamond_chestplate'),
  ('horse_body','horse',20,'armor.body','iron_horse_armor'),

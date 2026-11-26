@@ -69,6 +69,9 @@ pub struct TooltipAppenderPart {
     pub(crate) component: Box<str>,
     pub(crate) placement: crate::TooltipPlacement,
     pub(crate) appender: Arc<dyn crate::TooltipAppender>,
+    /// How many [`VANILLA_TOOLTIP_COMPONENTS`](crate::VANILLA_TOOLTIP_COMPONENTS) come before it
+    /// in the sorted order.
+    pub(crate) slot: usize,
 }
 
 impl TooltipAppenderPart {
@@ -83,6 +86,11 @@ impl TooltipAppenderPart {
     /// The appender that adds the lines.
     pub fn appender(&self) -> &dyn crate::TooltipAppender {
         self
+    }
+    /// How many vanilla tooltip components' lines come before its lines: its lines follow
+    /// those of `VANILLA_TOOLTIP_COMPONENTS[slot - 1]` and precede `[slot]`'s.
+    pub fn slot(&self) -> usize {
+        self.slot
     }
     /// Whether its mod is enabled.
     pub fn enabled(&self) -> bool {
@@ -107,7 +115,8 @@ impl crate::TooltipAppender for TooltipAppenderPart {
     }
 }
 
-/// The tooltip appenders the mods registered, in registration order.
+/// The tooltip appenders the mods registered, in the order their lines go (see
+/// [`TooltipPlacement`](crate::TooltipPlacement)).
 pub fn tooltip_appenders() -> &'static [TooltipAppenderPart] {
     installed().map_or(&[], |installed| &installed.keys.tooltip_appenders)
 }
@@ -140,29 +149,6 @@ pub struct ItemKeyError {
     pub id: String,
 }
 
-impl Attached<dyn crate::ClientItemExtensions> {
-    /// Bind a reload-owned item provider to the currently registering mod.
-    // hidden: the engine's reload registrar uses the same ownership and enablement as item Parts.
-    #[doc(hidden)]
-    pub fn __client_item_extensions(
-        provider: Arc<dyn crate::ClientItemExtensions>,
-    ) -> Option<Self> {
-        let mod_id = crate::content::crash::current_native_mod()?;
-        let mod_index = crate::__private::mod_index(mod_id)?;
-        Some(Self {
-            mod_id,
-            mod_index,
-            order: 0,
-            type_name: "ClientItemExtensions",
-            part: provider,
-        })
-    }
-    /// Whether the owning mod is currently enabled.
-    pub fn enabled(&self) -> bool {
-        crate::mod_index_on(self.mod_index)
-    }
-}
-
 impl HookParts {
     pub(crate) fn item<'k>(
         &self,
@@ -184,18 +170,21 @@ impl dyn Registrar + '_ {
     /// Answer item capability `key` for item `item` (`mymod:backpack`) with `provider`, which
     /// gives a handler for the stack at one place, or none: `r.item_capability(&ITEM_ITEMS,
     /// "mymod:backpack", |_, _| Some(Box::new(Backpack)))`. Asked as
-    /// `block_entity_capability`'s are.
+    /// `block_entity_capability`'s are. The capability name and item id must be fully qualified
+    /// resource identifiers. The item can be declared later in registration; an unknown item
+    /// refuses load. The key must match the canonical handler type for the capability name.
     pub fn item_capability<T: ?Sized + 'static>(
         &mut self,
         key: &ItemCapabilityKey<T>,
         item: &str,
         provider: impl Fn(&mut dyn ServerHost, &ItemPlace) -> Option<Box<T>> + Send + Sync + 'static,
     ) {
+        let provider: Arc<ItemProvider<T>> = Arc::new(provider);
         self.provide_item_capability(
             key.name,
             item,
             false,
-            ItemProviderOf::of(Arc::new(provider)),
+            NativeCapabilityProvider::of::<T, _>(provider),
         );
     }
     /// `item_capability`, asked ahead of the game's own provider.
@@ -205,7 +194,13 @@ impl dyn Registrar + '_ {
         item: &str,
         provider: impl Fn(&mut dyn ServerHost, &ItemPlace) -> Option<Box<T>> + Send + Sync + 'static,
     ) {
-        self.provide_item_capability(key.name, item, true, ItemProviderOf::of(Arc::new(provider)));
+        let provider: Arc<ItemProvider<T>> = Arc::new(provider);
+        self.provide_item_capability(
+            key.name,
+            item,
+            true,
+            NativeCapabilityProvider::of::<T, _>(provider),
+        );
     }
 }
 
@@ -253,7 +248,7 @@ pub trait ItemsRegistrar {
         name: &'static str,
         item: &str,
         before_game: bool,
-        provider: ItemProviderOf,
+        provider: NativeCapabilityProvider,
     );
 
     /// Read and write the item places `ItemPlace::Mod { provider: name, .. }` with `provider`,
@@ -263,9 +258,11 @@ pub trait ItemsRegistrar {
     /// Register `appender` as the lines data component `component` (`mymod:charge`) adds to a
     /// stack's tooltip, where `placement` puts them (NeoForge's `RegisterTooltipAppendersEvent`).
     /// Only this mod's appender is asked, for a stack that carries the component and whose
-    /// tooltip shows it, and only while the mod is enabled. A component id that isn't namespaced,
-    /// or a `Before`/`After` anchor the game doesn't list as a component detail, refuses the mods
-    /// at startup, naming the mod.
+    /// tooltip shows it, and only while the mod is enabled. As NeoForge's event, one appender a
+    /// component: a component id that isn't namespaced, one the game or an earlier appender
+    /// already adds lines for, a `Before`/`After` anchor that is neither a vanilla tooltip
+    /// component nor registered by an appender, or anchors that form a cycle, refuse the mods
+    /// at startup, naming them.
     fn register_tooltip_appender(
         &mut self,
         component: &str,
@@ -275,32 +272,14 @@ pub trait ItemsRegistrar {
 }
 
 /// CapabilityProviders operations for items.
-// hidden: per-kind lookup implementation, exposed for generated provider bindings
+// hidden: per-kind lookup implementation for native provider bindings
 #[doc(hidden)]
 pub trait ItemsCapabilityProviders {
-    /// The next enabled provider of item capability `name` for item `item`, advancing `index`.
-    fn item_provider(
-        &self,
-        name: &str,
-        item: crate::ItemKey,
-        index: &mut u32,
-    ) -> Option<(ItemProviderOf, &'static str, bool)>;
-
     /// The enabled provider of the item places named `name`, with its mod.
     fn place_provider(&self, name: &str) -> Option<(Arc<dyn PlaceProvider>, &'static str)>;
 }
 
 impl ItemsCapabilityProviders for InstalledProviders {
-    fn item_provider(
-        &self,
-        name: &str,
-        item: crate::ItemKey,
-        index: &mut u32,
-    ) -> Option<(ItemProviderOf, &'static str, bool)> {
-        let item = crate::content::registry_keys::item_id(item)?;
-        next(&installed()?.keys.item_capabilities, name, item, index)
-    }
-
     fn place_provider(&self, name: &str) -> Option<(Arc<dyn PlaceProvider>, &'static str)> {
         let part = installed()?.keys.place_providers.get(name)?;
         crate::mod_index_on(part.mod_index).then(|| (part.provider.clone(), part.mod_id))

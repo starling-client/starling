@@ -40,7 +40,7 @@ TranslucentFeatureRenderPhase.sortIndices	port	crates/sunrise-client-render/src/
 TranslucentSubmit.computeDistanceToCameraSq	inline	crates/sunrise-client-render/src/gfx/translucency.rs::Sorter::sort	distance from the quad centre to the camera, computed inside sort
 FogRenderer.getBuffer	skip:other		selects the fog uniform slice; Sunrise hands its fog values to its own shader per frame
 FogRenderer.updateBuffer	skip:other		writes the fog uniform buffer; Sunrise's frame_fog passes FogData to its own shader
-AtmosphericFogEnvironment.getBaseColor	port	crates/sunrise-client-render/src/fog.rs::setup_fog	gap: minor: sky fog end uses constant 512 instead of the SKY_FOG_END_DISTANCE attribute
+AtmosphericFogEnvironment.getBaseColor	port	crates/sunrise-client-render/src/fog.rs::setup_fog	attributes supply the fog colour, sunrise tint and sky mix independently of skybox
 AtmosphericFogEnvironment.applyWeatherDarken	inline	crates/sunrise-client-render/src/fog.rs::setup_fog	rain and thunder darkening folded into the atmospheric colour
 BlindnessFogEnvironment.setupFog	port	crates/sunrise-client-render/src/fog.rs::setup_fog	blindness distance and sky/cloud ends
 BlindnessFogEnvironment.getModifiedDarkness	inline	crates/sunrise-client-render/src/fog.rs::setup_fog	blindness darkness folded into setup_fog

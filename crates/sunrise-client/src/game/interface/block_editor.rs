@@ -12,10 +12,7 @@ use sunrise_client::{
     ui::{self, EditBox},
 };
 use sunrise_protocol::packets::play::Serverbound as S;
-use winit::{
-    event::{ElementState, KeyEvent},
-    keyboard::{KeyCode, PhysicalKey},
-};
+use winit::keyboard::KeyCode;
 
 pub(super) type Pos = (i32, i32, i32);
 
@@ -466,7 +463,7 @@ impl Game<'_> {
                     active,
                     ..
                 } if *active && ui::hovered(cursor, *x, *y, *w, 20.0) => {
-                    self.audio.play_button_click();
+                    self.play_audio_button_click();
                     let id = *id;
                     if let Some(outcome) = self.with_block_editor(|s, e| {
                         let pos = s.pos;
@@ -505,13 +502,15 @@ impl Game<'_> {
     }
 
     /// The cursor moved with a slider held (`AbstractSliderButton.onDrag`).
-    pub(super) fn block_editor_drag(&mut self) {
+    pub(super) fn block_editor_drag(&mut self) -> bool {
         let x = self.cursor.0;
         if let Some(screen) = self.block_editor.as_mut()
             && let Some((id, sx, sw)) = screen.dragging
         {
             screen.editor.slide(id, ui::slider_value(sx, sw, x) as f32);
+            return true;
         }
+        false
     }
 
     /// The left button released: a held slider lets go.
@@ -521,17 +520,6 @@ impl Game<'_> {
             .is_some_and(|screen| screen.dragging.take().is_some())
     }
 
-    pub(super) fn block_editor_key(&mut self, event: &KeyEvent) {
-        if event.state != ElementState::Pressed {
-            return;
-        }
-        let PhysicalKey::Code(key) = event.physical_key else {
-            return;
-        };
-        let shortcut = self.edit_shortcut(event);
-        self.block_editor_key_code(key, shortcut, event.text.as_deref());
-    }
-
     /// A key pressed on an edit screen: Enter is Done, Escape cancels, Tab
     /// moves between the boxes, the rest edits the focused one.
     pub(super) fn block_editor_key_code(
@@ -539,7 +527,7 @@ impl Game<'_> {
         key: KeyCode,
         shortcut: Option<sunrise_client::clipboard::EditShortcut>,
         text: Option<&str>,
-    ) {
+    ) -> bool {
         let ctrl = self.has_control_down_with_quirk();
         let shift = self.has_shift_down();
         let types_text = self.types_text();
@@ -557,6 +545,7 @@ impl Game<'_> {
                     })
                     .unwrap_or(Outcome::Cancel);
                 self.block_editor_outcome(outcome);
+                true
             }
             KeyCode::Enter | KeyCode::NumpadEnter => {
                 let confirms = self
@@ -564,7 +553,7 @@ impl Game<'_> {
                     .as_ref()
                     .is_some_and(|s| s.editor.enter_confirms());
                 if !confirms {
-                    return;
+                    return false;
                 }
                 if let Some(outcome) = self.with_block_editor(|s, e| {
                     let pos = s.pos;
@@ -572,6 +561,7 @@ impl Game<'_> {
                 }) {
                     self.block_editor_outcome(outcome);
                 }
+                true
             }
             KeyCode::Tab => {
                 self.with_block_editor(|s, e| {
@@ -596,24 +586,31 @@ impl Game<'_> {
                     };
                     s.focus = Some(shown[next]);
                 });
+                false
             }
             _ => {
                 let Some(mut screen) = self.block_editor.take() else {
-                    return;
+                    return false;
                 };
+                let mut handled = false;
                 if let Some(focus) = screen.focus
                     && let Some(edit) = screen.editor.edits().get_mut(focus)
                 {
                     if let Some(shortcut) = shortcut {
                         edit.shortcut(shortcut, &mut self.clipboard);
-                    } else if !edit.key(key, ctrl, shift) && types_text {
-                        for c in text.unwrap_or("").chars() {
-                            self.block_editor_type_into(&mut screen, focus, c);
+                        handled = true;
+                    } else {
+                        handled = edit.key(key, ctrl, shift);
+                        if !handled && types_text {
+                            for c in text.unwrap_or("").chars() {
+                                self.block_editor_type_into(&mut screen, focus, c);
+                            }
                         }
                     }
                 }
                 self.block_editor = Some(screen);
                 self.block_editor_after_input();
+                handled
             }
         }
     }

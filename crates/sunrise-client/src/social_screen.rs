@@ -71,6 +71,10 @@ fn window_height(h: f32) -> f32 {
 fn list_end(h: f32) -> f32 {
     80.0 + window_height(h) - 8.0
 }
+pub fn list_contains(cursor: (f32, f32), (w, h): (f32, f32)) -> bool {
+    let left = margin_x(w);
+    (left..left + IMAGE_WIDTH).contains(&cursor.0) && (80.0..list_end(h)).contains(&cursor.1)
+}
 fn row_left(w: f32) -> f32 {
     ((w - ROW_WIDTH) / 2.0).floor()
 }

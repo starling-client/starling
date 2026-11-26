@@ -8,8 +8,8 @@ pub trait Hooks {
     /// local player's UUID and entity id. `draw`'s pose stack starts at the
     /// arm model's origin, in blocks, posed as vanilla's arm is (with any
     /// `render_hand`), lit with the light at the eyes; add
-    /// geometry with `native_draw_cube`, `native_draw_quad`, `native_draw_block`
-    /// and `native_draw_item`. Set `canceled` to leave out vanilla's arm;
+    /// geometry with `draw.cube`, `draw.quad`, `draw.block` (taking a resolved
+    /// `BlockState`) and `draw.item`. Set `canceled` to leave out vanilla's arm;
     /// what the mods drew stays. Client-side.
     #[hook(
         receiver = "read",

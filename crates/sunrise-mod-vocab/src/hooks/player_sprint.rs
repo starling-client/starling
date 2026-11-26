@@ -1,5 +1,4 @@
 //! The `player_sprint` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0261
 
 pub trait Hooks {
     /// A server player's sprint started or stopped: their client sent

@@ -1,0 +1,3 @@
+ids = ["method:prelude::ClientViewClientHost::mining_destroy_delay"]
+why = "A client mod reads the local player's post-break mining delay (MultiPlayerGameMode.destroyDelay): 5 after a block breaks or creative's instant break, counting down by one per continued-destroy tick, 0 outside a world. Read-only."
+migrate = "Additive: nothing to change."

@@ -1,5 +1,4 @@
 //! The `resource_pack_status` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0266
 
 pub trait Hooks {
     /// A server player's client answered a resource pack in play (vanilla's

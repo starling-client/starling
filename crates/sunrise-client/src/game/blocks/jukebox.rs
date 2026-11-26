@@ -6,7 +6,7 @@ use super::Game;
 use sunrise_client::{
     block_entity_item,
     containers::{BlockEntity, Jukebox},
-    items::ItemStack,
+    items::{ItemStack, Song},
     mobs::{Species, Who},
     particles::{ParticleOptions, ParticleType},
     text::Text,
@@ -285,12 +285,17 @@ impl Game<'_> {
     }
     /// Level event 1010: the song from the jukebox, and the "Now Playing" overlay.
     fn start_song(&mut self, pos: [i32; 3], song: &str) {
+        let definition = self.items().songs.get(song).cloned();
+        self.play_song(pos, song, definition);
+    }
+    /// `LevelEventHandler.playJukeboxSong` for `song`, defined by `definition`.
+    fn play_song(&mut self, pos: [i32; 3], song: &str, definition: Option<Song>) {
         self.stop_sound(pos);
-        let Some(s) = self.items().songs.get(song).cloned() else {
+        let Some(s) = definition else {
             return;
         };
-        // LevelRenderer.playJukeboxSong: SimpleSoundInstance.forJukeboxSong.
-        let id = self.audio.play_jukebox_song(&s.sound, pos);
+        // LevelEventHandler.playJukeboxSong: SimpleSoundInstance.forJukeboxSong.
+        let id = self.play_audio_jukebox_song(&s.sound, pos);
         self.jukebox_sounds.insert((pos[0], pos[1], pos[2]), id);
         let description =
             sunrise_client::component::to_text(&s.description, &mut |k| Text::literal(k));
@@ -298,7 +303,6 @@ impl Game<'_> {
         let message = Text::translate("record.nowPlaying", &[description]);
         self.say_system_now(&message);
         self.titles.set_overlay(message, true);
-        self.update_song_volumes();
         self.notify_record_playing(pos, true);
         if self.audio.capture.is_some() {
             self.lan_songs.push((pos, Some(song.to_owned())));
@@ -309,9 +313,21 @@ impl Game<'_> {
     /// registry (`Registry.get(int).ifPresent`: an unknown id does nothing).
     /// The server's jukebox plays it; this client only hears it.
     pub(super) fn jukebox_song_event(&mut self, pos: [i32; 3], data: i32) {
-        if let Some(song) = jukebox_song_name(self.remote.as_ref().map(|r| &*r.registries), data) {
-            self.start_song(pos, &song);
-        }
+        let Some(registries) = self.remote.as_ref().map(|r| r.registries.clone()) else {
+            return;
+        };
+        let Some((name, tag)) = registries.entry("minecraft:jukebox_song", data) else {
+            return;
+        };
+        // The entry the server synchronized defines the song; one it sent
+        // without data is a built-in the client holds itself.
+        let definition = match tag {
+            Some(tag) => Song::decode(&sunrise_client::scoreboard::tag_to_json(tag))
+                .inspect_err(|error| log::warn!("Sunrise: jukebox_song {name}: {error}"))
+                .ok(),
+            None => self.items().songs.get(name).cloned(),
+        };
+        self.play_song(pos, name, definition);
     }
     /// `LevelEventHandler` 1011: `stopJukeboxSongAndNotifyNearby`.
     pub(super) fn jukebox_stop_event(&mut self, pos: [i32; 3]) {
@@ -486,17 +502,6 @@ impl Game<'_> {
         }
     }
 }
-/// The song a level event 1010's data names: its id in the `jukebox_song`
-/// registry the server sent (`Registry.get(int)`). Only a server's client
-/// has one; a level that plays its own jukeboxes starts their songs itself.
-fn jukebox_song_name(
-    registries: Option<&sunrise_protocol::registry::Dynamic>,
-    id: i32,
-) -> Option<String> {
-    registries?
-        .name("minecraft:jukebox_song", id)
-        .map(str::to_owned)
-}
 /// Whether a jukebox song keeps playing: until it ends, and, in a level that
 /// plays its own jukeboxes, while that jukebox plays. A server's client
 /// stops it at level event 1011 (`LevelRenderer.playingJukeboxSongs`).
@@ -531,34 +536,81 @@ pub(super) fn jukebox_signals(
 
 #[cfg(test)]
 mod tests {
-    use super::{jukebox_song_name, keeps_song};
+    use super::keeps_song;
+    use crate::game::native_entity_refs::tests::with_client_game;
+    use sunrise_client::text::Text;
+    use sunrise_core::nbt::Tag;
     use sunrise_protocol::registry::Dynamic;
 
     /// On a server's client the song comes from level event 1010, whose data
     /// is the song's id in the server's `jukebox_song` registry (#3173), and
     /// it plays on although this client's jukebox isn't playing.
     #[test]
-    fn a_server_clients_jukebox_song_comes_from_level_event_1010() {
-        let mut registries = Dynamic::default();
-        registries.registries.insert(
-            "minecraft:jukebox_song".into(),
-            ["minecraft:11", "minecraft:13", "minecraft:cat"]
-                .map(|n| (n.to_owned(), None))
-                .to_vec(),
-        );
-        assert_eq!(
-            jukebox_song_name(Some(&registries), 2).as_deref(),
-            Some("minecraft:cat")
-        );
-        assert_eq!(jukebox_song_name(Some(&registries), 3), None);
-        assert_eq!(jukebox_song_name(Some(&registries), -1), None);
-        assert_eq!(jukebox_song_name(None, 2), None);
+    fn a_server_clients_jukebox_song_lasts_until_it_ends() {
         // A server's client: on until the song ends (or level event 1011).
         assert!(keeps_song(true, true, false));
         assert!(!keeps_song(false, true, false));
         // A level that plays its own jukebox: also until the jukebox stops.
         assert!(keeps_song(true, false, true));
         assert!(!keeps_song(true, false, false));
+    }
+
+    /// A client plays the song the server synchronized, not its own table's.
+    #[test]
+    #[ignore = "daily"]
+    fn level_event_1010_plays_the_servers_synchronized_song() {
+        with_client_game(|game| {
+            let (client, _server) = sunrise_protocol::connection::Pipe::pair();
+            game.connect_local(client, "jukebox-song-client").unwrap();
+            let definition = Tag::compound([
+                (
+                    "sound_event",
+                    Tag::String("minecraft:music_disc.cat".into()),
+                ),
+                ("description", Tag::String("Test Disc".into())),
+                ("length_in_seconds", Tag::Float(10.0_f32.to_bits())),
+                ("comparator_output", Tag::Int(4)),
+            ]);
+            let mut registries = Dynamic::default();
+            registries.registries.insert(
+                "minecraft:jukebox_song".into(),
+                vec![("test:disc".to_owned(), Some(definition))],
+            );
+            game.remote.as_mut().unwrap().registries = std::sync::Arc::new(registries);
+            assert!(!game.items().songs.contains_key("test:disc"));
+            game.jukebox_song_event([0, 64, 0], 0);
+            assert!(game.jukebox_sounds.contains_key(&(0, 64, 0)));
+            assert_eq!(
+                game.titles.overlay,
+                Some(Text::translate(
+                    "record.nowPlaying",
+                    &[Text::literal("Test Disc")]
+                ))
+            );
+            // An id past the registry does nothing (`Registry.get(int)` is empty).
+            game.jukebox_song_event([1, 64, 0], 1);
+            assert!(!game.jukebox_sounds.contains_key(&(1, 64, 0)));
+        });
+    }
+
+    /// A known-pack entry the server sent without data plays the client's built-in song.
+    #[test]
+    #[ignore = "daily"]
+    fn level_event_1010_plays_a_data_less_entry_from_the_clients_built_in_song() {
+        with_client_game(|game| {
+            let (client, _server) = sunrise_protocol::connection::Pipe::pair();
+            game.connect_local(client, "jukebox-built-in-client")
+                .unwrap();
+            let mut registries = Dynamic::default();
+            registries.registries.insert(
+                "minecraft:jukebox_song".into(),
+                vec![("minecraft:cat".to_owned(), None)],
+            );
+            game.remote.as_mut().unwrap().registries = std::sync::Arc::new(registries);
+            assert!(game.items().songs.contains_key("minecraft:cat"));
+            game.jukebox_song_event([0, 64, 0], 0);
+            assert!(game.jukebox_sounds.contains_key(&(0, 64, 0)));
+        });
     }
 }
 

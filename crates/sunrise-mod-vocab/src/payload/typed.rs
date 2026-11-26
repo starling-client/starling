@@ -8,8 +8,8 @@ use super::{
 };
 use crate::wire::{Reader, Wire, WireError, WireSchema, Writer};
 use crate::{
-    ChunkRef, ClientHost, EntityRef, LevelRef, PAYLOAD_DECODE_BUDGET, PlayerRef, ServerHost,
-    decode_payload, encode_payload, payload_schema,
+    ChunkRef, ClientHost, EntityReadError, EntityRef, LevelReadError, LevelRef,
+    PAYLOAD_DECODE_BUDGET, PlayerRef, ServerHost, decode_payload, encode_payload, payload_schema,
 };
 use core::ops::ControlFlow;
 use std::{marker::PhantomData, sync::Arc};
@@ -280,10 +280,11 @@ impl<T: Wire> ToClient<T> {
         Ok(self.deliver(host, near, body))
     }
 
-    /// Send `value` to the players watching `chunk` (`chunk_watchers`), like NeoForge's
+    /// Send `value` to the players watching `chunk` ([`ChunkRef::visit_watchers`]), like NeoForge's
     /// `PacketDistributor.sendToPlayersTrackingChunk`. The list is the engine's, never a
-    /// distance test. Returns how many sends were accepted; a stale chunk handle has no
-    /// watchers, so it is `Ok(0)`.
+    /// distance test. Returns how many sends were accepted; a stale chunk handle or an empty
+    /// watcher set returns `Ok(0)`. If the watcher read is unavailable, returns
+    /// [`PayloadSendError::Unavailable`] without sending.
     ///
     /// Encoding and per-player refusals follow [`send_to_all`](Self::send_to_all).
     pub fn send_tracking_chunk(
@@ -293,15 +294,24 @@ impl<T: Wire> ToClient<T> {
         value: &T,
     ) -> Result<u32, PayloadSendError> {
         let body = self.encode(host, value)?;
-        let watchers = chunk.watchers(host).unwrap_or_default();
+        let mut watchers = Vec::new();
+        match chunk.visit_watchers(host, &mut |player| {
+            watchers.push(player);
+            ControlFlow::Continue(())
+        }) {
+            Ok(_) => (),
+            Err(LevelReadError::Stale) => return Ok(0),
+            Err(LevelReadError::Unavailable) => return Err(PayloadSendError::Unavailable),
+        }
         Ok(self.deliver(host, watchers, body))
     }
 
-    /// Send `value` to the players tracking `entity` (`entity_trackers`), like NeoForge's
+    /// Send `value` to the players tracking `entity` ([`EntityRef::visit_trackers`]), like NeoForge's
     /// `PacketDistributor.sendToPlayersTrackingEntity`; with `and_self`, also to the entity
     /// itself when it is a player (`sendToPlayersTrackingEntityAndSelf`). Returns how many sends
-    /// were accepted; a stale entity has no trackers, so it is `Ok(0)` unless `and_self` names
-    /// a player.
+    /// were accepted. A stale entity returns `Ok(0)`; an unavailable tracker read returns
+    /// [`PayloadSendError::Unavailable`] without looking up `and_self` or sending.
+    /// A readable entity with no trackers can still receive the payload with `and_self`.
     ///
     /// Encoding and per-player refusals follow [`send_to_all`](Self::send_to_all).
     pub fn send_tracking_entity(
@@ -312,14 +322,24 @@ impl<T: Wire> ToClient<T> {
         value: &T,
     ) -> Result<u32, PayloadSendError> {
         let body = self.encode(host, value)?;
-        let mut players = entity.trackers(host).unwrap_or_default();
+        let mut players = Vec::new();
+        match entity.visit_trackers(host, &mut |player| {
+            players.push(player);
+            ControlFlow::Continue(())
+        }) {
+            Ok(_) => (),
+            Err(EntityReadError::Stale) => return Ok(0),
+            Err(EntityReadError::Unavailable) => return Err(PayloadSendError::Unavailable),
+        }
         if and_self {
             let own = host
                 .players()
                 .server_players()
                 .into_iter()
                 .find(|player| player.entity() == entity);
-            players.extend(own.filter(|player| !players.contains(player)));
+            if let Some(own) = own.filter(|player| !players.contains(player)) {
+                players.push(own);
+            }
         }
         Ok(self.deliver(host, players, body))
     }

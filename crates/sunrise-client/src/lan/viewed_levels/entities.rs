@@ -146,6 +146,7 @@ mod tests {
             view_distance: 2,
             chunks: &chunks,
             sources: Some(&[((0, 0), 10)]),
+            far: &[],
             tracker,
             out: &mut out,
         }];
@@ -164,6 +165,39 @@ mod tests {
             &mut tracker,
             &[zombie(1, 7), zombie(2, 8), zombie(3, -7)],
         );
+        assert!(tracker.is_tracking(1) && tracker.is_tracking(3));
+        assert!(!tracker.is_tracking(2));
+    }
+
+    /// A player in the level whose client keeps an area at chunk (300, 0) past its view
+    /// (`viewed_levels::own`) tracks from it too: a zombie 7 chunks from its centre, 300 from the
+    /// player, is tracked, one 8 chunks from it is not, and one beside the player still is.
+    #[test]
+    fn a_player_tracks_from_its_own_levels_area_past_its_view() {
+        let (mut level, mut tracker) = (Entities::default(), Tracker::default());
+        let chunks = (0..=310).map(|x| (x, 0)).collect();
+        let entities = [zombie(1, 307), zombie(2, 308), zombie(3, 0)];
+        let entities: Vec<&EntityState> = entities.iter().collect();
+        let mut out = Vec::new();
+        let mut viewer = [Viewer {
+            entity_id: -1,
+            spectator: false,
+            permission: 0,
+            sunrise: true,
+            general_entity: false,
+            attachment_sender: None,
+            moved: true,
+            position: [0.5, 64.0, 8.0],
+            view_distance: 2,
+            chunks: &chunks,
+            sources: None,
+            far: &[((300, 0), 10)],
+            tracker: &mut tracker,
+            out: &mut out,
+        }];
+        level.tick(&entities, &Riding::default(), &mut viewer, None, |_| {
+            Some(1)
+        });
         assert!(tracker.is_tracking(1) && tracker.is_tracking(3));
         assert!(!tracker.is_tracking(2));
     }

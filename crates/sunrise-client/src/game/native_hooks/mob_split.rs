@@ -6,10 +6,10 @@ impl Game<'_> {
     /// smaller ones (NeoForge's `MobSplitEvent`, vanilla's
     /// `AbstractCubeMob.remove`): `parent` is its entity id, `kind` its type,
     /// `size` its size and `child_size` the size of the children (half of
-    /// it). `children` names the engine-owned list of the children vanilla
-    /// already constructed and `edits` changes it (edit, replace, remove,
-    /// append); cancel spawns none. Only for a parent above size 1, once its
-    /// children are made. On the server.
+    /// it). `children` (`MobSplitChildren<'_>`) lends the unbounded mutable list
+    /// of children vanilla already constructed (inspect, edit, replace, insert,
+    /// push, remove, clear); cancel spawns none. Only for a parent above size 1,
+    /// once its children are made. On the server.
     pub(in crate::game) fn native_mob_split(&mut self, call: mod_api::__private::MobSplitCall<'_>) {
         self.fire_mob_split(call);
     }

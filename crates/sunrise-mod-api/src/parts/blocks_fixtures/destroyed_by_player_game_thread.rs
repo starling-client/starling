@@ -23,7 +23,13 @@ pub fn destroyed_by_player_game_thread() {
             }
             let snowball = mod_vocab::__private::item_key("minecraft:snowball")?;
             let level = host.level("minecraft:overworld")?;
-            host.set_block_property(event.pos, "layers", &(layers - 1).to_string());
+            let _ = level.set_block_property(
+                host,
+                event.pos,
+                "layers",
+                &(layers - 1).to_string(),
+                BlockUpdateFlags::NEIGHBORS | BlockUpdateFlags::CLIENTS,
+            );
             let _ = level.pop_resource(host, event.pos, ItemStack::of(snowball));
             Some(false)
         }

@@ -1,0 +1,2 @@
+# Vanilla's light texture against its float32 oracle, skipped where the driver stores bytes through half floats (#5167).
+sunrise-client-render gfx::core_lightmap::tests::vanillas_lightmap_shaders_draw_vanillas_light_texture lib daily resources

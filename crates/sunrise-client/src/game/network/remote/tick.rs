@@ -3,11 +3,13 @@ use super::*;
 impl Game<'_> {
     /// One client tick while connected (Minecraft.tick with a ClientLevel).
     pub(in crate::game) fn tick_remote(&mut self) -> Result<()> {
+        // The particle hook follows the enabled mods before anything this tick can add a
+        // particle: the level's packets and ambience, frozen ticks and the first tick included.
+        self.sync_render_hooks();
         self.tick_remote_level()?;
         // The rockets boosting this player tick after it, also while it waits
         // for chunks.
         self.tick_own_rockets();
-        self.tick_book_snapshot_retry();
         // Far tiles the samplers asked for (`lod_net`).
         if let Some(r) = &self.remote {
             r.session.send_far_terrain();
@@ -31,14 +33,13 @@ impl Game<'_> {
             }
         }
         // ClientLevel.tick: the border's size change, while the level runs.
-        if running {
-            self.border.tick();
+        if running && let Err(error) = self.border.tick() {
+            log::warn!("client world border tick refused: {error}");
         }
         // ClientLevel.tick: the End's sky flash, frozen or not.
         self.tick_end_flash();
         self.player_border();
         self.tick_remote_entities(running);
-        self.tick_remote_arm_poses();
         self.tick_random_textures();
         // Breeze.tick's block dust: drawn by each client for the breezes it sees.
         if running {
@@ -47,7 +48,7 @@ impl Game<'_> {
         self.tick_remote_guardian_eyes(running);
         self.tick_hand();
         if running {
-            self.tick_particles();
+            self.tick_particle_sources();
         } else if self.clock.still() {
             self.settle_rain_fog();
         }
@@ -78,6 +79,8 @@ impl Game<'_> {
         let sent = self.tick_remote_own_player();
         if running {
             self.tick_remote_block_entities();
+            // Minecraft.tick: the particle engine ticks after Level.tickBlockEntities.
+            self.tick_particle_engine();
         }
         let input = sent?;
         // Like the block-entity push above, collider displacement belongs in this tick's
@@ -91,8 +94,6 @@ impl Game<'_> {
         Ok(())
     }
 
-    /// ClientLevel.tickEntities; a frozen level only ticks the players
-    /// (`TickRateManager.isEntityFrozen`).
     /// `GuardianRenderer.getEntityToLookAt`: a guardian's eye follows its
     /// synched attack target, else the camera.
     pub(in crate::game) fn tick_remote_guardian_eyes(&mut self, running: bool) {
@@ -100,13 +101,7 @@ impl Game<'_> {
         if !running {
             return;
         }
-        let camera = self.player.as_ref().map(|p| {
-            [
-                p.position.x,
-                p.position.y + f64::from(p.dimensions.eye_height),
-                p.position.z,
-            ]
-        });
+        let camera = self.camera_eye_position();
         let mut looks = std::mem::take(&mut self.guardian_look_scratch);
         looks.clear();
         looks.extend(
@@ -134,43 +129,76 @@ impl Game<'_> {
         self.guardian_look_scratch = looks;
     }
 
+    /// `ClientLevel.tickEntities`: a frozen level only ticks the players
+    /// (`TickRateManager.isEntityFrozen`), and the section index takes each crossing at its
+    /// entity's turn.
     pub(in crate::game) fn tick_remote_entities(&mut self, running: bool) {
+        self.client_pick.sections.get_mut().begin_entity_ticks();
+        self.tick_remote_entity_turns(running);
+        self.client_pick.sections.get_mut().end_entity_ticks();
+    }
+
+    fn tick_remote_entity_turns(&mut self, running: bool) {
         use crate::game::native_ticks::{PLAYER, TickKind};
 
+        let frozen_ticking: Vec<i32> = if running {
+            Vec::new()
+        } else {
+            self.remote
+                .as_ref()
+                .map(|r| {
+                    r.entities
+                        .keys()
+                        .copied()
+                        .filter(|&id| self.entity_ticks_while_frozen(r, id as u32))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        // Entity.commonTick's tickCount, at each entity's own visit. The kinds a client tells
+        // their tick (mobs and players, projectiles, tridents, text displays) count in their own
+        // loops (`count_client_tick`): a root once its Pre let it through, a passenger at its
+        // ride visit whatever either Pre answers. The others are visited here, where their
+        // setOldPosAndRot runs.
+        self.count_untold_client_ticks(running, &frozen_ticking);
+        self.tick_text_displays(running);
         if running {
-            self.tick_text_displays();
+            // Entity.commonTick's setOldPosAndRot for each entity the level ticks.
+            if let Some(r) = self.remote.as_mut() {
+                for t in r.entities.values_mut() {
+                    t.previous = t.position;
+                    t.previous_yaw = t.yaw;
+                    t.previous_pitch = t.pitch;
+                }
+            }
+            for i in self.interactions.values_mut() {
+                i.snapshot_previous();
+            }
             self.tick_remote_ominous_item_spawners();
+        } else {
+            // ClientLevel.tickPassenger: non-players in a player-bearing passenger tree still tick.
+            if let Some(r) = self.remote.as_mut() {
+                for &id in &frozen_ticking {
+                    if let Some(t) = r.entities.get_mut(&id) {
+                        t.previous = t.position;
+                        t.previous_yaw = t.yaw;
+                        t.previous_pitch = t.pitch;
+                    }
+                }
+            }
+            for &id in &frozen_ticking {
+                if let Some(i) = self.interactions.get_mut(&id) {
+                    i.snapshot_previous();
+                }
+            }
         }
-        // EntityTickEvent.Pre for the mobs and players this client ticks, once for the family
-        // before their tick, and the Post after it (below). A canceled one keeps its state. One
-        // of a type a mod named is told alone, right before and right after its own turn below.
+        // EntityTickEvent.Pre and .Post bracket each mob and remote player individually right
+        // before and right after its own turn below.
         let mut round = self.native_tick_round();
         // The mount this client moves ticks in `remote_ride` instead, as its
         // authoritative side (LivingEntity.tick with travelRidden).
         let driven = self.driven_mount().map(|m| m.id);
-        let alone_player = round.alone_kind(PLAYER);
-        let mut alone_any = false;
-        if round.listening() {
-            let players = self.remote.as_ref().map(|r| &r.level_players);
-            for m in self.mobs.iter() {
-                let player = players.is_some_and(|p| p.contains_key(&(m.id as i32)));
-                if (running || player) && driven != Some(m.id) {
-                    let alone = if player {
-                        alone_player
-                    } else {
-                        round.alone_mob(&m.kind)
-                    };
-                    if alone {
-                        alone_any = true;
-                    } else if player {
-                        round.add(m.id, TickKind::Fixed(PLAYER));
-                    } else {
-                        round.add(m.id, TickKind::Mob(m.kind.clone()));
-                    }
-                }
-            }
-            self.native_tick_pre_batch(&mut round);
-        }
+        let told = round.told_listening();
         // EntityFluidInteraction.update for the entities this window only displays: the
         // server never sends the fluid contact, and the renderers read it (cod, salmon and
         // tropical fish lie on their side without `in_water`, #1591).
@@ -193,8 +221,13 @@ impl Game<'_> {
             let players = self.remote.as_ref().map(|r| &r.level_players);
             fluids.clear();
             fluids.extend(self.mobs.iter().map(|m| {
-                (running || players.is_some_and(|p| p.contains_key(&(m.id as i32))))
-                    .then(|| w.fluids(m.bounds(), m.eye_y()))
+                (running
+                    || players.is_some_and(|p| p.contains_key(&(m.id as i32)))
+                    || self
+                        .remote
+                        .as_ref()
+                        .is_some_and(|r| self.entity_ticks_while_frozen(r, m.id)))
+                .then(|| w.fluids(m.bounds(), m.eye_y()))
             }));
             rain.clear();
             rain.extend(self.mobs.iter().map(|m| {
@@ -220,22 +253,9 @@ impl Game<'_> {
         // The window's own player already splashes from its motion tick.
         let own = self.remote.as_ref().map(|r| r.entity_id);
         for i in 0..self.mobs.len() {
-            let mob = &self.mobs[i];
-            let id = mob.id;
-            let told_alone = alone_any
-                && if self
-                    .remote
-                    .as_ref()
-                    .unwrap()
-                    .level_players
-                    .contains_key(&(id as i32))
-                {
-                    alone_player
-                } else {
-                    round.alone_mob(&mob.kind)
-                };
-            // One told alone takes this step in its own turn, after its Pre (below).
-            if round.canceled(id) || told_alone && fluids[i].is_some() && driven != Some(id) {
+            let id = self.mobs[i].id;
+            // When Pre is subscribed, each entity takes its fluid step in its own turn after Pre.
+            if round.pre() && fluids[i].is_some() && driven != Some(id) {
                 continue;
             }
             client_fluid_step(
@@ -281,7 +301,7 @@ impl Game<'_> {
             let own = self
                 .player
                 .as_ref()
-                .filter(|p| !p.health.dead_or_dying() && !self.spectator())
+                .filter(|p| !p.health.dead_or_dying() && !p.spectator)
                 .map(|p| {
                     let feet = [p.position.x, p.position.y, p.position.z];
                     let eye = f64::from(p.dimensions.eye_height);
@@ -291,12 +311,7 @@ impl Game<'_> {
                 self.mobs
                     .iter()
                     .filter(move |m| m.alive() && r.level_players.contains_key(&(m.id as i32)))
-                    .filter(move |m| {
-                        let listed = r.level_players.get(&(m.id as i32));
-                        !listed
-                            .and_then(|uuid| r.tab_players.get(uuid))
-                            .is_some_and(|t| t.game_mode == SPECTATOR)
-                    })
+                    .filter(move |m| r.remote_player_info_game_mode(m.id as i32) != Some(SPECTATOR))
                     .map(|m| {
                         let feet = [m.position.x, m.position.y, m.position.z];
                         (
@@ -346,9 +361,9 @@ impl Game<'_> {
         let mut mob_fx = water_fx;
         let tick_listened = mod_api::__private::listened(mod_api::HookId::PlayerTickPre)
             || mod_api::__private::listened(mod_api::HookId::PlayerTickPost);
-        // A mob told alone hears its hooks with the list in place: each slot's mob is kept by id,
-        // and where it is once a hook changed the list.
-        let slots: Vec<u32> = if alone_any {
+        // When tick hooks are subscribed, each entity hears them with the list in place: keep
+        // each slot's id so row shifts during hooks still resolve the remaining slots.
+        let slots: Vec<u32> = if told {
             self.mobs.iter().map(|m| m.id).collect()
         } else {
             Vec::new()
@@ -365,17 +380,39 @@ impl Game<'_> {
                 .unwrap()
                 .level_players
                 .contains_key(&(id as i32));
-            if (!running && !player) || driven == Some(id) || round.canceled(id) {
+            let ticks_frozen = !running
+                && (player
+                    || self
+                        .remote
+                        .as_ref()
+                        .is_some_and(|r| self.entity_ticks_while_frozen(r, id)));
+            if !running && !ticks_frozen {
                 continue;
             }
-            // Of a type a mod named: its own Pre, then its fluid step and its tick.
-            let alone = if player {
-                alone_player.then_some(TickKind::Fixed(PLAYER))
-            } else {
-                (alone_any && round.alone_mob(&self.mobs[i].kind))
-                    .then(|| TickKind::Mob(self.mobs[i].kind.clone()))
-            };
-            if let Some(kind) = &alone {
+            // The mount this client drives ticks in `remote_ride`, told nothing: its visit.
+            if driven == Some(id) {
+                self.count_client_tick(id);
+                continue;
+            }
+            // A passenger's ride visit counts it before its own Pre is told, whatever it answers.
+            let passenger = self.client_passenger(id);
+            if passenger {
+                self.count_client_tick(id);
+            }
+            if round.canceled(id) {
+                continue;
+            }
+            // Its own Pre, then its fluid step and its tick.
+            let kind = told.then(|| {
+                if player {
+                    TickKind::Fixed(PLAYER)
+                } else {
+                    TickKind::Mob(self.mobs[i].kind.clone())
+                }
+            });
+            if let Some(kind) = &kind
+                && round.pre()
+            {
                 let stamp = self.mobs.stamp();
                 let ticks = self.native_tick_pre_one(&mut round, id, kind.id());
                 if self.mobs.stamp() != stamp {
@@ -394,6 +431,10 @@ impl Game<'_> {
                     own,
                     &mut mob_fx,
                 );
+            }
+            // A root's own visit, once its Pre let it through.
+            if !passenger {
+                self.count_client_tick(id);
             }
             let animation = if player && self.mobs[i].extra.using_item > 0 {
                 let extra = &self.mobs[i].extra;
@@ -419,18 +460,18 @@ impl Game<'_> {
                     })
                 })
                 .flatten();
+            let spectator_player = player
+                && self
+                    .remote
+                    .as_ref()
+                    .is_some_and(|r| r.remote_player_info_game_mode(id as i32) == Some(SPECTATOR));
             let r = self.remote.as_mut().unwrap();
             let stepped = &mut r.stepped;
-            let players = &r.level_players;
-            let tab_players = &r.tab_players;
             let m = &mut self.mobs[i];
             let section_from = m.position;
             if player {
                 // AvatarRenderer.extractRenderState: isSpectator, from the player list.
-                m.extra.spectator = players
-                    .get(&(m.id as i32))
-                    .and_then(|uuid| tab_players.get(uuid))
-                    .is_some_and(|t| t.game_mode == SPECTATOR);
+                m.extra.spectator = spectator_player;
             }
             m.previous = m.position;
             // `Entity.deltaMovementOnPreviousTick`: the elytra's flight yaw
@@ -493,8 +534,15 @@ impl Game<'_> {
                     _ => {}
                 }
             }
+            if m.invulnerable > 0 {
+                m.invulnerable -= 1;
+            }
             if m.hurt_time > 0 {
                 m.hurt_time -= 1;
+            }
+            if m.extra.max_health_dirty {
+                m.extra.max_health_dirty = false;
+                m.health = m.health.min(m.attrs.max_health);
             }
             if !m.alive() {
                 m.death_time += 1;
@@ -516,6 +564,12 @@ impl Game<'_> {
             }
             let head_lerps = &mut self.remote.as_mut().unwrap().head_lerps;
             let m = &mut self.mobs[i];
+            // LivingEntity.baseTick's tickEffects, inside this tick (after its Pre, and a
+            // player's tick Pre): its effects count down and fade.
+            super::super::potions::client_tick_effects(
+                &mut m.extra.client_effects,
+                &mut m.extra.darkness_blend,
+            );
             // LivingEntity.aiStep: the head's own interpolation.
             if let Some((yaw, steps)) = head_lerps.get_mut(&(m.id as i32))
                 && *steps > 0
@@ -640,6 +694,12 @@ impl Game<'_> {
             }
             let section_id = m.id;
             let section_to = m.position;
+            // The committed body is where the index finds it before any hook reads it; the
+            // section events stay at their own turn below.
+            self.pick_section_move(section_id, section_to.components());
+            // `refreshDimensions` from its tick: a `minecraft:scale` the server sent since
+            // (`LivingEntity.refreshDirtyAttributes`), a shulker's lid (`onPeekAmountChange`).
+            self.native_client_copy_size(section_id, None);
             if let Some(player) = player_ref {
                 self.native_player_tick_post(mod_api::__private::PlayerTickPostCall { player });
             }
@@ -647,7 +707,9 @@ impl Game<'_> {
                 self.remote_entity_section_step(section_id, section_from, section_to);
             }
             // Its own Post, right after its turn.
-            if let Some(kind) = &alone {
+            if let Some(kind) = &kind
+                && round.post()
+            {
                 let stamp = self.mobs.stamp();
                 self.native_tick_post_one(&round, id, kind.id());
                 if self.mobs.stamp() != stamp {
@@ -657,7 +719,6 @@ impl Game<'_> {
                 }
             }
         }
-        self.native_tick_post_batch(round);
         // ExperienceOrb.tick runs on a client too (all but the merges and the
         // push out of a block, which are the server's): gravity, buoyancy,
         // collisions and the pull of the nearest player between the server's
@@ -671,6 +732,7 @@ impl Game<'_> {
                 .next_float()
         };
         if running {
+            let sections = self.client_pick.sections.get_mut();
             self.orbs.retain_mut(|o| {
                 let distance = |feet: &[f64; 3]| -> f64 {
                     (feet[0] - o.position.x).powi(2)
@@ -700,6 +762,7 @@ impl Game<'_> {
                         o.position.z + (l.target[2] - o.position.z) * alpha,
                     );
                     l.steps -= 1;
+                    sections.move_id(o.id, o.position.components());
                 }
                 let before = o.position;
                 let side = game_side!(self);
@@ -732,6 +795,11 @@ impl Game<'_> {
                     l.target[0] += o.position.x - before.x;
                     l.target[1] += o.position.y - before.y;
                     l.target[2] += o.position.z - before.z;
+                }
+                if kept {
+                    sections.move_id(o.id, o.position.components());
+                } else {
+                    sections.remove(o.id);
                 }
                 kept
             });
@@ -788,24 +856,14 @@ impl Game<'_> {
                     (l.target, l.rotation.map(|r| r.0), steps)
                 });
             self.tick_remote_dragon(dragon_lerp);
+            if let Some(dragon) = self.dragon.as_ref() {
+                self.pick_section_move(dragon.id, dragon.position.components());
+            }
             // A mod's general rows: the non-living interpolation, and no mod code.
             if let Some(r) = self.remote.as_mut() {
                 general::tick_remote_general(&mut r.general.rows, &mut lerps);
             }
-            // Armor stands: ClientLevel.tickNonPassenger's setOldPosAndRot,
-            // then their SteppedInterpolationHandler's step, as the mobs'.
-            if let Some(r) = self.remote.as_mut() {
-                for a in &mut self.armor_stands {
-                    let step = r
-                        .stepped
-                        .get_mut(&(a.id as i32))
-                        .and_then(|h| h.interpolate());
-                    a.interpolate(step.map(|at| {
-                        let p = at.position;
-                        (Vec3::new(p[0], p[1], p[2]), at.yaw)
-                    }));
-                }
-            }
+            self.tick_remote_armor_stands(|_| true);
             // The yaw of a boat eases toward the server's over the same steps
             // as its position, read before `step` counts one off.
             let turns: HashMap<i32, (f32, u32)> = lerps
@@ -843,6 +901,10 @@ impl Game<'_> {
             self.tick_remote_projectiles(&mut step);
             // LightningBolt.tick on a client.
             self.tick_bolts();
+        } else if !frozen_ticking.is_empty() {
+            let ticking_set: sunrise_client::fast_hash::FxHashSet<u32> =
+                frozen_ticking.iter().map(|&id| id as u32).collect();
+            self.tick_remote_armor_stands(|id| ticking_set.contains(&id));
         }
         lerps.retain(|_, l| l.steps > 0);
         if let Some(r) = self.remote.as_mut() {
@@ -854,12 +916,114 @@ impl Game<'_> {
             }
         }
     }
+    /// The armor stands `ticks` admits (all in a running level, those that tick while
+    /// frozen otherwise): ClientLevel.tickNonPassenger's setOldPosAndRot, then their
+    /// SteppedInterpolationHandler's step, as the mobs', `LivingEntity.baseTick`'s
+    /// tickEffects, and the pick index's move.
+    fn tick_remote_armor_stands(&mut self, ticks: impl Fn(u32) -> bool) {
+        let Some(r) = self.remote.as_mut() else {
+            return;
+        };
+        for a in &mut self.armor_stands {
+            if !ticks(a.id) {
+                continue;
+            }
+            let step = r
+                .stepped
+                .get_mut(&(a.id as i32))
+                .and_then(|h| h.interpolate());
+            a.interpolate(step.map(|at| {
+                let p = at.position;
+                (Vec3::new(p[0], p[1], p[2]), at.yaw, at.pitch)
+            }));
+            // LivingEntity.baseTick's tickEffects.
+            super::super::potions::client_tick_effects(
+                &mut a.client_effects,
+                &mut a.darkness_blend,
+            );
+            self.client_pick
+                .sections
+                .get_mut()
+                .move_id(a.id, a.position.components());
+        }
+    }
+    /// The visit of each entity of the client level whose kind is told no tick
+    /// (`tick_remote_entities`): its `Entity.commonTick` counts it here. A frozen level visits
+    /// only the players and what carries them.
+    fn count_untold_client_ticks(&mut self, running: bool, frozen_ticking: &[i32]) {
+        let Some(mut r) = self.remote.take() else {
+            return;
+        };
+        let flying: sunrise_client::fast_hash::FxHashSet<u32> = self
+            .creatures
+            .projectiles
+            .iter()
+            .map(|p| p.id)
+            .chain(self.tridents.iter().map(|t| t.id))
+            .collect();
+        let told = |id: i32| {
+            let id = id as u32;
+            self.mob_index.get_ref(&self.mobs, id).is_some()
+                || self.text_displays.contains_key(&(id as i32))
+                || flying.contains(&id)
+        };
+        if running {
+            for (&id, t) in r.entities.iter_mut() {
+                if !told(id) {
+                    t.tick_count = t.tick_count.wrapping_add(1);
+                }
+            }
+        } else {
+            for &id in frozen_ticking {
+                if !told(id)
+                    && let Some(t) = r.entities.get_mut(&id)
+                {
+                    t.tick_count = t.tick_count.wrapping_add(1);
+                }
+            }
+        }
+        self.remote = Some(r);
+    }
+    /// `Entity.commonTick`'s tickCount for an entity of the client level at its own visit: a
+    /// root once its `EntityTickEvent.Pre` let it through (`tickNonPassenger`), a passenger at
+    /// its ride visit whatever that Pre answered (`tickPassenger`).
+    pub(in crate::game) fn count_client_tick(&mut self, id: u32) {
+        if let Some(t) = self
+            .remote
+            .as_mut()
+            .and_then(|r| r.entities.get_mut(&(id as i32)))
+        {
+            t.tick_count = t.tick_count.wrapping_add(1);
+        }
+    }
+    /// Whether entity `id` of the client level rides another (`Entity.vehicle`): its tick is a
+    /// ride visit, counted whatever its Pre answers.
+    pub(in crate::game) fn client_passenger(&self, id: u32) -> bool {
+        self.remote
+            .as_ref()
+            .and_then(|r| r.entities.get(&(id as i32)))
+            .is_some_and(|t| t.vehicle.is_some())
+    }
+    /// `LocalPlayer.aiStep` (877-883): water vision reads the local body's `Entity.baseTick`
+    /// `isEyeInFluid(FluidTags.WATER)` sample and `this.isSpectator()`.
+    fn tick_local_water_vision(&mut self) {
+        let in_water = self
+            .player
+            .as_ref()
+            .is_some_and(|p| p.is_eye_in_fluid(sunrise_client::motion::WATER));
+        self.fog.tick(in_water, self.own_player_is_spectator());
+    }
+
     /// `LocalPlayer.tick`'s `Player.tick` work: input, riding, motion and
     /// sleep, and the input `sendChanges` sends for it (`None`: nothing ticked).
+    /// `fall_flying_before_hooks` is the flag from before the tick's hooks when the caller
+    /// took it before them: a glide a `player_tick_pre` listener starts is then reported as
+    /// this tick's start, as a jump-started glide is.
     pub(super) fn tick_local_player(
         &mut self,
         entity_collisions: Vec<sunrise_core::geometry::Aabb>,
         sprint_window: i32,
+        fall_flying_before_hooks: Option<bool>,
     ) -> Result<Option<u8>> {
         // Player.tick's ItemCooldowns.tick, after Pre and after
         // handleKeybinds: this path replaces `tick_world`'s for a server's
@@ -931,7 +1095,14 @@ impl Game<'_> {
             .riding
             .filter(|_| self.screen != Screen::Dead)
             .and_then(|_| self.player.as_ref().map(|p| p.position));
+        // LocalPlayer.aiStep: on a tick without a vehicle that can jump now, the riding jump's
+        // scale drops to 0 (the `else` of `jumpableVehicle != null && getJumpCooldown() == 0`),
+        // so a charge left when the rider got off is not kept.
+        if self.jumpable_mount().is_none() {
+            self.mount.jump_scale = 0.0;
+        }
         let riding = self.screen != Screen::Dead && self.remote_ride(keys);
+        let mut rider_movement = None;
         // LocalPlayer.isShiftKeyDown is the input's sneak, riding or not: the tick after a
         // dismount crouches (a passenger never does) on the sneak held to get off.
         if riding && let Some(p) = self.player.as_mut() {
@@ -968,6 +1139,7 @@ impl Game<'_> {
         );
         let was_flying = player.flying;
         self.sync_player_body();
+        self.sync_remote_player_game_mode();
         let sleeping = self.sleeping;
         if let Some(at) = sleeping.and_then(|head| self.sleeping_position(head))
             && let Some(player) = self.player.as_mut()
@@ -1005,13 +1177,22 @@ impl Game<'_> {
             return Ok(None);
         };
         let body = player.entity_id;
-        let was_gliding = player.fall_flying;
+        let was_gliding = fall_flying_before_hooks.unwrap_or(player.fall_flying);
         let dead = self.screen == Screen::Dead;
         // LivingEntity.isImmobile: a sleeper lies still, even if its bed's
         // shape is unavailable here; only the server decides when to wake.
         if sleeping.is_some() {
-            player.velocity = Vec3::ZERO;
-            player.pitch = 0.0;
+            // Entity.baseTick still samples fluids while sleeping, before LocalPlayer.aiStep.
+            let side = game_side!(self);
+            player.client_side = true;
+            motion_world!(side, player).fluid_base_tick()?;
+            if let Some(player) = self.player.as_mut().filter(|p| p.entity_id == body) {
+                player.velocity = Vec3::ZERO;
+                player.pitch = 0.0;
+            }
+            if !dead {
+                self.tick_local_water_vision();
+            }
         } else if walks {
             let side = game_side!(self);
             player.client_side = true;
@@ -1042,6 +1223,12 @@ impl Game<'_> {
             motion.finish_fluid_tick(answer)?;
             let keys = motion.prepare_local_sprint(keys)?;
             self.player_sprint_tick(keys, sprint_window, None)?;
+            if !self.player.as_ref().is_some_and(|p| p.entity_id == body) {
+                return Ok(None);
+            }
+            // LocalPlayer.aiStep: water vision reads this tick's `Entity.baseTick`
+            // `isEyeInFluid(FluidTags.WATER)` sample and `this.isSpectator()`, before `super.aiStep()`.
+            self.tick_local_water_vision();
             let side = game_side!(self);
             let Some(player) = self.player.as_mut().filter(|p| p.entity_id == body) else {
                 return Ok(None);
@@ -1078,13 +1265,19 @@ impl Game<'_> {
                 };
                 motion_world!(side, player).finish_rider_base_tick(answer);
                 self.remote_rider_sprint(keys, sprint_window)?;
+                if !self.player.as_ref().is_some_and(|p| p.entity_id == body) {
+                    return Ok(None);
+                }
+                self.tick_local_water_vision();
                 let side = game_side!(self);
                 let Some(player) = self.player.as_mut().filter(|p| p.entity_id == body) else {
                     return Ok(None);
                 };
                 let _sections = section_scope.map(|scope| scope.begin(&mut self.native_lifecycle));
                 let mut passenger = motion_world!(side, player);
+                let start = passenger.player.position;
                 passenger.finish_rider_tick(keys.direction())?;
+                rider_movement = Some(passenger.player.position.subtract(start));
                 sunrise_world::entity_move::EntityMoveWorld::set_position(&mut passenger, seat)?;
                 // LivingEntity.aiStep: a passenger freezes in powder snow too, and the
                 // frostbite overlay shows it (#8156).
@@ -1098,10 +1291,18 @@ impl Game<'_> {
         // The last sample is therefore the one taken on death tick 20.
         if dead {
             self.ui.death_time = self.ui.death_time.saturating_add(1);
+            // LivingEntity.tick runs LocalPlayer.aiStep only while `!this.isRemoved()`.
+            if !self.local_player_removed_by_death() {
+                self.tick_local_water_vision();
+            }
         }
         let Some(player) = self.player.as_mut().filter(|p| p.entity_id == body) else {
             return Ok(None);
         };
+        self.client_pick
+            .sections
+            .get_mut()
+            .move_id(body as u32, player.position.components());
         // The server decides fire the window cannot predict (blaze fireballs,
         // fire aspect, lightning): Entity.isOnFire reads the synched flag, so
         // the predicted tick's countdown must not end it while it is set.
@@ -1128,14 +1329,14 @@ impl Game<'_> {
                     muffled,
                 } => {
                     let at = [position.x, position.y, position.z];
-                    let sounds = self.own_sound_type(at, state, mod_api::BlockSoundCause::Step);
+                    let sounds = self.own_block_sound(at, state, mod_api::BlockSoundCause::Step);
                     // Player.playStepSound: muffled under the swim sound in water.
                     let (volume, pitch) = if muffled {
                         (sounds.volume * 0.05, sounds.pitch * 0.8)
                     } else {
                         (sounds.volume * 0.15, sounds.pitch)
                     };
-                    self.play_client_player_sound(&sounds.step, volume, pitch);
+                    self.play_client_player_sound(sounds.event.as_str(), volume, pitch);
                 }
                 sunrise_client::motion::MotionEvent::Swim { volume, pitch } => {
                     self.play_client_player_sound("minecraft:entity.player.swim", volume, pitch);
@@ -1223,12 +1424,15 @@ impl Game<'_> {
         }
         // The player's own model (third person, the inventory's preview).
         if !self.replay.playing() {
-            self.tick_player_model();
+            self.tick_player_model_with_rider_movement(rider_movement);
         }
         if !dead {
             self.remote_tick_using();
         }
         if flying != was_flying {
+            if let Some(r) = self.remote.as_mut() {
+                r.abilities.flying = flying;
+            }
             self.send(S::PlayerAbilities(play::PlayerAbilitiesRequest {
                 flags: if flying { 2 } else { 0 },
             }));
@@ -1284,12 +1488,13 @@ impl Game<'_> {
         {
             return;
         }
-        let camera_y = (player.position.y + f64::from(self.eye)).floor() as i32;
-        let camera = [
-            player.position.x.floor() as i32,
-            camera_y,
-            player.position.z.floor() as i32,
-        ];
+        let cam_pos = self.visual_camera_position().unwrap_or([
+            player.position.x,
+            player.position.y + f64::from(self.eye),
+            player.position.z,
+        ]);
+        let camera = cam_pos.map(|v| v.floor() as i32);
+        let camera_y = camera[1];
         // `Util.toMillis(chunkSectionFadeInTime)`.
         let fade_ms = sunrise_client::gfx::fade_millis(self.settings.chunk_fade as f32);
         // `LevelRenderer`'s playerCompiledSectionCallback, run once
@@ -1304,7 +1509,12 @@ impl Game<'_> {
             .map(|renderer| renderer.section_compiled_and_visible(camera, fade_ms));
         let (cx, cz) = (camera[0] >> 4, camera[2] >> 4);
         let neighbours_lit = shown.is_none()
-            && (-1..=1).all(|dx| (-1..=1).all(|dz| self.streaming.is_lit(cx + dx, cz + dz)));
+            && (-1..=1).all(|dx| {
+                (-1..=1).all(|dz| {
+                    self.streaming
+                        .is_lit(cx.wrapping_add(dx), cz.wrapping_add(dz))
+                })
+            });
         let shape = self.world.shape;
         let check = sunrise_client::level_loading::PlayerCheck {
             outside_build_height: camera_y < shape.min_y || camera_y >= shape.min_y + shape.height,
@@ -1356,13 +1566,8 @@ impl Game<'_> {
 impl Game<'_> {
     /// `Level.tickBlockEntities` on a client: the block entities' animations
     /// and client ticks, and the moving pistons' pushes.
-    pub(super) fn tick_remote_block_entities(&mut self) {
-        // The ticker list's spawners, trial spawners, vaults and mod block entities; the
-        // animated ones, beacons and potent sulfur still tick on their own passes after them.
+    pub(in crate::game) fn tick_remote_block_entities(&mut self) {
         self.tick_client_block_entities();
-        self.tick_block_entity_anims();
-        self.client_tick_beacons();
-        self.tick_remote_potent_sulfur();
         self.with_level(|b, level, ticks| {
             b.client_tick_block_entities(level, ticks);
         });
@@ -1371,12 +1576,14 @@ impl Game<'_> {
         self.sync_moving_pistons();
     }
 
-    /// The local player's `LocalPlayer.tick`, once the client has loaded. The
-    /// input `sendChanges` sends after the block entities ticked, if it runs.
+    /// The local player's turn in `ClientLevel.tickEntities`: `EntityTickEvent.Pre` and
+    /// `.Post` around `LocalPlayer.tick`, which runs once the client has loaded. The input
+    /// `sendChanges` sends after the block entities ticked, if it runs.
     pub(super) fn tick_remote_own_player(&mut self) -> Result<Option<u8>> {
+        use crate::game::native_ticks::{PLAYER, TickRound};
         // ClientLevel.tickEntities skips a removed entity. Keep the last player state
         // for LevelExtractor.extractPlayerState, which still sees it on the death screen.
-        if self.player.is_none() || self.local_player_removed_by_death() {
+        if self.local_player_removed_by_death() {
             return Ok(None);
         }
         // Starling: a long wait for the chunk under the player is logged (it cannot move).
@@ -1395,30 +1602,67 @@ impl Game<'_> {
         // LocalPlayer.tick and sendChanges run once the client has loaded (hasClientLoaded),
         // wherever the player is: a chunk that hasn't come yet has no blocks here, as vanilla's
         // empty chunk has none, so the player falls through it until the chunk comes.
-        if !self.remote.as_ref().is_some_and(|r| r.loaded_sent) {
-            return Ok(None);
+        let loaded = self.player.is_some() && self.remote.as_ref().is_some_and(|r| r.loaded_sent);
+        // The entities that tick before the player pushed it before its turn began, so
+        // before its Pre.
+        if loaded {
+            let pushed = self.remote_pushes(true);
+            self.apply_remote_push(pushed);
         }
-        let entity_collisions = self.entity_collisions(Mover::Player);
-        // Those added before it tick before it: their pushes reach this move.
-        let pushed = self.remote_pushes(true);
-        let sprint_window = self.settings.sprint_window;
-        // The hook endpoints bracket Player.tick only, not the level pass before it.
-        let player = (mod_api::__private::listened(mod_api::HookId::PlayerTickPre)
-            || mod_api::__private::listened(mod_api::HookId::PlayerTickPost))
-        .then(|| self.local_player())
-        .flatten();
-        // The entities that tick before the player pushed it before its tick began, so
-        // before Pre.
-        self.apply_remote_push(pushed);
-        if let Some(player) = player {
-            self.native_player_tick_pre(mod_api::__private::PlayerTickPreCall { player });
-        }
-        self.native_local_player_fit_sizes();
-        let result = self.tick_local_player(entity_collisions, sprint_window);
-        // `EntityEvent.Size` for the pose the tick set.
-        self.native_local_player_size();
-        if let Some(player) = player {
-            self.native_player_tick_post(mod_api::__private::PlayerTickPostCall { player });
+        // NeoForge's ClientLevel.tickNonPassenger: Pre, then unless it was canceled
+        // Entity.commonTick, LocalPlayer.tick and Post. A passenger's tickPassenger runs
+        // commonTick first and tells Pre inside Entity.rideTick, so it counts whatever Pre
+        // answers. The admitted player is told and counted whether it has its body yet, has
+        // loaded, sleeps or rides.
+        let own = self
+            .remote
+            .as_ref()
+            .filter(|r| r.has_logical_player)
+            .map(|r| r.entity_id as u32);
+        let mut round = TickRound::with_told(self.native_tick_told());
+        let ticks = own.is_none_or(|id| {
+            let passenger = self.riding.is_some();
+            if passenger {
+                self.count_own_tick();
+            }
+            let ticks = self.native_tick_pre_one(&mut round, id, PLAYER);
+            if ticks && !passenger {
+                self.count_own_tick();
+            }
+            ticks
+        });
+        let result = if ticks && loaded {
+            self.drop_spam_throttler.tick();
+            let entity_collisions = self.entity_collisions(Mover::Player);
+            let sprint_window = self.settings.sprint_window;
+            // PlayerTickEvent.Pre and Post bracket Player.tick, inside the entity's turn.
+            let player = (mod_api::__private::listened(mod_api::HookId::PlayerTickPre)
+                || mod_api::__private::listened(mod_api::HookId::PlayerTickPost))
+            .then(|| self.local_player())
+            .flatten();
+            // The flag a glide starts from is the one before the hook, so a listener that
+            // starts the glide from `player_tick_pre` is reported as this tick's start.
+            let fall_flying_before_hooks = self.player.as_ref().is_some_and(|p| p.fall_flying);
+            if let Some(player) = player {
+                self.native_player_tick_pre(mod_api::__private::PlayerTickPreCall { player });
+            }
+            self.native_local_player_fit_sizes();
+            let result = self.tick_local_player(
+                entity_collisions,
+                sprint_window,
+                Some(fall_flying_before_hooks),
+            );
+            // `EntityEvent.Size` for the pose the tick set.
+            self.native_local_player_size();
+            if let Some(player) = player {
+                self.native_player_tick_post(mod_api::__private::PlayerTickPostCall { player });
+            }
+            result
+        } else {
+            Ok(None)
+        };
+        if ticks && let Some(id) = own {
+            self.native_tick_post_one(&round, id, PLAYER);
         }
         // The entities added after the player tick after it, so after Post: `Entity.push`
         // adds each to the player's deltaMovement during their tick, from where they and
@@ -1426,13 +1670,23 @@ impl Game<'_> {
         // tick replaces that deltaMovement, push included
         // (`ClientPacketListener.handleSetEntityMotion`, `handleMovePlayer`), so the push
         // lands on the velocity now, not on the next move.
-        let after = self.remote_pushes(false);
-        self.apply_remote_push(after);
+        if loaded {
+            let after = self.remote_pushes(false);
+            self.apply_remote_push(after);
+        }
         result
     }
 
-    /// Humanoid held arm poses, once the tick has set equipment and use state.
-    pub(in crate::game) fn tick_remote_arm_poses(&mut self) {
+    /// `Entity.commonTick`'s tickCount for the local player.
+    fn count_own_tick(&mut self) {
+        if let Some(r) = self.remote.as_mut() {
+            r.own_tick_count = r.own_tick_count.wrapping_add(1);
+        }
+    }
+
+    /// Humanoid held arm poses, selected at the frame's extraction from the equipment and use state
+    /// the tick set (`AvatarRenderer.extractRenderState` → `getArmPose`).
+    pub(in crate::game) fn extract_remote_arm_poses(&mut self) {
         for i in 0..self.mobs.len() {
             let m = &self.mobs[i];
             if !sunrise_client::mobs::anim::extracts_humanoid(m) {

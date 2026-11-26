@@ -5,6 +5,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
+use sunrise_gameplay::stats::StatScoreOp;
 
 struct Rewrite(Arc<AtomicUsize>);
 #[mod_api::__subscriptions]
@@ -79,7 +80,11 @@ fn rewritten_awards_update_counts_criteria_and_dirty_values_atomically() {
             assert_eq!(game.stats.get("mined", "minecraft:stone"), 2);
             assert_eq!(
                 game.stats.events.pop(),
-                Some(("minecraft:mined".into(), "minecraft:stone".into(), Some(2)))
+                Some((
+                    "minecraft:mined".into(),
+                    "minecraft:stone".into(),
+                    StatScoreOp::Add(2)
+                ))
             );
             assert_eq!(
                 game.stats.take_dirty(),
@@ -91,7 +96,11 @@ fn rewritten_awards_update_counts_criteria_and_dirty_values_atomically() {
             assert_eq!(game.stats.get("custom", "minecraft:jump"), 0);
             assert_eq!(
                 game.stats.events.pop(),
-                Some(("minecraft:custom".into(), "rewrite:steps".into(), Some(3)))
+                Some((
+                    "minecraft:custom".into(),
+                    "rewrite:steps".into(),
+                    StatScoreOp::Add(3)
+                ))
             );
             assert_eq!(
                 game.stats.take_dirty(),
@@ -107,7 +116,11 @@ fn rewritten_awards_update_counts_criteria_and_dirty_values_atomically() {
                 assert_eq!(game.stats.get("custom", "rewrite:steps"), 3);
                 assert_eq!(
                     game.stats.events.pop(),
-                    Some(("minecraft:custom".into(), "minecraft:jump".into(), Some(1)))
+                    Some((
+                        "minecraft:custom".into(),
+                        "minecraft:jump".into(),
+                        StatScoreOp::Add(1)
+                    ))
                 );
             }
             mode.store(5, Ordering::Relaxed);
@@ -169,23 +182,25 @@ fn deferred_award_rewrites_only_after_outer_commit_and_abort_emits_nothing() {
                 .unwrap()
                 .play
                 .insert(12, Default::default());
-            let outer = game.transaction_open();
-            let inner = game.transaction_open();
-            game.defer_effect(DeferredEffect::CustomStat {
-                player: 12,
-                key: "jump",
-                amount: 1,
+            game.storage_scope(|game, _| {
+                game.storage_scope(|game, _| {
+                    game.defer_effect(DeferredEffect::CustomStat {
+                        player: 12,
+                        key: "jump",
+                        amount: 1,
+                    });
+                    ((), true)
+                });
+                assert_eq!(
+                    game.lan.as_ref().unwrap().play[&12]
+                        .stats
+                        .get("custom", "minecraft:jump"),
+                    0
+                );
+                // The listener's decision is taken at root commit, not at queue time.
+                mode.store(5, Ordering::Relaxed);
+                ((), true)
             });
-            game.transaction_close(&inner, true);
-            assert_eq!(
-                game.lan.as_ref().unwrap().play[&12]
-                    .stats
-                    .get("custom", "minecraft:jump"),
-                0
-            );
-            // The listener's decision is taken at root commit, not at queue time.
-            mode.store(5, Ordering::Relaxed);
-            game.transaction_close(&outer, true);
             assert_eq!(
                 game.lan.as_ref().unwrap().play[&12]
                     .stats
@@ -193,28 +208,31 @@ fn deferred_award_rewrites_only_after_outer_commit_and_abort_emits_nothing() {
                 0
             );
             mode.store(0, Ordering::Relaxed);
-            let outer = game.transaction_open();
-            let inner = game.transaction_open();
-            game.defer_effect(DeferredEffect::CustomStat {
-                player: 12,
-                key: "jump",
-                amount: 1,
+            game.storage_scope(|game, _| {
+                game.storage_scope(|game, _| {
+                    game.defer_effect(DeferredEffect::CustomStat {
+                        player: 12,
+                        key: "jump",
+                        amount: 1,
+                    });
+                    ((), true)
+                });
+                ((), false)
             });
-            game.transaction_close(&inner, true);
-            game.transaction_close(&outer, false);
             assert_eq!(
                 game.lan.as_ref().unwrap().play[&12]
                     .stats
                     .get("custom", "minecraft:jump"),
                 0
             );
-            let outer = game.transaction_open();
-            game.defer_effect(DeferredEffect::CustomStat {
-                player: 12,
-                key: "jump",
-                amount: 1,
+            game.storage_scope(|game, _| {
+                game.defer_effect(DeferredEffect::CustomStat {
+                    player: 12,
+                    key: "jump",
+                    amount: 1,
+                });
+                ((), true)
             });
-            game.transaction_close(&outer, true);
             assert_eq!(
                 game.lan.as_ref().unwrap().play[&12]
                     .stats
@@ -246,7 +264,7 @@ fn break_stone(game: &mut Game<'_>) {
         .default_state("minecraft:stone")
         .unwrap();
     game.world.set(6, 64, 4, stone).unwrap();
-    assert!(game.player_break_block([6, 64, 4]).unwrap());
+    assert!(game.player_break_block([6, 64, 4], None).unwrap());
     assert_eq!(
         game.res
             .facts()
@@ -490,7 +508,11 @@ fn lan_noncanonical_rewrite_keeps_the_entire_original_award() {
                     assert_eq!(game.stats.get("mined", "minecraft:stone"), 0);
                     assert_eq!(
                         game.stats.events.pop(),
-                        Some(("minecraft:mined".into(), "minecraft:dirt".into(), Some(4)))
+                        Some((
+                            "minecraft:mined".into(),
+                            "minecraft:dirt".into(),
+                            StatScoreOp::Add(4)
+                        ))
                     );
                     assert_eq!(
                         game.stats.take_dirty(),

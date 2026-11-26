@@ -6,6 +6,7 @@ pub trait Hooks {
     #[hook(
         dispatch = "flat",
         side = "server",
+        version = 2,
         contract = "listen",
         scope = "block",
         key = "state",

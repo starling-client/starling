@@ -1,28 +1,36 @@
 //! The `player_commands_sent` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0249
 
 pub trait Hooks {
-    /// The command tree a server sends a player (NeoForge's and Paper's
-    /// "commands sent to a player" stage): when they join and when their
-    /// level changes (`/op`, `/deop`, the LAN settings). `names` are the
-    /// root commands their client would get, vanilla's they may use and the
-    /// mods'; take a name out and that client gets the tree without it
-    /// (and without what it leads to), so it neither completes nor
-    /// highlights it. This hides the command from the client only: the
-    /// server still runs a typed one, `player_command` stops it.
-    /// For a player who is already on, their state is swapped in and the
-    /// helpers (`PlayerRef::tell`...) work; for one who is joining it is not, and
-    /// their client has no world to tell yet. The tree the hub sends again by
-    /// itself (after a respawn or a change of level) keeps the last answer
-    /// and does not ask again; the integrated server's owner is not asked
-    /// when the world's cheats are switched.
+    /// Filter the command tree just before it is sent to a live server player,
+    /// including on join, on respawn, on dimension changes and on command refresh.
+    /// Use `player` with the host to read the recipient and `tree.hide_where(...)`
+    /// to select roots to omit from the permission-filtered tree. Aliases that
+    /// redirect to removed commands are omitted too. This only changes command
+    /// highlighting and completion on that client; it does not prevent execution. A client
+    /// parses the tree it receives to find the arguments it must sign (NeoForge's
+    /// `ClientPacketListener.sendCommand` does the same with the client command tree), so
+    /// hiding a root that has signable arguments (`msg`, `say`, `me`, `teammsg`) leaves the
+    /// player's client unable to sign them: it sends the command unsigned, and a server that
+    /// enforces secure chat refuses it. Hide such a root only where that is acceptable; the
+    /// server's signature enforcement is not relaxed.
+    /// At join the handle has connection data before appearing in online player lists.
+    /// A permission update exposes the new level; cross-dimension travel exposes the
+    /// source dimension and position until the command tree has been sent.
     #[hook(
         target = "sunrise_client::game::native_hooks::base::Game<'_>::native_player_commands_sent",
-        dispatch = "flat",
+        dispatch = "api_carrier",
+        host = "read",
+        receiver = "read",
         side = "server",
         contract = "collect",
-        out = "names",
-        neoforge = "none (NeoForge 26.3 has no such event)"
+        out = "answers",
+        answered_by = "mod",
+        version = 2,
+        neoforge = "none (NeoForge 26.3 has no send-time filter event)"
     )]
-    fn player_commands_sent(player: u128, name: &str, names: &mut Vec<String>);
+    fn player_commands_sent(
+        player: PlayerRef,
+        tree: CommandTreeFilter<'_>,
+        answers: &mut dyn FnMut(Answered<CommandTreeSelection>),
+    );
 }

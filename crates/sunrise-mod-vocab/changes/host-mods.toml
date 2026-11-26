@@ -1,0 +1,3 @@
+ids = ["method:prelude::ConfigHost::mods", "handle:LoadedMods::display_name"]
+why = "#5494: ConfigHost::mods gives any hook, on either side, the startup package inventory registration reads through RegistrationContext::mods (NeoForge's ModList.get()): an installed package's manifest name, version and description by id. LoadedMods::display_name is the name to show for a mod id (IModInfo.getDisplayName): Minecraft for minecraft, the package's manifest name, or its id when the manifest has none. New methods only."
+migrate = "Nothing to change. A mod that hard-coded other mods' names reads host.mods().display_name(id) instead."

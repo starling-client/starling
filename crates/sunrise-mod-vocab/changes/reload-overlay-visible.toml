@@ -1,0 +1,3 @@
+ids = ["method:prelude::ScreensClientHost::reload_overlay_visible"]
+why = "Adds ClientHost::reload_overlay_visible (vanilla Gui.overlay() for a LoadingOverlay): whether a resource pack reload's overlay is up, from the reload's start until it has faded out, so a client mod that adapts to the window's state (a frame-rate limiter) knows when the game is reloading. While the overlay covers the window the game already renders no world behind it."
+migrate = "Additive."

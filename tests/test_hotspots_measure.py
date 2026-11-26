@@ -1,6 +1,6 @@
 import unittest
 
-from hotspots_repo import Repo
+from tests.hotspots_repo import Repo
 from tools.hotspots import measure
 
 LIST = "pub use a::{\n    A,\n    B,\n};\n"

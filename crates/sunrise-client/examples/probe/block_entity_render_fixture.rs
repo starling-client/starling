@@ -26,6 +26,7 @@ use sunrise_client::{
         push_text,
     },
     chunk::{Chunk, Light},
+    gfx::{TEXT_NORMAL_SOLID_OVERLAY, TEXT_POLYGON_OFFSET_SOLID_OVERLAY},
     hud::{HudAtlas, Rect},
     item_render::{ItemRenderer, gui},
     signs::{DYE_TEXT, SignData, SignText},
@@ -144,7 +145,6 @@ pub fn main() -> Result<()> {
     let renderer = BlockEntityRenderer::load(
         &sunrise_assets::resource_source::ResourceRoot::directory(root.to_path_buf()),
         registry,
-        item_data.defaults(),
     )?;
     let atlas = HudAtlas::build(&sunrise_assets::resource_source::ResourceSource::directory(
         root.to_path_buf(),
@@ -383,6 +383,7 @@ pub fn main() -> Result<()> {
         let texts = RefCell::new(Vec::<TextCall>::new());
         let scene = Scene {
             camera,
+            sign_outline: sunrise_client::block_entity_render::SignOutline::CameraEntity(camera),
             orientation: Quat::from_euler(
                 glam::EulerRot::YXZ,
                 std::f32::consts::PI - yaw * (std::f32::consts::PI / 180.0),
@@ -477,7 +478,12 @@ pub fn main() -> Result<()> {
                 push_text(&|c| atlas.font.glyph_styled(c, &t.style), Some(atlas.font.white()), &local.run(), &mut vertices);
                 let vertices: Vec<_> = vertices.iter().map(|v| {
                     let c = v.color;
-                    json!([v.pos[0], v.pos[1], v.pos[2], (c & 0xff00ff00) | (c & 255) << 16 | (c >> 16 & 255)])
+                    let mode = match v.layer & 0xffff {
+                        TEXT_NORMAL_SOLID_OVERLAY => "NORMAL",
+                        TEXT_POLYGON_OFFSET_SOLID_OVERLAY => "POLYGON_OFFSET",
+                        _ => "UNKNOWN",
+                    };
+                    json!([v.pos[0], v.pos[1], v.pos[2], (c & 0xff00ff00) | (c & 255) << 16 | (c >> 16 & 255), mode])
                 }).collect();
                 json!({"matrix": t.matrix.to_cols_array(), "x": t.x, "y": t.y, "text": t.text,
                        "color": t.color, "outline": t.outline, "glyphs": glyphs, "textVertices": vertices,

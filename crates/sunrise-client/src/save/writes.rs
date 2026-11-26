@@ -71,6 +71,21 @@ pub(super) struct QueuedWrite {
     pub(super) key: (i32, i32),
     pub(super) record: Record,
     seq: u64,
+    eviction: Option<EvictionWrites>,
+}
+
+/// Records skipped or refused in one idle eviction, independent of other saves.
+#[derive(Clone, Default)]
+pub(super) struct EvictionWrites(Arc<Mutex<std::collections::HashSet<(i32, i32)>>>);
+
+impl EvictionWrites {
+    pub(super) fn refuse(&self, key: (i32, i32)) {
+        self.0.lock().unwrap().insert(key);
+    }
+
+    pub(super) fn refused(&self) -> std::collections::HashSet<(i32, i32)> {
+        std::mem::take(&mut *self.0.lock().unwrap())
+    }
 }
 
 impl QueuedWrite {
@@ -79,6 +94,13 @@ impl QueuedWrite {
             key,
             record: record.track_block_entity_edits(),
             seq,
+            eviction: None,
+        }
+    }
+
+    fn refuse_eviction(&self) {
+        if let Some(eviction) = &self.eviction {
+            eviction.refuse(self.key);
         }
     }
 }
@@ -155,6 +177,10 @@ impl SaveDir {
         self.save_reporting.report(folder, key, error);
     }
 
+    pub fn report_entity_record_failure(&self, key: (i32, i32), error: &std::io::Error) {
+        self.save_reporting.report(Folder::Entities, key, error);
+    }
+
     /// Queue `records` for the writer thread. With `wait`, wait for these and all earlier
     /// write attempts. Individual failures are reported; a failed sync fails the wait.
     pub(super) fn write_records(
@@ -175,20 +201,46 @@ impl SaveDir {
         records: Vec<((i32, i32), Record)>,
         wait: bool,
     ) -> Result<()> {
+        self.enqueue_records(folder, records, None)?;
+        if wait {
+            self.flush()?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn enqueue_records(
+        &self,
+        folder: Folder,
+        records: Vec<((i32, i32), Record)>,
+        eviction: Option<&EvictionWrites>,
+    ) -> Result<()> {
         if !records.is_empty() {
-            let mut writer = self.writer.lock().map_err(|_| "writer poisoned")?;
-            let records = if self.disk.get().is_some()
-                || mod_api::__private::listened(mod_api::HookId::ChunkDataSave)
-            {
+            // Run snapshot callbacks before publishing pending records or taking writer locks.
+            let records: Vec<_> = if folder == Folder::Region {
                 records
                     .into_iter()
-                    .map(|(key, record)| {
-                        self.capture_disk_record(record).map(|record| (key, record))
+                    .filter_map(|(key, record)| match self.capture_disk_record(record) {
+                        Ok(record) => Some((key, record)),
+                        Err(error) => {
+                            if let Some(eviction) = eviction {
+                                eviction.refuse(key);
+                            }
+                            self.report_record_failure(
+                                Folder::Region,
+                                key,
+                                &std::io::Error::other(error),
+                            );
+                            None
+                        }
                     })
-                    .collect::<Result<Vec<_>>>()?
+                    .collect()
             } else {
                 records
             };
+            if records.is_empty() {
+                return Ok(());
+            }
+            let mut writer = self.writer.lock().map_err(|_| "writer poisoned")?;
             let writer = writer.get_or_insert_with(|| {
                 self.start_writer(fs::File::sync_data, RegionFile::sync_all)
             });
@@ -196,11 +248,12 @@ impl SaveDir {
             {
                 let mut pending = self.pending.lock().map_err(|_| "pending writes poisoned")?;
                 for (key, record) in records {
-                    let job = QueuedWrite::new(
+                    let mut job = QueuedWrite::new(
                         key,
                         record,
                         self.sequence.fetch_add(1, Ordering::Relaxed),
                     );
+                    job.eviction = eviction.cloned();
                     pending.insert((folder, key.0, key.1), (job.seq, job.record.clone()));
                     batch.push(job);
                 }
@@ -238,9 +291,6 @@ impl SaveDir {
                 return Err("the region writer stopped".into());
             }
         }
-        if wait {
-            self.flush()?;
-        }
         Ok(())
     }
     /// Queue a durable barrier behind all earlier writes. The window only polls
@@ -257,7 +307,7 @@ impl SaveDir {
         Ok(receive)
     }
 
-    fn start_writer(
+    pub(super) fn start_writer(
         &self,
         sync_data: impl Fn(&fs::File) -> std::io::Result<()> + Send + 'static,
         mut force: impl FnMut(&RegionFile) -> std::io::Result<()> + Send + 'static,
@@ -272,7 +322,7 @@ impl SaveDir {
         );
         let pending = self.pending.clone();
         let outstanding = self.outstanding.clone();
-        // The writer runs chunk_data_save callbacks before handing records to compression.
+        // Callbacks have run before handoff; the writer owns region I/O and completion.
         let thread = std::thread::Builder::new()
             .stack_size(sunrise_threads::GAME_THREAD_STACK_BYTES)
             .name("sunrise-region-writer".into())
@@ -340,30 +390,37 @@ impl SaveDir {
                             .iter()
                             .filter_map(|job| {
                                 let newest = newest(&job.key, job.seq);
-                                // Coalescing skips the old write, not its captured disk callback.
-                                // For current records, compress_record sees the cached outcome.
-                                if job.record.disk_job().is_some()
-                                    && let Err(error) = chunk_disk::encode_record(&job.record)
-                                    && !newest
-                                {
-                                    reporting.report(kind, job.key, &error);
-                                }
+                                // The owner already ran the callback for every capture, even
+                                // when a newer write replaces this snapshot.
                                 if !newest {
+                                    if let Some(capture) = job.record.disk_job() {
+                                        capture.cancel();
+                                    }
+                                    job.refuse_eviction();
                                     return None;
                                 }
                                 match compression_pool::catch_encoding_panic(|| {
                                     Ok(resolve_poi(storage, job.key, &job.record))
                                 }) {
-                                    Ok(record) => record.map(|record| (job.key, record)),
+                                    Ok(record) => record.map(|record| (job, record)),
                                     Err(error) => {
+                                        job.refuse_eviction();
                                         reporting.report(kind, job.key, &error);
                                         None
                                     }
                                 }
                             })
                             .collect();
-                        let records: Vec<_> = resolved.iter().map(|(k, r)| (*k, r)).collect();
+                        let records: Vec<_> =
+                            resolved.iter().map(|(job, r)| (job.key, r)).collect();
                         let outcome = write_region_records(storage, &records, &sync_data);
+                        if !outcome.failed_records.is_empty() {
+                            for (job, _) in &resolved {
+                                if outcome.failed_records.contains_key(&job.key) {
+                                    job.refuse_eviction();
+                                }
+                            }
+                        }
                         for (key, error) in outcome.failed_records {
                             reporting.report(kind, key, &error);
                         }
@@ -408,6 +465,35 @@ impl SaveDir {
     /// are reported by the writer; a storage sync failure fails the barrier that reports it.
     pub fn flush(&self) -> Result<()> {
         self.flush_with(RegionFile::sync_all)
+    }
+
+    #[doc(hidden)]
+    pub fn inject_sync_error_for_test(&self, error: std::io::Error) {
+        self.outstanding
+            .sync_error
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_or_insert(error);
+    }
+
+    /// Wait for every queued write batch to finish on the writer thread without
+    /// calling `sync_all` across all cached regions (used by idle chunk eviction;
+    /// full durability barriers use [`Self::flush`]).
+    pub(super) fn wait_for_writes(&self) -> Result<()> {
+        let mut count = self
+            .outstanding
+            .count
+            .lock()
+            .map_err(|_| "writer poisoned")?;
+        while *count > 0 {
+            count = self
+                .outstanding
+                .done
+                .wait(count)
+                .map_err(|_| "writer poisoned")?;
+        }
+        self.outstanding.write_result(true)?;
+        Ok(())
     }
 
     fn flush_with(&self, mut force: impl FnMut(&RegionFile) -> std::io::Result<()>) -> Result<()> {
@@ -815,7 +901,7 @@ mod tests {
                 .unwrap();
             reader.join().unwrap();
             assert_eq!(snapshot.tag.get("test:marker"), Some(&Tag::Int(42)));
-            assert_eq!(saves.load(Ordering::Relaxed), 0);
+            assert_eq!(saves.load(Ordering::Relaxed), 1);
         });
     }
 
@@ -846,5 +932,63 @@ mod tests {
             .recv_timeout(std::time::Duration::from_secs(1))
             .unwrap();
         waiter.join().unwrap();
+    }
+
+    #[test]
+    fn save_eviction_drains_writes_without_syncing_all_cached_regions() {
+        let dir = tempfile::tempdir().unwrap();
+        let (registry, biomes) = super::super::loot_tests::fixture();
+        let registry = Box::leak(Box::new(registry));
+        let biomes = Arc::new(biomes);
+        let save = SaveDir::new(
+            dir.path().to_path_buf(),
+            LevelShape::OVERWORLD,
+            Some(Default::default()),
+        );
+        super::super::chunk_disk_tests::context(&save);
+        let sync_data_calls = Arc::new(AtomicUsize::new(0));
+        let force_calls = Arc::new(AtomicUsize::new(0));
+        let sd = sync_data_calls.clone();
+        let fc = force_calls.clone();
+        *save.writer.lock().unwrap() = Some(save.start_writer(
+            move |file| {
+                sd.fetch_add(1, Ordering::Relaxed);
+                file.sync_data()
+            },
+            move |region| {
+                fc.fetch_add(1, Ordering::Relaxed);
+                region.sync_all()
+            },
+        ));
+        let record = NamedTag {
+            name: "".into(),
+            tag: Tag::compound([("marker", Tag::Int(7))]),
+        };
+        // Seed two unrelated cached regions.
+        save.write_records(
+            "region",
+            vec![((0, 0), Some(record.clone())), ((32, 0), Some(record))],
+            false,
+        )
+        .unwrap();
+        save.wait_for_writes().unwrap();
+        let before_sync_data = sync_data_calls.load(Ordering::Relaxed);
+        let before_force = force_calls.load(Ordering::Relaxed);
+
+        let chunk = Arc::new(Chunk::empty(64, 0));
+        let refused = save
+            .save_eviction(&[chunk], registry, &biomes, Vec::new())
+            .unwrap();
+        assert!(refused.is_empty());
+        assert_eq!(
+            force_calls.load(Ordering::Relaxed),
+            before_force,
+            "save_eviction must not call RegionFile::sync_all across cached regions"
+        );
+        // Only the evicted column's own region (not the two unrelated cached regions) synced.
+        assert_eq!(
+            sync_data_calls.load(Ordering::Relaxed) - before_sync_data,
+            1
+        );
     }
 }

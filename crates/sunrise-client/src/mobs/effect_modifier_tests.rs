@@ -91,6 +91,93 @@ fn tick(m: &mut Mob, times: usize) {
         );
     }
 }
+/// The content mods' effects of the lib's tests, registered in this
+/// thread's own scope until the guard drops. `testfx:stun` declares
+/// modifiers on a mob's movement speed and attack damage (its own store),
+/// its armor and scale (its attribute maps), and luck, which a mob has no
+/// instance of. `testfx:shield` lowers the maximum absorption,
+/// `testfx:grown` names the baby speed bonus and `testfx:still` changes
+/// nothing.
+pub(crate) fn register_test_mod_effects() -> impl Drop {
+    use crate::brewing::{Category, ModEffect, register_mod_effects};
+    use sunrise_world::attributes::Operation;
+    let scope = sunrise_client_core::potions::isolate_mod_effects();
+    let modifier = |attribute: &str, id: &str, amount, operation| {
+        (attribute.to_owned(), id.to_owned(), amount, operation)
+    };
+    assert!(register_mod_effects([
+        ModEffect::new("testfx:glow", 1, Category::Harmful, "testfx"),
+        ModEffect {
+            modifiers: vec![
+                modifier(
+                    "minecraft:movement_speed",
+                    "testfx:effect/stun_speed",
+                    -0.25,
+                    Operation::AddMultipliedTotal,
+                ),
+                modifier(
+                    "minecraft:attack_damage",
+                    "testfx:effect/stun_damage",
+                    1.5,
+                    Operation::AddValue,
+                ),
+                modifier(
+                    "minecraft:armor",
+                    "testfx:effect/stun_armor",
+                    2.0,
+                    Operation::AddValue,
+                ),
+                modifier(
+                    "minecraft:scale",
+                    "testfx:effect/stun_scale",
+                    0.5,
+                    Operation::AddMultipliedBase,
+                ),
+                modifier(
+                    "minecraft:luck",
+                    "testfx:effect/stun_luck",
+                    1.0,
+                    Operation::AddValue,
+                ),
+                modifier(
+                    "minecraft:knockback_resistance",
+                    "testfx:effect/stun_knockback",
+                    0.5,
+                    Operation::AddValue,
+                ),
+            ],
+            ..ModEffect::new("testfx:stun", 2, Category::Harmful, "testfx")
+        },
+        ModEffect {
+            modifiers: vec![modifier(
+                "minecraft:max_absorption",
+                "testfx:effect/shield",
+                -2.0,
+                Operation::AddValue,
+            )],
+            ..ModEffect::new("testfx:shield", 3, Category::Harmful, "testfx")
+        },
+        ModEffect {
+            modifiers: vec![modifier(
+                "minecraft:movement_speed",
+                "minecraft:baby",
+                0.1,
+                Operation::AddMultipliedBase,
+            )],
+            ..ModEffect::new("testfx:grown", 4, Category::Neutral, "testfx")
+        },
+        ModEffect {
+            modifiers: vec![modifier(
+                "minecraft:movement_speed",
+                "testfx:effect/still",
+                0.0,
+                Operation::AddValue,
+            )],
+            ..ModEffect::new("testfx:still", 5, Category::Neutral, "testfx")
+        },
+    ]));
+    scope
+}
 fn types() -> HashMap<String, Arc<MobType>> {
     HashMap::from([
         ("minecraft:pig".to_owned(), pig_type()),
@@ -160,6 +247,279 @@ fn the_modifier_leaves_when_the_effect_runs_out() {
     assert!(stored(&m, Attr::MovementSpeed, SPEED).is_empty());
     assert_eq!(finalize::value(&m, Attr::MovementSpeed), 0.25);
     assert_eq!(m.attrs.speed, 0.25);
+}
+
+/// A zombie whose type took its catalog row, with armor and scale besides
+/// its own store's attributes, as a loaded type has.
+fn cataloged_zombie() -> (Mob, Arc<sunrise_world::attributes::entity::Catalog>) {
+    let bits = |v: f64| format!("{:016x}", v.to_bits());
+    let attribute = |id: &str, default: f64, min: f64, max: f64| serde_json::json!({"id": id, "default": bits(default), "min": bits(min), "max": bits(max), "syncable": true});
+    let catalog = Arc::new(
+        sunrise_world::attributes::entity::Catalog::from_json(&serde_json::json!({
+            "data_version": sunrise_world::DATA_VERSION,
+            "attributes": [
+                attribute("minecraft:max_health", 20.0, 1.0, 1024.0),
+                attribute("minecraft:movement_speed", 0.7, 0.0, 1024.0),
+                attribute("minecraft:attack_damage", 2.0, 0.0, 2048.0),
+                attribute("minecraft:armor", 0.0, 0.0, 30.0),
+                attribute("minecraft:scale", 1.0, 0.0625, 16.0),
+                attribute("minecraft:luck", 0.0, -1024.0, 1024.0),
+            ],
+            "entities": {"minecraft:zombie": {
+                "minecraft:max_health": bits(20.0),
+                "minecraft:movement_speed": bits(0.23),
+                "minecraft:attack_damage": bits(3.0),
+                "minecraft:armor": bits(2.0),
+                "minecraft:scale": bits(1.0),
+            }},
+        }))
+        .unwrap(),
+    );
+    let mut t = (*zombie_type()).clone();
+    t.take_attribute_row(
+        Arc::new(catalog.entity_row("minecraft:zombie").unwrap()),
+        &catalog,
+    );
+    let mut m = Mob::new(2, Arc::new(t), Vec3::ZERO, 0.0);
+    m.health = 20.0;
+    (m, catalog)
+}
+
+/// #4473: a content mod's effect puts on the modifiers its declaration lists
+/// as vanilla's effects do theirs, on every attribute instance the mob has:
+/// its own store's (movement speed, attack damage) and its attribute maps'
+/// (armor, scale), which `/attribute`, the save and the sync read. Each
+/// amount is times the amplifier plus one, replaced when the amplifier
+/// changes; an attribute the mob has no instance of (luck) gets none; and
+/// all of them leave when the effect runs out or `/effect clear`
+/// (`removeAllEffects`) removes it.
+#[test]
+fn a_declared_effect_adds_and_removes_its_modifiers() {
+    let _scope = register_test_mod_effects();
+    let stun = crate::brewing::effect("testfx:stun").unwrap().id;
+    let (speed, damage) = ("testfx:effect/stun_speed", "testfx:effect/stun_damage");
+    let (armor, scale) = ("testfx:effect/stun_armor", "testfx:effect/stun_scale");
+    // The live map's value and modifiers of `name`, what the save and the
+    // sync read, and the attribute map's value, what `/attribute` reads.
+    let maps = |m: &Mob, catalog: &Arc<_>, name: &str| {
+        let seed = || {
+            crate::entity_nbt::attribute_entries(m)
+                .into_iter()
+                .map(|(_, e)| e)
+                .collect()
+        };
+        let live = m.extra.live.read(
+            catalog,
+            &m.kind.id,
+            name,
+            sunrise_world::attribute_map::ValueKind::Computed,
+            seed,
+        );
+        let modifiers: Vec<_> = m
+            .extra
+            .live
+            .modifiers(catalog, &m.kind.id, name, seed)
+            .unwrap()
+            .iter()
+            .map(|x| (x.id().to_owned(), x.amount()))
+            .collect();
+        let map = m.extra.generic_attributes.as_deref().and_then(|map| {
+            let key = map.catalog().id(name)?;
+            map.instance(key).map(|instance| instance.value())
+        });
+        (live, modifiers, map)
+    };
+    let (mut m, catalog) = cataloged_zombie();
+    m.add_effect(stun, 100, 0);
+    assert_eq!(
+        stored(&m, Attr::MovementSpeed, speed),
+        [(-0.25, Op::AddMultipliedTotal)]
+    );
+    assert_eq!(
+        stored(&m, Attr::AttackDamage, damage),
+        [(1.5, Op::AddValue)]
+    );
+    assert_eq!(finalize::value(&m, Attr::MovementSpeed), 0.23 * 0.75);
+    assert_eq!(m.attrs.attack_damage, 4.5);
+    assert_eq!(
+        maps(&m, &catalog, "minecraft:armor"),
+        (Some(4.0), vec![(armor.to_owned(), 2.0)], Some(4.0))
+    );
+    assert_eq!(crate::mobs::armor::values(&m).0, 4.0);
+    assert_eq!(
+        maps(&m, &catalog, "minecraft:scale"),
+        (Some(1.5), vec![(scale.to_owned(), 0.5)], Some(1.5))
+    );
+    m.add_effect(stun, 100, 2);
+    assert_eq!(
+        stored(&m, Attr::MovementSpeed, speed),
+        [(-0.75, Op::AddMultipliedTotal)]
+    );
+    assert_eq!(
+        stored(&m, Attr::AttackDamage, damage),
+        [(4.5, Op::AddValue)]
+    );
+    assert_eq!(finalize::value(&m, Attr::MovementSpeed), 0.23 * 0.25);
+    assert_eq!(m.attrs.attack_damage, 7.5);
+    assert_eq!(
+        maps(&m, &catalog, "minecraft:armor"),
+        (Some(8.0), vec![(armor.to_owned(), 6.0)], Some(8.0))
+    );
+    assert_eq!(
+        maps(&m, &catalog, "minecraft:scale"),
+        (Some(2.5), vec![(scale.to_owned(), 1.5)], Some(2.5))
+    );
+    let untouched = |m: &Mob| {
+        assert!(
+            m.extra
+                .attributes
+                .as_ref()
+                .is_none_or(|s| s.modifiers.is_empty())
+        );
+        assert_eq!(finalize::value(m, Attr::MovementSpeed), 0.23);
+        assert_eq!(m.attrs.attack_damage, 3.0);
+        assert_eq!(
+            maps(m, &catalog, "minecraft:armor"),
+            (Some(2.0), vec![], Some(2.0))
+        );
+        assert_eq!(
+            maps(m, &catalog, "minecraft:scale"),
+            (Some(1.0), vec![], Some(1.0))
+        );
+        assert!(
+            m.extra
+                .live
+                .modifiers(&catalog, &m.kind.id, "minecraft:luck", Vec::new)
+                .is_none(),
+            "a zombie has no luck"
+        );
+    };
+    let (mut expiring, _) = cataloged_zombie();
+    expiring.add_effect(stun, 3, 1);
+    assert_eq!(
+        stored(&expiring, Attr::AttackDamage, damage),
+        [(3.0, Op::AddValue)]
+    );
+    tick(&mut expiring, 4);
+    assert!(expiring.extra.effects.is_empty());
+    untouched(&expiring);
+    assert!(m.retain_effects(|_| false));
+    untouched(&m);
+    // A pig has no attack damage: only its speed takes the effect.
+    let mut p = pig();
+    p.add_effect(stun, -1, 0);
+    assert!(stored(&p, Attr::AttackDamage, damage).is_empty());
+    assert_eq!(stored(&p, Attr::MovementSpeed, speed).len(), 1);
+}
+
+/// The modifiers on `name` of the mob's live map, which the save and the
+/// sync read, as (id, amount).
+fn live_modifiers(
+    m: &Mob,
+    catalog: &Arc<sunrise_world::attributes::entity::Catalog>,
+    name: &str,
+) -> Vec<(String, f64)> {
+    let seed = || {
+        crate::entity_nbt::attribute_entries(m)
+            .into_iter()
+            .map(|(_, e)| e)
+            .collect()
+    };
+    m.extra
+        .live
+        .modifiers(catalog, &m.kind.id, name, seed)
+        .unwrap()
+        .iter()
+        .map(|x| (x.id().to_owned(), x.amount()))
+        .collect()
+}
+
+/// #4473: a transaction that removed a declared effect and is rolled back
+/// (`mutate_mob_effects`' journal, then its abort) puts the modifiers outside
+/// the mob's own store back where they are kept: the attribute map, and the
+/// live map's saved entry, so a rebuilt map, a save and a load still have
+/// them while the effect is on.
+#[test]
+fn an_undone_removal_keeps_the_declared_modifiers_through_a_rebuild_and_a_save() {
+    let _scope = register_test_mod_effects();
+    let stun = crate::brewing::effect("testfx:stun").unwrap().id;
+    let (mut m, catalog) = cataloged_zombie();
+    m.add_effect(stun, -1, 1);
+    let armor = vec![("testfx:effect/stun_armor".to_owned(), 4.0)];
+    let scale = vec![("testfx:effect/stun_scale".to_owned(), 1.0)];
+    // What the journal keeps before the write, then the write: a clear.
+    let effects = m.extra.effects.clone();
+    let undo = m.effect_modifier_undo(std::iter::once(stun)).unwrap();
+    assert!(m.retain_effects(|_| false));
+    assert!(live_modifiers(&m, &catalog, "minecraft:armor").is_empty());
+    // The abort: the effect lists, then the journal.
+    m.extra.effects = effects;
+    undo.restore(&mut m);
+    let map = m.extra.generic_attributes.as_deref().unwrap();
+    let key = map.catalog().id("minecraft:armor").unwrap();
+    assert_eq!(map.instance(key).map(|i| i.value()), Some(6.0));
+    m.extra.live.invalidate();
+    assert_eq!(live_modifiers(&m, &catalog, "minecraft:armor"), armor);
+    assert_eq!(live_modifiers(&m, &catalog, "minecraft:scale"), scale);
+    let tag = mob_to_nbt(&m, [1, 2, 3, 4], None, None, |_| None, &Default::default());
+    let types = HashMap::from([("minecraft:zombie".to_owned(), m.kind.clone())]);
+    let back = mob_from_nbt(&tag, &types, 2, None).unwrap();
+    assert!(back.has_effect(stun));
+    assert_eq!(live_modifiers(&back, &catalog, "minecraft:armor"), armor);
+    assert_eq!(live_modifiers(&back, &catalog, "minecraft:scale"), scale);
+}
+
+/// #4473: refreshing an effect whose modifier lowers the maximum absorption
+/// lowers an absorption above the new maximum
+/// (`onAttributeUpdated(MAX_ABSORPTION)`), as removing one does; the
+/// maximum coming back up gives nothing back.
+#[test]
+fn a_refreshed_modifier_lowering_the_maximum_absorption_clamps_it() {
+    let _scope = register_test_mod_effects();
+    let shield = crate::brewing::effect("testfx:shield").unwrap().id;
+    let mut m = zombie();
+    m.add_effect("minecraft:absorption", -1, 1);
+    assert_eq!(
+        (crate::mobs::armor::max_absorption(&m), m.absorption),
+        (8.0, 8.0)
+    );
+    m.add_effect(shield, -1, 0);
+    assert_eq!(
+        (crate::mobs::armor::max_absorption(&m), m.absorption),
+        (6.0, 6.0)
+    );
+    m.add_effect(shield, -1, 1);
+    assert_eq!(
+        (crate::mobs::armor::max_absorption(&m), m.absorption),
+        (4.0, 4.0)
+    );
+    assert!(m.retain_effects(|e| e.id != shield));
+    assert_eq!(
+        (crate::mobs::armor::max_absorption(&m), m.absorption),
+        (8.0, 4.0)
+    );
+}
+
+/// #4473: a declared modifier with the baby speed bonus's id replaces it as
+/// `/attribute ... modifier remove minecraft:baby` does: the bonus is gone,
+/// only the effect's modifier counts, and its removal brings no bonus back.
+#[test]
+fn a_declared_modifier_replaces_the_baby_speed_bonus() {
+    let _scope = register_test_mod_effects();
+    let grown = crate::brewing::effect("testfx:grown").unwrap().id;
+    let mut m = zombie();
+    finalize::set_baby(&mut m, true);
+    assert_eq!(m.movement_speed(), 0.23 + 0.23 * 0.5);
+    m.add_effect(grown, -1, 0);
+    assert_eq!(finalize::transient(&m, Attr::MovementSpeed), None);
+    assert_eq!(
+        stored(&m, Attr::MovementSpeed, "minecraft:baby"),
+        [(0.1, Op::AddMultipliedBase)]
+    );
+    assert_eq!(m.movement_speed(), 0.23 + 0.23 * 0.1);
+    assert!(m.retain_effects(|_| false));
+    assert!(stored(&m, Attr::MovementSpeed, "minecraft:baby").is_empty());
+    assert_eq!(m.movement_speed(), 0.23);
 }
 
 /// `addEffect` -> `onEffectUpdated(true)`: removeAttributeModifiers, then
@@ -891,4 +1251,303 @@ fn clearing_absorption_takes_a_mods_transient_off_and_clamps() {
     assert_eq!(crate::mobs::armor::max_absorption(&m), 0.0);
     assert_eq!(live_value(&m, "minecraft:max_absorption"), 0.0);
     assert_eq!(m.absorption, 0.0);
+}
+
+/// `removeAllEffects` is one `onEffectsRemoved`: every removed effect's
+/// modifiers come off before `refreshDirtyAttributes` clamps the absorption
+/// (`onAttributeUpdated(MAX_ABSORPTION)`). An Absorption's +4 and a
+/// `testfx:shield`'s -2 over a base maximum of 8 leave the 8 absorption in
+/// either order. `RemoveStatusEffectsConsumeEffect` calls `removeEffect` for
+/// each, one `onEffectsRemoved` apiece: Absorption first clamps to 6.
+#[test]
+fn a_bulk_clear_clamps_the_absorption_once_after_the_whole_batch() {
+    use crate::items::ConsumeEffect;
+    let _scope = register_test_mod_effects();
+    let shield = crate::brewing::effect("testfx:shield").unwrap().id;
+    let absorption = "minecraft:absorption";
+    let given = |first: &'static str, second: &'static str| {
+        let mut m = zombie();
+        finalize::set_base(&mut m, Attr::MaxAbsorption, 8.0);
+        m.add_effect(first, -1, 0);
+        m.add_effect(second, -1, 0);
+        assert_eq!(crate::mobs::armor::max_absorption(&m), 10.0);
+        m.absorption = 8.0;
+        m
+    };
+    let state = |m: &Mob| (crate::mobs::armor::max_absorption(m), m.absorption);
+    for (first, second) in [(absorption, shield), (shield, absorption)] {
+        let mut m = given(first, second);
+        m.apply_consume_effect(&ConsumeEffect::ClearAllEffects);
+        assert_eq!(state(&m), (8.0, 8.0), "{first}, then {second}");
+    }
+    let mut m = given(absorption, shield);
+    m.apply_consume_effect(&ConsumeEffect::RemoveEffects(vec![
+        absorption.into(),
+        shield.into(),
+    ]));
+    assert!(m.extra.effects.is_empty());
+    assert_eq!(state(&m), (8.0, 6.0));
+}
+
+/// The rows of an attribute instance, as (id, amount, permanent).
+type Rows = Vec<(String, f64, bool)>;
+/// The rows of `name` in the mob's attribute map and in its live map.
+fn map_and_live_rows(
+    m: &Mob,
+    catalog: &Arc<sunrise_world::attributes::entity::Catalog>,
+    name: &str,
+) -> (Rows, Rows) {
+    let rows = |instance: &sunrise_world::attributes::Instance| -> Rows {
+        instance
+            .modifiers()
+            .iter()
+            .map(|x| {
+                let permanent = instance
+                    .permanent_modifiers()
+                    .iter()
+                    .any(|p| p.id() == x.id());
+                (x.id().to_owned(), x.amount(), permanent)
+            })
+            .collect()
+    };
+    let map = m
+        .extra
+        .generic_attributes
+        .as_deref()
+        .and_then(|map| map.instance(map.catalog().id(name)?))
+        .map_or_else(Vec::new, rows);
+    let seed = || {
+        crate::entity_nbt::attribute_entries(m)
+            .into_iter()
+            .map(|(_, e)| e)
+            .collect()
+    };
+    let live = m
+        .extra
+        .live
+        .built_or_build(catalog, &m.kind.id, seed)
+        .unwrap();
+    let live = live
+        .key(name)
+        .and_then(|key| live.lookup(Some(&key)))
+        .and_then(|handle| live.instance(&handle).ok())
+        .map_or_else(Vec::new, rows);
+    (map, live)
+}
+/// The ids of the modifiers a save writes on `name`.
+fn saved_modifier_ids(m: &Mob, name: &str) -> Vec<String> {
+    let tag = mob_to_nbt(m, [1, 2, 3, 4], None, None, |_| None, &Default::default());
+    let Some(Tag::List(list)) = tag.get("attributes") else {
+        return Vec::new();
+    };
+    list.iter()
+        .filter(|entry| entry.get("id") == Some(&Tag::String(name.into())))
+        .filter_map(|entry| match entry.get("modifiers") {
+            Some(Tag::List(modifiers)) => Some(modifiers),
+            _ => None,
+        })
+        .flatten()
+        .filter_map(|modifier| match modifier.get("id") {
+            Some(Tag::String(id)) => id.to_string().ok(),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A transaction that adds a declared effect over a mod's transient
+/// modifier with the effect's id, then aborts: the restore puts the
+/// transient modifier back as a transient one, in the attribute map at its
+/// place between the others, in the live map and its list of transient
+/// modifiers, and the save still writes only the permanent ones.
+#[test]
+fn an_undone_add_restores_a_transient_modifier_as_transient_and_in_place() {
+    use sunrise_world::attributes::{Modifier, Operation};
+    let _scope = register_test_mod_effects();
+    let stun = crate::brewing::effect("testfx:stun").unwrap().id;
+    let (mut m, catalog) = cataloged_zombie();
+    let (armor, id) = ("minecraft:armor", "testfx:effect/stun_armor");
+    // A mod's write: the attribute map, and the live map with its saved
+    // entry, or its list of transient modifiers.
+    let write = |m: &mut Mob, modifier_id: &str, amount: f64, permanent: bool| {
+        let modifier = Modifier::new(modifier_id, amount, Operation::AddValue).unwrap();
+        let key = catalog.id(armor).unwrap();
+        let map = finalize::attribute_map(m, &catalog).unwrap();
+        map.edit(key, |value, observer| {
+            if permanent {
+                value.add_permanent(modifier.clone(), observer)
+            } else {
+                value.add_transient(modifier.clone(), observer)
+            }
+            .unwrap()
+        })
+        .unwrap();
+        let seed: Vec<_> = crate::entity_nbt::attribute_entries(m)
+            .into_iter()
+            .map(|(_, e)| e)
+            .collect();
+        let mut live = std::mem::take(&mut m.extra.live);
+        live.edit(
+            &catalog,
+            &m.kind.id,
+            armor,
+            true,
+            || seed,
+            |value, observer| {
+                if permanent {
+                    value.add_permanent(modifier.clone(), observer)
+                } else {
+                    value.add_transient(modifier.clone(), observer)
+                }
+            },
+        )
+        .unwrap();
+        if !permanent {
+            live.keep_transient(armor, modifier_id, Some(modifier.clone()));
+        }
+        m.extra.live = live;
+    };
+    write(&mut m, "test:before", 1.0, true);
+    write(&mut m, id, 0.5, false);
+    write(&mut m, "test:after", 3.0, true);
+    let row = |id: &str, amount: f64, permanent: bool| (id.to_owned(), amount, permanent);
+    let held = vec![
+        row("test:before", 1.0, true),
+        row(id, 0.5, false),
+        row("test:after", 3.0, true),
+    ];
+    assert_eq!(
+        map_and_live_rows(&m, &catalog, armor),
+        (held.clone(), held.clone())
+    );
+    let effects = m.extra.effects.clone();
+    let undo = m.effect_modifier_undo(std::iter::once(stun)).unwrap();
+    m.add_effect(stun, -1, 0);
+    let given = vec![
+        row("test:before", 1.0, true),
+        row("test:after", 3.0, true),
+        row(id, 2.0, true),
+    ];
+    assert_eq!(
+        map_and_live_rows(&m, &catalog, armor),
+        (given.clone(), given)
+    );
+    // The abort: the effect list, then the journal.
+    m.extra.effects = effects;
+    undo.restore(&mut m);
+    // The live map was built again from its records when the effect's own
+    // store modifiers changed: its saved entry, then its transient list, as
+    // any rebuild orders them. The transient row comes back transient, after
+    // the saved ones.
+    let rebuilt = vec![
+        row("test:before", 1.0, true),
+        row("test:after", 3.0, true),
+        row(id, 0.5, false),
+    ];
+    assert_eq!(map_and_live_rows(&m, &catalog, armor), (held, rebuilt));
+    assert_eq!(saved_modifier_ids(&m, armor), ["test:before", "test:after"]);
+}
+
+/// A transaction that adds an effect whose declared modifier is named
+/// `minecraft:baby`, then aborts: the baby speed bonus the add took away is
+/// back, and the speed with it.
+#[test]
+fn an_undone_baby_modifier_brings_the_bonus_back() {
+    let _scope = register_test_mod_effects();
+    let grown = crate::brewing::effect("testfx:grown").unwrap().id;
+    let mut m = zombie();
+    finalize::set_baby(&mut m, true);
+    let effects = m.extra.effects.clone();
+    let undo = m.effect_modifier_undo(std::iter::once(grown)).unwrap();
+    m.add_effect(grown, -1, 0);
+    assert_eq!(finalize::transient(&m, Attr::MovementSpeed), None);
+    assert_eq!(m.movement_speed(), 0.23 + 0.23 * 0.1);
+    m.extra.effects = effects;
+    undo.restore(&mut m);
+    assert!(stored(&m, Attr::MovementSpeed, "minecraft:baby").is_empty());
+    assert_eq!(
+        finalize::transient(&m, Attr::MovementSpeed),
+        Some((0.5, Op::AddMultipliedBase))
+    );
+    assert_eq!(m.movement_speed(), 0.23 + 0.23 * 0.5);
+}
+
+/// `onAttributeUpdated(SCALE)` -> `refreshDimensions`: a declared scale
+/// modifier sizes the mob's box and eye height as it is added, changed and
+/// removed, after a load too, and after an aborted removal.
+#[test]
+fn a_declared_scale_modifier_sizes_the_mob() {
+    let _scope = register_test_mod_effects();
+    let stun = crate::brewing::effect("testfx:stun").unwrap().id;
+    let (mut m, _) = cataloged_zombie();
+    let sized = |m: &Mob, scale: f32| {
+        let mut sized = m.clone();
+        sized.extra.model_scale = scale;
+        sized.dims()
+    };
+    let plain = m.dims();
+    m.add_effect(stun, -1, 0);
+    assert_eq!(m.extra.model_scale, 1.5);
+    assert_eq!(m.dims(), sized(&m, 1.5));
+    assert_ne!(m.dims(), plain);
+    m.add_effect(stun, -1, 2);
+    assert_eq!(m.dims(), sized(&m, 2.5));
+    let tag = mob_to_nbt(&m, [1, 2, 3, 4], None, None, |_| None, &Default::default());
+    let types = HashMap::from([("minecraft:zombie".to_owned(), m.kind.clone())]);
+    let back = mob_from_nbt(&tag, &types, 2, None).unwrap();
+    assert_eq!(back.extra.model_scale, 2.5);
+    assert_eq!(back.dims(), sized(&back, 2.5));
+    let effects = m.extra.effects.clone();
+    let undo = m.effect_modifier_undo(std::iter::once(stun)).unwrap();
+    assert!(m.retain_effects(|_| false));
+    assert_eq!(m.extra.model_scale, 1.0);
+    assert_eq!(m.dims(), plain);
+    m.extra.effects = effects;
+    undo.restore(&mut m);
+    assert_eq!(m.extra.model_scale, 2.5);
+    assert_eq!(m.dims(), sized(&m, 2.5));
+}
+
+/// A sulfur cube's knockback resistance is one of its body archetype's
+/// attributes, which its attribute map holds and its save writes from there,
+/// as `/attribute` writes it. A declared modifier on it goes there too, and
+/// to the store its bodiless physics reads, and leaves both with the effect.
+#[test]
+fn a_sulfur_cubes_declared_knockback_resistance_goes_to_its_attribute_map() {
+    let _scope = register_test_mod_effects();
+    let stun = crate::brewing::effect("testfx:stun").unwrap().id;
+    let (kr, id) = (
+        "minecraft:knockback_resistance",
+        "testfx:effect/stun_knockback",
+    );
+    let mut m = crate::mobs::sulfur_cube::adopt_body_tests::cube(Some("minecraft:tnt"));
+    let catalog = m
+        .extra
+        .generic_attributes
+        .as_deref()
+        .unwrap()
+        .catalog()
+        .clone();
+    let mut kind = (*m.kind).clone();
+    kind.take_attribute_row(
+        Arc::new(catalog.entity_row("minecraft:sulfur_cube").unwrap()),
+        &catalog,
+    );
+    m.kind = Arc::new(kind);
+    crate::mobs::sulfur_cube::adopt_body(&mut m);
+    let on_map = |m: &mut Mob| {
+        let map = m.extra.generic_attributes.as_deref_mut().unwrap();
+        let key = map.catalog().id(kr).unwrap();
+        map.modifier_value(key, id).ok()
+    };
+    m.add_effect(stun, -1, 0);
+    assert_eq!(on_map(&mut m), Some(0.5));
+    assert_eq!(
+        stored(&m, Attr::KnockbackResistance, id),
+        [(0.5, Op::AddValue)]
+    );
+    assert!(saved_modifier_ids(&m, kr).iter().any(|saved| saved == id));
+    assert!(m.retain_effects(|_| false));
+    assert_eq!(on_map(&mut m), None);
+    assert!(stored(&m, Attr::KnockbackResistance, id).is_empty());
+    assert!(!saved_modifier_ids(&m, kr).iter().any(|saved| saved == id));
 }

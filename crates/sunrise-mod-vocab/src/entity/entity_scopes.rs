@@ -1,7 +1,8 @@
 //! Scoped views and sequential host loans for entity-scoped and item-entity-scoped hooks.
 use crate::{
     ClientHost, EntityRef, EntityTypeKey, ItemEntityRef, ItemStack, ItemStackView, ServerHost,
-    StackWriteError, Transaction, WorldEpoch,
+    StackWriteError, TransactionContext, TransactionError, TransactionScopeError,
+    TransactionUnavailable, WorldEpoch,
 };
 
 /// Live resident view of a server general entity row during `general_entity_tick`.
@@ -96,6 +97,24 @@ impl<'a> EntityServerScope<'a> {
         Self(access)
     }
 
+    /// Borrows an already-open innermost transaction without opening or closing a frame.
+    /// Returns `None` without calling `f` if there is no current transaction to borrow.
+    pub fn current_transaction<T>(
+        &mut self,
+        f: impl for<'loan> FnOnce(&'loan mut EntityServerScope<'_>, &'loan TransactionContext) -> T,
+    ) -> Option<T> {
+        let mut f = Some(f);
+        let mut value = None;
+        self.0
+            .with_current_transaction_scope(&mut |access, tx| {
+                if let Some(f) = f.take() {
+                    value = Some(f(&mut EntityServerScope::new(access), tx));
+                }
+            })
+            .ok()?;
+        value
+    }
+
     /// Lend the live general entity row for `f`. Once `f` returns, you can use the Host
     /// and ask for another loan afterwards; each loan re-checks residency and returns
     /// `None` without running `f` if the entity was removed or left the level.
@@ -117,17 +136,25 @@ impl<'a> EntityServerScope<'a> {
     }
 
     /// Commit the view's velocity, rotation and fall-distance writes together with other
-    /// journaled Host writes on `Ok`. Returning `Err` restores those writes.
+    /// journaled Host writes on `Ok`. A returned error restores those writes. A host that cannot open a scope returns
+    /// [`TransactionError::Unavailable`] without running `f`.
     pub fn transaction<T, E>(
         &mut self,
-        f: impl FnOnce(&mut Self, &Transaction) -> Result<T, E>,
-    ) -> Result<T, E> {
-        crate::item::transaction::run_transaction_on(
-            self,
-            |scope| scope.0.host().transaction_open(),
-            |scope, seal, commit| scope.0.host().transaction_close(seal, commit),
-            f,
-        )
+        f: impl for<'loan> FnOnce(
+            &'loan mut EntityServerScope<'_>,
+            &'loan TransactionContext,
+        ) -> Result<T, E>,
+    ) -> Result<T, TransactionError<E>> {
+        let mut f = Some(f);
+        let mut result = None;
+        let settled = self.0.with_transaction_scope(&mut |access, tx| {
+            let Some(f) = f.take() else { return false };
+            let outcome = f(&mut EntityServerScope::new(access), tx);
+            let commit = outcome.is_ok();
+            result = Some(outcome);
+            commit
+        });
+        crate::item::transaction::finish_scope(settled, result)
     }
 }
 
@@ -279,9 +306,9 @@ impl<'a> ItemEntitySubjectView<'a> {
         });
         result
     }
-    /// The signed pickup delay; the infinite sentinel reads as vanilla's `32767`.
-    /// `None` if a stored value is outside `i32`.
-    pub fn pickup_delay(&self) -> Option<i32> {
+    /// The signed pickup delay (`ItemEntity.pickupDelay`); `32767` is vanilla's
+    /// infinite-delay sentinel (`set_never_pickup`).
+    pub fn pickup_delay(&self) -> i32 {
         self.data.pickup_delay()
     }
     /// `ItemEntity.getAge`, including negative lifetime sentinels.
@@ -298,8 +325,9 @@ impl<'a> ItemEntitySubjectView<'a> {
     }
 
     /// Replace the item entity's stack (`ItemEntity.setItem`), journaled under any open
-    /// transaction. Empty stacks are refused and return `Ok(false)`.
-    pub fn set_stack(&mut self, stack: ItemStack) -> Result<bool, StackWriteError> {
+    /// transaction. Passing `None` or an air stack stores an empty stack, which normal
+    /// `ItemEntity.tick` discards on its next tick.
+    pub fn set_stack(&mut self, stack: Option<ItemStack>) -> Result<bool, StackWriteError> {
         self.data.set_stack(stack)
     }
     /// `ItemEntity.setPickUpDelay`.
@@ -357,6 +385,25 @@ impl<'a> ItemEntityServerScope<'a> {
         self.item_id
     }
 
+    /// Borrows an already-open innermost transaction without opening or closing a frame.
+    /// Returns `None` without calling `f` if there is no current transaction to borrow.
+    pub fn current_transaction<T>(
+        &mut self,
+        f: impl for<'loan> FnOnce(&'loan mut ItemEntityServerScope<'_>, &'loan TransactionContext) -> T,
+    ) -> Option<T> {
+        let item_id = self.item_id;
+        let mut f = Some(f);
+        let mut value = None;
+        self.access
+            .with_current_transaction_scope(&mut |access, tx| {
+                if let Some(f) = f.take() {
+                    value = Some(f(&mut ItemEntityServerScope::new(access, item_id), tx));
+                }
+            })
+            .ok()?;
+        value
+    }
+
     /// Lend the live dropped-item entity for `f`. Once `f` returns, you can use the Host
     /// and ask for another loan afterwards; each loan re-checks residency and returns
     /// `None` without running `f` if the item was removed.
@@ -378,17 +425,26 @@ impl<'a> ItemEntityServerScope<'a> {
     }
 
     /// Commit the view's stack, pickup-delay, target and velocity writes together with other
-    /// journaled Host writes on `Ok`. Returning `Err` restores those writes.
+    /// journaled Host writes on `Ok`. A returned error restores those writes. A host that cannot open a scope returns
+    /// [`TransactionError::Unavailable`] without running `f`.
     pub fn transaction<T, E>(
         &mut self,
-        f: impl FnOnce(&mut Self, &Transaction) -> Result<T, E>,
-    ) -> Result<T, E> {
-        crate::item::transaction::run_transaction_on(
-            self,
-            |scope| scope.access.host().transaction_open(),
-            |scope, seal, commit| scope.access.host().transaction_close(seal, commit),
-            f,
-        )
+        f: impl for<'loan> FnOnce(
+            &'loan mut ItemEntityServerScope<'_>,
+            &'loan TransactionContext,
+        ) -> Result<T, E>,
+    ) -> Result<T, TransactionError<E>> {
+        let item_id = self.item_id;
+        let mut f = Some(f);
+        let mut result = None;
+        let settled = self.access.with_transaction_scope(&mut |access, tx| {
+            let Some(f) = f.take() else { return false };
+            let outcome = f(&mut ItemEntityServerScope::new(access, item_id), tx);
+            let commit = outcome.is_ok();
+            result = Some(outcome);
+            commit
+        });
+        crate::item::transaction::finish_scope(settled, result)
     }
 }
 
@@ -412,6 +468,26 @@ pub trait ResidentGeneralEntity {
 pub trait EntityServerAccess {
     fn with_view(&mut self, f: &mut dyn FnMut(EntitySubjectView<'_>));
     fn host(&mut self) -> &mut dyn ServerHost;
+    /// Lends the current scope without opening or settling a transaction.
+    fn with_current_transaction_scope(
+        &mut self,
+        _callback: &mut dyn for<'loan> FnMut(
+            &'loan mut dyn EntityServerAccess,
+            &'loan TransactionContext,
+        ),
+    ) -> Result<(), TransactionUnavailable> {
+        Err(TransactionUnavailable)
+    }
+
+    fn with_transaction_scope(
+        &mut self,
+        _callback: &mut dyn for<'loan> FnMut(
+            &'loan mut dyn EntityServerAccess,
+            &'loan TransactionContext,
+        ) -> bool,
+    ) -> Result<bool, TransactionScopeError> {
+        Err(TransactionScopeError::Unavailable)
+    }
 }
 
 /// Engine backing for a read-only resident client entity view.
@@ -440,11 +516,11 @@ pub trait ResidentItemEntity {
     fn position(&self) -> [f64; 3];
     fn velocity(&self) -> [f64; 3];
     fn with_stack(&self, f: &mut dyn for<'a> FnMut(ItemStackView<'a>));
-    fn pickup_delay(&self) -> Option<i32>;
+    fn pickup_delay(&self) -> i32;
     fn age(&self) -> i32;
     fn target(&self) -> Option<u128>;
     fn owner(&self) -> Option<EntityRef>;
-    fn set_stack(&mut self, stack: ItemStack) -> Result<bool, StackWriteError>;
+    fn set_stack(&mut self, stack: Option<ItemStack>) -> Result<bool, StackWriteError>;
     fn set_pickup_delay(&mut self, ticks: i32) -> bool;
     fn set_target(&mut self, target: Option<u128>) -> bool;
     fn set_velocity(&mut self, velocity: [f64; 3]) -> bool;
@@ -456,4 +532,24 @@ pub trait ResidentItemEntity {
 pub trait ItemEntityServerAccess {
     fn with_view(&mut self, f: &mut dyn FnMut(ItemEntitySubjectView<'_>));
     fn host(&mut self) -> &mut dyn ServerHost;
+    /// Lends the current scope without opening or settling a transaction.
+    fn with_current_transaction_scope(
+        &mut self,
+        _callback: &mut dyn for<'loan> FnMut(
+            &'loan mut dyn ItemEntityServerAccess,
+            &'loan TransactionContext,
+        ),
+    ) -> Result<(), TransactionUnavailable> {
+        Err(TransactionUnavailable)
+    }
+
+    fn with_transaction_scope(
+        &mut self,
+        _callback: &mut dyn for<'loan> FnMut(
+            &'loan mut dyn ItemEntityServerAccess,
+            &'loan TransactionContext,
+        ) -> bool,
+    ) -> Result<bool, TransactionScopeError> {
+        Err(TransactionScopeError::Unavailable)
+    }
 }

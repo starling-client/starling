@@ -28,14 +28,10 @@ import subprocess
 import sys
 import time
 
-try:
-    from . import anvil_dump, lab, test_rust_parity as base
-    from .test_dedicated_server_parity import Server, free_port
-except ImportError:
-    import anvil_dump
-    import lab
-    import test_rust_parity as base
-    from test_dedicated_server_parity import Server, free_port
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import anvil_dump, lab, test_rust_parity as base
+from tools.test_dedicated_server_parity import Server, free_port
 
 NAME = 'server-world-gen-parity'
 PROPERTIES = {

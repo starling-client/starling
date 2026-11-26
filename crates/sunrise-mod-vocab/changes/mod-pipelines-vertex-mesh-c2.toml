@@ -1,0 +1,25 @@
+ids = [
+    "type:VertexAttributeFormat",
+    "type:VertexStepMode",
+    "type:VertexAttribute",
+    "type:VertexFormatError",
+    "type:VertexFormat",
+    "type:VertexFormatBuilder",
+    "type:IndexFormat",
+    "type:MeshBufferInit",
+    "type:MeshIndexInit",
+    "type:MeshDescriptor",
+    "type:MeshError",
+    "type:MeshRef",
+    "trait:MeshContext",
+    "type:DrawRange",
+    "type:MeshDraw",
+    "type:DrawBindings",
+    "method:prelude::ClientRenderClientHost::create_mesh",
+    "method:WorldDrawContext::draw_mesh",
+    "method:WorldDrawContext::draw_vertices",
+    "method:PrepareRenderBuffersContext::draw_mesh",
+    "method:PrepareRenderBuffersContext::draw_vertices",
+]
+why = "Add custom VertexFormat and multi-binding vertex/instance step rates on RenderPipeline, retained GPU MeshRef handles (create_mesh on ClientHost, write_vertices/write_indices/replace/release on MeshRef), and unified WorldDrawContext/PrepareRenderBuffersContext draw_mesh and draw_vertices APIs (making pipeline_quads a shorthand over draw_vertices with the default PositionTexColor format)."
+migrate = "Additive API. Pass `&DrawBindings::EMPTY` to `draw_mesh` and `draw_vertices` for pipelines using only vanilla set-0 bindings. `pipeline_quads` now rejects pipelines with custom vertex bindings (`PipelineDrawError::VertexFormatMismatch`) and routes through the same unified draw path as `draw_vertices`."

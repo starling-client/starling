@@ -883,6 +883,24 @@ fn a_registered_token_reads_as_a_whole_word_before_the_vanilla_letter() {
     assert_eq!(error.key, "argument.entity.selector.unknown");
 }
 #[test]
+fn a_registered_token_accepts_brigadier_unquoted_characters() {
+    let mut reg = reg();
+    reg.selector_tokens
+        .push(sunrise_client_core::registries::SelectorToken {
+            name: "Allies_1.0+team-a".into(),
+            tooltip: "test.selector.allies_v1".into(),
+            players_only: false,
+            limit: 4,
+            sort: "furthest",
+        });
+    let mut r = Reader::new("@Allies_1.0+team-a[limit=2]");
+    let s = selector::parse(&mut r, &reg, true).unwrap();
+    assert_eq!(s.token.as_deref(), Some("Allies_1.0+team-a"));
+    assert_eq!((s.limit, s.sort), (2, Sort::Furthest));
+    assert!(s.include_entities);
+    assert!(!r.can_read());
+}
+#[test]
 fn a_uuid_selects_by_entity_uuid() {
     // EntitySelectorParser.parseNameOrUUID: a UUID sets entityUUID and
     // includesEntities, never playerName (which findEntities checks first).
@@ -1717,6 +1735,110 @@ fn h149_oblique_local_offsets_are_grouped_before_the_origin() {
     );
 }
 
+/// `IntegerArgumentType.parse` before the mod's parser: a value out of range is refused with
+/// Brigadier's message (the bound, then the value found), and the parser sees only digits that fit.
+#[test]
+fn a_custom_integer_argument_is_bounded_before_its_parser() {
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let parsed = seen.clone();
+    let argument = ArgType::Custom(CustomArgument::new(
+        "example:stack",
+        CustomArgumentKind::Integer { min: 1, max: 64 },
+        move |input| {
+            parsed.lock().unwrap().push(input.to_owned());
+            Ok(format!("{input} items"))
+        },
+        |_, _, _| Vec::new(),
+    ));
+    let mut dispatcher = Dispatcher::new();
+    let command = dispatcher.literal(0, "stack");
+    let count = dispatcher.argument(command, "count", argument);
+    dispatcher.executes(count, "test");
+    let registries = reg();
+    let parsed = dispatcher.parse("stack 64", &registries);
+    let (context, _) = parsed.executable().unwrap();
+    assert_eq!(
+        context.get("count"),
+        Some(&Arg::Custom {
+            kind: "example:stack".into(),
+            value: "64 items".into(),
+        })
+    );
+    for (input, expected) in [
+        ("stack 65", Text::tr("argument.integer.big", &[&64, &65])),
+        ("stack 0", Text::tr("argument.integer.low", &[&1, &0])),
+        ("stack 7.5", Text::tr("parsing.int.invalid", &[&"7.5"])),
+    ] {
+        let error = dispatcher
+            .parse(input, &registries)
+            .executable()
+            .unwrap_err();
+        assert_eq!(error.message, expected, "{input}");
+        assert_eq!(error.cursor, "stack ".len(), "{input}");
+    }
+    assert_eq!(*seen.lock().unwrap(), ["64"]);
+}
+
+/// `LongArgumentType.longArg(min, max)`: an `i64` past `int`'s range, refused out of range with
+/// `argument.long.low` / `big`, and never a fraction.
+#[test]
+fn a_long_argument_reads_past_int_and_refuses_out_of_range() {
+    let mut dispatcher = Dispatcher::new();
+    let command = dispatcher.literal(0, "bank");
+    let total = dispatcher.argument(
+        command,
+        "total",
+        ArgType::Long {
+            min: -5,
+            max: 9_000_000_000,
+        },
+    );
+    dispatcher.executes(total, "test");
+    let registries = reg();
+    let parsed = dispatcher.parse("bank 9000000000", &registries);
+    let (context, _) = parsed.executable().unwrap();
+    assert_eq!(context.get("total"), Some(&Arg::Long(9_000_000_000)));
+    for (input, expected) in [
+        (
+            "bank 9000000001",
+            Text::tr(
+                "argument.long.big",
+                &[&9_000_000_000_i64, &9_000_000_001_i64],
+            ),
+        ),
+        (
+            "bank -6",
+            Text::tr("argument.long.low", &[&-5_i64, &-6_i64]),
+        ),
+        ("bank 1.5", Text::tr("parsing.long.invalid", &[&"1.5"])),
+    ] {
+        let error = dispatcher
+            .parse(input, &registries)
+            .executable()
+            .unwrap_err();
+        assert_eq!(error.message, expected, "{input}");
+    }
+}
+
+#[test]
+fn a_custom_id_parser_receives_the_original_identifier_token() {
+    let argument = ArgType::Custom(CustomArgument::new(
+        "example:target",
+        CustomArgumentKind::Id,
+        |input| Err(Text::literal(format!("unknown target `{input}`"))),
+        |_, _, _| Vec::new(),
+    ));
+    let mut reader = Reader::new("group/path 2");
+    let error = argument.parse(&mut reader, &reg()).unwrap_err();
+    assert_eq!(error.message.plain(), "unknown target `group/path`");
+    assert_eq!(reader.cursor, 0, "a parser refusal resets the cursor");
+
+    let mut reader = Reader::new("example:group:path 2");
+    let error = argument.parse(&mut reader, &reg()).unwrap_err();
+    assert_eq!(error.key, "argument.id.invalid");
+    assert_eq!(reader.cursor, 0);
+}
+
 #[test]
 fn a_custom_argument_parses_completes_and_keeps_its_id() {
     let argument = ArgType::Custom(CustomArgument::new(
@@ -1729,15 +1851,11 @@ fn a_custom_argument_parses_completes_and_keeps_its_id() {
                 Err(Text::literal(format!("unknown machine `{input}`")))
             }
         },
-        |_, prefix| {
+        |_, prefix, _| {
             ["press", "furnace"]
                 .into_iter()
                 .filter(|machine| machine.starts_with(prefix))
-                .map(|text| CustomSuggestion {
-                    text: text.to_owned(),
-                    tooltip: None,
-                    replace_start: None,
-                })
+                .map(|text| sug((0, prefix.len()), text))
                 .collect()
         },
     ));
@@ -1778,13 +1896,157 @@ fn a_custom_argument_parses_completes_and_keeps_its_id() {
     );
 }
 
+/// `quest open <object:example:quest> <count:integer>` with a `Quotable` object whose parser
+/// hands back what it was given, between brackets so the decoded text is plain to see.
+fn quotable_quest_dispatcher(
+    suggest: impl Fn(&Registries, &str, &[ParsedArgument]) -> Vec<Suggestion> + Send + Sync + 'static,
+) -> Dispatcher {
+    let argument = ArgType::Custom(CustomArgument::new(
+        "example:quest",
+        CustomArgumentKind::Quotable,
+        |input| Ok(format!("[{input}]")),
+        suggest,
+    ));
+    let mut dispatcher = Dispatcher::new();
+    let quest = dispatcher.literal(0, "quest");
+    let open = dispatcher.literal(quest, "open");
+    let object = dispatcher.argument(open, "object", argument);
+    let count = dispatcher.argument(
+        object,
+        "count",
+        ArgType::Integer {
+            min: i32::MIN,
+            max: i32::MAX,
+        },
+    );
+    dispatcher.executes(count, "test");
+    dispatcher
+}
+
+#[test]
+fn a_quotable_custom_argument_reads_a_word_or_a_quoted_phrase_before_the_next_argument() {
+    // Brigadier's `StringReader.readString`: an unquoted word, or a phrase in either quote in
+    // which only that quote and `\` are escaped. The parser sees the decoded text, and the
+    // integer after it still parses.
+    let dispatcher = quotable_quest_dispatcher(|_, _, _| Vec::new());
+    let registries = reg();
+    for (typed, decoded) in [
+        ("1A2B3C4D5E6F7A8B", "1A2B3C4D5E6F7A8B"),
+        ("main.chapter-1+x", "main.chapter-1+x"),
+        (r##""#chapter_one""##, "#chapter_one"),
+        (r#""Some Title""#, "Some Title"),
+        (r#"'say "hi"'"#, r#"say "hi""#),
+        (r#""it's""#, "it's"),
+        (r#""a \"b\" \\ c""#, r#"a "b" \ c"#),
+        (r#"'it\'s'"#, "it's"),
+        (r#""""#, ""),
+        ("''", ""),
+        (r#""ünï cödé""#, "ünï cödé"),
+    ] {
+        let line = format!("quest open {typed} 7");
+        let parsed = dispatcher.parse(&line, &registries);
+        let (context, _) = parsed
+            .executable()
+            .unwrap_or_else(|e| panic!("{line}: {e:?}"));
+        assert_eq!(
+            context.get("object"),
+            Some(&Arg::Custom {
+                kind: "example:quest".into(),
+                value: format!("[{decoded}]"),
+            }),
+            "{line}"
+        );
+        assert_eq!(context.get("count"), Some(&Arg::Int(7)), "{line}");
+    }
+}
+
+#[test]
+fn a_quotable_custom_argument_refuses_a_bad_quote_with_brigadiers_cursor_errors() {
+    let dispatcher = quotable_quest_dispatcher(|_, _, _| Vec::new());
+    let registries = reg();
+    // `readStringUntil` ran off the end: `readerExpectedEndOfQuote` ("Unclosed quoted string")
+    // with the cursor at the end of the line.
+    let line = r#"quest open "Some Title 7"#;
+    let error = dispatcher
+        .parse(line, &registries)
+        .executable()
+        .unwrap_err();
+    assert_eq!(error.message, Text::tr("parsing.quote.expected.end", &[]));
+    assert_eq!(error.cursor, line.len());
+    // A `\` before anything but the active quote or `\`: `readerInvalidEscape` with that
+    // character, the cursor stepped back onto it. `\"` inside `'...'` is such an escape.
+    for (line, bad) in [
+        (r#"quest open "a\q" 7"#, "q"),
+        (r#"quest open 'a\"' 7"#, "\""),
+        (r#"quest open "a\'" 7"#, "'"),
+    ] {
+        let error = dispatcher
+            .parse(line, &registries)
+            .executable()
+            .unwrap_err();
+        assert_eq!(
+            error.message,
+            Text::tr("parsing.quote.escape", &[&bad]),
+            "{line}"
+        );
+        assert_eq!(error.cursor, line.find('\\').unwrap() + 1, "{line}");
+        assert!(error.context().unwrap().ends_with("<--[HERE]"), "{line}");
+    }
+    // A closed phrase must end the argument: Brigadier's `expectedArgumentSeparator`.
+    let line = r#"quest open "a"b 7"#;
+    assert!(dispatcher.parse(line, &registries).executable().is_err());
+}
+
+#[test]
+fn a_quotable_custom_completion_replaces_the_partly_quoted_prefix() {
+    // The type is handed the raw typed suffix, opening quote included, and its candidates are
+    // insertable syntax: a quoted title replaces the whole half-typed phrase.
+    let dispatcher = quotable_quest_dispatcher(|_, prefix, _| {
+        assert!(prefix.is_empty() || prefix.starts_with('"'), "{prefix}");
+        let typed = prefix.trim_start_matches('"');
+        ["Getting Started", "Getting Rich"]
+            .into_iter()
+            .filter(|title| title.starts_with(typed))
+            .map(|title| Suggestion {
+                range: (0, prefix.len()),
+                text: format!("\"{title}\""),
+                tooltip: None,
+                int_value: None,
+            })
+            .collect()
+    });
+    let registries = reg();
+    let typed = r#"quest open "Getting St"#;
+    let parse = dispatcher.parse(typed, &registries);
+    let (range, suggestions) = dispatcher.suggestions(&parse, typed.len(), &registries);
+    assert_eq!(range, (11, typed.len()), "from the opening quote");
+    assert_eq!(
+        suggestions
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect::<Vec<_>>(),
+        [r#""Getting Started""#]
+    );
+    let completed = suggestions[0].apply(typed);
+    assert_eq!(completed, r#"quest open "Getting Started""#);
+    let line = format!("{completed} 1");
+    let parsed = dispatcher.parse(&line, &registries);
+    assert_eq!(
+        parsed.executable().unwrap().0.get("object"),
+        Some(&Arg::Custom {
+            kind: "example:quest".into(),
+            value: "[Getting Started]".into(),
+        })
+    );
+}
+
 #[test]
 fn a_greedy_custom_argument_takes_the_rest_of_the_line() {
     let argument = ArgType::Custom(CustomArgument::new(
         "example:note",
         CustomArgumentKind::Greedy,
         |input| Ok(input.trim().to_owned()),
-        |_, _| Vec::new(),
+        |_, _, _| Vec::new(),
     ));
     let mut dispatcher = Dispatcher::new();
     let note = dispatcher.literal(0, "note");
@@ -1874,23 +2136,15 @@ fn a_custom_suggestion_replaces_only_the_token_it_names() {
         "example:pattern",
         CustomArgumentKind::Greedy,
         |input| Ok(input.to_owned()),
-        |_, prefix| {
+        |_, prefix, _| {
             let start = prefix.rfind(' ').map_or(0, |space| space + 1);
-            let mut out: Vec<CustomSuggestion> = ["stone", "dirt"]
+            let mut out: Vec<Suggestion> = ["stone", "dirt"]
                 .into_iter()
                 .filter(|block| block.starts_with(&prefix[start..]))
-                .map(|block| CustomSuggestion {
-                    text: block.to_owned(),
-                    tooltip: None,
-                    replace_start: Some(start),
-                })
+                .map(|block| sug((start, prefix.len()), block))
                 .collect();
             // A suggestion past the typed text is left out, never applied.
-            out.push(CustomSuggestion {
-                text: "nowhere".to_owned(),
-                tooltip: None,
-                replace_start: Some(prefix.len() + 1),
-            });
+            out.push(sug((prefix.len() + 1, prefix.len() + 1), "nowhere"));
             out
         },
     ));
@@ -1920,18 +2174,10 @@ fn a_split_character_completion_does_not_displace_a_valid_neighbor() {
         "example:unicode",
         CustomArgumentKind::Greedy,
         |input| Ok(input.to_owned()),
-        |_, _| {
+        |_, prefix, _| {
             vec![
-                CustomSuggestion {
-                    text: "emerald".into(),
-                    tooltip: None,
-                    replace_start: Some(0),
-                },
-                CustomSuggestion {
-                    text: "broken".into(),
-                    tooltip: None,
-                    replace_start: Some(1),
-                },
+                sug((0, prefix.len()), "emerald"),
+                sug((1, prefix.len()), "broken"),
             ]
         },
     ));
@@ -2055,31 +2301,40 @@ fn a_servers_own_profiler_keeps_its_node_and_is_not_sunrises() {
     assert!(!vanilla::game_dispatcher().has_sunrise_profiler());
 }
 
+/// A completion replacing `range` of the input with `text`.
+fn sug(range: Range, text: impl Into<String>) -> Suggestion {
+    Suggestion {
+        range,
+        text: text.into(),
+        tooltip: None,
+        int_value: None,
+    }
+}
+
 /// The provider a test argument type declares: it records every request and answers a fixed
 /// candidate list, so a test can see what the engine asked and which candidates it kept.
 type ProviderCalls =
     std::sync::Arc<std::sync::Mutex<Vec<(String, Vec<(String, String)>, Option<(u128, String)>)>>>;
 
-fn provider_argument(candidates: Vec<CustomSuggestion>, calls: ProviderCalls) -> ArgType {
+fn provider_argument(candidates: Vec<Suggestion>, calls: ProviderCalls) -> ArgType {
     let argument = CustomArgument::new(
         "example:machine",
         CustomArgumentKind::Word,
         |input| Ok(input.to_owned()),
-        |_, _| panic!("the type's own suggest is not called once it declares a provider"),
-    )
-    .with_provider(move |reg, prefix, arguments| {
-        calls.lock().unwrap().push((
-            prefix.to_owned(),
-            arguments
-                .iter()
-                .map(|argument| (argument.name.clone(), argument.text.clone()))
-                .collect(),
-            reg.sender
-                .as_ref()
-                .map(|sender| (sender.uuid, sender.name.clone())),
-        ));
-        candidates.clone()
-    });
+        move |reg, prefix, arguments| {
+            calls.lock().unwrap().push((
+                prefix.to_owned(),
+                arguments
+                    .iter()
+                    .map(|argument| (argument.name.clone(), argument.text.clone()))
+                    .collect(),
+                reg.sender
+                    .as_ref()
+                    .map(|sender| (sender.uuid, sender.name.clone())),
+            ));
+            candidates.clone()
+        },
+    );
     ArgType::Custom(argument)
 }
 
@@ -2090,7 +2345,7 @@ fn provider_dispatcher(argument: ArgType) -> Dispatcher {
         "example:mode",
         CustomArgumentKind::Word,
         |input| Ok(input.to_owned()),
-        |_, _| Vec::new(),
+        |_, _, _| Vec::new(),
     ));
     let mut dispatcher = Dispatcher::new();
     let command = dispatcher.literal(0, "machine");
@@ -2104,25 +2359,16 @@ fn provider_dispatcher(argument: ArgType) -> Dispatcher {
 #[test]
 fn a_declared_provider_is_asked_with_the_prefix_the_earlier_arguments_and_the_sender() {
     let calls: ProviderCalls = Default::default();
+    let at = |text: &str, tooltip: Option<&str>| Suggestion {
+        tooltip: tooltip.map(Into::into),
+        ..sug((0, 2), text)
+    };
     let dispatcher = provider_dispatcher(provider_argument(
-        [
-            CustomSuggestion {
-                text: "press".into(),
-                tooltip: Some("a press".into()),
-                replace_start: None,
-            },
-            CustomSuggestion {
-                text: "furnace".into(),
-                tooltip: None,
-                replace_start: None,
-            },
-            CustomSuggestion {
-                text: "extra/press".into(),
-                tooltip: None,
-                replace_start: None,
-            },
-        ]
-        .to_vec(),
+        vec![
+            at("press", Some("a press")),
+            at("furnace", None),
+            at("extra/press", None),
+        ],
         calls.clone(),
     ));
     let mut registries = reg();
@@ -2136,14 +2382,17 @@ fn a_declared_provider_is_asked_with_the_prefix_the_earlier_arguments_and_the_se
         typed.len(),
         &registries,
     );
-    // SharedSuggestionProvider.suggest: the prefix at the start, or after a `.`, `_` or `/`; the
-    // merged list is sorted by text ignoring case.
+    // The mod decides what it offers; the merged list is sorted by text ignoring case.
     assert_eq!(
         suggestions
             .iter()
             .map(|s| (s.text.as_str(), s.tooltip.as_deref()))
             .collect::<Vec<_>>(),
-        [("extra/press", None), ("press", Some("a press"))]
+        [
+            ("extra/press", None),
+            ("furnace", None),
+            ("press", Some("a press"))
+        ]
     );
     assert_eq!(
         calls.lock().unwrap().as_slice(),
@@ -2156,28 +2405,20 @@ fn a_declared_provider_is_asked_with_the_prefix_the_earlier_arguments_and_the_se
 }
 
 #[test]
-fn a_provider_answer_is_capped_after_matching_and_rejecting_candidates() {
+fn a_provider_answer_is_capped_after_rejecting_candidates() {
     let calls: ProviderCalls = Default::default();
-    let none = |text: String, tooltip: Option<String>| CustomSuggestion {
-        text,
+    let none = |text: String, tooltip: Option<String>| Suggestion {
         tooltip,
-        replace_start: None,
+        ..sug((0, 2), text)
     };
-    // 1,000 candidates the typed text does not match, then the ones it does: the cap counts what
-    // the reply keeps, so the non-matches before a match cost it nothing.
-    let mut candidates: Vec<CustomSuggestion> = (0..MAX_PROVIDER_SUGGESTIONS)
-        .map(|i| none(format!("x{i}"), None))
-        .collect();
-    candidates.push(none(
-        // A match past STRING_UTF8's 32767 UTF-16 code units: dropped, and no budget spent.
-        format!("pr{}", "a".repeat(MAX_SUGGESTION_TEXT)),
-        None,
-    ));
-    candidates.push(none(
-        "prtip".into(),
-        // The NBT string limit for a tooltip is 65535 modified-UTF-8 bytes.
-        Some("b".repeat(MAX_SUGGESTION_TOOLTIP + 1)),
-    ));
+    // Candidates the engine rejects (past STRING_UTF8's 32767 UTF-16 code units, a tooltip past
+    // the NBT string's 65535 modified-UTF-8 bytes, a range past the typed text) come first: the
+    // cap counts what the reply keeps, so they cost it nothing.
+    let mut candidates = vec![
+        none(format!("pr{}", "a".repeat(MAX_SUGGESTION_TEXT)), None),
+        none("prtip".into(), Some("b".repeat(MAX_SUGGESTION_TOOLTIP + 1))),
+        sug((3, 5), "prfar"),
+    ];
     candidates.push(none("press".into(), Some("a press".into())));
     candidates.extend((0..MAX_PROVIDER_SUGGESTIONS).map(|i| none(format!("prm{i}"), None)));
     let dispatcher = provider_dispatcher(provider_argument(candidates, calls.clone()));
@@ -2190,13 +2431,8 @@ fn a_provider_answer_is_capped_after_matching_and_rejecting_candidates() {
     );
     assert_eq!(calls.lock().unwrap().len(), 1, "one request, one answer");
     let texts: Vec<&str> = suggestions.iter().map(|s| s.text.as_str()).collect();
-    // The cap keeps 1,000 candidates, from the first one that matches: the matching candidate
-    // after 1,000 non-matches is offered.
     assert_eq!(texts.len(), MAX_PROVIDER_SUGGESTIONS);
-    assert!(
-        texts.contains(&"press"),
-        "a match after 1,000 non-matches is still offered"
-    );
+    assert!(texts.contains(&"press"));
     assert_eq!(
         suggestions
             .iter()
@@ -2206,13 +2442,12 @@ fn a_provider_answer_is_capped_after_matching_and_rejecting_candidates() {
         "its tooltip survives"
     );
     assert!(
-        !texts.iter().any(|text| text.starts_with("prt")),
-        "the candidate whose tooltip is past the NBT string limit is dropped, by name"
+        !texts
+            .iter()
+            .any(|text| text.starts_with("prt") || *text == "prfar"),
+        "a rejected candidate is dropped alone"
     );
-    assert!(
-        texts.iter().all(|text| text.len() <= MAX_SUGGESTION_TEXT),
-        "the 32768-code-unit candidate is dropped, by name"
-    );
+    assert!(texts.iter().all(|text| text.len() <= MAX_SUGGESTION_TEXT));
     assert!(
         texts.contains(&"prm998"),
         "the 1,000th kept candidate stays"
@@ -2225,12 +2460,11 @@ fn a_provider_answer_is_capped_after_matching_and_rejecting_candidates() {
 
 #[test]
 fn candidates_equal_to_the_input_or_repeated_spend_none_of_the_cap() {
-    let none = |text: &str, tooltip: Option<String>| CustomSuggestion {
-        text: text.into(),
+    let none = |text: &str, tooltip: Option<String>| Suggestion {
         tooltip,
-        replace_start: None,
+        ..sug((0, 2), text)
     };
-    let answer = |mut candidates: Vec<CustomSuggestion>| {
+    let answer = |mut candidates: Vec<Suggestion>| {
         candidates.push(none("press", None));
         let dispatcher = provider_dispatcher(provider_argument(candidates, Default::default()));
         let registries = reg();
@@ -2257,37 +2491,6 @@ fn candidates_equal_to_the_input_or_repeated_spend_none_of_the_cap() {
             .collect(),
     );
     assert_eq!(texts, ["prdup", "press"]);
-}
-
-#[test]
-fn only_the_argument_a_provider_owns_is_marked_as_owned() {
-    let calls: ProviderCalls = Default::default();
-    let dispatcher = provider_dispatcher(provider_argument(
-        vec![CustomSuggestion {
-            text: "press".into(),
-            tooltip: None,
-            replace_start: None,
-        }],
-        calls,
-    ));
-    let registries = reg();
-    // The provider's own argument: its answer is what the reply shows, untouched.
-    let typed = "machine use fast pr";
-    let (_, suggestions, owned) = dispatcher.client_suggestions_owned(
-        &dispatcher.parse(typed, &registries),
-        typed.len(),
-        &registries,
-    );
-    assert_eq!(suggestions.len(), 1);
-    assert!(owned, "the type declares a provider for this argument");
-    // One word earlier, a type that declares nothing keeps its completions open to a listener.
-    let typed = "machine use fa";
-    let (_, _, owned) = dispatcher.client_suggestions_owned(
-        &dispatcher.parse(typed, &registries),
-        typed.len(),
-        &registries,
-    );
-    assert!(!owned, "`suggest` alone leaves the completions open");
 }
 
 /// A syntax error at byte `cursor` of `input`.

@@ -1,0 +1,3 @@
+ids = ["method:prelude::ClientViewClientHost::tick_rate", "type:ClientTickRate"]
+why = "#5329: ClientViewClientHost::tick_rate reads the client's TickRateManager state as the server last sent it (ClientboundTickingStatePacket / ClientboundTickingStepPacket): the tick rate, whether ticking is frozen and the frozen steps left to run, for TPS and tick-freeze HUDs. None outside a client world (the title screen, before login, while reconfiguring). New method and type only."
+migrate = "Nothing to change."

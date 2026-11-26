@@ -1,6 +1,5 @@
 """Break-glass stable patch releases (docs/release-flow.md "Break-glass patch releases"): the legs a patch's changes
 select, the rules never waived, the two approvals, and how the workflows hold to them."""
-import ast
 import contextlib
 import io
 import json
@@ -12,7 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 from tests import test_daily_summary as daily
-from tests.test_release_branches import REPO, git_in, workflow
+from tests.test_release_branches import RELEASE, REPO, daily_run, daily_runs, git_in, repository, workflow
 from tools import release_train as train
 from tools.ci import daily_summary as summary
 from tools.ci import nightly
@@ -53,14 +52,14 @@ def history(folder, *changes):
     git("add", "-A")
     git("commit", "-q", "-m", "0.1.0")
     parent = git("rev-parse", "HEAD")
+    # Each entry goes straight into the index, with nothing on disk: a symbolic link is the entry git stores for one
+    # (mode 120000, its target as content), and a file name may hold a line break no Windows file system allows,
+    # which Git for Windows takes into the index only with core.protectNTFS off.
     for path, kind in changes:
-        target = repo / path
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if kind == "link":
-            target.symlink_to("a.md")
-        else:
-            target.write_text("fix\n")
-        subprocess.run(["git", "add", "--", path], cwd=repo, check=True)
+        mode, content = ("120000", "a.md") if kind == "link" else ("100644", "fix\n")
+        blob = subprocess.run(["git", "hash-object", "-w", "--stdin"], input=content, cwd=repo, text=True,
+                              capture_output=True, check=True).stdout.strip()
+        git("-c", "core.protectNTFS=false", "update-index", "--add", "--cacheinfo", f"{mode},{blob},{path}")
     git("commit", "-q", "--allow-empty", "-m", "cherry-pick")
     return parent, git("rev-parse", "HEAD")
 
@@ -204,9 +203,8 @@ class LegsTests(unittest.TestCase):
         self.assertEqual(sorted(special), ["docs/Cargo.toml\nCargo.lock", "docs/modding/link.md"])
 
 
-def run_record(id, created="2026-11-20T12:00:00Z", branch=train.RELEASE_BRANCH, head="f" * 40, conclusion="success"):
-    return {"id": id, "head_branch": branch, "head_sha": head, "created_at": created, "conclusion": conclusion,
-            "html_url": f"https://github.com/{REPO}/actions/runs/{id}"}
+def run_record(id, head, created="2026-11-20T12:00:00Z", branch=train.RELEASE_BRANCH, conclusion="success"):
+    return daily_run(id, head, branch=branch, conclusion=conclusion) | {"created_at": created}
 
 
 def legs_jobs(sha, legs):
@@ -218,60 +216,84 @@ def full(sha, green=True):
 
 
 class EvidenceTests(unittest.TestCase):
-    SHA = "c" * 40
+    def setUp(self):
+        folder = self.enterContext(tempfile.TemporaryDirectory())
+        git, (self.older, self.sha, self.tip) = repository(folder)
+        git("push", "-q", "origin", f"{self.tip}:{RELEASE}")
+        self.enterContext(mock.patch.object(train, "ROOT", Path(folder, "clone")))
+        self.enterContext(mock.patch.object(train, "REPO", REPO))
+
+    def admitted(self, *runs):
+        records = [(run, [{"name": name, "conclusion": conclusion, "status": "completed",
+                           "run_id": run["id"], "run_attempt": run["run_attempt"]} for name, conclusion in jobs.items()])
+                   for run, jobs in runs]
+        with mock.patch.object(train, "gh_json", side_effect=daily_runs(*records)):
+            return train.break_glass_runs()
 
     def test_a_break_glass_run_counts_for_the_legs_it_passed_and_no_fewer(self):
+        sha = self.sha
         legs = ALWAYS + ["book-quickstart"]
-        run = run_record(1)
-        self.assertEqual(train.legs_passed(self.SHA, legs, [(run, legs_jobs(self.SHA, legs))]), run["html_url"])
-        self.assertEqual(train.legs_passed(self.SHA, legs, [(run, legs_jobs(self.SHA, legs + ["shards"]))]),
+        run = run_record(1, self.tip)
+        jobs = legs_jobs(sha, legs)
+        self.assertEqual(train.legs_passed(sha, legs, self.admitted((run, jobs))), run["html_url"])
+        self.assertEqual(train.legs_passed(sha, legs, self.admitted((run, legs_jobs(sha, legs + ["shards"])))),
                          run["html_url"], "more legs than needed")
-        for jobs, branch in ((legs_jobs(self.SHA, ALWAYS), train.RELEASE_BRANCH),
-                             ({**legs_jobs(self.SHA, legs), f"legs {self.SHA} sdk": "failure"}, train.RELEASE_BRANCH),
-                             (legs_jobs("d" * 40, legs), train.RELEASE_BRANCH),
-                             (legs_jobs(self.SHA, legs), "main")):
-            with self.subTest(jobs=jobs, branch=branch):
-                self.assertEqual(train.legs_passed(self.SHA, legs, [(run_record(2, branch=branch), jobs)]), "")
-        # A run that failed or was cancelled after its legs jobs passed is no evidence.
-        for conclusion in ("failure", "cancelled"):
-            with self.subTest(conclusion=conclusion):
-                self.assertEqual(train.legs_passed(self.SHA, legs, [(run_record(5, conclusion=conclusion),
-                                                                     legs_jobs(self.SHA, legs))]), "")
+        for evidence in ((run, legs_jobs(sha, ALWAYS)),
+                         (run, jobs | {f"legs {sha} sdk": "failure"}),
+                         (run, legs_jobs(self.tip, legs)),
+                         (run_record(2, self.tip, branch="main"), jobs),
+                         (run_record(2, self.older), jobs),
+                         (run | {"conclusion": "failure"}, jobs),
+                         (run | {"conclusion": "cancelled"}, jobs)):
+            with self.subTest(evidence=evidence):
+                self.assertEqual(train.legs_passed(sha, legs, self.admitted(evidence)), "")
         # Two runs that each passed some of the legs are not one run that passed them all.
-        split = [(run_record(3), legs_jobs(self.SHA, ALWAYS)), (run_record(4), legs_jobs(self.SHA, ["book-quickstart"]))]
-        self.assertEqual(train.legs_passed(self.SHA, legs, split), "")
+        split = self.admitted((run, legs_jobs(sha, ALWAYS)), (run_record(3, self.tip), legs_jobs(sha, ["book-quickstart"])))
+        self.assertEqual(train.legs_passed(sha, legs, split), "")
 
-    def test_the_newest_full_daily_of_exactly_the_commit_decides(self):
-        green, red = run_record(1, "2026-11-19T09:00:00Z"), run_record(2, "2026-11-20T09:00:00Z")
-        skipped = run_record(3, "2026-11-21T09:00:00Z")  # a scheduled run that found the commit already done
-        partial = run_record(4, "2026-11-21T10:00:00Z")
-        runs = [(partial, {f"summary {self.SHA} (break-glass legs)": "success", **legs_jobs(self.SHA, ALWAYS)}),
-                (skipped, {f"summary {self.SHA}": "skipped"}), (red, full(self.SHA, green=False)),
-                (green, full(self.SHA))]
-        self.assertEqual(train.newest_full_daily(self.SHA, runs), (red["html_url"], False))
-        self.assertEqual(train.newest_full_daily(self.SHA, runs[1:2] + runs[3:]), (green["html_url"], True),
-                         "a skipped scheduled run is no verdict")
-        # The branch moved on before the follow-up ran: its head_sha is the newer head, its jobs name the commit.
-        moved = run_record(5, head="e" * 40)
-        self.assertEqual(train.newest_full_daily(self.SHA, [(moved, full(self.SHA))]), (moved["html_url"], True))
-        self.assertIsNone(train.newest_full_daily(self.SHA, [(moved, full("e" * 40))]))
-        self.assertIsNone(train.newest_full_daily(self.SHA, [(green, full(self.SHA))], since=train.github_time("2026-11-20T00:00:00Z")),
-                          "a break-glass parent's follow-up runs after its publication")
-        self.assertIsNone(train.newest_full_daily(self.SHA, [(green, full(self.SHA))], since=train.github_time(green["created_at"])),
-                          "a run created in the publication's second is not after it")
-        # Compared as times, not text: the same instant in another zone is not after it, a fraction of a second is.
+    def test_the_newest_admitted_full_daily_of_exactly_the_commit_decides(self):
+        sha = self.sha
+        green = run_record(1, self.tip, "2026-11-19T09:00:00Z")
+        red = run_record(2, self.tip, "2026-11-20T09:00:00Z", conclusion="failure")
+        skipped = run_record(3, self.tip, "2026-11-21T09:00:00Z")  # a scheduled run that found the commit already done
+        partial = run_record(4, self.tip, "2026-11-21T10:00:00Z")
+        inconclusive = [(partial, {f"summary {sha} (break-glass legs)": "success", **legs_jobs(sha, ALWAYS)}),
+                        (partial, {f"summary {sha} (dry run)": "success"}),
+                        (skipped, {f"summary {sha}": "skipped"}),
+                        (red | {"conclusion": "cancelled"}, full(sha, green=False))]
+        for evidence in inconclusive:
+            with self.subTest(evidence=evidence):
+                self.assertIsNone(train.newest_full_daily(sha, self.admitted(evidence)))
+        for verdict in (full(sha, green=False), full(sha)):
+            runs = self.admitted((red, verdict), (green, full(sha)))
+            self.assertEqual(train.newest_full_daily(sha, runs), (red["html_url"], False))
+        # A failed summary is red even if the run and its green marker somehow succeeded.
+        self.assertEqual(train.newest_full_daily(sha, self.admitted((green, full(sha) | {f"summary {sha}": "failure"}))),
+                         (green["html_url"], False))
+        self.assertEqual(train.newest_full_daily(sha, self.admitted((green, full(sha)))), (green["html_url"], True))
+        self.assertIsNone(train.newest_full_daily(sha, self.admitted((green, full(self.tip)))))
+
+    def test_a_full_daily_without_provenance_or_tested_ancestry_supplies_no_verdict(self):
+        sha = self.sha
+        old = run_record(1, self.older)
+        bad_ref = run_record(2, self.tip)
+        sdk, = bad_ref["referenced_workflows"]
+        bad_ref["referenced_workflows"] = [sdk | {"ref": "refs/tags/release/26.3"}]
+        for run in (old, bad_ref):
+            with self.subTest(run=run):
+                self.assertIsNone(train.newest_full_daily(sha, self.admitted((run, full(sha)))))
+                failed = run | {"conclusion": "failure"}
+                self.assertIsNone(train.newest_full_daily(sha, self.admitted((failed, full(sha, green=False)))))
+
+    def test_the_full_daily_cutoff_is_strict_and_compares_instants(self):
         since = train.github_time("2026-11-20T00:00:00Z")
-        self.assertIsNone(train.newest_full_daily(self.SHA, [(run_record(8, "2026-11-20T01:00:00+01:00"),
-                                                              full(self.SHA))], since=since))
-        later = run_record(9, "2026-11-20T00:00:00.5+00:00")
-        self.assertEqual(train.newest_full_daily(self.SHA, [(later, full(self.SHA))], since=since),
-                         (later["html_url"], True))
-        # The run's own conclusion decides too: a failed run is red whatever its green job says, a cancelled one no
-        # verdict.
-        failed, cancelled = run_record(6, conclusion="failure"), run_record(7, conclusion="cancelled")
-        self.assertEqual(train.newest_full_daily(self.SHA, [(failed, full(self.SHA))]), (failed["html_url"], False))
-        self.assertEqual(train.newest_full_daily(self.SHA, [(cancelled, full(self.SHA)), (green, full(self.SHA))]),
-                         (green["html_url"], True))
+        for created, accepted in (("2026-11-19T09:00:00Z", False), ("2026-11-20T00:00:00Z", False),
+                                  ("2026-11-20T01:00:00+01:00", False), ("2026-11-20T00:00:00.5+00:00", True)):
+            with self.subTest(created=created):
+                run = run_record(1, self.tip, created)
+                runs = self.admitted((run, full(self.sha)))
+                self.assertEqual(train.newest_full_daily(self.sha, runs, since=since),
+                                 (run["html_url"], True) if accepted else None)
 
 
 class ProblemsTests(unittest.TestCase):
@@ -288,8 +310,8 @@ class ProblemsTests(unittest.TestCase):
 
     @staticmethod
     def evidence(sha, parent_sha, legs=("book-quickstart",)):
-        return [(run_record(2), legs_jobs(sha, ALWAYS + list(legs))),
-                (run_record(1, "2026-11-19T09:00:00Z"), full(parent_sha))]
+        return [(run_record(2, sha), legs_jobs(sha, ALWAYS + list(legs))),
+                (run_record(1, sha, "2026-11-19T09:00:00Z"), full(parent_sha))]
 
     def test_a_patch_whose_legs_gate_and_parent_daily_passed_may_ship(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -303,14 +325,14 @@ class ProblemsTests(unittest.TestCase):
             parent, sha = history(folder, ("crates/sunrise-world/src/lib.rs", "file"))
             release = train.Release(PARENT_TAG, parent, train.github_time("2026-11-18T00:00:00Z"))
             good = self.evidence(sha, parent, CRATES)
-            own_red = [(run_record(3, "2026-11-20T13:00:00Z"), full(sha, green=False))]
+            own_red = [(run_record(3, sha, "2026-11-20T13:00:00Z"), full(sha, green=False))]
             for change, reason in (
                     ({"tag": "26.3-0.2.0"}, "is not a patch release of 26.3-0.1.0"),
                     ({"tag": "26.3-1.0.0"}, "is not a patch release of 26.3-0.1.0"),
                     ({"runs": good[1:]}, "has no real daily run that passed the legs"),
                     ({"runs": self.evidence(sha, parent, CRATES[:2])}, "passed the legs"),
                     ({"runs": good[:1]}, "the newest full daily run of 26.3-0.1.0"),
-                    ({"runs": good[:1] + [(run_record(1), full(parent, green=False))]}, "failed"),
+                    ({"runs": good[:1] + [(run_record(1, sha), full(parent, green=False))]}, "failed"),
                     ({"runs": own_red + good}, f"the newest full daily run of {sha} failed"),
                     ({"gate": False}, "gate jobs (lint, verify, verify-static) did not all pass")):
                 with self.subTest(change=change):
@@ -324,10 +346,10 @@ class ProblemsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             parent, sha = history(folder, ("docs/a.md", "file"))
             release = train.Release(PARENT_TAG, parent, train.github_time("2026-11-20T00:00:00Z"))
-            legs = (run_record(2), legs_jobs(sha, ALWAYS))
-            green_before = (run_record(1, "2026-11-19T09:00:00Z"), full(parent))
-            green_after = (run_record(3, "2026-11-20T05:00:00Z"), full(parent))
-            red_after = (run_record(4, "2026-11-20T09:00:00Z", conclusion="failure"), full(parent, green=False))
+            legs = (run_record(2, sha), legs_jobs(sha, ALWAYS))
+            green_before = (run_record(1, sha, "2026-11-19T09:00:00Z"), full(parent))
+            green_after = (run_record(3, sha, "2026-11-20T05:00:00Z"), full(parent))
+            red_after = (run_record(4, sha, "2026-11-20T09:00:00Z", conclusion="failure"), full(parent, green=False))
             for runs, problem in (([legs], "is missing"), ([legs, green_before], "is missing"),
                                   ([legs, green_after, green_before], None), ([legs, red_after, green_after], "failed"),
                                   ([legs, red_after, green_before], "failed")):
@@ -600,16 +622,13 @@ class WorkflowTests(unittest.TestCase):
         for name in ("break-glass", *bound):
             with self.subTest(job=name):
                 self.assertIn("github.run_attempt == '1'", jobs[name]["if"])
-        for name in ("build", "musl-build", "musl-attach"):
-            with self.subTest(job=name):
-                self.assertIn("(needs.pick.outputs.break_glass == 'false' || github.run_attempt == '1')",
-                              " ".join(jobs[name]["if"].split()) if name == "musl-attach" else f"({jobs[name]['if']})")
+        self.assertIn("(needs.pick.outputs.break_glass == 'false' || github.run_attempt == '1')",
+                      " ".join(jobs["build"]["if"].split()))
         for name in ("exporters", "sign", "publish"):
             with self.subTest(job=name):
                 self.assertIn("break-glass", jobs[name]["needs"])
                 self.assertIn("(needs.break-glass.result == 'success' && github.run_attempt == '1')", jobs[name]["if"])
-        for name in ("build", "musl-build"):
-            self.assertIn("exporters", jobs[name]["needs"])
+        self.assertIn("exporters", jobs["build"]["needs"])
 
     def test_the_surface_is_checked_at_the_pick_and_again_before_the_tag(self):
         jobs = workflow("nightly-build.yml")["jobs"]
@@ -634,20 +653,15 @@ class WorkflowTests(unittest.TestCase):
     def test_no_release_job_runs_cargo_in_the_checkout(self):
         # The checkout is the candidate: its .cargo/config.toml, [patch] or build scripts would run. Signatures are
         # checked with OpenSSL (nightly.py verify-sums); the only build is the parent's sunrise-stage, from the
-        # parent's own tree (nightly.parent_stage).
+        # parent's own tree (nightly.parent_stage, whose cargo run test_stable_mod_api.JudgeBuildTests checks).
         # The SDK's and the mod tool's signing, checking and publishing jobs build nothing either.
-        for file, names in (("nightly-build.yml", ("pick", "break-glass", "sign", "publish", "musl-attach")),
+        for file, names in (("nightly-build.yml", ("pick", "break-glass", "sign", "publish")),
                             ("sdk-publish.yml", ("sign", "publish")), ("mod-tool.yml", ("sign", "verify", "publish"))):
             jobs = workflow(file)["jobs"]
             for name in names:
                 for step in jobs[name]["steps"]:
                     with self.subTest(workflow=file, job=name, step=step.get("name", step.get("uses"))):
                         self.assertNotRegex(step.get("run", ""), r"(^|\s)cargo\s")
-        # And nightly.py, which those jobs run, starts cargo in one place: parent_stage, on the parent's tree.
-        tree = ast.parse(Path(nightly.__file__).read_text())
-        starts = {function.name for function in ast.walk(tree) if isinstance(function, ast.FunctionDef)
-                  for node in ast.walk(function) if isinstance(node, ast.Constant) and node.value == "cargo"}
-        self.assertEqual(starts, {"parent_stage"})
 
     def test_the_full_daily_follows_every_published_stable_release(self):
         full_daily = workflow("nightly-build.yml")["jobs"]["full-daily"]

@@ -23,9 +23,7 @@ pub(super) fn identifier(name: &str) -> Result<String, DecodeError> {
         || !path.bytes().all(|c| valid(c) || c == b'/')
         || path.is_empty()
     {
-        return Err(DecodeError::Registry(format!(
-            "invalid registry identifier: {name}"
-        )));
+        return Err(DecodeError::InvalidIdentifier(name.to_owned()));
     }
     Ok(format!("{namespace}:{path}"))
 }

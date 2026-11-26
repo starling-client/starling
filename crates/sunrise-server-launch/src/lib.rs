@@ -4,6 +4,7 @@
 pub mod config;
 mod install;
 pub mod prune;
+pub mod resources;
 
 use config::Config;
 pub use install::Install;
@@ -12,6 +13,8 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Stdio},
 };
+/// Prepared-file contract for tools that launch the game.
+pub use sunrise_core::prepared_profile;
 
 /// The game's program names, most specific first: the server build (the game without sound or
 /// controllers, so it needs neither ALSA nor udev on Linux; `sunrise-server-linux-x86_64.tar.gz` holds it),
@@ -120,16 +123,14 @@ impl std::error::Error for EngineCommandError {
 pub struct Engine {
     pub command: Command,
     pub resources: PathBuf,
+    /// The supervisor must prepare these game files before starting this command.
+    pub resources_pending: bool,
 }
 
 /// Describe the engine the supervisor at `supervisor` would run in `dir`.
 /// Uses the same config, install/current, PATH, resources and command builder as the supervisor.
-/// Does not launch the engine, run a preflight query, write properties, or download anything.
-pub fn engine_command(supervisor: &Path, dir: &Path) -> Result<Command, EngineCommandError> {
-    engine(supervisor, dir).map(|engine| engine.command)
-}
-
-/// [`engine_command`], with the resources folder it found.
+/// If `resources_pending` is true, the command describes the selected folder but cannot be run
+/// until the supervisor prepares it. This function starts nothing, writes nothing and downloads nothing.
 pub fn engine(supervisor: &Path, dir: &Path) -> Result<Engine, EngineCommandError> {
     // Not `fs::canonicalize`: its `\\?\` prefix on Windows would reach the game's program and resources
     // paths, where a later `/` in a string no longer means a separator.
@@ -146,8 +147,18 @@ pub fn engine(supervisor: &Path, dir: &Path) -> Result<Engine, EngineCommandErro
     let install = Install::around(&supervisor);
     let program = program_near(&config, dir, install.as_ref(), Some(&supervisor))
         .map_err(EngineCommandError::Program)?;
-    let resources =
-        resources(&config, dir, Some(&program)).map_err(EngineCommandError::Resources)?;
+    let (resources, resources_pending) = match resources::select(
+        &config,
+        dir,
+        Some(&program),
+        install.as_ref().map(|install| install.root.as_path()),
+        false,
+    )
+    .map_err(EngineCommandError::Resources)?
+    {
+        resources::Selection::Ready(path) => (path, false),
+        resources::Selection::NeedsPreparation(path) => (path, true),
+    };
     let command =
         command(&program, &resources, dir, config.engine.low_memory).map_err(|source| {
             EngineCommandError::Io {
@@ -159,49 +170,15 @@ pub fn engine(supervisor: &Path, dir: &Path) -> Result<Engine, EngineCommandErro
         path: resources.clone(),
         source,
     })?;
-    Ok(Engine { command, resources })
+    Ok(Engine {
+        command,
+        resources,
+        resources_pending,
+    })
 }
 
 /// The Minecraft version this server is pinned to; prepared game files must be stamped with it.
 pub const GAME_VERSION: &str = sunrise_core::version::VERSION_ID;
-
-/// Where the prepared game files may be, in the order they are tried.
-pub fn resource_candidates(config: &Config, dir: &Path, program: Option<&Path>) -> Vec<PathBuf> {
-    if !config.engine.resources.is_empty() {
-        return vec![dir.join(&config.engine.resources)];
-    }
-    let version = GAME_VERSION;
-    let mut out = vec![dir.join("resources")];
-    // A release folder or a checkout: .local/sunrise-client/<version> beside the program or above it.
-    if let Some(program) = program {
-        for ancestor in program.ancestors().skip(1).take(4) {
-            out.push(ancestor.join(".local/sunrise-client").join(version));
-        }
-    }
-    out
-}
-
-/// The prepared game files: a folder holding the manifest every `sunrise-prepare` run writes
-/// (`asset-index.json` comes only with the optional sounds, which a server doesn't need).
-pub fn resources(config: &Config, dir: &Path, program: Option<&Path>) -> Result<PathBuf, String> {
-    let candidates = resource_candidates(config, dir, program);
-    candidates
-        .iter()
-        .find(|d| d.join("sunrise-resources.json").is_file())
-        .cloned()
-        .ok_or_else(|| {
-            let tried: Vec<String> = candidates
-                .iter()
-                .map(|d| format!("  {}", d.display()))
-                .collect();
-            format!(
-                "no prepared game files. Sunrise reads them from your own copy of Minecraft 26.3:\n\
-                 prepare them with `sunrise-prepare --prepare --server-jar PATH` (or the launcher) and copy \
-                 the folder to resources/ here, or set engine.resources in server.toml. Looked in:\n{}",
-                tried.join("\n")
-            )
-        })
-}
 
 /// The command the supervisor runs, without starting it.
 pub fn command(
@@ -266,6 +243,35 @@ pub fn control_path(dir: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use prepared_profile::{MANIFEST, Profile, SCHEMA, STAMP};
+
+    fn prepared_server(dir: &Path) {
+        std::fs::create_dir_all(dir).unwrap();
+        for name in [
+            "facts.json",
+            "block-tags.json",
+            "commands.json",
+            "registries.json",
+        ] {
+            std::fs::write(dir.join(name), "{}").unwrap();
+        }
+        std::fs::write(
+            dir.join(MANIFEST),
+            serde_json::json!({
+                "schema": SCHEMA,
+                "minecraft": GAME_VERSION,
+                "profile": "server",
+                "server_files": ["facts.json"],
+            })
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join(STAMP),
+            serde_json::json!({"output_version": Profile::Server.output_version()}).to_string(),
+        )
+        .unwrap();
+    }
 
     #[test]
     fn library_command_uses_the_given_supervisor_and_config_without_starting() {
@@ -273,8 +279,7 @@ mod tests {
         let root = dunce::canonicalize(std::env::temp_dir())
             .unwrap()
             .join(format!("sunrise-server-command-{}", std::process::id()));
-        std::fs::create_dir_all(&root).unwrap();
-        std::fs::write(root.join("sunrise-resources.json"), "{}").unwrap();
+        prepared_server(&root);
         let bin = root.join("bin");
         let server = root.join("server");
         std::fs::create_dir_all(&bin).unwrap();
@@ -290,7 +295,9 @@ mod tests {
         config.engine.resources = root.to_str().unwrap().into();
         config.engine.low_memory = true;
         std::fs::write(server.join("server.toml"), crate::config::render(&config)).unwrap();
-        let command = crate::engine_command(&supervisor, &server).unwrap();
+        let described = engine(&supervisor, &server).unwrap();
+        assert!(!described.resources_pending);
+        let command = described.command;
         assert_eq!(command.get_program(), game);
         assert_eq!(command.get_current_dir(), Some(server.as_path()));
         let args: Vec<_> = command.get_args().map(std::ffi::OsStr::to_owned).collect();
@@ -318,21 +325,21 @@ mod tests {
         std::fs::write(&external, "not executable either").unwrap();
         config.engine.path = "../external-engine".into();
         std::fs::write(server.join("server.toml"), crate::config::render(&config)).unwrap();
+        let described = engine(&supervisor, &server).unwrap();
+        assert!(!described.resources_pending);
         assert_eq!(
-            crate::engine_command(&supervisor, &server)
-                .unwrap()
-                .get_program(),
+            described.command.get_program(),
             server.join("../external-engine")
         );
         config.backups.every = "6 hours".into();
         std::fs::write(server.join("server.toml"), crate::config::render(&config)).unwrap();
         assert!(matches!(
-            crate::engine_command(&supervisor, &server),
+            engine(&supervisor, &server),
             Err(EngineCommandError::Configuration(_))
         ));
         std::fs::write(server.join("server.toml"), "not TOML").unwrap();
         assert!(matches!(
-            crate::engine_command(&supervisor, &server),
+            engine(&supervisor, &server),
             Err(EngineCommandError::Configuration(_))
         ));
         std::fs::remove_dir_all(root).unwrap();
@@ -361,9 +368,10 @@ mod tests {
         }
         std::os::unix::fs::symlink(&current, root.join("current")).unwrap();
         std::fs::write(server.join("server.toml"), "").unwrap();
-        std::fs::create_dir_all(server.join("resources")).unwrap();
-        std::fs::write(server.join("resources/sunrise-resources.json"), "{}").unwrap();
-        let command = engine_command(&supervisor, &server).unwrap();
+        prepared_server(&server.join("resources"));
+        let described = engine(&supervisor, &server).unwrap();
+        assert!(!described.resources_pending);
+        let command = described.command;
         assert_eq!(command.get_program(), root.join("current/sunrise-engine"));
         assert_eq!(command.get_current_dir(), Some(server.as_path()));
         std::fs::remove_dir_all(root).unwrap();
@@ -381,35 +389,5 @@ mod tests {
         };
         assert_eq!(thp(true).as_deref(), Some(std::ffi::OsStr::new("0")));
         assert_eq!(thp(false), None);
-    }
-
-    #[test]
-    fn resources_are_searched_in_order() {
-        let mut config = Config::default();
-        let dir = Path::new("/srv/mc");
-        let program = Path::new("/opt/sunrise/target/release/sunrise-client");
-        let found = resource_candidates(&config, dir, Some(program));
-        assert_eq!(found[0], Path::new("/srv/mc/resources"));
-        assert!(found.contains(&PathBuf::from("/opt/sunrise/.local/sunrise-client/26.3")));
-        config.engine.resources = "/data/res".into();
-        assert_eq!(
-            resource_candidates(&config, dir, Some(program)),
-            [PathBuf::from("/data/res")]
-        );
-    }
-
-    #[test]
-    fn resources_prepared_without_sounds_are_found() {
-        let root = std::env::temp_dir().join(format!("sunrise-server-res-{}", std::process::id()));
-        let prepared = root.join(".local/sunrise-client/26.3");
-        std::fs::create_dir_all(&prepared).unwrap();
-        let program = root.join("sunrise-client");
-        let config = Config::default();
-        let server = root.join("server");
-        assert!(resources(&config, &server, Some(&program)).is_err());
-        // What `sunrise-prepare` writes on every run; no asset index without `sunrise-prepare sounds`.
-        std::fs::write(prepared.join("sunrise-resources.json"), "{}").unwrap();
-        assert_eq!(resources(&config, &server, Some(&program)), Ok(prepared));
-        std::fs::remove_dir_all(&root).unwrap();
     }
 }

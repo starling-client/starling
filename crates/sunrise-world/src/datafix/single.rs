@@ -1,7 +1,6 @@
-//! One block entity's or entity's saved data upgraded on its own, for callers that hold it outside a chunk (a mod
-//! reading a schematic or an old structure): the fixes the chunk loaders run on it, between a depth check of the
-//! input and one of the result.
-use super::{CURRENT, Ty, key, schema, update};
+//! The world's datafix chain applied to one saved compound, without a chunk or level.
+use super::{CURRENT, Ty, dynamic, identifier, key, schema, source_schema_key, tables, try_update};
+use mod_api::{NbtDataType, NbtUpgradeError};
 use sunrise_core::nbt::{Compound, JavaString, Tag};
 
 /// The deepest nesting accepted: a list or compound at depth `MAX_DEPTH` (the root compound is at 0) is refused.
@@ -11,118 +10,93 @@ use sunrise_core::nbt::{Compound, JavaString, Tag};
 /// and never limits fixing or writing it.
 pub const MAX_DEPTH: usize = 512;
 
-/// Why a value was not upgraded.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum UpgradeError {
-    /// The data version is below zero.
-    NegativeVersion(i32),
-    /// The data version is newer than the game's ([`CURRENT`]): the fixes only go forward.
-    FutureVersion(i32),
-    /// The input has a list or compound [`MAX_DEPTH`] levels deep or more, as encoded: refused before any fix.
-    TooDeep,
-    /// The fixes made the value deeper (1.9's `Riding` to `Passengers` doubles a chain's depth) and the result has a
-    /// list or compound [`MAX_DEPTH`] levels deep or more, as encoded: no NBT read, vanilla's included, could take
-    /// it back.
-    UpgradedTooDeep,
-}
-
-impl std::fmt::Display for UpgradeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::NegativeVersion(v) => write!(f, "data version {v} is negative"),
-            Self::FutureVersion(v) => {
-                write!(f, "data version {v} is newer than the game's ({CURRENT})")
-            }
-            Self::TooDeep => write!(f, "the data nests {MAX_DEPTH} levels deep or more"),
-            Self::UpgradedTooDeep => {
-                write!(f, "the upgraded data nests {MAX_DEPTH} levels deep or more")
-            }
-        }
-    }
-}
-
-impl std::error::Error for UpgradeError {}
-
-/// One block entity's NBT saved at `data_version`, upgraded as the chunk loader upgrades the block entities of a
-/// chunk of that version: each block entity type's fixes, up to [`CURRENT`]. Data of the current version comes back
-/// as it is, and so does a block entity whose `id` that version doesn't know, as a chunk keeps it. Fixes of the
-/// whole chunk (the blocks around it, the removal of bed block entities) have no chunk to act on and don't run. A
-/// tag the fixes can't read comes back as it was saved. Refused before any fix runs: a negative or future version,
-/// and a value with a list or compound [`MAX_DEPTH`] deep ([`UpgradeError::TooDeep`]); after the fixes, a result
-/// that deep ([`UpgradeError::UpgradedTooDeep`]).
-pub fn upgrade_block_entity(data_version: i32, tag: Compound) -> Result<Compound, UpgradeError> {
-    let tag = checked(data_version, tag)?;
-    let id = Tag::compound([(
-        "id",
-        tag.get(&JavaString::from("id"))
-            .cloned()
-            .unwrap_or(Tag::End),
-    )]);
-    // Before 1.13 the known types come from the fixers' tables too: a failure there keeps the data, as a fix's would.
-    let known =
-        std::panic::catch_unwind(|| schema::block_entity_known(&id, key(data_version as u32, 0)));
-    if known.unwrap_or(false) {
-        upgraded(Ty::BlockEntity, tag, data_version)
+/// `DataFixer.update` at one vanilla root reference. No world context is added or used.
+pub fn upgrade_compound(
+    kind: NbtDataType,
+    data_version: i32,
+    tag: Compound,
+) -> Result<Compound, NbtUpgradeError> {
+    let refusal = if data_version > CURRENT {
+        Some(NbtUpgradeError::FutureVersion(data_version))
     } else {
-        Ok(tag)
-    }
-}
-
-/// One entity's NBT saved at `data_version`, upgraded as the entity chunk loader upgrades the entities of a chunk of
-/// that version: each entity type's fixes, its passengers' included, up to [`CURRENT`]. Data of the current version
-/// comes back as it is; a tag the fixes can't read comes back as it was saved. Refused as
-/// [`upgrade_block_entity`] refuses.
-pub fn upgrade_entity(data_version: i32, tag: Compound) -> Result<Compound, UpgradeError> {
-    let tag = checked(data_version, tag)?;
-    upgraded(Ty::EntityTree, tag, data_version)
-}
-
-/// `tag` when its version can be upgraded from and it is within [`MAX_DEPTH`]. A refused value is taken apart
-/// without recursion, as a value too deep could not be dropped otherwise.
-fn checked(data_version: i32, tag: Compound) -> Result<Compound, UpgradeError> {
-    let refusal = if data_version < 0 {
-        Some(UpgradeError::NegativeVersion(data_version))
-    } else if data_version > CURRENT {
-        Some(UpgradeError::FutureVersion(data_version))
-    } else {
-        (!within_depth(&tag)).then_some(UpgradeError::TooDeep)
+        (!within_depth(&tag)).then_some(NbtUpgradeError::TooDeep)
     };
-    match refusal {
-        None => Ok(tag),
-        Some(error) => {
-            dismantle(Tag::Compound(tag));
-            Err(error)
-        }
+    if let Some(error) = refusal {
+        dismantle(Tag::Compound(tag));
+        return Err(error);
     }
-}
-
-/// [`update`] of one value of type `root` up to [`CURRENT`]. A value the fixes fail on (a legacy fixer's panic on
-/// data it can't read) comes back as it was saved; the input check has already kept anything too deep away. A
-/// result past [`MAX_DEPTH`] is refused, and taken apart without recursion.
-fn upgraded(root: Ty, tag: Compound, data_version: i32) -> Result<Compound, UpgradeError> {
-    if data_version == CURRENT {
+    let root = match kind {
+        NbtDataType::ItemStack => Ty::ItemStack,
+        NbtDataType::BlockState => Ty::BlockState,
+        NbtDataType::BlockEntity => Ty::BlockEntity,
+        NbtDataType::Entity => Ty::Entity,
+        NbtDataType::EntityTree => Ty::EntityTree,
+    };
+    let from = source_schema_key(data_version);
+    // BlockStateFieldNamesFix (V5006) renamed `Name` to `id`.
+    let discriminator = if root == Ty::BlockState && from < key(5006, 0) {
+        "Name"
+    } else {
+        "id"
+    };
+    let field = tag.get(&JavaString::from(discriminator));
+    let name = match field {
+        Some(Tag::String(name)) if !name.0.is_empty() => Some(name),
+        // V99's item name is a number or a string. `ItemIdFix` removes the numeric form in V102.
+        Some(id)
+            if root == Ty::ItemStack && from < key(102, 0) && dynamic::as_number(id).is_some() =>
+        {
+            None
+        }
+        _ => return Err(NbtUpgradeError::MalformedCompound),
+    };
+    let tagged_choice = matches!(root, Ty::Entity | Ty::EntityTree | Ty::BlockEntity);
+    // The entity choices do not read mod namespaces. Item names are not a tagged choice:
+    // the item fixers keep the id but still update shared stack fields.
+    if data_version == CURRENT
+        || tagged_choice
+            && name.is_some_and(|name| {
+                identifier(&name.to_string_lossy()).is_some_and(|(ns, _)| ns != "minecraft")
+            })
+    {
         return Ok(tag);
     }
-    let mut value = Tag::Compound(tag.clone());
-    let done = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        update(root, &mut value, data_version, CURRENT);
-    }))
-    .is_ok();
-    match value {
-        Tag::Compound(upgraded) if done => {
-            dismantle(Tag::Compound(tag));
-            if within_depth(&upgraded) {
-                Ok(upgraded)
-            } else {
-                dismantle(Tag::Compound(upgraded));
-                Err(UpgradeError::UpgradedTooDeep)
-            }
+    let mut value = Tag::Compound(tag);
+    let mut prefix = None;
+    let mut run = || -> tables::Result {
+        if root == Ty::BlockEntity && !schema::block_entity_known(&value, from)?
+            || matches!(root, Ty::Entity | Ty::EntityTree)
+                && from < schema::flat::END
+                && !schema::flat::entity_tree_known(&value, from)?
+        {
+            return Ok(());
         }
-        value => {
-            dismantle(value);
-            Ok(tag)
+        // `Type.readAndWrite` lays the fixed keys over the source codec's remainder.
+        // Tagged-choice roots leave the original compound there; the other roots don't.
+        if tagged_choice {
+            prefix = Some(value.clone());
         }
+        try_update(root, &mut value, data_version, CURRENT)
+    };
+    if run().is_err() {
+        dismantle(value);
+        return Err(NbtUpgradeError::LegacyTablesUnavailable);
     }
+    let Tag::Compound(mut upgraded) = value else {
+        dismantle(value);
+        return Err(NbtUpgradeError::MalformedCompound);
+    };
+    if !within_depth(&upgraded) {
+        dismantle(Tag::Compound(upgraded));
+        return Err(NbtUpgradeError::UpgradedTooDeep);
+    }
+    if let Some(Tag::Compound(mut prefix)) = prefix {
+        for (key, tag) in upgraded {
+            prefix.insert(key, tag);
+        }
+        upgraded = prefix;
+    }
+    Ok(upgraded)
 }
 
 /// Whether no list or compound of `tag` sits [`MAX_DEPTH`] levels deep or more as the NBT writer encodes it, walked

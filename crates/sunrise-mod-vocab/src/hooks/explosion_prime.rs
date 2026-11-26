@@ -1,5 +1,4 @@
 //! The `explosion_prime` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0214
 
 pub trait Hooks {
     /// A server explosion is about to begin at `center`, with `radius` (Bukkit's

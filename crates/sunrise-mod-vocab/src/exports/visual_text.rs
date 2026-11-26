@@ -1,2 +1,2 @@
 pub mod visual_text;
-pub use visual_text::VisualTextCharacter;
+pub use visual_text::{VisualTextCharacter, VisualTextCharacterRef};

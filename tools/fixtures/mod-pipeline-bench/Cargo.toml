@@ -1,0 +1,7 @@
+[package]
+name = "mod-pipeline-bench"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+sunrise-mod-api = { path = "../../../crates/sunrise-mod-api" }

@@ -6,9 +6,20 @@ mod sunrise_look;
 #[allow(unused_imports)]
 pub use self::starling::*;
 use crate::{crash, game, logging};
+use mod_api::__private::game::TicketActivation;
+use std::sync::OnceLock;
 use sunrise_mod_package::selection::{Argument, LaunchArguments};
 pub(crate) mod dedicated_arguments;
 pub(crate) mod runtime_environment;
+
+static TICKET_ACTIVATION: OnceLock<TicketActivation> = OnceLock::new();
+
+#[cfg(not(test))]
+pub(crate) fn ticket_activation() -> &'static TicketActivation {
+    TICKET_ACTIVATION
+        .get()
+        .expect("startup prepared ticket activation")
+}
 
 /// Validated startup state. No native hooks or workers may run before prepare returns.
 pub struct Startup {
@@ -51,8 +62,19 @@ pub fn prepare() -> Startup {
     };
     #[cfg(not(target_os = "android"))]
     let capture = sunrise_mod_package::holder::acquire(&launch);
+<<<<<<< HEAD
     #[cfg(target_os = "android")]
     let capture = None;
+||||||| 46c00106def
+=======
+    // Native libraries (including their initializers and hook factories) have not run yet.
+    TICKET_ACTIVATION.get_or_init(|| {
+        TicketActivation::take_for_startup().unwrap_or_else(|| {
+            eprintln!("Sunrise: refusing startup because ticket activation is already owned");
+            std::process::exit(game::exit_code::ERROR);
+        })
+    });
+>>>>>>> ed6772e2118
     Startup {
         launch,
         options,
@@ -194,6 +216,7 @@ pub fn start(
         sunrise_world::native_worldgen_hooks::NativeWorldgenHooks {
             alter_ground: crate::game::api_values::alter_ground,
             on_tree_grow: crate::game::native_tree_grow::on_tree_grow,
+            mirror: crate::game::native_rotate::mirror,
             rotate: crate::game::native_rotate::rotate,
             feature: crate::game::native_worldgen_parts::feature,
         },
@@ -211,7 +234,17 @@ pub fn start(
     }
     install_client_hooks();
     raise_open_file_limit();
-    if let Err(error) = game::run_with(options, native) {
+    // `Minecraft.run` catches the throwable and then calls `crash`: the panic hook only records,
+    // and the report is built here, after the unwind has released the panicking code's locks.
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        game::run_with(options, native)
+    }))
+    .unwrap_or_else(|payload| {
+        crash::report_main_panic(&*payload);
+        logging::flush();
+        std::process::exit(101)
+    });
+    if let Err(error) = outcome {
         // A bad command line is the caller's mistake, not a crash: no report.
         let missing_mods = game::dedicated::is_missing_mods_refusal(error.as_ref());
         let usage = error.is::<game::UsageError>() || missing_mods;
@@ -261,13 +294,15 @@ pub(crate) fn install_client_hooks() {
         menu_still_valid_listens: |menu| {
             mod_api::__private::menu_listens(mod_api::HookId::MenuStillValid, menu)
         },
-        living_heal: |context, entity, amount, cancel| {
+        living_heal: |context, healed, amount, cancel| {
             if !mod_api::__private::listened(mod_api::HookId::LivingHeal) {
                 return;
             }
             let reader = sunrise_client_render::api_context::LoopReader(context);
             let context = reader.context();
-            mod_api::dispatch_living_heal(&context, entity, amount, cancel);
+            game::with_lent_view(healed, |view| {
+                mod_api::dispatch_living_heal(&context, healed.id(), view, amount, cancel);
+            });
         },
         living_breathe_heard: || mod_api::__private::listened(mod_api::HookId::LivingBreathe),
         has_mods: || !mod_api::__private::mods().is_empty(),
@@ -340,29 +375,55 @@ pub(crate) fn install_client_hooks() {
             let context = reader.context();
             mod_api::dispatch_living_jump(&context, entity, kind, velocity);
         },
-        living_jump_power: |context, entity, kind, power| {
+        living_model_posed: |context, entity, layer, model| {
+            if !mod_api::__private::listened(mod_api::HookId::LivingModelPosed) {
+                return;
+            }
+            let reader = sunrise_client_render::api_context::LoopReader(context);
+            let context = reader.context();
+            mod_api::dispatch_living_model_posed(&context, entity, layer, model);
+        },
+        living_jump_power: |context, living, power| {
             if !mod_api::__private::listened(mod_api::HookId::LivingJumpPower) {
                 return;
             }
             let reader = sunrise_client_render::api_context::LoopReader(context);
             let context = reader.context();
-            mod_api::dispatch_living_jump_power(&context, entity, kind, power);
+            game::with_lent_view(living, |view| {
+                mod_api::dispatch_living_jump_power(
+                    &context,
+                    living.id(),
+                    living.kind(),
+                    view,
+                    power,
+                );
+            });
         },
-        living_speed: |context, entity, kind, speed| {
+        living_speed: |context, living, speed| {
             if !mod_api::__private::listened(mod_api::HookId::LivingSpeed) {
                 return;
             }
             let reader = sunrise_client_render::api_context::LoopReader(context);
             let context = reader.context();
-            mod_api::dispatch_living_speed(&context, entity, kind, speed);
+            game::with_lent_view(living, |view| {
+                mod_api::dispatch_living_speed(&context, living.id(), living.kind(), view, speed);
+            });
         },
-        living_flying_speed: |context, entity, kind, speed| {
+        living_flying_speed: |context, living, speed| {
             if !mod_api::__private::listened(mod_api::HookId::LivingFlyingSpeed) {
                 return;
             }
             let reader = sunrise_client_render::api_context::LoopReader(context);
             let context = reader.context();
-            mod_api::dispatch_living_flying_speed(&context, entity, kind, speed);
+            game::with_lent_view(living, |view| {
+                mod_api::dispatch_living_flying_speed(
+                    &context,
+                    living.id(),
+                    living.kind(),
+                    view,
+                    speed,
+                );
+            });
         },
         block_jump_factor: |context, state, factor| {
             crate::game::block_jump_factor(context, state, factor);
@@ -373,13 +434,28 @@ pub(crate) fn install_client_hooks() {
         is_ladder: |context, entity, pos, state, ladder| {
             crate::game::is_ladder(context, entity, pos, state, ladder);
         },
+        block_interaction_range: |context, player, pos, buffer, within| {
+            if !mod_api::__private::listened(mod_api::HookId::BlockInteractionRange) {
+                return;
+            }
+            let reader = sunrise_client_render::api_context::LoopReader(context);
+            mod_api::dispatch_block_interaction_range(
+                &reader.context(),
+                player,
+                pos,
+                buffer,
+                within,
+            );
+        },
+        is_scaffolding: |context, entity, pos, state, scaffolding| {
+            crate::game::is_scaffolding(context, entity, pos, state, scaffolding);
+        },
         makes_open_trapdoor_above_climbable:
             crate::game::native_trapdoor_ladder::makes_open_trapdoor_above_climbable,
         friction: crate::game::native_surface::friction,
         collision_shape: |context, pos, state, query, shape| {
             crate::game::native_collision_shape::collision_shape(context, pos, state, query, shape);
         },
-        collision_shape_refused: crate::game::native_collision_shape::refused,
         player_stays_on_ground_surface: |context, entity, staying| {
             if !mod_api::__private::listened(mod_api::HookId::PlayerStaysOnGroundSurface) {
                 return;
@@ -404,9 +480,7 @@ pub(crate) fn install_client_hooks() {
             let context = reader.context();
             mod_api::dispatch_fluid_flow(&context, fluid, pos, flow);
         },
-        sound_type: |context, pos, state, entity, cause, sound| {
-            crate::game::native_block_sounds::sound_type(context, pos, state, entity, cause, sound);
-        },
+        sound_type: crate::game::native_block_sounds::sound_type,
         can_grindstone_repair: crate::game::native_item_menu_parts::can_grindstone_repair,
         is_combine_repairable: crate::game::native_item_menu_parts::is_combine_repairable,
         can_fit_inside_container_items:

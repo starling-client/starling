@@ -32,6 +32,10 @@ const BASE: &str = sunrise_addresses::SDK_RELEASES;
 /// The build and signing policy a folder was verified under. Write this stamp last, so an old
 /// commit-only stamp or an incomplete fetch is never taken for a verified cache hit.
 const STAMP: &str = "build";
+/// Shared cache lock files, kept outside every directory replaced in place.
+const LOCKS_DIR: &str = "locks";
+/// SDK metadata folder inside a cached build root, kept separate from slice folders.
+pub(crate) const METADATA_DIR: &str = "metadata";
 
 pub(crate) struct CacheStamp(String);
 
@@ -43,6 +47,20 @@ impl CacheStamp {
         Self(format!("{build}:{:x}", Sha256::digest(keys.as_flattened())))
     }
 
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Short path-safe digest of the signing policy, isolating caches under different trust.
+    pub(crate) fn policy_key(&self) -> &str {
+        let policy = self
+            .0
+            .rsplit_once(':')
+            .expect("cache stamp carries a policy digest")
+            .1;
+        &policy[..16]
+    }
+
     fn matches(&self, dir: &Path) -> bool {
         fs::read_to_string(dir.join(STAMP)).is_ok_and(|stamp| stamp == self.0)
     }
@@ -52,10 +70,38 @@ impl CacheStamp {
         fs::write(&path, &self.0).map_err(|e| format!("{}: {e}", path.display()))
     }
 }
+
+/// Shared cache root for `build` under `stamp`'s signing policy.
+pub(crate) fn cache_root(cache: &Path, build: &str, stamp: &CacheStamp) -> PathBuf {
+    cache.join("sdk").join(build).join(stamp.policy_key())
+}
+
+/// Exclusive file lock in `dir/locks`, outside every directory replaced in place, keyed by `parts`.
+pub(crate) fn cache_lock(dir: &Path, parts: &[&str]) -> Result<fs::File, String> {
+    let locks = dir.join(LOCKS_DIR);
+    fs::create_dir_all(&locks).map_err(|e| format!("{}: {e}", locks.display()))?;
+    let mut hasher = Sha256::new();
+    for part in parts {
+        hasher.update((part.len() as u64).to_le_bytes());
+        hasher.update(part.as_bytes());
+    }
+    let digest = format!("{:x}", hasher.finalize());
+    let path = locks.join(format!("{}.lock", &digest[..32]));
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    file.lock()
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(file)
+}
 pub(crate) const SURFACE: &str = "surface.json";
 const API_SOURCE: &str = "api-source.tar.xz";
-/// The most a small file (`sdk.json`, the sums, the signature, `surface.json`) may be.
-const SMALL: u64 = 16 << 20;
+/// The most a small release file (`sdk.json`, the sums, the signature, `surface.json`) may be.
+pub(crate) const SMALL: u64 = 16 << 20;
 /// The most the API source may unpack to.
 const API_LIMIT: u64 = 512 << 20;
 /// The most one compiled slice may unpack to.
@@ -83,7 +129,13 @@ pub(crate) fn ensure_sdk(project: &Path) -> Result<PinnedSdk, String> {
 
 /// `build`'s SDK in the project's `.sunrise/sdk/`, API source included.
 pub(crate) fn fetch_pinned(project: &Path, build: &str) -> Result<PinnedSdk, String> {
-    fetch(&Base::from_env(), &keys(), build, &project.join(DIR), true)
+    let dir = project.join(DIR);
+    // A linked `.sunrise` or `.sunrise/sdk` would send the cache's removal and writes outside
+    // the project.
+    for folder in dir.ancestors().take(2) {
+        crate::internals::check_output_dir(folder)?;
+    }
+    fetch(&Base::from_env(), &keys(), build, &dir, true)
 }
 
 /// The game checkout the project at `project` builds against, when its `sunrise-mod-api`
@@ -168,7 +220,7 @@ pub(crate) fn resolve(
     if nightly || stable || build.is_some() {
         let missing = |e: String| {
             format!(
-                "Release {text} has no SDK ({e}). Pin a build that has one: --sunrise <full sha>"
+                "Release {text} has no SDK ({e}). Choose a build that has one, using its full SHA."
             )
         };
         let bytes = base.read(text, sdk::INDEX, SMALL).map_err(missing)?;
@@ -200,7 +252,8 @@ pub(crate) fn resolve(
                     Some(&signature),
                     release_keys,
                 ),
-            }?;
+            }
+            .map_err(|e| format!("Release {text}: {e}"))?;
             sunrise_release_sign::check(
                 sdk::INDEX,
                 &expected,
@@ -269,7 +322,7 @@ pub(crate) fn named(text: &str, build: &str, error: String) -> String {
     }
 }
 
-/// The keys a game release (a Stable or Dev tag) must be signed with.
+/// The built-in release signing keys, with no debug SDK keys.
 pub(crate) fn release_keys() -> Vec<PublicKey> {
     sunrise_release_sign::trusted_keys_for(native::PREBUILT_REPO)
 }
@@ -299,7 +352,7 @@ impl Base {
         }
     }
 
-    fn open(&self, release: &str, file: &str) -> Result<Box<dyn Read>, String> {
+    pub(crate) fn open(&self, release: &str, file: &str) -> Result<Box<dyn Read>, String> {
         match self {
             Self::Url(base) => {
                 let url = format!("{base}/{release}/{file}");
@@ -316,7 +369,7 @@ impl Base {
     }
 
     /// The release's file, refused past `limit` bytes.
-    fn read(&self, release: &str, file: &str, limit: u64) -> Result<Vec<u8>, String> {
+    pub(crate) fn read(&self, release: &str, file: &str, limit: u64) -> Result<Vec<u8>, String> {
         let mut bytes = Vec::new();
         self.open(release, file)?
             .take(limit + 1)
@@ -355,8 +408,8 @@ impl Base {
     }
 }
 
-/// `build`'s verified SDK in `dir`: reused when the stamp matches the build and trusted keys,
-/// otherwise fetched afresh. With `api`, unpack the API source too.
+/// `build`'s verified SDK in `dir`: reused when the stamp matches the build and trusted keys and
+/// the kept index and surface verify against the kept signed sums, otherwise fetched afresh. With `api`, unpack the API source too.
 pub(crate) fn fetch(
     base: &Base,
     keys: &[PublicKey],
@@ -367,7 +420,7 @@ pub(crate) fn fetch(
     fetch_index(base, keys, build, dir, api).map(|index| pinned(&index, dir))
 }
 
-fn fetch_index(
+pub(crate) fn fetch_index(
     base: &Base,
     keys: &[PublicKey],
     build: &str,
@@ -377,8 +430,30 @@ fn fetch_index(
     let tag = format!("sdk-{build}");
     let stamp = CacheStamp::new(build, keys);
     if stamp.matches(dir) {
-        let bytes = fs::read(dir.join(sdk::INDEX)).map_err(|e| format!("{DIR}: {e}"))?;
-        return Index::read(&bytes, build).map_err(|e| format!("{tag}: {e}"));
+        // The stamp only says which build and keys the folder was made for, and the folder may
+        // come from the checkout: what is read from it is verified again against its signed sums.
+        let read = |name: &str| {
+            crate::bounded::read_bytes(&dir.join(name), SMALL, crate::bounded::Symlinks::Refuse)
+                .map_err(|e| e.to_string())
+        };
+        let kept = (|| {
+            verified(
+                &tag,
+                keys,
+                build,
+                &read(sunrise_release_sign::SUMS)?,
+                &read(sunrise_release_sign::SIGNATURE)?,
+                &read(sdk::INDEX)?,
+                &read(SURFACE)?,
+            )
+        })();
+        match kept {
+            Ok(index) => return Ok(index),
+            Err(e) => println!(
+                "{} does not verify against its signed sums ({e}); fetching it again",
+                dir.display()
+            ),
+        }
     }
     if let Err(e) = fs::remove_dir_all(dir)
         && e.kind() != std::io::ErrorKind::NotFound
@@ -390,10 +465,52 @@ fn fetch_index(
         .read(&tag, sunrise_release_sign::SUMS, SMALL)
         .map_err(|e| format!("game build {build} has no signed SDK (release {tag}): {e}"))?;
     let signature = base.read(&tag, sunrise_release_sign::SIGNATURE, SMALL)?;
-    let listed =
-        sunrise_release_sign::verify(&tag, &sums, &String::from_utf8_lossy(&signature), keys)?;
     let bytes = base.read(&tag, sdk::INDEX, SMALL)?;
-    let digest = format!("{:x}", Sha256::digest(&bytes));
+    let surface = base.read(&tag, SURFACE, SMALL)?;
+    let index = verified(&tag, keys, build, &sums, &signature, &bytes, &surface)?;
+    let write = |name: &str, bytes: &[u8]| {
+        fs::write(dir.join(name), bytes).map_err(|e| format!("{}: {e}", dir.join(name).display()))
+    };
+    write(SURFACE, &surface)?;
+    if api {
+        unpack(base, &index, API_SOURCE, dir, "api", API_LIMIT)?;
+    }
+    write(sunrise_release_sign::SUMS, &sums)?;
+    write(sunrise_release_sign::SIGNATURE, &signature)?;
+    write(sdk::INDEX, &bytes)?;
+    stamp.write(dir)?;
+    Ok(index)
+}
+
+/// The SDK index `bytes`, once the signed sums list it and it lists `surface`.
+fn verified(
+    tag: &str,
+    keys: &[PublicKey],
+    build: &str,
+    sums: &[u8],
+    signature: &[u8],
+    bytes: &[u8],
+    surface: &[u8],
+) -> Result<Index, String> {
+    let index = verified_index(tag, keys, build, sums, signature, bytes)?;
+    index
+        .verify(SURFACE, surface)
+        .map_err(|e| format!("{tag}: {e}"))?;
+    Ok(index)
+}
+
+/// The SDK index `bytes`, once the signed sums list it.
+fn verified_index(
+    tag: &str,
+    keys: &[PublicKey],
+    build: &str,
+    sums: &[u8],
+    signature: &[u8],
+    bytes: &[u8],
+) -> Result<Index, String> {
+    let listed =
+        sunrise_release_sign::verify(tag, sums, &String::from_utf8_lossy(signature), keys)?;
+    let digest = format!("{:x}", Sha256::digest(bytes));
     if !listed
         .iter()
         .any(|(name, sha)| name == sdk::INDEX && *sha == digest)
@@ -404,45 +521,38 @@ fn fetch_index(
             sunrise_release_sign::SUMS
         ));
     }
-    let index = Index::read(&bytes, build).map_err(|e| format!("{tag}: {e}"))?;
-    let surface = base.read(&tag, SURFACE, SMALL)?;
-    index
-        .verify(SURFACE, surface.as_slice())
-        .map_err(|e| format!("{tag}: {e}"))?;
-    let write = |name: &str, bytes: &[u8]| {
-        fs::write(dir.join(name), bytes).map_err(|e| format!("{}: {e}", dir.join(name).display()))
-    };
-    write(SURFACE, &surface)?;
-    if api {
-        unpack(base, &index, API_SOURCE, dir, "api", API_LIMIT)?;
-    }
-    write(sdk::INDEX, &bytes)?;
-    stamp.write(dir)?;
-    Ok(index)
+    Index::read(bytes, build).map_err(|e| format!("{tag}: {e}"))
 }
 
 /// The compiled slices (`runtime`, `api`, `engine`) of the build `index` describes, for `target`,
-/// verified and unpacked into the folders `native-build`'s plan names. Independent release
-/// builds need only the runtime and API for one SDK host; the full client cache is unchanged.
+/// verified and unpacked into the folders `native-build`'s plan names.
 pub(crate) fn fetch_slices(
     base: &Base,
     index: &Index,
     target: &str,
     side: sdk::Side,
-    release: bool,
+    route: sunrise_native_build::prebuilt::Route,
     dir: &Path,
     stamp: &CacheStamp,
 ) -> Result<sunrise_native_build::prebuilt::Package, String> {
     let build = &index.build.commit;
     let host = sdk::Asset::host_name(target, side);
     let names = index
-        .route_assets(if release { "api" } else { "engine" }, target, side)
+        .route_assets(route.inputs(), target, side)
         .map_err(|e| format!("sdk-{build} has no slices for this computer ({target}): {e}"))?;
-    let into = if release {
-        dir.join("release-slices").join(host)
+    let (route_dir, into) = if route == sunrise_native_build::prebuilt::Route::Api {
+        ("api-slices", dir.join("api-slices").join(&host))
     } else {
-        dir.join(host)
+        ("engine-slices", dir.join(&host))
     };
+    let side_name = match side {
+        sdk::Side::Client => "client",
+        sdk::Side::Server => "server",
+    };
+    let _lock = cache_lock(
+        dir,
+        &["slices", stamp.as_str(), target, side_name, route_dir],
+    )?;
     let package = sunrise_native_build::prebuilt::Package::at(&into);
     if stamp.matches(&into) {
         return Ok(package);
@@ -470,6 +580,24 @@ pub(crate) fn fetch_slices(
     Ok(package)
 }
 
+/// Opens the tool asset described by the already verified SDK index. An executable is unpacked
+/// into a fresh directory for this invocation so no stale, unverified copy can run.
+pub(crate) fn fetch_tool(
+    base: &Base,
+    index: &Index,
+    target: &str,
+    dir: &Path,
+) -> Result<(tempfile::TempDir, PathBuf), String> {
+    let name = sdk::Asset::name(sdk::Kind::Tool, target, sdk::Side::Client);
+    let temporary = tempfile::tempdir_in(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    unpack(base, index, &name, temporary.path(), "tool", SLICE_LIMIT)?;
+    let program = temporary
+        .path()
+        .join("tool")
+        .join(format!("cargo-sunrise-mod{}", std::env::consts::EXE_SUFFIX));
+    Ok((temporary, program))
+}
+
 /// Downloads the archive `name` that `index` lists into `dir`, and unpacks it, verified, into
 /// `dir`'s folder `into`.
 fn unpack(
@@ -494,22 +622,79 @@ fn unpack(
 }
 
 fn pinned(index: &Index, dir: &Path) -> PinnedSdk {
-    let build = index.build.commit.clone();
-    let short = &build[..7];
     PinnedSdk {
-        name: match &index.build.nightly {
-            Some(nightly) => format!("{nightly} ({short})"),
-            None => short.to_owned(),
-        },
-        build,
+        name: name(index),
+        build: index.build.commit.clone(),
         dir: dir.to_owned(),
         surface: dir.join(SURFACE),
     }
 }
 
+/// The build `index` describes, as people read it: its Nightly and short commit, or the commit.
+pub(crate) fn name(index: &Index) -> String {
+    let short = &index.build.commit[..7];
+    match &index.build.nightly {
+        Some(nightly) => format!("{nightly} ({short})"),
+        None => short.to_owned(),
+    }
+}
+
+/// `build`'s verified `sdk.json` alone, for its change notes and the build before it: only the
+/// signed sums, their signature and `sdk.json` are fetched, kept in the project's
+/// `.sunrise/cache/<build>/` and verified again each time they are read from there.
+pub(crate) fn fetch_index_only(project: &Path, build: &str) -> Result<Index, String> {
+    fetch_index_only_from(&Base::from_env(), &keys(), project, build)
+}
+
+fn fetch_index_only_from(
+    base: &Base,
+    keys: &[PublicKey],
+    project: &Path,
+    build: &str,
+) -> Result<Index, String> {
+    if !sunrise_mod_package::manifest::revision(build) {
+        return Err(format!("{build} is not a build's full commit"));
+    }
+    let dir = project.join(CACHE).join(build);
+    // A linked folder on the way would send the cache's writes outside the project.
+    for folder in [project.join(".sunrise"), project.join(CACHE), dir.clone()] {
+        crate::internals::check_output_dir(&folder)?;
+    }
+    let tag = format!("sdk-{build}");
+    let names = [
+        sunrise_release_sign::SUMS,
+        sunrise_release_sign::SIGNATURE,
+        sdk::INDEX,
+    ];
+    let kept = names.map(|name| {
+        crate::bounded::read_bytes(&dir.join(name), SMALL, crate::bounded::Symlinks::Refuse).ok()
+    });
+    if let [Some(sums), Some(signature), Some(bytes)] = &kept
+        && let Ok(index) = verified_index(&tag, keys, build, sums, signature, bytes)
+    {
+        return Ok(index);
+    }
+    let fetched = names
+        .map(|name| base.read(&tag, name, SMALL))
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("game build {build} has no signed SDK (release {tag}): {e}"))?;
+    let index = verified_index(&tag, keys, build, &fetched[0], &fetched[1], &fetched[2])?;
+    fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    // A link committed in the cache is replaced, never written through.
+    for (name, bytes) in names.iter().zip(&fetched) {
+        crate::internals::atomic_write(&dir.join(name), bytes)?;
+    }
+    Ok(index)
+}
+
 /// `text` (a release tag or a sha)'s build, its small files only (`sdk.json`, `surface.json`),
 /// in the project's `.sunrise/cache/<build>/`, verified as the pinned SDK is, without repinning.
 pub(crate) fn fetch_build(project: &Path, text: &str) -> Result<PinnedSdk, String> {
+    // A linked `.sunrise` or `.sunrise/cache` would send the cache's writes outside the project.
+    for folder in [project.join(".sunrise"), project.join(CACHE)] {
+        crate::internals::check_output_dir(&folder)?;
+    }
     let base = Base::from_env();
     let build = resolve(&base, &release_keys(), text)?;
     fetch(
@@ -537,6 +722,10 @@ fn build_data_from(
     build: &str,
 ) -> Result<PathBuf, String> {
     let dir = project.join(CACHE).join(build);
+    // A linked folder on the way would send the cache's removal and writes outside the project.
+    for folder in [project.join(".sunrise"), project.join(CACHE), dir.clone()] {
+        crate::internals::check_output_dir(&folder)?;
+    }
     let into = dir.join(BUILD_DATA);
     // The stamp is written only after the folder's SDK verified, and the build data is renamed
     // into place only after it unpacked whole from a verified archive.
@@ -576,7 +765,13 @@ pub(crate) fn release_data(
         fs::remove_file(&lock).map_err(|e| format!("{}: {e}", lock.display()))?;
     }
     // A transported artifact must never be mistaken for a verified local SDK cache.
-    fs::remove_file(dir.join(STAMP)).map_err(|e| format!("{}: {e}", dir.display()))?;
+    for name in [
+        STAMP,
+        sunrise_release_sign::SUMS,
+        sunrise_release_sign::SIGNATURE,
+    ] {
+        fs::remove_file(dir.join(name)).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
     Ok(index)
 }
 

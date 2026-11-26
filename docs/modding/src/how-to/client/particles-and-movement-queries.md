@@ -24,6 +24,26 @@ layer particle sprites and resource-pack and stack-component overrides. It retur
 Setup, Reloading and World. Resolve again after resource reloads.
 It allocates a sprite list only when called; it adds no per-tick work.
 
+### Changing particles as they are added
+
+`client_particle_add` (vanilla's `ClientLevel.doAddParticle`) sees every particle the client is
+asked to add, whoever asked: the server, a block's or entity's ambient tick, an explosion or
+another mod's `add_particle`. The listener may move it (`event.pos`), change its velocity
+(`event.velocity`) or return `Flow::Cancel` to drop it; the options are read-only, so a mod that
+wants a different particle cancels this one and adds its own. The 32-block camera check and the
+Particles setting then apply at the position the listener left, and a position or velocity left
+non-finite drops the particle. The listener gets no host: it runs inside the particle engine, so
+keep what it needs (a wind, a limit) in the mod's own state and update it from `client_tick`.
+
+```rust,ignore
+fn client_particle_add(&self, event: &mut ClientParticleAddEvent<'_>) -> Flow {
+    let [wx, wz] = *self.wind.lock().unwrap();
+    event.velocity[0] += wx;
+    event.velocity[2] += wz;
+    Flow::Continue
+}
+```
+
 ### Tinting an item crumb
 
 The item crumbs (`item` and its `item_*` variants) multiply their red, green and blue by
@@ -46,7 +66,8 @@ velocity and the level's light.
 
 A code-defined particle has a common `ParticleType<T>` and a client sprite-set provider.
 Register the type in `Hooks::register`; neither the client atlas nor its JSON is needed on a
-server. Register the provider in `Hooks::register_particle_providers` on the client. Its sprite
+server. Register its factory in `Hooks::register_particle_providers` on the client. It binds on every
+resource load, after the sprite list is resolved. Its sprite
 list is `assets/<namespace>/particles/<path>.json`. Missing providers or sprite sets draw nothing.
 The last successful registration for a type wins;
 [a failed registration callback](../../concepts/load-phases.md#registration-and-setup) leaves the earlier provider in place.
@@ -56,9 +77,9 @@ SNBT fields for structured data and `/particle example:riser{lift:5}`, and a der
 for play packets. The `type` field is written by the structured dispatcher, not by the map codec.
 
 ```rust,ignore
-use mod_api::{Compound, ModParticle, ParticleBatch, ParticleLevelView, ParticleMapCodec,
-    ParticleProvider, ParticleStreamCodec, ParticleType, RandomSource, Registrar, Tag, Wire};
-use std::sync::Arc;
+use mod_api::{Compound, CustomParticle, ParticleLevelView, ParticleMapCodec,
+    ParticleProvider, ParticleSpawn, ParticleStreamCodec, ParticleTickView, ParticleType,
+    Registrar, Tag, Wire};
 
 #[derive(PartialEq, Wire)]
 struct Rise { lift: i32 }
@@ -82,26 +103,29 @@ fn register_riser(registrar: &mut dyn Registrar) -> ParticleType<Rise> {
     )
 }
 
+struct RiserProvider;
 struct Riser;
-impl ParticleProvider<Rise> for Riser {
-    fn create_particle(&self, options: &Rise, _level: &dyn ParticleLevelView,
-        _at: [f64; 3], aux: [f64; 3], _random: &mut dyn RandomSource,
-        particle: &mut ModParticle) -> Option<()> {
-        particle.velocity = [aux[0], f64::from(options.lift) * 0.01, aux[2]];
-        Some(())
-    }
 
-    fn tick(&self, particles: &mut ParticleBatch, _level: &dyn ParticleLevelView) {
-        for particle in particles {
-            for axis in 0..3 {
-                particle.position[axis] += particle.velocity[axis];
-            }
+impl ParticleProvider<Rise> for RiserProvider {
+    fn create_particle(&self, spawn: &mut ParticleSpawn<'_, Rise>,
+        particle: &mut dyn ParticleTickView) -> Option<Box<dyn CustomParticle>> {
+        let [x, _, z] = spawn.velocity;
+        particle.set_velocity([x, f64::from(spawn.options.lift) * 0.01, z]);
+        Some(Box::new(Riser))
+    }
+}
+
+impl CustomParticle for Riser {
+    fn tick(&mut self, particle: &mut dyn ParticleTickView, _level: &dyn ParticleLevelView) {
+        if particle.advance_age() {
+            let velocity = particle.velocity();
+            particle.move_by(velocity);
         }
     }
 }
 
 // In Hooks::register_particle_providers, using the retained `riser` type:
-event.providers.register_sprite_set(riser, Arc::new(Riser));
+event.providers.register_sprite_set(riser, |_sprites| RiserProvider);
 // From a client hook:
 host.add_particle(&riser.options(Rise { lift: 5 }), at, [0.0; 3]);
 ```
@@ -117,31 +141,25 @@ The position and three auxiliary values are exactly what the spawn supplied; the
 interpret the auxiliary values as something other than velocity. The RNG is the particle
 engine's provider RNG, not the one used to thin spawns.
 
-The game calls `ParticleProvider::tick(&self, particles: &mut ParticleBatch, level: &dyn ParticleLevelView)`
-once per type per tick, after it has aged the particles, with every live particle of the type; it is not called
-when none is alive, and a registered provider with no particle alive is not visited. Batch iteration
-(`for particle in particles`) preserves length and order. Set `removed` to expire a particle. If a callback
-returns a different length, the engine expires the batch's particles.
+Each `CustomParticle` owns its own state; put temporary counters or progression in its fields.
+Its `tick` receives a live `ParticleTickView`, not a copy. The default runs `tick_base`, which
+records the old pose, advances age, checks lifetime and applies vanilla motion. To replace the
+motion, use `advance_age()` and `move_by(delta)`, or control explicit removal with `remove()`.
+Invalid setter inputs leave that field unchanged. The level and particle views cannot be retained.
 
-Each `ModParticle` carries the particle's pose and look: `position`, `previous`, `velocity`, `size`, `rgba`, `frame`,
-`state` (four numbers kept from tick to tick), a `facing` and a `roll`. `facing` is `Camera` (vanilla's
-`LOOKAT_XYZ`), `AroundY` (`LOOKAT_Y`, which uses the camera's rotation about Y alone) or `Fixed([x, y, z, w])`, a
-world-fixed unit quaternion that turns the quad's default plane (corners in XY, facing +Z); a quad lying flat facing up is
-`[-sin(pi/4), 0, 0, cos(pi/4)]`. `roll` turns the quad about its own normal in radians, interpolated from the previous
-tick's value, and nothing is drawn rotated while it is zero. A number that is not finite, a position past the world's limit,
-a quaternion of no length and a roll beyond half of `f32::MAX` expire the particle.
+`ParticleFacing` can be `Camera`, `AroundY` or `Fixed` with a world-space XYZW quaternion.
+A nonzero roll is interpolated from the previous roll. Omitting a frame's geometry does not
+alter the pose or end the particle's lifetime. Resource reload drops native instances from the
+old sprite generation, then binds the factories again.
 
 `ParticleLevelView` reads the loaded level around the particles, read-only: `block_state(pos)` and
 `brightness(layer, pos)`. A missing chunk reads as air. Light follows the render world's stored light; a dimension
-without skylight always reads zero on the sky layer. Currently, an absent chunk or a position above the build height
-reads full sky where present and no block light; below a loaded column both layers read zero. The client light storage
-for padding sections and unloaded borders is tracked in [#2761](https://github.com/sunrise-org/sunrise/issues/2761).
-
-Dispatch reuses its batch storage once it has enough capacity.
+without skylight always reads zero on the sky layer. An absent chunk or a position above the build height
+reads full sky where present and no block light; below a loaded column both layers read zero.
 
 ### Extracting your own quads
 
-`ParticleProvider::extract` runs for each live particle whose current center is in the world
+`CustomParticle::extract` runs for each live particle whose current center is in the world
 camera's culling frustum, even when optional particle culling is off. The culling lens uses the wider
 of the configured and effective FOV, not the bobbed or narrowed render projection. Live GUI scenes
 use the ordinary quad and do not call `extract`. This is a draw call, separate from
@@ -153,13 +171,13 @@ The usual stock-quad geometry checks apply only to `add_default`.
 For example, a provider's `extract` can draw two overlapping opaque shapes at different angles:
 
 ```rust,ignore
-use mod_api::{ModParticle, ParticleBlend, ParticleExtractView, ParticleQuad, QuadParticleRenderState};
+use mod_api::{ParticleView, ParticleBlend, ParticleExtractView, ParticleQuad, QuadParticleRenderState};
 
-fn extract(&self, particle: &ModParticle, view: &ParticleExtractView,
+fn extract(&self, particle: &dyn ParticleView, view: &ParticleExtractView,
     output: &mut dyn QuadParticleRenderState) {
     let t = f64::from(view.partial_tick);
     let center: [f32; 3] = std::array::from_fn(|i| {
-        let world = particle.previous[i] + t * (particle.position[i] - particle.previous[i]);
+        let world = particle.previous_position()[i] + t * (particle.position()[i] - particle.previous_position()[i]);
         (world - view.camera[i]) as f32
     });
     for (offset, rotation) in [
@@ -170,8 +188,8 @@ fn extract(&self, particle: &ModParticle, view: &ParticleExtractView,
         quad.layer = ParticleBlend::Opaque;
         quad.center = [center[0] + offset, center[1], center[2]];
         quad.rotation = rotation;
-        quad.half_size = particle.size;
-        quad.frame = particle.frame;
+        quad.half_size = particle.size();
+        quad.frame = particle.sprite_index() as u32;
         quad.color = 0xffcceeff;
         quad.light_coords = view.light_coords;
         output.add(quad);
@@ -184,7 +202,8 @@ rotations. Each `frame` is an existing index into the bind-time sprite list. UVs
 sprite: `[0.0, 0.0, 1.0, 1.0]` selects it whole. `color` is `0xAARRGGBB`; for packed light use the
 view's value or vanilla's `LightCoordsUtil.pack`/`smoothPack` layout. The explicit layer wins over
 the group's blend. Opaque quads replace covered pixels after the alpha cut; translucent quads
-blend. Both are depth tested and culled from the back. The group still controls admission of the particle,
+blend; additive quads draw after the translucent layer with depth writes off and additive blending.
+All three are depth tested and culled from the back. The group still controls admission of the particle,
 not the number of quads it emits. The sink ignores an unresolved frame or non-finite geometry/UV
 without dropping other quads.
 
@@ -199,6 +218,28 @@ Duplicate IDs fail client startup without invoking any factory (matching NeoForg
 groups already built; it does not call factories again. Provider registration is separate:
 a group chooses the draw layer and quota for the listed particle types, not how those
 particles move.
+
+## Server item particles
+
+On a `ServerHost`, build `ParticleOptions::item_stack(item_particle_key, stack)` from the
+load-resolved `minecraft:item` key and an API `ItemStack`. Pass it to
+`level.send_particles(host, &options, state, at, spread, speed, count)` on a `LevelRef`.
+An invalid stack (unknown item, invalid components or count) returns `false` without
+queueing particles. `true` means queued, not drawn. In a transaction, accepted particles
+follow the [deferred effect rules](../../concepts/transactions.md#deferred-level-entity-and-player-effects).
+
+The packet carries the stack, not sprite names. Each client resolves its ground model
+with seed 0, as in `ClientHost::item_particle_options`, so the client's resources and
+the stack's components choose the particle sprites. The explicit sprite list in
+`ParticleOptions::item` is for local rendering, not server sends.
+
+Block, block-marker, falling-dust, dust-pillar and block-crumble requests need a valid
+block state argument. Server sends refuse trail and vibration requests.
+
+To send the same effect around several positions, pass a slice to
+`level.send_particles_batch(host, &options, state, &positions, spread, speed, count)`. The whole
+request is checked before anything is queued, and each position becomes its own send, in slice
+order.
 
 ## Block hit and destroy debris
 
@@ -216,7 +257,7 @@ uses, so the explosions follow each other every other tick as a rocket's do. Wit
 false the sparks and flash draw but the blast and twinkle sounds don't play, as for a
 silent rocket. Nothing reaches the server or other players: a mod's server half tells each
 client half to draw it. The request is refused on a server, without a loaded client player
-and world, for non-finite numbers and for more than 256 explosions.
+and world, or for non-finite numbers.
 
 ## Bot movement and block collisions
 
@@ -224,20 +265,21 @@ and world, for non-finite numbers and for more than 256 explosions.
 `PlayerInput`, using the game's movement implementation without replacing the
 live player's body. It returns `SimulatedMove` with position, velocity, ground,
 horizontal-collision and sprinting results. It refuses stale or inaccessible players,
-dead players, spectators, riders and invalid numeric input. The prediction includes the
-local player's ordinary wall-escape nudge, which checks solid collider boxes when a collision
-scene is in scope. A supplied velocity is input to the prediction, not a write to the player.
+dead players, spectators, riders and invalid numeric input. A supplied velocity is
+input to the prediction, not a write to the player.
 
-`LevelRef::collision_boxes` reads block collision boxes within a finite, ordered
-axis-aligned box. It excludes entity and border collisions. A refused level or a
-query covering more than 1,000,000 cells returns `None`; a valid query with no
-collisions returns `Some` containing an empty vector. Keep queries bounded rather
-than scanning a whole level each tick.
+`LevelRef::visit_block_collisions` lends each intersecting, unclipped world-space `VoxelShape`
+for a finite, ordered axis-aligned box. It uses vanilla's `BlockCollisions` walk, skips missing
+chunks without loading them, and excludes entities and the world border. Use `shape.boxes()`
+to walk its occupied boxes without allocating a list, or clone the shape to retain it.
+Return `ControlFlow::Break(())` to stop the walk. `None` means invalid bounds, unavailable
+level access or a shape error, not a completed empty visit. `LevelRef::has_collisions`
+uses the same walk and stops at the first hit.
 
-`LevelRef::block_shape(host, state, pos, kind)` reads an explicit `BlockState`'s
-outline or collision boxes with an empty context at a position in that level.
-The supplied state can differ from the world's block, without changing it;
-level-dependent shape inputs come from the actual level. To query the
-stored block, first read `level.block_state(host, pos)` and pass that state.
-Returns block-local boxes for the current client level and for open server levels,
-including parked levels, or `None` for an unknown state, stale handle or unavailable level.
+`LevelRef::visit_block_shape(host, state, pos, kind, &mut visit)` visits an explicit
+`BlockState`'s block-local outline or collision boxes with an empty context. The supplied
+state can differ from the world's block without changing it; level-dependent inputs come
+from the actual level. First read `level.block_state(host, pos)` to query the stored block,
+or use `visit_block_collision` to visit only its collision boxes. The supplied-state read
+works in the current client level and in open server levels, including parked ones, and
+returns `None` for an unknown state, stale handle or unavailable level.

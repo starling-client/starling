@@ -1,0 +1,31 @@
+ids = [
+    "hook:register_entity_layers",
+    "method:EntityRenderLayer::submit",
+    "method:EntityLayers::stock_layers",
+    "method:EntityLayers::hide",
+    "trait:StockLayerDraw",
+    "method:StockLayerDraw::draw_stock_layer",
+    "type:StockLayer",
+    "type:ArmorLayerSlot",
+    "type:ArmorLayerPass",
+]
+
+why = """
+Expose each living entity renderer's stock layers by id (`StockLayer`), allow hiding stock layers
+permanently per target during `register_entity_layers` (`EntityLayers::stock_layers`,
+`EntityLayers::hide`), and pass `&mut dyn StockLayerDraw` to `EntityRenderLayer::submit` so a mod
+layer can conditionally redraw a hidden stock layer per entity (`StockLayerDraw::draw_stock_layer`).
+This mirrors NeoForge's `EntityRenderersEvent.AddLayers` list inspection and removal together with
+subclassing a vanilla `RenderLayer` and calling `super.render` conditionally.
+"""
+
+migrate = """
+- Rebuild `register_entity_layers` listeners against v6 instead of v5.
+- Add the fourth parameter `stock: &mut dyn StockLayerDraw` (or `_stock: &mut dyn StockLayerDraw`
+  if unused) to every `EntityRenderLayer::submit` implementation.
+- To suppress a vanilla layer on a renderer (for example `StockLayer::SnowGolemHead` on
+  `minecraft:snow_golem`), call `event.layers.hide(target, layer)` during `register_entity_layers`.
+- For per-entity visibility (for example hiding armour only on selected players), hide the stock
+  layer on the target in `register_entity_layers` and call `stock.draw_stock_layer(layer)` from
+  your own `EntityRenderLayer::submit` for the entities that should still draw it.
+"""

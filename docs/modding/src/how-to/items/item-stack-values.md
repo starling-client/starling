@@ -87,28 +87,46 @@ of one. Invalid values produce typed errors, not clamped values. A transfer requ
 different: `ItemResource` plus a separate amount can request or return more than one
 resident stack's capacity. The resident writes it produces must pass validation.
 
-Game inventory, menus, trades and models keep their engine-owned representations. Where a
-native hook or host method takes an owned API snapshot, the game converts only after a listener
-guard and stages every mutable result before committing any captured output. Invalid hook
-edits retain those captured engine values. The same durability rules govern writable hook
-outputs: a valid damage value above that stack's maximum reaches later listeners and the game.
+Game inventory, menus, trades and models keep their engine-owned representations. Native hooks
+project owned API stacks only when a listener is present. The game admits ordinary changed
+outputs independently when that listener returns, leaving the last accepted value in place for
+any refusal. A `HookList` validates each edit that supplies a stack; a refused edit leaves other
+edits intact. The same durability rules govern writable hook outputs: a valid damage value above
+that stack's maximum reaches later listeners and the game.
 Consuming mutable events such as `bonemeal` and
 `item_after_vertical_collision` lend `Option<ItemStack>` so a listener can consume the value by
 setting `None`.
 
-The global `Hooks::item_stacked_on_other` hook runs on the authoritative server side only (`StackedOnOtherDirection::Event`), while `ItemPart::item_stacked_on_other` runs on both sides (server clicks, client prediction with authoritative server reconciliation, and creative inventory-tab/hotbar pickups), dispatching first to the carried stack (`CarriedOnOther`) and then — unless a carried vanilla `BundleItem` takes the click — to the clicked stack (`OtherStackedOnMe`). It does not lend the slot: it hands the listener the cursor and
-the clicked slot's stack, frozen, and takes a typed answer (`StackedOnOtherResult`: `handled`,
-`StackResult::Keep` or `Set` for `carried`, and `ClickedStackResult::Keep`, `Set`, or `Take(count)` for `clicked`) that the game validates once and applies
-once. For global listeners, a stack can be set only by a cancelled click that is also `handled` (`ClickedStackResult::Take` is refused), and a replacement cannot change a result slot or take an item from a brewing potion slot, because the replacement does not run the slot's take effects. For `ItemPart` overrides, `ClickedStackResult::Set` performs a direct write without `Slot.onTake` side effects while `ClickedStackResult::Take(count)` takes through `Slot.safeTake` / `Slot.onTake`. If both Parts take from the slot, each take runs its own effects in carried-then-clicked order. A refused replacement keeps
-the slot and cursor as they were and undoes the listener's writes. A write through the `Host` to
-what the click read likewise makes the click stale and refuses it.
+The global `Hooks::item_stacked_on_other` hook runs on the authoritative server side only
+(`StackedOnOtherDirection::Event`). `ItemPart::item_stacked_on_other` runs on both sides: server
+clicks, client prediction that the server corrects, and creative inventory-tab and hotbar
+pickups. It asks the carried stack's Part first (`CarriedOnOther`), then, unless a carried
+vanilla `BundleItem` takes the click, the clicked stack's Part (`OtherStackedOnMe`).
+
+Each call lends the click's cursor and clicked slot, as NeoForge's `getCarriedSlotAccess` and
+`getSlot` do. `carried()` and `clicked()` read them as earlier phases and the call itself left
+them. `set_carried` writes the cursor, `set_clicked` writes the slot directly (`Slot.set`,
+without the slot's take side effects), and `take_clicked(count)` takes through `Slot.safeTake`,
+running furnace experience, `recipes_used`, crafting remainders and take hooks. The edits are
+applied to the menu in the order they were made, once every phase has answered.
+
+A global listener cancels the click with `canceled`. The click is then done with its edits
+while `click.handled` stays `true` (its start value, as in NeoForge); set it to `false` to let
+plain pickup run as well. A global listener's edits refuse the click unless the click is
+cancelled and handled, and so do its takes and its writes to a result slot or a filled brewing
+potion slot. An `ItemPart` answers
+with its `Flow`, as vanilla's `boolean` does: `Flow::Cancel` takes the click, and
+`Flow::Continue` goes on to the later phases and plain pickup, which see its edits. An invalid
+stack, an edit a slot rule refuses, a write through the `Host` to what the click read, or a
+panic refuses the click: the slot and cursor stay as they were and the listener's writes are
+undone.
 
 The block-entity
 tick, menu-button and menu-quick-move bridges validate their captured snapshot outputs together
 before applying them. These are output guarantees, not whole-world transactions: independent
 `ServerHost` storage writes, commands, messages and other effects are not rolled back on a
 refused output. Carrier-form callbacks such as `bonemeal` and `item_after_vertical_collision`
-also retain their captured stack outputs on refusal but do not journal independent host writes.
+also keep the last accepted stack on refusal without rolling back independent host writes.
 
 A client without this mod predicts vanilla here; the server corrects it.
 
@@ -124,7 +142,22 @@ receives the live typed `ItemStack` from its hotbar slot while the same item kin
 if the slot was emptied or replaced. These callbacks intercept local input without starting
 ordinary item use; see the linked example for registration and typed component reads.
 
-## A stack's name
+## A stack's names and lore
+
+On either side, `stack.custom_name(host)` and `stack.item_name(host)` return the effective
+name components as `Result<Option<Text>, TextFormError>`. `stack.lore(host)` returns
+`Result<Vec<Text>, TextFormError>`, with an empty vector if absent. A read takes the patch
+first, otherwise the item's prototype. An explicit removal hides the default; an invalid
+present value returns a `TextFormError`.
+
+On an owned stack, use `set_custom_name(host, Some(&name))`, `set_item_name(host, Some(&name))`,
+and `set_lore(host, &lines)`. To append lore, read `let mut lines = stack.lore(host)?`, push a
+`Text`, and write the slice back. Pass `None` for a name or `&[]` for lore to remove the component,
+including a prototype default. Writing the prototype value removes any override or explicit
+removal. If a text cannot be encoded or lore exceeds vanilla's 256 lines
+(`ItemLore.MAX_LINES`), the write leaves the stack unchanged. None of these methods add style:
+vanilla's styled hover name defaults to italics for a custom name unless the component overrides
+it, but not for `item_name`.
 
 `host.hover_name(&stack)` is `ItemStack.getHoverName()` as a component, on both sides. The
 custom name wins, then a written book's nonblank raw title. Otherwise the item's name is used:
@@ -138,6 +171,18 @@ no rarity colour or italics. Each player renders the component in their own lang
 text or a display as it is. Call `host.text_string(&name)` for a string in the language of the
 side that calls it. An invalid stack is a `TextFormError`.
 
+## A stack's use animation
+
+`stack.use_animation(host)` is `ItemStack.getUseAnimation` with the mods' answers applied, on
+either side: the animation the renderer draws while the stack is in use (`Bow`, `Drink`, `Block`,
+`Spear`...). It starts from the item's own answer (its consumable, shield or kinetic components
+included), then the item's Part may change it in `ItemPart::use_animation`, which is asked on both
+sides with a read-only `&dyn Host`: answer from the stack alone. There is no global listener; the
+Part is item-scoped. A `Spear` answer for a stack without kinetic data reads `None`, as it draws.
+Inside the Part, reading the effective animation of any stack of the item it is answering (a copy
+with another count or components included) gives the item's own answer: the Part is not asked
+again. Reading another item's stack asks that item's Parts.
+
 ## The NBT escape
 
 `ItemStack::from_nbt(host, compound)` and `to_nbt(host)` are the NBT escape. They live on the
@@ -149,3 +194,11 @@ metadata fails encoding.
 The escape preserves explicit zero damage, default-component removals and opaque component
 NBT. It does not apply resident maxima or materialize prototype defaults. Those remain the
 responsibility of the metadata service and game write boundary respectively.
+
+## JSON serialization
+
+`host.item_to_json(Option<&ItemStack>)` and `host.item_from_json(&str)` encode and decode
+optional stacks with vanilla's `ItemStack.OPTIONAL_CODEC` over `JsonOps` on either side:
+`None` encodes as `{}`, and a non-empty stack encodes as `{"id","count","components":{...}}`
+with prototype-equal defaults elided and explicit removals written `"!id":{}`. Errors return
+`ItemJsonError`, naming the failing field when a top-level field or component key is invalid.

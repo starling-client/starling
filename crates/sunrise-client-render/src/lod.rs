@@ -1085,9 +1085,9 @@ enum Job {
     RequestDetail {
         chunks: Vec<(i32, i32)>,
         center: [i32; 2],
-        /// `Lod::refreshes` when asked: what was read before a later
-        /// `refresh` may be older than what it announced.
-        refreshes: u64,
+        /// `Lod::refreshes` when asking for detail. An empty request clears
+        /// queued decoration without retagging any results still in flight.
+        refreshes: Option<u64>,
     },
 }
 /// A chunk's columns on their way to the tiles over it: what `Lod::receive`
@@ -1596,7 +1596,9 @@ impl Lod {
                                     center,
                                     refreshes,
                                 } => {
-                                    asked = refreshes;
+                                    if let Some(refreshes) = refreshes {
+                                        asked = refreshes;
+                                    }
                                     sampler.request_detail(&chunks, center);
                                     Done::DetailRequested
                                 }
@@ -2415,19 +2417,18 @@ impl Lod {
             dx * dx + dz * dz
         });
         chunks.truncate(DETAIL_REQUEST);
-        if !chunks.is_empty() {
-            self.detail_request_pending = true;
-            self.shared
-                .jobs
-                .lock()
-                .unwrap()
-                .push_back(Job::RequestDetail {
-                    chunks,
-                    center: camera,
-                    refreshes: self.refreshes,
-                });
-            self.shared.wake.notify_all();
-        }
+        let refreshes = (!chunks.is_empty()).then_some(self.refreshes);
+        self.detail_request_pending = true;
+        self.shared
+            .jobs
+            .lock()
+            .unwrap()
+            .push_back(Job::RequestDetail {
+                chunks,
+                center: camera,
+                refreshes,
+            });
+        self.shared.wake.notify_all();
     }
     /// `aim` asks the tiles a zoomed view magnifies for finer detail
     /// ([`ZoomAim`]); `None` plans exactly as before.
@@ -3906,10 +3907,7 @@ mod tests {
         assert!(!lod.saved.contains_key(&(9, 9)));
 
         // Nothing new is asked for while summaries wait, whatever the
-        // request interval allows. Asserted on `detail_request_at`, which
-        // `request_detail` records once it is past its guards: a test
-        // scheduler has no active tile wanting detail, so `pending` would
-        // stay false either way and prove nothing.
+        // request interval allows.
         let long_ago = std::time::Instant::now() - std::time::Duration::from_secs(10);
         lod.detail_request_at = long_ago;
         lod.detail_request_pending = false;
@@ -3923,13 +3921,40 @@ mod tests {
         assert!(lod.saved.contains_key(&(9, 9)), "nothing was dropped");
         assert!(lod.saved.contains_key(&(10, 9)));
 
-        // Drained, requests resume.
+        // Drained, requests resume for visible detail.
+        let key = TileKey {
+            x: 0,
+            z: 0,
+            level: 0,
+        };
+        lod.active.insert(key);
+        let requested_at = lod.refreshes;
         lod.detail_request_at = long_ago;
         lod.request_detail([0, 0]);
-        assert!(
-            lod.detail_request_at > long_ago,
-            "asked once the backlog drained"
-        );
+        let Some(Job::RequestDetail {
+            chunks, refreshes, ..
+        }) = lod.shared.jobs.lock().unwrap().pop_front()
+        else {
+            panic!("detail was not requested after the backlog drained");
+        };
+        assert_eq!(chunks, [(0, 0)]);
+        assert_eq!(refreshes, Some(requested_at));
+
+        // The worker acknowledged the request, but may still have work in flight.
+        // The view wants nothing now: replace the queue without retagging that work.
+        lod.detail_request_pending = false;
+        lod.active.clear();
+        lod.refreshes += 1;
+        lod.detail_request_at = long_ago;
+        lod.request_detail([0, 0]);
+        let Some(Job::RequestDetail {
+            chunks, refreshes, ..
+        }) = lod.shared.jobs.lock().unwrap().pop_front()
+        else {
+            panic!("the empty view did not clear queued detail");
+        };
+        assert!(chunks.is_empty());
+        assert_eq!(refreshes, None);
     }
     /// `warm` builds exactly the levels asked for, off the render thread, and
     /// `get` then finds them built.

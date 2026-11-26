@@ -8,7 +8,8 @@
 pub enum TerrainMaterial {
     /// Each quad's own: solid, `cutout` or `cutout_mipped` as its model's `render_type` names
     /// it, and a translucent quad in the sorted translucent material (vanilla's
-    /// `translucent_moving_block`). A render type the game doesn't know refuses the whole draw.
+    /// `translucent_moving_block`). Quads with a render type the game doesn't know are skipped
+    /// individually.
     #[default]
     Model,
     /// Opaque, with no alpha test.
@@ -82,7 +83,7 @@ pub struct TerrainModelOptions<'a> {
     pub shade: TerrainShade,
     /// One sprite drawn as another, with its UVs moved.
     pub uv_shift: Option<TerrainUvShift<'a>>,
-    /// How far each face's UVs pull in towards their centre before the shift, `0.0..=1.0`:
+    /// How far each face's UVs pull in towards their centre before the shift:
     /// `0.0` keeps the baked UVs. A model baked by an older `FaceBakery` passes the atlas shrink
     /// ratio it was made with; a loader that doesn't shrink keeps `0.0`.
     pub uv_shrink_ratio: f32,
@@ -128,7 +129,7 @@ impl<'a> TerrainModelOptions<'a> {
             ..self
         }
     }
-    /// The same options with UVs shrunk by `ratio`. The draw call checks it.
+    /// The same options with UVs shrunk by `ratio`.
     #[inline]
     pub fn with_uv_shrink_ratio(self, ratio: f32) -> Self {
         Self {
@@ -146,20 +147,4 @@ impl<'a> TerrainModelOptions<'a> {
     pub fn with_color(self, color: u32) -> Self {
         Self { color, ..self }
     }
-}
-
-/// Why [`BlockEntityDrawContext::terrain_model`](crate::BlockEntityDrawContext::terrain_model)
-/// drew nothing. A refused draw appends no geometry.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
-pub enum TerrainModelError {
-    /// The handle is stale or not a resolved standalone model.
-    Model(crate::ModelError),
-    /// A quad could not be drawn, so none was: under [`TerrainMaterial::Model`] an unknown
-    /// render type; a sprite missing from the block sprites; a pose or UV
-    /// that is not finite, or a pose that flattens the model; a shrink ratio outside
-    /// `0.0..=1.0`; or a shift whose scale or offset is not finite, whose sprites are unknown,
-    /// or whose source sprite no face of the model uses.
-    Refused,
 }

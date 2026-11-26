@@ -22,8 +22,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write;
 
 use naga::ShaderStage;
-use naga::front::glsl::{Frontend, Options};
-use naga::valid::{Capabilities, ValidationFlags, Validator};
+use naga::front::glsl::InterfaceLimits;
 
 use crate::Preprocessed;
 
@@ -136,18 +135,17 @@ pub struct Sampler {
 }
 
 /// A translation diagnostic at a pack file and line.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Error {
-    pub file: String,
-    pub line: u32,
-    pub message: String,
-}
+pub use sunrise_glsl::Error;
 
 #[derive(Clone)]
 pub struct Program {
     pub vertex: naga::Module,
     pub fragment: naga::Module,
     pub interface: Interface,
+    /// The location each varying got between the stages, by its GLSL name (a matrix, array or
+    /// struct varying by the name of each part). A varying the fragment stage never reads has
+    /// none.
+    pub varyings: std::collections::BTreeMap<String, u32>,
     /// Non-fatal translation diagnostics, located in the authored source.
     pub notes: Vec<Error>,
 }
@@ -265,35 +263,46 @@ impl AlphaTest {
     }
 }
 
-/// Translates a composite-style program (`composite`, `deferred`, `final`...).
+/// Translates a composite-style program (`composite`, `deferred`, `final`...), for a device with
+/// `limits` (the stage interface's, [`InterfaceLimits`]).
 pub fn translate_composite(
     vertex: &Preprocessed,
     fragment: &Preprocessed,
     target: Target,
+    limits: InterfaceLimits,
 ) -> Result<Program, Vec<Error>> {
-    translate(vertex, fragment, target, None, false)
+    translate(vertex, fragment, target, None, false, limits)
 }
 
 /// Translates a gbuffers-style program (`gbuffers_terrain`...) drawing the game's geometry
-/// described by `inputs`, into `target` (the pack's buffers).
+/// described by `inputs`, into `target` (the pack's buffers), for a device with `limits`.
 pub fn translate_gbuffers(
     vertex: &Preprocessed,
     fragment: &Preprocessed,
     target: Target,
     inputs: &GbuffersInputs,
+    limits: InterfaceLimits,
 ) -> Result<Program, Vec<Error>> {
-    translate(vertex, fragment, target, Some(inputs), false)
+    translate(vertex, fragment, target, Some(inputs), false, limits)
 }
 
 /// Translates a shadow program (`shadow`, `shadow_water`...) drawing the game's geometry
 /// described by `inputs` from the shadow light: its model-view and projection matrices are the
-/// shadow camera's (5.2).
+/// shadow camera's (5.2), for a device with `limits`.
 pub fn translate_shadow(
     vertex: &Preprocessed,
     fragment: &Preprocessed,
     inputs: &GbuffersInputs,
+    limits: InterfaceLimits,
 ) -> Result<Program, Vec<Error>> {
-    translate(vertex, fragment, Target::Buffers, Some(inputs), true)
+    translate(
+        vertex,
+        fragment,
+        Target::Buffers,
+        Some(inputs),
+        true,
+        limits,
+    )
 }
 
 /// The matrices of the compatibility profile in a gbuffers-style program, from the frame's.
@@ -303,20 +312,6 @@ const GBUFFERS_MATRICES: &str = "    hz_ModelViewMatrix = gbufferModelView;\n   
      hz_ModelViewMatrixInverse = gbufferModelViewInverse;\n    \
      hz_ProjectionMatrixInverse = gbufferProjectionInverse;\n    \
      hz_NormalMatrix = mat3(gbufferModelView);\n";
-
-/// `pp` with `declaration` after its leading directives (`#version`, `#extension`...).
-fn with_declaration(pp: &Preprocessed, declaration: &str) -> Preprocessed {
-    let mut at = 0;
-    for line in pp.code.split_inclusive('\n') {
-        let t = line.trim_start();
-        if !(t.is_empty() || t.starts_with('#')) {
-            break;
-        }
-        at += line.len();
-    }
-    let code = format!("{}{declaration}\n{}", &pp.code[..at], &pp.code[at..]);
-    Preprocessed { code, ..pp.clone() }
-}
 
 /// The type of a game input a vertex stage may read without declaring it: terrain's
 /// `mc_chunkFade`, and the core-profile vertex attributes (`vaPosition`...) that a
@@ -349,7 +344,7 @@ fn implicit_inputs<'a>(
             Some((name.as_str(), value.as_str(), implicit_input_type(name)?))
         })
         .filter(|(name, _, _)| {
-            uses_name(&vertex.code, name)
+            uses_name(vertex.code(), name)
                 && !scanned.globals.contains(*name)
                 && !scanned.declared.contains(*name)
         })
@@ -369,6 +364,7 @@ fn translate(
     target: Target,
     gbuffers: Option<&GbuffersInputs>,
     shadow: bool,
+    limits: InterfaceLimits,
 ) -> Result<Program, Vec<Error>> {
     let matrices = if shadow {
         GBUFFERS_MATRICES.replace("gbuffer", "shadow")
@@ -388,14 +384,9 @@ fn translate(
     );
     let vertex = vertex_bools.as_ref().unwrap_or(vertex);
     let fragment = fragment_bools.as_ref().unwrap_or(fragment);
-    // The boats' water patches' depth, read by our `main` (`GbuffersInputs::water_mask`).
-    let masked = gbuffers
-        .filter(|g| g.water_mask)
-        .map(|_| with_declaration(fragment, &format!("uniform sampler2D {WATER_MASK};")));
-    let fragment = masked.as_ref().unwrap_or(fragment);
-    // The boats' water patches (`GbuffersInputs::water_patches`): the vertex's camera-relative
-    // place to the fragment, and the patches' boxes.
-    let patches = gbuffers.is_some_and(|g| g.water_patches);
+    // The declarations each stage gets, put in once: the boats' water patches (`GbuffersInputs::
+    // water_patches`), the vertex's camera-relative place to the fragment and the patches' boxes,
+    // then the patches' depth (`GbuffersInputs::water_mask`) that our `main` reads.
     let varying = |pp: &Preprocessed, dir: &str| {
         let old = pp.version.as_ref().is_none_or(|(v, _)| *v < 130);
         format!(
@@ -403,18 +394,25 @@ fn translate(
             if old { "varying" } else { dir }
         )
     };
-    let patch_vertex = patches.then(|| with_declaration(vertex, &varying(vertex, "out")));
+    let patches = gbuffers.is_some_and(|g| g.water_patches);
+    let mut vertex_declarations: Vec<String> = Vec::new();
+    let mut fragment_declarations: Vec<String> = Vec::new();
+    if patches {
+        vertex_declarations.push(varying(vertex, "out"));
+        fragment_declarations.push(varying(fragment, "in"));
+        fragment_declarations.push("uniform int sunriseWaterPatchCount;".to_owned());
+        fragment_declarations
+            .extend((0..2 * WATER_PATCHES).map(|k| format!("uniform vec4 sunriseWaterPatch{k};")));
+    }
+    if gbuffers.is_some_and(|g| g.water_mask) {
+        fragment_declarations.push(format!("uniform sampler2D {WATER_MASK};"));
+    }
+    let declared = |pp: &Preprocessed, declarations: &[String]| {
+        (!declarations.is_empty()).then(|| pp.with_declaration(&declarations.join("\n")))
+    };
+    let patch_vertex = declared(vertex, &vertex_declarations);
     let vertex = patch_vertex.as_ref().unwrap_or(vertex);
-    let patch_fragment = patches.then(|| {
-        let uniforms: String = std::iter::once("uniform int sunriseWaterPatchCount;".to_owned())
-            .chain((0..2 * WATER_PATCHES).map(|k| format!("uniform vec4 sunriseWaterPatch{k};")))
-            .collect::<Vec<_>>()
-            .join("\n");
-        with_declaration(
-            fragment,
-            &format!("{}\n{uniforms}", varying(fragment, "in")),
-        )
-    });
+    let patch_fragment = declared(fragment, &fragment_declarations);
     let fragment = patch_fragment.as_ref().unwrap_or(fragment);
     let mut v = Stage::scan(vertex, ShaderStage::Vertex);
     let mut f = Stage::scan(fragment, ShaderStage::Fragment);
@@ -561,7 +559,7 @@ fn translate(
             && !uniforms.contains_key(item)
             && [vertex, fragment]
                 .iter()
-                .any(|pp| uses_name(&pp.code, item));
+                .any(|pp| uses_name(pp.code(), item));
     }
     let samplers: Vec<Sampler> = samplers
         .into_iter()
@@ -578,7 +576,7 @@ fn translate(
         locations,
         split,
         private,
-    } = varyings::assign(&v, &f, &mut errors);
+    } = varyings::assign(&v, &f, &mut errors, limits.inter_stage_variables as usize);
 
     // Past the pack's varyings, and past `hz_cutout` when the program draws terrain's two parts:
     // both at the first free place made every such program invalid ("Multiple bindings at
@@ -829,27 +827,20 @@ fn translate(
     }
     fragment_main.push_str("}\n");
 
-    let v_text = format!(
-        "{}{}{vertex_main}",
-        header(&v),
-        v.rewrite(&samplers, &uniforms)
-    );
-    let f_text = format!(
-        "{}{}{fragment_main}",
-        header(&f),
-        f.rewrite(&samplers, &uniforms)
-    );
+    let (v_header, f_header) = (header(&v), header(&f));
+    let v_code = format!("{}{vertex_main}", v.rewrite(&samplers, &uniforms));
+    let f_code = format!("{}{fragment_main}", f.rewrite(&samplers, &uniforms));
     if !errors.is_empty() {
         return Err(errors);
     }
-    let mut vertex_module = compile(&v, &v_text, header(&v).lines().count());
+    let mut vertex_module = compile(&v, &v_header, &v_code, limits);
     // A stage that writes an image or a buffer runs once per vertex: run again by the game's
     // `after`, it would write twice. One that only reads them is run again like any other.
     if run_again && vertex_module.as_ref().is_ok_and(writes_storage) {
-        let once = v_text.replacen(RUNS_AGAIN, RUNS_ONCE, 1);
-        vertex_module = compile(&v, &once, header(&v).lines().count());
+        let once = v_header.replacen(RUNS_AGAIN, RUNS_ONCE, 1);
+        vertex_module = compile(&v, &once, &v_code, limits);
     }
-    let fragment_module = compile(&f, &f_text, header(&f).lines().count());
+    let fragment_module = compile(&f, &f_header, &f_code, limits);
     let (vertex, fragment) = match (vertex_module, fragment_module) {
         (Ok(v), Ok(f)) => (v, f),
         (a, b) => return Err(a.err().into_iter().chain(b.err()).flatten().collect()),
@@ -885,6 +876,10 @@ fn translate(
     mark_atomic(&fragment, &mut images);
     Ok(Program {
         notes,
+        varyings: locations
+            .iter()
+            .map(|(name, (location, _))| (name.clone(), *location))
+            .collect(),
         interface: Interface {
             uniform_size,
             initial_values,
@@ -1038,12 +1033,21 @@ fn resources(
 
 /// Translates a compute program (`.csh`).
 pub fn translate_compute(compute: &Preprocessed) -> Result<ComputeProgram, Vec<Error>> {
+<<<<<<< HEAD
     let named = anonymous_structs::name(&compute.code);
     let named = shadowed_types::rename(named.as_deref().unwrap_or(&compute.code)).or(named);
     let named = named.map(|code| Preprocessed {
         code,
         ..compute.clone()
     });
+||||||| 46c00106def
+    let named = anonymous_structs::name(&compute.code).map(|code| Preprocessed {
+        code,
+        ..compute.clone()
+    });
+=======
+    let named = anonymous_structs::name(compute.code()).map(|code| compute.with_code(code));
+>>>>>>> ed6772e2118
     let compute = named.as_ref().unwrap_or(compute);
     let split = atomic_vectors::rewrite(compute);
     let compute = split.as_ref().unwrap_or(compute);
@@ -1075,11 +1079,11 @@ pub fn translate_compute(compute: &Preprocessed) -> Result<ComputeProgram, Vec<E
     let mut sizes = |name: &str, counts: &[usize]| {
         let v = constant(&c, name)?;
         if !counts.contains(&v.len()) {
-            errors.push(Error {
-                file: compute.files.first().cloned().unwrap_or_default(),
-                line: 0,
-                message: format!("`{name}` must have {counts:?} numbers, not {}", v.len()),
-            });
+            errors.push(Error::new(
+                compute.file(),
+                0,
+                format!("`{name}` must have {counts:?} numbers, not {}", v.len()),
+            ));
             return None;
         }
         Some(v)
@@ -1097,21 +1101,13 @@ pub fn translate_compute(compute: &Preprocessed) -> Result<ComputeProgram, Vec<E
             code
         }
         Some(Err(message)) => {
-            errors.push(Error {
-                file: compute.files.first().cloned().unwrap_or_default(),
-                line: 0,
-                message,
-            });
+            errors.push(Error::new(compute.file(), 0, message));
             code
         }
         _ => code,
     };
     let code = work_group_size(&code).unwrap_or_else(|message| {
-        errors.push(Error {
-            file: compute.files.first().cloned().unwrap_or_default(),
-            line: 0,
-            message,
-        });
+        errors.push(Error::new(compute.file(), 0, message));
         code
     });
     let code = ordering::barriers_after_atomics(&code).unwrap_or(code);
@@ -1149,11 +1145,13 @@ pub fn translate_compute(compute: &Preprocessed) -> Result<ComputeProgram, Vec<E
     if folded.is_some() {
         header.push_str("uvec3 hz_WorkGroupID;\n");
     }
-    let text = format!("{header}{code}{main}");
+    let code = format!("{code}{main}");
     if !errors.is_empty() {
         return Err(errors);
     }
-    let module = compile(&c, &text, header.lines().count()).map_err(|e| {
+    // A compute stage has no location-bound interface, so no device limit of it applies.
+    let limits = crate::DEVICELESS_INTERFACE_LIMITS;
+    let module = compile(&c, &header, &code, limits).map_err(|e| {
         errors.extend(e);
         std::mem::take(&mut errors)
     })?;
@@ -1330,9 +1328,11 @@ fn work_group_size(code: &str) -> Result<String, String> {
     Ok(tokens.concat())
 }
 
-/// A work group size given as an integer constant expression (GLSL 4.60, 4.4 and 4.4.1):
-/// numbers, `+ - * / %`, brackets, `min`, `max` and `gl_MaxComputeWorkGroupSize`, the minimum
-/// GLSL requires (`ivec3(1024, 1024, 64)`, 7.3); the translation knows no device.
+/// A layout qualifier's value (a work group size, an output's location or component) given as
+/// an integer constant expression (GLSL 4.60, 4.4 and 4.4.1): integer literals (decimal, hex or
+/// octal, `u` or not, 4.1.3), `+ - * / %`, brackets, `min`, `max` and
+/// `gl_MaxComputeWorkGroupSize`, the minimum GLSL requires (`ivec3(1024, 1024, 64)`, 7.3); the
+/// translation knows no device.
 struct ConstantSize<'w> {
     words: &'w [&'w str],
     at: usize,
@@ -1340,11 +1340,14 @@ struct ConstantSize<'w> {
 
 impl<'w> ConstantSize<'w> {
     fn eval(words: &'w [&'w str]) -> Option<u32> {
+        Self::value(words).and_then(|v| u32::try_from(v).ok())
+    }
+
+    /// The expression's value, whatever its range.
+    fn value(words: &'w [&'w str]) -> Option<i64> {
         let mut p = Self { words, at: 0 };
         let v = p.sum()?;
-        (p.at == words.len())
-            .then_some(v)
-            .and_then(|v| u32::try_from(v).ok())
+        (p.at == words.len()).then_some(v)
     }
 
     fn peek(&self) -> Option<&'w str> {
@@ -1426,7 +1429,11 @@ impl<'w> ConstantSize<'w> {
                     _ => None,
                 }
             }
-            number => number.trim_end_matches(['u', 'U']).parse().ok(),
+            // GLSL's literal (hex, octal); one whose digits don't fit its radix (`08`, `018u`)
+            // is read as decimal, as before octal was read.
+            number => crate::condition::int_literal(number)
+                .ok()
+                .or_else(|| number.trim_end_matches(['u', 'U']).parse().ok()),
         }
     }
 }
@@ -1480,291 +1487,50 @@ pub(super) fn split_sampler(ty: &str) -> (String, &'static str) {
     (base, if shadow { "samplerShadow" } else { "sampler" })
 }
 
-/// Parses and validates one stage; errors at the pack's files and lines.
-fn compile(stage: &Stage, text: &str, header_lines: usize) -> Result<naga::Module, Vec<Error>> {
-    let specialized = image_parameters::rewrite(text).map_err(|message| {
-        vec![Error {
-            file: stage.pp.files.first().cloned().unwrap_or_default(),
-            line: 1,
-            message,
-        }]
-    })?;
-    let bounded = integer_bounds::rewrite(&array_constructors::rewrite(&specialized));
-    let text = bounded.as_str();
-    let at = |text: &str, span: naga::Span, message: String| {
-        let start = span.to_range().map_or(0, |r| r.start);
-        let line = text[..start.min(text.len())].matches('\n').count();
-        match line
-            .checked_sub(header_lines)
-            .and_then(|l| stage.pp.lines.get(l))
-        {
-            Some(o) => Error {
-                file: stage
-                    .pp
-                    .files
-                    .get(o.file as usize)
-                    .cloned()
-                    .unwrap_or_default(),
-                line: o.line,
-                message,
-            },
-            None => Error {
-                file: "<sunrise>".into(),
-                line: line as u32 + 1,
-                message,
-            },
-        }
+/// Parses and validates one stage, `header` (ours, its first lines) then `code` (the pack's,
+/// rewritten, then our `main`), through `sunrise_glsl::compile_stage`; errors at the pack's files
+/// and lines. The pack's own rewrites run first, on the whole stage: image parameters, integer
+/// bounds and array constructors.
+fn compile(
+    stage: &Stage,
+    header: &str,
+    code: &str,
+    limits: InterfaceLimits,
+) -> Result<naga::Module, Vec<Error>> {
+    let header_lines = header.lines().count();
+    let specialized = image_parameters::rewrite(&format!("{header}{code}"))
+        .map_err(|message| vec![Error::new(stage.pp.file(), 1, message)])?;
+    let text = integer_bounds::rewrite(&array_constructors::rewrite(&specialized));
+    // The rewrites keep every line where it is: the header is the text's first `header_lines`.
+    let code_start = match header_lines.checked_sub(1) {
+        Some(last) => (text.match_indices('\n').nth(last)).map_or(text.len(), |(at, _)| at + 1),
+        None => 0,
     };
-    let parse = |text: &str| {
-        Frontend::default()
-            .parse(&Options::from(stage.kind), text)
-            .map_err(|e| {
-                e.errors
-                    .into_iter()
-                    .map(|e| at(text, e.meta, e.kind.to_string()))
-                    .collect::<Vec<_>>()
-            })
-    };
-    // naga's frontend refuses a few things GL takes: a scalar's swizzle (`f.x`, GLSL 4.20), a
-    // matrix column's component written to (`m[1].y =`) and `min`/`max`/`clamp` of a `uint` and
-    // integer literals, and a function prototype declared again. Each refusal is rewritten where
-    // naga points, and the source parsed again.
-    let mut text = std::borrow::Cow::Borrowed(text);
-    let mut tries = 0;
-    let mut module = loop {
-        tries += 1;
-        match Frontend::default().parse(&Options::from(stage.kind), &text) {
-            Ok(m) => break m,
-            Err(e) => match e.errors.iter().find_map(|e| {
-                scalar_swizzle(&text, e)
-                    .or_else(|| unsigned_literals(&text, e))
-                    .or_else(|| repeated_prototype(&text, e))
-            }) {
-                Some(fixed) if tries < 256 => text = fixed.into(),
-                _ => return parse(&text),
-            },
-        }
-    };
-    end_returns_give_zero(&mut module);
-    lengths_of_loaded_arrays(&mut module);
-    Validator::new(ValidationFlags::all(), Capabilities::all())
-        .subgroup_operations(naga::valid::SubgroupOperationSet::all())
-        .subgroup_stages(naga::valid::ShaderStages::all())
-        .validate(&module)
-        .map_err(|e| {
-            let span = e.spans().next().map_or(naga::Span::default(), |(s, _)| *s);
-            // The validator nests its reasons: say them all.
-            let inner = e.into_inner();
-            let mut message = inner.to_string();
-            let mut source = std::error::Error::source(&inner);
-            while let Some(s) = source {
-                write!(message, ": {s}").unwrap();
-                source = s.source();
-            }
-            vec![at(&text, span, message)]
-        })?;
-    Ok(module)
-}
-
-/// `block.member.length()` of a buffer block's runtime-sized array: naga's frontend loads the
-/// array and takes the length of the loaded value, which its validator refuses, since a
-/// runtime-sized array can't be loaded. The length is taken of the array's pointer instead. The
-/// load's slot becomes that length, and the old length expression a plain conversion of it, so
-/// every handle and emitted range stays as it was.
-fn lengths_of_loaded_arrays(module: &mut naga::Module) {
-    use naga::Expression as E;
-    let functions = module.functions.iter_mut().map(|(_, f)| f);
-    for f in functions.chain(module.entry_points.iter_mut().map(|e| &mut e.function)) {
-        let loads: Vec<_> = f
-            .expressions
-            .iter()
-            .filter_map(|(at, e)| match *e {
-                E::ArrayLength(loaded) => match f.expressions[loaded] {
-                    E::Load { pointer } => Some((at, loaded, pointer)),
-                    _ => None,
-                },
-                _ => None,
-            })
-            .collect();
-        for (at, loaded, pointer) in loads {
-            f.expressions[loaded] = E::ArrayLength(pointer);
-            f.expressions[at] = E::As {
-                expr: loaded,
-                kind: naga::ScalarKind::Uint,
-                convert: Some(4),
-            };
-        }
-    }
-}
-
-/// GLSL lets a function that returns a value reach its end without a `return`: what it returns
-/// then is undefined (GLSL 4.60, 6.1). naga's frontend ends every body that can reach its end
-/// with a `return` of no value, which its validator refuses in such a function; those returns
-/// give the result type's zero instead.
-fn end_returns_give_zero(module: &mut naga::Module) {
-    fn fill(block: &mut naga::Block, zero: &mut dyn FnMut() -> naga::Handle<naga::Expression>) {
-        // The ends naga's frontend gives a `return` to (`naga::proc::ensure_block_returns`).
-        match block.last_mut() {
-            Some(naga::Statement::Block(b)) => fill(b, zero),
-            Some(naga::Statement::If { accept, reject, .. }) => {
-                fill(accept, zero);
-                fill(reject, zero);
-            }
-            Some(naga::Statement::Switch { cases, .. }) => {
-                for case in cases.iter_mut().filter(|c| !c.fall_through) {
-                    fill(&mut case.body, zero);
-                }
-            }
-            Some(naga::Statement::Return { value }) if value.is_none() => *value = Some(zero()),
-            _ => {}
-        }
-    }
-    for (_, f) in module.functions.iter_mut() {
-        let Some(ty) = f.result.as_ref().map(|r| r.ty) else {
-            continue;
-        };
-        let (body, expressions) = (&mut f.body, &mut f.expressions);
-        let mut made = None;
-        fill(body, &mut || {
-            *made.get_or_insert_with(|| {
-                expressions.append(naga::Expression::ZeroValue(ty), naga::Span::default())
-            })
-        });
-    }
-}
-
-/// `text` without the scalar swizzle naga's frontend refused (`e`, GLSL 4.20's `f.x`, `f.xx`): one
-/// component dropped, more a vector constructor of the scalar.
-fn scalar_swizzle(text: &str, e: &naga::front::glsl::Error) -> Option<String> {
-    if !e
-        .kind
-        .to_string()
-        .starts_with("Can't lookup field on this type")
+    let locate = |line: usize| match line
+        .checked_sub(header_lines)
+        .and_then(|l| stage.pp.origin_at(l))
     {
-        return None;
-    }
-    let r = e.meta.to_range()?;
-    let field = text.get(r.clone())?.strip_prefix('.')?;
-    let one = |c: char| field.chars().all(|f| f == c);
-    let indexed = text[..r.start].trim_end().ends_with(']');
-    let component = field.len() == 1 && "xyzwrgbastpq".contains(field);
-    if field.is_empty()
-        || field.len() > 4
-        || !(one('x') || one('r') || one('s') || indexed && component)
-    {
-        return None;
-    }
-    let mut out = text.to_owned();
-    if field.len() == 1 && indexed {
-        // A matrix column's component, written to: `m[1].y` as `m[1][1]`.
-        let k = "xyzwrgbastpq".find(field).map(|k| k % 4)?;
-        out.replace_range(r, &format!("[{k}]"));
-    } else if field.len() == 1 {
-        out.replace_range(r, "");
-    } else {
-        let start = expression_start(text, r.start)?;
-        out.replace_range(r, ")");
-        out.insert_str(start, &format!("vec{}(", field.len()));
-    }
-    Some(out)
-}
-
-/// `text` with the integer literals of the `min`/`max`/`clamp` call naga found ambiguous (`e`)
-/// made unsigned: with a `uint` beside them GL takes the `uint` overload.
-fn unsigned_literals(text: &str, e: &naga::front::glsl::Error) -> Option<String> {
-    let kind = e.kind.to_string();
-    let f = kind
-        .strip_prefix("Ambiguous best function for '")?
-        .trim_end_matches('\'');
-    if !matches!(f, "min" | "max" | "clamp") {
-        return None;
-    }
-    let r = e.meta.to_range()?;
-    let call = text.get(r.clone())?;
-    let b = call.as_bytes();
-    let word = |c: u8| c.is_ascii_alphanumeric() || c == b'_' || c == b'.';
-    let mut out = String::with_capacity(call.len() + 8);
-    let mut i = 0;
-    let mut changed = false;
-    while i < b.len() {
-        if b[i].is_ascii_digit() && (i == 0 || !word(b[i - 1])) {
-            let start = i;
-            while i < b.len() && b[i].is_ascii_digit() {
-                i += 1;
-            }
-            out.push_str(&call[start..i]);
-            if i == b.len() || !(word(b[i])) {
-                out.push('u');
-                changed = true;
-            }
-            continue;
-        }
-        out.push(b[i] as char);
-        i += 1;
-    }
-    changed.then(|| format!("{}{out}{}", &text[..r.start], &text[r.end..]))
-}
-
-/// `text` without the function prototype naga's frontend refused as declared before (`e`): GLSL
-/// lets a function be declared again (packs include the same helper's prototype from two
-/// files). The prototype and its `;` turn to spaces, keeping lines where they are; one with
-/// qualifiers before its type (naga's span starts at the type) is left alone.
-fn repeated_prototype(text: &str, e: &naga::front::glsl::Error) -> Option<String> {
-    if e.kind.to_string() != "Prototype already defined" {
-        return None;
-    }
-    let r = e.meta.to_range()?;
-    let end = r.end + text.get(r.end..)?.find(';')? + 1;
-    if !text.get(r.end..end - 1)?.trim().is_empty() {
-        return None;
-    }
-    let before = text.get(..r.start)?.trim_end();
-    let line = &before[before.rfind('\n').map_or(0, |n| n + 1)..];
-    let boundary =
-        before.is_empty() || before.ends_with([';', '}']) || line.trim_start().starts_with('#');
-    if !boundary {
-        return None;
-    }
-    let blank: String = text[r.start..end]
-        .chars()
-        .map(|c| if c == '\n' { '\n' } else { ' ' })
-        .collect();
-    Some(format!("{}{blank}{}", &text[..r.start], &text[end..]))
-}
-
-/// Where the operand that ends right before byte `end` begins: a name, a call or an index (with
-/// what it is of), or a bracketed expression.
-fn expression_start(text: &str, end: usize) -> Option<usize> {
-    let b = text.as_bytes();
-    let mut i = end;
-    while i > 0 && b[i - 1].is_ascii_whitespace() {
-        i -= 1;
-    }
-    loop {
-        match b.get(i.checked_sub(1)?) {
-            Some(b')') | Some(b']') => {
-                let mut level = 0i32;
-                loop {
-                    i = i.checked_sub(1)?;
-                    match b[i] {
-                        b')' | b']' => level += 1,
-                        b'(' | b'[' => {
-                            level -= 1;
-                            if level == 0 {
-                                break;
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            Some(c) if c.is_ascii_alphanumeric() || *c == b'_' || *c == b'.' => i -= 1,
-            _ => return Some(i),
-        }
-        if i == 0 {
-            return Some(0);
-        }
-    }
+        Some((file, line)) => sunrise_glsl::Location {
+            file: file.to_owned(),
+            line,
+        },
+        None => sunrise_glsl::Location {
+            file: "<sunrise>".into(),
+            line: line as u32 + 1,
+        },
+    };
+    sunrise_glsl::compile_stage(
+        &sunrise_glsl::Source {
+            stage: stage.kind,
+            header: &text[..code_start],
+            code: &text[code_start..],
+            locate: &locate,
+        },
+        // The pack's buffer blocks are in set 4 already: the scanner writes it into their
+        // layout (`Stage::buffer_block`). Nothing else the pack declares is moved.
+        &sunrise_glsl::BindingMap::new(),
+        limits,
+    )
 }
 
 /// The uniform block's size and member offsets, from naga's layout.
@@ -1791,6 +1557,7 @@ fn block_layout(module: &naga::Module) -> (u32, Vec<(String, u32)>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use naga::valid::{Capabilities, ValidationFlags, Validator};
 
     /// A gbuffers program whose fragment stage writes `float(<name>)` after `decl`.
     fn item_program(
@@ -1820,7 +1587,33 @@ mod tests {
             &preprocess(&pack, &f, &m),
             Target::Buffers,
             game,
+            InterfaceLimits::WGPU_DEFAULT,
         )
+    }
+
+    /// `with_declaration` puts the water mask's sampler after `#version`; an error on a later
+    /// line still names the pack's line (an inserted line used to be left out of `lines`, so
+    /// the error moved one line up).
+    #[test]
+    fn an_error_after_an_inserted_declaration_names_the_packs_line() {
+        let game = GbuffersInputs {
+            water_mask: true,
+            ..item_game()
+        };
+        let Err(errors) = item_program(
+            "gbuffers_basic",
+            "layout(location = 1, component = 4) out float x;",
+            "x",
+            &game,
+        ) else {
+            panic!("a component past the location's four is refused");
+        };
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.file.ends_with("gbuffers_basic.fsh") && e.line == 2),
+            "{errors:?}"
+        );
     }
 
     fn item_game() -> GbuffersInputs {
@@ -1946,8 +1739,14 @@ mod tests {
             body: "hz_Vertex = vec4(0.25, 0.5, -2.0, float(gl_VertexIndex));".into(),
             ..Default::default()
         };
-        let program = translate_gbuffers(&vertex, &fragment, Target::Buffers, &inputs)
-            .unwrap_or_else(|e| panic!("{e:?}"));
+        let program = translate_gbuffers(
+            &vertex,
+            &fragment,
+            Target::Buffers,
+            &inputs,
+            InterfaceLimits::WGPU_DEFAULT,
+        )
+        .unwrap_or_else(|e| panic!("{e:?}"));
         let module = &program.vertex;
         let reads = |f: &naga::Function, name: &str| {
             f.expressions.iter().any(|(_, e)| match *e {
@@ -1997,8 +1796,14 @@ mod tests {
                 after: "    hz_vertex_index = 1u;\n    hz_vertex();\n".into(),
                 ..Default::default()
             };
-            let program = translate_gbuffers(&vertex, &fragment, Target::Buffers, &inputs)
-                .unwrap_or_else(|e| panic!("{declarations} {write}: {e:?}"));
+            let program = translate_gbuffers(
+                &vertex,
+                &fragment,
+                Target::Buffers,
+                &inputs,
+                InterfaceLimits::WGPU_DEFAULT,
+            )
+            .unwrap_or_else(|e| panic!("{declarations} {write}: {e:?}"));
             let module = &program.vertex;
             let (_, constant) = (module.constants.iter())
                 .find(|(_, c)| c.name.as_deref() == Some("hz_vertex_reruns"))
@@ -2074,7 +1879,13 @@ mod tests {
                     .to_vec(),
                 ..Default::default()
             };
-            translate_gbuffers(&vertex, &fragment, Target::Buffers, &inputs)
+            translate_gbuffers(
+                &vertex,
+                &fragment,
+                Target::Buffers,
+                &inputs,
+                InterfaceLimits::WGPU_DEFAULT,
+            )
         };
         let cases = [
             (
@@ -2160,8 +1971,14 @@ mod tests {
                 after: after.into(),
                 ..Default::default()
             };
-            let program = translate_gbuffers(&vertex, &fragment, Target::Buffers, &inputs)
-                .unwrap_or_else(|e| panic!("{e:?}"));
+            let program = translate_gbuffers(
+                &vertex,
+                &fragment,
+                Target::Buffers,
+                &inputs,
+                InterfaceLimits::WGPU_DEFAULT,
+            )
+            .unwrap_or_else(|e| panic!("{e:?}"));
             let module = &program.vertex;
             let (_, f) = (module.functions.iter())
                 .find(|(_, f)| f.name.as_deref() == Some("hz_vertex"))
@@ -2249,7 +2066,13 @@ mod tests {
                 ],
                 ..Default::default()
             };
-            translate_gbuffers(&vertex, &fragment, Target::Buffers, &inputs)
+            translate_gbuffers(
+                &vertex,
+                &fragment,
+                Target::Buffers,
+                &inputs,
+                InterfaceLimits::WGPU_DEFAULT,
+            )
         };
         let reads = "void main() {\n    vec4 a = projectionMatrix * modelViewMatrix * vec4(vaPosition, 1.0);\n    \
                      vec4 b = projectionMatrix * modelViewMatrix * vec4(vaPosition + vaNormal, 1.0);\n    \
@@ -2313,8 +2136,14 @@ mod tests {
             .to_vec(),
             ..Default::default()
         };
-        let program = translate_gbuffers(&vertex, &fragment, Target::Buffers, &inputs)
-            .unwrap_or_else(|e| panic!("{e:?}"));
+        let program = translate_gbuffers(
+            &vertex,
+            &fragment,
+            Target::Buffers,
+            &inputs,
+            InterfaceLimits::WGPU_DEFAULT,
+        )
+        .unwrap_or_else(|e| panic!("{e:?}"));
         let module = &program.vertex;
         let ty = |name: &str| {
             let (_, global) = module
@@ -2408,6 +2237,7 @@ mod tests {
             &preprocess(&pack, "gbuffers_terrain.fsh", &macros),
             Target::Buffers,
             &GbuffersInputs::default(),
+            InterfaceLimits::WGPU_DEFAULT,
         )
         .unwrap();
         assert!(
@@ -2497,9 +2327,15 @@ mod tests {
             ..Default::default()
         };
         if shadow {
-            translate_shadow(&vertex, &fragment, &inputs)
+            translate_shadow(&vertex, &fragment, &inputs, InterfaceLimits::WGPU_DEFAULT)
         } else {
-            translate_gbuffers(&vertex, &fragment, Target::Buffers, &inputs)
+            translate_gbuffers(
+                &vertex,
+                &fragment,
+                Target::Buffers,
+                &inputs,
+                InterfaceLimits::WGPU_DEFAULT,
+            )
         }
     }
 
@@ -2538,6 +2374,7 @@ mod tests {
             &preprocess(&pack, "composite.vsh", &m),
             &preprocess(&pack, "composite.fsh", &m),
             target,
+            InterfaceLimits::WGPU_DEFAULT,
         )
     }
 
@@ -3126,6 +2963,7 @@ in VertexData {{ {member} }} vIn;
                 &preprocess(&pack, "gbuffers_clouds.fsh", &m),
                 Target::Buffers,
                 &inputs,
+                InterfaceLimits::WGPU_DEFAULT,
             )
             .unwrap_or_else(|e| panic!("{fsh}: {e:?}"));
         }
@@ -3170,6 +3008,7 @@ in VertexData {{ {member} }} vIn;
                 &preprocess(&pack, "gbuffers_entities.fsh", &m),
                 Target::Buffers,
                 &inputs,
+                InterfaceLimits::WGPU_DEFAULT,
             )
             .unwrap_or_else(|e| panic!("{e:?}"));
             // Calls of the functions named `name`, in every function's body.
@@ -3212,6 +3051,7 @@ in VertexData {{ {member} }} vIn;
                 &preprocess(&pack, "shadow.vsh", &m),
                 &preprocess(&pack, "shadow.fsh", &m),
                 &inputs,
+                InterfaceLimits::WGPU_DEFAULT,
             )
             .unwrap_or_else(|e| panic!("{e:?}"));
             let boxes = (p.interface.uniforms.iter())
@@ -3251,6 +3091,7 @@ in VertexData {{ {member} }} vIn;
                 &preprocess(&pack, "gbuffers_water.fsh", &m),
                 Target::Buffers,
                 &inputs,
+                InterfaceLimits::WGPU_DEFAULT,
             )
             .unwrap_or_else(|e| panic!("{e:?}"));
             let sampler = (p.interface.samplers.iter()).any(|s| s.name == WATER_MASK);
@@ -3295,6 +3136,7 @@ in VertexData {{ {member} }} vIn;
                 &preprocess(&pack, "gbuffers_entities.fsh", &m),
                 Target::Buffers,
                 &inputs,
+                InterfaceLimits::WGPU_DEFAULT,
             )
             .unwrap_or_else(|e| panic!("{e:?}"));
             let functions = p.fragment.functions.iter().map(|(_, f)| f);
@@ -3344,6 +3186,7 @@ in VertexData {{ {member} }} vIn;
                 &preprocess(&pack, "gbuffers_entities.fsh", &m),
                 Target::Buffers,
                 &game,
+                InterfaceLimits::WGPU_DEFAULT,
             )
             .unwrap_or_else(|e| panic!("{e:?}"));
             p.interface
@@ -3391,6 +3234,7 @@ in VertexData {{ {member} }} vIn;
             &preprocess(&pack, "gbuffers_terrain.fsh", &m),
             Target::Buffers,
             &game,
+            InterfaceLimits::WGPU_DEFAULT,
         )
         .unwrap_or_else(|e| panic!("{e:?}"));
         let names: Vec<&str> = p
@@ -3430,6 +3274,7 @@ in VertexData {{ {member} }} vIn;
             &preprocess(&pack, "gbuffers_terrain.vsh", &m),
             &preprocess(&pack, "gbuffers_terrain.fsh", &m),
             &game,
+            InterfaceLimits::WGPU_DEFAULT,
         )
         .unwrap_or_else(|e| panic!("{e:?}"));
         let names: Vec<&str> = (shadow.interface.uniforms.iter())
@@ -3496,15 +3341,89 @@ in VertexData {{ {member} }} vIn;
         // 3 columns + 2 elements + 2 x 2 columns, and the fragment position.
         assert!(inputs >= 9, "{inputs} inputs");
         assert_eq!(
-            varying_parts("flat ivec2 @[2];").unwrap().1,
+            varying_parts("flat ivec2 @[2];", 31).unwrap().unwrap().1,
             [
                 ("flat ivec2 @;".to_owned(), "[0]".to_owned()),
                 ("flat ivec2 @;".to_owned(), "[1]".to_owned())
             ]
         );
-        assert_eq!(varying_parts("mat2x3 @[2];").unwrap().1[3].1, "[1][1]");
-        assert!(varying_parts("vec4 @;").is_none());
-        assert!(varying_parts("vec4 @[N];").is_none());
+        assert_eq!(
+            varying_parts("mat2x3 @[2];", 31).unwrap().unwrap().1[3].1,
+            "[1][1]"
+        );
+        assert_eq!(varying_parts("vec4 @;", 31), Ok(None));
+        assert_eq!(varying_parts("vec4 @[N];", 31), Ok(None));
+    }
+
+    /// A varying splits within the locations the program has left (`room`: of the device's
+    /// `max_inter_stage_shader_variables`, 31 on RADV, D3D12 and Metal): at the room it splits,
+    /// one part past it is refused before any part is made (a size whose parts can't all be made,
+    /// `[99999999999]`, is refused the same way), and a struct's parts count four components each.
+    #[test]
+    fn the_split_of_a_varying_stops_at_the_room_left() {
+        let parts = varying_parts("float @[31];", 31).unwrap().unwrap().1;
+        assert_eq!(parts.len(), 31);
+        assert_eq!(parts[30].1, "[30]");
+        assert_eq!(
+            varying_parts("float @[32];", 31),
+            Err(varyings::TooManyParts)
+        );
+        assert_eq!(
+            varying_parts("float @[4][8];", 31),
+            Err(varyings::TooManyParts)
+        );
+        assert_eq!(varying_parts("mat4 @[8];", 31), Err(varyings::TooManyParts));
+        assert_eq!(
+            varying_parts("float @[99999999999];", 31),
+            Err(varyings::TooManyParts)
+        );
+        let structs = std::collections::HashMap::from([
+            (
+                "S".to_owned(),
+                vec![("float".to_owned(), "a[124]".to_owned())],
+            ),
+            (
+                "T".to_owned(),
+                vec![("float".to_owned(), "a[125]".to_owned())],
+            ),
+            (
+                "V".to_owned(),
+                vec![("vec4".to_owned(), "a[31]".to_owned())],
+            ),
+            // Structs inside themselves can't travel: refused once a path is longer than any
+            // without one, not by a stack overflow.
+            (
+                "R".to_owned(),
+                vec![
+                    ("float".to_owned(), "x".to_owned()),
+                    ("R".to_owned(), "r".to_owned()),
+                ],
+            ),
+            ("Q".to_owned(), vec![("Q".to_owned(), "q".to_owned())]),
+            // No leaves at all: its elements still take steps, which run out.
+            ("E".to_owned(), vec![]),
+        ]);
+        let parts = struct_parts("S @;", &structs, 31).unwrap().unwrap();
+        assert_eq!(parts.len(), 31);
+        assert_eq!(parts[30].1[3].1, ".a[123]");
+        assert_eq!(
+            struct_parts("T @;", &structs, 31),
+            Err(varyings::TooManyParts)
+        );
+        assert_eq!(
+            struct_parts("V @;", &structs, 31).unwrap().unwrap().len(),
+            31
+        );
+        assert_eq!(
+            struct_parts("V @;", &structs, 30),
+            Err(varyings::TooManyParts)
+        );
+        assert_eq!(struct_parts("R @;", &structs, 31), Ok(None));
+        assert_eq!(struct_parts("Q @;", &structs, 31), Ok(None));
+        assert_eq!(
+            struct_parts("E @[99999999999];", &structs, 31),
+            Err(varyings::TooManyParts)
+        );
     }
 
     #[test]
@@ -3585,7 +3504,7 @@ in VertexData {{ {member} }} vIn;
             ],
         )]);
         assert_eq!(
-            struct_parts("S @;", &structs).unwrap(),
+            struct_parts("S @;", &structs, 31).unwrap().unwrap(),
             [
                 (
                     "vec4 @;".to_owned(),
@@ -3608,7 +3527,7 @@ in VertexData {{ {member} }} vIn;
             "B".to_owned(),
             vec![("bool".to_owned(), "b".to_owned())],
         )]);
-        assert!(struct_parts("B @;", &bools).is_none());
+        assert_eq!(struct_parts("B @;", &bools, 31), Ok(None));
     }
 
     #[test]
@@ -4269,6 +4188,118 @@ in VertexData {{ {member} }} vIn;
         assert!(errors[0].message.contains("needs a binding"), "{errors:?}");
     }
 
+    /// A buffer block without a `set` binds in set 4 at its binding, a block or member the pack
+    /// names `set` included, and a uniform block of the pack at an SSBO's binding stays in set 0.
+    #[test]
+    fn buffer_blocks_and_a_packs_uniform_block_keep_their_bindings() {
+        let csh = "#version 430\nlayout(local_size_x = 1) in;\nuniform float frameTime;\n\
+                   layout(std430, binding = 0) buffer A { float a[]; } ga;\n\
+                   layout(std430, binding = 5) buffer F { float f[]; } gf;\n\
+                   layout(std140, binding = 5) uniform U { float u; } gu;\n\
+                   layout(std430, binding = 2) buffer set { float set; float s[]; } gs;\n\
+                   void main() { ga.a[0] = gf.f[0] + gu.u + gs.set + gs.s[0] + frameTime; }\n";
+        let pack = Pack::from_zip_bytes("P.zip", zip(&[("shaders/deferred_a.csh", csh)])).unwrap();
+        let c = translate_compute(&preprocess(&pack, "deferred_a.csh", &Macros::standard()))
+            .unwrap_or_else(|e| panic!("{e:?}"));
+        assert_eq!(c.interface.buffers, [0, 2, 5]);
+        let bound = |name: &str| {
+            (c.module.global_variables.iter())
+                .find(|(_, g)| g.name.as_deref() == Some(name))
+                .and_then(|(_, g)| g.binding)
+                .map(|b| (b.group, b.binding))
+        };
+        assert_eq!(
+            ["ga", "gf", "gu", "gs"].map(bound),
+            [Some((4, 0)), Some((4, 5)), Some((0, 5)), Some((4, 2))]
+        );
+    }
+
+    /// A `set` in a buffer block's layout, wherever the pack writes it, refuses the program with
+    /// an error at the block's line naming the block: GLSL 4.60.8, 4.4.5 makes `set` a
+    /// compile-time error when not targeting an API with descriptor sets, and packs target
+    /// OpenGL (spec rev 1, line 810).
+    #[test]
+    fn a_buffer_block_naming_a_set_is_refused_with_its_name() {
+        let forms = [
+            ("layout(std430, set = 1, binding = 1) buffer B", "B"),
+            ("layout(std430, binding = 3, set = 2) buffer C", "C"),
+            (
+                "layout(std430, set = 1, set = 2, binding = 6) buffer D",
+                "D",
+            ),
+            ("layout(set = 1) layout(std430, binding = 7) buffer E", "E"),
+            ("layout(std430, binding = 4, set = 4) buffer G", "G"),
+            ("layout(std430, binding = 3)\nlayout(set = 0) buffer H", "H"),
+        ];
+        for (layout, name) in forms {
+            let csh = format!(
+                "#version 430\nlayout(local_size_x = 1) in;\n\
+                 layout(std430, binding = 0) buffer A {{ float a[]; }} ga;\n\
+                 {layout} {{ float b[]; }} gb;\n\
+                 void main() {{ ga.a[0] = gb.b[0]; }}\n"
+            );
+            let pack =
+                Pack::from_zip_bytes("P.zip", zip(&[("shaders/deferred_a.csh", &csh)])).unwrap();
+            let errors =
+                translate_compute(&preprocess(&pack, "deferred_a.csh", &Macros::standard()))
+                    .err()
+                    .unwrap_or_else(|| panic!("{layout} translated"));
+            let [error] = &errors[..] else {
+                panic!("{layout}: {errors:?}");
+            };
+            // The line of the `set`: the 4th of the file, or the 5th where the layout is split.
+            let line = if layout.contains('\n') { 5 } else { 4 };
+            assert_eq!(
+                (error.file.as_str(), error.line),
+                ("deferred_a.csh", line),
+                "{layout}"
+            );
+            assert!(error.message.contains(&format!("`{name}`")), "{error:?}");
+        }
+        // In a composite program's fragment stage, the same: one error at the fragment file's
+        // line, naming the block.
+        let fsh = "#version 430 compatibility\n\
+                   layout(std430, binding = 3, set = 2) buffer C { vec4 c[]; } gc;\n\
+                   void main() { gl_FragData[0] = gc.c[0]; }\n";
+        let errors = program(
+            &[("composite.vsh", VSH_120), ("composite.fsh", fsh)],
+            Target::Buffers,
+        )
+        .err()
+        .expect("the fragment stage's `set` refuses the program");
+        let [error] = &errors[..] else {
+            panic!("{errors:?}");
+        };
+        assert_eq!((error.file.as_str(), error.line), ("composite.fsh", 2));
+        assert!(error.message.contains("`C`"), "{error:?}");
+        // Without its binding, the block gets both errors: the `set` one naming it, and the one
+        // the same block without its `set` gets.
+        let refused = |layout: &str| {
+            let csh = format!(
+                "#version 430\nlayout(local_size_x = 1) in;\n\
+                 {layout} buffer B {{ float b[]; }} gb;\n\
+                 void main() {{ gb.b[0] = 1.0; }}\n"
+            );
+            let pack =
+                Pack::from_zip_bytes("P.zip", zip(&[("shaders/deferred_a.csh", &csh)])).unwrap();
+            translate_compute(&preprocess(&pack, "deferred_a.csh", &Macros::standard()))
+                .err()
+                .unwrap_or_else(|| panic!("{layout} translated"))
+        };
+        let unbound = refused("layout(std430)");
+        let [unbound] = &unbound[..] else {
+            panic!("{unbound:?}");
+        };
+        let both = refused("layout(std430, set = 1)");
+        let [set, binding] = &both[..] else {
+            panic!("{both:?}");
+        };
+        assert_eq!((set.file.as_str(), set.line), ("deferred_a.csh", 3));
+        assert!(set.message.contains("`B`"), "{set:?}");
+        assert_ne!(set.message, unbound.message);
+        assert_eq!(binding, unbound);
+    }
+
     #[test]
     fn atomics_on_shared_vector_components_compile() {
         let csh = "#version 430\nlayout(local_size_x = 4) in;\nshared ivec4 sums;\nshared uvec2 lights[8];\n\
@@ -4481,6 +4512,22 @@ in VertexData {{ {member} }} vIn;
         assert!(
             work_group_size("layout(local_size_x = 16) in;\nuvec3 s = gl_WorkGroupSize;")
                 .is_ok_and(|c| c.contains("uvec3(16u, 1u, 1u)"))
+        );
+        // Hex and octal literals are GLSL's integers too (4.1.3): `010` is 8.
+        assert_eq!(
+            work_group_size(
+                "layout(local_size_x = 0x10, local_size_y = 010u) in;\nuvec3 s = gl_WorkGroupSize;"
+            )
+            .as_deref(),
+            Ok("layout(local_size_x = 16, local_size_y = 8) in;\nuvec3 s = uvec3(16u, 8u, 1u);")
+        );
+        // Digits octal doesn't have after a leading `0` are decimal, as before octal was read.
+        assert_eq!(
+            work_group_size(
+                "layout(local_size_x = 08, local_size_y = 018u) in;\nuvec3 s = gl_WorkGroupSize;"
+            )
+            .as_deref(),
+            Ok("layout(local_size_x = 8, local_size_y = 18) in;\nuvec3 s = uvec3(8u, 18u, 1u);")
         );
     }
 

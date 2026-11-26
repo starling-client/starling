@@ -14,7 +14,7 @@ use sunrise_protocol::{
     connection::Connection,
     ids,
     packets::{Empty, configuration as cfg, handshake, login, play},
-    registry::{Builtin, Dynamic, ceil_log2},
+    registry::{Builtin, Dynamic, SyncedNames, ceil_log2},
     servers::parse_address,
 };
 
@@ -33,7 +33,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let builtin = args
         .get(3)
         .map(|p| Builtin::load(std::path::Path::new(p)))
-        .transpose()?;
+        .transpose()?
+        .unwrap_or_default();
     let mut c = Connection::connect(&host, port, Duration::from_secs(5))?;
     c.reader.set_read_timeout(Some(Duration::from_secs(10)))?;
     c.send(
@@ -75,7 +76,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut decode_errors = 0;
     loop {
         let (id, payload) = c.recv()?;
-        match cfg::Clientbound::decode(id, &payload) {
+        let names = SyncedNames {
+            builtin: &builtin,
+            dynamic: &registries,
+        };
+        match cfg::Clientbound::decode_reader(id, Reader::new(&payload).with_names(&names)) {
             Ok(cfg::Clientbound::SelectKnownPacks(p)) => {
                 println!("known packs offered: {:?}", p.packs);
                 c.send(
@@ -117,6 +122,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
+    let names = SyncedNames {
+        builtin: &builtin,
+        dynamic: &registries,
+    };
     let biome_bits = ceil_log2(registries.len("minecraft:worldgen/biome"));
     let mut counts: BTreeMap<&str, (u32, u32)> = BTreeMap::new();
     let mut entity_types: BTreeMap<String, u32> = BTreeMap::new();
@@ -143,34 +152,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             c.send(&w.data)?;
             suggestion_sent = true;
         }
-        if suggestions && id == ids::play::clientbound::COMMAND_SUGGESTIONS {
-            let mut r = Reader::new(&payload);
-            let request = r.varint()?;
-            r.varint()?; // replacement start
-            r.varint()?; // replacement length
-            let count = r.count(65536)?;
-            let mut tooltips = 0;
-            for _ in 0..count {
-                r.string(32767)?;
-                if r.bool()? {
-                    r.nbt()?;
-                    tooltips += 1;
-                }
-            }
-            if r.remaining() != 0 {
-                return Err("trailing command suggestion bytes".into());
-            }
-            if request == 764 && count > 0 && tooltips > 0 {
-                suggestion_received = true;
-                println!("command_suggestions_validated {count} {tooltips}");
-            }
-        }
         let name =
             ids::name(State::Play, sunrise_protocol::Direction::Clientbound, id).unwrap_or("?");
         let entry = counts.entry(name).or_default();
         entry.0 += 1;
-        match play::Clientbound::decode(id, &payload) {
+        match play::Clientbound::decode_reader(id, Reader::new(&payload).with_names(&names)) {
             Ok(packet) => match packet {
+                play::Clientbound::CommandSuggestions(p) if suggestions && p.id == 764 => {
+                    let tooltips = p.suggestions.iter().filter(|s| s.tooltip.is_some()).count();
+                    if tooltips > 0 {
+                        suggestion_received = true;
+                        println!(
+                            "command_suggestions_validated {} {tooltips}",
+                            p.suggestions.len()
+                        );
+                    }
+                }
                 play::Clientbound::Login(p) => {
                     dimension = registries.dimension(p.spawn.dimension_type);
                     println!(
@@ -222,8 +219,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 play::Clientbound::AddEntity(p) => {
                     let kind = builtin
-                        .as_ref()
-                        .and_then(|b| b.get("minecraft:entity_type")?.name(p.kind))
+                        .get("minecraft:entity_type")
+                        .and_then(|ids| ids.name(p.kind))
                         .unwrap_or("?");
                     *entity_types.entry(kind.to_owned()).or_default() += 1;
                     if counts.get("add_entity").is_some_and(|c| c.0 < 4) {

@@ -1,6 +1,7 @@
 //! `player_respawn_position` (NeoForge's `PlayerRespawnPositionEvent`): where
 //! a respawning server player ends up. As in `PlayerList.respawn`, the destination
 //! and any redirect are resolved before the replacement is created.
+use super::original_player::CloneScope;
 use super::respawn_anchor::RespawnConfig;
 use super::{Dim, Game};
 use sunrise_core::dimension::Dimension as LevelDimension;
@@ -62,7 +63,7 @@ impl Game<'_> {
         let (mut level, mut position) = (found.dim.level(), original);
         let (mut yaw, mut pitch) = (found.yaw, found.pitch);
         let mut copy = missing.is_none();
-        self.with_cloning_player(conn, |game| {
+        self.with_cloning_player(conn, CloneScope::LendBody, |game| {
             let player = game.player(uuid)?;
             game.native_player_respawn_position(mod_api::__private::PlayerRespawnPositionCall {
                 player,

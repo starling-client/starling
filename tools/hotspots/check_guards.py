@@ -17,12 +17,10 @@ import re
 import subprocess
 import sys
 
-TOOLS = Path(__file__).resolve().parents[1]
-sys.path.append(str(TOOLS))
-import merge_base  # noqa: E402
-import modding_concept_pages as pages  # noqa: E402
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+from tools import merge_base, modding_concept_pages as pages
 
-ROOT = TOOLS.parent
 BOOK_SRC = "docs/modding/src"
 SUMMARY = f"{BOOK_SRC}/SUMMARY.md"
 NOTES = "crates/sunrise-mod-vocab/src/hooks/notes.rs"

@@ -9,11 +9,21 @@ mod placement;
 mod lifecycle_tests;
 
 impl Game<'_> {
-    /// The mod screen showing now, if any.
+    /// The mod screen showing now, if any, including a server-closed screen
+    /// kept displayed through `screen_closing` or a veto until removal runs.
     pub(in crate::game) fn shown_native_screen(&self) -> Option<&OpenNativeScreen> {
-        self.active_native_screen().filter(|s| {
-            s.shown && self.screen == Screen::Inventory && self.container == Some(s.menu.key)
-        })
+        let screen = self.mod_screen.as_ref()?;
+        if !screen.shown
+            || self.screen != Screen::Inventory
+            || self.container != Some(screen.menu.key)
+        {
+            return None;
+        }
+        let remote = &self.remote.as_ref()?.menu;
+        let active = !screen.detached
+            && remote.generation == screen.menu.generation
+            && remote.as_ref().is_some_and(|m| m.0 == screen.menu.window);
+        (active || (screen.detached && remote.as_ref().is_none())).then_some(screen)
     }
     /// Whether a mod's screen places the current container and player slots.
     pub(in crate::game) fn native_screen_shown(&self) -> bool {

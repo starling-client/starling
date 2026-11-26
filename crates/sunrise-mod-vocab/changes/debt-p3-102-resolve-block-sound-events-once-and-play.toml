@@ -1,0 +1,19 @@
+ids = [
+    "hook:sound_type",
+    "hook:play_level_sound_at_position",
+    "hook:play_level_sound_at_entity",
+    "type:BlockSoundType",
+    "type:BlockSoundType.identity",
+    "type:BlockSoundTypeIdentity",
+    "type:SoundEventKey",
+    "handle:BlockSoundType::event",
+    "handle:SoundEventKey::parse",
+    "handle:SoundEventKey::as_str",
+    "type:BlockSoundType.break_sound",
+    "type:BlockSoundType.step",
+    "type:BlockSoundType.place",
+    "type:BlockSoundType.hit",
+    "type:BlockSoundType.fall",
+]
+why = "Vanilla Identifier.parse qualifies sound names once. BlockItem.place and NeoForge's contextual IBlockExtension.getSoundType select the placed state's sound; SolidBucketItem.getPlaceSound overrides the event but retains the block's levels. LevelEventHandler's break event uses the Blocks source even for a mod event. AbstractHorse.isWoodSoundType compares the vanilla sound type identity, not event keys. NeoForge's PlayLevelSoundEvent passes volume and pitch through to SoundEngine.play, which handles levels and missing events without reverting the block's answer. A panicking part loses this callback for the session and its unfinished edit is not played."
+migrate = "Replace raw Arc<str> assignments to BlockSoundType.break_sound, step, place, hit and fall with SoundEventKey::parse(name) during load, handle None as invalid identifier syntax, then clone the retained key into event.sound.<slot> in BlockPart::sound_type. Bare names and names prefixed with : now use minecraft. To read a name from host.block_states().sound(state) or an event, use sound.<slot>.as_str(); sound.event(event.cause) borrows the requested key. In a new custom BlockSoundType literal set identity: BlockSoundTypeIdentity::Other; when editing a built-in type's event keys or levels keep its existing identity. BlockSoundType no longer implements Wire; define your own Wire payload with only the data the receiver needs (for example a String for the selected event) and parse received text at that boundary. Keep the same level-sound hook signatures; replace any use of invalid volume or pitch to suppress a sound with Flow::Cancel. Rebuild against sound_type version 3 and play_level_sound_at_position and play_level_sound_at_entity version 3."

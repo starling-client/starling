@@ -1,0 +1,48 @@
+# SDK tooling only: these items are not records in the mod API surface diff.
+ids = [
+    "type:sunrise_native_build::prebuilt::Identity",
+    "fn:sunrise_native_build::prebuilt::Identity::slices",
+    "fn:sunrise_native_build::prebuilt::identity",
+    "fn:sunrise_native_build::prebuilt::check_identity",
+    "fn:sunrise_native_build::prebuilt::lay_out",
+    "fn:sunrise_native_build::prebuilt::compile",
+    "type:sunrise_native_build::check::Plan",
+    "fn:sunrise_native_build::check::check",
+    "fn:sunrise_native_build::check::judge",
+    "fn:sunrise_native_build::internals::Catalog::read",
+    "type:sunrise_native_build::registry_compile::Options",
+    "fn:sunrise_native_build::game_uses::entries",
+    "fn:sunrise_native_build::game_uses::Data::read",
+]
+why = """
+Sunrise SDK tooling has no vanilla or NeoForge counterpart. Use the contract that
+`tools/prebuilt_game.py::_build_locked` and the build-data stager have published since format 6:
+parse the compiled package identity using its published field names and use the same commit,
+function-index and loop-path validation for patching and fit. The old patch reader could treat
+an unreadable loop file as an empty list, and fit could accept a function in a module the index
+never listed. A `native-check` request reads its build data once for all its mods. For same-build
+checks, it refuses unknown loops with the same diagnostic as patching. A read error in supplied
+build data is reported even when the mod already has an API misfit. Native builds check the
+internals catalog against the SDK's identity and reuse it for both compilation and the build
+record. The older format-6 packages that predate `native_log` and the supported surface schemas
+are unchanged.
+"""
+migrate = """
+No change to mod code, manifest rows, or `uses.json`. If custom tooling supplies `build_data`
+to `native-check`, pass the entire unpacked `build-data.tar.xz` for that build, not only
+`functions.json`. This also applies to same-build `[[native.loop]]` and `[[native.mixin]]` rows.
+Rust callers of `game_uses::entries(manifest, dir, build)` must pass the full unpacked build-data
+archive directory as `dir`, even for a mixin-only manifest. If `functions.json`, `internals.json` or `loops.json` is missing or mismatched, re-fetch that
+build's SDK; do not fabricate an empty loop file. Use `package_format` in `sunrise-prebuilt.json`,
+not `format_version`; keep the published registry, feature, facade and slice fields.
+Rust tooling calling `check_identity(...)?; lay_out(whole, out, link)` now uses
+`let sdk = check_identity(...)?; lay_out(whole, out, link, &sdk)`. Read `sdk.slices()` without `?`,
+and use `registry_lock`, `registry_patches` and `native_links` directly instead of unwrapping them.
+Pass the SDK build id to `internals::Catalog::read(dir, build)` instead of `Catalog::read(dir)`.
+Use `let prebuilt::Built { binary, libraries, catalog } = prebuilt::compile(...)?` instead of
+unpacking a pair; reuse `catalog` instead of opening the API slice again. A direct caller of
+`registry_compile::compile` passes `sdk: &sdk` and `catalog: &catalog` in its `Options`, reading the
+catalog against `sdk.commit()`.
+The `game` callback passed to `check::judge` returns `GameDataError::Omitted(error)` when no folder
+was supplied, or maps a supplied folder's read failures to `GameDataError::Unread(error)`.
+"""

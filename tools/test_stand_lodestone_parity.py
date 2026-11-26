@@ -8,8 +8,12 @@ from pathlib import Path
 import shutil
 import subprocess
 
-import test_command_exec_parity as runner
-from stand_lodestone_corpus import program
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_command_exec_parity as runner
+from tools.stand_lodestone_corpus import program
 
 
 def sha(path):

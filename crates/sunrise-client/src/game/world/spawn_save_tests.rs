@@ -59,9 +59,7 @@ fn spawn_batches_refuse_saves_until_all_rows_are_published() {
                 mod_api::__private::mark_game_thread();
                 if planned {
                     game.add_planned(
-                        mobs.into_iter()
-                            .map(|m| spawner::Planned::Finalized(m, None))
-                            .collect(),
+                        mobs.into_iter().map(spawner::Planned::Finalized).collect(),
                         Vec::new(),
                         Vec::new(),
                     );

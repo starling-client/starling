@@ -7,8 +7,10 @@ pub trait Hooks {
     /// Replace `title` and `description` to change the displayed components.
     /// For advancements the title is the frame label and the description is
     /// the advancement name. Existing recipe/system toasts updated in place
-    /// do not fire another add event. Integrated-server error notices are new
-    /// system toast candidates on the owning client, not on the server or its guests.
+    /// do not fire another add event. Requests from `ClientHost::add_toast` enter as
+    /// `ToastKind::Mod`, including requests that would replace an existing mod toast.
+    /// Integrated-server error notices are new system toast candidates on the owning
+    /// client, not on the server or its guests.
     /// Pending chunk I/O reports stay with that window when the world closes.
     /// Client-lib and title producers prepare candidates for the game to admit
     /// with a `ClientHost` before applying.
@@ -22,7 +24,7 @@ pub trait Hooks {
         out = "cancel",
         neoforge = "ToastAddEvent",
         cancellable = true,
-        version = 2
+        version = 3
     )]
     fn toast_add(
         kind: mod_api::ToastKind,

@@ -1,0 +1,3 @@
+ids = ["hook:sleep_skip_night", "type:HookId"]
+why = "Hooks::sleep_skip_night adds a server-side veto of the whole night skip in ServerLevel.tick, once enough players have slept: canceling keeps the clock, the sleepers and the rain for that tick. NeoForge's SleepFinishedTimeEvent cancels only the clock move."
+migrate = "No existing hook version changes. A mod that kept players from skipping the night by canceling sleep_finished_time and waking them itself implements sleep_skip_night instead. A mod that matches HookId exhaustively adds the new sleep_skip_night arm; one with a wildcard arm compiles unchanged."

@@ -1,7 +1,7 @@
 use super::*;
 use crate::game::{
     commands::Target,
-    native_entity_refs::tests::{with_client_game, with_game},
+    native_entity_refs::tests::{fixture_resident_column, with_client_game, with_game},
 };
 use mod_api::{EntityEnteringSectionEvent, Hooks, HostSide};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 
 #[test]
 fn section_read_backend_refuses_reads_outside_its_snapshot() {
-    let host = LiveSectionHost(None);
+    let host = LiveSectionHost::new(None);
     let entity = EntityRef::new(mod_api::WorldEpoch::new(1), 1);
     assert_eq!(
         entity.piston_push_reaction(&host),
@@ -27,6 +27,7 @@ fn section_read_backend_refuses_reads_outside_its_snapshot() {
     let menu = mod_api::__private::game::menu_ref(player, 1, 1);
 
     assert_eq!(entity.bounding_box(&host), None);
+    assert_eq!(entity.residency(&host), EntityResidency::Gone);
     assert_eq!(
         player.supporting_block(&host),
         Err(mod_api::LevelReadError::Unavailable)
@@ -39,6 +40,81 @@ fn section_read_backend_refuses_reads_outside_its_snapshot() {
         menu.merchant_offers(&host),
         Err(mod_api::LevelReadError::Unavailable)
     ));
+}
+
+#[test]
+fn live_section_host_reports_moved_entity_residency_in_callback() {
+    type Observed = Arc<Mutex<Vec<(bool, EntityResidency, EntityResidency)>>>;
+    struct ResidencyListener(Observed, EntityRef);
+
+    #[mod_api::__subscriptions]
+    impl Hooks for ResidencyListener {
+        fn entity_entering_section(
+            &self,
+            host: HostSide<'_>,
+            event: &mut EntityEnteringSectionEvent,
+        ) {
+            let (client, moved, other) = match host {
+                HostSide::Server(host) => {
+                    (false, event.entity.residency(host), self.1.residency(host))
+                }
+                HostSide::Client(host) => {
+                    (true, event.entity.residency(host), self.1.residency(host))
+                }
+            };
+            self.0.lock().unwrap().push((client, moved, other));
+        }
+    }
+
+    let observed = Observed::default();
+    let other = EntityRef::new(WorldEpoch::new(1), 99);
+    let mods = vec![mod_api::ModEntry::new(
+        "section-residency",
+        Box::new(ResidencyListener(observed.clone(), other)),
+    )]
+    .into();
+    mod_platform::testing::with_mods(mods, || {
+        let sections = std::cell::RefCell::new(EntitySections::default());
+        let w = scope(Overworld);
+
+        let player = EntityRef::new(w.epoch, 7);
+        sections
+            .borrow_mut()
+            .moved(w, 7, Some([8.0, 64.0, 8.0]), [24.0, 64.0, 8.0]);
+        tell_live(
+            &sections,
+            SectionWriter {
+                entity: player,
+                residency: EntityResidency::InPlace,
+                position: [24.0, 64.0, 8.0],
+                player: None,
+            },
+            false,
+        );
+
+        let mob = EntityRef::new(w.epoch, 12);
+        sections
+            .borrow_mut()
+            .moved(w, 12, Some([8.0, 64.0, 8.0]), [24.0, 64.0, 8.0]);
+        tell_live(
+            &sections,
+            SectionWriter {
+                entity: mob,
+                residency: EntityResidency::Busy,
+                position: [24.0, 64.0, 8.0],
+                player: None,
+            },
+            true,
+        );
+    });
+
+    assert_eq!(
+        *observed.lock().unwrap(),
+        vec![
+            (true, EntityResidency::InPlace, EntityResidency::Gone),
+            (false, EntityResidency::Busy, EntityResidency::Gone),
+        ]
+    );
 }
 
 /// What each told crossing carried: client side, entity id, old, new, chunk changed.
@@ -59,18 +135,18 @@ impl Hooks for Listener {
     }
 }
 
-type Positions = Arc<Mutex<Vec<Option<[f64; 3]>>>>;
+type Positions = Arc<Mutex<Vec<(Option<[f64; 3]>, EntityResidency)>>>;
 
 struct PositionListener(Positions);
 
 #[mod_api::__subscriptions]
 impl Hooks for PositionListener {
     fn entity_entering_section(&self, host: HostSide<'_>, event: &mut EntityEnteringSectionEvent) {
-        let position = match host {
-            HostSide::Server(host) => event.entity.position(host),
-            HostSide::Client(host) => event.entity.position(host),
+        let (position, residency) = match host {
+            HostSide::Server(host) => (event.entity.position(host), event.entity.residency(host)),
+            HostSide::Client(host) => (event.entity.position(host), event.entity.residency(host)),
         };
-        self.0.lock().unwrap().push(position);
+        self.0.lock().unwrap().push((position, residency));
     }
 }
 
@@ -125,19 +201,24 @@ fn scope(level: crate::game::Dim) -> Scope {
 use crate::game::Dim::{Nether, Overworld};
 
 /// The crossings queued since the last call, as a telling takes them.
-fn told(sections: &mut EntitySections) -> Vec<Crossing> {
-    match sections.begin_telling() {
-        Some(batch) => {
-            let out = batch.clone();
-            sections.end_telling(batch);
-            out
-        }
-        None => Vec::new(),
+fn told(sections: &mut EntitySections) -> Vec<Seen> {
+    if !sections.begin_telling() {
+        return Vec::new();
     }
+    let crossings = sections.queue.drain(..).map(seen).collect();
+    sections.end_telling();
+    crossings
 }
 
-fn crossing(id: u32, old: [i32; 3], new: [i32; 3]) -> Crossing {
-    Crossing { id, old, new }
+/// A crossing's entity and its two sections.
+type Seen = (u32, [i32; 3], [i32; 3]);
+
+fn seen(crossing: Crossing) -> Seen {
+    (crossing.id, crossing.old, crossing.new)
+}
+
+fn crossing(id: u32, old: [i32; 3], new: [i32; 3]) -> Seen {
+    (id, old, new)
 }
 
 #[test]
@@ -250,18 +331,32 @@ fn another_level_a_respawn_and_another_world_start_untold() {
 }
 
 #[test]
-fn what_a_listener_moves_waits_for_the_next_telling() {
+fn nested_writes_stay_queued_until_the_current_event_returns() {
     let mut s = EntitySections::default();
     let w = scope(Overworld);
     s.placed(w, 6, [0.5, 70.0, 0.5]);
     s.moved(w, 6, None, [16.5, 70.0, 0.5]);
-    let batch = s.begin_telling().unwrap();
-    assert_eq!(batch, [crossing(6, [0, 4, 0], [1, 4, 0])]);
-    // A listener moves it on while the first crossing is told: not told from inside.
+    assert!(s.begin_telling());
+    assert_eq!(
+        s.queue.pop_front().map(seen),
+        Some(crossing(6, [0, 4, 0], [1, 4, 0]))
+    );
+    // The listener moves two entities, then removes the second before its event runs.
     s.moved(w, 6, None, [32.5, 70.0, 0.5]);
-    assert!(s.begin_telling().is_none());
-    s.end_telling(batch);
-    assert_eq!(told(&mut s), [crossing(6, [1, 4, 0], [2, 4, 0])]);
+    s.moved(w, 7, Some([0.5, 70.0, 0.5]), [16.5, 70.0, 0.5]);
+    assert!(!s.begin_telling());
+    s.forget(7);
+    // Both filed crossings stay: a removal deletes none.
+    assert_eq!(
+        s.queue.pop_front().map(seen),
+        Some(crossing(6, [1, 4, 0], [2, 4, 0]))
+    );
+    assert_eq!(
+        s.queue.pop_front().map(seen),
+        Some(crossing(7, [0, 4, 0], [1, 4, 0]))
+    );
+    assert!(s.queue.is_empty());
+    s.end_telling();
 }
 
 #[test]
@@ -329,6 +424,45 @@ fn floating_cow(game: &mut crate::game::Game<'_>, at: [f64; 3]) -> u32 {
     let i = game.mobs.iter().position(|m| m.id == id).unwrap();
     game.mobs.update(i, |m| m.no_gravity = true);
     id
+}
+
+fn rising_cow(game: &mut Game<'_>, at: [f64; 3], no_physics: bool) -> u32 {
+    let id = floating_cow(game, at);
+    let entity = game.entity(id).unwrap();
+    assert!(entity.set_no_physics(game, no_physics));
+    let i = game.mobs.iter().position(|m| m.id == id).unwrap();
+    game.mobs.update(i, |m| {
+        m.ai.goals.clear();
+        m.velocity = sunrise_core::geometry::Vec3::new(0.0, 0.5, 0.0);
+    });
+    id
+}
+
+#[test]
+#[ignore = "daily"]
+fn borrowed_no_physics_moves_with_a_passive_listener_keep_their_order() {
+    observe_positions(|positions| {
+        with_game(|game| {
+            let first = rising_cow(game, [4.5, 111.75, 8.5], true);
+            let same_section = rising_cow(game, [8.5, 100.0, 8.5], true);
+            let last = rising_cow(game, [12.5, 127.75, 8.5], true);
+            game.tick_creature_entities().unwrap();
+            assert_eq!(
+                positions.lock().unwrap().as_slice(),
+                &[
+                    (Some([4.5, 112.25, 8.5]), EntityResidency::InPlace),
+                    (Some([12.5, 128.25, 8.5]), EntityResidency::InPlace),
+                ]
+            );
+            for (id, at) in [
+                (first, [4.5, 112.25, 8.5]),
+                (same_section, [8.5, 100.5, 8.5]),
+                (last, [12.5, 128.25, 8.5]),
+            ] {
+                assert_eq!(game.mob_object(id).unwrap().position.components(), at);
+            }
+        })
+    });
 }
 
 /// A goal that, when it starts, teleports its mob to each of its targets in turn, once: the
@@ -420,12 +554,13 @@ fn a_real_mob_tick_exposes_each_intermediate_position_to_the_listener() {
             let id = floating_cow(game, [8.5, 100.0, 8.5]);
             teleport_then_walk(game, id, &[[8.5, 127.75, 8.5]], [0.0, 0.6, 0.0]);
             let positions = positions.lock().unwrap();
-            assert_eq!(
-                positions.first().copied().flatten(),
-                Some([8.5, 127.75, 8.5])
-            );
             assert_eq!(positions.len(), 2);
-            assert!(positions[1].is_some_and(|at| at[1] >= 128.0));
+            assert_eq!(
+                positions[0],
+                (Some([8.5, 127.75, 8.5]), EntityResidency::Busy)
+            );
+            assert!(positions[1].0.is_some_and(|at| at[1] >= 128.0));
+            assert_eq!(positions[1].1, EntityResidency::Busy);
         })
     });
 }
@@ -685,16 +820,14 @@ fn a_server_mobs_own_move_is_not_reconstructed_after_its_post() {
                 )
                 .unwrap();
             let kind = game.mobs.iter().find(|m| m.id == id).unwrap().kind.clone();
-            // The mobs' round: Pre, the tick (its own move over z = 16), then the Post.
+            // The mob's round: Pre, the tick (its own move over z = 16), then the Post.
             let mut round = game.native_tick_round();
-            round.add(id, crate::game::native_ticks::TickKind::Mob(kind));
-            game.native_tick_pre_batch(&mut round);
-            assert_eq!(round.let_through(0), Some(id));
+            assert!(game.native_tick_pre_one(&mut round, id, &kind.id));
             let i = game.mobs.iter().position(|m| m.id == id).unwrap();
             game.mobs
                 .update(i, |m| m.position = Vec3::new(1.0, 70.0, 17.0));
             assert!(calls.lock().unwrap().is_empty());
-            game.native_tick_post_batch(round);
+            game.native_tick_post_one(&round, id, &kind.id);
             // A raw field edit is not a position-write boundary. The Post hook must not
             // synthesize a crossing after the fact; real ticks record their writes before Post.
             assert!(calls.lock().unwrap().is_empty());
@@ -794,6 +927,60 @@ fn a_client_is_told_each_teleport_and_where_its_entities_really_are() {
     });
 }
 
+#[test]
+#[ignore = "daily"]
+fn a_refused_player_add_does_not_hide_the_resident_entities_crossing() {
+    use crate::game::native_hotbar_slot::hotbar_slot_tests::logged_in;
+    use sunrise_core::geometry::Vec3;
+    use sunrise_protocol::packets::play::{self, Clientbound as C};
+
+    crate::game::in_own_process(
+        "game::entity_sections::tests::a_refused_player_add_does_not_hide_the_resident_entities_crossing",
+        || {
+            observe(|calls| {
+                with_client_game(|game| {
+                    let _reader = logged_in(game);
+                    let add = |game: &Game<'_>, uuid, kind| {
+                        C::AddEntity(play::AddEntity {
+                            id: 20,
+                            uuid,
+                            kind: game
+                                .remote
+                                .as_ref()
+                                .unwrap()
+                                .builtin
+                                .get("minecraft:entity_type")
+                                .unwrap()
+                                .id(kind)
+                                .unwrap(),
+                            position: [1.0, 70.0, 3.0],
+                            velocity: [0.0; 3],
+                            pitch: 0,
+                            yaw: 0,
+                            head_yaw: 0,
+                            data: 0,
+                        })
+                    };
+                    game.handle_packet(add(game, 20, "minecraft:pig")).unwrap();
+                    let i = game.mobs.iter().position(|mob| mob.id == 20).unwrap();
+                    game.mobs
+                        .update(i, |mob| mob.position = Vec3::new(17.0, 70.0, 3.0));
+                    // The unfiled move is still pending when an unknown player tries the same id.
+                    calls.lock().unwrap().clear();
+                    game.handle_packet(add(game, 21, "minecraft:player"))
+                        .unwrap();
+                    assert!(calls.lock().unwrap().is_empty());
+                    game.client_entity_sections_stepped();
+                    assert_eq!(
+                        calls.lock().unwrap().as_slice(),
+                        &[(true, 20, [0, 4, 0], [1, 4, 0], true)]
+                    );
+                });
+            })
+        },
+    );
+}
+
 /// A mod's `teleport_to_level` into another level is a change of level, not a crossing: the
 /// recreated entity is filed in the new level untold (its join), this call tells nothing of its
 /// own, and its next move there over a section edge is told once.
@@ -837,7 +1024,7 @@ fn an_entity_moved_into_another_level_is_told_once_at_its_next_crossing() {
 /// and never unwinds, whether or not a catalog has been published.
 #[test]
 fn section_host_reads_entity_type_defaults_without_unwinding() {
-    let host = LiveSectionHost(None);
+    let host = LiveSectionHost::new(None);
     let read = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         (
             mod_api::prelude::ItemsHost::entity_type_default_attribute(
@@ -874,7 +1061,7 @@ fn section_host_and_game_read_the_same_entity_type_defaults() {
         return;
     }
     with_game(|game| {
-        let host = LiveSectionHost(None);
+        let host = LiveSectionHost::new(None);
         let read = |game: &crate::game::Game<'_>, entity_type: &str, attribute: &str| {
             let scoped = mod_api::prelude::ItemsHost::entity_type_default_attribute(
                 &host,
@@ -949,4 +1136,279 @@ fn section_host_and_game_read_the_same_entity_type_defaults() {
         assert_eq!(read(&*game, "minecraft:skeleton", "luck"), Some(1.5));
         assert_eq!(read(&*game, "minecraft:zombie", "max_health"), Some(20.0));
     });
+}
+
+#[test]
+#[ignore = "daily"]
+fn ticked_live_preserves_order_removals_and_reindexed_rows() {
+    use std::sync::atomic::AtomicU32;
+    use sunrise_core::geometry::Vec3;
+
+    type Seen = Arc<Mutex<Vec<(u32, [i32; 3], [i32; 3], Option<[f64; 3]>)>>>;
+
+    struct MutatingListener {
+        mob_a: Arc<AtomicU32>,
+        mob_b: Arc<AtomicU32>,
+        seen: Seen,
+    }
+
+    #[mod_api::__subscriptions]
+    impl Hooks for MutatingListener {
+        fn entity_entering_section(
+            &self,
+            host: HostSide<'_>,
+            event: &mut EntityEnteringSectionEvent,
+        ) {
+            let HostSide::Server(host) = host else {
+                return;
+            };
+            let id = event.entity.id();
+            let pos = event.entity.position(host);
+            self.seen
+                .lock()
+                .unwrap()
+                .push((id, event.old_section, event.new_section, pos));
+            if id == self.mob_a.load(Ordering::Relaxed) && event.new_section == [1, 4, 0] {
+                let b = self.mob_b.load(Ordering::Relaxed);
+                assert!(host.entity(b).unwrap().discard(host));
+                // This fixture has no console host; spawn directly in the level.
+                let level = host.level("minecraft:overworld").unwrap();
+                assert!(
+                    level
+                        .spawn_mob(
+                            host,
+                            "minecraft:cow",
+                            [8.5, 70.0, 8.5],
+                            mod_api::SpawnReason::Command
+                        )
+                        .is_some()
+                );
+            }
+        }
+    }
+
+    let mob_a_id = Arc::new(AtomicU32::new(0));
+    let mob_b_id = Arc::new(AtomicU32::new(0));
+    let seen = Seen::default();
+    let mods = vec![mod_api::ModEntry::new(
+        "ticked-live-order",
+        Box::new(MutatingListener {
+            mob_a: mob_a_id.clone(),
+            mob_b: mob_b_id.clone(),
+            seen: seen.clone(),
+        }),
+    )]
+    .into();
+    mod_platform::testing::with_mods(mods, || {
+        with_game(|game| {
+            let start = Vec3::new(8.5, 70.0, 8.5);
+            let mid = Vec3::new(24.5, 70.0, 8.5);
+            let end = Vec3::new(40.5, 70.0, 8.5);
+            fixture_resident_column(&mut game.world, (1, 0));
+            fixture_resident_column(&mut game.world, (2, 0));
+            let mob_a = floating_cow(game, [start.x, start.y, start.z]);
+            let mob_b = floating_cow(game, [start.x, start.y, start.z]);
+            let mob_c = floating_cow(game, [start.x, start.y, start.z]);
+            let mob_d = floating_cow(game, [start.x, start.y, start.z]);
+            mob_a_id.store(mob_a, Ordering::Relaxed);
+            mob_b_id.store(mob_b, Ordering::Relaxed);
+
+            let join_of = |game: &crate::game::Game<'_>, id: u32| {
+                game.mobs.iter().find(|m| m.id == id).unwrap().join
+            };
+            let join_a = join_of(game, mob_a);
+            let join_b = join_of(game, mob_b);
+            let join_c = join_of(game, mob_c);
+            let join_d = join_of(game, mob_d);
+
+            for (id, final_pos) in [(mob_a, end), (mob_b, mid), (mob_c, mid), (mob_d, mid)] {
+                let i = game.mobs.iter().position(|m| m.id == id).unwrap();
+                game.mobs.update(i, |m| m.position = final_pos);
+            }
+            // Reorder the list out of join-seq order and pass a stale hint so resolution must
+            // recover without rebuilding a map.
+            game.mobs.swap(0, 3);
+            game.mobs.swap(1, 2);
+
+            let mut delivered = PositionWrite::captured(mob_d, join_d, start, mid);
+            delivered.delivered = true;
+            let mut moves = vec![
+                PositionWrite::captured(mob_a, join_a, start, mid),
+                PositionWrite::captured(mob_b, join_b, start, mid),
+                PositionWrite::captured(mob_a, join_a, mid, end),
+                PositionWrite::captured(mob_c, join_c, start, mid),
+                delivered,
+            ];
+            assert!(game.entity_sections_ticked_live(&mut moves, Some(999)));
+
+            assert!(moves.is_empty());
+            assert!(
+                game.mobs
+                    .iter()
+                    .any(|m| ![mob_a, mob_b, mob_c, mob_d].contains(&m.id)),
+                "the listener must add a row during dispatch"
+            );
+            assert_eq!(
+                seen.lock().unwrap().as_slice(),
+                &[
+                    (mob_a, [0, 4, 0], [1, 4, 0], Some([mid.x, mid.y, mid.z])),
+                    (mob_a, [1, 4, 0], [2, 4, 0], Some([end.x, end.y, end.z])),
+                    (mob_c, [0, 4, 0], [1, 4, 0], Some([mid.x, mid.y, mid.z])),
+                ]
+            );
+            assert_eq!(
+                game.mobs.iter().find(|m| m.id == mob_a).unwrap().position,
+                end
+            );
+            assert!(
+                !game
+                    .native_lifecycle
+                    .entity_sections
+                    .filed
+                    .contains_key(&mob_b),
+                "discarded mob must stay forgotten"
+            );
+        })
+    });
+}
+
+#[test]
+#[ignore = "daily"]
+fn borrowed_tick_tells_nested_passenger_and_vehicle_writes_before_resuming() {
+    use std::sync::atomic::AtomicU32;
+
+    type Seen = Arc<Mutex<Vec<(u32, [i32; 3], [i32; 3], Option<[f64; 3]>)>>>;
+
+    struct TeleportVehicleListener {
+        first: Arc<AtomicU32>,
+        vehicle: Arc<AtomicU32>,
+        teleported: Arc<AtomicBool>,
+        seen: Seen,
+    }
+
+    #[mod_api::__subscriptions]
+    impl Hooks for TeleportVehicleListener {
+        fn entity_entering_section(
+            &self,
+            host: HostSide<'_>,
+            event: &mut EntityEnteringSectionEvent,
+        ) {
+            let HostSide::Server(host) = host else { return };
+            self.seen.lock().unwrap().push((
+                event.entity.id(),
+                event.old_section,
+                event.new_section,
+                event.entity.position(host),
+            ));
+            if event.entity.id() == self.first.load(Ordering::Relaxed) {
+                let vehicle = host.entity(self.vehicle.load(Ordering::Relaxed)).unwrap();
+                self.teleported.store(
+                    vehicle.teleport_to(host, [56.5, 100.0, 8.5], None),
+                    Ordering::Relaxed,
+                );
+            }
+        }
+    }
+
+    let first_id = Arc::new(AtomicU32::new(0));
+    let vehicle_id = Arc::new(AtomicU32::new(0));
+    let teleported = Arc::new(AtomicBool::new(false));
+    let seen = Seen::default();
+    let mods = vec![mod_api::ModEntry::new(
+        "borrowed-tick-vehicle-tp",
+        Box::new(TeleportVehicleListener {
+            first: first_id.clone(),
+            vehicle: vehicle_id.clone(),
+            teleported: teleported.clone(),
+            seen: seen.clone(),
+        }),
+    )]
+    .into();
+    mod_platform::testing::with_mods(mods, || {
+        with_game(|game| {
+            // The first cow yields to the owning Host. The next uses the live
+            // borrowed observer, which must not inherit that Host's crossings.
+            let first = rising_cow(game, [4.5, 111.75, 8.5], true);
+            let next = rising_cow(game, [12.5, 127.75, 8.5], false);
+            let vehicle = floating_cow(game, [8.5, 100.0, 8.5]);
+            let passenger = floating_cow(game, [8.5, 100.0, 8.5]);
+            first_id.store(first, Ordering::Relaxed);
+            vehicle_id.store(vehicle, Ordering::Relaxed);
+            assert!(game.try_mount_mob(passenger, vehicle));
+            let [passenger_x, passenger_y, passenger_z] =
+                game.mob_object(passenger).unwrap().position.components();
+
+            game.tick_creature_entities().unwrap();
+            assert!(teleported.load(Ordering::Relaxed));
+            assert_eq!(
+                seen.lock().unwrap().as_slice(),
+                &[
+                    (first, [0, 6, 0], [0, 7, 0], Some([4.5, 112.25, 8.5])),
+                    (
+                        passenger,
+                        [0, 6, 0],
+                        [3, 6, 0],
+                        Some([passenger_x + 48.0, passenger_y, passenger_z])
+                    ),
+                    (vehicle, [0, 6, 0], [3, 6, 0], Some([56.5, 100.0, 8.5])),
+                    (next, [0, 7, 0], [0, 8, 0], Some([12.5, 128.25, 8.5])),
+                ]
+            );
+        })
+    });
+}
+
+#[test]
+fn live_section_host_builds_play_packets_and_refuses_container_click() {
+    use mod_api::{
+        ContainerClickRequest, PacketBuildError, PlayPacketRequest, prelude::NetworkClientHost,
+    };
+    use sunrise_protocol::{
+        ids::play::serverbound as sb,
+        packets::play::{Attack, Serverbound},
+    };
+
+    let host = LiveSectionHost::new(None);
+    let packet = host
+        .build_play_packet(&PlayPacketRequest::Attack { entity: 9 })
+        .unwrap();
+    assert_eq!(packet.id.to_string(), "minecraft:attack");
+    assert_eq!(
+        Serverbound::decode(sb::ATTACK, &packet.body).unwrap(),
+        Serverbound::Attack(Attack { id: 9 })
+    );
+    assert_eq!(
+        host.container_click(&ContainerClickRequest::default()),
+        Err(PacketBuildError::Unavailable {
+            packet: "container_click".into(),
+            field: "host".into(),
+        })
+    );
+}
+
+#[test]
+fn each_filed_crossing_keeps_the_placement_of_its_own_move() {
+    let mut s = EntitySections::default();
+    let w = scope(Overworld);
+    s.placed(w, 8, [0.5, 70.0, 0.5]);
+    // Two nested moves of one entity, filed before either is told.
+    s.moved(w, 8, None, [16.5, 70.0, 0.5]);
+    s.moved(w, 8, None, [32.5, 70.0, 0.5]);
+    assert!(s.begin_telling());
+    let first = s.queue.pop_front().unwrap();
+    let second = s.queue.pop_front().unwrap();
+    assert_eq!(
+        (first.at, second.at),
+        ([16.5, 70.0, 0.5], [32.5, 70.0, 0.5])
+    );
+}
+
+#[test]
+fn a_move_followed_by_a_discard_still_tells_its_crossing() {
+    let mut s = EntitySections::default();
+    let w = scope(Overworld);
+    s.placed(w, 8, [0.5, 70.0, 0.5]);
+    s.moved(w, 8, None, [16.5, 70.0, 0.5]);
+    s.forget(8);
+    assert_eq!(told(&mut s), [crossing(8, [0, 4, 0], [1, 4, 0])]);
 }

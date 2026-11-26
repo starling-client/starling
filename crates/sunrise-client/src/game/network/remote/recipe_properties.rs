@@ -1,31 +1,60 @@
 use super::*;
 
 #[cfg(test)]
+mod client_logging_out_tests;
+#[cfg(test)]
 mod tests;
 
 impl Game<'_> {
     /// Minecraft.disconnect's `ClientPlayerNetworkEvent.LoggingOut`: on
-    /// leaving a world, and on quitting the game from one. Once per
-    /// connection, whichever way out runs first.
+    /// leaving a world, starting a new world or server connection, and
+    /// quitting the game (including from the title screen). Fires before
+    /// teardown with the live local player handle and game mode when present,
+    /// or `(None, None)` on no-player transitions; once per connection,
+    /// whichever way out runs first.
     pub(in crate::game) fn client_logging_out(&mut self) {
-        let Some(remote) = self.remote.as_mut().filter(|r| !r.logged_out) else {
+        if !self.options.is_client_start() {
             return;
-        };
-        remote.logged_out = true;
+        }
+        if let Some(remote) = self.remote.as_mut() {
+            if remote.logged_out {
+                return;
+            }
+            remote.logged_out = true;
+            remote.camera = None;
+            remote.detached_camera = None;
+        }
         let player = self
-            .player
+            .remote
             .as_ref()
-            .map(|_| (remote.entity_id, remote.profile));
+            .filter(|remote| remote.has_level())
+            .and_then(|_| self.local_player());
+        let game_mode = player.map(|_| self.mode);
+        self.clear_spectated_entity_post_effect();
         self.reset_client_item_use();
-        self.native_client_player_logging_out(player.map(|p| p.0), player.map(|p| p.1));
+        // Camera.reset clears initialization while keeping the last aligned position.
+        self.view.initialized = false;
+        self.native_client_player_logging_out(player, game_mode);
+        if self.remote.is_none() {
+            return;
+        }
         if self.mod_screen.is_some() {
             self.remote_close_local();
         }
+        self.unload_client_level();
         self.native_lifecycle.begin_close();
         self.native_lifecycle_world_closed();
         self.recipe_ui.server_properties = Default::default();
         self.recipe_ui.server_stations = None;
         self.refresh_recipe_property_context();
+    }
+
+    /// `Minecraft.setLevel` / `clearClientLevel`: once per installed level,
+    /// while it is still the active level and its chunks and handles resolve.
+    pub(super) fn unload_client_level(&mut self) {
+        if let Some(dimension) = self.remote.as_mut().and_then(|r| r.heard_level.take()) {
+            self.native_client_level_unload(&dimension);
+        }
     }
 
     pub(super) fn remote_recipe_properties(
@@ -60,6 +89,7 @@ impl Game<'_> {
             let names = sunrise_client::recipe_book::PacketNames {
                 item: &item,
                 category: &category,
+                component: &|_| None,
                 tag: &tag,
             };
             self.stations().recipes.with_stonecutting(

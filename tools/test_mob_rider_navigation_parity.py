@@ -16,9 +16,12 @@ import shutil
 import subprocess
 import uuid
 
-import lab
-import test_rust_parity as base
-from integration_env import run_game
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_rust_parity as base
+from tools.integration_env import run_game
 
 
 def identity(i):

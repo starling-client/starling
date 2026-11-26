@@ -702,23 +702,23 @@ pub(super) fn mix(
                     Some(camera) => {
                         let d = away(camera);
                         let (forward, up, right) = camera.1;
-                        let dot = |a: [f64; 3], b: [f64; 3]| {
-                            (a[0] * b[0] + a[1] * b[1] + a[2] * b[2]) as f32
-                        };
-                        let distance = sqr(d).sqrt() as f32;
-                        let gain = volume * distance_gain(Some(c.range), distance);
-                        let [mut l, mut r] = super::stereo_gains_with_length(
-                            dot(d, right),
-                            dot(d, up),
-                            dot(d, forward),
-                            distance,
-                        );
-                        if shared_listeners {
-                            let middle = (l + r) * 0.5;
-                            l = middle + (l - middle) * 0.5;
-                            r = middle + (r - middle) * 0.5;
+                        let dot =
+                            |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+                        let distance = sqr(d).sqrt();
+                        let direction = [dot(d, right), dot(d, up), dot(d, forward)];
+                        if let Some([mut l, mut r]) =
+                            super::stereo_gains_with_length(direction, distance)
+                        {
+                            let gain = volume * distance_gain(Some(c.range), distance);
+                            if shared_listeners {
+                                let middle = (l + r) * 0.5;
+                                l = middle + (l - middle) * 0.5;
+                                r = middle + (r - middle) * 0.5;
+                            }
+                            [l * gain, r * gain, gain]
+                        } else {
+                            [0.0; 3]
                         }
-                        [l * gain, r * gain, gain]
                     }
                 }
             }

@@ -59,23 +59,13 @@ impl Installed {
 
     /// All synced attachments declared by `owner`, in sorted `namespace:name` order.
     pub(crate) fn synced_attachments(&self, owner: &str) -> Vec<String> {
-        let mut attachments = Vec::new();
-        for (namespace, types) in &self.attachment_types {
-            for (name, &sync) in types {
-                if !sync {
-                    continue;
-                }
-                let declarer = self
-                    .attachment_owners
-                    .get(namespace)
-                    .and_then(|owners| owners.get(name))
-                    .copied()
-                    .unwrap_or(namespace.as_str());
-                if declarer == owner {
-                    attachments.push(format!("{namespace}:{name}"));
-                }
-            }
-        }
+        let mut attachments: Vec<_> = self
+            .attachment_types
+            .values()
+            .flat_map(|types| types.values())
+            .filter(|record| record.owner() == owner && record.is_synced())
+            .map(|record| record.id().to_owned())
+            .collect();
         attachments.sort_unstable();
         attachments
     }

@@ -12,10 +12,11 @@ Vanilla prints what `Fireworks.addToTooltip` and `FireworkExplosion.addToTooltip
 """
 import random
 import sys
-try:
-    from . import lab, oracle_harness as harness
-except ImportError:
-    import lab, oracle_harness as harness
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, oracle_harness as harness
 
 SHAPES = ['small_ball', 'large_ball', 'star', 'creeper', 'burst']
 DYES = [0xF0F0F0, 0xEB8844, 0xC354CD, 0x6689D3, 0xDECF2A, 0x41CD34, 0xD88198, 0x434343, 0xABABAB, 0x287697,

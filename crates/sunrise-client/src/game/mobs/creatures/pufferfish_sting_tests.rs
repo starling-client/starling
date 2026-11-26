@@ -13,8 +13,12 @@ use sunrise_protocol::packets::play::Clientbound;
 fn with_fish(silent: bool, test: impl FnOnce(&mut Game<'_>)) {
     crate::game::native_entity_refs::tests::with_game(|game| {
         game.creative = false;
-        game.player = Some(PlayerMotion::new(game.motion, Vec3::new(8.5, 66.0, 8.5)).unwrap());
-        crate::game::native_entity_refs::tests::bind_local_player(game, 1, 1);
+        // The acting body is the guest's, not a second local player with the same ID.
+        let mut body = PlayerMotion::new(game.motion, Vec3::new(8.5, 66.0, 8.5)).unwrap();
+        body.entity_id = 1;
+        game.player = Some(body);
+        game.lan_acting_entity = Some(1);
+        game.lan_acting_uuid = Some(1);
         game.lan_acting = Some(7);
         game.lan_acting_name = Some("PufferfishTest".into());
         crate::game::native_entity_refs::tests::bind_acting_guest(game);

@@ -1,0 +1,3 @@
+ids = ["handle:LevelRef::drop_resources"]
+why = "Adds LevelRef::drop_resources (vanilla Block.dropResources): a server mod drops a block's resources as destroy_block would (the loot with a tool and breaker, the block entity's contribution, the block_drops hook and the block's experience, under doTileDrops) without the break particles and sound, the removal or the block_destroy game event, so a mod that breaks many blocks at once can send the break effect once."
+migrate = "Additive."

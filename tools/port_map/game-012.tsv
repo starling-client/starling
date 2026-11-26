@@ -28,7 +28,7 @@ Fox.FoxEatBerriesGoal.pickGlowBerry	port	crates/sunrise-client/src/mobs/fox.rs::
 Fox.FoxEatBerriesGoal.pickSweetBerries	port	crates/sunrise-client/src/mobs/fox.rs::EatBerries::pick	1 or 2 berries (+1 when fully grown), the first into the mouth when empty, age back to 1
 Fox.FoxFollowParentGoal.canContinueToUse	inline	crates/sunrise-client/src/mobs/fox.rs::Wrap::can_continue	defending is never set, so only the follow-parent test remains
 Fox.FoxLookAtPlayerGoal.canContinueToUse	inline	crates/sunrise-client/src/mobs/fox.rs::Wrap::can_continue	Wrap with the faceplanted or interested test on both can_use and can_continue
-Fox.FoxMeleeAttackGoal.checkAndPerformAttack	inline	crates/sunrise-client/src/mobs/goals.rs::MeleeAttack::tick	the generic melee strike, then the fox bite at entity.fox.bite 1.0/1.0 (MeleeAttack::bite, set in fox.rs::register)
+Fox.FoxMeleeAttackGoal.checkAndPerformAttack	port	crates/sunrise-client/src/mobs/goals/melee.rs::MeleeAttack::fox_check_and_perform_attack	replaces the base method without calling it: reset cooldown, do_hurt_target with no swing, then the fox bite at entity.fox.bite 1.0/1.0 (MeleeAttack::bite, set in fox.rs::register)
 Fox.FoxPanicGoal.shouldPanic	inline	crates/sunrise-client/src/mobs/fox.rs::register	Panic(2.2); the not-defending test is moot because defending is never set
 Fox.FoxPounceGoal.canContinueToUse	inline	crates/sunrise-client/src/mobs/fox.rs::Pounce::can_continue	target alive, still in the air or tilted 15 degrees, not faceplanted
 Fox.FoxStrollThroughVillageGoal.canFoxMove	port	crates/sunrise-client/src/mobs/fox.rs::can_fox_move	not sleeping, sitting or defending, and no target; fox.rs::can_move is Fox.canMove, a different test
@@ -63,7 +63,7 @@ ShootTongue.eatEntity	inline	crates/sunrise-client/src/mobs/frog.rs::ShootTongue
 ShootTongue.canPathfindToTarget	inline	crates/sunrise-client/src/mobs/frog.rs::ShootTongue::can_use	a path to the target that ends within 1.75 blocks
 ShootTongue.addUnreachableTargetToMemory	inline	crates/sunrise-client/src/mobs/frog.rs::ShootTongue::can_use	up to 5 ids kept 100 ticks in Frog.State.unreachable
 Tadpole.customServerAiStep	port	crates/sunrise-client/src/mobs/animal_brain.rs::tadpole_package	the tadpole brain package: panic 2.0 in the core activity, look at players, the food tempt and the stroll actions, run beside the AbstractFish goals aquatic.rs::register adds
-Tadpole.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt	Age and AgeLocked
+Tadpole.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_write.rs::mob_to_nbt	Age and AgeLocked
 Tadpole.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_load.rs::mob_from_nbt	Age and AgeLocked
 Tadpole.saveToBucketTag	port	crates/sunrise-client/src/entity_nbt.rs::bucket_data	Age and AgeLocked for axolotls and tadpoles
 Tadpole.loadFromBucketTag	port	crates/sunrise-client/src/entity_nbt.rs::apply_item_components	Age and AgeLocked from `minecraft:bucket_entity_data`
@@ -82,7 +82,7 @@ Goat.getHurtSound	port	crates/sunrise-client/src/mobs/ai.rs::voice_sounds	scream
 Goat.getDeathSound	port	crates/sunrise-client/src/mobs/ai.rs::voice_sounds	screaming death event selected by IsScreamingGoat
 Goat.finalizeSpawn	port	crates/sunrise-client/src/mobs/finalize.rs::goat_spawn	called for a live spawn by spawning.rs::finalize; Ctx::finalize has its own arm with the same draws for a structure mob: the ram and long jump cooldowns, screaming when nextDouble is below 0.02, ageBoundaryReached, and for an adult a lost horn one time in ten (nextFloat below 0.1, the side by nextBoolean)
 Goat.getDefaultDimensions	port	crates/sunrise-client/src/mobs/living.rs::Mob::dims	baby box (0.45 x 0.65, eye 0.59375) from the species table; no long jump pose scale since there is no long jump
-Goat.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt	IsScreamingGoat, HasLeftHorn, HasRightHorn; the GoatAi LONG_JUMP_COOLDOWN_TICKS brain memory is saved too
+Goat.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_write.rs::mob_to_nbt	IsScreamingGoat, HasLeftHorn, HasRightHorn; the GoatAi LONG_JUMP_COOLDOWN_TICKS brain memory is saved too
 Goat.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_load.rs::mob_from_nbt	IsScreamingGoat and both horn flags (default true)
 Goat.defineSynchedData	port	crates/sunrise-client/src/game/network/lan/mod.rs::mob_meta	gap: minor: the two horn flags are synced; the screaming flag is not
 Goat.checkGoatSpawnRules	port	crates/sunrise-client/src/mobs/spawn_rules.rs::check_spawn_rules	goats_spawnable_on below and bright enough
@@ -106,7 +106,7 @@ IronGolem.createAttributes	skip:data		attributes come from entity-types.json
 IronGolem.doPush	port	crates/sunrise-client/src/mobs/ai.rs::push_entities	a monster that is not a creeper becomes the target one time in 20, drawn only for those, then the push
 IronGolem.canSpawnSprintParticle	port	crates/sunrise-client/src/mobs/ai.rs::Mob::base_tick	ticked in #3512; `IronGolem.canSpawnSprintParticle` is cited at crates/sunrise-client/src/mobs/ai.rs:862 (in a comment, so `where` names the enclosing fn)
 IronGolem.canAttack	port	crates/sunrise-client/src/mobs/goals.rs::Mob::spares_players	the creator rule: player_created makes every player-target path skip players; gap: minor: the creeper refusal is only golem_prey's nearest-target filter, so HurtByTarget can still target a creeper that hits the golem
-IronGolem.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt	PlayerCreated in the iron golem arm; persistent anger writes anger_end_time and angry_at
+IronGolem.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_write.rs::mob_to_nbt	PlayerCreated in the iron golem arm; persistent anger writes anger_end_time and angry_at
 IronGolem.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_load.rs::mob_from_nbt	PlayerCreated (absent is false); persistent anger reads anger_end_time and angry_at
 IronGolem.hurtServer	port	crates/sunrise-client/src/mobs.rs::Mob::damage_with	golem::crackiness is read before the hit and compared after; a changed level plays entity.iron_golem.damage at 1.0/1.0
 IronGolem.isPlayerCreated	inline	crates/sunrise-client/src/mobs/goals.rs::Mob::spares_players	the flag is extra.player_created; spares_players reads it, and entity_nbt.rs writes and reads it
@@ -118,7 +118,7 @@ SnowGolem.hasPumpkin	inline	crates/sunrise-client/src/game/mobs/creatures/mod.rs
 SnowGolem.setPumpkin	inline	crates/sunrise-client/src/game/mobs/creatures/mod.rs::Game::interact_shear_mob	sets extra.sheared (shears, dispenser); nothing puts a pumpkin back, as in vanilla
 SnowGolem.getLeashOffset	port	crates/sunrise-client/src/mobs/leash.rs::leash_offset	0.75 of the eye height
 HappyGhast.setServerStillTimeout	inline	crates/sunrise-client/src/mobs/happy_ghast.rs::still_tick	gap: minor: the timeout is extra.counter (10 when a player stands on top, 10 on dismount, 0 on boarding); the one-off position sync to tracking players is not sent, lan.rs only marks the entity precise
-HappyGhast.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt	still_timeout, the serverStillTimeout `still_tick` keeps in `counter`
+HappyGhast.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_write.rs::mob_to_nbt	still_timeout, the serverStillTimeout `still_tick` keeps in `counter`
 HappyGhast.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_load.rs::mob_from_nbt	still_timeout back into `counter`; absent is 0
 HappyGhast.registerGoals	port	crates/sunrise-client/src/mobs/happy_ghast.rs::setup	adult goals: float, tempt (harness and food for a bare adult, food otherwise), float around within 16
 HappyGhast.adultGhastSetup	port	crates/sunrise-client/src/mobs/happy_ghast.rs::setup	adult half: ghast move control, happy ghast look control, goals, brain stopped

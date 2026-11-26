@@ -1,0 +1,3 @@
+ids = ["hook:use_animation"]
+why = "use_animation version 3: from inside the callback, a read of ItemStack::use_animation for another item now asks that item's Parts. Version 2 asked no Part again for any nested read. A read for any stack of the same item still gets the item's own answer."
+migrate = "Rebuild against this SDK. A Part that reads another item's use animation from inside its callback now sees that item's Part answer, where it saw the item's own answer before."

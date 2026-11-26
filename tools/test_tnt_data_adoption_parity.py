@@ -2,7 +2,9 @@
 """Live TNT data adoption with independent stationary inputs and unchanged controls."""
 import hashlib,json,sys,tempfile,uuid
 from pathlib import Path
-import test_command_exec_parity as driver
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_command_exec_parity as driver
 CASES=[('fuse',1,'{fuse:40s}','{fuse:60s}'),('motion',2,'{Motion:[0d,0d,0d]}','{Motion:[0.125d,0d,-0.25d]}')]
 def program():
  ops=[]

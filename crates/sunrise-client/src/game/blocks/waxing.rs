@@ -1,6 +1,6 @@
 //! `HoneycombItem.getWaxed` for the player's and the dispenser's honeycomb, and the axe's scrape
 //! and wax-off from the world's NeoForge block maps.
-use super::{Game, native_block_tables::BlockTables};
+use super::{Game, TransformKind, native_block_tables::BlockTables};
 use sunrise_world::registry::BlockStateId;
 
 impl Game<'_> {
@@ -36,7 +36,14 @@ impl Game<'_> {
     pub(in crate::game) fn tool_ability_result(
         new: BlockStateId,
         ability: mod_api::ToolAbility,
-    ) -> (BlockStateId, String, Option<String>, u32, String, String) {
+    ) -> (
+        BlockStateId,
+        String,
+        Option<String>,
+        u32,
+        String,
+        TransformKind,
+    ) {
         use mod_api::ToolAbility::*;
         let (sound, particle) = match ability {
             AxeStrip => ("minecraft:item.axe.strip", "none"),
@@ -53,7 +60,7 @@ impl Game<'_> {
             None,
             1,
             particle.to_owned(),
-            String::new(),
+            TransformKind::default(),
         )
     }
 }

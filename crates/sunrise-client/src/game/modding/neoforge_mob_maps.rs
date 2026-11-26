@@ -188,10 +188,14 @@ impl Game<'_> {
             return;
         }
         let snapshot = self.mob_map_snapshot();
-        if let Some(terrain) = self.end.locator() {
+        for terrain in self
+            .end
+            .locator()
+            .iter()
+            .chain(self.levels.parked_terrains())
+        {
             terrain.set_mob_maps(snapshot);
         }
-        self.levels.install_mob_map_snapshots(snapshot);
     }
 }
 

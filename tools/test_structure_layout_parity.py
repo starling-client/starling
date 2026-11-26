@@ -30,13 +30,7 @@ layouts, so the `lithostitched-probe` profile checks its pool elements' limits i
 every start Sunrise builds, no `limited` or `guaranteed` element's template appears more often than its
 limit, and how many starts hold one is printed beside the oracle's count.
 
-The `yung-probe` profiles check YUNG's API's draws with a data pack of the spec team's own (spec-yungsapi
-§3, probe experiments e1-e9: fallback, max_count, empty elements, min_required_depth, ignore_bounds,
-max_y, is_priority). The pack is carried as one more mod, built at run time from the oracle's profile file
-(`.local/structure-oracle/profiles/<profile>.json`), and its starts are read from the oracle's census of
-every start (`all_starts`).
-
-usage: test_structure_layout_parity.py [--profile lithostitched|betterdungeons|lithostitched-probe|yung-probe|yung-probe2]
+usage: test_structure_layout_parity.py [--profile lithostitched|lithostitched-probe]
                                        [--filter REGEX] [--verbose]
 """
 import base64
@@ -51,10 +45,9 @@ import sys
 import zipfile
 from pathlib import Path
 
-try:
-    from . import lab
-except ImportError:
-    import lab
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab
 
 ORACLE = Path(os.environ.get('SUNRISE_STRUCTURE_ORACLE', lab.LOCAL / 'structure-oracle'))
 JARS = Path(os.environ.get('SUNRISE_STRUCTURE_JARS', ORACLE / 'jars'))
@@ -68,31 +61,22 @@ def jar_path(jar):
 # structures compared (a regex; None: every start that has the pieces).
 PROFILES = {
     'lithostitched': {'side': 'base_pieces', 'mods': {}, 'carry': [], 'structures': None},
-    'betterdungeons': {'side': 'pieces', 'mods': {'yungsapi': 'YungsApi-1.21.1-NeoForge-5.1.9.jar',
-                                                  'betterdungeons': 'YungsBetterDungeons-1.21.1-NeoForge-5.1.4.jar'},
-                       'carry': ['betterdungeons'], 'structures': r'^betterdungeons:(small|skeleton|zombie)_dungeon$'},
     # The probe pack's limited (limit 1) and guaranteed (count 1) elements on vanilla's plains houses.
     'lithostitched-probe': {'side': 'pieces', 'mods': {'lithostitched': 'lithostitched-1.8.1-neoforge-21.1.jar'},
                             'packs': {'probe': 'lithostitched-probe'}, 'carry': ['lithostitched', 'probe'],
                             'structures': r'^minecraft:village_plains$',
                             'limits': {'minecraft:village/taiga/houses/taiga_small_house_1': 1,
                                        'minecraft:village/snowy/houses/snowy_library_1': 1}},
-    **{name: {'side': 'all_starts', 'mods': {'yungsapi': 'YungsApi-1.21.1-NeoForge-5.1.9.jar'},
-              'packs': {'probe': name}, 'carry': ['probe'], 'structures': r'^probe:'}
-       for name in ['yung-probe', 'yung-probe2']},
 }
 BUNDLES = {'structure': 'structures', 'structure_set': 'structure_sets', 'template_pool': 'template_pools',
            'processor_list': 'processor_lists'}
 # (profile, seed, structure id, start chunk x, z) -> how 26.3 vanilla differs from 1.21.1 there.
 TRIAL_CHAMBERS = '26.3 vanilla lays it out as Sunrise does, unlike 1.21.1'
-SULFUR_CAVES = "the start is in 26.3's sulfur_caves, a biome the mod's 1.21.1 tag cannot list"
 RUINED_PORTAL = "26.3 vanilla's portal is Sunrise's; 1.21.1 picked another"
 KNOWN = {
     ('lithostitched', 1234, 'minecraft:village_plains', -24, 47): 'no start in 26.3 vanilla (nor in Sunrise)',
     ('lithostitched', 1234, 'minecraft:ruined_portal', -16, 51): RUINED_PORTAL,
     ('lithostitched', 42, 'minecraft:ruined_portal', -19, -38): RUINED_PORTAL,
-    ('betterdungeons', 1234, 'betterdungeons:small_dungeon', 162, 10): SULFUR_CAVES,
-    ('betterdungeons', 42, 'betterdungeons:small_dungeon', -29, -28): SULFUR_CAVES,
     **{('lithostitched', seed, 'minecraft:trial_chambers', x, z): TRIAL_CHAMBERS
        for seed, x, z in [(1234, 13, 21), (2, -28, 13), (2, 11, 16), (2, 146, 44), (42, 17, 7), (42, 38, -25)]},
 }
@@ -100,7 +84,7 @@ KNOWN = {
 
 def element(saved):
     kind = saved.get('element_type')
-    if kind in ('minecraft:single_pool_element', 'minecraft:legacy_single_pool_element', 'yungsapi:yung_single_element'):
+    if kind in ('minecraft:single_pool_element', 'minecraft:legacy_single_pool_element'):
         location = saved['location']
         return location if ':' in location else 'minecraft:' + location
     if kind == 'minecraft:feature_pool_element':
@@ -285,15 +269,6 @@ def check_limits(binary, resources, results, profile, pattern):
     return 1 if failed or not starts else 0
 
 
-def census_starts(oracle):
-    """The oracle's census of every start (`all_starts`), as `structures` entries with their `all_starts`."""
-    for chunk in oracle['all_starts']:
-        for start in chunk['starts']:
-            if 'children' in start:
-                yield {'id': start['id'], 'dimension': chunk['dimension'], 'start_chunk': chunk['chunk'],
-                       'all_starts': start['children']}
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--profile', default='lithostitched', choices=sorted(PROFILES))
@@ -323,7 +298,7 @@ def main():
         oracle = json.load(gzip.open(path))
         seed = oracle['seed']
         by_dimension = {}
-        for start in oracle['structures'] if profile['side'] != 'all_starts' else census_starts(oracle):
+        for start in oracle['structures']:
             if start.get(profile['side']) is None or not re.search(args.filter, start['id']) \
                     or not re.search(profile['structures'] or '', start['id']):
                 continue

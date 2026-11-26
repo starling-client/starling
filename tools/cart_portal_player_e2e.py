@@ -29,12 +29,12 @@ import sys
 import tempfile
 import time
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import lab  # noqa: E402
-import test_rust_parity as base  # noqa: E402
-from test_dedicated_server_parity import Server as _Server  # noqa: E402
-from test_locator_bar_parity import generate_world, server_dir  # noqa: E402
-from cart_portal_e2e import Console, build_side, NETHER, TOL  # noqa: E402
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_rust_parity as base
+from tools.test_dedicated_server_parity import Server as _Server
+from tools.test_locator_bar_parity import generate_world, server_dir
+from tools.cart_portal_e2e import Console, build_side, NETHER, TOL  # noqa: E402
 
 PLAYER = 'Tester'
 LANE_Z, DEST_Z = 4, 0.5

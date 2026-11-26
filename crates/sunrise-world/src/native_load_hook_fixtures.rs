@@ -2,39 +2,43 @@
 use super::*;
 use crate::loot::{self, LootContext, LootStack};
 struct QueryCodec;
-impl loot::types::Registry for QueryCodec {
-    fn contains(&self, kind: &str, function: bool) -> bool {
-        !function && kind == "test:query"
-    }
-    fn validate(&self, _: &str, _: &serde_json::Value, _: bool) -> Result<Vec<String>, String> {
-        Ok(Vec::new())
-    }
-    fn conditional(&self, _: &str) -> bool {
-        true
-    }
-    fn apply(
-        &self,
-        _: &str,
-        _: &serde_json::Value,
-        _: &LootContext<'_>,
-        _: &mut dyn loot::types::RollRandom,
-        _: &dyn LootTags,
-        stack: &LootStack,
-    ) -> Result<LootStack, String> {
-        Ok(stack.clone())
-    }
+struct QueryCondition;
+impl loot::types::BoundCondition for QueryCondition {
     fn test(
         &self,
-        _: &str,
-        _: &serde_json::Value,
         ctx: &LootContext<'_>,
         _: &mut dyn loot::types::RollRandom,
         _: &dyn LootTags,
     ) -> Result<bool, String> {
         CONTEXT.with(|value| {
-            *value.borrow_mut() = Some((ctx.table_id().to_owned(), ctx.queried_stack.clone()))
+            *value.borrow_mut() = Some((ctx.table_id().to_owned(), ctx.queried_stack.cloned()))
         });
         Ok(true)
+    }
+}
+impl loot::types::Registry for QueryCodec {
+    fn contains(&self, kind: &str, function: bool) -> bool {
+        !function && kind == "test:query"
+    }
+    fn conditional(&self, _: &str) -> bool {
+        true
+    }
+    fn decode_function(
+        &self,
+        kind: &str,
+        _: &serde_json::Value,
+    ) -> Result<loot::types::DecodedFunction, String> {
+        Err(format!("unknown loot function type {kind}"))
+    }
+    fn decode_condition(
+        &self,
+        _: &str,
+        _: &serde_json::Value,
+    ) -> Result<loot::types::DecodedCondition, String> {
+        Ok(loot::types::DecodedCondition {
+            rule: std::sync::Arc::new(QueryCondition),
+            referenced_params: Vec::new(),
+        })
     }
 }
 thread_local! {
@@ -80,13 +84,14 @@ pub(crate) fn install() {
                     }
                     _ => {}
                 },
-                loot_ability: |tool, ability, holds| {
-                    ABILITY
-                        .with(|v| *v.borrow_mut() = Some((tool.item.clone(), ability.to_owned())));
-                    if tool.item == "test:grant" && ability == "shears_dig" {
+                loot_ability: |tool, ability, _tags, holds| {
+                    ABILITY.with(|v| {
+                        *v.borrow_mut() = Some((tool.item_id().to_owned(), ability.to_owned()))
+                    });
+                    if tool.item_id() == "test:grant" && ability == "shears_dig" {
                         *holds = true;
                     }
-                    if tool.item == "test:deny" {
+                    if tool.item_id() == "test:deny" {
                         *holds = false;
                     }
                 },

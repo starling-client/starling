@@ -1,0 +1,2 @@
+ids = ["method:prelude::ClientViewClientHost::jump_riding_scale"]
+why = "A client mod reads how far the local player has charged its mount's jump (LocalPlayer.getJumpRidingScale), the value the HUD's jump bar draws, so mount HUD mods can move or restyle the bar (#5637)."

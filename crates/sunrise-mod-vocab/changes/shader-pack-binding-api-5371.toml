@@ -1,0 +1,14 @@
+ids = [
+    "method:prelude::ClientOptionsClientHost::shader_pack_active",
+    "type:RenderPipeline.geometry_class",
+    "type:RenderPipeline.pack_binding",
+    "type:PipelineGeometryClass",
+    "type:PackBinding",
+    "type:PackPassSlot",
+    "type:PackDepthTarget",
+    "type:PackUniformDecl",
+    "type:PackUniformType",
+    "type:PackGlslInput",
+]
+why = "Adds PipelineGeometryClass and optional PackBinding metadata on RenderPipeline plus ClientHost::shader_pack_active() (#5371), allowing mods to declare their geometry class and shader-pack bindings without mod-specific engine code."
+migrate = "Additive only; RenderPipeline is #[non_exhaustive]."

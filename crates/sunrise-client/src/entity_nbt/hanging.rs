@@ -6,12 +6,7 @@ use super::*;
 /// `HangingEntity.setDirection` only write the yaw, so the loaded pitch is
 /// kept and `Entity.saveWithoutId` writes it back.
 pub(super) fn loaded_pitch(raw: Option<&Tag>) -> f32 {
-    let pitch = raw.map_or(0.0, |tag| rotation(tag)[1]);
-    if pitch.is_finite() {
-        (pitch % 360.0).clamp(-90.0, 90.0)
-    } else {
-        0.0
-    }
+    raw.map_or(0.0, |tag| loaded_rotation(tag)[1])
 }
 /// Painting.addAdditionalSaveData: `facing`, `variant` and `block_pos`, after
 /// Entity.saveWithoutId's common fields.
@@ -131,6 +126,7 @@ mod tests {
             pos,
             facing,
             variant: variant.unwrap().into(),
+            asset: None,
             width: 1,
             height: 1,
             check_interval: 0,

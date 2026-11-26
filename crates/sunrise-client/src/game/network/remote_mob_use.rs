@@ -4,7 +4,10 @@
 //! (`Minecraft.startUseItem` then sends UseItem). The server does the real
 //! interaction; this is what the client's copy of the mob answers.
 use super::Game;
+use super::item_abilities::ability;
 use sunrise_client::actions::Action;
+use sunrise_client::items::ItemStack;
+use sunrise_client::mobs::Mob;
 use sunrise_client::{
     first_person::Hand,
     mobs::{Species, armadillo, equine, llama, nautilus, panda, villager},
@@ -12,6 +15,15 @@ use sunrise_client::{
 use sunrise_client_gameplay::remote::mob_use::{
     ages_on_food, copper_golem_takes, iron_golem_takes, mob_swings, nautilus_takes,
 };
+
+/// `Mob.checkAndHandleImportantInteractions`: a lead, a named name tag, a spawn egg of the
+/// mob's own kind.
+fn important_interaction(m: &Mob, stack: Option<&ItemStack>) -> bool {
+    let item = stack.map_or("", |s| &*s.item);
+    item == "minecraft:lead"
+        || item == "minecraft:name_tag" && stack.is_some_and(|s| s.custom_name().is_some())
+        || item.strip_suffix("_spawn_egg") == Some(m.kind.id.as_str())
+}
 
 impl Game<'_> {
     /// Whether mob `i` takes a right click with `hand`'s item on this
@@ -35,13 +47,9 @@ impl Game<'_> {
             Hand::Off => self.offhand.as_ref(),
         };
         let item = stack.map_or("", |s| &*s.item);
+        let shears = stack.is_some_and(|s| self.stack_shears(s, ability::SHEARS_HARVEST));
         let baby = m.is_baby();
-        // Mob.checkAndHandleImportantInteractions: a lead, a named name tag,
-        // a spawn egg of the mob's own kind.
-        if item == "minecraft:lead"
-            || item == "minecraft:name_tag" && stack.is_some_and(|s| s.custom_name().is_some())
-            || item.strip_suffix("_spawn_egg") == Some(m.kind.id.as_str())
-        {
+        if important_interaction(m, stack) {
             return true;
         }
         // Armadillo.mobInteract: a rolled-up armadillo fails before
@@ -111,18 +119,15 @@ impl Game<'_> {
             Species::Cow | Species::Goat => item == "minecraft:bucket" && !baby,
             Species::Mooshroom => {
                 !baby
-                    && (matches!(
-                        item,
-                        "minecraft:bucket" | "minecraft:bowl" | "minecraft:shears"
-                    ) || m.extra.variant == 1
-                        && self.items().suspicious_stew_effects(item).is_some())
+                    && (matches!(item, "minecraft:bucket" | "minecraft:bowl")
+                        || shears
+                        || m.extra.variant == 1
+                            && self.items().suspicious_stew_effects(item).is_some())
             }
-            Species::Sheep if !act => {
-                item == "minecraft:shears" || self.sheep_would_take_dye(i, hand)
-            }
-            Species::Sheep => item == "minecraft:shears" || self.interact_sheep_dye(i, hand, true),
+            Species::Sheep if !act => shears || self.sheep_would_take_dye(i, hand),
+            Species::Sheep => shears || self.interact_sheep_dye(i, hand, true),
             // SnowGolem.mobInteract: shears take the pumpkin off.
-            Species::SnowGolem => item == "minecraft:shears" && !m.extra.sheared,
+            Species::SnowGolem => shears && !m.extra.sheared,
             // AbstractNautilus.mobInteract: an untamed adult only answers its
             // taming items, a tame one is fed, mounted or opens its screen.
             Species::Nautilus | Species::ZombieNautilus => {
@@ -148,6 +153,7 @@ impl Game<'_> {
             // CopperGolem.mobInteract.
             Species::CopperGolem => copper_golem_takes(
                 item,
+                shears,
                 m.extra.main_hand_stack().is_some(),
                 self.golem_shearable(i),
             ),
@@ -173,7 +179,12 @@ impl Game<'_> {
             }
             // Armadillo.brushOffScute fails on a baby, so its brush falls
             // through to FAIL (scared) or Mob.mobInteract's PASS.
-            Species::Armadillo => item == "minecraft:brush" && !baby,
+            Species::Armadillo => {
+                !baby
+                    && stack.is_some_and(|s| {
+                        self.stack_can_perform(s, ability::BRUSH_BRUSH, item == "minecraft:brush")
+                    })
+            }
             // ZombieVillager.mobInteract: CONSUME for a golden apple.
             Species::ZombieVillager => item == "minecraft:golden_apple",
             // Creeper.mobInteract: CREEPER_IGNITERS.
@@ -220,6 +231,14 @@ impl Game<'_> {
             && self.items().suspicious_stew_effects(item).is_some()
         {
             return true;
+        }
+        // Sheep.mobInteract (after the important interactions): shears, sheared or not,
+        // answer CONSUME on a client.
+        if m.species() == Species::Sheep
+            && !important_interaction(m, stack)
+            && stack.is_some_and(|s| self.stack_shears(s, ability::SHEARS_HARVEST))
+        {
+            return false;
         }
         mob_swings(m, item)
     }
@@ -364,22 +383,28 @@ mod tests {
             "not ingot"
         );
 
-        assert!(copper_golem_takes("", true, false), "takes its item back");
-        assert!(!copper_golem_takes("", false, false), "nothing to take");
         assert!(
-            copper_golem_takes("minecraft:shears", false, true),
+            copper_golem_takes("", false, true, false),
+            "takes its item back"
+        );
+        assert!(
+            !copper_golem_takes("", false, false, false),
+            "nothing to take"
+        );
+        assert!(
+            copper_golem_takes("minecraft:shears", true, false, true),
             "shears"
         );
         assert!(
-            !copper_golem_takes("minecraft:shears", false, false),
+            !copper_golem_takes("minecraft:shears", true, false, false),
             "no flower"
         );
         assert!(
-            !copper_golem_takes("minecraft:honeycomb", false, true),
+            !copper_golem_takes("minecraft:honeycomb", false, false, true),
             "waxing is server-only"
         );
         assert!(
-            !copper_golem_takes("minecraft:iron_axe", false, true),
+            !copper_golem_takes("minecraft:iron_axe", false, false, true),
             "scraping too"
         );
     }

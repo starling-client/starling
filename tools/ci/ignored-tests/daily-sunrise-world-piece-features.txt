@@ -1,0 +1,1 @@
+sunrise-world worldgen::generator::tests::a_structure_piece_places_configured_and_placed_features_by_id lib daily resources

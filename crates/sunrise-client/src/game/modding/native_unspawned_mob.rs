@@ -1,315 +1,466 @@
-//! A mob the game has made but not yet added to a level, lent to one hook call
-//! (`finalize_spawn`'s `mob`, docs/modding/src/how-to/world/spawning.md): the lend,
-//! the handle's reads (`UnspawnedMobRef`), the scoped editor handed out with it
-//! (`UnspawnedMobEdits`), and the spawn group data at the API boundary
-//! (`SpawnGroup`).
-//!
-//! Standalone lends move a mob into `Game::lent_mobs` and restore it afterward.
-//! Pending-child lends resolve the action arena's actual object instead. Both
-//! paths share the editor below; neither writes a resident mob. Kind/position
-//! metadata is subject to the same lease checks as all other reads and writes.
+//! A mob lent during finalization or the position check, or just after a natural spawn attempt:
+//! the scoped read-only view ([`BorrowedUnspawnedMob`]) and mutable editor
+//! ([`BorrowedUnspawnedMobMut`]), the shared read/write helpers used by pending children, and
+//! the spawn group data at the API boundary (`SpawnGroup`).
 
 use super::Game;
-use super::api_values::TryIntoEngine;
+use super::api_values::{TryIntoApi, TryIntoEngine};
 use super::living_attributes::{AttributeWrite, collect_equipment, write_unspawned_attribute};
 use mod_api::{
     AgeableGroup, AttributeModifier, AttributeOperation, EntityRef, EquipmentSlot, Identifier,
-    ItemStack, SpawnGroup, TropicalVariant, UnspawnedMobEdits, UnspawnedMobError, UnspawnedMobRef,
+    ItemStack, SpawnGroup, TropicalVariant, UnspawnedMobError, UnspawnedMobRead, UnspawnedMobWrite,
     WorldEpoch,
 };
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::{cell::RefCell, rc::Rc};
+use std::sync::Arc;
+use sunrise_client::items::Items;
 use sunrise_client::mobs::finalize::{Ageable, Group};
-use sunrise_client::mobs::{Mob, equine, llama, render, tame};
+use sunrise_client::mobs::{Mob, equine, llama, render};
 use sunrise_client::text::Text;
-use sunrise_mod_runtime::pending_children::PendingChildren;
 use sunrise_world::attribute_map::ValueKind;
-use sunrise_world::attributes::Operation;
+use sunrise_world::attributes::{Operation, entity::Catalog};
 
 /// The most tags an entity holds (`Entity.addTag`).
 const MAX_TAGS: usize = 1024;
 
-/// Lends are numbered across every `Game` of the process, so no two calls'
-/// handles are ever equal.
-static NEXT_LEND: AtomicU64 = AtomicU64::new(1);
-
-/// The mobs lent to the hook calls running now, the latest last.
-#[derive(Default)]
-pub(in crate::game) struct LentMobs {
-    lends: Vec<Lent>,
-    pub(super) pending: Rc<RefCell<PendingChildren<super::native_pending_children::PendingMob>>>,
-    /// The hook whose listeners the innermost pending action is dispatching to, if any.
-    pub(super) hook: Rc<std::cell::Cell<Option<mod_api::HookId>>>,
-}
-
-#[cfg(test)]
-impl LentMobs {
-    /// Whether no lend is open.
-    pub(in crate::game) fn is_empty(&self) -> bool {
-        self.lends.is_empty()
-    }
-}
-
-/// One lend: the handle's numbers, what every lend answers, and the copy of the
-/// mob when the game keeps one (not for the ender dragon).
-struct Lent {
-    handle: UnspawnedMobRef,
-    kind: String,
+/// Read-only scoped borrow of an unspawned mob (or metadata-only when `mob` is `None`).
+pub(in crate::game) struct BorrowedUnspawnedMob<'a> {
+    kind: &'a str,
     position: [f64; 3],
-    mob: Option<Mob>,
-    valid: bool,
+    mob: Option<&'a Mob>,
+    pub(super) live_tags: Option<mod_api::EntityTags<'a>>,
+    attributes: &'a Arc<Catalog>,
 }
 
-/// Ends a lend when it drops, after the call or while a listener's panic
-/// unwinds: the lend is withdrawn, so its handle answers `Expired`, and the
-/// lent mob moves back into the caller's slot.
-struct Withdraw<'a, 'g, 'm> {
-    game: &'a Game<'g>,
-    handle: UnspawnedMobRef,
-    slot: Option<&'m mut Mob>,
-}
-
-impl Drop for Withdraw<'_, '_, '_> {
-    fn drop(&mut self) {
-        let lent = {
-            let mut lent = self.game.lent_mobs.borrow_mut();
-            let at = lent.lends.iter().rposition(|l| l.handle == self.handle);
-            at.map(|at| lent.lends.remove(at))
-        };
-        if let (
-            Some(slot),
-            Some(Lent {
-                mob: Some(back), ..
-            }),
-        ) = (self.slot.take(), lent)
-        {
-            *slot = back;
+impl UnspawnedMobRead for BorrowedUnspawnedMob<'_> {
+    fn kind(&self) -> Result<Identifier, UnspawnedMobError> {
+        match self.mob {
+            Some(mob) => read_mob_kind(mob),
+            None => Identifier::parse(self.kind).map_err(|_| UnspawnedMobError::Unsupported),
         }
     }
+
+    fn position(&self) -> Result<[f64; 3], UnspawnedMobError> {
+        match self.mob {
+            Some(mob) => read_mob_position(mob),
+            None => Ok(self.position),
+        }
+    }
+
+    fn equipment(&self, slot: EquipmentSlot) -> Result<Option<ItemStack>, UnspawnedMobError> {
+        read_mob_equipment(self.mob.ok_or(UnspawnedMobError::Unsupported)?, slot)
+    }
+
+    fn attribute_base(&self, attribute: &Identifier) -> Result<f64, UnspawnedMobError> {
+        read_mob_attribute_base(
+            self.mob.ok_or(UnspawnedMobError::Unsupported)?,
+            self.attributes,
+            attribute,
+        )
+    }
+
+    fn attribute_value(&self, attribute: &Identifier) -> Result<f64, UnspawnedMobError> {
+        read_mob_attribute_value(
+            self.mob.ok_or(UnspawnedMobError::Unsupported)?,
+            self.attributes,
+            attribute,
+        )
+    }
+
+    fn tags(&self) -> Result<Vec<String>, UnspawnedMobError> {
+        if let Some(tags) = &self.live_tags {
+            return Ok(tags.iter_utf16().map(String::from_utf16_lossy).collect());
+        }
+        read_mob_tags(self.mob.ok_or(UnspawnedMobError::Unsupported)?)
+    }
+
+    fn custom_name(&self) -> Result<Option<mod_api::Text>, UnspawnedMobError> {
+        read_mob_custom_name(self.mob.ok_or(UnspawnedMobError::Unsupported)?)
+    }
 }
 
-/// The editor a lend hands out: it reaches only the lent copies, through the
-/// game it was made from.
-pub(super) struct Edits<'a, 'g> {
-    pub(super) game: &'a Game<'g>,
+/// Mutable scoped loan of an unspawned mob (or metadata-only when `mob` is `None`).
+pub(in crate::game) struct BorrowedUnspawnedMobMut<'a> {
+    kind: &'a str,
+    position: [f64; 3],
+    mob: Option<&'a mut Mob>,
+    items: &'a Items,
+    attributes: &'a Arc<Catalog>,
+}
+
+impl UnspawnedMobRead for BorrowedUnspawnedMobMut<'_> {
+    fn kind(&self) -> Result<Identifier, UnspawnedMobError> {
+        match self.mob.as_deref() {
+            Some(mob) => read_mob_kind(mob),
+            None => Identifier::parse(self.kind).map_err(|_| UnspawnedMobError::Unsupported),
+        }
+    }
+
+    fn position(&self) -> Result<[f64; 3], UnspawnedMobError> {
+        match self.mob.as_deref() {
+            Some(mob) => read_mob_position(mob),
+            None => Ok(self.position),
+        }
+    }
+
+    fn equipment(&self, slot: EquipmentSlot) -> Result<Option<ItemStack>, UnspawnedMobError> {
+        read_mob_equipment(
+            self.mob.as_deref().ok_or(UnspawnedMobError::Unsupported)?,
+            slot,
+        )
+    }
+
+    fn attribute_base(&self, attribute: &Identifier) -> Result<f64, UnspawnedMobError> {
+        read_mob_attribute_base(
+            self.mob.as_deref().ok_or(UnspawnedMobError::Unsupported)?,
+            self.attributes,
+            attribute,
+        )
+    }
+
+    fn attribute_value(&self, attribute: &Identifier) -> Result<f64, UnspawnedMobError> {
+        read_mob_attribute_value(
+            self.mob.as_deref().ok_or(UnspawnedMobError::Unsupported)?,
+            self.attributes,
+            attribute,
+        )
+    }
+
+    fn tags(&self) -> Result<Vec<String>, UnspawnedMobError> {
+        read_mob_tags(self.mob.as_deref().ok_or(UnspawnedMobError::Unsupported)?)
+    }
+
+    fn custom_name(&self) -> Result<Option<mod_api::Text>, UnspawnedMobError> {
+        read_mob_custom_name(self.mob.as_deref().ok_or(UnspawnedMobError::Unsupported)?)
+    }
+}
+
+impl UnspawnedMobWrite for BorrowedUnspawnedMobMut<'_> {
+    fn set_equipment(
+        &mut self,
+        slot: EquipmentSlot,
+        item: Option<ItemStack>,
+    ) -> Result<(), UnspawnedMobError> {
+        write_mob_equipment(
+            self.mob
+                .as_deref_mut()
+                .ok_or(UnspawnedMobError::Unsupported)?,
+            self.items,
+            self.attributes,
+            slot,
+            item,
+        )
+    }
+
+    fn set_attribute_base(
+        &mut self,
+        attribute: &Identifier,
+        base: f64,
+    ) -> Result<(), UnspawnedMobError> {
+        write_mob_attribute_base(
+            self.mob
+                .as_deref_mut()
+                .ok_or(UnspawnedMobError::Unsupported)?,
+            self.items,
+            self.attributes,
+            attribute,
+            base,
+        )
+    }
+
+    fn add_attribute_modifier(
+        &mut self,
+        attribute: &Identifier,
+        modifier: AttributeModifier,
+    ) -> Result<(), UnspawnedMobError> {
+        write_mob_add_attribute_modifier(
+            self.mob
+                .as_deref_mut()
+                .ok_or(UnspawnedMobError::Unsupported)?,
+            self.items,
+            self.attributes,
+            attribute,
+            modifier,
+        )
+    }
+
+    fn remove_attribute_modifier(
+        &mut self,
+        attribute: &Identifier,
+        id: &Identifier,
+    ) -> Result<bool, UnspawnedMobError> {
+        write_mob_remove_attribute_modifier(
+            self.mob
+                .as_deref_mut()
+                .ok_or(UnspawnedMobError::Unsupported)?,
+            self.items,
+            self.attributes,
+            attribute,
+            id,
+        )
+    }
+
+    fn add_tag(&mut self, tag: &str) -> Result<bool, UnspawnedMobError> {
+        write_mob_add_tag(
+            self.mob
+                .as_deref_mut()
+                .ok_or(UnspawnedMobError::Unsupported)?,
+            tag,
+        )
+    }
+
+    fn remove_tag(&mut self, tag: &str) -> Result<bool, UnspawnedMobError> {
+        write_mob_remove_tag(
+            self.mob
+                .as_deref_mut()
+                .ok_or(UnspawnedMobError::Unsupported)?,
+            tag,
+        )
+    }
+
+    fn set_custom_name(&mut self, name: Option<mod_api::Text>) -> Result<(), UnspawnedMobError> {
+        write_mob_set_custom_name(
+            self.mob
+                .as_deref_mut()
+                .ok_or(UnspawnedMobError::Unsupported)?,
+            name,
+        )
+    }
+}
+
+pub(super) fn read_mob_kind(mob: &Mob) -> Result<Identifier, UnspawnedMobError> {
+    Identifier::parse(&mob.kind.id).map_err(|_| UnspawnedMobError::Unsupported)
+}
+
+pub(super) fn read_mob_position(mob: &Mob) -> Result<[f64; 3], UnspawnedMobError> {
+    Ok([mob.position.x, mob.position.y, mob.position.z])
+}
+
+pub(super) fn read_mob_equipment(
+    mob: &Mob,
+    slot: EquipmentSlot,
+) -> Result<Option<ItemStack>, UnspawnedMobError> {
+    mob.equipment_stacks()[slot as usize]
+        .try_into_api()
+        .map_err(|error| error.into_write_error().into())
+}
+
+pub(super) fn read_mob_attribute_base(
+    mob: &Mob,
+    attributes: &Arc<Catalog>,
+    attribute: &Identifier,
+) -> Result<f64, UnspawnedMobError> {
+    read_mob_attribute(mob, attributes, attribute, ValueKind::Base)
+}
+
+pub(super) fn read_mob_attribute_value(
+    mob: &Mob,
+    attributes: &Arc<Catalog>,
+    attribute: &Identifier,
+) -> Result<f64, UnspawnedMobError> {
+    read_mob_attribute(mob, attributes, attribute, ValueKind::Computed)
+}
+
+fn read_mob_attribute(
+    mob: &Mob,
+    attributes: &Arc<Catalog>,
+    attribute: &Identifier,
+    kind: ValueKind,
+) -> Result<f64, UnspawnedMobError> {
+    mob.extra
+        .live
+        .read(
+            attributes,
+            &mob.kind.id,
+            &attribute.to_string(),
+            kind,
+            || {
+                sunrise_client::entity_nbt::attribute_entries(mob)
+                    .into_iter()
+                    .map(|(_, entry)| entry)
+                    .collect()
+            },
+        )
+        .ok_or(UnspawnedMobError::Unsupported)
+}
+
+pub(super) fn read_mob_tags(mob: &Mob) -> Result<Vec<String>, UnspawnedMobError> {
+    Ok(mob.extra.spawn_tags.clone())
+}
+
+pub(super) fn read_mob_custom_name(mob: &Mob) -> Result<Option<mod_api::Text>, UnspawnedMobError> {
+    mob.custom_name_text.try_into_api().map_err(Into::into)
+}
+
+pub(super) fn write_mob_equipment(
+    mob: &mut Mob,
+    items: &Items,
+    attributes: &Arc<Catalog>,
+    slot: EquipmentSlot,
+    item: Option<ItemStack>,
+) -> Result<(), UnspawnedMobError> {
+    let stack = item
+        .try_into_engine(items)
+        .map_err(|_| UnspawnedMobError::Invalid)?;
+    if !mob.set_equipment_stack(slot as usize, stack) {
+        return Err(UnspawnedMobError::Unsupported);
+    }
+    collect_equipment(attributes, items, mob);
+    Ok(())
+}
+
+pub(super) fn write_mob_attribute_base(
+    mob: &mut Mob,
+    items: &Items,
+    attributes: &Arc<Catalog>,
+    attribute: &Identifier,
+    base: f64,
+) -> Result<(), UnspawnedMobError> {
+    if !base.is_finite() {
+        return Err(UnspawnedMobError::Invalid);
+    }
+    write_mob_attribute(
+        mob,
+        items,
+        attributes,
+        attribute,
+        AttributeWrite::Base(base),
+    )
+    .map(|_| ())
+}
+
+pub(super) fn write_mob_add_attribute_modifier(
+    mob: &mut Mob,
+    items: &Items,
+    attributes: &Arc<Catalog>,
+    attribute: &Identifier,
+    modifier: AttributeModifier,
+) -> Result<(), UnspawnedMobError> {
+    let operation = match modifier.operation {
+        AttributeOperation::AddValue => Operation::AddValue,
+        AttributeOperation::AddMultipliedBase => Operation::AddMultipliedBase,
+        AttributeOperation::AddMultipliedTotal => Operation::AddMultipliedTotal,
+        _ => return Err(UnspawnedMobError::Invalid),
+    };
+    if !modifier.amount.is_finite() {
+        return Err(UnspawnedMobError::Invalid);
+    }
+    let write = AttributeWrite::add(
+        &modifier.id.to_string(),
+        modifier.amount,
+        operation,
+        true,
+        false,
+    )
+    .ok_or(UnspawnedMobError::Invalid)?;
+    match write_mob_attribute(mob, items, attributes, attribute, write)? {
+        true => Ok(()),
+        false => Err(UnspawnedMobError::Invalid),
+    }
+}
+
+pub(super) fn write_mob_remove_attribute_modifier(
+    mob: &mut Mob,
+    items: &Items,
+    attributes: &Arc<Catalog>,
+    attribute: &Identifier,
+    id: &Identifier,
+) -> Result<bool, UnspawnedMobError> {
+    write_mob_attribute(
+        mob,
+        items,
+        attributes,
+        attribute,
+        AttributeWrite::Remove(id.to_string()),
+    )
+}
+
+fn write_mob_attribute(
+    mob: &mut Mob,
+    items: &Items,
+    attributes: &Arc<Catalog>,
+    attribute: &Identifier,
+    write: AttributeWrite,
+) -> Result<bool, UnspawnedMobError> {
+    let name = attribute.to_string();
+    // Every write here is a mod's, so a base stays in the attribute's range.
+    let write = match write {
+        AttributeWrite::Base(base) => AttributeWrite::Base(
+            attributes
+                .definition(&name)
+                .map_or(base, |d| d.sanitize(base)),
+        ),
+        other => other,
+    };
+    write_unspawned_attribute(attributes, items, mob, &name, write)
+        .ok_or(UnspawnedMobError::Unsupported)
+}
+
+pub(super) fn write_mob_add_tag(mob: &mut Mob, tag: &str) -> Result<bool, UnspawnedMobError> {
+    let tags = &mut mob.extra.spawn_tags;
+    if tags.iter().any(|t| t == tag) {
+        return Ok(false);
+    }
+    if tag.is_empty() || tags.len() >= MAX_TAGS {
+        return Err(UnspawnedMobError::Invalid);
+    }
+    tags.push(tag.to_owned());
+    Ok(true)
+}
+
+pub(super) fn write_mob_remove_tag(mob: &mut Mob, tag: &str) -> Result<bool, UnspawnedMobError> {
+    let tags = &mut mob.extra.spawn_tags;
+    let before = tags.len();
+    tags.retain(|t| t != tag);
+    Ok(tags.len() != before)
+}
+
+pub(super) fn write_mob_set_custom_name(
+    mob: &mut Mob,
+    name: Option<mod_api::Text>,
+) -> Result<(), UnspawnedMobError> {
+    let name = name.try_into_engine(&())?;
+    mob.custom_name = name.as_ref().map(Text::plain);
+    mob.custom_name_text = name;
+    Ok(())
 }
 
 impl Game<'_> {
-    /// A nested pending action must expire standalone lends too, including their metadata.
-    pub(super) fn expire_standalone_lends(&self) {
-        for previous in &mut self.lent_mobs.borrow_mut().lends {
-            previous.valid = false;
+    /// Builds a read-only scoped borrow of an unspawned mob (or metadata-only when `mob` is `None`).
+    pub(in crate::game) fn borrowed_unspawned_mob<'a>(
+        &'a self,
+        kind: &'a str,
+        position: [f64; 3],
+        mob: Option<&'a Mob>,
+    ) -> BorrowedUnspawnedMob<'a> {
+        BorrowedUnspawnedMob {
+            kind,
+            position,
+            mob,
+            live_tags: None,
+            attributes: &self.motion.attributes,
         }
     }
 
-    /// Lends `mob` (or, with `None`, only its `kind` and `position`) to `call`,
-    /// then takes it back with whatever the call changed. `call` gets the
-    /// handle and the editor; both are dead once it returns.
-    ///
-    /// The mob itself moves into the lend and back, so state a copy leaves
-    /// out (a mod goal's own object) is kept; the caller's slot holds a copy
-    /// meanwhile, which nothing reads. A listener that panics still ends the
-    /// lend and puts the mob back ([`Withdraw`]).
-    pub(in crate::game) fn lend_unspawned<R>(
-        &self,
-        kind: &str,
+    /// Builds a mutable scoped loan of an unspawned mob (or metadata-only when `mob` is `None`).
+    pub(in crate::game) fn borrowed_unspawned_mob_mut<'a>(
+        &'a self,
+        kind: &'a str,
         position: [f64; 3],
-        mob: Option<&mut Mob>,
-        call: impl FnOnce(UnspawnedMobRef, &dyn UnspawnedMobEdits) -> R,
-    ) -> R {
-        self.expire_standalone_lends();
-        {
-            let lent = self.lent_mobs.borrow();
-            lent.pending
-                .borrow_mut()
-                .suspend()
-                .expect("pending lease budget exhausted");
-        }
-        let handle =
-            UnspawnedMobRef::new(self.lend_epoch(), NEXT_LEND.fetch_add(1, Ordering::Relaxed));
-        let mob = mob.map(|slot| {
-            let stand_in = slot.clone();
-            (std::mem::replace(slot, stand_in), slot)
-        });
-        let (lent, slot) = match mob {
-            Some((lent, slot)) => (Some(lent), Some(slot)),
-            None => (None, None),
-        };
-        self.lent_mobs.borrow_mut().lends.push(Lent {
-            handle,
-            kind: kind.to_owned(),
+        mob: Option<&'a mut Mob>,
+    ) -> BorrowedUnspawnedMobMut<'a> {
+        BorrowedUnspawnedMobMut {
+            kind,
             position,
-            mob: lent,
-            valid: true,
-        });
-        let _withdraw = Withdraw {
-            game: self,
-            handle,
-            slot,
-        };
-        call(handle, &Edits { game: self })
+            mob,
+            items: world_items!(self),
+            attributes: &self.motion.attributes,
+        }
     }
 
     /// The world a lend's handles belong to; a game with none open lends
     /// under epoch 0, which no open world has.
     pub(in crate::game) fn lend_epoch(&self) -> WorldEpoch {
         self.native_lifecycle.epoch().unwrap_or(WorldEpoch::new(0))
-    }
-
-    /// Runs `read` on the lend `handle` names.
-    fn with_lent<T>(
-        &self,
-        handle: UnspawnedMobRef,
-        read: impl FnOnce(&Lent) -> Result<T, UnspawnedMobError>,
-    ) -> Result<T, UnspawnedMobError> {
-        let lent = self.lent_mobs.borrow();
-        read(
-            lent.lends
-                .last()
-                .filter(|l| l.valid && l.handle == handle && handle.epoch() == self.lend_epoch())
-                .ok_or(UnspawnedMobError::Expired)?,
-        )
-    }
-
-    /// Runs `read` on the mob the lend `handle` names.
-    pub(super) fn with_lent_mob<T>(
-        &self,
-        handle: UnspawnedMobRef,
-        read: impl FnOnce(&Mob) -> Result<T, UnspawnedMobError>,
-    ) -> Result<T, UnspawnedMobError> {
-        if let Some(key) = super::native_pending_children::pending_key(self, handle)? {
-            let arena = self.lent_mobs.borrow().pending.clone();
-            let borrowed = arena.borrow();
-            let child = borrowed
-                .get(key)
-                .map_err(super::native_pending_children::pending_error)?;
-            if child.dimension != self.dim {
-                return Err(UnspawnedMobError::Expired);
-            }
-            return read(&child.mob);
-        }
-        self.with_lent(handle, |l| {
-            read(l.mob.as_ref().ok_or(UnspawnedMobError::Unsupported)?)
-        })
-    }
-
-    /// Runs `edit` on the mob the lend `handle` names.
-    pub(super) fn edit_lent_mob<T>(
-        &self,
-        handle: UnspawnedMobRef,
-        edit: impl FnOnce(&Game<'_>, &mut Mob) -> Result<T, UnspawnedMobError>,
-    ) -> Result<T, UnspawnedMobError> {
-        if let Some(key) = super::native_pending_children::pending_key(self, handle)? {
-            let arena = self.lent_mobs.borrow().pending.clone();
-            let mut borrowed = arena.borrow_mut();
-            let child = borrowed
-                .get_mut(key)
-                .map_err(super::native_pending_children::pending_error)?;
-            if child.dimension != self.dim {
-                return Err(UnspawnedMobError::Expired);
-            }
-            return edit(self, &mut child.mob);
-        }
-        let mut lent = self.lent_mobs.borrow_mut();
-        let l = lent
-            .lends
-            .last_mut()
-            .filter(|l| l.valid && l.handle == handle && handle.epoch() == self.lend_epoch())
-            .ok_or(UnspawnedMobError::Expired)?;
-        edit(self, l.mob.as_mut().ok_or(UnspawnedMobError::Unsupported)?)
-    }
-
-    /// The mob's entity type (`minecraft:zombie`).
-    pub(super) fn unspawned_mob_kind(
-        &self,
-        mob: UnspawnedMobRef,
-    ) -> Result<Identifier, UnspawnedMobError> {
-        if mob.pending_parts().is_some() {
-            return self.with_lent_mob(mob, |m| {
-                Identifier::parse(&m.kind.id).map_err(|_| UnspawnedMobError::Unsupported)
-            });
-        }
-        self.with_lent(mob, |l| {
-            Identifier::parse(&l.kind).map_err(|_| UnspawnedMobError::Unsupported)
-        })
-    }
-
-    /// Where the mob will join the level.
-    pub(super) fn unspawned_mob_position(
-        &self,
-        mob: UnspawnedMobRef,
-    ) -> Result<[f64; 3], UnspawnedMobError> {
-        if mob.pending_parts().is_some() {
-            return self.with_lent_mob(mob, |m| Ok([m.position.x, m.position.y, m.position.z]));
-        }
-        self.with_lent(mob, |l| Ok(l.position))
-    }
-
-    /// The stack in `slot` (`LivingEntity.getItemBySlot`) and its count; `None`
-    /// for an empty slot.
-    pub(super) fn unspawned_mob_equipment(
-        &self,
-        mob: UnspawnedMobRef,
-        slot: EquipmentSlot,
-    ) -> Result<Option<sunrise_client::items::ItemStack>, UnspawnedMobError> {
-        self.with_lent_mob(mob, |m| Ok(m.equipment_stacks()[slot as usize].clone()))
-    }
-
-    /// An attribute's base value, before modifiers (`AttributeMap.getBaseValue`).
-    /// `Unsupported` for an attribute the mob's type does not have.
-    pub(super) fn unspawned_mob_attribute_base(
-        &self,
-        mob: UnspawnedMobRef,
-        attribute: &Identifier,
-    ) -> Result<f64, UnspawnedMobError> {
-        self.unspawned_attribute(mob, attribute, ValueKind::Base)
-    }
-
-    /// An attribute's value with its modifiers, its equipment's included
-    /// (`AttributeMap.getValue`). `Unsupported` for an attribute the mob's type
-    /// does not have.
-    pub(super) fn unspawned_mob_attribute_value(
-        &self,
-        mob: UnspawnedMobRef,
-        attribute: &Identifier,
-    ) -> Result<f64, UnspawnedMobError> {
-        self.unspawned_attribute(mob, attribute, ValueKind::Computed)
-    }
-
-    fn unspawned_attribute(
-        &self,
-        mob: UnspawnedMobRef,
-        attribute: &Identifier,
-        kind: ValueKind,
-    ) -> Result<f64, UnspawnedMobError> {
-        let catalog = &self.motion.attributes;
-        self.with_lent_mob(mob, |m| {
-            m.extra
-                .live
-                .read(catalog, &m.kind.id, &attribute.to_string(), kind, || {
-                    sunrise_client::entity_nbt::attribute_entries(m)
-                        .into_iter()
-                        .map(|(_, entry)| entry)
-                        .collect()
-                })
-                .ok_or(UnspawnedMobError::Unsupported)
-        })
-    }
-
-    /// The tags a mod gave the mob so far (`Entity.entityTags()`).
-    pub(super) fn unspawned_mob_tags(
-        &self,
-        mob: UnspawnedMobRef,
-    ) -> Result<Vec<String>, UnspawnedMobError> {
-        self.with_lent_mob(mob, |m| Ok(m.extra.spawn_tags.clone()))
-    }
-
-    /// The mob's custom name, if it has one.
-    pub(super) fn unspawned_mob_custom_name(
-        &self,
-        mob: UnspawnedMobRef,
-    ) -> Result<Option<Text>, UnspawnedMobError> {
-        self.with_lent_mob(mob, |m| Ok(m.custom_name_text.clone()))
     }
 
     /// The tags a mod gave the mobs from index `from` on before they joined
@@ -334,7 +485,11 @@ impl Game<'_> {
 
 /// The pack's group data as the API's, a school's leader a handle of `epoch`;
 /// None where a value has no API name.
-pub(in crate::game) fn native_spawn_group(group: &Group, epoch: WorldEpoch) -> Option<SpawnGroup> {
+pub(in crate::game) fn native_spawn_group(
+    group: &Group,
+    epoch: WorldEpoch,
+    variants: &sunrise_client::mobs::variants::VariantTables,
+) -> Option<SpawnGroup> {
     let named = |names: &[&'static str], i: u8| names.get(usize::from(i)).map(|n| (*n).to_owned());
     Some(match group {
         Group::Ageable(a) => SpawnGroup::Ageable(native_ageable(a)),
@@ -377,7 +532,7 @@ pub(in crate::game) fn native_spawn_group(group: &Group, epoch: WorldEpoch) -> O
         },
         Group::Wolf(a, v) => SpawnGroup::Wolf {
             ageable: native_ageable(a),
-            variant: Identifier::parse(tame::WOLF_VARIANTS.get(usize::from(*v))?.0).ok()?,
+            variant: Identifier::parse(variants.wolf.id(*v)?).ok()?,
         },
         Group::School(leader, look) => SpawnGroup::School {
             leader: EntityRef::new(epoch, *leader),
@@ -395,7 +550,10 @@ pub(in crate::game) fn native_spawn_group(group: &Group, epoch: WorldEpoch) -> O
 
 /// The API's group data as the game's; None for a name the game does not know,
 /// which drops the group.
-pub(in crate::game) fn spawn_group(group: &SpawnGroup) -> Option<Group> {
+pub(in crate::game) fn spawn_group(
+    group: &SpawnGroup,
+    variants: &sunrise_client::mobs::variants::VariantTables,
+) -> Option<Group> {
     let index = |names: &[&str], name: &str| names.iter().position(|n| *n == name).map(|i| i as u8);
     Some(match group {
         SpawnGroup::Ageable(a) => Group::Ageable(ageable(a)),
@@ -448,12 +606,8 @@ pub(in crate::game) fn spawn_group(group: &SpawnGroup) -> Option<Group> {
             ageable: a,
             variant,
         } => {
-            if variant.namespace() != "minecraft" {
-                return None;
-            }
-            let name = variant.path();
-            let i = tame::WOLF_VARIANTS.iter().position(|(n, _)| *n == name)?;
-            Group::Wolf(ageable(a), i as u8)
+            let r = variants.wolf.lookup(variant.as_str())?;
+            Group::Wolf(ageable(a), r)
         }
         SpawnGroup::School { leader, tropical } => Group::School(
             leader.id(),
@@ -497,138 +651,6 @@ fn ageable(a: &AgeableGroup) -> Ageable {
         size: a.size,
         should_spawn_baby: a.should_spawn_baby,
         baby_chance: a.baby_chance,
-    }
-}
-
-impl UnspawnedMobEdits for Edits<'_, '_> {
-    fn set_equipment(
-        &self,
-        mob: UnspawnedMobRef,
-        slot: EquipmentSlot,
-        item: Option<ItemStack>,
-    ) -> Result<(), UnspawnedMobError> {
-        self.game.edit_lent_mob(mob, |game, m| {
-            let stack = item
-                .try_into_engine(world_items!(game))
-                .map_err(|_| UnspawnedMobError::Invalid)?;
-            if !m.set_equipment_stack(slot as usize, stack) {
-                return Err(UnspawnedMobError::Unsupported);
-            }
-            collect_equipment(&game.motion.attributes, world_items!(game), m);
-            Ok(())
-        })
-    }
-
-    fn set_attribute_base(
-        &self,
-        mob: UnspawnedMobRef,
-        attribute: &Identifier,
-        base: f64,
-    ) -> Result<(), UnspawnedMobError> {
-        if !base.is_finite() {
-            return Err(UnspawnedMobError::Invalid);
-        }
-        self.write_attribute(mob, attribute, AttributeWrite::Base(base))
-            .map(|_| ())
-    }
-
-    fn add_attribute_modifier(
-        &self,
-        mob: UnspawnedMobRef,
-        attribute: &Identifier,
-        modifier: AttributeModifier,
-    ) -> Result<(), UnspawnedMobError> {
-        let operation = match modifier.operation {
-            AttributeOperation::AddValue => Operation::AddValue,
-            AttributeOperation::AddMultipliedBase => Operation::AddMultipliedBase,
-            AttributeOperation::AddMultipliedTotal => Operation::AddMultipliedTotal,
-            _ => return Err(UnspawnedMobError::Invalid),
-        };
-        if !modifier.amount.is_finite() {
-            return Err(UnspawnedMobError::Invalid);
-        }
-        let write = AttributeWrite::add(
-            &modifier.id.to_string(),
-            modifier.amount,
-            operation,
-            true,
-            false,
-        )
-        .ok_or(UnspawnedMobError::Invalid)?;
-        match self.write_attribute(mob, attribute, write)? {
-            true => Ok(()),
-            false => Err(UnspawnedMobError::Invalid),
-        }
-    }
-
-    fn remove_attribute_modifier(
-        &self,
-        mob: UnspawnedMobRef,
-        attribute: &Identifier,
-        id: &Identifier,
-    ) -> Result<bool, UnspawnedMobError> {
-        self.write_attribute(mob, attribute, AttributeWrite::Remove(id.to_string()))
-    }
-
-    fn add_tag(&self, mob: UnspawnedMobRef, tag: &str) -> Result<bool, UnspawnedMobError> {
-        self.game.edit_lent_mob(mob, |_, m| {
-            let tags = &mut m.extra.spawn_tags;
-            if tags.iter().any(|t| t == tag) {
-                return Ok(false);
-            }
-            if tag.is_empty() || tags.len() >= MAX_TAGS {
-                return Err(UnspawnedMobError::Invalid);
-            }
-            tags.push(tag.to_owned());
-            Ok(true)
-        })
-    }
-
-    fn remove_tag(&self, mob: UnspawnedMobRef, tag: &str) -> Result<bool, UnspawnedMobError> {
-        self.game.edit_lent_mob(mob, |_, m| {
-            let tags = &mut m.extra.spawn_tags;
-            let before = tags.len();
-            tags.retain(|t| t != tag);
-            Ok(tags.len() != before)
-        })
-    }
-
-    fn set_custom_name(
-        &self,
-        mob: UnspawnedMobRef,
-        name: Option<mod_api::Text>,
-    ) -> Result<(), UnspawnedMobError> {
-        let name = name
-            .as_ref()
-            .map(sunrise_client_lib::api_text::to_serialized_engine)
-            .transpose()?;
-        self.game.edit_lent_mob(mob, |_, m| {
-            m.custom_name = name.as_ref().map(Text::plain);
-            m.custom_name_text = name;
-            Ok(())
-        })
-    }
-}
-
-impl Edits<'_, '_> {
-    /// An attribute write on the lent mob; `Unsupported` for an attribute it
-    /// does not keep itself.
-    fn write_attribute(
-        &self,
-        mob: UnspawnedMobRef,
-        attribute: &Identifier,
-        write: AttributeWrite,
-    ) -> Result<bool, UnspawnedMobError> {
-        self.game.edit_lent_mob(mob, |game, m| {
-            write_unspawned_attribute(
-                &game.motion.attributes,
-                world_items!(game),
-                m,
-                &attribute.to_string(),
-                write,
-            )
-            .ok_or(UnspawnedMobError::Unsupported)
-        })
     }
 }
 
@@ -696,35 +718,29 @@ mod tests {
         let saw = seen.clone();
         let max_health = id("minecraft:max_health");
         listening(
-            move |host, event| {
-                let (mob, edits) = (event.mob, event.edits);
-                edits
-                    .set_equipment(mob, EquipmentSlot::Head, Some(pumpkin()))
+            move |_, event| {
+                let mob = &mut event.mob;
+                mob.set_equipment(EquipmentSlot::Head, Some(pumpkin()))
                     .unwrap();
                 let mut oversized = pumpkin();
                 oversized.set_count(100).unwrap();
                 assert_eq!(
-                    edits.set_equipment(mob, EquipmentSlot::Head, Some(oversized)),
+                    mob.set_equipment(EquipmentSlot::Head, Some(oversized)),
                     Err(UnspawnedMobError::Invalid)
                 );
-                assert_eq!(
-                    mob.equipment(host, EquipmentSlot::Head),
-                    Ok(Some(pumpkin()))
-                );
-                edits.set_equipment(mob, EquipmentSlot::Head, None).unwrap();
-                assert_eq!(mob.equipment(host, EquipmentSlot::Head), Ok(None));
-                edits
-                    .set_equipment(mob, EquipmentSlot::Head, Some(pumpkin()))
+                assert_eq!(mob.equipment(EquipmentSlot::Head), Ok(Some(pumpkin())));
+                mob.set_equipment(EquipmentSlot::Head, None).unwrap();
+                assert_eq!(mob.equipment(EquipmentSlot::Head), Ok(None));
+                mob.set_equipment(EquipmentSlot::Head, Some(pumpkin()))
                     .unwrap();
-                edits.set_attribute_base(mob, &max_health, 20.0).unwrap();
-                assert_eq!(edits.add_tag(mob, "test:tagged"), Ok(true));
-                edits
-                    .set_custom_name(mob, Some(mod_api::Text::literal("Bacon")))
+                mob.set_attribute_base(&max_health, 20.0).unwrap();
+                assert_eq!(mob.add_tag("test:tagged"), Ok(true));
+                mob.set_custom_name(Some(mod_api::Text::literal("Bacon")))
                     .unwrap();
                 *saw.lock().unwrap() = Some((
-                    mob.kind(host),
-                    mob.attribute_base(host, &max_health),
-                    mob.equipment(host, EquipmentSlot::Head),
+                    mob.kind(),
+                    mob.attribute_base(&max_health),
+                    mob.equipment(EquipmentSlot::Head),
                 ));
                 Flow::Continue
             },
@@ -750,42 +766,30 @@ mod tests {
         );
     }
 
-    /// A handle kept past its hook reads `Expired`, and the next call's
-    /// editor refuses it the same way: it reaches only its own lend.
+    /// A mod's base written through the editor stays in the attribute's range, as documented.
     #[test]
     #[ignore = "daily"]
-    fn a_handle_kept_past_its_hook_is_expired() {
-        let kept: Arc<Mutex<Vec<UnspawnedMobRef>>> = Arc::default();
-        let refused = Arc::new(Mutex::new(Vec::new()));
-        let (keep, refuse) = (kept.clone(), refused.clone());
+    fn a_base_written_through_the_editor_stays_in_range() {
+        let seen: Arc<Mutex<Option<Result<f64, UnspawnedMobError>>>> = Arc::new(Mutex::new(None));
+        let saw = seen.clone();
+        let max_health = id("minecraft:max_health");
         listening(
             move |_, event| {
-                let earlier = keep.lock().unwrap().last().copied();
-                if let Some(earlier) = earlier {
-                    refuse
-                        .lock()
-                        .unwrap()
-                        .push(event.edits.add_tag(earlier, "test:late"));
-                }
-                keep.lock().unwrap().push(event.mob);
+                let mob = &mut event.mob;
+                mob.set_attribute_base(&max_health, 2000.0).unwrap();
+                *saw.lock().unwrap() = Some(mob.attribute_base(&max_health));
                 Flow::Continue
             },
             || {
                 with_game(|game| {
-                    let first = spawn_pig(game).unwrap();
-                    spawn_pig(game).unwrap();
-                    let old = kept.lock().unwrap()[0];
-                    assert_eq!(old.kind(game), Err(UnspawnedMobError::Expired));
-                    assert_eq!(old.position(game), Err(UnspawnedMobError::Expired));
-                    assert!(game.tags_of(Target::Mob(first)).is_empty());
+                    let spawned = spawn_pig(game).unwrap();
+                    let m = game.mobs.iter().find(|m| m.id == spawned).unwrap();
+                    assert_eq!(finalize::base_value(m, Attr::MaxHealth), 1024.0);
                 });
+                assert_eq!(seen.lock().unwrap().take(), Some(Ok(1024.0)));
             },
         );
-        assert_eq!(*refused.lock().unwrap(), [Err(UnspawnedMobError::Expired)]);
-        let kept = kept.lock().unwrap();
-        assert_ne!(kept[0], kept[1], "each call lends anew");
     }
-
     /// `Flow::Cancel` skips finalization and keeps the listener's edits on
     /// the mob that still joins; `spawn_cancelled` adds no mob at all.
     #[test]
@@ -794,10 +798,7 @@ mod tests {
         let max_health = id("minecraft:max_health");
         listening(
             move |_, event| {
-                event
-                    .edits
-                    .set_attribute_base(event.mob, &max_health, 20.0)
-                    .unwrap();
+                event.mob.set_attribute_base(&max_health, 20.0).unwrap();
                 Flow::Cancel
             },
             || {
@@ -818,7 +819,7 @@ mod tests {
         );
         listening(
             |_, event| {
-                assert_eq!(event.edits.add_tag(event.mob, "test:gone"), Ok(true));
+                assert_eq!(event.mob.add_tag("test:gone"), Ok(true));
                 event.spawn_cancelled = true;
                 Flow::Continue
             },
@@ -881,8 +882,12 @@ mod tests {
     struct KeptGoal;
     #[mod_api::sunrise_part]
     impl mod_api::EntityPart for KeptGoal {
-        fn register_goals(&self, goals: &mut mod_api::GoalRegistrar<'_>) {
-            goals.add_goal(7, Kept);
+        fn register_goals(
+            &self,
+            _host: &mut dyn mod_api::ServerHost,
+            event: &mut mod_api::RegisterGoalsEvent<'_, '_>,
+        ) {
+            event.goals.add_goal(7, Kept);
         }
     }
     struct KeptGoalMod;
@@ -893,12 +898,12 @@ mod tests {
         }
     }
 
-    /// A listener that panics still ends its lend: the handle is withdrawn
-    /// and the mob in the caller's slot is the one that was lent, mod goal
-    /// and all, not a copy (whose mod goal would have no goal) or a default.
+    /// Unwinding out of an unspawned-mob loan leaves the mob intact in place
+    /// (mod goal and all, never copied or replaced) and leaves no broken state
+    /// for a subsequent `finalize_spawn` call.
     #[test]
     #[ignore = "daily"]
-    fn a_panicking_listener_still_ends_the_lend() {
+    fn an_engine_unwind_still_ends_the_unspawned_mob_lend() {
         let installed = || vec![mod_api::ModEntry::new("kept-goal", Box::new(KeptGoalMod))];
         mod_platform::testing::with_mods(installed().into(), || {
             super::super::api_values::install_parts(&installed()).unwrap();
@@ -910,6 +915,7 @@ mod tests {
                     .unwrap()
                     .clone();
                 let mut zombie = Mob::new(70, kind, sunrise_core::geometry::Vec3::ZERO, 0.0);
+                game.flush_unjoined_mob_parts(&mut zombie);
                 zombie.custom_name = Some("Lent".to_owned());
                 let goals = |m: &Mob| -> Vec<&'static str> {
                     m.ai.goals.entries().map(|(_, name, _)| name).collect()
@@ -918,20 +924,17 @@ mod tests {
                     goals(&zombie).contains(&"Kept"),
                     "the part attached its goal"
                 );
-                let mut kept = None;
                 let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    game.lend_unspawned("minecraft:zombie", AT, Some(&mut zombie), |mob, _| {
-                        kept = Some(mob);
-                        panic!("a listener's bug");
-                    })
+                    let mut borrowed =
+                        game.borrowed_unspawned_mob_mut("minecraft:zombie", AT, Some(&mut zombie));
+                    let editor = mod_api::UnspawnedMobEditor::new(&mut borrowed);
+                    assert_eq!(editor.kind(), Ok(id("minecraft:zombie")));
+                    std::panic::resume_unwind(Box::new("unspawned mob fixture fault"));
                 }));
-                assert!(panicked.is_err());
-                assert!(
-                    game.lent_mobs.borrow().lends.is_empty(),
-                    "the lend is withdrawn"
+                assert_eq!(
+                    panicked.unwrap_err().downcast_ref::<&str>(),
+                    Some(&"unspawned mob fixture fault")
                 );
-                let kept = kept.expect("the call ran");
-                assert_eq!(kept.kind(game), Err(UnspawnedMobError::Expired));
                 assert_eq!(zombie.id, 70);
                 assert_eq!(zombie.custom_name.as_deref(), Some("Lent"));
                 let back = goals(&zombie);
@@ -943,6 +946,18 @@ mod tests {
             });
             super::super::api_values::install_parts(&[]).unwrap();
         });
+        listening(
+            |_, event| {
+                assert_eq!(event.mob.add_tag("test:after_panic"), Ok(true));
+                Flow::Continue
+            },
+            || {
+                with_game(|game| {
+                    let spawned = spawn_pig(game).unwrap();
+                    assert_eq!(game.tags_of(Target::Mob(spawned)), ["test:after_panic"]);
+                });
+            },
+        );
     }
 
     /// Group data crosses the boundary by the names vanilla saves its
@@ -953,6 +968,45 @@ mod tests {
         let epoch = WorldEpoch::new(3);
         let ageable = Ageable::babies(true);
         let api = AgeableGroup::new(true, 0.05);
+        let variants = sunrise_client::mobs::variants::VariantTables {
+            wolf: sunrise_client::mobs::variants::VariantTable::from_entries(vec![
+                (
+                    ("minecraft".into(), "spotted".into()),
+                    sunrise_client::mobs::variants::WolfVariant {
+                        assets: sunrise_client::mobs::variants::WolfAssetInfo {
+                            wild: "minecraft:entity/wolf/wolf_spotted".into(),
+                            tame: "minecraft:entity/wolf/wolf_spotted_tame".into(),
+                            angry: "minecraft:entity/wolf/wolf_spotted_angry".into(),
+                        },
+                        baby_assets: sunrise_client::mobs::variants::WolfAssetInfo {
+                            wild: "minecraft:entity/wolf/wolf_spotted_baby".into(),
+                            tame: "minecraft:entity/wolf/wolf_spotted_tame_baby".into(),
+                            angry: "minecraft:entity/wolf/wolf_spotted_angry_baby".into(),
+                        },
+                        spawn_conditions: Vec::new(),
+                    },
+                ),
+                (
+                    ("test".into(), "mint".into()),
+                    sunrise_client::mobs::variants::WolfVariant {
+                        assets: sunrise_client::mobs::variants::WolfAssetInfo {
+                            wild: "test:entity/wolf/mint".into(),
+                            tame: "test:entity/wolf/mint_tame".into(),
+                            angry: "test:entity/wolf/mint_angry".into(),
+                        },
+                        baby_assets: sunrise_client::mobs::variants::WolfAssetInfo {
+                            wild: "test:entity/wolf/mint_baby".into(),
+                            tame: "test:entity/wolf/mint_tame_baby".into(),
+                            angry: "test:entity/wolf/mint_angry_baby".into(),
+                        },
+                        spawn_conditions: Vec::new(),
+                    },
+                ),
+            ]),
+            ..Default::default()
+        };
+        let spotted = variants.wolf.lookup("minecraft:spotted").unwrap();
+        let mint = variants.wolf.lookup("test:mint").unwrap();
         let cases = [
             (
                 Group::Horse(ageable, 1),
@@ -983,10 +1037,17 @@ mod tests {
                 },
             ),
             (
-                Group::Wolf(ageable, 1),
+                Group::Wolf(ageable, spotted),
                 SpawnGroup::Wolf {
                     ageable: api,
                     variant: id("minecraft:spotted"),
+                },
+            ),
+            (
+                Group::Wolf(ageable, mint),
+                SpawnGroup::Wolf {
+                    ageable: api,
+                    variant: id("test:mint"),
                 },
             ),
             (
@@ -1020,13 +1081,21 @@ mod tests {
             ),
         ];
         for (game, api) in cases {
-            assert_eq!(native_spawn_group(&game, epoch).as_ref(), Some(&api));
-            assert_eq!(spawn_group(&api), Some(game));
+            assert_eq!(
+                native_spawn_group(&game, epoch, &variants).as_ref(),
+                Some(&api)
+            );
+            assert_eq!(spawn_group(&api, &variants), Some(game));
         }
         let unknown = SpawnGroup::Horse {
             ageable: api,
             variant: "plaid".into(),
         };
-        assert_eq!(spawn_group(&unknown), None);
+        assert_eq!(spawn_group(&unknown, &variants), None);
+        let unknown_wolf = SpawnGroup::Wolf {
+            ageable: api,
+            variant: id("test:missing"),
+        };
+        assert_eq!(spawn_group(&unknown_wolf, &variants), None);
     }
 }

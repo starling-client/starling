@@ -1,48 +1,53 @@
 //! Part state (#781) on real block entities: one value each, kept with its block entity
 //! through ticks, transactions, replacement, saving and unloading.
-use std::{panic::AssertUnwindSafe, sync::Arc};
+use std::{
+    panic::AssertUnwindSafe,
+    sync::{Arc, Mutex},
+};
 
 use mod_api::{
-    AttachmentType, BlockEntityPart, BlockEntityPartState, BlockEntityRef, BlockEntityTickEvent,
-    BlockPart, Hooks, HostTransaction, PartStateError, Registrar, ServerHost, edit_part_state,
-    read_state,
+    AttachmentDescriptor, AttachmentKey, BlockEntityPart, BlockEntityPartState, BlockEntityRef,
+    BlockEntityTickEvent, BlockPart, Hooks, HostTransaction, PartStateError, Registrar, ServerHost,
+    edit_part_state, read_state,
 };
 use sunrise_client::{
     chunk::Chunk,
     containers::{BlockEntity, ModBlockEntity},
 };
 use sunrise_core::nbt::{Compound, Tag};
-use sunrise_mod_runtime::attachments::{AttachmentCodec, AttachmentError, Attachments, Holder};
+use sunrise_mod_runtime::attachments::{
+    AttachmentCodec, AttachmentError, AttachmentType, Attachments, Holder,
+};
 
 use super::{Dim, Game};
+
+const PROGRESS_CODEC: AttachmentCodec<i32> = AttachmentCodec {
+    encode: |n| {
+        if *n == i32::MIN {
+            return Err(AttachmentError::Encode);
+        }
+        Ok([("n".into(), Tag::Int(*n))].into())
+    },
+    decode: |saved: &Compound| match saved.get(&"n".into()) {
+        Some(Tag::Int(n)) => Ok(*n),
+        _ => Err(AttachmentError::Decode),
+    },
+};
 
 static PROGRESS: AttachmentType<i32> = AttachmentType {
     namespace: "part_state",
     name: "progress",
     default: || 0,
-    codec: Some(AttachmentCodec {
-        encode: |n| Ok([("n".into(), Tag::Int(*n))].into()),
-        decode: |saved: &Compound| match saved.get(&"n".into()) {
-            Some(Tag::Int(n)) => Ok(*n),
-            _ => Err(AttachmentError::Decode),
-        },
-    }),
+    codec: Some(PROGRESS_CODEC),
     copy_on_death: false,
-    sync: false,
-};
-
-/// Kept for the session only: no codec.
-static SCRATCH: AttachmentType<i32> = AttachmentType {
-    namespace: "part_state",
-    name: "scratch",
-    default: || 0,
-    codec: None,
-    copy_on_death: false,
-    sync: false,
+    sync_codec: None,
 };
 
 /// Counts its block entity's ticks in its state.
-struct Press;
+#[derive(Clone)]
+struct Press {
+    progress: AttachmentKey<i32>,
+}
 #[mod_api::sunrise_part]
 impl BlockPart for Press {}
 #[mod_api::sunrise_part]
@@ -58,25 +63,49 @@ impl BlockEntityPart for Press {
             Some(entity),
             "resident during its tick"
         );
-        Press::edit_state(host, entity, |_, ticks| *ticks += 1).unwrap();
+        self.edit_state(host, entity, |_, _tx, ticks| *ticks += 1)
+            .unwrap();
     }
 }
 impl BlockEntityPartState for Press {
     type Data = i32;
-    const DATA: &'static AttachmentType<i32> = &PROGRESS;
+    fn state_key(&self) -> &AttachmentKey<i32> {
+        &self.progress
+    }
 }
 
-struct StateMod;
+#[derive(Clone)]
+struct StateKeys {
+    press: Press,
+    /// Kept for the session only: no codec.
+    scratch: AttachmentKey<i32>,
+}
+
+struct StateMod {
+    keys: Arc<Mutex<Option<StateKeys>>>,
+}
 #[mod_api::__subscriptions]
 impl Hooks for StateMod {
     fn register(&self, r: &mut dyn Registrar, _: &mod_api::RegistrationContext) {
-        r.register_attachment_type("part_state:progress", false)
+        let progress = r
+            .register_attachment_type(
+                AttachmentDescriptor::new("part_state:progress", || 0_i32)
+                    .serialize(PROGRESS_CODEC),
+            )
             .unwrap();
+        let scratch = r
+            .register_attachment_type(AttachmentDescriptor::new("part_state:scratch", || 0_i32))
+            .unwrap();
+        let press = Press { progress };
+        *self.keys.lock().unwrap() = Some(StateKeys {
+            press: press.clone(),
+            scratch,
+        });
         let kind = r
             .block_entity_type("press")
             .blocks(&["part_state:press"])
             .build();
-        r.block_entity_part_with_state(&kind, Press).unwrap();
+        r.block_entity_part_with_state(&kind, press).unwrap();
         let press = r.block_key("part_state:press");
         r.block_container(
             &press,
@@ -94,7 +123,7 @@ impl Hooks for StateMod {
 
 /// Run the test `name` with `StateMod` installed, in a fresh process: its content root
 /// freezes the process's block entity types, which another test may already have frozen.
-fn with_state_mod(name: &str, test: impl FnOnce(&mut Game<'_>)) {
+fn with_state_mod(name: &str, test: impl FnOnce(&mut Game<'_>, &StateKeys)) {
     if super::native_entity_refs::tests::run_fresh_cases(
         name,
         "SUNRISE_PART_STATE_GAME_CHILD",
@@ -102,19 +131,25 @@ fn with_state_mod(name: &str, test: impl FnOnce(&mut Game<'_>)) {
     ) {
         return;
     }
-    let mods: mod_api::Mods = vec![mod_api::ModEntry::new("part_state", Box::new(StateMod))].into();
+    let keys = Arc::new(Mutex::new(None));
+    let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
+        "part_state",
+        Box::new(StateMod { keys: keys.clone() }),
+    )]
+    .into();
     mod_platform::testing::with_mods(mods.clone(), || {
         crate::game::api_values::install_parts(&mods).unwrap();
         mod_api::__private::mark_game_thread();
         let base = std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
         let root = super::mods::content_root(&base, &Default::default()).unwrap();
         super::native_entity_refs::tests::with_game_at(root.prepared().to_owned(), |game| {
+            let state_keys = keys.lock().unwrap().clone().expect("StateMod registered");
             game.options.dedicated = Some(Vec::new());
             game.native_level_opened(Dim::Overworld);
             game.world
                 .chunks
                 .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
-            test(game);
+            test(game, &state_keys);
         });
     });
 }
@@ -143,75 +178,138 @@ fn press_with_item_slot(game: &mut Game<'_>, pos: (i32, i32, i32)) -> BlockEntit
     press(game, pos)
 }
 
-fn stored(game: &mut Game<'_>, entity: BlockEntityRef) -> Option<i32> {
-    Press::state_existing(game, entity).unwrap()
+fn stored(press: &Press, game: &mut Game<'_>, entity: BlockEntityRef) -> Option<i32> {
+    press
+        .state_existing(game, entity, |value| value.cloned())
+        .unwrap()
 }
 
 #[test]
 #[ignore = "daily"]
 fn part_state_is_per_block_entity_through_ticks_transactions_and_replacement() {
     const NAME: &str = "game::block_entity_part_state_tests::part_state_is_per_block_entity_through_ticks_transactions_and_replacement";
-    with_state_mod(NAME, |game| {
-        let (a, b) = (press(game, (1, 64, 1)), press(game, (2, 64, 1)));
+    with_state_mod(NAME, |game, keys| {
+        let press_part = &keys.press;
+        use super::api_values::TryIntoApi;
+        use sunrise_client::items::ItemStack;
+
+        let (a, b) = (
+            press_with_item_slot(game, (1, 64, 1)),
+            press(game, (2, 64, 1)),
+        );
         // Reads insert nothing.
-        assert_eq!(Press::state(game, a), Ok(0));
-        assert_eq!(stored(game, a), None);
+        assert_eq!(press_part.state(game, a, Clone::clone), Ok(0));
+        assert_eq!(stored(press_part, game, a), None);
         game.with_level(|_, level, _| {
-            assert_eq!(Press::state_in(level, a), Ok(0));
-            assert_eq!(Press::state_existing_in(level, a), Ok(None));
+            assert_eq!(press_part.state_in(level, a, Clone::clone), Ok(0));
+            assert_eq!(
+                press_part.state_existing_in(level, a, |value| value.cloned()),
+                Ok(None)
+            );
         });
         assert_eq!(
-            PROGRESS.has(game, Holder::BlockEntity([1, 64, 1])),
+            press_part
+                .state_key()
+                .has(game, Holder::BlockEntity([1, 64, 1])),
             Ok(false)
         );
-        assert_eq!(Press::edit_state(game, a, |_, n| *n = 7), Ok(()));
-        assert_eq!((stored(game, a), stored(game, b)), (Some(7), None));
+        assert_eq!(press_part.edit_state(game, a, |_, _tx, n| *n = 7), Ok(()));
+        assert_eq!(
+            (stored(press_part, game, a), stored(press_part, game, b)),
+            (Some(7), None)
+        );
         game.with_level(|_, level, _| {
-            assert_eq!(Press::state_in(level, a), Ok(7));
-            assert_eq!(Press::state_existing_in(level, a), Ok(Some(7)));
-        });
-        let chunk = game.world.chunks.remove(&(0, 0)).unwrap();
-        game.with_level(|_, level, _| {
-            assert_eq!(Press::state_in(level, a), Err(PartStateError::Stale));
+            assert_eq!(press_part.state_in(level, a, Clone::clone), Ok(7));
             assert_eq!(
-                Press::state_existing_in(level, a),
+                press_part.state_existing_in(level, a, |value| value.cloned()),
+                Ok(Some(7))
+            );
+        });
+        let mut chunk = game.world.chunks.remove(&(0, 0)).unwrap();
+        game.with_level(|_, level, _| {
+            assert_eq!(
+                press_part.state_in(level, a, Clone::clone),
+                Err(PartStateError::Stale)
+            );
+            assert_eq!(
+                press_part.state_existing_in(level, a, |value| value.cloned()),
                 Err(PartStateError::Stale)
             );
         });
+        game.install_live_features();
+        let rain_pos = [4, 64, 4];
+        let plains = world_biomes!(game).id("minecraft:plains");
+        let column = Arc::make_mut(&mut chunk);
+        let bottom = column.min_y() >> 2;
+        // This column is open air with full skylight. Seed every quart cell that
+        // BiomeManager.getBiome can select at rain_pos, independent of the zoom seed.
+        for x in 0..=1 {
+            for y in 15..=16 {
+                for z in 0..=1 {
+                    column.set_biome_cell(x, y - bottom, z, plains);
+                }
+            }
+        }
         game.world.chunks.insert((0, 0), chunk);
         let level = game.level(game.dim.id()).unwrap();
+        game.world.weather.rain_level = (1.0, 1.0);
+        let server_rain = game
+            .level_is_raining_at(level, rain_pos)
+            .expect("server weather read");
+        assert!(server_rain, "the fixture position is exposed to rain");
         let dedicated = game.options.dedicated.take();
         let role = game.options.execution_role;
         game.options.execution_role = super::execution_role::ExecutionRole::Client;
-        let client_view = super::native_level_signals::ReadLevel { game, level };
-        assert_eq!(Press::state_in(&client_view, a), Ok(0));
-        assert_eq!(Press::state_existing_in(&client_view, a), Ok(None));
+        let client_view = super::native_level_signals::ReadLevel::new(game, level, &game.world);
+        assert_eq!(press_part.state_in(&client_view, a, Clone::clone), Ok(0));
+        assert_eq!(
+            press_part.state_existing_in(&client_view, a, |value| value.cloned()),
+            Ok(None)
+        );
+        assert_eq!(
+            mod_api::LevelHost::is_raining_at(&client_view, rain_pos),
+            server_rain,
+            "a client Part reads weather from its bound world"
+        );
         game.options.dedicated = dedicated;
         game.options.execution_role = role;
 
         // Its own tick reaches it while it is out of the world, under the same handle.
         game.tick_mod_block_entity((1, 64, 1));
         game.tick_mod_block_entity((1, 64, 1));
-        assert_eq!(stored(game, a), Some(9));
-        assert_eq!(Press::state(game, b), Ok(0));
+        assert_eq!(stored(press_part, game, a), Some(9));
+        assert_eq!(press_part.state(game, b, Clone::clone), Ok(0));
 
         // An inner edit commits into the outer transaction, which then aborts: the value and
         // the chunk's unsaved mark go back, so a chunk that was clean is clean again.
         game.world.modified.clear();
-        let aborted: Result<(), ()> = game.transaction(|game, _| {
-            assert_eq!(Press::edit_state(game, a, |_, n| *n = 11), Ok(()));
-            assert_eq!(Press::state(game, a), Ok(11), "later steps see it");
-            game.with_level(|_, level, _| {
-                assert_eq!(Press::state_existing_in(level, a), Ok(Some(11)));
+        let aborted: Result<(), mod_api::TransactionError<()>> = (game as &mut dyn ServerHost)
+            .transaction(|host, _| {
+                let stack = ItemStack::new("minecraft:stone", 1).try_into_api().unwrap();
+                assert_eq!(
+                    press_part.edit_state(host, a, |host, tx, n| {
+                        *n = 11;
+                        a.set_item_slot(host, tx, 0, Some(stack))
+                    }),
+                    Ok(Ok(true)),
+                );
+                assert_eq!(
+                    press_part.state(host, a, Clone::clone),
+                    Ok(11),
+                    "later steps see it"
+                );
+                assert!(
+                    !sunrise_client::join_seq::visibility::passes_settled(),
+                    "no save while it is tentative"
+                );
+                Err(())
             });
-            assert!(
-                !sunrise_client::join_seq::visibility::passes_settled(),
-                "no save while it is tentative"
-            );
-            Err(())
-        });
-        assert_eq!(aborted, Err(()));
-        assert_eq!(stored(game, a), Some(9));
+        assert_eq!(aborted, Err(mod_api::TransactionError::Aborted(())));
+        assert_eq!(stored(press_part, game, a), Some(9));
+        let Some(BlockEntity::Mod(restored)) = game.world.block_entities.get(&(1, 64, 1)) else {
+            panic!("the holder must survive the abort");
+        };
+        assert!(restored.items.iter().all(Option::is_none));
         assert!(
             !game.world.modified.contains(&(0, 0)),
             "clean after the abort"
@@ -220,45 +318,85 @@ fn part_state_is_per_block_entity_through_ticks_transactions_and_replacement() {
         // A panic inside an edit leaves no default behind.
         let host: &mut dyn ServerHost = game;
         let panicked = std::panic::catch_unwind(AssertUnwindSafe(|| {
-            Press::edit_state(host, b, |_, n| {
+            press_part.edit_state(host, b, |_, _tx, n| {
                 *n = 5;
                 panic!("edit fails");
             })
         }));
         assert!(panicked.is_err());
         assert!(game.transactions.is_empty());
-        assert_eq!(stored(game, b), None);
-        assert_eq!(Press::edit_state(game, b, |_, n| *n = 8), Ok(()));
-        assert_eq!(stored(game, b), Some(8));
+        assert_eq!(stored(press_part, game, b), None);
+        assert_eq!(press_part.edit_state(game, b, |_, _tx, n| *n = 8), Ok(()));
+        assert_eq!(stored(press_part, game, b), Some(8));
 
         // The same state can't be edited from inside its own edit; another key can.
-        let inner = Press::edit_state(game, a, |host, n| {
+        let inner = press_part.edit_state(game, a, |host, _tx, n| {
             *n = 10;
             (
-                Press::edit_state(host, a, |_, n| *n = 99),
-                edit_part_state(host, a, &SCRATCH, |_, n| *n = 1),
+                press_part.edit_state(host, a, |_, _tx, n| *n = 99),
+                edit_part_state(host, a, &keys.scratch, |_, _tx, n| *n = 1),
             )
         });
         assert_eq!(inner, Ok((Err(PartStateError::Reentrant), Ok(()))));
-        assert_eq!(stored(game, a), Some(10));
-        assert_eq!(read_state(game, a, &SCRATCH), Ok(Some(1)));
+        assert_eq!(stored(press_part, game, a), Some(10));
+        assert_eq!(
+            read_state(game, a, &keys.scratch, |value| value.cloned()),
+            Ok(Some(1))
+        );
 
         // A value replaced while the closure ran refuses the edit and keeps the old one.
-        let changed = Press::edit_state(game, a, |host, n| {
+        let changed = press_part.edit_state(game, a, |host, _tx, n| {
             *n = 12;
-            PROGRESS
-                .set(host.attachments(), Holder::BlockEntity([1, 64, 1]), 50)
+            press_part
+                .state_key()
+                .set(host, Holder::BlockEntity([1, 64, 1]), 50)
                 .unwrap();
         });
         assert_eq!(changed, Err(PartStateError::Changed));
-        assert_eq!(stored(game, a), Some(10));
+        assert_eq!(stored(press_part, game, a), Some(10));
+
+        // Refusing the draft's encoding keeps its prior bytes and undoes nested writes.
+        let saved = game
+            .world
+            .block_entities
+            .attachments((1, 64, 1))
+            .unwrap()
+            .try_to_nbt()
+            .unwrap();
+        let refused = press_part.edit_state(game, a, |host, _tx, n| {
+            keys.scratch
+                .set(host, Holder::BlockEntity([1, 64, 1]), 8)
+                .unwrap();
+            *n = i32::MIN;
+        });
+        assert_eq!(
+            refused,
+            Err(PartStateError::Attachment {
+                namespace: "part_state",
+                name: "progress",
+                error: AttachmentError::Encode,
+            })
+        );
+        assert_eq!(
+            read_state(game, a, &keys.scratch, |value| value.copied()),
+            Ok(Some(1))
+        );
+        assert_eq!(
+            game.world
+                .block_entities
+                .attachments((1, 64, 1))
+                .unwrap()
+                .try_to_nbt()
+                .unwrap(),
+            saved
+        );
 
         // An undecodable saved value refuses before the closure runs and keeps its bytes.
         let mut bad = Compound::new();
         bad.insert("n".into(), Tag::String("ten".into()));
         let mut saved = Attachments::default();
         PROGRESS.set(&mut saved, Holder::Level, 0).unwrap();
-        let mut raw = saved.to_nbt();
+        let mut raw = saved.try_to_nbt().unwrap();
         let Some(Tag::Compound(names)) = raw.get_mut(&"part_state".into()) else {
             unreachable!()
         };
@@ -274,10 +412,13 @@ fn part_state_is_per_block_entity_through_ticks_transactions_and_replacement() {
             name: "progress",
             error: AttachmentError::Decode,
         };
-        assert_eq!(Press::state(game, b), Err(decode.clone()));
+        assert_eq!(press_part.state(game, b, Clone::clone), Err(decode.clone()));
         let mut ran = false;
         game.world.modified.clear();
-        assert_eq!(Press::edit_state(game, b, |_, _| ran = true), Err(decode));
+        assert_eq!(
+            press_part.edit_state(game, b, |_, _tx, _| ran = true),
+            Err(decode)
+        );
         assert!(!ran);
         assert!(
             !game.world.modified.contains(&(0, 0)),
@@ -288,33 +429,43 @@ fn part_state_is_per_block_entity_through_ticks_transactions_and_replacement() {
                 .block_entities
                 .attachments((2, 64, 1))
                 .unwrap()
-                .to_nbt(),
+                .try_to_nbt()
+                .unwrap(),
             raw
         );
 
         // A block entity of the same place in another level has its own value, and a
         // handle answers only in its own level.
         game.enter_level(Dim::Nether).unwrap();
-        assert_eq!(Press::state(game, a), Err(PartStateError::OtherLevel));
+        assert_eq!(
+            press_part.state(game, a, Clone::clone),
+            Err(PartStateError::OtherLevel)
+        );
         game.world
             .chunks
             .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
         let nether = press(game, (1, 64, 1));
-        assert_eq!(Press::state(game, nether), Ok(0));
-        assert_eq!(Press::edit_state(game, nether, |_, n| *n = 3), Ok(()));
+        assert_eq!(press_part.state(game, nether, Clone::clone), Ok(0));
+        assert_eq!(
+            press_part.edit_state(game, nether, |_, _tx, n| *n = 3),
+            Ok(())
+        );
         game.enter_level(Dim::Overworld).unwrap();
-        assert_eq!(stored(game, a), Some(10));
+        assert_eq!(stored(press_part, game, a), Some(10));
 
         // A replacement at the same place is a new block entity with no value.
         game.world.block_entities.remove(&(1, 64, 1));
         let replacement = press(game, (1, 64, 1));
         assert_ne!(replacement, a);
-        assert_eq!(Press::state(game, a), Err(PartStateError::Stale));
         assert_eq!(
-            Press::edit_state(game, a, |_, n| *n = 1),
+            press_part.state(game, a, Clone::clone),
             Err(PartStateError::Stale)
         );
-        assert_eq!(stored(game, replacement), None);
+        assert_eq!(
+            press_part.edit_state(game, a, |_, _tx, n| *n = 1),
+            Err(PartStateError::Stale)
+        );
+        assert_eq!(stored(press_part, game, replacement), None);
     });
 }
 
@@ -322,7 +473,8 @@ fn part_state_is_per_block_entity_through_ticks_transactions_and_replacement() {
 #[ignore = "daily"]
 fn part_state_saves_with_its_chunk_and_reloads_under_a_fresh_handle() {
     const NAME: &str = "game::block_entity_part_state_tests::part_state_saves_with_its_chunk_and_reloads_under_a_fresh_handle";
-    with_state_mod(NAME, |game| {
+    with_state_mod(NAME, |game, keys| {
+        let press_part = &keys.press;
         // A column far from the player, kept by a forced ticket while it is edited.
         let key = (80, 80);
         let pos = (1283, 100, 1283);
@@ -335,13 +487,16 @@ fn part_state_saves_with_its_chunk_and_reloads_under_a_fresh_handle() {
         game.update_world();
         let entity = press(game, pos);
         game.world.modified.clear();
-        assert_eq!(Press::edit_state(game, entity, |_, n| *n = 7), Ok(()));
+        assert_eq!(
+            press_part.edit_state(game, entity, |_, _tx, n| *n = 7),
+            Ok(())
+        );
         assert!(
             game.world.modified.contains(&key),
             "an edit marks its chunk for the unload's save"
         );
         assert_eq!(
-            edit_part_state(game, entity, &SCRATCH, |_, n| *n = 4),
+            edit_part_state(game, entity, &keys.scratch, |_, _tx, n| *n = 4),
             Ok(())
         );
 
@@ -354,7 +509,10 @@ fn part_state_saves_with_its_chunk_and_reloads_under_a_fresh_handle() {
         }
         assert!(!game.world.chunks.contains_key(&key), "unloaded");
         assert!(game.world.block_entities.attachments(pos).is_none());
-        assert_eq!(Press::state(game, entity), Err(PartStateError::Stale));
+        assert_eq!(
+            press_part.state(game, entity, Clone::clone),
+            Err(PartStateError::Stale)
+        );
 
         // Loaded back from the region file it was saved to, as streaming installs a column.
         game.save_level(true).unwrap();
@@ -367,10 +525,13 @@ fn part_state_saves_with_its_chunk_and_reloads_under_a_fresh_handle() {
         let level = game.level(game.dim.id()).unwrap();
         let reloaded = game.block_entity(level, [pos.0, pos.1, pos.2]).unwrap();
         assert_ne!(reloaded, entity);
-        assert_eq!(Press::state(game, entity), Err(PartStateError::Stale));
-        assert_eq!(stored(game, reloaded), Some(7));
         assert_eq!(
-            read_state(game, reloaded, &SCRATCH),
+            press_part.state(game, entity, Clone::clone),
+            Err(PartStateError::Stale)
+        );
+        assert_eq!(stored(press_part, game, reloaded), Some(7));
+        assert_eq!(
+            read_state(game, reloaded, &keys.scratch, |value| value.cloned()),
             Ok(None),
             "session only"
         );
@@ -382,7 +543,7 @@ fn part_state_saves_with_its_chunk_and_reloads_under_a_fresh_handle() {
 fn item_slot_writes_save_but_menu_data_is_transient() {
     const NAME: &str =
         "game::block_entity_part_state_tests::item_slot_writes_save_but_menu_data_is_transient";
-    with_state_mod(NAME, |game| {
+    with_state_mod(NAME, |game, _| {
         use super::api_values::TryIntoApi;
         use sunrise_client::items::ItemStack;
 
@@ -406,12 +567,7 @@ fn item_slot_writes_save_but_menu_data_is_transient() {
             let item = ItemStack::new("minecraft:stone", count);
             let stack = item.clone().try_into_api().unwrap();
             assert_eq!(
-                (game as &mut dyn ServerHost).transaction(|host, tx| entity.set_item_slot(
-                    host,
-                    tx,
-                    0,
-                    Some(stack)
-                )),
+                game.storage_transaction(|host, tx| entity.set_item_slot(host, tx, 0, Some(stack))),
                 Ok(true)
             );
             game.save_level(true).unwrap();
@@ -435,7 +591,7 @@ fn item_slot_writes_save_but_menu_data_is_transient() {
 #[ignore = "daily"]
 fn an_item_write_commits_in_its_own_level_despite_an_unrelated_transaction() {
     const NAME: &str = "game::block_entity_part_state_tests::an_item_write_commits_in_its_own_level_despite_an_unrelated_transaction";
-    with_state_mod(NAME, |game| {
+    with_state_mod(NAME, |game, _| {
         let chunk = (0, 0);
         let pos = (1, 64, 1);
         game.enter_level(Dim::Nether).unwrap();
@@ -448,27 +604,30 @@ fn an_item_write_commits_in_its_own_level_despite_an_unrelated_transaction() {
         game.enter_level(Dim::Overworld).unwrap();
         assert!(!game.world.modified.contains(&chunk));
 
-        let overworld = game.transaction_open();
-        // Like `execute in`: the Nether has no open journal to join.
-        game.enter_level(Dim::Nether).unwrap();
-        let stone =
-            mod_api::ItemStack::new(mod_api::__private::item_key("minecraft:stone").unwrap(), 1)
-                .unwrap();
-        assert_eq!(
-            (game as &mut dyn ServerHost).transaction(|host, child| entity.set_item_slot(
-                host,
-                child,
-                0,
-                Some(stone)
-            )),
-            Ok(true)
-        );
-        assert!(
-            game.world.modified.contains(&chunk),
-            "committed in the Nether"
-        );
-        game.enter_level(Dim::Overworld).unwrap();
-        game.transaction_close(&overworld, false);
+        game.storage_scope(|game, _| {
+            // Like `execute in`: the Nether has no open journal to join.
+            game.enter_level(Dim::Nether).unwrap();
+            let stone = mod_api::ItemStack::new(
+                mod_api::__private::item_key("minecraft:stone").unwrap(),
+                1,
+            )
+            .unwrap();
+            assert_eq!(
+                game.storage_transaction(|host, child| entity.set_item_slot(
+                    host,
+                    child,
+                    0,
+                    Some(stone)
+                )),
+                Ok(true)
+            );
+            assert!(
+                game.world.modified.contains(&chunk),
+                "committed in the Nether"
+            );
+            game.enter_level(Dim::Overworld).unwrap();
+            ((), false)
+        });
         assert!(game.transactions.is_empty());
         assert!(!game.world.modified.contains(&chunk));
         assert!(
@@ -479,7 +638,7 @@ fn an_item_write_commits_in_its_own_level_despite_an_unrelated_transaction() {
                 .contains(&chunk)
         );
 
-        game.save_parked_levels(true).unwrap();
+        game.save_all_levels(true).unwrap();
         game.enter_level(Dim::Nether).unwrap();
         let reloaded = game
             .save
@@ -503,15 +662,16 @@ fn an_item_write_commits_in_its_own_level_despite_an_unrelated_transaction() {
     });
 }
 
-/// What the attachment index answers for `entity`'s `PROGRESS`, without the handle check.
-fn indexed(game: &Game<'_>, entity: BlockEntityRef) -> Option<i32> {
+/// What the attachment index answers for `entity`'s `progress`, without the handle check.
+fn indexed(game: &Game<'_>, entity: BlockEntityRef, progress: &AttachmentKey<i32>) -> Option<i32> {
     use mod_api::AttachmentQueries;
     let host: &dyn mod_api::Host = game;
-    host.query(&PROGRESS)
+    host.query(progress)
         .unwrap()
         .get(
             game.attachment_frame_borrow(),
             mod_api::AttachmentHolder::BlockEntity(entity),
+            |value| value.cloned(),
         )
         .ok()
         .flatten()
@@ -522,40 +682,57 @@ fn indexed(game: &Game<'_>, entity: BlockEntityRef) -> Option<i32> {
 fn a_removal_retires_its_state_only_at_the_root_commit() {
     const NAME: &str =
         "game::block_entity_part_state_tests::a_removal_retires_its_state_only_at_the_root_commit";
-    with_state_mod(NAME, |game| {
+    with_state_mod(NAME, |game, keys| {
+        let press_part = &keys.press;
+        let progress = press_part.state_key();
         let pos = (1, 64, 1);
         let a = press(game, pos);
-        assert_eq!(Press::edit_state(game, a, |_, n| *n = 7), Ok(()));
+        assert_eq!(press_part.edit_state(game, a, |_, _tx, n| *n = 7), Ok(()));
 
         // Removed and replaced inside a transaction that then aborts: the handle is stale
         // while it is open, but the index keeps the map bound; the abort brings the very
         // binding back, and the tentative block entity's handle stays stale.
-        let seal = game.transaction_open();
-        game.journal_remove_block_entity(pos);
-        assert_eq!(Press::state(game, a), Err(PartStateError::Stale));
+        let tentative = game.storage_scope(|game, _| {
+            game.journal_remove_block_entity(pos);
+            assert_eq!(
+                press_part.state(game, a, Clone::clone),
+                Err(PartStateError::Stale)
+            );
+            assert_eq!(
+                indexed(game, a, progress),
+                Some(7),
+                "still bound until the root commits"
+            );
+            let tentative = press(game, pos);
+            assert_eq!(
+                press_part.edit_state(game, tentative, |_, _tx, n| *n = 5),
+                Ok(())
+            );
+            (tentative, false)
+        });
+        assert_eq!(press_part.state(game, a, Clone::clone), Ok(7));
+        assert_eq!(indexed(game, a, progress), Some(7));
         assert_eq!(
-            indexed(game, a),
-            Some(7),
-            "still bound until the root commits"
+            press_part.state(game, tentative, Clone::clone),
+            Err(PartStateError::Stale)
         );
-        let tentative = press(game, pos);
-        assert_eq!(Press::edit_state(game, tentative, |_, n| *n = 5), Ok(()));
-        game.transaction_close(&seal, false);
-        assert_eq!(Press::state(game, a), Ok(7));
-        assert_eq!(indexed(game, a), Some(7));
-        assert_eq!(Press::state(game, tentative), Err(PartStateError::Stale));
-        assert_eq!(indexed(game, tentative), None);
+        assert_eq!(indexed(game, tentative, progress), None);
 
         // A nested removal committed into its parent is still not published.
-        let outer = game.transaction_open();
-        let inner = game.transaction_open();
-        game.journal_remove_block_entity(pos);
-        game.transaction_close(&inner, true);
-        assert_eq!(indexed(game, a), Some(7));
-        // The root commit retires it.
-        game.transaction_close(&outer, true);
-        assert_eq!(Press::state(game, a), Err(PartStateError::Stale));
-        assert_eq!(indexed(game, a), None);
+        game.storage_scope(|game, _| {
+            game.storage_scope(|game, _| {
+                game.journal_remove_block_entity(pos);
+                ((), true)
+            });
+            assert_eq!(indexed(game, a, progress), Some(7));
+            // The root commit retires it.
+            ((), true)
+        });
+        assert_eq!(
+            press_part.state(game, a, Clone::clone),
+            Err(PartStateError::Stale)
+        );
+        assert_eq!(indexed(game, a, progress), None);
         assert!(game.world.block_entities.attachments(pos).is_none());
     });
 }
@@ -564,7 +741,8 @@ fn a_removal_retires_its_state_only_at_the_root_commit() {
 #[ignore = "daily"]
 fn a_save_or_unload_during_a_transaction_writes_only_committed_state() {
     const NAME: &str = "game::block_entity_part_state_tests::a_save_or_unload_during_a_transaction_writes_only_committed_state";
-    with_state_mod(NAME, |game| {
+    with_state_mod(NAME, |game, keys| {
+        let press_part = &keys.press;
         let (key, pos) = ((80, 80), (1283, 100, 1283));
         game.streaming.paused = false;
         assert!(game.streaming.set_forced(key.0, key.1, true));
@@ -573,7 +751,10 @@ fn a_save_or_unload_during_a_transaction_writes_only_committed_state() {
             .insert(key, Arc::new(Chunk::empty(key.0, key.1)));
         game.update_world();
         let entity = press(game, pos);
-        assert_eq!(Press::edit_state(game, entity, |_, n| *n = 7), Ok(()));
+        assert_eq!(
+            press_part.edit_state(game, entity, |_, _tx, n| *n = 7),
+            Ok(())
+        );
         let reload = |game: &mut Game<'_>| {
             let chunk = game
                 .save
@@ -590,24 +771,32 @@ fn a_save_or_unload_during_a_transaction_writes_only_committed_state() {
 
         // A save asked for while an edit is tentative is refused; once it aborts, the save
         // writes the committed value.
-        let seal = game.transaction_open();
-        assert_eq!(Press::edit_state(game, entity, |_, n| *n = 9), Ok(()));
-        assert!(game.save_level(true).is_err(), "refused while tentative");
-        game.transaction_close(&seal, false);
+        game.storage_scope(|game, _| {
+            assert_eq!(
+                press_part.edit_state(game, entity, |_, _tx, n| *n = 9),
+                Ok(())
+            );
+            assert!(game.save_level(true).is_err(), "refused while tentative");
+            ((), false)
+        });
         game.save_level(true).unwrap();
         assert_eq!(reload(game), Ok(Some(7)));
 
         // An unload due while a transaction is open waits for it to close, then saves the
         // committed value.
-        let seal = game.transaction_open();
-        assert_eq!(Press::edit_state(game, entity, |_, n| *n = 11), Ok(()));
-        assert!(game.streaming.set_forced(key.0, key.1, false));
-        for _ in 0..9 {
-            game.update_world();
-        }
-        assert!(game.world.chunks.contains_key(&key), "kept while tentative");
-        assert_eq!(Press::state(game, entity), Ok(11));
-        game.transaction_close(&seal, false);
+        game.storage_scope(|game, _| {
+            assert_eq!(
+                press_part.edit_state(game, entity, |_, _tx, n| *n = 11),
+                Ok(())
+            );
+            assert!(game.streaming.set_forced(key.0, key.1, false));
+            for _ in 0..9 {
+                game.update_world();
+            }
+            assert!(game.world.chunks.contains_key(&key), "kept while tentative");
+            assert_eq!(press_part.state(game, entity, Clone::clone), Ok(11));
+            ((), false)
+        });
         game.update_world();
         assert!(!game.world.chunks.contains_key(&key), "unloaded");
         game.save_level(true).unwrap();
@@ -619,32 +808,41 @@ fn a_save_or_unload_during_a_transaction_writes_only_committed_state() {
 #[ignore = "daily"]
 fn one_position_replaced_twice_in_an_aborted_transaction_gets_its_original_back() {
     const NAME: &str = "game::block_entity_part_state_tests::one_position_replaced_twice_in_an_aborted_transaction_gets_its_original_back";
-    with_state_mod(NAME, |game| {
+    with_state_mod(NAME, |game, keys| {
+        let press_part = &keys.press;
+        let progress = press_part.state_key();
         let pos = (1, 64, 1);
         let original = press(game, pos);
-        assert_eq!(Press::edit_state(game, original, |_, n| *n = 7), Ok(()));
-        let seal = game.transaction_open();
-        let mut tentative = Vec::new();
-        for value in [20, 30] {
-            game.journal_remove_block_entity(pos);
-            let replacement = press(game, pos);
-            assert_eq!(
-                Press::edit_state(game, replacement, |_, n| *n = value),
-                Ok(())
-            );
-            tentative.push(replacement);
-        }
         assert_eq!(
-            indexed(game, original),
-            Some(7),
-            "bound until the root commits"
+            press_part.edit_state(game, original, |_, _tx, n| *n = 7),
+            Ok(())
         );
-        game.transaction_close(&seal, false);
-        assert_eq!(Press::state(game, original), Ok(7));
-        assert_eq!(indexed(game, original), Some(7));
+        let tentative = game.storage_scope(|game, _| {
+            let mut tentative = Vec::new();
+            for value in [20, 30] {
+                game.journal_remove_block_entity(pos);
+                let replacement = press(game, pos);
+                assert_eq!(
+                    press_part.edit_state(game, replacement, |_, _tx, n| *n = value),
+                    Ok(())
+                );
+                tentative.push(replacement);
+            }
+            assert_eq!(
+                indexed(game, original, progress),
+                Some(7),
+                "bound until the root commits"
+            );
+            (tentative, false)
+        });
+        assert_eq!(press_part.state(game, original, Clone::clone), Ok(7));
+        assert_eq!(indexed(game, original, progress), Some(7));
         for handle in tentative {
-            assert_eq!(Press::state(game, handle), Err(PartStateError::Stale));
-            assert_eq!(indexed(game, handle), None);
+            assert_eq!(
+                press_part.state(game, handle, Clone::clone),
+                Err(PartStateError::Stale)
+            );
+            assert_eq!(indexed(game, handle, progress), None);
         }
     });
 }
@@ -665,7 +863,12 @@ impl Hooks for NativeFixture {
 
 /// The fixture's value at `pos`, read from its saved form.
 fn saved_value(game: &Game<'_>, pos: (i32, i32, i32), name: &str) -> Option<i32> {
-    let saved = game.world.block_entities.attachments(pos)?.to_nbt();
+    let saved = game
+        .world
+        .block_entities
+        .attachments(pos)?
+        .try_to_nbt()
+        .unwrap();
     let Some(Tag::Compound(names)) = saved.get(&"part_state_fixture".into()) else {
         return None;
     };
@@ -771,7 +974,13 @@ fn part_state_counts_ticks_across_chunk_reload() {
                 );
 
                 // An undecodable saved count: refused, bytes kept, and the Part continues.
-                let mut raw = game.world.block_entities.attachments(pos).unwrap().to_nbt();
+                let mut raw = game
+                    .world
+                    .block_entities
+                    .attachments(pos)
+                    .unwrap()
+                    .try_to_nbt()
+                    .unwrap();
                 let Some(Tag::Compound(names)) = raw.get_mut(&"part_state_fixture".into()) else {
                     unreachable!()
                 };
@@ -786,7 +995,13 @@ fn part_state_counts_ticks_across_chunk_reload() {
                     .block_entities
                     .restore_attachments(pos, Attachments::from_nbt(raw.clone()));
                 tick_in(game, pos, 1);
-                let after = game.world.block_entities.attachments(pos).unwrap().to_nbt();
+                let after = game
+                    .world
+                    .block_entities
+                    .attachments(pos)
+                    .unwrap()
+                    .try_to_nbt()
+                    .unwrap();
                 let Some(Tag::Compound(names)) = after.get(&"part_state_fixture".into()) else {
                     unreachable!()
                 };

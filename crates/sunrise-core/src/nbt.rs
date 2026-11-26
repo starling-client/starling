@@ -476,9 +476,38 @@ pub fn discard_tag(root: Tag) {
     }
 }
 
-/// Whether recursive lists/compounds fit the supplied NBT container bound.
+// ListTag.identifyRawElementType and ListTag.wrapIfNeeded. Keep the writer
+// and its depth preflight on the same list layout, including literal wrappers.
+fn list_element_id(values: &[Tag]) -> u8 {
+    let first = values.first().map_or(0, Tag::id);
+    if values.iter().any(|v| v.id() != first) {
+        10
+    } else {
+        first
+    }
+}
+
+fn needs_list_wrapper(element_id: u8, value: &Tag) -> bool {
+    element_id == 10
+        && match value {
+            Tag::Compound(c) => c.len() == 1 && c.contains_key(&JavaString::default()),
+            _ => true,
+        }
+}
+
+/// Whether the materialized tag's recursive lists and compounds fit the bound.
 /// Scalars and primitive arrays consume no recursive nesting.
 pub fn within_depth(root: &Tag, limit: usize) -> bool {
+    fits_depth::<false>(root, limit)
+}
+
+/// Whether the lists and compounds emitted by the binary NBT writer fit the bound,
+/// including synthetic list wrappers.
+pub fn within_write_depth(root: &Tag, limit: usize) -> bool {
+    fits_depth::<true>(root, limit)
+}
+
+fn fits_depth<const BINARY: bool>(root: &Tag, limit: usize) -> bool {
     match root {
         Tag::List(values) if values.is_empty() => return limit > 0,
         Tag::Compound(values) if values.is_empty() => return limit > 0,
@@ -492,7 +521,14 @@ pub fn within_depth(root: &Tag, limit: usize) -> bool {
                 if depth >= limit {
                     return false;
                 }
-                work.extend(values.iter().map(|v| (v, depth + 1)));
+                let element_id = if BINARY { list_element_id(values) } else { 0 };
+                for value in values {
+                    let wrapped = BINARY && needs_list_wrapper(element_id, value);
+                    if wrapped && depth + 1 >= limit {
+                        return false;
+                    }
+                    work.push((value, depth + 1 + usize::from(wrapped)));
+                }
             }
             Tag::Compound(values) => {
                 if depth >= limit {
@@ -539,6 +575,16 @@ impl Limits {
         Self {
             max_bytes: 2_097_152,
             max_nodes: 2_097_152 / 8,
+            max_depth: 512,
+        }
+    }
+
+    /// Vanilla `NbtAccounter.unlimitedHeap()`: no effective NBT byte or node quota,
+    /// but at most 512 nested list and compound tags.
+    pub const fn unlimited_heap() -> Self {
+        Self {
+            max_bytes: usize::MAX,
+            max_nodes: usize::MAX,
             max_depth: 512,
         }
     }
@@ -1328,6 +1374,10 @@ struct Writer {
     /// `DataOutputStream.writeFloat`/`writeDouble` (`floatToIntBits`): a NaN
     /// is written as the canonical one. The network writer keeps its bits.
     canonical_nan: bool,
+    /// Measure instead of write: nothing is stored, and the heap a reader's `NbtAccounter`
+    /// would charge for the tree is summed against this quota (`(used, quota)`), through the
+    /// same charges [`Reader::entry`] and its payload readers make.
+    measure: Option<(u64, u64)>,
 }
 impl Writer {
     fn error(&self, reason: &'static str) -> Error {
@@ -1336,7 +1386,20 @@ impl Writer {
             reason,
         }
     }
+    fn charge(&mut self, bytes: u64) -> Result<(), Error> {
+        if let Some((used, quota)) = self.measure {
+            let next = used
+                .checked_add(bytes)
+                .filter(|&n| n <= quota)
+                .ok_or_else(|| self.error("heap quota exceeded"))?;
+            self.measure = Some((next, quota));
+        }
+        Ok(())
+    }
     fn put(&mut self, bytes: &[u8]) -> Result<(), Error> {
+        if self.measure.is_some() {
+            return Ok(());
+        }
         if bytes.len() > self.limits.max_bytes.saturating_sub(self.bytes.len()) {
             return Err(self.error("byte limit exceeded"));
         }
@@ -1356,6 +1419,9 @@ impl Writer {
             return Err(self.error("modified UTF-8 exceeds 65535 bytes"));
         };
         self.put(&prefix.to_be_bytes())?;
+        if self.measure.is_some() {
+            return Ok(());
+        }
         let room = self.limits.max_bytes.saturating_sub(self.bytes.len());
         if len > room {
             // Where writing one unit at a time stops: at the first unit that doesn't fit.
@@ -1367,7 +1433,61 @@ impl Writer {
         modified_utf8::encode(&string.0, len, &mut self.bytes);
         Ok(())
     }
+    // Only the containers recurse: the entry checks and the leaf arms stay out of the
+    // recursive frame, so a tree at the depth limit fits the writer threads' stacks.
     fn payload(&mut self, tag: &Tag, depth: usize) -> Result<(), Error> {
+        self.enter(tag, depth)?;
+        match tag {
+            Tag::List(values) => {
+                if values.iter().any(|v| matches!(v, Tag::End)) {
+                    return Err(self.error("End cannot be a list element"));
+                }
+                let element_id = list_element_id(values);
+                self.put(&[element_id])?;
+                self.count(values.len())?;
+                self.charge(4 * values.len() as u64)?;
+                for value in values {
+                    if needs_list_wrapper(element_id, value) {
+                        // Emit one synthetic compound layer without cloning the tree.
+                        if depth + 1 >= self.limits.max_depth {
+                            return Err(self.error("depth limit exceeded"));
+                        }
+                        if self.nodes >= self.limits.max_nodes {
+                            return Err(self.error("node limit exceeded"));
+                        }
+                        self.nodes += 1;
+                        // The reader's synthetic compound: its entry, one empty key and the
+                        // insert of the wrapped value.
+                        self.charge(48 + 28)?;
+                        self.put(&[value.id()])?;
+                        self.string(&JavaString::default())?;
+                        self.payload(value, depth + 2)?;
+                        self.charge(36)?;
+                        self.put(&[0])?;
+                    } else {
+                        self.payload(value, depth + 1)?;
+                    }
+                }
+            }
+            Tag::Compound(values) => {
+                for (name, value) in values {
+                    if matches!(value, Tag::End) {
+                        return Err(self.error("End cannot be a named value"));
+                    }
+                    self.put(&[value.id()])?;
+                    self.string(name)?;
+                    self.charge(28 + 2 * name.0.len() as u64)?;
+                    self.payload(value, depth + 1)?;
+                    self.charge(36)?;
+                }
+                self.put(&[0])?;
+            }
+            _ => self.leaf(tag)?,
+        }
+        Ok(())
+    }
+    #[inline(never)]
+    fn enter(&mut self, tag: &Tag, depth: usize) -> Result<(), Error> {
         if self.nodes >= self.limits.max_nodes {
             return Err(self.error("node limit exceeded"));
         }
@@ -1375,6 +1495,19 @@ impl Writer {
         if matches!(tag, Tag::List(_) | Tag::Compound(_)) && depth >= self.limits.max_depth {
             return Err(self.error("depth limit exceeded"));
         }
+        self.charge(match tag {
+            Tag::End => 8,
+            Tag::Byte(_) => 9,
+            Tag::Short(_) => 10,
+            Tag::Int(_) | Tag::Float(_) => 12,
+            Tag::Long(_) | Tag::Double(_) => 16,
+            Tag::ByteArray(_) | Tag::IntArray(_) | Tag::LongArray(_) => 24,
+            Tag::String(_) | Tag::List(_) => 36,
+            Tag::Compound(_) => 48,
+        })
+    }
+    #[inline(never)]
+    fn leaf(&mut self, tag: &Tag) -> Result<(), Error> {
         match tag {
             Tag::End => {}
             Tag::Byte(v) => self.put(&[*v as u8])?,
@@ -1398,65 +1531,29 @@ impl Writer {
                 .to_be_bytes(),
             )?,
             Tag::ByteArray(v) => {
+                self.charge(v.len() as u64)?;
                 self.count(v.len())?;
                 self.put(v)?;
             }
-            Tag::String(v) => self.string(v)?,
-            Tag::List(values) => {
-                if values.iter().any(|v| matches!(v, Tag::End)) {
-                    return Err(self.error("End cannot be a list element"));
-                }
-                let first = values.first().map_or(0, Tag::id);
-                let id = if values.iter().any(|v| v.id() != first) {
-                    10
-                } else {
-                    first
-                };
-                self.put(&[id])?;
-                self.count(values.len())?;
-                for value in values {
-                    let wrapper = matches!(value, Tag::Compound(c) if c.len() == 1 && c.contains_key(&JavaString::default()));
-                    if id == 10 && (value.id() != 10 || wrapper) {
-                        // Emit one synthetic compound layer without cloning the tree.
-                        if depth + 1 >= self.limits.max_depth {
-                            return Err(self.error("depth limit exceeded"));
-                        }
-                        if self.nodes >= self.limits.max_nodes {
-                            return Err(self.error("node limit exceeded"));
-                        }
-                        self.nodes += 1;
-                        self.put(&[value.id()])?;
-                        self.string(&JavaString::default())?;
-                        self.payload(value, depth + 2)?;
-                        self.put(&[0])?;
-                    } else {
-                        self.payload(value, depth + 1)?;
-                    }
-                }
-            }
-            Tag::Compound(values) => {
-                for (name, value) in values {
-                    if matches!(value, Tag::End) {
-                        return Err(self.error("End cannot be a named value"));
-                    }
-                    self.put(&[value.id()])?;
-                    self.string(name)?;
-                    self.payload(value, depth + 1)?;
-                }
-                self.put(&[0])?;
+            Tag::String(v) => {
+                self.charge(2 * v.0.len() as u64)?;
+                self.string(v)?
             }
             Tag::IntArray(v) => {
+                self.charge(4 * v.len() as u64)?;
                 self.count(v.len())?;
                 for item in v {
                     self.put(&item.to_be_bytes())?;
                 }
             }
             Tag::LongArray(v) => {
+                self.charge(8 * v.len() as u64)?;
                 self.count(v.len())?;
                 for item in v {
                     self.put(&item.to_be_bytes())?;
                 }
             }
+            Tag::List(_) | Tag::Compound(_) => unreachable!("containers are written by payload"),
         }
         Ok(())
     }
@@ -1475,6 +1572,7 @@ fn write_named_parts(name: &JavaString, tag: &Tag, limits: Limits) -> Result<Vec
         nodes: 0,
         empty_long_strings: true,
         canonical_nan: true,
+        measure: None,
     };
     writer.put(&[tag.id()])?;
     if tag.id() != 0 {
@@ -1491,10 +1589,35 @@ pub fn write_network(tag: &Tag, limits: Limits) -> Result<Vec<u8>, Error> {
         nodes: 0,
         empty_long_strings: false,
         canonical_nan: false,
+        measure: None,
     };
     writer.put(&[tag.id()])?;
     writer.payload(tag, 0)?;
     Ok(writer.bytes)
+}
+
+/// Whether [`write_network`]'s bytes for `tag` would read back under a heap `quota`
+/// ([`Tag::from_network_bytes`]'s accounting) without refusing: one walk of the tree, with no
+/// bytes written and no second tree built. Refuses what the writer refuses (depth, a string
+/// past modified UTF-8's 65535 bytes).
+pub fn network_heap_within(tag: &Tag, quota: u64) -> Result<(), Error> {
+    let mut writer = Writer {
+        bytes: Vec::new(),
+        limits: Limits {
+            max_bytes: usize::MAX,
+            max_nodes: usize::MAX,
+            max_depth: 512,
+        },
+        nodes: 0,
+        empty_long_strings: false,
+        canonical_nan: false,
+        // The root End is read without a charge.
+        measure: Some((0, quota)),
+    };
+    if matches!(tag, Tag::End) {
+        return Ok(());
+    }
+    writer.payload(tag, 0)
 }
 
 /// Validate an opaque native component against network limits and a stable disk round trip.
@@ -1617,24 +1740,37 @@ impl Tag {
     /// bytes. Container nesting is limited to 512. End represents vanilla null.
     /// Malformed input, quota exhaustion and excessive depth return an Error.
     pub fn from_network_bytes(bytes: &[u8], quota: Option<u64>) -> Result<(Self, usize), Error> {
-        let mut reader = Reader {
-            bytes,
-            offset: 0,
-            limits: Limits {
-                max_bytes: usize::MAX,
-                max_nodes: usize::MAX,
-                max_depth: 512,
-            },
-            nodes: 0,
-            heap: Some((0, quota.unwrap_or(NETWORK_NBT_QUOTA))),
-            stream: None,
-            bounded: None,
-            strict: false,
-            entering: 0,
-            rejected: 0,
-        };
-        read_network_with_reader(&mut reader, &mut Tree)
+        read_network_accounted(bytes, quota.unwrap_or(NETWORK_NBT_QUOTA), 512)
     }
+}
+
+/// `NbtIo.readAnyTag` with `new NbtAccounter(quota, max_depth)`: one nameless
+/// network root and its consumed byte count, charging the heap as
+/// `NbtAccounter.accountBytes` does and nesting at most `max_depth` lists and
+/// compounds (`NbtAccounter.pushDepth`). Trailing bytes stay unread; `End` is
+/// vanilla's null.
+pub fn read_network_accounted(
+    bytes: &[u8],
+    quota: u64,
+    max_depth: usize,
+) -> Result<(Tag, usize), Error> {
+    let mut reader = Reader {
+        bytes,
+        offset: 0,
+        limits: Limits {
+            max_bytes: usize::MAX,
+            max_nodes: usize::MAX,
+            max_depth,
+        },
+        nodes: 0,
+        heap: Some((0, quota)),
+        stream: None,
+        bounded: None,
+        strict: false,
+        entering: 0,
+        rejected: 0,
+    };
+    read_network_with_reader(&mut reader, &mut Tree)
 }
 
 #[cfg(test)]
@@ -2158,6 +2294,20 @@ mod tests {
             write_network(&Tag::Double((-0.0_f64).to_bits()), Limits::default()).unwrap()[1],
             0x80
         );
+    }
+    /// A NaN read from the network goes back out with its bits (#308 item 4).
+    /// Expected bytes from vanilla 26.3.
+    #[test]
+    fn a_network_nan_round_trips_with_its_bits() {
+        for bytes in [
+            // FriendlyByteBuf.readNbt then writeNbt on FloatTag NaN 0x7f800001
+            &[5, 0x7f, 0x80, 0, 1][..],
+            // FriendlyByteBuf.readNbt then writeNbt on DoubleTag NaN 0xfff0000000000001
+            &[6, 0xff, 0xf0, 0, 0, 0, 0, 0, 1],
+        ] {
+            let tag = read_network(bytes, Limits::default()).unwrap().0;
+            assert_eq!(write_network(&tag, Limits::default()).unwrap(), bytes);
+        }
     }
     #[test]
     fn snbt_parses_typed_values() {

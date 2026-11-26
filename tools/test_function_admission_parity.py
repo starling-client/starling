@@ -2,7 +2,9 @@
 """Real valid pack files and atomic ordinary-command function admission."""
 import hashlib,json,sys,tempfile
 from pathlib import Path
-import test_command_exec_parity as driver
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_command_exec_parity as driver
 CASES=['good','other','bad','forbidden','missing']
 FUNCTIONS={
  'h144:good':'scoreboard players set good h144 11\n',

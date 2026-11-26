@@ -2,7 +2,6 @@
 //! arguments against (what the server's registry access holds).
 use std::collections::BTreeMap;
 
-/// Registry contents and source state used to validate and complete arguments.
 /// A selector token a mod registered: the word after `@` and the base selection it parses to,
 /// before its `[...]` options.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -28,6 +27,7 @@ pub struct CommandSender {
     /// Their account name.
     pub name: String,
 }
+/// Registry contents and source state used to validate and complete arguments.
 #[derive(Clone, Debug, Default)]
 pub struct Registries {
     /// Permission level of the command source.
@@ -102,7 +102,8 @@ pub struct Registries {
     /// Every registry's element and tag ids (`minecraft:item` -> ...), as
     /// the server's registry access and reloadable registries hold them.
     pub by_registry: BTreeMap<String, RegistryIds>,
-    /// The selector tokens mods registered (`@allies`), in registration order.
+    /// Selector tokens mods registered (`@allies`), in token-name order on the host.
+    /// A remote snapshot keeps the order its server sent.
     pub selector_tokens: Vec<SelectorToken>,
     /// Blocks whose default state has a block entity.
     pub block_entities: std::collections::BTreeSet<String>,
@@ -257,13 +258,26 @@ impl Registries {
             if RELOADED.contains(&name.as_str()) || self.by_registry.contains_key(name) {
                 continue;
             }
+            // [`Self::ids`] is sorted, and its readers search it. Vanilla's export is, but the
+            // mod content load appends a mod's entries to it (#6129): an `ae2:` biome at the end
+            // hid `minecraft:wooded_badlands` from a binary search.
+            let mut ids = strings(&entry["ids"]);
+            ids.sort_unstable();
+            ids.dedup();
             self.by_registry.insert(
                 name.clone(),
                 RegistryIds {
-                    ids: strings(&entry["ids"]),
+                    ids,
                     tags: strings(&entry["tags"]),
                 },
             );
+        }
+        // `CommandSourceStack.getAvailableSounds` lists built-in sound events;
+        // a dedicated server does not open the client's sound definitions.
+        if self.sounds.is_empty()
+            && let Some(events) = self.by_registry.get("minecraft:sound_event")
+        {
+            self.sounds.clone_from(&events.ids);
         }
         if self.block_entities.is_empty() {
             self.block_entities = strings(&r["block_entities"]).into_iter().collect();
@@ -309,6 +323,7 @@ impl Registries {
         fill(&mut self.templates, &e.templates);
         fill(&mut self.persistent_components, &e.persistent_components);
         fill(&mut self.learnable_recipes, &e.learnable_recipes);
+        fill(&mut self.sounds, &e.sounds);
         if self.summonable.is_empty() {
             self.summonable.clone_from(&e.summonable);
             self.summonable.sort();
@@ -357,6 +372,21 @@ impl Registries {
             .or_default()
             .ids = ids;
     }
+    /// The world's enchantment ids (vanilla's, content mods' and the world's packs'), in both
+    /// views the codecs read: `enchantments` and `by_registry`'s `minecraft:enchantment`, which
+    /// [`Self::ids`] reads first and the export fills with vanilla's alone. Sorted and
+    /// deduplicated; the export's tags stay. Replaced, not extended, as
+    /// [`Self::sync_damage_type_ids`] does.
+    pub fn set_enchantment_ids(&mut self, ids: impl IntoIterator<Item = String>) {
+        let mut ids: Vec<String> = ids.into_iter().collect();
+        ids.sort();
+        ids.dedup();
+        self.enchantments = ids.clone();
+        self.by_registry
+            .entry("minecraft:enchantment".into())
+            .or_default()
+            .ids = ids;
+    }
     /// The element ids of a registry (sorted).
     pub fn ids(&self, registry: &str) -> &[String] {
         if let Some(r) = self.by_registry.get(registry) {
@@ -397,6 +427,63 @@ impl Registries {
 
 #[cfg(test)]
 mod tests {
+    /// #6129: a mod's entries merged into the export after vanilla's are read in order, so a
+    /// search finds every entry, vanilla's last one too.
+    #[test]
+    fn an_exports_merged_entries_read_sorted() {
+        let registries = Registries::from_export(&serde_json::json!({"by_registry": {
+            "minecraft:worldgen/biome": {"ids": [
+                "minecraft:plains", "minecraft:wooded_badlands", "ae2:spatial_storage",
+                "tconstruct:skyslime", "minecraft:plains",
+            ]},
+        }}));
+        let ids = registries.ids("minecraft:worldgen/biome");
+        assert_eq!(
+            ids,
+            [
+                "ae2:spatial_storage",
+                "minecraft:plains",
+                "minecraft:wooded_badlands",
+                "tconstruct:skyslime",
+            ]
+        );
+        for id in [
+            "minecraft:wooded_badlands",
+            "ae2:spatial_storage",
+            "tconstruct:skyslime",
+        ] {
+            assert!(ids.binary_search_by(|known| known.as_str().cmp(id)).is_ok());
+        }
+    }
+
+    /// A content mod's enchantment reaches the ids an item component's enchantment map is
+    /// checked against (#5607): the export's vanilla-only `by_registry` list no longer hides it,
+    /// and the export's tags stay.
+    #[test]
+    fn set_enchantment_ids_reach_the_registry_view_the_codecs_read() {
+        let mut registries = Registries::default();
+        registries.by_registry.insert(
+            "minecraft:enchantment".into(),
+            super::RegistryIds {
+                ids: vec!["minecraft:sharpness".into()],
+                tags: vec!["minecraft:curse".into()],
+            },
+        );
+        registries.set_enchantment_ids(["minecraft:sharpness".into(), "bwncr:silence".into()]);
+        assert_eq!(
+            registries.ids("minecraft:enchantment"),
+            ["bwncr:silence", "minecraft:sharpness"]
+        );
+        assert_eq!(
+            registries.enchantments,
+            ["bwncr:silence", "minecraft:sharpness"]
+        );
+        assert_eq!(
+            registries.by_registry["minecraft:enchantment"].tags,
+            ["minecraft:curse"]
+        );
+    }
+
     use super::Registries;
 
     /// A content mod's damage type joins vanilla's in the commands' ids, the

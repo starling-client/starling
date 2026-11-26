@@ -1,0 +1,3 @@
+ids = ["handle:EntityRef::interpolate_to"]
+why = "Adds EntityRef::interpolate_to(&self, host: &mut dyn ClientHost, position: [f64; 3], rotation: Option<[f32; 2]>) -> bool, exposing vanilla Entity.moveOrInterpolateTo for client display state on observed entities the server owns. Routes to each entity family's own interpolation handler (falling back to a direct set for NO_OP families), refuses non-finite inputs and bodies the client simulates, and lets the next server update win."
+migrate = "Nothing to migrate; this is a new client handle method."

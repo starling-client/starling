@@ -26,8 +26,6 @@ impl Game<'_> {
         self.sync_tick_chunks();
         self.start_ticking_chunks();
         laps.lap("tb_tickets");
-        self.random_tick_chunks(&mut scratch.ticking);
-        laps.lap("tb_chunks");
         // Entity.checkInsideBlocks for the plates, tripwires, detector rails and
         // buttons under the players (the host and the LAN guests), the minecarts
         // and the arrows (the mobs and other entities are added in `with_level`
@@ -224,6 +222,9 @@ impl Game<'_> {
         if !debug {
             self.tick_scheduled()?;
         }
+        // ServerLevel.tick runs DistanceManager.runAllUpdates after scheduled ticks and before random ticks and entities.
+        self.update_chunk_tickets();
+        self.random_tick_chunks(&mut scratch.ticking);
         sunrise_threads::work::clear_work();
         self.with_level(|b, level, ticks| {
             // The masks the random ticks will read, built on helper threads first while the

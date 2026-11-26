@@ -16,13 +16,37 @@ impl Game<'_> {
     ) {
         self.fire_mob_effect_applicable(entity, effect, applicable);
     }
+    /// NeoForge's `MobEffectEvent.Added`, vanilla's `LivingEntity.addEffect`:
+    /// every accepted addition (vanilla or mod) before active-effect mutation,
+    /// with the previous active instance if any, the incoming instance, and
+    /// the causing entity when known. Server-side.
+    pub(in crate::game) fn native_mob_effect_added(
+        &mut self,
+        entity: LivingRef,
+        old_effect: Option<&ActiveEffect>,
+        new_effect: &ActiveEffect,
+        source: Option<EntityRef>,
+    ) {
+        self.fire_mob_effect_added(entity, old_effect, new_effect, source);
+    }
+    /// `MobEffect.onEffectAdded`: called on the `MobEffectPart`s attached to
+    /// `effect` after `LivingEntity.addEffect` newly inserts `effect` onto
+    /// `entity`. Server-side.
+    pub(in crate::game) fn native_on_effect_added(
+        &mut self,
+        effect: EffectKey,
+        entity: LivingRef,
+        amplifier: i32,
+    ) {
+        self.fire_on_effect_added(effect, entity, amplifier);
+    }
     /// `LivingEntity.hurtServer`, past its guards (invulnerable, dead, fire
     /// with fire resistance), is about to hurt entity `entity` of type `kind`
     /// (`minecraft:zombie`, `minecraft:player`) by `amount` of `damage_type`
     /// (`minecraft:fall`), from the source's `causing` entity
     /// (`DamageSource.getEntity`: the shooter of an arrow) and `direct` one
     /// (`getDirectEntity`: the arrow), 0 for none or not known yet
-    /// (docs/native-mods.md, API 50). Change `amount`, or set `canceled`,
+    /// (docs/modding/src/how-to/native-mods.md, API 50). Change `amount`, or set `canceled`,
     /// and nothing of `hurtServer` itself happens (no damage, hurt sound,
     /// knockback, invulnerable time, statistics or criteria); the caller acts
     /// as on a refused hit, except that a canceled hit on the ender dragon
@@ -39,7 +63,7 @@ impl Game<'_> {
     /// (`minecraft:zombie`, `minecraft:player`) `strength` away from the direction (`x`, `z`),
     /// on the raw strength, before the entity's knockback resistance takes its share and its motion
     /// changes
-    /// (docs/native-mods.md, API 125). Vanilla's direction points at the
+    /// (docs/modding/src/how-to/native-mods.md, API 125). Vanilla's direction points at the
     /// source of a hit (the attacker's side), and the entity is pushed the other way. Change
     /// `strength`, `x` or `z`, or set `canceled`, and the push follows them: canceled, the
     /// entity's motion is left alone. A `strength` of 0 or less after the hook is no push, and a

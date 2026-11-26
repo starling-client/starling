@@ -109,6 +109,12 @@ fn a_burning_teleport_does_not_take_the_old_spots_fire_along() {
                         &mut crate::health::TestLevel::new(0).level(),
                         &mut events,
                     );
+                    effects_from_blocks(
+                        &mut m,
+                        w,
+                        &mut crate::health::TestLevel::new(0).level(),
+                        &mut events,
+                    );
                     if first.position != Vec3::new(0.5, 64.0, 0.5) {
                         assert_eq!(m.position, first.position, "seed {seed}: the same teleport");
                         teleported += 1;
@@ -411,12 +417,12 @@ fn a_solid_waterlogged_neighbor_does_not_penalize_a_dry_walk_node() {
 }
 
 /// #1697: `Enderman.hurtServer` teleports inside every hurt. The freezing hurt
-/// (`LivingEntity.aiStep`), cramming (`pushEntities`) and a mod part's queued
-/// hurt (`applyEffectsFromBlocks`) each settle it at once: the enderman lands,
+/// (`LivingEntity.aiStep`) and cramming (`pushEntities`) each settle it at
+/// once: the enderman lands,
 /// and draws, as the hurt dealt with its teleport.
 #[test]
 #[ignore = "daily"]
-fn freezing_cramming_and_a_mod_hurt_each_teleport_inside_the_hurt() {
+fn freezing_and_cramming_each_teleport_inside_the_hurt() {
     use crate::mobs::Seen;
     use sunrise_core::random::RandomSource as _;
     let world = |world: &mut crate::world::World, registry: &BlockRegistry| {
@@ -425,8 +431,8 @@ fn freezing_cramming_and_a_mod_hurt_each_teleport_inside_the_hurt() {
         world.set(8, 64, 8, air).unwrap();
     };
     assert!(
-        with_built_contact_test_world(world, |w, types, generic| {
-            let mut landed = [0; 3];
+        with_built_contact_test_world(world, |w, types, _generic| {
+            let mut landed = [0; 2];
             for seed in 0..40 {
                 // Freezing: fully frozen in powder snow, on the 40-tick beat.
                 let mut m = enderman(types, seed);
@@ -455,35 +461,6 @@ fn freezing_cramming_and_a_mod_hurt_each_teleport_inside_the_hurt() {
                     "freezing, seed {seed}"
                 );
                 landed[0] += usize::from(m.position != Vec3::new(0.5, 64.0, 0.5));
-
-                // A mod part's queued hurt.
-                let mut m = enderman(types, seed);
-                m.position = Vec3::new(8.5, 64.0, 8.5);
-                let mut expected = m.clone();
-                hurt(
-                    &mut expected,
-                    w,
-                    &mut Vec::new(),
-                    2.0,
-                    Damage::of(DamageKind::Generic),
-                );
-                apply_entity_write(
-                    &mut m,
-                    w,
-                    &mut crate::health::TestLevel::new(0).level(),
-                    &mut Vec::new(),
-                    mod_api::EntityWrite::Hurt {
-                        damage_type: generic,
-                        amount: 2.0,
-                    },
-                );
-                assert_eq!(m.position, expected.position, "mod hurt, seed {seed}");
-                assert_eq!(
-                    m.random.state(),
-                    expected.random.state(),
-                    "mod hurt, seed {seed}"
-                );
-                landed[1] += usize::from(m.position != Vec3::new(8.5, 64.0, 8.5));
 
                 // Cramming: three pushable pigs around it, `maxEntityCramming` 3.
                 let pig = |id: u32, x: f64| {
@@ -537,7 +514,7 @@ fn freezing_cramming_and_a_mod_hurt_each_teleport_inside_the_hurt() {
                     expected.random.state(),
                     "cramming, seed {seed}"
                 );
-                landed[2] += usize::from(m.position != Vec3::new(8.5, 64.0, 8.5));
+                landed[1] += usize::from(m.position != Vec3::new(8.5, 64.0, 8.5));
             }
             assert!(
                 landed.iter().all(|n| *n > 0),
@@ -564,7 +541,7 @@ fn two_hurts_in_a_tick_each_teleport_inside_their_own_hurt() {
         world.set(8, 64, 8, air).unwrap();
     };
     assert!(
-        with_built_contact_test_world(world, |w, types, generic| {
+        with_built_contact_test_world(world, |w, types, _generic| {
             let pig = |id: u32, x: f64| {
                 let kind = std::sync::Arc::new(types.types["minecraft:pig"].clone());
                 let mut p = Mob::new(id, kind, Vec3::new(x, 64.0, 8.5), 0.0);
@@ -630,16 +607,21 @@ fn two_hurts_in_a_tick_each_teleport_inside_their_own_hurt() {
                 m.in_powder_snow = true;
                 let mut level = crate::health::TestLevel::new(0);
                 let mut events = Vec::new();
-                apply_entity_write(
-                    &mut m,
-                    w,
-                    &mut level.level(),
-                    &mut events,
-                    mod_api::EntityWrite::Hurt {
-                        damage_type: generic,
-                        amount: 2.0,
-                    },
-                );
+                {
+                    let mut level_guard = level.level();
+                    let mut effects = mod_api::InsideEffects::default();
+                    effects.advance_step(0);
+                    effects.run_after(mod_api::InsideEffect::Freeze, |view| {
+                        view.hurt("minecraft:generic", 2.0);
+                    });
+                    let mut access = MobInsideAccess {
+                        m: &mut m,
+                        w,
+                        level: &mut level_guard,
+                        events: &mut events,
+                    };
+                    effects.apply_and_clear(&mut access);
+                }
                 freeze_tick(&mut m, w, &mut level.level(), &mut events);
                 assert_eq!(
                     m.position, expected.position,

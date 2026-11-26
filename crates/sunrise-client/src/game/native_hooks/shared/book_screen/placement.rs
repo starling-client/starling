@@ -15,8 +15,21 @@ impl Game<'_> {
         }
         self.apply_screen(screen, owner);
         if self.native_screen_shown() {
+            if self
+                .native_net
+                .placement
+                .client
+                .window()
+                .is_some_and(|window| !self.native_book_placement_window_matches(window))
+            {
+                self.clear_mod_book_placement_screen();
+            }
             self.begin_mod_book_placement();
             self.ensure_mod_book_catalog();
+        } else if self.native_net.placement.client.window().is_some()
+            || self.native_net.placement.view.is_some()
+        {
+            self.clear_mod_book_placement_screen();
         }
     }
     fn native_book_placement_scope_matches(
@@ -26,7 +39,7 @@ impl Game<'_> {
         menu: &str,
         book: &str,
     ) -> bool {
-        self.shown_native_screen().is_some_and(|screen| {
+        self.shown_active_native_screen().is_some_and(|screen| {
             screen.menu.window == window
                 && screen.menu.name == menu
                 && screen.layout_revision == nonce
@@ -62,7 +75,7 @@ impl Game<'_> {
     pub(in crate::game) fn native_book_placement_window(
         &self,
     ) -> Option<sunrise_client::recipe_book::placement_sync::Window> {
-        let screen = self.shown_native_screen()?;
+        let screen = self.shown_active_native_screen()?;
         let menu = screen.menu.name.as_str();
         mod_api::RecipeBookLayout::registered(menu)?;
         Some(sunrise_client::recipe_book::placement_sync::Window {

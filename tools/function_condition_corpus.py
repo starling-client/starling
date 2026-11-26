@@ -1,3 +1,10 @@
+
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
 """Real function execution, independent counters, and continuation stores (H154)."""
 
 ACTOR = '0000009a-0000-0000-0000-000000000001'
@@ -15,10 +22,7 @@ def functions():
 
 
 def conditions():
-    try:
-        from .command_exec_corpus import cmd
-    except ImportError:
-        from command_exec_corpus import cmd
+    from tools.command_exec_corpus import cmd
     ops = [cmd('/tick freeze'), cmd('/datapack list enabled'),
            cmd('/scoreboard objectives add h154 dummy', expect_result=1),
            cmd('/forceload add 0 0 15 15'), {'op': 'settle'},

@@ -29,11 +29,13 @@ impl Game<'_> {
             fire,
             interaction,
         };
-        Some(self.explosion_resistances_of(level, [pos].into_iter(), 1, &blast, None)[0])
+        self.explosion_resistances_of(level, [pos].into_iter(), 1, &blast, None)
+            .ok()
+            .map(|out| out[0])
     }
 
     /// `level_explosion_resistance` for every cell of `cells`, in its order. Refused, with
-    /// nothing read, for an inverted area or more than `ResistanceCells::MAX` cells.
+    /// nothing read, for an inverted area or an area whose cell count overflows allocation.
     pub(super) fn level_explosion_resistances(
         &mut self,
         level: LevelRef,
@@ -59,7 +61,7 @@ impl Game<'_> {
                 let positions = (min[1]..=max[1]).flat_map(move |y| {
                     (min[2]..=max[2]).flat_map(move |z| (min[0]..=max[0]).map(move |x| [x, y, z]))
                 });
-                self.explosion_resistances_of(level, positions, count, &blast, Some(&mut answers))
+                self.explosion_resistances_of(level, positions, count, &blast, Some(&mut answers))?
             }
             ResistanceCells::Columns {
                 columns,
@@ -70,7 +72,7 @@ impl Game<'_> {
                 let positions = columns
                     .iter()
                     .flat_map(move |&(x, z)| (min_y..=max_y).map(move |y| [x, y, z]));
-                self.explosion_resistances_of(level, positions, count, &blast, Some(&mut answers))
+                self.explosion_resistances_of(level, positions, count, &blast, Some(&mut answers))?
             }
             _ => unreachable!("ResistanceCells: unhandled variant"),
         };
@@ -91,15 +93,21 @@ impl Game<'_> {
         count: usize,
         blast: &Blast,
         mut answers: Option<&mut PartAnswers>,
-    ) -> Vec<ExplosionResistance> {
-        let unavailable = || vec![ExplosionResistance::Unavailable; count];
+    ) -> Result<Vec<ExplosionResistance>, ResistanceCellsError> {
+        let mut out = Vec::new();
+        out.try_reserve_exact(count)
+            .map_err(|_| ResistanceCellsError::Overflow)?;
         if !self.level_in_place(level) {
-            return unavailable();
+            out.resize(count, ExplosionResistance::Unavailable);
+            return Ok(out);
         }
         let source = match blast.source {
             Some(entity) => match self.native_explosion_source(entity) {
                 Some(source) => Some(source),
-                None => return unavailable(),
+                None => {
+                    out.resize(count, ExplosionResistance::Unavailable);
+                    return Ok(out);
+                }
             },
             None => None,
         };
@@ -122,7 +130,6 @@ impl Game<'_> {
             damage_type,
         );
         let (min_y, max_y) = (self.world.bottom_y(), self.world.top_y());
-        let mut out = Vec::with_capacity(count);
         for pos in positions {
             // Reads never load a column.
             if !self.world.chunks.contains_key(&(pos[0] >> 4, pos[2] >> 4)) {
@@ -147,7 +154,7 @@ impl Game<'_> {
             ));
         }
         self.restore_blast_state(outer);
-        out
+        Ok(out)
     }
 }
 
@@ -170,20 +177,27 @@ fn cell_count(cells: &ResistanceCells) -> Result<usize, ResistanceCellsError> {
         }
     };
     let count = match cells {
-        ResistanceCells::Box { min, max } => span(min[0], max[0])?
-            .saturating_mul(span(min[1], max[1])?)
-            .saturating_mul(span(min[2], max[2])?),
+        ResistanceCells::Box { min, max } => {
+            let x = span(min[0], max[0])?;
+            let y = span(min[1], max[1])?;
+            let z = span(min[2], max[2])?;
+            x.checked_mul(y).and_then(|xy| xy.checked_mul(z))
+        }
         ResistanceCells::Columns {
             columns,
             min_y,
             max_y,
-        } => (columns.len() as u64).saturating_mul(span(*min_y, *max_y)?),
+        } => {
+            let y = span(*min_y, *max_y)?;
+            u64::try_from(columns.len())
+                .ok()
+                .and_then(|n| n.checked_mul(y))
+        }
         _ => unreachable!("ResistanceCells: unhandled variant"),
     };
-    if count > ResistanceCells::MAX {
-        return Err(ResistanceCellsError::TooMany(count));
-    }
-    Ok(count as usize)
+    count
+        .and_then(|n| usize::try_from(n).ok())
+        .ok_or(ResistanceCellsError::Overflow)
 }
 
 #[cfg(test)]
@@ -191,22 +205,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_read_counts_its_cells_and_refuses_past_the_cap() {
+    fn a_read_counts_its_cells_without_a_synthetic_cap() {
         let cells = |min: [i32; 3], max: [i32; 3]| cell_count(&ResistanceCells::Box { min, max });
         assert_eq!(cells([0, 0, 0], [0, 0, 0]), Ok(1));
         assert_eq!(cells([-1, 60, -1], [1, 61, 1]), Ok(18));
         assert_eq!(cells([0, 0, 0], [63, 63, 63]), Ok(262_144));
-        assert_eq!(
-            cells([0, 0, 0], [63, 63, 64]),
-            Err(ResistanceCellsError::TooMany(266_240))
-        );
+        assert_eq!(cells([0, 0, 0], [63, 63, 64]), Ok(266_240));
         assert_eq!(
             cells([0, 5, 0], [0, 4, 0]),
             Err(ResistanceCellsError::Inverted)
         );
         assert_eq!(
+            cells([i32::MIN, 5, i32::MIN], [i32::MAX, 4, i32::MAX]),
+            Err(ResistanceCellsError::Inverted)
+        );
+        assert_eq!(
             cells([i32::MIN; 3], [i32::MAX; 3]),
-            Err(ResistanceCellsError::TooMany(u64::MAX))
+            Err(ResistanceCellsError::Overflow)
         );
         let columns = ResistanceCells::Columns {
             columns: vec![(0, 0), (0, 0), (5, -3)],
@@ -214,5 +229,14 @@ mod tests {
             max_y: 319,
         };
         assert_eq!(cell_count(&columns), Ok(1152));
+        let inverted_columns = ResistanceCells::Columns {
+            columns: vec![],
+            min_y: 10,
+            max_y: 9,
+        };
+        assert_eq!(
+            cell_count(&inverted_columns),
+            Err(ResistanceCellsError::Inverted)
+        );
     }
 }

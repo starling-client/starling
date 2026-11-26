@@ -26,6 +26,20 @@ impl MobIndex {
         self.position(mobs, |m| m.id, id)
     }
 
+    /// Read-only lookup: checks the cached slot before falling back to linear search.
+    pub fn find_ref(&self, mobs: &[Mob], id: u32) -> Option<usize> {
+        self.position_ref(mobs, |m| m.id, id)
+    }
+
+    fn position_ref<T>(&self, items: &[T], id_of: impl Fn(&T) -> u32, id: u32) -> Option<usize> {
+        if let Some(&i) = self.slots.get(&id)
+            && items.get(i as usize).is_some_and(|m| id_of(m) == id)
+        {
+            return Some(i as usize);
+        }
+        items.iter().position(|m| id_of(m) == id)
+    }
+
     fn position<T>(&mut self, items: &[T], id_of: impl Fn(&T) -> u32, id: u32) -> Option<usize> {
         if let Some(&i) = self.slots.get(&id)
             && items.get(i as usize).is_some_and(|m| id_of(m) == id)
@@ -55,6 +69,12 @@ impl MobIndex {
         let i = self.find(mobs, id)?;
         Some(&mobs[i])
     }
+
+    /// Immutable indexed borrow: O(1) on cache hit, falls back to linear scan on miss.
+    pub fn get_ref<'a>(&self, mobs: &'a [Mob], id: u32) -> Option<&'a Mob> {
+        let i = self.find_ref(mobs, id)?;
+        Some(&mobs[i])
+    }
 }
 
 #[cfg(test)]
@@ -68,11 +88,18 @@ mod tests {
         let mut index = MobIndex::default();
         let check = |index: &mut MobIndex, ids: &[u32]| {
             for id in 0..20 {
-                let found = index.position(ids, |&m| m, id);
+                let want = ids.iter().position(|&m| m == id);
                 assert_eq!(
-                    found,
-                    ids.iter().position(|&m| m == id),
-                    "id {id} in {ids:?}"
+                    index.position_ref(ids, |&m| m, id),
+                    want,
+                    "ref id {id} in {ids:?}"
+                );
+                let found = index.position(ids, |&m| m, id);
+                assert_eq!(found, want, "id {id} in {ids:?}");
+                assert_eq!(
+                    index.position_ref(ids, |&m| m, id),
+                    want,
+                    "cached ref id {id} in {ids:?}"
                 );
             }
         };

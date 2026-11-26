@@ -18,7 +18,7 @@ pub trait Hooks {
         contract = "listen",
         host = "hit",
         neoforge = "LivingShieldBlockEvent",
-        version = 3,
+        version = 4,
         target = "sunrise_client::game::native_hooks::living_shield_block::HitLevel<'_>::native_living_shield_block"
     )]
     fn living_shield_block(

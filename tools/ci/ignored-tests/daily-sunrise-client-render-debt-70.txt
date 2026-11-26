@@ -1,0 +1,2 @@
+sunrise-client-render gfx::mod_pipelines::tests::pipeline_quads_chunk_across_small_max_buffer_size_and_preserve_order lib daily slow
+sunrise-client-render gfx::world_primitives::tests::chunked_uploads_respect_small_max_buffer_size_and_preserve_stage_order lib daily slow

@@ -103,7 +103,7 @@ fn fixture() -> (BlockRegistry, crate::blocks::BlockFacts, Tag) {
     std::fs::create_dir(&root).unwrap();
     // Original minimal facts: air identity and generic sturdy flags, deliberately
     // distinct from the soul sand's lower collision shape.
-    let facts = serde_json::json!({"states":(0..names.len()).map(|id|serde_json::json!({"id":id})).collect::<Vec<_>>()});
+    let facts = serde_json::json!({"states":(0..names.len()).map(|id|serde_json::json!({"id":id,"sound":{"identity":"other"}})).collect::<Vec<_>>()});
     std::fs::write(root.join("gameplay-facts.json"), facts.to_string()).unwrap();
     let behaviours = serde_json::json!({"states":[[0,0],[63,0],[63,0],[0,0],[1,0]],"blocks":names.iter().map(|name|serde_json::json!({"name":format!("minecraft:{name}"),"class":["Block"]})).collect::<Vec<_>>()});
     let facts =

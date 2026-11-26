@@ -26,6 +26,7 @@ impl Game<'_> {
                 ParticleOptions::simple(ParticleType::Crit),
                 TrackingTarget::Entity(m.id as i32),
                 mob_tracking_body(m),
+                None,
             );
         }
         self.remote_attacker_knockback(damage, strength);

@@ -28,11 +28,9 @@ import time
 from collections import Counter, defaultdict
 from pathlib import Path
 
-try:
-    from . import lab, test_rust_parity as base
-except ImportError:
-    import lab
-    import test_rust_parity as base
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_rust_parity as base
 
 SEEDS = [12345, -7046029254386353131, 987654321987, 4242, -1, 0x5DEECE66D, 20260607, 777]
 # Sites from bug reports, compared on every run: seed, dimension, chunk

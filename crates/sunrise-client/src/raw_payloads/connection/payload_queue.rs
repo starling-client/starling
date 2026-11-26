@@ -76,7 +76,7 @@ impl Connection {
                 let waiting = queue.active && epoch.active();
                 #[cfg(test)]
                 if waiting {
-                    super::tests::notify_payload_wait_entered();
+                    super::test_hooks::notify();
                 }
                 waiting
             })

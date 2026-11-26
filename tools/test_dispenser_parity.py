@@ -17,14 +17,12 @@ import random
 import subprocess
 import tempfile
 from pathlib import Path
-try:
-    from . import block_update_harness as h, lab, test_rust_parity as base
-    from .integration_env import run_game
-except ImportError:
-    from integration_env import run_game
-    import block_update_harness as h
-    import lab
-    import test_rust_parity as base
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import block_update_harness as h, lab, test_rust_parity as base
+from tools.integration_env import run_game
 
 DIRECTIONS = ['down', 'up', 'north', 'south', 'west', 'east']
 STEP = {'down': (0, -1, 0), 'up': (0, 1, 0), 'north': (0, 0, -1), 'south': (0, 0, 1), 'west': (-1, 0, 0), 'east': (1, 0, 0)}

@@ -11,7 +11,6 @@ use super::{
 use crate::projectiles::{Projectile, ProjectileKind};
 use sunrise_core::geometry::trig::Mth;
 use sunrise_core::{geometry::Vec3, random::RandomSource};
-use sunrise_world::native_load_context::LoopContext;
 
 pub fn register(m: &mut Mob) {
     let g = &mut m.ai.goals;
@@ -56,9 +55,11 @@ impl Default for HealRaiders {
 }
 impl Goal for HealRaiders {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         self.0.flags()
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if m.extra.counter2 > 0 || !m.random.next_boolean() {
             return false;
@@ -68,13 +69,16 @@ impl Goal for HealRaiders {
         }
         self.0.can_use(m, cx)
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         self.0.can_continue(m, cx)
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         m.extra.counter2 = super::goals::reduced(200);
         self.0.start(m, cx);
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.stop(m, cx);
     }
@@ -108,22 +112,28 @@ impl RangedAttack {
 }
 impl Goal for RangedAttack {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE | LOOK
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         m.target_info(cx.w).is_some_and(|t| t.alive)
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         self.can_use(m, cx) || m.target_info(cx.w).is_some_and(|t| t.alive) && !m.ai.nav.is_done()
     }
+    #[inline]
     fn stop(&mut self, _: &mut Mob, _: &mut Cx) {
         self.see_time = 0;
         self.attack_time = -1;
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         true
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         let Some(who) = m.ai.target else { return };
         let Some(t) = cx.w.target_info(who) else {
@@ -165,7 +175,10 @@ impl Goal for RangedAttack {
     }
 }
 /// Witch.performRangedAttack: harming by default, slowness at range, poison
-/// on healthy targets, weakness up close.
+/// on healthy targets, weakness up close. A native mod takes the throw here through
+/// `[[native.mixin]]`, where a Java mod's mixin on `Witch.performRangedAttack` cancels or
+/// delays it (#4678).
+#[sunrise_mod_api_macros::replaceable]
 fn witch_attack(m: &mut Mob, who: Who, _power: f32, cx: &mut Cx) {
     // isDrinkingPotion
     if m.extra.flag {
@@ -251,50 +264,48 @@ pub fn drinking_modifier(m: &Mob) -> Option<(f64, super::finalize::Op)> {
 }
 /// Witch.aiStep before `super.aiStep()`: the healing cooldown, then drink
 /// water breathing, fire resistance, healing or swiftness.
-pub fn ai_step(
+pub(super) fn ai_step_until_drink(
     m: &mut Mob,
-    context: &LoopContext,
-    cx_events: &mut Vec<MobEvent>,
+    events: &mut Vec<MobEvent>,
     target_far: bool,
-) {
+) -> Option<crate::items::ItemStack> {
     if !m.alive() {
-        return;
+        return None;
     }
     // healRaidersGoal.decrementCooldown (the attack goal's canAttack reads it).
     m.extra.counter2 -= 1;
-    drink(m, context, cx_events, target_far);
+    let drink = drink(m, events, target_far);
+    if drink.is_none() {
+        after_drink(m, events);
+    }
+    drink
+}
+
+pub(super) fn after_drink(m: &mut Mob, events: &mut Vec<MobEvent>) {
     // `broadcastEntityEvent(this, 15)`: the magic puffs over its hat on every client.
     if m.random.next_float() < 7.5E-4 {
-        cx_events.push(MobEvent::EntityEvent {
+        events.push(MobEvent::EntityEvent {
             mob: m.id,
             event: 15,
             at: [m.position.x, m.position.y, m.position.z],
         });
     }
 }
-fn drink(m: &mut Mob, context: &LoopContext, cx_events: &mut Vec<MobEvent>, target_far: bool) {
+
+fn drink(
+    m: &mut Mob,
+    events: &mut Vec<MobEvent>,
+    target_far: bool,
+) -> Option<crate::items::ItemStack> {
     if m.extra.flag {
         // `usingTime-- <= 0`
         m.extra.using_item -= 1;
         if m.extra.using_item < 0 {
             m.extra.using_item = 0;
-            if let Some(stack) = m.extra.main_hand_stack().cloned() {
-                match stack.potion().unwrap_or(&stack.item) {
-                    "minecraft:water_breathing" => {
-                        m.add_effect("minecraft:water_breathing", 3600, 0)
-                    }
-                    "minecraft:fire_resistance" => {
-                        m.add_effect("minecraft:fire_resistance", 3600, 0)
-                    }
-                    "minecraft:healing" => m.heal(context, 4.0),
-                    "minecraft:swiftness" => m.add_effect("minecraft:speed", 3600, 0),
-                    _ => {}
-                }
-                cx_events.push(MobEvent::DrinkFinished { mob: m.id, stack });
-            }
             m.extra.flag = false;
+            return m.extra.main_hand_stack().cloned();
         }
-        return;
+        return None;
     }
     let potion = if m.random.next_float() < 0.15
         && m.fluids.eye_in_water
@@ -326,8 +337,9 @@ fn drink(m: &mut Mob, context: &LoopContext, cx_events: &mut Vec<MobEvent>, targ
         m.extra.flag = true;
         // Witch.aiStep: the drink sound, and its pitch draw, only when the
         // witch is not silent.
-        witch_sound(m, cx_events, "entity.witch.drink");
+        witch_sound(m, events, "entity.witch.drink");
     }
+    None
 }
 /// `Witch` drink and throw sounds: volume 1, pitch `0.8 + nextFloat * 0.4`,
 /// skipped entirely (including the pitch draw) when `isSilent()`.
@@ -421,12 +433,7 @@ mod tests {
         let mut events = Vec::new();
         for _ in 0..40 {
             m.extra.flag = false;
-            drink(
-                &mut m,
-                crate::test_resources::server_loop_context(),
-                &mut events,
-                true,
-            );
+            drink(&mut m, &mut events, true);
         }
         events
             .iter()

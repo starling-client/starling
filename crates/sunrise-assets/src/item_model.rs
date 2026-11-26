@@ -1639,6 +1639,31 @@ impl ItemModels {
     pub fn swap_animation_scale(&self, stack: &StackView) -> f32 {
         self.properties(stack).2
     }
+    /// The skull kind a `minecraft:head` model at the top of `item`'s default item model names
+    /// (`minecraft:item_model`): how a native mod's skull item, whose block the game does not
+    /// know as a skull, names the kind it registered (`create_skull_models`). None for an item
+    /// whose model is anything else.
+    pub fn head_kind(&self, item: &str) -> Option<&str> {
+        let Some(Value::String(id)) = self.prototypes.get(item)?.get("minecraft:item_model") else {
+            return None;
+        };
+        // Asked each frame for every worn non-vanilla item: a namespaced id is already the
+        // definitions' canonical key, so only a bare one pays for `identifier`'s allocation.
+        let definition = match id.split_once(':') {
+            Some((namespace, _)) if !namespace.is_empty() => self.definitions.get(id.as_str())?,
+            _ => self.definitions.get(&identifier(id).ok()?)?,
+        };
+        match &definition.model {
+            ItemModelNode::Special {
+                model:
+                    SpecialModel {
+                        kind: SpecialKind::Head { kind, .. },
+                    },
+                ..
+            } => Some(kind),
+            _ => None,
+        }
+    }
     fn properties(&self, stack: &StackView) -> (bool, bool, f32) {
         match self.components_view(stack).get("minecraft:item_model") {
             Some(Value::String(id)) => identifier(id)

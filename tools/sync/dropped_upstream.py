@@ -75,7 +75,7 @@ def rows(merge: str) -> tuple[list[tuple[str, str, str, str, int, int, list[str]
         if not longer or not path.endswith(".rs"):
             return None
         crate = "/".join(path.split("/")[:2]) + "/" if path.count("/") >= 2 else ""
-        out = subprocess.run(["git", "grep", "-c", "-F", "-f", "/dev/stdin", merge, "--", crate + "**.rs"],
+        out = subprocess.run(["git", "grep", "-c", "-F", "-f", "-", merge, "--", crate + "**.rs"],
                              input="\n".join(longer), capture_output=True, text=True).stdout
         hits = [(int(row.rsplit(":", 1)[1]), row.split(":", 1)[1].rsplit(":", 1)[0]) for row in out.splitlines()]
         best = max(hits, default=(0, None))

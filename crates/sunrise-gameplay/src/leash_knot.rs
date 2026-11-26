@@ -10,6 +10,13 @@ pub struct Knot {
     pub id: u32,
     pub join: sunrise_client::join_seq::JoinSeq,
     pub fence: [i32; 3],
+    /// `Entity`'s base state (#5082), the values `Entity.saveWithoutId` writes under `Fire`,
+    /// `Invulnerable`, `NoGravity`, `Silent` and `Glowing`.
+    pub fire_ticks: i32,
+    pub invulnerable: bool,
+    pub no_gravity: bool,
+    pub silent: bool,
+    pub glowing: bool,
 }
 sunrise_client::impl_joined!(Knot);
 sunrise_mod_runtime::impl_attachment_lifetime!(Knot);

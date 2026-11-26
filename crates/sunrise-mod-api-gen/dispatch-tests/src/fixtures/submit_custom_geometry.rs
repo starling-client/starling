@@ -1,3 +1,3 @@
 mod api {
-    pub struct WorldRenderView;
+    pub struct WorldRenderView<'a>(pub &'a ());
 }

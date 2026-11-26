@@ -1,9 +1,6 @@
 #[path = "../../src/gfx/sunrise_fan.rs"]
 mod sunrise_fan;
 
-#[path = "../../src/gfx/wgsl_prefix.rs"]
-mod wgsl_prefix;
-
 fn sunrise_shader() -> String {
     let terrain = include_str!("../../src/terrain.wgsl");
     let start = terrain.find("fn sunrise_weight_full").unwrap();
@@ -143,52 +140,4 @@ fn sunrise_sectors_match_reference_on_real_gpu() {
             read.unmap();
         }
     }
-}
-
-#[test]
-fn native_pack_sky_keeps_sunrise_helpers_private() {
-    use wgsl_prefix::{TERRAIN, prefixed, section};
-    // Use the same shared helper, complete terrain sections and prefixer as native_sky.rs.
-    let sky = prefixed(
-        &[
-            include_str!("../../src/hdr_light.wgsl"),
-            section(TERRAIN, "struct Globals {", "@group(0) @binding(1)"),
-            section(TERRAIN, "fn linear_fog(", "fn apply_fog("),
-            section(TERRAIN, "struct SkyOut {", "// rendertype_lines"),
-        ]
-        .concat(),
-        "sunrise_sky_",
-    );
-    for name in [
-        "sunrise_weight",
-        "sunrise_weight_full",
-        "sunrise_triangle_weight",
-    ] {
-        assert!(sky.contains(&format!("fn sunrise_sky_{name}(")));
-    }
-    // A native pack may declare the same helper names as the renderer.
-    let own = "fn sunrise_weight(d: vec3<f32>) -> f32 { return d.x; }\n\
-               fn sunrise_weight_full(d: vec3<f32>) -> f32 { return d.y; }\n\
-               fn sunrise_triangle_weight(d: vec3<f32>, i: u32) -> f32 { return d.z + f32(i); }\n";
-    let module = naga::front::wgsl::parse_str(&format!("{own}\n{sky}")).unwrap();
-    naga::valid::Validator::new(
-        naga::valid::ValidationFlags::all(),
-        naga::valid::Capabilities::all(),
-    )
-    .validate(&module)
-    .unwrap();
-}
-
-#[test]
-fn complete_terrain_shader_still_validates_for_fallback_sky() {
-    let module = naga::front::wgsl::parse_str(
-        &(include_str!("../../src/hdr_light.wgsl").to_owned() + wgsl_prefix::TERRAIN),
-    )
-    .unwrap();
-    naga::valid::Validator::new(
-        naga::valid::ValidationFlags::all(),
-        naga::valid::Capabilities::all(),
-    )
-    .validate(&module)
-    .unwrap();
 }

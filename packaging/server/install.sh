@@ -52,18 +52,6 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-# The archives to look for, in order: on Linux the server build, else (releases before it) the full game.
-MACHINE=$(uname -m)
-# A shell under Rosetta 2 says x86_64 on Apple Silicon: the native build runs faster there.
-[ "$(uname -s)" = Darwin ] && [ "$(sysctl -n sysctl.proc_translated 2>/dev/null)" = 1 ] && MACHINE=arm64
-case "$(uname -s)-$MACHINE" in
-  Linux-x86_64) PLATFORM=linux-x86_64; ASSETS="sunrise-server-linux-x86_64.tar.gz sunrise-linux-x86_64.tar.gz" ;;
-  Darwin-arm64) PLATFORM=macos-arm64; ASSETS=sunrise-macos-arm64.zip ;;
-  # Intel Macs: the Nightlies built since #1161.
-  Darwin-x86_64) PLATFORM=macos-x64; ASSETS=sunrise-macos-x64.zip ;;
-  *) die "no Sunrise release for $(uname -s) $(uname -m) yet: build it from source (docs/server.md)" ;;
-esac
-
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 if [ -n "$ARCHIVE" ]; then
@@ -73,6 +61,15 @@ if [ -n "$ARCHIVE" ]; then
   ASSET=$(basename "$ARCHIVE")
   cp "$ARCHIVE" "$TMP/$ASSET"
 else
+  # A download only: the archives to look for, in order: on Linux the server build, else (releases before it) the full game.
+  MACHINE=$(uname -m)
+  # A shell under Rosetta 2 says x86_64 on Apple Silicon: the native build runs faster there.
+  [ "$(uname -s)" = Darwin ] && [ "$(sysctl -n sysctl.proc_translated 2>/dev/null)" = 1 ] && MACHINE=arm64
+  case "$(uname -s)-$MACHINE" in
+    Linux-x86_64) PLATFORM=linux-x86_64; ASSETS="sunrise-server-linux-x86_64.tar.gz sunrise-linux-x86_64.tar.gz" ;;
+    Darwin-arm64) PLATFORM=macos-arm64; ASSETS=sunrise-macos-arm64.zip ;;
+    *) die "no Sunrise release for $(uname -s) $(uname -m) yet: build it from source and install it with --archive (docs/server.md)" ;;
+  esac
   command -v curl >/dev/null || die "curl is needed"
   if command -v sha256sum >/dev/null; then SHA="sha256sum"
   elif command -v shasum >/dev/null; then SHA="shasum -a 256"
@@ -139,7 +136,6 @@ else
     case "$PLATFORM" in
       linux-x86_64) PIN=$VERIFIER_SHA256_linux_x86_64 ;;
       macos-arm64) PIN=$VERIFIER_SHA256_macos_arm64 ;;
-      macos-x64) PIN=$VERIFIER_SHA256_macos_x64 ;;
     esac
     VERIFIER_FROM=$VERIFIER_VERSION
     [ "$VERIFIER_FROM" != unpinned ] && [ -n "$VERIFIER_FROM" ] || die "this script has no pinned sunrise-verify yet, so it can't check the release signature: not installed. Use the install.sh from Sunrise's main branch."
@@ -211,9 +207,4 @@ case ":$PATH:" in
   *":$BIN:"*) ;;
   *) echo "Add $BIN to your PATH, for example: echo 'export PATH=\"$BIN:\$PATH\"' >> ~/.profile" ;;
 esac
-if [ -z "$(ls -A "$DIR/game-files/sunrise-client" 2>/dev/null)" ]; then
-  echo "Next, prepare the game files from your own Minecraft 26.3 (it needs Java 25 and the game installed once"
-  echo "by the official launcher; see docs/server.md):"
-  echo "  sunrise-prepare --prepare --server-jar /path/to/server.jar"
-fi
 echo "Then set up a server: mkdir my-server && cd my-server && sunrise-server init"

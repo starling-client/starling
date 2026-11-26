@@ -701,3 +701,18 @@ fn the_entity_buffer_grows_within_the_device() {
     assert_eq!(grow(1000, 1000 * vertex), 1000, "not 1024");
     assert_eq!(grow(1100, 1000 * vertex), 1100, "the frame's own");
 }
+
+/// A block the type's uniforms don't give refuses the shader at its declaration; given, it is
+/// the pipeline's.
+#[test]
+fn a_block_no_uniform_gives_is_named_at_its_declaration() {
+    let refused = others(&shader(&[])).err();
+    assert_eq!(
+        refused,
+        Some(sunrise_glsl::Location {
+            file: "minecraft:shaders/core/core.fsh".into(),
+            line: 3,
+        })
+    );
+    assert!(others(&shader(&["Brightness"])).is_ok());
+}

@@ -1,0 +1,3 @@
+ids = ["hook:register_model_loaders"]
+why = "Registering neoforge:empty from register_model_loaders is now refused, like neoforge:composite, neoforge:obj and fusion:model, because the engine reads neoforge:empty as a model with no geometry. A listener that registered it sees a registration error and its loader is not kept; the signature is unchanged. Version 3."
+migrate = "Register the loader under an identifier of your own, and update any model JSON that named the old identifier."

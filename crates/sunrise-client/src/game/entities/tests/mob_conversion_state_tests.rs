@@ -189,6 +189,7 @@ fn a_zombifying_piglin_leaves_a_nauseous_zombified_piglin() {
         kind: "minecraft:zombified_piglin",
         params: sunrise_client::mobs::conversion::Params::KEEP_ALL,
         after: sunrise_client::mobs::conversion::After::Nausea,
+        before_travel: true,
     }])
     .unwrap();
     let zombified = game

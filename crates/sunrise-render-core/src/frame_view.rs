@@ -24,6 +24,7 @@ pub struct UniformFrameView<'a> {
     pub camera: DVec3,
     pub yaw: f32,
     pub pitch: f32,
+    pub roll: f32,
     pub fov_degrees: f32,
     pub eye: DVec3,
     pub eye_rotation: [f32; 2],

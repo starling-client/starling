@@ -4,7 +4,7 @@ use super::{
     Behaviours, LevelAccess, Sim, Spread,
     buckets::{Douse, Drain, PlacedLiquid},
     classes::{Class, Interface},
-    fluid_interactions::{Cell, first_match},
+    fluid_interactions::{Cell, Matched, first_match},
     update::{HORIZONTAL, above, below, rel},
 };
 use crate::{
@@ -26,6 +26,14 @@ const POSSIBLE_FLOW_DIRECTIONS: [Direction; 5] = [
     Direction::West,
 ];
 
+/// What the fluid hooks call `kind`: `water`, `lava` or a mod fluid's id.
+fn fluid_hook_name(kind: FluidKind) -> &'static str {
+    match kind {
+        FluidKind::Water | FluidKind::FlowingWater => "water",
+        FluidKind::Lava | FluidKind::FlowingLava => "lava",
+        FluidKind::Mod(_) | FluidKind::ModFlowing(_) | FluidKind::Empty => kind.name(),
+    }
+}
 fn is_water(kind: FluidKind) -> bool {
     matches!(kind, FluidKind::Water | FluidKind::FlowingWater)
 }
@@ -622,6 +630,14 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         !self.is_source_of(kind, test_fluid)
             && self.can_hold_any_fluid(test)
             && self.can_pass_through_wall(direction, source_pos, source, test)
+            && self.level.fluid_passage(
+                fluid_hook_name(kind),
+                source_pos,
+                source,
+                direction,
+                rel(source_pos, direction),
+                test,
+            )
     }
     fn can_pass_through(
         &mut self,
@@ -888,12 +904,10 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         let mut state = self.state(pos);
         let mut fluid = self.b.fluid(state);
         let kind = fluid.kind();
-        let name = match kind {
-            FluidKind::Water | FluidKind::FlowingWater => "water",
-            FluidKind::Lava | FluidKind::FlowingLava => "lava",
-            FluidKind::Mod(_) | FluidKind::ModFlowing(_) => kind.name(),
-            FluidKind::Empty => return,
-        };
+        if kind == FluidKind::Empty {
+            return;
+        }
+        let name = fluid_hook_name(kind);
         if !self.level.allow_fluid_tick(pos, name) {
             return;
         }
@@ -966,15 +980,38 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             }
         });
         let below = b.block(self.below_state(pos));
-        let source_cell = self.fluid_at(pos).is_source();
-        let Some(result) = first_match(&interactions, neighbours, below, source_cell) else {
-            return true;
-        };
-        if let Some(state) = self.level.fluid_place_block(pos, pos, result) {
-            self.set_block_and_update(pos, state);
+        let fluid = self.fluid_at(pos);
+        let relative = |neighbour: usize| rel(pos, POSSIBLE_FLOW_DIRECTIONS[neighbour].opposite());
+        let level = &*self.level;
+        let matched = first_match(
+            &interactions,
+            neighbours,
+            below,
+            fluid.is_source(),
+            |handler, neighbour| {
+                level.fluid_interaction_test(handler, pos, relative(neighbour), fluid)
+            },
+        );
+        match matched {
+            None => true,
+            Some(Matched::Becomes(result)) => {
+                if let Some(state) = self.level.fluid_place_block(pos, pos, result) {
+                    self.set_block_and_update(pos, state);
+                }
+                self.level_event(1501, pos, 0);
+                false
+            }
+            Some(Matched::Handler { handler, neighbour }) => {
+                self.level.fluid_interaction_interact(
+                    self.ticks,
+                    handler,
+                    pos,
+                    relative(neighbour),
+                    fluid,
+                );
+                false
+            }
         }
-        self.level_event(1501, pos, 0);
-        false
     }
     /// `LiquidBlock.onPlace` / `neighborChanged`.
     pub(crate) fn liquid_block_changed(&mut self, pos: BlockPos, state: BlockStateId) {
@@ -1160,6 +1197,7 @@ mod tests {
             register_mod_fluid(ModFluidType {
                 id: format!("fluid_facts:{id}"),
                 flowing_id: format!("fluid_facts:flowing_{id}"),
+                block_id: format!("fluid_facts:{id}"),
                 bucket: None,
                 rules: ModFluidRules {
                     tick_delay,
@@ -1277,5 +1315,59 @@ mod tests {
             assert_eq!(fluid_randomly_ticks(kind), random, "{kind:?}");
             assert_eq!(fluid_drip_particle(kind), drip, "{kind:?}");
         }
+    }
+
+    /// `fluid_passage` closes one side of a cell: water beside an open east cell spreads every
+    /// other way, and the east cell stays dry while the closing stands.
+    #[test]
+    #[ignore = "daily"]
+    fn a_closed_side_is_not_flowed_into() {
+        use super::super::tests::{World, fixture};
+        let f = fixture().expect("prepared resources");
+        let mut w = World::new(f);
+        w.floor(0, 10, "stone");
+        let origin = BlockPos::new(0, 1, 0);
+        w.level.closed_passage.insert((origin, Direction::East));
+        let water = w.id("water", &[]);
+        w.set(origin, water);
+        for _ in 0..6 {
+            w.tick();
+        }
+        for open in [
+            BlockPos::new(-1, 1, 0),
+            BlockPos::new(0, 1, 1),
+            BlockPos::new(0, 1, -1),
+        ] {
+            assert_ne!(
+                w.b().fluid(w.get(open)).kind(),
+                FluidKind::Empty,
+                "{open:?}"
+            );
+        }
+        assert_eq!(w.get(BlockPos::new(1, 1, 0)), w.b().air());
+    }
+
+    /// The hook is asked only after the game's own answer is true: a level that never closes
+    /// anything (it answers true everywhere) does not let water into a wall.
+    #[test]
+    #[ignore = "daily"]
+    fn an_open_answer_does_not_open_a_wall() {
+        use super::super::tests::{World, fixture};
+        let f = fixture().expect("prepared resources");
+        let mut w = World::new(f);
+        w.floor(0, 10, "stone");
+        let wall = BlockPos::new(1, 1, 0);
+        let stone = w.id("stone", &[]);
+        w.put(wall, stone);
+        let water = w.id("water", &[]);
+        w.set(BlockPos::new(0, 1, 0), water);
+        for _ in 0..6 {
+            w.tick();
+        }
+        assert_ne!(
+            w.b().fluid(w.get(BlockPos::new(-1, 1, 0))).kind(),
+            FluidKind::Empty
+        );
+        assert_eq!(w.get(wall), stone);
     }
 }

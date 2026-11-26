@@ -75,17 +75,3 @@ These belong to `sunrise-server`, not to the game:
   it; on a running server it applies the difficulty, the default game mode, the whitelist switch, `motd`,
   `max_players` and the `[backups]` and `[updates]` settings at once, and says which settings wait for the next
   start. There is no full live reload yet.
-
-## Planned: limiting a server to Sunrise clients
-
-The design ([server-next.md](server-next.md#6-who-can-join), section 6) adds one more setting. It is not in
-`server.toml` yet.
-
-```toml
-[clients]
-allow = "any"        # "any" (vanilla Java and Sunrise) or "sunrise" (Sunrise clients only)
-```
-
-With `"sunrise"` the server refuses a client that does not identify as Sunrise. This is a convenience filter,
-not security: Sunrise's client is open source, so a modified client can claim to be Sunrise. The real gate
-stays `online_mode`, plus the whitelist and bans on top of it.

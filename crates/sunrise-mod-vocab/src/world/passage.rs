@@ -206,7 +206,8 @@ pub enum PassageCrossRefusal {
     },
     /// The opening's chunk is not loaded or not tracked for the player.
     NearEndNotTracked,
-    /// The chunk the player comes out in is not loaded or not tracked for the player.
+    /// The chunk the player comes out in is not loaded or not tracked for the player: inside
+    /// its view, or past it in a chunk area of its own level (`PlayerRef::set_chunk_areas`).
     FarEndNotTracked,
     /// A mod's `player_passage_cross` cancelled the crossing.
     Vetoed,

@@ -45,10 +45,7 @@ fn ftransform(
     vertices: &[[f32; 3]],
     shadow: bool,
 ) -> Vec<[f32; 4]> {
-    let pp = |code: &str| sunrise_shaders::Preprocessed {
-        code: code.to_owned(),
-        ..Default::default()
-    };
+    let pp = |code: &str| sunrise_shaders::Preprocessed::from_source("", code);
     let vertex = pp(&format!(
         "varying vec4 probe;\nvoid main() {{\n    probe = ftransform();\n    \
          gl_Position = vec4((float(gl_VertexID) + 0.5) * {} - 1.0, 0.0, 0.0, 1.0);\n}}",
@@ -65,13 +62,19 @@ fn ftransform(
         ..Default::default()
     };
     let program = if shadow {
-        sunrise_shaders::translate_shadow(&vertex, &fragment, &inputs)
+        sunrise_shaders::translate_shadow(
+            &vertex,
+            &fragment,
+            &inputs,
+            naga::front::glsl::InterfaceLimits::WGPU_DEFAULT,
+        )
     } else {
         sunrise_shaders::translate_gbuffers(
             &vertex,
             &fragment,
             sunrise_shaders::Target::Buffers,
             &inputs,
+            naga::front::glsl::InterfaceLimits::WGPU_DEFAULT,
         )
     }
     .unwrap();

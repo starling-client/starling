@@ -1,5 +1,4 @@
 //! The `compute_fog_color` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0115
 
 pub trait Hooks {
     /// Computed world fog RGB, after ordinary effects and before upload. Title panoramas skip it.

@@ -3,7 +3,7 @@ use crate::game::{
     native_entity_refs::tests::run_fresh_cases,
     native_projectiles::impact_probe::{Action, with_probe},
 };
-use mod_api::{Flow, HearsProjectileImpactsEvent, Hooks, ProjectileImpactEvent, ServerHost};
+use mod_api::{Flow, Hooks, ProjectileImpactEvent, ServerHost};
 use std::sync::{Arc, Mutex, atomic::Ordering};
 use sunrise_client::{chunk::Chunk, join_seq::JoinSeq};
 use sunrise_mod_runtime::attachments::{
@@ -15,7 +15,7 @@ static VALUE: AttachmentType<i32> = AttachmentType {
     default: || 0,
     codec: None,
     copy_on_death: false,
-    sync: false,
+    sync_codec: None,
 };
 
 struct BoundProjectiles {
@@ -68,24 +68,18 @@ impl Hooks for CancelImpacts {
             let mut observed = self.0.lock().unwrap();
             if !observed.buffered {
                 // Shoot events fire after settlement while the tick batch is taken.
-                let _ = host.summon(
-                    event.dimension,
-                    "minecraft:snowball",
-                    [9.5, 70.0, 0.5],
-                    Default::default(),
-                );
+                if let Some(level) = host.level(event.dimension) {
+                    let _ = level.summon(
+                        host,
+                        "minecraft:snowball",
+                        [9.5, 70.0, 0.5],
+                        Default::default(),
+                    );
+                }
                 observed.buffered = true;
             }
         }
         Flow::Continue
-    }
-
-    fn hears_projectile_impacts(
-        &self,
-        _: &dyn mod_api::Host,
-        event: &mut HearsProjectileImpactsEvent,
-    ) {
-        event.hears = true;
     }
 
     fn projectile_impact(
@@ -97,12 +91,14 @@ impl Hooks for CancelImpacts {
         observed.impacts.push(event.projectile);
         if !observed.spawned {
             // The projectile is installed even though summon has no projectile return target.
-            let _ = host.summon(
-                event.dimension,
-                "minecraft:snowball",
-                [8.5, 70.0, 0.5],
-                Default::default(),
-            );
+            if let Some(level) = host.level(event.dimension) {
+                let _ = level.summon(
+                    host,
+                    "minecraft:snowball",
+                    [8.5, 70.0, 0.5],
+                    Default::default(),
+                );
+            }
             observed.spawned = true;
         }
         if observed.remove == Some(event.projectile) {
@@ -596,7 +592,7 @@ fn an_arrow_lands_before_its_first_shot_event_at_the_backed_off_position() {
         assert_eq!(
             *observed.game_events.lock().unwrap(),
             [
-                ("land", [2.0, 64.5, 0.5]),
+                ("land", [2.5, 64.5, 0.5]),
                 ("shoot", [2.0 - f64::from(0.05_f32), 64.5, 0.5])
             ],
         );
@@ -734,5 +730,450 @@ fn wind_charges_retrace_only_after_gameplay_breaks_a_vehicle() {
             assert_eq!(charge.age, 1);
             assert_eq!(charge.position.components(), at);
         }
+    });
+}
+
+/// A subscriber that was off when the tick began and is turned on by a section callback during
+/// it hears the flights that follow: the live loop asks `native_hears_impacts` at each flight,
+/// not once for the family.
+#[test]
+#[ignore = "daily"]
+fn a_subscriber_enabled_by_a_section_callback_hears_the_flights_after_it() {
+    struct Counter(Arc<Mutex<Vec<u32>>>);
+    #[mod_api::__subscriptions]
+    impl Hooks for Counter {
+        fn projectile_impact(
+            &self,
+            _: &mut dyn ServerHost,
+            event: &mut ProjectileImpactEvent<'_>,
+        ) -> Flow {
+            self.0.lock().unwrap().push(event.projectile);
+            Flow::Continue
+        }
+    }
+    struct Trigger(Arc<std::sync::atomic::AtomicUsize>);
+    #[mod_api::__subscriptions]
+    impl Hooks for Trigger {
+        fn entity_entering_section(
+            &self,
+            _: mod_api::HostSide<'_>,
+            _: &mut mod_api::EntityEnteringSectionEvent,
+        ) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            mod_api::__private::set_mod_enabled("reenabled-counter", true);
+        }
+    }
+    if run_fresh_cases(
+        "game::creatures::projectile_batch_tests::a_subscriber_enabled_by_a_section_callback_hears_the_flights_after_it",
+        "SUNRISE_PROJECTILE_REENABLE_CASE",
+        &["off"],
+    ) {
+        return;
+    }
+    let crossings = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let heard: Arc<Mutex<Vec<u32>>> = Arc::default();
+    let mods: mod_api::Mods = vec![
+        mod_api::ModEntry::new("reenabled-counter", Box::new(Counter(heard.clone()))),
+        mod_api::ModEntry::new("section-trigger", Box::new(Trigger(crossings.clone()))),
+    ]
+    .into();
+    mod_platform::testing::with_mods(mods, || {
+        super::super::native_entity_refs::tests::with_game(|game| {
+            game.options.dedicated = Some(Vec::new());
+            for chunk in [(0, 0), (1, 0)] {
+                game.world
+                    .chunks
+                    .insert(chunk, Arc::new(Chunk::empty(chunk.0, chunk.1)));
+                game.block_ticks
+                    .add_empty_chunk(sunrise_core::position::ChunkPos::new(chunk.0, chunk.1))
+                    .unwrap();
+            }
+            game.build_registries();
+            game.set_allow_commands(true);
+            assert!(game.run_command("forceload add 0 0"));
+            assert!(game.run_command("forceload add 16 0"));
+            game.player = Some(
+                sunrise_client::motion::PlayerMotion::new(game.motion, Vec3::new(0.5, 64.0, 8.5))
+                    .unwrap(),
+            );
+            crate::game::native_entity_refs::tests::bind_local_player(game, 7, 7);
+            game.next_entity = 100;
+            assert!(mod_api::__private::set_mod_enabled(
+                "reenabled-counter",
+                false
+            ));
+            let stone = game
+                .pack
+                .assets
+                .registry
+                .default_state("minecraft:stone")
+                .unwrap();
+            // Arrow 71 flies across into the next section (the trigger's callback turns the counter
+            // on); arrow 72 lands on a wall in the first section.
+            game.world.set(2, 64, 0, stone).unwrap();
+            for (id, start) in [(71, 14.5), (72, 0.5)] {
+                let mut arrow = Projectile::new(
+                    ProjectileKind::Arrow {
+                        base_damage: 2.0,
+                        critical: false,
+                        effect: None,
+                    },
+                    Vec3::new(start, 64.5, 0.5),
+                    None,
+                );
+                arrow.id = id;
+                arrow.velocity = Vec3::new(3.0, 0.0, 0.0);
+                game.creatures.projectiles.push(arrow);
+            }
+            game.native_joins_skip();
+            game.tick_projectiles().unwrap();
+        });
+    });
+    assert!(
+        crossings.load(Ordering::SeqCst) > 0,
+        "a section callback ran"
+    );
+    // The counter was off when the tick began and the callback switched it on: it hears the
+    // flight after the callback, and only that one.
+    assert_eq!(*heard.lock().unwrap(), [72]);
+}
+
+#[derive(Default)]
+struct WindContinuationObserved {
+    launches: Mutex<Vec<u32>>,
+    alone_ticks: Mutex<Vec<u32>>,
+    buffered: Mutex<bool>,
+}
+
+struct WindContinuationObserver {
+    spawn_on_shoot: bool,
+    observed: Arc<WindContinuationObserved>,
+}
+
+#[mod_api::__subscriptions]
+impl Hooks for WindContinuationObserver {
+    fn entity_tick_post(
+        &self,
+        _: mod_api::HostSide<'_>,
+        event: &mut mod_api::EntityTickPostEvent<'_>,
+    ) {
+        self.observed.alone_ticks.lock().unwrap().push(event.entity);
+    }
+
+    fn entity_join_level(
+        &self,
+        host: &mut dyn ServerHost,
+        event: &mut mod_api::EntityJoinLevelEvent<'_>,
+    ) -> Flow {
+        if host.projectile(event.subject).is_some() {
+            self.observed
+                .launches
+                .lock()
+                .unwrap()
+                .push(event.subject.id());
+        }
+        Flow::Continue
+    }
+
+    fn vanilla_game_event(
+        &self,
+        host: &mut dyn ServerHost,
+        event: &mut mod_api::VanillaGameEventEvent<'_>,
+    ) -> Flow {
+        if self.spawn_on_shoot && event.event == "minecraft:projectile_shoot" {
+            let mut buffered = self.observed.buffered.lock().unwrap();
+            if !*buffered {
+                // Spawn into the lifted buffer so SpawnsFirst restores it ahead of survivors.
+                if let Some(level) = host.level(event.dimension) {
+                    let _ = level.summon(
+                        host,
+                        "minecraft:snowball",
+                        [12.5, -55.0, 8.5],
+                        Default::default(),
+                    );
+                }
+                *buffered = true;
+            }
+        }
+        Flow::Continue
+    }
+}
+
+fn load_wind_continuation_witness_26_3() -> String {
+    let raw = std::env::var_os("SUNRISE_WIND_CONTINUATION_WITNESS").unwrap_or_else(|| {
+        panic!(
+            "SUNRISE_WIND_CONTINUATION_WITNESS is unset; run tools/test_bounced_projectile_tick_order_parity.py"
+        )
+    });
+    let path = std::path::PathBuf::from(raw);
+    let path = if path.is_dir() {
+        path.join("wind_charge_continuation_tick_order.txt")
+    } else {
+        path
+    };
+    std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!(
+            "failed to read witness {} (run tools/test_bounced_projectile_tick_order_parity.py): {e}",
+            path.display()
+        )
+    })
+}
+
+fn wind_continuation_witness_row_26_3<'a>(witness: &'a str, tick: usize, tag: &str) -> &'a str {
+    let prefix = format!("tick {tick} {tag} ");
+    let line = witness
+        .lines()
+        .find(|line| line.starts_with(&prefix))
+        .unwrap_or_else(|| panic!("missing 26.3 witness row for {prefix}"));
+    &line[prefix.len()..]
+}
+
+fn wind_continuation_witness_26_3(
+    witness: &str,
+    tick: usize,
+    tag: &str,
+) -> Option<([f64; 3], [f64; 3])> {
+    let rest = wind_continuation_witness_row_26_3(witness, tick, tag);
+    if rest == "gone" {
+        return None;
+    }
+    let rest = rest.strip_prefix("pos ").expect("pos prefix");
+    let (pos_str, mot_str) = rest.split_once(" motion ").expect("motion separator");
+    let parse3 = |s: &str| {
+        let mut it = s
+            .split_whitespace()
+            .map(|n| n.parse::<f64>().expect("witness float"));
+        [it.next().unwrap(), it.next().unwrap(), it.next().unwrap()]
+    };
+    Some((parse3(pos_str), parse3(mot_str)))
+}
+
+fn wind_continuation_boat_witness_26_3(witness: &str, tick: usize, tag: &str) -> Option<f32> {
+    let rest = wind_continuation_witness_row_26_3(witness, tick, tag);
+    if rest == "gone" {
+        return None;
+    }
+    let damage = rest
+        .strip_prefix("alive damage ")
+        .expect("alive damage prefix")
+        .parse::<f32>()
+        .expect("witness boat damage float");
+    Some(damage)
+}
+
+fn assert_boat_matches_witness(witness: &str, game: &Game<'_>, tick: usize, tag: &str) {
+    let actual = game.boats.iter().find(|b| b.id == 71).map(|b| b.damage);
+    let expected = wind_continuation_boat_witness_26_3(witness, tick, tag);
+    assert_eq!(
+        actual.map(f32::to_bits),
+        expected.map(f32::to_bits),
+        "tick {tick} {tag}: boat state got {actual:?} expected {expected:?}"
+    );
+    assert_eq!(
+        game.boats.len(),
+        usize::from(expected.is_some()),
+        "tick {tick} {tag}: boat count mismatch"
+    );
+}
+
+fn assert_vec3_bits(actual: Vec3, expected: [f64; 3], label: &str) {
+    for (axis, (got, want)) in actual.components().into_iter().zip(expected).enumerate() {
+        assert_eq!(
+            got.to_bits(),
+            want.to_bits(),
+            "{label} axis {axis}: got {got} expected {want}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "run by tools/test_bounced_projectile_tick_order_parity.py"]
+fn continuing_wind_charge_keeps_tick_order_and_skips_relaunch_in_batched_pass() {
+    run_continuing_wind_charge_keeps_tick_order_and_skips_relaunch_in_batched_pass();
+}
+
+pub(in crate::game) fn run_continuing_wind_charge_keeps_tick_order_and_skips_relaunch_in_batched_pass()
+ {
+    let witness = load_wind_continuation_witness_26_3();
+    const CASE: &str = "SUNRISE_PROJECTILE_BATCH_CASE";
+    if run_fresh_cases(
+        "game::creatures::projectile_batch_tests::continuing_wind_charge_keeps_tick_order_and_skips_relaunch_in_batched_pass",
+        CASE,
+        &["main", "ctrl4", "reversed", "mixed-batch"],
+    ) {
+        return;
+    }
+    let case = std::env::var(CASE).unwrap();
+    let observed = Arc::new(WindContinuationObserved::default());
+    let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
+        "wind-continuation-observer",
+        Box::new(WindContinuationObserver {
+            spawn_on_shoot: case == "mixed-batch",
+            observed: observed.clone(),
+        }),
+    )]
+    .into();
+    mod_platform::testing::with_mods(mods, || {
+        super::super::native_entity_refs::tests::with_game(|game| {
+            game.options.dedicated = Some(Vec::new());
+            for cz in 0..=2 {
+                game.world
+                    .chunks
+                    .insert((0, cz), Arc::new(Chunk::empty(0, cz)));
+                game.block_ticks
+                    .add_empty_chunk(sunrise_core::position::ChunkPos::new(0, cz))
+                    .unwrap();
+            }
+            game.build_registries();
+            game.set_allow_commands(true);
+            assert!(game.run_command("forceload add 0 0 15 47"));
+            game.next_entity = 100;
+            let (z, breakers, boat_tag, w6_tag, a2_tag) = match case.as_str() {
+                "ctrl4" => (24.5, 4_u32, "boat_ctrl4", "w6_ctrl4", None),
+                "reversed" => (40.5, 5_u32, "boat_rev", "w6_rev", Some("a2_rev")),
+                _ => (8.5, 5_u32, "boat_main", "w6_main", Some("a2_main")),
+            };
+            game.boats.push(crate::game::boats::Boat::new(
+                71,
+                Arc::from("oak"),
+                Vec3::new(4.5, -60.0, z),
+                0.0,
+            ));
+            for i in 0..breakers {
+                let mut p =
+                    Projectile::new(ProjectileKind::WindCharge, Vec3::new(4.5, -59.2, z), None);
+                p.id = 80 + i;
+                p.velocity = Vec3::new(0.0, -0.5, 0.0);
+                p.acceleration = 0.0;
+                game.creatures.projectiles.push(p);
+            }
+            let make_w6 = || {
+                let mut w6 = Projectile::new(
+                    ProjectileKind::BreezeWindCharge,
+                    Vec3::new(3.5, -59.7, z),
+                    None,
+                );
+                w6.id = 85;
+                w6.velocity = Vec3::new(1.5, 0.0, 0.0);
+                w6.acceleration = 0.0;
+                w6
+            };
+            let make_a2 = || {
+                let mut a2 = Projectile::new(
+                    ProjectileKind::Arrow {
+                        base_damage: 2.0,
+                        critical: false,
+                        effect: None,
+                    },
+                    Vec3::new(8.0, -58.6, z),
+                    None,
+                );
+                a2.id = 86;
+                a2.velocity = Vec3::new(0.0, -0.2, 0.0);
+                a2
+            };
+            let (w6_join, a2_join) = if case == "reversed" {
+                game.creatures.projectiles.push(make_a2());
+                let a2_join = game.creatures.projectiles.last().unwrap().join;
+                game.creatures.projectiles.push(make_w6());
+                let w6_join = game.creatures.projectiles.last().unwrap().join;
+                (w6_join, Some(a2_join))
+            } else {
+                game.creatures.projectiles.push(make_w6());
+                let w6_join = game.creatures.projectiles.last().unwrap().join;
+                let a2_join = a2_tag.map(|_| {
+                    game.creatures.projectiles.push(make_a2());
+                    game.creatures.projectiles.last().unwrap().join
+                });
+                (w6_join, a2_join)
+            };
+            game.native_joins_skip();
+            assert_boat_matches_witness(&witness, game, 0, boat_tag);
+            game.ticked_entities_through = u32::MAX;
+            game.tick_projectiles().unwrap();
+            if case != "reversed" {
+                assert!(
+                    observed.alone_ticks.lock().unwrap().contains(&85),
+                    "w6 must fire entity_tick_post on its own tick"
+                );
+            }
+            if case == "ctrl4" {
+                assert!(wind_continuation_witness_26_3(&witness, 1, w6_tag).is_none());
+                assert!(game.creatures.projectiles.is_empty());
+                assert_boat_matches_witness(&witness, game, 1, boat_tag);
+                for tick in 2..=4 {
+                    game.ticked_entities_through = u32::MAX;
+                    game.tick_projectiles().unwrap();
+                    assert!(wind_continuation_witness_26_3(&witness, tick, w6_tag).is_none());
+                    assert!(game.creatures.projectiles.is_empty());
+                    assert_boat_matches_witness(&witness, game, tick, boat_tag);
+                }
+                assert!(observed.launches.lock().unwrap().is_empty());
+                return;
+            }
+            let spawned = (case == "mixed-batch").then(|| {
+                assert!(*observed.buffered.lock().unwrap());
+                game.creatures
+                    .projectiles
+                    .iter()
+                    .find(|p| p.position.x == 12.5)
+                    .expect("nested snowball restored ahead of survivors")
+                    .id
+            });
+            let expected_ids: Vec<u32> = match (case.as_str(), spawned) {
+                ("reversed", None) => vec![86, 85],
+                (_, Some(id)) => vec![id, 85, 86],
+                (_, None) => vec![85, 86],
+            };
+            let actual_ids: Vec<u32> = game.creatures.projectiles.iter().map(|p| p.id).collect();
+            assert_eq!(actual_ids, expected_ids);
+            let expected_launches: Vec<u32> = spawned.into_iter().collect();
+            assert_eq!(*observed.launches.lock().unwrap(), expected_launches);
+            let w6_live = game
+                .creatures
+                .projectiles
+                .iter()
+                .find(|p| p.id == 85)
+                .unwrap();
+            let a2_live = game
+                .creatures
+                .projectiles
+                .iter()
+                .find(|p| p.id == 86)
+                .unwrap();
+            assert_eq!(w6_live.join, w6_join);
+            assert_eq!(Some(a2_live.join), a2_join);
+            let a2_tag = a2_tag.unwrap();
+            let check_tick = |game: &Game<'_>, tick: usize| {
+                assert_boat_matches_witness(&witness, game, tick, boat_tag);
+                let (w6_pos, w6_mot) =
+                    wind_continuation_witness_26_3(&witness, tick, w6_tag).expect("w6 alive");
+                let (a2_pos, a2_mot) =
+                    wind_continuation_witness_26_3(&witness, tick, a2_tag).expect("a2 alive");
+                let w6 = game
+                    .creatures
+                    .projectiles
+                    .iter()
+                    .find(|p| p.id == 85)
+                    .unwrap();
+                let a2 = game
+                    .creatures
+                    .projectiles
+                    .iter()
+                    .find(|p| p.id == 86)
+                    .unwrap();
+                assert_vec3_bits(w6.position, w6_pos, "w6 pos");
+                assert_vec3_bits(w6.velocity, w6_mot, "w6 motion");
+                assert_vec3_bits(a2.position, a2_pos, "a2 pos");
+                assert_vec3_bits(a2.velocity, a2_mot, "a2 motion");
+            };
+            check_tick(game, 1);
+            for tick in 2..=4 {
+                game.ticked_entities_through = u32::MAX;
+                game.tick_projectiles().unwrap();
+                check_tick(game, tick);
+            }
+            assert_eq!(*observed.launches.lock().unwrap(), expected_launches);
+        });
     });
 }

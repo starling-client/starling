@@ -1,0 +1,13 @@
+version = 1
+doc = """\
+`RenderAssets::block_state_model` resolves a state of a block vanilla's `BuiltInBlockModels` also draws with a \
+special renderer (chests, shulker boxes, banners, heads and skulls, the bell, conduit, decorated pot, enchanting \
+table, copper golem statues, the end portal and gateway) to its composite model: the blockstate parts, then the \
+special renderer's geometry with no block entity data, as a block display shows it. `draw_model_instances`, \
+instance groups and `BlockEntityDrawContext::terrain_model` draw both parts; the special part takes the entity \
+materials, the copy's colour, no tint and no hidden faces, and blends as `entity_translucent` below opaque alpha \
+except the end portal's and gateway's starfield. `UnknownModel` is left for a state that draws nothing or one the \
+block-state index lacks."""
+tests = [
+  "crates/sunrise-client/src/game/modding/native_custom_geometry.rs::a_special_block_state_draws_its_renderer_and_a_faded_copy_blends",
+]

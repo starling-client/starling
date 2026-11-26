@@ -19,6 +19,9 @@ pub struct ThrownTrident {
     pub needs_sync: bool,
     pub yaw: f32,
     pub pitch: f32,
+    /// `Entity.yRotO` and `xRotO`: the yaw and pitch when its tick began (`setOldPosAndRot`).
+    pub previous_yaw: f32,
+    pub previous_pitch: f32,
     pub in_ground: bool,
     /// `AbstractArrow.inGroundTime`: the ticks it has been stuck, from 0 on
     /// load; past 4, Loyalty calls the trident back.
@@ -60,6 +63,9 @@ pub struct ThrownTrident {
     pub owner: u32,
     /// The guest that threw it (`Projectile.getOwner`); `None` for the host.
     pub guest: Option<u32>,
+    /// What `entity_size` answered at its last size refresh (`EntityEvent.Size`): its box takes
+    /// the answer while it holds for its vanilla size.
+    pub size_answer: Option<sunrise_client::pose::SizeAnswer>,
 }
 impl ThrownTrident {
     /// A trident loaded from its NBT (`AbstractArrow.readAdditionalSaveData`).
@@ -89,7 +95,11 @@ impl ThrownTrident {
         self.previous = n.position;
         self.yaw = n.yaw;
         self.pitch = n.pitch;
-        self.loyalty = n.item.enchantment_level("minecraft:loyalty");
+        // Entity.load ends with setOldPosAndRot.
+        self.previous_yaw = n.yaw;
+        self.previous_pitch = n.pitch;
+        // The server resolves Loyalty against its current enchantment table after this read.
+        self.loyalty = 0;
         self.stack = n.item;
         self.velocity = n.motion;
         self.in_ground = n.in_ground;
@@ -157,6 +167,7 @@ impl ThrownTrident {
     /// A trident a server sent (`handleAddEntity`): placed and moved by it.
     pub fn remote(id: u32, position: Vec3, yaw: f32, pitch: f32) -> Self {
         Self {
+            size_answer: None,
             attachment_lifetime: Default::default(),
             join: Default::default(),
             id,
@@ -167,6 +178,8 @@ impl ThrownTrident {
             needs_sync: false,
             yaw,
             pitch,
+            previous_yaw: yaw,
+            previous_pitch: pitch,
             in_ground: false,
             in_ground_time: 0,
             life: 0,

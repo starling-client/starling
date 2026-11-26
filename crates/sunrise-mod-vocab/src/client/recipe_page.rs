@@ -20,7 +20,7 @@ use crate::{FluidStack, Stack};
 /// this page.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
+// no wire: local client recipe-panel display data.
 pub struct RecipePage {
     /// The line beside the back button (an item's name, a recipe type's).
     pub title: String,
@@ -60,7 +60,7 @@ impl RecipePage {
 /// How the panel lays out a [`RecipeView`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
+// no wire: local client recipe-panel layout mode.
 pub enum RecipeLayout {
     /// A crafting grid of `width` x `height` slots, an arrow and the results.
     #[default]
@@ -79,7 +79,7 @@ pub enum RecipeLayout {
 /// chance in percent the recipe gives it.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
+// no wire: local client recipe-panel result slot display.
 pub struct RecipeResult {
     /// The stacks the slot cycles through; at most [`RecipeView::MAX_STACKS`], those past it are
     /// left out.
@@ -110,7 +110,7 @@ impl RecipeResult {
 /// left out of its cycle.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
+// no wire: local client recipe-panel entry display data.
 pub struct RecipeView {
     /// How the slots are laid out.
     pub layout: RecipeLayout,

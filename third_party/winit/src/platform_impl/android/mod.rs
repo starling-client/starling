@@ -34,6 +34,7 @@ pub(crate) use crate::icon::NoIcon as PlatformIcon;
 
 static HAS_FOCUS: AtomicBool = AtomicBool::new(true);
 
+<<<<<<< HEAD
 /// Sunrise's patch: the app's hook (`platform::android::set_input_hook`), which sees each input
 /// event before this backend turns it into window events.
 static INPUT_HOOK: std::sync::OnceLock<crate::platform::android::InputHook> =
@@ -384,6 +385,346 @@ impl<T: 'static> EventLoop<T> {
         if let Some(status) = INPUT_HOOK.get().and_then(|hook| hook(event)) {
             return status;
         }
+||||||| 46c00106def
+=======
+/// Returns the minimum `Option<Duration>`, taking into account that `None`
+/// equates to an infinite timeout, not a zero timeout (so can't just use
+/// `Option::min`)
+fn min_timeout(a: Option<Duration>, b: Option<Duration>) -> Option<Duration> {
+    a.map_or(b, |a_timeout| b.map_or(Some(a_timeout), |b_timeout| Some(a_timeout.min(b_timeout))))
+}
+
+struct PeekableReceiver<T> {
+    recv: mpsc::Receiver<T>,
+    first: Option<T>,
+}
+
+impl<T> PeekableReceiver<T> {
+    pub fn from_recv(recv: mpsc::Receiver<T>) -> Self {
+        Self { recv, first: None }
+    }
+
+    pub fn has_incoming(&mut self) -> bool {
+        if self.first.is_some() {
+            return true;
+        }
+        match self.recv.try_recv() {
+            Ok(v) => {
+                self.first = Some(v);
+                true
+            },
+            Err(mpsc::TryRecvError::Empty) => false,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                warn!("Channel was disconnected when checking incoming");
+                false
+            },
+        }
+    }
+
+    pub fn try_recv(&mut self) -> Result<T, mpsc::TryRecvError> {
+        if let Some(first) = self.first.take() {
+            return Ok(first);
+        }
+        self.recv.try_recv()
+    }
+}
+
+#[derive(Clone)]
+struct SharedFlagSetter {
+    flag: Arc<AtomicBool>,
+}
+impl SharedFlagSetter {
+    pub fn set(&self) -> bool {
+        self.flag.compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed).is_ok()
+    }
+}
+
+struct SharedFlag {
+    flag: Arc<AtomicBool>,
+}
+
+// Used for queuing redraws from arbitrary threads. We don't care how many
+// times a redraw is requested (so don't actually need to queue any data,
+// we just need to know at the start of a main loop iteration if a redraw
+// was queued and be able to read and clear the state atomically)
+impl SharedFlag {
+    pub fn new() -> Self {
+        Self { flag: Arc::new(AtomicBool::new(false)) }
+    }
+
+    pub fn setter(&self) -> SharedFlagSetter {
+        SharedFlagSetter { flag: self.flag.clone() }
+    }
+
+    pub fn get_and_reset(&self) -> bool {
+        self.flag.swap(false, std::sync::atomic::Ordering::AcqRel)
+    }
+}
+
+#[derive(Clone)]
+pub struct RedrawRequester {
+    flag: SharedFlagSetter,
+    waker: AndroidAppWaker,
+}
+
+impl RedrawRequester {
+    fn new(flag: &SharedFlag, waker: AndroidAppWaker) -> Self {
+        RedrawRequester { flag: flag.setter(), waker }
+    }
+
+    pub fn request_redraw(&self) {
+        if self.flag.set() {
+            // Only explicitly try to wake up the main loop when the flag
+            // value changes
+            self.waker.wake();
+        }
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub struct KeyEventExtra {}
+
+pub struct EventLoop<T: 'static> {
+    pub(crate) android_app: AndroidApp,
+    window_target: event_loop::ActiveEventLoop,
+    redraw_flag: SharedFlag,
+    user_events_sender: mpsc::Sender<T>,
+    user_events_receiver: PeekableReceiver<T>, // must wake looper whenever something gets sent
+    loop_running: bool,                        // Dispatched `NewEvents<Init>`
+    running: bool,
+    pending_redraw: bool,
+    cause: StartCause,
+    ignore_volume_keys: bool,
+    combining_accent: Option<char>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PlatformSpecificEventLoopAttributes {
+    pub(crate) android_app: Option<AndroidApp>,
+    pub(crate) ignore_volume_keys: bool,
+}
+
+impl Default for PlatformSpecificEventLoopAttributes {
+    fn default() -> Self {
+        Self { android_app: Default::default(), ignore_volume_keys: true }
+    }
+}
+
+impl<T: 'static> EventLoop<T> {
+    pub(crate) fn new(
+        attributes: &PlatformSpecificEventLoopAttributes,
+    ) -> Result<Self, EventLoopError> {
+        let (user_events_sender, user_events_receiver) = mpsc::channel();
+
+        let android_app = attributes.android_app.as_ref().expect(
+            "An `AndroidApp` as passed to android_main() is required to create an `EventLoop` on \
+             Android",
+        );
+        let redraw_flag = SharedFlag::new();
+
+        Ok(Self {
+            android_app: android_app.clone(),
+            window_target: event_loop::ActiveEventLoop {
+                p: ActiveEventLoop {
+                    app: android_app.clone(),
+                    control_flow: Cell::new(ControlFlow::default()),
+                    exit: Cell::new(false),
+                    redraw_requester: RedrawRequester::new(
+                        &redraw_flag,
+                        android_app.create_waker(),
+                    ),
+                },
+                _marker: PhantomData,
+            },
+            redraw_flag,
+            user_events_sender,
+            user_events_receiver: PeekableReceiver::from_recv(user_events_receiver),
+            loop_running: false,
+            running: false,
+            pending_redraw: false,
+            cause: StartCause::Init,
+            ignore_volume_keys: attributes.ignore_volume_keys,
+            combining_accent: None,
+        })
+    }
+
+    fn single_iteration<F>(&mut self, main_event: Option<MainEvent<'_>>, callback: &mut F)
+    where
+        F: FnMut(event::Event<T>, &RootAEL),
+    {
+        trace!("Mainloop iteration");
+
+        let cause = self.cause;
+        let mut pending_redraw = self.pending_redraw;
+        let mut resized = false;
+
+        callback(event::Event::NewEvents(cause), self.window_target());
+
+        if let Some(event) = main_event {
+            trace!("Handling main event {:?}", event);
+
+            match event {
+                MainEvent::InitWindow { .. } => {
+                    callback(event::Event::Resumed, self.window_target());
+                },
+                MainEvent::TerminateWindow { .. } => {
+                    callback(event::Event::Suspended, self.window_target());
+                },
+                MainEvent::WindowResized { .. } => resized = true,
+                MainEvent::RedrawNeeded { .. } => pending_redraw = true,
+                MainEvent::ContentRectChanged { .. } => {
+                    warn!("TODO: find a way to notify application of content rect change");
+                },
+                MainEvent::GainedFocus => {
+                    HAS_FOCUS.store(true, Ordering::Relaxed);
+                    callback(
+                        event::Event::WindowEvent {
+                            window_id: window::WindowId(WindowId),
+                            event: event::WindowEvent::Focused(true),
+                        },
+                        self.window_target(),
+                    );
+                },
+                MainEvent::LostFocus => {
+                    HAS_FOCUS.store(false, Ordering::Relaxed);
+                    callback(
+                        event::Event::WindowEvent {
+                            window_id: window::WindowId(WindowId),
+                            event: event::WindowEvent::Focused(false),
+                        },
+                        self.window_target(),
+                    );
+                },
+                MainEvent::ConfigChanged { .. } => {
+                    let monitor = MonitorHandle::new(self.android_app.clone());
+                    let old_scale_factor = monitor.scale_factor();
+                    let scale_factor = monitor.scale_factor();
+                    if (scale_factor - old_scale_factor).abs() < f64::EPSILON {
+                        let new_inner_size = Arc::new(Mutex::new(
+                            MonitorHandle::new(self.android_app.clone()).size(),
+                        ));
+                        let event = event::Event::WindowEvent {
+                            window_id: window::WindowId(WindowId),
+                            event: event::WindowEvent::ScaleFactorChanged {
+                                inner_size_writer: InnerSizeWriter::new(Arc::downgrade(
+                                    &new_inner_size,
+                                )),
+                                scale_factor,
+                            },
+                        };
+                        callback(event, self.window_target());
+                    }
+                },
+                MainEvent::LowMemory => {
+                    callback(event::Event::MemoryWarning, self.window_target());
+                },
+                MainEvent::Start => {
+                    // XXX: how to forward this state to applications?
+                    warn!("TODO: forward onStart notification to application");
+                },
+                MainEvent::Resume { .. } => {
+                    debug!("App Resumed - is running");
+                    self.running = true;
+                },
+                MainEvent::SaveState { .. } => {
+                    // XXX: how to forward this state to applications?
+                    // XXX: also how do we expose state restoration to apps?
+                    warn!("TODO: forward saveState notification to application");
+                },
+                MainEvent::Pause => {
+                    debug!("App Paused - stopped running");
+                    self.running = false;
+                },
+                MainEvent::Stop => {
+                    // XXX: how to forward this state to applications?
+                    warn!("TODO: forward onStop notification to application");
+                },
+                MainEvent::Destroy => {
+                    // XXX: maybe exit mainloop to drop things before being
+                    // killed by the OS?
+                    warn!("TODO: forward onDestroy notification to application");
+                },
+                MainEvent::InsetsChanged { .. } => {
+                    // XXX: how to forward this state to applications?
+                    warn!("TODO: handle Android InsetsChanged notification");
+                },
+                unknown => {
+                    trace!("Unknown MainEvent {unknown:?} (ignored)");
+                },
+            }
+        } else {
+            trace!("No main event to handle");
+        }
+
+        // temporarily decouple `android_app` from `self` so we aren't holding
+        // a borrow of `self` while iterating
+        let android_app = self.android_app.clone();
+
+        // Process input events
+        match android_app.input_events_iter() {
+            Ok(mut input_iter) => loop {
+                let read_event =
+                    input_iter.next(|event| self.handle_input_event(&android_app, event, callback));
+
+                if !read_event {
+                    break;
+                }
+            },
+            Err(err) => {
+                tracing::warn!("Failed to get input events iterator: {err:?}");
+            },
+        }
+
+        // Empty the user event buffer
+        {
+            while let Ok(event) = self.user_events_receiver.try_recv() {
+                callback(crate::event::Event::UserEvent(event), self.window_target());
+            }
+        }
+
+        if self.running {
+            if resized {
+                let size = if let Some(native_window) = self.android_app.native_window().as_ref() {
+                    let width = native_window.width() as _;
+                    let height = native_window.height() as _;
+                    PhysicalSize::new(width, height)
+                } else {
+                    PhysicalSize::new(0, 0)
+                };
+                let event = event::Event::WindowEvent {
+                    window_id: window::WindowId(WindowId),
+                    event: event::WindowEvent::Resized(size),
+                };
+                callback(event, self.window_target());
+            }
+
+            pending_redraw |= self.redraw_flag.get_and_reset();
+            if pending_redraw {
+                pending_redraw = false;
+                let event = event::Event::WindowEvent {
+                    window_id: window::WindowId(WindowId),
+                    event: event::WindowEvent::RedrawRequested,
+                };
+                callback(event, self.window_target());
+            }
+        }
+
+        // This is always the last event we dispatch before poll again
+        callback(event::Event::AboutToWait, self.window_target());
+
+        self.pending_redraw = pending_redraw;
+    }
+
+    fn handle_input_event<F>(
+        &mut self,
+        android_app: &AndroidApp,
+        event: &InputEvent<'_>,
+        callback: &mut F,
+    ) -> InputStatus
+    where
+        F: FnMut(event::Event<T>, &RootAEL),
+    {
+>>>>>>> ed6772e2118
         let mut input_status = InputStatus::Handled;
         match event {
             InputEvent::MotionEvent(motion_event) => {

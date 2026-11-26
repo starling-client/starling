@@ -430,15 +430,33 @@ fn component_from_stream_value(
     }
     let mut w = Writer::new();
     encode(kind, value, &mut w, ids, depth)?;
-    if !matches!(kind,0..=4|6|9..=13|17..=21|30|45|47|48|50|53|55..=58|63|65|69..=72|74|75|109)
-        || matches!(
-            (kind, value),
-            (63, Value::Map(_)) | (109, Value::StreamOnly(_))
-        )
-        || kind == 74
-            && list(value)?
-                .iter()
-                .any(|v| !matches!(field(v, "pattern"), Some(Value::String(_))))
+    if !matches!(
+        kind,
+        0..=4
+            | 6
+            | 9..=13
+            | 17..=21
+            | 30
+            | 35
+            | 45
+            | 47
+            | 48
+            | 50
+            | 53
+            | 55..=58
+            | 63
+            | 65
+            | 69..=72
+            | 74
+            | 75
+            | 109
+    ) || matches!(
+        (kind, value),
+        (63, Value::Map(_)) | (109, Value::StreamOnly(_))
+    ) || kind == 74
+        && list(value)?
+            .iter()
+            .any(|v| !matches!(field(v, "pattern"), Some(Value::String(_))))
     {
         return Ok(Component::Raw(w.data));
     }

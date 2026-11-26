@@ -1,0 +1,6 @@
+ids = [
+    "handle:LevelRef::entity_by_uuid",
+    "method:prelude::EntitiesServerHost::entity_by_uuid",
+]
+why = "`LevelRef::entity_by_uuid` is vanilla 26.3's `ServerLevel.getEntity(UUID)` (NeoForge mods call the same vanilla method): it reads the named open level's UUID index, whether that level is in place for the hook or parked, with the same `None` cases the in-place lookup had. A lookup across every level asks the hook's own level first, then the other levels of `host.levels().list_levels()`, as vanilla's `ServerLevel.getEntityInAnyDimension(UUID)` does. The in-place `EntitiesServerHost::entity_by_uuid` is removed: the handle method covers it."
+migrate = "Replace `host.entity_by_uuid(uuid)` with `level.entity_by_uuid(host, uuid)` on the level that should hold the entity: the hook's own level (its event's `level`, or `host.level(dimension)`) keeps the old answer; to search every level, ask the hook's own level first, then the others of `host.levels().list_levels()`, as vanilla's `ServerLevel.getEntityInAnyDimension(UUID)` does."

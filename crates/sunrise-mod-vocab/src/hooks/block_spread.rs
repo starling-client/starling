@@ -1,5 +1,4 @@
 //! The `block_spread` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0040
 
 pub trait Hooks {
     /// On an authoritative server, a fluid flows or fire spreads from `from`

@@ -7,10 +7,11 @@ import re
 import subprocess
 import tempfile
 
-try:
-    from . import lab, oracle_harness as harness, test_rust_parity as base, integration_env
-except ImportError:
-    import lab, oracle_harness as harness, test_rust_parity as base, integration_env
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, oracle_harness as harness, test_rust_parity as base, integration_env
 
 
 def rows(path):
@@ -43,17 +44,7 @@ def main():
         harness.java_run(build, classes, dependencies, 'VanillaNativeEntityMovesOracle',
                          [fixture, output], side)
         assert rows(output) == expected, f'{side}: committed outcomes differ from vanilla'
-    harness.run_logged(['cargo', 'test', '--locked', '-p', 'sunrise-client', '--lib', '--no-run', '--message-format=json'],
-                       build, 'compile-rust', timeout=3600)
-    artifacts = [json.loads(line) for line in (build / 'compile-rust.log').read_text().splitlines()
-                 if line.startswith('{')]
-    executables = {record['executable'] for record in artifacts
-                   if record.get('reason') == 'compiler-artifact' and record.get('executable')
-                   and record.get('profile', {}).get('test')
-                   and record['target']['name'] == 'sunrise_client'
-                   and 'lib' in record['target']['kind']}
-    assert len(executables) == 1, executables
-    executable = executables.pop()
+    executable = lab.parity_fixtures()
     with tempfile.TemporaryDirectory(prefix='sunrise-move-properties-') as scratch:
         env = integration_env.game_environment(os.environ, scratch)
         for key in ('XDG_CACHE_HOME', 'TMPDIR', 'SUNRISE_LAUNCHER_TRASH',

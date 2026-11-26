@@ -244,7 +244,7 @@ pub fn main() -> sunrise_client::Result<()> {
     let items = Items::catalog(root, &PackOverlay::NONE, &defaults)?;
     let enchantments = Enchantments::load(root, &defaults)?;
     let names = sunrise_client::creative::Names::default();
-    let trades = Trades::load(root, &PackOverlay::NONE);
+    let trades = Trades::load(root, &PackOverlay::NONE)?;
     let recipes = sunrise_client::crafting::Recipes::load(
         root,
         &items,
@@ -539,7 +539,31 @@ fn trade(
             "close" if open_menu => {
                 menu.merchant_close(env);
                 open_menu = false;
-                session_after = Some(menu.merchant.take().ok_or("session")?);
+                let session = menu.merchant.take().ok_or("session")?;
+                // Game::merchant_closed: the mob gets the screen's offers.
+                m.trader.offers.clone_from(&session.offers);
+                session_after = Some(session);
+            }
+            "restock" if m.villager => {
+                let time: i64 = f[1].parse()?;
+                let day: i64 = f[2].parse()?;
+                // The mob's offers are the screen's (the game keeps them live):
+                // the brain restocks them, then the screen refreshes its prices.
+                if let Some(sess) = menu.merchant.as_mut() {
+                    m.trader.offers.clone_from(&sess.offers);
+                }
+                let caught = m.trader.catch_up(time, day).is_some();
+                let due = m.trader.restock_due(time);
+                if due {
+                    m.trader.restock(time);
+                }
+                if let Some(sess) = menu.merchant.as_mut()
+                    && (caught || due)
+                {
+                    sess.offers.clone_from(&m.trader.offers);
+                    sess.update_special_prices();
+                    menu.merchant_update(env);
+                }
             }
             _ => {}
         }
@@ -575,7 +599,12 @@ fn trade(
                         _ => {}
                     }
                 }
-                (sess.xp, sess.level, sess.offers.clone(), orbs)
+                let offers = if open_menu {
+                    sess.offers.clone()
+                } else {
+                    m.trader.offers.clone()
+                };
+                (sess.xp, sess.level, offers, orbs)
             }
             None => (m.trader.xp, m.level, m.trader.offers.clone(), Vec::new()),
         };
@@ -591,10 +620,11 @@ fn trade(
         for o in &offers {
             write!(
                 line,
-                " {}/{}/{}",
+                " {}/{}/{}/{}",
                 o.uses,
                 o.special_price_diff,
-                o.cost_a_count(env.items)
+                o.cost_a_count(env.items),
+                o.demand
             )?;
         }
         line.push_str(" orbs");

@@ -1,0 +1,1 @@
+sunrise-client-render gfx::entity_pixel_test::hud_lightmapped_special_item_samples_frame_lightmap_without_disturbing_neighbour lib daily slow

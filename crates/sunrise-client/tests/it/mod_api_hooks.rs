@@ -70,28 +70,154 @@ fn client_packet_hands_a_mod_the_type_and_custom_payload() {
                 HEARD
                     .lock()
                     .unwrap()
-                    .push((p.channel.clone(), p.data.clone()));
+                    .push((p.channel.to_owned(), p.data.to_vec()));
             }
         }
     }
     mod_platform::testing::with_mods(vec![ModEntry::new("channels", hooks())].into(), || {
+        let ping = Identifier::parse("minecraft:ping").unwrap();
+        dispatch_client_packet(&mut FakeHost::new(), &ClientPacket::new(&ping, None));
+        let custom = Identifier::parse("minecraft:custom_payload").unwrap();
+        let payload = ClientPayload::new("voicechat:secret", &[1, 2, 3]);
         dispatch_client_packet(
             &mut FakeHost::new(),
-            &ClientPacket::new(Identifier::parse("minecraft:ping").unwrap(), None),
-        );
-        let payload = ClientPayload::new("voicechat:secret".into(), vec![1, 2, 3]);
-        dispatch_client_packet(
-            &mut FakeHost::new(),
-            &ClientPacket::new(
-                Identifier::parse("minecraft:custom_payload").unwrap(),
-                Some(payload),
-            ),
+            &ClientPacket::new(&custom, Some(payload)),
         );
     });
     assert_eq!(
         *HEARD.lock().unwrap(),
         [("voicechat:secret".to_string(), vec![1, 2, 3])]
     );
+}
+
+#[test]
+fn packet_hook_panics_disable_only_the_failed_callback_and_keep_accepted_answers() {
+    use mod_api::{
+        ClientPacket, ClientPacketEvent, ClientPacketSendEvent, Flow, Identifier,
+        dispatch_client_packet, dispatch_client_packet_send,
+    };
+    use mod_platform::testing::{FakeHost, with_mods};
+    use std::sync::{Arc, LazyLock, Mutex};
+
+    #[derive(Debug, PartialEq, Eq)]
+    enum Visit {
+        FailedReceive,
+        FailedSend(bool),
+        Received(String),
+        Sending(String, bool),
+    }
+    type Trace = Arc<Mutex<Vec<Visit>>>;
+
+    static OTHER_ID: LazyLock<Identifier> =
+        LazyLock::new(|| Identifier::parse("sunrise:other").unwrap());
+    static OTHER: LazyLock<ClientPacket<'static>> =
+        LazyLock::new(|| ClientPacket::new(&OTHER_ID, None));
+
+    struct First(Flow);
+    #[mod_api::__subscriptions]
+    impl Hooks for First {
+        fn client_packet(&self, _: &mut dyn ClientHost, event: &mut ClientPacketEvent<'_>) {
+            event.packet = &OTHER;
+        }
+
+        fn client_packet_send(
+            &self,
+            _: &dyn ClientHost,
+            event: &mut ClientPacketSendEvent<'_>,
+        ) -> Flow {
+            event.packet = &OTHER;
+            self.0
+        }
+    }
+
+    struct Broken(Trace);
+    #[mod_api::__subscriptions]
+    impl Hooks for Broken {
+        fn client_packet(&self, _: &mut dyn ClientHost, _: &mut ClientPacketEvent<'_>) {
+            self.0.lock().unwrap().push(Visit::FailedReceive);
+            panic!("receiver panicked");
+        }
+
+        #[listener(receive_cancelled)]
+        fn client_packet_send(
+            &self,
+            _: &dyn ClientHost,
+            event: &mut ClientPacketSendEvent<'_>,
+        ) -> Flow {
+            self.0
+                .lock()
+                .unwrap()
+                .push(Visit::FailedSend(event.cancelled));
+            event.cancelled = !event.cancelled;
+            panic!("send observer panicked");
+        }
+    }
+
+    struct Healthy(Trace);
+    #[mod_api::__subscriptions]
+    impl Hooks for Healthy {
+        fn client_packet(&self, _: &mut dyn ClientHost, event: &mut ClientPacketEvent<'_>) {
+            self.0
+                .lock()
+                .unwrap()
+                .push(Visit::Received(event.packet.id.to_string()));
+        }
+
+        #[listener(receive_cancelled)]
+        fn client_packet_send(
+            &self,
+            _: &dyn ClientHost,
+            event: &mut ClientPacketSendEvent<'_>,
+        ) -> Flow {
+            self.0
+                .lock()
+                .unwrap()
+                .push(Visit::Sending(event.packet.id.to_string(), event.cancelled));
+            Flow::Continue
+        }
+    }
+
+    let ping = Identifier::parse("minecraft:ping").unwrap();
+    let pong = Identifier::parse("minecraft:pong").unwrap();
+    let incoming = ClientPacket::new(&ping, None);
+    let outgoing = ClientPacket::new(&pong, None);
+    for (first, accepted) in [(Flow::Continue, false), (Flow::Cancel, true)] {
+        let trace = Trace::default();
+        with_mods(
+            vec![
+                ModEntry::new("first_packet_listener", Box::new(First(first))),
+                ModEntry::new(
+                    "broken_packet_listener",
+                    Box::new(Broken(Arc::clone(&trace))),
+                ),
+                ModEntry::new(
+                    "healthy_packet_listener",
+                    Box::new(Healthy(Arc::clone(&trace))),
+                ),
+            ]
+            .into(),
+            || {
+                let mut host = FakeHost::new();
+                for _ in 0..2 {
+                    dispatch_client_packet(&mut host, &incoming);
+                    let mut canceled = false;
+                    dispatch_client_packet_send(&host, &outgoing, &mut canceled);
+                    assert_eq!(canceled, accepted);
+                }
+            },
+        );
+        assert_eq!(
+            *trace.lock().unwrap(),
+            [
+                Visit::FailedReceive,
+                Visit::Received("minecraft:ping".into()),
+                Visit::FailedSend(accepted),
+                Visit::Sending("minecraft:pong".into(), accepted),
+                Visit::Received("minecraft:ping".into()),
+                Visit::Sending("minecraft:pong".into(), accepted),
+            ]
+        );
+    }
 }
 
 // Fluid acceptance is scoped to a FLUIDS provider, not a global Hooks method.
@@ -153,7 +279,11 @@ mod model_layers {
                         ("second", "second:golem#main")
                     ]
                 );
-                let model = (layers[0].answer.supplier)().bake_root();
+                let model = layers[0]
+                    .answer
+                    .build(layers[0].mod_id)
+                    .expect("layer builds")
+                    .bake_root();
                 let head = model.get_child("head").expect("the head part");
                 assert_eq!((head.y, head.polygons.len()), (6.0, 6));
             },

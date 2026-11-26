@@ -2,7 +2,7 @@ import contextlib
 import io
 import unittest
 
-from hotspots_repo import Repo
+from tests.hotspots_repo import Repo
 from tools.hotspots import open_prs
 
 

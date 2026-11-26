@@ -1,0 +1,1 @@
+cargo-sunrise-mod installed_lower_bends_and_routes_a_client_model test:installed_client_draw daily own-sdk # Builds lower against this build's client SDK and measures the loaded rows' emitted geometry in a fresh process.

@@ -4,14 +4,123 @@
 //! line naming a mod command parses with no hub; a hub, once there is one, takes that same tree.
 
 use super::{
-    CommandArguments, CommandExecutorSlots, Game, command_arguments, command_tree_for,
+    BaseTree, CommandArguments, CommandExecutorSlots, Game, command_arguments, command_tree_for,
     register_command_nodes,
 };
 use mod_api::__private::{
-    CommandExecutor, RetainedCallback, mod_index, split_command_registration,
+    ClientCommandExecutor, CommandExecutor, RetainedCallback, RetainedFailure, mod_index,
+    split_command_registration,
 };
 use serde_json::Value;
 use std::{collections::HashMap, sync::Arc};
+
+pub(in crate::game) struct RegisteredClientExecutor {
+    pub(super) callback: RetainedCallback,
+    call: Option<Arc<ClientCommandExecutor>>,
+}
+
+impl RegisteredClientExecutor {
+    pub(in crate::game) fn new(
+        owner: &'static str,
+        index: usize,
+        usage: &str,
+        call: Arc<ClientCommandExecutor>,
+    ) -> Self {
+        Self {
+            callback: RetainedCallback::new(owner, index, "client_command.execute", usage),
+            call: Some(call),
+        }
+    }
+
+    pub(super) fn execute(
+        &self,
+        host: &mut dyn mod_api::ClientHost,
+        invocation: &mod_api::CommandInvocation,
+    ) -> Result<Option<i32>, RetainedFailure> {
+        let call = self.call.as_ref().expect("live client executor");
+        self.callback.call(|| call(host, invocation))
+    }
+}
+
+impl Drop for RegisteredClientExecutor {
+    fn drop(&mut self) {
+        self.callback
+            .dispose("client_command.drop", self.call.take());
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::game) enum PendingClientCommandKind {
+    Signed,
+    Unattended,
+}
+
+/// An invocation path, shared by all submissions from the same executor. Use the retained
+/// registration identity rather than a parsed node, which can change on a tree refresh.
+pub(in crate::game) struct ClientCommandChain {
+    pub(super) executor: RetainedCallback,
+    pub(super) parent: Option<Arc<Self>>,
+}
+
+pub(in crate::game) struct PendingClientCommand {
+    pub(super) command: String,
+    pub(super) kind: PendingClientCommandKind,
+    pub(super) chain: Arc<ClientCommandChain>,
+}
+
+/// The client's own native mod commands, bound to the current client dispatcher generation.
+pub(in crate::game) struct NativeClientCommandState {
+    pub(in crate::game) dispatcher: sunrise_client::command::Dispatcher,
+    pub(super) executors: Vec<Option<Arc<RegisteredClientExecutor>>>,
+    /// Present while an executor runs; nested slash submissions inherit this path and wait
+    /// for the client event loop instead of re-entering synchronously.
+    pub(super) active_chain: Option<Arc<ClientCommandChain>>,
+    pub(in crate::game) pending_commands: Vec<PendingClientCommand>,
+    /// Present while `client_chat` listeners run; a chat message a listener submits waits for
+    /// the next event-loop wave instead of re-entering the hook synchronously.
+    pub(in crate::game) chat_dispatching: bool,
+    pub(in crate::game) pending_chats: Vec<String>,
+}
+
+impl Default for NativeClientCommandState {
+    fn default() -> Self {
+        Self {
+            dispatcher: sunrise_client::command::Dispatcher::new(),
+            executors: Vec::new(),
+            active_chain: None,
+            pending_commands: Vec::new(),
+            chat_dispatching: false,
+            pending_chats: Vec::new(),
+        }
+    }
+}
+
+impl NativeClientCommandState {
+    pub(in crate::game) fn defer(&mut self, command: &str, kind: PendingClientCommandKind) -> bool {
+        let Some(chain) = self.active_chain.clone() else {
+            return false;
+        };
+        self.pending_commands.push(PendingClientCommand {
+            command: command.to_owned(),
+            kind,
+            chain,
+        });
+        true
+    }
+
+    pub(in crate::game) fn install(
+        &mut self,
+        dispatcher: sunrise_client::command::Dispatcher,
+        executors: Vec<Option<RegisteredClientExecutor>>,
+    ) {
+        self.dispatcher = dispatcher;
+        // A panicking retired callable may disable its replacement in the shared quarantine.
+        self.executors = executors
+            .into_iter()
+            .map(|entry| entry.map(Arc::new))
+            .collect();
+    }
+}
 
 pub(super) struct RegisteredExecutor {
     pub(super) callback: RetainedCallback,
@@ -80,11 +189,10 @@ impl Game<'_> {
             features,
         );
         let arguments = command_arguments();
-        let hub = self.lan.as_ref().map(|host| &host.hub);
         let mut slots = HashMap::new();
         let (tree, levels, problems) = command_tree_for(
             &usages,
-            |name| hub.is_some_and(|hub| hub.vanilla_command(name)) || vanilla.find(name).is_some(),
+            BaseTree::Merged(&vanilla),
             &arguments,
             false,
             Some(&mut slots),
@@ -102,6 +210,8 @@ impl Game<'_> {
         });
         state.display_revision = state.display_revision.wrapping_add(1);
         self.ui.dispatcher.0 = Arc::new(vanilla);
+        self.ui.registries.selector_tokens =
+            super::super::native_entity_selectors::selector_tokens();
         self.rebind_native_commands();
     }
 
@@ -127,26 +237,26 @@ impl Game<'_> {
         let state = &self.native_commands;
         if state.registered.is_none() {
             if force_resend {
-                self.resend_commands_filtered();
+                self.send_placed_command_trees(false);
             }
             return;
         }
         let revision = Some(state.display_revision);
         let replacing = host.native_commands_sent.is_some();
         if host.native_commands_sent != revision {
-            let tree = without_reserved_roots(&state.report, |name| host.hub.vanilla_command(name));
+            // The hub merges a root vanilla has into vanilla's node (`CommandTree::packet_with`).
+            let tree = state.report.clone();
             host.native_commands_sent = revision;
             host.hub
-                .set_selector_tokens(super::super::native_entity_selectors::selector_tokens());
-            if !force_resend && !replacing {
-                host.hub.set_mod_commands(0, tree);
+                .set_selector_tokens(self.ui.registries.selector_tokens.clone());
+            let changed = host.hub.set_mod_commands(0, tree);
+            if !force_resend && !replacing && !changed {
                 return;
             }
-            host.hub.store_mod_commands(0, tree);
         } else if !force_resend {
             return;
         }
-        self.resend_commands_filtered();
+        self.send_placed_command_trees(false);
     }
 
     /// Restore mod nodes (and rebind their executors) after vanilla replaces the tree.
@@ -165,8 +275,11 @@ impl Game<'_> {
         };
         let dispatcher = Arc::make_mut(&mut self.ui.dispatcher.0);
         // A replacement can add a session tool, e.g. pregen. Never overwrite its nodes
-        // or advertise a mod usage behind the tool's name.
-        let report = without_reserved_roots(&commands.tree, |name| dispatcher.find(name).is_some());
+        // or advertise a mod usage behind the tool's name. Vanilla's roots take mod usages.
+        let report = without_reserved_roots(&commands.tree, |name| {
+            sunrise_client::command::vanilla::is_session_tool(name)
+                && dispatcher.find(name).is_some()
+        });
         register_command_nodes(
             dispatcher,
             &report,

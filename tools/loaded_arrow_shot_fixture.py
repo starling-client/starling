@@ -1,8 +1,8 @@
 import hashlib,json,sys,uuid
 from pathlib import Path
-sys.path.insert(0,str(Path.cwd()/'tools'))
-import test_command_exec_parity as driver
-import harness_args
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_command_exec_parity as driver, harness_args
 OWNER='00000072-0000-0000-0000-000000000063'
 CASES=[('positive',None),('omitted',None),('false',0),('true',1),('crossbow',None)]
 TIMES=[0,1,3,4,6]

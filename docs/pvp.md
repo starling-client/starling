@@ -20,7 +20,7 @@ Each feature is built from what it visibly does, never from another client's or 
 | Part | Code |
 |---|---|
 | Settings, parsing, the page's rows | `crates/sunrise-client-render/src/pvp.rs` (stored in `sunrise-extras.txt`, see [extras.md](extras.md)) |
-| The page | `options_ui.rs` (`Page::Pvp`), the rows of `pvp::rows()` drawn like the Extras page |
+| The page | `options_ui.rs` (`Page::Pvp`), the rows of `pvp::rows()`, opened from Sunrise Settings' Extras page |
 | Game glue | `crates/sunrise-client/src/game/extras/pvp.rs` |
 
 ## Crosshair (`crosshair`, default off)
@@ -174,7 +174,7 @@ block-hit packets), so vanilla servers and their anticheats see nothing new. Cod
 
 ## PvP preset
 
-The **PvP preset** button (first on the PvP & HUD page and on Sunrise Extras) turns on, in one click: the custom
+The **PvP preset** button (first on the PvP & HUD page) turns on, in one click: the custom
 crosshair, the armour and effects widgets, vanilla's Toggle Sprint and Toggle Sneak (Controls), lower fire (40% unless
 already set), and the official FPS counter and keystrokes (with CPS) native mods when they are installed
 (`pvp::PRESET_MODS`). It only turns things on and keeps each option's own settings, so any of them can be turned

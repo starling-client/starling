@@ -1,5 +1,11 @@
 [workspace]
+<<<<<<< HEAD
 exclude = ["crates/sunrise-telemetry-server", "crates/sunrise-mod-registry", "third_party/wgpu-hal", "third_party/naga", "third_party/libmimalloc-sys", "third_party/android-activity", "third_party/winit", "tools/fixtures/paper-trace-mod"]
+||||||| 46c00106def
+exclude = ["crates/sunrise-telemetry-server", "crates/sunrise-mod-registry", "third_party/wgpu-hal", "third_party/naga", "third_party/libmimalloc-sys", "tools/fixtures/paper-trace-mod"]
+=======
+exclude = ["crates/sunrise-telemetry-server", "crates/sunrise-mod-registry", "third_party/wgpu-hal", "third_party/naga", "third_party/libmimalloc-sys", "third_party/winit", "tools/fixtures/paper-trace-mod", "tools/fixtures/mod-pipeline-bench"]
+>>>>>>> ed6772e2118
 members = [
     "crates/starling-catalog",
     "crates/starling-platform",
@@ -24,8 +30,13 @@ members = [
     "crates/sunrise-hdr",
     "crates/sunrise-world",
     "crates/sunrise-client",
+<<<<<<< HEAD
     # Starling: the game as a NativeActivity library; empty on other targets.
     "crates/sunrise-android",
+||||||| 46c00106def
+=======
+    "crates/sunrise-parity-fixtures",
+>>>>>>> ed6772e2118
     "crates/sunrise-internals",
     "crates/sunrise-client-lib",
     "crates/sunrise-gameplay",
@@ -59,6 +70,7 @@ members = [
     "crates/sunrise-friends",
     "crates/sunrise-relay",
     "crates/sunrise-mod-package",
+    "crates/sunrise-attestation",
     "crates/sunrise-mod-api-gen",
     "crates/sunrise-stage",
     "crates/sunrise-mod-api",
@@ -70,16 +82,19 @@ members = [
     "crates/sunrise-native-build",
     "crates/sunrise-mod-api-gen/dispatch-tests",
     "crates/cargo-sunrise-mod",
+    "crates/sunrise-jar-fetch",
     "crates/sunrise-port-pack",
     "crates/sunrise-proxy",
+    "crates/sunrise-glsl",
     "crates/sunrise-shaders",
     "crates/sunrise-connected",
     "crates/sunrise-optifine",
     "crates/sunrise-polytone",
-    "crates/sunrise-shader-api",
+    "crates/sunrise-mod-pipeline",
     "crates/sunrise-release-sign",
     "crates/starling-account",
     "crates/sunrise-mod-deps",
+    "crates/sunrise-dependency-rule",
     "xtask",
 ]
 resolver = "2"
@@ -127,6 +142,8 @@ naga = { path = "third_party/naga" }
 # game died before main on CPUs without it (Core 2, #7264; THIRD_PARTY_NOTICES.md). Drop this and
 # the folder once a libmimalloc-sys release has microsoft/mimalloc#1291's fix.
 libmimalloc-sys = { path = "third_party/libmimalloc-sys" }
+# winit 0.30.13 whose X11 raw motion comes from the slave pointers, once each under its pointer grab (#3022; THIRD_PARTY_NOTICES.md).
+winit = { path = "third_party/winit" }
 
 # Line tables keep file:line in backtraces; full debug info made every
 # example and test binary hundreds of megabytes and slow to link.
@@ -150,12 +167,26 @@ opt-level = 3
 opt-level = 3
 [profile.dev.package.proc-macro2]
 opt-level = 3
+# shader_fuzz's fixed-seed test loads its cases through the shader pack translator (sunrise-shaders on naga): 2.5 s of
+# CPU unoptimized, which verify's busy runners stretched to 5.5-8 s against its 5 s limit; 1.0 s with both at level 3.
+[profile.dev.package.naga]
+opt-level = 3
+[profile.dev.package.sunrise-shaders]
+opt-level = 3
 # The parity runner builds at opt-level 3 (CARGO_PROFILE_DEV_OPT_LEVEL, tools/parity.py), and harnesses that run
 # `cargo test -p sunrise-client --lib` compiled its lib test there in one rustc of 15.2 GiB, whatever the job count,
 # which a 16 GiB parity runner killed (signal 9, mount_control, 2026-11-16). At opt-level 0, the test profile's own
 # level and verify's, it takes 12.0 GiB and 124 s instead of 378 s; its dependencies stay at the runner's level.
+# Its line tables went too: verify's build of this lib test (the whole game plus every in-crate test module in one
+# rustc) filled the 16 GiB runner and was killed by signal 9 at -j4 and again at -j1 (rollup 179 at 26a4df3591, run
+# 45333586536: memory.peak 16 GiB, oom_kill 2). A test's panic keeps its file and line without debuginfo; only
+# backtraces lose their lines.
 [profile.test.package.sunrise-client]
 opt-level = 0
+debug = 0
+# 256 smaller codegen units instead of the non-incremental 16: this lib test's rustc at Rollup 218 peaked at 16.4 GiB
+# with 16 and 14.1 GiB with 256 (8 jobs), and compiled in 2m54 instead of 4m04 (sunrise#5839).
+codegen-units = 256
 # The same for sunrise-client-lib's lib test, which a dozen harnesses run: 6.3 GiB and 253 s at opt-level 0 against
 # 8.7 GiB and 349 s at 3 (damage_catalog's build of it beside sunrise-client's was killed, main, run 43884739298).
 [profile.test.package.sunrise-client-lib]
@@ -176,7 +207,8 @@ codegen-units = 1
 # Optimized but quick-to-link builds for iteration: cargo build --profile fast
 [profile.fast]
 inherits = "release"
-lto = false
+# Not `false`: mbx compiles opt-level 2+ incrementally only with lto "off", and an edit then rebuilt sunrise-client whole.
+lto = "off"
 codegen-units = 16
 incremental = true
 

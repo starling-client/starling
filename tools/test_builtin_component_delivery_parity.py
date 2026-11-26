@@ -18,12 +18,11 @@ import subprocess
 import time
 import uuid
 PARITY_MANUAL = "a proof run by hand, once per side: --side java, then --side native, each with --binary BIN"  # not a harness: tools/parity.py leaves it out
-try:
-    from . import anvil_dump as nbt, net_capture, test_locator_bar_parity as net
-except ImportError:
-    import anvil_dump as nbt
-    import net_capture
-    import test_locator_bar_parity as net
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import anvil_dump as nbt, net_capture, test_locator_bar_parity as net
 
 def offline(name):
     raw = bytearray(hashlib.md5(f'OfflinePlayer:{name}'.encode()).digest())

@@ -1,5 +1,4 @@
 //! The `state_for_placement` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0089
 
 pub trait Hooks {
     /// Choose a block's placement candidate (`Block.getStateForPlacement(BlockPlaceContext)`),
@@ -17,9 +16,16 @@ pub trait Hooks {
     /// game-master block. An unknown state falls back to ordinary placement.
     /// Refuse with `Some(None)`: the block goes nowhere and the stack is kept,
     /// as vanilla's `null`. Left empty, the block's own placement runs. `context` is
-    /// vanilla's `BlockPlaceContext` (the clicked face, the placer's rotation,
-    /// the clicked position, whether the clicked block is being replaced, the
-    /// item key in hand, not an item stack or its components) and `fluid`
+    /// vanilla's `BlockPlaceContext` (the clicked face, the clicked position,
+    /// `source` distinguishing `PlacementSource::Player { yaw, pitch, sneaking }`
+    /// from a non-player `PlacementSource::Directional { direction }`, whether the
+    /// clicked block is being replaced, and the item key in hand, not an item stack
+    /// or its components). For a directional source, whether the clicked block is
+    /// replaced is the game's answer from the clicked block, as
+    /// `DirectionalPlaceContext.replacingClickedOnBlock()` is, and a block whose own
+    /// rule reads the placer's vertical look (pointed dripstone) has no vanilla answer:
+    /// left empty, that placement is refused (`PlacementStateError::NoVerticalLook`
+    /// for `LevelRef::state_for_placement`), and answering replaces that rule. `fluid` is
     /// the fluid in the position the block would go in, which a waterlogged block reads. Build the state from `state` with
     /// `native_state_with_property`, and know whether `state` is yours with
     /// `native_state_block`. It is asked for every placer that goes
@@ -42,6 +48,13 @@ pub trait Hooks {
 
 `BlockPart::state_for_placement` is vanilla's `Block.getStateForPlacement` for
 player and dispenser placement, including client prediction for a player.
+`event.context.source` distinguishes a player placement
+(`PlacementSource::Player { yaw, pitch, sneaking }`) from a non-player
+`DirectionalPlaceContext` (`PlacementSource::Directional { direction }`, such as
+a dispenser placing a shulker box). A directional context's `replace_clicked` is
+read from the clicked block. Where vanilla's directional context throws, as for a
+pointed dripstone's vertical look, ordinary placement refuses: answer for your block
+to place it anyway.
 Code with a `ServerHost` can also call `LevelRef::state_for_placement` to ask
 for a candidate without placing anything. The Part still receives only its
 `LevelHost` through `LevelSide`; the context carries an item key, not a stack.
@@ -61,7 +74,7 @@ before returning it: `setPlacedBy` does not recheck its companion cell.
         receiver = "read",
         dispatch = "flat",
         side = "both",
-        version = 3,
+        version = 4,
         contract = "replace",
         out = "answer",
         scope = "block",

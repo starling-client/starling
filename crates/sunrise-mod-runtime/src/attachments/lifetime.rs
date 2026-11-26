@@ -118,7 +118,7 @@ mod tests {
         default: || 0,
         codec: None,
         copy_on_death: false,
-        sync: false,
+        sync_codec: None,
     };
 
     fn values(index: &Arc<Mutex<AttachmentIndex<u32>>>) -> Vec<(u32, i32)> {
@@ -249,7 +249,7 @@ mod tests {
             default: || panic!("no default"),
             codec: None,
             copy_on_death: false,
-            sync: false,
+            sync_codec: None,
         };
         let index = Arc::new(Mutex::new(AttachmentIndex::default()));
         let dropped = Arc::new(AtomicBool::new(false));

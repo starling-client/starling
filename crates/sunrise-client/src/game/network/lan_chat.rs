@@ -11,7 +11,43 @@ use sunrise_client::{
     },
     text::{self, Text},
 };
+use sunrise_core::nbt::Tag;
 use sunrise_protocol::packets::play::{self, Clientbound as C};
+
+/// `OutgoingChatMessage`: preserve the signed body, or deliver a disguised component.
+pub(super) enum ChatDelivery<'a> {
+    Player(&'a ChatMessage),
+    Disguised(&'a Tag),
+}
+
+/// An owned [`ChatDelivery`], for a broadcast that waits its turn.
+enum QueuedDelivery {
+    Player(ChatMessage),
+    Disguised(Tag),
+}
+
+/// A public chat line, identified by its sender and the text shown.
+type ChatKey = (u128, String);
+
+struct QueuedBroadcast {
+    sender: u128,
+    name: String,
+    shown: String,
+    line: Text,
+    bound: play::ChatTypeBound,
+    delivery: QueuedDelivery,
+    /// The lines whose delivery led to this one, itself last.
+    path: Vec<ChatKey>,
+}
+
+/// Broadcasts started from inside a recipient listener: delivered one after another once the
+/// running broadcast finishes (no recursion), and dropped when a line repeats one of the lines
+/// that led to it (a relay answering its own answer).
+#[derive(Default)]
+pub(in crate::game) struct ChatBroadcasts {
+    active: Option<Vec<ChatKey>>,
+    queue: std::collections::VecDeque<QueuedBroadcast>,
+}
 
 /// The signing context of a command: each message argument as the chain
 /// let it through, by argument name (CommandSigningContext.SignedArguments).
@@ -152,62 +188,172 @@ impl Game<'_> {
         }
     }
 
-    /// A player's chat line, once `server_chat` has left it: `chat_recipient` is asked of each
-    /// receiver (`shown` is what players read), the line goes to everyone it keeps nobody from,
-    /// and the log keeps it. None when there is no hub.
+    /// `PlayerList.broadcastChatMessage`: log and check trust first, then ask and send
+    /// each eligible copy together. Nested broadcasts use this same path independently.
     pub(super) fn lan_broadcast_chat(
         &mut self,
-        message: &ChatMessage,
-        bound: &play::ChatTypeBound,
-        line: String,
-        name: &str,
+        (sender, name): (u128, &str),
         shown: &str,
-    ) -> Option<()> {
-        let hidden = self.chat_hidden_from(|_| (message.sender, name, shown))?;
-        let mut chat = Vec::new();
-        let host = self.lan.as_mut()?;
-        host.hub
-            .broadcast_chat(message, bound, line, &hidden, &mut chat);
-        for event in chat {
-            self.lan_log_event(event);
+        line: Text,
+        bound: &play::ChatTypeBound,
+        delivery: ChatDelivery<'_>,
+    ) {
+        let key = (sender, shown.to_owned());
+        if let Some(active) = &self.chat_broadcasts.active {
+            if active.contains(&key) {
+                log::warn!("chat broadcast cycle refused: {shown}");
+                return;
+            }
+            let mut path = active.clone();
+            path.push(key);
+            self.chat_broadcasts.queue.push_back(QueuedBroadcast {
+                sender,
+                name: name.to_owned(),
+                shown: shown.to_owned(),
+                line,
+                bound: bound.clone(),
+                delivery: match delivery {
+                    ChatDelivery::Player(message) => QueuedDelivery::Player(message.clone()),
+                    ChatDelivery::Disguised(content) => QueuedDelivery::Disguised(content.clone()),
+                },
+                path,
+            });
+            return;
         }
-        Some(())
+        self.chat_broadcasts.active = Some(vec![key]);
+        self.deliver_chat_broadcast((sender, name), shown, line, bound, delivery);
+        while let Some(next) = self.chat_broadcasts.queue.pop_front() {
+            let QueuedBroadcast {
+                sender,
+                name,
+                shown,
+                line,
+                bound,
+                delivery,
+                path,
+            } = next;
+            self.chat_broadcasts.active = Some(path);
+            let delivery = match &delivery {
+                QueuedDelivery::Player(message) => ChatDelivery::Player(message),
+                QueuedDelivery::Disguised(content) => ChatDelivery::Disguised(content),
+            };
+            self.deliver_chat_broadcast((sender, &name), &shown, line, &bound, delivery);
+        }
+        self.chat_broadcasts.active = None;
     }
 
-    /// Unsigned `/say` from the command dispatcher. Returns whether the acting player's copy
-    /// should go with its captured command output. `None` refuses reentrant `/say`.
-    pub(super) fn lan_broadcast_source_say(
+    fn deliver_chat_broadcast(
         &mut self,
-        name: &Text,
-        message: &Text,
-        captured_for: Option<u32>,
-    ) -> Option<bool> {
-        use sunrise_client::lan::data::component_nbt;
-
-        let hidden = self.chat_hidden_from(|game| {
-            let sender = match game.source_entity() {
-                Some(Target::Player) => game.lan_acting_uuid.unwrap_or_else(|| game.own_uuid()),
-                Some(Target::Guest(conn)) => game.command_guest(conn).map_or(0, |guest| guest.uuid),
-                _ => 0, // PlayerChatMessage.system uses the nil UUID.
-            };
-            (sender, name.plain(), message.plain())
-        })?;
-        let Some(host) = &self.lan else {
-            return Some(false);
+        (sender, name): (u128, &str),
+        shown: &str,
+        line: Text,
+        bound: &play::ChatTypeBound,
+        delivery: ChatDelivery<'_>,
+    ) {
+        let secure = match delivery {
+            ChatDelivery::Player(message) => {
+                message.trusted(sunrise_client::lan::hub::chat::now_millis())
+            }
+            ChatDelivery::Disguised(_) => false,
         };
-        host.hub.broadcast_source_chat(
-            "say_command",
-            component_nbt(&name.component()),
-            component_nbt(&message.component()),
-            captured_for,
-            &hidden,
+        self.record_public_chat(line, secure);
+        let Some(host) = self.lan.as_ref() else {
+            return;
+        };
+        // Keep join order and release the hub before handing out a mutable Host.
+        // Only identities are saved: eligibility is checked at the actual delivery site.
+        let connections: Vec<_> = host.hub.guests.simulation_iter().map(|g| g.conn).collect();
+        let listened = mod_api::__private::listened(mod_api::HookId::ChatRecipient);
+        for conn in connections {
+            let Some((_, recipient)) = self
+                .lan
+                .as_ref()
+                .and_then(|host| host.hub.chat_recipient(conn))
+            else {
+                continue;
+            };
+            if listened {
+                let mut hidden = false;
+                self.native_chat_recipient(sender, name, shown, recipient, &mut hidden);
+                if hidden {
+                    continue;
+                }
+            }
+            if let Some(host) = self.lan.as_mut()
+                && let Some((index, current)) = host.hub.chat_recipient(conn)
+                && current == recipient
+            {
+                match delivery {
+                    ChatDelivery::Player(message) => host.hub.send_chat(index, message, bound),
+                    ChatDelivery::Disguised(content) => {
+                        host.hub
+                            .send_disguised(index, content.clone(), bound.clone())
+                    }
+                }
+            }
+        }
+    }
+
+    /// `SayCommand` / `EmoteCommands`: a command source's visible message is sent as
+    /// player chat, including to its source, never as the command's feedback.
+    /// False, with nothing sent, when the registry lacks the chat type: `ChatType.bind`
+    /// throws and the command fails (`Commands.performCommand`).
+    pub(super) fn lan_broadcast_command_chat(
+        &mut self,
+        sender: u128,
+        name: &Text,
+        id: &str,
+        message: &Text,
+        mut signed: Option<ChatMessage>,
+    ) -> bool {
+        let (chat_type, key) = if id == "say" {
+            ("say_command", "chat.type.announcement")
+        } else {
+            ("emote_command", "chat.type.emote")
+        };
+        let line = Text::translate(key, &[name.clone(), message.clone()]);
+        let Some(host) = self.lan.as_ref() else {
+            self.record_public_chat(line, false);
+            return true;
+        };
+        let Some(chat_type) = host.hub.chat_type_id(chat_type) else {
+            return false;
+        };
+        let bound = play::ChatTypeBound {
+            chat_type: chat_type.network_id() as i32,
+            name: component_nbt(&name.component()),
+            target: None,
+        };
+        let content = component_nbt(&message.component());
+        let delivery = match &mut signed {
+            Some(signed) => {
+                if *message != Text::literal(signed.content.as_str()) {
+                    signed.unsigned_content = Some(content);
+                }
+                ChatDelivery::Player(signed)
+            }
+            None => ChatDelivery::Disguised(&content),
+        };
+        self.lan_broadcast_chat(
+            (sender, &name.plain()),
+            &message.plain(),
+            line,
+            &bound,
+            delivery,
         );
-        Some(
-            captured_for.is_some()
-                && !self
-                    .lan_acting_uuid
-                    .is_some_and(|uuid| hidden.contains(&uuid)),
-        )
+        true
+    }
+
+    /// `Commands.performCommand`'s catch: a command that threw fails with
+    /// `command.failed`, sent to the guest in red.
+    fn guest_command_failed(&self, i: usize) {
+        if let Some(host) = self.lan.as_ref() {
+            let failure = Text::translate("command.failed", &[]).with_color(text::RED);
+            host.hub.guests[i].send(&C::SystemChat(play::SystemChat {
+                content: component_nbt(&failure.component()),
+                overlay: false,
+            }));
+        }
     }
 
     /// SayCommand, EmoteCommands and MsgCommand for a guest: chat to the
@@ -243,81 +389,93 @@ impl Game<'_> {
                 .find(|(n, _)| n == argument)
                 .map(|(_, m)| m.clone())
         });
-        let mut events = Vec::new();
+        if id != "msg" {
+            // A redirect back to the root (e.g. `execute … run`) runs via the
+            // dispatcher, which owns the modifiers and their resulting source(s).
+            if parse.context.child.is_some() {
+                return false;
+            }
+            // Resolve selectors as the packet's source, not the current server player.
+            let Some((sender, name)) = self.command_guest(conn).and_then(|guest| {
+                let host = self.lan.as_ref()?;
+                let name = host.hub.player_display_name(guest.uuid, &guest.name);
+                Some((
+                    guest.uuid,
+                    sunrise_client::scoreboard::comp_text(
+                        &sunrise_client::scoreboard::tag_to_json(&name),
+                    ),
+                ))
+            }) else {
+                return true;
+            };
+            if let Some(text) =
+                self.for_player(Target::Guest(conn), |game| game.resolve_chat_message(text))
+            {
+                if !self.lan_broadcast_command_chat(sender, &name, id, &text, message) {
+                    self.guest_command_failed(i);
+                }
+            } else {
+                log::warn!(
+                    "Cannot resolve public chat command for disconnected player {sender:032x}"
+                );
+            }
+            return true;
+        }
         let Some(host) = self.lan.as_mut() else {
             return false;
         };
-        if id == "msg" {
-            let Some(Arg::Entity(selector)) = context.get("targets") else {
-                return false;
-            };
-            let raw = context
-                .args
-                .iter()
-                .rev()
-                .find(|a| a.name == "targets")
-                .and_then(|a| command.get(a.range.0..a.range.1));
-            let guests = &host.hub.guests;
-            let placed = |k: &usize| guests[*k].placed && guests[*k].participates_online();
-            let targets: Vec<usize> = match (raw, &selector.player_name, selector.uuid) {
-                (Some("@s"), ..) => vec![i],
-                (Some("@a"), ..) => (0..guests.len()).filter(placed).collect(),
-                (_, Some(name), _) => {
-                    let named: Vec<usize> = (0..guests.len())
-                        .filter(|&k| placed(&k) && guests[k].name.eq_ignore_ascii_case(name))
-                        .collect();
-                    if named.is_empty() {
-                        // No player has that name: the one going by it as a nickname (`~` optional).
-                        let bare = |s: &str| s.strip_prefix('~').unwrap_or(s).to_ascii_lowercase();
-                        let wanted = bare(name);
-                        let nicknamed = |k: &usize| {
-                            host.hub
-                                .nicknames
-                                .get(&guests[*k].uuid)
-                                .is_some_and(|nick| bare(nick) == wanted)
-                        };
-                        (0..guests.len())
-                            .filter(|k| placed(k) && nicknamed(k))
-                            .collect()
-                    } else {
-                        named
-                    }
+        let Some(Arg::Entity(selector)) = context.get("targets") else {
+            return false;
+        };
+        let raw = context
+            .args
+            .iter()
+            .rev()
+            .find(|a| a.name == "targets")
+            .and_then(|a| command.get(a.range.0..a.range.1));
+        let guests = &host.hub.guests;
+        let placed = |k: &usize| guests[*k].placed && guests[*k].participates_online();
+        let targets: Vec<usize> = match (raw, &selector.player_name, selector.uuid) {
+            (Some("@s"), ..) => vec![i],
+            (Some("@a"), ..) => (0..guests.len()).filter(placed).collect(),
+            (_, Some(name), _) => {
+                let named: Vec<usize> = (0..guests.len())
+                    .filter(|&k| placed(&k) && guests[k].name.eq_ignore_ascii_case(name))
+                    .collect();
+                if named.is_empty() {
+                    // No player has that name: the one going by it as a nickname (`~` optional).
+                    let bare = |s: &str| s.strip_prefix('~').unwrap_or(s).to_ascii_lowercase();
+                    let wanted = bare(name);
+                    let nicknamed = |k: &usize| {
+                        host.hub
+                            .nicknames
+                            .get(&guests[*k].uuid)
+                            .is_some_and(|nick| bare(nick) == wanted)
+                    };
+                    (0..guests.len())
+                        .filter(|k| placed(k) && nicknamed(k))
+                        .collect()
+                } else {
+                    named
                 }
-                (_, None, Some(uuid)) => (0..guests.len())
-                    .filter(|&k| placed(&k) && guests[k].uuid == uuid)
-                    .collect(),
-                _ => return false,
-            };
-            if targets.is_empty() {
-                let failure = Text::empty()
-                    .append(Text::translate("argument.entity.notfound.player", &[]))
-                    .with_color(text::RED);
-                host.hub.guests[i].send(&C::SystemChat(play::SystemChat {
-                    content: component_nbt(&failure.component()),
-                    overlay: false,
-                }));
-                return true;
             }
-            host.hub.whisper(i, &targets, message, text);
-        } else {
-            let chat_type = if id == "say" {
-                "say_command"
-            } else {
-                "emote_command"
-            };
-            let (sender, name) = (host.hub.guests[i].uuid, host.hub.guests[i].name.clone());
-            let Some(hidden) = self.chat_hidden_from(|_| (sender, name.as_str(), text.as_str()))
-            else {
-                return true;
-            };
-            let Some(host) = self.lan.as_mut() else {
-                return false;
-            };
-            host.hub
-                .broadcast_command_chat(i, chat_type, message, text, &hidden, &mut events);
+            (_, None, Some(uuid)) => (0..guests.len())
+                .filter(|&k| placed(&k) && guests[k].uuid == uuid)
+                .collect(),
+            _ => return false,
+        };
+        if targets.is_empty() {
+            let failure = Text::empty()
+                .append(Text::translate("argument.entity.notfound.player", &[]))
+                .with_color(text::RED);
+            host.hub.guests[i].send(&C::SystemChat(play::SystemChat {
+                content: component_nbt(&failure.component()),
+                overlay: false,
+            }));
+            return true;
         }
-        for event in events {
-            self.lan_log_event(event);
+        if !host.hub.whisper(i, &targets, message, text) {
+            self.guest_command_failed(i);
         }
         true
     }

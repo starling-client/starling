@@ -1,0 +1,15 @@
+ids = [
+    "hook:compute_fov_modifier",
+    "method:Hooks::compute_fov_modifier",
+    "type:ComputeFovModifierEvent",
+    "hook:compute_fov_modifier.base",
+    "hook:compute_fov_modifier.player",
+    "type:ComputeFovModifierEvent.base",
+    "type:ComputeFovModifierEvent.player",
+]
+why = """
+NeoForge's `ComputeFovModifierEvent` carries the player, the raw `getFieldOfViewModifier` product and the effect scale, and starts its result as `Mth.lerp(effectScale, 1, raw)`. The event gave a snapshot with no player identity, and its interpolated base lost the raw value at effect scale zero. It now carries the effective camera player's handle (the local player or the spectated one), the raw modifier and the scale, with `modifier` initialized to the interpolation. The spyglass early return stays before the event.
+"""
+migrate = """
+Pin `compute_fov_modifier` at `hook_version = 3` instead of `2`. Replace `event.player` (the `FovPlayer` snapshot) with the `PlayerRef` handle and read what you need through the host, for example `event.player.uuid()` to tell the spectated player from the local one. Replace `event.base` with `event.raw` when you need the value before the effect-scale lerp, or read `event.modifier` before writing it to get what `base` was (the interpolation). `event.effect_scale` is the Field of View Effects setting. A spectated player with no handle (a detached snapshot) no longer reaches the hook.
+"""

@@ -5,7 +5,7 @@ import subprocess
 import tempfile
 import unittest
 
-from test_world_input_capture import method
+from tests.test_world_input_capture import method
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -57,8 +57,8 @@ impl Game {
     fn millis(&self) -> u64 { 100 }
     fn settle_title_mode(&mut self) { self.calls.push("settle"); }
     fn notify_window_resize(&mut self) {}
-    fn handle_window_event_inner(&mut self, _: (), _: WindowEvent, cursor_sample: Option<PointerSample>,
-                                 press_millis: Option<u64>) -> bool {
+    fn handle_window_event_inner_as(&mut self, _: (), _: WindowEvent, cursor_sample: Option<PointerSample>,
+                                    press_millis: Option<u64>, _: InputOrigin) -> bool {
         assert!(cursor_sample.is_none());
         self.press_millis = press_millis;
         self.calls.push("handle");

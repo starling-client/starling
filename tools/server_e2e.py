@@ -41,14 +41,13 @@ import tempfile
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import lab  # noqa: E402
-import test_rust_parity as base  # noqa: E402
-from agent_control_e2e import Failed  # noqa: E402
-from lan_e2e import Game  # noqa: E402
-from test_dedicated_server_parity import Server  # noqa: E402
-
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_rust_parity as base
+from tools.agent_control_e2e import Failed
+from tools.lan_e2e import Game
+from tools.test_dedicated_server_parity import Server  # noqa: E402
+
 PLAYER = 'Steve'
 PROPERTIES = {
     'online-mode': 'false',

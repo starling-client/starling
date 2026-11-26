@@ -1,5 +1,4 @@
 //! The `player_fish` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0251
 
 pub trait Hooks {
     /// A server player's fishing rod, with `state`: 0 the cast

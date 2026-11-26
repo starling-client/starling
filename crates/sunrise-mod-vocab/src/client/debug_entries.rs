@@ -1,14 +1,14 @@
 //! Named entries and world-space renderers a native mod adds to the debug screen (NeoForge's
 //! `RegisterDebugEntriesEvent`, `RegisterDebugRenderersEvent`).
 
-use crate::{ClientHost, WorldDrawContext, WorldRenderView};
+use crate::{ClientHost, Identifier, WorldDrawContext, WorldRenderView};
 
 // no wire: this callable and its captures stay in the client process.
 /// Appends lines for one registered F3 text entry. The host is borrowed for this draw.
 pub type DebugEntryLines = dyn Fn(&dyn ClientHost, &mut Vec<String>) + Send + Sync + 'static;
 
 // no wire: a text entry owns a process-local callback.
-/// An F3 entry registered at client startup: text in a vanilla group or a renderer toggle.
+/// An F3 entry registered at client startup: text in a group or a renderer toggle.
 // exhaustive: private storage keeps the ID with either a text callback or a renderer toggle.
 pub struct DebugEntry {
     id: String,
@@ -17,10 +17,11 @@ pub struct DebugEntry {
 }
 
 impl DebugEntry {
-    /// Declare a text entry under a `<namespace>:<path>` identifier such as `mymod:tick_cost`.
+    /// Declare a text entry under an unused `<namespace>:<path>` such as `mymod:tick_cost`.
     /// The client retains `lines` for the session and calls it as the registering mod only
     /// while the entry is visible. Append lines to the supplied vector; legacy colour codes (§)
-    /// work. Appending nothing leaves the group unchanged.
+    /// work. Appending nothing leaves the group unchanged. `group` is a vanilla group or one of
+    /// the mod's own ([`DebugGroup::Named`]).
     ///
     /// Hidden while reduced debug info is active unless opted in with
     /// [`Self::with_reduced_debug_info`], matching vanilla's `DebugScreenEntry.isAllowed`.
@@ -61,9 +62,9 @@ impl DebugEntry {
         &self.id
     }
 
-    /// The vanilla group and line callback of a text entry, or `None` for a renderer toggle.
-    pub fn text_lines(&self) -> Option<(DebugGroup, &DebugEntryLines)> {
-        self.text.as_ref().map(|(group, lines)| (*group, &**lines))
+    /// The group and line callback of a text entry, or `None` for a renderer toggle.
+    pub fn text_lines(&self) -> Option<(&DebugGroup, &DebugEntryLines)> {
+        self.text.as_ref().map(|(group, lines)| (group, &**lines))
     }
 
     /// Whether this entry may show while reduced debug info is active.
@@ -78,8 +79,10 @@ impl DebugEntry {
     }
 }
 
-type DebugRendererDraw =
-    dyn Fn(&dyn ClientHost, &WorldRenderView, &mut dyn WorldDrawContext) + Send + Sync + 'static;
+type DebugRendererDraw = dyn Fn(&dyn ClientHost, &WorldRenderView<'_>, &mut dyn WorldDrawContext)
+    + Send
+    + Sync
+    + 'static;
 
 // no wire: the renderer owns a process-local draw callback.
 /// A world-space debug renderer owned by the client until its renderer list next refreshes.
@@ -97,7 +100,10 @@ impl DebugRenderer {
     /// before pushing it.
     pub fn new<F>(draw: F) -> Self
     where
-        F: Fn(&dyn ClientHost, &WorldRenderView, &mut dyn WorldDrawContext) + Send + Sync + 'static,
+        F: Fn(&dyn ClientHost, &WorldRenderView<'_>, &mut dyn WorldDrawContext)
+            + Send
+            + Sync
+            + 'static,
     {
         Self {
             callback_type: std::any::TypeId::of::<F>(),
@@ -109,7 +115,7 @@ impl DebugRenderer {
     pub fn draw(
         &self,
         host: &dyn ClientHost,
-        view: &WorldRenderView,
+        view: &WorldRenderView<'_>,
         draw: &mut dyn WorldDrawContext,
     ) {
         (self.draw)(host, view, draw);
@@ -142,9 +148,12 @@ impl crate::RegisterDebugRenderersEvent<'_> {
     }
 }
 
-/// The vanilla groups a debug entry's lines can join (`DebugScreenDisplayer.addToGroup`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-// exhaustive: vanilla's debug screen text groups, matched without a wildcard
+/// The group a debug entry's lines join (`DebugScreenDisplayer.addToGroup`): one of vanilla's
+/// or one named by the mod. Each group's lines stay together, the groups in the order their
+/// first lines were added, split half into the left column and half into the right with a blank
+/// line after each, as vanilla splits them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+// exhaustive: vanilla's debug screen text groups and a mod's own, matched without a wildcard
 #[derive(sunrise_mod_api_macros::Wire)]
 pub enum DebugGroup {
     /// `position`: the player's position, section and speed.
@@ -161,6 +170,10 @@ pub enum DebugGroup {
     LookingAtFluid,
     /// `chunk_generation`: the density of the chunk at the feet.
     ChunkGeneration,
+    /// A group by identifier, such as a mod's own `mymod:debug_info`, which every entry naming
+    /// it joins. Vanilla's groups are `minecraft:` identifiers, so `minecraft:memory` is
+    /// [`Self::Memory`]'s group.
+    Named(Identifier),
 }
 
 #[cfg(test)]

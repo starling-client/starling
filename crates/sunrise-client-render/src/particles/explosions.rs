@@ -72,20 +72,21 @@ impl ParticleEngine {
         block_count: usize,
         radius: f32,
         particles: &[ExplosionParticle],
+        level: &ParticleLevel<'_>,
     ) {
-        self.add(emitter, center, [1.0, 0.0, 0.0]);
+        self.add_with(Some(level), emitter, center, [1.0, 0.0, 0.0], false, false);
         self.track_explosion(center, radius, block_count, particles);
     }
     /// `ClientExplosionTracker.tick`: throws up to 512 debris particles across all
     /// explosions tracked in this tick, weighted by each explosion's block count.
     pub(super) fn tick_explosions(&mut self, level: &ParticleLevel) {
-        self.tick_explosions_with(Some(level.world), &|b| {
+        self.tick_explosions_with(Some(level), &|b| {
             level.facts.is_air(level.world.block(b[0], b[1], b[2]))
         });
     }
     pub(super) fn tick_explosions_with(
         &mut self,
-        world: Option<&super::World>,
+        level: Option<&ParticleLevel<'_>>,
         is_air: &dyn Fn([i32; 3]) -> bool,
     ) {
         if self.tracked_explosions.is_empty() {
@@ -161,8 +162,8 @@ impl ParticleEngine {
                 explosion.center[2] + local[2] * scaling,
             ];
             let speed = f64::from(speed * particle.speed);
-            self.add_with_world(
-                world,
+            self.add_with(
+                level,
                 &particle.options,
                 p,
                 [d.x * speed, d.y * speed, d.z * speed],

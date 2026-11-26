@@ -28,9 +28,38 @@ pub enum RecipeBookLayout {
         result: u16,
     },
     /// The menu's placement is answered by the mod: the `recipe_book_place` hook of its
-    /// `MenuPart`, with `ServerHost::place_recipe_in_grid` as vanilla's placer. The roles are the
-    /// mod's own, so none is declared or checked here, and the game maps no display to a slot.
+    /// `MenuPart` writes a [`RecipeBookPlacement`] (`Nothing`, `Ghost`, or `Grid` to invoke
+    /// vanilla's placer on the active menu's physical slots). The roles are the mod's own, so
+    /// none is declared or checked here, and the game maps no display to a slot.
     Mod,
+}
+
+/// How a `RecipeBookLayout::Mod` menu's `MenuPart::recipe_book_place` answers a recipe click.
+// no wire: answer from a local menu callback, not a packet
+// exhaustive: the three outcomes of a menu placement callback: custom/no-op, ghost, or engine grid placement
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum RecipeBookPlacement {
+    /// Leave placement to the part's own normal `Host` operations, or do nothing.
+    #[default]
+    Nothing,
+    /// The manual menu says ingredients are missing; while the same opening remains current, the
+    /// server sends the clicked display to the client to show the recipe's ghosts.
+    Ghost,
+    /// Ask the engine's canonical placer (`ServerPlaceRecipe.placeRecipe`) to place the clicked
+    /// recipe into these physical container slots on the active menu and its live storage, using
+    /// the click's current Shift (`use_max_items`) and creative flags and sending ghosts only when
+    /// ingredients are missing.
+    Grid {
+        /// Grid width in cells.
+        width: u16,
+        /// Grid height in cells.
+        height: u16,
+        /// Physical menu container slot index for each cell of the grid, row by row.
+        slots: Vec<u16>,
+        /// Physical menu container slots emptied back into the player's inventory first (the
+        /// grid's own slots are cleared too).
+        clear: Vec<u16>,
+    },
 }
 
 impl RecipeBookLayout {

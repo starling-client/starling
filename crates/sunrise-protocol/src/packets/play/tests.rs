@@ -72,6 +72,23 @@ fn a_command_tree_with_a_cycle_is_refused() {
         node(1, "b", vec![], Some(1)),
     ];
     assert!(read(redirects).is_err());
+    // The root index must name a root node: an empty tree, an out-of-range index and a
+    // non-root entry are refused.
+    let read_root = |nodes: Vec<CommandNode>, root: i32| {
+        let mut w = Writer::new();
+        Commands::write(&Commands { nodes, root }, &mut w);
+        Commands::read(&mut Reader::new(&w.data))
+    };
+    assert!(read_root(Vec::new(), 0).is_err());
+    assert!(read_root(vec![node(0, "", vec![], None)], 1).is_err());
+    assert!(read_root(vec![node(0, "", vec![], None)], -1).is_err());
+    assert!(
+        read_root(
+            vec![node(0, "", vec![1], None), node(1, "a", vec![], None)],
+            1
+        )
+        .is_err()
+    );
     // A long chain is fine and checked without recursing.
     let mut chain: Vec<_> = (1..=100_000).map(|i| node(1, "x", vec![i], None)).collect();
     chain[0].kind = 0;
@@ -1132,6 +1149,11 @@ fn unknown_packets_keep_their_payload() {
         Clientbound::Unknown(crate::ids::play::clientbound::DEBUG_EVENT, vec![1, 2, 3])
     );
     assert_eq!(p.encode()[1..], [1, 2, 3]);
+    let unregistered = crate::ids::play::clientbound::NAMES.len() as i32;
+    for bad_id in [-1, unregistered, 9999] {
+        let err = Clientbound::decode(bad_id, &[]).unwrap_err();
+        assert!(err.is_unknown_packet_id(), "id {bad_id}: {err:?}");
+    }
 }
 
 #[test]
@@ -1206,6 +1228,43 @@ fn sign_packets_match_vanilla_stream_codecs() {
     let body = update.encode();
     assert_eq!(body[9..], [2, b'H', b'i', 0, 1, b'x', 0, 0]);
     round_trip(update, Serverbound::encode, Serverbound::decode);
+
+    // ServerboundSignUpdatePacket.MAX_STRING_LENGTH (384 UTF-16 code units) is enforced on
+    // protocol encode validation too, matching vanilla Utf8String.write(buf, line, 384).
+    let at_limit = Serverbound::SignUpdate(SignUpdate {
+        pos: [1, 64, -2],
+        lines: [
+            "a".repeat(SignLines::MAX_UTF16),
+            "🦀".repeat(SignLines::MAX_UTF16 / 2),
+            String::new(),
+            String::new(),
+        ],
+        front: true,
+    });
+    assert!(at_limit.try_encode().is_ok());
+    assert!(at_limit.try_encode_payload().is_ok());
+    for bad_lines in [
+        [
+            "a".repeat(SignLines::MAX_UTF16 + 1),
+            String::new(),
+            String::new(),
+            String::new(),
+        ],
+        [
+            String::new(),
+            String::new(),
+            "🦀".repeat(SignLines::MAX_UTF16 / 2 + 1),
+            String::new(),
+        ],
+    ] {
+        let too_long = Serverbound::SignUpdate(SignUpdate {
+            pos: [1, 64, -2],
+            lines: bad_lines,
+            front: true,
+        });
+        assert!(too_long.try_encode().is_err());
+        assert!(too_long.try_encode_payload().is_err());
+    }
 }
 
 #[test]

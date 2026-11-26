@@ -1,0 +1,24 @@
+ids = [
+    "hook:mob_effect_added",
+    "hook:mob_effect_added.amplifier",
+    "hook:mob_effect_added.effect",
+    "hook:mob_effect_added.entity",
+    "hook:mob_effect_added.new_effect",
+    "hook:mob_effect_added.old_effect",
+    "hook:mob_effect_added.source",
+    "hook:on_effect_added",
+    "hook:on_effect_added.entity",
+    "method:Hooks::mob_effect_added",
+    "method:Hooks::on_effect_added",
+    "method:MobEffectPart::on_effect_added",
+    "type:MobEffectAddedEvent",
+    "type:MobEffectAddedEvent.amplifier",
+    "type:MobEffectAddedEvent.effect",
+    "type:MobEffectAddedEvent.entity",
+    "type:MobEffectAddedEvent.new_effect",
+    "type:MobEffectAddedEvent.old_effect",
+    "type:MobEffectAddedEvent.source",
+    "type:OnEffectAddedEvent.entity",
+]
+why = "Vanilla 26.3 LivingEntity.addEffect and MobEffect.onEffectAdded, and NeoForge 26.3 MobEffectEvent.Added (LivingEntity.java.patch): separate the global bus event from the effect-owned first-insertion callback. Hooks::mob_effect_added (version 2) now models MobEffectEvent.Added for every eligible vanilla and mod effect after canBeAffected / mob_effect_applicable and before active-effect mutation, carrying entity: LivingRef, old_effect: Option<&ActiveEffect>, new_effect: &ActiveEffect, and source: Option<EntityRef>, including reapplications and unchanged updates (non-cancellable; never on forceAddEffect, load, or client sync). MobEffect.onEffectAdded moves to MobEffectPart::on_effect_added (version 2, scope = effect, key = effect) taking (effect: EffectKey, entity: LivingRef, amplifier: i32) and runs only on first insertion after the active map and attribute modifiers update and vanilla's added sound plays (before onEffectStarted). Server-side mob and player addEffect paths share add_player_effect_from and add_mob_effect."
+migrate = "Update Hooks::mob_effect_added listeners to read event.entity (LivingRef), event.old_effect (Option<&ActiveEffect>), event.new_effect (&ActiveEffect), and event.source (Option<EntityRef>); expect it to fire pre-mutation for both vanilla and mod effects, including unchanged reapplications. Move Hooks::on_effect_added implementations onto the effect's MobEffectPart::on_effect_added and read event.entity as LivingRef instead of Option<i32>."

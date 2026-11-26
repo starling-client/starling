@@ -118,8 +118,7 @@ fn a_bite_is_level_event_1039_at_the_phantoms_block_unless_it_is_silent() {
     }
     let (loud, quiet, block) = outcomes.unwrap();
     assert!(
-        loud.iter()
-            .any(|e| matches!(e, MobEvent::AttackPlayer(_, _))),
+        loud.iter().any(|e| matches!(e, MobEvent::AttackPlayer(..))),
         "the bite should still hurt the player: {loud:?}"
     );
     assert!(

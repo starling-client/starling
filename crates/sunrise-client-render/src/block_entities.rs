@@ -63,7 +63,37 @@ pub struct BlockEntityLease {
     generation: u64,
 }
 
+/// Opaque snapshot of an in-flight `take` lease at one position, captured by a
+/// transaction journal before a tentative removal and restored only on abort.
+#[derive(Clone, Copy)]
+pub struct TakenLeaseSnapshot {
+    taken: Taken,
+    generation: u64,
+    is_mod: bool,
+    shows_box: bool,
+}
+
 pub type Pos = (i32, i32, i32);
+
+/// The type of a block entity taken out (`take`), kept until its lease ends.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TakenType {
+    /// A chest-backed container by its own ID, which its block can name over (a barrel or a
+    /// trapped chest).
+    Container(&'static str),
+    /// Any other vanilla block entity, by its type ID.
+    Vanilla(&'static str),
+    /// A mod's, which its block's factory may not name (an additional valid type): its own key,
+    /// `None` for an unregistered type.
+    Mod(Option<mod_api::BlockEntityTypeKey>),
+}
+
+/// The lease of a block entity taken out, and its type.
+#[derive(Clone, Copy)]
+struct Taken {
+    token: u64,
+    kind: TakenType,
+}
 
 /// What a block state's block entity does each tick (`BlockState.getTicker`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -77,6 +107,9 @@ pub enum Ticking {
     /// without a record): a state change to it frees the slot.
     Idle,
 }
+
+/// A level side's baked native tick states, indexed by state and attached type's numeric id.
+pub type ModTickerStates = FxHashMap<(u32, u32), Ticking>;
 
 struct LiveTicker {
     slot: u32,
@@ -119,13 +152,14 @@ pub struct BlockEntities {
     freed: bool,
     /// Positions whose block entity `take` took and `put` has not brought
     /// back.
-    out: FxHashMap<Pos, u64>,
+    out: FxHashMap<Pos, Taken>,
     /// Positions a loaded chunk gave a new block entity over an old one: at
     /// the next tick their slot stays only if their block state ticks
     /// (`updateBlockEntityTicker`: rebind, or remove without a ticker).
     replaced: FxHashSet<Pos>,
     /// `Ticking` by block state id; empty until the game builds it.
     states: Vec<Ticking>,
+    mod_ticker_states: Option<Arc<ModTickerStates>>,
     /// The containers of mod blocks' block entities, by block state id;
     /// built with `states`.
     mod_containers: FxHashMap<u32, Arc<ModContainer>>,
@@ -437,6 +471,28 @@ impl BlockEntities {
     pub fn ticking(&self, state: u32) -> Ticking {
         self.states.get(state as usize).copied().unwrap_or_default()
     }
+    /// Install the typed state table prepared with the level's block registry.
+    pub fn set_mod_ticker_states(&mut self, states: Arc<ModTickerStates>) {
+        self.mod_ticker_states = Some(states);
+    }
+    /// The native ticker choice for this actual type (not the block's factory type).
+    pub fn mod_ticking(&self, state: u32, kind: u32) -> Ticking {
+        self.mod_ticker_states
+            .as_ref()
+            .and_then(|states| states.get(&(state, kind)))
+            .copied()
+            .unwrap_or_default()
+    }
+    fn ticker_at(&self, pos: &Pos, state: u32) -> Ticking {
+        if self.mod_ticker_states.is_some()
+            && let Some(BlockEntity::Mod(entity)) = self.map.get(pos)
+        {
+            return entity
+                .numeric_id()
+                .map_or(Ticking::No, |kind| self.mod_ticking(state, kind));
+        }
+        self.ticking(state)
+    }
     pub fn set_mod_containers(&mut self, containers: FxHashMap<u32, Arc<ModContainer>>) {
         self.mod_containers = containers;
     }
@@ -697,6 +753,14 @@ impl BlockEntities {
     pub fn mods_in(&self, chunk: (i32, i32)) -> impl Iterator<Item = &Pos> {
         self.mods.get(&chunk).into_iter().flatten()
     }
+    /// The type of the block entity taken out at `pos`; `None` when none is out.
+    pub fn taken_type(&self, pos: &Pos) -> Option<TakenType> {
+        self.out.get(pos).map(|taken| taken.kind)
+    }
+    /// Every block entity of chunk `chunk`, in no order; one taken out is listed too.
+    pub fn in_chunk(&self, chunk: (i32, i32)) -> impl Iterator<Item = &Pos> {
+        self.columns.get(&chunk).into_iter().flatten()
+    }
     /// `SignBlockEntity.playerWhoMayEdit` of the sign at `pos`.
     pub fn sign_editor(&self, pos: &Pos) -> Option<u128> {
         match self.map.get(pos) {
@@ -876,8 +940,13 @@ impl BlockEntities {
         if self.on_load_enabled && new_identity && new_is_mod {
             self.on_load.push_back((pos, self.generations[&pos]));
         }
-        if old.is_none() {
+        if old.is_none()
+            || new_identity && !self.live.contains_key(&pos) && !self.pending.contains_key(&pos)
+        {
             self.add(pos);
+        }
+        if new_identity && old.is_some() {
+            self.replaced.insert(pos);
         }
         if new_box {
             self.boxes.insert(pos);
@@ -940,7 +1009,12 @@ impl BlockEntities {
         self.wake_at(pos);
         let entity = self.map.remove(pos)?;
         let token = next_token();
-        self.out.insert(*pos, token);
+        let kind = match &entity {
+            BlockEntity::Mod(entity) => TakenType::Mod(entity.kind()),
+            BlockEntity::Chest(_) => TakenType::Container(entity.vanilla_id().unwrap_or_default()),
+            other => TakenType::Vanilla(other.vanilla_id().unwrap_or_default()),
+        };
+        self.out.insert(*pos, Taken { token, kind });
         let generation = self.generations[pos];
         Some((
             BlockEntityLease {
@@ -954,20 +1028,52 @@ impl BlockEntities {
     /// Re-key a live lease when an intentional state change keeps the instance.
     /// Ordinary removal still revokes it; a retired or foreign lease cannot re-key.
     pub fn rekey(&mut self, pos: &Pos, lease: &mut BlockEntityLease) -> bool {
-        if lease.pos != *pos
-            || self.out.get(pos) != Some(&lease.token)
-            || self.generation(pos) != Some(lease.generation)
-        {
+        if lease.pos != *pos || self.generation(pos) != Some(lease.generation) {
             return false;
         }
-        lease.token = next_token();
-        self.out.insert(*pos, lease.token);
-        true
+        match self.out.get_mut(pos) {
+            Some(taken) if taken.token == lease.token => {
+                lease.token = next_token();
+                taken.token = lease.token;
+                true
+            }
+            _ => false,
+        }
+    }
+    /// Snapshot the active in-flight lease at `pos`, if an owner holds it via `take`.
+    pub fn taken_lease_snapshot(&self, pos: &Pos) -> Option<TakenLeaseSnapshot> {
+        let taken = *self.out.get(pos)?;
+        let generation = *self.generations.get(pos)?;
+        let is_mod = self
+            .mods
+            .get(&chunk_of(*pos))
+            .is_some_and(|set| set.contains(pos));
+        let shows_box = self.boxes.contains(pos);
+        Some(TakenLeaseSnapshot {
+            taken,
+            generation,
+            is_mod,
+            shows_box,
+        })
+    }
+    /// Restore an in-flight lease whose tentative removal was aborted, so the
+    /// original owner's `put` succeeds with its original identity and attachments.
+    pub fn restore_taken_lease(&mut self, pos: Pos, snapshot: TakenLeaseSnapshot) {
+        assert!(!self.map.contains_key(&pos));
+        self.replaced.remove(&pos);
+        self.generations.insert(pos, snapshot.generation);
+        self.out.insert(pos, snapshot.taken);
+        if snapshot.is_mod {
+            self.mods.entry(chunk_of(pos)).or_default().insert(pos);
+        }
+        if snapshot.shows_box {
+            self.boxes.insert(pos);
+        }
     }
     /// Return the taken instance in its slot; false if its lease was retired.
     pub fn put(&mut self, lease: BlockEntityLease, entity: BlockEntity) -> bool {
         let pos = lease.pos;
-        if self.out.get(&pos) != Some(&lease.token)
+        if self.out.get(&pos).map(|taken| taken.token) != Some(lease.token)
             || self.generation(&pos) != Some(lease.generation)
         {
             return false;
@@ -1167,10 +1273,10 @@ impl BlockEntities {
         if self.states.is_empty() || !self.map.contains_key(&pos) {
             return;
         }
-        match self.ticking(new) {
+        match self.ticker_at(&pos, new) {
             // A new ticker, unless one was made or is pending (rebound).
             Ticking::Yes => {
-                if self.ticking(old) != Ticking::Yes && !self.live.contains_key(&pos) {
+                if self.ticker_at(&pos, old) != Ticking::Yes && !self.live.contains_key(&pos) {
                     self.add(pos);
                 }
             }
@@ -1191,7 +1297,7 @@ impl BlockEntities {
             self.pending.remove(&pos);
             if self.live.contains_key(&pos)
                 || !self.map.contains_key(&pos)
-                || self.ticking(state(pos)) != Ticking::Yes
+                || self.ticker_at(&pos, state(pos)) != Ticking::Yes
             {
                 continue;
             }
@@ -1206,7 +1312,7 @@ impl BlockEntities {
             Arc::make_mut(&mut self.tickers).push((pos, slot));
         }
         for pos in std::mem::take(&mut self.replaced) {
-            if self.live.contains_key(&pos) && self.ticking(state(pos)) != Ticking::Yes {
+            if self.live.contains_key(&pos) && self.ticker_at(&pos, state(pos)) != Ticking::Yes {
                 self.cancel(&pos);
             }
         }
@@ -1590,7 +1696,7 @@ mod tests {
             default: || 0,
             codec: None,
             copy_on_death: false,
-            sync: false,
+            sync_codec: None,
         };
         let p = (1, 64, 2);
         let mut entities = level();

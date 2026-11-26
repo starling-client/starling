@@ -1,7 +1,7 @@
 //! Geometry the frame builds on the CPU each time it draws: the breaking cracks (`cracks`), the sun,
 //! moon and stars (`celestial_geometry`), the first-person hand and arm (`hand_geometry`,
 //! `first_person_arm`) and the rain and snow around the camera (`weather_geometry`).
-use super::*;
+use super::{weather::precipitation_at, *};
 use sunrise_client::{gfx::CelestialBody, mobs::ModelNormals};
 
 impl Game<'_> {
@@ -34,10 +34,25 @@ impl Game<'_> {
         stages
     }
 
+    /// The stage stored at each cracked position, origin and extras alike: what a mod block
+    /// entity's draw reads as `crumbling_stage`. Empty, with nothing allocated, when no crack is live.
+    pub(super) fn crack_stage_map(&self) -> sunrise_client::fast_hash::FxHashMap<[i32; 3], u8> {
+        self.crack_stages()
+            .into_iter()
+            .filter_map(|(pos, stage)| Some((pos, u8::try_from(stage).ok()?)))
+            .collect()
+    }
+
+    /// The atlas origin of the `destroy_stage_*` sprite drawn for `stage`, if the atlas has it.
+    pub(super) fn crack_origin(&self, stage: u32) -> Option<[f32; 2]> {
+        let name = crack_stage_names(self.settings.improved_transparency).get(stage as usize)?;
+        let r = self.gui.atlas.sprites.get(*name)?;
+        Some([r.u0, r.v0])
+    }
+
     /// `renderBlockDestroyAnimation`: eligible cells within 32 blocks of the camera,
     /// with each stage sprite's atlas origin. No hook is asked during extraction.
     pub(super) fn cracks(&self, camera: glam::DVec3) -> Vec<([i32; 3], [f32; 2])> {
-        let names = crack_stage_names(self.settings.improved_transparency);
         self.crack_stages()
             .into_iter()
             .filter(|(pos, _)| {
@@ -50,11 +65,7 @@ impl Game<'_> {
                 let state = self.world.block(pos[0], pos[1], pos[2]);
                 self.res.facts().get(state).destroy_overlay
             })
-            .filter_map(|(pos, stage)| {
-                let name = names.get(stage as usize)?;
-                let r = self.gui.atlas.sprites.get(*name)?;
-                Some((pos, [r.u0, r.v0]))
-            })
+            .filter_map(|(pos, stage)| Some((pos, self.crack_origin(stage)?)))
             .collect()
     }
     /// SkyRenderer.renderSunMoonAndStars: bodies on a frame rotated Y -90 then X by angle.
@@ -97,25 +108,33 @@ impl Game<'_> {
     ) {
         if mod_api::__private::listened(mod_api::HookId::RenderArm) {
             let eye = self.eye_position().unwrap_or_default();
-            let mut draw = BlockEntityDraw::posed(
-                partial,
-                self.world.game_time,
-                light,
-                eye.map(|c| c.floor() as i32),
-                m,
-                sunrise_client::block_entity_render::diffuse_lights(self.dim == Dim::Nether),
-                std::mem::take(out),
-            )
-            .animated(self.animation_time());
-            let mut canceled = false;
-            self.native_render_arm(
-                self.own_uuid(),
-                self.own_entity_id(),
-                left,
-                &mut draw,
-                &mut canceled,
+            let camera = self.native_camera_frame.as_ref().map_or_else(
+                || glam::DVec3::from_array(eye),
+                |c| glam::DVec3::from(c.position),
             );
-            *out = draw.into_vertices();
+            let mut canceled = false;
+            self.with_world_view(camera, partial, None, |view| {
+                let mut draw = BlockEntityDraw::posed_with_view(
+                    view,
+                    light,
+                    eye.map(|c| c.floor() as i32),
+                    m,
+                    sunrise_client::block_entity_render::diffuse_lights(self.dim == Dim::Nether),
+                    std::mem::take(out),
+                )
+                .with_quad_budget(
+                    self.entity_quad_capacity(),
+                    self.entity_batch_reserved_quads(),
+                );
+                self.native_render_arm(
+                    self.own_uuid(),
+                    self.own_entity_id(),
+                    left,
+                    &mut draw,
+                    &mut canceled,
+                );
+                *out = draw.into_vertices();
+            });
             if canceled {
                 return;
             }
@@ -182,7 +201,7 @@ impl Game<'_> {
             self.studio.flying(),
             self.ui.hands_drawn(
                 self.spectator(),
-                self.sleeping.is_some(),
+                self.camera_subject().is_some_and(|c| c.is_sleeping),
                 self.camera_type.is_first_person(),
                 self.player
                     .as_ref()
@@ -495,6 +514,9 @@ impl Game<'_> {
         // The 32x32 direction table supports at most a 15-block radius.
         let radius = self.settings.weather_radius.clamp(0, 15);
         let eye = camera.to_array();
+        let sea_level = self.weather_sea_level();
+        let biome_zoom = self.streaming.biome_zoom;
+        let biomes = world_biomes!(self);
         let mut rain = Vec::new();
         let mut snow_vertices = Vec::new();
         // Saturation keeps extreme camera coordinates from overflowing the loop.
@@ -506,7 +528,13 @@ impl Game<'_> {
                 if y1 == y0 {
                     continue;
                 }
-                let Some(snow) = self.precipitation(x, cy, z) else {
+                let Some(snow) = precipitation_at(
+                    &self.world,
+                    biomes,
+                    biome_zoom,
+                    BlockPos::new(x, cy, z),
+                    sea_level,
+                ) else {
                     continue;
                 };
                 let parameters = self.weather_parameters.get(x, z);

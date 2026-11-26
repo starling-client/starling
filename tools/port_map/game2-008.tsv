@@ -42,11 +42,11 @@ BlockItem.canPlace	port	crates/sunrise-world/src/level/place.rs::Sim::place	the 
 BlockItem.onDestroyed	port	crates/sunrise-client/src/entities.rs::ItemEntity::hurt	the damage that empties an item's health makes the stack's `container` contents item entities where it lay (`item_data::destroyed_container`)
 BoatItem.getBoat	port	crates/sunrise-client/src/game/entities/boats/mod.rs::Game::place_boat	boat placed at the hit point with the item's stack config
 BucketItem.playEmptySound	port	crates/sunrise-world/src/level/buckets.rs::Sim::empty_sound
-BundleItem.getWeightSafe	port	crates/sunrise-items/src/bundle.rs::Contents::weight_fraction	float fraction; vanilla compares an exact Fraction
-BundleItem.getBarWidth	port	crates/sunrise-items/src/bundle.rs::Contents::bar
-BundleItem.getBarColor	port	crates/sunrise-items/src/bundle.rs::Contents::bar
+BundleItem.getWeightSafe	port	crates/sunrise-items/src/bundle.rs::CustomBundleContents::shown_weight	the exact Fraction; a custom capacity divides it, and an overflowing division reads as Fraction.ONE
+BundleItem.getBarWidth	port	crates/sunrise-items/src/bundle.rs::stack_bar
+BundleItem.getBarColor	port	crates/sunrise-items/src/bundle.rs::stack_bar
 BundleItem.removeOneItemFromBundle	port	crates/sunrise-items/src/bundle.rs::Contents::remove_one
-BundleItem.getTooltipImage	port	crates/sunrise-client/src/item_tooltip.rs::bundle_tooltip	the contents grid, hidden when `minecraft:tooltip_display` hides `minecraft:bundle_contents` (or the whole tooltip); the geometry is `bundle.rs::tooltip_layout`
+BundleItem.getTooltipImage	port	crates/sunrise-client/src/item_tooltip.rs::shows_bundle_tooltip	selects the bundle tooltip source when the stack carries `minecraft:bundle_contents` and `minecraft:tooltip_display` shows it; `bundle.rs::Contents::tooltip_layout` lays out the prepared contents
 BundleItem.onDestroyed	port	crates/sunrise-client/src/entities.rs::ItemEntity::hurt	the damage that empties an item's health makes the bundle's contents item entities where it lay (`bundle::destroyed`)
 BundleItem.playRemoveOneSound	port	crates/sunrise-client/src/game.rs::Game::drop_bundle_content	the menu queues the same sound in menu/bundle.rs
 BundleItem.playInsertSound	port	crates/sunrise-client/src/menu/bundle.rs::Menu::carried_bundle_click	queues the insert or insert-fail sound
@@ -55,7 +55,7 @@ CompassItem.isFoil	port	crates/sunrise-assets/src/item_model.rs::Resolve::has_fo
 CrossbowItem.tryLoadProjectiles	port	crates/sunrise-client/src/game/items/crossbow.rs::Game::tick_crossbow	the drawn ammo is stored on the crossbow once charged
 CrossbowItem.shootProjectile	port	crates/sunrise-client/src/game/items/crossbow.rs::Game::shoot_crossbow
 CrossbowItem.getProjectileShotVector	inline	crates/sunrise-client/src/game/items/crossbow.rs::Game::shoot_crossbow	the multishot spread is rotated inline from the view and up vectors
-CrossbowItem.createProjectile	port	crates/sunrise-client/src/arrows.rs::Ticker::hit_sound	a crossbow arrow hits with item.crossbow.hit (the arrow keeps fired_from_weapon, set in shoot_crossbow)
+CrossbowItem.createProjectile	port	crates/sunrise-client/src/entities/arrows/flight.rs::Ticker::hit_sound	a crossbow arrow hits with item.crossbow.hit (the arrow keeps fired_from_weapon, set in shoot_crossbow)
 CrossbowItem.getShotPitch	inline	crates/sunrise-client/src/game/items/crossbow.rs::Game::shoot_crossbow	the shot pitch per index is inline
 CrossbowItem.getRandomShotPitch	inline	crates/sunrise-client/src/game/items/crossbow.rs::Game::shoot_crossbow	the random pitch formula is inline
 CrossbowItem.getPowerForTime	inline	crates/sunrise-client/src/game/items/crossbow.rs::Game::tick_crossbow	the charge fraction capped at one is the tick check against the charge time
@@ -130,7 +130,7 @@ ItemUtils.onContainerDestroyed	port	crates/sunrise-client/src/game/item_entities
 Items.registerBlock	skip:data		item registry bootstrap
 Items.registerItem	skip:data		item registry bootstrap
 JukeboxSong.hasFinished	port	crates/sunrise-items/src/items.rs::Song::finished
-JukeboxSongPlayer.setSongWithoutPlaying	inline	crates/sunrise-client/src/save.rs::decode_block_entity	the load sets the record and `ticks_since_song_started` straight into the `Jukebox` block entity, which is the whole of `setSongWithoutPlaying`; the song carries on from that tick in `tick_jukebox`
+JukeboxSongPlayer.setSongWithoutPlaying	inline	crates/sunrise-client/src/save/block_entity_decode.rs::decode_block_entity	the load sets the record and `ticks_since_song_started` straight into the `Jukebox` block entity, which is the whole of `setSongWithoutPlaying`; the song carries on from that tick in `tick_jukebox`
 JukeboxSongPlayer.play	port	crates/sunrise-client/src/game/blocks/jukebox.rs::Game::start_song	the song starts at the jukebox with its sound
 JukeboxSongPlayer.shouldEmitJukeboxPlayingEvent	inline	crates/sunrise-client/src/game/blocks/jukebox.rs::Game::tick_jukebox
 JukeboxSongPlayer.spawnMusicParticles	inline	crates/sunrise-client/src/game/blocks/jukebox.rs::Game::tick_jukebox	the note particle is emitted in tick_jukebox

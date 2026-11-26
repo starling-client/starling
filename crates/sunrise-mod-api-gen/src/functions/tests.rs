@@ -31,7 +31,11 @@ impl fmt::Display for Game<'_> {
 pub fn twice() {}
 #[cfg(not(unix))]
 pub fn twice() {}
-#[cfg(test)]
+#[cfg_attr(true, cfg_attr(not(false,), cfg(test,),),)]
+mod inner {
+    pub fn nested() -> u8 { 9 }
+}
+#[cfg(test,)]
 mod tests {
     fn hidden() {}
 }
@@ -151,7 +155,9 @@ fn the_index_lists_each_function_with_its_text_or_its_refusal() {
         game,
         &[ModuleFile {
             path: "crates/sunrise-client/src/game.rs".into(),
+            cfg: Vec::new(),
             sha256: sha256(GAME.as_bytes()),
+            include_cfg: None,
         }]
     );
     assert_eq!(ticks.module, "sunrise_client::game");
@@ -903,4 +909,64 @@ fn a_target_key_drops_generics_spaces_and_the_traits_path() {
         key("sunrise_client::game::autosave::Game<'_>::next_autosave_interval"),
         "sunrise_client::game::autosave::Game::next_autosave_interval"
     );
+}
+
+#[test]
+fn a_method_below_the_game_crate_is_named_by_its_types_module() {
+    let root = fixture();
+    let low = root.path().join("crates/sunrise-low/src");
+    fs::write(low.join("lib.rs"), "pub mod clock;\npub struct Clock;\n").unwrap();
+    fs::write(
+        low.join("clock.rs"),
+        "use super::Clock;\nimpl Clock {\n    #[sunrise_mod_api_macros::replaceable]\n    pub fn advance(&self) {}\n}\n",
+    )
+    .unwrap();
+    let named = "sunrise_low::Clock::advance";
+    let by_file = "sunrise_low::clock::Clock::advance";
+    let marked = crate::replace::marked(root.path()).unwrap();
+    assert_eq!(
+        marked
+            .iter()
+            .map(|(_, path)| path.as_str())
+            .collect::<Vec<_>>(),
+        [named]
+    );
+    let index = index(root.path(), &BTreeSet::new()).unwrap();
+    let advance = &index.functions[named];
+    assert_eq!(advance.module, "sunrise_low::clock");
+    assert_eq!(advance.file, "crates/sunrise-low/src/clock.rs");
+    assert_eq!(index.check(root.path(), named), Ok(()));
+    let found = index
+        .found(&mut Source::new(root.path()).unwrap(), named)
+        .unwrap();
+    assert_eq!(found.module, "sunrise_low::clock");
+    // The path of the file the `impl` is in is refused, naming the target.
+    let (code, why) = index.check(root.path(), by_file).unwrap_err();
+    assert_eq!(code, "E_MIXIN_TARGET_MISSING");
+    assert!(why.contains(&format!("`{named}`")), "{why}");
+    // A bridge looks it up by name the same way.
+    let bridged = crate::patch::find(&mut Source::new(root.path()).unwrap(), named).unwrap();
+    assert_eq!(bridged.module, "sunrise_low::clock");
+    let (code, why) = crate::patch::find(&mut Source::new(root.path()).unwrap(), by_file)
+        .err()
+        .expect("refused");
+    assert_eq!(code, "E_MIXIN_TARGET_MISSING");
+    assert!(why.contains(&format!("`{named}`")), "{why}");
+    // The staging pass gives it its slot under the same name.
+    fs::write(
+        root.path().join("Cargo.lock"),
+        "version = 4
+
+[[package]]
+name = \"sunrise-client\"
+version = \"0.1.0\"
+
+[[package]]
+name = \"sunrise-low\"
+version = \"0.1.0\"
+",
+    )
+    .unwrap();
+    let staged = crate::replace::stage(root.path()).unwrap();
+    assert!(staged.slots.contains(named), "{:?}", staged.slots);
 }

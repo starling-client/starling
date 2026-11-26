@@ -2,7 +2,9 @@
 """World-pack enchantment catalog: deterministic compatible loot application."""
 import json,sys,hashlib,tempfile
 from pathlib import Path
-import test_command_exec_parity as driver
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_command_exec_parity as driver
 CUSTOM=dict(description='World catalog loaded',supported_items='minecraft:diamond_sword',weight=1,max_level=1,min_cost=dict(base=1,per_level_above_first=0),max_cost=dict(base=1,per_level_above_first=0),anvil_cost=1,slots=['mainhand'],effects={'minecraft:damage':[{'effect':{'type':'minecraft:add','value':2.0}}]})
 _original=driver.install_datapack_fixtures
 def install(world,predicates,functions,jar,*args,**kwargs):

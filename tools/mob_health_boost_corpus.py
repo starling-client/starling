@@ -7,7 +7,12 @@ mob's next tick up to the boosted maximum. When the effect is removed
 (LivingEntity.onEffectsRemoved -> refreshDirtyAttributes -> onAttributeUpdated)
 Health is clamped to the new maximum.
 """
-from command_exec_corpus import cmd
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools.command_exec_corpus import cmd
 
 PIG = 'PersistenceRequired:1b,Silent:1b,NoAI:1b'
 

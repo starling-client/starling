@@ -1,0 +1,1 @@
+sunrise-client game::native_player_food::tests::enchantment_debits_ask_but_absolute_level_writes_only_report lib daily resources

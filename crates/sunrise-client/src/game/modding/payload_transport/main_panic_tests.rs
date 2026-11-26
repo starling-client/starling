@@ -66,7 +66,11 @@ fn a_panicking_main_payload_refunds_its_journal_and_preserves_unrelated_delivery
     mod_platform::testing::with_mods(mods, || {
         crate::game::api_values::install_parts(mod_api::__private::mods()).unwrap();
         with_game(|game| {
-            let transport = Transport::capture(Side::Server).unwrap();
+            let transport = Transport::capture(
+                Side::Server,
+                crate::raw_payloads::connection::record_overhead(&[]),
+            )
+            .unwrap();
             transport
                 .accept(transport.local.manifest.entries())
                 .unwrap();

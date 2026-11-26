@@ -8,7 +8,7 @@ entities, player data, scoreboard, maps, advancements and statistics that the fl
 States that the game recomputes at once (powered pistons, repeaters, fluids, hanging entities ...) are
 placed in the very last tick, together with `save-all flush`, and the server is killed right after: the saved chunks keep them.
 
-  populate(server, Bot, port, protocol, name, problems)  -> runs everything, bot joined, returns the bot
+  populate(server, Bot, port, protocol, name, problems, *, mcstring, origin=...)  -> builds and saves the scene
 
 What a real server cannot produce is written by hand after the stop, see `fixtures()` (marked there).
 """
@@ -23,37 +23,26 @@ import threading
 import time
 from pathlib import Path
 
-import lab
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import anvil_dump
+from tools.lab import free_port, parse_varint, varint
 
-BX, BZ, SIZE = 144, 144, 96          # south-west corner and size of the platforms (inside the spawn chunks)
+DEFAULT_ORIGIN = (144, 144)         # south-west corner of the platforms (inside the spawn chunks)
+SIZE = 96
 LAYERS = list(range(100, 245, 16))   # platform y levels: one chunk section each, the last one reaches y = 255
 UUID_HI = 0x6000
 
 
 # ------------------------------------------------------------------ versions
-# One builder for 1.8.9 to 1.12.2; `ERA` is the minor version (8 to 12), set by `set_protocol` from the bot's protocol.
+# One builder for 1.8.9 to 1.12.2; the era is the minor version (8 to 12) of the bot's protocol.
 # 1.8: numeric item ids in saves, CamelCase entity and tile entity ids, `Equipment`, `Riding`
 # 1.9: `ArmorItems`/`HandItems`, `Passengers`, shulkers, lingering potions, tipped arrows, elytra, chorus, purpur ...
 # 1.10: husks and strays (zombie / skeleton types), polar bears, magma, bone blocks, nether wart blocks
 # 1.11: namespaced entity ids, evokers, vindicators, vexes, llamas, separate donkeys and so on, shulker boxes, observers
 # 1.12: parrots, illusioners, concrete, glazed terracotta, advancements instead of achievements
-ERA = 12
 PROTOCOL_ERA = {47: 8, 107: 9, 108: 9, 109: 9, 110: 9, 210: 10, 315: 11, 316: 11, 335: 12, 338: 12, 340: 12}
-VALID_ITEMS = None        # item names the server accepts (probed at the start), None: everything
 
-
-def set_protocol(protocol):
-    global ERA
-    ERA = PROTOCOL_ERA[protocol]
-
-
-def block_ok(name):
-    """Whether this version has the block (by its numeric id)."""
-    i = BLOCK_IDS.get(name)
-    if i is None:
-        return False
-    limit = {8: 197, 9: 212, 10: 217, 11: 234, 12: 255}[ERA]
-    return i <= limit or (i == 255 and ERA >= 9)
 
 # ------------------------------------------------------------------ tables
 # `id:name=data,ranges` of every 1.12 block state (from vanilla's BlockStateData), id = numeric block id.
@@ -200,13 +189,6 @@ def q(s):
     return '"' + s.replace('\\', '\\\\').replace('"', '\\"') + '"'
 
 
-def js(obj):
-    """A JSON text as an NBT string (1.12 stores text components as JSON strings)."""
-    if isinstance(obj, str) and ERA < 12:
-        obj = {'text': obj}         # before 1.12 a JSON string primitive makes the command fail
-    return q(json.dumps(obj, separators=(',', ':')))
-
-
 def full(name):
     return name if ':' in name else 'minecraft:' + name
 
@@ -221,21 +203,6 @@ class Stack(str):
 
     def command_args(self):
         return f'{full(self.name)} {self.count} {self.damage}' + (f' {self.tag}' if self.tag else '')
-
-
-def item(name, count=1, damage=0, tag=None, slot=None, numeric=None):
-    """An item stack compound. `numeric`: write the 1.7 style numeric `id:Ns` instead of the name."""
-    if VALID_ITEMS is not None and numeric is None and name not in VALID_ITEMS:
-        name, tag = 'stick', None      # an item this version lacks
-    parts = []
-    if slot is not None:
-        parts.append(f'Slot:{slot}b')
-    parts.append(f'id:{numeric}s' if numeric is not None else f'id:{q(full(name))}')
-    parts.append(f'Count:{count}b')
-    parts.append(f'Damage:{damage}s')
-    if tag:
-        parts.append(f'tag:{tag}')
-    return Stack('{' + ','.join(parts) + '}', name, count, damage, tag, numeric)
 
 
 def slotted(stacks, first=0):
@@ -339,9 +306,10 @@ class Layers:
 
     def row(self, zstep):
         """The next free row (y, z, parity) of the current platform."""
-        if self.y is None or self.z + zstep > BZ + SIZE - 2:
+        bz = self.scene.bz
+        if self.y is None or self.z + zstep > bz + SIZE - 2:
             self.y = self.take()
-            self.z = BZ + 1
+            self.z = bz + 1
         z = self.z
         self.z += zstep + (1 if self.n % 2 == 0 else 0)
         self.n += 1
@@ -352,11 +320,12 @@ class Layers:
             return
         self.made.add(y)
         s = self.scene
+        bx, bz = s.bx, s.bz
         if y == LAYERS[0]:   # clear the natural terrain around the first platform
-            for x in range(BX, BX + SIZE, 32):
-                for z in range(BZ, BZ + SIZE, 32):
+            for x in range(bx, bx + SIZE, 32):
+                for z in range(bz, bz + SIZE, 32):
                     s.cmd(f'fill {x} {y} {z} {x + 31} {y + 11} {z + 31} minecraft:air 0')
-        s.cmd(f'fill {BX} {y - 2} {BZ} {BX + SIZE - 1} {y - 1} {BZ + SIZE - 1} minecraft:stone 0')
+        s.cmd(f'fill {bx} {y - 2} {bz} {bx + SIZE - 1} {y - 1} {bz + SIZE - 1} minecraft:stone 0')
 
 
 class Packer:
@@ -369,11 +338,11 @@ class Packer:
 
     def newrow(self):
         self.y, self.z, parity = self.layers.row(self.zstep)
-        self.x = BX + parity
+        self.x = self.layers.scene.bx + parity
 
     def cell(self, span=1):
         """One cell with room for `span` cells in x."""
-        if self.x is None or self.x + self.stride * span > BX + SIZE - 1:
+        if self.x is None or self.x + self.stride * span > self.layers.scene.bx + SIZE - 1:
             self.newrow()
         x = self.x
         self.x += self.stride
@@ -388,7 +357,10 @@ class Packer:
 
 
 class Scene:
-    def __init__(self):
+    def __init__(self, era, origin, valid_items):
+        self.era = era
+        self.bx, self.bz = origin
+        self.valid_items = valid_items  # items accepted by this server, or None when no probe is needed
         self.cmds = []       # the first phase
         self.late = []       # the last tick
         self.expect = {}     # (x, y, z) -> (block, data), what the scene placed
@@ -399,7 +371,7 @@ class Scene:
         (self.late if late else self.cmds).append(c)
 
     def block(self, x, y, z, name, data=0, tag=None, late=False, expect=True):
-        if not block_ok(name):
+        if not self.block_ok(name):
             return
         if name in TWO_STEP and data:
             self.cmd(f'setblock {x} {y} {z} {full(name)} 0 replace', late)
@@ -413,6 +385,54 @@ class Scene:
 
     def summon(self, kind, x, y, z, nbt='', late=False):
         self.cmd(f'summon {kind} {x} {y} {z} {{{nbt}}}', late)
+
+
+    def block_ok(self, name):
+        """Whether this version has the block (by its numeric id)."""
+        i = BLOCK_IDS.get(name)
+        if i is None:
+            return False
+        limit = {8: 197, 9: 212, 10: 217, 11: 234, 12: 255}[self.era]
+        return i <= limit or (i == 255 and self.era >= 9)
+
+    def js(self, obj):
+        """A JSON text as an NBT string (1.12 stores text components as JSON strings)."""
+        if isinstance(obj, str) and self.era < 12:
+            obj = {'text': obj}         # before 1.12 a JSON string primitive makes the command fail
+        return q(json.dumps(obj, separators=(',', ':')))
+
+    def item(self, name, count=1, damage=0, tag=None, slot=None, numeric=None):
+        """An item stack compound. `numeric`: write the 1.7 style numeric `id:Ns` instead of the name."""
+        if self.valid_items is not None and numeric is None and name not in self.valid_items:
+            name, tag = 'stick', None      # an item this version lacks
+        parts = []
+        if slot is not None:
+            parts.append(f'Slot:{slot}b')
+        parts.append(f'id:{numeric}s' if numeric is not None else f'id:{q(full(name))}')
+        parts.append(f'Count:{count}b')
+        parts.append(f'Damage:{damage}s')
+        if tag:
+            parts.append(f'tag:{tag}')
+        return Stack('{' + ','.join(parts) + '}', name, count, damage, tag, numeric)
+
+    def entity_form(self, kind, profession=None):
+        """(summon id, extra NBT) of an entity kind in this era, None if the version lacks it."""
+        if kind in ABSENT[self.era]:
+            return None
+        if self.era >= 11:
+            return kind, ''
+        if kind in MERGED:
+            sid, extra = MERGED[kind]
+            if kind == 'zombie_villager':
+                extra = 'IsVillager:1b' if self.era == 8 else 'ZombieType:%d' % (1 + (profession or 0) % 5)
+            return sid, extra
+        return CAMEL[kind], ''
+
+    def eid(self, kind):
+        """The quoted `id` for a kind inside NBT."""
+        form = self.entity_form(kind)
+        sid = form[0] if form else kind
+        return q(sid if self.era <= 10 else 'minecraft:' + sid)
 
 
 # ------------------------------------------------------------------ items
@@ -472,27 +492,6 @@ ABSENT = {   # kinds a version lacks
 }
 
 
-def entity_form(kind, profession=None):
-    """(summon id, extra NBT) of an entity kind in this era, None if the version lacks it."""
-    if kind in ABSENT[ERA]:
-        return None
-    if ERA >= 11:
-        return kind, ''
-    if kind in MERGED:
-        sid, extra = MERGED[kind]
-        if kind == 'zombie_villager':
-            extra = 'IsVillager:1b' if ERA == 8 else 'ZombieType:%d' % (1 + (profession or 0) % 5)
-        return sid, extra
-    return CAMEL[kind], ''
-
-
-def eid(kind):
-    """The quoted `id` for a kind inside NBT."""
-    form = entity_form(kind)
-    sid = form[0] if form else kind
-    return q(sid if ERA <= 10 else 'minecraft:' + sid)
-
-
 BANNER_PATTERNS = ['b', 'bs', 'ls', 'rs', 'ts', 'ms', 'drs', 'dls', 'ss', 'cr', 'sc', 'bt', 'tt', 'bts', 'tts', 'ld', 'rd',
                    'lud', 'rud', 'mc', 'mr', 'vh', 'hh', 'vhr', 'hhb', 'bo', 'cbo', 'br', 'tl', 'bl', 'tr', 'gra', 'gru',
                    'bri', 'sku', 'cre', 'flo', 'moj', 'cs']
@@ -508,8 +507,10 @@ DAMAGEABLE = ['bow', 'carrot_on_a_stick', 'chainmail_boots', 'chainmail_chestpla
               'stone_shovel', 'stone_sword', 'wooden_axe', 'wooden_hoe', 'wooden_pickaxe', 'wooden_shovel', 'wooden_sword']
 
 
-def sweep_stacks():
+def sweep_stacks(scene):
     """Every kind of item the flattening cares about, one stack each (no slot yet)."""
+    item = scene.item
+    js = scene.js
     out = []
     for n in ITEMS:
         for d in ITEM_VARIANTS.get(n, [0]):
@@ -529,12 +530,12 @@ def sweep_stacks():
                    (160, 7), (159, 14), (251, 3), (425, 0), (397, 5), (298, 0), (276, 12)]:
         out.append(item('air', damage=d, numeric=nid))
     # potions in all four shapes
-    if ERA == 8:       # before 1.9 a potion is its damage value: effect, level and extended / splash bits
+    if scene.era == 8:       # before 1.9 a potion is its damage value: effect, level and extended / splash bits
         for d in list(range(0, 64)) + [8193, 8194, 8195, 8196, 8197, 8198, 8200, 8201, 8202, 8204, 8205, 8206, 8225, 8226, 8228, 8229, 8233,
                                          8234, 8236, 8257, 8258, 8259, 8260, 8261, 8262, 8264, 8265, 8266, 8270, 16385, 16386, 16387, 16388,
                                          16389, 16392, 16393, 16394, 16396, 16418, 16420, 16421, 16449, 16450, 16451, 16452, 16453, 16457, 16458]:
             out.append(item('potion', damage=d))
-    for kind in ('potion', 'splash_potion', 'lingering_potion', 'tipped_arrow') if ERA >= 9 else ():
+    for kind in ('potion', 'splash_potion', 'lingering_potion', 'tipped_arrow') if scene.era >= 9 else ():
         for p in POTIONS:
             out.append(item(kind, count=1 if kind != 'tipped_arrow' else 7, tag='{Potion:%s}' % q('minecraft:' + p)))
         out.append(item(kind, tag='{CustomPotionEffects:[{Id:1b,Amplifier:1b,Duration:600,Ambient:0b,ShowParticles:1b},'
@@ -550,9 +551,9 @@ def sweep_stacks():
     out.append(item('diamond_sword', tag='{ench:[{id:16s,lvl:32767s},{id:-1s,lvl:0s}],Unbreakable:1b,HideFlags:63}'))
     # spawn eggs, old style: the entity id in EntityTag
     for i, m in enumerate(MOBS):
-        if entity_form(m) is None:
+        if scene.entity_form(m) is None:
             continue
-        out.append(item('spawn_egg', tag='{EntityTag:{id:%s}}' % eid(m)))
+        out.append(item('spawn_egg', tag='{EntityTag:{id:%s}}' % scene.eid(m)))
         if m in OLD_NAMES or i % 3 == 0:
             out.append(item('spawn_egg', tag='{EntityTag:{id:%s,CustomName:"Egg %d"}}' % (q(OLD_NAMES.get(m, m.title())), i)))
     out.append(item('spawn_egg', damage=50, tag='{EntityTag:{id:"minecraft:creeper",powered:1b}}'))
@@ -640,9 +641,9 @@ def sweep_stacks():
 class Stacks:
     """A cursor over the sweep: containers take the next stacks, and wrap around at the end."""
 
-    def __init__(self):
-        self.stacks = sweep_stacks()
-        if VALID_ITEMS is not None:      # the items this version lacks became sticks: keep one
+    def __init__(self, scene):
+        self.stacks = sweep_stacks(scene)
+        if scene.valid_items is not None:      # the items this version lacks became sticks: keep one
             self.stacks = list(dict.fromkeys(self.stacks))
         self.i = 0
 
@@ -656,8 +657,9 @@ class Stacks:
 
 
 # ------------------------------------------------------------------ block entities
-def sign_texts():
-    """(a function: `js` depends on the era)"""
+def sign_texts(scene):
+    """Sign text components in the era's NBT format."""
+    js = scene.js
     return [
     [js({'text': 'Hello'}), js({'text': 'World', 'color': 'red', 'bold': True}), js({'text': ''}), js({'text': 'x', 'extra': [{'text': 'a', 'italic': True}]})],
     [js('plain string'), js({'text': 'click', 'clickEvent': {'action': 'run_command', 'value': '/say hi'}}),
@@ -672,7 +674,7 @@ COMMANDS = ['say hi', 'tp @p ~ ~1 ~', 'execute @e[type=Zombie] ~ ~ ~ detect ~ ~-
             'give @p minecraft:wool 1 5', 'setblock ~ ~1 ~ minecraft:stone', 'testfor @a', 'playsound minecraft:entity.pig.ambient master @a']
 
 
-def tag_for(name, data, k, stacks):
+def tag_for(scene, name, data, k, stacks):
     """The tile entity data for one placed block, or None."""
     if name in ('chest', 'trapped_chest'):
         t = 'Items:' + stacks.items(27 if k % 4 else 20)
@@ -691,7 +693,7 @@ def tag_for(name, data, k, stacks):
     if name == 'brewing_stand':      # the block data follows the bottles in the first three slots
         picks = stacks.take(3)
         slots = ['{Slot:%db,%s' % (i, picks[i][1:]) for i in range(3) if data >> i & 1]
-        slots += ['{Slot:3b,%s' % stacks.take(1)[0][1:], '{Slot:4b,%s' % item('blaze_powder', 3)[1:]]
+        slots += ['{Slot:3b,%s' % stacks.take(1)[0][1:], '{Slot:4b,%s' % scene.item('blaze_powder', 3)[1:]]
         return ('Items:[' + ','.join(slots) + ']' + ',BrewTime:%ds,Fuel:%db' % (k * 3, 20 - k)
                 + (',CustomName:"Brewery"' if k % 2 else ''))
     if name == 'enchanting_table':
@@ -699,13 +701,13 @@ def tag_for(name, data, k, stacks):
     if name == 'beacon':
         return 'Levels:%d,Primary:%d,Secondary:%d' % (k % 5, 1 + k % 10, k % 3 and 1 + k % 10)
     if name == 'jukebox':
-        return ('RecordItem:' + item(RECORDS[k % len(RECORDS)])) if data else 'Record:%d' % (2256 + k % 12)
+        return ('RecordItem:' + scene.item(RECORDS[k % len(RECORDS)])) if data else 'Record:%d' % (2256 + k % 12)
     if name == 'noteblock':
         return 'note:%db,powered:%db' % (k % 25, k % 2)
     if name in ('command_block', 'repeating_command_block', 'chain_command_block'):
         t = 'Command:%s,SuccessCount:%d,TrackOutput:%db,powered:0b,auto:0b,conditionMet:%db' % (
             q(COMMANDS[k % len(COMMANDS)]), k % 4, k % 2, data // 8)
-        t += ',LastOutput:%s' % js({'text': '[@] done', 'color': 'white'}) if k % 2 else ''
+        t += ',LastOutput:%s' % scene.js({'text': '[@] done', 'color': 'white'}) if k % 2 else ''
         t += ',CustomName:%s' % q('Cmd ' + str(k)) if k % 3 == 0 else ''
         return t + ',UpdateLastExecution:1b,LastExecution:%dL' % (1000 + k)
     if name == 'structure_block':
@@ -714,16 +716,16 @@ def tag_for(name, data, k, stacks):
                     k, k % 3 - 1, 1 + k % 2, -k % 3, 2 + k % 5, 3, 4, q(['NONE', 'CLOCKWISE_90', 'CLOCKWISE_180', 'COUNTERCLOCKWISE_90'][k % 4]),
                     q(['NONE', 'LEFT_RIGHT', 'FRONT_BACK'][k % 3]), q(['SAVE', 'LOAD', 'CORNER', 'DATA'][data & 3]), k % 2, k * 77, k % 2, k % 2)
     if name in ('standing_sign', 'wall_sign'):
-        texts = sign_texts()
+        texts = sign_texts(scene)
         text = texts[k % len(texts)]
         return ','.join('Text%d:%s' % (i + 1, text[i]) for i in range(4))
     if name == 'mob_spawner':
-        mob = [m for m in MOBS if entity_form(m)][k % len([m for m in MOBS if entity_form(m)])]
-        spawn = 'SpawnData:{id:%s}' % (q(OLD_NAMES.get(mob, mob.title())) if k % 2 else eid(mob))
+        mob = [m for m in MOBS if scene.entity_form(m)][k % len([m for m in MOBS if scene.entity_form(m)])]
+        spawn = 'SpawnData:{id:%s}' % (q(OLD_NAMES.get(mob, mob.title())) if k % 2 else scene.eid(mob))
         if k % 3 == 0:
             spawn = ('SpawnData:{id:"minecraft:zombie",HandItems:[%s,{}],ArmorItems:[{},{},{},%s],CustomName:"Spawned",Health:5.0f},'
                      'SpawnPotentials:[{Entity:{id:"minecraft:skeleton",HandItems:[%s,{}]},Weight:2},{Entity:{id:"Pig"},Weight:1}]'
-                     % (item('stone_sword', damage=3), item('log', damage=2), item('air', numeric=261)))
+                     % (scene.item('stone_sword', damage=3), scene.item('log', damage=2), scene.item('air', numeric=261)))
         return (spawn + ',MaxNearbyEntities:%ds,RequiredPlayerRange:1s,SpawnCount:%ds,SpawnRange:%ds,Delay:%ds,MinSpawnDelay:%ds,MaxSpawnDelay:%ds'
                 % (6 + k % 3, 3 + k % 4, 4 + k % 2, 20 + k, 200, 800))
     if name.endswith('shulker_box'):
@@ -776,7 +778,7 @@ def sweep_blocks(scene, stacks):
     pockets = Packer(scene.layers, stride=3, zstep=4)
     k = 0
     for name in sorted(BLOCK_STATES, key=lambda n: BLOCK_IDS[n]):
-        if name in SPECIAL or not block_ok(name):
+        if name in SPECIAL or not scene.block_ok(name):
             continue
         datas = BLOCK_STATES[name]
         pk = name in POCKETS
@@ -792,7 +794,7 @@ def sweep_blocks(scene, stacks):
                     scene.block(x + 1, y - 1, z, 'water', 0, expect=False)
             if pk:
                 pocket(scene, x, y, z, POCKETS[name])
-            t = tag_for(name, d, k, stacks)
+            t = tag_for(scene, name, d, k, stacks)
             scene.block(x, y, z, name, d, '{' + t + '}' if t else None, late=name in LATE_NAMES)
 
 
@@ -971,7 +973,7 @@ def skulls(scene):
     pk = Packer(scene.layers, stride=2, zstep=3)
     k = 0
     for data in BLOCK_STATES['skull']:
-        for kind in range(6 if ERA >= 9 else 5):
+        for kind in range(6 if scene.era >= 9 else 5):
             for rot in (range(16) if data == 1 else [0] if data in (0, 8) else [k % 16]):
                 x, y, z = pk.cell()
                 tag = 'SkullType:%db,Rot:%db' % (kind, rot)
@@ -1032,10 +1034,10 @@ def notes_and_spawners(scene):
     pk.gap()
     for i in range(12):
         x, y, z = pk.cell()
-        scene.block(x, y, z, 'mob_spawner', 0, '{%s}' % tag_for('mob_spawner', 0, i, None))
+        scene.block(x, y, z, 'mob_spawner', 0, '{%s}' % tag_for(scene, 'mob_spawner', 0, i, None))
     for i, rec in enumerate(RECORDS):
         x, y, z = pk.cell()
-        scene.block(x, y, z, 'jukebox', 1, '{RecordItem:%s}' % item(rec))
+        scene.block(x, y, z, 'jukebox', 1, '{RecordItem:%s}' % scene.item(rec))
         x, y, z = pk.cell()
         scene.block(x, y, z, 'jukebox', 0, '{Record:%d}' % (2256 + i))
 
@@ -1050,43 +1052,39 @@ def edges(scene):
                'spruce_fence_gate', 'birch_fence_gate', 'jungle_fence_gate', 'dark_oak_fence_gate', 'acacia_fence_gate',
                'tripwire', 'cobblestone_wall', 'chorus_plant', 'melon_stem', 'pumpkin_stem', 'snow_layer', 'cauldron',
                'standing_sign', 'mob_spawner']
-    virtual = [n for n in virtual if block_ok(n)]
+    virtual = [n for n in virtual if scene.block_ok(n)]
     y = scene.layers.take()
     k = 0
     cells = []
     for chunk in range(1, 6):            # borders x = 16 * (9 + chunk): x - 1 and x are on different chunks
-        bx = BX + 16 * chunk
+        bx, bz = scene.bx + 16 * chunk, scene.bz + 16 * chunk
         for i in range(0, SIZE, 2):
-            cells.append((bx - 1, BZ + 1 + i))          # last column of a chunk, z odd
-            cells.append((bx, BZ + 2 + i))              # first column of the next chunk, z even
-            cells.append((BX + 1 + i, bz_of(chunk) - 1))
-            cells.append((BX + 2 + i, bz_of(chunk)))
+            cells.append((bx - 1, scene.bz + 1 + i))          # last column of a chunk, z odd
+            cells.append((bx, scene.bz + 2 + i))              # first column of the next chunk, z even
+            cells.append((scene.bx + 1 + i, bz - 1))
+            cells.append((scene.bx + 2 + i, bz))
     seen = set()
     for n, name in enumerate(virtual):
         datas = BLOCK_STATES[name][:3]
         for j, d in enumerate(datas):
             for corner in range(8):
                 pos = cells[(n * 24 + j * 8 + corner * 31) % len(cells)]
-                while pos in seen or pos[1] >= BZ + SIZE - 1:
-                    pos = (pos[0], (pos[1] + 2) if pos[1] + 2 < BZ + SIZE - 1 else BZ + 1 + (pos[1] % 2))
+                while pos in seen or pos[1] >= scene.bz + SIZE - 1:
+                    pos = (pos[0], (pos[1] + 2) if pos[1] + 2 < scene.bz + SIZE - 1 else scene.bz + 1 + (pos[1] % 2))
                     if pos in seen:
                         pos = (pos[0] + 2, pos[1])
                 seen.add(pos)
                 x, z = pos
                 if name in FLOORS:
                     scene.block(x, y - 1, z, FLOORS[name][0], FLOORS[name][1], expect=False)
-                t = tag_for(name, d, k, None) if name in ('standing_sign', 'wall_sign', 'mob_spawner') else None
+                t = tag_for(scene, name, d, k, None) if name in ('standing_sign', 'wall_sign', 'mob_spawner') else None
                 if name in ('chest', 'trapped_chest'):
-                    t = 'Items:[%s]' % item('wool', damage=k % 16, slot=0)
+                    t = 'Items:[%s]' % scene.item('wool', damage=k % 16, slot=0)
                 k += 1
                 if name == 'bed':
                     scene.block(x, y, z, 'bed', d % 4, '{color:%d}' % (k % 16))
                     continue
                 scene.block(x, y, z, name, d, '{%s}' % t if t else None, late=name in LATE_NAMES)
-
-
-def bz_of(chunk):
-    return BZ + 16 * chunk
 
 
 def transient_blocks(scene, stacks):
@@ -1130,7 +1128,7 @@ def transient_blocks(scene, stacks):
             scene.block(x + 1, y, z, 'redstone_block', 0, late=late, expect=False)
         scene.block(x, y, z, 'hopper', data, '{Items:%s,TransferCooldown:%d}' % (stacks.items(5), data % 4), late=late)
     # observers, powered ones included
-    for data in range(6) if block_ok('observer') else ():   # (the powered states only come from a pulse that takes ticks)
+    for data in range(6) if scene.block_ok('observer') else ():   # (the powered states only come from a pulse that takes ticks)
         x, y, z = pk.cell()
         scene.block(x, y, z, 'observer', data, late=late)
     # liquids of every level, still and flowing
@@ -1142,7 +1140,7 @@ def transient_blocks(scene, stacks):
     for age in range(16):
         x, y, z = pk.cell()
         scene.block(x, y, z, 'fire', age, late=late)
-    for age in range(4) if block_ok('frosted_ice') else ():
+    for age in range(4) if scene.block_ok('frosted_ice') else ():
         x, y, z = pk.cell()
         scene.block(x, y, z, 'frosted_ice', age, late=late)
     # nether portals in both axes: obsidian frames, then the portal blocks with one fill
@@ -1164,20 +1162,20 @@ def top(scene, stacks):
     scene.layers.platform(244)
     for i in range(16):
         for y in range(240, 256):
-            scene.block(BX + 2 + 2 * i, y, BZ + 2, 'wool' if y % 2 else 'stained_hardened_clay', (i + y) % 16)
-    x, z = BX + 2, BZ + 6
+            scene.block(scene.bx + 2 + 2 * i, y, scene.bz + 2, 'wool' if y % 2 else 'stained_hardened_clay', (i + y) % 16)
+    x, z = scene.bx + 2, scene.bz + 6
     scene.block(x, 255, z, 'chest', 2, '{Items:%s,CustomName:"Top chest"}' % stacks.items(27))
-    scene.block(x + 2, 255, z, 'standing_sign', 7, '{Text1:%s,Text2:%s}' % (js({'text': 'y=255'}), js({'text': 'limit'})))
+    scene.block(x + 2, 255, z, 'standing_sign', 7, '{Text1:%s,Text2:%s}' % (scene.js({'text': 'y=255'}), scene.js({'text': 'limit'})))
     scene.block(x + 4, 255, z, 'command_block', 1, '{Command:"say top",TrackOutput:0b}')
     scene.block(x + 6, 254, z, 'skull', 1, '{SkullType:5b,Rot:4b}')
     scene.block(x + 8, 253, z, 'bed', 1, '{color:14}')
     scene.block(x + 7, 253, z, 'bed', 9, '{color:14}')
     scene.block(x + 10, 255, z, 'standing_banner', 3, banner_tag(5, 3))
     scene.block(x + 12, 250, z, 'shulker_box' if False else 'purple_shulker_box', 5, '{Items:%s}' % stacks.items(5))
-    scene.block(x + 14, 255, z, 'mob_spawner', 0, '{SpawnData:{id:%s},MaxNearbyEntities:6s,RequiredPlayerRange:1s}' % eid('ghast'))
+    scene.block(x + 14, 255, z, 'mob_spawner', 0, '{SpawnData:{id:%s},MaxNearbyEntities:6s,RequiredPlayerRange:1s}' % scene.eid('ghast'))
     for i in range(8):      # and the very bottom of the world, next to the bedrock
-        scene.block(BX + 2 + 2 * i, 5 + i, BZ + 3, 'sponge', i % 2)
-        scene.block(BX + 2 + 2 * i, 1, BZ + 5, 'wool', i)
+        scene.block(scene.bx + 2 + 2 * i, 5 + i, scene.bz + 3, 'sponge', i % 2)
+        scene.block(scene.bx + 2 + 2 * i, 1, scene.bz + 5, 'wool', i)
 
 
 def build_blocks(scene, stacks):
@@ -1202,8 +1200,9 @@ def uuid_tag(n):
 STAY = 'NoAI:1b,Silent:1b,NoGravity:1b,Invulnerable:1b,PersistenceRequired:1b'
 
 
-def equipment(i, stacks=None):
+def equipment(scene, i, stacks=None):
     """Hand and armor items with numeric damage and enchantments, as 1.12 mobs carry them."""
+    item = scene.item
     weapons = ['diamond_sword', 'bow', 'iron_axe', 'golden_pickaxe', 'shield', 'fishing_rod', 'stone_hoe', 'wooden_shovel']
     hand = item(weapons[i % 8], damage=i % 40, tag='{%s}' % ench(((i * 3) % 22, 1 + i % 3), (34, 2)) if i % 2 else None)
     off = item('shield', damage=i % 5, tag='{BlockEntityTag:{Base:%d,Patterns:[{Pattern:"bs",Color:%d}]}}' % (i % 16, (i + 4) % 16)) if i % 3 == 0 else '{}'
@@ -1211,7 +1210,7 @@ def equipment(i, stacks=None):
              item(['iron', 'golden', 'diamond', 'chainmail'][i % 4] + '_leggings', damage=i % 30),
              item(['iron', 'golden', 'diamond', 'chainmail'][(i + 1) % 4] + '_chestplate', damage=i % 30, tag='{%s}' % ench((0, 2), (7, 3))),
              (item('skull', damage=i % 6) if i % 4 == 0 else item('pumpkin') if i % 4 == 1 else item('wool', damage=i % 16) if i % 4 == 2 else item('diamond_helmet', damage=7, tag='{%s}' % ench((5, 2))))]
-    if ERA == 8:      # before 1.9: one list, the held item first and then boots, leggings, chestplate and helmet
+    if scene.era == 8:      # before 1.9: one list, the held item first and then boots, leggings, chestplate and helmet
         return 'Equipment:[%s,%s],DropChances:[0.085f,0.0f,1.0f,%.2ff,%.3ff]' % (hand, ','.join(armor), 0.1 * (i % 5), 0.05 * (i % 7))
     return ('HandItems:[%s,%s],ArmorItems:[%s],HandDropChances:[0.085f,%.3ff],ArmorDropChances:[0.085f,0.0f,1.0f,%.2ff]'
             % (hand, off, ','.join(armor), 0.05 * (i % 7), 0.1 * (i % 5)))
@@ -1224,7 +1223,8 @@ TRADE_ITEMS = [('wheat', 0, 18), ('wool', 5, 1), ('dye', 4, 3), ('stained_harden
                ('fish', 3, 6), ('cooked_fish', 1, 6), ('stone', 5, 8), ('log', 2, 4), ('record_13', 0, 1), ('golden_apple', 1, 1)]
 
 
-def trades(n):
+def trades(scene, n):
+    item = scene.item
     out = []
     for i in range(n):
         b = TRADE_ITEMS[i % len(TRADE_ITEMS)]
@@ -1238,8 +1238,10 @@ def trades(n):
     return 'Offers:{Recipes:[%s]}' % ','.join(out)
 
 
-def entity_list(stacks):
+def entity_list(scene, stacks):
     """(summon id, nbt, late). Fixed uuids are added by the caller."""
+    item = scene.item
+    era = scene.era
     E = []
 
     def add(kind, nbt='', late=False, stay=True):
@@ -1247,14 +1249,14 @@ def entity_list(stacks):
 
     def ride(mount, mount_nbt, riders):
         """From 1.9 a mount lists its `Passengers`; before, the rider has a `Riding` mount (one rider only)."""
-        if ERA >= 9:
-            text = ','.join('{id:%s%s}' % (eid(k), (',' + n) if n else '') for k, n in riders)
+        if era >= 9:
+            text = ','.join('{id:%s%s}' % (scene.eid(k), (',' + n) if n else '') for k, n in riders)
             add(mount, 'Passengers:[%s]' % text + (',' + mount_nbt if mount_nbt else ''))
         else:
-            form = entity_form(mount)
+            form = scene.entity_form(mount)
             mid = form[0] if form else mount
             rider, rnbt = riders[0]
-            rform = entity_form(rider)
+            rform = scene.entity_form(rider)
             add(rider, (rnbt + ',' if rnbt else '') + 'Riding:{id:%s%s%s}' % (q(mid), (',' + form[1]) if form and form[1] else '',
                                                                               (',' + mount_nbt) if mount_nbt else ''))
 
@@ -1262,7 +1264,7 @@ def entity_list(stacks):
     for i, k in enumerate(['zombie', 'husk', 'skeleton', 'stray', 'wither_skeleton', 'creeper', 'spider', 'cave_spider', 'silverfish',
                            'endermite', 'blaze', 'ghast', 'witch', 'giant', 'guardian', 'elder_guardian', 'shulker', 'vex',
                            'evocation_illager', 'vindication_illager', 'illusion_illager', 'zombie_pigman', 'slime', 'magma_cube']):
-        extra = equipment(i)
+        extra = equipment(scene, i)
         if k == 'creeper':
             extra += ',powered:1b,Fuse:30s,ExplosionRadius:4b,ignited:0b'
         elif k in ('zombie', 'husk'):
@@ -1281,12 +1283,12 @@ def entity_list(stacks):
             extra += ',Johnny:1b' if k == 'vindication_illager' else ''
         add(k, extra + ',' + EFFECTS + ',' + ATTRS + ',Health:%d.0f,CustomName:"%s",CustomNameVisible:%db,Tags:["scene","t%d"]' % (
             5 + i, k.title() + ' ' + str(i), i % 2, i))
-    add('skeleton', 'SkeletonType:0b,' + equipment(3))
-    add('zombie', 'ZombieType:0,' + equipment(4))
+    add('skeleton', 'SkeletonType:0b,' + equipment(scene, 3))
+    add('zombie', 'ZombieType:0,' + equipment(scene, 4))
     add('zombie_villager', 'Profession:1,ConversionTime:-1,IsVillager:1b')
     for prof in range(6):
         add('zombie_villager', 'Profession:%d,ConversionTime:%d,IsBaby:%db,CustomName:"Zombie %d"' % (prof, [-1, 999999, -1][prof % 3], prof % 2, prof))
-    if ERA > 8:
+    if era > 8:
         add('zombie', 'IsVillager:1b,VillagerProfession:2')
     # animals
     for color in range(16):
@@ -1300,7 +1302,7 @@ def entity_list(stacks):
     for v in range(5):
         add('parrot', 'Variant:%d,Sitting:%db,OwnerUUID:"61699b2e-d327-4a01-9f1e-0ea8c3f06bc6"' % (v, v % 2))
     for kind in ('pig', 'cow', 'chicken', 'mooshroom', 'polar_bear', 'squid', 'bat', 'snowman', 'villager_golem'):
-        extra = equipment(5) if kind not in ('bat', 'squid') else ''
+        extra = equipment(scene, 5) if kind not in ('bat', 'squid') else ''
         if kind == 'pig':
             extra = 'Saddle:1b,' + extra
         if kind == 'chicken':
@@ -1327,15 +1329,15 @@ def entity_list(stacks):
     for prof in range(6):
         for career in (1, 2):
             add('villager', 'Profession:%d,Career:%d,CareerLevel:%d,Riches:%d,Willing:%db,%s,Inventory:%s,Age:%d' % (
-                prof, career, 1 + career, prof * 5, prof % 2, trades(3 + prof), '[%s]' % item('wheat_seeds', 4) if prof % 2 else '[]', -24000 if prof == 3 else 0))
+                prof, career, 1 + career, prof * 5, prof % 2, trades(scene, 3 + prof), '[%s]' % item('wheat_seeds', 4) if prof % 2 else '[]', -24000 if prof == 3 else 0))
     add('villager', 'Profession:0,Offers:{Recipes:[]}')
     # armor stands
     for i in range(10):
         add('armor_stand', 'ShowArms:%db,Small:%db,NoBasePlate:%db,Invisible:%db,Marker:%db,DisabledSlots:%d,CustomName:"Stand %d",%s,'
                            'Pose:{Head:[%d.0f,10.0f,0.0f],Body:[0.0f,%d.0f,5.0f],LeftArm:[-10.0f,0.0f,-10.0f],RightLeg:[1.0f,2.0f,3.0f]}'
-            % (i % 2, (i // 2) % 2, i % 3 == 0, i % 4 == 0, i % 5 == 0, i * 64, i, equipment(i), i * 5, i * 3))
+            % (i % 2, (i // 2) % 2, i % 3 == 0, i % 4 == 0, i % 5 == 0, i * 64, i, equipment(scene, i), i * 5, i * 3))
     # dropped items and orbs
-    for i, s in enumerate([s for s in stacks.stacks if VALID_ITEMS is None or s.numeric is None][::37][:16]):
+    for i, s in enumerate([s for s in stacks.stacks if scene.valid_items is None or s.numeric is None][::37][:16]):
         add('item', 'Item:%s,Age:100,PickupDelay:32767,Health:5,Owner:"Upgrader",Thrower:"Upgrader"' % s)
     add('xp_orb', 'Value:50s,Age:100s,Health:5')
     # minecarts and boats
@@ -1345,18 +1347,18 @@ def entity_list(stacks):
     add('furnace_minecart', 'PushX:1.0d,PushZ:0.0d,Fuel:3000s')
     add('hopper_minecart', 'Items:%s,Enabled:0b,TransferCooldown:4' % stacks.items(5))
     add('tnt_minecart', 'TNTFuse:100', late=True)
-    add('commandblock_minecart', 'Command:"say hello",LastOutput:%s,TrackOutput:1b,CustomName:"Commander"' % js({'text': '[@] hello'}))
+    add('commandblock_minecart', 'Command:"say hello",LastOutput:%s,TrackOutput:1b,CustomName:"Commander"' % scene.js({'text': '[@] hello'}))
     add('spawner_minecart', 'SpawnData:{id:"minecraft:pig"},SpawnPotentials:[{Entity:{id:"minecraft:cow"},Weight:3}],SpawnCount:2s,Delay:100s,RequiredPlayerRange:1s')
     for wood in WOODS:
         add('boat', 'Type:%s' % q(wood))
     ride('boat', '', [('villager', 'Profession:2'), ('pig', '')])
     # riding stacks
-    ride('chicken', '', [('zombie', 'IsBaby:1b,' + equipment(2))])
-    ride('spider', '', [('skeleton', (('HandItems:[%s,{}]' if ERA >= 9 else 'Equipment:[%s,{},{},{},{}]') % item('bow')))])
-    ride('horse', 'Tame:1b', [('skeleton', 'Passengers:[{id:%s,Variant:3}]' % eid('parrot') if ERA >= 12 else '')])
+    ride('chicken', '', [('zombie', 'IsBaby:1b,' + equipment(scene, 2))])
+    ride('spider', '', [('skeleton', (('HandItems:[%s,{}]' if era >= 9 else 'Equipment:[%s,{},{},{},{}]') % item('bow')))])
+    ride('horse', 'Tame:1b', [('skeleton', 'Passengers:[{id:%s,Variant:3}]' % scene.eid('parrot') if era >= 12 else '')])
     add('pig', 'Leashed:1b,Leash:{UUIDMost:%dL,UUIDLeast:%dL}' % (UUID_HI, 99))
-    add('cow', 'Leashed:1b,Leash:{X:%d,Y:%d,Z:%d}' % (BX + 10, LAYERS[0], BZ + 10))
-    add('enderman', 'carried:"minecraft:grass",carriedData:0s,' + equipment(1))
+    add('cow', 'Leashed:1b,Leash:{X:%d,Y:%d,Z:%d}' % (scene.bx + 10, LAYERS[0], scene.bz + 10))
+    add('enderman', 'carried:"minecraft:grass",carriedData:0s,' + equipment(scene, 1))
     add('enderman', 'carried:2s,carriedData:0s')
     add('enderman', 'carried:"minecraft:log",carriedData:3s')
     add('enderman', 'carried:35s,carriedData:5s')
@@ -1372,8 +1374,8 @@ def entity_list(stacks):
             ['wool', 'stained_hardened_clay', 'dye', 'filled_map', 'log', 'skull', 'banner', 'potion', 'fish', 'spawn_egg'][i], damage=i + 3)), late=True, stay=False)
     add('item_frame', 'Facing:0b', late=True, stay=False)
     for i, (blk, data, te) in enumerate([('sand', 0, None), ('gravel', 0, None), ('anvil', 5, None), ('chest', 2, 'Items:[%s]' % item('wool', 1, 4, slot=0)),
-                                          ('log', 6, None), ('concrete_powder' if ERA == 12 else 'sand', 11, None), ('stained_hardened_clay', 14, None),
-                                          ('standing_sign', 3, 'Text1:%s' % js({'text': 'falling'}))]):
+                                          ('log', 6, None), ('concrete_powder' if era == 12 else 'sand', 11, None), ('stained_hardened_clay', 14, None),
+                                          ('standing_sign', 3, 'Text1:%s' % scene.js({'text': 'falling'}))]):
         add('falling_block', 'Block:"minecraft:%s",Data:%db,Time:1,DropItem:1b,HurtEntities:%db,FallHurtMax:40,FallHurtAmount:2.0f%s'
             % (blk, data, i % 2, (',TileEntityData:{%s}' % te) if te else ''), late=True)
     add('falling_block', 'TileID:12,Data:1b,Time:1,DropItem:1b', late=True)
@@ -1386,16 +1388,16 @@ def entity_list(stacks):
             ('arrow', 'inTile:35,inData:7b,inGround:1b'),
             ('spectral_arrow', 'inTile:"minecraft:log",inData:2b,inGround:1b,Duration:100'),
             ('arrow', 'Potion:"minecraft:strong_poison",CustomPotionEffects:[{Id:1b,Amplifier:0b,Duration:100}],Color:255'),
-            ('potion', 'Potion:%s' % (item('splash_potion', tag='{Potion:"minecraft:poison"}') if ERA >= 9 else item('potion', damage=16388))),
-            ('potion', 'Potion:%s,inTile:0' % (item('lingering_potion', tag='{Potion:"minecraft:long_regeneration"}') if ERA >= 9
+            ('potion', 'Potion:%s' % (item('splash_potion', tag='{Potion:"minecraft:poison"}') if era >= 9 else item('potion', damage=16388))),
+            ('potion', 'Potion:%s,inTile:0' % (item('lingering_potion', tag='{Potion:"minecraft:long_regeneration"}') if era >= 9
                                                else item('potion', damage=16385))),
-            ('potion', 'Potion:%s' % (item('splash_potion', damage=16453) if ERA >= 9 else item('potion', damage=16453))),
+            ('potion', 'Potion:%s' % (item('splash_potion', damage=16453) if era >= 9 else item('potion', damage=16453))),
             ('egg', 'inTile:"minecraft:stone",inGround:1b'), ('snowball', 'inTile:"minecraft:dirt",inData:1b'),
             ('ender_pearl', 'inTile:"minecraft:stone"'), ('xp_bottle', ''), ('eye_of_ender_signal', ''),
             ('fireball', 'direction:[0.0d,-0.1d,0.0d],power:[0.0d,-0.1d,0.0d],ExplosionPower:2,inTile:"minecraft:netherrack"'),
             ('small_fireball', 'direction:[0.0d,0.0d,0.0d],power:[0.0d,0.0d,0.0d]'), ('wither_skull', 'Invulnerable:1b,direction:[0.0d,0.0d,0.0d]'),
             ('shulker_bullet', 'Steps:5,TXD:0.1d,TYD:0.0d,TZD:0.1d,Target:{L:5L,M:7L}'), ('llama_spit', ''), ('evocation_fangs', 'Warmup:5'),
-            ('ender_crystal', 'ShowBottom:1b,BeamTarget:{X:%d,Y:%d,Z:%d}' % (BX, LAYERS[0], BZ)), ('ender_crystal', 'ShowBottom:0b'),
+            ('ender_crystal', 'ShowBottom:1b,BeamTarget:{X:%d,Y:%d,Z:%d}' % (scene.bx, LAYERS[0], scene.bz)), ('ender_crystal', 'ShowBottom:0b'),
             ('fireworks_rocket', 'Life:0,LifeTime:5000,FireworksItem:%s' % item('fireworks', 1, 0, '{Fireworks:{Flight:1b,Explosions:[{Type:2b,Colors:[I;255]}]}}')),
             ('area_effect_cloud', 'Particle:"mobSpell",Radius:3.0f,Duration:600000,Age:3,WaitTime:20,ReapplicationDelay:20,DurationOnUse:0.0f,RadiusOnUse:0.0f,'
                                   'RadiusPerTick:0.0f,Color:16711680,Potion:"minecraft:strong_healing",Effects:[{Id:1b,Amplifier:1b,Duration:100}]'),
@@ -1408,10 +1410,10 @@ def entity_list(stacks):
 
 def summon_all(scene, stacks, late):
     pk = Packer(scene.layers, stride=3, zstep=4)
-    for i, (kind, nbt, is_late, stay) in enumerate(entity_list(stacks)):
+    for i, (kind, nbt, is_late, stay) in enumerate(entity_list(scene, stacks)):
         if is_late != late:
             continue
-        form = entity_form(kind, i)
+        form = scene.entity_form(kind, i)
         if form is None:
             continue
         x, y, z = pk.cell()
@@ -1445,26 +1447,26 @@ def wipe_late(scene):
     """Commands that remove the last tick's content again, if it has to be redone."""
     cmds = []
     for y in scene.late_layers:
-        cmds.append(f'kill @e[type=!player,x={BX},y={y - 2},z={BZ},dx={SIZE},dy=14,dz={SIZE}]')
-        for x in range(BX, BX + SIZE, 32):
-            for z in range(BZ, BZ + SIZE, 32):
+        cmds.append(f'kill @e[type=!player,x={scene.bx},y={y - 2},z={scene.bz},dx={SIZE},dy=14,dz={SIZE}]')
+        for x in range(scene.bx, scene.bx + SIZE, 32):
+            for z in range(scene.bz, scene.bz + SIZE, 32):
                 cmds.append(f'fill {x} {y - 2} {z} {x + 31} {y + 11} {z + 31} minecraft:air 0')
-        cmds.append(f'fill {BX} {y - 2} {BZ} {BX + SIZE - 1} {y - 1} {BZ + SIZE - 1} minecraft:stone 0')
+        cmds.append(f'fill {scene.bx} {y - 2} {scene.bz} {scene.bx + SIZE - 1} {y - 1} {scene.bz + SIZE - 1} minecraft:stone 0')
     return cmds
 
 
 # ------------------------------------------------------------------ player, scoreboard, advancements
 PLAYER = 'Upgrader'
-LAB = (BX + 56, 150, BZ + 107)  # a stone platform in the air where the bot works; (x, floor y, z)
 
 
-def inventory_commands(stacks):
+def inventory_commands(scene, stacks):
+    item = scene.item
     cmds = []
     pool = [s for s in stacks.stacks if not s.numeric and s.name != 'air']
     # a hand-picked start of the hotbar, then the sweep
     hot = [item('map'), item('map'), item('map'), item('iron_hoe', 1, 249), item('stone', 64), item('flint_and_steel', 1, 63),
            item('wool', 64, 14), item('cobblestone', 32), item('torch', 20)]
-    if 8 < ERA < 12:    # nobody uses the maps here: the server makes the map files of filled maps in a player's inventory
+    if 8 < scene.era < 12:    # nobody uses the maps here: the server makes the map files of filled maps in a player's inventory
         hot[:3] = [item('filled_map', 1, i) for i in range(3)]
     for i, st in enumerate(hot):
         cmds.append(f'replaceitem entity {PLAYER} slot.hotbar.{i} {st.command_args()}')
@@ -1474,12 +1476,12 @@ def inventory_commands(stacks):
         cmds.append(f'replaceitem entity {PLAYER} slot.inventory.{i} {st.command_args()}')
     armor = [('feet', item('leather_boots', 1, 12, '{%s}' % display('Boots', color=255))),
              ('legs', item('iron_leggings', 1, 20, '{%s}' % ench((0, 4), (34, 3)))),
-             ('chest', item('elytra', 1, 100) if ERA >= 9 else item('diamond_chestplate', 1, 100)),
+             ('chest', item('elytra', 1, 100) if scene.era >= 9 else item('diamond_chestplate', 1, 100)),
              ('head', item('skull', 1, 3, '{SkullOwner:{Id:"61699b2e-d327-4a01-9f1e-0ea8c3f06bc6",Name:"Dinnerbone",'
                                            'Properties:{textures:[{Value:"eyJ0ZXh0dXJlcyI6e319"}]}}}'))]
     for slot, st in armor:
         cmds.append(f'replaceitem entity {PLAYER} slot.armor.{slot} {st.command_args()}')
-    if ERA >= 9:
+    if scene.era >= 9:
         cmds.append(f'replaceitem entity {PLAYER} slot.weapon.offhand {item("shield", 1, 7, "{BlockEntityTag:{Base:11,Patterns:[{Pattern:%s,Color:3}]}}" % q("bs")).command_args()}')
     for i in range(27):
         st = pool[(i * 17 + 300) % len(pool)]
@@ -1498,16 +1500,16 @@ OBJECTIVES = [('dummy1', 'dummy', 'Dummy "quoted" objective'), ('kills', 'player
               ('mine_log', 'stat.mineBlock.minecraft.log', None), ('killed_pig', 'stat.killEntity.Pig', None)]
 
 
-def objectives():
+def objectives(era):
     """The objectives this version has (1.8 lacks the food, air, armor, xp and level criteria and the pickup and drop statistics)."""
-    if ERA >= 9:
+    if era >= 9:
         return OBJECTIVES
     return [o for o in OBJECTIVES if o[1] not in ('food', 'air', 'armor', 'xp', 'level') and not o[1].startswith(('stat.pickup', 'stat.drop'))]
 
 
-def scoreboard_commands():
+def scoreboard_commands(era):
     cmds = []
-    for name, crit, disp in objectives():
+    for name, crit, disp in objectives(era):
         cmds.append(f'scoreboard objectives add {name} {crit}' + (f' {disp}' if disp else ''))
     cmds += ['scoreboard objectives setdisplay sidebar kills', 'scoreboard objectives setdisplay list hp',
              'scoreboard objectives setdisplay belowName deaths', 'scoreboard objectives setdisplay sidebar.team.red mined',
@@ -1521,16 +1523,16 @@ def scoreboard_commands():
         cmds.append(f'scoreboard teams option t_{c} seeFriendlyInvisibles {"true" if i % 3 else "false"}')
         cmds.append(f'scoreboard teams option t_{c} nametagVisibility {["always", "never", "hideForOtherTeams", "hideForOwnTeam"][i % 4]}')
         cmds.append(f'scoreboard teams option t_{c} deathMessageVisibility {["always", "never", "hideForOtherTeams", "hideForOwnTeam"][(i + 1) % 4]}')
-        if ERA >= 9:
+        if era >= 9:
             cmds.append(f'scoreboard teams option t_{c} collisionRule {["always", "never", "pushOtherTeams", "pushOwnTeam"][i % 4]}')
     cmds += ['scoreboard teams join t_red ' + PLAYER, 'scoreboard teams join t_blue Fakeplayer1 Fakeplayer2',
              'scoreboard teams join t_gold Zombie']
-    for i, (name, crit, disp) in enumerate(objectives()):
+    for i, (name, crit, disp) in enumerate(objectives(era)):
         if crit in ('health', 'food', 'air', 'armor', 'xp', 'level'):
             continue                      # read-only criteria
         cmds.append(f'scoreboard players set {PLAYER} {name} {i * 7 - 3}')
         cmds.append(f'scoreboard players set Fakeplayer{1 + i % 2} {name} {i}')
-    tags = ['scoreboard players tag ' + PLAYER + ' add scene', 'scoreboard players tag ' + PLAYER + ' add second'] if ERA >= 9 else []
+    tags = ['scoreboard players tag ' + PLAYER + ' add scene', 'scoreboard players tag ' + PLAYER + ' add second'] if era >= 9 else []
     cmds += ['scoreboard players enable ' + PLAYER + ' trig', *tags, 'scoreboard players add ' + PLAYER + ' kills 5',
              'scoreboard players operation ' + PLAYER + ' dummy1 = Fakeplayer1 dummy1']
     return cmds
@@ -1559,21 +1561,20 @@ def achievement_commands():
     return [f'achievement give * {PLAYER}'] + [f'achievement take achievement.{a} {PLAYER}' for a in ('theEnd2', 'overpowered', 'snipeSkeleton')]
 
 
-def lab_commands():
-    x, y, z = LAB
+def lab_commands(x, y, z):
     cmds = [f'fill {x - 6} {y - 1} {z - 6} {x + 6} {y - 1} {z + 6} minecraft:stone 0',
             f'fill {x - 6} {y} {z - 6} {x + 6} {y + 4} {z + 6} minecraft:air 0']
     return cmds
 
 
 # ------------------------------------------------------------------ the bot works in the lab: real statistics and maps
-def lab_actions(server, bot, problems):
+def lab_actions(scene, server, bot, problems):
     """Everything here is done by the bot with real packets, so the server records genuine statistics."""
-    x, y, z = LAB
+    x, y, z = scene.bx + 56, 150, scene.bz + 107  # the platform where the bot works
     pause = time.sleep
     cx, cz = x + 0.5, z + 0.5
     say = lambda cmds: batch(server, cmds, problems)
-    say(lab_commands() + [f'tp {PLAYER} {cx} {y} {cz}'])
+    say(lab_commands(x, y, z) + [f'tp {PLAYER} {cx} {y} {cz}'])
     pause(1.5)
     # containers around the bot
     ring = [(-3, -3, 'chest', 2), (-2, -3, 'trapped_chest', 2), (-1, -3, 'ender_chest', 2), (0, -3, 'furnace', 2), (1, -3, 'crafting_table', 0),
@@ -1689,7 +1690,7 @@ def lab_actions(server, bot, problems):
     pause(2.5)
     say(['gamerule keepInventory false', 'kill @e[tag=labvictim]',
          f'effect {PLAYER} minecraft:speed 99999 1 true', f'effect {PLAYER} minecraft:night_vision 99999 0 true',
-         f'effect {PLAYER} minecraft:regeneration 99999 0 false', f'tp {PLAYER} {BX}.5 {LAYERS[0]} {BZ}.5'])
+         f'effect {PLAYER} minecraft:regeneration 99999 0 false', f'tp {PLAYER} {scene.bx}.5 {LAYERS[0]} {scene.bz}.5'])
     pause(1.5)
 
 
@@ -1709,14 +1710,14 @@ def spawn_origin(server, say):
     """Where to build: around the world spawn, whose chunks stay loaded (96 x 96 blocks, on chunk borders)."""
     say(['save-all'])
     time.sleep(2)
-    import anvil_dump
     level = anvil_dump.read_dat(str(server.directory / 'world' / 'level.dat'))['Data']
     return (level['SpawnX'] - 48) // 16 * 16, (level['SpawnZ'] - 48) // 16 * 16
 
 
-def probe_items(server, say, names):
+def probe_items(server, origin, names):
     """The item names this version knows (an unknown id is dropped when a chest loads its items)."""
-    x, y, z = BX + 1, 150, BZ + 1
+    bx, bz = origin
+    x, y, z = bx + 1, 150, bz + 1
     cmds = [f'fill {x - 1} {y - 1} {z - 1} {x + 1} {y - 1} {z + 1} minecraft:stone 0']
     for n in names:
         cmds += [f'setblock {x} {y} {z} minecraft:chest 2 replace {{Items:[{{Slot:0b,id:"minecraft:{n}",Count:1b,Damage:0s}}]}}',
@@ -1727,61 +1728,45 @@ def probe_items(server, say, names):
     return good
 
 
-def barrier():
-    return [f'fill {BX + dx} 108 {BZ + dz} {BX + dx + 31} 113 {BZ + dz + 31} minecraft:{b} 0'
+def barrier(scene):
+    return [f'fill {scene.bx + dx} 108 {scene.bz + dz} {scene.bx + dx + 31} 113 {scene.bz + dz + 31} minecraft:{b} 0'
             for b in ('stone', 'air', 'stone', 'air') for dx in (0, 32, 64) for dz in (0, 32, 64)]
 
 
-def set_origin(bx, bz):
-    """Move the whole scene (the flat world has its spawn chunks elsewhere)."""
-    global BX, BZ, LAB
-    BX, BZ = bx, bz
-    LAB = (bx + 56, 150, bz + 107)
-
-
-LAST = {}
-
-
-def populate(server, Bot, port, protocol, name, problems):
-    """Build the whole 1.12.2 scene, save it for good and return the (still joined) bot."""
-    harness = sys.modules[Bot.__module__]
-    Player = make_player(Bot, lab.varint, lab.parse_varint, harness.mcstring)
-    set_protocol(protocol)
+def populate(server, Bot, port, protocol, name, problems, *, mcstring, origin=DEFAULT_ORIGIN):
+    """Build and save the legacy scene. Its bot leaves before the last tick; the owner stops the server without
+    saving again on success and closes any bot that was left joined by a failure."""
+    Player = make_player(Bot, varint, parse_varint, mcstring)
+    era = PROTOCOL_ERA[protocol]
     say = lambda cmds, **kw: batch(server, cmds, problems, **kw)
-    if ERA < 12:
-        global VALID_ITEMS
-        VALID_ITEMS = None
+    valid_items = None
+    if era < 12:
         origin = spawn_origin(server, say)
-        set_origin(*origin)
-        VALID_ITEMS = probe_items(server, say, ITEMS)
-    stacks = Stacks()
-    scene = Scene()
+        valid_items = probe_items(server, origin, ITEMS)
+    scene = Scene(era, origin, valid_items)
+    stacks = Stacks(scene)
     build_blocks(scene, stacks)
     entities(scene, stacks)
     late_content(scene, stacks)
-    LAST['scene'] = scene
     say(['gamerule randomTickSpeed 0', 'gamerule doDaylightCycle false', 'gamerule doWeatherCycle false', 'gamerule doMobSpawning false',
          'gamerule doFireTick false', 'gamerule mobGriefing false', 'gamerule sceneRule fixture', 'gamerule logAdminCommands true',
-         *(['gamerule announceAdvancements false', 'gamerule spawnRadius 7'] if ERA == 12 else []), 'time set 6000', 'weather clear 999999', 'difficulty 2',
+         *(['gamerule announceAdvancements false', 'gamerule spawnRadius 7'] if era == 12 else []), 'time set 6000', 'weather clear 999999', 'difficulty 2',
          'worldborder set 59999968', 'worldborder damage amount 0.25', 'worldborder warning distance 7'])
     say(scene.cmds)
     bot = Player(port, protocol, name)
     time.sleep(3)
-    say(inventory_commands(stacks))
+    say(inventory_commands(scene, stacks))
     say([f'xp 117L {name}', f'xp 29 {name}',
-         *([f'effect {name} minecraft:speed 99999 1 true', f'effect {name} minecraft:night_vision 99999 0 true'] if ERA == 12 else
+         *([f'effect {name} minecraft:speed 99999 1 true', f'effect {name} minecraft:night_vision 99999 0 true'] if era == 12 else
            [f'effect {name} 1 99999 1 true', f'effect {name} 16 99999 0 true']),
-         f'spawnpoint {name} {BX} {LAYERS[0]} {BZ}', f'gamemode survival {name}'])
-    say(scoreboard_commands())
-    if ERA == 12:
+         f'spawnpoint {name} {scene.bx} {LAYERS[0]} {scene.bz}', f'gamemode survival {name}'])
+    say(scoreboard_commands(era))
+    if era == 12:
         say(advancement_commands())
-        try:
-            lab_actions(server, bot, problems)
-        except OSError as error:      # the server dropped the bot
-            problems.append(('lab_actions', ['the bot lost its connection: %s' % error]))
+        lab_actions(scene, server, bot, problems)
     else:
         say(achievement_commands())
-        if ERA == 8:                  # 1.8 makes a map only when an empty map is used
+        if era == 8:                  # 1.8 makes a map only when an empty map is used
             for slot in range(3):
                 bot.use_map_18(slot)
             bot.send(0x09, struct.pack('>h', 8))
@@ -1791,10 +1776,10 @@ def populate(server, Bot, port, protocol, name, problems):
     bot.leave()            # the player's data, statistics and advancements are written when the bot leaves
     time.sleep(2)
     # The last tick: transient states and entities, then the save. A normal stop would save the chunks again,
-    # after those states have changed (it ignores `save-off`), so the server is killed once the save is done.
+    # after those states have changed (it ignores `save-off`), so the owner kills the server once the save is done.
     # `time query gametime` before and after tells whether a tick ran in between (the server executes a queue of
     # console commands in one tick unless the queue runs dry); if so the content is wiped and placed again.
-    slow = barrier()
+    slow = barrier(scene)
     batch_commands = ['time query gametime'] + slow + scene.late + ['save-all flush', 'time query gametime']
     for attempt in range(5):
         kept = len(problems)
@@ -1809,13 +1794,6 @@ def populate(server, Bot, port, protocol, name, problems):
     else:
         problems.append(('last tick', ['the transient states were not saved in one tick']))
     time.sleep(1)
-    server.process.kill()
-    server.process.wait()
-    try:
-        server.process.stdin.close()
-    except OSError:
-        pass
-    return bot
 
 
 # ------------------------------------------------------------------ after the server stopped
@@ -1876,33 +1854,19 @@ def build_flat(h, force=False):
         return []
     work = h.LOCAL / 'gen' / (version + '-flat')
     shutil.rmtree(work, ignore_errors=True)
-    port = lab.free_port()
+    port = free_port()
 
-    class FlatServer(h.Server):
-        def __init__(self, directory):         # as Server.__init__, with a flat world
-            directory.mkdir(parents=True, exist_ok=True)
-            (directory / 'eula.txt').write_text('eula=true\n')
-            props = {'server-port': port, 'online-mode': 'false', 'level-name': 'world', 'level-seed': '4242',
-                     'view-distance': '4', 'spawn-protection': '0', 'enable-rcon': 'false', 'enable-query': 'false',
-                     'max-tick-time': '-1', 'level-type': 'FLAT', 'generator-settings': FLAT_OPTIONS}
-            (directory / 'server.properties').write_text(''.join(f'{k}={v}\n' for k, v in props.items()))
-            self.process = h.subprocess.Popen([h.java(version), '-Xmx2G', '-jar', str(jar), 'nogui'], cwd=directory,
-                                              stdin=h.subprocess.PIPE, stdout=h.subprocess.PIPE, stderr=h.subprocess.STDOUT, text=True)
-            self.lines = []
-            self.queue = queue.Queue()
-            self.counter = 0
-            threading.Thread(target=self._pump, daemon=True).start()
-            self.wait('Done (', 600)
-
-    server = FlatServer(work)
+    server = h.Server(work, jar, port, java=h.java(version),
+                      props_override={'level-type': 'FLAT', 'generator-settings': FLAT_OPTIONS})
     problems = []
-    old = (BX, BZ)
-    set_origin(16, 16)
+    bots = []   # every bot that joined, so that the finally below closes it whatever fails
+    JoinedBot = h.tracked_bot(bots)
+    save_on_stop = True
     try:
         # A flat world's spawn is found far away; make it (64, 64), and let a bot visit the scene's area so that its chunks
         # are loaded (they stay loaded, being within the spawn radius).
         batch(server, ['setworldspawn 64 4 64'], problems)
-        Player = make_player(h.Bot, lab.varint, lab.parse_varint, h.mcstring)
+        Player = make_player(JoinedBot, varint, parse_varint, h.mcstring)
         visitor = Player(port, protocol, h.BOT)
         time.sleep(2)
         for x, z in ((24, 24), (24, 72), (24, 104), (72, 24), (72, 72), (72, 104), (104, 24), (104, 72), (104, 104), (72, 123), (-8, 63), (32, 103)):
@@ -1912,11 +1876,14 @@ def build_flat(h, force=False):
         time.sleep(1)
         visitor.leave()
         time.sleep(1)
-        bot = populate(server, h.Bot, port, protocol, h.BOT, problems)
-        bot.leave()
+        populate(server, JoinedBot, port, protocol, h.BOT, problems, mcstring=h.mcstring, origin=(16, 16))
+        save_on_stop = False
     finally:
-        set_origin(*old)
-        server.stop()
+        try:
+            for bot in bots:
+                bot.leave()
+        finally:
+            server.stop(save=save_on_stop)
     fixtures(work / 'world')
     partial = target.with_name(target.name + '.partial')
     shutil.rmtree(partial, ignore_errors=True)

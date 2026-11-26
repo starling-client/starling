@@ -148,7 +148,7 @@ impl ModLayer {
 
 /// The states mods colour: their layers by slot ([`Tint::Mod`]), and every state as a mod reads
 /// it, kept while a mod's own source is registered.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(super) struct ModTints {
     pub(super) layers: Vec<Box<[ModLayer]>>,
     pub(super) values: Option<ModTintValues>,
@@ -156,6 +156,7 @@ pub(super) struct ModTints {
 }
 
 /// API values prepared by the owning game before mesh tables are built.
+#[derive(Clone)]
 pub struct ModTintValues {
     /// One value for each engine state slot; conversion belongs to the game boundary.
     pub states: Box<[mod_api::BlockState]>,

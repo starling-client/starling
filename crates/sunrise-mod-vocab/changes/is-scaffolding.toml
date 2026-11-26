@@ -1,0 +1,3 @@
+ids = ["hook:is_scaffolding", "method:BlockPart::is_scaffolding"]
+why = "A block Part decides whether its block stops a sneaking player's slide down a climbable as scaffolding does (NeoForge IBlockExtension.isScaffolding, which LivingEntity.handleOnClimbable asks of the block the player stands in). `scaffolding` starts with vanilla's answer, whether the state is minecraft:scaffolding; a part may set either value. Asked for players only, on both sides."
+migrate = "None: a new hook. To make a block slide-friendly like scaffolding, answer `scaffolding = true` from `BlockPart::is_scaffolding`."

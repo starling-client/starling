@@ -131,6 +131,13 @@ mod dimension_transition_tests {
     #[derive(Default)]
     struct Canvas(Vec<([f32; 4], u32)>);
     impl DrawContext for Canvas {
+        fn with_scissor(
+            &mut self,
+            _: [f32; 4],
+            _: &mut dyn FnMut(&mut dyn DrawContext),
+        ) -> Result<(), GuiClipRefusal> {
+            unreachable!("the transition under test does not open a scissor")
+        }
         fn size(&self) -> [f32; 2] {
             [320.0, 240.0]
         }

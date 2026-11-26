@@ -1,6 +1,11 @@
 """Six real UUID-bound pig loads, plus actual tag commands and a live rewrite."""
 import json
-from command_exec_corpus import cmd, setup
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools.command_exec_corpus import cmd, setup
 
 UNIQUE = [f"h252_{i:04d}" for i in range(1025)]
 DUPLICATES = ["h252_repeat"] * 1024 + ["h252_late"]

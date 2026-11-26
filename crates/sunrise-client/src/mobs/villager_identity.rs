@@ -8,6 +8,9 @@ pub fn profession_id(index: u8) -> &'static str {
 }
 
 pub fn command_name(mob: &Mob) -> crate::text::Text {
+    if let Some(text) = &mob.custom_name_text {
+        return crate::scoreboard::remove_click_events(text);
+    }
     if let Some(name) = &mob.custom_name {
         return crate::text::Text::literal(name);
     }

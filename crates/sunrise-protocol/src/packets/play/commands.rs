@@ -1,10 +1,24 @@
-//! The command tree (`ClientboundCommandsPacket`): its nodes, the 26.3 argument types
-//! and their parser properties.
+//! The command tree (`ClientboundCommandsPacket`) and server-supplied suggestions.
 use crate::{
     Result,
-    buf::{Codec, Reader},
+    buf::{Codec, List, Opt, Reader, Str, TrustedComponent, VarInt},
+    packet,
 };
-use sunrise_core::vanilla_bytes::Writer;
+use sunrise_core::{nbt::Tag, vanilla_bytes::Writer};
+
+packet!(
+    /// One `ClientboundCommandSuggestionsPacket.Entry`: suggestion text and optional tooltip.
+    CommandSuggestion { text: String => Str, tooltip: Option<Tag> => Opt<TrustedComponent> }
+);
+packet!(
+    /// `ClientboundCommandSuggestionsPacket.STREAM_CODEC`.
+    CommandSuggestions {
+        id: i32 => VarInt,
+        start: i32 => VarInt,
+        length: i32 => VarInt,
+        suggestions: Vec<CommandSuggestion> => List<CommandSuggestion>,
+    }
+);
 
 /// One entry of ClientboundCommandsPacket: a literal or an argument node.
 #[derive(Clone, Debug, PartialEq)]
@@ -282,10 +296,17 @@ impl Codec<Commands> for Commands {
         if !acyclic(&nodes, |n| n.redirect.as_slice()) || !acyclic(&nodes, |n| &n.children) {
             return Err(crate::Error::new("Server sent an impossible command tree"));
         }
-        Ok(Self {
-            nodes,
-            root: r.varint()?,
-        })
+        // The root index must name a root node of the tree; a missing, out-of-range or
+        // non-root entry is an impossible tree, never index 0 in its place.
+        let root = r.varint()?;
+        let names_root = usize::try_from(root)
+            .ok()
+            .and_then(|root| nodes.get(root))
+            .is_some_and(|node| node.kind == 0);
+        if !names_root {
+            return Err(crate::Error::new("Server sent an impossible command tree"));
+        }
+        Ok(Self { nodes, root })
     }
     fn write(v: &Self, w: &mut Writer) {
         w.varint(v.nodes.len() as i32);

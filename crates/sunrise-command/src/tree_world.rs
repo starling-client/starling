@@ -3,7 +3,7 @@
 //! `/attribute`, `/ride`, `/spreadplayers`, `/loot`, `/forceload`,
 //! `/fillbiome`, `/worldborder`.
 use super::{
-    Dispatcher,
+    Dispatcher, RegistryId,
     args::{ArgType, integer},
     vanilla::{ENTITIES, ENTITY, GAMEMASTERS, PLAYERS},
 };
@@ -40,7 +40,7 @@ pub fn register(d: &mut Dispatcher, root: usize) {
     // spreadplayers <center> <spreadDistance> <maxRange> [under <maxHeight>] <respectTeams> <targets>
     let spread = d.literal(root, "spreadplayers");
     d.requires(spread, GAMEMASTERS);
-    let center = d.argument(spread, "center", ArgType::Vec2);
+    let center = d.argument(spread, "center", ArgType::Vec2 { center: true });
     let dist = d.argument(center, "spreadDistance", float(0.0));
     let range = d.argument(dist, "maxRange", float(1.0));
     let respect = d.argument(range, "respectTeams", ArgType::Bool);
@@ -59,7 +59,7 @@ pub fn register(d: &mut Dispatcher, root: usize) {
     let f = d.argument(
         feature,
         "feature",
-        ArgType::ResourceOrId("minecraft:worldgen/feature"),
+        ArgType::ResourceOrId(RegistryId::from_static("minecraft:worldgen/feature")),
     );
     d.executes(f, "place.feature");
     let pos = d.argument(f, "pos", ArgType::BlockPos);
@@ -68,7 +68,7 @@ pub fn register(d: &mut Dispatcher, root: usize) {
     let pool = d.argument(
         jigsaw,
         "pool",
-        ArgType::ResKey("minecraft:worldgen/template_pool"),
+        ArgType::ResKey(RegistryId::from_static("minecraft:worldgen/template_pool")),
     );
     let target = d.argument(pool, "target", ArgType::Id("none"));
     let depth = d.argument(target, "max_depth", ArgType::Integer { min: 1, max: 20 });
@@ -79,7 +79,7 @@ pub fn register(d: &mut Dispatcher, root: usize) {
     let st = d.argument(
         structure,
         "structure",
-        ArgType::ResKey("minecraft:worldgen/structure"),
+        ArgType::ResKey(RegistryId::from_static("minecraft:worldgen/structure")),
     );
     d.executes(st, "place.structure");
     let pos = d.argument(st, "pos", ArgType::BlockPos);
@@ -126,7 +126,11 @@ fn recipe(d: &mut Dispatcher, root: usize) {
     for (word, id) in [("give", "recipe.give"), ("take", "recipe.take")] {
         let w = d.literal(recipe, word);
         let t = d.argument(w, "targets", PLAYERS);
-        let r = d.argument(t, "recipe", ArgType::ResKey("minecraft:recipe"));
+        let r = d.argument(
+            t,
+            "recipe",
+            ArgType::ResKey(RegistryId::from_static("minecraft:recipe")),
+        );
         d.executes(r, id);
         let all = d.literal(t, "*");
         d.executes(all, id);
@@ -139,7 +143,11 @@ fn damage(d: &mut Dispatcher, root: usize) {
     let target = d.argument(damage, "target", ENTITY);
     let amount = d.argument(target, "amount", float(0.0));
     d.executes(amount, "damage");
-    let ty = d.argument(amount, "damageType", ArgType::Res("minecraft:damage_type"));
+    let ty = d.argument(
+        amount,
+        "damageType",
+        ArgType::Res(RegistryId::from_static("minecraft:damage_type")),
+    );
     d.executes(ty, "damage");
     let at = d.literal(ty, "at");
     let loc = d.argument(at, "location", ArgType::Vec3 { center: true });
@@ -245,7 +253,11 @@ fn attribute(d: &mut Dispatcher, root: usize) {
     let attribute = d.literal(root, "attribute");
     d.requires(attribute, GAMEMASTERS);
     let target = d.argument(attribute, "target", ENTITY);
-    let attr = d.argument(target, "attribute", ArgType::Res("minecraft:attribute"));
+    let attr = d.argument(
+        target,
+        "attribute",
+        ArgType::Res(RegistryId::from_static("minecraft:attribute")),
+    );
     let get = d.literal(attr, "get");
     d.executes(get, "attribute.get");
     let scale = d.argument(get, "scale", double());
@@ -304,13 +316,17 @@ fn fillbiome(d: &mut Dispatcher, root: usize) {
     d.requires(f, GAMEMASTERS);
     let from = d.argument(f, "from", ArgType::BlockPos);
     let to = d.argument(from, "to", ArgType::BlockPos);
-    let biome = d.argument(to, "biome", ArgType::Res("minecraft:worldgen/biome"));
+    let biome = d.argument(
+        to,
+        "biome",
+        ArgType::Res(RegistryId::from_static("minecraft:worldgen/biome")),
+    );
     d.executes(biome, "fillbiome");
     let replace = d.literal(biome, "replace");
     let filter = d.argument(
         replace,
         "filter",
-        ArgType::ResOrTag("minecraft:worldgen/biome"),
+        ArgType::ResOrTag(RegistryId::from_static("minecraft:worldgen/biome")),
     );
     d.executes(filter, "fillbiome");
 }
@@ -335,7 +351,7 @@ fn worldborder(d: &mut Dispatcher, root: usize) {
         d.executes(time, id);
     }
     let center = d.literal(w, "center");
-    let pos = d.argument(center, "pos", ArgType::Vec2);
+    let pos = d.argument(center, "pos", ArgType::Vec2 { center: true });
     d.executes(pos, "worldborder.center");
     let damage = d.literal(w, "damage");
     let amount = d.literal(damage, "amount");
@@ -386,7 +402,7 @@ fn loot(d: &mut Dispatcher, root: usize) {
         let table = d.argument(
             fish,
             "loot_table",
-            ArgType::ResourceOrId("minecraft:loot_table"),
+            ArgType::ResourceOrId(RegistryId::from_static("minecraft:loot_table")),
         );
         let pos = d.argument(table, "pos", ArgType::BlockPos);
         d.executes(pos, "loot.fish");
@@ -400,7 +416,7 @@ fn loot(d: &mut Dispatcher, root: usize) {
         let lt = d.argument(
             l,
             "loot_table",
-            ArgType::ResourceOrId("minecraft:loot_table"),
+            ArgType::ResourceOrId(RegistryId::from_static("minecraft:loot_table")),
         );
         d.executes(lt, "loot.loot");
         let kill = d.literal(t, "kill");

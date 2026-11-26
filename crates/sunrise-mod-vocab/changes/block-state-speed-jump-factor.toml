@@ -1,0 +1,2 @@
+ids = ["handle:BlockStates::speed_factor", "handle:BlockStates::jump_factor"]
+why = "Mods read a block's declared speed and jump factors (Block.getSpeedFactor, Block.getJumpFactor) on either side, as they read its friction, for tooltips or for movement and pathfinding helpers (#5307)."

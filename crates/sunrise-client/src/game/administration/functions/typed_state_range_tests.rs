@@ -4,11 +4,12 @@ mod typed_state_range_read_tests {
     #[test]
     #[ignore = "needs prepared resources, actual pack and scratch homes/cwd"]
     fn loaded_pack_state_ranges_match_typed_controls() {
+        let scratch = tempfile::tempdir().unwrap();
         let mut resources = None;
         let mut game = crate::game::game_tests::tests::server_game(&mut resources);
         let source =
             std::path::PathBuf::from(std::env::var_os("SUNRISE_TYPED_RANGE_PACK").unwrap());
-        game.world_root = std::env::current_dir().unwrap().join("typed-range-world");
+        game.world_root = scratch.path().join("typed-range-world");
         let target = game.world_root.join("datapacks/typed_ranges");
         let preds = target.join("data/ranges/predicate");
         std::fs::create_dir_all(&preds).unwrap();
@@ -151,13 +152,12 @@ mod typed_state_range_read_tests {
     #[test]
     #[ignore = "needs prepared resources, actual pack and scratch homes/cwd"]
     fn loaded_pack_direction_ranges_keep_full_and_filtered_domains() {
+        let scratch = tempfile::tempdir().unwrap();
         let mut resources = None;
         let mut game = crate::game::game_tests::tests::server_game(&mut resources);
         let source =
             std::path::PathBuf::from(std::env::var_os("SUNRISE_TYPED_RANGE_PACK").unwrap());
-        game.world_root = std::env::current_dir()
-            .unwrap()
-            .join("typed-direction-world");
+        game.world_root = scratch.path().join("typed-direction-world");
         let target = game.world_root.join("datapacks/typed_ranges");
         let preds = target.join("data/ranges/predicate");
         std::fs::create_dir_all(&preds).unwrap();

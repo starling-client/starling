@@ -6,7 +6,7 @@
 //! each `OitStage` (`CloudRenderer.renderOit`, in `Oit`'s cloud passes). Without one the clouds
 //! draw natively (`clouds.rs`, `vs_cloud`).
 
-use crate::core_shader::{CoreProgram, Glue};
+use sunrise_glsl::{Glue, Translated};
 
 /// `core/clouds`: no vertex input, the face and its corner from `gl_VertexIndex`.
 pub(crate) const GLUE: Glue = Glue {
@@ -16,6 +16,8 @@ pub(crate) const GLUE: Glue = Glue {
     // 26.3's ProjMat already has wgpu's reversed 0 to 1 depth.
     finish: "",
     vertex_id: "int(gl_VertexIndex)",
+    fragment_finish: None,
+    interface: sunrise_shaders::DEVICELESS_INTERFACE_LIMITS,
 };
 
 /// The pipeline's own block and texel buffer, beside the vanilla blocks.
@@ -25,7 +27,6 @@ pub(crate) const FACES: &str = "CloudFaces";
 /// Each vanilla block's offset in the one buffer (`core_shader::BLOCKS` order), then
 /// `CloudInfo`'s.
 const BLOCK_OFFSETS: [u64; 4] = [0, 256, 512, 768];
-const BLOCK_SIZES: [u64; 4] = [48, 64, 160, 48];
 const INFO_OFFSET: u64 = 1024;
 const INFO_SIZE: u64 = 48;
 /// The uniform bytes a frame writes: the vanilla blocks (`core_lines::uniforms`), `CloudInfo`.
@@ -51,19 +52,17 @@ pub(crate) struct OitStageSource {
     pub samplers: &'static [&'static str],
 }
 
-/// The stage samplers, in the order [`super::oit::CloudSamples::views`] gives their textures.
-const STAGE_SAMPLERS: [&str; 3] = ["DepthBoundsSampler", "Coeff0", "Coeff1"];
+/// The stage samplers, in the order [`super::oit::CloudSamples::views`] gives their textures (the
+/// pack text's Improved Transparency stages bind them by the same names).
+pub(crate) const STAGE_SAMPLERS: [&str; 3] = ["DepthBoundsSampler", "Coeff0", "Coeff1"];
 
-/// What `GlslCompiler` defines for every program on a backend whose depth runs from 0 to 1, as
-/// wgpu's does.
-const DEPTH_ZERO_TO_ONE: &str = "RENDERPEARL_DEPTH_IS_ZERO_TO_ONE";
-
-/// The defines of `CLOUDS` and `FLAT_CLOUDS`: the backend's alone.
-pub(crate) const CLASSIC_DEFINES: [&str; 1] = [DEPTH_ZERO_TO_ONE];
+/// The defines of `CLOUDS` and `FLAT_CLOUDS`: none of their own. The backend's, which every
+/// program has, the translator adds (`core_shader::DEPTH_ZERO_TO_ONE`).
+pub(crate) const CLASSIC_DEFINES: [&str; 0] = [];
 
 /// `OitStage`'s order. `OIT_COEFF_COUNT` is `LevelRenderer.OIT_COEFFICIENT_COUNT` (8), its
-/// attachments `OIT_TRANSMITTANCE_TARGET_COUNT` (2), as `oit.rs` draws them; then the backend's
-/// [`DEPTH_ZERO_TO_ONE`].
+/// attachments `OIT_TRANSMITTANCE_TARGET_COUNT` (2), as `oit.rs` draws them. The backend's
+/// define, which every program has, the translator adds.
 pub(crate) const OIT_STAGES: [OitStageSource; 3] = [
     OitStageSource {
         pipeline: "minecraft:pipeline/oit_depth_bounds_clouds",
@@ -72,7 +71,6 @@ pub(crate) const OIT_STAGES: [OitStageSource; 3] = [
             "OIT_WAVELET_RANK 2",
             "OIT_COEFF_COUNT 8",
             "OIT_COEFF_ATTACHMENT_COUNT 2",
-            DEPTH_ZERO_TO_ONE,
             "OIT_ALPHA_ONLY",
             "OIT_DEPTH_BOUNDS",
         ],
@@ -85,7 +83,6 @@ pub(crate) const OIT_STAGES: [OitStageSource; 3] = [
             "OIT_WAVELET_RANK 2",
             "OIT_COEFF_COUNT 8",
             "OIT_COEFF_ATTACHMENT_COUNT 2",
-            DEPTH_ZERO_TO_ONE,
             "OIT_ALPHA_ONLY",
             "OIT_TRANSMITTANCE",
         ],
@@ -98,7 +95,6 @@ pub(crate) const OIT_STAGES: [OitStageSource; 3] = [
             "OIT_WAVELET_RANK 2",
             "OIT_COEFF_COUNT 8",
             "OIT_COEFF_ATTACHMENT_COUNT 2",
-            DEPTH_ZERO_TO_ONE,
             "OIT_ACCUMULATE",
         ],
         samplers: &STAGE_SAMPLERS,
@@ -108,49 +104,18 @@ pub(crate) const OIT_STAGES: [OitStageSource; 3] = [
 /// `RenderPipelines.CLOUDS`' location (`FLAT_CLOUDS` is made from the same program).
 pub(crate) const CLASSIC_PIPELINE: &str = "minecraft:pipeline/clouds";
 
-/// How many colour targets the `i`th Improved Transparency stage draws into.
-pub(crate) fn oit_targets(i: usize) -> usize {
-    super::oit::stage_targets(super::oit::Stage::ALL[i]).len()
-}
-
-/// Why a translated program can't make its pipeline here, as the device would refuse it when
-/// the pipeline is made: it reads one of vanilla's samplers (`Sampler0` to `Sampler2`), which no
-/// clouds pass binds; or its fragment stage writes one of the pipeline's `targets` colour
-/// targets with anything but floats. Checked when the packs load, so the load fails as
-/// vanilla's compile failure fails its reload.
-pub(crate) fn check(program: &CoreProgram, targets: usize) -> Result<(), String> {
+/// Why a translated program can't make its pipeline here, as vanilla's builder refuses a
+/// descriptor missing from the pipeline's layout: it reads one of vanilla's samplers (`Sampler0`
+/// to `Sampler2`), which no clouds pass binds. Checked when the packs load, so the load fails as
+/// vanilla's compile failure fails its reload; the error names the declaration it is about. (A
+/// colour output the device doesn't take, which vanilla doesn't check, draws natively instead:
+/// `clouds_for_frame`.)
+pub(crate) fn check(program: &Translated) -> Result<(), sunrise_glsl::Error> {
     for (name, binding) in crate::core_shader::SAMPLERS {
         if !(program.stages_reading(binding) | program.stages_reading(binding + 1)).is_empty() {
-            return Err(format!("{name} is not a sampler of this pipeline"));
-        }
-    }
-    let module = &program.fragment;
-    let mut outputs = Vec::new();
-    for entry in &module.entry_points {
-        let Some(result) = &entry.function.result else {
-            continue;
-        };
-        match &module.types[result.ty].inner {
-            naga::TypeInner::Struct { members, .. } => {
-                outputs.extend(members.iter().map(|m| (m.binding.clone(), m.ty)));
-            }
-            _ => outputs.push((result.binding.clone(), result.ty)),
-        }
-    }
-    for (binding, ty) in outputs {
-        let Some(naga::Binding::Location { location, .. }) = binding else {
-            continue;
-        };
-        let float = match module.types[ty].inner {
-            naga::TypeInner::Scalar(s) | naga::TypeInner::Vector { scalar: s, .. } => {
-                s.kind == naga::ScalarKind::Float
-            }
-            _ => false,
-        };
-        if (location as usize) < targets && !float {
-            return Err(format!(
-                "its fragment stage writes colour target {location} with something other than floats"
-            ));
+            return Err(program
+                .declared_at(binding)
+                .error(format!("{name} is not a sampler of this pipeline")));
         }
     }
     Ok(())
@@ -169,6 +134,10 @@ struct Draw {
     /// The stage samplers it declares and its stage gives: the texture's binding (the sampler
     /// object's the next) and its place in [`STAGE_SAMPLERS`].
     samplers: Vec<(u32, usize)>,
+    /// Vanilla's blocks' sizes as the program binds them
+    /// (`expression_blocks::vanilla_block_size`), then `CloudInfo`'s.
+    block_sizes: [u64; 4],
+    info_size: u64,
 }
 
 /// The Improved Transparency stages' programs and their groups.
@@ -201,25 +170,12 @@ pub(crate) struct CoreClouds {
     key: Option<crate::clouds::pack::FacesKey>,
 }
 
-/// What `f` makes, or the device refusal naming its pipeline: a
-/// pack's shader is untrusted, and the backend failing to compile it is an internal error.
-fn scoped<T>(device: &wgpu::Device, what: &str, f: impl FnOnce() -> T) -> Result<T, String> {
-    let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
-    let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
-    let made = f();
-    let internal = pollster::block_on(internal.pop());
-    if let Some(e) = internal.or(pollster::block_on(validation.pop())) {
-        return Err(format!("{what}: {e}"));
-    }
-    Ok(made)
-}
-
 impl Draw {
     /// `program`'s pipelines into `targets`, the depth written by the fancy and the flat one
     /// as `writes` says; `samplers` are the stage's.
     fn new(
         device: &wgpu::Device,
-        program: &CoreProgram,
+        program: &Translated,
         targets: &[Option<wgpu::ColorTargetState>],
         writes: [bool; 2],
         samplers: &[&str],
@@ -229,7 +185,7 @@ impl Draw {
                 .other
                 .iter()
                 .position(|n| n == name)
-                .map(crate::core_shader::other_binding)
+                .map(|i| program.other_binding(i))
         };
         let faces_binding = binding(FACES);
         let info_binding = binding(INFO_BLOCK);
@@ -251,6 +207,8 @@ impl Draw {
             ty,
             count: None,
         };
+        let block_sizes: [u64; 4] =
+            std::array::from_fn(|i| super::expression_blocks::vanilla_block_size(program, i));
         let block = |binding: u32, size: u64| {
             entry(
                 binding,
@@ -262,8 +220,11 @@ impl Draw {
             )
         };
         let mut entries: Vec<wgpu::BindGroupLayoutEntry> =
-            (0..4).map(|b| block(b, BLOCK_SIZES[b as usize])).collect();
-        entries.extend(info_binding.map(|b| block(b, INFO_SIZE)));
+            (0..4).map(|b| block(b, block_sizes[b as usize])).collect();
+        let info_size = info_binding.map_or(INFO_SIZE, |b| {
+            super::expression_blocks::block_size(program, b, INFO_SIZE)
+        });
+        entries.extend(info_binding.map(|b| block(b, info_size)));
         entries.extend(faces_binding.map(|binding| {
             entry(
                 binding,
@@ -336,6 +297,8 @@ impl Draw {
             faces_binding,
             info_binding,
             samplers,
+            block_sizes,
+            info_size,
         }
     }
 
@@ -357,9 +320,12 @@ impl Draw {
             }),
         };
         let mut entries: Vec<wgpu::BindGroupEntry> = (0..4)
-            .map(|i| range(i as u32, BLOCK_OFFSETS[i], BLOCK_SIZES[i]))
+            .map(|i| range(i as u32, BLOCK_OFFSETS[i], self.block_sizes[i]))
             .collect();
-        entries.extend(self.info_binding.map(|b| range(b, INFO_OFFSET, INFO_SIZE)));
+        entries.extend(
+            self.info_binding
+                .map(|b| range(b, INFO_OFFSET, self.info_size)),
+        );
         entries.extend(self.faces_binding.map(|binding| wgpu::BindGroupEntry {
             binding,
             resource: faces.as_entire_binding(),
@@ -396,7 +362,7 @@ impl CoreClouds {
     pub(super) fn new(
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
-        (classic, stages): (Option<&CoreProgram>, Option<&[CoreProgram; 3]>),
+        (classic, stages): (Option<&Translated>, Option<&[Translated; 3]>),
     ) -> Result<Self, String> {
         let uniform = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Resource pack clouds"),
@@ -411,7 +377,7 @@ impl CoreClouds {
         // refusal, which reaches the pack reload through build_renderer.
         let classic = classic
             .map(|program| {
-                scoped(device, CLASSIC_PIPELINE, || {
+                crate::core_shader::scoped(device, CLASSIC_PIPELINE, || {
                     let targets = [Some(wgpu::ColorTargetState {
                         format,
                         blend: Some(wgpu::BlendState::ALPHA_BLENDING),
@@ -434,7 +400,7 @@ impl CoreClouds {
                     let program = &stages[i];
                     let first = stage == super::oit::Stage::DepthBounds;
                     let targets = super::oit::stage_targets(stage);
-                    scoped(device, OIT_STAGES[i].pipeline, || {
+                    crate::core_shader::scoped(device, OIT_STAGES[i].pipeline, || {
                         Draw::new(
                             device,
                             program,
@@ -620,7 +586,6 @@ pub(crate) struct CloudsFrame {
     pub pack_shader: bool,
     pub pack_oit_shader: bool,
     pub clouds: bool,
-    pub native_clouds: bool,
     pub improved_transparency: bool,
     pub shader_pack: bool,
     pub title: bool,
@@ -634,19 +599,14 @@ impl CloudsFrame {
         } else {
             self.pack_shader
         };
-        shader
-            && self.clouds
-            && self.native_clouds
-            && !self.shader_pack
-            && !self.title
-            && !self.cloud_marks
+        shader && self.clouds && !self.shader_pack && !self.title && !self.cloud_marks
     }
 }
 
 /// Whether the native mesh is prepared this frame (`draw_frame`): the clouds are the game's own,
 /// and no pack's faces were prepared in its place.
-pub(crate) fn native_mesh(native_clouds: bool, pack_quads: Option<u32>) -> bool {
-    native_clouds && pack_quads.is_none()
+pub(crate) fn native_mesh(pack_quads: Option<u32>) -> bool {
+    pack_quads.is_none()
 }
 
 /// Whether the classic world pass draws `quads` clouds, a pack's or the native mesh's: not where
@@ -685,12 +645,30 @@ impl super::Renderer {
     }
 }
 
-/// Link every required pipeline before deciding whether this frame draws the pack's clouds.
+/// Link every required pipeline before deciding whether this frame draws the pack's clouds. A
+/// program past the device's limits (`sunrise_glsl::PastDeviceLimit`), among the pipelines the
+/// device makes, leaves the native clouds.
 fn clouds_for_frame(
     device: &wgpu::Device,
     frame: super::FrameConfiguration,
     programs: &crate::clouds::pack::Programs,
 ) -> Result<Option<CoreClouds>, String> {
+    let fits = |program, pipeline, targets: &[wgpu::TextureFormat]| {
+        crate::core_shader::within_device_limits(device, program, pipeline, targets)
+    };
+    let oit = super::oit::supported(device);
+    let stage_fits = |i: usize| {
+        let targets: Vec<wgpu::TextureFormat> =
+            (super::oit::stage_targets(super::oit::Stage::ALL[i]).iter())
+                .filter_map(|t| t.as_ref().map(|t| t.format))
+                .collect();
+        fits(&programs.oit[i], OIT_STAGES[i].pipeline, &targets)
+    };
+    if !fits(&programs.classic, CLASSIC_PIPELINE, &[frame.format])
+        || (oit && !(0..3).all(stage_fits))
+    {
+        return Ok(None);
+    }
     let clouds = CoreClouds::new(
         device,
         frame.format,

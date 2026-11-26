@@ -1,0 +1,2 @@
+# sunrise-render-shaderpack's ignored tests that never run in the daily shards, and who runs them (README.md: `manual`).
+sunrise-render-shaderpack spirv_dump_real_packs by-hand manual # needs SUNRISE_TEST_SHADER_PACKS: real packs are never committed

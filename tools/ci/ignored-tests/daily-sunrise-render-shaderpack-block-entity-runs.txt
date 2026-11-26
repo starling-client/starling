@@ -1,0 +1,5 @@
+# A block entity's and an entity's native terrain quads split into the pack's draws from its block atlas (#5090): the
+# programs they take, a run's translucent ones sorted as one draw with their at_velocity links, and an entity's run.
+sunrise-render-shaderpack pack_entities::gpu_span_tests::a_runs_translucent_native_quads_draw_once_far_to_near lib daily gpu
+sunrise-render-shaderpack pack_entities::gpu_span_tests::an_entitys_native_terrain_quads_draw_in_the_entity_programs lib daily gpu
+sunrise-render-shaderpack pack_entities::gpu_span_tests::native_terrain_quads_draw_in_the_pack_programs_from_the_block_atlas lib daily gpu

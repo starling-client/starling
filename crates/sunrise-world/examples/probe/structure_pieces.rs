@@ -46,6 +46,7 @@ fn element(element: &PoolElement) -> String {
             let parts: Vec<_> = elements.iter().map(self::element).collect();
             format!("list:{}", parts.join("+"))
         }
+        PoolElement::Mod { id, .. } => format!("mod:{id}"),
     }
 }
 

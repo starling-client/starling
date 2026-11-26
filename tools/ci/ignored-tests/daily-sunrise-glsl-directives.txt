@@ -1,0 +1,2 @@
+# The daily tests of sunrise-glsl's directives: each is #[ignore = "daily"] in its source and runs once a day.
+sunrise-glsl directives_tests::an_expansion_past_the_budget_is_refused_where_it_is lib daily slow

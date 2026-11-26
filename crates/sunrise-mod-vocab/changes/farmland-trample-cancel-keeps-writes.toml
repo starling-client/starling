@@ -1,0 +1,3 @@
+ids = ["hook:farmland_trample"]
+why = "Version 5 aligns farmland_trample with NeoForge's CommonHooks.onFarmlandTrample: a completed listener's writes now commit even when the listener cancels the trample or the trample apply refuses on stale state. Cancellation skips only the trample apply (the lift, base-block write and block-change game event). A panicking or phase-refused listener still rolls back only its own writes and cancel flag."
+migrate = "Rebuild native mods against the updated SDK. A cancelling listener that previously relied on cancellation to discard its own writes should avoid performing those writes or roll them back explicitly in a nested host.transaction."

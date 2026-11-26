@@ -1,24 +1,44 @@
 use super::*;
 use crate::game::native_entity_refs::tests::run_fresh_cases;
+use crate::game::{native_client_session::tests::logged_client, remote::RemoteDimensionEntry};
 use mod_api::{
     DatapackEntry, DatapackField, DatapackFieldKind, DatapackReadError as E, DatapackRegistrySync,
-    LevelRef, Registrar, RegistrationContext, WorldEpoch,
+    Host, LevelRef, Registrar, RegistrationContext, WorldEpoch,
 };
+use std::ops::ControlFlow;
+
 struct SyncedRegistryMod;
 #[mod_api::__subscriptions]
 impl Hooks for SyncedRegistryMod {
     fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
-        r.declare_datapack_registry(
-            "spell",
-            DatapackRegistrySync::Required,
-            vec![DatapackField::required(
-                "power",
-                DatapackFieldKind::Int { min: 0, max: 100 },
-            )],
-        )
-        .unwrap();
+        for (name, sync) in [
+            ("spell", DatapackRegistrySync::Required),
+            ("server_only", DatapackRegistrySync::ServerOnly),
+        ] {
+            r.declare_datapack_registry(
+                name,
+                sync,
+                vec![DatapackField::required(
+                    "power",
+                    DatapackFieldKind::Int { min: 0, max: 100 },
+                )],
+            )
+            .unwrap();
+        }
     }
 }
+fn assert_spell_ids(host: &dyn Host, level: LevelRef, expected: &[&str]) {
+    let mut ids = Vec::new();
+    assert_eq!(
+        level.visit_datapack_entries(host, "registry_test:spell", &mut |id| {
+            ids.push(id.to_owned());
+            ControlFlow::Continue(())
+        }),
+        Ok(ControlFlow::Continue(()))
+    );
+    assert_eq!(ids, expected);
+}
+
 #[test]
 #[ignore = "daily"]
 fn native_datapack_host_reads_enforce_level_session_and_generation() {
@@ -52,6 +72,7 @@ fn native_datapack_host_reads_enforce_level_session_and_generation() {
                                 vec![("pack".to_owned(), br#"{"power":3}"#.to_vec())],
                             ),
                         ],
+                        &mut mod_api::__private::NoVanillaValueDecoder,
                     )
                     .unwrap()
                 };
@@ -59,9 +80,14 @@ fn native_datapack_host_reads_enforce_level_session_and_generation() {
                     mod_api::DatapackRegistrySet::from_candidate(candidate(7)),
                 ));
                 let level = game.level(game.dim.id()).unwrap();
+                assert_spell_ids(game, level, &["addon:ice", "registry_test:fire"]);
                 assert_eq!(
-                    level.datapack_entries(game, "registry_test:spell"),
-                    Some(vec!["addon:ice".into(), "registry_test:fire".into()])
+                    level.visit_datapack_entries(game, "registry_test:spell", &mut |id| {
+                        // Insertion order was fire then ice. Ice must be first and only visited.
+                        assert_eq!(id, "addon:ice");
+                        ControlFlow::Break(())
+                    }),
+                    Ok(ControlFlow::Break(()))
                 );
                 let published = game
                     .mods
@@ -86,7 +112,12 @@ fn native_datapack_host_reads_enforce_level_session_and_generation() {
                 assert_eq!(visits, 1);
                 let mut visited_refusal = false;
                 let mut unexpected_visit = |_: &DatapackEntry| visited_refusal = true;
-                assert_eq!(level.datapack_entries(game, "missing:registry"), None);
+                let mut unexpected_id =
+                    |_: &str| -> ControlFlow<()> { panic!("unexpected entry ID") };
+                assert_eq!(
+                    level.visit_datapack_entries(game, "missing:registry", &mut unexpected_id),
+                    Err(E::UnknownRegistry)
+                );
                 assert_eq!(
                     level.datapack_read(
                         game,
@@ -117,7 +148,14 @@ fn native_datapack_host_reads_enforce_level_session_and_generation() {
                         mod_api::__private::dimension_key("registry_test:unopened"),
                     ),
                 ] {
-                    assert_eq!(refused.datapack_entries(game, "registry_test:spell"), None);
+                    assert_eq!(
+                        refused.visit_datapack_entries(
+                            game,
+                            "registry_test:spell",
+                            &mut unexpected_id
+                        ),
+                        Err(E::UnknownRegistry)
+                    );
                     assert_eq!(
                         refused.datapack_read(
                             game,
@@ -131,10 +169,7 @@ fn native_datapack_host_reads_enforce_level_session_and_generation() {
                 // World open already parked the Nether. Its handle shares the server's registries.
                 let parked = game.level("minecraft:the_nether").unwrap();
                 assert_ne!(parked.dimension(), level.dimension());
-                assert_eq!(
-                    parked.datapack_entries(game, "registry_test:spell"),
-                    Some(vec!["addon:ice".into(), "registry_test:fire".into()])
-                );
+                assert_spell_ids(game, parked, &["addon:ice", "registry_test:fire"]);
                 let mut parked_visits = 0;
                 parked
                     .datapack_read(
@@ -172,33 +207,51 @@ fn native_datapack_host_reads_enforce_level_session_and_generation() {
                         "data/registry_test/registry_test/spell/fire.json".into(),
                         vec![("pack".to_owned(), br#"{"power":19}"#.to_vec())],
                     )],
+                    &mut mod_api::__private::NoVanillaValueDecoder,
                 )
                 .unwrap();
                 sunrise_client::datapack_net::serve(Some(std::sync::Arc::new(
                     mod_api::DatapackRegistrySet::from_candidate(remote),
                 )));
-                let offer = sunrise_client::datapack_net::offer().unwrap();
+                let offer = sunrise_client::datapack_net::offer()
+                    .unwrap()
+                    .expect("synchronized registry offer required");
                 let sunrise_client::datapack_net::Step::Send(bytes) =
                     sunrise_client::datapack_net::server_step(true, Some(&offer))
                 else {
                     panic!("snapshot required");
                 };
-                sunrise_client::datapack_net::clear_received();
-                sunrise_client::datapack_net::accept(&bytes).unwrap();
                 game.options.execution_role = crate::game::execution_role::ExecutionRole::Client;
-                assert_eq!(parked.datapack_entries(game, "registry_test:spell"), None);
-                assert_eq!(
-                    parked.datapack_read(
-                        game,
-                        "registry_test:spell",
-                        "registry_test:fire",
-                        &mut unexpected_visit,
-                    ),
-                    Err(E::UnknownRegistry)
+                let _server = logged_client(game);
+                game.enter_remote_dimension(
+                    &sunrise_protocol::packets::play::SpawnInfo {
+                        dimension_type: 0,
+                        dimension: "minecraft:overworld".into(),
+                        seed: 0,
+                        game_type: 1,
+                        previous_game_type: None,
+                        debug: false,
+                        flat: true,
+                        last_death: None,
+                        portal_cooldown: 0,
+                        sea_level: 63,
+                    },
+                    RemoteDimensionEntry::Login,
+                    sunrise_client::level_loading::Reason::Other,
                 );
+                let receiver = &mut game.remote.as_mut().unwrap().datapacks;
+                for chunk in sunrise_client::datapack_net::chunks(&bytes).unwrap() {
+                    receiver.accept_chunk(&chunk).unwrap();
+                }
+                let level = game.level("minecraft:overworld").unwrap();
                 assert_eq!(
-                    level.datapack_entries(game, "registry_test:spell"),
-                    Some(vec!["registry_test:fire".into()])
+                    level.visit_datapack_entries(
+                        game,
+                        "registry_test:server_only",
+                        &mut unexpected_id
+                    ),
+                    Ok(ControlFlow::Continue(())),
+                    "an omitted declared registry is an empty level listing"
                 );
                 let mut visits = 0;
                 level
@@ -207,14 +260,18 @@ fn native_datapack_host_reads_enforce_level_session_and_generation() {
                         "registry_test:spell",
                         "registry_test:fire",
                         &mut |entry| {
-                            // Clearing takes the publication lock and drops its reference to the set.
-                            sunrise_client::datapack_net::clear_received();
                             assert_eq!(entry.get("power"), Some(&DatapackValue::Int(19)));
                             visits += 1;
                         },
                     )
                     .unwrap();
                 assert_eq!(visits, 1);
+                game.remote.as_mut().unwrap().datapacks = Default::default();
+                assert_eq!(
+                    level.visit_datapack_entries(game, "registry_test:spell", &mut unexpected_id),
+                    Err(E::UnknownRegistry),
+                    "the next enumeration sees that the publication is gone"
+                );
                 assert_eq!(
                     level.datapack_read(
                         game,

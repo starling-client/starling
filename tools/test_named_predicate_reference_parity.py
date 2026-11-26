@@ -2,7 +2,9 @@
 """Actual named deterministic predicate context, valid graph contract."""
 import json,sys,hashlib,tempfile,uuid
 from pathlib import Path
-import test_command_exec_parity as driver
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_command_exec_parity as driver
 P={
  'h121:pig':{'type':'minecraft:entity_properties','entity':'this','predicate':{'minecraft:entity_type':'minecraft:pig'}},
  'h121:cow':{'type':'minecraft:entity_properties','entity':'this','predicate':{'minecraft:entity_type':'minecraft:cow'}},

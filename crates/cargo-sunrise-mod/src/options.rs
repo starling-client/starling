@@ -14,12 +14,10 @@ pub struct Options<'a> {
     end: usize,
     /// Whether the command asked for what follows that `--`.
     rest_read: bool,
-    /// The usage a refusal shows, where it is not the help table's.
-    usage: Option<&'a str>,
 }
 
 impl<'a> Options<'a> {
-    /// `command` is the name the refusal uses (`registry list`); its first word names the usage.
+    /// `command` is the name the refusal uses (`check`); its first word names the usage.
     /// `valued` names the options that take a value, which [`Options::value`] and
     /// [`Options::values`] then read.
     pub fn new(command: &'a str, args: &'a [String], valued: &[&str]) -> Self {
@@ -40,14 +38,7 @@ impl<'a> Options<'a> {
             is_value,
             end,
             rest_read: false,
-            usage: None,
         }
-    }
-
-    /// Shows `usage` in a refusal, for a command whose forms the help table only names.
-    pub fn usage(mut self, usage: &'a str) -> Self {
-        self.usage = Some(usage);
-        self
     }
 
     /// Whether the option `name` stands among the arguments.
@@ -130,15 +121,12 @@ impl<'a> Options<'a> {
     }
 
     fn refusal(&self, what: &str) -> String {
-        let usage = match self.usage {
-            Some(usage) => usage.to_owned(),
-            None => self
-                .command
-                .split(' ')
-                .next()
-                .and_then(crate::help::of)
-                .unwrap_or_default(),
-        };
+        let usage = self
+            .command
+            .split(' ')
+            .next()
+            .and_then(crate::help::of)
+            .unwrap_or_default();
         format!("{what}\n{}", usage.trim_end())
     }
 }
@@ -170,13 +158,12 @@ mod tests {
 
     #[test]
     fn a_stray_word_a_second_file_and_an_unwanted_tail_are_refused_by_name() {
-        // `update nightly` without `--sunrise` would otherwise repin to the current Nightly.
-        let args = argv("nightly-2026-11-20");
-        let error = Options::new("update", &args, &[]).finish().unwrap_err();
-        assert!(error.contains("nightly-2026-11-20"), "{error}");
+        let args = argv("stray");
+        let error = Options::new("build", &args, &[]).finish().unwrap_err();
+        assert!(error.contains("stray"), "{error}");
 
         let args = argv("a.smod b.smod");
-        let error = Options::new("fits", &args, &["--build"])
+        let error = Options::new("check", &args, &["--build"])
             .at_most_one()
             .unwrap_err();
         assert!(
@@ -194,12 +181,13 @@ mod tests {
 
     #[test]
     fn an_options_value_is_never_also_an_option_whichever_is_read_first() {
-        let args = argv("--signature --native --key --kind");
-        let mut options = Options::new("check", &args, &["--signature", "--key", "--kind"]);
-        assert!(!options.switch("--native"));
-        assert_eq!(options.value("--kind").unwrap(), None);
-        assert_eq!(options.value("--signature").unwrap(), Some("--native"));
-        assert_eq!(options.value("--key").unwrap(), Some("--kind"));
+        let args = argv("--attestation --uses --kind --repository");
+        let mut options =
+            Options::new("check", &args, &["--attestation", "--kind", "--repository"]);
+        assert!(!options.switch("--uses"));
+        assert_eq!(options.value("--repository").unwrap(), None);
+        assert_eq!(options.value("--attestation").unwrap(), Some("--uses"));
+        assert_eq!(options.value("--kind").unwrap(), Some("--repository"));
         assert!(options.positional().is_empty());
         options.finish().unwrap();
     }
@@ -218,13 +206,13 @@ mod tests {
     #[test]
     fn repeated_options_are_all_read_and_a_missing_value_is_refused() {
         let args = argv("--build a --build b --all");
-        let mut options = Options::new("fits", &args, &["--build"]);
+        let mut options = Options::new("check", &args, &["--build"]);
         assert_eq!(options.values("--build").unwrap(), ["a", "b"]);
         assert!(options.switch("--all"));
         options.finish().unwrap();
 
         let last = argv("--build");
-        let error = Options::new("fits", &last, &["--build"])
+        let error = Options::new("check", &last, &["--build"])
             .value("--build")
             .unwrap_err();
         assert!(error.contains("--build"), "{error}");

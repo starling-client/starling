@@ -1,5 +1,4 @@
 //! The `fire_odds` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0215
 
 pub trait Hooks {
     /// How fire treats the block `state` at `pos` on either side

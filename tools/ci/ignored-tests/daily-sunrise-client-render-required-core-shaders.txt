@@ -1,0 +1,11 @@
+# The daily tests of sunrise-client-render for the pipelines vanilla requires of a pack's core shaders: each is
+# #[ignore = "daily"] in its source and runs once a day in the daily run, where it must pass (README.md).
+# Rows: PACKAGE TEST TARGET daily REASON, sorted.
+sunrise-client-render gfx::core_lightmap::tests::a_pack_lightmap_with_an_older_larger_info_block_draws lib daily gpu
+sunrise-client-render gfx::core_lines::tests::linear_light_makes_the_outline_pipelines_before_keeping_the_built_in_one lib daily gpu
+sunrise-client-render gfx::core_sky::tests::linear_light_makes_the_sky_pipelines_before_keeping_the_built_in_sky lib daily gpu
+sunrise-client-render gfx::core_text::tests::a_text_pipeline_the_device_refuses_fails_the_load lib daily gpu
+sunrise-client-render hud::pack_text::gpu_tests::a_gui_text_pipeline_the_device_refuses_fails_the_load lib daily gpu
+sunrise-client-render hud::pack_text::gpu_tests::a_gui_text_shader_is_taken_or_left_the_same_in_every_coverage_mode lib daily gpu
+sunrise-client-render hud::pack_text::gpu_tests::a_gui_text_shader_with_an_older_larger_block_draws lib daily gpu
+sunrise-client-render hud::pack_text::required_tests::vanillas_own_core_shaders_make_every_required_program lib daily resources

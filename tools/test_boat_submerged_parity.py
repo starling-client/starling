@@ -6,10 +6,12 @@ count immersion even for a boat whose player normally moves it. Surface water
 and a brief immersion followed by surfacing must not eject the player; a long
 continuous immersion must. Includes a chest boat, a raft and flowing water.
 """
-try:
-    from . import test_locator_bar_parity as net
-except ImportError:
-    import test_locator_bar_parity as net
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_locator_bar_parity as net
 
 SCRIPT = [('setup', ['cmd Alice gamerule spawn_mobs false'])]
 EXPECTED = []

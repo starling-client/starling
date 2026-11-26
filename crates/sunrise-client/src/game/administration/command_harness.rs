@@ -19,6 +19,11 @@ use std::{
 };
 use sunrise_client::{Result, text::Text};
 
+/// A message's structured component as `ComponentSerialization.CODEC` writes it.
+pub(super) fn canonical_component(text: &Text) -> Value {
+    sunrise_client::scoreboard::canonical_component(&text.component())
+}
+
 /// A message as `[text, style]` runs with adjacent equal styles merged; the
 /// style lists colour, bold, italic, underlined, strikethrough, obfuscated
 /// and the suggested command.
@@ -271,7 +276,7 @@ impl Game<'_> {
                     let earlier = self.adv.announced.len();
                     self.cmds.broadcast_announced = earlier;
                     self.harness_owner(|g| {
-                        let previous = g.command_source;
+                        let previous = g.command_source.clone();
                         if op["source"].as_str() == Some("console") {
                             // Actual server source; permission-only `as_console`
                             // otherwise keeps the connected owner's entity.
@@ -307,11 +312,15 @@ impl Game<'_> {
                     let results = self.cmds.results.take().unwrap_or_default();
                     if op["record"].as_bool() != Some(false) || op["trace"].as_bool() == Some(true)
                     {
-                        let record = json!({
+                        let mut record = json!({
                             "cmd": command,
                             "messages": messages.iter().map(spans).collect::<Vec<_>>(),
                             "results": results.iter().map(|(s, v)| json!([s, v])).collect::<Vec<_>>(),
                         });
+                        if op["components"].as_bool() == Some(true) {
+                            record["components"] =
+                                Value::Array(messages.iter().map(canonical_component).collect());
+                        }
                         if op["trace"].as_bool() == Some(true) {
                             eprintln!("command trace: {record}");
                         }
@@ -320,6 +329,51 @@ impl Game<'_> {
                             out.push('\n');
                         }
                     }
+                }
+                "mob_damage_state" => {
+                    if let Some(seed) = op["level_seed"].as_i64() {
+                        *self.world.random = sunrise_core::random::LegacyRandom::new(seed);
+                    }
+                    let uuid = u128::from_str_radix(
+                        &op["uuid"]
+                            .as_str()
+                            .ok_or("mob damage state: missing UUID")?
+                            .replace('-', ""),
+                        16,
+                    )?;
+                    let Some(super::commands::Target::Mob(id)) = self.target_by_uuid(uuid) else {
+                        return Err("mob damage state: missing loaded mob".into());
+                    };
+                    if !op["start_sleeping"].is_null() {
+                        let bed: [i32; 3] = serde_json::from_value(op["start_sleeping"].clone())?;
+                        let epoch = self
+                            .native_lifecycle
+                            .epoch()
+                            .ok_or("sleep fixture: no level")?;
+                        let mob = mod_api::LivingRef::new(mod_api::EntityRef::new(epoch, id));
+                        if !self.living_start_sleeping(mob, bed) {
+                            return Err("sleep fixture: villager did not start sleeping".into());
+                        }
+                    }
+                    let index = self
+                        .mob_index
+                        .find(&self.mobs, id)
+                        .ok_or("mob damage state: missing row")?;
+                    let mob = &mut self.mobs[index];
+                    if let Some(seed) = op["no_action_time"].as_i64() {
+                        mob.ai.no_action_time = i32::try_from(seed)?;
+                    }
+                    let state = json!({
+                        "no_action_time": mob.ai.no_action_time,
+                        "cooldown": mob.invulnerable,
+                        "hurt_time": mob.hurt_time,
+                        "health": format!("{:08x}", mob.health.to_bits()),
+                        "sleeping": mob.pose() == mod_api::Pose::Sleeping,
+                        "position": mob.position.components().map(|v| format!("{:016x}", v.to_bits())),
+                        "rotation": ([mob.yaw, mob.head_pitch].map(|v| format!("{:08x}", v.to_bits()))),
+                    });
+                    out.push_str(&json!({"cmd": op["label"], "state": state}).to_string());
+                    out.push('\n');
                 }
                 "projectile_saved_type" => {
                     let uuid = u128::from_str_radix(
@@ -470,6 +524,10 @@ impl Game<'_> {
                     self.harness_owner(|g| {
                         loop {
                             g.update_world();
+                            // The oracle's `wait_chunks` ticks the chunk source (even while
+                            // frozen, running `DistanceManager.runAllUpdates`); this poll runs
+                            // no level tick, and `/execute if loaded` reads the refreshed levels.
+                            g.update_chunk_tickets();
                             g.spawn_loaded_entities();
                             if targets.iter().all(|&(x, z)| {
                                 g.world.chunks.contains_key(&(x, z))

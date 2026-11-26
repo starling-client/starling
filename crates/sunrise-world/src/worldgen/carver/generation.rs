@@ -2,6 +2,7 @@
 use super::{CanyonCarver, CarverError, CaveCarver};
 use crate::worldgen::{
     DecodeError, Object, anchor::WorldGenerationContext, density::identifier, required,
+    tags::TagDefinitions,
 };
 use std::{collections::BTreeMap, sync::Arc};
 use sunrise_core::{
@@ -48,16 +49,13 @@ impl WorldCarver {
         }
     }
 }
-/// Immutable named carvers. Inline definitions and direct holder lists are
-/// supported; tagged sets and live registry reloads remain separate work.
+/// Immutable carver holders and their bound tags.
 pub struct CarverCatalog {
     definitions: BTreeMap<String, Arc<WorldCarver>>,
+    tags: BTreeMap<String, Vec<String>>,
 }
 impl CarverCatalog {
     pub fn from_json(definitions: &BTreeMap<String, String>) -> Result<Self, DecodeError> {
-        if definitions.len() > 8192 {
-            return Err(DecodeError::Field("carver registry size"));
-        }
         let mut result = BTreeMap::new();
         for (name, json) in definitions {
             let name = identifier(name)?;
@@ -70,8 +68,19 @@ impl CarverCatalog {
         }
         Ok(Self {
             definitions: result,
+            tags: BTreeMap::new(),
         })
     }
+
+    pub(crate) fn with_tags(mut self, definitions: &TagDefinitions) -> Self {
+        let bound = definitions.bind(|id, _| self.contains(id).then(|| id.to_owned()));
+        for (tag, missing) in bound.missing {
+            log::warn!("carver tag {tag} has missing entries: {missing:?}");
+        }
+        self.tags = bound.tags;
+        self
+    }
+
     /// Direct reads of the accepted immutable registry, shared with generic level lookups.
     pub(crate) fn contains(&self, id: &str) -> bool {
         self.definitions.contains_key(id)
@@ -80,38 +89,55 @@ impl CarverCatalog {
         self.definitions.keys().map(String::as_str)
     }
     pub fn decode_set(&self, json: &str) -> Result<Vec<Arc<WorldCarver>>, DecodeError> {
-        use serde_json::value::RawValue;
-        let raw: Box<RawValue> = serde_json::from_str(json)?;
-        let entries: Vec<Box<RawValue>> = if raw.get().starts_with('[') {
-            serde_json::from_str(raw.get())?
-        } else {
-            vec![raw]
+        use crate::holder_set::{StringLookup, resolve_with_inline};
+        let value = serde_json::from_str(json)?;
+        let lookup = StringLookup {
+            what: "carver",
+            ids: Some(&|| self.definitions.keys().cloned().collect()),
+            entry: &|id| {
+                let id = identifier(id).map_err(|error| error.to_string())?;
+                self.contains(&id)
+                    .then(|| vec![id.clone()])
+                    .ok_or_else(|| format!("unknown carver {id}"))
+            },
+            tag: &|tag| {
+                let tag =
+                    crate::worldgen::tags::identifier(tag).map_err(|error| error.to_string())?;
+                self.tags
+                    .get(&tag)
+                    .cloned()
+                    .ok_or_else(|| format!("unknown carver tag {tag}"))
+            },
         };
-        if entries.len() > 1024 {
-            return Err(DecodeError::Field("biome carver count"));
-        }
-        entries
+        let direct = std::cell::RefCell::new(BTreeMap::new());
+        let holders = resolve_with_inline(&value, &lookup, false, &|holder| {
+            let json = holder.to_string();
+            let mut direct = direct.borrow_mut();
+            if let std::collections::btree_map::Entry::Vacant(entry) = direct.entry(json.clone()) {
+                let carver =
+                    WorldCarver::from_json(entry.key()).map_err(|error| error.to_string())?;
+                entry.insert(Arc::new(carver));
+            }
+            Ok(json)
+        })?;
+        let direct = direct.into_inner();
+        Ok(holders
             .iter()
-            .map(|raw| {
-                if let Ok(name) = serde_json::from_str::<String>(raw.get()) {
-                    let name = identifier(&name)?;
-                    self.definitions
-                        .get(&name)
-                        .cloned()
-                        .ok_or_else(|| DecodeError::Registry(format!("unknown carver {name}")))
-                } else {
-                    Ok(Arc::new(WorldCarver::from_json(raw.get())?))
-                }
+            .map(|id| {
+                self.definitions
+                    .get(id)
+                    .unwrap_or_else(|| &direct[id])
+                    .clone()
             })
-            .collect()
+            .collect())
     }
 }
+
 #[derive(Debug)]
 pub enum MaskGenerationError<E> {
     Source(E),
     Mask(CarvingMaskError),
     Carver(CarverError<CarvingMaskError>),
-    TooManyCarvers,
 }
 impl<E: std::fmt::Display> std::fmt::Display for MaskGenerationError<E> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -119,7 +145,6 @@ impl<E: std::fmt::Display> std::fmt::Display for MaskGenerationError<E> {
             Self::Source(e) => e.fmt(f),
             Self::Mask(e) => e.fmt(f),
             Self::Carver(e) => e.fmt(f),
-            Self::TooManyCarvers => f.write_str("biome carver count exceeds 1024"),
         }
     }
 }
@@ -147,9 +172,6 @@ pub fn generate_carving_mask<'a, E>(
         for dz in -8..=8 {
             let origin = ChunkPos::new(target.x.wrapping_add(dx), target.z.wrapping_add(dz));
             let selected = carvers(origin).map_err(MaskGenerationError::Source)?;
-            if selected.len() > 1024 {
-                return Err(MaskGenerationError::TooManyCarvers);
-            }
             for (index, carver) in selected.iter().enumerate() {
                 let mut random =
                     large_feature_random(world_seed.wrapping_add(index as i64), origin);

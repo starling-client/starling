@@ -74,7 +74,7 @@ impl Game<'_> {
         };
         let now = Instant::now();
         // A freeze lasts ticks: how long one takes now, for `check_freeze`.
-        let period = arrivals::tick_period(self.clock.tick_duration(), state.tps());
+        let period = arrivals::tick_period(self.clock.tick_duration(), state.transfer_tps());
         match &mut transfers.stop_wait {
             None => {
                 transfers.stopping = true;
@@ -366,12 +366,13 @@ impl Game<'_> {
         if let Err(e) = self.enter_level(level) {
             return json!({ "error": format!("the player's level could not be opened: {e}") });
         }
-        self.guest_close_menus_for_save(conn);
+        let hold = self.guest_close_menus_for_save(conn);
         if let Err(e) = self.enter_level(back) {
             log::error!("could not reopen {}: {e}", back.id());
         }
         let host = self.lan.as_mut().expect("server host is present");
         let Some(i) = host.hub.guests.iter().position(|g| g.conn == conn) else {
+            self.resume_menu_opens(hold);
             return json!({ "error": "that player is not connected to this server" });
         };
         // The player may stay (a hand-over that does not finish): its client closes the menu too
@@ -397,8 +398,16 @@ impl Game<'_> {
             stats,
         };
         match arrivals::export_record(&mut host.hub, i, freeze, records) {
-            Ok(record) => arrivals::export_reply(&host.hub, i, record),
-            Err(e) => json!({ "error": e }),
+            Ok(record) => {
+                let reply = arrivals::export_reply(&host.hub, i, record);
+                // The player leaves with the record: a menu the close asked for never opens.
+                self.discard_menu_opens(hold);
+                reply
+            }
+            Err(e) => {
+                self.resume_menu_opens(hold);
+                json!({ "error": e })
+            }
         }
     }
 }

@@ -112,6 +112,14 @@ impl Names {
         }
     }
 
+    /// Take back every request `drop` names, as [`Self::withdraw`] does for one.
+    pub fn withdraw_where(&mut self, mut drop: impl FnMut(&'static str, &str) -> bool) {
+        for entry in &mut self.entries {
+            let id = entry.id.as_str();
+            entry.mods.retain(|&mod_id| !drop(mod_id, id));
+        }
+    }
+
     pub fn id(&self, slot: u32) -> Option<&str> {
         self.entries
             .get(slot as usize)
@@ -256,6 +264,14 @@ pub fn tag_slot(id: &sunrise_core::identifier::Identifier) -> Option<u32> {
         .ok()?
         .request_identifier("sunrise", id)
         .ok()
+}
+
+/// Intern a canonical tag identifier string (`"c:ingots"`), returning its retained slot.
+pub fn tag_slot_str(id: &str) -> Option<u32> {
+    if let Some(slot) = TAG_NAMES.read().ok()?.slots.get(id) {
+        return Some(*slot);
+    }
+    TAG_NAMES.write().ok()?.request("sunrise", id).ok()
 }
 
 /// Borrow a retained tag name while its table is read-locked. No string is allocated.

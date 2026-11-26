@@ -6,7 +6,8 @@ impl Game<'_> {
     /// `ServerPlayerGameMode.destroyBlock`'s `Block.destroy` call, once
     /// `Level.removeBlock` succeeded. `state` and `block_entity` (the saved
     /// data of the block entity there) are read just before the removal.
-    /// Server-side.
+    /// The breaking client fires it too (`MultiPlayerGameMode.destroyBlock`),
+    /// with the state it read before the removal and no block entity.
     pub(in crate::game) fn native_player_destroyed_block(
         &mut self,
         pos: [i32; 3],

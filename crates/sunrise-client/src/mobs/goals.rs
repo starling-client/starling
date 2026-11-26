@@ -9,359 +9,7 @@ use sunrise_core::{
     random::RandomSource,
 };
 
-pub const MOVE: u8 = 1;
-pub const LOOK: u8 = 2;
-pub const JUMP: u8 = 4;
-pub const TARGET: u8 = 8;
-
-/// The facts of a target one mob may take, as far as [`Mob::valid_target`]
-/// reads them (#1175): another mob — what a tick's snapshot carries, or the
-/// game's own state — or a player. One rule set; both the write handle and a
-/// goal tick's view fill these from where they stand.
-pub enum TargetFacts {
-    /// A mob target: `asValidTarget`'s facts of it.
-    Mob {
-        id: u32,
-        species: Species,
-        alive: bool,
-        /// `invulnerable_flag`, the flag `asValidTarget` refuses.
-        invulnerable: bool,
-        baby: bool,
-    },
-    /// A player target: its survival liveness, its `invulnerable` ability,
-    /// the modes that cannot be attacked (creative, spectator) and its uuid.
-    Player {
-        alive: bool,
-        invulnerable: bool,
-        creative: bool,
-        spectator: bool,
-        uuid: [i32; 4],
-    },
-}
-
-/// What goals may read and emit during a tick.
-pub struct Cx<'a, 'w, 'l> {
-    pub w: &'a MobWorld<'w>,
-    /// The level: its random (`level.getRandom()`), for the draws vanilla's
-    /// behaviours make from it rather than from the mob's own, and the damage hooks.
-    pub level: &'a mut crate::health::DamageLevel<'l>,
-    pub events: &'a mut Vec<MobEvent>,
-}
-pub trait Goal: std::fmt::Debug + Send + Sync {
-    fn flags(&self) -> u8;
-    /// A goal that draws its first start delay in its constructor (a schooling fish's
-    /// `FollowFlockLeaderGoal`): the delay again, when the mob's random is seeded afterwards.
-    fn set_start_delay(&mut self, _ticks: i32) {}
-    fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool;
-    fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
-        self.can_use(m, cx)
-    }
-    fn interruptable(&self) -> bool {
-        true
-    }
-    fn start(&mut self, _m: &mut Mob, _cx: &mut Cx) {}
-    fn stop(&mut self, _m: &mut Mob, _cx: &mut Cx) {}
-    fn every_tick(&self) -> bool {
-        false
-    }
-    fn tick(&mut self, _m: &mut Mob, _cx: &mut Cx) {}
-    /// Goals that move the body itself can stop for the owning level to handle
-    /// a trample, passenger fall, or hurt. The ordinary path runs without a pause.
-    fn tick_until_movement_pause(
-        &mut self,
-        mob: &mut Mob,
-        cx: &mut Cx,
-    ) -> Option<super::living::TravelPause> {
-        self.tick(mob, cx);
-        None
-    }
-    /// Finish a goal that stopped in its own movement; false for a different goal.
-    fn after_movement(&mut self, _m: &mut Mob, _cx: &mut Cx) -> bool {
-        false
-    }
-    fn box_clone(&self) -> Box<dyn Goal>;
-    /// The goal's name for debugging (`Goal.toString`).
-    fn name(&self) -> &'static str {
-        std::any::type_name::<Self>()
-            .rsplit("::")
-            .next()
-            .unwrap_or("Goal")
-    }
-}
-impl Clone for Box<dyn Goal> {
-    fn clone(&self) -> Self {
-        self.box_clone()
-    }
-}
-macro_rules! goal_clone {
-    () => {
-        fn box_clone(&self) -> Box<dyn crate::mobs::goals::Goal> {
-            Box::new(self.clone())
-        }
-    };
-}
-pub(crate) use goal_clone;
-
-/// Goal.reducedTickDelay
-pub fn reduced(ticks: i32) -> i32 {
-    (ticks + 1) / 2
-}
-fn adjusted(every_tick: bool, ticks: i32) -> i32 {
-    if every_tick { ticks } else { reduced(ticks) }
-}
-
-#[derive(Clone, Debug)]
-struct Wrapped {
-    priority: i32,
-    goal: Box<dyn Goal>,
-    running: bool,
-}
-#[derive(Clone, Debug, Default)]
-pub struct GoalSelector {
-    goals: Vec<Wrapped>,
-    locked: [Option<usize>; 4],
-    pub disabled: u8,
-}
-#[derive(Debug)]
-pub(super) struct GoalMovementPause {
-    pub(super) movement: super::living::TravelPause,
-    slot: usize,
-    pub(super) force: bool,
-}
-
-impl GoalSelector {
-    pub fn add(&mut self, priority: i32, goal: impl Goal + 'static) {
-        self.add_boxed(priority, Box::new(goal));
-    }
-    /// `add` for a goal built at runtime (`Box<dyn Goal>`).
-    pub fn add_boxed(&mut self, priority: i32, goal: Box<dyn Goal>) {
-        self.goals.push(Wrapped {
-            priority,
-            goal,
-            running: false,
-        });
-    }
-    /// `Goal::set_start_delay` of the goal of this name.
-    pub fn set_start_delay(&mut self, name: &str, ticks: i32) {
-        for g in &mut self.goals {
-            if g.goal.name() == name {
-                g.goal.set_start_delay(ticks);
-            }
-        }
-    }
-    pub fn clear(&mut self) {
-        self.goals.clear();
-        self.locked = [None; 4];
-    }
-    pub fn running_names(&self) -> Vec<&'static str> {
-        self.goals
-            .iter()
-            .filter(|g| g.running)
-            .map(|g| g.goal.name())
-            .collect()
-    }
-    /// Whether a goal of this name is registered, running or not.
-    pub fn has(&self, name: &str) -> bool {
-        self.goals.iter().any(|g| g.goal.name() == name)
-    }
-    pub fn is_running(&self, name: &str) -> bool {
-        self.goals
-            .iter()
-            .any(|g| g.running && g.goal.name() == name)
-    }
-    fn stop(&mut self, i: usize, m: &mut Mob, cx: &mut Cx) {
-        if self.goals[i].running {
-            self.goals[i].running = false;
-            self.goals[i].goal.stop(m, cx);
-        }
-    }
-    /// GoalSelector.tick
-    pub fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
-        self.prepare_tick(m, cx);
-        self.tick_running(m, cx, true);
-    }
-
-    fn prepare_tick(&mut self, m: &mut Mob, cx: &mut Cx) {
-        for i in 0..self.goals.len() {
-            if self.goals[i].running
-                && (self.goals[i].goal.flags() & self.disabled != 0
-                    || !self.goals[i].goal.can_continue(m, cx))
-            {
-                self.stop(i, m, cx);
-            }
-        }
-        for slot in &mut self.locked {
-            if slot.is_some_and(|i| !self.goals[i].running) {
-                *slot = None;
-            }
-        }
-        for i in 0..self.goals.len() {
-            let flags = self.goals[i].goal.flags();
-            if self.goals[i].running || flags & self.disabled != 0 {
-                continue;
-            }
-            let replaceable =
-                (0..4)
-                    .filter(|b| flags & (1 << b) != 0)
-                    .all(|b| match self.locked[b] {
-                        None => true,
-                        Some(j) => {
-                            self.goals[j].goal.interruptable()
-                                && self.goals[i].priority < self.goals[j].priority
-                        }
-                    });
-            if !replaceable || !self.goals[i].goal.can_use(m, cx) {
-                continue;
-            }
-            for b in 0..4 {
-                if flags & (1 << b) != 0 {
-                    if let Some(j) = self.locked[b] {
-                        self.stop(j, m, cx);
-                    }
-                    self.locked[b] = Some(i);
-                }
-            }
-            if !self.goals[i].running {
-                self.goals[i].running = true;
-                self.goals[i].goal.start(m, cx);
-            }
-        }
-    }
-    pub fn tick_running(&mut self, m: &mut Mob, cx: &mut Cx, force: bool) {
-        for g in &mut self.goals {
-            if g.running && (force || g.goal.every_tick()) {
-                g.goal.tick(m, cx);
-            }
-        }
-    }
-    pub(super) fn tick_until_movement_pause(
-        &mut self,
-        m: &mut Mob,
-        cx: &mut Cx,
-        force: bool,
-    ) -> Option<GoalMovementPause> {
-        if force {
-            self.prepare_tick(m, cx);
-        }
-        self.tick_from(m, cx, force, 0)
-    }
-
-    fn tick_from(
-        &mut self,
-        m: &mut Mob,
-        cx: &mut Cx,
-        force: bool,
-        start: usize,
-    ) -> Option<GoalMovementPause> {
-        for (slot, g) in self.goals.iter_mut().enumerate().skip(start) {
-            if g.running
-                && (force || g.goal.every_tick())
-                && let Some(movement) = g.goal.tick_until_movement_pause(m, cx)
-            {
-                return Some(GoalMovementPause {
-                    movement,
-                    slot,
-                    force,
-                });
-            }
-        }
-        None
-    }
-
-    pub(super) fn resume_movement(
-        &mut self,
-        m: &mut Mob,
-        cx: &mut Cx,
-        paused: GoalMovementPause,
-    ) -> Option<GoalMovementPause> {
-        if let ControlFlow::Break(movement) = paused.movement.resume(m, cx.w, cx.level, cx.events) {
-            return Some(GoalMovementPause { movement, ..paused });
-        }
-        if m.removed {
-            return None;
-        }
-        // An owning-host listener can remove or shift the running goal. Only
-        // the still-resident goal holding this pause can finish its path update.
-        let next = self
-            .goals
-            .iter_mut()
-            .position(|g| g.goal.after_movement(m, cx))
-            .map_or(paused.slot, |slot| slot + 1);
-        self.tick_from(m, cx, paused.force, next)
-    }
-
-    pub fn stop_all(&mut self, m: &mut Mob, cx: &mut Cx) {
-        for i in 0..self.goals.len() {
-            self.stop(i, m, cx);
-        }
-        self.locked = [None; 4];
-    }
-    /// `GoalSelector.removeAllGoals(predicate)`: every goal `predicate`
-    /// picks goes, a running one stopped first (`removeGoal` stops it), and
-    /// the flag locks it held move with the list. How many went.
-    pub fn remove_all(
-        &mut self,
-        predicate: impl Fn(&dyn Goal) -> bool,
-        m: &mut Mob,
-        cx: &mut Cx,
-    ) -> usize {
-        let mut removed = 0;
-        let mut i = 0;
-        while i < self.goals.len() {
-            if predicate(&*self.goals[i].goal) {
-                self.stop(i, m, cx);
-                self.goals.remove(i);
-                removed += 1;
-                for slot in &mut self.locked {
-                    match *slot {
-                        Some(j) if j == i => *slot = None,
-                        Some(j) if j > i => *slot = Some(j - 1),
-                        _ => {}
-                    }
-                }
-            } else {
-                i += 1;
-            }
-        }
-        removed
-    }
-    /// Every goal as (priority, name, running), in registration order.
-    pub fn entries(&self) -> impl Iterator<Item = (i32, &'static str, bool)> + '_ {
-        self.goals
-            .iter()
-            .map(|g| (g.priority, g.goal.name(), g.running))
-    }
-}
-
-// --- random positions (DefaultRandomPos / LandRandomPos / RandomPos) -------
-
-/// RandomPos.moveUpToAboveSolid: out of the solid blocks, then up to
-/// `above` more blocks of air.
-fn move_up_to_above_solid(w: &MobWorld, mut p: [i32; 3], above: i32) -> [i32; 3] {
-    if !w.solid(p[0], p[1], p[2]) {
-        return p;
-    }
-    p[1] += 1;
-    while p[1] < w.world.top_y() && w.solid(p[0], p[1], p[2]) {
-        p[1] += 1;
-    }
-    let first = p[1];
-    while p[1] < w.world.top_y() && p[1] - first < above {
-        p[1] += 1;
-        if w.solid(p[0], p[1], p[2]) {
-            p[1] -= 1;
-            break;
-        }
-    }
-    p
-}
-/// `Mob.isWithinHome(BlockPos)`: `Vec3i.distSqr` in doubles, so no
-/// coordinate pair overflows, against the radius squared as a Java `int`
-/// (which wraps past 46 340, as vanilla's does).
-pub fn within_home(c: [i32; 3], r: i32, p: [i32; 3]) -> bool {
-    let d = |i: usize| f64::from(c[i]) - f64::from(p[i]);
-    d(0) * d(0) + d(1) * d(1) + d(2) * d(2) < f64::from(r.wrapping_mul(r))
-}
+include!("goals/core.rs");
 
 impl Mob {
     /// PathfinderMob.getWalkTargetValue.
@@ -877,6 +525,18 @@ impl Mob {
             self.extra.main_hand_id()
         }
     }
+    /// Each vanilla mob's own sitting test, as its renderer and goals read it: `Fox.isSitting`,
+    /// `Panda.isSitting`, `Camel.isCamelSitting` and `TamableAnimal.isInSittingPose`. None for a
+    /// species with no such test.
+    pub fn sitting(&self) -> Option<bool> {
+        Some(match self.species() {
+            Species::Fox => super::fox::flag(self, super::fox::SITTING),
+            Species::Panda => super::panda::is_sitting(self),
+            Species::Camel | Species::CamelHusk => super::camel::sitting(self),
+            _ if self.is_tamable_animal() => self.extra.sitting_pose,
+            _ => return None,
+        })
+    }
     /// Whether the species is a `TamableAnimal` (not the horses and llamas,
     /// which are tamed another way).
     pub fn is_tamable_animal(&self) -> bool {
@@ -1064,15 +724,19 @@ impl Mob {
         if !p.alive || p.spectator {
             return false;
         }
-        // LivingEntity.getVisibilityPercent
-        let visibility = if scale {
-            w.player_visibility(p, self.id, p.visibility_percent(self.species()))
-        } else {
-            1.0
-        };
-        let dist = (range * visibility).max(2.0);
-        if self.distance_sqr(p.position) > dist * dist {
-            return false;
+        // `TargetingConditions.test` measures only `if (this.range > 0.0)`: the unranged
+        // `TargetingConditions.DEFAULT` reaches any distance.
+        if range > 0.0 {
+            // LivingEntity.getVisibilityPercent
+            let visibility = if scale {
+                w.player_visibility(p, self.id, p.visibility_percent(self.species()))
+            } else {
+                1.0
+            };
+            let dist = (range * visibility).max(2.0);
+            if self.distance_sqr(p.position) > dist * dist {
+                return false;
+            }
         }
         !check_sight || self.sees(w, Who::Player)
     }
@@ -1080,1324 +744,12 @@ impl Mob {
 
 // --- goals ---------------------------------------------------------------
 
-/// FloatGoal: jump (swim up) while deeper than the jump threshold or in lava.
-#[derive(Clone, Debug)]
-pub struct Float;
-impl Goal for Float {
-    goal_clone!();
-    fn flags(&self) -> u8 {
-        JUMP
-    }
-    fn can_use(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
-        m.floats()
-    }
-    fn every_tick(&self) -> bool {
-        true
-    }
-    fn tick(&mut self, m: &mut Mob, _: &mut Cx) {
-        if m.random.next_float() < 0.8 {
-            m.ai.jump = true;
-        }
-    }
-}
-/// `ClimbOnTopOfPowderSnowGoal`: a powder-snow walker standing in powder snow
-/// jumps while the block above is powder snow or has no collision.
-#[derive(Clone, Debug)]
-pub struct ClimbOnTopOfPowderSnow;
-impl Goal for ClimbOnTopOfPowderSnow {
-    goal_clone!();
-    fn flags(&self) -> u8 {
-        JUMP
-    }
-    fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
-        // wasInPowderSnow || isInPowderSnow: the freeze tick has read the
-        // powder snow the mob's box touches before the goals run.
-        if !super::ai::in_powder_snow(m, cx.w)
-            || !cx
-                .w
-                .entity_tag_bit(&m.kind, crate::items::EntityTypeTags::POWDER_SNOW_WALKABLE)
-        {
-            return false;
-        }
-        // Mob.blockPosition().above()
-        let above = [
-            m.position.x.floor() as i32,
-            m.position.y.floor() as i32 + 1,
-            m.position.z.floor() as i32,
-        ];
-        cx.w.block_name(above[0], above[1], above[2]) == "minecraft:powder_snow"
-            || cx.w.collision_bounds(above).is_none()
-    }
-    fn every_tick(&self) -> bool {
-        true
-    }
-    /// `ClimbOnTopOfPowderSnowGoal.tick`: ask the mob to jump.
-    fn tick(&mut self, m: &mut Mob, _: &mut Cx) {
-        m.ai.jump = true;
-    }
-}
-/// PanicGoal: flee to a random position after panic-causing damage (or
-/// towards water while burning).
-#[derive(Clone, Debug)]
-pub struct Panic {
-    pub speed: f64,
-    /// Only the damage of `#panic_environmental_causes` (an armadillo).
-    pub environmental: bool,
-    /// `TurtlePanicGoal`: always look for water this far away, not only
-    /// when on fire.
-    pub water_range: Option<i32>,
-    pos: [f64; 3],
-}
-impl Panic {
-    /// The position `canUse` chose (`PanicGoal.posX/Y/Z`).
-    pub fn target(&self) -> [f64; 3] {
-        self.pos
-    }
-    pub fn new(speed: f64) -> Self {
-        Self {
-            speed,
-            environmental: false,
-            water_range: None,
-            pos: [0.0; 3],
-        }
-    }
-    /// `TurtlePanicGoal`.
-    pub fn looking_for_water(mut self, range: i32) -> Self {
-        self.water_range = Some(range);
-        self
-    }
-}
-pub fn should_panic(m: &Mob) -> bool {
-    m.last_damage
-        .is_some_and(|(d, t)| d.causes_panic() && i64::from(m.age) - t <= 40)
-        || m.is_on_fire()
-}
-impl Goal for Panic {
-    goal_clone!();
-    fn flags(&self) -> u8 {
-        MOVE
-    }
-    fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
-        let wanted = if self.environmental {
-            m.last_damage.is_some_and(|(d, t)| {
-                super::armadillo::environmental(d.kind) && i64::from(m.age) - t <= 40
-            }) || m.is_on_fire()
-        } else {
-            should_panic(m)
-        };
-        if !wanted {
-            return false;
-        }
-        let range = self.water_range.or((m.fire_ticks > 0).then_some(5));
-        if let Some(range) = range {
-            let (bx, by, bz) = (
-                m.position.x.floor() as i32,
-                m.position.y.floor() as i32,
-                m.position.z.floor() as i32,
-            );
-            // lookForWater: only when `getCollisionShape(level, pos).isEmpty()`. A state that
-            // takes its shapes from its block entity asks for the published one (#1710): a
-            // box ending at the block's bottom is not empty though its top is 0. Vanilla's
-            // query cannot fail; a failed one here is not taken for empty, so the goal goes
-            // on to a random position as over any other shape.
-            let state = cx.w.world.block(bx, by, bz);
-            let empty = if cx.w.collision.publishes_shapes(state) {
-                cx.w.bound_collision_shape(state, [bx, by, bz])
-                    .is_some_and(|shape| shape.is_empty())
-            } else {
-                cx.w.data.state(state).top == 0.0
-            };
-            if empty {
-                // findBlocksInBoxByManhattanDistance(pos, range, 1) for water.
-                let mut best: Option<([i32; 3], i32)> = None;
-                for dy in -1i32..=1 {
-                    for dx in -range..=range {
-                        for dz in -range..=range {
-                            let d = dx.abs() + dy.abs() + dz.abs();
-                            if cx.w.fluid(bx + dx, by + dy, bz + dz) == crate::blocks::Fluid::Water
-                                && best.is_none_or(|b| d < b.1)
-                            {
-                                best = Some(([bx + dx, by + dy, bz + dz], d));
-                            }
-                        }
-                    }
-                }
-                if let Some((p, _)) = best {
-                    self.pos = [f64::from(p[0]), f64::from(p[1]), f64::from(p[2])];
-                    return true;
-                }
-            }
-        }
-        match m.default_random_pos(cx.w, 5, 4) {
-            Some(p) => {
-                self.pos = p;
-                true
-            }
-            None => false,
-        }
-    }
-    fn can_continue(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
-        !m.ai.nav.is_done()
-    }
-    fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
-        m.nav_move_to(cx.w, self.pos, self.speed);
-        m.ai.panicking = true;
-    }
-    fn stop(&mut self, m: &mut Mob, _: &mut Cx) {
-        m.ai.panicking = false;
-    }
-}
-/// RandomStrollGoal / WaterAvoidingRandomStrollGoal.
-#[derive(Clone, Debug)]
-pub struct Stroll {
-    pub speed: f64,
-    pub interval: i32,
-    pub check_no_action: bool,
-    /// WaterAvoidingRandomStrollGoal probability of a plain stroll.
-    pub water_avoiding: Option<f32>,
-    /// RandomSwimmingGoal: BehaviorUtils.getRandomSwimmablePos.
-    pub swim: bool,
-    /// WaterAvoidingRandomFlyingGoal: a hover spot, else an air or water pos.
-    pub flying: bool,
-    /// `Parrot.ParrotWanderGoal`: to a tree, else as `flying`.
-    pub parrot: bool,
-    pub force: bool,
-    wanted: [f64; 3],
-    /// A subclass's `getPosition` in place of the default pick
-    /// (`GolemRandomStrollInVillageGoal`, `MoveBackToVillageGoal`).
-    position: Option<fn(&mut Mob, &mut Cx) -> Option<[f64; 3]>>,
-    /// A subclass's own `canUse` test, run before the interval's draw.
-    gate: Option<fn(&Mob, &MobWorld) -> bool>,
-    label: Option<&'static str>,
-}
-impl Stroll {
-    /// `RandomStrollGoal.<init>` (interval 120, checks the no-action time).
-    pub fn new(speed: f64) -> Self {
-        Self {
-            speed,
-            interval: 120,
-            check_no_action: true,
-            water_avoiding: None,
-            swim: false,
-            flying: false,
-            parrot: false,
-            force: false,
-            wanted: [0.0; 3],
-            position: None,
-            gate: None,
-            label: None,
-        }
-    }
-    /// The stroll's spot comes from `f` (an overridden `getPosition`).
-    pub fn position(mut self, f: fn(&mut Mob, &mut Cx) -> Option<[f64; 3]>) -> Self {
-        self.position = Some(f);
-        self
-    }
-    /// The stroll may only start while `f` holds (an overridden `canUse`).
-    pub fn gate(mut self, f: fn(&Mob, &MobWorld) -> bool) -> Self {
-        self.gate = Some(f);
-        self
-    }
-    /// The goal's class name, for debugging.
-    pub fn named(mut self, label: &'static str) -> Self {
-        self.label = Some(label);
-        self
-    }
-    pub fn avoiding_water(speed: f64) -> Self {
-        Self {
-            water_avoiding: Some(0.001),
-            ..Self::new(speed)
-        }
-    }
-    pub fn interval(mut self, i: i32) -> Self {
-        self.interval = i;
-        self
-    }
-    /// WaterAvoidingRandomFlyingGoal (a nearby air position).
-    pub fn flying(speed: f64) -> Self {
-        Self {
-            flying: true,
-            ..Self::new(speed)
-        }
-    }
-    /// `Parrot.ParrotWanderGoal(speed)`, a WaterAvoidingRandomFlyingGoal.
-    pub fn parrot(speed: f64) -> Self {
-        Self {
-            water_avoiding: Some(0.001),
-            parrot: true,
-            ..Self::new(speed)
-        }
-    }
-    /// RandomSwimmingGoal(speed, interval)
-    pub fn swimming(speed: f64, interval: i32) -> Self {
-        Self {
-            swim: true,
-            ..Self::new(speed).interval(interval)
-        }
-    }
-}
-impl Goal for Stroll {
-    goal_clone!();
-    fn name(&self) -> &'static str {
-        if let Some(label) = self.label {
-            label
-        } else if self.parrot {
-            "ParrotWander"
-        } else if self.water_avoiding.is_some() {
-            "Stroll"
-        } else if self.swim {
-            "RandomSwimming"
-        } else {
-            "RandomStroll"
-        }
-    }
-    fn flags(&self) -> u8 {
-        MOVE
-    }
-    /// RandomStrollGoal.canUse.
-    fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
-        if super::riders::mob_controlled(m, cx.w) {
-            return false;
-        }
-        if self.gate.is_some_and(|gate| !gate(m, cx.w)) {
-            return false;
-        }
-        if !self.force {
-            if self.check_no_action && m.ai.no_action_time >= 100 {
-                return false;
-            }
-            if m.random.next_int_bound(reduced(self.interval)).unwrap_or(1) != 0 {
-                return false;
-            }
-        }
-        let pos = match self.water_avoiding {
-            _ if self.position.is_some() => self.position.and_then(|pick| pick(m, cx)),
-            Some(_) if self.parrot => super::parrot::wander_pos(m, cx.w),
-            Some(prob) => {
-                if m.fluids.in_water {
-                    m.land_random_pos(cx.w, 15, 7)
-                        .or_else(|| m.default_random_pos(cx.w, 10, 7))
-                } else if m.random.next_float() >= prob {
-                    m.land_random_pos(cx.w, 10, 7)
-                } else {
-                    m.default_random_pos(cx.w, 10, 7)
-                }
-            }
-            None if self.swim => {
-                let mut p = m.default_random_pos(cx.w, 10, 7);
-                let mut count = 0;
-                while let Some(q) = p {
-                    let s = cx.w.world.block(
-                        q[0].floor() as i32,
-                        q[1].floor() as i32,
-                        q[2].floor() as i32,
-                    );
-                    if cx
-                        .w
-                        .data
-                        .pathfindable(s, super::data::PathComputationType::Water)
-                        || count >= 10
-                    {
-                        break;
-                    }
-                    count += 1;
-                    p = m.default_random_pos(cx.w, 10, 7);
-                }
-                p
-            }
-            None if self.flying => m.flying_stroll_pos(cx.w),
-            None => m.default_random_pos(cx.w, 10, 7),
-        };
-        let Some(p) = pos else { return false };
-        self.wanted = p;
-        self.force = false;
-        true
-    }
-    /// RandomStrollGoal.canContinueToUse.
-    fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
-        !m.ai.nav.is_done() && !super::riders::mob_controlled(m, cx.w)
-    }
-    fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
-        m.nav_move_to(cx.w, self.wanted, self.speed);
-    }
-    fn stop(&mut self, m: &mut Mob, _: &mut Cx) {
-        m.nav_stop();
-    }
-}
-/// LookAtPlayerGoal (player targets only).
-#[derive(Clone, Debug)]
-pub struct LookAtPlayer {
-    pub range: f32,
-    pub probability: f32,
-    pub only_horizontal: bool,
-    /// `LookAtPlayerGoal(Mob.class, ...)`: the nearest mob, not the player.
-    pub mobs: bool,
-    /// `LookAtPlayerGoal(Strider.class, ...)`: only mobs of this species.
-    pub only: Option<Species>,
-    /// InteractGoal: LOOK and MOVE.
-    pub interact: bool,
-    look_at: Option<Who>,
-    look_time: i32,
-}
-impl LookAtPlayer {
-    pub fn new(range: f32) -> Self {
-        Self {
-            range,
-            probability: 0.02,
-            only_horizontal: false,
-            mobs: false,
-            only: None,
-            interact: false,
-            look_at: None,
-            look_time: 0,
-        }
-    }
-    /// `LookAtPlayerGoal(this, Mob.class, range)`.
-    pub fn mobs(range: f32) -> Self {
-        Self {
-            mobs: true,
-            ..Self::new(range)
-        }
-    }
-    /// `LookAtPlayerGoal(this, <species class>, range)`.
-    pub fn species(species: Species, range: f32) -> Self {
-        Self {
-            only: Some(species),
-            ..Self::mobs(range)
-        }
-    }
-    /// `InteractGoal(this, Player.class, range, probability)`.
-    pub fn interact(range: f32, probability: f32) -> Self {
-        Self {
-            interact: true,
-            ..Self::new(range).probability(probability)
-        }
-    }
-    pub fn probability(mut self, p: f32) -> Self {
-        self.probability = p;
-        self
-    }
-    /// The goal's look target, alive, with its position and eye height.
-    fn look_target(&self, w: &MobWorld) -> Option<(Vec3, f64)> {
-        match self.look_at? {
-            Who::Player => w
-                .selected_player()
-                .filter(|p| p.alive)
-                .map(|p| (p.position, p.eye[1])),
-            Who::Mob(id) => w
-                .seen(id)
-                .filter(|s| s.alive)
-                .map(|s| (s.position, s.eye_y)),
-        }
-    }
-}
-impl Goal for LookAtPlayer {
-    goal_clone!();
-    fn flags(&self) -> u8 {
-        if self.interact { LOOK | MOVE } else { LOOK }
-    }
-    fn name(&self) -> &'static str {
-        if self.interact {
-            "InteractGoal"
-        } else {
-            "LookAtPlayer"
-        }
-    }
-    fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
-        if m.random.next_float() >= self.probability {
-            return false;
-        }
-        self.look_at = None;
-        let range = f64::from(self.range);
-        if !self.mobs {
-            // level.getNearestPlayer(forNonCombat().range(lookDistance)).
-            if m.can_see_player(cx.w, range) {
-                self.look_at = Some(Who::Player);
-            }
-            return self.look_at.is_some();
-        }
-        // level.getNearestEntity(mobs in the box inflated by (range, 3, range)).
-        let area = m.bounds().inflate(Vec3::new(range, 3.0, range));
-        let (id, only) = (m.id, self.only);
-        let at = Vec3::new(m.position.x, m.eye_y(), m.position.z);
-        let candidates: Vec<(u32, Vec3)> =
-            cx.w.others_near(area)
-                .filter(|s| s.id != id && s.alive && s.bounds.intersects(area))
-                .filter(|s| only.is_none_or(|o| s.species == o))
-                .map(|s| (s.id, s.position))
-                .collect();
-        let mut best: Option<(u32, f64)> = None;
-        for (cid, pos) in candidates {
-            let reach = range.max(2.0);
-            if m.distance_sqr(pos) > reach * reach || !m.sees(cx.w, Who::Mob(cid)) {
-                continue;
-            }
-            let d = pos.distance_squared(at);
-            if best.is_none_or(|(_, b)| d < b) {
-                best = Some((cid, d));
-            }
-        }
-        self.look_at = best.map(|(cid, _)| Who::Mob(cid));
-        self.look_at.is_some()
-    }
-    fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
-        let Some((pos, _)) = self.look_target(cx.w) else {
-            return false;
-        };
-        m.distance_sqr(pos) <= f64::from(self.range * self.range) && self.look_time > 0
-    }
-    fn start(&mut self, m: &mut Mob, _: &mut Cx) {
-        self.look_time = reduced(40 + m.random.next_int_bound(40).unwrap_or(0));
-    }
-    fn stop(&mut self, _: &mut Mob, _: &mut Cx) {
-        self.look_at = None;
-    }
-    fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
-        if let Some((pos, eye)) = self.look_target(cx.w) {
-            let y = if self.only_horizontal { m.eye_y() } else { eye };
-            m.look_at([pos.x, y, pos.z]);
-            self.look_time -= 1;
-        }
-    }
-}
-/// RandomLookAroundGoal.
-#[derive(Clone, Debug, Default)]
-pub struct RandomLookAround {
-    rel: [f64; 2],
-    time: i32,
-}
-impl Goal for RandomLookAround {
-    goal_clone!();
-    fn flags(&self) -> u8 {
-        MOVE | LOOK
-    }
-    fn can_use(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
-        m.random.next_float() < 0.02
-    }
-    fn can_continue(&mut self, _: &mut Mob, _: &mut Cx) -> bool {
-        self.time >= 0
-    }
-    fn start(&mut self, m: &mut Mob, _: &mut Cx) {
-        let r = std::f64::consts::TAU * m.random.next_double();
-        self.rel = [jmath::cos(r), jmath::sin(r)];
-        self.time = 20 + m.random.next_int_bound(20).unwrap_or(0);
-    }
-    fn every_tick(&self) -> bool {
-        true
-    }
-    fn tick(&mut self, m: &mut Mob, _: &mut Cx) {
-        self.time -= 1;
-        let at = [
-            m.position.x + self.rel[0],
-            m.eye_y(),
-            m.position.z + self.rel[1],
-        ];
-        m.look_at(at);
-    }
-}
-/// MeleeAttackGoal (and ZombieAttackGoal's raised arms when `zombie`).
-#[derive(Clone, Debug)]
-pub struct MeleeAttack {
-    pub speed: f64,
-    pub follow_unseen: bool,
-    pub zombie: bool,
-    /// `PolarBear.PolarBearMeleeAttackGoal`: rears up before each strike.
-    pub polar_bear: bool,
-    path_target: [f64; 3],
-    recalc: i32,
-    pub until_attack: i32,
-    last_check: i64,
-    raise_arm: i32,
-    /// Ticks between attacks (20 unless set).
-    pub interval: i32,
-    /// Ticks between attacks for a baby, when they differ.
-    pub baby_interval: Option<i32>,
-    /// The sound played after each strike (a fox's bite).
-    pub bite: Option<&'static str>,
-}
-impl MeleeAttack {
-    pub fn new(speed: f64, follow_unseen: bool) -> Self {
-        Self {
-            speed,
-            follow_unseen,
-            zombie: false,
-            polar_bear: false,
-            path_target: [0.0; 3],
-            recalc: 0,
-            until_attack: 0,
-            last_check: 0,
-            raise_arm: 0,
-            interval: 20,
-            baby_interval: None,
-            bite: None,
-        }
-    }
-    pub fn zombie(mut self) -> Self {
-        self.zombie = true;
-        self
-    }
-    pub fn polar_bear(mut self) -> Self {
-        self.polar_bear = true;
-        self
-    }
-    pub fn interval(mut self, ticks: i32) -> Self {
-        self.interval = ticks;
-        self
-    }
-    /// `MeleeAttack.create(adult)` for adults, `create(baby)` for babies.
-    pub fn intervals(mut self, adult: i32, baby: i32) -> Self {
-        self.interval = adult;
-        self.baby_interval = Some(baby);
-        self
-    }
-    /// `FoxMeleeAttackGoal.checkAndPerformAttack`: the bite after each strike.
-    pub fn bite(mut self, sound: &'static str) -> Self {
-        self.bite = Some(sound);
-        self
-    }
-}
-impl Goal for MeleeAttack {
-    goal_clone!();
-    fn flags(&self) -> u8 {
-        MOVE | LOOK
-    }
-    fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
-        if cx.w.game_time - self.last_check < 20 {
-            return false;
-        }
-        self.last_check = cx.w.game_time;
-        let Some(t) = m.target_info(cx.w) else {
-            return false;
-        };
-        if !t.alive {
-            return false;
-        }
-        let path = m.create_path_to_entity(cx.w, [t.position.x, t.position.y, t.position.z], 0);
-        let ok = path.is_some() || m.within_melee_range(cx.w, &t);
-        m.ai.pending_path = path;
-        ok
-    }
-    fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
-        let Some(t) = m.target_info(cx.w) else {
-            return false;
-        };
-        if !t.alive {
-            return false;
-        }
-        if !self.follow_unseen {
-            return !m.ai.nav.is_done();
-        }
-        // `MeleeAttackGoal.canContinueToUse`'s follow branch re-checks
-        // `isWithinHome(target.blockPosition())` and refuses a spectator or
-        // creative player.
-        let target_block = [
-            t.position.x.floor() as i32,
-            t.position.y.floor() as i32,
-            t.position.z.floor() as i32,
-        ];
-        m.ai.home
-            .is_none_or(|(center, radius)| within_home(center, radius, target_block))
-            && !(t.is_player && (t.creative || cx.w.selected_player().is_some_and(|p| p.spectator)))
-    }
-    fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
-        let path = m.ai.pending_path.take();
-        m.nav_move_to_path(cx.w, path, self.speed);
-        m.ai.aggressive = true;
-        self.recalc = 0;
-        self.until_attack = 0;
-        self.raise_arm = 0;
-    }
-    fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
-        if let Some(t) = m.target_info(cx.w)
-            && t.is_player
-            && t.creative
-        {
-            m.set_ai_target(cx.w, None);
-        }
-        m.ai.aggressive = false;
-        m.nav_stop();
-        if self.polar_bear {
-            super::polar_bear::set_standing(m, false);
-        }
-    }
-    fn every_tick(&self) -> bool {
-        true
-    }
-    fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
-        let Some(who) = m.ai.target else { return };
-        let Some(t) = cx.w.target_info(who) else {
-            return;
-        };
-        m.look_at_speed([t.position.x, t.eye_y, t.position.z], 30.0, 30.0);
-        self.recalc = (self.recalc - 1).max(0);
-        let moved = (t.position.x - self.path_target[0]).powi(2)
-            + (t.position.y - self.path_target[1]).powi(2)
-            + (t.position.z - self.path_target[2]).powi(2)
-            >= 1.0;
-        if (self.follow_unseen || m.sees(cx.w, who))
-            && self.recalc <= 0
-            && (self.path_target == [0.0; 3] || moved || m.random.next_float() < 0.05)
-        {
-            self.path_target = [t.position.x, t.position.y, t.position.z];
-            self.recalc = 4 + m.random.next_int_bound(7).unwrap_or(0);
-            let d = m.distance_sqr(t.position);
-            if d > 1024.0 {
-                self.recalc += 10;
-            } else if d > 256.0 {
-                self.recalc += 5;
-            }
-            if !m.nav_move_to_entity(cx.w, self.path_target, 0, self.speed) {
-                self.recalc += 15;
-            }
-            self.recalc = adjusted(true, self.recalc);
-        }
-        self.until_attack = (self.until_attack - 1).max(0);
-        if self.polar_bear {
-            let cooldown = adjusted(true, self.interval);
-            super::polar_bear::check_and_perform_attack(
-                &mut self.until_attack,
-                cooldown,
-                m,
-                who,
-                &t,
-                cx,
-            );
-        } else if self.until_attack <= 0 && m.within_melee_range(cx.w, &t) && m.sees(cx.w, who) {
-            let interval = match self.baby_interval {
-                Some(baby) if m.is_baby() => baby,
-                _ => self.interval,
-            };
-            self.until_attack = adjusted(true, interval);
-            m.swing();
-            super::ai::do_hurt_target(m, who, cx);
-            if let Some(sound) = self.bite {
-                let at = [m.position.x, m.position.y, m.position.z];
-                cx.events.push(MobEvent::Sound(sound, at, 1.0, 1.0));
-            }
-        }
-        if self.zombie {
-            self.raise_arm += 1;
-            m.ai.aggressive = self.raise_arm >= 5 && self.until_attack < adjusted(true, 20) / 2;
-        }
-    }
-}
-/// LeapAtTargetGoal.
-#[derive(Clone, Debug)]
-pub struct LeapAtTarget {
-    pub yd: f32,
-    target: [f64; 3],
-}
-impl LeapAtTarget {
-    pub fn new(yd: f32) -> Self {
-        Self {
-            yd,
-            target: [0.0; 3],
-        }
-    }
-}
-impl Goal for LeapAtTarget {
-    goal_clone!();
-    fn flags(&self) -> u8 {
-        JUMP | MOVE
-    }
-    fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
-        let Some(t) = m.target_info(cx.w) else {
-            return false;
-        };
-        let d = m.distance_sqr(t.position);
-        if !(4.0..=16.0).contains(&d) || !m.ground.on_ground {
-            return false;
-        }
-        self.target = [t.position.x, t.position.y, t.position.z];
-        m.random.next_int_bound(reduced(5)).unwrap_or(1) == 0
-    }
-    fn can_continue(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
-        !m.ground.on_ground
-    }
-    fn start(&mut self, m: &mut Mob, _: &mut Cx) {
-        let mut d = [
-            self.target[0] - m.position.x,
-            0.0,
-            self.target[2] - m.position.z,
-        ];
-        let len_sq = d[0] * d[0] + d[2] * d[2];
-        if len_sq > 1.0e-7 {
-            let l = len_sq.sqrt();
-            d = [
-                d[0] / l * 0.4 + m.velocity.x * 0.2,
-                0.0,
-                d[2] / l * 0.4 + m.velocity.z * 0.2,
-            ];
-        }
-        m.velocity = Vec3::new(d[0], f64::from(self.yd), d[2]);
-    }
-}
-/// What a target goal hunts.
-#[derive(Clone, Debug)]
-pub enum Prey {
-    Player,
-    Species(Vec<Species>),
-    /// Any mob matching a predicate on its snapshot.
-    Filter(fn(&Seen) -> bool),
-}
-/// NearestAttackableTargetGoal (+ TargetGoal's continue rules).
-#[derive(Clone, Debug)]
-pub struct NearestTarget {
-    pub prey: Prey,
-    pub must_see: bool,
-    pub must_reach: bool,
-    pub interval: i32,
-    /// Extra condition on the attacker, checked after the random interval.
-    pub when: Option<fn(&Mob, &MobWorld) -> bool>,
-    /// Mobs closer than this squared distance are not picked
-    /// (`GuardianAttackSelector`: `distanceToSqr > 9`).
-    pub beyond_sqr: Option<f64>,
-    /// A condition checked before anything else, by subclasses overriding
-    /// `canUse` (SpiderTargetGoal: only in the dark).
-    pub gate: Option<fn(&Mob, &MobWorld) -> bool>,
-    /// The vanilla class name of a subclass (`Goal::name`).
-    pub label: Option<&'static str>,
-    found: Option<Who>,
-    target_goal: TargetState,
-}
-#[derive(Clone, Debug)]
-pub struct TargetState {
-    unseen: i32,
-    pub unseen_memory: i32,
-    /// `TargetGoal.getFollowDistance` as a fraction of the follow range.
-    pub follow_scale: f64,
-}
-impl Default for TargetState {
-    fn default() -> Self {
-        Self {
-            unseen: 0,
-            unseen_memory: 0,
-            follow_scale: 1.0,
-        }
-    }
-}
-impl NearestTarget {
-    pub fn new(prey: Prey, must_see: bool) -> Self {
-        Self {
-            prey,
-            must_see,
-            must_reach: false,
-            interval: reduced(10),
-            when: None,
-            beyond_sqr: None,
-            gate: None,
-            label: None,
-            found: None,
-            target_goal: TargetState {
-                unseen_memory: 60,
-                ..Default::default()
-            },
-        }
-    }
-    pub fn player(must_see: bool) -> Self {
-        Self::new(Prey::Player, must_see)
-    }
-    pub fn species(list: &[Species], must_see: bool) -> Self {
-        Self::new(Prey::Species(list.to_vec()), must_see)
-    }
-    pub fn interval(mut self, i: i32) -> Self {
-        self.interval = reduced(i);
-        self
-    }
-    /// `TargetGoal.setUnseenMemoryTicks`.
-    pub fn unseen_memory(mut self, ticks: i32) -> Self {
-        self.target_goal.unseen_memory = ticks;
-        self
-    }
-    /// Scale the follow distance (llamas hunt wolves within a quarter of it).
-    pub fn follow_scale(mut self, scale: f64) -> Self {
-        self.target_goal.follow_scale = scale;
-        self
-    }
-    pub fn reach(mut self) -> Self {
-        self.must_reach = true;
-        self
-    }
-    pub fn when(mut self, f: fn(&Mob, &MobWorld) -> bool) -> Self {
-        self.when = Some(f);
-        self
-    }
-    pub fn beyond(mut self, distance_sqr: f64) -> Self {
-        self.beyond_sqr = Some(distance_sqr);
-        self
-    }
-    pub fn gate(mut self, f: fn(&Mob, &MobWorld) -> bool) -> Self {
-        self.gate = Some(f);
-        self
-    }
-    /// A subclass's name, e.g. `NearestAttackableWitchTargetGoal`.
-    pub fn named(mut self, label: &'static str) -> Self {
-        self.label = Some(label);
-        self
-    }
-}
-/// `AbstractIllager.canAttack`: a baby `AbstractVillager` is never attacked.
-fn illager_spares(attacker: Species, target: &Seen) -> bool {
-    matches!(
-        attacker,
-        Species::Pillager | Species::Vindicator | Species::Evoker | Species::Illusioner
-    ) && target.baby
-        && matches!(target.species, Species::Villager | Species::WanderingTrader)
-}
-/// TargetGoal.canContinueToUse
-pub fn target_continue(st: &mut TargetState, must_see: bool, m: &mut Mob, cx: &mut Cx) -> bool {
-    let Some(who) = m.ai.target else { return false };
-    if let Who::Mob(id) = who
-        && cx
-            .w
-            .seen(id)
-            .is_some_and(|s| illager_spares(m.species(), s))
-    {
-        return false;
-    }
-    let Some(t) = cx.w.target_info(who) else {
-        return false;
-    };
-    if !t.alive
-        || !t.can_be_seen_as_enemy
-        || (t.is_player && t.creative)
-        || m.spares_target(cx.w, who)
-    {
-        return false;
-    }
-    let follow = m.attrs.follow_range * st.follow_scale;
-    if m.distance_sqr(t.position) > follow * follow {
-        return false;
-    }
-    if must_see {
-        if m.sees(cx.w, who) {
-            st.unseen = 0;
-        } else {
-            st.unseen += 1;
-            if st.unseen > reduced(st.unseen_memory) {
-                return false;
-            }
-        }
-    }
-    m.set_ai_target(cx.w, Some(who));
-    true
-}
-impl Goal for NearestTarget {
-    goal_clone!();
-    fn name(&self) -> &'static str {
-        self.label.unwrap_or("NearestTarget")
-    }
-    fn flags(&self) -> u8 {
-        TARGET
-    }
-    fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
-        if let Some(f) = self.gate
-            && !f(m, cx.w)
-        {
-            return false;
-        }
-        if self.interval > 0 && m.random.next_int_bound(self.interval).unwrap_or(1) != 0 {
-            return false;
-        }
-        if let Some(f) = self.when
-            && !f(m, cx.w)
-        {
-            return false;
-        }
-        let range = m.attrs.follow_range * self.target_goal.follow_scale;
-        self.found = None;
-        // NearestAttackableTargetGoal.findTarget: TargetingConditions.forCombat()
-        // always checks the line of sight; mustSee and mustReach only matter
-        // to TargetGoal.canContinueToUse and canAttack.
-        match &self.prey {
-            Prey::Player => {
-                if m.can_target_player(cx.w, range, true) {
-                    self.found = Some(Who::Player);
-                }
-            }
-            prey => {
-                let pos = Vec3::new(m.position.x, m.eye_y(), m.position.z);
-                let id = m.id;
-                let attacker = m.species();
-                let candidates: Vec<(u32, Vec3)> =
-                    cx.w.nearby(pos, range, move |s| {
-                        s.id != id
-                            && !s.playing_dead
-                            && !illager_spares(attacker, s)
-                            && match prey {
-                                Prey::Species(list) => list.contains(&s.species),
-                                Prey::Filter(f) => f(s),
-                                Prey::Player => false,
-                            }
-                    })
-                    .map(|s| (s.id, s.position))
-                    .collect();
-                for (cid, cpos) in candidates {
-                    if m.distance_sqr(cpos) > cx.w.reach_sqr(cid, m, range) {
-                        continue;
-                    }
-                    if self.beyond_sqr.is_some_and(|d| m.distance_sqr(cpos) <= d) {
-                        continue;
-                    }
-                    if !m.sees(cx.w, Who::Mob(cid)) {
-                        continue;
-                    }
-                    self.found = Some(Who::Mob(cid));
-                    break;
-                }
-            }
-        }
-        self.found.is_some()
-    }
-    fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
-        target_continue(&mut self.target_goal, self.must_see, m, cx)
-    }
-    fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
-        m.set_ai_target(cx.w, self.found);
-        self.target_goal.unseen = 0;
-    }
-    fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
-        m.set_ai_target(cx.w, None);
-    }
-}
-/// HurtByTargetGoal (optionally alerting others of the same species).
-#[derive(Clone, Debug)]
-pub struct HurtByTarget {
-    pub alert: bool,
-    /// Species that should not be alerted.
-    pub alert_except: Vec<Species>,
-    /// Attackers ignored (e.g. zombified piglins ignore other zombified piglins).
-    pub ignore: Vec<Species>,
-    /// `Bee.BeeHurtByOtherGoal`: kept only while angry, and alerting others
-    /// only when the attacker is in sight.
-    pub bee: bool,
-    /// Whom `alertOther` calls: a filter on the mob (`PandaHurtByTargetGoal`
-    /// calls aggressive pandas only).
-    pub alert_if: Option<fn(&Seen) -> bool>,
-    /// `PolarBear.PolarBearHurtByTargetGoal`: a hurt cub only calls the
-    /// adult bears and drops the target itself.
-    pub polar_bear: bool,
-    timestamp: i32,
-    st: TargetState,
-}
-impl HurtByTarget {
-    pub fn new() -> Self {
-        Self {
-            alert: false,
-            alert_except: vec![],
-            ignore: vec![],
-            bee: false,
-            alert_if: None,
-            polar_bear: false,
-            timestamp: 0,
-            st: TargetState {
-                unseen_memory: 300,
-                ..Default::default()
-            },
-        }
-    }
-    pub fn alert(mut self) -> Self {
-        self.alert = true;
-        self
-    }
-    pub fn ignoring(mut self, s: &[Species]) -> Self {
-        self.ignore = s.to_vec();
-        self
-    }
-    pub fn bee(mut self) -> Self {
-        self.bee = true;
-        self
-    }
-    pub fn alert_if(mut self, f: fn(&Seen) -> bool) -> Self {
-        self.alert_if = Some(f);
-        self
-    }
-    pub fn polar_bear(mut self) -> Self {
-        self.polar_bear = true;
-        self
-    }
-}
-impl Default for HurtByTarget {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-impl Goal for HurtByTarget {
-    goal_clone!();
-    fn name(&self) -> &'static str {
-        if self.bee {
-            "BeeHurtByOtherGoal"
-        } else if self.polar_bear {
-            "PolarBearHurtByTargetGoal"
-        } else {
-            "HurtByTarget"
-        }
-    }
-    fn flags(&self) -> u8 {
-        TARGET
-    }
-    fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
-        let Some(by) = m.ai.last_hurt_by else {
-            return false;
-        };
-        if m.ai.last_hurt_by_time == self.timestamp {
-            return false;
-        }
-        // `HurtByTargetGoal.canUse`: with universal anger on, a player's hit
-        // is left to the anger goals, never a direct retaliation.
-        if by == Who::Player && cx.w.universal_anger {
-            return false;
-        }
-        if let Who::Mob(id) = by
-            && cx
-                .w
-                .seen(id)
-                .is_some_and(|s| self.ignore.contains(&s.species))
-        {
-            return false;
-        }
-        let Some(t) = cx.w.target_info(by) else {
-            return false;
-        };
-        t.alive
-            && t.can_be_seen_as_enemy
-            && !(t.is_player && t.creative)
-            // HurtByTargetGoal.canUse ends with canAttack(lastHurtByMob).
-            && !m.spares_target(cx.w, by)
-            // TargetGoal.canAttack: Mob.isWithinHome(target.blockPosition()).
-            && m.within_home_at(t.position)
-    }
-    fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
-        if self.bee && !super::bee::angry(m, cx.w) {
-            return false;
-        }
-        target_continue(&mut self.st, true, m, cx)
-    }
-    fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
-        m.set_ai_target(cx.w, m.ai.last_hurt_by);
-        self.timestamp = m.ai.last_hurt_by_time;
-        self.st.unseen_memory = 300;
-        self.st.unseen = 0;
-        // PolarBearHurtByTargetGoal.start: a cub alerts the adults itself.
-        let cub = self.polar_bear && m.is_baby();
-        if (self.alert || cub)
-            && let Some(by) = m.ai.target
-        {
-            let range = m.attrs.follow_range;
-            let species = m.species();
-            let id = m.id;
-            let pos = m.position;
-            // TamableAnimal: its owner (`getOwner`, none for a wild one) and
-            // whether it is a pet at all.
-            let tamable = m.is_tamable_animal();
-            let owner = m.extra.tame.then_some(m.extra.owner).flatten();
-            let player = cx.w.selected_player().map(|p| p.uuid);
-            let ids: Vec<u32> =
-                cx.w.others
-                    .iter()
-                    .filter(|s| {
-                        s.id != id
-                            && s.alive
-                            && s.species == species
-                            && s.target.is_none()
-                            && (s.position.x - pos.x).abs() <= range + 1.0
-                            && (s.position.y - pos.y).abs() <= 11.0
-                            && (s.position.z - pos.z).abs() <= range + 1.0
-                    })
-                    .filter(|s| !self.alert_except.contains(&s.species))
-                    .filter(|s| self.alert_if.is_none_or(|f| f(s)))
-                    // PolarBearHurtByTargetGoal.alertOther: adults only.
-                    .filter(|s| !(self.polar_bear && s.baby))
-                    .filter(|s| Who::Mob(s.id) != by)
-                    // HurtByTargetGoal.alertOthers: a pet is only called by a
-                    // pet with the same owner.
-                    .filter(|s| !tamable || s.tame.then_some(s.owner).flatten() == owner)
-                    // TamableAnimal.considersEntityAsAlly: a pet tamed by the
-                    // player who hurt it is allied with them, so it is not called.
-                    .filter(|s| {
-                        !(tamable
-                            && by == Who::Player
-                            && s.tame
-                            && s.owner.is_some()
-                            && s.owner == player)
-                    })
-                    .map(|s| s.id)
-                    .collect();
-            // Bee.BeeHurtByOtherGoal.alertOther: only with the attacker in sight.
-            if self.bee && !ids.is_empty() && !m.sees(cx.w, by) {
-                return;
-            }
-            for other in ids {
-                cx.events.push(MobEvent::SetTarget {
-                    mob: other,
-                    target: by,
-                });
-            }
-        }
-        if cub {
-            m.set_ai_target(cx.w, None);
-        }
-    }
-    fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
-        m.set_ai_target(cx.w, None);
-    }
-}
-/// What an AvoidEntityGoal flees from.
-#[derive(Clone, Debug)]
-pub enum Avoid {
-    Player,
-    Species(Vec<Species>),
-}
-/// AvoidEntityGoal.
-#[derive(Clone, Debug)]
-pub struct AvoidEntity {
-    pub what: Avoid,
-    pub max_dist: f32,
-    pub walk: f64,
-    pub sprint: f64,
-    /// Extra condition on the avoider (e.g. untamed cats only).
-    pub when: Option<fn(&Mob) -> bool>,
-    /// Extra condition on the player or mob avoided (`AvoidEntityGoal`'s
-    /// predicate: a sneaking player, a tame wolf).
-    pub player_when: Option<fn(&Mob, &super::PlayerView) -> bool>,
-    pub seen_when: Option<fn(&Seen) -> bool>,
-    from: Vec3,
-    /// The mob being avoided (`toAvoid`), when it is one.
-    pub found: Option<u32>,
-}
-impl AvoidEntity {
-    pub fn new(what: Avoid, max_dist: f32, walk: f64, sprint: f64) -> Self {
-        Self {
-            what,
-            max_dist,
-            walk,
-            sprint,
-            when: None,
-            player_when: None,
-            seen_when: None,
-            from: Vec3::ZERO,
-            found: None,
-        }
-    }
-    pub fn when(mut self, f: fn(&Mob) -> bool) -> Self {
-        self.when = Some(f);
-        self
-    }
-    pub fn player_when(mut self, f: fn(&Mob, &super::PlayerView) -> bool) -> Self {
-        self.player_when = Some(f);
-        self
-    }
-    pub fn seen_when(mut self, f: fn(&Seen) -> bool) -> Self {
-        self.seen_when = Some(f);
-        self
-    }
-    /// The target the goal flees from, before the random retreat position and
-    /// the path. `AvoidEntityGoal` finds it with `TargetingConditions.forCombat()`:
-    /// for the player that is `canAttack` (`LivingEntity.canAttack` refuses a
-    /// player in Peaceful), the range scaled by `getVisibilityPercent` with a
-    /// floor of 2 and line of sight required; the species arm needs the line of
-    /// sight too, because `checkLineOfSight` defaults to true. Without them an
-    /// animal fled a player behind a wall, a sneaking or invisible one from the
-    /// full range, and in Peaceful where vanilla animals ignore the player.
-    fn avoid_target(&mut self, m: &mut Mob, cx: &mut Cx) -> Option<Vec3> {
-        let max = f64::from(self.max_dist);
-        if matches!(self.what, Avoid::Player) {
-            let wanted = cx.w.selected_player().is_none_or(|p| {
-                self.player_when.is_none_or(|f| f(m, p))
-                    && (p.position.y - m.position.y).abs() <= max + 3.0
-            });
-            // `can_target_player` refuses a player in Peaceful (`spares_players`).
-            if !wanted || !m.can_target_player(cx.w, max, true) {
-                return None;
-            }
-            return cx.w.selected_player().map(|p| p.position);
-        }
-        let Avoid::Species(list) = &self.what else {
-            return None;
-        };
-        let id = m.id;
-        let y = m.position.y;
-        let seen_when = self.seen_when;
-        let mut hit = None;
-        for s in cx.w.nearby(m.position, max, move |s| {
-            s.id != id
-                && list.contains(&s.species)
-                && seen_when.is_none_or(|f| f(s))
-                && (s.position.y - y).abs() <= 3.0 + max
-        }) {
-            if m.sees(cx.w, Who::Mob(s.id)) {
-                hit = Some((s.id, s.position));
-                break;
-            }
-        }
-        self.found = hit.map(|h| h.0);
-        hit.map(|h| h.1)
-    }
-}
-impl Goal for AvoidEntity {
-    goal_clone!();
-    fn flags(&self) -> u8 {
-        MOVE
-    }
-    fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
-        if let Some(f) = self.when
-            && !f(m)
-        {
-            return false;
-        }
-        let max = f64::from(self.max_dist);
-        let Some(from) = self.avoid_target(m, cx) else {
-            return false;
-        };
-        // The player arm already applied the visibility-scaled range (floor 2);
-        // the species arm only got a box test from `nearby`.
-        if !matches!(self.what, Avoid::Player) && m.distance_sqr(from) > max * max {
-            return false;
-        }
-        let Some(pos) = m.default_random_pos_away(cx.w, 16, 7, [from.x, from.y, from.z]) else {
-            return false;
-        };
-        let to_pos =
-            (from.x - pos[0]).powi(2) + (from.y - pos[1]).powi(2) + (from.z - pos[2]).powi(2);
-        if to_pos < m.distance_sqr(from) {
-            return false;
-        }
-        self.from = from;
-        let path = m.create_path_to(
-            cx.w,
-            [
-                pos[0].floor() as i32,
-                pos[1].floor() as i32,
-                pos[2].floor() as i32,
-            ],
-            0,
-        );
-        m.ai.pending_path = path;
-        m.ai.pending_path.is_some()
-    }
-    fn can_continue(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
-        !m.ai.nav.is_done()
-    }
-    fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
-        let path = m.ai.pending_path.take();
-        m.nav_move_to_path(cx.w, path, self.walk);
-    }
-    fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
-        let from = match &self.what {
-            Avoid::Player => {
-                cx.w.selected_player()
-                    .map(|p| p.position)
-                    .unwrap_or(self.from)
-            }
-            Avoid::Species(_) => self.from,
-        };
-        m.ai.nav.speed_modifier = if m.distance_sqr(from) < 49.0 {
-            self.sprint
-        } else {
-            self.walk
-        };
-    }
-}
+include!("goals/wander.rs");
+
+include!("goals/melee.rs");
+
+include!("goals/target.rs");
+
 /// TemptGoal: follow a player holding one of the items.
 #[derive(Clone, Debug)]
 pub struct Tempt {
@@ -2428,9 +780,11 @@ impl Tempt {
 }
 impl Goal for Tempt {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE | LOOK
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if self.calm_down > 0 {
             self.calm_down -= 1;
@@ -2446,6 +800,7 @@ impl Goal for Tempt {
             && (self.wants(&p.main_hand) || self.wants(&p.off_hand))
             && m.distance_sqr(p.position) <= (10.0 * range).max(2.0).powi(2)
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if self.can_scare
             && let Some(p) = cx.w.selected_player()
@@ -2469,15 +824,18 @@ impl Goal for Tempt {
         }
         self.can_use(m, cx)
     }
+    #[inline]
     fn start(&mut self, _: &mut Mob, cx: &mut Cx) {
         if let Some(p) = cx.w.selected_player() {
             self.p = [p.position.x, p.position.y, p.position.z];
         }
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, _: &mut Cx) {
         m.nav_stop();
         self.calm_down = reduced(100);
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         let Some(p) = cx.w.selected_player().cloned() else {
             return;
@@ -2519,9 +877,11 @@ impl Breed {
 }
 impl Goal for Breed {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE | LOOK
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if m.extra.in_love <= 0 {
             return false;
@@ -2588,6 +948,7 @@ impl Goal for Breed {
             .map(|s| s.id);
         self.partner.is_some()
     }
+    #[inline]
     fn can_continue(&mut self, _: &mut Mob, cx: &mut Cx) -> bool {
         self.partner
             .and_then(|p| cx.w.seen(p))
@@ -2595,10 +956,12 @@ impl Goal for Breed {
             .is_some_and(|s| s.alive && s.in_love && !s.panicking)
             && self.love_time < 60
     }
+    #[inline]
     fn stop(&mut self, _: &mut Mob, _: &mut Cx) {
         self.partner = None;
         self.love_time = 0;
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         let Some(p) = self.partner.and_then(|p| cx.w.seen(p)).cloned() else {
             return;
@@ -2621,8 +984,14 @@ impl Goal for Breed {
                 cx.w,
                 equine.is_some() || parent_variant.is_some(),
             );
-            m.extra.in_love = 0;
-            m.extra.age = 6000;
+            // NeoForge Animal.spawnChildFromBreeding / Fox.FoxBreedGoal.breed:
+            // when a baby_entity_spawn listener is present on a live-baby route, defer the
+            // initiating parent's cooldown until Game::breed so an uncanceled empty slot does
+            // not leave the parent cooled down.
+            if !cx.w.asks_live_birth(m.species()) {
+                m.extra.in_love = 0;
+                super::finalize::set_age(m, 6000, Some(cx.w));
+            }
             // TurtleBreedGoal.breed: the mother carries an egg, not a baby.
             if m.species() == Species::Turtle {
                 m.extra.flag = true;
@@ -2660,9 +1029,11 @@ impl FollowParent {
 }
 impl Goal for FollowParent {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         0
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if m.extra.age >= 0 {
             return false;
@@ -2696,6 +1067,7 @@ impl Goal for FollowParent {
             _ => false,
         }
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if m.extra.age >= 0 {
             return false;
@@ -2706,12 +1078,15 @@ impl Goal for FollowParent {
         let d = m.distance_sqr(p.position);
         p.alive && (9.0..=256.0).contains(&d)
     }
+    #[inline]
     fn start(&mut self, _: &mut Mob, _: &mut Cx) {
         self.recalc = 0;
     }
+    #[inline]
     fn stop(&mut self, _: &mut Mob, _: &mut Cx) {
         self.parent = None;
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.recalc -= 1;
         if self.recalc <= 0 {
@@ -2752,14 +1127,17 @@ impl FollowMob {
     }
 }
 impl Goal for FollowMob {
+    #[inline]
     fn name(&self) -> &'static str {
         "FollowMobGoal"
     }
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE | LOOK
     }
     /// `FollowMobGoal.canUse`.
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         let species = m.species();
         // `getEntitiesOfClass(Mob, getBoundingBox().inflate(areaSize))`.
@@ -2774,6 +1152,7 @@ impl Goal for FollowMob {
         found.is_some()
     }
     /// `FollowMobGoal.canContinueToUse`.
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         let Some(at) = self
             .following
@@ -2785,18 +1164,21 @@ impl Goal for FollowMob {
         !m.ai.nav.is_done() && m.distance_sqr(at) > self.stop * self.stop
     }
     /// `FollowMobGoal.start`.
+    #[inline]
     fn start(&mut self, m: &mut Mob, _: &mut Cx) {
         self.recalc = 0;
         self.old_water = m.malus(super::path::PathType::Water);
         m.set_malus(super::path::PathType::Water, 0.0);
     }
     /// `FollowMobGoal.stop`.
+    #[inline]
     fn stop(&mut self, m: &mut Mob, _: &mut Cx) {
         self.following = None;
         m.nav_stop();
         m.set_malus(super::path::PathType::Water, self.old_water);
     }
     /// `FollowMobGoal.tick`.
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         let Some((at, eye)) = self
             .following
@@ -2837,15 +1219,19 @@ impl Goal for FollowMob {
 pub struct RestrictSun;
 impl Goal for RestrictSun {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         0
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         cx.w.daylight && m.extra.head_id().is_none()
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, _: &mut Cx) {
         m.ai.nav.avoid_sun = true;
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, _: &mut Cx) {
         m.ai.nav.avoid_sun = false;
     }
@@ -2890,9 +1276,11 @@ impl FleeSun {
 }
 impl Goal for FleeSun {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if m.ai.target.is_some()
             || !cx.w.daylight
@@ -2917,9 +1305,11 @@ impl Goal for FleeSun {
             None => false,
         }
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
         !m.ai.nav.is_done()
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         m.nav_move_to(cx.w, self.wanted, self.speed);
     }
@@ -2931,9 +1321,11 @@ pub struct EatBlock {
 }
 impl Goal for EatBlock {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE | LOOK | JUMP
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         let chance = reduced(if m.is_baby() { 50 } else { 1000 });
         if m.random.next_int_bound(chance).unwrap_or(1) != 0 {
@@ -2948,6 +1340,7 @@ impl Goal for EatBlock {
         cx.w.has_tag("minecraft:edible_for_sheep", &here)
             || cx.w.block_name(x, y - 1, z) == "minecraft:grass_block"
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.tick = reduced(40);
         m.extra.anim_ticks = 40;
@@ -2961,12 +1354,15 @@ impl Goal for EatBlock {
         });
         m.nav_stop();
     }
+    #[inline]
     fn stop(&mut self, _: &mut Mob, _: &mut Cx) {
         self.tick = 0;
     }
+    #[inline]
     fn can_continue(&mut self, _: &mut Mob, _: &mut Cx) -> bool {
         self.tick > 0
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.tick = (self.tick - 1).max(0);
         if self.tick == reduced(4) {
@@ -3059,28 +1455,41 @@ impl BreathAir {
             f64::from(m.ai.zza),
         );
         m.move_relative(0.02, input);
-        m.travel_move(cx.w, cx.level, cx.events, pause, |_, _, _, _| {})
-            .break_value()
+        m.travel_move(
+            cx.w,
+            cx.level,
+            cx.events,
+            pause,
+            sunrise_world::travel::TravelMode::Water,
+            |_, _, _, _| {},
+        )
+        .break_value()
     }
 }
 impl Goal for BreathAir {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE | LOOK
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
         m.air < 140
     }
+    #[inline]
     fn interruptable(&self) -> bool {
         false
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         m.nav_stop();
         Self::find_air(m, cx);
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         let _ = Self::move_to_air(m, cx, false);
     }
+    #[inline]
     fn tick_until_movement_pause(
         &mut self,
         m: &mut Mob,
@@ -3090,9 +1499,11 @@ impl Goal for BreathAir {
         self.movement_paused = movement.is_some();
         movement
     }
+    #[inline]
     fn after_movement(&mut self, _: &mut Mob, _: &mut Cx) -> bool {
         std::mem::take(&mut self.movement_paused)
     }
+    #[inline]
     fn stop(&mut self, _: &mut Mob, _: &mut Cx) {
         self.movement_paused = false;
     }
@@ -3104,9 +1515,11 @@ pub struct TryFindWater {
 }
 impl Goal for TryFindWater {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if !m.ground.on_ground || m.fluids.in_water {
             return false;
@@ -3129,9 +1542,11 @@ impl Goal for TryFindWater {
         }
         false
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
         !m.ai.nav.is_done()
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         m.nav_move_to(cx.w, self.wanted, 1.0);
     }
@@ -3317,15 +1732,19 @@ mod breeding_variant_tests {
         struct SeedAtBreed(Breed);
         impl Goal for SeedAtBreed {
             goal_clone!();
+            #[inline]
             fn flags(&self) -> u8 {
                 MOVE | LOOK
             }
+            #[inline]
             fn can_use(&mut self, _: &mut Mob, _: &mut Cx) -> bool {
                 true
             }
+            #[inline]
             fn can_continue(&mut self, _: &mut Mob, _: &mut Cx) -> bool {
                 true
             }
+            #[inline]
             fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
                 m.random = sunrise_core::random::LegacyRandom::new(1);
                 self.0.tick(m, cx);
@@ -3351,6 +1770,7 @@ mod breeding_variant_tests {
                 parent.extra.egg_time = 1;
                 parent.ai.targets.clear();
                 parent.ai.goals = GoalSelector {
+                    generation: 0,
                     goals: vec![Wrapped {
                         priority: 2,
                         running: true,
@@ -3362,6 +1782,7 @@ mod breeding_variant_tests {
                     }],
                     locked: [Some(0), Some(0), None, None],
                     disabled: 0,
+                    brain_starters: 0,
                 };
                 let mut events = Vec::new();
                 parent.tick(
@@ -3377,7 +1798,7 @@ mod breeding_variant_tests {
                     }
                 )));
                 assert_eq!(parent.extra.egg_time, 8313);
-                assert_eq!(parent.extra.age, 5999);
+                assert_eq!(parent.extra.age, if asks_baby_spawn { 0 } else { 5999 });
             }
         }));
     }
@@ -3694,18 +2115,23 @@ mod remove_all_tests {
     struct Walk;
     impl Goal for Walk {
         goal_clone!();
+        #[inline]
         fn flags(&self) -> u8 {
             MOVE
         }
+        #[inline]
         fn can_use(&mut self, _: &mut Mob, _: &mut Cx) -> bool {
             true
         }
+        #[inline]
         fn start(&mut self, m: &mut Mob, _: &mut Cx) {
             m.ai.panicking = true;
         }
+        #[inline]
         fn stop(&mut self, m: &mut Mob, _: &mut Cx) {
             m.ai.panicking = false;
         }
+        #[inline]
         fn name(&self) -> &'static str {
             "Walk"
         }
@@ -4577,6 +3003,171 @@ mod melee_continue_tests {
             Some((true, false)),
             "a mob chases a survival player and stops when they become a spectator"
         );
+    }
+}
+
+#[cfg(test)]
+mod check_and_perform_attack_tests {
+    use super::*;
+    use crate::mobs::world::{test_player, with_test_world};
+    use std::sync::Arc;
+    use sunrise_core::geometry::Vec3;
+
+    /// What `call` leaves: the goal's cooldown, whether the mob swings, and its hits on the
+    /// player.
+    fn strike(
+        goal: &mut MeleeAttack,
+        m: &mut Mob,
+        world: &MobWorld,
+        call: impl FnOnce(&mut MeleeAttack, &mut Mob, &mut Cx),
+    ) -> (i32, bool, usize) {
+        let mut fixture = crate::health::TestLevel::new(0);
+        let mut events = Vec::new();
+        let mut cx = Cx {
+            w: world,
+            level: &mut fixture.level(),
+            events: &mut events,
+        };
+        call(goal, m, &mut cx);
+        let hits = events
+            .iter()
+            .filter(|e| matches!(e, MobEvent::AttackPlayer(..)))
+            .count();
+        (goal.until_attack, m.ai.swinging, hits)
+    }
+
+    /// `MeleeAttackGoal.checkAndPerformAttack`: while the cooldown runs, nothing; once it is
+    /// over, with the target in reach and in sight, `resetAttackCooldown` (20 ticks), the swing
+    /// and one hit. `tick` counts the cooldown down before it calls the method, as vanilla's
+    /// does, so a zombie one tick from its next attack strikes in that tick.
+    #[test]
+    #[ignore = "daily"]
+    fn the_strike_comes_after_the_cooldown_countdown_in_tick() {
+        let mut outcomes = Vec::new();
+        let ran = with_test_world(&[], |w, types| {
+            let kind = Arc::new(types.types["minecraft:zombie"].clone());
+            let mut world = w.clone();
+            world.player = Some(test_player(Vec3::new(1.5, 64.0, 0.5)));
+            let t = world.target_info(Who::Player).unwrap();
+            for (until_attack, through_tick) in [(1, false), (0, false), (1, true)] {
+                let mut m = Mob::new(1, kind.clone(), Vec3::new(0.5, 64.0, 0.5), 0.0);
+                m.ai.target = Some(Who::Player);
+                let mut goal = MeleeAttack::new(1.0, false);
+                goal.until_attack = until_attack;
+                outcomes.push(strike(&mut goal, &mut m, &world, |goal, m, cx| {
+                    if through_tick {
+                        goal.tick(m, cx);
+                    } else {
+                        goal.check_and_perform_attack(m, Who::Player, &t, cx);
+                    }
+                }));
+            }
+        });
+        assert!(ran, "prepared mob resources required");
+        assert_eq!(outcomes, [(1, false, 0), (20, true, 1), (20, true, 1)]);
+    }
+
+    /// `FoxMeleeAttackGoal.checkAndPerformAttack` replaces the base method without calling
+    /// it: a fox's `tick` strikes and bites through its own, and the base method, which a
+    /// mod's row on `MeleeAttackGoal.checkAndPerformAttack` takes, has no bite.
+    #[test]
+    #[ignore = "daily"]
+    fn a_foxs_bite_is_not_in_the_base_method() {
+        let mut bites = Vec::new();
+        let ran = with_test_world(&[], |w, types| {
+            let kind = Arc::new(types.types["minecraft:fox"].clone());
+            let mut world = w.clone();
+            world.player = Some(test_player(Vec3::new(1.5, 64.0, 0.5)));
+            let t = world.target_info(Who::Player).unwrap();
+            for through_tick in [true, false] {
+                let mut m = Mob::new(1, kind.clone(), Vec3::new(0.5, 64.0, 0.5), 0.0);
+                m.ai.target = Some(Who::Player);
+                let mut goal = MeleeAttack::new(1.2, true).bite("entity.fox.bite");
+                let mut fixture = crate::health::TestLevel::new(0);
+                let mut events = Vec::new();
+                let mut cx = Cx {
+                    w: &world,
+                    level: &mut fixture.level(),
+                    events: &mut events,
+                };
+                if through_tick {
+                    goal.tick(&mut m, &mut cx);
+                } else {
+                    goal.check_and_perform_attack(&mut m, Who::Player, &t, &mut cx);
+                }
+                let bitten = events
+                    .iter()
+                    .filter(|e| matches!(e, MobEvent::Sound("entity.fox.bite", ..)))
+                    .count();
+                bites.push(bitten);
+            }
+        });
+        assert!(ran, "vanilla data is missing");
+        assert_eq!(bites, [1, 0]);
+    }
+
+    /// Whether `test` of this module runs here: in the test process, it reruns `test` alone in
+    /// a fresh child process, asserts the child passed and returns false; in that child, true.
+    /// The prepared-resource world writes process-wide tables (the block palette, the item
+    /// tables), which no other test of the shared process may see.
+    fn in_fresh_process(test: &str) -> bool {
+        const CHILD: &str = "SUNRISE_TEST_MELEE_ATTACK_CHILD";
+        let module = module_path!().split_once("::").unwrap().1;
+        let name = format!("{module}::{test}");
+        if std::env::var_os(CHILD).is_some_and(|value| value == name.as_str()) {
+            return true;
+        }
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([&name, "--exact", "--include-ignored", "--test-threads=1"])
+            .env(CHILD, &name)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            out.status.success() && stdout.contains("test result: ok. 1 passed;"),
+            "{name} failed in its own process:\n{stdout}{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        false
+    }
+
+    /// `FoxMeleeAttackGoal.checkAndPerformAttack` has no `swingForAttack`: a fox's strike
+    /// resets the cooldown, hurts its target and bites, but doesn't swing (#4733). The world
+    /// is built in a fresh child process.
+    #[test]
+    #[ignore = "daily"]
+    fn a_foxs_strike_hurts_and_bites_without_a_swing() {
+        if !in_fresh_process("a_foxs_strike_hurts_and_bites_without_a_swing") {
+            return;
+        }
+        let mut outcome = None;
+        let ran = with_test_world(&[], |w, types| {
+            let kind = Arc::new(types.types["minecraft:fox"].clone());
+            let mut world = w.clone();
+            world.player = Some(test_player(Vec3::new(1.5, 64.0, 0.5)));
+            let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+            m.ai.target = Some(Who::Player);
+            let mut goal = MeleeAttack::new(1.2, true).bite("entity.fox.bite");
+            let mut fixture = crate::health::TestLevel::new(0);
+            let mut events = Vec::new();
+            let mut cx = Cx {
+                w: &world,
+                level: &mut fixture.level(),
+                events: &mut events,
+            };
+            goal.tick(&mut m, &mut cx);
+            let hits = events
+                .iter()
+                .filter(|e| matches!(e, MobEvent::AttackPlayer(..)))
+                .count();
+            let bites = events
+                .iter()
+                .filter(|e| matches!(e, MobEvent::Sound("entity.fox.bite", ..)))
+                .count();
+            outcome = Some((goal.until_attack, hits, bites, m.ai.swinging));
+        });
+        assert!(ran, "prepared mob resources required");
+        assert_eq!(outcome, Some((20, 1, 1, false)));
     }
 }
 

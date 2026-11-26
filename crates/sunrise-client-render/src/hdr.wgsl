@@ -322,10 +322,10 @@ fn tone_scale(top: f32, scene_peak: f32, sun_peak: f32, headroom: f32, paper: f3
     return pq_nits(vec3(p * source)).x / paper / top;
 }
 
-// Hdr::tonemap, after the post effects and before the camera overlays (docs/design/
-// hdr-linear-light.md, `[tonemap]`): the light (`world` holds the frame) fitted to the display, in
-// gamma, where scaling the light by s scales the stored colour by s^(1/2.2). Light the curve
-// leaves alone stays exactly as stored. With no headroom and no scene peak, a clip at white.
+// Hdr::tonemap, after the post effects and before the camera overlays (`[tonemap]`): the light
+// (`world` holds the frame) fitted to the display, in gamma, where scaling the light by s scales
+// the stored colour by s^(1/2.2). Light the curve leaves alone stays exactly as stored. With no
+// headroom and no scene peak, a clip at white.
 @fragment fn fs_tonemap(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     let g = textureLoad(world, vec2<i32>(pos.xy), 0).rgb;
     if params.scene_peak == 0.0 && params.peak <= 1.0 {

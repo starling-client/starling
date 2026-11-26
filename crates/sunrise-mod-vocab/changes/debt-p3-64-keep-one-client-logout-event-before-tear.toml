@@ -1,0 +1,16 @@
+ids = [
+    "hook:client_disconnecting",
+    "method:Hooks::client_disconnecting",
+    "type:ClientDisconnectingEvent",
+    "hook:client_player_logging_out",
+    "hook:client_player_logging_out.player_id",
+    "hook:client_player_logging_out.uuid",
+    "hook:client_player_logging_out.player",
+    "hook:client_player_logging_out.game_mode",
+    "type:ClientPlayerLoggingOutEvent.player_id",
+    "type:ClientPlayerLoggingOutEvent.uuid",
+    "type:ClientPlayerLoggingOutEvent.player",
+    "type:ClientPlayerLoggingOutEvent.game_mode",
+]
+why = "Keep one client logout hook (`client_player_logging_out`, version 2) matching vanilla 26.3 `Minecraft.disconnect` and NeoForge `ClientHooks.firePlayerLogout` / `ClientPlayerNetworkEvent.LoggingOut`, and delete the duplicate `client_disconnecting` hook that fired again late during session cleanup. `client_player_logging_out` now runs once per actual client disconnect before teardown (including no-player transitions) and carries optional live `PlayerRef` and `GameMode` handles instead of raw entity ID and UUID integers."
+migrate = "Move any `Hooks::client_disconnecting` listener to `Hooks::client_player_logging_out` (version 2) and update `client_player_logging_out` listeners to read `event.player: Option<PlayerRef>` and `event.game_mode: Option<GameMode>` instead of `event.player_id` and `event.uuid` (`event.player` is still live for host queries during the callback, and both fields are `None` on no-player disconnect transitions)."

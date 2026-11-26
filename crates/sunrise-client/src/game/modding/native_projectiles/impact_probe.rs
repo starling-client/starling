@@ -3,7 +3,7 @@ use crate::game::{
     Game,
     native_entity_refs::tests::{bind_local_player, with_game},
 };
-use mod_api::{Flow, Hooks, HostTransaction, ServerHost};
+use mod_api::{Flow, Hooks, HostTransaction, ServerHost, TransactionError};
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
@@ -15,6 +15,8 @@ use sunrise_core::{geometry::Vec3, position::ChunkPos};
 #[derive(Clone, Copy)]
 pub(in crate::game) enum Action {
     Allow,
+    SaveOnImpact,
+    ReadSectionPosition,
     ClearBlockOnImpact,
     ClearBlockOnShoot([i32; 3]),
     Cancel,
@@ -52,26 +54,18 @@ pub(in crate::game) struct Observed {
     pub bursts: AtomicUsize,
     pub game_events: Mutex<Vec<(&'static str, [f64; 3])>>,
     pub sections: Mutex<Vec<SectionCrossing>>,
+    pub section_positions: Mutex<Vec<Option<[f64; 3]>>>,
     pub deaths: AtomicUsize,
     pub leaves: Mutex<Vec<u32>>,
 }
 
 struct Probe {
     action: Action,
-    hears: bool,
     observed: Arc<Observed>,
 }
 
 #[mod_api::__subscriptions]
 impl Hooks for Probe {
-    fn hears_projectile_impacts(
-        &self,
-        _: &dyn mod_api::Host,
-        event: &mut mod_api::HearsProjectileImpactsEvent,
-    ) {
-        event.hears = self.hears;
-    }
-
     fn projectile_impact(
         &self,
         host: &mut dyn ServerHost,
@@ -93,7 +87,13 @@ impl Hooks for Probe {
             projectile_pos: projectile.position(host).unwrap(),
         });
         match self.action {
-            Action::Allow | Action::ClearBlockOnShoot(_) => Flow::Continue,
+            Action::Allow | Action::ReadSectionPosition | Action::ClearBlockOnShoot(_) => {
+                Flow::Continue
+            }
+            Action::SaveOnImpact => {
+                assert!(host.commands().run_command("save-all flush"));
+                Flow::Cancel
+            }
             Action::ClearBlockOnImpact => {
                 let level = host.level(event.dimension).unwrap();
                 assert!(level.remove_block(host, event.block, false));
@@ -119,11 +119,11 @@ impl Hooks for Probe {
                     assert!(!projectile.discard(host));
                 };
                 if matches!(self.action, Action::AbortDiscard) {
-                    let aborted: Result<(), ()> = host.transaction(|host, _| {
+                    let aborted = host.transaction::<(), ()>(|host, _| {
                         remove(host);
                         Err(())
                     });
-                    assert!(aborted.is_err());
+                    assert_eq!(aborted, Err(TransactionError::Aborted(())));
                     assert_eq!(host.entity(event.projectile), Some(projectile));
                 } else {
                     remove(host);
@@ -175,9 +175,20 @@ impl Hooks for Probe {
 
     fn entity_entering_section(
         &self,
-        _: mod_api::HostSide<'_>,
+        host: mod_api::HostSide<'_>,
         event: &mut mod_api::EntityEnteringSectionEvent,
     ) {
+        if matches!(self.action, Action::ReadSectionPosition) && event.entity.id() == 71 {
+            let position = match host {
+                mod_api::HostSide::Server(host) => event.entity.position(host),
+                mod_api::HostSide::Client(host) => event.entity.position(host),
+            };
+            self.observed
+                .section_positions
+                .lock()
+                .unwrap()
+                .push(position);
+        }
         self.observed.sections.lock().unwrap().push((
             event.entity.id(),
             event.old_section,
@@ -193,30 +204,72 @@ impl Hooks for Probe {
         self.observed.leaves.lock().unwrap().push(event.entity);
     }
 
-    fn item_fished(&self, _: &mut dyn ServerHost, _: &mut mod_api::ItemFishedEvent<'_>) -> Flow {
+    fn item_fished(
+        &self,
+        _: &mut dyn ServerHost,
+        _: &mut mod_api::ItemFishedEvent<'_, '_>,
+    ) -> Flow {
         self.observed.catches.fetch_add(1, Ordering::Relaxed);
         Flow::Continue
+    }
+}
+
+struct UnsubscribedProbe(Probe);
+
+#[mod_api::__subscriptions]
+impl Hooks for UnsubscribedProbe {
+    fn vanilla_game_event(
+        &self,
+        host: &mut dyn ServerHost,
+        event: &mut mod_api::VanillaGameEventEvent<'_>,
+    ) -> Flow {
+        self.0.vanilla_game_event(host, event)
+    }
+
+    fn entity_entering_section(
+        &self,
+        host: mod_api::HostSide<'_>,
+        event: &mut mod_api::EntityEnteringSectionEvent,
+    ) {
+        self.0.entity_entering_section(host, event);
+    }
+
+    fn entity_leave_level(
+        &self,
+        host: &mut dyn ServerHost,
+        event: &mut mod_api::EntityLeaveLevelEvent<'_>,
+    ) {
+        self.0.entity_leave_level(host, event);
+    }
+
+    fn item_fished(
+        &self,
+        host: &mut dyn ServerHost,
+        event: &mut mod_api::ItemFishedEvent<'_, '_>,
+    ) -> Flow {
+        self.0.item_fished(host, event)
     }
 }
 
 /// Run a real server tick fixture with a live player and listener installed.
 pub(in crate::game) fn with_probe(
     action: Action,
-    hears: bool,
+    subscribed: bool,
     test: impl FnOnce(&mut Game<'_>, &Observed),
 ) {
     let observed = Arc::new(Observed::default());
-    let mods = vec![mod_api::ModEntry::new(
-        "impact-probe",
-        Box::new(Probe {
-            action,
-            hears,
-            observed: observed.clone(),
-        }),
-    )]
-    .into();
+    let probe = Probe {
+        action,
+        observed: observed.clone(),
+    };
+    let entry = if subscribed {
+        mod_api::ModEntry::new("impact-probe", Box::new(probe))
+    } else {
+        mod_api::ModEntry::new("impact-probe", Box::new(UnsubscribedProbe(probe)))
+    };
+    let mods = vec![entry].into();
     mod_platform::testing::with_mods(mods, || {
-        with_game(|game| {
+        let check = |game: &mut Game<'_>| {
             game.options.dedicated = Some(Vec::new());
             game.world
                 .chunks
@@ -233,7 +286,13 @@ pub(in crate::game) fn with_probe(
             game.inventory[0] = Some(ItemStack::new("minecraft:fishing_rod", 1));
             game.next_entity = 100;
             test(game, &observed);
-        })
+        };
+        if matches!(action, Action::SaveOnImpact) {
+            let save = tempfile::tempdir().unwrap();
+            crate::game::visibility_unwind_tests::with_save_game(save.path(), check);
+        } else {
+            with_game(check);
+        }
     });
 }
 

@@ -81,10 +81,7 @@ impl HeartHost for Host<'_> {
     fn create_mob(&mut self, kind: Arc<MobType>, at: Vec3) -> Mob {
         *self.next_entity += 1;
         // A new entity's random is its own (Mob::new seeds it).
-        let mut m = Mob::new(*self.next_entity, kind, at, 0.0);
-        let seed = i64::from(m.id);
-        sunrise_client::mobs::monster_brain::init(&mut m, seed);
-        m
+        Mob::new(*self.next_entity, kind, at, 0.0)
     }
     fn add_mob(&mut self, m: Mob) {
         self.added.push(m);
@@ -166,8 +163,7 @@ impl Game<'_> {
             match e {
                 HeartEvent::SetBlock(at, state) => self.level_set(at, state)?,
                 HeartEvent::Sound(name, at, volume, pitch) => {
-                    self.audio
-                        .play(&format!("minecraft:{name}"), Some(at), volume, pitch)
+                    self.play_audio(&format!("minecraft:{name}"), Some(at), volume, pitch)
                 }
                 HeartEvent::Trail {
                     at,

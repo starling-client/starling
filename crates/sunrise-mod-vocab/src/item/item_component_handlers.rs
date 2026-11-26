@@ -7,7 +7,8 @@
 use crate::content::registry_keys::{fluid_id, fluid_key};
 use crate::{
     ComponentId, Components, Compound, EnergyHandler, FluidIdentity, FluidResource, FluidStack,
-    ItemPlace, ResourceHandler, ServerHost, Tag, Transaction,
+    ItemPlace, Overanswered, ResourceHandler, ServerHost, Tag, TransactionContext,
+    TransactionError,
 };
 
 /// One component of the item at a place, read and rewritten through the place
@@ -36,19 +37,28 @@ impl ItemComponentHandler {
         self.place.resource(host)?.value(&*host, &self.component)
     }
     /// Rewrites one item at the place with the component set to `value`, or removed for none, in
-    /// `tx`: whether that went through.
-    pub fn write(&self, host: &mut dyn ServerHost, tx: &Transaction, value: Option<Tag>) -> bool {
+    /// `tx`: whether that went through. A mismatched `tx` returns
+    /// `Err(TransactionError::InvalidContext)`.
+    pub fn write(
+        &self,
+        host: &mut dyn ServerHost,
+        tx: &TransactionContext,
+        value: Option<Tag>,
+    ) -> Result<bool, TransactionError<Overanswered>> {
+        if !host.transaction_matches(Some(tx)) {
+            return Err(TransactionError::InvalidContext);
+        }
         let Some(held) = self.place.resource(host) else {
-            return false;
+            return Ok(false);
         };
         let changed = match value {
             Some(value) => match held.with_component(&*host, &self.component, value) {
                 Ok(changed) => changed,
-                Err(_) => return false,
+                Err(_) => return Ok(false),
             },
             None => held.without_component(&*host, &self.component),
         };
-        self.place.exchange(host, tx, &changed, 1) == 1
+        Ok(self.place.exchange(host, tx, &changed, 1)? == 1)
     }
 }
 
@@ -81,14 +91,20 @@ impl ItemComponentEnergy {
         }
     }
     /// Rewrites the item as holding `energy`: `moved` when that goes through, else 0.
-    fn rewrite(&self, host: &mut dyn ServerHost, tx: &Transaction, energy: u32, moved: u32) -> u32 {
+    fn rewrite(
+        &self,
+        host: &mut dyn ServerHost,
+        tx: &TransactionContext,
+        energy: u32,
+        moved: u32,
+    ) -> Result<u32, TransactionError<Overanswered>> {
         // `energy` is at most the capacity, which fits an int.
         let value = Tag::Int(i32::try_from(energy).unwrap_or(i32::MAX));
-        if self.item.write(host, tx, Some(value)) {
+        Ok(if self.item.write(host, tx, Some(value))? {
             moved
         } else {
             0
-        }
+        })
     }
 }
 
@@ -102,18 +118,34 @@ impl EnergyHandler for ItemComponentEnergy {
     fn capacity(&self, _: &mut dyn ServerHost) -> u32 {
         self.capacity
     }
-    fn insert(&self, host: &mut dyn ServerHost, tx: &Transaction, amount: u32) -> u32 {
+    fn insert(
+        &self,
+        host: &mut dyn ServerHost,
+        tx: &TransactionContext,
+        amount: u32,
+    ) -> Result<u32, TransactionError<Overanswered>> {
+        if !host.transaction_matches(Some(tx)) {
+            return Err(TransactionError::InvalidContext);
+        }
         let held = self.amount(host);
         let room = self.capacity.saturating_sub(held);
         match amount.min(self.max_insert).min(room) {
-            0 => 0,
+            0 => Ok(0),
             went => self.rewrite(host, tx, held + went, went),
         }
     }
-    fn extract(&self, host: &mut dyn ServerHost, tx: &Transaction, amount: u32) -> u32 {
+    fn extract(
+        &self,
+        host: &mut dyn ServerHost,
+        tx: &TransactionContext,
+        amount: u32,
+    ) -> Result<u32, TransactionError<Overanswered>> {
+        if !host.transaction_matches(Some(tx)) {
+            return Err(TransactionError::InvalidContext);
+        }
         let held = self.amount(host);
         match amount.min(self.max_extract).min(held) {
-            0 => 0,
+            0 => Ok(0),
             came => self.rewrite(host, tx, held - came, came),
         }
     }
@@ -185,14 +217,14 @@ impl ItemComponentFluidTank {
     fn rewrite(
         &self,
         host: &mut dyn ServerHost,
-        tx: &Transaction,
+        tx: &TransactionContext,
         stack: Option<FluidStack>,
         moved: u32,
-    ) -> u32 {
+    ) -> Result<u32, TransactionError<Overanswered>> {
         let value = match stack {
             Some(stack) => {
                 let Some(id) = stack.key().and_then(fluid_id) else {
-                    return 0;
+                    return Ok(0);
                 };
                 let mut content = Compound::new();
                 content.insert("id".into(), Tag::String(id.into()));
@@ -208,11 +240,11 @@ impl ItemComponentFluidTank {
             }
             None => None,
         };
-        if self.item.write(host, tx, value) {
+        Ok(if self.item.write(host, tx, value)? {
             moved
         } else {
             0
-        }
+        })
     }
 }
 
@@ -235,45 +267,51 @@ impl ResourceHandler<FluidResource> for ItemComponentFluidTank {
     fn insert_at(
         &self,
         host: &mut dyn ServerHost,
-        tx: &Transaction,
+        tx: &TransactionContext,
         index: usize,
         resource: &FluidResource,
         amount: u32,
-    ) -> u32 {
+    ) -> Result<u32, TransactionError<Overanswered>> {
+        if !host.transaction_matches(Some(tx)) {
+            return Err(TransactionError::InvalidContext);
+        }
         if index != 0 {
-            return 0;
+            return Ok(0);
         }
         let held = match self.content(host) {
-            TankContent::Unresolved => return 0,
+            TankContent::Unresolved => return Ok(0),
             TankContent::Fluid(held) => Some(held),
             TankContent::Empty => None,
         };
         if held.as_ref().is_some_and(|held| !resource.matches(held)) {
-            return 0;
+            return Ok(0);
         }
         let have = held.map_or(0, |held| held.amount);
         match amount.min(self.capacity.saturating_sub(have)) {
-            0 => 0,
+            0 => Ok(0),
             went => self.rewrite(host, tx, Some(resource.to_stack(have + went)), went),
         }
     }
     fn extract_at(
         &self,
         host: &mut dyn ServerHost,
-        tx: &Transaction,
+        tx: &TransactionContext,
         index: usize,
         resource: &FluidResource,
         amount: u32,
-    ) -> u32 {
+    ) -> Result<u32, TransactionError<Overanswered>> {
+        if !host.transaction_matches(Some(tx)) {
+            return Err(TransactionError::InvalidContext);
+        }
         let Some(held) = self
             .held(host)
             .filter(|held| index == 0 && resource.matches(held))
         else {
-            return 0;
+            return Ok(0);
         };
         let came = amount.min(held.amount);
         if came == 0 {
-            return 0;
+            return Ok(0);
         }
         let left = (held.amount > came).then(|| held.with_amount(held.amount - came));
         self.rewrite(host, tx, left, came)

@@ -1,0 +1,2 @@
+ids = ["handle:EntityRef::custom_name"]
+why = "Mods read an entity's custom name with its style, or None when it has none (Entity.getCustomName, Entity.hasCustomName), on either side, where EntityRef::name falls back to a type's name and drops the style (#5380)."

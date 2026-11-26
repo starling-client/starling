@@ -1,9 +1,22 @@
+/// Declare a mod's own event; see the [`Event`](trait@crate::Event) trait.
+///
+/// A cancellable event needs a `cancelled: bool` field:
+///
+/// ```compile_fail
+/// #[derive(mod_api::Event)]
+/// #[event(id = "demo:ping", cancellable)]
+/// #[non_exhaustive]
+/// pub struct Ping;
+/// ```
+pub use sunrise_mod_api_macros::Event;
 /// Encode an owned value with the Wire codec.
 ///
 /// Fields are encoded in declaration order. Enum tags are zero-based declaration
 /// indices, independent of explicit discriminants. Use `#[wire(via = Type)]` to
 /// encode through `From<&Self>` and validate decoding with `TryFrom<Type>`.
 /// This conversion form is for ordinary Wire, not bounded typed payloads.
+/// The derive's standard types and macros resolve independently of your module's scope.
+/// Your field types and `via` type still resolve in the scope where you write them.
 /// Borrowed call arguments are not owned Wire values.
 ///
 /// ```compile_fail

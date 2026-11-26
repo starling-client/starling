@@ -16,7 +16,7 @@ pub mod biome;
 pub mod block_edit;
 pub mod block_entities;
 pub mod block_entity_anim;
-pub mod block_entity_cem;
+pub(crate) mod block_entity_cem;
 pub mod block_entity_reach;
 pub mod block_entity_render;
 pub mod block_sprites;
@@ -72,7 +72,12 @@ pub mod inventory_effects;
 pub mod java_text;
 mod jei_sprites;
 pub mod jigsaw_block;
+<<<<<<< HEAD
 pub mod keypad;
+||||||| 46c00106def
+=======
+pub mod mod_hooks;
+>>>>>>> ed6772e2118
 pub mod moving_colliders;
 pub mod terrain_model;
 pub use sunrise_polytone::creative_tabs as polytone_creative_tabs;
@@ -93,8 +98,8 @@ pub mod mesher;
 pub mod mipmap;
 pub mod mod_animations;
 pub mod mod_block_state_models;
-pub mod mod_browser;
 pub mod mod_chunk_tickets;
+pub mod mod_compute;
 pub mod mod_list;
 pub mod mod_model_loaders;
 pub mod mod_pipelines;
@@ -115,7 +120,7 @@ pub mod own_skin;
 pub mod pack_browser;
 pub mod pack_formats;
 pub mod pack_hooks;
-pub mod pack_options_ui;
+pub(crate) mod pack_options_ui;
 pub mod pack_palette;
 pub mod pack_screen;
 pub mod pack_tags;
@@ -131,7 +136,7 @@ pub mod perf_gpu;
 pub mod poi_sections;
 pub mod polytone_post;
 pub mod post_chain;
-pub mod post_glsl;
+pub(crate) mod post_glsl;
 pub mod potent_sulfur;
 pub mod preedit;
 pub mod providers;
@@ -140,7 +145,7 @@ pub mod pvp_hud;
 pub mod spectator_shaders;
 pub use sunrise_assets::resource_source;
 pub mod api_context;
-pub mod radial_editor;
+pub(crate) mod radial_editor;
 pub mod radial_overlay;
 pub mod random_source;
 pub mod screen_draw;
@@ -149,10 +154,10 @@ pub mod sculk;
 pub mod section_mask;
 pub mod server_terrain;
 pub mod settings;
-pub mod settings_shell;
+pub(crate) mod settings_shell;
 pub mod shader_options;
 pub mod shader_pack_list;
-pub mod shader_ui;
+pub(crate) mod shader_ui;
 pub mod signs;
 pub mod skins;
 pub mod social;
@@ -164,8 +169,15 @@ mod sprite_cache;
 pub mod sprites;
 pub mod streaming;
 pub mod structure_block;
+<<<<<<< HEAD
 pub mod studio_ui;
 pub mod system_stats;
+||||||| 46c00106def
+pub mod studio_ui;
+=======
+pub(crate) mod studio_ui;
+pub(crate) mod sunrise_ui;
+>>>>>>> ed6772e2118
 pub mod tab_list;
 pub mod test_block;
 pub mod test_instance_block;
@@ -217,6 +229,8 @@ pub mod render_slots;
 
 pub mod render_views;
 
+#[cfg(test)]
+mod glsl_spirv_dump_tests;
 #[cfg(test)]
 mod test_log;
 #[cfg(test)]

@@ -11,15 +11,19 @@ pub mod advancements;
 pub mod ambience;
 pub mod animate_tick;
 pub mod api_text;
-pub mod arrows;
+pub use entities::arrows;
 pub mod bed_geometry;
 pub mod block_contact;
 pub mod block_sounds;
+#[cfg(test)]
+mod fresh_process;
 pub mod item_damage;
 pub mod mod_packet_builders;
 pub mod packet_source;
 pub mod parallel;
 pub mod powder_snow;
+#[cfg(test)]
+mod rule_replacements;
 #[cfg(test)]
 mod test_log;
 #[cfg(test)]
@@ -34,7 +38,7 @@ pub use sunrise_client_render::{
     environment, extras, fast_hash, fluid_models, fluid_render, fog, font, gfx, gpu_drivers,
     graphics, graphics_style, graphics_ui, hdr_calibration, hud, hud_kit, hud_layout, hud_overlays,
     inventory_effects, java_text, jigsaw_block, json_folder, level_loading, light, lod, logging,
-    mark_sprite, menu_blur, menu_style, mesher, mipmap, mod_browser, mod_chunk_tickets, mod_list,
+    mark_sprite, menu_blur, menu_style, mesher, mipmap, mod_chunk_tickets, mod_hooks, mod_list,
     mod_pipelines, model_library, models, mods_screen, monitor, multiline_edit, native_emissive,
     offline_name, options_file, options_fixes, options_ui, overlay, own_buttons, own_skin,
     pack_browser, pack_formats, pack_hooks, pack_palette, pack_screen, packs, pad_cursor,
@@ -135,7 +139,6 @@ pub mod menu_extra_net;
 pub mod merchant;
 pub mod mobs;
 pub mod mod_content;
-pub mod mod_registry;
 pub mod modgen;
 pub mod motion;
 pub mod multiplayer;
@@ -171,7 +174,7 @@ pub mod save;
 // save.rs below it. Not part of the mods' API surface.
 #[cfg(test)]
 mod carrier_recover_tests;
-pub mod carrier_store;
+pub use save::carrier as carrier_store;
 #[cfg(test)]
 mod carrier_store_tests;
 pub mod scoreboard_cmd;
@@ -207,7 +210,12 @@ pub mod tick_chunk_membership;
 pub mod ticket_levels;
 pub mod title;
 pub mod toasts;
+<<<<<<< HEAD
 pub mod touch;
+||||||| 46c00106def
+=======
+pub mod tooltip_components;
+>>>>>>> ed6772e2118
 pub mod travel_gate;
 pub mod ui_theme;
 pub mod vanillagen;

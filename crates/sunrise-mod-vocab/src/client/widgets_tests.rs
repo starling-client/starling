@@ -1,362 +1,206 @@
 use super::*;
-use crate::prelude::*;
-use crate::{Host, SoundRef};
-use std::cell::{Cell, RefCell};
+use crate::Host;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-/// A client host with a clock the test moves, a clipboard and a record of the sounds played.
 #[derive(Default)]
-struct Fake {
-    now: Cell<u64>,
-    clipboard: RefCell<String>,
-    sounds: RefCell<Vec<String>>,
-}
-impl Host for Fake {}
-crate::impl_host_areas!(Fake);
-impl ClientHost for Fake {}
-crate::impl_client_host_areas!(Fake, except(client_input, effects));
-impl ClientInputClientHost for Fake {
-    fn millis(&self) -> u64 {
-        self.now.get()
-    }
-    fn clipboard_text(&self) -> Option<String> {
-        Some(self.clipboard.borrow().clone())
-    }
-    fn set_clipboard_text(&self, text: &str) -> bool {
-        *self.clipboard.borrow_mut() = text.to_owned();
-        true
-    }
-}
-impl EffectsClientHost for Fake {
-    fn play_local_sound(&self, sound: &SoundPlay, _: u32) -> Option<SoundRef> {
-        self.sounds.borrow_mut().push(sound.identifier.clone());
-        None
-    }
-}
+struct FakeHost;
+impl Host for FakeHost {}
+crate::impl_host_areas!(FakeHost);
+impl ClientHost for FakeHost {}
+crate::impl_client_host_areas!(FakeHost);
 
-/// What the widgets asked the game to draw: each button and each field's view.
-/// Every field character is 6 pixels wide, from 4 pixels in.
-#[derive(Default)]
-struct Recorder {
-    buttons: Vec<(Text, bool, bool, Option<ButtonSprites>)>,
-    fields: Vec<TextFieldView>,
-}
-impl DrawContext for Recorder {
-    fn widget_button(
+struct StubDraw;
+impl DrawContext for StubDraw {
+    fn with_scissor(
         &mut self,
         _: [f32; 4],
-        label: &Text,
-        active: bool,
-        highlighted: bool,
-        sprites: Option<&ButtonSprites>,
-    ) -> Result<(), crate::text::TextFormError> {
-        label.validate_depth()?;
-        self.buttons
-            .push((label.clone(), active, highlighted, sprites.cloned()));
-        Ok(())
-    }
-    fn widget_text_field(&mut self, field: &TextFieldView) -> TextFieldLayout {
-        self.fields.push(field.clone());
-        let left = field.rect[0] + 4.0;
-        let shown = char_len(&field.value) - field.scroll;
-        TextFieldLayout::new(
-            field.scroll,
-            (0..=shown).map(|i| left + 6.0 * i as f32).collect(),
-        )
+        _: &mut dyn FnMut(&mut dyn DrawContext),
+    ) -> Result<(), crate::GuiClipRefusal> {
+        unreachable!("widgets under test do not open a scissor")
     }
 }
 
-/// Two fields and two buttons, as the example screen has them.
-fn screen() -> (Widgets, [WidgetId; 4]) {
-    let mut widgets = Widgets::new();
-    let a = widgets.add_text_field(TextField::new([10.0, 10.0, 100.0, 20.0], 32));
-    let b = widgets.add_text_field(TextField::new([10.0, 40.0, 100.0, 20.0], 32));
-    let copy = widgets.add_button(Button::new(
-        [10.0, 70.0, 100.0, 20.0],
-        Text::literal("Copy"),
-    ));
-    let done = widgets.add_button(Button::new(
-        [10.0, 100.0, 100.0, 20.0],
-        Text::literal("Done"),
-    ));
-    (widgets, [a, b, copy, done])
-}
-
-/// A press focuses the field under it and puts the cursor at the character it is on; typing,
-/// Backspace and the clipboard edit it, each a `Changed`; a press over nothing clears the focus.
 #[test]
-fn a_field_takes_clicks_typing_and_the_clipboard() {
-    let host = Fake::default();
-    let (mut widgets, [a, ..]) = screen();
-    let mut draw = Recorder::default();
-    widgets.text_field_mut(a).unwrap().set_value("hello");
-    widgets.draw(&mut draw, &host, [0.0, 0.0]).unwrap();
-    // Character boundaries at 14, 20, 26...: x 27 is after the second character.
-    assert_eq!(
-        widgets.mouse_pressed(&host, [27.0, 15.0], 0, 0),
-        Outcome::Handled
-    );
-    assert_eq!(widgets.focused(), Some(a));
-    assert_eq!(widgets.text_field(a).unwrap().edit.cursor, 2);
-    assert_eq!(widgets.char_typed(&host, 'X'), Outcome::Changed(a));
-    assert_eq!(widgets.char_typed(&host, '\u{7}'), Outcome::Ignored);
-    assert_eq!(widgets.text_field(a).unwrap().value(), "heXllo");
-    assert_eq!(
-        widgets.key_pressed(&host, "key.keyboard.backspace", 0),
-        Outcome::Changed(a)
-    );
-    assert_eq!(
-        widgets.key_pressed(&host, "key.keyboard.a", CONTROL),
-        Outcome::Handled
-    );
-    assert_eq!(
-        widgets.key_pressed(&host, "key.keyboard.c", CONTROL),
-        Outcome::Handled
-    );
-    assert_eq!(*host.clipboard.borrow(), "hello");
-    assert_eq!(
-        widgets.key_pressed(&host, "key.keyboard.x", CONTROL),
-        Outcome::Changed(a)
-    );
-    assert_eq!(widgets.text_field(a).unwrap().value(), "");
-    assert_eq!(
-        widgets.key_pressed(&host, "key.keyboard.v", CONTROL),
-        Outcome::Changed(a)
-    );
-    assert_eq!(widgets.text_field(a).unwrap().value(), "hello");
-    assert_eq!(
-        widgets.key_pressed(&host, "key.keyboard.enter", 0),
-        Outcome::Submitted(a)
-    );
-    assert_eq!(
-        widgets.key_pressed(&host, "key.keyboard.escape", 0),
-        Outcome::Ignored
-    );
-    assert_eq!(
-        widgets.mouse_pressed(&host, [300.0, 300.0], 0, 0),
-        Outcome::Ignored
-    );
-    assert_eq!(widgets.focused(), None);
-    assert_eq!(widgets.char_typed(&host, 'y'), Outcome::Ignored);
-}
-
-/// A second press within 250 ms selects the word; Shift extends the selection; a drag from a
-/// press on the field follows the pointer until the release.
-#[test]
-fn double_clicks_select_words_and_drags_select_text() {
-    let host = Fake::default();
-    let (mut widgets, [a, ..]) = screen();
-    let mut draw = Recorder::default();
-    widgets.text_field_mut(a).unwrap().set_value("ab cd");
-    widgets.draw(&mut draw, &host, [0.0, 0.0]).unwrap();
-    host.now.set(1000);
-    widgets.mouse_pressed(&host, [39.0, 15.0], 0, 0);
-    widgets.mouse_released(0);
-    host.now.set(1100);
-    widgets.mouse_pressed(&host, [39.0, 15.0], 0, 0);
-    let edit = &widgets.text_field(a).unwrap().edit;
-    assert_eq!((edit.highlight, edit.cursor), (3, 5));
-    widgets.mouse_released(0);
-    host.now.set(2000);
-    widgets.mouse_pressed(&host, [14.0, 15.0], 0, 0);
-    assert_eq!(
-        widgets.mouse_dragged(&host, [27.0, 15.0], 0),
-        Outcome::Handled
-    );
-    let edit = &widgets.text_field(a).unwrap().edit;
-    assert_eq!((edit.highlight, edit.cursor), (0, 2));
-    assert_eq!(widgets.mouse_released(0), Outcome::Handled);
-    assert_eq!(
-        widgets.mouse_dragged(&host, [33.0, 15.0], 0),
-        Outcome::Ignored
-    );
-    host.now.set(3000);
-    widgets.mouse_pressed(&host, [39.0, 15.0], 0, SHIFT);
-    let edit = &widgets.text_field(a).unwrap().edit;
-    assert_eq!((edit.highlight, edit.cursor), (0, 4));
-    // The right button clicks no widget.
-    assert_eq!(
-        widgets.mouse_pressed(&host, [14.0, 15.0], 1, 0),
-        Outcome::Ignored
-    );
-    assert_eq!(widgets.focused(), Some(a));
-}
-
-/// Tab walks the widgets in the order added and wraps round, Shift+Tab goes back, and an
-/// inactive button is skipped; Enter and Space press the focused button with its click sound,
-/// as a left click does.
-#[test]
-fn tab_moves_the_focus_and_keys_press_the_focused_button() {
-    let host = Fake::default();
-    let (mut widgets, [a, b, copy, done]) = screen();
-    widgets.button_mut(done).unwrap().sprites = Some(ButtonSprites::new("test:done"));
-    let tab = |widgets: &mut Widgets, modifiers| {
-        widgets.key_pressed(&host, "key.keyboard.tab", modifiers);
-        widgets.focused()
+fn button_builder_defaults_modifiers_and_callback_unpack() {
+    let pressed = Arc::new(AtomicBool::new(false));
+    let seen = Arc::clone(&pressed);
+    let sprites = ButtonSprites {
+        highlighted: Some("example:btn_hover".into()),
+        disabled: Some("example:btn_disabled".into()),
+        label_offset: [2.0, -1.0],
+        ..ButtonSprites::new("example:btn")
     };
-    assert_eq!(tab(&mut widgets, 0), Some(a));
-    assert_eq!(tab(&mut widgets, 0), Some(b));
-    assert_eq!(tab(&mut widgets, 0), Some(copy));
-    assert_eq!(tab(&mut widgets, 0), Some(done));
-    assert_eq!(tab(&mut widgets, 0), Some(a));
-    assert_eq!(tab(&mut widgets, SHIFT), Some(done));
-    widgets.button_mut(copy).unwrap().active = false;
-    assert_eq!(tab(&mut widgets, SHIFT), Some(b));
-    assert_eq!(tab(&mut widgets, 0), Some(done));
-    assert_eq!(
-        widgets.key_pressed(&host, "key.keyboard.space", 0),
-        Outcome::Pressed(done)
-    );
-    assert_eq!(
-        widgets.key_pressed(&host, "key.keyboard.keypad.enter", 0),
-        Outcome::Pressed(done)
-    );
-    assert_eq!(
-        widgets.mouse_pressed(&host, [20.0, 75.0], 0, 0),
-        Outcome::Ignored
-    );
-    assert_eq!(
-        widgets.mouse_pressed(&host, [20.0, 105.0], 0, 0),
-        Outcome::Pressed(done)
-    );
-    assert_eq!(
-        *host.sounds.borrow(),
-        ["minecraft:ui.button.click"; 3].map(String::from)
-    );
-    let mut empty = Widgets::new();
-    assert_eq!(
-        empty.key_pressed(&host, "key.keyboard.tab", 0),
-        Outcome::Ignored
-    );
+    let button = Button::new(
+        [10.0, 20.0, 120.0, 20.0],
+        Text::literal("Save"),
+        move |state, _host| {
+            state.label = Text::literal("Saved");
+            state.active = false;
+            seen.store(true, Ordering::Relaxed);
+        },
+    )
+    .active(false)
+    .visible(false)
+    .sprites(sprites.clone());
+
+    assert_eq!(button.state().rect, [10.0, 20.0, 120.0, 20.0]);
+    assert_eq!(button.state().label, Text::literal("Save"));
+    assert!(!button.state().active);
+    assert!(!button.state().visible);
+    assert_eq!(button.state().sprites, Some(sprites));
+
+    let (mut state, on_press) = button.into_parts();
+    let mut host = FakeHost;
+    on_press.expect("Button::new installs a press callback")(&mut state, &mut host);
+    assert!(pressed.load(Ordering::Relaxed));
+    assert_eq!(state.label, Text::literal("Saved"));
+    assert!(!state.active);
+
+    let inactive = Button::inactive([0.0, 0.0, 80.0, 20.0], Text::literal("Locked"));
+    assert!(!inactive.state().active);
+    assert!(inactive.state().visible);
+    assert_eq!(inactive.state().sprites, None);
+    let (inactive_state, inactive_cb) = inactive.into_parts();
+    assert!(!inactive_state.active);
+    assert!(inactive_cb.is_none());
 }
 
-/// The game draws each widget once a frame: the hovered or focused button highlighted, an
-/// inactive one greyed, and the focused field with its caret blinking every 300 ms from its
-/// last move; the scroll the game answers is kept for the next frame and the next press.
 #[test]
-fn drawing_asks_the_game_for_each_widget() {
-    let host = Fake::default();
-    let (mut widgets, [a, b, copy, done]) = screen();
-    let mut sprites = ButtonSprites::new("test:copy");
-    sprites.highlighted = Some("test:copy_hovered".into());
-    sprites.label_offset = [1.0, -2.0];
-    widgets.button_mut(copy).unwrap().sprites = Some(sprites.clone());
-    widgets.button_mut(done).unwrap().active = false;
-    widgets.set_focus(&host, Some(b));
-    let mut draw = Recorder::default();
-    widgets.draw(&mut draw, &host, [20.0, 75.0]).unwrap();
-    assert_eq!(
-        draw.buttons,
-        [
-            (Text::literal("Copy"), true, true, Some(sprites)),
-            (Text::literal("Done"), false, false, None)
-        ]
-    );
-    assert_eq!(
-        draw.fields
-            .iter()
-            .map(|f| (f.focused, f.caret_shown))
-            .collect::<Vec<_>>(),
-        [(false, false), (true, true)]
-    );
-    host.now.set(350);
-    let mut draw = Recorder::default();
-    widgets.draw(&mut draw, &host, [0.0, 0.0]).unwrap();
-    assert!(!draw.fields[1].caret_shown);
-    assert_eq!(widgets.char_typed(&host, 'z'), Outcome::Changed(b));
-    let mut draw = Recorder::default();
-    widgets.draw(&mut draw, &host, [0.0, 0.0]).unwrap();
-    assert!(draw.fields[1].caret_shown, "typing restarts the blink");
-    widgets.text_field_mut(a).unwrap().active = false;
-    widgets.set_focus(&host, Some(a));
-    assert_eq!(widgets.focused(), None, "an inactive field takes no focus");
-    let mut draw = Recorder::default();
-    widgets.draw(&mut draw, &host, [0.0, 0.0]).unwrap();
-    assert_eq!(draw.fields[0].text_color, TEXT_COLOR_INACTIVE);
-    assert_eq!(
-        widgets.widget(copy).map(|w| w.rect()),
-        Some([10.0, 70.0, 100.0, 20.0])
-    );
+fn text_field_builder_defaults_modifiers_and_callbacks_unpack() {
+    let changed = Arc::new(AtomicBool::new(false));
+    let submitted = Arc::new(AtomicBool::new(false));
+    let changed_flag = Arc::clone(&changed);
+    let submitted_flag = Arc::clone(&submitted);
+
+    let default_parts = TextField::new([4.0, 8.0, 160.0, 20.0], 64).into_parts();
+    assert_eq!(default_parts.rect, [4.0, 8.0, 160.0, 20.0]);
+    assert!(default_parts.value.is_empty());
+    assert_eq!(default_parts.hint, None);
+    assert_eq!(default_parts.max_length, 64);
+    assert!(default_parts.editable);
+    assert!(default_parts.active);
+    assert!(default_parts.visible);
+    assert!(default_parts.bordered);
+    assert!(default_parts.on_change.is_none());
+    assert!(default_parts.on_submit.is_none());
+
+    let parts = TextField::new([12.0, 24.0, 200.0, 20.0], 32)
+        .value("hello")
+        .hint(Text::literal("Search"))
+        .editable(false)
+        .active(false)
+        .visible(false)
+        .bordered(false)
+        .on_change(move |text, _host| {
+            if text == "world" {
+                changed_flag.store(true, Ordering::Relaxed);
+            }
+        })
+        .on_submit(move |text, _host| {
+            if text == "world" {
+                submitted_flag.store(true, Ordering::Relaxed);
+            }
+        })
+        .into_parts();
+
+    assert_eq!(parts.value, "hello");
+    assert_eq!(parts.hint, Some(Text::literal("Search")));
+    assert!(!parts.editable);
+    assert!(!parts.active);
+    assert!(!parts.visible);
+    assert!(!parts.bordered);
+
+    let mut host = FakeHost;
+    parts.on_change.expect("on_change installed")("world", &mut host);
+    parts.on_submit.expect("on_submit installed")("world", &mut host);
+    assert!(changed.load(Ordering::Relaxed));
+    assert!(submitted.load(Ordering::Relaxed));
 }
 
-/// A widget made inactive while it has the focus takes no more input: Enter on a button
-/// presses nothing and plays nothing, typing and the edit keys leave a field as it is, and a
-/// drag no longer selects (`AbstractButton.keyPressed`, `EditBox.canConsumeInput`). Tab still
-/// moves on from it.
 #[test]
-fn a_focused_widget_made_inactive_takes_no_input() {
-    let host = Fake::default();
-    let (mut widgets, [a, b, copy, _]) = screen();
-    let mut draw = Recorder::default();
-    widgets.draw(&mut draw, &host, [0.0, 0.0]).unwrap();
-    widgets.set_focus(&host, Some(copy));
-    widgets.button_mut(copy).unwrap().active = false;
-    assert_eq!(
-        widgets.key_pressed(&host, "key.keyboard.enter", 0),
-        Outcome::Ignored
-    );
-    assert!(host.sounds.borrow().is_empty());
-    widgets.text_field_mut(a).unwrap().set_value("hello");
-    widgets.mouse_pressed(&host, [14.0, 15.0], 0, 0);
-    widgets.text_field_mut(a).unwrap().active = false;
-    assert_eq!(widgets.char_typed(&host, 'x'), Outcome::Ignored);
-    assert_eq!(
-        widgets.key_pressed(&host, "key.keyboard.delete", 0),
-        Outcome::Ignored
-    );
-    assert_eq!(
-        widgets.key_pressed(&host, "key.keyboard.v", CONTROL),
-        Outcome::Ignored
-    );
-    assert_eq!(
-        widgets.mouse_dragged(&host, [33.0, 15.0], 0),
-        Outcome::Ignored
-    );
-    let edit = &widgets.text_field(a).unwrap().edit;
-    assert_eq!(
-        (edit.value.as_str(), edit.highlight, edit.cursor),
-        ("hello", 0, 0)
-    );
-    assert_eq!(
-        widgets.key_pressed(&host, "key.keyboard.tab", 0),
-        Outcome::Handled
-    );
-    assert_eq!(widgets.focused(), Some(b));
-}
+fn screen_widget_defaults_and_registrar_ids_work() {
+    struct MinimalWidget;
+    impl ScreenWidget for MinimalWidget {
+        fn bounds(&self) -> [f32; 4] {
+            [1.0, 2.0, 30.0, 40.0]
+        }
+    }
 
-/// Replacing all of a scrolled field's text scrolls back to show it (`EditBox.scrollTo` steps
-/// back when the cursor is on the first shown character), instead of leaving it out of view.
-#[test]
-fn replacing_a_scrolled_text_scrolls_back_to_it() {
-    let host = Fake::default();
-    let (mut widgets, [a, ..]) = screen();
-    let mut draw = Recorder::default();
-    widgets.set_focus(&host, Some(a));
-    widgets.text_field_mut(a).unwrap().set_value("hello world");
-    widgets.text_field_mut(a).unwrap().scroll = 6;
-    widgets.key_pressed(&host, "key.keyboard.a", CONTROL);
-    assert_eq!(widgets.char_typed(&host, 'x'), Outcome::Changed(a));
-    widgets.draw(&mut draw, &host, [0.0, 0.0]).unwrap();
-    assert_eq!(draw.fields[0].value, "x");
-    assert_eq!(draw.fields[0].scroll, 0);
-}
+    let mut widget = MinimalWidget;
+    let mut host = FakeHost;
+    let mut draw = StubDraw;
+    assert_eq!(widget.bounds(), [1.0, 2.0, 30.0, 40.0]);
+    assert!(widget.visible());
+    assert!(widget.active());
+    assert!(!widget.captures_input());
+    widget.render(&host, &mut draw, [0.0, 0.0], false, false, 0.5);
+    assert!(!widget.mouse_clicked(&mut host, [5.0, 5.0], 0, 0, false));
+    assert!(!widget.mouse_released(&mut host, [5.0, 5.0], 0, 0));
+    assert!(!widget.mouse_dragged(&mut host, [5.0, 5.0], 0, [1.0, 0.0], 0));
+    assert!(!widget.mouse_scrolled(&mut host, [5.0, 5.0], [0.0, 1.0], 0));
+    assert!(!widget.key_pressed(&mut host, "key.keyboard.a", false, 0));
+    assert!(!widget.key_released(&mut host, "key.keyboard.a", 0));
+    assert!(!widget.char_typed(&mut host, 'a', 0));
+    widget.set_focused(true);
 
-/// A press over no widget is not the first click of a double click (`MouseHandler.onButton`
-/// keeps the time only of a click the screen took): a click on a field right after it only
-/// places the cursor.
-#[test]
-fn an_ignored_press_starts_no_double_click() {
-    let host = Fake::default();
-    let (mut widgets, [a, ..]) = screen();
-    let mut draw = Recorder::default();
-    widgets.text_field_mut(a).unwrap().set_value("hello");
-    widgets.draw(&mut draw, &host, [0.0, 0.0]).unwrap();
-    host.now.set(1000);
-    assert_eq!(
-        widgets.mouse_pressed(&host, [300.0, 300.0], 0, 0),
-        Outcome::Ignored
-    );
-    host.now.set(1100);
-    widgets.mouse_pressed(&host, [27.0, 15.0], 0, 0);
-    let edit = &widgets.text_field(a).unwrap().edit;
-    assert_eq!((edit.highlight, edit.cursor), (2, 2));
+    #[derive(Default)]
+    struct FakeRegistrar {
+        next: u64,
+        children: Vec<ScreenChild>,
+        initial_focus: Option<ScreenWidgetId>,
+    }
+    impl ScreenWidgets for FakeRegistrar {
+        fn children(&self) -> &[ScreenChild] {
+            &self.children
+        }
+
+        fn add_button(&mut self, _button: Button) -> ScreenWidgetId {
+            self.next += 1;
+            let id = ScreenWidgetId::from_raw(self.next);
+            self.children.push(ScreenChild::new(id, [0.0; 4], None));
+            id
+        }
+        fn add_text_field(&mut self, _field: TextField) -> ScreenWidgetId {
+            self.next += 1;
+            let id = ScreenWidgetId::from_raw(self.next);
+            self.children.push(ScreenChild::new(id, [0.0; 4], None));
+            id
+        }
+        fn add_widget(&mut self, _widget: Box<dyn ScreenWidget>) -> ScreenWidgetId {
+            self.next += 1;
+            let id = ScreenWidgetId::from_raw(self.next);
+            self.children.push(ScreenChild::new(id, [0.0; 4], None));
+            id
+        }
+        fn set_initial_focus(&mut self, id: ScreenWidgetId) -> bool {
+            if self.children.iter().any(|child| child.id == id) {
+                self.initial_focus = Some(id);
+                true
+            } else {
+                false
+            }
+        }
+        fn remove(&mut self, id: ScreenWidgetId) -> bool {
+            if let Some(pos) = self.children.iter().position(|child| child.id == id) {
+                self.children.remove(pos);
+                true
+            } else {
+                false
+            }
+        }
+    }
+
+    let mut reg = FakeRegistrar::default();
+    let b = reg.add_button(Button::inactive([0.0, 0.0, 20.0, 20.0], Text::literal("B")));
+    let f = reg.add_text_field(TextField::new([0.0, 24.0, 100.0, 20.0], 16));
+    let w = reg.add_widget(Box::new(MinimalWidget));
+    assert_eq!(b.raw(), 1);
+    assert_eq!(f.raw(), 2);
+    assert_eq!(w.raw(), 3);
+    assert!(reg.set_initial_focus(f));
+    assert_eq!(reg.initial_focus, Some(f));
+    assert!(reg.remove(w));
+    assert!(!reg.remove(w));
+    assert!(!reg.set_initial_focus(w));
 }

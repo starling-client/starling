@@ -1,13 +1,15 @@
 # Controlling spawns
 
-Use spawn hooks to accept or reject a spawn, edit a mob before finalization, or control despawning. All four hooks run on the server with a read-only host and fire on replayed ticks. Your listeners must be pure functions of their inputs. `finalize_spawn` can also change the mob it is about to finalize, through the editor it is handed, and the pack's group data; it changes nothing else.
+Use spawn hooks to accept or reject a spawn, edit a mob before finalization, edit pending breeding or split children, or control despawning. The four spawn-check and despawn hooks below run on the server with a read-only host and fire on replayed ticks, so their listeners must be pure functions of their inputs (`finalize_spawn` changes only `event.mob` and `event.group`). `baby_entity_spawn` and `mob_split` run on the server with `&mut dyn ServerHost`.
 
 | Moment | Hook | Answer |
 |---|---|---|
 | The spawn predicate for a type and position | `mob_spawn_placement_check` | `SpawnCheck::{Default, Succeed, Fail}` |
 | The mob's own position and obstruction checks | `mob_spawn_position_check` | `SpawnCheck::{Default, Succeed, Fail}` |
-| Just before `finalizeSpawn` | `finalize_spawn` | `Flow::Cancel`, `spawn_cancelled`, a new `difficulty`, edits to `mob`, a new `group` |
+| Before `finalizeSpawn`, or after loading a spawner's configured mob | `finalize_spawn` | `Flow::Cancel`, `spawn_cancelled`, a new `difficulty`, edits to `mob`, a new `group` |
 | Each tick, before a mob's `checkDespawn` | `mob_despawn` | `Despawn::{Default, Allow, Deny}` |
+| After breeding constructs a baby, before insertion | `baby_entity_spawn` | `Flow::Cancel`, edits/replacement/removal on `event.child` |
+| After a cube splits on death, before insertion | `mob_split` | `Flow::Cancel`, edits/additions/removals on `event.children` |
 
 ## Registering a spawn predicate
 
@@ -93,33 +95,54 @@ If mods register predicates, the prepared resources must include vanilla's spawn
 
 ## Saved display and utility entities
 
-`entity_join_level` (hook version 3) additionally notifies for live fallback-store
-entities: block, item and text displays, markers, interactions, and summoned or
-chunk-restored eyes of ender and explicit leash knots. Gameplay-thrown eyes and
-naturally tied leash knots live in separate lists and do not notify yet. Saved data
-kept for a missing mod is not a live entity and does not notify. A fresh fallback
-entity notifies once with `loaded_from_disk = false`; restoring it from a saved chunk
-notifies once with `loaded_from_disk = true`. The normal join cancellation and
-transaction rules apply to these entities too.
+`entity_join_level` fires for block, item and text displays, markers, interactions,
+and summoned or chunk-restored eyes of ender and explicit leash knots.
+It does not fire for gameplay-thrown eyes, naturally tied leash knots, or saved data
+kept for a missing mod. A new entity fires the hook once with `loaded_from_disk = false`;
+restoring it from a saved chunk fires the hook once with `loaded_from_disk = true`.
+The normal join cancellation and transaction rules apply.
 
-`entity_leave_level` (hook version 3) reports the same additional kinds when they leave.
-On the server, `LevelRef::visit_entities_in` also visits block, item and text displays,
-markers and interactions. Eyes of ender, leash knots and other unmodeled kinds are
-not visited yet. The query uses physical boxes, not rendering bounds: displays
-and markers have zero-sized boxes at their positions; interactions use their saved
-width and height. A handle expires when its entity unloads, so find it again when
-the saved entity rejoins.
+`entity_leave_level` reports when the same entities leave. On the server,
+`LevelRef::visit_entities_in` also visits markers and interactions, and on both sides
+block, item and text displays (see below). It does not visit eyes of ender, leash knots
+or other unmodeled kinds. The query uses physical boxes, not rendering bounds: markers
+have zero-sized boxes at their positions; interactions use their saved width and height.
+A handle expires when its entity unloads, so find it again when the saved entity rejoins.
+
+### Reading display settings
+
+Narrow a server entity with `host.display(entity)`. The resulting `DisplayRef` reads
+its current server settings, not the last save or the client's interpolated pose.
+`text(host)` projects just the text component of a text display; it returns `Ok(None)`
+for other display kinds. For an item display, `with_item` lends its stack only when
+nonempty. For example, read the count without copying the stack's components:
+
+```rust,ignore
+let count = host.display(entity)?.with_item(host, |stack| stack.count());
+```
+
+Use `display.with_item(host, |stack| stack.project()).flatten()` if you need an owned
+stack or need to inspect its components. `set_item(host, None)` still empties the display.
+
+`set_transformation` stores the translation, scale and two `[x, y, z, w]` quaternions
+exactly as provided. It does not normalize rotations or use their length to reject a
+write. Provide unit quaternions for ordinary rotations. Vanilla's saved transformation
+codec is separate and normalizes quaternion component lists on load.
 
 ## Visiting entities in a box
 
 `level.visit_entities_in(host, min, max, &mut visit)` visits readable `EntityRef`s
 whose boxes intersect the given box. Face-only contact does not intersect, and
-inverted bounds are swapped on each axis. Ordinary entities come first, then item
-frames and paintings in join order (frames first on ties), then the dragon's body. The server then visits
-displays, markers, interactions, fishing hooks and placed non-spectator guests.
-On a client the walk sees the server-tracked entities, including tracked players,
-and visits the window's own player after the dragon's body unless spectating.
-Intersecting dragon parts come last on both sides.
+inverted bounds are swapped on each axis. Ordinary entities are visited in level
+section order, then in entry order within each section. The client sees tracked
+entities and its own player if not spectating; the server includes fishing hooks
+and placed non-spectator guests. Intersecting dragon parts come last on both sides.
+
+Block, item and text displays have zero-sized physical boxes on both sides: a display
+only matches when its position is strictly inside the query on every axis. On the client,
+this is its current tick position after movement interpolation, not the packet's destination
+or the pose drawn between ticks. Overlap with just the render culling box does not count,
+and ordinary crosshair picking still ignores displays.
 
 The visitor can read the entity or run another shared query through the same host:
 no residency guard is held during the callback. Return `ControlFlow::Continue(())`
@@ -205,7 +228,10 @@ at the end of it again, and a passenger enters after its vehicle. A vehicle
 comes before its passengers.
 
 Section entry order does not depend on a listener of `entity_entering_section`:
-the engine records each server crossing whether or not a mod hears it.
+the engine records each server crossing whether or not a mod hears it. When a mob
+write is told with the owning Host, crossings queued by those listeners (for example,
+from a vehicle teleport) are also told with the owning Host, in write order, before
+the next mob ticks.
 
 Some differences remain. Vanilla notes a section change at every position write;
 here minecarts, boats, projectiles, dropped items, primed TNT, falling blocks,
@@ -221,14 +247,13 @@ you need a list after the call, collect the handles you need in your visitor.
 ## Checking a spawn
 
 `mob_spawn_placement_check` and `mob_spawn_position_check` both get the `level` the mob would join (a `LevelRef`, so a
-listener can read the blocks around `pos` through the host) and the `spawner` that asked: `Spawner::Block { pos }` for a
-spawner block, `Spawner::Trial { pos }` for a trial spawner, and `None` when no block asked, including a spawner
-minecart. Set `*event.result` to `SpawnCheck::Succeed` or `Fail` to override that
-check; `Default` keeps the check's own answer.
+listener can read the blocks around `pos` through the host). Set `*event.result` to `SpawnCheck::Succeed` or `Fail` to
+override that check; `Default` keeps the check's own answer.
 
-In `mob_spawn_placement_check` version 2, `event.default_result` is the effective predicate result. It can differ
+In `mob_spawn_placement_check`, `event.default_result` is the effective predicate result. It can differ
 from vanilla even for a vanilla type, because registrations can add to or replace its predicate. The hook fires
-after the predicates at `SpawnPlacements.checkSpawnRules`. For a probabilistic decision, draw from `event.random`,
+after the predicates at `SpawnPlacements.checkSpawnRules`. Like NeoForge's `SpawnPlacementCheck`, it has no spawner
+field; inspect `event.reason` instead. For a probabilistic decision, draw from `event.random`,
 the caller's live `&mut dyn RandomSource` lent to each listener in turn. Reassigning `event.random` only changes that
 listener's local reference; draws from the caller's stream and writes through `event.result` carry to the next
 listener. Keeping `Default` or refusing a spawn does not undo any draws, and this hook does not decide later checks.
@@ -248,27 +273,35 @@ fn mob_spawn_placement_check(&self, _: &dyn mod_api::Host, event: &mut mod_api::
 }
 ```
 
-The position check also gets `event.mob`, the mob about to spawn, as an `UnspawnedMobRef` with the same reads as
-`finalize_spawn`'s (no editor: the hook only reads). Vanilla creates the mob before this check; Sunrise creates it there
-only when the hook has a listener, the same way the spawn would, and the spawn then goes on with that very mob, so what
-the listener read is what joins the level. A refused check drops the mob: it never joins the level. Creating it draws
-nothing from the level's random, so a listener that answers `Default` changes no draw.
+In `mob_spawn_position_check` (hook version 3, NeoForge's `MobSpawnEvent.PositionCheck`), `event.spawner` is
+`Some(Spawner::Block { pos })` for a monster spawner block, `Some(Spawner::Minecart { entity })` for a spawner
+minecart, and `None` for natural spawning and chunk generation. A minecart's `entity.kind(host)` and
+`entity.position(host)` read the live cart at this spawn attempt. Like NeoForge, trial spawners do not fire
+`mob_spawn_position_check`. The position check also gets `event.mob`, the mob about to spawn, as a scoped read-only
+`UnspawnedMobView<'_>` with the same reads as `finalize_spawn`'s (read-only: the hook does not edit the mob). Vanilla
+creates the mob before this check. The spawn goes on with the very mob the listener read, not a second construction. A refused check
+drops the mob: it never joins the level. Creating it draws nothing from the level's random, so a listener that answers
+`Default` changes no draw.
 
 ```rust,ignore
-fn mob_spawn_position_check(&self, host: &dyn mod_api::Host, event: &mut mod_api::MobSpawnPositionCheckEvent<'_>) {
-    if event.mob.custom_name(host).is_ok_and(|name| name.is_some()) {
+fn mob_spawn_position_check(&self, _: &dyn mod_api::Host, event: &mut mod_api::MobSpawnPositionCheckEvent<'_>) {
+    if event.mob.custom_name().is_ok_and(|name| name.is_some()) {
         *event.result = mod_api::SpawnCheck::Succeed;
     }
 }
 ```
 
-Where the game does not create the mob fresh, the handle answers only `kind` and `position` (the rest is
-`UnspawnedMobError::Unsupported`): chunk generation's packs, which the world generator creates and finalizes after the
-check, and a spawner or trial spawner whose spawn data carries entity data, which the game loads after the tick.
+Both configured ordinary spawners and chunk-generation packs lend the real candidate. The ordinary spawner
+loads its configured entity data before the position check. Trial spawners post placement checks, but run
+obstruction checks directly without posting a position check.
+
+To keep a monster spawner running with no player near, or idle with one beside it, answer [`spawner_active`](https://github.com/sunrise-org/sunrise/blob/main/crates/sunrise-mod-vocab/src/hooks/spawner_active.rs).
 
 ## Stopping a spawn or leaving a mob plain
 
-`finalize_spawn` has two cancels. Returning `Flow::Cancel` skips finalization: the mob spawns, but with no equipment, attributes or class setup. Setting `event.spawn_cancelled = true` adds no mob at all.
+`finalize_spawn` has two cancels. Returning `Flow::Cancel` skips finalization: the mob spawns, but with no equipment, attributes or class setup. Setting `event.spawn_cancelled = true` vetoes admission but still runs initialization and its draws. Set both to skip initialization and veto admission. `event.spawner` carries the shared
+`Option<Spawner>` identity (`Spawner::Block { pos }`, `Spawner::Trial { pos }`, or `Spawner::Minecart { entity }`,
+matching NeoForge's `FinalizeSpawnEvent.getSpawner`). The minecart is readable through the same host as in the position check.
 
 ```rust,ignore
 fn finalize_spawn(&self, _: &dyn mod_api::Host, event: &mut mod_api::FinalizeSpawnEvent<'_>) -> mod_api::Flow {
@@ -279,7 +312,13 @@ fn finalize_spawn(&self, _: &dyn mod_api::Host, event: &mut mod_api::FinalizeSpa
 }
 ```
 
-`finalize_spawn` fires only where vanilla calls `finalizeSpawn`, so a breeding, an infested block's silverfish or a thrown egg's chick does not tell it.
+`finalize_spawn` also fires when a monster spawner block, spawner minecart, or trial spawner uses
+configured mob NBT. Those already skip vanilla initialization; a listener can still read, edit or veto the
+loaded mob. On spawners, vanilla finalization (when unconfigured and not cancelled with `Flow::Cancel`),
+trial-spawner persistence, and any configured equipment table roll still run before `spawn_cancelled` vetoes
+admission. Chunk-generation packs lend their actual mob and carry spawn group data between members. Outside
+spawners, the hook fires only where vanilla calls `finalizeSpawn`: breeding, an infested block's silverfish
+and a thrown egg's chick do not fire it.
 
 For `/summon minecraft:ender_dragon` without NBT, command placement starts at zero
 rotation and consumes no random yaw draw. Skipping finalization also skips its
@@ -288,18 +327,18 @@ an explicit NBT compound follows the load route without finalization.
 
 ## Changing the mob before it is finalized
 
-`event.mob` is the mob itself, an `UnspawnedMobRef`: it is not in a level, so it is not an `EntityRef`, and only this
-hook call can use it. Read it through the host (`kind`, `position`, `equipment`, `attribute_base`, `attribute_value`,
-`tags`, `custom_name`) and change it through `event.edits`, which reaches only this mob: equipment (an API-owned `ItemStack`), an attribute's base or a permanent modifier, tags and the custom name. An edit applies at once, so the
-reads and the next listener see it. Once the hook returns, the handle answers `UnspawnedMobError::Expired`, as does a
-handle from another call passed to this call's editor.
+In `finalize_spawn` (hook version 3), `event.mob` is a scoped `UnspawnedMobEditor<'_>` borrowing the mob directly: it is
+not in a level, so it is not an `EntityRef`, and the borrow lasts only for this hook call. Read it directly without
+`host` (`kind`, `position`, `equipment`, `attribute_base`, `attribute_value`, `tags`, `custom_name`, or `as_view` for a
+read-only `UnspawnedMobView<'_>`) and edit it directly: equipment (an API-owned `ItemStack`), an attribute's base or a
+permanent modifier, tags and the custom name. An edit applies at once, so later reads and the next listener see it.
 
 ```rust,ignore
-fn finalize_spawn(&self, host: &dyn mod_api::Host, event: &mut mod_api::FinalizeSpawnEvent<'_>) -> mod_api::Flow {
-    if event.mob.kind(host).is_ok_and(|kind| kind.path() == "zombie") {
+fn finalize_spawn(&self, _: &dyn mod_api::Host, event: &mut mod_api::FinalizeSpawnEvent<'_>) -> mod_api::Flow {
+    if event.mob.kind().is_ok_and(|kind| kind.path() == "zombie") {
         let health = mod_api::Identifier::parse("minecraft:max_health").unwrap();
-        let _ = event.edits.set_attribute_base(event.mob, &health, 40.0);
-        let _ = event.edits.add_tag(event.mob, "mymod:tough");
+        let _ = event.mob.set_attribute_base(&health, 40.0);
+        let _ = event.mob.add_tag("mymod:tough");
     }
     mod_api::Flow::Continue
 }
@@ -310,11 +349,11 @@ slot replaces what a listener put there, and the attribute bonuses it adds apply
 `Flow::Cancel` to keep exactly what the listener left, since no finalization runs. Attribute edits reach the
 attributes a mob keeps itself (max health, movement speed, follow range, attack damage, knockback resistance,
 spawn reinforcements, jump strength, burning time, flying speed); the others answer `Unsupported` until the mob has
-joined, when a `LivingRef` writes them. The ender dragon's handle answers its kind and position, and `Unsupported`
+joined, when a `LivingRef` writes them. The ender dragon's loan answers its kind and position, and `Unsupported`
 for the rest. A mob that finalization creates (a chicken jockey's chicken, a zombie horse's rider) fires the hook
-again with a handle of its own.
+again with a scoped loan of its own.
 
-The hook fires on replayed ticks with the read-only host, so the editor and `group` are the only things a
+The hook fires on replayed ticks with the read-only host, so `event.mob` and `group` are the only things a
 listener changes, and it must change them the same way every time: a pure function of the event.
 
 `event.group` is the pack's `SpawnGroupData` as plain data (`SpawnGroup`, variants named as vanilla saves them):
@@ -326,7 +365,15 @@ See [the `finalize_spawn` contract](https://github.com/sunrise-org/sunrise/blob/
 
 ## Changing how large a spawn group grows
 
-A natural spawn adds mobs of one type to a group until the group reaches the type's limit (`Mob.getMaxSpawnClusterSize`: 4 by default, more for horses, wolves and schooling fish, 1 for ghasts and pillagers). The entity part of the type changes that limit with `EntityPart::spawn_cluster_size`, which gets the read-only host, the mob just spawned, why and from what it spawned, and the limit vanilla would use. Return `Some(limit)` to replace it, or `None` to leave it to the next part and then to vanilla. The first part to answer wins, and the group stops growing once its size reaches the limit.
+A natural spawn adds mobs of one type to a group until its count reaches the type's limit
+(`Mob.getMaxSpawnClusterSize`). `EntityPart::spawn_cluster_size` runs at that comparison in
+`NaturalSpawner.spawnCategoryForPosition`, like NeoForge's `SpawnClusterSizeEvent`: after the mob was
+finalized, added to the level with its passengers and counted by the spawn state. The part gets the read-only host and the
+event: the mob (`event.mob`), the vanilla limit (`event.vanilla`, an `i32`) and one signed
+`event.size: i32` that starts at the vanilla limit. Every part of the type edits it in dispatch
+order and sees what the parts before it left, so two parts compose (one doubles, the next adds one). The
+group stops growing once its count reaches the final size, so a size of 0 or less ends it with the mob just
+spawned.
 
 ```rust,ignore
 struct ZombiePacks;
@@ -335,17 +382,54 @@ impl mod_api::EntityPart for ZombiePacks {
     fn spawn_cluster_size(
         &self,
         _: &dyn mod_api::Host,
-        _: mod_api::UnspawnedMobRef,
-        _: mod_api::SpawnReason,
-        _: Option<mod_api::SpawnSource>,
-        vanilla: u32,
-    ) -> Option<u32> {
-        Some(vanilla * 2)
+        event: &mut mod_api::SpawnClusterSizeEvent,
+    ) {
+        event.size = event.vanilla * 2;
     }
 }
 ```
 
-Only natural spawning's packs ask it: vanilla has no group limit anywhere else. A type with no part keeps vanilla's limit and costs nothing. The mob is the same `UnspawnedMobRef` as `finalize_spawn`'s, finalized and not in a level, and the call runs on replayed ticks like `finalize_spawn`, so an answer must be a pure function of its inputs. Attach the part with `r.entity_part("minecraft:zombie", ZombiePacks)` as [entity parts](../../concepts/parts/entity-parts-and-mob-goals.md) describe.
+Only natural spawning's packs ask it: vanilla has no group limit anywhere else. A type with no part keeps vanilla's limit and costs nothing. The mob (`event.mob`) is a `MobRef` to a mob already in the level, so it reads and changes like any resident mob, and the call runs on replayed ticks like `finalize_spawn`, so an answer must be a pure function of its inputs. Attach the part with `r.entity_part("minecraft:zombie", ZombiePacks)` as [entity parts](../../concepts/parts/entity-parts-and-mob-goals.md) describe.
+
+## Editing bred babies and split children
+
+The baby hook's `player` and `player_entity_id` name the same player. The game resolves
+who fed the initiating parent first, then who fed the partner if the first player is no
+longer in the level. Both fields are `None` if neither feeder resolves.
+
+`baby_entity_spawn` (hook version 4, NeoForge's `BabyEntitySpawnEvent`) fires after animal breeding has attempted to construct the baby (`Animal.spawnChildFromBreeding` / `Fox.FoxBreedGoal.breed`) and before breeding snaps the baby, finalizes breeding, and inserts it. `event.child` is a scoped `BabyEntitySpawnChild<'_>` lending the single optional child slot: inspect it with `get()` (`Option<UnspawnedMobView<'_>>`), edit it in place with `get_mut()` (`Option<PendingChildEditor<'_>>` — equipment, attributes, tags, custom name, position, yaw, baby state, size), construct a replacement detached `UnspawnedMob` with `construct(host, PendingMobSpec::new(...))?` and swap it in with `replace(baby)?`, or clear the slot with `take()` / `clear()`. A replacement must be an `AgeableMob` (`minecraft:fox` for fox breeding), but it can start as an adult. The event runs inside the breeding goal or brain behavior, before either parent's cooldown and before the initiating mob's movement and age/love countdown. Returning `Flow::Cancel` breeds no baby and resets both parents to age 6000 and love 0; returning `Flow::Continue` with an empty slot skips spawning and finalization without resetting the parents or consuming credit. An accepted child is made a baby and snapped to the initiating parent's live position with zero yaw and pitch before joining. Ordinary animals award breeding credit after those updates and admit their experience orb before the baby; the baby's state stays unpublished until its own admission. Foxes grant trust and award credit against the child's pre-snap age and position, then reset the parents before updating the child. Any detached `UnspawnedMob` not left in the slot is discarded cleanly on drop.
+
+```rust,ignore
+fn baby_entity_spawn(
+    &self,
+    _: &mut dyn mod_api::ServerHost,
+    event: &mut mod_api::BabyEntitySpawnEvent<'_>,
+) -> mod_api::Flow {
+    if let Some(mut baby) = event.child.get_mut() {
+        let _ = baby.add_tag("mymod:bred_baby");
+    }
+    mod_api::Flow::Continue
+}
+```
+
+`mob_split` (hook version 4, NeoForge's `MobSplitEvent`) fires when a slime, magma cube or sulfur cube above size 1 dies and splits (`AbstractCubeMob.remove`), after vanilla has constructed its children (a primed sulfur cube above size 1 dispatches with an empty list). `event.children` is a scoped `MobSplitChildren<'_>` lending an unbounded mutable child list: inspect with `len()`, `is_empty()` and `get(i)`, edit in place with `get_mut(i)`, construct a detached `UnspawnedMob` with `construct(host, spec)?`, and mutate the list with `push(child)?`, `insert(i, child)?`, `replace(i, child)?`, `remove(i)` and `clear()`. An invalid spec or out-of-bounds `insert` or `replace` returns `UnspawnedMobError::Invalid`; `get`, `get_mut`, and `remove` return `None` for an out-of-bounds index. The original proposals fire `entity_constructing` before this event, even for children later removed or canceled. Returning `Flow::Cancel` (or clearing the list) spawns no children but keeps the construction draws and unrelated Host writes; the parent still dies. Otherwise the remaining children join once each in list order. The parent’s removal effects run afterwards against its current state: removing Oozing during the split, for example, prevents the extra slimes from that effect.
+
+In either hook, `construct(host, spec)` fires `entity_constructing` before returning the detached child, even if you later discard it. Constructor attachments and identity remain unpublished until admission. The original split proposals are all constructed before any admission, even without a `mob_split` listener.
+
+For either pending-child hook, a panicking callback is disabled for that hook for the session. The shared dispatcher reports the mod and hook in the error log and, when a local client is present, in an error toast. The callback's cancellation flag is restored, but direct edits to a child, slot or list are not journaled and remain visible to later listeners. This does not change rollback for writes covered by an existing Host transaction.
+
+```rust,ignore
+fn mob_split(
+    &self,
+    _: &mut dyn mod_api::ServerHost,
+    event: &mut mod_api::MobSplitEvent<'_>,
+) -> mod_api::Flow {
+    if let Some(mut first) = event.children.get_mut(0) {
+        let _ = first.add_tag("mymod:first_split");
+    }
+    mod_api::Flow::Continue
+}
+```
 
 ## Keeping or removing a mob
 
@@ -361,29 +445,41 @@ fn mob_despawn(&self, _: &dyn mod_api::Host, event: &mut mod_api::MobDespawnEven
 
 The hook's scoped read host resolves the ticking mob directly and peers through the tick snapshot. An already-ticked peer exposes its post-turn state; a not-yet-ticked peer exposes its pre-turn state. A mob spawned during the pass does not resolve through this scoped view until the next pass. Removed mobs do not resolve, but a dead mob still present in the level is not removed and can still resolve. `living_change_target` uses the same view when fired inside this tick pass; outside it, that hook reads the entities available in the game host, not this snapshot.
 
-This is the accepted read-host scoped-view first step of #795, not the completed in-place ownership design. Write-host callbacks and the remaining ownership work are outside this contract.
-
 The wither and the ender dragon override `checkDespawn` in vanilla, so the event is not fired for them.
 
 ## Adding or removing a custom spawner
 
-The level's custom spawners (phantoms, patrols, cats, village sieges, the wandering trader) are a list a mod edits once, in `modify_custom_spawners`. A mod's own spawner is a key plus `custom_spawner_tick`, which runs every tick while mob spawning is on:
+The level's custom spawners (for the Overworld: wandering trader, patrols, cats, village sieges, and phantoms; other dimensions start empty as in vanilla `MinecraftServer#createLevels`) are a list a mod edits once per server level when it opens, in `modify_custom_spawners`. The listener gets the level (`event.level`) and an editor over the ordered list (`event.spawners`): read every entry, built-in or a mod's, with `entries`, `get` and `position`; take one out with `remove(SpawnerKind::...)` or `remove_at`; put an owned `CustomSpawner` (a struct implementing `CustomSpawner` or a `FnMut(&mut dyn ServerHost, LevelRef, bool) + Send + 'static` closure) at any place with `insert` (0 is before the built-ins) or at the end with `add`; reorder with `move_entry`. Edits are staged and applied after every listener ran, and a listener that panics has its edits undone, so another mod's instance it removed is still in the level. The level owns each registered spawner for its lifetime, ticks every entry in one ordered walk (including `Phantom` before mod-appended spawners) once per eligible server tick (outside debug worlds, with `spawn_mobs` enabled) inside a server transaction, and drops it when the level unloads or the world closes.
+
+The callback's `spawn_enemies` is the chunk source's stored setting. The server samples `spawn_mobs && spawn_monsters` at startup, on difficulty updates, and when `spawn_monsters` is set (`MinecraftServer#updateMobSpawningFlags`). Changing only `spawn_mobs` changes whether the pass runs, not the stored setting. Peaceful is not a separate filter on that setting.
 
 ```rust,ignore
-fn modify_custom_spawners(&self, _: &dyn mod_api::Host, event: &mut mod_api::ModifyCustomSpawnersEvent<'_>) {
-    // no phantoms in this world
-    event.spawners.remove(&mod_api::SpawnerEntry::Builtin(mod_api::SpawnerKind::Phantom));
-    event.spawners.add(mod_api::SpawnerKey::new("mymod:rat_swarm").unwrap());
+struct RatSwarmSpawner {
+    cooldown: u32,
 }
 
-fn custom_spawner_tick(&self, host: &mut dyn mod_api::ServerHost, event: &mut mod_api::CustomSpawnerTickEvent<'_>) {
-    if event.key.as_str() == "mymod:rat_swarm" && event.spawn_enemies {
-        // spawn through `host`
+impl mod_api::CustomSpawner for RatSwarmSpawner {
+    fn tick(&mut self, host: &mut dyn mod_api::ServerHost, level: mod_api::LevelRef, spawn_enemies: bool) {
+        if !spawn_enemies {
+            return;
+        }
+        if self.cooldown > 0 {
+            self.cooldown -= 1;
+            return;
+        }
+        self.cooldown = 200;
+        // spawn on `level` through `host`
     }
+}
+
+fn modify_custom_spawners(&self, _: &dyn mod_api::Host, event: &mut mod_api::ModifyCustomSpawnersEvent<'_>) {
+    // no phantoms in this world
+    event.spawners.remove(mod_api::SpawnerKind::Phantom);
+    event.spawners.add(RatSwarmSpawner { cooldown: 0 });
 }
 ```
 
-Every mod is asked about every key, so a mod ignores keys it does not own. See [the custom spawner contracts](https://github.com/sunrise-org/sunrise/blob/main/crates/sunrise-mod-vocab/src/hooks/custom_spawners.rs).
+See [the custom spawner contracts](https://github.com/sunrise-org/sunrise/blob/main/crates/sunrise-mod-vocab/src/hooks/custom_spawners.rs).
 
 ## Spawning from a level
 
@@ -391,9 +487,9 @@ Every mod is asked about every key, so a mod ignores keys it does not own. See [
 
 `LevelRef::spawn_entity(host, kind, pos, &spawn)` spawns one entity of `kind` at `pos` and returns its handle, or `None` with nothing spawned. `EntitySpawn::new(body)` starts the spawn at rest, unturned and with no owner; set its `velocity` (blocks per tick, `Entity.setDeltaMovement`, set before it joins), `rotation` (`[yaw, pitch]`) and `owner` (the entity that fired it) as needed. Its `SpawnBody` names the family, and the call goes the way that family's own spawns go:
 
-- `SpawnBody::Thrown { item }`: a thrown item projectile (vanilla's snowball, egg, ender pearl, experience bottle, wind charge, splash or lingering potion, or a content mod's thrown type) through `Projectile.spawnProjectile`, the route a thrown snowball takes. Its owner is set before it joins (`Projectile.setOwner`: hit credit, saved as `Owner`, and the shot keeps clear of its owner until it has left the owner's box), `projectile_launch` fires, and it carries one of `item`. With no `rotation` it faces along its velocity, as `Projectile.shoot` leaves it. Its owner is a player, a mob, a boat or a minecart: the shot needs the owner's collision identity to keep clear of it, so any other owner refuses the spawn.
+- `SpawnBody::Thrown { item }`: a thrown item projectile (vanilla's snowball, egg, ender pearl, experience bottle, wind charge, splash or lingering potion, or a content mod's thrown type) through `Projectile.spawnProjectile`, the route a thrown snowball takes. Its owner is set before it joins (`Projectile.setOwner`: hit credit, saved as `Owner`, and the shot keeps clear of its owner until it has left the owner's box), `entity_join_level` decides whether it joins, and it carries one of `item`. With no `rotation` it faces along its velocity, as `Projectile.shoot` leaves it. Its owner is a player, a mob, a boat or a minecart: the shot needs the owner's collision identity to keep clear of it, so any other owner refuses the spawn.
 - `SpawnBody::Living { reason }`: a mob (vanilla's or a content living type) through `EntityType.spawn`, the route `/summon` takes: made as any of its type is, Parts, attachments and `entity_constructing` included, then `finalize_spawn` and `finalizeSpawn` run with `reason`, and it joins the level (`entity_join_level`), not persistent. With no `rotation` it takes `EntityType.spawn`'s yaw. Both calls refuse a type that is disallowed in Peaceful when the level is Peaceful, before the mob is built or any spawn hooks run. A mob takes no owner. `kind` resolves as `/summon`'s does (`cow` is `minecraft:cow`). The ender dragon takes its own creation, facing `rotation`'s yaw; it has no velocity or pitch here, so a dragon given either is refused.
-- `SpawnBody::General`: a row of a general type a mod declared (`declare_general_entity`), with a fresh UUID and the type's declared payload version, through the insertion `/summon` and chunk loading share. It is admitted as one record (no `entities_load`: no save was read) and joins as a fresh spawn. Its owner is kept on the row and saved as `Owner`. Its state is its attachments: write them on the returned handle inside the same transaction, and `entity_join_level` and the row's first tracking see them.
+- `SpawnBody::General`: a row of a general type a mod declared (`declare_general_entity`), with a fresh UUID and the type's declared payload version, through the insertion `/summon` and chunk loading share. It is admitted as one record (no `entities_load`: no save was read) and joins as a fresh spawn. Every declared `FeatureFlag` must be enabled in the world. For example, check `level.enabled_features(host).is_some_and(|flags| flags.contains_flag(FeatureFlag::RedstoneExperiments))`, or use `flags.contains_all(&required)` for a slice of requirements. Its owner is kept on the row and saved as `Owner`. Its state is its attachments: write them on the returned handle inside the same transaction, and `entity_join_level` and the row's first tracking see them.
 
 A general row can move to another position in its level through `EntityRef::teleport_to`. A row teleported on its own dismounts; a teleported vehicle takes its riders with it. Removing the vehicle dismounts its riders and leaves them in the level. `EntityRef::set_rotation` turns a general row without moving or dismounting it; the new angles reach clients through ordinary tracking.
 
@@ -403,13 +499,36 @@ the declared box as soon as the row spawns on the client. The ordinary use and
 attack packets name that row, and the existing `entity_interact` and
 `attack_entity` hooks receive its id and declared kind. Without a listener's
 response, use on the row passes and the row declines damage. This does not make
-the box solid or give it a middle-click item. The next argument declares how the
+the box solid or give it a middle-click item. The next argument, `fire_immune`,
+is vanilla's `EntityType.fireImmune()`: with `true`, the row never reads as
+burning and its fire ticks are put out each tick. The argument after it declares how the
 row reacts to pistons: pass `None` for `PushReaction::PushPull`, or
 `Some(PushReaction::IgnoreEntity)` to leave the row in place. The declared
 reaction is readable on either side.
 
+`LevelRef::spawn_falling_block(host, state, pos, velocity, falling)` spawns a falling block
+(`FallingBlockEntity`) of `state` at `pos` (its bottom centre) in the named open server level, even
+when that level is parked. It leaves the block at `pos` alone. `Falling` sets `drop_item` (default
+`true`) and `hurts` (default `false`, which keeps the carried block's default damage). Enabling
+`hurts` sets the damage from `AnvilBlock.falling`: 2 per block fallen up to 40. Live velocity stays
+exact in blocks per tick (`Entity.setDeltaMovement`); packets quantize only on send (`LpVec3`).
+Any valid block state is accepted, including air, which vanilla discards on its first tick.
+Admission follows `ServerLevel.addFreshEntity`: no per-level count cap or `/summon` position
+check, and the call neither requires nor loads the destination chunk. Section status governs
+entity visibility and ticking. Keep the returned `EntityRef` to work with the entity
+in its destination level while its column is hidden; ID and UUID lookup, entity visits,
+and ray traces do not discover it until the section is accessible.
+
+The spawn runs `entity_constructing` then `entity_join_level`, just like a natural fall. A natural
+fall asks for admission before the next scheduled block tick; if vetoed, the source block's
+replacement still stands. `spawn_falling_block` returns `Ok(Some(EntityRef))` when admitted,
+`Ok(None)` for non-finite coordinates or velocity, exhausted entity ids or a join veto, and
+`Err(LevelWriteError)` for a stale or closed level, a client, or an unknown block state.
+Only a transaction in the destination level delays the join until its root commit; the
+returned handle is provisional and becomes stale on abort or a veto at commit.
+
 `EntityRef::owner(host)` reads the owner back (`TraceableEntity.getOwner`) for a projectile or a general row (`ProjectileRef::owner` answers the same for a projectile): a general type's own tick uses it to skip its shooter and to name the attacker of the damage it deals. A spawn is refused for a kind of another family than its body, a position, velocity or rotation that isn't finite, a position outside `Level.isInSpawnableBounds` or in an unloaded chunk, an owner that is stale, in another level, or without a collision identity for a thrown spawn, a level not in place, a client, or a mod that cancelled the spawn or kept the entity out.
-Inside a transaction the join waits for the root commit, so a spawn a mod then keeps out still returns a handle, which reads stale from the commit on. The level's spawn limits, flags and spawn rules don't apply, as they don't to `/summon`; nor does a general type's `summonable`, which is `/summon`'s alone. Items, experience and block drops have their own calls (`spawn_item`, `award_experience`, `pop_resource`), and any other entity `summon`.
+Inside a transaction the join waits for the root commit, so a spawn a mod then keeps out still returns a handle, which reads stale from the commit on. The level's spawn limits, flags and spawn rules don't apply, as they don't to `/summon`; nor does a general type's `summonable`, which is `/summon`'s alone. Items, experience and block drops have their own calls (`spawn_item`, `award_experience`, `pop_resource`), and any other entity `LevelRef::summon(host, kind, pos, nbt)` (which also routes parked levels outside a transaction and returns `Result<Option<EntityRef>, LevelWriteError>`).
 
 A level's natural spawning (`NaturalSpawner.spawnForChunk`) also has a policy a mod can change:
 
@@ -426,3 +545,13 @@ fn level_load(&self, host: &mut dyn mod_api::ServerHost, event: &mut mod_api::Le
 ```
 
 Only natural spawning reads the policy: spawners, trial spawners, patrols, sieges, phantoms, a new chunk's creatures and custom spawners keep their own rules. A change counts from the level's next spawn pass, and mobs already there stay. The policy is not saved. It survives parking and reopening a level within the same world session, but closing the world resets it. Set it in `level_load`. Reads work on any host and answer `None` on a client or for a stale handle; the writes need a `ServerHost` and return `false` there.
+
+## Raid handles
+
+Use `LevelRef::raid`, `raid_at` and `raids` to obtain raid handles. They resolve their
+own loaded server level even while another dimension is in place. Raid reads,
+omen-level writes and `stop` do not swap levels. Raider lists and living health
+come from that level's mobs; raid ids are local to a level. A closed level, an
+earlier world epoch or a client refuses the handle. Entity handles in a parked
+raid's member list keep their identity; their ordinary entity operations
+require the entity's level to be in place.

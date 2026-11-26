@@ -10,8 +10,11 @@ import sys
 import tempfile
 import unittest
 
-from tests.test_ci_concurrency import ROOT, yaml
+from tests.test_ci_concurrency import ROOT
 from tools import check_pe_arch
+from tools.ci import vendored_yaml
+
+yaml = vendored_yaml.load()
 
 
 def pe(machine, reserve=None):
@@ -62,26 +65,26 @@ class CheckPEArchTests(unittest.TestCase):
         end = next(i for i, step in enumerate(steps) if step.get("name") == "Verify Windows executable architecture")
         # Run the Windows steps between Cargo and the architecture check against pre-policy binaries.
         after_build = "\n".join(step["run"] for step in steps[start + 1:end + 1])
-        for arch, machine, other_machine in (("x64", 0x8664, 0xAA64), ("arm64", 0xAA64, 0x8664)):
-            row = next(row for row in build["strategy"]["matrix"]["include"] if row.get("pe_arch") == arch)
-            commands = re.sub(r"\$\{\{ matrix\.(\w+) \}\}", lambda match: row[match[1]], after_build)
-            with self.subTest(arch=arch), tempfile.TemporaryDirectory() as folder:
-                root = Path(folder)
-                tools = root / ".workflow-tools/tools"
-                tools.mkdir(parents=True)
-                shutil.copyfile(ROOT / "tools/check_pe_arch.py", tools / "check_pe_arch.py")
-                # Older game refs reserve 136 MiB. The official binary becomes the shipped client.
-                for exe in ("sunrise-client", "sunrise-official", "sunrise-ctl", "sunrise-perf", "sunrise-prepare",
-                            "sunrise-server", "sunrise-port-pack"):
-                    (root / f"{exe}.exe").write_bytes(pe(machine, 136 * 1024 * 1024))
-                env = {**os.environ, "BIN": ".", "RUNNER_OS": "Windows", "TEST_PYTHON": sys.executable}
-                script = ["bash", "-ec", 'python() { "$TEST_PYTHON" "$@"; }\n' + commands]
-                result = subprocess.run(script, cwd=root, env=env, capture_output=True, text=True)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                (root / "sunrise-official.exe").write_bytes(pe(other_machine, 136 * 1024 * 1024))
-                result = subprocess.run(script, cwd=root, env=env, capture_output=True, text=True)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn("sunrise-client.exe: PE machine", result.stderr)
+        # The shipped Windows build is x64; a binary for another machine fails the check.
+        row = next(row for row in build["strategy"]["matrix"]["include"] if row.get("pe_arch") == "x64")
+        commands = re.sub(r"\$\{\{ matrix\.(\w+) \}\}", lambda match: row[match[1]], after_build)
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            tools = root / ".workflow-tools/tools"
+            tools.mkdir(parents=True)
+            shutil.copyfile(ROOT / "tools/check_pe_arch.py", tools / "check_pe_arch.py")
+            # Older game refs reserve 136 MiB. The official binary becomes the shipped client.
+            for exe in ("sunrise-client", "sunrise-official", "sunrise-ctl", "sunrise-perf", "sunrise-prepare",
+                        "sunrise-server", "sunrise-port-pack"):
+                (root / f"{exe}.exe").write_bytes(pe(0x8664, 136 * 1024 * 1024))
+            env = {**os.environ, "BIN": ".", "RUNNER_OS": "Windows", "TEST_PYTHON": sys.executable}
+            script = ["bash", "-ec", 'python() { "$TEST_PYTHON" "$@"; }\n' + commands]
+            result = subprocess.run(script, cwd=root, env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            (root / "sunrise-official.exe").write_bytes(pe(0xAA64, 136 * 1024 * 1024))
+            result = subprocess.run(script, cwd=root, env=env, capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("sunrise-client.exe: PE machine", result.stderr)
 
 
 if __name__ == "__main__":

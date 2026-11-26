@@ -5,18 +5,15 @@ use std::{
     sync::OnceLock,
 };
 use sunrise_core::{
-    geometry::{Aabb, Axis, Direction, Vec3},
+    geometry::{Aabb, Axis, Direction, SweepCursor, Vec3},
     position::BlockPos,
 };
-use sunrise_world::{
-    level::{InsideWrite, LandingWrite},
-    registry::BlockStateId,
-};
+use sunrise_world::{level::LandingWrite, registry::BlockStateId};
 
 /// `getEntityInsideCollisionShape` as the shared walk sees it: the whole block, boxes
 /// to sweep the move against, or nothing. This is the one point #1011 adds the Part's
 /// own shape at.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub enum InsideShape {
     /// `Shapes.block()`: every move through the block is inside it.
     Full,
@@ -24,6 +21,177 @@ pub enum InsideShape {
     Boxes(Vec<sunrise_core::geometry::Aabb>),
     /// An empty shape: nothing is inside it.
     Empty,
+    /// A shape every state of the block shares, in block space: each box is moved to
+    /// the block and swept in turn, with nothing collected.
+    Fixed(&'static sunrise_core::geometry::VoxelShape),
+}
+
+/// `AbstractCauldronBlock.SHAPE`: the cauldron's hollow shell, shared across
+/// lava, water, and powder-snow cauldrons.
+fn cauldron_shell_shape() -> &'static sunrise_core::geometry::VoxelShape {
+    use sunrise_core::geometry::{ShapeOp, VoxelShape};
+    static SHELL: std::sync::OnceLock<VoxelShape> = std::sync::OnceLock::new();
+    SHELL.get_or_init(|| {
+        let cuboid = |x0, y0, z0, x1, y1, z1| {
+            VoxelShape::from_box(Aabb::new(
+                Vec3::new(x0 / 16.0, y0 / 16.0, z0 / 16.0),
+                Vec3::new(x1 / 16.0, y1 / 16.0, z1 / 16.0),
+            ))
+            .expect("valid cauldron box")
+        };
+        let mut solid = VoxelShape::block();
+        // AbstractCauldronBlock.SHAPE: the openings under its feet
+        // and its hollow centre are cut out of the unit block.
+        for hole in [
+            cuboid(0.0, 0.0, 4.0, 16.0, 3.0, 12.0),
+            cuboid(4.0, 0.0, 0.0, 12.0, 3.0, 16.0),
+            cuboid(2.0, 0.0, 2.0, 14.0, 3.0, 14.0),
+            cuboid(2.0, 4.0, 2.0, 14.0, 16.0, 14.0),
+        ] {
+            solid = solid
+                .join(&hole, ShapeOp::ONLY_FIRST)
+                .expect("valid cauldron cutout");
+        }
+        solid
+    })
+}
+
+fn cauldron_filled_shape_for_top(top: f64) -> sunrise_core::geometry::VoxelShape {
+    use sunrise_core::geometry::{ShapeOp, VoxelShape};
+    let fill = VoxelShape::from_box(Aabb::new(
+        Vec3::new(2.0 / 16.0, 4.0 / 16.0, 2.0 / 16.0),
+        Vec3::new(14.0 / 16.0, top / 16.0, 14.0 / 16.0),
+    ))
+    .expect("valid cauldron fill");
+    cauldron_shell_shape()
+        .join(&fill, ShapeOp::OR)
+        .expect("valid filled cauldron")
+}
+
+/// `LavaCauldronBlock.FILLED_SHAPE`: `Shapes.or(AbstractCauldronBlock.SHAPE,
+/// Block.column(12, 4, 15))`, the cauldron's solid shape plus its lava. It is the
+/// block's `getEntityInsideCollisionShape` whatever the collision tables hold.
+pub(crate) fn lava_cauldron_filled_shape() -> &'static sunrise_core::geometry::VoxelShape {
+    static SHAPE: std::sync::OnceLock<sunrise_core::geometry::VoxelShape> =
+        std::sync::OnceLock::new();
+    SHAPE.get_or_init(|| cauldron_filled_shape_for_top(15.0))
+}
+
+/// `LayeredCauldronBlock.FILLEDSLOT_SHAPES`: precomputed fixed shapes for levels 1..=3
+/// (`top = 6 + 3 * level`, i.e. 9, 12, 15), avoiding per-contact `Vec<Aabb>` allocation.
+fn layered_cauldron_filled_shape(level: u8) -> Option<&'static sunrise_core::geometry::VoxelShape> {
+    static SHAPES: std::sync::OnceLock<[sunrise_core::geometry::VoxelShape; 3]> =
+        std::sync::OnceLock::new();
+    let idx = usize::from(level.checked_sub(1)?);
+    SHAPES
+        .get_or_init(|| {
+            [
+                cauldron_filled_shape_for_top(9.0),
+                cauldron_filled_shape_for_top(12.0),
+                cauldron_filled_shape_for_top(15.0),
+            ]
+        })
+        .get(idx)
+}
+
+/// The filled inside-collision shape of a lava or layered cauldron: its shell
+/// and the contents up to that level's surface (vanilla `FILLED_SHAPE(S)`).
+pub fn cauldron_inside_shape(
+    collision: &sunrise_world::block_collision::BlockCollisionRegistry<'_>,
+    state: BlockStateId,
+    definition: &sunrise_world::chunk::BlockState,
+    pos: BlockPos,
+) -> InsideShape {
+    let top = match definition.name.as_str() {
+        // `LavaCauldronBlock.getEntityInsideCollisionShape`: its one fixed shape.
+        "minecraft:lava_cauldron" => return InsideShape::Fixed(lava_cauldron_filled_shape()),
+        "minecraft:water_cauldron" | "minecraft:powder_snow_cauldron" => {
+            let Some(level) = definition
+                .properties
+                .get("level")
+                .and_then(|value| value.parse::<u8>().ok())
+            else {
+                return InsideShape::Empty;
+            };
+            if let Some(fixed) = layered_cauldron_filled_shape(level) {
+                return InsideShape::Fixed(fixed);
+            }
+            6.0 + 3.0 * f64::from(level)
+        }
+        _ => return InsideShape::Full,
+    };
+    let offset = Vec3::new(f64::from(pos.x), f64::from(pos.y), f64::from(pos.z));
+    let shell = collision.static_shape(state).ok().flatten();
+    let mut boxes: Vec<_> = shell
+        .into_iter()
+        .flat_map(|shape| shape.boxes())
+        .map(|bounds| bounds.move_by(offset))
+        .collect();
+    boxes.push(Aabb::new(
+        Vec3::new(2.0 / 16.0, 4.0 / 16.0, 2.0 / 16.0).add_vector(offset),
+        Vec3::new(14.0 / 16.0, top / 16.0, 14.0 / 16.0).add_vector(offset),
+    ));
+    InsideShape::Boxes(boxes)
+}
+
+/// The fire, cauldron and powder snow effects that run in vanilla's ordered
+/// collector, rather than immediately inside `Block.entityInside`.
+pub fn queue_block_effects(
+    effects: &mut mod_api::InsideEffects,
+    block: &str,
+    state: BlockStateId,
+    pos: BlockPos,
+) {
+    use mod_api::{__private::BuiltinInsideAction as Action, InsideEffect as Effect};
+    match block {
+        "minecraft:fire" | "minecraft:soul_fire" => {
+            effects.apply(Effect::ClearFreeze);
+            effects.apply(Effect::FireIgnite);
+            let damage = if block == "minecraft:fire" { 1.0 } else { 2.0 };
+            effects.run_after_builtin(Effect::FireIgnite, Action::FireHurt(damage));
+        }
+        "minecraft:lava_cauldron" => {
+            queue_fluid_effects(effects, sunrise_world::fluid::FluidKind::Lava)
+        }
+        "minecraft:water_cauldron" | "minecraft:powder_snow_cauldron" => {
+            effects.run_before_builtin(
+                Effect::Extinguish,
+                Action::LayeredCauldronExtinguish {
+                    pos: [pos.x, pos.y, pos.z],
+                    state: state.0,
+                },
+            );
+            effects.apply(Effect::Extinguish);
+        }
+        "minecraft:powder_snow" => {
+            effects.run_before_builtin(
+                Effect::Extinguish,
+                Action::PowderSnowMelt([pos.x, pos.y, pos.z]),
+            );
+            effects.apply(Effect::Freeze);
+            effects.apply(Effect::Extinguish);
+        }
+        _ => {}
+    }
+}
+
+/// `LavaFluid.entityInside` and `WaterFluid.entityInside` at the fluid's
+/// position in the walk. Lava shares its slots with a filled lava cauldron.
+pub fn queue_fluid_effects(
+    effects: &mut mod_api::InsideEffects,
+    kind: sunrise_world::fluid::FluidKind,
+) {
+    use mod_api::{__private::BuiltinInsideAction as Action, InsideEffect as Effect};
+    use sunrise_world::fluid::FluidKind;
+    match kind {
+        FluidKind::Water | FluidKind::FlowingWater => effects.apply(Effect::Extinguish),
+        FluidKind::Lava | FluidKind::FlowingLava => {
+            effects.apply(Effect::ClearFreeze);
+            effects.apply(Effect::LavaIgnite);
+            effects.run_after_builtin(Effect::LavaIgnite, Action::LavaHurt);
+        }
+        _ => {}
+    }
 }
 
 /// The collector a walk queues its per-step effects into. `advanceStep` is the only
@@ -124,6 +292,13 @@ pub fn contact_at<W: InsideWalk>(
         InsideShape::Boxes(boxes) => walk
             .bounds_at(from)
             .collided_along_vector(to.subtract(from), &boxes),
+        InsideShape::Fixed(shape) => {
+            let (bounds, offset) = (walk.bounds_at(from), Vec3::from_block(at));
+            shape
+                .boxes()
+                .iter()
+                .any(|b| bounds.collided_along_vector(to.subtract(from), &[b.move_by(offset)]))
+        }
     };
     Contacted {
         block,
@@ -145,9 +320,9 @@ pub fn sweep_inside_blocks<W: InsideWalk>(
     effects: &mut W::Effects,
     max_iterations: i32,
 ) -> Result<i32, W::Error> {
-    let (mut segment, used) = SweepSegment::collect(walk, from, to, max_iterations);
+    let mut segment = SweepSegment::new(walk, from, to, max_iterations);
     segment.run(walk, visited, effects, |_| false)?;
-    Ok(used)
+    Ok(segment.iteration + 1)
 }
 
 #[derive(Debug)]
@@ -156,42 +331,27 @@ struct SweepSegment {
     to: Vec3,
     deflated: Aabb,
     moved_far: bool,
-    hits: std::vec::IntoIter<(i32, BlockPos)>,
+    cells: Option<SweepCursor>,
+    iteration: i32,
+    max_iterations: i32,
 }
 
 impl SweepSegment {
-    fn collect<W: InsideWalk>(walk: &W, from: Vec3, to: Vec3, max_iterations: i32) -> (Self, i32) {
+    fn new<W: InsideWalk>(walk: &W, from: Vec3, to: Vec3, max_iterations: i32) -> Self {
         let epsilon = Vec3::new(W::DEFLATE, W::DEFLATE, W::DEFLATE);
         let deflated = walk.bounds_at(to).deflate(epsilon);
         // Mth.square(0.9999900000002526): a long move counts every block it crosses as precise.
         let far = 0.999_990_000_000_252_6_f64;
-        let moved_far = from.distance_squared(to) > far * far;
-        let mut iterations = 0;
-        let mut hits = Vec::new();
-        let _ = sunrise_core::geometry::sweep_intersected_blocks(
+        Self {
             from,
             to,
             deflated,
-            (max_iterations.max(0) as usize).max(1_000_000),
-            |p, iteration| {
-                if !walk.is_alive() || iteration >= max_iterations {
-                    return false;
-                }
-                iterations = iteration;
-                hits.push((iteration, p));
-                true
-            },
-        );
-        (
-            Self {
-                from,
-                to,
-                deflated,
-                moved_far,
-                hits: hits.into_iter(),
-            },
-            iterations + 1,
-        )
+            moved_far: from.distance_squared(to) > far * far,
+            // As before, a geometry error ends the segment after its valid prefix.
+            cells: SweepCursor::new(from, to, deflated, None).ok(),
+            iteration: 0,
+            max_iterations,
+        }
     }
 
     fn run<W: InsideWalk>(
@@ -201,10 +361,14 @@ impl SweepSegment {
         effects: &mut W::Effects,
         halt: impl Fn(&W) -> bool,
     ) -> Result<bool, W::Error> {
-        for (step, p) in self.hits.by_ref() {
-            if !walk.is_alive() {
+        while walk.is_alive() {
+            let Some(Ok((p, step))) = self.cells.as_mut().and_then(Iterator::next) else {
+                break;
+            };
+            if step >= self.max_iterations {
                 break;
             }
+            self.iteration = step;
             let state = walk.block(p);
             if walk.is_air(state) {
                 continue;
@@ -362,6 +526,10 @@ impl MovementSweep {
                 if !segment.run(walk, visited, effects, &halt)? {
                     return Ok(false);
                 }
+                // The target-box fallback runs after advancing the row and spends no budget.
+                if self.from.is_some() {
+                    self.budget -= segment.iteration + 1;
+                }
                 self.segment = None;
             }
             let Some(movement) = movements.get(self.row) else {
@@ -403,13 +571,11 @@ impl MovementSweep {
                 _ => None,
             };
             if let Some(to) = to {
-                let (segment, used) = SweepSegment::collect(walk, from, to, self.budget);
-                self.budget -= used;
+                self.segment = Some(SweepSegment::new(walk, from, to, self.budget));
                 self.from = Some(to);
-                self.segment = Some(segment);
             } else {
                 if self.budget <= 0 {
-                    self.segment = Some(SweepSegment::collect(walk, movement.to, movement.to, 1).0);
+                    self.segment = Some(SweepSegment::new(walk, movement.to, movement.to, 1));
                 }
                 self.row += 1;
                 self.from = None;
@@ -456,9 +622,8 @@ pub struct Hooks {
     /// `Block.bounceOn`: change `movement`, the movement the bounce leaves the entity.
     pub bounce_on:
         fn(&str, &mut DamageLevel<'_>, Contact<'_>, f64, &mut sunrise_core::geometry::Vec3),
-    /// `Block.entityInside` told mid-walk: the part's own contact on the level
-    /// host, its whole callback staged into the fresh collector and write list,
-    /// so only an answering callback's writes reach the walk.
+    /// `Block.entityInside` told mid-walk: generated dispatch isolates each
+    /// part into a staged collector and absorbs it on return.
     pub inside_fire: fn(
         &mut DamageLevel<'_>,
         &'static str,
@@ -468,11 +633,24 @@ pub struct Hooks {
         BlockPos,
         bool,
         &mut mod_api::InsideEffects,
-        &mut Vec<InsideWrite>,
     ),
+    /// Convert an engine block state id to the mod API's `BlockState`.
+    pub state_to_api: fn(BlockStateId) -> Option<mod_api::BlockState>,
+    /// Convert a mod API `BlockState` to an engine block state id.
+    pub state_to_engine: fn(mod_api::BlockState) -> Option<BlockStateId>,
 }
 
 pub static HOOKS: OnceLock<Hooks> = OnceLock::new();
+
+/// Convert an engine block state id to a mod API `BlockState` through the installed hooks.
+pub fn state_to_api(id: BlockStateId) -> Option<mod_api::BlockState> {
+    HOOKS.get().and_then(|hooks| (hooks.state_to_api)(id))
+}
+
+/// Convert a mod API `BlockState` to an engine block state id through the installed hooks.
+pub fn state_to_engine(state: mod_api::BlockState) -> Option<BlockStateId> {
+    HOOKS.get().and_then(|hooks| (hooks.state_to_engine)(state))
+}
 
 /// Where `IBlockExtension.getBounceRestitution` is answered, on both sides: the game says
 /// which block states have a part for it and binds the part's answer.
@@ -485,24 +663,12 @@ pub struct RestitutionHooks {
 pub static RESTITUTION_HOOKS: OnceLock<RestitutionHooks> = OnceLock::new();
 
 /// What a contact asked to keep until the entity's batch ends, delivered in
-/// the order it happened: the parts' `entity_inside` contacts themselves fire
-/// mid-walk now, on the shared inside sweep, so what stays here is the level
-/// writes they and the landings asked for, and the minecart passes.
+/// the order it happened: landing writes (`Block.fallOn`) and minecart passes.
+/// `entity_inside` callbacks now apply their level writes directly at flush.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Pending {
     Landed(Landed),
     MinecartPass(MinecartPass),
-    /// Level writes a mid-walk `entity_inside` part asked for, at the block it
-    /// touched: applied at the batch end, guarded on the touched state.
-    InsideWritten(InsideWritten),
-}
-
-/// The level writes an `entity_inside` part asked for at one block.
-#[derive(Clone, Debug, PartialEq)]
-pub struct InsideWritten {
-    pub state: BlockStateId,
-    pub position: BlockPos,
-    pub writes: Vec<InsideWrite>,
 }
 
 /// An entity that landed on a block whose Part asked for writes (`Block.fallOn`).
@@ -696,20 +862,6 @@ pub fn landed(state: BlockStateId, position: BlockPos, writes: Vec<LandingWrite>
     if !writes.is_empty() {
         PENDING.with_borrow_mut(|pending| {
             pending.push(Pending::Landed(Landed {
-                state,
-                position,
-                writes,
-            }));
-        });
-    }
-}
-
-/// Keep the level writes a mid-walk `entity_inside` contact asked for until the
-/// entity's batch ends; nothing is kept when none were asked.
-pub fn inside_written(state: BlockStateId, position: BlockPos, writes: Vec<InsideWrite>) {
-    if !writes.is_empty() {
-        PENDING.with_borrow_mut(|pending| {
-            pending.push(Pending::InsideWritten(InsideWritten {
                 state,
                 position,
                 writes,
@@ -915,6 +1067,53 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_suspended_move_resumes_with_live_block_states() {
+        let mut grid = Grid {
+            alive: true,
+            ..Grid::default()
+        };
+        grid.cell([1, 64, 1], InsideShape::Full, true);
+        grid.cell([3, 64, 1], InsideShape::Full, false);
+        let movement = sunrise_world::entity_move::MovementRecord {
+            from: Vec3::new(0.5, 64.0, 1.5),
+            to: Vec3::new(3.5, 64.0, 2.5),
+            original: Some(Vec3::new(3.0, 0.0, 1.0)),
+        };
+        let mut sweep = super::MovementSweep::default();
+        let mut visited = crate::fast_hash::FxHashSet::default();
+        let mut effects = mod_api::InsideEffects::default();
+        assert!(
+            !sweep
+                .run(&mut grid, &[movement], &mut visited, &mut effects, |_| true)
+                .unwrap()
+        );
+        assert_eq!(
+            grid.visits,
+            [(1, [1, 64, 1], "precise"), (1, [1, 64, 1], "fluid")]
+        );
+
+        grid.cell([2, 64, 1], InsideShape::Full, false);
+        grid.blocks.remove(&[3, 64, 1]);
+        grid.cell([3, 64, 2], InsideShape::Full, false);
+        assert!(
+            sweep
+                .run(&mut grid, &[movement], &mut visited, &mut effects, |_| {
+                    false
+                })
+                .unwrap()
+        );
+        assert_eq!(
+            grid.visits,
+            [
+                (1, [1, 64, 1], "precise"),
+                (1, [1, 64, 1], "fluid"),
+                (2, [2, 64, 1], "precise"),
+                (1, [3, 64, 2], "precise"),
+            ]
+        );
+    }
+
     /// A recorded original walks its axes in `axisStepOrder`: y first, then the longer
     /// horizontal axis, with a fresh step per axis.
     #[test]
@@ -1044,6 +1243,25 @@ mod tests {
                 .any(|&(_, p, _)| (16..20).contains(&p[0])),
             "nothing between the budget and the target is visited"
         );
+    }
+
+    #[test]
+    fn layered_cauldron_inside_shape_uses_static_fixed_shapes_for_levels_1_to_3() {
+        for level in 1u8..=3 {
+            let fixed = layered_cauldron_filled_shape(level).expect("cached shape for level");
+            assert!(
+                !fixed.boxes().is_empty(),
+                "level {level} cauldron shape must have boxes"
+            );
+            let max_y = fixed
+                .boxes()
+                .iter()
+                .map(|b| b.max_position().y)
+                .fold(0.0_f64, f64::max);
+            assert_eq!(max_y, 1.0, "shell top stays at 1.0 for level {level}");
+        }
+        assert!(layered_cauldron_filled_shape(0).is_none());
+        assert!(layered_cauldron_filled_shape(4).is_none());
     }
 }
 

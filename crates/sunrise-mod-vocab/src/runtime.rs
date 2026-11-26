@@ -5,8 +5,8 @@
 //! a panic. A panic disables that mod's callback for that hook for the session, reports the mod
 //! and hook in the error log, and queues a local client error toast. A headless dedicated server
 //! logs the error without presenting a toast. A phase refusal is reported each time and does not
-//! disable the callback. Startup [`invoke_registration`] uses the same panic boundary for the
-//! once-only `Hooks::register` call.
+//! disable the callback. Once-only callbacks such as startup `Hooks::register` and model layer
+//! suppliers use the same panic boundary; they have no future invocation to disable.
 //!
 //! Dispatch and the owning publication boundary discard unfinished work. Later eligible listeners
 //! still run from the last accepted outputs; only a completed proposal can cancel or replace.
@@ -20,13 +20,18 @@ use crate::*;
 pub struct ModEntry {
     pub(crate) id: &'static str,
     pub(crate) hooks: Box<dyn Hooks>,
+    pub(crate) side: crate::Side,
 }
 
 impl ModEntry {
     /// Bind a hook implementation to its nonempty bundle id.
     pub fn new(id: &'static str, hooks: Box<dyn Hooks>) -> Self {
         assert!(!id.is_empty(), "native mod id must not be empty");
-        Self { id, hooks }
+        Self {
+            id,
+            hooks,
+            side: crate::Side::Both,
+        }
     }
 
     /// Marks the thread as inside this mod's `hook` until the guard drops, so a panic in it
@@ -64,6 +69,9 @@ pub type Mods = Arc<[ModEntry]>;
 type NamedPoison =
     std::collections::HashMap<(usize, &'static str), std::collections::BTreeSet<Identifier>>;
 
+type PoisonKey = (&'static str, Option<usize>);
+type PoisonSets = Box<[Option<std::collections::HashSet<PoisonKey>>]>;
+
 pub(crate) struct Installed {
     pub(crate) mods: Mods,
     pub(crate) by_id: std::collections::HashMap<&'static str, usize>,
@@ -71,19 +79,19 @@ pub(crate) struct Installed {
     pub(crate) disabled: Box<[std::sync::atomic::AtomicBool]>,
     /// One installed owner per mod for delayed tasks, independent of its other callbacks.
     pub(crate) scheduled_tasks: Box<[crate::callback_owner::CallbackOwner]>,
-    pub(crate) configuration_task_owners: std::sync::Mutex<crate::configuration_task::TaskOwners>,
+    pub(crate) typed_callback_owners: std::sync::Mutex<crate::callback_owner::TypedCallbackOwners>,
     /// Retained submission owners are installed once per subscribed mod, one per overlay.
     pub(crate) overlay_owners: std::collections::HashMap<
         &'static str,
         [crate::callback_owner::CallbackOwner; BlockScreenEffect::COUNT],
     >,
-    mod_id_owners: std::collections::HashMap<&'static str, usize>,
-    content_owners: OnceLock<std::collections::HashMap<Box<str>, Option<usize>>>,
+    consume_effects: Box<[Option<crate::callback_owner::CallbackOwner>]>,
+    content_owners: OnceLock<ContentOwners>,
     disabled_count: std::sync::atomic::AtomicUsize,
-    /// Per-hook sets of mods whose listener panicked and is disabled for that
-    /// hook for the rest of the session. Filled only on a panic; `poison_free`
-    /// answers through one atomic load, so a dispatch with no poison pays nothing.
-    poisons: std::sync::Mutex<Option<Box<[Option<std::collections::HashSet<&'static str>>]>>>,
+    /// Per-hook sets of callbacks disabled after a panic. Most are keyed by mod; an item
+    /// tooltip image provider also has its registration's order within that mod.
+    /// `poison_free` answers through one atomic load before a session's first panic.
+    poisons: std::sync::Mutex<Option<PoisonSets>>,
     poison_free: std::sync::atomic::AtomicBool,
     /// Session poison for named callbacks rebuilt with resources or a connection.
     named_poison: std::sync::Mutex<NamedPoison>,
@@ -138,10 +146,14 @@ impl Installed {
             .enumerate()
             .map(|(index, entry)| crate::callback_owner::CallbackOwner::for_index(entry.id, index))
             .collect();
-        let mod_id_owners = mods
+        let consume_effects = mods
             .iter()
             .enumerate()
-            .map(|(index, entry)| (entry.id, index))
+            .map(|(index, entry)| {
+                subscribers
+                    .contains(HookId::ConsumeEffect as usize, index)
+                    .then(|| crate::callback_owner::CallbackOwner::for_index(entry.id, index))
+            })
             .collect();
         Self {
             by_id: mods
@@ -153,9 +165,9 @@ impl Installed {
             subscribers,
             disabled,
             scheduled_tasks,
-            configuration_task_owners: Default::default(),
+            typed_callback_owners: Default::default(),
             overlay_owners,
-            mod_id_owners,
+            consume_effects,
             content_owners: OnceLock::new(),
             disabled_count: std::sync::atomic::AtomicUsize::new(0),
             poisons: std::sync::Mutex::new(None),
@@ -249,19 +261,23 @@ pub(crate) fn install(mods: Mods) -> &'static Installed {
     }
 }
 
-/// Checkpoint for an owning action around isolated dispatch. A trapped listener
+/// Checkpoint for an owning action around isolated dispatch. A trapped action listener
 /// resets its outputs, but the owner must also abort any tentative Host writes.
+/// A contained creative build failure does not affect the owning action.
 /// Unrelated threads do not affect the checkpoint.
 // hidden: the game's own decide/fire/apply actions read it; it is not a mod-facing call.
 #[doc(hidden)]
 pub fn isolated_failures() -> u64 {
-    LISTENER_SERIAL.get().1
+    ISOLATED_FAILURES.get()
 }
 
 /// Dispatch keys include engine-invoked callbacks that are not themselves catalog hooks.
 #[derive(Clone, Copy)]
 pub(crate) enum Callback {
     Hook(generated::HookId),
+    /// A callback whose failure is contained without aborting an enclosing action.
+    IndependentHook(generated::HookId),
+    TooltipImage(usize),
     DamageReduction,
     Registration,
 }
@@ -275,10 +291,19 @@ impl From<generated::HookId> for Callback {
 impl Callback {
     fn index(self) -> usize {
         match self {
-            Self::Hook(hook) => hook as usize,
+            Self::Hook(hook) | Self::IndependentHook(hook) => hook as usize,
+            Self::TooltipImage(_) => HookId::TooltipImage as usize,
             Self::DamageReduction => generated::HOOK_COUNT,
             Self::Registration => generated::HOOK_COUNT + 1,
         }
+    }
+
+    fn poison_key(self, id: &'static str) -> PoisonKey {
+        let registration = match self {
+            Self::TooltipImage(order) => Some(order),
+            _ => None,
+        };
+        (id, registration)
     }
 }
 
@@ -287,24 +312,33 @@ impl Callback {
 /// untouched, unlike a whole-mod disable. Returns `true` only on the first panic for
 /// `(hook, id)`, so the error log line and error toast fire once.
 fn poison(callback: Callback, id: &'static str) -> bool {
-    let (entered, trapped) = LISTENER_SERIAL.get();
-    LISTENER_SERIAL.set((entered, trapped.wrapping_add(1)));
-    let Some(installed) = installed() else {
-        return true;
-    };
+    // A creative rebuild is a nested publication: its completed edits stand and a
+    // quarantined editor must not abort an action that requested the catalog.
+    if !matches!(
+        callback,
+        Callback::IndependentHook(_)
+            | Callback::Hook(generated::HookId::BuildCreativeModeTabContents)
+    ) {
+        ISOLATED_FAILURES.set(ISOLATED_FAILURES.get().wrapping_add(1));
+    }
+    installed().is_none_or(|installed| poison_installed(installed, callback, id))
+}
+
+fn poison_installed(installed: &Installed, callback: Callback, id: &'static str) -> bool {
     let mut poisons = installed.poisons.lock().unwrap_or_else(|e| e.into_inner());
     let sets = poisons
         .get_or_insert_with(|| std::vec![None; generated::HOOK_COUNT + 2].into_boxed_slice());
     let first = sets[callback.index()]
         .get_or_insert_with(std::collections::HashSet::new)
-        .insert(id);
+        .insert(callback.poison_key(id));
     installed
         .poison_free
         .store(false, std::sync::atomic::Ordering::Release);
     first
 }
 
-fn is_poisoned(installed: &Installed, callback: impl Into<Callback>, id: &str) -> bool {
+fn is_poisoned(installed: &Installed, callback: impl Into<Callback>, id: &'static str) -> bool {
+    let callback = callback.into();
     // One atomic load on the usual path: the sets only fill on a panic.
     !installed
         .poison_free
@@ -314,13 +348,55 @@ fn is_poisoned(installed: &Installed, callback: impl Into<Callback>, id: &str) -
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .as_ref()
-            .and_then(|poisons| poisons[callback.into().index()].as_ref())
-            .is_some_and(|poisoned| poisoned.contains(id))
+            .and_then(|poisons| poisons[callback.index()].as_ref())
+            .is_some_and(|poisoned| poisoned.contains(&callback.poison_key(id)))
 }
 
 /// Whether `id`'s listener of `hook` is poisoned for the session.
-pub(crate) fn poisoned(hook: impl Into<Callback>, id: &str) -> bool {
+pub(crate) fn poisoned(hook: impl Into<Callback>, id: &'static str) -> bool {
     installed().is_some_and(|installed| is_poisoned(installed, hook, id))
+}
+
+/// The dispatcher that published a retained tooltip payload. Carry its original installed
+/// state so the final release can suppress that producer even outside the callback's scope.
+#[derive(Clone, Copy)]
+pub(crate) struct TooltipProducer {
+    installed: Option<&'static Installed>,
+    callback: Callback,
+    pub(crate) mod_id: &'static str,
+}
+
+impl TooltipProducer {
+    pub(crate) fn new(callback: impl Into<Callback>, mod_id: &'static str) -> Self {
+        Self {
+            installed: installed(),
+            callback: callback.into(),
+            mod_id,
+        }
+    }
+
+    pub(crate) fn dispose<T>(self, payload: T) {
+        let _guard = mark_mod(self.mod_id, "data_drop");
+        // A retained object's destructor may run during another listener's callback. Poison
+        // its publisher without reporting that the *current* listener failed.
+        let _ = contain_callback(
+            || drop(payload),
+            |panic| {
+                if self
+                    .installed
+                    .is_none_or(|installed| poison_installed(installed, self.callback, self.mod_id))
+                {
+                    log_and_queue_named_panic(
+                        self.installed,
+                        "data_drop",
+                        self.mod_id,
+                        None,
+                        panic,
+                    );
+                }
+            },
+        );
+    }
 }
 
 /// Record a mod callback panic under the unified dispatch failure rule.
@@ -348,11 +424,45 @@ pub(crate) fn log_and_queue_panic(
     log_and_queue_named_panic(installed(), hook, mod_id, None, payload);
 }
 
+fn log_and_queue_once_panic(
+    hook: &'static str,
+    mod_id: &'static str,
+    payload: &(dyn std::any::Any + Send),
+) {
+    let reason = payload
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("panic");
+    log::error!("mod {mod_id} panicked in {hook} (callback discarded): {reason}");
+    if let Some(installed) = installed() {
+        let mut queue = installed
+            .hook_panics
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        queue.push(HookPanicReport { mod_id, hook });
+        installed
+            .has_hook_panics
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+}
+
 pub(crate) fn log_and_queue_named_panic(
     installed: Option<&Installed>,
     hook: &'static str,
     mod_id: &'static str,
     named_callback: Option<&Identifier>,
+    payload: &(dyn std::any::Any + Send),
+) {
+    report_callback_panic(installed, hook, mod_id, named_callback, true, payload);
+}
+
+fn report_callback_panic(
+    installed: Option<&Installed>,
+    hook: &'static str,
+    mod_id: &'static str,
+    named_callback: Option<&Identifier>,
+    disabled: bool,
     payload: &(dyn std::any::Any + Send),
 ) {
     let reason = payload
@@ -364,11 +474,29 @@ pub(crate) fn log_and_queue_named_panic(
         log::error!(
             "mod {mod_id} panicked in {hook} ({id}) and has been disabled for this callback for the rest of the session: {reason}"
         );
-    } else {
+    } else if disabled {
         log::error!(
             "mod {mod_id} panicked in hook {hook} and has been disabled for this hook for the rest of the session: {reason}"
         );
+    } else {
+        log::error!("mod {mod_id} panicked in hook {hook}; discarded this invocation: {reason}");
     }
+    queue_callback_panic(installed, mod_id, hook);
+}
+
+/// A one-call predicate has no retained registration to disable.
+pub(crate) fn report_borrowed_callback_panic(
+    operation: &'static str,
+    mod_id: &'static str,
+    label: &str,
+    payload: &(dyn std::any::Any + Send),
+) {
+    let reason = crate::callback_owner::panic_payload_text(payload);
+    log::error!("mod {mod_id} panicked in {operation} ({label}): {reason}");
+    queue_callback_panic(installed(), mod_id, operation);
+}
+
+fn queue_callback_panic(installed: Option<&Installed>, mod_id: &'static str, hook: &'static str) {
     if let Some(installed) = installed {
         let mut queue = installed
             .hook_panics
@@ -394,6 +522,29 @@ pub(crate) fn invoke<T>(
     })
 }
 
+/// Uses the shared diagnostic fence but leaves the listener available for the next call.
+#[inline]
+pub(crate) fn invoke_without_disabling<T>(
+    hook: &'static str,
+    mod_id: &'static str,
+    call: impl FnOnce() -> T,
+) -> Option<T> {
+    contain_callback(call, |payload| {
+        ISOLATED_FAILURES.set(ISOLATED_FAILURES.get().wrapping_add(1));
+        report_callback_panic(installed(), hook, mod_id, None, false, payload);
+    })
+}
+
+/// Run a callback called only once by its owner, without poisoning any other callback of the mod.
+pub(crate) fn invoke_once<T>(
+    hook: &'static str,
+    mod_id: &'static str,
+    call: impl FnOnce() -> T,
+) -> Option<T> {
+    contain_callback(call, |payload| {
+        log_and_queue_once_panic(hook, mod_id, payload);
+    })
+}
 #[cold]
 pub(crate) fn report_output_refusal(mod_id: &str, hook: &str, field: &str) {
     log::warn!(
@@ -413,6 +564,18 @@ pub(crate) fn invoke_registered_codec<T>(
     if poisoned.load(Ordering::Acquire) {
         return Err(format!("mod {mod_id}: {operation} disabled after a panic"));
     }
+    finish_registered_codec(mod_id, operation, poisoned, call)
+}
+
+/// The same diagnostic fence without a precheck: a value already acquired by a codec
+/// still needs to be released after the codec panics and disables itself.
+pub(crate) fn finish_registered_codec<T>(
+    mod_id: &'static str,
+    operation: &'static str,
+    poisoned: &std::sync::atomic::AtomicBool,
+    call: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    use std::sync::atomic::Ordering;
     let _owner = mark_mod(mod_id, operation);
     contain_callback(call, |payload| {
         if !poisoned.swap(true, Ordering::AcqRel) {
@@ -478,8 +641,7 @@ pub fn call_session_callback<T>(
 ) -> Result<T, String> {
     let _owner = mark_mod(owner, operation);
     contain_callback(call, |payload| {
-        let (entered, trapped) = LISTENER_SERIAL.get();
-        LISTENER_SERIAL.set((entered, trapped.wrapping_add(1)));
+        ISOLATED_FAILURES.set(ISOLATED_FAILURES.get().wrapping_add(1));
         let first = installed().is_none_or(|installed| {
             installed
                 .named_poison
@@ -597,10 +759,16 @@ impl<T, K: Ord> RegistrationMap<T, K> {
     }
 
     pub(crate) fn into_values(self) -> std::collections::BTreeMap<K, T> {
-        self.0
+        self.into_owned_values()
             .into_iter()
             .map(|(key, (_, value))| (key, value))
             .collect()
+    }
+
+    pub(crate) fn into_owned_values(
+        self,
+    ) -> std::collections::BTreeMap<K, (Option<&'static str>, T)> {
+        self.0
     }
 }
 
@@ -646,11 +814,13 @@ pub(crate) fn listened(hook: generated::HookId) -> bool {
 }
 
 pub(crate) fn enabled_listened(hook: generated::HookId) -> bool {
-    installed().is_some_and(|installed| {
-        installed.subscribers.indices(hook as usize).any(|index| {
-            !installed.disabled[index].load(std::sync::atomic::Ordering::Relaxed)
-                && !is_poisoned(installed, hook, installed.mods[index].id)
-        })
+    installed().is_some_and(|installed| has_enabled_listener(installed, hook))
+}
+
+pub(crate) fn has_enabled_listener(installed: &Installed, hook: generated::HookId) -> bool {
+    installed.subscribers.indices(hook as usize).any(|index| {
+        !installed.disabled[index].load(std::sync::atomic::Ordering::Relaxed)
+            && !is_poisoned(installed, hook, installed.mods[index].id)
     })
 }
 
@@ -729,22 +899,36 @@ pub(crate) fn mod_index_on(index: usize) -> bool {
     })
 }
 
-/// Freeze primary IDs first, then the first admitted owner of each alias.
-/// An admitted content-only owner reserves its aliases without a dispatch slot.
-pub(crate) fn install_content_owners<'a>(owners: impl IntoIterator<Item = (&'a str, &'a str)>) {
+// no wire: dispatch indices are only valid in this process.
+struct ContentOwners {
+    blocks: std::collections::HashMap<Box<str>, Option<usize>>,
+    items: std::collections::HashSet<Box<str>>,
+    block_entities: std::collections::HashMap<Box<str>, usize>,
+    menus: std::collections::HashMap<Box<str>, usize>,
+}
+
+/// Resolve admitted identities once, regardless of the key's namespace.
+pub(crate) fn install_content_owners<'a>(
+    blocks: impl IntoIterator<Item = (&'a str, &'a str)>,
+    items: impl IntoIterator<Item = &'a str>,
+    block_entities: impl IntoIterator<Item = (&'a str, &'a str)>,
+    menus: impl IntoIterator<Item = (&'a str, &'a str)>,
+) {
     if let Some(installed) = installed() {
-        installed.content_owners.get_or_init(|| {
-            let mut by_namespace: std::collections::HashMap<Box<str>, _> = installed
-                .mod_id_owners
-                .iter()
-                .map(|(&id, &index)| (id.into(), Some(index)))
-                .collect();
-            for (namespace, owner) in owners {
-                by_namespace
-                    .entry(namespace.into())
-                    .or_insert_with(|| installed.mod_id_owners.get(owner).copied());
-            }
-            by_namespace
+        installed.content_owners.get_or_init(|| ContentOwners {
+            blocks: blocks
+                .into_iter()
+                .map(|(id, owner)| (id.into(), installed.by_id.get(owner).copied()))
+                .collect(),
+            items: items.into_iter().map(Into::into).collect(),
+            block_entities: block_entities
+                .into_iter()
+                .filter_map(|(id, owner)| Some((id.into(), *installed.by_id.get(owner)?)))
+                .collect(),
+            menus: menus
+                .into_iter()
+                .filter_map(|(id, owner)| Some((id.into(), *installed.by_id.get(owner)?)))
+                .collect(),
         });
     }
 }
@@ -753,18 +937,26 @@ pub(crate) fn content_owners_published() -> bool {
     installed().is_none_or(|installed| installed.content_owners.get().is_some())
 }
 
-/// Content ownership is resolved at startup, not by scanning mods on a tick.
-pub(crate) fn content_owner_disabled(id: &str) -> bool {
-    any_mod_disabled() && content_owner_index(id).is_some_and(|index| !mod_index_on(index))
+pub(crate) fn block_entity_owner_disabled(id: &str) -> bool {
+    any_mod_disabled()
+        && installed()
+            .and_then(|i| i.content_owners.get())
+            .and_then(|owners| owners.block_entities.get(id))
+            .is_some_and(|&index| !mod_index_on(index))
 }
 
-pub(crate) fn content_owner_index(id: &str) -> Option<usize> {
-    let (namespace, _) = id.split_once(':')?;
-    let installed = installed()?;
-    match installed.content_owners.get() {
-        Some(owners) => owners.get(namespace).copied().flatten(),
-        None => installed.mod_id_owners.get(namespace).copied(),
-    }
+pub(crate) fn content_block(id: &str) -> Option<Option<usize>> {
+    installed()?.content_owners.get()?.blocks.get(id).copied()
+}
+
+pub(crate) fn is_content_item(id: &str) -> bool {
+    installed()
+        .and_then(|i| i.content_owners.get())
+        .is_some_and(|owners| owners.items.contains(id))
+}
+
+pub(crate) fn content_menu_owner(id: &str) -> Option<usize> {
+    installed()?.content_owners.get()?.menus.get(id).copied()
 }
 
 /// `mods` in order, each marked as running `hook` until the next one is (or the loop ends), so a
@@ -854,6 +1046,50 @@ pub(crate) fn entered_parts<'a, P: ?Sized>(
     parts: &'a [Attached<P>],
     hook: &'static str,
 ) -> impl Iterator<Item = (&'static str, &'a P)> {
+    entered_part_entries(hook_id, parts, hook).map(|attached| (attached.mod_id, &*attached.part))
+}
+
+/// Like [`entered_parts`], also yielding the owning part's type name for registration labels.
+pub(crate) fn entered_parts_with_owner<'a, P: ?Sized>(
+    hook_id: generated::HookId,
+    parts: &'a [Attached<P>],
+    hook: &'static str,
+) -> impl Iterator<Item = (&'static str, &'static str, &'a P)> {
+    entered_part_entries(hook_id, parts, hook)
+        .map(|attached| (attached.mod_id, attached.type_name, &*attached.part))
+}
+
+/// Like [`entered_parts`], also yielding the registration slot for a paired follow-up hook.
+pub(crate) fn entered_parts_with_slot<'a, P: ?Sized>(
+    hook_id: generated::HookId,
+    parts: &'a [Attached<P>],
+    hook: &'static str,
+) -> impl Iterator<Item = (&'static str, (usize, usize), &'a P)> {
+    entered_part_entries(hook_id, parts, hook).map(|attached| {
+        (
+            attached.mod_id,
+            (attached.mod_index, attached.order),
+            &*attached.part,
+        )
+    })
+}
+
+/// Find the single subscription at this slot, independently of its quarantine state.
+pub(crate) fn part_slot<P: ?Sized>(
+    parts: &[Attached<P>],
+    slot: (usize, usize),
+) -> Option<&[Attached<P>]> {
+    parts
+        .iter()
+        .find(|attached| (attached.mod_index, attached.order) == slot)
+        .map(std::slice::from_ref)
+}
+
+fn entered_part_entries<'a, P: ?Sized>(
+    hook_id: generated::HookId,
+    parts: &'a [Attached<P>],
+    hook: &'static str,
+) -> impl Iterator<Item = &'a Attached<P>> {
     let mut guard = crate::dispatch_scope::ModGuard::empty();
     let scope = crate::dispatch_scope::snapshot();
     parts
@@ -861,7 +1097,7 @@ pub(crate) fn entered_parts<'a, P: ?Sized>(
         .filter(move |attached| {
             mod_index_on(attached.mod_index) && !poisoned(hook_id, attached.mod_id)
         })
-        .map(move |attached| {
+        .inspect(move |attached| {
             // The last part's mark goes first, as in `Entered`.
             scope.replace(
                 &mut guard,
@@ -871,8 +1107,52 @@ pub(crate) fn entered_parts<'a, P: ?Sized>(
                     part: Some(attached.type_name),
                 },
             );
-            (attached.mod_id, &*attached.part)
         })
+}
+
+/// Publish a part's output only when its callback and nested Host transaction complete.
+/// The retained callback boundary quarantines only the attachment that panicked.
+pub(crate) fn run_isolated_part_output<P: ?Sized, O: Clone>(
+    parts: &[Attached<P>],
+    host: &mut dyn crate::ServerHost,
+    output: &mut O,
+    kind: &'static str,
+    operation: &'static str,
+    mut invoke: impl FnMut(&P, &mut dyn crate::ServerHost, &mut O),
+) {
+    for attached in parts {
+        let result = crate::callback_owner::call(
+            attached.mod_id,
+            attached.mod_index,
+            &attached.panicked,
+            kind,
+            operation,
+            || {
+                let mut candidate = output.clone();
+                match crate::HostTransaction::transaction(&mut *host, |host, _| {
+                    invoke(&*attached.part, host, &mut candidate);
+                    Ok::<_, std::convert::Infallible>(candidate)
+                }) {
+                    Ok(candidate) => Some(candidate),
+                    Err(crate::TransactionError::Aborted(never)) => match never {},
+                    Err(
+                        error @ (crate::TransactionError::InvalidContext
+                        | crate::TransactionError::Unavailable
+                        | crate::TransactionError::CommitRefused),
+                    ) => {
+                        log::warn!(
+                            "mod {}: {kind}.{operation} callback refused: {error:?}",
+                            attached.mod_id
+                        );
+                        None
+                    }
+                }
+            },
+        );
+        if let Ok(Some(candidate)) = result {
+            *output = candidate;
+        }
+    }
 }
 
 pub(crate) struct Entered<'a> {
@@ -958,7 +1238,7 @@ pub(crate) fn listening(
     listening_matching(hook_id, |_| true)
 }
 
-fn listening_matching<'a>(
+pub(crate) fn listening_matching<'a>(
     hook_id: generated::HookId,
     mut allow: impl FnMut(&str) -> bool + 'a,
 ) -> impl Iterator<Item = (bool, &'static ModEntry)> + 'a {
@@ -976,27 +1256,50 @@ fn listening_matching<'a>(
             {
                 continue;
             }
-            bump_listener_serial();
             return Some((subscriber.receives_cancelled, entry));
         }
         None
     })
 }
 
-/// Look up the enabled, unpoisoned subscriber owning a namespaced kind without walking the hook's
-/// listeners.
-pub(crate) fn listening_kind_owner(hook: HookId, kind: &str) -> Option<&'static ModEntry> {
-    let (namespace, _) = kind.split_once(':')?;
-    let installed = installed()?;
-    let &index = installed.by_id.get(namespace)?;
-    if !installed.subscribers.contains(hook as usize, index)
-        || installed.disabled[index].load(std::sync::atomic::Ordering::Relaxed)
-        || is_poisoned(installed, hook, installed.mods[index].id)
-    {
-        return None;
+// no wire: the binding refers to this process's installed native callback.
+/// A consume-effect callback resolved while decoding the effect's registered kind.
+// hidden: the game retains the callback with its decoded effect.
+// exhaustive: private fields; resolved only inside this crate.
+#[doc(hidden)]
+#[derive(Clone, Copy)]
+pub struct ConsumeEffectBinding {
+    owner: &'static crate::callback_owner::CallbackOwner,
+    entry: &'static ModEntry,
+}
+
+impl std::fmt::Debug for ConsumeEffectBinding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("ConsumeEffectBinding")
+            .field(&self.entry.id)
+            .finish()
     }
-    bump_listener_serial();
-    Some(&installed.mods[index])
+}
+
+impl ConsumeEffectBinding {
+    /// Bind to the namespace owner's registered listener, even if currently toggled off.
+    pub fn resolve(kind: &str) -> Option<Self> {
+        let (namespace, _) = kind.split_once(':')?;
+        let installed = installed()?;
+        let &index = installed.by_id.get(namespace)?;
+        Some(Self {
+            owner: installed.consume_effects[index].as_ref()?,
+            entry: &installed.mods[index],
+        })
+    }
+
+    pub(crate) fn invoke(self, invoke: impl FnOnce(&dyn Hooks)) -> bool {
+        self.owner
+            .call("consume effect", "consume_effect", || {
+                invoke(&*self.entry.hooks);
+            })
+            .is_ok()
+    }
 }
 
 /// Marks the thread as inside `entry`'s `hook` until the guard drops, and hands back its hooks.
@@ -1030,71 +1333,47 @@ impl ListenerScope {
     }
 }
 
-thread_local! {
-    /// Listener entries (including nested hooks) and poisoned traps on this thread.
-    static LISTENER_SERIAL: std::cell::Cell<(u64, u64)> = const { std::cell::Cell::new((0, 0)) };
-}
+/// Scope for hooks that can call their own setter again. Invocation still uses the
+/// standard ownership, panic and journal path.
+#[must_use]
+pub(crate) struct ActiveListener;
 
-#[inline]
-fn bump_listener_serial() {
-    let (entered, trapped) = LISTENER_SERIAL.get();
-    LISTENER_SERIAL.set((entered.wrapping_add(1), trapped));
-}
-
-pub(crate) fn listener_serial() -> u64 {
-    LISTENER_SERIAL.get().0
-}
-
-#[cfg(test)]
-mod listener_lease_tests {
-    use super::*;
-    use sunrise_mod_runtime::pending_children::{Decision, Error, PendingChildren};
-
-    #[test]
-    fn entering_a_different_hook_expires_a_retained_pending_child() {
-        struct Listener;
-        #[mod_api::__subscriptions]
-        impl crate::Hooks for Listener {
-            fn mob_split(
-                &self,
-                _: &mut dyn crate::ServerHost,
-                _: &mut crate::MobSplitEvent<'_>,
-            ) -> Flow {
-                Flow::Continue
-            }
-            fn baby_entity_spawn(
-                &self,
-                _: &mut dyn crate::ServerHost,
-                _: &mut crate::BabyEntitySpawnEvent<'_>,
-            ) -> Flow {
-                Flow::Continue
-            }
-        }
-        install(vec![ModEntry::new("lease-test", Box::new(Listener))].into());
-        let mut arena = PendingChildren::default();
-        arena
-            .run(
-                1,
-                1,
-                vec![7u32],
-                |arena, action| {
-                    let _outer = listening(generated::HookId::MobSplit).next().unwrap();
-                    arena.sync_listener(listener_serial()).unwrap();
-                    let child = arena.borrow(action, 0).unwrap();
-                    assert_eq!(arena.get(child), Ok(&7));
-                    let _nested = listening(generated::HookId::BabyEntitySpawn)
-                        .next()
-                        .unwrap();
-                    arena.sync_listener(listener_serial()).unwrap();
-                    assert_eq!(arena.get(child), Err(Error::Expired));
-                    let fresh = arena.borrow(action, 0).unwrap();
-                    assert_eq!(arena.get(fresh), Ok(&7));
-                    Decision::Accept
-                },
-                |_| true,
-            )
-            .unwrap();
+impl Drop for ActiveListener {
+    fn drop(&mut self) {
+        ACTIVE_LISTENERS.with_borrow_mut(|active| {
+            active.pop();
+        });
     }
+}
+
+impl ActiveListener {
+    pub(crate) fn enter(hook: HookId, id: &'static str) -> Self {
+        ACTIVE_LISTENERS.with_borrow_mut(|active| active.push((hook as usize, id)));
+        Self
+    }
+}
+
+/// Filter reentrant callbacks before opening their crash scope or marking them as entered.
+pub(crate) fn listener_is_inactive(hook: HookId, name: &'static str, id: &str) -> bool {
+    let hook = hook as usize;
+    let inactive = ACTIVE_LISTENERS.with_borrow(|active| {
+        !active
+            .iter()
+            .any(|&(active_hook, active_id)| active_hook == hook && active_id == id)
+    });
+    if !inactive {
+        log::warn!("native refusal: {id} hook {name}: this callback is already running");
+    }
+    inactive
+}
+
+thread_local! {
+    /// Only hooks that opt out of reentry touch this stack.
+    static ACTIVE_LISTENERS: std::cell::RefCell<Vec<(usize, &'static str)>> = const {
+        std::cell::RefCell::new(Vec::new())
+    };
+    /// Per-thread count of trapped listener failures on this thread.
+    static ISOLATED_FAILURES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -1125,6 +1404,57 @@ mod toggle_tests {
                 assert!(any_mod_disabled());
                 assert!(set_mod_enabled("b", true));
                 assert!(!any_mod_disabled());
+            },
+        );
+    }
+}
+
+#[cfg(test)]
+mod isolated_failure_tests {
+    use super::*;
+
+    #[test]
+    fn contained_listener_panic_disables_and_reports_without_advancing_action_checkpoint() {
+        struct Quiet;
+        #[mod_api::__subscriptions]
+        impl crate::Hooks for Quiet {}
+
+        crate::testing::with_dispatch(
+            vec![ModEntry::new("broken", Box::new(Quiet))].into(),
+            || {
+                let before = isolated_failures();
+                assert_eq!(
+                    invoke::<()>(
+                        generated::HookId::BuildCreativeModeTabContents,
+                        "build_creative_mode_tab_contents",
+                        "broken",
+                        || panic!("creative editor boom"),
+                    ),
+                    None
+                );
+
+                assert_eq!(isolated_failures(), before);
+                assert!(poisoned(
+                    generated::HookId::BuildCreativeModeTabContents,
+                    "broken"
+                ));
+                assert!(!poisoned(generated::HookId::FarmlandTrample, "broken"));
+                let notices = take_hook_panics();
+                assert_eq!(notices.len(), 1);
+                assert_eq!(notices[0].mod_id, "broken");
+                assert_eq!(notices[0].hook, "build_creative_mode_tab_contents");
+
+                assert_eq!(
+                    invoke::<()>(
+                        generated::HookId::FarmlandTrample,
+                        "farmland_trample",
+                        "broken",
+                        || panic!("farmland listener boom"),
+                    ),
+                    None
+                );
+                assert_eq!(isolated_failures(), before.wrapping_add(1));
+                assert!(poisoned(generated::HookId::FarmlandTrample, "broken"));
             },
         );
     }

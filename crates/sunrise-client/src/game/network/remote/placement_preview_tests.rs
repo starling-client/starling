@@ -1,6 +1,10 @@
 #[test]
 #[ignore = "daily"]
 fn placement_preview_checks_obstruction_without_changing_the_level() {
+    run_placement_preview_checks_obstruction_without_changing_the_level();
+}
+
+pub(in crate::game) fn run_placement_preview_checks_obstruction_without_changing_the_level() {
     use super::super::DryLevel;
     use sunrise_core::{position::BlockPos, random::LegacyRandom};
     use sunrise_world::{
@@ -84,9 +88,11 @@ fn placement_preview_checks_obstruction_without_changing_the_level() {
             face: sunrise_core::geometry::Direction::Up,
             hit: sunrise_core::geometry::Vec3::new(0.5, 1.0, 0.5),
             inside: false,
-            yaw: 0.0,
-            pitch: 45.0,
-            sneaking: false,
+            source: sunrise_world::level::PlacementSource::Player {
+                yaw: 0.0,
+                pitch: 45.0,
+                sneaking: false,
+            },
             item: item.into(),
             can_use_game_master_blocks: false,
         };
@@ -143,6 +149,10 @@ fn placement_preview_checks_obstruction_without_changing_the_level() {
 #[test]
 #[ignore = "daily"]
 fn redstone_updates_respect_the_preview_level_side() {
+    run_redstone_updates_respect_the_preview_level_side();
+}
+
+pub(in crate::game) fn run_redstone_updates_respect_the_preview_level_side() {
     use super::super::{DryLevel, dry_level::PredictionBase};
     use std::collections::HashMap;
     use sunrise_core::{geometry::Direction, position::BlockPos, random::LegacyRandom};

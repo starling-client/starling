@@ -17,18 +17,28 @@ fn checked_records_have_declared_field_bytes() {
         ("example".to_owned(), "gear".to_owned()),
     );
     fields(
-        ConfigPath::new("gear/options.toml").unwrap(),
-        ("gear/options.toml".to_owned(),),
-    );
-    fields(
-        SpawnerKey::new("example:spawn").unwrap(),
-        ("example:spawn".to_owned(),),
-    );
-    fields(
         LevelKey::try_from("example:moon".to_owned()).unwrap(),
         ("example:moon".to_owned(),),
     );
     fields(JavaString(vec![65, 0xd800, 90]), (vec![65u16, 0xd800, 90],));
+    fields(
+        EnchantmentInfo::new(
+            "example:keen".to_owned(),
+            5,
+            10,
+            1,
+            false,
+            crate::Text::translate("enchantment.example.keen", Vec::new()),
+        ),
+        (
+            "example:keen".to_owned(),
+            5u32,
+            10u32,
+            1u32,
+            false,
+            crate::Text::translate("enchantment.example.keen", Vec::new()),
+        ),
+    );
     let mut nbt = Compound::new();
     nbt.insert("answer".into(), Tag::Int(42));
     fields(Components::from(nbt.clone()), (nbt.clone(),));
@@ -36,7 +46,20 @@ fn checked_records_have_declared_field_bytes() {
     let key = ItemKey::from_slot(0).unwrap();
     let mut stack = ItemStack::new(key, 7).unwrap();
     stack.set_damage(11);
-    fields(stack, (key, 7u32, Some(11u32), None::<Components>));
+    fields(stack.clone(), (key, 7u32, Some(11u32), None::<Components>));
+    fields(
+        MenuSlotChange::new(MenuContainer::Main, 1, Some(stack.clone()), None),
+        (
+            MenuContainer::Main,
+            1usize,
+            Some(stack.clone()),
+            None::<ItemStack>,
+        ),
+    );
+    fields(
+        MenuSlotWrite::new(MenuContainer::Main, 2, Some(stack.clone())),
+        (MenuContainer::Main, 2usize, Some(stack)),
+    );
     let block = BlockKey::from_slot(0).unwrap();
     let state: BlockState = crate::__private::block_state_from_ordinal(block, 9);
     fields(state, (block, 9u16));
@@ -44,14 +67,6 @@ fn checked_records_have_declared_field_bytes() {
     fields(
         FeatureFlags::new(vec!["example:a".to_owned(), "example:b".to_owned()].into()),
         (vec!["example:a".to_owned(), "example:b".to_owned()],),
-    );
-    fields(
-        Corners {
-            width: 13.0,
-            height: 17.0,
-            used: [1.0, 2.0, 3.0, 4.0],
-        },
-        (13.0f32, 17.0f32, [1.0f32, 2.0, 3.0, 4.0]),
     );
     fields(
         BlockPos {
@@ -92,6 +107,47 @@ fn feature_flag_wire_preserves_the_effective_set() {
     let flags = FeatureFlags::new(["minecraft:vanilla".to_owned()].into());
     assert!(flags.contains("minecraft:vanilla"));
     assert!(flags.contains("vanilla"));
+    assert!(flags.contains_flag(FeatureFlag::Vanilla));
+    assert!(!flags.contains_flag(FeatureFlag::RedstoneExperiments));
+    assert!(flags.contains_all(&[FeatureFlag::Vanilla]));
+    assert!(!flags.contains_all(&[FeatureFlag::Vanilla, FeatureFlag::MinecartImprovements]));
+    assert_eq!(
+        FeatureFlag::from_id("minecraft:trade_rebalance"),
+        Some(FeatureFlag::TradeRebalance)
+    );
+    assert_eq!(
+        FeatureFlag::from_id("redstone_experiments"),
+        Some(FeatureFlag::RedstoneExperiments)
+    );
+    assert_eq!(FeatureFlag::from_id("unknown:flag"), None);
+    for flag in FeatureFlag::ALL {
+        assert_eq!(FeatureFlag::from_id(flag.id()), Some(flag));
+        let mut flag_out = Writer::new();
+        flag_out.put(&flag);
+        assert_eq!(
+            Reader::decode::<FeatureFlag>(flag_out.bytes()).unwrap(),
+            flag
+        );
+    }
+    let spawners = [
+        Spawner::Block {
+            pos: BlockPos::new(1, 2, 3),
+        },
+        Spawner::Trial {
+            pos: BlockPos::new(-4, 5, 6),
+        },
+        Spawner::Minecart {
+            entity: EntityRef::new(WorldEpoch::new(7), 88),
+        },
+    ];
+    for spawner in spawners {
+        let mut spawner_out = Writer::new();
+        spawner_out.put(&spawner);
+        assert_eq!(
+            Reader::decode::<Spawner>(spawner_out.bytes()).unwrap(),
+            spawner
+        );
+    }
     assert_eq!(flags.iter().collect::<Vec<_>>(), ["minecraft:vanilla"]);
     // Independent bytes: one flag, then the 17-byte UTF-8 resource id.
     let expected = b"\x01\0\0\0\x11\0\0\0minecraft:vanilla";
@@ -122,7 +178,6 @@ fn handle_records_have_declared_field_bytes() {
     fields(ChunkRef::new(level, [3, -4]), (level, [3i32, -4]));
     fields(RaidRef::new(level, 53), (level, 53i32));
     fields(RaidRef::new(level, -1), (level, -1i32));
-    fields(WaterTicket::new(level, 59), (level, 59u64));
     fields(player, (entity, 0x1234u128));
     fields(
         GlobalPos::new(id("example:moon"), pos),
@@ -153,40 +208,16 @@ fn handle_records_have_declared_field_bytes() {
         },
         (level, [7i32, -8, 9], 83u64),
     );
-    // epoch, lend, action, slot: a standalone lend has no action and slot 0.
-    fields(UnspawnedMobRef::new(epoch, 61), (epoch, 61u64, 0u64, 0u32));
-    fields(
-        UnspawnedMobRef::pending(epoch, 62, 63, 7),
-        (epoch, 63u64, 62u64, 7u32),
-    );
-    // epoch, action, lease.
-    fields(
-        PendingChildrenRef::new(epoch, 62, 63),
-        (epoch, 62u64, 63u64),
-    );
-    fields(
-        UnattachedMob::new(UnspawnedMobRef::pending(epoch, 62, 63, 7)),
-        (UnspawnedMobRef::pending(epoch, 62, 63, 7),),
-    );
     fields(ModelRef::from_parts(31, 7).unwrap(), (31u64, 7u32));
     fields(
         crate::BakedModelKey::from_parts(43, 11).unwrap(),
         (43u64, 11u32),
     );
     fields(InstanceGroupRef::from_parts(37, 9).unwrap(), (37u64, 9u32));
-    fields(RenderPipelineRef::from_parts(41, 5).unwrap(), (41u64, 5u32));
 }
 
 #[test]
 fn payload_enum_cases_have_declared_field_bytes() {
-    fields(
-        SpawnerEntry::Builtin(SpawnerKind::Cat),
-        (0u32, SpawnerKind::Cat),
-    );
-    fields(
-        SpawnerEntry::Mod(SpawnerKey::new("example:spawn").unwrap()),
-        (1u32, SpawnerKey::new("example:spawn").unwrap()),
-    );
     let pos = [2i32, -4, 6];
     fields(
         crate::client::particles::PositionSource::Block([2, -4, 6]),
@@ -247,20 +278,35 @@ impl Drop for Keys {
 
 #[test]
 fn snapshot_records_have_declared_field_bytes() {
-    let _keys = Keys::new();
-    let block = BlockKey::from_slot(0).unwrap();
-    fields(
-        StatePredicate::from(StatePredicateRecord::new(
-            StatePredicateTarget::Block(block),
-            vec![],
-        )),
-        (
-            StatePredicateTarget::Block(block),
-            Vec::<StateConstraint>::new(),
-        ),
-    );
     let revision = crate::item::containers::ModRevision::from_snapshot(31, 47);
     fields(revision, (31u64, 47u64));
+    let player_source = PlacementSource::Player {
+        yaw: -45.0,
+        pitch: 30.0,
+        sneaking: true,
+    };
+    fields(player_source, (0u32, -45.0f32, 30.0f32, true));
+    let directional_source = PlacementSource::Directional {
+        direction: Direction::East,
+    };
+    fields(directional_source, (1u32, Direction::East));
+    let pos = BlockPos { x: 1, y: 2, z: 3 };
+    let hit_pos = BlockPos { x: 4, y: 5, z: 6 };
+    let _keys = Keys::new();
+    let item = ItemKey::from_slot(0).unwrap();
+    let mut ctx = PlacementContext::new(pos, Direction::Up, Some(item));
+    ctx.hit_pos = hit_pos;
+    ctx.hit = [4.25, 5.5, 6.75];
+    ctx.inside = true;
+    ctx.source = player_source;
+    ctx.replace_clicked = true;
+    fields(
+        ctx,
+        (
+            (pos, hit_pos, Direction::Up, [4.25f64, 5.5, 6.75], true),
+            (player_source, Some(item), true),
+        ),
+    );
 }
 
 fn decode<T: Wire, F: Wire>(value: T) -> F {
@@ -271,15 +317,7 @@ fn decode<T: Wire, F: Wire>(value: T) -> F {
 }
 
 #[test]
-fn spawner_and_attribute_records_have_declared_field_bytes() {
-    let spawners = vec![
-        SpawnerEntry::Builtin(SpawnerKind::Cat),
-        SpawnerEntry::Mod(SpawnerKey::new("example:spawn").unwrap()),
-    ];
-    fields(
-        CustomSpawners::try_from(spawners.clone()).unwrap(),
-        (spawners,),
-    );
+fn attribute_records_have_declared_field_bytes() {
     let modifier = AttributeModifier::new(id("example:boost"), 1.75, AttributeOperation::AddValue);
     let entry = ItemAttributeModifier::new(
         id("minecraft:generic.attack_damage"),
@@ -337,16 +375,19 @@ fn newtype_widths_and_unit_enum_tags_match_their_encodings() {
     fields(BlockKey::from_slot(0).unwrap(), (0u32,));
     fields(ItemKey::from_slot(0).unwrap(), (0u32,));
     fields(FluidKey::from_slot(0).unwrap(), (0u32,));
-    // Issuance is platform-owned; this layer pins the encoded 64-bit field only.
-    fields(crate::UnresolvedFluid(0x100000003), (0x100000003u64,));
+    fields(
+        crate::UnresolvedFluid(id("absent:fluid")),
+        (id("absent:fluid"),),
+    );
     fields(WorldEpoch::new(47), (47u64,));
     fields(TickId::new(19), (19u64,));
-    fields(SoundRef { id: 71 }, (71u64,));
-    fields(crate::__private::biome_id(11), (11u32,));
+    fields(
+        BiomeKey::parse("minecraft:plains").unwrap(),
+        (id("minecraft:plains"),),
+    );
     fields(crate::__private::mod_color_resolver(13), (13u32,));
     fields(BlockUpdateFlags(17), (17u32,));
     fields(Reduction::Armor, (1u8,));
-    fields(SpawnerKind::Patrol, (1u32,));
     fields(Direction::North, (2u32,));
     fields(EquipmentSlotGroup::Head, (7u32,));
     fields(EquipmentSlot::Head, (5u32,));
@@ -395,7 +436,7 @@ fn every_direction_and_equipment_case_has_declared_tag_type() {
 }
 
 #[test]
-fn reduction_spawner_side_dimension_and_neighbour_cases_keep_their_tags() {
+fn reduction_side_dimension_and_neighbour_cases_keep_their_tags() {
     for (value, tag) in [
         (Reduction::Invulnerability, 0u8),
         (Reduction::Armor, 1),
@@ -403,15 +444,6 @@ fn reduction_spawner_side_dimension_and_neighbour_cases_keep_their_tags() {
         (Reduction::MobEffects, 3),
         (Reduction::Absorption, 4),
         (Reduction::InnateResistance, 5),
-    ] {
-        fields(value, (tag,));
-    }
-    for (value, tag) in [
-        (SpawnerKind::Phantom, 0u32),
-        (SpawnerKind::Patrol, 1),
-        (SpawnerKind::Cat, 2),
-        (SpawnerKind::VillageSiege, 3),
-        (SpawnerKind::WanderingTrader, 4),
     ] {
         fields(value, (tag,));
     }
@@ -427,6 +459,14 @@ fn reduction_spawner_side_dimension_and_neighbour_cases_keep_their_tags() {
         NeighbourUpdate::NeighboursExcept(Direction::East),
         (2u32, Direction::East),
     );
+}
+
+#[test]
+fn collision_exclusion_errors_use_the_clean_break_tags() {
+    fields(CollisionExclusionsError::Stale, (0u32,));
+    fields(CollisionExclusionsError::NotAPlayer, (1u32,));
+    fields(CollisionExclusionsError::NotFinite, (2u32,));
+    fields(CollisionExclusionsError::Inverted, (3u32,));
 }
 
 #[test]

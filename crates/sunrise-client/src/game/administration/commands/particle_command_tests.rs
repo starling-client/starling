@@ -34,7 +34,8 @@ fn game<'a>(resources: &'a mut Option<std::sync::Arc<crate::game::Resources>>) -
         &settings,
         std::time::Instant::now(),
         false,
-        crate::game::execution_role::ExecutionRole::IntegratedServer,
+        // A window's resources: a headless load parses no models, so it has no particle sprites.
+        crate::game::execution_role::ExecutionRole::Client,
         &Progress::new(),
         &mut |_, _| unreachable!(),
     )
@@ -148,6 +149,36 @@ fn block_crumble_draws_the_block_it_names() {
     };
     game.particles.tick(&level);
     assert_eq!(game.particles.len(), 1, "the crumble is drawn");
+}
+
+/// `TerrainParticle.Provider` keeps no particle for air: the command still reaches the
+/// player, but the window draws nothing, not some other block's crumbs.
+#[test]
+#[ignore = "daily"]
+fn block_particles_of_air_reach_the_player_and_draw_nothing() {
+    let mut resources = None;
+    let mut game = game(&mut resources);
+    game.particles.created_requests = Some(Vec::new());
+    assert!(game.run_command(
+        "particle minecraft:block{block_state:\"minecraft:air\"} 0.5 100.5 0.5 0 0 0 0 1"
+    ));
+    assert!(game.particles.created_requests.take().unwrap().is_empty());
+}
+
+/// `BlockMarker.Provider` draws air's particle material, the missing model's: the missing
+/// texture the particle atlas packs.
+#[test]
+#[ignore = "daily"]
+fn a_block_marker_of_air_draws_the_missing_texture() {
+    let mut resources = None;
+    let mut game = game(&mut resources);
+    let marker = drawn(
+        &mut game,
+        "particle minecraft:block_marker{block_state:\"minecraft:air\"} 0.5 100.5 0.5 0 0 0 0 1",
+    );
+    let (sprite, tint) = marker.block.expect("the marker carries its sprite");
+    assert_eq!(sprite, sunrise_client::hud::MISSING_SPRITE);
+    assert_eq!(tint, 0xFFFFFF);
 }
 
 #[test]

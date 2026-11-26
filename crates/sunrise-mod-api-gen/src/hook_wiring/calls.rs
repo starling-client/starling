@@ -349,21 +349,6 @@ impl<'ast, F: FnMut(&syn::Path, usize, &[&UseTree]) -> bool> Visit<'ast> for Cal
                 }
                 Expr::MethodCall(call) => {
                     self.record(expr);
-                    // LevelControl::hear invokes the dispatch with the current control marked.
-                    if call.method == "hear"
-                        && let Some(receiver) = function_path(&call.receiver)
-                        && receiver.segments.len() == 5
-                        && receiver
-                            .segments
-                            .iter()
-                            .take(4)
-                            .map(|segment| &segment.ident)
-                            .zip(["crate", "game", "level_control_hooks", "LevelControl"])
-                            .all(|(ident, segment)| ident == segment)
-                        && let Some(closure) = call.args.first().and_then(|arg| self.closure(arg))
-                    {
-                        self.invoke(closure);
-                    }
                     // The effect dispatcher filters its parts by cadence. Creating that iterator
                     // does not ask the parts; advancing it runs the predicate.
                     if call.method == "next" {

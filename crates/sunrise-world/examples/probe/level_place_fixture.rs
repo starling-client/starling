@@ -12,7 +12,7 @@ use sunrise_core::{
     random::LegacyRandom,
 };
 use sunrise_world::{
-    level::{Behaviours, LevelAccess, PlaceContext, Ticks, data::load_registry},
+    level::{Behaviours, LevelAccess, PlaceContext, PlacementSource, Ticks, data::load_registry},
     registry::BlockStateId,
 };
 
@@ -98,9 +98,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             face: Direction::ALL[case["face"].as_u64().unwrap() as usize],
             hit: Vec3::new(h[0], h[1], h[2]),
             inside: false,
-            yaw: case["yaw"].as_f64().unwrap() as f32,
-            pitch: case["pitch"].as_f64().unwrap() as f32,
-            sneaking: case["sneak"].as_bool().unwrap(),
+            source: PlacementSource::Player {
+                yaw: case["yaw"].as_f64().unwrap() as f32,
+                pitch: case["pitch"].as_f64().unwrap() as f32,
+                sneaking: case["sneak"].as_bool().unwrap(),
+            },
             item: case["item"].as_str().unwrap().to_owned(),
             can_use_game_master_blocks: false,
         };

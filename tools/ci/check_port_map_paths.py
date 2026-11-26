@@ -8,7 +8,7 @@ and left its row behind turned the ledger's answer into a file that no longer ho
 
 A row resolves when its file declares the function with a body (`fn name`, whatever the visibility), which
 is what the ledger indexes; a `use` that re-exports the name from another module is not a definition there,
-and neither is a call or a mention in a comment or a string. `tools/port_map_known_stale.txt` lists the rows
+and neither is a call or a mention in a comment or a string. `tools/ci/port_map_known_stale.txt` lists the rows
 that do not resolve today, one `map file<TAB>vanilla name<TAB>path::owner::fn` per line, and it only shrinks
 (as `crates/sunrise-mod-api-gen/unwinding-methods.txt` does): a row that does not resolve and is not listed
 fails, a listed row that resolves now (or whose row is gone) fails until its line is deleted, and a line added

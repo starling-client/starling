@@ -1,0 +1,174 @@
+ids = [
+    "hook:brewing_complete",
+    "hook:brewing_complete.pos",
+    "method:Hooks::brewing_complete",
+    "type:BrewingCompleteEvent",
+    "type:BrewingCompleteEvent.pos",
+    "hook:entity_shoot_bow",
+    "hook:entity_shoot_bow.player",
+    "hook:entity_shoot_bow.name",
+    "hook:entity_shoot_bow.projectile",
+    "hook:entity_shoot_bow.force",
+    "method:Hooks::entity_shoot_bow",
+    "type:EntityShootBowEvent",
+    "type:EntityShootBowEvent.player",
+    "type:EntityShootBowEvent.name",
+    "type:EntityShootBowEvent.projectile",
+    "type:EntityShootBowEvent.force",
+    "hook:mob_killed",
+    "hook:mob_killed.player",
+    "hook:mob_killed.entity",
+    "hook:mob_killed.kind",
+    "method:Hooks::mob_killed",
+    "type:MobKilledEvent",
+    "type:MobKilledEvent.player",
+    "type:MobKilledEvent.entity",
+    "type:MobKilledEvent.kind",
+    "hook:mob_spawned",
+    "hook:mob_spawned.dimension",
+    "hook:mob_spawned.kind",
+    "hook:mob_spawned.pos",
+    "hook:mob_spawned.natural",
+    "method:Hooks::mob_spawned",
+    "type:MobSpawnedEvent",
+    "type:MobSpawnedEvent.dimension",
+    "type:MobSpawnedEvent.kind",
+    "type:MobSpawnedEvent.pos",
+    "type:MobSpawnedEvent.natural",
+    "hook:on_equip",
+    "hook:on_equip.slot",
+    "hook:on_equip.new",
+    "method:Hooks::on_equip",
+    "type:OnEquipEvent",
+    "type:OnEquipEvent.slot",
+    "type:OnEquipEvent.new",
+    "hook:player_died",
+    "hook:player_died.player",
+    "hook:player_died.cause",
+    "method:Hooks::player_died",
+    "type:PlayerDiedEvent",
+    "type:PlayerDiedEvent.player",
+    "type:PlayerDiedEvent.cause",
+    "hook:player_jump",
+    "hook:player_jump.player",
+    "hook:player_jump.name",
+    "method:Hooks::player_jump",
+    "type:PlayerJumpEvent",
+    "type:PlayerJumpEvent.player",
+    "type:PlayerJumpEvent.name",
+    "hook:player_launch_projectile",
+    "hook:player_launch_projectile.player",
+    "hook:player_launch_projectile.name",
+    "hook:player_launch_projectile.item",
+    "method:Hooks::player_launch_projectile",
+    "type:PlayerLaunchProjectileEvent",
+    "type:PlayerLaunchProjectileEvent.player",
+    "type:PlayerLaunchProjectileEvent.name",
+    "type:PlayerLaunchProjectileEvent.item",
+    "hook:player_ready_arrow",
+    "hook:player_ready_arrow.player",
+    "hook:player_ready_arrow.name",
+    "hook:player_ready_arrow.arrow",
+    "method:Hooks::player_ready_arrow",
+    "type:PlayerReadyArrowEvent",
+    "type:PlayerReadyArrowEvent.player",
+    "type:PlayerReadyArrowEvent.name",
+    "type:PlayerReadyArrowEvent.arrow",
+    "hook:player_stop_using_item",
+    "hook:player_stop_using_item.player",
+    "hook:player_stop_using_item.name",
+    "method:Hooks::player_stop_using_item",
+    "type:PlayerStopUsingItemEvent",
+    "type:PlayerStopUsingItemEvent.player",
+    "type:PlayerStopUsingItemEvent.name",
+    "hook:player_totem",
+    "hook:player_totem.player",
+    "hook:player_totem.name",
+    "method:Hooks::player_totem",
+    "type:PlayerTotemEvent",
+    "type:PlayerTotemEvent.player",
+    "type:PlayerTotemEvent.name",
+    "hook:player_trade",
+    "hook:player_trade.player",
+    "hook:player_trade.name",
+    "hook:player_trade.entity_id",
+    "method:Hooks::player_trade",
+    "type:PlayerTradeEvent",
+    "type:PlayerTradeEvent.player",
+    "type:PlayerTradeEvent.name",
+    "type:PlayerTradeEvent.entity_id",
+    "hook:projectile_launch",
+    "hook:projectile_launch.player",
+    "hook:projectile_launch.name",
+    "hook:projectile_launch.entity",
+    "hook:projectile_launch.kind",
+    "method:Hooks::projectile_launch",
+    "type:ProjectileLaunchEvent",
+    "type:ProjectileLaunchEvent.player",
+    "type:ProjectileLaunchEvent.name",
+    "type:ProjectileLaunchEvent.entity",
+    "type:ProjectileLaunchEvent.kind",
+    "hook:arrow_loose",
+    "hook:entity_change_block_pre",
+    "hook:entity_join_level",
+    "hook:living_death_post",
+    "hook:player_level_change",
+    "hook:player_xp_level_change",
+    "hook:potion_brew_post",
+    "hook:sleep_finished_time",
+    "hook:time_skip",
+    "hook:living_death_post.kind",
+    "type:LivingDeathPostEvent.kind",
+    "hook:living_death_post.player",
+    "type:LivingDeathPostEvent.player",
+    "hook:living_death_post.credited_player",
+    "type:LivingDeathPostEvent.credited_player",
+    "hook:living_death_post.message_key",
+    "type:LivingDeathPostEvent.message_key",
+    "hook:living_use_totem.item",
+    "type:LivingUseTotemEvent.item",
+    "hook:living_use_totem.stack",
+    "type:LivingUseTotemEvent.stack",
+]
+why = """
+Consolidate listener routes at the actual operations. `FarmlandBlock.fallOn` asks only
+`farmland_trample`; other block writes retain `entity_change_block_pre`. `EntityJoinLevelEvent`
+handles mob and projectile admission, while `FinalizeSpawnEvent` still handles spawn preparation.
+Projectile-list shots ask at `Projectile.spawnProjectile` with the owner set; no guest-turn scan
+or duplicate launch/shot notification remains. `ArrowLooseEvent` asks after ammo selection in
+`BowItem.releaseUsing` and before a player crossbow spends its charge in `CrossbowItem.performShooting`.
+`LivingDeathEvent` is the veto at the start of death, while `living_death_post` reports the end of
+`LivingEntity.die` or `ServerPlayer.die` with the victim and player attribution. `PotionBrewEvent.Post`
+reports the new bottles before consuming the ingredient in `BrewingStandBlockEntity.doBrew`,
+matching NeoForge `EventHooks.onPotionBrewed`. Taking a bottle is still a separate event.
+`LivingEntity.checkTotemDeathProtection` tries actual component-bearing stacks in hand order, asking
+NeoForge's `CommonHooks.onLivingUseTotem` for each before applying the first accepted protection.
+`LivingJumpEvent`, `LivingEquipmentChangeEvent` and `TradeWithVillagerEvent` replace duplicate
+jump, equip and trade listeners. `PlayerXpEvent.LevelChange` covers `Player.giveExperienceLevels`,
+including the NeoForge enchanting debit; the post-apply `player_level_change` also observes
+`ServerPlayer.setExperienceLevels` through the host setter. Waking sleepers asks only
+`SleepFinishedTimeEvent`, as in `ServerLevel.tick`; manual clock changes keep their own veto.
+"""
+migrate = """
+At a farmland landing, use `farmland_trample`; keep `entity_change_block_pre` for other writes.
+Replace `mob_spawned` with `entity_join_level` for admission or `finalize_spawn` to inspect the
+spawn reason earlier. Replace `mob_killed` and `player_died` with `living_death_post`; filter its
+`kind` or `player` and read `credited_player` for player credit or `message_key` for a known
+player death message. Use `living_death` only for the decision before death effects.
+Use `potion_brew_post` for `brewing_complete`, `living_equipment_change` for `on_equip`,
+`living_jump` for `player_jump`, and `trade_with_villager` for `player_trade`. The trade hook
+observes each take and may edit its offer, not one notice per clicked result slot.
+Replace `player_totem` with `living_use_totem`; `event.stack` is the eligible stack (`ItemStackView`),
+not an item ID. A canceled candidate is not consumed; another hand can still protect the victim.
+Use `arrow_loose` for the bow/crossbow firing decision (`player_ready_arrow` is gone), and
+`entity_join_level` for `entity_shoot_bow`, `player_launch_projectile` or `projectile_launch`.
+Filter by entity kind, then look up `host.projectile` and query its owner. There is no separate
+shot-force notification. The duplicate `player_stop_using_item` listener is gone; the retained
+use-item release/Stop classification is unchanged in this change. Use `sleep_finished_time` for
+sleep clock changes and `time_skip` for manual clock changes only. Keep `player_level_change`
+for applied levels, not `player_xp_level_change`, which can modify or veto a delta.
+Update version pins: `arrow_loose` 2, `entity_change_block_pre` 2, `entity_join_level` 5,
+`living_death_post` 2, `living_use_totem` 4, `player_level_change` 2, `player_xp_level_change` 2,
+`potion_brew_post` 3, `sleep_finished_time` 3, and `time_skip` 2. Post now sees the
+unconsumed brewing ingredient and the newly crafted bottles.
+"""

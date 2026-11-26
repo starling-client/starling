@@ -346,12 +346,17 @@ fn observed(id: &'static str, overlay: bool) -> Option<ObservedScreen> {
     Some(ObservedScreen {
         id,
         overlay,
+        mod_screen: None,
         menu: None,
+        menu_generation: None,
+        dialog_key: None,
         title: None,
         rect: [0.0; 4],
+        screen_size: [0.0; 2],
         slots: 0,
         mouse: [0.0; 2],
         partial_tick: 0.0,
+        regions: Vec::new(),
     })
 }
 
@@ -424,6 +429,86 @@ fn a_title_screen_opens_through_screen_opening() {
         assert_eq!(take(log), ["opening title->world_create", "closing title"]);
         game.settle_title_mode();
         assert!(take(log).is_empty());
+    });
+}
+
+#[test]
+#[ignore = "daily"]
+fn title_hook_requests_one_orderly_quit() {
+    use crate::game::EventLoopCtl;
+    use crate::game::native_entity_refs::tests::{run_fresh_cases, with_client_game};
+    use mod_api::{ClientStoppingEvent, ScreenKeyPressedPreEvent};
+    use std::cell::Cell;
+    use winit::event_loop::ControlFlow;
+
+    if run_fresh_cases(
+        "game::native_hooks::base::screen_open_tests::title_hook_requests_one_orderly_quit",
+        "SUNRISE_CLIENT_QUIT_CHILD",
+        &["title"],
+    ) {
+        return;
+    }
+
+    struct QuitProbe(Arc<Mutex<Vec<(&'static str, bool)>>>);
+    #[mod_api::__subscriptions]
+    impl Hooks for QuitProbe {
+        fn screen_key_pressed_pre(
+            &self,
+            host: &dyn ClientHost,
+            event: &mut ScreenKeyPressedPreEvent<'_>,
+        ) -> Flow {
+            if event.screen.id != "title" {
+                return Flow::Continue;
+            }
+            let accepted = host.request_client_quit();
+            let duplicate = host.request_client_quit();
+            self.0
+                .lock()
+                .unwrap()
+                .extend([("request", accepted), ("request", duplicate)]);
+            Flow::Cancel
+        }
+
+        fn client_stopping(&self, host: &mut dyn ClientHost, _: &mut ClientStoppingEvent) {
+            let accepted = host.request_client_quit();
+            self.0.lock().unwrap().push(("stopping", accepted));
+        }
+    }
+
+    struct QuitLoop(Cell<usize>);
+    impl EventLoopCtl for QuitLoop {
+        fn exit(&self) {
+            self.0.set(self.0.get() + 1);
+        }
+
+        fn set_control_flow(&self, _: ControlFlow) {}
+    }
+
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mods = vec![ModEntry::new("quit", Box::new(QuitProbe(log.clone())))].into();
+    with_mods(mods, || {
+        with_client_game(|game| {
+            game.title = Some(game.new_title(game.save.root.clone()));
+            let event_loop = QuitLoop(Cell::new(0));
+            let batch = HudBatch::scratch([854, 480]);
+            let screen = game.title_screen_view(&batch).unwrap();
+            let mut canceled = false;
+            game.native_screen_key_pressed_pre(&screen, "key.keyboard.q", false, 0, &mut canceled);
+            let requests = [("request", true), ("request", false)];
+            assert_eq!(*log.lock().unwrap(), requests);
+            assert_eq!(event_loop.0.get(), 0);
+
+            game.idle(&event_loop);
+            assert_eq!(event_loop.0.get(), 1);
+            assert!(game.error.is_none(), "quit failed: {:?}", game.error);
+            assert_eq!(*log.lock().unwrap(), requests);
+
+            game.shut_down();
+            assert_eq!(
+                *log.lock().unwrap(),
+                [("request", true), ("request", false), ("stopping", false)]
+            );
+        });
     });
 }
 
@@ -652,7 +737,10 @@ fn client_gui_state_matches_screen_init_hook() {
                     .unwrap(),
             );
             game.options.offscreen = true;
-            game.renderer = Some(game.new_renderer(window).unwrap());
+            {
+                let renderer = game.new_renderer(window).unwrap();
+                game.set_renderer(renderer);
+            }
             game.screen = Screen::Playing;
             assert!(mod_api::prelude::ScreensClientHost::observed_screen_id(game).is_none());
             game.set_screen(Screen::Inventory);
@@ -730,6 +818,374 @@ fn no_mods_is_a_plain_assignment() {
             game.options.execution_role = ExecutionRole::Client;
             game.set_screen(Screen::Inventory);
             assert_eq!(game.screen, Screen::Inventory);
+        });
+    });
+}
+
+/// Audit [85]: `mod_screen_open` opens over `Paused`, `Inventory` (running container close
+/// cleanup), `Creative`, the title screen (reporting `"title"`), active overlays (`book_view`,
+/// `sign_editor`, `dialog`, `link_prompt` — reporting each overlay's id and clearing
+/// `screen_over_playing()` so `screen_hooks_open()` is true), and another mod's `Screen::Mod`
+/// (firing `screen_opening`/`screen_closing` and switching `native_mod_screen`); fires
+/// `screen_init_post`; is idempotent (`true`) for the same mod; respects `ScreenOpening::Cancel`;
+/// and returns `false` when headless (`renderer.is_none()`), acting for a guest
+/// (`lan_acting.is_some()`), or while `remote_loading()`.
+#[test]
+#[ignore = "daily"]
+fn mod_screen_open_replaces_vanilla_screens_overlays_and_mod_screens() {
+    if crate::game::native_entity_refs::tests::run_fresh_cases(
+        "game::native_hooks::base::screen_open_tests::mod_screen_open_replaces_vanilla_screens_overlays_and_mod_screens",
+        "SUNRISE_MOD_SCREEN_OPEN_CHILD",
+        &["window"],
+    ) {
+        return;
+    }
+    use mod_api::ScreenInitPostEvent;
+    use sunrise_core::nbt::{Compound, Tag};
+
+    struct OpenAuditMod {
+        log: Arc<Mutex<Vec<String>>>,
+        answer: Arc<Mutex<Option<ScreenOpening>>>,
+    }
+    #[mod_api::__subscriptions]
+    impl Hooks for OpenAuditMod {
+        fn screen_opening(
+            &self,
+            _host: &dyn ClientHost,
+            event: &mut ScreenOpeningEvent<'_>,
+        ) -> Option<ScreenOpening> {
+            self.log
+                .lock()
+                .unwrap()
+                .push(format!("opening {}->{}", event.current.id, event.new.id));
+            self.answer.lock().unwrap().clone()
+        }
+        fn screen_closing(&self, _host: &dyn ClientHost, event: &mut ScreenClosingEvent<'_>) {
+            self.log
+                .lock()
+                .unwrap()
+                .push(format!("closing {}", event.screen.id));
+        }
+        fn screen_init_post(&self, host: &dyn ClientHost, event: &mut ScreenInitPostEvent<'_>) {
+            self.log.lock().unwrap().push(format!(
+                "init {}:{:?}",
+                event.screen.id,
+                host.mod_screen()
+            ));
+        }
+    }
+
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let answer = Arc::new(Mutex::new(None));
+    let mods: Arc<[ModEntry]> = vec![ModEntry::new(
+        "audit",
+        Box::new(OpenAuditMod {
+            log: log.clone(),
+            answer: answer.clone(),
+        }),
+    )]
+    .into();
+
+    with_mods(mods, || {
+        crate::game::native_entity_refs::tests::with_client_game(|game| {
+            // 1) Refused when headless (`renderer.is_none()`).
+            assert!(game.renderer.is_none());
+            assert!(!game.mod_screen_open("mod_a"));
+            assert_eq!(game.screen, Screen::Playing);
+            assert!(take(&log).is_empty());
+
+            // Attach an offscreen window + renderer for live screen transitions.
+            let mut builder = winit::event_loop::EventLoop::builder();
+            #[cfg(target_os = "linux")]
+            {
+                use winit::platform::x11::EventLoopBuilderExtX11;
+                builder.with_x11().with_any_thread(true);
+            }
+            let event_loop = builder.build().unwrap();
+            #[allow(deprecated)]
+            let window = Arc::new(
+                event_loop
+                    .create_window(
+                        winit::window::Window::default_attributes()
+                            .with_visible(false)
+                            .with_inner_size(winit::dpi::PhysicalSize::new(320, 240)),
+                    )
+                    .unwrap(),
+            );
+            game.options.offscreen = true;
+            game.window = Some(window.clone());
+            {
+                let renderer = game.new_renderer(window).unwrap();
+                game.set_renderer(renderer);
+            }
+            game.title = None;
+            game.player = Some(
+                sunrise_client::motion::PlayerMotion::new(
+                    game.motion,
+                    sunrise_core::geometry::Vec3::ZERO,
+                )
+                .unwrap(),
+            );
+            game.focused = true;
+
+            // 2) Refused when acting on a guest's behalf (`lan_acting.is_some()`).
+            game.lan_acting = Some(1);
+            assert!(!game.mod_screen_open("mod_a"));
+            game.lan_acting = None;
+            assert!(take(&log).is_empty());
+
+            // 3) Opens over `Screen::Paused`, fires opening/closing/init_post.
+            game.set_screen(Screen::Paused);
+            take(&log);
+            assert!(game.mod_screen_open("mod_a"));
+            assert_eq!(game.screen, Screen::Mod);
+            assert_eq!(game.mod_screen(), Some("mod_a"));
+            assert!(game.screen_hooks_open());
+            assert_eq!(
+                take(&log),
+                vec![
+                    "opening paused->mod",
+                    "closing paused",
+                    "init mod:Some(\"mod_a\")",
+                ]
+            );
+
+            // 4) Idempotent `true` for the same mod with no re-fire.
+            assert!(game.mod_screen_open("mod_a"));
+            assert!(take(&log).is_empty());
+
+            // 5) Switches from `mod_a` to another mod `mod_b`, firing opening/closing/init_post.
+            assert!(game.mod_screen_open("mod_b"));
+            assert_eq!(game.screen, Screen::Mod);
+            assert_eq!(game.mod_screen(), Some("mod_b"));
+            assert_eq!(
+                take(&log),
+                vec![
+                    "opening mod->mod",
+                    "closing mod",
+                    "init mod:Some(\"mod_b\")",
+                ]
+            );
+
+            // 6) `ScreenOpening::Cancel` keeps `mod_b` open and returns `false`.
+            *answer.lock().unwrap() = Some(ScreenOpening::Cancel);
+            assert!(!game.mod_screen_open("mod_c"));
+            assert_eq!(game.screen, Screen::Mod);
+            assert_eq!(game.mod_screen(), Some("mod_b"));
+            assert_eq!(take(&log), vec!["opening mod->mod"]);
+            *answer.lock().unwrap() = None;
+
+            // 7) Opens over `Screen::Creative`.
+            game.set_screen(Screen::Creative);
+            take(&log);
+            assert!(game.mod_screen_open("mod_a"));
+            assert_eq!(game.screen, Screen::Mod);
+            assert_eq!(game.mod_screen(), Some("mod_a"));
+            assert_eq!(
+                take(&log),
+                vec![
+                    "opening creative->mod",
+                    "closing creative",
+                    "init mod:Some(\"mod_a\")",
+                ]
+            );
+
+            // 8) Opens over `Screen::Inventory` with an open remote chest menu, sending
+            //    `ServerboundContainerClosePacket` during close cleanup.
+            let (mut reader, _writer) = crate::game::remote::tests::connect_menu_test(game);
+            use sunrise_protocol::packets::play::{self, Clientbound as C, Serverbound as S};
+            game.handle_packet(C::Login(play::Login {
+                player_id: 7,
+                hardcore: false,
+                levels: vec!["minecraft:overworld".into()],
+                max_players: 20,
+                chunk_radius: 8,
+                simulation_distance: 8,
+                reduced_debug_info: false,
+                show_death_screen: true,
+                limited_crafting: false,
+                spawn: play::SpawnInfo {
+                    dimension_type: 0,
+                    dimension: "minecraft:overworld".into(),
+                    seed: 1,
+                    game_type: 0,
+                    previous_game_type: None,
+                    debug: false,
+                    flat: false,
+                    last_death: None,
+                    portal_cooldown: 0,
+                    sea_level: 63,
+                },
+                online_mode: false,
+                enforces_secure_chat: false,
+            }))
+            .unwrap();
+            game.handle_packet(C::PlayerPosition(play::PlayerPosition {
+                teleport: 1,
+                position: [0.5, 65.0, 0.5],
+                delta: [0.0; 3],
+                yaw: 0.0,
+                pitch: 0.0,
+                relatives: 0,
+            }))
+            .unwrap();
+            game.remote.as_mut().unwrap().level_load.finish();
+            let root = std::path::PathBuf::from(
+                std::env::var_os("SUNRISE_TEST_RESOURCES")
+                    .expect("set SUNRISE_TEST_RESOURCES to prepared resources"),
+            );
+            let report = sunrise_protocol::registry::Builtin::find(&root)
+                .expect("the prepared resources carry registries.json");
+            let builtin = sunrise_protocol::registry::Builtin::load(&report).unwrap();
+            let chest_menu = builtin
+                .get("minecraft:menu")
+                .unwrap()
+                .id("minecraft:generic_9x3")
+                .unwrap();
+            game.handle_packet(C::OpenScreen(play::OpenScreen {
+                container: 5,
+                menu: chest_menu,
+                title: Tag::String("Chest".into()),
+            }))
+            .unwrap();
+            assert_eq!(game.screen, Screen::Inventory);
+            reader
+                .set_read_timeout(Some(std::time::Duration::from_millis(100)))
+                .unwrap();
+            while reader.recv().is_ok() {}
+            take(&log);
+
+            assert!(game.mod_screen_open("mod_a"));
+            assert_eq!(game.screen, Screen::Mod);
+            assert_eq!(game.mod_screen(), Some("mod_a"));
+            assert!(game.remote.as_ref().unwrap().menu.as_ref().is_none());
+            let mut closed_container = None;
+            while let Ok((id, body)) = reader.recv() {
+                if let Ok(S::ContainerClose(close)) = S::decode(id, &body) {
+                    closed_container = Some(close.container);
+                }
+            }
+            assert_eq!(closed_container, Some(5));
+            assert_eq!(
+                take(&log),
+                vec![
+                    "opening inventory->mod",
+                    "closing inventory",
+                    "init mod:Some(\"mod_a\")",
+                ]
+            );
+
+            // 9) Opens over active overlays (`book_view`, `sign_editor`, `dialog`, `link_prompt`):
+            //    reports each overlay's id in `opening`/`closing`, clears `screen_over_playing()`,
+            //    and leaves `screen_hooks_open() == true`.
+            game.set_screen(Screen::Playing);
+            game.open_book(crate::game::books::BookScreen::View {
+                pages: Vec::new(),
+                page: 0,
+                lectern: None,
+            });
+            assert!(game.screen_over_playing());
+            take(&log);
+            assert!(game.mod_screen_open("mod_a"));
+            assert!(game.book.is_none());
+            assert!(!game.screen_over_playing());
+            assert!(game.screen_hooks_open());
+            assert_eq!(
+                take(&log),
+                vec![
+                    "opening book_view->mod",
+                    "closing book_view",
+                    "init mod:Some(\"mod_a\")",
+                ]
+            );
+
+            game.set_screen(Screen::Playing);
+            game.open_sign_editor((0, 64, 0), true);
+            assert!(game.screen_over_playing());
+            take(&log);
+            assert!(game.mod_screen_open("mod_a"));
+            assert!(game.sign_edit.is_none());
+            assert!(!game.screen_over_playing());
+            assert!(game.screen_hooks_open());
+            assert_eq!(
+                take(&log),
+                vec![
+                    "opening sign_editor->mod",
+                    "closing sign_editor",
+                    "init mod:Some(\"mod_a\")",
+                ]
+            );
+
+            game.set_screen(Screen::Playing);
+            let mut dialog = Compound::new();
+            dialog.insert("type".into(), Tag::String("minecraft:notice".into()));
+            dialog.insert("title".into(), Tag::String("Notice".into()));
+            game.show_dialog(&Tag::Compound(dialog));
+            assert!(game.dialog_open());
+            assert!(game.screen_over_playing());
+            take(&log);
+            assert!(game.mod_screen_open("mod_a"));
+            assert!(!game.dialog_open());
+            assert!(!game.screen_over_playing());
+            assert!(game.screen_hooks_open());
+            assert_eq!(
+                take(&log),
+                vec![
+                    "opening dialog->mod",
+                    "closing dialog",
+                    "init mod:Some(\"mod_a\")",
+                ]
+            );
+
+            game.set_screen(Screen::Playing);
+            game.open_screen_overlay("link_prompt", |game| {
+                game.link_prompt = Some("https://example.com".into());
+            });
+            assert!(game.screen_over_playing());
+            take(&log);
+            assert!(game.mod_screen_open("mod_a"));
+            assert!(game.link_prompt.is_none());
+            assert!(!game.screen_over_playing());
+            assert!(game.screen_hooks_open());
+            assert_eq!(
+                take(&log),
+                vec![
+                    "opening link_prompt->mod",
+                    "closing link_prompt",
+                    "init mod:Some(\"mod_a\")",
+                ]
+            );
+
+            // 10) Opens over the title screen, reporting `"title"`.
+            game.set_screen(Screen::Playing);
+            game.remote = None;
+            game.player = None;
+            let saves = tempfile::tempdir().unwrap();
+            game.title = Some(game.new_title(saves.path().to_path_buf()));
+            take(&log);
+            assert!(game.mod_screen_open("mod_a"));
+            assert_eq!(game.screen, Screen::Mod);
+            assert_eq!(game.mod_screen(), Some("mod_a"));
+            assert_eq!(
+                take(&log),
+                vec![
+                    "opening title->mod",
+                    "closing title",
+                    "init mod:Some(\"mod_a\")",
+                ]
+            );
+
+            // 11) Refused while `remote_loading()` (connected with `player.is_none()`).
+            game.set_screen(Screen::Playing);
+            let (_peer, _w) = crate::game::remote::tests::connect_menu_test(game);
+            game.player = None;
+            assert!(game.remote_loading());
+            take(&log);
+            assert!(!game.mod_screen_open("mod_a"));
+            assert_eq!(game.screen, Screen::Playing);
+            assert!(take(&log).is_empty());
+
+            drop(event_loop);
         });
     });
 }

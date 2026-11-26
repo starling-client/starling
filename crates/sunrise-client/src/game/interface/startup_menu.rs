@@ -66,10 +66,18 @@ pub(super) struct StartupMenu {
     pub reload_packs: bool,
     /// A committed client pack selection, independent of other reload requests.
     pub(super) pack_selection_revision: u64,
+<<<<<<< HEAD
     /// Browse mods' worker (`mod_browser`).
     mod_jobs: super::mod_browser::Jobs,
     pub perf: sunrise_client::telemetry::Session,
     pub(super) diagnostic_frame: Option<Instant>,
+||||||| 46c00106def
+    /// Browse mods' worker (`mod_browser`).
+    mod_jobs: super::mod_browser::Jobs,
+    perf: sunrise_client::telemetry::Session,
+=======
+    perf: sunrise_client::telemetry::Session,
+>>>>>>> ed6772e2118
 }
 
 impl StartupMenu {
@@ -78,6 +86,7 @@ impl StartupMenu {
             Some(PendingWorldEntry::Server {
                 address: address.clone(),
                 name: options.player_name(),
+                list_name: None,
                 cookies: None,
                 lan: false,
                 realm: false,
@@ -92,7 +101,7 @@ impl StartupMenu {
                 .map(|folder| PendingWorldEntry::Local {
                     folder: folder.clone(),
                     name: None,
-                    seed: Some(options.seed),
+                    seed: options.seed,
                     creative: options.creative,
                     create: None,
                 })
@@ -138,9 +147,20 @@ impl StartupMenu {
             );
             title.last_server = settings.file.string("lastServer");
             title.skip_multiplayer_warning = settings.file.bool("skipMultiplayerWarning");
+<<<<<<< HEAD
             // Gui.addInitialScreens: the accessibility onboarding comes first. Not on Android,
             // which has no narrator, and whose players' options all still ask for it.
             if !cfg!(target_os = "android") && settings.file.bool("onboardAccessibility") {
+||||||| 46c00106def
+            // Gui.addInitialScreens: the accessibility onboarding comes first.
+            if settings.file.bool("onboardAccessibility") {
+=======
+            // The mods' parts are installed before this menu opens, so Create New World's
+            // Game Rules page lists their rules from the first frame.
+            title.set_rule_registry(Arc::new(crate::game::api_values::game_rule_registry()));
+            // Gui.addInitialScreens: the accessibility onboarding comes first.
+            if settings.file.bool("onboardAccessibility") {
+>>>>>>> ed6772e2118
                 title.start_onboarding();
             }
             self.title = Some(title);
@@ -172,7 +192,6 @@ impl StartupMenu {
         }
         game.pending_entry = self.pending.take();
         game.perf = std::mem::take(&mut self.perf);
-        game.mod_jobs = std::mem::take(&mut self.mod_jobs);
         game.cursor = self.cursor;
         if self.key_focus.is_none() {
             game.window_cursor = Some(self.pointer);
@@ -181,10 +200,9 @@ impl StartupMenu {
         game.physical_keys = std::mem::take(&mut self.physical_keys);
         game.clipboard = std::mem::take(&mut self.clipboard);
         game.text_selection = std::mem::take(&mut self.selection);
-        game.narrator_toast = self
-            .pending_narrator_toast
-            .take()
-            .and_then(|toast| game.add_system_toast(toast));
+        if let Some(toast) = self.pending_narrator_toast.take() {
+            game.add_system_toast(Some(super::toast_manager::SystemToastId::Narrator), toast);
+        }
         game.narration = std::mem::take(&mut self.narration);
         // Preserve an existing resource-error screen opened by start_game.
         if self.options_open {
@@ -195,7 +213,10 @@ impl StartupMenu {
             game.ui.options.offer_catalog();
             game.set_screen(Screen::Options);
             game.options_from_title = true;
-            game.dragging = self.dragging;
+            if self.dragging {
+                game.physical_buttons.insert(MouseButton::Left);
+                game.track_drag_button(MouseButton::Left, true);
+            }
         }
         if let Some(focus) = self.key_focus.take() {
             game.key_focus_adopt(focus, self.key_slider_edit);
@@ -279,11 +300,13 @@ impl StartupMenu {
             },
             Action::Connect {
                 address,
+                name,
                 lan,
                 realm,
             } => PendingWorldEntry::Server {
                 address,
                 name: player_name,
+                list_name: name,
                 cookies: None,
                 lan,
                 realm,
@@ -421,6 +444,7 @@ pub(super) fn spawn_loader(
     vanilla_root: &std::path::Path,
     started: Instant,
     progress: &Progress,
+    max_atlas_size: &Arc<AtomicU32>,
 ) -> Result<(Receiver<LoaderMsg>, JoinHandle<()>)> {
     #[cfg(target_os = "android")]
     crate::diagnostics::checkpoint("resource_loading", || serde_json::json!({}));
@@ -453,6 +477,7 @@ pub(super) fn spawn_loader(
     }
     let world = launch_world(options).map(str::to_owned);
     let progress = progress.clone();
+    let max_atlas_size = max_atlas_size.clone();
     let handle = std::thread::Builder::new()
         .stack_size(sunrise_threads::GAME_THREAD_STACK_BYTES)
         .name("resource-loader".into())
@@ -460,7 +485,7 @@ pub(super) fn spawn_loader(
             let result =
                 packs::startup_root(&vanilla_root, &settings.resource_packs, &[], &mod_sources)
                     .and_then(|roots| {
-                        load_resources_for_mods(
+                        load_resources_for_mods_with_limit(
                             roots,
                             super::pack_finders::data_packs(&mod_sources),
                             world.as_deref(),
@@ -470,8 +495,13 @@ pub(super) fn spawn_loader(
                             true,
                             load_role,
                             &progress,
-                            &mut |gui, root| {
-                                let _ = sender.send(LoaderMsg::Ui(gui, root.to_path_buf()));
+                            &max_atlas_size,
+                            &mut |gui, root, source| {
+                                let _ = sender.send(LoaderMsg::Ui(
+                                    gui,
+                                    root.to_path_buf(),
+                                    source.clone(),
+                                ));
                             },
                             &mut || {
                                 // The menu owns live settings; do not save the worker's snapshot.
@@ -501,7 +531,7 @@ impl Loading {
         if self.loaded.is_none() && !self.delivered {
             loop {
                 match self.receiver.try_recv() {
-                    Ok(LoaderMsg::Ui(gui, root)) => self.set_ui(gui, root),
+                    Ok(LoaderMsg::Ui(gui, root, source)) => self.set_ui(gui, root, source),
                     Ok(LoaderMsg::ClearPackSelection { revision, ack }) => {
                         if revision == self.menu.pack_selection_revision {
                             packs::clear_selection(&mut self.settings);
@@ -530,23 +560,7 @@ impl Loading {
                 }
             }
         }
-        self.drive_menu_mod_browser();
         self.restart_menu_resources()
-    }
-    /// The startup menu's Browse mods, as `Game::drive_mod_browser`.
-    fn drive_menu_mod_browser(&mut self) {
-        let menu = &mut self.menu;
-        let (installed, changed) = menu.mod_jobs.poll(
-            &mut menu.options.mod_browser,
-            &mut self.settings.mods,
-            false,
-        );
-        if changed {
-            menu.options.layout_changed();
-        }
-        if installed {
-            self.settings.save(&Game::options_path());
-        }
     }
     pub(super) fn apply_menu_settings(&mut self) {
         if let Some(renderer) = &mut self.renderer {
@@ -714,6 +728,10 @@ impl Loading {
                     self.save_menu_settings();
                     self.menu.reload_packs = true;
                 }
+                Event::ReloadTextures => {
+                    self.save_menu_settings();
+                    self.menu.reload_packs = true;
+                }
                 Event::PackOptions { entries, chosen } => {
                     packs::save_pack_options(&entries, chosen);
                     self.menu.options.pack_configs = packs::pack_configs(&self.vanilla_root);
@@ -762,6 +780,7 @@ impl Loading {
                     let _ = std::fs::create_dir_all(&dir);
                     packs::open_folder(&dir);
                 }
+<<<<<<< HEAD
                 Event::ButtonClick => {
                     if let Some(audio) = &mut self.audio {
                         audio.play_button_click();
@@ -777,6 +796,18 @@ impl Loading {
                     self.menu.mod_jobs.install(ui, Game::game_dir(), id);
                 }
                 Event::OpenModPage(url) => packs::open_uri(&url),
+||||||| 46c00106def
+                Event::BrowseMods => {
+                    let ui = &mut self.menu.options.mod_browser;
+                    self.menu.mod_jobs.browse(ui, Game::game_dir());
+                }
+                Event::InstallMod(id) => {
+                    let ui = &mut self.menu.options.mod_browser;
+                    self.menu.mod_jobs.install(ui, Game::game_dir(), id);
+                }
+                Event::OpenModPage(url) => packs::open_uri(&url),
+=======
+>>>>>>> ed6772e2118
                 // The startup menu has no screen stack for ConfirmLinkScreen; the link opens
                 // directly, as the menu's other links do.
                 Event::OpenLink(url) => packs::open_uri(&url),
@@ -785,14 +816,6 @@ impl Loading {
                     self.menu.clipboard.set(&text);
                 }
                 Event::ListShaderPacks => {
-                    let (key, _) = sunrise_client::shader_pack_list::resolve(
-                        &Game::shader_packs_dir(),
-                        &self.settings.sunrise.shader_pack,
-                    );
-                    if key != self.settings.sunrise.shader_pack {
-                        self.settings.sunrise.shader_pack = key;
-                        self.save_menu_settings();
-                    }
                     self.settings.shader_packs =
                         sunrise_client::shader_pack_list::scan(&Game::shader_packs_dir());
                 }
@@ -830,11 +853,6 @@ impl Loading {
                         super::shader_packs::write_shader_options(&options);
                     }
                 }
-                Event::NativePackOptions(i) => {
-                    if let Some(pack) = self.settings.shader_packs.get(i) {
-                        pack.save_values(&Game::shader_packs_dir());
-                    }
-                }
                 Event::OpenShaderPackFolder => {
                     let dir = Game::shader_packs_dir();
                     let _ = std::fs::create_dir_all(&dir);
@@ -864,20 +882,17 @@ impl Loading {
                         self.menu.win = Some((screen, Instant::now()));
                     }
                 }
-                Event::Narrator => super::narrator::update_status(
-                    self.settings.narrator(),
-                    &mut self.menu.pending_narrator_toast,
-                    Some,
-                ),
+                Event::Narrator => self.menu_narrator_status_changed(),
                 // The startup menu has no screen stack for ConfirmLinkScreen;
                 // the link opens directly, as the menu's other links do.
                 Event::AccessibilityHelp => {
                     super::packs::open_uri(super::options::ACCESSIBILITY_HELP_LINK)
                 }
-                // Mods' settings pages open only in a running game.
+                // Mods' settings pages and config screens open only in a running game.
                 // The HUD editor needs a world: its button is inactive here.
                 Event::NativeSettings(_)
                 | Event::NativeSetting(..)
+<<<<<<< HEAD
                 | Event::HudEditor
                 | Event::OpenCatalog(_)
                 | Event::NativeGame(_) => {}
@@ -893,6 +908,22 @@ impl Loading {
                 // The startup menu runs before the game opens a control socket, and has no music
                 // tracks to list or play.
                 Event::CopyAgentDetails
+||||||| 46c00106def
+                Event::NativeSettings(_) | Event::NativeSetting(..) | Event::HudEditor => {}
+                // The startup menu runs before the game opens a control socket,
+                // and before its sound engine (no clicks, no volume previews,
+                // and no music tracks to list or play).
+                Event::ButtonClick
+                | Event::CopyAgentDetails
+=======
+                | Event::ModConfigScreen(_)
+                | Event::HudEditor => {}
+                // The startup menu runs before the game opens a control socket,
+                // and before its sound engine (no clicks, no volume previews,
+                // and no music tracks to list or play).
+                Event::ButtonClick
+                | Event::CopyAgentDetails
+>>>>>>> ed6772e2118
                 | Event::ToggleRecording
                 | Event::ExportRepro
                 | Event::ListMusicTracks
@@ -908,6 +939,15 @@ impl Loading {
                     self.menu.pending = Some(PendingWorldEntry::StudioReplay(path));
                 }
             }
+        }
+    }
+
+    fn menu_narrator_status_changed(&mut self) {
+        if let Some(toast) = super::narrator::update_status(
+            self.settings.narrator(),
+            self.menu.pending_narrator_toast.as_mut(),
+        ) {
+            self.menu.pending_narrator_toast = Some(toast);
         }
     }
 
@@ -945,11 +985,7 @@ impl Loading {
         }
         let was_disabled = super::narrator::cycle_status(&mut self.settings);
         self.menu.options.layout_changed();
-        super::narrator::update_status(
-            self.settings.narrator(),
-            &mut self.menu.pending_narrator_toast,
-            Some,
-        );
+        self.menu_narrator_status_changed();
         self.save_menu_settings();
         self.menu
             .narration
@@ -1687,6 +1723,7 @@ impl Loading {
             &self.vanilla_root,
             self.started,
             &self.progress,
+            &self.max_atlas_size,
         )?;
         self.follow_loader(receiver, handle);
         self.menu.reload_packs = false;
@@ -1727,11 +1764,16 @@ mod tests {
     use super::*;
 
     fn gui(root: &std::path::Path) -> UiResources {
-        UiResources {
-            atlas: HudAtlas::fonts(&sunrise_assets::resource_source::ResourceSource::directory(
+        let atlas = if root.exists() {
+            HudAtlas::fonts(&sunrise_assets::resource_source::ResourceSource::directory(
                 root.to_path_buf(),
             ))
-            .unwrap(),
+            .unwrap()
+        } else {
+            HudAtlas::boot()
+        };
+        UiResources {
+            atlas,
             panorama: Arc::new(sunrise_client::gfx::panorama::Faces::colour([
                 96, 110, 111, 255,
             ])),
@@ -1745,8 +1787,13 @@ mod tests {
         Loading {
             window: None,
             renderer: None,
+<<<<<<< HEAD
             boot_renderer: None,
             world_renderer: None,
+||||||| 46c00106def
+=======
+            max_atlas_size: Arc::new(AtomicU32::new(sunrise_client::hud::MAX_ATLAS_SIZE)),
+>>>>>>> ed6772e2118
             boot: sunrise_client::hud::HudAtlas::boot(),
             gui: None,
             settings: Settings::default(),
@@ -1776,6 +1823,54 @@ mod tests {
             sound_registry: None,
             suspended: false,
         }
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn startup_menu_creation_carries_installed_mod_rules() {
+        use mod_api::{Hooks, Registrar, RegistrationContext};
+        use sunrise_client::gamerules::Value;
+        struct Mod;
+        #[mod_api::__subscriptions]
+        impl Hooks for Mod {
+            fn register(&self, registrar: &mut dyn Registrar, _: &RegistrationContext) {
+                registrar.game_rule_category("machines").unwrap();
+                registrar
+                    .game_rule_int("cap", "example:machines", 8, 0, 64)
+                    .unwrap();
+            }
+        }
+        // `set_root` replaces the process's language: keep it in a child process.
+        if super::super::native_entity_refs::tests::run_fresh_cases(
+            "game::startup_menu::tests::startup_menu_creation_carries_installed_mod_rules",
+            "SUNRISE_STARTUP_MOD_RULES_CASE",
+            &["rules"],
+        ) {
+            return;
+        }
+        let mods: mod_api::Mods = vec![mod_api::ModEntry::new("example", Box::new(Mod))].into();
+        mod_platform::testing::with_mods(mods, || {
+            super::super::native_entity_refs::tests::with_client_game(|_| {
+                let scratch = tempfile::tempdir().unwrap();
+                let mut menu = StartupMenu::default();
+                menu.set_root(
+                    scratch.path().to_path_buf(),
+                    &Settings::default(),
+                    Arc::from([]),
+                    "",
+                );
+                let title = menu.title.as_mut().unwrap();
+                title.enter_singleplayer();
+                let Action::Create { mut options, .. } = title.create_action() else {
+                    panic!("creation")
+                };
+                // The page lists `available_rules`: the mod's integer rule is one of them.
+                assert!(options.rules.rule("example:cap").is_some());
+                assert_eq!(options.rules.get("example:cap"), Some(Value::Int(8)));
+                assert!(options.rules.set("example:cap", Value::Int(12)));
+                assert_eq!(options.rules.get("example:cap"), Some(Value::Int(12)));
+            })
+        });
     }
 
     #[test]
@@ -2206,15 +2301,29 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "daily"]
     fn menu_is_usable_while_the_core_worker_is_blocked() {
-        let root = std::env::temp_dir().join("sunrise-startup-menu-no-world-resources");
+        // Publishing the empty root's language must not replace another game's language.
+        if super::super::native_entity_refs::tests::run_fresh_cases(
+            "game::startup_menu::tests::menu_is_usable_while_the_core_worker_is_blocked",
+            "SUNRISE_STARTUP_BLOCKED_WORKER_CASE",
+            &["blocked"],
+        ) {
+            return;
+        }
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path().to_path_buf();
         let (sender, receiver) = std::sync::mpsc::channel();
         let (release, wait) = std::sync::mpsc::channel();
         let (published, published_rx) = std::sync::mpsc::channel();
         let worker_root = root.clone();
         let worker = std::thread::spawn(move || {
             sender
-                .send(LoaderMsg::Ui(gui(&worker_root), worker_root))
+                .send(LoaderMsg::Ui(
+                    gui(&worker_root),
+                    worker_root,
+                    sunrise_assets::resource_source::ResourceSource::default(),
+                ))
                 .unwrap();
             published.send(()).unwrap();
             wait.recv().unwrap();
@@ -2239,7 +2348,11 @@ mod tests {
             options: Default::default(),
         };
         title.type_text("My world");
-        loading.set_ui(gui(&root), root);
+        loading.set_ui(
+            gui(&root),
+            root,
+            sunrise_assets::resource_source::ResourceSource::default(),
+        );
         let action = loading.menu.title.as_ref().unwrap().create_action();
         loading.menu.queue_entry(action, "Player".into());
         assert!(
@@ -2267,6 +2380,7 @@ mod tests {
         menu.queue_entry(
             Action::Connect {
                 address: "localhost:25565".into(),
+                name: None,
                 lan: true,
                 realm: false,
             },
@@ -2318,9 +2432,9 @@ mod tests {
             DeclarationRefusal::new(
                 "porter",
                 DeclarationKind::Item,
-                mod_api::DeclarationError::UnownedNamespace {
+                mod_api::DeclarationError::Rejected {
                     id: "foreign:wrench".into(),
-                    namespace: "foreign".into(),
+                    reason: "declared twice".into(),
                 },
             ),
         ]);

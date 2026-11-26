@@ -1,8 +1,8 @@
 import hashlib,json,sys
 from pathlib import Path
-sys.path.insert(0,str(Path.cwd()/'tools'))
-import test_command_exec_parity as driver
-import harness_args
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_command_exec_parity as driver, harness_args
 INLINE='{material:{palette_id:"minecraft:gold",description:"Inline material"},pattern:{asset_id:"minecraft:coast",description:"Inline pattern",decal:0b}}'
 NAMED='{material:"minecraft:gold",pattern:"minecraft:coast"}'
 CASES=[('inline',INLINE),('named',NAMED),('plain',None)]

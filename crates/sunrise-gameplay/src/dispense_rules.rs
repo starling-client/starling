@@ -48,13 +48,6 @@ pub fn y_rot(d: Direction) -> f32 {
         _ => 270.0,
     }
 }
-/// `DirectionalPlaceContext.getRotation`: `get2DDataValue() * 90`, -90 for vertical.
-pub fn place_rotation(d: Direction) -> f32 {
-    match d {
-        Direction::Up | Direction::Down => -90.0,
-        _ => y_rot(d),
-    }
-}
 pub fn block_box(p: Pos) -> Aabb {
     Aabb::new(
         Vec3::new(f64::from(p.0), f64::from(p.1), f64::from(p.2)),

@@ -85,26 +85,48 @@ pub(crate) fn crate_root(root: &Path, krate: &str) -> Result<(PathBuf, PathBuf),
     Ok((package, lib))
 }
 
-/// The files of the crate `krate` that every build compiles.
+/// The files of the crate `krate` that every build compiles. Each must resolve inside `root`:
+/// the index never names a file the staged copy doesn't hold.
 pub(crate) fn crate_files(root: &Path, krate: &str) -> Result<Vec<ModuleFile>, String> {
     let (_, lib) = crate_root(root, krate)?;
     let dir = lib.parent().expect("a source file has a folder").to_owned();
-    module_files(krate.to_owned(), lib, dir, true)
-}
-
-/// A path without generic arguments or spaces, as listed paths and found ones are compared.
-pub(crate) fn plain_path(path: &str) -> String {
-    let mut out = String::new();
-    let mut depth = 0;
-    for c in path.chars() {
-        match c {
-            '<' => depth += 1,
-            '>' => depth -= 1,
-            c if depth == 0 && !c.is_whitespace() => out.push(c),
-            _ => {}
+    let files = module_files(krate.to_owned(), lib, dir, true)?;
+    let canonical = root
+        .canonicalize()
+        .map_err(|e| format!("{}: {e}", root.display()))?;
+    for file in &files {
+        let physical = file
+            .path
+            .canonicalize()
+            .map_err(|e| format!("{}: {e}", file.path.display()))?;
+        if !physical.starts_with(&canonical) {
+            return Err(format!(
+                "{}: outside the source at {}",
+                file.path.display(),
+                root.display()
+            ));
         }
     }
-    out
+    Ok(files)
+}
+
+/// A type or path without generic arguments or spaces, as listed paths, owners and found ones
+/// are compared (`Game<'_>` is `Game`).
+pub(crate) fn plain_path(path: &str) -> String {
+    let mut depth = 0usize;
+    path.chars()
+        .filter(|&c| match c {
+            '<' => {
+                depth += 1;
+                false
+            }
+            '>' => {
+                depth = depth.saturating_sub(1);
+                false
+            }
+            c => depth == 0 && !c.is_whitespace(),
+        })
+        .collect()
 }
 
 /// `r#type` as `type`.

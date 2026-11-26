@@ -12,12 +12,13 @@ import subprocess
 import tempfile
 
 from PIL import Image
-import lab
-import oracle_harness as oracle
-import test_rust_parity as base
-from bundle_tooltip_e2e import longest_tooltip_border
+import sys
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, oracle_harness as oracle, test_rust_parity as base
+from tools.bundle_tooltip_e2e import longest_tooltip_border
+
 
 
 def main():

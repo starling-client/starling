@@ -1,58 +1,41 @@
 # Sunrise APIs
 
-Sunrise has eight surfaces that other programs and people build on. Each one has an **API** (the contract: what you
-may call, read or write, and what Sunrise promises about it) and an **SDK** (the tools that help you use it). This
-section has one page per surface, plus the rules every surface follows:
-[stability and versioning](stability.md).
+Use this index to find the guides and references for building mods, running Sunrise, or integrating it with other tools.
+See [stability and versioning](stability.md) for how to read the stability labels in the API pages.
 
-| Surface | For | API today | Stability | Reference |
-| --- | --- | --- | --- | --- |
-| [Mods](../mods.md) | mod authors | content mods: manifest `api` 0.2; native mods: a horizon-mixins bundle ([native-mods.md](../native-mods.md)) | preview (content), experimental (native) | [mods.md](../mods.md) |
-| [Shaders](shaders.md) | shader authors | API 0.1 (sky, vertex, material, weather and post stages, coloured block light, options, hot reload) | experimental | [shaders-reference.md](shaders-reference.md) |
-| [Agent control](agent-control.md) | agents, scripts, tests | `sunrise-ctl`, its MCP server, the game's control socket | preview | [sunrise-ctl-commands.md](../sunrise-ctl-commands.md) (generated) |
-| [Servers](server.md) | hosts, panels, bots | `sunrise-server` commands, `server.toml`, control API `/api/v1` | stable | [server-reference.md](server-reference.md) (generated) |
-| [Launcher](launcher.md) | players' agents, pack makers | `sunrise-launcher` commands and its MCP server | preview | [launcher-commands.md](https://github.com/sunrise-org/sunrise-launcher/blob/main/docs/launcher-commands.md) (generated) |
-| [Launch](launch.md) | other launchers | `sunrise-client`'s launch options, the session JSON, exit codes; `sunrise-prepare`'s output, `--check` and `--progress json` | experimental | [launch-reference.md](launch-reference.md) (generated) |
-| [Data formats](data-formats.md) | tools that read Sunrise's files | benchmark reports, settings files, signed checksums | stable or preview, per format | on that page |
+| Surface | What it covers | Guides and references |
+| --- | --- | --- |
+| [Mods](../modding/src/introduction.md) | Content and native mods both ship as `.smod` packages. Native mods use `mod_api` and build against the SDK for an exact game build. | [Manifest](../modding/src/reference/manifest.md), [SDK](../modding/src/reference/sdk.md) |
+| [Agent control](agent-control.md) | Drive a running game with `sunrise-ctl`, its MCP tools, or the local control socket. | [sunrise-ctl commands](../sunrise-ctl-commands.md) |
+| [Servers](server.md) | Host and manage a dedicated server with `sunrise-server`, `server.toml`, and the `/api/v1` control API. | [Server reference](server-reference.md) |
+| [Launcher](launcher.md) | Manage installations and play through the `sunrise-launcher` CLI or MCP. | [Launcher commands](https://github.com/sunrise-org/sunrise-launcher/blob/main/docs/launcher-commands.md) |
+| [Launch](launch.md) | Integrate another launcher with `sunrise-prepare` and `sunrise-client`: resource preparation, launch options, session data, and exit codes. | [Launch guide](launch-guide.md), [Launch reference](launch-reference.md) |
+| [Data formats](data-formats.md) | Read files such as benchmark reports, server settings, and signed release checksums. | Format links and version fields on that page |
 
 ## How these APIs are designed
 
-- **From the people who use them.** Each API starts from what a mod author, a pack author, a server host or an agent
-  needs to do, written down as tasks ("a host backs up the world from a script"), and from how Sunrise is built:
-  Rust, wgpu and a server thread that runs every world. A function exists because a task
-  needs it.
-- **Our own design.** Sunrise's APIs are not modelled on any other project's. Contributors may know other mod
-  loaders, renderers and server platforms exist, but their source and API references are never read, copied or
-  paraphrased here, and our names, shapes and docs are not taken from theirs. Vanilla Minecraft 26.3 is the reference for game
-  concepts: ids, commands, `server.properties`, data packs and resource packs.
-- **Safe by default.** A content mod is data and runs no code; a native mod runs with the player's rights, so it is
-  off by default, behind a warning and reviewed before the registry lists it; the control
-  sockets listen on this computer only, behind a token; nothing here is on by default where it would change vanilla's
-  look or behaviour.
-- **Free when unused.** An API nobody uses costs nothing per tick or per frame: no engine, no thread, no allocation.
-- **One contract for every mode.** In-frame single player, the server thread, LAN and the dedicated server run the
-  same gameplay code ([AGENTS.md](../../AGENTS.md)), so a server-side API serves all of them.
+Vanilla Minecraft: Java Edition 26.3 is the specification for game behaviour. Mod API hooks use NeoForge 26.3
+as the design reference for names and shapes where a counterpart exists; see the
+[mod API reference](../modding/src/reference/api.md) for the exact Sunrise contracts and any differences.
+Single player runs on an integrated server thread and uses the same server-side gameplay code as LAN and
+dedicated servers.
+
+Content mods provide data and assets without running code. Native mods run in the game process with the player's
+permissions; see the [modding book](../modding/src/introduction.md) for how the two kinds of package differ.
 
 ## References are generated
 
-A reference page is written by code from the source it describes, and a test fails when the two differ:
+Update the source, then regenerate the reference when its contract changes:
 
 | Page | Generated from | Update it with |
 | --- | --- | --- |
-| [server-reference.md](server-reference.md) | `sunrise-server`'s help, `config::TEMPLATE`, `api::ROUTES` | `SUNRISE_WRITE_DOCS=1 cargo test -p sunrise-server reference` |
-| [sunrise-ctl-commands.md](../sunrise-ctl-commands.md) | the command table in `crates/sunrise-client/src/bin/sunrise-ctl/commands.rs` | `sunrise-ctl help --markdown > docs/sunrise-ctl-commands.md` |
-| [launcher-commands.md](https://github.com/sunrise-org/sunrise-launcher/blob/main/docs/launcher-commands.md) | `src/cli.rs` in [sunrise-launcher](https://github.com/sunrise-org/sunrise-launcher) | `SUNRISE_WRITE_DOCS=1 cargo test the_launcher_reference` there |
-| [launch-reference.md](launch-reference.md) | `crates/sunrise-client/src/game/runtime/launch_api.rs` | `SUNRISE_WRITE_DOCS=1 cargo test -p sunrise-client --lib launch_api` |
-
-So a pull request that changes an API also changes its reference, and the reviewer sees the API's diff in the
-reference's diff. The guides (overview, how-to, examples) are written by hand.
+| [Server reference](server-reference.md) | Help text, `config::TEMPLATE`, and `api::ROUTES` in `crates/sunrise-server` and `crates/sunrise-server-launch` | `SUNRISE_WRITE_DOCS=1 cargo test -p sunrise-server reference` |
+| [sunrise-ctl commands](../sunrise-ctl-commands.md) | The command table in `crates/sunrise-client/src/bin/sunrise-ctl/commands.rs` | `sunrise-ctl help --markdown > docs/sunrise-ctl-commands.md` |
+| [Launcher commands](https://github.com/sunrise-org/sunrise-launcher/blob/main/docs/launcher-commands.md) | `src/cli.rs` in [sunrise-launcher](https://github.com/sunrise-org/sunrise-launcher) | `SUNRISE_WRITE_DOCS=1 cargo test the_launcher_reference` in that repository |
+| [Launch reference](launch-reference.md) | `crates/sunrise-client/src/game/runtime/launch_api.rs` | `SUNRISE_WRITE_DOCS=1 cargo test -p sunrise-client --lib launch_api` |
 
 ## Each surface's page
 
-Every page has the same parts: **Overview** (what you can build), **Guide** (where to start), **Reference**,
-**Examples**, **Stability** (the level of each part, per [stability.md](stability.md)), **Changelog** and
-**Not there yet** (what is planned, so nobody builds on a guess).
-
-The website shows these pages at [playsunrise.net/docs/api](https://playsunrise.net/docs/api), built from this
-folder, and a summary for players and authors at [playsunrise.net/docs/apis](https://playsunrise.net/docs/apis)
-(in the website's repository, horizon-rust/horizon-site).
+Start with the overview or guide for examples, then use the reference to look up commands, arguments, or file formats.
+These pages are published at [playsunrise.net/docs/api](https://playsunrise.net/docs/api) by the website in
+`sunrise-org/sunny`.

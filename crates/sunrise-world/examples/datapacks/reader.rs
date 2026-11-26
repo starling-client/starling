@@ -32,9 +32,6 @@ pub fn overrides(packs: &[&Path]) -> Result<WorldgenOverrides, Error> {
             }
         }
     }
-    for warning in overrides.finish(|_| true) {
-        eprintln!("data pack worldgen: {warning}");
-    }
     Ok(overrides)
 }
 

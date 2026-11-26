@@ -245,90 +245,36 @@ class CheckLayersTests(unittest.TestCase):
         self.assertEqual(check_layers.edges([pkg]), {"game": set()})
 
 
-class UpstreamLayerRestorationTests(unittest.TestCase):
-    def setUp(self):
-        directory = tempfile.TemporaryDirectory()
-        self.addCleanup(directory.cleanup)
-        self.root = Path(directory.name)
-        self.git("init", "-q", "-b", "main")
-        self.git("config", "user.name", "Fixture")
-        self.git("config", "user.email", "fixture@example.invalid")
-        self.config = dict(CONFIG, crates=dict(CONFIG["crates"], cosmetic="sunrise"))
-        self.base_config = dict(self.config, crates={k: v for k, v in self.config["crates"].items() if k != "cosmetics"})
-        (self.root / "tools").mkdir()
-        (self.root / "tools/layers.json").write_text(json.dumps(self.base_config))
-        self.git("add", "tools")
-        self.git("commit", "-q", "-m", "base")
-        self.base = self.git("rev-parse", "HEAD").strip()
-        self.git("checkout", "-q", "-b", "upstream")
-        upstream = dict(self.config, allowed=["game -> cosmetics"])
-        (self.root / "tools/layers.json").write_text(json.dumps(upstream))
-        self.git("commit", "-q", "-am", "upstream layers")
-        remote = self.root / "remote.git"
-        self.git("init", "-q", "--bare", str(remote))
-        self.git("push", "-q", str(remote), "HEAD:refs/heads/main")
-        self.git("checkout", "-q", "-b", "work", self.base)
-        (self.root / "fork").write_text("fork")
-        self.git("add", "fork")
-        self.git("commit", "-q", "-m", "fork")
-        self.git("merge", "-q", "--no-edit", "upstream")
-        for patch in (mock.patch.object(merge_base, "ROOT", self.root),
-                      mock.patch.dict(os.environ, {"SUNRISE_UPSTREAM_URL": str(remote)})):
-            patch.start()
-            self.addCleanup(patch.stop)
+class RollupTests(unittest.TestCase):
+    def test_a_branch_merging_another_branch_with_a_new_crate_passes_offline(self):
+        """A rollup merges pull request heads main lacks; a crate one of them adds gets its layer like any other."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t.invalid",
+                       GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t.invalid")
 
-    def git(self, *args):
-        return subprocess.run(["git", *args], cwd=self.root, check=True,
-                              capture_output=True, text=True).stdout
+            def run(*args):
+                return subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, env=env,
+                                      text=True).stdout.strip()
 
-    def problems(self, edge, layer="sunrise"):
-        upstream, errors = merge_base.verified_sync_config(self.base, "tools/layers.json")
-        self.assertEqual(errors, [])
-        config = dict(self.config, allowed=[edge], crates=dict(self.config["crates"], cosmetics=layer))
-        crate, dependency = edge.split(" -> ")
-        return check_layers.check(config, {crate: {dependency}, dependency: set()},
-                                  self.base_config, upstream=upstream)[0]
-
-    def test_verbatim_upstream_edge_and_assignment_pass(self):
-        self.assertEqual(self.problems("game -> cosmetics"), [])
-
-    def run_main(self, allowed):
-        packages = [{"name": "game", "dependencies": [{"name": "cosmetics", "kind": None, "path": "/x/cosmetics"}]},
-                    {"name": "cosmetics", "dependencies": []}]
-        config = dict(self.config, allowed=allowed)
-        with mock.patch.object(check_layers, "load_config", return_value=config), \
-                mock.patch.object(check_layers, "base_config", return_value=self.base_config), \
-                mock.patch.object(check_layers, "workspace_packages", return_value=packages), \
-                mock.patch.object(merge_base, "verified_sync_config", wraps=merge_base.verified_sync_config) as spy, \
-                mock.patch("sys.stdout", new_callable=io.StringIO):
-            return check_layers.main(["--base", self.base]), spy
-
-    def test_a_violation_the_upstream_inventory_excuses_looks_it_up_once(self):
-        code, spy = self.run_main(["game -> cosmetics"])
-        self.assertEqual(code, 0)
-        spy.assert_called_once()
-
-    def test_a_merge_without_a_violation_never_reaches_the_network(self):
-        packages = [{"name": "game", "dependencies": []}]
-        with mock.patch.object(check_layers, "load_config", return_value=self.base_config), \
-                mock.patch.object(check_layers, "base_config", return_value=self.base_config), \
-                mock.patch.object(check_layers, "workspace_packages", return_value=packages), \
-                mock.patch.object(merge_base, "fetch_upstream_main", side_effect=AssertionError("network")), \
-                mock.patch("sys.stdout", new_callable=io.StringIO):
-            self.assertEqual(check_layers.main(["--base", self.base]), 0)
-
-    def test_fork_only_edge_fails(self):
-        self.assertTrue(self.problems("game -> mod-api"))
-
-    def test_one_character_different_edge_fails(self):
-        self.assertTrue(self.problems("game -> cosmetic"))
-
-    def test_upstream_edge_without_a_merge_of_upstream_fails(self):
-        self.git("reset", "-q", "--hard", "HEAD^")
-        self.assertTrue(self.problems("game -> cosmetics"))
-
-    def test_altered_new_crate_assignment_fails(self):
-        self.assertTrue(self.problems("game -> cosmetics", "platform"))
+            (root / "tools").mkdir()
+            (root / "tools/layers.json").write_text(json.dumps(CONFIG))
+            run("init", "-q", "-b", "main")
+            run("add", ".")
+            run("commit", "-q", "-m", "base")
+            base = run("rev-parse", "HEAD")
+            run("checkout", "-q", "-b", "member")
+            config = dict(CONFIG, crates=dict(CONFIG["crates"], rule="sunrise"))
+            (root / "tools/layers.json").write_text(json.dumps(config))
+            run("commit", "-q", "-am", "a new crate")
+            run("checkout", "-q", "-b", "rollup", base)
+            run("merge", "-q", "--no-ff", "-m", "merge member", "member")
+            packages = [package("rule", "cosmetics"), package("cosmetics")]
+            with mock.patch.object(check_layers, "ROOT", root), mock.patch.object(merge_base, "ROOT", root), \
+                    mock.patch.object(check_layers, "workspace_packages", return_value=packages), \
+                    mock.patch.object(check_layers, "load_config", return_value=config), \
+                    mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+                self.assertEqual(check_layers.main(["--base", base]), 0, out.getvalue())
 
 
 class PullRequestMergeTests(unittest.TestCase):

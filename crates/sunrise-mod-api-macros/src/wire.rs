@@ -46,8 +46,11 @@ pub(crate) fn expand(mut input: DeriveInput) -> syn::Result<TokenStream> {
         return Ok(quote! {
             #[automatically_derived]
             impl #imp #w::Wire for #name #ty #clause {
-                const MIN: usize = <#via as #w::Wire>::MIN;
-                fn describe(schema: &mut #w::WireSchema) -> u64 where Self: 'static {
+                const MIN: ::core::primitive::usize = <#via as #w::Wire>::MIN;
+                fn describe(schema: &mut #w::WireSchema) -> ::core::primitive::u64
+                where
+                    Self: 'static,
+                {
                     schema.ordinary_only();
                     schema.named::<Self>(|schema| <#via as #w::Wire>::describe(schema))
                 }
@@ -117,9 +120,12 @@ pub(crate) fn expand(mut input: DeriveInput) -> syn::Result<TokenStream> {
                 takes.push(quote!(#index => #build,));
             }
             puts = vec![quote!(match self { #(#puts,)* _ => ::core::unreachable!() })];
-            takes = vec![
-                quote!(match input.take::<u32>()? { #(#takes)* tag => return ::core::result::Result::Err(#w::WireError::Tag(tag)) }),
-            ];
+            takes = vec![quote! {
+                match input.take::<::core::primitive::u32>()? {
+                    #(#takes)*
+                    tag => return ::core::result::Result::Err(#w::WireError::Tag(tag)),
+                }
+            }];
         }
         Data::Union(_) => return Err(syn::Error::new_spanned(name, "Wire cannot encode a union")),
     }
@@ -136,9 +142,12 @@ pub(crate) fn expand(mut input: DeriveInput) -> syn::Result<TokenStream> {
     Ok(quote! {
         #[allow(unreachable_patterns, unused_variables)]
         #[automatically_derived]
-            impl #imp #w::Wire for #name #ty #clause {
-            const MIN: usize = #min;
-            fn describe(schema: &mut #w::WireSchema) -> u64 where Self: 'static {
+        impl #imp #w::Wire for #name #ty #clause {
+            const MIN: ::core::primitive::usize = #min;
+            fn describe(schema: &mut #w::WireSchema) -> ::core::primitive::u64
+            where
+                Self: 'static,
+            {
                 schema.named::<Self>(|schema| { #describe })
             }
             fn put(&self, out: &mut #w::Writer) { #put }

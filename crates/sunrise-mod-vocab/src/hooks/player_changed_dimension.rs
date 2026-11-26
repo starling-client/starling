@@ -1,5 +1,4 @@
 //! The `player_changed_dimension` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0247
 
 pub trait Hooks {
     /// `player` (`name`) changed dimension (NeoForge's

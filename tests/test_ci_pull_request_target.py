@@ -10,8 +10,10 @@ event to another file, stops it running until the policy's list changes too.
 import re
 import unittest
 from pathlib import Path
+from tools.ci import vendored_yaml
 
-from tests.test_ci_concurrency import yaml
+yaml = vendored_yaml.load()
+
 
 ROOT = Path(__file__).resolve().parents[1]
 # The files the repository's Actions policy lets run on pull_request_target; change it with the policy.

@@ -1,5 +1,4 @@
 //! The `player_respawned` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0118
 
 pub trait Hooks {
     /// `PlayerRespawnPositionEvent`: where `player` respawns, once the server has

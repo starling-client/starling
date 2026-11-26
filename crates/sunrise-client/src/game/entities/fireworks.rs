@@ -3,6 +3,7 @@
 //! acceleration and 0.04 lift, the flight-duration lifetime, explosion
 //! damage with line of sight, and the client explosion (`createFireworks`).
 use super::{Game, Hit, dragon::FightWho, item_draw::owner_at, view_vector};
+use std::sync::Arc;
 use sunrise_assets::item_model::DisplayContext;
 use sunrise_client::{
     block_entity_render::vertex_light,
@@ -26,11 +27,15 @@ pub(super) const FIREWORK_EXPLODE_EVENT: i8 = 17;
 #[path = "fireworks/impact.rs"]
 mod impact;
 
+#[derive(Clone)]
 pub(super) struct Rocket {
     /// Entity-owned registration metadata; content clones are detached.
     pub(super) attachment_lifetime: sunrise_mod_runtime::attachments::AttachmentLifetime,
     /// `Entity.yRot` and `xRot` (`/tp`, `/data get ... Rotation`).
     pub rotation: [f32; 2],
+    /// `Entity.yRotO` and `xRotO`: the rotation when its tick began (`setOldPosAndRot`), which
+    /// `Projectile.updateRotation` eases from and a deflection turns with the rotation.
+    pub(super) previous_rotation: [f32; 2],
     /// When it joined its list (`sunrise_client::join_seq`); set by the list.
     pub(super) join: sunrise_client::join_seq::JoinSeq,
     /// Its entity id: from the entity counter on the server, the server's on
@@ -41,7 +46,7 @@ pub(super) struct Rocket {
     pub(super) velocity: Vec3,
     life: i32,
     lifetime: i32,
-    pub(super) explosions: Vec<FireworkExplosion>,
+    pub(super) explosions: Arc<Vec<FireworkExplosion>>,
     /// Boosting the player (attachedToEntity).
     pub(super) attached: bool,
     /// On a server, the guest (by connection) who launched it, or whom it
@@ -55,13 +60,15 @@ pub(super) struct Rocket {
     pub(super) owner_uuid: Option<[i32; 4]>,
     /// `Projectile.leftOwner`: until then it can't hit its owner.
     left_owner: bool,
+    /// `Projectile.lastDeflectedBy`: prevents repeated deflection by the same mob.
+    last_deflected_by: Option<u32>,
     /// `DATA_ATTACHED_TO_TARGET`: the server entity the rocket follows;
     /// boosting happens when it is the local player.
     pub(super) attached_to: Option<u32>,
     /// `DATA_SHOT_AT_ANGLE` (dispensers, crossbows): constant velocity.
     pub(super) angled: bool,
     /// `DATA_ID_FIREWORKS_ITEM`: the stack it was launched from.
-    pub(super) item: ItemStack,
+    pub(super) item: Arc<ItemStack>,
     /// `Entity.random`: what a mod's `Projectile.deflect` draws from.
     pub(super) random: sunrise_core::random::LegacyRandom,
     /// `Entity.onGround`: whether its last move was stopped going down (or
@@ -80,6 +87,9 @@ pub(super) struct Rocket {
     was_touching_water: bool,
     /// `Entity.firstTick`: no splash on the tick it appears in water.
     first_tick: bool,
+    /// What `entity_size` answered at its last size refresh (`EntityEvent.Size`): its box takes
+    /// the answer while it holds for its vanilla size.
+    pub(super) size_answer: Option<sunrise_client::pose::SizeAnswer>,
 }
 impl Rocket {
     /// A rocket a server sent (`handleAddEntity`): placed and moved by it.
@@ -87,8 +97,10 @@ impl Rocket {
         let item = ItemStack::new("minecraft:firework_rocket", 1);
         let (_, explosions) = fireworks_of(&item);
         Self {
+            size_answer: None,
             attachment_lifetime: Default::default(),
             rotation: [0.0, 0.0],
+            previous_rotation: [0.0, 0.0],
             join: Default::default(),
             id,
             position,
@@ -96,15 +108,16 @@ impl Rocket {
             velocity,
             life: 0,
             lifetime: i32::MAX,
-            explosions,
+            explosions: explosions.into(),
             attached: false,
             guest: None,
             owner: None,
             owner_uuid: None,
             left_owner: false,
+            last_deflected_by: None,
             attached_to: None,
             angled: false,
-            item,
+            item: item.into(),
             random: sunrise_client::projectiles::unique_random(position),
             ground: Default::default(),
             // The server posts the shot.
@@ -166,8 +179,10 @@ impl Rocket {
             .unwrap_or_else(|| ItemStack::new("minecraft:firework_rocket", 1));
         let (_, explosions) = fireworks_of(&item);
         Self {
+            size_answer: None,
             attachment_lifetime: Default::default(),
             rotation: r.rotation,
+            previous_rotation: r.rotation,
             join: Default::default(),
             id: 0,
             position: r.position,
@@ -175,15 +190,16 @@ impl Rocket {
             velocity: r.motion,
             life: r.life,
             lifetime: r.lifetime,
-            explosions,
+            explosions: explosions.into(),
             attached: false,
             guest: None,
             owner: r.owner,
             owner_uuid: r.owner_uuid.filter(|_| r.owner.is_none()),
             left_owner: r.left_owner,
+            last_deflected_by: None,
             attached_to: None,
             angled: r.angled,
-            item,
+            item: item.into(),
             random: sunrise_client::projectiles::unique_random(r.position),
             ground: sunrise_world::ground_support::GroundState::from_ground_flag(r.on_ground),
             has_been_shot: r.has_been_shot,
@@ -200,6 +216,7 @@ impl Rocket {
     pub(super) fn load_nbt(&mut self, r: RocketNbt) {
         let loaded = Self::from_nbt(r);
         self.rotation = loaded.rotation;
+        self.previous_rotation = loaded.rotation;
         self.has_been_shot = loaded.has_been_shot;
         self.silent = loaded.silent;
         self.position = loaded.position;
@@ -219,6 +236,7 @@ impl Rocket {
     /// caller).
     pub(super) fn remote_step(&mut self, motion: sunrise_client::motion::BodyMotion<'_>) {
         self.previous = self.position;
+        self.previous_rotation = self.rotation;
         if self.attached_to.is_none() {
             let mut scene = SceneCollisions {
                 world: motion.world,
@@ -241,7 +259,7 @@ impl Rocket {
                 motion.apply_block_speed(self.position, &mut self.velocity);
                 motion.step_on(
                     (self.id, "minecraft:firework_rocket"),
-                    (self.position, Self::bounds_at(self.position)),
+                    (self.position, self.bounds()),
                     &self.ground,
                     &mut self.velocity,
                 );
@@ -251,20 +269,21 @@ impl Rocket {
         self.life += 1;
     }
     /// The end of `Projectile.shoot`: yaw and pitch are set straight from the
-    /// shot's motion (the old rotation follows, as `rotation` is the old one
-    /// on the next tick).
+    /// shot's motion, and the old rotation (`yRotO`, `xRotO`) to them.
     fn turn_to_shot(&mut self) {
         let v = self.velocity;
         let horizontal = (v.x * v.x + v.z * v.z).sqrt();
         let atan2 = sunrise_core::geometry::trig::atan2_degrees;
         self.rotation = [atan2(v.x, v.z), atan2(v.y, horizontal)];
+        self.previous_rotation = self.rotation;
     }
-    /// `Projectile.updateRotation`: a fifth of the way from `old` (yaw,
+    /// `Projectile.updateRotation`: a fifth of the way from the old rotation (yaw,
     /// pitch) toward its motion's direction, the short way round.
-    fn update_rotation(&mut self, old: [f32; 2]) {
+    fn update_rotation(&mut self) {
         let v = self.velocity;
         let horizontal = (v.x * v.x + v.z * v.z).sqrt();
         let atan2 = sunrise_core::geometry::trig::atan2_degrees;
+        let old = self.previous_rotation;
         self.rotation = [
             sunrise_client::arrows::lerp_rotation(old[0], atan2(v.x, v.z)),
             sunrise_client::arrows::lerp_rotation(old[1], atan2(v.y, horizontal)),
@@ -288,9 +307,17 @@ impl Rocket {
             )
         }
     }
+    /// `EntityType.FIREWORK_ROCKET.getDimensions()`: width, height and eye height.
+    pub(super) const DIMENSIONS: [f32; 3] = [0.25, 0.25, 0.2125];
     /// `EntityType.FIREWORK_ROCKET`: 0.25 x 0.25.
     pub(super) fn bounds(&self) -> Aabb {
-        Self::bounds_at(self.position)
+        let vanilla = Self::bounds_at(self.position);
+        sunrise_client::pose::SizeAnswer::sized_box(
+            self.size_answer,
+            Self::DIMENSIONS,
+            self.position,
+            vanilla,
+        )
     }
     /// [`Self::bounds`] at `position`.
     fn bounds_at(position: Vec3) -> Aabb {
@@ -476,12 +503,8 @@ impl Game<'_> {
         let side = game_side!(self);
         let motion = self.body_motion(&side);
         motion.apply_block_speed(r.position, &mut r.velocity);
-        let writes = self.body_step_on(
-            entity,
-            (r.position, Rocket::bounds_at(r.position)),
-            &r.ground,
-            &mut r.velocity,
-        );
+        let writes =
+            self.body_step_on(entity, (r.position, r.bounds()), &r.ground, &mut r.velocity);
         super::entity::apply_contact_writes(
             writes,
             &mut r.velocity,
@@ -546,8 +569,10 @@ impl Game<'_> {
             .insert(id, sunrise_client::save::insecure_uuid(own));
         let (velocity, lifetime) = rocket_draws(own, flight);
         Rocket {
+            size_answer: None,
             attachment_lifetime: Default::default(),
             rotation: [0.0, 0.0],
+            previous_rotation: [0.0, 0.0],
             join: Default::default(),
             id,
             position: at,
@@ -555,15 +580,16 @@ impl Game<'_> {
             velocity,
             life: 0,
             lifetime,
-            explosions,
+            explosions: explosions.into(),
             attached,
             guest: None,
             owner: None,
             owner_uuid: None,
             left_owner: false,
+            last_deflected_by: None,
             attached_to: None,
             angled: false,
-            item: stack.clone(),
+            item: Arc::new(stack.clone()),
             random: own.clone(),
             ground: Default::default(),
             has_been_shot: false,
@@ -703,13 +729,7 @@ impl Game<'_> {
         true
     }
     pub(super) fn tick_rockets(&mut self) {
-        let targets = if self.rockets.is_empty() {
-            Vec::new()
-        } else {
-            self.rocket_targets()
-        };
         let ticking = self.entity_ticking_area();
-        let hears_impacts = !self.rockets.is_empty() && self.native_hears_impacts();
         let mut i = 0;
         while i < self.rockets.len() {
             // ServerLevel.tick: only entities in entity-ticking chunks tick.
@@ -719,140 +739,229 @@ impl Game<'_> {
                 i += 1;
                 continue;
             }
-            let join = self.rockets[i].join;
-            let mut r = self.rockets.extract(join).unwrap();
-            r.previous = r.position;
-            // Entity.baseTick's setOldRot: where updateRotation eases from.
-            let old_rotation = r.rotation;
-            // Projectile.tick: the first tick posts the shot, with its owner.
-            if !r.has_been_shot {
-                let at = [r.position.x, r.position.y, r.position.z];
-                self.projectile_shoot_event(r.owner, r.guest, at);
-                r.has_been_shot = true;
-            }
-            // Projectile.tick: whether it has left its owner, before it moves.
-            let owner = self.rocket_owner(&r);
-            if !r.left_owner {
-                let h = 0.125;
-                let reach = Aabb::new(
-                    Vec3::new(r.position.x - h, r.position.y, r.position.z - h),
-                    Vec3::new(r.position.x + h, r.position.y + 2.0 * h, r.position.z + h),
-                )
-                .expand_towards(r.velocity)
-                .inflate(Vec3::new(1.0, 1.0, 1.0));
-                r.left_owner = owner.is_none_or(|o| {
-                    !targets
-                        .iter()
-                        .any(|(who, b)| *who == o && b.intersects(reach))
-                });
-            }
-            // Entity.baseTick (updateFluidInteraction): water resets the fall,
-            // entering it after the first tick splashes, currents push it; lava
-            // halves the fall.
-            let before = r.velocity;
-            let (water, lava, _) = sunrise_client::entities::update_entity_fluids(
-                r.bounds(),
-                r.position,
-                r.position.y + f64::from(0.2125_f32),
-                &mut r.velocity,
-                &self.world,
-                &self.res.motion().fluids,
-                &self.loop_context,
-            );
-            if water > 0.0 {
-                r.fall_distance = 0.0;
-                if !r.was_touching_water && !r.first_tick {
-                    self.rocket_splash(&r, before);
-                }
-            }
-            r.was_touching_water = water > 0.0;
-            // Entity.isInLava is false on the first tick (firstTick).
-            if lava > 0.0 && !r.first_tick {
-                r.fall_distance *= 0.5;
-            }
-            r.first_tick = false;
-            let skip = owner.filter(|_| !r.left_owner);
-            let mut hit = ProjectileHit::None;
-            if r.attached
-                && let Some(conn) = r.guest
-            {
-                // A guest's rocket follows them; their own client boosts them.
-                let guest = self
-                    .lan
-                    .as_ref()
-                    .and_then(|host| host.hub.guests.iter().find(|g| g.conn == conn));
-                if let Some(g) = guest {
-                    r.position = Vec3::new(g.position[0], g.position[1], g.position[2]);
-                }
-            } else if r.attached {
-                self.follow_own_player(&mut r);
-                hit = self.rocket_struck(&targets, &r, r.velocity, skip);
+            // Like falling blocks and boats, tick an unbound clone while the resident
+            // owner keeps its slot: extracting and reinserting every rocket shifts the
+            // list tail twice per entity, which is O(n^2) for a crowd of rockets.
+            let id = self.rockets[i].id;
+            let rocket = self.rockets[i].clone();
+            let kept = self.tick_rocket(i, rocket);
+            // A hook may have added or removed rockets: resume right after this one
+            // where it stands, or at `i` when it is gone.
+            i = if !kept {
+                i
+            } else if self.rockets.get(i).is_some_and(|rocket| rocket.id == id) {
+                i + 1
             } else {
-                // getHitResultOnMoveVector before the move.
-                hit = self.rocket_struck(&targets, &r, r.next_motion(), skip);
-                let mut scene = SceneCollisions {
-                    world: &self.world,
-                    binding: self.collision,
-                    subject: None,
-                };
-                if let Some(flight) = r.free_flight(&mut scene, &self.loop_context) {
-                    self.rocket_moved(&mut r, flight, water > 0.0);
-                }
-            }
-            self.entity_powder_snow_particles(
-                r.previous,
-                r.position,
-                r.bounds(),
-                r.velocity,
-                false,
-            );
-            // hitTargetOrDeflectSelf on an entity: a breeze turns it back
-            // (ProjectileDeflection.REVERSE), anything else sets it off.
-            // onHitBlock: only a rocket with explosions (hasExplosion) goes
-            // off on a block; a plain one flies on to its lifetime.
-            let deflected = matches!(hit, ProjectileHit::Entity { who: Who::Mob(id), .. }
-                if self.mobs.iter().any(|m| m.id == id && m.species() == Species::Breeze));
-            if deflected {
-                r.velocity = r.velocity.scale(-0.5);
-            } else {
-                let Some((rocket, canceled)) = self.rocket_impact(i, r, hit, hears_impacts) else {
-                    continue;
+                self.rockets
+                    .iter()
+                    .position(|rocket| rocket.id == id)
+                    .map_or(i, |index| index + 1)
+            };
+        }
+    }
+    /// One tick of `r`, a clone of the resident rocket at `index`. Returns whether the
+    /// rocket stays in the list; one that explodes or was removed has left it.
+    fn tick_rocket(&mut self, index: usize, mut r: Rocket) -> bool {
+        let (id, join) = (r.id, r.join);
+        let hit = self.with_entity_held_out(id, |game| game.advance_rocket(&mut r));
+        let deflected = matches!(hit, ProjectileHit::Entity { who: Who::Mob(id), .. }
+            if self.mobs.iter().any(|m| m.id == id && m.alive() && m.species() == Species::Breeze));
+        let canceled =
+            if !deflected && !matches!(hit, ProjectileHit::None) && self.native_hears_impacts() {
+                let Some((rocket, canceled)) = self.rocket_impact(index, r, hit) else {
+                    return false;
                 };
                 r = rocket;
+                canceled
+            } else {
+                false
+            };
+        let explodes_on_hit = !canceled
+            && !deflected
+            && match hit {
+                ProjectileHit::Entity { .. } => true,
+                ProjectileHit::Block { .. } => !r.explosions.is_empty(),
+                ProjectileHit::None => false,
+            };
+        let terminal = explodes_on_hit || r.life + 1 > r.lifetime;
+        let _save_lease = terminal.then(sunrise_client::join_seq::visibility::PassLease::enter);
+        if terminal {
+            let Some(mut owner) = self.rockets.extract(join) else {
+                return false;
+            };
+            sunrise_client::join_seq::store_back(&mut owner, r);
+            r = owner;
+        }
+        if !canceled {
+            if let ProjectileHit::Entity {
+                who: Who::Mob(id),
+                at,
+            } = hit
+                && deflected
+            {
+                if r.last_deflected_by != Some(id) {
+                    let rot = 170.0 + r.random.next_float() * 20.0;
+                    r.rotation[0] += rot;
+                    r.previous_rotation[0] += rot;
+                    r.velocity = r.velocity.scale(-0.5);
+                    r.last_deflected_by = Some(id);
+                    let sound = super::level_sounds::LevelSound::new(
+                        "minecraft:entity.breeze.deflect",
+                        [at.x, at.y, at.z],
+                        1.0,
+                        1.0,
+                    )
+                    .in_source(mod_api::SoundSource::Hostile);
+                    self.play_bound_sound(sound, id, None);
+                }
+            } else {
                 match hit {
-                    ProjectileHit::Entity { .. } if !canceled => r.life = r.lifetime,
-                    ProjectileHit::Block { .. } if !canceled && !r.explosions.is_empty() => {
-                        r.life = r.lifetime;
+                    ProjectileHit::Entity { who, at } => {
+                        if let Who::Mob(id) = who {
+                            self.redirect_projectile(id, r.owner, r.owner_uuid, r.guest, None);
+                        }
+                        self.explode_rocket(&r);
+                        self.projectile_landed_event(r.id, r.owner, [at.x, at.y, at.z]);
                     }
-                    _ => {}
+                    ProjectileHit::Block { pos, face, at } => {
+                        if face != [0; 3] {
+                            let hitter = super::creatures::ProjectileHitter {
+                                owner: r.owner,
+                                guest: r.guest,
+                                arrow: false,
+                                kind: "minecraft:firework_rocket",
+                                position: r.position,
+                            };
+                            let _ = self.projectile_block_impact(&hitter, pos, at, face);
+                            self.target_block_hit(&hitter, pos, at, face);
+                        }
+                        if !r.explosions.is_empty() {
+                            self.explode_rocket(&r);
+                        }
+                        self.projectile_block_landed_event(r.id, r.owner, pos);
+                    }
+                    ProjectileHit::None => {}
                 }
             }
-            r.update_rotation(old_rotation);
-            let at = [r.position.x, r.position.y, r.position.z];
-            if r.life == 0 && !r.silent {
-                self.audio.play(
-                    "minecraft:entity.firework_rocket.launch",
-                    Some(at),
-                    3.0,
-                    1.0,
-                );
-            }
-            r.life += 1;
-            self.rocket_spark(&r);
-            if r.life > r.lifetime {
-                self.explode_rocket(&r);
-                self.rockets.retire_extracted(r.id, r.join);
-                continue;
-            }
-            let (id, from, to) = (r.id, r.previous, r.position);
-            self.rockets.put_back(i, r);
-            self.entity_section_step(id, [from.x, from.y, from.z], [to.x, to.y, to.z]);
-            i = self
-                .rockets
-                .iter()
-                .position(|rocket| rocket.id == id)
-                .map_or(i, |index| index + 1);
         }
+        // FireworkRocketEntity.tick runs updateRotation, launch sound, life++, spark even after impact.
+        r.update_rotation();
+        let at = [r.position.x, r.position.y, r.position.z];
+        if r.life == 0 && !r.silent {
+            self.play_audio(
+                "minecraft:entity.firework_rocket.launch",
+                Some(at),
+                3.0,
+                1.0,
+            );
+        }
+        r.life += 1;
+        self.rocket_spark(&r);
+        if terminal {
+            if !explodes_on_hit {
+                self.explode_rocket(&r);
+            }
+            self.rockets.retire_extracted(id, join);
+            return false;
+        }
+        let (from, to) = (r.previous, r.position);
+        if !self.store_rocket_back(index, r) {
+            return false;
+        }
+        self.entity_section_step(id, [from.x, from.y, from.z], [to.x, to.y, to.z]);
+        true
+    }
+
+    fn advance_rocket(&mut self, r: &mut Rocket) -> ProjectileHit {
+        // Entity.commonTick's setOldPosAndRot: where updateRotation eases from.
+        r.previous = r.position;
+        r.previous_rotation = r.rotation;
+        // Projectile.tick: the first tick posts the shot, with its owner.
+        if !r.has_been_shot {
+            let at = [r.position.x, r.position.y, r.position.z];
+            self.projectile_shoot_event(r.owner, r.guest, at);
+            r.has_been_shot = true;
+        }
+        // Projectile.tick: whether it has left its owner's vehicle tree, before it moves.
+        let owner = self.rocket_owner(r);
+        if !r.left_owner {
+            let reach = r
+                .bounds()
+                .expand_towards(r.velocity)
+                .inflate(Vec3::new(1.0, 1.0, 1.0));
+            r.left_owner = owner.is_none_or(|o| self.outside_owner_collision_range(o, reach));
+        }
+        // Entity.baseTick (updateFluidInteraction): water resets the fall,
+        // entering it after the first tick splashes, currents push it; lava
+        // halves the fall.
+        let before = r.velocity;
+        let (water, lava, _) = sunrise_client::entities::update_entity_fluids(
+            r.bounds(),
+            r.position,
+            r.position.y + f64::from(0.2125_f32),
+            &mut r.velocity,
+            &self.world,
+            &self.res.motion().fluids,
+            &self.loop_context,
+        );
+        if water > 0.0 {
+            r.fall_distance = 0.0;
+            if !r.was_touching_water && !r.first_tick {
+                self.rocket_splash(r, before);
+            }
+        }
+        r.was_touching_water = water > 0.0;
+        // Entity.isInLava is false on the first tick (firstTick).
+        if lava > 0.0 && !r.first_tick {
+            r.fall_distance *= 0.5;
+        }
+        r.first_tick = false;
+        let hit;
+        if r.attached
+            && let Some(conn) = r.guest
+        {
+            // A guest's rocket follows them and sweeps their motion (`FireworkRocketEntity.tick`).
+            let guest = self
+                .lan
+                .as_ref()
+                .and_then(|host| host.hub.guests.iter().find(|g| g.conn == conn))
+                .map(|g| {
+                    (
+                        Vec3::new(g.position[0], g.position[1], g.position[2]),
+                        g.motion.as_deref().map_or(Vec3::ZERO, |m| m.velocity),
+                    )
+                });
+            if let Some((pos, vel)) = guest {
+                r.position = pos;
+                r.velocity = vel;
+            }
+            hit = self.rocket_struck(r, r.velocity, owner);
+        } else if r.attached {
+            self.follow_own_player(r);
+            hit = self.rocket_struck(r, r.velocity, owner);
+        } else {
+            // getHitResultOnMoveVector before the move.
+            hit = self.rocket_struck(r, r.next_motion(), owner);
+            let mut scene = SceneCollisions {
+                world: &self.world,
+                binding: self.collision,
+                subject: None,
+            };
+            if let Some(flight) = r.free_flight(&mut scene, &self.loop_context) {
+                self.rocket_moved(r, flight, water > 0.0);
+            }
+        }
+        self.entity_powder_snow_particles(r.previous, r.position, r.bounds(), r.velocity, false);
+        hit
+    }
+
+    /// Refuse a removed target before carrying its owning slot into a tick clone.
+    pub(super) fn store_rocket_back(&mut self, index: usize, rocket: Rocket) -> bool {
+        !self
+            .persist
+            .removals
+            .contains(&super::commands::Target::Rocket(rocket.id))
+            && self.rockets.store_back(index, rocket)
     }
     /// `FireworkRocketEntity.explode` and `dealExplosionDamage`.
     fn explode_rocket(&mut self, r: &Rocket) {
@@ -869,90 +978,189 @@ impl Game<'_> {
         if !r.explosions.is_empty() {
             let damage = 5.0 + r.explosions.len() as f32 * 2.0;
             let from = r.position;
-            // `attachedToEntity` takes the full damage, a guest as well; every
-            // other player in range and in sight takes the blast.
+            // `attachedToEntity` takes the full damage first, before the AABB LivingEntity sweep.
             let boosted = r.guest.filter(|_| r.attached);
             if r.attached && boosted.is_none() {
                 self.rocket_hurt_player(from, damage);
-            } else {
-                self.rocket_blast_player(from, damage);
             }
             if let Some(conn) = boosted {
                 self.as_guest(conn, |g| g.rocket_hurt_player(from, damage));
             }
-            // Every other player in the level (LAN guests, the players of a
-            // server thread), each swapped in as the player.
-            let guests: Vec<u32> = self.lan.as_ref().map_or_else(Vec::new, |host| {
-                host.hub
-                    .guests
-                    .iter()
-                    .filter(|g| host.hub.here(g) && Some(g.conn) != boosted)
-                    .map(|g| g.conn)
-                    .collect()
-            });
-            for conn in guests {
-                self.as_guest(conn, |g| g.rocket_blast_player(from, damage));
+            let reach = r.bounds().inflate(Vec3::new(5.0, 5.0, 5.0));
+            enum SplashTarget {
+                Host,
+                Guest(u32),
+                Mob(u32),
+                Dragon,
+                Stand(u32),
             }
-            let hits: Vec<(u32, f32)> = {
-                let world = self.mob_world_base(&[]);
-                self.mobs
-                    .iter()
-                    .filter_map(|m| {
-                        let d2 = (m.position.x - from.x).powi(2)
-                            + (m.position.y - from.y).powi(2)
-                            + (m.position.z - from.z).powi(2);
-                        // Line of sight to the feet or the middle of the mob.
-                        let sees = d2 <= 25.0
-                            && (0..2).any(|step| {
-                                let to = Vec3::new(
-                                    m.position.x,
-                                    m.position.y + f64::from(m.height()) * 0.5 * f64::from(step),
-                                    m.position.z,
-                                );
-                                world.clear_between(from, to, false)
-                            });
-                        sees.then(|| (m.id, blast_damage(damage, from, m.position)))
-                    })
-                    .collect()
-            };
-            // damageSources().fireworks(this, getOwner()): a guest's rocket
-            // hurts as theirs, and the mobs it hit answer to them.
-            let owner = r.owner;
-            if let Some(conn) = r.guest.filter(|_| owner.is_some()) {
-                let ran = self
-                    .as_guest(conn, |g| g.rocket_hurt_mobs(&hits, r.id, owner, at))
-                    .is_some();
-                if ran
-                    && let Some(host) = self.lan.as_mut()
-                    && host
-                        .hub
-                        .guest(conn)
-                        .is_some_and(|guest| guest.participates_online())
-                {
-                    for (id, _) in &hits {
-                        if self.mobs.iter().any(|m| m.id == *id) {
-                            host.mob_players.insert(*id, conn);
-                        }
+            let mut candidates: Vec<(sunrise_client::projectiles::TargetOrder, SplashTarget)> =
+                Vec::new();
+            if !(r.attached && boosted.is_none())
+                && !self.spectator()
+                && let Some(p) = self.player_view()
+                && p.bounds.intersects(reach)
+            {
+                let pos = self.player.as_ref().map_or(Vec3::ZERO, |pl| pl.position);
+                candidates.push((
+                    sunrise_client::projectiles::TargetOrder::entity(pos, 0),
+                    SplashTarget::Host,
+                ));
+            }
+            if let Some(host) = self.lan.as_ref() {
+                for g in &host.hub.guests {
+                    if host.hub.here(g)
+                        && !g.spectator()
+                        && Some(g.conn) != boosted
+                        && super::lan_mobs::guest_bounds(g).intersects(reach)
+                    {
+                        let pos = Vec3::new(g.position[0], g.position[1], g.position[2]);
+                        candidates.push((
+                            sunrise_client::projectiles::TargetOrder::entity(
+                                pos,
+                                g.entity_id as u64,
+                            ),
+                            SplashTarget::Guest(g.conn),
+                        ));
                     }
                 }
-                if !ran {
-                    self.rocket_hurt_mobs(&hits, r.id, owner, at);
-                }
-            } else {
-                self.rocket_hurt_mobs(&hits, r.id, owner, at);
             }
-            // The dragon is a living entity of its own, not one of `mobs`.
-            let reach = r.bounds().inflate(Vec3::new(5.0, 5.0, 5.0));
+            for m in self.mobs.iter() {
+                if !m.removed && m.bounds().intersects(reach) {
+                    candidates.push((
+                        sunrise_client::projectiles::TargetOrder::entity(m.position, m.join.get()),
+                        SplashTarget::Mob(m.id),
+                    ));
+                }
+            }
+            if let Some(d) = self.dragon.as_ref().filter(|d| d.alive())
+                && d.body_bounds().intersects(reach)
+            {
+                candidates.push((
+                    sunrise_client::projectiles::TargetOrder::entity(d.position, u64::from(d.id)),
+                    SplashTarget::Dragon,
+                ));
+            }
+            for a in self.armor_stands.iter() {
+                if a.bounds().intersects(reach) {
+                    candidates.push((
+                        sunrise_client::projectiles::TargetOrder::entity(a.position, a.join.get()),
+                        SplashTarget::Stand(a.id),
+                    ));
+                }
+            }
+            candidates.sort_by_key(|(order, _)| *order);
+            let owner = r.owner;
             let by = (owner == Some(Who::Player)).then(|| {
                 r.guest
                     .map_or_else(|| self.acting_player(), FightWho::Guest)
             });
-            self.rocket_blast_dragon(from, damage, reach, by);
+            let causing = match owner {
+                Some(Who::Player) => Some(r.guest.map_or(
+                    super::commands::Target::Player,
+                    super::commands::Target::Guest,
+                )),
+                Some(Who::Mob(id)) => Some(super::commands::Target::Mob(id)),
+                None => None,
+            };
+            for (_, target) in candidates {
+                match target {
+                    SplashTarget::Host => self.rocket_blast_player(from, damage),
+                    SplashTarget::Guest(conn) => {
+                        self.as_guest(conn, |g| g.rocket_blast_player(from, damage));
+                    }
+                    SplashTarget::Mob(id) => {
+                        let hit = {
+                            let world = self.mob_world_base(&[]);
+                            self.mobs
+                                .iter()
+                                .find(|m| m.id == id && !m.removed)
+                                .and_then(|m| {
+                                    let d2 = (m.position.x - from.x).powi(2)
+                                        + (m.position.y - from.y).powi(2)
+                                        + (m.position.z - from.z).powi(2);
+                                    let sees = d2 <= 25.0
+                                        && (0..2).any(|step| {
+                                            let to = Vec3::new(
+                                                m.position.x,
+                                                m.position.y
+                                                    + f64::from(m.height()) * 0.5 * f64::from(step),
+                                                m.position.z,
+                                            );
+                                            world.clear_between(from, to, false)
+                                        });
+                                    sees.then(|| (m.id, blast_damage(damage, from, m.position)))
+                                })
+                        };
+                        if let Some(hit) = hit {
+                            let hits = [hit];
+                            if let Some(conn) = r.guest.filter(|_| owner.is_some()) {
+                                let ran = self
+                                    .as_guest(conn, |g| g.rocket_hurt_mobs(&hits, r.id, owner, at))
+                                    .is_some();
+                                if ran
+                                    && let Some(host) = self.lan.as_mut()
+                                    && host
+                                        .hub
+                                        .guest(conn)
+                                        .is_some_and(|guest| guest.participates_online())
+                                    && self.mobs.iter().any(|m| m.id == hit.0)
+                                {
+                                    host.mob_players.insert(hit.0, conn);
+                                }
+                                if !ran {
+                                    self.rocket_hurt_mobs(&hits, r.id, owner, at);
+                                }
+                            } else {
+                                self.rocket_hurt_mobs(&hits, r.id, owner, at);
+                            }
+                        }
+                    }
+                    SplashTarget::Dragon => {
+                        self.rocket_blast_dragon(from, damage, reach, by, r.id, owner);
+                    }
+                    SplashTarget::Stand(id) => {
+                        let sees = {
+                            let world = self.mob_world_base(&[]);
+                            self.armor_stands
+                                .iter()
+                                .find(|a| a.id == id)
+                                .is_some_and(|a| {
+                                    let d2 = (a.position.x - from.x).powi(2)
+                                        + (a.position.y - from.y).powi(2)
+                                        + (a.position.z - from.z).powi(2);
+                                    if d2 > 25.0 {
+                                        return false;
+                                    }
+                                    let bounds = a.bounds();
+                                    let height = bounds.max_position().y - bounds.min_position().y;
+                                    (0..2).any(|step| {
+                                        let to = Vec3::new(
+                                            a.position.x,
+                                            a.position.y + height * 0.5 * f64::from(step),
+                                            a.position.z,
+                                        );
+                                        world.clear_between(from, to, false)
+                                    })
+                                })
+                        };
+                        if sees {
+                            self.hurt_armor_stand(
+                                id,
+                                "minecraft:fireworks",
+                                causing,
+                                r.id,
+                                Some(at),
+                            );
+                        }
+                    }
+                }
+            }
         }
         let camera = self.eye_position().unwrap_or(at);
         let v = [r.velocity.x, r.velocity.y, r.velocity.z];
         self.particles
-            .fireworks(at, v, r.explosions.clone(), camera, !r.silent);
+            .fireworks(at, v, r.explosions.as_ref().clone(), camera, !r.silent);
         self.native_firework_explode(r.id, at, r.explosions.len());
     }
     /// `FireworkRocketEntity.explode`'s game event: EXPLODE at the rocket, from
@@ -974,7 +1182,7 @@ impl Game<'_> {
         let ctx = self.who_context(owner, None);
         self.post_game_event("minecraft:explode", at, ctx);
     }
-    fn rocket_hurt_mobs(
+    pub(in crate::game) fn rocket_hurt_mobs(
         &mut self,
         hits: &[(u32, f32)],
         rocket_id: u32,
@@ -983,28 +1191,54 @@ impl Game<'_> {
     ) {
         let mut attack = self.attack_of_who(attacker);
         attack.projectile = Some(rocket_id as i32);
+        attack.enchantment_direct = Some(sunrise_client::health::EnchantmentActor {
+            id: rocket_id as i32,
+            kind: "minecraft:firework_rocket".into(),
+            motion: None,
+        });
         attack.projectile_kind = sunrise_client::health::DirectEntity::Projectile;
+        attack.projectile_type = Some("minecraft:firework_rocket");
         for &(id, amount) in hits {
             let plan = self.prepare_knockback_credit(id as i32, attacker, &attack);
+            // The hit's causing entity, lent to its listeners beside the victim.
+            let causing = self.causer_id(attacker);
+            let decision = crate::game::entity::causer_decision!(self, causing);
             let mut credit = plan.lend(&mut self.last_hurt_by_player);
             if let Some(index) = self.mob_index.find(&self.mobs, id) {
-                let hurt = self.mobs[index].damage(
-                    crate::game::entity::damage_level_of!(self, &attack, &mut credit, None),
+                let before = self.mobs[index].health;
+                let join = self.mobs[index].join;
+                let (victim, lend) =
+                    crate::game::entity::victim_and_causer!(self, index, causing, decision);
+                let hurt = victim.damage(
+                    crate::game::entity::damage_level_of!(self, &attack, &mut credit, lend),
                     amount,
                     Damage::fireworks(attacker, at),
                 );
+                let Some((index, hurt)) = self.complete_mob_hurt(index, hurt) else {
+                    continue;
+                };
+                // LivingEntity.actuallyHurt posts after health loss, before death settlement.
+                if self.mobs[index].health < before {
+                    let pos = self.mobs[index].position.components();
+                    let ctx = self.who_context(Some(Who::Mob(id)), None);
+                    self.post_game_event("minecraft:entity_damage", pos, ctx);
+                }
                 // LivingEntity.hurtServer: a player's rocket makes them the
                 // last player to hurt it (`setLastHurtByPlayer`), so its death
                 // message names them and their item.
-                if hurt && attacker == Some(Who::Player) {
-                    self.remember_mob_player_credit(id);
+                if let Some(index) = self.mob_index.find(&self.mobs, id)
+                    && self.mobs[index].join == join
+                {
+                    if hurt && attacker == Some(Who::Player) {
+                        self.remember_mob_player_credit(id);
+                    }
+                    self.finish_mob_damage_at(index);
                 }
-                self.finish_mob_damage_at(index);
             }
             self.settle_mob_hurt(id);
         }
     }
-    /// The owner as `rocket_targets` names it: a guest by their entity id.
+    /// The rocket's owner in projectile queries: a guest by their entity id.
     fn rocket_owner(&self, r: &Rocket) -> Option<Who> {
         self.shooter_who(r.owner, r.guest)
     }
@@ -1019,64 +1253,38 @@ impl Game<'_> {
         let g = host.hub.guests.iter().find(|g| g.conn == conn)?;
         Some(Who::Mob(g.entity_id as u32))
     }
-    /// What a rocket can hit (`Projectile.canHitEntity`): living mobs, the
-    /// dragon's parts and crystals, the player and the guests.
-    fn rocket_targets(&self) -> Vec<(Who, Aabb)> {
-        let mut targets: Vec<(Who, Aabb)> = self
-            .mobs
-            .iter()
-            .filter(|m| m.alive())
-            .map(|m| (Who::Mob(m.id), m.bounds()))
-            .collect();
-        if let Some(p) = self.player_view()
-            && p.alive
-            && !self.spectator()
-        {
-            targets.push((Who::Player, p.bounds));
-        }
-        targets.extend(
-            self.special_targets()
-                .into_iter()
-                .map(|(id, b)| (Who::Mob(id), b)),
-        );
-        targets.extend(self.lan_projectile_targets());
-        targets
-    }
     /// `ProjectileUtil.getHitResultOnMoveVector`: the nearest target on the
     /// move, short of the block it clips (`ClipContext.Block.COLLIDER`), each
     /// box grown by `computeMargin` (`tickCount` is the rocket's life plus
     /// one); else that block.
-    fn rocket_struck(
-        &self,
-        targets: &[(Who, Aabb)],
-        r: &Rocket,
-        motion: Vec3,
-        skip: Option<Who>,
-    ) -> ProjectileHit {
+    fn rocket_struck(&self, r: &Rocket, motion: Vec3, owner: Option<Who>) -> ProjectileHit {
+        use sunrise_client::projectiles::{NearestHit, compute_margin};
         let from = r.position;
-        let mut to = from.add_vector(motion);
-        let w = self.mob_world_base(&[]);
-        let block = (super::creatures::ProjWorld {
-            w: &w,
-            targets: &[],
-            border: Some(self.border.bounds()),
-        })
-        .clip(from, to);
-        if let Some((at, ..)) = block {
-            to = at;
-        }
-        let margin = (f64::from(r.life - 1) / 20.0).clamp(0.0, 0.3);
-        targets
-            .iter()
-            .filter(|(who, _)| Some(*who) != skip)
-            .filter_map(|(who, b)| {
-                let at = b
-                    .inflate(Vec3::new(margin, margin, margin))
-                    .clip(from, to)?;
-                Some((*who, at, from.distance_squared(at)))
-            })
-            .min_by(|a, b| a.2.total_cmp(&b.2))
-            .map(|(who, at, _)| ProjectileHit::Entity { who, at })
+        let to = from.add_vector(motion);
+        let query = super::creatures::TargetQuery {
+            include_guests: true,
+            ..Default::default()
+        };
+        let live = self.live_proj_world(query, &[]);
+        let block = live.clip(from, to);
+        let entity_end = block.map_or(to, |(at, ..)| at);
+        let search_area = r
+            .bounds()
+            .expand_towards(motion)
+            .inflate(Vec3::new(1.0, 1.0, 1.0));
+        let margin = compute_margin(r.life + 1);
+        let mut best = NearestHit::new();
+        self.visit_projectile_targets(query, &[], |c| {
+            if !r.left_owner
+                && let Some(o) = owner
+                && self.in_same_vehicle_tree(o, c.who)
+            {
+                return;
+            }
+            best.consider(c, search_area, from, entity_end, margin);
+        });
+        best.finish()
+            .map(|(who, at)| ProjectileHit::Entity { who, at })
             .or(block.map(|(at, pos, face)| ProjectileHit::Block { pos, face, at }))
             .unwrap_or(ProjectileHit::None)
     }
@@ -1086,8 +1294,13 @@ impl Game<'_> {
         if let Some(r) = self.rockets.iter().find(|r| r.id == id as u32) {
             let at = [r.position.x, r.position.y, r.position.z];
             let v = [r.velocity.x, r.velocity.y, r.velocity.z];
-            self.particles
-                .fireworks(at, v, r.explosions.clone(), camera.unwrap_or(at), !r.silent);
+            self.particles.fireworks(
+                at,
+                v,
+                r.explosions.as_ref().clone(),
+                camera.unwrap_or(at),
+                !r.silent,
+            );
         }
     }
     /// `FireworkRocketEntity.dealExplosionDamage` on a player that is not the rocket's
@@ -1132,7 +1345,13 @@ impl Game<'_> {
         self.combat.projectile_direct =
             Some(Text::translate("entity.minecraft.firework_rocket", &[]));
         let at = [from.x, from.y, from.z];
-        self.hurt_player_from(amount, Some(at), "minecraft:fireworks", Some(None), false);
+        self.hurt_player_from(
+            amount,
+            Some(at),
+            "minecraft:fireworks",
+            crate::game::creatures::KnownCause::None,
+            false,
+        );
     }
     /// `FireworkEntityRenderer.submit`: the item (GROUND) facing the camera,
     /// lit at the rocket's light probe.
@@ -1147,7 +1366,7 @@ impl Game<'_> {
         // shouldRender: not while attached to an entity (`isAttachedToEntity`).
         for r in self.rockets[run]
             .iter()
-            .filter(|r| !r.attached && r.attached_to.is_none())
+            .filter(|r| !r.attached && r.attached_to.is_none() && !self.hides_as_camera(r.id))
         {
             // FireworkRocketEntity.shouldRenderAtSqrDistance: within 64 blocks;
             // EntityRenderer.shouldRender: its 0.25 box in the view.

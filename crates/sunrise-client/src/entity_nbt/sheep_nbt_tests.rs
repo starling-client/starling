@@ -295,7 +295,6 @@ fn a_mannequin_keeps_its_immovable_flag_and_description() {
     assert_eq!(back.extra.description, D::Custom(own));
 }
 
-/// The only lib test that registers mod effects (once per process).
 #[test]
 fn a_mob_keeps_a_mod_effect() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -310,13 +309,7 @@ fn a_mob_keeps_a_mod_effect() {
         .into_iter()
         .map(|(k, v)| (k, Arc::new(v)))
         .collect();
-    crate::brewing::register_mod_effects([(
-        "testfx:glow".to_owned(),
-        1,
-        crate::brewing::Category::Harmful,
-        None,
-        "testfx".into(),
-    )]);
+    let _scope = crate::mobs::ai::effect_modifier_tests::register_test_mod_effects();
     let mut m = Mob::new(1, types["minecraft:pig"].clone(), Vec3::ZERO, 0.0);
     m.add_effect(crate::brewing::effect("testfx:glow").unwrap().id, 200, 2);
     let tag = mob_to_nbt(&m, [1, 2, 3, 4], None, None, |_| None, &Default::default());
@@ -385,13 +378,30 @@ fn farm_animals_keep_their_variant_and_sound_variant() {
         .iter()
         .map(|(k, v)| (k.clone(), Arc::new(v.clone())))
         .collect();
+    let variants = crate::mobs::variants::VariantTables::load_prepared(&root);
+    let save_mob = |m: &Mob| {
+        let mut w = EntityTagWriter::from_saved(Tag::compound(Vec::<(&str, Tag)>::new()));
+        write_mob(
+            m,
+            [1, 2, 3, 4],
+            &mut w,
+            None,
+            |_| None,
+            &crate::items::Items::empty(),
+            MobSave {
+                variants: Some(&variants),
+                ..Default::default()
+            },
+        );
+        w.finish()
+    };
     let mut m = Mob::new(
         1,
         types["minecraft:pig"].clone(),
         Vec3::new(0.0, 4.0, 0.0),
         0.0,
     );
-    let tag = mob_to_nbt(&m, [1, 2, 3, 4], None, None, |_| None, &Default::default());
+    let tag = save_mob(&m);
     assert_eq!(
         text(tag.get("variant")).as_deref(),
         Some("minecraft:temperate")
@@ -401,49 +411,41 @@ fn farm_animals_keep_their_variant_and_sound_variant() {
         Some("minecraft:classic")
     );
     // Spawned in a warm biome with the mini sounds.
-    (m.extra.variant, m.extra.sound_variant) = (1, Some(2));
-    let tag = mob_to_nbt(&m, [1, 2, 3, 4], None, None, |_| None, &Default::default());
+    let warm_pig = variants.pig.lookup("minecraft:warm");
+    let mini_pig = variants.pig_sound.lookup("minecraft:mini");
+    (m.extra.pig_variant, m.extra.pig_sound_variant) = (warm_pig, mini_pig);
+    let tag = save_mob(&m);
     assert_eq!(text(tag.get("variant")).as_deref(), Some("minecraft:warm"));
     assert_eq!(
         text(tag.get("sound_variant")).as_deref(),
         Some("minecraft:mini")
     );
-    let back = mob_from_nbt(&tag, &types, 2, None).unwrap();
-    assert_eq!((back.extra.variant, back.extra.sound_variant), (1, Some(2)));
+    let back = mob_from_nbt_with_variants(&tag, &types, 2, None, &variants).unwrap();
+    assert_eq!(
+        (back.extra.pig_variant, back.extra.pig_sound_variant),
+        (warm_pig, mini_pig)
+    );
     let mut hen = Mob::new(
         3,
         types["minecraft:chicken"].clone(),
         Vec3::new(0.0, 4.0, 0.0),
         0.0,
     );
-    (hen.extra.variant, hen.extra.egg_time) = (2, 7795);
-    let tag = mob_to_nbt(
-        &hen,
-        [1, 2, 3, 4],
-        None,
-        None,
-        |_| None,
-        &Default::default(),
-    );
+    let cold_hen = variants.chicken.lookup("minecraft:cold");
+    (hen.extra.chicken_variant, hen.extra.egg_time) = (cold_hen, 7795);
+    let tag = save_mob(&hen);
     assert_eq!(text(tag.get("variant")).as_deref(), Some("minecraft:cold"));
-    let back = mob_from_nbt(&tag, &types, 4, None).unwrap();
-    assert_eq!((back.extra.variant, back.extra.egg_time), (2, 7795));
-    // The sound variants are indices into the registries finalizeSpawn draws from.
-    use crate::mobs::{Species, finalize};
-    let registries = finalize::SpawnRegistries::load(&root);
-    for (species, registry) in [
-        (Species::Pig, &registries.pig_sound),
-        (Species::Cow, &registries.cow_sound),
-        (Species::Chicken, &registries.chicken_sound),
-        (Species::Cat, &registries.cat_sound),
-        (Species::Wolf, &registries.wolf_sound),
-    ] {
-        assert_eq!(
-            finalize::sound_variants(species),
-            registry.names,
-            "{species:?}"
-        );
-    }
+    let back = mob_from_nbt_with_variants(&tag, &types, 4, None, &variants).unwrap();
+    assert_eq!(
+        (back.extra.chicken_variant, back.extra.egg_time),
+        (cold_hen, 7795)
+    );
+    // All five sound-variant species load into `VariantTables` with `classic`.
+    assert!(variants.wolf_sound.lookup("minecraft:classic").is_some());
+    assert!(variants.cat_sound.lookup("minecraft:classic").is_some());
+    assert!(variants.pig_sound.lookup("minecraft:classic").is_some());
+    assert!(variants.cow_sound.lookup("minecraft:classic").is_some());
+    assert!(variants.chicken_sound.lookup("minecraft:classic").is_some());
 }
 
 #[test]

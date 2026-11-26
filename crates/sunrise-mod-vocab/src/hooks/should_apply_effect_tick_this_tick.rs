@@ -1,5 +1,4 @@
 //! Per-Part cadence of a registered effect.
-// catalog-order: 0062
 
 pub trait Hooks {
     /// `MobEffect.shouldApplyEffectTickThisTick` for this Part's effect.

@@ -1,0 +1,2 @@
+ids = ["handle:EntityRef::main_arm", "method:prelude::ConfigServerHost::server_is_published"]
+why = "Additive reads: EntityRef::main_arm is LivingEntity.getMainArm on both sides (every entity a client tracks, as the server sent it); server_is_published() is MinecraftServer.isPublished."

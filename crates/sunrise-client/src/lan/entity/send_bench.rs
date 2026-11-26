@@ -75,6 +75,7 @@ impl Scene {
                 general_entity: true,
                 attachment_sender: None,
                 sources: None,
+                far: &[],
                 spectator: false,
                 permission: 0,
                 moved: true,

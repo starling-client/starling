@@ -15,7 +15,7 @@ impl Game<'_> {
     /// `new InventoryScreen(player)`: the player's inventory, or in creative
     /// mode the creative inventory `InventoryScreen.init` swaps in.
     pub(super) fn open_player_inventory(&mut self) {
-        if self.creative {
+        if self.instabuild() {
             self.set_screen(Screen::Creative);
             self.refresh_creative_tabs();
             self.creative_screen.reopen();
@@ -27,9 +27,8 @@ impl Game<'_> {
     }
     /// A key press while a world is open (keyboard or control socket). `key`
     /// is the vanilla default the pressed mapping translates to, `raw` the
-    /// physical key as pressed (the same where the caller had no window key):
-    /// `Screen.keyPressed` hears the raw one, and only a raw key settles what
-    /// the container's hotbar keys are now (`checkHotbarKeyPressed`).
+    /// physical key as pressed (the same where the caller had no window key).
+    /// The input dispatcher runs a receiving screen's key actions separately.
     pub(super) fn key_pressed(&mut self, key: KeyCode, raw: KeyCode) -> Result<()> {
         // Scripted presses and controller presses are delivered to the same mappings
         // as window input; direct screen keys remain immediate.
@@ -54,6 +53,7 @@ impl Game<'_> {
             name,
             "key.togglePerspective"
                 | "key.smoothCamera"
+                | "key.toggleSpectatorShaderEffects"
                 | "key.inventory"
                 | "key.quickActions"
                 | "key.swapOffhand"
@@ -83,11 +83,14 @@ impl Game<'_> {
             }
             return Ok(());
         }
-        if self.sort_key_press(key)
-            || sunrise_client::keybinds::key_name(key).is_some_and(|name| {
-                self.hud_editor_key_press(name) || self.shader_pack_key_press(name)
-            })
+        if sunrise_client::keybinds::key_name(key)
+            .is_some_and(|name| self.hud_editor_key_press(name) || self.shader_pack_key_press(name))
         {
+            return Ok(());
+        }
+        // Escape cancels a press on the item panel; one that is a drag takes
+        // the Escape, and the screen stays open.
+        if key == KeyCode::Escape && self.mod_browser_drag_escape() {
             return Ok(());
         }
         if key == KeyCode::Escape && self.mod_browser_back() {
@@ -95,7 +98,9 @@ impl Game<'_> {
         }
         match key {
             KeyCode::Escape => match self.screen {
-                Screen::Options => self.options_key(KeyCode::Escape, None)?,
+                Screen::Options => {
+                    self.options_key(KeyCode::Escape, None)?;
+                }
                 Screen::Playing => {
                     if self.replay.playing() && self.captured {
                         self.capture(false);
@@ -143,7 +148,8 @@ impl Game<'_> {
                 Screen::ServerLinks => self.set_screen(Screen::Paused),
                 // ConfirmScreen.keyPressed: Escape answers no; both return to
                 // the Server Links screen they came from.
-                Screen::ConfirmLink => self.set_screen(self.confirm_link_back()),
+                Screen::ConfirmLink => self.close_confirm_link(),
+                Screen::DemoIntro => self.close_demo_intro(),
                 Screen::DialogWarning => self.set_screen(Screen::ServerLinks),
                 Screen::Advancements => self.close_advancements(),
                 Screen::WorldOptions => self.world_options_escape(),
@@ -155,77 +161,18 @@ impl Game<'_> {
                 Screen::Mod => self.close_mod_screen(),
                 Screen::HudEditor => self.close_hud_editor(),
             },
-            // `checkHotbarKeyPressed`: the keys the controls bind to the off
-            // hand and the hotbar slots, so a rebound key swaps instead of
-            // reaching the screen. The list below keeps Q and the defaults.
-            // The raw key asks what the bindings are now: the translated
-            // `key` is a vanilla default and may itself be another mapping's
-            // rebound key (the off hand on Left Alt while hotbar 7 is on F
-            // would find that F a second time and swap with slot 7).
-            _ if (self.screen == Screen::Inventory
-                || (self.screen == Screen::Creative && !self.creative_screen.tab().search))
-                && self
-                    .settings
-                    .keys
-                    .container_hotbar_key(raw)
-                    .is_some_and(|key| self.inventory_hotkey(key)) => {}
-            KeyCode::Digit1
-            | KeyCode::Digit2
-            | KeyCode::Digit3
-            | KeyCode::Digit4
-            | KeyCode::Digit5
-            | KeyCode::Digit6
-            | KeyCode::Digit7
-            | KeyCode::Digit8
-            | KeyCode::Digit9
-            | KeyCode::KeyF
-            | KeyCode::KeyQ
-                if (self.screen == Screen::Inventory
-                    || (self.screen == Screen::Creative && !self.creative_screen.tab().search))
-                    && self.inventory_hotkey(key) => {}
-            // The search tab's number keys (scripted presses; the window's
-            // keys reach search_tab_hotbar_key before the search box).
-            _ if self.screen == Screen::Creative
-                && self.creative_screen.tab().search
-                && self.search_tab_hotbar_key(key) => {}
-            KeyCode::KeyT if self.screen == Screen::Inventory => self.recipe_focus_search(),
-            // CreativeModeInventoryScreen.keyPressed: the chat key opens the
-            // search tab from another tab, and `ignoreTextInput` drops the
-            // letter it would have typed.
-            KeyCode::KeyT
-                if self.screen == Screen::Creative && !self.creative_screen.tab().search =>
-            {
-                if let Some(tab) = self.creative_screen.search_tab() {
-                    select_creative_tab(&mut self.creative_screen, &mut self.inv_clicks, tab);
-                    self.build_screen();
-                    self.creative_ignore_text = true;
-                }
-            }
-            KeyCode::KeyL if self.screen == Screen::Advancements => self.close_advancements(),
             KeyCode::F11 => self.toggle_fullscreen(),
             KeyCode::KeyE
                 if self.screen == Screen::Creative && self.creative_screen.tab().search => {}
             KeyCode::KeyE => match self.screen {
-                Screen::Creative => {
-                    self.pad_clear_focus();
-                    if let Some(c) = self.carried.take() {
-                        let _ = self.add_stack_to_inventory(c);
-                    }
-                    self.set_screen_with(Screen::Playing, |g| g.close_creative_menu());
-                    self.capture(true);
-                }
-                Screen::Inventory => {
-                    self.close_container();
-                    self.set_screen(Screen::Playing);
-                    self.capture(true);
-                }
+                Screen::Creative | Screen::Inventory => self.close_inventory_key(),
                 _ => {}
             },
             _ if self.screen == Screen::Paused && self.pause_menu => {
-                self.pause_key(key)?;
+                let _ = self.pause_key(key)?;
             }
             _ if self.screen == Screen::Dead => {
-                self.death_key(key)?;
+                let _ = self.death_key(key)?;
             }
             _ if self.screen == Screen::Stats => self.stats_key(raw),
             _ => {}
@@ -250,7 +197,8 @@ impl Game<'_> {
                     "key.toggleGui" => self.toggle_hide_gui(),
                     "key.advancements" => self.open_advancements(false),
                     "key.socialInteractions" if self.is_multiplayer_server() => {
-                        self.open_social(false)
+                        self.hide_social_tutorial();
+                        self.open_social(false);
                     }
                     "key.socialInteractions" => {
                         let message = sunrise_client::text::Text::translate(
@@ -266,6 +214,9 @@ impl Game<'_> {
                 }
             }
         }
+        while self.consume_mapping_click("key.toggleSpectatorShaderEffects") {
+            self.toggle_spectator_post_effect();
+        }
         self.select_queued_hotbar();
         while self.consume_mapping_click("key.inventory") {
             self.open_inventory_key_action();
@@ -274,7 +225,7 @@ impl Game<'_> {
             self.open_quick_actions();
         }
         while self.consume_mapping_click("key.swapOffhand") {
-            if !self.spectator() {
+            if !self.own_player_is_spectator() {
                 if self.remote.is_some() {
                     self.remote_swap_hands();
                 } else {
@@ -283,7 +234,7 @@ impl Game<'_> {
             }
         }
         while self.consume_mapping_click("key.drop") {
-            if !self.spectator() {
+            if !self.own_player_is_spectator() {
                 if self.remote.is_some() {
                     let all = self.has_control_down() || self.input_takes_stack_drop();
                     self.remote_drop(all);
@@ -343,7 +294,10 @@ impl Game<'_> {
         };
         self.player_on_equip("offhand", old_off, offhand.as_ref());
         self.player_on_equip("mainhand", old_main, main.as_ref());
-        self.using = None;
+        // handlePlayerAction ends with stopUsingItem.
+        if self.using.is_some() {
+            self.stop_active_item_use();
+        }
     }
 }
 

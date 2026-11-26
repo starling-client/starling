@@ -1,0 +1,2 @@
+sunrise-client-render gfx::mod_pipelines::tests::defines_specialize_one_glsl_program_into_distinct_gpu_pipelines lib daily gpu
+sunrise-client-render gfx::pack_post::mod_stage_tests::pack_composite_inverts_mod_glsl_quad_drawn_once_after_opaque_blocks lib daily gpu

@@ -13,6 +13,7 @@ const SERVER: &[&str] = &[
     "VanillaGameplayFactsExporter",
     "VanillaEntityTypesExporter",
     "VanillaBlockBehaviourExporter",
+    "VanillaMobDataExporter",
     "VanillaDataFixTablesExporter",
     "VanillaCommandParseOracle",
     "VanillaCreativeTabsExporter",
@@ -23,7 +24,8 @@ const SERVER: &[&str] = &[
 const CLIENT: &[&str] = &[
     "VanillaBlockStateBindingOracle",
     "VanillaEntityModelExporter",
-    "VanillaMobDataExporter",
+    "VanillaRenderPipelineExporter",
+    "VanillaMobAnimationExporter",
     "PrepareWorker",
 ];
 
@@ -104,7 +106,12 @@ pub(crate) fn classes(run: &Run) -> Result<PathBuf, String> {
     if valid(&shipped, &key) {
         return Ok(shipped);
     }
-    let cached = run.local.join("exporters").join(&key);
+    let scope = if run.client.is_none() {
+        "server-exporters"
+    } else {
+        "exporters"
+    };
+    let cached = run.local.join(scope).join(&key);
     if valid(&cached, &key) {
         return Ok(cached);
     }
@@ -112,7 +119,7 @@ pub(crate) fn classes(run: &Run) -> Result<PathBuf, String> {
     let destination = cached;
     let cached = run
         .local
-        .join("exporters")
+        .join(scope)
         .join(format!(".{key}-{}", std::process::id()));
     if cached.exists() {
         fs::remove_dir_all(&cached).map_err(|e| e.to_string())?;
@@ -120,10 +127,10 @@ pub(crate) fn classes(run: &Run) -> Result<PathBuf, String> {
     mkdir(&cached)?;
     let jdk = java::find(run.java_major, &[run.jdk.home()])?;
     // The two sides compile at once: neither reads the other's classes.
-    let sides = [
-        ("server", SERVER, &run.server_classpath),
-        ("client", CLIENT, &run.client_classpath),
-    ];
+    let mut sides = vec![("server", SERVER, &run.server_classpath)];
+    if let Some(client) = &run.client {
+        sides.push(("client", CLIENT, &client.classpath));
+    }
     crate::pool::map(&sides, |(side, mains, cp)| {
         (run.log)(&format!("Compiling {side} exporters (shared helpers once)"));
         let started = std::time::Instant::now();

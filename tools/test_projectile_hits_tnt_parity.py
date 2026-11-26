@@ -17,12 +17,12 @@ import re
 import sys
 import time
 
-try:
-    from . import test_locator_bar_parity as locator
-    from .test_dedicated_server_parity import Server
-except ImportError:
-    import test_locator_bar_parity as locator
-    from test_dedicated_server_parity import Server
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_locator_bar_parity as locator
+from tools.test_dedicated_server_parity import Server
 
 NAME = 'projectile-hits-tnt-parity'
 TICKS = 3

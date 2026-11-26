@@ -8,7 +8,7 @@ we have to the max") every job that can runs on our own machines, and GitHub's p
 | Runner | Machine | Labels | Takes |
 | --- | --- | --- | --- |
 | `ludodesktop-checks-1`…`-3` | ludodesktop (the maintainer's desktop, 24 threads), isolated user `gha` | `sunrise-checks` | `checks`' `verify` and `launcher` for this repository's own pull requests whose number ends in 0 or 1 (never a fork's), `mod-registry`, `pack load bench` |
-| `playsunrise-light-1`…`-12` | playsunrise (partner's server, 8 vCPU) | `sunrise-light`, `playsunrise-light` | The bots that run main's own scripts: `pr labels`, `overlap note`, `cancel-on-close`, `claim command`, `triage command`, `mojang republish`, `nightly build`'s `answer` |
+| `playsunrise-light-1`…`-12` | playsunrise (partner's server, 8 vCPU) | `sunrise-light`, `playsunrise-light` | The bots that run main's own scripts: `pr labels`, `overlap note`, `cancel-on-close`, `triage command`, `mojang republish`, `nightly build`'s `answer` |
 | `playsunrise-ci-1`, `playsunrise-ci-2` | playsunrise | `playsunrise-ci` | Nothing routed since 2026-11-03 (they took `checks` of this repository's own pull requests with the old `SELF_HOSTED_CI=all`) |
 | `playsunrise-sunrise`, `ludodesktop-sunrise`, `ludodesktop-parity-2` | playsunrise, ludodesktop | `sunrise-game` | Parity ([release-flow.md](release-flow.md#the-parity-job)) |
 | `ludovics-mac-mini*` | Mac mini | `sunrise-game`, `sunrise-release`, `sunrise-nightly` | By-hand game tools, macOS builds, releases |
@@ -87,7 +87,7 @@ checks runners are the only ones it may reach:
 
 ## On playsunrise
 
-Installed by `tools/ci/checks-runners.sh` (run it there; it reads the registration token on stdin, so the token never
+Installed by `tools/ci/checks-runners.sh`, copied to `~/sunrise-install/` with `git-slim.sh` and `job-started.sh` beside it (run it there; it reads the registration token on stdin, so the token never
 touches the disk or the screen):
 
 ```sh

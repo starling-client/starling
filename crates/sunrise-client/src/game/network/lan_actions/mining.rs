@@ -65,16 +65,17 @@ impl Game<'_> {
             self.as_guest(conn, |g| g.destroy_progress(pos))
                 .map(|p| p * (ticks - start + 1) as f32)
         };
-        match progress {
-            Some(p) if p < 1.0 => {}
-            done => {
-                if let Some(play) = self.lan.as_mut().and_then(|host| host.play.get_mut(&conn)) {
-                    play.delayed = None;
-                }
-                if done.is_some() {
-                    self.guest_destroy(conn, pos);
-                }
-            }
+        // ServerPlayerGameMode.tick: the delayed block breaks once destroyProgress >= 1.
+        let done = match progress {
+            None => false,
+            Some(p) if p >= 1.0 => true,
+            Some(_) => return,
+        };
+        if let Some(play) = self.lan.as_mut().and_then(|host| host.play.get_mut(&conn)) {
+            play.delayed = None;
+        }
+        if done {
+            self.guest_destroy(conn, pos);
         }
     }
 
@@ -114,7 +115,12 @@ impl Game<'_> {
         let Some(host) = self.lan.as_mut() else {
             return Err(ActionRefused::Stale);
         };
-        if !host.hub.guests.update(gi, |g| g.may_reach_block(pos)) {
+        let context = &host.hub.loop_context;
+        if !host
+            .hub
+            .guests
+            .update(gi, |g| g.reaches_block(context, pos))
+        {
             return Err(ActionRefused::OutOfReach);
         }
         let (min_y, max_y) = (self.world.shape.min_y, self.world.shape.max_y() - 1);

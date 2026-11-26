@@ -325,9 +325,9 @@ pub fn client_sounds(m: &mut Mob, events: &mut Vec<MobEvent>) {
     if m.alive() {
         let roll = m.random.next_int_bound(1000).unwrap_or(999);
         let t = m.ambient_timer;
-        m.ambient_timer += 1;
+        m.ambient_timer = m.ambient_timer.wrapping_add(1);
         if roll < t {
-            m.ambient_timer = -m.ambient_interval();
+            m.ambient_timer = m.ambient_interval().wrapping_neg();
             if let Some(s) = ambient(m)
                 && !m.silent
             {
@@ -587,6 +587,7 @@ mod invulnerability_tests {
             kind: DamageKind::Thrown,
             attacker: Some(Who::Mob(2)),
             from: Some([1.0, 0.0, 0.0]),
+            direct: None,
             attacker_species: Some(Species::Breeze),
         };
         assert!(

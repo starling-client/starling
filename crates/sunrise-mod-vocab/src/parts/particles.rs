@@ -17,7 +17,7 @@ pub trait ParticlesRegistrar {
 impl dyn super::Registrar + '_ {
     /// Register a common `ParticleType` with its structured and play-stream codecs.
     /// This does not need client assets. Register its sprite-set provider separately
-    /// on the client. Duplicate names and foreign namespaces refuse startup.
+    /// on the client. Duplicate names refuse startup. A valid explicit key keeps its namespace.
     pub fn register_particle_type<T: PartialEq + Send + Sync + 'static>(
         &mut self,
         id: &str,

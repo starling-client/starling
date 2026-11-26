@@ -2,21 +2,47 @@
 //! message and the hook that may replace or cancel a line.
 use super::*;
 
-/// A player message Chat Delay holds back, its signature and trust level,
-/// what the narrator says of it once it shows, and who sent it in which
-/// chat type, for mods told when it shows (`ClientChatReceivedEvent`).
+/// Receipt-time context for `ChatListener.handleMessage`. Its presentation,
+/// including trust evaluation, decoration, the mod hook, and checks against
+/// current social/visibility options, waits until the queue accepts it.
 pub(super) struct QueuedChat {
-    pub(super) line: sunrise_client::text::Text,
+    /// The valid player signature (also the deletion key), or the invalid
+    /// signature an error only acknowledges. Disguised chat has neither.
     pub(super) signature: Option<Signature>,
-    pub(super) trust: ChatTrust,
-    pub(super) narration: String,
     /// The player's UUID, 0 for disguised chat (`Util.NIL_UUID`).
     pub(super) sender: u128,
-    /// The chat type's network ID (`ChatType.Bound.chatType`).
-    pub(super) chat_type: i32,
-    /// The message as the player signed it, read only while a mod listens;
-    /// `None` for disguised chat and validation errors.
-    pub(super) player: Option<mod_api::PlayerChatInfo>,
+    pub(super) kind: QueuedChatKind,
+}
+
+pub(super) enum QueuedChatKind {
+    Player {
+        chat_type: play::ChatTypeBound,
+        signed: bool,
+        timestamp: i64,
+        received_ms: i64,
+        only_show_secure: bool,
+        /// What the line shows, as `handlePlayerChatMessage` picks it at receipt
+        /// (`displayedMessage.decoratedContent()`: the signed content under Only
+        /// Show Secure Chat, else the unsigned content or the signed content). It
+        /// translates when the line is decorated to be shown.
+        displayed: serde_json::Value,
+        /// `FilterMask.applyWithFormatting` and `ChatTrustLevel.isModified` use the signed text.
+        signed_content: String,
+        unsigned_content: Option<Tag>,
+        filter: (i32, Vec<i64>),
+        /// Saved only while a mod listens to `ClientChatReceivedEvent`.
+        info: Option<Box<mod_api::PlayerChatInfo>>,
+    },
+    /// `FilterMask.FULLY_FILTERED`: stays in FIFO queue order with its deletion
+    /// key and acknowledges as not shown on acceptance, without retaining text.
+    Filtered,
+    Disguised {
+        chat_type: play::ChatTypeBound,
+        message: Tag,
+    },
+    Error {
+        chat_type: play::ChatTypeBound,
+    },
 }
 
 /// `PlayerChatMessage` of a `ClientboundPlayerChatPacket`, for

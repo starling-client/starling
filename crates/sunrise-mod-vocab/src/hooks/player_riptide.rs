@@ -1,5 +1,4 @@
 //! The `player_riptide` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0307
 
 pub trait Hooks {
     /// A server player launched with a riptide trident, after the velocity,

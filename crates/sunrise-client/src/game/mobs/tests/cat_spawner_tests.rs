@@ -14,20 +14,25 @@ fn a_cat_spawner_cat_faces_south_without_a_level_draw() {
     // unconditional coats. There is no black-cat structure in this fixture.
     game.world.day_time = 0;
     let coats = [
-        "all_black",
-        "black",
-        "british_shorthair",
-        "calico",
-        "jellie",
-        "persian",
-        "ragdoll",
-        "red",
-        "siamese",
-        "tabby",
-        "white",
+        "minecraft:all_black",
+        "minecraft:black",
+        "minecraft:british_shorthair",
+        "minecraft:calico",
+        "minecraft:jellie",
+        "minecraft:persian",
+        "minecraft:ragdoll",
+        "minecraft:red",
+        "minecraft:siamese",
+        "minecraft:tabby",
+        "minecraft:white",
     ];
-    let sounds = &game.res.spawn_registries().cat_sound.names;
-    assert_eq!(sounds, &["classic", "royal"]);
+    let sounds: Vec<String> = game
+        .world_variants()
+        .cat_sound
+        .iter()
+        .map(|(_, id, _)| id.to_owned())
+        .collect();
+    assert_eq!(sounds, ["minecraft:classic", "minecraft:royal"]);
     let sound_count = sounds.len() as i32;
     let mut level = game.world.random.clone();
     for _ in 0..8 {
@@ -38,17 +43,23 @@ fn a_cat_spawner_cat_faces_south_without_a_level_draw() {
         level.next_double();
         level.next_float();
         let coat = level.next_int_bound(coats.len() as i32).unwrap() as usize;
-        let sound = level.next_int_bound(sound_count).unwrap() as u8;
+        let sound = level.next_int_bound(sound_count).unwrap() as usize;
         let before = game.mobs.len();
         game.spawn_cat([4, 100, 8], false);
         assert_eq!(game.mobs.len(), before + 1, "one cat");
+        let variants = game.world_variants();
         let cat = game.mobs.last().expect("cat");
         assert_eq!(cat.species(), Species::Cat);
         assert_eq!(
-            sunrise_client::mobs::finalize::variant_name(Species::Cat, cat.extra.variant),
-            coats[coat]
+            cat.cat_variant(&variants.cat)
+                .and_then(|r| variants.cat.id(r)),
+            Some(coats[coat])
         );
-        assert_eq!(cat.extra.sound_variant, Some(sound));
+        assert_eq!(
+            cat.cat_sound_variant(&variants.cat_sound)
+                .and_then(|r| variants.cat_sound.id(r)),
+            Some(sounds[sound].as_str())
+        );
         assert_eq!(cat.yaw, 0.0);
         assert_eq!(cat.body_yaw, 0.0);
         assert_eq!(cat.head_yaw, 0.0);

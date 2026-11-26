@@ -57,8 +57,7 @@ impl ItemPart for Jar {
                     slot: 1,
                 };
                 let stick = ItemResource::of(event.stack);
-                let went =
-                    host.transaction(|host, tx| Ok::<_, ()>(slot.insert(host, tx, &stick, 1)));
+                let went = host.transaction(|host, tx| slot.insert(host, tx, &stick, 1));
                 assert_eq!(went, Ok(1));
             }
         }
@@ -101,6 +100,8 @@ fn dispense(game: &mut super::Game<'_>) -> Option<ItemStack> {
         Direction::East,
         ItemStack::new("minecraft:stick", 1),
     )
+    .unwrap()
+    .continue_value()
     .unwrap()
 }
 

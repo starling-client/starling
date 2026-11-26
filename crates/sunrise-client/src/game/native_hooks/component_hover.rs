@@ -69,19 +69,15 @@ mod component_hover_tests {
         let entity = style(serde_json::json!({
             "action": "show_entity", "id": "minecraft:pig", "uuid": [0, 1, 0, 2], "name": "Babe"
         }));
-        let mut unheard = Vec::new();
-        crate::game::native_entity_refs::tests::with_game(|game| {
-            unheard = [&text, &secret, &item, &entity]
-                .map(|style| drawn(game, style))
-                .to_vec();
-        });
-        assert!(unheard[..3].iter().all(|quads| !quads.is_empty()));
-        // Without advanced tooltips an entity hover draws nothing, as vanilla's.
-        assert!(unheard[3].is_empty());
-        SEEN.lock().unwrap().clear();
-        let mods: mod_api::Mods = vec![ModEntry::new("hovers", Box::new(Hovers))].into();
-        with_mods(mods, || {
-            crate::game::native_entity_refs::tests::with_game(|game| {
+        crate::game::native_entity_refs::tests::with_client_game(|game| {
+            // Compare the same atlas before and after installing the scoped listener.
+            let unheard = [&text, &secret, &item, &entity].map(|style| drawn(game, style));
+            assert!(unheard[..3].iter().all(|quads| !quads.is_empty()));
+            // Without advanced tooltips an entity hover draws nothing, as vanilla's.
+            assert!(unheard[3].is_empty());
+            SEEN.lock().unwrap().clear();
+            let mods: mod_api::Mods = vec![ModEntry::new("hovers", Box::new(Hovers))].into();
+            with_mods(mods, || {
                 assert_eq!(drawn(game, &text), unheard[0]);
                 assert_eq!(drawn(game, &item), unheard[2]);
                 assert_eq!(drawn(game, &entity), unheard[3]);

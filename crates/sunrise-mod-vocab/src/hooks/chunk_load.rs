@@ -1,5 +1,4 @@
 //! The `chunk_load` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0065
 
 pub trait Hooks {
     /// Chunk `chunk` (`[x, z]`, in chunks) of `dimension` came into the world

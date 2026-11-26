@@ -21,7 +21,7 @@ A mismatch is counted by the oracle's no-mod block, the expected block and Sunri
 missing rule reads as one line. KNOWN names the mismatch classes the implementation does not cover yet, with
 the reason; they are reported, not failed.
 
-usage: test_structure_blocks_parity.py [--profile betterdungeons|ctov|lithostitched-probe] [--filter REGEX]
+usage: test_structure_blocks_parity.py [--profile ctov|lithostitched-probe] [--filter REGEX]
                                       [--limit N]
 """
 import argparse
@@ -33,11 +33,11 @@ import subprocess
 import sys
 from collections import Counter, defaultdict
 
-try:
-    from . import lab, test_structure_layout_parity as layout
-except ImportError:
-    import lab
-    import test_structure_layout_parity as layout
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_structure_layout_parity as layout
 
 # The mod profiles: the layout harness's, and CTOV (its jar and Lithostitched's come from a pack's jar
 # folder, `.local/structure-oracle/pack-jars/`).
@@ -48,14 +48,6 @@ PROFILES = {
 }
 # profile -> {structure id regex: what the implementation does not cover yet}
 KNOWN = {
-    'betterdungeons': {
-        r'^betterdungeons:(small|skeleton|zombie)_dungeon$':
-            "Better Dungeons' placeholder processors and its biome modifier that removes vanilla's "
-            'monster rooms (spec-betterdungeons §1.2, §3.2) are not implemented yet',
-        r'^betterdungeons:(spider|small_nether)_dungeon$':
-            "Better Dungeons' own structure types (spec-betterdungeons §5, §6; OPEN-B14, B15) are not "
-            'implemented yet',
-    },
     'ctov': {
         r'^ctov:': "Lithostitched's random is not known (spec-lithostitched OPEN-L6): per-block road and palette "
                    'choices match by share, not by block; and decoration (grass, trees) differs where the village '
@@ -192,7 +184,7 @@ def compare(start, vanilla, modded):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('--profile', default='betterdungeons', choices=sorted(PROFILES))
+    parser.add_argument('--profile', default='ctov', choices=sorted(PROFILES))
     parser.add_argument('--filter', default='', help='only structure ids matching this regex')
     parser.add_argument('--limit', type=int, default=8, help='mismatch classes shown per structure')
     args = parser.parse_args()

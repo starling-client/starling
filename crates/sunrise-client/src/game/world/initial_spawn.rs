@@ -28,10 +28,10 @@ impl Game<'_> {
             world: &self.world,
             properties: &self.pack.assets.properties,
             collision: self.collision,
-            // The spawn searches are the overworld's (PlayerSpawnFinder); a
-            // ceiling starts them at the generator's spawn height.
-            has_ceiling: self.level_shapes.overworld.has_ceiling,
-            spawn_height: self.spawn_origin.map_or(64, |(_, height)| height),
+            // PlayerSpawnFinder.getLevelRespawnPos: a ceiling starts the walk
+            // at the destination generator's spawn height.
+            has_ceiling: self.dimension_type().height.has_ceiling,
+            spawn_height: self.streaming.spawn_height(),
         }
     }
     /// ChunkGenerator.getOrigin and getSpawnHeight of the overworld.
@@ -55,10 +55,59 @@ impl Game<'_> {
         };
         Ok(((origin.x, origin.z), 64))
     }
+    /// MinecraftServer.createLevels initializes the Overworld after its Load
+    /// event and before constructing other levels. The owner's player spawn
+    /// is resolved separately, after level preparation.
+    pub(super) fn initialize_overworld_spawn(&mut self) -> Result<()> {
+        let dedicated = self.is_dedicated_server();
+        if self.level.world_spawn.is_none() && self.world_debug {
+            // MinecraftServer.setInitialSpawn takes this branch before NeoForge's
+            // CreateSpawnPosition and the normal chunk search (including bonus chest).
+            self.level.world_spawn = Some([0, 80, 0]);
+            self.level.world_spawn_angle = [0.0, 0.0];
+            self.level.spawn = Some([0.0, 80.0, 0.0]);
+        }
+        if self.level.world_spawn.is_none() {
+            if dedicated {
+                self.streaming.radius = -1;
+            }
+            self.try_initialize_world_spawn(true)?;
+        }
+        if dedicated {
+            self.spawn = self
+                .level
+                .world_spawn
+                .map(|[x, y, z]| Vec3::new(f64::from(x) + 0.5, f64::from(y), f64::from(z) + 0.5));
+        }
+        Ok(())
+    }
+
+    pub(super) fn try_initialize_world_spawn(&mut self, wait: bool) -> Result<bool> {
+        let Some([x, y, z]) = self.find_world_spawn(wait)? else {
+            return Ok(false);
+        };
+        self.spawn = Some(Vec3::new(
+            f64::from(x) + 0.5,
+            f64::from(y),
+            f64::from(z) + 0.5,
+        ));
+        self.level.spawn = Some([f64::from(x), f64::from(y), f64::from(z)]);
+        // A personal spawnpoint must not replace the world's spawn.
+        self.level.world_spawn.get_or_insert([x, y, z]);
+        if !self.spawn_hook_cancelled
+            && sunrise_client::save::WorldGen::read(&self.world_root).is_some_and(|g| g.bonus_chest)
+        {
+            self.place_bonus_chest([x, y, z])?;
+        }
+        Ok(true)
+    }
+
     /// MinecraftServer.setInitialSpawn: the first chunk of the spiral with a
     /// valid respawn column gives the world spawn, else the origin chunk's
-    /// centre at the spawn height. None while a chunk to test is loading.
-    pub(super) fn find_world_spawn(&mut self) -> Result<Option<[i32; 3]>> {
+    /// centre at the spawn height. The server's creation pass loads each tested
+    /// column to FULL as `ServerChunkCache.getChunk` does. The nonblocking path
+    /// can return None while a chunk to test is loading.
+    fn find_world_spawn(&mut self, wait: bool) -> Result<Option<[i32; 3]>> {
         if !self.spawn_hook_fired {
             self.spawn_hook_fired = true;
             let mut position = self.level.world_spawn.unwrap_or([0, 0, 0]);
@@ -79,15 +128,9 @@ impl Game<'_> {
         while let Some((dx, dz)) = self.spawn_spiral.current() {
             if self.spawn_spiral.tested() {
                 let (cx, cz) = (ox + dx, oz + dz);
-                if self.is_dedicated_server() {
-                    // getChunk(FULL) of the tested chunk alone: its 3x3 is decorated.
-                    if !self.world.chunks.contains_key(&(cx, cz)) {
-                        let area = [((cx, cz), -1)];
-                        if self.streaming.extra != area {
-                            self.streaming.extra = area.to_vec();
-                            self.streaming.rank_full_task(cx, cz);
-                        }
-                        return Ok(None);
+                if wait {
+                    if self.load_full_chunk(None, (cx, cz)).is_err() {
+                        return Err(format!("could not load initial spawn chunk {cx},{cz}").into());
                     }
                 } else if !self.streaming.is_lit(cx, cz) {
                     self.streaming.center = (cx, cz);
@@ -271,35 +314,6 @@ impl Game<'_> {
             random_source::entity().next_int_bound(n).unwrap_or(0)
         })
     }
-    /// ServerPlayer.adjustSpawnLocation for a server's new player: where
-    /// PlayerSpawnFinder.findSpawn puts their feet around the world spawn
-    /// (`spawn`, the feet there), so that players new to a world don't all
-    /// stand in one spot. Vanilla waits for each candidate's chunk; a server
-    /// tick can't, so a candidate in a chunk not loaded yet is passed over,
-    /// and `spawn` stays when the search never reaches a loaded column.
-    pub(super) fn server_player_spawn(&self, spawn: [f64; 3]) -> [f64; 3] {
-        let suggestion = spawn.map(|v| v.floor() as i32);
-        let mut finder = self.spawn_finder(suggestion);
-        while let Some(candidate) = finder.next_candidate() {
-            let (x, z) = match candidate {
-                SpawnCandidate::Column(x, z) => (x, z),
-                SpawnCandidate::Suggestion => (suggestion[0], suggestion[2]),
-            };
-            if !self.streaming.is_lit(x >> 4, z >> 4) {
-                continue;
-            }
-            let feet = match candidate {
-                SpawnCandidate::Column(x, z) => level_respawn_pos(&self.spawn_columns(), x, z)
-                    .filter(|&pos| self.player_fits(pos))
-                    .map(bottom_center),
-                SpawnCandidate::Suggestion => Some(self.fixup_spawn_height(suggestion)),
-            };
-            if let Some(feet) = feet {
-                return [feet.x, feet.y, feet.z];
-            }
-        }
-        spawn
-    }
     /// PlayerSpawnFinder.noCollisionNoLiquid: a player's box standing at the
     /// block's bottom centre touches no block or liquid.
     fn player_fits(&self, pos: [i32; 3]) -> bool {
@@ -327,5 +341,95 @@ impl Game<'_> {
             y -= 1;
         }
         bottom_center([x, y + 1, z])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::game::native_entity_refs::tests::{run_fresh_cases, with_game};
+    use crate::game::world_loading::WorldRequest;
+    use mod_api::{ChunkLoadEvent, Hooks, LevelLoadEvent, ModEntry, ServerHost};
+    use std::sync::{Arc, Mutex};
+    use sunrise_client::{
+        save::WorldPreset,
+        title::{FlatSettings, WorldOptions},
+    };
+
+    #[test]
+    #[ignore = "daily"]
+    fn integrated_creation_finishes_world_spawn_before_opening_the_nether() {
+        if run_fresh_cases(
+            "game::initial_spawn::tests::integrated_creation_finishes_world_spawn_before_opening_the_nether",
+            "SUNRISE_INITIAL_WORLD_SPAWN_CASE",
+            &["flat"],
+        ) {
+            return;
+        }
+
+        struct Log(Arc<Mutex<Vec<&'static str>>>);
+        #[mod_api::__subscriptions]
+        impl Hooks for Log {
+            fn level_load(&self, _: &mut dyn ServerHost, event: &mut LevelLoadEvent<'_>) {
+                match event.dimension {
+                    "minecraft:overworld" => self.0.lock().unwrap().push("overworld"),
+                    "minecraft:the_nether" => self.0.lock().unwrap().push("nether"),
+                    _ => {}
+                }
+            }
+            fn chunk_load(&self, _: &mut dyn ServerHost, event: &mut ChunkLoadEvent<'_>) {
+                if event.dimension == "minecraft:overworld" && event.chunk == [0, 0] {
+                    self.0.lock().unwrap().push("spawn column");
+                }
+            }
+        }
+        let log = Arc::new(Mutex::new(Vec::new()));
+        mod_platform::testing::with_mods(
+            vec![ModEntry::new("spawn_order", Box::new(Log(log.clone())))].into(),
+            || {
+                with_game(|game| {
+                    let root = tempfile::tempdir().unwrap();
+                    game.join_world_rest().unwrap();
+                    let options = WorldOptions {
+                        world_type: WorldPreset::Flat,
+                        flat_settings: Some(FlatSettings {
+                            structure_overrides: Vec::new(),
+                            ..FlatSettings::default()
+                        }),
+                        structures: false,
+                        ..WorldOptions::default()
+                    };
+                    let mut request = WorldRequest::new(
+                        "spawn_order",
+                        Some("Flat spawn"),
+                        Some(1),
+                        false,
+                        Some(&options),
+                        game.level.rule_registry.clone(),
+                    )
+                    .unwrap();
+                    request.save_root = root.path().to_path_buf();
+                    request.stem_order = Some(&[
+                        "minecraft:overworld",
+                        "minecraft:the_nether",
+                        "minecraft:the_end",
+                    ]);
+                    let prepared = game.prepare_world_and_rules(request).unwrap();
+                    assert!(prepared.level.world_spawn.is_none());
+                    game.native_lifecycle_open_started();
+                    game.finish_open_world(prepared).unwrap();
+                    // The Flat preset's column has four solid blocks from -64. The spawn
+                    // search takes the first usable column in the origin chunk.
+                    assert_eq!(game.level.world_spawn, Some([0, -60, 0]));
+                    assert!(
+                        game.player.is_none(),
+                        "the owner's player is prepared separately"
+                    );
+                })
+            },
+        );
+        assert_eq!(
+            *log.lock().unwrap(),
+            ["overworld", "spawn column", "nether"]
+        );
     }
 }

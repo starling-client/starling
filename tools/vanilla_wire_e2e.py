@@ -37,12 +37,11 @@ import sys
 import tempfile
 import time
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import lab  # noqa: E402
-import net_capture  # noqa: E402
-import test_rust_parity as base  # noqa: E402
-from server_pack_e2e import Game  # noqa: E402
-from test_dedicated_server_parity import Server, free_port  # noqa: E402
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, net_capture, test_rust_parity as base
+from tools.server_pack_e2e import Game
+from tools.test_dedicated_server_parity import Server, free_port  # noqa: E402
 
 PLAYER = 'Steve'
 PROPERTIES = {

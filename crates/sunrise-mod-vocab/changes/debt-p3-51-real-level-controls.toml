@@ -1,0 +1,96 @@
+# `ids` lists the records the surface diff can detect. These additional items
+# change behaviour, not Rust signatures or record hashes, and are covered by
+# the hook/member and behaviour records below:
+# method:Hooks::weather_change, type:WeatherChangeEvent,
+# method:Hooks::world_border_center_changed, type:WorldBorderCenterChangedEvent,
+# method:Hooks::world_border_bounds_changed, type:WorldBorderBoundsChangedEvent,
+# method:Hooks::world_border_bounds_change_finish, type:WorldBorderBoundsChangeFinishEvent,
+# method:Hooks::server_tick_rate_changed,
+# handle:LevelRef::set_weather, handle:LevelRef::set_weather_levels,
+# handle:LevelRef::weather, handle:LevelRef::is_raining, handle:LevelRef::is_raining_at,
+# handle:LevelRef::is_thundering,
+# handle:LevelRef::world_border, handle:LevelRef::set_world_border_center,
+# handle:LevelRef::set_world_border_size, handle:LevelRef::set_world_border_damage,
+# handle:LevelRef::set_world_border_warning, method:ConfigServerHost::set_tick_rate,
+# method:ConfigServerHost::server_view_distance, method:ConfigServerHost::server_set_view_distance,
+# method:ConfigServerHost::server_simulation_distance, method:ConfigServerHost::server_set_simulation_distance.
+ids = [
+    "hook:thunder_change",
+    "hook:thunder_change.dimension",
+    "hook:thunder_change.thundering",
+    "hook:thunder_change.cancelled",
+    "method:Hooks::thunder_change",
+    "type:ThunderChangeEvent",
+    "type:ThunderChangeEvent.dimension",
+    "type:ThunderChangeEvent.thundering",
+    "type:ThunderChangeEvent.cancelled",
+    "hook:weather_change",
+    "hook:weather_change.clear_ticks",
+    "hook:weather_change.weather_ticks",
+    "type:WeatherChangeEvent.clear_ticks",
+    "type:WeatherChangeEvent.weather_ticks",
+    "hook:world_border_center_changed",
+    "hook:world_border_center_changed.level",
+    "type:WorldBorderCenterChangedEvent.level",
+    "hook:world_border_bounds_changed",
+    "hook:world_border_bounds_changed.level",
+    "hook:world_border_bounds_changed.lerp_ticks",
+    "type:WorldBorderBoundsChangedEvent.level",
+    "type:WorldBorderBoundsChangedEvent.lerp_ticks",
+    "hook:world_border_bounds_change_finish",
+    "hook:world_border_bounds_change_finish.level",
+    "type:WorldBorderBoundsChangeFinishEvent.level",
+    "hook:server_tick_rate_changed",
+    "behaviour:live_server_distances",
+    "handle:LevelRef::set_weather",
+    "handle:LevelRef::set_weather_levels",
+    "handle:LevelRef::weather",
+    "handle:LevelRef::is_raining_at",
+    "handle:LevelRef::set_world_border_center",
+    "handle:LevelRef::set_world_border_size",
+    "handle:LevelRef::set_world_border_damage",
+    "handle:LevelRef::set_world_border_warning",
+    "behaviour:level_set_weather",
+    "behaviour:level_set_weather_levels",
+    "behaviour:level_weather_read",
+    "behaviour:level_is_raining_at",
+    "behaviour:level_set_world_border_center",
+    "behaviour:level_set_world_border_size",
+    "behaviour:level_set_world_border_damage",
+    "behaviour:level_set_world_border_warning",
+    "behaviour:server_tick_rate_write",
+]
+why = """
+Vanilla MinecraftServer.setWeatherParameters writes one server-wide set of signed timers and flags. Level.setRainLevel and Level.setThunderLevel clamp both interpolants to 0–1 through Mth.clamp. NeoForge's ServerLevel.advanceWeatherCycle patch changes who gets the weather packets; it does not add a weather/thunder veto pair. Sunrise now offers one veto per explicit weather parameter write, including GameTest setup and restoration at TestEnvironmentDefinition.Weather.Type.apply. Weather.setup snapshots the batch level's actual type using Level.isThundering and isRaining; Weather.teardown still calls ServerLevel.resetWeatherCycle separately. The shared predicate converts the float strengths to doubles for the comparison, as Level.isRaining and isThundering do. Level-local strengths stay with their level across swaps and idle ticks. PlayerList.sendLevelInfo sends weather from the destination level's rain predicate and current strengths; ClientPacketListener.handleRespawn starts a fresh ClientLevel on a level change rather than carrying over the departing weather. Normal and viewed level updates follow ServerLevel.advanceWeatherCycle and NeoForge's dimension-scoped patch: the level's rain predicate determines START/STOP and both current strengths follow each transition. A view opens from its own strengths; on promotion its last-sent weather is reconciled with the destination's current local weather.
+
+Vanilla WorldBorder.setCenter, setSize, lerpSizeBetween and the warning and damage setters address one level. PlayerList.addWorldborderListener sends center, size, lerp and warning packets at the write, only to players in that level; damage settings stay server-side. WorldBorder.StaticBorderExtent.updateBox clips the edges to the absolute bounds, and Shapes.box requires ordered bounds, not the limits of the WorldBorderCommand parser. WorldBorder.MovingBorderExtent.update applies the last tick before a finish is observable. MinecraftServer.tickChildren runs command functions before visiting resident levels in order, and ServerLevel.tick advances the border before weather and block work, even when a level has no players. Sunrise reports the affected level at each separate notification. ClientPacketListener.handleRespawn gives each replacement ClientLevel its own border; handleInitializeBorder applies the destination's complete settings.
+
+Vanilla TickRateManager.setTickRate clamps rates below 1 TPS; TickCommand.register owns the command's upper bound. ServerTickRateManager.setTickRate calls MinecraftServer.onTickRateChanged before sending the resulting ticking state, and finishTickSprint signals onTickRateChanged when a sprint ends. NeoForge reads this clock in TPSCommand.createComponent, but adds no setter event. Sunrise now uses the same clock setter for native writes and the command.
+
+Vanilla PlayerList.setViewDistance and setSimulationDistance store and send the supplied distances and update the chunk source. The native mod boundary takes 2–32 chunks: view uses ChunkMap.MIN_VIEW_DISTANCE and MAX_VIEW_DISTANCE in setServerViewDistance; simulation uses the supported endpoints of Options.simulationDistance's IntRange (2 with DEBUG_ALLOW_LOW_SIM_DISTANCE, up to 32), with tickets updated by DistanceManager.updateSimulationDistance. That mod input range does not clamp what PlayerList advertises for the management protocol or the owner's options. The effective loading and player tracking radius uses ChunkMap.setServerViewDistance and getPlayerViewDistance, not the advertised integer. After the successful unpaused server tick, IntegratedServer.tickServer compares the owner's render distance to PlayerList's live value, but compares the owner's simulation option to the last owner value. The same live setters now serve integrated and dedicated worlds, and management alone persists changes to server.properties.
+"""
+migrate = """
+Replace fn thunder_change(&self, host: &mut dyn ServerHost, event: &mut ThunderChangeEvent<'_>) -> Flow in your Hooks impl with fn weather_change(&self, host: &mut dyn ServerHost, event: &mut WeatherChangeEvent<'_>) -> Flow. If you implement both, merge them into one listener. Read event.thundering for the proposed thunder state, event.weather_ticks for both the rain and thunder timers, and event.clear_ticks for the clear timer. event.dimension is the origin, not a per-level destination. Return Flow::Cancel or set event.cancelled to veto the entire proposal, not just thunder. Keep calling level.set_weather(host, clear_ticks, weather_ticks, raining, thundering); it now accepts signed timers and parked origins. It returns false for an invalid level or a final veto. Keep calling level.set_weather_levels(host, rain, thunder) for an immediate interpolant change on the named resident level, including a parked level; infinities now clamp to the endpoints and NaN is still refused. Strength writes and the natural weather cycle do not call weather_change.
+
+Keep calling level.weather(host). It reads the named level's own rain strength and its thunder strength scaled by rain at partial tick 1, even if the server has swapped that level out or ticked it while idle. It does not read the shared weather flags.
+
+Keep calling level.is_raining(host) or level.is_raining_at(host, pos). In a level that can have weather a strength of 0.2_f32 now passes the rain threshold, because it is greater than vanilla's double value 0.2; the position method still requires the other conditions for precipitation there.
+
+Keep calling level.is_thundering(host). Like Level.isThundering it checks the named server level's own rain-scaled thunder strength against the double threshold 0.9. That level retains its own strengths across swaps and idle ticks; the shared thunder flag is not the predicate.
+
+For an exact-build [[native.mixin]] target, replace sunrise_client::game::native_level_weather::Game<'_>::set_weather_parameters(clear_ticks, weather_ticks, raining, thundering) with sunrise_client::game::weather::Game<'_>::set_weather_parameters(origin_dimension, clear_ticks, weather_ticks, raining, thundering). Pass the originating level's dimension ID as the new leading &str (for the level in place, pass self.dim.id()), and handle the bool result: false means the write was vetoed.
+
+Keep Hooks::world_border_center_changed and read WorldBorderCenterChangedEvent.level; call event.level.world_border(host) instead of looking up a presumed current or shared border.
+Keep Hooks::world_border_bounds_changed and read WorldBorderBoundsChangedEvent.level for the affected level. WorldBorderBoundsChangedEvent.lerp_ticks is None for an immediate write and Some(ticks) for a timed request, even if the old and new sizes are equal.
+Keep Hooks::world_border_bounds_change_finish and read WorldBorderBoundsChangeFinishEvent.level; only this hook reports an actual moving extent reaching its target. If destructuring the border events, read the new fields or use `..`.
+
+Keep calling level.world_border(host) and level.set_world_border_center(host, [x, z]), level.set_world_border_size(host, size, ticks), level.set_world_border_damage(host, per_block, safe_zone) and level.set_world_border_warning(host, blocks, ticks). Pass the actual destination level, including a parked one. Finite centers and sizes no longer inherit command ranges. A signed size is permitted when the minima do not exceed the maxima after clipping the box's edges and rounding its minima down and maxima up. Pass ticks <= 0 for a fixed size. Damage values can be signed and finite; warning settings can be signed. Successful center, size and warning writes notify that level's watchers even when values repeat. Damage settings stay server-side. A write returns false and logs the refusal for an invalid input or unavailable level.
+
+Exact-build WorldBorder users: replace border.lerp_to(to, ticks) with border.set_size(to) for ticks <= 0, or let from = border.size(); border.lerp_between(from, to, ticks) for ticks > 0. Drop imports of MAX_CENTER and MAX_SIZE from sunrise_border::worldborder or its client re-exports; those were command bounds, not limits for direct writes. Let the setters validate geometry; use border.absolute_max_size() only when you need the live clip limit for the edges. WorldBorder::set_center, set_absolute_max_size, set_size, lerp_between, and tick now return Result<(), sunrise_core::geometry::border::BorderError>; WorldBorder::unpack returns Result<WorldBorder, BorderError>. Handle or propagate the error instead of assuming the operation succeeded. Drop sunrise_client::lan::border::Sent and its Sent::of and Sent::changes calls; there is no replacement packet-diff cache. For notifications use level.set_world_border_center, level.set_world_border_size or level.set_world_border_warning above. Use sunrise_client::lan::border::initialize(&border) for a full entry snapshot.
+
+Keep calling host.set_tick_rate(tps) on either logical server. Finite rates below 1 take effect as 1; the command's upper bound no longer applies. A non-finite rate or a call off the logical server returns false and logs the refusal. The listener signature is unchanged: fn server_tick_rate_changed(&self, host: &mut dyn ServerHost, event: &mut ServerTickRateChangedEvent). Even an equal direct write notifies it before the autosave adjustment and resulting clock sync. Use host.set_tick_rate(tps) rather than a console command when retuning the clock from a mod. For an exact-build [[native.mixin]] target, replace sunrise_client::game::native_server::Game<'_>::apply_tick_rate or sunrise_client::game::native_server::Game<'_>::set_tick_rate with sunrise_client::game::autosave::Game<'_>::set_tick_rate.
+
+Rebuild for version 2 of weather_change, the three border notifications and server_tick_rate_changed. A nested setter can run: it skips only callbacks for that hook already running on this thread; other eligible listeners still run. A mod callback that panics is logged with its mod ID, shown in an error toast and disabled for the session without disabling the mod's other callbacks. Vetoes and phase or reentry refusals are logged each time and are not latched. A veto or panic does not undo any Host writes already made by a listener.
+
+For live_server_distances, keep calling host.server_view_distance() and host.server_simulation_distance() for the advertised values; None means no logical server player list is available. Remove dedicated-only or open-to-LAN checks before host.server_set_view_distance(d) or host.server_set_simulation_distance(d): both work on either logical server, including unpublished worlds. Continue passing 2–32 chunks and handle false for a logged refusal. These writes leave server.properties and the owner's options alone. In an integrated world, the owner's render distance is restored at the end of an unpaused server tick, including the same tick in which a listener writes it. A mod's simulation distance stays until a tick follows a changed simulation option.
+"""

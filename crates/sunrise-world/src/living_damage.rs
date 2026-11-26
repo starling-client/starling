@@ -190,10 +190,20 @@ impl DamageContainer {
         self.state.new_damage = next;
         next
     }
-    /// Apply the absorption stage after Pre. Returns (damage to health, damage absorbed,
-    /// remaining hearts). Vanilla computes spent hearts by subtraction; NeoForge takes the
-    /// nominal share directly, even if no modifier was registered at this stage.
+    /// Apply the absorption stage after Pre when the caller owns the heart value.
+    /// Returns (damage to health, damage absorbed, remaining hearts).
     pub fn absorb(&mut self, damage: f32, hearts: f32) -> (f32, f32, f32) {
+        let (remaining, absorbed) = self.absorption_damage(damage, hearts);
+        (
+            remaining,
+            absorbed,
+            self.remaining_absorption(hearts, absorbed),
+        )
+    }
+
+    /// Vanilla computes the spent hearts by subtraction; NeoForge takes the nominal
+    /// share directly, even if there is no absorption reduction modifier.
+    fn absorption_damage(&mut self, damage: f32, hearts: f32) -> (f32, f32) {
         if self.live_reductions {
             let remaining = self.reduce(
                 Reduction::Absorption,
@@ -202,13 +212,22 @@ impl DamageContainer {
                 damage,
             );
             let absorbed = java_min_f32(damage, self.reduction(Reduction::Absorption));
-            (remaining, absorbed, java_max_f32(hearts - absorbed, 0.0))
+            (remaining, absorbed)
         } else {
             let remaining = java_max_f32(damage - hearts, 0.0);
             let absorbed = damage - remaining;
             self.record_reduction(Reduction::Absorption, absorbed);
             self.record_new_damage(remaining);
-            (remaining, absorbed, hearts - absorbed)
+            (remaining, absorbed)
+        }
+    }
+
+    fn remaining_absorption(&self, hearts: f32, absorbed: f32) -> f32 {
+        let remaining = hearts - absorbed;
+        if self.live_reductions {
+            java_max_f32(remaining, 0.0)
+        } else {
+            remaining
         }
     }
     /// The damage sequence: capture the damage Pre left, before absorption.
@@ -389,7 +408,9 @@ pub(crate) fn actually_hurt_after_armor<W: DamageWorld>(
     container.record_new_damage(magic_damage);
     world.damage_pre(container)?;
     let damage = container.capture_inflicted();
-    let (remaining, absorbed, hearts) = container.absorb(damage, world.absorption()?);
+    let (remaining, absorbed) = container.absorption_damage(damage, world.absorption()?);
+    // actuallyHurt reads the current hearts again after calculating the split.
+    let hearts = container.remaining_absorption(world.absorption()?, absorbed);
     world.set_absorption(hearts)?;
     if absorbed > 0.0 && absorbed < STAT_LIMIT {
         if player {

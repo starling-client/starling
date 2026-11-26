@@ -26,7 +26,7 @@ fn client_day_time_reads_overworld_clock_across_packets_and_levels() {
             .registries
             .insert("minecraft:dimension_type".into(), dimensions);
         let registries = Arc::new(registries);
-        game.set_registries(registries.clone());
+        game.set_registries(registries.clone()).unwrap();
         let mut spawn = play::SpawnInfo {
             dimension_type: 1,
             dimension: "minecraft:the_end".into(),
@@ -215,7 +215,7 @@ fn client_day_time_reads_overworld_clock_across_packets_and_levels() {
         let (client, _server) = Pipe::pair();
         game.connect_local(client, "ClockReadTest").unwrap();
         assert_eq!(fresh.day_time(game), None);
-        game.set_registries(registries);
+        game.set_registries(registries).unwrap();
         game.handle_packet(login(spawn)).unwrap();
         let reconnected = game.level("minecraft:the_nether").unwrap();
         assert_eq!(fresh.day_time(game), None);

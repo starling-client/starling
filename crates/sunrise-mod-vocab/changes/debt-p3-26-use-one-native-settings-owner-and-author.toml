@@ -1,0 +1,49 @@
+ids = [
+    "hook:setting_changed",
+    "method:Hooks::setting_changed",
+    "method:SettingsRegistrar::register_setting",
+    "method:prelude::ConfigHost::setting",
+    "method:prelude::ConfigHost::set_setting",
+    "method:prelude::ConfigHost::setting_bool",
+    "method:prelude::ConfigHost::setting_choice",
+    "method:prelude::ConfigHost::setting_f64",
+    "method:prelude::ConfigHost::setting_color",
+    "method:prelude::ConfigClientHost::set_setting",
+    "method:prelude::ConfigServerHost::set_setting",
+    "method:ConfigContext::setting",
+    "method:ReloadContext::setting",
+    "method:ClientReloadListenerContext::setting",
+    "method:ChunkDiskHost::setting",
+    "method:prelude::ConfigClientHost::setting_bool",
+    "method:prelude::ConfigClientHost::setting_choice",
+    "method:prelude::ConfigClientHost::setting_color",
+    "method:prelude::ConfigClientHost::setting_f64",
+]
+why = """
+Replace the TLS owner guess (`own_setting`), stale process cache (`READ`), and raw mod-id bypass
+with a `SettingKey` minted at registration. Options > Mods and both live hosts use the same
+validated write path and keep the existing per-mod settings files and value formats. Reloads use
+captured settings; disk workers borrow their generation's snapshot, not the live store.
+
+Vanilla 26.3 `OptionInstance.set` compares boxed values and calls back after publishing a change.
+NeoForge `ModConfigSpec.save` delegates to `LoadedConfig.save`, which persists and delivers the
+reload event synchronously. Sunrise dispatches `setting_changed` on the side that changed the
+value, only to its owner, using the shared hook panic boundary. Live settings writes from
+`config_reloading` and `config_unloading` still stand if the listener later panics.
+"""
+migrate = """
+Keep the `SettingKey` returned by `SettingsRegistrar::register_setting(spec)?`. Replace live
+`ConfigHost::setting(mod_id, key)` with `ConfigHost::setting(key)`, which any `&dyn Host` reaches
+and which reads the live value on the side it runs, and `ConfigHost::set_setting(mod_id, key, raw)`
+with the side's `set_setting(key, SettingValue::…)` on `ClientHost` or `ServerHost`. Reads return
+`Result<SettingValue, SettingAccessError>`; writes return `Result<bool, SettingAccessError>`, with
+`true` meaning the value changed. The typed reads `setting_bool`, `setting_choice`, `setting_f64`
+and `setting_color` move from `ConfigClientHost` to `ConfigHost`, so server code has them too:
+replace the string argument with the saved `SettingKey` and handle `Result` instead of `Option`.
+Use `ConfigContext::setting(key)`, `ReloadContext::setting(key)` or
+`ClientReloadListenerContext::setting(key)` for typed reads in those read-only contexts.
+On `ChunkDiskHost`, use `host.setting(mod_id, key) -> Option<&str>` to borrow the captured string.
+Implement `Hooks::setting_changed(&self, host: HostSide<'_>, event: &mut SettingChangedEvent<'_>)`
+(v2) instead of taking `&mut dyn ClientHost`; match on `host` and read the changed value by its
+registered key on that side.
+"""

@@ -1,5 +1,4 @@
 //! The `block_highlight` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0097
 
 pub trait Hooks {
     /// Before an eligible targeted block's selection outline is built.

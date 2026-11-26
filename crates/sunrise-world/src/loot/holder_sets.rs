@@ -142,11 +142,13 @@ impl Binding {
         owner: &str,
         value: &mut Value,
         tags: &loot_tags::BoundTags,
+        types: &types::Types,
+        function: Option<bool>,
     ) -> io::Result<bool> {
         if let Value::Array(values) = value {
             let mut changed = false;
             for (i, value) in values.iter_mut().enumerate() {
-                changed |= self.walk(&format!("{owner}[{i}]"), value, tags)?;
+                changed |= self.walk(&format!("{owner}[{i}]"), value, tags, types, function)?;
             }
             return Ok(changed);
         }
@@ -201,10 +203,20 @@ impl Binding {
             }
             _ => {}
         }
-        // A mod kind owns its payload, but its enclosing condition remains engine-owned.
+        // Only conditional functions have an engine-owned edge into an otherwise opaque
+        // mod entry. A condition codec or direct function codec owns its `condition` field.
         if kind.contains(':') && !kind.starts_with("minecraft:") {
-            if let Some(condition) = value.get_mut("condition") {
-                changed |= self.walk(&format!("{owner}.condition"), condition, tags)?;
+            if function == Some(true)
+                && types.conditional(&kind)
+                && let Some(condition) = value.get_mut("condition")
+            {
+                changed |= self.walk(
+                    &format!("{owner}.condition"),
+                    condition,
+                    tags,
+                    types,
+                    Some(false),
+                )?;
             }
             return Ok(changed);
         }
@@ -213,7 +225,6 @@ impl Binding {
             "entries",
             "children",
             "condition",
-            "conditions",
             "terms",
             "term",
             "modifier",
@@ -227,34 +238,49 @@ impl Binding {
             if let Some(child) = value.get_mut(field) {
                 if field == "effects" && child.is_object() {
                     for (name, effect) in child.as_object_mut().unwrap() {
-                        changed |= self.walk(&format!("{owner}.effects.{name}"), effect, tags)?;
+                        changed |= self.walk(
+                            &format!("{owner}.effects.{name}"),
+                            effect,
+                            tags,
+                            types,
+                            None,
+                        )?;
                     }
                 } else {
-                    changed |= self.walk(&format!("{owner}.{field}"), child, tags)?;
+                    let function = match field {
+                        "modifier" | "functions" | "on_pass" | "on_fail" => Some(true),
+                        "condition" | "terms" | "term" | "requirements" => Some(false),
+                        _ => None,
+                    };
+                    changed |=
+                        self.walk(&format!("{owner}.{field}"), child, tags, types, function)?;
                 }
             }
         }
+        if value["type"] == "minecraft:loot_table" && value["value"].is_object() {
+            changed |= self.walk(
+                &format!("{owner}.value"),
+                &mut value["value"],
+                tags,
+                types,
+                None,
+            )?;
+        }
         Ok(changed)
     }
-    pub(super) fn snapshot(&self, data: &mut LootData) -> io::Result<()> {
-        let mut tables = None;
-        for (id, lazy) in &data.tables.0 {
-            let mut value = lazy.read().into_owned();
-            if self.walk(&format!("loot_table {id}"), &mut value, &data.tags)? {
-                tables
-                    .get_or_insert_with(|| data.tables.0.clone())
-                    .insert(id.clone(), LazyJson::new(&value));
-            }
-        }
-        if let Some(tables) = tables {
-            data.tables = Arc::new(LootTables(tables));
-        }
-        for (kind, entries) in [
-            ("item_modifier", &mut data.modifiers),
-            ("predicate", Arc::make_mut(&mut data.predicates)),
+    pub(super) fn snapshot(&self, data: &mut LootData, types: &types::Types) -> io::Result<()> {
+        for (kind, function, entries) in [
+            ("item_modifier", true, Arc::make_mut(&mut data.modifiers)),
+            ("predicate", false, Arc::make_mut(&mut data.predicates)),
         ] {
             for (id, value) in entries {
-                self.walk(&format!("{kind} {id}"), value, &data.tags)?;
+                self.walk(
+                    &format!("{kind} {id}"),
+                    value,
+                    &data.tags,
+                    types,
+                    Some(function),
+                )?;
             }
         }
         for enchantment in &mut data.enchantments {
@@ -277,11 +303,17 @@ impl Binding {
                     &data.tags,
                 )?;
             }
-            for (kind, effects) in enchantment.effects.as_object_mut().into_iter().flatten() {
+            for (kind, effects) in Arc::make_mut(&mut enchantment.effects)
+                .as_object_mut()
+                .into_iter()
+                .flatten()
+            {
                 self.walk(
                     &format!("enchantment {}.effects.{kind}", enchantment.name),
                     effects,
                     &data.tags,
+                    types,
+                    None,
                 )?;
             }
         }
@@ -334,22 +366,18 @@ mod tests {
             json!(["minecraft:sing"])
         );
         assert!(
-            data.roll(
+            crate::loot::in_biome(&data, Some("minecraft:plains"), |location| data.roll(
                 "test:horn",
                 &mut LegacyRandom::new(1),
                 0.0,
-                Some("minecraft:plains"),
+                location,
                 None
-            )
+            ))
             .is_empty()
         );
-        let drops = data.roll(
-            "test:horn",
-            &mut LegacyRandom::new(1),
-            0.0,
-            Some("minecraft:desert"),
-            None,
-        );
+        let drops = crate::loot::in_biome(&data, Some("minecraft:desert"), |location| {
+            data.roll("test:horn", &mut LegacyRandom::new(1), 0.0, location, None)
+        });
         assert_eq!(drops.len(), 1);
         assert_eq!(
             drops[0].components,
@@ -386,9 +414,16 @@ mod tests {
     fn unavailable_universes_refuse_and_opaque_mod_payloads_remain_untouched() {
         let binding = Binding::default();
         let tags = HashMap::new();
+        let types = types::Types::default();
         let mut location = json!({"type": "minecraft:location_check", "predicate": {"biomes": {"type": "neoforge:any"}}});
         let error = binding
-            .walk("predicate test:where", &mut location, &tags)
+            .walk(
+                "predicate test:where",
+                &mut location,
+                &tags,
+                &types,
+                Some(false),
+            )
             .unwrap_err()
             .to_string();
         assert!(
@@ -400,7 +435,7 @@ mod tests {
         let expected = custom.clone();
         assert!(
             !binding
-                .walk("loot_table test:opaque", &mut custom, &tags)
+                .walk("loot_table test:opaque", &mut custom, &tags, &types, None)
                 .unwrap()
         );
         assert_eq!(custom, expected);

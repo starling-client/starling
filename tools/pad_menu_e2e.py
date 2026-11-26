@@ -60,10 +60,12 @@ Cases:
   turns Fog off and saves it, X presses the Undo that appears, which puts it back, and B leaves.
 - shell_choice_step: on Graphics, Left and Right on a focused choice (Preset) step it back and on, from the D-pad
   and the arrow keys alike, and the focus stays; up and down leave the row, and LB goes to the page list.
-- shader_screens: Shaders, on the settings shell, with a pack of more screens than its page list has rows for: they
-  collapse into one `‹ Name ›` strip, RB walks every one and round to the pack list, LB from the first goes back to
-  it, and Undo shows once the pack is picked.
-- extras_shell_edges: on Extras, which has no page list, down from the search field lands on the first row, not Done;
+- sunrise_bumpers: at GUI scale 4, where Sunrise Settings' page list scrolls, RB walks every page in order (those out of
+  view too) and wraps, and LB walks back; skipped in a window where every page fits.
+- shader_screens: Sunrise Settings' Shaders page lists a pack of more screens than a page list has rows for; Undo
+  shows once it is picked; on its Shader Options the screens collapse into one `‹ Name ›` strip, RB walks every one
+  and round, and LB undoes an RB.
+- extras_shell_edges: on Gameplay, across from the search field lands on the first row;
   a row the right stick leaves mostly hidden scrolls back into view when A presses it, and A changes it.
 - osk_book_done: on a book and quill's page the keyboard's New Line key makes a line and keeps typing; Done (Menu)
   is the book's Done: it saves what was typed and closes the book, never a new line.
@@ -71,7 +73,9 @@ Cases:
 - osk_chat_suggestions: over chat with the keyboard open, RT fills in the selected command suggestion (Tab) and the
   right stick picks another first (Up and Down), without closing the keyboard.
 Needs built fast binaries (`cargo build --profile fast -p sunrise-game -p sunrise-client-lib --bins`)
-and prepared resources in .local/sunrise-client/26.3. Exit status 0 when every case passes.
+and prepared resources in .local/sunrise-client/26.3. A case that can't run in this window (sunrise_bumpers where every
+page fits) prints `skip` with the reason and counts as skipped. Exit status 0 when no case fails and at least one ran,
+1 when one fails, 2 when every case was skipped.
 - radial_commit: holding the opener shows the overlay and pauses nothing; the stick selects; releasing runs the action once.
 - radial_no_selection: a release with nothing selected, after retention ran out, or on an empty slot runs nothing.
 - radial_retention: a stick let go just before the release still commits.
@@ -125,10 +129,10 @@ import zlib
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import lab  # noqa: E402
-
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab  # noqa: E402
+
 EXE = '.exe' if os.name == 'nt' else ''
 SETTLE = 0.5
 # Between quick taps of a button: a few of the game's polls, well inside a paced craft (`PLACE_GAP`).
@@ -166,8 +170,9 @@ class Game:
         """Hidden or not, a tiling compositor sizes the window, and these cases assume 16:9."""
         width, height = self.ctl('ui')['gui_size']
         if abs(width / height - WINDOW_ASPECT) > WINDOW_ASPECT_SLACK:
-            print(f'warning: the window is {width:g}x{height:g} GUI pixels, not 16:9, and cases that scroll will '
-                  "fail. On a tiling compositor, float the app id 'sunrise'.", file=sys.stderr, flush=True)
+            print(f'warning: the window is {width:g}x{height:g} GUI pixels, not 16:9: cases that scroll may fail '
+                  '(sunrise_bumpers skips when every page fits at this GUI size). On a tiling compositor, float the '
+                  "app id 'sunrise'.", file=sys.stderr, flush=True)
 
     def restart(self):
         """Quit and start again on the same files."""
@@ -281,6 +286,10 @@ class Game:
         time.sleep(SETTLE)
         single = min((r for r in buttons if r[2] == widest), key=lambda r: r[1])
         return single, pair[0], pair[-1]
+
+
+class Skipped(Exception):
+    """A case that can't run in this environment (the window it got, say): reported as skipped, with the reason."""
 
 
 class Check:
@@ -1171,13 +1180,33 @@ def crosshair_station_rows(args, name):
     return check.failures
 
 
+def open_sunrise_settings(game):
+    """Sunrise Settings, which opens on its graphics pages' first."""
+    game.ctl('options', 'sunrise')
+    time.sleep(SETTLE)
+    game.wait_targets()
+
+
+def focus_extra(game, text):
+    """The D-pad down the Extras rows until the focus is on the one with this text."""
+    for _ in range(ROW_WALK):
+        if text in (game.focused_label() or ''):
+            return True
+        game.pad('down')
+    return text in (game.focused_label() or '')
+
+
 def options_case(button):
     def wrap(body):
         def case(args, name):
             game = Game(args, name)
             check = Check()
             try:
-                game.press_through('west', click=button)
+                if button:
+                    game.press_through('west', click=button)
+                else:
+                    game.press_through('west')
+                    open_sunrise_settings(game)
                 body(game, check)
             finally:
                 game.quit()
@@ -1204,9 +1233,9 @@ def stick_under_keyboard(game, check):
     check(game.widgets() == before, 'the list scrolled under the keyboard')
 
 
-@options_case('video-settings')
+@options_case(None)
 def stick_leaves_sidebar(game, check):
-    # Video Settings... is the graphics screen.
+    # Sunrise Settings' graphics pages: Video Settings... is vanilla's page.
     game.pad('down')
     game.wait_targets()
     game.focus_on('advanced')
@@ -1334,9 +1363,11 @@ def stick_steps_once(args, name):
     return check.failures
 
 
-@options_case('video-settings')
+@options_case(None)
 def gui_scale_keeps_focus(game, check):
-    # The graphics screen's General page.
+    # Sunrise Settings' General page: the first press lands the focus, and right takes it into the rows.
+    game.pad('down')
+    game.pad('right')
     game.focus_on('gui-scale')
     label = game.focused_label() or ''
     check(label.startswith('GUI Scale'), f'never reached GUI Scale: on {label}')
@@ -1637,9 +1668,10 @@ def extras_shell(args, name):
         check(label_of(game, LAST_MENU_EXTRA) is None, 'the page fits: this case cannot see it scroll')
         shot(game, 'extras-open')
 
-        # From the search field across to the first row, then down: a greyed row is stepped over, hidden rows scroll in.
+        # From the search field across to the plate's first row (Down goes to the page list), then down: a greyed
+        # row is stepped over, hidden rows scroll in.
         game.pad('right')
-        check(FIRST_EXTRA in (game.focused_label() or ''), f'the D-pad never reached {FIRST_EXTRA}: {game.focused_label()}')
+        check(FIRST_EXTRA in (game.focused_label() or ''), f'right from the search field is on {game.focused_label()}')
         # A presses with a click: the row it pressed doesn't stay lit once the focus moves on.
         game.pad('south')
         pressed = game.focus()
@@ -1691,7 +1723,9 @@ def extras_shell(args, name):
 
 
 FOG = 'Fog'
-GRAPHICS_PAGES = ('General', 'Quality', 'Performance', 'Shaders', 'Advanced', 'HDR')
+# Sunrise Settings' pages, in their order.
+SUNRISE_PAGES = ('General', 'Quality', 'Performance', 'Shaders', 'Resource Pack Options', 'Advanced', 'HDR', 'Gameplay',
+                 'Tools', 'Extras')
 
 
 def graphics_saved(game):
@@ -1710,7 +1744,7 @@ def graphics_shell(args, name):
         check(declared(game).get('Done') is True, f'Graphics declares {declared(game)}')
         check('Apply' not in declared(game), f'Undo shows with nothing changed: {declared(game)}')
         # Down the page list from the search field to Quality, which opens it, and right into its rows.
-        for _ in range(len(GRAPHICS_PAGES)):
+        for _ in range(len(SUNRISE_PAGES)):
             game.pad('down')
             if game.focused_label() == 'Quality':
                 break
@@ -1798,8 +1832,8 @@ def shell_choice_step(args, name):
     return check.failures
 
 
-ZOOM_INSTALL = 'Zoom: install from Mods'
-# How far a group's name sits over its first row (`graphics_style::GROUP_ROW`): the list's top from the Mods note.
+# How far a group's name sits over its first row (`graphics_style::GROUP_ROW`): the list's top from the first
+# extra's row, under its group's name, before anything scrolls (Gameplay has no Mods group without the Zoom mod).
 GROUP_NAME_H = 14
 STICK_NOTCHES = 8
 
@@ -1813,16 +1847,16 @@ def extras_shell_edges(args, name):
         time.sleep(SETTLE)
         game.wait_targets()
         check((game.menu()['focus'] or {}).get('kind') == 'field', f"Extras opened on {game.menu()['focus']}")
-        game.pad('down')
+        # Down from the search field is the page list's; across is the plate's first row.
+        game.pad('right')
         check(FIRST_EXTRA in (game.focused_label() or ''),
-              f'down from the search field went to {game.focused_label()}, not {FIRST_EXTRA}')
+              f'right from the search field went to {game.focused_label()}, not {FIRST_EXTRA}')
+        first_row = game.focus()
 
         # The right stick moves the list until the focused row's middle is above the list's top.
-        note = label_of(game, ZOOM_INSTALL)
-        check(note is not None, f'no Mods note to find the list by: {labels(game)}')
-        if not note or FIRST_EXTRA not in (game.focused_label() or ''):
+        if not first_row or FIRST_EXTRA not in (game.focused_label() or ''):
             return check.failures
-        top = note['bounds'][1] - GROUP_NAME_H
+        top = first_row[1] - GROUP_NAME_H
         before = game.focused_label()
         for _ in range(STICK_NOTCHES):
             focus = game.focus()
@@ -1867,11 +1901,45 @@ def open_tab(game):
     return next((w.get('label') for w in game.widgets() if tuple(w['bounds']) in lit), None)
 
 
+def sunrise_bumpers(args, name):
+    """At a GUI scale big enough that Sunrise Settings' page list scrolls, RB walks every page in order, those out
+    of view too, and wraps; LB walks back."""
+    game = Game(args, name)
+    check = Check()
+    try:
+        game.ctl('options-set', 'guiScale', '4')
+        game.press_through('west')
+        game.ctl('options', 'sunrise')
+        time.sleep(SETTLE)
+        game.wait_targets()
+        ids = {page: page.lower().replace(' ', '-') for page in SUNRISE_PAGES}
+        shown = [page for page in SUNRISE_PAGES if any(w['id'] == ids[page] for w in game.widgets())]
+        # The scale is held to what the window fits (vanilla's), so the GUI size the window ends up with decides
+        # whether the list scrolls: where every page fits at that size (a tall window) there is nothing to walk,
+        # and the case skips.
+        if len(shown) == len(SUNRISE_PAGES):
+            raise Skipped(f'every page fits at {game.ctl("ui")["gui_size"]} GUI px: the list never scrolls in this '
+                          f'window')
+        check(open_tab(game) == SUNRISE_PAGES[0], f'it opened on {open_tab(game)}')
+        for bumper, order in (('rb', SUNRISE_PAGES[1:] + SUNRISE_PAGES[:1]),
+                              ('lb', tuple(reversed(SUNRISE_PAGES)))):
+            walked = []
+            for _ in SUNRISE_PAGES:
+                game.pad(bumper)
+                time.sleep(SETTLE)
+                walked.append(open_tab(game))
+            check(tuple(walked) == order, f'{bumper} walked {walked}')
+    finally:
+        game.quit()
+    return check.failures
+
+
 def shader_screens(args, name):
     game = Game(args, name, seed=seed_many_screens)
     check = Check()
     try:
         game.press_through('west')
+        # Sunrise Settings' Shaders page, which lists the packs.
         game.ctl('options', 'shader-packs')
         time.sleep(SETTLE)
         game.wait_targets()
@@ -1880,19 +1948,24 @@ def shader_screens(args, name):
         check(pack is not None, f'no ManyScreens pack: {labels(game)}')
         game.ctl('click', pack['id'])
         time.sleep(SETTLE)
-        # RB from the pack list through every screen, none left out, and round to the pack list.
-        walked = []
-        for _ in range(len(MANY_SCREENS) + 2):
-            game.pad('rb')
-            walked.append(open_tab(game))
-        packs = walked[-1]
-        check(walked[1:-1] == MANY_SCREENS, f'RB walked {walked}')
-        # LB back from the first screen leaves the strip for the pack list.
-        game.pad('rb')
-        game.pad('lb')
-        check(open_tab(game) == packs, f'LB from {walked[0]} went to {open_tab(game)}')
         # Picking the pack is a change the shell's Undo puts back.
         check(has_label(game, 'Undo'), f'no Undo after picking a pack: {labels(game)}')
+        # Its settings: the pack's main screen, then RB through every screen, none left out, and round.
+        options = next((w for w in game.widgets() if (w.get('label') or '').startswith('Shader Options')), None)
+        check(options is not None, f'no Shader Options row: {labels(game)}')
+        game.ctl('click', options['id'])
+        time.sleep(SETTLE)
+        game.wait_targets()
+        start = open_tab(game)
+        walked = []
+        for _ in range(len(MANY_SCREENS) + 1):
+            game.pad('rb')
+            walked.append(open_tab(game))
+        check(walked[:-1] == MANY_SCREENS and walked[-1] == start, f'RB walked {walked} from {start}')
+        # LB undoes an RB.
+        game.pad('rb')
+        game.pad('lb')
+        check(open_tab(game) == start, f'LB from {walked[0]} went to {open_tab(game)}')
     finally:
         game.quit()
     return check.failures
@@ -2081,10 +2154,26 @@ def every_screen_has_targets(game, check, single, options, quit_game):
         game.ctl('options', page)
         time.sleep(SETTLE)
         check_has_targets(game, check, page)
+    open_replay_studio(game)
+    check_has_targets(game, check, 'studio')
+
+
+def open_replay_studio(game):
+    """Replay Studio, from its row on Sunrise Settings' Tools page (the wheel over the page list brings the Tools
+    tab into view in a short window)."""
     game.ctl('options', 'sunrise')
     time.sleep(SETTLE)
+    game.wait_targets()
+    for _ in range(10):
+        tools = next((w for w in game.widgets() if w['id'] == 'tools'), None)
+        if tools:
+            break
+        # Over the page list's first place, under the search field.
+        x, y, w, h = widget(game, 'field-0')['bounds']
+        game.ctl('scroll-at', x + w / 2, y + 30, -1)
+        time.sleep(SETTLE)
+    click_widget(game, widget(game, 'tools'))
     click_widget(game, widget(game, 'studio'))
-    check_has_targets(game, check, 'studio')
 
 
 def seed_recordings(game_home):
@@ -2102,10 +2191,7 @@ def studio_rows(args, name):
     check = Check()
     try:
         game.wait_targets()
-        game.ctl('options', 'sunrise')
-        time.sleep(SETTLE)
-        click_widget(game, widget(game, 'studio'))
-        time.sleep(SETTLE)
+        open_replay_studio(game)
         game.wait_targets()
         first = game.rows()[0]['label']
         for _ in range(4):
@@ -3172,7 +3258,7 @@ PROPERTIES = {
 
 
 def craft_dedicated(args, name):
-    from server_bench import DONE, Server
+    from tools.server_bench import DONE, Server
     check = Check()
     folder = Path(tempfile.mkdtemp(prefix=f'pad-menu-{name}-server-'))
     port = lab.free_port()
@@ -4674,7 +4760,7 @@ CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': releas
          'extras_shell': extras_shell,
          'extras_shell_edges': extras_shell_edges,
          'graphics_shell': graphics_shell,
-         'shell_choice_step': shell_choice_step,
+         'shell_choice_step': shell_choice_step, 'sunrise_bumpers': sunrise_bumpers,
          'shader_screens': shader_screens,
          'pack_card_options': pack_card_options,
          'pack_options': pack_options,
@@ -4736,23 +4822,43 @@ def main():
     parser.add_argument('--jobs', type=int, default=1, help='cases at once; each has its own game and home')
     args = parser.parse_args()
     args.game, args.ctl, args.resources = args.game.resolve(), args.ctl.resolve(), args.resources.resolve()
+    sys.exit(run_cases(CASES, args.only or list(CASES), args.jobs, args))
+
+
+def run_cases(cases, names, jobs, args):
+    """Runs the named cases, prints a line for each and a summary, and gives the exit status: 1 when one failed,
+    2 when none failed but none ran either (every one skipped), 0 otherwise."""
     def run(name):
         # A case that dies takes only itself down, and leaves no game behind it.
         try:
-            return name, CASES[name](args, name)
+            return name, cases[name](args, name)
+        except Skipped as skip:
+            return name, skip
         except Exception as error:
             return name, [f'{type(error).__name__}: {error}']
 
-    failed = []
-    with ThreadPoolExecutor(args.jobs) as pool:
-        for name, failures in pool.map(run, args.only or CASES):
-            for failure in failures:
+    passed, failed, skipped = [], [], []
+    with ThreadPoolExecutor(jobs) as pool:
+        for name, outcome in pool.map(run, names):
+            if isinstance(outcome, Skipped):
+                print(f'skip {name}: {outcome}', flush=True)
+                skipped.append(name)
+                continue
+            for failure in outcome:
                 print(f'FAIL {name}: {failure}', flush=True)
-            if failures:
+            if outcome:
                 failed.append(name)
             else:
                 print(f'ok   {name}', flush=True)
-    sys.exit(1 if failed else 0)
+                passed.append(name)
+    print(f'{len(passed)} ok, {len(failed)} failed, {len(skipped)} skipped'
+          + (f' ({", ".join(skipped)})' if skipped else ''), flush=True)
+    if failed:
+        return 1
+    if not passed:
+        print('nothing ran', flush=True)
+        return 2
+    return 0
 
 
 if __name__ == '__main__':

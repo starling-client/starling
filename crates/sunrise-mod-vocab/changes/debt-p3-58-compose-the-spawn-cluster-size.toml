@@ -1,0 +1,11 @@
+ids = [
+    "hook:spawn_cluster_size",
+    "hook:spawn_cluster_size.vanilla",
+    "hook:spawn_cluster_size.size",
+    "type:SpawnClusterSizeEvent",
+    "method:EntityPart::spawn_cluster_size",
+]
+why = "NeoForge NaturalSpawner.spawnCategoryForPosition counts the spawned mob before it posts SpawnClusterSizeEvent with one mutable size that listeners edit in turn. The hook now fires at the group comparison, after the mob is finalized, added to the level with its passengers and counted, with that resident mob as `event.mob` (a `MobRef`, as `addFreshEntityWithPassengers` runs first in vanilla), and every part edits one signed `size` that starts at Mob.getMaxSpawnClusterSize, instead of the first part's unsigned `Option<u32>` answer ending the chain."
+migrate = """
+Replace `fn spawn_cluster_size(&self, host, event) -> Option<u32>` with a method that returns nothing and writes `event.size`: `Some(event.vanilla * 2)` becomes `event.size = event.vanilla * 2;`, and `None` is simply not writing. `event.mob` is now a `MobRef` of a mob already in the level, not an `UnspawnedMobRef` (read it with the same `kind` and position calls; the mob can be hurt, ridden or removed like any resident mob, and a handle to one a join listener removed no longer resolves). `event.vanilla` is now an `i32`, `event.limit` is gone, and a later part reads the size the parts before it left, so a part that wants vanilla's limit back writes `event.size = event.vanilla;`.
+"""

@@ -62,32 +62,7 @@ copies. They do not instrument every static in every transitive crate: the
 remaining sharing evidence is the compiler's exact metadata dependency graph and
 actual linked image imports, not a universal state census.
 
-## Linux result
-
-Passed on x86_64-unknown-linux-gnu at SDK source commit
-`ff35cdee9511e779c03cae92ae7059e9306b9f16`, with:
-
-```text
-rustc 1.99.1 (58cf8f9c3 2026-10-13)
-binary: rustc
-commit-hash: 58cf8f9c35b355199727627d07ae34a4e2846d67
-commit-date: 2026-10-13
-host: x86_64-unknown-linux-gnu
-release: 1.99.1
-LLVM version: 23.1.1
-```
-
-The unchanged SDK completed release/client compilation (18 existing staging
-visibility warnings). All four probe targets passed metadata checking and Clippy;
-runtime assertions passed and both Python refusal tests passed. Every
-allocator binding in the process, from the executable, both consumers, the shared
-dependency and std itself, resolves to the game.
-The consumer libraries also allocate vectors and return them for executable drop.
-
-An initial harness draft failed because it omitted the explicit game dependency
-from the shared fixture: rustc correctly demanded unavailable rlibs. Adding the
-required game reference and SDK dylib extern fixed the harness; no SDK, profile,
-crate type or dependency architecture was changed.
+## CI
 
 CI runs the probe on the Linux and Windows GNU client legs of
 `.github/workflows/prebuilt-game-build.yml`, against each leg's own SDK before

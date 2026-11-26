@@ -5,7 +5,13 @@
 //! markMessageAsProcessed). Without a signed-in
 //! account, or on a server that plays the account under another profile
 //! (offline mode), there is no session and everything goes unsigned.
-use super::{Game, Screen, books::BookScreen, dialogs::ClosedDialog};
+use super::{
+    Game, Screen,
+    books::BookScreen,
+    dialogs::ClosedDialog,
+    native_net::PlaySend,
+    native_server::{ClientCommandChain, ClientCommandOutcome, PendingClientCommandKind},
+};
 use std::sync::Arc;
 use sunrise_client::{
     auth::{self, ChatKeyPair},
@@ -31,34 +37,6 @@ enum CommandCheck {
     ParseErrors,
     SignatureRequired,
     PermissionsRequired,
-}
-
-impl Game<'_> {
-    /// `ChatListener.showMessageToPlayer`'s line and narration of a player
-    /// message: none when its sender is hidden in the Social Interactions
-    /// screen (`Minecraft.isBlocked`) or the server filtered all of it; a
-    /// partial filter mask shows and narrates `applyWithFormatting(signedContent)`
-    /// instead of the decorated `line` and `narration`.
-    pub(super) fn shown_player_chat(
-        &mut self,
-        p: &play::PlayerChat,
-        line: Text,
-        narration: String,
-    ) -> Option<(Text, String)> {
-        use super::remote::Decoration;
-        let filtered = sunrise_client::chat::filtered_message(&p.content, &p.filter)?;
-        if self.social_hides(p.sender) {
-            return None;
-        }
-        if p.filter.0 != 2 {
-            return Some((line, narration));
-        }
-        Some((
-            self.decorate_chat(&p.chat_type, &filtered, Decoration::Chat),
-            self.decorate_chat(&p.chat_type, &filtered, Decoration::Narration)
-                .plain(),
-        ))
-    }
 }
 
 /// ClientPacketListener.verifyCommand over the tree the server sent.
@@ -111,19 +89,6 @@ pub(super) struct CommandPrompt {
     focus: Option<usize>,
 }
 
-/// `FriendlyByteBuf.readUtf(256)` counts UTF-16 code units, not Unicode scalar
-/// values. Keep a whole scalar at the boundary so the wire string is valid.
-fn truncate_utf16(content: &str, max_units: usize) -> String {
-    let mut units = 0;
-    content
-        .chars()
-        .take_while(|ch| {
-            let next = units + ch.len_utf16();
-            (next <= max_units).then(|| units = next).is_some()
-        })
-        .collect()
-}
-
 /// A connection's secure chat state, new with every login packet.
 #[derive(Default)]
 pub(super) struct SecureChat {
@@ -135,6 +100,10 @@ pub(super) struct SecureChat {
 impl SecureChat {
     pub(super) fn signed(&self) -> bool {
         self.session.is_some()
+    }
+    #[cfg(test)]
+    pub(super) fn tracker_mut(&mut self) -> &mut LastSeenTracker {
+        &mut self.tracker
     }
     /// handleDeleteChat: a deleted message that is still pending is not
     /// acknowledged.
@@ -245,83 +214,197 @@ impl Game<'_> {
         self.send(packet);
     }
 
-    /// ClientPacketListener.sendChat: the last-seen update goes with every
-    /// message; the signature only with a chat session.
-    pub(super) fn send_signed_chat(&mut self, content: &str) {
-        let content = truncate_utf16(content, 256);
-        let (timestamp, salt) = (now_millis(), salt());
-        let Some(r) = self.remote.as_mut() else {
-            return;
+    /// `ClientPacketListener.sendChat` / `sendCommand`: the play listener, not
+    /// the input box. The server still applies signatures, permissions and chat policy.
+    pub(super) fn send_chat(&mut self, message: &str) -> Result<(), String> {
+        if let Some(command) = message.strip_prefix('/') {
+            return self.send_command(command).map(|_| ());
+        }
+        let remote = self.remote.as_ref().ok_or("not connected to a server")?;
+        if !remote.joined || remote.reconfiguring.is_some() {
+            return Err("the player has not joined yet".into());
+        }
+        // NeoForge fires ClientChatEvent here, before signing, for direct and UI sends.
+        let outgoing;
+        let content = if mod_api::__private::listened(mod_api::HookId::ClientChat) {
+            // A submission from inside a listener waits for the next event-loop wave: the
+            // hook is never re-entered synchronously, so a resend cannot recurse.
+            if self.native_client_commands.chat_dispatching {
+                self.native_client_commands
+                    .pending_chats
+                    .push(message.to_owned());
+                return Ok(());
+            }
+            let (id, uuid) = (self.own_entity_id(), remote.profile);
+            let mut text = message.to_owned();
+            let mut cancel = false;
+            self.native_client_commands.chat_dispatching = true;
+            self.native_client_chat(id, uuid, message, &mut text, &mut cancel);
+            self.native_client_commands.chat_dispatching = false;
+            if cancel {
+                return Ok(());
+            }
+            outgoing = text;
+            &outgoing
+        } else {
+            message
         };
-        let chat = &mut r.secure_chat;
-        let seen = chat.tracker.update();
-        let signature = chat.session.as_mut().and_then(|(keys, encoder)| {
+        if !content.is_empty() {
+            self.send_with_chat_state(|timestamp, salt, last_seen, sign| {
+                S::Chat(play::Chat {
+                    message: content.to_owned(),
+                    timestamp,
+                    salt,
+                    last_seen,
+                    signature: sign(content).map(|signature| signature.to_vec()),
+                })
+            })?;
+        }
+        Ok(())
+    }
+
+    /// `ClientPacketListener.sendCommand`: submit the player's slash command without its slash.
+    pub(super) fn send_command(
+        &mut self,
+        command: &str,
+    ) -> Result<Option<ClientCommandOutcome>, String> {
+        self.submit_client_command(command, PendingClientCommandKind::Signed, None)
+    }
+
+    /// `ClientCommandHandler.runCommand` precedes both signed and unattended server submission.
+    pub(super) fn submit_client_command(
+        &mut self,
+        input: &str,
+        kind: PendingClientCommandKind,
+        chain: Option<Arc<ClientCommandChain>>,
+    ) -> Result<Option<ClientCommandOutcome>, String> {
+        self.submit_client_command_with_sent(input, kind, chain)
+            .map(|(outcome, _)| outcome)
+    }
+
+    fn submit_client_command_with_sent(
+        &mut self,
+        input: &str,
+        kind: PendingClientCommandKind,
+        chain: Option<Arc<ClientCommandChain>>,
+    ) -> Result<(Option<ClientCommandOutcome>, bool), String> {
+        let remote = self.remote.as_ref().ok_or("not connected to a server")?;
+        if !remote.joined || remote.reconfiguring.is_some() {
+            return Err("the player has not joined yet".into());
+        }
+        let command = match kind {
+            PendingClientCommandKind::Signed => input,
+            PendingClientCommandKind::Unattended => {
+                let input = input.trim();
+                let command = input.strip_prefix('/').unwrap_or(input);
+                if command.is_empty() || !self.chat_abilities().allows(&format!("/{command}")) {
+                    return Ok((None, false));
+                }
+                command
+            }
+        };
+        if self.native_client_commands.defer(input, kind) {
+            return Ok((None, false));
+        }
+        if let Some(outcome) = self.run_client_native_command_in_chain(command, chain) {
+            return Ok((Some(outcome), false));
+        }
+        let sent = match kind {
+            PendingClientCommandKind::Signed if !self.studio_command(command) => {
+                self.send_server_command(command)?;
+                true
+            }
+            PendingClientCommandKind::Signed => false,
+            PendingClientCommandKind::Unattended => self.send_server_unattended_command(command),
+        };
+        Ok((None, sent))
+    }
+
+    /// Sign only arguments from the remote dispatcher, never client-only display branches.
+    pub(super) fn send_server_command(&mut self, command: &str) -> Result<(), String> {
+        let remote = self.remote.as_ref().ok_or("not connected to a server")?;
+        let arguments = remote
+            .server_chat_tree
+            .as_ref()
+            .map_or_else(Vec::new, |tree| {
+                tree.parse(command, &self.ui.registries)
+                    .signable_arguments(tree)
+            });
+        if arguments.is_empty() {
+            return match self.send_play(S::ChatCommand(play::ChatCommand {
+                command: command.to_owned(),
+            })) {
+                PlaySend::Admitted | PlaySend::Cancelled => Ok(()),
+                PlaySend::Unavailable => Err("command packet was not admitted".into()),
+            };
+        }
+        self.send_with_chat_state(|timestamp, salt, last_seen, sign| {
+            let arguments = arguments
+                .into_iter()
+                .filter_map(|(name, value)| {
+                    sign(&value).map(|signature| (name, signature.to_vec()))
+                })
+                .collect();
+            S::ChatCommandSigned(play::ChatCommandSigned {
+                command: command.to_owned(),
+                timestamp,
+                salt,
+                arguments,
+                last_seen,
+            })
+        })
+    }
+
+    /// Build against the pending last-seen window and next signing links. Neither
+    /// is consumed until the packet is accepted by the play queue.
+    fn send_with_chat_state(
+        &mut self,
+        packet: impl FnOnce(
+            i64,
+            i64,
+            play::LastSeenUpdate,
+            &mut dyn FnMut(&str) -> Option<Signature>,
+        ) -> S,
+    ) -> Result<(), String> {
+        let chat = &self
+            .remote
+            .as_ref()
+            .ok_or("not connected to a server")?
+            .secure_chat;
+        let seen = chat.tracker.pending_update();
+        let (timestamp, salt) = (now_millis(), salt());
+        let mut next = chat
+            .session
+            .as_ref()
+            .map(|(keys, encoder)| (keys, encoder.clone()));
+        let packet = packet(timestamp, salt, seen.update, &mut |content| {
+            let (keys, encoder) = next.as_mut()?;
             sign(
                 keys,
                 encoder,
                 &Body {
-                    content: &content,
+                    content,
                     timestamp,
                     salt,
                     last_seen: &seen.last_seen,
                 },
             )
         });
-        self.send(S::Chat(play::Chat {
-            message: content,
-            timestamp,
-            salt,
-            signature: signature.map(|s| s.to_vec()),
-            last_seen: seen.update,
-        }));
-    }
-
-    /// ClientPacketListener.sendCommand: a command with message arguments
-    /// (SignableCommand.of over the chat's tree, the server's once it sent one) has each of them signed,
-    /// all with the same time, salt and last seen (without a chat session the
-    /// signature list is empty, as in vanilla); any other command goes as the
-    /// unsigned packet.
-    pub(super) fn send_command(&mut self, command: &str) {
-        let Some(r) = self.remote.as_mut() else {
-            return;
-        };
-        let arguments: Vec<(String, String)> = if r.chat_tree_received {
-            r.chat_tree
-                .parse(command, &self.ui.registries)
-                .signable_arguments(&r.chat_tree)
-        } else {
-            Vec::new()
-        };
-        if arguments.is_empty() {
-            self.send(S::ChatCommand(play::ChatCommand {
-                command: command.to_owned(),
-            }));
-            return;
-        }
-        let (timestamp, salt) = (now_millis(), salt());
-        let chat = &mut r.secure_chat;
-        let seen = chat.tracker.update();
-        let mut signatures = Vec::new();
-        if let Some((keys, encoder)) = chat.session.as_mut() {
-            for (name, value) in arguments {
-                let body = Body {
-                    content: &value,
-                    timestamp,
-                    salt,
-                    last_seen: &seen.last_seen,
-                };
-                if let Some(signature) = sign(keys, encoder, &body) {
-                    signatures.push((name, signature.to_vec()));
+        let next = next.map(|(_, encoder)| encoder);
+        match self.send_play(packet) {
+            PlaySend::Admitted => {
+                if let Some(remote) = self.remote.as_mut() {
+                    let chat = &mut remote.secure_chat;
+                    chat.tracker.apply_update();
+                    if let (Some((_, encoder)), Some(next)) = (&mut chat.session, next) {
+                        *encoder = next;
+                    }
                 }
+                Ok(())
             }
+            PlaySend::Cancelled => Ok(()),
+            PlaySend::Unavailable => Err("chat packet was not admitted".into()),
         }
-        self.send(S::ChatCommandSigned(play::ChatCommandSigned {
-            command: command.to_owned(),
-            timestamp,
-            salt,
-            arguments: signatures,
-            last_seen: seen.update,
-        }));
     }
 
     /// ClientPacketListener.sendUnattendedCommand: a command the player
@@ -330,29 +413,29 @@ impl Game<'_> {
     /// asks first, and one with a message argument is never sent from here:
     /// the player can only send it themselves, from the chat box. So neither
     /// a server nor a mod can have the player sign a message they never saw.
-    pub(super) fn send_unattended_command(&mut self, command: &str) {
-        let command = command.trim();
-        let command = command.strip_prefix('/').unwrap_or(command);
-        if command.is_empty() || !self.chat_abilities().allows(&format!("/{command}")) {
-            return;
-        }
-        let Some(r) = self.remote.as_ref() else {
-            return;
-        };
+    /// Returns true when sent without a confirmation, so a dialog can open
+    /// its screen after the command.
+    pub(super) fn send_unattended_command(&mut self, command: &str) -> bool {
+        self.submit_client_command_with_sent(command, PendingClientCommandKind::Unattended, None)
+            .is_ok_and(|(_, sent)| sent)
+    }
+
+    fn send_server_unattended_command(&mut self, command: &str) -> bool {
         // Vanilla's dispatcher is empty until the server sends its tree.
-        let check = if r.chat_tree_received {
-            verify_command(&r.chat_tree, &self.ui.registries, command)
-        } else {
-            CommandCheck::ParseErrors
-        };
+        let check = self
+            .remote
+            .as_ref()
+            .and_then(|r| r.server_chat_tree.as_ref())
+            .map_or(CommandCheck::ParseErrors, |tree| {
+                verify_command(tree, &self.ui.registries, command)
+            });
         // screenAfterCommand: what stays once it has run, a dialog included.
         let over_screen = self.screen != Screen::Playing || self.dialog_open();
         let (message, accept) = match check {
             CommandCheck::NoIssues => {
                 // Verification above excludes message arguments. Use the ordinary sender so
                 // releases without an unsigned command packet still acknowledge seen chat.
-                self.send_command(command);
-                return;
+                return self.send_server_command(command).is_ok();
             }
             CommandCheck::ParseErrors => (
                 "multiplayer.confirm_command.parse_errors",
@@ -382,6 +465,7 @@ impl Game<'_> {
             });
             game.capture(false);
         });
+        false
     }
 
     /// The command just clicked left this screen: if it asks, no returns there.
@@ -449,6 +533,7 @@ impl Game<'_> {
         let mut layout = self.command_prompt_layout(prompt, (w, h));
         layout.declare_no(1);
         layout.draw(batch, atlas, self.cursor, &labels);
+        self.draw_overlay_mounted_widgets(batch, "command_prompt");
     }
 
     /// The confirmation's answer; on no, what was behind it is back.
@@ -466,7 +551,7 @@ impl Game<'_> {
             }
             // Gui.openChatAndAddText.
             (true, CommandAccept::Suggest, _) => {
-                self.begin_chat_screen(&format!("/{}", prompt.command), false)
+                self.begin_chat_screen(&format!("/{}", prompt.command), false);
             }
             (true, CommandAccept::Copy, _) => {
                 use sunrise_client::clipboard::Clipboard;
@@ -476,6 +561,7 @@ impl Game<'_> {
             (false, _, Some(Behind::Dialog(dialog))) => self.reopen_dialog(dialog),
             (false, _, None) => {}
         }
+        self.refresh_screen_widgets();
         if self.screen == Screen::Playing && !self.screen_over_playing() {
             self.capture(true);
         }
@@ -483,29 +569,34 @@ impl Game<'_> {
 
     /// ConfirmScreen.keyPressed, and what its buttons take from the keyboard
     /// (Screen's focus navigation, AbstractButton's Enter and Space).
-    pub(super) fn command_prompt_key(&mut self, key: KeyCode) {
+    pub(super) fn command_prompt_key(&mut self, key: KeyCode) -> bool {
         let (size, shift) = (self.gui_size(), self.has_shift_down());
         let Some(prompt) = &self.command_prompt else {
-            return;
+            return false;
         };
         let mut choice = self.command_prompt_layout(prompt, size);
         match key {
-            KeyCode::Escape => return self.answer_command_prompt(false),
+            KeyCode::Escape => {
+                self.answer_command_prompt(false);
+                return true;
+            }
             KeyCode::Tab => choice.tab(shift),
             KeyCode::ArrowLeft | KeyCode::ArrowRight => choice.arrow(key == KeyCode::ArrowLeft),
             KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Space => {
                 if let Some(button) = choice.pressed() {
-                    self.audio.play_button_click();
+                    self.play_audio_button_click();
                     self.answer_command_prompt(button == 0);
+                    return true;
                 }
-                return;
+                return false;
             }
-            _ => return,
+            _ => return false,
         }
         let focus = choice.focus;
         if let Some(prompt) = self.command_prompt.as_mut() {
             prompt.focus = focus;
         }
+        false
     }
 
     pub(super) fn command_prompt_click(&mut self) -> bool {
@@ -516,7 +607,7 @@ impl Game<'_> {
             .command_prompt_layout(prompt, self.gui_size())
             .pressed_at(self.cursor);
         if let Some(button) = pressed {
-            self.audio.play_button_click();
+            self.play_audio_button_click();
             self.answer_command_prompt(button == 0);
         }
         pressed.is_some()
@@ -547,19 +638,5 @@ impl Game<'_> {
         if offset > 0 {
             self.send(S::ChatAck(play::ChatAck { offset }));
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::truncate_utf16;
-
-    #[test]
-    fn chat_limit_counts_utf16_units() {
-        let emojis = "😀".repeat(256);
-        assert_eq!(truncate_utf16(&emojis, 256).encode_utf16().count(), 256);
-        assert_eq!(truncate_utf16(&emojis, 255).encode_utf16().count(), 254);
-        let mixed = format!("{}😀tail", "a".repeat(255));
-        assert_eq!(truncate_utf16(&mixed, 256), "a".repeat(255));
     }
 }

@@ -1,0 +1,2 @@
+# The dump of vanilla's core and post shaders as sunrise-glsl translates them reads the prepared resources.
+sunrise-client-render glsl_spirv_dump_tests::glsl_spirv_dump_matches_vanilla lib daily resources

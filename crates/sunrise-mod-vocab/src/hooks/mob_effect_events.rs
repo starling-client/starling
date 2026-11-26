@@ -15,6 +15,27 @@ pub trait Hooks {
         effect: EffectKey,
         applicable: &mut Option<mod_api::EffectApplicable>,
     );
+    /// NeoForge's `MobEffectEvent.Added`, vanilla's `LivingEntity.addEffect`: fired for every
+    /// eligible effect (vanilla and mod) after `canBeAffected` / `mob_effect_applicable` accepts
+    /// it and before `entity`'s active effects are mutated. `old_effect` is the existing active
+    /// instance of the same effect, if any; `new_effect` is the incoming instance being applied;
+    /// `source` is the entity that caused the effect, when known. Fires on first insertion,
+    /// reapplications and unchanged updates alike; does not fire on `forceAddEffect`, world load
+    /// or client sync, and is not cancellable. Server-side.
+    #[hook(
+        dispatch = "flat",
+        side = "server",
+        contract = "listen",
+        version = 2,
+        neoforge = "MobEffectEvent.Added",
+        cancellable = false
+    )]
+    fn mob_effect_added(
+        entity: LivingRef,
+        old_effect: Option<&ActiveEffect>,
+        new_effect: &ActiveEffect,
+        source: Option<EntityRef>,
+    );
     /// NeoForge's `MobEffectEvent.Expired`, vanilla `LivingEntity.tickEffects`: the resolved `EffectKey` `effect` (`minecraft:speed`, amplifier `amplifier`) on the living entity `entity` (a [`LivingRef`], the player's own included) counted down to nothing and is about to leave. Cancel and the effect stays, kept at no ticks and asked again next tick; unanswered, the expiry runs. Fires only on the tick an effect actually expires, never per tick. Server-side.
     #[hook(
         receiver = "read",

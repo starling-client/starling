@@ -1,0 +1,2 @@
+ids = ["behaviour:client_permission_level"]
+why = "A client mod reads the local player's permission level as the server last sent it (LocalPlayer.permissionLevel, entity events 24 to 28), so it can tell whether a command it would send is allowed (#5529)."

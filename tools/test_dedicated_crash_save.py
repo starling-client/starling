@@ -2,10 +2,10 @@
 """A dedicated server saves connected players on save-all/stop/SIGTERM and keeps safe data after a panic.
 
 `MinecraftServer.runServer` catches what the tick throws and still stops the server. Sunrise's
-`stop_after_crash` does the same, but a panic can interrupt a guest's turn (the game holds that
-player's state swapped in) or a tick that has the hub out. `SUNRISE_CRASH_FIXTURE` makes the tick
-panic at one of those points. Each run below joins a real Sunrise client, panics the server, and
-checks, from the files the server leaves:
+`run_server_lifecycle` crash stop does the same, but a panic can interrupt a guest's turn (the game
+holds that player's state swapped in) or a tick that has the hub out. `SUNRISE_CRASH_FIXTURE` makes
+the tick panic at one of those points. Each run below joins a real Sunrise client, panics the server,
+and checks, from the files the server leaves:
 
 - Connected player: save-all writes five diamonds while the player stays joined;
   stop writes the newer inventory of twelve diamonds.
@@ -26,14 +26,11 @@ import uuid
 import time
 from pathlib import Path
 
-try:
-    from . import lab
-    from .integration_env import run_game
-    from .test_dedicated_server_parity import Server, write_server_dir, free_port
-except ImportError:
-    import lab
-    from integration_env import run_game
-    from test_dedicated_server_parity import Server, write_server_dir, free_port
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab
+from tools.integration_env import run_game
+from tools.test_dedicated_server_parity import Server, write_server_dir, free_port
 
 PLAYER = 'Tester'
 
@@ -117,11 +114,7 @@ def crash(directory, fixture, port, out, trigger):
 
 def connected_saves(build):
     """Save-all and stop persist a player who is still connected, before logout can save them."""
-    try:
-        from . import anvil_dump, lan_e2e
-    except ImportError:
-        import anvil_dump
-        import lan_e2e
+    from tools import anvil_dump, lan_e2e
     directory = build / 'connected-server'
     port = free_port()
     write_server_dir(directory, port)
@@ -161,11 +154,7 @@ def connected_saves(build):
 def signal_saves(build):
     """SIGTERM stops the server as `stop` does (vanilla's shutdown hook): a connected player's
     inventory and ender chest changed since the last save are in their file afterwards."""
-    try:
-        from . import anvil_dump, lan_e2e
-    except ImportError:
-        import anvil_dump
-        import lan_e2e
+    from tools import anvil_dump, lan_e2e
     directory = build / 'signal-server'
     port = free_port()
     write_server_dir(directory, port)

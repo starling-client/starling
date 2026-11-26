@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# The C compiler of build scripts for aarch64-apple-darwin on a Linux runner: zig cc against the Apple SDK in $SDKROOT.
+# Cargo's cc crate passes -arch, --target and -mmacosx-version-min for clang; zig takes its target once.
+args=()
+compiling=0
+output=0
+while (($#)); do
+  case "$1" in
+    -arch | -isysroot) shift ;;
+    --target=* | -mmacosx-version-min=*) ;;
+    -o) output=1; args+=("$1") ;;
+    -c) compiling=1; args+=("$1") ;;
+    *) args+=("$1") ;;
+  esac
+  shift
+done
+# A flag probe compiles with -c and no -o: zig would leave an a.o in the crate's folder, which the SDK build copies.
+((output == 0 && compiling == 1)) && args+=(-o /dev/null)
+exec zig cc -target aarch64-macos.11.0 -isysroot "$SDKROOT" -iframework "$SDKROOT/System/Library/Frameworks" "${args[@]}"

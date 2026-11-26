@@ -18,13 +18,9 @@ import platform
 import subprocess
 import sys
 
-try:
-    from . import lab, test_rust_parity as base
-    from . import command_parse_corpus as corpus_module
-except ImportError:
-    import lab
-    import test_rust_parity as base
-    import command_parse_corpus as corpus_module
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_rust_parity as base, command_parse_corpus as corpus_module
 
 
 def main():

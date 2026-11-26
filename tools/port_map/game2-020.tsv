@@ -5,20 +5,20 @@ SectionStorage.getOrCreate	skip:other		no POI record to create; PoiSections::get
 SectionStorage.prefetch	skip:java		async prefetch of POI files; nothing is loaded from disk, so there is nothing to prefetch
 SectionStorage.unpackChunk	missing		minor: POI region files are never read back; POI come from blocks (poi_sections.rs), so saved POI claims are not restored
 SectionStorage.tryRead	missing		minor: POI region files are never read back; POI come from blocks (poi_sections.rs), so saved POI claims are not restored
-SectionStorage.writeChunk	port	crates/sunrise-client/src/save.rs::SaveDir::save_poi	queues the chunk's POI records to the region writer; claims kept by resolve_poi
+SectionStorage.writeChunk	port	crates/sunrise-client/src/save/dir.rs::SaveDir::save_poi	queues the chunk's POI records to the region writer; claims kept by resolve_poi
 SectionStorage.setDirty	inline	crates/sunrise-client/src/game/world_update.rs::Game::update_world	the chunk modified list marks chunks to save together with their POI
 SectionStorage.PackedChunk.parse	missing		minor: POI region files are never read back, so POI ticket claims are not restored on load
-SerializableChunkData.parse	port	crates/sunrise-client/src/save.rs::decode_column	gap: minor: entity tags are read by Persistent::load (load_entities), not here
+SerializableChunkData.parse	port	crates/sunrise-client/src/save/column.rs::decode_column	gap: minor: entity tags are read by Persistent::load (load_entities), not here
 SerializableChunkData.logErrors	skip:debug		logs load problems; Sunrise warns with log::warn where a problem is found
 SerializableChunkData.copyOf	skip:java		snapshot copy for the async writer; Sunrise shares the chunk as Arc<Chunk> in Record::Chunk
 SerializableChunkData.saveTicks	port	crates/sunrise-client/src/save.rs::tick_list	builds the block_ticks and fluid_ticks tags
-SerializableChunkData.getChunkStatusFromTag	inline	crates/sunrise-client/src/save.rs::decode_with	gap: minor: decode_with only checks that Status is full and does not return the status; partial statuses go to decode_proto
-SerializableChunkData.postLoadChunk	inline	crates/sunrise-client/src/save.rs::decode_column	gap: minor: decodes the block entities here; entity tags are attached by Persistent::load
-SerializableChunkData.packStructureData	inline	crates/sunrise-client/src/save.rs::encode_with	writes structures.starts and structures.References
+SerializableChunkData.getChunkStatusFromTag	inline	crates/sunrise-client/src/save/column.rs::decode_with	gap: minor: decode_with only checks that Status is full and does not return the status; partial statuses go to decode_proto
+SerializableChunkData.postLoadChunk	inline	crates/sunrise-client/src/save/column.rs::decode_column	gap: minor: decodes the block entities here; entity tags are attached by Persistent::load
+SerializableChunkData.packStructureData	inline	crates/sunrise-client/src/save/column.rs::encode_with	writes structures.starts and structures.References
 SerializableChunkData.unpackStructureStart	skip:other		starts are written but not read back; worldgen regenerates them from the seed (vanillagen.rs)
-SerializableChunkData.unpackStructureReferences	inline	crates/sunrise-client/src/save.rs::decode_column	gap: minor: reads the references but does not drop ones more than 8 chunks away
-SerializableChunkData.packOffsets	inline	crates/sunrise-client/src/save.rs::encode_proto	packs the PostProcessing marks per section
-SimpleRegionStorage.write	port	crates/sunrise-client/src/save.rs::SaveDir::queue	queues the record for the region writer thread
+SerializableChunkData.unpackStructureReferences	inline	crates/sunrise-client/src/save/column.rs::decode_column	gap: minor: reads the references but does not drop ones more than 8 chunks away
+SerializableChunkData.packOffsets	inline	crates/sunrise-client/src/save/column.rs::encode_proto	packs the PostProcessing marks per section
+SimpleRegionStorage.write	port	crates/sunrise-client/src/save/writes.rs::SaveDir::queue	queues the record for the region writer thread
 DimensionType.<init>	skip:data		validates a dimension type's numbers when datapack data loads; Sunrise uses fixed dimension data
 DimensionType.createDirectCodec	skip:java		codec for the dimension type JSON
 EnderDragonFight.createDefault	inline	crates/sunrise-client/src/game/mobs/dragon.rs::Game::load_fight	the defaults load_fight uses when no saved fight exists (scan on, no gateways yet)

@@ -1,0 +1,2 @@
+ids = ["method:prelude::ClientViewClientHost::jumpable_vehicle", "method:prelude::ClientViewClientHost::has_waypoints"]
+why = "Adds two client reads (#4677) of the facts the HUD's contextual bar is chosen from: jumpable_vehicle is LocalPlayer.jumpableVehicle (the saddled mount that can jump, as a handle), has_waypoints is ClientWaypointManager.hasWaypoints. Both read the state the HUD reads; the chosen bar (Hud.nextContextualInfoState, private in vanilla) is not exposed."

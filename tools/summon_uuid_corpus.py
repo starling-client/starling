@@ -6,7 +6,12 @@ joins. Then it adds the root and each passenger in turn; addNewEntity skips
 one whose UUID an earlier entity of the same tree took, but that entity still
 rides its vehicle and saves under its Passengers.
 """
-from command_exec_corpus import cmd
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools.command_exec_corpus import cmd
 
 PIG = 'NoAI:1b,NoGravity:1b,PersistenceRequired:1b,Silent:1b'
 

@@ -27,9 +27,9 @@ import shutil
 import subprocess
 import sys
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import lab  # noqa: E402
-import test_rust_parity as base  # noqa: E402
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_rust_parity as base  # noqa: E402
 
 FUNCTIONS = ["sin", "cos", "tan", "exp", "log", "log10", "pow", "cbrt", "atan2", "atan", "asin", "acos", "hypot",
              "mthtable"]

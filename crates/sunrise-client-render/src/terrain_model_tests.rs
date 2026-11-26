@@ -28,28 +28,29 @@ fn sprite(name: &str) -> Option<u32> {
     match name {
         "test:source" => Some(7),
         "test:target" => Some(11),
+        "minecraft:missingno" => Some(1),
         _ => None,
     }
 }
-fn draw(
-    faces: &[BakedFace],
-    pose: Mat4,
-    options: NativeModelRenderOptions<'_>,
-) -> (bool, Vec<Vertex>) {
+fn draw(faces: &[BakedFace], pose: Mat4, options: NativeModelRenderOptions<'_>) -> Vec<Vertex> {
     let mut output = Vec::new();
-    let accepted = draw_model(faces, pose, 0xf0f0, options, sprite, |v| output.push(v));
-    (accepted, output)
+    draw_model(faces, pose, 0xf0f0, options, sprite, |quad| {
+        output.extend_from_slice(&quad);
+        true
+    });
+    output
 }
 #[test]
-fn late_unknown_material_or_sprite_rejects_the_whole_model() {
+fn unsupported_material_skips_only_that_quad_and_missing_sprite_uses_missingno() {
     let first = face();
     let mut second = face();
     second.quad.render_type = Some(RenderType::Unsupported);
     let mut faces = [first, second];
-    let (accepted, output) = draw(&faces, Mat4::IDENTITY, Default::default());
-    assert!(!accepted);
-    assert!(output.is_empty());
-    let (accepted, output) = draw(
+    let output = draw(&faces, Mat4::IDENTITY, Default::default());
+    // The valid quad renders while the unsupported one is isolated.
+    assert_eq!(output.len(), 4);
+    assert_eq!(output[0].layer >> 16, 7);
+    let output = draw(
         &faces,
         Mat4::IDENTITY,
         NativeModelRenderOptions {
@@ -57,15 +58,32 @@ fn late_unknown_material_or_sprite_rejects_the_whole_model() {
             ..Default::default()
         },
     );
-    assert!(accepted);
     assert_eq!(output.len(), 8);
+    // A missing sprite falls back to `minecraft:missingno` (layer 1) rather than refusing the model.
+    faces[1].quad.render_type = None;
     faces[1].quad.material.sprite = "test:missing".into();
-    let (accepted, output) = draw(&faces, Mat4::IDENTITY, Default::default());
-    assert!(!accepted);
-    assert!(output.is_empty());
+    let output = draw(&faces, Mat4::IDENTITY, Default::default());
+    assert_eq!(output.len(), 8);
+    assert_eq!(output[0].layer >> 16, 7);
+    assert_eq!(output[4].layer >> 16, 1);
+    // Without even a fallback sprite, only the missing quad is skipped.
+    let mut partial = Vec::new();
+    draw_model(
+        &faces,
+        Mat4::IDENTITY,
+        0xf0f0,
+        Default::default(),
+        |name| (name == "test:source").then_some(7),
+        |quad| {
+            partial.extend_from_slice(&quad);
+            true
+        },
+    );
+    assert_eq!(partial.len(), 4);
+    assert_eq!(partial[0].layer >> 16, 7);
 }
 #[test]
-fn exact_sprite_shift_and_explicit_json_shrink_precede_array_mapping() {
+fn exact_sprite_shift_and_unmatched_shift_noop_and_missing_target_fallback() {
     let options = NativeModelRenderOptions {
         uv_shrink_ratio: 4.0 / 2048.0,
         uv_shift: Some(NativeModelUvShift {
@@ -76,12 +94,13 @@ fn exact_sprite_shift_and_explicit_json_shrink_precede_array_mapping() {
         }),
         ..Default::default()
     };
-    let (accepted, output) = draw(&[face()], Mat4::IDENTITY, options);
-    assert!(accepted);
+    let output = draw(&[face()], Mat4::IDENTITY, options);
+    assert_eq!(output.len(), 4);
     assert_eq!(output[0].uv, [0.25048828, 0.12548828]);
     assert_eq!(output[2].uv, [0.7495117, 0.6245117]);
     assert!(output.iter().all(|v| v.layer >> 16 == 11));
-    let (accepted, output) = draw(
+    // An unmatched shift source is a no-op and keeps the face's original sprite and UVs.
+    let output = draw(
         &[face()],
         Mat4::IDENTITY,
         NativeModelRenderOptions {
@@ -93,8 +112,43 @@ fn exact_sprite_shift_and_explicit_json_shrink_precede_array_mapping() {
             ..options
         },
     );
-    assert!(!accepted);
-    assert!(output.is_empty());
+    assert_eq!(output.len(), 4);
+    assert!(output.iter().all(|v| v.layer >> 16 == 7));
+    // A missing target sprite resolves to `minecraft:missingno` (layer 1).
+    let output = draw(
+        &[face()],
+        Mat4::IDENTITY,
+        NativeModelRenderOptions {
+            uv_shift: Some(NativeModelUvShift {
+                source_sprite: "test:source",
+                target_sprite: "test:missing_target",
+                scale: [1.0; 2],
+                offset: [0.0; 2],
+            }),
+            ..Default::default()
+        },
+    );
+    assert_eq!(output.len(), 4);
+    assert!(output.iter().all(|v| v.layer >> 16 == 1));
+    // A non-finite shift only drops faces matching `source_sprite`; other faces still draw.
+    let mut other = face();
+    other.quad.material.sprite = "test:target".into();
+    other.layer = 11;
+    let output = draw(
+        &[face(), other],
+        Mat4::IDENTITY,
+        NativeModelRenderOptions {
+            uv_shift: Some(NativeModelUvShift {
+                source_sprite: "test:source",
+                target_sprite: "test:target",
+                scale: [f32::NAN; 2],
+                offset: [0.0; 2],
+            }),
+            ..Default::default()
+        },
+    );
+    assert_eq!(output.len(), 4);
+    assert!(output.iter().all(|v| v.layer >> 16 == 11));
 }
 #[test]
 fn transformed_slope_normal_stays_float_and_fullbright_keeps_shading() {
@@ -106,8 +160,8 @@ fn transformed_slope_normal_stays_float_and_fullbright_keeps_shading() {
         [1.0, 0.0, 0.0],
     ];
     let pose = Mat4::from_rotation_y(0.372) * Mat4::from_scale(Vec3::new(-2.0, 3.0, 1.0));
-    let (accepted, output) = draw(&[face], pose, Default::default());
-    assert!(accepted);
+    let output = draw(&[face], pose, Default::default());
+    assert_eq!(output.len(), 4);
     let normal = Vec3::new(
         output[0].glint_uv[0],
         output[0].glint_uv[1],
@@ -122,21 +176,49 @@ fn transformed_slope_normal_stays_float_and_fullbright_keeps_shading() {
     assert_ne!(normal.y, (normal.y * 127.0) as i8 as f32 / 127.0);
 }
 #[test]
-fn invalid_shift_and_singular_pose_emit_nothing() {
-    let options = NativeModelRenderOptions {
-        uv_shrink_ratio: f32::NAN,
-        ..Default::default()
-    };
-    let (ok, output) = draw(&[face()], Mat4::IDENTITY, options);
-    assert!(!ok);
+fn flattened_pose_and_unclamped_shrink_render_while_non_finite_quads_are_isolated() {
+    // Non-finite shrink ratio produces non-finite UVs, so affected quads are skipped.
+    let output = draw(
+        &[face()],
+        Mat4::IDENTITY,
+        NativeModelRenderOptions {
+            uv_shrink_ratio: f32::NAN,
+            ..Default::default()
+        },
+    );
     assert!(output.is_empty());
-    let (ok, output) = draw(
+    // Finite shrink ratio outside 0..=1 is accepted directly.
+    let output = draw(
+        &[face()],
+        Mat4::IDENTITY,
+        NativeModelRenderOptions {
+            uv_shrink_ratio: 1.5,
+            ..Default::default()
+        },
+    );
+    assert_eq!(output.len(), 4);
+    // A flattened/singular pose still renders with finite normals instead of refusing the model.
+    let output = draw(
         &[face()],
         Mat4::from_scale(Vec3::new(1.0, 0.0, 1.0)),
         Default::default(),
     );
-    assert!(!ok);
-    assert!(output.is_empty());
+    assert_eq!(output.len(), 4);
+    assert!(output.iter().all(|v| v.pos.iter().all(|c| c.is_finite())));
+    // Returning false from emit stops after the first quad.
+    let mut emitted = 0usize;
+    draw_model(
+        &[face(), face()],
+        Mat4::IDENTITY,
+        0xf0f0,
+        Default::default(),
+        sprite,
+        |_| {
+            emitted += 1;
+            false
+        },
+    );
+    assert_eq!(emitted, 1);
 }
 
 #[test]
@@ -144,7 +226,7 @@ fn a_deduplicated_array_layer_is_not_the_same_named_source_sprite() {
     let mut alias = face();
     alias.quad.material.sprite = "test:alias".into();
     let mut output = Vec::new();
-    assert!(draw_model(
+    draw_model(
         &[face(), alias],
         Mat4::IDENTITY,
         0xf0f0,
@@ -153,17 +235,22 @@ fn a_deduplicated_array_layer_is_not_the_same_named_source_sprite() {
                 source_sprite: "test:source",
                 target_sprite: "test:target",
                 scale: [0.5; 2],
-                offset: [0.25; 2]
+                offset: [0.25; 2],
             }),
             ..Default::default()
         },
-        |name| if name == "test:alias" {
-            Some(7)
-        } else {
-            sprite(name)
+        |name| {
+            if name == "test:alias" {
+                Some(7)
+            } else {
+                sprite(name)
+            }
         },
-        |v| output.push(v)
-    ));
+        |quad| {
+            output.extend_from_slice(&quad);
+            true
+        },
+    );
     assert_eq!(output[0].layer >> 16, 11);
     assert_eq!(output[4].layer >> 16, 7);
     assert_eq!(output[4].uv, [0.0, 0.0]);
@@ -182,8 +269,8 @@ fn the_draw_colour_multiplies_every_channel_and_white_changes_nothing() {
         color: 0xC0_80_FF_40,
         ..Default::default()
     };
-    let (accepted, output) = draw(&[tinted(), face()], Mat4::IDENTITY, options);
-    assert!(accepted);
+    let output = draw(&[tinted(), face()], Mat4::IDENTITY, options);
+    assert_eq!(output.len(), 8);
     // Red: 255 * 0x80 / 255 = 0x80, then * 0x80 / 255 = 0x40. Green and blue: 255, then * 0xFF
     // and * 0x40 / 255. The alpha makes the quads translucent, and a translucent quad carries its
     // face's shade in the colour: the south face's 0.8, as 204 / 255 on each colour channel.
@@ -200,7 +287,7 @@ fn the_draw_colour_multiplies_every_channel_and_white_changes_nothing() {
         tint: 0x80_ffff,
         ..Default::default()
     };
-    let (_, plain) = draw(&[tinted()], Mat4::IDENTITY, white);
+    let plain = draw(&[tinted()], Mat4::IDENTITY, white);
     assert_eq!(plain[0].layer & 0xffff, gfx::TERRAIN_MODEL_SOLID_OVERLAY);
     assert_eq!(plain[0].color, 0xFFFF_FF80);
 }
@@ -221,7 +308,7 @@ fn hidden_faces_skip_quads_by_cull_side_and_keep_those_without() {
             hidden_faces,
             ..Default::default()
         };
-        draw(&[south(), open()], Mat4::IDENTITY, options).1.len() / 4
+        draw(&[south(), open()], Mat4::IDENTITY, options).len() / 4
     };
     assert_eq!(hide(0), 2);
     assert_eq!(hide(1 << 3), 1, "south is bit 3");
@@ -233,8 +320,8 @@ fn translucent_quads_bake_their_shade_into_the_colour() {
     let mut glass = face();
     glass.quad.render_type = Some(RenderType::Translucent);
     glass.layer = 7;
-    let (accepted, output) = draw(&[glass], Mat4::IDENTITY, Default::default());
-    assert!(accepted);
+    let output = draw(&[glass], Mat4::IDENTITY, Default::default());
+    assert_eq!(output.len(), 4);
     // South faces shade 204/255 (0.8), baked into the colour; the sprite layer rides the high
     // half of `layer`.
     assert_eq!(output[0].color & 0xff, 204);

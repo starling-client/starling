@@ -74,29 +74,15 @@ pub(super) fn admit_stack_limits(
     definition: &ItemInfo,
     damage: Option<u32>,
 ) -> Result<(), StackWriteError> {
-    let max_stack_size = "minecraft:max_stack_size";
-    let maximum = if stack.carries_component(Some(definition), max_stack_size) {
-        match stack.data().and_then(|data| data.other(max_stack_size)) {
-            Some(Tag::Int(value)) => {
-                u32::try_from(*value).map_err(|_| StackWriteError::InvalidMaximum)?
-            }
-            Some(_) => return Err(StackWriteError::InvalidMaximum),
-            None => definition.max_stack,
-        }
-    } else {
-        1
-    };
-    if !(1..=99).contains(&maximum) {
+    let Some(maximum @ 1..=99) = stack.effective_max_stack_size(Some(definition)) else {
         return Err(StackWriteError::InvalidMaximum);
-    }
+    };
     let max_damage = "minecraft:max_damage";
     let carries_max_damage = stack.carries_component(Some(definition), max_damage);
-    if !sunrise_world::item_template::durability_allows_stack_size(
-        carries_max_damage,
-        i64::from(maximum),
-    ) {
+    if !sunrise_world::item_template::durability_allows_stack_size(carries_max_damage, maximum) {
         return Err(StackWriteError::StackableDamageable);
     }
+    let maximum = maximum as u32; // The range match above proves this fits.
     if stack.count > maximum {
         return Err(StackWriteError::CountExceeded { maximum });
     }

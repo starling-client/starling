@@ -19,8 +19,9 @@ impl dyn Registrar + '_ {
     /// Register command argument type `name` (`machine` or `mymod:machine`), once, from
     /// `Hooks::register`: a usage then names it as an argument's kind,
     /// `Command::new("machine use <machine:mymod:machine>")`, and the game parses and
-    /// completes that argument with it. A name in an unowned namespace, an empty name, and an
-    /// id registered twice refuse the mods at startup, naming the mod.
+    /// completes that argument with it. A bare name uses this mod's namespace; an explicit valid
+    /// `namespace:path` keeps its namespace. A malformed name, a built-in command argument type
+    /// id, and an id registered twice refuse the mods at startup, naming the mod.
     pub fn register_command_argument<T: crate::CommandArgumentType>(
         &mut self,
         name: &str,

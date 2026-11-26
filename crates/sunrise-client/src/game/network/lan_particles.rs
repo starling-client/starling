@@ -3,8 +3,8 @@
 //! `/particle` uses) and `ClientboundExplodePacket` (`ServerLevel.explode`).
 use super::{Game, explosion_settings::BlastEffects, lan::LanHost, level_sounds::LevelSound};
 use mod_api::{SoundSource, client::particles::PositionSource};
-use sunrise_client::lan::containers::within_range;
-use sunrise_client::lan::hub::Hub;
+use sunrise_client::lan::{Body, containers::within_range, hub::Hub};
+use sunrise_client::particles::ParticleLevel;
 use sunrise_client::particles::{ExplosionParticle, ParticleOptions, ParticleType};
 use sunrise_core::{
     geometry::{Aabb, Vec3},
@@ -197,17 +197,40 @@ pub(super) fn send_hub_level_particles(
         count: count as i32,
         randomization: 0,
     });
-    for g in hub.guests.iter().filter(|g| hub.here(g)) {
-        if sunrise_only && !g.is_sunrise() {
-            continue;
+    let mut recipients = hub
+        .guests
+        .iter()
+        .filter(|guest| {
+            if !hub.here(guest)
+                || !guest.participates_online()
+                || sunrise_only && !guest.is_sunrise()
+            {
+                return false;
+            }
+            // ServerLevel compares the player's block centre, strictly within 32.
+            let distance: f64 = (0..3)
+                .map(|k| (guest.position[k].floor() + 0.5 - at[k]).powi(2))
+                .sum();
+            distance < 32.0 * 32.0
+        })
+        .peekable();
+    let Some(first) = recipients.next() else {
+        return;
+    };
+    let body = match packet.try_encode() {
+        Ok(body) => body,
+        Err(error) => {
+            eprintln!("[lan] send refused: {error}");
+            return;
         }
-        // ServerLevel compares the player's block centre, strictly within 32.
-        let distance: f64 = (0..3)
-            .map(|k| (g.position[k].floor() + 0.5 - at[k]).powi(2))
-            .sum();
-        if distance < 32.0 * 32.0 {
-            g.send(&packet);
-        }
+    };
+    if recipients.peek().is_none() {
+        first.sender.send(body);
+        return;
+    }
+    let shared = Body::shared(body);
+    for guest in std::iter::once(first).chain(recipients) {
+        guest.sender.send_many([shared.clone()]);
     }
 }
 
@@ -276,6 +299,7 @@ impl Game<'_> {
                     [0.0; 3],
                     speed,
                     count as u32,
+                    None,
                 );
             }
         }
@@ -405,15 +429,11 @@ impl Game<'_> {
                 );
                 self.item_particle_options(&stack)?
             }
-            Some(ParticleData::State(s)) => {
-                let pos = at.map(|v| v.floor() as i32);
-                let state = BlockStateId(*s as u32);
-                let (sprite, tint) = self
-                    .particle_sprite(state, pos)
-                    .unwrap_or_else(|| ("block/stone".into(), 0xFFFFFF));
-                ParticleOptions::block(ty, sprite, tint)
-                    .with_source(&self.res.facts().get(state).name)
-            }
+            Some(ParticleData::State(s)) => self.block_provider_options(
+                ty,
+                BlockStateId(*s as u32),
+                at.map(|v| v.floor() as i32),
+            )?,
             Some(ParticleData::ColorScale(c, scale)) => {
                 ParticleOptions::dust(rgb(rgba(*c)), *scale)
             }
@@ -490,9 +510,10 @@ impl Game<'_> {
         let Some(remote) = &mut self.remote else {
             return;
         };
+        let level = ParticleLevel::new(&self.world, self.res.facts(), self.collision);
         self.particles.handle_level_particles(
             &mut remote.particle_packet_random,
-            &self.world,
+            Some(&level),
             p,
             &options,
         );
@@ -512,11 +533,12 @@ impl Game<'_> {
             let sound = self
                 .remote_sound_name(&p.sound)
                 .unwrap_or_else(|| "minecraft:entity.generic.explode".to_owned());
-            self.audio.play(&sound, Some(p.center), 4.0, pitch);
+            self.play_audio(&sound, Some(p.center), 4.0, pitch);
         }
         if let Some(options) = self.received_particle(&p.particle, p.center) {
-            self.particles.add_with_world(
-                Some(&self.world),
+            let level = ParticleLevel::new(&self.world, self.res.facts(), self.collision);
+            self.particles.add_with(
+                Some(&level),
                 &options,
                 p.center,
                 [1.0, 0.0, 0.0],
@@ -543,13 +565,19 @@ impl Game<'_> {
             p.block_count.max(0) as usize,
             &block_particles,
         );
-        // Entity.pushFromExplosion.
-        if let (Some(push), Some(player)) = (p.knockback, self.player.as_mut()) {
-            player.velocity = Vec3::new(
-                player.velocity.x + push[0],
-                player.velocity.y + push[1],
-                player.velocity.z + push[2],
-            );
+        // `Entity.pushFromExplosion` calls `Entity.push`, which rejects a
+        // non-finite impulse before even marking the entity for sync.
+        if let (Some([x, y, z]), Some(player)) = (p.knockback, self.player.as_mut()) {
+            let impulse = Vec3::new(x, y, z);
+            if impulse.is_finite() {
+                let velocity = player.velocity.add_vector(impulse);
+                // `Entity.setDeltaMovement` can reject the sum, but the push
+                // still marks the entity for sync.
+                if velocity.is_finite() {
+                    player.velocity = velocity;
+                }
+                player.needs_sync = true;
+            }
         }
     }
 
@@ -605,25 +633,15 @@ impl Game<'_> {
         });
     }
 
-    /// Resolve a native sound through `play_level_sound_at_*` hooks in the sound's own level and
-    /// drop unknown `minecraft:` events. Sounds emitted from inside a level-sound listener
-    /// (`skip_hooks` or active `asking_level_sound`) skip re-dispatching the hooks and undergo
-    /// registry validation only. Returns the sound ready for pure packet delivery, or `None` if
-    /// canceled/dropped.
+    /// Resolve through the level-sound hooks in the sound's own level. Sounds emitted from
+    /// inside a listener skip re-dispatch, whether still in the listener or queued for a flush.
+    /// Preserve the original holder unless a listener replaces its event key.
     pub(super) fn resolve_native_sound(
         &mut self,
         mut sound: super::creatures::NativeSound,
     ) -> Option<super::creatures::NativeSound> {
-        let sound_known = |game: &Self, name: &str| {
-            !name.starts_with("minecraft:")
-                || game.lan.as_ref().is_some_and(|host| {
-                    host.hub
-                        .registry_id("minecraft:sound_event", name)
-                        .is_some()
-                })
-        };
         if sound.skip_hooks || self.creatures.asking_level_sound {
-            return sound_known(self, &sound.sound).then_some(sound);
+            return Some(sound);
         }
         let emitter = sound.entity.and_then(|id| u32::try_from(id).ok());
         let mut asked = LevelSound::new(&sound.sound, sound.at, sound.volume, sound.pitch)
@@ -635,9 +653,8 @@ impl Game<'_> {
             );
         asked.emitter = emitter;
         let dim = super::Dim::from_id(sound.dimension);
-        let heard = self
-            .with_effect_level(dim, |game| game.ask_level_sound(sound.dimension, asked))?
-            .filter(|heard| sound_known(self, &heard.name))?;
+        let heard =
+            self.with_effect_level(dim, |game| game.ask_level_sound(sound.dimension, asked))??;
         let (edited_name, source, volume, pitch) = (
             match heard.name {
                 std::borrow::Cow::Borrowed(_) => None,
@@ -647,8 +664,11 @@ impl Game<'_> {
             heard.volume,
             heard.pitch,
         );
-        if let Some(name) = edited_name {
+        if let Some(name) = edited_name
+            && name != sound.sound
+        {
             sound.sound = name;
+            sound.inline_range = None;
         }
         sound.source = source;
         sound.volume = volume;
@@ -660,7 +680,7 @@ impl Game<'_> {
     /// (runs no mod hooks and does not touch `self.creatures.lan_sounds`).
     pub(super) fn send_resolved_native_sound(&self, sound: &super::creatures::NativeSound) {
         let Some(host) = &self.lan else { return };
-        let packet = host.hub.sound_packet(
+        let mut packet = host.hub.sound_packet(
             &sound.sound,
             sound.at,
             sound.volume,
@@ -668,6 +688,11 @@ impl Game<'_> {
             sound.source,
             sound.seed,
         );
+        if let Some(range) = sound.inline_range
+            && let C::Sound(packet) = &mut packet
+        {
+            packet.sound = (-1, Some((sound.sound.clone(), range)));
+        }
         // `Level.playSound(except, entity, ...)`: the same sound and
         // seed, bound to the entity.
         let packet = match (packet, sound.entity) {
@@ -682,7 +707,10 @@ impl Game<'_> {
             (packet, _) => packet,
         }
         .encode();
-        let range = f64::from(sound.volume.max(1.0)) * 16.0;
+        let range = sound
+            .inline_range
+            .flatten()
+            .map_or_else(|| f64::from(sound.volume.max(1.0)) * 16.0, f64::from);
         // Wrapped for the level's viewers too: one bound to an entity for those tracking it.
         host.hub
             .send_viewed_sound(sound.dimension, sound.at, range, sound.entity, || {
@@ -698,11 +726,8 @@ impl Game<'_> {
         );
     }
 
-    /// Native sounds wait until the server host is available. An unknown
-    /// `minecraft:` event is dropped; a mod's goes by name (`sound_packet`).
-    /// Each is asked of the mods first (`play_level_sound_at_entity` when
-    /// bound to an entity, `_at_position` otherwise). One at a position also
-    /// goes wrapped to its level's viewers (`Hub::send_viewed_sound`).
+    /// Resolve tick-queued sounds and send them to their level's players and viewers.
+    /// The packet uses the registry ID when present or carries the event inline by name.
     pub(super) fn flush_native_sounds(&mut self) {
         if self.lan.is_none() {
             return;
@@ -907,6 +932,92 @@ pub(in crate::game) mod tests {
     use sunrise_client::particles::{ExplosionParticle, ParticleOptions, ParticleType};
     use sunrise_core::random::LegacyRandom;
     use sunrise_protocol::packets::play;
+
+    #[test]
+    #[ignore = "daily"]
+    fn received_block_particles_follow_the_provider_matrix() {
+        use crate::game::{
+            in_own_process, native_client_session::tests::logged_client,
+            native_entity_refs::tests::with_client_game,
+        };
+        in_own_process(
+            "game::lan_particles::tests::received_block_particles_follow_the_provider_matrix",
+            || {
+                with_client_game(|game| {
+                    let _server = logged_client(game);
+                    let types = [
+                        ParticleType::Block,
+                        ParticleType::DustPillar,
+                        ParticleType::BlockCrumble,
+                        ParticleType::FallingDust,
+                        ParticleType::BlockMarker,
+                    ];
+                    let registry = game
+                        .remote
+                        .as_ref()
+                        .unwrap()
+                        .builtin
+                        .get("minecraft:particle_type")
+                        .unwrap();
+                    let ids =
+                        types.map(|ty| registry.id(&format!("minecraft:{}", ty.name())).unwrap());
+                    for (name, terrain, dust) in [
+                        ("air", false, true),
+                        ("cave_air", false, true),
+                        ("void_air", false, true),
+                        ("moving_piston", false, false),
+                        ("barrier", false, false),
+                        ("structure_void", false, false),
+                        ("light", true, false),
+                        ("water", true, false),
+                        ("chest", true, true),
+                        ("sand", true, true),
+                        ("stone", true, true),
+                    ] {
+                        let state = game
+                            .pack
+                            .assets
+                            .registry
+                            .default_state(&format!("minecraft:{name}"))
+                            .unwrap();
+                        for ((ty, id), admit) in types
+                            .into_iter()
+                            .zip(ids)
+                            .zip([terrain, terrain, terrain, dust, true])
+                        {
+                            let result = game.received_particle(
+                                &Particle {
+                                    id,
+                                    data: Some(ParticleData::State(state.0 as i32)),
+                                },
+                                [0.5, 64.5, 0.5],
+                            );
+                            assert_eq!(result.is_some(), admit, "{name} for {}", ty.name());
+                            if let Some(options) = result {
+                                assert_eq!(options.ty, ty);
+                                let (sprite, tint) = options.block.unwrap();
+                                if ty == ParticleType::BlockMarker {
+                                    assert!(!sprite.is_empty());
+                                    assert_eq!(tint, 0xFFFFFF);
+                                } else if ty == ParticleType::FallingDust {
+                                    assert!(
+                                        sprite.is_empty(),
+                                        "falling dust uses the provider's sprite set"
+                                    );
+                                    match name {
+                                        "sand" => assert_eq!(tint, 0xDBD3A0),
+                                        "stone" => assert_eq!(tint, 0x707070),
+                                        "air" | "cave_air" | "void_air" => assert_eq!(tint, 0),
+                                        _ => {}
+                                    }
+                                }
+                            }
+                        }
+                    }
+                })
+            },
+        );
+    }
 
     /// `PowderSnowBlock.entityInside`: vertical-only movement skips the roll;
     /// horizontal movement uses nextBoolean, then X and Z floats in order.
@@ -1165,7 +1276,6 @@ pub(in crate::game) mod tests {
         assert!(decode_mod_particle(name, &[1, 1, 0, 0, 0]).is_none());
         let decoded = decode_mod_particle(name, bytes).unwrap();
         assert_eq!(decoded.typed_particle, options.typed_particle);
-        let world = sunrise_client::world::World::new(BlockStateId(0), 1);
         let mut engine = sunrise_client::particles::ParticleEngine::new(
             &Default::default(),
             &Default::default(),
@@ -1173,7 +1283,7 @@ pub(in crate::game) mod tests {
         );
         engine.created_requests = Some(Vec::new());
         let mut random = LegacyRandom::new(23);
-        engine.handle_level_particles(&mut random, &world, &packet, &decoded);
+        engine.handle_level_particles(&mut random, None, &packet, &decoded);
         let created = engine.created_requests.as_mut().unwrap();
         assert_eq!(created.len(), 2);
         for request in created.drain(..) {
@@ -1182,7 +1292,7 @@ pub(in crate::game) mod tests {
         packet.count = 0;
         packet.dist = [0.1, -0.2, 0.7];
         packet.max_speed = [0.3, 0.4, 0.9];
-        engine.handle_level_particles(&mut random, &world, &packet, &decoded);
+        engine.handle_level_particles(&mut random, None, &packet, &decoded);
         let created = engine.created_requests.take().unwrap();
         assert_eq!(created.len(), 1);
         assert_eq!(created[0].1, at);

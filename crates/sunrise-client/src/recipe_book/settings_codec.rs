@@ -1,37 +1,59 @@
-//! Bounded binary framing for the dedicated negotiated settings channel.
+//! Private settings codec. The registered play packet uses the connection's framing.
 use super::{
     BookFlags,
-    custom_books::{MAX_BOOKS, MAX_ID_BYTES, valid_book_id},
-    settings_sync::{MAX_BYTES, Message},
+    placement_sync::{RESOURCE_ID_BYTES, ResourceId},
+    settings_sync::Message,
 };
+use std::collections::BTreeSet;
+use sunrise_core::vanilla_bytes::Writer;
+use sunrise_protocol::{Error, Result, buf::Reader, custom_book::VERSION};
 
 pub const PLACEMENT_TAG: u8 = 8;
 
-pub fn encode(message: &Message) -> Option<Vec<u8>> {
-    let mut out = Vec::new();
-    fn key(out: &mut Vec<u8>, id: &str) -> Option<()> {
-        if id.len() > MAX_ID_BYTES || !valid_book_id(id) {
-            return None;
+pub fn encode(message: &Message) -> Result<Vec<u8>> {
+    fn key(out: &mut Writer, id: &ResourceId) -> Result<()> {
+        if !id.fits_wire() {
+            return Err(Error::new(format!(
+                "book identifier has {} bytes; Identifier.STREAM_CODEC permits {RESOURCE_ID_BYTES}",
+                id.as_str().len()
+            )));
         }
-        out.extend_from_slice(&(id.len() as u16).to_be_bytes());
-        out.extend_from_slice(id.as_bytes());
-        Some(())
+        out.string(id.as_str());
+        Ok(())
     }
-    fn pair(out: &mut Vec<u8>, flags: BookFlags) {
-        out.extend([u8::from(flags.open), u8::from(flags.filtering)]);
+    fn count(out: &mut Writer, len: usize) -> Result<()> {
+        out.varint(i32::try_from(len).map_err(|_| Error::new("book count cannot fit a VarInt"))?);
+        Ok(())
     }
+    let mut out = Writer::new();
+    let pair = |out: &mut Writer, flags: BookFlags| {
+        out.bool(flags.open);
+        out.bool(flags.filtering);
+    };
     match message {
-        Message::Busy => out.push(7),
-        Message::Hello => out.extend([5, 1]),
-        Message::Ready => out.extend([6, 1]),
+        Message::Hello => out.bytes(&[5, VERSION]),
+        Message::Ready => out.bytes(&[6, VERSION]),
         Message::Offer(keys) => {
-            if keys.len() > MAX_BOOKS {
-                return None;
-            }
-            out.push(0);
-            out.extend_from_slice(&(keys.len() as u16).to_be_bytes());
+            // A book that cannot be represented on the wire stays local; it must
+            // not prevent the rest of the registry from negotiating.
+            let keys: Vec<_> = keys
+                .iter()
+                .filter(|id| {
+                    if id.fits_wire() {
+                        return true;
+                    }
+                    let namespace = id.as_str().split(':').next().unwrap_or_default();
+                    log::warn!(
+                        "[recipe book] cannot offer a book from {namespace}: {}-byte identifier exceeds Identifier.STREAM_CODEC ({RESOURCE_ID_BYTES} bytes)",
+                        id.as_str().len()
+                    );
+                    false
+                })
+                .collect();
+            out.u8(0);
+            count(&mut out, keys.len())?;
             for id in keys {
-                key(&mut out, id)?;
+                out.string(id.as_str());
             }
         }
         Message::Snapshot {
@@ -39,13 +61,10 @@ pub fn encode(message: &Message) -> Option<Vec<u8>> {
             revision,
             entries,
         } => {
-            if entries.len() > MAX_BOOKS {
-                return None;
-            }
-            out.push(1);
-            out.extend(epoch.to_be_bytes());
-            out.extend(revision.to_be_bytes());
-            out.extend_from_slice(&(entries.len() as u16).to_be_bytes());
+            out.u8(1);
+            out.i64(*epoch as i64);
+            out.i64(*revision as i64);
+            count(&mut out, entries.len())?;
             for (id, flags) in entries {
                 key(&mut out, id)?;
                 pair(&mut out, *flags);
@@ -56,96 +75,72 @@ pub fn encode(message: &Message) -> Option<Vec<u8>> {
             number,
             key: id,
             flags,
-        } => {
-            out.push(2);
-            out.extend(epoch.to_be_bytes());
-            out.extend(number.to_be_bytes());
-            key(&mut out, id)?;
-            pair(&mut out, *flags);
         }
-        Message::Update {
+        | Message::Update {
             epoch,
-            revision,
+            revision: number,
             key: id,
             flags,
         } => {
-            out.push(3);
-            out.extend(epoch.to_be_bytes());
-            out.extend(revision.to_be_bytes());
+            out.u8(if matches!(message, Message::Request { .. }) {
+                2
+            } else {
+                3
+            });
+            out.i64(*epoch as i64);
+            out.i64(*number as i64);
             key(&mut out, id)?;
             pair(&mut out, *flags);
         }
-        Message::Resnapshot => out.push(4),
         Message::Placement(frame) => {
-            out.push(PLACEMENT_TAG);
-            out.extend(super::placement_codec::encode(frame)?);
+            out.u8(PLACEMENT_TAG);
+            out.data.extend(super::placement_codec::encode(frame)?);
         }
     }
-    (out.len() <= MAX_BYTES).then_some(out)
+    Ok(out.data)
 }
 
 pub fn decode(data: &[u8]) -> Option<Message> {
-    if data.len() > MAX_BYTES {
-        return None;
+    fn key(r: &mut Reader<'_>) -> Option<ResourceId> {
+        ResourceId::try_from(r.string(RESOURCE_ID_BYTES).ok()?).ok()
     }
-    struct Reader<'a>(&'a [u8]);
-    impl Reader<'_> {
-        fn take(&mut self, n: usize) -> Option<&[u8]> {
-            let (a, b) = self.0.split_at_checked(n)?;
-            self.0 = b;
-            Some(a)
+    fn flags(r: &mut Reader<'_>) -> Option<BookFlags> {
+        let open = r.u8().ok()?;
+        let filtering = r.u8().ok()?;
+        if open > 1 || filtering > 1 {
+            return None;
         }
-        fn byte(&mut self) -> Option<u8> {
-            Some(self.take(1)?[0])
-        }
-        fn number(&mut self) -> Option<u64> {
-            Some(u64::from_be_bytes(self.take(8)?.try_into().ok()?))
-        }
-        fn count(&mut self) -> Option<usize> {
-            Some(u16::from_be_bytes(self.take(2)?.try_into().ok()?) as usize)
-        }
-        fn key(&mut self) -> Option<String> {
-            let n = self.count()?;
-            if n > MAX_ID_BYTES {
-                return None;
-            }
-            let id = std::str::from_utf8(self.take(n)?).ok()?;
-            valid_book_id(id).then(|| id.to_owned())
-        }
-        fn flags(&mut self) -> Option<BookFlags> {
-            let open = self.byte()?;
-            let filtering = self.byte()?;
-            if open > 1 || filtering > 1 {
-                return None;
-            }
-            Some(BookFlags {
-                open: open == 1,
-                filtering: filtering == 1,
-            })
-        }
+        Some(BookFlags {
+            open: open == 1,
+            filtering: filtering == 1,
+        })
     }
-    let mut r = Reader(data);
-    let tag = r.byte()?;
+    let mut r = Reader::new(data);
+    // The private epochs and revisions are fixed-width unsigned bit patterns.
+    let number = |r: &mut Reader<'_>| r.i64().ok().map(|bits| bits as u64);
+    let tag = r.u8().ok()?;
     let result = match tag {
         0 | 1 => {
             let (epoch, revision) = if tag == 1 {
-                (r.number()?, r.number()?)
+                (number(&mut r)?, number(&mut r)?)
             } else {
                 (0, 0)
             };
-            let n = r.count()?;
-            if n > MAX_BOOKS || n > r.0.len() / 3 {
+            let n = usize::try_from(r.varint().ok()?).ok()?;
+            // A length prefix and at least "a:b", plus two flags per snapshot entry.
+            let min = if tag == 0 { 4 } else { 6 };
+            if n > r.remaining() / min {
                 return None;
             }
-            let mut seen = std::collections::BTreeSet::new();
+            let mut seen = BTreeSet::new();
             let mut entries = Vec::new();
             for _ in 0..n {
-                let id = r.key()?;
+                let id = key(&mut r)?;
                 if !seen.insert(id.clone()) {
                     return None;
                 }
                 let flags = if tag == 1 {
-                    r.flags()?
+                    flags(&mut r)?
                 } else {
                     BookFlags::default()
                 };
@@ -162,10 +157,10 @@ pub fn decode(data: &[u8]) -> Option<Message> {
             }
         }
         2 | 3 => {
-            let epoch = r.number()?;
-            let number = r.number()?;
-            let key = r.key()?;
-            let flags = r.flags()?;
+            let epoch = number(&mut r)?;
+            let number = number(&mut r)?;
+            let key = key(&mut r)?;
+            let flags = flags(&mut r)?;
             if tag == 2 {
                 Message::Request {
                     epoch,
@@ -182,24 +177,15 @@ pub fn decode(data: &[u8]) -> Option<Message> {
                 }
             }
         }
-        4 => Message::Resnapshot,
-        7 => Message::Busy,
-        5 | 6 => {
-            if r.byte()? != 1 {
-                return None;
-            }
+        5 | 6 if r.u8().ok()? == VERSION => {
             if tag == 5 {
                 Message::Hello
             } else {
                 Message::Ready
             }
         }
-        PLACEMENT_TAG => {
-            let frame = super::placement_codec::decode(r.0)?;
-            r.0 = &[];
-            Message::Placement(frame)
-        }
+        PLACEMENT_TAG => Message::Placement(super::placement_codec::decode(r.rest())?),
         _ => return None,
     };
-    r.0.is_empty().then_some(result)
+    (r.remaining() == 0).then_some(result)
 }

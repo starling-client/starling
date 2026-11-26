@@ -10,8 +10,12 @@ import json
 import math
 import subprocess
 
-import lab
-import lan_e2e as lan
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, lan_e2e as lan
 
 
 def check_motion(host, guest, out):

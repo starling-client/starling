@@ -1,5 +1,5 @@
 use super::*;
-use crate::testing::FakeHost;
+use crate::testing::{FakeHost, FakeJournal};
 use crate::{Capability, ItemResource, Tag};
 use std::{cell::RefCell, rc::Rc};
 
@@ -41,17 +41,22 @@ impl ResourceHandler<Chemical> for Tanks {
     fn insert_at(
         &self,
         _: &mut dyn ServerHost,
-        _: &Transaction,
+        _: &TransactionContext,
         index: usize,
         chemical: &Chemical,
         amount: u32,
-    ) -> u32 {
+    ) -> Result<u32, TransactionError<Overanswered>> {
+        let chemical = if *chemical == HYDROGEN_ALIAS {
+            &HYDROGEN
+        } else {
+            chemical
+        };
         let mut tanks = self.0.borrow_mut();
         let Some(tank) = tanks.get_mut(index) else {
-            return 0;
+            return Ok(0);
         };
         let held = match tank {
-            Some((other, _)) if other != chemical => return 0,
+            Some((other, _)) if other != chemical => return Ok(0),
             Some((_, held)) => *held,
             None => 0,
         };
@@ -59,30 +64,31 @@ impl ResourceHandler<Chemical> for Tanks {
         if went > 0 {
             *tank = Some((chemical.clone(), held + went));
         }
-        went
+        Ok(went)
     }
     fn extract_at(
         &self,
         _: &mut dyn ServerHost,
-        _: &Transaction,
+        _: &TransactionContext,
         index: usize,
         chemical: &Chemical,
         amount: u32,
-    ) -> u32 {
+    ) -> Result<u32, TransactionError<Overanswered>> {
         let mut tanks = self.0.borrow_mut();
         let Some(tank) = tanks.get_mut(index) else {
-            return 0;
+            return Ok(0);
         };
         let Some((held_chemical, held)) = tank.clone().filter(|(c, _)| c == chemical) else {
-            return 0;
+            return Ok(0);
         };
         let came = amount.min(held);
         *tank = (held > came).then(|| (held_chemical, held - came));
-        came
+        Ok(came)
     }
 }
 
 const HYDROGEN: Chemical = Chemical("test:hydrogen");
+const HYDROGEN_ALIAS: Chemical = Chemical("test:h");
 
 #[test]
 fn a_combined_handler_numbers_both_and_fills_the_second_when_the_first_is_full() {
@@ -134,6 +140,89 @@ fn ranged_checks_constructor_bounds_and_maps_the_single_index() {
     assert_eq!(ranged.amount(host, 1), 0);
 }
 
+/// A two-slot chest at `pos` that names its slots as the game's block handlers do.
+struct Chest {
+    level: crate::LevelRef,
+    pos: [i32; 3],
+}
+
+impl ResourceHandler<Chemical> for Chest {
+    fn size(&self, _: &mut dyn ServerHost) -> usize {
+        2
+    }
+    fn resource(&self, _: &mut dyn ServerHost, _: usize) -> Option<Chemical> {
+        None
+    }
+    fn amount(&self, _: &mut dyn ServerHost, _: usize) -> u32 {
+        0
+    }
+    fn capacity(&self, _: &mut dyn ServerHost, _: usize, _: Option<&Chemical>) -> u32 {
+        0
+    }
+    fn backing(&self, _: &mut dyn ServerHost, index: usize) -> Option<crate::StorageSlot> {
+        (index < 2).then_some(crate::StorageSlot {
+            level: self.level,
+            pos: self.pos,
+            slot: index,
+        })
+    }
+    fn insert_at(
+        &self,
+        _: &mut dyn ServerHost,
+        _: &TransactionContext,
+        _: usize,
+        _: &Chemical,
+        _: u32,
+    ) -> Result<u32, TransactionError<Overanswered>> {
+        Ok(0)
+    }
+    fn extract_at(
+        &self,
+        _: &mut dyn ServerHost,
+        _: &TransactionContext,
+        _: usize,
+        _: &Chemical,
+        _: u32,
+    ) -> Result<u32, TransactionError<Overanswered>> {
+        Ok(0)
+    }
+}
+
+#[test]
+fn combined_and_ranged_handlers_report_the_backing_slot_of_the_index_they_map_to() {
+    let mut fake = FakeHost::new();
+    let level = fake.level.level();
+    let host: &mut dyn ServerHost = &mut fake;
+    let slot = |pos, slot| Some(crate::StorageSlot { level, pos, slot });
+    let combined = CombinedResourceHandler::new(
+        host,
+        vec![
+            Box::new(Chest {
+                level,
+                pos: [0, 64, 0],
+            }) as Box<dyn ResourceHandler<Chemical>>,
+            Box::new(Chest {
+                level,
+                pos: [1, 64, 0],
+            }),
+        ],
+    );
+    assert_eq!(combined.backing(host, 1), slot([0, 64, 0], 1));
+    assert_eq!(combined.backing(host, 2), slot([1, 64, 0], 0));
+    assert_eq!(combined.backing(host, 4), None);
+    let ranged = RangedResourceHandler::of_single_index(
+        host,
+        Box::new(Chest {
+            level,
+            pos: [0, 64, 0],
+        }),
+        1,
+    )
+    .unwrap();
+    assert_eq!(ranged.backing(host, 0), slot([0, 64, 0], 1));
+    assert_eq!(ranged.backing(host, 1), None);
+}
+
 #[test]
 fn an_empty_index_is_full_only_when_it_cannot_hold_anything() {
     let (mut fake, r) = items_host(&["minecraft:stone"]);
@@ -150,12 +239,12 @@ fn an_empty_index_is_full_only_when_it_cannot_hold_anything() {
 }
 
 #[test]
-fn insert_stacking_tops_up_a_holding_index_before_an_empty_one() {
+fn insert_stacking_tries_occupied_indices_even_when_the_resource_is_an_alias() {
     let tanks = Tanks::new(vec![None, Some((HYDROGEN, 10))]);
     let handler: &dyn ResourceHandler<Chemical> = &tanks;
     let mut fake = FakeHost::new();
     let host: &mut dyn ServerHost = &mut fake;
-    let went = insert_stacking(host, handler, &HYDROGEN, 95, None);
+    let went = insert_stacking(host, handler, &HYDROGEN_ALIAS, 95, None);
     assert_eq!(went, Ok(95));
     // The default `insert` would have filled index 0 first.
     assert_eq!(
@@ -222,22 +311,22 @@ impl ResourceHandler<Chemical> for Oversized {
     fn insert_at(
         &self,
         _: &mut dyn ServerHost,
-        _: &Transaction,
+        _: &TransactionContext,
         _: usize,
         _: &Chemical,
         _: u32,
-    ) -> u32 {
-        0
+    ) -> Result<u32, TransactionError<Overanswered>> {
+        Ok(0)
     }
     fn extract_at(
         &self,
         _: &mut dyn ServerHost,
-        _: &Transaction,
+        _: &TransactionContext,
         _: usize,
         _: &Chemical,
         _: u32,
-    ) -> u32 {
-        0
+    ) -> Result<u32, TransactionError<Overanswered>> {
+        Ok(0)
     }
 }
 
@@ -276,15 +365,22 @@ impl<R> ResourceHandler<R> for Liar {
     fn insert_at(
         &self,
         _: &mut dyn ServerHost,
-        _: &Transaction,
+        _: &TransactionContext,
         _: usize,
         _: &R,
         amount: u32,
-    ) -> u32 {
-        amount.saturating_add(1)
+    ) -> Result<u32, TransactionError<Overanswered>> {
+        Ok(amount.saturating_add(1))
     }
-    fn extract_at(&self, _: &mut dyn ServerHost, _: &Transaction, _: usize, _: &R, _: u32) -> u32 {
-        0
+    fn extract_at(
+        &self,
+        _: &mut dyn ServerHost,
+        _: &TransactionContext,
+        _: usize,
+        _: &R,
+        _: u32,
+    ) -> Result<u32, TransactionError<Overanswered>> {
+        Ok(0)
     }
 }
 
@@ -320,7 +416,9 @@ fn a_part_answering_more_than_asked_shows_through_every_total() {
         let inner = tank_then_liar(host);
         assert_eq!(
             insert(host, &inner, amount),
-            Err(Overanswered { owner: None })
+            Err(TransactionError::Aborted(TransactionError::Aborted(
+                Overanswered { owner: None }
+            )))
         );
     }
     // The ranged wrapper inherits the default slot-less implementation.
@@ -334,11 +432,13 @@ fn a_part_answering_more_than_asked_shows_through_every_total() {
     let indices = RangedResourceHandler::of(host, Box::new(indices), 0..2).unwrap();
     assert_eq!(
         insert(host, &indices, 20),
-        Err(Overanswered { owner: None })
+        Err(TransactionError::Aborted(TransactionError::Aborted(
+            Overanswered { owner: None }
+        )))
     );
     assert_eq!(
         insert_stacking(host, &indices, &HYDROGEN, 20, None),
-        Err(Overanswered { owner: None })
+        Err(TransactionError::Aborted(Overanswered { owner: None }))
     );
 }
 
@@ -413,7 +513,10 @@ fn move_first_moves_one_resource_and_an_abort_puts_it_back() {
             Some(tx),
         ))
     });
-    assert_eq!(aborted, Err(Ok(Some((stone.clone(), 12)))));
+    assert_eq!(
+        aborted,
+        Err(TransactionError::Aborted(Ok(Some((stone.clone(), 12)))))
+    );
     assert_eq!(counts(&fake, A), [5, 3, 7]);
     assert_eq!(counts(&fake, B), [0, 10]);
 
@@ -457,23 +560,23 @@ fn find_extractable_probes_the_whole_int_amount_and_rolls_back() {
         fn insert_at(
             &self,
             host: &mut dyn ServerHost,
-            tx: &Transaction,
+            tx: &TransactionContext,
             index: usize,
             item: &ItemResource,
             amount: u32,
-        ) -> u32 {
+        ) -> Result<u32, TransactionError<Overanswered>> {
             self.0.insert_at(host, tx, index, item, amount)
         }
         fn extract_at(
             &self,
             host: &mut dyn ServerHost,
-            tx: &Transaction,
+            tx: &TransactionContext,
             index: usize,
             item: &ItemResource,
             amount: u32,
-        ) -> u32 {
+        ) -> Result<u32, TransactionError<Overanswered>> {
             if amount != self.0.amount(host, index) {
-                return 0;
+                return Ok(0);
             }
             self.0.extract_at(host, tx, index, item, amount)
         }
@@ -484,14 +587,8 @@ fn find_extractable_probes_the_whole_int_amount_and_rolls_back() {
     chest(&mut fake, A, &[Some((dirt, 3)), Some((stone, 5))]);
     let items = WholeSlot(items_at(&mut fake, A));
     let host: &mut dyn ServerHost = &mut fake;
-    let found = host.transaction(|host, tx| {
-        Ok::<_, ()>(find_extractable_resource(
-            host,
-            &items,
-            |r| r == stone,
-            Some(tx),
-        ))
-    });
+    let found = host
+        .transaction(|host, tx| find_extractable_resource(host, &items, |r| r == stone, Some(tx)));
     assert_eq!(found, Ok(Some(stone.clone())));
     assert_eq!(counts(&fake, A), [3, 5]);
     assert_eq!(fake.journal.closed(), [(2, false), (1, true)]);
@@ -513,7 +610,7 @@ fn stacking_moves_each_allowed_resource_into_an_existing_stack() {
 }
 
 #[test]
-fn each_extractability_probe_starts_with_unchanged_storage() {
+fn extractability_scan_sees_a_zero_answer_write_then_rolls_back_both_slots() {
     struct Probe(Capability<dyn ResourceHandler<ItemResource>>);
 
     impl ResourceHandler<ItemResource> for Probe {
@@ -537,29 +634,29 @@ fn each_extractability_probe_starts_with_unchanged_storage() {
         fn insert_at(
             &self,
             _: &mut dyn ServerHost,
-            _: &Transaction,
+            _: &TransactionContext,
             _: usize,
             _: &ItemResource,
             _: u32,
-        ) -> u32 {
-            0
+        ) -> Result<u32, TransactionError<Overanswered>> {
+            Ok(0)
         }
         fn extract_at(
             &self,
             host: &mut dyn ServerHost,
-            tx: &Transaction,
+            tx: &TransactionContext,
             slot: usize,
             r: &ItemResource,
             amount: u32,
-        ) -> u32 {
+        ) -> Result<u32, TransactionError<Overanswered>> {
             if slot == 0 {
-                assert_eq!(self.0.extract_at(host, tx, slot, r, amount), 3);
-                return 0;
+                assert_eq!(self.0.extract_at(host, tx, slot, r, amount), Ok(3));
+                return Ok(0);
             }
-            if self.0.amount(host, 0) == 3 {
+            if self.0.amount(host, 0) == 0 {
                 self.0.extract_at(host, tx, slot, r, amount)
             } else {
-                0
+                Ok(0)
             }
         }
     }
@@ -569,7 +666,7 @@ fn each_extractability_probe_starts_with_unchanged_storage() {
     let probe = Probe(items_at(&mut fake, A));
     assert_eq!(
         find_extractable_resource(&mut fake, &probe, |_| true, None),
-        Some(r[1].clone())
+        Ok(Some(r[1].clone()))
     );
     assert_eq!(counts(&fake, A), [3, 5]);
 }
@@ -585,7 +682,7 @@ fn extract_first_only_takes_the_selected_resource_and_commits_its_root() {
     );
     let items = items_at(&mut fake, A);
     let taken = extract_first(&mut fake, &*items, |r| r == stone, 8, None);
-    assert_eq!(taken, Some((stone.clone(), 8)));
+    assert_eq!(taken, Ok(Some((stone.clone(), 8))));
     assert_eq!(counts(&fake, A), [3, 0, 4]);
     assert_eq!(fake.journal.closed().last(), Some(&(1, true)));
 }
@@ -596,12 +693,32 @@ fn optional_tokens_must_name_the_current_transaction() {
     let stone = &r[0];
     chest(&mut fake, A, &[Some((stone, 5))]);
     let items = items_at(&mut fake, A);
-    let assert_refused = |host: &mut dyn ServerHost, token: Option<&Transaction>| {
-        assert_eq!(insert_stacking(host, &items, stone, 1, token), Ok(0));
-        assert_eq!(extract_first(host, &items, |_| true, 1, token), None);
+    let assert_refused = |host: &mut dyn ServerHost, token: Option<&TransactionContext>| {
+        assert_eq!(
+            insert_stacking(host, &items, stone, 1, token),
+            Err(TransactionError::InvalidContext)
+        );
+        assert_eq!(
+            extract_first(
+                host,
+                &items,
+                |_| panic!("invalid context reached the filter"),
+                1,
+                token
+            ),
+            Err(TransactionError::InvalidContext)
+        );
         assert_eq!(
             find_extractable_resource(host, &items, |_| true, token),
-            None
+            Err(TransactionError::InvalidContext)
+        );
+        assert_eq!(
+            move_resources(host, &items, &items, |_| true, 1, token),
+            Err(TransactionError::InvalidContext)
+        );
+        assert_eq!(
+            move_first(host, &items, &items, |_| true, 0, token),
+            Err(TransactionError::InvalidContext)
         );
     };
     let host: &mut dyn ServerHost = &mut fake;
@@ -611,6 +728,8 @@ fn optional_tokens_must_name_the_current_transaction() {
             assert_refused(host, Some(parent));
             Ok::<_, ()>(())
         })
+        .unwrap();
+        Ok::<_, ()>(())
     })
     .unwrap();
     assert_eq!(counts(&fake, A), [5]);
@@ -642,9 +761,11 @@ fn an_overanswer_after_an_honest_part_undoes_the_whole_move() {
         });
         assert_eq!(
             moved,
-            Err(Overanswered {
-                owner: Some("test:liar".into())
-            })
+            Err(TransactionError::Aborted(TransactionError::Aborted(
+                Overanswered {
+                    owner: Some("test:liar".into())
+                }
+            )))
         );
         assert_eq!(counts(&fake, A), [5]);
         assert_eq!(counts(&fake, B), [62]);
@@ -652,7 +773,7 @@ fn an_overanswer_after_an_honest_part_undoes_the_whole_move() {
     let host: &mut dyn ServerHost = &mut fake;
     assert_eq!(
         move_resources_stacking(host, &from, &*to, |_| true, 5, None),
-        Err(Overanswered { owner: None })
+        Err(TransactionError::Aborted(Overanswered { owner: None }))
     );
     assert_eq!(counts(&fake, A), [5]);
     assert_eq!(counts(&fake, B), [62]);
@@ -686,16 +807,16 @@ fn a_caught_bulk_error_does_not_commit_earlier_moves_and_the_sink_sees_the_sourc
         fn insert_at(
             &self,
             host: &mut dyn ServerHost,
-            tx: &Transaction,
+            tx: &TransactionContext,
             index: usize,
             item: &ItemResource,
             amount: u32,
-        ) -> u32 {
+        ) -> Result<u32, TransactionError<Overanswered>> {
             if self.source.resource(host, 1).as_ref() == Some(item) {
                 // The previous resource really moved before the second one's bad answer.
                 assert_eq!(self.source.amount(host, 0), 0);
                 assert_eq!(self.sink.amount(host, 0), 5);
-                return amount + 1;
+                return Ok(amount + 1);
             }
             // The destination is called after the probe rolls back, before extraction.
             assert_eq!(self.source.amount(host, 0), 5);
@@ -704,12 +825,12 @@ fn a_caught_bulk_error_does_not_commit_earlier_moves_and_the_sink_sees_the_sourc
         fn extract_at(
             &self,
             _: &mut dyn ServerHost,
-            _: &Transaction,
+            _: &TransactionContext,
             _: usize,
             _: &ItemResource,
             _: u32,
-        ) -> u32 {
-            0
+        ) -> Result<u32, TransactionError<Overanswered>> {
+            Ok(0)
         }
     }
 
@@ -730,22 +851,13 @@ fn a_caught_bulk_error_does_not_commit_earlier_moves_and_the_sink_sees_the_sourc
     );
     let host: &mut dyn ServerHost = &mut fake;
     host.transaction(|host, parent| {
-        // Neither `None` under a parent nor a token naming an ancestor admits a move.
-        assert_eq!(move_resources(host, &from, &to, |_| true, 8, None), Ok(0));
-        host.transaction(|host, _| {
-            assert_eq!(
-                move_resources(host, &from, &to, |_| true, 8, Some(parent)),
-                Ok(0)
-            );
-            Ok::<_, ()>(())
-        })?;
         // Commit this unrelated edit even after catching the helper's failure.
-        assert_eq!(other.insert_at(host, parent, 0, stone, 1), 1);
+        assert_eq!(other.insert_at(host, parent, 0, stone, 1), Ok(1));
         assert_eq!(
             move_resources(host, &from, &to, |_| true, 8, Some(parent)),
-            Err(Overanswered {
+            Err(TransactionError::Aborted(Overanswered {
                 owner: Some("test:sink".into())
-            })
+            }))
         );
         Ok::<_, ()>(())
     })
@@ -777,9 +889,9 @@ fn a_maximum_transfer_propagates_nested_overanswers_and_aborts_the_tank() {
     let refused = host.transaction(|host, tx| Ok::<_, ()>(to.insert(host, tx, stone, u32::MAX)));
     assert_eq!(
         refused,
-        Ok(Err(Overanswered {
+        Ok(Err(TransactionError::Aborted(Overanswered {
             owner: Some("test:liar".into())
-        }))
+        })))
     );
     assert_eq!(counts(&fake, B), [62]);
     assert_eq!(fake.journal.closed().last(), Some(&(1, true)));
@@ -788,9 +900,9 @@ fn a_maximum_transfer_propagates_nested_overanswers_and_aborts_the_tank() {
     let moved = move_resources(host, &from, &to, |_| true, u32::MAX, None);
     assert_eq!(
         moved,
-        Err(Overanswered {
+        Err(TransactionError::Aborted(Overanswered {
             owner: Some("test:liar".into())
-        })
+        }))
     );
     assert_eq!(counts(&fake, B), [62]);
     assert_eq!(fake.journal.closed().last(), Some(&(1, false)));
@@ -817,30 +929,30 @@ fn maximum_batch_moves_without_splitting_a_quantized_handler() {
         fn insert_at(
             &self,
             _: &mut dyn ServerHost,
-            _: &Transaction,
+            _: &TransactionContext,
             _: usize,
             _: &Chemical,
             amount: u32,
-        ) -> u32 {
-            if !self.0 && amount == u32::MAX {
+        ) -> Result<u32, TransactionError<Overanswered>> {
+            Ok(if !self.0 && amount == u32::MAX {
                 amount
             } else {
                 0
-            }
+            })
         }
         fn extract_at(
             &self,
             _: &mut dyn ServerHost,
-            _: &Transaction,
+            _: &TransactionContext,
             _: usize,
             _: &Chemical,
             amount: u32,
-        ) -> u32 {
-            if self.0 && amount == u32::MAX {
+        ) -> Result<u32, TransactionError<Overanswered>> {
+            Ok(if self.0 && amount == u32::MAX {
                 amount
             } else {
                 0
-            }
+            })
         }
     }
 
@@ -869,6 +981,61 @@ fn maximum_batch_moves_without_splitting_a_quantized_handler() {
 }
 
 #[test]
+fn moves_probe_the_remaining_request_once_per_source_index() {
+    struct Metered(RefCell<Vec<(usize, u32)>>);
+    impl ResourceHandler<Chemical> for Metered {
+        fn size(&self, _: &mut dyn ServerHost) -> usize {
+            2
+        }
+        fn resource(&self, _: &mut dyn ServerHost, _: usize) -> Option<Chemical> {
+            Some(HYDROGEN)
+        }
+        fn amount(&self, _: &mut dyn ServerHost, _: usize) -> u32 {
+            3
+        }
+        fn capacity(&self, _: &mut dyn ServerHost, _: usize, _: Option<&Chemical>) -> u32 {
+            3
+        }
+        fn insert_at(
+            &self,
+            _: &mut dyn ServerHost,
+            _: &TransactionContext,
+            _: usize,
+            _: &Chemical,
+            _: u32,
+        ) -> Result<u32, TransactionError<Overanswered>> {
+            Ok(0)
+        }
+        fn extract_at(
+            &self,
+            _: &mut dyn ServerHost,
+            _: &TransactionContext,
+            index: usize,
+            _: &Chemical,
+            amount: u32,
+        ) -> Result<u32, TransactionError<Overanswered>> {
+            self.0.borrow_mut().push((index, amount));
+            Ok(amount.min(1))
+        }
+    }
+
+    let mut fake = FakeHost::new();
+    let source = Metered(RefCell::new(Vec::new()));
+    let from: &dyn ResourceHandler<Chemical> = &source;
+    let to: &dyn ResourceHandler<Chemical> = &VoidingResourceHandler;
+    assert_eq!(
+        move_resources(&mut fake, from, to, |_| true, 5, None),
+        Ok(2)
+    );
+    assert_eq!(source.0.take(), [(0, 5), (0, 1), (1, 4), (1, 1)]);
+    assert_eq!(
+        move_first(&mut fake, from, to, |_| true, 5, None),
+        Ok(Some((HYDROGEN, 2)))
+    );
+    assert_eq!(source.0.take(), [(0, 5), (0, 1), (1, 4), (1, 1)]);
+}
+
+#[test]
 fn moves_accept_public_wrappers_without_registering_providers() {
     let host: &mut dyn ServerHost = &mut FakeHost::new();
     let source = RangedResourceHandler::of_single_index(
@@ -886,4 +1053,136 @@ fn moves_accept_public_wrappers_without_registering_providers() {
         move_resources(host, source, sink, |_| true, 17, None),
         Ok(17)
     );
+}
+
+#[test]
+fn transfers_and_probes_report_a_refused_scope_on_every_attempt() {
+    struct Refuses {
+        journal: FakeJournal<()>,
+        allow_root: bool,
+        refusals: usize,
+    }
+    impl crate::Host for Refuses {}
+    crate::impl_host_areas!(Refuses);
+    crate::impl_server_host_areas!(Refuses);
+    impl ServerHost for Refuses {
+        fn with_current_transaction_scope(
+            &mut self,
+            callback: &mut dyn for<'loan> FnMut(
+                &'loan mut dyn ServerHost,
+                &'loan TransactionContext,
+            ),
+        ) -> Result<(), crate::TransactionUnavailable> {
+            FakeJournal::with_current_scope(self, |host| &host.journal, callback)
+        }
+
+        fn with_transaction_scope(
+            &mut self,
+            callback: &mut dyn for<'loan> FnMut(
+                &'loan mut dyn ServerHost,
+                &'loan TransactionContext,
+            ) -> bool,
+        ) -> Result<bool, crate::TransactionScopeError> {
+            if self.allow_root && self.journal.matches(None) {
+                FakeJournal::with_scope(
+                    self,
+                    |host| &mut host.journal,
+                    |_| (),
+                    |_, ()| {},
+                    callback,
+                )
+            } else {
+                self.refusals += 1;
+                Err(crate::TransactionScopeError::Unavailable)
+            }
+        }
+        fn transaction_matches(&self, tx: Option<&TransactionContext>) -> bool {
+            self.journal.matches(tx)
+        }
+    }
+
+    let from = InfiniteResourceHandler::new(HYDROGEN);
+    let to = VoidingResourceHandler;
+    let mut host = Refuses {
+        journal: FakeJournal::default(),
+        allow_root: false,
+        refusals: 0,
+    };
+    let from_handler: &dyn ResourceHandler<Chemical> = &from;
+    let to_handler: &dyn ResourceHandler<Chemical> = &to;
+    assert_eq!(
+        move_resources(&mut host, from_handler, to_handler, |_| true, 0, None),
+        Ok(0)
+    );
+    assert_eq!(
+        move_resources_stacking(&mut host, from_handler, to_handler, |_| true, 0, None),
+        Ok(0)
+    );
+    assert_eq!(
+        move_first(&mut host, from_handler, to_handler, |_| true, 0, None),
+        Ok(None)
+    );
+    assert_eq!(
+        move_first_stacking(&mut host, from_handler, to_handler, |_| true, 0, None),
+        Ok(None)
+    );
+    assert_eq!(host.refusals, 0);
+    let empty = EmptyResourceHandler;
+    let no_match: [(&dyn ResourceHandler<Chemical>, bool); 2] =
+        [(&empty, true), (from_handler, false)];
+    for _ in 0..2 {
+        assert_eq!(
+            insert_stacking(&mut host, &to, &HYDROGEN, 1, None),
+            Err(TransactionError::Unavailable)
+        );
+        for (handler, accepts) in [(from_handler, true)].into_iter().chain(no_match) {
+            let filter_calls = std::cell::Cell::new(0);
+            let filter = |_: &Chemical| {
+                filter_calls.set(filter_calls.get() + 1);
+                accepts
+            };
+            assert_eq!(
+                find_extractable_resource(&mut host, handler, filter, None),
+                Err(TransactionError::Unavailable)
+            );
+            assert_eq!(
+                extract_first(&mut host, handler, filter, 1, None),
+                Err(TransactionError::Unavailable)
+            );
+            assert_eq!(filter_calls.get(), 0);
+        }
+        assert_eq!(
+            move_resources(&mut host, from_handler, to_handler, |_| true, 1, None),
+            Err(TransactionError::Unavailable)
+        );
+        assert_eq!(
+            move_first(&mut host, from_handler, to_handler, |_| true, 1, None),
+            Err(TransactionError::Unavailable)
+        );
+    }
+    host.allow_root = true;
+    assert_eq!(
+        move_resources(&mut host, from_handler, to_handler, |_| true, 1, None),
+        Err(TransactionError::Unavailable)
+    );
+    assert_eq!(host.journal.closed(), [(1, false)]);
+    host.transaction(|host, tx| {
+        assert_eq!(
+            from.extract(host, tx, &HYDROGEN, 1),
+            Err(TransactionError::Unavailable)
+        );
+        Ok::<_, ()>(())
+    })
+    .unwrap();
+    assert_eq!(host.refusals, 20);
+    for (handler, accepts) in no_match {
+        assert_eq!(
+            find_extractable_resource(&mut host, handler, |_| accepts, None),
+            Ok(None)
+        );
+        assert_eq!(
+            extract_first(&mut host, handler, |_| accepts, 1, None),
+            Ok(None)
+        );
+    }
 }

@@ -1,0 +1,10 @@
+ids = [
+    "method:GenerationContext::assemble_jigsaw",
+    "type:JigsawSettings",
+    "type:JigsawReach",
+    "type:DimensionPadding",
+    "type:LiquidSettings",
+    "type:PoolAliasBinding",
+    "type:JigsawLayout",
+]
+why = "A structure type lays its start out from the data pack's template pools with JigsawPlacement.addPieces, at its own depth and reach, as a NeoForge structure type does from its own findGenerationPoint. The game no longer decodes one mod's jigsaw structure type itself; that mod's type uses this call."

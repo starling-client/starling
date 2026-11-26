@@ -1,5 +1,4 @@
 //! The `render_needs` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0070
 
 pub trait Hooks {
     /// Asked as a frame is built and drawn: set what your mod needs in

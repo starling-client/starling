@@ -64,9 +64,11 @@ struct AttackPlayerTarget {
 }
 impl Goal for AttackPlayerTarget {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         TARGET
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if self.next_scan > 0 {
             self.next_scan -= 1;
@@ -86,6 +88,7 @@ impl Goal for AttackPlayerTarget {
         }
         false
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         m.ai.target.is_some() && can_attack_seen(m, cx.w)
     }
@@ -107,17 +110,21 @@ impl AttackStrategy {
 }
 impl Goal for AttackStrategy {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         0
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         m.ai.target.is_some() && can_attack_seen(m, cx.w)
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.next_sweep = reduced(10);
         m.extra.flag = false;
         Self::anchor_above_target(m, cx);
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         if let Some(a) = m.extra.home {
             let top = cx.w.motion_blocking_height(a[0], a[2]);
@@ -128,6 +135,7 @@ impl Goal for AttackStrategy {
             ]);
         }
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         if !m.extra.flag {
             self.next_sweep -= 1;
@@ -174,12 +182,15 @@ fn empty(w: &MobWorld, x: i32, y: i32, z: i32) -> bool {
 }
 impl Goal for CircleAroundAnchor {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
         m.ai.target.is_none() || !m.extra.flag
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, _: &mut Cx) {
         self.distance = 5.0 + m.random.next_float() * 10.0;
         self.height = -4.0 + m.random.next_float() * 9.0;
@@ -190,6 +201,7 @@ impl Goal for CircleAroundAnchor {
         };
         self.select_next(m);
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         if m.random.next_int_bound(reduced(350)).unwrap_or(1) == 0 {
             self.height = -4.0 + m.random.next_float() * 9.0;
@@ -235,12 +247,15 @@ struct SweepAttack {
 }
 impl Goal for SweepAttack {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
         m.ai.target.is_some() && m.extra.flag
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if !can_attack(cx.w) || m.ai.target.is_none() || !m.extra.flag {
             return false;
@@ -258,10 +273,12 @@ impl Goal for SweepAttack {
         }
         !self.scared
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         m.set_ai_target(cx.w, None);
         m.extra.flag = false;
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         let Some(who) = m.ai.target else {
             return;
@@ -461,7 +478,7 @@ mod tests {
                 assert!(
                     events
                         .iter()
-                        .any(|e| matches!(e, MobEvent::AttackPlayer(_, _))),
+                        .any(|e| matches!(e, MobEvent::AttackPlayer(..))),
                     "the swoop should bite through the pane: {events:?}"
                 );
             }),

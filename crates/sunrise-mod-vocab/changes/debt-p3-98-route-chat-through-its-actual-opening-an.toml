@@ -1,0 +1,20 @@
+ids = [
+    "hook:chat_recipient",
+    "hook:client_chat",
+    "hook:screen_opening",
+    "hook:screen_closing",
+    "hook:screen_init_post",
+]
+why = "Vanilla Gui.setScreen and InBedChatScreen.onPlayerWokeUp replace the foreground once; NeoForge ScreenEvent.Opening, Closing and Init.Post follow the instance, not its class. LocalPlayer and ChatScreen own input policy; NeoForge's ClientPacketListener.sendChat/sendCommand fire ClientChatEvent before signing and try the client command dispatcher before the wire. ServerboundChatPacket.STREAM_CODEC and Utf8String.write reject oversize input rather than truncate it. PlayerList.broadcastChatMessage logs and checks trust before each ServerPlayer.sendChatMessage; SayCommand and EmoteCommands resolve MessageArgument before broadcasting while keeping the signed body unchanged. Public announcements are chat, not command feedback. A panicking listener is reported and disabled without disabling another listener."
+migrate = """
+`method:prelude::NetworkClientHost::open_chat`: Call `host.open_chat(text)` without closing the foreground or waiting for `Playing`. Opening can veto or replace the requested chat without returning an error.
+`method:prelude::NetworkClientHost::send_chat`: Use `host.send_chat(text)` for direct play sends and `host.open_chat(text)` for player-controlled input. Normalize explicitly if needed. Handle `Err` for unavailable play or local wire refusal. `Ok` includes client-handled commands, intentional cancellation, and empty chat results.
+`method:Commands::run_command_with_output`: Keep reading the ordered, untruncated source snapshot; it does not contain public `/say` or `/me` chat. Use `CommandResult.success` for execution and `chat_recipient` for public delivery attempts.
+`handle:EntityRef::run_command_with_output`: Replace checks for public `/say` or `/me` lines in `CommandResult.feedback` with `CommandResult.success` for execution and `chat_recipient` for delivery attempts.
+`hook:chat_recipient`: Keep the listener signature and return `Flow::Cancel` to omit an eligible receiver's copy. The hook runs after the log, at each delivery, and sees resolved text. Distinguish nested broadcasts this listener sends from the triggering message.
+`hook:client_chat`: Handle direct and typed messages before signing. Return `Flow::Cancel` or clear the outgoing text to omit a send.
+The `command` hook no longer exists (see P3-24's `RegisterClientCommandsEvent` and `Command::executes_client`): register a client command with `Command::new(usage).executes_client(...)` in `Hooks::register_client_commands`; it handles direct and UI commands without a leading slash.
+`hook:screen_opening`: Treat an opening with the same chat ID as a new instance. `current` can be the foreground prompt; use the existing cancel or redirect reply for the requested replacement.
+`hook:screen_closing`: Run cleanup for the actual outgoing foreground, including when another instance with the same chat ID replaces it. A veto fires no Closing.
+`hook:screen_init_post`: Initialize on the accepted new chat instance, even when its ID is unchanged. Do not wait for the frame observer or expect a second Init.Post for the same transition.
+"""

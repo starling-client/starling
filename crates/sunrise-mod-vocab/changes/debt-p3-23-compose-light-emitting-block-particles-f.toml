@@ -1,0 +1,47 @@
+ids = [
+    "method:prelude::LevelsHost::lit_block_name",
+    "method:prelude::EffectsClientHost::flame_particle",
+]
+why = """
+Remove the single-purpose `lit_block_name` and `flame_particle` helpers from `Host` and
+`ClientHost`. `lit_block_name` implicitly queried the active world for loaded light-emitting
+blocks and returned a `BlockKey`; `flame_particle` duplicated general client particle spawning
+with a fixed flame/soul-flame choice, fixed `[0.0, 0.01, 0.0]` velocity and fixed 32-block
+distance cutoff.
+
+Following vanilla 26.3 (`LevelReader.hasChunkAt`, `BlockBehaviour.BlockStateBase.getLightEmission`,
+`ClientLevel.addParticle`, `ParticleTypes.FLAME` and `ParticleTypes.SOUL_FIRE_FLAME`) and NeoForge
+(`IBlockExtension.getLightEmission`), callers now compose these from the general loaded-level
+state read, block-state light-emission lookup and client particle submission, owning any cosmetic
+range or rate policy themselves.
+"""
+migrate = """
+- Replace `host.lit_block_name(pos)` or an explicit `LevelsHost::lit_block_name(host, pos)`
+  call with a loaded-chunk state read on the actual `LevelRef`, a light-emission check through
+  `HostBlockStates::block_states`, and `BlockState::block()` when you need the `BlockKey`:
+  ```rust,ignore
+  use mod_api::HostBlockStates;
+
+  let lit_block = level
+      .block_state(host, pos)
+      .filter(|&state| host.block_states().light_emission(state).unwrap_or(0) > 0)
+      .map(|state| state.block());
+  ```
+  Use the `LevelRef` from your hook event, `host.level(dimension)`, or
+  `player.entity().level(host)`. `LevelRef::block_state` returns `None` for unloaded chunks and
+  out-of-bounds heights without loading chunks.
+- Replace `host.flame_particle(at, soul)` or an explicit `EffectsClientHost::flame_particle(host,
+  at, soul)` call with `host.add_particle` using
+  `ParticleOptions::simple` on particle keys resolved once in `Hooks::register`:
+  ```rust,ignore
+  // In Hooks::register:
+  let flame = r.particle_key("minecraft:flame");
+  let soul_flame = r.particle_key("minecraft:soul_fire_flame");
+
+  // At the spawn site (apply any distance or rate limit in your mod):
+  let key = if soul { self.soul_flame } else { self.flame };
+  host.add_particle(&ParticleOptions::simple(key), at, [0.0, 0.01, 0.0]);
+  ```
+  To keep the previous 32-block radius check around the local player, compare `at` against
+  `host.local_player().and_then(|p| p.entity().position(host))` before calling `add_particle`.
+"""

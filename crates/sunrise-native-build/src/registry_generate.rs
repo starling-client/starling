@@ -1,53 +1,15 @@
 //! Explicit, index-only generation of the registry lock consumed by native staging.
-use super::{Bundle, api};
+use super::{Bundle, api, registry_lock::RegistryLock};
 use crate::rust::Toolchain;
 use std::{
-    collections::BTreeSet,
     fs,
     io::{Read, Write},
-    path::{Path, PathBuf},
+    path::Path,
 };
-use sunrise_mod_package::native_route::PACKAGES;
 
-/// Copies only inert manifests. Source files, build scripts and Cargo config never enter it.
-pub fn stage(bundle: &Bundle, output: &Path) -> Result<(), String> {
-    let mut todo = vec![PathBuf::new()];
-    let mut seen = BTreeSet::new();
-    while let Some(relative) = todo.pop() {
-        if !seen.insert(relative.clone()) {
-            continue;
-        }
-        let input = bundle.dir.join(&relative);
-        let manifest_path = input.join("Cargo.toml");
-        if super::crates::is_link_or_junction(
-            &fs::symlink_metadata(&manifest_path).map_err(|e| e.to_string())?,
-        ) {
-            return Err("linked dependency manifest is refused".into());
-        }
-        let mut manifest: toml::Table = fs::read_to_string(&manifest_path)
-            .map_err(|e| e.to_string())?
-            .parse()
-            .map_err(|e| format!("{}: {e}", manifest_path.display()))?;
-        for section in ["patch", "replace", "workspace"] {
-            if manifest.contains_key(section) {
-                return Err(format!(
-                    "{}: [{section}] is refused",
-                    manifest_path.display()
-                ));
-            }
-        }
-        rewrite_dependencies(bundle, &relative, &mut manifest, &mut todo)?;
-        if let Some(targets) = manifest
-            .get_mut("target")
-            .and_then(toml::Value::as_table_mut)
-        {
-            for target in targets
-                .iter_mut()
-                .filter_map(|(_, value)| value.as_table_mut())
-            {
-                rewrite_dependencies(bundle, &relative, target, &mut todo)?;
-            }
-        }
+/// For `native-lock`, emit only inert manifests; no build scripts, source or Cargo config.
+fn stage(project: &api::Project<'_>, output: &Path) -> Result<(), String> {
+    let write = |relative: &Path, manifest: &mut toml::Table| -> Result<(), String> {
         manifest.remove("bin");
         manifest.remove("example");
         manifest.remove("test");
@@ -68,68 +30,30 @@ pub fn stage(bundle: &Bundle, output: &Path) -> Result<(), String> {
         let dest = output.join(relative);
         fs::create_dir_all(&dest).map_err(|e| e.to_string())?;
         fs::write(dest.join("Cargo.toml"), manifest.to_string()).map_err(|e| e.to_string())?;
-        fs::write(dest.join("inert.rs"), "").map_err(|e| e.to_string())?;
-    }
-    Ok(())
+        fs::write(dest.join("inert.rs"), "").map_err(|e| e.to_string())
+    };
+    let (mut root, _) = super::crates::rewrite_closure(project, &project.bundle.dir, write)?;
+    write(Path::new(""), &mut root)
 }
 
-pub fn rewrite_dependencies(
-    bundle: &Bundle,
-    relative: &Path,
-    table: &mut toml::Table,
-    todo: &mut Vec<PathBuf>,
-) -> Result<(), String> {
-    for kind in super::crates::DEPENDENCY_KINDS {
-        let Some(deps) = table.get_mut(kind).and_then(toml::Value::as_table_mut) else {
-            continue;
-        };
-        let mut sdk = Vec::new();
-        for (key, dep) in deps.iter_mut() {
-            let get = |field| dep.get(field).and_then(toml::Value::as_str);
-            let package = get("package").unwrap_or(key);
-            if let Some(&(name, _)) = PACKAGES.iter().find(|(name, _)| *name == package) {
-                api::sdk_source(key, name, dep)?;
-                sdk.push(key.clone());
-                continue;
-            }
-            for selector in [
-                "git",
-                "rev",
-                "tag",
-                "branch",
-                "registry",
-                "registry-index",
-                "workspace",
-            ] {
-                if dep.get(selector).is_some() {
-                    return Err(format!("{key}: {selector} source is refused"));
-                }
-            }
-            if let Some(path) = dep.get("path") {
-                let path = path.as_str().ok_or("dependency path must be a string")?;
-                let inside = super::crates::local_path(&bundle.dir, relative, path)?;
-                todo.push(inside);
-            }
-        }
-        for key in sdk {
-            deps.remove(&key);
-        }
-    }
-    Ok(())
+/// The mod resolver's seed from the pinned game's `Cargo.lock`. The kept file is the original
+/// game lock, not a projected lock. A kept file that no longer reads as a seed is downloaded again.
+pub fn game_lock(revision: &str) -> Result<RegistryLock, String> {
+    game_lock_at(revision, &super::root(), crate::host::get)
 }
 
-/// The `Cargo.lock` of the game build `revision`, which a mod's lock starts from: kept in the
-/// build's folder, and downloaded from that commit once. A kept file that no longer reads as a
-/// lock is downloaded again.
-pub fn game_lock(revision: &str) -> Result<String, String> {
-    let kept = super::root()
-        .join("game-lock")
-        .join(format!("{revision}.lock"));
-    if let Ok(text) = fs::read_to_string(&kept)
-        && super::registry_lock::RegistryLock::parse(&text).is_ok()
+fn game_lock_at(
+    revision: &str,
+    root: &Path,
+    get: impl FnOnce(&str) -> Result<Box<dyn Read + Send>, String>,
+) -> Result<RegistryLock, String> {
+    let kept = root.join("game-lock").join(format!("{revision}.lock"));
+    if let Ok(file) = fs::File::open(&kept)
+        && let Ok(text) = read_game_lock(file)
+        && let Ok(seed) = RegistryLock::parse_game_seed(&text)
     {
         crate::host::mark_used(&kept)?;
-        return Ok(text);
+        return Ok(seed);
     }
     let url = format!(
         "{}/{revision}/Cargo.lock",
@@ -145,17 +69,8 @@ pub fn game_lock(revision: &str) -> Result<String, String> {
             ],
         )
     };
-    let mut text = String::new();
-    // One byte past the limit shows an answer that is too large, where a cut one could still parse.
-    crate::host::get(&url)
-        .map_err(unavailable)?
-        .take(GAME_LOCK_LIMIT + 1)
-        .read_to_string(&mut text)
-        .map_err(|e| unavailable(e.to_string()))?;
-    if text.len() as u64 > GAME_LOCK_LIMIT {
-        return Err(unavailable("the answer is too large to be a lock".into()));
-    }
-    super::registry_lock::RegistryLock::parse(&text).map_err(unavailable)?;
+    let text = read_game_lock(get(&url).map_err(unavailable)?).map_err(unavailable)?;
+    let seed = RegistryLock::parse_game_seed(&text).map_err(unavailable)?;
     let folder = kept.parent().expect("a file in the build's folder");
     fs::create_dir_all(folder).map_err(|e| e.to_string())?;
     let mut pending = tempfile::NamedTempFile::new_in(folder).map_err(|e| e.to_string())?;
@@ -164,11 +79,24 @@ pub fn game_lock(revision: &str) -> Result<String, String> {
         .map_err(|e| e.to_string())?;
     pending.persist(&kept).map_err(|e| e.to_string())?;
     crate::host::mark_used(&kept)?;
-    Ok(text)
+    Ok(seed)
 }
 
-/// More than any game lock holds; a larger answer is not one.
+/// More than any game lock holds; a larger input is not one.
 const GAME_LOCK_LIMIT: u64 = 16 << 20;
+
+fn read_game_lock(input: impl Read) -> Result<String, String> {
+    let mut bytes = Vec::new();
+    // A truncated lock can still parse. Read one extra byte to detect overflow first.
+    input
+        .take(GAME_LOCK_LIMIT + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    if bytes.len() as u64 > GAME_LOCK_LIMIT {
+        return Err("the answer is too large to be a lock".into());
+    }
+    String::from_utf8(bytes).map_err(|e| e.utf8_error().to_string())
+}
 
 /// The mod's registry pins resolved with the toolchain `rust` gives, once the mod's inputs passed.
 /// Resolution starts from `game`, the `Cargo.lock` of the mod's game build: a package the game
@@ -177,7 +105,7 @@ const GAME_LOCK_LIMIT: u64 = 16 << 20;
 /// the build the mod pins.
 pub fn generate<T: Toolchain>(
     rust: impl FnOnce() -> Result<T, String>,
-    game: impl FnOnce(&str) -> Result<String, String>,
+    game: impl FnOnce(&str) -> Result<RegistryLock, String>,
     bundle: &Bundle,
     update: bool,
 ) -> Result<(), String> {
@@ -188,7 +116,7 @@ pub fn generate<T: Toolchain>(
         )
     })?;
     // Project owns the original API declaration and source-policy boundary.
-    api::Project::read(bundle).map_err(|e| e.to_string())?;
+    let project = api::Project::read(bundle).map_err(|e| e.to_string())?;
     let destination = bundle.dir.join("Cargo.lock");
     if destination.exists() && !update {
         return Err(
@@ -197,8 +125,8 @@ pub fn generate<T: Toolchain>(
     }
     fs::create_dir_all(super::root()).map_err(|e| e.to_string())?;
     let work = tempfile::tempdir_in(super::root()).map_err(|e| e.to_string())?;
-    stage(bundle, work.path())?;
-    let seed = super::registry_lock::RegistryLock::parse(&game(&native.sunrise)?)?;
+    stage(&project, work.path())?;
+    let seed = game(&native.sunrise)?;
     let rust = rust()?;
     let text = super::registry_resolve::resolve(work.path(), &seed, &seed, None, |subcommand| {
         super::cargo(&rust, work.path(), subcommand)
@@ -231,6 +159,48 @@ mod tests {
         fs::write(root.join("Cargo.toml"), "[package]\nname='fixture'\nversion='0.1.0'\n[dependencies]\nsunrise-mod-api={ path='.sunrise/sdk/api/crates/sunrise-mod-api' }\nitoa='1'\n").unwrap();
         super::super::bundle_in(root).unwrap().unwrap()
     }
+    fn stage_bundle(bundle: &Bundle, output: &Path) -> Result<(), String> {
+        let project = api::Project::read(bundle).map_err(|e| e.to_string())?;
+        stage(&project, output)
+    }
+
+    #[test]
+    fn kept_and_downloaded_game_locks_share_the_byte_limit() {
+        let root = tempfile::tempdir().unwrap();
+        let revision = "a".repeat(40);
+        let kept = root
+            .path()
+            .join("game-lock")
+            .join(format!("{revision}.lock"));
+        let lock = include_bytes!("../../../tools/fixtures/sdk-git-patches/game.lock");
+        game_lock_at(&revision, root.path(), |_| {
+            Ok(Box::new(std::io::Cursor::new(lock)))
+        })
+        .unwrap();
+        assert_eq!(fs::read(&kept).unwrap().as_slice(), lock);
+        game_lock_at(&revision, root.path(), |_| {
+            panic!("valid kept seed is offline")
+        })
+        .unwrap();
+
+        {
+            let mut file = fs::OpenOptions::new().append(true).open(&kept).unwrap();
+            // Still valid TOML if read in full or truncated. Only the byte limit rejects it.
+            let mut padding = std::io::repeat(b' ').take(GAME_LOCK_LIMIT + 1 - lock.len() as u64);
+            std::io::copy(&mut padding, &mut file).unwrap();
+        }
+        let error = game_lock_at(&revision, root.path(), |_| {
+            Ok(Box::new(fs::File::open(&kept).unwrap()))
+        })
+        .unwrap_err();
+        assert!(
+            error.contains("the answer is too large to be a lock"),
+            "{error}"
+        );
+        assert!(error.contains("To lock without the network"), "{error}");
+        assert_eq!(fs::metadata(&kept).unwrap().len(), GAME_LOCK_LIMIT + 1);
+    }
+
     #[test]
     fn the_sdk_is_removed_only_in_its_path_form_and_sources_are_inert() {
         let input = tempfile::tempdir().unwrap();
@@ -244,7 +214,7 @@ mod tests {
         )
         .unwrap();
         let before = fs::read(input.path().join("Cargo.toml")).unwrap();
-        stage(&bundle, output.path()).unwrap();
+        stage_bundle(&bundle, output.path()).unwrap();
         assert!(!output.path().join(".cargo").exists());
         let generated = fs::read_to_string(output.path().join("Cargo.toml")).unwrap();
         assert!(!generated.contains("sunrise-mod-api"));
@@ -275,8 +245,8 @@ mod tests {
                 original.replace("{ path='.sunrise/sdk/api/crates/sunrise-mod-api' }", &form),
             )
             .unwrap();
-            let error = stage(&bundle, output.path()).unwrap_err();
-            assert!(error.starts_with(refusal), "{error}");
+            let error = stage_bundle(&bundle, output.path()).unwrap_err();
+            assert!(error.contains(refusal), "{error}");
         }
     }
     #[test]
@@ -299,16 +269,27 @@ mod tests {
             .unwrap_err()
             .contains("--update-lock")
         );
-        for extra in [
-            "[patch.crates-io]\nitoa={path='outside'}\n",
-            "[replace]\n'itoa:1.0.18'={path='outside'}\n",
+        for (extra, refusal) in [
+            (
+                "[patch.crates-io]\nitoa={path='outside'}\n",
+                "[patch] is not allowed",
+            ),
+            (
+                "[replace]\n'itoa:1.0.18'={path='outside'}\n",
+                "[replace] is not allowed",
+            ),
+            (
+                "git_only={git='https://example.invalid/mod',rev='1111111111111111111111111111111111111111'}\n",
+                "git_only: git source is refused",
+            ),
         ] {
             fs::write(
                 input.path().join("Cargo.toml"),
                 format!("{original}\n{extra}"),
             )
             .unwrap();
-            assert!(stage(&bundle, output.path()).is_err());
+            let error = stage_bundle(&bundle, output.path()).unwrap_err();
+            assert!(error.contains(refusal), "{error}");
             assert_eq!(
                 fs::read_to_string(input.path().join("Cargo.lock")).unwrap(),
                 "original pins"
@@ -332,7 +313,7 @@ mod tests {
             format!("{original}\nhelper={{path='local'}}\n"),
         )
         .unwrap();
-        stage(&bundle, output.path()).unwrap();
+        stage_bundle(&bundle, output.path()).unwrap();
         assert!(output.path().join("local/inert.rs").is_file());
         fs::write(
             input.path().join("Cargo.toml"),
@@ -340,7 +321,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            stage(&bundle, output.path())
+            stage_bundle(&bundle, output.path())
                 .unwrap_err()
                 .contains("outside the mod")
         );
@@ -435,14 +416,19 @@ mod tests {
     #[test]
     #[ignore = "daily"]
     fn a_mods_lock_starts_from_the_games_versions() {
-        use crate::registry_lock::RegistryLock;
         let GameSeedFixture {
             input,
             bundle,
             game,
             toolchain,
         } = game_seed_fixture();
-        generate(|| Ok(toolchain), |_| Ok(game.clone()), &bundle, false).unwrap();
+        generate(
+            || Ok(toolchain),
+            |_| RegistryLock::parse_game_seed(&game),
+            &bundle,
+            false,
+        )
+        .unwrap();
         let text = fs::read_to_string(input.path().join("Cargo.lock")).unwrap();
         let pins = RegistryLock::parse(&text).unwrap();
         let locked: Vec<_> = pins
@@ -480,7 +466,7 @@ mod tests {
         let lock = input.path().join("Cargo.lock");
         generate(
             || Ok(toolchain.clone()),
-            |_| Ok(game.clone()),
+            |_| RegistryLock::parse_game_seed(&game),
             &bundle,
             false,
         )
@@ -505,7 +491,7 @@ mod tests {
             fs::write(&manifest, cargo).unwrap();
             let error = generate(
                 || Ok(toolchain.clone()),
-                |_| Ok(game.clone()),
+                |_| RegistryLock::parse_game_seed(&game),
                 &bundle,
                 true,
             )

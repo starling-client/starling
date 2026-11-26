@@ -2,7 +2,9 @@
 """Independent loaded Temper values; no actor updates or observation ticks."""
 import hashlib,json,sys,tempfile,uuid
 from pathlib import Path
-import test_command_exec_parity as driver
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_command_exec_parity as driver
 VALUES=[('absent',None),('zero',0),('max_llama',30),('fifty',50),('hundred',100),('negative',-7),('large',1000)]
 SPECIES=['llama','trader_llama','horse']
 def program():

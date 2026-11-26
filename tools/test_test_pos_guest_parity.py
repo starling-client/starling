@@ -21,9 +21,12 @@ import argparse
 import json
 from pathlib import Path
 
-import anvil_dump as nbt
-import test_locator_bar_parity as net
-from test_disconnect_crafting_parity import generate, uuid_words, wait_new
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import anvil_dump as nbt, test_locator_bar_parity as net
+from tools.test_disconnect_crafting_parity import generate, uuid_words, wait_new
 
 A, B = 'H274Host', 'H274Guest'
 PIG = '00000274-0000-0000-0000-000000000001'

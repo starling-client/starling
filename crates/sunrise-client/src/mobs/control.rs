@@ -458,23 +458,41 @@ impl Mob {
         }
         let dx = self.position.x - self.previous.x;
         let dz = self.position.z - self.previous.z;
-        let max = self.kind.max_head_y_rot;
-        if dx * dx + dz * dz > ARRIVED {
-            self.body_yaw = self.yaw;
-            self.head_yaw = rotate_if_necessary(self.head_yaw, self.body_yaw, max);
-            self.ai.body.last_stable_head = self.head_yaw;
-            self.ai.body.head_stable_time = 0;
-        } else if (self.head_yaw - self.ai.body.last_stable_head).abs() > 15.0 {
-            self.ai.body.head_stable_time = 0;
-            self.ai.body.last_stable_head = self.head_yaw;
-            self.body_yaw = rotate_if_necessary(self.body_yaw, self.head_yaw, max);
+        self.ai.body.tick(
+            dx * dx + dz * dz,
+            self.yaw,
+            &mut self.body_yaw,
+            &mut self.head_yaw,
+            self.kind.max_head_y_rot,
+        );
+    }
+}
+
+impl BodyRotation {
+    /// BodyRotationControl.clientTick, after the living body's own aiStep.
+    pub fn tick(
+        &mut self,
+        horizontal_distance_squared: f64,
+        view_yaw: f32,
+        body_yaw: &mut f32,
+        head_yaw: &mut f32,
+        max: f32,
+    ) {
+        if horizontal_distance_squared > ARRIVED {
+            *body_yaw = view_yaw;
+            *head_yaw = rotate_if_necessary(*head_yaw, *body_yaw, max);
+            self.last_stable_head = *head_yaw;
+            self.head_stable_time = 0;
+        } else if (*head_yaw - self.last_stable_head).abs() > 15.0 {
+            self.head_stable_time = 0;
+            self.last_stable_head = *head_yaw;
+            *body_yaw = rotate_if_necessary(*body_yaw, *head_yaw, max);
         } else {
-            self.ai.body.head_stable_time += 1;
-            if self.ai.body.head_stable_time > 10 {
-                let t = self.ai.body.head_stable_time - 10;
+            self.head_stable_time += 1;
+            if self.head_stable_time > 10 {
+                let t = self.head_stable_time - 10;
                 let fraction = (t as f32 / 10.0).clamp(0.0, 1.0);
-                self.body_yaw =
-                    rotate_if_necessary(self.body_yaw, self.head_yaw, max * (1.0 - fraction));
+                *body_yaw = rotate_if_necessary(*body_yaw, *head_yaw, max * (1.0 - fraction));
             }
         }
     }
@@ -482,16 +500,6 @@ impl Mob {
 /// Entity.rotlerp used by Mob.lookAt (clamped turn, no wrap of the result).
 fn rotate_toward_max(from: f32, to: f32, max: f32) -> f32 {
     from + wrap(to - from).clamp(-max, max)
-}
-
-impl Mob {
-    /// The end of `Entity.applyEffectsFromBlocks`: an entity that is not burning
-    /// and was not just ignited gets `setRemainingFireTicks(-getFireImmuneTicks())`.
-    /// `getFireImmuneTicks` is 0 outside `Player`, so a negative `Fire` ends at 0;
-    /// a fresh ignition is positive and an extinguish already leaves 0.
-    pub(super) fn reset_unlit_fire(&mut self) {
-        self.fire_ticks = self.fire_ticks.max(0);
-    }
 }
 
 #[cfg(test)]

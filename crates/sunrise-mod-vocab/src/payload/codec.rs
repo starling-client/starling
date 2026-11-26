@@ -1,9 +1,7 @@
 //! Typed payload bodies are bounded uses of the ordinary Wire codec.
 use crate::wire::{Reader, Wire, WireError, WireSchema, Writer};
 
-pub use crate::wire::limits::{
-    PAYLOAD_DECODE_BUDGET, PAYLOAD_MAX_DEPTH, PAYLOAD_MAX_LIST_ENTRIES, PAYLOAD_MAX_STRING_BYTES,
-};
+pub use crate::wire::limits::{PAYLOAD_DECODE_BUDGET, PAYLOAD_MAX_DEPTH, PAYLOAD_MAX_STRING_BYTES};
 
 /// Marker in a typed declaration's negotiated version, followed by the schema fingerprint
 /// as 16 lowercase hex digits. A raw declaration's version cannot contain this marker.

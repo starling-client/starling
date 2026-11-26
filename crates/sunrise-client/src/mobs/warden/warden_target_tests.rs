@@ -79,10 +79,12 @@ fn the_warden_leaves_its_allies_and_invulnerable_mobs_alone() {
     let alone = Teams {
         player: None,
         mobs: HashMap::from([(1, warden_team)]),
+        players: HashMap::new(),
     };
     let allied = Teams {
         player: board.players_team("Steve"),
         mobs: HashMap::from([(1, warden_team), (2, zombie_team)]),
+        players: HashMap::new(),
     };
     // The zombie 3 is invulnerable and on no team.
     let others = [zombie(2, false), zombie(3, true)];
@@ -130,6 +132,7 @@ fn an_allied_vibration_is_not_heard() {
     let teams = Teams {
         player: board.players_team("Steve"),
         mobs: HashMap::from([(1, team_of(WARDEN_UUID)), (2, team_of(ZOMBIE_UUID))]),
+        players: HashMap::new(),
     };
     let ran = with_test_world(&[], |w, types| {
         let m = warden_mob(types, 1);

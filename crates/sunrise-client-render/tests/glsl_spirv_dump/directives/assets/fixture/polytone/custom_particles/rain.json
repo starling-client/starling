@@ -1,0 +1,8 @@
+{
+    "type": "gpu",
+    "texture": "fixture:textures/particle/rain.png",
+    "render_type": "translucent",
+    "shader": "fixture:rain",
+    "uniforms": {},
+    "initializer": {"lifetime": "40", "size": "0.5", "custom": "4"}
+}

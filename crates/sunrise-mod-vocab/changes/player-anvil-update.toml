@@ -1,0 +1,3 @@
+ids = ["handle:PlayerRef::anvil_update"]
+why = "Adds PlayerRef::anvil_update (NeoForge CommonHooks.onAnvilUpdate): a mod's own anvil menu (an upgraded or portable anvil) runs every mod's anvil_update listeners for its inputs and costs, on either side, and gets their edits back, or None when one canceled, so other mods' anvil recipes, cost changes and repair rules work in it. A call from inside an anvil_update listener declines instead of running them again."
+migrate = "Additive."

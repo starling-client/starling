@@ -340,6 +340,7 @@ fn extrude_masked(
 /// One thin face per opaque/transparent edge, over every animation frame.
 fn side_faces(mask: &SpriteMask, material: &Material, layer: i32) -> Result<Vec<ModelQuad>> {
     let (width, height) = (mask.width as i64, mask.height as i64);
+    // Vanilla's HashSet<SideFace> order varies per launch through SideDirection's Enum identity hash.
     let mut faces = BTreeSet::new();
     for frame in 0..mask.frames.len() {
         for y in 0..height {

@@ -24,6 +24,7 @@ fn tags_merge_in_load_order_and_replace_warns() {
         let text = merge_tag(
             None,
             &merge.layers(),
+            merge.replaced,
             file,
             &sunrise_world::conditions::LoadConditions::vanilla(),
         )

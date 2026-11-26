@@ -19,7 +19,23 @@ pub struct Found {
 /// The packs in `dir`, sorted by name ignoring case. Hidden entries and files that are not
 /// `.zip` (the game's own option files live beside the packs) are skipped.
 pub fn discover(dir: &Path) -> Vec<Found> {
-    let mut found: Vec<Found> = fs::read_dir(dir)
+    candidates(dir)
+        .into_iter()
+        .map(|(name, path)| {
+            let problem = Pack::open(&path).err().map(|e| e.to_string());
+            Found {
+                name,
+                path,
+                problem,
+            }
+        })
+        .collect()
+}
+
+/// The entries of `dir` that [`discover`] takes for packs, by name and path in its order,
+/// without opening any of them: nothing of a pack is read.
+pub fn candidates(dir: &Path) -> Vec<(String, PathBuf)> {
+    let mut found: Vec<(String, PathBuf)> = fs::read_dir(dir)
         .into_iter()
         .flatten()
         .flatten()
@@ -32,15 +48,10 @@ pub fn discover(dir: &Path) -> Vec<Found> {
             if name.starts_with('.') || !(path.is_dir() || is_zip) {
                 return None;
             }
-            let problem = Pack::open(&path).err().map(|e| e.to_string());
-            Some(Found {
-                name,
-                path,
-                problem,
-            })
+            Some((name, path))
         })
         .collect();
-    found.sort_by_cached_key(|f| (f.name.to_lowercase(), f.name.clone()));
+    found.sort_by_cached_key(|(name, _)| (name.to_lowercase(), name.clone()));
     found
 }
 

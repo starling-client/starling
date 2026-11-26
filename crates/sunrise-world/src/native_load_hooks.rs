@@ -6,7 +6,7 @@ use std::sync::OnceLock;
 /// Data-loading hooks, installed before any data loads. Earlier loads see no mods.
 pub struct NativeLoadHooks {
     pub item_ability_default: fn(&str, &str, &dyn LootTags) -> bool,
-    pub loot_ability: fn(&crate::loot::LootStack, &str, &mut bool),
+    pub loot_ability: fn(&dyn crate::loot::LootAbilityTool, &str, &dyn LootTags, &mut bool),
     pub loot_table_load: fn(&LoadContext, &str, &mut Value),
     pub modify_default_components: fn(&LoadContext, &str, &mut Map<String, Value>),
 }
@@ -34,9 +34,14 @@ pub(crate) fn modify_default_components(
     }
 }
 
-pub(crate) fn loot_ability(tool: &crate::loot::LootStack, ability: &str, holds: &mut bool) {
+pub(crate) fn loot_ability(
+    tool: &dyn crate::loot::LootAbilityTool,
+    ability: &str,
+    tags: &dyn LootTags,
+    holds: &mut bool,
+) {
     if let Some(hooks) = HOOKS.get() {
-        (hooks.loot_ability)(tool, ability, holds);
+        (hooks.loot_ability)(tool, ability, tags, holds);
     }
 }
 

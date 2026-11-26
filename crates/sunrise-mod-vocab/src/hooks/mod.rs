@@ -25,11 +25,11 @@
 //! | `side` | `"server"`, `"client"` or `"both"`; required |
 //! | `contract` | `"listen"`, `"cancel"`, `"collect"` or `"replace"`; required |
 //! | `out` | the event field a cancel, collect or replace hook writes; not for `"listen"` |
-//! | `staged_surface` | Engine-only marker naming the mutable registrar or GUI draw field of a flat global listen hook. The fire adapter hands its owner one listener thunk at a time, under that listener's mod scope. Only an accepted callback publishes the batch. This is not a mod-facing parameter. |
+//! | `staged_surface` | Engine-only marker naming a flat listen hook's mutable surface, such as a registrar, a GUI draw context or a Part's effect sink. The fire adapter hands its owner one listener thunk at a time, under that listener's mod scope. Only an accepted callback publishes its contributions. This marker is not a mod-facing parameter. |
 //! | `scope`, `key` | a Part method: the kind of Part (`"block"`, `"block_entity"`, `"item"`, `"menu"`, `"fluid"`, `"entity"`) and the hook argument naming what it is attached to |
-//! | `part` | an additional Part method on a plain global `"cancel"` hook (e.g. `"item"`): keeps `Hooks::<name>` and also emits `<Kind>Part::<name>` plus `dispatch_<name>_part(host, part_key, ...)` sharing the same `HookId`. Prefer `scope` + `key` unless one `HookId` must combine a global event with per-part overrides whose dispatch key varies by phase (such as `item_stacked_on_other` dispatching on carried and clicked stacks). Cannot be combined with `scope`, `isolate`, `answered_by`, `owner`, `collect_validator`, `output_validator`, or a phase `context` |
+//! | `part` | an additional Part method on a plain global `"cancel"` hook (e.g. `"item"`): keeps `Hooks::<name>` and also emits `<Kind>Part::<name>` plus `dispatch_<name>_part(host, part_key, ...)` sharing the same `HookId`. Prefer `scope` + `key` unless one `HookId` must combine a global event with per-part overrides whose dispatch key varies by phase (such as `item_stacked_on_other` dispatching on carried and clicked stacks). Cannot be combined with `scope`, per-listener event construction such as `event_per_listener` or `independent_listener`, `answered_by`, `owner`, `output_validator`, or a phase `context` |
 //! | `answered_by` | `"mod"`: a global replace hook whose output also names the mod that answered, or a global collect hook whose output is `Vec<Answered<T>>`: each mod pushes `T`s into its own empty batch and dispatch names that mod on each entry |
-//! | `output_validator` | A path on a global cancel hook with `Copy` outputs. In the shared cancel dispatch, `fn(&accepted, ..., &proposed, ...) -> Result<(), &'static str>` takes both sets in declaration order. It checks only completed proposals. A refusal rejects the whole proposal, including cancellation, reports the mod and field every time, and does not disable the callback. Later eligible listeners see the accepted outputs; these validated hooks do not clear an accepted cancellation. |
+//! | `output_validator` | A path on a global cancel, plain global collect or plain global listen hook with shared `Copy` outputs (refused on a collect hook with `answered_by` or `registration_append`). `fn(&accepted, ..., &proposed, ...) -> Result<(), &'static str>` takes both sets in declaration order. It checks only completed proposals. A refusal rejects the whole proposal, including any cancellation, reports the mod and field every time, and does not disable the callback. Later eligible listeners see the accepted outputs; validated cancel hooks do not clear an accepted cancellation. |
 //! | `host`, `context` | `"read"` or `"level"`; `"registration"`, `"data_load"`, `"loop"` or `"worldgen"` |
 //! | `neoforge`, `fabric`, `paper` | the counterpart's name, or a list of them, for the rustdoc and the gap lists |
 //! | `cancellable` | whether the NeoForge counterpart event is cancellable (documentation, not the contract) |
@@ -39,15 +39,12 @@
 //! | `dispatch` | a game target takes the generated engine carrier by default; existing flat, already-converted (`"api_carrier"`), and direct bindings name their shape explicitly |
 //!
 //! Every hook needs `///` lines: they are the rustdoc of its trait method, and a hook without them
-//! is refused. `HookId` values are process-local dispatch indexes, not persistent API identities.
-//! Native mods compile for the selected revision. Existing split hooks retain their generated order
-//! through each file's `// catalog-order: N` comment.
-//! These frozen ordinals only keep the split's output byte-identical; they provide no cross-build
-//! compatibility. New hooks omit the comment and follow in file-name order. No shared list is
-//! edited: the generator discovers the files directly.
+//! is refused. `HookId` values are process-local dispatch indexes, not serialized or persistent
+//! API identities (SDK records identify hooks by name as `hook:<name>`).
+//! Native binaries rebuild for the selected game build. The generator discovers `*.rs` declaration
+//! files (other than `mod.rs`) in lexical file-name order, and each file's declarations in in-file
+//! order, without a shared list or ordinal pins.
 //! Each new hook goes in a file of its own.
-//! The JSON catalog (`native-hooks.json`,
-//! `tools/native-hook-fragments/`) is retired and a file there fails the build.
 //!
 //! A new game hook takes its generated `fire::<Name>Call` carrier, built from these declarations
 //! and the generator's engine value and draw mappings. A hook with no event parameters needs no

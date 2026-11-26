@@ -1,0 +1,1 @@
+cargo-sunrise-mod a_native_mod_compiles_its_c_source_with_cc_from_its_build_script test:build_errors daily own-sdk # Builds a native mod whose build script compiles a C file with `cc`: book-quickstart.yml runs it on Linux, prebuilt-game-build.yml's windows and macos legs on theirs, each against the SDK it just built.

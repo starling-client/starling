@@ -1,5 +1,4 @@
 //! The `mouse_scrolling` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0126
 
 pub trait Hooks {
     /// Gameplay scrolling after accumulation, before hotbar/spectator handling.

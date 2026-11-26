@@ -1,0 +1,3 @@
+ids = ["hook:client_chunk_unload"]
+why = "The view centre moving away no longer tells client_chunk_unload. As in ClientChunkCache, a column that leaves the view stays in its slot out of view and is shown again untold when it is back in view, with no client_chunk_load. The unload now comes once when a column's data is freed: the forget packet, a newer column taking its slot, the view radius shrinking, or the client level going."
+migrate = "Rebuild listeners against the version 2 hook. A listener that keeps state per column no longer hears a column leave the view and come back: drop that state on the unload, not when a column leaves the view."

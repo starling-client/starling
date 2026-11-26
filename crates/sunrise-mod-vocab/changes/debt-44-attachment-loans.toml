@@ -1,0 +1,69 @@
+ids = [
+    "handle:AttachmentKey::get",
+    "handle:AttachmentKey::has",
+    "handle:AttachmentKey::get_existing",
+    "handle:AttachmentKey::with_decoded",
+    "handle:AttachmentKey::set",
+    "handle:AttachmentKey::remove",
+    "handle:AttachmentKey::sync_data",
+    "handle:AttachmentKey::get_in",
+    "handle:AttachmentKey::has_in",
+    "handle:AttachmentKey::get_existing_in",
+    "handle:AttachmentKey::set_in",
+    "handle:AttachmentKey::remove_in",
+    "handle:AttachmentKey::sync_data_in",
+    "handle:OriginalPlayer::attachment",
+    "handle:OriginalPlayer::has_attachment",
+    "handle:OriginalPlayer::existing_attachment",
+    "handle:OriginalPlayer::with_decoded_attachment",
+    "handle:OriginalPlayer::set_attachment",
+    "handle:AttachmentQuery::get",
+    "trait:BlockEntityPartState",
+    "assoc:BlockEntityPartState::Data",
+    "method:BlockEntityPartState::state",
+    "method:BlockEntityPartState::state_existing",
+    "method:BlockEntityPartState::state_in",
+    "method:BlockEntityPartState::state_existing_in",
+    "method:BlockEntityPartState::edit_state",
+    "trait:EntityPartState",
+    "assoc:EntityPartState::Data",
+    "method:EntityPartState::state",
+    "method:EntityPartState::state_existing",
+    "method:EntityPartState::edit_state",
+    "fn:read_state",
+    "fn:edit_part_state",
+]
+why = """
+Typed reads lend the canonical or captured value instead of making a copy. NeoForge
+IAttachmentHolder.getData and AttachmentHolder.getData initialize the default in the holder;
+getExistingDataOrNull does not. Part state and the retained OriginalPlayer still never insert
+read defaults. An unbound AttachmentBatch can be bound with the current key for its captured
+bucket after reinstallation; an already-bound AttachmentQuery keeps its original installation.
+Both keep the capture's residency and current-frame checks. Part edits lend the existing nested journal's TransactionContext alongside the mutable
+draft: the ordinary store journals before publication after the draft encodes, and refuses a
+changed binding or reentry. No listener call site or hook contract changes.
+"""
+migrate = """
+- Replace `key.get(host, holder)?` with `key.get(host, holder, |value| *value)?` for a Copy value
+  or project the fields you need; pass `Clone::clone` only when you need the entire owned value.
+  `key.get_in(level, holder, read)` takes the same closure. Replace
+  `key.get_existing(host, holder)?` with `key.get_existing(host, holder, |value| value.copied())?`
+  for a Copy value, or use `|value| value.cloned()` for an owned Clone value. The closure of
+  `get_existing_in` also receives `Option<&T>`. `has`, `with_decoded`, `set` and `sync_data`
+  keep their calls and no longer require `T: Clone`; `remove` still needs Clone.
+- Use `original.attachment(&key, |value| *value)` or
+  `original.existing_attachment(&key, |value| value.copied())` for the corresponding retained
+  player reads. `has_attachment`, `with_decoded_attachment` and `set_attachment` keep their
+  calls and no longer require Clone. `remove_attachment` is unchanged.
+- Pass the same read closure to Part `state` / `state_in` (`&T`) or
+  `state_existing` / `state_existing_in` and `read_state` (`Option<&T>`).
+  Prefer inferring the generics of `read_state`, or use `read_state::<HolderType, T, _>`.
+  Part implementations no longer need `Data: Clone` unless they edit it.
+- Replace `|host, draft|` in `edit_state` and `edit_part_state` with `|host, tx, draft|`.
+  Pass `tx` to any storage call that takes a `TransactionContext`, or name it `_tx` if unused.
+- Replace `query.get(scope, holder)` with `query.get(scope, holder, |value| value.copied())`
+  for Copy values; for an owned Clone value use `|value| value.cloned()`. Project just the data
+  you need from the optional captured reference when no owned value is required.
+- Keep an unbound batch from `host.capture(&key)` if you need to rebind the same bucket with a
+  newly issued key. Already-bound queries refuse reads after reinstallation.
+"""

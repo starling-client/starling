@@ -3,24 +3,23 @@
 pub mod end_city;
 pub mod enhanced_terrain;
 pub mod features;
-pub mod formations;
 pub mod fortress;
 pub mod jigsaw;
 pub mod legacy;
 pub mod mansion;
 pub mod mineshaft;
+pub mod mod_elements;
+pub mod mod_processors;
 pub mod mod_types;
 pub mod monument;
 pub mod nether_fossil;
 pub mod ocean_ruin;
-pub mod piece_limited;
 pub mod processor;
 pub mod ruined_portal;
 pub(crate) mod saved_legacy;
 pub(crate) mod saved_templates;
 pub mod simple;
 pub mod start;
-pub mod start_checks;
 pub mod stronghold;
 pub mod template;
 pub mod temple;
@@ -226,6 +225,13 @@ impl StateTransforms {
                 .map_or(state, |t| BlockStateId(t[m as usize - 1])),
         }
     }
+    /// `BlockState.mirror(mirror)` as a template places `state` at `pos` (vanilla's
+    /// `BlockBehaviour.mirror`, which a block overrides): this table's mirrored state, or another
+    /// state of the block its parts answer (`mirror`). Every template placement that mirrors
+    /// its states does it here, before [`rotate_at`](Self::rotate_at).
+    pub fn mirror_at(&self, state: BlockStateId, pos: [i32; 3], mirror: Mirror) -> BlockStateId {
+        crate::native_worldgen_hooks::mirror(state, pos, mirror, self.mirror(state, mirror))
+    }
     pub fn full_block(&self, state: BlockStateId) -> bool {
         self.full.get(state.0 as usize).copied().unwrap_or(false)
     }
@@ -297,6 +303,14 @@ impl LazyTemplate {
             id: String::new(),
             store: None,
             cell: OnceLock::from(template),
+        }
+    }
+    /// The template's id, without reading its file
+    /// (`SinglePoolElement.getTemplateLocation`).
+    pub fn location(&self) -> &str {
+        match self.store {
+            Some(_) => &self.id,
+            None => &self.arc().location,
         }
     }
     /// The template (the resources' shared one: comparable by pointer).

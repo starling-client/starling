@@ -9,10 +9,9 @@ from pathlib import Path
 import struct
 import shutil
 import sys
-try:
-    from . import test_command_exec_parity as driver
-except ImportError:
-    import test_command_exec_parity as driver
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_command_exec_parity as driver
 
 CASES = [
     {'name': 'south', 'route': 'direct', 'rotation': [0.0, 0.0], 'local': [0.75, 0.5, 1.25],

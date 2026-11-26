@@ -1,5 +1,25 @@
 {
   "category": "harmful",
   "color": 11246608,
-  "sort_order": -8
+  "sort_order": -8,
+  "attribute_modifiers": [
+    {
+      "attribute": "minecraft:movement_speed",
+      "id": "mob_effect_full:effect/startled_speed",
+      "amount": -1.0,
+      "operation": "add_multiplied_total"
+    },
+    {
+      "attribute": "minecraft:jump_strength",
+      "id": "mob_effect_full:effect/startled_jump",
+      "amount": -0.5,
+      "operation": "add_multiplied_base"
+    },
+    {
+      "attribute": "minecraft:max_absorption",
+      "id": "mob_effect_full:effect/startled_absorption",
+      "amount": 1,
+      "operation": "add_value"
+    }
+  ]
 }

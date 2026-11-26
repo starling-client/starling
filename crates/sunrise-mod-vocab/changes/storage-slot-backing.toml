@@ -1,0 +1,7 @@
+ids = [
+    "type:StorageSlot",
+    "method:ResourceHandler::backing",
+    "handle:ItemPlace::backing",
+]
+why = "Storage networks need one identity for the slot behind a side's index: a furnace's sides that reach one slot, a double chest's two halves and a multiblock's blocks must be counted once, and a furnace's top and side or a double chest's halves kept apart (#5086; WorldlyContainer.getSlotsForFace, ChestBlock.getContainer, CompoundContainer). StorageSlot is slot `slot` of the container owned by the block entity at `pos` in `level`, the same (level, pos, slot) as MenuSlotBacking::BlockEntity. ResourceHandler::backing reports it for a handler index and defaults to None, never made up from the position asked at; the game's own block ITEMS handler reports the half or block entity that owns each slot, and none for a composter, which has no backing container (vanilla builds one per access). ItemPlace::backing reports it for BlockEntity and MenuSlot places, through Strict and OneByOne, and None for every other place. Purely additive; no hook changes."
+migrate = "Nothing to change. A mod's own ITEMS handler that fronts a container, such as a multiblock, overrides ResourceHandler::backing to return Some(StorageSlot { level, pos: owner_pos, slot }); without it the handler reports None."

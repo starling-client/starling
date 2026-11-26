@@ -9,7 +9,10 @@ impl Game<'_> {
             .ok_or_else(|| err("argument.pos.missing.int", &[]))?;
         // BlockPos.containing(getPosition)
         let p = self.resolve_coords(&c).map(|v| v.floor() as i32);
-        let dimension = self.command_source.map_or(self.dim, |s| s.dimension);
+        let dimension = self
+            .command_source
+            .as_ref()
+            .map_or(self.dim, |s| s.dimension);
         if dimension != self.dim || !self.world.chunks.contains_key(&(p[0] >> 4, p[2] >> 4)) {
             return Err(err("argument.pos.unloaded", &[]));
         }

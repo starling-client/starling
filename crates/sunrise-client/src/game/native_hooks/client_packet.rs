@@ -14,7 +14,7 @@ impl Game<'_> {
     /// Client-side, on any server, single player's own included.
     /// Every packet exposes its protocol type id. Custom payloads also expose
     /// their channel and raw bytes; no other decoded fields cross the API.
-    pub(in crate::game) fn native_client_packet(&mut self, packet: &ClientPacket) {
+    pub(in crate::game) fn native_client_packet(&mut self, packet: &ClientPacket<'_>) {
         self.fire_client_packet(packet);
     }
 }

@@ -77,6 +77,30 @@ impl VanillaGuiLayer {
             Self::TabList => "minecraft:tab_list",
         }
     }
+
+    /// The perf span this layer's body is timed under, a child of `hud` ([`crate::spans::time`]).
+    pub const fn span_name(self) -> &'static str {
+        match self {
+            Self::Crosshair => "hud_crosshair",
+            Self::Hotbar => "hud_hotbar",
+            Self::Effects => "hud_effects",
+            Self::BossOverlay => "hud_boss_overlay",
+            Self::PlayerHealth => "hud_player_health",
+            Self::ArmorLevel => "hud_armor_level",
+            Self::FoodLevel => "hud_food_level",
+            Self::VehicleHealth => "hud_vehicle_health",
+            Self::AirLevel => "hud_air_level",
+            Self::ContextualInfoBar => "hud_contextual_bar",
+            Self::SelectedItemName => "hud_selected_item",
+            Self::SleepOverlay => "hud_sleep",
+            Self::OverlayMessage => "hud_overlay_message",
+            Self::Title => "hud_title",
+            Self::ScoreboardSidebar => "hud_scoreboard",
+            Self::SubtitleOverlay => "hud_subtitles",
+            Self::Chat => "hud_chat",
+            Self::TabList => "hud_tab_list",
+        }
+    }
 }
 
 // no wire: slots own process-local layer bodies.

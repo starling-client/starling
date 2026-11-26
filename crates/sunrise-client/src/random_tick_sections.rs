@@ -834,8 +834,10 @@ mod tick_parity {
     /// (`BlockFacts::get` falls back to air's), so which blocks a mask admits
     /// is the candidate closure's to decide.
     fn uniform_facts(random_ticks: bool) -> BlockFacts {
-        use crate::blocks::{Fluid, RenderShape, Sounds, StateFacts};
+        use crate::blocks::{Fluid, RenderShape, StateFacts};
+        use mod_api::{BlockSoundType, BlockSoundTypeIdentity, SoundEventKey};
         let text = |s: &str| -> Arc<str> { s.into() };
+        let sound = SoundEventKey::parse("").unwrap();
         BlockFacts {
             states: vec![StateFacts {
                 name: text("test:state"),
@@ -859,14 +861,15 @@ mod tick_parity {
                 explosion_resistance: 1.0,
                 item: text("test:state"),
                 pick_item: text("test:state"),
-                sounds: Sounds {
+                sounds: BlockSoundType {
+                    identity: BlockSoundTypeIdentity::Other,
                     volume: 1.0,
                     pitch: 1.0,
-                    break_sound: text(""),
-                    step: text(""),
-                    place: text(""),
-                    hit: text(""),
-                    fall: text(""),
+                    break_sound: sound.clone(),
+                    step: sound.clone(),
+                    place: sound.clone(),
+                    hit: sound.clone(),
+                    fall: sound,
                 },
                 fluid: Fluid::None,
                 fluid_level: 0,

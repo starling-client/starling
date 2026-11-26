@@ -1,12 +1,15 @@
 """The rolling mod tool: the folders that rebuild it come from cargo metadata, and its workflow mirrors the SDK's signing."""
 import json
 import re
-import sys
+import shutil
 import unittest
 from pathlib import Path
 
-from tests.test_ci_concurrency import ROOT, yaml
+from tests.test_ci_concurrency import ROOT
 from tools.ci import mod_tool
+from tools.ci import vendored_yaml
+
+yaml = vendored_yaml.load()
 
 
 def package(name, root="/w"):
@@ -34,12 +37,36 @@ class ToolFoldersTests(unittest.TestCase):
         self.assertEqual(mod_tool.crates(metadata),
                          ["crates/build-helper", "crates/cargo-sunrise-mod", "crates/lib"])
 
+    @unittest.skipUnless(shutil.which("cargo"), "needs cargo")
     def test_the_real_workspace_names_the_tool_and_its_package_crates(self):
         folders = mod_tool.crates()
         self.assertIn("crates/cargo-sunrise-mod", folders)
         self.assertIn("crates/sunrise-native-build", folders)
         self.assertIn("crates/sunrise-mod-package", folders)
         self.assertNotIn("crates/sunrise-client", folders)
+
+    def test_the_build_inputs_follow_the_imports_of_the_program_that_builds_the_tool(self):
+        import tempfile
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as folder:
+            tools = Path(folder) / "tools"
+            tools.mkdir()
+            (tools / "prebuilt_game.py").write_text("import os\nfrom tools import lab, unused_name\nfrom tools.release_file import LAUNCHER_MIN\n")
+            (tools / "lab.py").write_text("from tools import file_lock\nfrom tools.ci import ids\n")
+            (tools / "ci").mkdir()
+            (tools / "ci/ids.py").write_text("")
+            (tools / "file_lock.py").write_text("import time\n")
+            (tools / "release_file.py").write_text("")
+            (tools / "other.py").write_text("")
+            with patch.object(mod_tool, "ROOT", Path(folder)):
+                inputs = mod_tool.build_inputs()
+        self.assertEqual([path for path in inputs if path.startswith("tools/") and path not in mod_tool.BUILD_FILES],
+                         ["tools/ci/ids.py", "tools/file_lock.py", "tools/lab.py", "tools/prebuilt_game.py",
+                          "tools/release_file.py"])
+        self.assertIn("Cargo.lock", inputs)
+
+    def test_the_real_build_inputs_hold_the_modules_prebuilt_game_imports(self):
+        self.assertTrue({"tools/prebuilt_game.py", "tools/lab.py", "tools/file_lock.py"} <= set(mod_tool.build_inputs()))
 
     def test_the_contract_number_in_tool_json_is_the_sources(self):
         import tempfile
@@ -49,6 +76,10 @@ class ToolFoldersTests(unittest.TestCase):
             document = json.loads(out.read_text())
         self.assertEqual(document["tag"], "mod-tool")
         self.assertIsInstance(document["native_contract"], int)
+        self.assertIsInstance(document["release_contract"], int)
+        number = (ROOT / "crates/sunrise-mod-package/src/sdk/package-format").read_text().split()[0]
+        self.assertEqual(document["package_format"], int(number))
+        self.assertEqual(document["schema"], 1)
 
 
 class WorkflowTests(unittest.TestCase):

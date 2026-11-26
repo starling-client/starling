@@ -1,5 +1,4 @@
 //! The `player_command` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0107
 
 pub trait Hooks {
     /// A command a player typed (NeoForge's `CommandEvent`, before
@@ -21,7 +20,8 @@ pub trait Hooks {
         contract = "cancel",
         out = "canceled",
         neoforge = "CommandEvent",
-        cancellable = true
+        cancellable = true,
+        version = 2
     )]
     fn player_command(
         player: u128,

@@ -1,0 +1,3 @@
+ids = ["method:prelude::ScreensClientHost::window_hovered", "method:prelude::ScreensClientHost::window_occluded"]
+why = "A client mod reads whether the pointer is over the game window while it is in the background, and whether the window is fully hidden, from the window system's enter, leave and occlusion events, as Dynamic FPS adapts its frame rate to them (#5549)."
+migrate = "Nothing to change: additive."

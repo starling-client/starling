@@ -5,7 +5,12 @@ clearContent, then addItem for each saved stack. addItem first fills
 earlier stacks of the same item and components (up to the stack limit),
 then empty slots; what does not fit in the eight slots is dropped.
 """
-from command_exec_corpus import cmd
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools.command_exec_corpus import cmd
 
 MOBS = {
     'piglin': 'NoAI:1b,PersistenceRequired:1b,Silent:1b,IsImmuneToZombification:1b',

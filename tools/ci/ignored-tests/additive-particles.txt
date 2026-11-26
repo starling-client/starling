@@ -1,0 +1,1 @@
+sunrise-client-render gfx::entity_pixel_test::additive_particles_brighten_when_overlapping_without_writing_depth lib daily slow

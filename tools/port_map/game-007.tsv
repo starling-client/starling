@@ -29,7 +29,7 @@ SulfurCubeArchetypes.archetype	skip:data		builds the speed, bounce, friction and
 SulfurCubeArchetypes.contactDamage	skip:data		hot archetype's contact damage is a field of the table
 SulfurCubeArchetypes.register	skip:data		registry registration
 TamableAnimal.defineSynchedData	port	crates/sunrise-client/src/game/network/lan/mod.rs::mob_meta	gap: minor: the flags byte (sitting 1, tame 4) is sent to LAN guests; the owner UUID data is never sent
-TamableAnimal.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt	Owner and modeled Sitting for wolf, cat, parrot and both nautili (their species codec)
+TamableAnimal.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_write.rs::mob_to_nbt	Owner and modeled Sitting for wolf, cat, parrot and both nautili (their species codec)
 TamableAnimal.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_load.rs::mob_from_nbt	an owner makes the mob tame (wolf health 40); Sitting restored independently of owner, including both nautili; old owner-name conversion is not done
 TamableAnimal.handleEntityEvent	port	crates/sunrise-client-render/src/particles.rs::entity_event_burst	event 7 hearts, event 6 smoke, seven particles
 TamableAnimal.isTame	skip:other		a field: Mob.extra.tame
@@ -42,11 +42,11 @@ TamableAnimal.teleportToAroundBlockPos	port	crates/sunrise-client/src/mobs/tame.
 WalkAnimationState.speed	port	crates/sunrise-client/src/mobs/anim.rs::state	speed(partial) lerps previous and current limb speed, capped at 1; the plain speed() is the limb_speed field
 ActivityData.createPriorityPairs	inline	crates/sunrise-client/src/mobs/villager_brain.rs::packages	each behaviour's priority is written out where it is added
 Brain.provider	skip:data		builder of the sensor list and activity supplier; each species builds its brain in init or make_brain
-Brain.<init>	port	crates/sunrise-client/src/mobs/villager_brain.rs::make_brain	sensors' first scans delayed by draws from the mob's random, packed memories restored, schedule applied; the warden's is Brain::new plus delay_sensors
+Brain.<init>	port	crates/sunrise-client/src/mobs/villager_brain/schedules.rs::make_brain	sensors' first scans delayed by draws from the mob's random, packed memories restored, schedule applied; the warden's is Brain::new plus delay_sensors
 Brain.getMemorySlot	skip:java		memories are typed Slot fields of Memories, no map lookup
 Brain.setMemoryInternal	port	crates/sunrise-client/src/mobs/villager_brain.rs::set_ttl	Slot::set_ttl stores a value with its time to live; set_list erases an empty list
 Brain.getMemoryInternal	skip:java		typed fields, an unregistered memory cannot be asked for
-Brain.forEach	inline	crates/sunrise-client/src/mobs/villager_brain.rs::pack	the visitor over the memories is Memories::pack and the debug describe
+Brain.forEach	inline	crates/sunrise-client/src/mobs/villager_brain/memories.rs::pack	the visitor over the memories is Memories::pack and the debug describe
 Brain.isMemoryValue	skip:java		compare Slot::get() with the value
 Brain.checkMemory	port	crates/sunrise-client/src/mobs/villager_brain.rs::present	VALUE_PRESENT is Slot::present, VALUE_ABSENT is its negation, REGISTERED is always true for a field
 Brain.getRunningBehaviors	inline	crates/sunrise-client/src/mobs/villager_brain.rs::tick	behaviours are kept in start order and tick loops over those whose B::running is true
@@ -55,7 +55,7 @@ Brain.eraseMemoriesForOtherActivitesThan	port	crates/sunrise-client/src/mobs/war
 Brain.setActiveActivityToFirstValid	port	crates/sunrise-client/src/mobs/warden_brain.rs::update_activity	the same loop is in animal_brain.rs and monster_brain.rs update_activity
 Brain.addActivity	inline	crates/sunrise-client/src/mobs/villager_brain.rs::packages	behaviours are listed per brain in vanilla's start order (priority, hash slot, insertion) instead of a priority map
 Brain.tickEachRunningBehavior	inline	crates/sunrise-client/src/mobs/villager_brain.rs::tick	the second loop of tick
-Brain.activityRequirementsAreMet	port	crates/sunrise-client/src/mobs/villager_brain.rs::requirements_met	hard-coded memory conditions per activity
+Brain.activityRequirementsAreMet	port	crates/sunrise-client/src/mobs/villager_brain/memories.rs::requirements_met	hard-coded memory conditions per activity
 Brain.isEmptyCollection	port	crates/sunrise-client/src/mobs/villager_brain.rs::set_list	only list memories can be empty
 Brain.isBrainDead	skip:other		mobs without a brain are told apart by species (monster_brain::has_brain) or an empty brain Option
 Attribute.Sentiment.getStyle	port	crates/sunrise-client/src/item_tooltip.rs::attribute_color	burning time and fall damage are negative, gravity, scale and waypoint ranges neutral, the rest positive
@@ -86,7 +86,7 @@ DefaultAttributes.validate	skip:debug		logs entity types without attributes in a
 RangedAttribute.sanitizeValue	port	crates/sunrise-world/src/attributes/mod.rs::sanitize	Definition::sanitize clamps and gives the minimum for NaN
 AcquirePoi.create	port	crates/sunrise-client/src/mobs/villager_brain.rs::acquire	the behaviour runs in B::try_start; POI tickets are counted from other villagers' memories
 AcquirePoi.findPathToPois	inline	crates/sunrise-client/src/mobs/villager_brain.rs::try_start	create_path_to_any over the found POIs with the largest valid range
-AcquirePoi.JitteredLinearRetry.markAttempt	port	crates/sunrise-client/src/mobs/villager_brain.rs::mark
+AcquirePoi.JitteredLinearRetry.markAttempt	port	crates/sunrise-client/src/mobs/villager_brain/tasks.rs::mark
 AcquirePoi.JitteredLinearRetry.isStillValid	inline	crates/sunrise-client/src/mobs/villager_brain.rs::try_start	retries.retain(now - previous < 400)
 AnimalMakeLove.checkExtraStartConditions	inline	crates/sunrise-client/src/mobs/animal_brain.rs::try_start	in love and a partner from breed_partner
 AnimalMakeLove.canStillUse	inline	crates/sunrise-client/src/mobs/animal_brain.rs::tick_or_stop	gap: minor: partner_panicking is stubbed to false, so a partner that starts panicking does not end the pairing
@@ -123,9 +123,9 @@ DismountOrSkipMounting.create	port	crates/sunrise-client/src/mobs/piglin.rs::dis
 DismountOrSkipMounting.isVehicleValid	inline	crates/sunrise-client/src/mobs/piglin.rs::dismount_or_skip_mounting	the alive, closerThan(8) and wantsToStopRiding test the same fn makes
 DoNothing.tryStart	port	crates/sunrise-client/src/mobs/warden_brain.rs::try_start	B::DoNothing starts a random timer
 DoNothing.tickOrStop	port	crates/sunrise-client/src/mobs/warden_brain.rs::tick_or_stop	stops when the timer ends
-EntityTracker.currentPosition	port	crates/sunrise-client/src/mobs/villager_brain.rs::position	Tracker::position, eyes or feet
-EntityTracker.currentBlockPosition	port	crates/sunrise-client/src/mobs/villager_brain.rs::block	Tracker::block
-EntityTracker.isVisibleBy	port	crates/sunrise-client/src/mobs/villager_brain.rs::tracker_visible
+EntityTracker.currentPosition	port	crates/sunrise-client/src/mobs/villager_brain/memories.rs::position	Tracker::position, eyes or feet
+EntityTracker.currentBlockPosition	port	crates/sunrise-client/src/mobs/villager_brain/memories.rs::block	Tracker::block
+EntityTracker.isVisibleBy	port	crates/sunrise-client/src/mobs/villager_brain/tasks.rs::tracker_visible
 EraseMemoryIf.create	skip:other		generic builder; its uses (breeding hoglins and axolotls drop their target, piglins near zombified drop theirs) are only approximated by goal priorities
 FollowTemptation.canStillUse	inline	crates/sunrise-client/src/mobs/animal_brain.rs::tick_or_stop	tempting player present, no breed target, not panicking
 FollowTemptation.stop	port	crates/sunrise-client/src/mobs/animal_brain.rs::do_stop	cooldown 100, walk and look targets cleared

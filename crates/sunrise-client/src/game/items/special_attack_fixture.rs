@@ -62,20 +62,24 @@ impl Game<'_> {
                 "weakness", 200, 0,
             ));
         }
-        self.attack_ticks = op["ticks"].as_u64().unwrap_or(20) as u32;
+        self.attack_ticks = op["ticks"].as_i64().unwrap_or(20) as i32;
         self.world.game_time = 100;
         let at = Vec3::new(0.5, 1.0, 0.5);
+        // The fixture targets and the live drops from breaking them share one allocator.
         let center = match kind {
             "boat" => {
-                self.boats.push(Boat::new(1, "oak".into(), at, 0.0));
+                let id = self.take_entity_id();
+                self.boats.push(Boat::new(id, "oak".into(), at, 0.0));
                 self.boats[0].bounds().center()
             }
             "cart" => {
-                self.carts.push(Minecart::new(1, CartKind::Rideable, at));
+                let id = self.take_entity_id();
+                self.carts.push(Minecart::new(id, CartKind::Rideable, at));
                 self.carts[0].bounds().center()
             }
             "stand" => {
-                let mut stand = ArmorStand::new(1, Vec3::new(0.5, 0.0, 0.5), 0.0);
+                let id = self.take_entity_id();
+                let mut stand = ArmorStand::new(id, Vec3::new(0.5, 0.0, 0.5), 0.0);
                 stand.last_hit = if op["break"].as_bool().unwrap_or(false) {
                     100
                 } else {
@@ -96,13 +100,15 @@ impl Game<'_> {
                 self.special_targets()[0].1.center()
             }
             "painting" => {
+                let id = self.take_entity_id();
                 self.paintings.push(Painting {
                     attachment_lifetime: Default::default(),
                     join: Default::default(),
-                    id: 1,
+                    id,
                     pos: [0, 1, 0],
                     facing: 2,
                     variant: "minecraft:kebab".into(),
+                    asset: None,
                     width: 1,
                     height: 1,
                     check_interval: 0,
@@ -116,10 +122,11 @@ impl Game<'_> {
                 )
             }
             "frame" | "fixed_frame" | "filled_frame" => {
+                let id = self.take_entity_id();
                 self.item_frames.push(ItemFrame {
                     attachment_lifetime: Default::default(),
                     join: Default::default(),
-                    id: 1,
+                    id,
                     pos: [0, 1, 0],
                     facing: 2,
                     glow: false,
@@ -179,12 +186,16 @@ impl Game<'_> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(in crate::game) mod tests {
     /// Invoke the actual attack methods in an empty scratch Game, without
     /// starting a server, opening a world or entering the game loop.
     #[test]
     #[ignore = "needs prepared resources and SUNRISE_SPECIAL_ATTACK_CASES=INPUT,OUTPUT"]
     fn special_attack_cases_without_world_startup() {
+        run_special_attack_cases_without_world_startup();
+    }
+
+    pub(in crate::game) fn run_special_attack_cases_without_world_startup() {
         let spec = std::env::var("SUNRISE_SPECIAL_ATTACK_CASES").expect("case paths required");
         let mut resources = None;
         let mut game = crate::game::game_tests::tests::server_game(&mut resources);

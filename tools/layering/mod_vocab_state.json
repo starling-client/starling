@@ -9,6 +9,11 @@
     "category": "immutable lookup cache",
     "reason": "Three vanilla bucket identifiers resolved once; no live registration or world state."
   },
+  "block/item_place.rs::fresh::NEXT": {
+    "type": "AtomicU64",
+    "category": "monotonic counter",
+    "reason": "Names lent scratch slots without reusing an identity after a transaction or host drops; it stores no stacks or world state."
+  },
   "block/part_state.rs::EDITING": {
     "type": "RefCell<Vec<(AttachmentHolder,&'staticstr,&'staticstr)>>",
     "category": "reentrancy guard",
@@ -52,7 +57,7 @@
   "content/crash.rs::CURRENT_CRASH_OWNER": {
     "type": "Cell<CrashOwner>",
     "category": "crash owner",
-    "reason": "The one addition to #2587: call and frame ownership stay local to avoid indirect callbacks on every subscribed dispatch."
+    "reason": "Call and frame ownership stay local to avoid indirect callbacks on every subscribed dispatch; the same cell identifies contained attachment callback panics."
   },
   "content/registry_keys.rs::ENCHANTMENTS": {
     "type": "std::sync::LazyLock<std::sync::RwLock<Option<sunrise_mod_runtime::registry_keys::Names>>,>",
@@ -93,6 +98,11 @@
     "type": "OnceLock<Option<Backend>>",
     "category": "set-once socket",
     "reason": "Set-once platform callback registration; mutable platform storage lives above the engine."
+  },
+  "parts/attachment_types.rs::attachment_sync_projection::COMPONENTS": {
+    "type": "std::cell::RefCell<[String;2]>",
+    "category": "scratch buffer",
+    "reason": "Per-thread conversion buffers for one attachment's namespace and name while a pairing packet is projected; emptied and refilled on each call, holding no state between calls."
   },
   "parts/block_entities.rs::resolved_block_entity_types::EMPTY": {
     "type": "OnceLock<sunrise_mod_runtime::registry_keys::Names>",
@@ -169,15 +179,20 @@
     "category": "immutable cache",
     "reason": "Empty or set-once resolved registry lookup returned when no installed Parts inventory supplies one."
   },
+  "runtime.rs::ACTIVE_LISTENERS": {
+    "type": "std::cell::RefCell<Vec<(usize,&'staticstr)>>",
+    "category": "reentrancy guard",
+    "reason": "Per-thread stack of active non-reentrant hook callbacks so reentering the same listener for the same hook is refused."
+  },
   "runtime.rs::HOOK_DISPATCH_DEPTH": {
     "type": "std::cell::Cell<u32>",
     "category": "dispatch table",
     "reason": "Thread-local depth of active hook panic-containment guards. The crash hook defers only while this call is inside a guarded native dispatch."
   },
-  "runtime.rs::LISTENER_SERIAL": {
-    "type": "std::cell::Cell<(u64,u64)>",
+  "runtime.rs::ISOLATED_FAILURES": {
+    "type": "std::cell::Cell<u64>",
     "category": "dispatch table",
-    "reason": "Independent per-thread counts of listener entries and trapped listeners. Scoped engine leases compare the entry count; owning decide/fire/apply actions compare the trap count to decide whether to abort tentative Host writes."
+    "reason": "Per-thread count of trapped listener failures; owning decide/fire/apply actions compare it to decide whether to abort tentative Host writes."
   },
   "runtime.rs::MODS": {
     "type": "OnceLock<Installed>",
@@ -193,6 +208,11 @@
     "type": "std::cell::Cell<Option<&'staticInstalled>>",
     "category": "dispatch table",
     "reason": "Thread-local dispatch inventory for isolated engine tests."
+  },
+  "world/inside_write.rs::SPARE_SWEEP": {
+    "type": "std::cell::RefCell<Option<Box<SweepScratch>>>",
+    "category": "scratch buffer",
+    "reason": "Per-thread reusable inside-block collector storage, lent exclusively to one sweep and returned empty; a nested sweep takes its own, and no callback runs under the borrow."
   },
   "world/scheduler.rs::allocate::NEXT_ID": {
     "type": "AtomicU64",
@@ -214,9 +234,24 @@
     "category": "dispatch table",
     "reason": "Thread-local startup screen override lent to registration fixtures and restored on scope exit."
   },
+  "world/ticket_controller.rs::NEXT_TOKEN": {
+    "type": "AtomicU64",
+    "category": "monotonic counter",
+    "reason": "Monotonic sequence counter mixed into opaque TicketController registration tokens so no handle identity is reused."
+  },
   "world/ticket_controller.rs::TEST_CONTROLLERS": {
     "type": "std::cell::Cell<Option<&'static[ControllerInfo]>>",
     "category": "Parts lookup table",
     "reason": "Thread-local test lookup of installed Parts metadata by engine-issued slot."
+  },
+  "world/ticket_controller.rs::issue_token::SALT": {
+    "type": "OnceLock<u64>",
+    "category": "immutable cache",
+    "reason": "Per-process random salt mixed into opaque TicketController registration tokens; initialized once and immutable."
+  },
+  "world/ticket_controller.rs::take_for_startup::CLAIMED": {
+    "type": "OnceLock<()>",
+    "category": "set-once socket",
+    "reason": "One-shot latch ensuring installed TicketActivation startup authority can only be claimed once before native mods load."
   }
 }

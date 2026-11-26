@@ -243,7 +243,7 @@ fn watches_journal_nested_changes_and_preserve_explicit_abort_notices() {
             let observer = game.block_entity(level, OBSERVER).unwrap();
             let source = game.block_entity(level, SOURCE).unwrap();
             assert!(
-                game.transaction(|host, _| {
+                game.storage_transaction(|host, _| {
                     observer.watch_contents(host, source_pos(), true).unwrap();
                     source.set_changed(host).unwrap();
                     Err::<(), ()>(())
@@ -255,7 +255,7 @@ fn watches_journal_nested_changes_and_preserve_explicit_abort_notices() {
             assert!(take(&watcher).is_empty());
             observer.watch_contents(game, source_pos(), true).unwrap();
             assert!(
-                game.transaction(|host, _| {
+                game.storage_transaction(|host, _| {
                     host.transaction(|host, _| {
                         observer.watch_contents(host, source_pos(), false).unwrap();
                         Ok::<_, ()>(())
@@ -268,7 +268,7 @@ fn watches_journal_nested_changes_and_preserve_explicit_abort_notices() {
             notify(game, level, SOURCE);
             assert_eq!(take(&watcher).len(), 2);
             assert_eq!(
-                game.transaction(|host, _| {
+                game.storage_transaction(|host, _| {
                     assert!(
                         host.transaction(|host, _| {
                             observer.watch_contents(host, source_pos(), false).unwrap();
@@ -291,16 +291,16 @@ fn watches_journal_nested_changes_and_preserve_explicit_abort_notices() {
                 .unwrap(),
             );
             assert!(
-                game.transaction(|host, tx| {
-                    assert_eq!(items.insert_at(host, tx, 0, &sticks, 2), 2);
+                game.storage_transaction(|host, tx| {
+                    assert_eq!(items.insert_at(host, tx, 0, &sticks, 2), Ok(2));
                     Err::<(), ()>(())
                 })
                 .is_err()
             );
             assert!(take(&watcher).is_empty());
-            game.transaction(|host, tx| {
-                assert_eq!(items.insert_at(host, tx, 0, &sticks, 2), 2);
-                assert_eq!(items.insert_at(host, tx, 0, &sticks, 3), 3);
+            game.storage_transaction(|host, tx| {
+                assert_eq!(items.insert_at(host, tx, 0, &sticks, 2), Ok(2));
+                assert_eq!(items.insert_at(host, tx, 0, &sticks, 3), Ok(3));
                 Ok::<_, ()>(())
             })
             .unwrap();
@@ -369,11 +369,12 @@ fn observer_unload_reload_requires_explicit_reregistration_and_replacement_retir
             let observer = game.block_entity(level, OBSERVER).unwrap();
             observer.watch_contents(game, source_pos(), true).unwrap();
             // Removing an observer tentatively also journals its watch membership.
-            let seal = game.transaction_open();
-            game.journal_remove_block_entity((18, 64, 0));
-            notify(game, level, SOURCE);
-            assert!(take(&watcher).is_empty());
-            game.transaction_close(&seal, false);
+            game.storage_scope(|game, _| {
+                game.journal_remove_block_entity((18, 64, 0));
+                notify(game, level, SOURCE);
+                assert!(take(&watcher).is_empty());
+                ((), false)
+            });
             notify(game, level, SOURCE);
             assert_eq!(take(&watcher).len(), 2);
             // Source unload does not retire the observer's positional watch.

@@ -51,7 +51,7 @@ impl std::fmt::Display for Error {
                 signature,
             } => write!(
                 f,
-                "E_INTERNAL_CHANGED: {mod_id} uses {path}, whose signature is now {signature}; run cargo sunrise-mod update to see what changed."
+                "E_INTERNAL_CHANGED: {mod_id} uses {path}, whose signature is now {signature}; run cargo sunrise-mod pin to see what changed."
             ),
             Self::Ambiguous {
                 mod_id,

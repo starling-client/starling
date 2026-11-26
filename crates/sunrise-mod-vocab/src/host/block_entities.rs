@@ -15,22 +15,6 @@ pub trait BlockEntitiesHost {
     /// data reads find nothing until the row is put back.
     fn block_entity_identity(&self, level: LevelRef, pos: [i32; 3]) -> Option<BlockEntityRef>;
 }
-/// The server host's methods of the `block_entities` area, implemented by the game and reached through [`ServerHost`].
-#[sunrise_mod_api_macros::host_area]
-pub trait BlockEntitiesServerHost {
-    /// Side: server.
-    /// Sends clients the block at `pos` and its block entity's update tag
-    /// (`block_entity_update_tag`) again, as `Level.sendBlockUpdated`
-    /// does: with the level's other block changes, to the players who see its
-    /// chunk, once however often it is called before then. Changes made in a
-    /// block entity's tick go out at the start of the next tick, as vanilla's
-    /// do (`ServerLevel.tick` broadcasts chunks before it ticks block
-    /// entities). Call it when what clients show changed (a machine started),
-    /// not for every tick's progress: a menu's data slots carry that. Nothing
-    /// happens for an unloaded block. It also sends the one-shot fields of
-    /// `BlockEntityView::set_client_update_fields`.
-    fn block_entity_sync(&mut self, pos: [i32; 3]);
-}
 /// The handles' reads of the `block_entities` area, implemented by the game and reached through [`Backend`].
 // hidden: a handle's backend, reached through `Backend`; mods call the handle, never this trait
 #[doc(hidden)]
@@ -45,6 +29,24 @@ pub trait BlockEntitiesBackend {
     /// Side: both.
     /// The block entity's level.
     fn block_entity_level(&self, entity: BlockEntityRef) -> Option<LevelRef>;
+    /// Side: server.
+    /// The block entities of the named open server level, active or parked, whose positions lie
+    /// in the box from `min` (inclusive) to `max` (exclusive) on each axis and within the level's
+    /// build height (`LevelHeightAccessor.isInsideBuildHeight`), in no order. Only chunks
+    /// already loaded are read (`ServerChunkCache.getChunkNow`), from their live entries
+    /// (`LevelChunk.getBlockEntities`): nothing is loaded or generated, and saved entries not
+    /// yet made live are not listed. A moving piston's (`minecraft:piston`) is listed, and one taken
+    /// out for its tick is still listed with its own type. Empty for a box
+    /// with no block entity, including one of zero volume, one outside the build height and one
+    /// that meets no loaded chunk; any corners are valid, `i32::MIN` and `i32::MAX` included,
+    /// and there is no cap on the chunks a box covers. None for reversed bounds (`min` above
+    /// `max` on an axis), a stale handle, or on a client.
+    fn level_block_entities(
+        &self,
+        level: LevelRef,
+        min: [i32; 3],
+        max: [i32; 3],
+    ) -> Option<Vec<BlockEntityAt>>;
     /// Side: both.
     /// An owned snapshot of the data saved without identity or position metadata
     /// (`BlockEntity.saveWithoutMetadata`). The save payload is assembled on request.
@@ -76,6 +78,8 @@ pub trait BlockEntitiesBackend {
     fn block_entity_data_slots(&self, entity: BlockEntityRef) -> Option<Vec<i32>>;
     /// Side: both.
     /// Read a configured mod holder's declared internal item slot, without automation policy.
+    /// A read cannot roll a loot table still waiting in the container: on the server, call
+    /// `unpack_loot_table` first, as vanilla's `getItem` unpacks before it reads.
     /// Removed, replaced or reloaded holders return BlockEntityItemError::Stale.
     fn block_entity_item_slot(
         &self,
@@ -88,6 +92,14 @@ pub trait BlockEntitiesBackend {
 #[doc(hidden)]
 #[sunrise_mod_api_macros::host_area]
 pub trait BlockEntitiesBackendMut {
+    /// Side: server.
+    /// `ServerLevel.sendBlockUpdated`: send the holder's block and update tag
+    /// (including one-shot client update fields) on its level's next block broadcast.
+    /// Requests before that broadcast coalesce. Call when the display changes, not
+    /// for progress carried by a menu's data slots. Works during the holder's own tick
+    /// and in parked levels. Returns `Stale` after replacement or unload, or
+    /// `Unavailable` when server world access is unavailable.
+    fn block_entity_sync(&mut self, entity: BlockEntityRef) -> Result<(), LevelWriteError>;
     /// Side: server.
     /// Change the lock through the same storage used by container opening and saving.
     /// The lock belongs to this block entity, not to the position or its previous occupant.
@@ -114,6 +126,69 @@ pub trait BlockEntitiesBackendMut {
     /// Uses the same transactional load and client update path as `merge_data`.
     /// Ok(false) for unsupported data or no change; Stale for an invalidated handle.
     fn block_entity_replace_data(
+        &mut self,
+        entity: BlockEntityRef,
+        data: Compound,
+    ) -> Result<bool, BlockEntityError>;
+    /// Side: server.
+    /// `RandomizableContainer.setLootTable(table, seed)` (NeoForge mods call the same vanilla
+    /// method) on a mod block entity whose block declares container slots: the table and seed
+    /// are kept with it and saved as its `LootTable` and `LootTableSeed`, which `/data` and
+    /// `data` show, and nothing is rolled yet. The first time a player is admitted to its
+    /// menu (a spectator is refused while a table waits, as
+    /// `RandomizableContainerBlockEntity.canOpen` refuses one), a hopper or other container
+    /// access reads it, [`Self::block_entity_unpack_loot_table`] runs, or the block is broken
+    /// (`RandomizableContainer.unpackLootTable`), the table rolls once into its empty slots
+    /// with `LootTable.fill`'s slot shuffle, from `RandomSource.create(seed)`, the table's
+    /// random sequence for a seed of 0, else the level random, with the container's centre
+    /// as `ORIGIN` and the opening player as `THIS_ENTITY` and for its luck; then the table
+    /// is gone. Stacks already in the container keep their slots: the fill shuffles and
+    /// fills only the empty ones, as vanilla's does. Two worlds rolling the same table and
+    /// seed into the same contents fill the same slots. A saved container with a table loads
+    /// the table, not its `Items` (`tryLoadLootTable`). Ok(false) for a block entity with no
+    /// declared slots, a table that is not an identifier, or the table and seed it already
+    /// waits with (`chests/x` is `minecraft:chests/x`); Stale for an invalidated or
+    /// unwritable handle. Inside a transaction an abort puts the previous table back.
+    fn block_entity_set_loot_table(
+        &mut self,
+        entity: BlockEntityRef,
+        table: &str,
+        seed: i64,
+    ) -> Result<bool, BlockEntityError>;
+    /// Side: server.
+    /// `RandomizableContainer.unpackLootTable(null)`, what vanilla's `getItem`, `setItem`,
+    /// `removeItem` and `isEmpty` run before they touch a container's slots: a table still
+    /// waiting (from [`Self::block_entity_set_loot_table`], a save or a structure) rolls into
+    /// the container's empty slots now, with no player, as
+    /// `block_entity_set_loot_table` describes. Reads through `&dyn Host`
+    /// (`item_slot`) and `set_item_slot` don't roll it: call this first when the mod reads or
+    /// writes the slots of a container that may still hold a table. Ok(true) when a table
+    /// rolled, Ok(false) when none waited; Stale for an invalidated or unwritable handle.
+    /// Inside a transaction an abort puts the table and the slots back.
+    fn block_entity_unpack_loot_table(
+        &mut self,
+        entity: BlockEntityRef,
+    ) -> Result<bool, BlockEntityError>;
+    /// Side: server.
+    /// [`Self::block_entity_merge_data`] without the send: the data is merged and loaded,
+    /// then `BlockEntity.setChanged` marks the chunk unsaved and notifies comparators, and no
+    /// `Level.sendBlockUpdated` follows. Clients keep what they last got until
+    /// `block_entity_sync`, so a machine whose state changes every tick sends when it
+    /// chooses, as a vanilla or NeoForge block entity calling `setChanged()` and
+    /// `Level.sendBlockUpdated` itself does. A block entity whose own `setChanged` sends is
+    /// still sent: a vanilla shelf's (`ShelfBlockEntity.setChanged`) calls
+    /// `sendBlockUpdated` itself. Same results, errors and transaction rules as
+    /// `merge_data`.
+    fn block_entity_merge_data_quiet(
+        &mut self,
+        entity: BlockEntityRef,
+        data: Compound,
+    ) -> Result<bool, BlockEntityError>;
+    /// Side: server.
+    /// [`Self::block_entity_replace_data`] without the send, as
+    /// [`Self::block_entity_merge_data_quiet`] is to `merge_data`: `setChanged` only, the
+    /// client update left to `block_entity_sync`.
+    fn block_entity_replace_data_quiet(
         &mut self,
         entity: BlockEntityRef,
         data: Compound,
@@ -200,15 +275,41 @@ pub trait BlockEntitiesBackendMut {
         values: Vec<i32>,
     ) -> Result<bool, BlockEntityDataError>;
     /// Side: server.
-    /// Replace internal storage under the existing transaction; ITEMS routing is separate.
-    /// A committed change marks the chunk unsaved but sends no notification. Call
-    /// set_changed explicitly to notify. Removed, replaced or reloaded holders return
-    /// BlockEntityItemError::Stale.
+    /// Replace internal storage under the innermost transaction; ITEMS routing is separate.
+    /// A mismatched `tx` returns `BlockEntityItemError::InvalidContext`. A committed change marks
+    /// the chunk unsaved but sends no notification. Call set_changed explicitly to notify.
+    /// Removed, replaced or reloaded holders return `BlockEntityItemError::Stale`.
     fn block_entity_set_item_slot(
         &mut self,
         entity: BlockEntityRef,
-        tx: &Transaction,
+        tx: &TransactionContext,
         slot: u32,
         stack: Option<ItemStack>,
     ) -> Result<bool, BlockEntityItemError>;
+    /// Side: server.
+    /// Removes this block entity from its level without changing its block or state and
+    /// without running `pre_remove_side_effects` (`Level.removeBlockEntity`,
+    /// `LevelChunk.removeBlockEntity`, `BlockEntity.setRemoved`).
+    ///
+    /// Accepts any resident block entity (vanilla or mod) in a writable server level.
+    /// Unregisters its game-event listener (sculk sensors, calibrated sensors, shriekers,
+    /// catalysts), runs its `setRemoved` effects (a jukebox stops playing; a beacon plays
+    /// its deactivation sound), retires its ticker, attachments, custom name, lock, and
+    /// contents watches, and notifies neighbours if a mod block entity's published shapes
+    /// disappeared. Sends no network packet and does not mark the chunk unsaved.
+    ///
+    /// Change the block after removing if it still carries a block entity type; otherwise
+    /// a fresh, empty entity is created on the next access or reload.
+    ///
+    /// Inside a transaction, tentative reads immediately see the entity as gone and this
+    /// handle as stale; `setRemoved` effects (listener unregister, jukebox stop, beacon
+    /// sound, neighbour updates) are deferred to root commit and never happen on abort,
+    /// which restores the entity, generation, attachments, custom name, lock, watches,
+    /// and published shapes. A subsequent `set_block` at the same position in the same
+    /// transaction does not run `pre_remove_side_effects` for the already-removed entity.
+    ///
+    /// Returns `Err(BlockEntityError::Stale)` when this handle is stale, unloaded,
+    /// temporarily taken out by an engine operation, on a client, or in a level not
+    /// writable here.
+    fn block_entity_remove(&mut self, entity: BlockEntityRef) -> Result<(), BlockEntityError>;
 }

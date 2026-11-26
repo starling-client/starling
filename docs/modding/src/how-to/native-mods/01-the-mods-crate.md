@@ -100,10 +100,22 @@ restrictions do not trigger a source fallback.
 
 ## Build restrictions
 
-A mod's own build script is refused with `E_NATIVE_BUILD_SCRIPT`: ship generated source instead.
 `E_NATIVE_FEATURES` refuses mod feature declarations and custom SDK feature requests; use the
-pinned SDK's feature set. These restrictions do not prohibit the separately approved build scripts
-of registry dependencies.
+pinned SDK's feature set.
+
+### Build scripts and C sources
+
+A mod may have a build script (`build.rs`, or a `build` key in `[package]`) and `[build-dependencies]`,
+and may carry C sources and headers that the script compiles with the `cc` crate, as many `-sys` crates do.
+Such a mod is built by Cargo, like a mod with crates.io dependencies, so the build script runs on the
+computer that builds the mod, under the same approval as its dependencies' build scripts: the question lists
+the mod's own script beside theirs. The package carries the C files like any other source file (see the
+package contents in [the data files page](03-data-files.md)); a prebuilt object file, library or executable
+is refused whatever its name. `build = false` in `[package]` switches an incidental `build.rs` off.
+
+Mods build for the game's own target, and on Windows x64 that is `x86_64-pc-windows-gnu`: `cc` finds a
+MinGW GCC, the one the build's toolchain brings or a GCC on `PATH`, and not MSVC. A C source that builds
+only with MSVC does not build. On Linux and macOS `cc` uses the system's C compiler.
 
 The build adds a small generated module to the crate's root, the library entry that the game
 loads, and that module exports two `#[unsafe(no_mangle)]` functions. A crate root may say

@@ -52,6 +52,11 @@ impl Review {
                 let Ok(package) = crate::Package::read_zip(&mut zip) else {
                     continue;
                 };
+                // The game's reader skips source entries unread, so they are bounded here,
+                // before `manifest_conflicts` inflates any.
+                if crate::Package::check_source_bounds(&mut zip).is_err() {
+                    continue;
+                }
                 let Some(native) = package.manifest.native else {
                     continue;
                 };
@@ -119,7 +124,9 @@ fn manifest_conflicts<R: Read + Seek>(
         let Ok(file) = zip.by_name(&name) else {
             continue;
         };
-        let size = file.size(); // Package::read_zip already bounded the source entries.
+        // `check_source_bounds` bounded the declared size; one byte more shows an entry that
+        // inflates past what it declares.
+        let size = file.size();
         let mut text = String::new();
         if file.take(size + 1).read_to_string(&mut text).is_err() || text.len() as u64 != size {
             continue;
@@ -248,4 +255,35 @@ fn accepts_another_on_line(requirement: &VersionReq, pin: &Version) -> bool {
                             })
                         }))
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::manifest_conflicts;
+    use semver::Version;
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::io::{Cursor, Write};
+
+    #[test]
+    fn a_manifest_that_inflates_past_its_declared_size_is_not_read() {
+        let read = "[dependencies]\nzip = \"=9.0.0\"\n";
+        let mut archive = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let stored = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        archive.start_file("Cargo.toml", stored).unwrap();
+        archive
+            .write_all(format!("{read}# more\n").as_bytes())
+            .unwrap();
+        let mut bytes = archive.finish().unwrap().into_inner();
+        // Declare only the first lines' size, in the local header and the central directory.
+        let declared = (read.len() as u32).to_le_bytes();
+        for (signature, at) in [(b"PK\x03\x04", 22), (b"PK\x01\x02", 24)] {
+            let start = bytes.windows(4).position(|w| w == signature).unwrap();
+            bytes[start + at..start + at + 4].copy_from_slice(&declared);
+        }
+        let pins = BTreeMap::from([("zip".to_owned(), BTreeSet::from([Version::new(9, 1, 3)]))]);
+        let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        assert_eq!(zip.by_name("Cargo.toml").unwrap().size(), read.len() as u64);
+        assert_eq!(manifest_conflicts(&mut zip, &pins), BTreeSet::new());
+    }
 }

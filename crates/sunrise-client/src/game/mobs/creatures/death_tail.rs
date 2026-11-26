@@ -13,6 +13,7 @@ impl Game<'_> {
         m: &Mob,
         dying: &mut Mob,
         source: Option<(&'static str, u32)>,
+        credited_player: Option<u128>,
     ) {
         self.create_wither_rose(m);
         if m.species() == Species::CopperGolem {
@@ -23,6 +24,15 @@ impl Game<'_> {
             return;
         }
         let (damage_type, attacker) = source.unwrap_or(("minecraft:generic", 0));
-        self.native_living_death_post(m.id, damage_type, attacker);
+        let kind = crate::game::native_namespaced_id::namespaced(&m.kind.id);
+        self.native_living_death_post(mod_api::__private::LivingDeathPostCall {
+            entity: m.id,
+            kind: &kind,
+            damage_type,
+            attacker,
+            player: None,
+            credited_player,
+            message_key: None,
+        });
     }
 }

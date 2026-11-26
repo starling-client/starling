@@ -203,7 +203,7 @@ fn datapack_sync_decision_precedes_join_recipe_packets() {
                 // Drive the production join path through Hub::place_new_player,
                 // rather than calling the selection and send helpers separately.
                 for conn in [12, 13] {
-                    game.lan_guest_joined(conn, &[], [3.0, 64.0, 5.0]);
+                    game.lan_guest_joined(conn, &[], [3.0, 64.0, 5.0], None);
                 }
                 assert_eq!(*decided.lock().unwrap(), [12, 13]);
                 for (index, rx) in receivers.iter().enumerate() {

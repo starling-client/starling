@@ -14,6 +14,8 @@ world = ["dep:sunrise-world"]
 server-files = ["dep:sunrise-server-files", "dep:sunrise-java-properties"]
 
 mod-build = ["dep:sunrise-mod-api-gen"]
+# Proxy-aware HTTP used by the game-file preparer and the server manager.
+http-proxy = ["dep:sunrise-proxy"]
 
 [dependencies]
 sunrise-mod-api-gen = { path = "../sunrise-mod-api-gen", optional = true }
@@ -22,6 +24,7 @@ sunrise-system = { path = "../sunrise-system" }
 sunrise-bench = { path = "../sunrise-bench" }
 sunrise-perf-format = { path = "../sunrise-perf-format" }
 sunrise-world = { path = "../sunrise-world", optional = true }
+sunrise-proxy = { path = "../sunrise-proxy", optional = true }
 sunrise-server-files = { path = "../sunrise-server-files", optional = true }
 sunrise-java-properties = { path = "../sunrise-java-properties", optional = true }
 # The game's extension points, re-exported as `hooks`.

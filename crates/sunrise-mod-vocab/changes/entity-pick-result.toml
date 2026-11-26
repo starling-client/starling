@@ -1,0 +1,3 @@
+ids = ["handle:EntityRef::pick_result"]
+why = "Adds EntityRef::pick_result (vanilla Entity.getPickResult, NeoForge IEntityExtension.getPickedResult): the stack picking an entity gives, on the side that holds it, so a mod can show an entity's icon (Jade's overlay) without guessing it from the type: a mob's spawn egg, a boat's or a minecart's item, an item frame's framed item, a painting, an armor stand, an end crystal or a leash knot's lead."
+migrate = "Additive."

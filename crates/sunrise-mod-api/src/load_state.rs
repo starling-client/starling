@@ -41,6 +41,12 @@ impl Drop for RegistrationGuard {
     }
 }
 
+/// Runs `declare` with startup registration open on the current thread.
+pub fn with_registration_open(declare: &mut dyn FnMut()) {
+    let _registration = RegistrationGuard::open();
+    declare();
+}
+
 struct PackageInventory {
     entries: Arc<[PackageInfo]>,
     authority: Arc<mod_vocab::__private::NamespaceAuthority>,
@@ -295,13 +301,24 @@ mod tests {
         }
         #[crate::__subscriptions]
         impl Hooks for Trace {
-            fn register(&self, _: &mut dyn Registrar, _: &RegistrationContext) {
+            fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
                 assert!(crate::registration_open());
                 self.calls.lock().unwrap().push(("register", self.id));
-            }
-            fn config_loading(&self, _: &dyn ConfigContext, _: &mut ConfigLoadingEvent<'_>) {
-                assert!(!crate::registration_open());
-                self.calls.lock().unwrap().push(("config", self.id));
+                let calls = self.calls.clone();
+                let owner = self.id;
+                r.register_config(
+                    ConfigSpec::new(ConfigKind::Server, ""),
+                    Some(Arc::new(
+                        move |event: ConfigEvent<'_>, _: &ConfigSnapshot| {
+                            assert!(matches!(event, ConfigEvent::Loading(_)));
+                            assert!(!crate::registration_open());
+                            assert_eq!(crate::content::crash::current_native_mod(), Some(owner));
+                            calls.lock().unwrap().push(("config", owner));
+                            Ok(())
+                        },
+                    )),
+                )
+                .unwrap();
             }
             fn add_server_reload_listeners(
                 &self,
@@ -315,7 +332,11 @@ mod tests {
         struct Server;
         impl Host for Server {}
         mod_api::impl_host_areas!(Server);
-        impl ConfigContext for Server {}
+        impl ConfigContext for Server {
+            fn config_dir(&self) -> &std::path::Path {
+                std::path::Path::new("config")
+            }
+        }
         impl ReloadContext for Server {}
         // The loader supplies a dependency-resolved slice; dispatch must retain it.
         let order = [1, 0, 2];
@@ -334,34 +355,25 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .into();
-        crate::__private::install(mods.clone());
-        assert!(!crate::registration_open());
-        crate::__private::install_parts(
-            &mods,
-            &crate::__private::part_tests::rule_schema(),
-            |_| false,
-        )
-        .unwrap();
-        assert!(!crate::registration_open());
-        let host = Server;
-        for _world in 0..2 {
-            dispatch_config_loading(
-                &host,
-                &crate::__private::built::ConfigFile {
-                    mod_id: "lib".into(),
-                    kind: ConfigKind::Server,
-                    file: "lib-server.toml".into(),
-                    text: String::new(),
+        // Use the dispatch-only scope so setup does not probe registration a second time.
+        mod_vocab::testing::with_dispatch(mods.clone(), || {
+            assert!(!crate::registration_open());
+            crate::__private::part_tests::install_parts_fixture(&mods).unwrap();
+            assert!(!crate::registration_open());
+            let host = Server;
+            for _world in 0..2 {
+                for config in crate::__private::parts_installation::registered_configs() {
+                    let snapshot = config.snapshot(config.file.clone(), String::new());
+                    config.notify_snapshot(ConfigEvent::Loading(&host), &snapshot);
                 }
-                .into(),
-            );
-            for _reload in 0..2 {
-                let mut listeners = ServerListenerRegistry::new();
-                dispatch_add_server_reload_listeners(&host, |listen| {
-                    listeners.register_listener(listen)
-                });
+                for _reload in 0..2 {
+                    let mut listeners = ServerListenerRegistry::new();
+                    dispatch_add_server_reload_listeners(&host, |listen| {
+                        listeners.register_listener(listen)
+                    });
+                }
             }
-        }
+        });
         let expected = [
             "register", "config", "reload", "reload", "config", "reload", "reload",
         ]
@@ -372,57 +384,42 @@ mod tests {
     }
 
     #[test]
-    fn admitted_owners_protect_primary_ids_and_keep_first_alias_claims() {
+    fn admitted_keys_keep_distinct_owners_in_one_namespace() {
         crate::__private::initialize().unwrap();
         use mod_vocab::__private::{
-            content_owner_disabled, install_content_owners, set_mod_enabled,
+            block_entity_owner_disabled, install_content_owners, set_mod_enabled,
         };
 
         struct Quiet;
         #[crate::__subscriptions]
         impl crate::Hooks for Quiet {}
 
-        let packages = [
-            ("owner", vec!["owner", "shared"]),
-            ("claimant", vec!["claimant", "shared", "owner"]),
-        ]
-        .into_iter()
-        .map(|(id, namespaces)| {
-            PackageInfo::new(
-                id.into(),
-                "1".into(),
-                PackageKind::Code,
-                crate::Side::Both,
-                namespaces.into_iter().map(str::to_owned).collect(),
-                vec![],
-            )
-        })
-        .collect();
-        with_test_package_inventory(packages, || {
-            crate::testing::with_dispatch(
-                vec![
-                    crate::ModEntry::new("owner", Box::new(Quiet)),
-                    crate::ModEntry::new("claimant", Box::new(Quiet)),
-                ]
-                .into(),
-                || {
-                    assert!(set_mod_enabled("owner", false));
-                    assert!(content_owner_disabled("owner:machine"));
-                    assert!(!content_owner_disabled("shared:machine")); // raw metadata is not admission
-
-                    install_content_owners([
-                        ("owner", "claimant"),
-                        ("shared", "owner"),
-                        ("shared", "claimant"),
-                        ("assets_only", "content_only"),
-                        ("assets_only", "owner"),
-                    ]);
-                    assert!(content_owner_disabled("owner:machine"));
-                    assert!(content_owner_disabled("shared:machine"));
-                    assert!(!content_owner_disabled("assets_only:machine"));
-                },
-            );
-        });
+        crate::testing::with_dispatch(
+            vec![
+                crate::ModEntry::new("alpha", Box::new(Quiet)),
+                crate::ModEntry::new("beta", Box::new(Quiet)),
+            ]
+            .into(),
+            || {
+                assert!(set_mod_enabled("alpha", false));
+                install_content_owners(
+                    [("beta:alpha_block", "alpha"), ("beta:beta_block", "beta")],
+                    [],
+                    [
+                        ("beta:alpha_machine", "alpha"),
+                        ("beta:beta_machine", "beta"),
+                    ],
+                    [],
+                );
+                assert!(block_entity_owner_disabled("beta:alpha_machine"));
+                assert!(!block_entity_owner_disabled("beta:beta_machine"));
+                assert!(set_mod_enabled("alpha", true));
+                assert!(set_mod_enabled("beta", false));
+                assert!(!block_entity_owner_disabled("beta:alpha_machine"));
+                assert!(block_entity_owner_disabled("beta:beta_machine"));
+                assert!(!block_entity_owner_disabled("beta:unknown"));
+            },
+        );
     }
 
     #[test]
@@ -627,7 +624,17 @@ mod tests {
                 assert_eq!(*registered.lock().unwrap(), expected);
                 let mut types = Vec::new();
                 dispatch_component_types(&RegistrationContext::new(), &mut types);
-                assert_eq!(types, expected, "a later step reads the same snapshot");
+                assert_eq!(
+                    types
+                        .iter()
+                        .map(|entry| (entry.mod_id, entry.answer.as_str()))
+                        .collect::<Vec<_>>(),
+                    expected
+                        .iter()
+                        .map(|&value| ("reader", value))
+                        .collect::<Vec<_>>(),
+                    "a later step reads the same snapshot"
+                );
             });
             // No engine snapshot: every read returns None.
             crate::__private::install_parts(
@@ -638,6 +645,44 @@ mod tests {
             .unwrap();
             let absent = registered.lock().unwrap().clone();
             assert!(absent.iter().all(|entry| entry == "None"));
+        });
+    }
+
+    /// `ConfigHost::mods` reads the inventory visible at startup: a package installed but off
+    /// when the game started (no content files bound for it) is not in it (#5494).
+    #[test]
+    fn host_mods_leave_out_a_package_off_at_startup() {
+        crate::__private::initialize().unwrap();
+        struct NoFiles;
+        impl crate::PackageFileSource for NoFiles {
+            fn names(&self) -> Result<Arc<[String]>, String> {
+                Ok(Arc::from([]))
+            }
+            fn read(&self, name: &str) -> Result<Vec<u8>, crate::PackageReadError> {
+                unreachable!("{name} was never listed")
+            }
+        }
+        with_test_packages(&["on", "off"], || {
+            let files: Arc<dyn crate::PackageFileSource> = Arc::new(NoFiles);
+            let data = RegistrationData::new(
+                BTreeMap::new(),
+                BTreeMap::new(),
+                crate::InstanceDirectory::from_path(std::path::Path::new("unused")).unwrap(),
+                crate::RuntimeEnvironment::new(
+                    crate::Dist::Client,
+                    "26.3".into(),
+                    "test".into(),
+                    false,
+                ),
+            )
+            .with_package_files(BTreeMap::from([("on".to_owned(), files)]));
+            with_test_registration_data(data, || {
+                let mods = crate::prelude::ConfigHost::mods(&crate::testing::FakeHost::default());
+                assert_eq!(mods.ids().collect::<Vec<_>>(), ["on"]);
+                assert!(mods.get("off").is_none());
+                assert_eq!(mods.display_name("off"), None);
+                assert_eq!(mods.display_name("on"), Some("on"));
+            });
         });
     }
 }

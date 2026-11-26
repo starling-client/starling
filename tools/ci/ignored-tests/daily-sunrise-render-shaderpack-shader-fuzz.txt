@@ -1,0 +1,5 @@
+# The daily tests of sunrise-render-shaderpack: each is #[ignore = "daily"] in its source and runs once a day in the daily run,
+# where it must pass (README.md). Rows: PACKAGE TEST TARGET daily REASON, sorted; tools/ci/move_to_daily.py writes them.
+sunrise-render-shaderpack a_pack_that_exhausts_memory_or_cant_be_staged_costs_only_its_cases test:shader_fuzz_cli daily child-process
+sunrise-render-shaderpack a_run_in_which_no_case_ran_fails test:shader_fuzz_cli daily child-process
+sunrise-render-shaderpack every_child_process_is_closed_and_waited_for test:shader_fuzz_cli daily child-process

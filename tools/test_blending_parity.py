@@ -16,11 +16,11 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-try:
-    from . import lab, test_chunk_generation_parity as base
-except ImportError:
-    import lab
-    import test_chunk_generation_parity as base
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_chunk_generation_parity as base
 
 # (target seed, old seed, old chunks x0,z0,x1,z1, target chunks x0,z0,x1,z1, label)
 CASES = [

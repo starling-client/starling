@@ -1,5 +1,4 @@
 //! The `mod_container_viewers` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0128
 
 pub trait Hooks {
     /// The number of players with the mod container at `pos` of `dimension`

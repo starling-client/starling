@@ -1,5 +1,4 @@
 //! The `data_pack_files` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0110
 
 pub trait Hooks {
     /// The server is assembling its data tables from the world's data packs

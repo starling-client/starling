@@ -1,7 +1,6 @@
-//! Sunrise's initial simulation primitives, targeting the Minecraft Java Edition version in [`version`].
+//! Core simulation primitives targeting the Minecraft Java Edition version in [`version`].
 //!
-//! This is not a playable game. Differential checks cover only the operations
-//! listed in docs/rust-parity.md; the rest of vanilla remains unimplemented.
+//! Differential parity coverage is tracked in `docs/status.md` and `docs/parity-workflow.md`.
 #![deny(unsafe_code)]
 
 pub mod arm_pose;
@@ -40,6 +39,7 @@ pub mod noise;
 pub mod paletted;
 pub mod position;
 pub mod prepared_files;
+pub mod prepared_profile;
 pub mod profile;
 pub mod random;
 pub mod release;

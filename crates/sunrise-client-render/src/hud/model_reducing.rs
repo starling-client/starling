@@ -66,10 +66,20 @@ impl HudAtlas {
     /// Last resort for a pack that exceeds the shared atlas: halve model
     /// textures until they fit, retaining their logical GUI sizes. Never
     /// shrink run-time slots (empty pixels), or below the vanilla 16 texels.
+    #[cfg(test)]
     pub(super) fn layout_reducing_models(
         images: &mut [PackedImage],
         gui_sizes: &mut HashMap<String, (u32, u32)>,
         models: &HashSet<String>,
+        max: u32,
+    ) -> Result<(u32, Vec<(u32, u32)>, u32)> {
+        Self::layout_reducing_models_with_borders(images, gui_sizes, models, &HashSet::new(), max)
+    }
+    pub(super) fn layout_reducing_models_with_borders(
+        images: &mut [PackedImage],
+        gui_sizes: &mut HashMap<String, (u32, u32)>,
+        models: &HashSet<String>,
+        clamp_bordered: &HashSet<String>,
         max: u32,
     ) -> Result<(u32, Vec<(u32, u32)>, u32)> {
         loop {
@@ -79,20 +89,37 @@ impl HudAtlas {
             };
             let mut changed = false;
             for (name, w, h, pixels) in images.iter_mut() {
-                if !models.contains(name) || pixels.is_empty() || (*w <= 16 && *h <= 16) {
+                if !models.contains(name) || pixels.is_empty() {
                     continue;
                 }
-                let (nw, nh) = ((*w / 2).max((*w).min(16)), (*h / 2).max((*h).min(16)));
+                let bordered = clamp_bordered.contains(name);
+                let (iw, ih, inner) = if bordered {
+                    if *w <= 18 && *h <= 18 {
+                        continue;
+                    }
+                    super::strip_border(*w, *h, pixels)
+                } else {
+                    if *w <= 16 && *h <= 16 {
+                        continue;
+                    }
+                    (*w, *h, std::mem::take(pixels))
+                };
+                let (nw, nh) = ((iw / 2).max(iw.min(16)), (ih / 2).max(ih.min(16)));
                 let mut scaled = Vec::with_capacity((nw * nh * 4) as usize);
                 for y in 0..nh {
                     for x in 0..nw {
-                        let at = (((y * *h / nh) * *w + x * *w / nw) * 4) as usize;
-                        scaled.extend_from_slice(&pixels[at..at + 4]);
+                        let at = (((y * ih / nh) * iw + x * iw / nw) * 4) as usize;
+                        scaled.extend_from_slice(&inner[at..at + 4]);
                     }
                 }
-                gui_sizes.entry(name.clone()).or_insert((*w, *h));
-                *pixels = scaled;
-                (*w, *h) = (nw, nh);
+                gui_sizes.entry(name.clone()).or_insert((iw, ih));
+                if bordered {
+                    *pixels = super::clamp_border_pixels(&scaled, nw, nh);
+                    (*w, *h) = (nw + 2, nh + 2);
+                } else {
+                    *pixels = scaled;
+                    (*w, *h) = (nw, nh);
+                }
                 changed = true;
             }
             if !changed {

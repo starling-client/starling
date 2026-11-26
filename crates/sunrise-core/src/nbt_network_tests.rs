@@ -176,3 +176,40 @@ fn network_all_variants_and_java_strings_reuse_engine_codec() {
             .is_err()
     );
 }
+
+/// The quota measured from the tree is the quota the reader charges for its bytes: vanilla's 325
+/// above, and the same refusal point for lists (mixed ones are written wrapped) and arrays.
+#[test]
+fn heap_measured_from_the_tree_matches_the_reader() {
+    let tag = Tag::compound([
+        ("a", Tag::Byte(1)),
+        ("b", Tag::String("x".into())),
+        ("c", Tag::IntArray(vec![1, 2])),
+    ]);
+    assert!(network_heap_within(&tag, 325).is_ok());
+    assert!(network_heap_within(&tag, 324).is_err());
+    let trees = [
+        Tag::compound([(
+            "mixed",
+            Tag::List(vec![Tag::Int(1), Tag::String("y".into()), Tag::Byte(2)]),
+        )]),
+        Tag::compound([
+            ("longs", Tag::LongArray(vec![1, 2, 3])),
+            ("bytes", Tag::ByteArray(vec![1, 2, 3])),
+            (
+                "nested",
+                Tag::List(vec![Tag::compound([("k", Tag::Double(0))]); 2]),
+            ),
+        ]),
+    ];
+    for tree in trees {
+        let bytes = tree.to_network_bytes().unwrap();
+        for quota in 0..600 {
+            assert_eq!(
+                network_heap_within(&tree, quota).is_ok(),
+                Tag::from_network_bytes(&bytes, Some(quota)).is_ok(),
+                "quota {quota}"
+            );
+        }
+    }
+}

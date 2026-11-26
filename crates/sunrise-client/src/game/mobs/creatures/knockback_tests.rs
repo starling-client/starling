@@ -50,6 +50,7 @@ fn the_native_knockback_hook_changes_or_cancels_a_players_push() {
         causing: 5,
         direct: 5,
         position: None,
+        direct_type: None,
     };
     let mut push = |entity, resistance: f64| {
         let mut p = sunrise_client::motion::PlayerMotion::new(&resources, Vec3::ZERO).unwrap();

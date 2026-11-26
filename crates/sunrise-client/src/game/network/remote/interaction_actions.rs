@@ -118,26 +118,12 @@ impl Game<'_> {
             return false;
         }
         let mut instant = false;
-        // A ghast's fireball or a wind charge nearer than any mob: the
-        // server turns it (game/items/deflect.rs).
-        if let Some((i, distance)) = self.redirectable_hit()
-            && self.mob_hit().is_none_or(|(_, d, _)| distance <= d)
-            && self.before_block(distance)
-            && self.creatures.projectiles[i].id != 0
-        {
-            self.remote_attack_entity(self.creatures.projectiles[i].id as i32, distance);
-        } else if let Some(hit) = self.remote_object_hit(true)
-            && self.mob_hit().is_none_or(|(_, d, _)| hit.distance < d)
-            && self.before_block(hit.distance)
-        {
-            self.remote_attack_entity(hit.id, hit.distance);
-        } else if let Some((i, distance, _)) = self.mob_hit()
-            && self.before_block(distance)
-        {
-            self.remote_attack_entity(self.mobs[i].id as i32, distance);
-        } else if !self.entity_targeted()
-            && let Some(hit) = self.pick()
-        {
+        if let Some(hit) = self.crosshair_entity_hit() {
+            // A range rejection is still an entity hit: skip the attack, but swing below.
+            if let Some(distance) = self.attack_hit_distance(hit.point) {
+                self.remote_attack_entity(hit.id, distance);
+            }
+        } else if let Some(hit) = self.pick() {
             // A block hit on air falls through to MISS. `instant` below reads the
             // block again after the dig, which may have broken it.
             if mod_api::__private::listened(mod_api::HookId::LeftClickEmpty)
@@ -156,12 +142,10 @@ impl Game<'_> {
                 .facts()
                 .is_air(self.world.block(hit.pos[0], hit.pos[1], hit.pos[2]));
         } else {
-            if mod_api::__private::listened(mod_api::HookId::LeftClickEmpty)
-                && !self.entity_targeted()
-            {
+            if mod_api::__private::listened(mod_api::HookId::LeftClickEmpty) {
                 self.native_left_click_empty();
             }
-            if !self.creative {
+            if self.has_miss_time() {
                 self.clicks.miss_time = 10;
             }
             self.reset_attack_strength();
@@ -249,7 +233,7 @@ impl Game<'_> {
     pub(super) fn hud_disconnected(&mut self) {
         self.tab_list.reset();
         self.boss_overlay.reset();
-        self.adv.toasts.clear();
+        self.toast_manager = Default::default();
         self.debug_charts.reset();
         self.titles.clear();
         self.titles.reset_times();
@@ -258,13 +242,15 @@ impl Game<'_> {
     /// hit (`CRIT`) or magic critical hit (`ENCHANTED_HIT`) emitter.
     pub(super) fn remote_animate(&mut self, id: i32, action: u8) {
         use sunrise_client::particles::{ParticleOptions, ParticleType};
-        let Some((target, body)) = self.remote_tracking_body(id) else {
-            return;
-        };
         let particle = match action {
             // Player.stopSleepInBed.
             0 => {
-                if target == TrackingTarget::LocalPlayer {
+                if self.player.is_some()
+                    && self
+                        .remote
+                        .as_ref()
+                        .is_some_and(|remote| remote.entity_id == id)
+                {
                     self.sleeping = None;
                     self.sleep_timer = 100;
                 }
@@ -274,8 +260,11 @@ impl Game<'_> {
             2 => ParticleType::EnchantedHit,
             _ => return,
         };
+        let Some((target, body)) = self.remote_tracking_body(id) else {
+            return;
+        };
         self.particles
-            .tracking_emitter(ParticleOptions::simple(particle), target, body);
+            .tracking_emitter(ParticleOptions::simple(particle), target, body, None);
     }
     /// `ServerPlayer.dismountTo` lands a rider at the ghast's own (x, maxY, z)
     /// (`HappyGhast.getDismountLocationForPassenger`). A vanilla client
@@ -371,7 +360,9 @@ impl Game<'_> {
                 })
             }
             "minecraft:pumpkin" => held
-                .is_some_and(|s| &*s.item == "minecraft:shears")
+                .is_some_and(|s| {
+                    self.stack_shears(s, super::super::item_abilities::ability::SHEARS_CARVE)
+                })
                 .then_some(InteractionResult::Success),
             "minecraft:copper_golem_statue" => held
                 .is_some_and(|s| self.item_in_tag("minecraft:axes", &s.item))
@@ -398,18 +389,19 @@ impl Game<'_> {
             self.apply_predicted_item(at, stack);
         }
         self.predict_blocks(rest, seq);
-        let state = primary.1;
+        let state = placed.sound_state;
         if !self.res.facts().is_air(state) {
-            let sound = self.own_sound_type(at, state, mod_api::BlockSoundCause::Place);
-            self.play_client_local_sound(
-                LevelSound::new(
-                    &sound.place,
-                    at.map(|n| f64::from(n) + 0.5),
-                    (sound.volume + 1.0) / 2.0,
-                    sound.pitch * 0.8,
-                )
-                .in_source(mod_api::SoundSource::Blocks),
-            );
+            let sound = self
+                .own_block_sound(at, state, mod_api::BlockSoundCause::Place)
+                .for_placement(&stack.item);
+            self.play_client_local_sound(LevelSound {
+                name: sound.event.as_str(),
+                at: at.map(|n| f64::from(n) + 0.5),
+                volume: sound.volume,
+                pitch: sound.pitch,
+                source: mod_api::SoundSource::Blocks,
+                emitter: None,
+            });
         }
     }
     /// Whether `held`'s `Item.use` needs a target this client sees none of
@@ -513,20 +505,25 @@ impl Game<'_> {
     /// in the same tick, when a keybind opens a screen.
     pub(super) fn release_remote_use(&mut self) {
         self.send_action(6);
-        // a mod's Stop may skip the item's release, and a mod's own release follows.
+        // a mod's Stop may skip the item's release; a mod's release, then on_stop_using, follow.
         let hand = self.used_hand();
         if let Some((slot, ticks)) = self.using.take()
             && let Some(hand) = hand
             && let Some(stack) = self.stack_in(slot).cloned()
         {
             self.with_hand(hand, |g| {
-                if !g.use_item_stopped(&stack, ticks) {
-                    return;
+                if g.use_item_stopped(&stack, ticks) {
+                    if &*stack.item == "minecraft:trident" {
+                        g.release_trident(g.ticks_held(&stack, ticks));
+                    }
+                    g.mod_release_using(&stack, ticks);
                 }
-                if &*stack.item == "minecraft:trident" {
-                    g.release_trident(g.ticks_held(&stack, ticks));
-                }
-                g.mod_release_using(&stack, ticks);
+                g.stopped_using(
+                    &stack,
+                    Some(g.own_entity_id()),
+                    hand,
+                    ticks_left(g.use_duration, ticks),
+                );
             });
         }
     }

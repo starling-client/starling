@@ -6,11 +6,12 @@ window. The Rust tests run placement and neighbor updates through DryLevel,
 with server-side controls. This does not replay a flying machine.
 """
 import os
-try:
-    from . import lab, test_rust_parity as base
-except ImportError:
-    import lab
-    import test_rust_parity as base
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_rust_parity as base
 
 
 def main():
@@ -31,8 +32,8 @@ def main():
         test = f'game::remote::tests::placement_preview_tests::{case}'
         recording = work / f'{case}.log'
         with recording.open('w', encoding='utf-8') as output:
-            base.run(['cargo', 'test', '--locked', '-p', 'sunrise-client', '--lib',
-                      test, '--', '--exact', '--ignored'], stdout=output,
+            base.run([lab.parity_fixtures(),
+                      test, '--exact', '--ignored'], stdout=output,
                      env={**os.environ, "SUNRISE_TEST_RESOURCES": str(lab.RESOURCES)})
         if f'test {test} ... ok' not in recording.read_text(encoding='utf-8').splitlines():
             raise AssertionError(f'{test} did not run')

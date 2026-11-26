@@ -9,7 +9,7 @@ use sunrise_client::mobs::leash::Holder;
 use sunrise_client::particles::{ParticleOptions, ParticleType};
 use sunrise_core::geometry::Vec3;
 use sunrise_core::random::RandomSource;
-use sunrise_protocol::entity_data::Value;
+use sunrise_protocol::entity_data::{PaintingHolder, Value};
 
 /// `Mth.rotLerp(alpha, from, to)`: `from` turned `alpha` of the way to `to` by
 /// the shorter arc (`wrapDegrees` of the difference).
@@ -42,10 +42,9 @@ impl Game<'_> {
         id: i32,
         kind: &str,
         position: [f64; 3],
-        rotation: (f32, f32),
+        [yaw, pitch, head_yaw]: [f32; 3],
         data: i32,
     ) -> bool {
-        let (yaw, pitch) = rotation;
         let id = id as u32;
         let at = Vec3::new(position[0], position[1], position[2]);
         let block = position.map(|v| v.floor() as i32);
@@ -65,15 +64,11 @@ impl Game<'_> {
                     b.leash = Some(Holder::Knot(block));
                 }
             });
-        } else if let Some(shows) = match kind {
-            "minecraft:text_display" => Some(super::text_displays::Shows::Text),
-            "minecraft:block_display" => Some(super::text_displays::Shows::Block),
-            "minecraft:item_display" => Some(super::text_displays::Shows::Item),
-            _ => None,
-        } {
+        } else if let Some(shows) = super::text_displays::Shows::from_kind(kind) {
             self.text_displays.insert(
                 id as i32,
-                super::text_displays::RemoteTextDisplay::new(shows, position, yaw),
+                super::text_displays::RemoteTextDisplay::new(shows, position, yaw)
+                    .with_pitch(pitch),
             );
         } else if kind == "minecraft:ominous_item_spawner" {
             self.add_remote_ominous_item_spawner(id, position);
@@ -81,7 +76,7 @@ impl Game<'_> {
             // The width, height and response follow in SetEntityData.
             self.interactions.insert(
                 id as i32,
-                super::interactions::RemoteInteraction::new(position),
+                super::interactions::RemoteInteraction::new_with_rotation(position, yaw, pitch),
             );
         } else if let Some(cart) = super::minecarts::CartKind::from_id(kind) {
             let mut c = super::minecarts::Minecart::new(id, cart, at);
@@ -99,7 +94,17 @@ impl Game<'_> {
             }
             self.boats.push(b);
         } else if kind == "minecraft:armor_stand" {
-            self.armor_stands.push(ArmorStand::new(id, at, yaw));
+            // LivingEntity.recreateFromPacket seeds the body and head from
+            // the packet's head yaw, independently of the view yaw.
+            let mut stand = ArmorStand::new(id, at, yaw);
+            stand.body_yaw = head_yaw;
+            stand.previous_body_yaw = head_yaw;
+            stand.head_yaw = head_yaw;
+            stand.previous_head_yaw = head_yaw;
+            let clamped = (pitch % 360.0).clamp(-90.0, 90.0);
+            stand.pitch = clamped;
+            stand.previous_pitch = clamped;
+            self.armor_stands.push(stand);
         } else if kind == "minecraft:item_frame" || kind == "minecraft:glow_item_frame" {
             self.item_frames.push(ItemFrame {
                 attachment_lifetime: Default::default(),
@@ -136,10 +141,10 @@ impl Game<'_> {
         } else if kind == "minecraft:painting" {
             // The variant comes with the entity data; until then the
             // registry's first one (VariantUtils.getAny).
-            let (variant, width, height) = self
+            let (variant, asset, width, height) = self
                 .remote_painting_variant(0)
-                .map_or((Arc::from("minecraft:kebab"), 1, 1), |v| {
-                    (v.id, v.width, v.height)
+                .map_or((Arc::from("minecraft:kebab"), None, 1, 1), |v| {
+                    (v.id, Some(Arc::from(v.asset)), v.width, v.height)
                 });
             // Direction 3D data value (north 2, south 3, west 4, east 5) to 2D.
             let facing = match data {
@@ -155,6 +160,7 @@ impl Game<'_> {
                 pos: block,
                 facing,
                 variant,
+                asset,
                 width,
                 height,
                 check_interval: 0,
@@ -166,11 +172,15 @@ impl Game<'_> {
         true
     }
 
-    /// A `painting_variant` by its network id, from the server's registry.
+    /// A `painting_variant` by its network id, preferring the synced registry entry over local resources.
     fn remote_painting_variant(&self, id: i32) -> Option<super::paintings::Variant> {
         let r = self.remote.as_ref()?;
-        let name = r.registries.name("minecraft:painting_variant", id)?;
-        self.painting_variants.get(name).cloned()
+        let (name, tag) = r.registries.entry("minecraft:painting_variant", id)?;
+        if let Some(tag) = tag {
+            let json = sunrise_client::scoreboard::tag_to_json(tag);
+            return super::paintings::Variant::decode(name, &json).ok();
+        }
+        world_paintings!(self).get(name).cloned()
     }
 
     /// `handleSetEntityData` for an object: what changes how it looks.
@@ -230,12 +240,20 @@ impl Game<'_> {
                 {
                     p.facing = facing;
                 }
-                // Painting.DATA_PAINTING_VARIANT_ID: a registry holder (id + 1).
-                if let (9, Value::Id(holder)) = (index, value)
-                    && let Some(v) = self.remote_painting_variant(holder - 1)
+                // Painting.DATA_PAINTING_VARIANT_ID: holder already resolved during packet decode.
+                if let (9, Value::PaintingVariant(holder)) = (index, value)
                     && let Some(p) = self.paintings.iter_mut().find(|p| p.id == id)
                 {
-                    p.variant = v.id;
+                    let (variant_name, v) = match holder {
+                        PaintingHolder::Reference { name, variant, .. } => {
+                            (Arc::from(name.as_str()), variant)
+                        }
+                        PaintingHolder::Direct(v) => (Arc::from(v.asset_id.as_str()), v),
+                    };
+                    p.variant = variant_name;
+                    p.asset = Some(Arc::from(
+                        v.asset_id.strip_prefix("minecraft:").unwrap_or(&v.asset_id),
+                    ));
                     p.width = v.width;
                     p.height = v.height;
                 }
@@ -269,6 +287,21 @@ impl Game<'_> {
                     }
                     _ => {}
                 }
+            } else if let Some(i) = self.bolts.iter().position(|b| b.id == id) {
+                self.bolts.update(i, |b| match (index, value) {
+                    (0, Value::Byte(flags)) => {
+                        b.fire_ticks = i32::from(flags & 1);
+                        b.glowing = (*flags as u8 & 0x40) != 0;
+                    }
+                    (1, Value::Int(air)) => b.air = *air,
+                    (2, Value::OptText(name)) => b.custom_name = name.clone(),
+                    (2, Value::Text(name)) => b.custom_name = Some(name.clone()),
+                    (3, Value::Bool(visible)) => b.custom_name_visible = *visible,
+                    (4, Value::Bool(silent)) => b.silent = *silent,
+                    (5, Value::Bool(no_gravity)) => b.no_gravity = *no_gravity,
+                    (7, Value::Int(frozen)) => b.ticks_frozen = *frozen,
+                    _ => {}
+                });
             } else if let Some(c) = self.cushions.iter_mut().find(|c| c.id == id) {
                 // Cushion.DATA_COLOR (DyeColor, a byte-backed id).
                 if let (8, Value::Id(color)) = (index, value) {
@@ -359,10 +392,9 @@ impl Game<'_> {
                 if Some(id) == driven {
                     return;
                 }
-                // AbstractBoat keeps a LinearInterpolationHandler: the new yaw is
+                // AbstractBoat keeps a LinearInterpolationHandler: a move's yaw is
                 // the target of the three-tick lerp (`tick_remote_objects`), not
-                // the boat's yaw at once.
-                let _ = yaw;
+                // the boat's yaw at once, so only its ground state is taken here.
                 b.ground.on_ground = on_ground;
             });
         } else if let Some(i) = self.carts.iter().position(|c| c.id == id)
@@ -393,6 +425,7 @@ impl Game<'_> {
         mut turn: impl FnMut(u32, f32) -> f32,
         mut lerp_cart: impl FnMut(&mut super::minecarts::Minecart) -> bool,
     ) {
+        let improved = self.minecart_improvements();
         let mut cart = 0;
         while cart < self.carts.len() {
             let (id, from, to, kind, fuse, fuel) = self.carts.update(cart, |c| {
@@ -411,12 +444,14 @@ impl Game<'_> {
                 }
                 (c.id, from, c.position, c.kind, fuse, c.fuel)
             });
-            if kind == super::minecarts::CartKind::Tnt && fuse {
-                self.particles.add(
-                    &ParticleOptions::simple(ParticleType::Smoke),
-                    [to.x, to.y + 0.5, to.z],
-                    [0.0; 3],
-                );
+            // NewMinecartBehavior.tick: sample the rail at the interpolated position,
+            // even when this tick has no new movement.
+            if improved {
+                let [x, y, z] = self.rail_block(to, true);
+                let on_rails = self.is_rail(self.world.block(x, y, z));
+                if self.carts[cart].on_rails != on_rails {
+                    self.carts.update(cart, |c| c.on_rails = on_rails);
+                }
             }
             if kind == super::minecarts::CartKind::Furnace
                 && fuel > 0
@@ -552,10 +587,11 @@ impl Game<'_> {
         self.item_frames.clear();
         self.paintings.clear();
         self.orbs.clear();
+        self.pick_section_clear();
     }
 
     pub(super) fn remove_remote_object(&mut self, id: u32) {
-        self.text_displays.remove(&(id as i32));
+        self.text_displays.shift_remove(&(id as i32));
         self.interactions.remove(&(id as i32));
         self.ominous_spawners.retain(|s| s.id != id);
         self.remote_knots.remove(&id);
@@ -577,6 +613,7 @@ impl Game<'_> {
         self.item_frames.retain(|f| f.id != id);
         self.paintings.retain(|p| p.id != id);
         self.bolts.retain(|b| b.id != id);
+        self.pick_section_remove(id);
     }
 }
 
@@ -595,6 +632,36 @@ fn painting_facing(direction: i32) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `MinecartTNT.tick` on the client (#6011): a primed TNT minecart counts its fuse down
+    /// and adds one smoke particle a tick, not two.
+    #[test]
+    #[ignore = "daily"]
+    fn a_primed_tnt_minecart_adds_one_smoke_particle_a_tick() {
+        use super::super::minecarts::{CartKind, Minecart};
+        use sunrise_client::motion::PlayerMotion;
+        crate::game::native_entity_refs::tests::with_client_game(|game| {
+            let at = Vec3::new(0.5, 64.0, 0.5);
+            game.player = Some(PlayerMotion::new(game.motion, at).unwrap());
+            let mut cart = Minecart::new(71, CartKind::Tnt, Vec3::new(2.5, 64.0, 0.5));
+            cart.fuse = 3;
+            game.carts.push(cart);
+            // Capture what the level is asked for, ahead of the camera-distance limiter.
+            game.particles.requested = Some(Vec::new());
+            let mut smoke = || {
+                game.tick_remote_objects(|_, p| p, |_, yaw| yaw, |_| false);
+                let asked = game.particles.requested.replace(Vec::new()).unwrap();
+                asked
+                    .iter()
+                    .filter(|(options, ..)| options.ty == ParticleType::Smoke)
+                    .count()
+            };
+            for tick in 0..3 {
+                assert_eq!(smoke(), 1, "smoke on tick {tick}");
+            }
+            assert_eq!(smoke(), 0, "no smoke once the fuse is out");
+        });
+    }
 
     #[test]
     fn rot_lerp_takes_the_short_way_round() {

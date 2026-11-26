@@ -13,6 +13,11 @@
 // integers the CPU computed, and facing compares keys that order as the floats
 // the CPU compares. `cull` leaves sections fading in or out to the CPU
 // (`FADING`).
+// A second table of records runs through the same entry points: sourced
+// geometry's meshes (gfx/sourced_geometry/gpu.rs), cells of any size past the
+// render distance. Its parameters switch the view-distance test off
+// (`NO_RANGE`) and cave culling's graph (no `REACH`), and each record's box is
+// in units of its own (`BOX_SHIFT`).
 // Frames that occlude (`OCCLUDE`, gpu_occlusion.wgsl) draw in two phases, each
 // in id order: `cull` leaves to phase 2 the sections whose box the last test
 // did not see and lists the boxes to test; after the test, `count2`, `scan2`
@@ -34,18 +39,18 @@ struct Params {
     near: i32,
     cam_x: i32,
     cam_z: i32,
-    // The tables' first column: x, 0, z, 0.
+    // The tables' first cell: x, y, z, 0.
     first: vec4<i32>,
-    // Their entries along x, y and z, and 0.
+    // Their entries along x, y and z, and the f32 bits of the instances' UV step.
     cells: vec4<u32>,
     // Each frustum plane's w term, its margin in, then 0, 0.
     w: array<vec4<i32>, 2>,
     // Cave culling's graph (occlusion.rs `Reach`): from x, from z, radius, lowest
-    // section y; its height in sections and the level's; REACH, SKY, EYE,
-    // OCCLUDE and PROBE; where the eye's keys start in `tables`.
+    // section y; its height in sections and outside-height octree branch word offset;
+    // REACH, EYE, OCCLUDE, PROBE, TREE; where the eye's keys start in `tables`.
     reach: vec4<i32>,
     reach_height: i32,
-    reach_sections: i32,
+    tree: u32,
     flags: u32,
     eyes: u32,
     // Occlusion (OCCLUDE): this frame's stamp (never 0), where the boxes to
@@ -59,11 +64,11 @@ struct Params {
 // gpu_culling.rs `Record`.
 struct Section {
     // Section x, y (from the level's bottom), z, and its arena page (-1: a
-    // free id).
+    // free id). In the second table, a cell's corner in sections.
     key: vec4<i32>,
     // The first vertex of its solid quads, its solid quads (where its last
     // bucket by facing side ends), its box (gpu_culling.rs `rounded_box`), then
-    // its flags (`FADING`).
+    // its flags (`FADING`, `BOX_SHIFT`).
     a: vec4<u32>,
     // Where its first six buckets end (mesher/sides.rs `BUCKETS`): +X, +Z, the
     // other bucket, +Y, -Z, -X.
@@ -105,8 +110,6 @@ struct Update {
 // a bit each (32 a word, lowest first).
 @group(0) @binding(8) var<storage, read> reached_cells: array<u32>;
 
-// gfx.rs `section_instance`'s w for a whole section: 1 / mesher::UV_STEPS.
-const STEP_BITS: u32 = 0x38000000u;
 // Workgroups along x when the ids need more than one row of them.
 const ROW: u32 = 65535u;
 // Ids per block.
@@ -124,12 +127,17 @@ const DRAWN2: u32 = 10u;
 // gpu_culling.rs `rounded_box` for a box past what its codes hold: no plane
 // rejects it.
 const UNBOUNDED: u32 = 0x80000000u;
-// In `params.flags`: cave culling's graph is in `params.reach`, and its search
-// reached the box's top layer (the sky band).
+// Packed full 16x16x16 section box (`[0, 0, 0]..[16, 16, 16]` with `CODE_OFFSET = 8`).
+const FULL_SECTION_BOX: u32 = 0x318C2108u;
+// In `params.flags`: cave culling's graph is in `params.reach`.
 const REACH: u32 = 1u;
-const SKY: u32 = 2u;
 // In a section's `a.w`: it fades in or out, and the CPU draws it with its fade.
 const FADING: u32 = 1u;
+// In its `a.w` too: its box's units are 1 << shift blocks, the shift in bits 8-11
+// along x and z, in bits 12-15 along y (0 for a section: whole blocks).
+const BOX_SHIFT: u32 = 8u;
+// In `params.flags`: the columns are not limited to the render distance.
+const NO_RANGE: u32 = 64u;
 // In `params.flags`: solid quads facing away from the eye are left out, its
 // keys in `tables` from `params.eyes`.
 const EYE: u32 = 4u;
@@ -146,6 +154,8 @@ const TESTED_WORD: u32 = 10u;
 // In `params.flags`: the frame occludes, and tests every box (cull.rs's probe).
 const OCCLUDE: u32 = 8u;
 const PROBE: u32 = 16u;
+// In `params.flags`: outside-height octree branch decisions are in `tables` from `params.tree`.
+const TREE: u32 = 32u;
 // cull.rs `RETEST` and `BIG`.
 const RETEST: u32 = 8u;
 const BIG: f32 = 0.25;
@@ -194,6 +204,9 @@ fn region(page: u32) -> vec2<u32> {
 // streaming.rs `in_view_distance` around the camera's column. A gap at or past
 // the distance cannot pass, so testing it first keeps the squares in range.
 fn near(x: i32, z: i32) -> bool {
+    if (params.flags & NO_RANGE) != 0u {
+        return true;
+    }
     let r = params.near;
     let gx = max(abs(x - params.cam_x) - 1, 0);
     let gz = max(abs(z - params.cam_z) - 1, 0);
@@ -203,10 +216,7 @@ fn near(x: i32, z: i32) -> bool {
     return gx * gx + gz * gz < r * r;
 }
 
-// occlusion.rs `Occlusion::contains` (`Graph::contains`): with no graph, or with
-// cave culling off, every section; in the searched box, whether the search
-// reached it; above a clamped box, over its columns and within the level, the
-// sky band (all of it or none); else none. `Reach::contains` on the CPU.
+// occlusion.rs `Occlusion::contains` (`Reach::contains`): true when cave culling is off or cell is reached.
 fn reached(key: vec3<i32>) -> bool {
     if (params.flags & REACH) == 0u {
         return true;
@@ -215,11 +225,8 @@ fn reached(key: vec3<i32>) -> bool {
     let dx = key.x - params.reach.x;
     let dz = key.z - params.reach.y;
     let dy = key.y - params.reach.w;
-    if dx < -r || dx > r || dz < -r || dz > r || dy < 0 {
+    if dx < -r || dx > r || dz < -r || dz > r || dy < 0 || dy >= params.reach_height {
         return false;
-    }
-    if dy >= params.reach_height {
-        return (params.flags & SKY) != 0u && key.y >= 0 && key.y <= params.reach_sections;
     }
     let i = u32(((dz + r) * (2 * r + 1) + dx + r) * params.reach_height + dy);
     return ((reached_cells[i >> 5u] >> (i & 31u)) & 1u) != 0u;
@@ -231,10 +238,12 @@ fn term(at: u32) -> i32 {
 
 // gfx.rs `Frustum::intersects` for the box `b` of the section in cell `c` of the
 // tables, in integers (gpu_culling.rs `tables`): it keeps every box the CPU keeps.
-fn in_frustum(c: vec3<u32>, b: u32) -> bool {
+fn in_frustum(c: vec3<u32>, b: u32, shift: u32) -> bool {
     if (b & UNBOUNDED) != 0u {
         return true;
     }
+    let sx = (shift >> BOX_SHIFT) & 15u;
+    let sy = (shift >> (BOX_SHIFT + 4u)) & 15u;
     let nx = params.cells.x;
     let ny = params.cells.y;
     let n = nx + ny + params.cells.z;
@@ -248,7 +257,8 @@ fn in_frustum(c: vec3<u32>, b: u32) -> bool {
         let code_terms = 7u * n + 96u * j;
         let sum = params.w[j / 4u][j % 4u] + term(origin_terms + c.x)
             + term(origin_terms + nx + c.y) + term(origin_terms + nx + ny + c.z)
-            + term(code_terms + kx) + term(code_terms + 32u + ky) + term(code_terms + 64u + kz);
+            + (term(code_terms + kx) << sx) + (term(code_terms + 32u + ky) << sy)
+            + (term(code_terms + 64u + kz) << sx);
         if sum < 0 {
             return false;
         }
@@ -368,14 +378,28 @@ fn cull(@builtin(global_invocation_id) gid: vec3<u32>) {
     // The tables hold every column within the distance; a key before their
     // first wraps past their end.
     let c = vec3<u32>(s.key.xyz - params.first.xyz);
-    if page >= params.pages || any(c >= params.cells.xyz) || !in_frustum(c, s.a.z) {
+    if page >= params.pages || any(c >= params.cells.xyz) {
+        return;
+    }
+    var skip_frustum = false;
+    var test_box = s.a.z;
+    if (params.flags & TREE) != 0u {
+        let col = c.z * params.cells.x + c.x;
+        let state = (tables[params.tree + (col >> 4u)] >> ((col & 15u) * 2u)) & 3u;
+        if state == 0u {
+            return;
+        }
+        skip_frustum = state == 2u;
+        test_box = FULL_SECTION_BOX;
+    }
+    if !skip_frustum && !in_frustum(c, test_box, s.a.w) {
         return;
     }
     // Kept, whether or not a quad of it can face the eye.
     atomicAdd(&counts[0], 1u);
     let nx = params.cells.x;
     let ny = params.cells.y;
-    let origin = vec4<u32>(tables[c.x], tables[nx + c.y], tables[nx + ny + c.z], STEP_BITS);
+    let origin = vec4<u32>(tables[c.x], tables[nx + c.y], tables[nx + ny + c.z], params.cells.w);
     origins[id] = origin;
     // gfx.rs `facing_runs`: the runs of its buckets that can face the eye, an
     // empty bucket breaking none, a draw each; without an eye, its solid quads.

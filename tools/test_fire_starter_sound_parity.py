@@ -5,10 +5,12 @@ stone block, on level randoms from many seeds, comparing the sound, its volume
 and pitch bits, and the level random's next value (how many values it drew)."""
 import random
 
-try:
-    from . import lab, oracle_harness as harness
-except ImportError:
-    import lab, oracle_harness as harness
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, oracle_harness as harness
 
 
 ITEMS = ['fire_charge', 'flint_and_steel']

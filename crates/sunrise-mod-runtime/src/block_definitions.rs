@@ -83,6 +83,17 @@ impl BlockDefinition {
         self.states.len() as u32
     }
 
+    /// The default state's local ordinal (`Block.defaultBlockState`).
+    pub fn default_state(&self) -> u16 {
+        self.default
+    }
+
+    /// Each property's name and legal values, in property-name order; the values in the order
+    /// the imported states first take them (`StateDefinition.getProperties`).
+    pub fn properties(&self) -> &[(String, Vec<String>)] {
+        &self.properties
+    }
+
     /// Read a borrowed property value without allocation, locks or mutable state.
     pub fn property(&self, state: u16, name: &str) -> Result<Option<&str>, StateError> {
         let values = self
@@ -95,6 +106,23 @@ impl BlockDefinition {
             .enumerate()
             .find(|(_, (key, _))| key == name)
             .map(|(index, (_, legal))| legal[usize::from(values[index])].as_str()))
+    }
+
+    /// Visit each property of `state` with its serialized value, in name order (as vanilla's
+    /// `StateDefinition` keeps them), without allocation, locks or mutable state.
+    pub fn visit_properties(
+        &self,
+        state: u16,
+        mut visit: impl FnMut(&str, &str),
+    ) -> Result<(), StateError> {
+        let values = self
+            .states
+            .get(usize::from(state))
+            .ok_or(StateError::UnknownState)?;
+        for ((name, legal), &value) in self.properties.iter().zip(values.iter()) {
+            visit(name, &legal[usize::from(value)]);
+        }
+        Ok(())
     }
 
     /// Build a state from the default and partial property constraints.
@@ -110,34 +138,54 @@ impl BlockDefinition {
         self.apply(state, &[(name, value)])
     }
 
+    /// Check explicit property requirements without filling in omitted values or building a state.
+    pub fn validate_properties(&self, properties: &[(&str, &str)]) -> Result<(), StateError> {
+        self.resolve_properties(properties)
+            .try_for_each(|resolved| resolved.map(|_| ()))
+    }
+
     fn apply(&self, state: u16, properties: &[(&str, &str)]) -> Result<u16, StateError> {
         let mut values = self
             .states
             .get(usize::from(state))
             .ok_or(StateError::UnknownState)?
             .to_vec();
-        for (input, &(name, value)) in properties.iter().enumerate() {
-            if properties[..input]
-                .iter()
-                .any(|(previous, _)| *previous == name)
-            {
-                return Err(StateError::DuplicateProperty(input));
-            }
-            let (index, (_, legal)) = self
-                .properties
-                .iter()
-                .enumerate()
-                .find(|(_, (key, _))| key == name)
-                .ok_or(StateError::UnknownProperty(input))?;
-            values[index] = legal
-                .iter()
-                .position(|v| v == value)
-                .ok_or(StateError::InvalidValue(input))? as u16;
+        for resolved in self.resolve_properties(properties) {
+            let (index, value) = resolved?;
+            values[index] = value;
         }
         self.ordinals
             .get(values.as_slice())
             .copied()
             .ok_or(StateError::InvalidCombination)
+    }
+
+    fn resolve_properties<'a>(
+        &'a self,
+        properties: &'a [(&'a str, &'a str)],
+    ) -> impl Iterator<Item = Result<(usize, u16), StateError>> + 'a {
+        properties
+            .iter()
+            .enumerate()
+            .map(move |(input, &(name, value))| {
+                if properties[..input]
+                    .iter()
+                    .any(|(previous, _)| *previous == name)
+                {
+                    return Err(StateError::DuplicateProperty(input));
+                }
+                let (index, (_, legal)) = self
+                    .properties
+                    .iter()
+                    .enumerate()
+                    .find(|(_, (key, _))| key == name)
+                    .ok_or(StateError::UnknownProperty(input))?;
+                let value = legal
+                    .iter()
+                    .position(|v| v == value)
+                    .ok_or(StateError::InvalidValue(input))? as u16;
+                Ok((index, value))
+            })
     }
 }
 

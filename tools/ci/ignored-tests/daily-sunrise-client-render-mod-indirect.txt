@@ -1,0 +1,1 @@
+sunrise-client-render gfx::mod_pipelines::tests::indirect_commands_draw_with_base_vertex_skip_zeroed_slots_and_are_refused_when_unfit lib daily gpu

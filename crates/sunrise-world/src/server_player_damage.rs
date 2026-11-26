@@ -36,6 +36,13 @@ fn health_error<E, A>(e: PlayerHealthError<E, A>) -> ServerDamageError<E, A> {
         PlayerHealthError::Data(e) => ServerDamageError::Data(e),
     }
 }
+/// The player's body as a combat binding holds it, lent for reading to its environment at a
+/// hook: the attribute map and the synced health and absorption floats.
+pub struct PlayerBodyRead<'a, A> {
+    pub attributes: &'a A,
+    pub data: &'a SyncedFloats,
+    pub ids: PlayerFloatIds,
+}
 pub trait ServerDamageEnvironment<A: HealthAttributes = EntityAttributes>:
     ArmorWorld + Observer<Error = <Self as ArmorWorld>::Error>
 {
@@ -66,6 +73,14 @@ pub trait ServerDamageEnvironment<A: HealthAttributes = EntityAttributes>:
     /// `DamageWorld::damage_pre`. The default does nothing.
     fn damage_pre(&mut self, _container: &mut DamageContainer) -> Result<(), EnvError<Self>> {
         Ok(())
+    }
+    /// [`Self::damage_pre`] with the player's body lent for reading. The default ignores it.
+    fn damage_pre_with(
+        &mut self,
+        container: &mut DamageContainer,
+        _body: PlayerBodyRead<'_, A>,
+    ) -> Result<(), EnvError<Self>> {
+        self.damage_pre(container)
     }
 }
 pub struct ServerPlayerDamage<'a, E, A: HealthAttributes = EntityAttributes> {
@@ -315,8 +330,13 @@ impl<A: HealthAttributes, E: ServerDamageEnvironment<A>> DamageWorld
             .map_err(ServerDamageError::Environment)
     }
     fn damage_pre(&mut self, container: &mut DamageContainer) -> Result<(), Self::Error> {
+        let body = PlayerBodyRead {
+            attributes: &*self.attributes,
+            data: &*self.data,
+            ids: self.ids,
+        };
         self.environment
-            .damage_pre(container)
+            .damage_pre_with(container, body)
             .map_err(ServerDamageError::Environment)
     }
 }

@@ -1,18 +1,16 @@
-//! A server mod's bulk block edit (`edit_blocks`): its palette and
+//! A server mod's bulk block edit (`LevelRef::edit_blocks`): its palette and
 //! filters compile to the command matcher, its heights read, and its runs made
 //! at once through `World::edit_runs`, with what `fill ... strict` does for
 //! the block entities and the watched blocks of each block changed.
 use super::{
     Game,
-    transactions::{StrictBlockStep, StrictBlockSteps, take_replay_row},
+    transactions::{ReplayEntity, StrictBlockStep, StrictBlockSteps},
 };
-use mod_api::BlockEdit;
-use mod_api::ColumnBlocks;
-use mod_api::Heightmap;
+use mod_api::{BlockEdit, BlockEditError, Heightmap};
 use std::sync::Arc;
 use sunrise_client::{
     block_edit::{BulkPublication, Run},
-    chunk::ColumnLayout,
+    chunk::{Chunk, LevelShape},
     containers::BlockEntity,
     fast_hash::{FxHashMap, FxHashSet},
     world::World,
@@ -26,12 +24,8 @@ pub(super) type Tracked = ((i32, i32, i32), u32, u32);
 
 impl Game<'_> {
     /// Make a mod's block edit; how many blocks changed, or why none did.
-    /// Every palette entry, filter and run is checked before anything
-    /// changes: an invalid typed state or predicate (NBT cannot be represented),
-    /// a run naming a palette entry
-    /// or filter past the end, or more than 65536 filters, and nothing is
-    /// made.
-    pub(super) fn apply_block_edit(&mut self, edit: &BlockEdit) -> Result<u64, String> {
+    /// Palette states, filter names and run indices are resolved before any changes.
+    pub(super) fn apply_block_edit(&mut self, edit: &BlockEdit) -> Result<u64, BlockEditError> {
         let super::api_values::block_edit::PreparedBlockEdit { palette, filters } =
             super::api_values::block_edit::prepare(edit)?;
         let runs = resolve_runs(edit, &palette, filters.len(), |h, x, z| {
@@ -49,14 +43,7 @@ impl Game<'_> {
         let tags = [&self.res.items().block_tags, &world_items.block_tags];
         let facts = self.res.facts();
         let watched = std::mem::take(&mut self.world.watched);
-        let matches = |f, s| {
-            super::commands::block_input_matches(
-                registry,
-                tags,
-                &filters[f as usize],
-                BlockStateId(s),
-            )
-        };
+        let matches = |f: usize, s| filters[f].matches(registry, tags, BlockStateId(s));
         let track = |s| {
             let f = facts.get(BlockStateId(s));
             watched.get(s as usize).copied().unwrap_or(false)
@@ -103,30 +90,43 @@ impl Game<'_> {
             .tracked
             .iter()
             .filter(|&&((x, y, z), old, new)| {
-                name(old) != name(new)
-                    || !self
-                        .world
-                        .block_entities
-                        .get(&(x, y, z))
-                        .is_some_and(|e| e.fits(&name(new)))
+                let (was, now) = (name(old), name(new));
+                was != now
+                    || (!self.world.block_entities.is_taken(&(x, y, z))
+                        && !self
+                            .world
+                            .block_entities
+                            .get(&(x, y, z))
+                            .is_some_and(|e| e.fits(&now)))
             })
             .map(|&(_, _, new)| BlockStateId(new))
             .collect();
         let mut made =
             make_block_entities(&wanted, |state| self.new_block_entity_for_state(*state))
                 .into_iter();
+        let mut replaced_placements = Vec::new();
         if publication.is_some() {
             // Keep the original row, including absence, before the strict writer creates or
             // removes a resident. Keep its drops suppressed just as in an immediate bulk edit.
             for &(pos, old, new) in &out.tracked {
-                if name(old) != name(new)
-                    || !self
-                        .world
-                        .block_entities
-                        .get(&pos)
-                        .is_some_and(|row| row.fits(&name(new)))
+                let (was, now) = (name(old), name(new));
+                if was != now
+                    || (!self.world.block_entities.is_taken(&pos)
+                        && !self
+                            .world
+                            .block_entities
+                            .get(&pos)
+                            .is_some_and(|row| row.fits(&now)))
                 {
                     self.journal_block_entity(pos);
+                    if self
+                        .world
+                        .block_entities
+                        .generation(&pos)
+                        .is_some_and(|generation| self.is_placement_entity(pos, generation))
+                    {
+                        replaced_placements.push(pos);
+                    }
                 }
             }
         }
@@ -137,6 +137,10 @@ impl Game<'_> {
             |_| made.next().flatten(),
             publication.as_ref().map(|_| &mut steps),
         );
+        for pos in replaced_placements {
+            self.world.block_names.remove(&pos);
+            self.world.forget_block_entity_source(pos);
+        }
         if let Some(publication) = publication {
             self.after_commit(super::transactions::After::BulkBlocks(
                 publication,
@@ -167,58 +171,18 @@ impl Game<'_> {
         }
     }
 
-    /// Each column's height on `h` as `edit_height` reads it, none where its chunk is not loaded.
-    pub(super) fn loaded_column_heights(
-        &self,
-        columns: &[(i32, i32)],
-        h: Heightmap,
-    ) -> Vec<Option<i32>> {
-        loaded_heights(&self.world, columns, |x, z| self.edit_height(h, x, z))
-    }
-
-    /// Each column's height on `h` (none where its chunk is not loaded) and its blocks from `below` under it to
-    /// `above` - 1 over it, bottom first (air outside the column and where it is not loaded), as indices into the
-    /// full states seen, with each column's biome JSON water colour at the column's top (`0xRRGGBB`, `0` where it is
-    /// not loaded). `Err`, reading nothing, when `below + above` is 0 or more than the level's height, or the read
-    /// would be more than `MAX_READ` blocks.
-    pub(super) fn read_loaded_block_columns(
-        &self,
-        columns: &[(i32, i32)],
-        h: Heightmap,
-        below: u32,
-        above: u32,
-    ) -> Result<ColumnBlocks, String> {
-        read_size(columns.len(), below, above, self.world.layout().height())?;
-        let bases = self.loaded_column_heights(columns, h);
-        let (palette, blocks) = column_blocks(&self.world, columns, &bases, below, above)
-            .ok_or("the read is too big")?;
-        let biomes = world_biomes!(self);
-        let mut water_colors = Vec::with_capacity(columns.len());
-        for (&(x, z), base) in columns.iter().zip(&bases) {
-            let water = base
-                .and_then(|b| {
-                    self.world
-                        .chunks
-                        .get(&(x >> 4, z >> 4))
-                        .map(|c| biomes.get(c.biome(x, b - 1, z)).water)
-                })
-                .unwrap_or(0);
-            water_colors.push(water);
-        }
-        Ok(ColumnBlocks {
-            palette: super::api_values::block_edit::column_palette(palette)?,
-            bases,
-            blocks,
-            water_colors,
-        })
-    }
-
     /// One above the highest block of column (x, z) that counts on heightmap `h`, or the bottom of the column (also
     /// where it is not loaded).
     fn edit_height(&self, h: Heightmap, x: i32, z: i32) -> i32 {
+        self.world_column_height(&self.world, h, x, z)
+    }
+
+    /// One above the highest block of column (x, z) in `world` that counts on heightmap `h`, or
+    /// the bottom of the column (also where it is not loaded).
+    pub(super) fn world_column_height(&self, world: &World, h: Heightmap, x: i32, z: i32) -> i32 {
         let properties = &self.pack.assets.properties;
         column_height(
-            &self.world,
+            world,
             h,
             (x, z),
             |s| self.res.facts().is_air(s),
@@ -227,26 +191,13 @@ impl Game<'_> {
     }
 }
 
-/// The most blocks one `read_columns` reads (2 MiB of indices): it runs on the
-/// server tick, so a mod reads a big area in pieces.
-pub(super) const MAX_READ: usize = 1 << 20;
-/// The most columns one `surface_heights` reads.
-pub(super) const MAX_COLUMNS: usize = 1 << 16;
-
-/// The blocks a column read of `columns` columns, `below` + `above` each,
-/// reads, or why it can't: a span of 0 or more than `height` (the level's),
-/// or the whole more than `MAX_READ`.
-fn read_size(columns: usize, below: u32, above: u32, height: i32) -> Result<usize, String> {
-    let per = below
+/// The vertical span `below + above` for one column read, bounded by the level's build height
+/// (`LevelHeightAccessor.getHeight`).
+pub(super) fn column_span(below: u32, above: u32, height: i32) -> Option<usize> {
+    below
         .checked_add(above)
         .filter(|&per| per > 0 && i64::from(per) <= i64::from(height))
-        .ok_or_else(|| format!("below + above must be 1 to {height}, the level's height"))?;
-    columns
-        .checked_mul(per as usize)
-        .filter(|&n| n <= MAX_READ)
-        .ok_or_else(|| {
-            format!("the read is more than {MAX_READ} blocks: read fewer columns a call")
-        })
+        .map(|per| per as usize)
 }
 
 /// One above the highest block of column `(x, z)` on heightmap `h`, or the
@@ -254,6 +205,18 @@ fn read_size(columns: usize, below: u32, above: u32, height: i32) -> Result<usiz
 /// blocks the world surface passes over, and `counts(kind, state)` which
 /// count on the other heightmaps.
 fn column_height(
+    world: &World,
+    h: Heightmap,
+    (x, z): (i32, i32),
+    air: impl Fn(BlockStateId) -> bool,
+    counts: impl Fn(HeightmapType, BlockStateId) -> bool,
+) -> i32 {
+    // The chunk storage is padded past a shorter level (the Nether starts at 0, not -64): an
+    // empty column's bottom is the level's own minimum.
+    column_height_in_storage(world, h, (x, z), air, counts).max(world.shape.min_y)
+}
+
+fn column_height_in_storage(
     world: &World,
     h: Heightmap,
     (x, z): (i32, i32),
@@ -281,114 +244,56 @@ fn column_height(
     y
 }
 
-/// `height(x, z)` of each column, none where its chunk is not loaded. (A
-/// chunk is looked up once for a run of columns in it.)
-fn loaded_heights(
-    world: &World,
-    columns: &[(i32, i32)],
-    height: impl Fn(i32, i32) -> i32,
-) -> Vec<Option<i32>> {
-    let mut last: Option<((i32, i32), bool)> = None;
-    columns
-        .iter()
-        .map(|&(x, z)| {
-            let key = (x >> 4, z >> 4);
-            let loaded = match last {
-                Some((k, l)) if k == key => l,
-                _ => {
-                    let l = world.chunks.get(&key).is_some();
-                    last = Some((key, l));
-                    l
-                }
-            };
-            loaded.then(|| height(x, z))
-        })
-        .collect()
-}
-
-/// The blocks of each column from `below` under its base to `above` - 1 over
-/// it, bottom first, as indices into full numeric states: air outside the
-/// column's chunk's own height and where there is no base. None, reading
-/// nothing, past `read_size`'s bound.
-fn column_blocks(
-    world: &World,
-    columns: &[(i32, i32)],
-    bases: &[Option<i32>],
+/// The blocks of one loaded column from `below` under `base` to `above - 1` over it,
+/// bottom first, using `air` outside the chunk's vertical range.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn fill_column_blocks(
+    air: BlockStateId,
+    chunk: &Chunk,
+    level: LevelShape,
+    x: i32,
+    z: i32,
+    base: i32,
     below: u32,
     above: u32,
-) -> Option<(Vec<BlockStateId>, Vec<u16>)> {
-    let total = read_size(
-        columns.len(),
-        below,
-        above,
-        ColumnLayout::HIGHEST_Y + 1 - ColumnLayout::LOWEST_Y,
-    )
-    .ok()?;
-    let per = (below + above) as usize;
-    let mut blocks = Vec::with_capacity(total);
-    let mut palette: Vec<BlockStateId> = Vec::new();
-    // A full state's palette index, worked out once per distinct state.
-    let mut seen: FxHashMap<u32, u16> = FxHashMap::default();
-    let mut index = |s: BlockStateId| -> Option<u16> {
-        if let Some(&index) = seen.get(&s.0) {
-            return Some(index);
-        }
-        let index = u16::try_from(palette.len()).ok()?;
-        palette.push(s);
-        seen.insert(s.0, index);
-        Some(index)
-    };
-    for (&(x, z), base) in columns.iter().zip(bases) {
-        let chunk = world.chunks.get(&(x >> 4, z >> 4));
-        match (base, chunk) {
-            (Some(b), Some(chunk)) => {
-                let (bottom, top) = (chunk.min_y(), chunk.max_y());
-                let y0 = i64::from(*b) - i64::from(below);
-                for y in y0..y0 + per as i64 {
-                    let s = match i32::try_from(y) {
-                        Ok(y) if (bottom..top).contains(&y) => chunk.block(x & 15, y, z & 15),
-                        _ => world.air,
-                    };
-                    blocks.push(index(s)?);
-                }
-            }
-            _ => {
-                let air = index(world.air)?;
-                blocks.extend(std::iter::repeat_n(air, per));
-            }
-        }
+    out: &mut Vec<BlockStateId>,
+) {
+    // The chunk's storage may be taller than the level it belongs to.
+    let (bottom, top) = (
+        chunk.min_y().max(level.min_y),
+        chunk.max_y().min(level.max_y()),
+    );
+    let per = i64::from(below) + i64::from(above);
+    let y0 = i64::from(base) - i64::from(below);
+    for y in y0..y0 + per {
+        let state = match i32::try_from(y) {
+            Ok(y) if (bottom..top).contains(&y) => chunk.block(x & 15, y, z & 15),
+            _ => air,
+        };
+        out.push(state);
     }
-    Some((palette, blocks))
 }
 
 /// `edit`'s runs as `World::edit_runs` takes them: each palette entry `block`
 /// as its state in `palette`, each `y` counted from `height(surface, x, z)`
 /// when the run names a heightmap (read before any change, once a column).
-/// Err, with nothing resolved, for a run naming a palette entry or a filter
-/// past the end, or for more filters than a run can name (65536).
+/// Err, with nothing resolved, for a run naming a palette entry or a filter past the end.
 fn resolve_runs(
     edit: &BlockEdit,
     palette: &[u32],
     filters: usize,
     mut height: impl FnMut(Heightmap, i32, i32) -> i32,
-) -> Result<Vec<Run>, String> {
-    if filters > usize::from(u16::MAX) + 1 {
-        return Err(format!("{filters} filters: 65536 at most"));
-    }
+) -> Result<Vec<Run>, BlockEditError> {
     let mut heights: FxHashMap<(i32, i32, u8), i32> = FxHashMap::default();
     let mut runs = Vec::with_capacity(edit.runs.len());
-    for (i, r) in edit.runs.iter().enumerate() {
+    for r in &edit.runs {
         let Some(&state) = usize::try_from(r.block).ok().and_then(|b| palette.get(b)) else {
-            return Err(format!(
-                "run {i}: palette entry {} of {}",
-                r.block,
-                palette.len()
-            ));
+            return Err(BlockEditError::PaletteOutOfRange);
         };
         let only = match r.only {
             None => None,
-            Some(f) if (f as usize) < filters => Some(f as u16),
-            Some(f) => return Err(format!("run {i}: filter {f} of {filters}")),
+            Some(f) if (f as usize) < filters => Some(f as usize),
+            Some(_) => return Err(BlockEditError::FilterOutOfRange),
         };
         if r.height == 0 {
             continue;
@@ -473,16 +378,17 @@ fn replace_block_entities(
         // (`BlockEntity.isValidBlockState`); a mismatched or missing one
         // makes way for the block's own.
         if was != now
-            || !world
-                .block_entities
-                .get(&(x, y, z))
-                .is_some_and(|e| e.fits(&now))
+            || (!world.block_entities.is_taken(&(x, y, z))
+                && !world
+                    .block_entities
+                    .get(&(x, y, z))
+                    .is_some_and(|e| e.fits(&now)))
         {
             let pos = (x, y, z);
             if let Some(step) = staged.as_deref_mut().and_then(|steps| steps.get_mut(&pos))
                 && step.row.is_none()
             {
-                step.row = Some(take_replay_row(world, pos));
+                step.row = Some(ReplayEntity::take(world, pos));
             } else {
                 world.block_entities.remove(&pos);
             }
@@ -504,13 +410,8 @@ mod tests {
     #[ignore = "daily"]
     fn typed_bulk_late_refusals_preserve_the_world_and_emit_no_changes() {
         use crate::game::api_values::TryIntoApi;
-        use mod_api::{
-            StateConstraint, StatePredicate, StatePredicateRecord, StatePredicateTarget,
-        };
+        use mod_api::StatePredicate;
         crate::game::native_entity_refs::tests::with_game(|game| {
-            // The shared fixture is unticked; expose the dedicated-server bulk surface.
-            game.options.dedicated = Some(Vec::new());
-            let dimension = game.dim.id().to_owned();
             game.world
                 .chunks
                 .insert((0, 0), std::sync::Arc::new(Chunk::empty(0, 0)));
@@ -519,15 +420,13 @@ mod tests {
             let stone = registry.default_state("minecraft:stone").unwrap();
             let api_air = air.try_into_api().unwrap();
             let api_stone = stone.try_into_api().unwrap();
-            let metadata = mod_api::__private::block_definitions().unwrap();
-            let good = StatePredicate::block(metadata, api_air.block(), &[]).unwrap();
-            let bad = StatePredicate::from(StatePredicateRecord::new(
-                StatePredicateTarget::Block(api_air.block()),
-                vec![StateConstraint::new("unknown", "true")],
-            ));
+            let air_filter = StatePredicate::block(api_air.block(), &[]).unwrap();
+            let stone_filter = StatePredicate::block(api_stone.block(), &[]).unwrap();
             let mut edit = BlockEdit {
                 palette: vec![api_stone],
-                filters: vec![good, bad],
+                // Start with the last index just out of bounds. If that index is narrowed to
+                // u16 when the filter is present, it would select the stone filter at index 0.
+                filters: vec![stone_filter; 65_536],
                 runs: vec![BlockRun {
                     x: 0,
                     z: 0,
@@ -535,43 +434,344 @@ mod tests {
                     height: 1,
                     surface: None,
                     block: 0,
-                    only: Some(0),
+                    only: Some(65_536),
                 }],
             };
             game.world.block_log = Some(Vec::new());
             assert_eq!(game.world.block(0, 64, 0), air);
-            let refused = game.edit_blocks(&dimension, &edit);
+            let refused = game.apply_block_edit(&edit);
             assert_eq!(
                 game.world.block(0, 64, 0),
                 air,
-                "late filter refusal must preserve the world"
+                "an out-of-bounds filter index must preserve the world"
             );
             assert!(game.world.block_log.as_ref().unwrap().is_empty());
-            assert!(refused.is_err());
+            assert_eq!(refused, Err(BlockEditError::FilterOutOfRange));
 
-            edit.filters.pop();
+            edit.filters.push(air_filter);
             edit.palette
                 .push(mod_api::__private::block_state_from_ordinal(
                     api_stone.block(),
                     u16::MAX,
                 ));
-            let refused = game.edit_blocks(&dimension, &edit);
+            let refused = game.apply_block_edit(&edit);
             assert_eq!(
                 game.world.block(0, 64, 0),
                 air,
                 "late palette refusal must preserve the world"
             );
             assert!(game.world.block_log.as_ref().unwrap().is_empty());
-            assert!(refused.is_err());
+            assert!(matches!(refused, Err(BlockEditError::InvalidState(_))));
 
             edit.palette.pop();
-            assert_eq!(game.edit_blocks(&dimension, &edit), Ok(1));
+            assert_eq!(game.apply_block_edit(&edit), Ok(1));
             assert_eq!(
                 game.world.block(0, 64, 0),
                 stone,
-                "the same valid run must actually mutate"
+                "the run must match filter 65,536, not filter 0"
             );
             game.world.block_log = None;
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn mixed_bulk_and_ordinary_writes_publish_only_on_outer_commit() {
+        use crate::game::{api_values::TryIntoApi, native_entity_refs::tests::with_game};
+        use mod_api::BlockUpdateFlags;
+
+        with_game(|game| {
+            game.world
+                .chunks
+                .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+            game.world.block_log = Some(Vec::new());
+            let level = game.level(game.dim.id()).unwrap();
+            let state = |name| game.pack.assets.registry.default_state(name).unwrap();
+            let (air, stone, chest, dirt) = (
+                state("minecraft:air"),
+                state("minecraft:stone"),
+                state("minecraft:chest"),
+                state("minecraft:dirt"),
+            );
+            let original = [1, 64, 0];
+            let new_holder = [2, 64, 0];
+            let ordinary = [3, 64, 0];
+            let sync = [4, 64, 0];
+            for pos in [original, sync] {
+                assert_eq!(
+                    level.set_block(
+                        game,
+                        pos,
+                        chest.try_into_api().unwrap(),
+                        BlockUpdateFlags::NONE
+                    ),
+                    Ok(true)
+                );
+            }
+            let holder = game.block_entity(level, original).unwrap();
+            let explicit = game.block_entity(level, sync).unwrap();
+            let edit = BlockEdit {
+                palette: vec![stone.try_into_api().unwrap(), chest.try_into_api().unwrap()],
+                filters: vec![],
+                runs: [(original, 0), (new_holder, 1)]
+                    .into_iter()
+                    .map(|([x, y, z], block)| BlockRun {
+                        x,
+                        y,
+                        z,
+                        block,
+                        height: 1,
+                        surface: None,
+                        only: None,
+                    })
+                    .collect(),
+            };
+            game.world.modified.clear();
+            game.world.dirty_light.clear();
+            game.world.block_log.as_mut().unwrap().clear();
+
+            for commit in [false, true] {
+                game.storage_scope(|game, _| {
+                    game.storage_scope(|game, _| {
+                        assert_eq!(level.edit_blocks(game, &edit), Ok(2));
+                        ((), true)
+                    });
+                    assert!(game.block_entity(level, original).is_none());
+                    assert!(game.block_entity(level, new_holder).is_some());
+                    for pos in [ordinary, original] {
+                        assert_eq!(
+                            level.set_block(
+                                game,
+                                pos,
+                                dirt.try_into_api().unwrap(),
+                                BlockUpdateFlags::CLIENTS
+                            ),
+                            Ok(true)
+                        );
+                    }
+                    assert!(game.world.bulk_log.is_empty());
+                    assert!(game.world.dirty_light.is_empty());
+                    assert!(game.world.modified.is_empty());
+                    assert!(game.world.block_log.as_ref().unwrap().is_empty());
+                    ((), commit)
+                });
+                assert_eq!(
+                    game.world.block(1, 64, 0),
+                    if commit { dirt } else { chest }
+                );
+                assert_eq!(game.world.block(2, 64, 0), if commit { chest } else { air });
+                assert_eq!(game.world.block(3, 64, 0), if commit { dirt } else { air });
+                assert_eq!(
+                    game.block_entity(level, original),
+                    (!commit).then_some(holder)
+                );
+                assert_eq!(game.block_entity(level, new_holder).is_some(), commit);
+                assert_eq!(game.world.modified.contains(&(0, 0)), commit);
+                assert_eq!(game.world.dirty_light.contains(&(0, 0)), commit);
+                assert_eq!(game.world.bulk_log.contains(&(0, 0)), commit);
+            }
+            assert_eq!(explicit.sync(game), Ok(()));
+            assert!(game.world.block_log.as_ref().unwrap().contains(&(4, 64, 0)));
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn swapped_dimension_bulk_edits_use_only_their_own_level_journal() {
+        use crate::game::{Dim, api_values::TryIntoApi, native_entity_refs::tests::with_game};
+        use mod_api::BlockUpdateFlags;
+
+        with_game(|game| {
+            game.world
+                .chunks
+                .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+            game.world.block_log = Some(Vec::new());
+            let state = |name| game.pack.assets.registry.default_state(name).unwrap();
+            let (stone, dirt, cobblestone) = (
+                state("minecraft:stone"),
+                state("minecraft:dirt"),
+                state("minecraft:cobblestone"),
+            );
+            let overworld = game.level("minecraft:overworld").unwrap();
+            assert_eq!(
+                overworld.set_block(
+                    game,
+                    [1, 64, 0],
+                    stone.try_into_api().unwrap(),
+                    BlockUpdateFlags::NONE
+                ),
+                Ok(true)
+            );
+            let back = game.enter_command_level(Dim::Nether).unwrap();
+            game.world
+                .chunks
+                .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+            game.world.block_log = Some(Vec::new());
+            let nether = game.level("minecraft:the_nether").unwrap();
+            assert_eq!(
+                nether.set_block(
+                    game,
+                    [1, 64, 0],
+                    dirt.try_into_api().unwrap(),
+                    BlockUpdateFlags::NONE
+                ),
+                Ok(true)
+            );
+            game.world.modified.clear();
+            game.world.dirty_light.clear();
+            game.world.bulk_log.clear();
+            game.enter_command_level(back).unwrap();
+            game.world.modified.clear();
+            game.world.dirty_light.clear();
+            game.world.bulk_log.clear();
+
+            let edit = BlockEdit {
+                palette: vec![cobblestone.try_into_api().unwrap()],
+                filters: vec![],
+                runs: vec![BlockRun {
+                    x: 1,
+                    y: 64,
+                    z: 0,
+                    block: 0,
+                    height: 1,
+                    surface: None,
+                    only: None,
+                }],
+            };
+
+            game.storage_scope(|game, _| {
+                // Only the overworld transaction is open. The parked nether commits immediately.
+                assert_eq!(nether.edit_blocks(game, &edit), Ok(1));
+                let back = game.enter_command_level(Dim::Nether).unwrap();
+                assert_eq!(game.world.block(1, 64, 0), cobblestone);
+                assert!(game.world.modified.contains(&(0, 0)));
+                assert!(game.world.bulk_log.contains(&(0, 0)));
+                // The parked overworld still has its own open frame.
+                assert_eq!(overworld.edit_blocks(game, &edit), Ok(1));
+                let parked = game.levels.parked_world(Dim::Overworld).unwrap();
+                assert_eq!(parked.block(1, 64, 0), cobblestone);
+                assert!(parked.modified.is_empty());
+                assert!(parked.bulk_log.is_empty());
+
+                // A nether transaction commits its own edits even with an overworld parent.
+                game.storage_scope(|game, _| {
+                    let reset = BlockEdit {
+                        palette: vec![dirt.try_into_api().unwrap()],
+                        ..edit
+                    };
+                    assert_eq!(nether.edit_blocks(game, &reset), Ok(1));
+                    ((), true)
+                });
+                game.enter_command_level(back).unwrap();
+                ((), false)
+            });
+            assert_eq!(game.world.block(1, 64, 0), stone);
+            assert!(game.world.modified.is_empty());
+            assert!(game.world.bulk_log.is_empty());
+            assert_eq!(
+                game.levels
+                    .parked_world(Dim::Nether)
+                    .unwrap()
+                    .block(1, 64, 0),
+                dirt
+            );
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn aborted_bulk_replacement_restores_loaned_block_entity_lease() {
+        use crate::game::{api_values::TryIntoApi, native_entity_refs::tests::with_game};
+        use mod_api::BlockUpdateFlags;
+        use sunrise_client::items::ItemStack;
+
+        with_game(|game| {
+            game.world
+                .chunks
+                .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+            let level = game.level(game.dim.id()).unwrap();
+            let state = |name| game.pack.assets.registry.default_state(name).unwrap();
+            let (chest, stone, hopper) = (
+                state("minecraft:chest"),
+                state("minecraft:stone"),
+                state("minecraft:hopper"),
+            );
+            let to_stone = [1, 64, 0];
+            let to_hopper = [2, 64, 0];
+            let diamond = ItemStack::new("minecraft:diamond", 1);
+            for pos in [to_stone, to_hopper] {
+                assert_eq!(
+                    level.set_block(
+                        game,
+                        pos,
+                        chest.try_into_api().unwrap(),
+                        BlockUpdateFlags::NONE
+                    ),
+                    Ok(true)
+                );
+                game.world
+                    .block_entities
+                    .get_mut(&(pos[0], pos[1], pos[2]))
+                    .unwrap()
+                    .slots_mut()[0] = Some(diamond.clone());
+            }
+            let h1 = game.block_entity(level, to_stone).unwrap();
+            let h2 = game.block_entity(level, to_hopper).unwrap();
+            let (lease1, entity1) = game.world.block_entities.take(&(1, 64, 0)).unwrap();
+            let (lease2, entity2) = game.world.block_entities.take(&(2, 64, 0)).unwrap();
+
+            let edit = BlockEdit {
+                palette: vec![
+                    stone.try_into_api().unwrap(),
+                    hopper.try_into_api().unwrap(),
+                ],
+                filters: vec![],
+                runs: [(to_stone, 0), (to_hopper, 1)]
+                    .into_iter()
+                    .map(|([x, y, z], block)| BlockRun {
+                        x,
+                        y,
+                        z,
+                        block,
+                        height: 1,
+                        surface: None,
+                        only: None,
+                    })
+                    .collect(),
+            };
+
+            game.storage_scope(|game, _| {
+                game.storage_scope(|game, _| {
+                    assert_eq!(level.edit_blocks(game, &edit), Ok(2));
+                    ((), true)
+                });
+                assert!(game.block_entity(level, to_stone).is_none());
+                assert_ne!(game.block_entity(level, to_hopper), Some(h2));
+                assert!(game.block_entity(level, to_hopper).is_some());
+                ((), false)
+            });
+
+            assert_eq!(game.world.block(1, 64, 0), chest);
+            assert_eq!(game.world.block(2, 64, 0), chest);
+            assert!(game.world.block_entities.put(lease1, entity1));
+            assert!(game.world.block_entities.put(lease2, entity2));
+            assert_eq!(game.block_entity(level, to_stone), Some(h1));
+            assert_eq!(game.block_entity(level, to_hopper), Some(h2));
+            for pos in [(1, 64, 0), (2, 64, 0)] {
+                assert_eq!(
+                    game.world.block_entities.get(&pos).unwrap().slots()[0],
+                    Some(diamond.clone())
+                );
+            }
+
+            let (lease, entity) = game.world.block_entities.take(&(1, 64, 0)).unwrap();
+            game.storage_scope(|game, _| {
+                assert_eq!(level.edit_blocks(game, &edit), Ok(2));
+                ((), true)
+            });
+            assert!(!game.world.block_entities.put(lease, entity));
+            assert_eq!(game.world.block(1, 64, 0), stone);
+            assert!(game.world.block_entities.get(&(1, 64, 0)).is_none());
         });
     }
 
@@ -617,14 +817,23 @@ mod tests {
                 0
             })
         };
-        assert!(bad(vec![run(0, None), run(2, None)]).is_err());
-        assert!(bad(vec![run(0, None), run(u32::MAX, None)]).is_err());
-        assert!(bad(vec![run(0, Some(1))]).is_err());
-        assert!(bad(vec![run(0, Some(u32::MAX))]).is_err());
+        assert_eq!(
+            bad(vec![run(0, None), run(2, None)]),
+            Err(BlockEditError::PaletteOutOfRange)
+        );
+        assert_eq!(
+            bad(vec![run(0, None), run(u32::MAX, None)]),
+            Err(BlockEditError::PaletteOutOfRange)
+        );
+        assert_eq!(
+            bad(vec![run(0, Some(1))]),
+            Err(BlockEditError::FilterOutOfRange)
+        );
+        assert_eq!(
+            bad(vec![run(0, Some(u32::MAX))]),
+            Err(BlockEditError::FilterOutOfRange)
+        );
         assert_eq!(asked, 0);
-        // more filters than a run's u16 names
-        assert!(resolve_runs(&edit(vec![]), &palette, 65_537, |_, _, _| 0).is_err());
-        assert!(resolve_runs(&edit(vec![]), &palette, 65_536, |_, _, _| 0).is_ok());
     }
 
     #[test]
@@ -871,26 +1080,13 @@ mod tests {
     }
 
     #[test]
-    fn columns_not_loaded_have_no_height() {
+    fn column_blocks_read_air_past_the_column() {
         let w = columns_world();
-        let heights = loaded_heights(&w, &[(1, 1), (100, 100), (2, 2), (-1, 0)], |x, z| {
-            height(&w, Heightmap::OceanFloor, x, z)
-        });
-        assert_eq!(heights, [Some(65), None, Some(63), None]);
-    }
-
-    #[test]
-    fn column_blocks_read_air_past_the_column_and_where_not_loaded() {
-        let w = columns_world();
-        let (palette, blocks) = column_blocks(
-            &w,
-            &[(1, 1), (3, 3), (100, 100)],
-            &[Some(65), Some(319), None],
-            2,
-            3,
-        )
-        .unwrap();
-        let read: Vec<u32> = blocks.iter().map(|&i| palette[i as usize].0).collect();
+        let chunk = w.chunks.get(&(0, 0)).unwrap();
+        let mut out = Vec::new();
+        fill_column_blocks(w.air, chunk, w.shape, 1, 1, 65, 2, 3, &mut out);
+        fill_column_blocks(w.air, chunk, w.shape, 3, 3, 319, 2, 3, &mut out);
+        let read: Vec<u32> = out.iter().map(|s| s.0).collect();
         // (`names` calls state 2 a chest: here it stands for leaves)
         let (leaves, stone, air) = (2, 1, 0);
         assert_eq!(
@@ -898,38 +1094,34 @@ mod tests {
             [
                 leaves, leaves, air, air, air, // (1, 1) from 63
                 air, air, stone, air, air, // (3, 3) from 317: stone at 319, nothing over 319
-                air, air, air, air, air, // not loaded
             ]
         );
-        // Distinct states appear once each.
-        assert_eq!(palette.len(), 3);
+    }
+
+    /// The Nether's build range is 0..256 inside storage padded to the overworld's: a column
+    /// there starts at 0, reads air outside its range, and spans at most 256 rows.
+    #[test]
+    fn a_shorter_level_bounds_columns_by_its_own_range() {
+        let mut w = columns_world();
+        w.shape = LevelShape::NETHER;
+        assert_eq!(height(&w, Heightmap::OceanFloor, 5, 5), 0);
+        assert_eq!(height(&w, Heightmap::WorldSurface, 100, 100), 0);
+        let chunk = w.chunks.get(&(0, 0)).unwrap();
+        let mut out = Vec::new();
+        // Rows -2..=2: the two below the level read air, the rest are the stone below 60.
+        fill_column_blocks(w.air, chunk, w.shape, 1, 1, 1, 3, 2, &mut out);
+        let read: Vec<u32> = out.iter().map(|s| s.0).collect();
+        assert_eq!(read, [0, 0, 1, 1, 1]);
+        assert_eq!(column_span(0, 256, w.shape.height), Some(256));
+        assert_eq!(column_span(0, 257, w.shape.height), None);
     }
 
     #[test]
-    fn column_palette_preserves_distinct_property_states() {
-        let mut w = world();
-        w.set(1, 5, 1, BlockStateId(2)).unwrap();
-        w.set(1, 6, 1, BlockStateId(4)).unwrap();
-        w.set(1, 7, 1, BlockStateId(2)).unwrap();
-        let (palette, blocks) = column_blocks(&w, &[(1, 1)], &[Some(5)], 0, 3).unwrap();
-        assert_eq!(palette, [BlockStateId(2), BlockStateId(4)]);
-        assert_eq!(blocks, [0, 1, 0]);
-    }
-
-    #[test]
-    fn a_read_is_bounded() {
-        assert_eq!(read_size(10, 200, 184, 384), Ok(3840));
-        assert!(
-            read_size(1, 200, 185, 384).is_err(),
-            "more than the level's height"
-        );
-        assert!(read_size(1, 0, 0, 384).is_err(), "an empty span");
-        assert!(read_size(1, u32::MAX, 1, 4064).is_err());
-        assert!(read_size(1 << 14, 100, 0, 384).is_err(), "over MAX_READ");
-        assert!(read_size(usize::MAX, 2, 0, 384).is_err());
-        assert_eq!(read_size(1 << 12, 256, 0, 384), Ok(MAX_READ));
-        let w = columns_world();
-        assert!(column_blocks(&w, &[(1, 1)], &[Some(0)], u32::MAX, 2).is_none());
+    fn column_span_matches_level_height_only() {
+        assert_eq!(column_span(200, 184, 384), Some(384));
+        assert_eq!(column_span(200, 185, 384), None);
+        assert_eq!(column_span(0, 0, 384), None);
+        assert_eq!(column_span(u32::MAX, 1, 4064), None);
     }
 
     #[test]

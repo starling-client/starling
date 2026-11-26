@@ -135,6 +135,7 @@ impl Hooks for DeclareGeneral {
             mod_api::GeneralSavePolicy::NoSave,
             false,
             false,
+            false,
             None,
             8,
             3,
@@ -215,13 +216,18 @@ fn every_walk_family_of_the_entity_lists_fires_its_case() {
             // its tick's gravity.
             assert!(game.run_command(&format!("summon experience_orb {} 40.5 5.5", at(7)[0])));
             // The falling block: thrown by the game's own spawn, eastbound.
-            assert!(game.spawn_falling_block(
-                "minecraft:overworld",
-                stone,
-                at(6),
-                [0.5, 0.0, 0.0],
-                mod_api::Falling::default()
-            ));
+            let level = game.level("minecraft:overworld").unwrap();
+            assert!(
+                game.level_spawn_falling_block(
+                    level,
+                    stone,
+                    at(6),
+                    [0.5, 0.0, 0.0],
+                    mod_api::Falling::default(),
+                )
+                .unwrap()
+                .is_some()
+            );
             // The trident: a thrown one in flight, a `setPos` flyer.
             let id = game.take_entity_id();
             let mut trident = super::trident::ThrownTrident::remote(
@@ -239,6 +245,11 @@ fn every_walk_family_of_the_entity_lists_fires_its_case() {
                 velocity: [0.5, 0.0, 0.0],
                 rotation: [0.0, 90.0],
                 owner: None,
+                custom_name: None,
+                custom_name_visible: false,
+                base: Default::default(),
+                on_ground: false,
+                fall_distance: 0.0,
                 uuid: [11, 12, 13, 14],
                 envelope: crate::game::general::GeneralTypeEnvelope {
                     type_key: "mymod:robot".to_owned(),
@@ -405,8 +416,7 @@ fn the_off_walk_movers_fire_too() {
                 "the dragon is an off-walk mover"
             );
             log.lock().unwrap().clear();
-            // Overworld: no fight, so the fight tick runs `aiStep` directly.
-            game.tick_fight();
+            game.tick_dragon();
             let heard = std::mem::take(&mut *log.lock().unwrap());
             assert!(
                 heard.iter().any(|(kind, cause)| {
@@ -529,4 +539,298 @@ fn a_drowning_dolphins_goal_move_fires_too() {
             );
         });
     });
+}
+
+/// `Entity.move` ends the same way whatever moved the entity: a general row set down on a
+/// floor by a self move, a piston push or either lid's push stands on it, has collided
+/// vertically, loses only its vertical speed and forgets its fall; a row with `noPhysics`
+/// passes through the floor and keeps every flag false.
+#[test]
+#[ignore = "daily"]
+fn a_general_rows_collided_move_writes_its_flags_for_every_cause() {
+    use crate::game::general::{GeneralEntityRecord, GeneralTypeEnvelope};
+    use mod_api::EntityRef;
+    mod_platform::__private::initialize().unwrap();
+    let _registration = mod_platform::__private::RegistrationGuard::open();
+    let mods: mod_api::Mods =
+        vec![mod_api::ModEntry::new("mymod", Box::new(DeclareGeneral))].into();
+    mod_platform::testing::with_mods(mods, || {
+        with_game(|game| {
+            game.options.dedicated = Some(Vec::new());
+            game.native_level_opened(crate::game::Dim::Overworld);
+            game.build_registries();
+            game.reset_entity_residency();
+            let stone = game
+                .pack
+                .assets
+                .registry
+                .default_state("minecraft:stone")
+                .unwrap();
+            let mut chunk = sunrise_client::chunk::Chunk::empty(0, 0);
+            for x in 0..16 {
+                for z in 0..16 {
+                    chunk.set(x, 8, z, stone.0);
+                }
+            }
+            game.world.chunks.insert((0, 0), std::sync::Arc::new(chunk));
+            let epoch = game.native_lifecycle.epoch().unwrap();
+            // The floor's top is at y = 9: a row 0.3 above it, asked to drop 0.4, drops 0.3.
+            let causes = [
+                (MoveCause::SelfMovement, false),
+                (MoveCause::Piston, false),
+                (MoveCause::ShulkerBox, false),
+                (MoveCause::Shulker, false),
+                (MoveCause::SelfMovement, true),
+            ];
+            for (i, (cause, no_physics)) in causes.into_iter().enumerate() {
+                let record = GeneralEntityRecord {
+                    position: [2.5 + 2.0 * i as f64, 9.3, 5.5],
+                    velocity: [0.3, -0.4, 0.0],
+                    rotation: [0.0; 2],
+                    owner: None,
+                    custom_name: None,
+                    custom_name_visible: false,
+                    base: Default::default(),
+                    on_ground: false,
+                    fall_distance: 1.0,
+                    uuid: [1, 2, 3, i as i32],
+                    envelope: GeneralTypeEnvelope {
+                        type_key: "mymod:robot".to_owned(),
+                        payload_version: 3,
+                        payload_bytes: Vec::new(),
+                    },
+                    passengers: Vec::new(),
+                };
+                game.load_listed("mymod:robot", None, None, record.to_tag())
+                    .unwrap();
+                let row = game
+                    .resident_entities
+                    .general
+                    .rows
+                    .iter_mut()
+                    .last()
+                    .unwrap();
+                row.no_physics = no_physics;
+                let id = row.id;
+                let moved = game
+                    .entity_move_by(EntityRef::new(epoch, id), [0.0, -0.4, 0.0], cause)
+                    .unwrap();
+                let row = game.resident_entities.general.row(id).unwrap();
+                assert!(!row.horizontal_collision, "{cause:?}");
+                assert_eq!(row.velocity.x, 0.3, "{cause:?}");
+                if no_physics {
+                    assert!((moved[1] + 0.4).abs() < 1.0e-9, "{cause:?}: {moved:?}");
+                    assert!(!row.on_ground && !row.vertical_collision, "{cause:?}");
+                    assert_eq!(row.velocity.y, -0.4, "{cause:?}");
+                } else {
+                    assert!((moved[1] + 0.3).abs() < 1.0e-9, "{cause:?}: {moved:?}");
+                    assert!(row.on_ground, "{cause:?}");
+                    assert!(
+                        row.vertical_collision && row.vertical_collision_below,
+                        "{cause:?}"
+                    );
+                    assert_eq!(row.velocity.y, 0.0, "{cause:?}");
+                    assert_eq!(row.fall_distance, 0.0, "{cause:?}");
+                }
+            }
+        });
+    });
+}
+
+/// A one-chunk level whose floor of `floor` has its top at y = 9, with `extra` blocks set above
+/// it, and the census's general type declared. `test` gets the game and the level's epoch.
+fn with_general_level(
+    floor: &str,
+    extra: &[(i32, i32, i32, &str)],
+    test: impl FnOnce(&mut crate::game::Game<'_>, mod_api::WorldEpoch),
+) {
+    mod_platform::__private::initialize().unwrap();
+    let _registration = mod_platform::__private::RegistrationGuard::open();
+    let mods: mod_api::Mods =
+        vec![mod_api::ModEntry::new("mymod", Box::new(DeclareGeneral))].into();
+    mod_platform::testing::with_mods(mods, || {
+        with_game(|game| {
+            game.options.dedicated = Some(Vec::new());
+            game.native_level_opened(crate::game::Dim::Overworld);
+            game.build_registries();
+            game.reset_entity_residency();
+            let registry = &game.pack.assets.registry;
+            let floor = registry.default_state(floor).unwrap();
+            let extra: Vec<_> = extra
+                .iter()
+                .map(|&(x, y, z, name)| (x, y, z, registry.default_state(name).unwrap()))
+                .collect();
+            let mut chunk = sunrise_client::chunk::Chunk::empty(0, 0);
+            for x in 0..16 {
+                for z in 0..16 {
+                    chunk.set(x, 8, z, floor.0);
+                }
+            }
+            for (x, y, z, state) in extra {
+                chunk.set(x, y, z, state.0);
+            }
+            game.world.chunks.insert((0, 0), std::sync::Arc::new(chunk));
+            let epoch = game.native_lifecycle.epoch().unwrap();
+            test(game, epoch);
+        });
+    });
+}
+
+/// Loads one general row at `at` with `velocity` and `fall_distance` and returns its id.
+fn load_general_row(
+    game: &mut crate::game::Game<'_>,
+    at: [f64; 3],
+    velocity: [f64; 3],
+    fall_distance: f64,
+) -> u32 {
+    let record = crate::game::general::GeneralEntityRecord {
+        position: at,
+        velocity,
+        rotation: [0.0; 2],
+        owner: None,
+        custom_name: None,
+        custom_name_visible: false,
+        base: Default::default(),
+        on_ground: false,
+        fall_distance,
+        uuid: [4, 5, 6, game.resident_entities.general.rows.len() as i32],
+        envelope: crate::game::general::GeneralTypeEnvelope {
+            type_key: "mymod:robot".to_owned(),
+            payload_version: 3,
+            payload_bytes: Vec::new(),
+        },
+        passengers: Vec::new(),
+    };
+    game.load_listed("mymod:robot", None, None, record.to_tag())
+        .unwrap();
+    game.resident_entities
+        .general
+        .rows
+        .iter()
+        .last()
+        .unwrap()
+        .id
+}
+
+/// `Entity.move`'s fall-reset ray: a general row that moves a block or more through a block of
+/// `#minecraft:fall_damage_resetting` forgets its fall before the move's own fall check adds the
+/// distance it went, while a move shorter than a block, or one through open air, keeps it.
+#[test]
+#[ignore = "daily"]
+fn a_general_row_moving_through_a_fall_resetting_block_forgets_its_fall() {
+    use mod_api::EntityRef;
+    // A block of the tag with no collider, so the row passes through it.
+    let web = "minecraft:cobweb";
+    with_general_level(
+        "minecraft:stone",
+        &[(5, 15, 5, web), (5, 14, 5, web)],
+        |game, epoch| {
+            assert!(
+                game.res.motion().fall_reset.contains(web),
+                "{web} is in #minecraft:fall_damage_resetting"
+            );
+            // Two blocks down the column: the ray crosses the web, the fall restarts at the move.
+            let id = load_general_row(game, [5.5, 16.5, 5.5], [0.0; 3], 5.0);
+            game.entity_move_by(
+                EntityRef::new(epoch, id),
+                [0.0, -2.0, 0.0],
+                MoveCause::SelfMovement,
+            )
+            .unwrap();
+            let row = game.resident_entities.general.row(id).unwrap();
+            assert_eq!(row.fall_distance, 2.0, "reset, then the 2 blocks it went");
+            // The same two blocks of open air beside the column keep the fall and add to it.
+            let id = load_general_row(game, [9.5, 16.5, 9.5], [0.0; 3], 5.0);
+            game.entity_move_by(
+                EntityRef::new(epoch, id),
+                [0.0, -2.0, 0.0],
+                MoveCause::SelfMovement,
+            )
+            .unwrap();
+            let row = game.resident_entities.general.row(id).unwrap();
+            assert_eq!(row.fall_distance, 7.0);
+            // Less than a block never casts the ray: the web is crossed, the fall stays.
+            let id = load_general_row(game, [5.5, 15.9, 5.5], [0.0; 3], 5.0);
+            game.entity_move_by(
+                EntityRef::new(epoch, id),
+                [0.0, -0.9, 0.0],
+                MoveCause::SelfMovement,
+            )
+            .unwrap();
+            let row = game.resident_entities.general.row(id).unwrap();
+            assert!(
+                (row.fall_distance - 5.9).abs() < 1.0e-6,
+                "{}",
+                row.fall_distance
+            );
+        },
+    );
+}
+
+/// `restituteMovementAfterCollisions` for a non-living entity: a general row landing on slime
+/// leaves it upward at `Block.getBounceRestitution() * 0.8F` of the speed it hit with (scaled by
+/// the fraction of the move it completed), where on stone it just stops.
+#[test]
+#[ignore = "daily"]
+fn a_general_row_landing_on_slime_bounces_and_on_stone_stops() {
+    use mod_api::EntityRef;
+    for (floor, bounces) in [("minecraft:slime_block", true), ("minecraft:stone", false)] {
+        with_general_level(floor, &[], |game, epoch| {
+            // 0.3 above the floor, asked to drop 0.4 at speed 0.4: it travels 3/4 of the move.
+            let id = load_general_row(game, [5.5, 9.3, 5.5], [0.0, -0.4, 0.0], 0.0);
+            game.entity_move_by(
+                EntityRef::new(epoch, id),
+                [0.0, -0.4, 0.0],
+                MoveCause::SelfMovement,
+            )
+            .unwrap();
+            let row = game.resident_entities.general.row(id).unwrap();
+            assert!(row.on_ground && row.vertical_collision_below);
+            if bounces {
+                // (gravity - old.y) * drag * bounce, with no gravity, the fraction 0.75 of an
+                // air drag of 0.98F, and slime's 1.0F * 0.8F.
+                let drag = 1.0 + 0.75 * (f64::from(0.98_f32) - 1.0);
+                let expected = 0.4 * drag * f64::from(0.8_f32);
+                assert!(
+                    (row.velocity.y - expected).abs() < 1.0e-9,
+                    "bounced at {}, wanted {expected}",
+                    row.velocity.y
+                );
+            } else {
+                assert_eq!(row.velocity.y, 0.0);
+            }
+        });
+    }
+}
+
+/// `Entity.getBlockSpeedFactor` at the end of `Entity.move`: a general row moving over soul sand
+/// keeps 0.4 of its horizontal velocity and all of its vertical one; over stone it keeps all.
+#[test]
+#[ignore = "daily"]
+fn a_general_row_moving_over_soul_sand_is_slowed() {
+    use mod_api::EntityRef;
+    for (floor, factor) in [("minecraft:soul_sand", 0.4), ("minecraft:stone", 1.0)] {
+        with_general_level(floor, &[], |game, epoch| {
+            // Over the floor's top (8.875 for soul sand, 9 for stone) and moving within it.
+            let id = load_general_row(game, [5.5, 9.3, 5.5], [0.3, -0.05, 0.2], 0.0);
+            game.entity_move_by(
+                EntityRef::new(epoch, id),
+                [0.0, -0.01, 0.0],
+                MoveCause::SelfMovement,
+            )
+            .unwrap();
+            let row = game.resident_entities.general.row(id).unwrap();
+            assert!(
+                (row.velocity.x - 0.3 * factor).abs() < 1.0e-6,
+                "{floor}: {:?}",
+                row.velocity
+            );
+            assert!(
+                (row.velocity.z - 0.2 * factor).abs() < 1.0e-6,
+                "{floor}: {:?}",
+                row.velocity
+            );
+            assert_eq!(row.velocity.y, -0.05, "{floor}");
+        });
+    }
 }

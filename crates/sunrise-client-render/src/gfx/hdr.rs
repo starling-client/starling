@@ -7,10 +7,9 @@
 //! the hand and HUD so only it is expanded.
 //!
 //! On the float frame Sunrise's world light is the same on every display (`TIERS`, up to
-//! `SCENE_PEAK`), and the tone curve alone fits it to the display's peak
-//! (docs/design/hdr-linear-light.md, step 6a). Lit surfaces get no gain: diffuse white stays at
-//! paper white, and HDR's range above it is the light sources' and the sun's. The sun's disc
-//! alone follows the display past the scene's peak (`SUN_CAP`).
+//! `SCENE_PEAK`), and the tone curve alone fits it to the display's peak. Lit surfaces get no
+//! gain: diffuse white stays at paper white, and HDR's range above it is the light sources' and
+//! the sun's. The sun's disc alone follows the display past the scene's peak (`SUN_CAP`).
 
 /// The swapchain HDR output presents to.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -103,9 +102,8 @@ struct Targets {
     passes: Option<[wgpu::BindGroup; 3]>,
 }
 
-/// The float frame with HUD coverage (`hud_coverage::supported`, docs/design/hdr-linear-light.md
-/// "The HUD and menus"): the default world draws write light directly; the tone curve eases
-/// it into the peak after the post effects (`tonemap`); the
+/// The float frame with HUD coverage (`hud_coverage::supported`): the default world draws write
+/// light directly; the tone curve eases it into the peak after the post effects (`tonemap`); the
 /// camera overlays draw on that light; the HUD draws on a target of its own,
 /// the world clipped to white (`keep_world`); and the last pass composites the HUD over the
 /// world's light by its coverage (`fs_hdr_layered`), as the menu blur does before it blurs
@@ -1561,10 +1559,9 @@ struct ReferenceParams { peak: f32, unused: f32, world: f32, debug: f32, share: 
         assert!(above[0] > white[0] && above[1] > white[1]);
     }
 
-    /// The world's writers read the same gains at any paper white and peak
-    /// (docs/design/hdr-linear-light.md, step 6a). Of the display only the sun's disc's peak
-    /// reaches them: the scene's up to a display at it, so there nothing differs; above it the
-    /// display's, up to `SUN_CAP`.
+    /// The world's writers read the same gains at any paper white and peak. Of the display only
+    /// the sun's disc's peak reaches them: the scene's up to a display at it, so there nothing
+    /// differs; above it the display's, up to `SUN_CAP`.
     #[test]
     #[ignore = "daily"]
     fn the_writers_light_is_the_same_on_every_display_but_the_suns_disc() {

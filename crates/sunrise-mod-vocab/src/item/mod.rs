@@ -2,14 +2,16 @@
 
 pub(crate) mod capability;
 pub(crate) mod capability_cache;
+pub(crate) mod carried_destroy;
 // hidden: a module of game-side types; mods use their re-exports
 #[doc(hidden)]
 pub mod containers;
 // hidden: a module of game-side types; mods use their re-exports
 #[doc(hidden)]
 pub mod crafting;
+pub(crate) mod creative_give;
 pub(crate) mod creative_tabs;
-pub(crate) mod enchantment_damage;
+pub(crate) mod enchantment_effects;
 // hidden: a module of game-side types; mods use their re-exports
 #[doc(hidden)]
 pub mod enchantments;
@@ -43,6 +45,7 @@ pub(crate) mod recipe_rule;
 #[doc(hidden)]
 pub mod stations;
 pub(crate) mod storage;
+pub(crate) mod storage_slot;
 pub(crate) mod tooltip_appender;
 pub(crate) mod tooltip_element;
 pub(crate) mod transaction;

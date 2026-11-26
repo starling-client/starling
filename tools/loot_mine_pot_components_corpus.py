@@ -1,5 +1,10 @@
 """Actual pot source -> loot mine -> chest, without a world observation tick."""
-from command_exec_corpus import cmd, setup
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools.command_exec_corpus import cmd, setup
 
 CHEST = "12 200 4"
 RIGHT = "minecraft:angler_pottery_sherd"

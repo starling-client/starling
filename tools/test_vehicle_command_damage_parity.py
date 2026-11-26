@@ -2,7 +2,9 @@
 """Generic vehicle damage (no attacker, or a creative player), exact command records and raw bodies."""
 import hashlib,json,sys,tempfile,uuid
 from pathlib import Path
-import test_command_exec_parity as driver
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_command_exec_parity as driver
 def program():
  ops=[]
  def cmd(text,label,result=None,admission=True,diagnostic=False):

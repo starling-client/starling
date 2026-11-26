@@ -26,7 +26,7 @@ impl Game<'_> {
     pub(super) fn draw_item(&self, batch: &mut HudBatch, stack: &ItemStack, x: f32, y: f32) {
         // `GuiGraphics.renderItem`: the resolved item model (tints, foil and
         // special renderers included), then the decorations.
-        self.draw_item_model(batch, stack, x, y);
+        self.draw_item_model(batch, stack, x, y, 0);
         self.draw_item_decorations(batch, stack, x, y, None);
     }
     /// `extractSlot` of slot `slot` holding `stack` at (x, y): during a quick
@@ -56,8 +56,13 @@ impl Game<'_> {
             None => (stack.as_ref(), false),
         };
         if let Some(stack) = stack {
-            self.draw_item_model(batch, stack, x, y);
-            let text = capped.then(|| format!("\u{a7}e{}", stack.count));
+            self.draw_item_model(batch, stack, x, y, 0);
+            let mut count = [0; 13];
+            let text = if capped {
+                Some(hud_overlays::item_count_text(stack.count, true, &mut count))
+            } else {
+                None
+            };
             self.draw_item_decorations(batch, stack, x, y, text);
         } else if let Some(icon) =
             container_slot_index(slot).and_then(|slot| self.native_screen_slot_icon(slot))
@@ -124,27 +129,35 @@ impl Game<'_> {
         stack: &ItemStack,
         x: f32,
         y: f32,
-        count_text: Option<String>,
+        count_text: Option<&str>,
+    ) {
+        self.draw_vanilla_item_decorations(batch, stack, x, y, count_text);
+        let hook = mod_api::HookId::ItemDecorations;
+        if mod_api::__private::has_part_hook(hook) || mod_api::__private::listened(hook) {
+            // The ordinary inventory, hotbar and tooltip paths draw in screen GUI units.
+            self.draw_item_decorator(batch, stack, x, y);
+        }
+    }
+
+    /// Emit only the standard bar (including `item_bar`'s choice), cooldown and count.
+    /// A scoped caller poses this suffix before lending its canvas to the decorator.
+    pub(in crate::game) fn draw_vanilla_item_decorations(
+        &self,
+        batch: &mut HudBatch,
+        stack: &ItemStack,
+        x: f32,
+        y: f32,
+        count_text: Option<&str>,
     ) {
         // GuiGraphicsExtractor.itemDecorations, laid out at the origin and
         // moved to (x, y): the damage bar, the cooldown shade and the count.
-        let info = self.items().get(&stack.item);
-        // ItemStack.isBarVisible: isDamaged, which an unbreakable stack never is.
-        let max_damage = if sunrise_client::stations::is_damageable(self.items(), stack) {
-            stack.max_damage(info)
-        } else {
-            0
-        };
+        let items = self.items();
+        let info = items.get(&stack.item);
         let cooldown =
             sunrise_client::cooldowns::group(stack, info.and_then(|i| i.use_cooldown.as_ref()));
         let partial = self.clock.fraction() as f32;
-        // BundleItem overrides the bar with its fullness.
-        let mut bar = if info.is_some_and(|item| item.bundle) {
-            sunrise_client::bundle::Contents::of(self.items(), stack)
-                .and_then(|contents| contents.bar())
-        } else {
-            hud_overlays::damage_bar(stack.effective_damage(info), max_damage)
-        };
+        let mut bar = sunrise_items::properties::stack_bar(items, stack, info)
+            .map(|bar| (bar.width, bar.color));
         // Client-only: a mod may replace or hide the bar vanilla just chose.
         self.native_item_bar(stack, &mut bar);
         let decorations = hud_overlays::ItemDecorations {
@@ -153,18 +166,7 @@ impl Game<'_> {
             bar,
             cooldown: self.cooldowns.percent(&cooldown, partial),
         };
-        let mut draws = vec![hud_layout::GuiDraw::Push(vec![
-            hud_layout::PoseOp::Translate(x, y),
-        ])];
-        draws.extend(hud_overlays::item_decorations(
-            0,
-            0,
-            &decorations,
-            &self.gui.atlas.font,
-        ));
-        draws.push(hud_layout::GuiDraw::Pop);
-        hud_layout::paint(batch, &self.gui.atlas, &draws);
-        self.native_item_decorations(stack, x, y, batch);
+        hud_overlays::paint_item_decorations(batch, &self.gui.atlas, [x, y], &decorations);
     }
     /// The open container screen's player-inventory origin (`getXOrigin`/
     /// `getYOrigin`): the build's, or the frame's own arithmetic with no
@@ -178,14 +180,14 @@ impl Game<'_> {
     /// `inventory_origin` from the game's state alone: the container build's
     /// own arithmetic, and the fallback when no build holds this size. The
     /// open book moves the window right, the room the mods ask beside it
-    /// (`screen_room`) left.
+    /// (`screen_room`) either way.
     pub(super) fn inventory_origin_unbuilt(&self, batch: &HudBatch) -> (f32, f32) {
         if self.screen == Screen::Creative {
             return Self::creative_origin(batch);
         }
         let width = self.native_screen_width().unwrap_or(176.0);
         let (x, y) = batch.centered_origin(width, self.screen_height());
-        let x = x + self.recipe_book_shift(batch.width) - self.screen_room_shift(batch);
+        let x = x + self.recipe_book_shift(batch.width) + self.screen_room_offset(batch);
         (x, y)
     }
     /// InventoryMenu / CraftingMenu slot layouts.
@@ -226,6 +228,8 @@ impl Game<'_> {
         };
         let inventory_x = self.native_screen_inventory_x().unwrap_or(8.0);
         match i {
+            // A mod screen's committed move of a player slot, else the grid below.
+            0..36 if let Some(p) = self.native_screen_player_slot(i) => p,
             0..9 => (inventory_x + i as f32 * 18.0, 142.0 + shift),
             9..36 => (
                 inventory_x + ((i - 9) % 9) as f32 * 18.0,
@@ -374,7 +378,7 @@ impl Game<'_> {
         self.draw_slot_highlight(batch, front, ox + sx, oy + sy);
     }
     pub(super) fn slot_mut(&mut self, i: usize) -> &mut Option<ItemStack> {
-        if i >= MOD_MENU_SLOT_BASE {
+        if i >= MOD_MENU_SLOT_BASE && !self.is_mount_chest_slot(i) {
             return self.container_slot_mut(i - MOD_MENU_SLOT_BASE);
         }
         if i >= mount_menu::SADDLE {
@@ -405,7 +409,9 @@ impl Game<'_> {
             309 if matches!(self.container_kind(), Some(BlockEntity::Crafter(_))) => {
                 self.crafter_result()
             }
-            i if i >= MOD_MENU_SLOT_BASE => self.container_slot(i - MOD_MENU_SLOT_BASE).clone(),
+            i if i >= MOD_MENU_SLOT_BASE && !self.is_mount_chest_slot(i) => {
+                self.container_slot(i - MOD_MENU_SLOT_BASE).clone()
+            }
             i if i >= mount_menu::SADDLE => self.mount_slot(i).clone(),
             i if i >= stations::INPUT => self.station_slot(i).clone(),
             500..=503 => self.armor[i - 500].clone(),

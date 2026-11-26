@@ -357,3 +357,19 @@ fn villager_reports_registered_and_unresolved_names() {
     mob.extra.profession = ProfessionState::from_index(5);
     assert_eq!(reported_profession(&mob), "farmer");
 }
+/// `ALL_ACQUIRABLE_JOBS` is the bound `acquirable_job_site` tag: a pack that lists a type makes
+/// its blocks job sites, and one that drops a type takes them away.
+#[test]
+fn the_bound_acquirable_tag_decides_what_a_jobless_villager_takes() {
+    use sunrise_world::poi::PoiType;
+    let mut table = ResolvedProfessions::vanilla();
+    assert!(table.accepts(0, PoiType::Farmer.into(), false));
+    assert!(!table.accepts(0, PoiType::Lodestone.into(), false));
+    table.poi_tags = [(
+        ACQUIRABLE_JOB_SITE.to_owned(),
+        ["minecraft:lodestone".to_owned()].into(),
+    )]
+    .into();
+    assert!(table.accepts(0, PoiType::Lodestone.into(), false));
+    assert!(!table.accepts(0, PoiType::Farmer.into(), false));
+}

@@ -58,16 +58,10 @@ import subprocess
 import sys
 import time
 
-try:
-    from . import parity_reach
-    from . import file_lock
-    from . import process_tree
-except ImportError:
-    import parity_reach
-    import file_lock
-    import process_tree
-
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import file_lock, parity_reach, process_tree
+
 LOCAL = ROOT / ".local"
 STATE_DIR = LOCAL / "parity-runner"
 STATE = STATE_DIR / "state.json"
@@ -79,6 +73,10 @@ PROFILE = {
     # Probes built in the dev profile keep its overflow checks and debug
     # assertions, but run optimised.
     "CARGO_PROFILE_DEV_OPT_LEVEL": "3",
+    # The sunrise-client lib test, which many harnesses build, outgrew a 16 GiB parity runner with line-table
+    # debuginfo. Parity needs no debuginfo; .github/workflows/parity.yml's warm-up sets the same, so these builds
+    # reuse it.
+    "CARGO_PROFILE_TEST_DEBUG": "false",
 }
 SHIM = STATE_DIR / "shim"
 ORACLE_KEEP = Path(os.environ["PARITY_ORACLE_KEEP"]) if os.environ.get("PARITY_ORACLE_KEEP") else None
@@ -240,7 +238,8 @@ def dep_info(binary):
 
 
 def artifact_path(kind, name, profile):
-    directory = "debug" if profile == "dev" else profile
+    # Cargo's built-in test and bench profiles build into dev's and release's folders.
+    directory = {"dev": "debug", "test": "debug", "bench": "release"}.get(profile, profile)
     return TARGET / directory / ("examples" if kind == "example" else "") / name
 
 
@@ -776,7 +775,7 @@ def machine_slot():
     slots = SHARED / "slots"
     slots.mkdir(parents=True, exist_ok=True)
     for index in range(MACHINE_JOBS):
-        handle = open(slots / f"{index}.lock", "w")
+        handle = open(slots / f"{index}.lock", "a")
         if file_lock.lock(handle, wait=False):
             return handle
         handle.close()
@@ -820,10 +819,9 @@ def outcome(name, script, passed, elapsed, trace_path, hasher=None):
     """The record of a finished harness, from its trace. With a hasher, also the content hash of each dependency."""
     record = {"status": "pass" if passed else "fail", "seconds": round(elapsed, 1),
               "finished": time.strftime("%Y-%m-%dT%H:%M:%S"), "host": HOST}
-    try:
-        trace = json.loads(Path(trace_path).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        trace = None  # killed before writing it, or the disk was full: the pass can't be keyed
+    # No trace file: the harness was killed before writing it, so the pass can't be keyed. A trace that exists is
+    # written whole (trace_main), so one that cannot be read or parsed is an error.
+    trace = json.loads(Path(trace_path).read_text(encoding="utf-8")) if Path(trace_path).is_file() else None
     if trace:
         record["dependencies"], record["artifacts"] = dependencies(trace, harness_settings(script).get("PARITY_RUST_SCOPE"))
         if "peak_bytes" in trace:
@@ -1129,10 +1127,10 @@ def fresh_only(keep):
     """{harness: date} of the harnesses that passed only without kept oracle runs, within FRESH_ONLY_DAYS."""
     listing = keep / "fresh-only.json"
     names = json.loads(listing.read_text(encoding="utf-8")) if listing.exists() else {}
-    if not isinstance(names, dict):
-        return {}
+    if not isinstance(names, dict) or not all(isinstance(day, str) for day in names.values()):
+        raise ValueError(f"{listing} is not an object of harness names and dates")
     oldest = time.strftime("%Y-%m-%d", time.gmtime(time.time() - FRESH_ONLY_DAYS * 86400))
-    return {name: day for name, day in names.items() if isinstance(name, str) and isinstance(day, str) and day >= oldest}
+    return {name: day for name, day in names.items() if day >= oldest}
 
 
 def remember_fresh_only(keep, results):
@@ -1145,7 +1143,7 @@ def remember_fresh_only(keep, results):
              if record.get("fresh_rerun") == "pass"}
     if not added:
         return
-    with open(keep / "fresh-only.lock", "w") as handle:
+    with open(keep / "fresh-only.lock", "a") as handle:
         file_lock.lock(handle)
         temporary = keep / f".fresh-only.{os.getpid()}.json"
         temporary.write_text(json.dumps(dict(fresh_only(keep), **added), indent=1, sort_keys=True) + "\n",
@@ -1400,11 +1398,15 @@ def trace_main(output, script, arguments):
             peak = max(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss, resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss)
             peak //= 1024 if sys.platform == "darwin" else 1  # bytes on macOS, KiB elsewhere
             trace["peak_bytes"] = peak * 1024
-        Path(output).write_text(json.dumps(trace))
+        temporary = Path(f"{output}.{os.getpid()}.tmp")
+        temporary.write_text(json.dumps(trace))
+        temporary.replace(output)
 
     atexit.register(write)
     sys.addaudithook(audit)
     sys.argv = [script, *arguments]
+    # What `python <script>` itself does (sys.path[0] is the script's folder) and runpy.run_path does not: a traced run
+    # imports exactly what the untraced run of the same harness would. Harnesses import tools.<name> from the root.
     sys.path.insert(0, str(Path(script).parent))
     runpy.run_path(script, run_name="__main__")
 
@@ -1558,10 +1560,7 @@ def affected_harnesses(found, records, changed, reach=True, base=None):
     # Parses are keyed by content, so every worktree sharing the vanilla data shares them.
     cache_path = (SHARED if SHARED.is_dir() else STATE_DIR) / "reach-cache.json"
     if reach and any(path.startswith("crates/") for path in changed):
-        try:
-            cache = json.loads(cache_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            cache = {}
+        cache = json.loads(cache_path.read_text(encoding="utf-8")) if cache_path.is_file() else {}
         graph = parity_reach.SourceGraph(ROOT, rust_code, cache)
         # A changed file that differs in more than its `mod` declarations counts as soon as a harness reaches it,
         # so the search for that harness can stop there.
@@ -1648,7 +1647,7 @@ def share_of(path, found, parser):
     plan and the tree disagree, which is refused rather than silently run as something else."""
     try:
         names = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, ValueError) as error:
+    except (OSError, ValueError) as error:  # the command line's boundary: a share file the plan job did not write ends the run with a usage error
         parser.error(f"--harness-file: {path}: {error}")
     if not isinstance(names, list) or not all(isinstance(name, str) for name in names):
         parser.error(f"--harness-file: {path} is not a JSON list of harness names")
@@ -1847,13 +1846,9 @@ def main():
         reuse_oracles = not args.fresh and (not args.all or ORACLE_KEEP is not None)
         kept_fresh_only = {}
         if reuse_oracles and ORACLE_KEEP:
-            # The keep only saves work: a keep that can't be read or tidied leaves this run without its list.
-            try:
-                ORACLE_KEEP.mkdir(parents=True, exist_ok=True)
-                prune_oracle_keep(ORACLE_KEEP)
-                kept_fresh_only = fresh_only(ORACLE_KEEP)
-            except (OSError, ValueError) as error:
-                print(f"oracle keep {ORACLE_KEEP}: {error}; running without its upkeep", flush=True)
+            ORACLE_KEEP.mkdir(parents=True, exist_ok=True)
+            prune_oracle_keep(ORACLE_KEEP)
+            kept_fresh_only = fresh_only(ORACLE_KEEP)
         local = LocalExecutor(jobs, int(memory_available() * 0.75), args.timeout,
                               REMOTE_LOCAL_PEAK if remotes and args.jobs is None else None)
         local.solo = solo_harnesses(config)
@@ -1865,12 +1860,6 @@ def main():
                   f"{', '.join(sorted(local.solo & {harness_of(name) for name in selected}))}", flush=True)
         results, elapsed = run(selected, state, hasher, environment_key(hasher), [*remotes, local], reuse_oracles,
                                rounds, set(kept_fresh_only))
-        if reuse_oracles and ORACLE_KEEP:
-            try:
-                remember_fresh_only(ORACLE_KEEP, results)
-            except (OSError, ValueError) as error:
-                print(f"oracle keep {ORACLE_KEEP}: {error}; the harnesses that passed only fresh are not kept",
-                      flush=True)
     finally:
         for executor in [*remotes, *([local] if local else [])]:
             executor.stop()
@@ -1892,6 +1881,8 @@ def main():
                 lines = []
             for line in lines:
                 print(f"    {line[:300]}")
+    if reuse_oracles and ORACLE_KEEP:  # after the run's state and report, so a keep that can't be written loses only its list
+        remember_fresh_only(ORACLE_KEEP, results)
     return 1 if failed else 0
 
 

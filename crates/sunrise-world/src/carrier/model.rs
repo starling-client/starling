@@ -1,13 +1,10 @@
 //! Carrier data model: identity, transform and local cells.
 //!
-//! Slice 1 of the moving structures design
-//! (`docs/design/mod-api/moving-structures.md`, board issue 1:
-//! "Carrier data model and bounded codec"): the persisted shape of a
-//! carrier — UUID, generation, simulation revision, transform and local
-//! cells — with no gameplay integration. The transform reuses
-//! [`RigidTransform`] and [`Rotation`] from slice 5's contact kernel;
-//! cells are stored sorted by position, without duplicates, and air is
-//! never stored.
+//! The persisted shape of a carrier — UUID, generation, simulation
+//! revision, transform and local cells — with no gameplay integration.
+//! The transform reuses [`RigidTransform`] and [`Rotation`] from the
+//! contact kernel; cells are stored sorted by position, without
+//! duplicates, and air is never stored.
 //!
 //! Trust-boundary limits (design section "Proposed mod_api surface and
 //! trust boundary"), all checked before allocation and refusing rather

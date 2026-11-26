@@ -1,0 +1,11 @@
+ids = [
+    "method:GenerationContext::attach_jigsaw",
+    "method:GenerationContext::elements",
+    "type:JigsawSpace",
+    "handle:JigsawSpace::new",
+    "handle:JigsawSpace::fits",
+    "handle:JigsawSpace::remove",
+    "handle:PoolElementRef::template_location",
+]
+why = "A structure type with its own layout rules lays its pools out with vanilla's jigsaw placement: attach_jigsaw places one candidate on one jigsaw with JigsawPlacement.Placer's checks, JigsawSpace is the free space it checks against, and template_location names a single element's template for rules by piece name. elements now hands back the context's random beside the element reads, so a piece's jigsaws are shuffled with the random the layout draws from, as vanilla does."
+migrate = "Replace `context.elements()` with `let (elements, random) = context.elements();` and shuffle jigsaws with that `random`."

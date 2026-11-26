@@ -1,0 +1,48 @@
+ids = [
+    "handle:TextLine::new",
+    "handle:TextLines::new",
+    "method:DrawContext::text_lines",
+    "method:prelude::ClientTextClientHost::text_visual_order",
+    "method:prelude::ClientTextClientHost::visit_text_visual_order",
+    "method:prelude::ClientTextClientHost::visit_text_lines",
+    "method:GuiCanvas::text_with_word_wrap",
+    "type:TextAlign",
+    "type:TextLine",
+    "type:TextLine.text",
+    "type:TextLines",
+    "type:TextLines.lines",
+    "type:TextLines.width",
+    "type:TextLines.height",
+    "type:TextLinesRefusal",
+    "type:TextLinesRefusal.WidthNotFinite",
+    "type:TextLinesRefusal.ScaleInvalid",
+    "type:TextLinesRefusal.TooManyLines",
+    "type:TextLinesRefusal.TooManyGlyphs",
+    "type:TextLinesRefusal.Text",
+    "type:TextLayoutSpec",
+    "type:TextLayoutSpec.max_width",
+    "type:TextLayoutSpec.align",
+    "type:TextLayoutSpec.scale",
+    "type:TextLayoutSize",
+    "type:TextLayoutSize.width",
+    "type:TextLayoutSize.height",
+    "type:TextLayoutError",
+    "type:TextLayoutError.WidthNotFinite",
+    "type:TextLayoutError.ScaleInvalid",
+    "type:TextLayoutError.GeometryNotFinite",
+    "type:GuiDrawError.TextLayout",
+    "type:visual_text::VisualTextCharacter",
+    "type:visual_text::VisualTextCharacterRef",
+    "type:visual_text::VisualTextCharacterRef.scalar",
+    "type:visual_text::VisualTextCharacterRef.style",
+    "type:visual_text::VisualTextCharacterRef.source_index",
+    "handle:visual_text::VisualTextCharacterRef::to_owned",
+]
+why = "Native mods can visit formatted text or paint a wrapped component in scope, as in vanilla’s FormattedCharSequence.accept and GuiGraphicsExtractor.textWithWordWrap. Drawing uses the same wrapping and visual order as measurement without building API-owned lines to replay. In-process output no longer has a line or character budget."
+migrate = '''
+To paint, replace `draw.text_lines` and the loop drawing its lines with `canvas.text_with_word_wrap(&text, at, TextLayoutSpec { max_width, align, scale }, argb, shadow)?` inside `draw.draw_gui`. `at` is the label origin in local GUI pixels. Do not apply a second scale pose: the returned `TextLayoutSize` gives the label's width and height after the requested scale and before the surrounding pose. The canvas reports invalid width, scale or non-finite scaled layout as `GuiDrawError::TextLayout`; geometry and component representation refusals still use the canvas's existing errors.
+
+For reads outside drawing, use `host.visit_text_lines(&text, spec, &mut |line| { ... })`. Read each line's logical-order, legacy-resolved text, scaled offset, and width in the visitor instead of iterating `TextLines.lines`. Clone `line.text` explicitly if retaining it. Take width and height from the returned `TextLayoutSize`. Match `TextLayoutError::WidthNotFinite`, `ScaleInvalid` or `GeometryNotFinite` before any lines are visited. Remove matches on the old output count and text serialization refusals.
+
+Replace `host.text_visual_order(&text)` with `host.visit_text_visual_order(&text, &mut |character| { ...; true })`. The visitor may return `false` to stop. Each character still has a Unicode scalar, effective style and run-local UTF-16 offset. The style is lent to the visitor; `character.to_owned()` retains it. These local values no longer implement Wire.
+'''

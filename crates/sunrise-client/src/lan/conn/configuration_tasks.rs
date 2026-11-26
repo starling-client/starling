@@ -1,5 +1,5 @@
 //! Read configuration while the server thread advances the task queue.
-use super::super::configuration_tasks::{ConfigurationRequest, Session};
+use super::super::configuration_tasks::{ConfigurationRequest, Configured, Session};
 use super::*;
 
 pub(super) fn configure(
@@ -10,9 +10,9 @@ pub(super) fn configure(
     info: &mut ClientInformation,
     transport: &Arc<Transport>,
     negotiation: &mut sunrise_protocol::payload_negotiation::Negotiation,
-) -> Result<(), String> {
+) -> Result<Option<Configured>, String> {
     let Some(requests) = &shared.configuration_requests else {
-        return Ok(());
+        return Ok(None);
     };
     let connection = shared
         .next_configuration_connection()
@@ -20,32 +20,36 @@ pub(super) fn configure(
     let sender = c
         .task_sender(transport.clone())
         .map_err(|e| e.to_string())?;
-    let session = Session::new(sender);
+    let session = Configured(Session::new_for_player(
+        sender,
+        shared.prepare_spawn.then_some(player),
+    ));
     requests
         .send(ConfigurationRequest {
             connection,
             player,
             name: name.to_owned(),
-            session: session.clone(),
+            session: session.0.clone(),
         })
         .map_err(|e| e.to_string())?;
-    c.set_configuration_session(Arc::downgrade(&session));
-    let result = wait(c, info, transport, negotiation, &session);
+    c.set_configuration_session(Arc::downgrade(&session.0));
+    let result = wait(c, info, transport, negotiation, &session.0);
     c.clear_configuration_session();
-    session.close();
     c.reader
         .set_read_timeout(Some(READ_TIMEOUT))
         .map_err(|e| e.to_string())?;
-    result.inspect_err(|error| {
-        let reason = crate::text::Text::translate_with_fallback(
-            "sunrise.configuration.error",
-            crate::lang::Language::load(&[], crate::lang::DEFAULT)
-                .get("sunrise.configuration.error")
-                .unwrap(),
-            &[crate::text::Text::literal(error)],
-        );
-        c.disconnect(super::super::data::component_nbt(&reason.component()));
-    })
+    result
+        .inspect_err(|error| {
+            let reason = crate::text::Text::translate_with_fallback(
+                "sunrise.configuration.error",
+                crate::lang::Language::load(&[], crate::lang::DEFAULT)
+                    .get("sunrise.configuration.error")
+                    .unwrap(),
+                &[crate::text::Text::literal(error)],
+            );
+            c.disconnect(super::super::data::component_nbt(&reason.component()));
+        })
+        .map(|()| Some(session))
 }
 fn wait(
     c: &mut ConfigIo<'_>,

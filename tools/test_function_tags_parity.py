@@ -7,10 +7,9 @@ import shutil
 import sys
 import uuid
 
-try:
-    from . import test_command_exec_parity as driver
-except ImportError:
-    import test_command_exec_parity as driver
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_command_exec_parity as driver
 
 FUNCTIONS = {f'h145:{name}': f'scoreboard players add {name} h145 1\nscoreboard players operation order h145 *= ten h145\nscoreboard players add order h145 {digit}\n'
              for digit, name in enumerate(('a', 'b', 'c'), 1)}

@@ -1,6 +1,6 @@
 use super::*;
 use crate::game::native_entity_refs::tests::with_game;
-use mod_api::{EntityRef, HostTransaction};
+use mod_api::EntityRef;
 use std::collections::HashSet;
 use {
     sunrise_core::nbt::{Compound, Tag},
@@ -21,7 +21,7 @@ static VALUE: AttachmentType<i32> = AttachmentType {
         },
     }),
     copy_on_death: false,
-    sync: false,
+    sync_codec: None,
 };
 static OTHER: AttachmentType<i32> = AttachmentType {
     namespace: "test",
@@ -29,7 +29,7 @@ static OTHER: AttachmentType<i32> = AttachmentType {
     default: || 0,
     codec: None,
     copy_on_death: false,
-    sync: false,
+    sync_codec: None,
 };
 
 fn painting(uuid: [i32; 4], contents: Tag) -> Tag {
@@ -123,9 +123,9 @@ fn saved_painting_membership_follows_transactions_and_chunk_unload() {
         let key = ("test".into(), "mana".into());
         let other = ("test".into(), "other".into());
         let original = index.lock().unwrap().snapshot(&key);
-        let aborted: Result<(), AttachmentError> = game.transaction(|host, _| {
+        let aborted: Result<(), AttachmentError> = game.storage_transaction(|host, _| {
             VALUE.set(host, holder, 11)?;
-            let inner: Result<(), AttachmentError> = host.transaction(|host, _| {
+            let inner: Result<(), AttachmentError> = host.storage_transaction(|host, _| {
                 VALUE.remove(host, holder)?;
                 OTHER.set(host, holder, 23)?;
                 assert!(index.lock().unwrap().snapshot(&key).is_empty());
@@ -234,7 +234,7 @@ fn first_write_painting_publication_and_rollback() {
             default: || 0i32,
             codec: None,
             copy_on_death: true,
-            sync: false,
+            sync_codec: None,
         };
         let store: &mut dyn sunrise_mod_runtime::attachments::AttachmentStore = game;
         assert_eq!(
@@ -242,7 +242,7 @@ fn first_write_painting_publication_and_rollback() {
             Err(AttachmentError::InvalidCopyPolicy)
         );
         assert!(!game.entity_attachments[&id].has_index_binding());
-        let aborted: Result<(), AttachmentError> = game.transaction(|host, _| {
+        let aborted: Result<(), AttachmentError> = game.storage_transaction(|host, _| {
             let store: &mut dyn sunrise_mod_runtime::attachments::AttachmentStore = host;
             assert_eq!(VALUE.get(store, holder), Ok(0));
             let index = host.attachment_indexes[&Dim::Overworld].clone();
@@ -250,7 +250,7 @@ fn first_write_painting_publication_and_rollback() {
             let before = index.lock().unwrap().snapshot(&key);
             assert_eq!(before[0].entry.read(&VALUE), Ok(&0));
             VALUE.set(host, holder, 10)?;
-            let inner: Result<(), AttachmentError> = host.transaction(|host, _| {
+            let inner: Result<(), AttachmentError> = host.storage_transaction(|host, _| {
                 VALUE.set(host, holder, 20)?;
                 Err(AttachmentError::MissingHolder)
             });

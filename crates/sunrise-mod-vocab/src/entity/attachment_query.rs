@@ -35,39 +35,66 @@ impl From<runtime::AttachmentBatch<AttachmentHolder>> for AttachmentBatch {
     }
 }
 impl AttachmentBatch {
-    /// Bind a type without eagerly decoding or cloning any value.
-    /// This view borrows only the key, never the host.
-    pub fn query<T: Send + Sync + 'static>(
+    /// Bind an issued attachment key without eagerly decoding or cloning any value.
+    /// This view borrows only the key, never the host. An unbound batch can be bound
+    /// after reinstallation with the current key for its captured bucket; a query that
+    /// was already bound remains tied to the installation that issued its key.
+    /// Refuses keys from an earlier installation with [`AttachmentError::StaleKey`], or a key
+    /// for a different captured bucket with [`AttachmentError::TypeMismatch`].
+    pub fn query<'key, T: Send + Sync + 'static>(
         self,
-        key: &AttachmentType<T>,
-    ) -> Result<AttachmentQuery<'_, T>, AttachmentError> {
-        crate::parts::validate_attachment_use(key.namespace, key.name, key.sync)?;
-        self.0.query(key).map(AttachmentQuery)
+        key: &'key AttachmentKey<T>,
+    ) -> Result<AttachmentQuery<'key, T>, AttachmentError> {
+        let (checked, epoch) = key.live_with_epoch()?;
+        self.query_checked(checked, epoch)
+    }
+
+    pub(crate) fn query_checked<'key, T: Send + Sync + 'static>(
+        self,
+        checked: &'key runtime::CheckedAttachmentType<T>,
+        epoch: u64,
+    ) -> Result<AttachmentQuery<'key, T>, AttachmentError> {
+        Ok(AttachmentQuery(
+            self.0.query_checked(checked, epoch)?,
+            epoch,
+        ))
     }
 }
 
 /// A typed snapshot whose rows lend values from their captured bindings.
-/// `get(scope, holder)` returns an owned clone with an expected O(1) probe before decode.
-/// Missing or not yet synced holders return `Ok(None)`; no default is created.
-/// `None` does not mean the holder is alive: absent and not-live holders alike
-/// return `Ok(None)` when absent from the snapshot, without a host liveness check.
+/// [`Self::get`] uses an expected O(1) holder probe before decode.
+/// Missing or not yet synced holders lend `None`; no default is created.
+/// `None` does not mean the holder is alive: the probe looks at captured membership
+/// without a host liveness check.
 /// Only scoped residency probes report `StaleHolder`. `get` and iteration report
-/// [`AttachmentRowError::OutsideTransaction`] if the capture's frame is not current.
+/// [`AttachmentRowError::OutsideTransaction`] if the capture's frame is not current, or
+/// [`AttachmentError::StaleKey`] as a value error after the installation changes.
 // no wire: binds a borrowed key to an in-process snapshot.
 #[non_exhaustive]
-pub struct AttachmentQuery<'key, T: 'static>(runtime::AttachmentQuery<'key, AttachmentHolder, T>);
+pub struct AttachmentQuery<'key, T: 'static>(
+    runtime::AttachmentQuery<'key, AttachmentHolder, T>,
+    u64,
+);
+
+fn check_epoch(epoch: u64) -> Result<(), AttachmentRowError> {
+    if crate::parts::installed().is_some_and(|installed| installed.epoch == epoch) {
+        Ok(())
+    } else {
+        Err(AttachmentRowError::Value(AttachmentError::StaleKey))
+    }
+}
 
 impl<T: Send + Sync + 'static> AttachmentQuery<'_, T> {
     /// Create a fallible cursor in captured order, decoding values only as rows are visited.
     pub fn iter(&self) -> AttachmentIter<'_, T> {
-        AttachmentIter(self.0.iter())
+        AttachmentIter(self.0.iter(), self.1)
     }
 }
 
 /// A fallible cursor borrowing the snapshot of an [`AttachmentQuery`].
 // no wire: borrows a live snapshot and tracks a local cursor position.
 #[non_exhaustive]
-pub struct AttachmentIter<'q, T: 'static>(runtime::AttachmentIter<'q, AttachmentHolder, T>);
+pub struct AttachmentIter<'q, T: 'static>(runtime::AttachmentIter<'q, AttachmentHolder, T>, u64);
 
 impl<'q, T: Send + Sync + 'static> AttachmentIter<'q, T> {
     /// Return the next row, or `Ok(None)` at the end while in scope.
@@ -75,22 +102,27 @@ impl<'q, T: Send + Sync + 'static> AttachmentIter<'q, T> {
     /// the next call can resume once the capturing frame is current again.
     /// A value error consumes only its own row.
     pub fn try_next(&mut self) -> Result<Option<AttachmentRow<'q, T>>, AttachmentRowError> {
+        check_epoch(self.1)?;
         Ok(self.0.try_next()?.map(|binding| AttachmentRow {
             holder: binding.holder,
             binding,
+            epoch: self.1,
         }))
     }
 }
 
-impl<T: Clone + Send + Sync + 'static> AttachmentQuery<'_, T> {
-    /// Read an owned captured value without inserting a default. A capture made in a
-    /// transaction requires its current frame and a read scope from the capturing host.
-    pub fn get(
+impl<T: Send + Sync + 'static> AttachmentQuery<'_, T> {
+    /// Lend a captured value or `None` without inserting a default. A capture made
+    /// in a transaction requires the current frame and a read scope from its host.
+    /// Stale installation, invalid scope and decode errors refuse before calling `read`.
+    pub fn get<R>(
         &self,
         scope: AttachmentReadScope<'_>,
         holder: AttachmentHolder,
-    ) -> Result<Option<T>, AttachmentRowError> {
-        self.0.get(scope.0, holder)
+        read: impl FnOnce(Option<&T>) -> R,
+    ) -> Result<R, AttachmentRowError> {
+        check_epoch(self.1)?;
+        self.0.get(scope.0, holder, read)
     }
 }
 
@@ -99,6 +131,7 @@ impl<T: Clone + Send + Sync + 'static> AttachmentQuery<'_, T> {
 #[non_exhaustive]
 pub struct AttachmentRow<'q, T: 'static> {
     binding: runtime::AttachmentRowRef<'q, AttachmentHolder, T>,
+    epoch: u64,
     /// The captured holder's identity.
     pub holder: AttachmentHolder,
 }
@@ -110,11 +143,10 @@ impl<T: 'static> AttachmentRow<'_, T> {
     /// The default scope is only for captures made outside a transaction.
     ///
     /// ```compile_fail,E0500
-    /// use mod_api::{AttachmentRow, ServerHost, TransactionSeal};
-    /// fn close_during_read(row: &AttachmentRow<'_, u32>, host: &mut dyn ServerHost,
-    ///                      seal: &TransactionSeal) {
+    /// use mod_api::{AttachmentRow, HostTransaction, ServerHost};
+    /// fn transact_during_read(row: &AttachmentRow<'_, u32>, host: &mut dyn ServerHost) {
     ///     let _ = row.with_value(host.attachment_read_scope().unwrap(), |value| {
-    ///         host.transaction_close(seal, false);
+    ///         let _ = host.transaction(|_, _| Ok::<_, ()>(()));
     ///         *value
     ///     });
     /// }
@@ -124,6 +156,7 @@ impl<T: 'static> AttachmentRow<'_, T> {
         scope: AttachmentReadScope<'_>,
         f: impl FnOnce(&T) -> R,
     ) -> Result<R, AttachmentRowError> {
+        check_epoch(self.epoch)?;
         self.binding.with_value(scope.0, f)
     }
 
@@ -169,26 +202,23 @@ pub fn validate_attachment_write(
 #[cfg(test)]
 mod tests {
     use super::*;
-    static KEY: AttachmentType<u32> = AttachmentType {
-        namespace: "test",
-        name: "value",
-        default: || 0,
-        codec: None,
-        copy_on_death: false,
-        sync: false,
-    };
-
     #[test]
     fn write_tokens_go_stale_with_their_residency() {
+        let key = crate::parts::install_attachment_fixture(
+            "test",
+            AttachmentDescriptor::new("test:value", || 0u32),
+        );
         let holder = AttachmentHolder::Entity(EntityRef::new(WorldEpoch::new(1), 42));
         let index = Arc::new(std::sync::Mutex::new(index::AttachmentIndex::default()));
         let mut values = runtime::Attachments::default();
-        KEY.set(&mut values, runtime::Holder::Level, 7).unwrap();
+        key.descriptor()
+            .set(&mut values, runtime::Holder::Level, 7)
+            .unwrap();
         values.bind_index(&index, holder);
         let batch = AttachmentBatch::from(runtime::AttachmentBatch::new(
             index.lock().unwrap().snapshot_named("test", "value"),
         ));
-        let query = batch.query(&KEY).unwrap();
+        let query = batch.query(&key).unwrap();
         let row = query.iter().try_next().unwrap().unwrap();
         assert_eq!(row.holder, holder);
         assert_eq!(row.with_value(Default::default(), |value| *value), Ok(7));
@@ -204,7 +234,9 @@ mod tests {
             Err(AttachmentRowError::StaleHolder)
         );
         let mut again = runtime::Attachments::default();
-        KEY.set(&mut again, runtime::Holder::Level, 7).unwrap();
+        key.descriptor()
+            .set(&mut again, runtime::Holder::Level, 7)
+            .unwrap();
         again.bind_index(&index, holder);
         assert_eq!(
             validate_attachment_write(&token, Some(&index)),

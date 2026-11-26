@@ -50,15 +50,10 @@ import sys
 import tempfile
 import time
 
-try:
-    from . import lab, oracle_harness as oh, test_rust_parity as base
-    from .server_bench import DONE, Server
-except ImportError:
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    import lab
-    import oracle_harness as oh
-    import test_rust_parity as base
-    from server_bench import DONE, Server
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, oracle_harness as oh, test_rust_parity as base
+from tools.server_bench import DONE, Server
 
 NAME = 'management-protocol-parity'
 EXE = '.exe' if os.name == 'nt' else ''

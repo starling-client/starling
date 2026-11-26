@@ -97,10 +97,12 @@ mod tests {
         )])
         .unwrap();
         let tag = mod_api::__private::tag_key(&mod_api::Identifier::parse("test:grain").unwrap())
-            .unwrap();
+            .unwrap()
+            .typed();
         let missing =
             mod_api::__private::tag_key(&mod_api::Identifier::parse("test:missing").unwrap())
-                .unwrap();
+                .unwrap()
+                .typed();
         let load = engine::LoadContext::new(
             engine::DataLoadOrigin::ServerDataLoad,
             Arc::new(engine::LoadInputs::new(
@@ -160,10 +162,12 @@ mod tests {
         let old_reader = LoopReader(&frozen);
         let old = old_reader.context();
         let empty = mod_api::__private::tag_key(&mod_api::Identifier::parse("test:empty").unwrap())
-            .unwrap();
+            .unwrap()
+            .typed();
         // A mod can resolve a populated tag's key after the table is published.
-        let late =
-            mod_api::__private::tag_key(&mod_api::Identifier::parse("test:late").unwrap()).unwrap();
+        let late = mod_api::__private::tag_key(&mod_api::Identifier::parse("test:late").unwrap())
+            .unwrap()
+            .typed();
         let ordered = old.items_in_tag(tag).unwrap();
         assert_eq!(ordered, [emerald, diamond, air]);
         assert_eq!(old.items_in_tag(late), Some(&[air][..]));
@@ -172,8 +176,9 @@ mod tests {
         assert_eq!(old.is_in_tag(emerald, tag), Some(true));
         assert_eq!(old.is_in_tag(emerald, missing), Some(false));
         for name in ["test:no_api_key", "test:outside_generation"] {
-            let refused =
-                mod_api::__private::tag_key(&mod_api::Identifier::parse(name).unwrap()).unwrap();
+            let refused = mod_api::__private::tag_key(&mod_api::Identifier::parse(name).unwrap())
+                .unwrap()
+                .typed();
             assert_eq!(old.items_in_tag(refused), None, "{name}");
             assert_eq!(old.is_in_tag(emerald, refused), None, "{name}");
         }
@@ -278,7 +283,7 @@ mod tests {
                     .captured_loop_context(engine::LoopSide::Server)
                     .worldgen_context();
                 let reader = WorldgenReader(&worldgen);
-                let host = mod_api::OwningWorldgen::new(&reader, &|_, _, _| None);
+                let host = mod_api::OwningWorldgen::new(&reader, &|_, _, _| None, &|_, _| None);
                 let context: &dyn WorldgenHost = &host;
                 let names = context.registry("item").unwrap();
                 assert_eq!(names, ["test:second", "test:first"]);

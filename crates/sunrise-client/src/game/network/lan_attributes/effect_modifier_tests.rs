@@ -202,3 +202,115 @@ fn the_attribute_packet_carries_given_jump_boost_and_absorption_modifiers_once()
         );
     });
 }
+
+/// #4473: a baby zombie given a content mod's effect whose declared modifier
+/// is named `minecraft:baby` replaces the baby speed bonus, as `/attribute`'s
+/// `modifier remove minecraft:baby` would first: the packet sends the
+/// effect's modifier alone, once, and the speed is the base plus a tenth of it.
+#[test]
+#[ignore = "daily"]
+fn a_declared_baby_modifier_replaces_the_bonus_in_the_packet() {
+    use sunrise_client::brewing::{Category, ModEffect, register_mod_effects};
+    use sunrise_client::mobs::finalize::{self, Attr};
+    with_game(|game| {
+        let _scope = sunrise_client_core::potions::isolate_mod_effects();
+        assert!(register_mod_effects([ModEffect {
+            modifiers: vec![(
+                "minecraft:movement_speed".into(),
+                "minecraft:baby".into(),
+                0.1,
+                sunrise_world::attributes::Operation::AddMultipliedBase,
+            )],
+            ..ModEffect::new("testfx:grown", 4, Category::Neutral, "testfx")
+        }]));
+        let zombie = game
+            .res
+            .mob_types()
+            .get("minecraft:zombie")
+            .unwrap()
+            .clone();
+        let mut baby = Mob::new(12, zombie, Vec3::ZERO, 0.0);
+        finalize::set_baby(&mut baby, true);
+        let grown = sunrise_client::brewing::effect("testfx:grown").unwrap().id;
+        baby.add_effect(grown, -1, 0);
+        let base = finalize::base_value(&baby, Attr::MovementSpeed);
+        assert_eq!(baby.movement_speed(), base + base * 0.1);
+        let speed = game
+            .motion
+            .attributes
+            .id("minecraft:movement_speed")
+            .unwrap()
+            .registry_id();
+        let mut out = Vec::new();
+        game.mob_attributes(&baby, &mut SpeedByType::default(), &mut out);
+        let rows: Vec<_> = out.iter().filter(|s| s.attribute == speed).collect();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(
+            rows[0].modifiers,
+            [AttributeModifier {
+                id: "minecraft:baby".into(),
+                amount: 0.1,
+                operation: 1,
+            }]
+        );
+    });
+}
+
+/// #4473: a transaction that gave a baby zombie an effect whose declared
+/// modifier is named `minecraft:baby`, then aborted (its effect journal
+/// restored): the baby speed bonus is back, in the speed and in the packet,
+/// once.
+#[test]
+#[ignore = "daily"]
+fn an_undone_declared_baby_modifier_brings_the_bonus_back_in_the_packet() {
+    use sunrise_client::brewing::{Category, ModEffect, register_mod_effects};
+    use sunrise_client::mobs::finalize::{self, Attr};
+    with_game(|game| {
+        let _scope = sunrise_client_core::potions::isolate_mod_effects();
+        assert!(register_mod_effects([ModEffect {
+            modifiers: vec![(
+                "minecraft:movement_speed".into(),
+                "minecraft:baby".into(),
+                0.1,
+                sunrise_world::attributes::Operation::AddMultipliedBase,
+            )],
+            ..ModEffect::new("testfx:grown", 4, Category::Neutral, "testfx")
+        }]));
+        let zombie = game
+            .res
+            .mob_types()
+            .get("minecraft:zombie")
+            .unwrap()
+            .clone();
+        let mut baby = Mob::new(12, zombie, Vec3::ZERO, 0.0);
+        finalize::set_baby(&mut baby, true);
+        let grown = sunrise_client::brewing::effect("testfx:grown").unwrap().id;
+        let effects = baby.extra.effects.clone();
+        let undo = baby
+            .effect_modifier_undo(std::iter::once(grown))
+            .expect("the effect names the baby bonus");
+        baby.add_effect(grown, -1, 0);
+        baby.extra.effects = effects;
+        undo.restore(&mut baby);
+        let base = finalize::base_value(&baby, Attr::MovementSpeed);
+        assert_eq!(baby.movement_speed(), base + base * 0.5);
+        let speed = game
+            .motion
+            .attributes
+            .id("minecraft:movement_speed")
+            .unwrap()
+            .registry_id();
+        let mut out = Vec::new();
+        game.mob_attributes(&baby, &mut SpeedByType::default(), &mut out);
+        let rows: Vec<_> = out.iter().filter(|s| s.attribute == speed).collect();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(
+            rows[0].modifiers,
+            [AttributeModifier {
+                id: "minecraft:baby".into(),
+                amount: 0.5,
+                operation: 1,
+            }]
+        );
+    });
+}

@@ -4,11 +4,11 @@ Sunrise signs players in with their Microsoft account in the launcher and joins 
 (authenticated) servers like vanilla 26.3 does. The launcher plays only with an account that owns
 Minecraft: Java Edition ([the owner gate](#the-owner-gate)), as that account, on LAN and
 offline-mode servers too. There are no offline names. This note is the design, the status of each
-part and what Ludovic has to register.
+part and what a maintainer has to register.
 
-## What Ludovic registers (needs his accounts)
+## What a maintainer registers (needs org accounts)
 
-Nothing below can be done by an agent: the app registrations belong to Ludovic. A build without
+Nothing below can be done by an agent: the app registrations belong to the maintainers. A build without
 the client ID can't sign in, so its launcher can't start the game ("This build of the launcher has
 no Microsoft sign-in"); release builds have it.
 
@@ -28,7 +28,7 @@ no Microsoft sign-in"); release builds have it.
    `api.minecraftservices.com/authentication/login_with_xbox` (HTTP 403, "Invalid app registration")
    until Mojang approves them. Apply with the form linked from https://aka.ms/mce-reviewappid
    (Minecraft Java "App ID review"), giving the client ID above, the app name, the project URL
-   (https://github.com/horizon-rust/horizon) and a short description ("open-source Minecraft Java
+   (https://github.com/sunrise-org/sunrise) and a short description ("open-source Minecraft Java
    Edition client written in Rust; signs players in to join online-mode servers"). Approval takes
    days to weeks; sign-in fails at the Minecraft step with "This app is not approved by Mojang yet"
    until then.

@@ -6,9 +6,7 @@
 //!     [--warmup] [--json] [--no-map] [--snapshot PATH] [--datapack PATH]...
 //! --datapack: a world data pack, a folder or a `.zip` with `pack.mcmeta`
 //!     (repeatable, lowest first), over the bundles as a world's packs are.
-//!     Every biome a pack gives is kept: the game leaves a pack's new biomes
-//!     out of a world's generator, this keeps them so the pack's own worldgen
-//!     runs. The content mods' biome modifiers (`biome-modifiers.json`) are
+//!     Every biome a pack gives is kept, as the game keeps them. The content mods' biome modifiers (`biome-modifiers.json`) are
 //!     the client's, so they are not applied, and a warning says so.
 use serde_json::Value;
 use std::{

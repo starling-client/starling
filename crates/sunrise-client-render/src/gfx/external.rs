@@ -84,31 +84,32 @@ impl ShadowView {
     }
 
     #[inline]
-    pub fn with_distance(mut self, distance: Option<f32>) -> Self {
+    pub(crate) fn with_distance(mut self, distance: Option<f32>) -> Self {
         self.distance = distance;
         self
     }
 
     #[inline]
-    pub fn with_unculled(mut self, unculled: Option<f32>) -> Self {
+    pub(crate) fn with_unculled(mut self, unculled: Option<f32>) -> Self {
         self.unculled = unculled;
         self
     }
 
     #[inline]
-    pub fn with_every_face(mut self, every_face: bool) -> Self {
+    pub(crate) fn with_every_face(mut self, every_face: bool) -> Self {
         self.every_face = every_face;
         self
     }
 
     #[inline]
-    pub fn with_view_casters(mut self, view_casters: bool) -> Self {
+    pub(crate) fn with_view_casters(mut self, view_casters: bool) -> Self {
         self.view_casters = view_casters;
         self
     }
 
+    #[cfg(test)]
     #[inline]
-    pub fn with_depth_planes(mut self, depth_planes: bool) -> Self {
+    pub(crate) fn with_depth_planes(mut self, depth_planes: bool) -> Self {
         self.depth_planes = depth_planes;
         self
     }
@@ -244,6 +245,9 @@ impl Cull for ShadowCull {
     /// Our probe's Iris 1.11.7 maps fit testing the casters' whole sections (a guess that matched).
     fn tight(&self) -> bool {
         self.casters.is_none()
+    }
+    fn vertical_clamp(&self) -> bool {
+        false
     }
 }
 /// The shadow camera's box that the shadow pass draws terrain in: the sides of `view.cull`, and

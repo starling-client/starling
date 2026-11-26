@@ -21,6 +21,7 @@ pub trait Hooks {
     /// name and parameters is Sunrise's reading, not checked against NeoForge's. Diverges
     /// from upstream: new hook.
     /// A client without this mod predicts vanilla here; the server corrects it.
+    /// Read the borrowed stack with `get`; call `project` only to keep an owned copy.
     #[hook(
         side = "both",
         contract = "listen",
@@ -29,7 +30,8 @@ pub trait Hooks {
         key = "stack",
         cancellable = false,
         target = "sunrise_client_lib::menu::container_items::native_can_fit_inside_container_items",
+        version = 2,
         neoforge = "IItemExtension.canFitInsideContainerItems"
     )]
-    fn can_fit_inside_container_items(stack: &mod_api::ItemStack, fits: &mut bool);
+    fn can_fit_inside_container_items(stack: mod_api::ItemStackView<'_>, fits: &mut bool);
 }

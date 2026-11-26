@@ -1,1 +1,3 @@
-pub use world::read_error::LevelReadError;
+pub use world::read_error::{
+    EntityReadError, LevelReadError, RaidReadError, RegistryReadError, ServerReadError,
+};

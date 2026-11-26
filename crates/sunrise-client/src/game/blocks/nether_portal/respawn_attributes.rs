@@ -53,6 +53,7 @@ impl Game<'_> {
             (Some(_), None) => {}
             (None, _) => respawn.carried = None,
         }
+        self.equipment = Default::default();
         self.remove_local_player_body();
     }
 

@@ -19,8 +19,7 @@ pub struct Mixin {
     pub options: toml::Table,
 }
 
-/// A horizon-mixins table forwarded whole (`[[native.bridge]]`, `[[native.state]]`); only its
-/// id is the package's to check.
+/// A `[[native.bridge]]` row forwarded whole to horizon-mixins; the package checks its id.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct Forwarded {
     pub id: String,
@@ -280,41 +279,26 @@ mod tests {
     }
 
     #[test]
-    fn mixins_bridges_states_modules_share_one_id_space() {
+    fn mixins_bridges_and_modules_share_one_id_space() {
+        let bridge =
+            "[[native.bridge]]\nid='autosave'\nkind='GET'\ntarget='game::Game'\nmember='world'\n";
         let tables = [
-            ROW.to_owned(),
-            "[[native.module]]\nid='autosave'\nfile='game.rs'\nname='runtime'\nsource='src/runtime.rs'\n".into(),
-            "[[native.bridge]]\nid='autosave'\nkind='GET'\ntarget='game::Game'\nmember='world'\n".into(),
-            "[[native.state]]\nid='autosave'\ntarget='game::Game'\nty='u32'\ninitial='0'\nconstructor=[]\n".into(),
+            ROW,
+            "[[native.module]]\nid='autosave'\nfile='game.rs'\nname='runtime'\nsource='src/runtime.rs'\n",
+            bridge,
         ];
+        let pins = native();
         for (a, first) in tables.iter().enumerate() {
-            // Top-level rows precede `[native]`; its own tables follow it.
-            let text = |second: &str| {
-                let (top, nested): (Vec<&str>, Vec<&str>) = [first.as_str(), second]
-                    .into_iter()
-                    .partition(|table| !table.starts_with("[[native."));
-                format!("{HEADER}{}{}{}", top.concat(), native(), nested.concat())
-            };
-            assert!(Manifest::parse(&text("")).is_ok(), "{first}");
+            assert!(parse(&pins, first).is_ok(), "{first}");
             for second in &tables[a + 1..] {
-                let error = Manifest::parse(&text(second)).unwrap_err();
+                let error = parse(&pins, &format!("{first}{second}")).unwrap_err();
                 assert!(error.contains("duplicate"), "{first}{second}: {error}");
-                assert!(
-                    Manifest::parse(&text(&second.replace("id='autosave'", "id='other'"))).is_ok(),
-                    "{first}{second}"
-                );
+                let second = second.replace("id='autosave'", "id='other'");
+                assert!(parse(&pins, &format!("{first}{second}")).is_ok());
             }
         }
-        let manifest = Manifest::parse(&format!(
-            "{HEADER}{}{}{}",
-            native(),
-            tables[2],
-            tables[3].replace("id='autosave'", "id='count'")
-        ))
-        .unwrap();
-        let native = manifest.native.unwrap();
+        let native = parse(&pins, bridge).unwrap().native.unwrap();
         assert_eq!(native.bridge[0].fields["member"].as_str(), Some("world"));
-        assert_eq!(native.state[0].fields["ty"].as_str(), Some("u32"));
     }
 
     /// A bridge's id names its accessor, so it is refused when it can't, naming the mod and row.

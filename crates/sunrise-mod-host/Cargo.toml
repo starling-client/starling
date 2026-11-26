@@ -12,15 +12,25 @@ mod-render = { package = "sunrise-mod-render", path = "../sunrise-mod-render" }
 sunrise-client = { path = "../sunrise-client", default-features = false }
 sunrise-hooks = { path = "../sunrise-hooks" }
 
-sunrise-mod-package = { path = "../sunrise-mod-package", default-features = false, features = ["index"] }
+sunrise-mod-package = { path = "../sunrise-mod-package", default-features = false }
 mod-api = { package = "sunrise-mod-api", path = "../sunrise-mod-api" }
 
 log = "0.4"
 libloading = "0.8"
+memchr = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
-object = { version = "0.39", default-features = false, features = ["read", "std"] }
+object = { version = "0.39", default-features = false, features = ["read_core", "std"] }
+
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+object = { version = "0.39", default-features = false, features = ["elf"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+object = { version = "0.39", default-features = false, features = ["macho"] }
+
+[target.'cfg(windows)'.dependencies]
+object = { version = "0.39", default-features = false, features = ["pe"] }
 
 [lints]
 workspace = true

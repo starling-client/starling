@@ -9,7 +9,7 @@ impl FrictionView<'_> {
         &self,
         pos: BlockPos,
         state: BlockStateId,
-        entity: Option<(u32, &str)>,
+        entity: Option<mod_api::EntityRef>,
         friction: &mut f32,
     ) {
         self.fire_friction(pos, state, entity, friction);

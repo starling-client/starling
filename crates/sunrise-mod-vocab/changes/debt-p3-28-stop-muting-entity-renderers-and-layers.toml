@@ -1,0 +1,27 @@
+ids = [
+  "hook:register_entity_layers",
+  "hook:register_entity_renderers",
+  "method:EntityLayers::entity_types",
+  "method:EntityLayers::player_models",
+  "handle:EntityRendererRegistry::into_renderers",
+]
+
+why = """
+Stop muting entity renderers and entity layers on ordinary draw `Err` returns, route retained renderer and layer callbacks through the shared `CallbackOwner` panic/enablement policy, and borrow registration metadata on `EntityLayers`. This follows vanilla's `EntityRenderer`, `LivingEntityRenderer.submit` and `RenderLayer.submit` draw boundaries and NeoForge's `EntityRenderersEvent.AddLayers`, which `EntityRenderDispatcher.onResourceManagerReload` fires after rebuilding renderers.
+
+- Previously, `Resolved<T>` held an independent `failed: AtomicBool` latch that silenced any entity renderer or layer until the next resource reload on either an `Err` return or a panic, while a reload could re-enable a panicking callback.
+- Returning `Err` from `EntityRenderer::submit` or `EntityRenderLayer::submit` now rolls back that draw's geometry, logs a warning, falls back or skips only that draw, and leaves the callback active for subsequent draws.
+- Panics now go through `CallbackOwner`: they roll back that draw and disable only the panicking callback for the rest of the session, with an error log and an in-game error toast naming the mod. A layer keeps its disablement when the mod re-adds the same `Arc` on reload, regardless of target or order. Replacement instances do not inherit the previous layer's state.
+- `EntityLayers::entity_types(&self)` and `EntityLayers::player_models(&self)` now borrow slices (`&[String]` and `&[PlayerModel]`) instead of allocating owned `Vec`s on each call.
+- `EntityRendererRegistry::into_renderers` now carries each registration's owning mod id `(Option<&'static str>, Arc<dyn EntityRenderer>)` so the engine binds each retained renderer to a session `CallbackOwner`.
+"""
+
+migrate = """
+- Rebuild `register_entity_renderers` listeners against v5 instead of v4; keep the scoped registration context.
+- Rebuild `register_entity_layers` listeners against v5 instead of v4; keep the scoped registration context.
+- Use the borrowed `&[String]` from `EntityLayers::entity_types()` instead of an owned `Vec<String>`; call `.to_vec()` only when ownership is needed.
+- Use the borrowed `&[PlayerModel]` from `EntityLayers::player_models()` instead of an owned `Vec<PlayerModel>`; call `.to_vec()` only when ownership is needed.
+- Do not rely on returning `Err` from `EntityRenderer::submit` or `EntityRenderLayer::submit` to silence the callback until reload; `Err` skips only that draw.
+- Continue to call `EntityLayers::add(target, layer)` on every reload. Clone the same `Arc` to re-add a retained layer in any position; pass the replacement's new `Arc` when rebuilding a layer. A panic disables the retained instance, not the position in the list.
+- Engine/test callers of `EntityRendererRegistry::into_renderers()` now receive `BTreeMap<String, (Option<&'static str>, Arc<dyn EntityRenderer>)>`.
+"""

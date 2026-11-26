@@ -59,6 +59,7 @@ pub fn main() -> Result<()> {
                     view_distance: 10,
                     chunks: &chunks,
                     sources: None,
+                    far: &[],
                     tracker: &mut tracker,
                     out: &mut packets,
                 }];

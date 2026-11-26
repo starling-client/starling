@@ -30,6 +30,12 @@ class ParityRunnerTests(unittest.TestCase):
                          [["example", "c", "fast", [], True]])
         self.assertEqual(parity.artifacts_of(["cargo", "build", "--example", "d"]), [["example", "d", "dev", [], True]])
 
+    def test_the_test_profile_builds_into_devs_folder(self):
+        # lab.parity_fixtures() builds sunrise-parity-fixtures with --profile test: its dep-info is under debug/.
+        self.assertEqual(parity.artifact_path("bin", "sunrise-parity-fixtures", "test"),
+                         parity.TARGET / "debug" / "sunrise-parity-fixtures")
+        self.assertEqual(parity.artifact_path("example", "probe", "fast"), parity.TARGET / "fast" / "examples" / "probe")
+
     def test_artifacts_keep_the_package_and_feature_selection(self):
         self.assertEqual(parity.artifacts_of(["cargo", "build", "--locked", "--profile=fast", "-j", "4", "--package",
                                               "sunrise-client", "--bins", "-F", "x"]),
@@ -159,6 +165,25 @@ class ParityRunnerTests(unittest.TestCase):
             self.assertTrue(parity.stale("x", state, hasher, "other toolchain"))
             source.write_text("two!")
             self.assertTrue(parity.stale("x", state, hasher, "env"))
+
+    def test_an_unreadable_trace_is_an_error_and_a_missing_one_is_an_unkeyed_pass(self):
+        with tempfile.TemporaryDirectory() as temp, mock.patch.object(parity, "ROOT", Path(temp)):
+            script = Path(temp, "tools", "test_x_parity.py")
+            missing = parity.outcome("x", script, True, 1.0, Path(temp, "none.json"))
+            self.assertEqual((missing["status"], missing["dependencies"], missing["artifacts"]), ("pass", [], []))
+            cut = Path(temp, "cut.json")
+            cut.write_text('{"modules": [', encoding="utf-8")
+            with self.assertRaises(ValueError):
+                parity.outcome("x", script, True, 1.0, cut)
+
+    def test_a_damaged_reach_cache_is_an_error(self):
+        with tempfile.TemporaryDirectory() as temp, mock.patch.object(parity, "ROOT", Path(temp)), \
+                mock.patch.object(parity, "SHARED", Path(temp, "shared")):
+            Path(temp, "shared").mkdir()
+            Path(temp, "shared", "reach-cache.json").write_text("{not json", encoding="utf-8")
+            found = {"food": Path(temp, "tools", "test_food_parity.py")}
+            with self.assertRaises(ValueError):
+                parity.affected_harnesses(found, {"food": {"dependencies": ["crates/a.rs"]}}, {"crates/a.rs"})
 
     def test_a_change_affects_the_harnesses_that_depend_on_it(self):
         with tempfile.TemporaryDirectory() as temp, mock.patch.object(parity, "ROOT", Path(temp)), \
@@ -568,6 +593,45 @@ class OracleReuseTests(unittest.TestCase):
         self.assertEqual(result.stdout, "done\n")
         return int((self.input.parent / "runs").read_text())
 
+    def test_cold_cache_setup_holds_the_setup_lock(self):
+        import hashlib
+        import sqlite3
+        from tools import file_lock, parity_shim
+
+        cache = Path(self.env["PARITY_SHIM_CACHE"])
+
+        def held():
+            # A second open file description conflicts with the shim's flock even in this process.
+            with (cache / "hashes.lock").open("a+b") as other:
+                return not file_lock.lock(other, wait=False)
+
+        during = []
+
+        class Probed:
+            def __init__(self, db):
+                self.db = db
+
+            def execute(self, *args):
+                during.append(held())
+                return self.db.execute(*args)
+
+            def __getattr__(self, name):
+                return getattr(self.db, name)
+
+        connect = sqlite3.connect
+
+        def probed_connect(*args, **kwargs):
+            during.append(held())
+            return Probed(connect(*args, **kwargs))
+
+        with mock.patch.object(parity_shim, "CACHE", cache), mock.patch.object(sqlite3, "connect", probed_connect):
+            hashes = parity_shim.Hashes()
+        # The connect, the switch to WAL and the create table all run under the lock.
+        self.assertEqual(during, [True, True, True])
+        self.assertFalse(held())
+        with contextlib.closing(hashes.db.db):
+            self.assertEqual(hashes.file(str(self.input)), hashlib.sha256(b"a").hexdigest())
+
     def test_reuses_until_an_input_or_output_changes(self):
         self.assertEqual(self.oracle(), 1)
         self.assertEqual(self.oracle(), 1)  # replayed, stdout included
@@ -779,10 +843,15 @@ class OracleKeepTests(unittest.TestCase):
             (keep / "fresh-only.json").write_text(json.dumps({"peer": lately}))
             parity.remember_fresh_only(keep, {"light": {"status": "pass", "oracle_reuse": True}})
             self.assertEqual(parity.fresh_only(keep), {"peer": lately})
-            (keep / "fresh-only.json").write_text("[1, 2]")
-            self.assertEqual(parity.fresh_only(keep), {})
-            (keep / "fresh-only.json").write_text(json.dumps({"loot": 3, "light": lately}))
-            self.assertEqual(parity.fresh_only(keep), {"light": lately})
+
+    def test_a_fresh_only_list_of_the_wrong_shape_is_an_error(self):
+        import json
+        with tempfile.TemporaryDirectory() as tmp:
+            keep = Path(tmp)
+            for text in ("[1, 2]", json.dumps({"loot": 3, "light": "2026-11-20"})):
+                (keep / "fresh-only.json").write_text(text)
+                with self.assertRaises(ValueError):
+                    parity.fresh_only(keep)
 
     def kept_run(self, root, outputs):
         import json

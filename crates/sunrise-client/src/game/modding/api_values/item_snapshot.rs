@@ -44,26 +44,6 @@ impl<'a> super::super::GameLevel<'a> {
     }
 }
 
-/// Registry access for the remaining generated value conversions.
-pub(in crate::game) trait ItemBoundary {
-    fn boundary_items(&self) -> Option<&Items>;
-}
-impl ItemBoundary for super::super::Game<'_> {
-    fn boundary_items(&self) -> Option<&Items> {
-        Some(self.items())
-    }
-}
-impl ItemBoundary for super::super::GameLevel<'_> {
-    fn boundary_items(&self) -> Option<&Items> {
-        Some(self.items)
-    }
-}
-impl ItemBoundary for super::super::native_hooks::HitLevel<'_> {
-    fn boundary_items(&self) -> Option<&Items> {
-        self.0.tags()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

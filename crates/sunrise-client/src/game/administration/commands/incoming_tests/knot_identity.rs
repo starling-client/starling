@@ -288,6 +288,10 @@ fn the_same_fence_position_in_another_level_is_another_knot() {
     assert_eq!(game.dim, Dim::Overworld);
     summon_pig(&mut game, 1, 16.5);
     step(&mut game);
+    // The server tick leaves its first active level in place (the Nether, whose chunks are
+    // forced), not the one the test was in: name the Overworld again before reading its knot.
+    game.enter_command_level(Dim::Overworld);
+    assert_eq!(game.dim, Dim::Overworld);
     let here = knots(&game);
     game.enter_command_level(Dim::Nether);
     let there = knots(&game);

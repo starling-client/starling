@@ -1,8 +1,8 @@
 import hashlib,json,sys
 from pathlib import Path
-sys.path.insert(0,str(Path.cwd()/'tools'))
-import test_command_exec_parity as driver
-import harness_args
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_command_exec_parity as driver, harness_args
 CASES=[('ordinary','fill','','','stone'),('strict','fill','','strict','stone'),('explicit','fill','[instrument=banjo,note=7]','','stone'),('strict-explicit','fill','[instrument=banjo,note=7]','strict','stone'),('air','fill','','','air'),('keep','fill','','keep','stone'),('filtered','fill','','replace air','stone'),('setblock','setblock','','','stone'),('setblock-explicit','setblock','[instrument=banjo,note=7]','','stone'),('explicit-default','fill','[instrument=harp,note=7]','','stone'),('existing-default','fill','','','stone')]
 def program():
  ops=[]

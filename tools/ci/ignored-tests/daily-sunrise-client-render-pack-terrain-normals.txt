@@ -1,0 +1,5 @@
+# Asset-free pixel assertions of a shaders/ pack's terrain normal with flat section draws on and off,
+# and on a renderer without flat draws as packs load and unload, run on the daily GPU hosts under
+# with_xvfb.py; each test re-runs itself in a child process with throwaway homes.
+sunrise-client-render pack_terrain_normals test:pack_terrain_normals daily child-process
+sunrise-client-render pack_terrain_normals_without_flat_draws test:pack_terrain_normals daily child-process

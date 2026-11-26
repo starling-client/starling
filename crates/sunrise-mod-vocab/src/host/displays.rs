@@ -18,7 +18,7 @@ pub trait DisplaysBackend {
     /// Which `Display` subclass the entity is.
     fn display_kind(&self, display: DisplayRef) -> Option<DisplayKind>;
     /// Side: server.
-    /// `Display.createTransformation`: the transformation as shown.
+    /// `Display.createTransformation`: the current server-side components, before any client interpolation.
     fn display_transformation(&self, display: DisplayRef) -> Option<Transformation>;
     /// Side: server.
     /// `Display.getBillboardConstraints`.
@@ -83,8 +83,13 @@ pub trait DisplaysBackend {
     /// `BlockDisplay.getBlockState`; None for another kind of display.
     fn display_block_state(&self, display: DisplayRef) -> Option<BlockState>;
     /// Side: server.
-    /// `ItemDisplay.getItemStack`; None for another kind of display or an empty stack.
-    fn display_item(&self, display: DisplayRef) -> Option<ItemStack>;
+    /// Lends `ItemDisplay.getItemStack` as in [`DisplayRef::with_item`].
+    #[manual_handle]
+    fn display_item_stack(
+        &self,
+        display: DisplayRef,
+        read: &mut dyn for<'a> FnMut(ItemStackView<'a>),
+    ) -> Option<()>;
     /// Side: server.
     /// `ItemDisplay.getItemTransform`: how the item is displayed.
     fn display_item_context(&self, display: DisplayRef) -> Option<ItemDisplayContext>;
@@ -95,9 +100,11 @@ pub trait DisplaysBackend {
 #[sunrise_mod_api_macros::host_area]
 pub trait DisplaysBackendMut {
     /// Side: server.
-    /// Sets the transformation. False for a value that isn't finite or a
-    /// zero quaternion. Clients ease to it when the start delay is set
-    /// (`set_start_interpolation`).
+    /// `Display.setTransformation` writes the four components as given and does not
+    /// normalize or reject quaternions. This returns false if the display is unavailable.
+    /// The NBT transformation codec is separate: it normalizes quaternion component
+    /// lists when loading. Clients interpolate to the new transformation when the
+    /// start delay is set (`set_start_interpolation`).
     fn display_set_transformation(
         &mut self,
         display: DisplayRef,
@@ -112,19 +119,19 @@ pub trait DisplaysBackendMut {
     fn display_set_brightness(&mut self, display: DisplayRef, brightness: Option<(u8, u8)>)
     -> bool;
     /// Side: server.
-    /// `Display.setViewRange`. False for a value that isn't finite.
+    /// `Display.setViewRange`. Stores the given float; false if the display is unavailable.
     fn display_set_view_range(&mut self, display: DisplayRef, range: f32) -> bool;
     /// Side: server.
-    /// `Display.setShadowRadius`. False for a value that isn't finite.
+    /// `Display.setShadowRadius`. Stores the given float; false if the display is unavailable.
     fn display_set_shadow_radius(&mut self, display: DisplayRef, radius: f32) -> bool;
     /// Side: server.
-    /// `Display.setShadowStrength`. False for a value that isn't finite.
+    /// `Display.setShadowStrength`. Stores the given float; false if the display is unavailable.
     fn display_set_shadow_strength(&mut self, display: DisplayRef, strength: f32) -> bool;
     /// Side: server.
-    /// `Display.setWidth`. False for a value that isn't finite.
+    /// `Display.setWidth`. Stores the given float; false if the display is unavailable.
     fn display_set_width(&mut self, display: DisplayRef, width: f32) -> bool;
     /// Side: server.
-    /// `Display.setHeight`. False for a value that isn't finite.
+    /// `Display.setHeight`. Stores the given float; false if the display is unavailable.
     fn display_set_height(&mut self, display: DisplayRef, height: f32) -> bool;
     /// Side: server.
     /// `Display.setGlowColorOverride`.

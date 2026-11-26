@@ -213,7 +213,7 @@ fn leftover_sleep_countdown_waits_at_the_unloaded_edge_then_resumes() {
             assert!(loaded.bed.is_none() && edge.bed.is_none());
             game.lan.as_mut().unwrap().hub.guests.extend([loaded, edge]);
             game.tick_guests();
-            let timers = |game: &Game<'_>| -> Vec<u32> {
+            let timers = |game: &Game<'_>| -> Vec<i32> {
                 game.lan
                     .as_ref()
                     .unwrap()
@@ -269,6 +269,7 @@ fn pre_teleport_to_unloaded_edge_keeps_the_resolved_body_tick() {
                 let mut watcher = placed(1, 8.5, SPECTATOR);
                 let mut motion = PlayerMotion::new(game.motion, Vec3::new(8.5, 64.0, 8.5)).unwrap();
                 motion.spectator = true;
+                motion.local_spectator = true;
                 motion.health.food.exhaustion = 5.0;
                 watcher.motion = Some(Box::new(motion));
                 watcher.saved = Some(sunrise_core::nbt::Tag::compound([(
@@ -316,4 +317,64 @@ fn pre_teleport_to_unloaded_edge_keeps_the_resolved_body_tick() {
             });
         },
     );
+}
+
+#[test]
+#[ignore = "daily"]
+fn guest_body_projects_spectator_flags_on_init_and_hub_mode_change() {
+    mod_platform::testing::with_mods(Vec::new().into(), || {
+        with_game(|game| {
+            open_to_lan(game);
+            game.world
+                .chunks
+                .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+            let spectator = placed(1, 8.5, SPECTATOR);
+            let switcher = placed(2, 8.5, 0);
+            assert!(spectator.motion.is_none());
+            assert!(switcher.motion.is_none());
+            game.lan
+                .as_mut()
+                .unwrap()
+                .hub
+                .guests
+                .extend([spectator, switcher]);
+
+            // Initialized from a spectator join without priming motion flags by hand.
+            game.as_guest(1, |g| {
+                let p = g.player.as_ref().unwrap();
+                assert!(p.spectator && p.local_spectator);
+            });
+            let g1 = game.lan.as_ref().unwrap().hub.guest(1).unwrap();
+            let m1 = g1.motion.as_ref().unwrap();
+            assert!(m1.spectator && m1.local_spectator);
+
+            // Switcher initializes as survival, then hub switches it to spectator and back.
+            game.as_guest(2, |g| {
+                let p = g.player.as_ref().unwrap();
+                assert!(!p.spectator && !p.local_spectator);
+            });
+            let world = &game.world;
+            let collision = game.collision;
+            game.lan
+                .as_mut()
+                .unwrap()
+                .hub
+                .set_game_mode(2, SPECTATOR, world, Some(collision));
+            game.as_guest(2, |g| {
+                let p = g.player.as_ref().unwrap();
+                assert!(p.spectator && p.local_spectator);
+            });
+            let world = &game.world;
+            let collision = game.collision;
+            game.lan
+                .as_mut()
+                .unwrap()
+                .hub
+                .set_game_mode(2, 0, world, Some(collision));
+            game.as_guest(2, |g| {
+                let p = g.player.as_ref().unwrap();
+                assert!(!p.spectator && !p.local_spectator);
+            });
+        });
+    });
 }

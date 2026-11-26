@@ -226,7 +226,7 @@ fn decor(c: &Value, atlas: &HudAtlas) -> Vec<GuiDraw> {
     };
     let d = ItemDecorations {
         count: count as u32,
-        count_text: c["countText"].as_str().map(str::to_owned),
+        count_text: c["countText"].as_str(),
         bar: hud_overlays::damage_bar(int(c, "damage", 0), max_damage),
         cooldown,
     };

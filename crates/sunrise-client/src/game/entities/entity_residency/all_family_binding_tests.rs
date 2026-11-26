@@ -1,4 +1,4 @@
-use super::super::native_entity_refs::tests::with_game;
+use super::super::native_entity_refs::tests::{fixture_resident_column, with_game};
 use super::{Game, SlotAccess};
 use mod_api::DimensionKey;
 use std::{
@@ -19,13 +19,16 @@ static VALUE: AttachmentType<i32> = AttachmentType {
     default: || 0,
     codec: None,
     copy_on_death: false,
-    sync: false,
+    sync_codec: None,
 };
 
 #[test]
 #[ignore = "daily"]
 fn every_ordinary_resident_family_binds_its_actual_owned_slot() {
     with_game(|game| {
+        // A handle resolves only for an entity in an accessible section
+        // (`LevelEntityGetter`); every entity here stands in chunk (0, 0).
+        fixture_resident_column(&mut game.world, (0, 0));
         let index = Arc::new(Mutex::new(AttachmentIndex::default()));
         let key = ("test".into(), "all_resident_families".into());
         let mut maps = Vec::new();
@@ -94,6 +97,7 @@ fn every_ordinary_resident_family_binds_its_actual_owned_slot() {
         let id = game.ominous_spawners[0].id;
         bind(game, id, Kind::Spawner);
         summon!("area_effect_cloud", Cloud, breath_clouds);
+        summon!("lightning_bolt", Bolt, bolts);
         summon!("cushion", Cushion, cushions);
         let fence = [0, 70, 0];
         game.tie_knot(fence);
@@ -124,8 +128,20 @@ fn every_ordinary_resident_family_binds_its_actual_owned_slot() {
                 previous: sunrise_core::geometry::Vec3::ZERO,
                 velocity: sunrise_core::geometry::Vec3::ZERO,
                 rotation: [0.0, 0.0],
+                previous_rotation: [0.0, 0.0],
                 owner: None,
                 fall_distance: 0.0,
+                custom_name: None,
+                custom_name_visible: false,
+                base: Default::default(),
+                on_ground: false,
+                tick_count: 0,
+                no_physics: false,
+                horizontal_collision: false,
+                vertical_collision: false,
+                vertical_collision_below: false,
+                fluids: Default::default(),
+                under_water: false,
                 payload_version: 1,
                 payload_bytes: Vec::new(),
                 mount: None,
@@ -134,7 +150,7 @@ fn every_ordinary_resident_family_binds_its_actual_owned_slot() {
                 attachment_lifetime: Default::default(),
             });
         bind(game, 4242, Kind::General);
-        assert_eq!(maps.len(), 22);
-        assert_eq!(index.lock().unwrap().snapshot(&key).len(), 22);
+        assert_eq!(maps.len(), 23);
+        assert_eq!(index.lock().unwrap().snapshot(&key).len(), 23);
     });
 }

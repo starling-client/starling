@@ -15,10 +15,12 @@ than the 2-tick delay, or only seven extinguishings does not. `--no-burnout` lea
 reproduces the corpus before it, byte for byte.
 """
 import random
-try:
-    from . import block_update_harness as h
-except ImportError:
-    import block_update_harness as h
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import block_update_harness as h
 
 COMPONENTS = [
     'redstone_wire', 'redstone_wire', 'redstone_wire', 'redstone_wire', 'repeater', 'repeater', 'comparator', 'redstone_torch',

@@ -317,6 +317,21 @@ impl<L: LevelAccess + ?Sized> PlacementContext for LevelFeatureWorld<'_, '_, L> 
             .and_then(|name| self.features.biome_id(name))
             .ok_or(PlacementQueryError::Unavailable)
     }
+    fn biome_key(&mut self, position: [i32; 3]) -> Result<mod_api::BiomeKey, PlacementQueryError> {
+        self.sim
+            .level
+            .biome_name(pos(position))
+            .and_then(|name| {
+                self.sim
+                    .b
+                    .mod_biome_keys()
+                    .current()
+                    .view(name)
+                    .ok()
+                    .map(|view| view.key().clone())
+            })
+            .ok_or(PlacementQueryError::Unavailable)
+    }
     fn block_state(&mut self, position: [i32; 3]) -> Result<BlockStateId, PlacementQueryError> {
         Ok(self.sim.state(pos(position)))
     }

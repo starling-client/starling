@@ -46,24 +46,32 @@ impl Game<'_> {
     ) -> bool {
         let start = out.len();
         let eye = self.eye_position().unwrap_or_default();
-        let mut draw = BlockEntityDraw::posed(
-            render.partial,
-            self.world.game_time,
-            light,
-            eye.map(|c| c.floor() as i32),
-            to_world,
-            sunrise_client::block_entity_render::diffuse_lights(self.dim == Dim::Nether),
-            std::mem::take(out),
-        )
-        .track_normal_pose()
-        .animated(self.animation_time());
-        let mut canceled = false;
-        self.native_render_hand(
-            render,
-            &mut crate::game::host::draw::GameBlockEntityDrawContext::new(self, &mut draw),
-            &mut canceled,
+        let camera = self.native_camera_frame.as_ref().map_or_else(
+            || glam::DVec3::from_array(eye),
+            |c| glam::DVec3::from(c.position),
         );
-        *out = draw.into_vertices();
+        let mut canceled = false;
+        self.with_world_view(camera, render.partial, None, |view| {
+            let mut draw = BlockEntityDraw::posed_with_view(
+                view,
+                light,
+                eye.map(|c| c.floor() as i32),
+                to_world,
+                sunrise_client::block_entity_render::diffuse_lights(self.dim == Dim::Nether),
+                std::mem::take(out),
+            )
+            .track_normal_pose()
+            .with_quad_budget(
+                self.entity_quad_capacity(),
+                self.entity_batch_reserved_quads(),
+            );
+            self.native_render_hand(
+                render,
+                &mut crate::game::host::draw::GameBlockEntityDrawContext::new(self, &mut draw),
+                &mut canceled,
+            );
+            *out = draw.into_vertices();
+        });
         if out.len() > start {
             runs.push((start as u32, 0));
         }

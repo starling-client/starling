@@ -11,7 +11,9 @@ from pathlib import Path
 import subprocess
 import sys
 
-import prebuilt_game as sdk_tools
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import prebuilt_game as sdk_tools
 
 FIXTURES = Path(__file__).with_suffix("")
 PINNED = sdk_tools.ROOT / "tools/ci/rust-version"

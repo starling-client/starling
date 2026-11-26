@@ -1,16 +1,24 @@
 //! Retained copies feed the same per-view submission route as transient batches.
 use super::Game;
+use super::native_block_entity_draw::BlockEntityDraw;
 use mod_api::__private::game::Fields;
-use mod_api::{GroupError, InstanceGroupRef, InstanceGroups, ModelInstance, ModelRef};
+use mod_api::{
+    GroupError, InstanceGroupRef, InstanceGroups, ItemDisplayContext, ModelError, ModelInstance,
+    ModelRef, PreparedItemRef,
+};
 
-use glam::{DVec3, Mat4};
-use sunrise_client::{gfx::PreparedModelInstance, world_geometry::row_major_3x4};
-
-const MOD_CAPACITY: usize = 65_536;
+use glam::{DVec3, Mat4, Vec3};
+use sunrise_client::{
+    gfx::PreparedModelInstance,
+    item_render::ItemRenderState,
+    terrain_model,
+    world_geometry::{self, row_major_3x4},
+};
 
 struct Group {
     generation: u64,
     owner: Option<&'static str>,
+    submitted: bool,
     model: ModelRef,
     copies: Vec<ModelInstance>,
     len: usize,
@@ -54,6 +62,7 @@ impl Group {
 pub(super) struct InstanceGroupStorage {
     next: u64,
     groups: Vec<Option<Group>>,
+    retired: sunrise_client::fast_hash::FxHashMap<u64, Group>,
 }
 impl InstanceGroupStorage {
     #[cfg(test)]
@@ -66,6 +75,7 @@ impl InstanceGroupStorage {
     }
     pub(super) fn clear(&mut self) {
         self.groups.clear();
+        self.retired.clear();
     }
     pub(super) fn retire_disabled(&mut self, disabled: &std::collections::BTreeSet<String>) {
         for slot in &mut self.groups {
@@ -73,7 +83,10 @@ impl InstanceGroupStorage {
                 .as_ref()
                 .is_some_and(|g| g.owner.is_some_and(|id| disabled.contains(id)))
             {
-                *slot = None;
+                let group = slot.take().expect("disabled slot has a group");
+                if group.submitted {
+                    self.retired.insert(group.generation, group);
+                }
             }
         }
     }
@@ -82,14 +95,24 @@ impl InstanceGroupStorage {
         handle: InstanceGroupRef,
         model_generation: u64,
     ) -> Result<&mut Group, GroupError> {
+        self.get_owned(
+            mod_api::content::crash::current_native_mod(),
+            handle,
+            model_generation,
+        )
+    }
+    fn get_owned(
+        &mut self,
+        _owner: Option<&'static str>,
+        handle: InstanceGroupRef,
+        model_generation: u64,
+    ) -> Result<&mut Group, GroupError> {
         let fields = handle.fields();
         self.groups
             .get_mut(fields.slot as usize)
             .and_then(Option::as_mut)
             .filter(|g| {
-                g.owner == mod_api::content::crash::current_native_mod()
-                    && g.generation == fields.generation
-                    && g.model.fields().generation == model_generation
+                g.generation == fields.generation && g.model.fields().generation == model_generation
             })
             .ok_or(GroupError::Stale)
     }
@@ -106,17 +129,9 @@ impl InstanceGroups for Game<'_> {
             .ok_or(GroupError::Model(mod_api::ModelError::UnknownModel))?;
         let owner = mod_api::content::crash::current_native_mod();
         let mut storage = self.instance_groups.borrow_mut();
-        let reserved: usize = storage
-            .groups
-            .iter()
-            .flatten()
-            .filter(|g| g.owner == owner)
-            .map(|g| g.copies.len().max(1))
-            .sum();
-        if capacity > 16_384 || reserved + (capacity as usize).max(1) > MOD_CAPACITY {
-            return Err(GroupError::CapacityExceeded);
-        }
-        self.prepared_model_draws.borrow_mut().reserve(16_384);
+        self.prepared_model_draws
+            .borrow_mut()
+            .reserve((capacity as usize).min(16_384));
         storage.next = storage
             .next
             .checked_add(1)
@@ -124,6 +139,7 @@ impl InstanceGroups for Game<'_> {
         let mut group = Group {
             generation: storage.next,
             owner,
+            submitted: false,
             model,
             copies: vec![ModelInstance::at([0.0; 3], 0xFFFF_FFFF); capacity as usize],
             len: 0,
@@ -213,7 +229,12 @@ impl Game<'_> {
     ) -> Result<(), GroupError> {
         let mut storage = self.instance_groups.borrow_mut();
         storage.get(handle, self.standalone_geometry.generation())?;
-        storage.groups[handle.fields().slot as usize] = None;
+        let group = storage.groups[handle.fields().slot as usize]
+            .take()
+            .expect("validated group slot");
+        if group.submitted {
+            storage.retired.insert(group.generation, group);
+        }
         Ok(())
     }
     pub(super) fn draw_instance_group(
@@ -223,20 +244,313 @@ impl Game<'_> {
     ) -> Result<(), GroupError> {
         let mut storage = self.instance_groups.borrow_mut();
         let group = storage.get(handle, self.standalone_geometry.generation())?;
-        if draw.has_group(handle) {
-            return Ok(());
-        }
-        if !draw.group_room() {
-            return Err(GroupError::CapacityExceeded);
-        }
-        self.draw_cached_model_instances(
-            draw,
-            group.model,
-            &group.composed[..group.len],
-            Some(&group.records[..group.len]),
-        )?;
-        draw.mark_group(handle);
+        group.submitted = true;
+        draw.queue_group(handle);
         Ok(())
+    }
+
+    /// Resolve live data after the prepare hook, or the last data of an accepted group that
+    /// was destroyed. The latter no longer occupies a public handle slot.
+    pub(super) fn resolve_submitted_groups(
+        &self,
+        draw: &mut sunrise_client::world_geometry::WorldGeometry,
+    ) {
+        let mut storage = self.instance_groups.borrow_mut();
+        let mut submitted = draw.take_submitted_groups();
+        for &handle in &submitted {
+            let fields = handle.fields();
+            let group = if let Some(group) = storage.retired.get(&fields.generation) {
+                group
+            } else if let Some(group) = storage.groups[fields.slot as usize]
+                .as_mut()
+                .filter(|group| group.generation == fields.generation)
+            {
+                group.submitted = false;
+                group
+            } else {
+                unreachable!("accepted group must be live or retained");
+            };
+            let _ = self.draw_cached_model_instances(
+                draw,
+                group.model,
+                &group.composed[..group.len],
+                Some(&group.records[..group.len]),
+            );
+        }
+        for handle in submitted.drain(..) {
+            storage.retired.remove(&handle.fields().generation);
+        }
+        draw.recycle_submitted_groups(submitted);
+    }
+
+    /// A frame can stop before prepare, for example on graphics device loss.
+    pub(super) fn discard_submitted_groups(
+        &self,
+        draw: &mut sunrise_client::world_geometry::WorldGeometry,
+    ) {
+        let mut storage = self.instance_groups.borrow_mut();
+        for handle in draw.drain_submitted_groups() {
+            let fields = handle.fields();
+            if storage.retired.remove(&fields.generation).is_none()
+                && let Some(group) = storage.groups[fields.slot as usize]
+                    .as_mut()
+                    .filter(|group| group.generation == fields.generation)
+            {
+                group.submitted = false;
+            }
+        }
+    }
+
+    /// Draw a retained [`InstanceGroupRef`] under `draw`'s active pose (entity renderers,
+    /// entity layers, block entities, and screen scenes).
+    pub(super) fn native_draw_instance_group(
+        &self,
+        draw: &mut BlockEntityDraw<'_>,
+        handle: InstanceGroupRef,
+    ) -> Result<(), GroupError> {
+        let model_gen = self.standalone_geometry.generation();
+        let mut storage = self.instance_groups.borrow_mut();
+        let group = storage.get(handle, model_gen)?;
+        let model_fields = group.model.fields();
+        let slot_info = self
+            .standalone_geometry
+            .instance_slot(model_fields.slot)
+            .ok_or(GroupError::Model(ModelError::UnknownModel))?;
+        let base_pose = draw.pose();
+        let layers = &self.pack.render.sprite_layers;
+        for copy in &group.composed[..group.len] {
+            let copy_local = Mat4::from_translation(Vec3::new(
+                copy.origin[0] as f32,
+                copy.origin[1] as f32,
+                copy.origin[2] as f32,
+            )) * row_major_3x4(copy.transform);
+            let copy_pose = base_pose * copy_local;
+            let copy_light = world_geometry::pack_light(copy.light);
+            let copy_overlay = world_geometry::pack_overlay(copy.overlay);
+            let material = slot_info.translucent || slot_info.state || (copy.color >> 24) != 0xFF;
+            if !material
+                && copy_overlay == 0
+                && copy.color == u32::MAX
+                && copy.hidden_faces == 0
+                && draw.defer_model_at(
+                    model_fields.slot,
+                    model_fields.generation,
+                    copy_pose,
+                    copy.tint,
+                    copy_light,
+                )
+            {
+                continue;
+            }
+            if material {
+                let Some(faces) = self.model_faces(model_fields.slot) else {
+                    continue;
+                };
+                let start = draw.vertices.len();
+                let emit_light = if draw.unlit {
+                    sunrise_client::mobs::render::FULL_BRIGHT
+                } else if draw.level_lit {
+                    0
+                } else {
+                    copy_light
+                };
+                let options = terrain_model::NativeModelRenderOptions {
+                    shade: if draw.unlit {
+                        terrain_model::NativeModelShade::Off
+                    } else if slot_info.state {
+                        terrain_model::NativeModelShade::Model
+                    } else {
+                        terrain_model::NativeModelShade::Entity
+                    },
+                    tint: copy.tint & 0xFF_FFFF,
+                    tint_alpha: (copy.tint >> 24) as u8,
+                    color: copy.color,
+                    hidden_faces: copy.hidden_faces,
+                    ..Default::default()
+                };
+                {
+                    let mut scope = draw.quad_scope();
+                    terrain_model::draw_model(
+                        faces,
+                        copy_pose,
+                        emit_light,
+                        options,
+                        |name| {
+                            layers
+                                .get(name)
+                                .or_else(|| layers.get(name.strip_prefix("minecraft:")?))
+                                .copied()
+                        },
+                        |quad| scope.submit_quad(quad),
+                    );
+                }
+                if !draw.unlit {
+                    draw.lit_since(
+                        start,
+                        || copy_local.transform_point3(Vec3::splat(0.5)).as_dvec3(),
+                        copy_light & 0xffff,
+                    );
+                }
+            } else {
+                let Some(faces) = self.standalone_geometry.faces(model_fields.slot) else {
+                    continue;
+                };
+                let room = draw.quad_scope().remaining_quads();
+                if room == 0 {
+                    break;
+                }
+                let start = draw.vertices.len();
+                let emit_light = if draw.level_lit { 0 } else { copy_light };
+                let shown = || {
+                    faces
+                        .iter()
+                        .filter(|face| !face.hidden_by(copy.hidden_faces))
+                        .take(room)
+                };
+                super::minecarts::emit_model_faces(
+                    shown().copied().map(|face| (face, emit_light)),
+                    copy_pose,
+                    true,
+                    |index| (index >= 0).then_some(copy.tint & 0xFF_FFFF),
+                    &mut draw.vertices,
+                );
+                if copy_overlay != 0 || copy.color != u32::MAX {
+                    for vertex in &mut draw.vertices[start..] {
+                        vertex.layer = copy_overlay;
+                        if copy.color != u32::MAX {
+                            vertex.color =
+                                terrain_model::multiply_draw_color(vertex.color, copy.color);
+                        }
+                    }
+                }
+                super::minecarts::scale_tint_alpha(&mut draw.vertices[start..], shown(), copy.tint);
+                draw.quad_scope().retain_valid_since(start);
+                draw.drawn_since(
+                    start,
+                    || copy_local.transform_point3(Vec3::splat(0.5)).as_dvec3(),
+                    copy_light & 0xffff,
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Resolve `stack`'s item render state once for `display` and `seed`
+    /// (`ClientRenderClientHost::prepare_item`).
+    pub(in crate::game) fn prepare_item(
+        &self,
+        stack: &sunrise_client::items::ItemStack,
+        display: ItemDisplayContext,
+        seed: i32,
+    ) -> Result<PreparedItemRef, ModelError> {
+        let display = crate::game::api_values::engine_display_context(display)
+            .ok_or(ModelError::UnknownModel)?;
+        let state = self.resolve_item(stack, display, None, seed);
+        if state.is_empty() {
+            return Err(ModelError::UnknownModel);
+        }
+        let owner = mod_api::content::crash::current_native_mod();
+        let resource_generation = self.standalone_geometry.generation();
+        let mut storage = self.prepared_items.borrow_mut();
+        storage.next = storage
+            .next
+            .checked_add(1)
+            .expect("prepared item epoch exhausted");
+        let entry = PreparedItemEntry {
+            generation: storage.next,
+            resource_generation,
+            owner,
+            state,
+        };
+        let index = storage
+            .items
+            .iter()
+            .position(Option::is_none)
+            .unwrap_or(storage.items.len());
+        let handle = mod_api::__private::built::prepared_item_ref(entry.generation, index as u32);
+        if index == storage.items.len() {
+            storage.items.push(Some(entry));
+        } else {
+            storage.items[index] = Some(entry);
+        }
+        Ok(handle)
+    }
+
+    /// Retire a prepared item render state (`PreparedItemRef::destroy`).
+    pub(in crate::game) fn prepared_item_destroy(
+        &self,
+        handle: PreparedItemRef,
+    ) -> Result<(), ModelError> {
+        let resource_generation = self.standalone_geometry.generation();
+        let mut storage = self.prepared_items.borrow_mut();
+        storage.get(handle, resource_generation)?;
+        storage.items[handle.fields().slot as usize] = None;
+        Ok(())
+    }
+
+    /// Draw a retained [`PreparedItemRef`] under `draw`'s active pose
+    /// (`BlockEntityDrawContext::prepared_item`).
+    pub(super) fn native_draw_prepared_item(
+        &self,
+        draw: &mut BlockEntityDraw<'_>,
+        handle: PreparedItemRef,
+    ) -> Result<(), ModelError> {
+        let resource_generation = self.standalone_geometry.generation();
+        let storage = self.prepared_items.borrow();
+        let entry = storage.get(handle, resource_generation)?;
+        let pose = draw.pose();
+        if draw.unlit {
+            let full = sunrise_client::mobs::render::FULL_BRIGHT;
+            self.submit_item_unlit(&entry.state, pose, full, &mut draw.vertices);
+        } else {
+            self.submit_item_world(&entry.state, pose, draw.light(), &mut draw.vertices);
+        }
+        Ok(())
+    }
+}
+
+struct PreparedItemEntry {
+    generation: u64,
+    resource_generation: u64,
+    owner: Option<&'static str>,
+    state: ItemRenderState,
+}
+
+#[derive(Default)]
+pub(super) struct PreparedItemStorage {
+    next: u64,
+    items: Vec<Option<PreparedItemEntry>>,
+}
+
+impl PreparedItemStorage {
+    pub(super) fn clear(&mut self) {
+        self.items.clear();
+    }
+
+    pub(super) fn retire_disabled(&mut self, disabled: &std::collections::BTreeSet<String>) {
+        for slot in &mut self.items {
+            if slot
+                .as_ref()
+                .is_some_and(|e| e.owner.is_some_and(|id| disabled.contains(id)))
+            {
+                slot.take();
+            }
+        }
+    }
+
+    fn get(
+        &self,
+        handle: PreparedItemRef,
+        resource_generation: u64,
+    ) -> Result<&PreparedItemEntry, ModelError> {
+        let fields = handle.fields();
+        self.items
+            .get(fields.slot as usize)
+            .and_then(Option::as_ref)
+            .filter(|e| {
+                e.generation == fields.generation && e.resource_generation == resource_generation
+            })
+            .ok_or(ModelError::StaleModel)
     }
 }
 
@@ -250,6 +564,7 @@ mod tests {
         let mut group = Group {
             generation: 1,
             owner: None,
+            submitted: false,
             model: mod_api::__private::built::model_ref(1, 0),
             copies: vec![copy; 2],
             len: 2,
@@ -311,21 +626,50 @@ mod tests {
             ]
         );
         let handle = mod_api::__private::built::instance_group_ref(1, 0);
+        let owned_handle = mod_api::__private::built::instance_group_ref(2, 1);
+        let owned = Group {
+            generation: 2,
+            owner: Some("group-owner"),
+            submitted: false,
+            model: mod_api::__private::built::model_ref(1, 0),
+            copies: vec![copy],
+            len: 1,
+            transform: Mat4::IDENTITY,
+            composed: vec![copy],
+            records: vec![PreparedModelInstance::new(
+                Mat4::IDENTITY,
+                DVec3::ZERO,
+                DVec3::ZERO,
+                [1.0; 4],
+                0,
+            )],
+            converted_bytes: 0,
+        };
         let mut storage = InstanceGroupStorage {
-            next: 1,
-            groups: vec![Some(group)],
+            next: 2,
+            groups: vec![Some(group), Some(owned)],
+            retired: Default::default(),
         };
         assert!(storage.get(handle, 1).is_ok());
-        // Disabling a mod must not retire unmarked engine-owned groups.
+        assert!(storage.get(owned_handle, 1).is_ok());
+        // Access checks generation and model lifetime, not the TLS caller mod name.
+        {
+            let _other =
+                mod_platform::content::crash::enter_native_mod(mod_api::content::crash::ModCall {
+                    id: "other",
+                    hook: "test",
+                    part: None,
+                });
+            assert!(storage.get(handle, 1).is_ok());
+            assert!(storage.get(owned_handle, 1).is_ok());
+            assert!(matches!(storage.get(handle, 2), Err(GroupError::Stale)));
+        }
+        // Disabling the owner still retires its groups without touching engine-owned ones.
         storage.retire_disabled(&std::collections::BTreeSet::from(["group-owner".into()]));
         assert!(storage.get(handle, 1).is_ok());
-        assert!(matches!(storage.get(handle, 2), Err(GroupError::Stale)));
-        let _owner =
-            mod_platform::content::crash::enter_native_mod(mod_api::content::crash::ModCall {
-                id: "other",
-                hook: "test",
-                part: None,
-            });
-        assert!(matches!(storage.get(handle, 1), Err(GroupError::Stale)));
+        assert!(matches!(
+            storage.get(owned_handle, 1),
+            Err(GroupError::Stale)
+        ));
     }
 }

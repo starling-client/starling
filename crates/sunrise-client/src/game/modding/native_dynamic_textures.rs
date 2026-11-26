@@ -1,28 +1,48 @@
 //! `ClientRenderClientHost::create_dynamic_texture`, `update_dynamic_texture`,
-//! `free_dynamic_texture` and `dynamic_texture_budget`: a client mod's dynamic textures (vanilla's
-//! `DynamicTexture` in the `TextureManager`), held in the GUI atlas's pool of slots for the mod
-//! whose hook or part is running (`crash::current_native_mod`) and named among the atlas's
-//! sprites, so `native_sprite` and every other sprite path draw them.
+//! `update_dynamic_texture_region` and `release_dynamic_texture`: a client mod's dynamic textures
+//! (vanilla's `DynamicTexture` in the `TextureManager`), made for the mod whose hook or part is
+//! running (`crash::current_native_mod`). Each call is checked here and queued as a command the
+//! render thread applies, in order, before the next frame (`hud::dynamic_textures`).
 use super::Game;
-use mod_api::{DynamicTextureBudget, DynamicTextureError, Identifier};
-use sunrise_client::hud::dynamic_textures::ImagePatch;
+use mod_api::{DynamicTextureError, Identifier};
+use sunrise_client::hud::dynamic_textures::Command;
 
 impl Game<'_> {
-    /// The calling mod's image `id` made from `rgba` (`width * height` pixels of four bytes) in
-    /// a slot of the atlas's pool, its pixels uploaded with the next frame.
+    /// The calling mod, when `id` is in a namespace it owns (its manifest namespaces or a served
+    /// package's namespaces via `served_by`), excluding vanilla's `minecraft`.
+    fn dynamic_texture_owner(id: &Identifier) -> Result<&'static str, DynamicTextureError> {
+        mod_api::content::crash::current_native_mod()
+            .filter(|owner| {
+                id.namespace() != "minecraft"
+                    && mod_api::__private::owns_namespace(owner, id.namespace())
+            })
+            .ok_or(DynamicTextureError::NotOwned)
+    }
+
+    /// Tell the table which device's textures it is naming, as the renderer holds them now.
+    pub(in crate::game) fn bind_dynamic_textures(&mut self) {
+        if let Some(renderer) = &self.renderer {
+            self.dynamic_textures
+                .bind(renderer.hud.dynamic().id(), renderer.max_texture_side());
+        }
+    }
+
+    /// The calling mod's texture `id` of `mip_levels` levels made from `rgba` (`width * height`
+    /// pixels of four bytes, level 0).
     pub(in crate::game) fn create_dynamic_texture(
         &mut self,
         id: &Identifier,
         width: u32,
         height: u32,
+        mip_levels: u32,
         rgba: &[u8],
     ) -> Result<(), DynamicTextureError> {
-        let owner = mod_api::content::crash::current_native_mod();
-        let (pool, mut names) = self.gui.atlas.dynamic_names();
+        self.bind_dynamic_textures();
+        let owner = Self::dynamic_texture_owner(id)?;
         self.dynamic_textures
-            .create(pool, &mut names, owner, id, [width, height], rgba)
+            .create(owner, id, [width, height], mip_levels, rgba)
     }
-    /// The calling mod's image `id` given new pixels, written into its slot with the next frame.
+    /// The calling mod's texture `id` given new pixels.
     pub(in crate::game) fn update_dynamic_texture(
         &mut self,
         id: &Identifier,
@@ -30,32 +50,43 @@ impl Game<'_> {
         height: u32,
         rgba: &[u8],
     ) -> Result<(), DynamicTextureError> {
-        let owner = mod_api::content::crash::current_native_mod();
-        let (pool, mut names) = self.gui.atlas.dynamic_names();
+        self.bind_dynamic_textures();
+        let owner = Self::dynamic_texture_owner(id)?;
         self.dynamic_textures
-            .update(pool, &mut names, owner, id, [width, height], rgba)
+            .update(owner, id, [width, height], rgba)
     }
-    /// The calling mod's image `id` freed: its name and slot go at once.
-    pub(in crate::game) fn free_dynamic_texture(
+    /// A region of mip level `mip_level` of the calling mod's texture `id` given new pixels.
+    pub(in crate::game) fn update_dynamic_texture_region(
+        &mut self,
+        id: &Identifier,
+        mip_level: u32,
+        origin: [u32; 2],
+        size: [u32; 2],
+        rgba: &[u8],
+    ) -> Result<(), DynamicTextureError> {
+        self.bind_dynamic_textures();
+        let owner = Self::dynamic_texture_owner(id)?;
+        self.dynamic_textures
+            .update_region(owner, id, mip_level, origin, size, rgba)
+    }
+    /// The calling mod's texture `id` released.
+    pub(in crate::game) fn release_dynamic_texture(
         &mut self,
         id: &Identifier,
     ) -> Result<(), DynamicTextureError> {
-        let owner = mod_api::content::crash::current_native_mod();
-        let (pool, mut names) = self.gui.atlas.dynamic_names();
-        self.dynamic_textures.free(pool, &mut names, owner, id)
+        self.bind_dynamic_textures();
+        let owner = Self::dynamic_texture_owner(id)?;
+        self.dynamic_textures.release(owner, id)
     }
-    /// What the calling mod may still create.
-    pub(in crate::game) fn dynamic_texture_budget(
-        &self,
-    ) -> Result<DynamicTextureBudget, DynamicTextureError> {
-        let owner = mod_api::content::crash::current_native_mod();
+    /// The commands made since the last frame, for this frame's batch: first the textures of
+    /// a mod that was switched off since are released.
+    pub(in crate::game) fn dynamic_texture_commands(&mut self, commands: &mut Vec<Command>) {
+        self.bind_dynamic_textures();
+        let mods = &self.mods;
         self.dynamic_textures
-            .budget(self.gui.atlas.dynamic_texture_pool.as_ref(), owner)
-    }
-    /// The images created, updated or lost by a rebuilt atlas texture since the last frame, as
-    /// patches into their slots for this frame's batch.
-    pub(in crate::game) fn dynamic_texture_patches(&mut self, patches: &mut Vec<ImagePatch>) {
-        self.dynamic_textures
-            .patches(self.gui.atlas.dynamic_texture_pool.as_ref(), patches);
+            .release_unloaded(mod_api::__private::mods_switched(), |owner| {
+                mods.code_owner_enabled(owner)
+            });
+        self.dynamic_textures.take_commands(commands);
     }
 }

@@ -28,7 +28,7 @@ IntegratedServer.processPacketsAndTick	skip:debug		gizmo collector for debug dra
 IntegratedServer.fillServerSystemReport	skip:debug		system report for crash reports
 IntegratedServer.getPersonalGameMode	port	crates/sunrise-client/src/game/world/integrated.rs::Game::server_options	owner's game mode, read from the guest record
 IntegratedServer.updateGameModeBasedOnPermission	inline	crates/sunrise-client/src/game/network/lan/mod.rs::Game::lan_guest_joined	gap: player: a guest already in the world keeps their mode when force-gamemode or the default mode changes; only a join applies it
-IntegratedServer.updatePermissions	port	crates/sunrise-client/src/lan/hub.rs::Hub::resend_commands	permission level and commands sent to every guest
+IntegratedServer.updatePermissions	port	crates/sunrise-client/src/game/modding/native_server.rs::Game::resend_commands_filtered	permission level and commands sent to every guest
 IntegratedServer.setDefaultGameType	port	crates/sunrise-client/src/game/network/lan/mod.rs::Game::set_default_game_mode
 IntegratedServer.isSingleplayerOwner	port	crates/sunrise-client/src/lan/hub.rs::Hub::player_info	the owner is kept by uuid on the hub, and player_info marks the guest it names
 IntegratedServer.getScaledTrackingDistance	inline	crates/sunrise-client/src/game/network/lan/mod.rs::Game::tick_lan	the Entity Distance option becomes the hub's entity range percent for an integrated or LAN host
@@ -118,7 +118,7 @@ CommandSourceStack.withAnchor	inline	crates/sunrise-client/src/game/administrati
 CommandSourceStack.withSigningContext	skip:service		chat message signing
 CommandSourceStack.getPlayer	port	crates/sunrise-client/src/game/administration/commands/players.rs::Game::source_entity	the source entity; callers check for a player
 CommandSourceStack.shouldFilterMessageTo	skip:service		chat text filtering
-CommandSourceStack.sendChatMessage	port	crates/sunrise-client/src/lan/hub.rs::Hub::chat	gap: minor: console and command block sources are not sent here
+CommandSourceStack.sendChatMessage	port	crates/sunrise-client/src/lan/hub/chat.rs::Hub::chat	gap: minor: console and command block sources are not sent here
 CommandSourceStack.suggestRegistryElements	port	crates/sunrise-command/src/args.rs::suggest_resources	registry tags and elements
 CommandSourceStack.getLookup	skip:data		registry lookup; registries come from tables
 Commands.<init>	port	crates/sunrise-command/src/vanilla.rs::build	registers the command tree

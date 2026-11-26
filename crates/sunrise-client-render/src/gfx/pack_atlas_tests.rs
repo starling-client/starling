@@ -19,3 +19,7 @@ mod midpoint_support;
 #[cfg(test)]
 #[path = "pack_atlas/source_ownership_test.rs"]
 mod source_ownership_test;
+
+#[cfg(test)]
+#[path = "pack_atlas/compact_source_test.rs"]
+mod compact_source_test;

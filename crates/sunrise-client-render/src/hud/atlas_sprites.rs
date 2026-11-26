@@ -2,30 +2,35 @@ use super::*;
 
 /// How the GUI atlas publishes one of its ids.
 pub(super) enum GuiPublished {
-    /// The sprite is packed under this name, with the nine-slice scaling its file gave it.
-    Packed(String, Option<crate::ui::NineSlice>),
-    /// The list removed it or its origin didn't finish.
+    /// The sprite is packed under this name, with the scaling its file gave it.
+    Packed(String, Option<crate::ui::Scaling>),
+    /// The list removed it, its origin didn't finish, or its metadata was rejected.
     Missing,
 }
 /// The GUI atlas's answer for one id ([`HudAtlas::gui_lookup`]).
 #[derive(Clone, Copy, Debug)]
 pub enum GuiSprite {
-    /// The sprite the id names, with the nine-slice scaling of the file it is (none for a
+    /// The sprite the id names, with the scaling of the file it is (none for a
     /// generated sprite, a live texture or any sprite without that metadata: it stretches).
     Present {
         rect: Rect,
-        scaling: Option<crate::ui::NineSlice>,
+        scaling: Option<crate::ui::Scaling>,
     },
-    /// The id is listed, and its sprite was removed or its origin didn't finish.
+    /// The id is listed, and its sprite was removed, its origin didn't finish, or its metadata
+    /// was rejected.
     Missing,
 }
-/// The nine-slice scaling a sprite file's `.png.mcmeta` gives (none: it stretches).
-fn nine_slice_of(root: &ResourceSource, file: &str) -> Option<crate::ui::NineSlice> {
-    let text = root.read_to_string(&format!("{file}.mcmeta")).ok()?;
-    crate::packs::first_json(text.as_bytes())
-        .ok()
-        .as_ref()
-        .and_then(crate::ui::parse_nine_slice)
+/// The `gui.scaling` a sprite file's `.png.mcmeta` gives (`Ok(None)` when it stretches,
+/// `Err(())` when `ResourceMetadata` or `GuiMetadataSection.CODEC` rejects it).
+fn scaling_of(
+    root: &ResourceSource,
+    file: &str,
+) -> std::result::Result<Option<crate::ui::Scaling>, ()> {
+    match crate::ui::sprite_metadata_of(root, file) {
+        None => Ok(None),
+        Some(crate::ui::SpriteMetadata::Scaled(scaling)) => Ok(Some(scaling)),
+        Some(crate::ui::SpriteMetadata::Rejected) => Err(()),
+    }
 }
 /// What [`atlas_sprites`] found.
 #[derive(Default)]
@@ -160,11 +165,17 @@ pub(super) fn atlas_sprites(root: &ResourceSource, packed: &[PackedImage]) -> At
                 _ => None,
             };
             if let Some(name) = stands {
-                claimed.insert(name.clone());
-                standing.insert(name.clone());
-                let scaling =
-                    nine_slice_of(root, &atlas_sources::texture_resource(&name, "textures"));
-                gui_table.push((plain.to_owned(), GuiPublished::Packed(name, scaling)));
+                match scaling_of(root, &atlas_sources::texture_resource(&name, "textures")) {
+                    Ok(scaling) => {
+                        claimed.insert(name.clone());
+                        standing.insert(name.clone());
+                        gui_table.push((plain.to_owned(), GuiPublished::Packed(name, scaling)));
+                    }
+                    Err(()) => {
+                        dropping.extend(own);
+                        gui_table.push((plain.to_owned(), GuiPublished::Missing));
+                    }
+                }
                 continue;
             }
             dropping.extend(own);
@@ -173,14 +184,18 @@ pub(super) fn atlas_sprites(root: &ResourceSource, packed: &[PackedImage]) -> At
                 gui_table.push((plain.to_owned(), GuiPublished::Missing));
                 continue;
             };
+            let Ok(scaling) = material
+                .resource
+                .as_deref()
+                .map_or(Ok(None), |file| scaling_of(root, file))
+            else {
+                gui_table.push((plain.to_owned(), GuiPublished::Missing));
+                continue;
+            };
             let packed_as = format!("{GUI_KEY}{id}");
             if let Some(file) = &material.resource {
                 gui_files.insert(packed_as.clone(), file.clone());
             }
-            let scaling = material
-                .resource
-                .as_deref()
-                .and_then(|file| nine_slice_of(root, file));
             gui_table.push((
                 plain.to_owned(),
                 GuiPublished::Packed(packed_as.clone(), scaling),
@@ -270,8 +285,8 @@ pub(super) fn atlas_sprites(root: &ResourceSource, packed: &[PackedImage]) -> At
             names[slot].1.push(origin.clone());
         }
     }
-    let load = |texture: &str| {
-        decode_resource(root, &atlas_sources::texture_resource(texture, "textures")).ok()
+    let load = |texture: &str, directory: &str| {
+        decode_resource(root, &atlas_sources::texture_resource(texture, directory)).ok()
     };
     out.extend(
         crate::par::par_map(&names, |(name, origins)| {

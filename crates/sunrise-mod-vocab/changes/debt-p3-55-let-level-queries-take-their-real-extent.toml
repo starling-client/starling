@@ -1,0 +1,41 @@
+ids = [
+    "handle:BiomeSearch::MAX_SAMPLES",
+    "handle:StructureSearch::MAX_RADIUS",
+    "handle:LevelRef::visit_surface_heights",
+    "handle:LevelRef::visit_columns",
+    "type:ColumnBlocks",
+    "type:ColumnBlocks.palette",
+    "type:ColumnBlocks.bases",
+    "type:ColumnBlocks.blocks",
+    "type:ColumnBlocks.water_colors",
+    "type:ColumnSlice",
+    "type:ColumnSlice.base",
+    "type:ColumnSlice.blocks",
+    "type:ColumnSlice.water_color",
+    "handle:ColumnSlice::new",
+    "method:prelude::ClientViewClientHost::client_surface_heights",
+    "method:prelude::WorldEditServerHost::surface_heights",
+    "method:prelude::WorldEditServerHost::read_columns",
+    "handle:LevelRef::find_closest_biome",
+    "handle:LevelRef::find_nearest_structure",
+    "behaviour:level_find_closest_biome",
+    "behaviour:level_find_nearest_structure",
+    "behaviour:client_raycast",
+    "behaviour:client_view_hit",
+]
+why = "Remove arbitrary Sunrise-only extent caps and flat guest batch limits that vanilla 26.3 does not impose on biome searches (`ServerLevel.findClosestBiome3d`), structure searches (`ServerLevel.findNearestMapStructure`), client view raycasts (`BlockGetter.clip`, `VoxelShape.clip`), and column height/block/terrain reads (`LevelReader.getHeight`, `LevelHeightAccessor.getHeight`). `BiomeSearch::MAX_SAMPLES` (65,536) refused vanilla's own `/locate biome` default search (`radius = 6400, horizontal_step = 32, vertical_step = 64`); `StructureSearch::MAX_RADIUS` refused radii above 100; `ClientHost::raycast` / `view_hit` clamped hits at 1024 blocks and shifted endpoints instead of passing the caller's original `(from, to)` endpoints through `traverse_blocks` and `clip_with_interaction`; and `ServerHost::{surface_heights, read_columns}` plus `ClientHost::client_surface_heights` enforced fixed 65,536 / 1,048,576-block caps and string-dimension flat vectors instead of streaming through `LevelRef`."
+migrate = '''
+### `BiomeSearch::MAX_SAMPLES` and `LevelRef::find_closest_biome`
+- Remove references to `BiomeSearch::MAX_SAMPLES`. `LevelRef::find_closest_biome` no longer enforces a pre-search sample budget and accepts any nonnegative `radius` with positive `horizontal_step` and `vertical_step`. If your mod wants a smaller synchronous cap, check its own parameters before calling.
+
+### `StructureSearch::MAX_RADIUS` and `LevelRef::find_nearest_structure`
+- Remove references to `StructureSearch::MAX_RADIUS`. `LevelRef::find_nearest_structure` accepts any nonnegative `radius` (vanilla `/locate structure` uses `100`) and still checks vanilla's `Level.isInWorldBoundsHorizontal` bound (`-30_000_000..30_000_000`) on `origin`.
+
+### `ClientHost::raycast` and `ClientHost::view_hit`
+- `ClientHost::view_hit()` traverses the full extent of loaded chunks along the view rather than stopping at 1024 blocks. It clips each candidate with a segment derived from the view and that candidate's geometry, so loading a distant chunk does not move an inside-block hit. Call `raycast(distance)` instead if you need a caller-defined clipping endpoint.
+- `ClientHost::raycast(distance)` no longer clamps `distance` to 1024 blocks; it returns `None` for nonpositive or non-finite distances and clips against loaded blocks using the caller's original `(eye, eye + dir * distance)` endpoints (matching `VoxelShape.clip`'s inside-block nudge and sub-`1e-7`-squared sweep rejection). Pass `1024.0` explicitly if you want the previous ceiling.
+
+### Streaming column queries on `LevelRef`
+- Replace `ServerHost::surface_heights(dimension, columns, heightmap)` and `ClientHost::client_surface_heights(columns, heightmap)` with `level.visit_surface_heights(host, columns, heightmap, &mut |pos, height| ...)`. It works on active and parked server levels and on the client's open level, imposes no 65,536-column cap, returns `Result<ControlFlow<()>, LevelReadError>`, and supports early exit via `ControlFlow::Break(())`.
+- Replace `ServerHost::read_columns(dimension, columns, heightmap, range)` and `ColumnBlocks` with `level.visit_columns(host, columns, heightmap, range, &mut |pos, slice| ...)`. Replace `ColumnBlocks::bases[i]` with `slice.map(|s| s.base)`, the `ColumnBlocks::palette` lookup through `ColumnBlocks::blocks` with direct reads from `slice.blocks: &[BlockState]`, and `ColumnBlocks::water_colors[i]` with `slice.map(|s| s.water_color)` (`None` for an unloaded column, not `0`). Use `ColumnSlice::new(base, blocks, water_color)` if a test backend needs to construct that borrowed view. Copy any state or colour you need after the callback. The 1,048,576-block cap is removed; the requested span must be nonempty and stays within the build height (`LevelHeightAccessor.getHeight`).
+'''

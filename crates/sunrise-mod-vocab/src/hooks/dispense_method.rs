@@ -11,10 +11,13 @@ pub trait Hooks {
     /// empties the slot, `Some(stack)` replaces it (the hook owns
     /// consumption: no extra item is removed afterwards), and `event` is the
     /// level event played with the smoke: 1000 the click, 1001 the fail sound,
-    /// or 0 for nothing at all. Leave answer None and `dispense_item` decides,
-    /// as it did before.
-    /// A disabled owner's subscribed method retains the stack and emits no dispense event unless
-    /// an earlier enabled Part supplies a reply the engine accepts.
+    /// or 0 for no sound or smoke. Leave answer None and `dispense_item` decides.
+    /// In an open transaction in the dispenser's level, sound and smoke follow the behaviour's
+    /// published effects at the outermost commit and are discarded on abort.
+    /// The remainder is detached until the dispenser writes its slot. An invalid remainder is
+    /// reported without writing or notifying the slot, and no other behaviour runs. A disabled
+    /// owner's subscribed method skips the slot write and dispense events unless an earlier
+    /// enabled Part supplies a reply the engine accepts.
     #[hook(
         dispatch = "flat",
         side = "server",
@@ -24,7 +27,7 @@ pub trait Hooks {
         inert = "signal",
         key = "state",
         neoforge = "none (vanilla DispenserBlock.getDispenseMethod; NeoForge adds no event or extension for it)",
-        version = 2
+        version = 4
     )]
     fn dispense_method(
         dimension: &str,

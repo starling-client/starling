@@ -12,12 +12,11 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
-try:
-    from . import lab, test_rust_parity as base, test_model_baking_parity as baking
-except ImportError:
-    import lab
-    import test_rust_parity as base
-    import test_model_baking_parity as baking
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_rust_parity as base, test_model_baking_parity as baking
 
 FIXTURE = 'game::explosion::tests::explosion_items_parity_fixture'
 
@@ -85,20 +84,7 @@ def main():
         if binary is None:
             # Build from the workspace, then execute from scratch so Game cannot
             # read or write the checkout's options, caches or worlds.
-            run(['cargo', 'test', '-p', 'sunrise-client', '--lib', '--no-run',
-                 '--message-format=json'], 'compile-rust')
-            for line in (work / 'compile-rust.log').read_text(encoding='utf-8').splitlines():
-                try:
-                    message = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if (message.get('reason') == 'compiler-artifact' and message.get('executable')
-                        and message.get('profile', {}).get('test')
-                        and message.get('target', {}).get('name') == 'sunrise_client'
-                        and message.get('target', {}).get('kind') == ['lib']):
-                    binary = Path(message['executable'])
-            if binary is None:
-                raise RuntimeError('Cargo did not report a gameplay test executable')
+            binary = lab.parity_fixtures()
         with (work / 'rust.log').open('w') as log, tempfile.TemporaryDirectory(prefix='explosion-items-') as game_dir:
             env = lab.game_env(SUNRISE_EXPLOSION_ITEMS_FIXTURE=work,
                                SUNRISE_TEST_RESOURCES=args.resources.resolve())

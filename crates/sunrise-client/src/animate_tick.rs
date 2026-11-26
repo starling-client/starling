@@ -15,8 +15,8 @@ use std::{
     collections::BTreeMap,
     path::Path,
     sync::{
-        OnceLock,
-        atomic::{AtomicU8, Ordering},
+        Arc, OnceLock,
+        atomic::{AtomicBool, AtomicU8, Ordering},
     },
 };
 use sunrise_core::{
@@ -25,6 +25,8 @@ use sunrise_core::{
 };
 use sunrise_world::{
     block_collision::BlockCollisionRegistry,
+    environment_attributes::AmbientParticle,
+    particle_options::ParticleOptions as PersistentOptions,
     registry::{BlockRegistry, BlockStateId},
     worldgen::tags::TagDefinitions,
 };
@@ -121,7 +123,24 @@ fn step(facing: &str) -> [i32; 3] {
         _ => [0, -1, 0],
     }
 }
+/// `ColoredFallingBlock.getDustColor` and `DragonEggBlock.getDustColor`.
+pub fn fixed_falling_dust_color(name: &str) -> Option<u32> {
+    Some(match name {
+        "minecraft:sand" => 0xDBD3A0,
+        "minecraft:red_sand" => 0xA95821,
+        "minecraft:gravel" => 0x807C7B,
+        "minecraft:dragon_egg" => 0x000000,
+        _ => return None,
+    })
+}
+
 fn classify(name: &str, prop: &dyn Fn(&str) -> Option<String>) -> Animate {
+    if let Some(color) = fixed_falling_dust_color(name) {
+        return Animate::Falling(
+            color,
+            matches!(name, "minecraft:sand" | "minecraft:red_sand"),
+        );
+    }
     let name = name.strip_prefix("minecraft:").unwrap_or(name);
     let lit = prop("lit").as_deref() == Some("true");
     let powered = prop("powered").as_deref() == Some("true");
@@ -164,13 +183,8 @@ fn classify(name: &str, prop: &dyn Fn(&str) -> Option<String>) -> Animate {
         "mycelium" => Animate::Mycelium,
         "brewing_stand" => Animate::BrewingStand,
         "ender_chest" => Animate::EnderChest,
-        "sand" => Animate::Falling(0xDBD3A0, true),
-        "red_sand" => Animate::Falling(0xA95821, true),
-        "gravel" => Animate::Falling(0x807C7B, false),
-        // AnvilBlock/ConcretePowderBlock.getDustColor is the map colour;
-        // DragonEggBlock's is black.
+        // AnvilBlock/ConcretePowderBlock.getDustColor is the map colour.
         "anvil" | "chipped_anvil" | "damaged_anvil" => Animate::Falling(0xA7A7A7, false),
-        "dragon_egg" => Animate::Falling(0x000000, false),
         _ if name.ends_with("_concrete_powder") => Animate::Falling(
             concrete_powder_color(name.trim_end_matches("_concrete_powder")),
             false,
@@ -422,6 +436,9 @@ impl AnimateTables {
 #[derive(Default)]
 pub struct EnchantPower {
     states: OnceLock<Vec<AtomicU8>>,
+    /// A mod listens to `is_valid_book_shelf`: [`AnimateSampling`] stops at each bookshelf
+    /// the table's particles ask about, for the game to fire it.
+    hooked: AtomicBool,
 }
 
 impl EnchantPower {
@@ -442,6 +459,28 @@ impl EnchantPower {
             let bits = u8::from(answer(state) != 0.0) | (u8::from(transmits(state)) << 1);
             entry.store(bits, Ordering::Relaxed);
         }
+    }
+
+    /// Set with the answers, from whether a mod listens to `is_valid_book_shelf`.
+    pub fn set_hooked(&self, hooked: bool) {
+        self.hooked.store(hooked, Ordering::Relaxed);
+    }
+
+    /// `EnchantingTableBlock.isValidBookShelf` from the answers: the block at `offset` from
+    /// `table` gives power and the block halfway to it transmits.
+    fn valid_book_shelf(&self, ctx: &AnimateContext, table: [i32; 3], offset: [i32; 3]) -> bool {
+        let [ox, oy, oz] = offset;
+        let provider = ctx.state([
+            table[0].wrapping_add(ox),
+            table[1].wrapping_add(oy),
+            table[2].wrapping_add(oz),
+        ]);
+        let between = ctx.state([
+            table[0].wrapping_add(ox / 2),
+            table[1].wrapping_add(oy),
+            table[2].wrapping_add(oz / 2),
+        ]);
+        self.has(provider, 1) && self.has(between, 2)
     }
 
     fn has(&self, state: BlockStateId, bit: u8) -> bool {
@@ -472,6 +511,8 @@ pub struct AnimateContext<'a> {
     pub sky_darken: i32,
     /// Creative main-hand marker block and a resolver for each placed state's sprite.
     pub marker: Option<(&'a str, &'a dyn Fn(BlockStateId) -> Option<ParticleOptions>)>,
+    /// `ClientLevel.environmentAttributes().getValue(AMBIENT_PARTICLES, pos)`.
+    pub ambient_particles: Option<&'a dyn Fn([i32; 3]) -> Arc<[AmbientParticle]>>,
     /// `BlockState.getOffset` of a state at (x, z), for blocks with a random model offset.
     pub model_offset: &'a dyn Fn(BlockStateId, i32, i32) -> Option<[f64; 3]>,
     /// `TheEndGatewayBlockEntity.getParticleAmount` of the gateway state at a position.
@@ -588,7 +629,7 @@ fn add(engine: &mut ParticleEngine, ty: T, p: [f64; 3], v: [f64; 3]) {
 }
 /// `Level.addAlwaysVisibleParticle`: still shown under the Minimal option now and then.
 fn add_visible(engine: &mut ParticleEngine, ty: T, p: [f64; 3], v: [f64; 3]) {
-    engine.add_with(&ParticleOptions::simple(ty), p, v, false, true);
+    engine.add_with(None, &ParticleOptions::simple(ty), p, v, false, true);
 }
 fn sound(engine: &mut ParticleEngine, name: &'static str, p: [f64; 3], volume: f32, pitch: f32) {
     engine.sounds.push((name, p, volume, pitch, false));
@@ -599,7 +640,7 @@ fn redstone(engine: &mut ParticleEngine, p: [f64; 3]) {
 
 /// `ClientLevel.animateTick` around the player's block position. A pick whose block has a part
 /// (`AnimateContext::block_parts`) gets no part call here: the game runs the tick through
-/// [`AnimateSampling`] to call them.
+/// [`AnimateSampling`] to call them or resolve model-backed ambient options.
 pub fn animate_tick(
     tables: &AnimateTables,
     engine: &mut ParticleEngine,
@@ -620,6 +661,99 @@ pub struct AnimateSampling {
     picks: u32,
     /// The pick [`AnimateSampling::run`] stopped in for its part: its state and position.
     rest: Option<(BlockStateId, [i32; 3])>,
+    ambient: Option<AmbientEmissions>,
+    /// The enchanting table whose bookshelves the game is being asked about.
+    shelves: Option<ShelfScan>,
+}
+
+pub enum AnimateStep {
+    BlockPart(BlockStateId, [i32; 3]),
+    Ambient(Arc<PersistentOptions>, [f64; 3]),
+    /// `isValidBookShelf` for the enchanting table at `table`, asked only when a mod listens to
+    /// `is_valid_book_shelf`: `valid` is vanilla's answer. The game fires the hook and hands
+    /// the result to [`AnimateSampling::answer_book_shelf`].
+    BookShelf {
+        table: [i32; 3],
+        offset: [i32; 3],
+        valid: bool,
+    },
+}
+
+/// `EnchantingTableBlock.animateTick` stopped at each offset whose `nextInt(16)` draw passed,
+/// where vanilla calls `isValidBookShelf`. After it, the pick goes on as
+/// [`AnimateSampling::run`] would have: the block's part, then the rest of its tick.
+struct ShelfScan {
+    table: [i32; 3],
+    state: BlockStateId,
+    part: bool,
+    /// Offsets drawn for so far.
+    next: usize,
+    /// The offset asked about, and the answer the game gave.
+    asked: Option<[i32; 3]>,
+    valid: bool,
+}
+
+impl ShelfScan {
+    /// The next offset to ask about (`valid`: vanilla's answer), after drawing the glyph of
+    /// the last one if the game answered yes. `None` once the scan is done.
+    fn scan(
+        &mut self,
+        engine: &mut ParticleEngine,
+        valid: impl Fn([i32; 3]) -> bool,
+    ) -> Option<AnimateStep> {
+        if let Some(offset) = self.asked.take()
+            && self.valid
+        {
+            enchant_glyph(engine, self.table, offset);
+        }
+        for offset in crate::stations::bookshelf_offsets().skip(self.next) {
+            self.next += 1;
+            if next_int(engine.random(), 16) != 0 {
+                continue;
+            }
+            self.asked = Some(offset);
+            self.valid = false;
+            return Some(AnimateStep::BookShelf {
+                table: self.table,
+                offset,
+                valid: valid(offset),
+            });
+        }
+        None
+    }
+}
+
+struct AmbientEmissions {
+    pos: [i32; 3],
+    entries: Arc<[AmbientParticle]>,
+    next: usize,
+}
+
+impl AmbientEmissions {
+    /// Resume after each game-resolved particle so its limiter/provider draws happen
+    /// before testing the next entry's spawn chance.
+    fn emit(&mut self, engine: &mut ParticleEngine, ctx: &AnimateContext) -> Option<AnimateStep> {
+        let level = crate::particles::ParticleLevel::new(ctx.world, ctx.facts, ctx.collision);
+        while let Some(entry) = self.entries.get(self.next) {
+            self.next += 1;
+            let random = engine.level_random();
+            // AmbientParticle.canSpawn includes equality, even at zero probability.
+            if random.next_float() <= entry.probability {
+                let [x, y, z] = self.pos.map(f64::from);
+                let at = [
+                    x + random.next_double(),
+                    y + random.next_double(),
+                    z + random.next_double(),
+                ];
+                if let Some(options) = ParticleOptions::from_persistent(&entry.particle) {
+                    engine.add_with(Some(&level), &options, at, [0.0; 3], false, false);
+                } else {
+                    return Some(AnimateStep::Ambient(Arc::clone(&entry.particle), at));
+                }
+            }
+        }
+        None
+    }
 }
 
 impl AnimateSampling {
@@ -629,39 +763,84 @@ impl AnimateSampling {
             player,
             picks: 0,
             rest: None,
+            ambient: None,
+            shelves: None,
+        }
+    }
+    /// The game's `is_valid_book_shelf` answer to the [`AnimateStep::BookShelf`] just
+    /// returned.
+    pub fn answer_book_shelf(&mut self, valid: bool) {
+        if let Some(scan) = self.shelves.as_mut() {
+            scan.valid = valid;
         }
     }
     /// Some pick made already.
     pub fn started(&self) -> bool {
         self.picks > 0
     }
-    /// Picks on until one whose block has a part (`ctx.block_parts`), and returns its state and
-    /// position after the block's own effects: the caller calls the part, then runs again,
-    /// which ends that pick (the position's pack emitters, fluid, marker and biome ambience)
-    /// before making the next. `None` once the tick's picks are all done.
+    /// Run through the picks, stopping for a mod block part or a particle that needs a
+    /// game-side provider. `None` once the tick's picks and emissions are finished.
     pub fn run(
         &mut self,
         tables: &AnimateTables,
         engine: &mut ParticleEngine,
         ctx: &AnimateContext,
-    ) -> Option<(BlockStateId, [i32; 3])> {
-        if let Some((state, pos)) = self.rest.take() {
-            animate_rest(tables, engine, ctx, state, pos, true);
-        }
-        while self.picks < 2 * 667 {
+    ) -> Option<AnimateStep> {
+        loop {
+            if let Some(scan) = self.shelves.as_mut() {
+                let table = scan.table;
+                let valid = |offset| ctx.enchant_power.valid_book_shelf(ctx, table, offset);
+                if let Some(step) = scan.scan(engine, valid) {
+                    return Some(step);
+                }
+                let ShelfScan {
+                    table, state, part, ..
+                } = self.shelves.take()?;
+                if part {
+                    self.rest = Some((state, table));
+                    return Some(AnimateStep::BlockPart(state, table));
+                }
+                self.ambient = animate_rest(tables, engine, ctx, state, table, true);
+                continue;
+            }
+            if let Some(ambient) = self.ambient.as_mut()
+                && let Some(step) = ambient.emit(engine, ctx)
+            {
+                return Some(step);
+            }
+            self.ambient = None;
+            if let Some((state, pos)) = self.rest.take() {
+                self.ambient = animate_rest(tables, engine, ctx, state, pos, true);
+                continue;
+            }
+            if self.picks == 2 * 667 {
+                return None;
+            }
             let r = if self.picks.is_multiple_of(2) { 16 } else { 32 };
             self.picks += 1;
             let pos = pick(engine, self.player, r);
-            let Some((state, part)) = animate_block(tables, engine, ctx, pos, self.player) else {
+            let Some((state, part, shelves)) =
+                animate_block(tables, engine, ctx, pos, self.player, true)
+            else {
                 continue;
             };
+            if shelves {
+                self.shelves = Some(ShelfScan {
+                    table: pos,
+                    state,
+                    part,
+                    next: 0,
+                    asked: None,
+                    valid: false,
+                });
+                continue;
+            }
             if part {
                 self.rest = Some((state, pos));
-                return Some((state, pos));
+                return Some(AnimateStep::BlockPart(state, pos));
             }
-            animate_rest(tables, engine, ctx, state, pos, true);
+            self.ambient = animate_rest(tables, engine, ctx, state, pos, true);
         }
-        None
     }
 }
 
@@ -685,7 +864,7 @@ pub fn animate_scene(
     }
     for _ in 0..picks {
         let pos = blocks[next_int(engine.random(), count) as usize];
-        animate_at(tables, engine, ctx, pos, pos, false);
+        let _ = animate_at(tables, engine, ctx, pos, pos, false);
     }
 }
 fn next_int(r: &mut LegacyRandom, bound: i32) -> i32 {
@@ -693,7 +872,7 @@ fn next_int(r: &mut LegacyRandom, bound: i32) -> i32 {
 }
 /// `ClientLevel.doAnimateTick`'s position: within `r` of `center` on each axis.
 fn pick(engine: &mut ParticleEngine, center: [i32; 3], r: i32) -> [i32; 3] {
-    let random = engine.random();
+    let random = engine.level_random();
     let x = center[0] + next_int(random, r) - next_int(random, r);
     let y = center[1] + next_int(random, r) - next_int(random, r);
     let z = center[2] + next_int(random, r) - next_int(random, r);
@@ -709,7 +888,9 @@ fn do_animate_tick(
     level: bool,
 ) {
     let pos = pick(engine, center, r);
-    animate_at(tables, engine, ctx, pos, center, level);
+    if let Some(mut ambient) = animate_at(tables, engine, ctx, pos, center, level) {
+        assert!(ambient.emit(engine, ctx).is_none());
+    }
 }
 
 /// One picked position's animate tick: its block's and fluid's, and with `level` the
@@ -721,32 +902,42 @@ fn animate_at(
     pos: [i32; 3],
     center: [i32; 3],
     level: bool,
-) {
-    if let Some((state, _)) = animate_block(tables, engine, ctx, pos, center) {
-        animate_rest(tables, engine, ctx, state, pos, level);
-    }
+) -> Option<AmbientEmissions> {
+    let (state, ..) = animate_block(tables, engine, ctx, pos, center, false)?;
+    animate_rest(tables, engine, ctx, state, pos, level)
 }
 
-/// A picked position's block's own animate tick: its state, and whether a mod block's part
-/// (`ctx.block_parts`) is to be called next, before [`animate_rest`]. `None`, with nothing
-/// drawn, where the position isn't loaded.
+/// A picked position's block's own animate tick: its state, whether a mod block's part
+/// (`ctx.block_parts`) is to be called next, before [`animate_rest`], and whether the block is
+/// an enchanting table whose bookshelves the game asks a mod about (with `ask_shelves`, when a
+/// mod listens), its tick left to a [`ShelfScan`]. `None`, with nothing drawn, where the
+/// position isn't loaded.
 fn animate_block(
     tables: &AnimateTables,
     engine: &mut ParticleEngine,
     ctx: &AnimateContext,
     pos: [i32; 3],
     center: [i32; 3],
-) -> Option<(BlockStateId, bool)> {
+    ask_shelves: bool,
+) -> Option<(BlockStateId, bool, bool)> {
     if !ctx.world.loaded(pos[0], pos[2]) {
         return None;
     }
     let state = ctx.state(pos);
     // A Polytone block modifier's `disable_particles` stops the block's own animate tick.
     if engine.polytone_disables_particles(state) {
-        return Some((state, false));
+        return Some((state, false, false));
+    }
+    let part = ctx.block_parts.is_some_and(|parts| parts(state));
+    // `EnchantingTableBlock.animateTick` is only the bookshelf glyphs.
+    if ask_shelves
+        && ctx.enchant_power.hooked.load(Ordering::Relaxed)
+        && matches!(tables.kind(state), Animate::EnchantingTable)
+    {
+        return Some((state, part, true));
     }
     block_animate_tick(tables, engine, ctx, state, pos, center);
-    Some((state, ctx.block_parts.is_some_and(|parts| parts(state))))
+    Some((state, part, false))
 }
 
 /// The rest of a picked position's animate tick, after its block's (and the block's parts'):
@@ -759,7 +950,7 @@ fn animate_rest(
     state: BlockStateId,
     pos: [i32; 3],
     level: bool,
-) {
+) -> Option<AmbientEmissions> {
     let [x, y, z] = pos;
     // Resource packs' Polytone block emitters (#11486): nothing without such a pack.
     if level {
@@ -782,7 +973,12 @@ fn animate_rest(
             facts.fluid_level,
             facts.fluid_falling,
         );
-        if next_int(engine.random(), 10) == 0 {
+        let random = if level {
+            engine.level_random()
+        } else {
+            engine.random()
+        };
+        if next_int(random, 10) == 0 {
             let drip = if facts.fluid == Fluid::Water {
                 T::DrippingWater
             } else {
@@ -792,11 +988,11 @@ fn animate_rest(
             // the fluid block's own down face, not whether it is a full cube (a
             // waterlogged bottom slab's face is sturdy and has no fluid below).
             let top_solid = facts.sturdy_full & 1 != 0;
-            try_spawn_drip(tables, engine, ctx, [x, y - 1, z], drip, top_solid);
+            try_spawn_drip(tables, engine, ctx, [x, y - 1, z], drip, top_solid, level);
         }
     }
     if !level {
-        return;
+        return None;
     }
     if let Some((block, options)) = ctx.marker
         && ctx.registry.state(state).is_some_and(|s| s.name == block)
@@ -804,30 +1000,15 @@ fn animate_rest(
     {
         engine.add(&options, pos.map(|v| f64::from(v) + 0.5), [0.0; 3]);
     }
-    if !facts.full_collision {
-        let biome = ctx
-            .world
-            .chunks
-            .get(&(x >> 4, z >> 4))
-            .map_or(0, |c| c.biome(x, y, z));
-        let particles = ctx
-            .biomes
-            .list
-            .get(usize::from(biome))
-            .map_or(&[][..], |info| info.ambient_particles.as_slice());
-        for &(ty, probability) in particles {
-            // AmbientParticle.canSpawn: random.nextFloat() <= probability.
-            let random = engine.random();
-            if random.next_float() <= probability {
-                let p = [
-                    f64::from(x) + random.next_double(),
-                    f64::from(y) + random.next_double(),
-                    f64::from(z) + random.next_double(),
-                ];
-                add(engine, ty, p, [0.0; 3]);
-            }
-        }
+    if facts.full_collision {
+        return None;
     }
+    let entries = ctx.ambient_particles?(pos);
+    (!entries.is_empty()).then_some(AmbientEmissions {
+        pos,
+        entries,
+        next: 0,
+    })
 }
 /// `ClientLevel.trySpawnDripParticles`.
 fn try_spawn_drip(
@@ -837,6 +1018,7 @@ fn try_spawn_drip(
     pos: [i32; 3],
     drip: T,
     top_solid: bool,
+    level: bool,
 ) {
     let state = ctx.state(pos);
     if ctx.facts.get(state).fluid != Fluid::None {
@@ -846,7 +1028,11 @@ fn try_spawn_drip(
         return;
     };
     let spawn = |engine: &mut ParticleEngine, x1: f64, x2: f64, z1: f64, z2: f64, y: f64| {
-        let r = engine.random();
+        let r = if level {
+            engine.level_random()
+        } else {
+            engine.random()
+        };
         let (a, b) = (r.next_double(), r.next_double());
         add(
             engine,
@@ -1210,31 +1396,9 @@ fn block_animate_tick(
                 add(engine, T::Portal, p, v);
             }
         }
-        Animate::EnchantingTable => {
-            for ox in -2i32..=2 {
-                for oy in 0..=1 {
-                    for oz in -2i32..=2 {
-                        if ox.abs() != 2 && oz.abs() != 2 {
-                            continue;
-                        }
-                        if next_int(engine.random(), 16) != 0 {
-                            continue;
-                        }
-                        let provider = ctx.state([pos[0] + ox, pos[1] + oy, pos[2] + oz]);
-                        let between = ctx.state([pos[0] + ox / 2, pos[1] + oy, pos[2] + oz / 2]);
-                        if ctx.enchant_power.has(provider, 1) && ctx.enchant_power.has(between, 2) {
-                            let r = engine.random();
-                            let v = [
-                                f64::from(ox as f32 + r.next_float() - 0.5),
-                                f64::from(oy as f32 - r.next_float() - 1.0),
-                                f64::from(oz as f32 + r.next_float() - 0.5),
-                            ];
-                            add(engine, T::Enchant, [fx + 0.5, fy + 2.0, fz + 0.5], v);
-                        }
-                    }
-                }
-            }
-        }
+        Animate::EnchantingTable => enchanting_table_particles(engine, pos, |offset| {
+            ctx.enchant_power.valid_book_shelf(ctx, pos, offset)
+        }),
         Animate::EndRod(facing) => {
             let r = engine.random();
             let x = fx + 0.55 - f64::from(r.next_float() * 0.1);
@@ -1913,6 +2077,36 @@ fn block_animate_tick(
         }
     }
 }
+/// `EnchantingTableBlock.animateTick`'s glyphs: for each scanned offset
+/// (`BOOKSHELF_OFFSETS`, then the mods'), in its order, a `nextInt(16)` draw, and only when it
+/// is 0 `isValidBookShelf` (`valid`), then three `nextFloat`s for the glyph flying from that shelf
+/// to the table.
+fn enchanting_table_particles(
+    engine: &mut ParticleEngine,
+    table: [i32; 3],
+    mut valid: impl FnMut([i32; 3]) -> bool,
+) {
+    for offset in crate::stations::bookshelf_offsets() {
+        if next_int(engine.random(), 16) != 0 || !valid(offset) {
+            continue;
+        }
+        enchant_glyph(engine, table, offset);
+    }
+}
+
+/// One glyph flying from the bookshelf at `offset` to the table: three `nextFloat`s.
+fn enchant_glyph(engine: &mut ParticleEngine, table: [i32; 3], offset: [i32; 3]) {
+    let [fx, fy, fz] = table.map(f64::from);
+    let [ox, oy, oz] = offset;
+    let r = engine.random();
+    let v = [
+        f64::from(ox as f32 + r.next_float()) - 0.5,
+        f64::from(oy as f32 - r.next_float() - 1.0),
+        f64::from(oz as f32 + r.next_float()) - 0.5,
+    ];
+    add(engine, T::Enchant, [fx + 0.5, fy + 2.0, fz + 0.5], v);
+}
+
 /// `AmbientLeavesBlockSoundPlayer.playAmbientLeavesSounds` for the poplar leaves:
 /// one log and three leaves of the same kind around the block.
 fn leaves_ambient_sound(
@@ -2092,58 +2286,65 @@ pub fn campfire_particles<'a>(
     cooking: &dyn Fn([i32; 3]) -> [bool; 4],
 ) {
     for &(pos, state) in blocks {
-        if !tables.is_lit_campfire(state) {
+        campfire_particle_tick(tables, engine, ctx.registry, pos, state, cooking(pos));
+    }
+}
+/// `CampfireBlockEntity.particleTick` of the campfire at `pos` in `state`, if it is lit.
+pub fn campfire_particle_tick(
+    tables: &AnimateTables,
+    engine: &mut ParticleEngine,
+    registry: &BlockRegistry,
+    pos: [i32; 3],
+    state: u32,
+    occupied: [bool; 4],
+) {
+    if !tables.is_lit_campfire(state) {
+        return;
+    }
+    let properties = registry.state(BlockStateId(state)).map(|s| &s.properties);
+    let prop = |k: &str| properties.and_then(|p| p.get(k)).map(String::as_str);
+    let signal = prop("signal_fire") == Some("true");
+    // Direction.get2DDataValue: south, west, north, east.
+    let rotation = match prop("facing") {
+        Some("west") => 1,
+        Some("north") => 2,
+        Some("east") => 3,
+        _ => 0,
+    };
+    let r = engine.level_random();
+    if r.next_float() < 0.11 {
+        // `for (int i = 0; i < random.nextInt(2) + 2; i++)`: the iteration
+        // bound is drawn again on every pass, so the loop keeps asking the
+        // random whether to make one more puff.
+        let mut made = 0;
+        loop {
+            let count = next_int(engine.level_random(), 2) + 2;
+            if made >= count {
+                break;
+            }
+            make_campfire_smoke(engine, pos, signal, false);
+            made += 1;
+        }
+    }
+    // The smoke over each cooking item, at the slot's corner of the fire.
+    for (slot, _) in occupied.iter().enumerate().filter(|(_, held)| **held) {
+        if engine.level_random().next_float() >= 0.2 {
             continue;
         }
-        let properties = ctx
-            .registry
-            .state(BlockStateId(state))
-            .map(|s| &s.properties);
-        let prop = |k: &str| properties.and_then(|p| p.get(k)).map(String::as_str);
-        let signal = prop("signal_fire") == Some("true");
-        // Direction.get2DDataValue: south, west, north, east.
-        let rotation = match prop("facing") {
-            Some("west") => 1,
-            Some("north") => 2,
-            Some("east") => 3,
-            _ => 0,
+        // Direction.from2DDataValue((slot + rotation) % 4) and its clockwise side.
+        let (step, clockwise) = match (slot + rotation) % 4 {
+            0 => ([0.0, 1.0], [-1.0, 0.0]),
+            1 => ([-1.0, 0.0], [0.0, -1.0]),
+            2 => ([0.0, -1.0], [1.0, 0.0]),
+            _ => ([1.0, 0.0], [0.0, 1.0]),
         };
-        let r = engine.random();
-        if r.next_float() < 0.11 {
-            // `for (int i = 0; i < random.nextInt(2) + 2; i++)`: the iteration
-            // bound is drawn again on every pass, so the loop keeps asking the
-            // random whether to make one more puff.
-            let mut made = 0;
-            loop {
-                let count = next_int(engine.random(), 2) + 2;
-                if made >= count {
-                    break;
-                }
-                make_campfire_smoke(engine, pos, signal, false);
-                made += 1;
-            }
-        }
-        // The smoke over each cooking item, at the slot's corner of the fire.
-        let occupied = cooking(pos);
-        for (slot, _) in occupied.iter().enumerate().filter(|(_, held)| **held) {
-            if engine.random().next_float() >= 0.2 {
-                continue;
-            }
-            // Direction.from2DDataValue((slot + rotation) % 4) and its clockwise side.
-            let (step, clockwise) = match (slot + rotation) % 4 {
-                0 => ([0.0, 1.0], [-1.0, 0.0]),
-                1 => ([-1.0, 0.0], [0.0, -1.0]),
-                2 => ([0.0, -1.0], [1.0, 0.0]),
-                _ => ([1.0, 0.0], [0.0, 1.0]),
-            };
-            let at = [
-                f64::from(pos[0]) + 0.5 - step[0] * 0.3125 + clockwise[0] * 0.3125,
-                f64::from(pos[1]) + 0.5,
-                f64::from(pos[2]) + 0.5 - step[1] * 0.3125 + clockwise[1] * 0.3125,
-            ];
-            for _ in 0..4 {
-                add(engine, T::Smoke, at, [0.0, 5.0e-4, 0.0]);
-            }
+        let at = [
+            f64::from(pos[0]) + 0.5 - step[0] * 0.3125 + clockwise[0] * 0.3125,
+            f64::from(pos[1]) + 0.5,
+            f64::from(pos[2]) + 0.5 - step[1] * 0.3125 + clockwise[1] * 0.3125,
+        ];
+        for _ in 0..4 {
+            add(engine, T::Smoke, at, [0.0, 5.0e-4, 0.0]);
         }
     }
 }
@@ -2157,7 +2358,7 @@ pub fn make_campfire_smoke(
     signal: bool,
     smoking: bool,
 ) {
-    let r = engine.random();
+    let r = engine.level_random();
     let sign = |r: &mut LegacyRandom| if r.next_boolean() { 1.0 } else { -1.0 };
     let dx = r.next_double() / 3.0;
     let x = f64::from(pos[0]) + 0.5 + dx * sign(r);
@@ -2170,6 +2371,7 @@ pub fn make_campfire_smoke(
         T::CampfireCosySmoke
     };
     engine.add_with(
+        None,
         &ParticleOptions::simple(ty),
         [x, y, z],
         [0.0, 0.07, 0.0],
@@ -2177,7 +2379,7 @@ pub fn make_campfire_smoke(
         true,
     );
     if smoking {
-        let r = engine.random();
+        let r = engine.level_random();
         let dx = r.next_double() / 4.0 * sign(r);
         let dz = r.next_double() / 4.0 * sign(r);
         let at = [
@@ -2247,6 +2449,96 @@ mod tests {
         );
         assert_eq!(other_ambience.random.clone().next_long(), random_before);
     }
+    /// `EnchantingTableBlock.animateTick` walks `BOOKSHELF_OFFSETS`, which
+    /// `BlockPos.betweenClosedStream(-2, 0, -2, 2, 1, 2)` orders x fastest, then y, then z:
+    /// the shelves are asked in that order within a tick, so each glyph's draws follow it.
+    #[test]
+    fn enchanting_table_asks_its_shelves_in_vanilla_order() {
+        use std::collections::{HashMap, HashSet};
+        let mut vanilla = Vec::new();
+        for z in -2i32..=2 {
+            for y in 0..=1 {
+                for x in -2i32..=2 {
+                    if x.abs() == 2 || z.abs() == 2 {
+                        vanilla.push([x, y, z]);
+                    }
+                }
+            }
+        }
+        let mut engine = ParticleEngine::new(
+            &crate::resource_source::ResourceSource::indexed(Default::default()),
+            &HashMap::new(),
+            &HashSet::new(),
+        );
+        engine.seed_randoms(5, 9, 0);
+        engine.created_requests = Some(Vec::new());
+        engine.camera = [0.5, 66.0, 0.5];
+        let mut several = 0;
+        for _ in 0..200 {
+            let mut asked = Vec::new();
+            enchanting_table_particles(&mut engine, [0, 64, 0], |o| {
+                asked.push(vanilla.iter().position(|v| *v == o).unwrap());
+                true
+            });
+            assert!(asked.is_sorted(), "asked out of vanilla's order: {asked:?}");
+            several += usize::from(asked.len() > 1);
+        }
+        assert!(
+            several > 10,
+            "too few ticks asked two shelves to show the order"
+        );
+        let made = engine.created_requests.take().unwrap();
+        assert!(made.iter().all(|(o, ..)| o.ty == T::Enchant) && !made.is_empty());
+    }
+    /// With a mod listening to `is_valid_book_shelf`, the sampler stops at each offset where
+    /// `animateTick` calls `isValidBookShelf` and nowhere else, and the game's answers give the
+    /// glyphs and random draws the inline tick gives for the same answers.
+    #[test]
+    fn shelf_scan_stops_where_vanilla_asks_and_draws_its_glyphs() {
+        use std::collections::{HashMap, HashSet};
+        let engine = || {
+            let mut engine = ParticleEngine::new(
+                &crate::resource_source::ResourceSource::indexed(Default::default()),
+                &HashMap::new(),
+                &HashSet::new(),
+            );
+            engine.seed_randoms(5, 9, 0);
+            engine.created_requests = Some(Vec::new());
+            engine.camera = [0.5, 66.0, 0.5];
+            engine
+        };
+        let answer = |offset: [i32; 3]| offset[0] < 0;
+        let (mut inline, mut inline_asked) = (engine(), Vec::new());
+        let (mut sampled, mut asked) = (engine(), Vec::new());
+        for _ in 0..50 {
+            enchanting_table_particles(&mut inline, [0, 64, 0], |offset| {
+                inline_asked.push(offset);
+                answer(offset)
+            });
+            let mut scan = ShelfScan {
+                table: [0, 64, 0],
+                state: BlockStateId(0),
+                part: false,
+                next: 0,
+                asked: None,
+                valid: false,
+            };
+            while let Some(AnimateStep::BookShelf { offset, valid, .. }) =
+                scan.scan(&mut sampled, |offset| offset[2] == 0)
+            {
+                assert_eq!(valid, offset[2] == 0, "the step carries vanilla's answer");
+                asked.push(offset);
+                scan.valid = answer(offset);
+            }
+        }
+        assert_eq!(asked, inline_asked);
+        assert!(asked.iter().any(|o| answer(*o)) && asked.iter().any(|o| !answer(*o)));
+        let glyphs = |engine: &mut ParticleEngine| {
+            let made = engine.created_requests.take().unwrap();
+            made.into_iter().map(|(_, p, v)| (p, v)).collect::<Vec<_>>()
+        };
+        assert_eq!(glyphs(&mut sampled), glyphs(&mut inline));
+    }
     /// `CampfireBlock.makeParticles` through `ClientLevel.doAddParticle`: the
     /// cosy smoke overrides the limiter, the plain smoke does not, so it is
     /// dropped beyond 32 blocks and at Particles: Minimal, and at Decreased
@@ -2276,11 +2568,26 @@ mod tests {
         assert_eq!(run(0, near), (20, 20), "All");
         assert_eq!(run(2, near), (20, 0), "Minimal");
         assert_eq!(run(0, [100.5, 65.0, 0.5]), (20, 0), "100 blocks away");
-        // Decreased: per puff the cosy smoke's roll, then the plain smoke's.
+        // Decreased: per puff the level random draws the cosy smoke's place, rolls it, draws the
+        // plain smoke's place, then rolls that.
         let mut level = LegacyRandom::new(9);
         let kept = (0..20)
             .filter(|_| {
+                for draw in [0, 1, 0, 0, 0, 1] {
+                    if draw == 0 {
+                        level.next_double();
+                    } else {
+                        level.next_boolean();
+                    }
+                }
                 level.next_int_bound(3).unwrap();
+                for draw in [0, 1, 0, 1] {
+                    if draw == 0 {
+                        level.next_double();
+                    } else {
+                        level.next_boolean();
+                    }
+                }
                 level.next_int_bound(3).unwrap() != 0
             })
             .count();
@@ -2384,6 +2691,7 @@ mod tests {
                 creaking_active: false,
                 sky_darken: 0,
                 marker: None,
+                ambient_particles: None,
                 model_offset: &no_offset,
                 gateway_particles: &no_gateway,
                 thundering: false,

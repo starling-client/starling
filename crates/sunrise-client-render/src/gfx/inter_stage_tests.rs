@@ -166,6 +166,11 @@ fn composed() -> Vec<(&'static str, Vec<&'static str>, String)> {
             super::world_primitives::shader(),
         ),
         (
+            "improved transparency world primitives",
+            vec!["world_primitives.wgsl", "oit.wgsl"],
+            super::world_primitives::oit_shader(),
+        ),
+        (
             "improved transparency world border",
             vec!["border.wgsl", "oit.wgsl", "oit_border.wgsl"],
             super::border_shader()

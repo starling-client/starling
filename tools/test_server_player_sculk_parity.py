@@ -10,6 +10,12 @@ import math
 import subprocess
 import threading
 
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
 
 def until(game, observe, predicate, ticks=100):
     value = observe()
@@ -38,7 +44,7 @@ def wait_for_quiet_sensor(host, phase, ticks=100):
 
 
 def check_walk(host, guest, out, role):
-    import lan_e2e as lan
+    from tools import lan_e2e as lan
 
     player = host if role == 'host' else guest
     hx, y, hz = (math.floor(v) for v in lan.pos_of(host))
@@ -85,8 +91,7 @@ def check_walk(host, guest, out, role):
 
 
 def main():
-    import lab
-    import lan_e2e as lan
+    from tools import lab, lan_e2e as lan
 
     subprocess.run(['cargo', 'build', '--locked', '--profile', 'fast', '-p', 'sunrise-game', '-p', 'sunrise-client-lib',
                     '--bin', 'sunrise-client', '--bin', 'sunrise-ctl'], cwd=lab.ROOT, check=True)

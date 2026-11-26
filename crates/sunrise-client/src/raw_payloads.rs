@@ -13,21 +13,28 @@ pub use encode::{encode, encoded_len};
 mod incoming;
 pub use incoming::{Body, Classified, Failure, Incoming};
 mod endpoint;
-pub use endpoint::{Endpoint, Prepared};
+pub use endpoint::{
+    Admission, ConfigurationTask, Endpoint, HostedAdmission, HostedEndpoint, HostedOutput,
+    HostedPreparedSend, Output, Prepared, PreparedSend,
+};
+mod pairing;
+pub use pairing::PairingPayload;
 mod executor;
-#[cfg(test)]
-mod executor_tests;
-#[cfg(test)]
-mod raw_channel_tests;
+pub mod ingress;
 #[cfg(any(test, feature = "test-payload-probe"))]
 pub mod staging_probe;
 #[cfg(test)]
 mod typed_schema_tests;
-pub use executor::{dispatch, dispatch_bundle, dispatch_pending, mod_of};
+pub use executor::{
+    dispatch_bundle, dispatch_client, dispatch_pending_client, dispatch_pending_server,
+    dispatch_server, mod_of,
+};
 mod main_queue;
-pub use main_queue::MainQueue;
+pub use main_queue::{ClientEvent, ClientQueue, HostedEvent, ServerQueue};
 #[cfg(test)]
 pub(crate) mod test_support;
+#[cfg(test)]
+pub(crate) mod vanilla_peer_support;
 /// Physical server ingress identity, moved unchanged from I/O through Hub to main.
 /// Boxed only on mod-bearing paths so ordinary event unions do not grow.
 pub struct Delivery {
@@ -48,6 +55,8 @@ use sunrise_protocol::{
     packets::custom_payload::{PayloadCodecs, PayloadFlow, PayloadProtocol as CodecProtocol},
     payload_negotiation::{self as negotiation, Flow, Manifest, Phase, RegistrationPhase},
 };
+#[cfg(test)]
+pub(crate) const TEST_RECORD_OVERHEAD: usize = connection::record_overhead(&[]);
 pub(crate) use transport::PlayTransition;
 pub use transport::Transport;
 
@@ -165,7 +174,7 @@ impl Local {
             .get_or_init(|| Arc::new(Self::new(Manifest::default(), None)))
             .clone()
     }
-    fn new(manifest: Manifest, registry: Option<Arc<Payloads>>) -> Self {
+    pub(crate) fn new(manifest: Manifest, registry: Option<Arc<Payloads>>) -> Self {
         // The metadata channel must also be accepted by an otherwise unmodded endpoint:
         // an optional peer's offer can exceed the unknown serverbound discard limit.
         let mut channels = vec![
@@ -414,33 +423,63 @@ impl Peer {
     }
     /// Resolve local authority, phase, direction and peer support before preparing bytes.
     pub fn can_send(&self, phase: Phase, id: &PayloadId) -> Result<(), PayloadSendError> {
+        match self.send_refusal(phase, &id.0) {
+            None => Ok(()),
+            Some(refusal) => Err(refusal.error(&id.0)),
+        }
+    }
+    /// The decision behind [`Self::can_send`], without building the owned error: `None` when
+    /// `id` may be sent in `phase`. It allocates nothing, so a refusal is cheap to ask for.
+    pub fn send_refusal(&self, phase: Phase, id: &str) -> Option<SendRefusal> {
         // A raw channel needs no peer declaration: it goes to any client in play.
-        if self.local.is_raw(&id.0) {
+        if self.local.is_raw(id) {
             return match (phase, self.side) {
-                (Phase::Play, Side::Server) => Ok(()),
-                (Phase::Configuration, _) => Err(PayloadSendError::WrongProtocol(id.clone())),
-                (_, Side::Client) => Err(PayloadSendError::WrongDirection(id.clone())),
+                (Phase::Play, Side::Server) => None,
+                (Phase::Configuration, _) => Some(SendRefusal::WrongProtocol),
+                (_, Side::Client) => Some(SendRefusal::WrongDirection),
             };
         }
-        let flow = self.local.declarations[index(phase)]
-            .get(&id.0)
-            .ok_or_else(|| self.missing(phase, &id.0))?;
+        let Some(flow) = self.local.declarations[index(phase)].get(id) else {
+            return Some(self.missing_refusal(phase, id));
+        };
         if *flow != Flow::Bidirectional && *flow != self.side.outgoing() {
-            return Err(PayloadSendError::WrongDirection(id.clone()));
+            return Some(SendRefusal::WrongDirection);
         }
-        if !self.phases[index(phase)].contains_key(&id.0) {
-            return Err(PayloadSendError::UnsupportedPeer(id.clone()));
+        if !self.phases[index(phase)].contains_key(id) {
+            return Some(SendRefusal::UnsupportedPeer);
         }
-        Ok(())
+        None
     }
     fn missing(&self, phase: Phase, id: &str) -> PayloadSendError {
-        let id = PayloadId(id.to_owned());
-        if self.local.declarations[index(phase)].contains_key(&id.0) {
-            PayloadSendError::UnsupportedPeer(id)
-        } else if self.local.owns(&id.0) {
-            PayloadSendError::WrongProtocol(id)
+        self.missing_refusal(phase, id).error(id)
+    }
+    fn missing_refusal(&self, phase: Phase, id: &str) -> SendRefusal {
+        if self.local.declarations[index(phase)].contains_key(id) {
+            SendRefusal::UnsupportedPeer
+        } else if self.local.owns(id) {
+            SendRefusal::WrongProtocol
         } else {
-            PayloadSendError::UnknownPayload(id)
+            SendRefusal::UnknownPayload
+        }
+    }
+}
+/// Why a channel cannot be sent on, before the owned [`PayloadSendError`] names it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SendRefusal {
+    UnknownPayload,
+    WrongProtocol,
+    WrongDirection,
+    UnsupportedPeer,
+}
+impl SendRefusal {
+    /// The send path's error for channel `id`.
+    pub fn error(self, id: &str) -> PayloadSendError {
+        let id = PayloadId(id.to_owned());
+        match self {
+            Self::UnknownPayload => PayloadSendError::UnknownPayload(id),
+            Self::WrongProtocol => PayloadSendError::WrongProtocol(id),
+            Self::WrongDirection => PayloadSendError::WrongDirection(id),
+            Self::UnsupportedPeer => PayloadSendError::UnsupportedPeer(id),
         }
     }
 }

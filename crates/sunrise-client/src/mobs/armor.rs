@@ -64,7 +64,7 @@ pub fn values(mob: &Mob) -> (f32, f32) {
             return (armor.floor() as i32 as f32, toughness as f32);
         }
     }
-    let map = mob.extra.armor_attributes.as_deref();
+    let map = mob.extra.generic_attributes.as_deref();
     let armor_base =
         finalize::base_value_with(mob, Attr::Armor, || Some(f64::from(mob.kind.armor)));
     let armor = effective(map, "minecraft:armor", armor_base)
@@ -210,7 +210,7 @@ mod tests {
         let mut kind = crate::mobs::sensor_scan_tests::kind();
         let ty = Arc::make_mut(&mut kind);
         ty.attributes = Arc::new([("minecraft:max_absorption".to_owned(), 0.0)].into());
-        ty.attribute_bounds = finalize::AttrBounds::of(&catalog);
+        ty.attribute_bounds = finalize::AttrBounds::of(&Arc::new(catalog.clone()));
         // base, other modifiers, Absorption's amplifier, the Java value
         let cases: [(f64, &[(f64, Op)], i32, f32); 5] = [
             (20.0, &[(0.5, Op::AddMultipliedBase)], 0, 36.0),

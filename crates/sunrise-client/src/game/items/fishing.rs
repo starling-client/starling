@@ -1,7 +1,10 @@
 //! Fishing: `FishingRodItem.use` (cast / reel in), the `FishingHook` (flight,
 //! bobbing, lure and bite timers, open water, hooking mobs, retrieving the
 //! `gameplay/fishing` loot) and `FishingHookRenderer` (bobber and line).
-use super::{Game, billboard_axes, creatures::ProjectileHitter, lan_mobs::guest_bounds};
+use super::{
+    Game, billboard_axes, creatures::ProjectileHitter, item_abilities::ability,
+    lan_mobs::guest_bounds,
+};
 use std::sync::Arc;
 use sunrise_client::advancements::EntityView;
 use sunrise_client::lan::entity::States;
@@ -55,6 +58,7 @@ fn fishing_loot(
     level_random: &mut LegacyRandom,
     world_seed: i64,
     biome: Option<&str>,
+    location: Option<sunrise_world::loot::LootLocation<'_>>,
     open_water: bool,
     params: &sunrise_world::loot::EntityLootParams,
 ) -> Vec<sunrise_world::loot::LootStack> {
@@ -63,10 +67,18 @@ fn fishing_loot(
             table,
             sequences.get(sequence, world_seed),
             biome,
+            location,
             Some(open_water),
             params,
         ),
-        None => loot.roll_as(table, level_random, biome, Some(open_water), params),
+        None => loot.roll_as(
+            table,
+            level_random,
+            biome,
+            location,
+            Some(open_water),
+            params,
+        ),
     }
 }
 
@@ -79,7 +91,7 @@ enum State {
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum EntityCollision {
     Hooked,
-    Deflected { first: bool },
+    Deflected { first: bool, rot: f32 },
 }
 pub(super) struct Hook {
     pub(super) uuid: [i32; 4],
@@ -93,6 +105,19 @@ pub(super) struct Hook {
     pub(super) previous: Vec3,
     velocity: Vec3,
     state: State,
+    /// `FishingHook.hookedIn`: set in `onHitEntity`, transitioned to `State::Hooked` on the next tick.
+    hooked_in: Option<u32>,
+    /// `Projectile.leftOwner`: until true, caster's root-vehicle tree is excluded from hits.
+    left_owner: bool,
+    /// `Entity.yRot` updated on `Projectile.updateRotation` and `ProjectileDeflection.REVERSE`.
+    pub(super) yaw: f32,
+    /// `Entity.xRot` updated on `Projectile.updateRotation`.
+    pub(super) pitch: f32,
+    /// `Entity.yRotO` and `xRotO`: the yaw and pitch when its tick began (`setOldPosAndRot`),
+    /// which `Projectile.updateRotation` eases from; `ProjectileDeflection.REVERSE` turns the
+    /// old yaw with the yaw.
+    pub(super) previous_yaw: f32,
+    pub(super) previous_pitch: f32,
     last_deflected_by: Option<u32>,
     needs_sync: bool,
     tick_count: i32,
@@ -112,6 +137,8 @@ pub(super) struct Hook {
     /// The position a server's update put it heading for.
     lerp: HookLerp,
     pub(super) random: LegacyRandom,
+    /// `Entity`'s base state (#5082); a bobber is never saved, so it lives only here.
+    pub(super) base: super::native_entity_base::EntityBase,
 }
 /// What a hook keeps of the mod's fishing medium it floats in, on the server.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -151,9 +178,8 @@ static WARNED_TABLES: std::sync::Mutex<Vec<(&'static str, String)>> =
 /// A player a hook can catch (`canHitEntity`): their entity id, which
 /// guest they are (none: the host) and their box.
 pub(super) struct HookTarget {
-    id: u32,
-    conn: Option<u32>,
-    bounds: Aabb,
+    pub(in crate::game) id: u32,
+    pub(in crate::game) bounds: Aabb,
 }
 const SIZE: f64 = 0.25;
 fn bounds(p: Vec3) -> Aabb {
@@ -163,6 +189,7 @@ fn bounds(p: Vec3) -> Aabb {
         Vec3::new(p.x + h, p.y + SIZE, p.z + h),
     )
 }
+#[cfg(test)]
 fn segment_entry(start: Vec3, end: Vec3, bounds: Aabb) -> Option<f64> {
     let min = bounds.min_position();
     let max = bounds.max_position();
@@ -194,9 +221,11 @@ fn segment_entry(start: Vec3, end: Vec3, bounds: Aabb) -> Option<f64> {
 }
 /// `ProjectileUtil.computeMargin`: the fishing hook's target-box margin grows
 /// to 0.3 blocks over its first eight ticks.
+#[cfg(test)]
 fn entity_hit_margin(tick_count: i32) -> f64 {
     f64::from((tick_count - 2).clamp(0, 6)) / 20.0
 }
+#[cfg(test)]
 fn first_entity_hit(
     start: Vec3,
     end: Vec3,
@@ -241,6 +270,7 @@ fn pull_hooked(velocity: Vec3, hook: Vec3, owner: Vec3) -> Vec3 {
 }
 /// Minecarts a hook can catch. `AbstractMinecart.isPickable` is true while the
 /// cart exists, and `Projectile.canHitEntity` skips the vehicle the owner rides.
+#[cfg(test)]
 fn minecart_hook_targets<'a>(
     carts: impl Iterator<Item = &'a super::minecarts::Minecart> + 'a,
     own_vehicle: Option<u32>,
@@ -263,15 +293,18 @@ impl Hook {
     fn hit_entity(&mut self, id: u32, deflects: bool) -> EntityCollision {
         if deflects {
             let first = self.last_deflected_by != Some(id);
+            let mut rot = 0.0;
             if first {
+                rot = 170.0 + self.random.next_float() * 20.0;
+                self.yaw += rot;
                 self.velocity = self.velocity.scale(-0.5);
                 self.last_deflected_by = Some(id);
                 self.needs_sync = true;
             }
-            return EntityCollision::Deflected { first };
+            return EntityCollision::Deflected { first, rot };
         }
-        self.state = State::Hooked(id);
-        self.velocity = Vec3::ZERO;
+        // FishingHook.onHitEntity sets hookedIn only; state flips to HOOKED_IN_ENTITY next tick.
+        self.hooked_in = Some(id);
         EntityCollision::Hooked
     }
 
@@ -302,6 +335,12 @@ fn synchronized_random(uuid: [i32; 4], game_time: i64) -> LegacyRandom {
 fn bite_impulse(r: &mut impl RandomSource) -> f64 {
     // Mth.nextFloat(random, min, max): `random.nextFloat() * (max - min) + min`.
     f64::from(-0.4f32 * (r.next_float() * (1.0f32 - 0.6f32) + 0.6f32))
+}
+
+/// `FishingHook`'s constructor and `Projectile.updateRotation` read the current velocity.
+fn hook_rotation(v: Vec3) -> [f32; 2] {
+    let atan2 = sunrise_core::geometry::trig::atan2_degrees;
+    [atan2(v.x, v.z), atan2(v.y, v.horizontal_distance())]
 }
 
 /// `FishingHook` constructor's three independent triangle draws.
@@ -490,9 +529,14 @@ impl Game<'_> {
             .get(&stack.item)
             .is_some_and(|i| i.is("minecraft:fishing_rod"))
     }
+    /// Whether `stack` holds a cast line as a rod does (`fishing_rod_cast`).
+    fn casts(&self, stack: &ItemStack) -> bool {
+        self.stack_can_perform(stack, ability::FISHING_ROD_CAST, self.is_rod(stack))
+    }
+    /// `FishingHook.shouldStopFishing`: a hand still holds a casting stack.
     fn holds_rod(&self) -> bool {
-        self.held().is_some_and(|s| self.is_rod(s))
-            || self.offhand.as_ref().is_some_and(|s| self.is_rod(s))
+        self.held().is_some_and(|s| self.casts(s))
+            || self.offhand.as_ref().is_some_and(|s| self.casts(s))
     }
     /// `FishingRodItem.use`.
     pub(super) fn use_fishing_rod(&mut self, stack: &ItemStack) -> bool {
@@ -519,11 +563,15 @@ impl Game<'_> {
             return false;
         };
         let at = [p.position.x, p.position.y, p.position.z];
+        let (owner, eye_y) = (
+            p.position,
+            p.position.y + f64::from(p.dimensions.eye_height),
+        );
         if self.hook.is_some() {
             let damage = self.retrieve_hook(stack);
             self.damage_held(damage);
             let pitch = 0.4 / (self.world.random.next_float() * 0.4 + 0.8);
-            self.audio.play(
+            self.play_audio(
                 "minecraft:entity.fishing_bobber.retrieve",
                 Some(at),
                 1.0,
@@ -536,24 +584,38 @@ impl Game<'_> {
             }
         } else {
             let pitch = 0.4 / (self.world.random.next_float() * 0.4 + 0.8);
-            self.audio.play(
+            self.play_audio(
                 "minecraft:entity.fishing_bobber.throw",
                 Some(at),
                 0.5,
                 pitch,
             );
-            // FishingHook(player, level, luck, lureSpeed)
-            let lure = stack.enchantment_level("minecraft:lure") as i32 * 5 * 20;
-            let luck = stack.enchantment_level("minecraft:luck_of_the_sea") as i32;
             let (yaw, pitch) = (self.yaw, self.pitch);
             let (y_sin, y_cos, dir_y) = cast_direction(yaw, pitch);
-            let eye_y = p.position.y + f64::from(p.dimensions.eye_height);
             // snapTo(x, getEyeY(), z): the hook's feet start at the owner's eye.
             let start = Vec3::new(
-                p.position.x - f64::from(y_sin) * 0.3,
+                owner.x - f64::from(y_sin) * 0.3,
                 eye_y,
-                p.position.z - f64::from(y_cos) * 0.3,
+                owner.z - f64::from(y_cos) * 0.3,
             );
+            // FishingRodItem samples lure time, then luck, from the fisher's stream.
+            let shooter = self.own_entity_id() as u32;
+            let lure = self.entity_enchantment_value(
+                stack,
+                shooter,
+                "minecraft:player",
+                "minecraft:fishing_time_reduction",
+                0.0,
+            );
+            let lure = ((if lure < 0.0 { 0.0 } else { lure }) * 20.0) as i32;
+            let luck = (self.entity_enchantment_value(
+                stack,
+                shooter,
+                "minecraft:player",
+                "minecraft:fishing_luck_bonus",
+                0.0,
+            ) as i32)
+                .max(0);
             // The hook's own random (`Entity.random`).
             let mut random = random_source::entity();
             let uuid = sunrise_client::save::insecure_uuid(&mut random);
@@ -561,6 +623,7 @@ impl Game<'_> {
             // use, but its construction still takes its own unique seed.
             let _synchronized = random_source::create();
             let v = cast_velocity(y_sin, y_cos, dir_y, &mut random);
+            let [hook_yaw, hook_pitch] = hook_rotation(v);
             self.next_entity += 1;
             self.install_fishing_hook(Hook {
                 uuid,
@@ -573,6 +636,13 @@ impl Game<'_> {
                 previous: start,
                 velocity: v,
                 state: State::Flying,
+                hooked_in: None,
+                left_owner: false,
+                yaw: hook_yaw,
+                pitch: hook_pitch,
+                // Projectile.shoot ends with yRotO = getYRot(), xRotO = getXRot().
+                previous_yaw: hook_yaw,
+                previous_pitch: hook_pitch,
                 last_deflected_by: None,
                 needs_sync: false,
                 tick_count: 0,
@@ -589,6 +659,7 @@ impl Game<'_> {
                 medium: None,
                 lerp: HookLerp::default(),
                 random,
+                base: Default::default(),
             });
             // FishingRodItem.use counts a cast, not a reel-in.
             self.award_stat("used", &stack.item, 1);
@@ -596,19 +667,6 @@ impl Game<'_> {
         }
         self.swing_arm();
         true
-    }
-    /// The boat the hook's owner rides (`Entity.isPassengerOfSameVehicle`).
-    fn own_vehicle(&self) -> Option<u32> {
-        match self.lan_acting {
-            None => self.riding,
-            Some(conn) => self.lan.as_ref().and_then(|h| {
-                h.hub
-                    .guests
-                    .iter()
-                    .find(|g| g.conn == conn)
-                    .and_then(|g| g.vehicle)
-            }),
-        }
     }
     /// `FishingHook.retrieve`: the rod damage it costs.
     fn retrieve_hook(&mut self, rod: &ItemStack) -> u32 {
@@ -626,7 +684,7 @@ impl Game<'_> {
         };
         let owner = p.position;
         let mut damage = 0;
-        if let State::Hooked(id) = hook.state {
+        if let Some(id) = hook.hooked_in() {
             // pullEntity: 0.1 of the way to the owner.
             let d = Vec3::new(
                 owner.x - hook.position.x,
@@ -651,18 +709,44 @@ impl Game<'_> {
             } else if let Some(i) = self.carts.iter().position(|c| c.id == id) {
                 // `AbstractMinecart` is pickable, so `pullEntity` moves it too.
                 self.carts.update(i, |c| c.velocity = pulled(c.velocity));
+            } else if let Some(i) = self.falling.iter().position(|f| f.id == id) {
+                self.falling.update(i, |f| f.velocity = pulled(f.velocity));
+            } else if self
+                .player
+                .as_ref()
+                .is_some_and(|pl| pl.entity_id as u32 == id)
+            {
+                if let Some(pl) = self.player.as_mut() {
+                    pl.velocity = pulled(pl.velocity);
+                }
             } else if self.creatures.hook_targets.iter().any(|t| t.id == id) {
                 // A player: the hub moves them when the tick ends.
                 self.creatures
                     .hook_pulls
                     .push((id, Vec3::new(d.x * 0.1, d.y * 0.1, d.z * 0.1)));
             }
-            // CriteriaTriggers.FISHING_ROD_HOOKED with no items.
+            // CriteriaTriggers.FISHING_ROD_HOOKED for any hooked entity type.
             let hooked = self
                 .mobs
                 .iter()
                 .find(|m| m.id == id)
-                .map(|m| self.mob_entity(m));
+                .map(|m| self.mob_entity(m))
+                .or_else(|| {
+                    let kind = if self
+                        .player
+                        .as_ref()
+                        .is_some_and(|pl| pl.entity_id as u32 == id)
+                    {
+                        Some("minecraft:player".to_owned())
+                    } else {
+                        self.entity_kind_for_who(sunrise_client::mobs::Who::Mob(id))
+                    }?;
+                    Some(sunrise_client::advancements::EntityView {
+                        kind,
+                        position: [hook.position.x, hook.position.y, hook.position.z],
+                        ..Default::default()
+                    })
+                });
             if let Some(hooked) = hooked {
                 self.trigger_fishing_rod_hooked(rod, &hooked, &[]);
             }
@@ -697,18 +781,30 @@ impl Game<'_> {
                 Some([hook.position.x, hook.position.y, hook.position.z]),
                 Some(super::creatures::to_loot(rod)),
             );
+            // ORIGIN is the hook's position; its location checks read the level, so
+            // the roll draws from copies of the randoms put back after it.
+            let origin = [hook.position.x, hook.position.y, hook.position.z];
+            let mut random = self.world.random.clone();
+            let mut sequences = std::mem::take(&mut self.rand_sequences);
             let items = caller.with(|| {
+                let level = crate::game::advancements::View(&*self);
+                let read = |predicate: &serde_json::Value, at: [f64; 3]| {
+                    sunrise_client::advancements::location(predicate, at, &level)
+                };
                 fishing_loot(
                     &loot,
                     table,
-                    &mut self.rand_sequences,
-                    &mut self.world.random,
+                    &mut sequences,
+                    &mut random,
                     self.level.seed,
                     biome.as_deref(),
+                    Some(sunrise_client::advancements::loot_location(origin, &read)),
                     hook.open_water,
                     &params,
                 )
             });
+            self.world.random = random;
+            self.rand_sequences = sequences;
             let mut caught: Vec<ItemStack> = items
                 .into_iter()
                 .map(|stack| {
@@ -932,7 +1028,7 @@ impl Game<'_> {
                     }
                 }
                 let pitch = 1.0 + (h.random.next_float() - h.random.next_float()) * 0.4;
-                self.audio.play(
+                self.play_audio(
                     "minecraft:entity.fishing_bobber.splash",
                     Some(at),
                     0.25,
@@ -1001,7 +1097,7 @@ impl Game<'_> {
     ) {
         let options = ParticleOptions::simple(kind);
         self.particles
-            .send_particles(&options, at, spread, speed, count);
+            .send_particles(&options, at, spread, speed, count, None);
         // The players a server serves are sent them too.
         self.lan_send_particles(super::lan_particles::QueuedParticle {
             dimension: self.dim.id(),
@@ -1041,6 +1137,17 @@ impl Game<'_> {
             return None;
         }
         h.tick_count += 1;
+        h.previous_yaw = h.yaw;
+        h.previous_pitch = h.pitch;
+        // Projectile.tick: update leftOwner using the caster's full root-vehicle tree.
+        if !h.left_owner {
+            let swept = h
+                .bounds()
+                .expand_towards(h.velocity)
+                .inflate(Vec3::new(1.0, 1.0, 1.0));
+            h.left_owner =
+                self.outside_owner_collision_range(sunrise_client::mobs::Who::Player, swept);
+        }
         // The players it can catch, as they stand now (the host's own hook;
         // guests' hooks use the ones taken as their turns start).
         if self.lan_acting.is_none() && matches!(h.state, State::Flying | State::Hooked(_)) {
@@ -1097,55 +1204,48 @@ impl Game<'_> {
         let in_water = liquid > 0.0 || surface.is_some();
         match h.state {
             State::Flying => {
+                // FishingHook.tick: if hookedIn was set on a prior tick, freeze and transition.
+                if let Some(id) = h.hooked_in {
+                    h.velocity = Vec3::ZERO;
+                    h.state = State::Hooked(id);
+                    return Some(h);
+                }
                 if in_water {
                     h.velocity =
                         Vec3::new(h.velocity.x * 0.3, h.velocity.y * 0.2, h.velocity.z * 0.3);
                     h.state = State::Bobbing;
                     return Some(h);
                 }
-                // checkCollision: find the first block and entity on the movement
-                // segment so a fast hook cannot tunnel or catch through a wall.
+                // checkCollision: find the first block and entity on the movement segment.
                 let to = h.position.add_vector(h.velocity);
                 let block_hit = self.hook_block_hit(h.position, to);
                 let entity_end = block_hit.map_or(to, |hit| hit.location);
-                let owner = self.lan_acting;
-                let own_vehicle = self.own_vehicle();
-                let hit = first_entity_hit(
-                    h.position,
-                    entity_end,
-                    entity_hit_margin(h.tick_count),
-                    self.mobs
-                        .iter()
-                        .filter(|m| m.alive())
-                        .map(|m| (m.id, m.bounds()))
-                        .chain(
-                            self.creatures
-                                .hook_targets
-                                .iter()
-                                .filter(|t| t.conn != owner)
-                                .map(|t| (t.id, t.bounds)),
-                        )
-                        .chain(
-                            self.armor_stands
-                                .iter()
-                                .filter(|a| a.health > 0.0 && !a.marker)
-                                .map(|a| (a.id, a.bounds())),
-                        )
-                        .chain(
-                            self.boats
-                                .iter()
-                                .filter(|b| Some(b.id) != own_vehicle)
-                                .map(|b| (b.id, b.bounds())),
-                        )
-                        .chain(minecart_hook_targets(self.carts.iter(), own_vehicle))
-                        .chain(self.dropped.iter().map(|i| (i.id, i.bounds())))
-                        .chain(
-                            self.tnts
-                                .iter()
-                                .filter(|t| t.id != 0)
-                                .map(|t| (t.id, t.bounds())),
-                        ),
-                );
+                let margin = sunrise_client::projectiles::compute_margin(h.tick_count);
+                let search_area = h
+                    .bounds()
+                    .expand_towards(h.velocity)
+                    .inflate(Vec3::new(1.0, 1.0, 1.0));
+                let mut best = sunrise_client::projectiles::NearestHit::new();
+                let query = super::creatures::TargetQuery {
+                    include_guests: true,
+                    include_items: true,
+                    ..Default::default()
+                };
+                self.visit_projectile_targets(query, &[], |c| {
+                    if !h.left_owner
+                        && self.in_same_vehicle_tree(sunrise_client::mobs::Who::Player, c.who)
+                    {
+                        return;
+                    }
+                    best.consider(c, search_area, h.position, entity_end, margin);
+                });
+                let hit = best.finish().map(|(who, at)| {
+                    let id = match who {
+                        sunrise_client::mobs::Who::Player => self.own_entity_id() as u32,
+                        sunrise_client::mobs::Who::Mob(id) => id,
+                    };
+                    (id, at)
+                });
                 let impact = match (hit, block_hit) {
                     (Some((id, at)), _) => sunrise_client::projectiles::Hit::Entity {
                         who: sunrise_client::mobs::Who::Mob(id),
@@ -1162,33 +1262,52 @@ impl Game<'_> {
                 h = hook;
                 // A veto skips only hit handling; Entity.move below still
                 // stops a flying bobber against solid collision shapes.
-                if let Some((id, _)) = hit.filter(|_| !canceled) {
-                    let breeze = self
-                        .mobs
-                        .iter()
-                        .find(|m| {
-                            m.id == id && m.species() == sunrise_client::mobs::Species::Breeze
-                        })
-                        .map(|m| [m.position.x, m.position.y, m.position.z]);
-                    match h.hit_entity(id, breeze.is_some()) {
-                        EntityCollision::Deflected { first } => {
-                            if first {
-                                self.audio.play(
-                                    "minecraft:entity.breeze.deflect",
-                                    breeze,
-                                    1.0,
-                                    1.0,
+                if let Some((id, at)) = hit.filter(|_| !canceled) {
+                    if id >= super::dragon::SPECIAL {
+                        // Vanilla onSyncedDataUpdated resolves level.getEntity(part.id) == null, clearing hookedIn.
+                        self.projectile_landed_event(
+                            h.id,
+                            Some(sunrise_client::mobs::Who::Player),
+                            [at.x, at.y, at.z],
+                        );
+                    } else if id != 0 {
+                        let breeze = self
+                            .mobs
+                            .iter()
+                            .find(|m| {
+                                m.id == id
+                                    && m.alive()
+                                    && m.species() == sunrise_client::mobs::Species::Breeze
+                            })
+                            .map(|m| [m.position.x, m.position.y, m.position.z]);
+                        if breeze.is_none() {
+                            self.redirect_projectile(
+                                id,
+                                Some(sunrise_client::mobs::Who::Player),
+                                self.level.player_uuid,
+                                self.lan_acting,
+                                None,
+                            );
+                        }
+                        match h.hit_entity(id, breeze.is_some()) {
+                            EntityCollision::Deflected { first, rot } => {
+                                if first {
+                                    h.previous_yaw += rot;
+                                    self.play_audio(
+                                        "minecraft:entity.breeze.deflect",
+                                        breeze,
+                                        1.0,
+                                        1.0,
+                                    );
+                                }
+                            }
+                            EntityCollision::Hooked => {
+                                self.projectile_landed_event(
+                                    h.id,
+                                    Some(sunrise_client::mobs::Who::Player),
+                                    [at.x, at.y, at.z],
                                 );
                             }
-                        }
-                        EntityCollision::Hooked => {
-                            // Projectile.onHit on an entity: PROJECTILE_LAND.
-                            self.projectile_landed_event(
-                                h.id,
-                                Some(sunrise_client::mobs::Who::Player),
-                                [h.position.x, h.position.y, h.position.z],
-                            );
-                            return Some(h);
                         }
                     }
                 } else if let Some(hit) = block_hit.filter(|_| !canceled && hit.is_none()) {
@@ -1207,11 +1326,11 @@ impl Game<'_> {
                         log::error!("fishing block impact: {error}");
                     }
                     self.target_block_hit(&projectile, pos, hit.location, face);
-                    // Projectile.onHit on a block: PROJECTILE_LAND.
-                    self.projectile_landed_event(
+                    // Projectile.onHit on a block: PROJECTILE_LAND at block center with post-callback state.
+                    self.projectile_block_landed_event(
                         h.id,
                         Some(sunrise_client::mobs::Who::Player),
-                        [hit.location.x, hit.location.y, hit.location.z],
+                        pos,
                     );
                     h.velocity = rebound(h.velocity, hit.location, h.position);
                 }
@@ -1265,10 +1384,81 @@ impl Game<'_> {
                             .iter()
                             .find(|t| t.id != 0 && t.id == id)
                             .map(|t| (t.position, super::tnt::PrimedTnt::SIZE))
+                    })
+                    .or_else(|| {
+                        self.item_frames.iter().find(|f| f.id == id).map(|f| {
+                            let (lo, hi) = f.bounds();
+                            (
+                                Vec3::new(
+                                    (lo[0] + hi[0]) * 0.5,
+                                    (lo[1] + hi[1]) * 0.5,
+                                    (lo[2] + hi[2]) * 0.5,
+                                ),
+                                f64::from(0.5_f32),
+                            )
+                        })
+                    })
+                    .or_else(|| {
+                        self.paintings.iter().find(|p| p.id == id).map(|p| {
+                            let (lo, hi) = p.bounds();
+                            (
+                                Vec3::new(
+                                    (lo[0] + hi[0]) * 0.5,
+                                    (lo[1] + hi[1]) * 0.5,
+                                    (lo[2] + hi[2]) * 0.5,
+                                ),
+                                f64::from(0.5_f32),
+                            )
+                        })
+                    })
+                    .or_else(|| {
+                        self.falling
+                            .iter()
+                            .find(|f| f.id == id)
+                            .map(|f| (f.position, f64::from(0.98_f32)))
+                    })
+                    .or_else(|| {
+                        self.crystals
+                            .iter()
+                            .find(|c| c.id != 0 && c.id == id)
+                            .map(|c| (c.position, 2.0))
+                    })
+                    .or_else(|| {
+                        self.cushions
+                            .iter()
+                            .find(|c| c.id == id)
+                            .map(|c| (c.position, f64::from(0.25_f32)))
+                    })
+                    .or_else(|| {
+                        self.resident_entities
+                            .knots
+                            .iter()
+                            .find(|k| k.id == id)
+                            .map(|k| {
+                                (
+                                    sunrise_client::mobs::leash::knot_state(k.fence).position,
+                                    f64::from(0.5_f32),
+                                )
+                            })
+                    })
+                    .or_else(|| {
+                        self.player
+                            .as_ref()
+                            .filter(|pl| pl.entity_id as u32 == id)
+                            .map(|pl| (pl.position, f64::from(pl.dimensions.height)))
+                    })
+                    .or_else(|| {
+                        self.others
+                            .iter()
+                            .find(|o| o.id == id && o.kind == "minecraft:leash_knot")
+                            .map(|o| (o.position, f64::from(0.5_f32)))
                     });
                 match hooked {
                     Some((at, height)) => h.position = Vec3::new(at.x, at.y + height * 0.8, at.z),
-                    None => h.state = State::Flying,
+                    None => {
+                        h.hooked_in = None;
+                        h.state = State::Flying;
+                    }
                 }
                 return Some(h);
             }
@@ -1306,8 +1496,11 @@ impl Game<'_> {
                 }
             }
         }
-        if !in_water && !h.ground.on_ground {
-            h.velocity.y -= f64::from(0.03_f32);
+        if !in_water && !h.ground.on_ground && h.hooked_in.is_none() {
+            // FishingHook.tick adds all three components, including the horizontal zeroes.
+            h.velocity = h
+                .velocity
+                .add_vector(Vec3::new(0.0, -f64::from(0.03_f32), 0.0));
         }
         let mut scene = SceneCollisions {
             world: &self.world,
@@ -1345,6 +1538,11 @@ impl Game<'_> {
                 moved,
                 &mut h.velocity,
             );
+            // FishingHook.tick turns before grounding or drag zeros/scales motion.
+            let [yaw, pitch] = hook_rotation(h.velocity);
+            let lerp = sunrise_client::arrows::lerp_rotation;
+            h.yaw = lerp(h.previous_yaw, yaw);
+            h.pitch = lerp(h.previous_pitch, pitch);
             if h.state == State::Flying && (h.ground.on_ground || h.ground.horizontal_collision) {
                 h.velocity = Vec3::ZERO;
             }
@@ -1412,7 +1610,6 @@ impl Game<'_> {
             if host.hub.here(g) && g.loaded && !g.dead && !g.spectator() {
                 targets.push(HookTarget {
                     id: g.entity_id as u32,
-                    conn: Some(g.conn),
                     bounds: guest_bounds(g),
                 });
             }
@@ -1452,7 +1649,7 @@ impl Game<'_> {
         }
     }
     pub(super) fn main_hand_rod(&self) -> bool {
-        self.held().is_some_and(|s| self.is_rod(s))
+        self.held().is_some_and(|s| self.casts(s))
     }
     /// The hook's position this frame.
     fn hook_position(&self, alpha: f64) -> Option<glam::DVec3> {
@@ -1619,6 +1816,13 @@ impl Game<'_> {
             })
             .collect()
     }
+    /// The local player's fishing hook: its position and whether a fish is biting
+    /// (`nibble > 0`, the server's DATA_BITING). None when no hook is out.
+    pub(in crate::game) fn local_fishing_hook(&self) -> Option<(Vec3, bool)> {
+        let hook = self.hook.as_ref()?;
+        Some((hook.position, hook.nibble > 0))
+    }
+
     /// The cast hooks of the level in place and who cast each: the player in
     /// place, then the guests here. A guest displaced by a nested swap holds
     /// someone else's hook for the moment, so theirs is left out.
@@ -1681,6 +1885,23 @@ impl Game<'_> {
             EntityLookup::Taken | EntityLookup::Missing => None,
         }
     }
+    /// The cast hook of `caster`, the one whose turn it is or a guest's.
+    pub(in crate::game) fn caster_hook_mut(
+        &mut self,
+        caster: super::commands::Target,
+    ) -> Option<&mut Hook> {
+        match caster {
+            super::commands::Target::Guest(conn) if Some(conn) != self.lan_acting => self
+                .lan
+                .as_mut()
+                .and_then(|host| host.play.get_mut(&conn))
+                .and_then(|play| play.hook.as_mut()),
+            super::commands::Target::Player | super::commands::Target::Guest(_) => {
+                self.hook.as_mut()
+            }
+            _ => None,
+        }
+    }
     /// Update a cast bobber's support in the level that owns the hook.
     pub(super) fn set_fishing_hook_ground(
         &mut self,
@@ -1704,18 +1925,7 @@ impl Game<'_> {
             None,
             sunrise_client::motion::BodyMotion::entity_context(id, at),
         );
-        let hook = match caster {
-            super::commands::Target::Guest(conn) if Some(conn) != self.lan_acting => self
-                .lan
-                .as_mut()
-                .and_then(|host| host.play.get_mut(&conn))
-                .and_then(|play| play.hook.as_mut()),
-            super::commands::Target::Player | super::commands::Target::Guest(_) => {
-                self.hook.as_mut()
-            }
-            _ => None,
-        };
-        let Some(hook) = hook else {
+        let Some(hook) = self.caster_hook_mut(caster) else {
             return Ok(false);
         };
         hook.ground = ground;
@@ -1764,7 +1974,7 @@ impl Game<'_> {
 /// that another player cast: drawn where the server puts it, its line
 /// running to that player's hand.
 pub(super) struct RemoteHook {
-    id: u32,
+    pub(super) id: u32,
     uuid: [i32; 4],
     pub(super) owner: u32,
     pub(super) owner_fishing: bool,
@@ -1868,10 +2078,10 @@ impl Hook {
     }
     /// `FishingHook.getHookedIn`, by entity id.
     pub(in crate::game) fn hooked_in(&self) -> Option<u32> {
-        match self.state {
+        self.hooked_in.or(match self.state {
             State::Hooked(id) => Some(id),
             _ => None,
-        }
+        })
     }
     /// `FishingHook.isOpenWaterFishing`.
     pub(in crate::game) fn open_water(&self) -> bool {
@@ -1879,6 +2089,7 @@ impl Hook {
     }
     #[cfg(test)]
     pub(in crate::game) fn set_hooked_in(&mut self, id: u32) {
+        self.hooked_in = Some(id);
         self.state = State::Hooked(id);
     }
     /// A server's update of this client's own hook (`handleMoveEntity` also
@@ -1917,6 +2128,12 @@ impl Hook {
             previous: at,
             velocity: Vec3::ZERO,
             state: State::Flying,
+            hooked_in: None,
+            left_owner: false,
+            yaw: 0.0,
+            pitch: 0.0,
+            previous_yaw: 0.0,
+            previous_pitch: 0.0,
             last_deflected_by: None,
             needs_sync: false,
             tick_count: 0,
@@ -1933,6 +2150,7 @@ impl Hook {
             medium: None,
             lerp: HookLerp::default(),
             random,
+            base: Default::default(),
         }
     }
     /// `FishingHook`'s entity for the players tracking it: the owner's id in
@@ -2301,7 +2519,7 @@ impl Game<'_> {
             }
         }
         if !in_water && !ground.on_ground {
-            velocity.y -= f64::from(0.03_f32);
+            velocity = velocity.add_vector(Vec3::new(0.0, -f64::from(0.03_f32), 0.0));
         }
         let mut scene = SceneCollisions {
             world: &self.world,
@@ -2368,6 +2586,9 @@ impl Game<'_> {
         self.remote_hooks
             .iter()
             .filter_map(|h| {
+                if self.hides_as_camera(h.id) {
+                    return None;
+                }
                 let owner = self.mobs.iter().find(|m| m.id == h.owner)?;
                 let feet = lerp(owner.previous, owner.position);
                 let body = mod_api::client::camera::lerp(
@@ -2402,7 +2623,7 @@ fn cast_direction(yaw: f32, pitch: f32) -> (f32, f32, f32) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(in crate::game) mod tests {
     use super::{Hook, cast_direction, entity_hit_margin, first_entity_hit, pull_item, rebound};
 
     /// `FishingHookRenderer.getPlayerHandPos` in first person on HotSpot 25.0.4.1: the camera at
@@ -2484,6 +2705,10 @@ mod tests {
     #[test]
     #[ignore = "requires prepared resources and the vanilla fishing reference"]
     fn fishing_retrieve_reference() {
+        run_fishing_retrieve_reference();
+    }
+
+    pub(in crate::game) fn run_fishing_retrieve_reference() {
         use sunrise_core::random::{LegacyRandom, RandomSource};
         use sunrise_world::loot::{LootData, PackOverlay};
         let resources = std::env::var_os("SUNRISE_FISHING_RESOURCES").unwrap();
@@ -2504,6 +2729,7 @@ mod tests {
                 &mut sequences,
                 &mut level_random,
                 seed,
+                None,
                 None,
                 true,
                 &super::hook_params(0.0, None),
@@ -2567,22 +2793,25 @@ mod tests {
         use super::{EntityCollision, Hook, State};
         let mut hook = Hook::remote(1, Vec3::ZERO, [0, 0, 0, 1]);
         hook.velocity = Vec3::new(2.0, -0.4, 1.0);
-        assert_eq!(
+        assert!(matches!(
             hook.hit_entity(10, true),
-            EntityCollision::Deflected { first: true }
-        );
+            EntityCollision::Deflected { first: true, rot } if (170.0..190.0).contains(&rot)
+        ));
         assert_eq!(hook.state, State::Flying);
         assert!(hook.needs_sync);
         assert_eq!(hook.velocity, Vec3::new(-1.0, 0.2, -0.5));
         assert_eq!(
             hook.hit_entity(10, true),
-            EntityCollision::Deflected { first: false }
+            EntityCollision::Deflected {
+                first: false,
+                rot: 0.0,
+            }
         );
         assert_eq!(hook.velocity, Vec3::new(-1.0, 0.2, -0.5));
-        assert_eq!(
+        assert!(matches!(
             hook.hit_entity(11, true),
-            EntityCollision::Deflected { first: true }
-        );
+            EntityCollision::Deflected { first: true, rot } if (170.0..190.0).contains(&rot)
+        ));
         assert_eq!(hook.velocity, Vec3::new(0.5, -0.1, 0.25));
     }
 
@@ -2599,14 +2828,19 @@ mod tests {
         assert_eq!(state.velocity, [-1.0, -0.0, -0.0]);
         assert!(!state.meta.iter().any(|entry| entry.0 == 8));
         assert_eq!(hook.hit_entity(20, false), EntityCollision::Hooked);
-        assert_eq!(hook.state, State::Hooked(20));
-        assert_eq!(hook.velocity, Vec3::ZERO);
+        assert_eq!(hook.hooked_in, Some(20));
+        assert_eq!(hook.state, State::Flying);
+        assert_eq!(hook.velocity, Vec3::new(-1.0, -0.0, -0.0));
     }
 
     #[test]
     #[ignore = "run by tools/test_breeze_hook_parity.py"]
     fn breeze_hook_parity_fixture() {
-        use super::{EntityCollision, Hook, State};
+        run_breeze_hook_parity_fixture();
+    }
+
+    pub(in crate::game) fn run_breeze_hook_parity_fixture() {
+        use super::{EntityCollision, Hook};
         use std::io::Write;
         let input =
             std::fs::read_to_string(std::env::var("SUNRISE_BREEZE_HOOK_INPUT").unwrap()).unwrap();
@@ -2626,7 +2860,7 @@ mod tests {
                 let response = hook.hit_entity(target.parse::<u32>().unwrap() + 10, true);
                 let sounds = i32::from(matches!(
                     response,
-                    EntityCollision::Deflected { first: true }
+                    EntityCollision::Deflected { first: true, .. }
                 ));
                 let landed = i32::from(matches!(response, EntityCollision::Hooked));
                 trace.push(format!(
@@ -2635,7 +2869,7 @@ mod tests {
                     hook.velocity.y.to_bits(),
                     hook.velocity.z.to_bits(),
                     i32::from(hook.needs_sync),
-                    i32::from(matches!(hook.state, State::Hooked(_)))
+                    i32::from(hook.hooked_in().is_some())
                 ));
             }
             writeln!(out, "{}", trace.join(" ")).unwrap();
@@ -2677,6 +2911,7 @@ mod tests {
     #[test]
     fn reeling_an_item_requests_an_immediate_motion_update() {
         let mut item = ItemEntity {
+            size_answer: None,
             random: sunrise_core::random::LegacyRandom::new(0),
             attachment_lifetime: Default::default(),
             fall_distance: 0.0,
@@ -2695,6 +2930,8 @@ mod tests {
             ground: sunrise_world::ground_support::GroundState::from_ground_flag(true),
             vertical_collision: false,
             age: 0,
+            stack_revision: 0,
+            lifespan: ItemEntity::LIFETIME,
             pickup_delay: 0,
             bob_offset: 0.0,
             ticks: 0,
@@ -2845,3 +3082,11 @@ mod fishing_catch_tests;
 #[cfg(test)]
 #[path = "fishing_tests/fishing_medium_tests.rs"]
 mod fishing_medium_tests;
+
+#[cfg(test)]
+#[path = "fishing_tests/fishing_find_tests.rs"]
+mod fishing_find_tests;
+
+#[cfg(test)]
+#[path = "fishing_tests/fishing_targets_tests.rs"]
+pub(in crate::game) mod fishing_targets_tests;

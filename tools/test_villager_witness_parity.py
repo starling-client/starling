@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Compare cached villager witnesses without starting a server."""
+"""Compare cached villager witnesses, hurt reputation and offers without starting a server."""
 import argparse
 import json
 import os
 from pathlib import Path
 import subprocess
 import re
-try:
-    from . import lab, test_rust_parity as base
-except ImportError:
-    import lab
-    import test_rust_parity as base
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_rust_parity as base
 
 
 def main(argv=None):
@@ -29,10 +29,14 @@ def main(argv=None):
     sources = [Path(__file__), oracle,
                lab.ROOT / 'crates/sunrise-client/src/mobs/villager.rs',
                lab.ROOT / 'crates/sunrise-client/src/mobs/villager_brain.rs',
+               lab.ROOT / 'crates/sunrise-client/src/mobs/villager_brain/memories.rs',
+               lab.ROOT / 'crates/sunrise-client/src/mobs/villager_brain/schedules.rs',
+               lab.ROOT / 'crates/sunrise-client/src/mobs/villager_brain/tasks.rs',
                lab.ROOT / 'crates/sunrise-client/src/mobs/villager_brain/reputation.rs',
                lab.ROOT / 'crates/sunrise-client/src/mobs/villager_brain/reputation_witness_tests.rs',
                lab.ROOT / 'crates/sunrise-client/src/game/mobs/villagers.rs',
                lab.ROOT / 'crates/sunrise-client/src/game/mobs/tests/villager_witness_tests.rs',
+               lab.ROOT / 'crates/sunrise-client/src/game/network/lan/mod.rs',
                lab.ROOT / 'crates/sunrise-client/src/game/entities/kill_die_vibration_tests.rs']
     hashes = base.source_hashes(sources)
     clean = dict(os.environ)
@@ -48,7 +52,7 @@ def main(argv=None):
                     'dev.sunriselab.parity.VanillaVillagerWitnessOracle', str(expected)],
                    cwd=scratch, env=env, check=True)
     rows = expected.read_text(encoding='utf-8').splitlines()
-    if [line.split()[0] for line in rows] != ['witnesses', 'cached', 'fresh']:
+    if [line.split()[0] for line in rows] != ['witnesses', 'cached', 'fresh', 'hurt', 'hurt_order', 'hurt_order_buyer']:
         raise AssertionError('Missing/extra actual Java records')
     if args.java_only:
         base.ensure_sources_unchanged(sources, hashes)
@@ -59,7 +63,8 @@ def main(argv=None):
     executed = {}
     for package, group, count in [
         ('sunrise-client-lib', 'mobs::villager_brain::reputation_witness_tests', 1),
-        ('sunrise-client', 'game::villagers::witness_tests', 1),
+        ('sunrise-client', 'game::villagers::witness_tests', 4),
+        ('sunrise-client', 'game::lan::merchant_packet_tests', 1),
     ]:
         if package not in artifacts:
             source = (lab.ROOT / 'crates/sunrise-client/src' / ('client_lib.rs' if package == 'sunrise-client-lib' else 'lib.rs')).resolve()
@@ -83,14 +88,15 @@ def main(argv=None):
                              env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, encoding='utf-8')
         (build / (group.replace('::', '-') + '.log')).write_text(ran.stdout, encoding='utf-8')
         print(ran.stdout)
-        summary = re.search(r'test result: ok\. (\d+) passed; 0 failed;', ran.stdout)
-        if ran.returncode or not summary or int(summary[1]) != count:
+        # Fresh-process fixtures print their own summaries before the outer suite does.
+        summaries = re.findall(r'^test result: ok\. (\d+) passed; 0 failed;', ran.stdout, re.MULTILINE)
+        if ran.returncode or not summaries or int(summaries[-1]) != count:
             raise AssertionError(f'{group}: execution did not pass all {count} tests')
         executed[group] = count
     base.ensure_sources_unchanged(sources, hashes)
     lab.write_json(build / 'report.json', {'minecraft': lock['minecraft']['version'],
-        'sources_sha256': hashes, 'executed_tests': executed, 'java_records': len(rows), 'scope': 'Actual lazy cached witness visibility; isolated entities, no server/world loop.'})
-    print('Cached witness candidates and visibility match vanilla')
+        'sources_sha256': hashes, 'executed_tests': executed, 'java_records': len(rows), 'scope': 'Lazy cached witness visibility and same-tick hurt reputation, offer and entity-event order; no server/world loop.'})
+    print('Villager witnesses, hurt reputation and offer packet order match vanilla')
 
 
 if __name__ == '__main__':

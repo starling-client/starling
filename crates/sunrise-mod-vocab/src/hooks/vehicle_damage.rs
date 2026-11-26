@@ -1,5 +1,4 @@
 //! The `vehicle_damage` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0270
 
 pub trait Hooks {
     /// A vehicle is about to take damage from a player's attack. `kind` is

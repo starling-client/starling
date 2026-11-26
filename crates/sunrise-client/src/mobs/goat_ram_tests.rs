@@ -97,6 +97,7 @@ fn a_ram_angers_no_mob_but_a_plain_mob_attack_does() {
                         target: 2,
                         amount,
                         source,
+                        ..
                     } => Some((*amount, *source)),
                     _ => None,
                 })

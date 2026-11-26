@@ -16,7 +16,7 @@ const VALUE: AttachmentType<i32> = AttachmentType {
         },
     }),
     copy_on_death: true,
-    sync: false,
+    sync_codec: None,
 };
 
 fn snapshot(
@@ -42,8 +42,8 @@ fn saved_placement_respawn_removal_and_reconnect_publish_player_rows() {
             .unwrap();
         sunrise_client::lan::playerdata::save(&guests[0], &game.world_root, &Default::default());
         guests.update_all(|g| g.placed = false);
-        game.lan_guest_joined(12, &[], [0.5, 64.0, 0.5]);
-        game.lan_guest_joined(13, &[], [0.5, 64.0, 0.5]);
+        game.lan_guest_joined(12, &[], [0.5, 64.0, 0.5], None);
+        game.lan_guest_joined(13, &[], [0.5, 64.0, 0.5], None);
         let before = snapshot(game, Dim::Overworld);
         assert_eq!(before.len(), 1);
         assert_eq!(before[0].entry.read(&VALUE), Ok(&31));
@@ -82,7 +82,7 @@ fn saved_placement_respawn_removal_and_reconnect_publish_player_rows() {
         replacement.entity_id = 199;
         replacement.placed = false;
         game.lan.as_mut().unwrap().hub.guests.push(replacement);
-        game.lan_guest_joined(99, &[], [0.5, 64.0, 0.5]);
+        game.lan_guest_joined(99, &[], [0.5, 64.0, 0.5], None);
         removed.attachments.retire();
         assert!(!current.unregister());
         let fresh = snapshot(game, Dim::Overworld);

@@ -2,6 +2,7 @@
 //! at startup and looked up when a level stem's `biome_source` names one.
 //! Like a mod's chunk generator it runs on the worldgen worker threads, so it
 //! keeps no mutable state and has no `Host`.
+use super::DecodeError;
 use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock};
 
@@ -12,7 +13,10 @@ pub trait ModBiomeSource: Send + Sync {
     fn possible_biomes(&self) -> &[String];
     /// `BiomeResolver.getNoiseBiome` at quart cell `quart` (block >> 2) of a
     /// world with `seed`: an index into [`possible_biomes`](Self::possible_biomes).
-    fn noise_biome(&self, quart: [i32; 3], seed: i64) -> u16;
+    ///
+    /// An `Err` is the source failing (its code panicked or its mod is disabled): the
+    /// column being generated is not published.
+    fn noise_biome(&self, quart: [i32; 3], seed: i64) -> Result<u16, String>;
 }
 
 /// The installed biome sources, `modid:chaos` → source. Set once, before any
@@ -43,36 +47,45 @@ pub struct LevelBiomeSource<T> {
 impl<T> LevelBiomeSource<T> {
     /// Source `id` of `sources` over a world with `seed`, each of its possible
     /// biomes resolved by `biome`. Refused, naming the source, when nobody
-    /// registered `id` (None), when it lists no biome, or naming the biome too
-    /// when `biome` doesn't know one of them.
+    /// registered `id`, when it lists no biome, or naming the biome too when
+    /// `biome` doesn't know one of them.
     pub fn resolve(
         id: &str,
         sources: &ModBiomeSources,
         seed: i64,
         mut biome: impl FnMut(&str) -> Option<T>,
-    ) -> Option<Result<Self, String>> {
-        let source = sources.get(id)?.clone();
+    ) -> Result<Self, DecodeError> {
+        let source = sources
+            .get(id)
+            .ok_or_else(|| DecodeError::MissingRegistryEntry(format!("unknown biome source {id}")))?
+            .clone();
         let names = source.possible_biomes();
         if names.is_empty() {
-            return Some(Err(format!("biome source {id} lists no biome")));
+            return Err(DecodeError::Registry(format!(
+                "biome source {id} lists no biome"
+            )));
         }
         let biomes = names
             .iter()
             .map(|name| {
-                biome(name)
-                    .ok_or_else(|| format!("biome source {id} names the unknown biome {name}"))
+                biome(name).ok_or_else(|| {
+                    DecodeError::MissingRegistryEntry(format!(
+                        "biome source {id} names the unknown biome {name}"
+                    ))
+                })
             })
-            .collect::<Result<_, _>>();
-        Some(biomes.map(|biomes| Self {
+            .collect::<Result<_, _>>()?;
+        Ok(Self {
             source,
             biomes,
             seed,
-        }))
+        })
     }
-    /// The biome at quart cell `quart`. An index past the list wraps around it.
-    pub fn noise_biome(&self, quart: [i32; 3]) -> &T {
-        let index = usize::from(self.source.noise_biome(quart, self.seed));
-        &self.biomes[index % self.biomes.len()]
+    /// The biome at quart cell `quart`. An index past the list wraps around it. The source's
+    /// failure is the answer, never a biome in its place.
+    pub fn noise_biome(&self, quart: [i32; 3]) -> Result<&T, String> {
+        let index = usize::from(self.source.noise_biome(quart, self.seed)?);
+        Ok(&self.biomes[index % self.biomes.len()])
     }
     /// The possible biomes, in the order the mod listed them.
     pub fn biomes(&self) -> &[T] {
@@ -99,8 +112,8 @@ mod tests {
         fn possible_biomes(&self) -> &[String] {
             &self.0
         }
-        fn noise_biome(&self, [x, _, z]: [i32; 3], seed: i64) -> u16 {
-            (x + z + seed as i32) as u16
+        fn noise_biome(&self, [x, _, z]: [i32; 3], seed: i64) -> Result<u16, String> {
+            Ok((x + z + seed as i32) as u16)
         }
     }
 
@@ -119,11 +132,11 @@ mod tests {
                 .position(|b| *b == name)
         };
         let biomes = sources(&["minecraft:plains", "minecraft:desert"]);
-        let level = LevelBiomeSource::resolve("test:stripes", &biomes, 1, known)
-            .unwrap()
-            .unwrap();
+        let level = LevelBiomeSource::resolve("test:stripes", &biomes, 1, known).unwrap();
         assert_eq!(level.biomes(), [1, 0]);
-        let row: Vec<usize> = (-1..3).map(|x| *level.noise_biome([x, 7, 0])).collect();
+        let row: Vec<usize> = (-1..3)
+            .map(|x| *level.noise_biome([x, 7, 0]).unwrap())
+            .collect();
         assert_eq!(row, [1, 0, 1, 0]);
     }
 }

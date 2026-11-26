@@ -5,8 +5,10 @@ import json
 from pathlib import Path
 import sys
 
-import test_command_exec_parity as driver
-from frozen_first_tick_water_corpus import frozen_first_tick_water
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_command_exec_parity as driver
+from tools.frozen_first_tick_water_corpus import frozen_first_tick_water
 
 if __name__ == '__main__':
     full = '--full-diagnostic' in sys.argv

@@ -14,8 +14,8 @@ pub trait Hooks {
     /// A ratio that takes a positive repair to 0 leaves the experience
     /// unspent, for the player. Only the parts attached to `stack`'s item are
     /// asked: to change Mending for every item, change the enchantment's
-    /// `minecraft:repair_with_xp` effect in a data pack. Server-side,
-    /// including `PlayerRef::give_experience_points`.
+    /// `minecraft:repair_with_xp` effect in a data pack. Server-side at orb pickup; direct
+    /// experience writes do not ask this part.
     #[hook(
         receiver = "read",
         dispatch = "flat",
@@ -24,7 +24,8 @@ pub trait Hooks {
         scope = "item",
         key = "stack",
         host = "read",
-        neoforge = "IItemExtension.getXpRepairRatio"
+        neoforge = "IItemExtension.getXpRepairRatio",
+        version = 2
     )]
     fn xp_repair_ratio(player: u128, stack: &ItemStack, experience: u32, ratio: &mut f32);
 }

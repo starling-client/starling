@@ -72,7 +72,7 @@ fn text_programs(
     root: &ResourceSource,
     defaults: &ResourceSource,
 ) -> [Option<(
-    Arc<CoreProgram>,
+    Arc<Translated>,
     Vec<crate::polytone_post::ExpressionUniform>,
 )>; 3] {
     let mut atlas = super::super::HudAtlas::boot();
@@ -117,32 +117,26 @@ fn the_text_programs_resolve_their_expression_uniforms_at_load() {
     }
 }
 
-/// Without a file giving the block, the program is refused (an unknown block); with a block that
-/// is not one float, refused too; and a file for another shader gives the text nothing.
+/// Each text pipeline binds zero without a matching expression in its own modifier file.
 #[test]
-fn a_text_program_without_its_expression_uniform_is_refused() {
-    let without = packs(vsh(false), fsh("float"), None);
-    let not_a_float = packs(vsh(false), fsh("vec4"), Some(r#"{"Wave": "1"}"#));
-    for (root, defaults) in [without, not_a_float] {
-        assert!(text_programs(&root, &defaults).iter().all(Option::is_none));
+fn a_text_program_without_its_expression_uniform_reads_zero() {
+    let (root, defaults) = packs(vsh(false), fsh("float"), None);
+    let other_shader = source(&[
+        (VSH, vsh(false)),
+        (FSH, fsh("float")),
+        (
+            "assets/minecraft/polytone/shader_modifiers/core/sky.json",
+            r#"{"Wave": "1"}"#.to_owned(),
+        ),
+    ]);
+    for pack in [&root, &other_shader] {
+        for loaded in text_programs(pack, &defaults) {
+            let (_, expressions) = loaded.expect("the shader loads");
+            assert_eq!(expressions.len(), 1);
+            assert_eq!(expressions[0].name, "Wave");
+            assert_eq!(expressions[0].evaluate(&Default::default()), 0.0);
+        }
     }
-    let (mut root_files, defaults) = (
-        vec![
-            (VSH, vsh(false)),
-            (FSH, fsh("float")),
-            (
-                "assets/minecraft/polytone/shader_modifiers/core/sky.json",
-                r#"{"Wave": "1"}"#.to_owned(),
-            ),
-        ],
-        packs(vsh(false), fsh("float"), None).1,
-    );
-    let root = source(&root_files);
-    assert!(text_programs(&root, &defaults).iter().all(Option::is_none));
-    // The same file named for the text: all three load.
-    root_files[2].0 = MODIFIERS;
-    let root = source(&root_files);
-    assert!(text_programs(&root, &defaults).iter().all(Option::is_some));
 }
 
 /// A pack's text shader reading no expression uniform loads as before, with none.
@@ -156,18 +150,17 @@ fn a_text_program_reading_no_expression_uniform_has_none() {
     }
 }
 
-/// Each text program is refused on its own, through the atlas's load: a pack whose see-through
-/// stage alone reads a block its file doesn't give loads the GUI's and the world's programs and
-/// refuses the see-through one.
+/// A text program whose stage reads a block that isn't one float fails the load, named by its
+/// pipeline, even when it is the see-through text's alone: the pipeline can't give the block.
 #[test]
-fn a_text_program_reading_an_unknown_block_is_refused_alone() {
+fn a_text_program_reading_a_non_float_expression_block_fails_the_load() {
     let fsh = "#version 330\nlayout(location = 0) out vec4 fragColor;\n\
-               #ifdef IS_SEE_THROUGH\nlayout(std140) uniform Missing {\n    float value;\n};\n\
-               #else\nconst float value = 1.0;\n#endif\n\
-               void main() {\n    fragColor = vec4(value);\n}\n"
+               #ifdef IS_SEE_THROUGH\nlayout(std140) uniform Missing {\n    vec4 value;\n};\n\
+               #else\nconst vec4 value = vec4(1.0);\n#endif\n\
+               void main() {\n    fragColor = value;\n}\n"
         .to_owned();
     let (root, defaults) = packs(vsh(false), fsh, Some(r#"{"Other": "1"}"#));
-    let [gui, world, see_through] = text_programs(&root, &defaults);
-    assert!(gui.is_some() && world.is_some());
-    assert!(see_through.is_none());
+    let mut atlas = super::super::HudAtlas::boot();
+    let refused = load_shaders(&mut atlas, &root, &defaults).unwrap_err();
+    assert_eq!(refused.pipeline, "minecraft:pipeline/text_see_through");
 }

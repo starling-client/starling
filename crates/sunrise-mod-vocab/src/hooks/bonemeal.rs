@@ -8,14 +8,15 @@ pub trait Hooks {
     /// own bone meal Parts and the meal's use: `growCrop` then answers
     /// `successful` (`setSuccessful`), which is `false` unless a mod sets it.
     /// Fired on both sides; changes to `stack` stay. Set it to None to consume
-    /// the whole stack; a nonempty result is validated before any write-back.
+    /// the whole stack. If a submitted stack is refused, the previous stack stays;
+    /// that refusal does not change `successful` or cancellation.
     #[hook(
         side = "both",
         contract = "cancel",
         out = "canceled",
         neoforge = "BonemealEvent",
         cancellable = true,
-        version = 2
+        version = 3
     )]
     fn bonemeal(
         dimension: LevelDimension,

@@ -121,7 +121,7 @@ fn push(
 pub(crate) fn generate(root: &Path, out: &Path) -> Result<(), String> {
     let dir = root.join(DIRECTORY);
     crate::rerun_if_changed(&dir.display());
-    let mut areas = Catalog::modules(&root.join(DECLARATIONS))?;
+    let mut areas = sunrise_game_discovery::module_files(&root.join(DECLARATIONS))?;
     // A fixture can support a declared engine target as well as a declaration file.
     // Their boundaries need not match when declarations are split per hook.
     const NATIVE: &str = "sunrise_client::game::native_hooks::";
@@ -131,7 +131,7 @@ pub(crate) fn generate(root: &Path, out: &Path) -> Result<(), String> {
     }));
     let mut output = BTreeMap::new();
     let mut seen = BTreeSet::new();
-    for area in Catalog::modules(&dir)? {
+    for area in sunrise_game_discovery::module_files(&dir)? {
         if area != "shared" && !areas.contains(&area) {
             return Err(format!("fixture area {area} has no catalog declaration"));
         }
@@ -152,7 +152,7 @@ pub(crate) fn generate(root: &Path, out: &Path) -> Result<(), String> {
             continue;
         }
         crate::rerun_if_changed(&folder.display());
-        for name in Catalog::modules(&folder)? {
+        for name in sunrise_game_discovery::module_files(&folder)? {
             let path = folder.join(format!("{name}.rs"));
             crate::rerun_if_changed(&path.display());
             let source = fs::read_to_string(&path).map_err(|e| e.to_string())?;
@@ -173,33 +173,6 @@ pub(crate) fn generate(root: &Path, out: &Path) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     }
     Ok(())
-}
-
-/// Lossless source ranges and catalog ownership for the one-shot fixture move.
-#[doc(hidden)]
-pub fn layout(root: &Path, source: &str) -> Result<serde_json::Value, String> {
-    use syn::spanned::Spanned;
-    fn items(input: &[Item]) -> Vec<serde_json::Value> {
-        input.iter().map(|item| {
-            let span = item.span();
-            let children = if let Item::Mod(i) = item { i.content.as_ref().map(|(_, i)| items(i)) } else { None };
-            serde_json::json!({"name": key(item), "start": span.start().line, "end": span.end().line, "children": children})
-        }).collect()
-    }
-    let mut hooks = BTreeMap::new();
-    for area in Catalog::modules(&root.join(DECLARATIONS))? {
-        let path = root.join(DECLARATIONS).join(format!("{area}.rs"));
-        let catalog = Catalog::parse(&[(
-            path.display().to_string(),
-            fs::read_to_string(path).map_err(|e| e.to_string())?,
-        )])?;
-        for hook in catalog.hooks {
-            hooks.insert(hook.name, area.clone());
-        }
-    }
-    Ok(
-        serde_json::json!({"hooks": hooks, "items": items(&syn::parse_file(source).map_err(|e| e.to_string())?.items)}),
-    )
 }
 
 #[cfg(test)]

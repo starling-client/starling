@@ -6,7 +6,7 @@
 //! A cushion is a `BlockAttachedEntity`, not a block: it has no block state,
 //! only an entity whose `Pos` is the click point's height. Placement uses
 //! outline bounds, collision shapes and suffocation predicates.
-use super::{Game, Hit, InteractTarget, Keys, entity_culling::default_range, ray_box};
+use super::{Game, Hit, InteractTarget, Keys, entity_culling::default_range};
 use sunrise_client::actions::Action;
 use sunrise_client::entities::{Cushion, dye_index};
 use sunrise_client::items::ItemStack;
@@ -145,13 +145,6 @@ impl Game<'_> {
 impl Game<'_> {
     /// The cushion under the crosshair, its distance and the hit point.
     pub(super) fn cushion_hit(&self) -> Option<(usize, f64, [f64; 3])> {
-        let mut pick = crate::game::pick_accumulator::PickAccumulator::new(self.entity_reach);
-        self.cushion_hit_with_pick(&mut pick)
-    }
-    pub(super) fn cushion_hit_with_pick(
-        &self,
-        pick: &mut crate::game::pick_accumulator::PickAccumulator,
-    ) -> Option<(usize, f64, [f64; 3])> {
         if let Some(hit) = self.cached_entity_pick() {
             let (entity, distance, point) = hit?;
             let index = self.cushions.iter().position(|f| f.id == entity.id())?;
@@ -159,13 +152,13 @@ impl Game<'_> {
         }
         let (eye, dir) = self.aim()?;
         let reach: f64 = self.entity_reach;
+        let (from, to) = super::pick_accumulator::pick_ray_segment(eye, dir, reach);
+        let mut pick = super::pick_accumulator::PickAccumulator::new(reach * reach);
         let mut best: Option<(usize, f64, [f64; 3])> = None;
         for (i, c) in self.cushions.iter().enumerate() {
-            let Some(d) = ray_box(eye, dir, reach, aabb(c.bounds())) else {
-                continue;
-            };
-            if pick.consider(self, c.id, d) {
-                best = Some((i, d, std::array::from_fn(|k| eye[k] + dir[k] * d)));
+            if pick.consider_box(self, c.id, from, to, aabb(c.bounds())) {
+                let hit = pick.hovered.unwrap();
+                best = Some((i, hit.distance_sq.sqrt(), hit.point));
             }
         }
         best
@@ -300,7 +293,7 @@ impl Game<'_> {
         if self.cushion_in_fire(&self.cushions[placed]) {
             self.break_cushion(placed, false);
         }
-        self.audio.play(
+        self.play_audio(
             "minecraft:entity.cushion.place",
             Some([position.x, position.y, position.z]),
             0.75,
@@ -370,7 +363,7 @@ impl Game<'_> {
         };
         self.start_riding(id);
         let p = self.cushions[i].position;
-        self.audio.play(
+        self.play_audio(
             "minecraft:entity.cushion.sit",
             Some([p.x, p.y, p.z]),
             1.0,
@@ -435,7 +428,7 @@ impl Game<'_> {
             // BlockAttachedEntity.kill, before dropItem.
             self.entity_killed_event_by([p.x, p.y, p.z], source);
         }
-        self.audio.play(
+        self.play_audio(
             "minecraft:entity.cushion.break",
             Some([p.x, p.y, p.z]),
             1.0,
@@ -504,7 +497,7 @@ impl Game<'_> {
             tint,
         );
         self.particles
-            .send_particles(&options, particle_at, [0.25, 0.0625, 0.25], 0.05, 10);
+            .send_particles(&options, particle_at, [0.25, 0.0625, 0.25], 0.05, 10, None);
     }
 
     /// `BlockAttachedEntity.tick`: survive and burn checks after the post-increment reaches 100.
@@ -586,7 +579,7 @@ impl Game<'_> {
             p.velocity = Vec3::ZERO;
             p.fall_distance = 0.0;
         }
-        self.audio.play(
+        self.play_audio(
             "minecraft:entity.cushion.get_up",
             Some([c.position.x, c.position.y, c.position.z]),
             1.0,
@@ -726,6 +719,9 @@ impl Game<'_> {
         };
         let sprites = &self.gui.atlas.sprites;
         for c in &self.cushions {
+            if self.hides_as_camera(c.id) {
+                continue;
+            }
             let a = aabb(c.bounds());
             let (lo, hi) = (a.min_position(), a.max_position());
             let (lo, hi) = (

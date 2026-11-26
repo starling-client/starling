@@ -71,6 +71,11 @@ impl GoalCx<'_, '_> {
         Some(self.live_mob(mob)?.ai.aggressive)
     }
 
+    pub(super) fn r_mob_is_in_sitting_pose(&self, mob: MobRef) -> Option<bool> {
+        let mob = self.live_mob(mob)?;
+        mob.is_tamable_animal().then_some(mob.extra.sitting_pose)
+    }
+
     pub(super) fn r_mob_persistence_required(&self, mob: MobRef) -> Option<bool> {
         Some(self.live_mob(mob)?.persistent)
     }

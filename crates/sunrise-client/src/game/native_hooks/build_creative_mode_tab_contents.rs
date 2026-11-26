@@ -1,13 +1,15 @@
 //! One demand-driven creative catalog per logical side, and the scoped edit event.
 use super::*;
-use crate::game::api_values::{TryIntoApi, TryIntoEngine, stack_value};
-use mod_api::{
-    CreativeModeTabInfo, CreativeModeTabs, CreativeTabChange, CreativeTabEdit,
-    CreativeTabEditError, CreativeTabList, CreativeTabPermissions, CreativeTabPlacement,
-    CreativeTabReadError, CreativeTabVisibility,
+use crate::game::api_values::{
+    TryIntoApi, TryIntoEngine, project_stack, stack_read_metadata, stack_value,
 };
-use std::cell::{OnceCell, RefCell};
-use std::sync::atomic::{AtomicU64, Ordering};
+use mod_api::{
+    CreativeModeTabInfo, CreativeModeTabs, CreativeTabEditError, CreativeTabList,
+    CreativeTabOutput, CreativeTabPermissions, CreativeTabPlacement, CreativeTabReadError,
+    CreativeTabVisibility, ItemStackView,
+};
+use std::cell::OnceCell;
+use sunrise_hooks::items::engine::{CreativeOrder, set_creative_order};
 use sunrise_items::creative_catalog::{
     Catalog, Holders, Kind, Parameters, TabContents, normalize_components,
 };
@@ -48,12 +50,6 @@ struct ActiveBuild {
     key: BuildKey,
     partial: Contents,
     items: Arc<Items>,
-    edit: RefCell<Option<EditSession>>,
-}
-
-struct EditSession {
-    token: CreativeTabEdit,
-    contents: TabContents,
 }
 
 /// Replaced with the holder provider, never with tags or presentation. Thus the
@@ -70,15 +66,15 @@ impl Game<'_> {
         self.creative_screen.reset_contents();
     }
 
-    /// Fire after one tab's generator with the live edit session installed.
+    /// Lend the live tab output after the generator and before feature filtering.
     fn native_build_creative_mode_tab_contents(
         &mut self,
         tab: &str,
-        features: Vec<String>,
+        features: &[String],
         permissions: mod_api::CreativeTabPermissions,
-        edit: mod_api::CreativeTabEdit,
+        output: &mut dyn mod_api::CreativeTabOutput,
     ) {
-        self.fire_build_creative_mode_tab_contents(tab, features, permissions, edit);
+        self.fire_build_creative_mode_tab_contents(tab, features, permissions, output);
     }
 
     pub(in crate::game) fn creative_permissions(&self) -> CreativeTabPermissions {
@@ -134,7 +130,6 @@ impl Game<'_> {
             },
             partial: Arc::from([]),
             items: items.clone(),
-            edit: RefCell::new(None),
         });
         let lists = catalog.build(
             Parameters {
@@ -146,40 +141,29 @@ impl Game<'_> {
             prior.as_deref(),
             |tab, partial, current| {
                 if listen {
-                    static NEXT_EDIT: AtomicU64 = AtomicU64::new(0);
-                    let token = mod_api::__private::creative_tab_edit(
-                        NEXT_EDIT.fetch_add(1, Ordering::Relaxed),
-                    );
                     let active = self
                         .creative_contents
                         .active
                         .as_mut()
                         .expect("active creative build");
                     active.partial = Arc::from(partial);
-                    *active.edit.get_mut() = Some(EditSession {
-                        token,
-                        contents: std::mem::take(current),
-                    });
                     self.native_build_creative_mode_tab_contents(
                         &tab.id,
-                        key.features.to_vec(),
+                        &key.features,
                         permissions,
-                        token,
+                        &mut CreativeTabEditor {
+                            contents: current,
+                            items: &items,
+                        },
                     );
-                    *current = self
-                        .creative_contents
-                        .active
-                        .as_mut()
-                        .expect("active creative build")
-                        .edit
-                        .get_mut()
-                        .take()
-                        .expect("active tab edit")
-                        .contents;
                 }
             },
         );
         self.creative_contents.active = None;
+        // The platform reads the same search-tab order (after mods' edits) the sorter ranks by, refreshed with each build.
+        if self.options.execution_role.is_client() {
+            set_creative_order(self.creative_screen.stock_order(&lists));
+        }
         self.creative_contents.published = Some(Published {
             key,
             lists: lists.clone(),
@@ -302,7 +286,7 @@ impl Game<'_> {
 
     /// The built-in sorter is only a reader. A cold sort previews stock order
     /// without publishing anything or giving mods a creative callback.
-    pub(in crate::game) fn stock_sort_order(&self) -> Vec<ItemStack> {
+    pub(in crate::game) fn stock_sort_order(&self) -> CreativeOrder {
         let preview;
         let lists = if let Some(published) = &self.creative_contents.published {
             &published.lists
@@ -319,7 +303,7 @@ impl Game<'_> {
             );
             &preview
         };
-        self.creative_screen.search_order_from(lists)
+        self.creative_screen.stock_order(lists)
     }
 
     pub(in crate::game) fn creative_stack_key(&self, stack: &ItemStack) -> Option<ItemStack> {
@@ -332,113 +316,132 @@ impl Game<'_> {
             .map_or_else(|| self.items(), |active| &active.items);
         comparison_key(stack.clone(), items).ok()
     }
+}
 
-    pub(in crate::game) fn creative_tab_entries(
+struct CreativeTabEditor<'a> {
+    contents: &'a mut TabContents,
+    items: &'a Items,
+}
+
+impl CreativeTabOutput for CreativeTabEditor<'_> {
+    fn entries(
         &self,
-        edit: CreativeTabEdit,
         list: CreativeTabList,
-    ) -> Result<Vec<ItemStack>, CreativeTabEditError> {
-        self.edit_creative(edit, |contents, _| Ok(list_items(contents, list).clone()))
-    }
-
-    pub(in crate::game) fn creative_tab_change(
-        &self,
-        edit: CreativeTabEdit,
-        change: CreativeTabChange,
+        visit: &mut dyn FnMut(ItemStackView<'_>),
     ) -> Result<(), CreativeTabEditError> {
-        match change {
-            CreativeTabChange::Insert {
-                placement,
-                stack,
-                visibility,
-            } => self.creative_tab_insert(edit, placement, stack, visibility),
-            CreativeTabChange::Remove { stack, visibility } => {
-                self.creative_tab_remove(edit, &stack, visibility)
-            }
-        }
+        let entries = match list {
+            CreativeTabList::Parent => &self.contents.display,
+            CreativeTabList::Search => &self.contents.search,
+        };
+        entries
+            .iter()
+            .try_for_each(|stack| lend_entry(stack, &mut *visit))
     }
 
-    fn creative_tab_insert(
-        &self,
-        edit: CreativeTabEdit,
+    fn insert(
+        &mut self,
         placement: CreativeTabPlacement,
         stack: mod_api::ItemStack,
         visibility: CreativeTabVisibility,
     ) -> Result<(), CreativeTabEditError> {
-        self.edit_creative(edit, |contents, items| {
-            if stack.count() != 1 {
-                return Err(CreativeTabEditError::Count);
+        if stack.count() != 1 {
+            return Err(report_edit_refusal(CreativeTabEditError::Count));
+        }
+        let mut stack = stack
+            .try_into_engine(self.items)
+            .map_err(report_edit_refusal)?;
+        normalize_components(&mut stack, self.items);
+        let anchor = match &placement {
+            CreativeTabPlacement::Before(anchor) | CreativeTabPlacement::After(anchor) => {
+                let anchor = stack_value(anchor)
+                    .and_then(|anchor| comparison_key(anchor, self.items))
+                    .map_err(report_edit_refusal)?;
+                Some(anchor)
             }
-            let mut stack = stack.try_into_engine(items)?;
-            normalize_components(&mut stack, items);
-            let (anchor, after) = match &placement {
-                CreativeTabPlacement::Before(anchor) => {
-                    (Some(comparison_key(stack_value(anchor)?, items)?), false)
+            _ => None,
+        };
+        for &list in target_lists(visibility) {
+            let entries = list_items(self.contents, list);
+            let index = match &anchor {
+                Some(anchor) => {
+                    entries
+                        .iter()
+                        .position(|entry| entry.same_item_same_components(anchor))
+                        .ok_or_else(|| {
+                            report_edit_refusal(CreativeTabEditError::MissingAnchor(list))
+                        })?
+                        + usize::from(matches!(placement, CreativeTabPlacement::After(_)))
                 }
-                CreativeTabPlacement::After(anchor) => {
-                    (Some(comparison_key(stack_value(anchor)?, items)?), true)
-                }
-                _ => (None, false),
+                None if matches!(placement, CreativeTabPlacement::First) => 0,
+                None => entries.len(),
             };
-            for list in target_lists(visibility) {
-                let entries = list_items(contents, *list);
-                if entries
-                    .iter()
-                    .any(|entry| entry.same_item_same_components(&stack))
-                {
-                    return Err(CreativeTabEditError::Duplicate(*list));
-                }
-                let index = match &anchor {
-                    Some(anchor) => {
-                        entries
-                            .iter()
-                            .position(|entry| entry.same_item_same_components(anchor))
-                            .ok_or(CreativeTabEditError::MissingAnchor(*list))?
-                            + usize::from(after)
-                    }
-                    None if matches!(placement, CreativeTabPlacement::First) => 0,
-                    None => entries.len(),
-                };
-                entries.insert(index, stack.clone());
+            if entries
+                .iter()
+                .any(|entry| entry.same_item_same_components(&stack))
+            {
+                return Err(report_edit_refusal(CreativeTabEditError::Duplicate(list)));
             }
-            Ok(())
-        })
+            entries.insert(index, stack.clone());
+        }
+        Ok(())
     }
 
-    fn creative_tab_remove(
-        &self,
-        edit: CreativeTabEdit,
+    fn remove(
+        &mut self,
         stack: &mod_api::ItemStack,
         visibility: CreativeTabVisibility,
     ) -> Result<(), CreativeTabEditError> {
-        self.edit_creative(edit, |contents, items| {
-            let stack = comparison_key(stack_value(stack)?, items)?;
-            for list in target_lists(visibility) {
-                list_items(contents, *list)
-                    .retain(|entry| !entry.same_item_same_components(&stack));
-            }
-            Ok(())
-        })
+        let stack = stack_value(stack)
+            .and_then(|stack| comparison_key(stack, self.items))
+            .map_err(report_edit_refusal)?;
+        for &list in target_lists(visibility) {
+            list_items(self.contents, list)
+                .retain(|entry| !entry.same_item_same_components(&stack));
+        }
+        Ok(())
     }
 
-    fn edit_creative<T>(
-        &self,
-        edit: CreativeTabEdit,
-        apply: impl FnOnce(&mut TabContents, &Items) -> Result<T, CreativeTabEditError>,
-    ) -> Result<T, CreativeTabEditError> {
-        let Some(active) = &self.creative_contents.active else {
-            return Err(CreativeTabEditError::Stale);
-        };
-        let mut session = active
-            .edit
-            .try_borrow_mut()
-            .map_err(|_| CreativeTabEditError::Stale)?;
-        let session = session
-            .as_mut()
-            .filter(|s| s.token == edit)
-            .ok_or(CreativeTabEditError::Stale)?;
-        apply(&mut session.contents, &active.items)
+    fn remove_if(
+        &mut self,
+        visibility: CreativeTabVisibility,
+        predicate: &mut dyn FnMut(ItemStackView<'_>) -> bool,
+    ) -> Result<(), CreativeTabEditError> {
+        for &list in target_lists(visibility) {
+            let mut result = Ok(());
+            list_items(self.contents, list).retain(|entry| {
+                if result.is_ok() {
+                    match lend_entry(entry, &mut *predicate) {
+                        Ok(remove) => return !remove,
+                        Err(error) => result = Err(error),
+                    }
+                }
+                true
+            });
+            result?;
+        }
+        Ok(())
     }
+}
+
+fn lend_entry<R>(
+    stack: &ItemStack,
+    visit: impl FnOnce(ItemStackView<'_>) -> R,
+) -> Result<R, CreativeTabEditError> {
+    let metadata = stack_read_metadata(stack)
+        .map_err(|error| report_edit_refusal(error.into_write_error()))?;
+    let project = |metadata| {
+        project_stack(stack, metadata)
+            .map_err(|error| report_edit_refusal(error.into_write_error()))
+            .ok()
+    };
+    Ok(visit(ItemStackView::resident(metadata, &project)))
+}
+
+fn report_edit_refusal(error: impl Into<CreativeTabEditError>) -> CreativeTabEditError {
+    let error = error.into();
+    let owner = mod_api::content::crash::current_native_mod().unwrap_or("unknown");
+    log::warn!("mod {owner} hook build_creative_mode_tab_contents edit refused: {error:?}");
+    error
 }
 
 fn api_stacks(stacks: &[ItemStack]) -> Vec<mod_api::ItemStack> {
@@ -483,7 +486,7 @@ fn display_name(id: &str, title: &str) -> mod_api::Text {
     })
 }
 
-// Comparison ignores count and resident maxima, but damage must fit the component codec.
+// Comparison ignores count and resident maxima; DataComponents.DAMAGE uses ExtraCodecs.NON_NEGATIVE_INT.
 fn comparison_key(
     mut stack: ItemStack,
     items: &Items,

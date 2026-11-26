@@ -5,8 +5,9 @@ pub trait Hooks {
     /// `EnchantedEntityLootEvent`): asked in the middle of the roll, each
     /// time an `enchanted_count_increase` function or a
     /// `random_chance_with_enchanted_bonus` condition is evaluated, for a
-    /// death and for `/loot ... kill`. `entity` is the living entity dropping
-    /// the loot, `source` the killing blow (`minecraft:magic` for the command)
+    /// death, for `/loot ... kill` and for `EntityRef::roll_death_loot`.
+    /// `entity` is the living entity dropping the loot, `source` the killing
+    /// blow (`minecraft:magic` for the command, the mod's source for a roll)
     /// and `attacker` the attacking entity (`getAttacker`): the one that
     /// caused the blow, or the command's source, even when `source` names
     /// nobody. It is None without one, and it need not be living: such a read
@@ -25,7 +26,8 @@ pub trait Hooks {
         side = "server",
         contract = "listen",
         neoforge = "EnchantedEntityLootEvent",
-        cancellable = false
+        cancellable = false,
+        version = 2
     )]
     fn enchanted_entity_loot(
         entity: LivingRef,

@@ -1,5 +1,4 @@
 //! The `player_stonecutter_recipe_select` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0311
 
 pub trait Hooks {
     /// A server player selected a stonecutter recipe, after the menu accepted

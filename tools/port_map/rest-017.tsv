@@ -92,8 +92,8 @@ LegacyTextFilter.processJoinOrLeave	skip:service		external chat filter service; 
 LegacyTextFilter.processRequest	skip:service		external chat filter service; Sunrise has no text filter
 LegacyTextFilter.filterText	skip:service		external chat filter service; Sunrise has no text filter
 MemoryServerHandshakePacketListenerImpl.handleIntention	inline	crates/sunrise-client/src/lan/conn.rs::serve_connection	gap: minor: the in-memory connection accepts every intention; vanilla throws for anything but login
-PlayerChunkSender.sendChunk	inline	crates/sunrise-client/src/lan/hub.rs::Hub::update_chunks	gap: minor: the debug synchronizer and the chunk-sent event are not ported
-PlayerChunkSender.collectChunksToSend	port	crates/sunrise-client/src/lan/hub.rs::Hub::next_batch	closest first within the batch quota; gap: minor: the in-memory player is cut to the quota too, vanilla sends it all pending chunks
+PlayerChunkSender.sendChunk	inline	crates/sunrise-client/src/lan/hub/tracking.rs::Hub::update_chunks	gap: minor: the debug synchronizer and the chunk-sent event are not ported
+PlayerChunkSender.collectChunksToSend	port	crates/sunrise-client/src/lan/hub/tracking.rs::Hub::next_batch	closest first within the batch quota; gap: minor: the in-memory player is cut to the quota too, vanilla sends it all pending chunks
 PlayerSafetyServiceTextFilter.createTextFilterFromConfig	skip:service		external chat filter service (Microsoft identity, text-filtering-config); Sunrise has no text filter
 PlayerSafetyServiceTextFilter.filterText	skip:service		external chat filter service; Sunrise has no text filter
 ServerCommandSuggestionsProvider.tick	port	crates/sunrise-client/src/game/network/lan_actions/commands.rs::Game::guest_try_suggestions	the budget is refilled for each guest once a tick, and the newest request is answered then

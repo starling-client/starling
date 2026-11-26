@@ -1,9 +1,11 @@
 use super::*;
 use crate::game::native_entity_refs::tests::with_game;
-use mod_api::{AttachmentQueries, AttachmentQueriesMut, AttachmentType};
+use mod_api::{AttachmentDescriptor, AttachmentKey, AttachmentQueries, AttachmentQueriesMut};
 use std::collections::HashSet;
 use sunrise_core::nbt::Tag;
-use sunrise_mod_runtime::attachments::{ATTACHMENTS_KEY, AttachmentCodec, AttachmentError};
+use sunrise_mod_runtime::attachments::{
+    ATTACHMENTS_KEY, AttachmentCodec, AttachmentError, AttachmentType,
+};
 
 static PROJECTILE_VALUE: AttachmentType<i32> = AttachmentType {
     namespace: "saved_projectile",
@@ -17,7 +19,7 @@ static PROJECTILE_VALUE: AttachmentType<i32> = AttachmentType {
         },
     }),
     copy_on_death: false,
-    sync: false,
+    sync_codec: None,
 };
 
 #[test]
@@ -97,19 +99,40 @@ fn saved_spit_and_bullet_query_before_access_and_round_trip() {
     });
 }
 
-static VALUE: AttachmentType<i32> = AttachmentType {
-    namespace: "saved_entity",
-    name: "value",
-    default: || 0,
-    codec: None,
-    copy_on_death: false,
-    sync: false,
-};
+struct SavedEntityMod(Arc<Mutex<Option<AttachmentKey<i32>>>>);
+#[mod_api::__subscriptions]
+impl mod_api::Hooks for SavedEntityMod {
+    fn register(&self, r: &mut dyn mod_api::Registrar, _: &mod_api::RegistrationContext) {
+        let key = r
+            .register_attachment_type(AttachmentDescriptor::new("saved_entity:value", || 0i32))
+            .unwrap();
+        *self.0.lock().unwrap() = Some(key);
+    }
+}
+
+fn with_saved_entity_game(test: impl FnOnce(&mut Game<'_>, &AttachmentKey<i32>)) {
+    let key_slot = Arc::new(Mutex::new(None));
+    let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
+        "saved_entity",
+        Box::new(SavedEntityMod(key_slot.clone())),
+    )]
+    .into();
+    mod_platform::testing::with_mods(mods, || {
+        with_game(|game| {
+            let key = key_slot
+                .lock()
+                .unwrap()
+                .clone()
+                .expect("SavedEntityMod registered");
+            test(game, &key);
+        });
+    });
+}
 
 #[test]
 #[ignore = "daily"]
 fn saved_entity_loaders_publish_and_retire_the_authoritative_owner() {
-    with_game(|game| {
+    with_saved_entity_game(|game, value_key| {
         game.options.dedicated = Some(Vec::new());
         game.native_level_opened(Dim::Overworld);
         for (n, kind) in [
@@ -180,8 +203,10 @@ fn saved_entity_loaders_publish_and_retire_the_authoritative_owner() {
                 panic!("not entity");
             };
             assert_ne!(entity.id(), 0, "{kind}");
-            VALUE.set(game, Holder::Entity(entity.id()), 19).unwrap();
-            let old = game.query_mut(&VALUE).unwrap();
+            value_key
+                .set(game, Holder::Entity(entity.id()), 19)
+                .unwrap();
+            let old = game.query_mut(value_key).unwrap();
             let row = old.iter().try_next().unwrap().unwrap();
             let work = index.lock().unwrap().work_count();
             // Exercise the clone-replay boundary used by vehicle/projectile ticks.
@@ -206,7 +231,7 @@ fn saved_entity_loaders_publish_and_retire_the_authoritative_owner() {
                 "{kind} store_back"
             );
             assert_eq!(
-                VALUE.get(game, Holder::Entity(entity.id())),
+                value_key.get(game, Holder::Entity(entity.id()), Clone::clone),
                 Ok(19),
                 "{kind}"
             );
@@ -243,7 +268,7 @@ fn saved_entity_loaders_publish_and_retire_the_authoritative_owner() {
 #[test]
 #[ignore = "daily"]
 fn saved_binding_family_first_stores_publish_to_queries() {
-    with_game(|game| {
+    with_saved_entity_game(|game, value_key| {
         game.options.dedicated = Some(Vec::new());
         game.native_level_opened(Dim::Overworld);
         let index = game.attachment_indexes[&Dim::Overworld].clone();
@@ -261,11 +286,11 @@ fn saved_binding_family_first_stores_publish_to_queries() {
                     "{} publishes before a store",
                     $kind
                 );
-                VALUE.set(game, holder, 7).unwrap();
+                value_key.set(game, holder, 7).unwrap();
                 {
-                    let query = game.query(&VALUE).unwrap();
-                    let mut rows = query.iter();
-                    let rows: Vec<_> = std::iter::from_fn(|| rows.try_next().unwrap()).collect();
+                    let query = game.query(value_key).unwrap();
+                    let mut iter = query.iter();
+                    let rows: Vec<_> = std::iter::from_fn(|| iter.try_next().unwrap()).collect();
                     assert_eq!(rows.len(), 1, "{} first store", $kind);
                     assert_eq!(rows[0].holder, AttachmentHolder::Entity(entity), "{}", $kind);
                     assert_eq!(rows[0].with_value(game.attachment_frame_borrow(), |value| *value), Ok(7), "{}", $kind);
@@ -291,9 +316,9 @@ fn saved_binding_family_first_stores_publish_to_queries() {
             .unwrap();
         game.lan_assign_ids();
         let id = game.tnts[0].id;
-        VALUE.set(game, Holder::Entity(id), 9).unwrap();
+        value_key.set(game, Holder::Entity(id), 9).unwrap();
         assert!(
-            game.query(&VALUE)
+            game.query(value_key)
                 .unwrap()
                 .iter()
                 .try_next()

@@ -21,9 +21,11 @@ impl mod_api::Hooks for Sets {
                 vec!["minecraft:emerald", "minecraft:air", "missing:item"],
             ),
             ("foreign:input", vec!["minecraft:diamond"]),
+            ("minecraft:custom_input", vec!["minecraft:emerald"]),
+            ("BAD:input", vec!["minecraft:diamond"]),
             ("minecraft:furnace_input", vec!["minecraft:diamond"]),
         ] {
-            event.additions.push(mod_api::RecipePropertyAddition::new(
+            event.register(mod_api::RecipePropertyAddition::new(
                 key,
                 items.into_iter().map(str::to_owned).collect(),
             ));
@@ -38,19 +40,23 @@ impl mod_api::Hooks for Extend {
         _: &dyn mod_api::DataLoadContext,
         event: &mut mod_api::RecipePropertySetsEvent<'_>,
     ) {
-        event.additions.push(mod_api::RecipePropertyAddition::new(
+        event.register(mod_api::RecipePropertyAddition::new(
             "pot:input",
+            vec!["minecraft:diamond".into(), "minecraft:emerald".into()],
+        ));
+        event.register(mod_api::RecipePropertyAddition::new(
+            "pot:foreign_new",
             vec!["minecraft:diamond".into()],
         ));
-        event.additions.push(mod_api::RecipePropertyAddition::new(
-            "pot:foreign_new",
+        event.register(mod_api::RecipePropertyAddition::new(
+            "unknown_property_test",
             vec!["minecraft:diamond".into()],
         ));
     }
 }
 
 #[test]
-fn custom_sets_survive_dispatch_and_sync_but_new_foreign_keys_do_not() {
+fn valid_namespaced_custom_sets_survive_dispatch_and_sync_while_invalid_keys_do_not() {
     let context = LoadContext::new(
         DataLoadOrigin::ServerDataLoad,
         Arc::new(LoadInputs::new(
@@ -66,9 +72,16 @@ fn custom_sets_survive_dispatch_and_sync_but_new_foreign_keys_do_not() {
         ]
         .into(),
         || {
+            crate::test_log::install();
+            crate::test_log::clear();
             let resolved = ResolvedSources::resolve(vec![], &Items::empty(), &context).unwrap();
-            assert!(resolved.property_additions.get("foreign:input").is_none());
-            assert!(resolved.property_additions.get("pot:foreign_new").is_none());
+            assert_eq!(resolved.property_additions.0["pot:input"].first_mod, "pot");
+            assert!(crate::test_log::records().iter().any(|(level, message)| {
+                *level == log::Level::Warn
+                    && message.contains("extension: unknown set unknown_property_test")
+            }));
+            assert!(resolved.property_additions.get("custom_input").is_none());
+            assert!(resolved.property_additions.get("BAD:input").is_none());
             assert!(
                 !resolved
                     .property_additions
@@ -98,12 +111,39 @@ fn custom_sets_survive_dispatch_and_sync_but_new_foreign_keys_do_not() {
                 packet
                     .properties
                     .iter()
+                    .find(|(key, _)| key == "foreign:input")
+                    .unwrap()
+                    .1,
+                vec![2]
+            );
+            assert_eq!(
+                packet
+                    .properties
+                    .iter()
+                    .find(|(key, _)| key == "pot:foreign_new")
+                    .unwrap()
+                    .1,
+                vec![2]
+            );
+            assert_eq!(
+                packet
+                    .properties
+                    .iter()
+                    .find(|(key, _)| key == "minecraft:custom_input")
+                    .unwrap()
+                    .1,
+                vec![1]
+            );
+            assert_eq!(
+                packet
+                    .properties
+                    .iter()
                     .find(|(key, _)| key == "minecraft:furnace_input")
                     .unwrap()
                     .1,
                 vec![2]
             );
-            assert_eq!(packet.properties.len(), 10);
+            assert_eq!(packet.properties.len(), 13);
         },
     );
 }

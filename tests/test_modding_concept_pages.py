@@ -1,21 +1,20 @@
 """Focused discovery, nesting and link-check regressions for the modding book."""
 import copy
-import importlib.util
 from pathlib import Path
-import sys
+import re
 import tempfile
 import unittest
 from unittest.mock import patch
 
-with patch.object(sys, "path", [*sys.path, str(Path(__file__).resolve().parents[1] / "tools")]):
-    import modding_concept_pages as pages
+from tools import modding_concept_pages as pages
 
 
 class ConceptPages(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.src = Path(self.tmp.name)
+        self.src = Path(self.tmp.name) / "src"
+        self.src.mkdir()
         self.book = {"sections": []}
         for part, folder in pages.FOLDERS.items():
             (self.src / folder).mkdir()
@@ -30,13 +29,6 @@ class ConceptPages(unittest.TestCase):
 
     def expand(self, book=None):
         return pages.expand(copy.deepcopy(book or self.book), self.src)
-
-    def test_import_does_not_change_discovery_search_paths(self):
-        spec = importlib.util.spec_from_file_location("concept_import_probe", __file__)
-        with patch.object(sys, "path", list(sys.path)):
-            before = list(sys.path)
-            spec.loader.exec_module(importlib.util.module_from_spec(spec))
-            self.assertEqual(sys.path, before)
 
     def test_a_folder_beside_a_page_gives_its_sub_chapters_in_file_name_order(self):
         parts = self.expand()["sections"][1]["Chapter"]
@@ -80,12 +72,12 @@ class ConceptPages(unittest.TestCase):
 
     def test_design_page_dropped_into_concepts_fails(self):
         (self.src / "concepts/next.md").write_text("# Design: what comes next\n\nA proposal.\n")
-        with self.assertRaisesRegex(AssertionError, "concepts/next.md: .* docs/design/"):
+        with self.assertRaisesRegex(AssertionError, "concepts/next.md: .* issues and PRs"):
             self.expand()
 
     def test_design_page_dropped_into_a_group_folder_fails(self):
         (self.src / "concepts/parts/c-plan.md").write_text("# Parts roadmap\n")
-        with self.assertRaisesRegex(AssertionError, "concepts/parts/c-plan.md: .* docs/design/"):
+        with self.assertRaisesRegex(AssertionError, "concepts/parts/c-plan.md: .* issues and PRs"):
             self.expand()
 
     def test_page_outside_the_discovered_folders_must_be_listed(self):
@@ -160,7 +152,14 @@ class ConceptPages(unittest.TestCase):
             pages.check_html(output, self.src / "concepts/..")
 
     def test_links_in_code_are_not_checked(self):
-        text = "```markdown\n[example](missing.md)\n```\n\nInline `[x](gone.md)` code.\n"
+        text = (
+            "```markdown\n[example](missing.md)\n```\n\n"
+            "1. List item:\n\n"
+            "    ```markdown\n"
+            "    [x](not-a-book-page.md)\n"
+            "    ```\n\n"
+            "Inline `[x](gone.md)` code.\n"
+        )
         pages.validate(text, "concepts/parts/a-item.md", self.src, {})
 
     def test_explicit_heading_ids_are_anchors(self):
@@ -187,6 +186,160 @@ class ConceptPages(unittest.TestCase):
             path.write_text(f'<a href="{href}">x</a>')
             with self.assertRaisesRegex(AssertionError, error):
                 pages.check_html(output, self.src / "concepts/..")
+
+    def test_missing_h1_fails_expand(self):
+        (self.src / "concepts/parts/no-h1.md").write_text("## Only h2\n\nBody.\n", encoding="utf-8")
+        with self.assertRaisesRegex(AssertionError, r"concepts/parts/no-h1\.md: missing top-level `# ` heading"):
+            self.expand()
+
+    def test_comment_only_h1_fails_expand(self):
+        (self.src / "concepts/parts/comment-h1.md").write_text(
+            "<!--\n# Comment-only title\n-->\n\n## Subheading\n",
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(AssertionError, r"concepts/parts/comment-h1\.md: missing top-level `# ` heading"):
+            self.expand()
+
+    def test_h1_after_quoted_fence_closed_without_space_is_found(self):
+        (self.src / "concepts/parts/quoted.md").write_text(
+            "> ```text\n> # Not a title\n>```\n\n# Quoted examples\n",
+            encoding="utf-8",
+        )
+        self.expand()
+
+    def test_bare_issue_reference_in_prose_is_rejected_while_code_destinations_and_heading_ids_pass(self):
+        text = (
+            "# Heading\n\n## Section {#1234}\n\nSee [section](#1234), [anchor](b-block.md#landing) and `#4776` and:\n\n"
+            "```text\n#1234\n```\n\nTitled: [section](#1234 \"Section\") and [anchor](b-block.md#landing 'Landing').\n\n"
+            "> ```text\n> #1234\n> ```\n\n- ```text\n  #1234\n  ```\n"
+        )
+        pages.validate(
+            text,
+            "concepts/parts/a-item.md",
+            self.src,
+            {(self.src / "concepts/parts/a-item.md").resolve(): text},
+        )
+        for token in ("#42", "#4776", "#100000"):
+            with self.subTest(token=token):
+                with self.assertRaisesRegex(AssertionError, rf"bare issue reference {re.escape(token)}"):
+                    pages.validate(
+                        f"# Heading\n\nAdded in {token}.\n",
+                        "concepts/parts/a-item.md",
+                        self.src,
+                        {},
+                    )
+        with self.subTest("prose after a quoted fence that ends at the quote boundary"):
+            with self.assertRaisesRegex(AssertionError, r"bare issue reference #42"):
+                pages.validate("# Heading\n\n> ```text\n> code\nSee #42.\n", "concepts/parts/a-item.md", self.src, {})
+
+    def test_inline_plain_rust_fence_and_uncompiled_include_are_rejected(self):
+        examples_src = self.src.parent / "examples" / "src"
+        examples_src.mkdir(parents=True, exist_ok=True)
+        (examples_src / "sample.rs").write_text("// ANCHOR: ok\nfn ok() {}\n// ANCHOR_END: ok\n", encoding="utf-8")
+        (self.src / "uncompiled.rs").write_text("// ANCHOR: ok\nfn ok() {}\n// ANCHOR_END: ok\n", encoding="utf-8")
+        pages.validate(
+            "# Heading\n\n```rust\n{{#include ../../../examples/src/sample.rs:ok}}\n```\n\n```rust,ignore\nlet x = 1;\n```\n",
+            "concepts/parts/a-item.md",
+            self.src,
+            {},
+        )
+        with self.assertRaisesRegex(AssertionError, r"must target a compiled source"):
+            pages.validate(
+                "# Heading\n\n```rust\n{{#include ../../uncompiled.rs:ok}}\n```\n",
+                "concepts/parts/a-item.md",
+                self.src,
+                {},
+            )
+        for fence in (
+            "```rust\nlet x = 1;\n```",
+            "```rs\nlet x = 1;\n```",
+            "```rust,no_run\nlet x = 1;\n```",
+            "> ```rust\n> let x = 1;\n> ```",
+            "- ```rust\n  let x = 1;\n  ```",
+            "1. Step:\n\n   ```rust\n   let x = 1;\n   ```",
+            "> - ```rust\n>   let x = 1;\n>   ```",
+        ):
+            with self.subTest(fence=fence):
+                with self.assertRaisesRegex(AssertionError, r"must use \{\{#include\}\}"):
+                    pages.validate(f"# Heading\n\n{fence}\n", "concepts/parts/a-item.md", self.src, {})
+        # A quoted text fence ends where its block quote does, so the top-level Rust fence after it is checked.
+        with self.assertRaisesRegex(AssertionError, r"a-item\.md:5: non-ignored ```rust block"):
+            pages.validate(
+                "# Heading\n\n> ```text\n> output\n```rust\nlet x = 1;\n```\n",
+                "concepts/parts/a-item.md",
+                self.src,
+                {},
+            )
+        pages.validate(
+            "# Heading\n\n- ```rust,ignore\n  let x = 1;\n  ```\n- ```rust\n  {{#include ../../../examples/src/sample.rs:ok}}\n  ```\n",
+            "concepts/parts/a-item.md",
+            self.src,
+            {},
+        )
+
+
+class BookSourceGuards(unittest.TestCase):
+    def setUp(self):
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.src = root / "src"
+        self.html = root / "html"
+
+    def write_rendered(self, name, body, *, write_source=True):
+        if write_source:
+            source = self.src / name
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_text("# Placeholder\n", encoding="utf-8")
+        rendered = (self.html / name).with_suffix(".html")
+        rendered.parent.mkdir(parents=True, exist_ok=True)
+        rendered.write_text(
+            f'<html><body><h1 class="menu-title">Sunrise Modding</h1><main>{body}</main></body></html>',
+            encoding="utf-8",
+        )
+
+    def test_duplicate_rendered_h1_is_case_insensitive_and_ignores_formatting_and_chrome(self):
+        self.write_rendered("concepts/parts.md", '<h1 id="registry-keys"><a class="header" href="#registry-keys">Registry <code>keys</code></a></h1>')
+        self.write_rendered("reference/keys.md", '<h1 id="registry-keys"><a class="header" href="#registry-keys">Registry   Keys</a></h1>')
+        with self.assertRaisesRegex(AssertionError, r"reference/keys\.md: duplicate H1 .*concepts/parts\.md"):
+            pages.check_html(self.html, self.src)
+
+    def test_duplicate_rendered_h1_catches_source_vs_generated_chapter(self):
+        self.write_rendered("concepts/hook-notes.md", '<h1 id="hook-notes"><a class="header" href="#hook-notes">Hook notes</a></h1>')
+        self.write_rendered("reference/hook-notes.md", '<h1 id="hook-notes"><a class="header" href="#hook-notes">Hook notes</a></h1>', write_source=False)
+        with self.assertRaisesRegex(AssertionError, r"reference/hook-notes\.md: duplicate H1 'Hook notes' \(also in concepts/hook-notes\.md\)"):
+            pages.check_html(self.html, self.src)
+
+    def test_duplicate_rendered_h1_discovers_any_generated_reference_chapter(self):
+        self.write_rendered("concepts/parts.md", '<h1 id="future-ref"><a class="header" href="#future-ref">Future reference</a></h1>')
+        self.write_rendered("reference/generated-future.md", '<h1 id="future-ref"><a class="header" href="#future-ref">Future reference</a></h1>', write_source=False)
+        with self.assertRaisesRegex(AssertionError, r"reference/generated-future\.md: duplicate H1 'Future reference' \(also in concepts/parts\.md\)"):
+            pages.check_html(self.html, self.src)
+
+    def test_menu_title_chrome_and_distinct_titles_pass(self):
+        self.write_rendered("concepts/parts.md", '<h1>Parts</h1>')
+        self.write_rendered("reference/keys.md", '<pre><code># Parts</code></pre><h1>Registry keys</h1>')
+        pages.check_html(self.html, self.src)
+
+    def test_nested_h1_does_not_mask_chapter_title_or_cause_false_duplicate(self):
+        self.write_rendered("concepts/parts.md", '<blockquote><h1>Example</h1></blockquote><h1>Parts</h1>')
+        self.write_rendered("concepts/example.md", '<h1>Example</h1>')
+        pages.check_html(self.html, self.src)
+
+    def test_nested_h1_does_not_hide_real_duplicate_chapter_title(self):
+        self.write_rendered("concepts/parts.md", '<blockquote><h1>Example</h1></blockquote><h1>Parts</h1>')
+        self.write_rendered("reference/parts.md", '<ul><li><h1>Item</h1></li></ul><h1>Parts</h1>')
+        with self.assertRaisesRegex(AssertionError, r"reference/parts\.md: duplicate H1 'Parts' \(also in concepts/parts\.md\)"):
+            pages.check_html(self.html, self.src)
+
+    def test_missing_rendered_h1_fails_check_html(self):
+        self.write_rendered("concepts/parts.md", '<h2>Only subheading</h2><p>Body</p>')
+        with self.assertRaisesRegex(AssertionError, r"concepts/parts\.md: missing rendered H1 heading"):
+            pages.check_html(self.html, self.src)
+
+    def test_valueless_class_attribute_on_h1_does_not_crash_and_still_checks_duplicates(self):
+        self.write_rendered("concepts/parts.md", '<h1 class>Parts</h1>')
+        self.write_rendered("reference/parts.md", '<h1>Parts</h1>')
+        with self.assertRaisesRegex(AssertionError, r"reference/parts\.md: duplicate H1 'Parts' \(also in concepts/parts\.md\)"):
+            pages.check_html(self.html, self.src)
 
 
 if __name__ == "__main__":

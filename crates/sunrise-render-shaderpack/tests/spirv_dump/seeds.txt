@@ -1,0 +1,491 @@
+options defaults {}
+subgroups false
+  folder "" draws Attributes
+    sizes 3a53559f78cf83200418c2e6c138f3ed31e0eaf1183799789954355c1819fbef
+    program 0 deferred Deferred
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv 019d1b59139a6e01b99e7be1e53171fa449b8a4fcf278224cc98ce2a37a2150c words 1924
+      fragment spirv 09c6f49cf8949d84c14ae3930ace19c80a2f7bdfc4e81f5082d13ead83107197 words 5028
+      interface e6c03d9b2493e6893e46ddfc8297942ecdbce98499ba2786fe8d4aeff1098f8c
+    program 1 composite Composite
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv 2c3441ac1a4d26245a96034fbd6a2c0691c14060d20fa32204d3b835cde722cd words 1959
+      fragment spirv c0e7202739f533db26e21b0bde58b140fe4002be6345cdb5ad77f5a9f5a2be98 words 2594
+      interface 36da55eb7051dc2f0fe4fa477e2d81b0c16c3ef6e5d9798b729ec20aa428285b
+    program 2 composite1 Composite
+      settings ec6427c4bfd50a624fed52dab2996771432a329535a37968de29164c244ecf87
+      compute composite1 spirv 74ac9d68e8b270a70435c48626ee02c196e20bc4cd0e33307108d6557aefe6b6 words 1760
+      compute composite1 interface d8824724184138321ccecc9dc9ff3d16b807a8e2dfcdc5539dfa40dc39126337
+    program 3 final Final
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv de56ecc5a41490d5d19e3c238bc7655f67974037b62adb7c4f56deb26e71da4d words 1876
+      fragment spirv 9b337922e25bc60e2b803de98d154b688d4f6bf4cf43885c078cf044caa1d5ca words 1638
+      interface cbc0c20ab62d34f6565c275c6dc5895ee276200326d5dabc89d5855ba1bd7a2d
+    program 4 gbuffers_terrain Gbuffers
+      settings 9c4b888efadc502bd1fb54c2cf690564ec0c5609d8a1d6c039f5d05a04f20993
+      vertex spirv ce7aaf2bd44aa313a691dd7b62080f9d55c576ce3e3e8f7b76f34da699c5eacd words 3283
+      fragment spirv 4424253961de2c6232a808fa34286146be7884dd01e2438b3a62cb578e8cb73d words 2288
+      interface 6d9bddb0259ea3f2f316641b75df75c5985515635b2334ef62924bed5d9b04b0
+    program 5 gbuffers_water Translucent
+      settings a2b6a6ba27aaea3991aefa9e7569c0d3bec842a4681d072d4c16ed5f29bdb7af
+      vertex spirv 86602574abf36155e0036fdbdee2f234fd32fd57389b35da39469b88f45b1a67 words 3303
+      fragment spirv 4cd93dfcde8790483926d1e3b9897cfb0cf50d68575660389d8e36c146655b94 words 2379
+      interface b8849e61d6ff7a195c479558bc4a8f56e0045e7ff3c6708e36e4dca6e652f1b3
+    program 6 gbuffers_terrain Gbuffers
+      settings 9c4b888efadc502bd1fb54c2cf690564ec0c5609d8a1d6c039f5d05a04f20993
+      vertex spirv d82e5c3231ea5432999d192a27c274fbd122e85cb55117b40c5747b3cfbdfe30 words 4531
+      fragment spirv 4424253961de2c6232a808fa34286146be7884dd01e2438b3a62cb578e8cb73d words 2288
+      interface 6d9bddb0259ea3f2f316641b75df75c5985515635b2334ef62924bed5d9b04b0
+    program 7 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      vertex spirv 881cdc0ce22e67af9352a91305693b55746d34094d6aa98e71f717c89a042dfe words 3008
+      fragment spirv d1d03391231e88e8d7e33c404de02ed29a8025432d0e900e1240a6c21f73c291 words 2032
+      interface 87db747c27fb928824a61f8bd7e9f76a601bc4b5f2b32c4b1434a3b0694342bf
+    program 8 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      vertex spirv 6ef33e8e5cb3effba1e9c99de63b5ba113cc1b07504cbaa8b57a120d06becade words 3542
+      fragment spirv 9212747ffb8fad14402db1dcd1e6e66cb515aef1ad51954db00e48f2a2afdff1 words 8928
+      interface b2d5bb64a87bf1be31ddf63feeb4bfdce08bf2b3a5be359bb3fb7d981dbfb8ab
+    program 9 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      vertex spirv 881cdc0ce22e67af9352a91305693b55746d34094d6aa98e71f717c89a042dfe words 3008
+      fragment spirv 6815cfe91b9299e06d289ff002295b9d3d39bbd2f1338e44608f0c34b5b78b41 words 1989
+      interface 87db747c27fb928824a61f8bd7e9f76a601bc4b5f2b32c4b1434a3b0694342bf
+    program 10 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      vertex spirv 08fddb33e25df2985495c808d2dc2fe10d4766bf0deeaf7a57356514fae040fb words 4285
+      fragment spirv d1d03391231e88e8d7e33c404de02ed29a8025432d0e900e1240a6c21f73c291 words 2032
+      interface 87db747c27fb928824a61f8bd7e9f76a601bc4b5f2b32c4b1434a3b0694342bf
+    program 11 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      vertex spirv 08fddb33e25df2985495c808d2dc2fe10d4766bf0deeaf7a57356514fae040fb words 4285
+      fragment spirv d1d03391231e88e8d7e33c404de02ed29a8025432d0e900e1240a6c21f73c291 words 2032
+      interface 87db747c27fb928824a61f8bd7e9f76a601bc4b5f2b32c4b1434a3b0694342bf
+  folder "" draws Pages
+    sizes 3a53559f78cf83200418c2e6c138f3ed31e0eaf1183799789954355c1819fbef
+    program 0 deferred Deferred
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv 019d1b59139a6e01b99e7be1e53171fa449b8a4fcf278224cc98ce2a37a2150c words 1924
+      fragment spirv 09c6f49cf8949d84c14ae3930ace19c80a2f7bdfc4e81f5082d13ead83107197 words 5028
+      interface e6c03d9b2493e6893e46ddfc8297942ecdbce98499ba2786fe8d4aeff1098f8c
+    program 1 composite Composite
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv 2c3441ac1a4d26245a96034fbd6a2c0691c14060d20fa32204d3b835cde722cd words 1959
+      fragment spirv c0e7202739f533db26e21b0bde58b140fe4002be6345cdb5ad77f5a9f5a2be98 words 2594
+      interface 36da55eb7051dc2f0fe4fa477e2d81b0c16c3ef6e5d9798b729ec20aa428285b
+    program 2 composite1 Composite
+      settings ec6427c4bfd50a624fed52dab2996771432a329535a37968de29164c244ecf87
+      compute composite1 spirv 74ac9d68e8b270a70435c48626ee02c196e20bc4cd0e33307108d6557aefe6b6 words 1760
+      compute composite1 interface d8824724184138321ccecc9dc9ff3d16b807a8e2dfcdc5539dfa40dc39126337
+    program 3 final Final
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv de56ecc5a41490d5d19e3c238bc7655f67974037b62adb7c4f56deb26e71da4d words 1876
+      fragment spirv 9b337922e25bc60e2b803de98d154b688d4f6bf4cf43885c078cf044caa1d5ca words 1638
+      interface cbc0c20ab62d34f6565c275c6dc5895ee276200326d5dabc89d5855ba1bd7a2d
+    program 4 gbuffers_terrain Gbuffers
+      settings 9c4b888efadc502bd1fb54c2cf690564ec0c5609d8a1d6c039f5d05a04f20993
+      vertex spirv 917f80b6bf1bc0c359ef3c3b7b10f5ac07f9c643c8d3c32abad59cab8bbdda71 words 7400
+      fragment spirv 4424253961de2c6232a808fa34286146be7884dd01e2438b3a62cb578e8cb73d words 2288
+      interface 6d9bddb0259ea3f2f316641b75df75c5985515635b2334ef62924bed5d9b04b0
+    program 5 gbuffers_water Translucent
+      settings a2b6a6ba27aaea3991aefa9e7569c0d3bec842a4681d072d4c16ed5f29bdb7af
+      vertex spirv 2bd92d6fc93656d297dc848ca312bf0acf01b472cb99e609902bd4c52f985321 words 7354
+      fragment spirv 4cd93dfcde8790483926d1e3b9897cfb0cf50d68575660389d8e36c146655b94 words 2379
+      interface b8849e61d6ff7a195c479558bc4a8f56e0045e7ff3c6708e36e4dca6e652f1b3
+    program 6 gbuffers_terrain Gbuffers
+      settings 9c4b888efadc502bd1fb54c2cf690564ec0c5609d8a1d6c039f5d05a04f20993
+      vertex spirv d82e5c3231ea5432999d192a27c274fbd122e85cb55117b40c5747b3cfbdfe30 words 4531
+      fragment spirv 4424253961de2c6232a808fa34286146be7884dd01e2438b3a62cb578e8cb73d words 2288
+      interface 6d9bddb0259ea3f2f316641b75df75c5985515635b2334ef62924bed5d9b04b0
+    program 7 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      vertex spirv 32224683e4c1b1434a33aeb2f7dfc1d3a99c6eed5823d30d6391c357d2a45f11 words 7067
+      fragment spirv d1d03391231e88e8d7e33c404de02ed29a8025432d0e900e1240a6c21f73c291 words 2032
+      interface 87db747c27fb928824a61f8bd7e9f76a601bc4b5f2b32c4b1434a3b0694342bf
+    program 8 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      vertex spirv 042514c110cd22128baf47cbfc43a780f984e4db08ad1641f0b7a5a0d259cd1c words 7601
+      fragment spirv 9212747ffb8fad14402db1dcd1e6e66cb515aef1ad51954db00e48f2a2afdff1 words 8928
+      interface b2d5bb64a87bf1be31ddf63feeb4bfdce08bf2b3a5be359bb3fb7d981dbfb8ab
+    program 9 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      vertex spirv 32224683e4c1b1434a33aeb2f7dfc1d3a99c6eed5823d30d6391c357d2a45f11 words 7067
+      fragment spirv 6815cfe91b9299e06d289ff002295b9d3d39bbd2f1338e44608f0c34b5b78b41 words 1989
+      interface 87db747c27fb928824a61f8bd7e9f76a601bc4b5f2b32c4b1434a3b0694342bf
+    program 10 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      vertex spirv 08fddb33e25df2985495c808d2dc2fe10d4766bf0deeaf7a57356514fae040fb words 4285
+      fragment spirv d1d03391231e88e8d7e33c404de02ed29a8025432d0e900e1240a6c21f73c291 words 2032
+      interface 87db747c27fb928824a61f8bd7e9f76a601bc4b5f2b32c4b1434a3b0694342bf
+    program 11 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      vertex spirv 08fddb33e25df2985495c808d2dc2fe10d4766bf0deeaf7a57356514fae040fb words 4285
+      fragment spirv d1d03391231e88e8d7e33c404de02ed29a8025432d0e900e1240a6c21f73c291 words 2032
+      interface 87db747c27fb928824a61f8bd7e9f76a601bc4b5f2b32c4b1434a3b0694342bf
+  folder "" draws Normals
+    sizes 3a53559f78cf83200418c2e6c138f3ed31e0eaf1183799789954355c1819fbef
+    program 0 deferred Deferred
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv 019d1b59139a6e01b99e7be1e53171fa449b8a4fcf278224cc98ce2a37a2150c words 1924
+      fragment spirv 09c6f49cf8949d84c14ae3930ace19c80a2f7bdfc4e81f5082d13ead83107197 words 5028
+      interface e6c03d9b2493e6893e46ddfc8297942ecdbce98499ba2786fe8d4aeff1098f8c
+    program 1 composite Composite
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv 2c3441ac1a4d26245a96034fbd6a2c0691c14060d20fa32204d3b835cde722cd words 1959
+      fragment spirv c0e7202739f533db26e21b0bde58b140fe4002be6345cdb5ad77f5a9f5a2be98 words 2594
+      interface 36da55eb7051dc2f0fe4fa477e2d81b0c16c3ef6e5d9798b729ec20aa428285b
+    program 2 composite1 Composite
+      settings ec6427c4bfd50a624fed52dab2996771432a329535a37968de29164c244ecf87
+      compute composite1 spirv 74ac9d68e8b270a70435c48626ee02c196e20bc4cd0e33307108d6557aefe6b6 words 1760
+      compute composite1 interface d8824724184138321ccecc9dc9ff3d16b807a8e2dfcdc5539dfa40dc39126337
+    program 3 final Final
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv de56ecc5a41490d5d19e3c238bc7655f67974037b62adb7c4f56deb26e71da4d words 1876
+      fragment spirv 9b337922e25bc60e2b803de98d154b688d4f6bf4cf43885c078cf044caa1d5ca words 1638
+      interface cbc0c20ab62d34f6565c275c6dc5895ee276200326d5dabc89d5855ba1bd7a2d
+    program 4 gbuffers_terrain Gbuffers
+      settings 9c4b888efadc502bd1fb54c2cf690564ec0c5609d8a1d6c039f5d05a04f20993
+      vertex spirv abd948f6052188afbcd43dd083830bcac9e32b0a22beff10bf94b28efdc7082c words 3626
+      fragment spirv 4424253961de2c6232a808fa34286146be7884dd01e2438b3a62cb578e8cb73d words 2288
+      interface 6d9bddb0259ea3f2f316641b75df75c5985515635b2334ef62924bed5d9b04b0
+    program 5 gbuffers_water Translucent
+      settings a2b6a6ba27aaea3991aefa9e7569c0d3bec842a4681d072d4c16ed5f29bdb7af
+      vertex spirv aa57b3a658146d0777033f803dcbab6e504f281f8a5a3369b9e14140ef1977cd words 3576
+      fragment spirv 4cd93dfcde8790483926d1e3b9897cfb0cf50d68575660389d8e36c146655b94 words 2379
+      interface b8849e61d6ff7a195c479558bc4a8f56e0045e7ff3c6708e36e4dca6e652f1b3
+    program 6 gbuffers_terrain Gbuffers
+      settings 9c4b888efadc502bd1fb54c2cf690564ec0c5609d8a1d6c039f5d05a04f20993
+      vertex spirv d82e5c3231ea5432999d192a27c274fbd122e85cb55117b40c5747b3cfbdfe30 words 4531
+      fragment spirv 4424253961de2c6232a808fa34286146be7884dd01e2438b3a62cb578e8cb73d words 2288
+      interface 6d9bddb0259ea3f2f316641b75df75c5985515635b2334ef62924bed5d9b04b0
+    program 7 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      vertex spirv c83bdc7ab17ddd5bbe3f0618a0c9dedcf5e50006a21b4fab206febf08737cad0 words 3281
+      fragment spirv d1d03391231e88e8d7e33c404de02ed29a8025432d0e900e1240a6c21f73c291 words 2032
+      interface 87db747c27fb928824a61f8bd7e9f76a601bc4b5f2b32c4b1434a3b0694342bf
+    program 8 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      vertex spirv c8891d1d9fd5e078c7ad7a9f8c87f1db68e4763011c267742754b3f822f357b8 words 3815
+      fragment spirv 9212747ffb8fad14402db1dcd1e6e66cb515aef1ad51954db00e48f2a2afdff1 words 8928
+      interface b2d5bb64a87bf1be31ddf63feeb4bfdce08bf2b3a5be359bb3fb7d981dbfb8ab
+    program 9 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      vertex spirv c83bdc7ab17ddd5bbe3f0618a0c9dedcf5e50006a21b4fab206febf08737cad0 words 3281
+      fragment spirv 6815cfe91b9299e06d289ff002295b9d3d39bbd2f1338e44608f0c34b5b78b41 words 1989
+      interface 87db747c27fb928824a61f8bd7e9f76a601bc4b5f2b32c4b1434a3b0694342bf
+    program 10 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      vertex spirv 08fddb33e25df2985495c808d2dc2fe10d4766bf0deeaf7a57356514fae040fb words 4285
+      fragment spirv d1d03391231e88e8d7e33c404de02ed29a8025432d0e900e1240a6c21f73c291 words 2032
+      interface 87db747c27fb928824a61f8bd7e9f76a601bc4b5f2b32c4b1434a3b0694342bf
+    program 11 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      vertex spirv 08fddb33e25df2985495c808d2dc2fe10d4766bf0deeaf7a57356514fae040fb words 4285
+      fragment spirv d1d03391231e88e8d7e33c404de02ed29a8025432d0e900e1240a6c21f73c291 words 2032
+      interface 87db747c27fb928824a61f8bd7e9f76a601bc4b5f2b32c4b1434a3b0694342bf
+  folder "" draws Flat
+    sizes 3a53559f78cf83200418c2e6c138f3ed31e0eaf1183799789954355c1819fbef
+    program 0 deferred Deferred
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv 019d1b59139a6e01b99e7be1e53171fa449b8a4fcf278224cc98ce2a37a2150c words 1924
+      fragment spirv 09c6f49cf8949d84c14ae3930ace19c80a2f7bdfc4e81f5082d13ead83107197 words 5028
+      interface e6c03d9b2493e6893e46ddfc8297942ecdbce98499ba2786fe8d4aeff1098f8c
+    program 1 composite Composite
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv 2c3441ac1a4d26245a96034fbd6a2c0691c14060d20fa32204d3b835cde722cd words 1959
+      fragment spirv c0e7202739f533db26e21b0bde58b140fe4002be6345cdb5ad77f5a9f5a2be98 words 2594
+      interface 36da55eb7051dc2f0fe4fa477e2d81b0c16c3ef6e5d9798b729ec20aa428285b
+    program 2 composite1 Composite
+      settings ec6427c4bfd50a624fed52dab2996771432a329535a37968de29164c244ecf87
+      compute composite1 spirv 74ac9d68e8b270a70435c48626ee02c196e20bc4cd0e33307108d6557aefe6b6 words 1760
+      compute composite1 interface d8824724184138321ccecc9dc9ff3d16b807a8e2dfcdc5539dfa40dc39126337
+    program 3 final Final
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv de56ecc5a41490d5d19e3c238bc7655f67974037b62adb7c4f56deb26e71da4d words 1876
+      fragment spirv 9b337922e25bc60e2b803de98d154b688d4f6bf4cf43885c078cf044caa1d5ca words 1638
+      interface cbc0c20ab62d34f6565c275c6dc5895ee276200326d5dabc89d5855ba1bd7a2d
+    program 4 gbuffers_terrain Gbuffers
+      settings 9c4b888efadc502bd1fb54c2cf690564ec0c5609d8a1d6c039f5d05a04f20993
+      vertex spirv 6cc9319aacc66fde39d6a6ae4324046e1b45610489759e8ed9ad226312c4e849 words 8440
+      fragment spirv 4424253961de2c6232a808fa34286146be7884dd01e2438b3a62cb578e8cb73d words 2288
+      interface 6d9bddb0259ea3f2f316641b75df75c5985515635b2334ef62924bed5d9b04b0
+    program 5 gbuffers_water Translucent
+      settings a2b6a6ba27aaea3991aefa9e7569c0d3bec842a4681d072d4c16ed5f29bdb7af
+      vertex spirv 24200b469cd32c08b900e1133a9088dde41aecb775d7f270ba0c1c8096b7668b words 8394
+      fragment spirv 4cd93dfcde8790483926d1e3b9897cfb0cf50d68575660389d8e36c146655b94 words 2379
+      interface b8849e61d6ff7a195c479558bc4a8f56e0045e7ff3c6708e36e4dca6e652f1b3
+    program 6 gbuffers_terrain Gbuffers
+      settings 9c4b888efadc502bd1fb54c2cf690564ec0c5609d8a1d6c039f5d05a04f20993
+      vertex spirv d82e5c3231ea5432999d192a27c274fbd122e85cb55117b40c5747b3cfbdfe30 words 4531
+      fragment spirv 4424253961de2c6232a808fa34286146be7884dd01e2438b3a62cb578e8cb73d words 2288
+      interface 6d9bddb0259ea3f2f316641b75df75c5985515635b2334ef62924bed5d9b04b0
+    program 7 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      vertex spirv 3443a8c8512ec5492f4c6e3e9a6283734cb1f48fbdf7a0190d431999e4419af1 words 8103
+      fragment spirv d1d03391231e88e8d7e33c404de02ed29a8025432d0e900e1240a6c21f73c291 words 2032
+      interface 87db747c27fb928824a61f8bd7e9f76a601bc4b5f2b32c4b1434a3b0694342bf
+    program 8 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      vertex spirv 1f77469990b88a6eaf94732c5c97b23397415b406a047ceb9e276b4aeed28d01 words 8637
+      fragment spirv 9212747ffb8fad14402db1dcd1e6e66cb515aef1ad51954db00e48f2a2afdff1 words 8928
+      interface b2d5bb64a87bf1be31ddf63feeb4bfdce08bf2b3a5be359bb3fb7d981dbfb8ab
+    program 9 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      vertex spirv 3443a8c8512ec5492f4c6e3e9a6283734cb1f48fbdf7a0190d431999e4419af1 words 8103
+      fragment spirv 6815cfe91b9299e06d289ff002295b9d3d39bbd2f1338e44608f0c34b5b78b41 words 1989
+      interface 87db747c27fb928824a61f8bd7e9f76a601bc4b5f2b32c4b1434a3b0694342bf
+    program 10 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      vertex spirv 08fddb33e25df2985495c808d2dc2fe10d4766bf0deeaf7a57356514fae040fb words 4285
+      fragment spirv d1d03391231e88e8d7e33c404de02ed29a8025432d0e900e1240a6c21f73c291 words 2032
+      interface 87db747c27fb928824a61f8bd7e9f76a601bc4b5f2b32c4b1434a3b0694342bf
+    program 11 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      vertex spirv 08fddb33e25df2985495c808d2dc2fe10d4766bf0deeaf7a57356514fae040fb words 4285
+      fragment spirv d1d03391231e88e8d7e33c404de02ed29a8025432d0e900e1240a6c21f73c291 words 2032
+      interface 87db747c27fb928824a61f8bd7e9f76a601bc4b5f2b32c4b1434a3b0694342bf
+subgroups true
+  folder "" draws Attributes
+    sizes 3a53559f78cf83200418c2e6c138f3ed31e0eaf1183799789954355c1819fbef
+    program 0 deferred Deferred
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv 019d1b59139a6e01b99e7be1e53171fa449b8a4fcf278224cc98ce2a37a2150c words 1924
+      fragment spirv 09c6f49cf8949d84c14ae3930ace19c80a2f7bdfc4e81f5082d13ead83107197 words 5028
+      interface e6c03d9b2493e6893e46ddfc8297942ecdbce98499ba2786fe8d4aeff1098f8c
+    program 1 composite Composite
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv 2c3441ac1a4d26245a96034fbd6a2c0691c14060d20fa32204d3b835cde722cd words 1959
+      fragment spirv c0e7202739f533db26e21b0bde58b140fe4002be6345cdb5ad77f5a9f5a2be98 words 2594
+      interface 36da55eb7051dc2f0fe4fa477e2d81b0c16c3ef6e5d9798b729ec20aa428285b
+    program 2 composite1 Composite
+      settings ec6427c4bfd50a624fed52dab2996771432a329535a37968de29164c244ecf87
+      compute composite1 spirv 74ac9d68e8b270a70435c48626ee02c196e20bc4cd0e33307108d6557aefe6b6 words 1760
+      compute composite1 interface d8824724184138321ccecc9dc9ff3d16b807a8e2dfcdc5539dfa40dc39126337
+    program 3 final Final
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv de56ecc5a41490d5d19e3c238bc7655f67974037b62adb7c4f56deb26e71da4d words 1876
+      fragment spirv 9b337922e25bc60e2b803de98d154b688d4f6bf4cf43885c078cf044caa1d5ca words 1638
+      interface cbc0c20ab62d34f6565c275c6dc5895ee276200326d5dabc89d5855ba1bd7a2d
+    program 4 gbuffers_terrain Gbuffers
+      settings 9c4b888efadc502bd1fb54c2cf690564ec0c5609d8a1d6c039f5d05a04f20993
+      vertex spirv ce7aaf2bd44aa313a691dd7b62080f9d55c576ce3e3e8f7b76f34da699c5eacd words 3283
+      fragment spirv 4424253961de2c6232a808fa34286146be7884dd01e2438b3a62cb578e8cb73d words 2288
+      interface 6d9bddb0259ea3f2f316641b75df75c5985515635b2334ef62924bed5d9b04b0
+    program 5 gbuffers_water Translucent
+      settings a2b6a6ba27aaea3991aefa9e7569c0d3bec842a4681d072d4c16ed5f29bdb7af
+      vertex spirv 86602574abf36155e0036fdbdee2f234fd32fd57389b35da39469b88f45b1a67 words 3303
+      fragment spirv 4cd93dfcde8790483926d1e3b9897cfb0cf50d68575660389d8e36c146655b94 words 2379
+      interface b8849e61d6ff7a195c479558bc4a8f56e0045e7ff3c6708e36e4dca6e652f1b3
+    program 6 gbuffers_terrain Gbuffers
+      settings 9c4b888efadc502bd1fb54c2cf690564ec0c5609d8a1d6c039f5d05a04f20993
+      vertex spirv d82e5c3231ea5432999d192a27c274fbd122e85cb55117b40c5747b3cfbdfe30 words 4531
+      fragment spirv 4424253961de2c6232a808fa34286146be7884dd01e2438b3a62cb578e8cb73d words 2288
+      interface 6d9bddb0259ea3f2f316641b75df75c5985515635b2334ef62924bed5d9b04b0
+    program 7 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      vertex spirv 881cdc0ce22e67af9352a91305693b55746d34094d6aa98e71f717c89a042dfe words 3008
+      fragment spirv d1d03391231e88e8d7e33c404de02ed29a8025432d0e900e1240a6c21f73c291 words 2032
+      interface 87db747c27fb928824a61f8bd7e9f76a601bc4b5f2b32c4b1434a3b0694342bf
+    program 8 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      vertex spirv 6ef33e8e5cb3effba1e9c99de63b5ba113cc1b07504cbaa8b57a120d06becade words 3542
+      fragment spirv 9212747ffb8fad14402db1dcd1e6e66cb515aef1ad51954db00e48f2a2afdff1 words 8928
+      interface b2d5bb64a87bf1be31ddf63feeb4bfdce08bf2b3a5be359bb3fb7d981dbfb8ab
+    program 9 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      vertex spirv 881cdc0ce22e67af9352a91305693b55746d34094d6aa98e71f717c89a042dfe words 3008
+      fragment spirv 6815cfe91b9299e06d289ff002295b9d3d39bbd2f1338e44608f0c34b5b78b41 words 1989
+      interface 87db747c27fb928824a61f8bd7e9f76a601bc4b5f2b32c4b1434a3b0694342bf
+    program 10 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      vertex spirv 08fddb33e25df2985495c808d2dc2fe10d4766bf0deeaf7a57356514fae040fb words 4285
+      fragment spirv d1d03391231e88e8d7e33c404de02ed29a8025432d0e900e1240a6c21f73c291 words 2032
+      interface 87db747c27fb928824a61f8bd7e9f76a601bc4b5f2b32c4b1434a3b0694342bf
+    program 11 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      vertex spirv 08fddb33e25df2985495c808d2dc2fe10d4766bf0deeaf7a57356514fae040fb words 4285
+      fragment spirv d1d03391231e88e8d7e33c404de02ed29a8025432d0e900e1240a6c21f73c291 words 2032
+      interface 87db747c27fb928824a61f8bd7e9f76a601bc4b5f2b32c4b1434a3b0694342bf
+  folder "" draws Pages
+    sizes 3a53559f78cf83200418c2e6c138f3ed31e0eaf1183799789954355c1819fbef
+    program 0 deferred Deferred
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv 019d1b59139a6e01b99e7be1e53171fa449b8a4fcf278224cc98ce2a37a2150c words 1924
+      fragment spirv 09c6f49cf8949d84c14ae3930ace19c80a2f7bdfc4e81f5082d13ead83107197 words 5028
+      interface e6c03d9b2493e6893e46ddfc8297942ecdbce98499ba2786fe8d4aeff1098f8c
+    program 1 composite Composite
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv 2c3441ac1a4d26245a96034fbd6a2c0691c14060d20fa32204d3b835cde722cd words 1959
+      fragment spirv c0e7202739f533db26e21b0bde58b140fe4002be6345cdb5ad77f5a9f5a2be98 words 2594
+      interface 36da55eb7051dc2f0fe4fa477e2d81b0c16c3ef6e5d9798b729ec20aa428285b
+    program 2 composite1 Composite
+      settings ec6427c4bfd50a624fed52dab2996771432a329535a37968de29164c244ecf87
+      compute composite1 spirv 74ac9d68e8b270a70435c48626ee02c196e20bc4cd0e33307108d6557aefe6b6 words 1760
+      compute composite1 interface d8824724184138321ccecc9dc9ff3d16b807a8e2dfcdc5539dfa40dc39126337
+    program 3 final Final
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv de56ecc5a41490d5d19e3c238bc7655f67974037b62adb7c4f56deb26e71da4d words 1876
+      fragment spirv 9b337922e25bc60e2b803de98d154b688d4f6bf4cf43885c078cf044caa1d5ca words 1638
+      interface cbc0c20ab62d34f6565c275c6dc5895ee276200326d5dabc89d5855ba1bd7a2d
+    program 4 gbuffers_terrain Gbuffers
+      settings 9c4b888efadc502bd1fb54c2cf690564ec0c5609d8a1d6c039f5d05a04f20993
+      vertex spirv 917f80b6bf1bc0c359ef3c3b7b10f5ac07f9c643c8d3c32abad59cab8bbdda71 words 7400
+      fragment spirv 4424253961de2c6232a808fa34286146be7884dd01e2438b3a62cb578e8cb73d words 2288
+      interface 6d9bddb0259ea3f2f316641b75df75c5985515635b2334ef62924bed5d9b04b0
+    program 5 gbuffers_water Translucent
+      settings a2b6a6ba27aaea3991aefa9e7569c0d3bec842a4681d072d4c16ed5f29bdb7af
+      vertex spirv 2bd92d6fc93656d297dc848ca312bf0acf01b472cb99e609902bd4c52f985321 words 7354
+      fragment spirv 4cd93dfcde8790483926d1e3b9897cfb0cf50d68575660389d8e36c146655b94 words 2379
+      interface b8849e61d6ff7a195c479558bc4a8f56e0045e7ff3c6708e36e4dca6e652f1b3
+    program 6 gbuffers_terrain Gbuffers
+      settings 9c4b888efadc502bd1fb54c2cf690564ec0c5609d8a1d6c039f5d05a04f20993
+      vertex spirv d82e5c3231ea5432999d192a27c274fbd122e85cb55117b40c5747b3cfbdfe30 words 4531
+      fragment spirv 4424253961de2c6232a808fa34286146be7884dd01e2438b3a62cb578e8cb73d words 2288
+      interface 6d9bddb0259ea3f2f316641b75df75c5985515635b2334ef62924bed5d9b04b0
+    program 7 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      vertex spirv 32224683e4c1b1434a33aeb2f7dfc1d3a99c6eed5823d30d6391c357d2a45f11 words 7067
+      fragment spirv d1d03391231e88e8d7e33c404de02ed29a8025432d0e900e1240a6c21f73c291 words 2032
+      interface 87db747c27fb928824a61f8bd7e9f76a601bc4b5f2b32c4b1434a3b0694342bf
+    program 8 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      vertex spirv 042514c110cd22128baf47cbfc43a780f984e4db08ad1641f0b7a5a0d259cd1c words 7601
+      fragment spirv 9212747ffb8fad14402db1dcd1e6e66cb515aef1ad51954db00e48f2a2afdff1 words 8928
+      interface b2d5bb64a87bf1be31ddf63feeb4bfdce08bf2b3a5be359bb3fb7d981dbfb8ab
+    program 9 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      vertex spirv 32224683e4c1b1434a33aeb2f7dfc1d3a99c6eed5823d30d6391c357d2a45f11 words 7067
+      fragment spirv 6815cfe91b9299e06d289ff002295b9d3d39bbd2f1338e44608f0c34b5b78b41 words 1989
+      interface 87db747c27fb928824a61f8bd7e9f76a601bc4b5f2b32c4b1434a3b0694342bf
+    program 10 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      vertex spirv 08fddb33e25df2985495c808d2dc2fe10d4766bf0deeaf7a57356514fae040fb words 4285
+      fragment spirv d1d03391231e88e8d7e33c404de02ed29a8025432d0e900e1240a6c21f73c291 words 2032
+      interface 87db747c27fb928824a61f8bd7e9f76a601bc4b5f2b32c4b1434a3b0694342bf
+    program 11 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      vertex spirv 08fddb33e25df2985495c808d2dc2fe10d4766bf0deeaf7a57356514fae040fb words 4285
+      fragment spirv d1d03391231e88e8d7e33c404de02ed29a8025432d0e900e1240a6c21f73c291 words 2032
+      interface 87db747c27fb928824a61f8bd7e9f76a601bc4b5f2b32c4b1434a3b0694342bf
+  folder "" draws Normals
+    sizes 3a53559f78cf83200418c2e6c138f3ed31e0eaf1183799789954355c1819fbef
+    program 0 deferred Deferred
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv 019d1b59139a6e01b99e7be1e53171fa449b8a4fcf278224cc98ce2a37a2150c words 1924
+      fragment spirv 09c6f49cf8949d84c14ae3930ace19c80a2f7bdfc4e81f5082d13ead83107197 words 5028
+      interface e6c03d9b2493e6893e46ddfc8297942ecdbce98499ba2786fe8d4aeff1098f8c
+    program 1 composite Composite
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv 2c3441ac1a4d26245a96034fbd6a2c0691c14060d20fa32204d3b835cde722cd words 1959
+      fragment spirv c0e7202739f533db26e21b0bde58b140fe4002be6345cdb5ad77f5a9f5a2be98 words 2594
+      interface 36da55eb7051dc2f0fe4fa477e2d81b0c16c3ef6e5d9798b729ec20aa428285b
+    program 2 composite1 Composite
+      settings ec6427c4bfd50a624fed52dab2996771432a329535a37968de29164c244ecf87
+      compute composite1 spirv 74ac9d68e8b270a70435c48626ee02c196e20bc4cd0e33307108d6557aefe6b6 words 1760
+      compute composite1 interface d8824724184138321ccecc9dc9ff3d16b807a8e2dfcdc5539dfa40dc39126337
+    program 3 final Final
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv de56ecc5a41490d5d19e3c238bc7655f67974037b62adb7c4f56deb26e71da4d words 1876
+      fragment spirv 9b337922e25bc60e2b803de98d154b688d4f6bf4cf43885c078cf044caa1d5ca words 1638
+      interface cbc0c20ab62d34f6565c275c6dc5895ee276200326d5dabc89d5855ba1bd7a2d
+    program 4 gbuffers_terrain Gbuffers
+      settings 9c4b888efadc502bd1fb54c2cf690564ec0c5609d8a1d6c039f5d05a04f20993
+      vertex spirv abd948f6052188afbcd43dd083830bcac9e32b0a22beff10bf94b28efdc7082c words 3626
+      fragment spirv 4424253961de2c6232a808fa34286146be7884dd01e2438b3a62cb578e8cb73d words 2288
+      interface 6d9bddb0259ea3f2f316641b75df75c5985515635b2334ef62924bed5d9b04b0
+    program 5 gbuffers_water Translucent
+      settings a2b6a6ba27aaea3991aefa9e7569c0d3bec842a4681d072d4c16ed5f29bdb7af
+      vertex spirv aa57b3a658146d0777033f803dcbab6e504f281f8a5a3369b9e14140ef1977cd words 3576
+      fragment spirv 4cd93dfcde8790483926d1e3b9897cfb0cf50d68575660389d8e36c146655b94 words 2379
+      interface b8849e61d6ff7a195c479558bc4a8f56e0045e7ff3c6708e36e4dca6e652f1b3
+    program 6 gbuffers_terrain Gbuffers
+      settings 9c4b888efadc502bd1fb54c2cf690564ec0c5609d8a1d6c039f5d05a04f20993
+      vertex spirv d82e5c3231ea5432999d192a27c274fbd122e85cb55117b40c5747b3cfbdfe30 words 4531
+      fragment spirv 4424253961de2c6232a808fa34286146be7884dd01e2438b3a62cb578e8cb73d words 2288
+      interface 6d9bddb0259ea3f2f316641b75df75c5985515635b2334ef62924bed5d9b04b0
+    program 7 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      vertex spirv c83bdc7ab17ddd5bbe3f0618a0c9dedcf5e50006a21b4fab206febf08737cad0 words 3281
+      fragment spirv d1d03391231e88e8d7e33c404de02ed29a8025432d0e900e1240a6c21f73c291 words 2032
+      interface 87db747c27fb928824a61f8bd7e9f76a601bc4b5f2b32c4b1434a3b0694342bf
+    program 8 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      vertex spirv c8891d1d9fd5e078c7ad7a9f8c87f1db68e4763011c267742754b3f822f357b8 words 3815
+      fragment spirv 9212747ffb8fad14402db1dcd1e6e66cb515aef1ad51954db00e48f2a2afdff1 words 8928
+      interface b2d5bb64a87bf1be31ddf63feeb4bfdce08bf2b3a5be359bb3fb7d981dbfb8ab
+    program 9 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      vertex spirv c83bdc7ab17ddd5bbe3f0618a0c9dedcf5e50006a21b4fab206febf08737cad0 words 3281
+      fragment spirv 6815cfe91b9299e06d289ff002295b9d3d39bbd2f1338e44608f0c34b5b78b41 words 1989
+      interface 87db747c27fb928824a61f8bd7e9f76a601bc4b5f2b32c4b1434a3b0694342bf
+    program 10 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      vertex spirv 08fddb33e25df2985495c808d2dc2fe10d4766bf0deeaf7a57356514fae040fb words 4285
+      fragment spirv d1d03391231e88e8d7e33c404de02ed29a8025432d0e900e1240a6c21f73c291 words 2032
+      interface 87db747c27fb928824a61f8bd7e9f76a601bc4b5f2b32c4b1434a3b0694342bf
+    program 11 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      vertex spirv 08fddb33e25df2985495c808d2dc2fe10d4766bf0deeaf7a57356514fae040fb words 4285
+      fragment spirv d1d03391231e88e8d7e33c404de02ed29a8025432d0e900e1240a6c21f73c291 words 2032
+      interface 87db747c27fb928824a61f8bd7e9f76a601bc4b5f2b32c4b1434a3b0694342bf
+  folder "" draws Flat
+    sizes 3a53559f78cf83200418c2e6c138f3ed31e0eaf1183799789954355c1819fbef
+    program 0 deferred Deferred
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv 019d1b59139a6e01b99e7be1e53171fa449b8a4fcf278224cc98ce2a37a2150c words 1924
+      fragment spirv 09c6f49cf8949d84c14ae3930ace19c80a2f7bdfc4e81f5082d13ead83107197 words 5028
+      interface e6c03d9b2493e6893e46ddfc8297942ecdbce98499ba2786fe8d4aeff1098f8c
+    program 1 composite Composite
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv 2c3441ac1a4d26245a96034fbd6a2c0691c14060d20fa32204d3b835cde722cd words 1959
+      fragment spirv c0e7202739f533db26e21b0bde58b140fe4002be6345cdb5ad77f5a9f5a2be98 words 2594
+      interface 36da55eb7051dc2f0fe4fa477e2d81b0c16c3ef6e5d9798b729ec20aa428285b
+    program 2 composite1 Composite
+      settings ec6427c4bfd50a624fed52dab2996771432a329535a37968de29164c244ecf87
+      compute composite1 spirv 74ac9d68e8b270a70435c48626ee02c196e20bc4cd0e33307108d6557aefe6b6 words 1760
+      compute composite1 interface d8824724184138321ccecc9dc9ff3d16b807a8e2dfcdc5539dfa40dc39126337
+    program 3 final Final
+      settings 370e2fbb86ede7a0cded3ae375442faebc50f84adacae12083bd6086c165d1ef
+      vertex spirv de56ecc5a41490d5d19e3c238bc7655f67974037b62adb7c4f56deb26e71da4d words 1876
+      fragment spirv 9b337922e25bc60e2b803de98d154b688d4f6bf4cf43885c078cf044caa1d5ca words 1638
+      interface cbc0c20ab62d34f6565c275c6dc5895ee276200326d5dabc89d5855ba1bd7a2d
+    program 4 gbuffers_terrain Gbuffers
+      settings 9c4b888efadc502bd1fb54c2cf690564ec0c5609d8a1d6c039f5d05a04f20993
+      vertex spirv 6cc9319aacc66fde39d6a6ae4324046e1b45610489759e8ed9ad226312c4e849 words 8440
+      fragment spirv 4424253961de2c6232a808fa34286146be7884dd01e2438b3a62cb578e8cb73d words 2288
+      interface 6d9bddb0259ea3f2f316641b75df75c5985515635b2334ef62924bed5d9b04b0
+    program 5 gbuffers_water Translucent
+      settings a2b6a6ba27aaea3991aefa9e7569c0d3bec842a4681d072d4c16ed5f29bdb7af
+      vertex spirv 24200b469cd32c08b900e1133a9088dde41aecb775d7f270ba0c1c8096b7668b words 8394
+      fragment spirv 4cd93dfcde8790483926d1e3b9897cfb0cf50d68575660389d8e36c146655b94 words 2379
+      interface b8849e61d6ff7a195c479558bc4a8f56e0045e7ff3c6708e36e4dca6e652f1b3
+    program 6 gbuffers_terrain Gbuffers
+      settings 9c4b888efadc502bd1fb54c2cf690564ec0c5609d8a1d6c039f5d05a04f20993
+      vertex spirv d82e5c3231ea5432999d192a27c274fbd122e85cb55117b40c5747b3cfbdfe30 words 4531
+      fragment spirv 4424253961de2c6232a808fa34286146be7884dd01e2438b3a62cb578e8cb73d words 2288
+      interface 6d9bddb0259ea3f2f316641b75df75c5985515635b2334ef62924bed5d9b04b0
+    program 7 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      vertex spirv 3443a8c8512ec5492f4c6e3e9a6283734cb1f48fbdf7a0190d431999e4419af1 words 8103
+      fragment spirv d1d03391231e88e8d7e33c404de02ed29a8025432d0e900e1240a6c21f73c291 words 2032
+      interface 87db747c27fb928824a61f8bd7e9f76a601bc4b5f2b32c4b1434a3b0694342bf
+    program 8 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      vertex spirv 1f77469990b88a6eaf94732c5c97b23397415b406a047ceb9e276b4aeed28d01 words 8637
+      fragment spirv 9212747ffb8fad14402db1dcd1e6e66cb515aef1ad51954db00e48f2a2afdff1 words 8928
+      interface b2d5bb64a87bf1be31ddf63feeb4bfdce08bf2b3a5be359bb3fb7d981dbfb8ab
+    program 9 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      vertex spirv 3443a8c8512ec5492f4c6e3e9a6283734cb1f48fbdf7a0190d431999e4419af1 words 8103
+      fragment spirv 6815cfe91b9299e06d289ff002295b9d3d39bbd2f1338e44608f0c34b5b78b41 words 1989
+      interface 87db747c27fb928824a61f8bd7e9f76a601bc4b5f2b32c4b1434a3b0694342bf
+    program 10 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      vertex spirv 08fddb33e25df2985495c808d2dc2fe10d4766bf0deeaf7a57356514fae040fb words 4285
+      fragment spirv d1d03391231e88e8d7e33c404de02ed29a8025432d0e900e1240a6c21f73c291 words 2032
+      interface 87db747c27fb928824a61f8bd7e9f76a601bc4b5f2b32c4b1434a3b0694342bf
+    program 11 shadow Shadow
+      settings acf8ab3123a126567b2429c08e1bff18cf3a25759f003cbd2d4854f6a20e0ec6
+      vertex spirv 08fddb33e25df2985495c808d2dc2fe10d4766bf0deeaf7a57356514fae040fb words 4285
+      fragment spirv d1d03391231e88e8d7e33c404de02ed29a8025432d0e900e1240a6c21f73c291 words 2032
+      interface 87db747c27fb928824a61f8bd7e9f76a601bc4b5f2b32c4b1434a3b0694342bf

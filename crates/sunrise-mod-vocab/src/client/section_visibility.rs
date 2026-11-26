@@ -3,7 +3,8 @@
 //!
 //! The game captures the input and asks on the client world thread, never on a meshing worker; the
 //! workers read only the checked answers.
-use crate::{BiomeId, BlockState};
+use crate::{BiomeKey, BlockState};
+use std::sync::Arc;
 
 /// Cells along each axis of a [`SectionVisibilityInput`]: the section's 16 and one each side.
 pub const SECTION_INPUT_SIDE: usize = 18;
@@ -39,16 +40,19 @@ pub struct SectionVisibilityInput {
     pub origin: [i32; 3],
     cells: Box<[SectionCell]>,
     light: Box<[u8]>,
-    biomes: Box<[Option<BiomeId>]>,
+    biome_keys: Arc<[BiomeKey]>,
+    biomes: Box<[Option<u16>]>,
 }
 
 impl SectionVisibilityInput {
-    /// The game captures one raw state, packed light and stored biome per position in the halo.
+    /// The game captures one raw state, packed light and raw biome slot per position in the halo.
+    /// The keys are shared with the registry that the mesh worker uses for these slots.
     // hidden: engine-only snapshot construction; listeners borrow the capture supplied by the game.
     #[doc(hidden)]
     pub fn capture(
         origin: [i32; 3],
-        mut cell_at: impl FnMut([i32; 3]) -> (SectionCell, u8, Option<BiomeId>),
+        mut cell_at: impl FnMut([i32; 3]) -> (SectionCell, u8, Option<u16>),
+        biome_keys: Arc<[BiomeKey]>,
     ) -> Self {
         let mut cells = Vec::with_capacity(SECTION_INPUT_CELLS);
         let mut light = Vec::with_capacity(SECTION_INPUT_CELLS);
@@ -56,10 +60,10 @@ impl SectionVisibilityInput {
         for y in -1..=16 {
             for z in -1..=16 {
                 for x in -1..=16 {
-                    let (cell, packed, biome) = cell_at([x, y, z]);
+                    let (cell, packed, raw_biome) = cell_at([x, y, z]);
                     cells.push(cell);
                     light.push(packed);
-                    biomes.push(biome);
+                    biomes.push(raw_biome);
                 }
             }
         }
@@ -67,6 +71,7 @@ impl SectionVisibilityInput {
             origin,
             cells: cells.into_boxed_slice(),
             light: light.into_boxed_slice(),
+            biome_keys,
             biomes: biomes.into_boxed_slice(),
         }
     }
@@ -89,9 +94,14 @@ impl SectionVisibilityInput {
         let packed = self.light[Self::index(local)?];
         Ok([packed >> 4, packed & 15])
     }
-    /// The raw, stored biome at `local`, before biome zoom and blending; `None` in a missing column.
-    pub fn biome(&self, local: [i32; 3]) -> Result<Option<BiomeId>, SectionVisibilityRefusal> {
-        Ok(self.biomes[Self::index(local)?])
+    /// The registered key for the stored biome at `local`, before biome zoom and blending.
+    /// Returns `Ok(None)` if the column is missing or the stored slot does not resolve to a
+    /// registered biome (for example, a saved biome from an absent pack).
+    pub fn biome(&self, local: [i32; 3]) -> Result<Option<&BiomeKey>, SectionVisibilityRefusal> {
+        Ok(
+            self.biomes[Self::index(local)?]
+                .and_then(|slot| self.biome_keys.get(usize::from(slot))),
+        )
     }
     /// The position seed used for seeded block-model selection at `local`.
     pub fn model_seed(&self, [x, y, z]: [i32; 3]) -> Result<i64, SectionVisibilityRefusal> {

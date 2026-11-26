@@ -1,0 +1,3 @@
+ids = ["method:prelude::ClientInputClientHost::right_click_delay", "method:prelude::ClientInputClientHost::set_right_click_delay"]
+why = "A client mod can read and set the held use key's repeat delay, vanilla's `Minecraft.rightClickDelay`: each use sets it to 4, the client tick counts it down, and a held use key uses again at 0. `set_right_click_delay(0)` after a use lets a held key place again on the next key step, as fast-place and bridging mods set the field. Both answer only in a client world."
+migrate = "Nothing to change."

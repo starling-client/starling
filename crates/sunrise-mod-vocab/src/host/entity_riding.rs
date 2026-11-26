@@ -28,26 +28,47 @@ pub trait EntityRidingBackend {
     /// this window has a handle for it.
     fn entity_root_vehicle(&self, entity: EntityRef) -> Option<EntityRef>;
     /// Side: both.
-    /// The entities riding this one (`Entity.getPassengers`), in `addPassenger`'s order: each
-    /// behind those aboard, except that a player goes first when the first is no player.
-    /// Only resident handles are returned; retained off-level passengers are omitted.
+    /// Visit the entities riding this one (`Entity.getPassengers`), in `addPassenger`'s order:
+    /// each behind those aboard, except that a server player goes first when the first is no
+    /// player. Only resident handles are visited; retained off-level passengers are omitted.
     /// Dying passengers stay aboard until removed. On a client, unknown passengers and
-    /// links that would form a cycle do not board. Returns their handles in packet order.
-    /// Returns `None` for a stale or untracked vehicle, an empty list for one with no
-    /// passengers whose handles can be returned.
-    fn entity_passengers(&self, entity: EntityRef) -> Option<Vec<EntityRef>>;
+    /// links that would form a cycle do not board; the visit follows packet seat order and
+    /// does not require a projected vehicle body. Return `ControlFlow::Break(())` to stop
+    /// (`Ok(Break(()))`). `Ok(Continue(()))` means the visit completed, including when no
+    /// passenger has a handle. A stale or untracked vehicle returns [`EntityReadError::Stale`];
+    /// an unavailable world view or a parked server body returns [`EntityReadError::Unavailable`].
+    /// A refusal never calls `visit`.
+    fn entity_visit_passengers(
+        &self,
+        entity: EntityRef,
+        visit: &mut dyn FnMut(EntityRef) -> core::ops::ControlFlow<()>,
+    ) -> Result<core::ops::ControlFlow<()>, EntityReadError>;
     /// Side: both.
     /// Whether anything rides the entity (`Entity.isVehicle`), including retained
-    /// off-level passengers omitted from `passengers`. Dying is not removal.
+    /// off-level passengers omitted from `visit_passengers`. Dying is not removal.
     /// On a client, whether any passenger boarded from the server's list.
     /// Stale or untracked handles return `None`.
     fn entity_is_vehicle(&self, entity: EntityRef) -> Option<bool>;
+    /// Side: both.
+    /// Whether the HUD draws this entity's hearts in place of the food bar while the local
+    /// player rides it (`Entity.showVehicleHealth`): true for a living entity
+    /// (`LivingEntity`: a mob, a player, an armor stand or the dragon), false for anything
+    /// else, such as a boat or a minecart. On a client, any entity the server shows this
+    /// window answers from its type. `None` for a stale or untracked handle.
+    fn entity_shows_vehicle_health(&self, entity: EntityRef) -> Option<bool>;
     /// Side: server.
-    /// Every entity riding this one, at any depth (`Entity.getIndirectPassengers`): each
-    /// passenger in boarding order, followed by those riding it. Traverses retained
-    /// off-level intermediaries, omitting only their handles from the result; resident
-    /// descendants below them are still returned.
-    fn entity_indirect_passengers(&self, entity: EntityRef) -> Option<Vec<EntityRef>>;
+    /// Visit every entity riding this one, at any depth (`Entity.getIndirectPassengers`): each
+    /// passenger in boarding order, followed by those riding it. Traverses retained off-level
+    /// intermediaries without lending a handle for them; resident descendants are still visited.
+    /// Return `ControlFlow::Break(())` to stop (`Ok(Break(()))`). `Ok(Continue(()))` means
+    /// the visit completed, including when there are no resident descendants. A stale vehicle
+    /// returns [`EntityReadError::Stale`]; a parked vehicle, a client or an unavailable world view
+    /// returns [`EntityReadError::Unavailable`]. A refusal never calls `visit`.
+    fn entity_visit_indirect_passengers(
+        &self,
+        entity: EntityRef,
+        visit: &mut dyn FnMut(EntityRef) -> core::ops::ControlFlow<()>,
+    ) -> Result<core::ops::ControlFlow<()>, EntityReadError>;
     /// Side: server.
     /// The first passenger, when it steers the entity (`Entity.getControllingPassenger`): a
     /// player in a boat, a player on a mount that is ready for one, or a mob on a mob with AI

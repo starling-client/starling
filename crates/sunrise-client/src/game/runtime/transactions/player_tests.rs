@@ -1,5 +1,5 @@
 use super::super::{Dim, Game, native_guest_turn_tests::with_guests};
-use mod_api::{AttachmentAccess, AttachmentHolder, Host, HostTransaction, PlayerRef, ServerHost};
+use mod_api::{AttachmentAccess, AttachmentHolder, Host, PlayerRef, ServerHost};
 use std::sync::{Arc, Mutex};
 use sunrise_client::items::ItemStack;
 use sunrise_core::nbt::{Compound, Tag};
@@ -19,7 +19,7 @@ const VALUE: AttachmentType<i32> = AttachmentType {
         },
     }),
     copy_on_death: true,
-    sync: false,
+    sync_codec: None,
 };
 const OTHER: AttachmentType<i32> = AttachmentType {
     name: "other",
@@ -89,7 +89,7 @@ fn abort_restores_fake_players_with_the_same_uuid_in_different_levels() {
         write_player_storage(game, outside, 3);
         write_player_storage(game, inside, 5);
 
-        let result: Result<(), ()> = game.transaction(|game, _| {
+        let result: Result<(), ()> = game.storage_transaction(|game, _| {
             write_player_storage(game, outside, 7);
             write_player_storage(game, inside, 11);
             Err(())
@@ -115,7 +115,7 @@ fn abort_restores_player_inventory_and_data_after_the_acting_player_dies() {
         let player = game.player(12).unwrap();
         write_player_storage(game, player, 13);
         game.as_guest(12, |game| {
-            let result: Result<(), ()> = game.transaction(|game, _| {
+            let result: Result<(), ()> = game.storage_transaction(|game, _| {
                 write_player_storage(game, player, 17);
                 // Health itself is not a journaled write in this case.
                 game.player
@@ -207,7 +207,7 @@ fn nested_player_turns_preserve_binding_and_rollback_whole_membership() {
             .attachment_slot(Holder::Player(112), AttachmentAccess::Existing)
             .unwrap()
             .clone();
-        let saved_nbt = saved.to_nbt();
+        let saved_nbt = saved.try_to_nbt().unwrap();
         let before = index
             .lock()
             .unwrap()
@@ -238,7 +238,7 @@ fn nested_player_turns_preserve_binding_and_rollback_whole_membership() {
         assert_eq!(rows(&index, "value"), [(112, 7), (113, 8)]);
         assert_eq!(rows(&index, "other"), [(112, 4)]);
         assert_eq!(VALUE.get_existing(&mut saved, Holder::Level), Ok(Some(7)));
-        assert_eq!(saved.to_nbt(), saved_nbt);
+        assert_eq!(saved.try_to_nbt().unwrap(), saved_nbt);
         assert_eq!(before[0].entry.read(&VALUE), Ok(&7));
         for binding in bindings {
             assert!(

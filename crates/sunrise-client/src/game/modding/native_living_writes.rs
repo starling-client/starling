@@ -315,9 +315,10 @@ mod tests {
     use super::Stuck;
     use mod_api::client::first_person::Hand;
     use mod_api::{
-        EntityRef, Flow, Hooks, HostSide, Identifier, ItemPart, LivingEntityUseItemFinishEvent,
-        LivingEntityUseItemStartEvent, LivingEntityUseItemStopEvent, LivingEntityUseItemTickEvent,
-        LivingRef, ModEntry, Mods, OnUseTickEvent, Registrar, ReleaseUsingEvent, WorldEpoch,
+        CanContinueUsingEvent, EntityRef, Flow, Hooks, Host, HostSide, Identifier, ItemPart,
+        LivingEntityUseItemFinishEvent, LivingEntityUseItemStartEvent,
+        LivingEntityUseItemStopEvent, LivingEntityUseItemTickEvent, LivingRef, ModEntry, Mods,
+        OnStopUsingEvent, OnUseTickEvent, Registrar, ReleaseUsingEvent, WorldEpoch,
     };
     use std::sync::{Arc, Mutex};
     use sunrise_client::items::ItemStack;
@@ -328,6 +329,8 @@ mod tests {
     /// What a mod heard of item uses, and what it does back.
     #[derive(Default)]
     struct Uses {
+        /// Each use hook heard, with the `entity` it was given.
+        heard: Vec<(&'static str, Option<i32>)>,
         stops: Vec<(Option<i32>, Hand, i32)>,
         releases: Vec<(Option<i32>, i32)>,
         /// Refuses every Start.
@@ -354,8 +357,9 @@ mod tests {
     struct UsePart(Shared);
     #[mod_api::sunrise_part]
     impl ItemPart for UsePart {
-        fn on_use_tick(&self, host: HostSide, _: &mut OnUseTickEvent<'_>) {
+        fn on_use_tick(&self, host: HostSide, event: &mut OnUseTickEvent<'_>) {
             self.0.lock().unwrap().effects += 1;
+            self.heard("on_use_tick", event.entity);
             let (release, remaining) = {
                 let mut uses = self.0.lock().unwrap();
                 (uses.release_on_use_tick, uses.remaining_on_use_tick.take())
@@ -370,8 +374,20 @@ mod tests {
             }
         }
         fn release_using(&self, _: HostSide, event: &mut ReleaseUsingEvent<'_>) {
+            self.heard("release_using", event.entity);
             let mut uses = self.0.lock().unwrap();
             uses.releases.push((event.entity, event.time_left));
+        }
+        fn can_continue_using(&self, _: &dyn Host, event: &mut CanContinueUsingEvent<'_>) {
+            self.heard("can_continue_using", event.entity);
+        }
+        fn on_stop_using(&self, _: HostSide, event: &mut OnStopUsingEvent<'_>) {
+            self.heard("on_stop_using", event.entity);
+        }
+    }
+    impl UsePart {
+        fn heard(&self, hook: &'static str, entity: Option<i32>) {
+            self.0.lock().unwrap().heard.push((hook, entity));
         }
     }
     struct UseMod(Shared);
@@ -394,6 +410,7 @@ mod tests {
             _: HostSide,
             event: &mut LivingEntityUseItemStartEvent<'_>,
         ) -> Flow {
+            UsePart(self.0.clone()).heard("start", event.entity);
             if let Some(duration) = self.0.lock().unwrap().start_duration {
                 event.duration = duration;
             }
@@ -408,6 +425,7 @@ mod tests {
             host: HostSide,
             event: &mut LivingEntityUseItemTickEvent<'_>,
         ) -> Flow {
+            UsePart(self.0.clone()).heard("tick", event.entity);
             {
                 let mut uses = self.0.lock().unwrap();
                 uses.tick_remaining.push(event.duration);
@@ -429,6 +447,7 @@ mod tests {
             _: HostSide,
             event: &mut LivingEntityUseItemFinishEvent<'_>,
         ) {
+            UsePart(self.0.clone()).heard("finish", event.entity);
             let mut uses = self.0.lock().unwrap();
             uses.finishes += 1;
             if uses.clear_finish_result {
@@ -440,6 +459,7 @@ mod tests {
             host: HostSide,
             event: &mut LivingEntityUseItemStopEvent<'_>,
         ) -> Flow {
+            UsePart(self.0.clone()).heard("stop", event.entity);
             let who = {
                 let mut uses = self.0.lock().unwrap();
                 uses.stops.push((event.entity, event.hand, event.duration));
@@ -558,11 +578,56 @@ mod tests {
                 assert!(game.living_release_using_item(player));
                 assert_eq!(game.using, None);
                 let uses = uses.lock().unwrap();
-                assert_eq!(uses.stops, [(None, Hand::Main, second)]);
+                assert_eq!(uses.stops, [(Some(20), Hand::Main, second)]);
                 assert_eq!(uses.tick_remaining.last(), Some(&first));
-                assert_eq!(uses.releases, [(None, second)]);
+                assert_eq!(uses.releases, [(Some(20), second)]);
                 assert_eq!(uses.finishes, 0);
             }
+        });
+    }
+
+    /// Every item-use hook names the player who uses, as NeoForge's
+    /// `LivingEntityUseItemEvent` carries its entity: an apple eaten (Start,
+    /// the may-still-use check, Tick, `onUseTick`, Finish), then a bow drawn
+    /// and let go (Stop, `releaseUsing`), each use ending in `onStopUsing`.
+    #[test]
+    #[ignore = "daily"]
+    fn the_item_use_hooks_name_the_player_who_uses() {
+        with_uses(|game, uses, player| {
+            assert_eq!(game.own_entity_id(), 20);
+            game.inventory[game.selected] = Some(ItemStack::new("minecraft:apple", 2));
+            uses.lock().unwrap().start_duration = Some(2);
+            assert!(game.living_start_using_item(player, Hand::Main));
+            for _ in 0..3 {
+                game.tick_using();
+            }
+            assert_eq!(game.using, None);
+            assert_eq!(uses.lock().unwrap().finishes, 1);
+            uses.lock().unwrap().start_duration = None;
+            game.inventory[game.selected] = Some(ItemStack::new("minecraft:bow", 1));
+            assert!(game.living_start_using_item(player, Hand::Main));
+            game.tick_using();
+            assert!(game.living_release_using_item(player));
+            let heard = std::mem::take(&mut uses.lock().unwrap().heard);
+            for hook in [
+                "start",
+                "can_continue_using",
+                "tick",
+                "on_use_tick",
+                "finish",
+                "stop",
+                "release_using",
+                "on_stop_using",
+            ] {
+                assert!(
+                    heard.iter().any(|(h, _)| *h == hook),
+                    "{hook} not heard: {heard:?}"
+                );
+            }
+            assert!(
+                heard.iter().all(|(_, entity)| *entity == Some(20)),
+                "{heard:?}"
+            );
         });
     }
 
@@ -711,9 +776,9 @@ mod tests {
                 assert_eq!(game.creatures.projectiles.len(), arrows + 1);
                 let uses = uses.lock().unwrap();
                 assert_eq!(uses.stops.len(), round + 1);
-                assert_eq!(uses.stops[round], (None, hand, 71_975));
+                assert_eq!(uses.stops[round], (Some(20), hand, 71_975));
                 assert_eq!(uses.releases.len(), round + 1);
-                assert_eq!(uses.releases[round], (None, 71_975));
+                assert_eq!(uses.releases[round], (Some(20), 71_975));
                 assert_eq!(uses.released_again, vec![false; round + 1]);
             }
         });
@@ -740,7 +805,7 @@ mod tests {
             assert!(game.living_start_using_item(player, Hand::Off));
             game.tick_using();
             assert_eq!(game.living_used_item_hand(player), None);
-            assert_eq!(uses.lock().unwrap().stops, [(None, Hand::Off, 72_000)]);
+            assert_eq!(uses.lock().unwrap().stops, [(Some(20), Hand::Off, 72_000)]);
         });
     }
 
@@ -1126,7 +1191,7 @@ mod tests {
                 seed: 0,
                 max_players: 2,
                 integrated: true,
-                levels: game.level_shapes,
+                levels: game.level_shapes.clone(),
                 level_seeds: game.levels.runtime.seeds(),
             };
             game.lan_host(settings, net, config).unwrap();
@@ -1243,7 +1308,7 @@ mod tests {
                 seed: 0,
                 max_players: 2,
                 integrated: true,
-                levels: game.level_shapes,
+                levels: game.level_shapes.clone(),
                 level_seeds: game.levels.runtime.seeds(),
             };
             game.lan_host(settings, net, config).unwrap();

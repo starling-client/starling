@@ -10,11 +10,18 @@ fn a_sound_entity_is_heard_where_its_entity_is() {
         crate::game::remote::Tracked {
             kind: "minecraft:cow".to_owned(),
             position: [8.5, 64.0, -3.5],
+            previous: [8.5, 64.0, -3.5],
+            yaw: 0.0,
+            pitch: 0.0,
+            previous_yaw: 0.0,
+            previous_pitch: 0.0,
             codec_base: [8.5, 64.0, -3.5],
             on_fire: false,
             mod_fire_immune: false,
             silent: false,
             vehicle: None,
+            tick_count: 0,
+            size_answer: None,
         },
     );
     let player = Some((2, [0.5, 70.0, 0.5], false));
@@ -57,11 +64,18 @@ fn a_sound_entity_retains_silence_for_players_and_non_mob_targets() {
         crate::game::remote::Tracked {
             kind: "minecraft:arrow".to_owned(),
             position: [8.5, 64.0, -3.5],
+            previous: [8.5, 64.0, -3.5],
+            yaw: 0.0,
+            pitch: 0.0,
+            previous_yaw: 0.0,
+            previous_pitch: 0.0,
             codec_base: [8.5, 64.0, -3.5],
             on_fire: false,
             mod_fire_immune: false,
             silent: true,
             vehicle: None,
+            tick_count: 0,
+            size_answer: None,
         },
     );
     let state = crate::game::remote::entity_sound_state(7, None, None, &tracked, None).unwrap();

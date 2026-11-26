@@ -1,5 +1,4 @@
 //! The `input_key` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0125
 
 pub trait Hooks {
     /// A key event after handling, the window's or the control socket's `key` (one press, then

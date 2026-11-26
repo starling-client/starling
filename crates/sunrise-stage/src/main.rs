@@ -150,7 +150,7 @@ fn read_manifest_facts(dir: &Path) -> Result<ManifestFacts, String> {
     let manifest = Manifest::read(file)?;
     if native_route::manifest_game_code(&manifest).is_some() {
         return Err(
-            "the mod declares game code (a [native] row or internals), which a surface alone cannot judge: use `cargo sunrise-mod fits`".into(),
+            "the mod declares game code (a [native] row or internals), which a surface alone cannot judge: use `cargo sunrise-mod check --build <name>`".into(),
         );
     }
     Ok((&manifest).into())
@@ -269,7 +269,7 @@ fn fits_command(args: &[PathBuf]) -> ! {
         .any(|entry| entry.id.starts_with("game:"))
     {
         fail(
-            "the list records game code the mod declares, which a surface alone cannot judge: use `cargo sunrise-mod fits`"
+            "the list records game code the mod declares, which a surface alone cannot judge: use `cargo sunrise-mod check --build <name>`"
                 .to_owned(),
         );
     }
@@ -364,8 +364,12 @@ fn surface_diff(args: &[PathBuf]) -> ! {
             }
             filter_ids(&mut file);
             for id in diff.attach(&file.note, &file.ids) {
+                let hint = diff
+                    .nearest(&id)
+                    .map(|known| format!("; did you mean {known}?"))
+                    .unwrap_or_default();
                 stale.push(format!(
-                    "change note {} names {id}, which did not change",
+                    "change note {} names {id}, which did not change{hint}",
                     file.note.file
                 ));
             }

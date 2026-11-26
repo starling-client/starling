@@ -275,3 +275,47 @@ fn damage_command_uses_effective_item_resistance() {
         }
     });
 }
+
+#[test]
+#[ignore = "daily"]
+fn dropped_item_hurt_uses_default_and_stack_fire_resistance() {
+    with_game(|game| {
+        prepare(game);
+        game.build_registries();
+        for (input, damage, expected_health) in [
+            ("netherite_sword", "in_fire", 5),
+            ("netherite_sword", "hot_floor", 5),
+            (
+                r##"stone[damage_resistant={types:"minecraft:in_fire"}]"##,
+                "in_fire",
+                5,
+            ),
+            (
+                r##"stone[damage_resistant={types:"minecraft:in_fire"}]"##,
+                "hot_floor",
+                1,
+            ),
+            (
+                r##"stone[damage_resistant={types:"#minecraft:is_fire"}]"##,
+                "in_fire",
+                5,
+            ),
+            (
+                r##"stone[damage_resistant={types:"#minecraft:is_fire"}]"##,
+                "hot_floor",
+                5,
+            ),
+            ("stone", "hot_floor", 1),
+        ] {
+            game.dropped.clear();
+            drop_stack(game, input, [4.5, 64.0, 4.5]);
+            let command = format!("damage @e[type=minecraft:item,limit=1] 4 minecraft:{damage}");
+            let success = game.as_console(|game| game.run_command(&command));
+            assert_eq!(success, expected_health == 1, "{input}: {command}");
+            assert_eq!(
+                game.dropped[0].health, expected_health,
+                "{input}: {command}"
+            );
+        }
+    });
+}

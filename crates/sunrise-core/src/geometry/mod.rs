@@ -17,8 +17,8 @@ pub use movement::{
     resolve_step_movement, try_resolve_step_movement, try_resolve_step_movement_oriented,
 };
 pub use shape::{ShapeError, ShapeOp, VoxelShape};
-pub use sweep::sweep_intersected_blocks;
-pub use traversal::{TraversalError, traverse_blocks};
+pub use sweep::{SweepCursor, sweep_intersected_blocks};
+pub use traversal::{TraversalError, traverse_blocks, traverse_blocks_window};
 
 pub const COLLISION_EPSILON: f64 = 1.0e-7;
 

@@ -1,0 +1,3 @@
+ids = ["hook:render_gui_pre"]
+why = "Vanilla Gui.extractRenderState draws ordinary toasts after the active screen or overlay. ToastManager.extractRenderState gates their drawing on HUD visibility, not on the HUD layer walk."
+migrate = "In render_gui_pre v4, returning Flow::Cancel still skips the HUD layer walk and render_gui_post, but no longer suppresses ordinary toasts. No listener signature changes."

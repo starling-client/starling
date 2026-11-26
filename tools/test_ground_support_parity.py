@@ -7,12 +7,11 @@ import platform
 import random
 import struct
 import subprocess
-try:
-    from . import lab, test_rust_parity as base, test_block_collision_scan_parity as scans
-except ImportError:
-    import lab
-    import test_rust_parity as base
-    import test_block_collision_scan_parity as scans
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_rust_parity as base, test_block_collision_scan_parity as scans
 
 
 def bits(value):return struct.pack('>d',float(value)).hex()

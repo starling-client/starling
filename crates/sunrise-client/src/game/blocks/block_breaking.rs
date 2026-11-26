@@ -12,7 +12,7 @@ impl Game<'_> {
         let stack = self.inventory[self.selected].clone()?;
         let per_block = self.items().mining_damage(&stack)?;
         let max = self.items().mining_damage_capacity(&stack);
-        let wears = if &*stack.item == "minecraft:shears" {
+        let wears = if self.stack_shears(&stack, super::item_abilities::ability::SHEARS_DIG) {
             !self.items().block_in_tag("minecraft:fire", name)
         } else {
             hardness != 0.0
@@ -35,14 +35,14 @@ impl Game<'_> {
         self.carrier_break_block(pos)
     }
 
-    /// `ServerPlayerGameMode.destroyBlock`: whether the block was removed.
-    /// A break inside another (a mod breaking more blocks from its
-    /// `native_destroy_block`) keeps the outer break's own events.
-    pub(super) fn player_break_block(&mut self, pos: [i32; 3]) -> Result<bool> {
-        let outer = self.lan_break_pos.replace(pos);
-        let broken = self.with_player_actor(|game| game.break_block_as_player(pos));
-        self.lan_break_pos = outer;
-        broken
+    /// `ServerPlayerGameMode.destroyBlock`: whether the block was removed. Collects this
+    /// break's item drops instead of spawning them if a destination was supplied.
+    pub(super) fn player_break_block(
+        &mut self,
+        pos: [i32; 3],
+        collect: Option<&mut Vec<ItemStack>>,
+    ) -> Result<bool> {
+        self.with_player_actor(|game| game.break_block_as_player(pos, collect))
     }
 
     /// `BundleItem.dropContent`: `removeOneItemFromBundle` and `Player.drop`,
@@ -58,7 +58,7 @@ impl Game<'_> {
         let Some(removed) = contents.remove_one(items) else {
             return;
         };
-        contents.store(&mut bundle);
+        contents.store(items, &mut bundle);
         let item = Arc::clone(&bundle.item);
         *self.stack_in_mut(slot) = Some(bundle);
         let Some(position) = self.player.as_ref().map(|p| p.position) else {
@@ -68,12 +68,11 @@ impl Game<'_> {
         // playRemoveOneSound, then Player.drop and playDropContentsSound at
         // the player's block.
         let pitch = 0.8 + self.world.random.next_float() * 0.4;
-        self.audio
-            .play(sunrise_client::bundle::REMOVE_ONE, Some(at), 0.8, pitch);
+        self.play_audio(sunrise_client::bundle::REMOVE_ONE, Some(at), 0.8, pitch);
         self.player_drop(removed);
         let block = BlockPos::containing(position);
         let pitch = 0.8 + self.world.random.next_float() * 0.4;
-        self.audio.play(
+        self.play_audio(
             sunrise_client::bundle::DROP_CONTENTS,
             Some([block.x, block.y, block.z].map(|v| f64::from(v) + 0.5)),
             0.8,

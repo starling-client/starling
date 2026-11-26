@@ -41,6 +41,17 @@ pub mod aarch64 {
     pub use super::fdlibm::{cos_fma as cos, sin_fma as sin};
 }
 
+/// Java's float minimum (`min`): NaN propagates, and negative zero is smaller than positive zero.
+pub fn min_f32(a: f32, b: f32) -> f32 {
+    if a.is_nan() || b.is_nan() {
+        f32::NAN
+    } else if a == 0.0 && b == 0.0 {
+        f32::from_bits(a.to_bits() | b.to_bits())
+    } else {
+        a.min(b)
+    }
+}
+
 /// `Math.round(float)`: the `int` closest to `a`, ties toward positive
 /// infinity (so `-2.5` is `-2`); `NaN` is 0, and values beyond the `int`
 /// range give `i32::MIN` or `i32::MAX`.
@@ -674,7 +685,15 @@ mod tests {
         assert_eq!(super::pow(2.0, 3.0), 8.0);
         assert_eq!(super::pow(2.0, inf), inf);
     }
-    use super::{aarch64, exact, fdlibm, round_f32};
+    use super::{aarch64, exact, fdlibm, min_f32, round_f32};
+
+    #[test]
+    fn min_f32_propagates_nan_and_prefers_negative_zero() {
+        assert!(min_f32(f32::NAN, 1.0).is_nan());
+        assert!(min_f32(1.0, f32::NAN).is_nan());
+        assert_eq!(min_f32(0.0, -0.0).to_bits(), (-0.0f32).to_bits());
+        assert_eq!(min_f32(-0.0, 0.0).to_bits(), (-0.0f32).to_bits());
+    }
 
     #[test]
     fn round_f32_is_exact_like_java() {

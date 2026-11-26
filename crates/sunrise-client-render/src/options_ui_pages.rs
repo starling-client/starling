@@ -1,11 +1,50 @@
 //! The pages crates add to the options screens: a native mod's settings page (its keys and
 //! buttons), and the pages crates above the engine register (`sunrise_hooks::pages`, docs/layers.md
-//! "Platform registries") with their entries on Sunrise Settings. Kept out of options_ui.rs.
+//! "Platform registries"), whose entries are on Sunrise Settings' Extras page (`sunrise_ui`). Kept
+//! out of options_ui.rs.
 use super::*;
 use sunrise_hooks::pages as added;
 
-/// `selected_key` while a registered page's key waits (`selected_page_key`: page, row).
+/// `selected_key` while a registered page's key waits (`selected_page_key`).
 pub(super) const PAGE_KEY: &str = "sunrise.pageKey";
+
+/// A registered page's key row by what names it, its page's id and its label, so a row that moves, greys or goes
+/// while it waits never takes another row's key. A page's key-row labels must therefore be unique: two key rows
+/// with one label on a page cannot be told apart, and the first one is found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct PageKey {
+    page: &'static str,
+    label: &'static str,
+}
+
+/// Row `r` of registered page `page` as a [`PageKey`], when it is an active key row.
+pub(super) fn page_key_at(page: usize, r: usize) -> Option<PageKey> {
+    let registered = registered().get(page)?;
+    let mut rows = Vec::new();
+    registered.rows(&mut rows);
+    match rows.get(r) {
+        Some(added::Row::Key {
+            label,
+            active: true,
+            ..
+        }) => Some(PageKey {
+            page: registered.id(),
+            label,
+        }),
+        _ => None,
+    }
+}
+
+/// Where `key` is now (page, row), while it is still an active key row.
+pub(super) fn find_page_key(key: PageKey) -> Option<(usize, usize)> {
+    let page = registered().iter().position(|p| p.id() == key.page)?;
+    let mut rows = Vec::new();
+    registered()[page].rows(&mut rows);
+    let r = rows.iter().position(
+        |row| matches!(row, added::Row::Key { label, active: true, .. } if *label == key.label),
+    )?;
+    Some((page, r))
+}
 
 #[cfg(test)]
 thread_local! {
@@ -14,8 +53,9 @@ thread_local! {
         const { std::cell::Cell::new(None) };
 }
 
-/// The pages crates registered.
-fn registered() -> &'static [&'static dyn added::Page] {
+/// The pages crates registered: Sunrise Settings' Extras page opens those for it
+/// (`Page::Added`, by their index here).
+pub(super) fn registered() -> &'static [&'static dyn added::Page] {
     #[cfg(test)]
     if let Some(pages) = TEST_PAGES.get() {
         return pages;
@@ -76,14 +116,16 @@ pub(super) fn sunrise_page_tooltip(page: Page) -> Option<&'static str> {
     Some(match page {
         Page::Sunrise => "sunrise.pages.settings.tooltip",
         Page::Studio => "sunrise.pages.studio.tooltip",
-        Page::Graphics => "sunrise.pages.graphics.tooltip",
-        Page::GraphicsAdvanced => "sunrise.pages.graphics_advanced.tooltip",
         Page::Controller => "sunrise.pages.controller.tooltip",
-        Page::Extras => "sunrise.pages.extras.tooltip",
         Page::Pvp => "sunrise.pages.pvp.tooltip",
         Page::Agent => "sunrise.pages.agent.tooltip",
+<<<<<<< HEAD
         Page::ShaderPacks => "sunrise.pages.shader_packs.tooltip",
         Page::GpuDrivers => "sunrise.pages.gpu_drivers.tooltip",
+||||||| 46c00106def
+        Page::ShaderPacks => "sunrise.pages.shader_packs.tooltip",
+=======
+>>>>>>> ed6772e2118
         Page::Mods => "sunrise.pages.mods.tooltip",
         Page::Music => "sunrise.pages.music.tooltip",
         _ => return None,
@@ -98,6 +140,7 @@ fn label_text(label: added::Label) -> Text {
 }
 
 impl OptionsUi {
+<<<<<<< HEAD
     /// Sunrise Settings: its pages, then the pages crates registered for it.
     pub(super) fn sunrise_rows(&self, s: &Settings) -> Vec<Row> {
         // Two to a row, as vanilla's OptionsList.addSmall lays out
@@ -140,6 +183,51 @@ impl OptionsUi {
         }
     }
 
+||||||| 46c00106def
+    /// Sunrise Settings: its pages, then the pages crates registered for it.
+    pub(super) fn sunrise_rows(&self, s: &Settings) -> Vec<Row> {
+        // Two to a row, as vanilla's OptionsList.addSmall lays out
+        // buttons; each opens one of Sunrise's settings pages. Each page has
+        // one way in: graphics and shader packs are Video Settings' (the graphics
+        // screen), the controller is Controls', mods are the Options screen's. The
+        // registry's mod browser is Sunrise's own and opens from here, not from the
+        // two-button Mods footer.
+        let open = |key: &str, page: Page| button(0.0, 0.0, 150.0, tr(key), Act::Push(page));
+        let mut rows: Vec<Row> = vec![
+            Row::Buttons(
+                open("sunrise.pages.open.extras", Page::Extras),
+                Some(open("sunrise.pages.open.pvp", Page::Pvp)),
+            ),
+            Row::Buttons(open("sunrise.pages.open.studio", Page::Studio), None),
+            // No AI hides the AI Agent page and everything AI.
+            if s.extras.no_ai {
+                Row::Buttons(self.extra_button(s, crate::extras::Item::NoAi), None)
+            } else {
+                Row::Buttons(
+                    open("sunrise.pages.open.agent", Page::Agent),
+                    Some(self.extra_button(s, crate::extras::Item::NoAi)),
+                )
+            },
+            Row::Buttons(open("sunrise.mods.browse", Page::ModBrowser), None),
+        ];
+        self.added_entries(&mut rows);
+        rows
+    }
+
+    /// The entries of the pages registered for Sunrise Settings, two to a row like the engine's.
+    fn added_entries(&self, rows: &mut Vec<Row>) {
+        let mut entries = registered()
+            .iter()
+            .enumerate()
+            .filter(|(_, page)| page.place() == added::Place::SunriseSettings)
+            .map(|(i, page)| button(0.0, 0.0, 150.0, tr(page.title()), Act::Push(Page::Added(i))));
+        while let Some(first) = entries.next() {
+            rows.push(Row::Buttons(first, entries.next()));
+        }
+    }
+
+=======
+>>>>>>> ed6772e2118
     /// A registered page's rows, asked of it each time the page is drawn.
     pub(super) fn added_rows(&self, page: usize) -> Vec<Row> {
         let Some(registered) = registered().get(page) else {
@@ -203,8 +291,10 @@ impl OptionsUi {
                 label, key, active, ..
             } => {
                 let mut message = keybinds::display_name(&key);
-                if self.selected_key == Some(PAGE_KEY) && self.selected_page_key == Some((page, r))
-                {
+                let waiting = self.selected_page_key.is_some_and(|k| {
+                    k.label == label && registered().get(page).is_some_and(|p| p.id() == k.page)
+                });
+                if self.selected_key == Some(PAGE_KEY) && waiting {
                     message = Text::literal("> ")
                         .append(message.with_color(text::WHITE))
                         .append(" <")
@@ -232,8 +322,8 @@ impl OptionsUi {
                 added::Row::Toggle { active: false, .. } | added::Row::Key { active: false, .. },
             ) => Vec::new(),
             Some(added::Row::Key { .. }) => {
-                self.selected_key = Some(PAGE_KEY);
-                self.selected_page_key = Some((page, r));
+                self.selected_page_key = page_key_at(page, r);
+                self.selected_key = self.selected_page_key.map(|_| PAGE_KEY);
                 Vec::new()
             }
             Some(_) => {
@@ -251,9 +341,10 @@ impl OptionsUi {
         }
     }
 
-    /// The open registered page's rows changed since its layout was made (a row greyed, a value
-    /// moved): lay it out again, and end a key's wait when its row is no longer an active key.
+    /// A key's wait ends when its row is no longer an active key, on whatever page it waits; and when the open
+    /// registered page's rows changed since its layout was made (a row greyed, a value moved), it is laid out again.
     pub(super) fn refresh_added_rows(&mut self) {
+        self.end_stale_page_key();
         let Page::Added(i) = self.page() else {
             return;
         };
@@ -265,33 +356,29 @@ impl OptionsUi {
         if rows == self.added_seen {
             return;
         }
-        if self.selected_key == Some(PAGE_KEY)
-            && let Some((waiting_page, k)) = self.selected_page_key
-            && waiting_page == i
-            && !matches!(rows.get(k), Some(added::Row::Key { active: true, .. }))
-        {
-            self.selected_key = None;
-            self.selected_page_key = None;
-        }
         self.added_seen = rows;
         self.relayout();
     }
 
-    /// Binds the waiting key row, read again first: a row that went inactive or away while it
-    /// waited hears nothing.
-    pub(super) fn bind_page_key(&mut self, value: String) -> Vec<Event> {
-        let Some((i, k)) = self.selected_page_key.take() else {
-            return Vec::new();
-        };
-        let Some(page) = registered().get(i) else {
-            return Vec::new();
-        };
-        let mut rows = Vec::new();
-        page.rows(&mut rows);
-        if !matches!(rows.get(k), Some(added::Row::Key { active: true, .. })) {
-            return Vec::new();
+    /// Ends a page key's wait whose row is no longer an active key. Shell screens (Extras) never lay out through
+    /// `refresh_added_rows`, so their input calls this before it treats a pressed key or button as the binding.
+    pub(super) fn end_stale_page_key(&mut self) {
+        if self.selected_key == Some(PAGE_KEY)
+            && self.selected_page_key.and_then(find_page_key).is_none()
+        {
+            self.selected_key = None;
+            self.selected_page_key = None;
+            self.relayout();
         }
-        page.act(k, added::Act::Bind(value));
+    }
+
+    /// Binds the waiting key row where it is now, found again by its page and label: a row that went inactive or
+    /// away while it waited hears nothing.
+    pub(super) fn bind_page_key(&mut self, value: String) -> Vec<Event> {
+        let Some((i, k)) = self.selected_page_key.take().and_then(find_page_key) else {
+            return Vec::new();
+        };
+        registered()[i].act(k, added::Act::Bind(value));
         vec![Event::Changed]
     }
 }
@@ -391,8 +478,14 @@ mod tests {
         let mut s = Settings::default();
         TEST_PAGES.set(Some(&PAGES));
         let mut ui = OptionsUi::default();
+        // Its row on Sunrise Settings' Extras page opens it.
         ui.show(Page::Sunrise);
-        press(&mut ui, &mut s, Act::Push(Page::Added(0)), false);
+        ui.sunrise.show(crate::sunrise_ui::Tab::Extras);
+        let size = (480.0, 240.0);
+        let row = crate::sunrise_ui::SunriseRow::Open(Page::Added(0));
+        let at = ui.sunrise.point_at(&s, size, row);
+        let atlas = super::super::tests::atlas();
+        ui.click(&mut s, &atlas, at.0, at.1, size, [480, 240], false, false);
         assert_eq!(ui.page(), Page::Added(0));
         // Rows: the heading (0), the switch (1), the step (2), the key (3).
         let events = press(&mut ui, &mut s, Act::PageRow(0, 1), false);
@@ -408,13 +501,11 @@ mod tests {
         assert_eq!(*SAMPLE.step.lock().unwrap(), -1, "Shift steps back");
         // A key row waits for the next key, as on Key Binds, and the page gets its name.
         press(&mut ui, &mut s, Act::PageRow(0, 3), false);
-        let atlas = super::super::tests::atlas();
         let events = ui.key(&mut s, &atlas, winit::keyboard::KeyCode::KeyZ, None);
         assert_eq!(events, [Event::Changed]);
         assert_eq!(*SAMPLE.key.lock().unwrap(), "key.keyboard.z");
         assert_eq!(ui.selected_key, None);
         // The volume is one of the screen's own sliders: dragged to its middle, then let go.
-        let size = (480.0, 240.0);
         let (widgets, ..) = ui.layout(&s, size.0, size.1);
         let slider = widgets
             .iter()
@@ -585,6 +676,139 @@ mod tests {
         assert_eq!(ui.selected_page_key, None);
     }
 
+    /// A key row, recording what it hears.
+    struct Binds(Mutex<Vec<String>>);
+    impl added::Page for Binds {
+        fn id(&self) -> &'static str {
+            "test.binds"
+        }
+        fn title(&self) -> &'static str {
+            "sunrise.extras.header.inventory"
+        }
+        fn place(&self) -> added::Place {
+            added::Place::Extras
+        }
+        fn rows(&self, rows: &mut Vec<added::Row>) {
+            rows.push(added::Row::key("test.binds.key", "key.keyboard.r"));
+        }
+        fn act(&self, _: usize, act: added::Act) {
+            self.0.lock().unwrap().push(format!("{act:?}"));
+        }
+    }
+
+    /// A key row on the Gameplay page waits by its page and row; the next key goes to it.
+    #[test]
+    fn a_page_key_capture_binds_the_rows_key() {
+        use crate::settings_shell::{Capture, Output};
+        static BINDS: Binds = Binds(Mutex::new(Vec::new()));
+        static BINDS_PAGES: [&dyn added::Page; 1] = [&BINDS];
+        TEST_PAGES.set(Some(&BINDS_PAGES));
+        let mut ui = OptionsUi::default();
+        let mut s = Settings::default();
+        ui.shell_events(&mut s, vec![Output::Bind(Capture::Page(0, 0))]);
+        assert_eq!(ui.waiting(), Some(Capture::Page(0, 0)));
+        assert_eq!(
+            ui.bind_key(&mut s, "key.keyboard.c".into()),
+            vec![Event::Changed]
+        );
+        assert_eq!(ui.waiting(), None);
+        assert_eq!(
+            *BINDS.0.lock().unwrap(),
+            [format!("{:?}", added::Act::Bind("key.keyboard.c".into()))]
+        );
+    }
+
+    /// Two key rows, the first of which the test can insert above the second, recording what each hears.
+    struct Shifting {
+        inserted: Mutex<bool>,
+        greyed: Mutex<bool>,
+        heard: Mutex<Vec<(usize, String)>>,
+    }
+    impl added::Page for Shifting {
+        fn id(&self) -> &'static str {
+            "test.shifting"
+        }
+        fn title(&self) -> &'static str {
+            "sunrise.extras.header.inventory"
+        }
+        fn place(&self) -> added::Place {
+            added::Place::Extras
+        }
+        fn rows(&self, rows: &mut Vec<added::Row>) {
+            if *self.inserted.lock().unwrap() {
+                rows.push(added::Row::key("test.shifting.new", "key.keyboard.n"));
+            }
+            let greyed = *self.greyed.lock().unwrap();
+            rows.push(added::Row::key("test.shifting.armed", "key.keyboard.a").active(!greyed));
+        }
+        fn act(&self, row: usize, act: added::Act) {
+            self.heard.lock().unwrap().push((row, format!("{act:?}")));
+        }
+    }
+
+    /// A row that moves while its key waits keeps the wait, and the key reaches it, not the row now at its old index.
+    #[test]
+    fn a_waiting_key_row_that_moves_still_gets_its_key() {
+        use crate::settings_shell::{Capture, Output};
+        static SHIFTING: Shifting = Shifting {
+            inserted: Mutex::new(false),
+            greyed: Mutex::new(false),
+            heard: Mutex::new(Vec::new()),
+        };
+        static SHIFTING_PAGES: [&dyn added::Page; 1] = [&SHIFTING];
+        TEST_PAGES.set(Some(&SHIFTING_PAGES));
+        let mut ui = OptionsUi::default();
+        let mut s = Settings::default();
+        ui.shell_events(&mut s, vec![Output::Bind(Capture::Page(0, 0))]);
+        *SHIFTING.inserted.lock().unwrap() = true;
+        ui.refresh_added_rows();
+        assert_eq!(
+            ui.waiting(),
+            Some(Capture::Page(0, 1)),
+            "the wait follows its row"
+        );
+        assert_eq!(
+            ui.bind_key(&mut s, "key.keyboard.c".into()),
+            vec![Event::Changed]
+        );
+        assert_eq!(
+            *SHIFTING.heard.lock().unwrap(),
+            [(
+                1,
+                format!("{:?}", added::Act::Bind("key.keyboard.c".into()))
+            )]
+        );
+    }
+
+    /// A key row greyed while it waits on the Gameplay page, no registered page open, stops
+    /// waiting when the next key arrives, and that key is not swallowed.
+    #[test]
+    fn a_waiting_key_row_greyed_off_its_own_page_stops_waiting() {
+        use crate::settings_shell::{Capture, Output};
+        static SHIFTING: Shifting = Shifting {
+            inserted: Mutex::new(false),
+            greyed: Mutex::new(false),
+            heard: Mutex::new(Vec::new()),
+        };
+        static SHIFTING_PAGES: [&dyn added::Page; 1] = [&SHIFTING];
+        TEST_PAGES.set(Some(&SHIFTING_PAGES));
+        let mut ui = OptionsUi::default();
+        let mut s = Settings::default();
+        ui.shell_events(&mut s, vec![Output::Bind(Capture::Page(0, 0))]);
+        assert_eq!(ui.selected_key, Some(PAGE_KEY));
+        *SHIFTING.greyed.lock().unwrap() = true;
+        let atlas = super::super::tests::atlas();
+        let (handled, events) =
+            ui.key_input(&mut s, &atlas, winit::keyboard::KeyCode::KeyC, None, false);
+        assert!(!handled, "the key is not taken as a binding");
+        assert!(events.is_empty());
+        assert_eq!(
+            (ui.selected_key, ui.selected_page_key, ui.waiting()),
+            (None, None, None)
+        );
+        assert!(SHIFTING.heard.lock().unwrap().is_empty());
+    }
+
     /// A key row whose greying the test controls, recording what it hears.
     struct Fading {
         active: Mutex<bool>,
@@ -621,12 +845,14 @@ mod tests {
         ui.stack.push(Page::Added(0));
         ui.refresh_added_rows();
         assert!(ui.page_act(0, 0, false).is_empty());
-        assert_eq!(ui.selected_page_key, Some((0, 0)), "the key waits");
+        let waiting = page_key_at(0, 0);
+        assert!(waiting.is_some());
+        assert_eq!(ui.selected_page_key, waiting, "the key waits");
         *FADING.active.lock().unwrap() = false;
         // A bind that lands before the page is laid out again still reaches nothing.
         assert!(ui.bind_page_key("key.keyboard.x".into()).is_empty());
         ui.selected_key = Some(PAGE_KEY);
-        ui.selected_page_key = Some((0, 0));
+        ui.selected_page_key = waiting;
         ui.refresh_added_rows();
         assert_eq!((ui.selected_key, ui.selected_page_key), (None, None));
         let rows = ui.added_rows(0);

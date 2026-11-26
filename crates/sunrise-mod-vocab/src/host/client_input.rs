@@ -15,7 +15,7 @@ pub trait ClientInputClientHost {
     /// [`ModKeyRefusal::Unavailable`] when there is no client backend in this host.
     fn mod_key_mapping(&self, owner: &str, id: &str) -> Result<ModKeyMappingRef, ModKeyRefusal>;
     /// Side: client.
-    /// Playing, with nothing over the world: keys and zoom apply.
+    /// Playing, with nothing over the world: in-game keys and camera effects apply.
     fn playing(&self) -> bool;
     /// Side: client.
     /// Resolve a vanilla mapping name such as `key.jump`, not a binding name such as
@@ -33,17 +33,67 @@ pub trait ClientInputClientHost {
     /// Cleared when the window loses focus; available even outside a world.
     fn modifiers(&self) -> ClientModifiers;
     /// Side: client.
-    /// The clipboard's text (`KeyboardHandler.getClipboard`), empty when it holds none,
-    /// while the game handles a key, mouse or typed-text event: a mod's key or screen hook
-    /// pasting into its own field. None at any other moment (a tick, a frame, a packet),
-    /// so no mod reads the clipboard without the player doing something, and None on a
-    /// server.
+    /// The clipboard's text (`KeyboardHandler.getClipboard`), empty when it holds none.
+    /// Works from any client callback (a tick, a frame, a payload handler, an input event, a
+    /// screen hook), as vanilla's `KeyboardHandler`; None only without a native window (a
+    /// server or a headless host).
     fn clipboard_text(&self) -> Option<String>;
     /// Side: client.
-    /// Puts `text` on the clipboard (`KeyboardHandler.setClipboard`) on the same terms as
-    /// `native_clipboard_text` reads it. False, with nothing copied, at any other moment or
-    /// on a server; empty text copies nothing, as vanilla's.
+    /// Puts `text` on the clipboard (`KeyboardHandler.setClipboard`) from any client
+    /// callback, as `clipboard_text` reads it. False, with nothing copied, only without a
+    /// native window (a server or a headless host); empty text is ignored and leaves the
+    /// clipboard unchanged, as vanilla's.
     fn set_clipboard_text(&self, text: &str) -> bool;
+    /// Side: client.
+    /// Opens the link confirmation over whatever screen is open (`ConfirmLinkScreen.confirmLinkNow`).
+    /// Yes hands `uri` to the desktop's browser (`Blaze3D.openUri`); Copy to Clipboard copies it;
+    /// every answer returns to the screen that was open. The player's answer is the consent, so no
+    /// input event is needed: a tick or a payload handler may call it. `trusted` only changes the
+    /// prompt, as vanilla's argument does: untrusted shows `chat.link.confirm`, the
+    /// `chat.link.warning` line and Yes / Copy to Clipboard / No; trusted shows
+    /// `chat.link.confirmTrusted`, no warning line and Open in Browser / Copy to Clipboard / Cancel.
+    /// The chat's Web Links and Prompt on Links options gate chat click events only and do not
+    /// apply. Only http and https URIs are accepted, as `Util.parseAndValidateUntrustedUri` does
+    /// (the scheme in any case); anything else returns [`OpenLinkError::Invalid`] and opens
+    /// nothing. Returns [`OpenLinkError::Unavailable`] without a native window (a server or a
+    /// headless host). A screen hook that cancels the prompt's opening leaves it unopened, as
+    /// for any screen.
+    fn confirm_link(&mut self, uri: &str, trusted: bool) -> Result<(), OpenLinkError>;
+    /// Side: client.
+    /// Hands `path` to the desktop's handler at once, with no confirmation (`Blaze3D.openPath`):
+    /// a folder opens in the default file manager, a file in the program the system assigns it.
+    /// The path comes from the mod; no input event is needed. A path that does not exist returns
+    /// [`OpenPathError::NotFound`] and starts no process; any other failure of the system's
+    /// call returns [`OpenPathError::Failed`] with its text. Returns [`OpenPathError::Unavailable`]
+    /// without a native window (a server or a headless host).
+    fn open_path(&self, path: &std::path::Path) -> Result<(), OpenPathError>;
+    /// Side: client.
+    /// Whether the window holds the pointer (`MouseHandler.isMouseGrabbed`): true while the
+    /// player looks around in a world, false with a screen open or the window released.
+    fn is_mouse_grabbed(&self) -> bool;
+    /// Side: client.
+    /// Grabs or releases the pointer as `MouseHandler.grabMouse` and `releaseMouse` do.
+    /// Grabbing does nothing when the window is inactive or already holds the pointer, with no
+    /// player in a world, while connecting or loading, or on the death screen (where
+    /// `setScreen(null)` does not return to the world); otherwise it closes the open screen
+    /// (`setScreen(null)`, a container's menu with it) and takes the pointer, with the
+    /// checks the game's own grab has: a screen a mod kept open, a prompt, a dialog and a
+    /// LAN guest's action leave it released. Releasing does nothing when the pointer is not
+    /// grabbed. A release in a world is undone by the player's next click in it, as vanilla's
+    /// is (`MouseHandler.onButton`). Does nothing on a host without a client window.
+    fn set_mouse_grabbed(&mut self, grabbed: bool);
+    /// Side: client.
+    /// `Minecraft.rightClickDelay`: the client ticks before a held use key uses again. Each use
+    /// (`startUseItem`) sets it to 4, the client tick counts it down by one, and a held use key
+    /// uses again when it reads 0. None outside a client world.
+    fn right_click_delay(&self) -> Option<u32>;
+    /// Side: client.
+    /// Sets `Minecraft.rightClickDelay` to `ticks`, as a mod that changes how fast a held use
+    /// key repeats does after a use: 0 lets the held key use again on the next client tick's key
+    /// step, a larger value waits longer. The next use sets it back to 4. It changes only this
+    /// client's timing: the server checks every use packet as it always does. Unlike vanilla's
+    /// `int`, it can't be negative. False, changing nothing, outside a client world.
+    fn set_right_click_delay(&mut self, ticks: u32) -> bool;
 }
 
 /// The live client reads behind [`VanillaKeyMappingRef`] and [`ModKeyMappingRef`].

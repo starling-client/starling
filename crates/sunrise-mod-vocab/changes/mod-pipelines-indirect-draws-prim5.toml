@@ -1,0 +1,9 @@
+ids = [
+    "type:IndirectDraw",
+    "type:PipelineDrawError.InvalidIndirect",
+    "method:WorldDrawContext::draw_indirect",
+    "method:PrepareRenderBuffersContext::draw_indirect",
+    "method:OffscreenDrawContext::draw_indirect",
+]
+why = """Add GPU-driven indirect draws as the fifth render primitive, following vanilla 26.3's RenderPass.drawIndexedIndirect(commands, drawCount) and drawIndirect: `draw_indirect(&IndirectDraw)` draws `max_count` commands from a storage buffer created with `indirect: true`, the same on every backend, so a compute culling pass can choose the draws with no CPU readback. A slot the shader drops carries `instance_count = 0`; there is no GPU-written count. The command layout follows the `MeshRef`: indexed (INDIRECT_INDEXED_DRAW_SIZE bytes, the mesh's own index format) when it has an index buffer, otherwise non-indexed (INDIRECT_DRAW_SIZE bytes). It is recorded into the world stage, the offscreen frame-graph pass and the translated shader pack's mod slot alike. PipelineDrawError gains InvalidIndirect, and a non-indexed draw with a Quads, Lines or TriangleFan pipeline is a TopologyMismatch."""
+migrate = """Additive API. Create the command buffer with `StorageBufferDescriptor::new(size).indirect(true)`, write `DrawIndexedIndirect` words from a compute pass, and draw with `ctx.draw_indirect(&IndirectDraw::new(pipeline, commands, max_count, &bindings).with_mesh(mesh))`. Code that matches `PipelineDrawError` exhaustively already has a wildcard arm, as the enum is non-exhaustive."""

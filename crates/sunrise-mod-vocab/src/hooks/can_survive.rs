@@ -1,5 +1,4 @@
 //! The `can_survive` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0078
 
 pub trait Hooks {
     /// `BlockState.canSurvive` for `state` at `pos`

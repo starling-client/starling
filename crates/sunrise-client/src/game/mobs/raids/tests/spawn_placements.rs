@@ -1,6 +1,4 @@
-use super::{
-    GameplayAttributes, LegacyRandom, LevelRandom, RandomSource, Species, Vec3, VillageSiege,
-};
+use super::{LegacyRandom, LevelRandom, RandomSource, Species, Vec3, VillageSiege};
 use crate::game::{creatures::SpawnSite, native_entity_refs::tests::with_game};
 use mod_api::{
     BlockPos, EntityTypeKey, GeneralEntityCategory, GeneralSavePolicy, Heightmap, Hooks, Host,
@@ -125,6 +123,7 @@ fn spawners_check_registered_placements_for_types_outside_the_mob_table() {
                 None,
                 GeneralSavePolicy::Save,
                 true,
+                false,
                 false,
                 None,
                 8,
@@ -340,7 +339,6 @@ fn patrols_and_sieges_bypass_registered_predicates_and_placement_listeners() {
             with_game(|game| {
                 game.set_difficulty_forced(2);
                 game.world.day_time = 6000;
-                game.raiding.attributes = Some(Arc::new(GameplayAttributes::default()));
                 game.player =
                     Some(PlayerMotion::new(game.motion, Vec3::new(0.5, 64.0, 0.5)).unwrap());
                 let stone = game

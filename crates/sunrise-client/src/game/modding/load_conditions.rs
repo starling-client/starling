@@ -1,9 +1,26 @@
 //! Load-scoped registration and per-candidate condition lookup.
 use super::Game;
-use mod_api::__private::game::RegistrationContextNew;
-use std::{collections::BTreeMap, sync::Arc};
+use mod_api::__private::game::{
+    CallbackOwner, DatapackCandidateBuilder, RegistrationContextNew, datapack_entry_id,
+    datapack_registry_directory, decode_datapack_entry, valid_namespaced,
+};
+use mod_api::__private::{NoVanillaValueDecoder, VanillaValueDecoder};
+use mod_api::{
+    DatapackCandidate, DatapackDecodeError, DatapackLoadReason, DatapackRegistryDeclaration,
+};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+    sync::Arc,
+};
+use sunrise_client::datapack::RegistryFiles;
+use sunrise_world::{
+    conditions::{ConditionProgress, LoadConditions},
+    loot::PackOverlay,
+};
+
 pub(super) type ConditionTable =
-    Arc<BTreeMap<mod_api::Identifier, (String, Arc<dyn mod_api::LoadCondition>)>>;
+    Arc<BTreeMap<mod_api::Identifier, (CallbackOwner, Arc<dyn mod_api::LoadCondition>)>>;
 impl Game<'_> {
     pub(super) fn begin_condition_reload(
         &mut self,
@@ -61,154 +78,441 @@ impl Game<'_> {
                 || !self.mods.native.packages().is_empty())
     }
 
-    /// The conditions of a load from `root` over the candidate pack `files`.
-    pub(super) fn registered_load_conditions(
+    pub(super) fn worldgen_base_conditions(
         &self,
-        inventory: &sunrise_mod_package::enabled::EnabledMods,
+    ) -> std::result::Result<sunrise_world::conditions::LoadConditions, String> {
+        let inventory = sunrise_mod_package::enabled::EnabledMods::read(&self.options.resources)
+            .map_err(|error| error.to_string())?;
+        conditions_for_mods(&self.mods, &inventory)
+    }
+
+    /// Stage the enabled packs’ actual winners before readers use their holders.
+    pub(super) fn stage_datapack_registries(
+        &self,
         stack: &super::functions::PackStack,
-        root: &std::path::Path,
-        files: &[(String, Vec<Vec<u8>>)],
-    ) -> Result<sunrise_world::conditions::LoadConditions, String> {
-        // `ICondition.IContext`: the world's feature flags and every registry's
-        // entries as this candidate holds them. Tags join later, once this load has bound them.
-        let features = || stack.features.iter().map(String::as_str);
-        // Admission of a pack entry reads every condition but the registries this builds. It
-        // shares the load's verdicts, so a condition that reads no registry runs once per file.
-        let base = conditions_for_mods(&self.mods, inventory)?;
-        let admission = base.clone().with_features(features());
-        // DataStore's fixed content folders omit mod-declared registry folders.
-        // Include those entries from this candidate's packs before conditions read them.
-        let registry_files = candidate_registry_files(stack)?;
-        let registries =
-            candidate_registries(root, files.iter().chain(&registry_files), &admission);
-        Ok(base.with_features(features()).with_registries(
-            registries
-                .iter()
-                .map(|(registry, ids)| (registry.as_str(), ids.iter().map(String::as_str))),
-        ))
+        root: &Path,
+        overlay: &PackOverlay<'_>,
+        view: &mut RegistryView,
+        inputs: &VanillaValueInputs<'_, '_>,
+    ) -> Result<
+        Option<(
+            DatapackCandidate,
+            Option<super::native_datapack_values::DatapackVanillaValues>,
+        )>,
+        String,
+    > {
+        let declarations = mod_api::__private::datapack_registry_declarations();
+        if declarations.is_empty() {
+            return Ok(None);
+        }
+        let keys: Vec<_> = declarations
+            .iter()
+            .map(|declaration| declaration.key.as_str())
+            .collect();
+        let packs: Vec<_> = std::iter::once(&stack.content)
+            .chain(stack.enabled_packs())
+            .collect();
+        let files = sunrise_client::datapack::registry_files(&packs, &keys)
+            .map_err(|error| format_datapack_error(&error))?;
+        if !mod_api::__private::declarations_use_vanilla_values(declarations) {
+            return admit_datapack_registries(
+                root,
+                overlay,
+                view,
+                declarations,
+                &files,
+                &mut NoVanillaValueDecoder,
+            )
+            .map(|candidate| Some((candidate, None)));
+        }
+        let biome_tags = sunrise_client::items::load_tags(root, "worldgen/biome", inputs.tag_files)
+            .map_err(|error| format!("datapack vanilla value biome tags: {error}"))?;
+        let live_features = self.res.behaviours().live_features();
+        let catalog = live_features
+            .as_ref()
+            .and_then(|features| features.state_provider_catalog());
+        let biome_names = inputs.biomes.registry_order();
+        let mut decoder = super::native_datapack_values::VanillaValueTableBuilder::new(
+            self.pack.assets.registry,
+            self.res.behaviours(),
+            &inputs.items.block_tags,
+            &inputs.items.fluid_tags,
+            &biome_names,
+            &biome_tags,
+            catalog,
+        )
+        .map_err(|error| format!("datapack vanilla value decoder: {error}"))?;
+        let candidate =
+            admit_datapack_registries(root, overlay, view, declarations, &files, &mut decoder)?;
+        Ok(Some((candidate, Some(decoder.finish()))))
     }
 }
 
-/// Read declared registry folders with the same scanner as the live registry loader.
-/// Convert its resource paths to the content keys candidate_registries consumes.
-fn candidate_registry_files(
-    stack: &super::functions::PackStack,
-) -> Result<Vec<(String, Vec<Vec<u8>>)>, String> {
-    let declarations = mod_api::__private::datapack_registry_declarations();
-    if declarations.is_empty() {
-        return Ok(Vec::new());
+/// The world's loaded tables a vanilla value decoder reads while datapack registries are staged.
+pub(super) struct VanillaValueInputs<'a, 'b> {
+    pub(super) items: &'a sunrise_client::items::Items,
+    pub(super) tag_files: &'a PackOverlay<'b>,
+    pub(super) biomes: &'a sunrise_client::biome::Biomes,
+}
+
+#[derive(Default)]
+pub(super) struct RegistryView {
+    pub(super) ids: BTreeMap<String, BTreeSet<String>>,
+    pub(super) tags: BTreeMap<String, BTreeSet<String>>,
+}
+
+impl RegistryView {
+    pub(super) fn conditions(&self, base: &LoadConditions) -> LoadConditions {
+        base.clone()
+            .with_registries(
+                self.ids
+                    .iter()
+                    .map(|(key, ids)| (key.as_str(), ids.iter().map(String::as_str))),
+            )
+            .with_tags(
+                self.tags
+                    .iter()
+                    .map(|(key, tags)| (key.as_str(), tags.iter().map(String::as_str))),
+            )
     }
-    let keys: Vec<_> = declarations
+}
+
+fn format_datapack_error(error: &mod_api::DatapackLoadError) -> String {
+    format!(
+        "datapack registry {} entry {} (pack {}, file {}): {:?}",
+        error.registry, error.entry, error.pack, error.file, error.reason
+    )
+}
+
+fn admit_datapack_registries(
+    root: &Path,
+    overlay: &PackOverlay<'_>,
+    view: &mut RegistryView,
+    declarations: &[DatapackRegistryDeclaration],
+    files: &RegistryFiles,
+    decoder: &mut dyn VanillaValueDecoder,
+) -> Result<DatapackCandidate, String> {
+    use DatapackLoadReason::{Decode, InvalidEntryId, NotUtf8};
+    let base = overlay.conditions;
+    let malformed = |message| Decode(DatapackDecodeError::Malformed(message));
+    let winners: Vec<_> = files
         .iter()
-        .filter_map(|declaration| declaration.key.split_once(':'))
-        .collect();
-    let packs: Vec<_> = std::iter::once(&stack.content)
-        .chain(stack.enabled_packs())
-        .collect();
-    // Admission is evaluated below, against the load-scoped conditions; no fallback.
-    let files = sunrise_client::datapack::registry_files(&packs, &keys, |_, _| true)
-        .map_err(|error| format!("{error:?}"))?
-        .into_iter()
-        .flat_map(|(file, versions)| {
-            let bytes: Vec<Vec<u8>> = versions.into_iter().map(|(_, bytes)| bytes).collect();
-            // A file under nested declared folders is an entry of each, as the live loader reads it.
-            let entries: Vec<String> = file
-                .strip_prefix("data/")
-                .and_then(|rest| rest.split_once('/'))
-                .map(|(namespace, path)| {
-                    keys.iter()
-                        .filter_map(|(ns, key)| {
-                            let folder = format!("{ns}/{key}");
-                            path.strip_prefix(&folder)
-                                .and_then(|entry| entry.strip_prefix('/'))
-                                .and_then(|entry| entry.strip_suffix(".json"))
-                                .map(|entry| format!("{folder}/{namespace}:{entry}"))
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            entries.into_iter().map(move |key| (key, bytes.clone()))
+        .map(|(file, (pack, bytes))| {
+            let json = std::str::from_utf8(bytes)
+                .map_err(|_| NotUtf8)
+                .and_then(|text| {
+                    serde_json::from_str::<serde_json::Value>(text)
+                        .map(|value| (text, value))
+                        .map_err(|error| malformed(error.to_string()))
+                });
+            (file.as_str(), pack.as_str(), json)
         })
         .collect();
-    Ok(files)
+    let programs: Vec<_> = winners
+        .iter()
+        .map(|(_, _, json)| {
+            let (text, json) = json.as_ref().map_err(Clone::clone)?;
+            base.decode_file_conditions(json)
+                .map(|program| (*text, program))
+                .map_err(malformed)
+        })
+        .collect();
+    let directories = declarations
+        .iter()
+        .map(|declaration| {
+            datapack_registry_directory(&declaration.key)
+                .ok_or_else(|| format!("invalid datapack registry key {}", declaration.key))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let producers: BTreeMap<_, _> = declarations
+        .iter()
+        .enumerate()
+        .map(|(index, declaration)| {
+            view.ids.remove(&declaration.key);
+            view.tags.remove(&declaration.key);
+            (declaration.key.as_str(), index)
+        })
+        .collect();
+    let mut pending: Vec<_> = declarations.iter().map(|_| Vec::new()).collect();
+    let mut errors = Vec::new();
+    for (index, (declaration, directory)) in declarations.iter().zip(&directories).enumerate() {
+        for ((file, pack, _), program) in winners.iter().zip(&programs) {
+            let Some(entry) = datapack_entry_id(directory, file) else {
+                continue;
+            };
+            let program = if valid_namespaced(&entry) {
+                program.as_ref()
+            } else {
+                Err(&InvalidEntryId)
+            };
+            match program {
+                Ok((text, program)) => {
+                    pending[index].push((entry, *file, *pack, *text, program.evaluation()));
+                }
+                Err(reason) => errors.push(format!(
+                    "datapack registry {} entry {entry} (pack {pack}, file {file}): {reason:?}",
+                    declaration.key,
+                )),
+            }
+        }
+    }
+
+    let mut builder = DatapackCandidateBuilder::default();
+    let mut unbound = vec![true; declarations.len()];
+    let mut groups: Vec<_> = (0..declarations.len()).collect();
+    let mut cyclic = vec![false; declarations.len()];
+    let mut entries = vec![BTreeMap::new(); declarations.len()];
+    while unbound.contains(&true) {
+        let context = view.conditions(base);
+        let mut dependencies = vec![BTreeSet::new(); declarations.len()];
+        for (index, declaration) in declarations.iter().enumerate() {
+            let group = groups[index];
+            pending[index].retain_mut(|(entry, file, pack, text, evaluation)| {
+                let decoded = match evaluation.advance(&context, |registry| {
+                    producers.get(registry).is_some_and(|&producer| {
+                        unbound[producer] && (groups[producer] != group || !cyclic[group])
+                    })
+                }) {
+                    Ok(ConditionProgress::NeedsRegistry(registry)) => {
+                        dependencies[group].insert(groups[producers[registry]]);
+                        return true;
+                    }
+                    Ok(ConditionProgress::Complete(false)) => return false,
+                    Ok(ConditionProgress::Complete(true)) => {
+                        decode_datapack_entry(declaration, text, &mut *decoder).map_err(Decode)
+                    }
+                    Err(error) => Err(malformed(error)),
+                };
+                match decoded {
+                    Ok(value) => {
+                        entries[index].insert(std::mem::take(entry), (value, (*pack).to_owned()));
+                    }
+                    Err(reason) => errors.push(format!(
+                        "datapack registry {} entry {entry} (pack {pack}, file {file}): {reason:?}",
+                        declaration.key,
+                    )),
+                }
+                false
+            });
+        }
+        let mut bound_any = false;
+        for (index, declaration) in declarations.iter().enumerate() {
+            if !unbound[index] || !dependencies[groups[index]].is_empty() {
+                continue;
+            }
+            let entries = std::mem::take(&mut entries[index]);
+            let tags = super::native_registry_entries::load_registry_tags(
+                root,
+                overlay,
+                &directories[index],
+                |id| entries.contains_key(id),
+            )
+            .unwrap_or_else(|error| {
+                errors.push(format!(
+                    "datapack registry {} tags: {error}",
+                    declaration.key
+                ));
+                BTreeMap::new()
+            });
+            view.ids
+                .insert(declaration.key.clone(), entries.keys().cloned().collect());
+            view.tags.insert(
+                declaration.key.clone(),
+                tags.iter()
+                    .filter(|(_, members)| !members.is_empty())
+                    .map(|(tag, _)| tag.clone())
+                    .collect(),
+            );
+            builder.stage_registry(&declaration.key, entries, tags);
+            unbound[index] = false;
+            bound_any = true;
+        }
+        if !bound_any {
+            // All pending groups are blocked. A sink component can test its internal
+            // reads as unbound; its entries and tags then become visible together, even
+            // if resuming a program reaches another dependency before it can finish.
+            let component = registry_components(&dependencies)
+                .into_iter()
+                .rev()
+                .find(|members| !dependencies[members[0]].is_empty())
+                .expect("nonempty graph of blocked registries");
+            let group = component[0];
+            cyclic[group] = true;
+            for current in &mut groups {
+                if component.contains(current) {
+                    *current = group;
+                }
+            }
+        }
+    }
+    if !errors.is_empty() {
+        return Err(errors.join("\n"));
+    }
+    builder
+        .finish(declarations)
+        .map_err(|error| format_datapack_error(&error))
 }
 
-/// Every registry's entries as the candidate load holds them, which `neoforge:registered` reads:
-/// the built-in ones the prepared root exports (`command-registries.json`, never what an earlier
-/// load added), and the entries the candidate's pack `files` add to a registry that takes them
-/// (vanilla's, or a datapack registry a mod declared). So an id a pack adds counts on its first
-/// load, and one a pack no longer has stops counting on the next.
-fn candidate_registries<'a>(
+fn builtin_command_registries(
     root: &std::path::Path,
-    files: impl IntoIterator<Item = &'a (String, Vec<Vec<u8>>)>,
-    admission: &sunrise_world::conditions::LoadConditions,
 ) -> BTreeMap<String, std::collections::BTreeSet<String>> {
     let export: serde_json::Value = std::fs::read(root.join("command-registries.json"))
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or_default();
-    let mut registries: BTreeMap<String, std::collections::BTreeSet<String>> =
-        export["by_registry"]
-            .as_object()
-            .into_iter()
-            .flatten()
-            .map(|(registry, entry)| {
-                let ids = entry["ids"].as_array().into_iter().flatten();
-                let ids = ids.filter_map(serde_json::Value::as_str).map(str::to_owned);
-                (registry.clone(), ids.collect())
-            })
-            .collect();
-    for declaration in mod_api::__private::datapack_registry_declarations().iter() {
-        registries.entry(declaration.key.clone()).or_default();
-    }
-    // A pack file's key is `<folder>/<namespace>:<path>`: `worldgen/biome/test:dunes` for
-    // `minecraft:worldgen/biome`, `mymod/spell/test:fire` for a mod's `mymod:spell`.
-    let folder = |registry: &str| match registry.split_once(':') {
-        Some(("minecraft", path)) => path.to_owned(),
-        Some((namespace, path)) => format!("{namespace}/{path}"),
-        None => registry.to_owned(),
-    };
-    let by_folder: BTreeMap<String, String> = registries
-        .keys()
-        .map(|registry| (folder(registry), registry.clone()))
-        .collect();
-    for (key, versions) in files {
-        let Some(slash) = key.find(':').and_then(|colon| key[..colon].rfind('/')) else {
-            continue;
-        };
-        let Some(registry) = by_folder.get(&key[..slash]) else {
-            continue;
-        };
-        // The winning registry file, if its own conditions hold: an entry
-        // they turn off is not there. Non-registry files belong to their loaders.
-        // The path the loaders test it under (`data/<namespace>/<folder>/<path>.json`).
-        let file_path = key[slash + 1..]
-            .split_once(':')
-            .map(|(namespace, path)| format!("data/{namespace}/{}/{path}.json", &key[..slash]))
-            .unwrap_or_else(|| key.clone());
-        let admitted = versions.last().is_some_and(|bytes| {
-            let Ok(file) = serde_json::from_slice::<serde_json::Value>(bytes) else {
-                return true;
-            };
-            let payload = file.get("neoforge:conditions").map(ToString::to_string);
-            payload.is_none_or(|payload| {
-                payload.contains("\"neoforge:registered\"")
-                    || payload.contains("\"neoforge:tag_empty\"")
-                    // An admission probe is not the entry's loader. A codec
-                    // error omits it here; the owning loader will report it.
-                    || admission.allows_file_isolated(&file, &file_path).unwrap_or(false)
-            })
-        });
-        if !admitted {
+    export["by_registry"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .map(|(registry, entry)| {
+            let ids = entry["ids"].as_array().into_iter().flatten();
+            let ids = ids.filter_map(serde_json::Value::as_str).map(str::to_owned);
+            (registry.clone(), ids.collect())
+        })
+        .collect()
+}
+
+/// Static built-in registries whose tags are bound before `WORLD_REGISTRIES` /
+/// `DIMENSION_REGISTRIES` load (`WorldLoader.java.patch` lines 43, 51 `staticLayerTags`).
+const WORLDGEN_STATIC_TAG_REGISTRIES: [&str; 6] = [
+    "block",
+    "item",
+    "fluid",
+    "entity_type",
+    "game_event",
+    "villager_profession",
+];
+
+/// Builds the `LoadConditions` used by worldgen and dimension pack loaders
+/// (`RegistryDataLoader.WORLD_REGISTRIES` / `DIMENSION_REGISTRIES`).
+///
+/// Follows NeoForge's `WorldLoader.java.patch` (lines 43, 51) and
+/// `ResourceManagerRegistryLoadTask.java.patch` (line 43):
+/// - Feature flags are `FeatureFlags.VANILLA_SET` (`["minecraft:vanilla"]`), matching
+///   NeoForge's `ResourceManagerRegistryLoadTask` rather than world-specific enabled features.
+/// - Static built-in registry entries come from `command-registries.json` (`neoforge:registered`).
+/// - Static-layer tags (`block`, `item`, `fluid`, `entity_type`, `game_event`,
+///   `villager_profession`) are loaded from `resources` and `packs`, so `neoforge:tag_empty`
+///   works in worldgen and dimension files.
+pub(super) fn worldgen_load_conditions(
+    base: &sunrise_world::conditions::LoadConditions,
+    resources: &std::path::Path,
+    packs: &[&sunrise_client::datapack::DataPack],
+) -> sunrise_world::conditions::LoadConditions {
+    let registries = builtin_command_registries(resources);
+    let mut pack_tag_files: BTreeMap<String, Vec<Vec<u8>>> = BTreeMap::new();
+    for pack in packs {
+        if pack.id == "vanilla" {
             continue;
         }
-        let id = key[slash + 1..].to_owned();
-        registries
-            .get_mut(registry)
-            .expect("named above")
-            .insert(id);
+        for file in pack.list_kinds(&["tags"]) {
+            let Some(rest) = file.strip_prefix("data/") else {
+                continue;
+            };
+            let Some((ns, rest)) = rest.split_once('/') else {
+                continue;
+            };
+            let Some(after_tags) = rest.strip_prefix("tags/") else {
+                continue;
+            };
+            let Some((kind, path)) = after_tags.split_once('/') else {
+                continue;
+            };
+            if !WORLDGEN_STATIC_TAG_REGISTRIES.contains(&kind) {
+                continue;
+            }
+            let Some(path) = path.strip_suffix(".json") else {
+                continue;
+            };
+            if let Some(bytes) = pack.read(&file) {
+                pack_tag_files
+                    .entry(format!("tags/{ns}:{kind}/{path}"))
+                    .or_default()
+                    .push(bytes);
+            }
+        }
     }
-    registries
+    let files: Vec<(String, Vec<Vec<u8>>)> = pack_tag_files.into_iter().collect();
+    let tag_overlay = sunrise_world::loot::PackOverlay {
+        conditions: &sunrise_world::conditions::LoadConditions::vanilla(),
+        files: &files,
+        ..sunrise_world::loot::PackOverlay::default()
+    };
+    let builtin_ids = sunrise_world::tag_layers::builtin_ids(resources).unwrap_or_default();
+    let mut non_empty_tags: Vec<(String, Vec<String>)> = Vec::new();
+    for kind in WORLDGEN_STATIC_TAG_REGISTRIES {
+        let ids = builtin_ids.get(kind);
+        if let Ok(loaded) = sunrise_world::tag_layers::load(resources, kind, &tag_overlay, |id| {
+            ids.is_none_or(|known| known.contains(id))
+        }) {
+            let tags: Vec<String> = loaded
+                .into_iter()
+                .filter(|(_, members)| !members.is_empty())
+                .map(|(tag, _)| tag)
+                .collect();
+            non_empty_tags.push((format!("minecraft:{kind}"), tags));
+        }
+    }
+    // `ResourceManagerRegistryLoadTask.java.patch:43` passes `FeatureFlags.VANILLA_SET`.
+    base.clone()
+        .with_features(["minecraft:vanilla"])
+        .with_registries(
+            registries
+                .iter()
+                .map(|(registry, ids)| (registry.as_str(), ids.iter().map(String::as_str))),
+        )
+        .with_tags(
+            non_empty_tags
+                .iter()
+                .map(|(registry, tags)| (registry.as_str(), tags.iter().map(String::as_str))),
+        )
+}
+
+/// Strongly connected components, consumers before their dependencies
+/// (Kosaraju's two traversals). Pack input controls the depth, so use explicit stacks.
+fn registry_components(dependencies: &[BTreeSet<usize>]) -> Vec<Vec<usize>> {
+    let mut consumers = vec![Vec::new(); dependencies.len()];
+    for (consumer, producers) in dependencies.iter().enumerate() {
+        for &producer in producers {
+            consumers[producer].push(consumer);
+        }
+    }
+    let mut seen = vec![false; dependencies.len()];
+    let mut finished = Vec::with_capacity(dependencies.len());
+    let mut stack = Vec::new();
+    for root in 0..dependencies.len() {
+        stack.push((root, false));
+        while let Some((index, leaving)) = stack.pop() {
+            if leaving {
+                finished.push(index);
+            } else if !std::mem::replace(&mut seen[index], true) {
+                stack.push((index, true));
+                stack.extend(
+                    dependencies[index]
+                        .iter()
+                        .map(|&producer| (producer, false)),
+                );
+            }
+        }
+    }
+    seen.fill(false);
+    let mut components = Vec::new();
+    let mut stack = Vec::new();
+    for root in finished.into_iter().rev() {
+        if seen[root] {
+            continue;
+        }
+        let mut component = Vec::new();
+        stack.push(root);
+        while let Some(index) = stack.pop() {
+            if !std::mem::replace(&mut seen[index], true) {
+                component.push(index);
+                stack.extend(consumers[index].iter().copied());
+            }
+        }
+        components.push(component);
+    }
+    components
 }
 
 pub(super) fn conditions_for_mods(
@@ -228,17 +532,21 @@ pub(super) fn conditions_for_mods(
                 &mod_api::RegistrationContext::new(),
                 &mut registrar,
             );
-            registrar
-                .finish()
-                .map(Arc::new)
-                .map_err(|error| error.message)
+            let entries = registrar.finish().map_err(|error| error.message)?;
+            // Every candidate shares the owner of each retained registration.
+            Ok(Arc::new(
+                entries
+                    .into_iter()
+                    .map(|(id, (owner, handler))| (id, (CallbackOwner::for_mod(owner), handler)))
+                    .collect(),
+            ))
         })
         .clone()?;
     let conditions = sunrise_world::conditions::LoadConditions::new(inventory.server_ids());
     Ok(
         conditions.with_lookup(table.iter().map(|(id, (owner, handler))| {
             let name = id.to_string();
-            let enabled = sources.code_owner_enabled(owner);
+            let enabled = sources.code_owner_enabled(owner.id());
             let owner = owner.clone();
             let handler = handler.clone();
             (name.clone(), move |args: &serde_json::Value| {
@@ -247,15 +555,13 @@ pub(super) fn conditions_for_mods(
                 }
                 let mut arguments = args.as_object().cloned().expect("decoded condition object");
                 arguments.remove("type");
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    handler.test(&mod_api::serde_json::Value::Object(arguments))
-                }))
-                .map_err(|_| format!("condition {name} (mod {owner}): handler panicked"))
-                .and_then(|answer| {
-                    answer.map_err(|error| {
-                        format!("condition {name} (mod {owner}): {}", error.message)
+                let arguments = serde_json::Value::Object(arguments);
+                owner
+                    .call("load condition", "test_load_condition", || {
+                        handler.test(&arguments)
                     })
-                })
+                    .map_err(|reason| format!("condition {name}: {reason}"))?
+                    .map_err(|error| format!("condition {name}: mod {}: {error}", owner.id()))
             })
         })),
     )
@@ -278,6 +584,7 @@ pub(super) fn content_root_with_conditions(
     sources: &super::mods::ModsState,
 ) -> sunrise_client::Result<std::path::PathBuf> {
     let conditions = conditions_for_mods(sources, inventory)?;
+    let conditions = worldgen_load_conditions(&conditions, root, &[]);
     sunrise_client::mod_content::resource_root_with_conditions(
         root,
         jars,

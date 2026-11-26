@@ -217,6 +217,48 @@ pub(in crate::game) mod tests {
         Some(&game.remote.as_ref()?.viewed.get(level)?.world)
     }
 
+    /// `far` (revision 5): a column of the player's own level 300 chunks from the cache centre
+    /// is ignored before it is kept and admitted after; it stays through a move of the centre and
+    /// takes a block update; released, it goes. More than `MAX_COLUMNS` kept close the connection.
+    #[test]
+    #[ignore = "daily"]
+    fn a_far_column_is_kept_past_the_view_until_released() {
+        let mut resources = None;
+        let mut game = client(&mut resources);
+        let far = |kept: &[(i32, i32)], released: &[(i32, i32)]| {
+            payload(&viewed_levels::far(kept, released))
+        };
+        game.handle_packet(column(300, 0)).unwrap();
+        assert!(!game.world.chunks.contains_key(&(300, 0)), "past the view");
+        game.handle_packet(far(&[(300, 0)], &[])).unwrap();
+        game.handle_packet(column(300, 0)).unwrap();
+        assert!(game.world.chunks.contains_key(&(300, 0)));
+        let centre = C::SetChunkCacheCenter(play::SetChunkCacheCenter { x: 20, z: 0 });
+        game.handle_packet(centre).unwrap();
+        assert!(
+            game.world.chunks.contains_key(&(300, 0)),
+            "the centre moved"
+        );
+        let block = C::BlockUpdate(play::BlockUpdate {
+            pos: [4803, 70, 5],
+            state: AIR.0 as i32,
+        });
+        game.handle_packet(block).unwrap();
+        assert_eq!(game.world.block(4803, 70, 5), AIR);
+        assert_eq!(game.world.block(4803, 71, 5), STONE);
+        game.handle_packet(far(&[], &[(300, 0)])).unwrap();
+        assert!(!game.world.chunks.contains_key(&(300, 0)), "released");
+
+        let many: Vec<_> = (0..viewed_levels::MAX_COLUMNS as i32)
+            .map(|x| (1000 + x, 0))
+            .collect();
+        assert_eq!(game.route_viewed_levels(data(&far(&many, &[]))), Ok(()));
+        assert_eq!(
+            game.route_viewed_levels(data(&far(&[(-1000, 0)], &[]))),
+            Err(RouteError::TooManyFar)
+        );
+    }
+
     /// A wrapped `BlockUpdate` changes the viewed level's block, and the player's level keeps
     /// its own at the same position.
     #[test]
@@ -452,6 +494,202 @@ pub(in crate::game) mod tests {
         assert_eq!(game.remote.as_ref().unwrap().level, "minecraft:overworld");
     }
 
+    #[test]
+    #[ignore = "daily"]
+    fn a_dry_view_stays_dry_after_shared_weather_changes_and_promotion() {
+        use crate::game::{
+            native_client_session::tests::logged_client,
+            native_entity_refs::tests::with_client_game, native_guest_turn_tests::with_guests,
+            remote::RemoteDimensionEntry,
+        };
+        use std::sync::mpsc::{Receiver, channel};
+        use sunrise_client::{
+            chunk::{ExtraLevel, ExtraLevels, LevelShape},
+            lan::{
+                Out, PlayerSender,
+                hub::game_event::{RAIN_LEVEL, START_RAINING, STOP_RAINING, THUNDER_LEVEL},
+                viewed_levels::areas::{ChunkArea, ChunkAreaMode},
+            },
+            level_loading::Reason,
+        };
+
+        const OVERWORLD: &str = "minecraft:overworld";
+        const VIEWED: &str = "test:viewed_overworld";
+        const CLEARED: &str = "test:cleared_overworld";
+        crate::game::in_own_process(
+            "game::viewed_worlds::tests::a_dry_view_stays_dry_after_shared_weather_changes_and_promotion",
+            || {
+                with_guests(|server| {
+                    let mut host = server.lan.take().unwrap();
+                    let hub = &mut host.hub;
+                    hub.config.levels.extra = ExtraLevels::new(vec![
+                        ExtraLevel {
+                            id: VIEWED,
+                            dimension_type: OVERWORLD,
+                            shape: LevelShape::OVERWORLD,
+                        },
+                        ExtraLevel {
+                            id: CLEARED,
+                            dimension_type: OVERWORLD,
+                            shape: LevelShape::OVERWORLD,
+                        },
+                    ]);
+                    let area = |level: &str| ChunkArea {
+                        level: level.into(),
+                        center: (0, 0),
+                        radius: 0,
+                        mode: ChunkAreaMode::Loaded,
+                    };
+                    let (view_tx, view_rx) = channel();
+                    let (plain_tx, plain_rx) = channel();
+                    hub.guests.update(0, |guest| {
+                        guest.dimension = OVERWORLD.into();
+                        guest.sender = PlayerSender::new(view_tx, Arc::default());
+                        guest.sender.viewed_levels = viewed_levels::Answer {
+                            revision: viewed_levels::REVISION_4,
+                            max_levels: 2,
+                        };
+                    });
+                    hub.guests.update(1, |guest| {
+                        guest.dimension = VIEWED.into();
+                        guest.sender = PlayerSender::new(plain_tx, Arc::default());
+                    });
+                    hub.set_dimension(VIEWED);
+                    hub.set_viewed_areas(12, "test:portal", vec![area(VIEWED)])
+                        .unwrap();
+
+                    let packets = |rx: &Receiver<Out>| {
+                        rx.try_iter()
+                            .flat_map(|out| match out {
+                                Out::Packet(body) => vec![body],
+                                Out::Packets(bodies) => bodies,
+                                Out::Disconnect(_) => panic!("unexpected disconnect"),
+                            })
+                            .map(|body| payload(&body))
+                            .collect::<Vec<_>>()
+                    };
+                    let plain_weather = || {
+                        packets(&plain_rx)
+                            .into_iter()
+                            .filter_map(|packet| match packet {
+                                C::GameEvent(p) => Some((p.event, p.param)),
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                    };
+                    let deliver_viewer_packets = |game: &mut Game<'_>| {
+                        for packet in packets(&view_rx) {
+                            if matches!(packet, C::Respawn(_) | C::GameEvent(_))
+                                || matches!(&packet, C::CustomPayload(p) if p.channel == viewed_levels::CHANNEL)
+                            {
+                                game.handle_packet(packet).unwrap();
+                            }
+                        }
+                    };
+                    with_client_game(|game| {
+                        let _transport = logged_client(game);
+                        game.remote.as_mut().unwrap().registries =
+                            Arc::new(hub.sync_data().dynamic.clone());
+                        game.enter_remote_dimension(
+                            &play::SpawnInfo {
+                                dimension_type: hub
+                                    .sync_data()
+                                    .id("minecraft:dimension_type", OVERWORLD)
+                                    .unwrap(),
+                                ..spawn(OVERWORLD)
+                            },
+                            RemoteDimensionEntry::Login,
+                            Reason::Other,
+                        );
+                        let ticks: [(_, &[_]); 4] = [
+                            ((true, 0.0, 0.0), &[]),
+                            // Local transitions send both strengths after START/STOP, even
+                            // when thunder hasn't changed.
+                            (
+                                (true, 0.25, 0.5),
+                                &[
+                                    (RAIN_LEVEL, 0.25),
+                                    (THUNDER_LEVEL, 0.5),
+                                    (START_RAINING, 0.0),
+                                    (RAIN_LEVEL, 0.25),
+                                    (THUNDER_LEVEL, 0.5),
+                                ],
+                            ),
+                            (
+                                (true, 0.0, 0.5),
+                                &[
+                                    (RAIN_LEVEL, 0.0),
+                                    (STOP_RAINING, 0.0),
+                                    (RAIN_LEVEL, 0.0),
+                                    (THUNDER_LEVEL, 0.5),
+                                ],
+                            ),
+                            // The shared flag flipped without a local transition.
+                            ((false, 0.0, 0.5), &[]),
+                        ];
+                        for ((shared_rain, rain, thunder), expected) in ticks {
+                            server.world.weather.raining = shared_rain;
+                            server.world.weather.set_levels(rain, thunder);
+                            let _ = hub.tick_level(&mut server.server_ctx(), None);
+                            deliver_viewer_packets(game);
+                            let view = &viewed(game, 0).unwrap().weather;
+                            assert_eq!((view.rain_level.1, view.thunder_level.1), (rain, thunder));
+                            assert_eq!(plain_weather().as_slice(), expected);
+                        }
+
+                        let ctx = server.server_ctx();
+                        let change =
+                            hub.begin_level_change(0, [0.5, 64.0, 0.5], 0.0, None, 0, &ctx);
+                        hub.finish_level_change(0, change, false, &ctx);
+                        deliver_viewer_packets(game);
+                        assert_eq!(game.remote.as_ref().unwrap().level, VIEWED);
+                        assert_eq!(game.world.weather.rain_level, (0.0, 0.0));
+                        // A plain Respawn would have dropped the viewed level's raw thunder.
+                        assert_eq!(game.world.weather.thunder_level, (0.5, 0.5));
+
+                        // Only the viewer is told it is wet; the ordinary send cache never saw it.
+                        hub.set_dimension(CLEARED);
+                        assert!(hub.guests.iter().all(|guest| guest.dimension != CLEARED));
+                        hub.set_viewed_areas(12, "test:portal", vec![area(CLEARED)])
+                            .unwrap();
+                        server.world.weather.raining = true;
+                        let level = server.level(server.dim.id()).unwrap();
+                        assert!(level.set_weather_levels(server, 0.75, 0.5));
+                        assert!(hub.viewed_pass(&mut server.server_ctx()));
+                        deliver_viewer_packets(game);
+                        let slot = game
+                            .remote
+                            .as_ref()
+                            .unwrap()
+                            .viewed
+                            .slot_of(CLEARED)
+                            .unwrap();
+                        let wet = &viewed(game, slot).unwrap().weather;
+                        assert_eq!(wet.rain_level.1, 0.75);
+                        assert_eq!(wet.thunder_level.1, 0.5);
+
+                        // Clear the destination with the shared flag still set, then travel
+                        // without another viewed pass or an ordinary level sync.
+                        assert!(level.set_weather_levels(server, 0.0, 0.0));
+                        assert!(server.world.weather.raining);
+                        let ctx = server.server_ctx();
+                        let change =
+                            hub.begin_level_change(0, [0.5, 64.0, 0.5], 0.0, None, 0, &ctx);
+                        hub.finish_level_change(0, change, false, &ctx);
+                        deliver_viewer_packets(game);
+                        let remote = game.remote.as_ref().unwrap();
+                        assert_eq!(remote.level, CLEARED);
+                        assert_eq!(remote.viewed.slot_of(VIEWED), Some(slot));
+                        let dry = &game.world.weather;
+                        assert!(!dry.raining);
+                        assert_eq!(dry.rain_level, (0.0, 0.0));
+                        assert_eq!(dry.thunder_level, (0.0, 0.0));
+                    });
+                });
+            },
+        );
+    }
+
     /// A wrapped `AddEntity` and its move put the entity in the viewed world, where it moves; the
     /// player's own world holds nothing of it. A wrapped `RemoveEntities` takes it out.
     #[test]
@@ -549,7 +787,7 @@ pub(in crate::game) mod tests {
         i64,
     );
 
-    /// Plays the anvil at (1.5, 70, -2.5) with volume 0.25 and pitch 1.5, leaves the bell
+    /// Places the anvil at (1.5, 70, -2.5) and attenuates it without changing pitch, leaves the bell
     /// unplayed and puts the harp at a position that is not finite; logs what it was asked.
     struct Portal(Arc<Mutex<Vec<Asked>>>);
     #[mod_api::__subscriptions]
@@ -572,7 +810,7 @@ pub(in crate::game) mod tests {
             match sound.as_str() {
                 "minecraft:block.anvil.land" => {
                     *e.play_at = Some([1.5, 70.0, -2.5]);
-                    (e.volume, e.pitch) = (0.25, 1.5);
+                    e.volume *= 0.125;
                 }
                 "minecraft:block.note_block.harp" => *e.play_at = Some([f64::NAN, 70.0, 0.0]),
                 _ => {}
@@ -599,14 +837,14 @@ pub(in crate::game) mod tests {
             let mut game = client(&mut resources);
             game.handle_packet(open(1, "minecraft:the_nether")).unwrap();
             game.audio.capture = Some(Vec::new());
-            let anvil = sound("minecraft:block.anvil.land", [452, 512, 66], 2.0, 0.5, 42);
+            let anvil = sound("minecraft:block.anvil.land", [452, 512, 66], 2.0, -2.0, 42);
             game.handle_packet(run(1, std::slice::from_ref(&anvil)))
                 .unwrap();
             let played = game.audio.capture.replace(Vec::new()).unwrap();
             assert_eq!(played.len(), 1);
             assert_eq!(played[0].event, "minecraft:block.anvil.land");
             assert_eq!(played[0].position, [1.5, 70.0, -2.5]);
-            assert_eq!((played[0].volume, played[0].pitch), (0.25, 1.5));
+            assert_eq!((played[0].volume, played[0].pitch), (0.25, -2.0));
             assert_eq!(played[0].source, SoundSource::Blocks.index());
             let C::Sound(p) = &anvil else { unreachable!() };
             assert_eq!(
@@ -616,7 +854,7 @@ pub(in crate::game) mod tests {
                     source: SoundSource::Blocks,
                     at: [1.5, 70.0, -2.5],
                     volume: 0.25,
-                    pitch: 1.5,
+                    pitch: -2.0,
                     seed: 42,
                 }),
                 "the server's seed"
@@ -644,8 +882,8 @@ pub(in crate::game) mod tests {
                     sound: (-1, Some(("minecraft:block.anvil.land".into(), None))),
                     source: SoundSource::Blocks.index() as i32,
                     id,
-                    volume: 1.0,
-                    pitch: 1.0,
+                    volume: -2.0,
+                    pitch: -2.0,
                     seed: 9,
                 })
             };
@@ -654,6 +892,7 @@ pub(in crate::game) mod tests {
             let played = game.audio.capture.replace(Vec::new()).unwrap();
             assert_eq!(played.len(), 1);
             assert_eq!(played[0].position, [1.5, 70.0, -2.5]);
+            assert_eq!((played[0].volume, played[0].pitch), (-0.25, -2.0));
             // The player's own level: played where it is, without asking.
             game.handle_packet(sound(
                 "minecraft:block.anvil.land",
@@ -675,7 +914,7 @@ pub(in crate::game) mod tests {
                     blocks,
                     [56.5, 64.0, 8.25],
                     volume,
-                    0.5,
+                    -2.0,
                     42,
                 )
             };
@@ -707,8 +946,8 @@ pub(in crate::game) mod tests {
                         "minecraft:block.anvil.land".into(),
                         blocks,
                         [12.5, 70.0, -3.25],
-                        1.0,
-                        1.0,
+                        -2.0,
+                        -2.0,
                         9
                     ),
                 ]

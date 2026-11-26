@@ -49,18 +49,12 @@ pub(in crate::game) fn prepare_component_edit(
         None if original.components().is_some() => ComponentEdit::Remove,
         None => ComponentEdit::Inherit,
     };
-    let read_override = |id: &str| {
-        let bare = id.strip_prefix('!').unwrap_or(id);
-        let Tag::Compound(mut patch) = read.extra_components_matching(|name| name == bare)? else {
-            return None;
-        };
-        patch.remove(&JavaString::from(id))
-    };
     let (item, count, _) = metadata;
-    let mut edits =
-        with_equipment_view(&read, (item, count, original.damage_component()), |view| {
-            edit_item_components(view, &read_override, edit)
-        });
+    let mut edits = with_equipment_view(
+        &read,
+        (item, count, original.damage_component()),
+        |view, read_override| edit_item_components(view, read_override, edit),
+    );
 
     let compared = edits
         .components()

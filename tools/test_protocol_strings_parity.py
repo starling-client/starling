@@ -9,12 +9,12 @@ reader position on both success and failure, rather than exception text.
 import itertools
 import os
 import random
-try:
-    from . import lab, test_rust_parity as base, oracle_harness as harness
-except ImportError:
-    import lab
-    import test_rust_parity as base
-    import oracle_harness as harness
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_rust_parity as base, oracle_harness as harness
 
 
 def varint(value):

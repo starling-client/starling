@@ -7,7 +7,7 @@ it out. `player.is_fake(host)` tells one apart; `player.remove_fake(host)` remov
 
 `player.disconnect(host, reason)` instead kicks the fake with a `Text` reason, as `/kick` by name or selector does.
 The first reason stands; removal completes at the next hub poll, after any current action returns.
-The shared leave path broadcasts the leave line and fires `player_kicked` and `player_logged_out` (version 2),
+The shared leave path broadcasts the leave line and fires `player_kicked` and `player_logged_out` (version 3),
 even though a fake has no preceding `player_logged_in`. It still writes no player-data save.
 Silent `remove_fake` sends no kick, leave line or logout notification.
 

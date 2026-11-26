@@ -3,7 +3,7 @@ use super::*;
 /// The hook points. Each does nothing in Sunrise.
 impl Game<'_> {
     /// `BlockBehaviour.useWithoutItem`: the captured state's empty-hand method,
-    /// after useItemOn asks for it, on the server and main hand only.
+    /// after useItemOn asks for it, on both logical sides and the main hand only.
     pub(in crate::game) fn native_use_without_item(
         &mut self,
         state: BlockStateId,

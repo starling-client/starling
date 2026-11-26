@@ -37,7 +37,7 @@ fn refusal(two: bool) -> String {
 fn undeclared_part_returns_load_error_without_panicking() {
     let error = refusal(false);
     assert!(error.starts_with("Mod parts refused:\n"));
-    assert!(error.contains("undeclared native block entity type demo:stove"));
+    assert!(error.contains("unknown native block entity type demo:stove"));
     assert_eq!(error.lines().count(), 2);
 }
 
@@ -47,7 +47,7 @@ fn two_refused_parts_preserve_messages_and_order() {
     assert_eq!(
         error,
         format!(
-            "Mod parts refused:\nmod demo attached {} to undeclared native block entity type demo:stove\nmod demo attached {} to undeclared native block entity type demo:stove",
+            "Mod parts refused:\nmod demo attached {} to unknown native block entity type demo:stove\nmod demo attached {} to unknown native block entity type demo:stove",
             std::any::type_name::<First>(),
             std::any::type_name::<Second>()
         )

@@ -6,8 +6,8 @@ pub trait Hooks {
     /// slots (three bottles, the ingredient, the fuel). Set `cancel` to skip
     /// vanilla's brew: the stand then takes `stacks` as the mods left them,
     /// uses no ingredient and plays no brew sound, and `potion_brew_post`
-    /// fires with those slots; `brewing_complete` doesn't, as nothing was
-    /// brewed. Uncancelled, changes to `stacks` are dropped. Server-side.
+    /// sees those slots if at least one slot still matches its prior value.
+    /// Uncanceled, changes to `stacks` are dropped. Server-side.
     #[hook(
         dispatch = "flat",
         side = "server",
@@ -15,7 +15,7 @@ pub trait Hooks {
         out = "cancel",
         neoforge = "PotionBrewEvent.Pre",
         cancellable = true,
-        version = 2
+        version = 3
     )]
     fn potion_brew_pre(pos: [i32; 3], stacks: &mut [Option<ItemStack>; 5], cancel: &mut bool);
 }

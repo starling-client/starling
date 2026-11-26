@@ -20,13 +20,13 @@ import math
 import os
 from pathlib import Path
 import random
+import struct
 import subprocess
 import sys
 
-try:
-    from . import lab, test_rust_parity as base, test_model_baking_parity as baking
-except ImportError:
-    import lab, test_rust_parity as base, test_model_baking_parity as baking
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_rust_parity as base, test_model_baking_parity as baking
 
 PARITY = lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity'
 DYES = ['white', 'orange', 'magenta', 'light_blue', 'yellow', 'lime', 'pink', 'gray', 'light_gray', 'cyan', 'purple',
@@ -155,6 +155,15 @@ def cases():
             level=rng.choice([[0, 256], [-64, 384]]), neighbours=rng.choice(neighbours))
     for n in neighbours:
         add('minecraft:end_portal', neighbours=n)
+    # Simple glyphs allow a bit-exact comparison of uncompensated local vertices.
+    for sign in ('oak_sign[rotation=0]', 'oak_hanging_sign[rotation=0,attached=false]'):
+        for outlined in (False, True):
+            add(f'minecraft:{sign}', sign={
+                'front': {'lines': ['A'], 'color': 'green', 'glowing': False},
+                'back': {'lines': ['B'], 'color': 'red', 'glowing': True},
+                'near': outlined,
+                'exactText': True,
+            })
     return out
 
 
@@ -326,13 +335,23 @@ def compare_case(v, r, tol):
         va = [t for t in vt if tuple(t['matrix']) == matrix]
         ra = [t for t in rt if all(abs(x - y) <= tol * (1 + abs(x)) for x, y in zip(matrix, t['matrix']))]
         if any(any(g['style'][4] for g in t['glyphs']) for t in va): continue
-        # Round only the ordering key: equivalent f32 sums must pair before
-        # comparing their original coordinates at the tolerance below.
-        key = lambda p: tuple(round(n, 4) for n in p[:3]) + (p[3],)
-        a = sorted((tuple(p) for t in va for p in t.get('textVertices', [])), key=key)
-        b = sorted((tuple(p) for t in ra for p in t['textVertices']), key=key)
-        if len(a) != len(b) or any(any(abs(x - y) > 1e-4 for x, y in zip(p[:3], q[:3])) or p[3] != q[3] for p, q in zip(a, b)):
-            problems.append(f'text geometry differs ({len(a)} vanilla vs {len(b)} Sunrise vertices)')
+        a = [tuple(p) for t in va for p in t.get('textVertices', [])]
+        b = [tuple(p) for t in ra for p in t['textVertices']]
+        if v['case'].get('sign', {}).get('exactText'):
+            # Decode the decimal coordinates back to the f32 that each probe emitted.
+            same = sorted((struct.pack('>3f', *p[:3]), p[3:]) for p in a) == \
+                   sorted((struct.pack('>3f', *p[:3]), p[3:]) for p in b)
+        else:
+            # Round only the ordering key before comparing the original coordinates
+            # of the older, styled cases at their existing tolerance.
+            key = lambda p: tuple(round(n, 4) for n in p[:3]) + p[3:]
+            a.sort(key=key)
+            b.sort(key=key)
+            same = len(a) == len(b) and all(p[3:] == q[3:] and
+                                           all(abs(x - y) <= 1e-4 for x, y in zip(p[:3], q[:3]))
+                                           for p, q in zip(a, b))
+        if not same:
+            problems.append(f'text geometry or render mode differs ({len(a)} vanilla vs {len(b)} Sunrise vertices)')
     return problems
 
 

@@ -1,5 +1,4 @@
 //! The `block_ignite` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0178
 
 pub trait Hooks {
     /// On an authoritative server, fire is about to be placed at `pos` by

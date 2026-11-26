@@ -1,6 +1,6 @@
 //! Camera-relative frustum and view clipping structures.
 
-use glam::{Mat4, Vec3, Vec4};
+use glam::{DVec3, Mat4, Vec3, Vec4};
 
 /// The maximum number of alternate world views supported simultaneously.
 pub const MAX_WORLD_VIEWS: usize = 8;
@@ -25,11 +25,13 @@ impl Frustum {
     }
 
     /// Whether the camera-relative box `min..max` is at least partly inside.
+    /// Uses `>= 0.0` (matching JOML `FrustumIntersection.intersectAab`) so a
+    /// non-finite plane test (`0.0 * inf = NaN`) rejects rather than passing.
     pub fn intersects(&self, min: Vec3, max: Vec3) -> bool {
-        !self.planes.iter().any(|p| {
+        self.planes.iter().all(|p| {
             let sign = p.truncate().cmpge(Vec3::ZERO);
             let v = Vec3::select(sign, max, min);
-            p.truncate().dot(v) + p.w < 0.0
+            p.truncate().dot(v) + p.w >= 0.0
         })
     }
 
@@ -80,7 +82,7 @@ impl Frustum {
         let sides: Vec3 = self.planes[..4].iter().map(|p| p.truncate()).sum();
         let depth = self.planes[4].truncate();
         let along = depth.dot(sides);
-        if along.abs() < 1.0e-3 {
+        if !along.is_finite() || along.abs() < 1.0e-3 {
             return *self;
         }
         let toward_sides = if along > 0.0 { depth } else { -depth };
@@ -90,6 +92,41 @@ impl Frustum {
             plane.w += blocks * plane.truncate().dot(axis);
         }
         Self::from_planes(planes)
+    }
+
+    /// Vanilla's `Frustum.offsetToFullyIncludeCameraCube`: pull back in 4-block steps until the
+    /// camera's aligned `cube_size` cube is wholly inside the frustum.
+    pub fn offset_to_fully_include_camera_cube(&self, camera: DVec3, cube_size: i32) -> Frustum {
+        if cube_size <= 0 || !camera.is_finite() || !self.planes.iter().all(|p| p.is_finite()) {
+            return *self;
+        }
+        let sides: Vec3 = self.planes[..4].iter().map(|p| p.truncate()).sum();
+        let depth = self.planes[4].truncate();
+        let along = depth.dot(sides);
+        if !along.is_finite() || along.abs() < 1.0e-3 {
+            return *self;
+        }
+        let size = f64::from(cube_size);
+        let min = (DVec3::new(
+            (camera.x / size).floor() * size,
+            (camera.y / size).floor() * size,
+            (camera.z / size).floor() * size,
+        ) - camera)
+            .as_vec3();
+        let max = (DVec3::new(
+            (camera.x / size).ceil() * size,
+            (camera.y / size).ceil() * size,
+            (camera.z / size).ceil() * size,
+        ) - camera)
+            .as_vec3();
+        let mut out = *self;
+        for _ in 0..256 {
+            if out.contains(min, max) {
+                break;
+            }
+            out = out.pulled_back(4.0);
+        }
+        out
     }
 
     /// Construct a frustum from a view-projection matrix (wgpu depth range 0..1).
@@ -112,10 +149,6 @@ pub fn frustum_planes_from_view_proj(m: Mat4) -> [Vec4; 6] {
     planes.map(|p| p / p.truncate().length())
 }
 
-/// The union of two frusta (the camera's and its water mirror's), for visibility testing.
-#[derive(Clone, Copy, Debug)]
-pub struct Frusta(pub Frustum, pub Option<Frustum>);
-
 /// What visibility tests cull with: a frustum or a union of them.
 pub trait Cull {
     fn intersects(&self, min: Vec3, max: Vec3) -> bool;
@@ -123,6 +156,14 @@ pub trait Cull {
     /// Whether a section is tested by the box around its geometry, not its whole 16 blocks.
     fn tight(&self) -> bool {
         true
+    }
+    /// Whether the eye's vertical render-distance clamp and section-tree culling apply.
+    fn vertical_clamp(&self) -> bool {
+        true
+    }
+    /// Camera-cube-offset frustum for outside-height section-tree culling, if applicable.
+    fn offset_for_camera_cube(&self, _camera: DVec3, _cube_size: i32) -> Option<JoinedFrusta> {
+        None
     }
 }
 
@@ -133,14 +174,10 @@ impl Cull for Frustum {
     fn contains(&self, min: Vec3, max: Vec3) -> bool {
         Frustum::contains(self, min, max)
     }
-}
-
-impl Cull for Frusta {
-    fn intersects(&self, min: Vec3, max: Vec3) -> bool {
-        self.0.intersects(min, max) || self.1.is_some_and(|f| f.intersects(min, max))
-    }
-    fn contains(&self, min: Vec3, max: Vec3) -> bool {
-        self.0.contains(min, max) || self.1.is_some_and(|f| f.contains(min, max))
+    fn offset_for_camera_cube(&self, camera: DVec3, cube_size: i32) -> Option<JoinedFrusta> {
+        Some(JoinedFrusta::from(
+            self.offset_to_fully_include_camera_cube(camera, cube_size),
+        ))
     }
 }
 
@@ -208,6 +245,18 @@ impl JoinedFrusta {
             len: self.len,
         }
     }
+
+    pub fn offset_to_fully_include_camera_cube(&self, camera: DVec3, cube_size: i32) -> Self {
+        Self {
+            camera: self
+                .camera
+                .offset_to_fully_include_camera_cube(camera, cube_size),
+            views: self
+                .views
+                .map(|f| f.offset_to_fully_include_camera_cube(camera, cube_size)),
+            len: self.len,
+        }
+    }
 }
 
 impl From<Frustum> for JoinedFrusta {
@@ -222,6 +271,9 @@ impl Cull for JoinedFrusta {
     }
     fn contains(&self, min: Vec3, max: Vec3) -> bool {
         JoinedFrusta::contains(self, min, max)
+    }
+    fn offset_for_camera_cube(&self, camera: DVec3, cube_size: i32) -> Option<JoinedFrusta> {
+        Some(self.offset_to_fully_include_camera_cube(camera, cube_size))
     }
 }
 
@@ -370,5 +422,36 @@ mod tests {
         ] {
             assert_eq!(flat.contains_point(p), moved.contains_point(p));
         }
+    }
+
+    #[test]
+    fn offset_to_fully_include_camera_cube_contains_aligned_cube() {
+        let view = looking_down_minus_z();
+        for camera in [
+            DVec3::new(0.0, 400.0, 0.0),
+            DVec3::new(0.5, 400.5, 0.5),
+            DVec3::new(-3.25, 70.1, 11.9),
+        ] {
+            let offset = view.offset_to_fully_include_camera_cube(camera, 8);
+            let min = (DVec3::new(
+                (camera.x / 8.0).floor() * 8.0,
+                (camera.y / 8.0).floor() * 8.0,
+                (camera.z / 8.0).floor() * 8.0,
+            ) - camera)
+                .as_vec3();
+            let max = (DVec3::new(
+                (camera.x / 8.0).ceil() * 8.0,
+                (camera.y / 8.0).ceil() * 8.0,
+                (camera.z / 8.0).ceil() * 8.0,
+            ) - camera)
+                .as_vec3();
+            assert!(
+                offset.contains(min, max),
+                "camera {camera}: cube {min}..{max} must be inside offset frustum"
+            );
+        }
+        let all = Frustum::from_planes([Vec4::W; 6]);
+        let same = all.offset_to_fully_include_camera_cube(DVec3::new(0.5, 400.5, 0.5), 8);
+        assert_eq!(same.planes(), all.planes());
     }
 }

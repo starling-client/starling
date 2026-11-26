@@ -2,10 +2,11 @@
 """Measure held-live attribute storage RSS on Linux; not a frame-rate benchmark."""
 import argparse,json,os,platform,statistics,subprocess
 from pathlib import Path
-try:
-    from . import lab,test_rust_parity as base
-except ImportError:
-    import lab,test_rust_parity as base
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_rust_parity as base
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)

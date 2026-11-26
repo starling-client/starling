@@ -1,8 +1,14 @@
-//! The client host builds hashed container clicks with its connection registries.
+//! The client host encodes typed play packets and hashed container clicks.
 use super::Game;
-use mod_api::{ContainerClickRequest, PacketBuildError, ServerboundPlayPacket};
+use mod_api::{ContainerClickRequest, PacketBuildError, PlayPacketRequest, ServerboundPlayPacket};
 
 impl Game<'_> {
+    pub(super) fn build_play_packet(
+        request: &PlayPacketRequest,
+    ) -> Result<ServerboundPlayPacket, PacketBuildError> {
+        sunrise_client::mod_packet_builders::encode_play_packet(request)
+    }
+
     pub(super) fn container_click(
         &self,
         request: &ContainerClickRequest,

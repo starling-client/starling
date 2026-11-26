@@ -1,8 +1,8 @@
 import json,sys,hashlib
 from pathlib import Path
-sys.path.insert(0,str(Path.cwd()/'tools'))
-import test_command_exec_parity as driver
-import harness_args
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_command_exec_parity as driver, harness_args
 def program():
  ops=[]
  def c(cmd,label,result=None,admission=True,trace=False):

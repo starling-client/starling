@@ -1,0 +1,3 @@
+ids = ["hook:player_pong", "type:PlayerPongEvent", "handle:PlayerRef::send_ping", "type:PlayerPingRefusal", "type:HookId"]
+why = "Adds the server listen hook player_pong, version 1: a joined player's play-phase pong (ServerCommonPacketListenerImpl.handlePong), heard at its turn in the connection's inbox; configuration and status pongs don't fire it, and an id doesn't prove which ping it answers. Adds PlayerRef::send_ping, which queues a play ClientboundPingPacket on the player's own connection, refused as PlayerPingRefusal. HookId gains its variant."
+migrate = "Nothing to migrate. A mod that matches HookId exhaustively adds the new arm; one with a wildcard arm compiles unchanged."

@@ -17,6 +17,7 @@ pub trait Hooks {
         receiver = "read",
         dispatch = "flat",
         side = "server",
+        version = 2,
         contract = "replace",
         out = "drops",
         scope = "block",

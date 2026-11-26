@@ -1,0 +1,12 @@
+ids = [
+    "hook:living_entity_use_item_start",
+    "hook:living_entity_use_item_tick",
+    "hook:living_entity_use_item_stop",
+    "hook:living_entity_use_item_finish",
+    "hook:on_use_tick",
+    "hook:release_using",
+    "hook:can_continue_using",
+    "hook:on_stop_using",
+]
+why = "NeoForge's LivingEntityUseItemEvent, IItemExtension.canContinueUsing and IItemExtension.onStopUsing always carry the using LivingEntity. The item-use hooks now pass a player's entity id in entity, as they do a mob's: the acting player on the server, the local player on a server's client. Until now entity was None for every player."
+migrate = "Rebuild for the new hook versions. A listener that told a player from a mob by entity being None now reads the id: resolve it with host.entity (then host.living for a LivingRef), or compare it with the acting player's. Code that already read host.players().acting_player() for a player keeps working."

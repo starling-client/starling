@@ -153,7 +153,9 @@ pub fn main() -> sunrise_client::Result<()> {
                 "click" => {
                     screen.click(&m, f("x"), f("y"));
                 }
-                "scroll" => screen.scroll(f("x"), f("y"), f("amount")),
+                "scroll" => {
+                    let _ = screen.scroll(f("x"), f("y"), f("amount"));
+                }
                 "type" => screen.type_text(&m, a["text"].as_str().unwrap_or_default()),
                 "erase" => screen.erase(&m, f("count") as isize),
                 _ => {}

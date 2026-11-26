@@ -64,10 +64,14 @@ impl CommandSource {
 #[non_exhaustive]
 #[derive(sunrise_mod_api_macros::Wire)]
 pub enum CommandArgumentValue {
-    /// A `word` or greedy `text` argument, exactly as the dispatcher parsed it.
+    /// A `word`, `string` or greedy `text` argument, exactly as the dispatcher parsed it: a
+    /// `string` arrives decoded, without its quotes and escapes (`"a \"b\""` as `a "b"`).
     String(String),
-    /// A signed `integer` argument.
+    /// A signed `integer` argument, within the bounds of `integer(min,max)`.
     Integer(i32),
+    /// A signed `long` argument, within the bounds of `long(min,max)`: Brigadier's
+    /// `LongArgumentType.getLong`.
+    Long(i64),
     /// A finite double-precision `number` argument.
     Number(f64),
     /// A `boolean` argument.
@@ -118,6 +122,25 @@ pub enum CommandArgumentValue {
     },
     /// A `resource:<registry>` argument: an id present in that registry (static or data pack).
     Id(Identifier),
+    /// A `resource_or_tag:<registry>` argument (`ResourceOrTagKeyArgument.Result`): `tag` true
+    /// for `#namespace:path`, a tag key of that registry, false for a resource key. `id` is the
+    /// identifier without the `#`. Neither is checked against the registry when parsed, as in
+    /// vanilla: look it up when the command runs.
+    ResourceOrTag {
+        /// Whether the text named a tag (`#minecraft:is_ocean`).
+        tag: bool,
+        /// The resource or tag identifier, without the `#`.
+        id: Identifier,
+    },
+    /// A `game_profile` argument: UUID and account name for each result, in selector order.
+    /// A plain name can also select an offline player whose profile is still in the user cache.
+    /// Never asks the profile service. Side: server.
+    GameProfiles(Vec<(u128, String)>),
+    /// A `vec2` or `vec2_uncentered` argument resolved against the source: `~` offsets applied
+    /// to its `x` and `z` position, narrowed to `f32` as vanilla's `Vec2Argument.getVec2` does.
+    /// `vec2` centres whole numbers on their block (`5` is `5.5`); `vec2_uncentered` keeps them
+    /// as written. Local `^` coordinates are refused. Resolution does not load chunks.
+    Vec2([f32; 2]),
 }
 
 /// An argument's registered name and its validated value.
@@ -138,7 +161,7 @@ impl CommandArgument {
     }
 }
 
-/// Validated input borrowed by a registered server command's executor, never a raw line.
+/// Validated input borrowed by a registered server or client command's executor, never a raw line.
 ///
 /// Missing optional arguments are absent. Selectors are permission-checked and resolved
 /// by the current server dispatcher before the executor runs. `entity` and `player` select exactly one;
@@ -148,6 +171,7 @@ impl CommandArgument {
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 #[derive(sunrise_mod_api_macros::Wire)]
+#[wire(via = InvocationRecord)]
 pub struct CommandInvocation {
     /// The literal path, including the registered command name and subcommands.
     pub literals: Vec<String>,
@@ -158,23 +182,112 @@ pub struct CommandInvocation {
     /// The execution position, after `execute at` or `positioned`; the console's is the
     /// world spawn's block corner.
     pub position: [f64; 3],
+    /// The entity the command executes as (`CommandSourceStack.getEntity`), after `execute as`
+    /// or `on`: the submitting player or command-block minecart, or the entity `as` selected.
+    /// None for the console, a command block, or a target that no longer resolves.
+    pub entity: Option<EntityRef>,
+    /// The execution rotation in degrees as `[yaw, pitch]` (Java's `Vec2` holds pitch first),
+    /// after `execute at`, `rotated` or `facing`, like `CommandArgumentValue::Rotation`. The
+    /// console's is zero; a command block's yaw is the direction it faces.
+    pub rotation: [f32; 2],
+    /// `entity` as a player, set with it by `with_player`. `player()` answers it only while
+    /// `entity` is still its entity, and a record where the two differ does not decode.
+    player: Option<PlayerRef>,
+}
+
+/// `CommandInvocation`'s wire record: its fields in order. Decoding refuses a player whose
+/// entity is not the invocation's.
+#[derive(sunrise_mod_api_macros::Wire)]
+struct InvocationRecord {
+    literals: Vec<String>,
+    arguments: Vec<CommandArgument>,
+    dimension: DimensionKey,
+    position: [f64; 3],
+    entity: Option<EntityRef>,
+    rotation: [f32; 2],
+    player: Option<PlayerRef>,
+}
+
+impl From<&CommandInvocation> for InvocationRecord {
+    fn from(invocation: &CommandInvocation) -> Self {
+        Self {
+            literals: invocation.literals.clone(),
+            arguments: invocation.arguments.clone(),
+            dimension: invocation.dimension,
+            position: invocation.position,
+            entity: invocation.entity,
+            rotation: invocation.rotation,
+            player: invocation.player(),
+        }
+    }
+}
+
+impl TryFrom<InvocationRecord> for CommandInvocation {
+    type Error = &'static str;
+    fn try_from(record: InvocationRecord) -> Result<Self, Self::Error> {
+        if record
+            .player
+            .is_some_and(|player| record.entity != Some(player.entity()))
+        {
+            return Err("the player is not the invocation's entity");
+        }
+        Ok(Self {
+            literals: record.literals,
+            arguments: record.arguments,
+            dimension: record.dimension,
+            position: record.position,
+            entity: record.entity,
+            rotation: record.rotation,
+            player: record.player,
+        })
+    }
 }
 
 impl CommandInvocation {
     /// Build an invocation from its parsed literal path, resolved arguments and execution
-    /// level and position.
+    /// level, position and `[yaw, pitch]` rotation, executing as no entity.
     pub fn new(
         literals: Vec<String>,
         arguments: Vec<CommandArgument>,
         dimension: DimensionKey,
         position: [f64; 3],
+        rotation: [f32; 2],
     ) -> Self {
         Self {
             literals,
             arguments,
             dimension,
             position,
+            entity: None,
+            rotation,
+            player: None,
         }
+    }
+
+    /// The same invocation executing as `entity`, which is not a player.
+    pub fn with_entity(self, entity: EntityRef) -> Self {
+        Self {
+            entity: Some(entity),
+            player: None,
+            ..self
+        }
+    }
+
+    /// The same invocation executing as `player`.
+    pub fn with_player(self, player: PlayerRef) -> Self {
+        Self {
+            entity: Some(player.entity()),
+            player: Some(player),
+            ..self
+        }
+    }
+
+    /// The entity the command executes as when it is a player (`CommandSourceStack.getPlayer`):
+    /// the player `with_player` set, while `entity` is still theirs. A command that needs one
+    /// maps `None` to its own failure, such as `permissions.requires.player`.
+    pub fn player(&self) -> Option<PlayerRef> {
+        self.player
+            .filter(|player| self.entity == Some(player.entity()))
     }
 
     /// The last argument registered under `name`, or `None` when it is absent.
@@ -185,6 +298,19 @@ impl CommandInvocation {
             .find(|argument| argument.name == name)
             .map(|argument| &argument.value)
     }
+}
+
+/// One structured message delivered to the native console's command source.
+// no wire: these messages travel through an in-process command output sink.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub enum CommandFeedback {
+    /// Feedback sent by `CommandSourceStack.sendSuccess`.
+    Success(crate::Text),
+    /// Feedback sent by `CommandSourceStack.sendFailure`, including its error style.
+    Failure(crate::Text),
+    /// A direct `CommandSourceStack.sendSystemMessage`, not gated as success feedback.
+    System(crate::Text),
 }
 
 /// A command's outcome and the messages received by its source.
@@ -212,5 +338,8 @@ impl CommandResult {
 pub(crate) mod command_argument;
 pub(crate) mod entity_selector;
 pub(crate) mod suggestion;
-pub(crate) mod suggestion_provider;
+pub(crate) mod tree_filter;
 pub(crate) mod types;
+
+#[cfg(test)]
+mod invocation_tests;

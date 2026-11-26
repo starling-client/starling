@@ -4,7 +4,7 @@ use super::{Game, PackResources, Screen};
 use BlockScreenEffect::{Block, Fire, Water};
 use mod_api::{
     BlockScreenEffect, BlockScreenEffectRender, BlockScreenEffectRenderer, CameraSubmersionEvent,
-    ClientHost, ExtractBlockScreenEffectEvent, Flow, GuiRenderPostEvent, Hooks, ModEntry, Mods,
+    ClientHost, ExtractBlockScreenEffectEvent, Flow, Hooks, ModEntry, Mods, RenderGuiPostEvent,
 };
 use std::{
     sync::{Arc, Mutex},
@@ -776,12 +776,15 @@ fn pack_assembly_reports_a_missing_water_default() {
         .unwrap();
         let Err(error) = PackResources::assemble(
             &root,
-            Arc::new(assets),
-            pack.render.clone(),
-            pack.context.tables.clone(),
-            items,
-            pack.context.biomes.clone(),
-            pack.context.light.clone(),
+            super::resource_tables::PackParts {
+                assets: Arc::new(assets),
+                render: pack.render.clone(),
+                tables: pack.context.tables.clone(),
+                item_renderer: items,
+                biomes: pack.context.biomes.clone(),
+                light: pack.context.light.clone(),
+            },
+            true,
         ) else {
             panic!("a registry without water cannot supply the overlay");
         };
@@ -915,7 +918,7 @@ fn drawn_frame(game: &mut Game<'_>) -> (Vec<u8>, usize) {
         scaled: false,
         background: false,
     });
-    game.render_with(|renderer, frame| renderer.render(frame))
+    game.render_with(|renderer, frame| renderer.render(frame, None))
         .unwrap();
     let result = game.renderer.as_mut().unwrap().screenshot_result.take();
     let mut pending = result.unwrap().unwrap();
@@ -938,12 +941,10 @@ impl Hooks for Painter {
         }
         Flow::Continue
     }
-    fn gui_render_post(&self, _: &dyn ClientHost, event: &mut GuiRenderPostEvent<'_>) {
+    fn render_gui_post(&self, _: &dyn ClientHost, event: &mut RenderGuiPostEvent<'_>) {
         if DRAWING.load(std::sync::atomic::Ordering::Relaxed) {
-            let [width, height] = event.batch.size();
-            event
-                .batch
-                .fill([0.0, 0.0, width / 2.0, height], 0xFF00FF00);
+            let [width, height] = event.draw.size();
+            event.draw.fill([0.0, 0.0, width / 2.0, height], 0xFF00FF00);
         }
     }
 }
@@ -1004,7 +1005,10 @@ fn screen_effect_quads_draw_over_the_level_and_under_the_gui() {
                     .unwrap(),
             );
             game.options.offscreen = true;
-            game.renderer = Some(game.new_renderer(window).unwrap());
+            {
+                let renderer = game.new_renderer(window).unwrap();
+                game.set_renderer(renderer);
+            }
             game.title = None;
             burning_player(game);
             game.previous_position = game.player.as_ref().unwrap().position;

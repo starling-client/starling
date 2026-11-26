@@ -1,0 +1,26 @@
+ids = [
+    "type:UnresolvedFluid",
+    "handle:UnresolvedFluid::id",
+    "type:FluidIdentity",
+    "handle:FluidIdentity::key",
+    "handle:FluidIdentity::of_name",
+    "method:prelude::TagsHost::unresolved_fluid_id",
+    "hook:place_liquid",
+    "hook:fluid_rules",
+    "method:FluidsRegistrar::fluid_interaction_handler",
+    "trait:FluidInteractionHandler",
+    "type:FluidInteractionAt",
+]
+why = """Register native fluid interactions without invented identities or limits.
+
+- `UnresolvedFluid` held a `u64` slot into a process-wide interner with namespace, length and count caps, filled only from trusted disk loads, and `Wire` sent the bare slot. It now owns the validated name: `UnresolvedFluid::id()` borrows it, `Wire` sends it, and the receiving game refuses a name it has registered or `minecraft:empty` (NeoForge's `FluidStack.CODEC` refuses the empty fluid). `FluidIdentity` is no longer `Copy`; `FluidIdentity::of_name` binds a saved name to the registered key or keeps it. `TagsHost::unresolved_fluid_id` is removed.
+- `place_liquid` (version 2) follows vanilla `LiquidBlockContainer.placeLiquid`: what a part writes stays written whatever it answers. Player buckets and the fluid utility used to discard a part's writes unless it answered `Some(true)`.
+- `WorldFluid` and `fluid_rules` (version 2) take NeoForge's `BaseFlowingFluid.Properties` domain, any `int`, in place of the unsourced ranges (tick delay 1 or more, drop-off 1 to 7, slope distance 1 to 4). Only a negative `drop_off` is refused, because the level `FlowingFluid.getNewLiquid` computes must stay within `FlowingFluid.LEVEL`; a negative `fluid_rules` answer keeps the declared value.
+- `FluidsRegistrar::fluid_interaction_handler` registers a `FluidInteractionHandler`: NeoForge's `FluidInteractionRegistry.addInteraction` with its own `HasFluidInteraction` (`test`) and `FluidInteraction` (`interact`), which takes `FluidInteractionAt` (the liquid's position, the neighbour checked and its fluid state). It keeps its place in registration order among the source fluid's interactions; `fluid_interaction_result` reads table entries only."""
+migrate = """
+- Replace `unresolved.id(host)` with `unresolved.id()` (a borrowed `Identifier`; `.as_str()` for text). Copy a `FluidIdentity` with `.clone()`. A payload carrying a `FluidStack` keeps working; its unresolved branch now sends the saved name.
+- `place_liquid` (version 2): don't rely on returning `None` or `Some(false)` to undo writes. Write only what should stay, then answer.
+- `WorldFluid` and `fluid_rules` (version 2): values outside the old ranges are now used as given. Keep `drop_off` at 0 or more.
+- For an interaction a table entry can't express, implement `FluidInteractionHandler` and register it with `r.fluid_interaction_handler(source, Arc::new(handler))`. The handler writes the level itself: call `set_block` and `level_event(1501, pos, 0)` where the table form fizzes.
+- Rebuild against the new SDK to record the new hook versions in the package's `uses` list.
+"""

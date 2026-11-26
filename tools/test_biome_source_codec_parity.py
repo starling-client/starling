@@ -7,14 +7,17 @@ from pathlib import Path
 import platform
 import random
 import subprocess
-try:
-    from . import lab,test_rust_parity as base,test_worldgen_parity as worldgen,test_biome_temperature_parity as temperature,test_material_condition_parity as material
-except ImportError:
-    import lab
-    import test_rust_parity as base
-    import test_worldgen_parity as worldgen
-    import test_biome_temperature_parity as temperature
-    import test_material_condition_parity as material
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import (
+    lab,
+    test_rust_parity as base,
+    test_worldgen_parity as worldgen,
+    test_biome_temperature_parity as temperature,
+    test_material_condition_parity as material,
+)
 
 
 def corpus(bundle):

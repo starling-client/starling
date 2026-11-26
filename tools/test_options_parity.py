@@ -8,10 +8,11 @@ from pathlib import Path
 import random
 import shutil
 
-try:
-    from . import lab, oracle_harness as harness
-except ImportError:
-    import lab, oracle_harness as harness
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, oracle_harness as harness
 
 VERSION = lab.version_info()['world_version']
 

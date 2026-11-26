@@ -2,13 +2,53 @@
 //! screens' system toasts.
 use crate::hud::{HudAtlas, HudBatch};
 use crate::text::Text;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+/// The clock every toast slides on (`Slide::update_on`): vanilla's real time (`Util.getMillis`),
+/// or under `SUNRISE_STILL` one moment for the whole process. There a toast stays at its first
+/// frame (off screen), never times out and its notes keep their colour, whatever the draws, the
+/// level, `SetTime` or the title screen do: screenshots under the switch show no toast.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToastClock {
+    Real,
+    Still,
+}
+impl ToastClock {
+    /// The clock of a game whose `FixedStep::still` is `still`; a draw samples it once.
+    pub fn of(still: bool) -> Self {
+        if still { Self::Still } else { Self::Real }
+    }
+    /// This moment on the clock, to time a toast's life from (`ToastStamp::elapsed`).
+    pub fn stamp(self) -> ToastStamp {
+        match self {
+            ToastClock::Real => ToastStamp::Real(Instant::now()),
+            ToastClock::Still => ToastStamp::Still,
+        }
+    }
+}
+
+/// A moment on a `ToastClock`.
+#[derive(Clone, Copy, Debug)]
+pub enum ToastStamp {
+    Real(Instant),
+    Still,
+}
+impl ToastStamp {
+    /// The time since this moment on `clock`: none on the still clock. `SUNRISE_STILL` is read
+    /// once per process, so a stamp only meets the kind of clock it was taken on.
+    pub fn elapsed(self, clock: ToastClock) -> Duration {
+        match (self, clock) {
+            (ToastStamp::Real(at), ToastClock::Real) => at.elapsed(),
+            _ => Duration::ZERO,
+        }
+    }
+}
 
 /// `ToastManager.ToastInstance`: slides a toast in and out over 600 ms,
 /// eased by the square, and counts how long it has been fully shown.
 #[derive(Default)]
 pub struct Slide {
-    /// When it first updated; the times below are milliseconds since.
+    /// On the real clock, when it first updated; the times below are milliseconds since.
     pub origin: Option<Instant>,
     begun: bool,
     /// `animationStartTime`.
@@ -52,10 +92,37 @@ impl Slide {
         let finished = !self.show && now - self.start > Self::MS;
         ((self.show != was).then_some(self.show), finished)
     }
-    /// `update` at the time since the first one.
-    pub fn update_now(&mut self, wants_show: impl FnOnce(i64) -> bool) -> (Option<bool>, bool) {
-        let origin = *self.origin.get_or_insert_with(Instant::now);
-        self.update(origin.elapsed().as_millis() as i64, wants_show)
+    /// Whether it has updated (been drawn) at all.
+    pub fn begun(&self) -> bool {
+        self.begun
+    }
+    /// `update` on `clock`: at the real time since the first update; on the still clock the toast
+    /// holds its first frame (`hold`).
+    pub fn update_on(
+        &mut self,
+        clock: ToastClock,
+        wants_show: impl FnOnce(i64) -> bool,
+    ) -> (Option<bool>, bool) {
+        match clock {
+            ToastClock::Real => {
+                let origin = *self.origin.get_or_insert_with(Instant::now);
+                self.update(origin.elapsed().as_millis() as i64, wants_show)
+            }
+            ToastClock::Still => self.hold(wants_show),
+        }
+    }
+    /// The still clock's update: no time passes, so the toast stays where its first frame put it
+    /// (off screen) and has been shown for no time. A change of the wanted visibility still
+    /// switches it and sounds, but moves nothing, and it never finishes.
+    fn hold(&mut self, wants_show: impl FnOnce(i64) -> bool) -> (Option<bool>, bool) {
+        let was = self.show;
+        if !self.begun {
+            self.begun = true;
+            self.show = true;
+        }
+        self.fully_for = 0;
+        self.show = wants_show(0);
+        ((self.show != was).then_some(self.show), false)
     }
 }
 
@@ -64,8 +131,6 @@ impl Slide {
 /// has passed since its last change, or until it is hidden.
 pub struct SystemToast {
     pub slide: Slide,
-    /// `ToastInstance.firstSlotIndex`: its 32-pixel slot once shown.
-    pub slot: Option<usize>,
     pub title: Text,
     pub message: Option<Text>,
     /// `changed`: the next update takes its time as `lastChanged`.
@@ -85,7 +150,6 @@ impl SystemToast {
     pub fn new(title: Text, message: Option<Text>) -> Self {
         Self {
             slide: Slide::default(),
-            slot: None,
             title,
             message,
             changed: false,
@@ -117,6 +181,7 @@ impl SystemToast {
     /// `addOrUpdate` on a toast that is still shown: `reset` to `other`'s text.
     pub fn reset_from(&mut self, other: SystemToast) {
         self.title_color = other.title_color;
+        self.display_time = other.display_time;
         self.reset(other.title, other.message);
     }
     pub fn force_hide(&mut self) {
@@ -125,8 +190,8 @@ impl SystemToast {
     /// `ToastInstance.update` with `SystemToast.update`, the display time
     /// scaled by the Notification Time option: the visibility it switched
     /// to (the sound to play), and whether it has slid out.
-    pub fn update(&mut self, multiplier: f64) -> (Option<bool>, bool) {
-        self.slide.update_now(|fully| {
+    pub fn update(&mut self, clock: ToastClock, multiplier: f64) -> (Option<bool>, bool) {
+        self.slide.update_on(clock, |fully| {
             if std::mem::take(&mut self.changed) {
                 self.last_changed = fully;
             }
@@ -146,18 +211,105 @@ impl SystemToast {
             + 30.0;
         let x = batch.width - width * self.slide.portion;
         background(atlas, batch, x, y, width);
-        let yellow = self.title_color;
-        match &self.message {
-            Some(message) => {
-                batch.text_styled(atlas, &self.title, x + 18.0, y + 7.0, yellow, false);
-                batch.text_styled(atlas, message, x + 18.0, y + 19.0, u32::MAX, false);
-            }
-            None => {
-                batch.text_styled(atlas, &self.title, x + 18.0, y + 12.0, yellow, false);
+        self.draw_lines(
+            atlas,
+            batch,
+            [x + 18.0, y],
+            std::slice::from_ref(&self.title),
+            self.message.as_slice(),
+        );
+    }
+
+    /// `SystemToast.update` and `recalculateWidth` for a notification with wrapped text.
+    pub fn layout(&self, atlas: &HudAtlas, has_icon: bool) -> SystemToastLayout {
+        let wrap = |text: &Text| atlas.font.split_formatted(text, 200.0);
+        let title = wrap(&self.title);
+        let message = self.message.as_ref().map_or_else(Vec::new, wrap);
+        let icon_indent = if has_icon { 12.0 } else { 0.0 };
+        let width = title
+            .iter()
+            .chain(&message)
+            .map(|line| atlas.font.width_text(line))
+            .reduce(f32::max)
+            .unwrap_or(200.0)
+            .max(160.0)
+            + 30.0
+            + icon_indent;
+        let height = 20 + 12 * (title.len() + message.len().max(1) - 1);
+        SystemToastLayout {
+            title,
+            message,
+            width,
+            height,
+            text_x: 18.0 + icon_indent,
+        }
+    }
+
+    /// Draw the wrapped system toast; return its origin for the caller's icon.
+    pub fn draw_wrapped(
+        &self,
+        layout: &SystemToastLayout,
+        atlas: &HudAtlas,
+        batch: &mut HudBatch,
+        slot: usize,
+    ) -> [f32; 2] {
+        let x = batch.width - layout.width * self.slide.portion;
+        // Toast.yPos: the first slot index times the toast's rendered height.
+        let y = slot as f32 * layout.height as f32;
+        crate::ui::nine_slice(
+            batch,
+            atlas,
+            "toast/system",
+            x,
+            y,
+            layout.width,
+            layout.height as f32,
+            u32::MAX,
+        );
+        self.draw_lines(
+            atlas,
+            batch,
+            [x + layout.text_x, y],
+            &layout.title,
+            &layout.message,
+        );
+        [x, y]
+    }
+
+    fn draw_lines(
+        &self,
+        atlas: &HudAtlas,
+        batch: &mut HudBatch,
+        [x, y]: [f32; 2],
+        title: &[Text],
+        message: &[Text],
+    ) {
+        let mut y = y + if message.is_empty() { 12.0 } else { 7.0 };
+        for (lines, color) in [(title, self.title_color), (message, u32::MAX)] {
+            for line in lines {
+                batch.text_styled(atlas, line, x, y, color, false);
+                y += 12.0;
             }
         }
     }
 }
+
+/// The text and dimensions `SystemToast` computes at add or reset.
+pub struct SystemToastLayout {
+    title: Vec<Text>,
+    message: Vec<Text>,
+    width: f32,
+    height: usize,
+    text_x: f32,
+}
+
+impl SystemToastLayout {
+    /// `Toast.occcupiedSlotCount`: one slot per 32 pixels of height, rounding up.
+    pub fn slots(&self) -> usize {
+        self.height.div_ceil(32)
+    }
+}
+
 /// SystemToast's 32-pixel background keeps the notice icon and borders intact.
 pub fn background(atlas: &HudAtlas, batch: &mut HudBatch, x: f32, y: f32, width: f32) {
     let Some(rect) = atlas.sprites.get("toast/system").copied() else {
@@ -193,7 +345,7 @@ pub fn background(atlas: &HudAtlas, batch: &mut HudBatch, x: f32, y: f32, width:
 /// `musicNoteColor`: the notes change colour every 25 ms, while a song plays.
 pub struct MusicNotes {
     tick: i32,
-    last_change: Option<Instant>,
+    last_change: Option<ToastStamp>,
     /// Opaque ARGB, white until the first change.
     pub color: u32,
 }
@@ -207,14 +359,18 @@ impl Default for MusicNotes {
     }
 }
 impl MusicNotes {
-    /// `NowPlayingToast.tickMusicNotes`, for a song that is playing.
-    pub fn tick(&mut self) {
+    /// `NowPlayingToast.tickMusicNotes`, for a song that is playing, on the toasts' clock: the
+    /// still clock never moves, so the notes keep their colour.
+    pub fn tick(&mut self, clock: ToastClock) {
+        if clock == ToastClock::Still {
+            return;
+        }
         if self
             .last_change
-            .is_none_or(|at| at.elapsed().as_millis() > 25)
+            .is_none_or(|at| at.elapsed(clock).as_millis() > 25)
         {
             self.tick += 1;
-            self.last_change = Some(Instant::now());
+            self.last_change = Some(clock.stamp());
             self.color = music_note_color(self.tick);
         }
     }
@@ -274,14 +430,14 @@ impl NowPlayingToast {
     }
     /// `ToastInstance.update` with `NowPlayingToast.update`. `ToastManager`
     /// plays no visibility sound for this toast.
-    pub fn update(&mut self, song_playing: bool, notes: &mut MusicNotes) {
+    pub fn update(&mut self, clock: ToastClock, song_playing: bool, notes: &mut MusicNotes) {
         let (update_toast, multiplier) = (self.update_toast, self.multiplier);
         let wanted = &mut self.wanted;
-        let (_, finished) = self.slide.update_now(|fully| {
+        let (_, finished) = self.slide.update_on(clock, |fully| {
             if update_toast {
                 *wanted = (fully as f64) < 5000.0 * multiplier;
                 if song_playing {
-                    notes.tick();
+                    notes.tick(clock);
                 }
             }
             *wanted
@@ -383,5 +539,86 @@ fn draw_now_playing_text(
     );
     if let Some(description) = description {
         batch.text_styled(atlas, description, x + 30.0, 17.0, 0xFFD3_D3D3, true);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MusicNotes, Slide, SystemToast, ToastClock};
+    use crate::text::Text;
+    use std::time::Duration;
+
+    /// Every toast's state that a frame reads.
+    fn state(toast: &SystemToast, notes: &MusicNotes) -> (f32, i64, u32) {
+        (toast.slide.portion, toast.slide.fully_for, notes.color)
+    }
+
+    #[test]
+    fn under_the_still_clock_sparse_and_dense_draws_leave_every_toast_as_it_was() {
+        // SUNRISE_STILL: a toast drawn three times with real time passing between, and one drawn
+        // three hundred times back to back, are in the same state: their first frame, off
+        // screen, never timed out, the notes their first colour.
+        let run = |draws: usize, pause: Duration| {
+            let mut toast = SystemToast::new(Text::literal("Saved"), None);
+            let mut notes = MusicNotes::default();
+            let mut results = Vec::new();
+            for _ in 0..draws {
+                results.push(toast.update(ToastClock::Still, 1.0));
+                notes.tick(ToastClock::Still);
+                std::thread::sleep(pause);
+            }
+            (state(&toast, &notes), results[0], results.last().copied())
+        };
+        let sparse = run(3, Duration::from_millis(30));
+        let dense = run(300, Duration::ZERO);
+        assert_eq!(sparse.0, dense.0);
+        assert_eq!(sparse.0, (0.0, 0, MusicNotes::default().color));
+        // It sounds once, on its first draw, and never finishes.
+        assert_eq!(
+            (sparse.1, dense.1),
+            ((Some(true), false), (Some(true), false))
+        );
+        assert_eq!(
+            (sparse.2, dense.2),
+            (Some((None, false)), Some((None, false)))
+        );
+    }
+
+    #[test]
+    fn a_reversal_on_the_still_clock_switches_the_toast_where_it_is() {
+        let mut slide = Slide::default();
+        assert_eq!(
+            slide.update_on(ToastClock::Still, |_| true),
+            (Some(true), false)
+        );
+        // Hidden, then shown again, at the same moment: it sounds each change and stays put.
+        assert_eq!(
+            slide.update_on(ToastClock::Still, |_| false),
+            (Some(false), false)
+        );
+        assert_eq!(slide.portion, 0.0);
+        assert_eq!(slide.update_on(ToastClock::Still, |_| false), (None, false));
+        assert_eq!(
+            slide.update_on(ToastClock::Still, |_| true),
+            (Some(true), false)
+        );
+        assert_eq!(slide.update_on(ToastClock::Still, |_| true), (None, false));
+        assert_eq!(slide.portion, 0.0);
+    }
+
+    #[test]
+    fn normal_play_slides_toasts_on_real_time() {
+        let mut real = Slide::default();
+        real.update_on(ToastClock::Real, |_| true);
+        std::thread::sleep(Duration::from_millis(60));
+        real.update_on(ToastClock::Real, |_| true);
+        assert!(real.portion > 0.0, "{}", real.portion);
+        let mut notes = MusicNotes::default();
+        notes.tick(ToastClock::Real);
+        assert_ne!(
+            notes.color,
+            MusicNotes::default().color,
+            "the notes change colour"
+        );
     }
 }

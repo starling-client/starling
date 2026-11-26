@@ -13,6 +13,8 @@ autotests = false
 sunrise-mod-api-gen = { path = "../sunrise-mod-api-gen" }
 
 [dependencies]
+cap-fs-ext = "3.4.6"
+cap-std = "3.4.6"
 sunrise-hooks = { path = "../sunrise-hooks" }
 sunrise-mod-runtime = { path = "../sunrise-mod-runtime" }
 mod_api = { package = "sunrise-mod-vocab", path = "../sunrise-mod-vocab" }
@@ -40,15 +42,13 @@ sunrise-server-files = { path = "../sunrise-server-files" }
 sunrise-java-properties = { path = "../sunrise-java-properties" }
 # Shader packs: reading them and turning their GLSL into naga modules.
 sunrise-shaders = { path = "../sunrise-shaders" }
-# Sunrise's own shader packs: the format, the stages and the check (docs/shaders.md).
-sunrise-shader-api = { path = "../sunrise-shader-api" }
 # Play with Friends: invite codes and their tunnel; the `friends` feature.
 sunrise-friends = { path = "../sunrise-friends", optional = true }
 # The narrator (GameNarrator): text-to-speech of chat, system messages and screens.
 sunrise-narrator = { path = "../sunrise-narrator" }
 # Sunrise mods: native code and content packages (docs/modding/src/how-to/content-mods.md).
 # Their runtime is the `mods` feature.
-sunrise-mod-package = { path = "../sunrise-mod-package", default-features = false, features = ["index", "runtime-process"] }
+sunrise-mod-package = { path = "../sunrise-mod-package", default-features = false, features = ["index-read", "runtime-process"] }
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "vulkan", "metal", "wgsl", "naga-ir"] }
 winit = "0.30.13"
 pollster = "0.4"
@@ -84,7 +84,7 @@ sunrise-system = { path = "../sunrise-system" }
 # anonymous "I'm playing" ping is the Sunrise layer's (`sunrise-heartbeat`, in the official executable).
 sunrise-telemetry = { path = "../sunrise-telemetry", default-features = false }
 sunrise-bench = { path = "../sunrise-bench" }
-zip = { version = "9.1.3", default-features = false, features = ["deflate"] }
+zip = { version = "9.1.3", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 # Controllers (evdev + libudev on Linux, IOKit on macOS, Windows.Gaming.Input); the `controllers` feature.
 gilrs = { version = "0.11", optional = true }
 # The DualSense's rumble, adaptive triggers and lights over HID (gilrs only reads it).
@@ -93,9 +93,6 @@ sunrise-dualsense = { path = "../sunrise-dualsense", optional = true }
 ureq = { version = "2", default-features = false, features = ["tls"] }
 # `LevelStorageAccess.estimateDiskSpace`: usable disk space, without unsafe code on Windows.
 fs4 = { version = "1.1.0", default-features = false, features = ["sync"] }
-# Mod file roots are descriptor-bound: no symlink race can leave a mod's area.
-cap-std = "3"
-cap-fs-ext = "3"
 
 [target.'cfg(unix)'.dependencies]
 # The server thread's CPU time per tick (`SUNRISE_SPIKES`, spans.rs).
@@ -175,9 +172,11 @@ path = "tests/it/main.rs"
 workspace = true
 
 [dev-dependencies]
+# `runtime_files`' test packs a mod folder.
+sunrise-mod-package = { path = "../sunrise-mod-package", default-features = false, features = ["folder"] }
 sunrise-hooks = { path = "../sunrise-hooks", features = ["test-support"] }
-sunrise-client-core = { path = "../sunrise-client-core", features = ["test-language-publication"] }
-sunrise-client-lib = { path = "../sunrise-client-lib", default-features = false, features = ["test-menu-validity", "test-payload-probe", "test-publication-scope", "test-residency-observer", "test-dry-side"] }
+sunrise-client-core = { path = "../sunrise-client-core", features = ["test-language-publication", "test-effect-registry"] }
+sunrise-client-lib = { path = "../sunrise-client-lib", default-features = false, features = ["test-menu-validity", "test-payload-probe", "test-publication-scope", "test-residency-observer", "test-dry-side", "test-tooltip-factories", "test-pack-feedback", "test-still-clock"] }
 tempfile = "3"
 sunrise-mod-runtime = { path = "../sunrise-mod-runtime", features = ["test-work-count"] }
 sunrise-threads = { path = "../sunrise-threads", features = ["test-allocation-count", "test-game-dir"] }

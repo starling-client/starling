@@ -44,6 +44,12 @@ impl Game<'_> {
     /// The box a typed character goes to (`type_chars_into_screen`'s choice), as it stands
     /// after `edited` when there is one, whose responders then run.
     fn focused_text_edit(&mut self, edited: Option<&TextEdit>) -> Option<TextEdit> {
+        if self.screen_state.widgets.has_focus() {
+            return self.mounted_focused_text_edit(edited);
+        }
+        if self.screen_over_playing() {
+            return None;
+        }
         if control::title_owns_text(&self.screen, self.title.is_some()) {
             let mut state = None;
             self.title
@@ -268,11 +274,12 @@ mod tests {
                 game.screen_chars_typed(Some("q"));
                 assert_eq!(taken(), ["q"]);
 
-                // A prompt over the screen keeps the box and the hook away.
+                // A prompt over the screen keeps the underlying screen's box away.
                 game.screen = Screen::Social;
                 game.link_prompt = Some("https://example.com".into());
                 game.ime_commit("w");
-                assert_eq!(taken(), [""; 0]);
+                assert_eq!(taken(), ["w"]);
+                assert_eq!(social(game), ("^z".to_owned(), 1, 1));
                 game.link_prompt = None;
 
                 // The title's own field.

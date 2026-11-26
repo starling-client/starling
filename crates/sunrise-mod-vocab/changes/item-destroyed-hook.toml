@@ -1,0 +1,8 @@
+ids = [
+    "hook:item_destroyed",
+    "method:ItemPart::item_destroyed",
+    "type:HookId",
+    "type:ItemDestroyedEvent",
+]
+why = "Add ItemPart::item_destroyed (IItemExtension.onDestroyed / vanilla ItemStack.onDestroyed) so custom item containers and items can react transactionally when a dropped item entity reaches zero health from damage and spawn drop stacks, seeing the original intact stack before built-in container components clear and before discard."
+migrate = "Additive hook on ItemPart. Implement ItemPart::item_destroyed to inspect event.stack (or the live event.item via ItemEntityRef::with_stack) with its original components intact and append stacks to event.drops for spawning at the entity's position."

@@ -594,6 +594,15 @@ public final class VanillaTradingOracle {
                         }
                     }
                     case "close" -> p.closeContainer();
+                    case "restock" -> {
+                        // WorkAtPoi.start's restock at game time f[1], day f[2], screen open or not.
+                        if (v instanceof Villager villager) {
+                            var clock = level.registryAccess().lookupOrThrow(Registries.WORLD_CLOCK).getOrThrow(WorldClocks.OVERWORLD);
+                            this.getWorldData().overworldData().setGameTime(Long.parseLong(f[1]));
+                            this.clockManager().setTotalTicks(clock, Long.parseLong(f[2]) * 24000L + 1000L);
+                            if (villager.shouldRestock(level)) villager.restock();
+                        }
+                    }
                     default -> throw new IllegalArgumentException(s);
                 }
                 StringBuilder sb = new StringBuilder(name + " " + (k++) + " " + s);
@@ -617,7 +626,7 @@ public final class VanillaTradingOracle {
                 }
                 sb.append(" offers");
                 for (MerchantOffer o : v.getOffers()) {
-                    sb.append(' ').append(o.getUses()).append('/').append(o.getSpecialPriceDiff()).append('/').append(o.getCostA().getCount());
+                    sb.append(' ').append(o.getUses()).append('/').append(o.getSpecialPriceDiff()).append('/').append(o.getCostA().getCount()).append('/').append(o.getDemand());
                 }
                 sb.append(" orbs");
                 for (ExperienceOrb orb : level.getEntitiesOfClass(ExperienceOrb.class, new AABB(at[0] - 8, at[1] - 8, at[2] - 8, at[0] + 8, at[1] + 8, at[2] + 8))) {

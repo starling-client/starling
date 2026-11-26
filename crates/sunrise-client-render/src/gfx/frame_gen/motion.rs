@@ -314,10 +314,18 @@ fn translucent(layer: u32) -> bool {
 /// Drawn without depth writes, so `depth` can't say where it shows: breaking cracks (11,
 /// 12), shadows and energy swirls.
 fn writes_depth(layer: u32) -> bool {
-    use super::super::entity_batch::{ENERGY_SWIRL_OVERLAY, SHADOW_OVERLAY};
+    use super::super::entity_batch::{
+        ARMOR_GLINT_ONLY_OVERLAY, BANNER_PATTERN_OVERLAY, ENERGY_SWIRL_OVERLAY, GLINT_ONLY_OVERLAY,
+        SHADOW_OVERLAY,
+    };
     !matches!(
         layer & 0xffff,
-        11 | 12 | SHADOW_OVERLAY | ENERGY_SWIRL_OVERLAY
+        11 | 12
+            | SHADOW_OVERLAY
+            | ENERGY_SWIRL_OVERLAY
+            | GLINT_ONLY_OVERLAY
+            | BANNER_PATTERN_OVERLAY
+            | ARMOR_GLINT_ONLY_OVERLAY
     )
 }
 

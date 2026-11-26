@@ -461,6 +461,57 @@ impl OwnerTypes {
             },
         }
     }
+
+    /// The module that declares `owner`, named by an `impl` in `module`, by the rule
+    /// [`OwnerTypes::exclusion`] reads it with: the type the module declares or its `use`s lead
+    /// to; where no `use` names it, the crate's only type of that name. `None` when the name
+    /// leads to no single type of the crate.
+    pub(crate) fn declaring(&self, module: &str, owner: &str) -> Option<String> {
+        match self.binding(module, owner, &mut BTreeSet::new()) {
+            Binding::Local(declaring) => Some(declaring),
+            Binding::NotFound => match self.types.get(owner) {
+                Some(modules) if modules.len() == 1 => modules.first().cloned(),
+                _ => None,
+            },
+            Binding::Foreign | Binding::Unresolved | Binding::Ambiguous => None,
+        }
+    }
+
+    /// What `files`, a crate's, say about its types.
+    pub(crate) fn of(files: &[ModuleFile]) -> Result<Self, String> {
+        let mut types = Self::default();
+        for file in files {
+            let text = fs::read_to_string(&file.path)
+                .map_err(|e| format!("{}: {e}", file.path.display()))?;
+            let parsed =
+                syn::parse_file(&text).map_err(|e| format!("{}: {e}", file.path.display()))?;
+            types.declare(&file.module, &parsed.items);
+        }
+        Ok(types)
+    }
+}
+
+/// What the files of `krate`, a crate below the game crate, say about its types: the files the
+/// staging pass reads.
+pub(crate) fn crate_owner_types(root: &Path, krate: &str) -> Result<OwnerTypes, String> {
+    OwnerTypes::of(&source::crate_files(root, krate)?)
+}
+
+/// The module a method of a crate below the game crate is named under in a target: the module
+/// that declares its `impl`'s type, the path `internals.txt` gives the type, in whichever file of
+/// the crate the `impl` is. Moving an `impl` between the files of a module keeps its methods'
+/// targets. A type written as a path, or a name that leads to no single type of the crate,
+/// keeps the `impl`'s own module (`module`).
+pub(crate) fn owner_module(types: &OwnerTypes, module: &str, self_ty: &Type) -> String {
+    let Type::Path(ty) = self_ty else {
+        return module.to_owned();
+    };
+    match &ty.path.segments.iter().collect::<Vec<_>>()[..] {
+        [name] if ty.qself.is_none() => types
+            .declaring(module, &name.ident.to_string())
+            .unwrap_or_else(|| module.to_owned()),
+        _ => module.to_owned(),
+    }
 }
 
 /// The names `items`' `use`s bring in from other crates: paths that don't start at `crate`,
@@ -511,7 +562,7 @@ pub fn qualified(sig: &syn::Signature, trait_path: &syn::Path) -> syn::Signature
 
 /// Whether `sig` still names something through `Self::` (an associated constant of the trait, in
 /// an array length): that has no form outside the trait's `impl`.
-fn names_associated(sig: &syn::Signature) -> bool {
+pub(crate) fn names_associated(sig: &syn::Signature) -> bool {
     struct Find(bool);
     impl<'ast> syn::visit::Visit<'ast> for Find {
         fn visit_path(&mut self, path: &'ast syn::Path) {
@@ -584,9 +635,17 @@ impl syn::visit_mut::VisitMut for ElideTo {
             *lifetime = self.0.clone();
         }
     }
-    // A function pointer or trait object in the return elides on its own.
+    // A function pointer in the return elides on its own; a trait object's explicit `'_` bound
+    // (`Box<dyn Read + '_>`) borrows from the receiver while trait-bound arguments (`dyn Fn(&T)`)
+    // elide on their own.
     fn visit_type_bare_fn_mut(&mut self, _: &mut syn::TypeBareFn) {}
-    fn visit_type_trait_object_mut(&mut self, _: &mut syn::TypeTraitObject) {}
+    fn visit_type_trait_object_mut(&mut self, object: &mut syn::TypeTraitObject) {
+        for bound in &mut object.bounds {
+            if let syn::TypeParamBound::Lifetime(lifetime) = bound {
+                self.visit_lifetime_mut(lifetime);
+            }
+        }
+    }
 }
 
 /// The function-pointer type of `sig`, as written inside its `impl`: the receiver as the first
@@ -657,6 +716,9 @@ pub fn pointer_type(sig: &syn::Signature) -> proc_macro2::TokenStream {
 /// A replaceable function, as found in a parsed file.
 struct Found<'a> {
     module: String,
+    /// The module its target names it under: `module`, or for a method of a crate below the
+    /// game crate the module that declares its type ([`owner_module`]).
+    named_in: String,
     sig: &'a syn::Signature,
     body: &'a syn::Block,
     /// The `impl` it is a method of.
@@ -673,13 +735,13 @@ impl Found<'_> {
         match (self.owner, self.trait_name) {
             (Some(block), Some(trait_name)) => format!(
                 "{}::<{} as {trait_name}>::{}",
-                self.module,
+                self.named_in,
                 source::owner(&block.self_ty),
                 self.sig.ident
             ),
             (Some(block), None) => format!(
                 "{}::{}::{}",
-                self.module,
+                self.named_in,
                 source::owner(&block.self_ty),
                 self.sig.ident
             ),
@@ -719,6 +781,7 @@ fn functions<'a>(
             {
                 out.push(Found {
                     module: module.to_owned(),
+                    named_in: module.to_owned(),
                     sig: &function.sig,
                     body: &function.block,
                     owner: None,
@@ -744,6 +807,7 @@ fn functions<'a>(
                     {
                         out.push(Found {
                             module: module.to_owned(),
+                            named_in: module.to_owned(),
                             sig: &method.sig,
                             body: &method.block,
                             owner: Some(block),
@@ -848,7 +912,22 @@ fn inventory(
 
 /// Marked lower-crate functions and their source locations.
 pub(crate) fn marked(root: &Path) -> Result<Vec<(String, String)>, String> {
-    fn scan(module: &str, items: &[Item], out: &mut Vec<(String, String)>) -> Result<(), String> {
+    marked_by(root, true)
+}
+
+/// [`marked`], with each method under the module of the file its `impl` is in rather than its
+/// type's: where the item is, for a pass that reads it there.
+pub(crate) fn marked_items(root: &Path) -> Result<Vec<(String, String)>, String> {
+    marked_by(root, false)
+}
+
+fn marked_by(root: &Path, by_type: bool) -> Result<Vec<(String, String)>, String> {
+    fn scan(
+        module: &str,
+        items: &[Item],
+        types: Option<&OwnerTypes>,
+        out: &mut Vec<(String, String)>,
+    ) -> Result<(), String> {
         for item in items {
             match item {
                 Item::Fn(f) if source::marker(&f.attrs, "replaceable").is_some() => {
@@ -869,7 +948,11 @@ pub(crate) fn marked(root: &Path) -> Result<Vec<(String, String)>, String> {
                             && source::marker(&f.attrs, "replaceable").is_some()
                         {
                             let path = source::plain_path(&format!(
-                                "{module}::{}::{}",
+                                "{}::{}::{}",
+                                types.map_or_else(
+                                    || module.to_owned(),
+                                    |types| owner_module(types, module, &block.self_ty)
+                                ),
                                 source::owner(&block.self_ty),
                                 f.sig.ident
                             ));
@@ -896,7 +979,7 @@ pub(crate) fn marked(root: &Path) -> Result<Vec<(String, String)>, String> {
                 }
                 Item::Mod(m) => {
                     if let Some((_, items)) = &m.content {
-                        scan(&format!("{module}::{}", m.ident), items, out)?;
+                        scan(&format!("{module}::{}", m.ident), items, types, out)?;
                     }
                 }
                 _ => {}
@@ -936,19 +1019,28 @@ pub(crate) fn marked(root: &Path) -> Result<Vec<(String, String)>, String> {
         if !lib.exists() {
             continue;
         }
-        for file in source::module_files(
+        let files = source::module_files(
             name.clone(),
             lib.clone(),
             lib.parent().unwrap().to_owned(),
             true,
-        )? {
+        )?;
+        let mut marking = Vec::new();
+        for file in &files {
             let text = fs::read_to_string(&file.path).map_err(|e| e.to_string())?;
-            if !text.contains("replaceable") {
-                continue;
+            if text.contains("replaceable") {
+                let parsed =
+                    syn::parse_file(&text).map_err(|e| format!("{}: {e}", file.path.display()))?;
+                marking.push((&file.module, parsed.items));
             }
-            let parsed =
-                syn::parse_file(&text).map_err(|e| format!("{}: {e}", file.path.display()))?;
-            scan(&file.module, &parsed.items, &mut out)?;
+        }
+        if marking.is_empty() {
+            continue;
+        }
+        // A method is named by its type's module, which may be another file's.
+        let types = by_type.then(|| OwnerTypes::of(&files)).transpose()?;
+        for (module, items) in &marking {
+            scan(module, items, types.as_ref(), &mut out)?;
         }
     }
     out.sort();
@@ -1070,6 +1162,11 @@ pub fn stage(root: &Path) -> Result<Staged, String> {
             let mut found = Vec::new();
             functions(&file.module, items, &traits, &types, &mut found);
             if krate.marked_only {
+                for found in &mut found {
+                    if let Some(block) = found.owner {
+                        found.named_in = owner_module(&types, &found.module, &block.self_ty);
+                    }
+                }
                 found.retain(|found| {
                     let target = source::plain_path(&found.target());
                     list.iter()
@@ -1584,6 +1681,24 @@ mod tests {
         assert_eq!(
             pointer_type(&free.sig).to_string(),
             quote!(fn(f32) -> i64).to_string()
+        );
+        let trait_obj: syn::ImplItemFn = syn::parse_str(
+            "fn open(&self, id: &str) -> Result<Box<dyn Read + '_>, Err> { todo!() }",
+        )
+        .unwrap();
+        assert_eq!(
+            pointer_type(&trait_obj.sig).to_string(),
+            quote!(for<'__fnr_s> fn(&'__fnr_s Self, &str) -> Result<Box<dyn Read + '__fnr_s>, Err>)
+                .to_string()
+        );
+        let fn_trait_obj: syn::ImplItemFn = syn::parse_str(
+            "fn mapper(&self, a: &str) -> Box<dyn Fn(&str) -> &str + '_> { todo!() }",
+        )
+        .unwrap();
+        assert_eq!(
+            pointer_type(&fn_trait_obj.sig).to_string(),
+            quote!(for<'__fnr_s> fn(&'__fnr_s Self, &str) -> Box<dyn Fn(&str) -> &str + '__fnr_s>)
+                .to_string()
         );
     }
 
@@ -2131,5 +2246,36 @@ mod tests {
             fs::read_to_string(root.path().join("crates/sunrise-high/src/lib.rs")).unwrap(),
             "#[sunrise_mod_api_macros::replaceable] pub fn drawn() {}\n"
         );
+    }
+
+    #[test]
+    fn stages_method_returning_trait_object_with_elided_lifetime() {
+        let root = tempfile::tempdir().unwrap();
+        let write = |path: &str, text: &str| {
+            let path = root.path().join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, text).unwrap();
+        };
+        write(
+            "crates/sunrise-client/Cargo.toml",
+            "[package]\nname = 'sunrise-client'\n",
+        );
+        write("crates/sunrise-client/src/lib.rs", "mod game;\n");
+        write(
+            "crates/sunrise-client/src/game.rs",
+            "impl Game<'_> {\n\
+             fn open_resource(&self, id: &str) -> Result<Option<Box<dyn std::io::Read + '_>>, ()> { let _ = id; Ok(None) }\n\
+             fn mapper(&self, _tag: &str) -> Box<dyn Fn(&str) -> &str + '_> { Box::new(|s| s) }\n\
+             }\n",
+        );
+
+        let staged = stage(root.path()).unwrap();
+        assert_eq!(staged.functions, 2);
+        let rewritten =
+            fs::read_to_string(root.path().join("crates/sunrise-client/src/game.rs")).unwrap();
+        let open_expected = "for < '__fnr_s > fn (& '__fnr_s Self , & str) -> Result < Option < Box < dyn std :: io :: Read + '__fnr_s > > , () >";
+        assert!(rewritten.contains(open_expected), "{rewritten}");
+        let mapper_expected = "for < '__fnr_s > fn (& '__fnr_s Self , & str) -> Box < dyn Fn (& str) -> & str + '__fnr_s >";
+        assert!(rewritten.contains(mapper_expected), "{rewritten}");
     }
 }

@@ -8,6 +8,11 @@ use std::collections::HashMap;
 use sunrise_client::sound_engine::InstanceId;
 use sunrise_core::identifier::Identifier;
 
+/// `Channel.setSelfPosition` sends float coordinates to the mixer.
+fn sound_position_readable(position: [f64; 3]) -> bool {
+    position.into_iter().all(|axis| (axis as f32).is_finite())
+}
+
 /// What a mod asked of one of its sounds, applied at the next audio update.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Change {
@@ -17,7 +22,7 @@ enum Change {
     Pitch { pitch: f32 },
 }
 impl Change {
-    /// It ends the sound when applied: a stop, or a fade to 0 at once.
+    /// It ends the sound when applied: a stop or an immediate fade to a nonpositive volume.
     fn stops(self) -> bool {
         match self {
             Change::Stop => true,
@@ -79,26 +84,47 @@ impl ModSounds {
 }
 
 impl Game<'_> {
+    /// Queues a client-local sound for the next audio update, with a delay in unpaused
+    /// sound-engine ticks (`ClientLevel.playLocalSound`, `SoundEngine.playDelayed`).
+    pub(in crate::game) fn play_local_sound(
+        &self,
+        sound: &SoundPlay,
+        after: u32,
+    ) -> Option<SoundRef> {
+        if !self.native_window()
+            || !super::native_hooks::sound_id(&sound.identifier)
+            || !sound_position_readable(sound.position)
+            || !sound.volume.is_finite()
+            || !sound.pitch.is_finite()
+            || !sound.effects.valid()
+        {
+            return None;
+        }
+        Some(self.mod_sounds.queue(sound, after))
+    }
+
     /// Plays the sounds client mods asked for since the last update, then applies their stops
-    /// and fades, and forgets the instances the engine let go. A play stopped (or faded to 0 at
-    /// once) before this update never reaches the engine. Called from the audio update
+    /// and fades, and forgets the instances the engine let go. A play ended before this update
+    /// never reaches the engine. Called from the audio update
     /// (`tick_sound_engine`), before the engine's own tick.
     pub(super) fn apply_mod_sounds(&mut self) {
-        let sounds = &mut self.mod_sounds;
-        let stopped: Vec<u64> = sounds
+        let stopped: Vec<u64> = self
+            .mod_sounds
             .changes
             .get_mut()
             .iter()
             .filter(|(_, change)| change.stops())
             .map(|&(id, _)| id)
             .collect();
-        for (id, sound, after) in sounds.queued.get_mut().drain(..) {
+        let queued = std::mem::take(self.mod_sounds.queued.get_mut());
+        for (id, sound, after) in queued {
             if stopped.contains(&id) {
                 continue;
             }
-            let instance = self.audio.play_mod_sound(&sound, after);
-            sounds.started.insert(id, instance);
+            let instance = self.play_audio_mod_sound(&sound, after);
+            self.mod_sounds.started.insert(id, instance);
         }
+        let sounds = &mut self.mod_sounds;
         for (id, change) in sounds.changes.get_mut().drain(..) {
             let Some(&instance) = sounds.started.get(&id) else {
                 continue;
@@ -120,8 +146,8 @@ impl Game<'_> {
             .started
             .retain(|_, instance| audio.mod_sound_state(*instance) != SoundState::Stopped);
     }
-    /// For a client mod: where its sound is. A stop or a fade to 0 at once asked since the last
-    /// audio update already reads `Stopped`. None on a server.
+    /// For a client mod: where its sound is. A stop or an immediate fade to a nonpositive
+    /// volume already reads `Stopped` before the next audio update. None on a server.
     pub(super) fn sound_state(&self, sound: SoundRef) -> Option<SoundState> {
         if !self.native_window() {
             return None;
@@ -159,39 +185,24 @@ impl Game<'_> {
     pub(super) fn sound_stop(&self, sound: SoundRef) -> bool {
         self.change_mod_sound(sound, Change::Stop)
     }
-    /// For a client mod: from the next audio update, its sound's volume moves to `volume` (at
-    /// or above 0, as `SoundPlay`'s) in equal steps over the next `ticks` unpaused ticks it plays,
-    /// or at once for 0. While the game is paused the fade waits, as vanilla's tickable sounds do
-    /// (`SoundEngine.tick(paused)`), and an interface or music sound keeps playing at its volume
-    /// (`pauseAllExcept(MUSIC, UI)`). A fade to 0 stops it when the fade ends, as
-    /// `LoopSoundInstance.fadeOut` does;
-    /// a fade up from a `SoundPlay` at volume 0 fades it in. A later fade replaces one in
-    /// progress. False, changing nothing, for a volume that isn't a number at or above 0, a sound
-    /// that is already over, and on a server.
+    /// Changes this sound's volume over `ticks` unpaused sound-engine ticks; a nonpositive
+    /// target stops it at the end. The mixer computes playback gain from the current volume.
     pub(super) fn sound_fade(&self, sound: SoundRef, volume: f32, ticks: u32) -> bool {
-        if !volume.is_finite() || volume < 0.0 {
+        if !volume.is_finite() {
             return false;
         }
         self.change_mod_sound(sound, Change::Fade { volume, ticks })
     }
-    /// For a client mod: from the next audio update, its sound plays at `position` (in blocks,
-    /// within 30 million of the origin): the same instance, not restarted. False, changing
-    /// nothing, for a position that isn't finite or is out of range, a sound that is already
-    /// over, and on a server.
+    /// Moves the same instance from the next audio update, with no world-border check.
     pub(super) fn sound_move_to(&self, sound: SoundRef, position: [f64; 3]) -> bool {
-        if !position
-            .iter()
-            .all(|v| v.is_finite() && v.abs() <= 30_000_000.0)
-        {
+        if !sound_position_readable(position) {
             return false;
         }
         self.change_mod_sound(sound, Change::Move { position })
     }
-    /// For a client mod: from the next audio update, its sound plays at `pitch` (at or above
-    /// 0, as `SoundPlay`'s): the same instance, not restarted. False, changing nothing, for a
-    /// pitch that isn't a number at or above 0, a sound that is already over, and on a server.
+    /// Changes the base pitch of the same instance; the sound engine computes the final pitch.
     pub(super) fn sound_set_pitch(&self, sound: SoundRef, pitch: f32) -> bool {
-        if !pitch.is_finite() || pitch < 0.0 {
+        if !pitch.is_finite() {
             return false;
         }
         self.change_mod_sound(sound, Change::Pitch { pitch })
@@ -244,14 +255,14 @@ impl Game<'_> {
 mod tests {
     use mod_api::__private::game::{Fields, sound_ref};
     use mod_api::{
-        ClientHost, Flow, Hooks, ModEntry, RenderGuiPreEvent, SoundPlay, SoundRef, SoundState,
+        ClientHost, Flow, Hooks, ModEntry, RenderGuiPreEvent, SoundPlay, SoundRef, SoundSource,
+        SoundState,
     };
     use mod_platform::testing::with_mods;
     use std::sync::{Arc, Mutex};
     use sunrise_core::identifier::Identifier;
 
-    /// From a screen hook's read-only host: starts two sounds, stops one and fades the other,
-    /// keeping their handles.
+    /// From a screen hook's read-only host: queues sounds to stop, fade and keep waiting.
     struct Player(Arc<Mutex<Vec<SoundRef>>>);
     #[mod_api::__subscriptions]
     impl Hooks for Player {
@@ -259,6 +270,16 @@ mod tests {
             let click = SoundPlay::ui("minecraft:ui.button.click");
             let stopped = host.play_local_sound(&click, 40).unwrap();
             let faded = host.play_local_sound(&click.clone().looping(0), 0).unwrap();
+            let far = SoundPlay::at(
+                &click.identifier,
+                SoundSource::Blocks,
+                [31_000_000.0, 64.0, 0.0],
+            )
+            .with_volume(-0.5)
+            .with_pitch(-1.0)
+            .looping(-1);
+            let delayed = host.play_local_sound(&far, u32::MAX).unwrap();
+            assert_eq!(delayed.state(host), Some(SoundState::Waiting));
             assert_eq!(stopped.state(host), Some(SoundState::Waiting), "queued");
             assert!(stopped.stop(host));
             assert_eq!(
@@ -271,14 +292,12 @@ mod tests {
             assert!(!stopped.move_to(host, [0.0; 3]), "already over");
             assert!(!stopped.set_pitch(host, 1.0), "already over");
             assert!(!faded.move_to(host, [f64::NAN, 0.0, 0.0]));
-            assert!(!faded.move_to(host, [0.0, 31_000_000.0, 0.0]));
-            assert!(!faded.set_pitch(host, -1.0));
+            assert!(!delayed.move_to(host, [0.0, f64::MAX, 0.0]));
+            assert!(delayed.move_to(host, [0.0, 31_000_000.0, 0.0]));
             assert!(!faded.set_pitch(host, f32::NAN));
-            assert!(faded.move_to(host, [1.0, 2.0, 3.0]));
-            assert!(faded.set_pitch(host, 1.5));
+            assert!(faded.set_pitch(host, -1.0));
             assert!(!faded.fade(host, f32::NAN, 10));
-            assert!(!faded.fade(host, -1.0, 10));
-            assert!(faded.fade(host, 0.0, 20));
+            assert!(faded.fade(host, -1.0, 20));
             assert_eq!(
                 faded.state(host),
                 Some(SoundState::Waiting),
@@ -288,12 +307,22 @@ mod tests {
                 host.play_local_sound(&SoundPlay::ui("not an id"), 0)
                     .is_none()
             );
+            assert!(
+                host.play_local_sound(&click.clone().with_pitch(f32::NAN), 0)
+                    .is_none()
+            );
+            let mut unreadable = far;
+            unreadable.position[0] = f64::MAX;
+            assert!(host.play_local_sound(&unreadable, 0).is_none());
+            unreadable.position[0] = 0.0;
+            unreadable.effects.gain = f32::NAN;
+            assert!(host.play_local_sound(&unreadable, 0).is_none());
             let _ = (
                 host.sound_events(),
                 host.audio_devices(),
                 host.audio_device(),
             );
-            self.0.lock().unwrap().extend([stopped, faded]);
+            self.0.lock().unwrap().extend([stopped, faded, delayed]);
             Flow::Continue
         }
     }
@@ -310,8 +339,8 @@ mod tests {
         with_mods(mods, || {
             super::super::native_entity_refs::tests::with_client_game(|game| {
                 game.native_render_gui_pre(&mut false);
-                let [stopped, faded] = kept.lock().unwrap()[..] else {
-                    panic!("two handles");
+                let [stopped, faded, delayed] = kept.lock().unwrap()[..] else {
+                    panic!("three handles");
                 };
                 assert_ne!(stopped, faded, "a handle per play");
                 game.tick_sound_engine();
@@ -324,6 +353,7 @@ mod tests {
                 // Without an output device (a test machine) the engine starts nothing, so the
                 // faded loop is over here; with one it plays until its fade ends.
                 assert_ne!(game.sound_state(faded), Some(SoundState::Waiting));
+                assert_eq!(game.sound_state(delayed), Some(SoundState::Waiting));
                 // Every event the engine has, none dropped (prepared test resources may have
                 // no sounds at all).
                 let names = game.audio.event_names();
@@ -347,6 +377,17 @@ mod tests {
                 );
                 assert!(game.sound_events().is_empty());
             });
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn a_client_muffle_accepts_more_than_sixty_four_exempt_events() {
+        super::super::native_entity_refs::tests::with_client_game(|game| {
+            let exempt: Vec<_> = (0..65).map(|n| format!("test:sound.{n}")).collect();
+            let exempt: Vec<_> = exempt.iter().map(String::as_str).collect();
+            assert!(game.muffle_sounds(0.5, 0.5, 4, &exempt));
+            assert!(!game.muffle_sounds(0.5, 0.5, 4, &["not an id"]));
         });
     }
 

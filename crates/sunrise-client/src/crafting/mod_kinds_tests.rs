@@ -72,7 +72,7 @@ impl mod_api::CraftingRecipeKind for Kind {
         let mut out = vec![None; grid.cells.len()];
         if *value == 3 {
             out[4] = context.default_remainder(4);
-            let &key = context.items_in_tag(self.byproducts)?.first()?;
+            let &key = context.items_in_tag(self.byproducts.typed())?.first()?;
             let mut custom = mod_api::ItemStack::new(key, 2)?;
             custom.set_damage(23);
             out[0] = Some(custom);

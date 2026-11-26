@@ -11,7 +11,7 @@ description = "Repository tasks: cargo run -p xtask -- package BINARY OUTDIR | t
 sunrise-mod-api-gen = { path = "../crates/sunrise-mod-api-gen" }
 # `mixins-tool`: the pin, the carried patch and its applier, shared with the launcher.
 sunrise-addresses = { path = "../crates/sunrise-addresses" }
-sunrise-mod-package = { path = "../crates/sunrise-mod-package", default-features = false }
+sunrise-mod-package = { path = "../crates/sunrise-mod-package", default-features = false, features = ["sdk"] }
 sunrise-theme = { path = "../crates/sunrise-theme" }
 
 [lints]

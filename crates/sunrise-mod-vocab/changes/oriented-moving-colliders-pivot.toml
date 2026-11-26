@@ -1,0 +1,15 @@
+ids = [
+    "type:Collider",
+    "type:ColliderPose",
+    "type:ColliderError",
+    "type:Collider.rotation",
+    "type:ColliderError.OutOfRange",
+    "type:ColliderError.TooManyBoxes",
+    "handle:EntityRef::set_collider_pose",
+    "handle:EntityRef::set_collider_transform",
+    "handle:Collider::MAX_BOXES",
+    "handle:Collider::MAX_REACH",
+    "handle:Collider::ROTATION_TOLERANCE",
+]
+why = "Oriented moving colliders now carry a ColliderPose (rotation quaternion normalized when set, plus a local pivot offset in blocks from the entity position), replacing EntityRef::set_collider_transform with EntityRef::set_collider_pose. Both Collider and ColliderPose are #[non_exhaustive] with constructors (new, Default, with_pose, with_rotation, with_pivot). Removed artificial box-count, reach, and rotation-tolerance constants (Collider::MAX_BOXES, Collider::MAX_REACH, Collider::ROTATION_TOLERANCE) and their error variants (ColliderError::TooManyBoxes, ColliderError::OutOfRange); the sole size limit is vanilla ClientboundCustomPayloadPacket.MAX_PAYLOAD_SIZE (1,048,576 bytes), reported as ColliderError::TooLarge { bytes, limit }. Zero, NaN, and infinite quaternions are refused as ColliderError::NonFinite { index: None }."
+migrate = "Construct Collider with Collider::new(boxes) (and optional .with_pose(...) / .with_rotation(...) / .with_pivot(...)) instead of a struct literal. Replace EntityRef::set_collider_transform(host, rotation) with EntityRef::set_collider_pose(host, ColliderPose::default().with_rotation(rotation)). Replace matches on ColliderError::TooManyBoxes and ColliderError::OutOfRange with ColliderError::TooLarge { bytes, limit }."

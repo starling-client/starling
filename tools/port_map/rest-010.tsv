@@ -149,5 +149,5 @@ PacketDecoder.decode	port	crates/sunrise-protocol/src/packets/mod.rs::decode	rej
 PacketEncoder.encode	port	crates/sunrise-protocol/src/packets/mod.rs::encode	gap: minor: no error log and no skippable-packet path
 PacketListener.fillCrashReport	skip:debug		crash report category
 PacketProcessor.scheduleIfPossible	port	crates/sunrise-client/src/lan/io_pool.rs::Pool::push	gap: minor: no shutdown rejection here; the hand-off is Hub::poll
-PacketProcessor.processQueuedPackets	port	crates/sunrise-client/src/lan/hub.rs::Hub::process_inbox	per guest; at most 400 packets per tick, the rest wait
-PacketProcessor.ListenerAndPacket.handle	inline	crates/sunrise-client/src/lan/hub.rs::Hub::process_inbox	gap: minor: no per-packet error catch; a failing handler does not become a disconnect
+PacketProcessor.processQueuedPackets	port	crates/sunrise-client/src/lan/hub/moves.rs::Hub::process_inbox	per guest; at most 400 packets per tick, the rest wait
+PacketProcessor.ListenerAndPacket.handle	inline	crates/sunrise-client/src/lan/hub/moves.rs::Hub::process_inbox	gap: minor: no per-packet error catch; a failing handler does not become a disconnect

@@ -89,7 +89,7 @@ fn pickaxe_damage(game: &Game<'_>) -> u32 {
 
 /// Mending with 5 points and a part's `answer`: the pickaxe's damage after,
 /// and the experience left for the player.
-fn mend(game: &mut Game<'_>, part: &Ratio, damage: u32, answer: Option<f32>) -> (u32, u32) {
+fn mend(game: &mut Game<'_>, part: &Ratio, damage: u32, answer: Option<f32>) -> (u32, i32) {
     hold_pickaxe(game, damage);
     part.answer(answer);
     let rest = game.mending(5);
@@ -139,7 +139,7 @@ fn bad_ratios_never_break_the_repair() {
 
 #[test]
 #[ignore = "daily"]
-fn give_experience_points_repairs_through_the_part() {
+fn orb_pickup_repairs_through_the_part() {
     with_parts(|game, pickaxe, _| {
         game.player = Some(
             sunrise_client::motion::PlayerMotion::new(
@@ -149,7 +149,6 @@ fn give_experience_points_repairs_through_the_part() {
             .unwrap(),
         );
         crate::game::native_entity_refs::tests::bind_local_player(game, 20, 123);
-        let player = game.player(123).unwrap();
         for (damage, answer, after, experience) in [
             (100, None, 90, 0),
             (100, Some(4.0), 80, 0),
@@ -159,7 +158,9 @@ fn give_experience_points_repairs_through_the_part() {
             hold_pickaxe(game, damage);
             pickaxe.answer(answer);
             game.experience = Default::default();
-            assert!(game.player_give_experience_points(player, 5));
+            game.xp_delay = 0;
+            game.add_orb([0.0; 3], 5);
+            game.tick_experience();
             assert_eq!(pickaxe_damage(game), after);
             assert_eq!(game.experience.total, experience);
         }

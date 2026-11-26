@@ -1,0 +1,3 @@
+ids = ["handle:BlockEntityRef::set_loot_table", "handle:BlockEntityRef::unpack_loot_table"]
+why = "A mod container can take a loot table and seed as RandomizableContainer.setLootTable gives a chest: kept and saved as LootTable and LootTableSeed, and rolled into its empty slots with LootTable.fill on its first admitted open, container access or break, or when the mod calls unpack_loot_table (RandomizableContainer.unpackLootTable, which vanilla's getItem and setItem run first)."
+migrate = "Nothing to change. Call set_loot_table(host, table, seed) on a mod block entity whose block declares container slots, and unpack_loot_table(host) before reading or writing the slots of a container that may still hold a table."

@@ -50,6 +50,8 @@ pub struct ScreenQuad {
     /// A tint of the whole view (the underwater overlay), not something in front of it: in HDR
     /// output the world shines through it (`Renderer::draw_overlay`).
     pub world_tint: bool,
+    /// A registered texture atlas page, or the base atlas.
+    pub atlas_page: Option<usize>,
 }
 /// What a selected block overlay renderer draws with: quads in camera space (`+x` right, `+y` up, the
 /// camera at the origin looking down `-z`), under `GameRenderer.render3dHud`'s projection.
@@ -75,6 +77,18 @@ impl CameraQuads {
         argb: u32,
         sampling: u32,
     ) -> bool {
+        self.push_on_atlas(corners, uv, rect, argb, sampling, None)
+    }
+
+    pub fn push_on_atlas(
+        &mut self,
+        corners: [[f32; 3]; 4],
+        uv: [[f32; 2]; 4],
+        rect: [f32; 4],
+        argb: u32,
+        sampling: u32,
+        atlas_page: Option<usize>,
+    ) -> bool {
         if !corners.as_flattened().iter().all(|c| c.is_finite())
             || !uv.as_flattened().iter().all(|c| c.is_finite())
         {
@@ -94,6 +108,7 @@ impl CameraQuads {
             blend: Blend::Alpha,
             sampling,
             world_tint: false,
+            atlas_page,
         });
         true
     }
@@ -233,6 +248,7 @@ impl ScreenEffects {
             blend: Blend::Alpha,
             sampling,
             world_tint: false,
+            atlas_page: None,
         };
         let full = [[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]];
         // ScreenEffectRenderer.submitBlockSprite: u1/v1 at (-1, -1), colour 0xFF191919.
@@ -304,6 +320,7 @@ impl ScreenEffects {
             blend,
             sampling,
             world_tint: false,
+            atlas_page: None,
         };
         for d in input.gui_overlays {
             match d {

@@ -252,11 +252,38 @@ impl Game<'_> {
                 .mobs
                 .iter()
                 .find(|mob| mob.id == id)
-                .map(|mob| sunrise_client::mobs::drops::loot_entity(mob, None))
+                .map(|mob| {
+                    // EntityPredicate's `vehicle`: the mob it rides, as at its death.
+                    let vehicle = mob
+                        .extra
+                        .mount
+                        .and_then(|mount| self.mobs.iter().find(|o| o.id == mount))
+                        .map(|o| sunrise_world::loot::LootEntity::new(&o.kind.id));
+                    sunrise_client::mobs::drops::loot_entity_with_variants(
+                        mob,
+                        vehicle,
+                        Some(self.world_variants()),
+                    )
+                })
                 .unwrap_or_else(|| sunrise_world::loot::LootEntity::new(&self.target_type(target))),
-            Target::Player => self.killer_loot_entity(None),
-            Target::Guest(conn) => self.killer_loot_entity(Some(conn)),
-            _ => sunrise_world::loot::LootEntity::new(&self.target_type(target)),
+            _ => {
+                let mut entity = sunrise_world::loot::LootEntity {
+                    kind: self.target_type(target),
+                    living: target.is_living(),
+                    ..Default::default()
+                };
+                if entity.living {
+                    entity.equipment = mod_api::EquipmentSlot::ALL
+                        .into_iter()
+                        .zip(sunrise_world::loot::EQUIPMENT_SLOTS)
+                        .filter_map(|(slot, name)| {
+                            let stack = self.equipment_stack_for(target, slot)?;
+                            Some((name.to_owned(), super::creatures::to_loot(&stack.project())))
+                        })
+                        .collect();
+                }
+                entity
+            }
         };
         if entity.nbt.is_none()
             && self
@@ -293,14 +320,29 @@ impl Game<'_> {
             )
         });
         self.caller_loot(origin, None).with(|| {
-            let items = world_items!(self);
-            match items.loot_sequence(table) {
-                Some(sequence) => {
-                    let random = self.rand_sequences.get(&sequence, self.level.seed);
-                    items.roll_loot_table(table, held, this, random)
+            // Location checks read the level at ORIGIN, so the roll draws from copies
+            // of the randoms put back after it.
+            let mut random = self.world.random.clone();
+            let mut sequences = std::mem::take(&mut self.rand_sequences);
+            let drops = {
+                let level = crate::game::advancements::View(&*self);
+                let read = |predicate: &serde_json::Value, at: [f64; 3]| {
+                    sunrise_client::advancements::location(predicate, at, &level)
+                };
+                let location =
+                    origin.map(|origin| sunrise_client::advancements::loot_location(origin, &read));
+                let items = world_items!(self);
+                match items.loot_sequence(table) {
+                    Some(sequence) => {
+                        let random = sequences.get(&sequence, self.level.seed);
+                        items.roll_loot_table(table, held, this, location, random)
+                    }
+                    None => items.roll_loot_table(table, held, this, location, &mut random),
                 }
-                None => items.roll_loot_table(table, held, this, &mut self.world.random),
-            }
+            };
+            self.world.random = random;
+            self.rand_sequences = sequences;
+            drops
         })
     }
 }

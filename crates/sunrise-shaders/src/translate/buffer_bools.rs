@@ -11,7 +11,7 @@
 use std::collections::BTreeMap;
 
 use super::Error;
-use super::scan::{is_ident, significant};
+use super::scan::{error_at_token, is_ident, significant};
 use crate::Preprocessed;
 use crate::macros::lex;
 
@@ -33,29 +33,16 @@ struct Block<'a> {
 
 /// `pp` with its buffers' `bool` members rewritten, and what could not be.
 pub(super) fn rewrite(pp: &Preprocessed) -> (Option<Preprocessed>, Vec<Error>) {
-    if !pp.code.contains("buffer") || !(pp.code.contains("bool") || pp.code.contains("bvec")) {
+    if !pp.code().contains("buffer") || !(pp.code().contains("bool") || pp.code().contains("bvec"))
+    {
         return (None, Vec::new());
     }
-    let tokens = lex(&pp.code);
+    let tokens = lex(pp.code());
     let next = |i: usize| (i + 1..tokens.len()).find(|&j| significant(tokens[j]));
     let prev = |i: usize| (0..i).rev().find(|&j| significant(tokens[j]));
-    let line_of = |at: usize| -> Error {
-        let line: usize = tokens[..at.min(tokens.len())]
-            .iter()
-            .map(|t| t.matches('\n').count())
-            .sum();
-        let o = pp.lines.get(line).copied().unwrap_or_default();
-        Error {
-            file: pp.files.get(o.file as usize).cloned().unwrap_or_default(),
-            line: o.line,
-            message: String::new(),
-        }
-    };
     let mut errors = Vec::new();
     let mut fail = |at: usize, message: String| {
-        let mut e = line_of(at);
-        e.message = message;
-        errors.push(e);
+        errors.push(error_at_token(pp, &tokens, at, message));
     };
     // The matching close of the bracket at `open`.
     let matching = |open: usize| -> Option<usize> {
@@ -313,7 +300,7 @@ pub(super) fn rewrite(pp: &Preprocessed) -> (Option<Preprocessed>, Vec<Error>) {
     if !errors.is_empty() {
         return (None, errors);
     }
-    let mut code = String::with_capacity(pp.code.len() + 32);
+    let mut code = String::with_capacity(pp.code().len() + 32);
     for (i, &t) in tokens.iter().enumerate() {
         if let Some(text) = before.get(&i) {
             code.push_str(text);
@@ -327,7 +314,7 @@ pub(super) fn rewrite(pp: &Preprocessed) -> (Option<Preprocessed>, Vec<Error>) {
             code.push_str(text);
         }
     }
-    (Some(Preprocessed { code, ..pp.clone() }), errors)
+    (Some(pp.with_code(code)), errors)
 }
 
 #[cfg(test)]
@@ -343,7 +330,7 @@ mod tests {
         let stage = preprocess(&pack, "composite.fsh", &Macros::standard());
         let (rewritten, errors) = rewrite(&stage);
         assert!(errors.is_empty(), "{errors:?}");
-        rewritten.map(|p| p.code)
+        rewritten.map(|p| p.code().to_owned())
     }
 
     #[test]
@@ -359,7 +346,7 @@ mod tests {
         let pack =
             Pack::from_zip_bytes("P.zip", zip(&[("shaders/composite.fsh", SOURCE)])).unwrap();
         let before = preprocess(&pack, "composite.fsh", &Macros::standard());
-        assert_eq!(out.lines().count(), before.code.lines().count());
+        assert_eq!(out.lines().count(), before.code().lines().count());
     }
 
     #[test]

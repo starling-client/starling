@@ -118,6 +118,7 @@ enum Sensor {
 /// A breeze's or creaking's brain.
 #[derive(Clone, Debug)]
 pub struct Brain {
+    pub(super) generation: u64,
     pub mem: Memories,
     sensors: Vec<(Sensor, i64)>,
     /// The active non-core activity (`CORE` is always active).
@@ -171,27 +172,30 @@ pub fn init(m: &mut Mob, shuffle_seed: i64) {
         .iter()
         .map(|&k| (k, i64::from(m.random.next_int_bound(20).unwrap_or(0))))
         .collect();
-    let (mut list, default_activity) = if breeze {
+    let (list, default_activity) = if breeze {
         (breeze_packages(shuffle_seed), Act::Fight)
     } else {
         (creaking_packages(shuffle_seed), Act::Idle)
     };
-    // The parts' behaviors join before the sort, so each lands after
-    // vanilla's of its priority (#824); the stable sort keeps vanilla's own
-    // order. Nothing joins a type no part attached to, and nothing is asked
-    // or built then.
-    let before = list.len();
-    attach_behaviors(&m.kind.id, &mut list);
-    if list.len() > before {
-        list.sort_by_key(|e| (e.prio, e.act.slot()));
-    }
+    let generation = m.next_brain_generation();
     m.extra.brain = Some(Box::new(Brain {
+        generation,
         mem: Memories::default(),
         sensors,
         activity: default_activity,
         default_activity,
         list,
     }));
+    m.stage_brain_behaviors(super::mod_behaviors::BehaviorTarget::Monster(generation));
+}
+
+/// Ensure the monster's brain is initialized before a brain tick so any staged
+/// `register_behaviors` dispatch can run on the owning `Game` first.
+pub fn ensure_brain(m: &mut Mob) {
+    if brain(m).is_none() {
+        let seed = i64::from(m.id);
+        init(m, seed);
+    }
 }
 
 /// What behaviours read and emit during a brain tick.
@@ -1406,31 +1410,41 @@ fn sorted(mut v: Vec<(i32, Act, B)>) -> Vec<Entry> {
 
 // ---- Mod behaviors ------------------------------------------------------
 
-/// The parts' behaviors for this brain (#824): each joins the list with its
-/// activity and priority, refused where this brain has no such activity.
-fn attach_behaviors(mob_id: &str, list: &mut Vec<Entry>) {
-    struct Reg<'a> {
-        list: &'a mut Vec<Entry>,
-        mob_id: &'a str,
+/// Validate that this brain keeps a slot for `activity`.
+pub(super) fn validate_activity(
+    activity: mod_api::Activity,
+) -> Result<(), mod_api::BehaviorRefusal> {
+    act_of(activity).map(|_| ())
+}
+
+/// Apply staged mod behaviors to the monster brain if it is still the same
+/// `generation` instance; otherwise discard them safely and return `false`.
+pub(super) fn apply_staged(
+    m: &mut Mob,
+    generation: u64,
+    staged: Vec<mod_api::RegisteredBehavior>,
+) -> bool {
+    let Some(b) = m.extra.brain.as_deref_mut() else {
+        super::mod_behaviors::discard_registrations(staged);
+        return false;
+    };
+    if b.generation != generation {
+        super::mod_behaviors::discard_registrations(staged);
+        return false;
     }
-    impl mod_api::BehaviorRegistrarBackend for Reg<'_> {
-        fn add_behavior(
-            &mut self,
-            r: mod_api::RegisteredBehavior,
-        ) -> Result<(), mod_api::BehaviorRefusal> {
-            let act = act_of(r.activity)?;
-            self.list.push(Entry {
-                prio: r.priority,
-                act,
-                b: B::Mod(super::mod_behaviors::ModBehavior::new(r)),
-            });
-            Ok(())
-        }
-        fn mob_id(&self) -> &str {
-            self.mob_id
-        }
+    let before = b.list.len();
+    for r in staged {
+        let act = act_of(r.activity).expect("staged activity was validated on add");
+        b.list.push(Entry {
+            prio: r.priority,
+            act,
+            b: B::Mod(super::mod_behaviors::ModBehavior::new(r)),
+        });
     }
-    super::mod_behaviors::attach(mob_id, &mut Reg { list, mob_id });
+    if b.list.len() > before {
+        b.list.sort_by_key(|e| (e.prio, e.act.slot()));
+    }
+    true
 }
 
 /// This brain's slot for a mod-api activity.

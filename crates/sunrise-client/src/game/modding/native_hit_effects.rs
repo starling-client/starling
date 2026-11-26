@@ -9,6 +9,7 @@ impl From<HitSound<'_>> for NativeSound {
         Self {
             dimension: sound.dimension,
             sound: sound.sound.to_owned(),
+            inline_range: None,
             at: sound.at,
             source: sound.source,
             volume: sound.volume,

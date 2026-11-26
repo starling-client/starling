@@ -1,5 +1,4 @@
 //! The `living_breathe` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0151
 
 pub trait Hooks {
     /// An entity's breathing this tick (`LivingBreatheEvent`, posted from

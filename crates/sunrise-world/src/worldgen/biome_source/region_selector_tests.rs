@@ -303,12 +303,29 @@ fn layouts_this_build_cannot_run_are_refused() {
     let mut version = layout(10, vec![region("a", 1)]);
     version.selector.version = 2;
     assert_eq!(refused(version.clone()), Some(RegionError::Version(2)));
-    for weight in [0, 1001, u32::MAX] {
+    for weight in [0, i32::MAX as u32 + 1, u32::MAX] {
         assert_eq!(
             refused(layout(10, vec![region("a", weight)])),
             Some(RegionError::Weight)
         );
     }
+    assert_eq!(refused(layout(10, vec![region("a", 1001)])), None);
+    assert_eq!(refused(layout(0, vec![region("a", i32::MAX as u32)])), None);
+    assert_eq!(
+        refused(layout(1, vec![region("a", i32::MAX as u32 - 1)])),
+        None
+    );
+    assert_eq!(
+        refused(layout(1, vec![region("a", i32::MAX as u32)])),
+        Some(RegionError::Weight)
+    );
+    assert_eq!(
+        refused(layout(
+            10,
+            vec![region("a", 1_500_000_000), region("b", 1_000_000_000)]
+        )),
+        Some(RegionError::Weight)
+    );
     let mut widest = layout(10, vec![region("a", 1)]);
     widest.selector.cell = 1 << 30;
     assert_eq!(refused(widest.clone()), None);
@@ -321,6 +338,7 @@ fn layouts_this_build_cannot_run_are_refused() {
         refused(layout(0, vec![region("a", 0)])),
         Some(RegionError::Weight)
     );
+    assert_eq!(refused(layout(0, Vec::new())), Some(RegionError::Weight));
     assert_eq!(
         refused(layout(u32::MAX, vec![region("a", 1)])),
         Some(RegionError::Weight)

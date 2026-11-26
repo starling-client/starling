@@ -1,5 +1,4 @@
 //! The `can_eat` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0103
 
 pub trait Hooks {
     /// `Player.canEat`, from `Consumable.canConsume` when eating starts

@@ -1,10 +1,9 @@
 import argparse,hashlib,json,os,re,shutil,sys
 from pathlib import Path
-sys.path.insert(0,str(Path.cwd()/'tools'))
-import anvil_dump as nbt
-import test_locator_bar_parity as net
-import net_capture as wire
-from test_disconnect_crafting_parity import generate,offline,uuid_words,wait_new
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import anvil_dump as nbt, test_locator_bar_parity as net, net_capture as wire
+from tools.test_disconnect_crafting_parity import generate, offline, uuid_words, wait_new
 PLAYERS=['Alice','Bob','Carol']
 def program():
  ops=[]

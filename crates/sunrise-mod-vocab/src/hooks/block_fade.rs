@@ -1,5 +1,4 @@
 //! The `block_fade` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0175
 
 pub trait Hooks {
     /// A block at `pos` is about to fade from `from` to `to` because of

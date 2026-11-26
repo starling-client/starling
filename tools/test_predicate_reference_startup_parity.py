@@ -29,8 +29,8 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / 'tools'))
-import lab  # noqa: E402
+sys.path.insert(0, str(ROOT))
+from tools import lab  # noqa: E402
 PARITY_MANUAL = "a proof run by hand: --kind java --output DIR, then --kind native --output DIR2 --binary BIN"  # not a harness: tools/parity.py leaves it out
 
 META = '{"pack":{"description":"predicate reference graph","min_format":[121,0],"max_format":[121,0]}}\n'

@@ -165,7 +165,11 @@ impl GameLevel<'_> {
 impl Game<'_> {
     /// `PistonMovingBlockEntity.saveAdditional` for a chunk save, with the
     /// block entity the piston carries under [`CARRIED_KEY`].
-    pub(super) fn saved_moving_piston(&self, pos: BlockPos, piston: &MovingPiston) -> Tag {
+    pub(super) fn saved_moving_piston(
+        &self,
+        pos: BlockPos,
+        piston: &MovingPiston,
+    ) -> Result<Tag, sunrise_mod_runtime::attachments::AttachmentEncodeError> {
         let mut tag = self.moving_piston_to_nbt(pos, piston);
         if let Some(Carried {
             entity,
@@ -186,7 +190,11 @@ impl Game<'_> {
                     "sunrise:position_data".into(),
                     Tag::Compound(position_data.clone()),
                 );
-                match attachments.as_ref().map(Attachments::to_nbt) {
+                match attachments
+                    .as_ref()
+                    .map(Attachments::try_to_nbt)
+                    .transpose()?
+                {
                     Some(data) if !data.is_empty() => {
                         fields.insert(ATTACHMENTS_KEY.into(), Tag::Compound(data));
                     }
@@ -197,7 +205,7 @@ impl Game<'_> {
             }
             map.insert(CARRIED_KEY.into(), carried);
         }
-        tag
+        Ok(tag)
     }
     /// `PistonMovingBlockEntity.loadAdditional`: the moving piston at `pos`
     /// as a new ticker, holding again the block entity its saved tag in
@@ -310,7 +318,7 @@ mod tests {
             };
 
             // Saved with one key more than vanilla's tag, and only while it carries.
-            let saved = game.saved_moving_piston(at, &piston);
+            let saved = game.saved_moving_piston(at, &piston).unwrap();
             let vanilla = game.moving_piston_to_nbt(at, &piston);
             let Tag::Compound(mut without) = saved.clone() else {
                 unreachable!()
@@ -333,18 +341,18 @@ mod tests {
                 game.world
                     .block_entities
                     .attachments(to)
-                    .map(Attachments::to_nbt),
+                    .map(|a| a.try_to_nbt().unwrap()),
                 Some(saved_attachments)
             );
             assert_eq!(
-                game.saved_moving_piston(at, &piston),
+                game.saved_moving_piston(at, &piston).unwrap(),
                 vanilla,
                 "nothing carried, nothing added"
             );
 
             // Attachments that can't be read: the block entity lands without them.
             assert!(game.world.block_entities.carry(to, to));
-            let mut saved = game.saved_moving_piston(at, &piston);
+            let mut saved = game.saved_moving_piston(at, &piston).unwrap();
             let Some(Tag::Compound(carried)) = saved.get_mut(CARRIED_KEY) else {
                 panic!("the carried block entity is saved")
             };

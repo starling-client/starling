@@ -24,8 +24,7 @@ impl OptionsUi {
     pub fn discard_draw(&mut self) {
         if let Some(FrameDraw::Shell(page)) = self.frame_draw.take() {
             let hosted: &mut dyn shell::Hosted = match page {
-                Page::Extras => &mut self.extras,
-                page if Self::graphics_page(page).is_some() => &mut self.graphics,
+                page if Self::sunrise_tab(page).is_some() => &mut self.sunrise,
                 Page::ControllerRadial => &mut self.radial,
                 Page::ControllerRadialPick => &mut self.radial_pick,
                 page if Self::controller_page(page).is_some() => &mut self.controller,
@@ -519,19 +518,13 @@ impl OptionsUi {
             }
             self.language_search = search;
         }
-        if matches!(
-            self.page(),
-            Page::Video | Page::Controls | Page::KeyBinds | Page::ModBrowser
-        ) {
+        if matches!(self.page(), Page::Video | Page::Controls | Page::KeyBinds) {
             let mut search = self.settings_search.clone();
             if self.focus == Some(FocusId::Search) {
                 search.focused = true;
             }
             search.draw(batch, atlas, None);
-            let hint = match self.page() {
-                Page::ModBrowser => "sunrise.mods.browse.search",
-                _ => "sunrise.options.search",
-            };
+            let hint = "sunrise.options.search";
             // Sunrise's search box sits in the header, before the list.
             crate::widgets::last_narratable(|n| {
                 n.order = -1;

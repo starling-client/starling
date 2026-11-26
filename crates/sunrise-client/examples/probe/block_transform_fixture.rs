@@ -62,7 +62,20 @@ pub fn main() -> sunrise_client::Result<()> {
     let defaults = sunrise_world::item_defaults::read(root)?;
     let items = Items::catalog(root, &PackOverlay::NONE, &defaults)?;
     let assets = Assets::load(root)?;
-    let transformers = Transformers::load(root, assets.registry)?;
+    // No packs here: the root's own files are the world's registry.
+    let mut files = Vec::new();
+    for entry in fs::read_dir(root.join("data/minecraft/block_transformer"))? {
+        let path = entry?.path();
+        let id = format!("minecraft:{}", path.file_stem().unwrap().to_string_lossy());
+        files.push((
+            id,
+            serde_json::from_slice::<serde_json::Value>(&fs::read(&path)?)?,
+        ));
+    }
+    let transformers = Transformers::build(
+        files.iter().map(|(id, value)| (id.as_str(), value)),
+        assets.registry,
+    )?;
     let mut out = String::new();
     for line in input.lines() {
         let f: Vec<&str> = line.split('\t').collect();

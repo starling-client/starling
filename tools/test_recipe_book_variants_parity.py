@@ -25,9 +25,12 @@ import json
 from pathlib import Path
 import zipfile
 
-import anvil_dump as nbt
-import test_locator_bar_parity as net
-from test_disconnect_crafting_parity import generate, wait_new
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import anvil_dump as nbt, test_locator_bar_parity as net
+from tools.test_disconnect_crafting_parity import generate, wait_new
 
 PLAYER = 'Bob'
 STEPS = [
@@ -157,7 +160,7 @@ def main():
     net.PROPERTIES['force-gamemode'] = 'false'
     lock, build, java, native, client = net.sides('recipe-book-variants-parity',
                                                  args.binary.resolve() if args.binary else None)
-    import test_rust_parity as base
+    from tools import test_rust_parity as base
     _, jars, _ = base.verify_artifacts()
     admitted = recipe_bytes(jars['server'], net.lab.RESOURCES)
     (build / 'recipe-bytes.json').write_text(json.dumps(admitted, indent=2) + '\n')

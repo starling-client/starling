@@ -557,7 +557,7 @@ fn a_command_cart_saves_its_base_command_block() {
     assert_eq!(cart.command.success_count, 0);
     // readAdditionalSaveData syncs both values.
     assert_eq!(cart.synced_command, "say hi");
-    assert_eq!(cart.synced_output, "[12:00:00] hi");
+    assert_eq!(cart.synced_output.as_ref(), saved.get("LastOutput"));
     let out = cart.to_nbt([0; 4], Some(&saved), &Default::default());
     assert_eq!(out.get("SuccessCount"), Some(&Tag::Int(0)));
     for key in ["Command", "TrackOutput", "LastOutput", "LastExecution"] {
@@ -657,4 +657,14 @@ fn an_old_behaviour_cart_writes_is_on_rails_each_tick() {
         assert!(on.on_rails);
         assert!(!off.on_rails);
     });
+}
+
+/// A special model drawn under a mod's packed vertex light gets back the level's light byte
+/// the block entity renderer packs it from.
+#[test]
+fn special_light_inverts_the_block_entity_renderers_vertex_light() {
+    for packed in 0..=u8::MAX {
+        let light = sunrise_client::block_entity_render::vertex_light(packed);
+        assert_eq!(super::special_light(light), packed);
+    }
 }

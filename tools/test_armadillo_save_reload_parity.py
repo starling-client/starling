@@ -11,10 +11,12 @@ not count the time down), one without `scute_time` and one with 4321, the world 
 - `drawn`: the drawn time scaled by 1/6000 is 1 (6000 to 11999, never 0), and copying it again onto the copy
   the setup took into command storage changes nothing, live and after the reload.
 """
-try:
-    from . import entity_save_reload as harness
-except ImportError:
-    import entity_save_reload as harness
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import entity_save_reload as harness
 
 SETUP = [
     'summon minecraft:armadillo 4.5 -60 4.5 {Tags:["drawn"],NoAI:1b,PersistenceRequired:1b}',

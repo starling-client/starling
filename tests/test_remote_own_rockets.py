@@ -38,6 +38,7 @@ struct Vec3 { x: f64, y: f64, z: f64 }
 impl Vec3 {
     fn new(x: f64, y: f64, z: f64) -> Self { Self { x, y, z } }
     fn add_vector(self, o: Vec3) -> Self { Self::new(self.x + o.x, self.y + o.y, self.z + o.z) }
+    fn components(self) -> [f64; 3] { [self.x, self.y, self.z] }
 }
 // Entity.calculateViewVector(pitch, yaw).
 fn view_vector(yaw: f32, pitch: f32) -> [f64; 3] {
@@ -95,7 +96,7 @@ impl Clock {
 struct Settings { main_hand_left: bool }
 struct Player { position: Vec3, velocity: Vec3, fall_flying: bool }
 #[derive(Default)]
-struct Rocket { attached_to: Option<u32>, position: Vec3, velocity: Vec3 }
+struct Rocket { id: u32, attached_to: Option<u32>, position: Vec3, velocity: Vec3 }
 struct Game {
     remote: Option<Remote>, clock: Clock, player: Option<Player>, settings: Settings,
     hotbar: Option<ItemStack>, offhand: Option<ItemStack>, selected: usize,
@@ -103,6 +104,8 @@ struct Game {
 }
 impl Game {
 fn stack_in(&self, slot: usize) -> Option<&ItemStack> { self.hotbar.as_ref().filter(|_| slot == 3) }
+// The pick-section index is not the subject of this physics fixture.
+fn pick_section_move(&mut self, _: u32, _: [f64; 3]) {}
 METHODS
 }
 fn rocket() -> Option<ItemStack> { Some(ItemStack { item: "minecraft:firework_rocket".into() }) }

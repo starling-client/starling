@@ -12,26 +12,8 @@ impl Game<'_> {
     /// During a player's turn only that player resolves, as for health. None
     /// for a stale handle, an armor stand or the dragon (they carry none).
     pub(super) fn living_absorption(&self, living: LivingRef) -> Option<f32> {
-        match self.native_living_read_target(living)? {
-            Target::Player => Some(self.player.as_ref()?.health.absorption()),
-            Target::Guest(conn) => {
-                let guest = self.command_guest(conn)?;
-                Some(
-                    guest
-                        .motion
-                        .as_ref()
-                        .map_or(guest.saved_absorption.unwrap_or(0.0), |m| {
-                            m.health.absorption()
-                        }),
-                )
-            }
-            Target::Mob(id) => self
-                .mobs
-                .iter()
-                .find(|m| m.id == id && !m.removed)
-                .map(|m| m.absorption),
-            _ => None,
-        }
+        let target = self.native_living_read_target(living)?;
+        super::native_living_body::body_absorption(self.native_living_body(target)?)
     }
 
     /// Sets the entity's absorption amount (`LivingEntity.setAbsorptionAmount`),
@@ -204,18 +186,20 @@ mod tests {
             assert!(mob.set_absorption(game, 2.0));
             let events = game.player.as_ref().unwrap().events.len();
             game.mobs[0].needs_sync = false;
-            let abort = game.transaction_open();
-            assert!(player.set_absorption(game, 9.0));
-            assert!(mob.set_absorption(game, 4.0));
-            game.transaction_close(&abort, false);
+            game.storage_scope(|game, _| {
+                assert!(player.set_absorption(game, 9.0));
+                assert!(mob.set_absorption(game, 4.0));
+                ((), false)
+            });
             assert_eq!(player.absorption(game), Some(5.0));
             assert_eq!(mob.absorption(game), Some(2.0));
             assert_eq!(game.player.as_ref().unwrap().events.len(), events);
             assert!(!game.mobs[0].needs_sync);
-            let commit = game.transaction_open();
-            assert!(player.set_absorption(game, 9.0));
-            assert!(mob.set_absorption(game, 4.0));
-            game.transaction_close(&commit, true);
+            game.storage_scope(|game, _| {
+                assert!(player.set_absorption(game, 9.0));
+                assert!(mob.set_absorption(game, 4.0));
+                ((), true)
+            });
             assert_eq!(player.absorption(game), Some(9.0));
             assert_eq!(mob.absorption(game), Some(4.0));
             assert!(game.mobs[0].needs_sync);

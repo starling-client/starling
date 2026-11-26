@@ -2,8 +2,9 @@
 //! Queries consume owned API block states, never world numeric IDs. Both sides read the
 //! game's published tables and borrow their property definitions.
 use crate::{
-    BlockKey, BlockMetadata, BlockSoundType, BlockState, BlockStateError, BlockStateRange, Host,
-    LevelReadError, PushReaction, host::block_states::BlockStatesBackend,
+    BlockKey, BlockLanding, BlockMetadata, BlockSoundType, BlockState, BlockStateError,
+    BlockStateRange, Host, LevelReadError, PathType, PushReaction, StateCollision,
+    host::block_states::BlockStatesBackend,
 };
 
 // no wire: borrows a name and values from the host's state definition.
@@ -103,6 +104,15 @@ pub enum BlockClass {
     StainedGlassPane,
     /// `TrapDoorBlock`.
     TrapDoor,
+    /// `BonemealableBlock`: the blocks that take bone meal (crops, saplings, grass, stems,
+    /// rooted dirt), whether or not they are a valid target at a given place and moment.
+    Bonemealable,
+    /// `SlabBlock`, the copper slabs included.
+    Slab,
+    /// `WallBlock`.
+    Wall,
+    /// `FenceBlock`, which includes the nether brick fence; not `FenceGateBlock`.
+    Fence,
 }
 
 /// An invalid constraint, identifying its index in the supplied list.
@@ -164,144 +174,290 @@ impl<'a> BlockStates<'a> {
     pub fn definition(&self, block: crate::BlockKey) -> Option<StateProperties<'a>> {
         self.backend.block_state_definition(block)
     }
+
+    /// The block registry's metadata as an owned, shared value: names, keys, default states,
+    /// state definitions and property edits, readable on any thread for as long as it is held,
+    /// such as a thread a mod spawns to render a region. Take it on a host's thread and move it.
+    /// The tables are immutable once the registry is loaded, as vanilla's `BuiltInRegistries`
+    /// are frozen after bootstrap (NeoForge freezes them after `RegisterEvent`). None for a host
+    /// with no game behind it, or before the block registry is complete.
+    pub fn metadata(&self) -> Option<std::sync::Arc<dyn BlockMetadata + Send + Sync>> {
+        self.backend.block_metadata_snapshot()
+    }
 }
 
 /// The reads of a level view with no block tables: the one place that says what such a view answers,
 /// `None` for a fact and `Unavailable` for a refusal. [`BlockStates`] reads through it.
 struct NoBlockTables;
 
-impl BlockStatesBackend for NoBlockTables {
-    fn block_weathering_age(&self, _: BlockState) -> Option<WeatheringAge> {
-        None
-    }
-    fn block_next_weathering_stage(&self, _: BlockState) -> Option<BlockState> {
-        None
-    }
-    fn block_previous_weathering_stage(&self, _: BlockState) -> Option<BlockState> {
-        None
-    }
-    fn block_state_waxed(&self, _: BlockState) -> Option<BlockState> {
-        None
-    }
-    fn block_state_unwaxed(&self, _: BlockState) -> Option<BlockState> {
-        None
-    }
-    fn block_metadata_name(&self, _: BlockKey) -> Result<&str, BlockStateError> {
-        Err(BlockStateError::Unavailable)
-    }
-    fn block_metadata_property(
-        &self,
-        _: BlockState,
-        _: &str,
-    ) -> Result<Option<&str>, BlockStateError> {
-        Err(BlockStateError::Unavailable)
-    }
-    fn block_metadata_with(
-        &self,
-        _: BlockState,
-        _: &str,
-        _: &str,
-    ) -> Result<BlockState, BlockStateError> {
-        Err(BlockStateError::Unavailable)
-    }
-    fn block_metadata_of(
-        &self,
-        _: BlockKey,
-        _: &[StateConstraint],
-    ) -> Result<BlockState, BlockStateError> {
-        Err(BlockStateError::Unavailable)
-    }
-    fn block_state_replaceable(&self, _: BlockState) -> Option<bool> {
-        None
-    }
-    fn block_state_destroy_speed(&self, _: BlockState) -> Option<f32> {
-        None
-    }
-    fn block_state_correct_tool_for_drops(
-        &self,
-        _: &crate::ItemStack,
-        _: BlockState,
-    ) -> Option<bool> {
-        None
-    }
-    fn block_state_requires_correct_tool(&self, _: BlockState) -> Option<bool> {
-        None
-    }
-    fn block_state_explosion_resistance(&self, _: BlockState) -> Option<f32> {
-        None
-    }
-    fn block_state_sound(&self, _: BlockState) -> Option<BlockSoundType> {
-        None
-    }
-    fn block_state_has_block_entity(&self, _: BlockState) -> Option<bool> {
-        None
-    }
-    fn block_state_map_color(&self, _: BlockState) -> Option<u8> {
-        None
-    }
-    fn block_state_map_color_rgba(&self, _: u8) -> Option<[u8; 4]> {
-        None
-    }
-    fn block_state_light_emission(&self, _: BlockState) -> Option<u8> {
-        None
-    }
-    fn block_state_friction(&self, _: BlockState) -> Option<f32> {
-        None
-    }
-    fn block_state_is_solid_render(&self, _: BlockState) -> Option<bool> {
-        None
-    }
-    fn block_state_is_redstone_conductor(&self, _: BlockState) -> Option<bool> {
-        None
-    }
-    fn block_state_class(
-        &self,
-        _: BlockState,
-        _: BlockClass,
-    ) -> Result<Option<bool>, LevelReadError> {
-        Err(LevelReadError::Unavailable)
-    }
-    fn block_state_piston_push_reaction(
-        &self,
-        _: BlockState,
-    ) -> Result<Option<PushReaction>, LevelReadError> {
-        Err(LevelReadError::Unavailable)
-    }
-    fn block_states_of(&self, _: BlockKey) -> Option<BlockStateRange> {
-        None
-    }
-    fn block_state_definition(&self, _: BlockKey) -> Option<StateProperties<'_>> {
-        None
-    }
-    fn block_state_matches(
-        &self,
-        _: BlockState,
-        _: BlockKey,
-        _: &[StateConstraint],
-    ) -> Option<Result<bool, StateMatchError>> {
-        None
-    }
-    fn fluid_state_definition(&self, _: crate::FluidKey) -> Option<crate::FluidDefinition<'_>> {
-        None
-    }
-    fn fluid_type_properties(&self, _: crate::FluidKey) -> Option<crate::FluidTypeProperties> {
-        None
-    }
-    fn fluid_legacy_block(&self, _: crate::FluidState) -> Option<BlockState> {
-        None
-    }
-    fn fluid_state_validate(
+// A host without block tables gives the same typed refusals as a restricted view.
+// Fake hosts can still answer the two sound reads from their own registry.
+macro_rules! impl_block_states_without_tables {
+    ($host:ty { $($sounds:item)* }) => {
+        const _: () = {
+            use $crate::block::block_states::{
+                BlockClass, StateConstraint, StateMatchError, StateProperties, WeatheringAge,
+            };
+            use $crate::{
+                BlockKey, BlockSoundType, BlockState, BlockStateError, BlockStateRange,
+                LevelReadError, PushReaction,
+            };
+            impl $crate::prelude::BlockStatesBackend for $host {
+                fn block_weathering_age(&self, _: BlockState) -> Option<WeatheringAge> {
+                    None
+                }
+                fn block_next_weathering_stage(&self, _: BlockState) -> Option<BlockState> {
+                    None
+                }
+                fn block_previous_weathering_stage(&self, _: BlockState) -> Option<BlockState> {
+                    None
+                }
+                fn block_state_waxed(&self, _: BlockState) -> Option<BlockState> {
+                    None
+                }
+                fn block_state_unwaxed(&self, _: BlockState) -> Option<BlockState> {
+                    None
+                }
+                fn block_metadata_name(&self, _: BlockKey) -> Result<&str, BlockStateError> {
+                    Err(BlockStateError::Unavailable)
+                }
+                fn block_metadata_property(
+                    &self,
+                    _: BlockState,
+                    _: &str,
+                ) -> Result<Option<&str>, BlockStateError> {
+                    Err(BlockStateError::Unavailable)
+                }
+                fn block_metadata_visit_properties(
+                    &self,
+                    _: BlockState,
+                    _: &mut dyn FnMut(&str, &str),
+                ) -> Result<(), BlockStateError> {
+                    Err(BlockStateError::Unavailable)
+                }
+                fn block_metadata_with(
+                    &self,
+                    _: BlockState,
+                    _: &str,
+                    _: &str,
+                ) -> Result<BlockState, BlockStateError> {
+                    Err(BlockStateError::Unavailable)
+                }
+                fn block_metadata_of(
+                    &self,
+                    _: BlockKey,
+                    _: &[StateConstraint],
+                ) -> Result<BlockState, BlockStateError> {
+                    Err(BlockStateError::Unavailable)
+                }
+                fn block_metadata_key(&self, _: &str) -> Option<BlockKey> {
+                    None
+                }
+                fn block_metadata_state_definition(
+                    &self,
+                    _: BlockKey,
+                ) -> Result<StateProperties<'_>, BlockStateError> {
+                    Err(BlockStateError::Unavailable)
+                }
+                fn block_metadata_snapshot(
+                    &self,
+                ) -> Option<std::sync::Arc<dyn $crate::BlockMetadata + Send + Sync>> {
+                    None
+                }
+                fn block_state_replaceable(&self, _: BlockState) -> Option<bool> {
+                    None
+                }
+                fn block_state_destroy_speed(&self, _: BlockState) -> Option<f32> {
+                    None
+                }
+                fn block_state_correct_tool_for_drops(
+                    &self,
+                    _: &$crate::ItemStack,
+                    _: BlockState,
+                ) -> Option<bool> {
+                    None
+                }
+                fn block_state_requires_correct_tool(&self, _: BlockState) -> Option<bool> {
+                    None
+                }
+                fn block_state_explosion_resistance(&self, _: BlockState) -> Option<f32> {
+                    None
+                }
+                fn block_state_sound(&self, _: BlockState) -> Option<BlockSoundType> {
+                    None
+                }
+                fn block_state_has_block_entity(&self, _: BlockState) -> Option<bool> {
+                    None
+                }
+                fn block_state_map_color(&self, _: BlockState) -> Option<u8> {
+                    None
+                }
+                fn block_state_map_color_rgba(&self, _: u8) -> Option<[u8; 4]> {
+                    None
+                }
+                fn block_state_light_emission(&self, _: BlockState) -> Option<u8> {
+                    None
+                }
+                fn block_state_friction(&self, _: BlockState) -> Option<f32> {
+                    None
+                }
+                fn block_state_speed_factor(&self, _: BlockState) -> Option<f32> {
+                    None
+                }
+                fn block_state_jump_factor(&self, _: BlockState) -> Option<f32> {
+                    None
+                }
+                fn block_state_collision(&self, _: BlockState) -> Option<$crate::StateCollision> {
+                    None
+                }
+                fn block_state_landing(&self, _: BlockState) -> Option<$crate::BlockLanding> {
+                    None
+                }
+                fn block_state_path_type(&self, _: BlockState) -> Option<$crate::PathType> {
+                    None
+                }
+                fn block_state_is_solid_render(&self, _: BlockState) -> Option<bool> {
+                    None
+                }
+                fn block_state_is_solid(&self, _: BlockState) -> Option<bool> {
+                    None
+                }
+                fn block_state_collision_is_full_block(&self, _: BlockState) -> Option<bool> {
+                    None
+                }
+                fn block_state_poi_type(&self, _: BlockState) -> Option<crate::Identifier> {
+                    None
+                }
+                fn block_state_propagates_skylight_down(&self, _: BlockState) -> Option<bool> {
+                    None
+                }
+                fn block_state_is_air(&self, _: BlockState) -> Option<bool> {
+                    None
+                }
+                fn block_state_is_redstone_conductor(&self, _: BlockState) -> Option<bool> {
+                    None
+                }
+                fn block_state_class(
+                    &self,
+                    _: BlockState,
+                    _: BlockClass,
+                ) -> Result<Option<bool>, LevelReadError> {
+                    Err(LevelReadError::Unavailable)
+                }
+                fn block_state_is_liquid_block_container(&self, _: BlockState) -> Option<bool> {
+                    None
+                }
+                fn block_state_is_simple_waterlogged(&self, _: BlockState) -> Option<bool> {
+                    None
+                }
+                fn block_state_piston_push_reaction(
+                    &self,
+                    _: BlockState,
+                ) -> Result<Option<PushReaction>, LevelReadError> {
+                    Err(LevelReadError::Unavailable)
+                }
+                fn block_states_of(&self, _: BlockKey) -> Option<BlockStateRange> {
+                    None
+                }
+                fn block_state_definition(&self, _: BlockKey) -> Option<StateProperties<'_>> {
+                    None
+                }
+                fn block_state_matches(
+                    &self,
+                    _: BlockState,
+                    _: BlockKey,
+                    _: &[StateConstraint],
+                ) -> Option<Result<bool, StateMatchError>> {
+                    None
+                }
+                fn block_state_outline(
+                    &self,
+                    _: BlockState,
+                ) -> Result<Option<&[[f64; 6]]>, LevelReadError> {
+                    Err(LevelReadError::Unavailable)
+                }
+                fn block_state_fluid_state(
+                    &self,
+                    _: BlockState,
+                ) -> Result<Option<$crate::FluidState>, LevelReadError> {
+                    Err(LevelReadError::Unavailable)
+                }
+                fn fluid_is_same(
+                    &self,
+                    _: $crate::FluidKey,
+                    _: $crate::FluidKey,
+                ) -> Result<bool, LevelReadError> {
+                    Err(LevelReadError::Unavailable)
+                }
+                fn fluid_state_definition(
+                    &self,
+                    _: $crate::FluidKey,
+                ) -> Option<$crate::FluidDefinition<'_>> {
+                    None
+                }
+                fn fluid_type_properties(
+                    &self,
+                    _: $crate::FluidKey,
+                ) -> Option<$crate::FluidTypeProperties> {
+                    None
+                }
+                fn fluid_legacy_block(&self, _: $crate::FluidState) -> Option<BlockState> {
+                    None
+                }
+                fn fluid_state_validate(
+                    &self,
+                    _: $crate::FluidKey,
+                    _: &[StateConstraint],
+                ) -> Result<(), $crate::FluidStateError> {
+                    Err($crate::FluidStateError::NoWorldState)
+                }
+                $($sounds)*
+            }
+        };
+    };
+}
+#[cfg(any(test, feature = "testing"))]
+pub(crate) use impl_block_states_without_tables;
+
+impl_block_states_without_tables!(NoBlockTables {
+    fn fluid_bucket(
         &self,
         _: crate::FluidKey,
-        _: &[StateConstraint],
-    ) -> Result<(), crate::FluidStateError> {
-        Err(crate::FluidStateError::NoWorldState)
+    ) -> Result<Option<crate::ItemKey>, LevelReadError> {
+        Err(LevelReadError::Unavailable)
     }
-}
+    fn bucket_fluid(
+        &self,
+        _: crate::ItemKey,
+    ) -> Result<Option<crate::FluidKey>, LevelReadError> {
+        Err(LevelReadError::Unavailable)
+    }
+    fn fluid_pickup_sound(
+        &self,
+        _: crate::FluidKey,
+    ) -> Result<Option<&'static str>, LevelReadError> {
+        Err(LevelReadError::Unavailable)
+    }
+    fn fluid_empty_sound(
+        &self,
+        _: crate::FluidKey,
+    ) -> Result<Option<&'static str>, LevelReadError> {
+        Err(LevelReadError::Unavailable)
+    }
+});
 
 impl BlockMetadata for BlockStates<'_> {
     fn name(&self, block: BlockKey) -> Result<&str, BlockStateError> {
         self.backend.block_metadata_name(block)
+    }
+    fn key(&self, id: &str) -> Option<BlockKey> {
+        self.backend.block_metadata_key(id)
+    }
+    fn default_state(&self, block: BlockKey) -> Result<BlockState, BlockStateError> {
+        self.backend.block_metadata_of(block, &[])
+    }
+    fn state_definition(&self, block: BlockKey) -> Result<StateProperties<'_>, BlockStateError> {
+        self.backend.block_metadata_state_definition(block)
     }
     fn property(&self, state: BlockState, name: &str) -> Result<Option<&str>, BlockStateError> {
         self.backend.block_metadata_property(state, name)
@@ -320,6 +476,13 @@ impl BlockMetadata for BlockStates<'_> {
         properties: &[StateConstraint],
     ) -> Result<BlockState, BlockStateError> {
         self.backend.block_metadata_of(block, properties)
+    }
+    fn visit_properties(
+        &self,
+        state: BlockState,
+        visit: &mut dyn FnMut(&str, &str),
+    ) -> Result<(), BlockStateError> {
+        self.backend.block_metadata_visit_properties(state, visit)
     }
 }
 
@@ -397,7 +560,10 @@ impl BlockStates<'_> {
     pub fn explosion_resistance(&self, state: BlockState) -> Option<f32> {
         self.backend.block_state_explosion_resistance(state)
     }
-    /// `state`'s sounds (`BlockState.getSoundType()`). None as for `replaceable`.
+    /// `state`'s base sound type (`BlockState.getSoundType()`), with its identity and
+    /// validated event keys.
+    /// This does not run a part or look up events in the sound resources. None as for
+    /// `replaceable`.
     pub fn sound(&self, state: BlockState) -> Option<BlockSoundType> {
         self.backend.block_state_sound(state)
     }
@@ -429,11 +595,84 @@ impl BlockStates<'_> {
     pub fn friction(&self, state: BlockState) -> Option<f32> {
         self.backend.block_state_friction(state)
     }
+    /// The speed factor of `state`'s block (`Block.getSpeedFactor`): 1.0 for most blocks, 0.4 for
+    /// soul sand and honey. The block's declared value; what its parts answer where an entity
+    /// stands is the `block_speed_factor` hook's. None as for `replaceable`.
+    pub fn speed_factor(&self, state: BlockState) -> Option<f32> {
+        self.backend.block_state_speed_factor(state)
+    }
+    /// The jump factor of `state`'s block (`Block.getJumpFactor`): 1.0 for most blocks, 0.5 for
+    /// honey. The block's declared value; what its parts answer where an entity jumps is the
+    /// `block_jump_factor` hook's. None as for `replaceable`.
+    pub fn jump_factor(&self, state: BlockState) -> Option<f32> {
+        self.backend.block_state_jump_factor(state)
+    }
+    /// The state's collision boxes with an empty collision context, in block-local
+    /// coordinates (`[min_x, min_y, min_z, max_x, max_y, max_z]`; a box may leave the cell, as a
+    /// fence's reaches y 1.5), and whether they hold at every position ([`StateCollision`]).
+    /// None as for `replaceable`.
+    pub fn collision(&self, state: BlockState) -> Option<StateCollision> {
+        self.backend.block_state_collision(state)
+    }
+    /// The bounce restitution and fall-distance reduction `state`'s block declares
+    /// (`BlockBehaviour.Properties`): 0.75 and 0.5 for beds and the shelf mushroom, a bounce of 1.0
+    /// for slime, 0 for most blocks. Not what a block part's `bounce_restitution` answers or a
+    /// custom `fallOn` does (hay's lighter fall damage). None as for `replaceable`.
+    pub fn landing(&self, state: BlockState) -> Option<BlockLanding> {
+        self.backend.block_state_landing(state)
+    }
+    /// The state's walking path type (`WalkNodeEvaluator.getPathTypeFromState`) after the block
+    /// parts' `isPathfindable` answers, without per-position overrides or neighbour rules.
+    /// None as for `replaceable`.
+    pub fn path_type(&self, state: BlockState) -> Option<PathType> {
+        self.backend.block_state_path_type(state)
+    }
     /// `BlockState.isSolidRender()`: whether the state is a full, occluding cube for rendering
     /// and light (stone yes; glass, leaves and slabs no). This is not redstone conduction.
     /// None as for `replaceable`.
     pub fn is_solid_render(&self, state: BlockState) -> Option<bool> {
         self.backend.block_state_is_solid_render(state)
+    }
+    /// `BlockState.isSolid()`: vanilla's cached `legacySolid`, decided once per state by
+    /// `BlockStateBase.calculateSolid`: `true` for a block with
+    /// `BlockBehaviour.Properties.forceSolidOn` (cobweb, signs, shulker boxes), `false` for one
+    /// with `forceSolidOff` (ladder); otherwise `false` for a block whose shape depends on its
+    /// position (`dynamicShape`: scaffolding, powder snow) or whose collision shape is empty
+    /// (torches, buttons), and `true` for a collision shape whose bounds measure at least
+    /// 0.7291666 on average (`AABB.getSize`) or 1 high (leaves, stone). NeoForge and Fabric mods
+    /// call the same method. None as for `replaceable`.
+    pub fn is_solid(&self, state: BlockState) -> Option<bool> {
+        self.backend.block_state_is_solid(state)
+    }
+    /// Whether `state`'s collision shape is the full cube, as vanilla caches it per state:
+    /// `Block.isShapeFullBlock(getCollisionShape(EmptyBlockGetter.INSTANCE, BlockPos.ZERO))`,
+    /// which `BlockState.isCollisionShapeFullBlock` answers (stone and leaves yes; slabs, stairs
+    /// and fences no, though they are solid). The state's own shape, with no position or entity
+    /// context.
+    /// None for a state whose shape depends on its position
+    /// (`BlockBehaviour.Properties.dynamicShape`: shulker boxes, moving pistons), where vanilla
+    /// keeps no cached answer, and as for `replaceable`.
+    pub fn collision_is_full_block(&self, state: BlockState) -> Option<bool> {
+        self.backend.block_state_collision_is_full_block(state)
+    }
+    /// `PoiTypes.forState`: the point of interest type `state` belongs to (`minecraft:home`,
+    /// `minecraft:librarian`, `minecraft:meeting`...), the states mods add with
+    /// `extend_poi_types` included; it says whether a placed block becomes a job site or a
+    /// bed a villager can claim. None for a state in no POI type, and as for `replaceable`.
+    pub fn poi_type(&self, state: BlockState) -> Option<crate::Identifier> {
+        self.backend.block_state_poi_type(state)
+    }
+    /// `BlockState.propagatesSkylightDown()`: whether sky light passes down through `state`
+    /// unchanged, the block's own answer included (glass, barriers and vegetation override what
+    /// the shape would say), as `NetherrackBlock.isValidBonemealTarget` tests the block above.
+    /// None as for `replaceable`.
+    pub fn propagates_skylight_down(&self, state: BlockState) -> Option<bool> {
+        self.backend.block_state_propagates_skylight_down(state)
+    }
+    /// `BlockState.isAir()`: air, cave air and void air (`LevelReader.isEmptyBlock`), by the
+    /// block's own flag, not the `#minecraft:air` tag. None as for `replaceable`.
+    pub fn is_air(&self, state: BlockState) -> Option<bool> {
+        self.backend.block_state_is_air(state)
     }
     /// Whether `state`'s block is of vanilla class `class`, subclasses included (Java's
     /// `instanceof`). It reads the engine's class of the block, never a tag, so it does not move
@@ -445,6 +684,20 @@ impl BlockStates<'_> {
         class: BlockClass,
     ) -> Result<Option<bool>, LevelReadError> {
         self.backend.block_state_class(state, class)
+    }
+    /// Whether `state`'s block is a `LiquidBlockContainer` (Java's `instanceof`), a block a fluid
+    /// can be placed into: the waterloggable blocks (`SimpleWaterloggedBlock` extends it) and the
+    /// ones that hold water without a `waterlogged` property (kelp, seagrass). A container that is
+    /// not [`is_simple_waterlogged`](Self::is_simple_waterlogged) is one of the latter. The
+    /// engine's classification of the block, never a tag. None as for `replaceable`.
+    pub fn is_liquid_block_container(&self, state: BlockState) -> Option<bool> {
+        self.backend.block_state_is_liquid_block_container(state)
+    }
+    /// Whether `state`'s block is a `SimpleWaterloggedBlock` (Java's `instanceof`): a block with a
+    /// `waterlogged` property that water fills and a bucket empties (slabs, stairs, fences,
+    /// chests). The engine's classification of the block, never a tag. None as for `replaceable`.
+    pub fn is_simple_waterlogged(&self, state: BlockState) -> Option<bool> {
+        self.backend.block_state_is_simple_waterlogged(state)
     }
     /// `BlockState.getPistonPushReaction()`: the resolved reaction used for piston simulation
     /// and client replay. Includes the active [`crate::BlockPart::piston_push_reaction`] answer
@@ -522,5 +775,35 @@ mod tests {
             Err(LevelReadError::Unavailable)
         );
         assert_eq!(facts.definition(crate::BlockKey(0)), None);
+        assert_eq!(state.outline(&facts), None);
+        assert_eq!(state.fluid_state(&facts), None);
+        let fluid = crate::FluidKey(0);
+        assert!(!fluid.is_same(&facts, fluid));
+        assert_eq!(fluid.bucket(&facts), None);
+        assert_eq!(fluid.pickup_sound(&facts), None);
+        assert_eq!(fluid.empty_sound(&facts), None);
+    }
+
+    #[test]
+    fn fake_host_without_block_tables_refuses_block_and_fluid_reads() {
+        use crate::HostFluidStates;
+
+        let host = crate::testing::FakeHost::new();
+        let facts = host.block_states();
+        let block = BlockKey(0);
+        let state = crate::__private::block_state_from_ordinal(block, 0);
+        let fluid = crate::FluidKey(0);
+
+        assert_eq!(facts.name(block), Err(BlockStateError::Unavailable));
+        assert_eq!(facts.friction(state), None);
+        assert_eq!(state.outline(&facts), None);
+        assert_eq!(state.fluid_state(&facts), None);
+        assert!(!fluid.is_same(&facts, fluid));
+        assert_eq!(fluid.bucket(&facts), None);
+        assert_eq!(host.fluid_states().definition(fluid), None);
+        assert_eq!(
+            host.fluid_states().validate(fluid, &[]),
+            Err(crate::FluidStateError::NoWorldState)
+        );
     }
 }

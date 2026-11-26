@@ -7,7 +7,7 @@ use super::Game;
 use sunrise_client::{
     mobs::{Species, bee, guardian, sniffer},
     random_source,
-    sound_engine::{MobSound, RiddenSound, SoundInstance, Sounds},
+    sound_engine::{MobSound, RiddenSound, SoundInstance},
 };
 
 impl Game<'_> {
@@ -51,7 +51,7 @@ impl Game<'_> {
             } else {
                 SoundInstance::riding_happy_ghast(&sound, random_source::create())
             };
-            self.audio.play_instance(instance, false);
+            self.play_audio_instance(instance, false);
         }
         self.riding_sound = started.map(|g| g.id);
         ridden.map(|r| r.1)
@@ -87,6 +87,8 @@ impl Game<'_> {
                     && bee::get(m).is_some_and(|b| b.anger_end > 0 && b.anger_end - game_time > 0),
                 silent: m.silent,
                 attack_scale: guardian::attack_scale(m),
+                guardian_has_target: matches!(species, Species::Guardian | Species::ElderGuardian)
+                    && m.ai.target.is_some(),
                 // SnifferSoundInstance.tick.
                 sniffer_digging: species == Species::Sniffer
                     && m.ai.target.is_none()
@@ -97,8 +99,6 @@ impl Game<'_> {
             }
             mobs.push(sound);
         }
-        self.guardian_sounds
-            .retain(|id| mobs.iter().any(|m| m.id == *id));
         self.bee_sounds
             .retain(|id, _| mobs.iter().any(|m| m.id == *id));
         for &idx in &bee_indices {
@@ -106,24 +106,22 @@ impl Game<'_> {
             if self.bee_sounds.get(&sound.id) != Some(&sound.angry) {
                 self.bee_sounds.insert(sound.id, sound.angry);
                 let instance = SoundInstance::bee(sound, sound.angry, random_source::create());
-                self.audio.play_instance(instance, false);
+                self.play_audio_instance(instance, false);
             }
         }
         mobs
     }
 
-    /// `ClientPacketListener.handleEntityEvent` 21: a guardian's attack
-    /// hum starts (one loop per guardian; the loops of its earlier beams are
-    /// the same loop, as each one follows the guardian's charge).
+    /// `ClientPacketListener.handleEntityEvent` 21 starts a fresh instance
+    /// for every guardian attack event, even while an earlier one plays.
     pub(super) fn start_guardian_sound(&mut self, id: u32) {
         let Some(m) = self.mobs.iter().find(|m| {
-            m.id == id && matches!(m.species(), Species::Guardian | Species::ElderGuardian)
+            m.id == id
+                && !m.removed
+                && matches!(m.species(), Species::Guardian | Species::ElderGuardian)
         }) else {
             return;
         };
-        if !self.guardian_sounds.insert(id) {
-            return;
-        }
         let sound = MobSound {
             id,
             position: [m.position.x, m.position.y, m.position.z],
@@ -132,10 +130,11 @@ impl Game<'_> {
             angry: false,
             silent: m.silent,
             attack_scale: guardian::attack_scale(m),
+            guardian_has_target: m.ai.target.is_some(),
             sniffer_digging: false,
         };
         let instance = SoundInstance::guardian_attack(&sound, random_source::create());
-        self.audio.play_instance(instance, false);
+        self.play_audio_instance(instance, false);
     }
 
     /// `ClientPacketListener.handleEntityEvent` 63: a sniffer's digging
@@ -152,6 +151,6 @@ impl Game<'_> {
             return;
         }
         let instance = SoundInstance::sniffer(id, random_source::create());
-        self.audio.play_instance(instance, false);
+        self.play_audio_instance(instance, false);
     }
 }

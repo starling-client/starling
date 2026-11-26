@@ -1,5 +1,4 @@
 //! The `item_consumption_teleport` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0187
 
 pub trait Hooks {
     /// On an authoritative server, a cauldron at `pos` is about to change

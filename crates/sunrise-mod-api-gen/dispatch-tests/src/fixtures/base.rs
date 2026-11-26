@@ -22,7 +22,13 @@ fn registration_context_reaches_collectors_in_order_without_a_game_host() {
     );
     let mut types = Vec::new();
     dispatch_component_types(&RegistrationContext("bootstrap"), &mut types);
-    assert_eq!(types, ["first:component", "second:component"]);
+    assert_eq!(
+        types
+            .iter()
+            .map(|row| (row.mod_id, row.answer.as_str()))
+            .collect::<Vec<_>>(),
+        [("first", "first:component"), ("second", "second:component")],
+    );
 }
 
 #[test]
@@ -243,7 +249,7 @@ fn block_entity_submit_dispatches_in_order_with_shared_draw() {
         [1, 2, 3],
         "example:machine",
         BlockState::new(BlockKey::Test, 0),
-        &ModBlockEntity::default(),
+        generated::mod_api::BlockEntityDataView(&ModBlockEntity::new("example:subject")),
         &mut draw,
     );
     assert_eq!(draw.0, [1, 2]);
@@ -324,6 +330,7 @@ fn item_finish_can_clear_vanilla_result() {
             Hand::Main,
             0,
             &mut result,
+            &mut |_| Ok(()),
         );
         assert!(result.is_none(), "client={client}");
     }
@@ -417,6 +424,7 @@ fn placement_replacement_can_refuse_and_stops_later_mods() {
                 source: false,
             },
             &mut answer,
+            &mut |_| Ok(()),
         );
         assert_eq!(answer, None);
         assert!(calls.lock().unwrap().is_empty());
@@ -433,9 +441,16 @@ fn placement_replacement_can_refuse_and_stops_later_mods() {
             source: false,
         },
         &mut answer,
+        &mut |_| {
+            if calls.lock().unwrap().as_slice() == [1] {
+                Err("first proposal refused".into())
+            } else {
+                Ok(())
+            }
+        },
     );
     assert_eq!(answer, Some(None));
-    assert_eq!(*calls.lock().unwrap(), vec![1]);
+    assert_eq!(*calls.lock().unwrap(), vec![1, 2]);
     dispatch_state_for_placement(
         LevelSide::Server(&Level),
         LevelDimension,
@@ -448,8 +463,9 @@ fn placement_replacement_can_refuse_and_stops_later_mods() {
             source: false,
         },
         &mut answer,
+        &mut |_| Ok(()),
     );
-    assert_eq!(*calls.lock().unwrap(), vec![1]);
+    assert_eq!(*calls.lock().unwrap(), vec![1, 2]);
 }
 
 #[test]
@@ -463,9 +479,9 @@ fn incoming_damage_carries_the_attack_data() {
             event: &mut LivingIncomingDamageEvent<'_>,
         ) -> Flow {
             assert_eq!(event.source.damage_type, "minecraft:player_attack");
-            assert_eq!(event.causing_weapon.unwrap().item.as_ref(), "test:sword");
+            assert_eq!(event.causing_weapon.unwrap().item().0, "test:sword");
             if let Some(weapon) = event.weapon {
-                assert_eq!(weapon.item.as_ref(), "test:crossbow");
+                assert_eq!(weapon.item().0, "test:crossbow");
             }
             let (from, at, look) = (
                 event.source.position.unwrap(),
@@ -492,6 +508,8 @@ fn incoming_damage_carries_the_attack_data() {
         item: "test:sword".into(),
         count: 1,
     };
+    let held = ItemStackView(&held);
+    let causing = ItemStackView(&causing);
     for (source_z, weapon, expected) in [
         (-1.0, Some(&held), 12.0),
         (1.0, Some(&held), 4.0),
@@ -581,7 +599,6 @@ fn dispatch_contracts() {
             assert!(event.attacker_main.is_none() && event.attacker_off.is_none());
             assert_eq!(event.kill_credit, 19);
             assert!(event.kill_credit_main.is_none());
-            assert_eq!(event.entry, KnockbackEntry::Full);
             assert_eq!(event.strength, 0.4);
             event.strength *= 2.0;
             event.x = -event.x;
@@ -607,7 +624,6 @@ fn dispatch_contracts() {
             attacker_off: None,
             kill_credit: 19,
             kill_credit_main: None,
-            entry: KnockbackEntry::Full,
             strength: &mut strength,
             x: &mut x,
             z: &mut z,
@@ -640,23 +656,35 @@ fn dispatch_contracts() {
     dispatch_level_tick_pre(HostSide::Server(&mut host), LevelRef);
     assert_eq!(*calls.lock().unwrap(), [1, 2]);
     calls.lock().unwrap().clear();
-    let mut zoom = None;
-    dispatch_zoom(&host, &mut zoom);
-    assert_eq!(zoom, Some(Zoom(1)));
+    let mut crafted = None;
+    dispatch_prepare_item_craft(&mut host, 0, "alex", None, &mut crafted, &mut |_| Ok(()));
+    assert_eq!(
+        crafted,
+        Some(ItemStack {
+            item: "test:crafted".into(),
+            count: 1,
+        })
+    );
     assert_eq!(*calls.lock().unwrap(), [1]);
     calls.lock().unwrap().clear();
-    dispatch_zoom(&host, &mut zoom);
+    dispatch_prepare_item_craft(&mut host, 0, "alex", None, &mut crafted, &mut |_| Ok(()));
     assert!(calls.lock().unwrap().is_empty());
     install_parts(Parts {
         items: vec![part(1, &calls), part(2, &calls)],
         ..Parts::default()
     });
     let mut lines = Vec::new();
+    let mut journal = HookListJournal::new(
+        HookListStorage::Resizable(&mut lines),
+        |value: &(Text, u32)| Some(value.clone()),
+        |value| Ok(value.clone()),
+    );
+    let mut list = HookList::new(&mut journal, "tooltip", "lines");
     dispatch_tooltip(
         &host,
         &ItemStack::default(),
         &mod_api::mod_api::TooltipAppendContext,
-        &mut lines,
+        &mut list,
     );
     assert_eq!(lines.iter().map(|line| line.1).collect::<Vec<_>>(), [1, 2]);
     let source = HurtSource {
@@ -777,7 +805,6 @@ mod stubs {
         Held,
     }
     pub(super) struct MobRender<'a>(pub &'a ());
-    pub(super) struct Shake;
     pub(super) struct Music;
     pub(super) struct MusicLayer;
     pub(super) struct BlockRim;
@@ -796,11 +823,8 @@ mod stubs {
     pub(super) struct Command;
     pub(super) struct LifecycleContext;
     pub(super) struct Load(pub &'static str);
-    pub(super) struct ServerPlayer;
     #[derive(Clone, Copy)]
     pub(super) struct ServerTickPhase;
-    #[derive(Clone, Copy)]
-    pub(super) struct WorldPhase;
 }
 
 mod api {

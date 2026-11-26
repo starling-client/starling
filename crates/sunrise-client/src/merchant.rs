@@ -12,7 +12,11 @@ use sunrise_world::loot::PackOverlay;
 mod offer;
 pub use offer::{ItemCost, MerchantOffer};
 use serde_json::Value;
-use std::{collections::HashMap, path::Path, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    path::Path,
+    sync::Arc,
+};
 
 /// `VillagerData.NEXT_LEVEL_XP_THRESHOLDS`.
 pub const LEVEL_XP: [i32; 5] = [0, 10, 70, 150, 250];
@@ -47,41 +51,61 @@ pub struct Trader {
     /// generated when first asked for, keeping the experience.
     pub unset: bool,
 }
-impl Trader {
-    fn update_demand(&mut self) {
-        for o in &mut self.offers {
-            o.update_demand();
+/// What a restock step does to the offers (`Villager.restock`, and the
+/// `catchUpDemand` of `shouldRestock` with the restocks it missed).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum RestockStep {
+    CatchUp(i32),
+    Restock,
+}
+impl RestockStep {
+    pub fn apply(self, offers: &mut [MerchantOffer]) {
+        match self {
+            Self::CatchUp(missed) => {
+                if missed > 0 {
+                    offers.iter_mut().for_each(MerchantOffer::reset_uses);
+                }
+                for _ in 0..missed {
+                    offers.iter_mut().for_each(MerchantOffer::update_demand);
+                }
+            }
+            Self::Restock => {
+                offers.iter_mut().for_each(MerchantOffer::update_demand);
+                offers.iter_mut().for_each(MerchantOffer::reset_uses);
+            }
         }
     }
+}
+impl Trader {
     /// `Villager.shouldRestock`.
     pub fn should_restock(&mut self, game_time: i64, day: i64) -> bool {
+        let _ = self.catch_up(game_time, day);
+        self.restock_due(game_time)
+    }
+    /// The new-day half of `Villager.shouldRestock` (`resetNumberOfRestocks` /
+    /// `catchUpDemand`). Returns the step applied to the offers on a new day.
+    pub fn catch_up(&mut self, game_time: i64, day: i64) -> Option<RestockStep> {
         let mut new_day = game_time > self.last_restock + 12000;
         new_day |= self.check_day > 0 && day > self.check_day;
         self.check_day = day;
-        if new_day {
-            self.last_restock = game_time;
-            // resetNumberOfRestocks / catchUpDemand.
-            let missed = 2 - self.restocks_today;
-            if missed > 0 {
-                for o in &mut self.offers {
-                    o.reset_uses();
-                }
-            }
-            for _ in 0..missed {
-                self.update_demand();
-            }
-            self.restocks_today = 0;
+        if !new_day {
+            return None;
         }
+        self.last_restock = game_time;
+        let step = RestockStep::CatchUp(2_i32.wrapping_sub(self.restocks_today));
+        step.apply(&mut self.offers);
+        self.restocks_today = 0;
+        Some(step)
+    }
+    /// `allowedToRestock && needsToRestock`.
+    pub fn restock_due(&self, game_time: i64) -> bool {
         let allowed = self.restocks_today == 0
             || self.restocks_today < 2 && game_time > self.last_restock + 2400;
         allowed && self.offers.iter().any(|o| o.uses > 0)
     }
     /// `Villager.restock`.
     pub fn restock(&mut self, game_time: i64) {
-        self.update_demand();
-        for o in &mut self.offers {
-            o.reset_uses();
-        }
+        RestockStep::Restock.apply(&mut self.offers);
         self.last_restock = game_time;
         self.restocks_today += 1;
     }
@@ -209,6 +233,8 @@ pub struct Session {
     pub future_xp: i32,
     /// `Mob.ambientSoundTime`.
     pub ambient_sound_time: i32,
+    /// The merchant's `Mob.getAmbientSoundInterval` (80 unless a content type declares one).
+    pub ambient_interval: i32,
     /// `Villager.lastTradedPlayer` is set: the TRADE reputation event is due.
     pub last_traded: bool,
     /// A server's merchant on its client (`ClientSideMerchant`): a trade only counts the
@@ -234,10 +260,23 @@ impl Session {
             active: None,
             future_xp: 0,
             ambient_sound_time: 0,
+            ambient_interval: 80,
             last_traded: false,
             client_side: false,
             events: Vec::new(),
         }
+    }
+    /// The trading mob's random and ambient sound clock, which the session draws
+    /// from and resets while it trades (the mob ticks meanwhile).
+    pub fn take_mob_clock(&mut self, m: &crate::mobs::Mob) {
+        self.random.clone_from(&m.random);
+        self.ambient_sound_time = m.ambient_timer;
+        self.ambient_interval = m.ambient_interval();
+    }
+    /// The random and ambient sound clock back to the mob after a trade.
+    pub fn give_mob_clock(&self, m: &mut crate::mobs::Mob) {
+        m.random = self.random.clone();
+        m.ambient_timer = self.ambient_sound_time;
     }
     /// `Merchant.showProgressBar` / `canRestock`.
     pub fn show_progress(&self) -> bool {
@@ -274,7 +313,7 @@ impl Session {
             return false;
         }
         let offer = offer.clone();
-        self.ambient_sound_time = -80;
+        self.ambient_sound_time = self.ambient_interval.wrapping_neg();
         self.events
             .push(Event::Traded(index, Box::new(offer.clone())));
         let mut prices = false;
@@ -329,43 +368,100 @@ impl Session {
         self.sequences.insert(sequence, random);
         out
     }
-    /// `AbstractVillager.notifyTradeUpdated`.
-    pub fn notify_trade_updated(&mut self, has_result: bool) {
+    /// `MerchantContainer.updateSellItem` with only its payment and result slots.
+    /// Returns the optional feedback so the owner can play it after publishing the menu.
+    pub fn update_sell_item(
+        &mut self,
+        items: &Items,
+        a: Option<&ItemStack>,
+        b: Option<&ItemStack>,
+        result: &mut Option<ItemStack>,
+        feedback: TradeFeedback,
+    ) -> Option<(bool, f32)> {
+        let (a, b) = if a.is_none() { (b, None) } else { (a, b) };
+        self.active = None;
+        if a.is_none() {
+            *result = None;
+            self.future_xp = 0;
+            return None;
+        }
+        if !self.offers.is_empty() {
+            (self.active, *result) =
+                sell_item(&self.offers, items, a, b, Some(self.selection_hint));
+            self.future_xp = if result.is_some() {
+                self.active.map_or(0, |i| self.offers[i].xp)
+            } else {
+                0
+            };
+        }
         // ClientSideMerchant.notifyTradeUpdated does nothing.
         if self.client_side {
-            return;
+            return None;
         }
-        if self.ambient_sound_time > -80 + 20 {
-            self.ambient_sound_time = -80;
-            let pitch = self.voice_pitch();
-            self.events.push(Event::TradeUpdated(has_result, pitch));
-        }
+        let pitch = match feedback {
+            TradeFeedback::Current => trade_update_pitch(
+                &mut self.ambient_sound_time,
+                self.ambient_interval,
+                &mut self.random,
+            ),
+            TradeFeedback::AtHurt(pitch) | TradeFeedback::AtWork(pitch) => pitch,
+        };
+        pitch.map(|pitch| (result.is_some(), pitch))
     }
-    /// `LivingEntity.getVoicePitch` of an adult merchant.
-    pub fn voice_pitch(&mut self) -> f32 {
-        (self.random.next_float() - self.random.next_float()) * 0.2 + 1.0
+}
+
+/// Which tick owns `AbstractVillager.notifyTradeUpdated`'s voice draw.
+#[derive(Clone, Copy)]
+pub enum TradeFeedback {
+    Current,
+    /// An accepted player hit already settled the living villager's timer and RNG.
+    AtHurt(Option<f32>),
+    /// A work-step restock already settled the living villager's timer and RNG.
+    AtWork(Option<f32>),
+}
+
+/// `AbstractVillager.notifyTradeUpdated`: a reply resets the clock to the negated interval.
+pub(crate) fn reset_trade_update_clock(ambient_time: &mut i32, interval: i32) -> bool {
+    let reset = interval.wrapping_neg();
+    if *ambient_time <= reset.wrapping_add(20) {
+        return false;
     }
+    *ambient_time = reset;
+    true
+}
+
+/// The reply pitch at a trade update if `AbstractVillager.notifyTradeUpdated` makes a sound.
+pub fn trade_update_pitch(
+    ambient_time: &mut i32,
+    interval: i32,
+    random: &mut sunrise_core::random::LegacyRandom,
+) -> Option<f32> {
+    reset_trade_update_clock(ambient_time, interval)
+        .then(|| (random.next_float() - random.next_float()) * 0.2 + 1.0)
 }
 
 /// The trade registries.
 pub struct Trades {
     pub professions: std::sync::Arc<crate::mobs::villager::ResolvedProfessions>,
-    pub trades: HashMap<String, Value>,
+    pub trades: BTreeMap<String, Value>,
     /// villager_trade tags, ordered.
     pub tags: HashMap<String, Vec<String>>,
-    pub sets: HashMap<String, Value>,
+    pub sets: BTreeMap<String, Value>,
     /// potion tags, ordered (`set_random_potion` options).
     pub potion_tags: HashMap<String, Vec<String>>,
 }
-/// The `.json` files under `dir` as `minecraft:<path>` ids, through `json_folder` (from the
+/// The `.json` files under `dir` as `<ns>:<path>` ids, through `json_folder` (from the
 /// prepared data file when there is one); a file that doesn't parse is left out.
-fn walk(dir: &Path, out: &mut HashMap<String, Value>) {
+fn walk(dir: &Path, ns: &str, out: &mut BTreeMap<String, Value>) {
     let Ok(folder) = sunrise_world::json_folder::read(dir) else {
         return;
     };
     for file in &folder.files {
+        if !sunrise_world::json_folder::valid_resource_path(ns, &file.name) {
+            continue;
+        }
         if let Ok(value) = serde_json::from_slice(file.bytes().unwrap_or_default()) {
-            out.insert(format!("minecraft:{}", file.name), value);
+            out.insert(format!("{ns}:{}", file.name), value);
         }
     }
 }
@@ -373,18 +469,19 @@ impl Trades {
     /// Load from a resource root; `overlay` (the world's data packs'
     /// content files) merges over it, the way a pack stack layers
     /// (`SimpleJsonResourceReloadListener`, `TagLoader`).
-    pub fn load(root: &Path, overlay: &sunrise_world::loot::PackOverlay) -> Self {
-        let data = root.join("data/minecraft");
-        let (mut trades, mut raw_tags, mut sets) = (HashMap::new(), HashMap::new(), HashMap::new());
-        walk(&data.join("villager_trade"), &mut trades);
-        walk(&data.join("tags/villager_trade"), &mut raw_tags);
-        walk(&data.join("trade_set"), &mut sets);
-        let mut raw_potions = HashMap::new();
-        walk(&data.join("tags/potion"), &mut raw_potions);
+    pub fn load(root: &Path, overlay: &sunrise_world::loot::PackOverlay) -> std::io::Result<Self> {
+        let data = root.join("data");
+        let (mut trades, mut sets) = (BTreeMap::new(), BTreeMap::new());
+        for ns in sunrise_world::json_folder::namespaces(&data) {
+            let ns_dir = data.join(&ns);
+            walk(&ns_dir.join("villager_trade"), &ns, &mut trades);
+            walk(&ns_dir.join("trade_set"), &ns, &mut sets);
+        }
         // The packs' trade files: a trade or set's top pack file replaces
         // the game's own (`SimpleJsonResourceReloadListener` sees one
-        // resource per id), a tag's entries join in pack order with a
-        // `replace` file dropping the lower sources' (`TagLoader.load`).
+        // resource per id), then `neoforge:conditions` runs on each winning
+        // entry (`RegistryDataLoader` / `ConditionalOps`). Tags bind through
+        // the one tag loader below and ignore conditions (`TagLoader.load`).
         for (id, files) in overlay.kind("villager_trade") {
             if let Ok(v) = serde_json::from_slice(PackOverlay::top(files)) {
                 trades.insert(id.to_owned(), v);
@@ -395,79 +492,24 @@ impl Trades {
                 sets.insert(id.to_owned(), v);
             }
         }
-        let values = |v: Value| -> Vec<String> {
-            v["values"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|e| e.as_str().map(str::to_owned))
-                .collect()
-        };
-        let mut raw_potions: HashMap<String, Vec<String>> = raw_potions
-            .into_iter()
-            .map(|(k, v)| (k, values(v)))
-            .collect();
-        let mut raw: HashMap<String, Vec<String>> = raw_tags
-            .into_iter()
-            .map(|(k, v)| {
-                (
-                    k,
-                    v["values"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .filter_map(|e| e.as_str().map(str::to_owned))
-                        .collect(),
-                )
-            })
-            .collect();
-        for (registry, raw) in [("villager_trade", &mut raw), ("potion", &mut raw_potions)] {
-            for (id, files) in overlay.tag_kind(registry) {
-                let slot = raw.entry(id).or_default();
-                for bytes in files {
-                    let Ok(v) = serde_json::from_slice::<Value>(bytes) else {
-                        continue;
-                    };
-                    if v["replace"].as_bool() == Some(true) {
-                        slot.clear();
-                    }
-                    if let Some(vs) = v["values"].as_array() {
-                        slot.extend(vs.iter().filter_map(|e| e.as_str().map(str::to_owned)));
-                    }
-                }
-            }
-        }
-        fn expand(
-            name: &str,
-            raw: &HashMap<String, Vec<String>>,
-            out: &mut Vec<String>,
-            depth: u32,
-        ) {
-            for v in raw.get(name).into_iter().flatten() {
-                match v.strip_prefix('#') {
-                    Some(t) if depth < 16 => expand(t, raw, out, depth + 1),
-                    Some(_) => {}
-                    None if !out.contains(v) => out.push(v.clone()),
-                    None => {}
-                }
-            }
-        }
-        let expand_all = |raw: &HashMap<String, Vec<String>>| {
-            raw.keys()
-                .map(|k| {
-                    let mut v = Vec::new();
-                    expand(k, raw, &mut v, 0);
-                    (k.clone(), v)
-                })
-                .collect()
-        };
-        Self {
+        trades.retain(|id, v| overlay.conditions.allows_id(v, "villager_trade", id));
+        sets.retain(|id, v| overlay.conditions.allows_id(v, "trade_set", id));
+        // Their tags bind through the one tag loader (`TagLoader.load` and `build`).
+        let registries = sunrise_world::tag_layers::builtin_ids(root)?;
+        let potions = registries.get("potion");
+        let tags = sunrise_world::tag_layers::load(root, "villager_trade", overlay, |id| {
+            trades.contains_key(id)
+        })?;
+        let potion_tags = sunrise_world::tag_layers::load(root, "potion", overlay, |id| {
+            potions.is_some_and(|ids| ids.contains(id))
+        })?;
+        Ok(Self {
             trades,
-            tags: expand_all(&raw),
+            tags,
             professions: std::sync::Arc::new(crate::mobs::villager::ResolvedProfessions::vanilla()),
             sets,
-            potion_tags: expand_all(&raw_potions),
-        }
+            potion_tags,
+        })
     }
     /// The random sequence of a trade set (`TradeSet.randomSequence`).
     pub fn sequence(&self, set_id: &str) -> Option<String> {
@@ -939,6 +981,45 @@ mod tests {
         }
     }
 
+    /// `AbstractVillager.notifyTrade` and `notifyTradeUpdated` reset the clock to
+    /// `-getAmbientSoundInterval()`: a content merchant's declared interval reaches
+    /// the mob's clock after a trade.
+    #[test]
+    fn a_trade_resets_the_mobs_ambient_clock_to_its_interval() {
+        let items = items();
+        let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
+        kind.ambient_interval = 200;
+        let mut m = crate::mobs::Mob::new(
+            1,
+            std::sync::Arc::new(kind),
+            sunrise_core::geometry::Vec3::ZERO,
+            0.0,
+        );
+        m.ambient_timer = 37;
+        let mut s = Session::new(vec![offer(4, None)], true);
+        s.take_mob_clock(&m);
+        s.notify_trade(0, None, &items);
+        s.give_mob_clock(&mut m);
+        assert_eq!(m.ambient_timer, -200);
+        // The yes/no voice waits until the clock is past `-interval + 20`.
+        let payment = ItemStack::new("minecraft:emerald", 4);
+        let recalculate = |s: &mut Session| {
+            s.update_sell_item(
+                &items,
+                Some(&payment),
+                None,
+                &mut None,
+                TradeFeedback::Current,
+            )
+            .map(|(yes, _)| yes)
+        };
+        s.ambient_sound_time = -180;
+        assert_eq!(recalculate(&mut s), None);
+        assert_eq!(s.ambient_sound_time, -180);
+        s.ambient_sound_time = -179;
+        assert_eq!(recalculate(&mut s), Some(true));
+        assert_eq!(s.ambient_sound_time, -200);
+    }
     /// A shift-click trades several times in one session: each `Traded`
     /// event keeps the offer as it was right after its own trade, which is
     /// what the mods hear (`TradeWithVillagerEvent` per `onTake`).
@@ -1175,7 +1256,7 @@ mod tests {
     fn offers_follow_the_trade_data() {
         let items = items();
         let e = crate::enchant::tests::sample();
-        let mut trades = HashMap::new();
+        let mut trades = BTreeMap::new();
         trades.insert("minecraft:t/boots".into(), json!({"gives":{"id":"minecraft:iron_boots"},"max_uses":12,"reputation_discount":0.2,"wants":{"count":4,"id":"minecraft:emerald"}}));
         trades.insert("minecraft:t/helmet".into(), json!({"gives":{"id":"minecraft:iron_helmet"},"max_uses":12,"reputation_discount":0.2,"wants":{"count":5,"id":"minecraft:emerald"}}));
         trades.insert("minecraft:t/desert".into(), json!({"gives":{"id":"minecraft:sand"},"wants":{"id":"minecraft:emerald"},"merchant_predicate":{"entity":"this","predicate":{"minecraft:predicates":{"minecraft:villager/variant":"minecraft:desert"}},"type":"minecraft:entity_properties"}}));
@@ -1188,7 +1269,7 @@ mod tests {
                 "minecraft:t/desert".into(),
             ],
         );
-        let mut sets = HashMap::new();
+        let mut sets = BTreeMap::new();
         sets.insert(
             "minecraft:t/level_1".into(),
             json!({"amount": 5, "trades": "#minecraft:t/level_1"}),
@@ -1246,10 +1327,10 @@ mod tests {
         let items = items();
         let e = crate::enchant::tests::sample();
         let t = Trades {
-            trades: HashMap::new(),
+            trades: BTreeMap::new(),
             tags: HashMap::new(),
             professions: std::sync::Arc::new(crate::mobs::villager::ResolvedProfessions::vanilla()),
-            sets: HashMap::new(),
+            sets: BTreeMap::new(),
             potion_tags: HashMap::new(),
         };
         let ctx = TradeContext {
@@ -1287,9 +1368,9 @@ mod enchant_select_tests {
         let items = crate::enchant::tests::sample_items();
         let e = crate::enchant::tests::sample();
         let trades = Trades {
-            trades: HashMap::new(),
+            trades: BTreeMap::new(),
             tags: HashMap::new(),
-            sets: HashMap::new(),
+            sets: BTreeMap::new(),
             professions: std::sync::Arc::new(crate::mobs::villager::ResolvedProfessions::vanilla()),
             potion_tags: HashMap::new(),
         };
@@ -1317,5 +1398,150 @@ mod enchant_select_tests {
             .unwrap();
         assert!(stack.enchantments().is_empty());
         assert_eq!(random.next_long(), expected.next_long());
+    }
+
+    /// Potion and villager trade tags bind through `TagLoader`: a pack's file removes and adds
+    /// entries, and a tag with a missing required member is dropped.
+    #[test]
+    fn pack_potion_and_trade_tags_bind_like_tag_loader() {
+        let root = tempfile::tempdir().unwrap();
+        let write = |path: &str, text: &str| {
+            let path = root.path().join("data/minecraft").join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        };
+        std::fs::write(
+            root.path().join("registries.json"),
+            r#"{"minecraft:potion":{"entries":{"minecraft:swiftness":{},"minecraft:strength":{},"minecraft:luck":{}}}}"#,
+        )
+        .unwrap();
+        write("villager_trade/offer.json", "{}");
+        write(
+            "tags/potion/pool.json",
+            r#"{"values":["minecraft:swiftness","minecraft:strength"]}"#,
+        );
+        write(
+            "tags/villager_trade/offers.json",
+            r#"{"values":["minecraft:offer"]}"#,
+        );
+        let files = [
+            (
+                "tags/minecraft:potion/pool".to_owned(),
+                vec![br#"{"values":["minecraft:luck"],"remove":["minecraft:swiftness"]}"#.to_vec()],
+            ),
+            (
+                "tags/minecraft:villager_trade/offers".to_owned(),
+                vec![br#"{"values":[{"id":"minecraft:absent","required":true}]}"#.to_vec()],
+            ),
+            (
+                "tags/minecraft:villager_trade/extra".to_owned(),
+                vec![br##"{"values":[{"id":"minecraft:absent","required":false},"#minecraft:offers"]}"##.to_vec()],
+            ),
+        ];
+        let trades = Trades::load(root.path(), &PackOverlay::new(&files)).unwrap();
+        assert_eq!(
+            trades.potion_tags["minecraft:pool"],
+            ["minecraft:strength", "minecraft:luck"]
+        );
+        assert!(!trades.tags.contains_key("minecraft:offers"));
+        assert!(!trades.tags.contains_key("minecraft:extra"));
+    }
+
+    #[test]
+    fn trades_load_evaluates_conditions_on_trades_and_sets_but_not_tags() {
+        let root =
+            std::env::temp_dir().join(format!("sunrise-merchant-cond-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let trade_dir = root.join("data/boiler/villager_trade");
+        let set_dir = root.join("data/boiler/trade_set");
+        let tag_dir = root.join("data/minecraft/tags/villager_trade");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("registries.json"), "{}").unwrap();
+        std::fs::create_dir_all(&trade_dir).unwrap();
+        std::fs::create_dir_all(&set_dir).unwrap();
+        std::fs::create_dir_all(&tag_dir).unwrap();
+        // Trade guarded by mod_loaded("chemlib")
+        std::fs::write(
+            trade_dir.join("chem.json"),
+            json!({
+                "neoforge:conditions": [{"type": "neoforge:mod_loaded", "modid": "chemlib"}],
+                "wants": {"id": "minecraft:emerald", "count": 1},
+                "gives": {"id": "minecraft:stick", "count": 1}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        // Unconditional baseline trade overridden by a failing higher pack: must not uncover.
+        std::fs::write(
+            trade_dir.join("override.json"),
+            json!({
+                "wants": {"id": "minecraft:emerald", "count": 1},
+                "gives": {"id": "minecraft:dirt", "count": 1}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        // Trade set guarded by mod_loaded("chemlib")
+        std::fs::write(
+            set_dir.join("chem_set.json"),
+            json!({
+                "neoforge:conditions": [{"type": "neoforge:mod_loaded", "modid": "chemlib"}],
+                "trades": "#minecraft:chem_pool"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        // Tag carrying a false condition: tags ignore conditions (TagLoader).
+        std::fs::write(
+            tag_dir.join("chem_pool.json"),
+            json!({
+                "neoforge:conditions": [{"type": "neoforge:false"}],
+                "values": ["boiler:chem"]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let pack_files = vec![(
+            "villager_trade/boiler:override".to_owned(),
+            vec![
+                json!({
+                    "neoforge:conditions": [{"type": "neoforge:mod_loaded", "modid": "absent"}],
+                    "wants": {"id": "minecraft:emerald", "count": 2},
+                    "gives": {"id": "minecraft:stone", "count": 1}
+                })
+                .to_string()
+                .into_bytes(),
+            ],
+        )];
+        let on = sunrise_world::conditions::LoadConditions::new(["chemlib"]);
+        let overlay_on = sunrise_world::loot::PackOverlay {
+            conditions: &on,
+            files: &pack_files,
+            ..sunrise_world::loot::PackOverlay::default()
+        };
+        let loaded_on = Trades::load(&root, &overlay_on).unwrap();
+        assert!(loaded_on.trades.contains_key("boiler:chem"));
+        assert!(!loaded_on.trades.contains_key("boiler:override"));
+        assert!(loaded_on.sets.contains_key("boiler:chem_set"));
+        assert_eq!(
+            loaded_on.tags.get("minecraft:chem_pool").map(Vec::as_slice),
+            Some(&["boiler:chem".to_owned()][..])
+        );
+
+        let off = sunrise_world::conditions::LoadConditions::vanilla();
+        let overlay_off = sunrise_world::loot::PackOverlay {
+            conditions: &off,
+            files: &pack_files,
+            ..sunrise_world::loot::PackOverlay::default()
+        };
+        let loaded_off = Trades::load(&root, &overlay_off).unwrap();
+        assert!(!loaded_off.trades.contains_key("boiler:chem"));
+        assert!(!loaded_off.trades.contains_key("boiler:override"));
+        assert!(!loaded_off.sets.contains_key("boiler:chem_set"));
+        // The tag's required member is gone with its conditioned trade, so the
+        // tag loader drops the tag (`TagLoader.build`).
+        assert!(!loaded_off.tags.contains_key("minecraft:chem_pool"));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -6,8 +6,8 @@ use crate::game::{
     stations::{Kind as StationKind, Station},
 };
 use mod_api::{
-    Flow, GrindstonePlaceEvent, GrindstoneTakeEvent, Hooks, ItemPlace, ItemResource, ModEntry,
-    Mods, Registrar, ServerHost,
+    Flow, GrindstonePlaceEvent, GrindstoneTakeEvent, Hooks, HostTransaction, ItemPlace,
+    ItemResource, ModEntry, Mods, Registrar, ServerHost,
 };
 use std::cell::{Cell, RefCell};
 use sunrise_client::items::ItemStack;
@@ -19,11 +19,11 @@ struct Script {
     place_xp: Option<i32>,
     place_cancel: bool,
     place_write: bool,
-    place_unclosed_write: bool,
+    place_panicking_write: bool,
     place_panic: bool,
     take_panic: bool,
     take_write: bool,
-    take_unclosed_write: bool,
+    take_panicking_write: bool,
     take_cancel: bool,
     take_xp: Option<i32>,
     take_new_top: Option<u32>,
@@ -65,23 +65,25 @@ fn write_dirt(host: &mut dyn ServerHost) {
         player: 12,
         slot: 20,
     };
-    let seal = host.transaction_open();
-    let inserted = place.insert(host, seal.transaction(), &ItemResource::of(&dirt), 2);
-    host.transaction_close(&seal, true);
-    assert_eq!(inserted, 2);
+    host.transaction(|host, tx| {
+        assert_eq!(place.insert(host, tx, &ItemResource::of(&dirt), 2), Ok(2));
+        Ok::<_, ()>(())
+    })
+    .unwrap();
 }
 
-fn write_dirt_unclosed(host: &mut dyn ServerHost) {
-    let key = mod_api::__private::item_key("minecraft:dirt").unwrap();
-    let dirt = mod_api::ItemStack::new(key, 1).unwrap();
+fn panic_during_write(host: &mut dyn ServerHost) {
     let place = ItemPlace::PlayerSlot {
         player: 12,
         slot: 21,
     };
-    let seal = host.transaction_open();
-    let inserted = place.insert(host, seal.transaction(), &ItemResource::of(&dirt), 3);
-    assert_eq!(inserted, 3);
-    // Deliberately leave `seal` open before panicking.
+    let _: Result<(), mod_api::TransactionError<()>> = host.transaction(|host, tx| {
+        assert_eq!(
+            place.insert(host, tx, &ItemResource::of(&dirt(1)), 3),
+            Ok(3)
+        );
+        panic!("a grindstone listener failed during a write");
+    });
 }
 
 struct Mod;
@@ -107,8 +109,8 @@ impl Hooks for Mod {
         if s.place_write {
             write_dirt(host);
         }
-        if s.place_unclosed_write {
-            write_dirt_unclosed(host);
+        if s.place_panicking_write {
+            panic_during_write(host);
         }
         if let Some(count) = s.place_output
             && (!s.place_requires_top || event.inputs.top.is_some())
@@ -139,8 +141,8 @@ impl Hooks for Mod {
         if s.take_write {
             write_dirt(host);
         }
-        if s.take_unclosed_write {
-            write_dirt_unclosed(host);
+        if s.take_panicking_write {
+            panic_during_write(host);
         }
         event.edits.new_top =
             if SCRIPT.with(|script| std::mem::take(&mut script.borrow_mut().restore_top_once)) {
@@ -614,24 +616,25 @@ fn an_outer_abort_undoes_an_accepted_grindstone_take() {
 
             for commit in [false, true] {
                 *game.world.random = LegacyRandom::new(23);
-                let outer = game.transaction_open();
-                click(game, window, 2, 0);
-                assert_eq!(slot(game, 0), None);
-                assert_eq!(
-                    game.lan.as_ref().unwrap().hub.guests[0].carried,
-                    Some(ItemStack::new("minecraft:dirt", 1))
-                );
-                assert_eq!(game.orbs[game.orbs.locate(join).unwrap()].count, 2);
-                assert!(
-                    rx.try_recv().is_err(),
-                    "published station content before commit"
-                );
-                assert_eq!(
-                    game.lan_events.len(),
-                    events,
-                    "published level event before commit"
-                );
-                game.transaction_close(&outer, commit);
+                game.storage_scope(|game, _| {
+                    click(game, window, 2, 0);
+                    assert_eq!(slot(game, 0), None);
+                    assert_eq!(
+                        game.lan.as_ref().unwrap().hub.guests[0].carried,
+                        Some(ItemStack::new("minecraft:dirt", 1))
+                    );
+                    assert_eq!(game.orbs[game.orbs.locate(join).unwrap()].count, 2);
+                    assert!(
+                        rx.try_recv().is_err(),
+                        "published station content before commit"
+                    );
+                    assert_eq!(
+                        game.lan_events.len(),
+                        events,
+                        "published level event before commit"
+                    );
+                    ((), commit)
+                });
                 if !commit {
                     assert_eq!(slot(game, 0), Some(original.clone()));
                     assert_eq!(slot(game, 2), Some(ItemStack::new("minecraft:dirt", 1)));
@@ -746,7 +749,7 @@ fn panicking_grindstone_listeners_keep_vanilla_and_initial_behavior() {
 
 #[test]
 #[ignore = "daily"]
-fn panicking_listener_aborts_unclosed_transaction_and_keeps_committed_writes() {
+fn panicking_listener_aborts_scoped_transaction_and_keeps_committed_writes() {
     with_mod(|| {
         with_guests(|game| {
             let window = open_grindstone(game);
@@ -756,32 +759,28 @@ fn panicking_listener_aborts_unclosed_transaction_and_keeps_committed_writes() {
             });
             script(Script {
                 place_write: true,
-                place_unclosed_write: true,
+                place_panicking_write: true,
                 place_panic: true,
                 ..Script::default()
             });
             click(game, window, 0, 0);
             assert_eq!(inventory(game, 20), 2, "committed write survives");
-            assert_eq!(inventory(game, 21), 0, "unclosed transaction rolled back");
+            assert_eq!(inventory(game, 21), 0, "panicking scope rolled back");
             assert!(
                 game.transactions.is_empty(),
                 "no abandoned transaction remains open"
             );
 
-            // Take also aborts any unclosed transaction left behind by a panicking listener.
+            // Take also aborts any panicking scope left behind by a panicking listener.
             script(Script {
                 take_write: true,
-                take_unclosed_write: true,
+                take_panicking_write: true,
                 take_panic: true,
                 ..Script::default()
             });
             click(game, window, 2, 0);
             assert_eq!(inventory(game, 20), 4, "committed take write survives");
-            assert_eq!(
-                inventory(game, 21),
-                0,
-                "unclosed take transaction rolled back"
-            );
+            assert_eq!(inventory(game, 21), 0, "panicking take scope rolled back");
             assert!(game.transactions.is_empty());
         });
     });
@@ -865,15 +864,15 @@ fn place_only_take_awards_xp_and_event_before_replacing_inputs() {
             event: &mut GrindstonePlaceEvent<'_>,
         ) -> mod_api::Flow {
             let at = event.pos.map(f64::from);
-            let orb_xp: i64 = host
-                .experience_orbs(
-                    "minecraft:overworld",
-                    at.map(|v| v - 3.0),
-                    at.map(|v| v + 4.0),
-                )
-                .iter()
-                .map(|orb| i64::from(orb.value) * i64::from(orb.count))
-                .sum();
+            let mut orb_xp = 0;
+            let level = host.level("minecraft:overworld").unwrap();
+            let _ = level
+                .visit_experience_orbs(host, at.map(|v| v - 3.0), at.map(|v| v + 4.0), &mut |orb| {
+                    orb_xp +=
+                        i64::from(orb.value(host).unwrap()) * i64::from(orb.count(host).unwrap());
+                    core::ops::ControlFlow::Continue(())
+                })
+                .unwrap();
             self.seen.lock().unwrap().push((
                 event.inputs.top.map(mod_api::ItemStack::count),
                 event.inputs.bottom.map(mod_api::ItemStack::count),

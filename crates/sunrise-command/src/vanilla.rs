@@ -2,7 +2,7 @@
 //! Sunrise implements. Leaves carry command ids that the game executes;
 //! mode keywords are read back from the parsed literals.
 use super::{
-    Dispatcher,
+    Dispatcher, RegistryId,
     args::{ArgType, Resource, integer},
 };
 use sunrise_client_core::gamerules::{MINECART_IMPROVEMENTS, RuleRegistry, Value, rule_registry};
@@ -378,17 +378,21 @@ fn registered_with_features(
     let a = d.argument(
         s,
         "structure",
-        ArgType::ResOrTagKey("minecraft:worldgen/structure"),
+        ArgType::ResOrTagKey(RegistryId::from_static("minecraft:worldgen/structure")),
     );
     d.executes(a, "locate.structure");
     let b = d.literal(locate, "biome");
-    let a = d.argument(b, "biome", ArgType::ResOrTag("minecraft:worldgen/biome"));
+    let a = d.argument(
+        b,
+        "biome",
+        ArgType::ResOrTag(RegistryId::from_static("minecraft:worldgen/biome")),
+    );
     d.executes(a, "locate.biome");
     let p = d.literal(locate, "poi");
     let a = d.argument(
         p,
         "poi",
-        ArgType::ResOrTag("minecraft:point_of_interest_type"),
+        ArgType::ResOrTag(RegistryId::from_static("minecraft:point_of_interest_type")),
     );
     d.executes(a, "locate.poi");
 
@@ -469,7 +473,11 @@ fn advancement(d: &mut Dispatcher, root: usize) {
         let t = d.argument(a, "targets", PLAYERS);
         for mode in ["only", "from", "until", "through"] {
             let m = d.literal(t, mode);
-            let id = d.argument(m, "advancement", ArgType::ResKey("minecraft:advancement"));
+            let id = d.argument(
+                m,
+                "advancement",
+                ArgType::ResKey(RegistryId::from_static("minecraft:advancement")),
+            );
             d.executes(id, "advancement");
             if mode == "only" {
                 let c = d.argument(id, "criterion", ArgType::Greedy);
@@ -600,6 +608,11 @@ pub const MODPROFILE_ACTIONS: [(&str, &str); 3] = [
     ("stop", "modprofile.stop"),
     ("report", "modprofile.report"),
 ];
+/// Whether `name` is a root Sunrise adds beside vanilla's (`/modprofile`, and `/pregen` when it
+/// is on): a tool of the game's own, which a mod's command never merges into.
+pub fn is_session_tool(name: &str) -> bool {
+    matches!(name, "modprofile" | "pregen")
+}
 /// Build the command tree for one server session's registry.
 pub fn session_dispatcher(registry: &RuleRegistry, features: &[String]) -> Dispatcher {
     let dev = std::env::var_os("SUNRISE_DEV_COMMANDS").is_some();

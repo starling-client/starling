@@ -6,8 +6,9 @@ pub trait Hooks {
     /// mod block entities, on each side that holds a copy of it, before the
     /// copy is dropped. `pos` is where it stands, `block_entity` its handle (the
     /// one `host.block_entity` gave while it was loaded) and `entity` its data.
-    /// Release what your mod keeps for it here. On a server its chunk may have
-    /// left the level already, so don't count on the handle's reads. As
+    /// Release what your mod keeps for it here. Use the borrowed `entity` to
+    /// read its data while the row leaves the world; the handle identifies it,
+    /// but need not resolve through the Host during eviction. As
     /// with `chunk_unload`, changes made in it aren't saved: the chunk
     /// was saved before it unloads. Not told when the world closes, or on a
     /// client when its level goes (a respawn, a dimension change, leaving).
@@ -17,8 +18,9 @@ pub trait Hooks {
 block entity type is told once for each block entity of that type in a chunk that unloads, so a machine with a
 running job, an open handle or a place in a network it keeps can let go of it. `event.pos` is where it stands,
 `event.block_entity` its handle, equal to the one `host.block_entity` gave while it was loaded (so a map keyed by
-it finds the entry), and `event.entity` its type id and data as they are at the call: on a server, what the chunk
-was just saved with; on a client, its copy as the server last sent it.
+it finds the entry), and `event.entity` a borrow of its type id and data as they are at the call: on a server, what the chunk
+was just saved with; on a client, its copy as the server last sent it. Read it directly during the
+callback; unloading rows need not resolve again by handle.
 
 It fires on each side that holds a copy of the block entity. On a server it fires for each chunk that leaves a
 level, a level that closes for being empty included, after the chunk was saved and before the block entity is
@@ -28,17 +30,22 @@ otherwise, aren't saved, as for `chunk_unload`. On a client (the window's own in
 it fires when the server forgets a chunk or the view moves away from it, while the chunk is still there.
 
 It fires once per block entity per unload and never for a vanilla block entity. It does not fire when the world
-closes (that moment has `world_lifecycle`), nor on a client when its whole level goes (a respawn, a
+closes (those moments have `level_unload`, `server_stopping`, and `server_stopped`), nor on a client when its whole level goes (a respawn, a
 dimension change, leaving the server). The chunk-wide notice stays `chunk_unload`, a server hook: on a server
 it is told after the chunk's block entities, and a client is told of them alone. A chunk unload with no part
 subscribed costs one check."##]
     #[hook(
         dispatch = "flat",
         side = "both",
+        version = 2,
         contract = "listen",
         scope = "block_entity",
         key = "entity",
         neoforge = "IBlockEntityExtension.onChunkUnloaded"
     )]
-    fn on_chunk_unloaded(pos: [i32; 3], block_entity: BlockEntityRef, entity: &ModBlockEntity);
+    fn on_chunk_unloaded(
+        pos: [i32; 3],
+        block_entity: BlockEntityRef,
+        entity: BlockEntityDataView<'_>,
+    );
 }

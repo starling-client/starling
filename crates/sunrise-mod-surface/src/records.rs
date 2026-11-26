@@ -241,6 +241,9 @@ pub struct FunctionContract {
     pub impl_generics: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub refs: Vec<String>,
+    /// Versions of engine behaviours that callers of this item rely on, keyed by behaviour id.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub behaviour_versions: std::collections::BTreeMap<String, u32>,
 }
 
 /// `fn:<path>` (a free function) or `handle:<owner path>::<name>` (an inherent method or

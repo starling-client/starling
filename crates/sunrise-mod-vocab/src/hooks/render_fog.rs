@@ -1,5 +1,4 @@
 //! The `render_fog` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0119
 
 pub trait Hooks {
     /// Final world fog, after the computed color hook, ordinary calculations and Sunrise's fog

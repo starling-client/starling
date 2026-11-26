@@ -1,5 +1,4 @@
 //! The `music` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0121
 
 pub trait Hooks {
     /// Choose this client's music, once a client tick: `music` and `volume`

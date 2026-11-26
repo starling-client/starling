@@ -7,7 +7,7 @@ from pathlib import PurePosixPath
 import subprocess
 import sys
 
-PRIVATE_ROOTS = {".local", "decompiled", "minecraft", "assets", "run", "logs"}
+PRIVATE_ROOTS = {".local", "game-files", "decompiled", "minecraft", "assets", "run", "logs"}
 PRIVATE_EXTENSIONS = {".jar", ".class", ".jfr", ".hprof", ".java"}
 ORIGINAL_JDK_TOOLS = {
     # Original observer of public Paper API events, with no server implementation code.

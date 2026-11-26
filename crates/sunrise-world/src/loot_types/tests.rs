@@ -129,6 +129,29 @@ fn pack_predicates_bind_for_validation_and_world_evaluation() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// `LootPool`, `LootPoolEntryContainer` and `LootItemConditionalFunction` read `condition`
+/// alone (#5378): an old `conditions` list, even of untyped pre-26.3 conditions, is an unknown
+/// field that the load-time walker leaves unchecked, as vanilla's codecs ignore it.
+#[test]
+fn old_conditions_lists_on_pools_entries_and_functions_are_not_checked() {
+    let types = Types::default();
+    let empty = HashMap::new();
+    let old = json!([{"condition":"minecraft:random_chance","chance":0.1}]);
+    let table = json!({"pools":[{"rolls":1,"conditions":old,"entries":[{
+        "type":"minecraft:item","name":"minecraft:stick","conditions":old,
+        "functions":[{"type":"minecraft:set_count","count":2,"conditions":old}]}]}]});
+    types
+        .validate(std::iter::once(("test:root", &table)), &empty, &empty)
+        .unwrap();
+    // The field the codecs do read is still checked.
+    let typed_field = json!({"pools":[{"rolls":1,"condition":old[0],"entries":[]}]});
+    assert!(
+        types
+            .validate(std::iter::once(("test:root", &typed_field)), &empty, &empty)
+            .is_err()
+    );
+}
+
 #[test]
 fn conditional_function_with_null_condition_loads_and_applies() {
     let root = std::env::temp_dir().join(format!("sunrise-null-function-{}", std::process::id()));
@@ -192,4 +215,43 @@ fn selecting_a_pack_never_falls_back_from_malformed_winning_loot_data() {
         "{error}"
     );
     std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn condition_field_validation_binds_predicate_holders_including_nested_terms() {
+    let types = Types::default();
+    let predicates = HashMap::from([(
+        "test:rain".into(),
+        json!({"type": "minecraft:weather_check", "raining": true}),
+    )]);
+    types
+        .validate_condition_field(&json!("test:rain"), &predicates, "conditions.player")
+        .unwrap();
+    types
+        .validate_condition_field(
+            &json!({"type": "minecraft:all_of", "terms": ["test:rain"]}),
+            &predicates,
+            "conditions.player",
+        )
+        .unwrap();
+    let missing_top = types
+        .validate_condition_field(&json!("test:missing"), &predicates, "conditions.player")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        missing_top.contains("test:missing") && missing_top.contains("unknown reference"),
+        "{missing_top}"
+    );
+    let missing_nested = types
+        .validate_condition_field(
+            &json!({"type": "minecraft:all_of", "terms": ["test:rain", "test:absent"]}),
+            &predicates,
+            "conditions.player",
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(
+        missing_nested.contains("test:absent") && missing_nested.contains("unknown reference"),
+        "{missing_nested}"
+    );
 }

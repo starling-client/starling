@@ -23,11 +23,11 @@ import re
 import shutil
 import subprocess
 
-try:
-    from . import lab, port_regen
-except ImportError:
-    import lab
-    import port_regen
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, port_regen
 
 RESOURCES_URL = "https://resources.download.minecraft.net"
 # What sunrise-prepare's sounds and panorama steps copy from the launcher's asset store

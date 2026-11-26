@@ -4,10 +4,11 @@ import os
 from pathlib import Path
 import random
 import tempfile
-try:
-    from . import lab, oracle_harness as harness, test_rust_parity as base, integration_env
-except ImportError:
-    import lab, oracle_harness as harness, test_rust_parity as base, integration_env
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, oracle_harness as harness, test_rust_parity as base, integration_env
 
 
 def cases():
@@ -57,9 +58,9 @@ def main():
     with tempfile.TemporaryDirectory(prefix='sunrise-mob-air-parity-') as scratch:
         env = integration_env.game_environment(os.environ, scratch)
         env.update(SUNRISE_MOB_AIR_INPUT=str(inputs), SUNRISE_MOB_AIR_OUTPUT=str(build / 'rust.txt'))
-        harness.run_logged(['cargo', 'test', '--locked', '-p', 'sunrise-client', '--lib',
+        harness.run_logged([lab.parity_fixtures(),
                             'game::remote_mob_data::tests::mob_air_parity_fixture',
-                            '--', '--exact', '--ignored'], build, 'rust', env=env)
+                            '--exact', '--ignored'], build, 'rust', env=env)
     matched = harness.compare(build / 'client.txt', build / 'rust.txt', len(rows))
     base.ensure_sources_unchanged(sources, hashes)
     if lab.digest(inputs, 'sha256') != input_hash:

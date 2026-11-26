@@ -1,23 +1,20 @@
 use super::*;
+use sunrise_client::containers::ModBlockEntity;
 
 /// Server-level helpers for native mods.
 impl GameLevel<'_> {
     /// Play a sound event for nearby players in this server level. The return
-    /// value means queued, not heard. A `minecraft:` event must be registered:
-    /// an unknown one is dropped at dispatch. Another namespace's event (a
-    /// mod's, `mymod:machine_hum`) is sent by name, as vanilla sends a sound
-    /// that isn't in its registry (`Holder.direct`, a variable range): players
-    /// hear it if their resources define it (`assets/mymod/sounds.json`, a
-    /// content mod's).
+    /// value means queued, not heard. The server sends registered sounds by ID and other valid
+    /// keys by name (`Holder.direct`). The receiving client resolves the sound resources.
     pub(in crate::game) fn native_play_sound(
         &mut self,
         sound: &str,
         at: [f64; 3],
-        source: usize,
+        source: mod_api::SoundSource,
         volume: f32,
         pitch: f32,
     ) -> bool {
-        if !self.native_authoritative || !mod_sound_ok(sound, at, source, volume, pitch) {
+        if !self.native_authoritative || !sound_id(sound) {
             return false;
         }
         // `Level.playSound` draws `soundSeedGenerator.nextLong` at the call;
@@ -29,8 +26,9 @@ impl GameLevel<'_> {
             .push(crate::game::creatures::NativeSound {
                 dimension: dimension_id(self.dimension),
                 sound: sound.to_owned(),
+                inline_range: None,
                 at,
-                source: source as i32,
+                source: source.index() as i32,
                 volume,
                 pitch,
                 seed,
@@ -60,7 +58,14 @@ impl GameLevel<'_> {
     ) -> bool {
         let state_ok = |id| self.registry.state(id).is_some();
         if !self.native_authoritative
-            || !mod_particles_ok(options, state, state_ok, at, spread, speed)
+            || !mod_particles_ok(
+                options,
+                state,
+                state_ok,
+                std::slice::from_ref(&at),
+                spread,
+                speed,
+            )
         {
             return false;
         }
@@ -245,11 +250,14 @@ pub(super) fn block_entity_for_block(
     initial: Compound,
 ) -> Option<BlockEntity> {
     if let Some(kind) = sunrise_client::block_entity_types::type_for(name) {
-        return Some(BlockEntity::Mod(Box::new(EngineBlockEntity::new(
+        let slots = mod_api::__private::parts_installation::block_container(name)
+            .map_or(0, |container| container.slots);
+        return Some(BlockEntity::Mod(Box::new(ModBlockEntity::new(
             kind.to_owned(),
             ModBlockEntityFields {
                 nbt: initial,
-                ..Default::default()
+                items: vec![None; slots],
+                data: Vec::new(),
             },
         ))));
     }

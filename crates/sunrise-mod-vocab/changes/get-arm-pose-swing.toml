@@ -1,0 +1,3 @@
+ids = ["hook:get_arm_pose", "type:HumanoidRenderState.is_swinging"]
+why = "get_arm_pose version 2 is asked once per draw instead of once per client tick, as vanilla selects held poses at render-state extraction (AvatarRenderer.extractRenderState, getArmPose), so the pose it answers and setupAnim see the same swing on every draw. HumanoidRenderState gains is_swinging, LivingEntity.isSwinging: the swing state, not the interpolated animation."
+migrate = "Do not keep per-call state in a get_arm_pose listener on the assumption that it runs once per tick; it runs once per draw per humanoid and non-empty hand. Read humanoid.is_swinging to abstain while the holder swings. Code that builds a HumanoidRenderState gains the field."

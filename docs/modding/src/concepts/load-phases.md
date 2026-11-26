@@ -1,228 +1,150 @@
 # Load phases and access
 
-A hook's signature determines what it can access. Registration callbacks receive declarations and startup
-facts, not a `Host`. An ordinary game hook receives its side's host, whether or not a world is open.
+A hook's signature determines what it can access. Registration declares content against a startup
+snapshot; reloads prepare and publish resource data; ordinary hooks use the live game. A reload
+runs its own callbacks, not a new access mode for the rest of the game.
 
 ## Callback order
 
 ![Client startup order: discover packages, collect registrations, apply initial assets, run client setup,
 load configs, then show the title.](../images/load-phases.svg)
 
-Registration, config loading and reload-listener registration all use the installed dependency order.
-The resolver keeps bundle-order ties, checks present optional dependencies and refuses cycles. Content-only
-packages stay after code in the loaded-mod inventory; listener-specific edges use `ReloadOrder`.
-Data or asset reloads run their own callbacks on first load or when resources change. They do not switch the
-game into a different access mode.
+Registration, initial config loading and reload-listener registration use dependency order.
+Bundle order breaks ties; present optional dependencies count and cycles are refused. Content-only
+packages follow code packages in the loaded-mod inventory. Use `ReloadOrder` for dependencies
+between individual reload listeners.
 
 | Callback | What it lends |
 | --- | --- |
-| Registration (`register`, `blocks`, `items`, and others) | `&RegistrationContext` for the mod list, built-in registry and captured settings. Write declarations through the hook's registrar or event. |
-| `client_setup` | `&mut dyn ClientSetupContext` for client setup operations and published assets and data. No world handles or transactions. |
-| Config registration and initial loading | `&dyn ConfigContext` for settings reads and mod-scoped `ConfigFiles`. |
-| `config_reloading`, `config_unloading` | `HostSide<'_>` for the polling game and `&mut dyn ServerHost` for the stopping server, respectively. |
-| Data and asset reload callbacks | The callback's `ReloadContext`, `ClientReloadListenerContext`, `ClientReloadHost` or `DataLoadContext`, as described below. |
-| Ordinary game callbacks | `ServerHost` or `ClientHost` (or a `HostSide` selecting between them). World and session queries return `None` when no corresponding world or session is open. |
-
-`RegistrationContext::instance_dir()` borrows the instance directory captured before
-registration begins, as `Option<&InstanceDirectory>`: `Unix(Vec<u8>)` preserves raw Unix
-path bytes, and `Windows(Vec<u16>)` preserves Windows UTF-16 code units, including
-unpaired surrogates. Never convert Unix bytes with a lossy UTF-8 conversion when
-constructing a filesystem path. A context with no engine snapshot returns `None`.
-
-A mod that does slow work while the game starts shows it on the startup loading screen
-(NeoForge's `StartupNotificationManager` and `ProgressMeter`). `RegistrationContext::progress(label,
-steps)` opens a bar under the game's stage bar and returns `Result<StartupProgress, StartupProgressError>`.
-It returns `TooManyBars` when that listener's mod already has 64 open bars. Opening bars from a scoped
-worker with the same context counts toward the same quota. The returned bar is owned and `Send + Sync`:
-call `step()`, `set(n)` and `label(text)` to update it, and drop it to remove it. A mod can keep the bar
-after registration and update it or call `bar.message(text)` from a worker thread or from `client_setup`.
-
-`RegistrationContext::message(text)` shows a line for a few seconds without opening a bar. Both
-message methods and `bar.label(text)` borrow `text`; the caller need not keep it alive after the call.
-The newest four bars and the last three lines are drawn; message lines are cut to one line
-while bar labels are kept verbatim. A dedicated server
-logs each label, line and progress in 10% increments instead.
-
-This is part of the startup progress feature, not live rendering of synchronous setup work.
-Bars can be opened through `RegistrationContext`; `client_setup` has no creation context and
-must retain a handle from registration. Updates become visible only while the loading screen
-is actually drawing. A synchronous `client_setup` listener runs on the render thread, so its
-updates cannot draw live and may appear only after it returns, if another loading frame is drawn.
-Slow work can run in a mod-owned worker and step a retained bar, but neither that worker nor
-the bar keeps the loading screen open. Live display of synchronous setup work and a creation
-route from `client_setup` remain outside this change.
+| Registration (`register`, `blocks`, `items`, and others) | `&RegistrationContext` for captured startup facts; declare changes through the registrar or event. |
+| `client_setup` | `&mut dyn ClientSetupContext` for client setup and published assets/data, not world handles or transactions. |
+| Registered config's `ConfigEvent::Loading` | Owner-bound `&dyn ConfigContext` for settings reads and the native config directory. |
+| Registered config's `ConfigEvent::Reloading`, `ConfigEvent::Unloading` | `HostSide<'_>` for the polling game and `&mut dyn ServerHost` for the stopping server, respectively. |
+| Data and asset reload callbacks | A reload or data-load context for the relevant resource generation, not a live `Host`. |
+| Ordinary game callbacks | `ServerHost`, `ClientHost` or `HostSide`; world or session queries may still be unavailable. |
 
 ## Registration and setup
 
-Startup hooks such as `register`, `component_types`, `blocks`, `items` and `standalone_models`
-receive no `Host` and read startup facts through `RegistrationContext`.
-`register` receives `&mut dyn Registrar` for writing declarations. In `component_types`, call
-`event.register("mymod:charge".into())` with each owned, namespaced ID. The game checks IDs and
-duplicates before freezing the component registry.
+Declare keys, Parts and providers through the registrar or the event. Registration callbacks have
+no live world. Their snapshot contains admitted packages, built-in registry names and captured
+settings, not declarations added by earlier callbacks. A native mod switched off at startup still
+registers, but its package is absent from the inventory. For package-scoped asset and data reads,
+see [Data files](../how-to/native-mods/03-data-files.md#another-packages-files).
 
-Scoped registration events are borrowed only for the listener call. Pending entries are accepted
-in dispatch order when the callback completes. A callback panic discards its pending entries,
-disables that callback for the session and reports the mod in the log and error toast. Other
-callbacks still run. Ordinary registration errors keep their own contract and never disable the
-callback. A [HUD layer registrar](../how-to/client/hud-drawing.md#replacing-or-wrapping-a-layer)
-can use pending anchors. It drops a listener's superseded callbacks before publication and retires
-bodies from earlier listeners after publication; a retirement panic does not undo a replacement.
+**A callback's pending declarations are staged.** They publish only after that callback succeeds.
+A panic discards its pending entries or replacements and leaves earlier listeners' work intact.
+Other listeners still run. Ordinary registration refusals follow the declaring API's contract;
+they do not disable a callback. See [Failures and panics](hooks-and-the-host.md#failures-and-panics).
 
-A callback registered on the event cannot borrow the event or the context. Capture owned inputs
-for its `Send + Sync + 'static` closure. A model layer supplier runs once at the startup freeze;
-a particle group factory runs once per particle engine, not on sprite reload. A standalone model
-baker can run on a resource worker during each load, and borrows its bake context only for that
-invocation. See [model drawing](../how-to/client/model-drawing.md) and
-[particle render groups](../how-to/client/particles-and-movement-queries.md#particle-render-groups).
+Factories or callbacks that run later cannot borrow a registration event or context. Capture
+owned inputs in the closure. For example, a standalone model baker runs with its own bake context
+on a resource load; see [Model drawing](../how-to/client/model-drawing.md).
 
-Not every registration-context hook runs only at startup. `register_fluid_models` and
-`register_texture_atlases` collect declarations again on client resource reload before baking or
-stitching, respectively. Atlas admission, duplicate handling and dispatch timing are unchanged.
+The client runs `client_setup` once after applying initial assets, then loads Client and Common
+configs before title, connection, input, render or tick callbacks. A dedicated server loads
+Common configs before its first world. Server configs load before `server_about_to_start` and
+unload after `server_stopped` for each world; opening another world does not repeat startup
+registration or client setup. Use registration and the first server reload for common setup,
+`server_about_to_start` for server setup, and declared dependencies for intermod ordering.
+A panic in a live config callback does not undo settings writes that already took effect or
+prevent server teardown.
 
-The context's `mods()`, `registry(name)` and `setting(mod_id, key)` borrow
-one view captured before the first of them runs, so every registration step sees the same values
-whatever the dispatch order: the enabled, admitted packages (`&LoadedMods`), the built-in registries as
-`registries.json` lists them (`Option<&[String]>`, without what mods declare during registration),
-and the settings on disk when the snapshot is captured (`Option<&str>`). An unknown registry,
-an unset key, or a context with no engine snapshot returns `None`.
-
-A native mod switched off at startup still registers, but its package is absent from the snapshot.
-`package_files(id)` lists and reads the admitted `assets/` and `data/` files for the packages in that view
-(see [Data files](../how-to/native-mods/03-data-files.md#another-packages-files)).
-
-`client_setup` runs once after initial assets are applied, with `&mut dyn ClientSetupContext` and
-`&mut ClientSetupEvent`. Afterward the window loads its Client and Common configs, before title,
-connection, input, render or ordinary tick callbacks. If pack selection fails during initialization,
-the recovery options screen opens only after config loading. A title-screen listener may receive a
-`ClientHost`; world-handle queries then return `None` because no world is open. A dedicated server
-loads Common configs once before its first world. Server configs load before `server_about_to_start`
-and unload after `server_stopping` for each world. A second world does not repeat startup registration
-or client setup.
-
-Attribute bounds are registration data too. `Registrar::widen_attribute_bounds` asks, from a both-side package's
-`register`, join the attribute catalog once when it grows: after the attributes mods declare with
-`declare_attribute`, and before entity attribute rows resolve and anything reads a definition. The bounds become
-the union of every mod's asks, so the result does not depend on the dispatch order, and the default never moves
-([content mods](../how-to/content-mods.md) has the call, its refusals and what saves keep).
-
-During `config_reloading` and `config_unloading`, a callback panic disables only that callback for
-that mod and reports its name. Subsequent listeners and server teardown still run. A live setting
-write that already took effect is not part of a registration batch and is not undone. In startup
-registration, the registrar checkpoint or declaration batch discards the panicking listener’s
-pending entries; later mods can still register.
+For startup progress, open a bar through `RegistrationContext` and retain the handle if later
+work needs to update it. A synchronous setup callback on the render thread cannot draw its own
+progress while it runs. A worker or retained bar does not keep the loading screen open.
 
 ## Pack repository discovery
 
-`add_pack_finders` takes `&mut dyn PackDiscoveryContext` and `&mut AddPackFindersEvent` at startup
-and on rediscovery. Register through `event.packs`; use `event.packs.pack_type()` to distinguish
-client resource and server data repositories. `context.text_string(&text)` resolves local text,
-using fallbacks before assets are loaded. `context.client_text()` lends font measurements only
-when the client is ready. `context.live_host()` returns `None` before the game exists, and lends
-a `HostSide<'_>` during live rediscovery. For example, match `Some(HostSide::Client(host))` to read
-a registered client setting via `host.setting(mod_id, key)` while rediscovering resource packs.
-If a callback panics, none of its offered packs are kept, and other finders still run.
+`add_pack_finders` lends a discovery context and a registrar for the client resource or server
+data repository. It can run before the game exists, so only live rediscovery can lend a live
+host. Text can use fallbacks before assets are ready. A panicking finder publishes none of its
+pending packs and does not stop the others. See `PackDiscoveryContext` in the
+[generated API reference](../reference/api.md) for the supported queries.
 
 ## Reloading
 
-Data and asset reload hooks lend their own contexts instead of a full `Host`:
-`add_server_reload_listeners`, `tags_updated`, `data_maps_updated` and `default_components_bound`
-receive `&dyn ReloadContext`, `add_client_reload_listeners` receives
-`&dyn ClientReloadListenerContext` (whose `published()` method returns `None` on initial startup
-before any resources are published and `Some(&dyn ClientReloadHost)` on later reloads), and
-`client_resources_reloaded` receives `&dyn ClientReloadHost` (which extends `ReloadContext` with
-published client render assets, sprites and instance groups). Published asset/data queries read
-the published generation, not pending prepare output: completion callbacks can refresh sprite and
-recipe caches after apply, including on first world open, without gaining world handles or
-transactions. Callbacks that take `DataLoadContext` use its restricted reads. Neither permits
-opening a world handle or transaction. In setup and reload, `context.block_states()` and
-`context.fluid_states()` still read registry tables, and an `ItemResource` can query
-`damageable(context)`, `foil(context)`, or `repairable(context, &material)`. A position-based
-lookup such as `lit_block_name(pos)` requires a live game host. The first client registration and prepare run on the loader
-thread; later registration runs on the render thread, prepare on its worker, and apply on the
-owning game thread. A panic during reload listener registration discards only that callback’s
-pending listeners, dependencies and retained entries. Registration errors are returned and
-reported without failing the whole reload; a cycle in the completed graph still fails it.
+Prepare work is not published data. Read completed data and refresh caches after apply, not
+from another listener's pending output. Initial client reload-listener registration has no
+published client generation to inspect; later reloads can read the previous one. Completion
+callbacks can read the newly published recipes, tags or client assets as their signature allows,
+but cannot open a world handle or transaction.
+
+The first client listener registration and prepare run on the loader thread. Later registration
+runs on the render thread, prepare on a worker, and apply on the owning game thread. Some
+asset declarations, such as fluid models and texture atlases, are collected again before their
+assets are rebuilt. A failed registration callback publishes none of its pending listeners,
+dependencies or retained entries; a cycle in the completed reload graph fails the reload.
+See [Hook notes](../reference/hook-notes.md) and [Recipe caching](../how-to/items/reload-stable-recipes.md).
 
 ## Load contexts
 
-`DataLoadContext`, `LoopContext` and `WorldgenHost` lend frozen metadata for their resource
-generation. `registry(name)` returns `Option<&[String]>` in registry ID order,
-`setting(mod_id, key)` returns `Option<&str>`, and `mods()` returns `&LoadedMods` in dispatch order:
-the packages enabled and admitted at startup. Reloading resources or switching code live does not
-change this snapshot.
-The getters do not read files. `None` means the registry or setting is unavailable, not that it is
-present and empty. Use the references within the callback; take an owned value only if it must
-outlive the context borrow. Use `DataLoadOrigin` to identify the load origin and `LoopSide` to identify
-the owning side.
+`RegistrationContext` lends the startup inventory, built-in registry names, settings and
+instance directory. Preserve native path bytes or code units when constructing a path. See
+[FML loader APIs](../reference/fml-loader-apis.md) for the path and inventory queries.
 
-`DataLoadContext::fluid_tags()` borrows the recipe pass's fluid-tag table. It returns `None` when
-there is no recipe overlay, `Some(&[])` when that overlay has no fluid tags, and otherwise a slice
-of `(tag ID, members)` pairs with each tag's members in source order.
+`DataLoadContext`, `LoopContext` and `WorldgenHost` lend frozen metadata for their generation.
+`mods()` gives the admitted packages in dispatch order; `registry(name)` and `setting(mod_id, key)`
+borrow captured values without reading files. `None` means unavailable or unset, not a present
+empty value. Reloads and live code switching do not change the startup package inventory. Keep
+an owned copy only when it must outlive the callback. [Chunk-disk callbacks](../how-to/world/chunk-data.md)
+borrow registry names from the generation retained by the worker.
 
-During registration, `RegistrationContext` lends the same startup inventory (`&LoadedMods`),
-built-in registry names (`Option<&[String]>`), captured settings (`Option<&str>`), and instance
-directory (`Option<&InstanceDirectory>`) from the startup snapshot.
-[Chunk disk callbacks](../how-to/chunk-data-load.md) also borrow registry names, but from the
-resource generation retained by their worker.
+`DataLoadContext::fluid_tags()` borrows the recipe pass's fluid-tag table. `None` means no
+recipe overlay; `Some(&[])` means an overlay with no fluid tags. See
+[Fluid ingredients](../how-to/items/ingredient-kinds.md#fluid-ingredients) for how to use it.
+`DataLoadOrigin` and `LoopSide` describe local execution, not an encoded payload.
 
 ### Ordinary Host reads
 
-Both client and server hosts expose `registry_entry(registry, id)`,
-`registry_entries(registry)` and `registry_entry_in_tag(&entry, tag)`. These read the
-current side's live registry and merged tags, not pending reload data. Unknown or
-unavailable registries and entries return `None`; an absent tag or a tag that does
-not contain the entry returns `Some(false)`. Enumeration yields each identity once.
-
-`ConfigHost::setting` still returns `Option<String>` on an ordinary `Host`; it is not the
-captured `Option<&str>` read on a load, loop or worldgen context.
-
-Server world-generation reads use the published decoded owners, including the
-live feature data in worlds without a terrain locator. Invalid source files do
-not establish entries. Prepared world-preset files have no published complete
-registry owner, so `minecraft:worldgen/world_preset` is unavailable; selecting a
-preset, sharing generator resources or reopening a saved stem does not change that.
-
-`RegistryEntry` is a plain Wire value containing `registry: Identifier` and
-`id: Identifier`. Its names may be retained across
-reloads; constructing the value does not establish that the entry exists.
-`as_block_key(host)`, `as_item_key(host)` and the corresponding narrowing methods
-for block entity types, boolean game rules, dimensions, effects, enchantments,
-entity types, fluids, menus and particles resolve a real host-issued typed key.
-A different registry or unknown entry returns `None`. Typed keys remain
-process-local; narrowing never treats a protocol numeric ID as a key slot.
-
-Mod-declared datapack registries resolve tags against the accepted candidate
-before publication; tags with missing required members are omitted. Synchronized
-snapshots carry those exact tag names and members (including empty tags);
-server-only and unnegotiated registries send neither entries nor tags. Clients
-validate membership before activating a snapshot.
-On clients, generic reads never fall back to prepared server-only datapack files:
-built-ins and the connection's currently synchronized registries are the entire view.
-
-There is no separate common-setup, load-complete or intermod event. Registration and the first server
-reload cover common setup, `client_setup` covers client setup, and `server_about_to_start` covers
-dedicated server setup. Dependencies express intermod ordering.
-
-`DataLoadOrigin` and `LoopSide` describe the local load or loop, not data to encode. Read them
-through `DataLoadContext::origin()` and `LoopContext::side()` as before; if a payload needs such
-a fact, map it into a field of your own [Wire record](wire-types.md).
-
-[FML loader APIs and their Sunrise routes](../reference/fml-loader-apis.md) compares the two loaders'
-file and path APIs, including the game directory.
+An ordinary host reads the current side's published registries, merged tags and live settings,
+not the captured settings or pending reload data. A `RegistryEntry` carries canonical registry
+and entry names; constructing one does not prove the entry exists. Narrow it through the host
+when you need a real [typed key](registry-keys.md). On clients, generic registry reads see
+built-ins and the connection's synchronized registries, not local copies of server-only data.
+A host can serve these reads even when its world queries return `None`. See `KeysHost` in the
+[generated API reference](../reference/api.md) for registry availability rules such as
+`minecraft:worldgen/world_preset`.
 
 ## Settings snapshots
 
-Settings snapshots accept regular UTF-8 files only. File and package-directory symlinks,
-including internal links, are not followed. Non-UTF-8 filenames, invalid UTF-8 contents,
-special files and unreadable entries are skipped individually and omitted from the snapshot
-rather than discarding the mod's remaining settings or failing load.
+Startup readers share one immutable settings capture. It includes only readable, regular
+UTF-8 files with UTF-8 names and follows no file or package-directory symlinks. Unreadable or
+invalid entries are omitted individually and reported for that capture, not again on every read.
+A captured value is not updated by a live settings write; use the ordinary host for live reads.
 
-Capture proceeds in sorted package-ID and key-name order. Missing settings directories and
-empty settings produce no warning. A capture with skipped entries emits one warning naming
-each omitted key, its mod and its reason; an inaccessible or incompletely enumerated
-directory is identified by scope instead of inventing a key.
-Initial registration, item-data loading, table preload and loop publication share one
-captured settings snapshot rather than rescanning it on each startup thread. The game,
-audio and world-generation readers retain that generation's immutable snapshot without
-recapturing or repeating diagnostics. A new capture reports new omissions,
-even if an earlier generation already warned.
+## Phase refusals and panics
+
+| Phase | Open |
+|---|---|
+| Setup | settings reads; registry and metadata reads; the client setup calls; the published resource queries |
+| Config | settings reads; the mod's own config files |
+| Reloading | settings reads; registry and metadata reads; the published resource queries |
+
+The client setup calls of Setup can have presentation effects (a sound, a narrator line, a HUD mode) that stand
+even if the hook is refused afterwards. A native mod that calls a method in a phase that does not admit it is
+**refused, not crashed**:
+
+- The call ends the mod's hook call (it unwinds out of the listener; the game makes no panic report). The game logs
+  `native refusal: <mod> hook <hook>: mod API <method> is unavailable during <phase>` on each refused callback.
+- The latch: after one refusal, every later Host call that hook call makes is refused too, whatever it asks, and the
+  refusal counts even if the mod caught the unwind itself and returned normally.
+- The listener is dropped, and the hook goes on with the next one. The event outputs the listener touched are put
+  back to what they were before its call, and the answers of earlier listeners stand. What its earlier allowed calls
+  did (a sound, a narrator line, a HUD mode) stands too.
+- The hook uses its default return value: `Flow::Continue` for a cancel hook, `None` for a replace
+  hook that answers an `Option`, and the type's default (`false`, an empty list, `()`) for any other. A
+  refused listener is not disabled for the session; a panicking listener is.
+- A method with a typed phase refusal (for example, one returning `Result<_, LevelReadError>`,
+  `Result<_, LevelWriteError>`, or `Result<_, TeamMembersReadError>`) returns its `Err(Unavailable)`
+  instead of unwinding, and the mod goes on.
+  `LevelRef::with_random` returns `None` without calling your closure when world access is unavailable.
+
+A panic is logged and shown in a client error toast naming the mod and hook. Only that callback is
+disabled for the session. Its staged outputs are discarded, and writes covered by an existing
+transaction are undone. Effects outside a transaction, such as a dynamic texture already created
+by `client_tick_pre`, are not undone.
+
+**The limit:** if the thread is already unwinding when the call is refused (a mod's `Drop` that calls the Host while
+another panic unwinds), the game logs the same line and panics, and a panic during an unwind aborts the process.
+Do not call the Host from a `Drop`. A native mod built with `panic = "abort"`, a library that brings its own
+`#[global_allocator]`, and a library that does not use the game's `libstd` are refused at load, by name.

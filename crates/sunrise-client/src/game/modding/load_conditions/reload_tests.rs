@@ -1,51 +1,62 @@
 use serde_json::json;
 
 #[test]
-fn candidate_registry_folder_collision_assigns_entry_to_minecraft_registry() {
+fn candidate_registry_folders_do_not_choose_between_two_declared_registries() {
     let root = tempfile::tempdir().unwrap();
-    std::fs::write(root.path().join("command-registries.json"),
-        br#"{"by_registry":{"example:spell":{"ids":["example:original"]},"minecraft:example/spell":{"ids":["minecraft:original"]}}}"#).unwrap();
-    let view = super::candidate_registries(
+    let keys = ["example:spell", "minecraft:example/spell"];
+    let declarations = keys.map(|key| mod_api::DatapackRegistryDeclaration {
+        mod_id: "example".into(),
+        key: key.into(),
+        fields: vec![],
+        sync: mod_api::DatapackRegistrySync::ServerOnly,
+    });
+    let files = sunrise_client::datapack::RegistryFiles::from([(
+        "data/test/example/spell/nested/added.json".into(),
+        ("file/winner".into(), b"{}".to_vec()),
+    )]);
+    let base = sunrise_world::conditions::LoadConditions::new([]);
+    let mut view = super::RegistryView::default();
+    let candidate = super::admit_datapack_registries(
         root.path(),
-        &[("example/spell/test:added".into(), vec![b"{}".to_vec()])],
-        &sunrise_world::conditions::LoadConditions::new([]),
-    );
-    assert_eq!(
-        view["example:spell"]
-            .iter()
-            .map(String::as_str)
-            .collect::<Vec<_>>(),
-        vec!["example:original"]
-    );
-    assert_eq!(
-        view["minecraft:example/spell"]
-            .iter()
-            .map(String::as_str)
-            .collect::<Vec<_>>(),
-        vec!["minecraft:original", "test:added"]
-    );
-    let conditions = sunrise_world::conditions::LoadConditions::new([]).with_registries(
-        view.iter()
-            .map(|(registry, ids)| (registry.as_str(), ids.iter().map(String::as_str))),
-    );
-    assert!(!conditions.allows(&json!({"neoforge:conditions":[{"type":"neoforge:registered","registry":"example:spell","value":"test:added"}]})));
-    assert!(conditions.allows(&json!({"neoforge:conditions":[{"type":"neoforge:registered","registry":"minecraft:example/spell","value":"test:added"}]})));
+        &sunrise_world::loot::PackOverlay {
+            conditions: &base,
+            ..Default::default()
+        },
+        &mut view,
+        &declarations,
+        &files,
+        &mut mod_api::__private::NoVanillaValueDecoder,
+    )
+    .unwrap();
+    let conditions = view.conditions(&base);
+    for registry in keys {
+        assert_eq!(candidate.entries(registry).unwrap(), ["test:nested/added"]);
+        assert!(conditions.allows(&json!({"neoforge:conditions":[{"type":"neoforge:registered","registry":registry,"value":"test:nested/added"}]})));
+    }
     assert_eq!(conditions.check_errors(), Ok(()));
 }
+
+const STAGES: [(&str, &str, i64); 3] = [
+    ("z_seed", "fire", 7),
+    ("m_link", "spark", 11),
+    ("a_final", "light", 19),
+];
 
 struct Registry;
 #[mod_api::__subscriptions]
 impl mod_api::Hooks for Registry {
     fn register(&self, r: &mut dyn mod_api::Registrar, _: &mod_api::RegistrationContext) {
-        r.declare_datapack_registry(
-            "spell",
-            mod_api::DatapackRegistrySync::Required,
-            vec![mod_api::DatapackField::required(
-                "power",
-                mod_api::DatapackFieldKind::Int { min: 0, max: 100 },
-            )],
-        )
-        .unwrap();
+        for (registry, _, _) in STAGES {
+            r.declare_datapack_registry(
+                registry,
+                mod_api::DatapackRegistrySync::Required,
+                vec![mod_api::DatapackField::required(
+                    "power",
+                    mod_api::DatapackFieldKind::Int { min: 0, max: 100 },
+                )],
+            )
+            .unwrap();
+        }
     }
 }
 fn write(path: &std::path::Path, bytes: impl AsRef<[u8]>) {
@@ -55,6 +66,7 @@ fn write(path: &std::path::Path, bytes: impl AsRef<[u8]>) {
 #[test]
 #[ignore = "daily"]
 fn reload_conditions_read_candidate_registries_and_bound_tags() {
+    let _publication = sunrise_client::datapack_net::isolate_server_publication();
     let scratch = tempfile::tempdir().unwrap();
     let root = scratch.path();
     let pack = root.join("datapacks/base");
@@ -66,6 +78,26 @@ fn reload_conditions_read_candidate_registries_and_bound_tags() {
         &root.join("datapacks.json"),
         br#"{"enabled":["vanilla","file/base"],"disabled":[]}"#,
     );
+    let flag_tag = pack.join("data/reload_conditions/tags/item/flag.json");
+    let nonempty_flag = br#"{"values":["minecraft:stick","minecraft:flint"]}"#;
+    write(&flag_tag, nonempty_flag);
+    write(
+        &pack.join("data/reload_conditions/tags/reload_conditions/z_seed/hot.json"),
+        br#"{"values":["reload_conditions:fire"]}"#,
+    );
+    let stage_conditions = [
+        json!({"type":"neoforge:tag_empty","tag":"reload_conditions:flag"}),
+        json!({"type":"neoforge:not","value":{"type":"neoforge:tag_empty","registry":"reload_conditions:z_seed","tag":"reload_conditions:hot"}}),
+        json!({"type":"neoforge:registered","registry":"reload_conditions:m_link","value":"reload_conditions:spark"}),
+    ];
+    for ((registry, id, power), condition) in STAGES.into_iter().zip(stage_conditions) {
+        write(
+            &pack.join(format!(
+                "data/reload_conditions/reload_conditions/{registry}/{id}.json"
+            )),
+            json!({"power":power,"neoforge:conditions":[condition]}).to_string(),
+        );
+    }
     let empty_tag = pack.join("data/reload_conditions/tags/item/empty.json");
     write(&empty_tag, br#"{"values":[]}"#);
     for (path, bytes, _) in crate::game::native_tags::PACK_BINDING_CASES {
@@ -77,7 +109,7 @@ fn reload_conditions_read_candidate_registries_and_bound_tags() {
     for (name, condition) in [
         (
             "registered",
-            json!({"type":"neoforge:registered","registry":"reload_conditions:spell","value":"reload_conditions:fire"}),
+            json!({"type":"neoforge:registered","registry":"reload_conditions:a_final","value":"reload_conditions:light"}),
         ),
         (
             "empty",
@@ -111,7 +143,9 @@ fn reload_conditions_read_candidate_registries_and_bound_tags() {
                 .unwrap();
                 request.save_root = root.to_owned();
                 game.load_world(request).unwrap();
-                let item_tags = |game: &crate::game::Game<'_>, tag| mod_api::Tags::items(game, tag);
+                let item_tags = |game: &crate::game::Game<'_>, tag: mod_api::TagKey| {
+                    mod_api::Tags::items(game, tag.typed())
+                };
                 let key = |path: &str| {
                     mod_api::__private::tag_key(
                         &mod_api::Identifier::parse(&format!("reload_conditions:{path}")).unwrap(),
@@ -135,7 +169,10 @@ fn reload_conditions_read_candidate_registries_and_bound_tags() {
                 let empty = key("empty");
                 let flag = key("flag");
                 assert_eq!(item_tags(game, empty), mod_api::TagMembers::Members(vec![]));
-                assert_eq!(item_tags(game, flag), mod_api::TagMembers::Missing);
+                let flag_members = mod_api::TagMembers::Members(vec![
+                    mod_api::__private::item_key("minecraft:stick").unwrap(),
+                    mod_api::__private::item_key("minecraft:flint").unwrap(),
+                ]);
                 let answers = |game: &crate::game::Game<'_>| {
                     ["registered", "empty", "absent"].map(|name| {
                         game.recipes()
@@ -143,39 +180,56 @@ fn reload_conditions_read_candidate_registries_and_bound_tags() {
                             .is_some()
                     })
                 };
-                assert_eq!(answers(game), [false, true, true]);
-                write(
-                    &pack.join("data/reload_conditions/reload_conditions/spell/fire.json"),
-                    br#"{"power":7}"#,
-                );
-                write(
-                    &pack.join("data/reload_conditions/tags/item/flag.json"),
-                    br#"{"values":["minecraft:stick","minecraft:flint"]}"#,
-                );
+                let check_stages = |game: &crate::game::Game<'_>, admitted: bool| {
+                    let level = game.level(game.dim.id()).unwrap();
+                    for (registry, entry, power) in STAGES {
+                        let registry = format!("reload_conditions:{registry}");
+                        let entry = format!("reload_conditions:{entry}");
+                        let mut ids = Vec::new();
+                        assert_eq!(
+                            level.visit_datapack_entries(game, &registry, &mut |id| {
+                                ids.push(id.to_owned());
+                                std::ops::ControlFlow::Continue(())
+                            }),
+                            Ok(std::ops::ControlFlow::Continue(()))
+                        );
+                        assert_eq!(
+                            ids,
+                            if admitted {
+                                vec![entry.clone()]
+                            } else {
+                                Vec::new()
+                            }
+                        );
+                        let mut value = None;
+                        let read = level.datapack_read(game, &registry, &entry, &mut |decoded| {
+                            value = decoded.get("power").cloned();
+                        });
+                        if admitted {
+                            assert_eq!(read, Ok(()));
+                            assert_eq!(value, Some(mod_api::DatapackValue::Int(power)));
+                        } else {
+                            assert_eq!(read, Err(mod_api::DatapackReadError::MissingEntry));
+                            assert_eq!(value, None);
+                        }
+                    }
+                };
+                assert_eq!(item_tags(game, flag), flag_members);
+                check_stages(game, false);
+                assert_eq!(answers(game), [false, false, true]);
+
+                write(&flag_tag, br#"{"values":[]}"#);
                 assert!(game.run_command("reload"));
-                assert_eq!(
-                    game.level(game.dim.id())
-                        .unwrap()
-                        .datapack_entries(game, "reload_conditions:spell"),
-                    Some(vec!["reload_conditions:fire".into()])
-                );
-                assert_eq!(answers(game), [true, false, true]);
-                assert_eq!(
-                    item_tags(game, flag),
-                    mod_api::TagMembers::Members(vec![
-                        mod_api::__private::item_key("minecraft:stick").unwrap(),
-                        mod_api::__private::item_key("minecraft:flint").unwrap(),
-                    ])
-                );
+                assert_eq!(item_tags(game, flag), mod_api::TagMembers::Members(vec![]));
+                check_stages(game, true);
+                assert_eq!(answers(game), [true, true, true]);
+
                 std::fs::remove_file(empty_tag).unwrap();
-                std::fs::remove_file(
-                    pack.join("data/reload_conditions/reload_conditions/spell/fire.json"),
-                )
-                .unwrap();
-                std::fs::remove_file(pack.join("data/reload_conditions/tags/item/flag.json"))
-                    .unwrap();
+                write(&flag_tag, nonempty_flag);
                 assert!(game.run_command("reload"));
-                assert_eq!(answers(game), [false, true, true]);
+                assert_eq!(item_tags(game, flag), flag_members);
+                check_stages(game, false);
+                assert_eq!(answers(game), [false, false, true]);
                 assert_eq!(item_tags(game, empty), mod_api::TagMembers::Missing);
                 assert_eq!(
                     game.mods

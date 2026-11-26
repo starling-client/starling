@@ -266,7 +266,7 @@ pub struct RecipeSnapshot {
     pub json: Arc<Value>,
     /// Book display metadata derived once from the decoded recipe when it has
     /// placement candidates (`None` when omitted from recipe-book numbering).
-    pub(crate) book: Option<crate::recipe_book::KnownEntry>,
+    pub(crate) book: Option<super::KnownEntry>,
 }
 impl RecipeSnapshot {
     /// The recipe `id` of type `kind` with its file `json`, the typed parts empty.

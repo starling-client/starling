@@ -18,6 +18,6 @@ pub(super) const REVIEWED: &[super::Reviewed] = &[
     // admitting exact-build native mods or cached root metadata into this corpus.
     (("manifest/jar.rs", "JarRequirement", "try_from = \"RequirementFields\""), &["src/manifest/jar.rs:decoded_root_requirements_validate_owners_at_the_read_boundary"]),
     (("manifest/mixin.rs", "options", "flatten"), &["src/manifest/mixin.rs:the_tools_keys_pass_through_and_the_packages_are_checked"]),
-    (("manifest/mixin.rs", "fields", "flatten"), &["src/manifest/mixin.rs:mixins_bridges_states_modules_share_one_id_space"]),
+    (("manifest/mixin.rs", "fields", "flatten"), &["src/manifest/mixin.rs:mixins_bridges_and_modules_share_one_id_space"]),
     (("manifest/mixin.rs", "Kind", "impl Deserialize"), &["src/manifest/mixin.rs:the_tools_keys_pass_through_and_the_packages_are_checked", "src/manifest/mixin.rs:hostile_shapes_are_refused_without_panicking"]),
 ];

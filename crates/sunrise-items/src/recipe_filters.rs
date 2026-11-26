@@ -64,10 +64,13 @@ impl RecipeFilters {
         for (id, versions) in overlay.kind("recipe_filter") {
             files.insert(id.to_owned(), PackOverlay::top(versions).to_vec());
         }
-        Self::parse(files)
+        Self::parse(files, overlay.conditions)
     }
 
-    fn parse(files: std::collections::BTreeMap<String, Vec<u8>>) -> Self {
+    fn parse(
+        files: std::collections::BTreeMap<String, Vec<u8>>,
+        conditions: &sunrise_world::conditions::LoadConditions,
+    ) -> Self {
         let mut filters = Vec::new();
         for (file, bytes) in files {
             let v: Value = match serde_json::from_slice(&bytes) {
@@ -77,6 +80,9 @@ impl RecipeFilters {
                     continue;
                 }
             };
+            if !conditions.allows_id(&v, "recipe_filter", &file) {
+                continue;
+            }
             for (i, f) in v["filters"].as_array().into_iter().flatten().enumerate() {
                 match Filter::parse(f) {
                     Ok(f) => filters.push(f),
@@ -278,7 +284,10 @@ mod tests {
     use serde_json::json;
 
     fn filters(v: Value) -> RecipeFilters {
-        RecipeFilters::parse([("test:f".to_owned(), v.to_string().into_bytes())].into())
+        RecipeFilters::parse(
+            [("test:f".to_owned(), v.to_string().into_bytes())].into(),
+            &sunrise_world::conditions::LoadConditions::vanilla(),
+        )
     }
 
     #[test]
@@ -338,7 +347,13 @@ mod tests {
             {"replace_input": {"from": "a:b"}}
         ]}));
         assert!(f.is_empty());
-        assert!(RecipeFilters::parse([("t:f".to_owned(), b"{nope".to_vec())].into()).is_empty());
+        assert!(
+            RecipeFilters::parse(
+                [("t:f".to_owned(), b"{nope".to_vec())].into(),
+                &sunrise_world::conditions::LoadConditions::vanilla(),
+            )
+            .is_empty()
+        );
     }
 
     #[test]
@@ -369,6 +384,74 @@ mod tests {
         )];
         let f = RecipeFilters::load(&root, &PackOverlay::new(&files));
         assert!(f.apply("minecraft:stick", &mut json!({})));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn recipe_filters_evaluate_load_conditions_on_winning_files() {
+        let root = std::env::temp_dir().join(format!(
+            "sunrise-recipe-filters-cond-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("data/mymod/recipe_filter");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            root.join(crate::content_namespaces::MARKER),
+            json!(["mymod"]).to_string(),
+        )
+        .unwrap();
+        // Guarded by neoforge:mod_loaded("chemlib").
+        let guarded = json!({
+            "neoforge:conditions": [{"type": "neoforge:mod_loaded", "modid": "chemlib"}],
+            "filters": [{"id": "minecraft:stick", "remove": true}]
+        });
+        std::fs::write(dir.join("guarded.json"), guarded.to_string()).unwrap();
+        // Unconditional baseline overridden by a higher pack whose condition fails:
+        // the failing higher pack must omit the filter without uncovering the baseline.
+        let base = json!({
+            "filters": [{"id": "minecraft:bowl", "remove": true}]
+        });
+        std::fs::write(dir.join("overridden.json"), base.to_string()).unwrap();
+        let files = vec![(
+            "recipe_filter/mymod:overridden".to_owned(),
+            vec![
+                json!({
+                    "neoforge:conditions": [{"type": "neoforge:mod_loaded", "modid": "absent"}],
+                    "filters": [{"id": "minecraft:bowl", "remove": true}]
+                })
+                .to_string()
+                .into_bytes(),
+            ],
+        )];
+
+        let with_chemlib = sunrise_world::conditions::LoadConditions::new(["chemlib"]);
+        let overlay = PackOverlay {
+            conditions: &with_chemlib,
+            files: &files,
+            ..PackOverlay::default()
+        };
+        let loaded = RecipeFilters::load(&root, &overlay);
+        assert!(
+            !loaded.apply("minecraft:stick", &mut json!({})),
+            "guarded filter must run when chemlib is loaded"
+        );
+        assert!(
+            loaded.apply("minecraft:bowl", &mut json!({})),
+            "failing higher override must not uncover lower filter"
+        );
+
+        let without_chemlib = sunrise_world::conditions::LoadConditions::vanilla();
+        let overlay_off = PackOverlay {
+            conditions: &without_chemlib,
+            files: &files,
+            ..PackOverlay::default()
+        };
+        let loaded_off = RecipeFilters::load(&root, &overlay_off);
+        assert!(
+            loaded_off.apply("minecraft:stick", &mut json!({})),
+            "guarded filter must be omitted when chemlib is absent"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 }

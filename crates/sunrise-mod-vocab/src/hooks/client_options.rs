@@ -5,6 +5,8 @@ pub trait Notes {
 return a copy of one group of the player's preferences, even outside a world, like
 `input_options()`. Read again after the settings change; an older snapshot stays unchanged.
 A zoom, brightness, HUD or chat mod reads these instead of keeping its own copy of the player's
-choices. The fields are documented in the API reference."#]
+choices. `ClientHost::shader_pack_active()` reports whether a shader pack is currently loaded and
+rendering the world (always `false` on the title screen, matching `IrisApi.isShaderPackInUse()`).
+The fields are documented in the API reference."#]
     fn client_options_note0();
 }

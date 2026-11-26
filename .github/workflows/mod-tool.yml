@@ -2,7 +2,7 @@ name: mod tool
 # The rolling mod tool (docs/release-flow.md "Rolling mod tool"): the one release `mod-tool` always holds the newest
 # `cargo-sunrise-mod` built from main, for the three hosts, so a tool fix reaches modders without waiting for a Nightly
 # and its SDK. A prerelease, never "latest". Assets: tool-<target>.tar.xz (the same archives an SDK holds, made by
-# tools/prebuilt_game.py), tool.json (the commit, its date, the native-* contract number), SHA256SUMS and
+# tools/prebuilt_game.py), tool.json (the commit, its date, the native-* contract number, the SDK package format), SHA256SUMS and
 # SHA256SUMS.sig, signed with the release key for the tag `mod-tool` (the message is "horizon release mod-tool\n" and
 # the sums, as an SDK's is for its tag). tool.json is in the sums, so the commit a tool says it is built from is signed.
 #
@@ -157,6 +157,8 @@ jobs:
       - name: Build and pack the tool
         env:
           SUNRISE_TOOL_COMMIT: ${{ needs.decide.outputs.commit }}
+          # Marks this build as the rolling release's, the only one `self-update` follows.
+          SUNRISE_TOOL_CHANNEL: mod-tool
         run: python tools/prebuilt_game.py tool dist
       - name: The tool starts and names this commit
         run: |

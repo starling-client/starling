@@ -39,8 +39,8 @@ pub trait PlayerInventoryBackendMut {
     /// tells their client (`ClientboundSetHeldSlot`), as `/clear`-style server code does. A new
     /// slot ends a main-hand use in progress, as the client's own switch does, and asks no
     /// `player_switch_hotbar_slot_pre`: that hook is for the player's own input. Returns false for
-    /// a slot past 8, a stale or unavailable player, and a dead one; true when the player already
-    /// held `slot`.
+    /// a slot past 8 or a stale or unavailable player; true when the player already held `slot`.
+    /// A resident dead player can still be edited.
     fn player_set_selected_slot(&mut self, player: PlayerRef, slot: usize) -> bool;
     /// Side: server.
     /// `Player.drop(stack, false, thrown_by_player)`: `stack` is thrown from the player's eyes
@@ -68,8 +68,9 @@ pub trait PlayerInventoryBackendMut {
     /// equipment changes follow for 36 to 42. The client is sent the slot with the tick's
     /// inventory sync (`ContainerSetSlot`), as vanilla's `broadcastChanges`. Each refusal
     /// writes nothing and is named by `PlayerDataRefusal`: `Stale` (no online player behind
-    /// the handle), `Client`, `Dead`, `SlotOutOfRange` (a slot past 42, never a panic) and
-    /// `Stack` (an item the world lacks, a count or damage the item does not allow).
+    /// the handle or the player's state is unavailable), `Client`, `SlotOutOfRange` (a slot
+    /// past 42, never a panic) and `Stack` (an item the world lacks, a count or damage the
+    /// item does not allow). A resident dead player can still be edited.
     /// An open transaction journals this write; an abort restores the previous value.
     /// Equipment effects wait for the outermost commit.
     fn player_set_inventory_slot(
@@ -82,7 +83,8 @@ pub trait PlayerInventoryBackendMut {
     /// `PlayerEnderChestContainer.setItem(slot, stack)`: `stack` (None empties it) in ender
     /// chest slot `slot` (0 to 26). A player looking into their ender chest is sent the slot
     /// with the open menu's sync. Refuses as `player_set_inventory_slot` does, with
-    /// `SlotOutOfRange { last: 26 }` for a slot past 26 (never a panic).
+    /// `SlotOutOfRange { last: 26 }` for a slot past 26 (never a panic). The chest is
+    /// editable while the player is dead and carries over on respawn.
     /// An open transaction journals this write; an abort restores the previous value.
     fn player_set_ender_chest_slot(
         &mut self,
@@ -96,7 +98,7 @@ pub trait PlayerInventoryBackendMut {
     /// the player's eyes with no pickup delay and only they may pick it up. A stack that fits
     /// instead spawns the short-lived, non-pickable `/give` visual and plays the pickup sound.
     /// Refuses, with nothing given, with `Stale`, `Client`,
-    /// `Dead` or `Stack`, as `player_set_inventory_slot` does.
+    /// `Dead` or `Stack`, with no inventory or world changes.
     /// This happens in the player's own level, even when the hook runs in another one.
     /// `Ok(None)` means every item was accepted. The ordinary entity-join hook can still
     /// cancel the overflow drop. If the player's level is unavailable, returns the overflow

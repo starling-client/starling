@@ -25,6 +25,16 @@ pub struct EntityRenderState {
     pub yaw: f32,
     /// `Entity.getXRot` at the frame: its pitch, positive looking down.
     pub pitch: f32,
+    /// World-space position interpolated to `partial` (`EntityRenderState.x/y/z`).
+    pub position: [f64; 3],
+    /// Bounding box width and height in blocks (`EntityRenderState.boundingBoxWidth`,
+    /// `boundingBoxHeight`).
+    pub size: [f32; 2],
+    /// Eye height above `position[1]`, in blocks (`EntityRenderState.eyeHeight`).
+    pub eye_height: f32,
+    /// Squared distance from `position` to the active view's camera position
+    /// (`EntityRenderState.distanceToCameraSq`).
+    pub distance_to_camera_sq: f64,
     /// A living entity's own frame (`LivingEntityRenderState`); none for any other entity.
     pub living: Option<LivingRenderState>,
     /// The remaining primed-TNT fuse, in ticks, as vanilla draws it (`fuse - partial + 1`);
@@ -140,10 +150,13 @@ pub trait EntityRenderer: Send + Sync + 'static {
     /// the partial tick, the game time and the entity's light. Asked once a frame for each entity
     /// of the type in view; a general entity is drawn only after its first synced attachment
     /// generation is published. What this method draws replaces the type's own drawing. A frame
-    /// is drawn afresh: `draw.keep()` does nothing here. `Ok(())` keeps what it drew. On an `Err` or
-    /// panic, what it drew this frame is dropped, the error is logged once, and the renderer
-    /// is asked no more until the next resource load resolves it again. Until then its type
-    /// draws as it would without a registered renderer.
+    /// is drawn afresh: `draw.keep()` does nothing here. `Ok(())` keeps what it drew. On an `Err`,
+    /// what it drew this frame is rolled back, the error is logged as a warning, that draw falls
+    /// back to what the type would draw without a registered renderer, and the renderer stays
+    /// active for later draws. On a panic, what it drew this frame is rolled back and only this
+    /// renderer is disabled for the rest of the session (including across reloads), with an error
+    /// log and an in-game error toast naming the mod; until the session ends its type draws as it
+    /// would without a registered renderer.
     fn submit(
         &self,
         entity: &EntityRenderState,
@@ -201,9 +214,12 @@ impl EntityRendererRegistry {
             .finish(REGISTRATION, publish, edits.0.ordered());
     }
 
-    /// Each type's renderer, the last registration for a type winning.
-    pub fn into_renderers(self) -> BTreeMap<String, Arc<dyn EntityRenderer>> {
-        self.renderers.into_values()
+    /// Each type's winning renderer and its owning mod's ID, or `None` for a registration
+    /// made outside a mod call. The last successful registration for a type wins.
+    pub fn into_renderers(
+        self,
+    ) -> BTreeMap<String, (Option<&'static str>, Arc<dyn EntityRenderer>)> {
+        self.renderers.into_owned_values()
     }
 }
 
@@ -314,8 +330,12 @@ mod tests {
                 assert!(crate::__private::take_hook_panics().is_empty());
                 let renderers = registry.into_renderers();
                 assert_eq!(renderers.len(), 2);
-                assert!(Arc::ptr_eq(&renderers["test:seed"], &seed));
-                assert!(Arc::ptr_eq(&renderers["test:healthy"], &healthy));
+                let (seed_owner, seeded) = &renderers["test:seed"];
+                assert_eq!(*seed_owner, None);
+                assert!(Arc::ptr_eq(seeded, &seed));
+                let (healthy_owner, winner) = &renderers["test:healthy"];
+                assert_eq!(*healthy_owner, Some("healthy_renderer"));
+                assert!(Arc::ptr_eq(winner, &healthy));
             },
         );
     }
@@ -334,6 +354,10 @@ mod tests {
             age: 3.5,
             yaw: 0.0,
             pitch: 0.0,
+            position: [0.0; 3],
+            size: [0.25, 0.25],
+            eye_height: 0.2125,
+            distance_to_camera_sq: 0.0,
             living: None,
             tnt_fuse: None,
             orb_value: None,
@@ -342,8 +366,10 @@ mod tests {
             attachments: None,
         };
         let (mut bolt, mut dart) = (Light::default(), Light::default());
-        renderers["mymod:bolt"].submit(&state, &mut bolt).unwrap();
-        renderers["mymod:dart"].submit(&state, &mut dart).unwrap();
+        assert_eq!(renderers["mymod:bolt"].0, None);
+        assert_eq!(renderers["mymod:dart"].0, None);
+        renderers["mymod:bolt"].1.submit(&state, &mut bolt).unwrap();
+        renderers["mymod:dart"].1.submit(&state, &mut dart).unwrap();
         assert_eq!((bolt.0, dart.0), (3, 2));
     }
 }

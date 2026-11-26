@@ -1,0 +1,2 @@
+ids = ["handle:LevelRef::load_chunk"]
+why = "Adds LevelRef::load_chunk (#4550): Level.getChunk(x, z) for mods, through ServerChunkCache.getChunk(x, z, FULL, true). It loads or generates the chunk to FULL in any open server level, blocking the server tick until it is there, under vanilla's one-tick UNKNOWN ticket, so nothing stays forced or ticketed. False for a stale or unopened level, a client, a chunk past ChunkPos.isValid, and while the level's generation is paused or stopped."

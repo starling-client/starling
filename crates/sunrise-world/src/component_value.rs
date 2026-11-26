@@ -1,6 +1,7 @@
 //! Immutable component codec values shared by item templates and protocol codecs.
 use sunrise_core::nbt::{Compound, JavaString, Tag, discard_tag, with_tree_stack};
 pub mod consume_effects;
+pub mod json;
 pub mod source;
 pub mod types;
 pub use source::from_component_tag;
@@ -380,41 +381,18 @@ impl Template {
     pub fn to_tag(&self) -> Result<Tag, String> {
         self.tag(Projection::Tree)
     }
+    /// Project the own persistent patch to its canonical `components` compound without
+    /// re-validating against the built-in-only registry.
+    pub fn patch_to_tag(&self) -> Result<Option<Tag>, String> {
+        template_patch_tag(&self.patch, Projection::Codec)
+    }
     fn tag(&self, projection: Projection) -> Result<Tag, String> {
-        let children = if projection == Projection::Presentation {
-            projection
-        } else {
-            Projection::Codec
-        };
         let mut fields = vec![("id".into(), Tag::String(self.item.as_str().into()))];
         if self.count != 1 {
             fields.push(("count".into(), Tag::Int(self.count)));
         }
-        let mut patch = Compound::new();
-        for (name, value) in effective_patch(&self.patch) {
-            if projection != Projection::Presentation && !is_persistent(name) {
-                continue;
-            }
-            let (key, projected) = match value {
-                Some(value) => match value.tag(children) {
-                    Ok(tag) => (name.as_str().into(), tag),
-                    Err(error) => {
-                        discard_tag(Tag::Compound(patch));
-                        return Err(format!("{name}: {error}"));
-                    }
-                },
-                None => (
-                    format!("!{name}").as_str().into(),
-                    Tag::Compound(Compound::new()),
-                ),
-            };
-            // A directly constructed set key may collide with a !-prefixed removal.
-            if let Some(replaced) = patch.insert(key, projected) {
-                discard_tag(replaced);
-            }
-        }
-        if !patch.is_empty() {
-            fields.push(("components".into(), Tag::Compound(patch)));
+        if let Some(patch) = template_patch_tag(&self.patch, projection)? {
+            fields.push(("components".into(), patch));
         }
         let tag = Tag::Compound(fields.into_iter().collect());
         if projection == Projection::Tree {
@@ -428,6 +406,38 @@ impl Template {
         }
         Ok(tag)
     }
+}
+
+fn template_patch_tag(patch: &Patch, projection: Projection) -> Result<Option<Tag>, String> {
+    let children = if projection == Projection::Presentation {
+        projection
+    } else {
+        Projection::Codec
+    };
+    let mut out = Compound::new();
+    for (name, value) in effective_patch(patch) {
+        if projection != Projection::Presentation && !is_persistent(name) {
+            continue;
+        }
+        let (key, projected) = match value {
+            Some(value) => match value.tag(children) {
+                Ok(tag) => (name.as_str().into(), tag),
+                Err(error) => {
+                    discard_tag(Tag::Compound(out));
+                    return Err(format!("{name}: {error}"));
+                }
+            },
+            None => (
+                format!("!{name}").as_str().into(),
+                Tag::Compound(Compound::new()),
+            ),
+        };
+        // A directly constructed set key may collide with a !-prefixed removal.
+        if let Some(replaced) = out.insert(key, projected) {
+            discard_tag(replaced);
+        }
+    }
+    Ok((!out.is_empty()).then_some(Tag::Compound(out)))
 }
 /// The pinned component types that intentionally have no persistent codec.
 pub fn is_persistent(name: &str) -> bool {

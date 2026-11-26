@@ -1,4 +1,6 @@
 """A crate file that no `mod` item or `include!` reaches is named; declared and included ones are not."""
+import os
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -7,6 +9,8 @@ from tools.ci import check_unreached_sources
 
 
 class UnreachedSources(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("cargo") or os.environ.get("SUNRISE_GAME_DISCOVERY"),
+                         "needs cargo, or SUNRISE_GAME_DISCOVERY, to run sunrise-game-discovery")
     def test_an_undeclared_source_file_is_named_and_declared_or_included_ones_are_not(self):
         with tempfile.TemporaryDirectory() as scratch:
             root = Path(scratch)

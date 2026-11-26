@@ -1,0 +1,87 @@
+# docs/layers.md: the launcher copies these crates; check_launcher_mirrors.py hashes their public surface.
+# Run --write after an announced `launcher-mirror:` change, never to hide an unannounced one.
+version = 1
+
+[[mirror]]
+launcher = "smod"
+sources = ["crates/sunrise-mod-package/src"]
+note = ".smod, the manifest and the registry index; the game keeps the content fence"
+surface = "sha256:d1b54c4ef888e9cba8f3a4cc7a85ae378b893b690ed0d620784e2de5a3fa6338"
+
+[[mirror]]
+launcher = "sdk"
+sources = ["crates/sunrise-mod-package/src", "crates/sunrise-native-build/src"]
+note = "the read-only half of the SDK index (sdk.json) and the native-build contract"
+surface = "sha256:998f8032e16afe0f4ea374b1ab232e35c4644f76f776247f1ba66e5085d239b8"
+
+[[mirror]]
+launcher = "nbt"
+sources = ["crates/sunrise-core/src/nbt.rs"]
+note = "Java NBT, without SNBT"
+surface = "sha256:359d4a55663d19c5765484bec8cc8ba13cc3117edd0518b489af60c495910509"
+
+[[mirror]]
+launcher = "resolver"
+sources = ["crates/sunrise-protocol/src/resolver.rs"]
+note = "the SRV redirect"
+surface = "sha256:97c49bdd8bdc397778611d9f076eaffb7b478aed505b92e8103d82666642d6bd"
+
+[[mirror]]
+launcher = "proxy"
+sources = ["crates/sunrise-proxy/src"]
+note = "shared proxy selection"
+surface = "sha256:319f98bbd8422e148e6c8ff199bf6e385052576fa4bcb75975fd5da56b019598"
+
+[[mirror]]
+launcher = "system"
+sources = ["crates/sunrise-system/src"]
+note = "OS, CPU, GPU and memory facts"
+surface = "sha256:a80dfaec087d84d243c8f99e7dc9fb9a359b2e63eb5bf844e4abb6f724fd2b08"
+
+[[mirror]]
+launcher = "addresses"
+sources = ["crates/sunrise-addresses/src"]
+note = "the built-in addresses of outside services"
+surface = "sha256:19be063821a148c358070b4cc53fdf2001b656a8afdd62d2fd76d870f33e3ada"
+
+[[mirror]]
+launcher = "telemetry"
+sources = ["crates/sunrise-telemetry/src"]
+note = "opt-in collection"
+surface = "sha256:47ba1c2f09bb879c4b273efd5852c41962a029c1bd23f5014e29f5374b2d3b83"
+
+[[mirror]]
+launcher = "theme"
+sources = ["crates/sunrise-theme/src"]
+note = "design tokens and fonts"
+surface = "sha256:202bfdadde7e022389c4792076efcb3fc943d1a0a6f7a9994a155f0e5e1beb59"
+
+[[mirror]]
+launcher = "attestation"
+sources = ["crates/sunrise-attestation/src"]
+note = "attestation predicates"
+surface = "sha256:68a0b858c51ce87dbdbff23945b0ac5b91f3231e1280b2d52f00365fbf43ebac"
+
+[[mirror]]
+launcher = "release-verify"
+sources = ["crates/sunrise-release-sign/src"]
+note = "the verification half of the signed checksums"
+surface = "sha256:9805284041207d4a10a0ab2215495abf271526c0f41e33c3c5f6a9cf11ed93d5"
+
+[[mirror]]
+launcher = "friends"
+sources = ["crates/sunrise-friends/src", "crates/sunrise-relay/src"]
+note = "invite codes and the tunnel"
+surface = "sha256:da1fdcaec10b6706435cab1cd99d8fba6ae3e76f973272d5bef8d60ba9954d84"
+
+[[mirror]]
+launcher = "mcp"
+sources = ["crates/sunrise-mcp/src"]
+note = "the agent/MCP surface"
+surface = "sha256:b0e4c01feaf3bd1484c95a815b3d5686bcd8d5970e2d011a85d633d6a48bbf3e"
+
+[[mirror]]
+launcher = "bench"
+sources = ["crates/sunrise-bench/src", "crates/sunrise-perf-format/src"]
+note = "the benchmark report format"
+surface = "sha256:aae5f52fc053dc329efb53a93c3cb456e22c4bfb92ba8589781f13c31fefdb31"

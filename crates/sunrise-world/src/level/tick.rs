@@ -1569,7 +1569,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             self.level_event(1034, pos, 0);
         }
     }
-    /// `ServerLevel.tickPrecipitation` at a column whose top (motion-blocking
+    /// The effects of `ServerLevel.tickPrecipitation` at a column whose top (motion-blocking
     /// heightmap) position and biome answers are supplied by the caller.
     pub(crate) fn precipitation_tick(&mut self, info: Precipitation) {
         let b = self.b;
@@ -1973,7 +1973,7 @@ impl Behaviours {
     /// is the minimum Y of the lowest such section from `min_y` up, as the
     /// chunk is now: vanilla asks as it reaches each section, so the ticks of
     /// the sections below count.
-    pub fn tick_chunk_random<L: LevelAccess + ?Sized>(
+    pub fn tick_chunk_random<L: LevelAccess>(
         &self,
         level: &mut L,
         ticks: &mut Ticks,
@@ -1989,7 +1989,7 @@ impl Behaviours {
     /// as its random tick would do nothing. The draws are the same. After a
     /// position that did tick, the section is asked for again (its blocks may
     /// have changed): a mask is only trusted for the blocks as they are.
-    pub fn tick_chunk_random_masked<L: LevelAccess + ?Sized>(
+    pub fn tick_chunk_random_masked<L: LevelAccess>(
         &self,
         level: &mut L,
         ticks: &mut Ticks,
@@ -2005,9 +2005,7 @@ impl Behaviours {
         for _ in 0..speed {
             if level.random().next_int_bound(48).unwrap_or(1) == 0 {
                 let pos = ticks.block_random_pos(min_x, 0, min_z, 15);
-                if let Some(info) = level.precipitation(pos) {
-                    self.sim(level, ticks).precipitation_tick(info);
-                }
+                self.tick_precipitation(level, ticks, pos);
             }
         }
         let mut from = level.min_y();

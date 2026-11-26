@@ -37,11 +37,6 @@ Scripts and AI agents
   sunrise-ctl mcp is an MCP server for AI agents (stdio; add it to your MCP
   client as the command sunrise-ctl with the argument mcp). It finds the game
   beside it or the version the launcher installed.
-  sunrise-perf, in this folder, reads the performance captures the game writes
-  (reports/profile-*.hzperf):
-    ./sunrise-perf summary                       the newest capture, in short
-    ./sunrise-perf help                          lists every command
-  sunrise-perf mcp is an MCP server for AI agents, like sunrise-ctl mcp.
 
 Running a server
   sunrise-server, in this folder, hosts a server with this game as its engine,

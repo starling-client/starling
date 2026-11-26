@@ -383,7 +383,7 @@ impl Store {
 pub struct GpuShader {
     /// The shader's id (`ns:name`), for the log.
     pub id: String,
-    pub program: Arc<crate::core_shader::CoreProgram>,
+    pub program: Arc<sunrise_glsl::Translated>,
     /// `Sampler0`: the type's `texture` (width, height, RGBA pixels).
     pub texture: Option<(u32, u32, Arc<[u8]>)>,
     pub render_type: RenderType,
@@ -405,7 +405,7 @@ const REFUSED: u8 = 2;
 impl GpuShader {
     pub fn new(
         id: String,
-        program: Arc<crate::core_shader::CoreProgram>,
+        program: Arc<sunrise_glsl::Translated>,
         texture: Option<(u32, u32, Arc<[u8]>)>,
         render_type: RenderType,
         uniforms: Vec<(String, sunrise_polytone::expr::Program)>,
@@ -449,7 +449,7 @@ impl std::fmt::Debug for GpuShader {
 
 /// What a custom shader's vertex stage reads (wiki "GPU Particles", 1.21.11 and up): the
 /// record, the same on the quad's four corners (`gl_VertexIndex & 3` is the corner).
-pub const GLUE: crate::core_shader::Glue = crate::core_shader::Glue {
+pub const GLUE: sunrise_glsl::Glue = sunrise_glsl::Glue {
     inputs: &[
         ("Position", "vec3"),
         ("Velocity", "vec3"),
@@ -468,6 +468,8 @@ pub const GLUE: crate::core_shader::Glue = crate::core_shader::Glue {
             Params = hz_params; Color = hz_color; UV2 = hz_uv2;",
     finish: "",
     vertex_id: "int(gl_VertexIndex)",
+    fragment_finish: None,
+    interface: sunrise_shaders::DEVICELESS_INTERFACE_LIMITS,
 };
 
 /// One corner of a record for a custom shader.

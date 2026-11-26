@@ -125,19 +125,13 @@ const RENAMED: [(&str, &str); 22] = [
 /// as the event it belongs to.
 const HELPERS: [(&str, &str); 1] = [("RegisterEvent.RegisterHelper", "RegisterEvent")];
 
-/// Events that are only a parent of the events NeoForge documents under
-/// them (its config page: "the `ModConfigEvent.Loading`,
-/// `ModConfigEvent.Reloading`, and `ModConfigEvent.Unloading` events"). A
-/// mod that listens to the parent hears each of them, so the parent is
-/// hooked when every one of them is.
-const PARENTS: [(&str, &[&str]); 1] = [("ModConfigEvent", &["Loading", "Reloading", "Unloading"])];
-
 /// Names the mod API answers outside the hook catalog, with what a port uses
-/// instead. A registration event NeoForge fires is a `Registrar` method a mod
-/// calls from `Hooks::register`; a NeoForge capability is the capability key
-/// a mod asks or answers by. The rustdoc of each method and key in
-/// `sunrise-mod-api` names the NeoForge name it stands under here.
-const API: [(&str, &str); 15] = [
+/// instead. A registration event NeoForge fires (and `ModContainer.registerConfig`
+/// plus `ModConfigEvent`) is a `Registrar` method a mod calls from
+/// `Hooks::register`; a NeoForge capability is the capability key a mod asks or
+/// answers by. The rustdoc of each method, event and key in `sunrise-mod-api`
+/// names the NeoForge name it stands under here.
+const API: [(&str, &str); 20] = [
     (
         "RegisterKeyMappingsEvent",
         "Registrar::register_key_mapping",
@@ -157,6 +151,20 @@ const API: [(&str, &str); 15] = [
     (
         "RegisterTicketControllersEvent",
         "Registrar::register_ticket_controller",
+    ),
+    ("ModContainer.registerConfig", "Registrar::register_config"),
+    ("ModConfigEvent", "Registrar::register_config (ConfigEvent)"),
+    (
+        "ModConfigEvent.Loading",
+        "Registrar::register_config (ConfigEvent::Loading)",
+    ),
+    (
+        "ModConfigEvent.Reloading",
+        "Registrar::register_config (ConfigEvent::Reloading)",
+    ),
+    (
+        "ModConfigEvent.Unloading",
+        "Registrar::register_config (ConfigEvent::Unloading)",
     ),
     ("Capabilities.Item.BLOCK", "mod_api::ITEMS"),
     ("Capabilities.Item.ENTITY", "mod_api::ENTITY_ITEMS"),
@@ -260,11 +268,10 @@ pub struct Catalog {
 /// How the catalog answers one name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Status {
-    /// The hooks whose counterpart it is (for a parent in `PARENTS`, the
-    /// hooks of all its events).
+    /// The hooks whose counterpart it is.
     Hooked(Vec<String>),
     /// The hooks of another phase (`.Post` for `.Pre`), or of the events
-    /// nested in it (`ModConfigEvent.Loading` for `ModConfigEvent`).
+    /// nested in it (`ChunkEvent.Load` for `ChunkEvent`).
     Phase(Vec<String>),
     /// The hooks whose label says why they aren't its counterpart.
     Noted(Vec<String>),
@@ -325,9 +332,8 @@ impl Catalog {
 
     /// The catalog's answer for `name` as it is written, else the tables'.
     fn answer(&self, name: &str) -> Status {
-        let status = self.lookup(name);
-        if status != Status::Missing {
-            return status;
+        if let Some(hooks) = self.exact.get(name) {
+            return Status::Hooked(hooks.clone());
         }
         if let Some((_, written)) = DATA.iter().find(|(event, _)| *event == name) {
             let written = written.iter().map(|w| (*w).to_owned()).collect();
@@ -343,23 +349,13 @@ impl Catalog {
         if let Some(place) = said(&LOADING) {
             return Status::Loading(place);
         }
-        said(&UNHOOKED).map_or(Status::Missing, Status::Unhooked)
+        if let Some(why) = said(&UNHOOKED) {
+            return Status::Unhooked(why);
+        }
+        self.fallback(name)
     }
 
-    fn lookup(&self, name: &str) -> Status {
-        if let Some(hooks) = self.exact.get(name) {
-            return Status::Hooked(hooks.clone());
-        }
-        if let Some((_, events)) = PARENTS.iter().find(|(parent, _)| *parent == name) {
-            let hooks: Option<Vec<&Vec<String>>> = events
-                .iter()
-                .map(|event| self.exact.get(&format!("{name}.{event}")))
-                .collect();
-            if let Some(hooks) = hooks {
-                let hooks: BTreeSet<&String> = hooks.into_iter().flatten().collect();
-                return Status::Hooked(hooks.into_iter().cloned().collect());
-            }
-        }
+    fn fallback(&self, name: &str) -> Status {
         let phase = |s: &str| s == "Pre" || s == "Post";
         let related = |k: &str| {
             let nested = k

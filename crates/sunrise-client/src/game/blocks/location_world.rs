@@ -62,6 +62,9 @@ impl sunrise_client::beehive::SmokeLevel for LevelLocation<'_> {
 }
 
 impl World for LevelLocation<'_> {
+    fn is_loaded(&self, [x, y, z]: [i32; 3]) -> bool {
+        self.world.is_loaded_at(x, y, z)
+    }
     fn dimension(&self) -> &str {
         self.refs.dimension
     }
@@ -81,6 +84,9 @@ impl World for LevelLocation<'_> {
             .filter(|(_, piece)| *piece)
             .map(|(name, _)| name)
             .collect()
+    }
+    fn block_state(&self, [x, y, z]: [i32; 3]) -> Option<&sunrise_world::chunk::BlockState> {
+        self.registry.state(self.world.block(x, y, z))
     }
     fn block(&self, p: [i32; 3]) -> (String, BTreeMap<String, String>) {
         let state = self.world.block(p[0], p[1], p[2]);
@@ -132,17 +138,40 @@ impl World for LevelLocation<'_> {
             .get(self.world.block(p[0], p[1], p[2]))
             .name
             .clone();
-        let entity = self.world.block_entities.get(&key)?;
-        Some(super::commands::data::stored_block_entity_data(
+        let Some(entity) = self.world.block_entities.get(&key) else {
+            return super::spill::saved_full_metadata(self.world, p);
+        };
+        let current = super::commands::data::stored_block_entity_data(
             self.world,
             key,
             &name,
             entity,
             self.items,
             || super::machines::hopper_cooldown_in(self.hoppers, self.world, key),
+        );
+        Some(super::spill::live_full_metadata(
+            self.world, key, entity, &name, self.items, current,
         ))
     }
     fn in_tag(&self, registry: &str, tag: &str, id: &str) -> bool {
         self.refs.tags.contains(registry, tag, id)
+    }
+}
+
+impl super::GameLevel<'_> {
+    /// This level as its location predicates and loot rolls read it.
+    pub(in crate::game) fn location_view(&self) -> LevelLocation<'_> {
+        LevelLocation {
+            world: &*self.world,
+            registry: self.registry,
+            facts: self.facts,
+            biomes: self.biomes,
+            items: self.items,
+            collision: self.collision,
+            hoppers: &*self.positions.hoppers,
+            raining: self.raining,
+            thundering: self.thundering,
+            refs: self.location,
+        }
     }
 }

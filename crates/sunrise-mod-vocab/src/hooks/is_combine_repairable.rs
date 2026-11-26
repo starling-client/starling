@@ -19,6 +19,7 @@ pub trait Hooks {
     /// parameters is Sunrise's reading, not checked against NeoForge's. Diverges from
     /// upstream: new hook.
     /// A client without this mod predicts vanilla here; the server corrects it.
+    /// Read the borrowed stack with `get`; call `project` only to keep an owned copy.
     #[hook(
         side = "both",
         contract = "listen",
@@ -27,7 +28,8 @@ pub trait Hooks {
         key = "stack",
         cancellable = false,
         target = "sunrise_client_lib::crafting::native_hooks::native_is_combine_repairable",
+        version = 2,
         neoforge = "IItemExtension.isCombineRepairable"
     )]
-    fn is_combine_repairable(stack: &mod_api::ItemStack, repairable: &mut bool);
+    fn is_combine_repairable(stack: mod_api::ItemStackView<'_>, repairable: &mut bool);
 }

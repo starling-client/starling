@@ -25,13 +25,11 @@ import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
-try:
-    from . import lab, lra_schem, parity_shard, test_rust_parity as base
-except ImportError:
-    import lab
-    import lra_schem
-    import parity_shard
-    import test_rust_parity as base
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, lra_schem, parity_shard, test_rust_parity as base
 
 ARCHIVE = 'mattbatwings/Logical-Redstone-Archive'
 COMMIT = 'da4dd515559458140f78a555600e7e4607ac6b8c'

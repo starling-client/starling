@@ -40,16 +40,9 @@ import tempfile
 import urllib.request
 import zipfile
 
-try:
-    from . import class_index, lab, port_harness, port_publish, port_regen, port_report, vanilla_map
-except ImportError:
-    import class_index
-    import lab
-    import port_harness
-    import port_publish
-    import port_regen
-    import port_report
-    import vanilla_map
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import class_index, lab, port_harness, port_publish, port_regen, port_report, vanilla_map
 
 MANIFEST_URL = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"
 STORE = Path(os.environ.get("SUNRISE_VERSIONS", Path.home() / "code" / "sunrise-parity" / "versions"))

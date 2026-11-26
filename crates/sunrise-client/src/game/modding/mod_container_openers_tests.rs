@@ -57,14 +57,17 @@ mod tests {
                     // outer opening's window ID without reusing its menu identity.
                     for window in (2..=100).chain([1]) {
                         assert_eq!(
-                            host.open_menu(
-                                player.uuid(),
-                                1,
-                                Text::literal("replacement"),
-                                Vec::new(),
-                                MenuReplace::InPlace
-                            ),
-                            Ok(Some(window))
+                            player
+                                .open_chest_menu(
+                                    host,
+                                    1,
+                                    Text::literal("replacement"),
+                                    Vec::new(),
+                                    MenuReplace::InPlace
+                                )
+                                .unwrap()
+                                .container_id(host),
+                            Some(window)
                         );
                     }
                 }
@@ -294,7 +297,7 @@ mod tests {
                 }
                 game.world.game_time = start + 10;
                 game.tick_mod_container_viewers();
-                game.player_menu_closing(12);
+                game.guest_close_all(12);
                 assert_eq!(&notices.lock().unwrap()[before..], [(0, 1), (1, 1)]);
 
                 // A recheck for the old cabinet must not report on its same-type replacement.
@@ -304,7 +307,7 @@ mod tests {
                 game.world.block_entities.replace(pos, entity).unwrap();
                 game.world.game_time = start + 15;
                 game.tick_mod_container_viewers();
-                game.player_menu_closing(13);
+                game.guest_close_all(13);
                 assert_eq!(notices.lock().unwrap().len(), before_notices);
                 assert_eq!(events.lock().unwrap().len(), before_events);
                 assert!(game.mod_container_viewers.is_empty());
@@ -376,7 +379,7 @@ mod tests {
                 );
                 game.player_menu_opening(13);
                 assert_eq!(&notices.lock().unwrap()[before..], [(0, 1), (0, 1)]);
-                game.player_menu_closing(13);
+                game.guest_close_all(13);
                 assert_eq!(&notices.lock().unwrap()[before + 2..], [(1, 0), (1, 0)]);
                 assert_eq!(notices.lock().unwrap().last(), Some(&(1, 0)));
                 assert_eq!(

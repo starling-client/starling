@@ -43,6 +43,12 @@ impl Game<'_> {
         }
     }
 
+    /// `MultiPlayerGameMode.destroyDelay`: the ticks left before the local player's next block
+    /// starts breaking. 0 outside a world.
+    pub(in crate::game) fn mining_destroy_delay(&self) -> u32 {
+        self.remote.as_ref().map_or(0, |r| r.destroy_delay)
+    }
+
     /// MultiPlayerGameMode.startDestroyBlock / continueDestroyBlock.
     pub(in crate::game) fn remote_mining(&mut self, start: bool) -> bool {
         let debug_stick = self
@@ -163,6 +169,8 @@ impl Game<'_> {
                 (r.destroying, r.destroying_item) = (Some((hit.pos, face, 0.0)), held);
                 r.is_destroying = true;
             }
+            // startDestroyBlock tells its level the new dig before the first hit's effects.
+            self.native_local_break_progress(hit.pos, 0.0);
             // startDestroyBlock plays the first hit and crack itself; the
             // server's level events 2019 and 2020 do the rest.
             self.breaking_block_effects(hit.pos, hit.face, true);
@@ -206,6 +214,8 @@ impl Game<'_> {
                 r.destroy_delay = 5;
             }
             self.mining = None;
+            // continueDestroyBlock tells its level the reset progress: the crack goes.
+            self.native_local_break_progress(pos, 0.0);
         } else {
             if last_face != face {
                 self.send(S::PlayerAction(play::PlayerAction {
@@ -225,6 +235,7 @@ impl Game<'_> {
                 ticks,
                 crack: None,
             }));
+            self.native_local_break_progress(pos, done);
         }
         true
     }
@@ -273,21 +284,36 @@ impl Game<'_> {
         held: Option<&ItemStack>,
         asks_mods: bool,
     ) -> (InteractionResult, DryUse) {
+        if let Some(reacts) = self.remote_block_shortcut(hit, held) {
+            return reacts;
+        }
+        let [x, y, z] = hit.pos;
+        let state = self.world.block(x, y, z);
+        let (result, changes) = self.remote_block_template(hit, state, held, None, asks_mods);
+        (result.unwrap_or(InteractionResult::Pass), changes)
+    }
+
+    /// Main-hand client `useItemOn` branches handled outside the dry level.
+    pub(in crate::game) fn remote_block_shortcut(
+        &mut self,
+        hit: &crate::game::Hit,
+        held: Option<&ItemStack>,
+    ) -> Option<(InteractionResult, DryUse)> {
         // AbstractCauldronBlock.useItemOn (CauldronInteractions): a bucket,
         // bottle or dye the cauldron takes fills or lowers it, and the click
         // ends there instead of falling through to Item.use (which would
         // empty a water bucket into the face of the cauldron).
         if let Some(reacts) = self.remote_cauldron_reacts(hit, held) {
-            return reacts;
+            return Some(reacts);
         }
         if self.jukebox_takes(hit.pos, held) {
-            return (InteractionResult::Success, DryUse::default());
+            return Some((InteractionResult::Success, DryUse::default()));
         }
         // RespawnAnchorBlock.useItemOn: PASS when the off hand's glowstone is to
         // charge the anchor, so useWithoutItem doesn't run and the off hand's turn
         // comes (glowstone in this hand charges it in `use_item_on`).
         if !self.anchor_takes(hit.pos, held) && self.anchor_takes(hit.pos, self.offhand.as_ref()) {
-            return (InteractionResult::Pass, DryUse::default());
+            return Some((InteractionResult::Pass, DryUse::default()));
         }
         // BeehiveBlock.useItemOn: a glass bottle on a full hive (honey level 5)
         // is SUCCESS, so the click ends after UseItemOn and no UseItem follows.
@@ -298,28 +324,31 @@ impl Game<'_> {
                 .hive_state(hit.pos)
                 .is_some_and(|(honey, _)| honey == Some(5))
         {
-            return (InteractionResult::Success, DryUse::default());
+            return Some((InteractionResult::Success, DryUse::default()));
         }
         // ComposterBlock.useItemOn: a compostable item on a composter below
         // level 8 is SUCCESS on the client too (only the server adds the
         // layer), so the other hand (a torch) is never tried.
         if self.composter_takes(hit.pos, held) {
-            return (InteractionResult::Success, DryUse::default());
+            return Some((InteractionResult::Success, DryUse::default()));
         }
-        if let Some(result) = self.client_block_answer(hit, held) {
-            return (result, DryUse::default());
-        }
-        self.remote_block_template(hit, held, false, asks_mods)
+        self.client_block_answer(hit, held)
+            .map(|result| (result, DryUse::default()))
     }
 
+    /// Run a selected block method on a dry level (or both for a preview).
+    /// ItemOn returns None for TryWithEmptyHand, with no dry changes, so the
+    /// clicking client can ask the fallback Part at that boundary.
     pub(in crate::game) fn remote_block_template(
         &mut self,
         hit: &crate::game::Hit,
+        state: BlockStateId,
         held: Option<&ItemStack>,
-        without_item: bool,
+        branch: Option<sunrise_world::level::UseBranch>,
         asks_mods: bool,
-    ) -> (InteractionResult, DryUse) {
+    ) -> (Option<InteractionResult>, DryUse) {
         use sunrise_core::geometry::Direction;
+        use sunrise_world::level::UseBranch;
         let face = match hit.face {
             [0, 1, 0] => Direction::Up,
             [0, -1, 0] => Direction::Down,
@@ -344,12 +373,18 @@ impl Game<'_> {
                 inside: hit.inside,
             };
             let mut ticks = sunrise_world::level::Ticks::default();
-            let result = if without_item {
-                use sunrise_world::level::LevelAccess as _;
-                let state = level.block_state(hit.block);
-                b.use_without_item(&mut level, &mut ticks, state, hit, player)
-            } else {
-                b.use_item_on(&mut level, &mut ticks, hit, player, held.map(|s| &*s.item))
+            let item = held.map(|s| &*s.item);
+            let result = match branch {
+                Some(UseBranch::ItemOn) => {
+                    b.block_use_item_on(&mut level, &mut ticks, state, hit, player, item)
+                }
+                Some(UseBranch::WithoutItem) => {
+                    Some(b.use_without_item(&mut level, &mut ticks, state, hit, player))
+                }
+                None => Some(
+                    b.use_item_on_branch(&mut level, &mut ticks, state, hit, player, item)
+                        .0,
+                ),
             };
             (result, (level.changed.into_iter().collect(), level.sounds))
         })
@@ -369,9 +404,21 @@ impl Game<'_> {
             face: sunrise_core::geometry::Direction::ALL[face_direction(hit.face) as usize],
             hit: Vec3::new(hit.point[0], hit.point[1], hit.point[2]),
             inside: hit.inside,
+<<<<<<< HEAD
             yaw: self.interaction_rotation().0,
             pitch: self.interaction_rotation().1,
             sneaking: self.remote_shift_down(),
+||||||| 46c00106def
+            yaw: self.yaw,
+            pitch: self.pitch,
+            sneaking: self.remote_shift_down(),
+=======
+            source: sunrise_world::level::PlacementSource::Player {
+                yaw: self.yaw,
+                pitch: self.pitch,
+                sneaking: self.remote_shift_down(),
+            },
+>>>>>>> ed6772e2118
             item: stack.item.to_string(),
             can_use_game_master_blocks: self.can_use_game_master_blocks(),
         };
@@ -399,11 +446,13 @@ impl Game<'_> {
                         .then(|| level.rewrite_placement_context(stack, context, placer))
                         .flatten()
                 })?;
-            let placed = b.place_resolved_block(&mut dry, &mut ticks, decision, stack_state)?;
+            let placed = b.apply_placement(&mut dry, &mut ticks, decision, stack_state)?;
+            b.placement_set_placed_by(&mut dry, &mut ticks, &placed);
             let pos = placed.context.pos;
             let primary = dry.changed.remove_entry(&pos);
             Some(DryPlace {
                 pos,
+                sound_state: placed.state,
                 matches_candidate: placed.matches_candidate,
                 changes: primary.into_iter().chain(dry.changed).collect(),
             })
@@ -537,7 +586,7 @@ impl Game<'_> {
     /// `InstrumentItem.use` on this client: unless the horn is on cooldown,
     /// it is held up, plays its sound at the player and starts its cooldown.
     pub(in crate::game) fn remote_use_instrument(&mut self, held: &ItemStack) {
-        let Some(instrument) = self.res.items().instrument(held) else {
+        let Some(instrument) = self.items().instrument(held) else {
             return;
         };
         let group = sunrise_client::cooldowns::group(held, None);

@@ -1,6 +1,71 @@
 //! Concrete authoring extracted verbatim from the vocabulary layer.
 use super::*;
 
+/// Vanilla 26.3 `RegistryDataLoader` datapack registries (`WORLD_REGISTRIES`,
+/// `DIMENSION_REGISTRIES`, `RELOADABLE_REGISTRIES`).
+const BUILTIN_DATAPACK_REGISTRIES: &[&str] = &[
+    "minecraft:dimension_type",
+    "minecraft:worldgen/biome",
+    "minecraft:chat_type",
+    "minecraft:worldgen/carver",
+    "minecraft:worldgen/feature",
+    "minecraft:worldgen/placed_feature",
+    "minecraft:worldgen/structure",
+    "minecraft:worldgen/structure_set",
+    "minecraft:worldgen/processor_list",
+    "minecraft:worldgen/template_pool",
+    "minecraft:worldgen/noise_settings",
+    "minecraft:worldgen/noise",
+    "minecraft:worldgen/density_function",
+    "minecraft:worldgen/material_rule",
+    "minecraft:worldgen/material_condition",
+    "minecraft:worldgen/world_preset",
+    "minecraft:worldgen/flat_level_generator_preset",
+    "minecraft:trim_pattern",
+    "minecraft:trim_material",
+    "minecraft:trial_spawner",
+    "minecraft:wolf_variant",
+    "minecraft:wolf_sound_variant",
+    "minecraft:pig_variant",
+    "minecraft:pig_sound_variant",
+    "minecraft:frog_variant",
+    "minecraft:cat_variant",
+    "minecraft:cat_sound_variant",
+    "minecraft:cow_variant",
+    "minecraft:cow_sound_variant",
+    "minecraft:sulfur_cube_archetype",
+    "minecraft:chicken_variant",
+    "minecraft:chicken_sound_variant",
+    "minecraft:zombie_nautilus_variant",
+    "minecraft:painting_variant",
+    "minecraft:damage_type",
+    "minecraft:worldgen/multi_noise_biome_source_parameter_list",
+    "minecraft:banner_pattern",
+    "minecraft:enchantment",
+    "minecraft:enchantment_provider",
+    "minecraft:jukebox_song",
+    "minecraft:instrument",
+    "minecraft:test_environment",
+    "minecraft:test_instance",
+    "minecraft:dialog",
+    "minecraft:world_clock",
+    "minecraft:timeline",
+    "minecraft:villager_trade",
+    "minecraft:trade_set",
+    "minecraft:decorated_pot_pattern",
+    "minecraft:block_transformer",
+    "minecraft:worldgen/block_state_provider",
+    "minecraft:dimension",
+    "minecraft:loot_table",
+    "minecraft:predicate",
+    "minecraft:context_float_provider",
+    "minecraft:context_int_provider",
+    "minecraft:item_modifier",
+    "minecraft:slot_source",
+    "minecraft:advancement",
+    "minecraft:recipe",
+];
+
 impl DatapackRegistriesRegistrar for PartRegistrar {
     fn declare_datapack_registry(
         &mut self,
@@ -9,27 +74,30 @@ impl DatapackRegistriesRegistrar for PartRegistrar {
         mut fields: Vec<DatapackField>,
     ) -> Result<(), DatapackRegistrationError> {
         let result = (|| {
-            if mod_vocab::__private::parts_installation::loaded_mods()
+            let side = mod_vocab::__private::parts_installation::loaded_mods()
                 .get(self.mod_id)
-                .is_some_and(|package| package.side() != crate::Side::Both)
-            {
+                .map(|package| package.side());
+            if side == Some(crate::Side::Client) {
                 return Err(DatapackRegistrationError::WrongSide);
             }
-            let (namespace, name) = path.split_once(':').unwrap_or((self.mod_id, path));
-            let key = format!("{namespace}:{name}");
-            if namespace == "minecraft"
-                || !owns_namespace(self.mod_id, namespace)
-                || !mod_vocab::__private::parts_installation::valid_datapack_id(&key)
-            {
+            let key = qualified(self.mod_id, path);
+            if !mod_vocab::__private::parts_installation::valid_datapack_id(&key) {
                 return Err(DatapackRegistrationError::InvalidKey);
             }
-            if self.declaration_side_not_both(&key) {
+            // A server-only declarer is checked by the package join-content rule;
+            // a both-side declarer may not add a required registry for a server-only supplier.
+            if sync == DatapackRegistrySync::Required
+                && side != Some(crate::Side::Server)
+                && self.declaration_side_not_both(&key)
+            {
                 return Err(DatapackRegistrationError::WrongSide);
             }
-            if self
-                .datapack_registries
-                .iter()
-                .any(|declared| declared.key == key)
+            if BUILTIN_DATAPACK_REGISTRIES.contains(&key.as_str())
+                || self.has_builtin_registry(&key)
+                || self
+                    .datapack_registries
+                    .iter()
+                    .any(|declared| declared.key == key)
             {
                 return Err(DatapackRegistrationError::Duplicate);
             }
@@ -65,55 +133,84 @@ mod tests {
         )]
     }
 
-    /// A key in the mod's namespace stands; foreign, vanilla and malformed keys, a
-    /// duplicate and a bad schema refuse, naming the mod.
+    /// Bare paths qualify with the declaring mod; valid explicit namespaces (including
+    /// non-colliding `minecraft:` keys) stand under the declaring mod while malformed keys,
+    /// duplicates, built-in registries and bad schemas refuse, naming the mod.
     #[test]
     pub(crate) fn datapack_registry_declarations_validate() {
         use DatapackRegistrationError as E;
-        let mut registrar = PartRegistrar::new("example");
-        let sync = DatapackRegistrySync::Required;
-        registrar
-            .declare_datapack_registry("spell", sync, power())
-            .unwrap();
-        assert_eq!(
-            registrar.datapack_registries[0].key, "example:spell",
-            "a bare path is in the declaring mod's namespace"
+        let data = mod_vocab::__private::RegistrationData::new(
+            [("minecraft:block".into(), vec!["minecraft:stone".into()])].into(),
+            Default::default(),
+            crate::InstanceDirectory::from_path(std::path::Path::new("unused")).unwrap(),
+            crate::RuntimeEnvironment::new(
+                crate::Dist::Client,
+                "26.3".into(),
+                "test".into(),
+                false,
+            ),
         );
-        assert_eq!(
-            registrar.declare_datapack_registry("example:spell", sync, power()),
-            Err(E::Duplicate)
-        );
-        assert_eq!(
-            registrar.declare_datapack_registry("minecraft:spell", sync, power()),
-            Err(E::InvalidKey)
-        );
-        assert_eq!(
-            registrar.declare_datapack_registry("addon:spell", sync, power()),
-            Err(E::InvalidKey)
-        );
-        assert_eq!(
-            registrar.declare_datapack_registry("Not A Key", sync, power()),
-            Err(E::InvalidKey)
-        );
-        assert_eq!(
-            registrar.declare_datapack_registry("", sync, power()),
-            Err(E::InvalidKey)
-        );
-        let mut bad = power();
-        bad.push(bad[0].clone());
-        assert_eq!(
-            registrar.declare_datapack_registry("other", sync, bad),
-            Err(E::InvalidFieldName)
-        );
-        // A refused schema leaves no half-declared registry behind.
-        assert_eq!(registrar.datapack_registries.len(), 1);
-        assert_eq!(registrar.refused.len(), 6);
-        assert!(
+        crate::load_state::with_test_registration_data(data, || {
+            let mut registrar = PartRegistrar::new("example");
+            let sync = DatapackRegistrySync::Required;
             registrar
-                .refused
-                .iter()
-                .all(|refusal| refusal.contains("mod example"))
-        );
+                .declare_datapack_registry("spell", sync, power())
+                .unwrap();
+            assert_eq!(
+                registrar.datapack_registries[0].key, "example:spell",
+                "a bare path is in the declaring mod's namespace"
+            );
+            assert_eq!(registrar.datapack_registries[0].mod_id, "example");
+            registrar
+                .declare_datapack_registry("addon:spell", sync, power())
+                .unwrap();
+            assert_eq!(registrar.datapack_registries[1].key, "addon:spell");
+            assert_eq!(registrar.datapack_registries[1].mod_id, "example");
+            registrar
+                .declare_datapack_registry("minecraft:spell", sync, power())
+                .unwrap();
+            assert_eq!(registrar.datapack_registries[2].key, "minecraft:spell");
+            assert_eq!(registrar.datapack_registries[2].mod_id, "example");
+            assert_eq!(
+                registrar.declare_datapack_registry("example:spell", sync, power()),
+                Err(E::Duplicate)
+            );
+            assert_eq!(
+                registrar.declare_datapack_registry("addon:spell", sync, power()),
+                Err(E::Duplicate)
+            );
+            assert_eq!(
+                registrar.declare_datapack_registry("minecraft:damage_type", sync, power()),
+                Err(E::Duplicate)
+            );
+            assert_eq!(
+                registrar.declare_datapack_registry("minecraft:block", sync, power()),
+                Err(E::Duplicate)
+            );
+            assert_eq!(
+                registrar.declare_datapack_registry("Not A Key", sync, power()),
+                Err(E::InvalidKey)
+            );
+            assert_eq!(
+                registrar.declare_datapack_registry("", sync, power()),
+                Err(E::InvalidKey)
+            );
+            let mut bad = power();
+            bad.push(bad[0].clone());
+            assert_eq!(
+                registrar.declare_datapack_registry("other", sync, bad),
+                Err(E::InvalidFieldName)
+            );
+            // A refused schema leaves no half-declared registry behind.
+            assert_eq!(registrar.datapack_registries.len(), 3);
+            assert_eq!(registrar.refused.len(), 7);
+            assert!(
+                registrar
+                    .refused
+                    .iter()
+                    .all(|refusal| refusal.contains("mod example"))
+            );
+        });
     }
 
     /// Through the registrar: an id default is normalised inside a record and as a map key as
@@ -189,6 +286,52 @@ mod tests {
     }
 
     #[test]
+    fn server_package_requires_clients_only_for_required_registries() {
+        use DatapackRegistrySync::{Optional, Required, ServerOnly};
+
+        let package = crate::PackageInfo::new(
+            "example".into(),
+            "1".into(),
+            crate::PackageKind::Code,
+            crate::Side::Server,
+            vec!["example".into()],
+            vec![],
+        );
+        crate::load_state::with_test_package_inventory(vec![package], || {
+            crate::testing::with_mods(Default::default(), || {
+                for (required, reason) in [
+                    (false, None),
+                    (
+                        true,
+                        Some("declares the required datapack registry example:shared"),
+                    ),
+                ] {
+                    let mut registrar = PartRegistrar::new("example");
+                    registrar
+                        .declare_datapack_registry("local", ServerOnly, power())
+                        .unwrap();
+                    registrar
+                        .declare_datapack_registry("offered", Optional, power())
+                        .unwrap();
+                    if required {
+                        registrar
+                            .declare_datapack_registry("shared", Required, power())
+                            .unwrap();
+                    }
+                    // No payload channels are registered in either installation.
+                    super::super::install_registrar(registrar, &crate::parts::tests::rule_schema())
+                        .unwrap();
+                    assert_eq!(
+                        crate::__private::client_requirement("example").as_deref(),
+                        reason
+                    );
+                    assert_eq!(crate::__private::client_requirement("unrelated"), None);
+                }
+            });
+        });
+    }
+
+    #[test]
     fn datapack_declarations_round_trip_the_wire() {
         use crate::wire::{Reader, Wire, Writer};
         let declaration = DatapackRegistryDeclaration {
@@ -260,15 +403,6 @@ mod tests {
             assert_eq!(
                 registrar.declare_datapack_registry("srv_runes:spell", sync, power()),
                 Err(E::WrongSide)
-            );
-            assert_eq!(
-                registrar.declare_datapack_registry("minecraft:spell", sync, power()),
-                Err(E::InvalidKey)
-            );
-            registrar.mod_id = "other";
-            assert_eq!(
-                registrar.declare_datapack_registry("runes:other", sync, power()),
-                Err(E::InvalidKey)
             );
             assert_eq!(registrar.datapack_registries.len(), 1);
         });

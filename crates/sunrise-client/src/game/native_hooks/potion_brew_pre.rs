@@ -7,8 +7,8 @@ impl Game<'_> {
     /// slots (three bottles, the ingredient, the fuel). Set `cancel` to skip
     /// vanilla's brew: the stand then takes `stacks` as the mods left them,
     /// uses no ingredient and plays no brew sound, and `potion_brew_post`
-    /// fires with those slots; `brewing_complete` doesn't, as nothing was
-    /// brewed. Uncancelled, changes to `stacks` are dropped. Server-side.
+    /// sees those slots if at least one slot still matches its prior value.
+    /// Uncanceled, changes to `stacks` are dropped. Server-side.
     pub(in crate::game) fn native_potion_brew_pre(
         &mut self,
         pos: [i32; 3],

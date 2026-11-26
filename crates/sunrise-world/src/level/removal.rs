@@ -145,7 +145,8 @@ pub fn lectern_book_position(pos: BlockPos, step: [i32; 2]) -> [f64; 3] {
 /// `BlockBehaviour.spawnAfterBreak`'s experience for block `name` broken with
 /// an unenchanted tool: `DropExperienceBlock` ranges (a `UniformInt` draws
 /// `nextInt(max - min + 1) + min`, a `ConstantInt` draws nothing), redstone
-/// ores, the sculk family and spawners. None when the block gives none.
+/// ores, the sculk family and spawners. `None` means the block does not sample
+/// experience; a sample of zero can still be changed by the tool's effects.
 pub fn break_experience<R: RandomSource>(random: &mut R, name: &str) -> Option<u32> {
     let n = name.strip_prefix("minecraft:").unwrap_or(name);
     let mut uniform = |min: i32, max: i32| random.next_int_bound(max - min + 1).unwrap_or(0) + min;
@@ -165,7 +166,7 @@ pub fn break_experience<R: RandomSource>(random: &mut R, name: &str) -> Option<u
         }
         _ => return None,
     };
-    (xp > 0).then_some(xp as u32)
+    Some(xp as u32)
 }
 
 /// `ExperienceOrb.getExperienceValue`: the largest orb size not above `value`.

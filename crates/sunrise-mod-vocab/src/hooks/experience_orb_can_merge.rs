@@ -1,5 +1,4 @@
 //! The `experience_orb_can_merge` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0129
 
 pub trait Hooks {
     /// Whether the experience orb `into` takes the orb `from` in (vanilla's
@@ -9,7 +8,7 @@ pub trait Hooks {
     /// ticks as an orb scans for neighbours (`scanForMerges`). `can_merge` holds vanilla's
     /// answer; change it either way. A merged orb counts as `count` orbs of `into`'s
     /// value, so forcing orbs of different values together drops points unless the mod
-    /// raises `into`'s value with `native_set_experience_orb` in `experience_orb_merge`.
+    /// raises `into`'s value with `ExperienceOrbRef::set_value` in `experience_orb_merge`.
     /// Server-side.
     #[hook(
         target = "sunrise_client::game::native_hooks::base::Game<'_>::native_experience_orb_can_merge",

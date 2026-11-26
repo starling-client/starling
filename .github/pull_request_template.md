@@ -26,7 +26,11 @@
        and Sunrise code using the platform's public API only, never the engine directly;
      - Sunrise features in the game are behind `sunrise-extras`, and platform features that change the vanilla
        look are off by default;
-     - no new built-in server address outside the Sunrise layer. -->
+     - no new built-in server address outside the Sunrise layer;
+     - no file this change moves or splits is held by an open pull request:
+       `python3 tools/hotspots/open_prs.py --from-gh <paths>`;
+     - a change to one of the launcher's mirrored crates (tools/launcher_mirrors.toml) says what the copy must
+       follow, on a line starting `launcher-mirror:`. -->
 
 ## Vanilla reference
 

@@ -1,6 +1,6 @@
 //! A mob's `CombatTracker`: the hits it took lately, which its death message
 //! is built from (`TamableAnimal.die` sends it to the owner).
-use super::{Damage, Mob, MobEvent, Species, Who, goals::Cx};
+use super::{Damage, Mob, MobEvent, Species, WeaponAttack, WeaponHit, Who, goals::Cx};
 use crate::blocks::Fluid;
 use sunrise_core::{geometry::Vec3, random::RandomSource};
 
@@ -50,6 +50,20 @@ impl Tracker {
             self.entries.clear();
         }
     }
+}
+
+/// `Mob.doHurtTarget` with every species' override, for a caller other than the mob's own goals
+/// and brain (a mod's `MobRef::do_hurt_target`): the warden's (`Warden.doHurtTarget`), which
+/// its brain calls by itself, and the creeper's (`Creeper.doHurtTarget`), which does nothing and
+/// answers true, before [`do_hurt_target`]'s. `Some` is vanilla's answer when no hit decides it
+/// (the creeper's); `None` leaves it to the hit the events carry.
+pub fn do_hurt_target_any(m: &mut Mob, who: Who, cx: &mut Cx) -> Option<bool> {
+    match m.species() {
+        Species::Creeper => return Some(true),
+        Species::Warden => super::warden::do_hurt_target(m, who, cx.w, cx.level, cx.events),
+        _ => do_hurt_target(m, who, cx),
+    }
+    None
 }
 
 pub fn do_hurt_target(m: &mut Mob, who: Who, cx: &mut Cx) {
@@ -112,35 +126,6 @@ pub fn do_hurt_target(m: &mut Mob, who: Who, cx: &mut Cx) {
     if amount <= 0.0 {
         amount = 1.0;
     }
-    // The held weapon's enchantments: Sharpness, Smite, Bane of Arthropods,
-    // Fire Aspect and Knockback.
-    let target_species = match who {
-        Who::Mob(id) => cx.w.seen(id).map(|s| s.species),
-        Who::Player => None,
-    };
-    amount += super::gear::melee_bonus(m, target_species);
-    let burn = super::gear::fire_aspect(m);
-    if burn > 0 {
-        cx.events
-            .push(cx.w.route_player_event(MobEvent::Ignite(who, burn)));
-    }
-    // `Mob.doHurtTarget`: `causeExtraKnockback(target, getKnockback(...))`. `getKnockback` is the
-    // `attack_knockback` attribute plus the Knockback enchantment, halved; the push goes along the
-    // attacker's facing through `LivingEntity.knockback` (so the target's resistance applies), and
-    // slows the attacker.
-    let power = (m.attrs.attack_knockback as f32 + super::gear::knockback(m) as f32) / 2.0;
-    if power > 0.0 {
-        use sunrise_core::geometry::trig::Mth;
-        cx.events.push(cx.w.route_player_event(MobEvent::Knockback {
-            target: who,
-            power: f64::from(power),
-            x: f64::from(m.yaw.to_radians().msin()),
-            z: f64::from(-m.yaw.to_radians().mcos()),
-            source,
-            apply_blocking: None,
-        }));
-        m.velocity = Vec3::new(m.velocity.x * 0.6, m.velocity.y, m.velocity.z * 0.6);
-    }
     // The effect picked above goes with the hit: it applies only when the
     // target takes damage (a shield-blocked hit gives none), for a mob as for
     // the player, since those `doHurtTarget`s take any `LivingEntity`.
@@ -156,32 +141,71 @@ pub fn do_hurt_target(m: &mut Mob, who: Who, cx: &mut Cx) {
             } => Some((effect, ticks, amplifier)),
             _ => None,
         });
-    match who {
-        Who::Player => cx.events.push(cx.w.route_player_event(match effect {
-            Some((effect, ticks, amplifier)) => MobEvent::AttackPlayerWithEffect {
-                amount,
-                from,
-                effect,
-                ticks,
-                amplifier,
-            },
-            None => MobEvent::AttackPlayer(amount, from),
-        })),
-        Who::Mob(id) => cx.events.push(match effect {
-            Some((effect, ticks, amplifier)) => MobEvent::AttackMobWithEffect {
-                target: id,
-                amount,
+    use sunrise_core::geometry::trig::Mth;
+    let knockback = m.attrs.attack_knockback as f32;
+    let direction = [
+        f64::from(m.yaw.to_radians().msin()),
+        f64::from(-m.yaw.to_radians().mcos()),
+    ];
+    if let Some(weapon) = m
+        .extra
+        .main_hand_stack()
+        .filter(|stack| !stack.all_enchantments().is_empty())
+    {
+        // The target is only a view during the mob tick. Evaluate the weapon once
+        // the hit can borrow the target's own random and live damage context.
+        cx.events
+            .push(cx.w.route_player_event(MobEvent::WeaponAttack(WeaponHit {
+                target: who,
                 source,
-                effect,
-                ticks,
-                amplifier,
-            },
-            None => MobEvent::AttackMob {
-                target: id,
+                weapon: weapon.clone(),
                 amount,
+                knockback,
+                direction,
+                attack: WeaponAttack::Melee { effect },
+            })));
+    } else {
+        let power = knockback / 2.0;
+        if power > 0.0 {
+            cx.events.push(cx.w.route_player_event(MobEvent::Knockback {
+                target: who,
+                power: f64::from(power),
+                x: direction[0],
+                z: direction[1],
                 source,
-            },
-        }),
+                apply_blocking: None,
+            }));
+            m.velocity = Vec3::new(m.velocity.x * 0.6, m.velocity.y, m.velocity.z * 0.6);
+        }
+        match who {
+            Who::Player => cx.events.push(cx.w.route_player_event(match effect {
+                Some((effect, ticks, amplifier)) => MobEvent::AttackPlayerWithEffect {
+                    attacker: m.id,
+                    amount,
+                    from,
+                    effect,
+                    ticks,
+                    amplifier,
+                },
+                None => MobEvent::AttackPlayer(amount, from, Some(m.id)),
+            })),
+            Who::Mob(id) => cx.events.push(match effect {
+                Some((effect, ticks, amplifier)) => MobEvent::AttackMobWithEffect {
+                    target: id,
+                    amount,
+                    source,
+                    effect,
+                    ticks,
+                    amplifier,
+                },
+                None => MobEvent::AttackMob {
+                    target: id,
+                    amount,
+                    source,
+                    remember_target: true,
+                },
+            }),
+        }
     }
     // Mob.doHurtTarget ends with playAttackSound once the hit landed.
     if super::creaking::is_creaking(m) {
@@ -236,6 +260,7 @@ mod tests {
                 kind: DamageKind::MobAttack,
                 attacker,
                 from: None,
+                direct: None,
                 attacker_species: None,
             },
             damage: 2.0,

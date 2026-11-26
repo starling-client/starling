@@ -17,6 +17,7 @@ fn format(value: &Value) -> String {
         Value::Float(f) => bits(*f),
         Value::Rgb(v) => v.map(bits).join(" "),
         Value::Argb(v) => v.map(bits).join(" "),
+        Value::AmbientParticles(list) => format!("{list:?}"),
         Value::Other(json) => json.to_string(),
     }
 }
@@ -99,7 +100,11 @@ fn run(
         post_blend: None,
         post_biome: None,
     };
-    for attribute in ATTRIBUTES.iter().filter(|a| a.kind != Kind::Other) {
+    // The Java system fixture samples numeric, color and boolean attributes.
+    for attribute in ATTRIBUTES
+        .iter()
+        .filter(|a| !matches!(a.kind, Kind::Other | Kind::AmbientParticles))
+    {
         let value = system.value(attribute, &conditions).ok_or("no value")?;
         let dimension = system
             .dimension_value(attribute, &conditions)

@@ -9,10 +9,12 @@ hands it (option values, 60 in menus, 10 when minimised or idle)."""
 import json
 import random
 
-try:
-    from . import lab, oracle_harness as harness
-except ImportError:
-    import lab, oracle_harness as harness
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, oracle_harness as harness
 
 LIMITS = [10, 30, 60, 60, 120, 144, 165, 240, 250, 259, 260, 1, 2, 7, 1000, 2**31 - 1]
 

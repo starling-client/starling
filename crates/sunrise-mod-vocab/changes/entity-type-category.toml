@@ -1,0 +1,3 @@
+ids = ["handle:EntityTypeKey::category", "method:ReloadContext::entity_type_category"]
+why = "An entity type's MobCategory reads without a live entity: EntityTypeKey::category(host) and KeysHost::entity_type_category are EntityType.getCategory() on either side, a mod mob's declared category included (Monster for the ender dragon, Misc for every other non-mob type)."
+migrate = "Nothing to change. Code that kept a hand list of vanilla categories can read the type's category instead."

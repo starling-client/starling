@@ -15,12 +15,6 @@ impl From<PoiType> for PoiIdentity {
     }
 }
 impl PoiIdentity {
-    pub fn is_job(self) -> bool {
-        match self {
-            Self::Vanilla(p) => p.is_job(),
-            Self::Custom(_) => true,
-        }
-    }
     pub fn max_tickets(self) -> usize {
         match self {
             Self::Vanilla(p) => p.max_tickets(),

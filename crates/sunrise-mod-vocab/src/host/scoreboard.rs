@@ -13,9 +13,14 @@ pub trait ScoreboardServerHost {
     /// string; saved objectives are there from the world's start.
     fn objective(&self, name: &str) -> Option<ObjectiveRef>;
     /// Side: server.
-    /// `Scoreboard.getObjectives`: every objective. Vanilla keeps them in a hash map, so no
-    /// order is promised; Sunrise answers its board's own.
-    fn objectives(&self) -> Vec<ObjectiveRef>;
+    /// `Scoreboard.getObjectives`: visits every objective in the resident board's order.
+    /// Vanilla leaves that order unspecified. Return `ControlFlow::Break(())` to stop;
+    /// the result is `Ok(Break(()))` on a stop or `Ok(Continue(()))` on completion,
+    /// including an empty board. An unavailable board does not call the visitor.
+    fn visit_objectives(
+        &self,
+        visit: &mut dyn FnMut(ObjectiveRef) -> core::ops::ControlFlow<()>,
+    ) -> Result<core::ops::ControlFlow<()>, ServerReadError>;
     /// Side: server.
     /// `Scoreboard.addObjective`: a new objective with no number format that does not update
     /// scores' display names, shown nowhere. The name is any string, as the board takes it;
@@ -44,9 +49,14 @@ pub trait ScoreboardServerHost {
     /// `Scoreboard.getPlayerTeam`: the team with that name, or None.
     fn team(&self, name: &str) -> Option<TeamRef>;
     /// Side: server.
-    /// `Scoreboard.getPlayerTeams`: every team, in the board's own order (vanilla's is a hash
-    /// map's, so no order is promised).
-    fn teams(&self) -> Vec<TeamRef>;
+    /// `Scoreboard.getPlayerTeams`: visits every team in the resident board's order.
+    /// Vanilla leaves that order unspecified. Return `ControlFlow::Break(())` to stop;
+    /// the result is `Ok(Break(()))` on a stop or `Ok(Continue(()))` on completion,
+    /// including an empty board. An unavailable board does not call the visitor.
+    fn visit_teams(
+        &self,
+        visit: &mut dyn FnMut(TeamRef) -> core::ops::ControlFlow<()>,
+    ) -> Result<core::ops::ControlFlow<()>, ServerReadError>;
     /// Side: server.
     /// `/team add`: a new team with its name as display name, no color, no members and
     /// vanilla's default options. The name is any string, as the board takes it. Refused with
@@ -63,11 +73,12 @@ pub trait ScoreboardServerHost {
 #[sunrise_mod_api_macros::host_area]
 pub trait ScoreboardBackend {
     /// Side: server.
-    /// `Objective.getName`, or None for a stale handle.
-    fn objective_name(&self, objective: ObjectiveRef) -> Option<String>;
+    /// `Objective.getName`: the borrowed name, or None for a stale handle.
+    fn objective_name(&self, objective: ObjectiveRef) -> Option<&str>;
     /// Side: server.
-    /// `Objective.getCriteria`: its name (`dummy`, `trigger`, `deathCount`, `minecraft.mined:minecraft.stone`...).
-    fn objective_criteria(&self, objective: ObjectiveRef) -> Option<String>;
+    /// `Objective.getCriteria`: the borrowed criteria name (`dummy`, `trigger`, `deathCount`,
+    /// `minecraft.mined:minecraft.stone`...), or None for a stale handle.
+    fn objective_criteria(&self, objective: ObjectiveRef) -> Option<&str>;
     /// Side: server.
     /// `Objective.getDisplayName`.
     fn objective_display_name(&self, objective: ObjectiveRef) -> Result<Text, ObjectiveError>;
@@ -86,23 +97,36 @@ pub trait ScoreboardBackend {
     /// into the score.
     fn objective_display_auto_update(&self, objective: ObjectiveRef) -> Option<bool>;
     /// Side: server.
-    /// The display slots that show the objective, in id order.
-    fn objective_slots(&self, objective: ObjectiveRef) -> Option<Vec<DisplaySlot>>;
+    /// Visits the display slots that show the objective (`Scoreboard.getDisplayObjective`),
+    /// in display-ID order. Return `ControlFlow::Break(())` to stop. A complete visit, even
+    /// when there are no slots, returns `Ok(Continue(()))`. Refusals do not call the visitor.
+    fn objective_visit_slots(
+        &self,
+        objective: ObjectiveRef,
+        visit: &mut dyn FnMut(DisplaySlot) -> core::ops::ControlFlow<()>,
+    ) -> Result<core::ops::ControlFlow<()>, ObjectiveReadError>;
     /// Side: server.
     /// `Scoreboard.getPlayerScoreInfo`: the holder's score, or None when it has none, a holder
     /// that does not resolve (an offline player's entity) or a stale handle. It never creates a score.
     fn objective_score(&self, objective: ObjectiveRef, holder: ScoreHolder) -> Option<i32>;
     /// Side: server.
-    /// `Scoreboard.listPlayerScores`: every holder's score. Vanilla's order is a hash map's;
-    /// the docs promise none, and Sunrise answers the board's own. None for a stale handle.
-    fn objective_scores(&self, objective: ObjectiveRef) -> Option<Vec<ScoreEntry>>;
+    /// `Scoreboard.listPlayerScores`: visits each stored score, including zero, in the board's
+    /// holder order (which vanilla leaves unspecified). Lends the holder key only for the
+    /// callback; copy the key inside it to retain it. Return `ControlFlow::Break(())` to stop.
+    /// A complete visit, even for an empty objective, returns `Ok(Continue(()))`. Refusals
+    /// do not call the visitor.
+    fn objective_visit_scores(
+        &self,
+        objective: ObjectiveRef,
+        visit: &mut dyn for<'a> FnMut(ScoreEntry<'a>) -> core::ops::ControlFlow<()>,
+    ) -> Result<core::ops::ControlFlow<()>, ObjectiveReadError>;
     /// Side: server.
     /// `ScoreAccess.locked`, the lock `/trigger` uses: a score created at runtime starts locked,
     /// one loaded from a save without the flag, unlocked. None when there is no score.
     fn objective_score_locked(&self, objective: ObjectiveRef, holder: ScoreHolder) -> Option<bool>;
     /// Side: server.
-    /// `PlayerTeam.getName`, or None for a stale handle.
-    fn team_name(&self, team: TeamRef) -> Option<String>;
+    /// `PlayerTeam.getName`: the borrowed name, or None for a stale handle.
+    fn team_name(&self, team: TeamRef) -> Option<&str>;
     /// Side: server.
     /// `PlayerTeam.getDisplayName`.
     fn team_display_name(&self, team: TeamRef) -> Result<Text, TeamError>;
@@ -274,9 +298,9 @@ pub trait ScoreboardBackendMut {
 #[sunrise_mod_api_macros::host_area]
 pub trait ScoreboardClientHost {
     /// Side: client.
-    /// What this client has been sent of the scoreboard: the objectives shown in a display
-    /// slot, with their scores, and every team. None outside a logged-in client world. A text the API cannot hold
-    /// (nested deeper than 512 component nodes) refuses the whole snapshot with
-    /// [`TextFormError::TooDeep`]; nothing is flattened or skipped.
-    fn client_scoreboard(&self) -> Result<Option<ClientScoreboard>, TextFormError>;
+    /// Borrows the live board sent to this client (`ClientLevel.getScoreboard`).
+    /// `Ok(None)` means no logged-in client world; a logged-in world with an empty
+    /// board still returns a view. An unavailable read returns [`ClientSessionReadError::Unavailable`].
+    /// Only an explicit text or format copy can fail to represent one of the board's fields.
+    fn client_scoreboard(&self) -> Result<Option<&dyn ClientScoreboard>, ClientSessionReadError>;
 }

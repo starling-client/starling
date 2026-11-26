@@ -1,5 +1,10 @@
 extern crate sunrise_client_lib as sunrise_client;
-use sunrise_client::{item_sync, items::ItemStack, lan::guest::stack_to_network};
+use mod_api::{Sidebar, Text, TextFormError, TextHover};
+use sunrise_client::{
+    item_sync,
+    items::ItemStack,
+    lan::{guest::stack_to_network, scoreboard::SidebarContents},
+};
 use sunrise_core::nbt::Tag;
 use sunrise_core::vanilla_bytes::Writer;
 use sunrise_items::item_nbt::{item_from_nbt, item_to_nbt};
@@ -161,4 +166,26 @@ fn custom_components_survive_save_wire_and_nested_stacks() {
     malformed.varint(FIRST_CUSTOM_ID);
     malformed.byte_array(&[0, 0]);
     assert!(DelimitedSlot::read(&mut Reader::new(&malformed.data)).is_err());
+
+    let sidebar = |component: &str| {
+        let mut title = Text::literal("Hover");
+        title.style.hover = Some(TextHover::Item {
+            id: "minecraft:stone".into(),
+            count: 1,
+            components: Some(Tag::compound([(
+                component,
+                Tag::compound([("charge", Tag::Int(42))]),
+            )])),
+        });
+        Sidebar {
+            title,
+            lines: Vec::new(),
+        }
+    };
+    let has_stone = |item: &str| item == "minecraft:stone";
+    assert!(SidebarContents::prepare(sidebar("sample:charge"), &has_stone).is_ok());
+    assert!(matches!(
+        SidebarContents::prepare(sidebar("sample:unregistered"), &has_stone),
+        Err(TextFormError::Malformed)
+    ));
 }

@@ -20,6 +20,8 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
 LOCAL = ROOT / '.local' / 'neoforge-oracle'
 SOURCE = ROOT / 'mods' / 'sunrise' / 'src' / 'neoforge-oracle'
 # ATM10 8.x: Minecraft 1.21.1 on NeoForge 21.1.259 (docs/modpacks.md).
@@ -72,9 +74,8 @@ def install():
 def client():
     """The NeoForge client (tools/perf_bench.py --game neoforge), installed once per version: the installer's
     own files, then the vanilla libraries its version inherits, fetched as the launcher does (sha1-checked)."""
-    sys.path.insert(0, str(ROOT / 'tools'))
     import hashlib
-    import lab
+    from tools import lab
     home = LOCAL / f'client-{NEOFORGE}'
     profile = home / 'versions' / f'neoforge-{NEOFORGE}' / f'neoforge-{NEOFORGE}.json'
     if not profile.exists():
@@ -109,7 +110,7 @@ def client():
 def client_command(java, heap, game_dir, natives, assets, jvm=(), game=()):
     """The command the launcher would run for the NeoForge client profile, with no account."""
     home, neo, base, jars = client()
-    import lab
+    from tools import lab
     values = {'library_directory': str(home / 'libraries'), 'classpath_separator': os.pathsep,
               'version_name': f'neoforge-{NEOFORGE}', 'natives_directory': str(natives),
               'launcher_name': 'sunrise-bench', 'launcher_version': '1'}

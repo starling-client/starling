@@ -1,0 +1,1 @@
+sunrise-client game::commands::summon_bolt_tests::silent_bolt_suppresses_sound_and_posts_strike_event_on_first_tick lib daily resources

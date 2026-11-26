@@ -41,7 +41,7 @@ JigsawJunction.toString	skip:debug		debug text
 LegacySinglePoolElement.getSettings	port	crates/sunrise-world/src/worldgen/structure/jigsaw.rs::place_element	Single arm, legacy branch: structure-block ignore is replaced by structure and air ignore after jigsaw replacement
 ListPoolElement.getBoundingBox	port	crates/sunrise-world/src/worldgen/structure/jigsaw.rs::PoolElement::bounding_box	List arm, skips empty elements
 ListPoolElement.getShuffledJigsawBlocks	port	crates/sunrise-world/src/worldgen/structure/jigsaw.rs::PoolElement::shuffled_jigsaws	List arm: first element only
-ListPoolElement.getSize	port	crates/sunrise-world/src/worldgen/structure/jigsaw.rs::PoolElement::size	List arm: per-axis maximum
+ListPoolElement.getSize	skip:other		vanilla calls it only from other getSize overrides; boxes come from getBoundingBox
 ListPoolElement.place	port	crates/sunrise-world/src/worldgen/structure/jigsaw.rs::place_element	List arm
 ListPoolElement.setProjectionOnEachElement	port	crates/sunrise-world/src/worldgen/structure/jigsaw.rs::PoolElement::decode	children take the list's projection while decoding
 ListPoolElement.toString	skip:debug		debug text

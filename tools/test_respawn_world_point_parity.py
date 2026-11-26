@@ -15,11 +15,12 @@ import shutil
 import struct
 import time
 
-import anvil_dump as nbt
-import lab
-import net_capture as wire
-import test_locator_bar_parity as net
-from test_dedicated_server_parity import game_time
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import anvil_dump as nbt, lab, net_capture as wire, test_locator_bar_parity as net
+from tools.test_dedicated_server_parity import game_time
 
 PLAYER = 'Alice'
 W, P = [0, 100, 0], [5, 101, 5]
@@ -99,6 +100,8 @@ def run(label, command, client_command, build, world):
         client.tell('chat on')
         client.tell('state on')
         client.tell('players on')
+        # The clock snapshot produces the same reply as /time query gametime.
+        client.tell('list-syncs on')
 
         def phase(name):
             client.tell(f'step {name}')

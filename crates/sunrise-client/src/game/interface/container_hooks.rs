@@ -9,7 +9,6 @@ use super::{
 };
 use crate::game::{Game, Screen};
 use std::cell::RefCell;
-use std::hash::{Hash, Hasher};
 use sunrise_client::{
     containers::{BlockEntity, FurnaceKind, ModMenuType},
     hud::{HudAtlas, HudBatch, rgba},
@@ -89,13 +88,6 @@ pub(in crate::game) fn local_menu_id(local: Local) -> Option<String> {
     Some(id)
 }
 
-/// What tells two stacks apart that don't merge: the item, its damage and its components.
-fn kind_of(stack: &ItemStack) -> u64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    (&*stack.item, stack.damage, stack.data()).hash(&mut hasher);
-    hasher.finish()
-}
-
 /// The role of game slot `slot` in mod menu `menu`, whose slots use the disjoint mod-menu
 /// range (`MOD_MENU_SLOT_BASE..`): `None` outside them.
 fn mod_menu_role(menu: &ModMenuType, slot: usize) -> Option<Role> {
@@ -150,7 +142,7 @@ impl<'g> Open<'_, 'g> {
             stack.item.to_string(),
             stack.count,
             self.game().max_stack(stack),
-            kind_of(stack),
+            stack.merge_kind(),
             seen.len() as u64 - 1,
         )
     }
@@ -314,7 +306,7 @@ impl<'g> Game<'g> {
             200 | stations::RESULT => Role::Result,
             500..=504 | mount_menu::SADDLE | mount_menu::ARMOR => Role::Equipment,
             s if (stations::INPUT..stations::RESULT).contains(&s) => Role::Input,
-            s if (mount_menu::CHEST..mount_menu::CHEST + 15).contains(&s) => Role::Storage,
+            s if self.is_mount_chest_slot(s) => Role::Storage,
             s if crate::game::inventory_slots::container_slot_index(s).is_some() => {
                 match self.container_kind() {
                     Some(BlockEntity::Furnace(_)) if slot == 302 => Role::Result,
@@ -716,10 +708,10 @@ mod tests {
             book(["minecraft:unbreaking", "minecraft:mending"]),
         );
         assert_eq!(a, b);
-        assert_eq!(kind_of(&a), kind_of(&b));
+        assert_eq!(a.merge_kind(), b.merge_kind());
         assert_ne!(
-            kind_of(&a),
-            kind_of(&ItemStack::new("minecraft:enchanted_book", 1))
+            a.merge_kind(),
+            ItemStack::new("minecraft:enchanted_book", 1).merge_kind()
         );
     }
 

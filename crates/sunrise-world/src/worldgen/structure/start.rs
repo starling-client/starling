@@ -27,7 +27,7 @@ use {
     super::{
         StructureResources,
         jigsaw::{
-            JigsawConfig, JigsawContext, PlaceFeature, PoolPiece, Pools, Projection,
+            JigsawConfig, JigsawContext, PlaceFeature, PoolPiece, Pools, Projection, Site,
             lay_out_children, place_start,
         },
         legacy::{LegacyPiece, PieceContext},
@@ -59,16 +59,9 @@ pub struct JigsawDef {
     use_expansion_hack: bool,
     project_to: Option<HeightmapType>,
     max_distance: [i32; 2],
-    aliases: Vec<Value>,
+    aliases: Vec<PoolAliasBinding>,
     padding: [i32; 2],
     waterlogging: bool,
-    /// A carried mod's start rules (`"sunrise:start_checks"`).
-    checks: super::start_checks::StartChecks,
-    /// Vanilla's draws, or YUNG's API's for `yungsapi:yung_jigsaw`.
-    draws: super::jigsaw::Draws,
-    /// Laid out by Repurposed Structures' and Moog's piece-limited
-    /// assembler (`"sunrise:piece_limited"`).
-    piece_limited: Option<super::piece_limited::Config>,
 }
 #[derive(Debug)]
 pub enum StructureKind {
@@ -99,8 +92,6 @@ pub enum StructureKind {
     Fortress,
     NetherFossil(HeightProvider),
     EndCity,
-    /// `sunrise:formations`: Formations' SimpleStructure.
-    Formations(super::formations::Def),
     /// A structure type a mod registered (`"type": "modid:tower"`): vanilla's
     /// `StructureType` as code, with the structure's own JSON config.
     Mod(ModType),
@@ -320,10 +311,11 @@ fn pair(value: Option<&Value>, a: &str, b: &str, default: i32, missing_b: i32) -
         _ => [default; 2],
     }
 }
-/// `JigsawStructure`'s `size` (its depth) and `max_distance_from_center`.
-fn jigsaw_depth_and_reach(v: &Value) -> (i32, [i32; 2]) {
+/// `JigsawStructure`'s `size` (its depth; a required field, so `None` when
+/// missing) and `max_distance_from_center`.
+fn jigsaw_depth_and_reach(v: &Value) -> (Option<i64>, [i32; 2]) {
     (
-        v["size"].as_i64().unwrap_or(0) as i32,
+        v["size"].as_i64(),
         pair(
             v.get("max_distance_from_center"),
             "horizontal",
@@ -334,12 +326,28 @@ fn jigsaw_depth_and_reach(v: &Value) -> (i32, [i32; 2]) {
         ),
     )
 }
-/// The bounds `JigsawStructure`'s codec puts on those two: `size` is
-/// `Codec.intRange(0, 20)` and `MaxDistance` is `horizontal`
+/// The bounds `JigsawStructure`'s codec puts on those two: `size` is a
+/// required `Codec.intRange(0, 20)` and `MaxDistance` is `horizontal`
 /// `Codec.intRange(1, 128)` beside `vertical`
-/// `ExtraCodecs.intRange(1, DimensionType.Y_SIZE)`.
-fn jigsaw_reach_in_range(depth: i32, [horizontal, vertical]: [i32; 2]) -> bool {
-    (0..=20).contains(&depth) && (1..=128).contains(&horizontal) && (1..=4064).contains(&vertical)
+/// `ExtraCodecs.intRange(1, DimensionType.Y_SIZE)`; then
+/// `JigsawStructure.verifyRange` keeps `horizontal` plus the edge `terrain`
+/// needs (`MAX_TOTAL_STRUCTURE_RANGE`, 128) in range.
+fn jigsaw_reach_in_range(
+    depth: Option<i64>,
+    [horizontal, vertical]: [i32; 2],
+    terrain: TerrainAdjustment,
+) -> bool {
+    let edge = match terrain {
+        TerrainAdjustment::None => 0,
+        TerrainAdjustment::Bury
+        | TerrainAdjustment::BeardThin
+        | TerrainAdjustment::BeardBox
+        | TerrainAdjustment::Encapsulate => 12,
+    };
+    depth.is_some_and(|depth| (0..=20).contains(&depth))
+        && (1..=128).contains(&horizontal)
+        && (1..=4064).contains(&vertical)
+        && horizontal + edge <= 128
 }
 
 /// All structures and structure sets of a resource bundle, in registry
@@ -368,38 +376,34 @@ impl StructureRegistry {
         let mut defs = Vec::new();
         for (name, json) in structures {
             let v: Value = serde_json::from_str(json)?;
-            let draws = match v["type"].as_str() {
-                Some("yungsapi:yung_jigsaw") => super::jigsaw::Draws::Yung,
-                _ => super::jigsaw::Draws::Vanilla,
-            };
+            let terrain = terrain(v["terrain_adaptation"].as_str());
             let kind = match v["type"].as_str().unwrap_or_default() {
-                "minecraft:jigsaw" | "yungsapi:yung_jigsaw" => {
+                "minecraft:jigsaw" => {
                     let (depth, max_distance) = jigsaw_depth_and_reach(&v);
                     let def = JigsawDef {
-                        draws,
                         start_pool: v["start_pool"].as_str().unwrap_or_default().to_owned(),
                         start_jigsaw: v["start_jigsaw_name"].as_str().map(str::to_owned),
-                        max_depth: depth,
+                        max_depth: depth.unwrap_or(0) as i32,
                         start_height: HeightProvider::from_json(&v["start_height"].to_string())?,
                         use_expansion_hack: v["use_expansion_hack"].as_bool().unwrap_or(false),
                         project_to: v["project_start_to_heightmap"].as_str().and_then(heightmap),
                         max_distance,
-                        aliases: v["pool_aliases"].as_array().cloned().unwrap_or_default(),
+                        aliases: v["pool_aliases"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(PoolAliasBinding::from_json)
+                            .collect(),
                         padding: pair(v.get("dimension_padding"), "bottom", "top", 0, 0),
                         waterlogging: v["liquid_settings"].as_str() != Some("ignore_waterlogging"),
-                        checks: super::start_checks::StartChecks::decode(
-                            v.get("sunrise:start_checks"),
-                        ),
-                        piece_limited: v
-                            .get("sunrise:piece_limited")
-                            .map(super::piece_limited::Config::decode),
                     };
-                    // JigsawStructure's codec bounds `size` and
-                    // `max_distance_from_center`: vanilla registers no
-                    // structure carrying others, so one that does places
-                    // nothing here either rather than reaching past what the
-                    // generator allows.
-                    if jigsaw_reach_in_range(depth, max_distance) {
+                    // JigsawStructure's codec requires and bounds `size` and
+                    // bounds `max_distance_from_center`, and verifyRange
+                    // bounds the reach with its terrain edge: vanilla
+                    // registers no structure carrying others, so one that
+                    // does places nothing here either rather than reaching
+                    // past what the generator allows.
+                    if jigsaw_reach_in_range(depth, max_distance, terrain) {
                         StructureKind::Jigsaw(def)
                     } else {
                         StructureKind::Unsupported("minecraft:jigsaw".into())
@@ -442,10 +446,6 @@ impl StructureRegistry {
                 "minecraft:nether_fossil" => StructureKind::NetherFossil(
                     HeightProvider::from_json(&v["height"].to_string())?,
                 ),
-                "sunrise:formations" => match super::formations::Def::decode(&v) {
-                    Ok(def) => StructureKind::Formations(def),
-                    Err(_) => StructureKind::Unsupported("sunrise:formations".into()),
-                },
                 other => match mod_types.get(other) {
                     Some(ty) => StructureKind::Mod(ModType {
                         ty: ty.clone(),
@@ -464,7 +464,7 @@ impl StructureRegistry {
                     .iter()
                     .position(|s| Some(*s) == v["step"].as_str())
                     .unwrap_or(4),
-                terrain: terrain(v["terrain_adaptation"].as_str()),
+                terrain,
                 enhanced_terrain: v
                     .get("sunrise:enhanced_terrain_adaptation")
                     .map(super::enhanced_terrain::StructureAdaptation::decode)
@@ -578,12 +578,12 @@ impl StructureRegistry {
         self.origin
     }
     /// The origin the generator reports for this dimension.
-    pub fn set_dimension_origin(&mut self, origin: ChunkPos) {
+    pub(crate) fn set_dimension_origin(&mut self, origin: ChunkPos) {
         self.origin = origin;
     }
     /// Whether a set is placed by the dimension's origin chunk alone, so the
     /// generator has to work out where its origin is.
-    pub fn needs_dimension_origin(&self) -> bool {
+    pub(crate) fn needs_dimension_origin(&self) -> bool {
         self.sets
             .iter()
             .any(|set| matches!(set.placement, Placement::DimensionOrigin))
@@ -591,7 +591,7 @@ impl StructureRegistry {
     /// ChunkGeneratorStructureState.generatePositions: the ring positions of
     /// each concentric-ring set among `possible_sets` before their biome
     /// searches (set index, searches in order).
-    pub fn ring_searches(
+    pub(crate) fn ring_searches(
         &self,
         possible_sets: &[usize],
         seed: i64,
@@ -615,7 +615,7 @@ impl StructureRegistry {
     /// How far from a chunk, in chunks, deciding its starts can look at
     /// other sets' start chunks through exclusion zones: every set's zones
     /// summed, a bound on any chain of them.
-    pub fn zone_reach(&self) -> i32 {
+    pub(crate) fn zone_reach(&self) -> i32 {
         self.sets
             .iter()
             .map(|s| {
@@ -625,7 +625,7 @@ impl StructureRegistry {
             .sum()
     }
     /// The preferred biomes of a concentric-ring set (empty for others).
-    pub fn ring_biomes(&self, set: usize) -> &BTreeSet<BiomeId> {
+    pub(crate) fn ring_biomes(&self, set: usize) -> &BTreeSet<BiomeId> {
         static NONE: BTreeSet<BiomeId> = BTreeSet::new();
         match &self.sets[set].placement {
             Placement::ConcentricRings { preferred, .. } => preferred,
@@ -635,7 +635,12 @@ impl StructureRegistry {
     /// RandomSpreadStructurePlacement.getPotentialStructureChunk et al.
     /// RandomSpreadStructurePlacement.getPotentialStructureChunk for the
     /// sector holding chunk (`x`, `z`); `None` for other placements.
-    pub fn potential_chunk(set: &StructureSet, seed: i64, x: i32, z: i32) -> Option<ChunkPos> {
+    pub(crate) fn potential_chunk(
+        set: &StructureSet,
+        seed: i64,
+        x: i32,
+        z: i32,
+    ) -> Option<ChunkPos> {
         let Placement::RandomSpread {
             spacing,
             separation,
@@ -657,9 +662,12 @@ impl StructureRegistry {
         };
         let sx = spread(&mut random);
         let sz = spread(&mut random);
-        Some(ChunkPos::new(gx * spacing + sx, gz * spacing + sz))
+        Some(ChunkPos::new(
+            gx.wrapping_mul(spacing).wrapping_add(sx),
+            gz.wrapping_mul(spacing).wrapping_add(sz),
+        ))
     }
-    pub fn is_structure_chunk(
+    pub(crate) fn is_structure_chunk(
         &self,
         set: &StructureSet,
         seed: i64,
@@ -708,7 +716,8 @@ impl StructureRegistry {
                 };
                 let sx = spread(&mut random);
                 let sz = spread(&mut random);
-                gx * spacing + sx == x && gz * spacing + sz == z
+                gx.wrapping_mul(spacing).wrapping_add(sx) == x
+                    && gz.wrapping_mul(spacing).wrapping_add(sz) == z
             }
             Placement::ConcentricRings { .. } => rings
                 .get(&set.name)
@@ -763,9 +772,9 @@ impl StructureRegistry {
         let Some(other) = self.sets.iter().find(|s| s.name == other) else {
             return false;
         };
-        (x - range..=x + range).any(|tx| {
-            (z - range..=z + range)
-                .any(|tz| self.structure_chunk(other, seed, tx, tz, rings, zones))
+        (i64::from(x) - i64::from(range)..=i64::from(x) + i64::from(range)).any(|tx| {
+            (i64::from(z) - i64::from(range)..=i64::from(z) + i64::from(range))
+                .any(|tz| self.structure_chunk(other, seed, tx as i32, tz as i32, rings, zones))
         })
     }
 }
@@ -779,9 +788,13 @@ impl StructureSet {
     }
     /// StructurePlacement.getLocatePos: the chunk's corner at y 0, moved by
     /// the set's `locate_offset`.
-    pub fn locate_pos(&self, chunk: ChunkPos) -> [i32; 3] {
+    pub(crate) fn locate_pos(&self, chunk: ChunkPos) -> [i32; 3] {
         let o = self.locate_offset;
-        [chunk.x * 16 + o[0], o[1], chunk.z * 16 + o[2]]
+        [
+            chunk.x.wrapping_mul(16).wrapping_add(o[0]),
+            o[1],
+            chunk.z.wrapping_mul(16).wrapping_add(o[2]),
+        ]
     }
 }
 fn reduce(method: Reduction, seed: i64, salt: i32, x: i32, z: i32, probability: f32) -> bool {
@@ -986,7 +999,7 @@ pub trait StartContext: JigsawContext {
         kind: &dyn Fn(usize) -> HeightmapType,
     ) -> Vec<Vec<bool>>;
     /// ChunkGenerator.getBaseColumn's blocks: the noise column's states, as
-    /// mods' placements test them (Formations').
+    /// mods' placements test them.
     fn noise_column(&mut self, x: i32, z: i32) -> NoiseColumn {
         let mut column = NoiseColumn::default();
         self.noise_column_into(x, z, &mut column);
@@ -999,6 +1012,8 @@ pub trait StartContext: JigsawContext {
     fn generation(&self) -> WorldGenerationContext;
     /// Noise biome at a quart position (caching resolver, no zoom).
     fn noise_biome(&mut self, quart: [i32; 3]) -> BiomeId;
+    /// The loaded registry key for a biome id issued by this generator's resolver.
+    fn biome_key(&self, biome: BiomeId) -> mod_api::BiomeKey;
     /// Noise biomes of `quarts` in order through one resolver, as
     /// BiomeSource.findBiomeHorizontal samples: each climate lookup starts
     /// from the previous result, which a tie keeps.
@@ -1009,7 +1024,7 @@ pub trait StartContext: JigsawContext {
 }
 
 /// ChunkGenerator.createStructures for one chunk: the starts it owns.
-pub fn create_starts(
+pub(crate) fn create_starts(
     registry: &StructureRegistry,
     resources: &StructureResources,
     bindings: &FeatureBlockBindings<'_>,
@@ -1170,9 +1185,7 @@ fn generate(
     stub_only: bool,
 ) -> Option<Generated> {
     let def = &registry.structures[structure];
-    let vanilla_jigsaw =
-        matches!(&def.kind, StructureKind::Jigsaw(jigsaw) if jigsaw.piece_limited.is_none());
-    if stub_only && !vanilla_jigsaw {
+    if stub_only && !matches!(def.kind, StructureKind::Jigsaw(_)) {
         return Some(Generated::Stub);
     }
     context.set_valid_biomes((!any_biome).then_some(&def.biomes));
@@ -1185,14 +1198,6 @@ fn generate(
                 .start_height
                 .sample(&mut random, context.generation())
                 .ok()?;
-            // A carried mod's own start rules keep the structure's biome set:
-            // they read it directly, not through the context's predicate.
-            if !jigsaw
-                .checks
-                .pass(context, &def.biomes, chunk, height, jigsaw.project_to)
-            {
-                return None;
-            }
             let start = [chunk.x * 16, height, chunk.z * 16];
             let aliases = resolve_aliases(&jigsaw.aliases, start, seed);
             let config = JigsawConfig {
@@ -1206,55 +1211,34 @@ fn generate(
                 padding: jigsaw.padding,
                 waterlogging: jigsaw.waterlogging,
             };
-            let (position, mut pieces) = match &jigsaw.piece_limited {
-                Some(limits) => super::piece_limited::assemble(
-                    &config,
-                    limits,
-                    context,
-                    &registry.pools,
-                    resources,
-                    bindings,
-                    chunk,
-                    start,
-                )?,
-                None => {
-                    let placed = place_start(
-                        jigsaw.draws,
-                        &config,
-                        context,
-                        &registry.pools,
-                        resources,
-                        bindings,
-                        &mut random,
-                        start,
-                    )?;
-                    // Structure.findValidGenerationPoint checks the stub's biome before its
-                    // GenerationStub lays the pieces out: a start in another biome costs its
-                    // start piece, not its whole layout (an ancient city's, a camp's).
-                    let quart = placed.position.map(|v| v >> 2);
-                    if !any_biome && !def.biomes.contains(&context.noise_biome(quart)) {
-                        return None;
-                    }
-                    if stub_only {
-                        return Some(Generated::Stub);
-                    }
-                    lay_out_children(
-                        jigsaw.draws,
-                        placed,
-                        &config,
-                        context,
-                        &registry.pools,
-                        resources,
-                        bindings,
-                        &mut random,
-                    )
-                }
-            };
-            // Vanilla's JigsawPlacement keeps no piece at size 0; the
-            // piece-limited assembler keeps the start piece.
-            if jigsaw.max_depth <= 0 && jigsaw.piece_limited.is_none() {
-                pieces.clear();
+            let placed = place_start(
+                &config,
+                context,
+                &registry.pools,
+                resources,
+                bindings,
+                &mut random,
+                start,
+            )?;
+            // Structure.findValidGenerationPoint checks the stub's biome before its
+            // GenerationStub lays the pieces out: a start in another biome costs its
+            // start piece, not its whole layout (an ancient city's, a camp's).
+            let quart = placed.position.map(|v| v >> 2);
+            if !any_biome && !def.biomes.contains(&context.noise_biome(quart)) {
+                return None;
             }
+            if stub_only {
+                return Some(Generated::Stub);
+            }
+            let (position, pieces) = lay_out_children(
+                placed,
+                &config,
+                context,
+                &registry.pools,
+                resources,
+                bindings,
+                &mut random,
+            );
             (
                 position,
                 pieces.into_iter().map(Piece::Pool).collect::<Vec<_>>(),
@@ -1491,30 +1475,19 @@ fn generate(
             let piece = super::nether_fossil::piece(resources, &mut random, position)?;
             (position, legacy(vec![piece]))
         }
-        StructureKind::Formations(formations) => {
-            let (position, pieces) = super::formations::generate(
-                formations,
-                context,
-                &registry.pools,
-                resources,
-                bindings,
-                &mut random,
-                chunk,
-            )?;
-            (position, pieces.into_iter().map(Piece::Pool).collect())
-        }
         StructureKind::Mod(mod_type) => {
             // The type's own start and pieces; the biome check below and the
             // set's spacing stay the game's, as for every other kind.
             let context: &mut dyn StartContext = context;
-            let (position, pieces) = mod_type.ty.find_generation_point(
+            let inputs =
+                super::mod_types::StructureInputs::new(resources, &registry.pools, bindings);
+            mod_type.ty.find_generation_point(
                 context,
-                resources,
+                &inputs,
                 chunk,
                 &mod_type.config,
                 &mut random,
-            )?;
-            (position, pieces.into_iter().map(Piece::Legacy).collect())
+            )?
         }
         StructureKind::Unsupported(_) => return None,
     };
@@ -1571,8 +1544,71 @@ impl StructureStart {
         }
     }
 }
-/// PoolAliasLookup.create.
-fn resolve_aliases(bindings: &[Value], position: [i32; 3], seed: i64) -> BTreeMap<String, String> {
+/// One of a jigsaw structure's `pool_aliases` (vanilla's `PoolAliasBinding`
+/// kinds), resolved per start by [`resolve_aliases`].
+#[derive(Clone, Debug)]
+pub enum PoolAliasBinding {
+    /// `minecraft:direct`: `alias` always names `target`.
+    Direct { alias: String, target: String },
+    /// `minecraft:random`: `alias` names one of `targets`, drawn by weight.
+    Random {
+        alias: String,
+        targets: WeightedList<String>,
+    },
+    /// `minecraft:random_group`: one of `groups`, drawn by weight, binds all its bindings.
+    RandomGroup {
+        groups: WeightedList<Vec<PoolAliasBinding>>,
+    },
+}
+impl PoolAliasBinding {
+    /// A binding as data writes it; one whose weighted list does not decode,
+    /// or of another type, binds nothing.
+    fn from_json(binding: &Value) -> Option<Self> {
+        fn weighted<T>(
+            binding: &Value,
+            key: &str,
+            decode: impl FnMut(&RawValue) -> Result<T, DecodeError>,
+        ) -> Option<WeightedList<T>> {
+            let raw: Box<RawValue> = serde_json::from_str(&binding[key].to_string()).ok()?;
+            WeightedList::decode(&raw, decode).ok()
+        }
+        let text = |key: &str| binding[key].as_str().unwrap_or_default().to_owned();
+        Some(match binding["type"].as_str().unwrap_or_default() {
+            "minecraft:direct" => Self::Direct {
+                alias: text("alias"),
+                target: text("target"),
+            },
+            "minecraft:random" => Self::Random {
+                alias: text("alias"),
+                targets: weighted(binding, "targets", |v| {
+                    Ok(serde_json::from_str::<Value>(v.get())?
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned())
+                })?,
+            },
+            "minecraft:random_group" => Self::RandomGroup {
+                groups: weighted(binding, "groups", |v| {
+                    Ok(serde_json::from_str::<Value>(v.get())?
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(Self::from_json)
+                        .collect())
+                })?,
+            },
+            _ => return None,
+        })
+    }
+}
+
+/// `PoolAliasLookup.create`: the aliases of one start, drawn from a random of
+/// the world seed at the start's position.
+pub fn resolve_aliases(
+    bindings: &[PoolAliasBinding],
+    position: [i32; 3],
+    seed: i64,
+) -> BTreeMap<String, String> {
     let mut map = BTreeMap::new();
     if bindings.is_empty() {
         return map;
@@ -1582,37 +1618,27 @@ fn resolve_aliases(bindings: &[Value], position: [i32; 3], seed: i64) -> BTreeMa
         position[1],
         position[2],
     ));
-    fn visit(binding: &Value, random: &mut LegacyRandom, map: &mut BTreeMap<String, String>) {
-        let weighted = |key: &str| -> Option<WeightedList<Value>> {
-            let raw: Box<RawValue> = serde_json::from_str(&binding[key].to_string()).ok()?;
-            WeightedList::decode(&raw, |v| Ok(serde_json::from_str::<Value>(v.get())?)).ok()
-        };
-        match binding["type"].as_str().unwrap_or_default() {
-            "minecraft:direct" => {
-                map.insert(
-                    binding["alias"].as_str().unwrap_or_default().to_owned(),
-                    binding["target"].as_str().unwrap_or_default().to_owned(),
-                );
+    fn visit(
+        binding: &PoolAliasBinding,
+        random: &mut LegacyRandom,
+        map: &mut BTreeMap<String, String>,
+    ) {
+        match binding {
+            PoolAliasBinding::Direct { alias, target } => {
+                map.insert(alias.clone(), target.clone());
             }
-            "minecraft:random" => {
-                if let Some(target) =
-                    weighted("targets").and_then(|w| w.sample(random).ok().cloned())
-                {
-                    map.insert(
-                        binding["alias"].as_str().unwrap_or_default().to_owned(),
-                        target.as_str().unwrap_or_default().to_owned(),
-                    );
+            PoolAliasBinding::Random { alias, targets } => {
+                if let Ok(target) = targets.sample(random) {
+                    map.insert(alias.clone(), target.clone());
                 }
             }
-            "minecraft:random_group" => {
-                if let Some(group) = weighted("groups").and_then(|w| w.sample(random).ok().cloned())
-                {
-                    for b in group.as_array().into_iter().flatten() {
+            PoolAliasBinding::RandomGroup { groups } => {
+                if let Ok(group) = groups.sample(random) {
+                    for b in group {
                         visit(b, random, map);
                     }
                 }
             }
-            _ => {}
         }
     }
     for binding in bindings {
@@ -1744,28 +1770,28 @@ pub fn place_in_chunk<W: FeatureWorld + PlacementContext, R: RandomSource + 'sta
     let center_box = first.bounding_box();
     let center = center_box.center();
     let reference = [center[0], center_box.min[1], center[2]];
+    let chunk = ChunkPos::new(chunk_box.min[0] >> 4, chunk_box.min[2] >> 4);
+    let mut site = Site {
+        world,
+        resources,
+        blocks,
+        chunk_box,
+        place_feature,
+    };
     for piece in &start.pieces {
         if piece.bounding_box().intersects(&chunk_box) {
             match piece {
                 Piece::Pool(p) => {
-                    p.place(
-                        world,
-                        resources,
-                        random,
-                        chunk_box,
-                        reference,
-                        false,
-                        place_feature,
-                    )?;
+                    p.place(&mut site, random, reference, false)?;
                 }
                 Piece::Legacy(p) => {
                     let mut context = PieceContext {
-                        world,
+                        world: &mut site,
                         resources,
                         blocks,
                         random,
                         chunk_box,
-                        chunk: ChunkPos::new(chunk_box.min[0] >> 4, chunk_box.min[2] >> 4),
+                        chunk,
                         reference,
                     };
                     p.post_process(&mut context)?;
@@ -1776,12 +1802,12 @@ pub fn place_in_chunk<W: FeatureWorld + PlacementContext, R: RandomSource + 'sta
     if let Piece::Legacy(p) = first {
         let boxes: Vec<BoundingBox> = start.pieces.iter().map(Piece::bounding_box).collect();
         let mut context = PieceContext {
-            world,
+            world: &mut site,
             resources,
             blocks,
             random,
             chunk_box,
-            chunk: ChunkPos::new(chunk_box.min[0] >> 4, chunk_box.min[2] >> 4),
+            chunk,
             reference,
         };
         p.after_place(&mut context, &boxes)?;

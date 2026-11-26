@@ -28,6 +28,8 @@ pub enum BlockEntityItemError {
     },
     /// The game's item conversion boundary refused the supplied stack.
     StackRejected(crate::StackWriteError),
+    /// The supplied context does not identify this host's innermost open transaction.
+    InvalidContext,
 }
 
 impl From<crate::StackWriteError> for BlockEntityItemError {

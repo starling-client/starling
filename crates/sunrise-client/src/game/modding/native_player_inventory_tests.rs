@@ -2,7 +2,8 @@
 
 use super::native_guest_turn_tests::with_guests;
 use mod_api::{
-    Host, HostTransaction, InventoryView, ItemStack, PlayerDataRefusal, StackWriteError, prelude::*,
+    Host, HostTransaction, InventoryView, ItemStack, PlayerDataRefusal, StackWriteError,
+    TransactionError, prelude::*,
 };
 
 fn api_item(game: &super::Game<'_>, snbt: &str) -> Option<ItemStack> {
@@ -140,7 +141,7 @@ fn inventory_slots_are_read_and_written_by_vanillas_numbers() {
 }
 
 /// Each refusal has its own name and writes nothing: a slot past 42 (never a panic), a stack
-/// the item does not allow, a dead player, and a handle whose player has left.
+/// the item does not allow, and a handle whose player has left.
 #[test]
 #[ignore = "daily"]
 fn each_inventory_refusal_has_its_own_name_and_writes_nothing() {
@@ -175,22 +176,15 @@ fn each_inventory_refusal_has_its_own_name_and_writes_nothing() {
             .unwrap()
             .hub
             .guests
-            .update_connection(13, |g| g.dead = true);
+            .update_connection(13, |g| {
+                g.dead = true;
+                g.health = 0.0;
+            });
+        assert_eq!(b.set_inventory_slot(game, 40, Some(rock.clone())), Ok(()));
         assert_eq!(
-            b.set_inventory_slot(game, 0, Some(rock.clone())),
-            Err(PlayerDataRefusal::Dead)
+            guest(game, 13).offhand.as_ref().unwrap().item.as_ref(),
+            "minecraft:stone"
         );
-        assert_eq!(
-            b.with_inventory(game, |view| view.iter().next().is_none()),
-            Some(true),
-            "a dead player is read, not written"
-        );
-        game.lan
-            .as_mut()
-            .unwrap()
-            .hub
-            .guests
-            .update_connection(13, |g| g.dead = false);
         let index = game
             .lan
             .as_ref()
@@ -256,7 +250,7 @@ fn inventory_write_aborts() {
         let old = stack(game, r#"{id:"minecraft:stone",count:64}"#);
         player.set_inventory_slot(game, 36, Some(old)).unwrap();
         let before = player.with_inventory(game, snapshot).unwrap();
-        let _: Result<(), ()> = game.transaction(|host, _| {
+        let _: Result<(), ()> = game.storage_transaction(|host, _| {
             player.set_inventory_slot(host, 36, Some(new)).unwrap();
             Err(())
         });
@@ -273,7 +267,7 @@ fn ender_write_aborts() {
         let old = stack(game, r#"{id:"minecraft:stone",count:64}"#);
         player.set_ender_chest_slot(game, 0, Some(old)).unwrap();
         let before = player.with_ender_chest(game, snapshot).unwrap();
-        let _: Result<(), ()> = game.transaction(|host, _| {
+        let _: Result<(), ()> = game.storage_transaction(|host, _| {
             player.set_ender_chest_slot(host, 0, Some(new)).unwrap();
             Err(())
         });
@@ -293,7 +287,7 @@ fn data_write_aborts() {
         player
             .set_persistent_data_key(game, &key, Some(&old))
             .unwrap();
-        let _: Result<(), ()> = game.transaction(|host, _| {
+        let _: Result<(), ()> = game.storage_transaction(|host, _| {
             player.set_persistent_data_key(host, &key, None).unwrap();
             missing
                 .set_persistent_data_key(host, &key, Some(&old))
@@ -324,7 +318,7 @@ fn give_write_aborts() {
             Some(true)
         );
         let drops = game.dropped.len();
-        let _: Result<(), ()> = game.transaction(|host, _| {
+        let _: Result<(), ()> = game.storage_transaction(|host, _| {
             player.give_stack(host, new.clone()).unwrap();
             assert_eq!(
                 player.with_inventory(host, snapshot),
@@ -344,7 +338,7 @@ fn give_write_aborts() {
         }
         let before = player.with_inventory(game, snapshot).unwrap();
         let drops = game.dropped.len();
-        let _: Result<(), ()> = game.transaction(|host, _| {
+        let _: Result<(), ()> = game.storage_transaction(|host, _| {
             player.give_stack(host, new).unwrap();
             Err(())
         });
@@ -360,27 +354,28 @@ fn equipment_effects_wait_for_root() {
         let player = game.players().server_players()[1];
         let new = stack(game, r#"{id:"minecraft:iron_boots",count:1}"#);
         game.audio.capture = Some(Vec::new());
-        let _: Result<(), ()> = game.transaction(|host, _| {
+        let _: Result<(), ()> = game.storage_transaction(|host, _| {
             host.transaction(|host, _| {
                 player
                     .set_inventory_slot(host, 36, Some(new.clone()))
                     .unwrap();
                 Ok::<(), ()>(())
-            })?;
+            })
+            .unwrap();
             Err(())
         });
         assert!(game.audio.capture.as_ref().unwrap().is_empty());
         let inner = stack(game, r#"{id:"minecraft:diamond_helmet",count:1}"#);
-        let _: Result<(), ()> = game.transaction(|host, _| {
+        let _: Result<(), ()> = game.storage_transaction(|host, _| {
             player
                 .set_inventory_slot(host, 36, Some(new.clone()))
                 .unwrap();
             let outer = player.with_inventory(host, snapshot).unwrap();
-            let aborted: Result<(), ()> = host.transaction(|host, _| {
+            let aborted: Result<(), TransactionError<()>> = host.transaction(|host, _| {
                 player.set_inventory_slot(host, 39, Some(inner)).unwrap();
                 Err(())
             });
-            assert_eq!(aborted, Err(()));
+            assert_eq!(aborted, Err(TransactionError::Aborted(())));
             assert_eq!(player.with_inventory(host, snapshot), Some(outer));
             Ok(())
         });

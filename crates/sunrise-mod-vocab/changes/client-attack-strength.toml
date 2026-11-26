@@ -1,0 +1,5 @@
+ids = [
+    "handle:PlayerRef::current_item_attack_strength_delay",
+]
+why = "Mods can read `Player.getCurrentItemAttackStrengthDelay`, the ticks a full attack charge takes, for a server's players and for the client's own player. `PlayerRef::attack_strength_scale` now also answers on a client, for the local player alone, so a mod that replaces the crosshair can draw its attack indicator."
+migrate = "Nothing to change."

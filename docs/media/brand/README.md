@@ -48,11 +48,8 @@ d=$(mktemp -d) && npm install --prefix "$d" playwright && npx --prefix "$d" play
 NODE_PATH="$d/node_modules" node -e 'const {chromium}=require("playwright");(async()=>{const b=await chromium.launch();const p=await b.newPage({viewport:{width:1600,height:1000}});await p.goto("https://playsunrise.net/",{waitUntil:"networkidle"});await p.click(".theme-toggle");await p.waitForTimeout(1200);await p.evaluate(()=>{for(const s of ["header",".hero-actions",".download-meta",".lede"]){const e=document.querySelector(s);if(e)e.style.display="none"}});await p.waitForTimeout(400);await p.screenshot({path:"docs/media/banner.webp",clip:{x:0,y:136,width:1600,height:600}});await b.close()})()'
 ```
 
-## Uploading (the accounts are Ludovic's)
+## Uploading
 
-- **GitHub avatar**: github.com/settings/profile (or the organisation's settings), *Edit* the
-  picture, upload `social/github-avatar-500.png`.
+- **GitHub avatar**: organisation settings, *Edit* the picture, upload `social/github-avatar-500.png`.
 - **GitHub social preview**: the repository's *Settings › General › Social preview › Edit*,
   upload `social/github-social-1280x640.png`.
-- **Discord** (the server icon and banner, Kira's avatar): they live in the private kira repo since 2026-10-15
-  (`assets/`, its README's "Discord brand assets"): this repo holds only the game, the launcher and the website.

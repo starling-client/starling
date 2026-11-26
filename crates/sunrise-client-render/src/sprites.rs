@@ -74,17 +74,25 @@ impl SpriteAnimation {
             }
         }
     }
-    pub fn resized_pixels(&self, frame: usize, width: u32, height: u32) -> Vec<u8> {
+    pub(crate) fn resized_pixels(&self, frame: usize, width: u32, height: u32) -> Result<Vec<u8>> {
         let source = self.pixels(frame);
-        let side = (source.len() / 4).isqrt() as u32;
-        let mut out = Vec::with_capacity((width * height * 4) as usize);
+        let side = (source.len() / 4).isqrt();
+        let len = crate::hud::rgba_len([width, height])
+            .ok_or("sprite frame exceeds the address space")?;
+        let mut out = Vec::new();
+        out.try_reserve_exact(len)?;
+        let (width, height) = (width as usize, height as usize);
+        // The source is a validated square RGBA buffer. Computing the scaled coordinate in
+        // u64 also works on 32-bit hosts, before using it as an index into that buffer.
+        let sample = |v: usize, dst: usize| (v as u64 * side as u64 / dst as u64) as usize;
         for y in 0..height {
+            let row = sample(y, height) * side * 4;
             for x in 0..width {
-                let offset = ((y * side / height * side + x * side / width) * 4) as usize;
+                let offset = row + sample(x, width) * 4;
                 out.extend_from_slice(&source[offset..offset + 4]);
             }
         }
-        out
+        Ok(out)
     }
     pub fn pixels(&self, frame: usize) -> &[u8] {
         &self.frames[frame]
@@ -106,8 +114,6 @@ struct StillKey {
 #[derive(Default)]
 pub struct Sprites {
     source: ResourceSource,
-    /// Whether this load draws nothing (a server's): the mods' sprite sources are not run for it.
-    serving: bool,
     /// Edge length of every array layer and the layers' current frames, set
     /// by [`Sprites::finish`].
     pub size: u32,
@@ -129,6 +135,10 @@ pub struct Sprites {
     /// Each layer's frames at the texture's own resolution (square), and the
     /// frame shown first.
     native: Vec<(u32, Arc<Vec<Vec<u8>>>, usize)>,
+    /// The first frame, at its own side, of each layer larger than the array's edge, set by
+    /// [`Sprites::finish`]: `RenderAssets::atlas_sprite_pixels` returns it unscaled, where the
+    /// array holds it shrunk to the edge.
+    pub(crate) oversized: std::collections::BTreeMap<u32, (u32, Vec<u8>)>,
     /// Each layer's LabPBR maps (`_n` normals, `_s` specular) beside its texture: their
     /// frames at their own resolution (square).
     pbr: Vec<[Option<(u32, Vec<Vec<u8>>)>; 2]>,
@@ -252,15 +262,6 @@ impl Sprites {
             ..Self::default()
         }
     }
-    /// The sprites of a load that draws nothing (a server's): the mods' sprite sources are
-    /// declared but not run for it, and no decoded textures are kept.
-    pub fn for_server(source: ResourceSource) -> Self {
-        Self {
-            source,
-            serving: true,
-            ..Self::default()
-        }
-    }
     /// Sprites that reuse textures decoded by an earlier launch, kept in a
     /// cache file in `root`. A texture's decoded form stands for the sprite lists this load's
     /// atlas sources gave, mods' included, and no other.
@@ -287,17 +288,8 @@ impl Sprites {
         }
     }
     fn materials(&self) -> &crate::atlas_sources::Materials {
-        self.materials.get_or_init(|| {
-            if self.serving {
-                let listing = crate::atlas_sources::Listing::build(
-                    &self.source,
-                    &crate::mod_sprite_sources::Declared,
-                );
-                crate::atlas_sources::Materials::over(Arc::new(listing), &self.source)
-            } else {
-                crate::atlas_sources::Materials::new(&self.source)
-            }
-        })
+        self.materials
+            .get_or_init(|| crate::atlas_sources::Materials::new(&self.source))
     }
     /// Every sprite a mod's sprite source made in the blocks atlas, by pixels or by naming a
     /// texture, added though no model names it: the mod that made it looks it up after the
@@ -341,14 +333,6 @@ impl Sprites {
     /// textures are scaled up by whole pixels, so UVs stay per layer.
     #[sunrise_mod_api_macros::replaceable]
     pub fn finish(&mut self) {
-        self.lay_out(true);
-    }
-    /// [`Sprites::finish`] for a server, which draws nothing: the layers'
-    /// size, but neither their pixels nor the animations' frames.
-    pub fn finish_without_pixels(&mut self) {
-        self.lay_out(false);
-    }
-    fn lay_out(&mut self, pixels: bool) {
         // Prefetched textures nothing inserted.
         self.ready = Default::default();
         let layers = self.native.len().max(1) as u64;
@@ -356,21 +340,13 @@ impl Sprites {
         self.minimum_size = self.native.iter().map(|n| n.0).min().unwrap_or(SPRITE_SIZE);
         let budget = TEXTURE_BUDGET.load(std::sync::atomic::Ordering::Relaxed);
         let size = side_within(largest, layers, budget);
-        if pixels {
-            log::info!(
-                "Sunrise: block sprites: {layers} layers at {size} px (largest {largest} px, budget {} MiB)",
-                budget >> 20
-            );
-        }
-        if !pixels {
-            self.pixels = Vec::new();
-            self.animations = Vec::new();
-            self.pbr = Vec::new();
-            self.size = size;
-            return;
-        }
+        log::info!(
+            "Sunrise: block sprites: {layers} layers at {size} px (largest {largest} px, budget {} MiB)",
+            budget >> 20
+        );
         let mut resized = Vec::with_capacity(self.native.len());
         self.pixels.clear();
+        self.oversized = oversized_frames(&self.native, size);
         for (from, frames, initial) in &self.native {
             // Native frames already match the atlas size: share the immutable
             // buffers with animations rather than copying every frame again.
@@ -436,6 +412,36 @@ impl Sprites {
             Some(layer) => Ok(layer),
             None => self.load(name, Lookup::Model),
         }
+    }
+    /// Load a sprite id or resource file into [`Sprites::files`] without substituting the
+    /// missing texture on error and without a synthetic byte cap.
+    pub fn try_insert_texture_file(&mut self, name: &str) -> Result<u32> {
+        if let Some(layer) = self.files.get(name) {
+            return Ok(*layer);
+        }
+        let path = if name.contains(':') {
+            crate::atlas_sources::texture_resource(name, "textures")
+        } else {
+            name.to_owned()
+        };
+        let bytes = self.source.read(&path)?;
+        self.load(name, Lookup::File(&bytes))
+    }
+    /// Whether `name` reads as a PNG, without adding a layer: what a caller checks before it
+    /// commits a texture slot to a file that may never be used.
+    pub fn texture_file_readable(&self, name: &str) -> Result<()> {
+        if self.files.contains_key(name) {
+            return Ok(());
+        }
+        let path = if name.contains(':') {
+            crate::atlas_sources::texture_resource(name, "textures")
+        } else {
+            name.to_owned()
+        };
+        let bytes = self.source.read(&path)?;
+        crate::hud::png_bytes_size(&bytes)
+            .map(|_| ())
+            .ok_or_else(|| format!("{name} is not a PNG").into())
     }
     /// Load a sprite id or resource file only when its PNG fits the byte limit,
     /// including cached layers. The checked bytes are reused when decoding.
@@ -778,8 +784,8 @@ impl Sprites {
                 Self::decode_file(&self.source, &file, name).ok()
             }
             generated => {
-                let image = crate::atlas_sources::generate(generated, &|texture| {
-                    let file = crate::atlas_sources::texture_resource(texture, "textures");
+                let image = crate::atlas_sources::generate(generated, &|texture, directory| {
+                    let file = crate::atlas_sources::texture_resource(texture, directory);
                     read_rgba(&self.source, &file).ok()
                 })?;
                 Self::decode_image(name, None, image).ok()
@@ -1146,6 +1152,20 @@ pub(crate) fn sprite_mipmap_limit(requested: u32, size: u32, minimum: u32, avail
     // Only the atlas native minimum determines how many resampling-only mips to skip.
     let upscale = (size / minimum.max(1)).max(1).ilog2();
     requested.saturating_add(upscale).min(available - 1)
+}
+
+/// The frame each layer of `native` larger than the array's edge `size` starts on, at its own
+/// side, by layer: what [`Sprites::finish`] keeps in [`Sprites::oversized`].
+pub(crate) fn oversized_frames(
+    native: &[(u32, Arc<Vec<Vec<u8>>>, usize)],
+    size: u32,
+) -> std::collections::BTreeMap<u32, (u32, Vec<u8>)> {
+    native
+        .iter()
+        .enumerate()
+        .filter(|(_, (from, _, _))| *from > size)
+        .map(|(layer, (from, frames, initial))| (layer as u32, (*from, frames[*initial].clone())))
+        .collect()
 }
 
 #[cfg(test)]
@@ -1821,7 +1841,7 @@ mod tests {
     fn hud_animation_resampling_uses_the_actual_frame_size() {
         for size in [16, 32, 64] {
             let animation = test_animation(size, 0);
-            let resized = animation.resized_pixels(1, 16, 16);
+            let resized = animation.resized_pixels(1, 16, 16).unwrap();
             let last = (15 * size / 16) as u8;
             assert_eq!(&resized[15 * 4..16 * 4], &[last, 0, 99, 255]);
             assert_eq!(&resized[255 * 4..256 * 4], &[last, last, 99, 255]);
@@ -1852,8 +1872,12 @@ mod tests {
                 animation.pixels(animation.frame(1))
             );
             assert_ne!(
-                animation.resized_pixels(animation.frame(0), 16, 16),
-                animation.resized_pixels(animation.frame(1), 16, 16)
+                animation
+                    .resized_pixels(animation.frame(0), 16, 16)
+                    .unwrap(),
+                animation
+                    .resized_pixels(animation.frame(1), 16, 16)
+                    .unwrap()
             );
             assert_eq!(
                 animation.pixels(animation.frame(0)).len(),
@@ -2102,8 +2126,18 @@ mod tests {
         };
         // Two columns of key colours, recoloured to the target palette's two colours.
         write("block/base.png", 2, 1, &[10, 20, 30, 255, 40, 50, 60, 255]);
-        write("trim/key.png", 2, 1, &[10, 20, 30, 255, 40, 50, 60, 255]);
-        write("trim/red.png", 2, 1, &[200, 0, 0, 255, 0, 200, 0, 255]);
+        write(
+            "palettes/trim/key.png",
+            2,
+            1,
+            &[10, 20, 30, 255, 40, 50, 60, 255],
+        );
+        write(
+            "palettes/trim/red.png",
+            2,
+            1,
+            &[200, 0, 0, 255, 0, 200, 0, 255],
+        );
         let atlases = root.join("assets/minecraft/atlases");
         fs::create_dir_all(&atlases).unwrap();
         fs::write(

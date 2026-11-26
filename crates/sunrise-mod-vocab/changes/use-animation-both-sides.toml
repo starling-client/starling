@@ -1,0 +1,3 @@
+ids = ["hook:use_animation", "method:ItemPart::use_animation"]
+why = "ItemPart::use_animation moves from version 1 to 2: it is asked on both sides with a read-only &dyn Host, since ItemStack::use_animation reads the same answer on a server as on a client (#4677). It used to be client-only with a ClientHost. A read of ItemStack::use_animation from inside the callback does not ask the Part again: it gets the item's own answer."
+migrate = "Change the Part method's host parameter from `&dyn ClientHost` to `&dyn Host` and answer from the stack alone, the same on both sides: register the Part on the server too if a server mod reads the animation. Client-only services are not reachable from this callback."

@@ -160,6 +160,8 @@ impl TryIntoEngine<()> for mod_api::FireworkExplosion {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mod_api::client::particles::PositionSource;
+
     fn prepare() {
         mod_platform::__private::part_tests::install_parts_fixture(&[]).unwrap();
         mod_api::__private::resolve_particles(
@@ -246,21 +248,33 @@ mod tests {
     #[test]
     fn particle_boundary_refuses_nonfinite_nested_input() {
         prepare();
-        let mut options = EngineOptions::simple(ParticleType::Smoke)
+        let good = EngineOptions::simple(ParticleType::Smoke)
             .try_into_api()
             .unwrap();
-        options.vibration = Some((
-            mod_api::client::particles::PositionSource::Entity {
+        assert!(good.try_into_engine(&()).is_ok());
+        let mut color = good.clone();
+        color.to_color[0] = f32::NAN;
+        let mut trail = good.clone();
+        trail.trail = Some(([f64::INFINITY, 0.0, 0.0], 3));
+        let mut geyser = good.clone();
+        geyser.geyser = Some((1, f32::NAN));
+        let mut y_offset = good.clone();
+        y_offset.vibration = Some((
+            PositionSource::Entity {
                 id: 1,
                 y_offset: f32::NAN,
             },
             [0.0; 3],
             3,
         ));
-        assert_eq!(
-            options.try_into_engine(&()),
-            Err(ParticleValueError::NonFinite)
-        );
+        let mut destination = good;
+        destination.vibration = Some((PositionSource::Block([0; 3]), [0.0, f64::NAN, 0.0], 3));
+        for options in [color, trail, geyser, y_offset, destination] {
+            assert_eq!(
+                options.try_into_engine(&()),
+                Err(ParticleValueError::NonFinite)
+            );
+        }
     }
     #[test]
     fn an_item_crumbs_colour_must_stay_inside_zero_to_one() {

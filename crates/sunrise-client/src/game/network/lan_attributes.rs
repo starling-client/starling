@@ -7,7 +7,7 @@ use std::sync::Arc;
 use sunrise_client::items::ItemStack;
 use sunrise_client::{
     items::Items,
-    lan::attributes::{add_modifier, instance, operation_named, syncable},
+    lan::attributes::{add_modifier, instance, operation_named, syncable_snapshots},
     mobs::{
         GearKnockback, Mob, Species,
         finalize::{self, Attr, Op},
@@ -69,21 +69,9 @@ fn gear_knockback(items: &Items, worn: &[Option<&ItemStack>; 6]) -> Vec<(f64, Op
     modifiers
 }
 
-/// `getAttributeValue(KNOCKBACK_RESISTANCE)` of a mob: its own value plus the
-/// modifiers of the items it wears or holds, as the tick's
-/// `refresh_gear_knockback_resistance` read them.
-pub(super) fn mob_knockback_resistance(m: &Mob) -> f64 {
-    let gear = m.extra.gear_knockback.as_deref();
-    finalize::value_with(
-        m,
-        Attr::KnockbackResistance,
-        gear.map_or(&[][..], |g| &g.modifiers).iter().copied(),
-    )
-}
-
 impl Game<'_> {
-    /// Each mob's `gear_knockback_resistance`, for the pushes that read the
-    /// mob alone. A worn or held stack is read again only when it changed
+    /// Each mob's gear knockback modifiers, which `Mob::knockback_resistance` adds to the
+    /// mob's attribute at each push. A worn or held stack is read again only when it changed
     /// (`ItemStack.matches`, as `collectEquipmentChanges` asks), so a tick
     /// with the same gear reads no item data and allocates nothing.
     pub(super) fn refresh_gear_knockback_resistance(&mut self) {
@@ -92,7 +80,6 @@ impl Game<'_> {
             let worn = GEAR.map(|(slot, _)| m.extra.slot_stack(slot));
             if worn.iter().all(Option::is_none) {
                 m.extra.gear_knockback = None;
-                m.gear_knockback_resistance = None;
                 continue;
             }
             let same = m.extra.gear_knockback.as_ref().is_some_and(|g| {
@@ -108,7 +95,6 @@ impl Game<'_> {
                 };
                 m.extra.gear_knockback = Some(Box::new(gear));
             }
-            m.gear_knockback_resistance = Some(mob_knockback_resistance(m));
         }
     }
 
@@ -169,9 +155,8 @@ impl Game<'_> {
         // builds the map if this is its first use; the tick's equipment pass
         // keeps its stacks current. What the map holds is sent once, with the
         // base its instance has — never derived again beside it.
-        let catalog = self.motion.attributes.clone();
         let _ = m.extra.live.read(
-            &catalog,
+            &self.motion.attributes,
             kind,
             Attr::MovementSpeed.id(),
             sunrise_world::attribute_map::ValueKind::Computed,
@@ -183,7 +168,7 @@ impl Game<'_> {
             },
         );
         if let Some(live) = m.extra.live.built() {
-            for s in syncable(live) {
+            for s in syncable_snapshots(live) {
                 let (attribute, base) = (s.attribute, s.base);
                 *instance(out, attribute, base) = s;
             }
@@ -250,31 +235,29 @@ impl Game<'_> {
     pub(super) fn stand_attributes(
         &self,
         live: &sunrise_client::living_attributes::LivingAttributes,
-    ) -> Vec<AttributeSnapshot> {
+        out: &mut Vec<AttributeSnapshot>,
+    ) {
         const KIND: &str = "minecraft:armor_stand";
-        let mut out = Vec::new();
         if let Some(a) = self.synced_attribute(KIND, "minecraft:movement_speed") {
             instance(
-                &mut out,
+                out,
                 a,
                 self.attribute_default(KIND, "minecraft:movement_speed"),
             );
         }
-        let catalog = self.motion.attributes.clone();
         let _ = live.read(
-            &catalog,
+            &self.motion.attributes,
             KIND,
             "minecraft:movement_speed",
             sunrise_world::attribute_map::ValueKind::Computed,
             Vec::new,
         );
         if let Some(map) = live.built() {
-            for s in syncable(map) {
+            for s in syncable_snapshots(map) {
                 let (attribute, base) = (s.attribute, s.base);
-                *instance(&mut out, attribute, base) = s;
+                *instance(out, attribute, base) = s;
             }
         }
-        out
     }
 
     /// The instances a server player's tick creates, and

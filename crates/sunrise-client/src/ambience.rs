@@ -4,11 +4,14 @@
 //! `minecraft:audio/ambient_sounds` attribute, `UnderwaterAmbientSoundHandler`
 //! and `LocalPlayer.updateIsUnderwater` (enter/exit sounds and the
 //! `UnderLiquidAmbientSoundInstance` loop), played through the sound engine.
+use crate::music::registered_sound;
 use crate::random_source;
 use crate::sound_engine::{AMBIENT, InstanceId, PLAYERS, SoundInstance, Sounds};
+use mod_api::client::music::parse_sound_event;
 use serde_json::Value;
-use std::{collections::HashMap, path::Path};
+use std::{collections::HashMap, path::Path, sync::Arc};
 use sunrise_core::random::{LegacyRandom, RandomSource};
+use sunrise_protocol::registry::Builtin;
 
 /// `AmbientMoodSettings`.
 #[derive(Clone, Debug, PartialEq)]
@@ -27,34 +30,50 @@ pub struct AmbientSounds {
     pub additions: Vec<(String, f64)>,
 }
 impl AmbientSounds {
-    fn parse(v: &Value) -> Self {
-        let mood = &v["mood"];
-        let addition =
-            |a: &Value| Some((a["sound"].as_str()?.to_owned(), a["tick_chance"].as_f64()?));
-        Self {
-            r#loop: v["loop"].as_str().map(str::to_owned),
-            mood: mood["sound"].as_str().map(|sound| Mood {
-                sound: sound.to_owned(),
-                tick_delay: mood["tick_delay"].as_i64().unwrap_or(6000) as i32,
-                block_search_extent: mood["block_search_extent"].as_i64().unwrap_or(8) as i32,
-                offset: mood["offset"].as_f64().unwrap_or(2.0),
-            }),
-            // A single addition or a list of them.
-            additions: match &v["additions"] {
-                Value::Array(list) => list.iter().filter_map(addition).collect(),
-                single => addition(single).into_iter().collect(),
+    fn parse(v: &Value, builtin: &Builtin) -> Option<Self> {
+        let v = v.as_object()?;
+        let sound = |v: &Value| {
+            parse_sound_event(v, &|name| registered_sound(builtin, name)).map(|(id, _)| id)
+        };
+        let addition = |a: &Value| {
+            let a = a.as_object()?;
+            Some((sound(a.get("sound")?)?, a.get("tick_chance")?.as_f64()?))
+        };
+        Some(Self {
+            r#loop: match v.get("loop") {
+                Some(value) => Some(sound(value)?),
+                None => None,
             },
-        }
+            mood: match v.get("mood") {
+                Some(value) => {
+                    let mood = value.as_object()?;
+                    let int = |name: &str| i32::try_from(mood.get(name)?.as_i64()?).ok();
+                    Some(Mood {
+                        sound: sound(mood.get("sound")?)?,
+                        tick_delay: int("tick_delay")?,
+                        block_search_extent: int("block_search_extent")?,
+                        offset: mood.get("offset")?.as_f64()?,
+                    })
+                }
+                None => None,
+            },
+            additions: match v.get("additions") {
+                Some(Value::Array(list)) => list.iter().map(addition).collect::<Option<_>>()?,
+                Some(single) => vec![addition(single)?],
+                None => Vec::new(),
+            },
+        })
     }
 }
 /// Ambient sound attributes by dimension type and biome.
 #[derive(Clone, Debug, Default)]
 pub struct AmbientTables {
+    builtin: Arc<Builtin>,
     dimensions: HashMap<String, AmbientSounds>,
     biomes: HashMap<String, AmbientSounds>,
 }
 impl AmbientTables {
-    pub fn load(root: &Path) -> Self {
+    pub fn load(root: &Path, builtin: Arc<Builtin>) -> Self {
         let read = |dir: &str| -> HashMap<String, AmbientSounds> {
             let Ok(folder) =
                 sunrise_world::json_folder::read(&root.join("data/minecraft").join(dir))
@@ -66,15 +85,20 @@ impl AmbientTables {
                 .iter()
                 .filter_map(|file| {
                     let json: Value = serde_json::from_slice(file.bytes().ok()?).ok()?;
-                    let v = &json["attributes"]["minecraft:audio/ambient_sounds"];
-                    (!v.is_null())
-                        .then(|| (format!("minecraft:{}", file.name), AmbientSounds::parse(v)))
+                    let v = json
+                        .get("attributes")?
+                        .get("minecraft:audio/ambient_sounds")?;
+                    Some((
+                        format!("minecraft:{}", file.name),
+                        AmbientSounds::parse(v, &builtin)?,
+                    ))
                 })
                 .collect()
         };
         Self {
             dimensions: read("dimension_type"),
             biomes: read("worldgen/biome"),
+            builtin,
         }
     }
     /// `EnvironmentAttributes.AMBIENT_SOUNDS` at a position.
@@ -91,12 +115,11 @@ impl AmbientTables {
         let Some(json) = pack else {
             return self.get(dimension, biome);
         };
-        let v = &json["attributes"]["minecraft:audio/ambient_sounds"];
-        if v.is_null() {
-            self.dimensions.get(dimension).cloned().unwrap_or_default()
-        } else {
-            AmbientSounds::parse(v)
-        }
+        json.get("attributes")
+            .and_then(|v| v.get("minecraft:audio/ambient_sounds"))
+            .and_then(|v| AmbientSounds::parse(v, &self.builtin))
+            .or_else(|| self.dimensions.get(dimension).cloned())
+            .unwrap_or_default()
     }
 }
 /// What the handlers read about the player and level each tick.
@@ -347,7 +370,8 @@ impl Ambience {
         }
         let Some(mood) = &ctx.sounds.mood else { return };
         let extent = mood.block_search_extent;
-        let span = extent * 2 + 1;
+        // Java int arithmetic wraps; the codec accepts the full signed range.
+        let span = extent.wrapping_mul(2).wrapping_add(1);
         let x = ctx.position[0] + f64::from(self.random.next_int_bound(span).unwrap_or(0))
             - f64::from(extent);
         let y = ctx.eye_y + f64::from(self.random.next_int_bound(span).unwrap_or(0))
@@ -414,30 +438,92 @@ mod tests {
     /// sounds: without the attribute, the dimension's apply.
     #[test]
     fn a_pack_biome_reads_its_own_file_over_the_dimension() {
-        let sounds = |json: serde_json::Value| AmbientSounds::parse(&json);
+        use serde_json::json;
+        let builtin = Arc::new(Builtin::default());
+        let sounds =
+            |id| AmbientSounds::parse(&json!({"loop": {"sound_id": id}}), &builtin).unwrap();
         let tables = AmbientTables {
-            dimensions: HashMap::from([(
-                "minecraft:the_nether".to_owned(),
-                sounds(serde_json::json!({"loop": "minecraft:ambient.nether"})),
-            )]),
+            dimensions: HashMap::from([("minecraft:the_nether".to_owned(), sounds("test:nether"))]),
             biomes: HashMap::from([(
                 "minecraft:crimson_forest".to_owned(),
-                sounds(serde_json::json!({"loop": "minecraft:crimson"})),
+                sounds("test:crimson"),
             )]),
+            builtin,
         };
         let at = |pack: Option<&serde_json::Value>| {
             tables
                 .at("minecraft:the_nether", "minecraft:crimson_forest", pack)
                 .r#loop
         };
-        assert_eq!(at(None).as_deref(), Some("minecraft:crimson"));
-        let pack = serde_json::json!({"attributes": {
-            "minecraft:audio/ambient_sounds": {"loop": "minecraft:warped"}
+        assert_eq!(at(None).as_deref(), Some("test:crimson"));
+        let mut pack = json!({"attributes": {
+            "minecraft:audio/ambient_sounds": {"loop": {"sound_id": "test:warped"}}
         }});
-        assert_eq!(at(Some(&pack)).as_deref(), Some("minecraft:warped"));
-        let bare = serde_json::json!({"temperature": 2.0});
-        assert_eq!(at(Some(&bare)).as_deref(), Some("minecraft:ambient.nether"));
+        assert_eq!(at(Some(&pack)).as_deref(), Some("test:warped"));
+        pack["attributes"]["minecraft:audio/ambient_sounds"]["additions"] = json!(null);
+        assert_eq!(at(Some(&pack)).as_deref(), Some("test:nether"));
+        let bare = json!({"temperature": 2.0});
+        assert_eq!(at(Some(&bare)).as_deref(), Some("test:nether"));
     }
+    #[test]
+    fn ambient_sound_codec_decodes_signed_mood_and_rejects_partial_additions() {
+        use serde_json::json;
+        let builtin = Builtin::parse(
+            r#"{"minecraft:sound_event":{"entries":{
+            "minecraft:ambient.cave":{"protocol_id":0}
+        }}}"#,
+        )
+        .unwrap();
+        let parse = |v: Value| AmbientSounds::parse(&v, &builtin);
+        let mood = json!({"sound":"ambient.cave", "tick_delay":-5, "block_search_extent":-2, "offset":2.5});
+        let single = json!({"sound":"minecraft:ambient.cave", "tick_chance":0.01});
+        let ambient = parse(json!({"mood":mood, "additions":single})).unwrap();
+        assert_eq!(
+            ambient.mood.unwrap(),
+            Mood {
+                sound: "minecraft:ambient.cave".into(),
+                tick_delay: -5,
+                block_search_extent: -2,
+                offset: 2.5
+            }
+        );
+        assert_eq!(
+            ambient.additions,
+            [("minecraft:ambient.cave".to_owned(), 0.01)]
+        );
+
+        let ambient = parse(json!({
+            "loop":{"sound_id":"test:loop"},
+            "mood":{"sound":{"sound_id":"test:mood", "range":false}, "tick_delay":1, "block_search_extent":0, "offset":0.0},
+            "additions":[single, {"sound":{"sound_id":"test:add", "range":8.0}, "tick_chance":0.02}]
+        })).unwrap();
+        assert_eq!(ambient.r#loop.as_deref(), Some("test:loop"));
+        assert_eq!(ambient.mood.unwrap().sound, "test:mood");
+        assert_eq!(
+            ambient.additions,
+            [
+                ("minecraft:ambient.cave".to_owned(), 0.01),
+                ("test:add".to_owned(), 0.02)
+            ]
+        );
+
+        for field in ["tick_delay", "block_search_extent", "offset", "sound"] {
+            let mut bad = mood.clone();
+            bad.as_object_mut().unwrap().remove(field);
+            assert!(parse(json!({"mood":bad})).is_none(), "missing {field}");
+        }
+        for bad in [
+            json!({"loop":"test:unknown"}),
+            json!({"loop":null}),
+            json!({"mood":null}),
+            json!({"additions":{"sound":"ambient.cave"}}),
+            json!({"additions":[single, {"sound":"ambient.cave"}]}),
+            json!({"additions":[single, null]}),
+        ] {
+            assert!(parse(bad).is_none());
+        }
+    }
+
     fn ctx<'a>(
         sounds: &'a AmbientSounds,
         underwater: bool,

@@ -5,20 +5,18 @@
 //! worldgen bundle as decoration and cached.
 use super::{
     biome::BiomeId,
-    biome_predicate::BiomePredicateBindings,
     block_feature::FeatureBlockBindings,
     feature::{FeatureBlocks, FeatureWorld},
-    feature_catalog::FeatureCatalog,
+    feature_catalog::{BiomePlacedFeature, FeatureCatalog},
     feature_graph::{FeatureDefinition, PlacedFeatureDefinition},
     generator::{GeneratorData, GeneratorError},
     placement::PlacementContext,
-    state_provider::{StateProviderBindings, StateProviderCatalog},
+    state_provider::StateProviderCatalog,
     tags::TagDefinitions,
 };
-use crate::block_placement::BlockPlacementBindings;
 use serde_json::Value;
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     sync::{Arc, Mutex, OnceLock},
 };
 use sunrise_core::random::RandomSource;
@@ -35,15 +33,12 @@ pub struct LiveFeatures {
     configured_ids: OnceLock<BTreeSet<String>>,
     placed_ids: OnceLock<BTreeSet<String>>,
     provider_ids: OnceLock<BTreeSet<String>>,
-    configured_tags: OnceLock<std::collections::BTreeMap<String, Vec<String>>>,
+    configured_tags: OnceLock<BTreeMap<String, Vec<String>>>,
+    placed_tags: OnceLock<BTreeMap<String, Vec<String>>>,
     /// `BiomeGenerationSettings.getBoneMealFeatures` per biome, in vanilla order.
     bone_meal: Vec<Vec<String>>,
     /// Temperature settings per biome (`Biome.getTemperature`).
     temperatures: Vec<super::biome_temperature::BiomeTemperatureSettings>,
-}
-
-fn resource(message: impl Into<String>) -> GeneratorError {
-    GeneratorError::Resource(message.into())
 }
 
 /// `ConfiguredFeature.getFeatures`: nested configured-feature references of a
@@ -96,49 +91,12 @@ impl LiveFeatures {
             return Ok(None);
         };
         let registry = data.registry();
-        let mut feature_tags = TagDefinitions::default();
-        for (name, json) in &resources.feature_tags {
-            feature_tags.apply_json(name, "vanilla", json)?;
-        }
-        let catalog =
-            FeatureCatalog::from_resources(&resources.features, &resources.placed, &feature_tags)?;
-        let biomes = Arc::new(BiomePredicateBindings::new(
-            &data
-                .biome_names()
-                .iter()
-                .enumerate()
-                .map(|(i, name)| (name.to_string(), BiomeId(i as u32)))
-                .collect(),
-            &data.biome_tags,
-        )?);
-        let mut bindings = data
-            .feature_block_bindings()?
-            .with_fluid_tags(&resources.fluid_tags)?
-            .with_biomes(biomes.clone());
-        if let Some(structures) = &data.structures {
-            bindings = bindings.with_structures(structures.clone());
-        }
-        if let Some(blocks) = &resources.blocks {
-            bindings = bindings
-                .with_block_properties(&blocks.properties)?
-                .with_state_providers(
-                    StateProviderBindings::new(
-                        registry,
-                        data.integers().clone(),
-                        &data.block_tags,
-                    )?
-                    .with_block_properties(&blocks.properties)?
-                    .with_fluid_tags(&resources.fluid_tags)?
-                    .with_biomes(biomes),
-                    StateProviderCatalog::from_resources(&resources.state_providers)?,
-                    BlockPlacementBindings::new(
-                        registry,
-                        &blocks.properties,
-                        &blocks.double_plants,
-                        &blocks.mossy_carpets,
-                    )?,
-                )?;
-        }
+        let catalog = FeatureCatalog::from_resources(
+            &resources.features,
+            &resources.placed,
+            &resources.placed_tags,
+        )?;
+        let bindings = data.geometry_feature_bindings(resources)?;
         // Configured-feature tag membership (feature_tags names configured features).
         let mut bone_meal_tag = BTreeSet::new();
         if let Some(json) = resources
@@ -152,54 +110,41 @@ impl LiveFeatures {
                 }
             }
         }
-        let placed_tags = feature_tags
-            .build(|name, _| resources.placed.contains_key(name).then(|| name.to_owned()))
-            .map_err(|e| resource(format!("feature tags: {e:?}")))?
-            .tags;
         let mut bone_meal = Vec::with_capacity(data.biome_names().len());
+        let mut placed_cache = HashMap::new();
         for i in 0..data.biome_names().len() {
-            let biome: Value = serde_json::from_str(data.biome_json(BiomeId(i as u32)))?;
             let mut list = Vec::new();
-            for step in biome["features"].as_array().into_iter().flatten() {
-                let entries: Vec<String> = match step {
-                    Value::String(tag) if tag.starts_with('#') => placed_tags
-                        .get(&super::tags::identifier(&tag[1..])?)
-                        .cloned()
-                        .unwrap_or_default(),
-                    Value::String(name) => vec![name.clone()],
-                    Value::Array(values) => values
-                        .iter()
-                        .filter_map(|v| v.as_str().map(str::to_owned))
-                        .collect(),
-                    _ => Vec::new(),
-                };
-                for entry in entries {
-                    let name = super::tags::identifier(&entry)?;
-                    let Some(placed) = resources
-                        .placed
-                        .get(&name)
-                        .and_then(|text| serde_json::from_str::<Value>(text).ok())
-                    else {
-                        continue;
-                    };
-                    // PlacedFeature.getFeatures: its feature, then that feature's children.
-                    let mut found = Vec::new();
-                    match &placed["feature"] {
-                        Value::String(feature) => {
-                            let feature = super::tags::identifier(feature)?;
-                            found.push(feature.clone());
-                            if let Some(child) = resources
-                                .features
-                                .get(&feature)
-                                .and_then(|text| serde_json::from_str::<Value>(text).ok())
-                            {
-                                nested_features(&child, &resources.features, 0, &mut found);
-                            }
+            for (holder, decoded) in data
+                .biome_feature_steps(BiomeId(i as u32), &catalog)?
+                .into_iter()
+                .flatten()
+            {
+                let placed: Value = match holder {
+                    BiomePlacedFeature::Named(name) => {
+                        if let Some(decoded) = decoded {
+                            placed_cache.insert(name.clone(), Some(decoded));
                         }
-                        inline => nested_features(inline, &resources.features, 0, &mut found),
+                        serde_json::from_str(catalog.placed_source(&name)?)?
                     }
-                    list.extend(found.into_iter().filter(|f| bone_meal_tag.contains(f)));
+                    BiomePlacedFeature::Direct(json) => serde_json::from_str(&json)?,
+                };
+                // PlacedFeature.getFeatures: its feature, then that feature's children.
+                let mut found = Vec::new();
+                match &placed["feature"] {
+                    Value::String(feature) => {
+                        let feature = super::tags::identifier(feature)?;
+                        found.push(feature.clone());
+                        if let Some(child) = resources
+                            .features
+                            .get(&feature)
+                            .and_then(|text| serde_json::from_str::<Value>(text).ok())
+                        {
+                            nested_features(&child, &resources.features, 0, &mut found);
+                        }
+                    }
+                    inline => nested_features(inline, &resources.features, 0, &mut found),
                 }
+                list.extend(found.into_iter().filter(|f| bone_meal_tag.contains(f)));
             }
             bone_meal.push(list);
         }
@@ -217,16 +162,24 @@ impl LiveFeatures {
             bindings,
             blocks: FeatureBlocks::from_registry(registry)?,
             configured: Mutex::new(HashMap::new()),
-            placed: Mutex::new(HashMap::new()),
+            placed: Mutex::new(placed_cache),
             configured_ids: OnceLock::new(),
             placed_ids: OnceLock::new(),
             provider_ids: OnceLock::new(),
             configured_tags: OnceLock::new(),
+            placed_tags: OnceLock::new(),
             bone_meal,
         }))
     }
     pub fn data(&self) -> &Arc<GeneratorData> {
         &self.data
+    }
+    /// The named block-state provider catalog (`worldgen/block_state_provider`), when present.
+    pub fn state_provider_catalog(&self) -> Option<&StateProviderCatalog> {
+        self.bindings
+            .simple_blocks
+            .as_ref()
+            .map(|(_, catalog, _)| catalog)
     }
     /// Registry identities are admitted by the same codecs used for live placement,
     /// not by the presence of source JSON in the worldgen bundle.
@@ -267,31 +220,34 @@ impl LiveFeatures {
         Some(self.registry_ids(registry)?.contains(id))
     }
     pub fn registry_tag_contains(&self, registry: &str, id: &str, tag: &str) -> Option<bool> {
-        if !self.registry_contains(registry, id)? {
+        let ids = self.registry_ids(registry)?;
+        if !ids.contains(id) {
             return None;
         }
-        if registry == "minecraft:worldgen/placed_feature" {
-            return Some(self.catalog.placed_in_tag(id, tag));
-        }
-        if registry != "minecraft:worldgen/feature" {
-            return Some(false);
-        }
-        let tags = self.configured_tags.get_or_init(|| {
-            let mut definitions = TagDefinitions::default();
-            if let Some(resources) = &self.data.feature_resources {
+        let resources = self
+            .data
+            .feature_resources
+            .as_ref()
+            .expect("live features have feature resources");
+        let lookup = |name: &str, _| ids.contains(name).then(|| name.to_owned());
+        let tags = match registry {
+            "minecraft:worldgen/placed_feature" => self.placed_tags.get_or_init(|| {
+                // The catalog uses source references to decode features. Only the
+                // decoded holders may bind the tag exposed by the registry owner.
+                resources.placed_tags.bind(lookup).tags
+            }),
+            "minecraft:worldgen/feature" => self.configured_tags.get_or_init(|| {
+                let mut definitions = TagDefinitions::default();
                 for (name, json) in &resources.feature_tags {
                     let _ = definitions.apply_json(name, "live features", json);
                 }
-            }
-            definitions
-                .build(|name, _| {
-                    self.registry_contains(registry, name)
-                        .filter(|accepted| *accepted)
-                        .map(|_| name.to_owned())
-                })
-                .map(|built| built.tags)
-                .unwrap_or_default()
-        });
+                definitions
+                    .build(lookup)
+                    .map(|built| built.tags)
+                    .unwrap_or_default()
+            }),
+            _ => return Some(false),
+        };
         Some(
             tags.get(tag)
                 .is_some_and(|members| members.iter().any(|member| member == id)),
@@ -312,7 +268,7 @@ impl LiveFeatures {
     }
     /// Raw JSON of a configured feature (for configuration values such as a
     /// trunk placer's base height).
-    pub fn configured_json(&self, name: &str) -> Option<Value> {
+    pub(crate) fn configured_json(&self, name: &str) -> Option<Value> {
         let resources = self.data.feature_resources.as_ref()?;
         serde_json::from_str(resources.features.get(name)?).ok()
     }
@@ -358,7 +314,7 @@ impl LiveFeatures {
     }
     /// `ConfiguredFeature.place`. Unknown or unsupported features and
     /// execution errors report failure.
-    pub fn place_configured<W: FeatureWorld + PlacementContext>(
+    pub(crate) fn place_configured<W: FeatureWorld + PlacementContext>(
         &self,
         name: &str,
         world: &mut W,
@@ -376,7 +332,7 @@ impl LiveFeatures {
     /// An inline feature value (`ResourceOrHolderArgument`), decoded by the
     /// same codec as a named feature; it is not cached. `None` when it does
     /// not decode.
-    pub fn configured_inline(&self, json: &str) -> Option<FeatureDefinition> {
+    pub(crate) fn configured_inline(&self, json: &str) -> Option<FeatureDefinition> {
         match self.decode_inline(json) {
             Ok(feature) => Some(feature),
             Err(e) => {
@@ -396,7 +352,7 @@ impl LiveFeatures {
     }
     /// `Feature.place` for a decoded feature; `label` names it in errors.
     /// Execution errors report failure.
-    pub fn place_definition<W: FeatureWorld + PlacementContext>(
+    pub(crate) fn place_definition<W: FeatureWorld + PlacementContext>(
         &self,
         feature: &FeatureDefinition,
         label: &str,
@@ -418,7 +374,7 @@ impl LiveFeatures {
     /// `PlacedFeature.place` (placement modifiers, then the feature).
     /// A reached biome filter without a top feature is returned distinctly; other
     /// execution errors retain the live placement failure result.
-    pub fn place_placed<W: FeatureWorld + PlacementContext>(
+    pub(crate) fn place_placed<W: FeatureWorld + PlacementContext>(
         &self,
         name: &str,
         world: &mut W,
@@ -443,6 +399,27 @@ impl LiveFeatures {
             }
         }
     }
+    /// A structure piece's feature: [`Self::place_configured`] or
+    /// [`Self::place_placed`]. An unknown id, and any placement error,
+    /// report failure.
+    pub(crate) fn place_for_piece<W: FeatureWorld + PlacementContext>(
+        &self,
+        feature: super::structure::jigsaw::FeatureKey<'_>,
+        world: &mut W,
+        random: &mut impl RandomSource,
+        origin: [i32; 3],
+    ) -> bool
+    where
+        W::Error: std::fmt::Display,
+    {
+        use super::structure::jigsaw::FeatureKey;
+        match feature {
+            FeatureKey::Configured(name) => self.place_configured(name, world, random, origin),
+            FeatureKey::Placed(name) => self
+                .place_placed(name, world, random, origin)
+                .unwrap_or(false),
+        }
+    }
     /// Temperature settings of a biome.
     pub fn biome_temperature(
         &self,
@@ -458,11 +435,11 @@ impl LiveFeatures {
             .is_some_and(|members| members.iter().any(|m| m == biome))
     }
     /// A block tag's members in registry tag order (for `getRandomElementOf`).
-    pub fn block_tag_entries(&self, tag: &str) -> &[String] {
+    pub(crate) fn block_tag_entries(&self, tag: &str) -> &[String] {
         self.data.block_tags.get(tag).map_or(&[], Vec::as_slice)
     }
     /// `BiomeGenerationSettings.getBoneMealFeatures` of a biome.
-    pub fn bone_meal_features(&self, biome: BiomeId) -> &[String] {
+    pub(crate) fn bone_meal_features(&self, biome: BiomeId) -> &[String] {
         self.bone_meal
             .get(biome.0 as usize)
             .map_or(&[], Vec::as_slice)

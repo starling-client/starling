@@ -363,6 +363,7 @@ struct Kept {
     other: Option<(
         Option<Tag>,
         Option<(String, [i32; 3])>,
+        i32,
         bool,
         Vec<String>,
         sunrise_mod_runtime::attachments::Attachments,
@@ -419,6 +420,7 @@ impl Kept {
                 (
                     g.saved.clone(),
                     g.last_death.clone(),
+                    g.score,
                     g.seen_credits,
                     g.post_effects.clone(),
                     sunrise_mod_runtime::attachments::Attachments::clone(&g.attachments),
@@ -488,8 +490,14 @@ impl Kept {
             (Some(mine), None) => g.loaded_body = Some(mine),
             (None, _) => {}
         }
-        if let Some((saved, death, credits, post, attachments)) = self.other {
-            (g.saved, g.last_death, g.seen_credits, g.post_effects) = (saved, death, credits, post);
+        if let Some((saved, death, score, credits, post, attachments)) = self.other {
+            (
+                g.saved,
+                g.last_death,
+                g.score,
+                g.seen_credits,
+                g.post_effects,
+            ) = (saved, death, score, credits, post);
             g.attachments.replace_contents(attachments);
         }
         // The client is in one dimension, and only a login can change it.

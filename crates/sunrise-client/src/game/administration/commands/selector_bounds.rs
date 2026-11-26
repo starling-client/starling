@@ -75,6 +75,10 @@ impl Game<'_> {
                 .iter()
                 .find(|e| e.id == id)
                 .map(|e| e.bounds()),
+            Target::Bolt(id) => self.bolts.iter().find(|b| b.id == id).map(|b| {
+                let p = Vec3::new(b.at[0], b.at[1], b.at[2]);
+                Aabb::new(p, p)
+            }),
             Target::Other(_)
             | Target::Fangs(_)
             | Target::Dragon(_)

@@ -45,7 +45,7 @@ impl Game<'_> {
             self.stabbed.retain(|(who, _), _| *who != actor);
             if let Some(p) = &self.player {
                 let at = [p.position.x, p.position.y, p.position.z];
-                self.audio.play(kinetic.sound, Some(at), 1.0, 1.0);
+                self.play_audio(kinetic.sound, Some(at), 1.0, 1.0);
             }
         }
         true
@@ -166,8 +166,13 @@ impl Game<'_> {
         let now = self.world.game_time;
         let actor = self.lan_acting;
         let mut affected = false;
+        let mut last_mob = None;
         let mut on_players = Vec::new();
-        for target in self.stab_targets(eye, look, movement) {
+        for (contact, target) in self
+            .stab_targets(eye, look, movement)
+            .into_iter()
+            .enumerate()
+        {
             let (entity, target_motion) = match target {
                 Target::Mob(i) => (self.mobs[i].id, self.mob_speed(i)),
                 Target::Player(k) => {
@@ -195,17 +200,21 @@ impl Game<'_> {
                 let amount = 1.0 + (relative * f64::from(kinetic.damage_multiplier)).floor() as f32;
                 match target {
                     Target::Mob(i) => {
-                        affected |= self.stab_mob(i, amount, damages, pushes, dismounts)
+                        if self.stab_mob(i, amount, damages, pushes, dismounts) {
+                            affected = true;
+                            last_mob = Some(contact);
+                        }
                     }
-                    Target::Player(k) => on_players
-                        .extend(self.queue_player_stab(k, amount, damages, pushes, dismounts)),
+                    Target::Player(k) => on_players.extend(
+                        self.queue_player_stab(k, contact, amount, damages, pushes, dismounts),
+                    ),
                 }
             }
         }
         if affected {
             self.spear_hit_feedback(&kinetic);
         }
-        self.keep_player_stabs(kinetic, true, affected, on_players);
+        self.keep_player_stabs(kinetic, true, last_mob, on_players);
     }
 
     /// What follows a charge tick that affected an entity:
@@ -262,37 +271,37 @@ impl Game<'_> {
             0.0
         };
         let (old_health, join) = (self.mobs[index].health, self.mobs[index].join);
-        let (hurt, killed) = if deals_damage {
+        let (hurt, _) = if deals_damage {
             self.hurt_by_player(index, total, Damage::spear(from))
         } else {
             (false, false)
         };
-        if killed
-            && let Some(i) = self.mob_index.find(&self.mobs, id)
-            && self.mobs[i].join == join
-            && !self.mobs[i].removed
-        {
-            self.native_kill_event(i);
-        }
         let Some(index) = self
             .mob_index
             .find(&self.mobs, id)
             .filter(|&i| self.mobs[i].join == join && !self.mobs[i].removed)
         else {
+            if hurt {
+                self.remember_player_target(Some(id));
+            }
             return hurt;
         };
         // causeExtraKnockback: a push of 0.4, then the weapon's Knockback.
         if deals_knockback {
             let (xd, zd) = self.extra_knockback_direction();
             let source = Damage::spear(from);
+            let aim = self.attacker_aim(source.attacker);
             let plan = self.prepare_knockback_credit(id as i32, None, &attack);
             let mut credit = plan.lend(&mut self.last_hurt_by_player);
+            self.mobs[index].attacker_aim = aim;
             let level = crate::game::entity::damage_level_of!(self, &attack, &mut credit, None);
             self.mobs[index].knockback_full(level, 0.4, xd, zd, &source, total, false);
-            let (strength, _) = self.extra_knockback(&kind, 0.0);
+            self.mobs[index].attacker_aim = None;
+            let (strength, _) = self.extra_knockback(&kind, id, 0.0, Some("minecraft:spear"));
             if strength > 0.0 {
                 let plan = self.prepare_knockback_credit(id as i32, None, &attack);
                 let mut credit = plan.lend(&mut self.last_hurt_by_player);
+                self.mobs[index].attacker_aim = aim;
                 let level = crate::game::entity::damage_level_of!(self, &attack, &mut credit, None);
                 self.mobs[index].knockback_full(
                     level,
@@ -303,11 +312,18 @@ impl Game<'_> {
                     total,
                     true,
                 );
+                self.mobs[index].attacker_aim = None;
             }
             // ...and the attacker stops sprinting.
             self.stop_sprint_after_extra_knockback();
         }
-        let dismounted = dismounts && self.mobs[index].extra.mount.is_some();
+        // `Player.stabAttack`: a type in `cannot_be_dismounted_by_item_usage` stays seated.
+        let dismounted = dismounts
+            && self.mobs[index].extra.mount.is_some()
+            && !self.items().entity_type_tags.has_bit(
+                self.mobs[index].kind.flags.entity_tag_slot,
+                sunrise_client::items::EntityTypeTags::CANNOT_BE_DISMOUNTED_BY_ITEM_USAGE,
+            );
         if dismounted {
             self.dismount_mob(id);
         }
@@ -325,13 +341,13 @@ impl Game<'_> {
         if magic_boost > 0.0 {
             self.critical_hit(self.lan_acting, id as i32, feet, width, height, true);
         }
-        self.combat.last_hurt_mob = Some((id, self.world.game_time));
+        self.remember_player_target(Some(id));
         // itemAttackInteraction: hurtEnemy (statistic, wear), and the
         // post-attack enchantments when the target was hurt.
         if let Some(stack) = self.held().cloned() {
             self.award_stat("used", &stack.item, 1);
             if hurt {
-                self.post_attack(index);
+                self.post_player_melee(id, &kind, "minecraft:spear", Some(&stack));
             }
             self.weapon_wear(&stack);
         }
@@ -360,6 +376,7 @@ impl Game<'_> {
                 [0.1, 0.0, 0.1],
                 0.2,
                 (actual * 0.5) as u32,
+                None,
             );
             // The players a server serves are sent them too (the window of the server thread).
             self.lan_send_particles(super::lan_particles::QueuedParticle {
@@ -396,23 +413,32 @@ impl Game<'_> {
         // The attack damage attribute.
         let damage = self.attack_damage();
         let movement = self.known_player_movement();
-        let mut hit = false;
+        let mut last_mob = None;
         let mut on_players = Vec::new();
-        for target in self.stab_targets(eye, look, movement) {
+        for (contact, target) in self
+            .stab_targets(eye, look, movement)
+            .into_iter()
+            .enumerate()
+        {
             match target {
-                Target::Mob(i) => hit |= self.stab_mob(i, damage, true, true, false),
+                Target::Mob(i) => {
+                    if self.stab_mob(i, damage, true, true, false) {
+                        last_mob = Some(contact);
+                    }
+                }
                 Target::Player(k) => {
-                    on_players.extend(self.queue_player_stab(k, damage, true, true, false))
+                    on_players.extend(self.queue_player_stab(k, contact, damage, true, true, false))
                 }
             }
         }
+        let hit = last_mob.is_some();
         // Player.onAttack, then postPiercingAttack.
         self.attack_ticks = 0;
         self.post_piercing_attack();
         if hit {
             self.play_at_feet(kinetic.hit_sound);
         }
-        self.keep_player_stabs(kinetic, false, hit, on_players);
+        self.keep_player_stabs(kinetic, false, last_mob, on_players);
         // swingAndResetAttackStrength (ServerPlayer): a swing that starts
         // resets the attack strength.
         let swings = self.swings_started;
@@ -427,7 +453,7 @@ impl Game<'_> {
     pub(super) fn play_at_feet(&mut self, sound: &str) {
         if let Some(p) = &self.player {
             let at = [p.position.x, p.position.y, p.position.z];
-            self.audio.play(sound, Some(at), 1.0, 1.0);
+            self.play_audio(sound, Some(at), 1.0, 1.0);
         }
     }
 
@@ -442,8 +468,7 @@ impl Game<'_> {
             .is_none_or(|&t| now - t > HIT_FEEDBACK_TICKS)
         {
             self.kinetic_feedback.insert(entity, now);
-            self.audio
-                .play_unshared(kinetic.hit_sound, Some(at), 1.0, 1.0);
+            self.play_audio_unshared(kinetic.hit_sound, Some(at), 1.0, 1.0);
         }
     }
 

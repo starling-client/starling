@@ -1,5 +1,4 @@
 //! The `vault_change_state` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0339
 
 pub trait Hooks {
     /// A vault at `pos` changed to `state`. Its block state is updated.

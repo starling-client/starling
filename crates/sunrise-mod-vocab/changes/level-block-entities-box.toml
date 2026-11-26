@@ -1,0 +1,3 @@
+ids = ["handle:LevelRef::block_entities", "type:BlockEntityAt"]
+why = "Mods can list a level's block entities in a box without loading chunks (#4586): LevelRef::block_entities reads the loaded chunks of an open server level, active or parked, and gives each block entity's position and type (BlockEntityAt) within the box and the build height, in no order. Reversed bounds, a stale handle or a client give None."
+migrate = "Nothing to migrate: this only adds a method and a type."

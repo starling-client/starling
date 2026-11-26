@@ -11,10 +11,12 @@ import argparse
 import json
 from pathlib import Path
 import re
-
-from layering.rust_text import blank, item_end
+import sys
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools.layering.rust_text import blank, item_end
+
 SOURCE = ROOT / "crates/sunrise-mod-vocab/src"
 INVENTORY = ROOT / "tools/layering/mod_vocab_state.json"
 DOCUMENT = ROOT / "docs/layering/mod-vocab-state.md"
@@ -93,7 +95,7 @@ def expansion_violations(files: dict[str, str], source_root: Path = SOURCE) -> l
     generated = {
         'mod_api_generated_host.rs', 'mod_api_generated.rs', 'mod_api_exports_root.rs',
         'wire_generated.rs', 'parts_modules.rs', 'mod_api_host_areas.rs',
-        'capability_providers_generated.rs', 'mod_api_exports_private_reload.rs',
+        'builtin_capability_keys.rs', 'mod_api_exports_private_reload.rs',
         'mod_api_exports_private_built.rs', 'mod_api_exports_private_game.rs',
         'mod_api_exports_private.rs',
     }

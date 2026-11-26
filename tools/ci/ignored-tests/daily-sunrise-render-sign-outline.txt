@@ -1,0 +1,1 @@
+sunrise-client-render gfx::world_text::tests::world_text_blends_culls_and_obeys_world_depth lib daily resources

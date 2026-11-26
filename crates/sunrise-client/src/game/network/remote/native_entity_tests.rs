@@ -5,6 +5,7 @@ use crate::game::{
     Audio, Game, Options, Progress, Settings, execution_role::ExecutionRole, load_resources,
 };
 use mod_api::EquipmentSlot;
+use std::sync::Arc;
 use sunrise_core::nbt::Tag;
 use sunrise_protocol::entity_data::Value;
 use sunrise_protocol::item::{Component, Stack, component};
@@ -384,6 +385,9 @@ impl super::Remote {
         let mut me = sunrise_client::tab_list::TabPlayer::new(self.profile, "SessionReadTest");
         me.latency = latency;
         self.tab_players.insert(self.profile, me);
+        self.tab_game_modes
+            .entry(self.profile)
+            .or_insert_with(|| Arc::new(std::sync::atomic::AtomicI32::new(0)));
     }
 }
 

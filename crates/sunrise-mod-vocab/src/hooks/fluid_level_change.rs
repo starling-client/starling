@@ -1,5 +1,4 @@
 //! The `fluid_level_change` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0218
 
 pub trait Hooks {
     /// A flowing fluid at `pos` is about to change level. `fluid` is `water`

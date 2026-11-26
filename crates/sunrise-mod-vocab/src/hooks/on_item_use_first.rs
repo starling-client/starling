@@ -2,13 +2,16 @@
 
 pub trait Hooks {
     /// `IItemExtension.onItemUseFirst`: the held item's first say on a
-    /// click on a block, on the server for each player, after
+    /// click on a block, on both logical sides, after
     /// `use_item_on_block` (`ItemBeforeBlock`) let it through and before the
-    /// block's own `useItemOn`. An answer ends the click: neither the block
-    /// nor the item's `useOn` runs. `Pass` goes on to the block.
+    /// block's own `useItemOn`. `None` defers; `Pass` goes on to the block.
+    /// Any other result skips the block and the item's `useOn`. Only
+    /// `Success` swings on the client. A client answer changes prediction,
+    /// not the authoritative request; its host allows reads and local effects.
     #[hook(
         dispatch = "flat",
-        side = "server",
+        side = "both",
+        version = 2,
         contract = "replace",
         out = "answer",
         scope = "item",

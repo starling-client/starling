@@ -71,12 +71,16 @@ pub mod tests {
             ("key_test:later", 0),
             ("minecraft:poison", 1),
         ];
-        mod_vocab::__private::resolve_effects(effects.iter().map(|(id, _)| *id), |id| {
-            effects
-                .iter()
-                .find(|(name, _)| *name == id)
-                .map(|(_, index)| *index)
-        })
+        mod_vocab::__private::resolve_effects(
+            effects.iter().map(|(id, _)| *id),
+            |id| {
+                effects
+                    .iter()
+                    .find(|(name, _)| *name == id)
+                    .map(|(_, index)| *index)
+            },
+            |_| true,
+        )
         .unwrap();
         let keys = requested.lock().unwrap();
         assert_eq!(keys[0], keys[2]);
@@ -148,7 +152,7 @@ impl EffectsRegistrar for PartRegistrar {
             ));
             return Err(MobEffectPartError::InvalidKey { effect: *effect });
         };
-        if id.starts_with("minecraft:") {
+        if self.has_builtin_entry("minecraft:mob_effect", &id) {
             return Err(MobEffectPartError::VanillaEffect { effect: *effect });
         }
         if self.attach_known(|parts| &mut parts.effects, kind, &id, part) {
@@ -195,10 +199,13 @@ impl PartRegistrar {
             }
             self.parts.effects.get_mut(&id).unwrap().retain(|part| {
                 if part.mod_id != namespace
-                    && dependencies.kind(part.mod_id, namespace) == Some(crate::DependencyKind::Optional)
+                    && dependencies.kind(part.mod_id, namespace)
+                        == Some(crate::DependencyKind::Optional)
                 {
-                    self.registry_keys.borrow_mut().effects.withdraw(part.mod_id, &id);
-                    log::debug!("mod {} skipped {} on effect {id}: optional dependency {namespace} is absent", part.mod_id, part.type_name);
+                    self.registry_keys
+                        .borrow_mut()
+                        .effects
+                        .withdraw(part.mod_id, &id);
                     return false;
                 }
                 true

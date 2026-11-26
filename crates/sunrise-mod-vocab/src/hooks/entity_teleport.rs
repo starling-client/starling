@@ -1,5 +1,4 @@
 //! The `entity_teleport` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0208
 
 pub trait Hooks {
     /// A server entity was moved by a same-level teleport command, after its

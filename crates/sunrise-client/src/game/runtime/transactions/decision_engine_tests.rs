@@ -57,18 +57,19 @@ fn actual_menu_frozen_click_and_outer_abort_use_the_game_journal() {
     }
     with_guests(|game| {
         let (target, identity) = fixture(game);
-        let root = game.transaction_open();
-        let mut host = GameHost { game, identity };
-        assert_eq!(
-            run(&mut host, &target, placement, |_| Reply::Allow),
-            Ok(Outcome::Applied)
-        );
-        let (_, menu) = target.read(host.game).unwrap();
-        assert_eq!(menu.carried, None);
-        assert_eq!(menu.slot(9), Some(&ItemStack::new("minecraft:stone", 3)));
-        host.game.transaction_close(&root, false);
-        initial(target, host.game);
-        assert!(host.game.transactions.is_empty());
+        game.storage_scope(|game, _| {
+            let mut host = GameHost { game, identity };
+            assert_eq!(
+                run(&mut host, &target, placement, |_| Reply::Allow),
+                Ok(Outcome::Applied)
+            );
+            let (_, menu) = target.read(host.game).unwrap();
+            assert_eq!(menu.carried, None);
+            assert_eq!(menu.slot(9), Some(&ItemStack::new("minecraft:stone", 3)));
+            ((), false)
+        });
+        initial(target, game);
+        assert!(game.transactions.is_empty());
     });
 }
 
@@ -84,29 +85,31 @@ fn actual_menu_cursor_aba_is_stale_and_undoes_a_nested_commit() {
     }
     with_guests(|game| {
         let (target, identity) = fixture(game);
-        let root = game.transaction_open();
-        let mut host = GameHost { game, identity };
-        assert_eq!(
-            run(&mut host, &target, placement, |host| {
-                let nested = host.game.transaction_open();
-                target
-                    .edit(host.game, |menu| {
-                        menu.carried = Some(ItemStack::new("minecraft:dirt", 3));
-                        menu.carried = Some(ItemStack::new("minecraft:stone", 3));
-                    })
-                    .unwrap();
-                host.game.transaction_close(&nested, true);
-                Reply::Allow
-            }),
-            Ok(Outcome::Stale(StaleReason::MenuInstance))
-        );
-        initial(target, host.game);
-        assert_eq!(
-            run(&mut host, &target, placement, |_| Reply::Allow),
-            Ok(Outcome::Applied)
-        );
-        host.game.transaction_close(&root, false);
-        initial(target, host.game);
+        game.storage_scope(|game, _| {
+            let mut host = GameHost { game, identity };
+            assert_eq!(
+                run(&mut host, &target, placement, |host| {
+                    host.game.storage_scope(|game, _| {
+                        target
+                            .edit(game, |menu| {
+                                menu.carried = Some(ItemStack::new("minecraft:dirt", 3));
+                                menu.carried = Some(ItemStack::new("minecraft:stone", 3));
+                            })
+                            .unwrap();
+                        ((), true)
+                    });
+                    Reply::Allow
+                }),
+                Ok(Outcome::Stale(StaleReason::MenuInstance))
+            );
+            initial(target, host.game);
+            assert_eq!(
+                run(&mut host, &target, placement, |_| Reply::Allow),
+                Ok(Outcome::Applied)
+            );
+            ((), false)
+        });
+        initial(target, game);
     });
 }
 
@@ -122,48 +125,49 @@ fn actual_owner_replacement_is_stale_and_same_owner_reentry_is_busy() {
     }
     with_guests(|game| {
         let (target, identity) = fixture(game);
-        let root = game.transaction_open();
-        let mut host = GameHost { game, identity };
-        assert_eq!(
-            run(&mut host, &target, placement, |host| {
-                assert_eq!(
-                    run(
-                        host,
-                        &target,
-                        |_, _| panic!("busy planner"),
-                        |_| panic!("busy dispatch")
-                    ),
-                    Err(Admission::Busy)
-                );
-                let same_menu = host
-                    .game
-                    .lan
-                    .as_mut()
-                    .unwrap()
-                    .menus
-                    .get_mut(&12)
-                    .unwrap()
-                    .crafting
-                    .inventory
-                    .take();
-                assert!(matches!(Target::admit(host.game, 12), Err(Admission::Busy)));
-                *host
-                    .game
-                    .lan
-                    .as_mut()
-                    .unwrap()
-                    .menus
-                    .get_mut(&12)
-                    .unwrap()
-                    .crafting
-                    .inventory = same_menu;
-                Reply::Allow
-            }),
-            Ok(Outcome::Stale(StaleReason::MenuInstance))
-        );
-        initial(target, host.game);
-        host.game.transaction_close(&root, true);
-        assert!(host.game.transactions.is_empty());
+        game.storage_scope(|game, _| {
+            let mut host = GameHost { game, identity };
+            assert_eq!(
+                run(&mut host, &target, placement, |host| {
+                    assert_eq!(
+                        run(
+                            host,
+                            &target,
+                            |_, _| panic!("busy planner"),
+                            |_| panic!("busy dispatch")
+                        ),
+                        Err(Admission::Busy)
+                    );
+                    let same_menu = host
+                        .game
+                        .lan
+                        .as_mut()
+                        .unwrap()
+                        .menus
+                        .get_mut(&12)
+                        .unwrap()
+                        .crafting
+                        .inventory
+                        .take();
+                    assert!(matches!(Target::admit(host.game, 12), Err(Admission::Busy)));
+                    *host
+                        .game
+                        .lan
+                        .as_mut()
+                        .unwrap()
+                        .menus
+                        .get_mut(&12)
+                        .unwrap()
+                        .crafting
+                        .inventory = same_menu;
+                    Reply::Allow
+                }),
+                Ok(Outcome::Stale(StaleReason::MenuInstance))
+            );
+            initial(target, host.game);
+            ((), true)
+        });
+        assert!(game.transactions.is_empty());
     });
 }
 
@@ -179,27 +183,29 @@ fn actual_owner_nested_edit_and_panic_roll_back_before_the_next_click() {
     }
     with_guests(|game| {
         let (target, identity) = fixture(game);
-        let root = game.transaction_open();
-        let mut host = GameHost { game, identity };
-        assert_eq!(
-            run(&mut host, &target, placement, |host| {
-                let nested = host.game.transaction_open();
-                target
-                    .edit(host.game, |menu| {
-                        menu.carried = Some(ItemStack::new("minecraft:dirt", 2))
-                    })
-                    .unwrap();
-                host.game.transaction_close(&nested, true);
-                panic!("recoverable listener failure");
-            }),
-            Ok(Outcome::ListenerFailed)
-        );
-        initial(target, host.game);
-        assert_eq!(
-            run(&mut host, &target, placement, |_| Reply::Allow),
-            Ok(Outcome::Applied)
-        );
-        host.game.transaction_close(&root, false);
-        initial(target, host.game);
+        game.storage_scope(|game, _| {
+            let mut host = GameHost { game, identity };
+            assert_eq!(
+                run(&mut host, &target, placement, |host| {
+                    host.game.storage_scope(|game, _| {
+                        target
+                            .edit(game, |menu| {
+                                menu.carried = Some(ItemStack::new("minecraft:dirt", 2))
+                            })
+                            .unwrap();
+                        ((), true)
+                    });
+                    panic!("recoverable listener failure");
+                }),
+                Ok(Outcome::ListenerFailed)
+            );
+            initial(target, host.game);
+            assert_eq!(
+                run(&mut host, &target, placement, |_| Reply::Allow),
+                Ok(Outcome::Applied)
+            );
+            ((), false)
+        });
+        initial(target, game);
     });
 }

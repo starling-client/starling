@@ -1,0 +1,2 @@
+ids = ["handle:EntityRef::shows_vehicle_health"]
+why = "EntityRef::shows_vehicle_health reads Entity.showVehicleHealth on both sides, so a client mod can tell whether the HUD draws its mount's hearts in place of the food bar."

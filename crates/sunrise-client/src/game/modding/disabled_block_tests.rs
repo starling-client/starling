@@ -16,7 +16,7 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
     use sunrise_client::{chunk::Chunk, items::ItemStack};
-    use sunrise_core::{geometry::Direction, position::BlockPos, ticks::TickPriority};
+    use sunrise_core::{position::BlockPos, ticks::TickPriority};
     use sunrise_world::{
         level::{BlockMapValue, BlockMaps, Landing, LevelAccess},
         registry::BlockStateId,
@@ -36,6 +36,7 @@ mod tests {
         owner_ticks: AtomicUsize,
         earlier_ticks: AtomicUsize,
         earlier_dispenses: AtomicUsize,
+        dispenser_changes: AtomicUsize,
         tool: Mutex<ToolProbe>,
     }
 
@@ -53,9 +54,15 @@ mod tests {
         ) -> Option<Dispensed> {
             self.0.earlier_dispenses.fetch_add(1, Ordering::Relaxed);
             let mut remainder = event.stack.clone();
-            remainder
-                .set_count(if remainder.count() == 3 { 65 } else { 2 })
-                .unwrap();
+            if remainder.count() == 65 {
+                remainder
+                    .set_components(
+                        [("minecraft:max_stack_size".into(), mod_api::Tag::Int(-1))].into(),
+                    )
+                    .unwrap();
+            } else {
+                remainder.set_count(2).unwrap();
+            }
             Some((Some(remainder), 0))
         }
     }
@@ -200,12 +207,22 @@ mod tests {
             }
         }
     }
+    struct DispenseNotices(Arc<Probe>);
+    #[mod_api::sunrise_part]
+    impl BlockPart for DispenseNotices {
+        fn contents_changed(&self, _: &mut dyn ServerHost, _: &mut mod_api::ContentsChangedEvent) {
+            self.0.dispenser_changes.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
     struct Observer(Arc<Probe>);
     #[mod_api::__subscriptions]
     impl Hooks for Observer {
         fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
             let farmland = r.block_key("inert_test:farmland");
             r.block_part(farmland, HydratesWithAnyFluid);
+            let dispenser = r.block_key("minecraft:dispenser");
+            r.block_part(dispenser, DispenseNotices(self.0.clone()));
         }
         fn block_tool_modification(
             &self,
@@ -418,30 +435,21 @@ mod tests {
                     wet,
                     "the earlier enabled Part can answer"
                 );
-                {
-                    let _owner = mod_platform::content::crash::enter_native_mod(
-                        mod_api::content::crash::ModCall {
-                            id: "enabled_observer",
-                            hook: "test",
-                            part: None,
-                        },
-                    );
-                    let ticket = level
-                        .add_water_ticket(game, at, [POS.x + 1, POS.y + 1, POS.z + 1])
-                        .unwrap();
-                    assert_eq!(
-                        tick(game, three, lava),
-                        wet,
-                        "the ticket wets held farmland even when the earlier Part does not accept the fluid"
-                    );
-                    assert!(mod_api::__private::set_mod_enabled("enabled_prefix", false));
-                    assert_eq!(
-                        tick(game, three, air),
-                        wet,
-                        "an enabled mod's ticket waters it even without fluid"
-                    );
-                    assert!(ticket.remove(game));
-                }
+                let ticket = level
+                    .add_water_ticket(game, at, [POS.x + 1, POS.y + 1, POS.z + 1])
+                    .unwrap();
+                assert_eq!(
+                    tick(game, three, lava),
+                    wet,
+                    "the ticket wets held farmland even when the earlier Part does not accept the fluid"
+                );
+                assert!(mod_api::__private::set_mod_enabled("enabled_prefix", false));
+                assert_eq!(
+                    tick(game, three, air),
+                    wet,
+                    "a water ticket waters it even without fluid"
+                );
+                assert!(ticket.remove(game));
                 assert_eq!(tick(game, dry, water), dry);
 
                 game.install_live_features();
@@ -585,38 +593,61 @@ mod tests {
         );
     }
 
+    const DISPENSER: BlockPos = BlockPos::new(POS.x - 1, POS.y, POS.z);
+    const DISPENSER_SLOT: (i32, i32, i32) = (DISPENSER.x, DISPENSER.y, DISPENSER.z);
+
+    fn place_dispenser(game: &mut Game<'_>) -> BlockStateId {
+        let base = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:dispenser")
+            .unwrap();
+        let dispenser = game.with_props(base, &[("facing", "east")]).unwrap();
+        let level = game.level(Dim::Overworld.id()).unwrap();
+        let pos = [DISPENSER.x, DISPENSER.y, DISPENSER.z];
+        assert_eq!(
+            game.level_set_block(level, pos, dispenser, mod_api::BlockUpdateFlags::NONE),
+            Ok(true)
+        );
+        dispenser
+    }
+
     #[test]
     #[ignore = "daily"]
     fn inert_dispense_keeps_a_legacy_over_max_stack_without_events() {
         with_inert_block(
             "inert_dispense_keeps_a_legacy_over_max_stack_without_events",
-            |game, _, _| {
+            |game, _, probe| {
                 assert!(mod_api::__private::set_mod_enabled("enabled_prefix", false));
-                let dispenser = (POS.x - 1, POS.y, POS.z);
-                let stack = ItemStack::new("minecraft:stick", 65); // legal persisted count, above 64
+                let dispenser = place_dispenser(game);
+                game.world
+                    .block_entities
+                    .get_mut(&DISPENSER_SLOT)
+                    .unwrap()
+                    .slots_mut()[0] = Some(ItemStack::new("minecraft:stick", 65));
                 game.audio.capture = Some(Vec::new());
                 let particles = game.particles.len();
-                assert!(mod_api::__private::set_mod_enabled("inert_test", false));
-                assert_eq!(
-                    game.dispense_item(dispenser, Direction::East, stack.clone())
-                        .unwrap(),
-                    Some(stack.clone())
-                );
-                assert!(game.dropped.is_empty());
-                assert!(game.audio.capture.as_ref().unwrap().is_empty());
-                assert_eq!(game.particles.len(), particles);
-
-                assert!(mod_api::__private::set_mod_enabled("inert_test", true));
-                let left = game
-                    .dispense_item(dispenser, Direction::East, stack)
-                    .unwrap()
-                    .unwrap();
-                assert_eq!(
-                    left.count, 64,
-                    "an enabled listener's over-max reply is still refused"
-                );
-                assert_eq!(game.dropped.len(), 1);
-                assert_eq!(game.dropped[0].stack, ItemStack::new("minecraft:stick", 1));
+                let notices = probe.dispenser_changes.load(Ordering::Relaxed);
+                for (enabled, count, writes) in [(false, 65, 0), (true, 64, 1)] {
+                    assert!(mod_api::__private::set_mod_enabled("inert_test", enabled));
+                    game.dispense_from(DISPENSER, dispenser).unwrap();
+                    assert_eq!(
+                        game.world
+                            .block_entities
+                            .get(&DISPENSER_SLOT)
+                            .unwrap()
+                            .slots()[0],
+                        Some(ItemStack::new("minecraft:stick", count))
+                    );
+                    assert_eq!(
+                        probe.dispenser_changes.load(Ordering::Relaxed),
+                        notices + writes
+                    );
+                    assert!(game.dropped.is_empty());
+                    assert!(game.audio.capture.as_ref().unwrap().is_empty());
+                    assert_eq!(game.particles.len(), particles);
+                }
             },
         );
     }
@@ -627,25 +658,40 @@ mod tests {
         with_inert_block(
             "rejected_dispense_reply_preserves_the_disabled_owners_fallback",
             |game, _, probe| {
-                assert!(mod_api::__private::set_mod_enabled("inert_test", false));
-                let dispenser = (POS.x - 1, POS.y, POS.z);
+                let dispenser = place_dispenser(game);
                 game.audio.capture = Some(Vec::new());
                 let particles = game.particles.len();
-                for (input, remaining) in [(3, 3), (4, 2)] {
-                    assert_eq!(
-                        game.dispense_item(
-                            dispenser,
-                            Direction::East,
-                            ItemStack::new("minecraft:stick", input)
-                        )
-                        .unwrap(),
-                        Some(ItemStack::new("minecraft:stick", remaining))
-                    );
-                    assert!(game.dropped.is_empty());
-                    assert!(game.audio.capture.as_ref().unwrap().is_empty());
-                    assert_eq!(game.particles.len(), particles);
+                for enabled in [false, true] {
+                    assert!(mod_api::__private::set_mod_enabled("inert_test", enabled));
+                    for (input, remaining, writes) in [(65, 65, 0), (4, 2, 1)] {
+                        let notices = probe.dispenser_changes.load(Ordering::Relaxed);
+                        game.world
+                            .block_entities
+                            .get_mut(&DISPENSER_SLOT)
+                            .unwrap()
+                            .slots_mut()[0] = Some(ItemStack::new("minecraft:stick", input));
+                        game.dispense_from(DISPENSER, dispenser).unwrap();
+                        assert_eq!(
+                            game.world
+                                .block_entities
+                                .get(&DISPENSER_SLOT)
+                                .unwrap()
+                                .slots()[0],
+                            Some(ItemStack::new("minecraft:stick", remaining))
+                        );
+                        assert_eq!(
+                            probe.dispenser_changes.load(Ordering::Relaxed),
+                            notices + writes
+                        );
+                        assert!(
+                            game.dropped.is_empty(),
+                            "vanilla must not run a second behaviour"
+                        );
+                        assert!(game.audio.capture.as_ref().unwrap().is_empty());
+                        assert_eq!(game.particles.len(), particles);
+                    }
                 }
-                assert_eq!(probe.earlier_dispenses.load(Ordering::Relaxed), 2);
+                assert_eq!(probe.earlier_dispenses.load(Ordering::Relaxed), 4);
             },
         );
     }

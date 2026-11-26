@@ -1,0 +1,2 @@
+ids = ["hook:destroy_progress", "method:BlockPart::destroy_progress", "type:HookId", "type:DestroyProgressEvent"]
+why = "#5280: a block Part answers vanilla's BlockBehaviour.getDestroyProgress for its state, the share of the block one tick of a player's mining removes, in place of the game's math, on both sides so a client predicts the same dig. PlayerRef::destroy_progress returns that answer; from inside a Part's answer it gives the game's math and asks no Part, so a block mines as another without unbounded recursion."

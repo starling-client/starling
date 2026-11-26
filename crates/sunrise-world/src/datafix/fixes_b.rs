@@ -17,8 +17,9 @@ pub(super) fn register(out: &mut Vec<(Key, FixFn)>) {
         let k = cx.k;
         cx.each(Ty::Entity, |e| {
             if id_is(e, "minecraft:arrow") || id_is(e, "minecraft:spectral_arrow") {
-                reread(k, e);
+                reread(k, e)?;
             }
+            Ok(())
         });
     }));
     out.push((key(3939, 0), |cx| {
@@ -1090,7 +1091,7 @@ fn saddle_equipment_slot(cx: &mut Cx) {
                     rename(e, "SaddleItem", "saddle");
                     saddle_drop_chance(e);
                 }
-                reread(k, e);
+                reread(k, e)?;
             }
             "minecraft:pig" | "minecraft:strider" => {
                 let saddled = as_bool(e.get("Saddle"), false);
@@ -1103,10 +1104,11 @@ fn saddle_equipment_slot(cx: &mut Cx) {
                     );
                     saddle_drop_chance(e);
                 }
-                reread(k, e);
+                reread(k, e)?;
             }
             _ => {}
         }
+        Ok(())
     });
 }
 

@@ -160,9 +160,14 @@ pub struct Poses {
     frame_hidden: Vec<bool>,
     has_frame_edits: bool,
     apply_frame_visibility: bool,
+    /// Mods' own values per part ([`Poses::set_data`]), keyed like `map` and by the value's
+    /// type; the engine never reads them.
+    data: FxHashMap<(u64, std::any::TypeId), PartData>,
     /// Names the draw state, kept by copies ([`Poses::version`]).
     version: u64,
 }
+/// A mod's value on a part ([`Poses::set_data`]): shared, not cloned, by a copy of the poses.
+type PartData = std::sync::Arc<dyn std::any::Any + Send + Sync>;
 /// The next [`Poses::version`].
 static NEXT_VERSION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 thread_local! {
@@ -231,6 +236,7 @@ impl Poses {
         self.frame_hidden.clone_from(&other.frame_hidden);
         self.has_frame_edits = other.has_frame_edits;
         self.apply_frame_visibility = other.apply_frame_visibility;
+        self.data.clone_from(&other.data);
         self.version = other.version;
     }
     /// Refills this for another model, keeping the map and set capacity:
@@ -257,6 +263,7 @@ impl Poses {
         self.skipped.clear();
         self.base_hidden_count = 0;
         self.apply_frame_visibility = false;
+        self.data.clear();
         walk(model, &mut self.map);
         self.changed();
     }
@@ -270,6 +277,15 @@ impl Poses {
     /// The pose of the part named `name`, when the model has one.
     pub fn pose_of(&self, name: &str) -> Option<[f32; 9]> {
         self.pose_by_key(key(name)).copied()
+    }
+    /// Overwrites the pose of the part keyed `key`; false when the model has no such part.
+    pub(super) fn set_pose_by_key(&mut self, key: u64, pose: [f32; 9]) -> bool {
+        let Some(entry) = self.map.get_mut(&key) else {
+            return false;
+        };
+        entry.pose = pose;
+        self.changed();
+        true
     }
     pub(super) fn pose_by_key(&self, key: u64) -> Option<&[f32; 9]> {
         self.map.get(&key).map(|entry| &entry.pose)
@@ -296,7 +312,10 @@ impl Poses {
     }
     /// `skips` by the part's name.
     pub fn skips_named(&self, name: &str) -> bool {
-        !self.skipped.is_empty() && self.skipped.contains(&key(name))
+        !self.skipped.is_empty() && self.skips_key(key(name))
+    }
+    pub(super) fn skips_key(&self, key: u64) -> bool {
+        self.skipped.contains(&key)
     }
     pub fn has(&self, name: &str) -> bool {
         self.map.contains_key(&key(name))
@@ -329,11 +348,10 @@ impl Poses {
     }
     /// Base visibility for animation, without the draw-local overlay.
     pub fn is_hidden_named(&self, name: &str) -> bool {
-        self.base_hidden_count != 0
-            && self
-                .map
-                .get(&key(name))
-                .is_some_and(|entry| entry.base_hidden)
+        self.base_hidden_count != 0 && self.is_hidden_key(key(name))
+    }
+    pub(super) fn is_hidden_key(&self, key: u64) -> bool {
+        self.base_hidden_count != 0 && self.map.get(&key).is_some_and(|entry| entry.base_hidden)
     }
     /// Refill pooled visibility storage before calling Pre, so edits never grow it.
     pub(super) fn prepare_frame_visibility(&mut self, layout: Arc<BakedFrameModel>) {
@@ -352,6 +370,39 @@ impl Poses {
             self.changed();
         }
         true
+    }
+    /// Stores `value`, a mod's own data of any type, on the part named `name`, when the model
+    /// has one: the engine never reads it. A mod's mixin on [`setup`] writes, say, a limb's
+    /// bend here, and its replacement of `render::compile_part` reads it back for the part it
+    /// draws. One value per part and type: a mod keeps its data in a type of its own, so two
+    /// mods never read each other's. A write changes [`Poses::version`], so a later draw never
+    /// reuses part matrices of the walk before it. `reset` (and `reset_animation`, before each
+    /// `setupAnim`) drops the values, `copy_from`
+    /// shares them with the copy.
+    pub fn set_data<T: std::any::Any + Send + Sync>(&mut self, name: &str, value: T) {
+        if self.map.contains_key(&key(name)) {
+            self.data.insert(
+                (key(name), std::any::TypeId::of::<T>()),
+                std::sync::Arc::new(value),
+            );
+            self.changed();
+        }
+    }
+    /// The value of type `T` [`Poses::set_data`] stored on the part named `name`.
+    pub fn data<T: std::any::Any + Send + Sync>(&self, name: &str) -> Option<&T> {
+        self.data
+            .get(&(key(name), std::any::TypeId::of::<T>()))
+            .and_then(|value| value.downcast_ref())
+    }
+    /// Removes the value of type `T` [`Poses::set_data`] stored on the part named `name`.
+    pub fn clear_data<T: std::any::Any + Send + Sync>(&mut self, name: &str) {
+        if self
+            .data
+            .remove(&(key(name), std::any::TypeId::of::<T>()))
+            .is_some()
+        {
+            self.changed();
+        }
     }
     /// Select whether the next draw sees the frame override or only the animated visibility.
     pub(super) fn apply_frame_visibility(&mut self, apply: bool) {
@@ -376,8 +427,7 @@ impl Poses {
         self.base_hidden_count != 0 || self.frame_visibility_active()
     }
     pub(super) fn is_hidden_at(&self, index: usize, key: u64) -> bool {
-        (self.base_hidden_count != 0 && self.map.get(&key).is_some_and(|entry| entry.base_hidden))
-            || self.frame_visibility_active() && self.frame_hidden[index]
+        self.is_hidden_key(key) || self.frame_visibility_active() && self.frame_hidden[index]
     }
     fn frame_visibility_active(&self) -> bool {
         self.apply_frame_visibility && self.has_frame_edits
@@ -433,6 +483,9 @@ pub struct State<'a> {
     pub partial: f32,
     /// Optional frame-local observer; absent without subscribers.
     pub observer: Option<Observation<'a>>,
+    /// The resources the frame draws from, which answer its tag reads (a piglin's
+    /// `#piglin_loved`); absent for tools, probes and tests, which then read no tag.
+    pub data: Option<&'a dyn super::render::RenderDataSource>,
 }
 
 impl State<'static> {
@@ -445,6 +498,17 @@ impl State<'static> {
         State {
             observer: observer.map(|observer| Observation { source, observer }),
             ..self
+        }
+    }
+    /// [`Self::observed`] by `data`'s observer, with `data` answering the frame's tag reads.
+    pub fn drawn_from<'a>(
+        self,
+        source: &'a Mob,
+        data: &'a dyn super::render::RenderDataSource,
+    ) -> State<'a> {
+        State {
+            data: Some(data),
+            ..self.observed(source, data.humanoid_setup())
         }
     }
 }
@@ -497,6 +561,7 @@ pub fn state(m: &Mob, alpha: f32) -> State<'static> {
         baby: m.is_baby(),
         partial: alpha,
         observer: None,
+        data: None,
     }
 }
 fn head(p: &mut Poses, s: &State) {
@@ -1498,6 +1563,7 @@ mod flight_pose_tests {
             baby: false,
             partial: 0.0,
             observer: None,
+            data: None,
         };
         let mut poses = Poses {
             map: [
@@ -1553,6 +1619,7 @@ mod flight_pose_tests {
             baby: false,
             partial: 0.0,
             observer: None,
+            data: None,
         };
         let make = || Poses {
             map: [
@@ -1600,6 +1667,7 @@ mod flight_pose_tests {
             baby: false,
             partial: 0.0,
             observer: None,
+            data: None,
         };
         let make = || Poses {
             map: ["head", "right_arm", "left_arm", "right_leg", "left_leg"]
@@ -1705,6 +1773,7 @@ mod flight_pose_tests {
             baby: false,
             partial: 0.0,
             observer: None,
+            data: None,
         };
         let mut p = Poses {
             map: ["head", "right_arm", "left_arm"]
@@ -1757,6 +1826,7 @@ mod flight_pose_tests {
             baby: false,
             partial: 0.0,
             observer: None,
+            data: None,
         };
         let make = || Poses {
             map: ["head", "right_arm", "left_arm"]
@@ -1822,6 +1892,7 @@ mod flight_pose_tests {
             baby: false,
             partial: 0.0,
             observer: None,
+            data: None,
         };
         let make = || Poses {
             map: ["head", "right_arm", "left_arm", "right_leg", "left_leg"]
@@ -1868,6 +1939,7 @@ mod flight_pose_tests {
             baby: false,
             partial: 0.0,
             observer: None,
+            data: None,
         };
         for (anim, pose, expected) in [
             (Anim::Zombie, ArmPose::ThrowTrident, -PI),
@@ -2063,6 +2135,7 @@ mod flight_pose_tests {
                 baby: false,
                 partial: 0.0,
                 observer: None,
+                data: None,
             };
             setup(&m, &state, &mut p, &HashMap::new());
             for arm in ["right_arm", "left_arm"] {
@@ -2082,14 +2155,92 @@ mod flight_pose_tests {
             pose: [0.0, 0.0, 0.0, xrot, 0.0, 0.0, 1.0, 1.0, 1.0],
             polygons: Vec::new(),
             children: Vec::new(),
+            layer: None,
         };
         let root = Part {
             name: "root".into(),
             pose: [0.0; 9],
             polygons: Vec::new(),
             children: vec![child(0.5), child(-0.5)],
+            layer: None,
         };
         let mut p = Poses::new(&root);
         assert_eq!(p.get("leg")[3], 0.5);
+    }
+}
+
+#[cfg(test)]
+mod part_data_tests {
+    use super::*;
+
+    /// One mod's data on a part: a bend.
+    #[derive(Debug, PartialEq)]
+    struct Bend {
+        axis: f32,
+        angle: f32,
+    }
+    /// Another mod's, of a type of its own, on the same part.
+    #[derive(Debug, PartialEq)]
+    struct Stretch(Vec<f32>);
+
+    /// Mods' values on a part are a change of the poses: every write gives a new `version`,
+    /// so `Skin::draw` never reuses the part matrices of a walk before it; a copy keeps them
+    /// and the version, and a reset for another draw drops them. Values of two types live
+    /// side by side on one part.
+    #[test]
+    fn writing_a_parts_data_changes_the_version() {
+        let model = Part::parse(
+            "root",
+            &serde_json::json!({"children": {"right_arm": {}, "left_arm": {}}}),
+        );
+        let mut poses = Poses::new(&model);
+        let start = poses.version();
+        poses.set_data(
+            "right_arm",
+            Bend {
+                axis: 0.0,
+                angle: 0.5,
+            },
+        );
+        let set = poses.version();
+        assert_ne!(set, start);
+        let bend = Bend {
+            axis: 0.0,
+            angle: 0.5,
+        };
+        assert_eq!(poses.data::<Bend>("right_arm"), Some(&bend));
+        poses.set_data("right_arm", Stretch(vec![1.0, 2.0, 3.0, 4.0, 5.0]));
+        assert_ne!(poses.version(), set, "a second type is a write too");
+        assert_eq!(poses.data::<Bend>("right_arm"), Some(&bend));
+        assert_eq!(
+            poses.data::<Stretch>("right_arm").map(|s| s.0.len()),
+            Some(5)
+        );
+        assert_eq!(poses.data::<Bend>("left_arm"), None);
+        let mut copy = Poses::default();
+        copy.copy_from(&poses);
+        assert_eq!(copy.version(), poses.version());
+        assert_eq!(copy.data::<Bend>("right_arm"), Some(&bend));
+        // A part the model lacks has no slot: nothing stored, nothing changed.
+        let before = poses.version();
+        poses.set_data("tail", Stretch(Vec::new()));
+        assert_eq!(
+            (poses.data::<Stretch>("tail"), poses.version()),
+            (None, before)
+        );
+        poses.clear_data::<Bend>("left_arm");
+        assert_eq!(poses.version(), before, "nothing to clear");
+        poses.clear_data::<Bend>("right_arm");
+        assert_ne!(poses.version(), before);
+        assert_eq!(poses.data::<Bend>("right_arm"), None);
+        assert!(poses.data::<Stretch>("right_arm").is_some());
+        assert_eq!(
+            copy.data::<Bend>("right_arm"),
+            Some(&bend),
+            "the copy keeps its own"
+        );
+        copy.reset(&model);
+        assert_eq!(copy.data::<Bend>("right_arm"), None);
+        assert_eq!(copy.data::<Stretch>("right_arm"), None);
     }
 }

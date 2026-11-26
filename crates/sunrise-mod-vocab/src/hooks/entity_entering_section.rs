@@ -23,10 +23,19 @@ pub trait Hooks {
     /// moving or removing the entity until the write completes, because the write is still in
     /// progress while this hook runs.
     ///
-    /// During a borrowed mob pass, the Host answers only this entity's position. During a
-    /// borrowed player move, it also answers that player's ground flag and velocity before
-    /// the move updates them, and `local_player` on the client. Other Host operations are
-    /// refused while these views are borrowed.
+    /// Which Host a listener gets decides what it can read. A write told while the mob view is
+    /// borrowed (the write happened inside that mob's own tick) gets a position-only Host: the
+    /// crossing entity's position, and `entity_residency` answers `EntityResidency::Busy` for it
+    /// (its row is lent to the tick) and `Gone` for every other entity; a player move also
+    /// answers that player's ground flag and velocity before the move updates them, and
+    /// `local_player` on the client. Every other Host operation is refused with its typed
+    /// refusal while a view is borrowed. A write told with the owning Host (including a mob
+    /// write delivered after its row is restored) can read the resident entities. Crossings
+    /// queued while a listener runs, for example by a vehicle teleport, are told after that
+    /// callback returns, in the order they were filed, with the owning Host before the pass
+    /// resumes. Each keeps the placement of the move that filed it: a later move, or the entity's
+    /// removal, neither rewrites nor deletes it, and a read of that entity's position while it is
+    /// told answers that placement (the no-reentry rule rules out telling it at its own write).
     #[notes = r#"## Entering a section
 
 `Hooks::entity_entering_section` (NeoForge's `EntityEvent.EnteringSection`) tells a mod each time an entity's
@@ -58,18 +67,20 @@ subscription check per position update.
 
 The hook runs at the position write: at once for a teleport (`/tp`, `teleport_to`, `random_teleport` from outside the tick,
 an enderman's or a shulker's teleport when hurt), a piston or shulker push, a server player's sent move and, on a client,
-a packet that places an entity. Mob ticks dispatch synchronously inside each position write, in write order,
-not by replaying captured moves after the tick. During a borrowed mob pass the Host answers only the current
-entity's position. During a borrowed player move it also answers that player's ground flag and velocity before
-the move updates them, and `local_player` on the client. Other Host operations are refused while these views
-are borrowed. There is no automatic mutation deferral: listeners must not move or remove the entity while its
-write is in progress."#]
+a packet that places an entity. Mob writes are told in write order. A write told while the mob view is borrowed
+gets a position-only Host: the crossing entity's position, `entity_residency` `Busy` for it and `Gone` for any other
+entity, and nothing else of the world; a player move also answers that player's ground flag and velocity before the
+move updates them, and `local_player` on the client. A write captured without a live observer is told after the
+owning row is restored, before the next mob ticks, with the owning Host that reads resident entities. Crossings
+queued while a listener runs are told after it returns, in filing order, with that Host; each keeps the placement of its
+own move, which a read of the entity's position answers, and no later move or removal rewrites or deletes it. Listeners must not move or remove the crossing entity while its write in progress."#]
     #[hook(
         dispatch = "flat",
         side = "both",
         contract = "listen",
         neoforge = "EntityEvent.EnteringSection",
-        cancellable = false
+        cancellable = false,
+        version = 2
     )]
     fn entity_entering_section(
         entity: EntityRef,

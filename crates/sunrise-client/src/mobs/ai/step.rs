@@ -28,9 +28,29 @@ pub fn inherited_step_sound(
         | S::Nautilus
         | S::ZombieNautilus => None,
         S::Armadillo => quiet("entity.armadillo.step"),
-        S::Chicken | S::Cow | S::Pig | S::Wolf => {
-            crate::mobs::finalize::variant_sound(m, "step").and_then(quiet)
+        S::Pig => {
+            if let Some(sound) = super::pig_sound(m, w.side.variant_tables(), "step") {
+                Some((Cow::Owned(sound.to_owned()), 0.15, 1.0))
+            } else {
+                quiet("entity.pig.step")
+            }
         }
+        S::Cow => {
+            if let Some(sound) = super::cow_sound(m, w.side.variant_tables(), "step") {
+                Some((Cow::Owned(sound.to_owned()), 0.15, 1.0))
+            } else {
+                quiet("entity.cow.step")
+            }
+        }
+        S::Chicken => {
+            if let Some(sound) = super::chicken_sound(m, w.side.variant_tables(), "step") {
+                Some((Cow::Owned(sound.to_owned()), 0.15, 1.0))
+            } else {
+                quiet("entity.chicken.step")
+            }
+        }
+        S::Wolf => super::wolf_sound(m, w.side.variant_tables(), "step")
+            .map(|sound| (Cow::Owned(sound.to_owned()), 0.15, 1.0)),
         S::Mooshroom => quiet("entity.cow.step"),
         S::Llama | S::TraderLlama => quiet("entity.llama.step"),
         S::Frog => quiet("entity.frog.step"),
@@ -96,7 +116,7 @@ pub fn inherited_step_sound(
         _ => {
             // Entity.playStepSound: the block's sound type, as its parts answer.
             let sounds = w.block_sound_type(m, pos, state, mod_api::BlockSoundCause::Step);
-            let step = Cow::Owned(sounds.step.to_string());
+            let step = Cow::Owned(sounds.step.as_str().to_owned());
             Some((step, sounds.volume * 0.15, sounds.pitch))
         }
     }

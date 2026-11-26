@@ -2,7 +2,7 @@ use super::*;
 
 /// The hook points. Each does nothing in Sunrise.
 impl Game<'_> {
-    /// Which hearts the local player's health bar draws (`PlayerHeartTypeEvent`): `kind` is
+    /// Which hearts the camera player's health bar draws (`PlayerHeartTypeEvent`): `kind` is
     /// vanilla's pick, and a mod may set another.
     pub(in crate::game) fn native_player_heart_type(
         &mut self,

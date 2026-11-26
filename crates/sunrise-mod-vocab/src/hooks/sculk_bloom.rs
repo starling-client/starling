@@ -1,5 +1,4 @@
 //! The `sculk_bloom` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0330
 
 pub trait Hooks {
     /// A sculk catalyst at `pos` has begun blooming after taking experience.

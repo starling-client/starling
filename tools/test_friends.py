@@ -34,14 +34,11 @@ import tempfile
 import time
 import urllib.request
 
-try:
-    from . import lab
-    from .integration_env import game_environment, require_server_reports
-except ImportError:
-    import lab
-    from integration_env import game_environment, require_server_reports
-
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab
+from tools.integration_env import game_environment, require_server_reports
+
 
 
 def command(endpoint, line, check=True):

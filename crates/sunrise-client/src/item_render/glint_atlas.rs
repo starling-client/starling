@@ -6,39 +6,75 @@ use sunrise_assets::resource_source::ResourceSource;
 
 type Entry = (String, u32, u32);
 
-/// `SpriteSourceList.list` and `SpriteResourceLoader.loadSprite` for the non-mipmapped ITEMS atlas.
-pub(super) fn load(
+/// `SpriteLoader.Preparations` for one atlas: stitched regions kept separate from missing fallback.
+#[derive(Clone, Debug, Default)]
+pub(super) struct GlintAtlas {
+    regions: HashMap<String, Rect>,
+    missing: Option<Rect>,
+}
+
+impl GlintAtlas {
+    /// `SpriteLoader.Preparations.getSprite`: only sprites that actually stitched.
+    pub(super) fn get_stitched(&self, name: &str) -> Option<Rect> {
+        self.regions.get(name).copied()
+    }
+
+    /// `SpriteLoader.Preparations.missing`: this atlas's `missingno` sprite.
+    pub(super) fn missing(&self) -> Option<Rect> {
+        self.missing
+    }
+
+    /// `TextureAtlas.getSprite` / `SpriteGetter`: stitched sprite, else this atlas's `missingno`.
+    pub(super) fn get_or_missing(&self, name: &str) -> Option<Rect> {
+        self.get_stitched(name).or(self.missing)
+    }
+
+    #[cfg(test)]
+    pub(super) fn len(&self) -> usize {
+        self.regions.len()
+    }
+}
+
+/// `SpriteLoader.stitch` for any atlas (`items`, `blocks`, `shield_patterns`) with vanilla mipmap
+/// clamping and anisotropic padding (`(1 << mip_level) << aniso_shift`).
+pub(super) fn load_atlas(
     root: &ResourceSource,
-    padding: u32,
+    atlas_id: &str,
+    max_mip: u32,
+    aniso_shift: u32,
     maximum: u32,
-) -> crate::Result<HashMap<String, Rect>> {
+) -> crate::Result<GlintAtlas> {
+    let entries = collect_entries(root, atlas_id);
+    let mip_level = mip_level_for(&entries, max_mip);
+    let padding = (1u32 << mip_level) << aniso_shift;
+    finish_atlas(atlas_id, &entries, mip_level, padding, maximum)
+}
+
+fn collect_entries(root: &ResourceSource, atlas_id: &str) -> Vec<Entry> {
     let listing = atlas_sources::listing(root);
-    let items = listing.sprites("minecraft:items");
-    let decode = |name: &str| {
+    let listed = listing.sprites(atlas_id);
+    let decode = |name: &str, directory: &str| {
         crate::hud::decode_bytes(
             &root
-                .read(&atlas_sources::texture_resource(name, "textures"))
+                .read(&atlas_sources::texture_resource(name, directory))
                 .ok()?,
         )
         .ok()
     };
     let mut entries = vec![("minecraft:missingno".into(), 16, 16)];
-    let mut names = Vec::new();
-    for (id, origin) in items {
-        names.push(id.clone());
+    for (id, origin) in listed {
         let dimensions = match &origin {
             atlas_sources::SpriteOrigin::File(texture) => (|| {
-                let (w, h, _) = decode(texture)?;
+                let (w, h, _) = decode(texture, "textures")?;
                 let path = format!(
                     "{}.mcmeta",
                     atlas_sources::texture_resource(texture, "textures")
                 );
-                let metadata = root
-                    .read_to_string(&path)
-                    .ok()
-                    .map(|text| serde_json::from_str::<serde_json::Value>(&text))
-                    .transpose()
-                    .ok()?;
+                let metadata = match root.read(&path) {
+                    Ok(bytes) => Some(crate::packs::first_json::<serde_json::Value>(&bytes).ok()?),
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+                    Err(_) => return None,
+                };
                 if let Some(metadata) = &metadata {
                     metadata.as_object()?;
                     if let Some(texture) = metadata.get("texture") {
@@ -65,20 +101,46 @@ pub(super) fn load(
             entries.push((id.clone(), w, h));
         }
     }
-    let mut sprites = stitch(&entries, padding, maximum).ok_or_else(|| {
+    entries
+}
+
+fn finish_atlas(
+    atlas_id: &str,
+    entries: &[Entry],
+    mip_level: u32,
+    padding: u32,
+    maximum: u32,
+) -> crate::Result<GlintAtlas> {
+    let regions = stitch(entries, mip_level, padding, maximum).ok_or_else(|| {
         std::io::Error::other(format!(
-            "item atlas does not fit texture limit {maximum} with padding {padding}"
+            "{atlas_id} atlas does not fit texture limit {maximum} with padding {padding}"
         ))
     })?;
-    // TextureAtlas.getSprite returns missingno for rejected or unplaced source sprites.
-    if let Some(missing) = sprites.get("missingno").copied() {
-        for name in names {
-            sprites
-                .entry(super::sprite_name(&name).to_owned())
-                .or_insert(missing);
-        }
+    let missing = regions.get("missingno").copied();
+    Ok(GlintAtlas { regions, missing })
+}
+
+/// `SpriteLoader.stitch`: reduce `max_mip` to the smallest sprite side and lowest power-of-two bit.
+fn mip_level_for(entries: &[Entry], max_mip: u32) -> u32 {
+    let mut min_texel = i32::MAX as u32;
+    let mut lowest_bit = 1_i32.wrapping_shl(max_mip);
+    for &(_, w, h) in entries {
+        min_texel = min_texel.min(w.min(h));
+        let low_w = (w as i32) & (w as i32).wrapping_neg();
+        let low_h = (h as i32) & (h as i32).wrapping_neg();
+        lowest_bit = lowest_bit.min(low_w.min(low_h));
     }
-    Ok(sprites)
+    let min_size = (min_texel as i32).min(lowest_bit);
+    if min_size <= 0 {
+        0
+    } else {
+        (min_size as u32).ilog2().min(max_mip)
+    }
+}
+
+/// `Stitcher.smallestFittingMinTexel`: round `input` up to a multiple of `1 << mip_level`.
+fn smallest_fitting_min_texel(input: u32, mip_level: u32) -> u32 {
+    ((input >> mip_level) + u32::from((input & ((1u32 << mip_level) - 1)) != 0)) << mip_level
 }
 
 /// `TextureMetadataSection.CODEC`: invalid fields reject the sprite, even without mipmaps.
@@ -178,14 +240,25 @@ impl Region {
     }
 }
 
-/// `Stitcher.stitch/expand`: mip level zero, padding from the filtering option.
-fn stitch(entries: &[Entry], padding: u32, maximum: u32) -> Option<HashMap<String, Rect>> {
+/// `Stitcher.stitch/expand` at `mip_level` with `padding` texels on each side.
+fn stitch(
+    entries: &[Entry],
+    mip_level: u32,
+    padding: u32,
+    maximum: u32,
+) -> Option<HashMap<String, Rect>> {
     let mut order: Vec<_> = entries
         .iter()
         .enumerate()
         .map(|(i, (name, w, h))| {
             let (ns, path) = name.split_once(':').unwrap_or(("minecraft", name));
-            (i, w + padding * 2, h + padding * 2, path, ns)
+            (
+                i,
+                smallest_fitting_min_texel(w + padding * 2, mip_level),
+                smallest_fitting_min_texel(h + padding * 2, mip_level),
+                path,
+                ns,
+            )
         })
         .collect();
     order.sort_by(|a, b| {

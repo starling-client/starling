@@ -5,89 +5,176 @@ mod starling;
 pub use self::starling::*;
 
 impl Game<'_> {
+<<<<<<< HEAD
     /// `C::SetEntityData`: its arms of `apply_packet`, guard and order kept.
     pub(super) fn apply_set_entity_data_packet(&mut self, p: play::SetEntityData) {
         // Starling: any entity's custom name (armor stand holograms, objects).
         self.remote_names(p.id, &p.values);
+||||||| 46c00106def
+    /// `C::SetEntityData`: its arms of `apply_packet`, guard and order kept.
+    pub(super) fn apply_set_entity_data_packet(&mut self, p: play::SetEntityData) {
+=======
+    /// The entity type of a resident remote entity (`ClientLevel.getEntity`), if present.
+    fn remote_entity_kind(&self, id: i32) -> Option<String> {
+        let r = self.remote.as_ref()?;
+        if id == r.entity_id {
+            return Some("minecraft:player".to_owned());
+        }
+        if let Some(t) = r.entities.get(&id) {
+            return Some(t.kind.clone());
+        }
+        if let Some(row) = r.general.rows.get(&id) {
+            return Some(row.kind().to_owned());
+        }
+        self.mobs
+            .iter()
+            .find(|m| m.id == id as u32)
+            .map(|m| m.kind.id.to_string())
+    }
+
+    /// `ClientPacketListener.handleSetEntityData`: require an active level, ignore absent entities,
+    /// and validate/assign each entry in wire order (`SynchedEntityData.assignValues`).
+    pub(super) fn apply_set_entity_data_packet(&mut self, p: play::SetEntityData) -> Result<()> {
+        if !self
+            .remote
+            .as_ref()
+            .is_some_and(|r| r.logged_in && r.reconfiguring.is_none())
+        {
+            return Err(raw_ingress::PacketError(
+                "Cannot apply entity data without a client level.",
+            )
+            .into());
+        }
+        let Some(kind) = self.remote_entity_kind(p.id) else {
+            return Ok(());
+        };
+        let schema = entity_data_schema::serializers(&kind);
+        for entry in &p.values {
+            let (index, serializer_id, _) = entry;
+            if let Some(schema) = schema {
+                let Some(&expected) = schema.get(usize::from(*index)) else {
+                    return Err(raw_ingress::PacketError(
+                        "Entity data accessor index out of range.",
+                    )
+                    .into());
+                };
+                if expected != *serializer_id {
+                    return Err(raw_ingress::PacketError(
+                        "Invalid entity data item type for field.",
+                    )
+                    .into());
+                }
+            } else if let Some(&expected) = entity_data_schema::ENTITY_BASE.get(usize::from(*index))
+                && expected != *serializer_id
+            {
+                return Err(
+                    raw_ingress::PacketError("Invalid entity data item type for field.").into(),
+                );
+            }
+            self.apply_set_entity_data_entry(p.id, entry);
+        }
+        Ok(())
+    }
+
+    /// Apply one validated `SynchedEntityData` entry (`assignValue` + `onSyncedDataUpdated`).
+    fn apply_set_entity_data_entry(&mut self, id: i32, entry: &(u8, i32, Value)) {
+        let (index, _, value) = entry;
+        let single = std::slice::from_ref(entry);
+        let size_key = self.synched_size_key(id as u32);
+>>>>>>> ed6772e2118
         if let Some(r) = self.remote.as_mut() {
-            for (index, _, value) in &p.values {
-                if let (0, Value::Byte(flags)) = (index, value)
-                    && let Some(t) = r.entities.get_mut(&p.id)
-                {
+            if let (0, Value::Byte(flags)) = (index, value) {
+                if let Some(t) = r.entities.get_mut(&id) {
                     t.on_fire = flags & 1 != 0;
                 }
-                if let (4, Value::Bool(silent)) = (index, value) {
-                    if p.id == r.entity_id {
-                        r.local_entity_silent = *silent;
+                if flags & 0x40 != 0 {
+                    r.glowing.insert(id);
+                } else {
+                    r.glowing.remove(&id);
+                }
+            }
+            if let (4, Value::Bool(silent)) = (index, value) {
+                if id == r.entity_id {
+                    r.local_entity_silent = *silent;
+                }
+                if let Some(t) = r.entities.get_mut(&id) {
+                    t.silent = *silent;
+                }
+            }
+            // Entity.DATA_CUSTOM_NAME and DATA_CUSTOM_NAME_VISIBLE of a general row.
+            if let Some(row) = r.general.rows.get_mut(&id) {
+                match (index, value) {
+                    (2, Value::OptText(name)) => {
+                        row.custom_name = name.as_ref().map(sunrise_client::entity_nbt::name_text);
                     }
-                    if let Some(t) = r.entities.get_mut(&p.id) {
-                        t.silent = *silent;
-                    }
+                    (3, Value::Bool(visible)) => row.custom_name_visible = *visible,
+                    (5, Value::Bool(no_gravity)) => row.no_gravity = *no_gravity,
+                    _ => {}
                 }
             }
         }
         // Entity.DATA_SHARED_FLAGS_ID, DATA_CUSTOM_NAME and
         // DATA_CUSTOM_NAME_VISIBLE: server NPCs and holograms rely on
         // these instead of saved NBT.
-        if let Some(m) = self.mob_index.get_mut(&mut self.mobs, p.id as u32) {
-            for (index, _, value) in &p.values {
-                match (index, value) {
-                    (0, Value::Byte(flags)) => {
-                        m.invisible = flags & 0x20 != 0;
-                        m.glowing = flags & 0x40 != 0;
-                    }
-                    (2, Value::OptText(name)) => {
-                        let text = name.as_ref().map(sunrise_client::entity_nbt::name_text);
-                        m.custom_name = text.as_ref().map(sunrise_client::text::Text::plain);
-                        m.custom_name_text = text;
-                    }
-                    (2, Value::Text(name)) => {
-                        let text = sunrise_client::entity_nbt::name_text(name);
-                        m.custom_name = Some(text.plain());
-                        m.custom_name_text = Some(text);
-                    }
-                    (3, Value::Bool(visible)) => m.name_visible = *visible,
-                    _ => {}
+        if let Some(m) = self.mob_index.get_mut(&mut self.mobs, id as u32) {
+            match (index, value) {
+                (0, Value::Byte(flags)) => {
+                    m.invisible = flags & 0x20 != 0;
+                    m.glowing = flags & 0x40 != 0;
                 }
+                (2, Value::OptText(name)) => {
+                    let text = name.as_ref().map(sunrise_client::entity_nbt::name_text);
+                    m.custom_name = text.as_ref().map(sunrise_client::text::Text::plain);
+                    m.custom_name_text = text;
+                }
+                (2, Value::Text(name)) => {
+                    let text = sunrise_client::entity_nbt::name_text(name);
+                    m.custom_name = Some(text.plain());
+                    m.custom_name_text = Some(text);
+                }
+                (3, Value::Bool(visible)) => m.name_visible = *visible,
+                // Entity.DATA_NO_GRAVITY: `isNoGravity` in the client's own travel.
+                (5, Value::Bool(no_gravity)) => m.no_gravity = *no_gravity,
+                _ => {}
             }
         }
-        if let Some((_, _, Value::Byte(flags))) = p.values.iter().find(|v| v.0 == 0)
-            && let Some(r) = self.remote.as_mut()
-        {
-            if flags & 0x40 != 0 {
-                r.glowing.insert(p.id);
-            } else {
-                r.glowing.remove(&p.id);
+        // Entity.DATA_NO_GRAVITY of an item, which may come before its stack
+        // (`DATA_ITEM`, 8) and so before the item is made.
+        if let (5, Value::Bool(no_gravity)) = (index, value) {
+            if let Some(item) = self.dropped.iter_mut().find(|d| d.id == id as u32) {
+                item.no_gravity = *no_gravity;
+            } else if let Some(pending) = self
+                .remote
+                .as_mut()
+                .and_then(|r| r.pending_items.get_mut(&id))
+            {
+                pending.no_gravity = *no_gravity;
             }
         }
-        self.remote_mob_data(p.id, &p.values);
-        if let Some(m) = self.mob_index.get_mut(&mut self.mobs, p.id as u32)
+        self.remote_mob_data(id, single);
+        if let Some(m) = self.mob_index.get_mut(&mut self.mobs, id as u32)
             && m.species() == sunrise_client::mobs::Species::Creeper
         {
-            for (index, _, value) in &p.values {
-                match (index, value) {
-                    // Creeper.DATA_SWELL_DIR, DATA_IS_POWERED, DATA_IS_IGNITED.
-                    (16, Value::Int(dir)) => m.extra.counter = *dir,
-                    (17, Value::Bool(powered)) => m.extra.charged = *powered,
-                    (18, Value::Bool(ignited)) => m.extra.flag = *ignited,
-                    _ => {}
-                }
+            match (index, value) {
+                // Creeper.DATA_SWELL_DIR, DATA_IS_POWERED, DATA_IS_IGNITED.
+                (16, Value::Int(dir)) => m.extra.counter = *dir,
+                (17, Value::Bool(powered)) => m.extra.charged = *powered,
+                (18, Value::Bool(ignited)) => m.extra.flag = *ignited,
+                _ => {}
             }
         }
-        if let Some(m) = self.mob_index.get_mut(&mut self.mobs, p.id as u32) {
-            for (index, _, value) in &p.values {
-                match (index, value) {
-                    // Entity.DATA_TICKS_FROZEN: isFullyFrozen shakes it.
-                    (7, Value::Int(ticks)) => m.ticks_frozen = *ticks,
-                    // Strider.DATA_SUFFOCATING (after AgeableMob's two
-                    // and DATA_BOOST_TIME): a cold strider shakes.
-                    (19, Value::Bool(cold))
-                        if m.species() == sunrise_client::mobs::Species::Strider =>
-                    {
-                        m.extra.flag = *cold;
-                    }
-                    _ => {}
+        if let Some(m) = self.mob_index.get_mut(&mut self.mobs, id as u32) {
+            match (index, value) {
+                // Entity.DATA_TICKS_FROZEN: isFullyFrozen shakes it.
+                (7, Value::Int(ticks)) => m.ticks_frozen = *ticks,
+                // Strider.DATA_SUFFOCATING (after AgeableMob's two
+                // and DATA_BOOST_TIME): a cold strider shakes.
+                (19, Value::Bool(cold))
+                    if m.species() == sunrise_client::mobs::Species::Strider =>
+                {
+                    m.extra.flag = *cold;
                 }
+                _ => {}
             }
         }
         // LivingEntity.DATA_LIVING_ENTITY_FLAGS: for another player
@@ -95,174 +182,172 @@ impl Game<'_> {
         let mannequin = self
             .mobs
             .iter()
-            .any(|m| m.id == p.id as u32 && &*m.kind.id == "minecraft:mannequin");
+            .any(|m| m.id == id as u32 && &*m.kind.id == "minecraft:mannequin");
         let other = mannequin
             || self
                 .remote
                 .as_ref()
-                .is_some_and(|r| r.level_players.contains_key(&p.id) && r.entity_id != p.id);
+                .is_some_and(|r| r.level_players.contains_key(&id) && r.entity_id != id);
         // LivingEntity.onSyncedDataUpdated(SLEEPING_POS_ID): another
         // player lies down in their bed (drawn lying in it), or gets up.
         if other {
-            for (index, _, value) in &p.values {
-                if let (14, Value::OptPos(bed)) = (index, value) {
-                    let code = bed.map_or(0, |b| self.bed_facing(b));
-                    let at = bed.and_then(|head| self.sleeping_position(head));
-                    if let Some(m) = self.mob_index.get_mut(&mut self.mobs, p.id as u32) {
-                        m.extra.ints[1] = code;
-                        if bed.is_some() {
-                            // setPosToBed leaves the server's position alone
-                            // when the client's bed has no sleep shape.
-                            if let Some(at) = at {
-                                m.position = at;
-                                m.previous = at;
-                            }
-                            m.head_pitch = 0.0;
-                            m.previous_head_pitch = 0.0;
+            if let (14, Value::OptPos(bed)) = (index, value) {
+                let code = bed.map_or(0, |b| self.bed_facing(b));
+                let at = bed.and_then(|head| self.sleeping_position(head));
+                if let Some(m) = self.mob_index.get_mut(&mut self.mobs, id as u32) {
+                    m.extra.ints[1] = code;
+                    if bed.is_some() {
+                        // setPosToBed leaves the server's position alone
+                        // when the client's bed has no sleep shape.
+                        if let Some(at) = at {
+                            m.position = at;
+                            m.previous = at;
                         }
+                        m.head_pitch = 0.0;
+                        m.previous_head_pitch = 0.0;
                     }
                 }
-                // Avatar.DATA_PLAYER_MAIN_HAND (HumanoidArm: 0 left, 1
-                // right): the arm a swing of the main hand moves.
-                if let (15, Value::Id(arm)) = (index, value)
-                    && let Some(m) = self.mob_index.get_mut(&mut self.mobs, p.id as u32)
-                {
-                    m.extra.main_hand_left = *arm == 0;
-                }
-                // Avatar.DATA_PLAYER_MODE_CUSTOMISATION: the skin layers
-                // the player shows (PlayerModelPart bits).
-                if let (16, Value::Byte(bits)) = (index, value)
-                    && let Some(m) = self.mob_index.get_mut(&mut self.mobs, p.id as u32)
-                {
-                    m.extra.hidden_model_parts = !(*bits as u8) & 0x7F;
-                }
+            }
+            // Avatar.DATA_PLAYER_MAIN_HAND (HumanoidArm: 0 left, 1
+            // right): the arm a swing of the main hand moves.
+            if let (15, Value::Id(arm)) = (index, value)
+                && let Some(m) = self.mob_index.get_mut(&mut self.mobs, id as u32)
+            {
+                m.extra.main_hand_left = *arm == 0;
+            }
+            // Avatar.DATA_PLAYER_MODE_CUSTOMISATION: the skin layers
+            // the player shows (PlayerModelPart bits).
+            if let (16, Value::Byte(bits)) = (index, value)
+                && let Some(m) = self.mob_index.get_mut(&mut self.mobs, id as u32)
+            {
+                m.extra.hidden_model_parts = !(*bits as u8) & 0x7F;
             }
         }
         // LivingEntity.onSyncedDataUpdated(SLEEPING_POS_ID): this
         // player lies down in the bed, or gets up.
-        if self.remote.as_ref().is_some_and(|r| r.entity_id == p.id) {
-            for (index, _, value) in &p.values {
-                match (index, value) {
-                    (14, Value::OptPos(bed)) => {
-                        if bed.is_some() && self.sleeping.is_none() {
-                            self.sleep_timer = 0;
-                        }
-                        self.sleeping = *bed;
-                        if let Some(head) = *bed {
-                            // LivingEntity.onSyncedDataUpdated(SLEEPING_POS_ID): setPosToBed.
-                            let at = self.sleeping_position(head);
-                            if let Some(pl) = self.player.as_mut() {
-                                if let Some(at) = at {
-                                    pl.position = at;
-                                }
-                                pl.velocity = Vec3::ZERO;
-                                pl.pitch = 0.0;
-                            }
+        if self.remote.as_ref().is_some_and(|r| r.entity_id == id) {
+            match (index, value) {
+                // Player.DATA_SCORE_ID: DeathScreen reads this, not the XP packet.
+                (18, Value::Int(score)) => self.player_score = *score,
+                (14, Value::OptPos(bed)) => {
+                    if bed.is_some() && self.sleeping.is_none() {
+                        self.sleep_timer = 0;
+                    }
+                    self.sleeping = *bed;
+                    if let Some(head) = *bed {
+                        // LivingEntity.onSyncedDataUpdated(SLEEPING_POS_ID): setPosToBed.
+                        let at = self.sleeping_position(head);
+                        if let Some(pl) = self.player.as_mut() {
                             if let Some(at) = at {
-                                self.previous_position = at;
+                                pl.position = at;
                             }
-                            self.pitch = 0.0;
-                            self.snap_player_model_pitch();
+                            pl.velocity = Vec3::ZERO;
+                            pl.pitch = 0.0;
                         }
+                        if let Some(at) = at {
+                            self.previous_position = at;
+                        }
+                        self.pitch = 0.0;
+                        self.snap_player_model_pitch();
                     }
-                    // Entity.DATA_SHARED_FLAGS_ID's sprinting bit: the
-                    // server stops the sprint after a hit's extra
-                    // knockback (the flag only, as assignValues sets
-                    // it: the speed modifier and wasSprinting stay).
-                    // Its invisible bit (Entity.isInvisible): the
-                    // Invisibility effect's, or a plugin's that hides
-                    // the real body under a pose (#3788).
-                    (0, Value::Byte(flags)) => {
-                        if let Some(pl) = self.player.as_mut() {
-                            pl.sprinting = flags & 0x08 != 0;
-                            // Entity.DATA_SHARED_FLAGS_ID's fall-flying
-                            // bit (0x80, `Entity.setSharedFlag(7, ...)`):
-                            // `LivingEntity.updateFallFlying` clears the
-                            // glide on the server only and `LocalPlayer`
-                            // never ends one itself, so this packet is
-                            // the glide's own end. Applied when it is
-                            // handled — the frame's poll, before its
-                            // ticks — as ClientPacketListener does, so a
-                            // clear that arrives mid-tick lets that tick
-                            // keep its glide travel (#7616).
-                            pl.fall_flying = flags & -128 != 0;
-                        }
-                        let on_fire = flags & 0x01 != 0;
-                        if let Some(r) = self.remote.as_mut() {
-                            r.own_invisible = flags & 0x20 != 0;
-                            let was_on_fire = std::mem::replace(&mut r.own_on_fire, on_fire);
-                            // The server put the fire out: the
-                            // window's countdown ends with it.
-                            if was_on_fire
-                                && !on_fire
-                                && let Some(pl) = self.player.as_mut()
-                            {
-                                pl.fire_ticks = pl.fire_ticks.min(0);
-                            }
-                        }
-                    }
-                    // Entity.DATA_AIR_SUPPLY_ID and
-                    // Player.DATA_PLAYER_ABSORPTION_ID: the bubbles
-                    // and golden hearts the server's player has.
-                    (1, Value::Int(air)) => {
-                        if let Some(pl) = self.player.as_mut() {
-                            pl.air = *air;
-                        }
-                    }
-                    // Entity.DATA_TICKS_FROZEN: the server's count of the
-                    // powder snow freeze, which the client's own copy reads
-                    // for the frost overlay, the frozen hearts and the
-                    // shiver of its third-person model (#11217).
-                    (7, Value::Int(ticks)) => {
-                        if let Some(pl) = self.player.as_mut() {
-                            pl.ticks_frozen = *ticks;
-                        }
-                    }
-                    // LivingEntity.DATA_ARROW_COUNT_ID and DATA_STINGER_COUNT_ID.
-                    (12, Value::Int(count)) => {
-                        if let Some(r) = self.remote.as_mut() {
-                            r.own_arrows = *count;
-                        }
-                    }
-                    (13, Value::Int(count)) => {
-                        if let Some(r) = self.remote.as_mut() {
-                            r.own_stingers = *count;
-                        }
-                    }
-                    (19 | 20, Value::Id(v)) => {
-                        if let Some(r) = self.remote.as_mut() {
-                            r.own_shoulders[usize::from(*index == 20)] =
-                                (*v > 0).then(|| (*v - 1).clamp(0, 4));
-                        }
-                    }
-                    (17, Value::Float(amount)) => {
-                        if let Some(pl) = self.player.as_mut() {
-                            let _ = pl.internal_set_absorption(*amount);
-                        }
-                    }
-                    // LivingEntity.DATA_LIVING_ENTITY_FLAGS: the server
-                    // starts or stops this player's use, as an axe that
-                    // disables the raised shield does (Player.disableShield's
-                    // stopUsingItem). LocalPlayer.onSyncedDataUpdated.
-                    (8, Value::Byte(flags)) => {
-                        let selected = self.selected;
-                        let using = self.using;
-                        self.using = synced_local_use(using, *flags, selected, |slot| {
-                            self.stack_in(slot).is_some()
-                        });
-                        // onSyncedDataUpdated's useItemRemaining: getUseDuration,
-                        // without startUsingItem's event.
-                        if using.is_none()
-                            && let Some((slot, _)) = self.using
-                            && let Some(stack) = self.stack_in(slot).cloned()
-                        {
-                            self.use_duration = self.use_duration(&stack);
-                            self.use_start = super::super::using_item::UseStart::of(stack);
-                            self.reset_client_item_use();
-                        }
-                    }
-                    _ => {}
                 }
+                // Entity.DATA_SHARED_FLAGS_ID's sprinting bit: the
+                // server stops the sprint after a hit's extra
+                // knockback (the flag only, as assignValues sets
+                // it: the speed modifier and wasSprinting stay).
+                // Its invisible bit (Entity.isInvisible): the
+                // Invisibility effect's, or a plugin's that hides
+                // the real body under a pose (#3788).
+                (0, Value::Byte(flags)) => {
+                    if let Some(pl) = self.player.as_mut() {
+                        pl.sprinting = flags & 0x08 != 0;
+                        // Entity.DATA_SHARED_FLAGS_ID's fall-flying
+                        // bit (0x80, `Entity.setSharedFlag(7, ...)`):
+                        // `LivingEntity.updateFallFlying` clears the
+                        // glide on the server only and `LocalPlayer`
+                        // never ends one itself, so this packet is
+                        // the glide's own end. Applied when it is
+                        // handled — the frame's poll, before its
+                        // ticks — as ClientPacketListener does, so a
+                        // clear that arrives mid-tick lets that tick
+                        // keep its glide travel (#7616).
+                        pl.fall_flying = flags & -128 != 0;
+                    }
+                    let on_fire = flags & 0x01 != 0;
+                    if let Some(r) = self.remote.as_mut() {
+                        r.own_invisible = flags & 0x20 != 0;
+                        let was_on_fire = std::mem::replace(&mut r.own_on_fire, on_fire);
+                        // The server put the fire out: the
+                        // window's countdown ends with it.
+                        if was_on_fire
+                            && !on_fire
+                            && let Some(pl) = self.player.as_mut()
+                        {
+                            pl.fire_ticks = pl.fire_ticks.min(0);
+                        }
+                    }
+                }
+                // Entity.DATA_AIR_SUPPLY_ID and
+                // Player.DATA_PLAYER_ABSORPTION_ID: the bubbles
+                // and golden hearts the server's player has.
+                (1, Value::Int(air)) => {
+                    if let Some(pl) = self.player.as_mut() {
+                        pl.air = *air;
+                    }
+                }
+                // Entity.DATA_TICKS_FROZEN: the server's count of the
+                // powder snow freeze, which the client's own copy reads
+                // for the frost overlay, the frozen hearts and the
+                // shiver of its third-person model (#11217).
+                (7, Value::Int(ticks)) => {
+                    if let Some(pl) = self.player.as_mut() {
+                        pl.ticks_frozen = *ticks;
+                    }
+                }
+                // LivingEntity.DATA_ARROW_COUNT_ID and DATA_STINGER_COUNT_ID.
+                (12, Value::Int(count)) => {
+                    if let Some(r) = self.remote.as_mut() {
+                        r.own_arrows = *count;
+                    }
+                }
+                (13, Value::Int(count)) => {
+                    if let Some(r) = self.remote.as_mut() {
+                        r.own_stingers = *count;
+                    }
+                }
+                (19 | 20, Value::Id(v)) => {
+                    if let Some(r) = self.remote.as_mut() {
+                        r.own_shoulders[usize::from(*index == 20)] =
+                            (*v > 0).then(|| (*v - 1).clamp(0, 4));
+                    }
+                }
+                (17, Value::Float(amount)) => {
+                    if let Some(pl) = self.player.as_mut() {
+                        let _ = pl.internal_set_absorption(*amount);
+                    }
+                }
+                // LivingEntity.DATA_LIVING_ENTITY_FLAGS: the server
+                // starts or stops this player's use, as an axe that
+                // disables the raised shield does (Player.disableShield's
+                // stopUsingItem). LocalPlayer.onSyncedDataUpdated.
+                (8, Value::Byte(flags)) => {
+                    let selected = self.selected;
+                    let using = self.using;
+                    self.using = synced_local_use(using, *flags, selected, |slot| {
+                        self.stack_in(slot).is_some()
+                    });
+                    // onSyncedDataUpdated's useItemRemaining: getUseDuration,
+                    // without startUsingItem's event.
+                    if using.is_none()
+                        && let Some((slot, _)) = self.using
+                        && let Some(stack) = self.stack_in(slot).cloned()
+                    {
+                        self.use_duration = self.use_duration(&stack);
+                        self.use_start = super::super::using_item::UseStart::of(stack);
+                        self.reset_client_item_use();
+                    }
+                }
+                _ => {}
             }
         }
         // Entity.DATA_SHARED_FLAGS_ID's crouching and sprinting bits:
@@ -272,33 +357,31 @@ impl Game<'_> {
             || self
                 .remote
                 .as_ref()
-                .is_some_and(|r| r.level_players.contains_key(&p.id)))
-            && let Some(m) = self.mob_index.get_mut(&mut self.mobs, p.id as u32)
+                .is_some_and(|r| r.level_players.contains_key(&id)))
+            && let Some(m) = self.mob_index.get_mut(&mut self.mobs, id as u32)
+            && let (0, Value::Byte(flags)) = (index, value)
         {
-            for (index, _, value) in &p.values {
-                if let (0, Value::Byte(flags)) = (index, value) {
-                    m.extra.crouching = flags & 2 != 0;
-                    m.extra.sprinting = flags & 8 != 0;
-                }
-            }
+            m.extra.crouching = flags & 2 != 0;
+            m.extra.sprinting = flags & 8 != 0;
         }
-        for (index, _, value) in &p.values {
-            if *index == ITEM_ENTITY_ITEM
-                && let Value::Item(stack) = value
-            {
-                self.remote_item_data(p.id, stack);
-            }
-            // ExperienceOrb.DATA_VALUE (the icon's size).
-            if *index == 8
-                && let Value::Int(v) = value
-                && let Some(o) = self.orbs.iter_mut().find(|o| o.id == p.id as u32)
-            {
-                o.value = *v;
-            }
+        if *index == ITEM_ENTITY_ITEM
+            && let Value::Item(stack) = value
+        {
+            self.remote_item_data(id, stack);
         }
-        self.remote_object_data(p.id, &p.values);
-        self.remote_projectile_data(p.id, &p.values);
-        self.remote_dragon_data(p.id, &p.values);
+        // ExperienceOrb.DATA_VALUE (the icon's size).
+        if *index == 8
+            && let Value::Int(v) = value
+            && let Some(o) = self.orbs.iter_mut().find(|o| o.id == id as u32)
+        {
+            o.value = *v;
+        }
+        self.remote_object_data(id, single);
+        self.remote_projectile_data(id, single);
+        self.remote_dragon_data(id, single);
+        // `onSyncedDataUpdated` → `refreshDimensions`: `EntityEvent.Size` when
+        // this value changed the copy's pose or the size it follows.
+        self.native_synched_size(id as u32, size_key, *index, value);
     }
 
     /// `C::SetEquipment`: its arms of `apply_packet`, guard and order kept.
@@ -381,17 +464,25 @@ impl Game<'_> {
         } else if let Some(m) = self.mob_index.get_mut(&mut self.mobs, p.id as u32) {
             m.limb_speed = 1.5;
             m.hurt_time = 10;
+            // LivingEntity.handleDamageEvent.
+            m.invulnerable = 20;
         } else {
             self.remote_dragon_hurt(p.id);
         }
     }
 
-    /// `C::RemoveMobEffect`: its arms of `apply_packet`, guard and order kept.
+    /// `C::RemoveMobEffect` (`LivingEntity.removeEffectNoUpdate`): from the player itself or
+    /// from another living entity whose effects this client keeps.
     pub(super) fn apply_remove_mob_effect_packet(&mut self, p: play::RemoveMobEffect) {
-        if self.remote.as_ref().is_some_and(|r| r.entity_id == p.id)
-            && let Some(id) = self.remote_effect_id(p.effect)
-        {
+        let Some(id) = self.remote_effect_id(p.effect) else {
+            return;
+        };
+        if self.remote.as_ref().is_some_and(|r| r.entity_id == p.id) {
             self.potions.effects.list.retain(|e| e.id != id);
+        } else if let Some(m) = self.mob_index.get_mut(&mut self.mobs, p.id as u32) {
+            m.extra.client_effects.list.retain(|e| e.id != id);
+        } else if let Some(a) = self.armor_stands.iter_mut().find(|a| a.id == p.id as u32) {
+            a.client_effects.list.retain(|e| e.id != id);
         }
     }
 

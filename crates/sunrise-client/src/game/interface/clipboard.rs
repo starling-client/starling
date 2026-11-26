@@ -5,27 +5,18 @@ use sunrise_client::clipboard::{self, EditShortcut};
 use winit::event::KeyEvent;
 
 impl Game<'_> {
-    /// Runs `f` with `user_input` saying whether it handles input, then restores it, so a
-    /// frame drawn while a key is handled reads false.
-    pub(super) fn with_user_input<R>(&mut self, input: bool, f: impl FnOnce(&mut Self) -> R) -> R {
-        let was = self.user_input.replace(input);
-        let result = f(self);
-        self.user_input.set(was);
-        result
-    }
-    /// The clipboard's text (`KeyboardHandler.getClipboard`), empty when it holds none,
-    /// while the game handles a key, mouse or typed-text event: a mod's key or screen hook
-    /// pasting into its own field. None at any other moment (a tick, a frame, a packet),
-    /// so no mod reads the clipboard without the player doing something, and None on a
-    /// server.
+    /// The clipboard's text (`KeyboardHandler.getClipboard`), empty when it holds none.
+    /// Works from any client callback (a tick, a frame, a payload handler, an input event,
+    /// a screen hook); None only without a native window (a server or headless host).
     pub(super) fn clipboard_text(&self) -> Option<String> {
-        (self.native_window() && self.user_input.get()).then(|| self.clipboard.text())
+        self.native_window().then(|| self.clipboard.text())
     }
-    /// Puts `text` on the clipboard (`KeyboardHandler.setClipboard`) on the same terms as
-    /// `clipboard_text` reads it. False, with nothing copied, at any other moment or
-    /// on a server; empty text copies nothing, as vanilla's.
+    /// Puts `text` on the clipboard (`KeyboardHandler.setClipboard`) from any client
+    /// callback, as `clipboard_text` reads it. False, with nothing copied, without a native
+    /// window (a server or headless host); empty text is ignored and leaves the
+    /// clipboard unchanged, as vanilla's.
     pub(super) fn set_clipboard_text(&self, text: &str) -> bool {
-        if !self.native_window() || !self.user_input.get() {
+        if !self.native_window() {
             return false;
         }
         self.clipboard.set_text(text);
@@ -38,11 +29,18 @@ impl Game<'_> {
         if event.state != ElementState::Pressed {
             return None;
         }
+        self.edit_shortcut_for_letter(clipboard::shortcut_letter(
+            &event.logical_key,
+            event.physical_key,
+        ))
+    }
+
+    pub(super) fn edit_shortcut_for_letter(&self, letter: Option<char>) -> Option<EditShortcut> {
         let m = self.modifiers;
         // The keys the player holds: Toggle Sprint and Toggle Sneak hold Ctrl and Shift too.
         let held = |keys: [KeyCode; 2]| keys.iter().any(|k| self.physical_keys.contains(k));
         clipboard::edit_shortcut(
-            clipboard::shortcut_letter(&event.logical_key, event.physical_key),
+            letter,
             self.has_control_down_with_quirk(),
             m.shift_key() || held([KeyCode::ShiftLeft, KeyCode::ShiftRight]),
             m.alt_key() || held([KeyCode::AltLeft, KeyCode::AltRight]),
@@ -83,7 +81,8 @@ impl Game<'_> {
     /// fields, the LAN port, a dialog's input, the command box and the edit
     /// screens of the jigsaw, structure and test blocks.
     pub(super) fn text_input_focused(&self) -> bool {
-        (self.screen == Screen::Chat && self.title.is_none())
+        self.mounted_widget_captures_input()
+            || (self.screen == Screen::Chat && self.title.is_none())
             || self.sign_edit.is_some()
             || matches!(self.book, Some(super::books::BookScreen::Edit { .. }))
             || (self.screen == Screen::Creative && self.creative_screen.tab().search)
@@ -226,16 +225,19 @@ mod tests {
         }
     }
 
-    /// A tick and a frame reach no clipboard, read or write; a click from the window does,
-    /// and its copy is what the clipboard holds after.
+    /// A mod reads and writes the clipboard in a tick, a frame, a payload handler's host
+    /// and an input event; a server has none, and empty text leaves it unchanged. A payload
+    /// handler's context hands the handler the game as its `ClientHost`, so it is called
+    /// with that host here.
     #[test]
     #[ignore = "daily"]
-    fn a_mod_reaches_the_clipboard_only_while_input_is_handled() {
+    fn a_mod_reaches_the_clipboard_from_any_client_callback() {
         let reads = Reads::default();
         let mods: mod_api::Mods = vec![ModEntry::new("paste", Box::new(Mod(reads.clone())))].into();
         with_mods(mods, || {
             crate::game::native_entity_refs::tests::with_game(|game| {
                 game.options.execution_role = crate::game::execution_role::ExecutionRole::Client;
+                // Headless has no window, but a client role is what `native_window` asks.
                 game.options.headless = true;
                 game.clipboard.set_text("pasted");
 
@@ -251,19 +253,43 @@ mod tests {
                     },
                     crate::game::input_trace::InputOrigin::User,
                 );
-                game.native_client_tick_pre();
                 let got = reads.0.lock().unwrap().clone();
                 assert_eq!(
                     got,
                     [
-                        ("tick", None, false),
-                        ("frame", None, false),
-                        ("click", Some("pasted".to_owned()), true),
-                        ("tick", None, false),
+                        ("tick", Some("pasted".to_owned()), true),
+                        ("frame", Some("tick".to_owned()), true),
+                        ("click", Some("frame".to_owned()), true),
                     ]
                 );
                 assert_eq!(game.clipboard.text(), "click");
+
+                // The Create-shaped case: a payload handler copies reply text, and a read
+                // after it returns that text.
+                let host: &mut dyn ClientHost = game;
+                assert!(host.set_clipboard_text("reply text"));
+                assert_eq!(host.clipboard_text().as_deref(), Some("reply text"));
+
+                // Empty text is ignored.
+                assert!(host.set_clipboard_text(""));
+                assert_eq!(host.clipboard_text().as_deref(), Some("reply text"));
             });
+            for role in [
+                crate::game::execution_role::ExecutionRole::IntegratedServer,
+                crate::game::execution_role::ExecutionRole::DedicatedServer,
+            ] {
+                crate::game::native_entity_refs::tests::with_game_role(
+                    crate::game::native_entity_refs::tests::fixture_root(),
+                    role,
+                    |game| {
+                        game.clipboard.set_text("kept");
+                        let host: &dyn ClientHost = &*game;
+                        assert_eq!(host.clipboard_text(), None);
+                        assert!(!host.set_clipboard_text("lost"));
+                        assert_eq!(game.clipboard.text(), "kept");
+                    },
+                );
+            }
         });
     }
 }

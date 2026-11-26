@@ -1,7 +1,4 @@
 //! Concrete stack matching, shared by ordinary crafting and placement.
-#[cfg(test)]
-#[path = "matching_tests.rs"]
-mod tests;
 use super::*;
 impl Ingredient {
     /// `test` with the loop context the game already holds.

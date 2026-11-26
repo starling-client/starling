@@ -11,9 +11,12 @@ import math
 from pathlib import Path
 import time
 
-import test_hostile_sound_categories_parity as sound
-import test_locator_bar_parity as net
-from test_dedicated_server_parity import Server, game_time
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_hostile_sound_categories_parity as sound, test_locator_bar_parity as net
+from tools.test_dedicated_server_parity import Server, game_time
 
 PLAYER = 'Alice'
 LOCAL = [f'minecraft:entity.breeze.{name}' for name in ['idle_ground', 'idle_air', 'whirl']]

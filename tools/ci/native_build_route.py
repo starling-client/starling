@@ -15,8 +15,9 @@ import shutil
 import subprocess
 import sys
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import prebuilt_game as sdk_tools
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+from tools import prebuilt_game as sdk_tools
 
 TEMPLATE = sdk_tools.ROOT / "crates/cargo-sunrise-mod/template/native"
 MIXINS_REV = re.search(r'REV: &str = "(\w+)"', (sdk_tools.ROOT / "crates/sunrise-mod-package/src/mixins_tool.rs").read_text())[1]

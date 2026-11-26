@@ -126,7 +126,12 @@ impl Game<'_> {
         }
         // A mod block's is the mod's own, as on the server.
         let removed = match self.new_block_entity_for_state(state) {
-            Some(entity) => {
+            Some(mut entity) => {
+                // PotentSulfurBlockEntity.setLevel: the eruption clock starts as it joins the
+                // level, not at its first tick.
+                if let BlockEntity::PotentSulfur(sulfur) = &mut entity {
+                    sulfur.eruption_tick = self.world.game_time;
+                }
                 let same = self.world.block_entities.get(&pos).is_some_and(|e| {
                     e.id() == entity.id() && !(other_block && matches!(e, BlockEntity::Mod(_)))
                 });

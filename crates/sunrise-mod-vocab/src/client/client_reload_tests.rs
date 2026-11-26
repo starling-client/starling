@@ -9,63 +9,51 @@ fn files() -> FileToIdConverter {
 #[test]
 fn registry_views_and_explicit_order_before_vanilla() {
     let mut listeners = ClientListenerRegistry::new();
-    let model_manager = VanillaClientListeners::model_manager();
-    assert_eq!(
-        listeners.get_registry(),
-        std::slice::from_ref(&model_manager)
-    );
-    assert!(listeners.get_graph().is_empty());
+    let [model_manager, mod_first, mod_second, mod_after] = [
+        "minecraft:model_manager",
+        "test_mod:first",
+        "test_mod:second",
+        "test_mod:after",
+    ]
+    .map(id);
+    assert!(listeners.get_registry().iter().eq([&model_manager]));
+    assert!(listeners.get_graph().iter().next().is_none());
 
-    let first = Arc::new(Boundary);
-    let second = Arc::new(Boundary);
-    let after = Arc::new(Boundary);
     listeners
-        .add_listener(id("test_mod:first"), files(), first)
+        .add_listener(mod_first.clone(), files(), Arc::new(Boundary))
         .unwrap();
     listeners
-        .add_listener(id("test_mod:second"), files(), second)
+        .add_listener(mod_second.clone(), files(), Arc::new(Boundary))
         .unwrap();
     listeners
-        .add_listener(id("test_mod:after"), files(), after)
+        .add_listener(mod_after.clone(), files(), Arc::new(Boundary))
         .unwrap();
-    assert_eq!(listeners.get_last_vanilla_listener(), model_manager);
-    assert_eq!(
-        listeners.get_registry(),
-        [
-            model_manager.clone(),
-            id("test_mod:first"),
-            id("test_mod:second"),
-            id("test_mod:after"),
-        ]
+    let view: &dyn crate::ClientReloadListeners = &listeners;
+    let anchor: &Identifier = view.get_last_vanilla_listener();
+    assert_eq!(anchor, &model_manager);
+    let registry: crate::ClientReloadRegistryView<'_> = view.get_registry();
+    assert!(
+        registry
+            .iter()
+            .eq([&model_manager, &mod_first, &mod_second, &mod_after])
     );
+
+    let anchor = anchor.clone();
     listeners
-        .add_dependency(
-            id("test_mod:second"),
-            VanillaClientListeners::model_manager(),
-        )
+        .add_dependency(mod_second.clone(), anchor.clone())
         .unwrap();
-    listeners
-        .add_dependency(
-            VanillaClientListeners::model_manager(),
-            id("test_mod:after"),
-        )
-        .unwrap();
-    assert_eq!(
-        listeners.get_graph(),
-        [
-            (id("test_mod:second"), model_manager.clone()),
-            (model_manager.clone(), id("test_mod:after")),
-        ]
+    listeners.add_dependency(anchor, mod_after.clone()).unwrap();
+    let view: &dyn crate::ClientReloadListeners = &listeners;
+    let graph: crate::ClientReloadGraphView<'_> = view.get_graph();
+    assert!(
+        graph
+            .iter()
+            .eq([(&mod_second, &model_manager), (&model_manager, &mod_after)])
     );
     let sorted = listeners.finish().unwrap();
     assert_eq!(
         sorted.into_iter().map(|entry| entry.id).collect::<Vec<_>>(),
-        [
-            id("test_mod:second"),
-            model_manager,
-            id("test_mod:first"),
-            id("test_mod:after"),
-        ]
+        [mod_second, model_manager, mod_first, mod_after]
     );
 }
 
@@ -212,7 +200,7 @@ fn registration_panic_discards_its_listeners_and_edges_before_later_subscribers(
             _: &dyn crate::ClientReloadListenerContext,
             event: &mut crate::AddClientReloadListenersEvent<'_>,
         ) {
-            assert!(event.listeners.get_graph().is_empty());
+            assert!(event.listeners.get_graph().iter().next().is_none());
             event
                 .listeners
                 .add_listener(id("registration_probe:kept"), files(), Arc::new(Boundary))
@@ -231,14 +219,11 @@ fn registration_panic_discards_its_listeners_and_edges_before_later_subscribers(
                 crate::dispatch_add_client_reload_listeners(&Context, |listen| {
                     registry.register_listener(listen)
                 });
-                assert!(registry.get_graph().is_empty());
-                assert_eq!(
-                    registry.get_registry(),
-                    [
-                        VanillaClientListeners::model_manager(),
-                        id("registration_probe:kept")
-                    ]
-                );
+                assert!(registry.get_graph().iter().next().is_none());
+                assert!(registry.get_registry().iter().eq([
+                    &VanillaClientListeners::model_manager(),
+                    &id("registration_probe:kept"),
+                ]));
                 let reports = crate::__private::take_hook_panics();
                 if load == 0 {
                     assert_eq!(

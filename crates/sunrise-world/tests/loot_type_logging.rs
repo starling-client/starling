@@ -5,8 +5,11 @@ use std::{
     sync::{Arc, Once},
 };
 use sunrise_world::loot::{
-    self,
-    types::{Registry, RollRandom, Types},
+    self, LootStack,
+    types::{
+        BoundCondition, BoundFunction, DecodedCondition, DecodedFunction, Registry, RollRandom,
+        Types,
+    },
 };
 
 thread_local! {
@@ -32,61 +35,174 @@ fn capture() {
     RECORDS.with_borrow_mut(Vec::clear);
 }
 
-#[test]
-fn callback_refusals_warn_once_per_registry_type_and_data_generation() {
-    capture();
-    let generation = Types::default();
-    for _ in 0..3 {
-        generation.warn_once("test:broken", true, "function refused");
-        generation
-            .clone()
-            .warn_once("test:broken", true, "function refused");
-        generation.warn_once("test:broken", false, "condition refused");
+struct RefusingFunction;
+impl BoundFunction for RefusingFunction {
+    fn apply(
+        &self,
+        _: &loot::LootContext<'_>,
+        _: &mut dyn RollRandom,
+        _: &dyn loot::LootTags,
+        _: &mut dyn loot::LootStackEditAccess,
+    ) -> Result<(), String> {
+        Err("mod test: function refused".into())
     }
-    Types::default().warn_once("test:broken", true, "new generation refused");
-    RECORDS.with_borrow(|records| {
-        assert_eq!(
-            records.as_slice(),
-            [
-                "loot function type test:broken: function refused",
-                "loot condition type test:broken: condition refused",
-                "loot function type test:broken: new generation refused",
-            ]
-        )
-    });
 }
 
-struct NeedsAttacker;
-impl Registry for NeedsAttacker {
-    fn contains(&self, kind: &str, function: bool) -> bool {
-        !function && kind == "test:condition"
+struct RefusingCondition;
+impl BoundCondition for RefusingCondition {
+    fn test(
+        &self,
+        _: &loot::LootContext<'_>,
+        _: &mut dyn RollRandom,
+        _: &dyn loot::LootTags,
+    ) -> Result<bool, String> {
+        Err("mod test: condition refused".into())
     }
-    fn validate(&self, _: &str, _: &Value, _: bool) -> Result<Vec<String>, String> {
-        Ok(vec!["minecraft:attacking_entity".into()])
+}
+
+struct RefusingRegistry;
+impl Registry for RefusingRegistry {
+    fn contains(&self, kind: &str, _: bool) -> bool {
+        kind == "test:broken"
     }
     fn conditional(&self, _: &str) -> bool {
         true
     }
-    fn apply(
-        &self,
-        _: &str,
-        _: &Value,
-        _: &loot::LootContext<'_>,
-        _: &mut dyn RollRandom,
-        _: &dyn loot::LootTags,
-        stack: &loot::LootStack,
-    ) -> Result<loot::LootStack, String> {
-        Ok(stack.clone())
+    fn decode_function(&self, _: &str, _: &Value) -> Result<DecodedFunction, String> {
+        Ok(DecodedFunction {
+            rule: Arc::new(RefusingFunction),
+            referenced_params: Vec::new(),
+        })
     }
+    fn decode_condition(&self, _: &str, _: &Value) -> Result<DecodedCondition, String> {
+        Ok(DecodedCondition {
+            rule: Arc::new(RefusingCondition),
+            referenced_params: Vec::new(),
+        })
+    }
+}
+
+struct EmptyTags;
+impl loot::LootTags for EmptyTags {
+    fn contains(&self, _: &str, _: &str, _: &str) -> bool {
+        false
+    }
+    fn members(&self, _: &str, _: &str) -> Option<Vec<String>> {
+        None
+    }
+    fn item_tag_names(&self) -> Option<&loot::ItemTagNames> {
+        None
+    }
+}
+
+#[test]
+fn ordinary_callback_refusals_report_each_call_with_type_location_and_reason() {
+    capture();
+    let types = Types::new(Arc::new(RefusingRegistry));
+    let predicates = Arc::new(HashMap::from([(
+        "test:pred".into(),
+        json!({"type":"test:broken"}),
+    )]));
+    let modifiers = Arc::new(HashMap::from([(
+        "test:mod".into(),
+        json!({"type":"test:broken"}),
+    )]));
+    let bindings = types
+        .bind_generation(
+            Arc::default(),
+            Arc::clone(&predicates),
+            Arc::clone(&modifiers),
+            Vec::new(),
+            Default::default(),
+        )
+        .unwrap();
+    let ctx = loot::LootContext {
+        queried_table_id: None,
+        queried_stack: None,
+        entity: None,
+        damage: None,
+        player: None,
+        interacting_entity: None,
+        tool: None,
+        block: None,
+        luck: 0.0,
+        biome: None,
+        place: None,
+    };
+    let mut random = sunrise_core::random::LegacyRandom::new(1);
+    let mut stack = LootStack {
+        item: "minecraft:stick".into(),
+        count: 1,
+        damage: 0,
+        enchantments: Vec::new(),
+        potion: None,
+        map: false,
+        exploration: None,
+        ominous_amplifier: None,
+        stew_effects: Vec::new(),
+        names: Vec::new(),
+        components: Vec::new(),
+    };
+    for _ in 0..2 {
+        bindings
+            .function(None, "test:broken", &modifiers["test:mod"])
+            .unwrap()
+            .apply(&ctx, &mut random, &EmptyTags, &mut stack);
+        assert!(
+            !bindings
+                .condition(None, "test:broken", &predicates["test:pred"])
+                .unwrap()
+                .test(&ctx, &mut random, &EmptyTags,)
+        );
+    }
+    RECORDS.with_borrow(|records| {
+        assert_eq!(records.len(), 4, "{records:?}");
+        assert!(
+            records[0].contains("loot function type test:broken")
+                && records[0].contains("item_modifier test:mod")
+                && records[0].contains("mod test: function refused"),
+            "{}",
+            records[0]
+        );
+        assert_eq!(records[0], records[2]);
+        assert!(
+            records[1].contains("loot condition type test:broken")
+                && records[1].contains("predicate test:pred")
+                && records[1].contains("mod test: condition refused"),
+            "{}",
+            records[1]
+        );
+        assert_eq!(records[1], records[3]);
+    });
+}
+
+struct NeedsAttacker;
+struct AlwaysTrue;
+impl BoundCondition for AlwaysTrue {
     fn test(
         &self,
-        _: &str,
-        _: &Value,
         _: &loot::LootContext<'_>,
         _: &mut dyn RollRandom,
         _: &dyn loot::LootTags,
     ) -> Result<bool, String> {
         Ok(true)
+    }
+}
+impl Registry for NeedsAttacker {
+    fn contains(&self, kind: &str, function: bool) -> bool {
+        !function && kind == "test:condition"
+    }
+    fn conditional(&self, _: &str) -> bool {
+        true
+    }
+    fn decode_function(&self, kind: &str, _: &Value) -> Result<DecodedFunction, String> {
+        Err(format!("unknown loot function type {kind}"))
+    }
+    fn decode_condition(&self, _: &str, _: &Value) -> Result<DecodedCondition, String> {
+        Ok(DecodedCondition {
+            rule: Arc::new(AlwaysTrue),
+            referenced_params: vec!["minecraft:attacking_entity".into()],
+        })
     }
 }
 

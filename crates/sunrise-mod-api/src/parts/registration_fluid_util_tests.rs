@@ -19,12 +19,18 @@ mod tests {
             "minecraft:bucket",
             "minecraft:water_bucket",
             "minecraft:lava_bucket",
+            "maker:xp_bucket",
         ];
         host.registries
             .resolve_items(items.map(|id| Identifier::parse(id).unwrap()))
             .unwrap();
         host.registries
-            .resolve_fluids(["minecraft:empty", "minecraft:water", "minecraft:lava"])
+            .resolve_fluids([
+                "minecraft:empty",
+                "minecraft:water",
+                "minecraft:lava",
+                "maker:xp",
+            ])
             .unwrap();
         host.registries
             .fluid_sounds(
@@ -36,7 +42,15 @@ mod tests {
                 "minecraft:lava",
                 "minecraft:item.bucket.fill_lava",
                 "minecraft:item.bucket.empty_lava",
-            );
+            )
+            .fluid_sounds(
+                "maker:xp",
+                "minecraft:item.bucket.fill",
+                "minecraft:item.bucket.empty",
+            )
+            .fluid_bucket("minecraft:water", "minecraft:water_bucket")
+            .fluid_bucket("minecraft:lava", "minecraft:lava_bucket")
+            .fluid_bucket("maker:xp", "maker:xp_bucket");
         host.level.block_entity(TANK).tanks = vec![FakeTank::new(8000)];
         host.join(PLAYER, PLAYER_ENTITY)
             .slots
@@ -121,6 +135,26 @@ mod tests {
             "minecraft:item.bucket.fill_lava",
             "minecraft:fluid_pickup",
         );
+    }
+
+    /// A mod's fluid fills an empty bucket into the bucket the game registers for it
+    /// (`Fluid.getBucket`) with its fill sound, as water and lava do, and that bucket, looked up
+    /// afresh, empties back into the tank.
+    #[test]
+    fn an_empty_bucket_fills_with_a_mod_fluid_into_its_bucket_and_empties_back() {
+        let mut host = host("minecraft:bucket", 1);
+        host.level.block_entity(TANK).tanks[0].held = Some(fluid("maker:xp", 1000));
+        assert!(click(&mut host));
+        assert_eq!(held(&host), None);
+        assert_eq!(hand(&host), Some(stack("maker:xp_bucket", 1)));
+        assert_effects(
+            &host,
+            "minecraft:item.bucket.fill",
+            "minecraft:fluid_pickup",
+        );
+        assert!(click(&mut host));
+        assert_eq!(held(&host), Some(fluid("maker:xp", 1000)));
+        assert_eq!(hand(&host), Some(stack("minecraft:bucket", 1)));
     }
 
     #[test]

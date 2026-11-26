@@ -5,6 +5,7 @@ mod ingredient_values;
 use mod_api::item::item_stack::{ItemStack as ApiStack, StackWriteError};
 use std::num::NonZeroU32;
 use std::sync::Arc;
+use sunrise_client::fast_hash::FxHashMap;
 #[cfg(test)]
 use sunrise_client::parallel::ListenSnapshot;
 use sunrise_client::parallel::TickThread;
@@ -147,8 +148,6 @@ pub(in crate::game) fn listen_snapshot(tick: &TickThread) -> Option<ListenSnapsh
         index.blocks(),
     ))
 }
-#[path = "api_values/inside_write.rs"]
-mod inside_write;
 #[path = "api_values/landing_write.rs"]
 mod landing_write;
 #[path = "api_values/recipe_inputs.rs"]
@@ -329,7 +328,6 @@ impl TryIntoApi for sunrise_client::boss_overlay::ModBar {
 
 #[path = "api_values/item_snapshot.rs"]
 mod item_snapshot;
-pub(in crate::game) use item_snapshot::ItemBoundary;
 
 impl TryIntoApi for sunrise_world::chunk::BlockState {
     type Api = mod_api::BlockState;
@@ -534,7 +532,7 @@ macro_rules! scalar_values {
         }
     )* };
 }
-scalar_values!(u32, i32, bool, ());
+scalar_values!(u32, i32, f32, bool, ());
 
 impl TryIntoApi for String {
     type Api = Self;
@@ -838,6 +836,50 @@ pub(in crate::game) fn stack_read_metadata(
 #[cfg(test)]
 thread_local! {
     pub(in crate::game) static STACK_PROJECTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static STACK_OVERRIDE_PROJECTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Lend the stack to a whole dispatch. Readers share the first encoding of each requested
+/// override (including a miss). The full patch is encoded only for an explicit owned read.
+pub(in crate::game) fn with_stack_view<R>(
+    stack: Option<&EngineStack>,
+    read: impl FnOnce(Option<mod_api::ItemStackView<'_>>) -> R,
+) -> R {
+    let Some((stack, metadata)) =
+        stack.and_then(|stack| Some((stack, stack_read_metadata(stack).ok()?)))
+    else {
+        return read(None);
+    };
+    let owned = std::cell::OnceCell::new();
+    let project = |metadata| {
+        owned
+            .get_or_init(|| project_stack(stack, metadata).ok())
+            .clone()
+    };
+    let overrides = std::cell::RefCell::new(FxHashMap::<String, Option<Tag>>::default());
+    let read_override = |id: &str| {
+        let mut overrides = overrides.borrow_mut();
+        if let Some(value) = overrides.get(id) {
+            return value.clone();
+        }
+        #[cfg(test)]
+        STACK_OVERRIDE_PROJECTIONS.set(STACK_OVERRIDE_PROJECTIONS.get() + 1);
+        let bare = id.strip_prefix('!').unwrap_or(id);
+        let value =
+            match sunrise_items::item_data::encode_extra_components_matching(stack, |name| {
+                name == bare
+            }) {
+                Some(Tag::Compound(mut patch)) => patch.remove(&JavaString::from(id)),
+                _ => None,
+            };
+        overrides.insert(id.to_owned(), value.clone());
+        value
+    };
+    read(Some(mod_api::ItemStackView::resident_with_components(
+        metadata,
+        &project,
+        &read_override,
+    )))
 }
 
 /// Encode and normalize the patch using the scalars already read from this same stack.
@@ -847,12 +889,12 @@ pub(in crate::game) fn project_stack(
 ) -> Result<ApiStack, StackReadError> {
     #[cfg(test)]
     STACK_PROJECTIONS.set(STACK_PROJECTIONS.get() + 1);
-    let patch = sunrise_items::item_data::encode_extra_components(stack);
+    let patch = sunrise_items::item_data::live_component_patch(stack, false);
     projected_stack(metadata, patch)
 }
 
 /// Build either a full or filtered projection with the same checked damage normalization.
-fn projected_stack(
+pub(super) fn projected_stack(
     (key, count, damage): StackReadMetadata,
     patch: Option<Tag>,
 ) -> Result<ApiStack, StackReadError> {
@@ -1184,23 +1226,27 @@ impl TryIntoApi for crate::crafting::RecipeSnapshot {
     }
 }
 
-/// Install the engine-facing callbacks; snapshots never enter engine storage.
+/// Install the engine-facing callbacks; their stack arguments borrow the queried value.
 pub(crate) fn install_stack_hooks() {
     crate::native_stack_hooks::install(crate::native_stack_hooks::StackHooks {
         enchantments: |stack, target, value| {
-            if !mod_api::__private::listened(mod_api::HookId::GetEnchantmentLevel) {
-                return;
-            }
-            if let Ok(stack) = stack.try_into_api() {
-                mod_api::item::enchantments::native_get_enchantment_level(&stack, target, value);
+            if mod_api::__private::listened(mod_api::HookId::GetEnchantmentLevel) {
+                with_stack_view(Some(stack), |view| {
+                    if let Some(view) = view {
+                        mod_api::item::enchantments::native_get_enchantment_level(
+                            view, target, value,
+                        );
+                    }
+                });
             }
         },
         attributes: |stack, value| {
-            if !mod_api::__private::listened(mod_api::HookId::ItemAttributeModifier) {
-                return;
-            }
-            if let Ok(stack) = stack.try_into_api() {
-                mod_api::item::item_attributes::native_item_attribute_modifier(&stack, value);
+            if mod_api::__private::listened(mod_api::HookId::ItemAttributeModifier) {
+                with_stack_view(Some(stack), |view| {
+                    if let Some(view) = view {
+                        mod_api::item::item_attributes::native_item_attribute_modifier(view, value);
+                    }
+                });
             }
         },
     });
@@ -1609,13 +1655,30 @@ mod attribute_boundary_tests {
 mod enchantment_boundary_tests {
     use super::EngineStack as ItemStack;
     use crate::enchantment_levels::get_enchantment_level;
-    use mod_api::{GetEnchantmentLevelEvent, Hooks, Identifier, ModEntry};
+    use mod_api::{Component, GetEnchantmentLevelEvent, Hooks, Identifier, ModEntry, Tag};
     use mod_platform::testing::with_mods;
     use std::borrow::Cow;
     use std::sync::Arc;
     fn id(text: &str) -> Identifier {
         Identifier::parse(text).unwrap()
     }
+    struct Note;
+    impl Component for Note {
+        type Value = i32;
+        fn id(&self) -> &str {
+            "test:note"
+        }
+        fn decode(&self, value: &Tag) -> Option<i32> {
+            match value {
+                Tag::Int(value) => Some(*value),
+                _ => None,
+            }
+        }
+        fn encode(&self, value: i32) -> Tag {
+            Tag::Int(value)
+        }
+    }
+
     /// An iron sword fights as if it had Looting II and no Sharpness.
     struct Keen;
     #[mod_api::__subscriptions]
@@ -1624,6 +1687,10 @@ mod enchantment_boundary_tests {
             if mod_api::__private::item_key_id(event.stack.item()) != Some("minecraft:iron_sword") {
                 return;
             }
+            let encoded = super::STACK_OVERRIDE_PROJECTIONS.get();
+            assert_eq!(event.stack.get(&Note), Some(17));
+            assert_eq!(event.stack.get(&Note), Some(17));
+            assert_eq!(super::STACK_OVERRIDE_PROJECTIONS.get(), encoded + 1);
             let looting = id("minecraft:looting");
             if event.target.is_none_or(|target| *target == looting) {
                 event.enchantments.upgrade(looting, 2);
@@ -1641,6 +1708,7 @@ mod enchantment_boundary_tests {
         let _ = sunrise_items::native_enchantment_hooks::install(get_enchantment_level);
         let mut iron = ItemStack::new("minecraft:iron_sword", 1);
         iron.enchant("minecraft:sharpness", 3);
+        iron.data_mut().set_other("test:note", Some(Tag::Int(17)));
         let mut diamond = ItemStack::new("minecraft:diamond_sword", 1);
         diamond.enchant("minecraft:sharpness", 3);
         with_mods(Vec::new().into(), || {
@@ -1648,6 +1716,7 @@ mod enchantment_boundary_tests {
             assert_eq!(iron.enchantment_level("minecraft:sharpness"), 3);
         });
         with_mods(vec![ModEntry::new("keen", Box::new(Keen))].into(), || {
+            let projected = super::STACK_PROJECTIONS.get();
             assert_eq!(
                 &*iron.all_enchantments(),
                 [(Arc::from("minecraft:looting"), 2)]
@@ -1658,6 +1727,7 @@ mod enchantment_boundary_tests {
             assert_eq!(iron.enchantments(), [(Arc::from("minecraft:sharpness"), 3)]);
             assert!(matches!(diamond.all_enchantments(), Cow::Borrowed(_)));
             assert_eq!(diamond.enchantment_level("minecraft:sharpness"), 3);
+            assert_eq!(super::STACK_PROJECTIONS.get(), projected);
         });
     }
 }
@@ -1811,9 +1881,8 @@ impl super::Game<'_> {
         if !mod_api::__private::has_part_hook(mod_api::HookId::BlockEntityUpdateTag) {
             return;
         }
-        if let Ok(api) = entity.try_into_api() {
-            Self::native_block_entity_update_tag(pos, &api, tag);
-        }
+        let data = super::native_hooks::ResidentReadBlockEntity::stored(entity);
+        Self::native_block_entity_update_tag(pos, mod_api::BlockEntityDataView::new(&data), tag);
     }
     pub(in crate::game) fn api_block_entity_submit(
         &self,
@@ -1826,9 +1895,14 @@ impl super::Game<'_> {
         if !mod_api::__private::has_part_hook(mod_api::HookId::BlockEntitySubmit) {
             return;
         }
-        if let Ok(api) = entity.try_into_api() {
-            self.native_block_entity_submit(pos, block, state, &api, draw);
-        }
+        let data = super::native_hooks::ResidentReadBlockEntity::stored(entity);
+        self.native_block_entity_submit(
+            pos,
+            block,
+            state,
+            mod_api::BlockEntityDataView::new(&data),
+            draw,
+        );
     }
     pub(in crate::game) fn api_block_entity_render_bounding_box(
         &self,
@@ -1841,9 +1915,14 @@ impl super::Game<'_> {
         if !mod_api::__private::has_part_hook(mod_api::HookId::BlockEntityRenderBoundingBox) {
             return;
         }
-        if let Ok(api) = entity.try_into_api() {
-            self.native_block_entity_render_bounding_box(pos, block, state, &api, bounds);
-        }
+        let data = super::native_hooks::ResidentReadBlockEntity::stored(entity);
+        self.native_block_entity_render_bounding_box(
+            pos,
+            block,
+            state,
+            mod_api::BlockEntityDataView::new(&data),
+            bounds,
+        );
     }
     /// Shared click metadata borrows the already-converted API snapshot for this call.
     pub(in crate::game) fn block_click<'a>(
@@ -1867,47 +1946,6 @@ impl super::Game<'_> {
             player,
             player_entity_id,
         })
-    }
-}
-impl super::GameLevel<'_> {
-    pub(in crate::game) fn api_pre_remove_side_effects(
-        &mut self,
-        pos: sunrise_core::position::BlockPos,
-        state: sunrise_world::registry::BlockStateId,
-        entity: &crate::containers::ModBlockEntity,
-    ) -> super::spill::RemovalOutputs {
-        let mut outputs = super::spill::RemovalOutputs::default();
-        if !mod_api::__private::has_part_hook(mod_api::HookId::PreRemoveSideEffects) {
-            return outputs;
-        }
-        let Ok(api) = entity.try_into_api() else {
-            return outputs;
-        };
-        self.native_pre_remove_side_effects(super::native_hooks::PreRemoveSideEffectsCall {
-            pos,
-            state,
-            entity: &api,
-            keep_contents: &mut outputs.keep_contents,
-            drops: &mut outputs.drops,
-            spawns: &mut outputs.spawns,
-            experience: &mut outputs.experience,
-        });
-        if outputs.drops.len() > 1024
-            || outputs.spawns.len() > 1024
-            || outputs.experience.len() > 1024
-            || outputs
-                .spawns
-                .iter()
-                .any(|(_, at)| at.iter().any(|v| !v.is_finite()))
-            || outputs
-                .experience
-                .iter()
-                .any(|(_, at)| at.iter().any(|v| !v.is_finite()))
-        {
-            log::warn!("pre_remove_side_effects outputs refused: limit or nonfinite position");
-            return Default::default();
-        }
-        outputs
     }
 }
 
@@ -2546,98 +2584,11 @@ mod declaration_snapshot_tests {
     }
 }
 
-#[path = "api_values/gui_draw.rs"]
-mod gui_draw;
 #[path = "api_values/text_boundary.rs"]
 mod text_boundary;
 #[cfg(test)]
-mod gui_draw_boundary_tests {
+mod text_boundary_tests {
     use super::{TryIntoApi, TryIntoEngine};
-    use serde_json::json;
-    use sunrise_client::{
-        hud_layout::{Blend, GuiDraw as D, PoseOp},
-        text::Text,
-    };
-
-    #[test]
-    fn gui_commands_keep_every_variant_field_order_and_text_source() {
-        let text = Text::from(
-            json!({"translate":"test.hud", "fallback":"%s", "with":[{"text":"name"}], "bold":false, "test:meta":{"n":1}}),
-        );
-        let commands = vec![
-            D::Sprite {
-                sprite: String::from("test:sprite").into(),
-                x: -1,
-                y: 2,
-                w: 3,
-                h: 4,
-                region: Some([5, 6, 7, 8]),
-                color: 0x12345678,
-                blend: Blend::Crosshair,
-            },
-            D::AtlasSprite {
-                sprite: "test:atlas".into(),
-                x: 11,
-                y: 12,
-                w: 13,
-                h: 14,
-                color: 15,
-            },
-            D::Blit {
-                texture: "test:texture".into(),
-                blend: Blend::Nausea,
-                x: 21,
-                y: 22,
-                w: 23,
-                h: 24,
-                uv: [0.25, 0.5],
-                src: [26, 27],
-                tex: [28, 29],
-                color: 30,
-            },
-            D::Fill {
-                x0: -31,
-                y0: 32,
-                x1: 33,
-                y1: 34,
-                color: 35,
-            },
-            D::FillGradient {
-                x0: 36,
-                y0: -37,
-                x1: 38,
-                y1: 39,
-                top: 0x8000_0040,
-                bottom: 0xFF00_0041,
-            },
-            D::Text {
-                text: text.clone(),
-                x: 41,
-                y: 42,
-                color: 43,
-                shadow: false,
-            },
-            D::Item {
-                slot: 40,
-                x: 51,
-                y: 52,
-                seed: -53,
-                scale: [0.5, 1.5],
-                pivot: [55., 56.],
-            },
-            D::Push(vec![PoseOp::Translate(61., 62.), PoseOp::Scale(0.5, 1.5)]),
-            D::Pop,
-        ];
-        let api = commands.try_into_api().unwrap();
-        let actual: Result<Vec<D>, mod_api::text::TextFormError> = api.try_into_engine(&());
-        let actual = actual.unwrap();
-        assert_eq!(actual, commands);
-        let D::Text { text: actual, .. } = &actual[5] else {
-            panic!("text command")
-        };
-        assert_eq!(actual.component(), text.component());
-    }
-
     #[test]
     fn tooltip_pairs_round_trip_without_an_item_registry() {
         let lines = vec![(sunrise_client::text::Text::literal("tip"), 0xff00ff00)];
@@ -2668,6 +2619,43 @@ mod gui_draw_boundary_tests {
     }
 }
 
+pub(in crate::game) fn placement_source_into_engine(
+    source: mod_api::PlacementSource,
+) -> Option<sunrise_world::level::PlacementSource> {
+    match source {
+        mod_api::PlacementSource::Player {
+            yaw,
+            pitch,
+            sneaking,
+        } if yaw.is_finite() && pitch.is_finite() => {
+            Some(sunrise_world::level::PlacementSource::Player {
+                yaw,
+                pitch,
+                sneaking,
+            })
+        }
+        mod_api::PlacementSource::Directional { direction } => {
+            Some(sunrise_world::level::PlacementSource::Directional { direction })
+        }
+        _ => None,
+    }
+}
+
+/// A directional placement question vanilla throws on, as `LevelRef::state_for_placement`
+/// refuses it.
+pub(in crate::game) fn placement_refusal_into_api(
+    refusal: sunrise_world::level::DirectionalRefusal,
+) -> mod_api::PlacementStateError {
+    match refusal {
+        sunrise_world::level::DirectionalRefusal::NoVerticalLook => {
+            mod_api::PlacementStateError::NoVerticalLook
+        }
+        sunrise_world::level::DirectionalRefusal::ReplacingClickedCycle => {
+            mod_api::PlacementStateError::ReplacingClickedCycle
+        }
+    }
+}
+
 impl TryIntoApi for sunrise_world::level::PlacementContext {
     type Api = mod_api::PlacementContext;
     type Error = StackReadError;
@@ -2681,9 +2669,20 @@ impl TryIntoApi for sunrise_world::level::PlacementContext {
         snapshot.hit_pos = self.hit_pos;
         snapshot.hit = [self.hit.x, self.hit.y, self.hit.z];
         snapshot.inside = self.inside;
-        snapshot.yaw = self.yaw;
-        snapshot.pitch = self.pitch;
-        snapshot.sneaking = self.sneaking;
+        snapshot.source = match self.source {
+            sunrise_world::level::PlacementSource::Player {
+                yaw,
+                pitch,
+                sneaking,
+            } => mod_api::PlacementSource::Player {
+                yaw,
+                pitch,
+                sneaking,
+            },
+            sunrise_world::level::PlacementSource::Directional { direction } => {
+                mod_api::PlacementSource::Directional { direction }
+            }
+        };
         snapshot.replace_clicked = self.replace_clicked;
         Ok(snapshot)
     }
@@ -2693,18 +2692,20 @@ impl TryIntoApi for sunrise_world::level::PlacementContext {
 mod placement_snapshot_tests {
     use super::*;
     #[test]
-    fn placement_keeps_click_view_flags_and_empty_hand_without_fallback() {
+    fn placement_keeps_click_source_flags_and_empty_hand_without_fallback() {
         install_parts(&[]).unwrap();
-        mod_api::__private::resolve_items(["minecraft:stone"]).unwrap();
+        mod_api::__private::resolve_items(["minecraft:stone", "minecraft:shulker_box"]).unwrap();
         let mut engine = sunrise_world::level::PlacementContext {
             pos: sunrise_core::position::BlockPos::new(1, 2, 3),
             hit_pos: sunrise_core::position::BlockPos::new(4, 5, 6),
             face: sunrise_core::geometry::Direction::Up,
             hit: sunrise_core::geometry::Vec3::new(4.25, 5.5, 6.75),
             inside: true,
-            yaw: -45.0,
-            pitch: 90.0,
-            sneaking: true,
+            source: sunrise_world::level::PlacementSource::Player {
+                yaw: -45.0,
+                pitch: 90.0,
+                sneaking: true,
+            },
             item: "minecraft:stone".into(),
             replace_clicked: true,
         };
@@ -2717,19 +2718,94 @@ mod placement_snapshot_tests {
         assert_eq!(snapshot.face, sunrise_core::geometry::Direction::Up);
         assert_eq!(snapshot.hit, [4.25, 5.5, 6.75]);
         assert!(snapshot.inside);
-        assert_eq!(snapshot.yaw, -45.0);
-        assert_eq!(snapshot.pitch, 90.0);
-        assert!(snapshot.sneaking && snapshot.replace_clicked);
+        assert_eq!(
+            snapshot.source,
+            mod_api::PlacementSource::Player {
+                yaw: -45.0,
+                pitch: 90.0,
+                sneaking: true,
+            }
+        );
+        assert!(snapshot.replace_clicked);
         assert_eq!(
             snapshot.item,
             mod_api::__private::item_key("minecraft:stone")
         );
+
+        // Dispenser directional placement preserves the dispenser's facing.
+        let dispenser_engine = sunrise_world::level::PlacementContext {
+            pos: sunrise_core::position::BlockPos::new(10, 64, 2),
+            hit_pos: sunrise_core::position::BlockPos::new(10, 64, 2),
+            face: sunrise_core::geometry::Direction::Up,
+            hit: sunrise_core::geometry::Vec3::new(10.5, 64.0, 2.5),
+            inside: false,
+            source: sunrise_world::level::PlacementSource::Directional {
+                direction: sunrise_core::geometry::Direction::East,
+            },
+            item: "minecraft:shulker_box".into(),
+            replace_clicked: true,
+        };
+        let dispenser_snapshot = dispenser_engine.try_into_api().unwrap();
+        assert_eq!(
+            dispenser_snapshot,
+            mod_api::PlacementContext::directional(
+                sunrise_core::position::BlockPos::new(10, 64, 2),
+                sunrise_core::geometry::Direction::East,
+                sunrise_core::geometry::Direction::Up,
+                mod_api::__private::item_key("minecraft:shulker_box"),
+            )
+        );
+
+        // Falling-block directional check: Directional { Down } with empty hand.
+        engine.source = sunrise_world::level::PlacementSource::Directional {
+            direction: sunrise_core::geometry::Direction::Down,
+        };
         engine.item.clear();
-        let mut empty = snapshot;
-        empty.item = None;
-        assert_eq!(engine.try_into_api(), Ok(empty));
+        let mut falling = snapshot;
+        falling.source = mod_api::PlacementSource::Directional {
+            direction: sunrise_core::geometry::Direction::Down,
+        };
+        falling.item = None;
+        assert_eq!(engine.try_into_api(), Ok(falling));
+
         engine.item = "missing:item".into();
         assert_eq!(engine.try_into_api(), Err(StackReadError::UnknownItem));
+
+        // Non-finite player orientation is refused at the mod boundary.
+        assert_eq!(
+            placement_source_into_engine(mod_api::PlacementSource::Player {
+                yaw: f32::NAN,
+                pitch: 0.0,
+                sneaking: false,
+            }),
+            None
+        );
+        assert_eq!(
+            placement_source_into_engine(mod_api::PlacementSource::Player {
+                yaw: 0.0,
+                pitch: f32::INFINITY,
+                sneaking: true,
+            }),
+            None
+        );
+        assert_eq!(
+            placement_source_into_engine(mod_api::PlacementSource::Directional {
+                direction: sunrise_core::geometry::Direction::Down,
+            }),
+            Some(sunrise_world::level::PlacementSource::Directional {
+                direction: sunrise_core::geometry::Direction::Down,
+            })
+        );
+    }
+}
+
+pub(super) fn api_game_rule_value(
+    value: sunrise_client_core::gamerules::Value,
+) -> mod_api::GameRuleValue {
+    use sunrise_client_core::gamerules::Value;
+    match value {
+        Value::Bool(value) => mod_api::GameRuleValue::Bool(value),
+        Value::Int(value) => mod_api::GameRuleValue::Int(value),
     }
 }
 
@@ -2737,10 +2813,7 @@ impl TryIntoApi for sunrise_client_core::gamerules::Value {
     type Api = mod_api::GameRuleValue;
     type Error = StackReadError;
     fn try_into_api(&self) -> Result<Self::Api, Self::Error> {
-        Ok(match *self {
-            Self::Bool(value) => mod_api::GameRuleValue::Bool(value),
-            Self::Int(value) => mod_api::GameRuleValue::Int(value),
-        })
+        Ok(api_game_rule_value(*self))
     }
 }
 
@@ -2788,6 +2861,7 @@ pub(in crate::game) fn install_test_platform() {
                 install_packages: mod_platform::__private::install_packages,
                 install_registration_data: mod_platform::__private::install_registration_data,
                 install_parts: mod_platform::__private::install_parts,
+                with_registration_open: mod_platform::__private::with_registration_open,
                 profiler_is_enabled: mod_platform::__private::profiler::is_enabled,
                 profiler_start: mod_platform::__private::profiler::start,
                 profiler_stop: mod_platform::__private::profiler::stop,
@@ -2812,9 +2886,15 @@ pub(in crate::game) fn install_parts(mods: &[mod_api::ModEntry]) -> Result<(), V
 }
 #[cfg(test)]
 pub(in crate::game) fn register_game_keys(ids: impl IntoIterator<Item = String>) {
+    let mod_fluids = sunrise_world::fluid::mod_fluids();
+    let mod_fluids: Vec<&str> = mod_fluids
+        .iter()
+        .flat_map(|(_, fluid)| [fluid.id.as_str(), fluid.flowing_id.as_str()])
+        .collect();
     with_rule_schema(|schema| {
         mod_platform::__private::part_tests::register_game_keys(
             ids,
+            &mod_fluids,
             schema,
             super::native_dimensions::valid_shape,
         )
@@ -2823,11 +2903,13 @@ pub(in crate::game) fn register_game_keys(ids: impl IntoIterator<Item = String>)
         sunrise_client_core::potions::all_effects()
             .map(|def| sunrise_client_core::potions::namespaced(def.id)),
         |id| sunrise_client_core::potions::effect(id).map(|def| def.index),
+        |_| true,
     )
     .unwrap();
-    mod_api::__private::validate_effect_part_owners(|id| {
-        sunrise_client_core::potions::effect(id)?.owner
-    })
+    mod_api::__private::validate_effect_part_owners(
+        |id| sunrise_client_core::potions::effect(id)?.owner,
+        |_| true,
+    )
     .unwrap();
     if let Some(types) = sunrise_client_core::block_entity_types::current() {
         // Registration just replaced the mod snapshot, but the process-wide engine
@@ -2861,8 +2943,6 @@ pub(in crate::game) fn game_rule_registry() -> sunrise_client_core::gamerules::R
 
 #[path = "api_values/game_rule_values.rs"]
 mod game_rule_values;
-#[path = "api_values/item_properties.rs"]
-mod item_properties;
 #[path = "api_values/loot_values.rs"]
 pub(crate) mod loot_values;
 #[path = "api_values/package_snapshot.rs"]

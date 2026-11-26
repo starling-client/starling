@@ -68,9 +68,18 @@ fn class_tags_dispatch_and_failed_preparation_preserve_installed_snapshot() {
             )
         };
         mod_api::__private::install_resolved_parts(prepare(&tags, true).unwrap());
-        crate::game::native_world_read::install_block_tags(
-            crate::game::native_world_read::prepare_block_tags(&tags),
+        let mut items = sunrise_client::items::Items::empty();
+        items.set_tags(
+            sunrise_client::items::TagRegistry::Block,
+            tags.iter()
+                .map(|(tag, members)| (tag.clone(), members.iter().cloned().collect()))
+                .collect(),
         );
+        let class_fence = mod_api::__private::tag_key(
+            &mod_api::Identifier::parse("sunrise:class/fence").unwrap(),
+        )
+        .unwrap()
+        .typed();
         let visit = |id| {
             let mut output = 0;
             mod_api::dispatch_analog_output(
@@ -104,9 +113,10 @@ fn class_tags_dispatch_and_failed_preparation_preserve_installed_snapshot() {
         assert_eq!(
             [fence, oak]
                 .into_iter()
-                .filter(|key| crate::game::native_world_read::block_in_tag(
+                .filter(|key| crate::game::native_tags::block_in_tag(
+                    Some(&items),
                     *key,
-                    "sunrise:class/fence"
+                    class_fence
                 ) == Some(true))
                 .count(),
             2

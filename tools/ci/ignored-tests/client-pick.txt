@@ -1,5 +1,6 @@
 sunrise-client game::native_hooks::client_pick::tests::attack_range_indicator_obeys_block_and_miss_replacements lib daily resources
 sunrise-client game::native_hooks::client_pick::tests::attack_range_pick_outside_interact_range_falls_through_to_item_use lib daily resources
+sunrise-client game::native_hooks::client_pick::tests::client_pick_listener_can_select_pig_occluded_by_closer_block lib daily resources
 sunrise-client game::native_hooks::client_pick::tests::forward_moving_pick_survives_a_noop_listener_and_extended_replacements lib daily resources
 sunrise-client game::native_hooks::client_pick::tests::frame_pick_is_shared_ordered_and_refuses_stale_or_invalid_output lib daily resources
 sunrise-client game::native_hooks::client_pick::tests::frame_pick_without_listeners_keeps_the_vanilla_result lib daily resources

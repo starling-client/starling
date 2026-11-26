@@ -35,8 +35,8 @@ fn bits(tag: Option<&Tag>) -> String {
     }
 }
 
-/// `saved id base ... mod id amount operation ...` per attribute, sorted by id.
-fn saved(tag: &Tag) -> String {
+/// `{prefix} id base ... mod id amount operation ...` per attribute, sorted by id.
+fn saved(tag: &Tag, prefix: &str) -> String {
     let Some(Tag::List(list)) = tag.get("attributes") else {
         return String::new();
     };
@@ -60,8 +60,29 @@ fn saved(tag: &Tag) -> String {
         .collect();
     rows.sort();
     rows.iter().fold(String::new(), |out, (id, row)| {
-        format!("{out}\tsaved {id} {row}")
+        format!("{out}\t{prefix} {id} {row}")
     })
+}
+
+fn mob_seed(mob: &sunrise_client::mobs::Mob) -> Vec<Tag> {
+    entity_nbt::attribute_entries(mob)
+        .into_iter()
+        .map(|(_, e)| e)
+        .collect()
+}
+
+fn append_reads(row: &mut String, prefix: &str, names: &[Value], reads: Vec<Option<(f64, f64)>>) {
+    for (n, r) in names.iter().zip(reads) {
+        let n = n.as_str().unwrap_or_default();
+        match r {
+            Some((v, b)) => {
+                let _ = write!(row, "\t{prefix} {n} {:x} {:x}", v.to_bits(), b.to_bits());
+            }
+            None => {
+                let _ = write!(row, "\t{prefix} {n} none");
+            }
+        }
+    }
 }
 
 fn stack(item: &Value) -> Option<ItemStack> {
@@ -106,15 +127,14 @@ pub fn main() -> sunrise_client::Result<()> {
                     .unwrap();
             }
         };
+        let read_names: &[Value] = case["read"].as_array().map_or(&[], Vec::as_slice);
         let (reads, health, saved_tag) = if entity == "minecraft:armor_stand" {
             let mut stand = entity_nbt::armor_stand_from_nbt(&tag, 1).ok_or("stand")?;
             let mut live = std::mem::take(&mut stand.live);
             run(&mut live, &mut stand.equipment, &Vec::new);
             stand.live = live;
-            let reads: Vec<Option<(f64, f64)>> = case["read"]
-                .as_array()
-                .into_iter()
-                .flatten()
+            let reads: Vec<Option<(f64, f64)>> = read_names
+                .iter()
                 .map(|n| read(&stand.live, &catalog, entity, n, Vec::new()))
                 .collect();
             let default_max = catalog
@@ -140,20 +160,12 @@ pub fn main() -> sunrise_client::Result<()> {
             let mut mob = entity_nbt::mob_from_nbt(&tag, &mobs, 1, None).ok_or("mob")?;
             let mut live = std::mem::take(&mut mob.extra.live);
             let mut equipment = std::mem::take(&mut mob.extra.equipment);
-            let seed = |mob: &sunrise_client::mobs::Mob| -> Vec<Tag> {
-                entity_nbt::attribute_entries(mob)
-                    .into_iter()
-                    .map(|(_, e)| e)
-                    .collect()
-            };
-            run(&mut live, &mut equipment, &|| seed(&mob));
+            run(&mut live, &mut equipment, &|| mob_seed(&mob));
             mob.extra.live = live;
             mob.extra.equipment = equipment;
-            let reads: Vec<Option<(f64, f64)>> = case["read"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .map(|n| read(&mob.extra.live, &catalog, entity, n, seed(&mob)))
+            let reads: Vec<Option<(f64, f64)>> = read_names
+                .iter()
+                .map(|n| read(&mob.extra.live, &catalog, entity, n, mob_seed(&mob)))
                 .collect();
             let default_max = mob
                 .kind
@@ -167,17 +179,7 @@ pub fn main() -> sunrise_client::Result<()> {
                 entity_nbt::mob_to_nbt(&mob, [0; 4], None, None, |_| None, &Default::default()),
             )
         };
-        for (n, r) in case["read"].as_array().into_iter().flatten().zip(reads) {
-            let n = n.as_str().unwrap_or_default();
-            match r {
-                Some((v, b)) => {
-                    let _ = write!(row, "\tread {n} {:x} {:x}", v.to_bits(), b.to_bits());
-                }
-                None => {
-                    let _ = write!(row, "\tread {n} none");
-                }
-            }
-        }
+        append_reads(&mut row, "read", read_names, reads);
         if case["health"].as_bool().unwrap_or(false) {
             let (loaded_health, loaded_max, default_max) = health;
             let saved_health = match saved_tag.get("Health") {
@@ -193,7 +195,32 @@ pub fn main() -> sunrise_client::Result<()> {
                 default_max.to_bits(),
             );
         }
-        row.push_str(&saved(&saved_tag));
+        row.push_str(&saved(&saved_tag, "saved"));
+        if case["reload"].as_bool().unwrap_or(false) {
+            let (reload_reads, reload_saved) = if entity == "minecraft:armor_stand" {
+                let stand = entity_nbt::armor_stand_from_nbt(&saved_tag, 1).ok_or("stand")?;
+                let reads: Vec<Option<(f64, f64)>> = read_names
+                    .iter()
+                    .map(|n| read(&stand.live, &catalog, entity, n, Vec::new()))
+                    .collect();
+                (
+                    reads,
+                    entity_nbt::armor_stand_to_nbt(&stand, [0; 4], None, &Default::default()),
+                )
+            } else {
+                let mob = entity_nbt::mob_from_nbt(&saved_tag, &mobs, 1, None).ok_or("mob")?;
+                let reads: Vec<Option<(f64, f64)>> = read_names
+                    .iter()
+                    .map(|n| read(&mob.extra.live, &catalog, entity, n, mob_seed(&mob)))
+                    .collect();
+                (
+                    reads,
+                    entity_nbt::mob_to_nbt(&mob, [0; 4], None, None, |_| None, &Default::default()),
+                )
+            };
+            append_reads(&mut row, "reload_read", read_names, reload_reads);
+            row.push_str(&saved(&reload_saved, "reload_saved"));
+        }
         out.push_str(&row);
         out.push('\n');
     }

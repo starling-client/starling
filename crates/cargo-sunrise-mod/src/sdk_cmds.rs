@@ -1,20 +1,24 @@
-//! The commands that read the SDK's data (design §4, design-fit.md 10.2): `check` of a mod
-//! folder, `hooks <text>`, `sdk diff <a> <b>`, `fits` and the report `update` prints before it
-//! repins. Each reads the pinned build's `surface.json` from `.sunrise/sdk/`, or another build's
+//! Commands that read SDK data: `check` of a mod folder, `check --build <name>`, `hooks <text>`,
+//! `sdk diff <a> <b>`, and the report `pin` prints before it repins. Each reads the pinned build's
+//! `surface.json` from `.sunrise/sdk/`, or another build's
 //! small files through [`crate::sdk_fetch::fetch_build`]; none links the generator's catalog.
 use crate::options::Options;
-use crate::sdk_fetch::{PinnedSdk, ensure_sdk, fetch_build, fetch_pinned};
+use crate::sdk_fetch::{PinnedSdk, ensure_sdk, fetch_build, fetch_index_only, fetch_pinned};
+use crate::sdk_notes::{self, Shipped};
 use crate::uses_table::{self, Scanned, surface_of};
 use mod_surface::child::ChildEntry;
-use mod_surface::uses::{Change, Fit, FitReport, PLAIN_SCHEMA, USES_FILE, UsesTable};
+use mod_surface::uses::{Change, Fit, USES_FILE, UsesTable};
 use mod_surface::{Surface, leaf};
+use std::collections::BTreeMap;
 use std::path::Path;
-use std::process::{Command, ExitCode};
+use std::process::ExitCode;
+use std::rc::Rc;
 use sunrise_mod_package::{
     Manifest, Package,
     manifest::MAX_USES,
-    sdk::{self, ChangeNote, Index},
+    sdk::{self, Index},
 };
+use sunrise_native_build::check::{self, Builds, Judged, Unlisted, Verdict};
 use sunrise_native_build::game_uses;
 
 /// One searchable record: its id, its doc text and its names in other mod APIs.
@@ -183,8 +187,9 @@ pub(crate) fn hooks(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// `sdk diff <a> <b>`: what changed in the surface from build `a` to build `b` (Nightly names
-/// or shas). Only each build's small files are read, so a pruned build still answers.
+/// `sdk diff <a> <b>`: what changed in the surface from build `a` to build `b` (release names
+/// or shas, as `--sunrise` takes them). Only each build's small files are read, so a pruned build
+/// still answers.
 pub(crate) fn sdk(args: &[String]) -> Result<(), String> {
     let usage = "cargo sunrise-mod sdk diff <build> <build>";
     let [command, a, b] = args else {
@@ -196,33 +201,38 @@ pub(crate) fn sdk(args: &[String]) -> Result<(), String> {
     let project = Path::new(".");
     let old = fetch_build(project, a)?;
     let new = fetch_build(project, b)?;
-    let notes = build_notes(&new)?;
+    let chain = sdk_notes::chain(&new, Some(&old.build), |build| {
+        fetch_index_only(project, build)
+    })?;
     println!("{} to {}", old.name, new.name);
     print!(
         "{}",
-        diff_text(&surface_of(&old)?, &surface_of(&new)?, &new.name, &notes)
+        diff_text(&surface_of(&old)?, &surface_of(&new)?, &chain.notes)
     );
+    if let Some(line) = chain.stopped_line() {
+        println!("{line}");
+    }
     Ok(())
 }
 
-/// The diff from `old` to `new`, with the change notes of the build `new` (named `new_name`)
-/// under the changes they name: the notes of the changes since the SDK published before it.
-fn diff_text(old: &Surface, new: &Surface, new_name: &str, notes: &[ChangeNote]) -> String {
+/// The diff from `old` to `new`, with the change `notes` of the builds between them under the
+/// changes they name, each tagged with the build that carried it.
+fn diff_text(old: &Surface, new: &Surface, notes: &[Shipped]) -> String {
     let mut diff = mod_surface::diff(old, new);
-    for note in notes {
+    for shipped in notes {
         let text = mod_surface::diff::Note {
-            file: new_name.to_owned(),
-            why: note.why.clone(),
-            migrate: note.migrate.clone(),
+            file: shipped.build.clone(),
+            why: shipped.note.why.clone(),
+            migrate: shipped.note.migrate.clone(),
         };
-        // An id the note names may be unchanged here when `old` is not the build `new`
-        // was compared with; the note then explains a change this diff does not show.
-        diff.attach(&text, &note.ids);
+        // An id the note names may be unchanged here when `old` is not the build the note's
+        // build was compared with; the note then explains a change this diff does not show.
+        diff.attach(&text, &shipped.note.ids);
     }
     diff.to_text()
 }
 
-/// What `fits` judges: the package's or the folder's table, or why the question does not apply.
+/// What a fit check judges: the package's or the folder's table, or why the question does not apply.
 pub(crate) enum Subject {
     Table {
         name: String,
@@ -230,25 +240,13 @@ pub(crate) enum Subject {
         /// The mod's manifest: the game code it declares is judged with the list.
         manifest: Box<Manifest>,
     },
-    /// The answer to print with exit status 2, and a reason suitable for the index.
-    NotApplicable {
-        message: String,
-        reason: &'static str,
-    },
+    /// The answer to print with exit status 2.
+    NotApplicable { message: String },
 }
 
-pub(crate) struct PackageSubject {
-    pub content_api: String,
-    pub uses: Result<Subject, String>,
-}
-
-/// The manifest API requirement is known even when the optional uses list cannot be read.
-pub(crate) fn package_subject(path: &Path) -> Result<PackageSubject, String> {
-    let package = Package::read(path)?;
-    Ok(PackageSubject {
-        content_api: package.manifest.api.clone(),
-        uses: package_uses(path, package),
-    })
+/// What the package at `path` gives `fits` to judge.
+pub(crate) fn package_subject(path: &Path) -> Result<Subject, String> {
+    package_uses(path, Package::read(path)?)
 }
 
 fn package_uses(path: &Path, package: Package) -> Result<Subject, String> {
@@ -256,22 +254,19 @@ fn package_uses(path: &Path, package: Package) -> Result<Subject, String> {
     if let Some(table) = game_uses::unjudged(&package.manifest) {
         return Ok(Subject::NotApplicable {
             message: exact_text(name, &format!("it has a {table} table")),
-            reason: table,
         });
     }
     let Some(native) = &package.manifest.native else {
         return Ok(Subject::NotApplicable {
             message: content_text(name),
-            reason: "no native code",
         });
     };
     let pin = &native.sunrise;
     let Some(bytes) = Package::entry(path, USES_FILE, MAX_USES)? else {
         return Ok(Subject::NotApplicable {
             message: format!(
-                "{name} pins build {pin} and its package carries no list of what it uses, so it can't be shown to fit another build. Pack it with `cargo sunrise-mod build`, which writes the list when the mod's code can be read, or repin it with `cargo sunrise-mod update --sunrise <build>` first."
+                "{name} pins build {pin} and its package carries no list of what it uses, so it can't be shown to fit another build. Pack it with `cargo sunrise-mod build`, which writes the list when the mod's code can be read, or repin it with `cargo sunrise-mod pin <build>` first."
             ),
-            reason: "no uses list",
         });
     };
     let table = UsesTable::read(&bytes).map_err(|e| format!("{USES_FILE}: {e}"))?;
@@ -281,7 +276,6 @@ fn package_uses(path: &Path, package: Package) -> Result<Subject, String> {
                 "{name} pins build {pin} and its list of what it uses was made for {}, so the list says nothing about the pinned build. Pack it again with `cargo sunrise-mod build`.",
                 table.made_for
             ),
-            reason: "the uses list is for a different build",
         });
     }
     Ok(Subject::Table {
@@ -298,43 +292,39 @@ fn folder_subject(entry: ChildEntry, root: &Path) -> Result<Subject, String> {
     let Some(native) = &parsed.native else {
         return Ok(Subject::NotApplicable {
             message: content_text(name),
-            reason: "no native code",
         });
     };
     if let Some(table) = game_uses::unjudged(&parsed) {
         return Ok(Subject::NotApplicable {
             message: exact_text(name, &format!("it has a {table} table")),
-            reason: table,
         });
     }
     let sdk = fetch_pinned(root, &native.sunrise)?;
     match uses_table::scan(entry, root, &parsed, &surface_of(&sdk)?)? {
         Scanned::Uses(uses) => Ok(Subject::Table {
             name: name.clone(),
-            table: uses_table::table(&uses, root, &parsed, &sdk)?,
+            table: uses_table::table(&uses, &parsed, &sdk)?,
             manifest: Box::new(parsed),
         }),
         Scanned::Exact(why) => Ok(Subject::NotApplicable {
             message: exact_text(name, &why),
-            reason: "the mod must be built for its pin",
         }),
         Scanned::Unread(why) => Err(why),
     }
 }
 
 fn content_text(name: &str) -> String {
-    format!("{name} is a content mod, with no code to check against a build; `fits` doesn't apply.")
+    format!("{name} is a content mod, with no code to check against a build.")
 }
 
 fn exact_text(name: &str, why: &str) -> String {
-    format!("{name} is made for exactly one build ({why}), so `fits` doesn't apply.")
+    format!("{name} is made for exactly one build ({why}), so the fit check doesn't apply.")
 }
 
-/// `fits [<file.smod>] [--build <name>]…`: one line per build (the current Nightly unless
-/// `--build` names others) saying whether the mod fits it. Exits 0 when every build fits, 1 when
-/// one does not, and 2 when the question cannot be answered or does not apply.
-pub(crate) fn fits(entry: ChildEntry, args: &[String]) -> ExitCode {
-    match fits_lines(entry, args) {
+/// `check [<file.smod>] --build <name> [--build <name>]…`: reports fit for each build. Exits 0
+/// when every build fits, 1 when one does not, and 2 when it cannot tell or does not apply.
+pub(crate) fn check_fit(entry: ChildEntry, package: Option<&Path>, builds: &[&str]) -> ExitCode {
+    match fit_lines(entry, package, builds) {
         Ok(Answer::Fits) => ExitCode::SUCCESS,
         Ok(Answer::DoesNotFit) => ExitCode::from(1),
         Ok(Answer::Unknown) => ExitCode::from(2),
@@ -350,7 +340,7 @@ pub(crate) fn fits(entry: ChildEntry, args: &[String]) -> ExitCode {
     }
 }
 
-/// What `fits` answered, once its lines are printed.
+/// The result of a fit check, once its lines are printed.
 enum Answer {
     Fits,
     DoesNotFit,
@@ -360,26 +350,13 @@ enum Answer {
     NotApplicable(String),
 }
 
-/// `fits`'s package and builds, as given.
-fn fits_args(args: &[String]) -> Result<(Option<&Path>, Vec<&str>), String> {
-    let mut options = Options::new("fits", args, &["--build"]);
-    let builds = options.values("--build")?;
-    let package = options.at_most_one()?.map(Path::new);
-    options.finish()?;
-    Ok((package, builds))
-}
-
-fn fits_lines(entry: ChildEntry, args: &[String]) -> Result<Answer, String> {
-    let (package, mut builds) = fits_args(args)?;
-    if builds.is_empty() {
-        builds.push("nightly");
-    }
+fn fit_lines(entry: ChildEntry, package: Option<&Path>, builds: &[&str]) -> Result<Answer, String> {
     let project = Path::new(".");
     let subject = match package {
-        Some(path) => package_subject(path)?.uses?,
+        Some(path) => package_subject(path)?,
         None => folder_subject(entry, project)?,
     };
-    let (name, mut table, manifest) = match subject {
+    let (name, table, manifest) = match subject {
         Subject::Table {
             name,
             table,
@@ -387,69 +364,105 @@ fn fits_lines(entry: ChildEntry, args: &[String]) -> Result<Answer, String> {
         } => (name, table, manifest),
         Subject::NotApplicable { message, .. } => return Ok(Answer::NotApplicable(message)),
     };
-    // Whether the build the list was made for gave the hook versions a list of an older tool
-    // lacks: asked for once, and only when a target leaves nothing else to judge.
-    let mut baseline: Option<Result<(), String>> = None;
+    let made_for = table.made_for.clone();
+    // The surface of the build the list was made for, fetched at most once whatever the builds:
+    // asked for only when a target leaves nothing else to judge.
+    let mut made_for_surface: Option<Result<Vec<u8>, String>> = None;
     println!("{name}:");
     let (mut all, mut known) = (true, true);
+    // Each build gets its own verdict: one that cannot be fetched or compared is not known, and
+    // the rest are still checked.
     for build in builds {
-        let target = fetch_build(project, build)?;
+        let target = match fetch_build(project, build) {
+            Ok(target) => target,
+            Err(why) => {
+                known = false;
+                println!("{build}  not known: {why}");
+                continue;
+            }
+        };
+        // The identity comes first: a mod made for this build is answered by the build's id,
+        // whatever its own surface says.
         if target.build == table.made_for {
             println!("{}  made for", target.name);
             continue;
         }
-        let target_surface = surface_of(&target)?;
-        let game = game_fit(project, &manifest, &table, &target)?;
-        let Comparison {
-            report,
-            mut compared,
-            uncompared,
-            unfetched,
-        } = compare_fit(&mut table, &target_surface, game, &mut baseline, |pin| {
-            let made_for = fetch_build(project, pin)?;
-            std::fs::read(&made_for.surface)
-                .map_err(|e| format!("{}: {e}", made_for.surface.display()))
+        let target_surface = match surface_of(&target) {
+            Ok(surface) => surface,
+            Err(why) => {
+                known = false;
+                println!("{}  not known: {why}", target.name);
+                continue;
+            }
+        };
+        let target_surface = Rc::new(target_surface);
+        // Each build judges its own copy, which the made-for surface may complete: what one
+        // build's verdict needed never changes another's.
+        let mut target_table = table.clone();
+        let judged = mixins_rev(&target).and_then(|mixins_rev| {
+            check::judge(
+                &manifest,
+                Builds {
+                    made_for: &made_for,
+                    build: &target.build,
+                    mixins_rev: &mixins_rev,
+                },
+                || Ok(&mut target_table),
+                &mut || Ok(target_surface.clone()),
+                &mut || build_data(&manifest, &target),
+                Some(&mut || {
+                    made_for_surface
+                        .get_or_insert_with(|| {
+                            fetch_build(project, &made_for).and_then(|made| {
+                                std::fs::read(&made.surface)
+                                    .map_err(|e| format!("{}: {e}", made.surface.display()))
+                            })
+                        })
+                        .clone()
+                }),
+            )
         });
-        let mut answer = report.verdict;
-        if !compared.misfits.is_empty() {
-            let mut misfits = match answer {
-                Fit::DoesNotFit(misfits) => misfits,
-                Fit::Fits | Fit::Unversioned(_) => Vec::new(),
-            };
-            misfits.append(&mut compared.misfits);
-            misfits.sort();
-            answer = Fit::DoesNotFit(misfits);
-        }
-        // What is already known to have changed is said, whatever the build data would add; with
-        // nothing known, a comparison that could not be made is the answer.
-        if let Some(why) = &uncompared
-            && !matches!(answer, Fit::DoesNotFit(_))
-        {
-            return Err(why.clone());
-        }
-        match answer {
-            Fit::Fits if !compared.unjudged.is_empty() => {
+        let Judged {
+            verdict,
+            deferred,
+            uncompared,
+            unjudged,
+            unpinned,
+        } = match judged {
+            Ok(judged) => judged,
+            Err(why) => {
+                known = false;
+                println!("{}  not known: {why}", target.name);
+                continue;
+            }
+        };
+        match verdict {
+            Verdict::MadeFor => println!("{}  made for", target.name),
+            Verdict::Fits { .. } => println!("{}  fits", target.name),
+            Verdict::Exact { .. } => {
                 known = false;
                 println!(
                     "{}  not known: nothing the list can judge changed, but the build's data cannot show {} unchanged (it holds no body for a function the mod calls, or not every part of a loop).",
                     target.name,
-                    compared
-                        .unjudged
+                    unjudged
                         .iter()
                         .map(|id| format!("`{}`", id.rsplit(':').next().unwrap_or(id)))
                         .collect::<Vec<_>>()
                         .join(", ")
                 );
             }
-            Fit::Fits if compared.unrecorded => {
+            Verdict::NoList {
+                why: Unlisted::GameCode,
+                ..
+            } => {
                 known = false;
                 println!(
                     "{}  not known: nothing the list can judge changed, but it holds no record of game code the mod declares. Pack the mod again with `cargo sunrise-mod build`, which records it.",
                     target.name
                 );
             }
-            Fit::Fits => println!("{}  fits", target.name),
-            Fit::Unversioned(hooks) => {
+            // The list is the pin's, so only its hook versions can be missing.
+            Verdict::NoList { hooks, .. } => {
                 known = false;
                 println!(
                     "{}  not known: nothing the list can judge changed, but it holds no version of {}{}. Pack the mod again with `cargo sunrise-mod build`, which records them.",
@@ -459,12 +472,12 @@ fn fits_lines(entry: ChildEntry, args: &[String]) -> Result<Answer, String> {
                         .map(|id| format!("`{}`", leaf(id)))
                         .collect::<Vec<_>>()
                         .join(", "),
-                    unfetched.map_or(String::new(), |why| format!(
+                    unpinned.map_or(String::new(), |why| format!(
                         ", and the build it was made for could not be read for them ({why})"
-                    ))
+                    )),
                 );
             }
-            Fit::DoesNotFit(misfits) => {
+            Verdict::DoesNotFit { misfits, .. } => {
                 all = false;
                 let count = misfits
                     .iter()
@@ -481,7 +494,7 @@ fn fits_lines(entry: ChildEntry, args: &[String]) -> Result<Answer, String> {
                 }
             }
         }
-        if let Some(note) = report.deferred {
+        if let Some(note) = deferred {
             println!("    {note}");
         }
     }
@@ -492,95 +505,35 @@ fn fits_lines(entry: ChildEntry, args: &[String]) -> Result<Answer, String> {
     })
 }
 
-pub(crate) struct Comparison {
-    pub report: FitReport,
-    pub compared: game_uses::Compared,
-    uncompared: Option<String>,
-    unfetched: Option<String>,
-}
-
-/// The mod API's items are judged by the surface, and declared game code by the build data.
-/// Both the CLI and the registry compare them here; their callers supply the files.
-pub(crate) fn compare_fit<B: AsRef<[u8]>>(
-    table: &mut UsesTable,
-    target_surface: &Surface,
-    (compared, uncompared): (game_uses::Compared, Option<String>),
-    baseline: &mut Option<Result<(), String>>,
-    baseline_surface: impl FnOnce(&str) -> Result<B, String>,
-) -> Comparison {
-    let api = |table: &UsesTable| {
-        table.fits(
-            table
-                .entries
-                .iter()
-                .filter(|entry| !entry.id.starts_with(game_uses::PREFIX)),
-            target_surface,
-        )
-    };
-    let mut report = api(table);
-    let mut unfetched = None;
-    if matches!(report.verdict, Fit::Unversioned(_)) && table.schema < PLAIN_SCHEMA {
-        let fetched = baseline.get_or_insert_with(|| {
-            let versions = baseline_surface(&table.made_for)?;
-            table
-                .pin_hook_versions(versions.as_ref())
-                .map_err(|e| e.to_string())
-        });
-        match fetched {
-            Ok(()) => report = api(table),
-            Err(why) => unfetched = Some(why.clone()),
-        }
-    }
-    Comparison {
-        report,
-        compared,
-        uncompared,
-        unfetched,
-    }
-}
-
-/// The game code `manifest` declares, as `target` has it, against `table`'s record of it, and
-/// the horizon-mixins revision the mod pins against the one `target`'s tool builds with. A
-/// misfit already known stays when the build data cannot be read: why it cannot comes second.
-fn game_fit(
-    project: &Path,
-    manifest: &Manifest,
-    table: &UsesTable,
-    target: &PinnedSdk,
-) -> Result<(game_uses::Compared, Option<String>), String> {
+/// The horizon-mixins revision `target`'s tool builds with, from its verified `sdk.json`.
+fn mixins_rev(target: &PinnedSdk) -> Result<String, String> {
     let path = target.dir.join(sdk::INDEX);
     let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     let index =
         Index::read(&bytes, &target.build).map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok(compare_game(manifest, table, &index.mixins.rev, || {
-        crate::sdk_fetch::build_data(project, &target.build)
-            .and_then(|data| game_uses::entries(manifest, &data, &target.build))
-    }))
+    Ok(index.mixins.rev)
 }
 
-pub(crate) fn compare_game(
+/// Where the game code `manifest` declares is in `target`, by its build data. The build data is
+/// fetched from `target`'s signed SDK into a private folder, never read from the project's
+/// cache, which the checkout can edit.
+fn build_data(
     manifest: &Manifest,
-    table: &UsesTable,
-    mixins_rev: &str,
-    target_entries: impl FnOnce() -> Result<Vec<(String, game_uses::Now)>, String>,
-) -> (game_uses::Compared, Option<String>) {
-    let mut compared = game_uses::Compared::default();
-    let mut uncompared = None;
-    if game_uses::declared(manifest) {
-        let recorded: Vec<_> = table
-            .entries
-            .iter()
-            .filter(|entry| entry.id.starts_with(game_uses::PREFIX))
-            .collect();
-        match target_entries() {
-            Ok(now) => compared = game_uses::compare(&recorded, now),
-            Err(why) => uncompared = Some(why),
-        }
-    }
-    compared
-        .misfits
-        .extend(game_uses::tool(manifest, mixins_rev));
-    (compared, uncompared)
+    target: &PinnedSdk,
+) -> Result<Vec<(String, game_uses::Now)>, String> {
+    let staging = tempfile::tempdir().map_err(|e| format!("build data: {e}"))?;
+    crate::sdk_fetch::release_data(
+        &crate::sdk_fetch::Base::from_env(),
+        &crate::sdk_fetch::keys(),
+        &target.build,
+        staging.path(),
+        true,
+    )?;
+    let data = staging
+        .path()
+        .join(&target.build)
+        .join(crate::sdk_fetch::BUILD_DATA);
+    game_uses::entries(manifest, &data, &target.build)
 }
 
 /// What the mod nearest to a removed item may use now, in `new`: the hook with one of the same
@@ -612,13 +565,9 @@ pub(crate) fn closest<'s>(old: &Surface, new: &'s Surface, id: &str) -> Option<R
 }
 
 /// What moving the pin from the build the mod is pinned to to `to` (the current Nightly when
-/// `None`) breaks in this mod, item by item with the lines that use it; printed before `update`
+/// `None`) breaks in this mod, item by item with the lines that use it; printed before `pin`
 /// repins. A mod made for exactly one build is only named.
-pub(crate) fn update_report(
-    entry: ChildEntry,
-    root: &Path,
-    to: Option<&str>,
-) -> Result<(), String> {
+pub(crate) fn pin_report(entry: ChildEntry, root: &Path, to: &str) -> Result<(), String> {
     let parsed = crate::read_manifest(root)?;
     let name = &parsed.name;
     let exact_line = || {
@@ -633,7 +582,19 @@ pub(crate) fn update_report(
         return Ok(());
     }
     let old = fetch_pinned(root, &native.sunrise)?;
-    let old_surface = surface_of(&old)?;
+    // Moving off a build whose surface schema this tool does not read is how such a mod gets
+    // back to a build it does: there is nothing to compare, and `check` judges the new build.
+    let old_surface = match uses_table::read_surface(&old)? {
+        Ok(surface) => surface,
+        Err(e @ mod_surface::ReadError::Schema(_)) => {
+            println!(
+                "{}: {e}, so what the move changes can't be compared.",
+                old.name
+            );
+            return Ok(());
+        }
+        Err(e) => return Err(format!("{}: {e}", old.surface.display())),
+    };
     let uses = match uses_table::scan(entry, root, &parsed, &old_surface)? {
         Scanned::Uses(uses) => uses,
         Scanned::Exact(_) => {
@@ -642,16 +603,26 @@ pub(crate) fn update_report(
         }
         Scanned::Unread(why) => return Err(why),
     };
-    let new = fetch_build(root, to.unwrap_or("nightly"))?;
+    let new = fetch_build(root, to)?;
     let new_surface = surface_of(&new)?;
-    let notes = migrate_notes(&build_notes(&new)?);
+    let chain = sdk_notes::chain(&new, Some(&old.build), |build| {
+        fetch_index_only(root, build)
+    })?;
+    let notes = migrate_notes(&chain.notes);
     print!(
         "{}",
         report(name, &old, &new, &uses, &old_surface, &new_surface, &notes)
     );
+    if let Some(line) = chain.stopped_line() {
+        println!("{line}");
+    }
     // The game code the mod declares, by the new build's build data.
-    let made = uses_table::table(&uses, root, &parsed, &old)?;
-    let (compared, uncompared) = game_fit(root, &parsed, &made, &new)?;
+    let made = uses_table::table(&uses, &parsed, &old)?;
+    // A misfit already known stays when the build data cannot be read: why it cannot comes second.
+    let (compared, uncompared) =
+        game_uses::compare_declared(&parsed, &made, &mixins_rev(&new)?, || {
+            build_data(&parsed, &new)
+        });
     for misfit in &compared.misfits {
         println!("{misfit}");
     }
@@ -684,30 +655,23 @@ pub(crate) fn update_report(
     Ok(())
 }
 
-/// The change notes `sdk`'s `sdk.json` carries (`surface.notes`): those of the changes since the
-/// SDK published before it. The fetch verified the file.
-fn build_notes(sdk: &PinnedSdk) -> Result<Vec<ChangeNote>, String> {
-    let path = sdk.dir.join(sdk::INDEX);
-    let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let index = Index::read(&bytes, &sdk.build).map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok(index.surface.notes)
-}
-
-/// Each changed id's `migrate` line from `notes`; a note without one adds nothing.
-fn migrate_notes(notes: &[ChangeNote]) -> std::collections::BTreeMap<String, String> {
-    let mut out = std::collections::BTreeMap::new();
-    for note in notes {
-        let Some(migrate) = &note.migrate else {
+/// Each changed id's `migrate` line from `notes` with the build that carried it; the newest
+/// build's wins, and a note without a line adds nothing.
+fn migrate_notes(notes: &[Shipped]) -> BTreeMap<String, (String, String)> {
+    let mut out = BTreeMap::new();
+    for shipped in notes {
+        let Some(migrate) = &shipped.note.migrate else {
             continue;
         };
-        for id in &note.ids {
-            out.insert(id.clone(), migrate.clone());
+        for id in &shipped.note.ids {
+            out.entry(id.clone())
+                .or_insert_with(|| (shipped.build.clone(), migrate.clone()));
         }
     }
     out
 }
 
-/// The text of [`update_report`].
+/// The text of [`pin_report`].
 fn report(
     name: &str,
     old: &PinnedSdk,
@@ -715,7 +679,7 @@ fn report(
     uses: &mod_surface::uses::Uses,
     old_surface: &Surface,
     new_surface: &Surface,
-    notes: &std::collections::BTreeMap<String, String>,
+    notes: &BTreeMap<String, (String, String)>,
 ) -> String {
     let total = uses.items.len();
     let misfits = match uses.fits(new_surface) {
@@ -754,20 +718,32 @@ fn report(
             };
             text.push_str(&format!("      closest now: {}{names}\n", record.id));
         }
-        if let Some(migrate) = notes.get(id) {
-            text.push_str(&format!("      note from the change: \"{migrate}\"\n"));
+        if let Some((build, migrate)) = notes.get(id) {
+            text.push_str(&format!(
+                "      note from the change ({build}): \"{migrate}\"\n"
+            ));
         }
     }
     text
 }
 
-/// `check [--uses]` in a mod folder: the package rules, then `cargo check` and an API use
-/// report for a native mod. `--uses` lists each item and the line that brought it in.
-pub(crate) fn check_mod(entry: ChildEntry, show_uses: bool) -> Result<(), String> {
-    let root = Path::new(".");
+/// Checks a mod folder and reports its API uses. Release checks enforce the page and tag
+/// requirements, and compile a native mod instead of only type-checking it.
+pub(crate) fn check_mod(
+    entry: ChildEntry,
+    root: &Path,
+    show_uses: bool,
+    with: &[&Path],
+    release: Option<&str>,
+) -> Result<(), String> {
     let package = Package::read(root)?;
     let files = package.directory_files(root)?;
-    let (pipelines, refused) = crate::check::pipeline_shaders(&files);
+    let prepared_resources = std::env::var_os("SUNRISE_RESOURCES")
+        .or_else(|| std::env::var_os("SUNRISE_TEST_RESOURCES"))
+        .map(std::path::PathBuf::from)
+        .filter(|p| p.is_dir());
+    let (pipelines, refused) =
+        crate::check::pipeline_shaders(&files, prepared_resources.as_deref());
     if !refused.is_empty() {
         return Err(format!(
             "render pipeline shaders refused:\n{}",
@@ -775,41 +751,72 @@ pub(crate) fn check_mod(entry: ChildEntry, show_uses: bool) -> Result<(), String
         ));
     }
     if pipelines > 0 {
+        let source = if prepared_resources.is_some() {
+            "prepared resources"
+        } else {
+            "Sunrise interface stubs (set SUNRISE_RESOURCES for prepared 26.3 includes)"
+        };
         println!(
-            "{pipelines} render pipeline shader(s) compose and validate as the game does \
-             (a file that calls pipeline_texture is checked as textured, any other as untextured)."
+            "{pipelines} GLSL render pipeline program(s) translate and validate as the game does ({source})."
         );
     }
     crate::check::references(root, &package.manifest)?;
+    crate::page::check(root, &package, release)?;
     let Some(native) = &package.manifest.native else {
+        if !with.is_empty() {
+            return Err("check --with supplies libraries to a native mod".into());
+        }
         println!("{}: the package rules hold.", package.manifest.name);
         return Ok(());
     };
+    // A release builds from the tagged source with its committed lockfile, as the registry does.
+    if release.is_some()
+        && !std::fs::symlink_metadata(root.join("Cargo.lock")).is_ok_and(|m| m.is_file())
+    {
+        return Err(
+            "a native mod releases with its Cargo.lock committed beside sunrise-mod.toml".into(),
+        );
+    }
     // The mod's `sunrise-mod-api` is a path into `.sunrise/sdk/`: fetch it before Cargo looks.
     let sdk = fetch_pinned(root, &native.sunrise)?;
     let surface = surface_of(&sdk)?;
-    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-    let status = Command::new(cargo)
-        .arg("check")
-        .current_dir(root)
-        .status()
-        .map_err(|e| format!("cargo check: {e}"))?;
-    if !status.success() {
-        let mut error = format!("cargo check failed: {status}");
-        let required: Vec<_> = package
-            .manifest
-            .dependencies
-            .iter()
-            .filter_map(|(id, dependency)| (!dependency.details().optional).then_some(id.as_str()))
-            .collect();
-        if !required.is_empty() {
-            error.push_str(&format!(
-                "\nRequired mods: {}. A standalone build does not supply library mods.",
-                required.join(", ")
-            ));
-        }
-        return Err(error);
+    let built = if release.is_some() {
+        let rust = crate::dev::native_sdk(&crate::dev::cache_dir()?, &native.sunrise)?.rust;
+        crate::dev::check_lock(&rust, root, &native.sunrise)?;
+        crate::dev::build(
+            root,
+            &package,
+            with,
+            false,
+            sunrise_native_build::contract::TargetName::Client,
+            true,
+        )
+        .map(|_| ())
+    } else {
+        crate::dev::check(root, &package, with)
+    };
+    if let Err(error) = built {
+        // The compiler's error stands; the notes of the changes that may explain it follow it.
+        let Ok(Ok(sources)) = uses_table::read(root, &package.manifest) else {
+            return Err(error);
+        };
+        // The notes since the build the mod last compiled against; with none recorded, only the
+        // pinned build's own, and the line after them says how to read older ones.
+        let last = sdk_notes::last_built(root);
+        let walked = sdk_notes::chain(&sdk, last.as_deref(), |build| match &last {
+            Some(_) => fetch_index_only(root, build),
+            None => Err(format!(
+                "no build this mod compiled against is recorded; `cargo sunrise-mod sdk diff <build> {}` lists the notes since one",
+                sdk.build
+            )),
+        });
+        let Ok(chain) = walked else {
+            return Err(error);
+        };
+        let explained = sdk_notes::explaining(&chain.notes, &surface, &sources);
+        return Err(sdk_notes::with_notes(error, &explained, &chain));
     }
+    sdk_notes::record_built(root, &sdk.build)?;
     match uses_table::scan(entry, root, &package.manifest, &surface)? {
         Scanned::Uses(uses) => {
             print!(
@@ -834,6 +841,7 @@ mod tests {
     use super::*;
     use mod_surface::{Counterparts, Hook, HookContract, HookEngine, HookKind, Side};
     use sunrise_mod_package::manifest::MANIFEST;
+    use sunrise_mod_package::sdk::ChangeNote;
 
     fn hook(id: &str, doc: &str, neoforge: &[&str]) -> Hook {
         Hook::new(
@@ -929,7 +937,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("greeter.smod");
         std::fs::write(&path, Package::write_files(&manifest, &files).unwrap()).unwrap();
-        package_subject(&path).unwrap().uses.unwrap()
+        package_subject(&path).unwrap()
     }
 
     #[test]
@@ -953,8 +961,15 @@ mod tests {
         }
     }
 
+    fn shipped(build: &str, note: ChangeNote) -> Shipped {
+        Shipped {
+            build: build.into(),
+            note,
+        }
+    }
+
     #[test]
-    fn a_content_mods_update_report_does_not_access_the_sdk() {
+    fn a_content_mods_pin_report_does_not_access_the_sdk() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join(MANIFEST),
@@ -962,29 +977,111 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            update_report(mod_surface::child::child_entry(), dir.path(), None),
+            pin_report(mod_surface::child::child_entry(), dir.path(), "nightly"),
             Ok(())
         );
         assert!(!dir.path().join(".sunrise").exists());
     }
 
     #[test]
-    fn the_update_report_takes_each_ids_migrate_line() {
+    fn the_pin_report_takes_each_ids_migrate_line() {
         let notes = migrate_notes(&[
-            note(
-                &["method:ServerHost::give_item"],
-                "Parts",
-                Some("items go through Parts under a transaction"),
+            shipped(
+                "newer",
+                note(
+                    &["method:ServerHost::give_item"],
+                    "Parts",
+                    Some("items go through Parts under a transaction"),
+                ),
             ),
-            note(&["hook:x"], "only why", None),
+            shipped("newer", note(&["hook:x"], "only why", None)),
+            shipped(
+                "older",
+                note(
+                    &["method:ServerHost::give_item"],
+                    "first",
+                    Some("older line"),
+                ),
+            ),
         ]);
         assert_eq!(
-            notes
-                .get("method:ServerHost::give_item")
-                .map(String::as_str),
-            Some("items go through Parts under a transaction")
+            notes.get("method:ServerHost::give_item"),
+            Some(&(
+                "newer".to_owned(),
+                "items go through Parts under a transaction".to_owned()
+            ))
         );
         assert_eq!(notes.len(), 1);
+    }
+
+    #[test]
+    fn update_report_shows_migration_for_a_removed_world_lifecycle_member() {
+        use mod_surface::uses::{Entry, Origin, Used, Uses};
+        // Keep the formatter fixture independent of the real lifecycle note's IDs and wording.
+        let id = "type:FixturePhase.Gone";
+        let uses = Uses {
+            items: vec![Used {
+                entry: Entry::plain(id.into(), "old-version".into()),
+                origin: Origin::Source {
+                    file: "src/lib.rs".into(),
+                    line: 19,
+                },
+                note: None,
+            }],
+        };
+        let lifecycle: ChangeNote = toml::from_str(include_str!(
+            "../../sunrise-mod-vocab/changes/debt-re-wl-re-wl.toml"
+        ))
+        .unwrap();
+        for changed in [
+            "type:WorldPhase.WorldCloseFailed",
+            "hook:world_lifecycle",
+            "hook:client_level_load",
+            "hook:client_level_unload",
+        ] {
+            assert!(
+                lifecycle.ids.iter().any(|id| id == changed),
+                "missing ID {changed}"
+            );
+        }
+        assert!(
+            lifecycle
+                .migrate
+                .is_some_and(|text| !text.trim().is_empty())
+        );
+        let notes = migrate_notes(&[shipped(
+            "42c5f70",
+            note(
+                &[id],
+                "The fixture phase was removed.",
+                Some("switch to the replacement fixture phase"),
+            ),
+        )]);
+        let pinned = |name: &str, build: &str| PinnedSdk {
+            name: name.into(),
+            build: build.into(),
+            dir: Default::default(),
+            surface: Default::default(),
+        };
+        let text = report(
+            "greeter",
+            &pinned("old", BUILD),
+            &pinned("new", OTHER_BUILD),
+            &uses,
+            &surface(vec![]),
+            &surface(vec![]),
+            &notes,
+        );
+        assert!(
+            text.lines()
+                .any(|line| line.trim() == "the variant `FixturePhase::Gone` (removed)"),
+            "{text}"
+        );
+        assert!(
+            text.lines().any(|line| line.trim()
+                == "note from the change (42c5f70): \"switch to the replacement fixture phase\""),
+            "{text}"
+        );
     }
 
     #[test]
@@ -994,11 +1091,13 @@ mod tests {
         let text = diff_text(
             &old,
             &new,
-            "42c5f70",
-            &[note(
-                &["hook:gone"],
-                "It fired twice.",
-                Some("Listen to hook:once."),
+            &[shipped(
+                "42c5f70",
+                note(
+                    &["hook:gone"],
+                    "It fired twice.",
+                    Some("Listen to hook:once."),
+                ),
             )],
         );
         assert!(text.contains("0 breaking without a note"), "{text}");
@@ -1026,6 +1125,259 @@ mod tests {
         );
     }
 
+    /// A build folder holding only the `sdk.json` of `commit`, which names `previous` and carries `notes`.
+    fn chained(
+        root: &Path,
+        commit: &str,
+        previous: Option<&str>,
+        notes: Vec<ChangeNote>,
+    ) -> PinnedSdk {
+        let dir = root.join(commit);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("surface.json"), r#"{"hash":"ab"}"#).unwrap();
+        let build = sdk::Build {
+            commit: commit.into(),
+            game: sdk::GAME.into(),
+            date: "2026-11-13".into(),
+            nightly: None,
+        };
+        let mut index = Index::of_folder(&dir, build, "1.99.1".into()).unwrap();
+        index.surface.previous = previous.map(str::to_owned);
+        index.surface.notes = notes;
+        std::fs::write(dir.join(sdk::INDEX), index.to_json()).unwrap();
+        PinnedSdk {
+            build: commit.into(),
+            name: format!("name-{}", &commit[..1]),
+            surface: dir.join("surface.json"),
+            dir,
+        }
+    }
+
+    /// Three builds, each carrying one note, the third (`c`) the newest.
+    fn three_builds(root: &Path) -> Vec<PinnedSdk> {
+        let a = "a".repeat(40);
+        let b = "b".repeat(40);
+        let c = "c".repeat(40);
+        vec![
+            chained(root, &a, None, vec![note(&["hook:one"], "first", None)]),
+            chained(
+                root,
+                &b,
+                Some(&a),
+                vec![note(&["hook:two"], "second", None)],
+            ),
+            chained(
+                root,
+                &c,
+                Some(&b),
+                vec![note(&["hook:three"], "third", None)],
+            ),
+        ]
+    }
+
+    /// Fetches the `sdk.json` of a build of `builds` by its id, as a release would.
+    fn fetcher(builds: &[PinnedSdk]) -> impl Fn(&str) -> Result<Index, String> + '_ {
+        |text| {
+            let build = builds
+                .iter()
+                .find(|b| b.build == text)
+                .ok_or_else(|| format!("no release for {text}"))?;
+            let bytes = std::fs::read(build.dir.join(sdk::INDEX)).unwrap();
+            Ok(Index::read(&bytes, &build.build).unwrap())
+        }
+    }
+
+    fn why_by_build(chain: &sdk_notes::Chain) -> Vec<(&str, &str)> {
+        chain
+            .notes
+            .iter()
+            .map(|s| (s.build.as_str(), s.note.why.as_str()))
+            .collect()
+    }
+
+    #[test]
+    fn the_chain_collects_each_hop_and_stops_at_the_older_build() {
+        let dir = tempfile::tempdir().unwrap();
+        let builds = three_builds(dir.path());
+        let chain = sdk_notes::chain(&builds[2], Some(&builds[0].build), fetcher(&builds)).unwrap();
+        assert_eq!(
+            why_by_build(&chain),
+            [("name-c", "third"), ("bbbbbbb", "second")]
+        );
+        assert_eq!(chain.stopped, None);
+    }
+
+    #[test]
+    fn the_chain_stops_at_a_build_named_twice() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = ("a".repeat(40), "b".repeat(40));
+        let builds = [
+            chained(
+                dir.path(),
+                &a,
+                Some(&b),
+                vec![note(&["hook:one"], "first", None)],
+            ),
+            chained(
+                dir.path(),
+                &b,
+                Some(&a),
+                vec![note(&["hook:two"], "second", None)],
+            ),
+        ];
+        let chain = sdk_notes::chain(&builds[0], None, fetcher(&builds)).unwrap();
+        assert_eq!(
+            why_by_build(&chain),
+            [("name-a", "first"), ("bbbbbbb", "second")]
+        );
+        assert!(
+            chain.stopped.is_some_and(|why| why.contains("aaaaaaa")),
+            "names the build named twice"
+        );
+    }
+
+    #[test]
+    fn the_chain_from_the_build_last_compiled_against_is_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let builds = three_builds(dir.path());
+        let chain = sdk_notes::chain(&builds[2], Some(&builds[2].build), |text| {
+            panic!("nothing to fetch, asked for {text}")
+        })
+        .unwrap();
+        assert_eq!(chain.notes, []);
+        assert_eq!(chain.stopped, None);
+    }
+
+    #[test]
+    fn the_last_compiled_build_reads_back_and_anything_else_is_none() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(sdk_notes::last_built(dir.path()), None);
+        std::fs::create_dir(dir.path().join(".sunrise")).unwrap();
+        let build = "d".repeat(40);
+        sdk_notes::record_built(dir.path(), &build).unwrap();
+        assert_eq!(sdk_notes::last_built(dir.path()), Some(build));
+        std::fs::write(dir.path().join(".sunrise/built"), "dddd\n").unwrap();
+        assert_eq!(sdk_notes::last_built(dir.path()), None);
+    }
+
+    #[test]
+    fn the_chain_without_an_older_build_ends_where_it_ends() {
+        let dir = tempfile::tempdir().unwrap();
+        let builds = three_builds(dir.path());
+        let chain = sdk_notes::chain(&builds[2], None, fetcher(&builds)).unwrap();
+        assert_eq!(
+            why_by_build(&chain),
+            [
+                ("name-c", "third"),
+                ("bbbbbbb", "second"),
+                ("aaaaaaa", "first")
+            ]
+        );
+        assert_eq!(chain.stopped, None);
+    }
+
+    #[test]
+    fn the_chain_keeps_its_notes_when_a_build_cannot_be_fetched() {
+        let dir = tempfile::tempdir().unwrap();
+        let builds = three_builds(dir.path());
+        let chain = sdk_notes::chain(&builds[2], None, |text| {
+            Err(format!("no release for {text}"))
+        })
+        .unwrap();
+        assert_eq!(why_by_build(&chain), [("name-c", "third")]);
+        assert!(
+            chain.stopped.is_some_and(|why| why.contains("bbbbbbb")),
+            "names the build it stopped at"
+        );
+    }
+
+    /// The names `explaining` matched for `ids` removed from a surface that still holds
+    /// `hook:kept`, against a source that calls `gone_hook` and `kept`.
+    fn explained_names(ids: &[&str]) -> Vec<String> {
+        let notes = [shipped(
+            "42c5f70",
+            note(ids, "It moved.", Some("Use hook:new.")),
+        )];
+        let current = surface(vec![hook("hook:kept", "", &[])]);
+        let sources = [(
+            "src/lib.rs".to_owned(),
+            "fn setup() { host.gone_hook(); // lost_hook\n let _ = kept; }".to_owned(),
+        )];
+        sdk_notes::explaining(&notes, &current, &sources)
+            .into_iter()
+            .flat_map(|e| e.names.into_iter().map(str::to_owned))
+            .collect()
+    }
+
+    #[test]
+    fn a_removed_id_the_source_names_is_explained() {
+        assert_eq!(explained_names(&["hook:gone_hook"]), ["gone_hook"]);
+    }
+
+    #[test]
+    fn a_removed_id_the_source_does_not_name_is_not_explained() {
+        // `lost_hook` is only in a comment, which is no identifier.
+        assert!(explained_names(&["hook:lost_hook", "hook:other"]).is_empty());
+    }
+
+    #[test]
+    fn an_id_still_in_the_surface_is_not_explained() {
+        assert!(explained_names(&["hook:kept"]).is_empty());
+    }
+
+    #[test]
+    fn the_notes_follow_the_error_and_nothing_follows_when_none_matches() {
+        let notes = [shipped(
+            "42c5f70",
+            note(&["hook:gone_hook"], "It moved.", Some("Use hook:new.")),
+        )];
+        let current = surface(vec![]);
+        let sources = [(
+            "src/lib.rs".to_owned(),
+            "fn f() { gone_hook(); }".to_owned(),
+        )];
+        let chain = sdk_notes::Chain {
+            notes: vec![],
+            stopped: Some("build bbbbbbb: gone".into()),
+        };
+        let explained = sdk_notes::explaining(&notes, &current, &sources);
+        let text = sdk_notes::with_notes("error: cargo failed".into(), &explained, &chain);
+        assert!(text.starts_with("error: cargo failed\n"), "{text}");
+        assert!(text.contains("`gone_hook`"), "{text}");
+        assert!(text.contains("changed in 42c5f70"), "{text}");
+        assert!(text.contains("Use hook:new."), "{text}");
+        assert!(text.contains("bbbbbbb"), "{text}");
+        // With no note, the line that says how to read older notes still follows.
+        let text = sdk_notes::with_notes("error: cargo failed".into(), &[], &chain);
+        assert!(text.starts_with("error: cargo failed\n"), "{text}");
+        assert!(
+            text.contains("bbbbbbb") && !text.contains("explain"),
+            "{text}"
+        );
+        let whole = sdk_notes::Chain {
+            notes: vec![],
+            stopped: None,
+        };
+        assert_eq!(
+            sdk_notes::with_notes("error: cargo failed".into(), &[], &whole),
+            "error: cargo failed"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_last_compiled_record_is_replaced_and_its_target_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("elsewhere");
+        std::fs::write(&target, "kept").unwrap();
+        std::fs::create_dir(dir.path().join(".sunrise")).unwrap();
+        std::os::unix::fs::symlink(&target, dir.path().join(".sunrise/built")).unwrap();
+        let build = "d".repeat(40);
+        sdk_notes::record_built(dir.path(), &build).unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "kept");
+        assert_eq!(sdk_notes::last_built(dir.path()), Some(build));
+    }
+
     fn argv(line: &str) -> Vec<String> {
         line.split(' ')
             .filter(|w| !w.is_empty())
@@ -1034,29 +1386,13 @@ mod tests {
     }
 
     #[test]
-    fn hooks_fits_and_check_read_their_options_and_refuse_others() {
+    fn hooks_reads_its_options_and_refuses_others() {
         assert_eq!(
             hooks_args(&argv("block break --all")),
             Ok(("block break".into(), true))
         );
-        let build = argv("pack.smod --build a --build b");
-        assert_eq!(
-            fits_args(&build),
-            Ok((Some(Path::new("pack.smod")), vec!["a", "b"]))
-        );
-        for (error, option) in [
-            (hooks_args(&argv("spawn --al")).unwrap_err(), "--al"),
-            (
-                fits_args(&argv("--bild a")).map(drop).unwrap_err(),
-                "--bild",
-            ),
-            (
-                fits_args(&argv("a.smod b.smod")).map(drop).unwrap_err(),
-                "b.smod",
-            ),
-        ] {
-            assert!(error.contains(option), "{error}");
-        }
+        let error = hooks_args(&argv("spawn --al")).unwrap_err();
+        assert!(error.contains("--al"), "{error}");
         // The usage below the diagnostic has dashes of its own: the diagnostic names the separator.
         let error = hooks_args(&argv("block -- break")).unwrap_err();
         let refused = error.lines().next().unwrap().split(' ').next_back();

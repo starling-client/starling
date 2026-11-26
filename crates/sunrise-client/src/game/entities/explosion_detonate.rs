@@ -4,7 +4,6 @@
 use super::Game;
 use crate::game::entity::EntityHandle;
 use mod_api::EntityRef;
-use std::collections::HashSet;
 
 impl Game<'_> {
     /// `ServerExplosion.explode` posting `onExplosionDetonate` before any block or
@@ -14,9 +13,9 @@ impl Game<'_> {
     /// cushions and end crystals the walk misses. The list they leave in
     /// `combat.blast_hit_list` is what the blast's walks then use: what a
     /// listener leaves in it is eligible for the normal hurt/push checks.
-    /// Order controls only the ordinary-storage walk, not the separate crystal,
-    /// dragon, player and decoration passes. Without a listener nothing is listed, and the walks
-    /// enumerate the storages as before.
+    /// The blast reaches the entries in the list's order whatever their kind, and an entry
+    /// named twice twice. Without a listener nothing is listed, and the walks enumerate the
+    /// storages as before.
     pub(super) fn explosion_detonate(
         &mut self,
         center: [f64; 3],
@@ -33,6 +32,7 @@ impl Game<'_> {
         let source = self
             .combat
             .explosion_direct
+            .map(|(id, _)| id)
             .or(self.combat.explosion_source);
         let mut entities = self
             .level(self.dim.id())
@@ -43,12 +43,12 @@ impl Game<'_> {
         let dimension = self.dim.id();
         self.native_explosion_detonate(dimension, center, blocks, &mut entities);
         // The walks follow the list: one a listener added is walked as any
-        // other, so a handle that names nothing real is refused here, and a
-        // repeated id is taken once (`getEntities` lists an entity once).
+        // other, so a handle that names nothing real is refused here. An entry
+        // a listener repeated is walked as often as it is named (the patched
+        // `hurtEntities` iterates the edited list itself); the set only answers
+        // membership.
         entities.retain(|entity| self.native_entity_target(*entity).is_some());
-        let mut seen = HashSet::new();
-        entities.retain(|entity| seen.insert(entity.id()));
-        self.combat.blast_hit_ids = seen;
+        self.combat.blast_hit_ids = entities.iter().map(|entity| entity.id()).collect();
         self.combat.blast_hit_list = Some(entities.iter().map(|entity| entity.id()).collect());
     }
 
@@ -234,6 +234,78 @@ mod tests {
         assert!(heard.contains(&900) && heard.contains(&SPARED), "{heard:?}");
     }
 
+    /// `ServerExplosion.hurtEntities` iterates the edited list itself: the entries are
+    /// reached in its order across kinds, and one named twice is reached twice.
+    #[test]
+    #[ignore = "daily"]
+    fn the_edited_list_is_walked_in_order_across_kinds_and_with_repeats() {
+        const CRYSTAL: u32 = 950;
+        struct Reorder;
+        #[mod_api::__subscriptions]
+        impl Hooks for Reorder {
+            fn explosion_detonate(
+                &self,
+                _: &mut dyn ServerHost,
+                event: &mut ExplosionDetonateEvent<'_>,
+            ) {
+                let epoch = event.entities.first().unwrap().epoch();
+                event.entities.clear();
+                for id in [900, CRYSTAL, 901, 901] {
+                    event.entities.push(EntityRef::new(epoch, id));
+                }
+            }
+        }
+        struct Seen(Arc<Mutex<Vec<(u32, bool)>>>);
+        #[mod_api::__subscriptions]
+        impl Hooks for Seen {
+            fn explosion_knockback(
+                &self,
+                host: &mut dyn ServerHost,
+                event: &mut mod_api::ExplosionKnockbackEvent<'_>,
+            ) {
+                if let Some(id) = event.entity {
+                    self.0
+                        .lock()
+                        .unwrap()
+                        .push((id, host.entity(CRYSTAL).is_some()));
+                }
+            }
+        }
+        let heard = Arc::new(Mutex::new(Vec::new()));
+        let mods: mod_api::Mods = vec![
+            mod_api::ModEntry::new("reorder", Box::new(Reorder)),
+            mod_api::ModEntry::new("seen", Box::new(Seen(heard.clone()))),
+        ]
+        .into();
+        mod_platform::testing::with_mods(mods, || {
+            with_game(|game| {
+                zombie(game, 900, 2.0);
+                zombie(game, 901, -2.0);
+                game.crystals.push(crate::game::dragon::Crystal {
+                    attachment_lifetime: Default::default(),
+                    join: Default::default(),
+                    id: CRYSTAL,
+                    position: Vec3::new(1.0, 1.0, 0.0),
+                    previous: Vec3::new(1.0, 1.0, 0.0),
+                    rotation: [0.0, 0.0],
+                    fire: 0,
+                    show_bottom: false,
+                    time: 0,
+                    beam: None,
+                    invulnerable: false,
+                    fall: (false, 0.0),
+                    size_answer: None,
+                });
+                explode(game);
+            });
+        });
+        // The crystal stands for the first mob and is gone for both visits of the second.
+        assert_eq!(
+            *heard.lock().unwrap(),
+            [(900, true), (901, false), (901, false)]
+        );
+    }
+
     /// `getEntities(source, box)` leaves the blast's exploding source out:
     /// it is not in the list and its own blast does not hurt it.
     #[test]
@@ -249,7 +321,7 @@ mod tests {
             with_game(|game| {
                 zombie(game, 900, 2.0);
                 zombie(game, 910, -2.0);
-                game.combat.explosion_direct = Some(900);
+                game.combat.explosion_direct = Some((900, "minecraft:zombie"));
                 explode(game);
                 let source = game.mobs.iter().find(|m| m.id == 900).unwrap();
                 assert_eq!(source.health, 20.0);
@@ -302,7 +374,9 @@ mod tests {
     }
 
     /// The list's order is the visit order: the reversed list reverses the
-    /// order the mobs take their hurt in (`living_damage_post`'s).
+    /// order the mobs take their hurt in (`living_damage_post`'s). The blast
+    /// lists entities as `EntitySectionStorage.forEachAccessibleNonEmptySection`
+    /// walks them: section x ascending, then arrival order within a section.
     #[test]
     #[ignore = "daily"]
     fn the_list_order_is_the_walk_order() {
@@ -340,17 +414,10 @@ mod tests {
                 explode(game);
             });
         });
+        // The walk is 902 (section x -1), then 900 and 901 (section x 0, in
+        // arrival order); the listener reversed it.
         let heard = heard.lock().unwrap();
-        let at = |id| {
-            heard
-                .iter()
-                .position(|&h| h == id)
-                .unwrap_or_else(|| panic!("{heard:?}"))
-        };
-        assert!(
-            at(900) > at(901) && at(901) > at(902),
-            "reversed, not storage order: {heard:?}"
-        );
+        assert_eq!(*heard, [901, 900, 902], "reversed, not walk order");
     }
 
     /// A position a listener takes out keeps its block and gets no fire,
@@ -546,17 +613,12 @@ mod tests {
         mod_platform::testing::with_mods(mods, || {
             with_game(|game| {
                 for (id, x) in [(940, 8.0), (941, 7.99)] {
-                    game.crystals.push(crate::game::dragon::Crystal {
-                        attachment_lifetime: Default::default(),
-                        join: Default::default(),
+                    game.crystals.push(crate::game::dragon::Crystal::new(
                         id,
-                        position: Vec3::new(x, 1.0, 0.0),
-                        show_bottom: false,
-                        time: 0,
-                        beam: None,
-                        invulnerable: false,
-                        fall: (false, 0.0),
-                    });
+                        Vec3::new(x, 1.0, 0.0),
+                        false,
+                        0,
+                    ));
                 }
                 game.explosion_detonate([0.0, 1.0, 0.0], 3.0, &mut Vec::new());
                 let listed = game.combat.blast_hit_list.as_ref().unwrap();
@@ -658,6 +720,7 @@ mod tests {
             pos: [2, 1, 0],
             facing: 0,
             variant: "minecraft:kebab".into(),
+            asset: None,
             width: 1,
             height: 1,
             check_interval: 0,
@@ -674,17 +737,12 @@ mod tests {
             check_interval: 0,
             custom_name: None,
         });
-        game.crystals.push(crate::game::dragon::Crystal {
-            attachment_lifetime: Default::default(),
-            join: Default::default(),
-            id: 954,
-            position: Vec3::new(2.0, 1.0, 0.0),
-            show_bottom: false,
-            time: 0,
-            beam: None,
-            invulnerable: false,
-            fall: (false, 0.0),
-        });
+        game.crystals.push(crate::game::dragon::Crystal::new(
+            954,
+            Vec3::new(2.0, 1.0, 0.0),
+            false,
+            0,
+        ));
         zombie(game, 955, -2.0);
         game.boats.push(crate::game::boats::Boat::new(
             960,
@@ -759,5 +817,50 @@ mod tests {
                 if empty { vec![] } else { vec![960, 955] }
             );
         }
+    }
+
+    /// A position a listener adds to `blocks` is destroyed, and an extreme Y
+    /// coordinate added with fire enabled does not panic.
+    #[test]
+    #[ignore = "daily"]
+    fn a_position_added_by_a_listener_is_destroyed() {
+        struct AddBlocks;
+        #[mod_api::__subscriptions]
+        impl Hooks for AddBlocks {
+            fn explosion_detonate(
+                &self,
+                _: &mut dyn ServerHost,
+                event: &mut ExplosionDetonateEvent<'_>,
+            ) {
+                event.blocks.push([12, 80, 12]);
+                event.blocks.push([0, i32::MIN, 0]);
+            }
+        }
+        let mods: mod_api::Mods =
+            vec![mod_api::ModEntry::new("add_blocks", Box::new(AddBlocks))].into();
+        mod_platform::testing::with_mods(mods, || {
+            with_game(|game| {
+                game.world
+                    .chunks
+                    .insert((0, 0), Arc::new(sunrise_client::chunk::Chunk::empty(0, 0)));
+                let stone = game
+                    .pack
+                    .assets
+                    .registry
+                    .default_state("minecraft:stone")
+                    .unwrap();
+                game.world.set(12, 80, 12, stone).unwrap();
+                game.server_explode_as(
+                    [0.0, 1.0, 0.0],
+                    3.0,
+                    super::super::explosion::BlockInteraction::Destroy,
+                    true,
+                    "minecraft:explosion",
+                    None,
+                )
+                .unwrap();
+                assert_eq!(game.world.block(12, 80, 12), game.world.air);
+            });
+        });
     }
 }

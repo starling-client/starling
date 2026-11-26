@@ -1,7 +1,7 @@
 //! Smaller command trees: `/bossbar`, `/function`, `/return`, `/schedule`,
 //! `/random`, `/tick`, `/teammsg`, `/reload` and `/datapack`.
 use super::{
-    Dispatcher,
+    Dispatcher, RegistryId,
     args::ArgType,
     vanilla::{ENTITIES, GAMEMASTERS, PLAYERS},
 };
@@ -172,7 +172,7 @@ fn item(d: &mut Dispatcher, root: usize) {
         let modifier = d.argument(
             slot,
             "modifier",
-            ArgType::ResourceOrId("minecraft:item_modifier"),
+            ArgType::ResourceOrId(RegistryId::from_static("minecraft:item_modifier")),
         );
         d.executes(modifier, "item.modify");
     }
@@ -204,7 +204,7 @@ fn item(d: &mut Dispatcher, root: usize) {
                 let modifier = d.argument(
                     source_slots,
                     "modifier",
-                    ArgType::ResourceOrId("minecraft:item_modifier"),
+                    ArgType::ResourceOrId(RegistryId::from_static("minecraft:item_modifier")),
                 );
                 d.executes(modifier, "item");
             }

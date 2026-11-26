@@ -8,14 +8,18 @@ import platform
 import subprocess
 import random
 import zipfile
-try:
-    from . import lab, test_rust_parity as base, test_worldgen_parity as worldgen, test_biome_temperature_parity as temperature, test_material_condition_parity as material, test_block_survival_parity as survival
-except ImportError:
-    import lab
-    import test_rust_parity as base
-    import test_worldgen_parity as worldgen
-    import test_biome_temperature_parity as temperature
-    import test_material_condition_parity as material, test_block_survival_parity as survival
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import (
+    lab,
+    test_rust_parity as base,
+    test_worldgen_parity as worldgen,
+    test_biome_temperature_parity as temperature,
+    test_material_condition_parity as material,
+    test_block_survival_parity as survival,
+)
 
 
 def corpus(facts,tags,provider_resources=None,catalog_resources=None,fluid_tags=None,biomes=None,biome_tags=None,support_states=None,survival_rules=None):

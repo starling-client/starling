@@ -22,14 +22,12 @@ from pathlib import Path
 import subprocess
 import struct
 import tempfile
-try:
-    from . import lab, test_rust_parity as base, test_model_baking_parity as baking
-    from .integration_env import run_game
-except ImportError:
-    import lab
-    import test_rust_parity as base
-    import test_model_baking_parity as baking
-    from integration_env import run_game
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_rust_parity as base, test_model_baking_parity as baking
+from tools.integration_env import run_game
 
 SOURCES = [
     'crates/sunrise-client/src/game.rs',

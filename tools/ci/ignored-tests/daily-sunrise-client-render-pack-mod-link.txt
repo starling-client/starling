@@ -1,0 +1,5 @@
+sunrise-client-render gfx::pack_post::mod_pack_binding_tests::mod_vertex_pack_fragment_against_a_geometry_stage_program_is_unbound_with_a_note lib daily gpu
+sunrise-client-render gfx::pack_post::mod_pack_binding_tests::mod_vertex_pack_fragment_draws_the_mods_vertices_through_the_packs_fragment_stage lib daily gpu
+sunrise-client-render gfx::pack_post::mod_pack_binding_tests::mod_vertex_pack_fragment_links_varyings_by_name_not_location lib daily gpu
+sunrise-client-render gfx::pack_post::mod_pack_binding_tests::mod_vertex_pack_fragment_reads_its_own_set_one_uniform_after_the_packs_sets lib daily gpu
+sunrise-client-render gfx::pack_post::mod_pack_binding_tests::mod_vertex_pack_fragment_with_a_varying_the_mod_does_not_write_is_unbound lib daily gpu

@@ -10,6 +10,7 @@ pub trait Hooks {
     #[hook(
         dispatch = "flat",
         side = "server",
+        version = 2,
         contract = "cancel",
         out = "cancel",
         neoforge = "ExplosionEvent.Start",

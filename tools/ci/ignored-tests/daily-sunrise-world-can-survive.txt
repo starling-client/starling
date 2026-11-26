@@ -1,0 +1,2 @@
+# #3596: growing-plant sibling pairs are resolved when the block registry loads.
+sunrise-world level::survive::growing_plant_pair_tests::growing_plant_pair_resolves_both_halves_and_falls_back_to_the_original_block lib daily resources

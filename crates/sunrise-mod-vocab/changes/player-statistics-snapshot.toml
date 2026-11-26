@@ -1,0 +1,3 @@
+ids = ["handle:PlayerRef::statistics", "handle:PlayerRef::set_statistics"]
+why = "Adds PlayerRef::statistics, a snapshot of the player's live counters in the ServerStatsCounter.toJson save format, and PlayerRef::set_statistics, which replaces them from such a document after ServerStatsCounter.parse's upgrade. Criterion scores follow the replacement, no player_stat_award fires, and inside a transaction the replacement happens at the root commit."
+migrate = "Nothing to migrate."

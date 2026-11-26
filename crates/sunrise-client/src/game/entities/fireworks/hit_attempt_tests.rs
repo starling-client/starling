@@ -101,7 +101,7 @@ fn remaining_hit_callers_observe_refusals_and_zero_damage() {
                 game.player.as_mut().unwrap().client_loaded = loaded;
                 let mut rocket = Rocket::remote(900, Vec3::ZERO, Vec3::ZERO);
                 rocket.attached = attached;
-                rocket.explosions.push(FireworkExplosion::default());
+                std::sync::Arc::make_mut(&mut rocket.explosions).push(FireworkExplosion::default());
                 game.explode_rocket(&rocket);
                 check(
                     expected,
@@ -125,7 +125,7 @@ fn remaining_hit_callers_observe_refusals_and_zero_damage() {
             corpse.health = 0.0;
             game.mobs.push(corpse);
             let mut rocket = Rocket::remote(902, Vec3::ZERO, Vec3::ZERO);
-            rocket.explosions.push(FireworkExplosion::default());
+            std::sync::Arc::make_mut(&mut rocket.explosions).push(FireworkExplosion::default());
             game.explode_rocket(&rocket);
             check(
                 1,
@@ -238,6 +238,9 @@ fn remaining_hit_callers_observe_refusals_and_zero_damage() {
             .unwrap();
             let (guest, _packets) = crate::game::native_sound_refs::tests::guest(88, 88, [0.0; 3]);
             game.lan.as_mut().unwrap().hub.guests.push(guest);
+            // The egg hits above may hatch chicks (`ThrownEgg.onHit`, drawn from the level's
+            // random); they would be splash targets too, so only the guest stays near the blast.
+            game.mobs.clear();
             for dead in [true, false] {
                 fresh_player(game, GameMode::Spectator); // excluded from splash
                 let mut body = Box::new(PlayerMotion::new(game.motion, Vec3::ZERO).unwrap());
@@ -257,7 +260,7 @@ fn remaining_hit_callers_observe_refusals_and_zero_damage() {
                     })
                     .unwrap();
                 let mut rocket = Rocket::remote(901, Vec3::ZERO, Vec3::ZERO);
-                rocket.explosions.push(FireworkExplosion::default());
+                std::sync::Arc::make_mut(&mut rocket.explosions).push(FireworkExplosion::default());
                 game.explode_rocket(&rocket);
                 check(
                     1,

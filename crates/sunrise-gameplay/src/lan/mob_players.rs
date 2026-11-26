@@ -118,6 +118,10 @@ pub fn acts_on_player(e: &MobEvent) -> bool {
         MobEvent::AttackPlayer(..)
             | MobEvent::CubeHurtPlayer { .. }
             | MobEvent::AttackPlayerWithEffect { .. }
+            | MobEvent::WeaponAttack(sunrise_client::mobs::WeaponHit {
+                target: Who::Player,
+                ..
+            })
             | MobEvent::Sting {
                 target: Who::Player,
                 ..
@@ -137,6 +141,10 @@ pub fn acts_on_player(e: &MobEvent) -> bool {
             }
             | MobEvent::StabDismount {
                 target: Who::Player,
+            }
+            | MobEvent::StabMemory {
+                target: Who::Player,
+                ..
             }
             | MobEvent::Ignite(Who::Player, _)
             | MobEvent::ZombieIgnite(Who::Player, _)

@@ -67,7 +67,9 @@ fn client_tick_cancellation_skips_one_tick_and_countdown_continues() {
                 game.inventory[game.selected] = Some(ItemStack::new("minecraft:apple", 2));
                 game.using = Some((game.selected, 0));
                 game.use_duration = 32;
-                game.use_start.ticks_set = false;
+                game.use_start = crate::game::using_item::UseStart::of(
+                    game.inventory[game.selected].clone().unwrap(),
+                );
                 game.set_mapping_held("key.use", true);
                 game.remote_tick_using();
                 assert_eq!(game.using, Some((game.selected, 1)));

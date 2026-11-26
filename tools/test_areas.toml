@@ -104,20 +104,21 @@ paths = [
 cargo = [
   { package = "sunrise-client-lib", target = "lib", filter = "mobs::" },
   { package = "sunrise-client", target = "lib", filter = "game::creatures::" },
+  { package = "sunrise-client", target = "lib", filter = "game::natural_spawning::" },
   { package = "sunrise-client", target = "lib", filter = "game::stats::phantom_spawn_tests" },
   { package = "sunrise-client", target = "lib", filter = "game::wither_star_tests" },
 ]
 harnesses = [
   "mob_*", "allay_*", "animal_love_cause", "armadillo_save_reload", "baby_pig_attachment", "breeze_hook",
   "camel_*", "chicken_egg", "conversion_*", "dragon_*", "server_dragon", "forced_end", "elder_curse", "equine_temper",
-  "finalize_spawn", "natural_spawn", "spawn_*", "spawner", "trial_spawner", "glow_squid_noai", "goat_voices",
+  "finalize_spawn", "natural_spawn", "spawn_*", "spawner", "trial_spawner", "glow_squid_noai", "sulfur_cube_fuse", "noai_breather_air", "goat_voices",
   "golem_defense_guest", "happy_ghast_leash", "hoglin_repeat_attack", "piglin_anger_memory", "pufferfish_*",
   "raid*", "raider_celebration", "sheep_dye", "shulker_*", "squid_*", "tropical_fish_variant", "villager_*",
   "trading", "trade_components", "merchant_*", "warden_owned_memories", "wolf_anger_writes", "zombie_cure_sound",
   "noai_*", "nautilus_memory", "pet_owner_teleport", "enderman_placement", "loaded_pig_tags", "ageable_integer_load",
   "bed_poi", "peaceful_summon", "return_to_sender", "hostile_sound_categories", "ominous_warning_sound",
   "command_reinforcements", "last_hurt_by_mob", "spell_ticks", "gateway_cooldown", "damage_source_entities",
-  "creaking_hit_order",
+  "creaking_hit_order", "first_tick_lava_burn", "fangs_ticking_gate", "fangs_fluid_current",
 ]
 lan = [
   "mobs", "barter", "piglin_offspring", "sleep-villager", "trials", "villagers", "hero-trading", "cure-discount",
@@ -177,7 +178,7 @@ harnesses = [
   "lan*", "server_*", "remote_*", "dedicated_*", "online_mode", "secure_chat", "wire_stream", "item_wire",
   "stop_sound_wire", "protocol_*", "friends_integration", "management_protocol", "user_cache", "player_sync",
   "*_guest", "guest_*", "connected_guest_advancement_save", "disconnect_crafting", "entity_sound_packet",
-  "synced_*", "test_pos_guest",
+  "synced_*", "test_pos_guest", "gamemode_split", "network",
 ]
 # Every LAN check runs through a guest: all of them belong here as well.
 lan = ["*"]
@@ -187,6 +188,7 @@ name = "saves"
 about = "saving and loading worlds, entities and players, region files, datafix"
 paths = [
   "crates/sunrise-client/src/save.rs", "crates/sunrise-client/src/save/*", "crates/sunrise-client/src/entity_nbt.rs",
+  "crates/sunrise-client/src/entity_nbt/*",
   "crates/sunrise-client/src/game/world/saving.rs", "crates/sunrise-client/src/game/world/persist*",
   "crates/sunrise-client/src/game/world/storage.rs", "crates/sunrise-client/src/game/world/autosave.rs",
   "crates/sunrise-world/src/region.rs", "crates/sunrise-world/src/datafix/*", "crates/sunrise-core/src/nbt.rs",
@@ -210,7 +212,7 @@ lan = ["sleep-reload", "leash_reload", "reopen_player"]
 name = "motion"
 about = "entity and player movement, collision, vehicles and riding, projectiles"
 paths = [
-  "crates/sunrise-client/src/motion*", "crates/sunrise-client/src/projectiles.rs", "crates/sunrise-client/src/arrows.rs",
+  "crates/sunrise-client/src/motion*", "crates/sunrise-client/src/projectiles.rs", "crates/sunrise-client/src/entities/arrows*",
   "crates/sunrise-world/src/entity_move.rs", "crates/sunrise-world/src/player_travel.rs",
   "crates/sunrise-world/src/*collision*", "crates/sunrise-world/src/movement_*", "crates/sunrise-world/src/living_motion.rs",
   "crates/sunrise-world/src/swimming.rs", "crates/sunrise-world/src/climbing.rs",
@@ -225,7 +227,7 @@ harnesses = [
   "*motion*", "*move*", "*collision*", "collision", "climbing", "swimming", "auto_jump", "boat_*", "*vehicle*",
   "mount_*", "passenger_relation", "mob_removal_order", "player_travel", "world_movement", "world_ray", "registry_fall_ray",
   "edge_backoff", "world_edge_backoff", "restitution", "stepped_interpolation", "view_direction", "projectile_*",
-  "arrow*", "client_arrow", "bounced_projectile_tick_order", "frame_projectile", "pearl_*", "trident",
+  "arrow*", "client_arrow", "bounced_projectile_tick_order", "fireball_hit_turn", "frame_projectile", "pearl_*", "trident",
   "lunge_motion", "fall_damage", "living_fall", "living_landing", "block_landing", "free_space", "entity_fluid*",
   "registered_entity_fluid", "registry_fluid", "fluid_box", "water_splash", "scaffolding_collision",
   "powder_snow_collision", "shulker_space", "local_input", "sprint_input", "leash_knot_uuid", "mob_quad_leash",
@@ -253,16 +255,16 @@ cargo = [
 ]
 harnesses = [
   "item_*", "*_item", "extra_items", "entity_attribute", "use_*", "inventory_*", "consum*", "consume_effect", "stored_*", "active_effect*",
-  "status_*", "effect*", "potion_effect_icon", "player_*", "food*", "damage_*", "*_damage", "living_*", "combat_rules",
+  "status_*", "effect*", "potion_effect_icon", "cloud_water", "player_*", "food*", "damage_*", "*_damage", "living_*", "combat_rules",
   "registered_player_combat", "special_attack", "mace", "blocking_*", "item_blocking", "invulnerable_time",
   "attribute*", "live_attribute*", "enchant*", "stored_enchantment_patch", "loot_*", "opened_loot", "spawn_loot",
-  "stand_break_loot", "entity_death_loot", "component_*", "*_components", "effective_item_components",
+  "stand_break_loot", "stand_low_health", "entity_death_loot", "component_*", "*_components", "effective_item_components",
   "builtin_component_delivery", "numeric_damage_component", "bundle_weight", "stack_*", "held_*", "helmet_damage",
   "use_flag_reaction", "teleport_consume", "pumpkin_equippable_use", "fishing_*", "inline_fishing_tool",
   "inline_loot_reference", "inline_trim_holders", "craft_map_take", "map_*", "exploration_map_command",
   "lore_tooltip", "tooltip_display", "firework_tooltip", "orb_*", "absorption_save_reload", "suffocation",
   "squid_damage_result", "server_knockback", "elder_curse", "pick_block_data", "hotbar", "slot_range_codec",
-  "creative_mining", "creative",
+  "creative_mining", "creative", "crosshair_pick", "writable_book",
 ]
 lan = [
   "damage", "hazards", "pvp", "deaths", "kills", "looting", "hurt", "eat*", "xp", "effects", "absorption", "breath",
@@ -280,12 +282,15 @@ paths = [
   "crates/sunrise-command/*", "crates/sunrise-client/src/game/administration/*", "crates/sunrise-client/src/scoreboard_cmd.rs",
   "crates/sunrise-client/src/data_cmd.rs", "crates/sunrise-client-core/src/scoreboard.rs",
   "crates/sunrise-*/src/nbt_path.rs", "crates/sunrise-client/src/game/world/server_reload/*",
+  "crates/sunrise-client-render/src/datapack*",
   "tools/command_exec_corpus.py", "tools/command_parse_corpus.py",
 ]
 cargo = [
   { package = "sunrise-command", target = "lib", filter = "" },
   { package = "sunrise-world", target = "lib", filter = "nbt_path::" },
+  { package = "sunrise-client-render", target = "lib", filter = "datapack::" },
   { package = "sunrise-client", target = "lib", filter = "game::commands::" },
+  { package = "sunrise-client", target = "lib", filter = "game::functions::" },
   { package = "sunrise-client", target = "lib", filter = "game::server_reload::" },
   { package = "sunrise-client", target = "lib", filter = "game::mob_discard_tests::" },
 ]
@@ -294,7 +299,8 @@ harnesses = [
   "named_predicate_reference", "predicate_reference_startup", "run_coordinate_feedback", "terminal_execute_fork",
   "fork_function_feedback", "loaded_command", "storage_alias", "seed_sync", "team_rules", "local_coordinate_rotation",
   "folder_datapack_metadata", "world_pack_enchantment_loader", "entity_type_tags", "world_test_def*", "vehicle_command_damage",
-  "stand_command_hurt", "dialog_codec", "clone_dimensions", "inline_object", "entity_lookup_order",
+  "stand_command_hurt", "stand_living_counters", "dialog_codec", "clone_dimensions", "inline_object", "entity_lookup_order", "eye_item",
+  "cloud_falling_loaded_rotation", "summon_custom_name", "entity_fire_ticks", "summon_bolt_nbt",
 ]
 lan = [
   "commands", "feedback", "styles", "tag-query", "selector-tags", "entity-tags", "data_uuid", "command-block-chat",
@@ -306,7 +312,8 @@ name = "containers"
 about = "menus, inventories, crafting, the recipe book, workstations"
 paths = [
   "crates/sunrise-client/src/menu.rs", "crates/sunrise-client/src/container_screen.rs", "crates/sunrise-client/src/creative.rs",
-  "crates/sunrise-client/src/crafting.rs", "crates/sunrise-client/src/recipe_book*", "crates/sunrise-client/src/stations.rs",
+  "crates/sunrise-client/src/crafting.rs", "crates/sunrise-client/src/crafting/*", "crates/sunrise-client/src/recipe_book*",
+  "crates/sunrise-client/src/stations.rs", "crates/sunrise-client/src/stations/recipe_load_tests.rs",
   "crates/sunrise-client-render/src/containers.rs", "crates/sunrise-world/src/simple_container.rs",
   "crates/sunrise-client/src/game/interface/container_*",
   "crates/sunrise-client/src/game/interface/extras/mouse_tweaks.rs",
@@ -314,6 +321,9 @@ paths = [
 cargo = [
   { package = "sunrise-client-lib", target = "lib", filter = "menu::" },
   { package = "sunrise-client-lib", target = "lib", filter = "crafting::" },
+  { package = "sunrise-client-lib", target = "lib", filter = "stations::recipe_load_tests::" },
+  { package = "sunrise-client-lib", target = "lib", filter = "recipe_book::tests::custom_display_matches_base_but_shows_another_item" },
+  { package = "sunrise-client-lib", target = "lib", filter = "recipe_book::tests::recipe_book_and_placement_use_component_ingredient_item_lists" },
   { package = "sunrise-client", target = "lib", filter = "game::container_hooks::" },
   { package = "sunrise-client", target = "lib", filter = "game::extras::mouse_tweaks::" },
 ]
@@ -344,10 +354,10 @@ harnesses = [
   "*render*", "*model*", "*particle*", "*sound*", "sound_*", "ambient_sound", "audio_attributes", "music",
   "situational_music", "subtitle", "source_silence", "zombie_cure_sound", "camera", "first_person", "frame_*",
   "hud", "tab_list", "locator_bar", "chat_screen", "screen_build", "title_debug", "options", "toggle_keys",
-  "interaction_input", "game_loop", "mipmap", "sprite_animation", "resource_pack", "pack_*", "server_resource_pack",
+  "interaction_input", "game_loop", "mipmap", "sprite_animation", "gui_sprite_scaling", "resource_pack", "pack_*", "server_resource_pack",
   "translucency", "block_tint", "face_visibility", "breaking_model", "crack_feedback", "stack_foil", "text_*",
   "float_text", "potion_effect_icon", "hdr_auto_flip", "environment_*", "level_environment_reads", "world_border*",
-  "world_options", "squid_client", "cursor_death", "interaction_*", "view_direction",
+  "world_options", "squid_client", "cursor_death", "interaction_*", "view_direction", "displays", "glint", "visibility",
 ]
 lan = [
   "tab", "self", "nametags", "names", "titles", "chat", "hud", "sidebar", "border", "particles", "sparks", "swings",
@@ -371,9 +381,10 @@ about = "what the client sends to a server: movement, acks, keep-alives, setting
 paths = [
   "crates/sunrise-client/src/player_sync.rs", "crates/sunrise-client/src/net.rs",
   "crates/sunrise-client/src/game/network/remote*", "crates/sunrise-protocol/src/packets/*",
-  "crates/sunrise-client/src/game/world/tick_script.rs", "tools/net_capture.py", "tools/wire_stream.py",
+  "crates/sunrise-client/src/game/world/tick_script.rs", "third_party/winit/*", "tools/net_capture.py",
+  "tools/wire_stream.py", "tools/client_packet_*.py", "tools/input_recording.py", "tools/packet_parity_runs.py",
 ]
-harnesses = ["wire_stream", "protocol_*", "item_wire", "stop_sound_wire", "player_sync"]
+harnesses = ["wire_stream", "x11_mouse_look", "protocol_*", "item_wire", "stop_sound_wire", "player_sync"]
 
 [[area]]
 name = "mod-api"

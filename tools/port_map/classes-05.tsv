@@ -19,9 +19,9 @@ PersistentEntitySectionManager.dumpSections	skip:debug		section dump for debuggi
 PersistentEntitySectionManager.ensureChunkQueuedForLoad	skip:other		async load queue; Sunrise's streaming hands the saved entity tags over with the chunk
 PersistentEntitySectionManager.gatherStats	skip:debug		statistics string
 PersistentEntitySectionManager.getAllChunksToSave	inline	crates/sunrise-client/src/game/world/persist.rs::Game::save_entities	the resident chunk keys that save_entities writes
-PersistentEntitySectionManager.processChunkUnload	port	crates/sunrise-client/src/game/world/persist.rs::Game::unload_entities	saves and removes the entities of an unloaded chunk
-PersistentEntitySectionManager.processUnloads	inline	crates/sunrise-client/src/game/world/persist.rs::Game::unload_entities	the batch of unloaded chunks handed over by the tick
-PersistentEntitySectionManager.requestChunkLoad	port	crates/sunrise-client/src/save.rs::SaveDir::load_entities	reads the saved entity record of the chunk; the chunk load itself is streaming
+PersistentEntitySectionManager.processChunkUnload	port	crates/sunrise-client/src/game/world/persist.rs::Game::unloading_entity_snapshots	captures unloading chunk entities for their save before remove_unloading_entities drops them
+PersistentEntitySectionManager.processUnloads	inline	crates/sunrise-client/src/game/world/persist.rs::Game::remove_unloading_entities	drops the batch of unloaded chunk entities handed over by the tick after unloading_entity_snapshots
+PersistentEntitySectionManager.requestChunkLoad	port	crates/sunrise-client/src/save/dir.rs::SaveDir::load_entities	reads the saved entity record of the chunk; the chunk load itself is streaming
 PersistentEntitySectionManager.saveAll	port	crates/sunrise-client/src/game/world/persist.rs::Game::save_entities	the waiting form (quit path) writes every resident chunk and flushes
 PersistentEntitySectionManager.storeChunkSections	port	crates/sunrise-client/src/game/world/persist.rs::Game::entity_chunks	the saved entity tags of a chunk; with remove the entities leave the world
 PersistentEntitySectionManager.updateChunkStatus	skip:other		visibility per chunk status; Sunrise derives entity ticking from ticket levels (ticket_levels.rs) instead of storing it

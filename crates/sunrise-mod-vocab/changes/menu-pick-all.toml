@@ -1,0 +1,3 @@
+ids = ["hook:menu_pick_all", "type:HookId"]
+why = "A mod menu type's MenuPart can keep slots out of a double click's gather (pick all): menu_pick_all is vanilla's AbstractContainerMenu.canTakeItemForPickAll(carried, slot), asked for each slot the gather would take from, on the server and in the client's prediction, after the game's own checks passed. A Part's refusal stands."
+migrate = "Nothing to change. A menu type whose Parts do not implement menu_pick_all gathers as before."

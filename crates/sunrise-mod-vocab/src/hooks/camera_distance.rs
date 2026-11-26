@@ -1,5 +1,4 @@
 //! The `camera_distance` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0114
 
 pub trait Hooks {
     /// Final scaled third-person camera distance, before visual-shape collision clipping.

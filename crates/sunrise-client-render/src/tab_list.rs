@@ -98,8 +98,22 @@ fn sprite(name: &'static str, x: i32, y: i32, w: i32, h: i32) -> GuiDraw {
     }
 }
 
-/// `PlayerFaceExtractor.extractRenderState`: the skin's face, then its hat
-/// layer, upside down for Dinnerbone and Grumm.
+/// A skin texture's size, as each face blit names it.
+pub const SKIN_TEX: [i32; 2] = [64, 64];
+
+/// `PlayerFaceExtractor.extractRenderState`'s blits of a skin ([`SKIN_TEX`]): the face, then
+/// its hat layer when `hat`, each as its `uv` and `src`; upside down (from the bottom row, a
+/// negative height) when `flip`, for Dinnerbone and Grumm. [`face`] and `GuiCanvas::player_face`
+/// both draw these.
+pub fn face_blits(hat: bool, flip: bool) -> impl Iterator<Item = ([f32; 2], [i32; 2])> {
+    let (v, height) = if flip { (16.0, -8) } else { (8.0, 8) };
+    [8.0, 40.0]
+        .into_iter()
+        .take(if hat { 2 } else { 1 })
+        .map(move |u| ([u, v], [8, height]))
+}
+
+/// [`face_blits`] as `Blit` draw calls of `skin`, each `size` square.
 #[allow(clippy::too_many_arguments)]
 pub fn face(
     out: &mut Vec<GuiDraw>,
@@ -111,21 +125,18 @@ pub fn face(
     flip: bool,
     color: u32,
 ) {
-    let (v, height) = if flip { (16.0, -8) } else { (8.0, 8) };
-    for u in [8.0, 40.0].into_iter().take(if hat { 2 } else { 1 }) {
-        out.push(GuiDraw::Blit {
-            texture: Cow::Owned(skin.to_owned()),
-            blend: Blend::Textured,
-            x,
-            y,
-            w: size,
-            h: size,
-            uv: [u, v],
-            src: [8, height],
-            tex: [64, 64],
-            color,
-        });
-    }
+    out.extend(face_blits(hat, flip).map(|(uv, src)| GuiDraw::Blit {
+        texture: Cow::Owned(skin.to_owned()),
+        blend: Blend::Textured,
+        x,
+        y,
+        w: size,
+        h: size,
+        uv,
+        src,
+        tex: SKIN_TEX,
+        color,
+    }));
 }
 
 /// `Hud.extractTabList`: whether the list shows. `Hud.extractRenderState`
@@ -193,27 +204,38 @@ fn compare_ignore_case(a: &str, b: &str) -> Ordering {
 
 /// `PlayerTabOverlay.getPlayerInfos`: `PLAYER_COMPARATOR` order (higher
 /// list order first, spectators last, team name, profile name ignoring
-/// case), at most 80 players.
-pub fn sorted_players<'a>(players: &'a [TabPlayer], board: &Scoreboard) -> Vec<&'a TabPlayer> {
-    let mut out: Vec<_> = players
-        .iter()
-        .map(|p| {
-            (
-                p,
-                board.players_team(&p.name).map_or("", |t| t.name.as_str()),
-            )
-        })
-        .collect();
-    out.sort_by(|(a, team_a), (b, team_b)| {
-        a.list_order
-            .wrapping_neg()
-            .cmp(&b.list_order.wrapping_neg())
-            .then_with(|| (a.game_mode == SPECTATOR).cmp(&(b.game_mode == SPECTATOR)))
-            .then_with(|| compare_utf16(team_a, team_b))
-            .then_with(|| compare_ignore_case(&a.name, &b.name))
-    });
-    out.truncate(80);
-    out.into_iter().map(|(p, _)| p).collect()
+/// case), at most the 80 players it displays. Ties keep encounter order.
+pub fn sorted_players<'a>(
+    players: impl IntoIterator<Item = &'a TabPlayer>,
+    board: &'a Scoreboard,
+) -> impl ExactSizeIterator<Item = &'a TabPlayer> + Clone {
+    const MAX_PLAYERS: usize = 80;
+    let mut top: [Option<(&TabPlayer, &str)>; MAX_PLAYERS] = [None; MAX_PLAYERS];
+    let mut len = 0;
+    for candidate in players {
+        let team = board
+            .players_team(&candidate.name)
+            .map_or("", |t| t.name.as_str());
+        // Insert after older equal rows so a tie at the cutoff cannot displace one.
+        let at = top[..len].partition_point(|row| {
+            let (p, p_team) = row.expect("the selected prefix is initialized");
+            p.list_order
+                .wrapping_neg()
+                .cmp(&candidate.list_order.wrapping_neg())
+                .then_with(|| (p.game_mode == SPECTATOR).cmp(&(candidate.game_mode == SPECTATOR)))
+                .then_with(|| compare_utf16(p_team, team))
+                .then_with(|| compare_ignore_case(&p.name, &candidate.name))
+                != Ordering::Greater
+        });
+        if at < MAX_PLAYERS {
+            top.copy_within(at..len.min(MAX_PLAYERS - 1), at + 1);
+            top[at] = Some((candidate, team));
+            len = (len + 1).min(MAX_PLAYERS);
+        }
+    }
+    top.into_iter()
+        .take(len)
+        .map(|row| row.expect("the selected prefix is initialized").0)
 }
 
 /// What `setVisible(true)` has the narrator say:
@@ -229,7 +251,6 @@ pub fn narration(players: &[TabPlayer], board: &Scoreboard) -> Text {
 /// The names the list shows, in its order, ", " between them.
 fn listed_names(players: &[TabPlayer], board: &Scoreboard) -> Text {
     sorted_players(players, board)
-        .into_iter()
         .enumerate()
         .fold(Text::empty(), |names, (i, p)| {
             let names = if i == 0 {
@@ -354,7 +375,6 @@ pub struct TabList {
     visible: bool,
     health: HashMap<u128, HealthState>,
     cache: Option<LayoutCache>,
-    order: Option<(Vec<TabPlayer>, Scoreboard, Vec<u128>)>,
 }
 #[derive(Clone)]
 struct LayoutCache {
@@ -396,26 +416,6 @@ impl TabList {
     pub fn reset(&mut self) {
         self.header = None;
         self.footer = None;
-    }
-    /// Share the cached display order with skin residency selection.
-    pub fn displayed_ids(&mut self, players: &[TabPlayer], board: &Scoreboard) -> &[u128] {
-        if self.order.as_ref().is_none_or(|(old, previous, _)| {
-            old.len() != players.len()
-                || old.iter().zip(players).any(|(a, b)| {
-                    a.uuid != b.uuid
-                        || a.name != b.name
-                        || a.list_order != b.list_order
-                        || a.game_mode != b.game_mode
-                })
-                || previous != board
-        }) {
-            let ids = sorted_players(players, board)
-                .iter()
-                .map(|p| p.uuid)
-                .collect();
-            self.order = Some((players.to_vec(), board.clone(), ids));
-        }
-        &self.order.as_ref().unwrap().2
     }
     /// `extractRenderState`: retain text, measurements and geometry, not animated hearts.
     pub fn layout(&mut self, i: &TabInputs, font: &Font) -> Vec<GuiDraw> {
@@ -471,14 +471,12 @@ impl TabList {
         hearts: &mut Vec<(usize, i32, i32, i32, u128, i32)>,
     ) -> Vec<GuiDraw> {
         let width = |t: &Text| font.width_text(t) as i32;
-        let ids = self.displayed_ids(i.players, i.board);
-        let by_id: HashMap<_, _> = i.players.iter().map(|p| (p.uuid, p)).collect();
-        let players: Vec<_> = ids.iter().map(|id| by_id[id]).collect();
+        let players = sorted_players(i.players, i.board);
         let spacer = font.width(" ") as i32;
         let mut max_name = 0;
         let mut max_score = 0;
         let mut entries = Vec::with_capacity(players.len());
-        for p in &players {
+        for p in players.clone() {
             let name = name_for_display(p, i.board).resolve_legacy();
             max_name = max_name.max(width(&name));
             let mut entry = Entry {
@@ -516,7 +514,7 @@ impl TabList {
             entries.push(entry);
         }
         if !self.health.is_empty() {
-            let displayed: HashSet<_> = players.iter().map(|p| p.uuid).collect();
+            let displayed: HashSet<_> = players.clone().map(|p| p.uuid).collect();
             self.health.retain(|id, _| displayed.contains(id));
         }
         let slots = players.len() as i32;
@@ -575,7 +573,7 @@ impl TabList {
             yyo += 1;
         }
         out.push(band(yyo - 1, yyo + rows * 9));
-        for (n, (p, entry)) in players.iter().zip(&entries).enumerate() {
+        for (n, (p, entry)) in players.zip(&entries).enumerate() {
             let n = n as i32;
             let (col, row) = (n / rows, n % rows);
             let mut xo = xxo + col * slot_width + col * 5;
@@ -828,7 +826,6 @@ mod tests {
         b.list_order = -1;
         let players = [a, b, c];
         let names: Vec<_> = sorted_players(&players, &board)
-            .iter()
             .map(|p| p.name.as_str())
             .collect();
         assert_eq!(names, ["carl", "bob", "Alice"]);

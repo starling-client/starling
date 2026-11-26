@@ -1,5 +1,5 @@
-//! `CampfireBlock.useItemOn`: an item in `#minecraft:douses_campfires` (the
-//! shovels) put on a lit campfire puts it out.
+//! `CampfireBlock.useItemOn`: an item that can `shovel_douse` (vanilla's
+//! `#minecraft:douses_campfires`, the shovels) put on a lit campfire puts it out.
 use super::{Game, Hit};
 use sunrise_client::{Result, animate_tick::make_campfire_smoke, items::ItemStack};
 use sunrise_core::position::BlockPos;
@@ -10,11 +10,13 @@ impl Game<'_> {
     /// `#minecraft:douses_campfires` (`CampfireBlock.useItemOn`).
     fn campfire_to_douse(&self, pos: [i32; 3], held: Option<&ItemStack>) -> Option<BlockState> {
         held.filter(|s| {
-            self.res
+            let douses = self
+                .res
                 .items()
                 .item_tags
                 .get("minecraft:douses_campfires")
-                .is_some_and(|members| members.contains(&*s.item))
+                .is_some_and(|members| members.contains(&*s.item));
+            self.stack_can_perform(s, super::item_abilities::ability::SHOVEL_DOUSE, douses)
         })?;
         self.pack
             .assets
@@ -62,28 +64,13 @@ impl Game<'_> {
         stack: &ItemStack,
         unlit: sunrise_world::registry::BlockStateId,
     ) -> Option<sunrise_world::registry::BlockStateId> {
-        let block = self.world.block(hit.pos[0], hit.pos[1], hit.pos[2]);
-        if !mod_api::__private::listened(mod_api::HookId::BlockToolModification)
-            && !crate::game::api_values::block_state::block_listens(
-                mod_api::HookId::ToolModifiedState,
-                block,
-            )
-        {
-            return Some(unlit);
-        }
-        let tool = mod_api::ToolUse::from(mod_api::__private::built::ToolUse {
-            player: self.player.is_some().then(|| self.own_entity_id() as u32),
-            hand: self.hand,
-            pos: hit.pos,
-            face: hit.face,
-            click: hit.point,
-            ability: mod_api::ToolAbility::ShovelDouse,
-            simulated: false,
-        });
-        let mut state = Some(unlit);
-        let mut cancel = false;
-        self.mod_tool_modification(stack, block, &tool, &mut state, &mut cancel);
-        if cancel { None } else { state }
+        self.hit_tool_modification(
+            hit,
+            stack,
+            mod_api::ToolAbility::ShovelDouse,
+            Some(unlit),
+            true,
+        )
     }
 
     /// `CampfireBlock.useItemOn` with `held` in the hand that acts, the block

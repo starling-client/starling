@@ -6,6 +6,10 @@ use sunrise_core::nbt::Tag;
 #[test]
 #[ignore = "daily"]
 fn discarded_mob_leaves_selectors_and_saves_while_frozen() {
+    run_discarded_mob_leaves_selectors_and_saves_while_frozen();
+}
+
+pub(in crate::game) fn run_discarded_mob_leaves_selectors_and_saves_while_frozen() {
     let root = PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
     let settings = Settings::default();
     let loaded = load_resources(
@@ -37,7 +41,7 @@ fn discarded_mob_leaves_selectors_and_saves_while_frozen() {
     )
     .unwrap();
     game.native_lifecycle
-        .begin_open(mod_api::Authority::IntegratedServer);
+        .begin_open(Some(mod_api::Authority::IntegratedServer));
     game.world = World::new(game.res.facts().air, 1);
     game.world
         .chunks
@@ -77,7 +81,9 @@ fn discarded_mob_leaves_selectors_and_saves_while_frozen() {
     );
     let keys = [(0, 0)].into();
     let mut saved = HashMap::new();
-    game.save_every_entity(&keys, &mut saved, false);
+    let mut failed = HashMap::new();
+    game.save_every_entity(&keys, &mut saved, &mut failed, false);
+    assert!(failed.is_empty());
     // A dying but not removed entity still saves until its death animation
     // completes. Both roots are savable before the explicit discard.
     assert_eq!(saved.values().map(Vec::len).sum::<usize>(), 2);
@@ -126,7 +132,9 @@ fn discarded_mob_leaves_selectors_and_saves_while_frozen() {
         Some(&Tag::Byte(1))
     );
     saved.clear();
-    game.save_every_entity(&keys, &mut saved, false);
+    failed.clear();
+    game.save_every_entity(&keys, &mut saved, &mut failed, false);
+    assert!(failed.is_empty());
     assert_eq!(
         saved
             .values()
@@ -171,7 +179,9 @@ fn discarded_mob_leaves_selectors_and_saves_while_frozen() {
         .push(Mob::new(45, kind, Vec3::new(0.5, 65.0, 2.5), 0.0));
     game.mobs[3].extra.mount = Some(44);
     saved.clear();
-    game.save_every_entity(&keys, &mut saved, false);
+    failed.clear();
+    game.save_every_entity(&keys, &mut saved, &mut failed, false);
+    assert!(failed.is_empty());
     let root = &saved[&(0, 0)][0].2;
     assert!(matches!(root.get("Passengers"), Some(Tag::List(list)) if list.len() == 1));
     assert!(game.entity_discard(mod_api::EntityRef::new(
@@ -179,7 +189,9 @@ fn discarded_mob_leaves_selectors_and_saves_while_frozen() {
         45
     )));
     saved.clear();
-    game.save_every_entity(&keys, &mut saved, false);
+    failed.clear();
+    game.save_every_entity(&keys, &mut saved, &mut failed, false);
+    assert!(failed.is_empty());
     assert_eq!(saved[&(0, 0)].len(), 1);
     assert!(saved[&(0, 0)][0].2.get("Passengers").is_none());
     // EntitySelectorParser gives @e and @n `Entity::isAlive`: a nearer mob at
@@ -218,7 +230,7 @@ struct FallenMod;
 #[mod_api::__subscriptions]
 impl mod_api::Hooks for FallenMod {
     fn register(&self, r: &mut dyn mod_api::Registrar, _: &mod_api::RegistrationContext) {
-        r.register_entity_selector("fallen", Fallen);
+        r.register_entity_selector("fallen", Fallen).unwrap();
     }
 }
 
@@ -230,7 +242,7 @@ fn dead_guest_leaves_at_e_but_reaches_a_registered_selector() {
         Box::new(FallenMod),
     )]
     .into();
-    crate::game::api_values::install_parts(&mods).unwrap();
+    mod_api::testing::rebuild_parts(|| crate::game::api_values::install_parts(&mods)).unwrap();
     mod_platform::testing::with_mods(mods, || {
         crate::game::native_guest_turn_tests::with_guests(|game| {
             game.build_registries();

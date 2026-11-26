@@ -1,5 +1,4 @@
 //! The `use_item` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0037
 
 pub trait Hooks {
     /// A player uses `stack` (right click) with `self.hand` on the block at

@@ -167,7 +167,7 @@ impl Game<'_> {
             f64::from(p[2]) + 0.5,
         ];
         let pitch = self.world.random.next_float() * 0.1 + 0.9;
-        self.audio.play(
+        self.play_audio(
             &format!("minecraft:block.{kind}.{side}"),
             Some(at),
             0.5,
@@ -192,7 +192,7 @@ impl Game<'_> {
         });
         if let Some(at) = statue_at {
             self.remove_mob_now(id, false);
-            self.audio.play(
+            self.play_audio(
                 "minecraft:entity.copper_golem_become_statue",
                 Some(at),
                 1.0,
@@ -376,8 +376,7 @@ impl Game<'_> {
             m.previous_head_yaw = yaw;
         }
         self.damage_held(1);
-        self.audio
-            .play("minecraft:entity.copper_golem.spawn", Some(at), 1.0, 1.0);
+        self.play_audio("minecraft:entity.copper_golem.spawn", Some(at), 1.0, 1.0);
         // Level.removeBlock(pos, false): air, or the water the statue stood in.
         let replacement = registry.default_state(if waterlogged {
             "minecraft:water"
@@ -425,7 +424,9 @@ impl Game<'_> {
         let name = item;
         let is_axe = name.ends_with("_axe");
         let waxed = self.mobs[index].extra.vector[0] as i64 == -2;
-        if name == "minecraft:shears" && self.golem_shearable(index) {
+        if self.held_shears(super::item_abilities::ability::SHEARS_HARVEST)
+            && self.golem_shearable(index)
+        {
             // CopperGolem.shear: the sound, the antenna slot emptied (an
             // unequip) and the flower dropped 1.5 up.
             // level.playSound(null, this, COPPER_GOLEM_SHEAR, PLAYERS, 1, 1).
@@ -454,8 +455,7 @@ impl Game<'_> {
         if name == "minecraft:honeycomb" && !waxed {
             self.mobs[index].extra.vector[0] = -2.0;
             self.level_event_at(3003, block, 0);
-            self.audio
-                .play("minecraft:item.honeycomb.wax_on", Some(at), 1.0, 1.0);
+            self.play_audio("minecraft:item.honeycomb.wax_on", Some(at), 1.0, 1.0);
             self.consume_held();
             return true;
         }

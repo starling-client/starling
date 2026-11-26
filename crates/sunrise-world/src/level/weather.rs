@@ -1,7 +1,7 @@
 //! Biome weather queries for a live level: `ServerLevel.tickPrecipitation`'s
-//! inputs (`Biome.shouldFreeze`, `shouldSnow`, `getPrecipitationAt`) and
-//! `Level.isRainingAt`, from the biome temperatures of the worldgen bundle.
-use super::{Behaviours, LevelAccess, Precipitation, PrecipitationKind};
+//! inputs (`Biome.shouldFreeze`, `shouldSnow`, `getPrecipitationAt`), and
+//! `Level.precipitationAt` with `isRainingAt`, from the biome temperatures of the worldgen bundle.
+use super::{Behaviours, LevelAccess, Precipitation, PrecipitationKind, Ticks};
 use crate::{
     fluid::FluidKind,
     worldgen::biome_temperature::{BiomeTemperatureSettings, Precipitation as BiomePrecipitation},
@@ -124,16 +124,99 @@ impl Behaviours {
         };
         full || (block == self.named.snow && self.table.int(below, self.props.layers) == 8)
     }
-    /// `Level.isRainingAt(pos)`.
+    /// `ServerLevel.tickPrecipitation(pos)`, one of a ticking chunk's draws: at the column's top
+    /// (`getHeightmapPos(MOTION_BLOCKING, pos)`), water freezes where the biome freezes
+    /// (`Biome.shouldFreeze`, rain or not), and while it rains snow piles up where the biome snows
+    /// (`shouldSnow`) and the block under the top takes the precipitation
+    /// (`Block.handlePrecipitation`: cauldrons fill). A level with nothing there (`precipitation`
+    /// answers None) does nothing.
+    ///
+    /// A native mod's `[[native.mixin]]` row can replace it, as a Java mod's mixin on
+    /// `tickPrecipitation` does: a cancelling `HEAD` keeps a level from freezing, snowing and
+    /// filling cauldrons.
+    #[sunrise_mod_api_macros::replaceable]
+    pub fn tick_precipitation(
+        &self,
+        level: &mut dyn LevelAccess,
+        ticks: &mut Ticks,
+        pos: BlockPos,
+    ) {
+        let Some(info) = level.precipitation(pos) else {
+            return;
+        };
+        self.precipitation_effects(level, ticks, info);
+    }
+    /// The effects of [`Self::tick_precipitation`] once its biome answers are known.
+    pub fn precipitation_effects(
+        &self,
+        level: &mut dyn LevelAccess,
+        ticks: &mut Ticks,
+        info: Precipitation,
+    ) {
+        self.sim(level, ticks).precipitation_tick(info);
+    }
+    /// `Level.isRainingAt(pos)`: [`precipitation_at`] is rain.
     pub fn is_raining_at<L: LevelAccess + ?Sized>(&self, level: &L, pos: BlockPos) -> bool {
-        if !level.is_raining() || level.sky_light(pos) < 15 {
-            return false;
+        precipitation_at(&LevelPrecipitation { b: self, level }, pos) == PrecipitationKind::Rain
+    }
+}
+
+/// What `Level.precipitationAt` reads of a level, for [`precipitation_at`].
+pub trait PrecipitationReads {
+    /// `Level.isRaining`: the rain level is above 0.2.
+    fn is_raining(&self) -> bool;
+    /// `Level.canSeeSky(pos)`.
+    fn can_see_sky(&self, pos: BlockPos) -> bool;
+    /// `getHeightmapPos(Heightmap.Types.MOTION_BLOCKING, pos).getY()`.
+    fn motion_blocking_y(&self, pos: BlockPos) -> i32;
+    /// `getBiome(pos).value().getPrecipitationAt(pos, getSeaLevel())`.
+    fn biome_precipitation(&self, pos: BlockPos) -> PrecipitationKind;
+}
+
+/// `Level.precipitationAt(pos)`: nothing unless it rains, the position sees the sky and nothing
+/// that blocks motion is above it; then the biome's precipitation there. `Level.isRainingAt` is
+/// its rain, and the server's block behaviours, entities, mobs and the mods' reads all ask it.
+///
+/// A native mod's `[[native.mixin]]` row can replace it, as a Java mod's mixin on
+/// `precipitationAt` does: a `RETURN` row answering `PrecipitationKind::None` keeps a level dry.
+#[sunrise_mod_api_macros::replaceable]
+pub fn precipitation_at(level: &dyn PrecipitationReads, pos: BlockPos) -> PrecipitationKind {
+    if !level.is_raining() {
+        return PrecipitationKind::None;
+    }
+    if !level.can_see_sky(pos) {
+        return PrecipitationKind::None;
+    }
+    if level.motion_blocking_y(pos) > pos.y {
+        return PrecipitationKind::None;
+    }
+    level.biome_precipitation(pos)
+}
+
+/// A level's answers for [`precipitation_at`], through its block behaviours.
+struct LevelPrecipitation<'a, L: LevelAccess + ?Sized> {
+    b: &'a Behaviours,
+    level: &'a L,
+}
+
+impl<L: LevelAccess + ?Sized> PrecipitationReads for LevelPrecipitation<'_, L> {
+    fn is_raining(&self) -> bool {
+        self.level.is_raining()
+    }
+    fn can_see_sky(&self, pos: BlockPos) -> bool {
+        self.level.sky_light(pos) >= 15
+    }
+    fn motion_blocking_y(&self, pos: BlockPos) -> i32 {
+        self.b.motion_blocking_top(self.level, pos).y
+    }
+    fn biome_precipitation(&self, pos: BlockPos) -> PrecipitationKind {
+        match self.b.biome_settings(self.level, pos) {
+            None => PrecipitationKind::None,
+            Some(s) => match Behaviours::precipitation_kind(s, pos, sea_level(self.level)) {
+                BiomePrecipitation::None => PrecipitationKind::None,
+                BiomePrecipitation::Rain => PrecipitationKind::Rain,
+                BiomePrecipitation::Snow => PrecipitationKind::Snow,
+            },
         }
-        if self.motion_blocking_top(level, pos).y > pos.y {
-            return false;
-        }
-        self.biome_settings(level, pos).is_some_and(|s| {
-            Self::precipitation_kind(s, pos, sea_level(level)) == BiomePrecipitation::Rain
-        })
     }
 }

@@ -1,5 +1,4 @@
 //! The `world_views` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0349
 
 pub trait Hooks {
     /// Asked once as each frame is built (not on the title screen's panorama): push the world

@@ -34,6 +34,22 @@ pub trait Names {
     fn consume_effect_admissions(&self) -> Option<&AdmissionLookup<'_>> {
         None
     }
+
+    /// Synchronized registry entry `(name, data)` at `id`, if present.
+    fn registry_entry(
+        &self,
+        registry: &str,
+        id: i32,
+    ) -> Option<(&str, Option<&sunrise_core::nbt::Tag>)> {
+        let _ = (registry, id);
+        None
+    }
+
+    /// Whether `registry` contains entry `name`.
+    fn contains_entry(&self, registry: &str, name: &str) -> bool {
+        let _ = (registry, name);
+        false
+    }
 }
 /// No registries: only the components that hold no registry id hash.
 pub struct NoNames;

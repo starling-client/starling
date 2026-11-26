@@ -39,17 +39,12 @@ import threading
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import anvil_dump  # noqa: E402
-import save_roundtrip_scene as scene  # noqa: E402
-
-try:
-    from . import lab, vanilla_world_check
-except ImportError:
-    import lab
-    import vanilla_world_check
-
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+from tools import anvil_dump, save_roundtrip_scene as scene  # noqa: E402
+
+from tools import lab, vanilla_world_check
+
 LOCAL = ROOT / '.local'
 RESOURCES = lab.RESOURCES
 SERVER = lab.GAME / 'jars' / 'server.jar'
@@ -312,8 +307,7 @@ def build_world(directory, *, fixed_spawn=False, sunrise_binary=None):
     server.run('time set 6000')
     server.run('gamerule advance_time false')
     server.run('gamerule advance_weather false')
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    import vanilla_login
+    from tools import vanilla_login
     threading.Thread(target=lambda: vanilla_login.join('127.0.0.1', server.port, 'RoundTrip', 25), daemon=True).start()
     time.sleep(6)
     server.run('item replace entity RoundTrip container.0 with minecraft:iron_sword[damage=3]')
@@ -330,10 +324,7 @@ def build_world(directory, *, fixed_spawn=False, sunrise_binary=None):
 
 def lower_sky_observer():
     """Compile a vanilla protocol client that records the first explicit sky pad layers."""
-    try:
-        from . import oracle_harness, test_model_baking_parity as baking, test_rust_parity as parity
-    except ImportError:
-        import oracle_harness, test_model_baking_parity as baking, test_rust_parity as parity
+    from tools import oracle_harness, test_model_baking_parity as baking, test_rust_parity as parity
 
     build = RUN / 'pad-observer'
     build.mkdir(exist_ok=True)

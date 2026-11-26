@@ -1,0 +1,4 @@
+# Engine-only: no catalog id changes; the surface diff accepts active notes only for changed catalog IDs.
+ids = []
+why = "A local player inside a mod collider box is no longer pushed sideways out of it (LocalPlayer.moveTowardsClosestSpace reads suffocating blocks only). A player standing on a collider that moves down no longer drifts off it."
+migrate = "Nothing to change. A mod that relied on the push-out moves the player itself."

@@ -1,5 +1,4 @@
 //! The `player_clone` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0248
 
 pub trait Hooks {
     /// A player's data was copied to their new player (NeoForge's
@@ -17,12 +16,15 @@ pub trait Hooks {
     /// replacement's UUID, already assigned its final level, including any
     /// `player_respawn_position` redirect. Heard after removal of the old
     /// player's menus and after the data copy, before placement or bulk
-    /// attachment publication. Old bulk tokens are stale. Not cancellable.
+    /// attachment publication. On both routes an installed descriptor must have
+    /// a persistence codec to copy; on death it must also opt in. Saved data for
+    /// absent packages remains opaque and uses its stored flag on death.
+    /// Old bulk tokens are stale. Not cancellable.
     #[hook(
         target = "sunrise_client::game::native_hooks::base::Game<'_>::native_player_clone",
         dispatch = "flat",
         side = "server",
-        version = 2,
+        version = 3,
         contract = "listen",
         neoforge = "PlayerEvent.Clone (not cancellable)",
         cancellable = false

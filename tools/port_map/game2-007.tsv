@@ -122,7 +122,7 @@ CrafterMenu.isSlotDisabled	inline	crates/sunrise-client/src/game/blocks/machines
 CrafterMenu.quickMoveStack	port	crates/sunrise-client/src/menu.rs::Menu::quick_move	shift-click for the crafter's grid slots
 CraftingMenu.slotsChanged	port	crates/sunrise-client/src/menu.rs::Menu::inventory_slots_changed	the crafting result is recomputed when the grid changes
 CraftingMenu.finishPlacingRecipe	inline	crates/sunrise-client/src/menu/place.rs::Menu::place_recipe	the result is recomputed once the placed recipe is in the grid
-CraftingMenu.removed	port	crates/sunrise-client/src/game/network/lan_crafting.rs::Game::lan_crafting_closed	the grid goes back when the table closes; the host side of a guest's table
+CraftingMenu.removed	port	crates/sunrise-client/src/game/network/lan_crafting.rs::Game::lan_crafting_removed	the grid goes back when the table closes; the host side of a guest's table
 CraftingMenu.quickMoveStack	port	crates/sunrise-client/src/menu.rs::Menu::quick_move	shift-click for the crafting grid and result
 CraftingMenu.canTakeItemForPickAll	port	crates/sunrise-client/src/menu.rs::Menu::can_take_for_pick_all	the result slot is never picked up in bulk
 DispenserMenu.add3x3GridSlots	inline	crates/sunrise-client/src/menu.rs::Menu::new	the 3x3 dispenser grid is set up when the menu is made
@@ -140,7 +140,7 @@ HopperMenu.quickMoveStack	port	crates/sunrise-client/src/menu.rs::Menu::quick_mo
 HorseInventoryMenu.<init>	port	crates/sunrise-client/src/game/network/lan_mount_menu.rs::Game::mount_engine_menu	saddle, armour and the chest columns are set for the mount
 InventoryMenu.isHotbarSlot	inline	crates/sunrise-client/src/menu.rs::Menu::quick_move	the hotbar range check is inline in the shift-click arm
 InventoryMenu.slotsChanged	port	crates/sunrise-client/src/menu.rs::Menu::inventory_slots_changed	the crafting result is recomputed when the grid changes
-InventoryMenu.removed	port	crates/sunrise-client/src/game/network/lan_crafting.rs::Game::lan_crafting_closed	the window-0 craft grid goes back when the inventory closes; the host side of a guest's inventory
+InventoryMenu.removed	port	crates/sunrise-client/src/game/network/lan_crafting.rs::Game::lan_crafting_removed	the window-0 craft grid goes back when the inventory closes; the host side of a guest's inventory
 InventoryMenu.quickMoveStack	port	crates/sunrise-client/src/menu.rs::Menu::quick_move	shift-click for the inventory, armour, grid and offhand, in vanilla's order: the item's equipment slot first, so armour in the off hand is worn
 InventoryMenu.canTakeItemForPickAll	port	crates/sunrise-client/src/menu.rs::Menu::can_take_for_pick_all	the result slot is never picked up in bulk
 ItemCombinerMenu.createInputSlots	inline	crates/sunrise-client/src/menu.rs::Menu::new	the anvil's input slots are set up when the menu is made; mayPlace is Menu::may_place

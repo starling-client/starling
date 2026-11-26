@@ -176,6 +176,7 @@ pub fn main() -> Result<()> {
                 creaking_active: false,
                 sky_darken: 0,
                 marker: None,
+                ambient_particles: None,
                 model_offset: &model_offset,
                 gateway_particles: &|_, _| 0,
                 thundering: false,
@@ -227,6 +228,7 @@ pub fn main() -> Result<()> {
                 creaking_active: false,
                 sky_darken: 0,
                 marker: None,
+                ambient_particles: None,
                 model_offset: &|_, _, _| None,
                 gateway_particles: &|_, _| 0,
                 thundering: false,
@@ -241,7 +243,9 @@ pub fn main() -> Result<()> {
             engine.requested = None;
             engine.created_requests = Some(Vec::new());
             engine.camera = [0.5, 64.5, 0.5];
-            engine.seed_randoms(seed, 0, 0);
+            // The campfire block entity's particles draw from the level random (`Level.random`),
+            // which the oracle seeds for these cases and reads its `next` from.
+            engine.seed_randoms(0, seed, 0);
             if kind == "campfire" {
                 let state = assets
                     .registry
@@ -270,7 +274,7 @@ pub fn main() -> Result<()> {
                 }
                 writeln!(out)?;
             }
-            writeln!(out, "next {}", engine.random().next_int())?;
+            writeln!(out, "next {}", engine.level_random().next_int())?;
             continue;
         }
         let mode = GameMode::ALL
@@ -300,6 +304,7 @@ pub fn main() -> Result<()> {
             creaking_active: false,
             sky_darken: 0,
             marker: target.map(|name| (name, &options as &dyn Fn(_) -> _)),
+            ambient_particles: None,
             model_offset: &|_, _, _| None,
             gateway_particles: &|_, _| 0,
             thundering: false,

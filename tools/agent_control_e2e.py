@@ -41,12 +41,10 @@ import tempfile
 import time
 from pathlib import Path
 
-try:
-    from . import lab
-except ImportError:
-    import lab
-
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab
+
 LAVAPIPE = Path('/run/opengl-driver/share/vulkan/icd.d/lvp_icd.x86_64.json')
 LOG_KINDS = ['oak_log', 'birch_log', 'spruce_log', 'jungle_log', 'acacia_log', 'dark_oak_log',
              'mangrove_log', 'cherry_log']
@@ -55,7 +53,7 @@ POSITIONAL = {
     'key': ['key', 'action'],
     'goto': ['x', 'y', 'z'], 'break': ['x', 'y', 'z'], 'place': ['x', 'y', 'z'], 'block': ['x', 'y', 'z'],
     'find_block': ['block', 'radius'], 'entities': ['radius', 'type'], 'click_slot': ['slot'],
-    'click_button': ['label'], 'type': ['text'], 'wait': ['ticks'], 'wait_ready': ['seconds'],
+    'click_button': ['label'], 'type': ['text'], 'scroll_at': ['x', 'y', 'steps'], 'wait': ['ticks'], 'wait_ready': ['seconds'],
     'command': ['command'], 'look_at_block': ['x', 'y', 'z'], 'click': ['id'], 'set': ['id', 'value'],
     'give': ['item', 'count'], 'options_get': ['keys'], 'options_set': ['key', 'value'],
     'record_start': ['name'], 'record_replay': ['name'], 'repro_export': ['name', 'path'],
@@ -71,6 +69,19 @@ BARE = {'click_slot': ['right', 'shift'], 'click': ['right', 'middle', 'shift'],
 
 class Failed(Exception):
     pass
+
+
+def open_tools(d):
+    """Sunrise Settings' Tools page, by its tab: the wheel over the page list (under the search field) brings the
+    tab into view where the window is too short for every page."""
+    for _ in range(10):
+        tree = widgets(d)
+        if 'tools' in tree:
+            d('click', id='tools')
+            return
+        x, y, w, _ = tree['field-0']['bounds']
+        d('scroll_at', x=x + w / 2, y=y + 30, steps=-1)
+    raise Failed(f'no Tools tab on Sunrise Settings: {sorted(widgets(d))}')
 
 
 def game_env(screen, home=None):
@@ -949,6 +960,7 @@ def manage_scenario(d, out):
     d('xp', levels=5)
     assert d('lan', action='status') is not None
     d('options', page='sunrise')
+    open_tools(d)  # Sunrise Settings' Tools page holds the way to AI Agent
     assert 'ai-agent' in widgets(d), widgets(d).keys()
     d('close')
     d('pause')
@@ -1089,11 +1101,13 @@ def setting_check(mode, ctl, out, resources):
         d = (Cli if mode == 'cli' else Mcp)(ctl, socket, work, env)
         assert d('state')['screen'] == 'title'  # the player's own game, at its title screen
         d('options', page='sunrise')
+        open_tools(d)  # Sunrise Settings' Tools page holds the way to AI Agent
         tree = widgets(d)
-        assert {'ai-agent', 'no-ai'} <= set(tree), sorted(tree)
+        assert 'ai-agent' in tree, sorted(tree)
         d('screenshot', path=str(out / f'{mode}-sunrise-settings.png'))
         d('options', page='agent')
         tree = widgets(d)
+        assert 'no-ai' in tree, sorted(tree)  # No AI is on the AI Agent page
         switch = next(w for w in tree.values() if w.get('label', '').startswith('Agent Control'))
         assert switch['label'] == 'Agent Control: On', switch
         d('screenshot', path=str(out / f'{mode}-ai-agent.png'))

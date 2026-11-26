@@ -207,3 +207,123 @@ fn a_declared_interaction_runs_after_vanillas_and_a_veto_stops_it() {
         game.install_fluid_interactions().unwrap();
     });
 }
+
+/// A handler whose test panics beside gold, registered by a mod of its own.
+struct Panicky;
+impl mod_api::FluidInteractionHandler for Panicky {
+    fn test(&self, level: &dyn LevelHost, at: mod_api::FluidInteractionAt) -> bool {
+        let [x, y, z] = [at.relative.x, at.relative.y, at.relative.z];
+        if level.block_state([x, y, z]) == level.block_state_id("minecraft:gold_block") {
+            panic!("a fluid interaction test that panics");
+        }
+        false
+    }
+    fn interact(&self, _: &mut dyn mod_api::LevelWriteHost, _: mod_api::FluidInteractionAt) {}
+}
+struct PanickyMod;
+#[mod_api::__subscriptions]
+impl Hooks for PanickyMod {
+    fn register(&self, r: &mut dyn Registrar, _: &mod_api::RegistrationContext) {
+        let lava = r.fluid_key("minecraft:lava");
+        r.fluid_interaction_handler(lava, Arc::new(Panicky));
+    }
+}
+
+/// Lava beside packed ice or gold becomes glass, written by the handler itself.
+struct Quench;
+impl mod_api::FluidInteractionHandler for Quench {
+    fn test(&self, level: &dyn LevelHost, at: mod_api::FluidInteractionAt) -> bool {
+        let [x, y, z] = [at.relative.x, at.relative.y, at.relative.z];
+        let beside = level.block_state([x, y, z]);
+        [
+            level.block_state_id("minecraft:packed_ice"),
+            level.block_state_id("minecraft:gold_block"),
+        ]
+        .contains(&beside)
+    }
+    fn interact(&self, level: &mut dyn mod_api::LevelWriteHost, at: mod_api::FluidInteractionAt) {
+        let glass = level.block_state_id("minecraft:glass").unwrap();
+        let flags = mod_api::BlockUpdateFlags::NEIGHBORS | mod_api::BlockUpdateFlags::CLIENTS;
+        assert!(level.set_block([at.pos.x, at.pos.y, at.pos.z], glass, flags));
+    }
+}
+struct Quenchy;
+#[mod_api::__subscriptions]
+impl Hooks for Quenchy {
+    fn register(&self, r: &mut dyn Registrar, _: &mod_api::RegistrationContext) {
+        let lava = r.fluid_key("minecraft:lava");
+        r.fluid_interaction_handler(lava, Arc::new(Quench));
+    }
+}
+
+#[test]
+#[ignore = "daily"]
+fn a_native_handler_tests_and_acts_in_its_place_and_a_panicking_one_does_not_apply() {
+    if run_fresh_cases(
+        "game::fluid_interaction_tests::a_native_handler_tests_and_acts_in_its_place_and_a_panicking_one_does_not_apply",
+        "SUNRISE_FLUID_HANDLER_CHILD",
+        &["valid"],
+    ) {
+        return;
+    }
+    let mods: mod_api::Mods = vec![
+        ModEntry::new("panicky", Box::new(PanickyMod)),
+        ModEntry::new("quenchy", Box::new(Quenchy)),
+    ]
+    .into();
+    mod_platform::__private::install(mods.clone());
+    crate::game::api_values::install_parts(&mods).unwrap();
+    let base = std::path::PathBuf::from(std::env::var_os("SUNRISE_TEST_RESOURCES").unwrap());
+    let root = super::mods::content_root(&base, &Default::default())
+        .unwrap()
+        .prepared()
+        .to_path_buf();
+    with_game_at(root, |game| {
+        game.options.dedicated = Some(Vec::new());
+        for cx in -1..=1 {
+            for cz in -1..=1 {
+                game.world
+                    .chunks
+                    .insert((cx, cz), Arc::new(Chunk::empty(cx, cz)));
+            }
+        }
+        let registry = game.pack.assets.registry;
+        let state = |name: &str| registry.default_state(name).unwrap();
+        let (lava, water, air, stone) = (
+            state("minecraft:lava"),
+            state("minecraft:water"),
+            state("minecraft:air"),
+            state("minecraft:stone"),
+        );
+        for x in -16..32 {
+            for z in -16..32 {
+                game.world.set(x, 63, z, stone).unwrap();
+            }
+        }
+        game.install_fluid_interactions().unwrap();
+        let meet = |game: &mut super::Game<'_>, z: i32, beside| {
+            game.world.set(4, 64, z, lava).unwrap();
+            game.world.set(5, 64, z, beside).unwrap();
+            let at = BlockPos::new(5, 64, z);
+            game.with_level(|b, level, ticks| {
+                b.update_neighbours_on_block_set(level, ticks, at, air)
+            });
+            game.world.block(4, 64, z)
+        };
+        let glass = state("minecraft:glass");
+        // The handler's own write, with no fizz or veto in between.
+        assert_eq!(meet(game, 2, state("minecraft:packed_ice")), glass);
+        // Vanilla's lava rules come before the mods' entries.
+        assert_eq!(meet(game, 6, water), state("minecraft:obsidian"));
+        // A neighbour no entry takes leaves the lava to spread.
+        assert_eq!(meet(game, 10, stone), lava);
+        // The earlier handler panics beside gold: it does not apply, and the next one still does.
+        assert_eq!(meet(game, 14, state("minecraft:gold_block")), glass);
+        // The pure read passes over handlers.
+        let source = super::native_world_read::api_fluid_state(game.res.behaviours().fluid(lava));
+        assert_eq!(
+            game.fluid_interaction_result(source.unwrap(), state("minecraft:packed_ice"), stone),
+            None
+        );
+    });
+}

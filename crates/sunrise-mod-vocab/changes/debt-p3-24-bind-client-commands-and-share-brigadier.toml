@@ -1,0 +1,44 @@
+ids = [
+    "type:EntitySelectorRegistrationError",
+    "type:EntitySelectorRegistrationError.EmptyName",
+    "type:EntitySelectorRegistrationError.InvalidToken",
+    "type:EntitySelectorRegistrationError.ReservedVanillaToken",
+    "type:EntitySelectorRegistrationError.DuplicateToken",
+    "type:EntitySelectorRegistrationError.RegistrationClosed",
+    "handle:Registrar::register_entity_selector",
+    "method:EntitySelectorsRegistrar::add_entity_selector",
+    "hook:register_client_commands",
+    "hook:register_client_commands.commands",
+    "type:RegisterClientCommandsEvent.commands",
+    "type:ClientCommandRegistration",
+    "handle:Command::executes_client",
+    "hook:command",
+    "hook:command.command",
+    "method:Hooks::command",
+    "type:CommandEvent",
+    "type:CommandEvent.command",
+    "type:CommandSuggestion",
+    "type:SuggestionReply",
+    "trait:SuggestionProvider",
+    "method:CommandArgumentType::suggest",
+    "method:CommandArgumentType::suggestion_provider",
+    "method:SuggestionProvider::suggest",
+    "handle:CommandSuggestion::new",
+    "handle:CommandSuggestion::replacing_from",
+    "handle:CommandSuggestion::with_tooltip",
+    "handle:SuggestionReply::new",
+]
+why = "Client commands bind their typed executors to the dispatcher generation instead of redispatching the line through Hooks::command. NeoForge RegisterClientCommandsEvent and ClientCommandHandler.mergeServerCommands/runCommand keep execution separate and share the display. Selector registration follows EntitySelectorManager.register and Brigadier StringReader.isAllowedInUnquotedString. The logical server builds the selector snapshot for parsing and synchronization. Both retained callbacks use shared panic containment. Command arguments own registry names when they come from a mod or a server, so replacing a dispatcher frees them, with no global interner or registration budget (vanilla 26.3 ArgumentTypeInfos.bootstrap and ResourceArgument.Info.deserializeFromNetwork; NeoForge's dispatcher-scoped RegisterCommandsEvent). Custom command argument completion now uses one Suggestion type (`mod_api::Suggestion`) and one `CommandArgumentType::suggest(&self, request: &SuggestionRequest) -> Vec<Suggestion>` method on both server and client commands (removing `CommandSuggestion`, `SuggestionProvider`, `SuggestionReply`, and `CommandArgumentType::suggestion_provider`), matching Brigadier's unified `Suggestion`/`SuggestionsBuilder`, vanilla 26.3 `ClientboundCommandSuggestionsPacket` per-entry string limits (32,767 UTF-16 code units for text, 65,535 modified UTF-8 bytes for literal NBT tooltip) and `ServerCommandSuggestionsProvider.limitSuggestionCount`'s post-sort 1,000-entry truncation at the packet boundary, with `kind`/`parse`/`suggest` contained under shared `CallbackOwner`."
+migrate = """
+For client commands, in `Hooks::register_client_commands` change `event.commands.push(Command::new(usage))` to `event.commands.push(Command::new(usage).executes_client(move |host, command| { ... }))` and delete `Hooks::command` and `CommandEvent`. Pin `register_client_commands` at `hook_version = 2` instead of `1`. Read the borrowed `CommandInvocation` instead of parsing the raw line; return `Some(n)` for success with result `n` or `None` for failure. Use level zero and client-safe argument kinds (no `player`, `players`, `entity`, `entities`, `dimension` or custom argument types with a server suggestion provider). A client usage can share a server root; an unknown client branch goes to the server, while syntax errors and executor failures stay local. `NetworkClientHost::send_chat` still submits chat input, but a slash command handled locally is no longer sent to the server. Fix a panicking executor and restart the client to enable that usage again.
+
+For `handle:Command::executes_client` and `method:prelude::NetworkClientHost::send_chat`, keep submitting unrelated nested commands as before; they run later. Remove submission loops instead of using `send_chat` to re-enter an executor already in the same chain. This fails locally even across dispatcher refreshes and is not forwarded to the server. The return value of `send_chat` still describes input admission, not the deferred result.
+
+For selectors, replace the unchecked `r.register_entity_selector("allies", Allies);` with `if let Err(error) = r.register_entity_selector("allies", Allies) { eprintln!("cannot register @allies: {error}"); }` inside `Hooks::register`, which returns `()`. Handle the non-exhaustive `EntitySelectorRegistrationError` (`EmptyName`, `InvalidToken { name }`, `ReservedVanillaToken { name }`, `DuplicateToken { name }`, `RegistrationClosed { name }`). Keep token names to non-empty Brigadier unquoted-string characters (`[0-9A-Za-z_.+-]`), excluding vanilla's `p`, `a`, `r`, `s`, `e`, `n`. `EntitySelectorType::base()` runs on the logical server when its command tree is rebuilt, not during registration or client connection setup. Its result is shared with the connected client's parser and completions. Keep `EntitySelectorType::matches` as the per-candidate predicate; a panic in either callback disables that token for the session.
+
+No mod API code changes: keep using `Command::new(\"pick <kind:resource:minecraft:entity_type>\")` and reading `CommandArgumentValue::Id`. Supply a qualified `namespace:path` for the registry as before; remove any application-side workaround for the old 256-byte or 256-registry registration limit.
+
+If a native replacement constructs a dispatcher argument directly, import `sunrise_client::command::RegistryId`. Replace `ArgType::Res(\"minecraft:entity_type\")` with `ArgType::Res(RegistryId::from_static(\"minecraft:entity_type\"))`. Do the same for `ResKey`, `ResOrTag`, `ResOrTagKey`, `ResourceSelector` and `ResourceOrId`. For a runtime name, call `RegistryId::parse(name)`, handle `None` as an invalid name, and pass the `RegistryId` to the variant. Use `registry.as_str()` to read the name from a matched variant.
+
+For custom command argument types, replace `CommandSuggestion`, `SuggestionProvider`, `SuggestionReply`, and `CommandArgumentType::suggestion_provider` with `CommandArgumentType::suggest(&self, request: &SuggestionRequest) -> Vec<Suggestion>`. Read `request.prefix`, `request.arguments` (`Vec<TypedArgument>`), and `request.sender` (`Option<CommandSender>`), and construct entries with `request.suggest(text)`, `request.suggest_with_tooltip(text, tooltip)`, `request.suggest_from(offset, text)`, or `Suggestion::new((start, end), text)` (with `.with_tooltip(...)`, `.with_range(...)`, `.with_int_value(...)`). The same argument type works on both server and client commands, `tab_complete` still observes server completions, oversized entries are dropped individually at the `ClientboundCommandSuggestionsPacket` boundary before vanilla's post-sort 1,000-entry truncation, and a panic in `kind`, `parse`, or `suggest` disables only that argument type for the session and emits an error notice.
+"""

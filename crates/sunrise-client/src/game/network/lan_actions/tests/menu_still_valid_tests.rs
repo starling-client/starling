@@ -10,7 +10,7 @@ use std::sync::{
 use sunrise_client::{
     chunk::Chunk,
     containers::{BlockEntity, ModMenuType},
-    lan::menu::{Menu, NativeMenuEvent, Slots, VEHICLE_KEY_Y, asks_still_valid},
+    lan::menu::{Menu, Slots, VEHICLE_KEY_Y, asks_still_valid},
 };
 use sunrise_protocol::packets::play::{ContainerButtonClick, ContainerClick, Serverbound};
 
@@ -233,6 +233,9 @@ fn a_mod_menu_part_decides_whether_its_menu_stays_open() {
                 links: Vec::new(),
                 asks_still_valid: asks_still_valid(Some(shell), "test:shell"),
                 opening_item: None,
+                opener_block: None,
+                removed: false,
+                slot_changed_seen: None,
             };
             assert!(menu.asks_still_valid);
             let before = asked();
@@ -387,15 +390,7 @@ fn a_blockless_mod_menu_closes_when_its_part_answers_false() {
                     click(game, window);
                     assert_eq!(window_of_guest(game), None);
                     assert_eq!(answer.asks.load(Ordering::Relaxed), before + 1);
-                    assert!(
-                        game.lan
-                            .as_ref()
-                            .unwrap()
-                            .hub
-                            .native_menu_events
-                            .iter()
-                            .any(|event| matches!(event, NativeMenuEvent::Closed { window: closed, .. } if *closed == window))
-                    );
+                    assert!(game.lan.as_ref().unwrap().hub.native_menu_events.is_empty());
                 });
             },
         );

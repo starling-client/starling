@@ -61,7 +61,7 @@ fn code_types_join_package_and_code_blocks_before_planning() {
     let base = base("merge");
     let mut mods = vec![declared_mod()];
     let blocks = [Block {
-        id: "test:c".into(),
+        id: "minecraft:custom_block".into(),
         template: "minecraft:stone".into(),
         ..Block::default()
     }];
@@ -72,7 +72,10 @@ fn code_types_join_package_and_code_blocks_before_planning() {
                 .into_iter()
                 .map(|b| b.validate_local().unwrap())
                 .collect(),
-            types: vec![kind("test:machine", &["test:b", "test:c"])],
+            types: vec![kind(
+                "minecraft:custom_type",
+                &["test:b", "minecraft:custom_block"],
+            )],
             ..Default::default()
         },
     )]);
@@ -83,11 +86,11 @@ fn code_types_join_package_and_code_blocks_before_planning() {
     assert_eq!(plan.block_entity_types.len(), 1);
     assert_eq!(
         plan.block_entity_factories.get("test:b"),
-        Some(&"test:machine")
+        Some(&"minecraft:custom_type")
     );
     assert_eq!(
-        plan.block_entity_factories.get("test:c"),
-        Some(&"test:machine")
+        plan.block_entity_factories.get("minecraft:custom_block"),
+        Some(&"minecraft:custom_type")
     );
     assert!(!plan.block_entity_factories.contains_key("test:a"));
     drop(plan);
@@ -107,18 +110,105 @@ fn code_types_join_package_and_code_blocks_before_planning() {
 }
 
 #[test]
+fn cross_namespace_declarations_do_not_replace_existing_block_or_item_keys() {
+    let base = base("duplicate-keys");
+    fs::write(base.join("items.json"), r#"{"minecraft:stone":{}}"#).unwrap();
+    let block = Block {
+        id: "test:a".into(),
+        template: "minecraft:stone".into(),
+        ..Block::default()
+    };
+    let item = Item {
+        id: "test:b".into(),
+        template: "minecraft:stone".into(),
+        ..Item::default()
+    };
+    let conflict = |kind, id: &str, reason: &str| {
+        DeclarationRefusal::new(
+            "other",
+            kind,
+            DeclarationError::Rejected {
+                id: id.into(),
+                reason: reason.into(),
+            },
+        )
+    };
+    for (batch, expected) in [
+        (
+            DeclaredContent {
+                blocks: vec![block.validate_local().unwrap()],
+                ..Default::default()
+            },
+            Ok(conflict(
+                DeclarationKind::Block,
+                "test:a",
+                "declared twice (already declared by mod test)",
+            )),
+        ),
+        (
+            DeclaredContent {
+                items: vec![item.clone().validate_local().unwrap()],
+                ..Default::default()
+            },
+            Ok(conflict(
+                DeclarationKind::Item,
+                "test:b",
+                "declared twice, or is also a block's item (already declared by mod test)",
+            )),
+        ),
+        (
+            DeclaredContent {
+                items: vec![
+                    Item {
+                        id: "minecraft:stone".into(),
+                        ..item
+                    }
+                    .validate_local()
+                    .unwrap(),
+                ],
+                ..Default::default()
+            },
+            Err("other: minecraft:stone is already an item"),
+        ),
+    ] {
+        let mut mods = vec![declared_mod()];
+        mods[0]
+            .content
+            .blocks
+            .iter_mut()
+            .find(|block| block.id == "test:b")
+            .unwrap()
+            .item = true;
+        let mut refusals = Vec::new();
+        accept_declared(
+            &mut mods,
+            &BTreeMap::from([("other", batch)]),
+            &[],
+            &BTreeSet::new(),
+            &mut refusals,
+        )
+        .unwrap();
+        match expected {
+            Ok(refusal) => {
+                // A second package's duplicate is caught while joining the batch.
+                assert_eq!(refusals, [refusal]);
+                assert_eq!(mods.len(), 1);
+                assert_eq!(mods[0].id, "test");
+            }
+            Err(expected) => {
+                // The prepared base item registry is first consulted by the plan.
+                assert!(refusals.is_empty(), "{refusals:?}");
+                assert_eq!(Plan::new(&base, &mods).err().unwrap().to_string(), expected);
+            }
+        }
+    }
+    fs::remove_dir_all(base).unwrap();
+}
+
+#[test]
 fn validates_declared_type_ids_and_exclusive_known_mod_block_membership() {
     let base = base("validation");
     let mut mods = [declared_mod()];
-    mods[0].content.block_entity_types = vec![kind("minecraft:custom", &["test:a"])];
-    let error = Plan::new(&base, &mods).err().unwrap();
-    assert_eq!(
-        error
-            .downcast_ref::<ReservedBlockEntityNamespace>()
-            .unwrap()
-            .kind,
-        "minecraft:custom"
-    );
     for (types, error) in [
         (
             vec![
@@ -129,7 +219,7 @@ fn validates_declared_type_ids_and_exclusive_known_mod_block_membership() {
         ),
         (
             vec![kind("minecraft:sign", &["test:a"])],
-            "block entity type minecraft:sign cannot use the minecraft namespace",
+            "block entity type minecraft:sign is already declared",
         ),
         (
             vec![kind("test:machine", &["test:a", "test:a"])],

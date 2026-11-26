@@ -1,5 +1,4 @@
 //! The `block_signal` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0054
 
 pub trait Hooks {
     /// The redstone signal the block `state` at `pos` gives on its `face`, the

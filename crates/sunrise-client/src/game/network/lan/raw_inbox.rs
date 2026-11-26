@@ -1,5 +1,6 @@
-//! Reborrow live world state only after a raw root has completed.
+//! Reborrow live world state after a turn that ran outside the Hub.
 use super::*;
+use crate::game::Dim;
 
 impl Game<'_> {
     pub(super) fn resume_raw_inbox(
@@ -41,15 +42,63 @@ impl Game<'_> {
         entities: &[sunrise_client::lan::entity::EntityState],
         spawn: [f64; 3],
     ) -> Option<LanHost> {
+        let source = self.dim;
+        let mut other_entities = States::default();
+        let mut active_spawn = spawn;
         loop {
+            let active_entities = if self.dim == source {
+                entities
+            } else {
+                other_entities.as_slice()
+            };
             let back = sunrise_client::spans::time("lan_events", || {
-                self.lan_process_events(host, events, entities, spawn)
-            })?;
+                self.lan_process_events(host, events, active_entities, active_spawn)
+            });
+            let Some(back) = back else {
+                if self.dim != source
+                    && let Err(error) = self.enter_level(source)
+                {
+                    log::error!("could not reopen {}: {error}", source.id());
+                }
+                return None;
+            };
             host = back;
+
+            let next = host
+                .hub
+                .packet_resume_dimension()
+                .map_or(source, Dim::from_id);
+            if next != self.dim {
+                if self.dim != source {
+                    host.states = std::mem::take(&mut other_entities);
+                }
+                // The teleport has already opened its destination. Resume only the
+                // travelling connection there, with that level's world and solids.
+                self.lan = Some(host);
+                if let Err(error) = self.enter_level(next) {
+                    log::error!("could not reopen {}: {error}", next.id());
+                    return None;
+                }
+                host = self.lan.take()?;
+                active_spawn = if next == source {
+                    spawn
+                } else {
+                    other_entities = std::mem::take(&mut host.states);
+                    self.world_spawn_position()
+                };
+                let mut solids = std::mem::take(&mut host.hub.move_solids);
+                self.fill_move_solids(&mut solids, !host.hub.guests.is_empty());
+                host.hub.move_solids = solids;
+            }
             if !host.hub.packets_paused() {
                 return Some(host);
             }
-            events = self.resume_raw_inbox(&mut host.hub, entities, spawn);
+            let active_entities = if self.dim == source {
+                entities
+            } else {
+                other_entities.as_slice()
+            };
+            events = self.resume_raw_inbox(&mut host.hub, active_entities, active_spawn);
         }
     }
 }

@@ -32,7 +32,7 @@ pub fn can_be_in_bundle(context: &LoopContext, stack: &ItemStack) -> bool {
 #[inline(never)]
 pub fn native_can_fit_inside_container_items(
     context: &LoopContext,
-    stack: &mod_api::ItemStack,
+    stack: mod_api::ItemStackView<'_>,
     fits: &mut bool,
 ) {
     mod_api::dispatch_can_fit_inside_container_items(

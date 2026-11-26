@@ -1,11 +1,37 @@
-//! The engine side of `rotate`: the callback every template placement turns its states through,
-//! asking the parts of each state's block on the worldgen workers and on the server thread. It
-//! reads what the server published (`native_worldgen_parts`), never a game thread's tables.
+//! The engine side of `mirror` and `rotate`: the callbacks every template placement mirrors and
+//! turns its states through, asking the parts of each state's block on the worldgen workers and
+//! on the server thread. They read what the server published (`native_worldgen_parts`), never a
+//! game thread's tables.
 use super::api_values::block_state::Index;
 use super::native_worldgen_parts;
-use mod_api::{BlockState, HookId, StructureRotation};
+use mod_api::{BlockState, HookId, StructureMirror, StructureRotation};
 use sunrise_world::registry::BlockStateId as EngineState;
-use sunrise_world::worldgen::structure::Rotation;
+use sunrise_world::worldgen::structure::{Mirror, Rotation};
+
+/// The engine's `mirror` callback: the state the parts of `state`'s block place at `pos` for
+/// `state` mirrored by `mirror`, starting from the game's `table`. Nothing is read or converted
+/// while no part answers the hook; a refused answer or a panicking part keeps `table`.
+pub(crate) fn mirror(
+    state: EngineState,
+    pos: [i32; 3],
+    mirror: Mirror,
+    table: EngineState,
+) -> EngineState {
+    let mirror = match mirror {
+        Mirror::None => StructureMirror::None,
+        Mirror::LeftRight => StructureMirror::LeftRight,
+        Mirror::FrontBack => StructureMirror::FrontBack,
+    };
+    ask_parts(
+        HookId::Mirror,
+        "mirror",
+        state,
+        table,
+        |host, asked, mirrored| {
+            mod_api::world::mirror::native_mirror(host, asked, pos, mirror, mirrored);
+        },
+    )
+}
 
 /// The engine's `rotate` callback: the state the parts of `state`'s block place at `pos` for
 /// `state` turned by `rotation`, starting from the game's `table`. Nothing is read or converted
@@ -16,43 +42,67 @@ pub(crate) fn rotate(
     rotation: Rotation,
     table: EngineState,
 ) -> EngineState {
-    if !mod_api::__private::has_part_hook(HookId::Rotate) {
-        return table;
-    }
-    let Some(index) = native_worldgen_parts::index() else {
-        return table;
-    };
-    if !index.worldgen_listens(HookId::Rotate, state) {
-        return table;
-    }
-    let (Ok(asked), Ok(mut rotated)) = (index.to_api(state), index.to_api(table)) else {
-        return table;
-    };
     let rotation = match rotation {
         Rotation::None => StructureRotation::None,
         Rotation::Clockwise90 => StructureRotation::Clockwise90,
         Rotation::Clockwise180 => StructureRotation::Clockwise180,
         Rotation::Counterclockwise90 => StructureRotation::Counterclockwise90,
     };
-    if let Err(error) = sunrise_client::crash::contain(|| {
-        native_worldgen_parts::with_host(|host| {
-            mod_api::world::rotation::native_rotate(host, asked, pos, rotation, &mut rotated);
-        });
-    }) {
-        log::warn!("rotate callback failed: {error}; the template places the game's state");
+    ask_parts(
+        HookId::Rotate,
+        "rotate",
+        state,
+        table,
+        |host, asked, rotated| {
+            mod_api::world::rotation::native_rotate(host, asked, pos, rotation, rotated);
+        },
+    )
+}
+
+/// Asks the parts of `state`'s block listening to `hook` (named `name` in warnings) through
+/// `dispatch`, which starts from the game's `table` answer, and returns the state they place.
+fn ask_parts(
+    hook: HookId,
+    name: &str,
+    state: EngineState,
+    table: EngineState,
+    dispatch: impl FnOnce(&mod_api::OwningWorldgen<'_>, BlockState, &mut BlockState),
+) -> EngineState {
+    if !mod_api::__private::has_part_hook(hook) {
         return table;
     }
-    turned(&index, asked, rotated).unwrap_or(table)
+    let Some(index) = native_worldgen_parts::index() else {
+        return table;
+    };
+    if !index.worldgen_listens(hook, state) {
+        return table;
+    }
+    let (Ok(asked), Ok(mut answer)) = (index.to_api(state), index.to_api(table)) else {
+        return table;
+    };
+    if let Err(error) = sunrise_client::crash::contain(|| {
+        native_worldgen_parts::with_host(|host| dispatch(host, asked, &mut answer));
+    }) {
+        log::warn!("{name} callback failed: {error}; the template places the game's state");
+        return table;
+    }
+    placed(&index, hook, name, asked, answer).unwrap_or(table)
 }
 
 /// The parts' answer for `state`, as the engine places it: None for a state of another block or
-/// one the game's registry does not have, naming the mods whose parts answer for `state`'s
-/// block.
-fn turned(index: &Index, state: BlockState, answer: BlockState) -> Option<EngineState> {
+/// one the game's registry does not have, naming the mods whose parts answer `hook` for
+/// `state`'s block.
+fn placed(
+    index: &Index,
+    hook: HookId,
+    name: &str,
+    state: BlockState,
+    answer: BlockState,
+) -> Option<EngineState> {
     let refused = |why: &str| {
         log::warn!(
-            "rotate: a part of {} answered {why}; the template places the game's state",
-            mod_api::__private::worldgen_part_mods(HookId::Rotate, state).join(", ")
+            "{name}: a part of {} answered {why}; the template places the game's state",
+            mod_api::__private::worldgen_part_mods(hook, state).join(", ")
         );
         None
     };
@@ -71,7 +121,7 @@ fn turned(index: &Index, state: BlockState, answer: BlockState) -> Option<Engine
 mod tests {
     use super::*;
     use crate::game::native_entity_refs::tests::with_game;
-    use mod_api::{BlockPart, Hooks, ModEntry, Mods, RotateEvent, WorldgenHost};
+    use mod_api::{BlockPart, Hooks, MirrorEvent, ModEntry, Mods, RotateEvent, WorldgenHost};
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex, PoisonError};
     use sunrise_world::native_load_context::{DataLoadOrigin, LoadContext, LoadInputs};
@@ -116,6 +166,60 @@ mod tests {
             panic!("a part that panics");
         }
     }
+    /// What the dispenser's part read: its `facing`, and a key its block does not have.
+    static READ: Mutex<Vec<(Option<String>, Option<String>)>> = Mutex::new(Vec::new());
+    /// A dispenser turned as vanilla's `rotate` overrides turn one: read `facing`, turn it, set it.
+    struct ReadsFacing;
+    #[mod_api::sunrise_part]
+    impl BlockPart for ReadsFacing {
+        fn rotate(&self, context: &dyn WorldgenHost, event: &mut RotateEvent<'_>) {
+            let facing = context.state_property(event.state, "facing");
+            READ.lock().unwrap_or_else(PoisonError::into_inner).push((
+                facing.clone(),
+                context.state_property(event.state, "no_such_property"),
+            ));
+            let turned = match (event.rotation, facing.as_deref()) {
+                (StructureRotation::Clockwise90, Some("north")) => "east",
+                (StructureRotation::Clockwise90, Some("east")) => "south",
+                (StructureRotation::Clockwise90, Some("south")) => "west",
+                (StructureRotation::Clockwise90, Some("west")) => "north",
+                _ => return,
+            };
+            *event.rotated = context
+                .state_with_property(event.state, "facing", turned)
+                .unwrap();
+        }
+    }
+    /// The states the observer's part was asked to mirror, with the mirror.
+    static MIRRORED: Mutex<Vec<(BlockState, StructureMirror)>> = Mutex::new(Vec::new());
+    /// An observer mirrored as a block overriding `BlockBehaviour.mirror` might: front to back,
+    /// it faces up whatever it faced, so its answer differs from the game's table.
+    struct MirrorsUp;
+    #[mod_api::sunrise_part]
+    impl BlockPart for MirrorsUp {
+        fn mirror(&self, context: &dyn WorldgenHost, event: &mut MirrorEvent<'_>) {
+            MIRRORED
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push((event.state, event.mirror));
+            if event.mirror == StructureMirror::FrontBack {
+                *event.mirrored = context
+                    .state_with_property(event.state, "facing", "up")
+                    .unwrap();
+            }
+        }
+    }
+    /// A comparator's part answering a state of another block for a mirror.
+    struct MirrorsToStone;
+    #[mod_api::sunrise_part]
+    impl BlockPart for MirrorsToStone {
+        fn mirror(&self, _: &dyn WorldgenHost, event: &mut MirrorEvent<'_>) {
+            *event.mirrored = OTHER
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .unwrap();
+        }
+    }
     struct Turns;
     #[mod_api::__subscriptions]
     impl Hooks for Turns {
@@ -126,6 +230,12 @@ mod tests {
             r.block_part(smoker, Stone);
             let lectern = r.block_key("minecraft:lectern");
             r.block_part(lectern, Panics);
+            let dispenser = r.block_key("minecraft:dispenser");
+            r.block_part(dispenser, ReadsFacing);
+            let observer = r.block_key("minecraft:observer");
+            r.block_part(observer, MirrorsUp);
+            let comparator = r.block_key("minecraft:comparator");
+            r.block_part(comparator, MirrorsToStone);
         }
     }
 
@@ -135,9 +245,13 @@ mod tests {
         crate::game::native_hooks::with_property(registry, default, "facing", facing).unwrap()
     }
 
-    #[test]
-    #[ignore = "daily"]
-    fn a_part_turns_its_block_as_a_template_places_it() {
+    /// Runs `test` on a server game that resolved and published `Turns`' parts and a worldgen
+    /// context, with `place(name)`: `/place template … clockwise_90 left_right` of `name` facing
+    /// north (LEFT_RIGHT turns north to south, then a clockwise quarter turn makes it west), as
+    /// the parts place it and as the game's own table does.
+    fn with_published_parts(
+        test: impl FnOnce(&BlockRegistry, &Index, &dyn Fn(&str) -> (EngineState, EngineState)),
+    ) {
         let _publishing = native_worldgen_parts::PUBLISHING
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
@@ -163,8 +277,6 @@ mod tests {
                 sunrise_world::native_worldgen_hooks::publish_context(Arc::new(
                     load.worldgen_context([]),
                 ));
-                // `/place template … clockwise_90 left_right`: LEFT_RIGHT turns north to south,
-                // then a clockwise quarter turn makes it west.
                 let place = |name: &str| {
                     let mirrored =
                         transforms.mirror(facing(registry, name, "north"), Mirror::LeftRight);
@@ -174,28 +286,90 @@ mod tests {
                         table,
                     )
                 };
-                let (blast, table) = place("minecraft:blast_furnace");
-                assert_eq!(blast, facing(registry, "minecraft:blast_furnace", "west"));
-                assert_eq!(blast, table);
-                let (furnace, _) = place("minecraft:furnace");
-                assert_eq!(furnace, facing(registry, "minecraft:furnace", "north"));
-                let asked = ASKED.lock().unwrap_or_else(PoisonError::into_inner).clone();
-                let south = index
-                    .to_api(facing(registry, "minecraft:furnace", "south"))
-                    .unwrap();
-                assert_eq!(asked, [south]);
-                // A state of another block, and a panicking part, keep the game's state.
-                let (smoker, table) = place("minecraft:smoker");
-                assert_eq!(
-                    (smoker, table),
-                    (table, facing(registry, "minecraft:smoker", "west"))
-                );
-                let (lectern, table) = place("minecraft:lectern");
-                assert_eq!(
-                    (lectern, table),
-                    (table, facing(registry, "minecraft:lectern", "west"))
-                );
+                test(registry, &index, &place);
             });
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn a_part_turns_its_block_as_a_template_places_it() {
+        with_published_parts(|registry, index, place| {
+            let (blast, table) = place("minecraft:blast_furnace");
+            assert_eq!(blast, facing(registry, "minecraft:blast_furnace", "west"));
+            assert_eq!(blast, table);
+            let (furnace, _) = place("minecraft:furnace");
+            assert_eq!(furnace, facing(registry, "minecraft:furnace", "north"));
+            let asked = ASKED.lock().unwrap_or_else(PoisonError::into_inner).clone();
+            let south = index
+                .to_api(facing(registry, "minecraft:furnace", "south"))
+                .unwrap();
+            assert_eq!(asked, [south]);
+            // A state of another block, and a panicking part, keep the game's state.
+            let (smoker, table) = place("minecraft:smoker");
+            assert_eq!(
+                (smoker, table),
+                (table, facing(registry, "minecraft:smoker", "west"))
+            );
+            let (lectern, table) = place("minecraft:lectern");
+            assert_eq!(
+                (lectern, table),
+                (table, facing(registry, "minecraft:lectern", "west"))
+            );
+        });
+    }
+
+    /// A template mirrored front to back places an observer facing east as its part answers
+    /// (`BlockBehaviour.mirror` overridden), where the game's table flips it to west; a block with
+    /// no part, and a part answering a state of another block, keep the table's state.
+    #[test]
+    #[ignore = "daily"]
+    fn a_part_mirrors_its_block_as_a_template_places_it() {
+        with_published_parts(|registry, index, _| {
+            MIRRORED
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clear();
+            let pos = [4, 64, 2];
+            let observer = facing(registry, "minecraft:observer", "east");
+            let west = facing(registry, "minecraft:observer", "west");
+            assert_eq!(
+                mirror(observer, pos, Mirror::FrontBack, west),
+                facing(registry, "minecraft:observer", "up")
+            );
+            // Left to right, the part keeps the game's answer.
+            assert_eq!(mirror(observer, pos, Mirror::LeftRight, observer), observer);
+            let asked = index.to_api(observer).unwrap();
+            assert_eq!(
+                *MIRRORED.lock().unwrap_or_else(PoisonError::into_inner),
+                [
+                    (asked, StructureMirror::FrontBack),
+                    (asked, StructureMirror::LeftRight),
+                ]
+            );
+            for block in ["minecraft:blast_furnace", "minecraft:comparator"] {
+                let east = facing(registry, block, "east");
+                let west = facing(registry, block, "west");
+                assert_eq!(mirror(east, pos, Mirror::FrontBack, west), west, "{block}");
+            }
+        });
+    }
+
+    /// `WorldgenHost::state_property` reads the state a part is asked with, so a part turns its
+    /// block as vanilla's `rotate` overrides do (`state.getValue(FACING)`) and lands where the
+    /// game's own table puts it; a key the block does not have reads None.
+    #[test]
+    #[ignore = "daily"]
+    fn a_part_reads_the_property_it_turns() {
+        with_published_parts(|registry, _, place| {
+            READ.lock().unwrap_or_else(PoisonError::into_inner).clear();
+            let (dispenser, table) = place("minecraft:dispenser");
+            assert_eq!(dispenser, facing(registry, "minecraft:dispenser", "west"));
+            assert_eq!(dispenser, table);
+            assert_eq!(
+                *READ.lock().unwrap_or_else(PoisonError::into_inner),
+                [(Some("south".to_owned()), None)]
+            );
         });
     }
 }

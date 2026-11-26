@@ -1,0 +1,6 @@
+ids = ["hook:render_tooltip_pre"]
+why = """`render_tooltip_pre` (version 4): text lines are wrapped only where `render_tooltip_gather_components` ran, as in NeoForge, where `ClientHooks.gatherTooltipComponents` splits lines too wide for either side of the cursor. With no Gather listener, Pre now receives each item line whole, as vanilla `GuiGraphicsExtractor.setTooltipForNextFrame` passes it. Before, the engine split such a line even when Gather did not run, so a Pre-only listener saw several components. A stack that can't be converted to the API still skips Gather and Pre, and its tooltip now keeps whole lines too."""
+migrate = """
+- A Pre listener that measures or inspects text components should expect a wide item line as one component unless a Gather listener is active.
+- Rebuild against the new SDK to record the new hook version in the package's `uses` list.
+"""

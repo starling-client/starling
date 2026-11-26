@@ -85,7 +85,7 @@ fn frame_model_lends_the_drawn_pose_without_changing_geometry() {
         let mut out = Vec::new();
         if layers_only {
             let extra = [(
-                &*cow.kind.model,
+                WornModel::Vanilla(&cow.kind.model),
                 [0.0, 0.0, 1.0, 1.0],
                 0xFFFF_FFFF,
                 0,
@@ -297,34 +297,34 @@ fn named_hidden_parts_leave_the_body_and_its_overlays_but_not_armour() {
     let (_, mut data) = humanoid_zombie();
     data.frame_models = BakedFrameModels::bake([&*cow.kind, &*villager.kind, &*layered.kind]);
     let atlas = |_: &str| Some([0.0, 0.0, 1.0, 1.0]);
-    let draw =
-        |mob: &Mob, names: &[&str], gpu: bool, extra: &[(&Part, [f32; 4], u32, u32, bool)]| {
-            let mut out = Vec::new();
-            let mut models = super::super::skin::SkinModels::default();
-            let mut skin_frame = crate::gfx::entity_skin::SkinFrame::default();
-            let mut skin = super::super::skin::Skin::new(&mut models, &mut skin_frame);
-            let mut frame = FrameDraw::default();
-            hide_in_draw(&mut frame, mob, &data, names);
-            render_visible(
-                mob,
-                0.5,
-                [glam::Mat4::IDENTITY],
-                &atlas,
-                0xf0f0,
-                &data,
-                extra,
-                Some(body_color(mob, 0.5)),
-                &mut frame,
-                &mut out,
-                gpu.then_some(&mut skin),
-            );
-            (
-                out.len() as u32,
-                skin_frame.jobs.iter().map(|job| job.count).sum::<u32>(),
-            )
-        };
+    let draw = |mob: &Mob, names: &[&str], gpu: bool, extra: &[WornLayer<'_>]| {
+        let mut out = Vec::new();
+        let mut models = super::super::skin::SkinModels::default();
+        let mut skin_frame = crate::gfx::entity_skin::SkinFrame::default();
+        let mut skin = super::super::skin::Skin::new(&mut models, &mut skin_frame);
+        let mut frame = FrameDraw::default();
+        hide_in_draw(&mut frame, mob, &data, names);
+        render_visible(
+            mob,
+            0.5,
+            None,
+            [glam::Mat4::IDENTITY],
+            &atlas,
+            0xf0f0,
+            &data,
+            extra,
+            Some(body_color(mob, 0.5)),
+            &mut frame,
+            &mut out,
+            gpu.then_some(&mut skin),
+        );
+        (
+            out.len() as u32,
+            skin_frame.jobs.iter().map(|job| job.count).sum::<u32>(),
+        )
+    };
     let armour = [(
-        &*villager.kind.model,
+        WornModel::Vanilla(&villager.kind.model),
         [0.0, 0.0, 1.0, 1.0],
         0xf0f0,
         0,
@@ -349,7 +349,7 @@ fn named_hidden_parts_leave_the_body_and_its_overlays_but_not_armour() {
         );
     }
     for gpu_path in [false, true] {
-        let draw_armoured = |names: &[&str], extra: &[(&Part, [f32; 4], u32, u32, bool)]| {
+        let draw_armoured = |names: &[&str], extra: &[WornLayer<'_>]| {
             let (cpu, gpu) = draw(&villager, names, gpu_path, extra);
             cpu + gpu
         };
@@ -402,7 +402,7 @@ fn named_hidden_parts_leave_the_body_and_its_overlays_but_not_armour() {
 fn equipment_model_override_draws_with_body_poses_and_inventory_does_not_dispatch_it() {
     struct Source {
         data: MobData,
-        model: std::sync::Arc<Part>,
+        model: std::sync::Arc<EquipmentModel>,
         calls: std::cell::Cell<usize>,
     }
     impl RenderDataSource for Source {
@@ -417,7 +417,8 @@ fn equipment_model_override_draws_with_body_poses_and_inventory_does_not_dispatc
                 0xFFFFFFFF,
                 ARMOR_GLINT,
             );
-            layer.equipment_model = Some(self.model.clone());
+            layer.equipment_model = Some((self.model.clone(), ArmorSlot::Chest));
+            layer.equipment_uv = Some([0.25, 0.25, 0.5, 0.5]);
             vec![layer]
         }
         fn equipment_inventory(&self, _: &Mob) -> Vec<Layer> {
@@ -425,18 +426,22 @@ fn equipment_model_override_draws_with_body_poses_and_inventory_does_not_dispatc
         }
     }
     let (mob, data) = humanoid_zombie();
+    let mut reference = (*mob.kind.model).clone();
+    reference.children.retain(|node| node.name == "body");
+    let reference = std::sync::Arc::new(reference);
+    let baked = EquipmentModel::bake(&crate::mobs::model_layers::from_part(&reference)).unwrap();
     let source = Source {
-        model: mob.kind.model.clone(),
+        model: std::sync::Arc::new(baked),
         data,
         calls: std::cell::Cell::new(0),
     };
     let uv = [0.25, 0.25, 0.5, 0.5];
     let atlas = |name: &str| {
-        Some(if name == "test:equipment" {
-            uv
-        } else {
-            [0.0, 0.0, 1.0, 1.0]
-        })
+        assert_ne!(
+            name, "test:equipment",
+            "final UVs must not consult the live atlas"
+        );
+        Some([0.0, 0.0, 1.0, 1.0])
     };
     assert!(
         !drawn_textures(&mob, &source)
@@ -467,7 +472,13 @@ fn equipment_model_override_draws_with_body_poses_and_inventory_does_not_dispatc
         &atlas,
         0xF0F0,
         &source.data,
-        &[(&source.model, uv, 0xFFFFFFFF, ARMOR_GLINT, false)],
+        &[(
+            WornModel::Vanilla(&reference),
+            uv,
+            0xFFFFFFFF,
+            ARMOR_GLINT,
+            false,
+        )],
         &mut expected,
     );
     assert_eq!(source.calls.get(), 1);

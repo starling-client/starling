@@ -109,7 +109,7 @@ server with `LevelRef::set_connection_group(host, pos, Some(group))` (or `None` 
 with `LevelRef::connection_group(host, pos)`):
 
 ```rust
-level.set_connection_group(host, pos, Some(tank_controller_id))?;
+{{#include ../../../examples/src/client_misc.rs:connection_group}}
 ```
 
 - **Combined with `connect`.** `connect_group` narrows `connect`: a neighbour joins only when both the rule's

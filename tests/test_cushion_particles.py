@@ -5,7 +5,7 @@ import subprocess
 import tempfile
 import unittest
 
-from rust_items import rust_fn
+from tests.rust_items import rust_fn
 
 
 @unittest.skipUnless(shutil.which("rustc"), "requires Rust")
@@ -37,7 +37,7 @@ mod sunrise_client { pub mod particles {
 struct Particles { count: u32 }
 impl Particles {
     fn send_particles(&mut self, _: &sunrise_client::particles::ParticleOptions,
-        at: [f64; 3], spread: [f64; 3], speed: f64, count: u32) {
+        at: [f64; 3], spread: [f64; 3], speed: f64, count: u32, _: Option<&()>) {
         assert!((at[1] - (10.0 + 1.0/6.0)).abs() < 1e-12);
         assert_eq!(spread, [0.25, 0.0625, 0.25]);
         assert_eq!(speed, 0.05); assert_eq!(count, 10); self.count += count;

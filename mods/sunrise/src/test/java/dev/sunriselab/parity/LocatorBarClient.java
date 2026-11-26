@@ -107,6 +107,7 @@ import net.minecraft.world.phys.Vec3;
  * also records what the server changes about it: its game mode, teleports,
  * motion, inventory slots, effects and death) and {@code end}, which writes each
  * player's lines to OUT. {@code boats on|off} records boat paddle metadata;
+ * {@code boat-damage on|off} records boat spawn, {@code VehicleEntity.DATA_ID_DAMAGE} updates and removal;
  * {@code hooks on|off} records the entity a fishing bobber hooks, by type;
  * {@code paddle NAME LEFT RIGHT} sends the two boolean paddle states;
  * {@code sounds on|off} records typed sound packets and their complete payloads;
@@ -129,9 +130,11 @@ public final class LocatorBarClient {
     private static Path partialTrace;
     private static final Object traceLock = new Object();
     private static volatile boolean boats;
+    private static volatile boolean boatDamage;
     private static volatile boolean hooks;
     private static volatile boolean state;
     private static volatile boolean sounds;
+    private static volatile boolean gameEvents;
     private static volatile boolean events;
     private static volatile boolean spawns;
     private static volatile boolean menus;
@@ -279,6 +282,7 @@ public final class LocatorBarClient {
                         }
                     }
                     case "boats" -> boats = w[1].equals("on");
+                    case "boat-damage" -> boatDamage = w[1].equals("on");
                     case "hooks" -> hooks = w[1].equals("on");
                     case "paddle" -> {
                         String[] sides = w[2].split(" ");
@@ -287,6 +291,7 @@ public final class LocatorBarClient {
                     }
                     case "state" -> state = w[1].equals("on");
                     case "sounds" -> sounds = w[1].equals("on");
+                    case "game-events" -> gameEvents = w[1].equals("on");
                     case "events" -> events = w[1].equals("on");
                     case "spawns" -> spawns = w[1].equals("on");
                     case "end" -> {
@@ -373,6 +378,7 @@ public final class LocatorBarClient {
         private int vehicle = -1;
         /** The other players this one was sent, by entity id. */
         private final java.util.Set<Integer> boatIds = new java.util.HashSet<>();
+        private final Map<Integer, String> boatPos = new java.util.HashMap<>();
         private final Map<Integer, String> entityTypes = new java.util.HashMap<>();
         private final Map<Integer, String> seen = new java.util.HashMap<>();
         private final Map<Integer, UUID> trackedProfiles = new java.util.HashMap<>();
@@ -867,6 +873,23 @@ public final class LocatorBarClient {
                         advancementUpdate(a, r.payload);
                     }
 
+                    if (gameEvents && p instanceof net.minecraft.network.protocol.game.ClientboundGameEventPacket gameEvent) {
+                        FriendlyByteBuf buf = new FriendlyByteBuf(Unpooled.wrappedBuffer(r.payload));
+                        buf.readVarInt();
+                        int event = buf.readUnsignedByte();
+                        int wireParamBits = Float.floatToRawIntBits(buf.readFloat());
+                        int paramBits = Float.floatToRawIntBits(gameEvent.getParam());
+                        if (wireParamBits != paramBits || buf.readableBytes() != 0) {
+                            throw new IllegalStateException("unexpected game event payload: "
+                                + java.util.HexFormat.of().formatHex(r.payload));
+                        }
+                        var j = new com.google.gson.JsonObject();
+                        j.addProperty("event", event);
+                        j.addProperty("param_bits", String.format(java.util.Locale.ROOT, "%08x", paramBits));
+                        j.addProperty("payload_hex", java.util.HexFormat.of().formatHex(r.payload));
+                        record("game-event " + j);
+                    }
+
                     if (sounds && p instanceof net.minecraft.network.protocol.game.ClientboundSoundPacket sound) {
                         com.google.gson.JsonObject j = new com.google.gson.JsonObject();
                         j.addProperty("event", sound.getSound().value().location().toString());
@@ -947,6 +970,27 @@ if (ownPoses && p instanceof net.minecraft.network.protocol.game.ClientboundSetE
                             }
                         }
                     }
+                    if (boatDamage && p instanceof net.minecraft.network.protocol.game.ClientboundAddEntityPacket a
+                        && isBoat(a.getType())) {
+                        String pos = a.getX() + " " + a.getY() + " " + a.getZ();
+                        boatPos.put(a.getId(), pos);
+                        record("boat-add " + pos);
+                    }
+                    // VehicleEntity.DATA_ID_DAMAGE is entity data id 10 (float).
+                    if (boatDamage && p instanceof net.minecraft.network.protocol.game.ClientboundSetEntityDataPacket data
+                        && boatPos.containsKey(data.id())) {
+                        for (var value : data.packedItems()) {
+                            if (value.id() == 10 && value.value() instanceof Float dmg) {
+                                record("boat-damage " + boatPos.get(data.id()) + " " + dmg);
+                            }
+                        }
+                    }
+                    if (boatDamage && p instanceof net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket rm) {
+                        rm.entityIds().forEach(entityId -> {
+                            String pos = boatPos.remove(entityId);
+                            if (pos != null) record("boat-remove " + pos);
+                        });
+                    }
                     if (spawns && p instanceof net.minecraft.network.protocol.game.ClientboundAddEntityPacket a
                         && a.getType() != net.minecraft.world.entity.EntityTypes.PLAYER) {
                         record(String.format(java.util.Locale.ROOT, "spawn %s %.4f %.4f %.4f",
@@ -977,12 +1021,14 @@ if (ownPoses && p instanceof net.minecraft.network.protocol.game.ClientboundSetE
                             syncs++;
                             replyLock.notifyAll();
                         }
-                    } else if (advancements && p instanceof ClientboundSystemChatPacket c
+                    } else if ((advancements || listSyncs) && p instanceof ClientboundSystemChatPacket c
                         && c.content().getContents() instanceof net.minecraft.network.chat.contents.TranslatableContents t
                         && t.getKey().equals("commands.list.players")) {
                         synchronized (replyLock) {
-                            record("adv-receipt " + net.minecraft.network.chat.ComponentSerialization.CODEC.encodeStart(
-                                ParityData.access.createSerializationContext(com.mojang.serialization.JsonOps.INSTANCE), c.content()).getOrThrow());
+                            if (advancements) {
+                                record("adv-receipt " + net.minecraft.network.chat.ComponentSerialization.CODEC.encodeStart(
+                                    ParityData.access.createSerializationContext(com.mojang.serialization.JsonOps.INSTANCE), c.content()).getOrThrow());
+                            }
                             listReplies++;
                             replyLock.notifyAll();
                         }

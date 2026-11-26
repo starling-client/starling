@@ -7,7 +7,8 @@ use crate::*;
 #[sunrise_mod_api_macros::host_area]
 pub trait LevelTicketsBackend {
     /// Side: server.
-    /// Whether any watered-area ticket covers this block. Minimum bounds are inclusive and
+    /// Whether any watered-area ticket covers this block
+    /// (`FarmlandWaterManager.hasBlockWaterTicket`). Minimum bounds are inclusive and
     /// maximum bounds exclusive on all three axes. Reads active and parked levels, loads no
     /// chunks, and calls no mod predicates. False on clients or for a stale/unavailable level.
     fn level_has_water_ticket(&self, level: LevelRef, pos: [i32; 3]) -> bool;
@@ -16,18 +17,27 @@ pub trait LevelTicketsBackend {
     /// loaded or not; a mod's own ticket on it does not count. None for a stale handle or on a client.
     fn chunk_forced(&self, chunk: ChunkRef) -> Option<bool>;
     /// Side: server.
-    /// The level's force-loaded chunks (`/forceload query`), sorted as
-    /// the command lists them. None for a stale handle or on a client.
-    fn level_forced_chunks(&self, level: LevelRef) -> Option<Vec<[i32; 2]>>;
+    /// Visit the level's force-loaded chunk positions in `/forceload query` order (signed
+    /// packed chunk position). An empty set completes without a call. Return `Break(())` to
+    /// stop. A stale level returns `Stale`; an unreadable side or backend returns `Unavailable`.
+    fn level_visit_forced_chunks(
+        &self,
+        level: LevelRef,
+        visit: &mut dyn FnMut([i32; 2]) -> core::ops::ControlFlow<()>,
+    ) -> Result<core::ops::ControlFlow<()>, LevelReadError>;
     /// Side: server.
-    /// The chunk tickets `controller` holds in the level, as (owner, chunk
-    /// position, natural_spawning), in order. None for a stale handle, on a
-    /// client, outside a mod's hook and for another mod's controller.
-    fn level_mod_forced_chunks(
+    /// Visit the chunk tickets `controller` holds in the level, in ticket order, with their
+    /// owner, chunk position and natural-spawning flag. Return `Break(())` to stop. The
+    /// registry-issued handle authorizes this read regardless of the current callback owner.
+    /// A stale level returns `Stale`; an unreadable side or backend, or an invalid handle
+    /// (including one from another registration table), returns `Unavailable`. An empty
+    /// set completes without a call.
+    fn level_visit_mod_forced_chunks(
         &self,
         level: LevelRef,
         controller: TicketController,
-    ) -> Option<Vec<(TicketOwner, [i32; 2], bool)>>;
+        visit: &mut dyn FnMut(TicketOwner, [i32; 2], bool) -> core::ops::ControlFlow<()>,
+    ) -> Result<core::ops::ControlFlow<()>, LevelReadError>;
 }
 /// The handles' writes of the `level_tickets` area, implemented by the game and reached through [`BackendMut`].
 // hidden: a handle's backend, reached through `Backend`; mods call the handle, never this trait
@@ -38,11 +48,17 @@ pub trait LevelTicketsBackendMut {
     /// Mark the half-open box `min <= pos < max` as watered (`FarmlandWaterManager.addAABBTicket`).
     /// For 5x1x5 farmland starting at [0, 64, 0], use min [0, 64, 0], max [5, 65, 5].
     /// Farmland checks tickets before its vanilla water scan; rain and water still hydrate it.
-    /// The calling mod owns this ticket; overlaps are independent. Remove it when the sprinkler
-    /// stops. It is also removed on owner disable and level unload, never saved: re-add in
+    /// Any holder of the returned [`WaterTicket`] can remove it; overlaps are independent.
+    /// Remove it when the sprinkler stops. Each ticket attaches to the covered chunk closest to
+    /// its horizontal center (master chunk); unloading that chunk on the server invalidates the
+    /// ticket (`FarmlandWaterManager.removeTickets` / `SimpleTicket.unload`), while unloading
+    /// other covered chunks leaves it active. When added during an enabled mod call, the ticket
+    /// is also attributed to that mod for cleanup on disable (a disabled installed mod is
+    /// refused); level unload invalidates all tickets in the level. Never saved: re-add in
     /// `level_load` or the block entity's load listener. Reads/writes reach parked server levels.
-    /// None outside an enabled mod call, on clients, for stale/unavailable levels, empty or
-    /// reversed bounds, or a box spanning more than 65,536 x/z chunks. Does not load chunks.
+    /// None on clients, for stale/unavailable levels, for disabled installed mods, or for empty
+    /// or reversed bounds. Queries test indexed tiles without loading chunks or calling mod
+    /// predicates.
     fn level_add_water_ticket(
         &mut self,
         level: LevelRef,
@@ -50,8 +66,10 @@ pub trait LevelTicketsBackendMut {
         max: [i32; 3],
     ) -> Option<WaterTicket>;
     /// Side: server.
-    /// Remove this watered area, leaving overlapping tickets intact. Only the owning enabled
-    /// mod can remove it. False if already removed, stale, unloaded, or called on a client.
+    /// Remove this watered area by its handle identity (`SimpleTicket.invalidate`), leaving
+    /// overlapping tickets intact. Any holder with the [`WaterTicket`] handle can remove it
+    /// without caller attribution. False if already removed, stale, unloaded, or called on a
+    /// client.
     fn water_ticket_remove(&mut self, water_ticket: WaterTicket) -> bool;
     /// Side: server.
     /// `/forceload add` or `remove` of one chunk (`ServerLevel.setChunkForced`):
@@ -68,7 +86,8 @@ pub trait LevelTicketsBackendMut {
     /// Side: server.
     /// The chunk ticket of `controller` for `owner` on `chunk`
     /// (`TicketController.forceChunk`): true when the controller's tickets
-    /// changed. The controller must be the calling mod's own.
+    /// changed. Authorized by the registry-issued `controller` handle itself,
+    /// without consulting the current caller.
     /// A chunk stays forced, entity ticking and saved, and its level keeps
     /// ticking, while any ticket or `/forceload` holds it. With
     /// `natural_spawning` the chunk joins the spawning chunks (inhabited
@@ -80,9 +99,9 @@ pub trait LevelTicketsBackendMut {
     /// two controllers, release separately. They are saved in
     /// `data/sunrise/mod_chunk_tickets.dat` under the controller's id; when
     /// the world loads, those of a controller no loaded mod registers are
-    /// discarded. False outside a mod's hook, for another mod's controller, on
-    /// a client, for a chunk outside the world and for a level the server has
-    /// not opened.
+    /// discarded. False for an invalid controller handle (such as one from a
+    /// refused registration or another registration table), on a client, for a
+    /// chunk outside the world and for a level the server has not opened.
     fn chunk_set_mod_forced(
         &mut self,
         chunk: ChunkRef,

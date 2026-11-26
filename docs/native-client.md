@@ -9,8 +9,7 @@ craft in the 2x2 inventory grid or on a crafting table, and save and reload worl
 in vanilla's Anvil format.
 
 **Status:** playable; players get it through [the launcher](https://github.com/sunrise-org/sunrise-launcher/blob/main/README.md). The [harness table](status.md#what-the-harnesses-compare)
-in the README scores each subsystem against vanilla and lists what is still
-missing; [Rust rewrite status](rust-parity.md) has the details.
+scores each subsystem against vanilla and lists what is still missing.
 
 On Windows, the launcher uses a stable executable path for each game home across
 release and native-mod updates. Its private runtime copy lives under the launcher's
@@ -18,68 +17,10 @@ data folder in `run/<home key>/game/`; installed versions remain intact. Opening
 world to other machines can still require an initial Windows Firewall permission.
 The launcher does not create firewall rules or change network-profile settings.
 
-## musl Linux: manual installation
-
-On x86-64 musl distributions, download `sunrise-linux-musl-x86_64.tar.gz` from the
-[Nightly release](https://github.com/sunrise-org/sunrise/releases/tag/nightly), once it appears. It is attached
-separately after publication, and the launcher does not install or update it. Its desktop gameplay and vanilla
-parity are still unverified; see the [musl build limitations](release-flow.md#builds).
-
-Before extracting, download `SHA256SUMS-musl` and `SHA256SUMS-musl.v2.sig` from the **same release** as the
-archive. Keep them in a folder of their own, not alongside the launcher's `SHA256SUMS`. Copy `SHA256SUMS-musl`
-to `SHA256SUMS` in that folder for the verifier. From a trusted Sunrise checkout, run the following with the date
-and commit from the release's title (`Nightly <date> · <commit>`), not from the moving `nightly` tag:
-
-```sh
-version='nightly-<date>-<commit>' # Replace <date> and <commit> with the values from the title.
-cp /path/to/musl-download/SHA256SUMS-musl /path/to/musl-download/SHA256SUMS
-cargo run --locked -p sunrise-release-sign -- verify --tag "$version" \
-  --signature SHA256SUMS-musl.v2.sig --only sunrise-linux-musl-x86_64.tar.gz /path/to/musl-download
-```
-
-For a Dev build, use `dev-<date>-<commit>` as the tag in the verification command. The verifier checks
-both the signature against Sunrise's release key and the archive's checksum. Do not extract the archive if
-verification fails.
-
-You need a working X11 or Wayland desktop, musl, libgcc, ALSA and libudev. For Vulkan, install both the loader
-(`libvulkan.so.1`) and your GPU's driver. On Alpine, the common runtime packages are:
-
-```sh
-sudo apk add musl libgcc alsa-lib eudev-libs vulkan-loader
-```
-
-Install the appropriate Mesa/Vulkan driver and window-system libraries for your desktop separately; OpenGL
-also needs a working musl-compatible OpenGL/EGL stack. NVIDIA's proprietary userspace drivers require glibc
-and cannot be loaded by this build; see [Alpine's GPU requirements](https://wiki.alpinelinux.org/wiki/Requirements).
-
-Resource preparation needs a **musl-compatible system JDK 25** (including `java` and `javac`). Mojang's bundled
-Linux Java runtime needs glibc. Install JDK 25 from your distribution or another musl-compatible provider,
-set `JAVA_HOME` to that JDK, and check `"$JAVA_HOME/bin/java" -version`. You also need your own Minecraft Java
-Edition 26.3 installation and its server jar. Download the server jar yourself from the `downloads.server.url`
-in that version's launcher JSON. Sunrise's preparer does not download it.
-
-Extract the archive and, inside its folder, run the following with your actual paths:
-
-```sh
-./sunrise-prepare --prepare --minecraft-dir /path/to/minecraft --server-jar /path/to/server.jar
-./sunrise-prepare sounds --minecraft-dir /path/to/minecraft
-./sunrise-client --resources "$PWD/.local/sunrise-client/26.3"
-```
-
-The sounds command copies the sounds from your Minecraft installation's asset store. If that store is
-incomplete, obtain the missing assets through your Minecraft launcher first. Preparation details and alternative
-layouts are described below.
-
-Updates are manual: download, verify and extract the next musl archive, prepare its resources, and use that version's
-programs. Keep your saves in a separate `SUNRISE_HOME` and point each version at it. Back up saves before
-updating. The bundled `sunrise-server` also refuses automatic updates because the server update archives use
-glibc. An absent musl archive is not a reason to install the glibc archive on a musl system.
-
 ## Run from a checkout
 
 Use current stable Rust (1.90+) and JDK 25 (Python 3.11+ only for the development
-harnesses). A checkout never
-downloads the game: resource preparation imports **your own copy** (the 26.3
+harnesses). Full client preparation imports **your own copy** (the 26.3
 client from your official launcher install, and the 26.3 server jar you
 downloaded yourself; see [Build from source](#run-from-a-checkout)),
 verifies it against the pinned checksums, runs vanilla's data generator and small
@@ -92,7 +33,10 @@ incomplete, preparation logs a warning and keeps the placeholders. To import the
 later without rerunning the Java exporters, run `sunrise-prepare panorama` (or
 `cargo run --release -p sunrise-prepare -- panorama` in a checkout). Pass
 `--minecraft-dir PATH` when using a different Minecraft installation.
-Prepared resources are private; never commit them.
+Prepared resources are private; never commit them. For server-only setup, `sunrise-prepare --server` can
+instead fetch Mojang's free `server.jar` and Java runtime from Mojang with SHA-1 checks, without client files.
+See [Host a server](hosting.md#2-prepare-the-game-files). Only the launcher downloads client files, for a
+signed-in account that owns Minecraft.
 
 Preparation is `sunrise-prepare` (`crates/sunrise-prepare`, Rust): it needs no Python, only
 the JDK, for the small exporters that call Mojang's own code. Release folders ship it beside
@@ -122,9 +66,9 @@ A launcher whose files are laid out its own way names them one by one instead of
 with `indexes/` and `objects/`); each replaces only what it names, and every file is still
 checked against `research-lock.json`'s pins. When an earlier import beside `--root` is still
 verified, it is reused and the named files aren't read. Two things no such launcher keeps:
-- **The server jar.** The first `--prepare` needs `--server-jar`. Sunrise never downloads it; a
-  launcher downloads it (the version JSON's `downloads.server`) only for a signed-in account that
-  owns Minecraft: Java Edition, as `sunrise-launcher` does.
+- **The server jar.** The first full `--prepare` needs `--server-jar`. The launcher can download it
+  (the version JSON's `downloads.server`) while preparing a signed-in player's client install. The
+  separate `--server` preparation fetches the pinned jar by SHA-1 for a dedicated server.
 - **Java 25.** `--java-home PATH` names a runtime the launcher manages. The preparer takes the first
   Java of the pinned version from `JAVA_HOME`, the `PATH`, `--java-home`, then the official
   launcher's runtimes.
@@ -338,7 +282,7 @@ While Discord runs on the same computer, the player's Discord profile shows
 "Playing Sunrise" and what they are doing: "In the menus", "Singleplayer",
 "Multiplayer" or "Hosting a world" (with the party size, of 8), the dimension
 ("In the Nether") and the time since they entered the world. It never shows a
-world's name or a server's address. The switch is on the Extras page, in its
+world's name or a server's address. The switch is on Sunrise Settings' Gameplay page, in its
 Multiplayer group (**Discord Rich Presence**, on by default; `discordPresence`
 in `sunrise-extras.txt`), and
 `SUNRISE_NO_DISCORD=1` turns it off for one run.
@@ -361,7 +305,7 @@ the large one; there are no game-mode images yet.
 
 ### Play on another of your machines
 
-Sunrise targets desktop Linux, macOS and Windows (see [Windows ARM64](windows-arm64.md)).
+Sunrise targets desktop Linux x86_64, Apple-chip macOS and Windows x64 ([Builds](release-flow.md#builds)).
 To play on another machine without Rust, JDK or prepared resources,
 package a release build where they exist:
 

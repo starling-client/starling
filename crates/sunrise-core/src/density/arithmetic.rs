@@ -12,17 +12,8 @@ pub(super) fn java_power(base: f64, exponent: f64) -> f64 {
     }
 }
 
-pub(super) fn java_min(a: f32, b: f32) -> f32 {
-    if a.is_nan() || b.is_nan() {
-        f32::NAN
-    } else if a == 0.0 && b == 0.0 {
-        f32::from_bits(a.to_bits() | b.to_bits())
-    } else if a <= b {
-        a
-    } else {
-        b
-    }
-}
+pub(super) use crate::jmath::min_f32 as java_min;
+
 pub(super) fn java_max(a: f32, b: f32) -> f32 {
     if a.is_nan() || b.is_nan() {
         f32::NAN

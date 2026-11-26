@@ -173,7 +173,7 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(10);
         while Instant::now() < deadline {
             for receipt in lan.poll() {
-                if let (NetEvent::Joined(j), _) = receipt.into_parts() {
+                if let (NetEvent::Joined(j, _), _) = receipt.into_parts() {
                     return Joined {
                         asked,
                         kept: Ok(j.sender.viewed_levels),
@@ -205,7 +205,7 @@ mod tests {
         assert_eq!(
             join("sunrise", &[], &[&[1, 4, 2]]),
             Joined {
-                asked: Some(vec![0, 4]),
+                asked: Some(vec![0, 5]),
                 kept: kept(4, 2),
             }
         );
@@ -236,7 +236,7 @@ mod tests {
         assert_eq!(
             join("sunrise", &[], &[]),
             Joined {
-                asked: Some(vec![0, 4]),
+                asked: Some(vec![0, 5]),
                 kept: kept(0, 0),
             }
         );
@@ -245,9 +245,9 @@ mod tests {
     #[test]
     fn an_answer_of_a_revision_not_served_views_none() {
         assert_eq!(
-            join("sunrise", &[], &[&[1, 5, 5]]),
+            join("sunrise", &[], &[&[1, 6, 5]]),
             Joined {
-                asked: Some(vec![0, 4]),
+                asked: Some(vec![0, 5]),
                 kept: kept(0, 0),
             }
         );
@@ -258,7 +258,7 @@ mod tests {
         assert_eq!(
             join("sunrise", &[], &[&[1, 4, 2], &[1, 4, 2]]),
             Joined {
-                asked: Some(vec![0, 4]),
+                asked: Some(vec![0, 5]),
                 kept: Err("sunrise:levels: a second answer".into()),
             }
         );
@@ -306,15 +306,15 @@ mod tests {
     fn a_mod_cannot_register_the_channel() {
         let mods = vec![mod_api::ModEntry::new("sunrise", Box::new(Claims))];
         mod_platform::testing::with_mods(mods.into(), || {
-            mod_platform::__private::part_tests::install_parts_fixture(mod_api::__private::mods())
-                .unwrap();
-            let refused =
-                crate::raw_payloads::Transport::capture(crate::raw_payloads::Side::Server)
-                    .err()
-                    .unwrap();
-            assert_eq!(
-                refused,
-                "payload sunrise:levels is reserved for an engine service or transport control"
+            let refused = mod_platform::__private::part_tests::install_parts_fixture(
+                mod_api::__private::mods(),
+            )
+            .unwrap_err();
+            assert!(
+                refused
+                    .iter()
+                    .any(|error| error.contains("sunrise:levels") && error.contains("reserved")),
+                "{refused:?}"
             );
         });
     }

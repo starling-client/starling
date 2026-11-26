@@ -105,7 +105,7 @@ answer on this fork; those fields now live only under `provenance`.
 ## Not there yet
 
 - **Mods on a dedicated server**: turn on and off, and their settings, once native mods can be built for the
-  server ([content mods](../modding/src/how-to/content-mods.md), [native mods](../modding/src/how-to/native-mods/11-multiplayer.md)).
+  server ([content mods](../modding/src/how-to/content-mods.md), [native mods](../modding/src/how-to/native-mods/12-standalone-server-export.md#multiplayer)).
 - **Vanilla's management protocol**: `serversettings/*` (the live settings not yet done) and the world
   upgrade's notifications (the others are sent). The methods answer
   an internal error saying so; a kick's translatable message is sent as its key.

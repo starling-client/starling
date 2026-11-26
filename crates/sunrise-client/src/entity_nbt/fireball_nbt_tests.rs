@@ -291,6 +291,7 @@ fn a_painting_keeps_its_saved_pitch_and_takes_its_yaw_from_the_facing() {
             pos,
             facing,
             variant: variant.unwrap().into(),
+            asset: None,
             width: 1,
             height: 1,
             check_interval: 0,
@@ -593,5 +594,123 @@ fn thrown_item_projectiles_round_trip_their_flight_item_and_owner() {
             .unwrap()
             .get("NoGravity")
             .is_none()
+    );
+}
+
+#[test]
+fn throwable_item_codec_falls_back_on_rejected_input_and_never_lets_raw_override() {
+    // Missing id in Item falls back to the kind's default item, never saving an id-less tag.
+    let no_id = Tag::compound([
+        ("id", Tag::String("minecraft:snowball".into())),
+        ("Pos", doubles(&[1.0, 70.0, 2.0])),
+        ("Item", Tag::compound([("count", Tag::Int(5))])),
+    ]);
+    let ball = throwable_from_nbt(&no_id, None).unwrap();
+    let saved = throwable_to_nbt(&ball, [1; 4], None, Some(&no_id), &Default::default()).unwrap();
+    assert_eq!(
+        saved.get("Item"),
+        Some(&Tag::compound([
+            ("id", Tag::String("minecraft:snowball".into())),
+            ("count", Tag::Int(1)),
+        ]))
+    );
+
+    // Bare item id on a splash potion normalizes and never leaks raw bare id on save.
+    let bare_potion = Tag::compound([
+        ("id", Tag::String("minecraft:splash_potion".into())),
+        ("Pos", doubles(&[1.0, 70.0, 2.0])),
+        (
+            "Item",
+            Tag::compound([
+                ("id", Tag::String("splash_potion".into())),
+                ("count", Tag::Int(5)),
+            ]),
+        ),
+    ]);
+    let potion = throwable_from_nbt(&bare_potion, None).unwrap();
+    let saved = throwable_to_nbt(
+        &potion,
+        [1; 4],
+        None,
+        Some(&bare_potion),
+        &Default::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        saved.get("Item"),
+        Some(&Tag::compound([
+            ("id", Tag::String("minecraft:splash_potion".into())),
+            ("count", Tag::Int(1)),
+        ]))
+    );
+
+    // Raw input with a different Item never overrides a modeled potion stack.
+    let stale_raw = Tag::compound([(
+        "Item",
+        Tag::compound([
+            ("id", Tag::String("minecraft:stone".into())),
+            ("count", Tag::Int(5)),
+        ]),
+    )]);
+    let harming = Projectile::new(
+        ProjectileKind::Potion(
+            Box::new(
+                crate::items::ItemStack::new("minecraft:splash_potion", 1)
+                    .with_potion("minecraft:harming"),
+            ),
+            false,
+        ),
+        Vec3::new(1.0, 70.0, 2.0),
+        None,
+    );
+    let saved = throwable_to_nbt(
+        &harming,
+        [1; 4],
+        None,
+        Some(&stale_raw),
+        &Default::default(),
+    )
+    .unwrap();
+    let item = saved.get("Item").and_then(item_from_nbt).unwrap();
+    assert_eq!(
+        (&*item.item, item.count, item.potion()),
+        ("minecraft:splash_potion", 1, Some("minecraft:harming"))
+    );
+
+    // Mixed valid + malformed/transient components keep only the valid component.
+    let mixed = Tag::compound([
+        ("id", Tag::String("minecraft:egg".into())),
+        ("Pos", doubles(&[1.0, 70.0, 2.0])),
+        (
+            "Item",
+            Tag::compound([
+                ("id", Tag::String("stone".into())),
+                ("count", Tag::Int(5)),
+                (
+                    "components",
+                    Tag::compound([
+                        ("minecraft:custom_name", Tag::String("pebble".into())),
+                        ("minecraft:damage", Tag::String("bad".into())),
+                        (
+                            "minecraft:creative_slot_lock",
+                            Tag::Compound(Default::default()),
+                        ),
+                    ]),
+                ),
+            ]),
+        ),
+    ]);
+    let egg = throwable_from_nbt(&mixed, None).unwrap();
+    let saved = throwable_to_nbt(&egg, [1; 4], None, Some(&mixed), &Default::default()).unwrap();
+    assert_eq!(
+        saved.get("Item"),
+        Some(&Tag::compound([
+            ("id", Tag::String("minecraft:stone".into())),
+            ("count", Tag::Int(1)),
+            (
+                "components",
+                Tag::compound([("minecraft:custom_name", Tag::String("pebble".into()))]),
+            ),
+        ]))
     );
 }

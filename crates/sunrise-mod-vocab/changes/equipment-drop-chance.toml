@@ -1,0 +1,2 @@
+ids = ["handle:LivingRef::equipment_drop_chance"]
+why = "Mods can read a mob's per-slot equipment drop chance (Mob.getDropChances().byEquipment) outside a death roll, for example to pass a splitting slime's chances on to its children."

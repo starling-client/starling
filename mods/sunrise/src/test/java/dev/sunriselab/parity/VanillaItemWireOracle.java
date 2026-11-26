@@ -104,7 +104,7 @@ public final class VanillaItemWireOracle {
         return true;
     }
 
-    private static String encode(ItemStack stack) {
+    private static byte[] encodeBytes(ItemStack stack) {
         var buf = new RegistryFriendlyByteBuf(Unpooled.buffer(), ParityData.access);
         try {
             ItemStack.OPTIONAL_STREAM_CODEC.encode(buf, stack);
@@ -113,15 +113,21 @@ public final class VanillaItemWireOracle {
         }
         byte[] bytes = new byte[buf.readableBytes()];
         buf.readBytes(bytes);
-        return HexFormat.of().formatHex(bytes);
+        return bytes;
+    }
+
+    private static String encode(ItemStack stack) {
+        byte[] bytes = encodeBytes(stack);
+        return bytes == null ? null : HexFormat.of().formatHex(bytes);
     }
 
     private static void print(PrintWriter out, String label, ItemStack stack) {
-        String hex = encode(stack);
-        if (hex == null) {
+        byte[] bytes = encodeBytes(stack);
+        if (bytes == null) {
             out.println("{\"label\":" + json(label) + ",\"error\":\"encode failed\"}");
             return;
         }
+        String hex = HexFormat.of().formatHex(bytes);
         // DataComponentPatch's encoding order: its map's fast iteration, added
         // components, then removals.
         StringBuilder kinds = new StringBuilder();
@@ -131,7 +137,18 @@ public final class VanillaItemWireOracle {
             StringBuilder to = e.getValue().getClass().getName().equals("net.minecraft.core.component.Removed") ? removed : kinds;
             to.append(to.isEmpty() ? "" : ",").append(id(e.getKey()));
         }
-        out.println("{\"label\":" + json(label) + ",\"hex\":\"" + hex + "\",\"added\":[" + kinds + "],\"removed\":[" + removed + "]}");
+        StringBuilder extra = new StringBuilder();
+        extra.append(",\"item\":").append(json(BuiltInRegistries.ITEM.getKey(stack.getItem()).toString()));
+        extra.append(",\"item_id\":").append(BuiltInRegistries.ITEM.getId(stack.getItem()));
+        if (stack.has(DataComponents.TOOLTIP_STYLE)) {
+            var readBuf = new RegistryFriendlyByteBuf(Unpooled.wrappedBuffer(bytes), ParityData.access);
+            ItemStack decoded = ItemStack.OPTIONAL_STREAM_CODEC.decode(readBuf);
+            Identifier style = decoded.get(DataComponents.TOOLTIP_STYLE);
+            if (style != null) {
+                extra.append(",\"tooltip_style\":").append(json(style.toString()));
+            }
+        }
+        out.println("{\"label\":" + json(label) + ",\"hex\":\"" + hex + "\",\"added\":[" + kinds + "],\"removed\":[" + removed + "]" + extra + "}");
     }
 
     @SuppressWarnings("unchecked")

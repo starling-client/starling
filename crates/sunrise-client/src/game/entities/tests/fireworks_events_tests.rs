@@ -113,14 +113,14 @@ fn a_silent_rocket_bursts_without_blast_or_twinkle() {
             &mut LegacyRandom::new(0),
         );
         quiet.silent = true;
-        quiet.explosions = vec![twinkling()];
+        quiet.explosions = vec![twinkling()].into();
         let mut loud = game.new_rocket(
             Vec3::new(loud_at[0], loud_at[1], loud_at[2]),
             &stack,
             false,
             &mut LegacyRandom::new(0),
         );
-        loud.explosions = vec![twinkling()];
+        loud.explosions = vec![twinkling()].into();
         game.explode_rocket(&quiet);
         game.explode_rocket(&loud);
         game.particles.sounds.clear();
@@ -181,7 +181,7 @@ fn a_detonating_rocket_posts_one_explode_from_its_owner() {
             false,
             &mut LegacyRandom::new(0),
         );
-        burst.explosions = vec![twinkling()];
+        burst.explosions = vec![twinkling()].into();
         burst.owner = Some(Who::Player);
         let mut plain = game.new_rocket(
             Vec3::new(9.5, 202.0, 8.5),
@@ -196,7 +196,7 @@ fn a_detonating_rocket_posts_one_explode_from_its_owner() {
             false,
             &mut LegacyRandom::new(0),
         );
-        stray.explosions = vec![twinkling()];
+        stray.explosions = vec![twinkling()].into();
 
         start_events();
         game.explode_rocket(&burst);

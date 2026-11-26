@@ -422,14 +422,20 @@ fn controller<'a>(m: &Mob, w: &'a MobWorld) -> Option<&'a Seen> {
     m.extra
         .rider
         .and_then(|id| w.passenger_object(id))
-        .filter(|r| r.alive && !w.entity_has("minecraft:non_controlling_rider", &r.kind.id))
+        .filter(|r| {
+            r.alive
+                && !w.entity_tag_bit(&r.kind, crate::items::EntityTypeTags::NON_CONTROLLING_RIDER)
+        })
 }
 /// Vehicle goal flags are independent of whether the rider has a combat target.
-/// Ravager.updateControlFlags permits raiders, unlike Mob.updateControlFlags.
+/// Ravager.updateControlFlags permits a rider in `#minecraft:raiders` (the resolved
+/// tag, so a data pack's change applies), unlike Mob.updateControlFlags.
 pub fn drive(m: &mut Mob, w: &MobWorld) {
     let rider = controller(m, w);
-    let disabled = rider
-        .is_some_and(|r| m.species() != Species::Ravager || !super::raider::is_raider(r.species));
+    let disabled = rider.is_some_and(|r| {
+        m.species() != Species::Ravager
+            || !w.entity_tag_bit(&r.kind, crate::items::EntityTypeTags::RAIDERS)
+    });
     let flags = CONTROLLED
         | if m.species() == Species::Ravager {
             TARGET
@@ -603,19 +609,80 @@ pub fn tick_until_consumption(
     })
 }
 
+/// Resume after flushing staged `register_behaviors` with the current navigation owner.
+pub fn resume_after_register_behaviors(
+    mobs: &mut JoinList<Mob>,
+    index: usize,
+    w: &MobWorld,
+    level: &mut super::DamageLevel<'_>,
+    stage: super::ai::BrainStage,
+    events: &mut Vec<super::MobEvent>,
+    movement: &mut Option<super::ai::MobMovement>,
+) -> super::ai::TickProgress {
+    if mobs[index].removed {
+        return super::ai::TickProgress::Complete(false);
+    }
+    tick_with(mobs, index, w, level, events, |m, w, level, events| {
+        let progress =
+            super::ai::resume_after_register_behaviors(m, w, level, stage, events, Some(movement));
+        if matches!(progress, super::ai::TickProgress::Complete(_)) {
+            super::neutral_anger::after_tick(m, w.game_time);
+        }
+        progress
+    })
+}
+
+/// Resume after equipment detection with the current navigation owner.
+pub fn resume_after_equipment(
+    mobs: &mut JoinList<Mob>,
+    index: usize,
+    w: &MobWorld,
+    level: &mut super::DamageLevel<'_>,
+    events: &mut Vec<super::MobEvent>,
+    movement: &mut Option<super::ai::MobMovement>,
+) -> super::ai::TickProgress {
+    if mobs[index].removed {
+        return super::ai::TickProgress::Complete(false);
+    }
+    tick_with(mobs, index, w, level, events, |m, w, level, events| {
+        let progress = super::ai::resume_after_equipment(m, w, level, events, Some(movement));
+        if matches!(progress, super::ai::TickProgress::Complete(_)) {
+            super::neutral_anger::after_tick(m, w.game_time);
+        }
+        progress
+    })
+}
+
 /// Resume the paused living AI step with the current vehicle/navigation owner.
 pub fn resume_after_consumption(
     mobs: &mut JoinList<Mob>,
     index: usize,
     w: &MobWorld,
     level: &mut super::DamageLevel<'_>,
-    was_on_fire: bool,
     events: &mut Vec<super::MobEvent>,
     movement: &mut Option<super::ai::MobMovement>,
 ) -> super::ai::TickProgress {
     tick_with(mobs, index, w, level, events, |m, w, level, events| {
-        let progress =
-            super::ai::resume_after_consumption(m, w, level, was_on_fire, events, Some(movement));
+        let progress = super::ai::resume_after_consumption(m, w, level, events, Some(movement));
+        if matches!(progress, super::ai::TickProgress::Complete(_)) {
+            super::neutral_anger::after_tick(m, w.game_time);
+        }
+        progress
+    })
+}
+
+/// Resume the tick after the owning level runs the drink's item effects.
+pub fn resume_after_drink(
+    mobs: &mut JoinList<Mob>,
+    index: usize,
+    w: &MobWorld,
+    level: &mut super::DamageLevel<'_>,
+    resume: super::ai::DrinkResume,
+    events: &mut Vec<super::MobEvent>,
+    movement: &mut Option<super::ai::MobMovement>,
+) -> super::ai::TickProgress {
+    tick_with(mobs, index, w, level, events, |m, w, level, events| {
+        let progress = super::ai::resume_after_drink(m, w, level, events, resume, Some(movement));
         if matches!(progress, super::ai::TickProgress::Complete(_)) {
             super::neutral_anger::after_tick(m, w.game_time);
         }
@@ -653,6 +720,25 @@ pub fn resume_after_breathing(
     })
 }
 
+/// Resume the breeding goal or brain with the current vehicle/navigation owner.
+pub fn resume_after_birth(
+    mobs: &mut JoinList<Mob>,
+    index: usize,
+    w: &MobWorld,
+    level: &mut super::DamageLevel<'_>,
+    resume: super::ai::BreedingResume,
+    events: &mut Vec<super::MobEvent>,
+    movement: &mut Option<super::ai::MobMovement>,
+) -> super::ai::TickProgress {
+    tick_with(mobs, index, w, level, events, |m, w, level, events| {
+        let progress = super::ai::resume_after_birth(m, w, level, events, resume, movement);
+        if matches!(progress, super::ai::TickProgress::Complete(_)) {
+            super::neutral_anger::after_tick(m, w.game_time);
+        }
+        progress
+    })
+}
+
 /// Resume the tick with its current navigation owner after settling a hit.
 pub fn resume_after_damage(
     mobs: &mut JoinList<Mob>,
@@ -683,6 +769,23 @@ pub fn resume_movement(
 ) -> super::ai::TickProgress {
     tick_with(mobs, index, w, level, events, |m, w, level, events| {
         let progress = super::ai::resume_movement(m, w, level, movement, events);
+        if matches!(progress, super::ai::TickProgress::Complete(_)) {
+            super::neutral_anger::after_tick(m, w.game_time);
+        }
+        progress
+    })
+}
+
+pub fn resume_after_inside_effects(
+    mobs: &mut JoinList<Mob>,
+    index: usize,
+    w: &MobWorld,
+    level: &mut super::DamageLevel<'_>,
+    paused: super::ai::InsidePause,
+    events: &mut Vec<super::MobEvent>,
+) -> super::ai::TickProgress {
+    tick_with(mobs, index, w, level, events, |m, w, level, events| {
+        let progress = super::ai::resume_after_inside_effects(m, w, level, events, paused);
         if matches!(progress, super::ai::TickProgress::Complete(_)) {
             super::neutral_anger::after_tick(m, w.game_time);
         }
@@ -808,18 +911,23 @@ mod tests {
         #[derive(Debug, Clone)]
         struct UnwindGoal(Arc<AtomicUsize>, Arc<i32>);
         impl Goal for UnwindGoal {
+            #[inline]
             fn flags(&self) -> u8 {
                 0
             }
+            #[inline]
             fn can_use(&mut self, _: &mut Mob, _: &mut Cx) -> bool {
                 true
             }
+            #[inline]
             fn every_tick(&self) -> bool {
                 true
             }
+            #[inline]
             fn box_clone(&self) -> Box<dyn Goal> {
                 Box::new(self.clone())
             }
+            #[inline]
             fn tick(&mut self, m: &mut Mob, _: &mut Cx) {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 assert_eq!(
@@ -899,7 +1007,11 @@ mod tests {
         let mut rider = of(72, Species::Skeleton);
         rider.extra.mount = Some(vehicle.id);
         vehicle.extra.rider = Some(rider.id);
-        std::sync::Arc::make_mut(&mut rider.kind).id = "test:custom_rider".into();
+        let custom = std::sync::Arc::make_mut(&mut rider.kind);
+        custom.id = "test:custom_rider".into();
+        // Its place in the one-type registry the tags below bind, as a content type's is set
+        // at load; in the resource world's registry that slot is a type outside the tag.
+        custom.flags.entity_tag_slot = Some(0);
         let retained = [rider.seen(None, &crate::items::Items::empty())];
         let root = std::env::var_os("SUNRISE_TEST_RESOURCES").expect("prepared resources required");
         assert!(crate::mobs::world::with_resource_test_world(
@@ -945,6 +1057,75 @@ mod tests {
                 vehicle.no_ai = true;
                 drive(&mut vehicle, &w);
                 assert_eq!(vehicle.ai.goals.disabled & CONTROLLED, 0);
+            }
+        ));
+    }
+
+    /// `Ravager.updateControlFlags`: a rider in `#minecraft:raiders` keeps the ravager's goals
+    /// on, any other mob rider turns them off. The tag is read as resolved, so a data pack that
+    /// adds a type to it, or takes one out, changes which riders steer.
+    #[test]
+    #[ignore = "daily"]
+    fn a_ravagers_goals_follow_the_raiders_tag_of_its_rider() {
+        let mut ravager = of(81, Species::Ravager);
+        let mut riders = [of(82, Species::Pillager), of(83, Species::Zombie)];
+        // Each its own type, at its place in the two-type registry the tag tables below bind
+        // (the test mobs share one type otherwise).
+        for (slot, (rider, id)) in riders
+            .iter_mut()
+            .zip(["minecraft:pillager", "minecraft:zombie"])
+            .enumerate()
+        {
+            rider.extra.mount = Some(ravager.id);
+            let kind = std::sync::Arc::make_mut(&mut rider.kind);
+            kind.id = id.into();
+            kind.flags.entity_tag_slot = Some(slot);
+        }
+        let ids: Vec<String> = riders.iter().map(|r| r.kind.id.clone()).collect();
+        let raiders = |members: &[&str]| {
+            let mut items = crate::items::Items::empty();
+            items.set_entity_type_tags(crate::items::EntityTypeTags::from_ordered(
+                [(
+                    "minecraft:raiders".into(),
+                    members.iter().map(|m| m.to_string()).collect(),
+                )]
+                .into(),
+                ids.clone().into(),
+            ));
+            items
+        };
+        let retained = riders
+            .each_ref()
+            .map(|r| r.seen(None, &crate::items::Items::empty()));
+        let (pillager, zombie) = (ids[0].as_str(), ids[1].as_str());
+        let root = std::env::var_os("SUNRISE_TEST_RESOURCES").expect("prepared resources required");
+        assert!(crate::mobs::world::with_resource_test_world(
+            std::path::Path::new(&root),
+            &[],
+            true,
+            true,
+            |_, _| {},
+            |w, _| {
+                // (tag members, rider, whether the ravager's goals stay on)
+                let cases = [
+                    (&[pillager][..], 0, true),
+                    (&[pillager][..], 1, false),
+                    (&[pillager, zombie][..], 1, true),
+                    (&[zombie][..], 0, false),
+                ];
+                for (members, rider, steers) in cases {
+                    let items = raiders(members);
+                    let w = MobWorld {
+                        side: sunrise_client::motion::dry_side(),
+                        passenger_objects: &retained,
+                        items: Some(&items),
+                        ..w.clone()
+                    };
+                    ravager.extra.rider = Some(riders[rider].id);
+                    drive(&mut ravager, &w);
+                    let off = ravager.ai.goals.disabled & CONTROLLED == CONTROLLED;
+                    assert_eq!(!off, steers, "{members:?}, rider {}", ids[rider]);
+                }
             }
         ));
     }

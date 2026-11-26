@@ -1,16 +1,17 @@
 # Drawing resolved models
 
 Register standalone models during `standalone_models`, then resolve their `ModelRef`
-through `RenderAssets::model` after resources are published. World render hooks receive
-`WorldDrawContext`: submit transient copies with `draw_model_instances`, or retain
-copies in a group. GUI scenes, mobs and kept/spinning renderers use their
-CPU routes; groups are a world-drawing facility, not another renderer.
+through `RenderAssets::model` after resources are published. `submit_custom_geometry`
+(and registered debug renderers) receive `WorldDrawContext`: submit transient copies
+with `draw_model_instances`, or retain copies in a group. Update retained groups before
+render passes execute in `prepare_render_buffers`. GUI scenes, mobs and kept/spinning
+renderers use their CPU routes; groups are a world-drawing facility, not another renderer.
 
 ## Local player skins
 
 Implement `Hooks::resolve_player_skin` to change the local player's appearance
 without changing their profile. Upload the skin with
-[`create_dynamic_texture`](dynamic-textures.md) as a 64×64 RGBA image once per
+[`create_dynamic_texture`](dynamic-textures.md) as a 64×64 texture once per
 skin file. Normalize legacy 64×32 skins before uploading. Keep the texture id
 and its model width, then select them in the hook:
 
@@ -25,7 +26,8 @@ fn resolve_player_skin(&self, _: &dyn ClientHost, event: &mut ResolvePlayerSkinE
 Use `PlayerModel::Wide` for four-pixel arms and `PlayerModel::Slim` for
 three-pixel arms. The selection starts at `None` each frame; listeners can leave
 an earlier answer alone or clear it with `*event.selection = None`. A missing,
-freed or wrongly sized texture keeps the original texture **and** model.
+released or wrongly sized texture keeps the original texture **and** model. A selected
+texture is copied on the GPU into the player's skin slot each frame it is selected.
 The selection affects the third-person avatar and its skin layers, first-person
 arms, and inventory and creative previews. It does not change the cape, tab
 list, or anyone else's view.
@@ -92,22 +94,25 @@ stack submitted during a frame. Rendering is not a source of combat state; see
 
 ## Entity model layers
 
-At client startup, implement `Hooks::register_layer_definitions` and call
+At client startup, implement `Hooks::register_layer_definitions` (hook version 5) and call
 `event.register("mymod:golem#main", create_golem_layer)`, where `create_golem_layer`
 returns a `LayerDefinition` built from a `MeshDefinition` and the texture size.
 The supplier is `Fn() -> LayerDefinition + Send + Sync + 'static`: capture owned
-inputs, not the event or its registration context. Use a `<namespace>:<path>#<layer>`
-ID matching vanilla's `ModelLayerLocation`. Include both separators even when a
-component is empty. Namespace and path follow vanilla's `Identifier` rules, and the
-layer can be any string. An exact collision with a vanilla layer key in
-`entity-models.json` fails client startup.
+inputs, not the event or its registration context. Write the model `Identifier` as
+`namespace:path` (with `:` even if a half is empty), followed by `#` and the layer name.
+The suffix after the first `#` is preserved verbatim.
 
-When multiple registrations share an ID, the last registration wins and overwritten
-suppliers never run. The game calls each winning supplier once when it freezes the
-layer table, in registration order. The frozen table retains the definitions, not the
-suppliers. Call `ClientHost::bake_layer("mymod:golem#main")` during renderer setup,
-then keep the resulting `ModelPart` tree for posing and drawing. Baking again and
-reloading resources reuse the definition.
+Duplicate mod registrations for the same ID overwrite earlier suppliers (last-writer-wins)
+before freeze, so overwritten suppliers never run. Malformed IDs, collisions with existing
+vanilla layer definitions, or an unavailable/invalid vanilla `entity-models.json` fail
+startup freeze cleanly before invoking any supplier or publishing. The game calls each
+winning supplier once when it freezes the layer table. A panicking supplier leaves no
+layer and is reported in the error log and client error toast under its mod's name.
+Other suppliers, including that mod's other suppliers, still run. The frozen table
+retains the definitions, not the suppliers. Call
+`ClientHost::bake_layer("mymod:golem#main")` during renderer setup, then keep the
+resulting `ModelPart` tree for posing and drawing. Baking again and reloading
+resources reuse the definition.
 
 ## Worn humanoid equipment
 
@@ -131,33 +136,72 @@ event.extensions.client_item_extensions(item, Arc::new(ChestLayers {
 }))?;
 ```
 
+Implement `ClientItemExtensions` using the borrowed draw inputs and the
+reload-bound references. If the equipment asset's `humanoid` layers specify
+`mymod:chest_inner` and `mymod:chest_outer`, the renderer expands them to the
+sprite names used in this match:
+
+```rust,ignore
+impl ClientItemExtensions for ChestLayers {
+    fn armor_texture(
+        &self,
+        _host: &dyn ClientHost,
+        _stack: &ItemStackView<'_>,
+        _layer_type: EquipmentLayerType,
+        layer: &EquipmentLayer<'_>,
+        _default_texture: &str,
+    ) -> ArmorTextureRef {
+        match layer.texture {
+            "mymod:entity/equipment/humanoid/chest_inner" => self.textures[0],
+            "mymod:entity/equipment/humanoid/chest_outer" => self.textures[1],
+            _ => ArmorTextureRef::DEFAULT,
+        }
+    }
+
+    fn armor_layer_model(
+        &self,
+        _host: &dyn ClientHost,
+        _stack: &ItemStackView<'_>,
+        _layer_type: EquipmentLayerType,
+        _layer: &EquipmentLayer<'_>,
+        index: u32,
+    ) -> ArmorModelRef {
+        self.models.get(index as usize).copied().unwrap_or(ArmorModelRef::VANILLA)
+    }
+}
+```
+
 Trees are API-owned `ModelPart` trees, built directly or baked from a
 `LayerDefinition`. Register them once per resource load, never during a frame.
-Model names belong to a namespace owned by the registering mod (its manifest
-namespaces or a content package it serves via `served_by`). Duplicate model names,
-non-finite geometry or poses, an unknown texture, an unknown item and two
-providers for one item refuse the resource-load registration by name. A duplicate
-item diagnostic names both providers. A completed callback's registration error
-still refuses preparation even if it ignored the returned error. A
-[failed registration callback](../../concepts/load-phases.md#registration-and-setup)
-loses only its own models, textures and providers;
-other callbacks can still register. Do not keep model or texture references
-from a discarded registration. Disabling the owning mod stops its Part.
+Register only sprites the provider may select as overrides: `register_texture`
+binds each requested sprite and its UVs for the current load. Vanilla/pack/CIT
+selection requires no registration. Model names may use any valid namespace.
+Duplicate model names, non-finite geometry or poses, unknown textures or items,
+and a second provider for an item return an error from that registrar call.
+Other successful registrations still install. A duplicate item error names both
+providers and leaves the first in place. Disabling the owning mod stops its provider.
 A server-only package cannot declare this client registration hook.
 
 The worn stack must first pass the equippable component's asset and matching-slot
 checks, and the asset must have layers. Only the visible equipped item's provider
 is queried; random-texture inventory enumeration does not run frame callbacks.
-Every callback takes `&dyn ClientHost` and `&ItemStack`:
+Every callback takes `&dyn ClientHost` and a live `&ItemStackView<'_>`. Read a
+single stored component override with `stack.get(&descriptor)` or explicitly
+call `stack.project()` if you need an owned stack. Callbacks for individual
+layers also borrow `&EquipmentLayer<'_>`; its `texture` is the asset's texture
+name before any renderer override.
 
-1. `default_dye_color` runs once and returns packed ARGB, or zero when undyed.
+1. `default_dye_color` runs once. By default it reads the stack's dyed colour
+   override and returns packed ARGB, or zero when undyed.
 2. `armor_layer_tint_color` runs in asset layer order, with the layer and its index.
    Exactly zero skips the layer, without calling its texture or model method.
    The default is white for a nondyeable layer, or its dye/optional undyed colour
    for a dyeable layer. Without either colour, a dyeable layer is skipped.
-3. `armor_texture` receives the layer type, layer and the resolved default texture
-   reference, including pack/CIT selection. A returned override is final for that
-   layer; it is not replaced by another random-texture or custom-model texture.
+3. `armor_texture` receives the layer type, layer and `default_texture: &str`:
+   the renderer's texture name after pack/CIT selection, or the asset's name if
+   the renderer could not bind it. Return `ArmorTextureRef::DEFAULT` to keep that
+   selection. Returning a registered sprite is final for that layer; it is not
+   replaced by another random-texture or custom-model texture.
 4. `armor_layer_model` chooses the registered tree for that layer. Returning
    `ArmorModelRef::VANILLA` keeps the original model. The humanoid pose is copied
    onto the chosen tree, with only the current slot's parts visible.
@@ -172,11 +216,15 @@ again. Babies do not draw trims. Foil goes on the first drawn material when ther
 is no trim, and on the trim otherwise.
 
 Model and texture references are scoped to the resource load. A stale reference
-returned during drawing uses vanilla's model or the supplied default texture,
-with one diagnostic per provider until reload, never a panic. A failed callback
-discards all of the piece's custom layers, draws the piece with vanilla behaviour,
-and disables that provider until reload, with one diagnostic. A failure discards the custom drawing even if an earlier layer succeeded.
-Callbacks work with references and layer values, not geometry or rebakes.
+uses vanilla's model or the supplied default texture and is logged each time
+without disabling the provider. If a callback is refused or the equipped stack
+is invalid, the refusal is reported each time and the whole piece draws as
+vanilla for that draw (even if an earlier layer succeeded), without disabling
+subsequent valid draws. A panic also discards that piece's custom layers, logs
+and shows an error toast naming the mod, and disables that mod's provider for
+that item for the rest of the session, including across resource reloads.
+Callbacks work with borrowed draw inputs and select reload-bound references,
+not geometry or rebakes.
 
 ## Standalone model bakers
 
@@ -243,15 +291,19 @@ after it applies. Successful reloads invalidate old handles, while refused prepa
 A copy whose colour alpha is below `0xFF` draws every quad in the translucent material described below.
 A model with translucent faces otherwise keeps its per-quad routing: only those faces take the translucent
 material. Copies with a colour other than white, hidden faces, a model with translucent faces or a block state model are baked on the CPU
-instead of drawn as GPU instances; the 16,384-copy budget bounds that cost.
+instead of drawn as GPU instances; GPU-routed copies past GPU buffer room also fall back to CPU baking.
 `overlay` (the hurt tint) has no effect on a copy on the translucent or block state model route, including any
 opaque faces it holds. `color` (the whole baked block model, multiplied at draw time) and `hidden_faces` (a
 cull mask the caller supplies) are Sunrise's options for mod copies.
 
-`block_state_model(state)` (on `RenderAssets`) resolves a block state as one model: the parts
+`block_state_model(state)` (on `RenderAssets`) resolves a `BlockState` as one model: the parts
 its blockstate file selects for its properties, weighted alternatives at the fixed seed
-`BlockEntityDrawContext::block` uses, each tinted face in the block's default tint. It draws
-through `draw_model_instances`, instance groups and `draw.terrain_model`, not `draw.model`.
+`BlockEntityDrawContext::block(state)` uses (which likewise takes a resolved `BlockState`),
+each tinted face in the block's default tint. A block vanilla also draws with a special
+renderer (a chest, shulker box, banner, head, bell, decorated pot and the other blocks of
+vanilla's `BuiltInBlockModels`) adds that renderer's geometry with no block entity data, as a
+block display shows it: a closed chest, a plain banner. It draws through
+`draw_model_instances`, instance groups and `draw.terrain_model`, not `draw.model`.
 Resolve it once per state in `client_setup` and `client_resources_reloaded`.
 
 ## Terrain materials in a block entity
@@ -278,9 +330,10 @@ draw.terrain_model(self.belt, options)?;
 - `shade`: `Model` follows each quad's `shade` flag, `Off` turns directional shading off, and
   `Entity` shades every quad by the level's entity light directions. Full-bright light never
   turns shading off.
-- `uv_shift` draws faces of exactly one sprite with another, their UVs scaled then moved.
-  `uv_shrink_ratio` (`0.0..=1.0`, default `0.0`) pulls UVs towards each face's centre first,
-  for a model baked with an older `FaceBakery`'s atlas shrink. The engine never guesses it.
+- `uv_shift` draws faces of exactly one sprite with another, their UVs scaled then moved; if no
+  face uses `source_sprite`, the shift is a no-op. `uv_shrink_ratio` (default `0.0`) pulls UVs
+  towards each face's centre first, for a model baked with an older `FaceBakery`'s atlas shrink.
+  The engine never guesses it.
 - `tint` (`0xRRGGBB`) multiplies only quads with a tint index.
 - `color` (`0xAARRGGBB`, default white) multiplies every quad's colour after its own and the
   tint, alpha included; white skips the multiply. An alpha below `0xFF` puts every quad in the
@@ -290,10 +343,11 @@ draw.terrain_model(self.belt, options)?;
   fragments under alpha 0.1 discarded, the quad's directional shade baked into its colour. The
   renderer sorts the quads of all translucent models far to near each frame, as vanilla's
   `sortOnUpload` does, so submission order does not matter.
-- A stale handle returns `TerrainModelError::Model(ModelError)`. If any quad can't be drawn, the result is
-  `TerrainModelError::Refused` and nothing is drawn. That covers an unknown render type, a
-  missing sprite, a pose that flattens the model, a ratio out of range, and a shift
-  whose numbers aren't finite, whose sprites are unknown or whose source sprite no face uses.
+- A stale or unknown handle returns `ModelError` without appending geometry. Otherwise quads are
+  submitted individually up to the device's vertex and index buffer capacity for the combined
+  entity batch: missing sprites (including a missing
+  shift target) fall back to `minecraft:missingno`, and quads with an unsupported render type or
+  non-finite positions or UVs are skipped individually rather than refusing the whole model.
 
 ## Extra models in a block's mesh
 
@@ -350,7 +404,10 @@ fn client_tick_pre(&self, host: &mut dyn ClientHost, _: &mut ClientTickPreEvent)
 
 ## Persistent groups
 
-- `host.create_group(model, capacity)` reserves up to 16,384 copies of a model.
+Group methods take either the live client host or the scoped client setup or published
+reload context. The scoped contexts do not lend a world.
+
+- `host.instance_groups().create_group(model, capacity)` reserves storage for `capacity` copies of a model.
   Initial drawn length is zero.
 - `group.write(host, first, copies)` atomically overwrites a range and extends drawn
   length if needed. Unwritten slots start as white, full-bright identity copies at
@@ -362,16 +419,41 @@ fn client_tick_pre(&self, host: &mut dyn ClientHost, _: &mut ClientTickPreEvent)
   3×4 affine pose. For each local vertex the composition is exactly
   `world = origin + group_transform * (copy_transform * local)`.
   The world-space f64 origin is not rotated or scaled. Non-finite pose values change nothing.
-- `draw.draw_instance_group(group)` draws the live length once per view. Repeated
-  submissions in that view are ignored. Culling uses the composed pose.
+- `draw.draw_instance_group(group)` explicitly submits the group's live copies for this
+  view. Repeated submissions of the same group in one view each draw again. Culling uses
+  the composed pose.
+- `draw.instance_group(group)` draws a retained group under the draw context's current pose,
+  in entity renderers, entity layers, block entities and screen scenes. A stale or destroyed
+  group returns `GroupError::Stale` and draws nothing.
+- `host.prepare_item(stack, display, seed)` resolves an item's model once and returns a
+  `PreparedItemRef`; `draw.prepared_item(item)` then draws it as `draw.item` would, without
+  resolving the model again. A stale handle draws nothing and returns `ModelError::StaleModel`.
 - `group.destroy(host)` retires the handle and releases capacity and CPU caches.
   Copies already accepted for a view remain drawn; subsequent calls return `Stale`.
+- `Hooks::prepare_render_buffers` runs once per world view before any pass-bearing render stage.
+  If a classic pack owns the sky disc or celestial work, `RenderLevelStage::AfterSky` fires once
+  after that work, following the pack's world import. Preparation
+  lends `&WorldRenderView<'_>` (camera, world partial tick, game time, improved-transparency state,
+  and visible `RenderableSection`s) and `&dyn ClientHost` so mods can update retained
+  `InstanceGroups` before the render passes execute.
+  To draw at a specific stage, prepare engine lines or quads with `event.context.lines(stage, &lines)`
+  or `.quads(stage, &quads)`. Keep the returned `PreparedWorldDraw` for this view. At the matching
+  `render_level_stage` callback, call `draw(batch)` on `event.context.world_pass()` or
+  `event.context.oit_pass()` as appropriate. Draws run in call order, without uploading from the
+  pass; handles cannot be used in a different view or stage. With a classic pack that owns feature
+  drawing, the two feature stages follow the pack's own opaque and translucent groups. They run
+  only if the pack's world color buffer can blend engine geometry. `AfterSky` and `AfterLevel` lend no
+  pass, and stages skipped by the renderer are not replayed later.
+  Drawing values (`WorldLine`, `WorldQuad`, `WorldDepth`, `NameTagOptions`, and `DrawError`)
+  and stage selectors (`RenderLevelStage` and `OitStage`) are client-local. To synchronize a
+  draw effect, send only its data in your own typed payload and choose the stage on the client.
 
-Each mod may reserve 65,536 copies across all its groups; a zero-capacity group
-reserves one slot. Destroying a group releases that reservation immediately. A view
-accepts 16,384 visible copies shared across transient batches, groups and listeners,
-and at most 16,384 group submissions. Culled copies do not consume the visible-copy
-budget. Refusal is atomic: no prefix of a refused submission draws.
+Per-view draw storage grows dynamically without fixed per-view or per-mod copy caps,
+and copies past GPU instance buffer room fall back to CPU baking. Culled copies are
+omitted before staging. For transient `draw_model_instances` calls, copies are culled
+against the frustum first and any individual visible copy with non-finite coordinates
+or transforms, or light channels outside `0..=15`, is skipped without rolling back
+valid copies in the same slice.
 
 Groups cache converted records on the CPU. Unchanged groups avoid pose, normal and
 tint conversion, but cull and stage visible copies each frame. Every visible
@@ -383,10 +465,10 @@ copies and copies of a block state model take the terrain model materials, not t
 block-entity program a `shaders/` pack replaces.
 There is no simulation-tick work.
 
-Only the creating mod can access a group. A foreign handle returns `GroupError::Stale`,
-as does a destroyed group, a group after resource reload or world close, or a group
-whose mod was disabled. Re-enabling starts without groups: recreate them from the
-newly published model handles. Slot reuse never revives an old handle.
+A destroyed group, a group after resource reload or world close, or a group whose
+creating mod was disabled returns `GroupError::Stale`. Re-enabling starts without
+groups: recreate them from the newly published model handles. Slot reuse never revives
+an old handle.
 
 ## Still fluids in a block entity
 
@@ -396,19 +478,19 @@ A block entity, mob or player submit hook draws a tank's contents with
 
 ```rust,ignore
 let options = FluidBoxOptions::new(false, 4.0 / 1024.0);
-draw.fluid_box(&tank.stack, [0.125, 0.0625, 0.125, 0.875, level, 0.875], options)?;
+draw.fluid_box(&tank.stack, [0.125, 0.0625, 0.125, 0.875, level, 0.875], options);
 ```
 
 - The stack's fluid is `minecraft:water`, `minecraft:lava` or any fluid with a look
   (`data/<mod>/sunrise/fluid/<name>.json`: `sprite`, `tint`; [fluid looks](../content-mods/fluid-container-models.md)
   holds the format). A stack with components is drawn like one without: they change neither the
   sprite nor the tint, so a mod colours a potion-like stack with `with_argb` from its own
-  components. A registered fluid with no look is `FluidBoxError::MissingSprite`; an unresolved
-  fluid and the empty fluid are `FluidBoxError::UnsupportedFluid`.
+  components. A registered fluid with no look or a missing sprite falls back to
+  `minecraft:missingno`; an empty or unresolved fluid draws nothing.
 - Each face tiles the fluid's animated still sprite (a look's `sprite`; a look with no sprite
   draws its tint as a flat colour) once per block, cut at whole-block lines.
   Each tile keeps its place in the sprite. The box is not inset. `uv_shrink_ratio` is the
-  sprite's `TextureAtlasSprite.uvShrinkRatio` (`0.0..=1.0`), and `render_bottom` adds the bottom face.
+  sprite's `TextureAtlasSprite.uvShrinkRatio`, and `render_bottom` adds the bottom face.
 - The colour is the fluid's tint (water `0xFF3F76E4`, lava white, a mod fluid's look `tint`, grey
   `0xFF9A9A9A` when it has none, as `DrawContext::fluid` draws it), never the biome's water colour. `with_argb` replaces it, alpha
   included. Faces have no directional shading. Sky light is the draw's own, and block light
@@ -417,10 +499,37 @@ draw.fluid_box(&tank.stack, [0.125, 0.0625, 0.125, 0.875, level, 0.875], options
 - The faces use a material of their own: sorted far to near, alpha blended, culled from behind,
   and depth-writing. They draw with the block entities, before the level's translucent terrain,
   under shader packs too.
-- A stack of 0 draws nothing and returns `Ok` without checking `bounds`. Non-finite or reversed
-  bounds, bounds beyond 1,048,576 blocks, a box of more than 65,536 tiled quads and a ratio out of range are
-  `FluidBoxError::InvalidBox`. Missing fluid sprites return
-  `FluidBoxError::MissingSprite`. A refusal draws nothing.
+- A stack of 0, an empty or unresolved fluid, or reversed or non-finite bounds draws nothing.
+  Valid quads are submitted individually up to the device's vertex and index buffer capacity for
+  the combined entity batch without artificial coordinate or quad caps.
+
+## Carried block entities
+
+A mod that moves blocks (a contraption drawn from an entity renderer) draws the block entities
+they carry with `draw.block_entity(&entity)`, vanilla's `BlockEntityRenderDispatcher` extract and
+submit. `entity` is a `SceneBlockEntity`: the type id, the block state and the saved fields. Build
+it once and again whenever its data changes; nothing ticks it.
+
+```rust,ignore
+draw.push();
+draw.translate(offset);
+draw.set_light(sampled_light); // the caller samples light itself
+draw.block_entity(&carried)?;
+draw.pop();
+```
+
+- The pose and light are `draw`'s; the overlay is vanilla's `NO_OVERLAY`. The block entity's own
+  position is never read, and the dispatcher's `shouldRender` culling is skipped: the caller's
+  entity was already culled.
+- A vanilla block entity draws through the engine's renderer for its block state, a mod's through
+  its `BlockEntityPart` submit. A type with no renderer draws nothing.
+- Without a level a double chest draws as a single closed chest, an enchanting table as its
+  closed book, a conduit inactive, an end portal and gateway on every face with no beam, and a
+  beacon with no beam. Chest lids, the bell's shake, the enchanting book and conduit rotation stay
+  at rest.
+- One level of nesting: a `block_entity` call from inside a submit that `block_entity` itself
+  dispatched returns `BlockEntityDrawRefusal::Nested`, because input a mod controls must never
+  recurse without end.
 
 ## Before and after a living entity draws
 
@@ -443,11 +552,9 @@ queries for mobs, players and dropped items also follow this pass's join order; 
 queried in a later pass. The ender dragon and end crystals draw at their slots without adding
 these hooks or outline queries.
 
-The order today: the model and the layers are drawn before the post hooks. The entity's name tag, its leash,
-and the flames of a burning entity and its shadow are each drawn in a later pass of the same frame, after the
-post hooks. A post hook doesn't see or replace the flames and the shadow. The reference draws the leash and
-the name tag before the post: that move is the follow-up in #1285. A type with a registered renderer has the
-same later passes, the renderer in the model's place, so it changes with that follow-up too.
+The model and layers draw before the post hooks. The entity's name tag, leash, flames and shadow draw
+in later passes of the same frame, after the post hooks. A post hook cannot see or replace the flames
+or shadow. A registered renderer draws in place of the model without changing the later passes.
 
 `draw` starts at the entity's feet, turned with its body (+z the way it faces, +x its left, +y up,
 in blocks), and keeps what each hook draws. Setting `event.cancelled` in a Pre hook skips the
@@ -502,6 +609,24 @@ index makes `hide` return `false` without changing anything. Neither refuses the
   `getParentModel()` layers do: a villager's type, profession and level, a spider's eyes. The
   armour, held items and other layers keep every part, and the cape, a layer of its own, stays.
 
+## Pose a model after vanilla's last step
+
+One living draw runs four phases, in order:
+
+1. **Select** (`render_living_pre`): pick the body and hide parts.
+2. **Animate** (`setupAnim`, with `humanoid_setup_anim` inside it): vanilla poses the model.
+3. **Posed** (`living_model_posed`): the model after vanilla's last posing step.
+4. **Drawn**: the layers and `render_living_post` read the final pose.
+
+`living_model_posed(entity, layer, model)` fires once for each model that gets posed, the body and
+each armour or equipment model that runs its own setup. `layer` is the model's `ModelLayerLocation`
+(`minecraft:player#main`, `minecraft:zombie#chestplate`); a model the game names without a namespace reads as
+`minecraft:`. A mod layer that redraws stock layers (`StockLayerDraw::draw_stock_layer`) poses the body and those
+layers again, and the hook fires again for each, so keep an edit a function of its inputs. `model` is a `&mut dyn FrameModelPoseEdit`: find a part's index as in
+[the final model](#read-the-final-body-model), then `set_pose(index, PartPose)` writes position,
+rotation and scale, and `reset_pose(index)` returns the part to its bind pose. A non-finite write
+returns `false` and the part keeps its pose. Hiding stays in Select. With no listener, no event is built.
+
 ## Text and animation in block entities
 
 `BlockEntityDrawContext::text` draws a component under the current pose in font pixels,
@@ -532,6 +657,24 @@ Stationary elements keep their original sample until the draw is invalidated. If
 falls outside representable cell coordinates, the element uses its fixed light instead.
 Level-less scenes, previews and mob model frames also stay fixed. `light()` always reports the
 fixed setting; `set_light` returns subsequent draws to fixed light.
+
+For a hologram, a glowing display or a projected item, call `BlockEntityDrawContext::unlit(true)`:
+what `item`, `block`, `cube`, `quad`, `model` and `model_part` draw next skips directional face
+shading and draws at full-bright light whatever `set_light` or `level_light` say. The lightmap's
+top cell still applies, so night, `darkness` and coloured lights still tint it. An enchanted item
+keeps its glint. It lasts until `unlit(false)` or the end of the draw; `terrain_model` keeps its
+own shading option.
+
+To draw a texture of your own (a dynamic texture a mod made), get a render type from
+`RenderAssets::entity_solid`, `entity_cutout` or `entity_translucent` with the texture's id and call
+`BlockEntityDrawContext::textured_quad(render_type, corners, uv, tint)`. Unlike `quad`, the UVs are
+in the texture's own unit square (0 to 1), not texels of 16. The same texture gives the same render
+type, so keep it. Light and `unlit` apply as for `quad`. The call returns false, drawing nothing,
+for an id that is not a live dynamic texture, a first-person hand draw or a coordinate that is not
+finite. A texture released after the quad was submitted draws the missing texture. Resource-stack
+textures are not accepted. Under a shader pack these quads are drawn by the
+pack's entity program (the block entity program in a block entity's draw) with the texture bound
+as the entity texture.
 
 ## Copycat faces
 

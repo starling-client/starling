@@ -1,0 +1,2 @@
+ids = ["handle:LivingRef::player"]
+why = "Mods can name the player a living entity is, with its UUID, under a read-only host: a living_visibility listener can now key its answer by the target player's UUID."

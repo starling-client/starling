@@ -135,8 +135,8 @@ impl Scroll {
         bar.clamp(32, (view - 8).max(32)).min(view.max(0))
     }
     /// `AbstractScrollArea.mouseDragged` while the scrollbar is held.
-    fn drag(&mut self, y: f64, top: i32, content: i32, view: i32) {
-        let Some(last) = self.held else { return };
+    fn drag(&mut self, y: f64, top: i32, content: i32, view: i32) -> bool {
+        let Some(last) = self.held else { return false };
         if y < f64::from(top) {
             self.set(0.0, content, view);
         } else if y > f64::from(top + view) {
@@ -151,6 +151,7 @@ impl Scroll {
             );
         }
         self.held = Some(y);
+        true
     }
     /// The scrollbar's sprites, when there is anything to scroll.
     fn draw(&self, out: &mut Vec<Draw>, x: i32, top: i32, content: i32, view: i32) {
@@ -334,10 +335,9 @@ impl ModsScreen {
                 description: installed.description.clone(),
                 icon: has_icon.then_some(key),
                 index: Some(index),
-                config: installed
-                    .native
-                    .as_ref()
-                    .is_some_and(|page| !page.settings.is_empty()),
+                config: installed.native.as_ref().is_some_and(|page| {
+                    (page.own_screen && mods.is_on(index)) || !page.settings.is_empty()
+                }),
                 status,
                 note,
             });
@@ -816,32 +816,38 @@ impl ModsScreen {
         (Action::None, false, false)
     }
     /// The pointer moved with the button held: a held scrollbar follows it.
-    pub fn drag(&mut self, y: f64) {
+    pub fn drag(&mut self, y: f64) -> bool {
         let g = self.geo();
         let content = self.list_content();
-        self.list.drag(y, g.list[1], content, g.list[3]);
+        if self.list.drag(y, g.list[1], content, g.list[3]) {
+            return true;
+        }
         let pinned = self.panel_pinned.get();
         self.panel.drag(
             y,
             g.panel[1] + pinned,
             self.panel_content.get() - pinned,
             g.panel[3] - pinned,
-        );
+        )
     }
     pub fn release(&mut self) -> bool {
         self.list.held.take().is_some() | self.panel.held.take().is_some()
     }
     /// The mouse wheel over the list or the panel.
-    pub fn scroll(&mut self, x: f64, y: f64, amount: f64) {
+    pub fn scroll(&mut self, x: f64, y: f64, amount: f64) -> bool {
         let g = self.geo();
         if hit(g.list, x, y) {
             let content = self.list_content();
             self.list
                 .set(self.list.amount - amount * WHEEL_STEP, content, g.list[3]);
+            true
         } else if hit([g.frame[0], g.panel[1], g.frame[2], g.panel[3]], x, y) {
             let content = self.panel_content.get();
             self.panel
                 .set(self.panel.amount - amount * WHEEL_STEP, content, g.panel[3]);
+            true
+        } else {
+            false
         }
     }
 
@@ -1249,6 +1255,7 @@ mod tests {
                 label: "Open".into(),
                 tooltip: None,
                 value: crate::mod_list::NativeSettingValue::Toggle(true),
+                category: None,
             }],
             ..NativePage::default()
         };

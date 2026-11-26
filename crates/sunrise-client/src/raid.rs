@@ -394,8 +394,12 @@ impl Raid {
         self.heroes.insert(JavaUuid(uuid));
     }
     /// The heroes in the order vanilla's `HashSet` iterates them.
+    pub fn iter_heroes(&self) -> impl Iterator<Item = [i32; 4]> + '_ {
+        self.heroes.iter().map(|u| u.0)
+    }
+    /// An owned list of heroes for the victory action.
     pub fn heroes(&self) -> Vec<[i32; 4]> {
-        self.heroes.iter().map(|u| u.0).collect()
+        self.iter_heroes().collect()
     }
     /// `setLeader`: the raider leading a wave (it wears the banner).
     pub fn set_leader(&mut self, wave: i32, id: u32) {
@@ -833,8 +837,12 @@ impl Raids {
         Some(before)
     }
     /// The raid ids in iteration order.
-    pub fn ids(&self) -> Vec<i32> {
+    pub fn iter_ids(&self) -> impl Iterator<Item = i32> + '_ {
         self.order.iter()
+    }
+    /// The raid ids for callers that need to keep them across a mutation.
+    pub fn ids(&self) -> Vec<i32> {
+        self.iter_ids().collect()
     }
     fn insert(&mut self, id: i32, raid: Raid) {
         if self.map.insert(id, raid).is_none() {
@@ -844,8 +852,7 @@ impl Raids {
     /// `Raids.getNearbyRaid(pos, 9216)`: the closest active raid.
     pub fn nearby(&self, pos: [i32; 3]) -> Option<(i32, &Raid)> {
         nearest(
-            self.ids()
-                .into_iter()
+            self.iter_ids()
                 .filter_map(|id| Some((id, self.map.get(&id)?))),
             pos,
         )
@@ -892,9 +899,9 @@ impl Raids {
     ) -> Vec<(i32, Action)> {
         self.tick += 1;
         let mut out = Vec::new();
+        let ids = self.ids();
         let map = &mut self.map;
         let mut removed_any = false;
-        let ids = self.order.iter();
         let mut visit = |id: i32| -> bool {
             // The raids in map order as they stand when this one ticks.
             let snapshot: Vec<(i32, [i32; 3], bool)> = ids
@@ -1473,17 +1480,14 @@ impl IntOpenHashOrder {
         out
     }
     /// The iterator (`MapIterator`): the null key, then the table downward.
-    fn iter(&self) -> Vec<i32> {
-        let mut out = Vec::new();
-        if self.null_key {
-            out.push(0);
-        }
-        for pos in (0..self.n).rev() {
-            if self.key[pos] != 0 {
-                out.push(self.key[pos]);
-            }
-        }
-        out
+    fn iter(&self) -> impl Iterator<Item = i32> + '_ {
+        self.null_key.then_some(0).into_iter().chain(
+            self.key[..self.n]
+                .iter()
+                .rev()
+                .copied()
+                .filter(|key| *key != 0),
+        )
     }
     /// A `values().iterator()` pass that removes the keys `visit` says to
     /// (the iterator's own removal, with wrapped entries); returns them.
@@ -1824,13 +1828,19 @@ mod tests {
     }
     #[test]
     fn fastutil_order_iterates_from_the_top_of_the_table() {
+        let mut small = IntOpenHashOrder::new();
+        for key in [2, 3, 4, 0] {
+            small.put(key);
+        }
+        // Zero is separate; the three nonzero keys occupy buckets 28, 25 and 13.
+        assert!(small.iter().eq([0, 2, 4, 3]));
+
         let mut o = IntOpenHashOrder::new();
         for k in 2..40 {
             o.put(k);
         }
-        let it = o.iter();
-        assert_eq!(it.len(), 38);
-        let mut sorted = it.clone();
+        let mut sorted: Vec<_> = o.iter().collect();
+        assert_eq!(sorted.len(), 38);
         sorted.sort();
         assert_eq!(sorted, (2..40).collect::<Vec<_>>());
         let mut seen = Vec::new();
@@ -1839,7 +1849,7 @@ mod tests {
             k % 3 == 0
         });
         assert_eq!(seen.len(), 38);
-        assert_eq!(o.iter().len(), 38 - removed.len());
+        assert_eq!(o.iter().count(), 38 - removed.len());
     }
     #[test]
     fn the_centre_is_the_mean_of_nearby_points() {

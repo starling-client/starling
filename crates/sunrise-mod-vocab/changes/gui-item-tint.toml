@@ -1,0 +1,3 @@
+ids = ["method:GuiCanvas::item_tinted"]
+why = "GuiCanvas::item_tinted draws a GUI item with every vertex, glint included, multiplied by an ARGB tint, so a mod fades pickup icons, draws translucent ghost items in recipe previews and dims unavailable slots (#5594)."
+migrate = "Nothing to change for mods: additive. Only the engine implements GuiCanvas."

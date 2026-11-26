@@ -17,10 +17,11 @@ import sys
 import time
 import zlib
 
-try:
-    from . import lab
-except ImportError:
-    import lab
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab
 
 
 def string(s):

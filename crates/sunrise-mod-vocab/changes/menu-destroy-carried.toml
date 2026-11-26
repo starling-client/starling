@@ -1,0 +1,2 @@
+ids = ["handle:MenuRef::destroy_carried", "type:CarriedDestroyError"]
+why = "A client mod's item list destroys the creative player's cursor stack as the creative screen's destroy slot does (CreativeModeInventoryScreen.slotClicked, ItemPickerMenu.setCarried(EMPTY)), clearing the client-owned cursor and sending nothing (#6145). Any other menu's cursor is the server's, which no vanilla packet clears, so it is refused as CarriedDestroyError::ServerOwnedMenu."

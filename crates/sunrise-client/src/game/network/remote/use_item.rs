@@ -149,89 +149,84 @@ impl Game<'_> {
     /// use (`held_until_released`), and a consumable's eating animation and
     /// its crumbs until the server's USE_ITEM_COMPLETE. The server sends the
     /// stack, its hunger and the sounds.
-    pub(super) fn remote_tick_using(&mut self) {
+    pub(in crate::game) fn remote_tick_using(&mut self) {
         self.tick_client_item_use();
         let Some((slot, ticks)) = self.using else {
             return;
         };
-        let stack = self.stack_in(slot).cloned();
-        // The use stops when the hand no longer holds the item it began with
-        // (ItemStack.isSameItem).
-        let item = stack.as_ref().map(|s| Arc::clone(&s.item));
-        if let Some(r) = self.remote.as_mut() {
-            if ticks == 0 {
-                r.use_item = item;
-            } else if r.use_item != item {
-                self.using = None;
-                return;
+        // The may-still-use check (`ItemStack.isSameItem`, then a part's
+        // `canContinueUsing`) reads the active hand, even when that hand is now
+        // holding a different hotbar slot.
+        let offhand = slot == crate::game::shield::OFFHAND_SLOT;
+        let (hand_slot, hand) = if offhand {
+            (slot, Hand::Off)
+        } else {
+            (self.selected, Hand::Main)
+        };
+        let held = self.stack_in(hand_slot).cloned();
+        let began = self.use_start.item.clone();
+        let goes_on = began
+            .as_ref()
+            .zip(held.as_ref())
+            .is_some_and(|(began, held)| {
+                self.can_continue_using(began, held, Some(self.own_entity_id()), hand)
+            });
+        let Some(stack) = held.filter(|_| goes_on) else {
+            self.using = None;
+            self.use_start = Default::default();
+            // Another item stops the use (`stopUsingItem`); an emptied hand is used up.
+            if let Some(began) = began.filter(|_| self.stack_in(hand_slot).is_some()) {
+                let time_left = ticks_left(self.use_duration, ticks);
+                self.stopped_using(&began, Some(self.own_entity_id()), hand, time_left);
             }
-        }
-        // Another hotbar slot picked: LivingEntity.updatingUsingItem sees a
-        // different stack in the hand. The off hand keeps its item.
-        let in_hand = slot == self.selected || slot == crate::game::shield::OFFHAND_SLOT;
+            return;
+        };
+        self.use_start.item = Some(stack.clone());
+        self.using = Some((hand_slot, ticks));
         // A client cancel skips this tick's effects; the countdown and release continue.
-        if let Some(s) = stack.as_ref().filter(|_| in_hand)
-            && !self.use_item_ticked(s, ticks)
-        {
-            self.using = Some((slot, ticks.saturating_add(1)));
+        if !self.use_item_ticked(&stack, ticks) {
+            self.using = Some((hand_slot, ticks.saturating_add(1)));
             return;
         }
         // BrushItem.onUseTick: with no block aimed the use ends (the server
         // ends it too); a stroke shows its dust. Its sounds are the server's.
-        if stack
-            .as_ref()
-            .is_some_and(|s| &*s.item == "minecraft:brush")
-        {
+        if &*stack.item == "minecraft:brush" {
             let elapsed = 201i32.wrapping_sub(ticks_left(self.use_duration, ticks));
-            let hit = self.pick().filter(|_| in_hand);
+            let hit = self.pick();
             if let Some(hit) = &hit
                 && elapsed % 10 == 5
             {
-                self.brush_dust(hit, slot == crate::game::shield::OFFHAND_SLOT);
+                self.brush_dust(hit, offhand);
             }
-            if hit.is_none() && in_hand {
+            if hit.is_none() {
                 self.send_action(6);
             }
-            self.using = hit.and(Some((slot, ticks + 1)));
+            self.using = hit.and(Some((hand_slot, ticks + 1)));
             return;
         }
         // A bundle's 200-tick use ends with the server's entity event 9, not here.
-        if stack
-            .as_ref()
-            .is_some_and(|s| self.items().get(&s.item).is_some_and(|i| i.bundle))
-        {
-            self.using = in_hand.then_some((slot, ticks + 1));
+        if self.items().get(&stack.item).is_some_and(|i| i.bundle) {
+            self.using = Some((hand_slot, ticks + 1));
             return;
         }
         // A drawn bow, a charging crossbow, a raised shield...: held until
         // the button lets go.
-        if let Some(s) = stack.as_ref().filter(|s| self.held_until_released(s)) {
-            if in_hand && (self.mod_use(s) || self.blocks_attacks(s).is_some()) {
-                self.item_on_use_tick(s, ticks);
+        if self.held_until_released(&stack) {
+            if self.mod_use(&stack) || self.blocks_attacks(&stack).is_some() {
+                self.item_on_use_tick(&stack, ticks);
             }
-            self.using = in_hand.then_some((slot, ticks + 1));
+            self.using = Some((hand_slot, ticks + 1));
             return;
         }
         // A goat horn is held up for its instrument's use duration.
-        if stack
-            .as_ref()
-            .is_some_and(|s| self.res.items().instrument(s).is_some())
-        {
-            self.using = in_hand.then_some((slot, ticks + 1));
+        if self.items().instrument(&stack).is_some() {
+            self.using = Some((hand_slot, ticks + 1));
             return;
         }
-        let consumable = stack.as_ref().and_then(|s| self.consumable(s));
-        let (Some(stack), Some(consumable)) = (stack, consumable) else {
+        let Some(consumable) = self.consumable(&stack) else {
             self.using = None;
             return;
         };
-        // Button release belongs to the next handleKeybinds phase, which
-        // sends RELEASE_USE_ITEM. Do not silently clear a use begun by a
-        // quick press/release between ticks.
-        if !in_hand {
-            self.using = None;
-            return;
-        }
         // Consumable.startConsuming eats one with no use time at once, without
         // a use (nor a USE_ITEM_COMPLETE).
         if consumable.ticks() <= 0 {
@@ -250,6 +245,6 @@ impl Game<'_> {
             self.emit_consume(&consumable, &stack, 5);
         }
         self.item_on_use_tick(&stack, ticks);
-        self.using = Some((slot, ticks + 1));
+        self.using = Some((hand_slot, ticks + 1));
     }
 }

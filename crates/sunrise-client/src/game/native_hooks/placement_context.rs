@@ -37,11 +37,16 @@ impl GameLevel<'_> {
         answer.map(|answer| {
             answer.and_then(|snapshot| {
                 let item = stack.item.as_ref();
-                if !snapshot.hit.iter().all(|n| n.is_finite())
-                    || !snapshot.yaw.is_finite()
-                    || !snapshot.pitch.is_finite()
-                {
-                    log::warn!("placement_context: refused {item}: nonfinite hit or rotation");
+                let Some(source) =
+                    crate::game::api_values::placement_source_into_engine(snapshot.source)
+                else {
+                    log::warn!(
+                        "placement_context: refused {item}: invalid or nonfinite placement source"
+                    );
+                    return None;
+                };
+                if !snapshot.hit.iter().all(|n| n.is_finite()) {
+                    log::warn!("placement_context: refused {item}: nonfinite hit location");
                     return None;
                 }
                 if snapshot.item.and_then(mod_api::__private::item_key_id) != Some(item) {
@@ -54,9 +59,7 @@ impl GameLevel<'_> {
                     face: snapshot.face,
                     hit: Vec3::new(snapshot.hit[0], snapshot.hit[1], snapshot.hit[2]),
                     inside: snapshot.inside,
-                    yaw: snapshot.yaw,
-                    pitch: snapshot.pitch,
-                    sneaking: snapshot.sneaking,
+                    source,
                     item: context.item.clone(),
                     replace_clicked: snapshot.replace_clicked,
                 })

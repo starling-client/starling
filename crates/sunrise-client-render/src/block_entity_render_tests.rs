@@ -1,7 +1,7 @@
 use crate::{
     block_entity_render::{
         BlockAnim, BlockEntityRenderer, BlockEntityShapes, CacheOptions, ChestPart, Kind,
-        ModelPart, SIGN_TEXT_KEEP, Scene, StaticSectionRevision, classify,
+        ModelPart, SIGN_TEXT_KEEP, Scene, SignOutline, StaticSectionRevision, classify,
     },
     chunk::Chunk,
     font::Glyph,
@@ -58,7 +58,7 @@ fn renderer_with_shapes(
         vanilla: vanilla.clone(),
         shapes: std::sync::RwLock::new(vanilla),
         kinds,
-        pot_patterns,
+        pot_patterns: std::sync::RwLock::new(pot_patterns),
         ..Default::default()
     }
 }
@@ -340,6 +340,7 @@ fn batched_callbacks_preserve_entity_ranges_and_allow_immediate_culling() {
     let anim = |_: [i32; 3]| BlockAnim::default();
     let scene = Scene {
         camera: DVec3::new(3.25, 64.5, -4.75),
+        sign_outline: SignOutline::None,
         orientation: Quat::IDENTITY,
         anim: &anim,
         texts: None,
@@ -431,6 +432,7 @@ fn static_cache_qualifies_local_positions_by_section_and_drops_old_entries() {
     let anim = |_: [i32; 3]| BlockAnim::default();
     let mut scene = Scene {
         camera: DVec3::new(2.25, 64.5, -3.75),
+        sign_outline: SignOutline::None,
         orientation: Quat::IDENTITY,
         anim: &anim,
         texts: None,
@@ -488,6 +490,7 @@ fn gpu_static_cache_uses_section_local_chests_and_keeps_visibility_separate() {
     };
     let mut scene = Scene {
         camera: DVec3::new(99.25, 70.5, -31.75),
+        sign_outline: SignOutline::None,
         orientation: Quat::IDENTITY,
         anim: &anim,
         texts: None,
@@ -677,6 +680,7 @@ fn sign_text_cache_can_be_disabled_and_reenabled_without_changing_output() {
     };
     let scene = Scene {
         camera: DVec3::new(2.25, 64.5, -3.75),
+        sign_outline: SignOutline::None,
         orientation: Quat::IDENTITY,
         anim: &|_| BlockAnim::default(),
         texts: None,
@@ -733,6 +737,7 @@ fn shulker_cache_tracks_settled_poses_and_does_not_freeze_opening_animation() {
     };
     let scene = Scene {
         camera: DVec3::new(2.0, 64.0, -3.0),
+        sign_outline: SignOutline::None,
         orientation: Quat::IDENTITY,
         anim: &anim,
         texts: None,
@@ -837,6 +842,7 @@ fn shulker_cache_covers_all_colors_and_facing_directions() {
     let anim = |_: [i32; 3]| BlockAnim::default();
     let scene = Scene {
         camera: DVec3::new(2.25, 64.5, -3.75),
+        sign_outline: SignOutline::None,
         orientation: Quat::IDENTITY,
         anim: &anim,
         texts: None,
@@ -894,6 +900,7 @@ fn cached_bells_keep_shaking_until_the_animation_ends() {
     };
     let scene = Scene {
         camera: DVec3::new(2.0, 64.0, -3.0),
+        sign_outline: SignOutline::None,
         orientation: Quat::IDENTITY,
         anim: &anim,
         texts: None,
@@ -958,6 +965,7 @@ fn cached_closed_chests_match_the_direct_model_and_rebuild_when_opening() {
     let anim = |_: [i32; 3]| BlockAnim::default();
     let mut scene = Scene {
         camera: DVec3::new(2.25, 64.5, -3.75),
+        sign_outline: SignOutline::None,
         orientation: Quat::IDENTITY,
         anim: &anim,
         texts: None,
@@ -1058,6 +1066,7 @@ fn closed_chest_cache_covers_all_materials_and_atlas_reloads() {
     let anim = |_: [i32; 3]| BlockAnim::default();
     let mut scene = Scene {
         camera: DVec3::new(2.25, 64.5, -3.75),
+        sign_outline: SignOutline::None,
         orientation: Quat::IDENTITY,
         anim: &anim,
         texts: None,
@@ -1149,6 +1158,7 @@ fn double_chest_cache_bypasses_both_halves_while_either_lid_is_open() {
     let anim = |_: [i32; 3]| BlockAnim::default();
     let scene = Scene {
         camera: DVec3::new(2.25, 64.5, -3.75),
+        sign_outline: SignOutline::None,
         orientation: Quat::IDENTITY,
         anim: &anim,
         texts: None,
@@ -1227,6 +1237,7 @@ fn decorated_pot_cache_tracks_sherds_and_bypasses_wobble_animation() {
     let anim = |_: [i32; 3]| animation.borrow().clone();
     let scene = Scene {
         camera: DVec3::new(2.25, 64.5, -3.75),
+        sign_outline: SignOutline::None,
         orientation: Quat::IDENTITY,
         anim: &anim,
         texts: None,
@@ -1308,6 +1319,7 @@ fn banner_cache_keeps_the_pole_static_while_the_flag_and_patterns_update() {
     let banner_patterns = |_: [i32; 3]| patterns.borrow().clone();
     let mut scene = Scene {
         camera: DVec3::new(2.25, 64.5, -3.75),
+        sign_outline: SignOutline::None,
         orientation: Quat::IDENTITY,
         anim: &anim,
         texts: None,
@@ -1377,6 +1389,7 @@ fn cached_wall_banner_poles_use_the_wall_model() {
     let anim = |_: [i32; 3]| BlockAnim::default();
     let scene = Scene {
         camera: DVec3::new(2.25, 64.5, -3.75),
+        sign_outline: SignOutline::None,
         orientation: Quat::IDENTITY,
         anim: &anim,
         texts: None,
@@ -1427,6 +1440,7 @@ fn copper_statue_cache_rebuilds_when_its_pose_state_changes() {
     let anim = |_: [i32; 3]| BlockAnim::default();
     let scene = Scene {
         camera: DVec3::new(2.25, 64.5, -3.75),
+        sign_outline: SignOutline::None,
         orientation: Quat::IDENTITY,
         anim: &anim,
         texts: None,
@@ -1535,6 +1549,7 @@ fn copper_statue_cache_covers_weathering_waxing_and_all_poses() {
     let anim = |_: [i32; 3]| BlockAnim::default();
     let scene = Scene {
         camera: DVec3::new(2.25, 64.5, -3.75),
+        sign_outline: SignOutline::None,
         orientation: Quat::IDENTITY,
         anim: &anim,
         texts: None,

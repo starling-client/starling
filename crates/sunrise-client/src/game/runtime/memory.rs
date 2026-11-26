@@ -961,10 +961,16 @@ mod tests {
                 0.0,
             ));
         }
-        game.lan.as_ref().unwrap().hub.guests[0]
-            .sender
-            .send(vec![0; 3 << 20]);
+        // The fixture's guest has no reader, and a packet nobody will read is dropped rather than
+        // kept, so its bytes are not counted (`PlayerSender::publish_reserved`). A queue is counted
+        // while its reader is still to come: this one outlives the report.
+        let (tx, queue) = channel();
+        game.lan.as_mut().unwrap().hub.guests.update(0, |guest| {
+            guest.sender = sunrise_client::lan::PlayerSender::new(tx, Arc::default());
+            guest.sender.send(vec![0; 3 << 20]);
+        });
         let report = game.memory_report();
+        drop(queue);
         let by_type: std::collections::BTreeMap<_, _> = report
             .entities
             .as_ref()

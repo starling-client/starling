@@ -121,7 +121,7 @@ fn bounded_catalog_commands() {
     const LIMIT: u64 = 256 << 20;
     let f = Fixture::new("internals-catalog");
     f.manifest("");
-    f.sdk.release(BUILD, MIXINS);
+    f.sdk.release(BUILD, MIXINS, None);
     f.sdk.prefetch(&f.dir, BUILD, BUILD);
     let data = f.dir.join(".sunrise/cache").join(BUILD).join("build-data");
     fs::create_dir_all(&data).unwrap();

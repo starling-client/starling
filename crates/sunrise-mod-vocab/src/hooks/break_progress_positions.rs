@@ -8,11 +8,15 @@ pub trait Hooks {
     /// Answers are stored with the crack, not requested during rendering, and
     /// disappear when the crack clears, expires or its client level closes.
     ///
-    /// Display bounds: at most 64 distinct extras within Euclidean distance
-    /// 8 blocks of `pos`, in the supplied `level`. The origin, duplicates and
-    /// out-of-range positions are dropped; excess/invalid extras produce a
-    /// debug log, never a panic. These limits constrain only the display, not
-    /// block interaction. This hook changes neither break speed nor what breaks.
+    /// Display bounds: at most 64 distinct extras, anywhere in the supplied
+    /// `level`. The origin and duplicates are dropped, and so is every extra past
+    /// the 64th; they produce a debug log, never a panic. The crack over a
+    /// position's block model is drawn only within vanilla's 32-block camera
+    /// distance (`LevelExtractor.extractBlockDestroyAnimation`), so an extra far
+    /// from the camera costs nothing there; a block entity's own draws read the
+    /// stage through `BlockEntityDrawContext::crumbling_stage`, as vanilla's
+    /// block-entity overlay does, with no distance filter of its own. These limits constrain only the display, not block
+    /// interaction. This hook changes neither break speed nor what breaks.
     #[hook(
         side = "client",
         contract = "collect",

@@ -177,7 +177,7 @@ fn a_state_past_the_registry_has_airs_facts() {
     std::fs::create_dir_all(&root).unwrap();
     std::fs::write(
         root.join("gameplay-facts.json"),
-        br#"{"states":[{"id":0},{"id":1}]}"#,
+        br#"{"states":[{"id":0,"sound":{"identity":"other"}},{"id":1,"sound":{"identity":"other"}}]}"#,
     )
     .unwrap();
     let behaviours = serde_json::json!({
@@ -196,6 +196,56 @@ fn a_state_past_the_registry_has_airs_facts() {
     assert!(!facts.is_air(id(1)));
     assert_eq!(&*facts.get(id(2)).name, "minecraft:air");
     assert!(facts.is_air(id(2)));
+}
+
+#[test]
+fn resource_facts_require_explicit_sound_type_identity() {
+    use mod_vocab::BlockSoundTypeIdentity;
+    use std::path::Path;
+    use sunrise_world::registry::{BlockRegistry, BlockStateId};
+
+    let registry = BlockRegistry::from_facts_json(
+        &br#"{"states":[["minecraft:air",true,false,"","minecraft:air"],["minecraft:oak_planks",true,false,"","minecraft:oak_planks"]],"defaults":{"minecraft:air":0,"minecraft:oak_planks":1}}"#[..],
+    )
+    .unwrap();
+    let behaviours = serde_json::json!({
+        "states": [[0, 0], [0, 0]],
+        "blocks": [
+            {"name": "minecraft:air", "class": ["Block"]},
+            {"name": "minecraft:oak_planks", "class": ["Block"]},
+        ],
+    });
+    let path = Path::new("fixture/gameplay-facts.json");
+    let load = |bytes: &[u8]| {
+        super::super::BlockFacts::decode_with_callback(
+            path,
+            bytes,
+            &registry,
+            &behaviours,
+            |_, _| Ok(()),
+        )
+    };
+    let mut raw = serde_json::json!({
+        "states": [
+            {"id": 0, "sound": {"identity": "other"}},
+            {"id": 1, "sound": {"step": {"id": "minecraft:block.wood.step"}}},
+        ],
+    });
+    let error = load(raw.to_string().as_bytes()).err().unwrap().to_string();
+    assert!(error.contains("gameplay-facts.json"), "{error}");
+    assert!(error.contains("missing its sound type identity"), "{error}");
+    assert!(error.contains("sunrise-prepare --prepare"), "{error}");
+
+    for (name, expected) in [
+        ("other", BlockSoundTypeIdentity::Other),
+        ("wood", BlockSoundTypeIdentity::Wood),
+    ] {
+        raw["states"][1]["sound"]["identity"] = name.into();
+        let (facts, ()) = load(raw.to_string().as_bytes()).unwrap();
+        let sound = &facts.get(BlockStateId(1)).sounds;
+        assert_eq!(sound.identity, expected);
+        assert_eq!(sound.step.as_str(), "minecraft:block.wood.step");
+    }
 }
 
 #[test]

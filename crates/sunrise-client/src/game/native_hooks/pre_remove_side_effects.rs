@@ -1,12 +1,19 @@
 use super::*;
+use crate::game::spill::RemovalEffects;
+use mod_api::BlockEntityDataView;
 
 impl GameLevel<'_> {
-    /// Collect removal outputs without world writes.
+    /// Lend the retiring row and the removal effect sink.
     #[inline(always)]
     pub(in crate::game) fn native_pre_remove_side_effects(
         &mut self,
-        call: super::fire::PreRemoveSideEffectsCall<'_>,
+        pos: BlockPos,
+        state: BlockStateId,
+        entity: BlockEntityDataView<'_>,
+        effects: &mut RemovalEffects<'_>,
     ) {
-        self.fire_pre_remove_side_effects(call);
+        self.fire_pre_remove_side_effects(pos, state, entity, |listen| {
+            effects.register_listener(listen);
+        });
     }
 }

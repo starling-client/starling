@@ -396,15 +396,19 @@ pub fn scale(m: &Mob, alpha: f32) -> glam::Mat4 {
 pub(super) struct CubeFloat;
 impl Goal for CubeFloat {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         JUMP | MOVE
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
         m.is_in_liquid()
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         true
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, _: &mut Cx) {
         if m.random.next_float() < 0.8 {
             m.ai.jump = true;
@@ -419,16 +423,20 @@ struct CubeAttack {
 }
 impl Goal for CubeAttack {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         LOOK
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         m.target_info(cx.w)
             .is_some_and(|t| t.alive && !(t.is_player && t.creative))
     }
+    #[inline]
     fn start(&mut self, _: &mut Mob, _: &mut Cx) {
         self.tired = reduced(300);
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if !m
             .target_info(cx.w)
@@ -439,9 +447,11 @@ impl Goal for CubeAttack {
         self.tired -= 1;
         self.tired > 0
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         true
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         if let Some(t) = m.target_info(cx.w) {
             m.turn_to([t.position.x, t.eye_y, t.position.z], 10.0, 10.0);
@@ -458,13 +468,16 @@ pub(super) struct CubeRandomDirection {
 }
 impl Goal for CubeRandomDirection {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         LOOK
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
         m.ai.target.is_none()
             && (m.ground.on_ground || m.is_in_liquid() || m.has_effect("minecraft:levitation"))
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, _: &mut Cx) {
         self.next -= 1;
         if self.next <= 0 {
@@ -479,13 +492,16 @@ impl Goal for CubeRandomDirection {
 pub(super) struct CubeKeepJumping;
 impl Goal for CubeKeepJumping {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         JUMP | MOVE
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
         // `CubeMobKeepOnJumpingGoal.canUse`: not while it is a passenger.
         !m.extra.passenger
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, _: &mut Cx) {
         set_wanted(m, 1.0);
     }
@@ -828,5 +844,168 @@ mod set_size_tests {
                 "Size {saved}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod own_base_tests {
+    use crate::mobs::{Mob, MobType};
+    use std::collections::HashMap;
+    use std::fmt::Write as _;
+    use std::sync::Arc;
+    use sunrise_core::nbt::Tag;
+    use sunrise_world::{attribute_map::ValueKind, attributes::entity::Catalog};
+
+    fn mob_seed(m: &Mob) -> Vec<Tag> {
+        crate::entity_nbt::attribute_entries(m)
+            .into_iter()
+            .map(|(_, e)| e)
+            .collect()
+    }
+
+    fn check_reads(m: &Mob, catalog: &Arc<Catalog>, tokens: &[&str], prefix: &str, case: &str) {
+        for token in tokens {
+            let mut parts = token.split(' ');
+            assert_eq!(parts.next(), Some(prefix), "{case}: {token}");
+            let attr = parts.next().unwrap();
+            let actual = match (
+                m.extra
+                    .live
+                    .read(catalog, &m.kind.id, attr, ValueKind::Computed, || {
+                        mob_seed(m)
+                    }),
+                m.extra
+                    .live
+                    .read(catalog, &m.kind.id, attr, ValueKind::Base, || mob_seed(m)),
+            ) {
+                (Some(v), Some(b)) => {
+                    format!("{prefix} {attr} {:x} {:x}", v.to_bits(), b.to_bits())
+                }
+                (None, None) => format!("{prefix} {attr} none"),
+                other => panic!("{case} {attr}: inconsistent live read {other:?}"),
+            };
+            assert_eq!(actual, *token, "{case}");
+        }
+    }
+
+    fn saved_tokens(tag: &Tag, prefix: &str) -> Vec<String> {
+        let Some(Tag::List(list)) = tag.get("attributes") else {
+            return Vec::new();
+        };
+        let mut rows: Vec<(String, String)> = list
+            .iter()
+            .map(|a| {
+                let base = match a.get("base") {
+                    Some(Tag::Double(b)) => format!("{b:x}"),
+                    other => panic!("non-double base: {other:?}"),
+                };
+                let mut row = format!("base {base}");
+                if let Some(Tag::List(mods)) = a.get("modifiers") {
+                    for modifier in mods {
+                        let id = crate::save::text(modifier.get("id")).unwrap();
+                        let amount = match modifier.get("amount") {
+                            Some(Tag::Double(b)) => format!("{b:x}"),
+                            other => panic!("non-double modifier amount: {other:?}"),
+                        };
+                        let op = crate::save::text(modifier.get("operation")).unwrap();
+                        let _ = write!(row, " mod {id} {amount} {op}");
+                    }
+                }
+                (crate::save::text(a.get("id")).unwrap(), row)
+            })
+            .collect();
+        rows.sort();
+        rows.into_iter()
+            .map(|(id, row)| format!("{prefix} {id} {row}"))
+            .collect()
+    }
+
+    /// Replays the vanilla 26.3 cube load/save/reload cases `tools/test_mob_attribute_nbt_parity.py` records (#2676).
+    #[test]
+    #[ignore = "run by tools/test_mob_attribute_nbt_parity.py"]
+    fn a_cube_keeps_the_bases_its_own_size_set() {
+        let path = std::env::var("SUNRISE_MOB_ATTRIBUTE_NBT_WITNESS").expect(
+            "run through tools/test_mob_attribute_nbt_parity.py, which records the witness",
+        );
+        let witness = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+            panic!(
+                "cannot read {path} (run through tools/test_mob_attribute_nbt_parity.py, which records the witness): {e}"
+            )
+        });
+        let ran = crate::mobs::world::with_test_world(&[], |w, types| {
+            let types: HashMap<String, Arc<MobType>> = types
+                .types
+                .iter()
+                .map(|(id, kind)| (id.clone(), Arc::new(kind.clone())))
+                .collect();
+            let mut checked = 0usize;
+            for line in witness.lines() {
+                if line.is_empty() || line.starts_with('#') {
+                    continue;
+                }
+                let cols: Vec<&str> = line.split('\t').collect();
+                let (name, entity, snbt) = (cols[0], cols[1], cols[2]);
+                if !matches!(entity, "minecraft:slime" | "minecraft:magma_cube") {
+                    continue;
+                }
+                let mut expected_reads = Vec::new();
+                let mut expected_saved = Vec::new();
+                let mut expected_reload_reads = Vec::new();
+                let mut expected_reload_saved = Vec::new();
+                for token in &cols[3..] {
+                    if token.starts_with("read ") {
+                        expected_reads.push(*token);
+                    } else if token.starts_with("saved ") {
+                        expected_saved.push(*token);
+                    } else if token.starts_with("reload_read ") {
+                        expected_reload_reads.push(*token);
+                    } else if token.starts_with("reload_saved ") {
+                        expected_reload_saved.push(*token);
+                    } else {
+                        panic!("{name}: unexpected witness token: {token}");
+                    }
+                }
+                let tag = sunrise_core::nbt::parse_snbt(snbt).unwrap().0;
+                let m = crate::entity_nbt::mob_from_nbt(&tag, &types, 1, None).unwrap();
+                check_reads(&m, w.attributes, &expected_reads, "read", name);
+                let saved = crate::entity_nbt::mob_to_nbt(
+                    &m,
+                    [1, 2, 3, 4],
+                    None,
+                    None,
+                    |_| None,
+                    &Default::default(),
+                );
+                assert_eq!(saved_tokens(&saved, "saved"), expected_saved, "{name}");
+                assert!(
+                    !expected_reload_reads.is_empty() && !expected_reload_saved.is_empty(),
+                    "{name}: missing reload witness"
+                );
+                let again = crate::entity_nbt::mob_from_nbt(&saved, &types, 1, None).unwrap();
+                check_reads(
+                    &again,
+                    w.attributes,
+                    &expected_reload_reads,
+                    "reload_read",
+                    name,
+                );
+                let resaved = crate::entity_nbt::mob_to_nbt(
+                    &again,
+                    [1, 2, 3, 4],
+                    None,
+                    None,
+                    |_| None,
+                    &Default::default(),
+                );
+                assert_eq!(
+                    saved_tokens(&resaved, "reload_saved"),
+                    expected_reload_saved,
+                    "{name} reloaded"
+                );
+                checked += 1;
+            }
+            assert!(checked > 0, "no cube cases in 26.3 witness");
+        });
+        assert!(ran, "vanilla data is missing");
     }
 }

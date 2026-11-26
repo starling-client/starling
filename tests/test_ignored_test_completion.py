@@ -3,9 +3,11 @@ import contextlib
 import io
 import json
 import os
+import re
 from pathlib import Path
 import tempfile
 import subprocess
+import sys
 import unittest
 from unittest.mock import patch
 
@@ -72,6 +74,36 @@ class IgnoredTests(unittest.TestCase):
                   "test synced ... ok\n" + summary(passed=1))
         result, _ = self.run_output(output)
         self.assertEqual(result, {"synced": True})
+
+    def test_a_failed_runs_full_output_is_kept_privately_and_not_printed(self):
+        panic = ("\n---- bad stdout ----\nthread 'bad' panicked at crates/example/src/lib.rs:3:5:\n"
+                 "synthetic payload 4.2 from the data\n")
+        failed = target(1, "test bad ... FAILED\n", summary(failed=1)) + panic
+        with tempfile.TemporaryDirectory() as private, \
+                patch.dict(os.environ, {"IGNORED_TESTS_PRIVATE_LOGS": private}):
+            kept = Path(private)
+            # A non-zero exit, and a run that exited 0 although a test reported FAILED: both keep the output.
+            for code in (101, 0):
+                with self.subTest(code=code):
+                    _, log = self.run_output(failed, code)
+                    self.assertEqual((kept / "example.test.log").read_text(), failed)
+                    self.assertEqual(re.findall(r"kept privately on the runner: (\S+)", log), ["example.test.log"])
+                    self.assertNotIn("synthetic payload", log)
+                    (kept / "example.test.log").unlink()
+            # A split leg whose listing fails keeps the listing's output under the leg's name.
+            listing = subprocess.CompletedProcess([], 101, "listed text on stdout\n",
+                                                  "error[E0425]: private compiler text\n")
+            with patch.object(ignored_tests.subprocess, "run", return_value=listing), \
+                    contextlib.redirect_stdout(io.StringIO()) as log:
+                self.assertIsNone(ignored_tests.run("example", [], 1, 2))
+            self.assertEqual((kept / "example#1of2.list.log").read_text(),
+                             "listed text on stdout\nerror[E0425]: private compiler text\n")
+            self.assertNotIn("private compiler text", log.getvalue())
+            self.assertNotIn("listed text on stdout", log.getvalue())
+            (kept / "example#1of2.list.log").unlink()
+            # A passing run keeps nothing.
+            self.run_output(target(1, "test good ... ok\n", summary(passed=1)))
+            self.assertEqual(list(kept.iterdir()), [])
 
     def test_known_failure_is_still_available_to_policy(self):
         result, _ = self.run_output(target(2, "test good ... ok\ntest bad ... FAILED\n", summary(passed=1, failed=1)), 101)
@@ -231,6 +263,27 @@ class IgnoredTests(unittest.TestCase):
         self.assertEqual(ran, ["a", "b"])
         self.assertEqual(done.returncode, ignored_tests.TIMED_OUT)
 
+    def test_prebuilt_executables_get_their_folder_first_in_the_library_path_keeping_its_spelling(self):
+        seen = []
+
+        def execute(command, **kwargs):
+            seen.append(kwargs["env"])
+            return subprocess.CompletedProcess(command, 0, "")
+
+        with tempfile.TemporaryDirectory() as folder, \
+                patch.object(ignored_tests.ignored_shards, "workspace_members", return_value={"pkg": (folder, ".")}), \
+                patch.object(ignored_tests.subprocess, "run", side_effect=execute):
+            deps = Path(folder, "deps")
+            # Windows' variable is `PATH`, which its environment may spell `Path`: one entry, the old value kept after.
+            with patch.object(ignored_tests, "LIBRARY_PATH", "PATH"):
+                ignored_tests.run_binaries("pkg", {"lib": str(deps / "a")}, [], {"Path": "old"})
+            with patch.object(ignored_tests, "LIBRARY_PATH", "LD_LIBRARY_PATH"):
+                ignored_tests.run_binaries("pkg", {"lib": str(deps / "a")}, [], {})
+        expected = os.pathsep.join([str(deps), folder])
+        self.assertEqual(seen[0]["Path"], expected + os.pathsep + "old")
+        self.assertNotIn("PATH", seen[0])
+        self.assertEqual(seen[1]["LD_LIBRARY_PATH"], expected)
+
     def test_the_report_names_the_run_in_progress_before_it_ends(self):
         # A job stopped at its time limit kills this script too: what it wrote before the run is what is uploaded.
         with tempfile.TemporaryDirectory() as folder:
@@ -358,13 +411,22 @@ class IgnoredTests(unittest.TestCase):
 
     def test_prebuilt_executables_report_like_cargo_test_and_a_killed_one_is_a_crash(self):
         with tempfile.TemporaryDirectory() as folder:
-            passing, killed = Path(folder, "passes"), Path(folder, "killed")
-            passing.write_text("#!/bin/sh\necho 'running 1 tests'\necho 'test a ... ok'\n"
-                               "echo 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'\n")
-            killed.write_text("#!/bin/sh\necho 'running 1 tests'\nkill -9 $$\n")
-            for script in (passing, killed):
-                script.chmod(0o755)
-            with contextlib.redirect_stdout(io.StringIO()):
+            passing, killed = Path(folder, "passes.py"), Path(folder, "killed.py")
+            passing.write_text("print('running 1 tests')\nprint('test a ... ok')\n"
+                               "print('test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out')\n")
+            killed.write_text("import os\nprint('running 1 tests', flush=True)\nos.kill(os.getpid(), 9)\n")
+            run = subprocess.run
+
+            def through_python(command, **kwargs):
+                # The stand-in executables are Python scripts, which not every platform runs by themselves.
+                at = next((index for index, word in enumerate(command) if word in (str(passing), str(killed))), None)
+                if at is None:
+                    return run(command, **kwargs)
+                return run([*command[:at], sys.executable, *command[at:]], **kwargs)
+
+            with contextlib.redirect_stdout(io.StringIO()), \
+                    patch.object(ignored_tests.subprocess, "run", side_effect=through_python), \
+                    patch.object(ignored_tests, "workspace_features", return_value={}):
                 self.assertEqual(ignored_tests.run("sunrise-relay", [], only=(["lib"], ["a"]),
                                                    binaries={"lib": str(passing)}), {"a": True})
                 self.assertIsNone(ignored_tests.run("sunrise-relay", [], only=(["lib", "test:it"], ["a", "b"]),
@@ -439,10 +501,15 @@ class IgnoredTests(unittest.TestCase):
                              {"holder::tests::slow": True})
         self.assertEqual(execute.call_args_list[0].args[0], prepare)
         self.assertEqual(execute.call_args_list[1].args[0][LIMIT:LIMIT + 2], ["cargo", "test"])
-        # A failed build stops the run, saying why, before any test runs.
-        with patch.object(ignored_tests.subprocess, "run", return_value=subprocess.CompletedProcess([], 101, "error: x\n")) as execute, \
-                patch.object(ignored_tests, "workspace_features", return_value={}), contextlib.redirect_stdout(io.StringIO()):
+        # A failed build stops the run, saying why, before any test runs, and keeps the build's output privately.
+        with tempfile.TemporaryDirectory() as private, \
+                patch.dict(os.environ, {"IGNORED_TESTS_PRIVATE_LOGS": private}), \
+                patch.object(ignored_tests.subprocess, "run",
+                             return_value=subprocess.CompletedProcess([], 101, "error: private build text\n")) as execute, \
+                patch.object(ignored_tests, "workspace_features", return_value={}), \
+                contextlib.redirect_stdout(io.StringIO()):
             self.assertIsNone(ignored_tests.run("sunrise-mod-package", [], only=(["lib"], ["holder::tests::slow"])))
+            self.assertEqual((Path(private) / "sunrise-mod-package.build.log").read_text(), "error: private build text\n")
         self.assertEqual(execute.call_count, 1)
         self.assertEqual(ignored_tests._stopped["reason"], "what the tests need could not be built")
 

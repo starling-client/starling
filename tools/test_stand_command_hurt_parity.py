@@ -7,11 +7,13 @@ import sys
 
 import argparse
 
-import test_command_exec_parity as driver
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_command_exec_parity as driver
 
 # main's driver reads an option no argument defines (#12376 removes the read).
 argparse.Namespace.seed_sync_gaps_diagnostic = False
-from stand_command_hurt_corpus import stand_command_hurt
+from tools.stand_command_hurt_corpus import stand_command_hurt
 
 if __name__ == '__main__':
     full = '--full-diagnostic' in sys.argv

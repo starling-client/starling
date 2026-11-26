@@ -4,16 +4,16 @@ use crate::hud_kit::fit::{ellipsize, wrap};
 use crate::hud_kit::hint::{self, HintRow};
 use crate::hud_kit::plate::{self, Plate};
 use crate::pad_glyph::{self, Glyph};
-use crate::toasts::Slide;
-use std::time::{Duration, Instant};
+use crate::toasts::{Slide, ToastClock, ToastStamp};
+use std::time::Duration;
 
 pub struct Notice {
     title: String,
     body: String,
     glyph: Option<Glyph>,
-    /// When it was raised: it goes that long after, drawn or not (a notice raised on the way
-    /// out of a world must not wait for the next one).
-    raised: Instant,
+    /// When it was raised, on the toasts' clock (`NoticeSlot::raise`): it goes that long after,
+    /// drawn or not (a notice raised on the way out of a world must not wait for the next one).
+    raised: Option<ToastStamp>,
     slide: Slide,
 }
 
@@ -23,7 +23,7 @@ impl Notice {
             title: title.into(),
             body: body.into(),
             glyph: None,
-            raised: Instant::now(),
+            raised: None,
             slide: Slide::default(),
         }
     }
@@ -41,8 +41,10 @@ pub struct NoticeSlot {
 }
 
 impl NoticeSlot {
-    /// Replace the last connection notice without restarting its slide.
-    pub fn raise(&mut self, mut notice: Notice) {
+    /// Replace the last connection notice without restarting its slide; its time starts now on
+    /// `clock`.
+    pub fn raise(&mut self, mut notice: Notice, clock: ToastClock) {
+        notice.raised = Some(clock.stamp());
         if let Some(old) = &mut self.current {
             notice.slide = std::mem::take(&mut old.slide);
         }
@@ -56,15 +58,15 @@ impl NoticeSlot {
     }
     /// Its time, after `shown_for`: it slides out (`ToastManager`'s slide); one whose time passed
     /// while nothing drew is simply gone. Then whether anything is left to draw.
-    fn update(&mut self, shown_for: Duration) -> bool {
+    fn update(&mut self, clock: ToastClock, shown_for: Duration) -> bool {
         let Some(notice) = &mut self.current else {
             return false;
         };
-        let elapsed = notice.raised.elapsed();
-        let finished = if notice.slide.origin.is_none() && elapsed > shown_for {
+        let elapsed = notice.raised.map_or(Duration::ZERO, |at| at.elapsed(clock));
+        let finished = if !notice.slide.begun() && elapsed > shown_for {
             true
         } else {
-            notice.slide.update_now(|_| elapsed <= shown_for).1
+            notice.slide.update_on(clock, |_| elapsed <= shown_for).1
         };
         if finished {
             self.current = None;
@@ -75,8 +77,15 @@ impl NoticeSlot {
     /// `Room`) on a view: a strip in the middle, its words wrapped to the view and cut with an
     /// ellipsis where a word or the title is wider than that (a narrow view, a long language),
     /// sliding down from the view's edge.
-    pub fn draw(&mut self, batch: &mut HudBatch, atlas: &HudAtlas, top: f32, shown_for: Duration) {
-        if !self.update(shown_for) {
+    pub fn draw(
+        &mut self,
+        batch: &mut HudBatch,
+        atlas: &HudAtlas,
+        top: f32,
+        clock: ToastClock,
+        shown_for: Duration,
+    ) {
+        if !self.update(clock, shown_for) {
             return;
         }
         let Some(notice) = &self.current else {
@@ -129,7 +138,7 @@ mod tests {
         let mut slot = NoticeSlot::default();
         for i in 0..50 {
             let title = i.to_string();
-            slot.raise(Notice::new(&title, ""));
+            slot.raise(Notice::new(&title, ""), ToastClock::Real);
         }
         assert_eq!(slot.showing().map(|s| s.0), Some("49"));
     }
@@ -137,28 +146,42 @@ mod tests {
     #[test]
     fn a_reconnect_replaces_its_disconnect() {
         let mut slot = NoticeSlot::default();
-        slot.raise(Notice::new("gone", ""));
-        slot.raise(Notice::new("back", ""));
+        slot.raise(Notice::new("gone", ""), ToastClock::Real);
+        slot.raise(Notice::new("back", ""), ToastClock::Real);
         assert_eq!(slot.showing().map(|s| s.0), Some("back"));
     }
 
     #[test]
     fn a_notice_raised_while_nothing_draws_is_gone_when_its_time_has_passed() {
         let mut slot = NoticeSlot::default();
-        slot.raise(Notice::new("old", ""));
+        slot.raise(Notice::new("old", ""), ToastClock::Real);
         std::thread::sleep(Duration::from_millis(2));
-        assert!(!slot.update(Duration::ZERO));
+        assert!(!slot.update(ToastClock::Real, Duration::ZERO));
         assert_eq!(slot.showing(), None);
+    }
+
+    #[test]
+    fn under_the_still_clock_a_notice_stays_at_its_first_frame() {
+        // SUNRISE_STILL: no time passes on the toasts' clock, so real time ends nothing, sparse or
+        // dense draws alike, and the notice stays off screen at its first frame.
+        let mut slot = NoticeSlot::default();
+        slot.raise(Notice::new("still", ""), ToastClock::Still);
+        let shown_for = Duration::from_millis(1);
+        for pause in [20, 0, 0, 20] {
+            std::thread::sleep(Duration::from_millis(pause));
+            assert!(slot.update(ToastClock::Still, shown_for));
+        }
+        assert_eq!(slot.current.as_ref().map(|n| n.slide.portion), Some(0.0));
     }
 
     #[test]
     fn a_notice_on_screen_stays_for_its_time_then_slides_out() {
         let mut slot = NoticeSlot::default();
-        slot.raise(Notice::new("new", ""));
-        assert!(slot.update(Duration::from_secs(60)));
+        slot.raise(Notice::new("new", ""), ToastClock::Real);
+        assert!(slot.update(ToastClock::Real, Duration::from_secs(60)));
         std::thread::sleep(Duration::from_millis(2));
         // Past its time it slides out rather than vanishing.
-        assert!(slot.update(Duration::ZERO));
+        assert!(slot.update(ToastClock::Real, Duration::ZERO));
         assert!(slot.showing().is_some());
     }
 }

@@ -60,6 +60,7 @@ fn a_worn_out_helmet_awards_the_broken_statistic() {
         causing: 0,
         direct: 0,
         position: None,
+        direct_type: None,
     };
     game.hurt_armor(&source, 4.0);
     assert!(game.armor[0].is_none(), "the helmet broke off the head");

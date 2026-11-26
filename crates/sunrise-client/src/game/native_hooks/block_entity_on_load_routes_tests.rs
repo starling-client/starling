@@ -27,9 +27,6 @@ mod tests {
         fn block_entity(&self, _: LevelSide<'_>, _: &mut BlockEntityEvent<'_>) -> Option<Compound> {
             Some(Compound::from([("count".into(), Tag::Int(7))]))
         }
-        fn block_entity_ticks(&self, _: &dyn Host, event: &mut BlockEntityTicksEvent<'_>) {
-            event.ticks = true;
-        }
         fn block_entity_tick(&self, _: &mut BlockEntityTickEvent<'_>) {
             self.log.lock().unwrap().push(("tick", -1));
         }
@@ -387,7 +384,7 @@ mod tests {
                     sunrise_client::items::ItemStack::new("test:box_shulker_box", 1),
                 )
                 .unwrap();
-            assert!(left.is_none());
+            assert_eq!(left.continue_value(), Some(None));
             assert!(matches!(
                 game.world.block_entities.get(&(1, 64, 1)),
                 Some(BlockEntity::Mod(_))
@@ -403,14 +400,19 @@ mod tests {
             return;
         }
         with_fixture(false, |game, log, _| {
+            let level = game.level("minecraft:overworld").unwrap();
             let state = game.pack.assets.registry.default_state("test:a").unwrap();
-            assert!(game.spawn_falling_block(
-                "minecraft:overworld",
-                state,
-                [1.5, 66.0, 1.5],
-                [0.0; 3],
-                Falling::default()
-            ));
+            assert!(
+                game.level_spawn_falling_block(
+                    level,
+                    state,
+                    [1.5, 66.0, 1.5],
+                    [0.0; 3],
+                    Falling::default(),
+                )
+                .unwrap()
+                .is_some()
+            );
             let join = game.falling[0].join;
             let mut block = game.falling.extract(join).unwrap();
             let id = block.id;

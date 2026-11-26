@@ -4,10 +4,9 @@ import argparse
 from pathlib import Path
 import sys
 
-try:
-    from . import test_server_knockback_parity as net
-except ImportError:
-    import test_server_knockback_parity as net
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_server_knockback_parity as net
 
 NAME = 'server-entity-zero-range-parity'
 X, Y, Z = net.A

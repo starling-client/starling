@@ -13,8 +13,11 @@ import shutil
 import time
 import uuid
 
-import anvil_dump as nbt
-import test_locator_bar_parity as net
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import anvil_dump as nbt, test_locator_bar_parity as net
 
 OBSERVER, GUEST = 'H319Observer', 'H319Guest'
 

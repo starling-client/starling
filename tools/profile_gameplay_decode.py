@@ -11,7 +11,11 @@ import json
 import os
 import statistics
 from pathlib import Path
-from profile_shared_json import percentile, run
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools.profile_shared_json import percentile, run
 
 
 def main():

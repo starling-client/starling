@@ -19,6 +19,14 @@ const MIN_SCALE: f32 = 0.25;
 /// The TAA history format: 8 bits would band as frames accumulate.
 const HISTORY_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
+fn reduced_scale(scale: f32) -> Option<f32> {
+    if scale <= MIN_SCALE {
+        None
+    } else {
+        Some((scale * 0.75).max(MIN_SCALE))
+    }
+}
+
 struct WorldTarget {
     size: [u32; 2],
     color: wgpu::TextureView,
@@ -390,11 +398,11 @@ impl Post {
     /// The world's rendered size and the size it is shown at (TAA's history).
     fn sizes(&self, window: [u32; 2]) -> ([u32; 2], [u32; 2]) {
         let upscale = if self.taa_on { self.upscale } else { 1.0 };
-        self.sizes_with_upscale(window, upscale)
+        Self::sizes_with_upscale(window, self.scale, upscale)
     }
 
-    fn sizes_with_upscale(&self, window: [u32; 2], upscale: f32) -> ([u32; 2], [u32; 2]) {
-        let output = window.map(|v| ((v as f32 * self.scale).round() as u32).clamp(1, 8192));
+    fn sizes_with_upscale(window: [u32; 2], scale: f32, upscale: f32) -> ([u32; 2], [u32; 2]) {
+        let output = window.map(|v| ((v as f32 * scale).round() as u32).clamp(1, 8192));
         (
             output.map(|v| ((v as f32 / upscale).round() as u32).max(1)),
             output,
@@ -403,7 +411,7 @@ impl Post {
 
     /// The next TAA frame's input size, even before its first jitter or resize.
     pub(super) fn taa_render_size(&self, window: [u32; 2]) -> [u32; 2] {
-        self.sizes_with_upscale(window, self.upscale).0
+        Self::sizes_with_upscale(window, self.scale, self.upscale).0
     }
 
     /// TAA's sub-pixel jitter this frame, as a clip-space matrix to multiply into the
@@ -488,7 +496,7 @@ impl Post {
                 break;
             }
             drop(target);
-            if self.scale <= MIN_SCALE {
+            let Some(reduced) = reduced_scale(self.scale) else {
                 log::warn!(
                     "Sunrise renderer: no video memory for the scaled world at {size:?} ({}); drawing at the window's size",
                     error.map_or_else(String::new, |e| e.to_string())
@@ -496,8 +504,7 @@ impl Post {
                 self.scale = 1.0;
                 self.target = None;
                 return None;
-            }
-            let reduced = (self.scale * 0.75).max(MIN_SCALE);
+            };
             log::warn!(
                 "Sunrise renderer: out of video memory for the scaled world at {size:?}; resolution scale {:.2} -> {reduced:.2} ({})",
                 self.scale,

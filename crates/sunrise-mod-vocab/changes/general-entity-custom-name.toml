@@ -1,0 +1,2 @@
+ids = ["behaviour:general_entity_custom_name"]
+why = "A general entity row keeps a custom name and its visibility (Entity.getCustomName, Entity.isCustomNameVisible), saved as CustomName and CustomNameVisible and synced to tracking clients as Entity.DATA_CUSTOM_NAME and DATA_CUSTOM_NAME_VISIBLE. The EntityRef reads and writes for a general row now return real values instead of None or false, and custom_name_visible reads on a client as well as on the server. @e[name=...] and command output use the name. Host methods only; no hook_version changes."

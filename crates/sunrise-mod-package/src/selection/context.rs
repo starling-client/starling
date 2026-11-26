@@ -149,7 +149,24 @@ impl LaunchArguments {
         while let Some(arg) = args.next() {
             match arg.as_str() {
                 "--dedicated" => {
-                    rest.push(Argument::Dedicated(args.collect()));
+                    // The server's own arguments follow, but the game folder and the prepared
+                    // resources stay the game's: vanilla's server has neither option, so a
+                    // `--game-dir` or `--resources` after `--dedicated` means what it means before.
+                    let mut server = Vec::new();
+                    while let Some(arg) = args.next() {
+                        match arg.as_str() {
+                            "--game-dir" | "--gameDir" | "--resources" => {
+                                let value = args.next().ok_or_else(|| MissingValue(arg.clone()))?;
+                                if arg == "--resources" {
+                                    rest.push(Argument::Value(arg, value));
+                                } else {
+                                    context.game_dir = cwd.join(value);
+                                }
+                            }
+                            _ => server.push(arg),
+                        }
+                    }
+                    rest.push(Argument::Dedicated(server));
                     break;
                 }
                 "--help" | "-h" | "--launch-api" => {
@@ -324,6 +341,48 @@ mod tests {
             Path::new("/start/relative")
         );
         assert_eq!(parse(&[], None).context.home, Path::new("/default"));
+    }
+
+    /// A dedicated server takes the game's folder and prepared resources after `--dedicated`
+    /// too (#5575), as `cargo sunrise-mod run -- --dedicated --game-dir ... --resources ...`
+    /// passes them; the server's own arguments around them stay the server's.
+    #[test]
+    fn a_dedicated_server_keeps_the_game_folder_and_resources_options() {
+        let parsed = LaunchArguments::parse(
+            [
+                "--dedicated",
+                "--nogui",
+                "--game-dir",
+                "server",
+                "--resources",
+                "prepared",
+                "--port",
+                "25570",
+            ]
+            .into_iter()
+            .map(String::from),
+            Path::new("/start"),
+            Path::new("/default"),
+            None,
+        )
+        .unwrap();
+        assert_eq!(parsed.context.game_dir, Path::new("/start/server"));
+        assert_eq!(
+            parsed.rest,
+            [
+                Argument::Value("--resources".into(), "prepared".into()),
+                Argument::Dedicated(vec!["--nogui".into(), "--port".into(), "25570".into()]),
+            ]
+        );
+        assert!(
+            LaunchArguments::parse(
+                ["--dedicated", "--resources"].into_iter().map(String::from),
+                Path::new("/start"),
+                Path::new("/default"),
+                None,
+            )
+            .is_err()
+        );
     }
 
     #[test]

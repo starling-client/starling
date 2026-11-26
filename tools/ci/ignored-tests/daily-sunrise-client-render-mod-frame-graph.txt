@@ -1,0 +1,1 @@
+sunrise-client-render gfx::mod_frame_graph::tests::gpu_frame_graph_runs_two_pass_transient_chain_culls_unused_and_rejects_cycle lib daily gpu

@@ -220,19 +220,51 @@ fn gpu_culling_is_offered_where_counts_are_drawn_and_vanilla_never_draws_flat() 
 
 /// The pack-flat rule: with Translucent Batching translucent quads have an arena of
 /// their own, unless a shader pack's terrain programs or its shadow pass alone can
-/// draw flat (a pack picked and not loaded yet counts as drawing terrain).
+/// draw flat (a pack picked and not loaded yet counts as drawing terrain), or a
+/// `shaders/` pack's per-section draws read the section arena's pages.
 #[test]
 fn translucent_quads_stay_in_the_section_arena_while_a_pack_can_draw_flat() {
-    // (batching, flat draws, the pack's terrain, its shadow pass)
+    // (batching, flat draws, pages read per section, the pack's terrain, its shadow pass)
     let split = super::translucent_split;
-    assert!(split(true, true, false, false));
-    assert!(!split(true, true, true, false));
-    assert!(!split(true, true, false, true));
-    assert!(!split(true, true, true, true));
-    // Without flat draws, or with them off, the pack draws per section, from either.
-    assert!(split(true, false, true, true));
-    assert!(!split(false, true, false, false));
-    assert!(!split(false, false, false, false));
+    assert!(split(true, true, false, false, false));
+    assert!(!split(true, true, false, true, false));
+    assert!(!split(true, true, false, false, true));
+    assert!(!split(true, true, false, true, true));
+    // Without flat draws, or with them off, the pack draws per section: from either arena
+    // as attributes alone, from the section arena while it reads the pages.
+    assert!(split(true, false, false, true, true));
+    assert!(!split(true, false, true, true, true));
+    assert!(!split(false, true, false, false, false));
+    assert!(!split(false, false, false, false, false));
+}
+
+/// Without a shader pack reading them, the section arena's pages are vertex buffers alone, as
+/// before per-section terrain read its pages: on a device whose storage bindings (128 MiB) are
+/// smaller than `PAGE_BYTES`, a page still holds 256 MiB of 24-byte vertices, in whole blocks
+/// (11184640); only pages storage too are cut to the binding (5592320).
+#[test]
+fn arena_pages_are_storage_only_while_flat_draws_or_a_pack_read_them() {
+    use super::arena::{Arena, PAGE_BYTES};
+    let limits = wgpu::Limits {
+        max_buffer_size: 1 << 30,
+        max_storage_buffer_binding_size: 128 << 20,
+        ..Default::default()
+    };
+    let stride = std::mem::size_of::<crate::mesher::TerrainVertex>() as u64;
+    let page = |storage: bool| {
+        let usage = if storage {
+            wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE
+        } else {
+            wgpu::BufferUsages::VERTEX
+        };
+        Arena::page_limit(&limits, stride, usage, PAGE_BYTES)
+    };
+    // (flat draws, a pack's per-section draws reading the pages)
+    assert!(!super::arena_storage(false, false));
+    assert_eq!(page(super::arena_storage(false, false)), 11184640);
+    assert!(super::arena_storage(true, false));
+    assert!(super::arena_storage(false, true));
+    assert_eq!(page(super::arena_storage(false, true)), 5592320);
 }
 
 /// No large translucent page starts to shrink until `SHRINK_SETTLE` after terrain
@@ -257,37 +289,6 @@ fn shrinking_starts_once_terrain_has_settled() {
     assert!(gate.may_start(now + SHRINK_RETRY, COMPACT_BUDGET));
 }
 
-#[test]
-fn the_mirror_sees_each_point_where_its_reflection_is() {
-    use glam::{Mat4, Vec3, Vec4};
-    let view_proj = super::world_projection(70.0, 1.5, 512.0)
-        * Mat4::look_to_rh(Vec3::ZERO, Vec3::new(0.3, -0.4, -1.0), Vec3::Y);
-    let plane = -3.25;
-    let mirror = super::view::mirror_view_projection(view_proj, plane);
-    for p in [Vec3::new(1.0, 2.0, -9.0), Vec3::new(-4.0, -1.5, -20.0)] {
-        let reflected = Vec3::new(p.x, 2.0 * plane - p.y, p.z);
-        let a = mirror * Vec4::from((p, 1.0));
-        let b = view_proj * Vec4::from((reflected, 1.0));
-        assert!((a - b).abs().max_element() < 1e-4, "{a} {b}");
-    }
-}
-#[test]
-fn the_mirrors_sky_rays_are_the_cameras_reflected() {
-    use glam::{Mat4, Vec3, Vec4};
-    // A camera looking down: its mirror looks up, by as much.
-    let forward = Vec3::new(0.3, -0.64, -1.0).normalize();
-    let view = Mat4::look_to_rh(Vec3::ZERO, forward, Vec3::Y);
-    let mirrored = super::view::mirror_inverse_view(view.inverse().to_cols_array_2d(), -3.25);
-    let ray = Mat4::from_cols_array_2d(&mirrored) * Vec4::new(0.0, 0.0, -1.0, 0.0);
-    let reflected = Vec3::new(forward.x, -forward.y, forward.z);
-    assert!((ray.truncate() - reflected).length() < 1e-5, "{ray}");
-    // The view's origin, the camera, goes to the mirror's eye.
-    let eye = Mat4::from_cols_array_2d(&mirrored) * Vec4::W;
-    assert!(
-        (eye.truncate() - Vec3::new(0.0, -6.5, 0.0)).length() < 1e-5,
-        "{eye}"
-    );
-}
 #[test]
 fn scaled_screenshots_follow_resolution_scale_and_quality_within_limits() {
     use super::screenshot::scaled_screenshot_factor as factor;
@@ -623,7 +624,12 @@ fn special_material_batches_preserve_quad_order_and_offsets() {
     let mut batch = super::EntityBatch::default();
     let counts = batch.update(&entities, &quad(3, 5), &quad(0, 6), &quad(0, 8), false);
     let vertices = &batch.combined;
-    assert_eq!(counts, [4, 1, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    assert_eq!(
+        counts,
+        [
+            4, 1, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+        ]
+    );
     assert_eq!(
         vertices
             .as_chunks::<4>()
@@ -634,6 +640,39 @@ fn special_material_batches_preserve_quad_order_and_offsets() {
         [0, 1, 3, 4, 11, 2, 7, 9, 10, 5, 6, 8]
     );
 }
+#[test]
+fn classic_additive_draws_only_the_uploaded_prefix() {
+    use super::{DRAGON_RAYS_OVERLAY, draw_frame::classic_additive_runs};
+
+    let quad = |layer, light| {
+        [super::Vertex {
+            pos: [0.0; 3],
+            uv: [0.0; 2],
+            layer,
+            color: u32::MAX,
+            light,
+            normal: [0; 4],
+            glint_uv: [0.0; 2],
+        }; 4]
+    };
+    let additive = [
+        quad(0, 1),
+        quad(DRAGON_RAYS_OVERLAY, 2),
+        quad(DRAGON_RAYS_OVERLAY, 3),
+    ];
+    let additive = additive.as_flattened();
+    let mut batch = super::EntityBatch::default();
+    let counts = batch.update_within(&quad(0, 0), additive, &[], &[], &[], false, 3);
+    assert_eq!(
+        batch.combined.iter().map(|v| v.light).collect::<Vec<_>>(),
+        [0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2]
+    );
+    assert_eq!(
+        classic_additive_runs(additive, counts.additive).collect::<Vec<_>>(),
+        [(false, 0..6), (true, 6..12)]
+    );
+}
+
 #[test]
 fn software_adapters_are_last_resort() {
     use super::is_software;
@@ -1249,7 +1288,7 @@ fn a_fade_ends_by_its_deadline_and_never_comes_back() {
 fn fading_sections_go_to_the_cpu_and_come_back() {
     use super::{
         FadeInputs, SectionGpu, SectionKey, decide_fade, forget_records, gpu_culling, hold_fading,
-        mark_fades,
+        mark_fades, section_fade,
     };
     use crate::fast_hash::{FxHashMap, FxHashSet};
     use std::time::{Duration, Instant};
@@ -1262,7 +1301,7 @@ fn fading_sections_go_to_the_cpu_and_come_back() {
     struct Sim {
         sections: super::resident::Resident<SectionGpu>,
         records: gpu_culling::Records,
-        fades: gpu_culling::Fades,
+        fades: section_fade::Fades,
         uploaded: FxHashMap<SectionKey, Instant>,
         retiring: FxHashSet<SectionKey>,
     }

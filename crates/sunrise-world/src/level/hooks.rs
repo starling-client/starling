@@ -124,10 +124,27 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
 
     /// `BlockState.onPlace`.
     pub fn on_place(&mut self, state: BlockStateId, pos: BlockPos, old: BlockStateId, moved: bool) {
+        self.level
+            .observe_on_place(self.ticks, pos, state, old, moved);
         let b = self.b;
         let block = b.block(state);
         let same = b.block(old) == block;
         let chain = &b.data(state).chain;
+        // `sunrise:golem_heads`: a block outside CarvedPumpkinBlock's class that counts as its
+        // head asks for the same golem check, and then runs its own class's onPlace below.
+        if !same
+            && self
+                .level
+                .golem_heads()
+                .is_some_and(|set| set.contains(block))
+            && !b.data(state).is(Class::CarvedPumpkin)
+        {
+            self.emit(LevelEvent::BlockEvent {
+                pos,
+                state,
+                kind: "golem",
+            });
+        }
         for &class in chain.iter() {
             match class {
                 Class::Fire => {

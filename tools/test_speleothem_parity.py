@@ -2,10 +2,12 @@
 """Compare small speleothem direction, base patches and waterlogged points."""
 import itertools
 import json
-try:
-    from . import test_simple_block_parity as harness
-except ImportError:
-    import test_simple_block_parity as harness
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_simple_block_parity as harness
 
 FIELDS=['chance_of_taller_generation','chance_of_directional_spread','chance_of_spread_radius2','chance_of_spread_radius3']
 def corpus(facts,placement):

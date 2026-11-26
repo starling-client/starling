@@ -17,7 +17,7 @@ use super::{
     io_pool::{self, Session as _},
 };
 use crate::raw_payloads::{Side, Transport};
-use mod_api::{PayloadFrameStage, PayloadId, PayloadSendError};
+use mod_api::{PayloadFrameStage, PayloadId, PayloadSendError, VirtualHost};
 use std::{
     cell::Cell,
     net::TcpStream,
@@ -67,9 +67,50 @@ fn login_disconnect(c: &mut Connection, reason: &sunrise_core::nbt::Tag) {
 pub fn component_json(tag: &sunrise_core::nbt::Tag) -> String {
     component_value(tag).compact()
 }
-fn component_value(tag: &sunrise_core::nbt::Tag) -> crate::server::json::Json {
+
+/// A login disconnect's reason JSON for a component already in its JSON form, written as
+/// [`component_json`] writes one, or None when `ClientboundLoginDisconnectPacket`'s codec
+/// would refuse it.
+pub fn login_disconnect_json(component: &serde_json::Value) -> Option<String> {
+    let reason_json = json_component_value(component).compact();
+    let packet = login::Clientbound::Disconnect(login::Disconnect { reason_json }).encode();
+    // The packet id, 0, is one VarInt byte.
+    match login::Clientbound::decode(i32::from(packet[0]), &packet[1..]) {
+        Ok(login::Clientbound::Disconnect(login::Disconnect { reason_json })) => Some(reason_json),
+        _ => None,
+    }
+}
+
+/// [`component_value`] for a JSON component: its numbers keep their JSON form.
+fn json_component_value(value: &serde_json::Value) -> crate::server::json::Json {
     use crate::server::json::Json;
-    use sunrise_core::nbt::Tag;
+    use serde_json::Value;
+    match value {
+        Value::Null => Json::Null,
+        Value::Bool(b) => Json::Bool(*b),
+        Value::Number(n) => Json::Number(n.to_string()),
+        Value::String(s) => Json::String(s.clone()),
+        Value::Array(items) => Json::Array(items.iter().map(json_component_value).collect()),
+        Value::Object(map) => {
+            if map.len() == 1
+                && let Some(Value::String(t)) = map.get("text")
+            {
+                return Json::String(t.clone());
+            }
+            let mut members: Vec<(&String, &Value)> = map.iter().collect();
+            members.sort_by_key(|(k, _)| component_key_rank(k));
+            Json::Object(
+                members
+                    .into_iter()
+                    .map(|(k, v)| (k.clone(), json_component_value(v)))
+                    .collect(),
+            )
+        }
+    }
+}
+
+/// Where ComponentSerialization.CODEC writes the field `key`: unknown fields last.
+fn component_key_rank(key: &str) -> usize {
     const ORDER: &[&str] = &[
         "type",
         "text",
@@ -104,6 +145,12 @@ fn component_value(tag: &sunrise_core::nbt::Tag) -> crate::server::json::Json {
         "insertion",
         "font",
     ];
+    ORDER.iter().position(|o| *o == key).unwrap_or(ORDER.len())
+}
+
+fn component_value(tag: &sunrise_core::nbt::Tag) -> crate::server::json::Json {
+    use crate::server::json::Json;
+    use sunrise_core::nbt::Tag;
     match tag {
         Tag::String(s) => Json::String(s.to_string_lossy()),
         Tag::List(items) => Json::Array(items.iter().map(component_value).collect()),
@@ -114,7 +161,7 @@ fn component_value(tag: &sunrise_core::nbt::Tag) -> crate::server::json::Json {
                 return Json::String(t.to_string_lossy());
             }
             let mut keys: Vec<String> = map.keys().map(|k| k.to_string_lossy()).collect();
-            keys.sort_by_key(|k| ORDER.iter().position(|o| o == k).unwrap_or(ORDER.len()));
+            keys.sort_by_key(|k| component_key_rank(k));
             Json::Object(
                 keys.into_iter()
                     .map(|k| {
@@ -278,6 +325,7 @@ impl Undrained {
 #[derive(Clone)]
 pub struct PlayerSender {
     payload_transport: Arc<Transport>,
+    virtual_host: Option<Arc<VirtualHost>>,
     /// What the player's network thread has handed the hub and the hub hasn't taken yet.
     pub undrained: Arc<Undrained>,
     /// The bytes of the bodies sent and not framed yet.
@@ -350,6 +398,10 @@ impl PlayerSender {
     pub fn payload_transport(&self) -> &Arc<Transport> {
         &self.payload_transport
     }
+    /// The client-supplied destination from this connection's login handshake.
+    pub fn virtual_host(&self) -> Option<&VirtualHost> {
+        self.virtual_host.as_deref()
+    }
     /// Frozen physical framing, used to reject before copying a large raw body.
     pub(crate) fn payload_framing(&self) -> sunrise_protocol::connection::Framing {
         self.framing
@@ -368,6 +420,7 @@ impl PlayerSender {
             to: To::Channel(tx),
             wire: None,
             payload_transport: Transport::empty(),
+            virtual_host: None,
             datapack_offer: None,
             announced: Arc::default(),
             viewed_levels: Default::default(),
@@ -395,6 +448,7 @@ impl PlayerSender {
         let inspect = outbox.clone();
         let sender = Self {
             payload_transport: transport,
+            virtual_host: None,
             undrained: Arc::default(),
             pending,
             cap: io_pool::MAX_PENDING,
@@ -415,6 +469,26 @@ impl PlayerSender {
         };
         (sender, move || inspect.queued_contents())
     }
+    /// A pooled test sender whose client answered no keep-alive since joining, longer ago than
+    /// the keep-alive timeout.
+    #[cfg(test)]
+    pub(crate) fn timed_out_test_sender() -> Self {
+        let (mut sender, _) = Self::payload_executor_test_sender(Transport::empty());
+        let To::Pool(outbox, _) = &sender.to else {
+            unreachable!("the executor test sender is pooled");
+        };
+        let start = Instant::now()
+            .checked_sub(2 * KEEP_ALIVE_EVERY + Duration::from_secs(1))
+            .unwrap();
+        sender.to = To::Pool(
+            outbox.clone(),
+            Arc::new(KeepAliveWatch {
+                start,
+                alive: Arc::new(AtomicI64::new(-1)),
+            }),
+        );
+        sender
+    }
     /// Override framing on a test sender (e.g. `Framing::Network(None)` for TCP frame limits).
     #[cfg(test)]
     pub fn with_framing(mut self, framing: sunrise_protocol::connection::Framing) -> Self {
@@ -432,6 +506,7 @@ impl PlayerSender {
             to: To::Disabled,
             wire: None,
             payload_transport: Transport::empty(),
+            virtual_host: None,
             datapack_offer: None,
             announced: Arc::default(),
             viewed_levels: Default::default(),
@@ -451,9 +526,25 @@ impl PlayerSender {
     pub fn timed_out(&self) -> bool {
         matches!(&self.to, To::Pool(_, watch) if watch.timed_out())
     }
+    /// Whether the connection still accepts new packets.
+    pub(super) fn is_live(&self) -> bool {
+        match &self.to {
+            To::Pool(outbox, _) => outbox.alive(),
+            To::Channel(_) => true,
+            To::Disabled => false,
+        }
+    }
     /// Close the connection now, dropping what is still queued for it.
     pub fn close(&self) {
         self.payload_transport.close();
+        if let To::Pool(outbox, _) = &self.to {
+            outbox.send(Vec::new(), Some(io_pool::End::Close));
+        }
+    }
+    /// Retire only the outbox writer, leaving the transport and its epoch live:
+    /// a reservation against it still answers its captured limits first.
+    #[cfg(test)]
+    pub(crate) fn retire_test_writer(&self) {
         if let To::Pool(outbox, _) = &self.to {
             outbox.send(Vec::new(), Some(io_pool::End::Close));
         }
@@ -526,29 +617,51 @@ impl PlayerSender {
     pub fn send(&self, body: Vec<u8>) {
         self.send_body(body.into());
     }
-    fn send_body(&self, body: Body) {
+    pub(super) fn send_body(&self, body: Body) {
+        self.queue_body(body, true);
+    }
+    /// Admit a typed play ping in normal send order, without closing on backpressure.
+    /// Admission to a held queue or transaction is not a promise of delivery.
+    pub fn try_send_play_ping(&self, id: i32) -> bool {
+        self.is_live()
+            && play::Clientbound::Ping(cfg::Ping { id })
+                .try_encode()
+                .is_ok_and(|body| self.queue_body(body.into(), false))
+    }
+    fn queue_body(&self, body: Body, close_on_full: bool) -> bool {
         if matches!(self.to, To::Disabled) {
-            return;
+            return false;
         }
         let cost = io_pool::charge(body.retained());
-        let Err(body) = transaction_packets::capture(self, body, cost) else {
-            return;
+        let body = match transaction_packets::capture(self, body, cost) {
+            Ok(admitted) => return admitted,
+            Err(body) => body,
         };
         if !self.reserve_queued(cost) {
-            self.close();
-            return;
+            if close_on_full {
+                self.close();
+            }
+            return false;
         }
-        self.publish_reserved(body);
+        self.publish_reserved(body)
     }
-    fn publish_reserved(&self, body: Body) {
+    fn publish_reserved(&self, body: Body) -> bool {
         if HOLDING.get() {
             self.held().push(body);
+            true
         } else {
             self.flush();
             match &self.to {
-                To::Disabled => {}
-                To::Channel(tx) => drop(tx.send(Out::Packet(body.into_vec()))),
-                To::Pool(outbox, _) => outbox.send(vec![body], None),
+                To::Disabled => false,
+                To::Channel(tx) => {
+                    let cost = io_pool::body_charge(&body);
+                    if tx.send(Out::Packet(body.into_vec())).is_err() {
+                        self.pending.fetch_sub(cost, Ordering::Relaxed);
+                        return false;
+                    }
+                    true
+                }
+                To::Pool(outbox, _) => outbox.try_send(vec![body], None),
             }
         }
     }
@@ -736,18 +849,101 @@ impl PreparedPayload {
             Err(PayloadSendError::Disconnected)
         }
     }
-    /// Transfer the existing reservation with the framed body into its pairing bundle.
-    pub(crate) fn into_prepared_body(
-        mut self,
+}
+impl crate::raw_payloads::PreparedSend for PreparedPayload {
+    fn publish(self: Box<Self>) -> Result<(), PayloadSendError> {
+        (*self).publish()
+    }
+}
+impl crate::raw_payloads::HostedPreparedSend for PreparedPayload {
+    fn into_pairing(
+        self: Box<Self>,
         epoch: Arc<crate::raw_payloads::connection::Epoch>,
-    ) -> Body {
-        let bytes = self.bytes.take().expect("prepared bytes");
-        Body::Prepared(Arc::new(super::body::PairingPayload {
+    ) -> Arc<crate::raw_payloads::PairingPayload> {
+        let mut this = *self;
+        let bytes = this.bytes.take().expect("prepared bytes");
+        Arc::new(crate::raw_payloads::PairingPayload {
             bytes,
             epoch,
-            pending: self.sender.pending.clone(),
-            cost: self.cost,
+            pending: this.sender.pending.clone(),
+            cost: this.cost,
+        })
+    }
+}
+/// One captured player outbox: the reservation keeps its prepaid body credit.
+struct SenderAdmission {
+    sender: PlayerSender,
+    framing: sunrise_protocol::connection::Framing,
+    capacity: usize,
+}
+impl crate::raw_payloads::Admission for SenderAdmission {
+    fn framing(&self) -> sunrise_protocol::connection::Framing {
+        self.framing
+    }
+    fn capacity(&self) -> usize {
+        self.capacity
+    }
+    fn accepts_packets(&self) -> bool {
+        true
+    }
+    fn prepare(
+        self: Box<Self>,
+        body: Vec<u8>,
+        id: &PayloadId,
+    ) -> Result<Box<dyn crate::raw_payloads::PreparedSend>, PayloadSendError> {
+        self.sender
+            .prepare_payload(body, id)
+            .map(|prepared| Box::new(prepared) as Box<dyn crate::raw_payloads::PreparedSend>)
+    }
+}
+impl crate::raw_payloads::HostedAdmission for SenderAdmission {
+    fn prepare_hosted(
+        self: Box<Self>,
+        body: Vec<u8>,
+        id: &PayloadId,
+    ) -> Result<Box<dyn crate::raw_payloads::HostedPreparedSend>, PayloadSendError> {
+        self.sender
+            .prepare_payload(body, id)
+            .map(|prepared| Box::new(prepared) as Box<dyn crate::raw_payloads::HostedPreparedSend>)
+    }
+}
+impl crate::raw_payloads::HostedOutput for PlayerSender {
+    fn admit_hosted(
+        &self,
+        _: sunrise_protocol::payload_negotiation::Phase,
+        _: &PayloadId,
+    ) -> Result<Box<dyn crate::raw_payloads::HostedAdmission>, PayloadSendError> {
+        Ok(Box::new(SenderAdmission {
+            sender: self.clone(),
+            framing: self.payload_framing(),
+            capacity: self.payload_capacity(),
         }))
+    }
+}
+impl crate::raw_payloads::Output for PlayerSender {
+    fn transport(&self) -> &Arc<Transport> {
+        self.payload_transport()
+    }
+    fn side(&self) -> Side {
+        Side::Server
+    }
+    fn admit(
+        &self,
+        _: sunrise_protocol::payload_negotiation::Phase,
+        _: &PayloadId,
+    ) -> Result<Box<dyn crate::raw_payloads::Admission>, PayloadSendError> {
+        Ok(Box::new(SenderAdmission {
+            sender: self.clone(),
+            framing: self.payload_framing(),
+            capacity: self.payload_capacity(),
+        }))
+    }
+    fn disconnect(&self, reason: &crate::text::Text) {
+        PlayerSender::disconnect(self, super::data::component_nbt(&reason.component()));
+    }
+    #[cfg(any(test, feature = "test-payload-probe"))]
+    fn diagnostics(&self) -> Box<dyn Fn() -> String + Send + Sync> {
+        self.payload_diagnostic_observer()
     }
 }
 impl Drop for PreparedPayload {
@@ -936,10 +1132,50 @@ fn serve_connection(
                 );
                 return Ok(());
             }
-            serve_login(c, address, &shared, counted)
+            let handed_off = shared.handoffs.is_some() && shared.handshake_listeners.any();
+            let intention = if handed_off {
+                let id = counted.as_ref().map_or_else(
+                    || shared.next_connection.fetch_add(1, Ordering::Relaxed),
+                    |counted| counted.2,
+                );
+                let peer_ip = (!c.is_memory()).then_some(address.ip());
+                let Some(decision) = shared.hand_off(id, intention, peer_ip) else {
+                    return Ok(());
+                };
+                // A server draining its players for a stop keeps listening: `try_admit` refuses
+                // an accepted login there as it refuses one no listener heard.
+                if shared.stop.load(Ordering::Relaxed) {
+                    return Ok(());
+                }
+                match decision {
+                    Ok(accepted) => accepted,
+                    Err(reason_json) => {
+                        let _ = c.send(
+                            &login::Clientbound::Disconnect(login::Disconnect { reason_json })
+                                .encode(),
+                        );
+                        return Ok(());
+                    }
+                }
+            } else {
+                intention
+            };
+            serve_login(c, intention, handed_off, address, &shared, counted)
         }
         other => Err(format!("unknown intent {other}")),
     }
+}
+
+/// Keep the destination of an accepted login or transfer, without proxy or loader data: the
+/// host before its first NUL, empty or not, and the port, as the handshake sent them. A memory
+/// connection's handshake names its address and port 0, as `Minecraft.doWorldLoad`'s does.
+fn login_virtual_host(intention: handshake::Intention) -> VirtualHost {
+    let handshake::Intention { host, port, .. } = intention;
+    let host = match host.split_once('\0') {
+        Some((prefix, _)) => prefix.to_owned(),
+        None => host,
+    };
+    VirtualHost { host, port }
 }
 
 fn serve_status(c: &mut Connection, shared: &Shared) -> Result<(), String> {
@@ -1109,16 +1345,25 @@ fn authenticate(
 
 fn serve_login(
     mut c: Connection,
+    // The accepted intention, after any `player_handshake` rewrite, is the player's virtual host.
+    intention: handshake::Intention,
+    handed_off: bool,
     address: std::net::SocketAddr,
     shared: &Arc<Shared>,
     counted: Option<super::Counted>,
 ) -> Result<(), String> {
+    let virtual_host = Some(login_virtual_host(intention));
     let e = |e: sunrise_protocol::Error| e.to_string();
     let (id, payload) = c.recv().map_err(e)?;
     let hello = match login::Serverbound::decode(id, &payload).map_err(e)? {
         login::Serverbound::Hello(h) => h,
         _ => return Err("expected a login hello".into()),
     };
+    // A peer that left while the server tick decided its handshake may have left a whole
+    // Hello behind: its connection is gone before authentication or admission sees it.
+    if handed_off && c.reader.peer_closed() {
+        return Ok(());
+    }
     if !valid_name(&hello.name) {
         // handleHello's validState throws; Connection.exceptionCaught sends the
         // exception as the login disconnect.
@@ -1211,7 +1456,15 @@ fn serve_login(
     let result = login_and_configure(&mut c, shared, uuid, &name, &user, properties);
     match result {
         Ok(Some(parts)) => {
-            play(c, shared, parts, address, counted, expected.is_some());
+            play(
+                c,
+                shared,
+                parts,
+                address,
+                counted,
+                expected.is_some(),
+                virtual_host,
+            );
             Ok(())
         }
         Ok(None) => {
@@ -1239,6 +1492,7 @@ struct Parts {
     info: ClientInformation,
     brand: String,
     datapack_offer: Option<Vec<u8>>,
+    configured: Option<super::configuration_tasks::Configured>,
     channels: super::config_payloads::EngineChannels,
 }
 
@@ -1251,6 +1505,10 @@ fn login_and_configure(
     properties: Vec<sunrise_core::profile::AccountProperty>,
 ) -> Result<Option<Parts>, String> {
     let e = |e: sunrise_protocol::Error| e.to_string();
+    // `player_login_profile`: the login's properties, as a mod edits them, go to both login
+    // success and the player list.
+    let properties =
+        super::login_profile::edited(shared.login_profiles.as_ref(), uuid, name, properties);
     // ServerLoginPacketListenerImpl: memory connections are not compressed.
     let threshold = shared.config.compression_threshold;
     if threshold >= 0 && !c.is_memory() {
@@ -1285,7 +1543,11 @@ fn login_and_configure(
     }
     c.reader.set_read_timeout(Some(READ_TIMEOUT)).map_err(e)?;
     // Configuration.
-    let payload_transport = Transport::new(shared.payload_local.clone(), Side::Server);
+    let payload_transport = Transport::new(
+        shared.payload_local.clone(),
+        Side::Server,
+        crate::lan::PAYLOAD_RECORD_OVERHEAD,
+    );
     let mut config_io =
         ConfigIo::new(c, payload_transport.clone(), shared.events.clone()).map_err(e)?;
     let c = &mut config_io;
@@ -1451,17 +1713,18 @@ fn login_and_configure(
                 data: Vec::new(),
             }),
         )?;
-        // Advertise private custom-book synchronization independently of mod registration.
-        send(
-            c,
-            cfg::Clientbound::CustomPayload(cfg::CustomPayload {
-                channel: sunrise_protocol::custom_book::CHANNEL.into(),
-                data: sunrise_protocol::custom_book::CAPABILITY.to_vec(),
-            }),
-        )?;
         c.ask_viewed_levels().map_err(e)?;
         c.ask_menu_extra_rev().map_err(e)?;
     }
+    // Any brand can use the book channel. Clients that don't understand this advertisement
+    // ignore it; the server sends no settings or placement data before the play exchange.
+    send(
+        c,
+        cfg::Clientbound::CustomPayload(cfg::CustomPayload {
+            channel: sunrise_protocol::custom_book::CHANNEL.into(),
+            data: sunrise_protocol::custom_book::CAPABILITY.to_vec(),
+        }),
+    )?;
     // And how far it samples far terrain for it (crate::lod_net).
     if brand == "sunrise" && shared.config.lod_distance > 0 {
         send(
@@ -1606,7 +1869,7 @@ fn login_and_configure(
         lost(shared, &format!("{name} ({})", uuid_string(uuid)), &text);
         return Ok(None);
     }
-    configuration_tasks::configure(
+    let configured = configuration_tasks::configure(
         c,
         shared,
         uuid,
@@ -1652,6 +1915,7 @@ fn login_and_configure(
         info,
         brand,
         datapack_offer,
+        configured,
     }))
 }
 
@@ -2043,6 +2307,7 @@ fn play(
     address: std::net::SocketAddr,
     counted: Option<super::Counted>,
     expected: bool,
+    virtual_host: Option<VirtualHost>,
 ) {
     let Some(conn) = shared.next_id() else {
         shared.release(parts.uuid);
@@ -2081,6 +2346,7 @@ fn play(
         to: To::Pool(outbox.clone(), watch.clone()),
         wire: Some(c.reader.counters.clone()),
         payload_transport: parts.payload_transport.clone(),
+        virtual_host: virtual_host.map(Arc::new),
         datapack_offer: parts.datapack_offer.map(Into::into),
         announced: parts.channels.announced.clone().unwrap_or_default(),
         viewed_levels: parts.channels.viewed_levels.answer(),
@@ -2091,9 +2357,12 @@ fn play(
         .resource_pack
         .as_ref()
         .is_some_and(|p| p.required);
+    // One output for this physical connection: every delivery clones the `Arc`.
+    let payload_endpoint = crate::raw_payloads::Endpoint::shared_server(Arc::new(sender.clone()));
     let session = PlayConn {
         sync: parts.sync,
         payload_sender: sender.clone(),
+        payload_endpoint,
         payload_transport: parts.payload_transport,
         conn,
         shared: shared.clone(),
@@ -2123,7 +2392,7 @@ fn play(
     let mut session = Box::new(session);
     if shared
         .events
-        .send(NetEvent::Joined(Box::new(joined)))
+        .send(NetEvent::Joined(Box::new(joined), parts.configured))
         .is_err()
     {
         session.left("server closed".to_owned());
@@ -2138,6 +2407,8 @@ fn play(
 struct PlayConn {
     sync: Arc<SyncData>,
     payload_sender: PlayerSender,
+    /// The one output this physical connection shares with its deliveries.
+    payload_endpoint: crate::raw_payloads::Endpoint,
     payload_transport: Arc<Transport>,
     conn: u32,
     shared: Arc<Shared>,
@@ -2155,17 +2426,6 @@ struct PlayConn {
     counted: Option<super::Counted>,
     /// Shared with the player's [`PlayerSender`]: what the hub hasn't taken yet.
     undrained: Arc<Undrained>,
-}
-impl PlayConn {
-    /// `IntegratedServer.isSingleplayerOwner`: the integrated server's own player,
-    /// by name (ignoring case).
-    fn is_owner(&self) -> bool {
-        self.shared
-            .config
-            .singleplayer_profile
-            .as_ref()
-            .is_some_and(|(owner, _)| owner.eq_ignore_ascii_case(&self.name))
-    }
 }
 impl io_pool::Session for PlayConn {
     /// Forward the player's packet, or say why it ends the connection: a
@@ -2205,7 +2465,7 @@ impl io_pool::Session for PlayConn {
                     self.latency.store((old * 3 + ms) / 4, Ordering::Relaxed);
                     self.sent_at = None;
                     Verdict::Go
-                } else if self.is_owner() {
+                } else if self.shared.is_singleplayer_owner(&self.name) {
                     Verdict::Go
                 } else {
                     kick((
@@ -2241,33 +2501,27 @@ impl io_pool::Session for PlayConn {
                             payload,
                         ) {
                             Ok(crate::raw_payloads::Classified::Application(incoming)) => {
-                                let endpoint = crate::raw_payloads::Endpoint::server(
-                                    self.payload_sender.clone(),
-                                );
-                                crate::raw_payloads::dispatch(
+                                crate::raw_payloads::dispatch_server(
                                     incoming,
-                                    endpoint.clone(),
-                                    crate::raw_payloads::MainQueue::Server {
-                                        events: self.shared.events.clone(),
-                                        endpoint,
-                                        conn: Some(self.conn),
-                                    },
+                                    self.payload_endpoint.clone(),
+                                    crate::raw_payloads::ServerQueue::new(
+                                        self.shared.events.clone(),
+                                        self.payload_endpoint.clone(),
+                                        Some(self.conn),
+                                    ),
                                 );
                                 return Verdict::Go;
                             }
                             Ok(crate::raw_payloads::Classified::Raw(deliveries)) => {
                                 for incoming in deliveries {
-                                    let endpoint = crate::raw_payloads::Endpoint::server(
-                                        self.payload_sender.clone(),
-                                    );
-                                    crate::raw_payloads::dispatch(
+                                    crate::raw_payloads::dispatch_server(
                                         incoming,
-                                        endpoint.clone(),
-                                        crate::raw_payloads::MainQueue::Server {
-                                            events: self.shared.events.clone(),
-                                            endpoint,
-                                            conn: Some(self.conn),
-                                        },
+                                        self.payload_endpoint.clone(),
+                                        crate::raw_payloads::ServerQueue::new(
+                                            self.shared.events.clone(),
+                                            self.payload_endpoint.clone(),
+                                            Some(self.conn),
+                                        ),
                                     );
                                 }
                                 return Verdict::Go;
@@ -2310,7 +2564,11 @@ impl io_pool::Session for PlayConn {
         self.payload_tick(now)
     }
     fn left(&mut self, reason: String) {
-        let _ = self.shared.events.send(NetEvent::Left(self.conn, reason));
+        // Publish logout before releasing the profile, even if gameplay filled its queue.
+        let _ = self
+            .shared
+            .events
+            .send_terminal(NetEvent::Left(self.conn, reason));
         self.shared.closing.fetch_add(1, Ordering::AcqRel);
     }
     fn closed(&mut self) {
@@ -2528,6 +2786,46 @@ impl KeepAliveWatch {
 #[cfg(test)]
 mod tests {
     include!("profession_join_tests.rs");
+
+    #[test]
+    fn login_virtual_host_uses_the_packet_destination() {
+        for (intent, host, port, expected) in [
+            (
+                handshake::LOGIN,
+                "Play.Example.test.\0proxy\0marker",
+                25572,
+                ("Play.Example.test.", 25572),
+            ),
+            (
+                handshake::TRANSFER,
+                "next.example.test",
+                65535,
+                ("next.example.test", 65535),
+            ),
+            // ClientIntentionPacket accepts an empty host name.
+            (handshake::LOGIN, "", 25565, ("", 25565)),
+            (handshake::LOGIN, "\0proxy", 25565, ("", 25565)),
+        ] {
+            let packet = handshake::Serverbound::Intention(handshake::Intention {
+                protocol: PROTOCOL_VERSION,
+                host: host.to_owned(),
+                port,
+                intent,
+            })
+            .encode();
+            let handshake::Serverbound::Intention(intention) =
+                handshake::Serverbound::decode(i32::from(packet[0]), &packet[1..]).unwrap()
+            else {
+                panic!("expected an intention packet");
+            };
+            let destination = login_virtual_host(intention);
+            assert_eq!(
+                (destination.host.as_str(), destination.port),
+                expected,
+                "intent {intent}, host {host:?}, port {port}",
+            );
+        }
+    }
 
     /// Bodies shared between players reach each of them as the same bytes, in the order
     /// they were sent among the player's own.
@@ -3081,59 +3379,119 @@ mod tests {
     }
 
     #[test]
-    fn vanilla_configuration_does_not_disclose_sunrise_mods() {
-        let config = crate::lan::NetConfig {
-            announce: false,
-            listen: false,
-            ..crate::lan::NetConfig::lan(0, "Owner - World".into(), 8)
+    fn book_offer_crosses_configuration_for_either_brand_without_disclosing_mods() {
+        use crate::recipe_book::{
+            CustomBooks, settings_codec, settings_connection, settings_sync::Message,
         };
-        let lan = crate::lan::Lan::start_with(Arc::new(SyncData::empty()), config).unwrap();
-        let mut c = Connection::local(lan.connect_local().unwrap());
-        c.reader
-            .set_read_timeout(Some(Duration::from_secs(10)))
+        use sunrise_protocol::custom_book::{CAPABILITY, CHANNEL};
+        use sunrise_protocol::packets::play::Serverbound as S;
+
+        for (brand, supports_books) in [("vanilla", false), ("other-client", true)] {
+            let config = crate::lan::NetConfig {
+                announce: false,
+                listen: false,
+                ..crate::lan::NetConfig::lan(0, "Owner - World".into(), 8)
+            };
+            let lan = crate::lan::Lan::start_with(Arc::new(SyncData::empty()), config).unwrap();
+            let mut c = Connection::local(lan.connect_local().unwrap());
+            let timeout = Duration::from_secs(10);
+            c.reader.set_read_timeout(Some(timeout)).unwrap();
+            login_profile(&mut c, "Owner");
+            c.send(
+                &login::Serverbound::LoginAcknowledged(sunrise_protocol::packets::Empty).encode(),
+            )
             .unwrap();
-        login_profile(&mut c, "Owner");
-        c.send(&login::Serverbound::LoginAcknowledged(sunrise_protocol::packets::Empty).encode())
+            let mut data = ::sunrise_core::vanilla_bytes::Writer::new();
+            data.string(brand);
+            c.send(
+                &cfg::Serverbound::CustomPayload(cfg::CustomPayload {
+                    channel: "minecraft:brand".into(),
+                    data: data.data,
+                })
+                .encode(),
+            )
             .unwrap();
-        let mut data = ::sunrise_core::vanilla_bytes::Writer::new();
-        data.string("vanilla");
-        c.send(
-            &cfg::Serverbound::CustomPayload(cfg::CustomPayload {
-                channel: "minecraft:brand".into(),
-                data: data.data,
-            })
-            .encode(),
-        )
-        .unwrap();
-        // Vanilla's server sends a vanilla client its brand and no ping in configuration
-        // (ServerConfigurationPacketListenerImpl.startConfiguration): neither the mod list nor
-        // `sunrise:payloads`, even with the engine's declarations in this server's manifest.
-        let mut sent = Vec::new();
-        loop {
-            let (id, payload) = c.recv().unwrap();
-            match cfg::Clientbound::decode(id, &payload).unwrap() {
-                cfg::Clientbound::CustomPayload(p) => sent.push(p.channel),
-                cfg::Clientbound::Ping(p) => {
-                    sent.push(format!("ping {}", p.id));
-                    c.send(&cfg::Serverbound::Pong(p).encode()).unwrap();
-                }
-                cfg::Clientbound::SelectKnownPacks(p) => {
-                    c.send(&cfg::Serverbound::SelectKnownPacks(p).encode())
-                        .unwrap();
-                }
-                cfg::Clientbound::Disconnect(d) => panic!("unexpected refusal: {:?}", d.reason),
-                cfg::Clientbound::FinishConfiguration(_) => {
-                    c.send(
-                        &cfg::Serverbound::FinishConfiguration(sunrise_protocol::packets::Empty)
+            // The book announcement is not a mod list or a mandatory protocol query.
+            let mut announced = false;
+            loop {
+                let (id, payload) = c.recv().unwrap();
+                match cfg::Clientbound::decode(id, &payload).unwrap() {
+                    cfg::Clientbound::CustomPayload(p) if p.channel == CHANNEL => {
+                        assert!(!announced);
+                        assert_eq!(p.data.as_slice(), CAPABILITY);
+                        announced = true;
+                    }
+                    cfg::Clientbound::CustomPayload(p) => assert_eq!(p.channel, "minecraft:brand"),
+                    cfg::Clientbound::Ping(_) => {
+                        panic!("unexpected configuration ping for {brand}")
+                    }
+                    cfg::Clientbound::SelectKnownPacks(p) => {
+                        c.send(&cfg::Serverbound::SelectKnownPacks(p).encode())
+                            .unwrap();
+                    }
+                    cfg::Clientbound::Disconnect(d) => panic!("unexpected refusal: {:?}", d.reason),
+                    cfg::Clientbound::FinishConfiguration(_) => {
+                        c.send(
+                            &cfg::Serverbound::FinishConfiguration(
+                                sunrise_protocol::packets::Empty,
+                            )
                             .encode(),
-                    )
-                    .unwrap();
-                    break;
+                        )
+                        .unwrap();
+                        break;
+                    }
+                    _ => {}
                 }
-                _ => {}
+            }
+            assert!(announced);
+            let (event, _credit) = lan.events.recv_timeout_owned(timeout).unwrap().into_parts();
+            let NetEvent::Joined(joined, _) = event else {
+                panic!("expected a play connection");
+            };
+            assert_eq!(joined.brand, brand);
+
+            let mut book_connection = settings_connection::Connection::default();
+            let mut books = CustomBooks::default();
+            let mut turn = |packet: S| {
+                c.send(&packet.encode()).unwrap();
+                let (event, _credit) = lan.events.recv_timeout_owned(timeout).unwrap().into_parts();
+                let NetEvent::Packet(conn, packet, _) = event else {
+                    panic!("expected a play packet");
+                };
+                assert_eq!(conn, joined.conn);
+                if let S::CustomPayload(payload) = *packet {
+                    assert_eq!(payload.channel, CHANNEL);
+                    book_connection
+                        .receive(&payload.data, &mut books, Default::default, || 1)
+                        .map(|reply| reply.message)
+                } else {
+                    assert!(matches!(*packet, S::ClientInformation(_)));
+                    None
+                }
+            };
+            if supports_books {
+                let mut send_book = |message| {
+                    turn(S::CustomPayload(cfg::CustomPayload {
+                        channel: CHANNEL.to_owned(),
+                        data: settings_codec::encode(&message).unwrap(),
+                    }))
+                };
+                assert_eq!(send_book(Message::Hello), Some(Message::Ready));
+                assert_eq!(
+                    send_book(Message::Offer(vec![])),
+                    Some(Message::Snapshot {
+                        epoch: 1,
+                        revision: 0,
+                        entries: vec![]
+                    })
+                );
+                assert!(book_connection.authority.is_some());
+            } else {
+                // An unsupported client ignores the announcement and enters ordinary play.
+                assert_eq!(turn(S::ClientInformation(ClientInformation::new(10))), None);
+                assert!(book_connection.authority.is_none());
             }
         }
-        assert_eq!(sent, ["minecraft:brand"]);
     }
 
     #[test]
@@ -3576,6 +3934,9 @@ mod tests {
         let mut c = PlayConn {
             sync: Arc::new(SyncData::empty()),
             payload_sender: PlayerSender::disabled(),
+            payload_endpoint: crate::raw_payloads::Endpoint::shared_server(Arc::new(
+                PlayerSender::disabled(),
+            )),
             payload_transport: Transport::empty(),
             conn: 1,
             shared: lan.shared.clone(),
@@ -3715,6 +4076,9 @@ mod tests {
         let conn = |uuid: u128, pending: Option<i64>| PlayConn {
             sync: Arc::new(SyncData::empty()),
             payload_sender: PlayerSender::disabled(),
+            payload_endpoint: crate::raw_payloads::Endpoint::shared_server(Arc::new(
+                PlayerSender::disabled(),
+            )),
             payload_transport: Transport::empty(),
             conn: 1,
             shared: lan.shared.clone(),
@@ -3769,6 +4133,9 @@ mod tests {
         let conn = |uuid: u128| PlayConn {
             sync: Arc::new(SyncData::empty()),
             payload_sender: PlayerSender::disabled(),
+            payload_endpoint: crate::raw_payloads::Endpoint::shared_server(Arc::new(
+                PlayerSender::disabled(),
+            )),
             payload_transport: Transport::empty(),
             conn: 1,
             shared: lan.shared.clone(),
@@ -3824,6 +4191,7 @@ mod outgoing_budget_tests {
                 .unwrap();
         PlayerSender {
             payload_transport: Transport::empty(),
+            virtual_host: None,
             undrained: Arc::default(),
             pending,
             cap: io_pool::MAX_PENDING,
@@ -3843,6 +4211,40 @@ mod outgoing_budget_tests {
             menu_extra_rev: 0,
         }
     }
+    #[test]
+    fn play_ping_reports_queue_admission() {
+        let mut s = sender(Framing::Network(None));
+        s.cap = 0;
+        assert!(!s.try_send_play_ping(-1));
+        assert!(s.is_live());
+        let transaction = transaction_packets::Scope::begin();
+        assert!(!s.try_send_play_ping(-1));
+        assert!(transaction_packets::Scope::refused());
+        drop(transaction);
+        assert_eq!(s.queued(), (0, 0));
+        assert!(s.is_live());
+
+        s.cap = io_pool::MAX_PENDING;
+        let transaction = transaction_packets::Scope::begin();
+        assert!(s.try_send_play_ping(42));
+        assert_eq!(s.queued().0, 0, "tentative packets cannot reach the outbox");
+        drop(transaction);
+        assert_eq!(s.queued(), (0, 0));
+        assert!(
+            s.try_send_play_ping(42),
+            "admission does not require a worker wake"
+        );
+        assert_eq!(s.queued().0, 1);
+        s.close();
+        assert!(!s.try_send_play_ping(43));
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let channel = PlayerSender::new(tx, Arc::default());
+        drop(rx);
+        assert!(!channel.try_send_play_ping(44));
+        assert_eq!(channel.queued(), (0, 0));
+    }
+
     #[test]
     fn empty_prepared_journal_records_are_bounded_and_fully_refunded() {
         let s = sender(Framing::Memory);
@@ -3913,7 +4315,11 @@ mod outgoing_budget_tests {
     #[test]
     fn a_pairing_attachment_keeps_its_prepaid_credit_and_play_epoch() {
         for stale in [false, true] {
-            let transport = Transport::capture(crate::raw_payloads::Side::Server).unwrap();
+            let transport = Transport::capture(
+                crate::raw_payloads::Side::Server,
+                crate::lan::PAYLOAD_RECORD_OVERHEAD,
+            )
+            .unwrap();
             transport
                 .accept(transport.local.manifest.entries())
                 .unwrap();
@@ -3924,11 +4330,11 @@ mod outgoing_budget_tests {
                 .unwrap();
             let prepaid = sender.pending.load(Ordering::Relaxed);
             assert!(prepaid > 0);
-            let mut out = vec![
-                vec![0].into(),
-                prepared.into_prepared_body(transport.epoch().unwrap()),
-                vec![0].into(),
-            ];
+            let pairing = crate::raw_payloads::HostedPreparedSend::into_pairing(
+                Box::new(prepared),
+                transport.epoch().unwrap(),
+            );
+            let mut out = vec![vec![0].into(), Body::Prepared(pairing), vec![0].into()];
             assert_eq!(sender.pending.load(Ordering::Relaxed), prepaid);
             if stale {
                 transport.begin_configuration();

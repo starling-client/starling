@@ -74,7 +74,7 @@ fn malformed_metadata_aborts_the_open_bundle_and_refunds_its_prefix() {
     .unwrap_err();
     assert_eq!(
         error.key.as_deref(),
-        Some("multiplayer.disconnect.invalid_packet"),
+        Some("disconnect.genericReason"),
         "{error:?}"
     );
     assert!(
@@ -93,7 +93,8 @@ fn malformed_attachment_aborts_packet_decoding_with_or_without_a_bundle() {
 
     for bundled in [false, true] {
         let (root, data) = empty_item_data("malformed-pairing-attachment");
-        let transport = Transport::capture(Side::Client).unwrap();
+        let transport =
+            Transport::capture(Side::Client, crate::net::PAYLOAD_RECORD_OVERHEAD).unwrap();
         transport
             .accept(transport.local.manifest.entries())
             .unwrap();
@@ -156,7 +157,7 @@ fn a_pairing_bundle_accepts_a_wire_valid_high_expansion_attachment() {
     use sunrise_protocol::attachment_sync;
 
     let (root, data) = empty_item_data("expanded-pairing-attachment");
-    let transport = Transport::capture(Side::Client).unwrap();
+    let transport = Transport::capture(Side::Client, crate::net::PAYLOAD_RECORD_OVERHEAD).unwrap();
     transport
         .accept(transport.local.manifest.entries())
         .unwrap();
@@ -256,7 +257,7 @@ fn assert_memory_snapshot_fits(element_opcode: u8, fill: u8) {
     use sunrise_protocol::attachment_sync;
 
     let (root, data) = empty_item_data("memory-only-pairing-attachment");
-    let transport = Transport::capture(Side::Client).unwrap();
+    let transport = Transport::capture(Side::Client, crate::net::PAYLOAD_RECORD_OVERHEAD).unwrap();
     transport
         .accept(transport.local.manifest.entries())
         .unwrap();
@@ -321,6 +322,141 @@ fn assert_memory_snapshot_fits(element_opcode: u8, fill: u8) {
     }
     drop(credit);
     assert_eq!(events.stats().reserved_bytes, 0);
+    reader.join().unwrap().unwrap_err();
+    writer.lock().unwrap().take().unwrap().shutdown();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn malformed_play_packets_fail_decode_before_bundling() {
+    let lang = Arc::new(
+        [("disconnect.genericReason".to_owned(), "%s".to_owned())]
+            .into_iter()
+            .collect::<Language>(),
+    );
+    let mut delim_extra = Writer::new();
+    delim_extra.varint(sunrise_protocol::ids::play::clientbound::BUNDLE_DELIMITER);
+    delim_extra.u8(0x01);
+    let mut trunc_post = Writer::new();
+    trunc_post.varint(sunrise_protocol::ids::play::clientbound::POST_EFFECTS);
+    trunc_post.varint(1);
+    let mut unknown_id = Writer::new();
+    unknown_id.varint(999);
+    let cases = [
+        (
+            "bundle_delimiter_extra_bytes",
+            delim_extra.data,
+            "Internal Exception: io.netty.handler.codec.DecoderException: java.io.IOException: Packet play/clientbound/minecraft:bundle_delimiter (ClientboundBundleDelimiterPacket) was larger than I expected, found 1 bytes extra whilst reading packet clientbound/minecraft:bundle_delimiter",
+        ),
+        (
+            "truncated_post_effects",
+            trunc_post.data,
+            "Internal Exception: io.netty.handler.codec.DecoderException: Failed to decode packet 'clientbound/minecraft:post_effects'",
+        ),
+        (
+            "unregistered_packet_id",
+            unknown_id.data,
+            "Internal Exception: io.netty.handler.codec.DecoderException: Received unknown packet id 999",
+        ),
+    ];
+    for (name, raw, expected_text) in cases {
+        let (root, data) = empty_item_data(name);
+        let (client, server) = Pipe::pair();
+        let (mut reader, writer) = Connection::local(client).split();
+        let writer = Arc::new(Mutex::new(Some(QueuedWriter::new(writer).unwrap())));
+        let (send, events) = event_channel();
+        let mut server = Connection::local(server);
+        server.send(&raw).unwrap();
+        drop(server);
+        let lang = lang.clone();
+        let writer_for_thread = writer.clone();
+        let error = std::thread::spawn(move || {
+            receive_play(
+                &mut reader,
+                Arc::default(),
+                &writer_for_thread,
+                &Arc::new(AtomicBool::new(false)),
+                &lang,
+                &send,
+                &Cookies::default(),
+                &Arc::default(),
+                &data,
+                &Arc::new(Mutex::new(None)),
+                &Transport::empty(),
+                &Arc::default(),
+                &Arc::default(),
+            )
+        })
+        .join()
+        .unwrap()
+        .unwrap_err();
+        assert_eq!(
+            error.key.as_deref(),
+            Some("disconnect.genericReason"),
+            "{name}"
+        );
+        assert_eq!(error.text, expected_text, "{name}");
+        assert!(
+            events.try_recv_owned().is_err(),
+            "{name}: no event may escape"
+        );
+        writer.lock().unwrap().take().unwrap().shutdown();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
+fn bundled_large_simple_particles_stay_compact_in_memory() {
+    use sunrise_protocol::entity_data::{Value, serializer};
+    use sunrise_protocol::retained::OwnedHeap;
+
+    let (root, data) = empty_item_data("compact-particles-bundle");
+    let (client, server) = Pipe::pair();
+    let (reader, writer) = Connection::local(client).split();
+    let writer = Arc::new(Mutex::new(Some(QueuedWriter::new(writer).unwrap())));
+    let (send, events) = event_channel();
+    let mut server = Connection::local(server);
+    let delimiter = play::Clientbound::BundleDelimiter(Empty).encode();
+
+    const COUNT: usize = 65_537;
+    let mut frame = Writer::new();
+    frame.varint(sunrise_protocol::ids::play::clientbound::SET_ENTITY_DATA);
+    frame.varint(37);
+    frame.u8(10);
+    frame.varint(serializer::PARTICLES);
+    frame.varint(COUNT as i32);
+    for _ in 0..COUNT {
+        frame.varint(0);
+    }
+    frame.u8(0xFF);
+    let wire_len = frame.data.len();
+
+    let reader = play_reader(reader, writer.clone(), send, data, Transport::empty());
+    server.send(&delimiter).unwrap();
+    server.send(&frame.data).unwrap();
+    server.send(&delimiter).unwrap();
+    drop(server);
+    let Event::Bundle(bundle) = events
+        .recv_timeout_owned(Duration::from_secs(5))
+        .unwrap()
+        .into_parts()
+        .0
+    else {
+        panic!("expected completed bundle");
+    };
+    let [BundleMember::Packet(play::Clientbound::SetEntityData(pkt))] = &bundle.packets[..] else {
+        panic!("expected one SetEntityData member");
+    };
+    let Value::Particles(list) = &pkt.values[0].2 else {
+        panic!("expected Particles value");
+    };
+    assert_eq!(list.len(), COUNT);
+    assert_eq!(list.owned_heap_bytes(), COUNT);
+    assert!(
+        bundle.owned_bytes() < wire_len * 2,
+        "bundle heap {} should stay near wire size {wire_len}",
+        bundle.owned_bytes()
+    );
     reader.join().unwrap().unwrap_err();
     writer.lock().unwrap().take().unwrap().shutdown();
     std::fs::remove_dir_all(root).unwrap();

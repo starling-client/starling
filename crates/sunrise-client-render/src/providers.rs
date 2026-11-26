@@ -4,10 +4,87 @@ mod evaluation;
 
 pub use evaluation::{ConditionContext, Evaluation};
 use serde_json::Value;
-use std::{collections::HashMap, fs, path::Path, sync::Arc};
+use std::{collections::BTreeMap, fs, path::Path, sync::Arc};
 
 pub(crate) const NUMBER_PROVIDER_KINDS: [&str; 2] =
     ["context_int_provider", "context_float_provider"];
+
+/// `ContextIntProviderTypes.bootstrap`.
+const INT_PROVIDER_TYPES: &[&str] = &[
+    "abs",
+    "avg",
+    "binomial",
+    "conditional",
+    "constant",
+    "sub",
+    "environment_attribute",
+    "from_float",
+    "max",
+    "min",
+    "floor_mod",
+    "floor_div",
+    "mod",
+    "div",
+    "negate",
+    "number_dispatcher",
+    "pow",
+    "mul",
+    "score",
+    "storage",
+    "add",
+    "uniform",
+    "weighted_list",
+];
+/// `ContextFloatProviderTypes.bootstrap`.
+const FLOAT_PROVIDER_TYPES: &[&str] = &[
+    "abs",
+    "avg",
+    "ceil",
+    "conditional",
+    "constant",
+    "cos",
+    "sub",
+    "enchantment_level",
+    "environment_attribute",
+    "floor",
+    "from_int",
+    "length",
+    "max",
+    "min",
+    "mod",
+    "negate",
+    "number_dispatcher",
+    "pow",
+    "mul",
+    "div",
+    "round",
+    "sin",
+    "sqrt",
+    "storage",
+    "add",
+    "truncate",
+    "uniform",
+    "weighted_list",
+];
+
+/// `ContextIntProviders.DIRECT_CODEC` / `ContextFloatProviders.DIRECT_CODEC`, the
+/// registry file codecs: an inline number, or an object of a registered provider
+/// type. A reference by id exists only in the holder `CODEC`.
+fn validate(value: &Value, types: &[&str]) -> Result<(), String> {
+    match value {
+        Value::Number(_) => Ok(()),
+        Value::Object(fields) => {
+            let kind = fields.get("type").and_then(Value::as_str).unwrap_or("");
+            let name = kind.strip_prefix("minecraft:").unwrap_or(kind);
+            if types.contains(&name) {
+                Ok(())
+            } else {
+                Err(format!("unknown provider type {kind:?}"))
+            }
+        }
+        _ => Err("expected a number or a typed object".into()),
+    }
+}
 
 /// Evaluator for `context_int_provider` / `context_float_provider` values.
 #[derive(Clone)]
@@ -15,15 +92,16 @@ pub struct Providers(Arc<Definitions>);
 
 #[derive(Default)]
 struct Definitions {
-    ints: HashMap<String, Value>,
-    floats: HashMap<String, Value>,
+    ints: BTreeMap<String, Value>,
+    floats: BTreeMap<String, Value>,
 }
-fn load_dir(dir: &Path, namespace: &str, out: &mut HashMap<String, Value>) {
+fn load_dir(dir: &Path, namespace: &str, out: &mut BTreeMap<String, Value>) {
     let Ok(folder) = sunrise_world::json_folder::read(dir) else {
         return;
     };
     for file in &folder.files {
-        if let Ok(bytes) = file.bytes()
+        if sunrise_world::json_folder::valid_resource_path(namespace, &file.name)
+            && let Ok(bytes) = file.bytes()
             && let Ok(value) = serde_json::from_slice(bytes)
         {
             out.insert(format!("{namespace}:{}", file.name), value);
@@ -32,8 +110,8 @@ fn load_dir(dir: &Path, namespace: &str, out: &mut HashMap<String, Value>) {
 }
 impl Definitions {
     fn load(root: &Path) -> Self {
-        let mut ints = HashMap::new();
-        let mut floats = HashMap::new();
+        let mut ints = BTreeMap::new();
+        let mut floats = BTreeMap::new();
         let mut namespaces: std::collections::BTreeSet<String> =
             std::iter::once("minecraft".to_owned())
                 .chain(sunrise_items::content_namespaces::namespaces(root))
@@ -84,17 +162,38 @@ impl Providers {
                 }
             }
         }
+        let mut errors: Vec<String> = [
+            ("context_int_provider", INT_PROVIDER_TYPES, &providers.ints),
+            (
+                "context_float_provider",
+                FLOAT_PROVIDER_TYPES,
+                &providers.floats,
+            ),
+        ]
+        .into_iter()
+        .flat_map(|(kind, types, table)| {
+            table.iter().filter_map(move |(id, value)| {
+                validate(value, types)
+                    .err()
+                    .map(|error| format!("{kind} {id}: {error}"))
+            })
+        })
+        .collect();
+        if !errors.is_empty() {
+            errors.sort();
+            return Err(errors.join("\n"));
+        }
         Ok(Self(Arc::new(providers)))
     }
     /// The accepted definitions used by provider evaluation, never a resource-file inventory.
-    pub fn registry(&self, registry: &str) -> Option<&HashMap<String, Value>> {
+    pub fn registry(&self, registry: &str) -> Option<&BTreeMap<String, Value>> {
         match registry {
             "minecraft:context_int_provider" => Some(&self.0.ints),
             "minecraft:context_float_provider" => Some(&self.0.floats),
             _ => None,
         }
     }
-    fn eval(v: &Value, fast: bool, table: &HashMap<String, Value>, depth: u32) -> f64 {
+    fn eval(v: &Value, fast: bool, table: &BTreeMap<String, Value>, depth: u32) -> f64 {
         if depth > 16 {
             return 0.0;
         }
@@ -208,6 +307,59 @@ mod tests {
     }
 
     #[test]
+    fn an_unregistered_provider_type_refuses_the_load() {
+        let root = std::env::temp_dir().join(format!(
+            "sunrise-provider-types-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        let ints = root.join("data/example/context_int_provider");
+        let floats = root.join("data/example/context_float_provider");
+        std::fs::create_dir_all(&ints).unwrap();
+        std::fs::create_dir_all(&floats).unwrap();
+        std::fs::write(
+            ints.join("ok.json"),
+            r#"{"type":"minecraft:add","left":1,"right":2}"#,
+        )
+        .unwrap();
+        std::fs::write(ints.join("bad.json"), r#"{"type":"example:nope"}"#).unwrap();
+        // `from_float` is an int provider type only.
+        std::fs::write(
+            floats.join("bad.json"),
+            r#"{"type":"minecraft:from_float"}"#,
+        )
+        .unwrap();
+        // A reference by id is only in the holder codec, not the file codec.
+        std::fs::write(ints.join("reference.json"), r#""example:ok""#).unwrap();
+        std::fs::write(floats.join("reference.json"), r#""example:ok""#).unwrap();
+        let Err(error) = Providers::load_with(&root, &sunrise_world::loot::PackOverlay::NONE)
+        else {
+            panic!("unregistered provider types loaded")
+        };
+        assert_eq!(error.lines().count(), 4, "{error}");
+        assert!(
+            error.contains("context_int_provider example:reference"),
+            "{error}"
+        );
+        assert!(
+            error.contains("context_float_provider example:reference"),
+            "{error}"
+        );
+        assert!(
+            error.contains("context_int_provider example:bad"),
+            "{error}"
+        );
+        assert!(
+            error.contains("context_float_provider example:bad"),
+            "{error}"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn registry_reads_share_accepted_names_with_provider_evaluation() {
         let root = std::env::temp_dir().join(format!(
             "sunrise-provider-entries-{}-{}",
@@ -221,6 +373,7 @@ mod tests {
         std::fs::create_dir_all(&folder).unwrap();
         std::fs::write(folder.join("value.json"), "17").unwrap();
         std::fs::write(folder.join("invalid.json"), "{").unwrap();
+        std::fs::write(folder.join("Invalid_Name.json"), "19").unwrap();
         let providers = Providers::load(&root);
         let table = providers
             .registry("minecraft:context_int_provider")
@@ -228,6 +381,7 @@ mod tests {
         assert_eq!(table.len(), 1);
         assert_eq!(table.get("example:sub/value"), Some(&json!(17)));
         assert!(!table.contains_key("example:sub/invalid"));
+        assert_eq!(providers.int_value(&json!("example:sub/Invalid_Name")), 0);
         assert_eq!(providers.int_value(&json!("example:sub/value")), 17);
         assert!(providers.registry("example:unknown").is_none());
         std::fs::remove_dir_all(root).unwrap();

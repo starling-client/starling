@@ -232,6 +232,21 @@ impl ClientWaypoints {
     pub fn has_waypoints(&self) -> bool {
         !self.waypoints.is_empty()
     }
+    /// The tracked waypoints in the order the server sent them, for reads that must not
+    /// change them.
+    pub fn entries(&self) -> &[TrackedWaypoint] {
+        &self.waypoints
+    }
+    /// `ClientWaypointManager.forEachWaypoint`'s read order: with a camera entity, the
+    /// tracked waypoints farthest first by `distanceSquared`, ties in no promised order;
+    /// without one, in no promised order.
+    pub fn for_read(&self, camera_entity_pos: Option<[f64; 3]>) -> Vec<&TrackedWaypoint> {
+        let mut rows: Vec<&TrackedWaypoint> = self.waypoints.iter().collect();
+        if let Some(pos) = camera_entity_pos {
+            rows.sort_by(|a, b| distance_sq(pos, b).total_cmp(&distance_sq(pos, a)));
+        }
+        rows
+    }
     pub fn clear(&mut self) {
         self.waypoints.clear();
     }
@@ -241,8 +256,8 @@ impl ClientWaypoints {
 pub struct View<'a> {
     pub gui_width: i32,
     pub gui_height: i32,
-    /// The camera entity's UUID, its block position and its position.
-    pub camera_uuid: u128,
+    /// The camera entity's UUID, if known, and its current feet position.
+    pub camera_uuid: Option<u128>,
     pub camera_entity_pos: [f64; 3],
     /// `Camera.position()` and `yRot()`, `xRot()`, `getFov()` in degrees.
     pub camera_pos: [f64; 3],
@@ -342,8 +357,10 @@ impl View<'_> {
         if let WaypointId::Uuid(uuid) = w.id
             && let Some((block, eyes)) = (self.entity)(uuid)
         {
-            let manhattan: i32 = (0..3).map(|i| (block[i] - v[i]).abs()).sum();
-            if manhattan <= 3 {
+            // Vec3i.distManhattan uses Java int differences and abs, then a float sum.
+            let [dx, dy, dz] =
+                std::array::from_fn(|i| v[i].wrapping_sub(block[i]).wrapping_abs() as f32);
+            if (dx + dy + dz) as i32 <= 3 {
                 return eyes;
             }
         }
@@ -362,10 +379,10 @@ impl View<'_> {
     fn chunk_middle(chunk: [i32; 2], y: i32) -> [f64; 3] {
         centre([chunk[0] * 16 + 8, y, chunk[1] * 16 + 8])
     }
-    fn yaw_angle(&self, w: &TrackedWaypoint) -> f64 {
+    fn yaw_angle(&self, w: &TrackedWaypoint, block_pos: Option<[f64; 3]>) -> f64 {
         match w.target {
             WaypointTarget::Empty => f64::NAN,
-            WaypointTarget::Block(v) => self.yaw_to(self.block_position(w, v)),
+            WaypointTarget::Block(v) => self.yaw_to(block_pos.unwrap_or_else(|| centre(v))),
             WaypointTarget::Chunk(c) => {
                 self.yaw_to(Self::chunk_middle(c, self.camera_pos[1] as i32))
             }
@@ -386,7 +403,7 @@ impl View<'_> {
         let rad = std::f32::consts::PI / 180.0;
         f64::from(self.pitch * rad).tan() / f64::from(self.fov / 2.0 * rad).tan()
     }
-    fn pitch_direction(&self, w: &TrackedWaypoint) -> Pitch {
+    fn pitch_direction(&self, w: &TrackedWaypoint, block_pos: Option<[f64; 3]>) -> Pitch {
         let by = |y: f64| {
             if y < -1.0 {
                 Pitch::Down
@@ -400,7 +417,7 @@ impl View<'_> {
             WaypointTarget::Empty => Pitch::None,
             WaypointTarget::Chunk(_) | WaypointTarget::Azimuth(_) => by(self.sunrise()),
             WaypointTarget::Block(v) => {
-                let p = self.block_position(w, v);
+                let p = block_pos.unwrap_or_else(|| centre(v));
                 let c = self.camera_pos;
                 let s = (self.project)([p[0] - c[0], p[1] - c[1], p[2] - c[2]]);
                 let behind = s[2] > 1.0;
@@ -412,15 +429,16 @@ impl View<'_> {
             }
         }
     }
-    /// `distanceSquared` from the camera entity.
-    fn distance_sq(&self, w: &TrackedWaypoint) -> f64 {
-        let e = self.camera_entity_pos;
-        let d = |p: [f64; 3]| (0..3).map(|i| (p[i] - e[i]).powi(2)).sum::<f64>();
-        match w.target {
-            WaypointTarget::Block(v) => d(centre(v)),
-            WaypointTarget::Chunk(c) => d(Self::chunk_middle(c, e[1].floor() as i32)),
-            WaypointTarget::Empty | WaypointTarget::Azimuth(_) => f64::INFINITY,
-        }
+}
+
+/// `distanceSquared` from the camera entity.
+pub fn distance_sq(camera_entity_pos: [f64; 3], w: &TrackedWaypoint) -> f64 {
+    let e = camera_entity_pos;
+    let d = |p: [f64; 3]| (0..3).map(|i| (p[i] - e[i]).powi(2)).sum::<f64>();
+    match w.target {
+        WaypointTarget::Block(v) => d(centre(v)),
+        WaypointTarget::Chunk(c) => d(View::chunk_middle(c, e[1].floor() as i32)),
+        WaypointTarget::Empty | WaypointTarget::Azimuth(_) => f64::INFINITY,
     }
 }
 
@@ -452,15 +470,22 @@ impl ClientWaypoints {
         let mut sorted: Vec<(f64, &TrackedWaypoint)> = self
             .waypoints
             .iter()
-            .map(|w| (view.distance_sq(w), w))
+            .map(|w| (distance_sq(view.camera_entity_pos, w), w))
             .collect();
         sorted.sort_by(|a, b| b.0.total_cmp(&a.0));
         let mut out = Vec::new();
         for (distance_sq, w) in sorted {
-            if w.id == WaypointId::Uuid(view.camera_uuid) {
+            if view
+                .camera_uuid
+                .is_some_and(|uuid| w.id == WaypointId::Uuid(uuid))
+            {
                 continue;
             }
-            let angle = view.yaw_angle(w);
+            let block_pos = match w.target {
+                WaypointTarget::Block(v) => Some(view.block_position(w, v)),
+                _ => None,
+            };
+            let angle = view.yaw_angle(w, block_pos);
             // `!(angle <= -60) && !(angle > 60)`: NaN draws, at the centre.
             if angle <= -60.0 || angle > 60.0 {
                 continue;
@@ -488,7 +513,7 @@ impl ClientWaypoints {
                 color,
                 view.tick,
             ));
-            let arrow = match view.pitch_direction(w) {
+            let arrow = match view.pitch_direction(w, block_pos) {
                 Pitch::None => continue,
                 Pitch::Down => (6, "hud/locator_bar_arrow_down"),
                 Pitch::Up => (-6, "hud/locator_bar_arrow_up"),
@@ -703,7 +728,7 @@ mod tests {
         let view = View {
             gui_width: 427,
             gui_height: 240,
-            camera_uuid: 9,
+            camera_uuid: Some(9),
             camera_entity_pos: [0.5, 64.0, 0.5],
             camera_pos: [0.5, 65.62, 0.5],
             yaw: 0.0,
@@ -750,6 +775,54 @@ mod tests {
             panic!();
         };
         assert_eq!(x, 209 + 43);
+    }
+
+    #[test]
+    fn block_waypoint_manhattan_distance_uses_java_wrapping_int_arithmetic() {
+        let styles = WaypointStyles::default();
+        let project = |p: [f64; 3]| [p[0], p[1], 0.5];
+        let eyes = [10.0, 65.62, 20.0];
+        let mut block = [i32::MAX - 2, 0, 0];
+        let make_view = |block: [i32; 3]| {
+            let entity = move |uuid: u128| (uuid == 7).then_some((block, eyes));
+            (entity,)
+        };
+        let waypoint = tracked(
+            waypoint_operation::TRACK,
+            7,
+            WaypointTarget::Block([i32::MIN, 0, 0]),
+        );
+        // Java Vec3i.distManhattan: (int)((float)Math.abs(Integer.MIN_VALUE - (Integer.MAX_VALUE - 2))) == 3 <= 3.
+        let (entity_within,) = make_view(block);
+        let view_within = View {
+            gui_width: 427,
+            gui_height: 240,
+            camera_uuid: Some(1),
+            camera_entity_pos: [0.0, 64.0, 0.0],
+            camera_pos: [0.0, 65.62, 0.0],
+            yaw: 0.0,
+            pitch: 0.0,
+            fov: 70.0,
+            project: &project,
+            entity: &entity_within,
+            styles: &styles,
+            tick: 0,
+        };
+        assert_eq!(
+            view_within.block_position(&waypoint, [i32::MIN, 0, 0]),
+            eyes
+        );
+        // One step further wraps to 4 > 3 and falls back to the block centre.
+        block = [i32::MAX - 3, 0, 0];
+        let (entity_far,) = make_view(block);
+        let view_far = View {
+            entity: &entity_far,
+            ..view_within
+        };
+        assert_eq!(
+            view_far.block_position(&waypoint, [i32::MIN, 0, 0]),
+            [f64::from(i32::MIN) + 0.5, 0.5, 0.5]
+        );
     }
 
     #[test]

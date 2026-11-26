@@ -1,5 +1,4 @@
 //! The `on_use_tick` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0133
 
 pub trait Hooks {
     /// `Item.onUseTick` of `stack`, used by `entity` with `remaining` ticks
@@ -18,7 +17,8 @@ pub trait Hooks {
         contract = "listen",
         scope = "item",
         key = "stack",
-        neoforge = "LivingEntityUseItemEvent.Tick"
+        neoforge = "LivingEntityUseItemEvent.Tick",
+        version = 2
     )]
     fn on_use_tick(stack: &ItemStack, entity: Option<i32>, remaining: i32);
 }

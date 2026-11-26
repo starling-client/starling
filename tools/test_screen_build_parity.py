@@ -24,14 +24,12 @@ import subprocess
 import sys
 import tempfile
 
-try:
-    from . import lab, test_model_baking_parity as baking, test_rust_parity as base
-    from .integration_env import run_game
-except ImportError:
-    import lab
-    import test_model_baking_parity as baking
-    import test_rust_parity as base
-    from integration_env import run_game
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_model_baking_parity as baking, test_rust_parity as base
+from tools.integration_env import run_game
 
 WINDOWS = [[320, 240], [854, 480], [1280, 720], [1920, 1080], [2560, 1440], [3840, 2160], [1279, 719]]
 SCALES = [1, 2, 3, 4, 0]

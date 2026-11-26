@@ -31,6 +31,7 @@ pub mod tests {
             .unwrap();
         let declared = crate::__private::biome_modifier_declarations();
         assert_eq!(declared.len(), 1);
+        assert_eq!(declared[0].mod_id, "ruby");
         assert_eq!(declared[0].id, "ruby:no_zombies");
         assert_eq!(declared[0].modifier, modifier());
         assert_eq!(
@@ -86,9 +87,24 @@ pub mod tests {
             registrar.declare_biome_modifier("ruby:no_zombies", modifier()),
             Err(BiomeModifierError::Duplicate)
         );
-        // The id stays in the declaring mod's namespace.
+        // Explicit valid namespaces, including `minecraft:`, succeed under the declaring mod.
+        registrar
+            .declare_biome_modifier("foreign:no_zombies", modifier())
+            .unwrap();
+        assert_eq!(registrar.biome_modifiers[1].mod_id, "ruby");
+        assert_eq!(registrar.biome_modifiers[1].id, "foreign:no_zombies");
+        registrar
+            .declare_biome_modifier("minecraft:no_zombies", modifier())
+            .unwrap();
+        assert_eq!(registrar.biome_modifiers[2].mod_id, "ruby");
+        assert_eq!(registrar.biome_modifiers[2].id, "minecraft:no_zombies");
+        // Malformed ids refuse.
         assert_eq!(
-            registrar.declare_biome_modifier("foreign:no_zombies", modifier()),
+            registrar.declare_biome_modifier("Bad Name", modifier()),
+            Err(BiomeModifierError::InvalidId)
+        );
+        assert_eq!(
+            registrar.declare_biome_modifier("foreign:Bad Name", modifier()),
             Err(BiomeModifierError::InvalidId)
         );
         // The modifier itself is checked.
@@ -100,9 +116,9 @@ pub mod tests {
             registrar.declare_biome_modifier("nothing", bad),
             Err(BiomeModifierError::EmptyList)
         );
-        // The refusals name the mod; the good declaration stands.
-        assert_eq!(registrar.biome_modifiers.len(), 1);
-        assert_eq!(registrar.refused.len(), 3);
+        // The refusals name the mod; the good declarations stand.
+        assert_eq!(registrar.biome_modifiers.len(), 3);
+        assert_eq!(registrar.refused.len(), 4);
         assert!(
             registrar
                 .refused
@@ -112,55 +128,32 @@ pub mod tests {
     }
 
     #[test]
-    fn served_by_biome_modifier_delegates_to_serving_host_only() {
-        let packages = vec![
-            PackageInfo::new(
-                "host".into(),
-                "1".into(),
-                PackageKind::Code,
-                Side::Both,
-                vec!["host".into()],
-                vec![],
-            ),
-            PackageInfo::new(
-                "other".into(),
-                "1".into(),
-                PackageKind::Code,
-                Side::Both,
-                vec!["other".into()],
-                vec![],
-            ),
-            PackageInfo::new(
-                "runes".into(),
-                "1".into(),
-                PackageKind::Content,
-                Side::Both,
-                vec!["runes".into()],
-                vec![],
-            )
-            .with_served_by(Some("host".into())),
-        ];
-        crate::load_state::with_test_package_inventory(packages, || {
-            let mut registrar = super::PartRegistrar::new("host");
-            registrar
-                .declare_biome_modifier("runes:no_zombies", modifier())
-                .unwrap();
-            assert_eq!(registrar.biome_modifiers[0].id, "runes:no_zombies");
-            assert_eq!(
-                registrar.biome_modifiers[0].file(),
-                "data/runes/neoforge/biome_modifier/no_zombies.json"
-            );
-            assert_eq!(
-                registrar.declare_biome_modifier("minecraft:no_zombies", modifier()),
-                Err(BiomeModifierError::InvalidId)
-            );
-            registrar.mod_id = "other";
-            assert_eq!(
-                registrar.declare_biome_modifier("runes:other_mod", modifier()),
-                Err(BiomeModifierError::InvalidId)
-            );
-            assert_eq!(registrar.biome_modifiers.len(), 1);
-        });
+    pub(crate) fn cross_mod_duplicate_biome_modifier_refuses() {
+        struct First;
+        #[mod_api::__subscriptions]
+        impl Hooks for First {
+            fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
+                r.declare_biome_modifier("shared:no_zombies", modifier())
+                    .unwrap();
+            }
+        }
+        struct Second;
+        #[mod_api::__subscriptions]
+        impl Hooks for Second {
+            fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
+                assert_eq!(
+                    r.declare_biome_modifier("shared:no_zombies", modifier()),
+                    Err(BiomeModifierError::Duplicate)
+                );
+            }
+        }
+        let errors = crate::parts::tests::install_parts_fixture(&[
+            ModEntry::new("first", Box::new(First)),
+            ModEntry::new("second", Box::new(Second)),
+        ])
+        .unwrap_err();
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("mod second") && errors[0].contains("Duplicate"));
     }
 }
 
@@ -171,30 +164,18 @@ impl BiomeModifiersRegistrar for PartRegistrar {
         modifier: crate::BiomeModifier,
     ) -> Result<(), crate::BiomeModifierError> {
         let result = (|| {
-            let (namespace, name) = path.split_once(':').unwrap_or((self.mod_id, path));
-            // The id becomes a file path under the mod's data folder.
-            let path_ok = name
-                .chars()
-                .all(|c| matches!(c, 'a'..='z' | '0'..='9' | '_' | '-' | '.' | '/'))
-                && !name.contains("..")
-                && !name.contains("//")
-                && !name.starts_with('/')
-                && !name.ends_with('/');
-            if namespace.is_empty()
-                || name.is_empty()
-                || namespace == "minecraft"
-                || !owns_namespace(self.mod_id, namespace)
-                || !path_ok
-            {
-                return Err(crate::BiomeModifierError::InvalidId);
-            }
-            let id = format!("{namespace}:{name}");
+            let id = self
+                .declaration_id(path)
+                .map_err(|_| crate::BiomeModifierError::InvalidId)?;
             if self.biome_modifiers.iter().any(|d| d.id == id) {
                 return Err(crate::BiomeModifierError::Duplicate);
             }
             modifier.check()?;
-            self.biome_modifiers
-                .push(BiomeModifierDeclaration { id, modifier });
+            self.biome_modifiers.push(BiomeModifierDeclaration {
+                mod_id: self.mod_id.to_owned(),
+                id,
+                modifier,
+            });
             Ok(())
         })();
         if let Err(error) = &result {

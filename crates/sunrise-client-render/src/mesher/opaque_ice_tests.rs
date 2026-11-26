@@ -11,15 +11,15 @@ use crate::{
     models,
 };
 
-struct Fixture {
-    assets: Assets,
-    biomes: Biomes,
-    render: RenderAssets,
-    visibility: sunrise_world::block_render::FaceVisibility,
-    tables: MeshTables,
+pub(super) struct Fixture {
+    pub(super) assets: Assets,
+    pub(super) biomes: Biomes,
+    pub(super) render: RenderAssets,
+    pub(super) visibility: sunrise_world::block_render::FaceVisibility,
+    pub(super) tables: MeshTables,
 }
 
-fn fixture() -> Fixture {
+pub(super) fn fixture() -> Fixture {
     let root = std::env::var_os("SUNRISE_MESH_TEST_RESOURCES")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| {
@@ -70,6 +70,7 @@ fn mesh(f: &Fixture, chunk: &Chunk, opaque_ice: bool) -> SectionMesh {
         cutout_leaves: true,
         opaque_ice,
         translucent_layers: &[],
+        layer_overrides: &[],
         leaf_culling: LeafCullingMode::Off,
         hidden_states: &[],
         part_tables: Default::default(),

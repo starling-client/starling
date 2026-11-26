@@ -1,5 +1,4 @@
 //! The `screen_render_post` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0091
 
 pub trait Hooks {
     /// The open screen has drawn itself and its tooltips (`Screen.render`,

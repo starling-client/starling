@@ -10,11 +10,24 @@ description = "A mod's own source as the mod tools read it: the mod folder and i
 name = "mod_source"
 
 [dependencies]
-sunrise-mod-surface = { path = "../sunrise-mod-surface" }
-proc-macro2 = { version = "1", features = ["span-locations"] }
-quote = "1"
-syn = { version = "2", features = ["full", "visit-mut"] }
-toml = "1.1"
+# The package's own file names (`uses.json`); the scan reader is the `scan` feature.
+sunrise-mod-surface = { path = "../sunrise-mod-surface", default-features = false }
+# Cargo's own gitignore-style matcher, for `.gitignore` and a manifest's `include` and `exclude`
+# (feature `folder`).
+ignore = { version = "0.4", optional = true }
+toml = { version = "1.1", optional = true }
+proc-macro2 = { version = "1", features = ["span-locations"], optional = true }
+quote = { version = "1", optional = true }
+syn = { version = "2", features = ["full", "visit-mut"], optional = true }
+
+[features]
+# Default includes the source parser and uses scanner. Runtime game crates disable default
+# features and only take `package`'s file list and binary rule.
+default = ["scan"]
+# Walking a mod folder for the files its package carries (`package::source_files`): the tools, never
+# the game.
+folder = ["dep:ignore", "dep:toml"]
+scan = ["folder", "sunrise-mod-surface/scan", "dep:proc-macro2", "dep:quote", "dep:syn"]
 
 [dev-dependencies]
 tempfile = "3.27.0"

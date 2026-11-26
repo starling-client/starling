@@ -5,13 +5,15 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 publish = false
-description = "Native mods compiled against a signed prebuilt SDK: the launcher's build and `cargo sunrise-mod native-build`"
+description = "Native mods compiled against a signed prebuilt SDK by cargo sunrise-mod"
 
 [dependencies]
 sunrise-addresses = { path = "../sunrise-addresses" }
-sunrise-mod-package = { path = "../sunrise-mod-package", default-features = false, features = ["index", "prebuilt"] }
+sunrise-mod-package = { path = "../sunrise-mod-package", default-features = false, features = ["index", "prebuilt", "folder"] }
 sunrise-platform = { path = "../sunrise-platform", features = ["mod-build"] }
 flate2 = "1"
+# Keeps a restaged folder's modified time (`registry_compile.rs`); std sets only a file's.
+filetime = "0.2"
 # Reads the object members out of the mods' rlibs for the API route's C link (`api_route.rs`).
 object = { version = "0.39", default-features = false, features = ["read_core", "archive", "pe", "std"] }
 # Match generated helpers to the compiler's byte spans, without depending on formatting.

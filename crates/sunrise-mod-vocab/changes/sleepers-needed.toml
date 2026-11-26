@@ -1,0 +1,3 @@
+ids = ["hook:sleepers_needed", "type:SleepersNeededEvent", "type:HookId"]
+why = "Adds the server hook sleepers_needed (vanilla SleepStatus.sleepersNeeded): a listener sets how many players must sleep in a level for this tick, starting from vanilla's count, so a mod can skip the night or the day with its own share of sleepers. The night-skip check and the players-sleeping announcement both use the answer. New hook: no existing hook version changes."
+migrate = "Additive. A mod that matches HookId exhaustively adds the SleepersNeeded arm."

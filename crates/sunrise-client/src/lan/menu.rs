@@ -6,6 +6,8 @@
 #[path = "menu/backing.rs"]
 mod backing;
 use super::guest::Guest;
+use crate::menu::linked::{linked_stacks, shown};
+pub use crate::menu::{LinkedSlots, linked_slot_count};
 use crate::{
     containers::{BlockEntity, ModContainerInsertRule},
     enchant::Enchantments,
@@ -60,6 +62,7 @@ pub trait Rules {
 }
 
 /// A guest's open container menu.
+#[derive(Clone)]
 pub struct Menu {
     pub window: i32,
     /// The `minecraft:menu` registry id.
@@ -97,6 +100,12 @@ pub struct Menu {
     pub asks_still_valid: bool,
     /// The hand the opener supplied and its stack at open. Neither travels to the client.
     pub opening_item: Option<(Hand, Option<ItemStack>)>,
+    /// The opener block id when a block opened this menu, retained for owner-routed teardown.
+    pub opener_block: Option<Box<str>>,
+    /// Whether `AbstractContainerMenu.removed` has already run for this menu instance.
+    pub removed: bool,
+    /// Last container snapshot reconciled with `menu_slot_changed` for this open mod menu.
+    pub slot_changed_seen: Option<Vec<Option<ItemStack>>>,
 }
 
 /// What a mod menu type's crafting grid makes (`ResultContainer`), and the
@@ -152,27 +161,76 @@ impl Menu {
         self.mod_type?.owned_slots.as_deref()
     }
 
-    /// Detached transient values and provenance, for the existing close notice. The old
-    /// native storage is emptied even for a menu that did not declare owned slots.
-    pub(super) fn native_closed(
+    /// Whether this menu is a blockless processing owned menu (declares both `owned_slots` and
+    /// take-only `results`), whose non-result inputs return to the player on close like vanilla
+    /// `AbstractContainerMenu.clearContainer` and whose results are discarded.
+    pub fn is_processing_owned(&self) -> bool {
+        self.slots == Slots::Native
+            && self
+                .mod_type
+                .is_some_and(|t| t.owned_slots.is_some() && !t.results.is_empty())
+    }
+
+    /// Extract all non-result stacks from a closing blockless processing owned menu, clearing its
+    /// transient storage and discarding declared `results` slots.
+    pub fn take_processing_inputs(
         &self,
+        native_menu: &mut Vec<Option<ItemStack>>,
+    ) -> Vec<ItemStack> {
+        if !self.is_processing_owned() {
+            return Vec::new();
+        }
+        let results = self.mod_type.map_or(&[][..], |t| t.results.as_slice());
+        std::mem::take(native_menu)
+            .into_iter()
+            .enumerate()
+            .filter_map(|(slot, stack)| (!results.contains(&slot)).then_some(stack).flatten())
+            .collect()
+    }
+
+    /// Detached transient values and provenance for `AbstractContainerMenu.removed`.
+    /// When `keep_empty_slots` is true, native storage is replaced with empty slots while the
+    /// menu remains temporarily attached for `PlayerContainerEvent.Close`.
+    /// Processing owned menus leave `owned_slots` empty because the game returns their inputs
+    /// itself.
+    pub fn native_removed(
+        &mut self,
         uuid: u128,
         generation: u64,
         native_menu: &mut Vec<Option<ItemStack>>,
+        keep_empty_slots: bool,
     ) -> Option<NativeMenuEvent> {
-        if self.slots != Slots::Native {
+        if self.removed {
             return None;
         }
-        let owned_slots = if self.owned_slots().is_some() {
-            std::mem::take(native_menu)
+        self.removed = true;
+        let owned_slots = if self.slots == Slots::Native {
+            if self.owned_slots().is_some() && !self.is_processing_owned() {
+                if keep_empty_slots {
+                    std::mem::replace(native_menu, vec![None; self.size])
+                } else {
+                    std::mem::take(native_menu)
+                }
+            } else {
+                if keep_empty_slots {
+                    *native_menu = vec![None; self.size];
+                } else {
+                    native_menu.clear();
+                }
+                Vec::new()
+            }
         } else {
-            native_menu.clear();
             Vec::new()
         };
+        if self.slots != Slots::Native && self.mod_type.is_none() && self.opener_block.is_none() {
+            return None;
+        }
         Some(NativeMenuEvent::Closed {
             uuid,
             window: self.window,
             generation,
+            menu: self.registry_id.clone(),
+            block: self.opener_block.clone(),
             opening_hand: self.opening_item.as_ref().map(|(hand, _)| *hand),
             owned_slots,
         })
@@ -186,7 +244,7 @@ impl Menu {
     /// not asked. A menu whose backing block entities are gone closes without asking.
     pub fn still_valid(&self, context: &LoopContext, world: &World, guest: &Guest) -> bool {
         if !self.asks_still_valid {
-            return self.slots.still_valid(world, guest, self.pos);
+            return self.slots.still_valid(context, world, guest, self.pos);
         }
         let block = match self.slots {
             Slots::Block(k) | Slots::Double(k, _) => Some(k),
@@ -194,12 +252,12 @@ impl Menu {
             Slots::Native => None,
         };
         if block.is_some_and(|(_, y, _)| y == VEHICLE_KEY_Y) {
-            return self.slots.still_valid(world, guest, self.pos);
+            return self.slots.still_valid(context, world, guest, self.pos);
         }
         if !self.slots.valid(world) {
             return false;
         }
-        let mut valid = self.slots.in_reach(guest, self.pos);
+        let mut valid = self.slots.in_reach(context, guest, self.pos);
         let opening_item = self.opening_item.as_ref().map(|(hand, opening)| {
             let stack = match hand {
                 Hand::Main => guest.inventory.get(guest.selected).and_then(Option::as_ref),
@@ -233,15 +291,24 @@ impl Menu {
         self.linked().map(|(range, _)| range)
     }
 
-    /// The linked slots (`links`) no container stands behind, which hold
-    /// nothing and take nothing: they are left out of clicks as a hidden
-    /// slot is.
+    /// The linked region of this menu, borrowing the containers that stand behind it.
+    pub fn linked_slots<'a>(&'a self, world: &'a World) -> Option<LinkedSlots<'a>> {
+        Some(LinkedSlots::new(world, self.mod_type?.links?, &self.links))
+    }
+
+    /// The linked slots no container stands behind, excluded just as hidden slots are.
     pub fn unlinked_slots(&self, world: &World) -> Vec<usize> {
-        let Some((range, links)) = self.linked() else {
-            return Vec::new();
-        };
-        let bound = linked_slot_count(world, links);
-        range.skip(bound).collect()
+        self.linked_slots(world)
+            .into_iter()
+            .flat_map(|linked| linked.unbound())
+            .collect()
+    }
+
+    /// A prepared result belongs to the grid that was shown with it. A prepared empty
+    /// result stays empty too, until the grid changes.
+    pub fn shown_craft_result(&self, grid: &[Option<ItemStack>]) -> Option<&Option<ItemStack>> {
+        let shown = self.craft.as_ref()?;
+        (grid == shown.grid.as_slice()).then_some(&shown.result)
     }
 
     /// The container slot of a mod menu type's crafting result, and what it shows.
@@ -256,6 +323,13 @@ impl Menu {
 pub enum NativeMenuEvent {
     /// The cursor of a menu the hub closed itself, to be returned to its player.
     ReturnCarried { conn: u32, item: ItemStack },
+    /// Non-result inputs detached from a closing processing owned menu, to be returned to the
+    /// player's inventory (or dropped when `drop_instead` is set for death or disconnect).
+    ReturnProcessingInputs {
+        conn: u32,
+        items: Vec<ItemStack>,
+        drop_instead: bool,
+    },
     /// The menu closed: by the player, by the server, another opened, or
     /// the player left.
     Closed {
@@ -263,6 +337,10 @@ pub enum NativeMenuEvent {
         window: i32,
         /// The window instance, for rolling back writes made before this pending close.
         generation: u64,
+        /// The closed menu type registry id, for owner-routed `MenuPart::menu_removed`.
+        menu: Box<str>,
+        /// The opener block id when opened by a block, for owner-routed `MenuPart::menu_removed`.
+        block: Option<Box<str>>,
         opening_hand: Option<Hand>,
         owned_slots: Vec<Option<ItemStack>>,
     },
@@ -299,6 +377,25 @@ pub enum SlotBacking {
 }
 
 impl Slots {
+    /// Borrow the backing storage in menu order, without overlaying linked slots or previews.
+    /// For a double chest, each slice is a separate half, as in `CompoundContainer`.
+    pub fn shown_slices<'a>(
+        self,
+        world: &'a World,
+        guest: &'a Guest,
+        acting_ender: Option<&'a [Option<ItemStack>]>,
+    ) -> (&'a [Option<ItemStack>], &'a [Option<ItemStack>]) {
+        match self {
+            Self::Block(pos) => (shown(world, pos).unwrap_or_default(), &[]),
+            Self::Double(a, b) => (
+                shown(world, a).unwrap_or_default(),
+                shown(world, b).unwrap_or_default(),
+            ),
+            Self::Ender => (acting_ender.unwrap_or(&guest.ender_items), &[]),
+            Self::Native => (&guest.native_menu, &[]),
+        }
+    }
+
     /// Optional persisted limits in the container's menu order.
     pub fn stack_limits(self, world: &World, size: usize) -> Vec<Option<u32>> {
         match self {
@@ -393,18 +490,25 @@ impl Slots {
     /// `Container.stillValid` for the guest: the block entities are there
     /// and the guest is within reach of each (`stillValidBlockEntity`). The
     /// ender chest's block is `at` (`PlayerEnderChestContainer.activeChest`).
-    pub fn still_valid(self, world: &World, guest: &Guest, at: Option<(i32, i32, i32)>) -> bool {
-        self.valid(world) && self.in_reach(guest, at)
+    pub fn still_valid(
+        self,
+        context: &LoopContext,
+        world: &World,
+        guest: &Guest,
+        at: Option<(i32, i32, i32)>,
+    ) -> bool {
+        self.valid(world) && self.in_reach(context, guest, at)
     }
     /// The reach half of `still_valid`: the guest is within its block
-    /// interaction range plus 4 of each block behind the slots.
-    fn in_reach(self, guest: &Guest, at: Option<(i32, i32, i32)>) -> bool {
+    /// interaction range plus 4 of each block behind the slots, as a mod's
+    /// `block_interaction_range` may answer.
+    fn in_reach(self, context: &LoopContext, guest: &Guest, at: Option<(i32, i32, i32)>) -> bool {
         let ender_chest = if self == Slots::Ender { at } else { None };
         // A vehicle's container is kept under a key, not a block: the game
         // checks its reach to the vehicle (`isChestVehicleStillValid`).
-        self.halves()
-            .chain(ender_chest)
-            .all(|(x, y, z)| y == VEHICLE_KEY_Y || guest.within_block_range([x, y, z], 4.0))
+        self.halves().chain(ender_chest).all(|(x, y, z)| {
+            y == VEHICLE_KEY_Y || guest.within_interaction_range(context, [x, y, z], 4.0)
+        })
     }
     /// Container slot `n`.
     pub fn get(self, world: &World, guest: &Guest, mut n: usize) -> Option<ItemStack> {
@@ -419,13 +523,14 @@ impl Slots {
         {
             return result;
         }
-        if let Some((range, links)) = self.links_of(guest)
-            && range.contains(&n)
+        if let Some(held) = guest
+            .menu
+            .as_ref()
+            .filter(|open| open.slots == self)
+            .and_then(|open| open.linked_slots(world))
+            .and_then(|linked| linked.get(n))
         {
-            return read_links(world, links, range.len())
-                .into_iter()
-                .nth(n - range.start)
-                .flatten();
+            return held.cloned().flatten();
         }
         for k in self.halves() {
             let slots = shown(world, k)?;
@@ -452,18 +557,14 @@ impl Slots {
         {
             return None;
         }
-        if let Some((range, links)) = self.links_of(guest)
-            && range.contains(&n)
+        if let Some(backing) = guest
+            .menu
+            .as_ref()
+            .filter(|open| open.slots == self)
+            .and_then(|open| open.linked_slots(world))
+            .and_then(|linked| linked.backing(n))
         {
-            let mut slot = n - range.start;
-            for &pos in links {
-                let len = shown(world, pos).map_or(0, <[_]>::len);
-                if slot < len {
-                    return Some((pos, slot));
-                }
-                slot -= len;
-            }
-            return None;
+            return backing;
         }
         match self.backing(world, n)? {
             SlotBacking::Block(pos, slot) => Some((pos, slot)),
@@ -539,30 +640,6 @@ impl Slots {
     }
 }
 
-/// The slots of the block entity at `k` its menu shows: a mod container's
-/// count, though items past it stay saved.
-fn shown(world: &World, k: (i32, i32, i32)) -> Option<&[Option<ItemStack>]> {
-    let e = world.block_entities.get(&k)?;
-    let slots = e.slots();
-    if !matches!(e, BlockEntity::Mod(_)) {
-        return Some(slots);
-    }
-    let state = world.block(k.0, k.1, k.2).0;
-    let count = world
-        .block_entities
-        .mod_container(state)
-        .map_or(0, |c| c.slots);
-    Some(&slots[..count.min(slots.len())])
-}
-
-/// How many slots the linked containers `links` have between them.
-pub fn linked_slot_count(world: &World, links: &[(i32, i32, i32)]) -> usize {
-    links
-        .iter()
-        .map(|&k| shown(world, k).map_or(0, <[_]>::len))
-        .sum()
-}
-
 /// The stacks of the linked containers `links`, their slots in order, at
 /// most `count`. A container no longer there has no slots.
 pub fn read_links(
@@ -570,11 +647,7 @@ pub fn read_links(
     links: &[(i32, i32, i32)],
     count: usize,
 ) -> Vec<Option<ItemStack>> {
-    links
-        .iter()
-        .flat_map(|&k| shown(world, k).unwrap_or_default().iter().cloned())
-        .take(count)
-        .collect()
+    linked_stacks(world, links).take(count).cloned().collect()
 }
 
 /// Stores `stacks` in the linked containers `links`, their slots in order
@@ -844,17 +917,22 @@ impl HostedSlotView<'_, '_> {
         }
     }
 
+    /// Run `edit` on a staged copy of the slot and the guest's cursor: both apply when it
+    /// accepts, and neither when it refuses.
     fn stage(&mut self, edit: impl FnOnce(&mut Self) -> bool) -> bool {
         let initial = self
             .staged
             .clone()
             .unwrap_or_else(|| self.view.get(self.slot));
         let previous = self.staged.replace(initial);
+        let carried = self.view.guest.carried.clone();
         let accepted = edit(self);
         let value = self.staged.take().expect("a staged slot");
         self.staged = previous;
         if accepted {
             self.set(value);
+        } else {
+            self.view.guest.carried = carried;
         }
         accepted
     }
@@ -2257,6 +2335,9 @@ pub(crate) mod tests {
             links: Vec::new(),
             asks_still_valid: false,
             opening_item: None,
+            opener_block: None,
+            removed: false,
+            slot_changed_seen: None,
         });
         // Nothing made yet: nothing shown.
         assert_eq!(slots.get(&world, &g, 0), None);
@@ -2404,6 +2485,9 @@ pub(crate) mod tests {
             links: Vec::new(),
             asks_still_valid: false,
             opening_item: None,
+            opener_block: None,
+            removed: false,
+            slot_changed_seen: None,
         });
         // Nothing linked yet: the linked slots are empty and all left out.
         let read = slots.read(&world, &g).unwrap();
@@ -3512,6 +3596,9 @@ pub(crate) mod tests {
             links: Vec::new(),
             asks_still_valid: false,
             opening_item: None,
+            opener_block: None,
+            removed: false,
+            slot_changed_seen: None,
         });
         g.inventory[9] = Some(ItemStack::new("minecraft:stone", 1));
         let mut chest = vec![Some(ItemStack::new("minecraft:stone", 1))];
@@ -3545,7 +3632,7 @@ pub(crate) mod tests {
 
     #[test]
     fn hosted_stacked_outcome_shares_result_slot_and_safe_take_rules() {
-        use crate::menu::{StackedClickedEdit, StackedEditPolicy, StackedOutcome, StackedResume};
+        use crate::menu::{StackedEdit, StackedEditPolicy, StackedOutcome, StackedResume};
         struct OutcomeRules<'a> {
             items: Items,
             may_pickup: bool,
@@ -3635,6 +3722,9 @@ pub(crate) mod tests {
                 links: Vec::new(),
                 asks_still_valid: false,
                 opening_item: None,
+                opener_block: None,
+                removed: false,
+                slot_changed_seen: None,
             });
             g
         };
@@ -3651,8 +3741,10 @@ pub(crate) mod tests {
             handled: true,
             policy: StackedEditPolicy::Global,
             resume: StackedResume::Done,
-            carried: Some(Some(ItemStack::new("minecraft:stick", 2))),
-            clicked: Some(StackedClickedEdit::Set(None)),
+            edits: vec![
+                StackedEdit::Clicked(None),
+                StackedEdit::Carried(Some(ItemStack::new("minecraft:stick", 2))),
+            ],
             ..Default::default()
         };
         let rules = OutcomeRules {
@@ -3678,14 +3770,17 @@ pub(crate) mod tests {
 
         // 2. Part policy explicit full take (`Take(4)`) runs through `HostedSlotView::safe_take`
         //    even when `may_place` is false, is refused when `may_pickup` is false, and partial
-        //    `Take(2)` is refused on a Result slot.
+        //    `Take(2)` is refused on a Result slot. A refused take also drops the cursor edit
+        //    made before it.
         let part_take = StackedOutcome {
             canceled: true,
             handled: true,
             policy: StackedEditPolicy::Part,
             resume: StackedResume::Done,
-            carried: Some(Some(ItemStack::new("minecraft:stick", 5))),
-            clicked: Some(StackedClickedEdit::Take(4)),
+            edits: vec![
+                StackedEdit::Carried(Some(ItemStack::new("minecraft:stick", 5))),
+                StackedEdit::Take(4),
+            ],
             ..Default::default()
         };
         let blocked_rules = OutcomeRules {
@@ -3696,14 +3791,17 @@ pub(crate) mod tests {
         click(&mut view, &mut drag, 0, 0, input::PICKUP, &blocked_rules);
         assert!(part_take.refused.get());
         assert_eq!(view.get(0), Some(ItemStack::new("minecraft:iron_ingot", 4)));
+        assert_eq!(
+            view.guest.carried,
+            Some(ItemStack::new("minecraft:stick", 1))
+        );
 
         let partial_result_take = StackedOutcome {
             canceled: true,
             handled: true,
             policy: StackedEditPolicy::Part,
             resume: StackedResume::Done,
-            carried: None,
-            clicked: Some(StackedClickedEdit::Take(2)),
+            edits: vec![StackedEdit::Take(2)],
             ..Default::default()
         };
         let partial_rules = OutcomeRules {
@@ -3737,8 +3835,10 @@ pub(crate) mod tests {
             handled: true,
             policy: StackedEditPolicy::Part,
             resume: StackedResume::Done,
-            carried: Some(Some(ItemStack::new("minecraft:stick", 1))),
-            clicked: Some(StackedClickedEdit::Set(None)),
+            edits: vec![
+                StackedEdit::Clicked(None),
+                StackedEdit::Carried(Some(ItemStack::new("minecraft:stick", 1))),
+            ],
             ..Default::default()
         };
         let clear_blocked = OutcomeRules {
@@ -3767,11 +3867,10 @@ pub(crate) mod tests {
             handled: true,
             policy: StackedEditPolicy::Part,
             resume: StackedResume::Done,
-            carried: None,
-            clicked: Some(StackedClickedEdit::Set(Some(ItemStack::new(
-                "minecraft:snowball",
-                17,
-            )))),
+            edits: vec![
+                StackedEdit::Carried(Some(ItemStack::new("minecraft:stick", 9))),
+                StackedEdit::Clicked(Some(ItemStack::new("minecraft:snowball", 17))),
+            ],
             ..Default::default()
         };
         let oversize_rules = OutcomeRules {
@@ -3782,6 +3881,11 @@ pub(crate) mod tests {
         click(&mut view, &mut drag, 0, 0, input::PICKUP, &oversize_rules);
         assert!(oversize.refused.get());
         assert_eq!(view.get(0), Some(ItemStack::new("minecraft:iron_ingot", 4)));
+        // The refused slot edit also drops the cursor edit made before it.
+        assert_eq!(
+            view.guest.carried,
+            Some(ItemStack::new("minecraft:stick", 1))
+        );
 
         // The existing stack can be replaced, but dirt in the slot refuses pickup.
         // The same edit with a takeable replacement acts as the positive control.
@@ -3790,11 +3894,11 @@ pub(crate) mod tests {
             let outcome = StackedOutcome {
                 policy: StackedEditPolicy::Part,
                 resume: StackedResume::Done,
-                carried: Some(None),
-                clicked: Some(StackedClickedEdit::SetThenTake {
-                    set: ItemStack::new(replacement, 2),
-                    take: 2,
-                }),
+                edits: vec![
+                    StackedEdit::Clicked(Some(ItemStack::new(replacement, 2))),
+                    StackedEdit::Take(2),
+                    StackedEdit::Carried(None),
+                ],
                 ..Default::default()
             };
             let rules = OutcomeRules {
@@ -3924,11 +4028,14 @@ pub(crate) mod tests {
             blockless_data: Vec::new(),
             reported_unsent_data_len: None,
             opening_item: None,
+            opener_block: None,
+            removed: false,
             mod_type: None,
             registry_id: "test:chest".into(),
             craft: None,
             links: Vec::new(),
             asks_still_valid: false,
+            slot_changed_seen: None,
         });
         g.carried = Some(ItemStack::new("minecraft:stone", 8));
         let mut chest = vec![None];
@@ -4009,11 +4116,14 @@ pub(crate) mod tests {
                 blockless_data: Vec::new(),
                 reported_unsent_data_len: None,
                 opening_item: None,
+                opener_block: None,
+                removed: false,
                 mod_type: None,
                 registry_id: "test:chest".into(),
                 craft: None,
                 links: Vec::new(),
                 asks_still_valid: false,
+                slot_changed_seen: None,
             });
             if button == 40 {
                 g.offhand = Some(ItemStack::new("minecraft:stone", 4));
@@ -4099,11 +4209,14 @@ pub(crate) mod tests {
                 blockless_data: Vec::new(),
                 reported_unsent_data_len: None,
                 opening_item: None,
+                opener_block: None,
+                removed: false,
                 mod_type: Some(menu_type),
                 registry_id: menu_type.id.into(),
                 craft: None,
                 links: Vec::new(),
                 asks_still_valid: false,
+                slot_changed_seen: None,
             });
             let mut prediction = crate::menu::Menu::new(crate::menu::Kind::Mod(menu_type));
             prediction.set_registry_id(Some(menu_type.id));
@@ -4240,4 +4353,104 @@ pub(crate) mod tests {
             }
         });
     }
+
+    #[test]
+    fn processing_owned_menu_extracts_only_non_result_inputs_and_clears_close_snapshot() {
+        let processing: &'static crate::containers::ModMenuType =
+            Box::leak(Box::new(crate::containers::ModMenuType {
+                id: "test:processor",
+                owner: "test",
+                slots: 3,
+                player_inventory: true,
+                data_slots: 0,
+                owned_slots: Some(vec![64, 64, 64]),
+                results: vec![2],
+                inputs: vec![0, 1],
+                crafting: None,
+                links: None,
+            }));
+        let generic: &'static crate::containers::ModMenuType =
+            Box::leak(Box::new(crate::containers::ModMenuType {
+                id: "test:filter",
+                owner: "test",
+                slots: 2,
+                player_inventory: true,
+                data_slots: 0,
+                owned_slots: Some(vec![1, 1]),
+                results: Vec::new(),
+                inputs: Vec::new(),
+                crafting: None,
+                links: None,
+            }));
+        let make = |kind: &'static crate::containers::ModMenuType| Menu {
+            window: 1,
+            kind: 0,
+            pos: None,
+            slots: Slots::Native,
+            size: kind.slots,
+            state: 0,
+            sent: Vec::new(),
+            drag: None,
+            sent_data: Vec::new(),
+            reported_unsent_data_len: None,
+            blockless_data: Vec::new(),
+            mod_type: Some(kind),
+            registry_id: kind.id.into(),
+            craft: None,
+            links: Vec::new(),
+            asks_still_valid: false,
+            opener_block: None,
+            opening_item: None,
+            removed: false,
+            slot_changed_seen: None,
+        };
+
+        let mut proc_menu = make(processing);
+        assert!(proc_menu.is_processing_owned());
+        let mut storage = vec![
+            Some(ItemStack::new("minecraft:stick", 2)),
+            None,
+            Some(ItemStack::new("minecraft:stone", 1)),
+        ];
+        let inputs = proc_menu.take_processing_inputs(&mut storage);
+        assert_eq!(inputs, vec![ItemStack::new("minecraft:stick", 2)]);
+        assert!(storage.is_empty());
+        assert_eq!(
+            proc_menu.native_removed(7, 1, &mut storage, false),
+            Some(NativeMenuEvent::Closed {
+                uuid: 7,
+                window: 1,
+                generation: 1,
+                menu: processing.id.into(),
+                block: None,
+                opening_hand: None,
+                owned_slots: Vec::new(),
+            })
+        );
+
+        let mut generic_menu = make(generic);
+        assert!(!generic_menu.is_processing_owned());
+        let mut generic_storage = vec![Some(ItemStack::new("minecraft:stick", 1)), None];
+        assert!(
+            generic_menu
+                .take_processing_inputs(&mut generic_storage)
+                .is_empty()
+        );
+        assert_eq!(
+            generic_menu.native_removed(7, 2, &mut generic_storage, false),
+            Some(NativeMenuEvent::Closed {
+                uuid: 7,
+                window: 1,
+                generation: 2,
+                menu: generic.id.into(),
+                block: None,
+                opening_hand: None,
+                owned_slots: vec![Some(ItemStack::new("minecraft:stick", 1)), None],
+            })
+        );
+    }
 }
+
+#[cfg(test)]
+#[path = "menu/slot_rule_hooks_tests.rs"]
+mod slot_rule_hooks_tests;

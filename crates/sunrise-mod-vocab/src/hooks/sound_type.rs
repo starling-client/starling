@@ -1,18 +1,40 @@
 //! The `sound_type` hooks and helpers: declarations the mod API generator reads (see `hooks/mod.rs`).
 
 pub trait Hooks {
-    /// The sound type of a block state this part is attached to (`IBlockExtension.getSoundType`) is being read, to play one of its sounds. `pos` is the block and `state` its state; `entity` is nullable, as NeoForge's: the id and type (`minecraft:player`, `minecraft:creeper`) of the entity stepping on it, landing on it, placing it or digging it (a sniffer), and `None` for a break and for a placement by no entity (a dispenser); `cause` says which sound is about to play (`BlockSoundCause::Step`, `Fall`, `Place`, `Break` or `Dig`). It is asked only where NeoForge asks it, not for the hit sound while a block is mined (that has its own client hook upstream) nor for sculk growth. A part may change `sound` (`event.sound`), which starts as the state's own sound type: its event names, volume and pitch. The game then applies vanilla's factors for `cause` to the volume and pitch and plays that one sound. An answer whose volume or pitch is not finite and at least 0, or one of whose events is not a `namespace:path` id, is dropped whole and the state's own sound type is used. An event the resources lack plays nothing, as in vanilla; a mod's own event (from its content mod's `assets/<id>/sounds.json`) is sent to players by name. It runs for each sound, on the side that plays it, so register the mod on both and keep the listener a pure function of its inputs: the placer's client and the server ask for the same placement and must agree. It is given the loop `context` of the side that asks, and takes no `Host`. It cannot play no sound, several sounds, or a sound somewhere else (`playStepSound` and `playFallSound` can). Diverges from upstream: new hook.
+    /// A block state's contextual sound type (`IBlockExtension.getSoundType`) is being read. `pos`
+    /// and `state` describe the block; `entity` is the id and type of the entity stepping, landing,
+    /// placing or digging, or `None` for a break or a dispenser placement. `cause` names the
+    /// action, and `sound` starts with the state's base sound type. Edit its event keys or base
+    /// volume and pitch without affecting the sound type's identity. The placing item
+    /// may supply its own placement event, and a horse's hoof sound uses the returned
+    /// type's identity. The game applies the action's normal factors and
+    /// lets the sound engine resolve it. An event absent from the sound resources plays nothing.
+    /// Supply keys parsed at load time, not raw names parsed again on every call.
+    ///
+    /// The read-only level host (`LevelSide`) reads the side that asked, at the shared selection
+    /// sites and in client prediction alike: a part can pick a sound from a neighbouring block
+    /// (`IBlockExtension.getSoundType` receives a `LevelReader`). It reads blocks, states, light,
+    /// fluids, weather, enabled features, tags and resident block entities without loading
+    /// chunks, and has no container, shape or signal view.
+    ///
+    /// Runs on the side that plays the sound. Keep answers a pure function of the inputs: the
+    /// placer's client and the server must agree. Mining hits and sculk growth do not ask this
+    /// hook. A mod that panics in this callback is reported and skipped by this hook for the
+    /// rest of the session; its unfinished edit is not used.
     #[notes = r#"## Block sound type
 
-- **Block Part method `sound_type(context, event)`**: edit `event.sound`, the `BlockSoundType` of the block state `event.state` at `event.pos` the part is attached to (NeoForge's `IBlockExtension.getSoundType`), as the game reads it to play one of its sounds. `event.cause` is the sound: `Step` (an entity walks on it), `Fall` (a living entity lands on it hard enough to be hurt), `Place`, `Break` or `Dig` (a sniffer digs it). `event.entity` is nullable, as NeoForge's: `Some((id, type))` of the entity stepping, landing, placing or digging, and `None` for a break (client only) and for a placement by no entity (a dispenser). `sound` starts as the state's own sound type; the game applies vanilla's factors for the cause to the answer: a step plays at volume × 0.15 (muffled: × 0.05, pitch × 0.8), a fall at volume × 0.5, pitch × 0.75, a place or break at `(volume + 1) / 2`, pitch × 0.8, and a sniffer's dig plays the hit sound at a fixed volume 0.5 and pitch 0.5. An event may be vanilla's or the mod's own from its content mod's `assets/<id>/sounds.json`, which is sent to players by name. An answer whose volume or pitch is not finite and at least 0, or with an event that is not a `namespace:path` id, is dropped whole for the state's own; nothing panics. It is asked on NeoForge's paths only: the ordinary and combination step (the player, mobs; the stepping entity), a horse's step (the horse, at the block below even when the snow layer above it answers), the mob fall (the block under its feet), the placement from a block item (the placer's client and the server), the break (level event 2001 and a client's predicted break) and a sniffer's digging (the block below its head), on the side that plays each sound, so a mod registers on both and keeps the listener a pure function of its inputs. It is not asked for the hit sound while a block is mined (a separate client hook upstream) nor for sculk growth's place sound. NeoForge's `playStepSound` and `playFallSound` are covered only as far as picking the one sound's event, volume and pitch: a part cannot play no sound, several sounds, or a sound under another source or position. With no part attached to the state, the owning game checks the hook subscription and prepared API block key before any event conversion, and the sounds are vanilla's. Diverges from upstream: new hook."#]
+- **`BlockPart::sound_type(context, event)`** edits the contextual `BlockSoundType` for the attached block, as in NeoForge's `IBlockExtension.getSoundType`. Use `SoundEventKey::parse` at load time and retain the keys on the part. A bare name or `:name` uses `minecraft`, and a syntactically valid event need not already be loaded. A mod's event can be provided by `assets/<namespace>/sounds.json`; an absent event plays nothing rather than reverting to vanilla. Playback reads the selected slot: step, fall, place, break, or the hit sound for a sniffer digging. A solid bucket chooses its own placement event but uses the returned sound type's levels. A horse chooses its hoof sound from the returned type's identity, not its event keys. There is no block-specific volume or pitch admission check: the usual action factors and the sound engine still apply. The hook runs on the ordinary and combination step, horse step (asked at the position below even when a snow layer answers), mob fall, block item placement, client break and sniffer dig paths; it is not the mining hit or sculk sound hook."#]
     #[hook(
+        receiver = "read",
+        dispatch = "flat",
         side = "both",
         contract = "listen",
-        context = "loop",
+        cancellable = false,
         scope = "block",
         key = "state",
-        cancellable = false,
-        target = "sunrise_client_lib::block_sounds::native_sound_type",
+        host = "level",
+        version = 4,
+        target = "sunrise_client::game::native_hooks::sound_type::FrictionView<'_>::native_sound_type",
         neoforge = "IBlockExtension.getSoundType"
     )]
     fn sound_type(

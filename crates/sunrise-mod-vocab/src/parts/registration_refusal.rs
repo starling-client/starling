@@ -1,7 +1,8 @@
 // exports: none (reached inside the crate only)
 //! Registration refusals and loading messages.
 
-/// Why a native declaration was not accepted.
+/// Why a native declaration was not accepted. An explicit namespace is part of the key,
+/// not a claim to package ownership.
 #[derive(Clone, Debug, PartialEq, Eq, sunrise_mod_api_macros::Wire)]
 #[non_exhaustive]
 pub enum DeclarationError {
@@ -14,13 +15,6 @@ pub enum DeclarationError {
     InvalidId {
         /// Rejected identifier, including any inferred namespace.
         id: String,
-    },
-    /// The mod's manifest does not own the identifier's namespace.
-    UnownedNamespace {
-        /// Rejected identifier.
-        id: String,
-        /// Namespace not available to the declaring mod.
-        namespace: String,
     },
     /// A declaration failed another registry-specific check.
     Rejected {
@@ -37,7 +31,6 @@ impl DeclarationError {
         match self {
             Self::RegistrationClosed { id }
             | Self::InvalidId { id }
-            | Self::UnownedNamespace { id, .. }
             | Self::Rejected { id, .. } => id,
         }
     }
@@ -48,9 +41,6 @@ impl std::fmt::Display for DeclarationError {
         match self {
             Self::RegistrationClosed { id } => write!(f, "registration is closed for {id:?}"),
             Self::InvalidId { id } => write!(f, "invalid identifier {id:?}"),
-            Self::UnownedNamespace { id, namespace } => {
-                write!(f, "{id:?} in unowned namespace {namespace:?}")
-            }
             Self::Rejected { id, reason } => write!(f, "{id:?}: {reason}"),
         }
     }

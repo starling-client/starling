@@ -1,0 +1,3 @@
+ids = ["hook:dispense_item", "hook:dispense_method"]
+why = "Dispenser replies are v4: with a transaction open in the dispenser's level, the reply's sound and smoke publish together after the behaviour's transfer and overflow effects at the outermost commit, and do not play on abort. In v3 the reply's feedback played immediately. This preserves the sound and animation order of vanilla DefaultDispenseItemBehavior.dispense. A transaction open only in another level does not defer the feedback."
+migrate = "No signature changes. Keep returning the desired remainder and level event. With a caller-owned transaction in the source level, expect the reply's sound and smoke only when it commits. Event 0 remains a silent slot replacement, not an inert dispatch."

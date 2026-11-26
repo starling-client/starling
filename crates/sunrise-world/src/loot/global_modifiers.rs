@@ -1,7 +1,7 @@
 //! Prepared, data-enabled modifiers and their one-pass roll capability.
 #[cfg(test)]
 mod tests;
-use super::{LootContext, LootStack};
+use super::{LootContext, LootListAccess, LootStackAccess};
 use crate::conditions::LoadConditions;
 use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc};
@@ -18,24 +18,31 @@ pub trait ModifierRoll {
     fn next_double(&mut self) -> f64;
     fn next_boolean(&mut self) -> bool;
     fn next_gaussian(&mut self) -> f64;
-    fn condition(&mut self, condition: &Value) -> bool;
-    fn roll_raw(&mut self, table: &str) -> Result<Vec<LootStack>, String>;
+    fn condition(&mut self, condition: &crate::loot::types::PreparedCondition) -> bool;
+    fn roll_raw(
+        &mut self,
+        table: &str,
+        visit: &mut dyn FnMut(&dyn LootStackAccess),
+    ) -> Result<(), String>;
+    fn append_raw(&mut self, table: &str, generated: &mut dyn LootListAccess)
+    -> Result<(), String>;
 }
 
-/// A validated candidate replaces the preceding list; failures leave it intact.
+/// Mutate the generated loot list in place; earlier valid edits and random draws
+/// remain in place when a later write or callback returns an error.
 /// The implementation must not split, clamp or filter the result after applying.
 pub trait ModifierApply: Send + Sync {
     fn apply(
         &self,
         context: &mut dyn ModifierRoll,
-        generated: &[LootStack],
-    ) -> Result<Vec<LootStack>, String>;
+        generated: &mut dyn LootListAccess,
+    ) -> Result<(), String>;
 }
 
 /// Metadata captured by the owning type decoder, before sorting the generation.
 pub struct DecodedModifier {
     pub priority: i32,
-    pub condition: Option<Value>,
+    pub condition: Option<crate::loot::types::PreparedCondition>,
     pub apply: Arc<dyn ModifierApply>,
 }
 
@@ -151,13 +158,9 @@ impl GlobalLootModifiers {
     }
 
     /// Run once after the root splitter, before consumption or container shuffle.
-    /// Conditions and callbacks share the selected random. Their draws are never
-    /// rolled back, even when the candidate list is refused.
-    pub fn apply(
-        &self,
-        context: &mut dyn ModifierRoll,
-        mut generated: Vec<LootStack>,
-    ) -> Vec<LootStack> {
+    /// Conditions and callbacks share the selected random. Earlier valid edits
+    /// and draws are never rolled back, even when a modifier later returns an error.
+    pub fn apply(&self, context: &mut dyn ModifierRoll, generated: &mut dyn LootListAccess) {
         for instance in &self.instances {
             if instance
                 .decoded
@@ -167,18 +170,16 @@ impl GlobalLootModifiers {
             {
                 continue;
             }
-            match instance.decoded.apply.apply(context, &generated) {
-                Ok(candidate) => generated = candidate,
-                Err(error) => log::warn!(
+            if let Err(error) = instance.decoded.apply.apply(context, generated) {
+                log::warn!(
                     "loot modifier {} (type {}) on table {} refused: {}",
                     instance.id,
                     instance.kind,
                     context.facts().table_id(),
                     error
-                ),
+                );
             }
         }
-        generated
     }
 }
 
@@ -191,17 +192,8 @@ impl ModifierApply for AddTableModifier {
     fn apply(
         &self,
         context: &mut dyn ModifierRoll,
-        generated: &[LootStack],
-    ) -> Result<Vec<LootStack>, String> {
-        let appended = context.roll_raw(&self.table)?;
-        Ok(append_raw(generated, appended))
+        generated: &mut dyn LootListAccess,
+    ) -> Result<(), String> {
+        context.append_raw(&self.table, generated)
     }
-}
-
-/// Append raw output unchanged, shared by the engine and retained API instance.
-pub fn append_raw<S: Clone>(generated: &[S], appended: Vec<S>) -> Vec<S> {
-    let mut result = Vec::with_capacity(generated.len() + appended.len());
-    result.extend_from_slice(generated);
-    result.extend(appended);
-    result
 }

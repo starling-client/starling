@@ -1,21 +1,10 @@
 //! Original controls for the type of each comma-separated GLSL declarator.
-use sunrise_shaders::{Origin, Preprocessed, Target, translate_composite};
+use sunrise_shaders::{Preprocessed, Target, translate_composite};
 
 fn stage(code: &str) -> Preprocessed {
-    Preprocessed {
-        code: code.into(),
-        files: vec!["original.fsh".into()],
-        lines: code
-            .lines()
-            .enumerate()
-            .map(|(i, _)| Origin {
-                file: 0,
-                line: i as u32 + 1,
-            })
-            .collect(),
-        version: Some((440, Some("compatibility".into()))),
-        ..Default::default()
-    }
+    let mut pp = Preprocessed::from_source("original.fsh", code);
+    pp.version = Some((440, Some("compatibility".into())));
+    pp
 }
 
 fn program(source: &str) -> Result<sunrise_shaders::Program, Vec<sunrise_shaders::Error>> {
@@ -23,6 +12,7 @@ fn program(source: &str) -> Result<sunrise_shaders::Program, Vec<sunrise_shaders
         &stage("void main() { gl_Position = gl_Vertex; }"),
         &stage(source),
         Target::Window,
+        naga::front::glsl::InterfaceLimits::WGPU_DEFAULT,
     )
 }
 

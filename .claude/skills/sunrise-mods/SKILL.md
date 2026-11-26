@@ -19,7 +19,7 @@ Choose the walkthrough under `docs/modding/src/` for the kind of mod you are mak
 
 `cargo sunrise-mod new` generates the project and `sunrise-mod.toml`. Edit declared fields such as the name,
 description and dependencies as needed (`reference/manifest.md`); do not write the manifest from scratch
-or change generated pins by hand. For code mods, `cargo sunrise-mod update` changes the pins.
+or change the generated build pin by hand. For code mods, `cargo sunrise-mod pin` moves the build pin.
 
 - `cargo sunrise-mod help all` lists the commands; `reference/sdk/05-commands.md` describes the SDK commands.
 - Find a hook with `cargo sunrise-mod hooks <words>`, never by guessing a name.
@@ -34,10 +34,10 @@ or change generated pins by hand. For code mods, `cargo sunrise-mod update` chan
 |---|---|
 | Blocks, items, recipes, loot, worldgen as data files | `how-to/content-mods.md` |
 | The crate, the package, data files of a native mod | `how-to/native-mods.md` and its numbered pages |
-| A compile fails | `how-to/native-mods/05-build-log.md` |
+| A compile fails | `how-to/native-mods/04-what-the-launcher-does.md` (Build log) |
 | Changing game code (`[native.*]` tables, mixins, loops) | `concepts/native-route.md` |
 | The SDK: what a release holds, the pin, signatures | `reference/sdk.md`, `reference/sdk/01-release.md`, `reference/sdk/03-in-a-project.md` |
-| Does a mod still fit a newer build (`fits`, `update`, `uses.json`) | `reference/sdk/04-fit.md`, `how-to/native-mods/14-checking-a-mod-against-a-build.md` |
+| Does a mod still fit a newer build (`check --build`, `pin`, `uses.json`) | `reference/sdk/04-fit.md`, `how-to/native-mods/14-checking-a-mod-against-a-build.md` |
 | crates.io dependencies and `Cargo.lock` (`build --update-lock`, `native-lock`) | `start/first-mod.md` (step 5), `reference/sdk/08-native-build.md` |
 | The JSON contract a build server or launcher drives (`native-build`, `native-check`, `native-lock`) | `reference/sdk/08-native-build.md` |
 | Testing a mod's logic | `concepts/testing.md` |

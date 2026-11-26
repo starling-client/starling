@@ -1,110 +1,97 @@
-//! A label's lines, as `DrawContext::text_lines` measures and places them: no widget, no theme, no
-//! state, so a mod draws each line itself.
-use crate::{Text, text::TextFormError};
+//! In-process label layout shared by off-draw reads and canvas painting.
+use crate::Text;
 
-/// Where a label's lines sit inside its width.
+/// Where lines sit inside their wrapping width.
+// no wire: local label layout.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 // exhaustive: a closed set the game matches without a wildcard
-#[derive(sunrise_mod_api_macros::Wire)]
 pub enum TextAlign {
-    /// Lined up on the left edge of the width.
+    /// Lined up on the left edge.
     Left,
-    /// Centred in the width: `width / 2 - floor(line width / 2)` from its left edge, as vanilla's
-    /// `TextAlignment.CENTER.calculateLeft` floors the half line width.
+    /// Centred: half the wrapping width minus the floored half of the line's width.
     Centre,
-    /// Lined up on the right edge of the width.
+    /// Lined up on the right edge.
     Right,
 }
 
-/// One line of a label: the piece of the component it carries, and where to draw it.
-#[derive(Clone, Debug, PartialEq)]
+/// How to wrap and place a label. Width is in GUI pixels after scaling.
+#[derive(Clone, Copy, Debug, PartialEq)]
+// no wire: local label layout.
+// exhaustive: callers supply the three layout inputs.
+pub struct TextLayoutSpec {
+    /// Wrapping width. Widths below one unscaled pixel wrap at one pixel, as in vanilla.
+    pub max_width: f32,
+    /// Where to place each line inside the wrapping width.
+    pub align: TextAlign,
+    /// Positive scale of the text relative to the active font's unscaled GUI pixels.
+    pub scale: f32,
+}
+
+impl TextLayoutSpec {
+    /// Wrap at `max_width`, place lines by `align`, and draw at `scale`.
+    pub fn new(max_width: f32, align: TextAlign, scale: f32) -> Self {
+        Self {
+            max_width,
+            align,
+            scale,
+        }
+    }
+}
+
+/// A line lent to a visitor in top-to-bottom order.
+// no wire: borrowed component.
+#[derive(Clone, Copy, Debug)]
 #[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
-pub struct TextLine {
-    /// The component's characters this line holds, styles and colours kept, its legacy `§` codes
-    /// already applied to those styles and dropped (a `§r` restores the style its run carried).
-    pub text: Text,
-    /// Where to draw it, in scaled GUI pixels: `x` from the label's left edge, `y` from its top
-    /// (`0` for the first line).
+pub struct TextLine<'a> {
+    /// Logical-order component with effective styles and inline objects. Legacy formatting
+    /// codes have been applied and dropped. Clone this component to retain it.
+    pub text: &'a Text,
+    /// Offset from the label origin, in scaled GUI pixels.
     pub at: [f32; 2],
-    /// Its width in scaled GUI pixels, as `Font.width` measures it, styles included.
+    /// Line width in scaled GUI pixels.
     pub width: f32,
 }
 
-impl TextLine {
-    /// A line `width` GUI pixels wide, drawn with its top left at `at`.
-    pub fn new(text: Text, at: [f32; 2], width: f32) -> Self {
+impl<'a> TextLine<'a> {
+    // hidden: the engine's layout builds the lines it lends; mods only receive them.
+    #[doc(hidden)]
+    pub fn new(text: &'a Text, at: [f32; 2], width: f32) -> Self {
         Self { text, at, width }
     }
 }
 
-/// A label laid out: its lines, already placed inside its width, and the block it occupies.
-#[derive(Clone, Debug, Default, PartialEq)]
-#[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
-pub struct TextLines {
-    /// The lines, top to bottom.
-    pub lines: Vec<TextLine>,
-    /// The widest line's width in scaled GUI pixels, `0` with no line.
+/// The dimensions of the label's laid-out lines, in scaled GUI pixels.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+// no wire: local label layout.
+// exhaustive: two dimensions of the label.
+pub struct TextLayoutSize {
+    /// The widest line, or zero with no lines.
     pub width: f32,
-    /// The block's height in scaled GUI pixels: the last line's `at[1]` plus one line height, `0`
-    /// with no line. What a scroll container sizes its content from.
+    /// The last line's vertical offset plus one line height, or zero with no lines.
     pub height: f32,
 }
 
-impl TextLines {
-    /// The layout a draw answers: `lines` already placed, the widest line's width and the block's
-    /// height.
-    pub fn new(lines: Vec<TextLine>, width: f32, height: f32) -> Self {
-        Self {
-            lines,
-            width,
-            height,
-        }
-    }
-}
-
-/// Why [`crate::DrawContext::text_lines`] answered no layout: nothing was measured, and no partial
-/// list of lines is answered with it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// A wrapping width, scale or scaled result that cannot place a label. No lines were visited.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+// no wire: local label layout.
 #[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
-pub enum TextLinesRefusal {
-    /// `max_width` is NaN or infinite, or so much larger than `scale` that dividing it by `scale`
-    /// overflows: there is no box to wrap in and none to place lines in.
+pub enum TextLayoutError {
+    /// The wrapping width or `max_width / scale` is not finite.
     WidthNotFinite,
-    /// `scale` is NaN, infinite, zero or less: no line has a position or a size to answer.
+    /// The scale is not finite or is not positive.
     ScaleInvalid,
-    /// The text wraps into more than 512 lines.
-    TooManyLines,
-    /// The lines hold more than 8192 characters together.
-    TooManyGlyphs,
-    /// The component could not cross to the game (deeper than 512 component nodes, malformed).
-    Text(TextFormError),
+    /// A scaled line offset, width or total height is not finite.
+    GeometryNotFinite,
 }
 
-impl From<TextFormError> for TextLinesRefusal {
-    fn from(error: TextFormError) -> Self {
-        Self::Text(error)
-    }
-}
-
-impl std::fmt::Display for TextLinesRefusal {
+impl std::fmt::Display for TextLayoutError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::WidthNotFinite => {
-                f.write_str("text_lines: max_width or max_width / scale is NaN or infinite")
-            }
-            Self::ScaleInvalid => f.write_str("text_lines: scale is NaN, infinite, zero or less"),
-            Self::TooManyLines => {
-                f.write_str("text_lines: the text wraps into more than 512 lines")
-            }
-            Self::TooManyGlyphs => {
-                f.write_str("text_lines: the lines hold more than 8192 characters")
-            }
-            Self::Text(error) => write!(f, "text_lines: text: {error}"),
-        }
+        f.write_str(match self {
+            Self::WidthNotFinite => "text layout: max_width or max_width / scale is not finite",
+            Self::ScaleInvalid => "text layout: scale is not finite or is not positive",
+            Self::GeometryNotFinite => "text layout: scaled line geometry is not finite",
+        })
     }
 }
 
-impl std::error::Error for TextLinesRefusal {}
+impl std::error::Error for TextLayoutError {}

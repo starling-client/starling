@@ -8,7 +8,11 @@ use std::time::Instant;
 fn delays_apply(opt: Opt) -> bool {
     matches!(
         opt,
-        Opt::RenderDistance | Opt::SimulationDistance | Opt::BiomeBlend | Opt::WheelSensitivity
+        Opt::RenderDistance
+            | Opt::VanillaRenderDistance
+            | Opt::SimulationDistance
+            | Opt::BiomeBlend
+            | Opt::WheelSensitivity
     )
 }
 /// Whether a slider still shows its own position: while held, or for a

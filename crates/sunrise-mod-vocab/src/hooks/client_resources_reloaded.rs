@@ -1,5 +1,4 @@
 //! The `client_resources_reloaded` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0099
 
 pub trait Hooks {
     /// Render-thread notification after a resource-pack reload has applied successfully.

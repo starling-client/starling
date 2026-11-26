@@ -5,13 +5,39 @@ use super::Game;
 use sunrise_client::{
     gossip::{self, GossipType},
     items::ItemStack,
-    mobs::{Mob, Species, spawning, villager, villager_brain},
+    merchant::TradeFeedback,
+    mobs::{Mob, Species, entity_sounds::full_id, spawning, villager, villager_brain},
 };
 use sunrise_core::{geometry::Vec3, position::BlockPos};
 
 fn block_of(p: Vec3) -> [i32; 3] {
     [p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32]
 }
+impl villager_brain::TradingPlayers for Game<'_> {
+    fn trading_player(&self, villager: u32) -> Option<villager_brain::TradingPlayer> {
+        if let Some(station) = &self.station
+            && station
+                .merchant
+                .as_ref()
+                .is_some_and(|merchant| merchant.mob == Some(villager))
+        {
+            return Some(villager_brain::TradingPlayer {
+                uuid: self.level.player_uuid,
+                hero: self.hero_amplifier(),
+                paying: station.inputs.iter().any(Option::is_some),
+            });
+        }
+        let host = self.lan.as_ref()?;
+        let (conn, screen) = self.lan_trade_screen(villager)?;
+        let guest = host.hub.guest(conn)?;
+        Some(villager_brain::TradingPlayer {
+            uuid: Some(sunrise_client::lan::playerdata::uuid_ints(guest.uuid)),
+            hero: guest.effects.amplifier("hero_of_the_village"),
+            paying: screen.slots[..2].iter().any(Option::is_some),
+        })
+    }
+}
+
 impl Game<'_> {
     fn villager_index(&self, id: u32) -> Option<usize> {
         self.mobs
@@ -171,11 +197,10 @@ impl Game<'_> {
         let sound = golem.kind.sounds[0];
         if !sound.is_empty() {
             let at = golem.center();
-            self.audio
-                .play(&format!("minecraft:{sound}"), Some(at), 1.0, 1.0);
+            self.play_audio(&format!("minecraft:{sound}"), Some(at), 1.0, 1.0);
         }
         self.mobs.push(golem);
-        self.native_mobs_joined(self.mobs.len() - 1, false);
+        self.admit_new_mobs(self.mobs.len() - 1);
         true
     }
 
@@ -486,43 +511,47 @@ impl Game<'_> {
         };
         Some(sunrise_client::lan::playerdata::uuid_ints(uuid))
     }
-    /// `Villager.setLastHurtByMob` and `ServerLevel.onReputationEvent`: a hit
-    /// from a player counts against that player with the villager that was hit.
-    pub(super) fn villager_reputation_tick(&mut self) {
-        let mut angry = Vec::new();
-        for i in 0..self.mobs.len() {
-            let m = &self.mobs[i];
-            if m.species() != Species::Villager
-                || m.ai.last_hurt_by != Some(sunrise_client::mobs::Who::Player)
-            {
-                continue;
-            }
-            let time = m.ai.last_hurt_by_time;
-            let alive = m.alive();
-            let at = m.id;
-            if villager::ext(m).is_some_and(|e| e.hurt_seen == time) {
-                continue;
-            }
-            let Some(uuid) = self.last_hurt_by_player.get(&at).and_then(|credit| {
-                self.resolve_player_credit(*credit)
-                    .and_then(|who| self.player_uuid_of(who))
-            }) else {
-                continue;
-            };
-            let e = villager::ext_mut(&mut self.mobs[i]);
-            e.hurt_seen = time;
-            e.gossips.add(
-                uuid,
-                GossipType::MinorNegative,
-                gossip::REPUTATION_CHANGE_PER_EVENT,
+    /// Complete this hit before another hit can publish its effects. In
+    /// `LivingEntity.hurtServer`, reputation and anger precede the damage
+    /// broadcast, then `playHurtSound` and `playSecondaryHurtSound`.
+    pub(super) fn settle_villager_hurt(&mut self, index: usize) {
+        let Some(mob) = self.mobs.get_mut(index) else {
+            return;
+        };
+        let Some(ext) = mob.extra.villager.as_mut() else {
+            return;
+        };
+        let (player, damage) = (
+            ext.pending_hurt_player.take(),
+            ext.pending_hurt_damage.take(),
+        );
+        let sounds = std::mem::take(&mut ext.pending_hurt_sounds);
+        let (id, at) = (mob.id, mob.position.components());
+        if let Some(player) = player {
+            self.villager_prices_changed(
+                id,
+                Some(player.uuid),
+                TradeFeedback::AtHurt(player.trade_pitch),
             );
-            if alive {
-                angry.push(at);
+            if player.angry {
+                if let Some(host) = &self.lan {
+                    host.hub.entity_event(id as i32, 13);
+                }
+                self.entity_event_particles(id, 13);
             }
         }
-        // Villager.setLastHurtByMob: entity event 13.
-        for id in angry {
-            self.mob_event_particles(id, 13);
+        if let Some((source, cause)) = damage
+            && let Some(host) = &self.lan
+        {
+            let direct = cause.filter(|_| super::combat::melee(source.kind));
+            let kind = super::creatures::source_damage_type(source);
+            host.hub.damage_event(id as i32, kind, cause, direct, at);
+        }
+        for villager::HurtSound(name, at, volume, pitch) in sounds.into_iter().flatten() {
+            let name = full_id(name);
+            self.play_immediate_level_sound(super::level_sounds::LevelSound::new(
+                &name, at, volume, pitch,
+            ));
         }
     }
     /// `Villager.tellWitnessesThatIWasMurdered`: the villagers that saw a
@@ -577,11 +606,22 @@ impl Game<'_> {
         // Villager.customServerAiStep after a trade: entity event 14.
         self.mob_event_particles(id, 14);
         // onReputationEventFrom refreshes the current trading player's prices.
-        if self
-            .station
-            .as_ref()
-            .and_then(|s| s.merchant.as_ref())
-            .is_some_and(|m| m.mob == Some(id))
+        self.villager_prices_changed(id, Some(uuid), TradeFeedback::Current);
+    }
+    /// `Villager.updateSpecialPrices` for the players trading with villager `id`
+    /// (only the player `only`, when given).
+    fn villager_prices_changed(
+        &mut self,
+        id: u32,
+        only: Option<[i32; 4]>,
+        feedback: TradeFeedback,
+    ) {
+        if only.is_none_or(|uuid| self.level.player_uuid == Some(uuid))
+            && self
+                .station
+                .as_ref()
+                .and_then(|s| s.merchant.as_ref())
+                .is_some_and(|m| m.mob == Some(id))
         {
             let reputation = self.villager_reputation(id);
             self.menu_session(|menu, env, _| {
@@ -589,11 +629,46 @@ impl Game<'_> {
                     session.reputation = reputation;
                     session.update_special_prices();
                 }
-                menu.merchant_update(env);
+                menu.merchant_update_with_feedback(env.items, feedback);
                 Some(true)
             });
         }
-        self.lan_merchant_reputation(id);
+        self.lan_merchant_reputation(id, only, feedback);
+    }
+    /// `Villager.restock` / `shouldRestock` with a trading player, at the
+    /// brain's work step: the live offers on the screen take the step, priced
+    /// for the player as the work step saw them; `updateSellItem` then picks
+    /// the result and the yes/no voice. Later edits are the last write.
+    pub(in crate::game) fn villager_offers_open(&mut self, restock: villager_brain::RestockNotice) {
+        let villager_brain::RestockNotice {
+            mob: id,
+            step,
+            reputation,
+            hero,
+            pitch,
+        } = restock;
+        let refresh = |menu: &mut sunrise_client::menu::Menu, env: &sunrise_client::menu::Env| {
+            if let Some(session) = menu.merchant.as_mut() {
+                step.apply(&mut session.offers);
+                session.reputation = reputation;
+                session.hero = hero;
+                session.update_special_prices();
+            }
+            menu.merchant_update_with_feedback(env.items, TradeFeedback::AtWork(pitch));
+        };
+        let local = self
+            .station
+            .as_ref()
+            .and_then(|s| s.merchant.as_ref())
+            .is_some_and(|m| m.mob == Some(id));
+        if local {
+            self.menu_session(|menu, env, _| {
+                refresh(menu, env);
+                Some(true)
+            });
+        } else if let Some(conn) = self.lan_trade_conn(id) {
+            self.lan_merchant_op(conn, None, true, refresh);
+        }
     }
     /// `Villager.getPlayerReputation` of the local player.
     pub(super) fn villager_reputation(&self, id: u32) -> i32 {
@@ -659,16 +734,30 @@ impl Game<'_> {
         let Some(i) = self.mobs.iter().position(|m| m.id == id) else {
             return;
         };
-        let mut mobs = self.mobs.lift();
-        #[cfg(test)]
-        super::entity::taken_pass_tests::after_take(self);
-        let mut events = Vec::new();
-        villager::stop_sleeping(&mut mobs[i], &self.mob_world_base(&[]), &mut events);
-        villager_brain::woken(&mut mobs[i], self.world.game_time);
-        self.mobs
-            .restore(mobs, sunrise_client::join_seq::RestoreOrder::SurvivorsFirst);
-        if let Err(e) = self.handle_mob_events(events) {
-            log::warn!("waking villager {id}: {e}");
+        let join = self.mobs[i].join;
+        if let Some(bed) = villager::sleeping_pos(&self.mobs[i]) {
+            self.set_bed_occupied(bed, false);
+        }
+        let Some(i) = self
+            .mob_index
+            .find(&self.mobs, id)
+            .filter(|&i| self.mobs[i].join == join && !self.mobs[i].removed)
+        else {
+            return;
+        };
+        let old = self.mobs[i].position;
+        let level = sunrise_client::stand_up::StandUpLevel {
+            world: &self.world,
+            registry: self.pack.assets.registry,
+            facts: self.res.facts(),
+            collision: self.collision,
+            block_tags: &world_items!(self).block_tags,
+            border: Some(self.border.geometry()),
+        };
+        let woke = villager::wake(&mut self.mobs[i], self.world.game_time, Some(&level), None);
+        if woke.is_some() {
+            let new = self.mobs[i].position;
+            self.entity_section_moved(id, Some([old.x, old.y, old.z]), [new.x, new.y, new.z]);
         }
     }
 }
@@ -685,35 +774,6 @@ mod entity_event_particle_tests {
         assert_eq!(kind("villager", 42), Some("splash"));
         assert_eq!(kind("dolphin", 38), Some("happy_villager"));
         assert_eq!(kind("villager", 2), None);
-    }
-}
-
-#[cfg(test)]
-mod nested_spawn_tests {
-    #[test]
-    #[ignore = "daily"]
-    fn lifted_mob_callback_keeps_nested_spawns_until_the_next_pass() {
-        crate::game::entity::taken_pass_tests::in_both_dimensions(|game, balance| {
-            let kind = game
-                .res
-                .mob_types()
-                .get("minecraft:villager")
-                .unwrap()
-                .clone();
-            game.mobs.push(sunrise_client::mobs::Mob::new(
-                99,
-                kind,
-                sunrise_core::geometry::Vec3::new(0.5, 80.0, 0.5),
-                0.0,
-            ));
-            crate::game::entity::taken_pass_tests::assert_mob_spawn_survives(
-                game,
-                balance,
-                |game| {
-                    game.wake_villager(99);
-                },
-            );
-        });
     }
 }
 

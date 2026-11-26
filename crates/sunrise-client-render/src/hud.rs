@@ -16,7 +16,6 @@ use model_reducing::reducible_model_sprites;
 
 mod animate;
 pub mod cit_glint;
-mod clip_corner;
 pub mod dynamic_textures;
 mod gui_sprite;
 pub use gui_sprite::atlas_key_of_gui_sprite;
@@ -96,6 +95,39 @@ impl TextureFlags {
         };
         (flags != Self::default()).then_some(flags)
     }
+    /// A standalone texture's `.png.mcmeta` as vanilla loads it: `ResourceMetadata.fromJsonStream`,
+    /// then `getSection(TextureMetadataSection.TYPE)`. `Err` where vanilla throws, a file that is
+    /// not a JSON object or a `texture` section its codec refuses, and `TextureManager` then loads
+    /// the missing texture. The codec reads `blur` and `clamp` (`Codec.BOOL`), `mipmap_strategy`
+    /// (`MipmapStrategy`'s names) and `alpha_cutoff_bias` (`Codec.FLOAT`), each optional, `null`
+    /// as absent, other keys ignored; no section is the default sampler.
+    pub fn read_mcmeta(json: &str) -> std::result::Result<Self, &'static str> {
+        let meta: serde_json::Value =
+            crate::packs::first_json(json.as_bytes()).map_err(|_| "not JSON")?;
+        let meta = meta.as_object().ok_or("not a JSON object")?;
+        let Some(section) = meta.get("texture") else {
+            return Ok(Self::default());
+        };
+        let section = section.as_object().ok_or("texture is not an object")?;
+        let field = |key| section.get(key).filter(|v| !v.is_null());
+        let flag = |key| match field(key) {
+            None => Ok(false),
+            Some(v) => v.as_bool().ok_or("blur or clamp is not a boolean"),
+        };
+        const STRATEGIES: [&str; 5] = ["auto", "mean", "cutout", "strict_cutout", "dark_cutout"];
+        if field("mipmap_strategy")
+            .is_some_and(|v| !v.as_str().is_some_and(|s| STRATEGIES.contains(&s)))
+        {
+            return Err("unknown mipmap_strategy");
+        }
+        if field("alpha_cutoff_bias").is_some_and(|v| !v.is_number()) {
+            return Err("alpha_cutoff_bias is not a number");
+        }
+        Ok(Self {
+            blur: flag("blur")?,
+            clamp: flag("clamp")?,
+        })
+    }
 }
 mod cit;
 use cit::*;
@@ -104,6 +136,10 @@ pub use atlas_sprites::*;
 mod atlas;
 pub use atlas::*;
 mod atlas_pack;
+pub(crate) use atlas_pack::rgba_len;
+mod atlas_pages;
+pub(crate) use atlas_pages::upload_atlas_page;
+use atlas_pages::{AtlasPageGpu, UploadedAtlasPage};
 mod image;
 pub use image::*;
 mod batch;
@@ -115,6 +151,9 @@ pub use renderer::*;
 #[cfg(test)]
 #[path = "hud/coverage_tests.rs"]
 mod coverage_tests;
+
+#[cfg(test)]
+mod dynamic_gui_gpu_tests;
 
 #[cfg(test)]
 mod tests;

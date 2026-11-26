@@ -1,0 +1,8 @@
+ids = [
+  "type:dependencies::Mod",
+  "type:dependencies::Mod.has_api",
+  "type:dependencies::Error",
+  "type:dependencies::Error.NoApi",
+]
+why = "The old check required an [api] package even though every native project already supplies its root Cargo package. Native Cargo linking is Sunrise-only. The logical version and dispatch checks stay separate and unchanged, as in NeoForge's ModSorter.verifyDependencyVersions and ModSorter.sort."
+migrate = "Remove any legacy [api] table. In the dependency mod, keep [native] and export shared functions or statics from its root Cargo crate; in the consuming mod, keep the mod ID and version under [dependencies] in sunrise-mod.toml and import the same crate alias. Keep the separate api = version field. If calling sunrise_mod_package::dependencies directly, omit has_api from Mod literals, keep code set from whether the manifest is native, and remove any Error::NoApi match arm; there is no replacement refusal."

@@ -11,7 +11,7 @@ from tools import test_fishing_rng_parity as fishing
 class FishingReferenceSetupTests(unittest.TestCase):
     def test_reference_only_producer_supplies_both_paths_and_isolated_homes(self):
         with tempfile.TemporaryDirectory() as directory:
-            work = Path(directory)
+            work = Path(directory).resolve()
 
             def produce(command, **kwargs):
                 self.assertEqual(Path(command[1]).name, "test_command_exec_parity.py")

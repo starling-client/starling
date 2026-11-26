@@ -307,6 +307,15 @@ impl<'r, B: TerrainBlockStates> TerrainChunk<'r, B> {
     pub(crate) fn registry(&self) -> &BlockRegistry {
         self.blocks.registry
     }
+    pub(super) fn air(&self) -> BlockStateId {
+        self.blocks.air
+    }
+    pub(super) fn void_air(&self) -> BlockStateId {
+        self.blocks.void_air
+    }
+    pub(super) fn block_properties_table(&self) -> &B {
+        &self.blocks.properties
+    }
     /// The indexes of the sections holding a block other than air
     /// (`LevelChunkSection.hasOnlyAir`, negated).
     pub fn filled_sections(&self) -> impl Iterator<Item = usize> + '_ {

@@ -16,8 +16,9 @@ identifier (including custom `minecraft:<path>` IDs that do not collide with bui
 entries). A malformed or duplicate ID is logged and left out.
 
 Declare text with `DebugEntry::text(id, group, lines)`. The `DebugGroup` chooses which
-vanilla lines it joins: `Position`, `Light`, `Memory`, `LookingAtBlock`, `LookingAtEntity`,
-`LookingAtFluid` or `ChunkGeneration`. The client owns the callback for its lifetime. Only
+lines it joins: vanilla's `Position`, `Light`, `Memory`, `LookingAtBlock`, `LookingAtEntity`,
+`LookingAtFluid` or `ChunkGeneration`, or `Named(id)`, a group of the mod's own that every
+entry naming the same identifier joins. The client owns the callback for its lifetime. Only
 while the entry is visible, the client calls the callback under the registering mod's identity,
 with the current `&dyn ClientHost` and a `&mut Vec<String>` to append lines to. Legacy colour
 codes (§) work. If the callback appends nothing, nothing joins the group. The lines are

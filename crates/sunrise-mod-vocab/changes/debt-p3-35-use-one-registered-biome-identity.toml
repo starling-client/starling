@@ -1,0 +1,84 @@
+ids = [
+    "type:BiomeKey",
+    "type:BiomeView",
+    "type:BiomeKeyError",
+    "type:BiomeKeyError.InvalidIdentifier",
+    "type:BiomeKeyError.UnknownBiome",
+    "type:BiomeId",
+    "method:prelude::KeysHost::biome_key",
+    "method:prelude::KeysHost::biome",
+    "method:ReloadContext::biome_key_id",
+    "handle:BiomeKey::id",
+    "handle:BiomeKey::new",
+    "handle:BiomeKey::parse",
+    "handle:BiomeKey::from_parts",
+    "handle:BiomeKey::identifier",
+    "handle:BiomeKey::namespace",
+    "handle:BiomeKey::path",
+    "handle:BiomeKey::into_identifier",
+    "handle:BiomeKey::view",
+    "handle:BiomeKey::data",
+    "handle:BiomeView::id",
+    "handle:BiomeView::key",
+    "handle:BiomeView::is",
+    "handle:BiomeView::data",
+    "method:BiomeSource::possible_biomes",
+    "method:GenerationContext::noise_biome",
+    "handle:SectionVisibilityInput::biome",
+    "handle:ChunkSnapshot::biome",
+    "handle:ChunkSnapshot::biome_name",
+    "handle:ChunkSnapshot::biome_id",
+    "handle:SectionSnapshot::uniform_biome",
+    "handle:SectionSnapshot::biome_quart",
+    "hook:section_visibility",
+]
+why = """
+Replace the duplicate biome ordinal and generation token with one persistent registered BiomeKey,
+like vanilla 26.3's ResourceKey<Biome>, and a scoped, generation-bound BiomeView, like Holder<Biome>.
+BiomeSource.possibleBiomes and Structure.GenerationContext use registered holders; structure queries
+now read the same validated key the engine's biome resolver selected. NeoForge's BaseMappedRegistry.getData
+indexes by the registered key, so data-map loading and lookup use the same loaded biome table.
+LevelChunkSection.getNoiseBiome reads the section's stored holder; section visibility likewise returns
+the registered identity, not a rendering default for an unresolved slot. Vanilla ResourceKey.streamCodec
+uses one namespaced Identifier UTF-8 string at the vanilla network boundary; it is not mod Wire.
+Loaded keys follow Identifier.isValidNamespace and Identifier.isValidPath. Invalid registry data
+refuses world load or disconnects the client before Play is applied, following RegistryDataLoader.load,
+ClientConfigurationPacketListenerImpl.handleConfigurationFinished, and Connection.exceptionCaught.
+"""
+migrate = """
+- Replace `BiomeId` with `BiomeKey`. `GenerationContext::noise_biome` returns `BiomeKey`, and
+  `BiomeSource::possible_biomes` returns `Vec<BiomeKey>`; return registered keys in the same order your
+  source's `noise_biome` uses for its indices. `BiomeKey` is no longer `Copy`: borrow it or call `.clone()`
+  to keep an owned key.
+- Construct a key with `BiomeKey::new(identifier)`, `BiomeKey::parse("minecraft:plains")`, or
+  `BiomeKey::from_parts("minecraft", "plains")`. Use `key.identifier()` to borrow `&Identifier`,
+  `key.namespace()` and `key.path()` to borrow the two parts, or `key.into_identifier()` to move out
+  the identifier. For owned canonical text use `key.to_string()`.
+- Replace `host.biome_key(id)` with `host.biome(id)?`. Use `view.id()` instead of `key.id(host)?`
+  for the borrowed canonical name. Use `view.key()` to borrow the persistent key, `view.key().clone()`
+  to keep it, and `view.is(&key)` to compare identity. To resolve a persistent key in the currently
+  installed registry, use `key.view(host)?`; do not keep a `BiomeView` across host borrows or reloads.
+  In scoped reload hooks, change `context.biome_key_id(key)` to `context.biome_key_id(&key)`;
+  it checks membership in the published registry, not the key's generation. Typed reload reads
+  still use `context.data_map(&key, &map)`.
+- On `InvalidIdentifier`, fix the supplied identifier; on `UnknownBiome`, handle the biome's absence
+  in the installed registry. `WrongGeneration` now applies to a scoped view checked against another
+  generation, not a persistent key; resolve the key again in the current host. Continue handling
+  `Unavailable` on clients and without installed world data or in a phase that forbids access.
+  `key.data(host, &map)` borrows `&self` and checks world membership; `view.data(host, &map)` checks
+  generation. The data reads report an unknown key or wrong-generation view as `DataMapError::InvalidKey`.
+- For `section_visibility`, change any manifest pin to `hook_version = 3`. Match
+  `event.input.biome(local)` as `Ok(Some(key))` to compare a borrowed registered key, `Ok(None)` if
+  the column is missing or the slot unresolved, or `Err(SectionVisibilityRefusal::OutsideInput)` beyond
+  the border. Use `event.input.cell(local)` if you need to distinguish an unloaded column from a loaded
+  cell with no registered biome. Do not compare ordinal numbers or use plains for `None`.
+- Re-encode mod data or payloads from names; old encoded keys and errors are incompatible. Mod Wire
+  for `BiomeKey` writes the `Identifier`'s namespace and path as two separately u32-length-prefixed
+  UTF-8 strings instead of the old `(u32, u64)` token. `BiomeView` is not Wire. The `BiomeKeyError` Wire
+  tags are now `InvalidIdentifier = 0`, `UnknownBiome = 1`, `WrongGeneration = 2`, and `Unavailable = 3`
+  (previously `WrongGeneration = 0` and `Unavailable = 1`). Do not use either mod format as a vanilla
+  network codec.
+- `ChunkSnapshot::biome`, `SectionSnapshot::uniform_biome` and `SectionSnapshot::biome_quart` return
+  the stored `&BiomeKey` (`LevelChunkSection.getNoiseBiome`'s holder) instead of an ordinal `BiomeId`.
+  `ChunkSnapshot::biome_name` and `biome_id` are removed: read `key.identifier()` from the returned key.
+"""

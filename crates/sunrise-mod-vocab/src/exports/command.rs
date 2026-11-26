@@ -1,3 +1,4 @@
 pub use command::{
-    CommandArgument, CommandArgumentValue, CommandInvocation, CommandResult, CommandSource,
+    CommandArgument, CommandArgumentValue, CommandFeedback, CommandInvocation, CommandResult,
+    CommandSource,
 };

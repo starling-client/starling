@@ -4,10 +4,81 @@
 //! `EnvironmentAttributeMap.Entry`'s codec does and applied as `AttributeModifier.apply`.
 //! Colors are float vectors as in 26.3 (`Vector3fc`, `Vector4fc` with alpha last), and all math
 //! is `f32` in Java's order of operations.
+use crate::particle_options::ParticleOptions;
 use serde_json::Value as Json;
+use std::sync::{Arc, LazyLock};
+use sunrise_core::nbt::Tag;
 
-/// `AttributeTypes`. The types without a ported codec are `Other`: their values are kept as
-/// JSON and can only be overridden.
+pub const AMBIENT_PARTICLES: &str = "visual/ambient_particles";
+
+/// `AmbientParticle`: the decoded options plus an independent spawn probability.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AmbientParticle {
+    pub particle: Arc<ParticleOptions>,
+    pub probability: f32,
+}
+
+impl AmbientParticle {
+    fn parse_list(json: &Json) -> Result<Arc<[Self]>, String> {
+        json.as_array()
+            .ok_or_else(|| "expected a list of ambient particles".to_owned())?
+            .iter()
+            .map(Self::parse)
+            .collect()
+    }
+
+    fn parse(json: &Json) -> Result<Self, String> {
+        Ok(Self {
+            particle: Arc::new(
+                ParticleOptions::parse(json.get("particle").ok_or("no particle")?)
+                    .ok_or("invalid particle options")?,
+            ),
+            probability: unit(
+                json.get("probability").ok_or("no probability")?,
+                "probability",
+            )?,
+        })
+    }
+}
+
+fn ambient_particles_to_nbt(list: &[AmbientParticle]) -> Tag {
+    Tag::List(
+        list.iter()
+            .map(|p| {
+                Tag::compound([
+                    ("particle", p.particle.to_nbt()),
+                    ("probability", Tag::Float(p.probability.to_bits())),
+                ])
+            })
+            .collect(),
+    )
+}
+
+/// `LerpFunction.ofListCrossFade`: scale each entry's probability independently.
+fn ambient_cross_fade(
+    alpha: f32,
+    from: &Arc<[AmbientParticle]>,
+    to: &Arc<[AmbientParticle]>,
+) -> Arc<[AmbientParticle]> {
+    match alpha {
+        0.0 => Arc::clone(from),
+        1.0 => Arc::clone(to),
+        _ => {
+            let scale = |p: &AmbientParticle, weight| AmbientParticle {
+                particle: Arc::clone(&p.particle),
+                probability: p.probability * weight,
+            };
+            let from_weight = 1.0 - alpha;
+            from.iter()
+                .map(|p| scale(p, from_weight))
+                .chain(to.iter().map(|p| scale(p, alpha)))
+                .collect()
+        }
+    }
+}
+
+/// `AttributeTypes`. Complex values (`Other`) use the shared persistent codecs and
+/// retain their JSON representation for consumers that interpret them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Boolean,
@@ -15,6 +86,7 @@ pub enum Kind {
     AngleDegrees,
     RgbColor,
     ArgbColor,
+    AmbientParticles,
     Other,
 }
 
@@ -25,6 +97,7 @@ pub enum Value {
     Float(f32),
     Rgb([f32; 3]),
     Argb([f32; 4]),
+    AmbientParticles(Arc<[AmbientParticle]>),
     Other(Json),
 }
 
@@ -33,6 +106,7 @@ enum Default {
     Float(f32),
     Rgb(i32),
     Argb(i32),
+    EmptyAmbientParticles,
     Unported,
 }
 
@@ -152,7 +226,12 @@ pub static ATTRIBUTES: [Attribute; 51] = {
             D::Unported,
             Range::Any,
         ),
-        a("visual/ambient_particles", Other, D::Unported, Range::Any),
+        a(
+            AMBIENT_PARTICLES,
+            AmbientParticles,
+            D::EmptyAmbientParticles,
+            Range::Any,
+        ),
         a("audio/background_music", Other, D::Unported, Range::Any),
         a("audio/music_volume", Float, D::Float(1.0), UNIT),
         a("audio/ambient_sounds", Other, D::Unported, Range::Any),
@@ -296,6 +375,21 @@ fn channels(color: i32) -> [f32; 4] {
 }
 
 impl Attribute {
+    /// `EnvironmentAttributes`: all visual and audio attributes are syncable;
+    /// the gameplay attributes opt in individually.
+    pub(crate) fn is_syncable(&self) -> bool {
+        self.id.starts_with("visual/")
+            || self.id.starts_with("audio/")
+            || matches!(
+                self.id,
+                "gameplay/sky_light_level"
+                    | "gameplay/water_evaporates"
+                    | "gameplay/fast_lava"
+                    | "gameplay/piglins_zombify"
+                    | "gameplay/creaking_active"
+            )
+    }
+
     /// `EnvironmentAttribute.defaultValue`; `None` for the types not ported yet.
     pub fn default_value(&self) -> Option<Value> {
         Some(match self.default {
@@ -306,6 +400,10 @@ impl Attribute {
                 Value::Rgb([r, g, b])
             }
             Default::Argb(c) => Value::Argb(channels(c)),
+            Default::EmptyAmbientParticles => {
+                static EMPTY: LazyLock<Arc<[AmbientParticle]>> = LazyLock::new(|| Arc::from([]));
+                Value::AmbientParticles(Arc::clone(&EMPTY))
+            }
             Default::Unported => return None,
         })
     }
@@ -328,11 +426,12 @@ impl Attribute {
             Kind::Float | Kind::AngleDegrees => Value::Float(float(json)?),
             Kind::RgbColor => Value::Rgb(rgb(json)?),
             Kind::ArgbColor => Value::Argb(argb(json)?),
-            // These types' modifiers (`append`, `overlay`) aren't ported yet.
-            Kind::Other if json.get("modifier").is_some() => {
-                return Err("modifiers on this attribute are not ported".into());
+            Kind::AmbientParticles => Value::AmbientParticles(AmbientParticle::parse_list(json)?),
+            Kind::Other => {
+                crate::loot::types::validate_environment_value(self, json)
+                    .map_err(|error| error.to_string())?;
+                Value::Other(json.clone())
             }
-            Kind::Other => Value::Other(json.clone()),
         };
         if let (Range::Float(min, max), Value::Float(v)) = (self.range, &value)
             && !(*v >= min && *v <= max)
@@ -391,6 +490,23 @@ fn vector<const N: usize>(json: &Json) -> Option<[f32; N]> {
     Some(out)
 }
 
+/// `ExtraCodecs.STRING_RGB_COLOR`: `#rrggbb`, an int, or three float channels.
+pub(crate) fn packed_rgb(json: &Json) -> Option<u32> {
+    hex(json, 6)
+        .or_else(|| int(json))
+        .or_else(|| {
+            let [r, g, b] = json.as_array()?.as_slice() else {
+                return None;
+            };
+            Some(sunrise_core::color::opaque_rgb_from_floats([
+                r.as_f64()? as f32,
+                g.as_f64()? as f32,
+                b.as_f64()? as f32,
+            ]))
+        })
+        .map(|rgb| rgb as u32 & 0xff_ffff)
+}
+
 /// `ExtraCodecs.STRING_RGB_VEC3_COLOR`: `#rrggbb`, else `[r, g, b]`, else an int.
 fn rgb(json: &Json) -> Result<[f32; 3], String> {
     let from_int = |c: i32| {
@@ -418,6 +534,7 @@ fn argb(json: &Json) -> Result<[f32; 4], String> {
 pub enum Entry {
     /// `override`: the argument replaces the value.
     Override(Value),
+    AppendAmbientParticles(Arc<[AmbientParticle]>),
     /// `FloatModifier.ALPHA_BLEND`: `Mth.lerp(alpha, subject, value)`.
     AlphaBlendFloat {
         value: f32,
@@ -436,8 +553,7 @@ pub enum Entry {
         factor: f32,
     },
     Boolean(BoolOp, bool),
-    /// A modifier of a type not ported yet (`ListModifier.append`, `MobSpawnSettingsModifier`
-    /// `overlay`): kept, and applying it leaves the value as it was.
+    /// `MobSpawnSettingsModifier.overlay`: kept, and applying it leaves the value as it was.
     Unported(Json),
     /// An entry computed when it applies, from the value so far (not vanilla: a resource pack's
     /// expression). `None` leaves the value as it was.
@@ -492,9 +608,6 @@ impl Entry {
         let Some(object) = json.as_object() else {
             return Err(value_error);
         };
-        if attribute.kind == Kind::Other && object.contains_key("modifier") {
-            return Ok(Self::Unported(json.clone()));
-        }
         let op = object
             .get("modifier")
             .and_then(Json::as_str)
@@ -526,6 +639,16 @@ impl Entry {
         };
         Ok(match op {
             "override" => Self::Override(attribute.value(argument)?),
+            // The argument codecs of ListModifier.append and
+            // MobSpawnSettingsModifier.overlay are their attribute's value codec.
+            "append" if kind == Kind::AmbientParticles => {
+                Self::AppendAmbientParticles(AmbientParticle::parse_list(argument)?)
+            }
+            "overlay" if attribute.id == "gameplay/natural_mob_spawns" => {
+                crate::loot::types::validate_environment_value(attribute, argument)
+                    .map_err(|error| error.to_string())?;
+                Self::Unported(serde_json::json!({"modifier": op, "argument": argument}))
+            }
             "add" => Self::Add(simple(argument)?),
             "subtract" => Self::Subtract(simple(argument)?),
             "multiply" if kind == Kind::ArgbColor => Self::Multiply(Value::Argb(argb(argument)?)),
@@ -594,6 +717,9 @@ impl Entry {
             (Self::Override(a), Self::Override(b)) => {
                 Self::Override(attribute.lerp(Lerp::Keyframe, alpha, a, b))
             }
+            (Self::AppendAmbientParticles(a), Self::AppendAmbientParticles(b)) => {
+                Self::AppendAmbientParticles(ambient_cross_fade(alpha, a, b))
+            }
             (
                 Self::AlphaBlendFloat {
                     value: v1,
@@ -646,6 +772,15 @@ impl Entry {
         };
         match (self, subject) {
             (Self::Override(v), _) => v.clone(),
+            (Self::AppendAmbientParticles(b), Value::AmbientParticles(a)) => {
+                Value::AmbientParticles(if a.is_empty() {
+                    Arc::clone(b)
+                } else if b.is_empty() {
+                    Arc::clone(a)
+                } else {
+                    a.iter().chain(b.iter()).cloned().collect()
+                })
+            }
             (Self::Dynamic(f), subject) => match (f.0)(subject) {
                 Some(entry) => entry.apply(subject),
                 None => subject.clone(),
@@ -769,8 +904,13 @@ impl std::fmt::Debug for AttributeMap {
 }
 
 impl AttributeMap {
-    /// `EnvironmentAttributeMap.CODEC`: a JSON object from attribute id to entry.
+    /// `EnvironmentAttributeMap.CODEC`: a JSON object from attribute id to entry. Biomes and
+    /// dimension types read their `attributes` with `optionalFieldOf("attributes", EMPTY)`, so
+    /// an absent field (`null`) is the empty map.
     pub fn parse(json: &Json) -> Result<Self, String> {
+        if json.is_null() {
+            return Ok(Self::default());
+        }
         let map = json.as_object().ok_or("attributes are not an object")?;
         map.iter()
             .map(|(id, entry)| {
@@ -782,9 +922,14 @@ impl AttributeMap {
             .map(Self)
     }
 
-    /// Encode entries read by `parse` for a dimension registry definition. Unported
-    /// attribute values remain opaque, as in the reader. Code-only expressions
-    /// cannot be sent as registry data.
+    /// `EnvironmentAttributeMap.NETWORK_CODEC` omits non-syncable entries.
+    pub(crate) fn into_network_nbt(mut self) -> Result<sunrise_core::nbt::Compound, String> {
+        self.0.retain(|(attribute, _)| attribute.is_syncable());
+        self.into_nbt()
+    }
+
+    /// Encode entries read by `parse`. Code-only expressions cannot be sent
+    /// as registry data.
     pub(crate) fn into_nbt(self) -> Result<sunrise_core::nbt::Compound, String> {
         use sunrise_core::{json_nbt, nbt::Tag};
         fn value(value: Value) -> Result<Tag, String> {
@@ -793,6 +938,7 @@ impl AttributeMap {
                 Value::Float(v) => Tag::Float(v.to_bits()),
                 Value::Rgb(v) => color(v),
                 Value::Argb(v) => color(v),
+                Value::AmbientParticles(list) => ambient_particles_to_nbt(&list),
                 Value::Other(v) => json_nbt::json_to_tag(&v).map_err(|e| e.to_string())?,
             })
         }
@@ -816,6 +962,9 @@ impl AttributeMap {
                 let float = |n: f32| Tag::Float(n.to_bits());
                 let tag = match entry {
                     Entry::Override(v) => value(v)?,
+                    Entry::AppendAmbientParticles(list) => {
+                        modified("append", ambient_particles_to_nbt(&list))
+                    }
                     Entry::Add(v) => modified("add", value(v)?),
                     Entry::Subtract(v) => modified("subtract", value(v)?),
                     Entry::Multiply(v) => modified("multiply", value(v)?),
@@ -916,9 +1065,7 @@ impl Attribute {
         self.id.starts_with("visual/")
             && !matches!(
                 self.id,
-                "visual/moon_phase"
-                    | "visual/default_dripstone_particle"
-                    | "visual/ambient_particles"
+                "visual/moon_phase" | "visual/default_dripstone_particle" | AMBIENT_PARTICLES
             )
     }
 
@@ -939,6 +1086,9 @@ impl Attribute {
             }
             (Value::Argb(a), Value::Argb(b)) => {
                 Value::Argb(std::array::from_fn(|i| (b[i] - a[i]) * alpha + a[i]))
+            }
+            (Value::AmbientParticles(a), Value::AmbientParticles(b)) => {
+                Value::AmbientParticles(ambient_cross_fade(alpha, a, b))
             }
             _ => {
                 let threshold = match purpose {
@@ -966,5 +1116,214 @@ mod finite_tests {
         let refused = AttributeMap::parse(&json!({"minecraft:visual/cloud_height": 1e300}));
         assert!(refused.unwrap_err().contains("not a finite float"));
         assert!(AttributeMap::parse(&json!({"minecraft:visual/cloud_height": 192.5})).is_ok());
+    }
+
+    #[test]
+    fn a_biome_without_attributes_has_the_empty_map() {
+        // A biome as a LimboAPI lobby sends it (#3388): the 1.18 layout, no `attributes`.
+        let biome = json!({
+            "category": "plains",
+            "depth": 0.125,
+            "downfall": 0.4,
+            "effects": {
+                "fog_color": 12638463,
+                "mood_sound": {
+                    "block_search_extent": 8,
+                    "offset": 2.0,
+                    "sound": "minecraft:ambient.cave",
+                    "tick_delay": 6000
+                },
+                "sky_color": 7907327,
+                "water_color": 415920,
+                "water_fog_color": 415920
+            },
+            "has_precipitation": true,
+            "scale": 0.05,
+            "temperature": 0.8
+        });
+        assert!(
+            AttributeMap::parse(&biome["attributes"])
+                .unwrap()
+                .is_empty()
+        );
+        assert!(AttributeMap::parse(&json!([])).is_err());
+    }
+}
+
+#[cfg(test)]
+mod ambient_particle_tests {
+    use super::*;
+    use crate::{
+        chunk::BlockState,
+        environment_system::{Builder, Conditions},
+        environment_timeline::Timeline,
+        particle_type::ParticleType,
+    };
+    use serde_json::json;
+
+    fn list(value: Value) -> Arc<[AmbientParticle]> {
+        let Value::AmbientParticles(value) = value else {
+            panic!("expected a typed particle list");
+        };
+        value
+    }
+
+    #[test]
+    fn ambient_particle_codec_validates_probability_and_type_options() {
+        let ash = json!({"type":"minecraft:ash"});
+        let dust = json!({"type":"minecraft:dust", "color":16711680, "scale":1.5});
+        let stone = json!({"type":"minecraft:block", "block_state":"minecraft:stone"});
+        let attribute = attribute(AMBIENT_PARTICLES).unwrap();
+        let entries = list(
+            attribute
+                .value(&json!([
+                    {"particle": ash, "probability":0.0},
+                    {"particle": dust, "probability":1.0},
+                    {"particle": stone, "probability":0.25}
+                ]))
+                .unwrap(),
+        );
+        assert_eq!(
+            *entries[0].particle,
+            ParticleOptions::Simple(ParticleType::Ash)
+        );
+        assert_eq!(*entries[1].particle, ParticleOptions::Dust(0xff0000, 1.5));
+        assert_eq!(
+            *entries[2].particle,
+            ParticleOptions::Block(
+                ParticleType::Block,
+                BlockState {
+                    name: "minecraft:stone".into(),
+                    properties: std::default::Default::default(),
+                }
+            )
+        );
+        assert_eq!(
+            entries
+                .iter()
+                .map(|p| p.probability.to_bits())
+                .collect::<Vec<_>>(),
+            [0, 0x3f80_0000, 0x3e80_0000]
+        );
+        for invalid in [
+            json!({"particle": ash, "probability": -0.01}),
+            json!({"particle": ash, "probability": 1.01}),
+            json!({"particle": ash}),
+            json!({"particle": "minecraft:ash", "probability": 0.5}),
+            json!({"particle": {"type":"minecraft:does_not_exist"}, "probability":0.5}),
+            json!({"particle": {"type":"minecraft:dust", "color":16711680}, "probability":0.5}),
+            json!({"particle": {"type":"minecraft:block"}, "probability":0.5}),
+        ] {
+            assert!(attribute.value(&json!([invalid])).is_err(), "{invalid}");
+        }
+    }
+
+    /// `Item.CODEC` refuses air while the biome file is decoded, in either form of the item.
+    #[test]
+    fn an_air_item_particle_is_refused_while_decoding() {
+        let attribute = attribute(AMBIENT_PARTICLES).unwrap();
+        let entry =
+            |item| json!([{"particle": {"type":"minecraft:item", "item":item}, "probability":0.5}]);
+        assert!(attribute.value(&entry(json!("minecraft:apple"))).is_ok());
+        for air in [
+            json!("minecraft:air"),
+            json!("air"),
+            json!({"id":"minecraft:air"}),
+        ] {
+            assert!(attribute.value(&entry(air.clone())).is_err(), "{air}");
+        }
+    }
+
+    #[test]
+    fn ambient_particle_layers_append_and_crossfade_without_merging() {
+        let attribute = attribute(AMBIENT_PARTICLES).unwrap();
+        let ash = json!({"type":"minecraft:ash"});
+        let dust = json!({"type":"minecraft:dust", "color":16711680, "scale":1.5});
+        let dimension = AttributeMap::parse(&json!({
+            AMBIENT_PARTICLES: [{"particle":ash, "probability":0.2}]
+        }))
+        .unwrap();
+        let biome = AttributeMap::parse(
+            &json!({AMBIENT_PARTICLES: {"modifier":"append", "argument":[
+                {"particle":dust, "probability":0.4}
+            ]}}),
+        )
+        .unwrap();
+        let at = Conditions {
+            rain: 0.0,
+            thunder: 0.0,
+            blend: None,
+            biome: &|full_resolution| {
+                assert!(!full_resolution);
+                Some(&biome)
+            },
+            clock: &|_| 5,
+            post_blend: None,
+            post_biome: None,
+        };
+        let mut builder = Builder::default();
+        builder.constant_layer(&dimension).biome_layer([&biome]);
+        let resolved = list(builder.build().value(attribute, &at).unwrap());
+        assert_eq!(resolved.len(), 2);
+        assert_eq!(
+            *resolved[0].particle,
+            ParticleOptions::Simple(ParticleType::Ash)
+        );
+        assert_eq!(*resolved[1].particle, ParticleOptions::Dust(0xff0000, 1.5));
+        assert_eq!(resolved[0].probability.to_bits(), 0x3e4c_cccd);
+        assert_eq!(resolved[1].probability.to_bits(), 0x3ecc_cccd);
+
+        let from = json!([{"particle":ash, "probability":0.8}]);
+        let to = json!([{"particle":ash, "probability":0.4}, {"particle":dust, "probability":0.6}]);
+        let from_value = attribute.value(&from).unwrap();
+        let to_value = attribute.value(&to).unwrap();
+        let lerp = |alpha| list(attribute.lerp(Lerp::StateChange, alpha, &from_value, &to_value));
+        assert!(Arc::ptr_eq(&lerp(0.0), &list(from_value.clone())));
+        assert!(Arc::ptr_eq(&lerp(1.0), &list(to_value.clone())));
+        let mid = lerp(0.25);
+        assert_eq!(*mid[0].particle, ParticleOptions::Simple(ParticleType::Ash));
+        assert_eq!(*mid[1].particle, *mid[0].particle);
+        assert_eq!(*mid[2].particle, ParticleOptions::Dust(0xff0000, 1.5));
+        let bits = |particles: &[AmbientParticle]| {
+            particles
+                .iter()
+                .map(|p| p.probability.to_bits())
+                .collect::<Vec<_>>()
+        };
+        let mid_bits = [0x3f19_999a, 0x3dcc_cccd, 0x3e19_999a];
+        assert_eq!(bits(&mid), mid_bits);
+
+        // An append track uses the same lerp for its keyframe arguments, leaving the
+        // preceding dimension and biome probabilities unscaled.
+        let timeline = Timeline::parse(&json!({"clock":"minecraft:overworld", "tracks":{
+            AMBIENT_PARTICLES: {"modifier":"append", "keyframes":[
+                {"ticks":0, "value": from}, {"ticks":20, "value":to}
+            ]}
+        }}))
+        .unwrap();
+        let mut builder = Builder::default();
+        builder
+            .constant_layer(&dimension)
+            .biome_layer([&biome])
+            .timeline_layer(&timeline);
+        let particles = list(builder.build().value(attribute, &at).unwrap());
+        assert_eq!(
+            bits(&particles),
+            [[0x3e4c_cccd, 0x3ecc_cccd].as_slice(), &mid_bits].concat()
+        );
+
+        let from = AttributeMap::parse(&json!({AMBIENT_PARTICLES:from})).unwrap();
+        let to = AttributeMap::parse(&json!({AMBIENT_PARTICLES:to})).unwrap();
+        let mut builder = Builder::default();
+        builder
+            .constant_layer(&from)
+            .weather_layers_with(&to, &AttributeMap::default());
+        let particles = list(
+            builder
+                .build()
+                .value(attribute, &Conditions { rain: 0.25, ..at })
+                .unwrap(),
+        );
+        assert_eq!(bits(&particles), mid_bits);
     }
 }

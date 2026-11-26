@@ -12,7 +12,7 @@ pub trait Hooks {
     #[hook(
         receiver = "read",
         side = "server",
-        version = 2,
+        version = 3,
         contract = "replace",
         out = "answer",
         scope = "block",

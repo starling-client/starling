@@ -21,11 +21,12 @@ and the Rust side follows it.
 import argparse
 import json
 import random
-try:
-    from . import interaction_lab as lib, test_crafter_parity as crafter
-except ImportError:
-    import interaction_lab as lib
-    import test_crafter_parity as crafter
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import interaction_lab as lib, test_crafter_parity as crafter
 
 GRIDS = {'inventory': 2, 'crafting': 3}
 COOKING = {'furnace': 'minecraft:smelting', 'blast_furnace': 'minecraft:blasting', 'smoker': 'minecraft:smoking'}

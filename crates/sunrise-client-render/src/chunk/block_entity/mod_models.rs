@@ -22,7 +22,8 @@ pub struct ModBlockEntity {
     /// Looked up once when the entity is made. `None` for an unknown type or before the
     /// process's type table is installed. Both the numeric id and keyed Parts are frozen.
     registered_type: Option<RegisteredBlockEntityType>,
-    tick_kind: Option<mod_api::BlockEntityTypeKey>,
+    /// Its type's key, resolved with `registered_type`; `None` for an unregistered type.
+    kind: Option<mod_api::BlockEntityTypeKey>,
     pub(crate) fields: ModBlockEntityFields,
     pub(crate) revision: ModRevision,
     /// What its block's collision and outline are while it holds some
@@ -92,35 +93,36 @@ impl ModBlockEntity {
             rows.iter().any(|row| saved_item_slot(row) == Some(slot)))
     }
 
-    /// A write (including an explicit clear) supersedes raw rows for this index.
-    pub fn item_slot_mut(&mut self, slot: usize) -> Option<&mut Option<ItemStack>> {
-        if slot >= self.items.len() {
-            return None;
-        }
+    /// A write (including an explicit clear) supersedes raw rows for this index. `items` holds
+    /// the slots up to the last one written, not the holder's capacity (its block declares
+    /// that), so a slot past it reads as empty and a write grows `items` to reach it only.
+    /// The caller has checked `slot` against the declared capacity.
+    pub fn item_slot_mut(&mut self, slot: usize) -> &mut Option<ItemStack> {
         if let Some(Tag::List(rows)) = self.fields.nbt.get_mut(&ITEMS) {
             rows.retain(|row| saved_item_slot(row) != Some(slot));
         }
-        self.items.get_mut(slot)
+        if slot >= self.items.len() {
+            self.items.resize(slot + 1, None);
+        }
+        &mut self.items[slot]
     }
 
     pub fn new(id: String, mut fields: ModBlockEntityFields) -> Self {
         fields.claim_modeled_item_rows();
         let registered_type = block_entity_types::registered(&id);
-        let tick_kind = registered_type
-            .filter(|kind| kind.has_tick_part)
-            .and_then(|_| mod_api::__private::block_entity_type_key(&id));
-        Self::with_type(id, registered_type, tick_kind, fields)
+        let kind = registered_type.and_then(|_| mod_api::__private::block_entity_type_key(&id));
+        Self::with_type(id, registered_type, kind, fields)
     }
     fn with_type(
         id: String,
         registered_type: Option<RegisteredBlockEntityType>,
-        tick_kind: Option<mod_api::BlockEntityTypeKey>,
+        kind: Option<mod_api::BlockEntityTypeKey>,
         fields: ModBlockEntityFields,
     ) -> Self {
         Self {
             id,
             registered_type,
-            tick_kind,
+            kind,
             fields,
             revision: ModRevision {
                 born: sunrise_mod_runtime::block_entities::new_identity(),
@@ -188,7 +190,12 @@ impl ModBlockEntity {
 
     /// The resolved route for a resident server tick, only when its type subscribes.
     pub fn tick_kind(&self) -> Option<mod_api::BlockEntityTypeKey> {
-        self.tick_kind
+        self.registered_type?.server_ticker
+    }
+    /// Its type's key (`BlockEntity.getType`), resolved from [`Self::id`] when the entity was
+    /// made; `None` for a type the game has not registered.
+    pub fn kind(&self) -> Option<mod_api::BlockEntityTypeKey> {
+        self.kind
     }
     pub fn revision(&self) -> ModRevision {
         self.revision
@@ -253,7 +260,7 @@ impl Clone for ModBlockEntity {
         let mut copy = Self::with_type(
             self.id.clone(),
             self.registered_type,
-            self.tick_kind,
+            self.kind,
             self.fields.clone(),
         );
         copy.shapes.clone_from(&self.shapes);

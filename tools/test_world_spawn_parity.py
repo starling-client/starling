@@ -54,16 +54,10 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-try:
-    from . import anvil_dump, lab, oracle_harness as oh, parity_shard, test_rust_parity as base
-    from .test_dedicated_server_parity import Server, free_port
-except ImportError:
-    import anvil_dump
-    import lab
-    import oracle_harness as oh
-    import parity_shard
-    import test_rust_parity as base
-    from test_dedicated_server_parity import Server, free_port
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import anvil_dump, lab, oracle_harness as oh, parity_shard, test_rust_parity as base
+from tools.test_dedicated_server_parity import Server, free_port
 
 NAME = 'world-spawn-parity'
 PARITY_SHARDS = 4

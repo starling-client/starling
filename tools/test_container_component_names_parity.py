@@ -7,9 +7,10 @@ clock-recovery parity. Every command record and typed disk snapshot is retained.
 """
 import argparse,hashlib,json,os,shutil,subprocess,sys,datetime
 from pathlib import Path
-import anvil_dump
-import test_command_exec_parity as runner
-from container_component_name_corpus import stage_one,stage_two,overlay_restart_programs
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import anvil_dump, test_command_exec_parity as runner
+from tools.container_component_name_corpus import stage_one, stage_two, overlay_restart_programs
 
 PROGRAMS=[('stage-one',stage_one()),('stage-two',stage_two())]
 

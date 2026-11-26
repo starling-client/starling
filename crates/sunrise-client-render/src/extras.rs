@@ -1,7 +1,7 @@
 //! Sunrise's optional extras (lighting, inventory tools): their
 //! settings, kept in `sunrise-extras.txt` next to `options.txt` so that file
 //! stays exactly vanilla's, and the logic behind them. Every extra is off by
-//! default; see `docs/extras.md`. Sunrise's own switches outside the Extras page
+//! default; see `docs/extras.md`. Sunrise's own switches outside the Gameplay page
 //! (No AI, Agent Control) are kept here too.
 use std::{collections::VecDeque, path::Path};
 
@@ -10,9 +10,54 @@ pub const FILE: &str = "sunrise-extras.txt";
 pub const SORT_KEY: &str = "sunrise.sort";
 /// The name the options screen uses while the shader pack key waits for a key.
 pub const SHADER_PACK_KEY: &str = "sunrise.shader_pack_key";
+/// Sunrise's own key bindings and their captions, in the order Controls -> Key Binds lists
+/// them under its "Sunrise" category, after vanilla's: the same bindings the Extras page and
+/// the PvP page set.
+pub const KEYS: [(&str, &str); 3] = [
+    (SHADER_PACK_KEY, "sunrise.extras.shader_pack_key"),
+    (crate::pvp::HUD_EDITOR_KEY, "sunrise.pvp.hud_editor_key"),
+    (SORT_KEY, "sunrise.extras.sort_key"),
+];
+/// The caption of Sunrise's own category on Controls -> Key Binds.
+pub const KEY_CATEGORY: &str = "sunrise.key.category";
 
-/// A screen corner for an overlay.
-pub use mod_api::client::extras::Corner;
+// no wire: this is private to the built-in HUD layout.
+/// A screen corner for Sunrise's internal extras and PvP HUD boxes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Corner {
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
+impl Corner {
+    pub const ALL: [Corner; 4] = [
+        Corner::TopLeft,
+        Corner::TopRight,
+        Corner::BottomLeft,
+        Corner::BottomRight,
+    ];
+    pub fn name(self) -> &'static str {
+        match self {
+            Corner::TopLeft => "top_left",
+            Corner::TopRight => "top_right",
+            Corner::BottomLeft => "bottom_left",
+            Corner::BottomRight => "bottom_right",
+        }
+    }
+    pub fn parse(s: &str, default: Corner) -> Corner {
+        Self::ALL
+            .into_iter()
+            .find(|c| c.name() == s)
+            .unwrap_or(default)
+    }
+    pub fn top(self) -> bool {
+        matches!(self, Corner::TopLeft | Corner::TopRight)
+    }
+    pub fn left(self) -> bool {
+        matches!(self, Corner::TopLeft | Corner::BottomLeft)
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Extras {
@@ -39,7 +84,7 @@ pub struct Extras {
     pub own_name_tag: bool,
     /// NeoForge's `skipModdedSplashesIfVanillaModified`, on by default: a
     /// pack's own `minecraft` splashes replace every namespace's
-    /// (`sunrise_client::splashes::pool`). No Extras page entry.
+    /// (`sunrise_client::splashes::pool`). No Gameplay page entry.
     pub skip_modded_splashes_if_vanilla_modified: bool,
     /// No particles from breaking or mining a block (other particles stay).
     pub hide_block_particles: bool,
@@ -245,6 +290,22 @@ impl Extras {
         }
         text
     }
+    /// The binding of Sunrise's own key `name` (one of [`KEYS`]); none for another name.
+    pub fn key(&self, name: &str) -> Option<&str> {
+        Some(match name {
+            SORT_KEY => &self.sort_key,
+            SHADER_PACK_KEY => &self.shader_pack_key,
+            crate::pvp::HUD_EDITOR_KEY => &self.pvp.editor_key,
+            _ => return None,
+        })
+    }
+    /// Puts Sunrise's own key `name` back to its default; false for another name.
+    pub fn reset_key(&mut self, name: &str) -> bool {
+        match Self::default().key(name) {
+            Some(default) => self.set_key(name, default.to_owned()),
+            None => false,
+        }
+    }
     /// Binds the extra key `name` (`SORT_KEY`); false for
     /// another name (a vanilla mapping).
     pub fn set_key(&mut self, name: &str, value: String) -> bool {
@@ -311,12 +372,6 @@ impl Extras {
     }
 }
 
-/// The field-of-view modifier target `Camera.tickFov` eases toward: vanilla's
-/// (`getFieldOfViewModifier`) divided by a mod's zoom (`native_zoom`). A
-/// zoom of 1 leaves it as is.
-pub fn fov_target(vanilla: f32, zoom: f32) -> f32 {
-    if zoom == 1.0 { vanilla } else { vanilla / zoom }
-}
 /// Frame times over the last few seconds: frames per second, the minimum
 /// and the 1% low, recomputed twice a second.
 pub struct FpsCounter {
@@ -402,7 +457,7 @@ impl Cps {
         self.clicks.len()
     }
 }
-/// The settings the Extras page shows, one per row.
+/// The settings Sunrise Settings' Gameplay page shows, one per row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Item {
     Fullbright,
@@ -416,13 +471,13 @@ pub enum Item {
     MouseTweaksWheel,
     Sort,
     SortKey,
-    /// Turns the picked shader pack off and on, from the Extras page's key.
+    /// Turns the picked shader pack off and on: its key is on Sunrise Settings' Shaders page.
     ShaderPackKey,
     /// A new chat line slides in and fades in (`Chat::layout`).
     ChatAnimation,
     /// The coloured bar at the left of a chat line.
     ChatIndicator,
-    /// Not on the Extras page: Sunrise Settings shows No AI, its AI Agent page Agent Control.
+    /// Not on the Gameplay page: the AI Agent page shows No AI and Agent Control.
     NoAi,
     AgentControl,
     /// On the AI Agent page, next to Agent Control: the F3 recording shortcuts.
@@ -434,7 +489,7 @@ pub enum Item {
     /// On the PvP & HUD page (`pvp::rows`).
     Pvp(crate::pvp::Opt),
 }
-/// The Extras page: headers (language keys) and items.
+/// Sunrise Settings' Gameplay page: headers (language keys) and items.
 pub fn rows() -> Vec<Result<Item, &'static str>> {
     use Item::*;
     // Fullbright, Dynamic lights and Hide block-break particles change the picture: they
@@ -453,7 +508,6 @@ pub fn rows() -> Vec<Result<Item, &'static str>> {
         Ok(ChatIndicator),
         Err("sunrise.extras.header.world"),
         Ok(Pregen),
-        Ok(ShaderPackKey),
         Err("sunrise.extras.header.multiplayer"),
         Err("sunrise.extras.header.sound"),
         Ok(UiSoundReserve),
@@ -901,31 +955,6 @@ mod tests {
         let e = Extras::parse("sort:maybe\nsortKey:r\nnoise");
         assert!(!e.sort);
         assert_eq!(e.sort_key, "key.keyboard.unknown");
-    }
-
-    #[test]
-    fn a_mods_zoom_eases_like_the_spyglass() {
-        // Camera.tickFov halves the distance to the target each tick.
-        let mut camera = crate::camera::Camera::default();
-        camera.tick(None, 1.0);
-        for _ in 0..30 {
-            camera.tick(None, 1.0);
-        }
-        let target = fov_target(1.0, 4.0);
-        camera.tick(None, target);
-        let first = camera.calculate_fov(1.0, 70, 1.0, None, Default::default(), false);
-        assert!((first - 70.0 * 0.625).abs() < 1e-3, "{first}");
-        for _ in 0..30 {
-            camera.tick(None, target);
-        }
-        let settled = camera.calculate_fov(1.0, 70, 1.0, None, Default::default(), false);
-        assert!((settled - 70.0 / 4.0).abs() < 1e-3, "{settled}");
-        // Deeper than the 0.1 floor stops there, as vanilla clamps.
-        for _ in 0..30 {
-            camera.tick(None, fov_target(1.0, 20.0));
-        }
-        let floor = camera.calculate_fov(1.0, 70, 1.0, None, Default::default(), false);
-        assert!((floor - 7.0).abs() < 1e-3, "{floor}");
     }
 
     #[test]

@@ -364,6 +364,17 @@ impl<G: FnMut() -> i32> LiveAttributes<G> {
         }
         self.data.supplier_read(key.as_ref(), kind)
     }
+    /// The resident modifiers in addition order. A supported attribute without an
+    /// instance has no modifiers; an unknown or unsupported attribute has no slice.
+    pub fn modifiers(&self, name: &str) -> Option<&[Modifier]> {
+        let id = self.data.catalog.id(name)?.index();
+        let key = &self.data.keys[id];
+        if let Some(handle) = self.map.instances.get(Some(key)) {
+            return Some(self.data.nodes[handle.index].value.modifiers());
+        }
+        self.data.bases[id]?;
+        Some(&[])
+    }
     /// The computed value exactly as the instance's cache holds it, without
     /// recomputing a dirty instance. An absent instance reads its supplier
     /// base, the same fallback `AttributeMap.getValue` uses (only an instance

@@ -179,3 +179,37 @@ fn modifier_value_get_finds_a_mods_transient_modifier() {
         );
     });
 }
+
+/// #4473: a zombie loaded with the scale modifier a content mod's effect
+/// stored before the save (`testfx:effect/stun_scale`, 0.5,
+/// `add_multiplied_base`): `/attribute` reads its map with what the load
+/// kept, so it reports the modifier and the scale it makes, and removes it;
+/// the loaded scale sizes the zombie (`onAttributeUpdated(SCALE)`).
+#[test]
+#[ignore = "daily"]
+fn attribute_reports_and_removes_a_reloaded_mobs_saved_effect_modifier() {
+    with_game(|game| {
+        assert!(game.run_command(
+            r#"summon minecraft:zombie 2.5 64 2.5 {NoAI:1b,Tags:["r"],UUID:[I;4473,0,0,1],attributes:[{id:"minecraft:scale",base:1d,modifiers:[{id:"testfx:effect/stun_scale",amount:0.5d,operation:"add_multiplied_base"}]}]}"#
+        ));
+        let scale = |game: &Game<'_>| {
+            game.mobs
+                .iter()
+                .find(|m| m.kind.id == "minecraft:zombie")
+                .expect("the summoned zombie")
+                .extra
+                .model_scale
+        };
+        assert_eq!(scale(game), 1.5);
+        let value = "attribute @e[tag=r,limit=1] minecraft:scale modifier value get testfx:effect/stun_scale";
+        let get = "attribute @e[tag=r,limit=1] minecraft:scale get";
+        assert_eq!(read(game, value).as_deref(), Some("0.5"));
+        assert_eq!(read(game, get).as_deref(), Some("1.5"));
+        assert!(game.run_command(
+            "attribute @e[tag=r,limit=1] minecraft:scale modifier remove testfx:effect/stun_scale"
+        ));
+        assert_eq!(read(game, value), None);
+        assert_eq!(read(game, get).as_deref(), Some("1.0"));
+        assert_eq!(scale(game), 1.0);
+    });
+}

@@ -2,12 +2,22 @@
 //! block state an enderman holds (`CarriedBlockLayer`). Also the block
 //! models mobs wear (`SnowGolemHeadLayer`, `MushroomCowMushroomLayer`).
 use super::Game;
+use super::stock_layer_mask::StockLayerMask;
+use mod_api::{Hand, StockLayer};
 use sunrise_client::{
     items::ItemStack,
     mesher::Vertex,
     mobs::{Mob, Species, render},
     particles::ELDER_GUARDIAN_LIFETIME,
 };
+
+/// Where and how lit a mob's blocks and layers are drawn this frame.
+#[derive(Clone, Copy)]
+pub(in crate::game) struct MobView {
+    pub camera: glam::DVec3,
+    pub alpha: f64,
+    pub light: u32,
+}
 
 // `FishingRodCast`: the main hand takes precedence when both hold rods.
 fn fishing_cast_item(
@@ -132,7 +142,7 @@ impl Game<'_> {
     }
     /// The ominous banner a raid captain wears on its head: the banner model
     /// with its eight pattern layers (`CustomHeadLayer`).
-    fn captain_banner_geometry(
+    pub(super) fn captain_banner_geometry(
         &self,
         mob: &Mob,
         camera: glam::DVec3,
@@ -204,16 +214,25 @@ impl Game<'_> {
     pub(super) fn mob_block_geometry(
         &self,
         mob: &Mob,
-        camera: glam::DVec3,
-        alpha: f64,
-        light: u32,
+        view: MobView,
+        hidden_layers: StockLayerMask,
         skin: Option<&mut super::creatures::Skinned>,
         out: &mut Vec<Vertex>,
     ) {
-        self.captain_banner_geometry(mob, camera, alpha, light, out);
-        self.held_item_geometry(mob, camera, alpha, light, true, skin, out);
-        self.worn_block_geometry(mob, camera, alpha, light, out);
-        self.head_item_geometry(mob, camera, alpha, light, true, out);
+        let MobView {
+            camera,
+            alpha,
+            light,
+        } = view;
+        let draw_head = !hidden_layers.contains(StockLayer::CustomHead);
+        if draw_head {
+            self.captain_banner_geometry(mob, camera, alpha, light, out);
+        }
+        self.held_item_geometry(mob, view, true, hidden_layers, skin, out);
+        self.worn_block_geometry(mob, camera, alpha, light, hidden_layers, out);
+        if draw_head {
+            self.head_item_geometry(mob, camera, alpha, light, true, out);
+        }
         self.golem_flower_geometry(mob, camera, alpha, light, out);
         self.antenna_block_geometry(mob, camera, alpha, light, out);
         if mob.species() == Species::Enderman
@@ -310,6 +329,43 @@ impl Game<'_> {
             * Mat4::from_translation(Vec3::splat(-0.5));
         self.block_layer_vertices(state, 42, t, light, out);
     }
+    /// `SnowGolemHeadLayer`: the carved pumpkin on a snow golem's head, as a baked block model.
+    pub(super) fn snow_golem_head_geometry(
+        &self,
+        mob: &Mob,
+        camera: glam::DVec3,
+        alpha: f64,
+        light: u32,
+        out: &mut Vec<Vertex>,
+    ) {
+        use glam::{Mat4, Vec3};
+        if mob.species() != Species::SnowGolem || mob.extra.sheared || mob.is_invisible() {
+            return;
+        }
+        let Some(state) = self
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:carved_pumpkin")
+        else {
+            return;
+        };
+        let Some(head) = render::part_transform(mob, alpha as f32, camera, self, "head") else {
+            return;
+        };
+        let t = head
+            * Mat4::from_translation(Vec3::new(0.0, -0.34375, 0.0))
+            * Mat4::from_rotation_y(180.0f32.to_radians())
+            * Mat4::from_scale(Vec3::new(0.625, -0.625, -0.625))
+            * Mat4::from_translation(Vec3::splat(-0.5));
+        // The hurt tint reaches these blocks as it does the body.
+        let overlay = sunrise_client::overlay::living(0.0, mob.hurt_time > 0 || mob.death_time > 0);
+        let start = out.len();
+        self.block_layer_vertices(state, 0, t, light, out);
+        for vertex in &mut out[start..] {
+            vertex.layer = overlay;
+        }
+    }
     /// `SnowGolemHeadLayer` and `MushroomCowMushroomLayer`: the carved pumpkin
     /// on a snow golem's head, and the mushrooms on an adult mooshroom's back
     /// and head, as baked block models.
@@ -319,24 +375,25 @@ impl Game<'_> {
         camera: glam::DVec3,
         alpha: f64,
         light: u32,
+        hidden_layers: StockLayerMask,
         out: &mut Vec<Vertex>,
     ) {
         use glam::{Mat4, Vec3};
-        let species = mob.species();
-        let on_head = match species {
-            Species::SnowGolem => !mob.extra.sheared,
-            Species::Mooshroom => !mob.is_baby(),
-            _ => false,
-        };
-        // The layers draw nothing on an invisible mob (the glow outline is not drawn).
-        if !on_head || mob.is_invisible() {
-            return;
+        match mob.species() {
+            Species::SnowGolem => {
+                if !hidden_layers.contains(StockLayer::SnowGolemHead) {
+                    self.snow_golem_head_geometry(mob, camera, alpha, light, out);
+                }
+                return;
+            }
+            Species::Mooshroom if !mob.is_baby() && !mob.is_invisible() => {}
+            _ => return,
         }
         let registry = &self.pack.assets.registry;
-        let block = match species {
-            Species::SnowGolem => "minecraft:carved_pumpkin",
-            _ if mob.extra.variant == 1 => "minecraft:brown_mushroom",
-            _ => "minecraft:red_mushroom",
+        let block = if mob.extra.variant == 1 {
+            "minecraft:brown_mushroom"
+        } else {
+            "minecraft:red_mushroom"
         };
         let Some(state) = registry.default_state(block) else {
             return;
@@ -349,26 +406,17 @@ impl Game<'_> {
         let flip = Mat4::from_scale(Vec3::new(-1.0, -1.0, 1.0));
         let at = |x: f32, y: f32, z: f32| Mat4::from_translation(Vec3::new(x, y, z));
         let spin = |degrees: f32| Mat4::from_rotation_y(degrees.to_radians());
-        let transforms = if species == Species::SnowGolem {
-            vec![
-                head * at(0.0, -0.34375, 0.0)
-                    * spin(180.0)
-                    * Mat4::from_scale(Vec3::new(0.625, -0.625, -0.625))
-                    * unit,
-            ]
-        } else {
-            let base = render::base_transform(mob, alpha, camera);
-            vec![
-                base * at(0.2, -0.35, 0.5) * spin(-48.0) * flip * unit,
-                base * at(0.2, -0.35, 0.5)
-                    * spin(42.0)
-                    * at(0.1, 0.0, -0.6)
-                    * spin(-48.0)
-                    * flip
-                    * unit,
-                head * at(0.0, -0.7, -0.2) * spin(-78.0) * flip * unit,
-            ]
-        };
+        let base = render::base_transform(mob, alpha, camera);
+        let transforms = [
+            base * at(0.2, -0.35, 0.5) * spin(-48.0) * flip * unit,
+            base * at(0.2, -0.35, 0.5)
+                * spin(42.0)
+                * at(0.1, 0.0, -0.6)
+                * spin(-48.0)
+                * flip
+                * unit,
+            head * at(0.0, -0.7, -0.2) * spin(-78.0) * flip * unit,
+        ];
         // The hurt tint reaches these blocks as it does the body.
         let overlay = sunrise_client::overlay::living(0.0, mob.hurt_time > 0 || mob.death_time > 0);
         for t in transforms {
@@ -385,29 +433,39 @@ impl Game<'_> {
     pub(super) fn held_item_geometry(
         &self,
         mob: &Mob,
-        camera: glam::DVec3,
-        alpha: f64,
-        light: u32,
+        view: MobView,
         in_world: bool,
+        hidden_layers: StockLayerMask,
         mut skin: Option<&mut super::creatures::Skinned>,
         out: &mut Vec<Vertex>,
     ) {
+        let MobView {
+            camera,
+            alpha,
+            light,
+        } = view;
         // ItemInHandLayer submits with OverlayTexture.NO_OVERLAY: no hurt tint.
         for (slot, off_hand) in [
             (sunrise_items::equipment::MAINHAND, false),
             (sunrise_items::equipment::OFFHAND, true),
         ] {
-            let Some(item) = mob.extra.slot_stack(slot).map(|s| &s.item) else {
+            let hand = if off_hand { Hand::Off } else { Hand::Main };
+            if hidden_layers.contains(StockLayer::HeldItem(hand)) {
+                continue;
+            }
+            let Some(stack) = mob.extra.slot_stack(slot) else {
                 continue;
             };
+            let item = &stack.item;
             let left = off_hand != mob.main_arm_left();
             // PlayerItemInHandLayer.submitArmWithItem (avatars only): a spyglass
             // in use, with no swing in progress, is held to the eye (`heldOnHead`).
-            let spyglass_to_eye = &**item == "minecraft:spyglass"
-                && (&*mob.kind.id == "minecraft:player" || mob.species() == Species::Mannequin)
+            let spyglass_to_eye = (&*mob.kind.id == "minecraft:player"
+                || mob.species() == Species::Mannequin)
                 && off_hand == mob.extra.using_off_hand
                 && mob.extra.using_item > 0
-                && sunrise_client::mobs::anim::state(mob, alpha as f32).swing < 1.0e-5;
+                && sunrise_client::mobs::anim::state(mob, alpha as f32).swing < 1.0e-5
+                && self.stack_scopes(stack);
             let t = if spyglass_to_eye {
                 render::held_to_eye_matrix(mob, alpha as f32, camera, self, left)
             } else {
@@ -468,7 +526,13 @@ impl Game<'_> {
                 fishing_cast_item(
                     mob.id,
                     active.map(|hook| hook.owner),
-                    mob.extra.main_hand_id() == Some("minecraft:fishing_rod"),
+                    mob.extra.main_hand_stack().is_some_and(|s| {
+                        self.stack_can_perform(
+                            s,
+                            super::item_abilities::ability::FISHING_ROD_CAST,
+                            &*s.item == "minecraft:fishing_rod",
+                        )
+                    }),
                     off_hand,
                 )
             };
@@ -570,7 +634,9 @@ impl Game<'_> {
         let Some(head) = render::part_transform(mob, alpha as f32, camera, self, "head") else {
             return;
         };
-        if let Some(kind) = super::armor_stands::skull_kind(&stack.item) {
+        if let Some(kind) =
+            super::armor_stands::skull_kind(&self.pack.item_renderer.models, &stack.item)
+        {
             // Only the renderers that add a `CustomHeadLayer` draw a skull:
             // the humanoid mobs, the illagers, the villagers, the copper golem
             // and the avatars.

@@ -5,7 +5,7 @@ import subprocess
 import tempfile
 import unittest
 
-from rust_items import rust_fn
+from tests.rust_items import rust_fn
 
 class AbilityBoundary(unittest.TestCase):
     def test_unrelated_item_skips_conversion(self):

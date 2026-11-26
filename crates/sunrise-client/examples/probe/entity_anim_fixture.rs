@@ -5,6 +5,9 @@
 //!
 //! cargo run --profile fast -p sunrise-client --example probe -- entity_anim_fixture \
 //!     RESOURCES VANILLA.jsonl OUT.jsonl
+#[path = "living_upside_down_probe.rs"]
+mod living_upside_down_probe;
+
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, fs, path::PathBuf, sync::Arc};
 use sunrise_client::mesher::Vertex;
@@ -307,9 +310,14 @@ fn entity_state(mob: &mut Mob, species: Species, case: &Value) {
 
 pub fn main() -> sunrise_client::Result<()> {
     let args: Vec<String> = crate::args().skip(1).collect();
+    if let [mode, rest @ ..] = args.as_slice()
+        && mode == "--living-upside-down"
+    {
+        return living_upside_down_probe::run(rest);
+    }
     let root = PathBuf::from(&args[0]);
     let types = MobTypes::load(&root)?;
-    let animations = MobData::load_animations(&root);
+    let animations = MobData::load_animations(&root)?;
     let mut out = String::new();
     let crystal = sunrise_client::mobs::load_model(&root, "minecraft:end_crystal#main");
     for line in fs::read_to_string(&args[1])?.lines() {
@@ -404,6 +412,7 @@ pub fn main() -> sunrise_client::Result<()> {
             baby,
             partial: 0.0,
             observer: None,
+            data: None,
         };
         let mut poses = Poses::new(&model);
         entity_state(&mut mob, def.species, case);

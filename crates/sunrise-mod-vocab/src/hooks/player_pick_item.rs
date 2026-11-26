@@ -1,5 +1,4 @@
 //! The `player_pick_item` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0301
 
 pub trait Hooks {
     /// A server player picked an item from a block or entity, before it enters the hotbar. `pos` is

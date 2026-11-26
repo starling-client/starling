@@ -6,7 +6,7 @@
 use super::*;
 use crate::game::native_entity_refs::tests::with_game;
 use mod_api::{
-    AttachmentCodec, AttachmentError, AttachmentType, EntityPart, EntityTickListenedEvent,
+    AttachmentCodec, AttachmentDescriptor, AttachmentError, AttachmentKey, EntityPart,
     EntityTickPreEvent, Flow, GeneralEntityCategory, GeneralEntityTickEvent, GeneralSavePolicy,
     Holder, Hooks, HostSide, Registrar, ServerHost,
 };
@@ -15,20 +15,17 @@ use sunrise_core::nbt::{Compound, Tag};
 
 /// The fixture counter: an attachment with a codec, so a saved row resumes
 /// its count and a quarantined record keeps it in its bytes.
-static COUNTER: AttachmentType<i32> = AttachmentType {
-    namespace: "mymod",
-    name: "counter",
-    default: || 0,
-    codec: Some(AttachmentCodec {
-        encode: |n| Ok([("n".into(), Tag::Int(*n))].into()),
-        decode: |tag: &Compound| match tag.get(&"n".into()) {
-            Some(Tag::Int(n)) => Ok(*n),
-            _ => Err(AttachmentError::Decode),
-        },
-    }),
-    copy_on_death: false,
-    sync: false,
+const COUNTER_CODEC: AttachmentCodec<i32> = AttachmentCodec {
+    encode: |n| Ok([("n".into(), Tag::Int(*n))].into()),
+    decode: |tag: &Compound| match tag.get(&"n".into()) {
+        Some(Tag::Int(n)) => Ok(*n),
+        _ => Err(AttachmentError::Decode),
+    },
 };
+
+fn counter_key() -> AttachmentKey<i32> {
+    mod_api::testing::attachment_key("mymod", "counter")
+}
 
 /// What the part saw, in call order: each row's id.
 type Trace = Arc<Mutex<Vec<u32>>>;
@@ -53,6 +50,7 @@ enum OnTick {
 /// per-instance state — two rows of one type share this one part, and their
 /// counters live apart in their attachments.
 struct Counter {
+    counter: AttachmentKey<i32>,
     trace: Trace,
     events: Events,
     /// Panics on this row's first tick only, after its write: the
@@ -73,8 +71,8 @@ impl EntityPart for Counter {
             .expect("live resident general entity");
         let host = event.subject.host();
         let holder = Holder::Entity(entity.id());
-        let value = COUNTER.get(host, holder).unwrap() + 1;
-        COUNTER.set(host, holder, value).unwrap();
+        let value = self.counter.get(host, holder, Clone::clone).unwrap() + 1;
+        self.counter.set(host, holder, value).unwrap();
         if self.panicking_on() == Some(entity.id())
             && !self.fired.swap(true, std::sync::atomic::Ordering::Relaxed)
         {
@@ -127,7 +125,11 @@ struct Declare {
 #[mod_api::__subscriptions]
 impl Hooks for Declare {
     fn register(&self, r: &mut dyn Registrar, _: &mod_api::RegistrationContext) {
-        r.register_attachment_type("mymod:counter", false).unwrap();
+        let counter = r
+            .register_attachment_type(
+                AttachmentDescriptor::new("mymod:counter", || 0i32).serialize(COUNTER_CODEC),
+            )
+            .unwrap();
         for (path, save) in [("robot", true), ("ghost", false)] {
             r.declare_general_entity(
                 path,
@@ -142,6 +144,7 @@ impl Hooks for Declare {
                 },
                 true,
                 false,
+                false,
                 None,
                 8,
                 3,
@@ -153,6 +156,7 @@ impl Hooks for Declare {
         r.entity_part(
             "mymod:robot",
             Counter {
+                counter,
                 trace: self.trace.clone(),
                 events: self.events.clone(),
                 panic_on: self.panic_on.clone(),
@@ -161,37 +165,36 @@ impl Hooks for Declare {
             },
         );
     }
-    fn entity_tick_listened(&self, _: HostSide<'_>, event: &mut EntityTickListenedEvent) {
-        event.listened = true;
-    }
-    fn entity_tick_pre(&self, host: HostSide<'_>, event: &mut EntityTickPreEvent<'_>) {
+    fn entity_tick_pre(&self, host: HostSide<'_>, event: &mut EntityTickPreEvent<'_>) -> Flow {
         let HostSide::Server(host) = host else {
             panic!("server fixture");
         };
-        for &entity in event.entities {
-            self.events.lock().unwrap().push((entity, "pre"));
-            if self.pre_on.load(std::sync::atomic::Ordering::Relaxed) == entity {
-                let victim = self.pre_victim.load(std::sync::atomic::Ordering::Relaxed);
-                let victim = host
-                    .entity(victim)
-                    .expect("the victim is a live row at the remover's Pre");
-                assert!(victim.discard(host));
-            }
-            if self.cancel_on.load(std::sync::atomic::Ordering::Relaxed) == entity {
-                event.canceled.push(entity);
-            }
+        let entity = event.entity;
+        self.events.lock().unwrap().push((entity, "pre"));
+        if self.pre_on.load(std::sync::atomic::Ordering::Relaxed) == entity {
+            let victim = self.pre_victim.load(std::sync::atomic::Ordering::Relaxed);
+            let victim = host
+                .entity(victim)
+                .expect("the victim is a live row at the remover's Pre");
+            assert!(victim.discard(host));
         }
+        if self.cancel_on.load(std::sync::atomic::Ordering::Relaxed) == entity {
+            return Flow::Cancel;
+        }
+        Flow::Continue
     }
     fn entity_tick_post(&self, _: HostSide<'_>, event: &mut mod_api::EntityTickPostEvent<'_>) {
-        let mut events = self.events.lock().unwrap();
-        events.extend(event.entities.iter().map(|&entity| (entity, "post")));
+        self.events.lock().unwrap().push((event.entity, "post"));
     }
     fn entity_join_level(
         &self,
         host: &mut dyn ServerHost,
         event: &mut mod_api::EntityJoinLevelEvent<'_>,
     ) -> Flow {
-        SPAWN_HEARD.lock().unwrap().push((event.entity, "join"));
+        SPAWN_HEARD
+            .lock()
+            .unwrap()
+            .push((event.subject.id(), "join"));
         let answer = SPAWN_ON_JOIN.swap(false, std::sync::atomic::Ordering::SeqCst);
         if answer && event.kind == "mymod:robot" {
             let level = host.level("minecraft:overworld").unwrap();
@@ -251,6 +254,10 @@ fn with_counter(test: impl FnOnce(&mut Game<'_>, Levers)) {
             game.native_level_opened(crate::game::Dim::Overworld);
             game.build_registries();
             game.reset_entity_residency();
+            crate::game::native_entity_refs::tests::fixture_resident_column(
+                &mut game.world,
+                (0, 0),
+            );
             // The registration phase ends before the test's own ticks: a
             // part's writes are storage writes, which only a world's phases
             // take, as the server's own tick runs in World.
@@ -277,6 +284,11 @@ fn record_at(type_key: &str, uuid: [i32; 4], at: [f64; 3], riders: Vec<Tag>) -> 
         velocity: [0.0; 3],
         rotation: [0.0, 90.0],
         owner: None,
+        custom_name: None,
+        custom_name_visible: false,
+        base: Default::default(),
+        on_ground: false,
+        fall_distance: 0.0,
         uuid,
         envelope: GeneralTypeEnvelope {
             type_key: type_key.to_owned(),
@@ -331,13 +343,15 @@ fn tick(game: &mut Game<'_>) {
 
 /// A row's counter, read through the same host surface the part writes.
 fn counter(game: &mut Game<'_>, id: u32) -> i32 {
-    COUNTER.get(game, Holder::Entity(id)).unwrap()
+    counter_key()
+        .get(game, Holder::Entity(id), Clone::clone)
+        .unwrap()
 }
 
 /// One robot row, its counter already at `value`.
 fn seeded_row(game: &mut Game<'_>, uuid: [i32; 4], value: i32) -> u32 {
     let id = spawn_tree(game, uuid, [0.5, 64.0, 0.5], Vec::new());
-    COUNTER.set(game, Holder::Entity(id), value).unwrap();
+    counter_key().set(game, Holder::Entity(id), value).unwrap();
     id
 }
 
@@ -641,7 +655,11 @@ fn a_reloaded_row_resumes_the_counter_and_refuses_its_old_handle() {
         let fresh = rows[0].id;
         assert_ne!(fresh, old);
         assert_eq!(counter(game, fresh), 41);
-        assert!(COUNTER.get(game, Holder::Entity(old)).is_err());
+        assert!(
+            counter_key()
+                .get(game, Holder::Entity(old), Clone::clone)
+                .is_err()
+        );
         tick(game);
         assert_eq!(counter(game, fresh), 42);
     });

@@ -18,22 +18,27 @@ use std::fmt;
 /// unknown type are refused when the game loads.
 ///
 /// ```rust,ignore
-/// struct Robot;
+/// struct Robot {
+///     charge: AttachmentKey<u32>,
+/// }
 /// impl EntityPartState for Robot {
 ///     type Data = u32;
-///     const DATA: &'static AttachmentType<u32> = &CHARGE;
+///     fn state_key(&self) -> &AttachmentKey<u32> {
+///         &self.charge
+///     }
 /// }
 /// // In a hook with `host: &mut dyn ServerHost` and the robot's `entity`:
-/// let full = Robot::edit_state(host, entity, |_, charge| {
+/// let full = self.edit_state(host, entity, |_, _tx, charge| {
 ///     *charge += 1;
 ///     *charge >= 100
 /// })?;
 /// ```
 ///
-/// Reads take `&dyn Host` and return a snapshot; edits take `&mut dyn ServerHost`, run in
+/// Reads take `&dyn Host` and lend a value from a snapshot; edits take `&mut dyn ServerHost`, run in
 /// their own nested transaction and store the new value only when the closure returns, as
-/// [`BlockEntityPartState`]'s do. Every call first checks that `entity` is of the open
-/// world and still names a resident entity, in the level this host is in:
+/// [`BlockEntityPartState`]'s do. Every call first checks that `self.state_key()` belongs to
+/// the active installation and that `entity` is of the open world and still names a resident
+/// entity, in the level this host is in:
 /// - a removed, unloaded or moved entity refuses with [`PartStateError::Stale`];
 /// - an entity in another level refuses with [`PartStateError::OtherLevel`];
 /// - an entity out of its level's lists for its own tick refuses with
@@ -46,41 +51,61 @@ use std::fmt;
 /// after the entity changed level, the state stays with the entity under its new id, and
 /// the old handle stays `Stale`. Travel fires no join or leave hook for it.
 ///
-/// Server-side only for now: `DATA` must not sync or copy on death, and a client reads
+/// Server-side only for now: the state key must not sync or copy on death, and a client reads
 /// the default.
 pub trait EntityPartState: EntityPart + Sized {
     /// The value each entity of the Part's type keeps.
-    type Data: Clone + Send + Sync + 'static;
-    /// Its attachment key, default and codec. The owner declares the key at registration;
-    /// without a codec the value is kept for the session only.
-    const DATA: &'static AttachmentType<Self::Data>;
+    type Data: Send + Sync + 'static;
+    /// The issued attachment key this Part keeps its per-entity state under.
+    /// Register its [`AttachmentDescriptor`](crate::AttachmentDescriptor) during
+    /// [`Hooks::register`](crate::Hooks::register) (or look up another package's key with
+    /// [`Registrar::attachment_key`](crate::Registrar)) and store it on the Part; without a
+    /// persistence codec the value is kept for the session only.
+    fn state_key(&self) -> &AttachmentKey<Self::Data>;
 
-    /// The entity's value, or the default when it has none. Inserts nothing.
-    fn state(host: &dyn Host, entity: EntityRef) -> Result<Self::Data, PartStateError> {
-        Ok(Self::state_existing(host, entity)?.unwrap_or_else(Self::DATA.default))
-    }
-
-    /// The entity's value, or `None` when it has none. Inserts nothing.
-    fn state_existing(
+    /// Lend the entity's value or its default. Inserts nothing.
+    fn state<R>(
+        &self,
         host: &dyn Host,
         entity: EntityRef,
-    ) -> Result<Option<Self::Data>, PartStateError> {
-        read_state(host, entity, Self::DATA)
+        read: impl FnOnce(&Self::Data) -> R,
+    ) -> Result<R, PartStateError> {
+        let key = self.state_key();
+        read_state(host, entity, key, |value| match value {
+            Some(value) => read(value),
+            None => read(&key.descriptor().default_value()),
+        })
+    }
+
+    /// Lend the entity's value or `None`. Inserts nothing.
+    fn state_existing<R>(
+        &self,
+        host: &dyn Host,
+        entity: EntityRef,
+        read: impl FnOnce(Option<&Self::Data>) -> R,
+    ) -> Result<R, PartStateError> {
+        read_state(host, entity, self.state_key(), read)
     }
 
     /// Changes the entity's value with `edit`, starting from the default when it has none,
     /// and stores the result: see [`edit_part_state`]. A stale handle never creates a map.
+    /// If the host cannot open a transaction, returns [`PartStateError::Unavailable`] without
+    /// calling `edit`.
     fn edit_state<R>(
+        &self,
         host: &mut dyn ServerHost,
         entity: EntityRef,
-        edit: impl FnOnce(&mut dyn ServerHost, &mut Self::Data) -> R,
-    ) -> Result<R, PartStateError> {
-        edit_part_state(host, entity, Self::DATA, edit)
+        edit: impl FnOnce(&mut dyn ServerHost, &TransactionContext, &mut Self::Data) -> R,
+    ) -> Result<R, PartStateError>
+    where
+        Self::Data: Clone,
+    {
+        edit_part_state(host, entity, self.state_key(), edit)
     }
 }
 
 /// Where the entity an [`EntityRef`] names is now, as its Part state checks it
-/// ([`EntitiesHost::entity_residency`]).
+/// ([`EntityRef::residency`]).
 ///
 /// This is a process-local residency snapshot, not a `Wire` type.
 ///
@@ -106,7 +131,7 @@ pub enum EntityResidency {
 
 impl PartStateHolder for EntityRef {
     fn part_state_holder(self, host: &dyn Host) -> Result<Holder, PartStateError> {
-        match host.entity_residency(self) {
+        match self.residency(host) {
             EntityResidency::InPlace => Ok(Holder::Entity(self.id())),
             EntityResidency::Busy => Err(PartStateError::HolderBusy),
             EntityResidency::OtherLevel => Err(PartStateError::OtherLevel),
@@ -173,7 +198,7 @@ impl std::error::Error for EntityPartStateError {}
 
 /// One entity Part state declaration as registration kept it, for the game to check its
 /// entity type once every type is known.
-// no wire: internal startup registration record embedding PartStateDeclaration.
+// no wire: host-local registration record holding a PartStateDeclaration with registration identity; never crosses the wire.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct EntityPartStateDeclaration {
@@ -234,4 +259,46 @@ impl EntityPartStateDeclaration {
 /// The entity Part state declarations of every mod, in registration order.
 pub fn entity_part_state_declarations() -> &'static [EntityPartStateDeclaration] {
     crate::parts::installed().map_or(&[], |installed| &installed.entity_part_states)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn entity_residency_routes_through_backend_and_defaults_gone_without_one() {
+        struct Bare;
+        impl Host for Bare {}
+        crate::impl_host_areas!(Bare);
+
+        let entity = EntityRef::new(WorldEpoch::new(1), 7);
+        assert_eq!(entity.residency(&Bare), EntityResidency::Gone);
+        assert_eq!(entity.part_state_holder(&Bare), Err(PartStateError::Stale));
+
+        struct WithResidency(EntityResidency);
+        impl Host for WithResidency {
+            fn backend(&self) -> Option<crate::BackendRef<'_>> {
+                Some(crate::BackendRef::of(self))
+            }
+        }
+        crate::impl_host_areas!(WithResidency);
+        impl Backend for WithResidency {}
+        crate::impl_backend_areas!(WithResidency, except(entities));
+        impl crate::prelude::EntitiesBackend for WithResidency {
+            fn entity_residency(&self, _: EntityRef) -> EntityResidency {
+                self.0
+            }
+        }
+
+        for (residency, expected) in [
+            (EntityResidency::InPlace, Ok(Holder::Entity(7))),
+            (EntityResidency::Busy, Err(PartStateError::HolderBusy)),
+            (EntityResidency::OtherLevel, Err(PartStateError::OtherLevel)),
+            (EntityResidency::Gone, Err(PartStateError::Stale)),
+        ] {
+            let host = WithResidency(residency);
+            assert_eq!(entity.residency(&host), residency);
+            assert_eq!(entity.part_state_holder(&host), expected);
+        }
+    }
 }

@@ -99,6 +99,24 @@ pub trait FrameModelEdit: FrameModel {
     fn hide(&mut self, index: usize) -> bool;
 }
 
+// no wire: borrows the posed hierarchy and pose for this callback.
+/// A posed model in a `living_model_posed` callback: the model after vanilla's last posing step
+/// (the RETURN of `EntityModel.setupAnim`), before it draws. Every [`FrameModel`] read shows the
+/// pose so far, earlier listeners' edits included. Edits last for this draw only, and a
+/// part is addressed by its model-local index, which [`FrameModel::part`] resolves.
+pub trait FrameModelPoseEdit: FrameModel {
+    /// Replaces the local pose of the part at this index: position in texels, rotation in
+    /// radians and scale as unitless factors, all relative to the parent, as
+    /// `ModelPart.setPos`, `setRotation` and `xScale`/`yScale`/`zScale` leave them. Returns
+    /// `false` without a change if the index is outside this model or any component of `pose` is
+    /// not finite: the part keeps its pose.
+    fn set_pose(&mut self, index: usize, pose: crate::PartPose) -> bool;
+
+    /// Restores the bind pose of the part at this index (`ModelPart.resetPose`): the pose it
+    /// has before any animation. Returns `false` if the index is outside this model.
+    fn reset_pose(&mut self, index: usize) -> bool;
+}
+
 // no wire: name and local pose are borrowed from the current frame model.
 /// A read-only view of one part within a [`FrameModel`]. Hierarchy links are indices for
 /// [`FrameModel::part_at`]; a missing link is `None`.

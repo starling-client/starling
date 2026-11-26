@@ -1,5 +1,4 @@
 //! The `player_login` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0259
 
 pub trait Hooks {
     /// A player whose login the server has accepted (NeoForge's
@@ -22,7 +21,8 @@ pub trait Hooks {
         contract = "cancel",
         out = "cancel",
         neoforge = "none (Bukkit's PlayerLoginEvent; NeoForge's PlayerNegotiationEvent is not cancellable)",
-        cancellable = true
+        cancellable = true,
+        version = 2
     )]
     fn player_login(player: u128, name: &str, cancel: &mut bool, reason: &mut Option<Text>);
 }

@@ -1,0 +1,2 @@
+ids = ["handle:item::item_stack::ItemStack::use_animation"]
+why = "Adds ItemStack::use_animation(host) on both sides (#4677): ItemStack.getUseAnimation with the mods' use_animation answers applied, the value the renderer draws. It reads the engine's own resolution through ItemsBackend::item_stack_use_animation."

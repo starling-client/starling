@@ -70,6 +70,7 @@ fn wolf_owner_rejoining_receives_the_kill_statistic() {
                     name: "kill".into(),
                     trigger: "minecraft:kill_mob_near_sculk_catalyst".into(),
                     conditions: serde_json::json!({}).into(),
+                    player: None,
                 }],
                 requirements: vec![vec!["kill".into()]],
                 rewards: Rewards::default(),

@@ -1,0 +1,3 @@
+ids = ["method:BlockMetadata::visit_properties", "handle:BlockState::visit_properties"]
+why = "BlockMetadata can enumerate a state's properties: `visit_properties` visits each property name with its serialized value, in name order as vanilla's StateDefinition keeps them, so a colour provider or an adapter can read a state's whole property set instead of asking for names it must already know. `BlockState::visit_properties` forwards to it."
+migrate = "A custom BlockMetadata implementation adds visit_properties: call visit(name, value) for each of the state's properties in name order, or return Err(BlockStateError::Unavailable) if it cannot enumerate. Callers need no change."

@@ -69,14 +69,14 @@ is waiting, and closes it once the runners are back.
 
 | Runner label | What waits | What to do |
 | --- | --- | --- |
-| `sunrise-light` (bots) | Triage and claim commands, labels, overlap notes, the Mojang check | An organisation owner sets `SELF_HOSTED_CI` to `off` (Settings → Secrets and variables → Actions → Variables). Then everything runs on GitHub |
+| `sunrise-light` (bots) | Triage commands, labels, overlap notes, the Mojang check | An organisation owner sets `SELF_HOSTED_CI` to `off` (Settings → Secrets and variables → Actions → Variables). Then everything runs on GitHub |
 | `sunrise-checks` | `verify` of this repository's own pull requests ending in 0 or 1 | Same switch (`off` or `light`), then re-run the waiting checks. Forks' pull requests never use these runners |
 | `sunrise-game` | By-hand game tools | Use local tools or wait for the maintainer's runner |
 | `dyna-large` | Daily vanilla parity | Inspect Dyna's runner pool; no other CI workflow runs it |
 | `sunrise-nightly`, `sunrise-release` | The Nightly's and the launcher's macOS builds | Nothing can be done on GitHub. No Nightly or launcher release until the Mac is back |
 
-What keeps working without them: `verify` and merging, triage and labels (once `SELF_HOSTED_CI=off`), Kira, the
-website, the mods registry and its checks, the official server.
+What keeps working without them: `verify` and merging, claims (on GitHub's hosted runners), triage and labels (once
+`SELF_HOSTED_CI=off`), Kira, the website, the mods registry and its checks, the official server.
 
 What the council decides about it (which pull requests may still merge without the vanilla harnesses, and who could
 host a runner with their own Minecraft) is a poll, not a rule on this page.
@@ -88,13 +88,15 @@ version file the game is pinned to. If its text says the jars are unchanged, a p
 from the issue into `research-lock.json` fixes it. New players can't prepare the game until a Nightly with that fix
 is out, so label that pull request `release-now` (or ask the council to) once it merged.
 
-## The mods registry (horizon-rust/horizon-mods)
+## The mods registry (sunrise-org/sunrise-mods)
 
 - **Submissions from the website** arrive as pull requests authored by `ludovic111` (the registry's account). A
-  Team member reviews the mod (what it does, its licence, no sign-in or token handling, no Mojang files; see
-  `MOD-POLICY.md` there), approves, and squash-merges once `check` passed. Publishing to the registry is hourly
+  Team member reviews every one of them, owner updates with a signed trailer included, for malware, dangerous
+  patterns and suspicious or obfuscated code only (never licences, provenance or copyright), approves, and
+  squash-merges once `check` passed. The trailer only proves who submitted it; it is never a reason to skip the review. Publishing to the registry is hourly
   (`publish.yml`).
-- **Fork pull requests:** approve their workflow run, and upload the mod's file to the `staging` release as
+- **Fork pull requests:** approve their workflow run, and upload the mod's file to the registry's
+  [`staging` release](https://github.com/sunrise-org/sunrise-mods/releases/tag/staging) as
   `<sha256>.<extension>` after checking its hash.
 - **Taking a mod down:** a pull request adding it to `revoked.toml`. That file is a code-owner path: today only
   Ludovic can approve it. For malware, two council members act at once as an emergency (GOVERNANCE.md 4.6), post

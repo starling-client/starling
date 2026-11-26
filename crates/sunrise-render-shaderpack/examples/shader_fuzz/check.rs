@@ -6,10 +6,10 @@ use std::hash::Hasher;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 
-use sunrise_render_shaderpack::pack_atlas::{PackAtlas, game_inputs};
-use sunrise_shaders::{Macros, Pack, Post, PostProgram};
+use sunrise_render_shaderpack::pack_atlas::{TerrainDraws, deviceless_game_inputs};
+use sunrise_shaders::{Macros, Pack, Post, PostProgram, Properties};
 
-use crate::cases::DIMENSIONS;
+use crate::cases::{self, DIMENSIONS};
 
 /// What a case asks of the checker besides its files.
 #[derive(Clone, Debug, PartialEq)]
@@ -63,24 +63,31 @@ pub struct Observed {
     pub pieces: Vec<(String, u64)>,
 }
 
-/// The pack in `dir` loaded as the game loads a pack for a dimension (`shader_packs.rs`): the
-/// standard macros and the renderer's at Mipmap Levels 4, `shaders.properties` with the
-/// features it turns on, the dimension's folder, and the game's own inputs.
-pub fn load(dir: &Path, request: &Request) -> Post {
-    let pack = Pack::open(dir).expect("the case folder is a pack");
+/// The pack's `shaders.properties` and the macros its programs are read with, as the game reads
+/// them (`shader_packs.rs`): the standard macros and the renderer's at Mipmap Levels 4, then
+/// `shaders.properties` with the features it turns on.
+pub fn pack_macros(pack: &Pack) -> (Properties, Macros) {
     let mut macros = Macros::standard();
     macros.define_renderer(4);
-    let (properties, _) = sunrise_shaders::read_properties(&pack, &mut macros);
-    let (id, legacy) = DIMENSIONS[request.dim];
-    let folder = sunrise_shaders::dimension_folder_named(&pack, id, legacy);
-    sunrise_shaders::load_post(&pack, &folder, &properties, &macros, &inputs(request.flat))
+    let (properties, _) = sunrise_shaders::read_properties(pack, &mut macros);
+    (properties, macros)
 }
 
-/// The game's inputs with a terrain atlas of 1024 x 1024 pixels in 16-pixel sprites: the
-/// atlas's size only reaches the GLSL as constants. `flat` picks the game's flat draws.
-pub fn inputs(flat: bool) -> sunrise_shaders::GameInputs {
-    let terrain = PackAtlas::terrain_inputs_sized([1024, 1024], 64, 16, false, flat);
-    game_inputs(Some(terrain), flat, &[3, 4])
+/// The pack in `dir` loaded as the game loads a pack for a dimension (`shader_packs.rs`): its
+/// properties and macros (`pack_macros`), the dimension's folder, and the game's own inputs.
+pub fn load(dir: &Path, request: &Request) -> Post {
+    let pack = Pack::open(dir).expect("the case folder is a pack");
+    let (properties, macros) = pack_macros(&pack);
+    let (id, legacy) = DIMENSIONS[request.dim];
+    let folder = sunrise_shaders::dimension_folder_named(&pack, id, legacy);
+    let inputs = inputs(&properties, request.flat);
+    sunrise_shaders::load_post(&pack, &folder, &properties, &macros, &inputs)
+}
+
+/// The game's inputs without a device ([`deviceless_game_inputs`]): `flat` picks the game's flat
+/// draws, the others per-section ones as attributes alone.
+pub fn inputs(properties: &Properties, flat: bool) -> sunrise_shaders::GameInputs {
+    deviceless_game_inputs(properties.separate_ao(), TerrainDraws::flat(flat))
 }
 
 /// Every program of `post` with a slot, by slot.
@@ -327,22 +334,25 @@ fn panic_text(payload: Box<dyn std::any::Any + Send>) -> String {
     shape(&message)
 }
 
-/// Every stage file's preprocessed size, by the preprocessor the loader runs: the files over
-/// `limit` bytes.
+/// Every stage file's preprocessed size in the dimension's folder, by the preprocessor the
+/// loader runs: the files over `limit` bytes.
 pub fn oversized(dir: &Path, request: &Request) -> Vec<Failure> {
     let Ok(pack) = Pack::open(dir) else {
         return Vec::new();
     };
-    let mut macros = Macros::standard();
-    macros.define_renderer(4);
-    let _ = sunrise_shaders::read_properties(&pack, &mut macros);
+    let (_, macros) = pack_macros(&pack);
+    let (id, legacy) = DIMENSIONS[request.dim];
+    let folder = sunrise_shaders::dimension_folder_named(&pack, id, legacy);
     let stages = [".vsh", ".fsh", ".gsh", ".csh"];
-    pack.all_files()
+    // The dimension folder's, which the loader loads: a case holds its whole pack, other
+    // dimensions' folders too.
+    pack.list(&folder)
         .into_iter()
         .filter(|f| stages.iter().any(|e| f.ends_with(e)))
+        .map(|f| cases::in_folder(&folder, &f))
         .filter_map(|f| {
             let pp = sunrise_shaders::preprocess(&pack, &f, &macros);
-            (pp.code.len() > request.size_limit).then(|| {
+            (pp.code().len() > request.size_limit).then(|| {
                 let file = f.rsplit('/').next().unwrap_or(&f).to_owned();
                 Failure::new("size", format!("{file}: preprocessed past the limit"))
             })

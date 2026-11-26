@@ -16,13 +16,28 @@ struct BrewModifier {
 
 #[crate::__subscriptions]
 impl Hooks for BrewModifier {
-    fn potion_brew_pre(&self, _: &mut dyn ServerHost, event: &mut PotionBrewPreEvent<'_>) -> Flow {
+    fn potion_brew_pre(
+        &self,
+        _: &mut dyn ServerHost,
+        event: &mut PotionBrewPreEvent<'_, '_>,
+    ) -> Flow {
         self.seen.lock().unwrap().push("pre".into());
-        event.stacks[0] = Some(crate::__private::part_tests::stack(
-            "minecraft:diamond",
-            1,
-            0,
-        ));
+        event
+            .stacks
+            .set(
+                0,
+                Some(crate::__private::part_tests::stack(
+                    "minecraft:diamond",
+                    1,
+                    0,
+                )),
+            )
+            .unwrap();
+        let invalid = crate::__private::part_tests::stack("minecraft:diamond", 2, 0);
+        assert_eq!(
+            event.stacks.set(1, Some(invalid)),
+            Err(StackWriteError::CountExceeded { maximum: 1 })
+        );
         if self.cancel {
             Flow::Cancel
         } else {
@@ -30,22 +45,30 @@ impl Hooks for BrewModifier {
         }
     }
 
-    fn potion_brew_post(&self, _: &mut dyn ServerHost, event: &mut PotionBrewPostEvent<'_>) {
-        let first = event.stacks[0]
-            .as_ref()
+    fn potion_brew_post(&self, _: &mut dyn ServerHost, event: &mut PotionBrewPostEvent<'_, '_>) {
+        let first = event
+            .stacks
+            .get(0)
+            .flatten()
             .and_then(|stack| crate::__private::item_key_id(stack.item()))
             .unwrap();
         self.seen.lock().unwrap().push(format!("post {first}"));
-        event.stacks[1] = Some(crate::__private::part_tests::stack(
-            "minecraft:emerald",
-            1,
-            0,
-        ));
+        event
+            .stacks
+            .set(
+                1,
+                Some(crate::__private::part_tests::stack(
+                    "minecraft:emerald",
+                    1,
+                    0,
+                )),
+            )
+            .unwrap();
     }
 }
 
 #[test]
-fn brewing_callbacks_keep_owned_slot_edits_and_report_cancellation() {
+fn brewing_callbacks_keep_independent_slots_and_report_cancellation() {
     install_parts(&[], &crate::__private::part_tests::rule_schema(), |_| false).unwrap();
     for cancel in [true, false] {
         let seen = Arc::new(Mutex::new(Vec::new()));
@@ -70,8 +93,22 @@ fn brewing_callbacks_keep_owned_slot_edits_and_report_cancellation() {
                 None,
             ];
             let mut cancelled = false;
-            dispatch_potion_brew_pre(&mut NoHost, [1, 2, 3], &mut stacks, &mut cancelled);
+            {
+                let mut journal = HookListJournal::new(
+                    HookListStorage::Fixed(&mut stacks),
+                    |value: &Option<ItemStack>| Some(value.clone()),
+                    |value| {
+                        if value.as_ref().is_some_and(|stack| stack.count() > 1) {
+                            return Err(StackWriteError::CountExceeded { maximum: 1 });
+                        }
+                        Ok(value.clone())
+                    },
+                );
+                let mut slots = HookList::new(&mut journal, "potion_brew_pre", "stacks");
+                dispatch_potion_brew_pre(&mut NoHost, [1, 2, 3], &mut slots, &mut cancelled);
+            }
             assert_eq!(cancelled, cancel);
+            assert_eq!(stacks[1], None);
             assert_eq!(
                 stacks[0],
                 Some(crate::__private::part_tests::stack(
@@ -82,7 +119,15 @@ fn brewing_callbacks_keep_owned_slot_edits_and_report_cancellation() {
             );
             // The engine decides whether to apply the pre slots. Dispatch itself
             // threads the caller's owned values through either contract.
-            dispatch_potion_brew_post(&mut NoHost, [1, 2, 3], &mut stacks);
+            {
+                let mut journal = HookListJournal::new(
+                    HookListStorage::Fixed(&mut stacks),
+                    |value: &Option<ItemStack>| Some(value.clone()),
+                    |value| Ok(value.clone()),
+                );
+                let mut slots = HookList::new(&mut journal, "potion_brew_post", "stacks");
+                dispatch_potion_brew_post(&mut NoHost, [1, 2, 3], &mut slots);
+            }
             assert_eq!(
                 stacks[0],
                 Some(crate::__private::part_tests::stack(

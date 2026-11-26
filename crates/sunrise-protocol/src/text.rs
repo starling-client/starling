@@ -42,11 +42,20 @@ pub fn push_capped(out: &mut String, s: &str) {
 
 /// Flatten a component to text, at most [`MAX_TEXT`] bytes of it.
 pub fn plain(tag: &Tag, lang: &Language) -> String {
+    plain_with(tag, |key| lang.get(key).map(String::as_str))
+}
+/// Flatten a component to text, resolving translation and keybind keys through `lookup`.
+pub fn plain_with<'a>(tag: &Tag, lookup: impl Fn(&str) -> Option<&'a str>) -> String {
     let mut out = String::new();
-    append(tag, lang, &mut out, 0);
+    append(tag, &lookup, &mut out, 0);
     out
 }
-fn append(tag: &Tag, lang: &Language, out: &mut String, depth: usize) {
+fn append<'a, F: Fn(&str) -> Option<&'a str>>(
+    tag: &Tag,
+    lookup: &F,
+    out: &mut String,
+    depth: usize,
+) {
     if depth > 32 || out.len() >= MAX_TEXT {
         return;
     }
@@ -61,7 +70,7 @@ fn append(tag: &Tag, lang: &Language, out: &mut String, depth: usize) {
         // A list is its first element with the rest appended as siblings.
         Tag::List(items) => {
             for item in items {
-                append(item, lang, out, depth + 1);
+                append(item, lookup, out, depth + 1);
             }
         }
         Tag::Compound(_) => {
@@ -70,27 +79,26 @@ fn append(tag: &Tag, lang: &Language, out: &mut String, depth: usize) {
             } else if let Some(value) = get(tag, "") {
                 // NbtOps' wrapper for a bare value in a mixed list (a
                 // translation's number and string arguments).
-                append(value, lang, out, depth + 1);
+                append(value, lookup, out, depth + 1);
             } else if let Some(key) = get(tag, "translate").and_then(string) {
                 let args: Vec<String> = match get(tag, "with") {
                     Some(Tag::List(args)) => args
                         .iter()
                         .map(|a| {
                             let mut s = String::new();
-                            append(a, lang, &mut s, depth + 1);
+                            append(a, lookup, &mut s, depth + 1);
                             s
                         })
                         .collect(),
                     _ => Vec::new(),
                 };
-                let pattern = lang
-                    .get(&key)
-                    .cloned()
+                let pattern = lookup(&key)
+                    .map(str::to_owned)
                     .or_else(|| get(tag, "fallback").and_then(string))
                     .unwrap_or_else(|| key.clone());
                 push_capped(out, &format_java(&pattern, &args));
             } else if let Some(key) = get(tag, "keybind").and_then(string) {
-                push_capped(out, lang.get(&key).map_or(key.as_str(), String::as_str));
+                push_capped(out, lookup(&key).unwrap_or(key.as_str()));
             } else if let Some(selector) = get(tag, "selector").and_then(string) {
                 push_capped(out, &selector);
             } else if let Some(score) = get(tag, "score")
@@ -100,7 +108,7 @@ fn append(tag: &Tag, lang: &Language, out: &mut String, depth: usize) {
             }
             if let Some(Tag::List(extra)) = get(tag, "extra") {
                 for e in extra {
-                    append(e, lang, out, depth + 1);
+                    append(e, lookup, out, depth + 1);
                 }
             }
         }

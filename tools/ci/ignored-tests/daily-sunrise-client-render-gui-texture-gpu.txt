@@ -1,0 +1,3 @@
+# GuiDraw::Texture: a standalone texture drawn on the HUD (#4633).
+sunrise-client-render hud::coverage_tests::a_held_picture_keeps_its_texture_between_frames_until_released lib daily gpu
+sunrise-client-render hud::coverage_tests::a_repeating_picture_past_u_2_draws_itself_not_a_glint lib daily gpu

@@ -24,7 +24,7 @@ use sunrise_client::{
     items::ItemStack,
     menu::place::{PostPlace, Stacked},
     random_source,
-    recipe_book::{Book, BookType, ClientBook, Collection, Entry, GhostTarget, Tab},
+    recipe_book::{Book, BookType, ClientBook, Collection, Entry, GhostSlot, GhostTarget, Tab},
     recipe_book_screen::{
         self as screen, ButtonView, Call, Drawn, GhostView, ItemCall, OverlayRecipe, OverlayView,
         Screen as Layout, Search, TabView,
@@ -96,7 +96,6 @@ pub(super) struct RecipeUi {
     /// Ticks, for the ghost and button cycling (`RecipeBookComponent.time`).
     time: f32,
     ghost: Vec<Ghost>,
-    last_placed: Option<String>,
     overlay: Option<Overlay>,
     /// A press landed in the search box, so a drag selects text in it.
     search_drag: bool,
@@ -202,6 +201,7 @@ mod transfer_check_cache_tests {
         let check = RecipeTransferCheck {
             result: RecipeTransferResult::Missing,
             missing_cells: vec![1],
+            craftable_cells: Vec::new(),
         };
         let mut checks = TransferChecks {
             seen: Some((1, 0, Vec::new())),
@@ -231,7 +231,6 @@ impl RecipeUi {
     /// A new screen starts without a ghost recipe, overlay or search focus.
     pub(super) fn reset_screen(&mut self) {
         self.ghost.clear();
-        self.last_placed = None;
         self.overlay = None;
         self.tab = None;
         self.page = 0;
@@ -250,6 +249,23 @@ fn inside(p: (f32, f32), x: f32, y: f32, w: f32, h: f32) -> bool {
 }
 fn sprite(name: &str) -> String {
     format!("recipe_book/{name}")
+}
+
+fn map_ghost_slots(book_type: BookType, slots: Vec<GhostSlot>) -> Vec<Ghost> {
+    slots
+        .into_iter()
+        .map(|g| Ghost {
+            slot: match (g.target, book_type) {
+                (GhostTarget::Result, BookType::Crafting) => 200,
+                (GhostTarget::Result, _) => 302,
+                (GhostTarget::Grid(i), _) => 100 + i,
+                (GhostTarget::Input, _) => 300,
+                (GhostTarget::Fuel, _) => 301,
+            },
+            result: g.target == GhostTarget::Result,
+            items: g.items,
+        })
+        .collect()
 }
 
 impl Game<'_> {
@@ -315,13 +331,15 @@ impl Game<'_> {
             && self.recipe_ui.search.as_ref().is_some_and(|s| s.focused)
     }
     /// `keyChat` focuses the search box.
-    pub(super) fn recipe_focus_search(&mut self) {
+    pub(super) fn recipe_focus_search(&mut self) -> bool {
         if (self.mod_book_open() || self.active_book().is_some_and(|b| self.book_open(b)))
             && let Some(s) = self.recipe_ui.search.as_mut()
         {
             s.focused = true;
             s.reset_blink();
+            return true;
         }
+        false
     }
     /// Text typed (or one backspace) into the search box.
     pub(super) fn recipe_text(&mut self, text: Option<&str>, backspace: bool) {
@@ -341,30 +359,22 @@ impl Game<'_> {
         }
     }
     /// A key press while the search box has focus.
-    pub(super) fn recipe_key(&mut self, event: &winit::event::KeyEvent) {
-        use winit::keyboard::PhysicalKey;
-        if let Some(shortcut) = self.edit_shortcut(event) {
+    pub(super) fn recipe_key(
+        &mut self,
+        key: winit::keyboard::KeyCode,
+        shortcut: Option<sunrise_client::clipboard::EditShortcut>,
+    ) -> bool {
+        if let Some(shortcut) = shortcut {
             self.recipe_shortcut(shortcut);
-            return;
+            return true;
         }
-        let ctrl = self.has_control_down();
-        let shift = self.has_shift_down();
-        let types_text = self.types_text();
+        let (ctrl, shift) = (self.has_control_down(), self.has_shift_down());
         let Some(search) = self.recipe_ui.search.as_mut() else {
-            return;
+            return false;
         };
-        let handled = match event.physical_key {
-            PhysicalKey::Code(code) => search.key(code, ctrl, shift),
-            _ => false,
-        };
-        if !handled
-            && types_text
-            && let Some(text) = &event.text
-        {
-            let text: String = text.chars().filter(|c| !c.is_control()).collect();
-            search.insert_text(&text);
-        }
+        let handled = search.key(key, ctrl, shift);
         search.reset_blink();
+        handled
     }
 
     /// `RecipeToast.addOrUpdate` for each display of the recipes just
@@ -414,7 +424,10 @@ impl Game<'_> {
         if items.is_empty() {
             return;
         }
-        match self.adv.toasts.iter_mut().find(|t| t.is_recipe()) {
+        match self.toast_manager.find_mut(|entry| match entry {
+            super::toast_manager::Toast::Advancement(t) if t.is_recipe() => Some(t),
+            _ => None,
+        }) {
             Some(toast) => toast.add_recipes(items),
             None => self.add_advancement_toast(super::advancements::Toast::recipe(items)),
         }
@@ -514,7 +527,8 @@ impl Game<'_> {
         ui.client_known = Some(known.clone());
         ui.client_version += 1;
     }
-    /// Every entry of the book, in its order (`native_recipes`).
+    /// Every entry of the book, in its order.
+    #[cfg(test)]
     pub(super) fn recipe_book_entries(&mut self) -> Vec<Entry> {
         self.ensure_book();
         self.recipe_ui
@@ -539,25 +553,21 @@ impl Game<'_> {
         self.recipe_tables.books = None;
         self.invalidate_mod_book_placement_catalogues();
     }
-    /// Puts a server's entries over `book` (`Book::use_server_entries`). The
-    /// names come from the connection's registries; a tag's items are the ones
-    /// the client knows for it (the server's tags are not read).
-    fn server_entries_over<'a>(
+    /// Resolves server recipe-display names from the connection's registries; a
+    /// tag's items are the ones the client knows for it (the server's tags are
+    /// not read).
+    fn with_packet_names<R>(
         &self,
-        book: &mut Book,
-        entries: impl IntoIterator<Item = &'a sunrise_protocol::packets::recipes::RecipeBookEntry>,
-    ) {
-        let Some(r) = self.remote.as_ref() else {
-            return;
-        };
+        f: impl FnOnce(&sunrise_client::recipe_book::PacketNames<'_>) -> R,
+    ) -> Option<R> {
+        let r = self.remote.as_ref()?;
         let items = self.items();
-        let name_of = |registry: &str, id: i32| {
-            r.builtin
-                .get(registry)
-                .and_then(|ids| ids.name(id))
-                .or_else(|| r.registries.name(registry, id))
-                .map(str::to_owned)
+        use sunrise_protocol::{item::Names, registry::SyncedNames};
+        let names = SyncedNames {
+            builtin: &r.builtin,
+            dynamic: &r.registries,
         };
+        let name_of = |registry: &str, id: i32| names.name(registry, id);
         let item = |id: i32| name_of("minecraft:item", id);
         let category = |id: i32| {
             name_of("minecraft:recipe_book_category", id).or_else(|| {
@@ -565,14 +575,20 @@ impl Game<'_> {
             })
         };
         let tag = |name: &str| items.item_tag_order.get(name).cloned().unwrap_or_default();
-        book.use_server_entries(
-            entries,
-            &sunrise_client::recipe_book::PacketNames {
-                item: &item,
-                category: &category,
-                tag: &tag,
-            },
-        );
+        Some(f(&sunrise_client::recipe_book::PacketNames {
+            item: &item,
+            category: &category,
+            component: &|id| name_of("minecraft:data_component_type", id),
+            tag: &tag,
+        }))
+    }
+    /// Puts a server's entries over `book` (`Book::use_server_entries`).
+    fn server_entries_over<'a>(
+        &self,
+        book: &mut Book,
+        entries: impl IntoIterator<Item = &'a sunrise_protocol::packets::recipes::RecipeBookEntry>,
+    ) {
+        self.with_packet_names(|names| book.use_server_entries(entries, names));
     }
     fn ensure_book(&mut self) {
         if self.recipe_ui.book.is_none() {
@@ -783,11 +799,11 @@ impl Game<'_> {
     // ---- geometry ----
 
     /// `RecipeBookComponent.getXOrigin` / `getYOrigin` (`widthTooNarrow`
-    /// centres the book over the menu), moved left with the window by the
+    /// centres the book over the menu), moved with the window by the
     /// room the mods ask beside it (`screen_room`).
     fn book_origin(&self, batch: &HudBatch) -> (f32, f32) {
         let (x, y) = self.book_origin_in_place(batch);
-        (x - self.screen_room_shift(batch), y)
+        (x + self.screen_room_offset(batch), y)
     }
     /// The visible left edge, including the selected tab, of the book beside
     /// the window before room moves it; none while no book is open or it covers the
@@ -872,7 +888,6 @@ impl Game<'_> {
         if let Some(slot) = self.slot_at(&batch, cursor.0, cursor.1)
             && self.is_book_slot(book_type, slot)
         {
-            self.recipe_ui.last_placed = None;
             self.recipe_ui.ghost.clear();
         }
         let (bx, by) = self.book_button_pos(book_type, ox, &batch);
@@ -886,8 +901,7 @@ impl Game<'_> {
             if !open {
                 self.recipe_ui.overlay = None;
             }
-            self.audio
-                .play("minecraft:ui.button.click", None, 0.25, 1.0);
+            self.play_audio("minecraft:ui.button.click", None, 0.25, 1.0);
             return true;
         }
         if !self.book_open(book_type) {
@@ -924,14 +938,12 @@ impl Game<'_> {
             if self.recipe_ui.page + 1 < pages && inside(cursor, xo + 93.0, yo + 137.0, 12.0, 17.0)
             {
                 self.recipe_ui.page += 1;
-                self.audio
-                    .play("minecraft:ui.button.click", None, 0.25, 1.0);
+                self.play_audio("minecraft:ui.button.click", None, 0.25, 1.0);
                 return true;
             }
             if self.recipe_ui.page > 0 && inside(cursor, xo + 38.0, yo + 137.0, 12.0, 17.0) {
                 self.recipe_ui.page -= 1;
-                self.audio
-                    .play("minecraft:ui.button.click", None, 0.25, 1.0);
+                self.play_audio("minecraft:ui.button.click", None, 0.25, 1.0);
                 return true;
             }
         }
@@ -985,8 +997,7 @@ impl Game<'_> {
             self.level.recipe_book.filtering[book_type.index()] = filtering;
             self.send_book_settings(book_type);
             self.recipe_ui.page = 0;
-            self.audio
-                .play("minecraft:ui.button.click", None, 0.25, 1.0);
+            self.play_audio("minecraft:ui.button.click", None, 0.25, 1.0);
             return true;
         }
         // Tabs.
@@ -997,8 +1008,7 @@ impl Game<'_> {
                     self.recipe_ui.tab = Some(tab);
                     self.recipe_ui.page = 0;
                 }
-                self.audio
-                    .play("minecraft:ui.button.click", None, 0.25, 1.0);
+                self.play_audio("minecraft:ui.button.click", None, 0.25, 1.0);
                 return true;
             }
         }
@@ -1041,25 +1051,26 @@ impl Game<'_> {
         else {
             return false;
         };
-        self.audio
-            .play("minecraft:ui.button.click", None, 0.25, 1.0);
+        self.play_audio("minecraft:ui.button.click", None, 0.25, 1.0);
         let shift = self.shift_down();
         self.try_place(entry, shift)
     }
     /// `RecipeBookComponent.mouseDragged`: while the search box is focused a
     /// drag moves its selection end to the pointer (`EditBox.onDrag`).
-    pub(super) fn recipe_book_drag(&mut self) {
+    pub(super) fn recipe_book_drag(&mut self) -> bool {
         if !self.recipe_ui.search_drag
             || !(self.mod_book_open() || self.active_book().is_some_and(|b| self.book_open(b)))
         {
-            return;
+            return false;
         }
         let x = self.cursor.0;
         if let Some(search) = self.recipe_ui.search.as_mut()
             && search.focused
         {
             search.drag_to(&self.gui.atlas, x);
+            return true;
         }
+        false
     }
     /// A mouse button let go: a drag no longer selects in the search box.
     pub(super) fn recipe_book_release(&mut self) -> bool {
@@ -1110,8 +1121,7 @@ impl Game<'_> {
             return;
         };
         self.recipe_ui.page = to;
-        self.audio
-            .play("minecraft:ui.button.click", None, 0.25, 1.0);
+        self.play_audio("minecraft:ui.button.click", None, 0.25, 1.0);
     }
     /// The crafting book's entry of the recipe button under the pointer, in its overlay if open.
     pub(super) fn recipe_under_pointer(&self) -> Option<usize> {
@@ -1205,12 +1215,6 @@ impl Game<'_> {
     }
     /// Places one set of the crafting book's entry, as a click on its button places it.
     pub(super) fn recipe_place_once(&mut self, entry_index: usize) {
-        self.recipe_ui.last_placed = self
-            .recipe_ui
-            .book
-            .as_ref()
-            .and_then(|b| b.entries.get(entry_index))
-            .map(|e| e.id.clone());
         self.recipe_ui.ghost.clear();
         self.recipe_ui.overlay = None;
         self.place_book_recipe(BookType::Crafting, entry_index, false);
@@ -1360,16 +1364,15 @@ impl Game<'_> {
         let Some(book_type) = self.active_book() else {
             return false;
         };
-        let Some(id) = self
+        if self
             .recipe_ui
             .book
             .as_ref()
             .and_then(|b| b.entries.get(entry_index))
-            .map(|e| e.id.clone())
-        else {
+            .is_none()
+        {
             return false;
-        };
-        self.recipe_ui.last_placed = Some(id);
+        }
         self.recipe_ui.ghost.clear();
         self.place_book_recipe(book_type, entry_index, use_max);
         true
@@ -1434,7 +1437,7 @@ impl Game<'_> {
         recipe: &str,
         max: bool,
         dry_run: bool,
-    ) -> Option<RecipeTransferResult> {
+    ) -> Option<RecipeTransferCheck> {
         if !mod_api::__private::has_part_hook(mod_api::HookId::MenuTransfer) {
             return None;
         }
@@ -1442,17 +1445,56 @@ impl Game<'_> {
         if !mod_api::__private::menu_listens(mod_api::HookId::MenuTransfer, menu) {
             return None;
         }
-        let mut result = None;
+        let player = self.own_uuid();
+        self.menu_transfer_answer(player, menu, Some(pos), recipe, max, dry_run)
+    }
+    /// Asks `menu_transfer` of the part of mod menu type `menu` (the caller checked that one
+    /// listens): its answer, and with `dry_run` the cells it named, both lists kept to the
+    /// recipe's known layout (`clamp_cells` to `recipe_cells`: one input for stonecutting, the
+    /// placement's slots, or `MAX_CHECK_CELLS` for a recipe the game can't inspect). Cells a
+    /// part names outside a dry run are dropped. None when no part answers.
+    pub(in crate::game) fn menu_transfer_answer(
+        &mut self,
+        player: u128,
+        menu: &str,
+        pos: Option<[i32; 3]>,
+        recipe: &str,
+        max: bool,
+        dry_run: bool,
+    ) -> Option<RecipeTransferCheck> {
+        use sunrise_client::lan::recipes::{clamp_cells, recipe_cells};
+        let (mut result, mut missing, mut craftable) = (None, Vec::new(), Vec::new());
         self.native_menu_transfer(mod_api::__private::MenuTransferCall {
-            player: self.own_uuid(),
+            player,
             menu,
-            pos: Some(pos),
+            pos,
             recipe,
             max,
             dry_run,
             result: &mut result,
+            missing_cells: &mut missing,
+            craftable_cells: &mut craftable,
         });
-        result
+        let result = result?;
+        let cells = if dry_run {
+            let recipes = self.recipes();
+            let id = if recipe.contains(':') {
+                std::borrow::Cow::Borrowed(recipe)
+            } else {
+                std::borrow::Cow::Owned(format!("minecraft:{recipe}"))
+            };
+            let kind = (recipes.by_type.iter())
+                .find(|(_, list)| list.iter().any(|r| r.id == *id))
+                .map(|(kind, _)| kind.as_str());
+            recipe_cells(kind, recipes.placement(recipe).map(|p| p.slots.len()))
+        } else {
+            0
+        };
+        Some(RecipeTransferCheck {
+            result,
+            missing_cells: clamp_cells(&missing, cells),
+            craftable_cells: clamp_cells(&craftable, cells),
+        })
     }
     /// A viewer's transfer of a recipe by id (`transfer_recipe_id`): sent to the server, whose
     /// `menu_transfer` parts on a mod menu answer first, then its grid transfer. Only a server
@@ -1470,7 +1512,7 @@ impl Game<'_> {
             // The game is its own server: the mod menu's part answers first, as on a server,
             // then the grid transfer.
             if let Some(answer) = self.local_menu_transfer(recipe, max, false) {
-                self.show_transfer_result(answer);
+                self.show_transfer_result(answer.result);
                 return;
             }
             self.local_grid_transfer(recipe, max);
@@ -1558,7 +1600,7 @@ impl Game<'_> {
         }
         // The game is its own server: a mod menu's part answers first, as on a server.
         if let Some(answer) = self.local_menu_transfer(&id, false, false) {
-            self.show_transfer_result(answer);
+            self.show_transfer_result(answer.result);
             return;
         }
         self.local_grid_transfer(&id, false);
@@ -1644,14 +1686,11 @@ impl Game<'_> {
         &mut self,
         recipe: &str,
     ) -> Option<RecipeTransferCheck> {
-        // The game is its own server: a mod menu's part answers the dry run, as
-        // `sunrise:recipe_check` asks it on a server; with none the check is as before.
+        // The game is its own server: a mod menu's part answers the dry run, with the
+        // cells it names, as `sunrise:recipe_check` asks it on a server; with none the
+        // check is as before.
         if self.remote.is_none() && self.mod_menu_open() {
-            let result = self.local_menu_transfer(recipe, false, true)?;
-            return Some(RecipeTransferCheck {
-                result,
-                missing_cells: Vec::new(),
-            });
+            return self.local_menu_transfer(recipe, false, true);
         }
         let eligible_menu = self.mod_recipe_screen()
             || (self.screen == Screen::Inventory && !self.spectator() && self.mod_menu_open());
@@ -1697,29 +1736,12 @@ impl Game<'_> {
     /// The server's answer to `sunrise:recipe_check`. Kept only as the answer
     /// to the request out, for the view of the menu it was asked for.
     fn remote_recipe_check(&mut self, data: &[u8]) {
-        let mut reader = sunrise_protocol::buf::Reader::new(data);
-        let (Ok(container), Ok(tag), Ok(byte)) = (reader.varint(), reader.varint(), reader.u8())
+        let Some((container, tag, check)) = sunrise_client::lan::recipes::decode_check_reply(data)
         else {
             return;
         };
-        let Some(result) = sunrise_client::lan::recipes::byte_result(byte) else {
-            return;
-        };
-        let mut missing_cells = Vec::new();
-        if result == RecipeTransferResult::Missing {
-            let Ok(n) = reader.varint() else {
-                return;
-            };
-            for _ in 0..n.clamp(0, 256) {
-                let Ok(cell) = reader.u8() else {
-                    return;
-                };
-                missing_cells.push(u32::from(cell));
-            }
-        }
         let checks = &mut self.recipe_ui.checks;
-        if reader.remaining() != 0
-            || checks.asked.as_ref().map(|(id, _, _)| *id) != Some(tag)
+        if checks.asked.as_ref().map(|(id, _, _)| *id) != Some(tag)
             || checks.seen.as_ref().map(|s| s.0) != Some(container)
         {
             return;
@@ -1729,10 +1751,7 @@ impl Game<'_> {
         checks.answers.push(CheckAnswer {
             recipe,
             refreshes,
-            check: RecipeTransferCheck {
-                result,
-                missing_cells,
-            },
+            check,
         });
     }
 
@@ -1860,8 +1879,9 @@ impl Game<'_> {
         }
         self.build_screen();
     }
-    /// ClientboundPlaceGhostRecipePacket: the recipe last placed, faded into
-    /// the open menu's grid.
+    /// ClientboundPlaceGhostRecipePacket (`ClientPacketListener.handlePlaceRecipe`
+    /// -> `RecipeBookComponent.showGhostRecipe`): fill directly from the server's
+    /// display for the open menu.
     pub(super) fn remote_ghost_recipe(
         &mut self,
         p: sunrise_protocol::packets::recipes::PlaceGhostRecipe,
@@ -1873,13 +1893,20 @@ impl Game<'_> {
         if p.container != open {
             return;
         }
-        let entry = self.recipe_ui.last_placed.as_ref().and_then(|id| {
-            let book = self.recipe_ui.book.as_ref()?;
-            book.entry(id).cloned()
-        });
-        if let Some(entry) = entry {
-            self.recipe_ui.ghost.clear();
-            self.fill_ghost(book_type, &entry);
+        let grid = self.craft_size;
+        let fuel_empty = self.slot_mut(301).is_none();
+        if let Some(slots) = self.with_packet_names(|names| {
+            sunrise_client::recipe_book::ghost_from_display(
+                &p.display,
+                names,
+                book_type,
+                grid,
+                fuel_empty,
+                self.items(),
+                |stack| self.decode_remote_stack(stack),
+            )
+        }) {
+            self.recipe_ui.ghost = map_ghost_slots(book_type, slots);
         }
         // The server is missing an item the client counted: nothing was placed.
         self.direct_craft_refused();
@@ -1887,6 +1914,18 @@ impl Game<'_> {
 
     // ---- ghost recipe ----
 
+    #[cfg(test)]
+    pub(in crate::game) fn ghost_slots(&self) -> Vec<(usize, String, bool)> {
+        self.recipe_ui
+            .ghost
+            .iter()
+            .filter_map(|g| {
+                g.items
+                    .first()
+                    .map(|stack| (g.slot, stack.item.to_string(), g.result))
+            })
+            .collect()
+    }
     /// `fillGhostRecipe`: the recipe's ingredients faded into the slots.
     fn fill_ghost(&mut self, book_type: BookType, entry: &Entry) {
         let grid = self.craft_size;
@@ -1894,22 +1933,8 @@ impl Game<'_> {
         let Some(book) = self.recipe_ui.book.as_ref() else {
             return;
         };
-        let ghost = book
-            .ghost(entry, book_type, grid, fuel_empty, self.items())
-            .into_iter()
-            .map(|g| Ghost {
-                slot: match (g.target, book_type) {
-                    (GhostTarget::Result, BookType::Crafting) => 200,
-                    (GhostTarget::Result, _) => 302,
-                    (GhostTarget::Grid(i), _) => 100 + i,
-                    (GhostTarget::Input, _) => 300,
-                    (GhostTarget::Fuel, _) => 301,
-                },
-                result: g.target == GhostTarget::Result,
-                items: g.items,
-            })
-            .collect();
-        self.recipe_ui.ghost = ghost;
+        let slots = book.ghost(entry, book_type, grid, fuel_empty, self.items());
+        self.recipe_ui.ghost = map_ghost_slots(book_type, slots);
     }
 
     // ---- drawing ----
@@ -2311,7 +2336,7 @@ impl Game<'_> {
                 }
                 Call::Item { call, stack, x, y } => match call {
                     ItemCall::Item | ItemCall::Fake => {
-                        self.draw_item_model(batch, stack, *x as f32, *y as f32)
+                        self.draw_item_model(batch, stack, *x as f32, *y as f32, 0)
                     }
                     ItemCall::Decorations => {
                         self.draw_item_decorations(batch, stack, *x as f32, *y as f32, None)

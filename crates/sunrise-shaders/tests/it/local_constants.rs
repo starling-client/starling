@@ -1,23 +1,12 @@
 //! Original controls for `const` locals: one initialized with a constant expression is a
 //! constant expression itself (GLSL 4.60, 4.3.3, as #8462 quotes it), so it may be a texel
 //! offset (8.9.2, as #8462 quotes it). glslangValidator takes every shader here.
-use sunrise_shaders::{Origin, Preprocessed, Target, translate_composite};
+use sunrise_shaders::{Preprocessed, Target, translate_composite};
 
 fn stage(code: &str) -> Preprocessed {
-    Preprocessed {
-        code: code.into(),
-        files: vec!["original.fsh".into()],
-        lines: code
-            .lines()
-            .enumerate()
-            .map(|(i, _)| Origin {
-                file: 0,
-                line: i as u32 + 1,
-            })
-            .collect(),
-        version: Some((440, Some("compatibility".into()))),
-        ..Default::default()
-    }
+    let mut pp = Preprocessed::from_source("original.fsh", code);
+    pp.version = Some((440, Some("compatibility".into())));
+    pp
 }
 
 fn translates(source: &str) {
@@ -25,6 +14,7 @@ fn translates(source: &str) {
         &stage("void main() { gl_Position = gl_Vertex; }"),
         &stage(source),
         Target::Window,
+        naga::front::glsl::InterfaceLimits::WGPU_DEFAULT,
     )
     .unwrap_or_else(|e| panic!("{source}\n{e:?}"));
     let info = naga::valid::Validator::new(

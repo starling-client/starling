@@ -59,6 +59,8 @@ pub struct ResolvedCuboidModel {
     pub unresolved_textures: BTreeSet<String>,
     /// NeoForge's `render_type`; the leaf-most model that sets one wins.
     pub render_type: Option<String>,
+    /// NeoForge's root `transform`; the leaf-most model that sets one wins.
+    pub root_transform: Option<RootTransform>,
     geometry: Option<Arc<CuboidModel>>,
     generated: bool,
     loader: Option<ResolvedLoader>,
@@ -119,6 +121,7 @@ impl ModelLibrary {
             display: None,
             render_type: None,
             visibility: BTreeMap::new(),
+            root_transform: None,
         }
     }
     pub fn new(models: BTreeMap<String, CuboidModel>) -> Result<Self> {
@@ -290,6 +293,7 @@ impl ModelLibrary {
             .find_map(|m| m.gui_light)
             .unwrap_or(GuiLight::Side);
         let render_type = chain.iter().find_map(|m| m.render_type.clone());
+        let root_transform = chain.iter().find_map(|m| m.root_transform);
         let top_geometry = chain
             .iter()
             .zip(&names)
@@ -442,6 +446,7 @@ impl ModelLibrary {
             textures,
             unresolved_textures,
             render_type,
+            root_transform,
             geometry,
             generated,
             loader,
@@ -547,6 +552,7 @@ pub fn missing_model() -> CuboidModel {
             ),
         ]),
         visibility: BTreeMap::new(),
+        root_transform: None,
     }
 }
 

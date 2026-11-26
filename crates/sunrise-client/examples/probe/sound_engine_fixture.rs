@@ -132,6 +132,8 @@ pub fn main() {
                     position: [d(a[2]), d(a[3]), d(a[4])],
                     // Vec3.horizontalDistance.
                     speed: (d(a[5]) * d(a[5]) + d(a[7]) * d(a[7])).sqrt(),
+                    new_behavior: false,
+                    on_rails: false,
                 };
                 let silent = a.get(9) == Some(&"1");
                 if a[0] == "cartnew"

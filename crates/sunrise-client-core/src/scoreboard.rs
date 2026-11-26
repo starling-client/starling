@@ -976,18 +976,23 @@ impl Scoreboard {
             }
         }
     }
-    /// `listPlayerScores(objective)`, in `playerScores.forEach` order.
-    pub fn list_scores(&self, objective: &str) -> Vec<ScoreEntry> {
+    /// The resident score rows in `playerScores.forEach` order.
+    pub fn score_rows<'a>(
+        &'a self,
+        objective: &'a str,
+    ) -> impl Iterator<Item = (&'a str, &'a Score)> {
         self.holder_order
             .iter()
-            .filter_map(|owner| {
-                let s = self.scores.get(owner)?.get(objective)?;
-                Some(ScoreEntry {
-                    owner: owner.to_owned(),
-                    value: s.value,
-                    display: s.display.clone(),
-                    number_format: s.number_format.clone(),
-                })
+            .filter_map(move |owner| Some((owner, self.scores.get(owner)?.get(objective)?)))
+    }
+    /// `listPlayerScores(objective)`, in `playerScores.forEach` order.
+    pub fn list_scores(&self, objective: &str) -> Vec<ScoreEntry> {
+        self.score_rows(objective)
+            .map(|(owner, score)| ScoreEntry {
+                owner: owner.to_owned(),
+                value: score.value,
+                display: score.display.clone(),
+                number_format: score.number_format.clone(),
             })
             .collect()
     }
@@ -1355,6 +1360,39 @@ pub fn canonical_component(c: &Comp) -> Comp {
     let (mut node, extra) = decompose(c);
     finish(&mut node, extra)
 }
+/// `Entity.removeAction`: clear `click_event` on the root component and
+/// recursively on every sibling (`extra`), leaving other styles intact.
+pub fn remove_click_events_comp(c: &Comp) -> Comp {
+    let mut out = canonical_component(c);
+    strip_click_events_in_place(&mut out);
+    canonical_component(&out)
+}
+fn strip_click_events_in_place(c: &mut Comp) {
+    if let Value::Object(map) = c {
+        map.remove("click_event");
+        map.remove("clickEvent");
+        if let Some(Value::Array(extra)) = map.get_mut("extra") {
+            for sibling in extra {
+                strip_click_events_in_place(sibling);
+            }
+        }
+    }
+}
+/// Build a [`Text`] from a canonicalized component without collapsing a plain
+/// root literal to a bare JSON string: in-memory [`Text`] literals hold
+/// `{"text": s}` (matching [`Text::literal`]), while serialization through
+/// [`canonical_component`] and [`component_tag`] collapses them per vanilla's
+/// `ComponentSerialization.CODEC`.
+pub fn text_from_canonical_component(c: Comp) -> Text {
+    match c {
+        Value::String(s) => Text::from(serde_json::json!({ "text": s })),
+        other => Text::from(other),
+    }
+}
+/// [`remove_click_events_comp`] on a [`Text`].
+pub fn remove_click_events(text: &Text) -> Text {
+    text_from_canonical_component(remove_click_events_comp(&text.component()))
+}
 /// A component's own fields (content and style) and its siblings.
 fn decompose(c: &Comp) -> (serde_json::Map<String, Value>, Vec<Comp>) {
     match c {
@@ -1412,10 +1450,25 @@ fn decompose(c: &Comp) -> (serde_json::Map<String, Value>, Vec<Comp>) {
                     }
                     "hover_event" => {
                         let mut h = v.clone();
-                        if let Some(value) = h.get("value").cloned()
-                            && h.get("action").and_then(Value::as_str) == Some("show_text")
-                        {
-                            h["value"] = canonical_component(&value);
+                        match h.get("action").and_then(Value::as_str) {
+                            Some("show_text") => {
+                                if let Some(value) = h.get("value").cloned() {
+                                    h["value"] = canonical_component(&value);
+                                }
+                            }
+                            Some("show_entity") => {
+                                if let Some(name) = h.get("name").cloned() {
+                                    h["name"] = canonical_component(&name);
+                                }
+                                if let Some(uuid) = h
+                                    .get("uuid")
+                                    .and_then(Value::as_str)
+                                    .and_then(crate::uuid::uuid_from_text)
+                                {
+                                    h["uuid"] = serde_json::json!(uuid);
+                                }
+                            }
+                            _ => {}
                         }
                         node.insert(k.clone(), h);
                     }

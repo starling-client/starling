@@ -3,7 +3,7 @@ use super::*;
 use crate::game::minecarts::{CartKind, Minecart};
 use std::sync::{Arc, Mutex};
 use sunrise_client::{items::ItemStack, save::PendingContainerLoot};
-use sunrise_core::{geometry::Vec3, nbt::Tag, position::BlockPos};
+use sunrise_core::{geometry::Vec3, nbt::Tag, position::BlockPos, random::RandomSource};
 use sunrise_world::loot::{LootData, PackOverlay};
 
 const POS: (i32, i32, i32) = (8, 64, 8);
@@ -17,7 +17,7 @@ fn level_container_reads_preserve_snapshot_and_unpack_comparator_once() {
     }
     mod_platform::testing::with_mods(Default::default(), || {
         with_game(|game| {
-            use mod_api::{LevelHost, LevelRandomHost};
+            use mod_api::LevelRandomHost;
             place(game, POS, TABLE, 37);
             let handle = game.level(game.dim.id()).unwrap();
             let at = mod_api::BlockSide {
@@ -27,18 +27,19 @@ fn level_container_reads_preserve_snapshot_and_unpack_comparator_once() {
             };
             let entity = game.block_entity(handle, at.pos).unwrap();
             game.with_level(|_, level, _| {
-                assert_eq!(level.block_entity(at.pos), Some(entity));
-                assert_eq!(level.container_size(at), Some(27));
+                let read: &dyn mod_api::LevelHost = level;
+                assert_eq!(read.block_entity(at.pos), Some(entity));
+                assert_eq!(read.container_size(at), Some(27));
                 for slot in 0..27 {
-                    assert!(level.container_stack(at, slot).is_none());
+                    assert!(read.with_container_stack(at, slot, |_| ()).is_none());
                 }
-                assert!(level.block_entity([32, 64, 8]).is_none());
+                assert!(read.block_entity([32, 64, 8]).is_none());
                 let unloaded = mod_api::BlockSide {
                     pos: [32, 64, 8],
                     ..at
                 };
-                assert_eq!(level.container_size(unloaded), None);
-                assert!(level.container_stack(unloaded, 0).is_none());
+                assert_eq!(read.container_size(unloaded), None);
+                assert!(read.with_container_stack(unloaded, 0, |_| ()).is_none());
                 assert_eq!(level.container_signal(unloaded.pos), None);
             });
             pending_seed(game, POS, &[37]);
@@ -77,9 +78,10 @@ fn level_container_reads_preserve_snapshot_and_unpack_comparator_once() {
             };
             let local_entity = game.block_entity(client_level, at.pos).unwrap();
             game.with_level(|_, level, _| {
-                assert_eq!(level.block_entity(at.pos), Some(local_entity));
-                assert_eq!(level.container_size(at), None);
-                assert!(level.container_stack(at, 0).is_none());
+                let read: &dyn mod_api::LevelHost = level;
+                assert_eq!(read.block_entity(at.pos), Some(local_entity));
+                assert_eq!(read.container_size(at), None);
+                assert!(read.with_container_stack(at, 0, |_| ()).is_none());
                 assert_eq!(level.container_signal(at.pos), None);
             });
             assert!(!game.world.loaded(32, 8));
@@ -812,16 +814,11 @@ fn random_selection_streams() {
             seed,
         };
         let mut slots = vec![None; 27];
-        fill_with_random(
-            &pending,
-            &mut slots,
-            &loot,
-            random,
-            sequences,
-            123,
-            Default::default(),
-            |_| {},
-        );
+        if let Some((items, source)) =
+            roll_fill(&pending, &loot, random, sequences, 123, Default::default())
+        {
+            place_fill(items, &mut slots, &loot, source, random, sequences, 123);
+        }
         slots
             .iter()
             .enumerate()
@@ -931,7 +928,7 @@ impl mod_api::Hooks for FillListener {
     fn container_loot_filled(
         &self,
         _: &dyn mod_api::LevelHost,
-        event: &mut mod_api::ContainerLootFilledEvent<'_>,
+        event: &mut mod_api::ContainerLootFilledEvent<'_, '_>,
     ) {
         self.seen.lock().unwrap().push((
             event.context.table.into(),
@@ -953,9 +950,10 @@ impl mod_api::Hooks for FillListener {
         if self.mode == 3 {
             event.drops.clear();
             let key = mod_api::__private::item_key("minecraft:diamond").unwrap();
-            event
-                .drops
-                .extend((0..30).map(|_| mod_api::ItemStack::new(key, 1).unwrap()));
+            let stack = mod_api::ItemStack::new(key, 1).unwrap();
+            for _ in 0..30 {
+                event.drops.push(stack.clone()).unwrap();
+            }
         } else if self.mode != 0 {
             event.drops.clear();
             let id = if self.mode == 1 {
@@ -964,9 +962,8 @@ impl mod_api::Hooks for FillListener {
                 "minecraft:diamond"
             };
             let key = mod_api::__private::item_key(id).unwrap();
-            event
-                .drops
-                .push(mod_api::ItemStack::new(key, if self.mode == 1 { 3 } else { 100 }).unwrap());
+            let stack = mod_api::ItemStack::new(key, if self.mode == 1 { 3 } else { 100 }).unwrap();
+            event.drops.push(stack).unwrap();
         }
     }
 }
@@ -1231,7 +1228,7 @@ impl mod_api::Hooks for DurableStickListener {
     fn container_loot_filled(
         &self,
         _: &dyn mod_api::LevelHost,
-        event: &mut mod_api::ContainerLootFilledEvent<'_>,
+        event: &mut mod_api::ContainerLootFilledEvent<'_, '_>,
     ) {
         let key = mod_api::__private::item_key("minecraft:stick").unwrap();
         let mut stick = mod_api::ItemStack::new(key, 1).unwrap();
@@ -1246,7 +1243,7 @@ impl mod_api::Hooks for DurableStickListener {
             .unwrap();
         stick.set_damage(self.0);
         event.drops.clear();
-        event.drops.push(stick);
+        event.drops.push(stick).unwrap();
     }
 }
 

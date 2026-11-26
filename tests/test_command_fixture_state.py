@@ -7,6 +7,7 @@ chunks it newly forces (ForceLoadCommand.changeForceLoad). A group that keeps
 an objective or a forced chunk moves those numbers for every later group, and
 parity-main then stops on "Java fixture control failed" (#9587).
 """
+import re
 import unittest
 
 from tools import command_exec_corpus as corpus
@@ -16,6 +17,10 @@ from tools import command_exec_corpus as corpus
 WORLD_RULES = {'block_drops': 'true', 'fire_spread_radius_around_player': '128',
                'keep_inventory': 'false', 'mob_griefing': 'true', 'random_tick_speed': '3',
                'tnt_explodes': 'true', 'tick_freeze': 'off'}
+
+
+# An auto command block the fixture places runs this itself: `/forceload remove <x z>` with no slash.
+COMMAND_BLOCK_UNFORCE = re.compile(r'command_block\{[^}]*Command:"forceload remove (-?\d+ -?\d+)"')
 
 
 def forced_chunks(words):
@@ -58,6 +63,8 @@ class CommandFixtureStateTests(unittest.TestCase):
                     forced.clear()
                 elif words[:2] == ['/forceload', 'remove']:
                     forced -= forced_chunks(words)
+                elif words[:1] == ['/setblock'] and (run := COMMAND_BLOCK_UNFORCE.search(op['cmd'])):
+                    forced -= forced_chunks(['/forceload', 'remove', *run.group(1).split()])
             with self.subTest(group=group):
                 self.assertEqual(set(), objectives, 'the group must remove its scoreboard objectives')
 

@@ -120,8 +120,7 @@ fn raw_hub(
 
 fn publish_raw(hub: &Hub, bytes: Vec<u8>) {
     let guest = &hub.guests[0];
-    let delivery =
-        crate::raw_payloads::test_support::delivery(guest.conn, guest.sender.clone(), bytes);
+    let delivery = crate::lan::payload_probe::delivery(guest.conn, guest.sender.clone(), bytes);
     hub.lan
         .shared
         .events

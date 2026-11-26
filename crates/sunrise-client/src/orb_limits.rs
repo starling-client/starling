@@ -1,14 +1,9 @@
-//! What an experience orb's saved form can hold.
+//! Limits on experience orb state enforced by vanilla's own types and codecs.
 //!
-//! `entity_nbt` writes `Value` as an NBT short and `Count` as an int, so an orb whose
-//! `value` or `count` is outside these ranges would reload as a different total. The
-//! mod API's `set_experience_orb` refuses such a write at the owning boundary, and the
-//! merge refuses a count it cannot save instead of saturating it.
+//! Vanilla's `ExperienceOrb.count` uses `ExtraCodecs.POSITIVE_INT` (`1..=i32::MAX`).
+//! Live `ExperienceOrb.DATA_VALUE` (`SynchedEntityData<Integer>`) and `ExperienceOrb.age`
+//! (Java `int`) hold full `i32` values; only `ExperienceOrb.addAdditionalSaveData`
+//! (`entity_nbt::orb_to_nbt`) truncates `Value` and `Age` to `(short)` at serialization.
 
-/// The most orbs one orb can count: `Count` is saved as an `i32`.
+/// The most orbs one orb can count (`ExperienceOrb.count`, `ExtraCodecs.POSITIVE_INT`: `1..=i32::MAX`).
 pub const MAX_COUNT: u32 = i32::MAX as u32;
-
-/// Whether `value` survives a save: `Value` is saved as an `i16`.
-pub fn value_fits(value: i32) -> bool {
-    i16::try_from(value).is_ok()
-}

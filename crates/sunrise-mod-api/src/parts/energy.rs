@@ -40,22 +40,32 @@ pub mod tests {
         fn capacity(&self, host: &mut dyn ServerHost) -> u32 {
             crate::backend_of(host).map_or(0, |backend| backend.energy_capacity(self.at))
         }
-        fn insert(&self, host: &mut dyn ServerHost, tx: &Transaction, amount: u32) -> u32 {
+        fn insert(
+            &self,
+            host: &mut dyn ServerHost,
+            tx: &TransactionContext,
+            amount: u32,
+        ) -> Result<u32, TransactionError<Overanswered>> {
             let went = crate::backend_mut_of(host)
                 .map_or(0, |backend| backend.energy_insert(self.at, amount, tx));
-            match self.lie {
+            Ok(match self.lie {
                 Lie::TakesMore => went + 100,
                 Lie::GivesMore => went,
-            }
+            })
         }
-        fn extract(&self, host: &mut dyn ServerHost, tx: &Transaction, amount: u32) -> u32 {
+        fn extract(
+            &self,
+            host: &mut dyn ServerHost,
+            tx: &TransactionContext,
+            amount: u32,
+        ) -> Result<u32, TransactionError<Overanswered>> {
             let more = match self.lie {
                 Lie::GivesMore => 100,
                 Lie::TakesMore => 0,
             };
-            crate::backend_mut_of(host).map_or(0, |backend| {
+            Ok(crate::backend_mut_of(host).map_or(0, |backend| {
                 backend.energy_extract(self.at, amount + more, tx)
-            })
+            }))
         }
     }
 
@@ -110,8 +120,10 @@ pub mod tests {
             let owner = "doubler".to_owned();
             assert_eq!(
                 moved,
-                Err(mod_vocab::__private::parts_installation::overanswered(
-                    owner
+                Err(crate::TransactionError::Aborted(
+                    crate::TransactionError::Aborted(
+                        mod_vocab::__private::parts_installation::overanswered(owner)
+                    )
                 )),
                 "{liar}"
             );

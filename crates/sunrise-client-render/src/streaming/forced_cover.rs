@@ -20,6 +20,10 @@ impl ForcedCover {
     /// Past this many forced chunks the distance map is not made (it holds up to
     /// `(2 * REACH + 1)^2` entries a forced chunk): the tiles answer.
     const MOST: usize = 4096;
+    /// Whether this cover already reflects `forced`.
+    pub(super) fn matches(&self, forced: &HashSet<(i32, i32)>) -> bool {
+        self.forced == *forced
+    }
     pub(super) fn refresh(cover: &mut Option<Self>, forced: &HashSet<(i32, i32)>) {
         if cover.as_ref().is_some_and(|c| c.forced == *forced) {
             return;
@@ -176,6 +180,7 @@ mod tests {
                 cover: None,
                 forced_cover,
                 band: None,
+                async_requests: None,
             };
             let (scan, map) = (ranges(None), ranges(Some(made)));
             let span = spread + 10;
@@ -258,6 +263,7 @@ mod tests {
                     cover: None,
                     forced_cover,
                     band: None,
+                    async_requests: None,
                 };
                 let map = ranges(Some(made));
                 // Keep every sampled column and reach; reuse its nearest forced chunk below.
@@ -346,6 +352,7 @@ mod tests {
                     cover: None,
                     forced_cover,
                     band: None,
+                    async_requests: None,
                 };
                 let spread = forced
                     .iter()

@@ -323,10 +323,12 @@ impl Game<'_> {
         if let Some((holder, player)) = found {
             // The boat is out of the list while it ticks: its own knot is
             // made here, not found by `lead_fences`.
-            if let Holder::Knot(fence) = holder {
+            b.leash_knot_id = if let Holder::Knot(fence) = holder {
                 self.forget_untied_knots();
-                self.tie_knot(fence);
-            }
+                Some(self.tie_knot(fence))
+            } else {
+                None
+            };
             b.leash = Some(holder);
             b.leash_player = player;
             b.leash_pending = None;
@@ -428,6 +430,10 @@ impl Game<'_> {
     /// sneak click on a mob, `LeadItem.bindPlayerMobs`, the knot's
     /// `interact`), the ones in reach of `at`. Whether any did.
     pub(super) fn tie_player_boats(&mut self, at: glam::DVec3, to: Holder) -> bool {
+        let knot_id = match to {
+            Holder::Knot(fence) => self.knot_ids.get(&fence).copied(),
+            _ => None,
+        };
         let mut any = false;
         for i in self.player_led_boats(at) {
             // Leashable.setLeashedTo: `this != holder`.
@@ -435,8 +441,11 @@ impl Game<'_> {
                 continue;
             }
             if self.boat_can_attach(i, at) {
-                self.boats.update(i, |b| b.leash = Some(to));
-                self.boats.update(i, |b| b.leash_player = None);
+                self.boats.update(i, |b| {
+                    b.leash = Some(to);
+                    b.leash_knot_id = knot_id;
+                    b.leash_player = None;
+                });
                 any = true;
             }
         }
@@ -489,7 +498,7 @@ impl Game<'_> {
         }
         // Entity.shearOffAllLeashConnections: its own lead and every one
         // hanging on it.
-        if item.as_deref() == Some("minecraft:shears") {
+        if self.held_shears(super::item_abilities::ability::SHEARS_HARVEST) {
             let held_mobs: Vec<u32> = self
                 .mobs
                 .iter()
@@ -506,8 +515,7 @@ impl Game<'_> {
                 }
                 self.drop_boat_leashes(&held_boats);
                 self.lead_game_event("minecraft:shear", at);
-                self.audio
-                    .play("minecraft:item.shears.snip", Some(at), 1.0, 1.0);
+                self.play_audio("minecraft:item.shears.snip", Some(at), 1.0, 1.0);
                 self.damage_held_tool();
                 return true;
             }

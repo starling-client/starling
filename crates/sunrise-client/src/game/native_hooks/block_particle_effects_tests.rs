@@ -1,4 +1,3 @@
-#![cfg(test)]
 use crate::game::{
     Game,
     execution_role::ExecutionRole,
@@ -40,12 +39,22 @@ impl BlockPart for Effects {
         if id != "minecraft:glass" {
             return Flow::Continue;
         }
+        use std::ops::ControlFlow;
+        let mut boxes = Vec::new();
         assert_eq!(
-            event
-                .level
-                .block_shape(&*host, event.state, [8, 64, 4], BlockShapeKind::Outline),
-            Some(vec![[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]])
+            event.level.visit_block_shape(
+                &*host,
+                event.state,
+                [8, 64, 4],
+                BlockShapeKind::Outline,
+                &mut |bounds| {
+                    boxes.push(bounds);
+                    ControlFlow::Continue(())
+                }
+            ),
+            Some(ControlFlow::Continue(()))
         );
+        assert_eq!(boxes, [[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]]);
         event.random.next_int();
         assert_eq!(
             event

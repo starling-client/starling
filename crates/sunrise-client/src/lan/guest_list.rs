@@ -12,6 +12,9 @@ pub struct GuestList {
     simulation: Vec<usize>,
     connections: FxHashMap<u32, usize>,
     identities: FxHashMap<(u128, u32), usize>,
+    /// Block positions currently viewed through an open block-backed mod menu, mapped to row
+    /// indexes in join order so external container writes can skip unviewed blocks in O(1).
+    block_mod_menus: FxHashMap<crate::block_entities::Pos, Vec<usize>>,
     residency: Option<(
         crate::join_seq::residency::Journal,
         fn(&str) -> mod_api::DimensionKey,
@@ -70,6 +73,7 @@ impl GuestList {
     /// not scan the collection or rebuild its indexes.
     pub fn update<T>(&mut self, index: usize, update: impl FnOnce(&mut Guest) -> T) -> T {
         let before = index_fields(&self.rows[index]);
+        let before_block_menu = block_mod_menu_pos(&self.rows[index]);
         let registration = self.rows[index].attachments.registration();
         let dimension = self
             .residency
@@ -81,6 +85,7 @@ impl GuestList {
             list: self,
             index,
             before,
+            before_block_menu,
             registration,
             dimension,
             released,
@@ -97,6 +102,22 @@ impl GuestList {
     ) -> Option<T> {
         let index = self.connection_index(conn)?;
         Some(self.update(index, update))
+    }
+
+    /// Move the inventory fields of a suspended guest between their own row and
+    /// the inner turn that is borrowing them. No indexed fields change.
+    pub fn swap_loaned_inventory(&mut self, guest: usize, inner: usize) {
+        let [g, i] = self
+            .rows
+            .get_disjoint_mut([guest, inner])
+            .expect("different guest turns");
+        std::mem::swap(&mut g.inventory, &mut i.inventory);
+        std::mem::swap(&mut g.armor, &mut i.armor);
+        std::mem::swap(&mut g.location_armor, &mut i.location_armor);
+        std::mem::swap(&mut g.offhand, &mut i.offhand);
+        std::mem::swap(&mut g.equipment, &mut i.equipment);
+        std::mem::swap(&mut g.carried, &mut i.carried);
+        std::mem::swap(&mut g.ender_items, &mut i.ender_items);
     }
 
     /// Edit rows in join order, through the same bounded mutation scope.
@@ -148,12 +169,13 @@ impl GuestList {
             if g.attachments.has_index_entries() {
                 player_attachments.insert(g.entity_id, (g.uuid, &*g.attachments));
             }
-            let (chunks, sources, tracker, out, moved) = if is_visible {
+            let (chunks, sources, far, tracker, out, moved) = if is_visible {
                 let Some(out) = outputs.next() else {
                     continue;
                 };
                 let moved = take_moved && std::mem::take(&mut g.moved);
-                (&g.sent_chunks, None, &mut g.tracker, out, moved)
+                let far = &g.viewed.own.sources[..];
+                (&g.sent_chunks, None, far, &mut g.tracker, out, moved)
             } else if viewing && tracks_view(g, dimension) {
                 let (Some(out), Some(view)) = (views.next(), g.viewed.views.get_mut(dimension))
                 else {
@@ -163,6 +185,7 @@ impl GuestList {
                 (
                     &view.sent,
                     Some(&view.sources[..]),
+                    &[][..],
                     &mut view.tracker,
                     out,
                     true,
@@ -182,6 +205,7 @@ impl GuestList {
                 view_distance: g.view_distance,
                 chunks,
                 sources,
+                far,
                 tracker,
                 out,
             });
@@ -268,6 +292,26 @@ impl GuestList {
     pub fn identity_index(&self, uuid: u128, entity: u32) -> Option<usize> {
         self.identities.get(&(uuid, entity)).copied()
     }
+    /// Row indexes (in join order) of guests currently viewing a block-backed mod menu at `pos`.
+    pub fn block_mod_menu_viewers(&self, pos: crate::block_entities::Pos) -> &[usize] {
+        self.block_mod_menus.get(&pos).map_or(&[], Vec::as_slice)
+    }
+    fn add_block_mod_menu(&mut self, pos: crate::block_entities::Pos, index: usize) {
+        let viewers = self.block_mod_menus.entry(pos).or_default();
+        if let Err(at) = viewers.binary_search(&index) {
+            viewers.insert(at, index);
+        }
+    }
+    fn remove_block_mod_menu(&mut self, pos: crate::block_entities::Pos, index: usize) {
+        if let Some(viewers) = self.block_mod_menus.get_mut(&pos) {
+            if let Ok(at) = viewers.binary_search(&index) {
+                viewers.remove(at);
+            }
+            if viewers.is_empty() {
+                self.block_mod_menus.remove(&pos);
+            }
+        }
+    }
     /// Material player bodies in join order, without visiting connectionless actors.
     pub fn simulation_iter(&self) -> impl Iterator<Item = &Guest> {
         self.simulation_indexed_iter().map(|(_, guest)| guest)
@@ -289,6 +333,9 @@ impl GuestList {
             .or_insert(index);
         if guest.participates_in_player_simulation() {
             self.simulation.push(index);
+        }
+        if let Some(pos) = block_mod_menu_pos(&guest) {
+            self.block_mod_menus.entry(pos).or_default().push(index);
         }
         self.rows.push(guest);
         if !self.bind_guest(index) {
@@ -345,6 +392,7 @@ impl GuestList {
         self.simulation.clear();
         self.connections.clear();
         self.identities.clear();
+        self.block_mod_menus.clear();
     }
     pub fn reverse(&mut self) {
         self.rows.reverse();
@@ -354,6 +402,7 @@ impl GuestList {
         self.simulation.clear();
         self.connections.clear();
         self.identities.clear();
+        self.block_mod_menus.clear();
         for (index, guest) in self.rows.iter().enumerate() {
             if guest.participates_in_player_simulation() {
                 self.simulation.push(index);
@@ -362,6 +411,9 @@ impl GuestList {
             self.identities
                 .entry((guest.uuid, guest.entity_id as u32))
                 .or_insert(index);
+            if let Some(pos) = block_mod_menu_pos(guest) {
+                self.block_mod_menus.entry(pos).or_default().push(index);
+            }
         }
     }
 }
@@ -395,6 +447,7 @@ struct Edit<'a> {
     list: &'a mut GuestList,
     index: usize,
     before: (u32, u128, i32, bool),
+    before_block_menu: Option<crate::block_entities::Pos>,
     registration: Option<sunrise_mod_runtime::attachments::AttachmentRegistration>,
     dimension: Option<mod_api::DimensionKey>,
     released: bool,
@@ -408,6 +461,14 @@ fn index_fields(guest: &Guest) -> (u32, u128, i32, bool) {
         guest.participates_in_player_simulation(),
     )
 }
+fn block_mod_menu_pos(guest: &Guest) -> Option<crate::block_entities::Pos> {
+    let open = guest.menu.as_ref()?;
+    open.mod_type?;
+    match open.slots {
+        super::menu::Slots::Block(pos) => Some(pos),
+        _ => None,
+    }
+}
 impl Drop for Edit<'_> {
     fn drop(&mut self) {
         if let Some(old) = &self.registration
@@ -419,6 +480,7 @@ impl Drop for Edit<'_> {
             old.unregister();
         }
         let after = index_fields(&self.list.rows[self.index]);
+        let after_block_menu = block_mod_menu_pos(&self.list.rows[self.index]);
         let identity_changed =
             (after.0, after.1, after.2) != (self.before.0, self.before.1, self.before.2);
         if (after.0, after.1) != (self.before.0, self.before.1)
@@ -448,6 +510,13 @@ impl Drop for Edit<'_> {
         }
         if after != self.before {
             self.list.reindex();
+        } else if after_block_menu != self.before_block_menu {
+            if let Some(old_pos) = self.before_block_menu {
+                self.list.remove_block_mod_menu(old_pos, self.index);
+            }
+            if let Some(new_pos) = after_block_menu {
+                self.list.add_block_mod_menu(new_pos, self.index);
+            }
         }
     }
 }
@@ -491,7 +560,7 @@ mod tests {
             default: || 0,
             codec: None,
             copy_on_death: false,
-            sync: false,
+            sync_codec: None,
         };
 
     #[test]
@@ -922,5 +991,157 @@ mod tests {
         list.update_all(|row| row.position[0] += 1.0);
         assert!(list.iter().all(|row| row.position[0] == 1.0));
         assert_eq!(list.connection_index(1), Some(1));
+    }
+
+    #[test]
+    fn block_mod_menu_index_tracks_open_close_rebind_leave_and_unwind() {
+        use super::super::menu::{Menu, Slots};
+        use crate::containers::ModMenuType;
+
+        let layout: &'static ModMenuType = Box::leak(Box::new(ModMenuType {
+            id: "guest_test:machine",
+            owner: "guest_test",
+            slots: 3,
+            player_inventory: true,
+            data_slots: 0,
+            owned_slots: None,
+            results: vec![2],
+            inputs: vec![0, 1],
+            crafting: None,
+            links: None,
+        }));
+        let block_menu = |pos: crate::block_entities::Pos| Menu {
+            window: 1,
+            kind: 0,
+            registry_id: layout.id.into(),
+            pos: Some(pos),
+            slots: Slots::Block(pos),
+            size: layout.slots,
+            state: 0,
+            sent: Vec::new(),
+            drag: None,
+            sent_data: Vec::new(),
+            reported_unsent_data_len: None,
+            blockless_data: Vec::new(),
+            mod_type: Some(layout),
+            craft: None,
+            links: Vec::new(),
+            asks_still_valid: false,
+            opener_block: None,
+            opening_item: None,
+            removed: false,
+            slot_changed_seen: None,
+        };
+        let owned_menu = || Menu {
+            window: 2,
+            kind: 0,
+            registry_id: layout.id.into(),
+            pos: None,
+            slots: Slots::Native,
+            size: layout.slots,
+            state: 0,
+            sent: Vec::new(),
+            drag: None,
+            sent_data: Vec::new(),
+            reported_unsent_data_len: None,
+            blockless_data: Vec::new(),
+            mod_type: Some(layout),
+            craft: None,
+            links: Vec::new(),
+            asks_still_valid: false,
+            opener_block: None,
+            opening_item: None,
+            removed: false,
+            slot_changed_seen: None,
+        };
+
+        let pos_a = (4, 64, -2);
+        let pos_b = (9, 64, 1);
+        let mut list = GuestList::default();
+        let mut g1 = guest(1);
+        g1.menu = Some(block_menu(pos_a));
+        list.push(g1);
+        list.push(guest(2));
+        list.push(guest(3));
+        assert_eq!(list.block_mod_menu_viewers(pos_a), &[0]);
+        assert!(list.block_mod_menu_viewers(pos_b).is_empty());
+
+        // Second viewer opens the same block; third opens a blockless owned menu (not indexed).
+        list.update(2, |g| g.menu = Some(block_menu(pos_a)));
+        list.update(1, |g| g.menu = Some(owned_menu()));
+        assert_eq!(list.block_mod_menu_viewers(pos_a), &[0, 2]);
+
+        // Rebind viewer 0 to pos_b; old entry retains only viewer 2.
+        list.update(0, |g| g.menu = Some(block_menu(pos_b)));
+        assert_eq!(list.block_mod_menu_viewers(pos_a), &[2]);
+        assert_eq!(list.block_mod_menu_viewers(pos_b), &[0]);
+
+        // Closing viewer 2 removes pos_a completely.
+        list.update(2, |g| g.menu = None);
+        assert!(list.block_mod_menu_viewers(pos_a).is_empty());
+
+        // Panic unwind inside update still repairs the index.
+        let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            list.update(0, |g| {
+                g.menu = Some(block_menu(pos_a));
+                panic!("unwind menu update");
+            });
+        }));
+        assert!(failed.is_err());
+        assert_eq!(list.block_mod_menu_viewers(pos_a), &[0]);
+        assert!(list.block_mod_menu_viewers(pos_b).is_empty());
+
+        // Removing a guest shifts row indexes and clears removed viewer entries.
+        list.update(2, |g| g.menu = Some(block_menu(pos_b)));
+        list.remove(0);
+        assert!(list.block_mod_menu_viewers(pos_a).is_empty());
+        assert_eq!(list.block_mod_menu_viewers(pos_b), &[1]);
+
+        list.clear();
+        assert!(list.block_mod_menu_viewers(pos_b).is_empty());
+    }
+
+    #[test]
+    fn swap_loaned_inventory_includes_ender_items() {
+        use crate::items::ItemStack;
+
+        let mut list = GuestList::default();
+        let mut outer = guest(1);
+        outer.inventory[0] = Some(ItemStack::new("minecraft:dirt", 1));
+        outer.ender_items[0] = Some(ItemStack::new("minecraft:diamond", 2));
+        let mut inner = guest(2);
+        inner.inventory[0] = Some(ItemStack::new("minecraft:stone", 3));
+        inner.ender_items[0] = Some(ItemStack::new("minecraft:emerald", 4));
+        list.push(outer);
+        list.push(inner);
+
+        list.swap_loaned_inventory(0, 1);
+        assert_eq!(
+            list[0].inventory[0],
+            Some(ItemStack::new("minecraft:stone", 3))
+        );
+        assert_eq!(
+            list[0].ender_items[0],
+            Some(ItemStack::new("minecraft:emerald", 4))
+        );
+        assert_eq!(
+            list[1].inventory[0],
+            Some(ItemStack::new("minecraft:dirt", 1))
+        );
+        assert_eq!(
+            list[1].ender_items[0],
+            Some(ItemStack::new("minecraft:diamond", 2))
+        );
+        check(&list);
+
+        list.swap_loaned_inventory(0, 1);
+        assert_eq!(
+            list[0].ender_items[0],
+            Some(ItemStack::new("minecraft:diamond", 2))
+        );
+        assert_eq!(
+            list[1].ender_items[0],
+            Some(ItemStack::new("minecraft:emerald", 4))
+        );
     }
 }

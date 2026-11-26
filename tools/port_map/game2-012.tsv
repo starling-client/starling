@@ -62,7 +62,7 @@ CampfireBlock.entityInside	port	crates/sunrise-client/src/motion.rs::MotionWorld
 CampfireBlock.getStateForPlacement	port	crates/sunrise-world/src/level/place.rs::Sim::placement_class	Waterlogged, lit, signal fire from hay below, facing from the player.
 CampfireBlock.updateShape	port	crates/sunrise-world/src/level/shapes.rs::Sim::update_shape_class	Waterlogged tick and signal fire from the block below.
 CampfireBlock.placeLiquid	port	crates/sunrise-world/src/level/fluids.rs::Sim::place_liquid	Water puts it out with the extinguish sound and sets waterlogged.
-CampfireBlock.onProjectileHit	port	crates/sunrise-client/src/arrows.rs::Ticker::block_reaction	a burning arrow lights an unlit, dry campfire
+CampfireBlock.onProjectileHit	port	crates/sunrise-client/src/entities/arrows/flight.rs::Ticker::block_reaction	a burning arrow lights an unlit, dry campfire
 CampfireBlock.getFluidState	port	crates/sunrise-world/src/level/mod.rs::Behaviours::fluid	Waterlogged fluid is read from per-state facts.
 CampfireBlock.rotate	skip:data		Rotation is a precomputed table from extracted data.
 CampfireBlock.createBlockStateDefinition	skip:data		Block state properties come from extracted data.

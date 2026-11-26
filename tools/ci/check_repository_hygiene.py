@@ -7,13 +7,15 @@ Uses the pinned, checksummed offline parser under tools/ci/vendor/.
 """
 
 import argparse
-import hashlib
 import io
 import os
 import re
 import subprocess
 import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from tools.ci import vendored_yaml
 
 PATTERNS = (
     r"Showing lines [0-9]+-[0-9]+ of [0-9]+",
@@ -39,19 +41,13 @@ def check(revision=None):
               file=sys.stderr)
         sys.stderr.write(matches.stdout.decode("utf-8", errors="replace"))
 
-    # The same offline parser serves CI and hooks; never fall back to site packages.
-    archive = Path(__file__).resolve().parent / "vendor/pyyaml-6.0.3.zip"
+    # The same offline parser serves CI and hooks; never fall back to site packages. This is the boundary that
+    # reports a missing or changed archive as a failed check rather than a traceback.
     try:
-        parser_bytes = archive.read_bytes()
+        yaml = vendored_yaml.load()
     except OSError as error:
         print(f"repository hygiene: missing vendored YAML parser: {error}", file=sys.stderr)
         return 1
-    if hashlib.sha256(parser_bytes).hexdigest() != "94ac21b4343e15647b3b5b5bd594aab5b7d3cd8d2ce17db15acb7260d489b6fc":
-        print("repository hygiene: vendored YAML parser checksum mismatch", file=sys.stderr)
-        return 1
-    sys.path.insert(0, str(archive))
-    try:
-        import yaml
     except ImportError as error:
         print(f"repository hygiene: cannot load vendored YAML parser: {error}", file=sys.stderr)
         return 1
@@ -76,12 +72,12 @@ def check(revision=None):
         except (yaml.YAMLError, UnicodeError, OSError) as error:
             mark = getattr(error, "problem_mark", None)
             line = mark.line + 1 if mark is not None else 1
-            print(f"repository hygiene: {path}:{line}: invalid workflow YAML: {error}",
+            print(f"repository hygiene: {path.as_posix()}:{line}: invalid workflow YAML: {error}",
                   file=sys.stderr)
             failed = True
             continue
         if not isinstance(document, dict):
-            print(f"repository hygiene: {path}:1: workflow must be a YAML mapping", file=sys.stderr)
+            print(f"repository hygiene: {path.as_posix()}:1: workflow must be a YAML mapping", file=sys.stderr)
             failed = True
     return int(failed)
 

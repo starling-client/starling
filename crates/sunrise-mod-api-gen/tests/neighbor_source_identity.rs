@@ -164,7 +164,7 @@ mod game {
     pub(super) struct GameLevel<'a> { behaviours: &'a Behaviours, native_authoritative: bool, dimension: LevelDimension }
     impl GameLevel<'_> {
         /* METHOD */
-        fn native_neighbor_changed(&self, _: &mut Ticks, dimension: LevelDimension, pos: BlockPos, state: BlockStateId, changed: BlockKey, moved: bool) {
+        fn native_neighbor_changed(&mut self, _: &mut Ticks, dimension: LevelDimension, pos: BlockPos, state: BlockStateId, changed: BlockKey, moved: bool) {
             CALLS.with_borrow_mut(|calls| calls.push((dimension, pos, state, changed, moved)));
         }
     }

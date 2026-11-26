@@ -16,10 +16,12 @@ the saved compound are compared.
 import argparse
 import json
 import random
-try:
-    from . import interaction_lab as lib
-except ImportError:
-    import interaction_lab as lib
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import interaction_lab as lib
 
 TYPES = ['CRAFTING', 'FURNACE', 'BLAST_FURNACE', 'SMOKER']
 

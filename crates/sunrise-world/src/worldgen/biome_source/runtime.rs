@@ -25,7 +25,7 @@ pub enum BiomeSourceError {
     Sample(SampleError),
     Regions(RegionError),
     MissingPreset,
-    /// A mod's biome source that is gone or no longer fits the world's biomes.
+    /// A registered source failed at a cell.
     Registered(String),
 }
 impl std::fmt::Display for BiomeSourceError {
@@ -102,13 +102,12 @@ impl BiomeSourceDefinition {
                     presets.get(name).ok_or(BiomeSourceError::MissingPreset)?,
                 )?)
             }
-            Self::Registered(id) => ResolvedBiomeSource::Registered(
-                LevelBiomeSource::resolve(id, mod_biome_sources(), seed, |name| {
-                    Some(name.to_owned())
-                })
-                .ok_or_else(|| BiomeSourceError::Registered(format!("unknown biome source {id}")))?
-                .map_err(BiomeSourceError::Registered)?,
-            ),
+            Self::Registered(id) => ResolvedBiomeSource::Registered(LevelBiomeSource::resolve(
+                id,
+                mod_biome_sources(),
+                seed,
+                |name| Some(name.to_owned()),
+            )?),
         })
     }
 }
@@ -192,7 +191,10 @@ impl<'a> BiomeSourceResolver<'a> {
             Self::End(source, erosion) => source.noise_biome(quart, *erosion, context)?.as_str(),
             Self::MultiNoise(source) => source.sample(context, quart)?,
             Self::Regions(source) => source.sample(context, quart)?,
-            Self::Registered(source) => source.noise_biome(quart).as_str(),
+            Self::Registered(source) => source
+                .noise_biome(quart)
+                .map_err(BiomeSourceError::Registered)?
+                .as_str(),
         })
     }
     /// Native fixed/checkerboard/End and registered sources do not pre-sample a climate volume.

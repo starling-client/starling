@@ -1,0 +1,9 @@
+id = "pipeline_bench"
+name = "Mod pipeline benchmark"
+version = "0.1.0"
+api = "0.2"
+side = "client"
+
+[native]
+game = "26.3"
+sunrise = "0000000000000000000000000000000000000000"

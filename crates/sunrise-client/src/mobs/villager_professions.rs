@@ -1,5 +1,9 @@
 //! The load-owned villager profession candidate and its vanilla seed.
 use super::NONE;
+/// `PoiTypeTags.ACQUIRABLE_JOB_SITE`.
+pub const ACQUIRABLE_JOB_SITE: &str = "minecraft:acquirable_job_site";
+/// `PoiTypeTags.BEE_HOME`.
+pub const BEE_HOME: &str = "minecraft:bee_home";
 /// Resolved profession metadata in the owning load.
 #[derive(Debug)]
 pub struct Profession {
@@ -22,10 +26,12 @@ pub struct Profession {
 #[derive(Debug)]
 pub struct ResolvedProfessions {
     entries: Vec<Profession>,
-    by_name: std::collections::HashMap<String, usize>,
+    by_name: std::collections::BTreeMap<String, usize>,
     custom_poi: std::collections::HashMap<String, usize>,
     by_poi: [Option<u8>; 13],
     pub pois: sunrise_world::poi::PoiSnapshot,
+    /// The bound `point_of_interest_type` tags (`PoiTypeTags`): tag id to POI ids.
+    pub poi_tags: std::collections::HashMap<String, std::collections::HashSet<String>>,
     pub workstation_pois: Vec<Option<sunrise_world::poi::PoiIdentity>>,
 }
 impl ResolvedProfessions {
@@ -92,13 +98,41 @@ impl ResolvedProfessions {
             by_name,
             custom_poi: Default::default(),
             pois: Default::default(),
+            poi_tags: Self::vanilla_poi_tags(),
             workstation_pois: Vec::new(),
         }
+    }
+    /// `PoiTypeTagsProvider`'s tags that gameplay reads, until a world binds its own.
+    fn vanilla_poi_tags() -> std::collections::HashMap<String, std::collections::HashSet<String>> {
+        use sunrise_world::poi::PoiType;
+        let ids = |keep: fn(&PoiType) -> bool| {
+            PoiType::ALL
+                .iter()
+                .filter(|poi| keep(poi))
+                .map(|poi| poi.id().to_owned())
+                .collect()
+        };
+        [
+            (ACQUIRABLE_JOB_SITE, ids(|poi| poi.is_job())),
+            (
+                BEE_HOME,
+                ids(|poi| matches!(poi, PoiType::Beehive | PoiType::BeeNest)),
+            ),
+        ]
+        .into_iter()
+        .map(|(tag, ids)| (tag.to_owned(), ids))
+        .collect()
+    }
+    /// `PoiType.is(TagKey)` for a POI of this table's snapshot.
+    pub fn poi_in_tag(&self, tag: &str, poi: sunrise_world::poi::PoiIdentity) -> bool {
+        self.pois
+            .name(poi)
+            .is_some_and(|name| self.poi_tags.get(tag).is_some_and(|ids| ids.contains(name)))
     }
     pub fn entries(&self) -> &[Profession] {
         &self.entries
     }
-    /// Canonical identities in this world's accepted profession table.
+    /// Canonical identities in this world's accepted profession table, in lexical order.
     pub fn registry_ids(&self) -> impl Iterator<Item = &str> {
         self.by_name.keys().map(String::as_str)
     }
@@ -124,7 +158,8 @@ impl ResolvedProfessions {
     }
     pub(in crate::mobs) fn acquirable(&self, index: u8, poi: sunrise_world::poi::PoiType) -> bool {
         if index == NONE {
-            poi.is_job()
+            // `VillagerProfession.ALL_ACQUIRABLE_JOBS`.
+            self.poi_in_tag(ACQUIRABLE_JOB_SITE, poi.into())
         } else {
             self.entries
                 .get(usize::from(index))
@@ -413,7 +448,7 @@ impl ResolvedProfessions {
             };
         }
         if index == 0 && !held {
-            return self.job(poi).is_some();
+            return self.poi_in_tag(ACQUIRABLE_JOB_SITE, poi);
         }
         let Some(entry) = self.entry(index) else {
             return false;

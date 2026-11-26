@@ -83,6 +83,9 @@ pub mod component {
     pub const ATTACK_RANGE: i32 = 30;
     pub const EQUIPPABLE: i32 = 32;
     pub const GLIDER: i32 = 34;
+    /// `Identifier.STREAM_CODEC`: the style whose `tooltip/<path>_background` and `_frame` sprites
+    /// the item's tooltip draws.
+    pub const TOOLTIP_STYLE: i32 = 35;
     /// `DeathProtection`: the `death_effects` a stack runs when it saves its holder.
     pub const DEATH_PROTECTION: i32 = 36;
     pub const BLOCKS_ATTACKS: i32 = 37;
@@ -398,7 +401,7 @@ impl Component {
             ENCHANTMENT_GLINT_OVERRIDE => Self::Bool(r.bool()?),
             CUSTOM_NAME | ITEM_NAME => Self::Text(r.nbt()?),
             CUSTOM_DATA => Self::Nbt(r.nbt()?),
-            ITEM_MODEL => Self::Ident(r.string(32767)?),
+            ITEM_MODEL | TOOLTIP_STYLE => Self::Ident(r.string(32767)?),
             LORE => {
                 let n = r.count(256)?;
                 Self::Lore((0..n).map(|_| r.nbt()).collect::<Result<_>>()?)

@@ -19,13 +19,15 @@ use mod_api::{
     RandomSource,
     content::crash::{ModCall, enter_native_mod},
 };
-use sunrise_core::geometry::Axis;
+use sunrise_core::geometry::{Axis, Vec3};
 use sunrise_core::random::RandomSource as EngineRandom;
 
 #[cfg(test)]
 mod interception_tests;
 mod live_backend;
 mod live_entity;
+#[cfg(test)]
+pub(super) use live_entity::test_goal_pick;
 mod live_living;
 mod live_merchant;
 mod live_mob;
@@ -258,6 +260,7 @@ impl GoalCx<'_, '_> {
         match self.resolve(entity)? {
             Resolved::Own if !self.m.removed => Some(self.m.body_yaw),
             Resolved::Live(mob) => Some(mob.body_yaw),
+            Resolved::Player | Resolved::Dragon(_) => entity.body_yaw(self.host),
             _ => None,
         }
     }
@@ -525,6 +528,31 @@ impl GoalCxBackend for GoalCx<'_, '_> {
         // handle writes it.
         self.m.ai.jump = true;
     }
+
+    fn delta_movement(&self) -> [f64; 3] {
+        let v = self.m.velocity;
+        [v.x, v.y, v.z]
+    }
+
+    fn set_delta_movement(&mut self, velocity: [f64; 3]) -> bool {
+        // `Entity.setDeltaMovement`: a vector that is not finite is not
+        // stored. No sync is forced: as for vanilla's goals, the tracker
+        // sends the motion on its own schedule.
+        if !velocity.iter().all(|v| v.is_finite()) {
+            return false;
+        }
+        let [x, y, z] = velocity;
+        self.m.velocity = Vec3::new(x, y, z);
+        true
+    }
+
+    fn add_delta_movement(&mut self, delta: [f64; 3]) -> bool {
+        // `Entity.addDeltaMovement`: a delta that is not finite is not
+        // added, and `setDeltaMovement` refuses a sum that overflows.
+        let v = self.m.velocity;
+        let sum = [v.x + delta[0], v.y + delta[1], v.z + delta[2]];
+        delta.iter().all(|d| d.is_finite()) && self.set_delta_movement(sum)
+    }
 }
 
 impl BehaviorCxBackend for GoalCx<'_, '_> {
@@ -612,11 +640,20 @@ impl mobs::part_goals::GoalHost for Game<'_> {
         self.merchant_read_lent(mob, |_, xp, level| (xp, level))
     }
 
-    fn player_passenger_seats(&self, vehicle: u32) -> Vec<(i64, u32)> {
-        self.seated_passengers(vehicle)
-            .into_iter()
-            .filter_map(|(order, id, player)| player.then_some((order, id)))
-            .collect()
+    fn visit_player_passenger_seats(
+        &self,
+        vehicle: u32,
+        visit: &mut dyn FnMut(i64, u32) -> bool,
+    ) -> bool {
+        self.any_player_passenger_seat(vehicle, visit)
+    }
+
+    fn next_passenger_seat(&self, vehicle: u32, after: Option<u32>) -> Option<u32> {
+        Game::next_passenger_seat(self, vehicle, after)
+    }
+
+    fn passenger_vehicle(&self, rider: u32) -> Option<u32> {
+        self.seated_passenger_vehicle(rider)
     }
 
     fn mob_dismount_location(
@@ -687,6 +724,10 @@ impl mobs::part_goals::GoalHost for Game<'_> {
     fn mob_in_other_level(&self, entity: EntityRef) -> bool {
         self.native_lifecycle.epoch() == Some(entity.epoch())
             && Game::mob_in_other_level(self, entity.id()).is_some()
+    }
+
+    fn living_last_hurt_record(&self, living: LivingRef) -> Option<(u32, i32)> {
+        Game::living_last_hurt_record(self, living)
     }
 
     fn mob_player_credit(&self, mob: &Mob) -> Option<Option<u32>> {

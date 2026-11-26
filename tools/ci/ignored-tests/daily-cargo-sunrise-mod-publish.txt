@@ -1,4 +1,0 @@
-cargo-sunrise-mod bad_version_or_checkout_leaves_destination_and_outside_files_unchanged test:publish daily child-process
-cargo-sunrise-mod check_command_accepts_an_update_without_shipping_history_or_the_icon_again test:publish daily child-process
-cargo-sunrise-mod output_replaces_file_symlinks_but_refuses_linked_directories test:publish daily child-process
-cargo-sunrise-mod signed_publish_stages_the_exact_prebuilt_package_with_the_checkout_key test:publish daily child-process

@@ -10,10 +10,11 @@ storage, saved light NBT and first-packet light masks and bytes when section sta
 import os
 from pathlib import Path
 
-try:
-    from . import lab, oracle_harness, test_rust_parity as base, test_model_baking_parity as baking
-except ImportError:
-    import lab, oracle_harness, test_rust_parity as base, test_model_baking_parity as baking
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, oracle_harness, test_rust_parity as base, test_model_baking_parity as baking
 
 
 def main():

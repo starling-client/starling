@@ -1,5 +1,4 @@
 //! The `is_valid_bonemeal_target` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0082
 
 pub trait Hooks {
     /// A block nothing in Sunrise knows a `BonemealableBlock` for is about to

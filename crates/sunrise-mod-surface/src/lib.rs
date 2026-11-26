@@ -69,28 +69,50 @@
 //! [`Surface::read`] refuses an unknown `schema` number and malformed or truncated JSON with a
 //! typed [`ReadError`], and ignores fields it does not know. It does not recompute record
 //! hashes: a newer writer may hash contract fields this reader does not know, and the file's
-//! integrity is the signature's job. [`Surface::unsealed`] does, for a release gate that judges a
+//! integrity is the signature's job. The one exception is a schema 2 document, whose method and
+//! function records it rehashes to schema 3's recipe, so a mod pinned to such a build compares
+//! with current ones. [`Surface::unsealed`] does, for a release gate that judges a
 //! newer writer's file with this reader.
 pub mod build_data;
+#[cfg(feature = "scan")]
 pub mod child;
+#[cfg(feature = "scan")]
 pub mod diff;
+#[cfg(feature = "scan")]
 mod legacy_hash;
+#[cfg(feature = "scan")]
 pub mod records;
+#[cfg(feature = "scan")]
 pub mod scan;
+#[cfg(feature = "scan")]
 pub mod shape;
+#[cfg(feature = "scan")]
 mod syntax;
+#[cfg(feature = "scan")]
 pub mod uses;
+#[cfg(not(feature = "scan"))]
+pub mod uses {
+    //! Minimal `uses.json` metadata compiled without the source scanner (`scan` feature).
+    pub use crate::uses_meta::{MAX_USES_BYTES, ManifestFacts, USES_FILE};
+}
+mod uses_meta;
 
+#[cfg(feature = "scan")]
 pub use diff::{Diff, Verdict, diff};
+#[cfg(feature = "scan")]
 pub use records::*;
+#[cfg(feature = "scan")]
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "scan")]
 use std::collections::{BTreeMap, BTreeSet};
 
 /// The schema this crate writes and reads. Adding a field does not change it; removing or
 /// redefining one does. Schema 3 records hash only the native contract.
+#[cfg(feature = "scan")]
 pub const SCHEMA: u32 = 3;
 
 /// The whole document.
+#[cfg(feature = "scan")]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Surface {
     pub schema: u32,
@@ -128,8 +150,10 @@ pub struct Surface {
 
 /// A document's top-level values, unread, refusing a key listed twice: a later value would hide
 /// an earlier one.
+#[cfg(feature = "scan")]
 struct TopLevel<'a>(BTreeMap<String, &'a serde_json::value::RawValue>);
 
+#[cfg(feature = "scan")]
 impl<'de> Deserialize<'de> for TopLevel<'de> {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         struct Keys;
@@ -158,6 +182,7 @@ impl<'de> Deserialize<'de> for TopLevel<'de> {
 
 /// A record of a list a newer writer added, as this reader knows it: its `id` and `hash` join the
 /// document hash.
+#[cfg(feature = "scan")]
 #[derive(Deserialize)]
 struct LaterRecord {
     id: String,
@@ -165,6 +190,7 @@ struct LaterRecord {
 }
 
 /// Why a document was refused.
+#[cfg(feature = "scan")]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReadError {
     /// Not JSON, truncated, or a field of the wrong type.
@@ -175,19 +201,26 @@ pub enum ReadError {
     DuplicateId(String),
 }
 
+#[cfg(feature = "scan")]
 impl std::fmt::Display for ReadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Json(error) => write!(f, "surface.json is not a valid surface: {error}"),
-            Self::Schema(schema) => write!(f, "surface schema {schema}, this tool reads {SCHEMA}"),
+            Self::Schema(schema) => write!(
+                f,
+                "surface schema {schema}, this tool reads {} and {SCHEMA}",
+                legacy_hash::OLD_RECIPE_SURFACE
+            ),
             Self::DuplicateId(id) => write!(f, "surface.json lists {id} twice"),
         }
     }
 }
 
+#[cfg(feature = "scan")]
 impl std::error::Error for ReadError {}
 
 /// First 128 bits of SHA-256, formatted as 32 lowercase hex digits.
+#[cfg(feature = "scan")]
 pub fn digest(text: &str) -> String {
     use sha2::{Digest, Sha256};
     use std::fmt::Write as _;
@@ -201,6 +234,7 @@ pub fn digest(text: &str) -> String {
 
 /// The contract hash of a record: the first 128 bits, as 32 lowercase hex digits, of the SHA-256
 /// of the contract's compact JSON (fields in declaration order, absent optional fields left out).
+#[cfg(feature = "scan")]
 pub fn contract_hash<T: Serialize>(contract: &T) -> String {
     let text = serde_json::to_string(contract).expect("contracts serialize");
     digest(&text)
@@ -208,6 +242,7 @@ pub fn contract_hash<T: Serialize>(contract: &T) -> String {
 
 /// The identifier a mod writes for an id: the last path segment, or the field or variant name.
 /// A capability's is its key; its constant is in [`Surface::identifiers`].
+#[cfg(feature = "scan")]
 pub fn leaf(id: &str) -> &str {
     let Some((kind, rest)) = id.split_once(':') else {
         return id;
@@ -223,6 +258,7 @@ pub fn leaf(id: &str) -> &str {
     }
 }
 
+#[cfg(feature = "scan")]
 macro_rules! sealed {
     ($($record:ident($contract:ty) { $($extra:ident),* }),* $(,)?) => {$(
         impl $record {
@@ -240,6 +276,7 @@ macro_rules! sealed {
     )*};
 }
 
+#[cfg(feature = "scan")]
 sealed!(
     Method(MethodContract) {},
     Function(FunctionContract) { paths },
@@ -250,6 +287,7 @@ sealed!(
     Associated(AssociatedContract) {},
 );
 
+#[cfg(feature = "scan")]
 impl Hook {
     /// The hook, hashed over what every listener relies on whatever arguments it reads; its
     /// arguments and output become member records.
@@ -326,6 +364,7 @@ impl Hook {
 
 /// Whether the normalised type `ty` names the item `id` by its full path: `a::Item` and
 /// `b::Item` are different items.
+#[cfg(feature = "scan")]
 fn names(ty: &str, id: &str) -> bool {
     let path = id.split_once(':').map_or(id, |(_, path)| path);
     ty.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == ':'))
@@ -335,6 +374,7 @@ fn names(ty: &str, id: &str) -> bool {
 /// The hash of a struct's field set: each public field's `name: type`, sorted. A literal or a
 /// pattern names fields in any order, so moving a field changes nothing; a tuple struct's
 /// field names are its positions, so moving one of its fields still changes the set.
+#[cfg(feature = "scan")]
 pub fn fields_hash(fields: &[Field]) -> String {
     fields_hash_of(
         fields
@@ -345,6 +385,7 @@ pub fn fields_hash(fields: &[Field]) -> String {
 
 /// [`fields_hash`] of `(name, type)` pairs: the exporter's, over every public field a literal
 /// must name, `#[doc(hidden)]` ones included.
+#[cfg(feature = "scan")]
 pub fn fields_hash_of<'a>(fields: impl IntoIterator<Item = (&'a str, &'a str)>) -> String {
     let mut lines: Vec<String> = fields
         .into_iter()
@@ -354,6 +395,7 @@ pub fn fields_hash_of<'a>(fields: impl IntoIterator<Item = (&'a str, &'a str)>) 
     digest(&lines.concat())
 }
 
+#[cfg(feature = "scan")]
 impl Trait {
     pub fn new(
         id: impl Into<String>,
@@ -386,6 +428,7 @@ impl Trait {
     }
 }
 
+#[cfg(feature = "scan")]
 impl Type {
     pub fn new(
         id: impl Into<String>,
@@ -425,6 +468,7 @@ impl Type {
     }
 }
 
+#[cfg(feature = "scan")]
 impl Behaviour {
     /// The behaviour, hashed over nothing but its existence: its `version` is compared on its
     /// own, and its `doc` and `tests` are outside the hash.
@@ -446,6 +490,7 @@ impl Behaviour {
     }
 }
 
+#[cfg(feature = "scan")]
 impl Part {
     pub fn new(
         id: impl Into<String>,
@@ -465,6 +510,7 @@ impl Part {
 
 /// Every id reached from `ids` along `refs` ([`Surface::refs`]), `ids` included. A caller that
 /// walks from many starts builds `refs` once.
+#[cfg(feature = "scan")]
 pub(crate) fn walk_refs<'a>(
     refs: &BTreeMap<&str, Vec<&str>>,
     ids: impl IntoIterator<Item = &'a str>,
@@ -484,6 +530,7 @@ pub(crate) fn walk_refs<'a>(
     out
 }
 
+#[cfg(feature = "scan")]
 impl Surface {
     /// The document: each list sorted by id, a trait's members by id, a type's fields and
     /// variants in declaration order, and its hash.
@@ -967,11 +1014,14 @@ impl Surface {
         }
         let header: Header =
             serde_json::from_slice(bytes).map_err(|e| ReadError::Json(e.to_string()))?;
-        if header.schema != SCHEMA {
+        if ![legacy_hash::OLD_RECIPE_SURFACE, SCHEMA].contains(&header.schema) {
             return Err(ReadError::Schema(header.schema));
         }
-        let surface: Self =
+        let mut surface: Self =
             serde_json::from_slice(bytes).map_err(|e| ReadError::Json(e.to_string()))?;
+        if surface.schema == legacy_hash::OLD_RECIPE_SURFACE {
+            legacy_hash::rehash(&mut surface);
+        }
         let mut seen = BTreeSet::new();
         for (id, _) in surface.entries_with_engine() {
             if !seen.insert(id) {
@@ -998,11 +1048,11 @@ impl Surface {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "scan"))]
 mod counterexamples_tests;
-#[cfg(test)]
+#[cfg(all(test, feature = "scan"))]
 mod scan_tests;
-#[cfg(test)]
+#[cfg(all(test, feature = "scan"))]
 mod tests;
-#[cfg(test)]
+#[cfg(all(test, feature = "scan"))]
 mod uses_tests;

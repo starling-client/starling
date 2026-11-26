@@ -1,5 +1,5 @@
 //! Read-back screenshots waiting for the game's client hook, then PNG encoding.
-use super::{Frame, GpuChecks, Renderer, Result, hdr_icc};
+use super::{Frame, GpuChecks, Renderer, Result, hdr_icc, world_primitives};
 use std::path::{Path, PathBuf};
 
 /// CPU-side frame returned to the game before any screenshot file is written.
@@ -23,6 +23,10 @@ pub struct SavedScreenshot {
 }
 
 type SaveOutcome = (PathBuf, std::result::Result<[u32; 2], String>);
+
+pub(super) fn screenshot_world_scale(scale: f32) -> f32 {
+    scale / scale.max(1.0)
+}
 
 impl Renderer {
     /// The frame size of the pending `scaled` screenshot when it is larger than the
@@ -49,7 +53,12 @@ impl Renderer {
     /// every pass sizes itself by `config`, which says `size` for this frame, the HUD
     /// keeps its layout at a larger scale, and the world is drawn at `size` (a Resolution
     /// Scale below 100% stays as low). The window keeps its last frame.
-    pub(super) fn draw_scaled_frame(&mut self, frame: &Frame, size: [u32; 2]) -> Result<bool> {
+    pub(super) fn draw_scaled_frame(
+        &mut self,
+        frame: &Frame,
+        size: [u32; 2],
+        hooks: Option<&mut dyn world_primitives::FrameHooks>,
+    ) -> Result<bool> {
         let window = [self.config.width, self.config.height];
         let mut config = self.config.clone();
         [config.width, config.height] = size;
@@ -82,7 +91,7 @@ impl Renderer {
             return Ok(false);
         }
         let scale = self.world_post.scale;
-        self.world_post.scale = scale / scale.max(1.0);
+        self.world_post.scale = screenshot_world_scale(scale);
         self.hud.zoom = size[0] as f32 / window[0] as f32;
         [self.config.width, self.config.height] = size;
         // Frame generation's present thread shows the window's frames, not this one: it stops,
@@ -93,7 +102,7 @@ impl Renderer {
         let offscreen = std::mem::replace(&mut self.offscreen, target);
         let window_depth = std::mem::replace(&mut self.depth, depth);
         // The frame's own targets at `size` can run out of memory too.
-        let drawn = self.draw_frame(frame, Some(GpuChecks::push(&self.device)), output);
+        let drawn = self.draw_frame(frame, Some(GpuChecks::push(&self.device)), output, hooks);
         self.depth = window_depth;
         self.offscreen = offscreen;
         match hdr {

@@ -1,4 +1,4 @@
-//! Scoreboard team handles for native server mods, and the client's teams.
+//! Scoreboard team handles for native server mods.
 //!
 //! As the objectives of `native_scoreboard.rs`: every write is made on the same `Scoreboard`
 //! `/team` writes, with its methods, so the sync, the save and the selectors need to know
@@ -7,15 +7,15 @@ use super::{Game, native_scoreboard::api_text};
 use core::ops::ControlFlow;
 use mod_api::__private::game::*;
 use mod_api::{
-    ClientTeam, CollisionRule, ScoreHolder, TeamColor, TeamError, TeamMembersReadError, TeamRef,
-    TeamVisibility, TextFormError,
+    CollisionRule, ScoreHolder, ServerReadError, TeamColor, TeamError, TeamMembersReadError,
+    TeamRef, TeamVisibility, TextFormError,
 };
 use sunrise_client::{
     scoreboard::{self as sb, Comp, comp_text},
     text::Text as EngineText,
 };
 
-fn api_visibility(visibility: sb::Visibility) -> TeamVisibility {
+pub(super) fn api_visibility(visibility: sb::Visibility) -> TeamVisibility {
     match visibility {
         sb::Visibility::Always => TeamVisibility::Always,
         sb::Visibility::Never => TeamVisibility::Never,
@@ -33,7 +33,7 @@ fn engine_visibility(visibility: TeamVisibility) -> sb::Visibility {
     }
 }
 
-fn api_collision_rule(rule: sb::CollisionRule) -> CollisionRule {
+pub(super) fn api_collision_rule(rule: sb::CollisionRule) -> CollisionRule {
     match rule {
         sb::CollisionRule::Always => CollisionRule::Always,
         sb::CollisionRule::Never => CollisionRule::Never,
@@ -52,11 +52,11 @@ fn engine_collision_rule(rule: CollisionRule) -> sb::CollisionRule {
 }
 
 /// The API's color of a team, which the board keeps as the color's name.
-fn api_color(team: &sb::Team) -> Option<TeamColor> {
+pub(super) fn api_color(team: &sb::Team) -> Option<TeamColor> {
     team.color.as_deref().and_then(TeamColor::from_name)
 }
 
-fn api_comp(comp: &Comp) -> Result<mod_api::Text, TextFormError> {
+pub(super) fn api_comp(comp: &Comp) -> Result<mod_api::Text, TextFormError> {
     api_text(&comp_text(comp))
 }
 
@@ -102,16 +102,18 @@ impl Game<'_> {
     }
 
     /// `Scoreboard.getPlayerTeams`.
-    pub(super) fn teams(&self) -> Vec<TeamRef> {
-        if self.remote.is_some() {
-            return Vec::new();
-        }
-        self.score
+    pub(super) fn visit_teams(
+        &self,
+        visit: &mut dyn FnMut(TeamRef) -> ControlFlow<()>,
+    ) -> Result<ControlFlow<()>, ServerReadError> {
+        let epoch = self.scoreboard_visit_epoch()?;
+        Ok(self
+            .score
             .board
             .teams
             .iter()
-            .filter_map(|t| self.team_handle(t))
-            .collect()
+            .map(|t| team_ref(epoch, t.identity.0))
+            .try_for_each(visit))
     }
 
     /// `/team add`.
@@ -140,8 +142,8 @@ impl Game<'_> {
     }
 
     /// `PlayerTeam.getName`.
-    pub(super) fn team_name(&self, team: TeamRef) -> Option<String> {
-        self.team_state(team).map(|t| t.name.clone())
+    pub(super) fn team_name(&self, team: TeamRef) -> Option<&str> {
+        self.team_state(team).map(|t| t.name.as_str())
     }
 
     /// `PlayerTeam.getDisplayName`.
@@ -333,28 +335,6 @@ impl Game<'_> {
         self.sync_score_registries();
         true
     }
-
-    /// Every team this client was sent. A text the API cannot hold refuses the snapshot by name.
-    pub(super) fn client_teams(&self) -> Result<Vec<ClientTeam>, TextFormError> {
-        self.score
-            .board
-            .teams
-            .iter()
-            .map(|t| {
-                let mut team = ClientTeam::new(t.name.clone());
-                team.display_name = api_comp(&t.display_name)?;
-                team.color = api_color(t);
-                team.prefix = api_comp(&t.prefix)?;
-                team.suffix = api_comp(&t.suffix)?;
-                team.friendly_fire = t.allow_friendly_fire;
-                team.see_friendly_invisibles = t.see_friendly_invisibles;
-                team.name_tag_visibility = api_visibility(t.nametag_visibility);
-                team.collision_rule = api_collision_rule(t.collision_rule);
-                team.members = t.players.iter().cloned().collect();
-                Ok(team)
-            })
-            .collect()
-    }
 }
 
 #[cfg(test)]
@@ -362,7 +342,7 @@ mod tests {
     use super::super::native_entity_refs::tests::with_game;
     use super::super::native_scoreboard::tests::{guest, open_lan};
     use super::*;
-    use mod_api::{HostTransaction, prelude::ScoreboardServerHost};
+    use mod_api::prelude::ScoreboardServerHost;
 
     /// The API's visibility and rule names are the board's.
     #[test]
@@ -395,11 +375,16 @@ mod tests {
     #[ignore = "daily"]
     fn teams_are_written_joined_synced_saved_and_stale_once_removed() {
         with_game(|game| {
+            game.world_root = game.save.root.clone();
             let saved_board = open_lan(game);
             game.lan.as_mut().unwrap().hub.guests.push(guest(123, 1));
             game.lan.as_mut().unwrap().hub.guests.push(guest(456, 2));
             let (a, b) = (game.player(123).unwrap(), game.player(456).unwrap());
             let text = mod_api::Text::literal;
+            assert_eq!(
+                ScoreboardServerHost::visit_teams(game, &mut |_| panic!("empty board")),
+                Ok(ControlFlow::Continue(()))
+            );
 
             // A name is any string; only a taken one is refused.
             let red = ScoreboardServerHost::add_team(game, "red").unwrap();
@@ -411,7 +396,16 @@ mod tests {
                 assert!(ScoreboardServerHost::add_team(game, odd).is_ok());
             }
             assert_eq!(game.team("red"), Some(red));
-            assert_eq!(red.name(game).as_deref(), Some("red"));
+            let mut first_team = Vec::new();
+            assert_eq!(
+                ScoreboardServerHost::visit_teams(game, &mut |team| {
+                    first_team.push(team);
+                    ControlFlow::Break(())
+                }),
+                Ok(ControlFlow::Break(()))
+            );
+            assert_eq!(first_team, [red]);
+            assert_eq!(red.name(game), Some("red"));
             let mut unexpected_visits = 0;
             let mut count = |_: &str| {
                 unexpected_visits += 1;
@@ -534,15 +528,6 @@ mod tests {
             let view = sunrise_client::lan::scoreboard::View::of(&game.score.board);
             assert_eq!(game.lan.as_ref().unwrap().hub.guests[0].scoreboard, view);
 
-            // The client's snapshot of the teams reads what the board holds.
-            let teams = game.client_teams().unwrap();
-            let sent = teams.iter().find(|t| t.name == "red").unwrap();
-            assert_eq!(sent.display_name, text("Reds"));
-            assert_eq!(sent.color, Some(TeamColor::Blue));
-            assert_eq!(sent.prefix, text("[R] "));
-            assert_eq!(sent.collision_rule, CollisionRule::PushOwnTeam);
-            assert_eq!(sent.members, ["offline"]);
-
             // Saved, the file holds the team and its members.
             game.save_scoreboard();
             let saved = sunrise_client::save::read_dat(&saved_board).unwrap();
@@ -584,7 +569,7 @@ mod tests {
 
             // An aborted transaction puts the teams back, as it does the objectives.
             let before = game.score.board.clone();
-            let aborted: Result<(), ()> = game.transaction(|host, _| {
+            let aborted: Result<(), ()> = game.storage_transaction(|host, _| {
                 let temp = ScoreboardServerHost::add_team(host, "temp").map_err(|_| ())?;
                 temp.join(host, ScoreHolder::Name("p".into()))
                     .map_err(|_| ())?;

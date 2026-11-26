@@ -1,0 +1,4 @@
+sunrise-client-render gfx::pack_post::mod_pack_binding_tests::mod_pack_aux_depth_is_lazy_when_pack_never_samples_it lib daily gpu
+sunrise-client-render gfx::pack_post::mod_pack_binding_tests::mod_pack_falls_back_to_gbuffers_terrain_when_custom_program_absent lib daily gpu
+sunrise-client-render gfx::pack_post::mod_pack_binding_tests::mod_pack_program_draws_aux_depth_and_tracks_previous_uniform lib daily gpu
+sunrise-client-render gfx::pack_post::mod_pack_binding_tests::mod_pack_type_mismatch_uniform_and_unbound_pipeline_never_panic lib daily gpu

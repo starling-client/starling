@@ -1,0 +1,93 @@
+name: exporters
+# Our Java exporters compiled against the pinned Minecraft jars, then a determinism check: two isolated preparations
+# and one batched, runtime-only preparation must write the same bytes (tools/check_prepare_exporters.py). Their classes
+# are a release input (artifact original-exporters): nightly-build.yml runs this before any of a build's platform
+# legs, and the daily runs it on main's head, so an exporter that writes in an unstable order (render-pipelines.json
+# from a Map.of, 880b096a34) fails there instead of in the release that needs it (the Dev release of 2026-11-25).
+on:
+  workflow_call:
+    inputs:
+      commit:
+        description: The commit to build
+        type: string
+        required: true
+      trusted:
+        # As game-build.yml's: true only for a build of main alone that must never share a machine with pull requests'
+        # jobs; false for anything a pull request's job may share.
+        description: The source is main (a release); false for anything else
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  exporters:
+    # Compiles our Java exporters against the pinned Minecraft jars; only our classes leave the runner. An untrusted
+    # build uses Dyna's runner (NIGHTLY_EXPORTERS_RUNNER), which keeps the prepared jars; a trusted one never shares
+    # a machine with pull requests' jobs, so it uses GitHub's, where vanilla-data.sh fetches the jars.
+    runs-on: ${{ fromJSON(!inputs.trusted && vars.DYNA_CI_SELF_HOSTED == 'true' && vars.NIGHTLY_EXPORTERS_RUNNER || '"ubuntu-latest"') }}
+    # Three full preparations (two isolated, one batched) besides the compile.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.commit }}
+          persist-credentials: false
+          clean: true
+      - name: The pinned Rust (tools/ci/rust-version)
+        id: rust
+        shell: bash
+        run: echo "version=$(cat "$GITHUB_WORKSPACE/tools/ci/rust-version")" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.rust.outputs.version }}
+      - uses: actions/setup-python@v6
+        if: runner.environment == 'github-hosted'
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-java@v4
+        if: runner.environment == 'github-hosted' || runner.os == 'Linux'
+        with:
+          distribution: temurin
+          java-version: '25'
+      - if: runner.environment == 'self-hosted'
+        run: |
+          if [[ -z "${DYNA_CI_BUILD:-}" ]]; then bash tools/ci/runner-env.sh; fi
+        env:
+          SUNRISE_NO_SCCACHE: ${{ inputs.trusted && '1' || '' }}
+      # A self-hosted runner's persistent target: keep its source snapshot true, as every job building there does
+      # (tools/ci/source_mtimes.py). The Nightly builds a commit that need not be main's head.
+      - name: Restore unchanged source timestamps
+        if: runner.environment == 'self-hosted'
+        run: python3 tools/ci/source_mtimes.py "${CARGO_TARGET_DIR:-target}/ci-source-mtimes-v2.json"
+      - name: Private exporter inputs
+        run: |
+          if [[ -n "${DYNA_CI_BUILD:-}" ]]; then
+            SUNRISE_DYNA_CACHE=true SUNRISE_PREPARED_CACHE="$DYNA_CI_BUILD/vanilla" SUNRISE_SHARED_SOURCE=/cache/sunrise-local bash tools/ci/vanilla-data.sh
+          else
+            bash tools/ci/vanilla-data.sh
+          fi
+      - name: Compile and validate original exporters against the pinned jars
+        shell: bash
+        run: |
+          set -euo pipefail
+          # target/ is gone after the clean checkout, and vanilla-data.sh builds the preparer only when it
+          # prepares afresh.
+          cargo build --release --locked -p sunrise-prepare
+          preparer="${CARGO_TARGET_DIR:-target}/release/sunrise-prepare"
+          # Compiled here, never taken from the runner's shared preparations: other game jobs
+          # write those (vanilla-data.sh links .local/exporters to them).
+          rm -rf .local/exporters
+          bundle=$("$preparer" compile-exporters --root "$PWD" | tail -1)
+          mkdir -p exporters
+          cp -R "$bundle/server" "$bundle/client" "$bundle/manifest.json" exporters/
+          # Only our classes and their manifest leave this runner.
+          stray=$(find exporters -type f ! -path exporters/manifest.json \
+            ! \( -name '*.class' \( -path 'exporters/server/dev/sunriselab/parity/*' -o -path 'exporters/client/dev/sunriselab/parity/*' \) \))
+          [ -z "$stray" ] || { echo "::error::not one of our classes: $stray"; exit 1; }
+          python3 tools/check_prepare_exporters.py --binary "$preparer"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: original-exporters
+          path: exporters/
+          if-no-files-found: error
+          retention-days: 3

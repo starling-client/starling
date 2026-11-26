@@ -186,23 +186,25 @@ pub mod tests {
         fn insert_at(
             &self,
             host: &mut dyn ServerHost,
-            tx: &Transaction,
+            tx: &TransactionContext,
             _: usize,
             resource: &ItemResource,
             amount: u32,
-        ) -> u32 {
-            self.downstream(host)
-                .map_or(0, |next| next.insert_at(host, tx, 0, resource, amount))
+        ) -> Result<u32, TransactionError<Overanswered>> {
+            match self.downstream(host) {
+                Some(next) => next.insert_at(host, tx, 0, resource, amount),
+                None => Ok(0),
+            }
         }
         fn extract_at(
             &self,
             _: &mut dyn ServerHost,
-            _: &Transaction,
+            _: &TransactionContext,
             _: usize,
             _: &ItemResource,
             _: u32,
-        ) -> u32 {
-            0
+        ) -> Result<u32, TransactionError<Overanswered>> {
+            Ok(0)
         }
     }
 
@@ -229,22 +231,22 @@ pub mod tests {
         fn insert_at(
             &self,
             host: &mut dyn ServerHost,
-            tx: &Transaction,
+            tx: &TransactionContext,
             index: usize,
             resource: &ItemResource,
             amount: u32,
-        ) -> u32 {
-            Pipe(self.0).insert_at(host, tx, index, resource, amount) + 1
+        ) -> Result<u32, TransactionError<Overanswered>> {
+            Ok(Pipe(self.0).insert_at(host, tx, index, resource, amount)? + 1)
         }
         fn extract_at(
             &self,
             _: &mut dyn ServerHost,
-            _: &Transaction,
+            _: &TransactionContext,
             _: usize,
             _: &ItemResource,
             _: u32,
-        ) -> u32 {
-            0
+        ) -> Result<u32, TransactionError<Overanswered>> {
+            Ok(0)
         }
     }
 
@@ -329,32 +331,32 @@ pub mod tests {
         fn insert_at(
             &self,
             host: &mut dyn ServerHost,
-            tx: &Transaction,
+            tx: &TransactionContext,
             _: usize,
             resource: &ItemResource,
             amount: u32,
-        ) -> u32 {
+        ) -> Result<u32, TransactionError<Overanswered>> {
             let Some(damage) = self.0.with_stack(host, |pouch| pouch.damage()) else {
-                return 0;
+                return Ok(0);
             };
             if !resource.matches(&stick()) {
-                return 0;
+                return Ok(0);
             }
             let filled = ItemResource::of(&stack("test:pouch", 1, damage + amount));
-            match self.0.exchange(host, tx, &filled, 1) {
+            Ok(match self.0.exchange(host, tx, &filled, 1)? {
                 1 => amount,
                 _ => 0,
-            }
+            })
         }
         fn extract_at(
             &self,
             _: &mut dyn ServerHost,
-            _: &Transaction,
+            _: &TransactionContext,
             _: usize,
             _: &ItemResource,
             _: u32,
-        ) -> u32 {
-            0
+        ) -> Result<u32, TransactionError<Overanswered>> {
+            Ok(0)
         }
     }
 
@@ -383,30 +385,30 @@ pub mod tests {
         fn insert_at(
             &self,
             host: &mut dyn ServerHost,
-            tx: &Transaction,
+            tx: &TransactionContext,
             _: usize,
             resource: &ItemResource,
             amount: u32,
-        ) -> u32 {
+        ) -> Result<u32, TransactionError<Overanswered>> {
             let pouch = resource.to_stack(1).unwrap();
             match self.0.with_stack(host, |bag| bag.damage()) {
                 Some(0) if amount > 0 && resource.item() == fixture_item_key("test:pouch") => {
                     let full = ItemResource::of(&stack("test:bag", 1, pouch.damage() + 1));
                     self.0.exchange(host, tx, &full, 1)
                 }
-                _ => 0,
+                _ => Ok(0),
             }
         }
         fn extract_at(
             &self,
             host: &mut dyn ServerHost,
-            tx: &Transaction,
+            tx: &TransactionContext,
             index: usize,
             resource: &ItemResource,
             amount: u32,
-        ) -> u32 {
+        ) -> Result<u32, TransactionError<Overanswered>> {
             if amount == 0 || self.resource(host, index).as_ref() != Some(resource) {
-                return 0;
+                return Ok(0);
             }
             let empty = ItemResource::of(&stack("test:bag", 1, 0));
             self.0.exchange(host, tx, &empty, 1)
@@ -422,9 +424,14 @@ pub mod tests {
             let damage = self.0.with_stack(host, |case| case.damage()).unwrap_or(0);
             [damage / 100, damage % 100][index]
         }
-        fn rewrite(&self, host: &mut dyn ServerHost, tx: &Transaction, damage: u32) -> bool {
+        fn rewrite(
+            &self,
+            host: &mut dyn ServerHost,
+            tx: &TransactionContext,
+            damage: u32,
+        ) -> Result<bool, TransactionError<Overanswered>> {
             let case = ItemResource::of(&stack("test:case", 1, damage));
-            self.0.exchange(host, tx, &case, 1) == 1
+            Ok(self.0.exchange(host, tx, &case, 1)? == 1)
         }
     }
     impl ResourceHandler<ItemResource> for Case {
@@ -454,44 +461,44 @@ pub mod tests {
         fn insert_at(
             &self,
             host: &mut dyn ServerHost,
-            tx: &Transaction,
+            tx: &TransactionContext,
             index: usize,
             resource: &ItemResource,
             amount: u32,
-        ) -> u32 {
+        ) -> Result<u32, TransactionError<Overanswered>> {
             if index != 1 || resource.item() != fixture_item_key("minecraft:stick") {
-                return 0;
+                return Ok(0);
             }
             let damage = self.0.with_stack(host, |case| case.damage()).unwrap_or(0);
-            match self.rewrite(host, tx, damage + amount) {
+            Ok(match self.rewrite(host, tx, damage + amount)? {
                 true => amount,
                 false => 0,
-            }
+            })
         }
         fn extract_at(
             &self,
             host: &mut dyn ServerHost,
-            tx: &Transaction,
+            tx: &TransactionContext,
             index: usize,
             resource: &ItemResource,
             amount: u32,
-        ) -> u32 {
+        ) -> Result<u32, TransactionError<Overanswered>> {
             if index != 1 || resource.item() != fixture_item_key("minecraft:stick") {
-                return 0;
+                return Ok(0);
             }
             let damage = self.0.with_stack(host, |case| case.damage()).unwrap_or(0);
-            let tried: Result<(), ()> = host.transaction(|host, tx| {
-                self.rewrite(host, tx, damage % 100);
+            let tried: Result<(), crate::TransactionError<()>> = host.transaction(|host, tx| {
+                let _ = self.rewrite(host, tx, damage % 100);
                 Err(())
             });
             assert!(tried.is_err());
             let damage = self.0.with_stack(host, |stack| stack.damage()).unwrap();
             assert_eq!(damage / 100, 1, "diamond restored after inner abort");
             let took = amount.min(damage % 100);
-            match self.rewrite(host, tx, damage - took) {
+            Ok(match self.rewrite(host, tx, damage - took)? {
                 true => took,
                 false => 0,
-            }
+            })
         }
     }
 
@@ -510,11 +517,11 @@ pub mod tests {
         fn insert(
             &self,
             host: &mut dyn ServerHost,
-            tx: &Transaction,
+            tx: &TransactionContext,
             key: u64,
             resource: &ItemResource,
             amount: u32,
-        ) -> u32 {
+        ) -> Result<u32, TransactionError<Overanswered>> {
             let place = charm_slot(key);
             let room = place
                 .with_stack(host, |held| {
@@ -532,11 +539,11 @@ pub mod tests {
         fn extract(
             &self,
             host: &mut dyn ServerHost,
-            tx: &Transaction,
+            tx: &TransactionContext,
             key: u64,
             resource: &ItemResource,
             amount: u32,
-        ) -> u32 {
+        ) -> Result<u32, TransactionError<Overanswered>> {
             charm_slot(key).extract(host, tx, resource, amount)
         }
     }
@@ -569,22 +576,22 @@ pub mod tests {
         fn insert_at(
             &self,
             _: &mut dyn ServerHost,
-            _: &Transaction,
+            _: &TransactionContext,
             _: usize,
             _: &ItemResource,
             _: u32,
-        ) -> u32 {
-            0
+        ) -> Result<u32, TransactionError<Overanswered>> {
+            Ok(0)
         }
         fn extract_at(
             &self,
             _: &mut dyn ServerHost,
-            _: &Transaction,
+            _: &TransactionContext,
             _: usize,
             _: &ItemResource,
             _: u32,
-        ) -> u32 {
-            0
+        ) -> Result<u32, TransactionError<Overanswered>> {
+            Ok(0)
         }
     }
 
@@ -614,9 +621,8 @@ pub mod tests {
         assert_eq!(items.amount(host, 3), 10);
         // Into one index, no further: 54 of 60 fill slot 3, and nothing goes elsewhere.
         let insert = |host: &mut dyn ServerHost, index, resource: &ItemResource, amount| {
-            let went = host.transaction(|host, tx| {
-                Ok::<_, ()>(items.insert_at(host, tx, index, resource, amount))
-            });
+            let went =
+                host.transaction(|host, tx| items.insert_at(host, tx, index, resource, amount));
             went.unwrap()
         };
         assert_eq!(insert(host, 3, &sticks, 60), 54);
@@ -652,7 +658,7 @@ pub mod tests {
     pub(crate) fn an_entitys_items_come_from_its_types_provider_and_none_outside_the_level_in_place()
      {
         install_parts(&[], &crate::parts::tests::rule_schema(), |_| false).unwrap();
-        game_thread();
+        install_shared_parts(true);
         let entity = |id| EntityRef::new(WorldEpoch::new(1), id);
         let mut player = player_world(None);
         let host: &mut dyn ServerHost = &mut player;
@@ -773,8 +779,15 @@ pub mod tests {
         fn container_size(&self, BlockSide { pos, .. }: BlockSide) -> Option<usize> {
             (pos == SHELF).then_some(3)
         }
-        fn container_stack(&self, _: BlockSide, slot: usize) -> Option<ItemStack> {
-            self.slots.get(slot)?.clone()
+        fn lend_container_stack(
+            &self,
+            _: BlockSide,
+            slot: usize,
+            read: &mut dyn for<'a> FnMut(ItemStackView<'a>),
+        ) {
+            if let Some(Some(stack)) = self.slots.get(slot) {
+                read(ItemStackView::from_stack(stack));
+            }
         }
     }
     #[cfg(test)]
@@ -792,8 +805,9 @@ pub mod tests {
             slot: usize,
             resource: &ItemResource,
             amount: u32,
-            _: &Transaction,
+            tx: &TransactionContext,
         ) -> Result<Option<ItemStack>, crate::StackWriteError> {
+            self.journal.assert_current(tx);
             let Some(stack) = resource.to_stack(amount) else {
                 return Ok(None);
             };
@@ -822,8 +836,9 @@ pub mod tests {
             _: BlockSide,
             slot: usize,
             max: u32,
-            _: &Transaction,
+            tx: &TransactionContext,
         ) -> Option<ItemStack> {
+            self.journal.assert_current(tx);
             let most = if self.whole_extract { max } else { 1 };
             let split = self.slots.get_mut(slot)?.take()?.split(most);
             self.slots[slot] = split.remainder;
@@ -870,21 +885,45 @@ pub mod tests {
                 self,
             ))
         }
+        fn with_current_transaction_scope(
+            &mut self,
+            callback: &mut dyn for<'loan> FnMut(
+                &'loan mut dyn ServerHost,
+                &'loan TransactionContext,
+            ),
+        ) -> Result<(), mod_vocab::TransactionUnavailable> {
+            FakeJournal::with_current_scope(self, |host| &host.journal, callback)
+        }
+
+        fn with_transaction_scope(
+            &mut self,
+            callback: &mut dyn for<'loan> FnMut(
+                &'loan mut dyn ServerHost,
+                &'loan TransactionContext,
+            ) -> bool,
+        ) -> Result<bool, crate::TransactionScopeError> {
+            FakeJournal::with_scope(
+                self,
+                |shelf| &mut shelf.journal,
+                |shelf| shelf.slots.clone(),
+                |shelf, slots| shelf.slots = slots,
+                callback,
+            )
+        }
+        fn transaction_matches(&self, tx: Option<&TransactionContext>) -> bool {
+            self.journal.matches(tx)
+        }
     }
     #[cfg(test)]
     mod_api::impl_server_host_areas!(Shelf, except(mod_state));
     #[cfg(test)]
     impl crate::prelude::ModStateServerHost for Shelf {
-        fn transaction_open(&mut self) -> TransactionSeal {
-            self.journal.open(self.slots.clone())
-        }
-        fn transaction_close(&mut self, seal: &TransactionSeal, commit: bool) {
-            if let Some(slots) = self.journal.close(seal, commit) {
-                self.slots = slots;
+        fn transaction_lifecycle(&self) -> crate::TransactionLifecycle {
+            if self.journal.depth() == 0 {
+                crate::TransactionLifecycle::None
+            } else {
+                crate::TransactionLifecycle::Open
             }
-        }
-        fn transaction_current(&self) -> Option<Transaction> {
-            self.journal.current()
         }
     }
 
@@ -906,14 +945,19 @@ pub mod tests {
                 .unwrap_or(0)
         }
         fn resource(&self, host: &mut dyn ServerHost, index: usize) -> Option<ItemResource> {
-            Some(ItemResource::of(
-                &backend_of(&*host)?.container_stack(on(SHELF, None), index)?,
-            ))
+            let mut resource = None;
+            backend_of(&*host)?.lend_container_stack(on(SHELF, None), index, &mut |view| {
+                resource = view.project().as_ref().map(ItemResource::of);
+            });
+            resource
         }
         fn amount(&self, host: &mut dyn ServerHost, index: usize) -> u32 {
-            backend_of(&*host)
-                .and_then(|backend| backend.container_stack(on(SHELF, None), index))
-                .map_or(0, |held| held.count())
+            let mut count = 0;
+            if let Some(backend) = backend_of(&*host) {
+                backend
+                    .lend_container_stack(on(SHELF, None), index, &mut |view| count = view.count());
+            }
+            count
         }
         fn capacity(
             &self,
@@ -932,27 +976,27 @@ pub mod tests {
         fn insert_at(
             &self,
             _: &mut dyn ServerHost,
-            _: &Transaction,
+            _: &TransactionContext,
             _: usize,
             _: &ItemResource,
             amount: u32,
-        ) -> u32 {
-            amount + 5
+        ) -> Result<u32, TransactionError<Overanswered>> {
+            Ok(amount + 5)
         }
         fn extract_at(
             &self,
             host: &mut dyn ServerHost,
-            tx: &Transaction,
+            tx: &TransactionContext,
             index: usize,
             _: &ItemResource,
             amount: u32,
-        ) -> u32 {
+        ) -> Result<u32, TransactionError<Overanswered>> {
             let Some(backend) = backend_mut_of(host) else {
-                return 0;
+                return Ok(0);
             };
-            backend
+            Ok(backend
                 .container_extract(on(SHELF, None), index, amount + 5, tx)
-                .map_or(0, |out| out.count())
+                .map_or(0, |out| out.count()))
         }
     }
 
@@ -965,9 +1009,9 @@ pub mod tests {
         let host: &mut dyn ServerHost = &mut player;
         let pouch = HAND.capability(host, &ITEM_ITEMS).unwrap();
         let sticks = ItemResource::of(&stick());
-        let aborted: Result<(), u32> =
-            host.transaction(|host, tx| Err(pouch.insert_at(host, tx, 0, &sticks, 3)));
-        assert_eq!(aborted, Err(3));
+        let aborted: Result<(), crate::TransactionError<u32>> =
+            host.transaction(|host, tx| Err(pouch.insert_at(host, tx, 0, &sticks, 3).unwrap()));
+        assert_eq!(aborted, Err(crate::TransactionError::Aborted(3)));
         assert_eq!(main_hand(&player), Some(stack("test:pouch", 2, 0)));
         assert!(player_of(&player).given.is_empty());
         // One of the two pouches is filled: it leaves the hand for the player, the other stays.
@@ -990,15 +1034,15 @@ pub mod tests {
         fn rewrite(
             &self,
             host: &mut dyn ServerHost,
-            tx: &Transaction,
+            tx: &TransactionContext,
             energy: u32,
             moved: u32,
-        ) -> u32 {
+        ) -> Result<u32, TransactionError<Overanswered>> {
             let charged = ItemResource::of(&stack("test:cell", 1, energy));
-            match self.0.exchange(host, tx, &charged, 1) {
+            Ok(match self.0.exchange(host, tx, &charged, 1)? {
                 1 => moved,
                 _ => 0,
-            }
+            })
         }
     }
     impl EnergyHandler for Cell {
@@ -1008,17 +1052,27 @@ pub mod tests {
         fn capacity(&self, _: &mut dyn ServerHost) -> u32 {
             1000
         }
-        fn insert(&self, host: &mut dyn ServerHost, tx: &Transaction, amount: u32) -> u32 {
+        fn insert(
+            &self,
+            host: &mut dyn ServerHost,
+            tx: &TransactionContext,
+            amount: u32,
+        ) -> Result<u32, TransactionError<Overanswered>> {
             let held = self.amount(host);
             match amount.min(1000 - held) {
-                0 => 0,
+                0 => Ok(0),
                 went => self.rewrite(host, tx, held + went, went),
             }
         }
-        fn extract(&self, host: &mut dyn ServerHost, tx: &Transaction, amount: u32) -> u32 {
+        fn extract(
+            &self,
+            host: &mut dyn ServerHost,
+            tx: &TransactionContext,
+            amount: u32,
+        ) -> Result<u32, TransactionError<Overanswered>> {
             let held = self.amount(host);
             match amount.min(held) {
-                0 => 0,
+                0 => Ok(0),
                 came => self.rewrite(host, tx, held - came, came),
             }
         }
@@ -1048,7 +1102,7 @@ pub mod tests {
             let moved = move_energy(host, &other, &hand, 400, tx);
             Err::<(), _>(moved)
         });
-        assert_eq!(aborted, Err(Ok(400)));
+        assert_eq!(aborted, Err(crate::TransactionError::Aborted(Ok(400))));
         assert_eq!(player_of(&player).slots[&9], stack("test:cell", 1, 1000));
         assert_eq!(main_hand(&player), Some(stack("test:cell", 1, 600)));
         // An item no mod answers for has no energy.
@@ -1064,13 +1118,14 @@ pub mod tests {
         let battery = crate::ItemComponentEnergy::new(HAND, energy.clone(), 1000, 250, 1000);
         let mut player = player_world(Some(stack("test:cell", 3, 0)));
         let host: &mut dyn ServerHost = &mut player;
-        let aborted = host.transaction(|host, tx| Err::<(), _>(battery.insert(host, tx, 300)));
-        assert_eq!(aborted, Err(250));
+        let aborted =
+            host.transaction(|host, tx| Err::<(), _>(battery.insert(host, tx, 300).unwrap()));
+        assert_eq!(aborted, Err(crate::TransactionError::Aborted(250)));
         assert_eq!(main_hand(&player), Some(stack("test:cell", 3, 0)));
         assert!(player_of(&player).given.is_empty());
         // The limit moves 250 of 300: one of the three is charged and splits off.
         let host: &mut dyn ServerHost = &mut player;
-        let went = host.transaction(|host, tx| Ok::<_, ()>(battery.insert(host, tx, 300)));
+        let went = host.transaction(|host, tx| battery.insert(host, tx, 300));
         assert_eq!(went, Ok(250));
         assert_eq!(main_hand(&player), Some(stack("test:cell", 2, 0)));
         let given = &player_of(&player).given;
@@ -1091,14 +1146,14 @@ pub mod tests {
         ));
         let mut player = player_world(Some(stack("test:case", 3, 0)));
         let host: &mut dyn ServerHost = &mut player;
-        let aborted =
-            host.transaction(|host, tx| Err::<(), _>(canteen.insert_at(host, tx, 0, &water, 1000)));
-        assert_eq!(aborted, Err(1000));
+        let aborted = host.transaction(|host, tx| {
+            Err::<(), _>(canteen.insert_at(host, tx, 0, &water, 1000).unwrap())
+        });
+        assert_eq!(aborted, Err(crate::TransactionError::Aborted(1000)));
         assert_eq!(main_hand(&player), Some(stack("test:case", 3, 0)));
         assert!(player_of(&player).given.is_empty());
         let host: &mut dyn ServerHost = &mut player;
-        let went =
-            host.transaction(|host, tx| Ok::<_, ()>(canteen.insert_at(host, tx, 0, &water, 5000)));
+        let went = host.transaction(|host, tx| canteen.insert_at(host, tx, 0, &water, 5000));
         assert_eq!(went, Ok(4000));
         assert_eq!(main_hand(&player), Some(stack("test:case", 2, 0)));
         let given = &player_of(&player).given;
@@ -1127,8 +1182,7 @@ pub mod tests {
             .registries
             .item_component("test:case", "test:fluid", Tag::Compound(unknown));
         let host: &mut dyn ServerHost = &mut player;
-        let went =
-            host.transaction(|host, tx| Ok::<_, ()>(canteen.insert_at(host, tx, 0, &water, 1000)));
+        let went = host.transaction(|host, tx| canteen.insert_at(host, tx, 0, &water, 1000));
         assert_eq!(went, Ok(0));
         assert_eq!(main_hand(&player), Some(stack("test:case", 1, 0)));
         assert!(player_of(&player).given.is_empty());
@@ -1151,8 +1205,7 @@ pub mod tests {
             .registries
             .item_component("test:case", "test:fluid", Tag::Compound(full));
         let host: &mut dyn ServerHost = &mut player;
-        let came =
-            host.transaction(|host, tx| Ok::<_, ()>(canteen.extract_at(host, tx, 0, &water, 0)));
+        let came = host.transaction(|host, tx| canteen.extract_at(host, tx, 0, &water, 0));
         assert_eq!(came, Ok(0));
         assert_eq!(main_hand(&player), Some(stack("test:case", 2, 0)));
         assert!(player_of(&player).given.is_empty());
@@ -1204,8 +1257,7 @@ pub mod tests {
     /// `place.insert` of `stack` in a transaction of its own: how much went.
     pub(crate) fn insert(host: &mut dyn ServerHost, place: &ItemPlace, stack: ItemStack) -> u32 {
         let resource = ItemResource::of(&stack);
-        let went = host
-            .transaction(|host, tx| Ok::<_, ()>(place.insert(host, tx, &resource, stack.count())));
+        let went = host.transaction(|host, tx| place.insert(host, tx, &resource, stack.count()));
         went.unwrap_or(0)
     }
 
@@ -1214,9 +1266,8 @@ pub mod tests {
     /// own: how many.
     pub(crate) fn exchange(host: &mut dyn ServerHost, place: &ItemPlace, stack: ItemStack) -> u32 {
         let resource = ItemResource::of(&stack);
-        let swapped = host.transaction(|host, tx| {
-            Ok::<_, ()>(place.exchange(host, tx, &resource, stack.count()))
-        });
+        let swapped =
+            host.transaction(|host, tx| place.exchange(host, tx, &resource, stack.count()));
         swapped.unwrap_or(0)
     }
 
@@ -1244,22 +1295,22 @@ pub mod tests {
         fn insert_at(
             &self,
             _: &mut dyn ServerHost,
-            _: &Transaction,
+            _: &TransactionContext,
             _: usize,
             _: &ItemResource,
             n: u32,
-        ) -> u32 {
-            n + 1
+        ) -> Result<u32, TransactionError<Overanswered>> {
+            Ok(n + 1)
         }
         fn extract_at(
             &self,
             _: &mut dyn ServerHost,
-            _: &Transaction,
+            _: &TransactionContext,
             _: usize,
             _: &ItemResource,
             _: u32,
-        ) -> u32 {
-            0
+        ) -> Result<u32, TransactionError<Overanswered>> {
+            Ok(0)
         }
     }
 
@@ -1315,8 +1366,10 @@ pub mod tests {
         let owner = "doubler".to_owned();
         assert_eq!(
             moved,
-            Err(mod_vocab::__private::parts_installation::overanswered(
-                owner
+            Err(crate::TransactionError::Aborted(
+                crate::TransactionError::Aborted(
+                    mod_vocab::__private::parts_installation::overanswered(owner)
+                )
             ))
         );
         assert_eq!(
@@ -1342,7 +1395,7 @@ pub mod tests {
         assert_eq!(worn.component(&damage), Some(Tag::Int(5)));
         // Aborted, nothing changed; committed, one sword of the two is worn and splits off.
         let aborted = host.transaction(|host, tx| {
-            assert_eq!(place.exchange(host, tx, &worn, 1), 1);
+            assert_eq!(place.exchange(host, tx, &worn, 1), Ok(1));
             Err::<(), ()>(())
         });
         assert!(aborted.is_err());
@@ -1589,8 +1642,7 @@ pub mod tests {
         assert!(shelf_.slots[1].is_none());
         let handler = here().capability(&mut shelf_, &ITEMS, SHELF, None).unwrap();
         assert_eq!(handler.capacity(&mut shelf_, 1, Some(&resource)), 64);
-        let moved = shelf_
-            .transaction(|host, tx| Ok::<_, ()>(handler.insert_at(host, tx, 1, &resource, 128)));
+        let moved = shelf_.transaction(|host, tx| handler.insert_at(host, tx, 1, &resource, 128));
         assert_eq!(moved, Ok(1));
         assert_eq!(shelf_.slots[1], Some(stack("minecraft:bread", 1, 0)));
     }
@@ -1648,9 +1700,9 @@ pub mod tests {
         let host: &mut dyn ServerHost = &mut player;
         let pouch = in_bag.capability(host, &ITEM_ITEMS).unwrap();
         let sticks = ItemResource::of(&stick());
-        let aborted: Result<(), u32> =
-            host.transaction(|host, tx| Err(pouch.insert_at(host, tx, 0, &sticks, 3)));
-        assert_eq!(aborted, Err(3));
+        let aborted: Result<(), crate::TransactionError<u32>> =
+            host.transaction(|host, tx| Err(pouch.insert_at(host, tx, 0, &sticks, 3).unwrap()));
+        assert_eq!(aborted, Err(crate::TransactionError::Aborted(3)));
         assert_eq!(main_hand(&player), Some(stack("test:bag", 2, 1)));
         assert!(player_of(&player).given.is_empty());
     }
@@ -1670,8 +1722,8 @@ pub mod tests {
         let host: &mut dyn ServerHost = &mut player;
         let resource = ItemResource::of(&stick());
         host.transaction(|host, tx| {
-            assert_eq!(sticks.extract(host, tx, &resource, 1), 1);
-            assert_eq!(sticks.insert(host, tx, &resource, 2), 2);
+            assert_eq!(sticks.extract(host, tx, &resource, 1), Ok(1));
+            assert_eq!(sticks.insert(host, tx, &resource, 2), Ok(2));
             Ok::<_, ()>(())
         })
         .unwrap();
@@ -1702,16 +1754,16 @@ pub mod tests {
             fn insert_at(
                 &self,
                 host: &mut dyn ServerHost,
-                tx: &Transaction,
+                tx: &TransactionContext,
                 _: usize,
                 r: &ItemResource,
                 n: u32,
-            ) -> u32 {
+            ) -> Result<u32, TransactionError<Overanswered>> {
                 if n == 0
                     || r.item() != fixture_item_key("test:bag")
                     || self.0.with_stack(host, |stack| stack.damage()).unwrap() != 0
                 {
-                    return 0;
+                    return Ok(0);
                 }
                 let new =
                     ItemResource::of(&stack("test:outer", 1, r.to_stack(1).unwrap().damage() + 1));
@@ -1720,13 +1772,13 @@ pub mod tests {
             fn extract_at(
                 &self,
                 host: &mut dyn ServerHost,
-                tx: &Transaction,
+                tx: &TransactionContext,
                 i: usize,
                 r: &ItemResource,
                 n: u32,
-            ) -> u32 {
+            ) -> Result<u32, TransactionError<Overanswered>> {
                 if n == 0 || self.resource(host, i).as_ref() != Some(r) {
-                    return 0;
+                    return Ok(0);
                 }
                 let new = ItemResource::of(&stack("test:outer", 1, 0));
                 self.0.exchange(host, tx, &new, 1)
@@ -1742,22 +1794,22 @@ pub mod tests {
             fn insert(
                 &self,
                 host: &mut dyn ServerHost,
-                tx: &Transaction,
+                tx: &TransactionContext,
                 _: u64,
                 r: &ItemResource,
                 n: u32,
-            ) -> u32 {
-                HAND.insert(host, tx, r, n) + 1
+            ) -> Result<u32, TransactionError<Overanswered>> {
+                Ok(HAND.insert(host, tx, r, n)? + 1)
             }
             fn extract(
                 &self,
                 host: &mut dyn ServerHost,
-                tx: &Transaction,
+                tx: &TransactionContext,
                 _: u64,
                 r: &ItemResource,
                 n: u32,
-            ) -> u32 {
-                HAND.extract(host, tx, r, n) + 1
+            ) -> Result<u32, TransactionError<Overanswered>> {
+                Ok(HAND.extract(host, tx, r, n)? + 1)
             }
         }
 
@@ -1783,7 +1835,7 @@ pub mod tests {
                             let handler = in_bag.capability(host, &ITEM_ITEMS).unwrap();
                             assert_eq!(
                                 handler.insert_at(host, tx, 0, &r, 3),
-                                3,
+                                Ok(3),
                                 "depth {abort_depth}"
                             );
                             if abort_depth == 2 { Err(()) } else { Ok(()) }
@@ -1859,9 +1911,12 @@ pub mod tests {
             };
             let host: &mut dyn ServerHost = &mut p;
             let r = ItemResource::of(&stick());
+            let expected = Err(TransactionError::Aborted(
+                mod_vocab::__private::parts_installation::overanswered("doubler".to_owned()),
+            ));
             host.transaction(|host, tx| {
-                assert_eq!(at.insert(host, tx, &r, 1), 0);
-                assert_eq!(at.extract(host, tx, &r, 1), 0);
+                assert_eq!(at.insert(host, tx, &r, 1), expected);
+                assert_eq!(at.extract(host, tx, &r, 1), expected);
                 assert_eq!(
                     HAND.with_stack(host, |stack| stack.project()).flatten(),
                     Some(stack("minecraft:stick", 2, 0))
@@ -1889,13 +1944,16 @@ pub mod tests {
             &invalid,
             |_, at, _, _, offer| offer.offer(|| Box::new(Pipe(at))),
         );
-        assert_eq!(r.refused.len(), 3, "{:?}", r.refused);
+        assert_eq!(r.refused.len(), 4, "{:?}", r.refused);
         assert!(
             r.refused[0]
                 .contains("item places test:charms are provided twice, by first and second")
         );
         assert!(r.refused[1].contains("not a namespaced name"));
         assert!(r.refused[2].contains("invalid registry key \"minecraft:\""));
+        assert!(r.refused[3].starts_with(
+            "mod second used capability \"sunrise:items\" for an invalid block entity type key slot "
+        ));
     }
 
     #[test]
@@ -1922,7 +1980,7 @@ pub mod tests {
         assert_eq!(insert(&mut player, &charm, stick()), 0);
         let resource = ItemResource::of(&stick());
         assert_eq!(
-            player.transaction(|host, tx| Ok::<_, ()>(charm.extract(host, tx, &resource, 1))),
+            player.transaction(|host, tx| charm.extract(host, tx, &resource, 1)),
             Ok(0)
         );
         assert_eq!(
@@ -1934,7 +1992,7 @@ pub mod tests {
         assert_eq!(charm.amount(&mut player), 3);
         assert_eq!(insert(&mut player, &charm, stick()), 1);
         assert_eq!(
-            player.transaction(|host, tx| Ok::<_, ()>(charm.extract(host, tx, &resource, 1))),
+            player.transaction(|host, tx| charm.extract(host, tx, &resource, 1)),
             Ok(1)
         );
         assert_eq!(charm.amount(&mut player), 3);
@@ -1946,8 +2004,12 @@ pub mod tests {
     pub(crate) struct HeldItem(pub(crate) ItemStack);
     #[cfg(test)]
     impl mod_api::prelude::ItemsBackend for HeldItem {
-        fn item_bundle_slots(&self, _: &ItemStack) -> Option<Vec<Option<ItemStack>>> {
-            None
+        fn bundle_slots(
+            &self,
+            _: &ItemStack,
+            _: &mod_api::BundleConfig,
+        ) -> Result<Option<Vec<Option<ItemStack>>>, mod_api::BundleReadError> {
+            Ok(None)
         }
         fn item_container_slots(&self, stack: &ItemStack) -> Option<Vec<Option<ItemStack>>> {
             (stack.damage() == 1).then(|| vec![None; 27])
@@ -2070,20 +2132,9 @@ impl ItemsRegistrar for PartRegistrar {
         name: &'static str,
         item: &str,
         before_game: bool,
-        provider: ItemProviderOf,
+        provider: NativeCapabilityProvider,
     ) {
-        self.capability(
-            |p| &mut p.item_capabilities,
-            None,
-            name,
-            ProviderTarget::Id(item),
-            before_game,
-            {
-                let handler =
-                    mod_vocab::__private::parts_installation::item_provider_handler(&provider);
-                (provider, handler)
-            },
-        );
+        self.capability(name, ProviderTarget::Item(item), before_game, provider);
     }
 
     /// Read and write the item places `ItemPlace::Mod { provider: name, .. }` with `provider`,
@@ -2119,24 +2170,30 @@ impl ItemsRegistrar for PartRegistrar {
         placement: crate::TooltipPlacement,
         appender: Arc<dyn crate::TooltipAppender>,
     ) {
+        // `RegisterTooltipAppendersEvent.registerComponentAppender`: one appender a component,
+        // the game's own among them.
         let refusal = if !namespaced(component) {
             Some(format!(
                 "{} registers a tooltip appender for {component:?}, which is not a namespaced data component id",
                 self.mod_id
             ))
+        } else if mod_vocab::VANILLA_TOOLTIP_COMPONENTS.contains(&component) {
+            Some(format!(
+                "{} registers a tooltip appender for {component}, whose lines the game adds itself",
+                self.mod_id
+            ))
+        } else if let Some(other) = self
+            .parts
+            .tooltip_appenders
+            .iter()
+            .find(|part| &*part.component == component)
+        {
+            Some(format!(
+                "tooltip appenders for {component} are registered twice, by {} and {}",
+                other.mod_id, self.mod_id
+            ))
         } else {
-            match &placement {
-                crate::TooltipPlacement::Before(anchor)
-                | crate::TooltipPlacement::After(anchor)
-                    if !TOOLTIP_DETAILS.contains(&anchor.as_str()) =>
-                {
-                    Some(format!(
-                        "{} anchors a tooltip appender for {component:?} to {anchor:?}, which is not a component detail Sunrise lists",
-                        self.mod_id
-                    ))
-                }
-                _ => None,
-            }
+            None
         };
         if let Some(refusal) = refusal {
             self.refused.push(refusal);
@@ -2148,34 +2205,229 @@ impl ItemsRegistrar for PartRegistrar {
             component: component.into(),
             placement,
             appender,
+            slot: 0,
         });
     }
 }
 
-/// The component details a tooltip lists, in the order the game lists them after the item's own
-/// lines. `TooltipPlacement::Before` and `After` name one of these.
-pub(crate) const TOOLTIP_DETAILS: &[&str] = &[
-    "minecraft:tropical_fish/pattern",
-    "minecraft:instrument",
-    "minecraft:map_id",
-    "minecraft:bees",
-    "minecraft:container",
-    "minecraft:banner_patterns",
-    "minecraft:written_book_content",
-    "minecraft:charged_projectiles",
-    "minecraft:fireworks",
-    "minecraft:potion_contents",
-    "minecraft:jukebox_playable",
-    "minecraft:trim",
-    "minecraft:stored_enchantments",
-    "minecraft:enchantments",
-    "minecraft:dyed_color",
-    "minecraft:lore",
-    "minecraft:attribute_modifiers",
-    "minecraft:unbreakable",
-    "minecraft:ominous_bottle_amplifier",
-    "minecraft:suspicious_stew_effects",
-    "minecraft:block_state",
-    "minecraft:entity_data",
-    "minecraft:block_entity_data",
-];
+impl PartRegistrar {
+    /// `ItemTooltipHandler.init`: sort the vanilla tooltip components, chained in their order,
+    /// and every appender by its placement's edge, as `CommonHooks.sortGraphChecked` does: a
+    /// topological sort whose ties go to the node added first. An anchor nothing adds lines for,
+    /// and every appender on a cycle, refuse their mods.
+    pub(crate) fn order_tooltip_appenders(&mut self) {
+        let vanilla = mod_vocab::VANILLA_TOOLTIP_COMPONENTS;
+        let appenders = &mut self.parts.tooltip_appenders;
+        let node = |id: &str| {
+            vanilla.iter().position(|v| *v == id).or_else(|| {
+                appenders
+                    .iter()
+                    .position(|part| &*part.component == id)
+                    .map(|i| vanilla.len() + i)
+            })
+        };
+        let count = vanilla.len() + appenders.len();
+        let mut edges: Vec<Vec<usize>> = vec![Vec::new(); count];
+        let mut incoming = vec![0usize; count];
+        let mut add = |from: usize, to: usize, edges: &mut Vec<Vec<usize>>| {
+            if !edges[from].contains(&to) {
+                edges[from].push(to);
+                incoming[to] += 1;
+            }
+        };
+        for i in 1..vanilla.len() {
+            add(i - 1, i, &mut edges);
+        }
+        let mut refused = Vec::new();
+        for (i, part) in appenders.iter().enumerate() {
+            let me = vanilla.len() + i;
+            let (from, to) = match &part.placement {
+                crate::TooltipPlacement::BeforeAll => (me, 0),
+                crate::TooltipPlacement::AfterAll => (vanilla.len() - 1, me),
+                crate::TooltipPlacement::Before(anchor)
+                | crate::TooltipPlacement::After(anchor) => {
+                    let Some(other) = node(anchor) else {
+                        refused.push(format!(
+                            "{} anchors its tooltip appender for {} to {anchor:?}, which no tooltip component or appender adds lines for",
+                            part.mod_id, part.component
+                        ));
+                        continue;
+                    };
+                    match part.placement {
+                        crate::TooltipPlacement::Before(_) => (me, other),
+                        _ => (other, me),
+                    }
+                }
+            };
+            add(from, to, &mut edges);
+        }
+        let mut ready: std::collections::BinaryHeap<std::cmp::Reverse<usize>> = (0..count)
+            .filter(|&n| incoming[n] == 0)
+            .map(std::cmp::Reverse)
+            .collect();
+        let mut order = Vec::with_capacity(count);
+        while let Some(std::cmp::Reverse(n)) = ready.pop() {
+            order.push(n);
+            for &next in &edges[n] {
+                incoming[next] -= 1;
+                if incoming[next] == 0 {
+                    ready.push(std::cmp::Reverse(next));
+                }
+            }
+        }
+        if order.len() < count {
+            let name = |n: usize| {
+                vanilla
+                    .get(n)
+                    .copied()
+                    .unwrap_or_else(|| &*appenders[n - vanilla.len()].component)
+            };
+            let cycle: Vec<&str> = (0..count).filter(|&n| incoming[n] > 0).map(name).collect();
+            let owners: Vec<&str> = (vanilla.len()..count)
+                .filter(|&n| incoming[n] > 0)
+                .map(|n| appenders[n - vanilla.len()].mod_id)
+                .collect();
+            refused.push(format!(
+                "tooltip appenders of {} form a cycle through {}",
+                owners.join(", "),
+                cycle.join(" -> ")
+            ));
+        }
+        if !refused.is_empty() {
+            self.refused.extend(refused);
+            return;
+        }
+        let mut sorted = Vec::with_capacity(appenders.len());
+        let mut slot = 0;
+        let mut taken: Vec<Option<TooltipAppenderPart>> =
+            std::mem::take(appenders).into_iter().map(Some).collect();
+        for n in order {
+            match n.checked_sub(vanilla.len()) {
+                None => slot += 1,
+                Some(i) => {
+                    let mut part = taken[i].take().expect("each node is sorted once");
+                    part.slot = slot;
+                    sorted.push(part);
+                }
+            }
+        }
+        *appenders = sorted;
+    }
+}
+
+#[cfg(test)]
+mod tooltip_order_tests {
+    use super::*;
+    use crate::TooltipPlacement::{After, AfterAll, Before, BeforeAll};
+
+    struct Silent;
+    impl crate::TooltipAppender for Silent {
+        fn append(
+            &self,
+            _: &dyn crate::ClientHost,
+            _: &crate::ItemStack,
+            _: &crate::TooltipAppendContext,
+            _: &mut Vec<(crate::Text, u32)>,
+        ) {
+        }
+    }
+
+    /// Registers each (mod, component, placement) in turn and sorts them.
+    fn ordered(appenders: &[(&'static str, &str, crate::TooltipPlacement)]) -> PartRegistrar {
+        let mut registrar = PartRegistrar::new("first");
+        for (index, (mod_id, component, placement)) in appenders.iter().enumerate() {
+            registrar.mod_id = mod_id;
+            registrar.mod_index = index;
+            registrar.register_tooltip_appender(component, placement.clone(), Arc::new(Silent));
+        }
+        registrar.order_tooltip_appenders();
+        registrar
+    }
+
+    fn vanilla(id: &str) -> usize {
+        mod_vocab::VANILLA_TOOLTIP_COMPONENTS
+            .iter()
+            .position(|v| *v == id)
+            .unwrap()
+    }
+
+    fn sorted(registrar: &PartRegistrar) -> Vec<(&str, usize)> {
+        let parts = &registrar.parts.tooltip_appenders;
+        parts.iter().map(|p| (&*p.component, p.slot)).collect()
+    }
+
+    /// As FML's `TopologicalSort` with insertion order: the vanilla components come first, so an
+    /// appender that only follows one lands after the last of them, and an appender a `Before`
+    /// holds back comes just before its anchor.
+    #[test]
+    fn appenders_sort_after_their_anchors_with_ties_in_registration_order() {
+        let last = mod_vocab::VANILLA_TOOLTIP_COMPONENTS.len();
+        let registrar = ordered(&[
+            ("a", "a:tail", AfterAll),
+            ("b", "b:on_a", After("a:charge".into())),
+            ("a", "a:charge", After("minecraft:lore".into())),
+            ("b", "b:head", BeforeAll),
+            ("b", "b:before_a", Before("a:charge".into())),
+            ("a", "a:second_tail", AfterAll),
+        ]);
+        assert!(registrar.refused.is_empty(), "{:?}", registrar.refused);
+        assert_eq!(
+            sorted(&registrar),
+            [
+                ("b:head", 0),
+                ("a:tail", last),
+                ("b:before_a", last),
+                ("a:charge", last),
+                ("b:on_a", last),
+                ("a:second_tail", last),
+            ]
+        );
+        let registrar = ordered(&[
+            ("a", "a:pre_trim", Before("minecraft:trim".into())),
+            ("b", "b:on_a", After("a:pre_trim".into())),
+            ("b", "b:pre_on_a", Before("b:on_a".into())),
+        ]);
+        let trim = vanilla("minecraft:trim");
+        assert_eq!(
+            sorted(&registrar),
+            [("a:pre_trim", trim), ("b:pre_on_a", last), ("b:on_a", last)]
+        );
+    }
+
+    #[test]
+    fn a_second_appender_for_a_component_is_refused() {
+        let registrar = ordered(&[
+            ("a", "a:charge", AfterAll),
+            ("b", "a:charge", AfterAll),
+            ("b", "minecraft:lore", AfterAll),
+            ("b", "bare", AfterAll),
+        ]);
+        assert_eq!(registrar.refused.len(), 3, "{:?}", registrar.refused);
+        assert!(registrar.refused[0].contains("by a and b"));
+        assert!(registrar.refused[1].contains("minecraft:lore"));
+        assert_eq!(
+            sorted(&registrar),
+            [("a:charge", vanilla("minecraft:damage") + 1)]
+        );
+    }
+
+    #[test]
+    fn an_anchor_nothing_adds_lines_for_is_refused() {
+        let registrar = ordered(&[("a", "a:charge", After("b:missing".into()))]);
+        assert_eq!(registrar.refused.len(), 1);
+        assert!(registrar.refused[0].contains("\"b:missing\""));
+    }
+
+    #[test]
+    fn anchors_that_form_a_cycle_are_refused() {
+        let registrar = ordered(&[
+            ("a", "a:one", After("b:two".into())),
+            ("b", "b:two", After("a:one".into())),
+            ("c", "c:free", AfterAll),
+        ]);
+        assert_eq!(registrar.refused.len(), 1, "{:?}", registrar.refused);
+        let refusal = &registrar.refused[0];
+        assert!(refusal.contains("a, b") && refusal.contains("a:one -> b:two"));
+        assert!(!refusal.contains("c:free"));
+    }
+}

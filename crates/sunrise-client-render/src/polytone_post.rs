@@ -201,20 +201,22 @@ pub struct ShaderModifiers {
 pub const MAX_SHADER_MODIFIERS_FILE: u64 = 64 * 1024;
 
 /// One expression uniform of a pipeline, resolved when its shader loads: the block's binding
-/// and the stages that read it, and the program that gives its value each frame.
+/// and the stages that read it, with an optional expression program.
 #[derive(Clone)]
 pub struct ExpressionUniform {
     pub name: String,
     pub binding: u32,
     pub stages: wgpu::ShaderStages,
-    program: Arc<Program>,
+    program: Option<Arc<Program>>,
     configs: Arc<sunrise_polytone::pack::Configs>,
 }
 
 impl ExpressionUniform {
-    /// Its value in `frame` (the packs' expression context): the expression's, 0 when it fails.
+    /// The expression's value in `frame`, or zero when missing or when evaluation fails.
     pub fn evaluate(&self, frame: &Frame) -> f32 {
-        crate::environment::eval_frame(&self.program, frame, &self.configs)
+        self.program
+            .as_ref()
+            .and_then(|program| crate::environment::eval_frame(program, frame, &self.configs))
             .map_or(0.0, |v| v.num() as f32)
     }
 }
@@ -232,30 +234,30 @@ impl std::fmt::Debug for ExpressionUniform {
 /// Why a pack core shader's expression uniforms refuse it when it loads.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ExpressionRefusal {
-    /// A stage reads the block, and it is not one float.
-    NotOneFloat(String),
-    /// A stage reads the block, and no `shader_modifiers` file of the pipeline's shaders gives it.
-    NotGiven(String),
+    /// A stage reads the block, and it is not one float: where it is declared, and its name.
+    NotOneFloat(sunrise_glsl::Location, String),
     /// A `shader_modifiers` file of the pipeline's shaders gives a block the game fills
     /// (`LightmapInfo`, `PolyGlobals`).
     Reserved(String),
     /// The shaders declare `PolyGlobals` other than its layout
-    /// (`expression_blocks::check_poly_globals`).
-    Globals(crate::gfx::expression_blocks::GlobalsRefusal),
+    /// (`expression_blocks::check_poly_globals`), at that declaration.
+    Globals(
+        sunrise_glsl::Location,
+        crate::gfx::expression_blocks::GlobalsRefusal,
+    ),
 }
 
 impl std::fmt::Display for ExpressionRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NotOneFloat(name) => write!(f, "its block {name} is not one float"),
-            Self::NotGiven(name) => {
-                write!(f, "no shader_modifiers file of its shaders gives {name}")
-            }
+            Self::NotOneFloat(at, name) => at
+                .error(format!("its block {name} is not one float"))
+                .fmt(f),
             Self::Reserved(name) => write!(
                 f,
                 "a shader_modifiers file of its shaders gives {name}, which the game fills"
             ),
-            Self::Globals(e) => e.fmt(f),
+            Self::Globals(at, e) => at.error(e).fmt(f),
         }
     }
 }
@@ -339,34 +341,23 @@ impl ShaderModifiers {
             name: name.to_owned(),
             binding,
             stages,
-            program: program.clone(),
+            program: Some(program.clone()),
             configs: self.configs.clone(),
         }
-    }
-
-    /// The names the files of `shaders` (a pipeline's stages' ids) give: the blocks the loader
-    /// lets the pipeline's shaders declare.
-    pub fn names(&self, shaders: &[&str]) -> Vec<String> {
-        let mut names: Vec<String> = (self.shaders.iter())
-            .filter(|(id, _)| shaders.contains(&id.as_str()))
-            .flat_map(|(_, uniforms)| uniforms.iter().map(|(n, _)| n.clone()))
-            .collect();
-        names.sort_unstable();
-        names.dedup();
-        names
     }
 
     /// The expression uniforms of `program`, a pipeline whose vertex stage is shader
     /// `vertex` and whose fragment stage is `fragment` (their ids): each of its blocks but
     /// `own` that a stage reads, with that stage's file's expression. A block both stages
     /// read, or that both files give, takes the fragment shader's file's first, then the
-    /// vertex shader's. One no stage reads is not bound; one that isn't one float refuses
-    /// the shader, named. So does a file of these shaders giving one of `own` (the game's), and
+    /// vertex shader's. Without either expression, the block reads zero. Unread blocks are
+    /// skipped. A read block that isn't a single float refuses the shader, as does an
+    /// expression for one of `own` (the game's), or
     /// a `PolyGlobals` declared other than its layout, the same rule as the post shaders'.
     pub fn resolve(
         &self,
         (vertex, fragment): (&str, &str),
-        program: &crate::core_shader::CoreProgram,
+        program: &sunrise_glsl::Translated,
         own: &[&str],
     ) -> Result<Vec<ExpressionUniform>, ExpressionRefusal> {
         if let Some(name) = (own.iter()).find(|name| {
@@ -378,39 +369,40 @@ impl ShaderModifiers {
         }
         if let Some(i) = (program.other.iter()).position(|n| n == sunrise_polytone::globals::BLOCK)
         {
-            let binding = crate::core_shader::other_binding(i);
+            let binding = program.other_binding(i);
             crate::gfx::expression_blocks::check_poly_globals(
                 [&program.vertex, &program.fragment],
                 binding,
             )
-            .map_err(ExpressionRefusal::Globals)?;
+            .map_err(|e| ExpressionRefusal::Globals(program.declared_at(binding), e))?;
         }
         let mut uniforms = Vec::new();
         for (i, name) in program.other.iter().enumerate() {
             if own.contains(&name.as_str()) {
                 continue;
             }
-            let binding = crate::core_shader::other_binding(i);
+            let binding = program.other_binding(i);
             let stages = program.stages_reading(binding);
             if stages.is_empty() {
                 continue;
             }
             if !program.is_float_block(binding) {
-                return Err(ExpressionRefusal::NotOneFloat(name.clone()));
+                return Err(ExpressionRefusal::NotOneFloat(
+                    program.declared_at(binding),
+                    name.clone(),
+                ));
             }
             let order = if stages.contains(wgpu::ShaderStages::FRAGMENT) {
                 [fragment, vertex]
             } else {
                 [vertex, fragment]
             };
-            let program = (order.iter())
-                .find_map(|id| self.uniform(id, name))
-                .ok_or_else(|| ExpressionRefusal::NotGiven(name.clone()))?;
+            let program = order.iter().find_map(|id| self.uniform(id, name)).cloned();
             uniforms.push(ExpressionUniform {
                 name: name.clone(),
                 binding,
                 stages,
-                program: program.clone(),
+                program,
                 configs: self.configs.clone(),
             });
         }
@@ -439,11 +431,7 @@ mod tests {
     /// A lightmap pipeline's program whose vertex stage reads blocks `vertex` and whose
     /// fragment stage reads `fragment` (each `uniform Name { float v; };`, or `vec4` for one
     /// named `Wide`), besides `LightmapInfo` and the blocks in `unused`, declared and not read.
-    fn program(
-        vertex: &[&str],
-        fragment: &[&str],
-        unused: &[&str],
-    ) -> crate::core_shader::CoreProgram {
+    fn program(vertex: &[&str], fragment: &[&str], unused: &[&str]) -> sunrise_glsl::Translated {
         let block = |name: &&str| {
             let ty = if *name == "Wide" { "vec4" } else { "float" };
             format!(
@@ -491,7 +479,7 @@ mod tests {
 
     fn resolved(
         modifiers: &ShaderModifiers,
-        program: &crate::core_shader::CoreProgram,
+        program: &sunrise_glsl::Translated,
     ) -> Result<Vec<(String, wgpu::ShaderStages, f32)>, ExpressionRefusal> {
         let [vertex, fragment] = crate::gfx::LIGHTMAP_SHADERS;
         let uniforms = modifiers.resolve((vertex, fragment), program, &["LightmapInfo"])?;
@@ -525,12 +513,6 @@ mod tests {
             ]),
             Default::default(),
         );
-        let lightmap = crate::gfx::LIGHTMAP_SHADERS;
-        assert_eq!(
-            modifiers.names(&lightmap),
-            ["Both", "Frag", "Unused", "Vert", "Wide"]
-        );
-        assert_eq!(modifiers.names(&["minecraft:core/sky"]), ["Sky"]);
         let (v, f) = (wgpu::ShaderStages::VERTEX, wgpu::ShaderStages::FRAGMENT);
         let split = program(&["Vert", "Both"], &["Frag", "Both"], &["Unused"]);
         assert_eq!(
@@ -556,7 +538,13 @@ mod tests {
         let wide = program(&[], &["Wide"], &[]);
         assert_eq!(
             resolved(&modifiers, &wide).unwrap_err(),
-            ExpressionRefusal::NotOneFloat("Wide".into())
+            ExpressionRefusal::NotOneFloat(
+                sunrise_glsl::Location {
+                    file: "minecraft:shaders/core/core.fsh".into(),
+                    line: 5,
+                },
+                "Wide".into()
+            )
         );
         // A `vec4` the vertex stage only declares binds nothing: the fragment stage's float of
         // that name is what the pipeline reads.
@@ -580,14 +568,13 @@ mod tests {
         // A block a stage reads that no file of the pipeline's shaders gives.
         let ungiven = program(&[], &["Sky"], &[]);
         assert_eq!(
-            resolved(&modifiers, &ungiven).unwrap_err(),
-            ExpressionRefusal::NotGiven("Sky".into())
+            resolved(&modifiers, &ungiven).unwrap(),
+            [("Sky".to_owned(), f, 0.0)]
         );
     }
 
     /// A file over the read budget, not JSON, or refused by its contents is left out, named by
-    /// its resource path: its uniforms are no shader's, so a shader reading one is refused
-    /// when it loads.
+    /// its resource path.
     #[test]
     fn a_bad_shader_modifiers_file_is_left_out_by_its_path() {
         let budget = MAX_SHADER_MODIFIERS_FILE as usize;

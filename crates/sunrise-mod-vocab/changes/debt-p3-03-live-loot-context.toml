@@ -1,0 +1,164 @@
+ids = [
+    # Removed owned loot parameter snapshot types, constructors, and Wire encodings
+    "type:world::snapshots::LootContext",
+    "handle:world::snapshots::LootContext::new",
+    "type:world::snapshots::LootTool",
+    "handle:world::snapshots::LootTool::new",
+    "type:world::snapshots::LootEntity",
+    "type:world::snapshots::LootDamage",
+    "type:world::snapshots::LootPlace",
+    "type:world::snapshots::LootLevel",
+    # Retained loot data types that are no longer Wire
+    "type:world::snapshots::LootStack",
+    "type:world::snapshots::ExplorationMap",
+    "type:LootModifierError",
+    "type:LootModifierSettings",
+    # Removed raw JSON carrier for loot type entries
+    "type:LootEntryData",
+    "handle:LootEntryData::new",
+    "handle:LootEntryData::value",
+    # Load-time loot codecs and bound rules
+    "trait:ModLootFunctionCodec",
+    "method:ModLootFunctionCodec::decode",
+    "method:ModLootFunctionCodec::conditional",
+    "trait:ModLootConditionCodec",
+    "method:ModLootConditionCodec::decode",
+    "trait:ModLootFunction",
+    "method:ModLootFunction::validate",
+    "method:ModLootFunction::conditional",
+    "method:ModLootFunction::apply",
+    "trait:ModLootCondition",
+    "method:ModLootCondition::validate",
+    "method:ModLootCondition::test",
+    "method:LootTypesRegistrar::add_loot_function_type",
+    "method:LootTypesRegistrar::add_loot_condition_type",
+    "handle:Registrar::register_loot_function_type",
+    "handle:Registrar::register_loot_condition_type",
+    "method:LootTypeContext::snapshot",
+    "method:LootTypeContext::params",
+    # Global loot modifier in-place editing and borrowed raw sub-rolls
+    "trait:GlobalLootModifier",
+    "method:GlobalLootModifier::apply",
+    "method:LootModifierContext::snapshot",
+    "method:LootModifierContext::params",
+    "method:LootModifierContext::roll_raw",
+    "method:LootModifierContext::append_raw",
+    # Borrowed loot parameter views, stack editors, and live generated list
+    "type:LootParamsView",
+    "handle:LootParamsView::block",
+    "type:LootBlockView",
+    "handle:LootBlockView::id",
+    "handle:LootBlockView::property",
+    "handle:LootParamsView::interacting_entity",
+    "type:LootToolView",
+    "type:LootEntityView",
+    "type:LootDamageView",
+    "type:LootLevelView",
+    "type:LootStackView",
+    "handle:LootStackView::to_owned",
+    "type:LootExplorationView",
+    "type:LootStackEditError",
+    "type:LootStackEditor",
+    "type:LootList",
+    # Item ability hook: borrowed stack view, no host on either route
+    "hook:can_perform_action",
+    "hook:can_perform_action.stack",
+    "type:CanPerformActionEvent.stack",
+    "method:ItemPart::can_perform_action",
+    "type:ItemAbilityContext",
+    "handle:ItemAbilityContext::tags",
+]
+why = """
+Vanilla 26.3 (`net.minecraft.world.level.storage.loot.LootContext`, `LootParams`,
+`LootItemFunction`, `LootItemCondition`, `LootItemConditionalFunction`,
+`LootContextUser.getReferencedContextParams`, `LootTable.getRandomItems`,
+`Block.dropFromBlockInteractLootTable`, `LootContextParamSets.BLOCK_INTERACT`,
+`NbtAccounter.MAX_STACK_DEPTH`) and NeoForge (`IGlobalLootModifier`,
+`CanItemPerformAbility`, `IItemExtension.canPerformAction`) decode custom loot
+functions and conditions once when data loads into bound rule objects, lend
+read-only loot parameters instead of cloning snapshots per callback, edit live
+loot candidates and modifier output lists in place, and evaluate
+`neoforge:can_item_perform_ability` without fabricating a gameplay `Host`.
+NeoForge's `IItemExtension.canPerformAction(ItemStack, ItemAbility)` gets no level
+on either route, so its answer for a stack is the same whether gameplay or a loot
+predicate asks; Sunrise's hook now matches it and lends only the merged tags.
+
+Sunrise previously passed raw `LootEntryData` JSON on every roll, cloned full
+`LootContext`, `LootTool`, `LootEntity`, `LootDamage`, `LootPlace`, `LootLevel`
+and `Vec<LootStack>` snapshots (with `Wire` derives and a legacy zeroed `seed`
+field), and backed loot item-ability checks with a synthetic `Host`.
+
+This clean break separates load-time codecs (`ModLootFunctionCodec`,
+`ModLootConditionCodec`) from bound rules (`ModLootFunction`,
+`ModLootCondition`), replaces snapshot cloning with borrowed views and in-place
+editors (`LootParamsView`, `LootToolView`, `LootEntityView`, `LootDamageView`,
+`LootLevelView`, `LootStackView`, `LootExplorationView`, `LootStackEditor`,
+`LootList`), adds direct `LootModifierContext::append_raw` alongside a
+borrowed-view `roll_raw` visitor, removes `Wire` from in-process loot value
+types, and moves `ItemPart::can_perform_action` to `ItemAbilityContext` +
+`ItemStackView` (hook version 2), which lends no `Host` on either route.
+"""
+migrate = """
+1. Custom loot functions and conditions (`ModLootFunctionCodec` / `ModLootConditionCodec`):
+   - Split each registered loot function or condition into a load-time codec
+     implementing `ModLootFunctionCodec` (with `decode(&serde_json::Value) -> Result<Arc<dyn ModLootFunction>, String>`
+     and optional `conditional() -> bool`, defaulting to `true`) or
+     `ModLootConditionCodec` (with `decode(&serde_json::Value) -> Result<Arc<dyn ModLootCondition>, String>`),
+     and a bound immutable rule implementing `ModLootFunction` or `ModLootCondition`.
+   - Pass the codec to `Registrar::register_loot_function_type` / `register_loot_condition_type`.
+   - Remove `validate(&LootEntryData)` and `LootEntryData` arguments; parse and
+     validate JSON fields once inside `decode`, store typed state on the rule,
+     and keep `referenced_context_params` on the bound rule.
+   - Update `ModLootFunction::apply(&self, stack: &mut LootStackEditor<'_>, context: &mut dyn LootTypeContext) -> Result<(), String>`
+     to mutate the candidate in place (`stack.view()`, `stack.set_count(...)`,
+     `stack.set_damage(...)`, `stack.push_component(...)`, etc.), calling
+     `stack.to_owned()?` / `stack.replace(owned)?` only when an owned `LootStack` is required.
+   - Update `ModLootCondition::test(&self, context: &mut dyn LootTypeContext) -> Result<bool, String>`.
+
+2. Borrowed loot parameters (`LootParamsView`):
+   - Replace `context.snapshot()` with `context.params()` on both
+     `LootTypeContext` and `LootModifierContext`.
+   - Replace field reads on `LootContext`, `LootTool`, `LootEntity`,
+     `LootDamage`, `LootPlace` and `LootLevel` with the corresponding getter
+     methods on `LootParamsView` and its child views (`params.entity()`,
+     `params.last_damage_player()`, `params.interacting_entity()`,
+     `params.damage()`, `params.tool()`, `params.block()`, `params.biome()`,
+     `params.origin()`, `params.block_entity()`, `params.level()`,
+     `params.luck()`, `params.queried_table_id()`, `params.queried_stack()`).
+   - `handle:LootParamsView::block`: use `params.block()` to borrow `BLOCK_STATE`, not a string.
+   - `type:LootBlockView`: keep this view only for the parameter borrow; it refers to the evaluated state.
+   - `handle:LootBlockView::id`: replace string reads of the block id with `block.id()`.
+   - `handle:LootBlockView::property`: use `block.property("honey_level")` to read a supplied state property.
+   - Release any borrow from `context.params()` before calling `context.random()`,
+     and use `context.random()` directly (the removed `seed` field had no seed).
+   - `LootStack`, `ExplorationMap`, `LootModifierError` and `LootModifierSettings`
+     no longer implement `Wire`; copy fields into your own `Wire` type if you
+     need to send them over a mod payload.
+
+3. Global loot modifiers (`GlobalLootModifier`, `LootList`, raw sub-rolls):
+   - Change `GlobalLootModifier::apply` from
+     `(&self, context: &mut dyn LootModifierContext, generated: Vec<LootStack>) -> Result<Vec<LootStack>, LootModifierError>`
+     to `(&self, context: &mut dyn LootModifierContext, generated: &mut LootList<'_>) -> Result<(), LootModifierError>`.
+   - Inspect or edit entries in place through `generated.get(i)` (`LootStackView`),
+     `generated.get_mut(i)` (`LootStackEditor`), `generated.iter()`, `push`,
+     `insert`, `replace`, `remove`, `pop`, `clear`, `truncate`, `swap`, `reverse`,
+     `reorder` and `retain`. `LootStackEditError` converts into `LootModifierError` via `?`.
+   - `method:LootModifierContext::append_raw`: replace `generated.extend(context.roll_raw(&table)?)`
+     with `context.append_raw(&table, generated)?` to append raw sub-rolls without
+     snapshot round-trips. Pass the same `generated` loan supplied to `apply`.
+   - When inspecting sub-roll entries before keeping them, pass a visitor to
+     `context.roll_raw(&table, &mut |stack| { ... })` and call `stack.to_owned()?`
+     only for stacks you retain.
+
+4. Item abilities (`ItemPart::can_perform_action`, version 2):
+   - Change the signature from
+     `fn can_perform_action(&self, host: &dyn Host, event: &mut CanPerformActionEvent)`
+     to `fn can_perform_action(&self, context: &ItemAbilityContext<'_>, event: &mut CanPerformActionEvent<'_>)`.
+   - Use `context.tags()` for tag lookups. The old `host` argument is gone with no
+     replacement: answer from the stack and the ability alone, since gameplay and
+     `neoforge:can_item_perform_ability` loot predicates must get the same answer.
+     Move behaviour that depends on the world to the hook for that moment (block
+     breaking, item use).
+   - Read item identity and count directly from `event.stack` (`ItemStackView<'_>`)
+     and call `event.stack.project()` only when components or an owned `ItemStack` are needed.
+"""

@@ -27,6 +27,12 @@ The vanilla side runs the pinned server jar from tools/lab.py prepare (your own 
 Sunrise side runs target/release/sunrise-server with the engine beside it; build both first:
     cargo build --release -p sunrise-game --bin sunrise-client -p sunrise-server -p sunrise-bots
 
+The entity load scenarios keep bots still on a flat world. Use a warm-up long enough for all bots to join
+and generate the chunks around their destination. The JSON report records measured TPS, MSPT and each bot's ping:
+    python3 tools/server_bench.py --servers sunrise --behaviour idle --ground --bots 40 --spread-bots 384 --warmup 180
+    python3 tools/server_bench.py --servers sunrise --behaviour idle --ground --bots 10 --water-stands 1000 --warmup 120
+Add `--gamerule spawn_mobs=false` to the dispersed-bot command for a control run.
+
 Two more Java servers, both dev-only downloads into .local/server-bench/jars (never committed or shipped):
 - `paper`: Paper's newest build for the pinned version, from PaperMC's download API, checked against the
   SHA-256 it publishes, with Paper's own defaults except `connection-throttle` (off: the bots all join from
@@ -49,6 +55,7 @@ has the comparison and its commands.
 import argparse
 import datetime
 import json
+import math
 import os
 from pathlib import Path
 import platform
@@ -62,14 +69,10 @@ import time
 import urllib.request
 import zipfile
 
-try:
-    from . import lab, runtime, test_rust_parity as base
-except ImportError:
-    import lab
-    import runtime
-    import test_rust_parity as base
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, runtime, test_rust_parity as base
 
-ROOT = lab.ROOT
 EXE = '.exe' if os.name == 'nt' else ''
 # Where sunrise-server and sunrise-bots are (the engine is found beside sunrise-server or on the PATH).
 BIN = Path(os.environ.get('SUNRISE_BENCH_BIN', ROOT / 'target/release'))
@@ -274,16 +277,16 @@ def pumpkin_defaults(exe, out):
     return files
 
 
-def pumpkin_config(text, port, args):
-    """Pumpkin's default configuration with the benchmark's settings (PROPERTIES), listening on 127.0.0.1 only,
+def pumpkin_config(text, port, args, properties=PROPERTIES):
+    """Pumpkin's default configuration with the benchmark's settings, listening on 127.0.0.1 only,
     with no Bedrock or LAN listener, query, plugins or telemetry."""
     top = {'seed': f'"{args.seed}"', 'default_difficulty': '"Easy"', 'default_gamemode': '"Creative"',
            'force_gamemode': 'true', 'spawn_protection': '0', 'white_list': 'false', 'use_tty': 'false'}
     sections = {
         'logging': {'color': 'false'},
         'networking.java': {'address': f'"127.0.0.1:{port}"', 'online_mode': 'false', 'encryption': 'false',
-                            'max_players': '200', 'view_distance': PROPERTIES['view-distance'],
-                            'simulation_distance': PROPERTIES['simulation-distance']},
+                            'max_players': '200', 'view_distance': properties['view-distance'],
+                            'simulation_distance': properties['simulation-distance']},
         'networking.java.authentication': {'enabled': 'false'},
         'networking.java.authentication.textures': {'enabled': 'false'},
         'networking.query': {'enabled': 'false', 'address': f'"127.0.0.1:{port + 1}"'},
@@ -329,7 +332,7 @@ def tick_query(server):
     return {'average': average, 'p50': percentiles[0], 'p95': percentiles[1], 'p99': percentiles[2]}
 
 
-def server_command(kind, directory, args):
+def server_command(kind, directory, args, properties=PROPERTIES):
     java = ['java', f'-Xms{args.heap}', f'-Xmx{args.heap}', '-Duser.timezone=UTC']
     if kind == 'vanilla':
         _, jars, libraries = base.verify_artifacts()
@@ -371,7 +374,8 @@ def server_command(kind, directory, args):
             args.pumpkin_files = pumpkin_defaults(args.pumpkin, directory.parent)
         for name, text in args.pumpkin_files.items():
             (directory / name).parent.mkdir(parents=True, exist_ok=True)
-            (directory / name).write_text(pumpkin_config(text, args.port, args) if '[networking.java]' in text else text)
+            (directory / name).write_text(pumpkin_config(text, args.port, args, properties)
+                                          if '[networking.java]' in text else text)
         return [args.pumpkin]
     server = BIN / f'sunrise-server{EXE}'
     subprocess.run([server, '--dir', directory, 'import', directory / 'server.properties'], check=True,
@@ -448,23 +452,84 @@ def populate(server, spec, seed):
             server.console(f'execute at @r run summon {kind} ~{dx} ~3 ~{dz} {data}'.rstrip())
 
 
+def entity_load_status(directory):
+    """Read the server's own TPS, tick timings and per-player latency."""
+    result = subprocess.run([BIN / f'sunrise-server{EXE}', '--dir', directory, 'status', '--json'],
+                            check=True, capture_output=True, text=True, timeout=5)
+    return (json.loads(result.stdout).get('sample') or {}).get('game') or {}
+
+
+def prepare_entity_load(server, directory, bots, args, deadline):
+    names = [f'Bot{i}' for i in range(bots)]
+    players = {}
+    while time.monotonic() < deadline:
+        try:
+            players = {p['name']: p for p in entity_load_status(directory).get('players', [])}
+        except (subprocess.SubprocessError, OSError, ValueError):
+            players = {}
+        if all(name in players for name in names):
+            break
+        time.sleep(0.5)
+    else:
+        raise RuntimeError(f'entity load setup timed out waiting for bots: {sorted(set(names) - players.keys())}')
+
+    x, y, z = map(math.floor, players[names[0]]['position'])
+    # Keep idle survival bots alive and targetable throughout the run.
+    server.console('effect give @a minecraft:resistance infinite 4 true')
+    if args.spread_bots:
+        server.console('time set midnight')
+        server.console('gamerule advance_time false')
+        width = math.isqrt(bots - 1) + 1
+        for i, name in enumerate(names):
+            dx = (i % width) * args.spread_bots
+            dz = (i // width) * args.spread_bots
+            server.console(f'teleport {name} {x + dx + 0.5} {y} {z + dz + 0.5}')
+    else:
+        # Soul sand keeps moving the stands after the warm-up. The stone rim holds the water.
+        x += 4
+        z += 4
+        server.console(f'fill {x} {y} {z} {x + 9} {y + 4} {z + 9} stone outline')
+        server.console(f'fill {x + 1} {y + 4} {z + 1} {x + 8} {y + 4} {z + 8} air')
+        server.console(f'fill {x + 1} {y + 1} {z + 1} {x + 8} {y + 3} {z + 8} water')
+        server.console(f'fill {x + 1} {y} {z + 1} {x + 8} {y} {z + 8} soul_sand')
+        for i in range(args.water_stands):
+            bx = x + 1.5 + i % 8
+            bz = z + 1.5 + (i // 8) % 8
+            by = y + 1.1 + (i % 7) / 4
+            server.console(f'summon armor_stand {bx} {by} {bz}')
+    ready = 'entity-load benchmark setup complete'
+    server.console(f'say {ready}')
+    server.wait_for(re.escape(ready), max(0, deadline - time.monotonic()))
+
+
 def run_once(kind, bots, behaviour, args, out):
     name = f'{kind}-{behaviour}-{bots}'
+    if args.spread_bots:
+        name += f'-spread-{args.spread_bots}'
+    elif args.water_stands:
+        name += f'-water-stands-{args.water_stands}'
     directory = out / name
     shutil.rmtree(directory, ignore_errors=True)
     directory.mkdir(parents=True)
     port = args.port = lab.free_port()
     props = dict(PROPERTIES, **{'server-port': str(port), 'level-seed': str(args.seed)})
+    props['view-distance'] = str(args.view_distance)
+    props['simulation-distance'] = str(args.simulation_distance)
     if args.ground:
         props.update({'level-type': 'minecraft\\:flat', 'generate-structures': 'false', 'gamemode': 'survival'})
+    if args.spread_bots:
+        # A fixed spawn Y may be above the ground at some of the teleports.
+        props['allow-flight'] = 'true'
     (directory / 'server.properties').write_text(''.join(f'{k}={v}\n' for k, v in props.items()))
     (directory / 'eula.txt').write_text('eula=true\n')
-    command = server_command(kind, directory, args)
+    command = server_command(kind, directory, args, props)
     if args.nice:
         command = ['nice', '-n', str(args.nice), *command]
     started = time.time()
     server = Server(command, directory, out / f'{name}.log')
     result = {'server': kind, 'bots': bots, 'behaviour': behaviour}
+    entity_load = args.spread_bots or args.water_stands
+    bot_process = None
     try:
         server.wait_for(PUMPKIN_READY if kind == 'pumpkin' else DONE, 600)
         result['start_seconds'] = round(time.time() - started, 2)
@@ -472,6 +537,8 @@ def run_once(kind, bots, behaviour, args, out):
         server.console('gamerule respawn_radius 0')
         for rule in filter(None, args.gamerule.split(',')):
             server.console('gamerule ' + rule.replace('=', ' '))
+        if args.water_stands:
+            server.console('gamerule spawn_mobs false')
         if args.farm:
             # A farm of mobs ~100 blocks east of the spawn, inside the simulation distance and far from
             # the bots: the mobs a player is not near. Cows and villagers (zombies would burn in daylight), two blocks apart so cramming leaves them be.
@@ -484,6 +551,7 @@ def run_once(kind, bots, behaviour, args, out):
         total = bots * args.join_every + args.warmup + args.seconds
         # The summary comes back on stdout after the per-second lines, so it works over ssh too.
         # No bots: the idle server, measured the same way.
+        bots_started = time.monotonic()
         bot_process = subprocess.Popen(['true'] if bots == 0 else [
              *bots_command(args), '--server', f'{args.connect}:{port}', '--bots', str(bots),
              '--behaviour', behaviour, '--join-every', str(args.join_every), '--seconds', str(int(total)),
@@ -495,7 +563,11 @@ def run_once(kind, bots, behaviour, args, out):
         bot_lines = []
         threading.Thread(target=lambda: bot_lines.extend(bot_process.stdout), daemon=True).start()
         # All bots in, then the warm-up.
-        if args.entities:
+        if entity_load:
+            measure_at = bots_started + bots * args.join_every + args.warmup
+            prepare_entity_load(server, directory, bots, args, measure_at)
+            time.sleep(max(0, measure_at - time.monotonic()))
+        elif args.entities:
             time.sleep(bots * args.join_every)
             populate(server, args.entities, args.seed)
             time.sleep(args.warmup)
@@ -504,6 +576,7 @@ def run_once(kind, bots, behaviour, args, out):
         profiling = start_profile(server, kind, args)
         measure_start = time.time()
         rss, cpu, ticks = [], [], []
+        load_samples, sample_failures = [], 0
         _, last_cpu = tree_usage(server.process.pid)
         last_time = time.time()
         next_query = time.time()
@@ -515,7 +588,30 @@ def run_once(kind, bots, behaviour, args, out):
             cpu.append((c - last_cpu) / (now - last_time) * 100)
             last_cpu, last_time = c, now
             if now >= next_query:
-                if (t := tick_query(server)) is not None:
+                if entity_load:
+                    try:
+                        game = entity_load_status(directory)
+                        if not game:
+                            raise ValueError('no game status sample')
+                    except (subprocess.SubprocessError, OSError, ValueError):
+                        sample_failures += 1
+                    else:
+                        ticks.append(game['mspt'])
+                        load_samples.append({
+                            'seconds': round(now - measure_start, 2),
+                            'tps': game['tps'],
+                            'mspt': game['mspt'],
+                            'levels': game.get('levels', []),
+                            'players': {
+                                p['name']: {
+                                    'ping_ms': p['ping_ms'],
+                                    'position': p['position'],
+                                    'pending_send_bytes': p.get('pending_send_bytes'),
+                                }
+                                for p in game['players']
+                            },
+                        })
+                elif (t := tick_query(server)) is not None:
                     ticks.append(t)
                 next_query = now + 5
         bot_process.wait(timeout=total + 120)
@@ -569,11 +665,19 @@ def run_once(kind, bots, behaviour, args, out):
             'bots_failed': [b for b in summary.get('per_bot', []) if b.get('error')],
             'tick_queries': len(ticks),
         })
+        if entity_load:
+            if not load_samples:
+                raise RuntimeError('entity load benchmark collected no server status samples')
+            result['tps'] = mean([sample['tps'] for sample in load_samples])
+            result['entity_load'] = {'samples': load_samples, 'failed_samples': sample_failures}
         if profiling:
             finish_profile(server, directory, result)
     except Exception as e:  # a failed run is reported, and the next one still runs
         result['error'] = str(e)
     finally:
+        if bot_process is not None and bot_process.poll() is None:
+            bot_process.kill()
+            bot_process.wait()
         server.stop()
     return result
 
@@ -630,6 +734,10 @@ def main():
     parser.add_argument('--warmup', type=int, default=60)
     parser.add_argument('--seconds', type=int, default=300)
     parser.add_argument('--seed', type=int, default=12345)
+    parser.add_argument('--view-distance', type=int, default=int(PROPERTIES['view-distance']),
+                        help='server view distance in chunks')
+    parser.add_argument('--simulation-distance', type=int, default=int(PROPERTIES['simulation-distance']),
+                        help='server simulation distance in chunks')
     parser.add_argument('--explore-speed', type=float, default=0,
                         help='blocks a second the explore bots fly (default: the bots\' 22, as fast as chunks '
                              'come); a speed both servers keep up with makes the explore pass equal work')
@@ -643,6 +751,11 @@ def main():
     parser.add_argument('--nice', type=int, default=0, help='run the servers under nice -n N')
     parser.add_argument('--farm', type=int, default=0,
                         help='summon this many mobs ~100 blocks from the spawn, away from the bots')
+    scenarios = parser.add_mutually_exclusive_group()
+    scenarios.add_argument('--spread-bots', type=int, default=0, metavar='BLOCKS',
+                           help='teleport idle bots onto a grid in a flat world for natural spawning')
+    scenarios.add_argument('--water-stands', type=int, default=0, metavar='COUNT',
+                           help='summon armor stands into a bubble-column tank near idle bots')
     parser.add_argument('--ground', action='store_true',
                         help='a flat survival world, the bots walking on its ground and saying so in every move')
     parser.add_argument('--bots-via', default='', help="a command prefix to run the bots elsewhere ('ssh host')")
@@ -655,6 +768,15 @@ def main():
     parser.add_argument('--repeat', type=int, default=1,
                         help='rounds: every server and bot count once per round, the servers alternated')
     args = parser.parse_args()
+    if not 2 <= args.view_distance <= 32 or not 2 <= args.simulation_distance <= 32:
+        parser.error('view and simulation distances must be between 2 and 32 chunks')
+    if args.spread_bots < 0 or args.water_stands < 0:
+        parser.error('entity load scenario values must be nonnegative')
+    if args.spread_bots or args.water_stands:
+        if args.servers != 'sunrise' or args.behaviour != 'idle' or not args.ground:
+            parser.error('entity load scenarios require --servers sunrise --behaviour idle --ground')
+        if args.entities or args.farm or any(int(n) < 1 for n in args.bots.split(',')):
+            parser.error('entity load scenarios require at least one bot and their own entity setup')
     args.pumpkin_files = None
     out = lab.LOCAL / 'server-bench'
     out.mkdir(parents=True, exist_ok=True)
@@ -677,7 +799,9 @@ def main():
         'versions': versions(args.servers.split(',')),
         'settings': {**{k: v for k, v in vars(args).items() if k != 'pumpkin_files'}, 'out': str(args.out),
                      'pumpkin': str(args.pumpkin) if args.pumpkin else None,
-                     'capture': str(args.capture) if args.capture else None, 'properties': PROPERTIES},
+                     'capture': str(args.capture) if args.capture else None,
+                     'properties': {**PROPERTIES, 'view-distance': str(args.view_distance),
+                                    'simulation-distance': str(args.simulation_distance)}},
         'runs': runs,
         'work': work(runs),
     }

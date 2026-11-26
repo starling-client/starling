@@ -1,8 +1,8 @@
-//! The `WorldDrawContext::name_tag` scene (#4171). It draws only at
-//! `AfterLevel` in a view whose game time is `SCENE_TIME`, so other tests' views stay empty.
+//! The `WorldDrawContext::name_tag` scene (#4171). It submits in `submit_custom_geometry`
+//! only in a view whose game time is `SCENE_TIME`, so other tests' views stay empty.
 use mod_api::{
-    DrawError, NameTagOptions, RenderLevelStage, RenderLevelStageEvent, Text, WorldDepth,
-    WorldLine, text::TextStyle,
+    DrawError, NameTagOptions, SubmitCustomGeometryEvent, Text, WorldDepth, WorldLine,
+    text::TextStyle,
 };
 
 /// The game time of the one view this scene draws in.
@@ -40,11 +40,11 @@ pub fn scene() -> Vec<([f64; 3], Text, NameTagOptions)> {
     ]
 }
 
-pub fn render_level_stage(event: &mut RenderLevelStageEvent<'_>) {
-    if event.stage != RenderLevelStage::AfterLevel || event.view.game_time != SCENE_TIME {
+pub fn submit_custom_geometry(event: &mut SubmitCustomGeometryEvent<'_>) {
+    if event.view.game_time != SCENE_TIME {
         return;
     }
-    let camera = event.view.camera;
+    let camera = event.view.camera_position();
     for (n, (at, text, options)) in scene().into_iter().enumerate() {
         let code = result_code(event.draw.name_tag(at, &text, options));
         // Each call's result as a marker line one
@@ -70,8 +70,6 @@ pub fn result_code(result: Result<(), DrawError>) -> u32 {
         Ok(()) => 0,
         Err(DrawError::NonFinite) => 1,
         Err(DrawError::InvalidWidth) => 2,
-        Err(DrawError::CapacityExceeded) => 3,
-        Err(DrawError::TextRefused) => 5,
-        Err(_) => 6,
+        Err(_) => 4,
     }
 }

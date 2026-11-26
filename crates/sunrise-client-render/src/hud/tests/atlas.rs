@@ -156,43 +156,6 @@ fn object_skin_revision_tracks_changes_and_capacity_clear() {
     assert!(atlas.object_skins.is_empty());
 }
 
-/// The pool of dynamic texture slots is paid only by a game with a client mod loaded: with
-/// none, the atlas packs no slot and does not grow. The slots' names leave the sprites, so
-/// no mod draws a slot another mod's image holds.
-#[test]
-fn the_dynamic_texture_pool_exists_only_when_a_mod_is_loaded() {
-    let root = sunrise_assets::resource_source::ResourceSource::directory(
-        Path::new("/nonexistent/sunrise-test-assets").to_path_buf(),
-    );
-    let plain = HudAtlas::build(&root).unwrap();
-    let without = HudAtlas::build_over_with_dynamic_textures(&root, &root, &root, false).unwrap();
-    assert!(plain.dynamic_texture_pool.is_none() && without.dynamic_texture_pool.is_none());
-    assert_eq!((without.width, without.height), (plain.width, plain.height));
-    let with = HudAtlas::build_over_with_dynamic_textures(&root, &root, &root, true).unwrap();
-    let pool = with.dynamic_texture_pool.as_ref().expect("the pool");
-    assert_eq!(pool.slots(), dynamic_textures::DYNAMIC_TEXTURE_SLOTS);
-    assert!(
-        !with
-            .sprites
-            .keys()
-            .any(|name| name.starts_with("sunrise/dynamic-texture/"))
-    );
-    // Every slot lies whole in the atlas, apart from every other slot.
-    let mut slots = Vec::new();
-    for (class, side) in mod_api::DYNAMIC_TEXTURE_CLASSES.into_iter().enumerate() {
-        for slot in 0..pool.slots()[class] {
-            let [x, y] = pool.origin(class, slot);
-            assert!(x + side <= with.width && y + side <= with.height);
-            slots.push([x, y, x + side, y + side]);
-        }
-    }
-    for (i, a) in slots.iter().enumerate() {
-        for b in &slots[i + 1..] {
-            assert!(a[2] <= b[0] || b[2] <= a[0] || a[3] <= b[1] || b[3] <= a[1]);
-        }
-    }
-}
-
 /// The GUI atlas's final list decides its sprites, under the names the GUI is looked up by
 /// (vanilla's definition: the folder `gui/sprites` with no prefix): a mod's pixels replace a
 /// walked sprite, an alias takes its texture's pixels and flags under the mod's plain id, a
@@ -461,6 +424,14 @@ fn two_gui_ids_of_one_walked_name_and_a_model_only_id_keep_their_own_results() {
     std::fs::remove_dir_all(&root).unwrap();
 }
 
+fn page_texel(page: &RegisteredAtlasPage, rect: Rect) -> [u8; 4] {
+    let [width, height] = page.size;
+    let x = (rect.u0 * width as f32).round() as usize;
+    let y = (rect.v0 * height as f32).round() as usize;
+    let at = (y * width as usize + x) * 4;
+    page.pixels[at..at + 4].try_into().unwrap()
+}
+
 /// A file another owner packed under a name that is also a GUI id (a registered atlas's
 /// projection is `mymod:gui/atlases/...`) is not erased by a GUI filter of that id: it stays
 /// in the packed table, while the GUI lane's answer for the id is its removal.
@@ -484,7 +455,8 @@ fn a_gui_filter_never_erases_a_registered_atlas_sprite_of_its_name() {
         .registered
         .get(name)
         .expect("the projection stays packed");
-    assert_eq!(texel_at(&atlas, packed, 0, 0), [0, 200, 0, 255]);
+    let page = &atlas.registered_pages[atlas.texture_atlas_page(name).unwrap()];
+    assert_eq!(page_texel(page, packed), [0, 200, 0, 255]);
     // The GUI list removed the id: the GUI lane says so, whatever else is packed under the name.
     assert!(matches!(atlas.gui_lookup(name), Some(GuiSprite::Missing)));
     std::fs::remove_dir_all(&root).unwrap();
@@ -529,18 +501,19 @@ fn a_registered_atlas_sprite_and_a_model_of_one_name_both_survive() {
     let atlas = HudAtlas::build(&ResourceSource::directory(root.clone())).unwrap();
     std::fs::remove_dir_all(&root).unwrap();
     let registered = *atlas.gui_rect(name).expect("the registered sprite");
+    let page = &atlas.registered_pages[atlas.gui_atlas_page(name).unwrap()];
     assert_eq!(
-        texel_at(&atlas, registered, 0, 0),
+        page_texel(page, registered),
         [0, 0, 200, 255],
         "the first frame of the staged file's animation"
     );
-    let (_, animation) = atlas
-        .sprite_animations
+    let (_, animation) = page
+        .animations
         .iter()
-        .find(|(rect, _)| rect.u0 == registered.u0 && rect.v0 == registered.v0)
+        .find(|(rect, _)| *rect == registered)
         .expect("the registered sprite animates");
     assert_eq!(
-        animation.resized_pixels(0, 1, 1),
+        animation.resized_pixels(0, 1, 1).unwrap(),
         [0, 200, 0, 255],
         "a later frame"
     );
@@ -548,7 +521,8 @@ fn a_registered_atlas_sprite_and_a_model_of_one_name_both_survive() {
     let model = *atlas.sprites.get(name).expect("the model's sprite");
     assert_eq!(texel_at(&atlas, model, 0, 0), [255, 0, 0, 255]);
     let raw = atlas.texture_rect(raw_name).expect("the exact raw name");
-    assert_eq!(texel_at(&atlas, *raw, 0, 0), [200, 100, 0, 255]);
+    let raw_page = &atlas.registered_pages[atlas.texture_atlas_page(raw_name).unwrap()];
+    assert_eq!(page_texel(raw_page, *raw), [200, 100, 0, 255]);
     assert_eq!(
         atlas.flags[raw_name],
         TextureFlags {
@@ -557,7 +531,12 @@ fn a_registered_atlas_sprite_and_a_model_of_one_name_both_survive() {
         }
     );
     let prefixed = format!("minecraft:{raw_name}");
-    assert!(atlas.texture_rect(&prefixed).is_none());
+    // A sprite name a hook resolved with its namespace draws as the raw texture too.
+    assert_eq!(atlas.texture_rect(&prefixed), Some(raw));
+    assert_eq!(
+        atlas.texture_atlas_page(&prefixed),
+        atlas.texture_atlas_page(raw_name)
+    );
     assert_eq!(atlas.gui_rect(&prefixed), Some(raw));
     assert!(
         atlas
@@ -670,9 +649,9 @@ fn a_gui_alias_animates_through_its_sources_frames() {
         .iter()
         .find(|(r, _)| r.u0 == rect.u0 && r.v0 == rect.v0)
         .expect("the alias animates");
-    assert_eq!(animation.resized_pixels(0, 1, 1), [255, 0, 0, 255]);
+    assert_eq!(animation.resized_pixels(0, 1, 1).unwrap(), [255, 0, 0, 255]);
     assert_eq!(
-        animation.resized_pixels(1, 1, 1),
+        animation.resized_pixels(1, 1, 1).unwrap(),
         [0, 255, 0, 0],
         "the strip's second frame"
     );
@@ -1889,7 +1868,7 @@ fn a_wrapped_border_repeats_the_opposite_edges() {
             .flat_map(|&v| [v, 0, 0, 255])
             .collect(),
     );
-    let (_, w, h, data) = wrap_border(&image);
+    let (_, w, h, data) = wrap_border(&image).unwrap();
     assert_eq!((w, h), (4, 4));
     let red: Vec<u8> = data.chunks(4).map(|t| t[0]).collect();
     #[rustfmt::skip]
@@ -1933,4 +1912,210 @@ fn a_builtin_sprite_source_override_supplies_the_particle_atlas_consumer() {
         (*w, *h, pixels.as_slice()),
         (1, 1, [3, 9, 24, 255].as_slice())
     );
+}
+
+#[test]
+#[ignore = "run by tools/test_displays_parity.py"]
+fn packed_sprites_have_clamp_to_edge_padding_matching_vanilla_26_3() {
+    let witness_path = std::env::var("SUNRISE_DISPLAY_PARITY_WITNESS").expect(
+        "SUNRISE_DISPLAY_PARITY_WITNESS must be set (run via tools/test_displays_parity.py)",
+    );
+    let witness_text = std::fs::read_to_string(&witness_path)
+        .unwrap_or_else(|e| panic!("failed to read {witness_path}: {e}"));
+    let w: serde_json::Value = serde_json::from_str(&witness_text).unwrap();
+    let pad = w["block_display_83224"]["stitcher_padding"]["mip0_aniso0"]
+        .as_u64()
+        .unwrap();
+    assert!(
+        pad >= 1,
+        "vanilla 26.3 Stitcher always pads sprites by >= 1 texel"
+    );
+
+    let root = std::env::temp_dir().join(format!("sunrise-atlas-clamp-pad-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    let blocks = root.join("assets/minecraft/textures/block");
+    let items = root.join("assets/minecraft/textures/item");
+    fs::create_dir_all(&blocks).unwrap();
+    fs::create_dir_all(&items).unwrap();
+
+    // 1. Opaque 16x16 block/lime_concrete with distinct edge/corner colors to distinguish clamp from wrap.
+    let write_rgba = |path: &std::path::Path, w: u32, h: u32, pixels: &[u8]| {
+        let file = fs::File::create(path).unwrap();
+        let mut enc = png::Encoder::new(file, w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()
+            .unwrap()
+            .write_image_data(pixels)
+            .unwrap();
+    };
+    let mut concrete = vec![0u8; 16 * 16 * 4];
+    for y in 0..16u32 {
+        for x in 0..16u32 {
+            let i = ((y * 16 + x) * 4) as usize;
+            concrete[i..i + 4].copy_from_slice(&[10 + x as u8 * 10, 20 + y as u8 * 10, 50, 255]);
+        }
+    }
+    write_rgba(&blocks.join("lime_concrete.png"), 16, 16, &concrete);
+
+    // 2. Transparent-edged item sprite: edge padding must stay transparent, not bleed opaque interior.
+    let mut blade = vec![0u8; 16 * 16 * 4];
+    for y in 4..12u32 {
+        for x in 4..12u32 {
+            let i = ((y * 16 + x) * 4) as usize;
+            blade[i..i + 4].copy_from_slice(&[200, 210, 220, 255]);
+        }
+    }
+    write_rgba(&items.join("cutout_blade.png"), 16, 16, &blade);
+
+    // 3. Animated block sprite (2 frames, starting on frame 1 via mcmeta): frame 1 must populate its border.
+    write_strip(
+        &blocks.join("anim_bar.png"),
+        16,
+        32,
+        &[[20, 30, 40, 255], [90, 180, 45, 255]],
+        Some(r#"{"animation":{"width":16,"height":16,"frames":[1,0]}}"#),
+    );
+
+    let atlas = HudAtlas::build(&ResourceSource::directory(root.clone())).unwrap();
+    let _ = fs::remove_dir_all(&root);
+
+    let raw = |x: u32, y: u32| -> [u8; 4] {
+        let i = ((y * atlas.width + x) * 4) as usize;
+        atlas.pixels[i..i + 4].try_into().unwrap()
+    };
+
+    // Opaque block/lime_concrete: exact 16x16 Rect, and 1-texel clamp border on all 4 sides + 4 corners.
+    let r = atlas.sprites["block/lime_concrete"];
+    assert_eq!(r.texels((atlas.width, atlas.height)), (16, 16));
+    let px = (r.u0 * atlas.width as f32).round() as u32;
+    let py = (r.v0 * atlas.height as f32).round() as u32;
+    assert!(px >= 1 && py >= 1, "sprite must have room for 1px padding");
+    for y in 0..16u32 {
+        assert_eq!(raw(px - 1, py + y), raw(px, py + y), "left border row {y}");
+        assert_eq!(
+            raw(px + 16, py + y),
+            raw(px + 15, py + y),
+            "right border row {y}"
+        );
+    }
+    for x in 0..16u32 {
+        assert_eq!(raw(px + x, py - 1), raw(px + x, py), "top border col {x}");
+        assert_eq!(
+            raw(px + x, py + 16),
+            raw(px + x, py + 15),
+            "bottom border col {x}"
+        );
+    }
+    assert_eq!(raw(px - 1, py - 1), raw(px, py), "top-left corner");
+    assert_eq!(raw(px + 16, py - 1), raw(px + 15, py), "top-right corner");
+    assert_eq!(raw(px - 1, py + 16), raw(px, py + 15), "bottom-left corner");
+    assert_eq!(
+        raw(px + 16, py + 16),
+        raw(px + 15, py + 15),
+        "bottom-right corner"
+    );
+
+    // Transparent-edged item keeps transparent border.
+    let rb = atlas.sprites["item/cutout_blade"];
+    let bx = (rb.u0 * atlas.width as f32).round() as u32;
+    let by = (rb.v0 * atlas.height as f32).round() as u32;
+    assert_eq!(raw(bx - 1, by + 8), [0, 0, 0, 0]);
+    assert_eq!(raw(bx + 16, by + 8), [0, 0, 0, 0]);
+
+    // Animated block sprite frame 1 (green) also populates its 1-texel border.
+    let ra = atlas.sprites["block/anim_bar"];
+    let ax = (ra.u0 * atlas.width as f32).round() as u32;
+    let ay = (ra.v0 * atlas.height as f32).round() as u32;
+    assert_eq!(raw(ax, ay), [90, 180, 45, 255]);
+    assert_eq!(raw(ax - 1, ay), [90, 180, 45, 255]);
+    assert_eq!(raw(ax + 16, ay + 15), [90, 180, 45, 255]);
+}
+
+#[test]
+fn animation_upload_region_preserves_unpadded_and_blurred_borders() {
+    use super::super::animate::animation_upload_region;
+
+    // 2x2 frame with distinct left (red) and right (blue) columns.
+    let frame: Vec<u8> = [
+        [255, 0, 0, 255],
+        [0, 0, 255, 255],
+        [255, 0, 0, 255],
+        [0, 0, 255, 255],
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let place = |border| AnimatedPlacement {
+        x: 10,
+        y: 20,
+        w: 2,
+        h: 2,
+        border,
+    };
+
+    // Unpadded interior stays strictly within its assigned (x, y, w, h).
+    let (ux, uy, uw, uh, ubuf) = animation_upload_region(place(AtlasBorder::None), &frame);
+    assert_eq!((ux, uy, uw, uh), (10, 20, 2, 2));
+    assert_eq!(ubuf.as_ref(), frame.as_slice());
+
+    // Blurred repeating sprite wraps opposite horizontal edges (left border gets blue, right gets red).
+    let (wx, wy, ww, wh, wbuf) = animation_upload_region(place(AtlasBorder::Wrap), &frame);
+    assert_eq!((wx, wy, ww, wh), (9, 19, 4, 4));
+    fn px(buf: &[u8], x: usize, y: usize) -> &[u8] {
+        &buf[(y * 4 + x) * 4..(y * 4 + x) * 4 + 4]
+    }
+    assert_eq!(px(&wbuf, 0, 1), &[0, 0, 255, 255]);
+    assert_eq!(px(&wbuf, 3, 1), &[255, 0, 0, 255]);
+
+    // Clamped sprite duplicates its own edges (left border gets red, right gets blue).
+    let (cx, cy, cw, ch, cbuf) = animation_upload_region(place(AtlasBorder::Clamp), &frame);
+    assert_eq!((cx, cy, cw, ch), (9, 19, 4, 4));
+    assert_eq!(px(&cbuf, 0, 1), &[255, 0, 0, 255]);
+    assert_eq!(px(&cbuf, 3, 1), &[0, 0, 255, 255]);
+}
+
+/// One `minecraft:` rule for both raw texture lookups (#6012): a packed sprite and a registered
+/// atlas's sprite answer to their bare name and to `minecraft:` before it, and a sprite of
+/// another namespace keeps its own.
+#[test]
+fn a_raw_texture_answers_to_its_name_with_or_without_minecraft() {
+    let mut atlas = HudAtlas::build(&ResourceSource::directory(
+        "/nonexistent/sunrise-test-assets".into(),
+    ))
+    .unwrap();
+    let rect = |w| Rect {
+        u0: 0.0,
+        v0: 0.0,
+        u1: 1.0,
+        v1: 1.0,
+        w,
+        h: 1,
+    };
+    atlas.sprites.insert("textures/gui/packed".into(), rect(1));
+    atlas
+        .registered
+        .insert("gui/atlases/icons/heart".into(), rect(2));
+    atlas
+        .registered_owners
+        .insert("gui/atlases/icons/heart".into(), 3);
+    atlas
+        .sprites
+        .insert("mymod:textures/gui/own".into(), rect(4));
+    for name in ["textures/gui/packed", "minecraft:textures/gui/packed"] {
+        assert_eq!(atlas.texture_rect(name).map(|r| r.w), Some(1), "{name}");
+        assert_eq!(atlas.texture_atlas_page(name), None, "{name}");
+    }
+    for name in [
+        "gui/atlases/icons/heart",
+        "minecraft:gui/atlases/icons/heart",
+    ] {
+        assert_eq!(atlas.texture_rect(name).map(|r| r.w), Some(2), "{name}");
+        assert_eq!(atlas.texture_atlas_page(name), Some(3), "{name}");
+    }
+    assert_eq!(
+        atlas.texture_rect("mymod:textures/gui/own").map(|r| r.w),
+        Some(4)
+    );
+    assert_eq!(atlas.texture_rect("textures/gui/own"), None);
 }

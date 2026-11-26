@@ -110,6 +110,20 @@ The GLSL frontend also resets the common type for each comma-separated declarato
 variable's array specifier does not change later variables.
 It also reads a struct member outside a constant expression through a pointer to the member,
 not out of a loaded copy of the whole struct, so a member an atomic function uses can be read.
+An array, struct or block too large to lay out (past naga's type size limit) is a parse error at its
+declaration, not a panic at the next array. `Options::interface_limits` carries the device's stage
+interface limits (`max_inter_stage_shader_variables`, `max_vertex_attributes`; wgpu's defaults
+when not given): a stage whose location-bound variables of one direction take more is a parse error
+before an entry-point argument is made per element. An interface variable whose elements or
+members would take a location past `u32` (each taking the next after its `layout(location = N)`)
+is a parse error at its declaration, not an overflow.
+An integer literal whose bit pattern does not fit in 32 bits is a parse error at the literal, not
+lowered to its low 32 bits (GLSL 4.60 §4.1.3).
+A constant expression inside a function (an array size, a `case` label) names the `const` locals
+in scope there, the innermost declaration of a name first, as a global `const` is named (GLSL
+4.60 §4.3.3); so does a constant expression nested in it (an array constructor's size).
+A name declared in an `if` or `else` statement, a `while` or `do` body (braced or not) or a
+`switch` body is scoped to its end (GLSL 4.60 §4.2.2, §6.2), not to the enclosing block.
 The HLSL backend writes an ordinary level-zero texture sample as `SampleLevel(..., 0.0)`, while
 comparison textures keep `SampleCmpLevelZero`; HLSL has no ordinary `SampleLevelZero` method.
 The shared interpolation defaults also compile with `glsl-in` alone, without needing the
@@ -139,7 +153,7 @@ files ship beside the DLL as `DXC-LICENSE-MS.txt` and `DXC-LICENSE-LLVM.txt`, wi
   ([REDIST.TXT lists](https://learn.microsoft.com/en-us/legal/windows-sdk/redist), updated 2024-10-21) names
   `Redist\D3D\x64\dxcompiler.dll` and `dxil.dll` and their x86 copies, for classic Windows applications (Sunrise is
   one), and no ARM64 copy. The release zip's own `LICENSE-MS.txt` refers to a list of distributable files that the zip
-  doesn't contain, so the SDK's list is the one followed. The Windows ARM64 build ships no DXC and compiles with FXC.
+  doesn't contain, so the SDK's list is the one followed.
 - No `dxil.dll`: since DXC 1.8.2505 the compiler signs shaders with its own validator and no longer loads it, and
   wgpu never does.
 
@@ -193,6 +207,16 @@ repository: a shared port fetches them from Modrinth on the player's device.
 The shape of the horizon a shader pack's sky draws (`gfx/pack_sky.rs`) comes from
 [Iris Features](https://github.com/FatulDev/Sunrise-Iris-Compatibility-Mod), a native mod for
 Horizon, Copyright (c) 2026 Riley-Neeb, under the MIT license (`licenses/iris-features-MIT.txt`).
+
+## winit
+
+`third_party/winit` is [winit](https://github.com/rust-windowing/winit) 0.30.13 by the winit
+contributors, licensed under Apache-2.0 (`LICENSE` in that folder), without its examples and tests.
+One change: its X11 backend takes raw motion from the enabled slave pointers instead of the master
+pointer's copy, tracking them from each device-hierarchy event in stream order; raw buttons and keys
+still come from the masters. While winit holds its own pointer grab (`CursorGrabMode::Confined`, the
+grab mode winit's X11 backend supports), an X server speaking XInput 2.1 or later sends a client
+each master raw event twice, so mouse look turned twice as far (#3022); each slave's arrives once.
 
 ## Pixelify Sans
 
@@ -632,6 +656,7 @@ OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
+<<<<<<< HEAD
 ## Sunrise Android performance work
 
 Adapted from [Vasysik/sunrise-android at fa548eb7abe91c194d3780e4580b9746323cd606](https://github.com/Vasysik/sunrise-android/tree/fa548eb7abe91c194d3780e4580b9746323cd606/crates),
@@ -650,3 +675,14 @@ Copyright (c) 2026 Ludovic Marie and the Horizon contributors.
   load (`loading_frame_due` in `game/runtime/loading_screen.rs`), from its commit f5cf0231bc.
 - Shadow maps of at most 4096 on Android (`shadow_side_limit` in `gfx/pack_shadow.rs`), from
   `max_shadow` in its `gfx/pack_shadow.rs` and `gfx/native_shadow.rs`.
+||||||| 46c00106def
+=======
+## Sigstore attestation verification
+
+`sunrise-attestation` uses [`sigstore-verify` 0.17](https://crates.io/crates/sigstore-verify/0.17.0)
+(Apache-2.0) for offline verification, with [AWS-LC](https://github.com/aws/aws-lc) for cryptography.
+It bundles [Sigstore's public-good TUF target](https://github.com/sigstore/root-signing/blob/25b222a48cda4aa88e1af85605bdd193f5619a60/targets/trusted_root.json)
+unchanged, under [Apache-2.0](crates/sunrise-attestation/LICENSE-APACHE-SIGSTORE). Its offline test
+fixture is a public [Ruff release attestation](crates/sunrise-attestation/tests/fixtures/README.md)
+from the GitHub attestation API, not the release asset itself.
+>>>>>>> ed6772e2118

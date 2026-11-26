@@ -80,7 +80,7 @@ impl Game<'_> {
             self.brush_dust(hit, slot == super::shield::OFFHAND_SLOT);
         }
         let at = hit.pos.map(|v| f64::from(v) + 0.5);
-        self.audio.play(sound, Some(at), 1.0, 1.0);
+        self.play_audio(sound, Some(at), 1.0, 1.0);
         if brushable && self.brush_block(hit.pos, hit.face, slot) {
             self.damage_held(1);
         }
@@ -392,7 +392,7 @@ impl Game<'_> {
         if !sound.is_empty() {
             let at = pos.map(|v| f64::from(v) + 0.5);
             // Each client plays it from the event itself.
-            self.audio.play_unshared(sound, Some(at), 1.0, 1.0);
+            self.play_audio_unshared(sound, Some(at), 1.0, 1.0);
         }
         self.destroy_particles(pos, state);
     }

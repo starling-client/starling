@@ -199,7 +199,7 @@ impl<'r, 'a> SelectorParser<'r, 'a> {
         let string: &'a str = self.reader.string;
         let word = string[start..]
             .bytes()
-            .take_while(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'_')
+            .take_while(|&b| crate::is_unquoted(b))
             .count();
         let word = &string[start..start + word];
         if let Some(token) = self.reg.selector_tokens.iter().find(|t| t.name == word) {

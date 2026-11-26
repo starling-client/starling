@@ -3,9 +3,9 @@
 //! to the horizon or tints the night sky expects. Without one the sky draws natively (`fs_sky` in
 //! terrain.wgsl, stars.rs).
 
-use crate::core_shader::{CoreProgram, Glue};
 use crate::polytone_post::ExpressionUniform;
 use glam::Mat4;
+use sunrise_glsl::{Glue, Translated};
 use wgpu::util::DeviceExt;
 
 /// `DefaultVertexFormat.POSITION`: the disc's and the stars' vertices.
@@ -16,6 +16,8 @@ pub(crate) const GLUE: Glue = Glue {
     // 26.3's ProjMat already has wgpu's reversed 0 to 1 depth (Projection: zZeroToOne).
     finish: "",
     vertex_id: "int(gl_VertexIndex)",
+    fragment_finish: None,
+    interface: sunrise_shaders::DEVICELESS_INTERFACE_LIMITS,
 };
 
 /// `SkyRenderer.buildSkyDisc(16)`: a fan around the point 16 above the camera, out to 512 every
@@ -48,14 +50,43 @@ impl Part {
     fn new(
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
-        (program, expressions): (&CoreProgram, &[ExpressionUniform]),
-        name: &str,
+        (program, expressions): (&Translated, &[ExpressionUniform]),
+        (name, location): (&str, &str),
         blend: Option<wgpu::BlendState>,
         triangles: &[[f32; 3]],
-    ) -> Option<Self> {
-        // A pack's shader is untrusted: the backend failing to compile it is an internal error.
-        let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
+    ) -> Result<Self, String> {
+        let (pipeline, group, uniform, extra) =
+            crate::core_shader::scoped(device, location, || {
+                Self::pipeline(device, format, (program, expressions), name, blend)
+            })?;
+        let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some(name),
+            contents: bytemuck::cast_slice(triangles),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        Ok(Self {
+            pipeline,
+            group,
+            uniform,
+            extra,
+            vertices,
+            count: triangles.len() as u32,
+        })
+    }
+
+    /// The pipeline of `program` with its group, its uniform buffer and its Polytone blocks.
+    fn pipeline(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        (program, expressions): (&Translated, &[ExpressionUniform]),
+        name: &str,
+        blend: Option<wgpu::BlendState>,
+    ) -> (
+        wgpu::RenderPipeline,
+        wgpu::BindGroup,
+        wgpu::Buffer,
+        super::expression_blocks::ExpressionBlocks,
+    ) {
         let module = |stage, module: &naga::Module| {
             device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some(&format!("Resource pack {name} ({stage})")),
@@ -64,7 +95,8 @@ impl Part {
         };
         let vertex = module("vertex", &program.vertex);
         let fragment = module("fragment", &program.fragment);
-        // Vanilla's SKY and STARS pipelines have no samplers: a pack that reads one is not used.
+        // Vanilla's SKY and STARS pipelines have no samplers: the device refuses a pack's that
+        // reads one.
         // Each block a stage reads is bound to the stages reading it: vanilla's four, then the
         // expression uniforms.
         let extra = super::expression_blocks::ExpressionBlocks::new(program, expressions, 1024);
@@ -126,24 +158,7 @@ impl Part {
             multiview_mask: None,
             cache: None,
         });
-        let internal = pollster::block_on(internal.pop());
-        if let Some(e) = internal.or(pollster::block_on(validation.pop())) {
-            log::warn!("the resource pack's {name} shader is not used: {e}");
-            return None;
-        }
-        let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some(name),
-            contents: bytemuck::cast_slice(triangles),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-        Some(Self {
-            pipeline,
-            group,
-            uniform,
-            extra,
-            vertices,
-            count: triangles.len() as u32,
-        })
+        (pipeline, group, uniform, extra)
     }
 
     fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
@@ -164,32 +179,55 @@ pub(crate) struct CoreSky {
 impl super::Renderer {
     /// The resource packs' `core/sky` and `core/stars` (`HudAtlas::sky_shader`,
     /// `stars_shader`, each with the expression uniforms resolved for it), or the built-in sky
-    /// and stars.
+    /// and stars; or the device's refusal of a pipeline vanilla requires, which fails the pack
+    /// reload.
     pub fn set_sky_shaders(
         &mut self,
-        disc: Option<(&CoreProgram, &[ExpressionUniform])>,
-        stars: Option<(&CoreProgram, &[ExpressionUniform])>,
-    ) {
-        // As `set_lines_shader`: not on a frame of linear light.
-        let keep = !self.output.frame.linear_light;
-        let (disc, stars) = (disc.filter(|_| keep), stars.filter(|_| keep));
-        self.core_sky = CoreSky::new(&self.device, self.output.frame.format, disc, stars);
+        disc: Option<(&Translated, &[ExpressionUniform])>,
+        stars: Option<(&Translated, &[ExpressionUniform])>,
+    ) -> Result<(), String> {
+        self.core_sky = sky_for_frame(&self.device, self.output.frame, disc, stars)?;
+        Ok(())
     }
 }
 
+/// As `core_lines::lines_for_frame`: the pipelines are made whatever the frame draws, then kept
+/// only off a frame of linear light.
+pub(super) fn sky_for_frame(
+    device: &wgpu::Device,
+    frame: super::FrameConfiguration,
+    disc: Option<(&Translated, &[ExpressionUniform])>,
+    stars: Option<(&Translated, &[ExpressionUniform])>,
+) -> Result<Option<CoreSky>, String> {
+    let sky = CoreSky::new(device, frame.format, disc, stars)?;
+    Ok(sky.filter(|_| !frame.linear_light))
+}
+
 impl CoreSky {
-    /// `None` when neither shader is replaced or neither builds.
+    /// `None` when neither shader is replaced; the device's refusal of either pipeline, named
+    /// by its location.
     pub(super) fn new(
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
-        disc: Option<(&CoreProgram, &[ExpressionUniform])>,
-        stars: Option<(&CoreProgram, &[ExpressionUniform])>,
-    ) -> Option<Self> {
-        let disc = disc.and_then(|program| {
+        disc: Option<(&Translated, &[ExpressionUniform])>,
+        stars: Option<(&Translated, &[ExpressionUniform])>,
+    ) -> Result<Option<Self>, String> {
+        use crate::hud::pack_text::{SKY, STARS};
+        // A program past the device's limits draws natively (`sunrise_glsl::PastDeviceLimit`).
+        let fits = |pipeline| {
+            move |(program, _): &(&Translated, &[ExpressionUniform])| {
+                crate::core_shader::within_device_limits(device, program, pipeline, &[format])
+            }
+        };
+        let disc = disc.filter(fits(SKY[0].pipeline));
+        let stars = stars.filter(fits(STARS[0].pipeline));
+        let disc = disc.map(|program| {
             // RenderPipelines.SKY: ColorTargetState.DEFAULT, no blending.
-            Part::new(device, format, program, "sky", None, &disc_triangles())
+            let name = ("sky", SKY[0].pipeline);
+            Part::new(device, format, program, name, None, &disc_triangles())
         });
-        let stars = stars.and_then(|program| {
+        let disc = disc.transpose()?;
+        let stars = stars.map(|program| {
             // RenderPipelines.STARS: BlendFunction.OVERLAY (src alpha and one; alpha one, zero).
             let overlay = wgpu::BlendState {
                 color: wgpu::BlendComponent {
@@ -204,9 +242,11 @@ impl CoreSky {
                 },
             };
             let triangles = super::stars::star_triangles();
-            Part::new(device, format, program, "stars", Some(overlay), &triangles)
+            let name = ("stars", STARS[0].pipeline);
+            Part::new(device, format, program, name, Some(overlay), &triangles)
         });
-        (disc.is_some() || stars.is_some()).then_some(Self { disc, stars })
+        let stars = stars.transpose()?;
+        Ok((disc.is_some() || stars.is_some()).then_some(Self { disc, stars }))
     }
 
     pub(super) fn draws_disc(&self) -> bool {
@@ -307,6 +347,114 @@ mod tests {
         assert!(near(triangles[23], [-512.0, 16.0, 0.0]));
     }
 
+    /// The sky's and the stars' pipelines are made on a frame of linear light too, which keeps
+    /// the built-in sky: the device refusing either (a fragment stage sampling `Sampler0`, which
+    /// these pipelines don't bind) fails the load in both modes, named by that pipeline, and pipelines it takes
+    /// are drawn only off linear light. A varying read `noperspective` or `centroid` is taken.
+    #[test]
+    #[ignore = "daily"]
+    fn linear_light_makes_the_sky_pipelines_before_keeping_the_built_in_sky() {
+        let _gpu = crate::gfx::test_gpu::lock();
+        let Some((_, device, _)) = crate::gfx::test_gpu::optional_device() else {
+            eprintln!("skipped: no adapter");
+            return;
+        };
+        let vertex = "#version 330\nlayout(location = 0) in vec3 Position;\n\
+                      void main() {\n    gl_Position = vec4(Position, 1.0);\n}\n";
+        let translate = |fragment: &str| {
+            crate::core_shader::translate_core(vertex, fragment, &[], &|_| None, &GLUE)
+                .expect("the shaders translate")
+        };
+        let taken = translate(
+            "#version 330\nlayout(location = 0) out vec4 fragColor;\n\
+             void main() {\n    fragColor = vec4(1.0);\n}\n",
+        );
+        // A refusal vanilla's builder makes too (`PipelineBuilder`: a descriptor missing from the
+        // pipeline's layout): `Sampler0`, which `SKY` and `STARS` don't bind.
+        let refused = translate(
+            "#version 330\nuniform sampler2D Sampler0;\nlayout(location = 0) out vec4 fragColor;\n\
+             void main() {\n    fragColor = texture(Sampler0, vec2(0.5));\n}\n",
+        );
+        let frame = |linear_light| super::super::FrameConfiguration {
+            format: wgpu::TextureFormat::Rgba16Float,
+            linear_light,
+            ..super::super::EffectiveOutput::NONE.frame
+        };
+        let made = |linear, disc: &Translated, stars: &Translated| {
+            sky_for_frame(
+                &device,
+                frame(linear),
+                Some((disc, &[])),
+                Some((stars, &[])),
+            )
+        };
+        assert!(
+            made(true, &taken, &taken).unwrap().is_none(),
+            "the built-in sky"
+        );
+        // Vanilla's check compares only flat-ness: a varying the fragment stage reads
+        // `noperspective` or `centroid` makes both pipelines.
+        let varying = |qualifier: &str| {
+            crate::core_shader::translate_core(
+                "#version 330\nlayout(location = 0) in vec3 Position;\nlayout(location = 0) out vec2 tag;\n\
+                 void main() {\n    gl_Position = vec4(Position, 1.0);\n    tag = vec2(1.0);\n}\n",
+                &format!(
+                    "#version 330\nlayout(location = 0) {qualifier} in vec2 tag;\n\
+                     layout(location = 0) out vec4 fragColor;\n\
+                     void main() {{\n    fragColor = vec4(tag, 0.0, 1.0);\n}}\n"
+                ),
+                &[],
+                &|_| None,
+                &GLUE,
+            )
+            .expect("the shaders translate")
+        };
+        for qualifier in ["noperspective", "centroid"] {
+            let program = varying(qualifier);
+            let sky = made(false, &program, &program).unwrap_or_else(|e| panic!("{e}"));
+            assert!(
+                sky.is_some_and(|s| s.draws_disc() && s.draws_stars()),
+                "{qualifier}"
+            );
+        }
+        // A colour output the device doesn't take into the 4-channel float target (`vec3`,
+        // `uvec4`), which vanilla's builder doesn't check: that part draws natively, in both modes,
+        // and the other is the pack's.
+        for output in [
+            "out vec3 fragColor;\nvoid main() {\n    fragColor = vec3(1.0);\n}\n",
+            "out uvec4 fragColor;\nvoid main() {\n    fragColor = uvec4(1u);\n}\n",
+        ] {
+            let other = translate(&format!("#version 330\nlayout(location = 0) {output}"));
+            for linear in [true, false] {
+                let sky = made(linear, &other, &taken).unwrap_or_else(|e| panic!("{e}"));
+                assert_eq!(
+                    sky.map(|s| (s.draws_disc(), s.draws_stars())),
+                    (!linear).then_some((false, true)),
+                    "{output}"
+                );
+            }
+        }
+        let drawn = made(false, &taken, &taken)
+            .unwrap()
+            .expect("the pack's sky");
+        assert!(drawn.draws_disc() && drawn.draws_stars());
+        for linear in [true, false] {
+            for (disc, stars, pipeline) in [
+                (&refused, &taken, "minecraft:pipeline/sky"),
+                (&taken, &refused, "minecraft:pipeline/stars"),
+            ] {
+                let error = made(linear, disc, stars)
+                    .err()
+                    .expect("the device refuses it");
+                assert_eq!(
+                    error.split_once(": ").map(|(p, _)| p),
+                    Some(pipeline),
+                    "linear light {linear}"
+                );
+            }
+        }
+    }
+
     /// The prepared resources (`SUNRISE_RESOURCES`, or `.local/sunrise-client/<version>`), where
     /// vanilla's sky shader and its includes are.
     fn resources() -> std::path::PathBuf {
@@ -321,7 +469,10 @@ mod tests {
 
     /// Vanilla's `sky.vsh` with a pack's fragment shader that paints `ColorModulator` (the sky
     /// colour) where the disc is: looking at the horizon, the top half of the target is the
-    /// disc, the bottom half stays clear.
+    /// disc, the bottom half stays clear. The same holds with the pack's own older
+    /// `dynamictransforms.glsl`, whose block has a member past 26.3's: vanilla's builder takes it
+    /// (it checks a descriptor's name, type and dimension, not a block's size), and the block is
+    /// bound at the shader's size.
     #[test]
     #[ignore = "daily"]
     fn a_pack_sky_shader_paints_the_disc_above_the_sunrise() {
@@ -333,110 +484,126 @@ mod tests {
             let (namespace, path) = id.split_once(':')?;
             std::fs::read_to_string(root.join(format!("assets/{namespace}/{path}"))).ok()
         };
-        let fragment = "#version 330\n#include <minecraft:dynamictransforms.glsl>\n\
+        for older_block in [false, true] {
+            let fragment = "#version 330\n#include <minecraft:dynamictransforms.glsl>\n\
             layout(location = 0) out vec4 fragColor;\n\
             void main() {\n    fragColor = ColorModulator;\n}\n";
-        let program = crate::core_shader::translate_core(&vertex, fragment, &[], &include, &GLUE)
+            let older = |id: &str| {
+                include(id).map(|text| {
+                    text.replace("vec3 ModelOffset;", "vec3 ModelOffset;\n    vec4 More;")
+                })
+            };
+            let program = if older_block {
+                crate::core_shader::translate_core(&vertex, fragment, &[], &older, &GLUE)
+            } else {
+                crate::core_shader::translate_core(&vertex, fragment, &[], &include, &GLUE)
+            }
             .expect("the sky shaders translate");
-        let Some((_, device, queue)) = crate::gfx::test_gpu::optional_device() else {
-            eprintln!("no GPU: skipping");
-            return;
-        };
-        const SIZE: u32 = 64;
-        let format = wgpu::TextureFormat::Rgba8Unorm;
-        let sky =
-            CoreSky::new(&device, format, Some((&program, &[])), None).expect("the sky pipeline");
-        let projection = crate::gfx::world_projection(90.0, 1.0, 2048.0);
-        let data = uniforms(
-            [0; 48],
-            projection,
-            Mat4::IDENTITY,
-            [0.25, 0.5, 1.0, 1.0],
-            [0.0; 4],
-            [1e6; 6],
-        );
-        queue.write_buffer(&sky.disc.as_ref().unwrap().uniform, 0, &data);
-        let target = |format, usage| {
-            device.create_texture(&wgpu::TextureDescriptor {
-                label: None,
-                size: wgpu::Extent3d {
-                    width: SIZE,
-                    height: SIZE,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | usage,
-                view_formats: &[],
-            })
-        };
-        let color = target(format, wgpu::TextureUsages::COPY_SRC);
-        let depth = target(
-            wgpu::TextureFormat::Depth32Float,
-            wgpu::TextureUsages::empty(),
-        );
-        let read = device.create_buffer(&wgpu::BufferDescriptor {
-            label: None,
-            size: u64::from(SIZE * SIZE * 4),
-            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let mut encoder = device.create_command_encoder(&Default::default());
-        {
-            let color_view = color.create_view(&Default::default());
-            let depth_view = depth.create_view(&Default::default());
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: None,
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &color_view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
+            assert_eq!(
+                program.declared_size(2),
+                if older_block { 176 } else { 160 }
+            );
+            let Some((_, device, queue)) = crate::gfx::test_gpu::optional_device() else {
+                eprintln!("no GPU: skipping");
+                return;
+            };
+            const SIZE: u32 = 64;
+            let format = wgpu::TextureFormat::Rgba8Unorm;
+            let sky = CoreSky::new(&device, format, Some((&program, &[])), None)
+                .unwrap_or_else(|e| panic!("{e}"))
+                .expect("the sky pipeline");
+            let projection = crate::gfx::world_projection(90.0, 1.0, 2048.0);
+            let data = uniforms(
+                [0; 48],
+                projection,
+                Mat4::IDENTITY,
+                [0.25, 0.5, 1.0, 1.0],
+                [0.0; 4],
+                [1e6; 6],
+            );
+            queue.write_buffer(&sky.disc.as_ref().unwrap().uniform, 0, &data);
+            let target = |format, usage| {
+                device.create_texture(&wgpu::TextureDescriptor {
+                    label: None,
+                    size: wgpu::Extent3d {
+                        width: SIZE,
+                        height: SIZE,
+                        depth_or_array_layers: 1,
                     },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &depth_view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(0.0),
-                        store: wgpu::StoreOp::Store,
-                    }),
-                    stencil_ops: None,
-                }),
-                ..Default::default()
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | usage,
+                    view_formats: &[],
+                })
+            };
+            let color = target(format, wgpu::TextureUsages::COPY_SRC);
+            let depth = target(
+                wgpu::TextureFormat::Depth32Float,
+                wgpu::TextureUsages::empty(),
+            );
+            let read = device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: u64::from(SIZE * SIZE * 4),
+                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
             });
-            sky.draw_disc(&mut pass);
-        }
-        encoder.copy_texture_to_buffer(
-            color.as_image_copy(),
-            wgpu::TexelCopyBufferInfo {
-                buffer: &read,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(SIZE * 4),
-                    rows_per_image: Some(SIZE),
+            let mut encoder = device.create_command_encoder(&Default::default());
+            {
+                let color_view = color.create_view(&Default::default());
+                let depth_view = depth.create_view(&Default::default());
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: None,
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &color_view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: &depth_view,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(0.0),
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: None,
+                    }),
+                    ..Default::default()
+                });
+                sky.draw_disc(&mut pass);
+            }
+            encoder.copy_texture_to_buffer(
+                color.as_image_copy(),
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &read,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(SIZE * 4),
+                        rows_per_image: Some(SIZE),
+                    },
                 },
-            },
-            color.size(),
-        );
-        queue.submit([encoder.finish()]);
-        read.slice(..)
-            .map_async(wgpu::MapMode::Read, |r| r.unwrap());
-        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-        let pixels = read.slice(..).get_mapped_range().unwrap().to_vec();
-        let at = |x: usize, y: usize| pixels[(y * 64 + x) * 4..(y * 64 + x) * 4 + 4].to_vec();
-        // Row 0 is the top: the disc, in the sky colour; the bottom row is below the horizon.
-        let top = at(32, 4);
-        assert!(
-            top.iter()
-                .zip([64u8, 128, 255, 255])
-                .all(|(&p, w)| p.abs_diff(w) <= 1),
-            "{top:?}"
-        );
-        assert_eq!(at(32, 60), vec![0, 0, 0, 0]);
+                color.size(),
+            );
+            queue.submit([encoder.finish()]);
+            read.slice(..)
+                .map_async(wgpu::MapMode::Read, |r| r.unwrap());
+            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            let pixels = read.slice(..).get_mapped_range().unwrap().to_vec();
+            let at = |x: usize, y: usize| pixels[(y * 64 + x) * 4..(y * 64 + x) * 4 + 4].to_vec();
+            // Row 0 is the top: the disc, in the sky colour; the bottom row is below the horizon.
+            let top = at(32, 4);
+            assert!(
+                top.iter()
+                    .zip([64u8, 128, 255, 255])
+                    .all(|(&p, w)| p.abs_diff(w) <= 1),
+                "{top:?} older block {older_block}"
+            );
+            assert_eq!(at(32, 60), vec![0, 0, 0, 0]);
+        }
     }
 }
 

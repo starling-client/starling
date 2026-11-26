@@ -261,7 +261,7 @@ pub(super) fn begin_shrink<'a>(
 pub(super) fn decide_fade(
     s: &SectionGpu,
     key: SectionKey,
-    fades: &mut gpu_culling::Fades,
+    fades: &mut section_fade::Fades,
     f: FadeInputs<'_>,
 ) -> bool {
     let fading = s.drawn_faded(key, f);
@@ -316,7 +316,7 @@ pub(super) fn forget_records(sections: &mut resident::Resident<SectionGpu>, rows
 pub(super) fn mark_fades(
     sections: &mut resident::Resident<SectionGpu>,
     records: &mut gpu_culling::Records,
-    fades: &mut gpu_culling::Fades,
+    fades: &mut section_fade::Fades,
     rows: usize,
     f: FadeInputs<'_>,
 ) {

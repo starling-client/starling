@@ -148,7 +148,7 @@ impl Game<'_> {
             if !swapped {
                 return Some(false);
             }
-            self.audio.play(
+            self.play_audio(
                 "minecraft:block.shelf.multi_swap",
                 Some(pos.map(|n| f64::from(n) + 0.5)),
                 1.0,
@@ -209,8 +209,7 @@ impl Game<'_> {
                 (false, true) => "minecraft:block.shelf.take_item",
                 (true, true) => "minecraft:block.shelf.single_swap",
             };
-            self.audio
-                .play(sound, Some(pos.map(|n| f64::from(n) + 0.5)), 1.0, 1.0);
+            self.play_audio(sound, Some(pos.map(|n| f64::from(n) + 0.5)), 1.0, 1.0);
             Some(true)
         }
     }

@@ -30,13 +30,13 @@ the player's sounds are compared.
 import argparse
 import json
 import random
-try:
-    from . import interaction_lab as lib, lab
-    from .test_furnace_parity import fuel_stacks
-except ImportError:
-    import interaction_lab as lib
-    import lab
-    from test_furnace_parity import fuel_stacks
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import interaction_lab as lib, lab
+from tools.test_furnace_parity import fuel_stacks
 
 MENUS = {'inventory': 46, 'crafting': 46, 'chest1': 45, 'chest2': 54, 'chest3': 63, 'chest4': 72, 'chest5': 81,
          'chest6': 90, 'hopper': 41, 'dispenser': 45, 'shulker': 63, 'furnace': 39, 'blast_furnace': 39, 'smoker': 39, 'brewing': 41, 'crafter': 46,

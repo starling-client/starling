@@ -179,6 +179,14 @@ impl Outbox {
     /// Past [`MAX_PENDING`] a capped connection closes. The thread to wake, if
     /// this is the first news it has since it last looked.
     pub(super) fn push(&self, bodies: Vec<Body>, end: Option<End>) -> Option<&Arc<Worker>> {
+        self.push_checked(bodies, end).ok().flatten()
+    }
+    // An accepted send may need no wake: its worker is already listed or not attached yet.
+    fn push_checked(
+        &self,
+        bodies: Vec<Body>,
+        end: Option<End>,
+    ) -> Result<Option<&Arc<Worker>>, ()> {
         let bodies = bodies
             .into_iter()
             .map(|body| Queued {
@@ -187,13 +195,10 @@ impl Outbox {
                 body,
                 pending: self.pending.clone(),
             })
-            .collect();
-        self.push_queued(bodies, end)
-    }
-    fn push_queued(&self, bodies: Vec<Queued>, end: Option<End>) -> Option<&Arc<Worker>> {
+            .collect::<Vec<_>>();
         let mut q = self.queue();
         match (q.at, q.end) {
-            (At::Closed, _) => return None,
+            (At::Closed, _) => return Err(()),
             (_, None) => {
                 if q.bodies.is_empty() {
                     q.bodies = bodies;
@@ -207,24 +212,33 @@ impl Outbox {
                 };
             }
             (_, Some(End::Disconnect)) if end == Some(End::Close) => q.end = end,
-            (_, Some(_)) => return None,
+            (_, Some(_)) => return Err(()),
         }
         let At::Slot(slot) = q.at else {
-            return None;
+            return Ok(None);
         };
         if std::mem::replace(&mut q.listed, true) {
-            return None;
+            return Ok(None);
         }
         drop(q);
-        self.worker
+        Ok(self
+            .worker
             .post(|i| i.serve.push(slot))
-            .then_some(&self.worker)
+            .then_some(&self.worker))
     }
     /// [`Self::push`], waking the thread at once.
     pub(super) fn send(&self, bodies: Vec<Body>, end: Option<End>) {
-        if let Some(worker) = self.push(bodies, end) {
+        self.try_send(bodies, end);
+    }
+    /// Whether the already reserved bodies were admitted, independently of waking a worker.
+    pub(super) fn try_send(&self, bodies: Vec<Body>, end: Option<End>) -> bool {
+        let Ok(wake) = self.push_checked(bodies, end) else {
+            return false;
+        };
+        if let Some(worker) = wake {
             worker.wake();
         }
+        true
     }
     #[cfg(any(test, feature = "test-payload-probe"))]
     pub(super) fn queued_contents(&self) -> Vec<Vec<u8>> {
@@ -667,6 +681,7 @@ impl Conn {
                 super::conn::frame_body(&mut self.writer, &body.body, &mut self.out)
             };
             if let Err(e) = result {
+                log::warn!("[lan] failed to frame outgoing packet: {e}");
                 self.end(now, e.to_string());
                 return false;
             }
@@ -807,20 +822,25 @@ impl Conn {
         true
     }
 
-    /// The connection's clocks: a keep-alive due, a client that sent nothing
-    /// or took nothing for too long.
+    /// The connection's clocks: a keep-alive due, a network client that sent
+    /// nothing or took nothing for too long.
     fn sweep(&mut self, now: Instant) {
         if self.close_at.is_some() {
             return;
         }
-        if self
-            .stalled
-            .is_some_and(|t| now.duration_since(t) > self.timeout)
-        {
-            return self.end(now, "Disconnected");
-        }
-        if !self.left && now.duration_since(self.last_read) > self.timeout {
-            return self.end(now, sunrise_protocol::Error::timed_out().to_string());
+        // Only a network connection times out: `ServerConnectionListener.startTcpServerListener`
+        // puts a `ReadTimeoutHandler(30)` on its pipeline, while `startMemoryChannel`'s
+        // (`Connection.configureInMemoryPipeline`) has none.
+        if matches!(self.io, Io::Tcp(_)) {
+            if self
+                .stalled
+                .is_some_and(|t| now.duration_since(t) > self.timeout)
+            {
+                return self.end(now, "Disconnected");
+            }
+            if !self.left && now.duration_since(self.last_read) > self.timeout {
+                return self.end(now, sunrise_protocol::Error::timed_out().to_string());
+            }
         }
         if !self.draining
             && let Some(body) = self.session.tick(now)
@@ -1110,13 +1130,53 @@ mod tests {
     }
 
     #[test]
-    fn a_silent_client_times_out() {
-        let (a, b) = Pipe::pair();
-        let mut client = Connection::local(a);
-        let served = serve(Connection::local(b), quiet, Duration::from_millis(300));
+    #[ignore = "daily"]
+    fn a_silent_network_client_times_out() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mut client = Connection::connect("127.0.0.1", port, Duration::from_secs(5)).unwrap();
+        let server = Connection::from_stream(listener.accept().unwrap().0).unwrap();
+        let served = serve(server, quiet, Duration::from_millis(300));
         assert_eq!(served.next(), Seen::Left("Timed out".into()));
         assert_eq!(served.next(), Seen::Closed);
         assert!(client.recv().is_err());
+    }
+
+    /// The integrated server's own client, over memory, has no read timeout: a silent one
+    /// stays connected well past it.
+    #[test]
+    fn a_silent_memory_client_stays_connected() {
+        let (a, b) = Pipe::pair();
+        let mut client = Connection::local(a);
+        let served = serve(Connection::local(b), quiet, Duration::from_millis(100));
+        assert!(
+            served
+                .seen
+                .recv_timeout(Duration::from_millis(500))
+                .is_err(),
+            "a memory connection timed out"
+        );
+        served.send(vec![body(3, 10)], None);
+        assert_eq!(client.recv().unwrap().0, 3);
+    }
+
+    /// Nor a write stall: a memory client that takes nothing while the pipe is full stays
+    /// connected well past the timeout, and is served once it reads.
+    #[test]
+    fn a_stalled_memory_client_stays_connected() {
+        let (a, b) = Pipe::pair();
+        let mut client = Connection::local(a);
+        let served = serve(Connection::local(b), quiet, Duration::from_millis(100));
+        // Past the pipe's capacity, so the server's writes wait for the client.
+        served.send(vec![body(3, 256 << 10)], None);
+        assert!(
+            served
+                .seen
+                .recv_timeout(Duration::from_millis(500))
+                .is_err(),
+            "a stalled memory connection was ended"
+        );
+        assert_eq!(client.recv().unwrap(), packet(&body(3, 256 << 10)));
     }
 
     /// A client that reads nothing holds its disconnect unwritten; a close

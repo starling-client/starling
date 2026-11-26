@@ -1,4 +1,24 @@
 use super::*;
+use sunrise_client::tab_list::{TabPlayer, default_skin};
+
+impl Remote {
+    /// `ClientPacketListener.getPlayerInfo(String)`: exact profile name, whether listed or not.
+    pub(in crate::game) fn player_info_by_name(&self, name: &str) -> Option<&TabPlayer> {
+        self.tab_players.values().find(|p| p.name == name)
+    }
+
+    /// `PlayerInfo.getSkin`: resolved skin or the profile's default, independent of listing.
+    pub(in crate::game) fn player_info_skin(&self, uuid: u128) -> &str {
+        self.skins
+            .get(&uuid)
+            .map(|skin| skin.body(uuid).0)
+            .unwrap_or_else(|| default_skin(uuid))
+    }
+}
+
+#[cfg(test)]
+#[path = "team_packet_tests.rs"]
+mod team_packet_tests;
 
 impl Game<'_> {
     /// A `Holder<SoundEvent>` off the wire: an inline event's location, or
@@ -119,16 +139,23 @@ impl Game<'_> {
     pub(in crate::game) fn remote_team(&mut self, p: play::SetPlayerTeam) {
         use sunrise_client::scoreboard::{CollisionRule, Visibility, tag_to_json};
         let board = &mut self.score.board;
+        let team = if p.method == 0 {
+            board.add_team(&p.name)
+        } else if let Some(team) = board.team_mut(&p.name) {
+            team
+        } else {
+            log::warn!(
+                "Received team packet with method {} for unknown team {:?}",
+                p.method,
+                p.name
+            );
+            return;
+        };
         if p.method == 1 {
             board.remove_team(&p.name);
             return;
         }
-        if p.method == 0 {
-            board.add_team(&p.name);
-        }
-        if let Some(params) = &p.parameters
-            && let Some(team) = board.team_mut(&p.name)
-        {
+        if let Some(params) = &p.parameters {
             team.display_name = tag_to_json(&params.display_name);
             team.prefix = tag_to_json(&params.prefix);
             team.suffix = tag_to_json(&params.suffix);
@@ -167,24 +194,19 @@ impl Game<'_> {
     }
     pub(in crate::game) fn remote_tab_players(
         &mut self,
-    ) -> Option<(Vec<sunrise_client::tab_list::TabPlayer>, bool, Vec<u128>)> {
+    ) -> Option<(Vec<TabPlayer>, bool, Vec<u128>)> {
         self.update_remote_skins();
         self.publish_tab_object_skins();
-        let mut players: Vec<_> = {
-            let r = self.remote.as_ref()?;
-            r.listed
-                .iter()
-                .filter_map(|u| r.tab_players.get(u).cloned())
-                .collect()
-        };
-        for p in &mut players {
-            p.skin = self
-                .remote
-                .as_ref()
-                .and_then(|r| r.skins.get(&p.uuid).cloned())
-                .unwrap_or_else(|| sunrise_client::tab_list::default_skin(p.uuid).to_owned());
-        }
         let r = self.remote.as_ref()?;
+        let players: Vec<_> = r
+            .listed
+            .iter()
+            .filter_map(|u| {
+                let mut player = r.tab_players.get(u)?.clone();
+                player.skin = r.player_info_skin(*u).to_owned();
+                Some(player)
+            })
+            .collect();
         let upside_down = players
             .iter()
             .filter(|p| {
@@ -265,8 +287,9 @@ impl Game<'_> {
                 let mut player = PlayerMotion::new(self.motion, position)?;
                 // The id the server gave, for the hooks the motion fires.
                 player.entity_id = self.own_entity_id();
-                // Player.tick derives noPhysics from the current game mode.
-                player.spectator = self.spectator();
+                // Entity.noPhysics starts false until Player.tick() resolves PlayerInfo;
+                // LocalPlayer.aiStep reads MultiPlayerGameMode.isSpectator().
+                player.local_spectator = self.spectator();
                 player.velocity = delta;
                 self.take_carried_attributes(&mut player)?;
                 self.hook.discard();
@@ -296,6 +319,7 @@ impl Game<'_> {
                 position_packet_pitch(m.previous_head_pitch, p.pitch, relative_pitch);
             m.head_pitch = pitch;
         }
+        self.ensure_player_model();
         if let Some(id) = self.remote.as_mut().and_then(|r| r.ghast_dismount.take()) {
             self.place_ghast_under(id, position);
         }
@@ -387,7 +411,7 @@ impl Game<'_> {
             out.push(S::MovePlayerRot(play::MovePlayerRot {
                 yaw,
                 pitch,
-                flags: u8::from(on_ground) | u8::from(collision) << 1,
+                flags: play::pack_move_player_flags(on_ground, collision),
             }));
             if !vehicle.is_empty() {
                 out.extend(vehicle);
@@ -499,11 +523,7 @@ impl Game<'_> {
             self.send(packet);
         }
         for (slot, stack) in creative_slots {
-            let item = self.to_network(&stack);
-            self.send(S::SetCreativeModeSlot(play::SetCreativeModeSlot {
-                slot,
-                item,
-            }));
+            self.send_creative_item_add(slot, stack);
         }
     }
     pub(in crate::game) fn creative_stacks(&self) -> Vec<Option<ItemStack>> {
@@ -531,13 +551,38 @@ impl Game<'_> {
             }
         }
         for (slot, stack) in changed {
-            let item = self.to_network(&stack);
-            self.send(S::SetCreativeModeSlot(play::SetCreativeModeSlot {
-                slot,
-                item,
-            }));
+            self.send_creative_item_add(slot, stack);
         }
         self.remote_creative_grid_sync();
+    }
+
+    /// `MultiPlayerGameMode.handleCreativeModeItemAdd`, shared by each creative slot sender.
+    pub(super) fn send_creative_item_add(&self, slot: i16, stack: Option<ItemStack>) {
+        if !self.creative || self.remote.is_none() {
+            return;
+        }
+        let stack = stack.filter(|stack| !stack.is_empty());
+        // Vanilla checks the item's required features, and an empty stack's item is air.
+        let air;
+        let enabled = match &stack {
+            Some(stack) => self
+                .creative_screen
+                .catalog()
+                .item_enabled(stack, self.enabled_feature_ids()),
+            None => {
+                air = ItemStack::new("minecraft:air", 0);
+                self.creative_screen
+                    .catalog()
+                    .item_enabled(&air, self.enabled_feature_ids())
+            }
+        };
+        if !enabled {
+            return;
+        }
+        self.send_play(S::SetCreativeModeSlot(play::SetCreativeModeSlot {
+            slot,
+            item: self.to_network(&stack),
+        }));
     }
     /// `MultiPlayerGameMode.ensureHasSentCarriedItem`: the server hears of a
     /// new selected slot before anything the slot acts with.
@@ -603,7 +648,7 @@ impl Game<'_> {
                 .and_then(|uuid| r.tab_players.get(uuid));
             let mob_team =
                 listed.map_or_else(|| teams.of(Who::Mob(m.id)), |t| board.players_team(&t.name));
-            if listed.is_some_and(|t| t.game_mode == SPECTATOR)
+            if r.remote_player_info_game_mode(m.id as i32) == Some(SPECTATOR)
                 || !sunrise_client::scoreboard::pushable_by(mob_team, player_team, true)
             {
                 continue;

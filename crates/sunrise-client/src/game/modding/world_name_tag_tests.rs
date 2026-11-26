@@ -1,5 +1,5 @@
 //! `WorldDrawContext::name_tag` (#4171): a mod's label hides behind a wall unless it is
-//! see-through, shrinks with distance as a name tag does, is refused whole for text too deep
+//! see-through, shrinks with distance as a name tag does, supports deep in-memory text
 //! or a position that is not finite, draws as vanilla's name tags in its light and the
 //! player's text background opacity.
 use super::host::draw::GameWorldDrawContext;
@@ -310,12 +310,11 @@ fn the_text_background_opacity_sets_the_backdrop_and_the_faded_text() {
     });
 }
 
-/// A label refused for capacity after its layout rasterized a new glyph still uploads that
-/// glyph's pixels: a later accepted label with the glyph needs none of its own and samples
-/// atlas texels that are queued.
+/// Labels grow past the initial 4,096 quad pre-reservation hint alongside plain quads,
+/// and newly rasterized glyphs upload their atlas patches.
 #[test]
 #[ignore = "daily"]
-fn glyphs_of_a_label_refused_for_capacity_still_upload() {
+fn labels_grow_past_initial_quad_hint_and_upload_glyphs() {
     with_client_game(|game| {
         face_south(game);
         // The default font's runes are already packed bitmap glyphs, not runtime uploads, and
@@ -351,7 +350,7 @@ fn glyphs_of_a_label_refused_for_capacity_still_upload() {
         let atlas = &mut game.gui.atlas;
         atlas.font = sunrise_client::font::Font::load(
             &source,
-            &Default::default(),
+            &atlas.sprites,
             &[],
             (atlas.width, atlas.height),
             (atlas.height / 2, atlas.height / 2),
@@ -363,31 +362,22 @@ fn glyphs_of_a_label_refused_for_capacity_still_upload() {
         let mut draw = WorldGeometry::default();
         draw.reset(CAMERA, Mat4::IDENTITY, [0.5, 0.5]);
         let quad = mod_api::WorldQuad::new([[0.5, 70.5, 0.0]; 4], !0, mod_api::WorldDepth::Tested);
-        let capacity = draw.usage().quad_capacity as usize;
-        draw.quads(&vec![quad; capacity - 1]).unwrap();
+        draw.quads(&vec![
+            quad;
+            sunrise_client::gfx::world_primitives::DEFAULT_CAPACITY
+                as usize
+        ])
+        .unwrap();
         game.text_patches.borrow_mut().clear();
-        let refused = GameWorldDrawContext::new(game, &mut draw).name_tag(at, &text, options);
-        assert_eq!(refused, Err(DrawError::CapacityExceeded));
-        assert!(draw.labels().iter().all(|label| label.is_empty()));
+        let accepted = GameWorldDrawContext::new(game, &mut draw).name_tag(at, &text, options);
+        assert_eq!(accepted, Ok(()));
         let queued: Vec<[u32; 4]> = game
             .text_patches
             .borrow()
             .iter()
             .map(|p| [p.x, p.y, p.width, p.height])
             .collect();
-        assert!(
-            !queued.is_empty(),
-            "the refused label's new glyphs still upload"
-        );
-
-        draw.reset(CAMERA, Mat4::IDENTITY, [0.5, 0.5]);
-        let accepted = GameWorldDrawContext::new(game, &mut draw).name_tag(at, &text, options);
-        assert_eq!(accepted, Ok(()));
-        assert_eq!(
-            game.text_patches.borrow().len(),
-            queued.len(),
-            "the glyphs were cached by the refused label"
-        );
+        assert!(!queued.is_empty(), "new glyphs upload their atlas patches");
         let size = [game.gui.atlas.width as f32, game.gui.atlas.height as f32];
         let glyphs: Vec<&[Vertex; 4]> = draw.labels()[0]
             .as_chunks::<4>()
@@ -481,17 +471,32 @@ fn labels_four_times_as_far_are_a_quarter_the_size_on_screen() {
 
 #[test]
 #[ignore = "daily"]
-fn deep_labels_draw_but_non_finite_positions_are_refused() {
+fn a_deep_label_renders_and_non_finite_is_refused() {
     with_client_game(|game| {
         let mut deep = Text::literal("leaf");
-        for _ in 0..mod_api::text::MAX_TEXT_DEPTH {
+        for _ in 1..520 {
             deep = Text::literal("").append(deep);
         }
         let options = NameTagOptions::new(true, true, 0xF0);
-        let (result, [world, see_through]) = labels(game, [0.5, 70.0, 0.5], &deep, options);
-        assert_eq!(result, Ok(()));
-        assert_eq!(world.len() / 4, 4, "one quad per leaf glyph");
-        assert!(!see_through.is_empty());
+        let (ok, [world, through]) = labels(game, [0.5, 70.0, 0.5], &deep, options);
+        assert_eq!(ok, Ok(()));
+        assert!(!world.is_empty() && !through.is_empty());
+        let mut bad_nbt = Text::literal("x");
+        bad_nbt.metadata = sunrise_core::nbt::Tag::compound([(
+            "deep",
+            (0..512).fold(sunrise_core::nbt::Tag::Byte(1), |t, _| {
+                sunrise_core::nbt::Tag::List(vec![t])
+            }),
+        )]);
+        let (ok, drawn) = labels(game, [0.5, 70.0, 0.5], &bad_nbt, options);
+        let (_, expected) = labels(game, [0.5, 70.0, 0.5], &Text::literal("x"), options);
+        assert_eq!(ok, Ok(()));
+        for (actual, expected) in drawn.iter().zip(&expected) {
+            assert_eq!(
+                bytemuck::cast_slice::<Vertex, u8>(actual),
+                bytemuck::cast_slice::<Vertex, u8>(expected)
+            );
+        }
         for at in [[f64::NAN, 70.0, 0.5], [0.5, f64::INFINITY, 0.5]] {
             let (refused, drawn) = labels(game, at, &Text::literal("x"), options);
             assert_eq!(refused, Err(DrawError::NonFinite));
@@ -511,12 +516,12 @@ fn deep_labels_draw_but_non_finite_positions_are_refused() {
 struct Native;
 #[mod_api::__subscriptions]
 impl Hooks for Native {
-    fn render_level_stage(
+    fn submit_custom_geometry(
         &self,
         _: &dyn mod_api::ClientHost,
-        event: &mut mod_api::RenderLevelStageEvent<'_>,
+        event: &mut mod_api::SubmitCustomGeometryEvent<'_>,
     ) {
-        scene::render_level_stage(event);
+        scene::submit_custom_geometry(event);
     }
 }
 
@@ -527,7 +532,31 @@ fn scene_frame(game: &mut super::Game<'_>) -> ([Vec<Vertex>; 2], Vec<u32>) {
     game.see_through_vertices.clear();
     let mut draw = WorldGeometry::default();
     let mut entities = Vec::new();
-    game.fill_world_geometry(false, CAMERA, Mat4::IDENTITY, 0.0, &mut draw, &mut entities);
+    let frame_camera = mod_api::Camera {
+        position: CAMERA,
+        eye_height: 1.62,
+        partial_tick: 0.0,
+        yaw: 0.0,
+        pitch: 0.0,
+        roll: 0.0,
+        fov_degrees: 70.0,
+        near: 0.05,
+        far: 128.0,
+        view: Mat4::IDENTITY.to_cols_array(),
+        projection: Mat4::IDENTITY.to_cols_array(),
+        dimension: "minecraft:overworld".into(),
+    };
+    game.fill_world_geometry(
+        false,
+        Some(&frame_camera),
+        CAMERA,
+        Mat4::IDENTITY,
+        0.0,
+        false,
+        &[],
+        &mut draw,
+        &mut entities,
+    );
     let see_through = std::mem::take(&mut game.see_through_vertices);
     // Each call's result, from the scene's marker lines: `code` across, the call's index up.
     let mut results: Vec<(f32, u32)> = draw

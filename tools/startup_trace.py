@@ -28,12 +28,10 @@ import sys
 import tempfile
 import time
 
-try:
-    from . import lab
-except ImportError:
-    import lab
-
 ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+from tools import lab
+
 # What each `--until` waits for.
 UNTIL = {"title": "title.shown", "world": "world.view_full", "frame": "world.first_frame"}
 

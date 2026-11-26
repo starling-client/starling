@@ -1,9 +1,6 @@
-//! Rigid contact kernel for moving-structure carriers.
-//!
-//! Slice 5 of the moving structures design
-//! (`docs/design/mod-api/moving-structures.md`, section "Transform and
-//! contact contract"): a pure geometry harness with no `Host`, no `Game` and
-//! no gameplay wiring. A caller assembles a [`CarrierGeometry`] from local
+//! Rigid contact kernel for moving-structure carriers: a pure geometry
+//! harness with no `Host`, no `Game` and no gameplay wiring. A caller
+//! assembles a [`CarrierGeometry`] from local
 //! cells carrying their real [`VoxelShape`]s, then asks for collision-safe
 //! translation and rotation steps against static obstacles, or queries the
 //! sparse shape with a world-space ray.

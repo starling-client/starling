@@ -39,14 +39,10 @@ import threading
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-try:
-    from . import lab, oracle_harness as oh, test_rust_parity as base
-    from .test_dedicated_server_parity import Server
-except ImportError:
-    import lab
-    import oracle_harness as oh
-    import test_rust_parity as base
-    from test_dedicated_server_parity import Server
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, oracle_harness as oh, test_rust_parity as base
+from tools.test_dedicated_server_parity import Server
 
 NAME = 'secure-chat-parity'
 SCENARIOS = {

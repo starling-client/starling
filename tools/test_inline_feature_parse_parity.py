@@ -5,8 +5,10 @@ import json
 from pathlib import Path
 import sys
 
-import test_command_exec_parity as driver
-from inline_feature_parse_corpus import inline_feature_parse
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_command_exec_parity as driver
+from tools.inline_feature_parse_corpus import inline_feature_parse
 
 if __name__ == '__main__':
     full = '--full-diagnostic' in sys.argv

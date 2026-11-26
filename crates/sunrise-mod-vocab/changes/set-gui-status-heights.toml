@@ -1,0 +1,3 @@
+ids = ["method:prelude::ClientViewClientHost::set_gui_status_heights"]
+why = "A HUD layer sets the status columns' heights as assigning NeoForge's Hud.leftHeight and rightHeight does, so the vanilla rows drawn after it (food, a mount's hearts, air) move up for a row the mod draws, instead of the mod repainting them (#5640)."
+migrate = "Nothing to change: additive."

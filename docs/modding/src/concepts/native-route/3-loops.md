@@ -182,7 +182,8 @@ without slots, from inside a slot or after a panic.
 | `E_LOOP_INVALID` | `<mod>:<row>: invalid loop; name a published loop of the game, such as block_entities.tick` | Name the loop. |
 | | `… invalid helper; name a Rust file under src/ in this package` | Put the helper under `src/`, ending in `.rs`. |
 | | `… invalid with; name the slot type the helper defines` | Write the type's name, a plain identifier. |
-| `E_LOOP_UNKNOWN` | ``<mod>:<row>: the game publishes no loop `<loop>`; its loops: block_entities.tick`` | Use a listed loop. |
+| `E_MIXIN_INDEX` | The build's `loops.json` is missing, invalid or from another build | Fetch the SDK for the build again. |
+| `E_LOOP_UNKNOWN` | ``<mod>:<row>: the game publishes no loop `<loop>`; its loops: block_entities.tick`` | Use a loop in the SDK's catalog. |
 | `E_LOOP_HELPER` | `<entry>: <mod>:<row>: its helper: <parse error>`, or `with: <parse error>` | Fix the Rust error shown. |
 | `E_LOOP_ENTRY_REPLACED` | `<mod>:<row>: the <KIND> mixin on <target> would replace or bypass the published loop …; only HEAD and RETURN mixins compose with it` | On the entry, use `HEAD` or `RETURN`. Never `OVERWRITE` the body. |
 

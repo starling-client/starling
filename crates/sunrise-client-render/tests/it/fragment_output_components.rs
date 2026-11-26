@@ -1,23 +1,12 @@
 //! Synthetic rendering checks (two output shapes mirror RenderPearl v2.7.2 @86de79c, MIT; see the
 //! PR): a fragment output's `component` layout qualifier (GLSL 4.60, 4.4.2) picks the channels of
 //! its location that it writes.
-use sunrise_shaders::{Origin, Preprocessed, Target, translate_composite};
+use sunrise_shaders::{Preprocessed, Target, translate_composite};
 
 fn source(code: &str) -> Preprocessed {
-    Preprocessed {
-        code: code.into(),
-        files: vec!["components.glsl".into()],
-        lines: code
-            .lines()
-            .enumerate()
-            .map(|(i, _)| Origin {
-                file: 0,
-                line: i as u32 + 1,
-            })
-            .collect(),
-        version: Some((440, None)),
-        ..Default::default()
-    }
+    let mut pp = Preprocessed::from_source("components.glsl", code);
+    pp.version = Some((440, None));
+    pp
 }
 
 /// Draws `fragment` over a 1×1 target of `format` and reads back its 16 bytes.
@@ -31,6 +20,7 @@ fn draw(
         &source("void main() { gl_Position = ftransform(); }"),
         &source(fragment),
         Target::Buffers,
+        naga::front::glsl::InterfaceLimits::WGPU_DEFAULT,
     )
     .unwrap_or_else(|e| panic!("{fragment}: {e:?}"));
     let module = |module| {

@@ -79,15 +79,11 @@ struct Draw<'a> {
     group: wgpu::BindGroup,
     raw: bool,
     hdr_lighting: bool,
-    material_frame: Option<super::super::native_post::NativeFrame>,
-    /// More pipeline constants, for the material wrappers' own.
-    constants: Vec<(&'static str, f64)>,
     uniform: wgpu::Buffer,
     pipelines: RefCell<HashMap<PipelineKey, wgpu::RenderPipeline>>,
 }
 /// Everything that changes a pipeline built by `Draw::render`: the entry point
-/// and its mark pass, the override constants, and the draw's own flags. The
-/// shader and layout only change in `material`, which empties the cache.
+/// and its mark pass, the override constants, and the draw's own flags.
 #[derive(PartialEq, Eq, Hash)]
 struct PipelineKey {
     entry: String,
@@ -98,9 +94,6 @@ struct PipelineKey {
     terrain: bool,
     raw: bool,
     hdr_lighting: bool,
-    material: bool,
-    /// `Draw::constants`, each value by its bits.
-    constants: Vec<(&'static str, u64)>,
 }
 impl<'a> Draw<'a> {
     fn render_oit(
@@ -481,8 +474,6 @@ impl<'a> Draw<'a> {
             group,
             raw: false,
             hdr_lighting: true,
-            material_frame: None,
-            constants: Vec::new(),
             uniform,
             pipelines: RefCell::default(),
         }
@@ -494,6 +485,7 @@ impl<'a> Draw<'a> {
             .write_buffer(&self.uniform, 0, bytemuck::bytes_of(globals));
     }
 
+<<<<<<< HEAD
     fn material(&mut self, api: sunrise_shader_api::Api) {
         let source = super::super::native_material::coverage_test_shader((api, false));
         self.shader = self
@@ -527,6 +519,41 @@ impl<'a> Draw<'a> {
         self.raw = true;
         self.pipelines.borrow_mut().clear();
     }
+||||||| 46c00106def
+    fn material(&mut self, api: sunrise_shader_api::Api) {
+        let source = super::super::native_material::coverage_test_shader((api, false));
+        self.shader = self
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("actual assembled material wrappers"),
+                source: wgpu::ShaderSource::Wgsl(source.into()),
+            });
+        let frame = super::super::native_post::NativeFrame::new(
+            self.device,
+            None,
+            Vec::new(),
+            Default::default(),
+            None,
+            (api, false),
+        );
+        self.queue.write_buffer(
+            &frame.buffer,
+            0,
+            bytemuck::bytes_of(&sunrise_shader_api::Frame::default()),
+        );
+        self.layout = self
+            .device
+            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: None,
+                bind_group_layouts: &[Some(&self.bindings), None, None, Some(&frame.layout)],
+                ..Default::default()
+            });
+        self.material_frame = Some(frame);
+        self.raw = true;
+        self.pipelines.borrow_mut().clear();
+    }
+=======
+>>>>>>> ed6772e2118
     fn render(
         &self,
         hdr: &mut Hdr,
@@ -537,37 +564,12 @@ impl<'a> Draw<'a> {
         background: [f64; 4],
     ) -> [f32; 4] {
         let mut constants = vec![
-            (
-                if self.material_frame.is_some() {
-                    "sunrise_terrain_HDR_WRITE_LIGHT"
-                } else {
-                    "HDR_WRITE_LIGHT"
-                },
-                f64::from(u8::from(written)),
-            ),
+            ("HDR_WRITE_LIGHT", f64::from(u8::from(written))),
             ("TEST_TIER", f64::from(tier)),
             ("TEST_OVERLAY", f64::from(overlay)),
         ];
-        constants.extend(self.constants.iter().copied());
         if self.terrain {
-            constants.push((
-                if self.material_frame.is_some() {
-                    "sunrise_terrain_HDR_LIGHTING"
-                } else {
-                    "HDR_LIGHTING"
-                },
-                f64::from(u8::from(self.hdr_lighting)),
-            ));
-        }
-        if self.material_frame.is_some() {
-            constants.push((
-                "sunrise_displace_distance",
-                if entry == "sunrise_material_fs_displaced" {
-                    10.0
-                } else {
-                    0.0
-                },
-            ));
+            constants.push(("HDR_LIGHTING", f64::from(u8::from(self.hdr_lighting))));
         }
         let vertex = match entry {
             "fs_sky" | "fs_sky_base" => "vs_sky",
@@ -635,12 +637,6 @@ impl<'a> Draw<'a> {
                 terrain: self.terrain,
                 raw: self.raw,
                 hdr_lighting: self.hdr_lighting,
-                material: self.material_frame.is_some(),
-                constants: self
-                    .constants
-                    .iter()
-                    .map(|&(name, value)| (name, value.to_bits()))
-                    .collect(),
             };
             if let Some(cached) = self.pipelines.borrow().get(&key) {
                 return cached.clone();
@@ -693,9 +689,6 @@ impl<'a> Draw<'a> {
                 ..Default::default()
             });
             pass.set_bind_group(0, &self.group, &[]);
-            if let Some(frame) = &self.material_frame {
-                pass.set_bind_group(3, &frame.group, &[]);
-            }
             pass.set_pipeline(&color);
             pass.draw(0..3, 0..1);
             if let Some(mark) = &mark {
@@ -910,124 +903,6 @@ fn float_stars_keep_the_original_rgb_with_brightness_as_coverage() {
         let float = draw("fs_stars");
         assert_eq!(&float[..3], &old[..3]);
         assert!((float[3] - 0.35).abs() < 0.001, "{float:?}");
-    }
-}
-
-/// A device for the real material layout, which binds the terrain arrays and the pack's frame
-/// together.
-fn material_gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
-    let adapter = crate::gfx::test_gpu::adapter()?;
-    if adapter.limits().max_sampled_textures_per_shader_stage < 19 {
-        return None;
-    }
-    crate::gfx::test_gpu::optional_device_with(
-        &adapter,
-        &wgpu::DeviceDescriptor {
-            required_limits: wgpu::Limits {
-                max_sampled_textures_per_shader_stage: 19,
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-    )
-}
-
-#[test]
-#[ignore = "daily"]
-fn float_material_wrappers_keep_rgb_and_coverage_including_displacement() {
-    let _gpu = crate::gfx::test_gpu::lock();
-    let Some((device, queue)) = material_gpu() else {
-        return;
-    };
-    let mut hdr = Hdr::with_debug(&device, &queue, F::Rgba16Float, Output::Pq, true, None);
-    let globals = super::super::Globals {
-        filtering: [0.0, 1.0, 0.0, 0.0],
-        hdr_windows: hdr.windows(),
-        ..bytemuck::Zeroable::zeroed()
-    };
-    for api in [sunrise_shader_api::Api::V0_1, sunrise_shader_api::Api::V0_2] {
-        let mut draw = Draw::new(&device, &queue, true, &globals, 255);
-        draw.material(api);
-        for entry in [
-            "sunrise_material_fs_solid",
-            "sunrise_material_fs_displaced",
-            "sunrise_material_fs_translucent",
-        ] {
-            let old = draw.render(&mut hdr, false, entry, 3, 0, [0.0; 4]);
-            let float = draw.render(&mut hdr, true, entry, 3, 0, [0.0; 4]);
-            assert_eq!(&float[..3], &old[..3], "{api} {entry}");
-            let alpha = if entry.ends_with("translucent") {
-                0.7
-            } else {
-                1.0
-            };
-            assert!((float[3] - alpha).abs() < 0.001, "{api} {entry}: {float:?}");
-            assert!(
-                float[0] > 1.0,
-                "{api} {entry}: clipping or an empty fixture: {float:?}"
-            );
-            if alpha == 1.0 {
-                assert_ne!(
-                    old[3], float[3],
-                    "the legacy source mark must distinguish the paths"
-                );
-            }
-        }
-    }
-    eprintln!("material GPU ran both API lines through solid, displaced and translucent wrappers");
-}
-
-#[test]
-#[ignore = "daily"]
-fn material_coverage_is_the_texture_s_unless_the_pack_declares_its_own() {
-    let _gpu = crate::gfx::test_gpu::lock();
-    let Some((device, queue)) = material_gpu() else {
-        eprintln!("material coverage GPU unavailable");
-        return;
-    };
-    let mut hdr = Hdr::with_debug(&device, &queue, F::Rgba16Float, Output::Pq, true, None);
-    let globals = super::super::Globals {
-        filtering: [0.0, 1.0, 0.0, 0.0],
-        hdr_windows: hdr.windows(),
-        ..bytemuck::Zeroable::zeroed()
-    };
-    let background = [0.0, 0.0, 0.25, 0.5];
-    // (coverage = "pack", the texel's alpha, the alpha `material` returns, solid drawn,
-    // translucent drawn): under "engine" the texture decides and the returned alpha is the
-    // translucent pass's opacity only; under "pack" the returned alpha decides.
-    for (pack, texel, returned, solid, translucent) in [
-        (false, 255, 0.0, true, true),
-        (false, 0, 1.0, false, false),
-        (false, 255, 0.7, true, true),
-        (true, 255, 0.0, false, false),
-        (true, 0, 1.0, true, true),
-        (true, 255, 0.7, true, true),
-    ] {
-        let mut draw = Draw::new(&device, &queue, true, &globals, texel);
-        draw.material(sunrise_shader_api::Api::V0_2);
-        draw.constants = vec![
-            ("sunrise_material_coverage_pack", f64::from(u8::from(pack))),
-            ("test_alpha", returned),
-        ];
-        let case = format!("pack {pack}, texel alpha {texel}, returned {returned}");
-        for (entry, drawn) in [
-            ("sunrise_material_fs_solid", solid),
-            ("sunrise_material_fs_translucent", translucent),
-        ] {
-            let got = draw.render(&mut hdr, true, entry, 0, 0, background);
-            if !drawn {
-                assert_eq!(got, background.map(|c| c as f32), "{case} {entry}");
-                continue;
-            }
-            assert!(got[0] > 1.0, "{case} {entry}: not drawn: {got:?}");
-            // The test pipeline replaces: the alpha written is what the blend would weigh by.
-            let alpha = if entry.ends_with("translucent") {
-                returned as f32
-            } else {
-                1.0
-            };
-            assert!((got[3] - alpha).abs() < 0.001, "{case} {entry}: {got:?}");
-        }
     }
 }
 

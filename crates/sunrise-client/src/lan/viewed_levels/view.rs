@@ -58,9 +58,10 @@ impl View {
     /// Portals sends a loader's chunks ring by ring from the inside out). The sent chunks no area
     /// covers start to linger; those covered again stop.
     pub fn requeue(&mut self, areas: &[&ChunkArea], now: u64) {
-        let sent = &self.sent;
+        self.sources = areas.iter().map(|a| (a.center, a.radius as i32)).collect();
+        let (sent, sources) = (&self.sent, &self.sources);
         self.queue
-            .retain(|&(x, z)| covers(areas, x, z) && !sent.contains(&(x, z)));
+            .retain(|&(x, z)| covers(sources, x, z) && !sent.contains(&(x, z)));
         let mut queued: FxHashSet<(i32, i32)> = self.queue.iter().copied().collect();
         for a in areas {
             let r = a.radius as i32;
@@ -73,10 +74,9 @@ impl View {
                 }
             }
         }
-        self.queue.sort_by_key(|&(x, z)| distance(areas, x, z));
-        self.sources = areas.iter().map(|a| (a.center, a.radius as i32)).collect();
+        self.queue.sort_by_key(|&(x, z)| distance(sources, x, z));
         for &(x, z) in sent {
-            if covers(areas, x, z) {
+            if covers(sources, x, z) {
                 self.linger.remove(&(x, z));
             } else {
                 self.linger.entry((x, z)).or_insert(now);
@@ -103,19 +103,15 @@ impl View {
     }
 }
 
-/// Whether one of `areas` holds the chunk.
-fn covers(areas: &[&ChunkArea], x: i32, z: i32) -> bool {
-    areas.iter().any(|a| {
-        let r = a.radius as i32;
-        (x - a.center.0).abs() <= r && (z - a.center.1).abs() <= r
-    })
+/// Whether one of the areas, `(centre, radius)` in chunks, holds the chunk.
+pub(in crate::lan) fn covers(areas: &[((i32, i32), i32)], x: i32, z: i32) -> bool {
+    (areas.iter()).any(|&((cx, cz), r)| (x - cx).abs() <= r && (z - cz).abs() <= r)
 }
 
 /// The Chebyshev distance from the chunk to the nearest area's centre.
-fn distance(areas: &[&ChunkArea], x: i32, z: i32) -> i32 {
-    areas
-        .iter()
-        .map(|a| (x - a.center.0).abs().max((z - a.center.1).abs()))
+pub(super) fn distance(areas: &[((i32, i32), i32)], x: i32, z: i32) -> i32 {
+    (areas.iter())
+        .map(|&((cx, cz), _)| (x - cx).abs().max((z - cz).abs()))
         .min()
         .unwrap_or(i32::MAX)
 }

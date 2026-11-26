@@ -37,8 +37,8 @@ fn the_entity_destroy_block_names_reaches_the_listener() {
     let root = std::env::temp_dir().join(format!("block-loot-{}", std::process::id()));
     let dir = root.join("data/minecraft/loot_table/blocks");
     std::fs::create_dir_all(&dir).unwrap();
-    let table = r#"{"pools":[{"rolls":1,"conditions":[{"type":"minecraft:table_bonus",
-        "enchantment":"minecraft:fortune","chances":[1.0]}],
+    let table = r#"{"pools":[{"rolls":1,"condition":{"type":"minecraft:table_bonus",
+        "enchantment":"minecraft:fortune","chances":[1.0]},
         "entries":[{"type":"minecraft:item","name":"minecraft:stick"}]}]}"#;
     for block in [
         "chorus_flower",

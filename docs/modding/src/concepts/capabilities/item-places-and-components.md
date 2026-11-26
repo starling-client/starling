@@ -10,8 +10,9 @@ register a `PlaceProvider` with `r.place_provider` and use `ItemPlace::Mod`. `It
 `place.with_stack(host, |stack| stack.item())` reads the item at a nonempty place. The
 callback receives an `ItemStackView` for that call only. Read `item()`, `count()` and
 `damage()` there without copying a resident stack. If you only need to know whether
-the place is occupied, use `place.amount(host) != 0`. For components or an owned
-`ItemStack` beyond the callback, project it explicitly:
+the place is occupied, use `place.amount(host) != 0`. Read one stored component
+override with `stack.get(&component)`; it does not consult item defaults. To read
+the whole patch or keep an owned `ItemStack` beyond the callback, project it explicitly:
 
 ```rust,ignore
 match place.with_stack(host, |stack| stack.project()) {
@@ -29,7 +30,7 @@ in the same transaction.
 For a provider-backed or decoded place, the view lends the value produced for that read. A
 provider-backed menu slot reads its live backing, not the menu's display copy. A dropped
 item narrowed to an `ItemEntityRef` has its own
-[`with_stack`](../../how-to/world/block-entity-item-drops.md).
+[`with_stack`](../../how-to/world/block-entities.md#dropped-items-during-block-entity-ticks).
 
 ## Item capabilities
 
@@ -42,7 +43,11 @@ slots declared with `r.item_container(&item, provider)`, then items carrying
 at slot 0, moving the inserted stack to the front. Only slot 0 can be extracted; reads expose
 all contents in front-first order. An empty bundle exposes one empty insertion slot.
 A mod can return `Some(Box::new(BundleItems::new(place.clone())))` from its own
-`ITEM_ITEMS` provider for an item carrying `minecraft:bundle_contents`. All writes exchange
+`ITEM_ITEMS` provider for an item carrying `minecraft:bundle_contents`, or
+`Some(Box::new(BundleItems::with_config(place.clone(), BundleConfig::custom("mymod:pouch_contents", 4).with_filter_tag("mymod:runes"))))`
+for a registered custom bundle-like component storing a `Tag::List` of `ItemStack.CODEC` entries
+with its own Sunrise-specific capacity multiplier and optional item tag filter (non-list component
+payloads are refused without overwriting). All writes exchange
 one item through the place and roll back with the caller's transaction. `place.capability(host, &ITEM_ITEMS)` queries these providers in order.
 The registered `ItemContainerProvider::slots(&dyn Host)` callback returns `Option<u32>` dynamically;
 it is not called by registration-time coverage queries. `ITEM_ITEMS` covers the declared item type
@@ -57,17 +62,36 @@ Keep the contents in the stack and use these methods to access it:
 | `place.with_stack(host, read)` | The callback's result, or `None` without calling it if the place is empty or unavailable |
 | `place.resource(host)` | Its resource without a count, or `None` |
 | `place.amount(host)` | Its count, or 0 |
-| `place.insert(host, tx, &resource, amount)` | How much was inserted |
-| `place.extract(host, tx, &resource, amount)` | How much was taken from a stack matching the resource's item and components |
-| `place.exchange(host, tx, &resource, amount)` | How much was exchanged, or 0 if the exchange fails |
+| `place.insert(host, tx, &resource, amount)` | `Result<u32, TransactionError<Overanswered>>`: how much was inserted, or a transaction/overanswer error |
+| `place.extract(host, tx, &resource, amount)` | `Result<u32, TransactionError<Overanswered>>`: how much was taken from a stack matching the resource's item and components |
+| `place.exchange(host, tx, &resource, amount)` | `Result<u32, TransactionError<Overanswered>>`: how much was exchanged, or `Ok(0)` if the exchange could not run |
 
-Where the game handles extraction directly, an override equal to the item's default does not
-change what matches. The resource need not be valid for insertion: for example, a damage
-component already on a stack can match even when that stack has no maximum damage.
+Where the game handles extraction directly, it matches decoded component values rather than
+raw tag spellings. An override equal to the item's default does not change what matches. A
+resident filled map's resource includes any pending lock or scale even though saves omit it;
+its resource matches the live map without processing that operation. The resource need not be
+valid for insertion: for example, a damage component already on a stack can match even when
+that stack has no maximum damage.
 
-Each write runs in its own transaction nested in `tx`. Aborting restores changes at every
-level of nested items. If a handler answers more than requested, the move is undone and the
-game warns once, naming the mod.
+Pass the innermost `&TransactionContext` to every write, including writes to lent scratch places.
+A foreign or ancestor context refuses without calling the provider: `insert`, `extract`, and
+`exchange` return `TransactionError::InvalidContext`, `edit` returns
+`ItemPlaceEditError::InvalidContext`, and `on_crafted_by` returns `CraftedByError::InvalidContext`
+(or `CraftedByError::CommitRefused` if its inner replacement commit is rolled back). Writes that
+open a nested scope, including exchange, restore changes at every level of nested items on abort.
+If a handler answers more than requested, the move is undone and the game warns once, naming the
+mod.
+
+## Which block slot a place is
+
+A side's indices are not a block's slots: a furnace's sides reach slot 1 as their index 0, its
+bottom reaches slots 2 then 1, and a double chest's two halves each reach all 54 slots. A
+`StorageSlot { level, pos, slot }` names slot `slot` of the container owned by the block entity at
+`pos`, whichever side or half reached it, so two equal values are one stack. Ask for it with
+`ItemPlace::backing(host)`, or `handler.backing(host, index)` on an `ITEMS` handler. A mod's own
+handler that fronts a container overrides `ResourceHandler::backing`; the default is `None`, and
+so is a composter's, which has no backing container. `MenuSlotBacking::BlockEntity` carries the
+same `(level, pos, slot)`.
 
 ## Exchanging one item
 
@@ -90,23 +114,38 @@ backpack keeps its contents.
 
 These correspond to NeoForge's other `ItemAccess` factories:
 
-- `host.scratch_stack(tx, stack)` (`forStack`) holds a stack outside the world, such as a
-  crafting result or a preview, and returns its `ItemPlace::Scratch`. Take it back with
-  `host.scratch_take(tx, &place)`. It lives until the outermost transaction closes. Aborting the
-  transaction that made it drops it, and aborting a later one puts it back as it was. As in
-  `StackItemAccess`, a write never changes its item, only its count and components: a bucket in
-  one can't become a water bucket.
-- `host.scratch_slots(tx, stack)` holds a stack outside the world in a private two-slot copy
-  whose item may change, and returns its `ItemPlace::ScratchSlots`: what
-  `fluid_util::dispense_container` runs a dispensed container in, so a bucket can become a water
-  bucket. Reads and extracts are the first slot's. An insert fills the first slot where it is
-  empty or holds the same item and components, and the rest goes to the second, as a changed
-  item split off a stack does. `host.scratch_take_slots(tx, &place)` takes both slots back out.
-  It lives and aborts as a scratch stack does.
+- `host.scratch_stack(stack, |host, tx, place| …)` (`forStack`) opens a scoped transaction
+  (nested if one is already open) and lends a single-slot `ItemPlace::Scratch(ScratchSlot)`
+  holding a stack outside the world, such as a crafting result or a preview. As in
+  `StackItemAccess`, writes never change its item, only its count and components: a bucket in
+  one can't become a water bucket. An oversized initial stack is admitted and preserved as-is,
+  while further inserts cap at the item's max stack size. On `Ok(value)` the transaction
+  commits and returns `Ok((value, final_stack))`; on `Err` or unwind the transaction aborts and
+  the lent slot is dropped without publishing. If the host cannot open a transaction or the
+  initial stack fails validation (such as an unknown item or invalid max stack size), it
+  returns `Err(ScratchError::Unavailable)` or `Err(ScratchError::Stack(_))` without calling the
+  closure.
+- `host.scratch_slots(stack, |host, tx, place| …)` (`DispenseFluidContainer`) opens a scoped
+  transaction and lends a two-slot `ItemPlace::Scratch(ScratchSlot)` whose item may change:
+  what `fluid_util::dispense_container` runs a dispensed container in, so a bucket can become
+  a water bucket. Reads and extracts use the first slot; an insert fills the first slot where
+  it is empty or holds the same item and components, and what doesn't fit goes to the second,
+  as a changed item split off a stack does. On `Ok(value)` it commits and returns
+  `Ok((value, (first, second)))`; on `Err` or unwind it aborts without publishing.
+- Both scratch scopes enforce transactional isolation on the lent slots:
+  - A nested transaction that aborts inside the scope restores the lent slots immediately before
+    fallback work runs.
+  - A nested transaction that commits inside the scope stays provisional and rolls back if the
+    enclosing scratch scope aborts or unwinds.
+  - Each loan mints a process-unique `ScratchSlot` and is removed when its scope closes, so it
+    is never kept in a longer-lived outer transaction's journal and never collides with a later
+    or foreign host. A handle copied out of the callback reads empty and writes nothing, and
+    `ItemPlace::Scratch` refuses `Wire` encoding.
 - `ItemPlace::Strict(place)` (`forHandlerIndexStrict`) refuses what a block entity's, entity's
   or nested item's slot doesn't take, where the plain place would spread it to the other slots.
-- `ItemPlace::OneByOne(place)` (`oneByOne`) lends and projects a count of one for a nonempty
-  stack without changing its stored count. An extract takes at most one item.
+- `ItemPlace::OneByOne(place)` (`oneByOne`, `OneByOneItemAccess`) lends and projects a count of
+  one for a nonempty stack without changing its stored count. Both inserts and extracts move at
+  most one item.
 - `ItemPlace::InfiniteMaterials { player, inner }` (`forInfiniteMaterials`) reaches `inner` as a
   creative player does while `player` has infinite materials. Extracts give without taking.
   Inserts are taken whole, and one item goes to the player only if they have none: into their
@@ -173,7 +212,7 @@ These methods return detached resources. Store the result with an exchange of on
 ```rust,ignore
 let resource = place.resource(host).ok_or("empty place")?;
 let changed = resource.with_component(host, &damage, Tag::Int(5))?;
-place.exchange(host, tx, &changed, 1);
+let _ = place.exchange(host, tx, &changed, 1)?;
 ```
 
 The exchange damages one sword from a stack, splitting it off when necessary.

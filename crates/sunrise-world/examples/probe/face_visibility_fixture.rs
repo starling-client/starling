@@ -45,11 +45,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
             Ok((
                 name,
-                RenderDefinition {
+                RenderDefinition::simple(
                     skip,
-                    can_occlude: v["can_occlude"].as_bool().ok_or("missing occlusion flag")?,
-                    bars_tag: v["bars_tag"].as_bool().ok_or("missing bars tag")?,
-                },
+                    v["can_occlude"].as_bool().ok_or("missing occlusion flag")?,
+                    v["bars_tag"].as_bool().ok_or("missing bars tag")?,
+                ),
             ))
         })
         .collect::<Result<_, &str>>()?;

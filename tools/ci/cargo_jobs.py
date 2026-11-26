@@ -26,11 +26,29 @@ def read(path: Path) -> str | None:
         return None
 
 
+def physical_memory() -> int:
+    """The machine's memory in bytes: sysconf where the OS has it (Linux, macOS), else Windows' GlobalMemoryStatusEx."""
+    if hasattr(os, "sysconf"):
+        return os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
+    import ctypes
+
+    class Status(ctypes.Structure):  # MEMORYSTATUSEX
+        _fields_ = [("dwLength", ctypes.c_uint32), ("dwMemoryLoad", ctypes.c_uint32)] + [
+            (name, ctypes.c_uint64) for name in ("ullTotalPhys", "ullAvailPhys", "ullTotalPageFile",
+                                                 "ullAvailPageFile", "ullTotalVirtual", "ullAvailVirtual",
+                                                 "ullAvailExtendedVirtual")]
+
+    status = Status(dwLength=ctypes.sizeof(Status))
+    if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+        raise OSError("GlobalMemoryStatusEx failed")
+    return status.ullTotalPhys
+
+
 def limits(cgroup: Path) -> tuple[int, int]:
     """The runner's CPUs and memory bytes, from its cgroup (v2, else v1); a host with no limit, or no
     cgroup file at all (a GitHub-hosted job runs in the root cgroup, which has no cpu.max), falls back to
     the machine's own CPUs and memory."""
-    cpus = len(os.sched_getaffinity(0))
+    cpus = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count()
     v2 = read(cgroup / "cpu.max")
     if v2 is not None:
         quota, period = v2.split()
@@ -40,7 +58,7 @@ def limits(cgroup: Path) -> tuple[int, int]:
         quota, period = read(cgroup / "cpu/cpu.cfs_quota_us"), read(cgroup / "cpu/cpu.cfs_period_us")
         if quota is not None and period is not None and int(quota) > 0:
             cpus = max(1, int(quota) // int(period))
-    total = os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
+    total = physical_memory()
     memory = read(cgroup / "memory.max") or read(cgroup / "memory/memory.limit_in_bytes")
     # cgroup v1 writes "no limit" as a huge number; neither layout can grant more than the machine has.
     if memory is not None and memory != "max":

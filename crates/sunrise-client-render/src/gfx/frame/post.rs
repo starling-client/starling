@@ -8,7 +8,9 @@ pub(in crate::gfx) struct PostPassArgs<'a> {
     pub(in crate::gfx) surface_frame: Option<&'a wgpu::SurfaceTexture>,
     pub(in crate::gfx) fg_frames: Option<&'a (wgpu::Texture, wgpu::Texture)>,
     pub(in crate::gfx) pack_post: bool,
-    pub(in crate::gfx) native_post: bool,
+    pub(in crate::gfx) after_pack_sky: bool,
+    pub(in crate::gfx) after_pack_features: bool,
+    pub(in crate::gfx) after_pack_custom_geometry: bool,
     pub(in crate::gfx) pack_draws_weather: bool,
     pub(in crate::gfx) pack_draws_terrain: bool,
     pub(in crate::gfx) pack_draws_shadow: bool,
@@ -34,6 +36,9 @@ pub(in crate::gfx) struct PostPassArgs<'a> {
     pub(in crate::gfx) debug_top: u32,
     pub(in crate::gfx) globals: Globals,
     pub(in crate::gfx) entity_quads: u32,
+    /// A pack-drawn name tag's copies (`EntityBatch`'s last materials): their first quad and
+    /// count, which the views draw as the native entity layer.
+    pub(in crate::gfx) name_tags: (u32, u32),
     pub(in crate::gfx) hand_in_world: bool,
     pub(in crate::gfx) world_quads: u32,
     pub(in crate::gfx) additive_quads: u32,
@@ -41,7 +46,10 @@ pub(in crate::gfx) struct PostPassArgs<'a> {
     pub(in crate::gfx) gpu_frame: bool,
     pub(in crate::gfx) serial: u64,
     pub(in crate::gfx) cpu: [usize; 3],
+    pub(in crate::gfx) sourced_frame: bool,
+    pub(in crate::gfx) sourced_cpu: [usize; 3],
     pub(in crate::gfx) lifts_world: bool,
+    pub(in crate::gfx) frame_graph: Option<mod_frame_graph::FrameGraphRunner>,
 }
 
 pub(in crate::gfx) struct PostPassResult {
@@ -55,6 +63,7 @@ impl Renderer {
         &mut self,
         mut encoder: wgpu::CommandEncoder,
         args: PostPassArgs<'_>,
+        mut hooks: Option<&mut dyn world_primitives::FrameHooks>,
     ) -> std::result::Result<(wgpu::CommandEncoder, PostPassResult), String> {
         let PostPassArgs {
             frame,
@@ -64,7 +73,9 @@ impl Renderer {
             surface_frame,
             fg_frames,
             pack_post,
-            native_post,
+            after_pack_sky,
+            after_pack_features,
+            after_pack_custom_geometry,
             pack_draws_weather,
             pack_draws_terrain,
             pack_draws_shadow,
@@ -90,6 +101,7 @@ impl Renderer {
             debug_top,
             globals,
             entity_quads,
+            name_tags,
             hand_in_world,
             world_quads,
             additive_quads,
@@ -97,7 +109,10 @@ impl Renderer {
             gpu_frame,
             serial,
             cpu,
+            sourced_frame,
+            sourced_cpu,
             lifts_world,
+            mut frame_graph,
         } = args;
 
         let mut fg_made = false;
@@ -106,6 +121,33 @@ impl Renderer {
             && pack_post
             && let Some((dimension, Some(mut post))) = self.pack_post.take()
         {
+            let format = post.formats[0];
+            // The standard primitive blend cannot target an integer or unblendable colortex0.
+            // On that route the pack world stages have no compatible pass, rather than firing
+            // early.
+            let pack_blendable = post.colortex0_blendable(&self.device);
+            let pack_features = after_pack_features && pack_blendable;
+            let pack_opaque_blocks = hooks.is_some() && pack_draws_terrain && pack_blendable;
+            let pack_translucent_blocks = hooks.is_some() && pack_draws_terrain && pack_blendable;
+            let pack_weather = hooks.is_some() && pack_draws_weather && pack_blendable;
+            let pack_custom_geometry = after_pack_custom_geometry && pack_blendable;
+            if pack_features
+                || pack_opaque_blocks
+                || pack_translucent_blocks
+                || pack_weather
+                || pack_custom_geometry
+            {
+                self.world_primitives
+                    .as_mut()
+                    .expect("world primitives")
+                    .prepare_pack_pass(
+                        &self.device,
+                        format,
+                        post.rgb & 1 != 0,
+                        self.output.frame.linear_light,
+                    );
+            }
+
             let size = self.world_post.size().unwrap_or([1, 1]);
             let weather = match &self.hud.atlas_texture {
                 Some(atlas) if pack_draws_weather => self
@@ -125,7 +167,10 @@ impl Renderer {
             post.set_weather(weather);
             let flat = self.flat.as_ref().filter(|_| flat_frame);
             self.pack_pages.clear();
-            if flat.is_some() && (pack_draws_terrain || pack_draws_shadow) {
+            // The pack's terrain programs read their pages: flat, or per section where vertex
+            // shaders read storage (`pack_terrain_draws`).
+            let reads_pages = flat.is_some() || self.pack_terrain_draws().reads_pages();
+            if reads_pages && (pack_draws_terrain || pack_draws_shadow) {
                 self.pack_pages.extend(
                     self.arena
                         .page_buffers()
@@ -133,6 +178,12 @@ impl Renderer {
                 );
             }
             let pages = &self.pack_pages;
+            // The pack's terrain programs read the normal stream beside each run's vertices
+            // (`pack_atlas::TerrainDraws::Normals`).
+            let normals = self.pack_terrain_draws() == pack_atlas::TerrainDraws::Normals;
+            // Out of `self` for the pass: its boundary closure runs mod frame-graph nodes beside
+            // the terrain closure's borrow of the renderer.
+            let mut world_primitives = self.world_primitives.take();
             let mut terrain =
                 |rp: &mut wgpu::RenderPass<'_>,
                  list: pack_post::TerrainList,
@@ -193,7 +244,22 @@ impl Renderer {
                                     (shadow_first + shadow_solid, shadow_translucent)
                                 }
                             };
-                            self.draw_sections(rp, &self.indirect, 0, first, count);
+                            if normals {
+                                let bind = |rp: &mut wgpu::RenderPass<'_>, key: u32| {
+                                    rp.set_vertex_buffer(
+                                        2,
+                                        section_upload::normals_binding_in(
+                                            &self.arena,
+                                            &self.translucent_arena,
+                                            key,
+                                        ),
+                                    );
+                                    page(rp, key);
+                                };
+                                self.draw_sections_paged(rp, &self.indirect, first, count, &bind);
+                            } else {
+                                self.draw_sections_paged(rp, &self.indirect, first, count, page);
+                            }
                         }
                     }
                 };
@@ -209,6 +275,16 @@ impl Renderer {
                 indices: self.indices.clone(),
                 quads: cloud_quads,
             }));
+            if let Some(wp) = world_primitives.as_ref() {
+                for &(name, value) in wp.pack_uniforms() {
+                    post.set_mod_uniform(name, crate::mod_pipelines::mod_uniform_value(value));
+                }
+                post.fill_mod_draws(|bound_slots, out| {
+                    wp.pack_bound_chunks_into(bound_slots, out);
+                });
+            } else {
+                post.fill_mod_draws(|_, _| {});
+            }
             // Fails only on a wait that found the device lost: the frame stops here, with
             // the pack kept for the next one and nothing more encoded.
             // Below the screen's size `final` works at the world's size too (a program reading
@@ -231,9 +307,106 @@ impl Renderer {
                 },
                 pages,
                 &mut terrain,
+                pack_post::WorldBoundaries {
+                    sky: after_pack_sky,
+                    opaque_blocks: pack_opaque_blocks,
+                    features: pack_features,
+                    translucent_blocks: pack_translucent_blocks,
+                    weather: pack_weather,
+                    custom_geometry: pack_custom_geometry,
+                },
+                |encoder, boundary| {
+                    use pack_post::WorldBoundary;
+                    if let WorldBoundary::CustomGeometry { color, depth } = boundary {
+                        return world_primitives
+                            .as_ref()
+                            .expect("world primitives")
+                            .draw_pack_custom(encoder, color, depth);
+                    }
+                    if let Some(hooks) = hooks.as_deref_mut() {
+                        let sections = &self.visible_renderable_sections;
+                        let (stage, color, depth) = match boundary {
+                            WorldBoundary::AfterSky => {
+                                hooks.on_after_sky(sections, false);
+                                execute_pack_fg_slot(
+                                    &mut frame_graph,
+                                    mod_frame_graph::FrameGraphSlot::AfterStage(
+                                        mod_api::RenderLevelStage::AfterSky,
+                                    ),
+                                    &self.device,
+                                    &self.queue,
+                                    encoder,
+                                    world_primitives.as_mut(),
+                                    &self.mod_gpu.render_targets,
+                                    &self.transient_targets,
+                                );
+                                return false;
+                            }
+                            WorldBoundary::AfterLevel => {
+                                hooks.on_after_level(sections, false);
+                                execute_pack_fg_slot(
+                                    &mut frame_graph,
+                                    mod_frame_graph::FrameGraphSlot::AfterStage(
+                                        mod_api::RenderLevelStage::AfterLevel,
+                                    ),
+                                    &self.device,
+                                    &self.queue,
+                                    encoder,
+                                    world_primitives.as_mut(),
+                                    &self.mod_gpu.render_targets,
+                                    &self.transient_targets,
+                                );
+                                return false;
+                            }
+                            WorldBoundary::AfterOpaqueBlocks { color, depth } => {
+                                (mod_api::RenderLevelStage::AfterOpaqueBlocks, color, depth)
+                            }
+                            WorldBoundary::Features {
+                                translucent,
+                                color,
+                                depth,
+                            } => (
+                                if translucent {
+                                    mod_api::RenderLevelStage::AfterTranslucentFeatures
+                                } else {
+                                    mod_api::RenderLevelStage::AfterOpaqueFeatures
+                                },
+                                color,
+                                depth,
+                            ),
+                            WorldBoundary::AfterTranslucentBlocks { color, depth } => (
+                                mod_api::RenderLevelStage::AfterTranslucentBlocks,
+                                color,
+                                depth,
+                            ),
+                            WorldBoundary::AfterWeather { color, depth } => {
+                                (mod_api::RenderLevelStage::AfterWeather, color, depth)
+                            }
+                            WorldBoundary::CustomGeometry { .. } => unreachable!(),
+                        };
+                        let draws = hooks.on_render_stage(stage, sections, false);
+                        let drew = world_primitives
+                            .as_ref()
+                            .expect("world primitives")
+                            .draw_pack_prepared(encoder, color, depth, draws);
+                        execute_pack_fg_slot(
+                            &mut frame_graph,
+                            mod_frame_graph::FrameGraphSlot::AfterStage(stage),
+                            &self.device,
+                            &self.queue,
+                            encoder,
+                            world_primitives.as_mut(),
+                            &self.mod_gpu.render_targets,
+                            &self.transient_targets,
+                        );
+                        return drew;
+                    }
+                    false
+                },
                 &self.device_lost,
                 super::super::in_flight::poll_live,
             );
+            self.world_primitives = world_primitives;
             // Keep the capacity, not the buffers: a page the arena frees must not stay alive
             // here until the next shader-pack frame (or forever once the pack is off).
             self.pack_pages.clear();
@@ -243,22 +416,6 @@ impl Renderer {
                     .finish_pack(&mut encoder, &view_target, self.own_timing.as_mut());
             }
             ran?;
-        } else if let Some((color, depth)) = &scaled
-            && native_post
-            && let Some(native) = &mut self.native
-            && let Some(post) = &mut native.post
-        {
-            let size = self.world_post.size().unwrap_or([1, 1]);
-            let history_reset = native.frame.take_history_reset();
-            post.run(
-                &self.device,
-                &mut encoder,
-                (color, depth, &native.frame.surface_view),
-                &view_target,
-                size,
-                history_reset,
-                native.timing.as_mut(),
-            );
         } else if let (Some((_, generated)), Some((_, depth))) = (fg_frames, &scaled) {
             let camera = frame_gen::Camera {
                 jittered,
@@ -293,7 +450,13 @@ impl Renderer {
             );
         }
         if !frame.title {
-            self.draw_world_views(&mut encoder, frame, globals, flat_frame, entity_quads);
+            self.draw_world_views(
+                &mut encoder,
+                frame,
+                globals,
+                flat_frame,
+                (entity_quads, name_tags),
+            );
             let (depth, depth_size) = match &scaled {
                 Some((_, depth)) => (depth, self.world_post.size().unwrap_or(size)),
                 None => (&self.depth, size),
@@ -366,9 +529,21 @@ impl Renderer {
         if culling && let Some(cull) = &mut self.cull {
             cull.end(&self.device, &mut encoder);
         }
-        // GPU culling's counts once its world passes are done (phase 2's too).
+        // GPU culling's counts once its world passes are done (phase 2's too), and sourced
+        // geometry's beside them; whether the frame drew sourced geometry rides the near
+        // copy, so its half waits for sourced geometry's (`in_flight::collect_stats`).
         if gpu_frame && let Some(gpu) = &mut self.gpu_culling {
-            gpu.copy_stats(&mut encoder, serial, cpu);
+            gpu.copy_stats(&mut encoder, serial, cpu, sourced_frame);
+        }
+        if sourced_frame {
+            self.sourced.copy_stats(&mut encoder, serial, sourced_cpu);
+        }
+        if let Some(runner) = frame_graph {
+            let mut pool = self
+                .transient_targets
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            runner.finish(&mut pool);
         }
         if let Some(timer) = &mut self.gpu_timer {
             timer.end(&self.device, &mut encoder, (&view_target, overlay_format));
@@ -382,5 +557,26 @@ impl Renderer {
                 fg_made,
             },
         ))
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn execute_pack_fg_slot(
+    frame_graph: &mut Option<mod_frame_graph::FrameGraphRunner>,
+    slot: mod_frame_graph::FrameGraphSlot,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    encoder: &mut wgpu::CommandEncoder,
+    world_primitives: Option<&mut world_primitives::WorldPrimitives>,
+    mod_render_targets: &std::sync::Mutex<mod_render_targets::ModRenderTargets>,
+    transient_targets: &std::sync::Mutex<mod_frame_graph::TransientTargetPool>,
+) {
+    if let Some(runner) = frame_graph.as_mut()
+        && runner.has_slot(slot)
+        && let Some(wp) = world_primitives
+    {
+        let targets = mod_render_targets.lock().unwrap_or_else(|e| e.into_inner());
+        let mut pool = transient_targets.lock().unwrap_or_else(|e| e.into_inner());
+        runner.execute_slot(slot, device, queue, encoder, wp, &targets, &mut pool);
     }
 }

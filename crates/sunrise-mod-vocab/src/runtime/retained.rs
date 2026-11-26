@@ -19,7 +19,7 @@ pub(super) struct RetainedPoisons {
 // no wire: the game binds a native callback's owner and session-local disablement key.
 // exhaustive: private fields keep this an engine-only dispatch token.
 /// Identity of retained native code, stable when its recipes or command tree are rebuilt.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RetainedCallback {
     owner: &'static str,
     index: usize,
@@ -67,13 +67,33 @@ impl RetainedCallback {
         })
     }
 
+    /// The mod registered to this callback.
+    pub fn owner(&self) -> &'static str {
+        self.owner
+    }
+
     /// Invoke only this callback. A panic is reported once and suppresses the callback
     /// even if it is later rebound to the same key.
     pub fn call<T>(&self, call: impl FnOnce() -> T) -> Result<T, RetainedFailure> {
         if !self.enabled() {
             return Err(RetainedFailure::Disabled);
         }
-        let _owner = super::mark_mod(self.owner, self.site);
+        self.contain(self.site, false, call)
+    }
+
+    /// Drop an owned registration even if already disabled. A destructor panic is reported
+    /// at its own operation and disables any replacement for the same callback key.
+    pub fn dispose<T>(&self, operation: &'static str, value: T) {
+        let _ = self.contain(operation, true, || drop(value));
+    }
+
+    fn contain<T>(
+        &self,
+        operation: &'static str,
+        disposal: bool,
+        call: impl FnOnce() -> T,
+    ) -> Result<T, RetainedFailure> {
+        let _owner = super::mark_mod(self.owner, operation);
         // The retained call's own caller handles this outcome. Do not flag an enclosing
         // generated listener as failed when it called retained code and handled the result.
         contain_callback(call, |payload| {
@@ -87,8 +107,8 @@ impl RetainedCallback {
                 poisons.any.store(true, Ordering::Release);
                 first
             });
-            if first {
-                log_and_queue_panic(self.site, self.owner, payload);
+            if first || disposal {
+                log_and_queue_panic(operation, self.owner, payload);
             }
         })
         .ok_or(RetainedFailure::Panicked)

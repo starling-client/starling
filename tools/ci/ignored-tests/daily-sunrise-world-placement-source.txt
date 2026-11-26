@@ -1,0 +1,3 @@
+# Directional placement (DirectionalPlaceContext): the clicked block answers replacingClickedOnBlock, and the
+# questions vanilla throws on are refused.
+sunrise-world level::tests::a_directional_placement_reads_the_clicked_block_and_refuses_what_vanilla_throws_on lib daily resources

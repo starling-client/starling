@@ -252,6 +252,7 @@ fn copy_components_uses_available_sources_and_table_filters_in_both_evaluators()
                                 &id,
                                 has_tool.then_some(&held),
                                 has_entity.then_some((&entity, &predicate)),
+                                None,
                                 &mut random,
                             )
                             .unwrap();
@@ -584,6 +585,7 @@ fn copy_custom_data_runs_the_same_ordered_nbt_operations_in_both_evaluators() {
                                         &predicate as &dyn Fn(&Value, &loot::LootEntity) -> bool,
                                     )
                                 }),
+                                None,
                                 &mut random,
                             )
                             .unwrap();
@@ -692,7 +694,9 @@ fn copy_custom_data_respects_removed_prototype_data_in_both_evaluators() {
                 let mut random = LegacyRandom::new(45);
                 let id = format!("test:{name}");
                 if item_engine {
-                    let mut output = items.roll_loot_table(&id, None, None, &mut random).unwrap();
+                    let mut output = items
+                        .roll_loot_table(&id, None, None, None, &mut random)
+                        .unwrap();
                     assert_eq!(output.len(), 1);
                     Tag::Compound(output.remove(0).custom_data().unwrap().clone())
                 } else {
@@ -758,7 +762,7 @@ fn set_custom_data_preserves_nbt_types_and_nested_merges_in_both_evaluators() {
         let mut random = LegacyRandom::new(45);
         let actual = if item_engine {
             let mut output = items
-                .roll_loot_table("test:typed", None, None, &mut random)
+                .roll_loot_table("test:typed", None, None, None, &mut random)
                 .unwrap();
             assert_eq!(output.len(), 1);
             Tag::Compound(output.remove(0).custom_data().unwrap().clone())
@@ -826,7 +830,9 @@ fn set_custom_data_removes_empty_effective_results_in_both_evaluators() {
             let mut random = LegacyRandom::new(45);
             let id = format!("test:{name}");
             let mut components = if item_engine {
-                let output = items.roll_loot_table(&id, None, None, &mut random).unwrap();
+                let output = items
+                    .roll_loot_table(&id, None, None, None, &mut random)
+                    .unwrap();
                 assert_eq!(output.len(), 1);
                 loot::copy::components_with_patch(
                     data.component_defaults().get(output[0].item.as_ref()),
@@ -907,7 +913,9 @@ fn set_custom_data_merges_effective_prototypes_and_respects_removal_in_both_eval
             let mut random = LegacyRandom::new(45);
             let id = format!("test:{name}");
             let actual = if item_engine {
-                let mut output = items.roll_loot_table(&id, None, None, &mut random).unwrap();
+                let mut output = items
+                    .roll_loot_table(&id, None, None, None, &mut random)
+                    .unwrap();
                 assert_eq!(output.len(), 1);
                 Tag::Compound(output.remove(0).custom_data().unwrap().clone())
             } else {

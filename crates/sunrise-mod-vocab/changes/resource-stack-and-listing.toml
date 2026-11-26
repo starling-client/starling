@@ -1,0 +1,2 @@
+ids = ["method:prelude::ResourcesHost::resource_stack", "method:prelude::ResourcesHost::list_resources"]
+why = "Additive reads: resource_stack is ResourceManager.getResourceStack and list_resources is ResourceManager.listResources, over the same stacks as ResourcesHost::resource, outside any reload."

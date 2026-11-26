@@ -1,9 +1,9 @@
-AbstractFish.addAdditionalSaveData	inline	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt	FromBucket always written; tadpole getter is always true
+AbstractFish.addAdditionalSaveData	inline	crates/sunrise-client/src/entity_nbt/mob_write.rs::mob_to_nbt	FromBucket always written; tadpole getter is always true
 AbstractFish.removeWhenFarAway	port	crates/sunrise-client/src/mobs/aquatic.rs::named_keeps_it	`!fromBucket() && !hasCustomName()`: the bucket flag is persistence in check_despawn, the name keeps it there too
 AbstractFish.readAdditionalSaveData	inline	crates/sunrise-client/src/entity_nbt/mob_load.rs::mob_from_nbt	FromBucket via read_variant defaults false; tadpole ignores loaded input
 AgeableWaterCreature.handleAirSupply	inline	crates/sunrise-client/src/mobs/ai.rs::base_tick	the needs_water branch of base_tick; dolphins override it to nothing and refill air in aquatic.rs
 AgeableWaterCreature.checkSurfaceAgeableWaterCreatureSpawnRules	port	crates/sunrise-client/src/mobs/spawn_rules.rs::surface_water
-Animal.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt	Animal fields: modeled InLove and optional LoveCause, removing stale raw when absent; inherited Ageable writer separate; UUID admission gaps retained
+Animal.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_write.rs::mob_to_nbt	Animal fields: modeled InLove and optional LoveCause, removing stale raw when absent; inherited Ageable writer separate; UUID admission gaps retained
 Animal.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_load.rs::mob_from_nbt	InLove through NumericTag.intValue; existing LoveCause UUID loading retained
 Animal.canMate	port	crates/sunrise-client/src/mobs/animal_brain.rs::can_mate_with	brain breeding; the Breed goal in goals.rs does the same for goal-driven animals
 Animal.mobInteract	port	crates/sunrise-client/src/mobs/ai/feeding.rs::takes_food	the food branches: an adult at age 0 that canFallInLove, else canAgeUp (isBaby && !isAgeLocked), both then playEatingSound; the sit/stand fall-through is in game/creatures.rs::interact_mob
@@ -21,7 +21,7 @@ Allay.updateDynamicGameEventListener	inline	crates/sunrise-client/src/game/mobs/
 Allay.setDancing	inline	crates/sunrise-client/src/game/mobs/allays.rs::Game::tick_allays	dancing set while a jukebox plays and not panicking
 Allay.shouldStopDancing	inline	crates/sunrise-client/src/game/mobs/allays.rs::Game::tick_allays	no jukebox within 10 blocks stops the dance
 Allay.isSpinning	inline	crates/sunrise-client/src/mobs/allay.rs::animate	dance clock modulo 55 below 15
-Allay.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt	inventory, DuplicationCooldown, liked player and the vibration listener (listener)
+Allay.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_write.rs::mob_to_nbt	inventory, DuplicationCooldown, liked player and the vibration listener (listener)
 Allay.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_load.rs::mob_from_nbt
 Allay.updateDuplicationCooldown	port	crates/sunrise-client/src/mobs/allay.rs::update_duplication_cooldown	positive egg_time counts down with or without NoAI
 Allay.setDuplicationCooldown	inline	crates/sunrise-client/src/game/mobs/allays.rs::Game::interact_allay	6000 set here; can_duplicate is derived from egg_time in mob_meta
@@ -37,7 +37,7 @@ AllayAi.shouldDepositItemsAtLikedNoteblock	inline	crates/sunrise-client/src/mobs
 AllayAi.getLikedPlayerPositionTracker	port	crates/sunrise-client/src/game/mobs/allays.rs::Game::allay_liked_player
 Armadillo.shouldSwitchToScaredState	inline	crates/sunrise-client/src/mobs/armadillo.rs::ball_up_tick	rolling past its animation length
 Armadillo.onSyncedDataUpdated	port	crates/sunrise-client/src/mobs/armadillo.rs::set_state	resets in_state_ticks on a state change
-Armadillo.addAdditionalSaveData	inline	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt	state is written as its ArmadilloState name, always, beside scute_time
+Armadillo.addAdditionalSaveData	inline	crates/sunrise-client/src/entity_nbt/mob_write.rs::mob_to_nbt	state is written as its ArmadilloState name, always, beside scute_time
 Armadillo.readAdditionalSaveData	inline	crates/sunrise-client/src/entity_nbt/mob_load.rs::mob_from_nbt	state goes through switchToState, idle when the save names none; scute_time keeps the constructor's value when absent
 Armadillo.checkArmadilloSpawnRules	port	crates/sunrise-client/src/mobs/spawn_rules.rs::check_spawn_rules
 Armadillo.brushOffScute	port	crates/sunrise-client/src/game/mobs/creatures/mod.rs::Game::interact_armadillo	brush use; dispenser.rs dispense_brush does the same for a dispenser
@@ -47,7 +47,7 @@ ArmadilloAi.initScaredActivity	inline	crates/sunrise-client/src/mobs/armadillo.r
 Axolotl.<init>	port	crates/sunrise-client/src/mobs/aquatic.rs::register	the Axolotl arm: smooth swimming move and look control, amphibious navigation, water malus 0
 Axolotl.removeWhenFarAway	port	crates/sunrise-client/src/mobs/aquatic.rs::named_keeps_it	the same pair as AbstractFish's
 Axolotl.defineSynchedData	port	crates/sunrise-client/src/game/network/lan/mod.rs::mob_meta	variant and playing_dead; from_bucket is not synced
-Axolotl.addAdditionalSaveData	inline	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt	Variant and FromBucket are written
+Axolotl.addAdditionalSaveData	inline	crates/sunrise-client/src/entity_nbt/mob_write.rs::mob_to_nbt	Variant and FromBucket are written
 Axolotl.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::read_variant	Variant and FromBucket are read
 Axolotl.finalizeSpawn	port	crates/sunrise-client/src/mobs/finalize.rs::Ctx::finalize	group variants and baby age
 Axolotl.tickBabyAnimations	inline	crates/sunrise-client/src/mobs/axolotl.rs::Animation::tick	the baby branch
@@ -95,7 +95,7 @@ Bee.BeePollinateGoal.setWantedPos	port	crates/sunrise-client/src/mobs/bee.rs::Po
 Bee.BeeWanderGoal.findPos	inline	crates/sunrise-client/src/mobs/bee.rs::Wander::start
 Bee.BeeWanderGoal.getWanderThreshold	inline	crates/sunrise-client/src/mobs/bee.rs::Wander::start	always 24: it only applies with a valid hive
 Bee.ValidateHiveGoal.canBeeUse	port	crates/sunrise-client/src/mobs/bee.rs::ValidateHive::can_use
-Camel.addAdditionalSaveData	inline	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt	LastPoseTick is written as -1 or 0, not the real tick
+Camel.addAdditionalSaveData	inline	crates/sunrise-client/src/entity_nbt/mob_write.rs::mob_to_nbt	LastPoseTick is written as -1 or 0, not the real tick
 Camel.readAdditionalSaveData	inline	crates/sunrise-client/src/entity_nbt/mob_load.rs::mob_from_nbt	sitting is read from the sign of LastPoseTick
 Camel.createAttributes	skip:data		attributes come from entity-types.json
 Camel.defineSynchedData	port	crates/sunrise-client/src/game/network/lan/mod.rs::mob_meta	dash and last pose change tick
@@ -129,7 +129,7 @@ Chicken.getBreedOffspring	port	crates/sunrise-client/src/game/mobs/creatures/mod
 Chicken.finalizeSpawn	port	crates/sunrise-client/src/mobs/finalize.rs::Ctx::finalize	variant by biome and a random sound variant
 Chicken.defineSynchedData	port	crates/sunrise-client/src/game/network/lan/mod.rs::mob_meta	gap: variant is synced, sound variant is not
 Chicken.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_load.rs::mob_from_nbt	EggLayTime, variant, sound_variant; jockey in riders.rs
-Chicken.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt
+Chicken.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_write.rs::mob_to_nbt
 Chicken.get	port	crates/sunrise-client/src/mobs/finalize.rs::variant_component	gap: chicken/variant only, no chicken/sound_variant
 Chicken.applyImplicitComponents	port	crates/sunrise-client/src/entity_nbt.rs::apply_item_components	chicken/variant and chicken/sound_variant from the stack that spawns or buckets it
 Chicken.applyImplicitComponent	port	crates/sunrise-client/src/entity_nbt.rs::apply_item_components	the same fn reads both components
@@ -138,7 +138,7 @@ ChickenVariants	skip:data		chicken variants come from the registry data files
 AbstractCow.registerGoals	port	crates/sunrise-client/src/mobs/farm.rs::register
 AbstractCow.mobInteract	port	crates/sunrise-client/src/game/mobs/creatures/mod.rs::Game::interact_mob	the Cow/Mooshroom bucket arm gives milk
 Cow.defineSynchedData	port	crates/sunrise-client/src/game/network/lan/mod.rs::mob_meta	gap: variant is synced, sound variant is not
-Cow.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt
+Cow.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_write.rs::mob_to_nbt
 Cow.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_load.rs::mob_from_nbt
 Cow.getBreedOffspring	port	crates/sunrise-client/src/game/mobs/creatures/mod.rs::Game::breed	gap: baby copies the first parent's variant, no random parent
 Cow.finalizeSpawn	port	crates/sunrise-client/src/mobs/finalize.rs::Ctx::finalize	variant by biome and a random sound variant
@@ -148,12 +148,12 @@ MushroomCow.checkMushroomSpawnRules	port	crates/sunrise-client/src/mobs/spawn_ru
 MushroomCow.thunderHit	port	crates/sunrise-client/src/game/entities/lightning.rs::Game::thunder_hit	swaps colour once per bolt, convert sound
 MushroomCow.defineSynchedData	port	crates/sunrise-client/src/game/network/lan/mod.rs::mob_meta	the type entry
 MushroomCow.mobInteract	port	crates/sunrise-client/src/game/mobs/creatures/mod.rs::Game::interact_mob	bowl (plain or suspicious stew), shears and the brown flower branch
-MushroomCow.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt	Type and stew_effects, written only while it holds any
+MushroomCow.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_write.rs::mob_to_nbt	Type and stew_effects, written only while it holds any
 MushroomCow.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_load.rs::mob_from_nbt	Type, red when missing; stew_effects decoded like the component's list
 MushroomCow.getEffectsFromItemStack	port	crates/sunrise-items/src/items.rs::Items::suspicious_stew_effects	the flower block's one entry, floor(seconds * 20)
 MushroomCow.get	port	crates/sunrise-client/src/mobs/finalize.rs::species_variant_component	the variant component, red (0) or brown (1)
 MushroomCow.applyImplicitComponent	port	crates/sunrise-client/src/entity_nbt.rs::apply_item_components	an egg's mooshroom/variant sets the colour
 MushroomCow.getBreedOffspring	port	crates/sunrise-client/src/game/mobs/creatures/mod.rs::Game::breed	see getOffspringVariant
 MushroomCow.getOffspringVariant	port	crates/sunrise-client/src/game/mobs/creatures/mod.rs::breed	ticked in #3512; `MushroomCow.getOffspringVariant` is cited at crates/sunrise-client/src/game/mobs/creatures/mod.rs:2566 (in a comment, so `where` names the enclosing fn)
-Tadpole.fromBucket	inline	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt	saved FromBucket is always true
+Tadpole.fromBucket	inline	crates/sunrise-client/src/entity_nbt/mob_write.rs::mob_to_nbt	saved FromBucket is always true
 CamelHusk.canBeABaby	port	crates/sunrise-client/src/mobs/species.rs::can_be_a_baby	the false arm: a camel husk inherits Camel's age but never its baby box

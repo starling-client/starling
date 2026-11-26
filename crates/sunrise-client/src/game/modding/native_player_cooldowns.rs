@@ -6,9 +6,8 @@
 //! (`minecraft:ender_pearl`, a mod's `mymod:wands`...);
 //! `item_cooldown_group` gives a stack's. Reads return None for a stale
 //! handle or a player who isn't online here; inside another player's turn
-//! they still read a resting guest. Writes return false for those, for a
-//! dead player, and for a player whose turn another player's turn is
-//! running inside.
+//! they still read a resting guest. Item cooldown writes reach the current player
+//! record even at zero health, but not one suspended by a nested turn.
 use super::Game;
 use mod_api::{ItemCooldown, PlayerRef};
 use std::sync::Arc;
@@ -80,13 +79,13 @@ impl Game<'_> {
         ticks: i32,
     ) -> bool {
         let group: Arc<str> = group.into();
-        self.native_as_player_handle(player, |game| game.add_cooldown(group, ticks))
+        self.native_as_resident_player(player, |game| game.add_cooldown(group, ticks))
     }
     /// `ItemCooldowns.removeCooldown(group)`: ends the group's cooldown now,
     /// on the client too (`ServerItemCooldowns.onCooldownEnded`).
     pub(super) fn player_remove_item_cooldown(&mut self, player: PlayerRef, group: &str) -> bool {
         let group: Arc<str> = group.into();
-        self.native_as_player_handle(player, |game| {
+        self.native_as_resident_player(player, |game| {
             game.cooldowns.remove(&group);
             if game.lan_acting.is_some() {
                 game.guest_cooldowns.push((group, 0));

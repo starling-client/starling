@@ -8,10 +8,12 @@ mule, pig, ravager, spider, strider, trader llama, zombie horse, happy ghast). A
 each mount with `/ride`; water that stops below the rider's eyes keeps it on, deeper water throws it off, and
 a mount outside the tag (a skeleton horse, a cow) keeps its rider underwater.
 """
-try:
-    from . import test_locator_bar_parity as net
-except ImportError:
-    import test_locator_bar_parity as net
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_locator_bar_parity as net
 
 SCRIPT = [('setup', ['cmd Alice gamerule spawn_mobs false'])]
 EXPECTED = []

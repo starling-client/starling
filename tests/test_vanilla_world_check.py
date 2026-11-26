@@ -36,3 +36,33 @@ class VanillaWorldCheckTests(unittest.TestCase):
             unavailable,
         ]
         self.assertEqual(log_problems(continued), [unavailable])
+
+    def test_ignores_windows_system_report_noise_but_not_server_failures(self):
+        stack = '\tat net.minecraft.SystemReport.ignoreErrors(SystemReport.java:121)'
+        process_null = ('java.lang.NullPointerException: Cannot invoke "oshi.software.os.OSProcess.getUserTime()" '
+                        'because "process" is null')
+        startup = [
+            '[04:37:38] [ServerMain/ERROR]: Unable to locate English counter names in registry Perflib 009. '
+            'Counters may need to be rebuilt: ',
+            'com.sun.jna.platform.win32.Win32Exception: The parameter is incorrect.',
+            '\tat com.sun.jna.platform.win32.Advapi32Util.registryGetStringArray(Advapi32Util.java:921)',
+            stack,
+            '[04:37:38] [ServerMain/WARN]: Unable to locate English counter names in registry Perflib 009. '
+            'Assuming English counters. Error 0x80070057. See https://support.microsoft.com/en-us/help/300956/'
+            'how-to-manually-rebuild-performance-counter-library-values',
+            '[04:37:38] [ServerMain/WARN]: Failed to get system info for Process Loads',
+            process_null,
+            stack,
+            '[04:37:38] [ServerMain/WARN]: Failed to get system info for Process Virtual Size (MiB)',
+            process_null.replace('getUserTime', 'getVirtualSize'),
+            stack,
+        ]
+        failures = [
+            '[04:37:41] [Server thread/ERROR]: Failed to save chunk',
+            '[04:37:41] [ServerMain/WARN]: Failed to get system info for Process Loads: disk full',
+        ]
+        self.assertEqual(log_problems(startup + failures), failures)
+        # Only the system report's own exceptions belong to its warnings: another one, and its stack, is reported.
+        other = 'java.lang.IllegalStateException: Failed to load registry'
+        warning = '[04:37:38] [ServerMain/WARN]: Failed to get system info for Process Loads'
+        self.assertEqual(log_problems([warning, other, stack]), [other, stack])

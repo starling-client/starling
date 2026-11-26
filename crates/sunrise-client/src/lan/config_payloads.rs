@@ -88,6 +88,58 @@ impl EngineChannels {
     }
 }
 
+/// One captured configuration outbox: the reservation keeps its prepaid body credit.
+struct ConfigAdmission {
+    sender: ConfigSender,
+    framing: sunrise_protocol::connection::Framing,
+    capacity: usize,
+}
+impl crate::raw_payloads::Admission for ConfigAdmission {
+    fn framing(&self) -> sunrise_protocol::connection::Framing {
+        self.framing
+    }
+    fn capacity(&self) -> usize {
+        self.capacity
+    }
+    fn accepts_packets(&self) -> bool {
+        true
+    }
+    fn prepare(
+        self: Box<Self>,
+        body: Vec<u8>,
+        id: &PayloadId,
+    ) -> Result<Box<dyn crate::raw_payloads::PreparedSend>, PayloadSendError> {
+        ConfigSender::prepare_payload(&self.sender, body, id)
+            .map(|prepared| Box::new(prepared) as Box<dyn crate::raw_payloads::PreparedSend>)
+    }
+}
+impl crate::raw_payloads::Output for ConfigSender {
+    fn transport(&self) -> &Arc<Transport> {
+        &self.transport
+    }
+    fn side(&self) -> crate::raw_payloads::Side {
+        crate::raw_payloads::Side::Server
+    }
+    fn admit(
+        &self,
+        _: Phase,
+        _: &PayloadId,
+    ) -> Result<Box<dyn crate::raw_payloads::Admission>, PayloadSendError> {
+        Ok(Box::new(ConfigAdmission {
+            sender: self.clone(),
+            framing: self.framing(),
+            capacity: self.payload_capacity(),
+        }))
+    }
+    fn disconnect(&self, reason: &crate::text::Text) {
+        ConfigSender::disconnect(self, crate::lan::data::component_nbt(&reason.component()));
+    }
+    #[cfg(any(test, feature = "test-payload-probe"))]
+    fn diagnostics(&self) -> Box<dyn Fn() -> String + Send + Sync> {
+        Box::new(|| "configuration sender not observed".into())
+    }
+}
+
 pub(super) struct ConfigIo<'a> {
     connection: &'a mut Connection,
     pub sender: Option<ConfigSender>,
@@ -95,6 +147,8 @@ pub(super) struct ConfigIo<'a> {
     handed_off: bool,
     pub channels: EngineChannels,
     configuration_session: Option<std::sync::Weak<super::configuration_tasks::Session>>,
+    /// One output for this configuration connection, shared by its deliveries.
+    payload_output: Option<Arc<dyn crate::raw_payloads::Output>>,
 }
 impl<'a> ConfigIo<'a> {
     pub fn new(
@@ -117,6 +171,7 @@ impl<'a> ConfigIo<'a> {
             handed_off: false,
             channels: EngineChannels::default(),
             configuration_session: None,
+            payload_output: None,
         })
     }
     pub(super) fn set_configuration_session(
@@ -144,6 +199,7 @@ impl<'a> ConfigIo<'a> {
                 writer: QueuedWriter::new(self.connection.writer.take())?,
                 transport,
             });
+            self.payload_output = None;
         }
         Ok(self.sender.as_ref().unwrap().clone())
     }
@@ -169,7 +225,7 @@ impl<'a> ConfigIo<'a> {
                 return Err(error);
             }
         }
-        let Some(sender) = &self.sender else {
+        let Some(sender) = self.sender.clone() else {
             return Ok(Some(payload));
         };
         match Incoming::classify(&sender.transport, Phase::Configuration, payload)
@@ -180,18 +236,20 @@ impl<'a> ConfigIo<'a> {
                 Ok(None)
             }
             crate::raw_payloads::Classified::Application(incoming) => {
-                let endpoint = crate::raw_payloads::Endpoint::configuration(
-                    sender.clone(),
-                    self.configuration_session.clone(),
-                );
-                crate::raw_payloads::dispatch(
+                let session = self.configuration_session.clone().map(|session| {
+                    session as std::sync::Weak<dyn crate::raw_payloads::ConfigurationTask>
+                });
+                let output = self
+                    .payload_output
+                    .get_or_insert_with(|| {
+                        Arc::new(sender.clone()) as Arc<dyn crate::raw_payloads::Output>
+                    })
+                    .clone();
+                let endpoint = crate::raw_payloads::Endpoint::shared_configuration(output, session);
+                crate::raw_payloads::dispatch_server(
                     incoming,
                     endpoint.clone(),
-                    crate::raw_payloads::MainQueue::Server {
-                        events: self.events.clone(),
-                        endpoint,
-                        conn: None,
-                    },
+                    crate::raw_payloads::ServerQueue::new(self.events.clone(), endpoint, None),
                 );
                 Ok(None)
             }

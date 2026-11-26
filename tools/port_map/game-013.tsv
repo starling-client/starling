@@ -15,7 +15,7 @@ AbstractNautilus.handleStartJump	inline	crates/sunrise-client/src/mobs/nautilus.
 AbstractNautilus.onSyncedDataUpdated	skip:other		client mirror of the dash flag; the nautilus keeps its own dash clock (anim_ticks) and the jump bar uses mount.jump_ticks
 AbstractNautilus.tryToTame	inline	crates/sunrise-client/src/game/mobs/nautili.rs::Game::interact_nautilus	one chance in three, taming particles (event 7 or 6), eating sound, tame_animal trigger
 AbstractNautilus.hurtServer	port	crates/sunrise-client/src/mobs/nautilus.rs::after_hurt	angry at the attacker for 400 ticks
-AbstractNautilus.finalizeSpawn	port	crates/sunrise-client/src/mobs/nautilus.rs::finalize	attack target cooldown of 2400 to 3600 ticks
+AbstractNautilus.finalizeSpawn	port	crates/sunrise-client/src/mobs/finalize.rs::Ctx::finalize	attack target cooldown of 2400 to 3600 ticks
 AbstractNautilus.getEquipSound	port	crates/sunrise-client/src/mobs/nautilus.rs::saddle_sound	underwater saddle sound while the eyes are in water
 AbstractNautilus.createInventory	skip:other		getInventoryColumns is 0, so the container has no slots; saddle and armour are equipment slots
 AbstractNautilus.openCustomInventoryScreen	port	crates/sunrise-gameplay/src/mount_rules.rs::has_mount_menu	shift-use on a tame nautilus and the inventory key while riding open the saddle/armour screen
@@ -34,7 +34,7 @@ NautilusAi.isHostileTarget	inline	crates/sunrise-client/src/mobs/nautilus.rs::fi
 ZombieNautilus.defineSynchedData	skip:other		synched variant id; Sunrise keeps the variant in extra.variant and reads it from the server's data in remote_mob_data.rs
 ZombieNautilus.get	skip:other		reads the variant as a data component for predicates; Sunrise has no entity component view
 ZombieNautilus.applyImplicitComponent	inline	crates/sunrise-client/src/entity_nbt.rs::apply_item_components	the minecraft:zombie_nautilus/variant component of a spawn egg or bucket; no sound variant
-ZombieNautilus.finalizeSpawn	port	crates/sunrise-client/src/mobs/nautilus.rs::finalize	warm variant in warm oceans (coral), temperate elsewhere
+ZombieNautilus.finalizeSpawn	port	crates/sunrise-client/src/mobs/finalize.rs::Ctx::finalize	variant picked from the zombie_nautilus table by its spawn conditions (VariantTable::select), then the attack target cooldown
 ZombieNautilusAi.initCoreActivity	inline	crates/sunrise-client/src/mobs/nautilus.rs::register	zombie arm: no panic; the cooldown counters tick in ai_step
 ZombieNautilusAi.initIdleActivity	inline	crates/sunrise-client/src/mobs/nautilus.rs::register	zombie arm: tempt 0.9, swim stroll 1.0, target pick in find_target; no breeding
 ZombieNautilusAi.initFightActivity	inline	crates/sunrise-client/src/mobs/nautilus.rs::register	zombie arm: Charge goal at speed 0.5
@@ -43,7 +43,7 @@ Panda.setMainGene	skip:other		stores the gene id in extra.variant; the random re
 Panda.setHiddenGene	skip:other		stores the gene id in extra.variant2; the random re-roll for an id above 6 never happens
 Panda.defineSynchedData	skip:other		synched flags, counters and genes; Sunrise keeps them in the panda State and extra.variant, extra.variant2
 Panda.getFlag	port	crates/sunrise-client/src/mobs/panda.rs::flag	reads the DATA_ID_FLAGS bit (set_flag writes it)
-Panda.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt	MainGene and HiddenGene by name
+Panda.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_write.rs::mob_to_nbt	MainGene and HiddenGene by name
 Panda.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_load.rs::mob_from_nbt	MainGene and HiddenGene by name, normal when absent
 Panda.addEatingParticles	inline	crates/sunrise-client/src/mobs/panda.rs::handle_eating	eat sound every 5 ticks and the six crumbs (crumbs)
 Panda.updateSitAmount	inline	crates/sunrise-client/src/mobs/panda.rs::update_amounts	sit amount rises 0.15 and falls 0.19 a tick
@@ -74,8 +74,8 @@ ShoulderRidingEntity.setEntityOnShoulder	port	crates/sunrise-client/src/game/mob
 Pig.registerGoals	port	crates/sunrise-client/src/mobs/farm.rs::register	Species::Pig arm: float, panic 1.25, breed, two temptations (stick and food), follow parent, stroll, look
 Pig.getControllingPassenger	port	crates/sunrise-client/src/mobs/equine.rs::controlled	saddled and the rider holds the carrot on a stick (r.steer)
 Pig.onSyncedDataUpdated	missing		minor: a server's pig does not start its client boost timer from the synched boost time (remote.rs reads only the strider's flag there)
-Pig.defineSynchedData	skip:other		synched boost time, variant and sound variant; Sunrise keeps them in extra.counter, extra.counter2, extra.variant and extra.sound_variant
-Pig.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt	variant, sound_variant and the saddle in equipment
+Pig.defineSynchedData	skip:other		synched boost time, variant and sound variant; Sunrise keeps the boost time in extra.counter and extra.counter2; the variant and sound variant are the holders pig_variant and pig_sound_variant
+Pig.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_write.rs::mob_to_nbt	variant, sound_variant and the saddle in equipment
 Pig.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_load.rs::mob_from_nbt	variant, sound_variant and the saddle
 Pig.mobInteract	port	crates/sunrise-client/src/game/mobs/mounts.rs::Game::interact_steerable	gap: player: a saddled pig is mounted even when the click holds its food, so it cannot be fed or bred while saddled (vanilla feeds first)
 Pig.canUseSlot	port	crates/sunrise-gameplay/src/dispense_rules.rs::mob_can_use_slot	the saddle needs an alive, grown pig
@@ -88,7 +88,7 @@ Pig.getBreedOffspring	port	crates/sunrise-client/src/game/mobs/creatures/mod.rs:
 Pig.getLeashOffset	port	crates/sunrise-client/src/mobs/leash.rs::leash_offset	0.6 of the eye height, the default width/2 forwards
 Pig.getSoundSet	inline	crates/sunrise-client/src/mobs/ai.rs::voice_sounds	gap: player: only the baby or adult classic sounds are used, so mini and big sound variants (chosen and saved) never sound different
 Pig.finalizeSpawn	port	crates/sunrise-client/src/mobs/finalize.rs::Ctx::finalize	variant by biome tag and a random sound variant
-PigSoundVariants.bootstrap	skip:data		sound variant registry; names come from finalize::sound_variants
+PigSoundVariants.bootstrap	skip:data		sound variant registry; entries come from the world's registry (VariantTables)
 PigVariants.bootstrap	skip:data		variant registry; the variants and their biome tags are read from data
 PigVariants.register	skip:data		registry helper
 PolarBear.createAttributes	skip:data		attributes come from the entity type table
@@ -103,7 +103,7 @@ Rabbit.defineSynchedData	skip:other		synched variant id; Sunrise keeps it in ext
 Rabbit.facePoint	inline	crates/sunrise-client/src/mobs/rabbit.rs::server_ai_step	yaw set toward the wanted or next path point before each hop
 Rabbit.setLandingDelay	inline	crates/sunrise-client/src/mobs/rabbit.rs::server_ai_step	10 ticks, 3 when the speed modifier is 2.2 or more
 Rabbit.createAttributes	skip:data		attributes come from the entity type table
-Rabbit.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt	RabbitType; MoreCarrotTicks is kept at 0
+Rabbit.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_write.rs::mob_to_nbt	RabbitType; MoreCarrotTicks is kept at 0
 Rabbit.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_load.rs::mob_from_nbt	gap: minor: RabbitType (0 to 5 and 99) is read but MoreCarrotTicks is ignored
 Rabbit.playAttackSound	port	crates/sunrise-client/src/mobs/rabbit.rs::attack_sound	only the killer bunny: `entity.rabbit.attack` at volume 1 and a pitch drawn from its own random (not the baby voice pitch)
 Rabbit.getBreedOffspring	port	crates/sunrise-client/src/game/mobs/creatures/mod.rs::Game::breed	gap: minor: the baby always takes the first parent's coat; vanilla takes either parent's and one time in 20 rolls a biome coat

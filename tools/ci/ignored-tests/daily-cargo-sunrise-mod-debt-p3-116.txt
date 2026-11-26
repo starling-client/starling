@@ -1,0 +1,1 @@
+cargo-sunrise-mod dev::tests::a_retained_sdk_builds_a_lower_mixin_with_its_signed_tool bin:cargo-sunrise-mod daily child-process

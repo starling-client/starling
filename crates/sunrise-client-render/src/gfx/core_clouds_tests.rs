@@ -4,7 +4,6 @@ const ALL: CloudsFrame = CloudsFrame {
     pack_shader: true,
     pack_oit_shader: true,
     clouds: true,
-    native_clouds: true,
     improved_transparency: false,
     shader_pack: false,
     title: false,
@@ -38,10 +37,6 @@ fn a_packs_clouds_draw_only_where_nothing_else_draws_them() {
             ..ALL
         },
         CloudsFrame {
-            native_clouds: false,
-            ..ALL
-        },
-        CloudsFrame {
             shader_pack: true,
             ..ALL
         },
@@ -69,10 +64,10 @@ const SIZE: u32 = 8;
 
 /// `program` as the classic clouds' only.
 fn classic(
-    program: &crate::core_shader::CoreProgram,
+    program: &sunrise_glsl::Translated,
 ) -> (
-    Option<&crate::core_shader::CoreProgram>,
-    Option<&[crate::core_shader::CoreProgram; 3]>,
+    Option<&sunrise_glsl::Translated>,
+    Option<&[sunrise_glsl::Translated; 3]>,
 ) {
     (Some(program), None)
 }
@@ -430,27 +425,6 @@ fn a_clouds_shader_that_reads_no_faces_still_draws_a_quad_a_face() {
     }
 }
 
-/// A device with Improved Transparency (`oit::features`), or none (said on stderr).
-fn oit_device() -> Option<(wgpu::Device, wgpu::Queue)> {
-    let adapter = crate::gfx::test_gpu::adapter()?;
-    let features = super::super::oit::features(&adapter);
-    if !features.contains(wgpu::Features::FLOAT32_BLENDABLE) {
-        eprintln!(
-            "skipped: no Improved Transparency on {:?}",
-            adapter.get_info()
-        );
-        return None;
-    }
-    eprintln!("adapter {:?}", adapter.get_info());
-    crate::gfx::test_gpu::optional_device_with(
-        &adapter,
-        &wgpu::DeviceDescriptor {
-            required_features: features,
-            ..Default::default()
-        },
-    )
-}
-
 /// A vertex stage covering the target with each face's quad at device depth 0.5, wound so fancy
 /// clouds keep it, handing `clouds.fsh` a fog distance of 0 and the colour 0.25, 0.5, 0.75, 1.
 const OIT_VSH: &str = "#version 330\n\
@@ -464,7 +438,7 @@ const OIT_VSH: &str = "#version 330\n\
 fn oit_programs(
     fragment: &str,
     include: &dyn Fn(&str) -> Option<String>,
-) -> [crate::core_shader::CoreProgram; 3] {
+) -> [sunrise_glsl::Translated; 3] {
     oit_programs_of(OIT_VSH, fragment, include)
 }
 
@@ -473,12 +447,12 @@ fn oit_programs_of(
     vertex: &str,
     fragment: &str,
     include: &dyn Fn(&str) -> Option<String>,
-) -> [crate::core_shader::CoreProgram; 3] {
+) -> [sunrise_glsl::Translated; 3] {
     let stage = |s: &OitStageSource| {
         crate::core_shader::translate_core_with(vertex, fragment, s.defines, include, &GLUE, &|b| {
             b == INFO_BLOCK || b == FACES || s.samplers.contains(&b)
         })
-        .unwrap_or_else(|e| panic!("{}: {e}", s.pipeline))
+        .unwrap_or_else(|e| panic!("{}: {e:?}", s.pipeline))
     };
     [
         stage(&OIT_STAGES[0]),
@@ -653,7 +627,7 @@ fn vanillas_clouds_fragment_shader_draws_each_improved_transparency_stage() {
             .ok()
     };
     let programs = oit_programs(&fragment, &include);
-    let Some((device, queue)) = oit_device() else {
+    let Some((device, queue)) = crate::gfx::test_gpu::oit_device() else {
         return;
     };
     let mut core = CoreClouds::new(
@@ -797,7 +771,7 @@ fn a_clouds_shader_ignoring_the_stage_defines_draws_location_0_in_each_stage() {
         layout(location = 1) in vec4 vertexColor;\nlayout(location = 0) out vec4 fragColor;\n\
         void main() {\n    fragColor = vertexColor;\n}\n";
     let programs = oit_programs(fragment, &|_| None);
-    let Some((device, queue)) = oit_device() else {
+    let Some((device, queue)) = crate::gfx::test_gpu::oit_device() else {
         return;
     };
     let mut core = CoreClouds::new(
@@ -902,7 +876,7 @@ fn the_improved_transparency_groups_follow_new_targets_and_a_grown_faces_buffer(
         return;
     }
     let programs = oit_programs_of(FACES_VSH, fragment, &include);
-    let Some((device, queue)) = oit_device() else {
+    let Some((device, queue)) = crate::gfx::test_gpu::oit_device() else {
         return;
     };
     let mut core = CoreClouds::new(
@@ -986,11 +960,7 @@ fn the_improved_transparency_groups_follow_new_targets_and_a_grown_faces_buffer(
 /// (`oit_clouds`). `(classic pack, classic native, OIT stages)`.
 fn picked(frame: CloudsFrame) -> (bool, bool, Option<&'static str>) {
     let pack_quads = frame.pack_draws().then_some(4);
-    let native_quads = if native_mesh(frame.native_clouds, pack_quads) {
-        6
-    } else {
-        0
-    };
+    let native_quads = if native_mesh(pack_quads) { 6 } else { 0 };
     let oit = frame.improved_transparency;
     let pack = pack_quads.is_some_and(|q| classic_pass_draws(q, frame.shader_pack, oit));
     let native = classic_pass_draws(native_quads, frame.shader_pack, oit);
@@ -1036,7 +1006,7 @@ fn the_native_clouds_draw_in_the_frames_path_without_a_pack() {
 #[ignore = "daily"]
 fn linear_light_links_the_required_programs_before_suppressing_the_draw() {
     let _gpu = crate::gfx::test_gpu::lock();
-    let Some((device, _queue)) = oit_device() else {
+    let Some((device, _queue)) = crate::gfx::test_gpu::oit_device() else {
         return;
     };
     let frame = super::super::FrameConfiguration {
@@ -1044,8 +1014,9 @@ fn linear_light_links_the_required_programs_before_suppressing_the_draw() {
         linear_light: true,
         ..super::super::EffectiveOutput::NONE.frame
     };
-    let vertex = "layout(location = 0) flat out float tag;\nvoid main() { gl_Position = vec4(1.0); tag = 1.0; }";
-    let fragment = "layout(location = 0) flat in float tag;\nlayout(location = 0) out vec4 pixel;\nvoid main() { pixel = vec4(float(tag)); }";
+    let vertex =
+        "layout(location = 0) out float tag;\nvoid main() { gl_Position = vec4(1.0); tag = 1.0; }";
+    let fragment = "layout(location = 0) in float tag;\nlayout(location = 0) out vec4 pixel;\nvoid main() { pixel = vec4(tag); }";
     let programs = |fragment: &str| crate::clouds::pack::Programs {
         classic: crate::core_shader::translate_core(
             vertex,
@@ -1062,17 +1033,49 @@ fn linear_light_links_the_required_programs_before_suppressing_the_draw() {
             .unwrap()
             .is_none()
     );
-    for (guard, pipeline) in [
-        ("1", CLASSIC_PIPELINE),
-        ("defined(OIT_TRANSMITTANCE)", OIT_STAGES[1].pipeline),
-    ] {
-        let varying = format!(
-            "#if {guard}\nlayout(location = 0) flat in int tag;\n#else\nlayout(location = 0) flat in float tag;\n#endif"
-        );
-        let mismatch = fragment.replace("layout(location = 0) flat in float tag;", &varying);
-        let error = clouds_for_frame(&device, frame, &programs(&mismatch))
+    // Every pack shader the device would refuse here is refused when the packs load (vanilla's
+    // checks, `check`) or made to fit, so the refused program is built by hand: it samples
+    // binding 4 (`Sampler0`'s), which no clouds pipeline binds.
+    let refused = || {
+        crate::core_shader::validated(
+            naga::front::wgsl::parse_str(
+                "@vertex fn main() -> @builtin(position) vec4<f32> { return vec4(1.0); }",
+            )
+            .unwrap(),
+            naga::front::wgsl::parse_str(
+                "@group(0) @binding(4) var t: texture_2d<f32>;\n@group(0) @binding(5) var s: sampler;\n\
+                 @fragment fn main() -> @location(0) vec4<f32> { return textureSample(t, s, vec2(0.5)); }",
+            )
+            .unwrap(),
+            Vec::new(),
+        )
+    };
+    for (stage, pipeline) in [(None, CLASSIC_PIPELINE), (Some(1), OIT_STAGES[1].pipeline)] {
+        let mut programs = programs(fragment);
+        match stage {
+            None => programs.classic = refused(),
+            Some(i) => programs.oit[i] = refused(),
+        }
+        let error = clouds_for_frame(&device, frame, &programs)
             .err()
-            .expect("device refused the varying");
+            .expect("the device refuses the binding");
         assert!(error.starts_with(pipeline), "{error}");
     }
+    // A colour output the device doesn't take (`vec3` into the 4-channel target), which vanilla's
+    // builder doesn't check: the native clouds draw off linear light too, and nothing fails.
+    let vec3 = "layout(location = 0) in float tag;\nlayout(location = 0) out vec3 pixel;\nvoid main() { pixel = vec3(tag); }";
+    let lit = super::super::FrameConfiguration {
+        linear_light: false,
+        ..frame
+    };
+    assert!(
+        clouds_for_frame(&device, lit, &programs(fragment))
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        clouds_for_frame(&device, lit, &programs(vec3))
+            .unwrap()
+            .is_none()
+    );
 }

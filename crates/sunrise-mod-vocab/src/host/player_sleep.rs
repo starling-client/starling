@@ -20,7 +20,7 @@ pub trait PlayerSleepBackend {
     /// asleep long enough (`isSleepingLongEnough`, what the night skip waits for), then
     /// counting up 101 to 109 and back to 0 once they are up. None for a stale or unavailable
     /// player.
-    fn player_sleep_timer(&self, player: PlayerRef) -> Option<u32>;
+    fn player_sleep_timer(&self, player: PlayerRef) -> Option<i32>;
 }
 /// The handles' writes of the `player_sleep` area, implemented by the game and reached through [`BackendMut`].
 // hidden: a handle's backend, reached through `Backend`; mods call the handle, never this trait
@@ -36,9 +36,7 @@ pub trait PlayerSleepBackendMut {
     /// stale or the player isn't online.
     fn player_set_sleep_ignored(&mut self, player: PlayerRef, ignored: bool) -> bool;
     /// Side: server.
-    /// Sets the player's `sleepCounter`: 0 to 109, the values the game reaches (see
-    /// `player_sleep_timer`). A player in bed at 100 counts as slept long enough for the night
-    /// skip. False for a value past 109, a stale or unavailable player, a fake player and a
-    /// player in another level than the one in place.
-    fn player_set_sleep_timer(&mut self, player: PlayerRef, ticks: u32) -> bool;
+    /// Writes the signed `Player.sleepCounter` without lying down or waking up. The next
+    /// `Player.tick` handles the counter as usual. False for a stale or unavailable player.
+    fn player_set_sleep_timer(&mut self, player: PlayerRef, ticks: i32) -> bool;
 }

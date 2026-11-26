@@ -1,10 +1,11 @@
 //! Audio environment attributes from Sunrise's `MusicTables` and
 //! `AmbientTables` for `tools/test_audio_attributes_parity.py`:
 //! `audio_attributes_fixture ROOT INPUT OUTPUT`.
-use std::io::Write;
+use std::{io::Write, sync::Arc};
 use sunrise_client::ambience::AmbientTables;
 use sunrise_client::music::{Music, MusicTables};
 use sunrise_client::sound_events::normalize;
+use sunrise_protocol::registry::Builtin;
 
 fn music(m: Option<&Music>) -> String {
     m.map_or("-".to_owned(), |m| {
@@ -21,8 +22,9 @@ fn music(m: Option<&Music>) -> String {
 pub fn main() {
     let args: Vec<String> = crate::args().collect();
     let root = std::path::Path::new(&args[1]);
-    let tables = MusicTables::load(root);
-    let ambient = AmbientTables::load(root);
+    let builtin = Arc::new(Builtin::load(&Builtin::find(root).expect("registry report")).unwrap());
+    let tables = MusicTables::load(root, builtin.clone());
+    let ambient = AmbientTables::load(root, builtin);
     let input = std::fs::read_to_string(&args[2]).expect("input");
     let mut out = std::io::BufWriter::new(std::fs::File::create(&args[3]).expect("output"));
     for (name, m) in [

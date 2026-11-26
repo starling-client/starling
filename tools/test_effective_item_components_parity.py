@@ -8,7 +8,9 @@ for frozen old/fixed runs. Scratch output is retained under --work-dir.
 """
 import hashlib,json,sys,tempfile
 from pathlib import Path
-import test_command_exec_parity as driver
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_command_exec_parity as driver
 FULL_REMOVAL = '--full-removal-diagnostic' in sys.argv
 if FULL_REMOVAL: sys.argv.remove('--full-removal-diagnostic')
 CASES=[('helmet-two','iron_helmet[max_stack_size=2,custom_data={keep:86}]'),('helmet-max','iron_helmet[max_stack_size=99,custom_data={keep:86}]'),('helmet-plain','iron_helmet'),('stone-two','stone[max_stack_size=2,custom_data={keep:86}]'),('removed-two','iron_helmet[!max_damage,max_stack_size=2,custom_data={keep:86}]'),('added-damage','stone[max_damage=10,max_stack_size=2,custom_data={keep:86}]'),('stone-max','stone[max_stack_size=99,custom_data={keep:86}]')]

@@ -1,6 +1,6 @@
 //! The pause menu (PauseScreen) and death screen (DeathScreen) layouts.
 use super::screen_build::{PauseInputs, PauseLayout};
-use super::{Game, Screen};
+use super::{Game, Screen, api_values::TryIntoApi};
 use sunrise_client::{
     Result,
     confirm_screen::Confirm,
@@ -15,30 +15,6 @@ use winit::keyboard::KeyCode;
 mod starling;
 #[allow(unused_imports)]
 pub use self::starling::*;
-
-impl Screen {
-    /// The screens whose own `keyPressed` takes every press: the social
-    /// screen, the command block and block editors, the debug options.
-    pub(super) fn takes_presses(self) -> bool {
-        matches!(
-            self,
-            Self::Social | Self::CommandBlock | Self::DebugOptions | Self::BlockEditor
-        )
-    }
-}
-
-impl Game<'_> {
-    /// A press on a screen that `takes_presses`, to that screen.
-    pub(super) fn screen_press(&mut self, event: &winit::event::KeyEvent) {
-        match self.screen {
-            Screen::Social => self.social_key(event),
-            Screen::CommandBlock => self.command_block_key(event),
-            Screen::DebugOptions => self.debug_options_key(event),
-            Screen::BlockEditor => self.block_editor_key(event),
-            _ => {}
-        }
-    }
-}
 
 impl Screen {
     /// `Screen.isPauseScreen`: whether this screen, open in a single-player
@@ -79,6 +55,7 @@ impl Screen {
             | Self::Friends
             | Self::ServerLinks
             | Self::ConfirmLink
+            | Self::DemoIntro
             | Self::DialogWarning
             | Self::CommandBlock
             | Self::BlockEditor
@@ -106,6 +83,7 @@ impl Screen {
             | Self::Social
             | Self::ServerLinks
             | Self::ConfirmLink
+            | Self::DemoIntro
             | Self::DialogWarning
             | Self::DebugOptions => true,
             Self::Playing
@@ -384,6 +362,40 @@ impl Game<'_> {
             icons: pause_icons(w, h, inputs.links, inputs.additions, &inputs.rows),
         }
     }
+    /// Native controls built by PauseScreen.init, in the grid's registration order.
+    pub(super) fn pause_init_children(&self) -> Vec<(u8, [f32; 4], Option<mod_api::Text>)> {
+        if self.screen != Screen::Paused || !self.pause_menu {
+            return Vec::new();
+        }
+        let [w, h] = self.gui_frame_now().1.size.map(|axis| axis as f32);
+        let Some(layout) = self.built_pause(w, h) else {
+            return Vec::new();
+        };
+        let buttons = layout.buttons.iter().map(|&(x, y, bw, key, id, _)| {
+            let label = if id == 14 {
+                self.pause_screen_additions()
+                    .and_then(|(text, _)| text.try_into_api().ok())
+            } else {
+                Some(mod_api::Text::translate(key, Vec::new()))
+            };
+            (id, [x, y, bw, 20.0], label)
+        });
+        let icons = layout.icons.iter().enumerate().map(|(i, &(x, y, _))| {
+            let id = if i == FRIENDS_ICON { 10 } else { 12 + i as u8 };
+            (
+                id,
+                [x, y, 20.0, 20.0],
+                Some(mod_api::Text::translate(ICON_LABELS[i], Vec::new())),
+            )
+        });
+        buttons
+            .clone()
+            .take(3)
+            .chain(icons)
+            .chain(buttons.skip(3))
+            .collect()
+    }
+
     pub(super) fn draw_pause_menu(&mut self, batch: &mut HudBatch) {
         let friends = self.friends_shown();
         let atlas = &self.gui.atlas;
@@ -411,7 +423,12 @@ impl Game<'_> {
             }
         };
         let mut tooltip = None;
-        for &(x, y, bw, key, id, active) in &layout.buttons {
+        let mut icon_narration_index = 0;
+        for (index, &(x, y, bw, key, id, active)) in layout.buttons.iter().enumerate() {
+            if self.pause_child_removed(id) {
+                continue;
+            }
+            icon_narration_index += usize::from(index < 3);
             let is_focused = self.pause_focus == Some(id);
             let hover = active && (ui::hovered(self.cursor, x, y, bw, 20.0) || is_focused);
             let label = match (id, &additions) {
@@ -435,9 +452,12 @@ impl Game<'_> {
             }
         }
         for (i, &(x, y, sprite)) in layout.icons.iter().enumerate() {
+            let id = if i == FRIENDS_ICON { 10 } else { 12 + i as u8 };
+            if self.pause_child_removed(id) {
+                continue;
+            }
             let active = icon_active(i, friends);
-            let is_focused = (self.pause_focus == Some(10) && i == FRIENDS_ICON)
-                || (self.pause_focus == Some(12 + i as u8));
+            let is_focused = self.pause_focus == Some(id);
             let hover = active && (ui::hovered(self.cursor, x, y, 20.0, 20.0) || is_focused);
             // The icon has no label: name it for controller focus and the
             // control socket's widget tree.
@@ -457,7 +477,7 @@ impl Game<'_> {
             );
             // PauseScreen adds the icon row after Statistics: the icons'
             // messages (their tooltips too), the friends button's own.
-            widgets::last_narratable_at(3 + i, |n| {
+            widgets::last_narratable_at(icon_narration_index, |n| {
                 let t = |key: &str| Text::translate(key, &[]).plain();
                 let key = [
                     "menu.reportBugs",
@@ -473,6 +493,7 @@ impl Game<'_> {
                 }
                 .hovered(hover);
             });
+            icon_narration_index += 1;
             // SpriteIconButton.CenteredIcon: the 15x15 sprite at
             // x + width / 2 - 15 / 2 in integer pixels, untinted even
             // when the button is inactive.
@@ -579,17 +600,24 @@ impl Game<'_> {
             .buttons
             .iter()
             .copied()
-            .find(|b| b.5 && ui::hovered(self.cursor, b.0, b.1, b.2, 20.0))
+            .find(|b| {
+                b.5 && !self.pause_child_removed(b.4)
+                    && ui::hovered(self.cursor, b.0, b.1, b.2, 20.0)
+            })
             .map(|b| b.4)
             .or_else(|| {
                 // The report bugs, feedback and player reporting icons (ids 12, 13 and 15).
                 [0, 1, 3]
                     .into_iter()
-                    .find(|&i| ui::hovered(self.cursor, icons[i].0, icons[i].1, 20.0, 20.0))
+                    .find(|&i| {
+                        !self.pause_child_removed(12 + i as u8)
+                            && ui::hovered(self.cursor, icons[i].0, icons[i].1, 20.0, 20.0)
+                    })
                     .map(|i| 12 + i as u8)
             })
             .or_else(|| {
                 (self.friends_shown()
+                    && !self.pause_child_removed(10)
                     && ui::hovered(
                         self.cursor,
                         icons[FRIENDS_ICON].0,
@@ -601,12 +629,13 @@ impl Game<'_> {
             });
         if let Some(id) = hit {
             self.pause_focus = Some(id);
-            self.audio.play_button_click();
+            self.play_audio_button_click();
             self.execute_pause_action(id)?;
+            return Ok(true);
         }
         Ok(hit.is_some())
     }
-    pub(super) fn pause_key(&mut self, key: KeyCode) -> Result<()> {
+    pub(super) fn pause_key(&mut self, key: KeyCode) -> Result<bool> {
         let (w, h) = {
             let size = self
                 .renderer
@@ -625,18 +654,22 @@ impl Game<'_> {
         };
         // The widget tuples are `Copy`: one small copy per press keeps the
         // build readable while the focus moves.
-        let buttons = layout.buttons.to_vec();
-        let icons = layout.icons;
-        let mut active_ids: Vec<u8> = buttons
+        let buttons: Vec<_> = layout
+            .buttons
             .iter()
             .copied()
-            .filter(|b| b.5)
-            .map(|b| b.4)
+            .filter(|b| b.5 && !self.pause_child_removed(b.4))
             .collect();
+        let icons = layout.icons;
+        let mut active_ids: Vec<u8> = buttons.iter().map(|b| b.4).collect();
         let friends = self.friends_shown();
-        active_ids.extend(pause_icon_focus_ids(friends));
+        active_ids.extend(
+            pause_icon_focus_ids(friends)
+                .into_iter()
+                .filter(|&id| !self.pause_child_removed(id)),
+        );
         if active_ids.is_empty() {
-            return Ok(());
+            return Ok(false);
         }
         match key {
             KeyCode::Tab => {
@@ -670,18 +703,15 @@ impl Game<'_> {
                     }
                 };
                 self.pause_focus = next;
+                Ok(true)
             }
             KeyCode::ArrowUp | KeyCode::ArrowDown | KeyCode::ArrowLeft | KeyCode::ArrowRight => {
-                let mut rects: Vec<(u8, f32, f32, f32)> = buttons
-                    .iter()
-                    .copied()
-                    .filter(|b| b.5)
-                    .map(|b| (b.4, b.0, b.1, b.2))
-                    .collect();
+                let mut rects: Vec<(u8, f32, f32, f32)> =
+                    buttons.iter().map(|b| (b.4, b.0, b.1, b.2)).collect();
                 let friends = self.friends_shown();
                 for (i, &(x, y, _)) in icons.iter().enumerate() {
-                    if icon_active(i, friends) {
-                        let id = if i == FRIENDS_ICON { 10 } else { 12 + i as u8 };
+                    let id = if i == FRIENDS_ICON { 10 } else { 12 + i as u8 };
+                    if icon_active(i, friends) && !self.pause_child_removed(id) {
                         rects.push((id, x, y, 20.0));
                     }
                 }
@@ -720,16 +750,19 @@ impl Game<'_> {
                 } else {
                     self.pause_focus = Some(active_ids[0]);
                 }
+                Ok(true)
             }
             KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Space => {
-                if let Some(hit) = self.pause_focus {
-                    self.audio.play_button_click();
+                if let Some(hit) = self.pause_focus.filter(|id| active_ids.contains(id)) {
+                    self.play_audio_button_click();
                     self.execute_pause_action(hit)?;
+                    Ok(true)
+                } else {
+                    Ok(false)
                 }
             }
-            _ => {}
+            _ => Ok(false),
         }
-        Ok(())
     }
     /// DeathScreen: gradient, the title at double size, the cause and score.
     pub(super) fn draw_death_screen(&mut self, batch: &mut HudBatch) {
@@ -803,10 +836,7 @@ impl Game<'_> {
         }
         let score = Text::translate(
             "deathScreen.score.value",
-            &[Text::colored(
-                self.experience.total.to_string(),
-                text::YELLOW,
-            )],
+            &[Text::colored(self.player_score.to_string(), text::YELLOW)],
         );
         let sw = atlas.font.width_text(&score);
         batch.text_styled(
@@ -927,28 +957,29 @@ impl Game<'_> {
         // handleExitToTitleScreen: outside hardcore, Title Screen asks first.
         if hit == Some(1) && !self.level.hardcore {
             self.ui.death_confirm = Some(std::time::Instant::now());
-            self.audio.play_button_click();
+            self.play_audio_button_click();
             return Ok(true);
         }
         self.death_action(hit)?;
         Ok(hit.is_some())
     }
-    pub(super) fn death_key(&mut self, key: KeyCode) -> Result<()> {
+    pub(super) fn death_key(&mut self, key: KeyCode) -> Result<bool> {
         if self
             .ui
             .died_at
             .is_some_and(|t| t.elapsed().as_millis() < 1000)
         {
-            return Ok(());
+            return Ok(false);
         }
         if let Some(opened) = self.ui.death_confirm {
             if opened.elapsed().as_millis() < 1000 {
-                return Ok(());
+                return Ok(false);
             }
-            match key {
+            return match key {
                 KeyCode::Escape => {
-                    self.audio.play_button_click();
+                    self.play_audio_button_click();
                     self.death_confirm_answer(false)?;
+                    Ok(true)
                 }
                 KeyCode::Tab => {
                     let reverse = self.has_shift_down();
@@ -963,17 +994,24 @@ impl Game<'_> {
                             }
                         }
                     };
+                    Ok(true)
                 }
-                KeyCode::ArrowLeft => self.death_focus = Some(0),
-                KeyCode::ArrowRight => self.death_focus = Some(1),
+                KeyCode::ArrowLeft => {
+                    self.death_focus = Some(0);
+                    Ok(true)
+                }
+                KeyCode::ArrowRight => {
+                    self.death_focus = Some(1);
+                    Ok(true)
+                }
                 KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Space => {
                     let yes = self.death_focus != Some(1);
-                    self.audio.play_button_click();
+                    self.play_audio_button_click();
                     self.death_confirm_answer(yes)?;
+                    Ok(true)
                 }
-                _ => {}
-            }
-            return Ok(());
+                _ => Ok(false),
+            };
         }
         match key {
             KeyCode::Tab => {
@@ -989,31 +1027,38 @@ impl Game<'_> {
                         }
                     }
                 };
+                Ok(true)
             }
-            KeyCode::ArrowUp => self.death_focus = Some(0),
-            KeyCode::ArrowDown => self.death_focus = Some(1),
+            KeyCode::ArrowUp => {
+                self.death_focus = Some(0);
+                Ok(true)
+            }
+            KeyCode::ArrowDown => {
+                self.death_focus = Some(1);
+                Ok(true)
+            }
             KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Space => {
                 let Some(hit) = self.death_focus else {
-                    return Ok(());
+                    return Ok(false);
                 };
-                self.audio.play_button_click();
+                self.play_audio_button_click();
                 if hit == 1 && !self.level.hardcore {
                     self.ui.death_confirm = Some(std::time::Instant::now());
                     self.death_focus = Some(0);
-                    return Ok(());
+                    return Ok(true);
                 }
                 self.death_action(Some(hit))?;
+                Ok(true)
             }
-            _ => {}
+            _ => Ok(false),
         }
-        Ok(())
     }
     /// The confirm screen's answer: yes leaves the world, no respawns
     /// (`DeathScreen.handleExitToTitleScreen`'s callback).
     pub(super) fn death_confirm_answer(&mut self, yes: bool) -> Result<()> {
         self.ui.death_confirm = None;
         if yes {
-            self.audio.play_button_click();
+            self.play_audio_button_click();
             self.close_world()
         } else {
             self.death_action(Some(0))
@@ -1027,7 +1072,7 @@ impl Game<'_> {
             _ => {}
         }
         if hit.is_some() {
-            self.audio.play_button_click();
+            self.play_audio_button_click();
         }
         Ok(())
     }
@@ -1052,6 +1097,7 @@ mod tests {
     fn menu_blur_matches_vanilla_screen_backgrounds() {
         for screen in [
             Screen::Options,
+            Screen::DemoIntro,
             Screen::Stats,
             Screen::Advancements,
             Screen::WorldOptions,
@@ -1105,6 +1151,7 @@ mod tests {
             Screen::Friends,
             Screen::ServerLinks,
             Screen::ConfirmLink,
+            Screen::DemoIntro,
             Screen::DialogWarning,
             Screen::CommandBlock,
             Screen::BlockEditor,

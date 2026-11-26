@@ -85,14 +85,16 @@ pitch follow `ItemFrame.setDirection` and are not interpolated (it has no previo
 (whose cancel skips it), the mods' layers and `render_living_post`, in the order the type's own
 model has, so it changes with #3915 and not before. When the replacement succeeds, the layers and
 Post receive `model: None`. Boats, displays and the other
-projectiles come in follow-ups of #860. A renderer that returns an `Err` or panics is logged once with
-the error and asked no more until the next resource load resolves it again. What it drew that frame is
-dropped, and until then its type draws as it would without one."#]
+projectiles come in follow-ups of #860. A renderer that returns an `Err` rolls back what it drew that
+frame, logs a warning, falls back for that draw to what the type would draw without a registered
+renderer, and stays active for later draws. A renderer that panics rolls back what it drew that frame and
+disables only that renderer for the rest of the session (including across reloads), with an error log and
+an in-game error toast naming the mod; until the session ends its type draws as it would without one."#]
     #[hook(
         receiver = "associated",
         dispatch = "flat",
         side = "client",
-        version = 4,
+        version = 5,
         contract = "listen",
         staged_surface = "renderers",
         context = "registration",

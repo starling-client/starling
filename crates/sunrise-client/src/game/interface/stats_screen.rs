@@ -746,8 +746,7 @@ impl Game<'_> {
         let before = self.stats_ui.tab;
         if self.stats_ui.key(key, ctrl, shift, active) && self.stats_ui.tab != before {
             // TabManager.setCurrentTab(.., true): the click of a tab press.
-            self.audio
-                .play("minecraft:ui.button.click", None, 0.25, 1.0);
+            self.play_audio("minecraft:ui.button.click", None, 0.25, 1.0);
         }
     }
     pub(super) fn stats_click(&mut self, size: [u32; 2]) -> bool {
@@ -765,8 +764,7 @@ impl Game<'_> {
             {
                 self.stats_ui.tab = i;
                 self.stats_ui.scroll.amount = 0.0;
-                self.audio
-                    .play("minecraft:ui.button.click", None, 0.25, 1.0);
+                self.play_audio("minecraft:ui.button.click", None, 0.25, 1.0);
                 return true;
             }
         }
@@ -777,8 +775,7 @@ impl Game<'_> {
             200.0,
             20.0,
         ) {
-            self.audio
-                .play("minecraft:ui.button.click", None, 0.25, 1.0);
+            self.play_audio("minecraft:ui.button.click", None, 0.25, 1.0);
             self.set_screen(Screen::Paused);
             return true;
         }
@@ -796,20 +793,23 @@ impl Game<'_> {
                         Some((sc, _)) if sc == c => None,
                         _ => Some((c, -1)),
                     };
-                    self.audio
-                        .play("minecraft:ui.button.click", None, 0.25, 1.0);
+                    self.play_audio("minecraft:ui.button.click", None, 0.25, 1.0);
                 }
             }
         }
         handled
     }
-    pub(super) fn stats_scroll(&mut self, amount: f32) {
+    pub(super) fn stats_scroll(&mut self, amount: f32) -> bool {
         let (row_h, _) = self.stats_rows();
         let h = self.gui_size().1;
+        if !(TAB_H..h - FOOTER).contains(&self.cursor.1) {
+            return false;
+        }
         let content = self.stats_content();
         self.stats_ui
             .scroll
             .wheel(amount, row_h / 2.0, TAB_H, h - FOOTER, content);
+        true
     }
     /// A press on the statistics list's scrollbar holds it
     /// (`AbstractSelectionList.updateScrolling`).
@@ -822,15 +822,16 @@ impl Game<'_> {
             .press(self.cursor, Self::stats_bar(w), TAB_H, h - FOOTER, content)
     }
     /// The pointer moved while the scrollbar is held.
-    pub(super) fn stats_drag(&mut self) {
+    pub(super) fn stats_drag(&mut self) -> bool {
         if !self.stats_ui.scroll.held() {
-            return;
+            return false;
         }
         let h = self.gui_size().1;
         let content = self.stats_content();
         self.stats_ui
             .scroll
             .drag(self.cursor.1, TAB_H, h - FOOTER, content);
+        true
     }
     /// The button came up: the scrollbar lets go.
     pub(super) fn stats_release(&mut self) -> bool {

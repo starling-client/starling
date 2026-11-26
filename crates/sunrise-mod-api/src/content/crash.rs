@@ -122,7 +122,6 @@ pub(crate) fn ensure_installed() -> Result<(), &'static str> {
     static INSTALLED: std::sync::OnceLock<Result<(), &'static str>> = std::sync::OnceLock::new();
     *INSTALLED.get_or_init(|| {
         mod_vocab::dispatch_scope::install(mod_vocab::dispatch_scope::Backend {
-            unresolved_fluids: crate::fluid_state::ACCESS,
             registration: &crate::parts::REGISTRATION_ACCESS,
             diagnostics: &crate::parts::DIAGNOSTICS,
             enter: enter_native,

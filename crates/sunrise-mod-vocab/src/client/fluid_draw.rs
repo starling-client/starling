@@ -12,14 +12,14 @@ pub struct FluidBoxOptions {
     pub argb: Option<u32>,
     /// Whether the box's bottom face is drawn; the other five always are.
     pub render_bottom: bool,
-    /// `TextureAtlasSprite.uvShrinkRatio`, `0.0..=1.0`: how far each face's UVs pull in towards
+    /// `TextureAtlasSprite.uvShrinkRatio`: how far each face's UVs pull in towards
     /// the sprite's centre. A port passes its sprite's own, 4 over the largest dimension of the
     /// atlas it was stitched into; Sunrise keeps block sprites in arrays, so it asks for it.
     pub uv_shrink_ratio: f32,
 }
 
 impl FluidBoxOptions {
-    /// The stack's own tint, `render_bottom` and `uv_shrink_ratio`. The draw call checks the ratio.
+    /// The stack's own tint, `render_bottom` and `uv_shrink_ratio`.
     #[inline]
     pub fn new(render_bottom: bool, uv_shrink_ratio: f32) -> Self {
         Self {
@@ -37,20 +37,4 @@ impl FluidBoxOptions {
             ..self
         }
     }
-}
-
-/// Why [`BlockEntityDrawContext::fluid_box`](crate::BlockEntityDrawContext::fluid_box) drew
-/// nothing. A refused box appends no geometry.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
-pub enum FluidBoxError {
-    /// The stack's fluid does not resolve, or is the empty fluid.
-    UnsupportedFluid,
-    /// The fluid is neither water nor lava and has no look
-    /// (`data/<mod>/sunrise/fluid/<name>.json`), or the loaded resources have no sprite for it.
-    MissingSprite,
-    /// A bound is not finite or beyond 1,048,576 blocks, a minimum exceeds its maximum, the
-    /// box would tile into more than 65,536 quads, or the shrink ratio is outside `0.0..=1.0`.
-    InvalidBox,
 }

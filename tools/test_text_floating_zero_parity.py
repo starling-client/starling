@@ -6,7 +6,9 @@ from pathlib import Path
 import sys
 import tempfile
 
-import test_command_exec_parity as driver
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_command_exec_parity as driver
 
 CASES = [('f_plain_pos', '0.0f', '0.0f', False), ('f_plain_neg', '-0.0f', '0.0f', True), ('f_exp_pos', '0e0f', '0.0f', False), ('f_exp_neg', '-0e0f', '0.0f', True), ('d_plain_pos', '0.0d', '0.0d', False), ('d_plain_neg', '-0.0d', '0.0d', True), ('d_exp_pos', '0e0d', '0.0d', False), ('d_exp_neg', '-0e0d', '0.0d', True), ('bare_plain_pos', '0.0', '0.0d', False), ('bare_plain_neg', '-0.0', '0.0d', True), ('bare_exp_pos', '0e0', '0.0d', False), ('bare_exp_neg', '-0e0', '0.0d', True), ('f_value_pos', '1.25f', '1.25f', False), ('f_value_neg', '-1.25f', '-1.25f', False), ('d_value_pos', '1.25d', '1.25d', False), ('d_value_neg', '-1.25d', '-1.25d', False), ('f_sub_pos', '1.0e-40f', '1.0e-40f', False), ('f_sub_neg', '-1.0e-40f', '-1.0e-40f', False), ('d_sub_pos', '1.0e-310d', '1.0e-310d', False), ('d_sub_neg', '-1.0e-310d', '-1.0e-310d', False)]
 

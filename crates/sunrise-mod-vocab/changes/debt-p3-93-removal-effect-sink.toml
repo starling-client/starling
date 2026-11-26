@@ -1,0 +1,22 @@
+ids = [
+    "hook:pre_remove_side_effects",
+    "hook:pre_remove_side_effects.keep_contents",
+    "hook:pre_remove_side_effects.drops",
+    "hook:pre_remove_side_effects.spawns",
+    "hook:pre_remove_side_effects.experience",
+    "hook:pre_remove_side_effects.effects",
+    "type:PreRemoveSideEffectsEvent.keep_contents",
+    "type:PreRemoveSideEffectsEvent.drops",
+    "type:PreRemoveSideEffectsEvent.spawns",
+    "type:PreRemoveSideEffectsEvent.experience",
+    "type:PreRemoveSideEffectsEvent.effects",
+]
+why = "Vanilla 26.3 LevelChunk.setBlockState calls BlockEntity.preRemoveSideEffects before removing the row and notifying neighbors. Containers.dropContents visits slots without a batch cap, and ExperienceOrb.award applies an award in orb order. NeoForge does not replace these removal semantics. The native removal callback now lends an append-only effect sink rather than copying back mutable lists: validation refuses only the bad contribution, never an entire list. The base contents decision and appended effects of a panicking Part are discarded through the shared dispatcher. Pickup XP and recipe ghosts remain separate callbacks."
+migrate = '''
+- Keep `BlockEntityPart::pre_remove_side_effects` with the same `LevelRandomHost` and `PreRemoveSideEffectsEvent<'_>` arguments. The hook version is now 6. Read `event.entity` as before; it still lends the actual outgoing block entity.
+- Replace reads and writes of `event.keep_contents` with `event.effects.keep_contents()` and `event.effects.set_keep_contents(keep)`. A successful Part's explicit decision is visible to later Parts.
+- Replace `event.drops.push(slot)` with `event.effects.drop_slot(slot)`. Pass `Some(stack)` for a filled slot or `None` for an empty one. Submit your own slots in their original order; the sink cannot rewrite another Part's contributions.
+- Replace `event.spawns.push((stack, position))` with `event.effects.spawn_item(stack, position)` and `event.experience.push((amount, position))` with `event.effects.award_experience(amount, position)`.
+- Handle `BlockRemovalEffectError` at each call. `Stack(error)` reports a checked stack refusal, `NonFinitePosition` reports invalid coordinates. Change or omit that one contribution; accepted siblings are kept. The game still applies base contents, extra scatter slots, positioned items, then experience, preserving the submission order in each group.
+- Rebuild with the new SDK and refresh the native package's surface usage list.
+'''

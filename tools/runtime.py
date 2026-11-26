@@ -2,15 +2,15 @@
 """Shared Java dependency and platform helpers for Rust comparison benchmarks."""
 
 import json
+import sys
 import time
 import urllib.error
+from pathlib import Path
 
-try:
-    from . import lab
-except ImportError:
-    import lab
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab
 
-ROOT = lab.ROOT
 CACHE = ROOT / ".local" / "runtime"
 library_allowed = lab.library_allowed
 native_library_matches = lab.native_library_matches

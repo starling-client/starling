@@ -21,6 +21,7 @@ import net.minecraft.server.Bootstrap;
 import net.minecraft.server.level.ChunkMap;
 import net.minecraft.util.datafix.DataFixTypes;
 import net.minecraft.util.datafix.DataFixers;
+import net.minecraft.util.datafix.fixes.References;
 import net.minecraft.util.filefix.FileFix;
 import net.minecraft.util.filefix.FileFixerUpper;
 import net.minecraft.util.worldupdate.UpgradeProgress;
@@ -53,6 +54,10 @@ public final class VanillaDataFixOracle {
     public static void main(String[] args) throws Exception {
         SharedConstants.tryDetectVersion();
         Bootstrap.bootStrap();
+        if (args[0].equals("--single")) {
+            singleCompounds(Path.of(args[1]), Path.of(args[2]));
+            return;
+        }
         Path in = Path.of(args[0]);
         Path out = Path.of(args[1]);
         delete(out);
@@ -116,6 +121,28 @@ public final class VanillaDataFixOracle {
             Files.writeString(file, GSON.toJson(fixed.getValue()), StandardCharsets.UTF_8);
         }
         System.exit(0);
+    }
+
+    private static void singleCompounds(Path cases, Path output) throws Exception {
+        var fixer = DataFixers.getDataFixer();
+        int current = SharedConstants.getCurrentVersion().dataVersion().version();
+        var results = new CompoundTag();
+        for (String line : Files.readAllLines(cases)) {
+            String[] row = line.split("\t", 4);
+            var type = switch (row[1]) {
+                case "item_stack" -> References.ITEM_STACK;
+                case "block_state" -> References.BLOCK_STATE;
+                case "block_entity" -> References.BLOCK_ENTITY;
+                case "entity" -> References.ENTITY;
+                case "entity_tree" -> References.ENTITY_TREE;
+                default -> throw new IllegalArgumentException(row[1]);
+            };
+            var input = new Dynamic<>(NbtOps.INSTANCE, TagParser.parseCompoundFully(row[3]));
+            results.put(row[0], fixer.update(type, input, Integer.parseInt(row[2]), current).getValue());
+        }
+        try (var stream = new DataOutputStream(Files.newOutputStream(output))) {
+            NbtIo.write(results, stream);
+        }
     }
 
     /**

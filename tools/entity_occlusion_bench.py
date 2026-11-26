@@ -9,9 +9,8 @@ from argparse import Namespace
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / 'tools'))
-import perf_bench as bench
-import stress_scenes as stress
+sys.path.insert(0, str(ROOT))
+from tools import perf_bench as bench, stress_scenes as stress
 
 # Keep this run isolated from the normal benchmark workspace.
 bench.WORK = Path('/tmp/sunrise-entity-occlusion-release-quick')

@@ -38,6 +38,9 @@ struct FixtureContext<'a> {
 }
 
 impl advancements::World for FixtureContext<'_> {
+    fn is_loaded(&self, _: [i32; 3]) -> bool {
+        true
+    }
     fn predicate(&self, id: &str) -> Option<&serde_json::Value> {
         self.predicates.get(id)
     }

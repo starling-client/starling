@@ -8,10 +8,11 @@ import platform
 import random
 import subprocess
 import zipfile
-try:
-    from . import lab, test_rust_parity as base, test_cuboid_model_parity as decoding
-except ImportError:
-    import lab, test_rust_parity as base, test_cuboid_model_parity as decoding
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_rust_parity as base, test_cuboid_model_parity as decoding
 
 
 def bundle(models, roots=None):

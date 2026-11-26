@@ -1,5 +1,0 @@
-manifest:
-refused: rust: unsupported package path
-
-icon:
-unavailable

@@ -1,0 +1,3 @@
+ids = ["method:GuiCanvas::triangles", "type:GuiVertex", "type:GuiVertex.pos", "type:GuiVertex.argb"]
+why = "A mod draws its own untextured triangles on a GUI canvas (#5421), for shapes a rectangle cannot make: rounded panels, discs, line icons. It is what a mod's POSITION_COLOR GuiElementRenderState submitted through NeoForge's GuiGraphicsExtractor.submitGuiElementRenderState draws, in the current pose and scissor, with each corner's colour blended across the triangle."
+migrate = "A type implementing GuiCanvas needs a triangles method."

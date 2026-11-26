@@ -1,8 +1,10 @@
 """Server orb fire: saved `Fire` and the 20-tick burn of `Entity.baseTick`, tick by tick."""
-try:
-    from .command_exec_corpus import cmd, setup
-except ImportError:
-    from command_exec_corpus import cmd, setup
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools.command_exec_corpus import cmd, setup
 
 # (name, Fire, Health): `Entity.baseTick` burns an orb with Fire > 0 once on every tick where
 # the counter is a multiple of 20 (`hurtServer(onFire, 1)`), then counts it down by one.

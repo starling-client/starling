@@ -1,0 +1,1 @@
+cargo-sunrise-mod collection::tests::git_fixtures::a_proposal_is_one_signed_off_commit_on_main_pushed_to_the_forks_branch bin:cargo-sunrise-mod daily child-process

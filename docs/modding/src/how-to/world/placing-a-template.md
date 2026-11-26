@@ -1,13 +1,14 @@
 # Placing a structure template
 
-`host.place_template` puts a structure template into the level through the game's own placement, the
-one `/place template` and a structure block's Load take. Blocks, block-entity data and the template's
-own entities arrive as vanilla places them: states are mirrored then turned, a block that carries a
-block entity keeps its data, loot tables get the seed a placement gives them, and the template's
-entities are spawned where the turn puts them.
+`level.place_template` puts a structure template into a server level (`LevelRef`, active or parked)
+through the game's own placement, the one `/place template` and a structure block's Load take.
+Blocks, block-entity data and the template's own entities arrive as vanilla places them: states are
+mirrored then turned, a block that carries a block entity keeps its data, loot tables get the seed a
+placement gives them, and the template's entities are spawned where the turn puts them.
 
 ```rust,ignore
-let placed = host.place_template(
+let placed = level.place_template(
+    host,
     &StructureTemplateSource::id("mymod:hut"),
     [120, 64, -40], // at
     [120, 64, -40], // pivot: what /place template uses
@@ -15,20 +16,21 @@ let placed = host.place_template(
     StructureMirror::None,
 );
 if let Err(reason) = placed {
-    // Nothing was placed; `reason` says why.
+    // Nothing was placed; `reason` is a typed `StructureTemplateError`.
 }
 ```
 
-Side: server. The call acts on the level the server is ticking, as `edit_blocks` and `native_set_block`
-do, and refuses a client.
+Side: server. The call acts on `level` (active or parked), refuses a client with
+`StructureTemplateError::Unavailable`, a stale handle with `StructureTemplateError::Stale`, and a
+parked level inside an open Host transaction with `StructureTemplateError::InTransaction`.
 
 ## Where the template comes from
 
 `StructureTemplateSource` is one of two things:
 
 - `StructureTemplateSource::id("mymod:hut")`: a template of the game's, found as
-  `StructureTemplateManager.get` finds it, the way `structure_template` finds it: the world's saved
-  structures first, then the game's and the mods' own.
+  `StructureTemplateManager.get` finds it, the way `level.visit_structure_template` finds it: the
+  world's saved structures first, then the game's and the mods' own.
 - `StructureTemplateSource::nbt(bytes)`: vanilla structure NBT the mod carries, the bytes of a
   `structures/<namespace>/<path>.nbt` file, gzipped as the game saves one or plain. The game's own
   loader reads it, within vanilla's limits for a template file (a `structure/*.nbt` read under
@@ -46,27 +48,32 @@ do, and refuses a client.
 - The chunks the turned template covers all have to be loaded. The call checks the box first and places
   nothing at all rather than half a structure.
 
-`structure_template` is the read side of the same thing: it answers the transformed blocks for a
-preview, and `place_template` places them. A mod that wants to place blocks its own way, one at a time
-or through `edit_blocks`, keeps using `structure_template`; a mod that wants vanilla's block entities
-and entities uses this call.
+`level.visit_structure_template` is the read side of the same thing: it lends each transformed
+block as a `StructureTemplateBlockView<'_>` in vanilla placement order (stopping early on
+`ControlFlow::Break(())`) and returns the rotated size `[i32; 3]`. A mod that wants to place blocks
+its own way, one at a time or through `level.edit_blocks`, uses `level.visit_structure_template`; a
+mod that wants vanilla's block entities and entities uses `level.place_template`.
 
 ## Refusals
 
-`Err(String)` says why nothing was placed, and nothing of the template reaches the level:
+`Err(StructureTemplateError)` names why nothing was read or placed, and nothing of the template
+reaches the level:
 
-| Reason | What was wrong |
+| Variant | What was wrong |
 |---|---|
-| not a template id | the id doesn't parse, or has a `.` or `..` part |
-| the game has no structure template | nothing of that id is the world's, the game's or the mods' |
-| the structure NBT does not decompress / does not read | the bytes are not a gzipped or plain structure file, or they are past vanilla's limits |
-| the template places nothing | it has no palette, or a side of its size is below 1 |
-| a client of a server places nothing | the call ran on a client |
-| chunk (x, z) of the template's box is not loaded | the footprint reaches a chunk the level has not loaded |
-| the game placed nothing | the game has no structure resources, or the palette holds no block and there is no entity |
+| `Stale` | the level handle is stale or the level is gone |
+| `Unavailable` | the call ran on a client, wrong phase/host, or structure resources are missing |
+| `InTransaction` | a parked level cannot place a template while a Host transaction is open |
+| `InvalidId` | the id doesn't parse, or has a `.` or `..` part |
+| `NotFound` | nothing of that id is in the world, the game or the mods |
+| `InvalidNbt` | the bytes are not a gzipped or plain structure file, or they are past vanilla's limits |
+| `EmptyTemplate` | the template has no palette, a side below 1, or places no blocks or entities |
+| `UnloadedChunk { chunk }` | chunk `[cx, cz]` in the transformed footprint is not loaded (`PlaceCommand.checkLoaded`) |
+| `InvalidState` | a block state in the template cannot be mapped to the API block state table |
+| `UnsupportedTransform` | the rotation, mirror, or template source variant is unsupported by this build |
 
 Nothing here panics on what a mod supplies: an unreadable file, a rotation this build does not know and
-an id with a `..` in it all come back as a reason.
+an id with a `..` in it all come back as a typed `StructureTemplateError`.
 
 ## Placing a feature
 

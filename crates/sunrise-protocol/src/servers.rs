@@ -50,20 +50,36 @@ impl ServerEntry {
         Tag::compound(entries)
     }
     fn from_tag(tag: &Tag) -> Option<Self> {
+        if !matches!(tag, Tag::Compound(_)) {
+            return None;
+        }
         let string = |k: &str| match tag.get(k) {
             Some(Tag::String(s)) => Some(s.to_string_lossy()),
             _ => None,
         };
         Some(Self {
             name: string("name").unwrap_or_default(),
-            ip: string("ip")?,
+            ip: string("ip").unwrap_or_default(),
             icon: string("icon"),
+            // ServerData.ServerPackStatus.FIELD_CODEC -> NbtOps.getBooleanValue:
+            // any numeric tag whose doubleValue() != 0.0.
             accept_textures: match tag.get("acceptTextures") {
-                Some(Tag::Byte(b)) => Some(*b != 0),
+                Some(Tag::Byte(n)) => Some(f64::from(*n) != 0.0),
+                Some(Tag::Short(n)) => Some(f64::from(*n) != 0.0),
+                Some(Tag::Int(n)) => Some(f64::from(*n) != 0.0),
+                Some(Tag::Long(n)) => Some((*n as f64) != 0.0),
+                Some(Tag::Float(bits)) => Some(f64::from(f32::from_bits(*bits)) != 0.0),
+                Some(Tag::Double(bits)) => Some(f64::from_bits(*bits) != 0.0),
                 _ => None,
             },
+            // CompoundTag.getIntOr("acceptedCodeOfConduct", 0) -> NumericTag.intValue().
             accepted_code_of_conduct: match tag.get("acceptedCodeOfConduct") {
-                Some(Tag::Int(hash)) => *hash,
+                Some(Tag::Byte(n)) => i32::from(*n),
+                Some(Tag::Short(n)) => i32::from(*n),
+                Some(Tag::Int(n)) => *n,
+                Some(Tag::Long(n)) => *n as i32,
+                Some(Tag::Float(bits)) => sunrise_core::mth::floor_f32(f32::from_bits(*bits)),
+                Some(Tag::Double(bits)) => sunrise_core::mth::floor(f64::from_bits(*bits)),
                 _ => 0,
             },
         })
@@ -88,7 +104,7 @@ pub fn load_all(path: &Path) -> (Vec<ServerEntry>, Vec<ServerEntry>) {
     let Ok(bytes) = std::fs::read(path) else {
         return (shown, hidden);
     };
-    let Ok((root, _)) = nbt::read_named(&bytes, nbt::Limits::default()) else {
+    let Ok((root, _)) = nbt::read_named(&bytes, nbt::Limits::unlimited_heap()) else {
         return (shown, hidden);
     };
     if let Some(Tag::List(list)) = root.tag.get("servers") {
@@ -96,12 +112,18 @@ pub fn load_all(path: &Path) -> (Vec<ServerEntry>, Vec<ServerEntry>) {
             let Some(entry) = ServerEntry::from_tag(t) else {
                 continue;
             };
-            // CompoundTag.getBooleanOr("hidden", false): any number but zero.
+            // CompoundTag.getBooleanOr("hidden", false) -> NumericTag.byteValue() != 0.
             let is_hidden = match t.get("hidden") {
                 Some(Tag::Byte(b)) => *b != 0,
                 Some(Tag::Short(n)) => *n as i8 != 0,
                 Some(Tag::Int(n)) => *n as i8 != 0,
                 Some(Tag::Long(n)) => *n as i8 != 0,
+                Some(Tag::Float(bits)) => {
+                    (sunrise_core::mth::floor_f32(f32::from_bits(*bits)) as i8) != 0
+                }
+                Some(Tag::Double(bits)) => {
+                    (sunrise_core::mth::floor(f64::from_bits(*bits)) as i8) != 0
+                }
                 _ => false,
             };
             if is_hidden {
@@ -165,7 +187,7 @@ pub fn remove_where(path: &Path, matches: impl Fn(&str, &str) -> bool) -> std::i
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(e) => return Err(e),
     };
-    let mut root = nbt::read_named(&bytes, nbt::Limits::default())
+    let mut root = nbt::read_named(&bytes, nbt::Limits::unlimited_heap())
         .map_err(std::io::Error::other)?
         .0;
     let Some(Tag::List(list)) = root.tag.get_mut("servers") else {
@@ -191,7 +213,7 @@ fn insert(
 ) -> std::io::Result<()> {
     let mut root = match std::fs::read(path) {
         Ok(bytes) => {
-            nbt::read_named(&bytes, nbt::Limits::default())
+            nbt::read_named(&bytes, nbt::Limits::unlimited_heap())
                 .map_err(std::io::Error::other)?
                 .0
         }
@@ -217,11 +239,40 @@ fn insert(
     write(path, &root)
 }
 fn write(path: &Path, root: &NamedTag) -> std::io::Result<()> {
-    let bytes = nbt::write_named(root, nbt::Limits::default()).map_err(std::io::Error::other)?;
-    // Its own temporary file: another game on the same folder writes at the same time.
+    let bytes =
+        nbt::write_named(root, nbt::Limits::unlimited_heap()).map_err(std::io::Error::other)?;
+    // ServerList.save + Util.safeReplaceFile: write a temp file, back up the
+    // preceding servers.dat to servers.dat_old, then move the new file into place.
     let tmp = path.with_extension(format!("dat_tmp.{}", std::process::id()));
     std::fs::write(&tmp, bytes)?;
-    std::fs::rename(tmp, path)
+    let mut backup_os = path.as_os_str().to_os_string();
+    backup_os.push("_old");
+    let backup = std::path::PathBuf::from(backup_os);
+    let backed_up = if path.exists() {
+        match std::fs::remove_file(&backup) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(e);
+            }
+        }
+        if let Err(e) = std::fs::rename(path, &backup) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e);
+        }
+        true
+    } else {
+        false
+    };
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        if backed_up {
+            let _ = std::fs::rename(&backup, path);
+        }
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    Ok(())
 }
 
 /// ServerAddress.parseString: `host`, `host:port` or `[v6]:port`; default 25565.
@@ -253,6 +304,44 @@ pub fn parse_address(text: &str) -> Option<(String, u16)> {
         }
         Some(_) => Some((text.to_owned(), 25565)),
         None => Some((text.to_owned(), 25565)),
+    }
+}
+
+/// `ServerList.get`: shown entries, then hidden. A name plus address picks that
+/// row; an address alone is the first row with that ip.
+pub fn find<'a>(
+    shown: &'a [ServerEntry],
+    hidden: &'a [ServerEntry],
+    address: &str,
+    name: Option<&str>,
+) -> Option<&'a ServerEntry> {
+    let mut rows = shown.iter().chain(hidden.iter());
+    match name {
+        Some(name) => rows.find(|s| s.ip == address && s.name == name),
+        None => rows.find(|s| s.ip == address),
+    }
+}
+
+/// `ServerList.saveSingleServer` for the resource-pack setting: only the shown
+/// or hidden row with this name and address is written.
+pub fn save_single_accept_textures(
+    shown: &mut [ServerEntry],
+    hidden: &mut [ServerEntry],
+    name: &str,
+    address: &str,
+    setting: Option<bool>,
+) -> bool {
+    if let Some(entry) = shown.iter_mut().find(|s| s.name == name && s.ip == address) {
+        entry.accept_textures = setting;
+        true
+    } else if let Some(entry) = hidden
+        .iter_mut()
+        .find(|s| s.name == name && s.ip == address)
+    {
+        entry.accept_textures = setting;
+        true
+    } else {
+        false
     }
 }
 
@@ -382,5 +471,177 @@ mod tests {
         assert_eq!(parse_address("host:-0"), Some(("host".into(), 0)));
         assert_eq!(parse_address("host:0"), Some(("host".into(), 0)));
         assert_eq!(parse_address("[::1]:65535"), Some(("::1".into(), 65535)));
+    }
+
+    #[test]
+    fn accept_textures_decodes_numeric_tags_and_save_retains_backup() {
+        let dir = std::env::temp_dir().join(format!(
+            "sunrise-servers-numeric-backup-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("servers.dat");
+        let backup = dir.join("servers.dat_old");
+
+        let entry = |name: &str, ip: &str, accept: Tag| {
+            Tag::compound([
+                ("name", Tag::String(JavaString::from(name))),
+                ("ip", Tag::String(JavaString::from(ip))),
+                ("acceptTextures", accept),
+            ])
+        };
+        let raw_root = NamedTag {
+            name: JavaString::from(""),
+            tag: Tag::compound([(
+                "servers",
+                Tag::List(vec![
+                    entry("IntZero", "int0.example", Tag::Int(0)),
+                    entry("Int256", "int256.example", Tag::Int(256)),
+                    entry("LongOne", "long1.example", Tag::Long(1)),
+                    entry(
+                        "FloatNegZero",
+                        "fneg0.example",
+                        Tag::Float((-0.0_f32).to_bits()),
+                    ),
+                    entry(
+                        "DoubleHalf",
+                        "dhalf.example",
+                        Tag::Double(0.5_f64.to_bits()),
+                    ),
+                    entry(
+                        "StringIgnored",
+                        "str.example",
+                        Tag::String(JavaString::from("1")),
+                    ),
+                ]),
+            )]),
+        };
+        let initial_bytes = nbt::write_named(&raw_root, nbt::Limits::default()).unwrap();
+        std::fs::write(&path, &initial_bytes).unwrap();
+
+        let loaded = load(&path);
+        assert_eq!(
+            loaded
+                .iter()
+                .map(|e| (e.ip.as_str(), e.accept_textures))
+                .collect::<Vec<_>>(),
+            vec![
+                ("int0.example", Some(false)),
+                ("int256.example", Some(true)),
+                ("long1.example", Some(true)),
+                ("fneg0.example", Some(false)),
+                ("dhalf.example", Some(true)),
+                ("str.example", None),
+            ]
+        );
+
+        save(&path, &loaded).unwrap();
+        assert_eq!(std::fs::read(&backup).unwrap(), initial_bytes);
+        let (saved_root, _) =
+            nbt::read_named(&std::fs::read(&path).unwrap(), nbt::Limits::default()).unwrap();
+        let Some(Tag::List(saved_list)) = saved_root.tag.get("servers") else {
+            panic!("expected servers list");
+        };
+        assert_eq!(saved_list[0].get("acceptTextures"), Some(&Tag::Byte(0)));
+        assert_eq!(saved_list[1].get("acceptTextures"), Some(&Tag::Byte(1)));
+        assert_eq!(saved_list[2].get("acceptTextures"), Some(&Tag::Byte(1)));
+        assert_eq!(saved_list[3].get("acceptTextures"), Some(&Tag::Byte(0)));
+        assert_eq!(saved_list[4].get("acceptTextures"), Some(&Tag::Byte(1)));
+        assert_eq!(saved_list[5].get("acceptTextures"), None);
+
+        // An unreadable file that gets replaced by save_all is kept in servers.dat_old.
+        let corrupt = b"corrupt servers.dat";
+        std::fs::write(&path, corrupt).unwrap();
+        save_all(&path, &[], &[]).unwrap();
+        assert_eq!(std::fs::read(&backup).unwrap(), corrupt);
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn disk_decoder_accepts_long_code_of_conduct_and_large_lists_across_second_save() {
+        let dir = std::env::temp_dir().join(format!(
+            "sunrise-servers-unbounded-coc-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("servers.dat");
+
+        // Vanilla ServerList.load uses NbtAccounter.unlimitedHeap() and CompoundTag.getIntOr()
+        // for acceptedCodeOfConduct (NumericTag.intValue). Exceed Limits::default().max_bytes
+        // (64 MiB) so a bounded decoder would empty the list on load.
+        let shown_entry = Tag::compound([
+            ("name", Tag::String(JavaString::from("LargeShown"))),
+            ("ip", Tag::String(JavaString::from("shown.example"))),
+            ("acceptTextures", Tag::Byte(0)),
+            ("acceptedCodeOfConduct", Tag::Long(0x1_0000_002A_i64)),
+            ("padding", Tag::ByteArray(vec![0u8; 64 * 1024 * 1024 + 1])),
+        ]);
+        let hidden_entry = Tag::compound([
+            ("name", Tag::String(JavaString::from("LargeHidden"))),
+            ("ip", Tag::String(JavaString::from("hidden.example"))),
+            ("hidden", Tag::Double(1.9_f64.to_bits())),
+            ("acceptedCodeOfConduct", Tag::Double((-3.2_f64).to_bits())),
+        ]);
+        let raw_root = NamedTag {
+            name: JavaString::from(""),
+            tag: Tag::compound([("servers", Tag::List(vec![shown_entry, hidden_entry]))]),
+        };
+        let bytes = nbt::write_named(&raw_root, nbt::Limits::unlimited_heap()).unwrap();
+        assert!(nbt::read_named(&bytes, nbt::Limits::default()).is_err());
+        std::fs::write(&path, &bytes).unwrap();
+
+        let (shown, hidden) = load_all(&path);
+        assert_eq!(shown.len(), 1);
+        assert_eq!(shown[0].ip, "shown.example");
+        assert_eq!(shown[0].accept_textures, Some(false));
+        assert_eq!(shown[0].accepted_code_of_conduct, 0x2A);
+        assert_eq!(hidden.len(), 1);
+        assert_eq!(hidden[0].ip, "hidden.example");
+        assert_eq!(hidden[0].accepted_code_of_conduct, -4);
+
+        // Save once, then save a second time: both shown and hidden entries and their
+        // acceptedCodeOfConduct values must survive.
+        save(&path, &shown).unwrap();
+        let (shown2, hidden2) = load_all(&path);
+        assert_eq!(shown2, shown);
+        assert_eq!(hidden2, hidden);
+        save(&path, &shown2).unwrap();
+        let (shown3, hidden3) = load_all(&path);
+        assert_eq!(shown3, shown);
+        assert_eq!(hidden3, hidden);
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn save_single_accept_textures_updates_only_the_named_row() {
+        let address = "play.example.net:25565";
+        let mut shown = vec![
+            ServerEntry::new("Home", address),
+            ServerEntry::new("Work", address),
+        ];
+        let mut hidden = vec![ServerEntry::new("Direct", address)];
+        assert_eq!(
+            find(&shown, &hidden, address, Some("Work")).map(|e| e.name.as_str()),
+            Some("Work")
+        );
+        assert!(save_single_accept_textures(
+            &mut shown,
+            &mut hidden,
+            "Work",
+            address,
+            Some(true),
+        ));
+        assert_eq!(shown[0].accept_textures, None);
+        assert_eq!(shown[1].accept_textures, Some(true));
+        assert_eq!(hidden[0].accept_textures, None);
+        assert_eq!(
+            find(&shown, &hidden, address, None).map(|e| e.name.as_str()),
+            Some("Home")
+        );
     }
 }

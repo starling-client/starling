@@ -1,16 +1,13 @@
 # Frame identity: world
 
-A test fixture of `tools/test_frame_identity_parity.py` (sessions `world_pack` and `world_pack_timed`), not a look
-and not offered to players: a shader API 0.2 pack with the stages that draw the world around terrain, so a change to
-how they reach the pack is held to the same pixels. Each part changes the picture plainly:
+A test fixture of `tools/test_frame_identity_parity.py` (session `world_pack`), not a look and not offered to
+players: a shader pack in the `shaders/` format (GLSL 120, [shader-packs-spec.md](../../../../docs/cleanroom/shader-packs-spec.md))
+with the programs that draw the world around terrain, so a change to how they reach the pack is held to the same
+pixels. Each program changes the picture plainly:
 
-- `[sky]` tints vanilla's sky and draws its own clouds, stars and sun (`clouds`, `stars` and `sun` off), so a sky
-  that falls back to the renderer's shows. With GPU pass timing on (`world_pack_timed`) the sky draws in a pass of
-  its own.
-- `[weather]` turns rain and snow orange.
-- `[material]` draws water as half the water mirror (`reflection`) plus what lies behind it (`opaque_color` and
-  `opaque_depth`), and stores solid terrain's normal and sky light with `set_surface`.
-- `[[post]]` tints solid terrain by what `set_surface` stored (`surface_at`), and grades the whole picture, the
-  End's sky included, which no other stage reaches.
-
-Check it with `sunrise-shader check tools/fixtures/shaderpacks/frame_identity_world`.
+- `gbuffers_skybasic` tints the sky disc and draws the stars cyan and the void dark red, so a sky that falls back to
+  the renderer's shows;
+- `gbuffers_textured` (the sun and the moon) turns the sun red and the moon green;
+- `gbuffers_weather` turns rain and snow orange;
+- `gbuffers_terrain` lights terrain with the lightmap and tints translucent terrain blue;
+- `composite` grades the whole picture, the End's sky included, which no other program reaches.

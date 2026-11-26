@@ -5,8 +5,11 @@ from pathlib import Path
 import subprocess
 import tempfile
 
-import prebuilt_game
-import lab
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import prebuilt_game, lab
 
 
 def main():

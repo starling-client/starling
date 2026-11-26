@@ -103,7 +103,7 @@ fn local_swim_eligibility_replaces_entry_and_the_shallow_sprint_query() {
                     game.player = Some(player);
                     game.bind_local_player_residency();
                     let tick = |game: &mut Game<'_>| {
-                        game.tick_local_player(Vec::new(), 7).unwrap();
+                        game.tick_local_player(Vec::new(), 7, None).unwrap();
                     };
                     // Seed the previous eye sample without asking the entry predicate.
                     tick(game);

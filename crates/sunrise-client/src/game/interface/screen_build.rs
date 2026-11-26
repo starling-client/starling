@@ -22,32 +22,41 @@ use super::{Game, Screen};
 
 /// What the native hooks see of the screen showing (`observe_screen`), kept
 /// beside its build so one `ScreenState` holds both.
+#[derive(Clone)]
 pub(super) struct ObservedScreen {
     pub(super) id: &'static str,
     /// Not a `Screen` value: the title's own screen or an overlay drawn over
     /// gameplay (sign editor, book, dialog, prompt). `set_screen` never sees
     /// it open or close.
     pub(super) overlay: bool,
+    pub(super) mod_screen: Option<String>,
     pub(super) menu: Option<String>,
+    pub(super) menu_generation: Option<u64>,
+    /// Dialog, warning and waiting screens share one public id, not one receiver.
+    pub(super) dialog_key: Option<(bool, bool, Option<u64>)>,
     pub(super) title: Option<std::sync::Arc<mod_api::Text>>,
     pub(super) rect: [f32; 4],
+    /// Actual GUI-scaled screen dimensions (`width`, `height`), used to detect
+    /// viewport/GUI-scale resizes independently of a panel's `rect`.
+    pub(super) screen_size: [f32; 2],
     pub(super) slots: usize,
     pub(super) mouse: [f32; 2],
     pub(super) partial_tick: f32,
+    pub(super) regions: Vec<mod_api::ScreenRegion>,
 }
 
 impl ObservedScreen {
     pub(super) fn view(&self) -> ScreenView<'_> {
         ScreenView::from(mod_api::__private::built::ScreenView {
             id: self.id,
+            mod_screen: self.mod_screen.as_deref(),
             menu: self.menu.as_deref(),
             title: self.title.as_deref(),
             rect: self.rect,
             slots: self.slots,
             mouse: self.mouse,
             partial_tick: self.partial_tick,
-            // A snapshot for comparing frames: the frame's own view has them.
-            regions: &[],
+            regions: &self.regions,
         })
     }
 }
@@ -295,6 +304,16 @@ impl ScreenBuild {
     }
 }
 
+/// The last handled mouse press on a screen, for vanilla's 250ms double-click
+/// detection (`MouseHandler.LastClick`, `MouseHandler.java:101-106`).
+#[derive(Clone, Copy, Debug)]
+pub(super) struct LastScreenClick {
+    time: u64,
+    title_mode: Option<u64>,
+    pub(super) screen_instance: u64,
+    pub(super) button: i32,
+}
+
 /// What the game knows about the screen showing: the snapshot the native hooks
 /// see (`ObservedScreen`) and the build the screen's drawing will read.
 #[derive(Default)]
@@ -307,6 +326,20 @@ pub(super) struct ScreenState {
     /// frame painted them (`recipe_book_screen::sprite_bounds`); None when the
     /// book drew none.
     pub(super) drawn_book_tabs: std::cell::Cell<Option<[f32; 4]>>,
+    pub(super) widgets: super::screen_widgets::MountedScreenWidgets,
+    /// A mod's context menu over this screen (`ClientHost::open_context_menu`).
+    pub(super) context_menu: Option<super::context_menu::ContextMenu>,
+    /// Press-to-release ownership for mouse, keyboard and controller input consumed by a context menu.
+    pub(super) context_menu_input: super::context_menu::ContextMenuInput,
+    /// Monotonic identity of the currently open screen instance. Bumped on
+    /// every screen open, close, or replacement, and preserved across
+    /// same-instance resize/rebuild (`Screen.resize`/`rebuildWidgets`).
+    pub(super) screen_instance: u64,
+    /// Identity of the text field that last owned IME composition, so switching
+    /// directly between two fields clears the old field's preedit and area.
+    pub(super) ime_focus: Option<u64>,
+    /// Last handled screen mouse press for 250ms double-click detection.
+    pub(super) last_click: Option<LastScreenClick>,
     /// A mod's `ScreenOpening::Vanilla` answer is opening its screen: that
     /// change fires no screen hook again.
     pub(super) replacing: bool,
@@ -314,6 +347,54 @@ pub(super) struct ScreenState {
     /// (a mod's `Cancel`, `ModScreen` or `Vanilla`): a caller's grab after it
     /// leaves the screen that shows its pointer. Never set with no listener.
     pub(super) answered: std::cell::Cell<bool>,
+}
+
+impl ScreenState {
+    /// Advance the receiving screen's identity. Rebuilding children is not a replacement.
+    pub(super) fn bump_instance(&mut self) -> u64 {
+        self.screen_instance = self.screen_instance.wrapping_add(1);
+        self.last_click = None;
+        if self.context_menu.is_some() {
+            self.context_menu = None;
+            self.context_menu_input.clear_unowned_keys_if_idle();
+        }
+        self.screen_instance
+    }
+
+    /// Whether a press at `now` on `screen_instance` with `button` is a vanilla
+    /// double-click (within 250ms on the same screen instance and button,
+    /// `MouseHandler.java:101-106`).
+    pub(super) fn is_double_click(
+        &self,
+        now: u64,
+        screen_instance: u64,
+        title_mode: Option<u64>,
+        button: i32,
+    ) -> bool {
+        self.last_click.is_some_and(|last| {
+            now.checked_sub(last.time)
+                .is_some_and(|elapsed| elapsed < 250)
+                && last.title_mode == title_mode
+                && last.screen_instance == screen_instance
+                && last.button == button
+        })
+    }
+
+    /// Record a handled mouse press for subsequent double-click detection.
+    pub(super) fn record_click(
+        &mut self,
+        now: u64,
+        screen_instance: u64,
+        title_mode: Option<u64>,
+        button: i32,
+    ) {
+        self.last_click = Some(LastScreenClick {
+            time: now,
+            title_mode,
+            screen_instance,
+            button,
+        });
+    }
 }
 
 /// One frame's `RenderInventoryMobEffects` answer and what it was taken for.
@@ -329,13 +410,13 @@ struct EffectsMemo {
     answer: EffectsLayout,
 }
 
-/// One frame's `screen_room` answer and the screen it was taken for: the
+/// One frame's `screen_room` answer (`[left, right]`) and the screen it was taken for: the
 /// layout's inputs ask it more than once a frame, the hook once.
 #[derive(Clone, Copy, PartialEq)]
 struct RoomMemo {
     frame: u64,
     screen: Screen,
-    room: f32,
+    room: [f32; 2],
 }
 
 /// The open screen's build and what it was made from.
@@ -387,7 +468,7 @@ impl ScreenBuildState {
     }
 
     /// The room the mods asked this frame for `screen`, if they were asked.
-    pub(super) fn room_answer(&self, frame: u64, screen: Screen) -> Option<f32> {
+    pub(super) fn room_answer(&self, frame: u64, screen: Screen) -> Option<[f32; 2]> {
         self.room
             .get()
             .filter(|memo| memo.frame == frame && memo.screen == screen)
@@ -395,7 +476,7 @@ impl ScreenBuildState {
     }
 
     /// Keeps this frame's room for the layout's other inputs in the same frame.
-    pub(super) fn keep_room_answer(&self, frame: u64, screen: Screen, room: f32) {
+    pub(super) fn keep_room_answer(&self, frame: u64, screen: Screen, room: [f32; 2]) {
         self.room.set(Some(RoomMemo {
             frame,
             screen,
@@ -494,11 +575,8 @@ impl Game<'_> {
         self.release_screen_mappings();
     }
 
-    /// `Screen.init`/`Screen.resize` for the game's open screen: builds it
-    /// when it opens, remakes it when the window or the GUI scale changed it,
-    /// and drops it when it closes. A frame that changes neither builds
-    /// nothing, so `observe_screen` calls it every frame.
-    pub(super) fn build_screen(&mut self) {
+    /// Framebuffer size and GUI projection, including before the renderer is initialized.
+    pub(super) fn gui_frame_now(&self) -> ([u32; 2], GuiSize) {
         let framebuffer = self.renderer.as_ref().map_or_else(
             || {
                 self.window.as_ref().map_or([1280, 720], |window| {
@@ -508,7 +586,16 @@ impl Game<'_> {
             },
             |renderer| [renderer.config.width, renderer.config.height],
         );
-        self.build_screen_at(framebuffer);
+        let inputs = self.settings.gui_scale_inputs();
+        (
+            framebuffer,
+            GuiSize::new(framebuffer, inputs.requested, inputs.unicode),
+        )
+    }
+
+    /// `Screen.init`/`Screen.resize` builds the open screen, and drops it when it closes.
+    pub(super) fn build_screen(&mut self) {
+        self.build_screen_at(self.gui_frame_now().0);
     }
 
     fn build_screen_at(&mut self, framebuffer: [u32; 2]) {
@@ -1504,6 +1591,90 @@ mod tests {
         }
     }
 
+    /// Room on the left moves the window right, clears the recipe book's selected tab or
+    /// moves nothing, and sets off room on the right; an answer that isn't room on one side
+    /// leaves the other side's. In its own process: the game it opens publishes process-wide
+    /// tables.
+    #[test]
+    #[ignore = "daily"]
+    fn room_on_the_left_moves_the_window_right_and_clears_the_book() {
+        crate::game::in_own_process(
+            "game::screen_build::tests::room_on_the_left_moves_the_window_right_and_clears_the_book",
+            || {
+                use mod_api::{ClientHost, Hooks, ModEntry, ScreenRoomEvent};
+                use std::sync::{
+                    Arc,
+                    atomic::{AtomicU32, Ordering},
+                };
+                use sunrise_client::{hud::HudBatch, recipe_book::BookType};
+
+                struct Panels {
+                    left: Arc<AtomicU32>,
+                    right: Arc<AtomicU32>,
+                }
+                #[mod_api::__subscriptions]
+                impl Hooks for Panels {
+                    fn screen_room(&self, _: &dyn ClientHost, event: &mut ScreenRoomEvent<'_>) {
+                        // Assigned, not `max`ed, so the answers that aren't room reach the game.
+                        event.left = f32::from_bits(self.left.load(Ordering::Relaxed));
+                        event.right = f32::from_bits(self.right.load(Ordering::Relaxed));
+                    }
+                }
+                let left = Arc::new(AtomicU32::new(0));
+                let right = Arc::new(AtomicU32::new(0));
+                let panels = Panels {
+                    left: left.clone(),
+                    right: right.clone(),
+                };
+                let mods: mod_api::Mods = vec![ModEntry::new("panels", Box::new(panels))].into();
+                mod_platform::testing::with_mods(mods, || {
+                    crate::game::native_entity_refs::tests::with_client_game(|game| {
+                        game.screen = Screen::Inventory;
+                        game.container = None;
+                        game.craft_size = 2;
+                        game.settings.gui_scale = 1;
+                        let batch = HudBatch::new([427, 240], game.settings.gui_scale_inputs());
+                        // (open book, left, right) -> the window's and the book's left edges.
+                        // Closed, the window sits at 125; open, at 202 with the book at 54 and
+                        // its selected tab at 22.
+                        for (open, l, r, x, book_x) in [
+                            // 74 right: 51 spare left of the panel's room.
+                            (false, 149.0, 0.0, 199.0, None),
+                            // 10 right: the tab stays 12 clear of the screen's edge.
+                            (true, 20.0, 0.0, 212.0, Some(64.0)),
+                            // The tab would leave the screen: nothing moves.
+                            (true, 149.0, 0.0, 202.0, Some(54.0)),
+                            // 50 right less 74 left: 1 spare on each side.
+                            (false, 100.0, 149.0, 101.0, None),
+                            // No room on one side leaves the other side's answer.
+                            (false, f32::NAN, 149.0, 51.0, None),
+                            (false, f32::INFINITY, 149.0, 51.0, None),
+                            (false, 149.0, -20.0, 199.0, None),
+                            (false, 149.0, f32::NEG_INFINITY, 199.0, None),
+                        ] {
+                            game.frames += 1;
+                            game.level.recipe_book.open[BookType::Crafting.index()] = open;
+                            left.store(f32::to_bits(l), Ordering::Relaxed);
+                            right.store(f32::to_bits(r), Ordering::Relaxed);
+                            let layout = game.container_layout(&batch);
+                            assert_eq!(layout.origin, (x, 37.0), "{open} {l} {r}");
+                            assert_eq!(layout.book.map(|book| book[0]), book_x);
+                            assert_eq!(
+                                layout.slots.iter().find(|(id, _)| *id == 0).unwrap().1,
+                                [x + 7.0, 178.0, 18.0, 18.0]
+                            );
+                            assert_eq!(
+                                game.screen_view(&batch, Screen::Inventory).rect,
+                                [x, 37.0, 176.0, 166.0]
+                            );
+                            assert_eq!(game.slot_at(&batch, x + 8.0, 179.0), Some(0));
+                        }
+                    });
+                });
+            },
+        );
+    }
+
     /// Each `ScreenView::regions` kind where vanilla 26.3 draws it, from its
     /// constants, as the hooks' view of the screen carries it: the effects
     /// beside the inventory, every creative tab, the recipe book's panel and
@@ -1583,8 +1754,7 @@ mod tests {
                 // The inventory and creative screen belong to a client in a world. An
                 // in-memory connection supplies the client registry holder for creative tabs.
                 let _server = crate::game::native_client_session::tests::logged_client(game);
-                game.native_lifecycle
-                    .begin_open(mod_api::Authority::RemoteClient);
+                game.native_lifecycle.begin_open(None);
                 game.player = Some(
                     sunrise_client::motion::PlayerMotion::new(
                         game.motion,
@@ -1658,7 +1828,7 @@ mod tests {
                 // Vanilla's painted 26 x 32 tabs are in two rows. The player
                 // can use the operator utilities, including the tab in column five.
                 game.potions.effects.list.clear();
-                game.set_mode_id(1);
+                game.set_local_mode(sunrise_client::command::args::GameMode::Creative);
                 game.ui.registries.permission = 2;
                 game.settings.operator_items_tab = true;
                 game.screen = Screen::Creative;
@@ -1678,7 +1848,7 @@ mod tests {
                 assert_eq!(tabs, expected);
 
                 // AnvilScreen does not paint the inventory's EffectsInInventory panel.
-                game.set_mode_id(0);
+                game.set_local_mode(sunrise_client::command::args::GameMode::Survival);
                 game.potions.effects.list = vec![sunrise_client::effects::EffectInstance::new(
                     "speed", 200, 0,
                 )];

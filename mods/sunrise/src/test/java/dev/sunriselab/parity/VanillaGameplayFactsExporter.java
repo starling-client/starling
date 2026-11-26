@@ -11,6 +11,7 @@ import net.minecraft.server.Bootstrap;
 import net.minecraft.sounds.SoundEvent;
 import net.minecraft.world.level.EmptyBlockGetter;
 import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.SoundType;
 import net.minecraft.world.phys.shapes.BooleanOp;
 import net.minecraft.world.phys.shapes.Shapes;
 
@@ -82,6 +83,13 @@ public final class VanillaGameplayFactsExporter {
             o.addProperty("item", BuiltInRegistries.ITEM.getKey(block.asItem()).toString());
             var sound = state.getSoundType();
             var sounds = new JsonObject();
+            // AbstractHorse.isWoodSoundType compares these constants by identity, not their events.
+            if (sound == SoundType.WOOD) sounds.addProperty("identity", "wood");
+            else if (sound == SoundType.NETHER_WOOD) sounds.addProperty("identity", "nether_wood");
+            else if (sound == SoundType.STEM) sounds.addProperty("identity", "stem");
+            else if (sound == SoundType.CHERRY_WOOD) sounds.addProperty("identity", "cherry_wood");
+            else if (sound == SoundType.BAMBOO_WOOD) sounds.addProperty("identity", "bamboo_wood");
+            else sounds.addProperty("identity", "other");
             sounds.addProperty("volume", sound.getVolume());
             sounds.addProperty("pitch", sound.getPitch());
             sounds.add("break", sound(sound.getBreakSound()));

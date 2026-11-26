@@ -216,7 +216,8 @@ fn reload_command_prepares_world_before_applying_listeners_and_preserves_tables_
                 game.load_world(request(&root)).unwrap();
                 let class =
                     mod_api::__private::tag_key(&Identifier::parse("sunrise:class/fence").unwrap())
-                        .unwrap();
+                        .unwrap()
+                        .typed();
                 let fence = mod_api::__private::block_key("minecraft:oak_fence").unwrap();
                 assert!(matches!(mod_api::Tags::blocks(game, class),
                     mod_api::TagMembers::Members(blocks) if blocks.contains(&fence)));
@@ -224,7 +225,7 @@ fn reload_command_prepares_world_before_applying_listeners_and_preserves_tables_
                     game.items()
                         .block_in_tag("sunrise:class/fence", "minecraft:oak_fence")
                 );
-                assert_eq!(game.block_in_tag(fence, "sunrise:class/fence"), Some(true));
+                assert_eq!(fence.is_in_tag(&*game, class), Some(true));
                 state.store(0, Ordering::SeqCst);
                 assert!(game.run_command("reload"));
                 assert_eq!(state.load(Ordering::SeqCst), 1);
@@ -235,7 +236,6 @@ fn reload_command_prepares_world_before_applying_listeners_and_preserves_tables_
                 );
                 assert!(matches!(mod_api::Tags::blocks(game, class),
                     mod_api::TagMembers::Members(blocks) if blocks.contains(&fence)));
-                let old_bound = crate::game::native_world_read::installed_block_tag_snapshot();
                 let old_order = game.items().block_tag_order.clone();
                 let old_sets = game.items().block_tags.clone();
                 let old = game.world_tables.as_ref().map(|tables| tables as *const _);
@@ -254,12 +254,17 @@ fn reload_command_prepares_world_before_applying_listeners_and_preserves_tables_
                     game.items().block_tags["reload_order:derived"]
                         .contains("minecraft:diamond_block")
                 );
-                assert_eq!(
-                    crate::game::native_world_read::installed_block_tag_snapshot(),
-                    old_bound
+                // The second install replaced the installed parts and their keys, so ask by name:
+                // the world's tags are the ones the refused reload left in place.
+                assert!(
+                    game.items()
+                        .block_in_tag("sunrise:class/fence", "minecraft:oak_fence")
                 );
-                assert_eq!(game.items().block_tag_order, old_order);
-                assert_eq!(game.items().block_tags, old_sets);
+                let selected = game
+                    .native_tag_items()
+                    .expect("selected world tag snapshot");
+                assert_eq!(selected.block_tag_order, old_order);
+                assert_eq!(selected.block_tags, old_sets);
                 let _ = std::fs::remove_dir_all(root);
             });
         },
@@ -271,131 +276,141 @@ fn reload_command_prepares_world_before_applying_listeners_and_preserves_tables_
 #[test]
 #[ignore = "daily"]
 fn reload_command_runs_listeners_on_both_sides_of_function_library() {
-    use mod_api::{
-        Command, CommandArgumentError, CommandArgumentKind, CommandArgumentType, CommandSender,
-        CommandSuggestion, RegisterCommandsEvent, Registrar, RegistrationContext, ServerHost,
-        VanillaServerListeners,
-    };
+    crate::game::in_own_process(
+        "game::server_reload::tests::reload_command_runs_listeners_on_both_sides_of_function_library",
+        || {
+            use mod_api::{
+                Command, CommandArgumentError, CommandArgumentKind, CommandArgumentType,
+                RegisterCommandsEvent, Registrar, RegistrationContext, ServerHost, Suggestion,
+                SuggestionRequest, VanillaServerListeners,
+            };
 
-    struct Listener {
-        trace: Arc<Mutex<Vec<String>>>,
-        path: std::path::PathBuf,
-        argument: &'static str,
-        apply: &'static str,
-    }
-    impl ServerReloadListener for Listener {
-        fn prepare(
-            &self,
-            _: &ServerReloadContext,
-        ) -> Result<Box<dyn FnOnce() + Send + 'static>, ReloadResourceError> {
-            write(&self.path, format!("reload_probe {}", self.argument));
-            let trace = self.trace.clone();
-            let apply = self.apply;
-            Ok(Box::new(move || trace.lock().unwrap().push(apply.into())))
-        }
-    }
-    struct Argument(Arc<Mutex<Vec<String>>>);
-    impl CommandArgumentType for Argument {
-        fn kind(&self) -> CommandArgumentKind {
-            CommandArgumentKind::Word
-        }
-        fn parse(&self, input: &str) -> Result<String, CommandArgumentError> {
-            self.0.lock().unwrap().push(format!("parse {input}"));
-            Ok(input.into())
-        }
-        fn suggest(&self, _: Option<&CommandSender>, _: &str) -> Vec<CommandSuggestion> {
-            Vec::new()
-        }
-    }
-    struct Probe {
-        trace: Arc<Mutex<Vec<String>>>,
-        path: std::path::PathBuf,
-    }
-    #[mod_api::__subscriptions]
-    impl Hooks for Probe {
-        fn register(&self, registrar: &mut dyn Registrar, _: &RegistrationContext) {
-            registrar.register_command_argument("argument", Argument(self.trace.clone()));
-        }
-        fn register_commands(&self, _: &mut dyn ServerHost, event: &mut RegisterCommandsEvent<'_>) {
-            event.commands.push(
-                Command::new("reload_probe <value:reload_probe:argument>")
-                    .executes(|_, _, _| Some(1)),
-            );
-        }
-        fn add_server_reload_listeners(
-            &self,
-            _: &dyn mod_api::ReloadContext,
-            event: &mut AddServerReloadListenersEvent<'_>,
-        ) {
-            let id = |name| Identifier::parse(name).unwrap();
-            for (name, argument, apply) in [
-                ("reload_probe:before", "chosen", "apply before"),
-                ("reload_probe:after", "too_late", "apply after"),
-            ] {
-                event
-                    .listeners
-                    .add_listener(
-                        id(name),
-                        FileToIdConverter::json("probe").unwrap(),
-                        Arc::new(Listener {
-                            trace: self.trace.clone(),
-                            path: self.path.clone(),
-                            argument,
-                            apply,
-                        }),
-                    )
-                    .unwrap();
+            struct Listener {
+                trace: Arc<Mutex<Vec<String>>>,
+                path: std::path::PathBuf,
+                argument: &'static str,
+                apply: &'static str,
             }
-            event
-                .listeners
-                .add_dependency(
-                    id("reload_probe:before"),
-                    VanillaServerListeners::functions(),
-                )
-                .unwrap();
-            event
-                .listeners
-                .add_dependency(
-                    VanillaServerListeners::functions(),
-                    id("reload_probe:after"),
-                )
-                .unwrap();
-        }
-    }
-    let scratch = tempfile::tempdir().unwrap();
-    let path = scratch
-        .path()
-        .join("datapacks/anchor/data/reload_probe/function/probe.mcfunction");
-    write(
-        &scratch.path().join("datapacks/anchor/pack.mcmeta"),
-        r#"{"pack":{"description":"anchor"}}"#,
-    );
-    write(
-        &scratch.path().join("datapacks.json"),
-        r#"{"enabled":["file/anchor"],"disabled":[]}"#,
-    );
-    write(&path, "reload_probe too_early");
-    let trace = Arc::new(Mutex::new(Vec::new()));
-    let mods = vec![ModEntry::new(
-        "reload_probe",
-        Box::new(Probe {
-            trace: trace.clone(),
-            path,
-        }),
-    )]
-    .into();
-    mod_platform::testing::with_mods(mods, || {
-        with_game(|game| {
-            game.load_world(request(scratch.path())).unwrap();
-            trace.lock().unwrap().clear();
-            assert!(game.run_command("reload"));
-            assert_eq!(
-                *trace.lock().unwrap(),
-                ["apply before", "parse chosen", "apply after"]
+            impl ServerReloadListener for Listener {
+                fn prepare(
+                    &self,
+                    _: &ServerReloadContext,
+                ) -> Result<Box<dyn FnOnce() + Send + 'static>, ReloadResourceError>
+                {
+                    write(&self.path, format!("reload_probe {}", self.argument));
+                    let trace = self.trace.clone();
+                    let apply = self.apply;
+                    Ok(Box::new(move || trace.lock().unwrap().push(apply.into())))
+                }
+            }
+            struct Argument(Arc<Mutex<Vec<String>>>);
+            impl CommandArgumentType for Argument {
+                fn kind(&self) -> CommandArgumentKind {
+                    CommandArgumentKind::Word
+                }
+                fn parse(&self, input: &str) -> Result<String, CommandArgumentError> {
+                    self.0.lock().unwrap().push(format!("parse {input}"));
+                    Ok(input.into())
+                }
+                fn suggest(&self, _: &SuggestionRequest) -> Vec<Suggestion> {
+                    Vec::new()
+                }
+            }
+            struct Probe {
+                trace: Arc<Mutex<Vec<String>>>,
+                path: std::path::PathBuf,
+            }
+            #[mod_api::__subscriptions]
+            impl Hooks for Probe {
+                fn register(&self, registrar: &mut dyn Registrar, _: &RegistrationContext) {
+                    registrar.register_command_argument("argument", Argument(self.trace.clone()));
+                }
+                fn register_commands(
+                    &self,
+                    _: &mut dyn ServerHost,
+                    event: &mut RegisterCommandsEvent<'_>,
+                ) {
+                    event.commands.push(
+                        Command::new("reload_probe <value:reload_probe:argument>")
+                            .executes(|_, _, _| Ok(1)),
+                    );
+                }
+                fn add_server_reload_listeners(
+                    &self,
+                    _: &dyn mod_api::ReloadContext,
+                    event: &mut AddServerReloadListenersEvent<'_>,
+                ) {
+                    let id = |name| Identifier::parse(name).unwrap();
+                    for (name, argument, apply) in [
+                        ("reload_probe:before", "chosen", "apply before"),
+                        ("reload_probe:after", "too_late", "apply after"),
+                    ] {
+                        event
+                            .listeners
+                            .add_listener(
+                                id(name),
+                                FileToIdConverter::json("probe").unwrap(),
+                                Arc::new(Listener {
+                                    trace: self.trace.clone(),
+                                    path: self.path.clone(),
+                                    argument,
+                                    apply,
+                                }),
+                            )
+                            .unwrap();
+                    }
+                    event
+                        .listeners
+                        .add_dependency(
+                            id("reload_probe:before"),
+                            VanillaServerListeners::functions(),
+                        )
+                        .unwrap();
+                    event
+                        .listeners
+                        .add_dependency(
+                            VanillaServerListeners::functions(),
+                            id("reload_probe:after"),
+                        )
+                        .unwrap();
+                }
+            }
+            let scratch = tempfile::tempdir().unwrap();
+            let path = scratch
+                .path()
+                .join("datapacks/anchor/data/reload_probe/function/probe.mcfunction");
+            write(
+                &scratch.path().join("datapacks/anchor/pack.mcmeta"),
+                r#"{"pack":{"description":"anchor"}}"#,
             );
-            assert!(game.fns.store.functions.contains_key("reload_probe:probe"));
-        });
-    });
+            write(
+                &scratch.path().join("datapacks.json"),
+                r#"{"enabled":["file/anchor"],"disabled":[]}"#,
+            );
+            write(&path, "reload_probe too_early");
+            let trace = Arc::new(Mutex::new(Vec::new()));
+            let mods = vec![ModEntry::new(
+                "reload_probe",
+                Box::new(Probe {
+                    trace: trace.clone(),
+                    path,
+                }),
+            )]
+            .into();
+            mod_platform::testing::with_mods(mods, || {
+                with_game(|game| {
+                    game.load_world(request(scratch.path())).unwrap();
+                    trace.lock().unwrap().clear();
+                    assert!(game.run_command("reload"));
+                    assert_eq!(
+                        *trace.lock().unwrap(),
+                        ["apply before", "parse chosen", "apply after"]
+                    );
+                    assert!(game.fns.store.functions.contains_key("reload_probe:probe"));
+                });
+            });
+        },
+    );
 }
 
 fn request(root: &Path) -> WorldRequest {
@@ -439,7 +454,8 @@ fn dedicated_world_open_publishes_crafting_item_tags() {
             let tag = mod_api::__private::tag_key(
                 &mod_api::Identifier::parse("test:crafting_inputs").unwrap(),
             )
-            .unwrap();
+            .unwrap()
+            .typed();
             let stick = mod_api::__private::item_key("minecraft:stick").unwrap();
             let dirt = mod_api::__private::item_key("minecraft:dirt").unwrap();
             let reader = LoopReader(&game.loop_context);
@@ -1151,7 +1167,8 @@ fn server_completion_reads_published_data_without_world_access_on_first_open() {
     .into();
     mod_platform::testing::with_mods(mods, || {
         with_game(|game| {
-            let root = std::env::current_dir().unwrap().join("published-world");
+            let scratch = tempfile::tempdir().unwrap();
+            let root = scratch.path().join("published-world");
             game.load_world(request(&root)).unwrap();
             game.native_tags_updated(TagsUpdateCause::ServerDataLoad { reload: true });
             assert_eq!(
@@ -1328,3 +1345,5 @@ mod villager_secondary_reload_tests;
 
 #[path = "datapack_publication_tests.rs"]
 mod datapack_publication_tests;
+#[path = "refused_entry_tests.rs"]
+mod refused_entry_tests;

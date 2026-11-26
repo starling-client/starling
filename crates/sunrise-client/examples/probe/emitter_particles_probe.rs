@@ -68,9 +68,9 @@ fn tracking_case(
             let options = ParticleOptions::simple(particle);
             let body = tracking_body(frame);
             if particle == ParticleType::TotemOfUndying {
-                engine.tracking_emitter_for(options, target, body, 30);
+                engine.tracking_emitter_for(options, target, body, 30, None);
             } else {
-                engine.tracking_emitter(options, target, body);
+                engine.tracking_emitter(options, target, body, None);
             }
         } else {
             engine.tick_tracking(level, |id| {

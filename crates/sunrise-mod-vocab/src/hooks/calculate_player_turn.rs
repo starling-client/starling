@@ -4,8 +4,9 @@ pub trait Hooks {
     /// The mouse sensitivity and cinematic camera option a grabbed player's
     /// mouse turn reads this frame (`MouseHandler.turnPlayer`). Change either
     /// for this turn only; the options are unchanged. Client-side. This shapes how far the
-    /// mouse turns the view; `ClientHost::set_local_rotation` sets the view directly, and the
-    /// two meet in the same angles the tick's move packet sends.
+    /// mouse turns the view; `player_turn` adjusts the relative `Entity.turn` delta across all
+    /// look devices (mouse, controller and keyboard), and `ClientHost::set_local_rotation`
+    /// sets the view directly. All three meet in the same angles the tick's move packet sends.
     #[hook(
         receiver = "read",
         dispatch = "flat",

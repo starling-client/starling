@@ -12,7 +12,7 @@ impl Game<'_> {
         stack: ItemStack,
         position: [f64; 3],
         velocity: Option<[f64; 3]>,
-        pickup_delay: u32,
+        pickup_delay: i32,
         random: Option<spill::ItemRandom>,
     ) -> [f64; 3] {
         let random = random.unwrap_or_else(|| spill::prepare_item_random(velocity));
@@ -25,7 +25,7 @@ impl Game<'_> {
             attachment_lifetime: Default::default(),
             fall_distance: 0.0,
             rotation: [yaw, 0.0],
-            pickup_delay: i64::from(pickup_delay),
+            pickup_delay,
             random: random.own.into(),
             ..ItemEntity::new(
                 self.next_entity,

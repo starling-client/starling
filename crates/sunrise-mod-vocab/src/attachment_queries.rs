@@ -3,19 +3,59 @@
 #[path = "attachment_queries/tests.rs"]
 mod tests;
 use crate::*;
+/// Engine-only proof of a live typed key for the requested capture bucket.
+// hidden: the engine builds it from a checked key inside `AttachmentQueries`; mods never name it.
+// exhaustive: its fields are private and `new` is crate-private.
+#[doc(hidden)]
+// no wire: a borrowed proof created only from a validated live key.
+pub struct AttachmentCaptureKey<'a> {
+    namespace: &'a str,
+    name: &'a str,
+}
+
+impl<'a> AttachmentCaptureKey<'a> {
+    pub(crate) fn new<T>(
+        checked: &'a sunrise_mod_runtime::attachments::CheckedAttachmentType<T>,
+    ) -> Self
+    where
+        T: Send + Sync + 'static,
+    {
+        Self {
+            namespace: checked.namespace(),
+            name: checked.name(),
+        }
+    }
+
+    pub fn id(&self) -> (&str, &str) {
+        (self.namespace, self.name)
+    }
+}
+
 /// Read queries available on either host side.
 pub trait AttachmentQueries: Host {
+    /// Capture an unbound batch with a live key. The batch can later be bound
+    /// to that attachment's currently issued key; the captured membership is unchanged.
+    fn capture<T: Send + Sync + 'static>(
+        &self,
+        key: &AttachmentKey<T>,
+    ) -> Result<AttachmentBatch, AttachmentError> {
+        self.attachment_query(&AttachmentCaptureKey::new(key.live()?))
+    }
+
     /// Capture a SNAPSHOT of membership and value bindings in the current dimension.
     /// Later changes appear only in fresh queries. This is a residency view: an
     /// entity removed but not yet swept may still appear; stale writes fail.
     /// Construction never clones or decodes values; iteration decodes lazily.
     /// Use this snapshot in process; it is not an attachment save or sync record.
     /// A capture inside a transaction is usable only while that frame is current.
+    /// Refuses keys from an earlier installation with [`AttachmentError::StaleKey`].
     fn query<'key, T: Send + Sync + 'static>(
         &self,
-        key: &'key AttachmentType<T>,
+        key: &'key AttachmentKey<T>,
     ) -> Result<AttachmentQuery<'key, T>, AttachmentError> {
-        self.attachment_query(key.namespace, key.name)?.query(key)
+        let (checked, epoch) = key.live_with_epoch()?;
+        self.attachment_query(&AttachmentCaptureKey::new(checked))?
+            .query_checked(checked, epoch)
     }
 }
 impl<H: Host + ?Sized> AttachmentQueries for H {}
@@ -26,9 +66,10 @@ pub trait AttachmentQueriesMut: ServerHost {
     /// Set/remove join the caller's journal; no implicit transaction or Drop commit
     /// occurs. Later changes require a fresh query, and stale writes fail.
     /// A capture inside a transaction is usable only while that frame is current.
+    /// Refuses keys from an earlier installation with [`AttachmentError::StaleKey`].
     fn query_mut<'key, T: Clone + Send + Sync + 'static>(
         &mut self,
-        key: &'key AttachmentType<T>,
+        key: &'key AttachmentKey<T>,
     ) -> Result<AttachmentQueryMut<'key, T>, AttachmentError> {
         Ok(AttachmentQueryMut {
             query: self.query(key)?,
@@ -43,7 +84,7 @@ impl<H: ServerHost + ?Sized> AttachmentQueriesMut for H {}
 #[non_exhaustive]
 pub struct AttachmentQueryMut<'key, T: 'static> {
     query: AttachmentQuery<'key, T>,
-    key: &'key AttachmentType<T>,
+    key: &'key AttachmentKey<T>,
 }
 impl<T: Clone + Send + Sync + 'static> AttachmentQueryMut<'_, T> {
     /// Create a fallible cursor over writable rows, decoding saved entries only when visited.
@@ -60,7 +101,7 @@ impl<T: Clone + Send + Sync + 'static> AttachmentQueryMut<'_, T> {
 #[non_exhaustive]
 pub struct AttachmentIterMut<'q, T: 'static> {
     rows: AttachmentIter<'q, T>,
-    key: &'q AttachmentType<T>,
+    key: &'q AttachmentKey<T>,
 }
 
 impl<'q, T: Clone + Send + Sync + 'static> AttachmentIterMut<'q, T> {
@@ -80,7 +121,7 @@ impl<'q, T: Clone + Send + Sync + 'static> AttachmentIterMut<'q, T> {
 #[non_exhaustive]
 pub struct AttachmentRowMut<'q, T: 'static> {
     row: AttachmentRow<'q, T>,
-    key: &'q AttachmentType<T>,
+    key: &'q AttachmentKey<T>,
 }
 fn write_error(error: AttachmentError) -> AttachmentRowError {
     match error {
@@ -121,7 +162,8 @@ impl<T: Clone + Send + Sync + 'static> AttachmentRowMut<'_, T> {
     pub fn set(&self, host: &mut dyn ServerHost, value: T) -> Result<(), AttachmentRowError> {
         let holder = self.holder_for_write(host)?;
         self.key
-            .set(host.attachments(), holder, value)
+            .live()
+            .and_then(|checked| checked.set(host.attachments(), holder, value))
             .map_err(write_error)
     }
     /// Remove through the ordinary write path, with the same scope, phase and
@@ -129,7 +171,8 @@ impl<T: Clone + Send + Sync + 'static> AttachmentRowMut<'_, T> {
     pub fn remove(&self, host: &mut dyn ServerHost) -> Result<Option<T>, AttachmentRowError> {
         let holder = self.holder_for_write(host)?;
         self.key
-            .remove(host.attachments(), holder)
+            .live()
+            .and_then(|checked| checked.remove(host.attachments(), holder))
             .map_err(write_error)
     }
 }

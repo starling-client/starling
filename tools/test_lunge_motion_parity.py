@@ -10,10 +10,11 @@ y keeps the jump because handlePlayerPositionChange makes the server's copy jump
 """
 import sys
 
-try:
-    from . import test_locator_bar_parity as locator
-except ImportError:
-    import test_locator_bar_parity as locator
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_locator_bar_parity as locator
 
 NAME = 'lunge-motion-parity'
 # server_dir and generate_world write these server.properties.

@@ -5,8 +5,8 @@
 use crate::{Identifier, RegisterParticleGroupsEvent};
 
 /// The definition built by a factory registered through [`RegisterParticleGroupsEvent::register`].
-/// The engine keeps each group's live particles and 16384-particle limit separate, and draws
-/// the groups after the built-in particles, in registration order.
+/// Each group admits its own live particles under vanilla's `ParticleGroup.add` rules.
+/// Groups draw after the built-in particles, in registration order.
 #[derive(Clone, Debug, PartialEq, Eq)]
 // exhaustive: a mod builds it with a literal
 // no wire: the factory builds this definition in-process for the particle engine.
@@ -14,9 +14,9 @@ pub struct ParticleGroup {
     /// How the group's particles blend, whatever their own sprites hold.
     pub blend: ParticleBlend,
     /// The namespaced particle types that draw in this group, such as `mymod:spark` for
-    /// `assets/mymod/particles/spark.json`. Each needs a sprite set, with or without a
-    /// `register_particle_providers` provider. Types already claimed by an earlier group or
-    /// without a matching sprite set are logged and left out.
+    /// `assets/mymod/particles/spark.json`. Each needs a sprite set, whether it has a bound
+    /// native provider or uses declarative motion. Types already claimed by an earlier group
+    /// or without a matching sprite set are logged and left out.
     pub particles: Vec<String>,
 }
 
@@ -51,8 +51,11 @@ pub struct ParticleGroupRegistration {
 
 /// How a [`ParticleGroup`]'s particles blend: the layer they draw on, which decides their order
 /// against the translucent terrain (`SingleQuadParticle.Layer`).
+///
+/// Vanilla's `SingleQuadParticle.Layer` is a record that can carry any render pipeline; `Additive`
+/// is the one mod blend beyond vanilla's two quad layers so far.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-// exhaustive: vanilla's two quad layers, matched without a wildcard
+#[non_exhaustive]
 #[derive(sunrise_mod_api_macros::Wire)]
 pub enum ParticleBlend {
     /// `SingleQuadParticle.Layer.OPAQUE`: drawn with the terrain, writing depth; the sprite's
@@ -61,4 +64,7 @@ pub enum ParticleBlend {
     /// `SingleQuadParticle.Layer.TRANSLUCENT`: drawn after the translucent terrain, blended by
     /// each particle's alpha.
     Translucent,
+    /// Drawn after the translucent particle layer, depth test on and depth write off, blended
+    /// additively (src alpha, one; matching `BlendFunction.LIGHTNING`).
+    Additive,
 }

@@ -1,0 +1,1 @@
+sunrise-native-build registry_compile::tests::a_build_script_watching_a_restaged_folder_stays_fresh lib daily child-process

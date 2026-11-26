@@ -14,16 +14,25 @@ impl Game<'_> {
     /// `PlayerList.getProfilePermissions`): an op's level, the
     /// single-player owner's 4 with commands allowed. A displaced connected
     /// player keeps their permission level even while their body is unavailable.
+    /// On a client, the local player's level the server last sent; None for another player.
     /// None for a stale or unavailable player.
     pub(super) fn player_permission_level(&self, player: PlayerRef) -> Option<u8> {
+        if self.remote.is_some() {
+            // `LocalPlayer.permissionLevel`, from the server's entity events 24 to 28.
+            return (self.local_player()? == player).then_some(self.ui.registries.permission);
+        }
         let read = self
             .player_handle_read(player)
             .or_else(|| self.online_player_record(player).map(PlayerRead::Guest))?;
         Some(match read {
             PlayerRead::Guest(g) => g.permission,
-            PlayerRead::Acting { .. } if self.lan_acting.is_some() => self.ui.registries.permission,
-            PlayerRead::Acting { .. } if self.allow_commands() => 4,
-            PlayerRead::Acting { .. } => 0,
+            // The command being executed keeps its source snapshot in `ui.registries`.
+            // A live handle instead sees the same permission as the outgoing tree.
+            PlayerRead::Acting { .. } => match self.lan_acting {
+                Some(conn) => self.command_guest(conn)?.permission,
+                None if self.allow_commands() => 4,
+                None => 0,
+            },
         })
     }
     /// `Player.hasInfiniteMaterials`: the `instabuild` ability, which
@@ -83,7 +92,12 @@ impl Game<'_> {
         self.player_handle_read(other)?;
         let attacker = self.native_target_team(self.native_entity_target(player.entity())?)?;
         let victim = self.native_target_team(self.native_entity_target(other.entity())?)?;
-        Some(self.player_may_harm(victim, attacker))
+        Some(self.player_may_harm(
+            player.entity().id() as i32,
+            other.entity().id() as i32,
+            attacker,
+            victim,
+        ))
     }
 }
 

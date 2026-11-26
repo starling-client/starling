@@ -1,5 +1,4 @@
 //! The `player_kicked` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0294
 
 pub trait Hooks {
     /// A network or fake guest was kicked, after the hub recorded the rendered `reason`. The guest's state is

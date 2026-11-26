@@ -21,10 +21,9 @@ impl Game<'_> {
         let mut sets = HashMap::<String, HashSet<String>>::new();
         if let Some(server) = &self.recipe_ui.server_properties.sets {
             if let Some(remote) = &self.remote {
-                for (key, ids) in server
-                    .iter()
-                    .filter(|(key, _)| !key.starts_with("minecraft:"))
-                {
+                for (key, ids) in server.iter().filter(|(key, _)| {
+                    sunrise_client::lan::recipes::vanilla_property_set(key).is_none()
+                }) {
                     let items = ids
                         .iter()
                         .filter_map(|id| remote.builtin.get("minecraft:item")?.name(*id))

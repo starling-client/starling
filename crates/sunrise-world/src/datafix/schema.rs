@@ -76,18 +76,57 @@ pub const fn key(version: u32, sub: u32) -> Key {
     version * 10 + sub
 }
 
+/// Most fix steps are infallible; legacy table-backed steps can stop the same walk.
+pub(super) trait WalkStep {
+    fn result(self) -> super::tables::Result;
+}
+
+impl WalkStep for () {
+    fn result(self) -> super::tables::Result {
+        Ok(())
+    }
+}
+
+impl WalkStep for super::tables::Result {
+    fn result(self) -> super::tables::Result {
+        self
+    }
+}
+
 pub struct Walker<'f> {
     /// The schema the data is read with.
     pub k: Key,
     pub target: Ty,
-    pub f: &'f mut dyn FnMut(&mut Tag),
+    f: &'f mut dyn FnMut(&mut Tag) -> super::tables::Result,
+    error: Option<super::tables::Error>,
+    pub(super) marking: bool,
 }
 
 impl Walker<'_> {
     pub fn walk(&mut self, ty: Ty, v: &mut Tag) {
+        if self.error.is_some() {
+            return;
+        }
         self.children(ty, v);
         if ty == self.target {
-            (self.f)(v);
+            self.visit(v);
+        }
+    }
+    fn visit(&mut self, value: &mut Tag) {
+        if self.error.is_none() {
+            self.error = (self.f)(value).err();
+        }
+    }
+    fn check<T>(&mut self, result: impl FnOnce() -> super::tables::Result<T>) -> Option<T> {
+        if self.error.is_some() {
+            return None;
+        }
+        match result() {
+            Ok(value) => Some(value),
+            Err(error) => {
+                self.error = Some(error);
+                None
+            }
         }
     }
     fn field(&mut self, ty: Ty, v: &mut Tag, name: &str) {
@@ -150,7 +189,7 @@ impl Walker<'_> {
             let entries: Vec<_> = std::mem::take(c).into_iter().collect();
             for (k, value) in entries {
                 let mut key_tag = Tag::String(k.clone());
-                (self.f)(&mut key_tag);
+                self.visit(&mut key_tag);
                 let k = match key_tag {
                     Tag::String(s) => s,
                     _ => k,
@@ -203,7 +242,7 @@ impl Walker<'_> {
                 if let Some(Tag::List(items)) = v.get_mut("block_entities") {
                     for be in items {
                         // DSL.or(BLOCK_ENTITY, remainder): unknown ids stay as they are.
-                        if block_entity_known(be, k) {
+                        if self.check(|| block_entity_known(be, k)) == Some(true) {
                             self.walk(Ty::BlockEntity, be);
                         }
                     }
@@ -276,7 +315,7 @@ impl Walker<'_> {
                     {
                         super::advancement_criteria::map_keys(criteria, |key| {
                             let mut value = Tag::String(key.clone());
-                            (self.f)(&mut value);
+                            self.visit(&mut value);
                             match value {
                                 Tag::String(s) => s,
                                 _ => key,
@@ -500,7 +539,7 @@ impl Walker<'_> {
         self.list(Ty::EntityTree, v, "Entities");
         if let Some(Tag::List(items)) = v.get_mut("TileEntities") {
             for be in items {
-                if block_entity_known(be, k) {
+                if self.check(|| block_entity_known(be, k)) == Some(true) {
                     self.walk(Ty::BlockEntity, be);
                 }
             }
@@ -868,7 +907,7 @@ impl Walker<'_> {
 }
 
 /// Block entity ids the schema at `k` knows (others are read as remainder).
-pub fn block_entity_known(be: &Tag, k: Key) -> bool {
+pub(super) fn block_entity_known(be: &Tag, k: Key) -> super::tables::Result<bool> {
     let id = namespaced(&as_str(be.get("id")).unwrap_or_default());
     if k < flat::END {
         return flat::legacy_block_entity_known(&id, k);
@@ -879,7 +918,7 @@ pub fn block_entity_known(be: &Tag, k: Key) -> bool {
         "minecraft:hanging_sign" => key(3202, 0),
         "minecraft:chiseled_bookshelf" => key(3204, 0),
         "minecraft:decorated_pot" => key(3327, 0),
-        "minecraft:suspicious_sand" => return (key(3327, 0)..key(3438, 0)).contains(&k),
+        "minecraft:suspicious_sand" => return Ok((key(3327, 0)..key(3438, 0)).contains(&k)),
         "minecraft:crafter" => key(3682, 0),
         "minecraft:trial_spawner" => key(3689, 0),
         "minecraft:vault" => key(3807, 0),
@@ -888,11 +927,11 @@ pub fn block_entity_known(be: &Tag, k: Key) -> bool {
         "minecraft:copper_golem_statue" => key(4532, 0),
         "minecraft:shelf" => key(4533, 0),
         "minecraft:potent_sulfur" => key(4881, 0),
-        "minecraft:bed" => return k < key(4885, 0),
+        "minecraft:bed" => return Ok(k < key(4885, 0)),
         "minecraft:brushable_block" | "minecraft:calibrated_sculk_sensor" => key(3438, 0),
         _ => 0,
     };
-    k >= since && BLOCK_ENTITIES.contains(&id.as_str())
+    Ok(k >= since && BLOCK_ENTITIES.contains(&id.as_str()))
 }
 
 /// Block entity types of the schemas from 1.20 on.
@@ -951,6 +990,31 @@ const BLOCK_ENTITIES: &[&str] = &[
 ];
 
 /// Visit every value of `target` under a `root`-typed value read with schema `k`.
-pub fn walk(root: Ty, v: &mut Tag, k: Key, target: Ty, f: &mut dyn FnMut(&mut Tag)) {
-    Walker { k, target, f }.walk(root, v);
+pub(super) fn walk<R: WalkStep>(
+    root: Ty,
+    v: &mut Tag,
+    k: Key,
+    target: Ty,
+    mut f: impl FnMut(&mut Tag) -> R,
+) -> super::tables::Result {
+    walk_schema(root, v, k, target, false, &mut |v| f(v).result())
+}
+
+fn walk_schema(
+    root: Ty,
+    v: &mut Tag,
+    k: Key,
+    target: Ty,
+    marking: bool,
+    f: &mut dyn FnMut(&mut Tag) -> super::tables::Result,
+) -> super::tables::Result {
+    let mut walker = Walker {
+        k,
+        target,
+        f,
+        error: None,
+        marking,
+    };
+    walker.walk(root, v);
+    walker.error.map_or(Ok(()), Err)
 }

@@ -1,0 +1,89 @@
+ids = [
+    "trait:Host",
+    "trait:ServerHost",
+    "trait:prelude::BlockStatesServerHost",
+    "trait:prelude::BlockEntitiesServerHost",
+    "trait:prelude::ClientViewHost",
+    "method:prelude::BlockStatesServerHost::set_block_property",
+    "method:prelude::BlockStatesServerHost::set_block_property_with",
+    "method:prelude::BlockEntitiesServerHost::block_entity_sync",
+    "method:prelude::ItemsServerHost::dispense_default",
+    "method:prelude::ItemsServerHost::dispense_with_remainder",
+    "method:prelude::ClientViewHost::block_collision",
+    "method:prelude::EntitiesServerHost::summon",
+    "method:prelude::EntitiesServerHost::experience_orbs",
+    "method:prelude::EntitiesServerHost::set_experience_orb",
+    "method:prelude::EntitiesServerHost::experience_orb",
+    "method:prelude::MobsServerHost::kill_mob",
+    "type:ExperienceOrb",
+    "type:ExperienceOrbRef",
+    "type:ExperienceOrbWriteError",
+    "handle:LevelRef::set_block_property",
+    "handle:BlockEntityRef::sync",
+    "handle:LevelRef::dispense_default",
+    "handle:LevelRef::dispense_with_remainder",
+    "type:LevelWriteError",
+    "handle:LevelRef::visit_block_collision",
+    "handle:LevelRef::summon",
+    "handle:LevelRef::visit_experience_orbs",
+    "handle:EntityRef::kill",
+    "handle:ExperienceOrbRef::entity",
+    "handle:ExperienceOrbRef::value",
+    "handle:ExperienceOrbRef::count",
+    "handle:ExperienceOrbRef::age",
+    "handle:ExperienceOrbRef::set_value",
+    "handle:ExperienceOrbRef::set_count",
+    "handle:ExperienceOrbRef::set_age",
+    "trait:prelude::WorldEditServerHost",
+    "method:prelude::WorldEditServerHost::edit_blocks",
+    "method:prelude::WorldEditServerHost::structure_template",
+    "method:prelude::WorldEditServerHost::place_template",
+    "type:StructureTemplateSnapshot",
+    "type:StructureTemplateBlock",
+    "handle:StructureTemplateSnapshot::new",
+    "handle:StructureTemplateBlock::new",
+    "type:BlockEditError",
+    "type:StructureTemplateError",
+    "type:StructureTemplateBlockView",
+    "handle:LevelRef::edit_blocks",
+    "handle:LevelRef::visit_structure_template",
+    "handle:LevelRef::place_template",
+    "trait:prelude::MenusServerHost",
+    "trait:prelude::RecipesServerHost",
+    "method:prelude::MenusServerHost::open_menu",
+    "method:prelude::MenusServerHost::menu",
+    "method:prelude::MenusServerHost::close_menu",
+    "method:prelude::MenusServerHost::menu_set_items",
+    "method:prelude::RecipesServerHost::place_recipe_in_grid",
+    "method:prelude::ItemsClientHost::give_stack",
+    "type:OpenMenuError",
+    "type:MenuItemsRefusal",
+    "type:CreativeGiveError",
+    "handle:PlayerRef::open_chest_menu",
+    "handle:MenuRef::set_items",
+    "handle:PlayerRef::give_creative",
+]
+why = "Block writes, dispenser actions, bulk block edits, structure template reads/placement, and entity summoning now name their level, block-entity sync names the live holder, entity killing names the live entity, experience-orb reads and writes live on ExperienceOrbRef without live save-width fencing, collision, template, and experience-orb queries visit the named level without building a list or enforcing guest result caps, and native menu operations, recipe-grid placement, and client creative item giving now live on PlayerRef and MenuRef with typed errors. These paths follow vanilla 26.3 ServerLevel, Level.setBlock and LevelChunk.setBlockState, ServerLevel.sendBlockUpdated, DispenserBlock.dispenseFrom and DefaultDispenseItemBehavior.execute/consumeWithRemainder, BlockState.getCollisionShape with VoxelShape.forAllBoxes, SummonCommand.createEntity and ServerLevel.tryAddFreshEntityWithPassengers, Entity.kill, BlockAttachedEntity.kill and LivingEntity.kill (genericKill hurtServer with Float.MAX_VALUE and LivingEntity.isAlive), Level.getEntities(EntityTypeTest.forClass(ExperienceOrb.class), ...), ExperienceOrb (DATA_VALUE SynchedEntityData<Integer>, int age, ExtraCodecs.POSITIVE_INT count, with addAdditionalSaveData truncating Value and Age to (short) only at save time), StructureTemplateManager.get / PlaceCommand.placeTemplate / PlaceCommand.checkLoaded / StructureTemplate.placeInWorld, ServerPlayer.openMenu and ServerPlayer.doCloseContainer, AbstractContainerMenu.removed and sendAllDataToRemote, RecipeBookMenu.handlePlacement, and ServerboundSetCreativeModeSlot / ServerGamePacketListenerImpl.handleSetCreativeModeSlot / Inventory.add. NeoForge's Level.markAndNotifyBlock preserves update flags, and DispenseFluidContainer.execute uses the same default and remainder paths, falling through to default dispensing only when there is no transfer. Sunrise's Host transaction holds the storage and effects of a strict bulk edit, kill, or successful fluid-container dispense until commit."
+migrate = '''
+Remove explicit imports of BlockStatesServerHost, BlockEntitiesServerHost and ClientViewHost; keep ServerHost for writes and Host for shared reads. Resolve an explicit dimension with `host.level(dimension)`. For an old call that implicitly used the hook's level, use `host.level(event.dimension)` when the hook supplies a dimension, or the LevelRef supplied by its view. From a player or entity callback with no dimension argument, use `player.entity().level(host)` or `entity.level(host)` on the relevant handle. For a client view with neither, use `host.local_player().and_then(|player| player.entity().level(host))`. Handle a missing level before calling its methods.
+
+- `host.set_block_property(pos, key, value)` → `level.set_block_property(host, pos, key, value, BlockUpdateFlags::NEIGHBORS | BlockUpdateFlags::CLIENTS)`. Replace `host.set_block_property_with(pos, key, value, flags)` with the same level call using the corresponding typed BlockUpdateFlags. Match `Ok(true)` for a change, `Ok(false)` for no write, or `Err(LevelWriteError)` for a refused level. Calls on LevelWriteHost inside block ticks are unchanged.
+- `host.block_entity_sync(pos)` → `holder.sync(host)`. Obtain the BlockEntityRef with `host.block_entity(level, pos)`, or during its own tick by returning `view.handle()` from `tick.with_view` and calling `holder.sync(tick.host())` after the view ends. Handle `Err(LevelWriteError::Stale)` for a replaced or unloaded holder and other typed refusals instead of syncing a replacement at the same position.
+- `host.dispense_default(dimension, pos, facing, stack)` → `level.dispense_default(host, pos, facing, stack)`. `host.dispense_with_remainder(dimension, pos, facing, stack, remainder)` → `level.dispense_with_remainder(host, pos, facing, stack, remainder)`. Keep using the successful Option<ItemStack> as the slot remainder. Handle `LevelWriteError::InvalidDispenser` for an unloaded position or a missing or mismatched dispenser, and `LevelWriteError::InvalidStack` for invalid stack input. Property writes and dispenser calls into parked levels return InTransaction if a Host transaction is open.
+- Keep `fluid_util::dispense_container(host, event)` for the standard fluid-container behavior. Return its answer unchanged. It commits the transfer and the slot/remainder updates together. A refusal is logged and returns `Some((Some(original_stack), 1001))`, not `None`; only a no-transfer result uses default dispensing.
+- Replace iteration over `host.block_collision(pos)` with `level.visit_block_collision(host, pos, &mut |bounds| { /* use bounds */ core::ops::ControlFlow::Continue(()) })`. The coordinates are still block-local. Return `Break(())` to stop early. Match the resulting `Ok(Continue(()))` or `Ok(Break(()))`, or handle `Err(LevelReadError)` for a stale or unavailable level. If you need an owned list, collect boxes inside the visitor.
+- `host.summon(dimension, kind, pos, nbt)` → `level.summon(host, kind, pos, nbt)`. Obtain `level` with `host.level(dimension)`. The call now routes parked dimensions and returns `Result<Option<EntityRef>, LevelWriteError>` (use `entity.id()` if you need the numeric id). `Ok(None)` includes Peaceful admission refusal and a UUID already held by any member of the level, including a matching passenger; no member of a rejected UUID tree joins. Handle `Err(LevelWriteError::InTransaction)` when summoning into a parked level inside an open Host transaction, `Err(LevelWriteError::Stale)` for a stale or closed level, and `Err(LevelWriteError::Unavailable)` on a client or outside the world phase.
+- `host.kill_mob(dimension, id)` → `entity.kill(host)`. Obtain `entity` with `host.entity(id)` (or keep the `EntityRef` from spawn/query). `EntityRef::kill` works on any killable entity across open server levels, returns `Ok(true)` when killed or staged for commit, and `Ok(false)` if the live target refuses (including a dragon part or a mob already dying), and returns `Err(LevelWriteError)` for stale/held-out handles, client/non-world calls, or parked-level kills inside an open Host transaction.
+- `host.experience_orbs(dimension, min, max)` and `ExperienceOrb` → `level.visit_experience_orbs(host, min, max, &mut |orb| { /* orb: ExperienceOrbRef */ core::ops::ControlFlow::Continue(()) })`. Read `orb.entity().id()`, `orb.entity().position(host)`, `orb.value(host)`, `orb.count(host)`, and `orb.age(host)` inside or after the visit; retain the visited handle for later use while the orb remains resident, including in a parked level. Non-finite bounds or client calls return `Err(LevelReadError::Unavailable)` without invoking the visitor.
+- `host.experience_orb(dimension, id)` → `host.experience_orb(host.entity(id)?)` for a resident orb. `host.set_experience_orb(dimension, id, value, count, age)` → for an active orb, narrow `host.entity(id)` with `host.experience_orb(entity)`. For a parked orb, keep its handle or match `orb.entity().id() == id` in `level.visit_experience_orbs(host, min, max, visitor)` on its owning level. When changing count together with other fields, call `orb.set_count(host, c)?` first, then `orb.set_value(host, v)?` and `orb.set_age(host, a)?` as needed, so an invalid count changes nothing. Live `set_value` and `set_age` accept full signed `i32` values (saving truncates to `(short)` as vanilla does); `set_count` validates `1..=i32::MAX` and returns `Err(ExperienceOrbWriteError::InvalidCount)` without mutating the orb.
+- `host.edit_blocks(dimension, edit)` → `level.edit_blocks(host, edit)`. Works on active and parked server levels and returns `Result<u64, BlockEditError>` instead of `Result<u64, String>`. An edit joins the innermost transaction of the edited level, if one exists. Abort restores blocks, resident block entities and connection groups. Commit replays strict and ordinary writes in call order and publishes whole chunk updates and relighting. An edit in a level with no open transaction commits immediately, regardless of transactions on other levels.
+- `host.structure_template(id, at, rotation, mirror)`, `StructureTemplateSnapshot` (`StructureTemplateSnapshot::new`), and `StructureTemplateBlock` (`StructureTemplateBlock::new`) → `level.visit_structure_template(host, id, at, rotation, mirror, &mut |block: StructureTemplateBlockView<'_>| core::ops::ControlFlow::Continue(()))` returning `Result<[i32; 3], StructureTemplateError>`.
+- `host.place_template(source, at, pivot, rotation, mirror)` → `level.place_template(host, source, at, pivot, rotation, mirror)`. Works on active and parked server levels and returns `Result<(), StructureTemplateError>` instead of `Result<(), String>`.
+- Remove explicit imports of `MenusServerHost` and `RecipesServerHost`.
+- `host.open_menu(uuid, rows, title, items, replace)` → `player.open_chest_menu(host, rows, title, items, replace)`. Resolve `player` with `host.player(uuid)`. Returns `Result<MenuRef, OpenMenuError>`: `OpenMenuError::Stack(StackWriteError)` for an invalid stack, `OpenMenuError::ClickInProgress` during a speculative quick move or trade action, and `OpenMenuError::PlayerUnavailable` for a stale or unconnected player or for `rows` outside `1..=6` (no `minecraft:generic_9x<rows>` menu exists). Inside a transaction or a menu close the returned handle names only the staged request; get the live handle with `player.container_menu(host)` after publication.
+- `host.menu(uuid, window)` → `player.container_menu(host)`, which returns `Option<MenuRef>` for the player's open menu. Use `menu.container_id(host)` for the protocol window id of a live menu; a staged handle from an open requested in a transaction has no window yet.
+- `host.close_menu(uuid)` → `menu.close_container(host)` on the player's open `MenuRef` (from `player.container_menu(host)`). It can also close during that player's turn. Inside a transaction, a true result queues close for outermost commit; abort keeps the window open.
+- `host.menu_set_items(uuid, window, items)` → `menu.set_items(host, items)` on the open `MenuRef`. `MenuItemsRefusal` gains `Unavailable` for non-world phases.
+- `host.place_recipe_in_grid(recipe, w, h, grid_slots, clear_slots, use_max_items)` is removed. From a recipe-book click, answer `RecipeBookPlacement::Grid { width, height, slots, clear }` in the menu type's recipe book layout; the engine's canonical placer (`ServerPlaceRecipe.placeRecipe`) uses the click's Shift and creative flags.
+- `host.give_stack(&stack)` on `ClientHost` → `player.give_creative(host, &stack)` on the local `PlayerRef` (`host.local_player()`). Preserves stack components, immediate creative slot sync (`ServerboundSetCreativeModeSlotPacket`), and `Result<Option<ItemStack>, CreativeGiveError>`, adding `CreativeGiveError::Stale` when the handle is stale or not the local player.
+'''

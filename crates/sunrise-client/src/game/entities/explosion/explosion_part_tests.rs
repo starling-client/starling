@@ -48,7 +48,9 @@ impl BlockPart for Blast {
         assert_eq!(item.get(&"count".into()), Some(&mod_api::Tag::Int(3)));
         assert_eq!(event.explosion.center, [1.0, 65.0, 1.0]);
         assert_eq!(event.explosion.radius, 4.0);
-        let level = host.level(event.explosion.dimension).unwrap();
+        let level = host
+            .level(event.explosion.dimension.id(host).unwrap())
+            .unwrap();
         let state = host.block_state_id("minecraft:stone").unwrap();
         assert!(
             level
@@ -193,7 +195,7 @@ fn block_parts_xp_and_explosion_contract() {
             }
             let chest = registry.default_state("minecraft:chest").unwrap();
             let start = ExplosionStart::from(mod_api::__private::built::ExplosionStart {
-                dimension: "minecraft:overworld",
+                dimension: mod_api::DimensionKey::OVERWORLD,
                 center: [1.0, 65.0, 1.0],
                 radius: 4.0,
                 fire: false,
@@ -403,7 +405,7 @@ fn with_answers(answers: &Answers, test: impl FnOnce(&mut Game<'_>)) {
 /// A radius-4 `Destroy` blast at `[1.5, 65.5, 3.5]`, beside the cell `[2, 65, 3]`.
 fn blast() -> ExplosionStart<'static> {
     ExplosionStart::from(mod_api::__private::built::ExplosionStart {
-        dimension: "minecraft:overworld",
+        dimension: mod_api::DimensionKey::OVERWORLD,
         center: [1.5, 65.5, 3.5],
         radius: 4.0,
         fire: false,
@@ -467,12 +469,12 @@ fn block_parts_answer_explosion_resistance() {
         explode(game, None);
         game.combat.blast_resistance_cap = None;
         assert_eq!(game.world.block(2, 65, 3), game.world.air);
-        // A negative or non-finite answer is refused for the block's own value.
+        // Any finite answer is accepted; only non-finite answers are refused for the block's own.
         let pos = [2, 65, 3];
         for (answer, expected) in [
             (1200.0, Some(1200.0)),
             (0.0, Some(0.0)),
-            (-1.0, None),
+            (-1.0, Some(-1.0)),
             (f32::NAN, None),
             (f32::INFINITY, None),
             (f32::NEG_INFINITY, None),
@@ -485,11 +487,30 @@ fn block_parts_answer_explosion_resistance() {
             );
         }
         *answers.dirt.0.lock().unwrap() = None;
-        // Obsidian answering 0: a step costs 0.09 and the weakest ray starts at 2.8.
+        // Obsidian answering a negative resistance combines with EmptyFluid (0.0) via max -> 0.0,
+        // breaking instead of falling back to obsidian's static 1200.
         game.world.set(2, 65, 3, obsidian).unwrap();
         explode(game, None);
         assert_eq!(game.world.block(2, 65, 3), obsidian, "1200 unanswered");
+        *answers.obsidian.0.lock().unwrap() = Some(-5.0);
+        explode(game, None);
+        assert_eq!(game.world.block(2, 65, 3), game.world.air);
+        // A waterlogged block answering a negative resistance still combines with WaterFluid
+        // (100.0) via max -> 100.0 and survives.
+        let mut wet_rail_desc = registry.state(rail).unwrap().clone();
+        wet_rail_desc
+            .properties
+            .insert("waterlogged".into(), "true".into());
+        let wet_rail = registry.id(&wet_rail_desc).unwrap();
+        *answers.rail.0.lock().unwrap() = Some(-5.0);
+        game.world.set(2, 65, 3, wet_rail).unwrap();
+        explode(game, None);
+        assert_eq!(game.world.block(2, 65, 3), wet_rail);
+        assert!(answers.rail.1.load(Ordering::Relaxed) > 0);
+        *answers.rail.0.lock().unwrap() = None;
+        // Obsidian answering 0: a step costs 0.09 and the weakest ray starts at 2.8.
         *answers.obsidian.0.lock().unwrap() = Some(0.0);
+        game.world.set(2, 65, 3, obsidian).unwrap();
         explode(game, None);
         assert_eq!(game.world.block(2, 65, 3), game.world.air);
         // A respawn anchor's water cell still resists as water (100: 30 a step).
@@ -497,13 +518,14 @@ fn block_parts_answer_explosion_resistance() {
         explode(game, Some((pos, 100.0)));
         assert_eq!(game.world.block(2, 65, 3), obsidian);
         // A TNT minecart's rails are spared without asking their parts.
+        let rail_asks_before = answers.rail.1.load(Ordering::Relaxed);
         *answers.rail.0.lock().unwrap() = Some(0.0);
         game.world.set(2, 65, 3, rail).unwrap();
         game.combat.rail_proof_blast = true;
         explode(game, None);
         game.combat.rail_proof_blast = false;
         assert_eq!(game.world.block(2, 65, 3), rail);
-        assert_eq!(answers.rail.1.load(Ordering::Relaxed), 0);
+        assert_eq!(answers.rail.1.load(Ordering::Relaxed), rail_asks_before);
     });
 }
 

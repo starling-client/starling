@@ -1,0 +1,2 @@
+ids = ["handle:BlockStates::propagates_skylight_down", "handle:BlockStates::is_air", "type:BlockClass"]
+why = "Mods that grow or spread blocks from code test a state as vanilla's growth code does: BlockState.propagatesSkylightDown, BlockState.isAir, and whether the block is a BonemealableBlock (#5364)."

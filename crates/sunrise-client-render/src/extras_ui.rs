@@ -1,4 +1,5 @@
-//! The Sunrise Extras page, on the settings shell (`settings_shell`): which rows it has and what
+//! The extras' page, on the settings shell (`settings_shell`), shown as Sunrise Settings' Gameplay
+//! page (`sunrise_ui`): which rows it has and what
 //! pressing them does. Each one's value and what it does stay in `extras::Item`; the sections crates
 //! add (`sunrise_hooks::pages::Place::Extras`) keep theirs.
 use crate::{
@@ -15,10 +16,9 @@ const ABOUT: &str = "sunrise.pages.extras.tooltip";
 /// The group of the mod that replaced an extra.
 const MODS: &str = "sunrise.pages.mods";
 const ZOOM: &str = "sunrise.extras.zoom";
-const ZOOM_INSTALL: &str = "sunrise.extras.zoom_mod_install";
 const MOD_SETTINGS: &str = "sunrise.mods.settings";
 /// Its descriptions run long, as tooltips they were: most need more than two lines.
-const NOTE_LINES: usize = 5;
+pub(crate) const NOTE_LINES: usize = 5;
 /// The official native mod that took over from the Zoom extra (#8713).
 const ZOOM_ID: &str = "zoom";
 
@@ -30,9 +30,6 @@ pub(crate) enum ExtraRow {
     Zoom(usize),
     /// Its own settings page.
     ZoomSettings(usize),
-    /// It isn't installed: where to get it. A note, not a button: Options > Mods already has the
-    /// one way into the Mods page (`every_setting_and_page_is_reached_from_one_place`).
-    ZoomInstall,
     /// Row `.1` of the section registered page `.0` adds (`Place::Extras`).
     Added(usize, usize),
 }
@@ -121,7 +118,8 @@ fn add_sections(groups: &mut Vec<Group<ExtraRow>>) {
                     label, key, active, ..
                 } => {
                     let key = crate::keybinds::display_name(&key).plain();
-                    Row::new(id, lang::get(label), Value::Read(key)).live(active)
+                    let binding = Binding::page_key(page, r, key);
+                    Row::new(id, lang::get(label), Value::Binding(binding)).live(active)
                 }
                 // A row kind newer than this engine.
                 _ => continue,
@@ -156,7 +154,8 @@ fn steps(page: usize, r: usize) -> bool {
     )
 }
 
-fn item_row(item: Item, s: &Settings) -> Row<ExtraRow> {
+/// An extra's row: a key's binding, a switch or a choice, greyed while its parent is off.
+pub(crate) fn item_row(item: Item, s: &Settings) -> Row<ExtraRow> {
     let e = &s.extras;
     let value = match (item.key_name(), item.switch(e)) {
         (Some(key), _) => Value::Binding(Binding::key(key, item.value(e))),
@@ -172,15 +171,15 @@ fn item_row(item: Item, s: &Settings) -> Row<ExtraRow> {
         .live(live)
 }
 
-/// Zoom is an official mod now; Extras keeps a way to it, as players look for it here.
+/// Zoom is an official mod now; Gameplay keeps its switch and settings while it is installed,
+/// and shows nothing for it otherwise.
 fn zoom_rows(s: &Settings) -> Vec<Row<ExtraRow>> {
     let installed = &s.mods.installed;
     let found = installed
         .iter()
         .position(|m| m.id == ZOOM_ID && m.native.is_some());
     let Some(i) = found else {
-        let note = Row::new(ExtraRow::ZoomInstall, lang::get(ZOOM_INSTALL), Value::Note);
-        return vec![note.live(false)];
+        return Vec::new();
     };
     let about = installed[i].problem.as_ref();
     let about = about.unwrap_or(&installed[i].description).clone();
@@ -216,10 +215,14 @@ impl Screen for ExtrasScreen {
         shell::stamp_of(&(&s.extras, &s.mods, added))
     }
     fn sheets(&self, s: &Settings) -> Vec<Sheet<(), ExtraRow>> {
-        let mut groups = vec![Group {
-            name: MODS,
-            rows: zoom_rows(s),
-        }];
+        let zoom = zoom_rows(s);
+        let mut groups = Vec::new();
+        if !zoom.is_empty() {
+            groups.push(Group {
+                name: MODS,
+                rows: zoom,
+            });
+        }
         for row in extras::rows() {
             match row {
                 Err(name) => groups.push(Group {
@@ -251,7 +254,6 @@ impl Screen for ExtrasScreen {
                 Output::Push(Page::NativeMod(i)),
                 Output::Event(Event::NativeSettings(i)),
             ],
-            ExtraRow::ZoomInstall => Vec::new(),
             ExtraRow::Added(page, r) => {
                 act(page, r, if back { Act::PressBack } else { Act::Press })
             }
@@ -321,6 +323,47 @@ mod tests {
         assert_ne!(s.extras.mouse_tweaks_wheel, before);
     }
 
+    /// A section with one key row.
+    struct KeyRow;
+    impl added::Page for KeyRow {
+        fn id(&self) -> &'static str {
+            "test.key"
+        }
+        fn title(&self) -> &'static str {
+            "sunrise.extras.header.inventory"
+        }
+        fn place(&self) -> added::Place {
+            added::Place::Extras
+        }
+        fn rows(&self, rows: &mut Vec<added::Row>) {
+            rows.push(added::Row::key("test.key.row", "key.keyboard.r"));
+        }
+        fn act(&self, _: usize, act: Act) {
+            panic!("the key row waits for a key, it heard {act:?}");
+        }
+    }
+
+    /// A section's key row binds by its page and row instead of cycling; the wheel leaves it be.
+    #[test]
+    fn a_sections_key_row_waits_for_a_key() {
+        use crate::settings_shell::Capture;
+        static KEY_ROW: KeyRow = KeyRow;
+        static PAGES: [&dyn added::Page; 1] = [&KEY_ROW];
+        TEST_PAGES.set(Some(&PAGES));
+        let mut s = Settings::default();
+        let mut shell = Shell::<ExtrasScreen>::default();
+        let row = ExtraRow::Added(0, 0);
+        let at = shell.point_at(&s, SIZE, row);
+        assert_eq!(
+            shell.click(&mut s, at, SIZE, false, false, false),
+            vec![
+                Output::Event(Event::ButtonClick),
+                Output::Bind(Capture::Page(0, 0))
+            ]
+        );
+        assert_eq!(ExtrasScreen.wheel_step(&mut s, row, true), None);
+    }
+
     /// #3202: smooth chat moves a line in, but the indicator bar colours its left edge whether
     /// it slides or not, so the row is live and toggles with smooth chat off.
     #[test]
@@ -359,26 +402,6 @@ mod tests {
         );
         ExtrasScreen.wheel_step(&mut s, row, true);
         assert_eq!(s.extras.sort_key, key);
-    }
-
-    /// The shader pack key binds the same way, without cycling: a click waits for its key.
-    #[test]
-    fn the_shader_pack_key_row_waits_for_a_key() {
-        use crate::settings_shell::Capture;
-        let mut s = Settings::default();
-        let mut shell = Shell::<ExtrasScreen>::default();
-        let row = ExtraRow::Item(Item::ShaderPackKey);
-        let key = s.extras.shader_pack_key.clone();
-        let at = shell.point_at(&s, SIZE, row);
-        assert_eq!(
-            shell.click(&mut s, at, SIZE, false, false, false),
-            vec![
-                Output::Event(Event::ButtonClick),
-                Output::Bind(Capture::Key(extras::SHADER_PACK_KEY))
-            ]
-        );
-        ExtrasScreen.wheel_step(&mut s, row, true);
-        assert_eq!(s.extras.shader_pack_key, key);
     }
 
     #[test]
@@ -448,7 +471,7 @@ mod tests {
         crate::widgets::end_frame(1);
         let size = (batch.width, batch.height);
         let cols = Columns::of(size.0, size.1).with_note_lines(NOTE_LINES);
-        // The Mods group's note can't take the focus: the first item can.
+        // The first extra's row: without the Zoom mod there is no Mods group over it.
         let first = ExtraRow::Item(Item::OwnNameTag);
         let at = shell.point_at(&s, size, first);
         let [x, y, w, h] = crate::widgets::linked_step(cols.search(), true).unwrap();

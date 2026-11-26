@@ -9,7 +9,10 @@ use super::{
         RandomLookAround, Stroll, TARGET, goal_clone, reduced,
     },
 };
-use crate::items::{BlockLootRoll, ItemStack};
+use crate::{
+    enchant::Enchantments,
+    items::{BlockLootRoll, ItemStack, Items},
+};
 use sunrise_core::{
     geometry::{Aabb, Vec3},
     random::RandomSource,
@@ -44,13 +47,17 @@ pub fn register(m: &mut Mob) {
     m.set_malus(super::path::PathType::Water, -1.0);
 }
 /// Enderman.isBeingStaredBy: the player's look within a cone of 0.025 / distance
-/// of the eyes, with line of sight, and no head item in #minecraft:gaze_disguise_equipment. Last,
-/// a mod may keep the enderman calm (`EnderManAngerEvent`).
+/// of the eyes, with line of sight, and no head item in #minecraft:gaze_disguise_equipment (or
+/// what a mod's `gaze_disguise` answers for it). Last, a mod may keep the enderman calm
+/// (`EnderManAngerEvent`).
 pub fn stared_at(m: &Mob, w: &MobWorld) -> bool {
     let Some(p) = w.selected_player() else {
         return false;
     };
-    if !p.alive || super::ai::wears_gaze_disguise(p.head.as_deref(), w) {
+    if !p.alive {
+        return false;
+    }
+    if super::ai::gaze_disguised(m.id, p, w) {
         return false;
     }
     let look = p.look;
@@ -375,9 +382,11 @@ pub fn anim(m: &Mob, s: &State, p: &mut Poses) {
 struct FreezeWhenLookedAt;
 impl Goal for FreezeWhenLookedAt {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         JUMP | MOVE
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if m.ai.target != Some(Who::Player) {
             return false;
@@ -387,9 +396,11 @@ impl Goal for FreezeWhenLookedAt {
         };
         m.distance_sqr(p.position) <= 256.0 && stared_at(m, cx.w)
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, _: &mut Cx) {
         m.nav_stop();
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         if let Some(p) = cx.w.selected_player() {
             let at = [p.position.x, p.eye[1], p.position.z];
@@ -407,9 +418,11 @@ struct LookForPlayer {
 }
 impl Goal for LookForPlayer {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         TARGET
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         let Some(p) = cx.w.selected_player() else {
             return false;
@@ -423,6 +436,7 @@ impl Goal for LookForPlayer {
             && m.sees(cx.w, Who::Player);
         self.pending
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, _: &mut Cx) {
         self.aggro = reduced(5);
         self.teleport = 0;
@@ -430,10 +444,12 @@ impl Goal for LookForPlayer {
         // only when a target is assigned.
         m.extra.flag2 = true;
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.pending = false;
         m.set_ai_target(cx.w, None);
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         let Some(p) = cx.w.selected_player().cloned() else {
             return false;
@@ -449,6 +465,7 @@ impl Goal for LookForPlayer {
         // which has no range: the target is kept however far it goes.
         p.alive && !p.creative && !p.spectator && m.ai.target == Some(Who::Player)
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         let Some(p) = cx.w.selected_player().cloned() else {
             return;
@@ -486,15 +503,18 @@ impl Goal for LookForPlayer {
 struct TakeBlock;
 impl Goal for TakeBlock {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         0
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         // EndermanTakeBlockGoal.canUse: needs mobGriefing, checked before the draw.
         m.extra.carried.is_none()
             && cx.w.can_grief(m.id)
             && m.random.next_int_bound(reduced(20)).unwrap_or(1) == 0
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         let x = (m.position.x - 2.0 + m.random.next_double() * 4.0).floor() as i32;
         let y = (m.position.y + m.random.next_double() * 3.0).floor() as i32;
@@ -540,15 +560,18 @@ impl Goal for TakeBlock {
 struct LeaveBlock;
 impl Goal for LeaveBlock {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         0
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         // EndermanLeaveBlockGoal.canUse: needs mobGriefing, checked before the draw.
         m.extra.carried.is_some()
             && cx.w.can_grief(m.id)
             && m.random.next_int_bound(reduced(2000)).unwrap_or(1) == 0
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         let Some(carried) = m.extra.carried else {
             return;
@@ -581,11 +604,23 @@ impl Goal for LeaveBlock {
 
 /// The tool `Enderman.dropCustomDeathLoot` rolls the carried block's drops
 /// with: a diamond axe enchanted by `VanillaEnchantmentProviders.ENDERMAN_LOOT_DROP`
-/// (`enchantment_provider/enderman_loot_drop.json`, a single Silk Touch I),
-/// so the block itself comes back.
-pub fn carried_block_tool() -> ItemStack {
+/// (`minecraft:enderman_loot_drop`).
+pub fn carried_block_tool<R: RandomSource>(
+    enchantments: &Enchantments,
+    items: &Items,
+    random: &mut R,
+    special: f32,
+) -> ItemStack {
     let mut axe = ItemStack::new("minecraft:diamond_axe", 1);
-    axe.enchant("minecraft:silk_touch", 1);
+    for (id, level) in enchantments.enchant_from_provider(
+        "minecraft:enderman_loot_drop",
+        items,
+        random,
+        &axe,
+        special,
+    ) {
+        axe.enchant(&id, level);
+    }
     axe
 }
 
@@ -624,7 +659,7 @@ mod tests {
     fn explicit_indirect_magic_is_not_assumed_to_be_a_thrown_potion() {
         let mut m = enderman();
         m.random = sunrise_core::random::LegacyRandom::new(1);
-        let positioned = Damage::indirect_magic(None, [0.0; 3]);
+        let positioned = Damage::indirect_magic("minecraft:splash_potion", None, [0.0; 3]);
         after_hurt(&mut m, &positioned, false);
         assert_eq!(m.extra.counter2, 0, "the built-in potion path handles this");
         after_hurt(&mut m, &positioned, true);
@@ -801,6 +836,7 @@ mod tests {
             vehicle: None,
             mob_drops,
             world_seed: 0,
+            variants: None,
         };
         let mut sequences = RandomSequences::default();
         let mut random = sunrise_core::random::LegacyRandom::new(0);
@@ -821,7 +857,8 @@ mod tests {
                 .into_iter()
                 .flat_map(|d| match d {
                     drops::Drop::CarriedBlock(state) => {
-                        let tool = carried_block_tool();
+                        let tool =
+                            carried_block_tool(&items.enchantments, &items, &mut m.random, 0.0);
                         let roll = carried_block_roll(&tool);
                         let stacks = Some((&mut sequences, 0));
                         let stacks = items.block_drops(registry, state, roll, &mut random, stacks);
@@ -898,6 +935,67 @@ mod tests {
             vec![true, false],
             "a survival player's stare angers it; a spectator's does not"
         );
+    }
+
+    #[test]
+    fn carried_block_tool_uses_pack_enderman_loot_drop_provider() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(
+            root.path().join("items.json"),
+            serde_json::json!({"minecraft:diamond_axe": {}}).to_string(),
+        )
+        .unwrap();
+        let defaults = sunrise_world::item_defaults::read(root.path()).unwrap();
+        let files = [
+            (
+                "enchantment/minecraft:fortune".into(),
+                vec![
+                    serde_json::json!({
+                        "description": "Fortune",
+                        "weight": 2,
+                        "max_level": 3,
+                        "anvil_cost": 4,
+                        "min_cost": {"base": 15, "per_level_above_first": 9},
+                        "max_cost": {"base": 65, "per_level_above_first": 9},
+                        "supported_items": "minecraft:diamond_axe",
+                        "slots": ["mainhand"]
+                    })
+                    .to_string()
+                    .into_bytes(),
+                ],
+            ),
+            (
+                "enchantment_provider/minecraft:enderman_loot_drop".into(),
+                vec![
+                    serde_json::json!({
+                        "type": "minecraft:single",
+                        "enchantment": "minecraft:fortune",
+                        "level": 3
+                    })
+                    .to_string()
+                    .into_bytes(),
+                ],
+            ),
+        ];
+        let overlay = sunrise_world::loot::PackOverlay::new(&files);
+        let (packed, admitted) = crate::lan::data::SyncData::stage_registry_definitions(
+            root.path(),
+            &defaults,
+            &overlay,
+            &Default::default(),
+            &Default::default(),
+            |_| true,
+        );
+        admitted.unwrap();
+        let mut items = Items::tags_only(root.path(), &overlay, &defaults).unwrap();
+        packed
+            .install_items(&mut items, root.path(), &overlay, &defaults)
+            .unwrap();
+        let mut rng = sunrise_core::random::LegacyRandom::new(0);
+        let tool = carried_block_tool(&items.enchantments, &items, &mut rng, 0.0);
+        assert_eq!(&*tool.item, "minecraft:diamond_axe");
+        assert_eq!(tool.enchantment_level("minecraft:fortune"), 3);
+        assert_eq!(tool.enchantment_level("minecraft:silk_touch"), 0);
     }
 }
 #[cfg(test)]

@@ -1,5 +1,0 @@
-manifest:
-refused: sunrise-native.json: unsupported package path
-
-icon:
-unavailable

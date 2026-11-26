@@ -1,0 +1,3 @@
+ids = ["hook:entity_place", "handle:PlayerRef::place_block", "type:PlayerWorldRefusal"]
+why = "The cancellable entity_place hook now runs for chosen player placements and sees their tentative states and block entities, including the full setPlacedBy footprint. A failed listener discards its own tentative writes instead of vetoing the chosen placement; later eligible listeners still run. Item and mob placement still dispatch before the block write."
+migrate = "Pass the placement face before update_neighbour_shapes. Handle Canceled when a listener vetoes the placement and PlacementChanged when its tentative writes cannot stand. For chosen player placements, a listener reads the staged placement instead of the replaced block. No item is consumed."

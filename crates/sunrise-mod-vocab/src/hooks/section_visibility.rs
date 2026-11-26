@@ -4,6 +4,8 @@ pub trait Hooks {
     /// A chunk section in the player's current level is about to mesh: return one
     /// `SectionVisibility` or `None`. `input` is the raw section with its one-block border, read
     /// before any mod hid a state. `SectionCell::State` gives the canonical `BlockState`.
+    /// Biome reads give the stored registered key, or `None` for a missing column or an
+    /// unresolved biome slot.
     /// Asked on the client world thread before the section goes to a meshing worker, including
     /// remeshes after a neighbouring column arrives or unloads, a resource reload, or
     /// `ClientHost::refresh_render_visibility`. A first all-air compile is
@@ -43,11 +45,12 @@ fn section_visibility(&self, _: &dyn ClientHost, event: &mut SectionVisibilityEv
 ```
 
 The input is the 16-cubed section and a one-block border on all six sides, edges and corners included (5832
-cells), with each cell's light, raw biome and deterministic model seed. A cell is the state the world holds,
-before any visibility answer: an ore a
-`block_render_visibility` part hides still reads as the ore. A neighbouring column not loaded reads `Missing`:
-not air, but neither occluding nor matching; the section is asked again when the column arrives or unloads.
-`SectionVisibilityInput::cell` refuses reads beyond the border.
+cells), with each cell's light, stored biome and deterministic model seed. A cell is the state the world holds,
+before any visibility answer: an ore a `block_render_visibility` part hides still reads as the ore. A neighbouring
+column not loaded reads `Missing`: not air, but neither occluding nor matching; the section is asked again when
+the column arrives or unloads. `SectionVisibilityInput::biome` returns the stored `BiomeKey` before biome zoom
+and blending or `None` for a missing column or an unresolved slot. It never returns the rendering default in
+place of a missing registered key. Reads beyond the border are refused.
 
 Answers only take away. A face mask removes faces after normal culling and never forces a culled face to show. A
 cell with neither model nor fluid no longer occludes, so its neighbours' faces toward it draw (also across a
@@ -71,7 +74,7 @@ it may read the `ClientHost`; it changes when the section meshes again, which a 
         contract = "collect",
         out = "answers",
         answered_by = "mod",
-        version = 2,
+        version = 3,
         neoforge = "none verified"
     )]
     fn section_visibility(

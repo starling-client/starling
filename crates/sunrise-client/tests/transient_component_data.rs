@@ -1,4 +1,4 @@
-//! Isolated real data loaders: malformed persistent files never abort a reload.
+//! Isolated real data loaders: a refused loot table, predicate, modifier or advancement fails its load, every one listed; a refused recipe fails its load too.
 extern crate sunrise_client_lib as sunrise_client;
 use serde_json::{Value, json};
 use std::{
@@ -49,18 +49,6 @@ fn context() -> LoadContext {
         [],
     )
 }
-fn diagnostic(messages: &[String], owner: &str, component: &str) {
-    let matching: Vec<_> = messages
-        .iter()
-        .filter(|message| message.contains(owner))
-        .collect();
-    assert_eq!(matching.len(), 1, "{messages:?}");
-    assert!(matching[0].contains(component), "{matching:?}");
-    assert!(
-        matching[0].contains("not a persistent component"),
-        "{matching:?}"
-    );
-}
 fn rejects_recipe(input: Value, component: &str) {
     let root = tempfile::tempdir().unwrap();
     write(root.path(), "recipe", "a_bad", &input);
@@ -72,20 +60,19 @@ fn rejects_recipe(input: Value, component: &str) {
         "ingredients":["minecraft:stone"],"result":{"id":"minecraft:stick"}}),
     );
     let items = Items::empty();
-    let (recipes, messages) =
-        capture(|| Recipes::load(root.path(), &items, &PackOverlay::NONE, &context()).unwrap());
-    assert_eq!(recipes.crafting.len(), 1);
-    assert_eq!(recipes.by_type["minecraft:crafting"].len(), 1);
-    assert_eq!(
-        recipes.by_type["minecraft:crafting"][0].id,
-        "minecraft:z_good"
+    let (result, _) =
+        capture(|| Recipes::load(root.path(), &items, &PackOverlay::NONE, &context()));
+    let error = result
+        .err()
+        .expect("a refused recipe fails the load")
+        .to_string();
+    assert!(
+        error.contains("data/minecraft/recipe/a_bad.json"),
+        "{error}"
     );
-    diagnostic(&messages, "a_bad", component);
-    let (book, messages) =
-        capture(|| sunrise_client::recipe_book::RecipeIndex::load(root.path(), &PackOverlay::NONE));
-    assert!(!book.contains("minecraft:a_bad"));
-    assert!(book.contains("minecraft:z_good"));
-    diagnostic(&messages, "a_bad", component);
+    assert!(error.contains(component), "{error}");
+    assert!(error.contains("not a persistent component"), "{error}");
+    assert!(!error.contains("z_good"), "{error}");
 }
 #[test]
 fn creative_slot_lock_result_refuses_the_file() {
@@ -112,7 +99,7 @@ fn map_post_processing_removal_refuses_the_file() {
     );
 }
 #[test]
-fn component_ingredient_removal_is_rejected_before_station_publication() {
+fn component_ingredient_removal_refuses_the_load_before_station_publication() {
     let root = tempfile::tempdir().unwrap();
     write(
         root.path(),
@@ -130,21 +117,20 @@ fn component_ingredient_removal_is_rejected_before_station_publication() {
         "ingredient":"minecraft:stone","result":{"id":"minecraft:stick"}}),
     );
     let items = Items::empty();
-    let (sources, messages) = capture(|| {
-        sunrise_client::crafting::ResolvedSources::load(
-            root.path(),
-            &items,
-            &PackOverlay::NONE,
-            &context(),
-        )
-        .unwrap()
-    });
-    assert_eq!(sources.recipes.len(), 1);
-    diagnostic(&messages, "a_bad", "minecraft:creative_slot_lock");
-    let stations =
-        sunrise_client::stations::StationRecipes::from_sources(root.path(), &items, &sources);
-    assert_eq!(stations.stonecutting.len(), 1);
-    assert_eq!(stations.stonecutting[0].id, "minecraft:z_good");
+    let error = sunrise_client::crafting::ResolvedSources::load(
+        root.path(),
+        &items,
+        &PackOverlay::NONE,
+        &context(),
+    )
+    .err()
+    .expect("a refused recipe fails the load")
+    .to_string();
+    assert!(
+        error.contains("data/minecraft/recipe/a_bad.json"),
+        "{error}"
+    );
+    assert!(error.contains("minecraft:creative_slot_lock"), "{error}");
 }
 #[test]
 fn type_only_displays_and_opaque_data_survive_recipe_loading() {
@@ -174,7 +160,7 @@ fn type_only_displays_and_opaque_data_survive_recipe_loading() {
     );
 }
 #[test]
-fn loot_value_removal_and_exact_predicate_fail_individually_and_reload_continues() {
+fn loot_value_removal_and_exact_predicate_refuse_the_load_and_list_each() {
     let root = tempfile::tempdir().unwrap();
     write(
         root.path(),
@@ -210,35 +196,33 @@ fn loot_value_removal_and_exact_predicate_fail_individually_and_reload_continues
     );
     std::fs::write(root.path().join("items.json"), "{}").unwrap();
     let defaults = sunrise_world::item_defaults::read(root.path()).unwrap();
-    let (loot, messages) =
-        capture(|| LootData::load(root.path(), &PackOverlay::NONE, &defaults).unwrap());
+    // RegistryDataLoader.logErrors: the load fails and lists every refused table.
+    let Err(error) = LootData::load(root.path(), &PackOverlay::NONE, &defaults) else {
+        panic!("a refused loot table loaded")
+    };
+    let error = error.to_string();
+    for (table, component) in [
+        ("a_value", "minecraft:additional_trade_cost"),
+        ("b_remove", "minecraft:creative_slot_lock"),
+        ("c_exact", "minecraft:map_post_processing"),
+    ] {
+        let line = error
+            .lines()
+            .find(|line| line.contains(&format!("loot table minecraft:{table}:")))
+            .unwrap_or_else(|| panic!("{table} not listed: {error}"));
+        assert!(line.contains(component), "{line}");
+    }
+    assert!(!error.contains("z_good"), "{error}");
+    for table in ["a_value", "b_remove", "c_exact"] {
+        std::fs::remove_file(
+            root.path()
+                .join(format!("data/minecraft/loot_table/{table}.json")),
+        )
+        .unwrap();
+    }
+    let loot = LootData::load(root.path(), &PackOverlay::NONE, &defaults).unwrap();
     assert_eq!(loot.tables().len(), 1);
     assert!(loot.has_table("minecraft:z_good"));
-    diagnostic(
-        &messages,
-        "minecraft:a_value",
-        "minecraft:additional_trade_cost",
-    );
-    diagnostic(
-        &messages,
-        "minecraft:b_remove",
-        "minecraft:creative_slot_lock",
-    );
-    diagnostic(
-        &messages,
-        "minecraft:c_exact",
-        "minecraft:map_post_processing",
-    );
-    write(root.path(), "loot_table", "zz_after", &json!({"pools":[]}));
-    let (reloaded, messages) =
-        capture(|| LootData::load(root.path(), &PackOverlay::NONE, &defaults).unwrap());
-    assert_eq!(reloaded.tables().len(), 2);
-    assert!(reloaded.has_table("minecraft:zz_after"));
-    diagnostic(
-        &messages,
-        "minecraft:a_value",
-        "minecraft:additional_trade_cost",
-    );
 }
 #[test]
 fn advancement_exact_values_fail_but_any_value_component_types_load() {
@@ -254,8 +238,10 @@ fn advancement_exact_values_fail_but_any_value_component_types_load() {
         root.path(),
         "advancement",
         "b_icon",
-        &json!({"display":{"icon":{"id":"minecraft:stone",
-        "components":{"!minecraft:creative_slot_lock":{}}}},"criteria":{}}),
+        &json!({"display":{"background":"minecraft:gui/advancements/backgrounds/stone",
+        "icon":{"id":"minecraft:stone",
+        "components":{"!minecraft:creative_slot_lock":{}}}},
+        "criteria":{"never":{"trigger":"minecraft:impossible"}}}),
     );
     write(
         root.path(),
@@ -271,20 +257,15 @@ fn advancement_exact_values_fail_but_any_value_component_types_load() {
         &json!({"criteria":{"custom":{"trigger":"example:custom",
         "conditions":{"item":{"components":{"minecraft:creative_slot_lock":{}}}}}}}),
     );
-    let (tree, messages) = capture(|| Tree::load(&root.path().join("data")));
+    let tree = Tree::load(&root.path().join("data"));
     assert_eq!(tree.list.len(), 2);
     assert!(tree.by_id.contains_key("minecraft:z_good"));
     assert!(tree.by_id.contains_key("minecraft:zz_native"));
-    diagnostic(
-        &messages,
-        "minecraft:a_bad",
-        "minecraft:map_post_processing",
-    );
-    diagnostic(
-        &messages,
-        "minecraft:b_icon",
-        "minecraft:creative_slot_lock",
-    );
+    // The load refuses on any of them (`Advancement.CODEC`), each listed.
+    assert_eq!(tree.refused.len(), 2, "{:?}", tree.refused);
+    assert!(tree.refused[0].contains("minecraft:a_bad"));
+    assert!(tree.refused[0].contains("minecraft:map_post_processing"));
+    assert!(tree.refused[1].contains("minecraft:b_icon"));
 }
 #[test]
 fn saves_drop_transient_values_and_removals_without_mutating_live_or_wire_data() {
@@ -391,7 +372,7 @@ fn persistent_nbt_and_component_syntax_refuse_transients_without_rejecting_runti
         ("id", Tag::String("minecraft:stone".into())),
         ("components", patch.clone()),
     ]);
-    assert!(item_nbt::item_from_persistent_nbt(&saved).is_none());
+    assert!(item_nbt::item_from_persistent_nbt(&saved).is_err());
     let (_, runtime) = item_data::decode_components(Some(&patch));
     assert!(
         runtime
@@ -412,7 +393,7 @@ fn persistent_nbt_and_component_syntax_refuse_transients_without_rejecting_runti
 }
 
 #[test]
-fn named_modifier_and_predicate_files_are_removed_before_loot_execution() {
+fn named_modifier_and_predicate_files_refuse_the_load_before_loot_execution() {
     let root = tempfile::tempdir().unwrap();
     std::fs::write(root.path().join("items.json"), "{}").unwrap();
     write(
@@ -458,63 +439,46 @@ fn named_modifier_and_predicate_files_are_removed_before_loot_execution() {
         "pools":[{"rolls":1,"condition":"minecraft:good_predicate","entries":[{"type":"minecraft:item","name":"minecraft:stone"}]}]}),
     );
     let defaults = sunrise_world::item_defaults::read(root.path()).unwrap();
-    let (loot, messages) =
-        capture(|| LootData::load(root.path(), &PackOverlay::NONE, &defaults).unwrap());
-    diagnostic(
-        &messages,
-        "item modifier minecraft:bad_modifier",
-        "minecraft:creative_slot_lock",
-    );
-    diagnostic(
-        &messages,
-        "predicate minecraft:bad_predicate",
-        "minecraft:additional_trade_cost",
-    );
-    diagnostic(
-        &messages,
-        "item modifier minecraft:bad_number",
-        "minecraft:map_post_processing",
-    );
+    let Err(error) = LootData::load(root.path(), &PackOverlay::NONE, &defaults) else {
+        panic!("refused modifiers and predicates loaded")
+    };
+    let error = error.to_string();
+    for (entry, component) in [
+        (
+            "item modifier minecraft:bad_modifier",
+            "minecraft:creative_slot_lock",
+        ),
+        (
+            "predicate minecraft:bad_predicate",
+            "minecraft:additional_trade_cost",
+        ),
+        (
+            "item modifier minecraft:bad_number",
+            "minecraft:map_post_processing",
+        ),
+    ] {
+        let line = error
+            .lines()
+            .find(|line| line.starts_with(&format!("{entry}:")))
+            .unwrap_or_else(|| panic!("{entry} not listed: {error}"));
+        assert!(line.contains(component), "{line}");
+    }
+    for (kind, name) in [
+        ("item_modifier", "bad_modifier"),
+        ("predicate", "bad_predicate"),
+        ("item_modifier", "bad_number"),
+    ] {
+        std::fs::remove_file(
+            root.path()
+                .join(format!("data/minecraft/{kind}/{name}.json")),
+        )
+        .unwrap();
+    }
+    let loot = LootData::load(root.path(), &PackOverlay::NONE, &defaults).unwrap();
     let mut random = sunrise_core::random::LegacyRandom::new(0);
     let good_modifier = loot.roll_split("minecraft:modifier_good", &mut random);
     assert_eq!(good_modifier.len(), 1);
     assert_eq!(good_modifier[0].count, 3);
-    // A dropped file is absent, so a table naming it is a missing reference: the
-    // loader refuses that generation (the typed loader's own rule, not skipping).
-    for (name, modifier, condition) in [
-        (
-            "modifier_bad",
-            "minecraft:bad_modifier",
-            "minecraft:good_predicate",
-        ),
-        (
-            "predicate_bad",
-            "minecraft:good_modifier",
-            "minecraft:bad_predicate",
-        ),
-        (
-            "number_bad",
-            "minecraft:bad_number",
-            "minecraft:good_predicate",
-        ),
-    ] {
-        write(
-            root.path(),
-            "loot_table",
-            name,
-            &json!({"modifier":modifier,
-            "pools":[{"rolls":1,"condition":condition,"entries":[{"type":"minecraft:item","name":"minecraft:stone"}]}]}),
-        );
-        let Err(error) = LootData::load(root.path(), &PackOverlay::NONE, &defaults) else {
-            panic!("{name} loaded with a dropped reference")
-        };
-        assert!(error.to_string().contains(name), "{error}");
-        std::fs::remove_file(
-            root.path()
-                .join(format!("data/minecraft/loot_table/{name}.json")),
-        )
-        .unwrap();
-    }
 }
 
 #[test]
@@ -531,7 +495,7 @@ fn recipe_nested_text_item_values_are_persistent_too() {
 #[test]
 fn command_datastore_filters_winning_files_without_lower_pack_fallback() {
     use sunrise_client::{
-        datapack::{DataPack, DataStore},
+        datapack::{DataPack, DataPacks, DataStore},
         resource_source::ResourceSource,
     };
     let root = tempfile::tempdir().unwrap();
@@ -589,36 +553,37 @@ fn command_datastore_filters_winning_files_without_lower_pack_fallback() {
     );
     let low = DataPack::from_source("low".into(), ResourceSource::directory(low));
     let high = DataPack::from_source("high".into(), ResourceSource::directory(high));
-    let (store, messages) = capture(|| DataStore::load(&[&low, &high]));
-    assert!(!store.item_modifiers.contains_key("minecraft:override"));
-    assert!(store.item_modifiers.contains_key("minecraft:z_good"));
-    assert!(!store.predicates.contains_key("minecraft:bad_predicate"));
-    assert!(store.predicates.contains_key("minecraft:z_good"));
-    assert!(!store.slot_sources.contains_key("minecraft:bad_slots"));
-    assert!(store.slot_sources.contains_key("minecraft:z_good"));
-    diagnostic(
-        &messages,
-        "item modifier minecraft:override",
-        "minecraft:additional_trade_cost",
-    );
-    diagnostic(
-        &messages,
-        "predicate minecraft:bad_predicate",
-        "minecraft:map_post_processing",
-    );
-    diagnostic(
-        &messages,
-        "slot source minecraft:bad_slots",
-        "minecraft:creative_slot_lock",
-    );
-    let (reloaded, messages) = capture(|| DataStore::load(&[&low, &high]));
-    assert_eq!(reloaded.item_modifiers.len(), 1);
-    assert_eq!(reloaded.predicates.len(), 1);
-    diagnostic(
-        &messages,
-        "item modifier minecraft:override",
-        "minecraft:additional_trade_cost",
-    );
+    let empty_root = root.path().join("empty_root");
+    std::fs::create_dir_all(&empty_root).unwrap();
+    std::fs::write(empty_root.join("items.json"), "{}").unwrap();
+    let defaults = sunrise_world::item_defaults::read(&empty_root).unwrap();
+    let store = DataStore::load(&DataPacks::new(&[&low, &high]));
+    let files: Vec<_> = store.files.into_iter().collect();
+    let overlay = sunrise_world::loot::PackOverlay::new(&files);
+    let err = match sunrise_world::loot::LootData::load(&empty_root, &overlay, &defaults) {
+        Ok(_) => panic!("expected refused transient components to fail LootData::load"),
+        Err(err) => err.to_string(),
+    };
+    // The refused winners fail the reload, each listed; the lower pack's file does not return.
+    for (entry, component) in [
+        (
+            "item modifier minecraft:override",
+            "minecraft:additional_trade_cost",
+        ),
+        (
+            "predicate minecraft:bad_predicate",
+            "minecraft:map_post_processing",
+        ),
+        (
+            "slot source minecraft:bad_slots",
+            "minecraft:creative_slot_lock",
+        ),
+    ] {
+        assert!(
+            err.contains(entry) && err.contains(component),
+            "{entry} / {component} missing in {err}"
+        );
+    }
 }
 
 #[test]
@@ -667,4 +632,35 @@ fn saving_nested_hover_items_prunes_transients_but_preserves_live_text_and_opaqu
     assert!(
         matches!(network.component(component::CUSTOM_NAME), Some(Component::Text(value)) if value == &text)
     );
+}
+#[test]
+fn an_unknown_loot_function_type_refuses_the_load_naming_the_file() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("items.json"), "{}").unwrap();
+    write(root.path(), "loot_table", "good", &json!({"pools": []}));
+    write(
+        root.path(),
+        "loot_table",
+        "bad",
+        &json!({"modifier":{"type":"minecraft:no_such_function"},"pools":[]}),
+    );
+    let defaults = sunrise_world::item_defaults::read(root.path()).unwrap();
+    let Err(error) = LootData::load(root.path(), &PackOverlay::NONE, &defaults) else {
+        panic!("an unknown loot function type loaded")
+    };
+    assert!(error.to_string().contains("minecraft:bad"), "{error}");
+}
+#[test]
+fn an_advancement_requiring_a_missing_criterion_is_refused() {
+    let root = tempfile::tempdir().unwrap();
+    write(
+        root.path(),
+        "advancement",
+        "ghost",
+        &json!({"criteria":{"a":{"trigger":"minecraft:tick"}},"requirements":[["ghost"]]}),
+    );
+    let tree = Tree::load(&root.path().join("data"));
+    assert!(tree.list.is_empty());
+    assert_eq!(tree.refused.len(), 1, "{:?}", tree.refused);
+    assert!(tree.refused[0].contains("minecraft:ghost"));
 }

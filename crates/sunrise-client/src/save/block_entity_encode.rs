@@ -74,9 +74,20 @@ pub fn data_with(
 
 /// Merge modeled stacks with saved rows the engine did not take ownership of.
 pub fn mod_items(m: &ModBlockEntity, items: &crate::items::Items) -> Option<Tag> {
-    let mut entries = sunrise_items::item_nbt::encode_items_using(&m.items, |stack| {
-        sunrise_items::item_nbt::item_to_nbt(stack, items)
-    });
+    let mut entries: Vec<Tag> = m
+        .items
+        .iter()
+        .enumerate()
+        .filter_map(|(i, stack)| {
+            let stack = stack.as_ref()?;
+            let slot = crate::block_entity_nbt::item_slot_tag(i)?;
+            let mut tag = sunrise_items::item_nbt::item_to_nbt(stack, items);
+            if let Tag::Compound(fields) = &mut tag {
+                fields.insert("Slot".into(), slot);
+            }
+            Some(tag)
+        })
+        .collect();
     match m.nbt.get(&"Items".into()) {
         Some(Tag::List(raw)) => {
             entries.extend(raw.iter().cloned());
@@ -119,6 +130,15 @@ fn fields(
         }
         if write_items {
             write_mod_items(&mut map, m, items);
+        }
+        // `RandomizableContainer.trySaveLootTable`: a pending table is saved in place of an
+        // empty inventory.
+        if let Some(pending) = pending {
+            let items = map.get(&"Items".into()).cloned();
+            pending.write_tags(&mut map);
+            if m.items.iter().any(Option::is_some) {
+                map.extend(items.map(|items| ("Items".into(), items)));
+            }
         }
         if let Some(lock) = lock {
             map.insert("lock".into(), lock.clone());

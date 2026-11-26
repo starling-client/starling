@@ -60,7 +60,8 @@ fn join_overworld(game: &mut super::Game<'_>, height: f64) {
             Some(sunrise_client::scoreboard::json_to_tag(&json)),
         )],
     );
-    game.set_registries(std::sync::Arc::new(registries));
+    game.set_registries(std::sync::Arc::new(registries))
+        .unwrap();
     game.handle_packet(C::Login(play::Login {
         player_id: 7,
         hardcore: false,
@@ -99,7 +100,7 @@ fn drawn_pixel(game: &mut super::Game<'_>) -> [u8; 4] {
         scaled: false,
         background: false,
     });
-    game.render_with(|renderer, frame| renderer.render(frame))
+    game.render_with(|renderer, frame| renderer.render(frame, None))
         .unwrap();
     let result = game.renderer.as_mut().unwrap().screenshot_result.take();
     let mut pending = result.unwrap().unwrap();

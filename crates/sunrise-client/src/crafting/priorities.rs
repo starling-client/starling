@@ -114,7 +114,7 @@ impl Priorities {
 
 impl ResolvedSources {
     /// Order `sources` once for a load: descending priority, then vanilla's registration order.
-    pub(super) fn order_by_priority(
+    pub(crate) fn order_by_priority(
         sources: &mut [(String, Value)],
         root: &Path,
         overlay: &PackOverlay,

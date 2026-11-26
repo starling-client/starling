@@ -1,0 +1,3 @@
+sunrise-client-render gfx::mod_pipelines::tests::a_stack_id_reused_by_a_different_stack_next_frame_draws_with_the_new_stack lib daily gpu
+sunrise-client-render gfx::mod_pipelines::tests::modifier_through_walls_nested_outermost_wins_and_refused_line_skips_only_its_runs lib daily gpu
+sunrise-client-render gfx::mod_pipelines::tests::opaque_pipeline_writes_solid_color_without_blending lib daily gpu

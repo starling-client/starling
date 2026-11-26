@@ -1,10 +1,10 @@
-//! Server capture seams. Disk callbacks run only in the persistence owner.
+//! Server-level binding and save admission for chunk disk callbacks.
 use super::*;
-use sunrise_client::chunk::Chunk;
-use sunrise_client::streaming::{ProtoSave, ProtoSnapshot};
 
 impl Game<'_> {
-    /// Bind the existing world's identity and immutable resources, before workers start.
+    /// Bind a newly opened level's save directory before publishing its streamer.
+    /// `Persistent` and the server share this directory; only its submitted records
+    /// become disk jobs.
     pub(super) fn bind_chunk_disk_worker(
         &self,
         save: &sunrise_client::save::SaveDir,
@@ -27,58 +27,12 @@ impl Game<'_> {
             );
         }
     }
-
-    /// Observe the exact full-chunk save copies on the server thread.
-    pub(super) fn native_full_chunk_snapshots(&mut self, chunks: &[Arc<Chunk>]) {
-        if self.remote.is_some() || mod_api::__private::mods().is_empty() {
-            return;
-        }
-        for chunk in chunks {
-            self.native_full_chunk_snapshot(chunk);
-        }
-    }
-
-    pub(super) fn native_late_full_chunk_snapshot(&mut self, chunk: &Chunk) {
-        if self.remote.is_none() && !mod_api::__private::mods().is_empty() {
-            self.native_full_chunk_snapshot(chunk);
-        }
-    }
-
-    fn native_full_chunk_snapshot(&mut self, _chunk: &Chunk) {
-        self.bind_chunk_disk_worker(&self.save, self.dim);
-    }
-
-    /// The proto stays checked out until its immutable save record is submitted.
-    pub(super) fn native_proto_snapshots(&mut self, protos: &[ProtoSave]) {
-        if self.remote.is_some() || mod_api::__private::mods().is_empty() {
-            return;
-        }
-        let access = self.streaming.proto_access();
-        let dimension = self.dim.id();
-        for save in protos {
-            let Some(status) = access.status(&save.proto) else {
-                continue;
-            };
-            self.native_proto_snapshot(ProtoSnapshot {
-                dimension,
-                pos: [save.pos.0, save.pos.1],
-                proto: &save.proto,
-                access: access.as_ref(),
-                status,
-            });
-        }
-    }
-
-    fn native_proto_snapshot(&mut self, _snapshot: ProtoSnapshot<'_>) {
-        self.bind_chunk_disk_worker(&self.save, self.dim);
-    }
 }
 
 impl Game<'_> {
-    /// With a `chunk_data_save` listener, saves wait while an action savepoint
-    /// is open, so tentative state is never captured: unloads, and the plan
-    /// that causes them, are deferred until it closes (the design's "defer
-    /// unload when the gate refuses"). Never defers without a listener.
+    /// Defer eager saves, streaming/unload and closing-save polling at their
+    /// gameplay call sites while an action savepoint holds an entity pass open.
+    /// With no save listener these call sites do not take this deferral path.
     pub(super) fn defer_chunk_disk_save(&mut self) -> bool {
         if self.options.execution_role.is_client()
             || !mod_api::__private::listened(mod_api::HookId::ChunkDataSave)
@@ -144,6 +98,7 @@ mod tests {
     use super::*;
     use crate::game::native_entity_refs::tests::with_game;
     use std::time::Duration;
+    use sunrise_client::chunk::Chunk;
     use sunrise_client::save::{LevelShape, SaveDir};
     use sunrise_core::nbt::{DISK_WRITE_NESTING_GUARD, Tag};
 

@@ -1,5 +1,4 @@
 //! The `has_analog_output` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0072
 
 pub trait Hooks {
     /// `BlockState.hasAnalogOutputSignal`: set `output` for a block of yours

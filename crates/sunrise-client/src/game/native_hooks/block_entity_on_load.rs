@@ -38,7 +38,7 @@ impl Game<'_> {
     pub(in crate::game) fn tick_mod_block_entity(&mut self, pos: Pos) -> bool {
         if mod_api::__private::any_mod_disabled()
             && let Some(BlockEntity::Mod(entity)) = self.world.block_entities.get(&pos)
-            && mod_api::__private::content_owner_disabled(entity.id())
+            && mod_api::__private::block_entity_owner_disabled(entity.id())
         {
             return false;
         }

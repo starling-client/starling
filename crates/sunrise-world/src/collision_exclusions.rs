@@ -17,14 +17,9 @@ use sunrise_core::{
     position::{BlockPos, ChunkPos},
 };
 
-/// The most boxes a set holds.
-pub const MAX_BOXES: usize = 64;
-
 /// Why a set of boxes was refused. The set held before stays.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Refused {
-    /// More than [`MAX_BOXES`] boxes.
-    TooMany,
     /// A coordinate that is NaN or infinite.
     NotFinite,
     /// A box whose minimum is above its maximum on an axis.
@@ -37,12 +32,9 @@ pub struct CollisionExclusions(Vec<Aabb>);
 
 impl CollisionExclusions {
     /// Replaces the set with `boxes` (`[min_x, min_y, min_z, max_x, max_y, max_z]` each); an
-    /// empty slice clears it. Refused, leaving the set as it was: more than [`MAX_BOXES`] boxes,
-    /// then a value that isn't finite, then a minimum above its maximum.
+    /// empty slice clears it. Refused, leaving the set as it was: a value that isn't finite,
+    /// then a minimum above its maximum.
     pub fn set(&mut self, boxes: &[[f64; 6]]) -> Result<(), Refused> {
-        if boxes.len() > MAX_BOXES {
-            return Err(Refused::TooMany);
-        }
         if boxes.iter().flatten().any(|v| !v.is_finite()) {
             return Err(Refused::NotFinite);
         }
@@ -323,9 +315,7 @@ mod tests {
     fn a_refused_set_keeps_the_one_before() {
         let opening = [[2.0, 64.0, 0.0, 3.0, 66.0, 1.0]];
         let mut exclusions = set(&opening);
-        let too_many = [[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]; 65];
         for (boxes, why) in [
-            (&too_many[..], Refused::TooMany),
             (
                 &[[0.0, 0.0, 0.0, f64::NAN, 1.0, 1.0]][..],
                 Refused::NotFinite,
@@ -339,8 +329,17 @@ mod tests {
             assert_eq!(exclusions.set(boxes), Err(why));
             assert_eq!(exclusions, set(&opening));
         }
-        assert_eq!(exclusions.set(&too_many[..64]), Ok(()));
-        assert_eq!(exclusions.boxes().len(), 64);
+        let mut many = [[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]; 65];
+        many[64] = opening[0];
+        assert_eq!(exclusions.set(&many), Ok(()));
+        assert_eq!(exclusions.boxes().len(), 65);
+        assert_eq!(walk_east(&exclusions), 2.0);
+        assert_eq!(
+            exclusions.set(&[[0.0, 2.0, 0.0, 1.0, 1.0, 1.0]]),
+            Err(Refused::Inverted)
+        );
+        assert_eq!(exclusions.boxes().len(), 65);
+        assert_eq!(walk_east(&exclusions), 2.0);
         assert_eq!(exclusions.set(&[]), Ok(()));
         assert_eq!(walk_east(&exclusions), 1.0);
     }

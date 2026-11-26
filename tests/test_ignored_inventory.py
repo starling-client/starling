@@ -1,4 +1,6 @@
 """Descriptive ignores cannot vanish between normal and exact-selected daily tests."""
+import os
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -7,6 +9,8 @@ from tools.ci import ignored_inventory, ignored_tests
 
 
 class IgnoredInventory(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("cargo") or os.environ.get("SUNRISE_GAME_DISCOVERY"),
+                         "needs cargo, or SUNRISE_GAME_DISCOVERY, to run sunrise-game-discovery")
     def test_unselected_descriptive_ignore_and_flattened_daily_selection(self):
         with tempfile.TemporaryDirectory() as scratch:
             root = Path(scratch)

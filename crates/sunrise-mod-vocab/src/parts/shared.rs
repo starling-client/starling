@@ -17,6 +17,8 @@ pub struct Attached<P: ?Sized> {
     /// The part's kind, its Rust type's name: one part of each kind per thing.
     pub(crate) type_name: &'static str,
     pub(crate) part: Arc<P>,
+    /// Set if an isolated callback on this attachment panicked and was disabled for the session.
+    pub(crate) panicked: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl<P: ?Sized> Attached<P> {
@@ -27,6 +29,7 @@ impl<P: ?Sized> Attached<P> {
             order: self.order,
             type_name: self.type_name,
             part,
+            panicked: self.panicked.clone(),
         }
     }
     // hidden: the game's goal registration reads these (#1077)
@@ -60,6 +63,11 @@ pub struct Parts {
     pub(crate) key_mappings: Vec<(&'static str, crate::KeyRegistration)>,
     /// Settings by owner, in registration order (`Registrar::register_setting`).
     pub(crate) settings: Vec<(&'static str, crate::SettingSpec)>,
+    /// Categories by owner and setting key (`Registrar::categorize_setting`), one entry per
+    /// setting: a later call replaces the earlier category.
+    pub(crate) setting_categories: Vec<(&'static str, String, String)>,
+    /// Config screen factories by owner, at most one each (`Registrar::register_config_screen`).
+    pub(crate) config_screens: Vec<crate::parts::settings::ConfigScreenRegistration>,
     /// Block parts, and block entity parts as the block parts they also are.
     pub(crate) blocks: HashMap<Box<str>, Vec<Attached<dyn BlockPart>>>,
     /// Block entity parts by block, for the hooks asked by block (`block_entity`).
@@ -79,25 +87,30 @@ pub struct Parts {
     pub(crate) entities: HashMap<Box<str>, Vec<Attached<dyn EntityPart>>>,
     /// Capability providers by capability name, then by block entity type, in registration
     /// order.
-    pub(crate) capabilities: Capabilities<BlockProviderOf>,
+    pub(crate) capabilities: Capabilities<NativeCapabilityProvider>,
     /// Block capability providers by capability name, then by block, in registration order:
     /// those asked of a block whatever block entity it has, or none.
-    pub(crate) block_capabilities: Capabilities<BlockProviderOf>,
-    /// Canonical block capability metadata, retained independently of provider availability.
-    pub(crate) block_capability_metadata: HashMap<&'static str, (Arc<str>, Option<bool>)>,
+    pub(crate) block_capabilities: Capabilities<NativeCapabilityProvider>,
+    /// Canonical bindings by domain, retained independently of provider availability.
+    pub(crate) block_capability_metadata: HashMap<&'static str, CapabilityMetadata>,
+    #[allow(
+        dead_code,
+        reason = "the mirrored authoring input consumes only the item bindings during registration"
+    )]
+    pub(crate) item_capability_metadata: HashMap<&'static str, CapabilityMetadata>,
+    pub(crate) entity_capability_metadata: HashMap<&'static str, CapabilityMetadata>,
     /// Built-in declaration order followed by the order mods first mention a capability.
     pub(crate) block_capability_order: Vec<&'static str>,
     /// Explicit domains and declarations of the game's default providers.
     pub(crate) default_block_containers: HashMap<Box<str>, Vec<(usize, crate::ModContainer)>>,
     pub(crate) default_block_fluids: HashMap<Box<str>, Vec<(usize, crate::ModFluidTanks)>>,
     pub(crate) default_block_energy: HashMap<Box<str>, Vec<(usize, crate::ModEnergyBuffer)>>,
-    pub(crate) default_item_containers:
-        HashMap<Box<str>, Vec<(usize, Arc<dyn crate::ItemContainerProvider>)>>,
+    pub(crate) default_item_containers: HashMap<Box<str>, Vec<DefaultItemContainer>>,
     /// Item capability providers by capability name, then by item, in registration order.
-    pub(crate) item_capabilities: Capabilities<ItemProviderOf>,
+    pub(crate) item_capabilities: Capabilities<NativeCapabilityProvider>,
     /// Entity capability providers by capability name, then by entity type, in registration
     /// order.
-    pub(crate) entity_capabilities: Capabilities<EntityProviderOf>,
+    pub(crate) entity_capabilities: Capabilities<NativeCapabilityProvider>,
     /// The mods' own item places (`ItemPlace::Mod`), by provider name.
     pub(crate) place_providers: HashMap<&'static str, PlaceProviderPart>,
     /// The tooltip appenders, in registration order.
@@ -116,6 +129,8 @@ pub struct Parts {
         HashMap<Box<str>, (usize, String, crate::__private::InstalledRecipeSerializer)>,
     /// Entity selector tokens the mods registered, by name, in registration order.
     pub(crate) entity_selectors: Vec<EntitySelectorInfo>,
+    /// Mod event listeners by event type, in dispatch order.
+    pub(crate) mod_events: HashMap<std::any::TypeId, Vec<ModEventListener>>,
     /// Frozen raw payload declarations and their sole receiving owners.
     pub(crate) payloads: Option<Arc<crate::parts::payloads::Payloads>>,
     /// Only the parts that override each scoped hook, resolved at load or reload. Boxed: most of the
@@ -136,7 +151,7 @@ pub struct HookParts {
     pub(crate) block_entity_kinds: HashMap<Box<str>, Vec<Attached<dyn BlockEntityPart>>>,
     pub(crate) items: HashMap<Box<str>, Vec<Attached<dyn ItemPart>>>,
     pub(crate) menus: HashMap<Box<str>, Vec<Attached<dyn MenuPart>>>,
-    pub(crate) menu_screens: HashMap<Box<str>, crate::parts::menus::MenuScreenIndex>,
+    pub(crate) menu_owners: HashMap<Box<str>, HashMap<usize, Attached<dyn MenuPart>>>,
     pub(crate) effects: HashMap<Box<str>, Vec<Attached<dyn MobEffectPart>>>,
     pub(crate) fluids: HashMap<Box<str>, Vec<Attached<dyn FluidPart>>>,
     pub(crate) entities: HashMap<Box<str>, Vec<Attached<dyn EntityPart>>>,
@@ -450,7 +465,7 @@ pub fn prepare_parts(
         "block",
     );
     add_tagged(&mut parts.items, &installed.tags.items, item_tags, "item");
-    parts.index_hooks(&installed.menu_recipe_books, &installed.namespace_authority);
+    parts.index_hooks();
     for table in parts.hooks.iter_mut().flatten() {
         if table.blocks.is_empty() {
             continue;
@@ -560,11 +575,7 @@ impl Parts {
     pub(crate) fn for_hook(&self, hook: HookId) -> Option<&HookParts> {
         self.hooks.get(hook as usize).and_then(Option::as_deref)
     }
-    pub(super) fn index_hooks(
-        &mut self,
-        menu_recipe_books: &HashMap<String, crate::parts::menus::MenuBookDeclaration>,
-        authority: &crate::parts::NamespaceAuthority,
-    ) {
+    pub(super) fn index_hooks(&mut self) {
         self.hooks = vec![None; HOOK_COUNT];
         macro_rules! index {
             ($field:ident, $method:ident) => {
@@ -591,30 +602,14 @@ impl Parts {
         index!(fluids, fluid_subscribed);
         index!(entities, entity_subscribed);
         for table in self.hooks.iter_mut().flatten() {
-            if !table.menus.is_empty() {
-                table.menu_screens = crate::parts::menus::index_menu_screens(
-                    &table.menus,
-                    menu_recipe_books,
-                    authority,
-                );
+            for (menu, parts) in &table.menus {
+                let owners = table.menu_owners.entry(menu.clone()).or_default();
+                for part in parts {
+                    owners.entry(part.mod_index).or_insert_with(|| part.clone());
+                }
             }
         }
     }
-}
-
-/// Walk only this capability and type's registrations, once each even if a provider switches
-/// a mod off during the lookup. The table and the game's direct lookups share this path.
-pub(crate) fn next_provider<P: Clone>(
-    parts: &[CapabilityPart<P>],
-    index: &mut u32,
-) -> Option<(P, &'static str, bool)> {
-    while let Some(part) = parts.get(*index as usize) {
-        *index += 1;
-        if crate::mod_index_on(part.mod_index) {
-            return Some((part.provider.clone(), part.mod_id, part.before_game));
-        }
-    }
-    None
 }
 
 pub(crate) fn attached<'a, 'k, P: ?Sized>(
@@ -652,6 +647,7 @@ mod lookup_context_tests {
                 order: 0,
                 type_name: "DropObserver",
                 part: Arc::new(DropObserver(observed)),
+                panicked: Default::default(),
             }],
         );
         parts

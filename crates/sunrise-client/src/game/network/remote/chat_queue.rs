@@ -1,9 +1,40 @@
 //! `ChatListener`'s delayed queue: Chat Delay's held-back messages, their
 //! tick, the flush when the delay turns off, and the queue row's click.
-use super::super::Game;
-use std::time::Duration;
+use super::{Game, QueuedChat, QueuedChatKind, Remote, Signature};
+use std::time::{Duration, Instant};
 
 impl Game<'_> {
+    /// `ChatListener.handleMessage`: hold the packet's receipt context or
+    /// accept it immediately when there is no delay.
+    pub(super) fn enqueue_chat(&mut self, chat: QueuedChat) {
+        if self.chat_delay_ms() > 0 {
+            if let Some(r) = self.remote.as_mut() {
+                r.chat_queue.push_back(chat);
+            }
+        } else {
+            self.accept_chat(chat);
+        }
+    }
+
+    /// `ChatListener.Message.accept`: acknowledge a player message after
+    /// deciding if it was shown. A validation error always acknowledges its
+    /// invalid signature as not shown, even if its error line is visible.
+    fn accept_chat(&mut self, chat: QueuedChat) -> bool {
+        let signature = chat.signature;
+        let error = matches!(chat.kind, QueuedChatKind::Error { .. });
+        if error && let Some(signature) = &signature {
+            self.mark_message_processed(signature, false);
+        }
+        let shown = self.show_queued_chat(chat);
+        if shown && let Some(r) = self.remote.as_mut() {
+            r.chat_previous = Some(Instant::now());
+        }
+        if !error && let Some(signature) = &signature {
+            self.mark_message_processed(signature, shown);
+        }
+        shown
+    }
+
     /// `ChatListener.messageDelay`: Chat Delay in milliseconds, as Java
     /// truncates it.
     pub(super) fn chat_delay_ms(&self) -> i64 {
@@ -47,8 +78,7 @@ impl Game<'_> {
         if !ready {
             return;
         }
-        // A message the Chat option hides is dropped and the next one is tried,
-        // until one shows.
+        // Rejected messages do not restart the wait; keep accepting until one shows.
         while let Some(chat) = self.remote.as_mut().and_then(|r| r.chat_queue.pop_front()) {
             if self.accept_chat(chat) {
                 break;
@@ -75,10 +105,25 @@ impl Game<'_> {
     }
 
     /// `ChatListener.acceptNextDelayedMessage`: the queue row's click shows the
-    /// next held-back message now, without moving the delay timer.
+    /// next held-back message now, even before the delay has elapsed.
     pub(in crate::game) fn accept_next_delayed_message(&mut self) {
         if let Some(chat) = self.remote.as_mut().and_then(|r| r.chat_queue.pop_front()) {
             self.accept_chat(chat);
         }
+    }
+}
+
+impl Remote {
+    /// `removeFromDelayedMessageQueue`: suppress presentation and the pending
+    /// acknowledgement. Invalid signatures are not queue deletion keys.
+    pub(super) fn remove_queued_chat(&mut self, signature: &Signature) -> bool {
+        let queued = self.chat_queue.len();
+        self.chat_queue.retain(|chat| {
+            !matches!(
+                chat.kind,
+                QueuedChatKind::Player { .. } | QueuedChatKind::Filtered
+            ) || chat.signature.as_ref() != Some(signature)
+        });
+        self.chat_queue.len() != queued
     }
 }

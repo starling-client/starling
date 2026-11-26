@@ -2,10 +2,15 @@
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{ffi::CStr, path::Path};
+<<<<<<< HEAD
 #[path = "native_libraries/starling.rs"]
 mod starling;
 #[allow(unused_imports)]
 pub use self::starling::*;
+||||||| 46c00106def
+=======
+use sunrise_mod_package::library_identity::LibraryIdentity;
+>>>>>>> ed6772e2118
 
 /// Commit used for the pinned SDK ABI; `dev` for a build that names none.
 pub const GAME_BUILD_ID: &str = env!("SUNRISE_GAME_BUILD_ID");
@@ -25,22 +30,14 @@ struct Library {
     identity: String,
 }
 
-/// A build identity is `<build id> <mod id> <version> <rustc release> <panic strategy>`.
-/// Returns the build id, the rustc release and the panic strategy.
-fn identity_parts(identity: &str) -> Option<(&str, &str, &str)> {
-    let parts: Vec<_> = identity.split_whitespace().collect();
-    (parts.len() == 5).then(|| (parts[0], parts[3], parts[4]))
-}
-
 /// The shared libraries an image needs: the dynamic section's `DT_NEEDED` entries on ELF, the
 /// imported libraries on Mach-O and PE.
 fn needed_libraries(bytes: &[u8]) -> Result<Vec<String>, String> {
-    use object::{
-        Object,
-        read::elf::{Dyn, ElfFile64},
-    };
+    use object::Object;
     let file = object::File::parse(bytes).map_err(|e| e.to_string())?;
+    #[cfg(all(unix, not(target_os = "macos")))]
     if let object::File::Elf64(_) = &file {
+        use object::read::elf::{Dyn, ElfFile64};
         let elf = ElfFile64::<object::Endianness>::parse(bytes).map_err(|e| e.to_string())?;
         let endian = elf.endian();
         let Some((entries, link)) = elf
@@ -122,11 +119,11 @@ fn check_image(id: &str, bytes: &[u8], game_std: Option<&str>) -> Result<(), Str
 fn verify(folder: &Path, libraries: &[Library]) -> Result<Vec<Vec<u8>>, String> {
     let mut images = Vec::new();
     for library in libraries {
-        if identity_parts(&library.identity)
-            .is_none_or(|(build, rustc, _)| build != GAME_BUILD_ID || rustc != RUSTC_VERSION)
-        {
+        if LibraryIdentity::parse(&library.identity).is_none_or(|identity| {
+            identity.build != GAME_BUILD_ID || identity.rust != RUSTC_VERSION
+        }) {
             return Err(format!(
-                "mod {}: incompatible build identity {:?}; game {GAME_BUILD_ID} rustc {RUSTC_VERSION}. The library was built for another game build or Rust release: rebuild the mod for this build (`cargo sunrise-mod update --sunrise {GAME_BUILD_ID}`, then `cargo sunrise-mod build`)",
+                "mod {}: incompatible build identity {:?}; game {GAME_BUILD_ID} rustc {RUSTC_VERSION}. The library was built for another game build or Rust release: rebuild the mod for this build (`cargo sunrise-mod pin {GAME_BUILD_ID}`, then `cargo sunrise-mod build`)",
                 library.id, library.identity
             ));
         }
@@ -164,9 +161,59 @@ fn verify(folder: &Path, libraries: &[Library]) -> Result<Vec<Vec<u8>>, String> 
                 library.id, library.file, library.sha256
             ));
         }
+        // The record's identity must be the one stamped in these bytes (the entry's
+        // NUL-terminated literal), so the dependency check below judges the library that loads,
+        // not only its record.
+        let stamped = [library.identity.as_bytes(), b"\0"].concat();
+        if memchr::memmem::find(&bytes, &stamped).is_none() {
+            return Err(format!(
+                "mod {}: library {} was not built with the identity its record names ({:?}): rebuild your native mods",
+                library.id, library.file, library.identity
+            ));
+        }
         images.push(bytes);
     }
+    for library in libraries {
+        verify_dependencies(library, libraries)?;
+    }
     Ok(images)
+}
+
+/// Refuses a library built against another build of a native mod it links than the one
+/// installed: their types and symbols would not agree (the identity's dependencies field,
+/// [`LibraryIdentity`]). A dependency's own identity names its dependencies, so the whole chain
+/// is checked.
+fn verify_dependencies(library: &Library, libraries: &[Library]) -> Result<(), String> {
+    let dependencies = LibraryIdentity::parse(&library.identity)
+        .and_then(|identity| identity.dependencies())
+        .ok_or_else(|| {
+            format!(
+                "mod {}: malformed build identity {:?}",
+                library.id, library.identity
+            )
+        })?;
+    for (dependency, expected) in dependencies {
+        let installed = libraries
+            .iter()
+            .find(|row| row.id == dependency)
+            .ok_or_else(|| {
+                format!(
+                    "mod {}: built against native mod {dependency}, which is not installed in this build: rebuild your native mods",
+                    library.id
+                )
+            })?;
+        let actual = format!("{:x}", Sha256::digest(installed.identity.as_bytes()));
+        if actual != expected {
+            return Err(format!(
+                "mod {}: built against another build of {dependency} (expected {}, installed {}): rebuild your native mods",
+                library.id,
+                // The record is untrusted input: no slice that could split a character.
+                expected.get(..12).unwrap_or(expected),
+                &actual[..12]
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Checks and loads every native library `folder`'s `native-mods.json` lists, refusing by mod name.
@@ -222,15 +269,15 @@ pub fn load(folder: &Path) -> Result<Vec<&'static mod_api::__private::native::Na
             let identity = CStr::from_ptr(pointer)
                 .to_str()
                 .map_err(|e| format!("mod {}: {e}", row.id))?;
-            if identity_parts(identity).is_some_and(|(_, _, panic)| panic != "unwind") {
+            if LibraryIdentity::parse(identity).is_some_and(|identity| identity.panic != "unwind") {
                 return Err(format!(
                     "mod {}: built with panic=abort ({identity:?}); the game unwinds a refused Host call through the mod's frames, so a native mod must be built with panic=unwind",
                     row.id
                 ));
             }
             if identity != row.identity
-                || identity_parts(identity).is_none_or(|(build, rustc, _)| {
-                    build != GAME_BUILD_ID || rustc != RUSTC_VERSION
+                || LibraryIdentity::parse(identity).is_none_or(|identity| {
+                    identity.build != GAME_BUILD_ID || identity.rust != RUSTC_VERSION
                 })
             {
                 return Err(format!(
@@ -300,22 +347,38 @@ mod tests {
     fn hash_phase_refuses_missing_corrupt_and_traversal_by_mod_name() {
         let folder = std::env::temp_dir().join(format!("native-hash-{}", std::process::id()));
         std::fs::create_dir_all(&folder).unwrap();
+        let identity = format!("{GAME_BUILD_ID} example 1 {RUSTC_VERSION} source none unwind");
+        let valid = format!("code{identity}\0data");
         let mut row = Library {
             file: "test.so".into(),
-            sha256: format!("{:x}", Sha256::digest(b"valid")),
+            sha256: format!("{:x}", Sha256::digest(&valid)),
             id: "example".into(),
-            identity: format!("{GAME_BUILD_ID} example 1 {RUSTC_VERSION} unwind"),
+            identity,
         };
         assert!(
             verify(&folder, std::slice::from_ref(&row))
                 .unwrap_err()
                 .contains("example")
         );
-        std::fs::write(folder.join("test.so"), b"valid").unwrap();
+        std::fs::write(folder.join("test.so"), &valid).unwrap();
         verify(&folder, std::slice::from_ref(&row)).unwrap();
+        // A record naming another build than the library's bytes, with the bytes' own hash.
+        let stamped_other = valid.replace(" source ", " other ");
+        std::fs::write(folder.join("test.so"), &stamped_other).unwrap();
+        let sha256 = std::mem::replace(
+            &mut row.sha256,
+            format!("{:x}", Sha256::digest(&stamped_other)),
+        );
+        let error = verify(&folder, std::slice::from_ref(&row)).unwrap_err();
+        assert!(
+            error.contains("example") && error.contains("not built with the identity"),
+            "{error}"
+        );
+        row.sha256 = sha256;
+        std::fs::write(folder.join("test.so"), &valid).unwrap();
         for identity in [
-            format!("wrong example 1 {RUSTC_VERSION} unwind"),
-            format!("{GAME_BUILD_ID} example 1 wrong unwind"),
+            format!("wrong example 1 {RUSTC_VERSION} source none unwind"),
+            format!("{GAME_BUILD_ID} example 1 wrong source none unwind"),
         ] {
             let valid = std::mem::replace(&mut row.identity, identity);
             let error = verify(&folder, std::slice::from_ref(&row)).unwrap_err();
@@ -333,7 +396,7 @@ mod tests {
         // A link with the right bytes is still refused: it could lead out of the installation.
         #[cfg(unix)]
         {
-            std::fs::write(folder.join("real.so"), b"valid").unwrap();
+            std::fs::write(folder.join("real.so"), &valid).unwrap();
             std::os::unix::fs::symlink(folder.join("real.so"), folder.join("link.so")).unwrap();
             row.file = "link.so".into();
             let error = verify(&folder, std::slice::from_ref(&row)).unwrap_err();
@@ -345,5 +408,38 @@ mod tests {
         row.file = "../test.so".into();
         assert!(verify(&folder, &[row]).unwrap_err().contains("example"));
         std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn dependencies_refuse_a_missing_or_rebuilt_dependency_by_name() {
+        let row = |id: &str, dependencies: &str| Library {
+            file: format!("{id}.so"),
+            sha256: String::new(),
+            id: id.into(),
+            identity: format!(
+                "{GAME_BUILD_ID} {id} 1 {RUSTC_VERSION} source {dependencies} unwind"
+            ),
+        };
+        let base = row("base", "none");
+        let dependent = row(
+            "dependent",
+            &format!("base={:x}", Sha256::digest(base.identity.as_bytes())),
+        );
+        let installed = [row("unrelated", "none"), base];
+        verify_dependencies(&dependent, &installed).unwrap();
+        // Built against another build of `base`.
+        let rebuilt = row("base", &format!("other={}", "0".repeat(64)));
+        let error = verify_dependencies(&dependent, &[rebuilt]).unwrap_err();
+        assert!(
+            error.contains("dependent") && error.contains("another build of base"),
+            "{error}"
+        );
+        let error = verify_dependencies(&dependent, &[]).unwrap_err();
+        assert!(
+            error.contains("dependent") && error.contains("base, which is not installed"),
+            "{error}"
+        );
+        let error = verify_dependencies(&row("dependent", "base"), &[]).unwrap_err();
+        assert!(error.contains("malformed"), "{error}");
     }
 }

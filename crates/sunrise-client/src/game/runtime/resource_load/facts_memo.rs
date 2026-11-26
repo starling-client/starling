@@ -132,7 +132,7 @@ fn identical_inputs_hit_but_changed_behaviours_and_registries_reload() {
     let registry_json = br#"{"states":[["minecraft:air",true,false,"","minecraft:air"],["minecraft:stone",true,false,"","minecraft:stone"]],"defaults":{"minecraft:air":0,"minecraft:stone":1}}"#;
     std::fs::write(
         root.join("gameplay-facts.json"),
-        br#"{"states":[{"id":0},{"id":1,"hardness":2}]}"#,
+        br#"{"states":[{"id":0,"sound":{"identity":"other"}},{"id":1,"hardness":2,"sound":{"identity":"other"}}]}"#,
     )
     .unwrap();
     let mut behaviours = serde_json::json!({"states":[[0,0],[0,0]],"blocks":[{"name":"minecraft:air","class":["Block"]},{"name":"minecraft:stone","class":["Block"]},{"name":"minecraft:dirt","class":["Block"]}]});

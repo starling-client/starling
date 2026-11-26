@@ -13,7 +13,7 @@ pub trait Hooks {
         contract = "collect",
         out = "projectile",
         neoforge = "LivingGetProjectileEvent",
-        version = 2
+        version = 3
     )]
     fn living_get_projectile(
         player: Option<u128>,

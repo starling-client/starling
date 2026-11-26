@@ -1,5 +1,4 @@
 //! The `lightning_strike` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0234
 
 pub trait Hooks {
     /// A server lightning bolt is about to be created. `cause` is `weather`,

@@ -55,9 +55,9 @@ pub trait EntityAttributesRegistrar {
     /// map and the attribute sync, so attribute reads answer the
     /// same defaults with no second copy.
     ///
-    /// Resolved once, at load: an id outside the mod's manifest-owned namespaces, a duplicate
-    /// attribute, a non-finite base or a second declaration of the same type
-    /// refuses the mods, naming the mod; an attribute the game does not know,
+    /// Resolved once, at load: a malformed id, a duplicate
+    /// attribute, a non-finite base or a duplicate entity type (including a built-in
+    /// entity type) refuses the mods, naming the mod; an attribute the game does not know,
     /// or a template without attribute defaults, refuses the resource load,
     /// naming the type.
     fn declare_entity_attributes(

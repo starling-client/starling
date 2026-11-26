@@ -222,9 +222,17 @@ fn decorations(c: &Value, atlas: &HudAtlas) -> Vec<GuiDraw> {
             offhand: !c["offhand"].is_null(),
             slots,
             offhand_pop: pop(&c["offhand"]).unwrap_or(0.0),
-            attack: (indicator == "HOTBAR").then(|| float("attackScale", 1.0)),
         };
         draws.extend(hud_layout::hotbar(w, h, &inputs));
+        if indicator == "HOTBAR" {
+            hud_layout::hotbar_attack_indicator(
+                w,
+                h,
+                inputs.right_handed,
+                float("attackScale", 1.0),
+                &mut draws,
+            );
+        }
     }
     let vehicle_hearts = if c.get("vehicleMaxHealth").is_some() {
         hud_layout::vehicle_max_hearts(float("vehicleMaxHealth", 0.0))
@@ -306,7 +314,8 @@ fn decorations(c: &Value, atlas: &HudAtlas) -> Vec<GuiDraw> {
         h,
         float("xpProgress", 0.0),
         level,
-        c["experienceBar"].as_bool().unwrap_or(false),
+        // Hud.nextContextualInfoState picks the experience bar only for a game mode with experience.
+        survival && c["experienceBar"].as_bool().unwrap_or(false),
         &width,
     ));
     draws

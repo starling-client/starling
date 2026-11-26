@@ -1,11 +1,10 @@
 """Maintainer-requested fork verification and skips a job only when the complete diff leaves its inputs untouched."""
 from pathlib import Path
-import sys
 import unittest
+from tools.ci import vendored_yaml
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "tools/ci/vendor/pyyaml-6.0.3.zip"))
-import yaml  # noqa: E402
+yaml = vendored_yaml.load()
 
 # Each job a fork's pull request can skip, and the selections that keep it.
 GATED = {"verify-tree": ("tooling_required", "rust_required"), "verify-lint": ("rust_required",),

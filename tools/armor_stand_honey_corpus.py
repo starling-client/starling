@@ -1,5 +1,10 @@
 """Armor-stand side-slide through actual Game world ticks."""
-from command_exec_corpus import cmd
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools.command_exec_corpus import cmd
 
 
 def armor_stand_honey():

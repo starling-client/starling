@@ -155,7 +155,7 @@ mod item_toss_tests {
             event: &mut mod_api::EntityJoinLevelEvent<'_>,
         ) -> Flow {
             if event.kind == "minecraft:item" {
-                self.0.joins.lock().unwrap().push(event.entity);
+                self.0.joins.lock().unwrap().push(event.subject.id());
                 self.0.order.lock().unwrap().push("join");
                 if self.0.veto_join {
                     return Flow::Cancel;

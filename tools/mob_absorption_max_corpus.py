@@ -7,7 +7,12 @@ to the maximum (setAbsorptionAmount). An upgrade swaps the modifier
 clamps the amount to the new maximum: a mob whose base max_absorption is 20
 keeps its amount, one with base 0 loses it.
 """
-from command_exec_corpus import cmd
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools.command_exec_corpus import cmd
 
 PIG = 'PersistenceRequired:1b,Silent:1b,NoAI:1b,Health:10f'
 

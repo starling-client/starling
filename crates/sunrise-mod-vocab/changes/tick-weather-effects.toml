@@ -1,0 +1,3 @@
+ids = ["hook:tick_weather_effects", "type:TickWeatherEffectsEvent", "type:HookId"]
+why = "Adds the client hook tick_weather_effects (vanilla ClientLevel.tickWeatherEffects, NeoForge CustomWeatherEffectRenderer.tickRain): each client tick a mod may cancel vanilla's weather effects, the rain splash and sizzle smoke particles and the ambient rain sound, and run its own weather. New hook: no existing hook version changes."
+migrate = "Additive. A mod that matches HookId exhaustively adds the TickWeatherEffects arm."

@@ -19,9 +19,9 @@ pub fn main() -> sunrise_client::Result<()> {
         professions: std::sync::Arc::new(
             sunrise_client::mobs::villager::ResolvedProfessions::vanilla(),
         ),
-        trades: HashMap::new(),
+        trades: Default::default(),
         tags: HashMap::new(),
-        sets: HashMap::new(),
+        sets: Default::default(),
         potion_tags: HashMap::new(),
     };
     let ctx = TradeContext {

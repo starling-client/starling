@@ -83,7 +83,6 @@ fn catalog_for_mod(
             crate::run(
                 crate::apply(rust, &tool, prepared, input, fresh),
                 "horizon-mixins",
-                |_| {},
             )
         },
     )
@@ -110,7 +109,6 @@ fn discover_catalog(
         id: &bundle.manifest.id,
         version: &bundle.manifest.version,
         dependencies: &declared[0],
-        has_api: true,
         code: true,
     }];
     let resolution = dependencies::resolve_links(&inputs).map_err(|e| e.to_string())?;
@@ -121,8 +119,10 @@ fn discover_catalog(
     crate::host::mark_used(&cache)?;
     let stage = cache.join("stage");
     prepare_stage(game, &stage, bundle.needs_mixins())?;
-    let mut listed = internals::Catalog::read(&stage)?;
-    listed.discovery = true;
+    let listed = internals::Catalog {
+        internals: catalog::read(&stage.join(build_data::INTERNALS))?,
+        discovery: true,
+    };
     api::stage(&stage, &projects, &declared, &resolution, &listed)?;
     let mod_dir = stage.join("native-api").join(&bundle.manifest.id);
     let mut cmd = crate::cargo(rust, &stage, "check");

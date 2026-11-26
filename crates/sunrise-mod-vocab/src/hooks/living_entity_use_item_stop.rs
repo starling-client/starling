@@ -1,5 +1,4 @@
 //! The `living_entity_use_item_stop` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0134
 
 pub trait Hooks {
     /// NeoForge's `LivingEntityUseItemEvent.Stop`: `entity` lets go of
@@ -17,7 +16,8 @@ pub trait Hooks {
         contract = "cancel",
         out = "canceled",
         neoforge = "LivingEntityUseItemEvent.Stop",
-        cancellable = true
+        cancellable = true,
+        version = 2
     )]
     fn living_entity_use_item_stop(
         stack: &ItemStack,

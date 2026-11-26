@@ -1,0 +1,3 @@
+ids = ["hook:vanilla_game_event"]
+why = "vanilla_game_event v3 sees a dispenser fluid transfer publish before overflow insertion or preparation when no caller-owned transaction is open in the dispenser's level. In v2, overflow insertion or its level random draws could already have happened. NeoForge DispenseFluidContainer.execute completes the transfer before consuming the original and routing its remainder. An enclosing transaction in the source level still keeps both operations provisional."
+migrate = "No signature changes. A fluid_pickup or fluid_place listener should not expect a dispenser's detached remainder to be in its slots or prepared for ejection when no caller-owned source-level transaction is open."

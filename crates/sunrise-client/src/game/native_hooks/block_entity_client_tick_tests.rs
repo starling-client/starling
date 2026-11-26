@@ -1,4 +1,3 @@
-#![cfg(test)]
 //! `block_entity_client_tick` (#3611), through a client's real frames (`client_tick_steps` after
 //! the frame's `update_world` drain): a client's copies of a type that declared client ticks are
 //! told once per client tick each, between `client_tick_pre`, the level's pre and its post, and
@@ -9,9 +8,9 @@
 use crate::game::native_entity_refs::tests::{run_fresh_cases, with_game_at};
 use crate::game::world_loading::WorldRequest;
 use mod_api::{
-    BlockEntityClientTickEvent, BlockEntityClientTicksEvent, BlockEntityDataReceivedEvent,
-    BlockEntityPart, BlockPart, BlocksEvent, ClientHost, ClientTickPostEvent, ClientTickPreEvent,
-    Hooks, HostSide, LevelTickPostEvent, LevelTickPreEvent, Registrar, RegistrationContext,
+    BlockEntityClientTickEvent, BlockEntityDataReceivedEvent, BlockEntityPart, BlockPart,
+    BlocksEvent, ClientHost, ClientTickPostEvent, ClientTickPreEvent, Hooks, HostSide,
+    LevelTickPostEvent, LevelTickPreEvent, Registrar, RegistrationContext,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -22,12 +21,15 @@ use sunrise_core::nbt::{Compound, Tag};
 
 const HUM: &str = "client_tick_probe:hum";
 const QUIET: &str = "client_tick_probe:quiet";
+/// A mod block named as vanilla's shulker boxes are: its ticker is its own type's.
+const CRATE: &str = "client_tick_probe:crate_shulker_box";
 /// Chunk (100, 100): far from the spawn.
 const CHUNK: (i32, i32) = (100, 100);
 const HUMS: [[i32; 3]; 2] = [[1610, 70, 1613], [1601, 64, 1602]];
 const QUIET_AT: [i32; 3] = [1605, 64, 1605];
 /// A hum in the next column, which stays.
 const OTHER: [i32; 3] = [1620, 64, 1600];
+const CRATE_AT: [i32; 3] = [1621, 64, 1600];
 /// A spawner that arrives after the second hum and before the first.
 const SPAWNER_AT: [i32; 3] = [1603, 64, 1608];
 
@@ -85,13 +87,6 @@ struct Hum;
 impl BlockPart for Hum {}
 #[mod_api::sunrise_part]
 impl BlockEntityPart for Hum {
-    fn block_entity_client_ticks(
-        &self,
-        _: &dyn ClientHost,
-        event: &mut BlockEntityClientTicksEvent<'_>,
-    ) {
-        event.ticks = true;
-    }
     fn block_entity_client_tick(&self, event: &mut BlockEntityClientTickEvent<'_>) {
         record(event);
     }
@@ -104,7 +99,7 @@ impl BlockEntityPart for Hum {
     }
 }
 
-/// Has a client tick but never declares one.
+/// Has a client tick, but the selector rejects its client states.
 struct Quiet;
 #[mod_api::sunrise_part]
 impl BlockPart for Quiet {}
@@ -121,11 +116,20 @@ impl Hooks for Probe {
     fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
         let hum = r.block_entity_type("hum").blocks(&[HUM]).build();
         r.block_entity_part(&hum, Hum).unwrap();
-        let quiet = r.block_entity_type("quiet").blocks(&[QUIET]).build();
+        let quiet = r
+            .block_entity_type("quiet")
+            .blocks(&[QUIET])
+            .ticker_when(|_, _, side| side == mod_api::LogicalSide::Server)
+            .build();
         r.block_entity_part(&quiet, Quiet).unwrap();
+        let boxed = r
+            .block_entity_type("crate_shulker_box")
+            .blocks(&[CRATE])
+            .build();
+        r.block_entity_part(&boxed, Hum).unwrap();
     }
     fn blocks(&self, _: &RegistrationContext, event: &mut BlocksEvent<'_>) {
-        for block in [HUM, QUIET] {
+        for block in [HUM, QUIET, CRATE] {
             event
                 .register(mod_api::Block::new(block, "minecraft:stone"))
                 .unwrap();
@@ -204,7 +208,11 @@ fn a_clients_frames_tick_its_declared_copies_until_they_go() {
         return;
     }
     install();
-    let types = ["client_tick_probe:hum", "client_tick_probe:quiet"];
+    let types = [
+        "client_tick_probe:hum",
+        "client_tick_probe:quiet",
+        "client_tick_probe:crate_shulker_box",
+    ];
     with_game_at(prepared_root(), |game| {
         game.options.execution_role = ExecutionRole::Client;
         game.options.dedicated = None;
@@ -227,12 +235,14 @@ fn a_clients_frames_tick_its_declared_copies_until_they_go() {
         let registry = game.pack.assets.registry;
         let hum = registry.default_state(HUM).unwrap();
         let quiet = registry.default_state(QUIET).unwrap();
+        let boxed = registry.default_state(CRATE).unwrap();
         // Arrival order: the second hum, the quiet one, the first hum, the other column's.
         let placed = [
             (HUMS[1], hum, HUM, 10),
             (QUIET_AT, quiet, QUIET, 20),
             (HUMS[0], hum, HUM, 30),
             (OTHER, hum, HUM, 40),
+            (CRATE_AT, boxed, CRATE, 50),
         ];
         for (n, ([x, y, z], state, id, speed)) in placed.into_iter().enumerate() {
             game.world.set(x, y, z, state).unwrap();
@@ -282,7 +292,7 @@ fn a_clients_frames_tick_its_declared_copies_until_they_go() {
         // Each declared copy once per tick, in arrival order, inside the level's brackets; the
         // quiet type never. The spawner ticks between the second hum and the first, as it arrived:
         // its two particles come between their ticks.
-        let all = |first| ticked(&[(HUMS[1], 10), (HUMS[0], first), (OTHER, 40)]);
+        let all = |first| ticked(&[(HUMS[1], 10), (HUMS[0], first), (OTHER, 40), (CRATE_AT, 50)]);
         game.particles.requested = Some(Vec::new());
         TICK_PARTICLES.lock().unwrap().clear();
         assert_eq!(frame(game, 1), all(30));
@@ -329,12 +339,15 @@ fn a_clients_frames_tick_its_declared_copies_until_they_go() {
         // A copy removed is not told again; its column's other hum still is.
         let [x, y, z] = HUMS[1];
         game.world.block_entities.remove(&(x, y, z));
-        assert_eq!(frame(game, 1), ticked(&[(HUMS[0], 31), (OTHER, 40)]));
+        assert_eq!(
+            frame(game, 1),
+            ticked(&[(HUMS[0], 31), (OTHER, 40), (CRATE_AT, 50)])
+        );
 
         // The server forgets the column: its hums are not told again, the other column's is.
         game.forget_remote_columns(&mut [CHUNK].into_iter().collect(), true);
         for _ in 0..2 {
-            assert_eq!(frame(game, 1), ticked(&[(OTHER, 40)]));
+            assert_eq!(frame(game, 1), ticked(&[(OTHER, 40), (CRATE_AT, 50)]));
         }
 
         // The level going leaves nothing to tell.

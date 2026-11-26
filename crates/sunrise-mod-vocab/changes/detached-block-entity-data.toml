@@ -1,0 +1,3 @@
+ids = ["type:DetachedBlockEntityData", "handle:DetachedBlockEntityData::new", "handle:DetachedBlockEntityData::view"]
+why = "#5877: DetachedBlockEntityData lends a mod's own saved block-entity data (a type id and a Compound, as a structure template or a moving contraption carries it) as a BlockEntityDataView, so code written for the engine's block-entity callbacks can read it too. The view reads the compound as it is and models no item or data slots. New type only."
+migrate = "Nothing to change."

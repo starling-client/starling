@@ -24,7 +24,7 @@ impl mod_api::Hooks for Probe {
     fn loot_drops(
         &self,
         host: &mut dyn mod_api::ServerHost,
-        event: &mut mod_api::LootDropsEvent<'_>,
+        event: &mut mod_api::LootDropsEvent<'_, '_>,
     ) {
         let source = event.context.damage_source.unwrap();
         assert!(event.context.tool.is_none(), "entity context has no TOOL");
@@ -211,7 +211,7 @@ impl mod_api::Hooks for ChangeKillerHand {
     fn loot_drops(
         &self,
         host: &mut dyn mod_api::ServerHost,
-        event: &mut mod_api::LootDropsEvent<'_>,
+        event: &mut mod_api::LootDropsEvent<'_, '_>,
     ) {
         assert!(event.context.tool.is_none());
         let entity = host
@@ -309,7 +309,7 @@ impl mod_api::Hooks for Nested {
     fn loot_drops(
         &self,
         host: &mut dyn mod_api::ServerHost,
-        event: &mut mod_api::LootDropsEvent<'_>,
+        event: &mut mod_api::LootDropsEvent<'_, '_>,
     ) {
         if event.context.entity.map(|e| e.0) != Some(90) {
             return;
@@ -377,7 +377,11 @@ fn death_loot_nested_death_keeps_outer_context() {
 struct BlockTool(mod_api::ItemStack);
 #[mod_api::__subscriptions]
 impl mod_api::Hooks for BlockTool {
-    fn loot_drops(&self, _: &mut dyn mod_api::ServerHost, event: &mut mod_api::LootDropsEvent<'_>) {
+    fn loot_drops(
+        &self,
+        _: &mut dyn mod_api::ServerHost,
+        event: &mut mod_api::LootDropsEvent<'_, '_>,
+    ) {
         assert!(event.context.damage_source.is_none());
         assert!(event.context.block.is_some());
         assert_eq!(event.context.tool, Some(&self.0));

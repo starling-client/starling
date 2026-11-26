@@ -73,6 +73,8 @@ pub enum MenuSlotBacking {
     /// 0..36, the armour 36..40 from feet to head, the off hand 40.
     Player(usize),
     /// Slot `slot` of the block entity at `pos`, through its [`ITEMS`](crate::ITEMS) handler.
+    /// `(level, pos, slot)` is the same identity as [`StorageSlot`](crate::StorageSlot): a
+    /// double chest's slot names the half that owns it, with that half's own unsided index.
     BlockEntity {
         /// The level the block entity is in.
         level: LevelRef,
@@ -98,11 +100,11 @@ pub enum MenuSlotBacking {
     /// Slot `.0` of a mod's display menu with no declared transient or handler backing.
     Native(usize),
     /// A container slot of a mod menu type opened with no block, backed by storage that is not a
-    /// block entity ([`PlayerRef::back_mod_menu_slots`](crate::PlayerRef::back_mod_menu_slots)):
+    /// block entity ([`MenuRef::back_slots`](crate::MenuRef::back_slots)):
     /// a held item's contents or an entity's item handler. Only such a slot has this backing.
     Place(MenuSlotPlace),
     /// Slot `.0` of this window's own transient container. It is never backed by another
-    /// inventory or saved independently; its final value appears in `menu_closed`.
+    /// inventory or saved independently; its final value appears in `MenuPart::menu_removed`.
     Owned(usize),
 }
 
@@ -115,8 +117,6 @@ pub enum MenuDataRefusal {
     Unsupported,
     /// The player or the menu generation is no longer current.
     Stale,
-    /// The caller does not own the menu type.
-    WrongOwner,
     /// The index is outside the menu type's declared data slots.
     InvalidIndex,
 }

@@ -10,8 +10,9 @@ pub trait Hooks {
 `Hooks::register_particle_groups` is the client registration-phase counterpart of NeoForge
 26.3's `RegisterParticleGroupsEvent`. It receives a `RegistrationContext` once at client
 startup. Call `event.register` with a namespaced ID and a factory. The factory returns a
-`ParticleGroup` with a `ParticleBlend` (`Opaque` or `Translucent`) and the particle types
-that draw in it.
+`ParticleGroup` with a `ParticleBlend` (`Opaque`, `Translucent`, or `Additive`) and the particle types
+that draw in it. `Additive` draws after the translucent layer, depth-tested without depth writes,
+blended additively.
 
 ```rust,ignore
 fn register_particle_groups(

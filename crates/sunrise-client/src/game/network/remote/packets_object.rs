@@ -1,9 +1,8 @@
 use super::*;
 
 impl Game<'_> {
-    /// `C::AddEntity`: its arms of `apply_packet`, guard and order kept.
+    /// `C::AddEntity`: admit the entity before replacing an old ID.
     pub(super) fn apply_add_entity_packet(&mut self, p: play::AddEntity) {
-        self.audio.remove_sound_entity(p.id as u32);
         let kind = self
             .remote
             .as_ref()
@@ -14,15 +13,54 @@ impl Game<'_> {
                     .map(str::to_owned)
             })
             .unwrap_or_default();
+        // `createEntityFromPacket`: an unlisted PlayerInfo still supplies its profile.
+        if kind == "minecraft:player"
+            && !self
+                .remote
+                .as_ref()
+                .is_some_and(|r| r.tab_players.contains_key(&p.uuid))
+        {
+            log::warn!(
+                "Server attempted to add a player before PlayerInfo ({:032x})",
+                p.uuid
+            );
+            return;
+        }
+        // ClientLevel.addEntity removes any existing entity with the same id before inserting.
+        self.detach_camera_if_matching(|cam_id| cam_id == p.id);
+        self.audio.remove_sound_entity(p.id as u32);
         let rotation = [p.yaw, p.pitch, p.head_yaw].map(sunrise_protocol::buf::unpack_degrees);
+        // ClientLevel.addEntity discards the old entity before inserting the new one.
+        if self
+            .remote
+            .as_ref()
+            .is_some_and(|r| r.general.rows.contains_key(&p.id))
+        {
+            self.apply_remove_entities_packet(play::RemoveEntities { ids: vec![p.id] });
+        }
         if let Some(r) = self.remote.as_mut() {
             // ClientLevel.addEntity: an id it holds already is removed
             // and added again, after the player.
             r.ticked_before_player.remove(&(p.id as u32));
             // A new entity looks its PlayerInfo up afresh.
             r.level_player_textures.remove(&p.id);
+            r.level_player_infos.remove(&p.id);
+            if let Some(old_uuid) = r.level_entity_uuids.insert(p.id, p.uuid)
+                && old_uuid != p.uuid
+                && r.level_uuids.get(&old_uuid) == Some(&p.id)
+            {
+                r.level_uuids.remove(&old_uuid);
+            }
+            if let Some(old_id) = r.level_uuids.insert(p.uuid, p.id)
+                && old_id != p.id
+                && r.level_entity_uuids.get(&old_id) == Some(&p.uuid)
+            {
+                r.level_entity_uuids.remove(&old_id);
+            }
             if kind == "minecraft:player" {
                 r.level_players.insert(p.id, p.uuid);
+                r.level_player_infos
+                    .insert(p.id, std::cell::OnceCell::new());
                 // createEntityFromPacket: the player takes the profile of its list entry.
                 match r.players.get(&p.uuid) {
                     Some(name) => r.level_player_names.insert(p.id, name.clone()),
@@ -44,6 +82,8 @@ impl Game<'_> {
         } else {
             Holder::Entity(p.id as u32)
         };
+        // The constructor's `EntityEvent.Size` comes before `EntityConstructing`.
+        let constructed = self.native_constructing_size(p.id as u32, &kind);
         self.initialize_entity(holder, &kind);
         let replace = self.tracks_remote_entity(p.id);
         self.spawn_entity(p.id, &kind, p.position, rotation);
@@ -51,7 +91,7 @@ impl Game<'_> {
             r.cart_lerps.remove(&p.id);
             r.lerps.remove(&p.id);
         }
-        if !self.spawn_remote_object(p.id, &kind, p.position, (rotation[0], rotation[1]), p.data) {
+        if !self.spawn_remote_object(p.id, &kind, p.position, rotation, p.data) {
             self.spawn_added_projectile(&p, &kind, (rotation[0], rotation[1]), replace);
         }
         // Entity.recreateFromPacket: objects must exist before applying motion.
@@ -64,6 +104,9 @@ impl Game<'_> {
         }
         self.move_remote_text_display(p.id, p.position, Some((rotation[0], rotation[1])));
         self.move_remote_interaction(p.id, p.position);
+        self.pick_section_sync_id(p.id as u32);
+        self.entity_section_joined(p.id as u32, p.position);
+        self.native_constructed_size(p.id as u32, constructed);
     }
 
     /// `C::RemoveEntities`: its arms of `apply_packet`, guard and order kept.
@@ -77,9 +120,10 @@ impl Game<'_> {
                 }
                 r.level_player_names.remove(&id);
                 r.level_player_textures.remove(&id);
+                r.level_player_infos.remove(&id);
                 r.attachments.remove(&Holder::Entity(id as u32));
-                Self::forget_remote_general(r, id);
             }
+            self.pick_section_remove(id as u32);
         }
         self.remove_entities(&p.ids);
     }
@@ -142,6 +186,14 @@ impl Game<'_> {
 
     /// `C::TakeItemEntity`: its arms of `apply_packet`, guard and order kept.
     pub(super) fn apply_take_item_entity_packet(&mut self, p: play::TakeItemEntity) {
+        // A client mod hears the pickup while what was taken is still whole (#5595): only of an
+        // entity this client tracks, as vanilla acts only on one (`if (from != null)`).
+        if mod_api::__private::listened(mod_api::HookId::ClientTakeItemEntity)
+            && let Some(collected) = u32::try_from(p.item).ok().and_then(|id| self.entity(id))
+        {
+            let collector = u32::try_from(p.player).ok().and_then(|id| self.entity(id));
+            self.native_client_take_item_entity(collected, collector, p.amount);
+        }
         // ClientPacketListener.handleTakeItemEntity: the pickup sound at
         // the orb, item or arrow, whoever collects it (the server sends
         // none); an entity this client doesn't track sounds at this player.
@@ -181,7 +233,7 @@ impl Game<'_> {
         if let Some(o) = orb_at {
             let mut r = sunrise_client::random_source::create();
             let pitch = (r.next_float() - r.next_float()) * 0.35 + 0.9;
-            self.audio.play(
+            self.play_audio(
                 "minecraft:entity.experience_orb.pickup",
                 Some([o.x, o.y, o.z]),
                 0.1,
@@ -190,8 +242,7 @@ impl Game<'_> {
         } else if let Some(at) = at {
             let mut r = sunrise_client::random_source::create();
             let pitch = ((r.next_float() - r.next_float()) * 0.7 + 1.0) * 2.0;
-            self.audio
-                .play("minecraft:entity.item.pickup", Some(at), 0.2, pitch);
+            self.play_audio("minecraft:entity.item.pickup", Some(at), 0.2, pitch);
         }
         // ItemPickupParticle toward the collector (this player, another one or a mob).
         let collector = if self
@@ -230,9 +281,22 @@ impl Game<'_> {
                 collector,
             );
         }
-        // An orb stays: the server may still hold merged ones in it.
+        // An orb stays: the server may still hold merged ones in it. An item shrinks by the
+        // amount taken and goes only when its stack is empty, so a survivor stays in view.
         if !orb {
-            self.remove_entity(p.item);
+            let remaining = self
+                .dropped
+                .iter_mut()
+                .find(|d| d.id == p.item as u32)
+                .map(|item| {
+                    if item.stack.count > 0 {
+                        item.stack.count = item.stack.count.saturating_sub(p.amount.max(0) as u32);
+                    }
+                    item.stack.count
+                });
+            if remaining.is_none_or(|count| count == 0) {
+                self.remove_entity(p.item);
+            }
         }
     }
 
@@ -272,6 +336,9 @@ impl Game<'_> {
             }
         } else if let Some(m) = self.mob_index.get_mut(&mut self.mobs, p.id as u32) {
             m.hurt_time = 10;
+            if &*m.kind.id == "minecraft:player" {
+                m.extra.hurt_dir = p.yaw;
+            }
         } else {
             self.remote_dragon_hurt(p.id);
         }
@@ -331,31 +398,144 @@ impl Game<'_> {
             self.teleport_driven_vehicle(position, rotation, delta, p.on_ground);
             return Ok(());
         }
-        let base = self
-            .remote
-            .as_ref()
-            .and_then(|r| r.entities.get(&p.id))
-            .map_or([0.0; 3], |t| t.position);
-        let rel = |bit: i32, i: usize| {
-            if p.relatives & bit != 0 {
-                base[i] + p.position[i]
+        if self.text_displays.contains_key(&p.id) {
+            self.teleport_remote_text_display(p.id, p.position, p.yaw, p.pitch, p.relatives);
+            self.entity_section_moved_id(p.id as u32);
+            return Ok(());
+        }
+        let (base, now_yaw, now_pitch, old_pos, old_yaw, old_pitch, now_vel) =
+            if let Some(m) = self.mob_index.get(&self.mobs, p.id as u32) {
+                let at = self
+                    .remote
+                    .as_ref()
+                    .and_then(|r| r.stepped.get(&p.id))
+                    .map_or_else(|| mob_pos_rot(m), |h| h.heading(mob_pos_rot(m)));
+                (
+                    at.position,
+                    at.yaw,
+                    at.pitch,
+                    [m.previous.x, m.previous.y, m.previous.z],
+                    m.previous_yaw,
+                    m.previous_head_pitch,
+                    [m.velocity.x, m.velocity.y, m.velocity.z],
+                )
+            } else if let Some(i) = self.interactions.get(&p.id) {
+                (
+                    [i.position.x, i.position.y, i.position.z],
+                    i.yaw,
+                    i.pitch,
+                    [i.previous.x, i.previous.y, i.previous.z],
+                    i.previous_yaw,
+                    i.previous_pitch,
+                    [0.0; 3],
+                )
+            } else if let Some(a) = self.armor_stands.iter().find(|a| a.id == p.id as u32) {
+                let cur = PosRot {
+                    position: [a.position.x, a.position.y, a.position.z],
+                    yaw: a.yaw,
+                    pitch: a.pitch,
+                };
+                let at = self
+                    .remote
+                    .as_ref()
+                    .and_then(|r| r.stepped.get(&p.id))
+                    .map_or(cur, |h| h.heading(cur));
+                (
+                    at.position,
+                    at.yaw,
+                    at.pitch,
+                    [a.previous.x, a.previous.y, a.previous.z],
+                    a.previous_yaw,
+                    a.previous_pitch,
+                    [a.velocity.x, a.velocity.y, a.velocity.z],
+                )
+            } else if let Some(b) = self.boats.iter().find(|b| b.id == p.id as u32) {
+                (
+                    [b.position.x, b.position.y, b.position.z],
+                    b.yaw,
+                    b.pitch,
+                    [b.previous.x, b.previous.y, b.previous.z],
+                    b.previous_yaw,
+                    b.pitch,
+                    [b.velocity.x, b.velocity.y, b.velocity.z],
+                )
+            } else if let Some(c) = self.carts.iter().find(|c| c.id == p.id as u32) {
+                (
+                    [c.position.x, c.position.y, c.position.z],
+                    c.yaw,
+                    c.pitch,
+                    [c.previous.x, c.previous.y, c.previous.z],
+                    c.previous_yaw,
+                    c.previous_pitch,
+                    [c.velocity.x, c.velocity.y, c.velocity.z],
+                )
+            } else if let Some(t) = self.remote.as_ref().and_then(|r| r.entities.get(&p.id)) {
+                (
+                    t.position,
+                    t.yaw,
+                    t.pitch,
+                    t.previous,
+                    t.previous_yaw,
+                    t.previous_pitch,
+                    [0.0; 3],
+                )
             } else {
-                p.position[i]
+                ([0.0; 3], 0.0, 0.0, [0.0; 3], 0.0, 0.0, [0.0; 3])
+            };
+        let resolve = |origin: [f64; 3], origin_yaw: f32, origin_pitch: f32| {
+            let coord = |bit: i32, i: usize| {
+                if p.relatives & bit != 0 {
+                    origin[i] + p.position[i]
+                } else {
+                    p.position[i]
+                }
+            };
+            let pos = [
+                coord(play::relative::X, 0),
+                coord(play::relative::Y, 1),
+                coord(play::relative::Z, 2),
+            ];
+            let yaw = if p.relatives & play::relative::Y_ROT != 0 {
+                origin_yaw + p.yaw
+            } else {
+                p.yaw
+            };
+            let pitch = (if p.relatives & play::relative::X_ROT != 0 {
+                origin_pitch + p.pitch
+            } else {
+                p.pitch
+            })
+            .clamp(-90.0, 90.0);
+            PosRot {
+                position: pos,
+                yaw,
+                pitch,
             }
         };
-        let position = [
-            rel(play::relative::X, 0),
-            rel(play::relative::Y, 1),
-            rel(play::relative::Z, 2),
+        let target = resolve(base, now_yaw, now_pitch);
+        let snap_old = resolve(old_pos, old_yaw, old_pitch);
+        let vel = |bit: i32, i: usize| {
+            if p.relatives & bit != 0 {
+                now_vel[i] + p.delta[i]
+            } else {
+                p.delta[i]
+            }
+        };
+        let delta = [
+            vel(play::relative::DELTA_X, 0),
+            vel(play::relative::DELTA_Y, 1),
+            vel(play::relative::DELTA_Z, 2),
         ];
-        // setValuesFromPositionPacket: interpolated, unless too far.
-        self.move_entity(
+        // setValuesFromPositionPacket: interpolated unless too far; old pose resolved separately on snap.
+        self.move_entity_with_old(
             p.id,
-            Some(Path::Linear(position)),
-            Some((p.yaw, p.pitch)),
+            Some(Path::Linear(target.position)),
+            Some((target.yaw, target.pitch)),
             p.on_ground,
             MovePacket::Teleport,
+            Some(snap_old),
         );
+        self.remote_motion(p.id, delta);
         self.entity_section_moved_id(p.id as u32);
         Ok(())
     }

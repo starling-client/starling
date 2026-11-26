@@ -1,7 +1,10 @@
 //! Where blocks' textures are in the block sprite arrays, for a client mod drawing blocks with the player's own
 //! textures (resource packs included) in its own pass: with `WorldDrawn::block_sprites`, the arrays themselves.
 use super::Game;
-use mod_api::{AtlasRegion, ColorResolver, Identifier, LevelReadError};
+use mod_api::{
+    AtlasRegion, AtlasSpriteError, AtlasSpritePixels, ColorResolver, Identifier, LevelReadError,
+};
+use sunrise_client::assets::RenderAssets;
 use sunrise_client::block_sprites::{BlockSprites, Lookup, SpriteRef};
 use sunrise_client::chunk::Chunk;
 use sunrise_world::registry::BlockStateId;
@@ -26,10 +29,10 @@ impl Game<'_> {
             })
             .collect()
     }
-    /// For a client mod: each texture's sprite by name (`minecraft:block/stone`, `block/stone`), none for one no
-    /// model uses. API 380.
-    pub(super) fn texture_sprites(&self, textures: &[&str]) -> Vec<Option<SpriteRef>> {
-        let atlas = self
+    /// The blocks atlas the sprite API answers from (the one being stitched, else the published
+    /// one) and the layers to one of its arrays.
+    fn sprite_atlas_and_split(&self) -> (&RenderAssets, u32) {
+        let atlas: &RenderAssets = self
             .stitching_block_atlas
             .as_ref()
             .unwrap_or(&self.pack.render);
@@ -37,10 +40,25 @@ impl Game<'_> {
             .renderer
             .as_ref()
             .map_or(u32::MAX, |r| r.sprite_split());
+        (atlas, split)
+    }
+    /// For a client mod: each texture's sprite by name (`minecraft:block/stone`, `block/stone`), none for one no
+    /// model uses. API 380.
+    pub(super) fn texture_sprites(&self, textures: &[&str]) -> Vec<Option<SpriteRef>> {
+        let (atlas, split) = self.sprite_atlas_and_split();
         textures
             .iter()
             .map(|name| sunrise_client::block_sprites::texture_at(atlas, split, name))
             .collect()
+    }
+    /// For a client mod: one blocks-atlas sprite's first frame as RGBA8 (`RenderAssets::atlas_sprite_pixels`), from
+    /// the same atlas `texture_sprites` answers from, split into arrays the same way.
+    pub(super) fn native_atlas_sprite_pixels(
+        &self,
+        sprite: SpriteRef,
+    ) -> Result<AtlasSpritePixels, AtlasSpriteError> {
+        let (atlas, split) = self.sprite_atlas_and_split();
+        atlas.atlas_sprite_pixels(sprite, split)
     }
     /// `ClientLevel.getBlockTint(pos, resolver)`, without consulting block or fluid tint sources.
     pub(super) fn biome_tint(
@@ -565,8 +583,7 @@ mod biome_tint_tests {
     use super::Game;
     use crate::game::native_entity_refs::tests::with_client_game;
     use mod_api::{
-        Authority, BiomeColorsEvent, ClientHost, ColorResolver, Hooks, ModEntry,
-        prelude::BlockStatesHost,
+        BiomeColorsEvent, ClientHost, ColorResolver, Hooks, ModEntry, prelude::BlockStatesHost,
     };
     use std::sync::Arc;
     use sunrise_client::chunk::Chunk;
@@ -594,7 +611,7 @@ mod biome_tint_tests {
             with_client_game(|game| {
                 // The replay fixture opens a client level without connecting to a server.
                 game.init_remote_for_replay().unwrap();
-                game.native_lifecycle.begin_open(Authority::RemoteClient);
+                game.native_lifecycle.begin_open(None);
 
                 let plains_id = game.res.biomes().id("minecraft:plains");
                 let mut chunk = Chunk::empty(0, 0);

@@ -1,0 +1,6 @@
+ids = [
+    "hook:player_destroyed_block",
+    "method:Hooks::player_destroyed_block",
+]
+why = "player_destroyed_block version 2 is heard on both sides. The server is unchanged. The breaking client now fires it from MultiPlayerGameMode.destroyBlock's Block.destroy call, right after the local player's predicted removal succeeded, for local effects only: the listener gets a ClientHost, event.state is vanilla's oldState (the block read before playerWillDestroy), and event.block_entity is always none. It is not fired for another player's break or a refused prediction. Version 1 was server only and took a ServerHost."
+migrate = "Update listeners to accept HostSide instead of &mut dyn ServerHost, and match HostSide::Server before calling server-only methods; a listener that must stay server-only does nothing for HostSide::Client. If your manifest pins this hook, request hook_version = 2."

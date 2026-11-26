@@ -1,0 +1,49 @@
+ids = [
+    "handle:LevelRef::collision_boxes",
+    "handle:LevelRef::block_shape",
+    "handle:LevelRef::visit_block_shape",
+    "method:LevelHost::collision_shape",
+    "hook:collision_shape",
+    "hook:collision_shape.shape",
+    "type:CollisionShapeEvent.shape",
+    "handle:LevelRef::visit_block_collisions",
+    "type:CollisionExclusionsError",
+    "type:CollisionExclusionsError.TooMany",
+    "type:VoxelShape",
+    "handle:VoxelShape::empty",
+    "handle:VoxelShape::try_from_boxes",
+    "handle:VoxelShape::is_empty",
+    "handle:VoxelShape::boxes",
+    "type:VoxelShapeError",
+    "type:VoxelShapeError.InvalidBounds",
+    "type:VoxelShapeError.Unrepresentable",
+]
+why = "The old block-collision query allocated a flat box list, capped scans at a million cells and refused scans crossing missing client chunks. Vanilla (unchanged by NeoForge here) lazily yields unclipped world-space shapes in CollisionGetter.getBlockCollisions and BlockCollisions.computeNext, skipping chunks that Level.getChunkForCollisions cannot get without loading. Both reads now use that cursor (whose domain comes from vanilla Cursor3D) in the named level. The boolean read follows CollisionGetter.noBlockCollision, stopping at the first hit. Shapes.box, Shapes.create and Shapes.or define the new immutable voxel geometry. LevelRef::clip and LevelRef::line_of_sight also dropped their synthetic 4096-visit ceiling and missing-column refusal to match BlockGetter.clip, BlockGetter.clipWithInteractionOverride and BlockGetter.traverseBlocks over resident data (ClientChunkCache.getChunk(..., true) on clients and viewed worlds; PathNavigationRegion.getBlockState/getChunk on immutable server views; out-of-height cells read as air), with collider clips using the full collision registry instead of rejecting dynamic-outline metadata and outline clips still failing explicitly when dynamic outline geometry is unsupported. Collision exclusions dropped their synthetic 64-box cap (CollisionExclusionsError::TooMany), matching Shapes.join(..., ONLY_FIRST) with no NeoForge exclusion list limit. BlockBehaviour.BlockStateBase.getCollisionShape anchors the typed shape queries. Destruction follows Level.destroyBlock and NeoForge CommonHooks.handleBlockDrops, retaining the old-state loot read before replacement."
+migrate = '''
+Replace `let boxes = level.collision_boxes(host, bounds)?;` with:
+
+```rust,ignore
+use std::ops::ControlFlow;
+
+let mut boxes = Vec::new();
+level.visit_block_collisions(host, bounds, &mut |shape| {
+    boxes.extend(shape.boxes());
+    ControlFlow::Continue(())
+})?;
+```
+
+When you do not need a list, consume `shape.boxes()` in the visitor or work with the `&VoxelShape` directly. Clone the shape to keep it after the visitor. Return `ControlFlow::Break(())` to stop the scan; it returns `Some(Break(()))`. `Some(Continue(()))` means completion, even for no hits. `None` still means a refused query, not an empty scan; if you collect, discard any partial result on `None`.
+
+`level.has_collisions(host, bounds)` keeps its signature and checks only for the first hit. Both methods now read parked server levels and skip missing chunks on either side without loading them. Do not interpret `Some(false)` or a completed empty visit as proof that every chunk was loaded. Neither method counts entities or the world border.
+
+To build your own immutable shape, use `VoxelShape::try_from_boxes(&boxes)`, with finite ordered `[min_x, min_y, min_z, max_x, max_y, max_z]` coordinates, or `VoxelShape::empty()` for no geometry. Handle `VoxelShapeError::InvalidBounds` for invalid coordinates and `VoxelShapeError::Unrepresentable` for an unrepresentable union. `is_empty()` reports no occupied volume; `boxes()` yields the occupied boxes without allocating a list.
+
+`level.clip(host, from, to, blocks, fluids)` and `level.line_of_sight(host, from, to)` keep their signatures, no longer stop at 4096 visited cells, and treat missing columns and out-of-height cells as air without loading chunks. Do not treat `None` as a missing-chunk signal; `None` now means an unavailable/stale level, non-finite endpoints, or a shape query error (such as an unsupported dynamic outline in `ClipBlock::Outline`). `ClipBlock::Collider` now clips against dynamic collision shapes such as bamboo, shulker boxes and pistons.
+
+Remove any match arm on `CollisionExclusionsError::TooMany`. `entity.set_collision_exclusions(host, &boxes)` and `host.set_collision_exclusions(&boxes)` keep their finite AABB slice signatures with no 64-box cap; non-finite or inverted boxes are still rejected before replacing the player's current set.
+The `CollisionExclusionsError` Wire layout drops `TooMany` and now uses `Stale = 0`, `NotAPlayer = 1`, `NotFinite = 2`, `Inverted = 3`.
+
+Use `level.visit_block_shape(host, state, pos, kind, &mut visit)` in place of `level.block_shape(...)`. The visitor receives each block-local box and can break. `LevelHost::collision_shape(pos)` now returns an `Option<VoxelShape>`; use `.boxes()` on the returned shape. `BlockPart::collision_shape` (hook version 2) now writes an `Option<VoxelShape>`; build a replacement with `VoxelShape::try_from_boxes`, or use `VoxelShape::empty()`. If a Part panics, the shared dispatcher restores the previous answer and the other Parts still run.
+
+`level.destroy_block(...)` now joins the transaction in its own level. Loot preparation reads the old block and block entity; an abort restores the old block and drops deferred item entities, experience and break effects. With no transaction in that level it still acts immediately.
+'''

@@ -21,7 +21,7 @@ pub trait Hooks {
         scope = "block_entity",
         key = "id",
         neoforge = "IBlockEntityExtension.onLoad",
-        version = 2
+        version = 3
     )]
     fn block_entity_on_load(id: BlockEntityTypeKey, subject: mod_api::BlockEntitySideScope<'_>);
 }

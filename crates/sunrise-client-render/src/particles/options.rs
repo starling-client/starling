@@ -1,6 +1,7 @@
 //! Engine particle provider options, independent of API registry keys.
 use super::ParticleType;
 use mod_api::client::particles::PositionSource;
+use sunrise_world::particle_options::ParticleOptions as PersistentOptions;
 /// `ParticleOptions` with the parameters of the option classes used here.
 #[derive(Clone, Debug, PartialEq)]
 // exhaustive: the game builds it with a literal; mods use the constructors
@@ -40,6 +41,42 @@ pub struct ParticleOptions {
     pub polytone_seed: Option<std::sync::Arc<super::polytone::Seed>>,
 }
 impl ParticleOptions {
+    /// Persistent options that don't need a model lookup or a special renderer.
+    pub fn from_persistent(options: &PersistentOptions) -> Option<Self> {
+        use PersistentOptions as P;
+        let rgb = |color: i32| [16, 8, 0].map(|s| ((color >> s) & 255) as f32 / 255.0);
+        Some(match *options {
+            P::Simple(ty) => Self::simple(ty),
+            P::Dust(color, scale) => Self::dust(rgb(color), scale),
+            P::DustTransition(from, to, scale) => Self::dust_transition(rgb(from), rgb(to), scale),
+            P::Color(ty, color) => {
+                let [r, g, b] = rgb(color);
+                Self::colored(ty, [r, g, b, ((color >> 24) & 255) as f32 / 255.0])
+            }
+            P::Spell(ty, color, scale) => {
+                let [r, g, b] = rgb(color);
+                Self {
+                    scale,
+                    ..Self::colored(ty, [r, g, b, 1.0])
+                }
+            }
+            P::Power(scale) => Self {
+                scale,
+                ..Self::simple(ParticleType::DragonBreath)
+            },
+            P::Charge(roll) => Self::sculk_charge(roll),
+            P::Shriek(delay) => Self::shriek(delay),
+            P::Geyser(ty, water, base) => Self::geyser_base(ty, water, base.unwrap_or(0.0)),
+            P::Trail(pos, color, ticks) => Self::trail(pos, color as u32, ticks),
+            P::Vibration(pos, ticks) => Self::vibration(
+                PositionSource::Block(pos),
+                pos.map(|v| f64::from(v) + 0.5),
+                ticks,
+            ),
+            P::Item(_) | P::Block(..) | P::ElderGuardian => return None,
+        })
+    }
+
     pub fn simple(ty: ParticleType) -> Self {
         Self {
             ty,

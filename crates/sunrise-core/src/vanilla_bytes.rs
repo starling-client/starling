@@ -2,6 +2,9 @@
 
 use crate::nbt::{self, Tag};
 
+/// `ServerboundCustomPayloadPacket.MAX_PAYLOAD_SIZE` in vanilla 26.3.
+pub const SERVERBOUND_CUSTOM_PAYLOAD_LIMIT: usize = 32_767;
+
 /// An outgoing packet body.
 #[derive(Default)]
 pub struct Writer {
@@ -70,11 +73,22 @@ impl Writer {
         self.data.extend_from_slice(&v.to_be_bytes());
     }
     pub fn nbt(&mut self, tag: &Tag) {
-        match nbt::write_network(tag, nbt::Limits::default()) {
+        self.nbt_within(tag, nbt::Limits::default());
+    }
+    /// Write network NBT using the packet codec's limits.
+    pub fn nbt_within(&mut self, tag: &Tag, limits: nbt::Limits) {
+        match nbt::write_network(tag, limits) {
             Ok(bytes) => self.data.extend_from_slice(&bytes),
             // Unencodable tags (too deep) are sent as "no tag".
             Err(_) => self.data.push(0),
         }
+    }
+    /// Write a network NBT tag under `limits`, returning the serialization error
+    /// instead of substituting `Tag::End`.
+    pub fn try_nbt(&mut self, tag: &Tag, limits: nbt::Limits) -> Result<(), nbt::Error> {
+        let bytes = nbt::write_network(tag, limits)?;
+        self.data.extend_from_slice(&bytes);
+        Ok(())
     }
     pub fn long_array(&mut self, v: &[i64]) {
         self.varint(v.len() as i32);

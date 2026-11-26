@@ -1,8 +1,8 @@
 import json,hashlib,sys,uuid
 from pathlib import Path
-sys.path.insert(0,str(Path.cwd()/'tools'))
-import test_command_exec_parity as driver
-import harness_args
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_command_exec_parity as driver, harness_args
 CASES=[('absent',None,1),('zero',0,1),('past-negative',-5,1),('past-positive',1,1),('future',999999,1),('ai-control',999999,0)]
 def program():
  ops=[]

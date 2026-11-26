@@ -2,7 +2,7 @@
 //! that every other entity collides with, kept on the server, saved with the entity, and sent
 //! to the Sunrise clients that track it.
 //!
-//! The server keeps a [`ColliderEntry`] by entity id beside the entity's attachments, and a
+//! The server keeps a [`ColliderState`] by entity id beside the entity's attachments, and a
 //! client keeps what its tracking server sent in `Remote::colliders`. A level with no colliders
 //! holds empty maps, so nothing else in the game pays for them.
 use super::{
@@ -10,10 +10,11 @@ use super::{
     commands::Target,
     remote_vehicles::{PassengerSeat, passenger_root},
 };
-use mod_api::{Collider, ColliderError, EntityRef};
+use mod_api::{Collider, ColliderError, ColliderPose, EntityRef};
 use std::collections::{HashMap, HashSet};
+use std::ops::ControlFlow;
 use sunrise_client::{
-    colliders::{ColliderState, valid_rotation},
+    colliders::{ColliderState, normalize_pose},
     fast_hash::FxHashMap,
 };
 use sunrise_core::{
@@ -26,19 +27,13 @@ use sunrise_protocol::collider_sync::{self, Message};
 /// The save key of an entity's collider, beside its attachments.
 pub(super) const SAVE_KEY: &str = "SunriseCollider";
 
-/// A server entity's collider, with the form the save writes.
-pub(in crate::game) struct ColliderEntry {
-    pub state: ColliderState,
-    saved: Compound,
-}
-
 /// The per-entity maps the game keeps by entity id: attachments, and colliders. It reads as
 /// the attachments map, which is what most of the game wants; the colliders are beside it so
 /// that what saves, loads and forgets an entity's attachments handles its collider too.
 #[derive(Default)]
 pub(in crate::game) struct EntityMaps {
     attachments: FxHashMap<u32, Attachments>,
-    colliders: FxHashMap<u32, ColliderEntry>,
+    colliders: FxHashMap<u32, ColliderState>,
     /// The ids of the colliders each level holds, so a level's tick places only its own.
     by_level: HashMap<Dim, HashSet<u32>>,
 }
@@ -57,16 +52,16 @@ impl std::ops::DerefMut for EntityMaps {
 }
 
 impl EntityMaps {
-    pub fn collider(&self, id: u32) -> Option<&ColliderEntry> {
+    pub fn collider(&self, id: u32) -> Option<&ColliderState> {
         self.colliders.get(&id)
     }
 
-    pub fn collider_mut(&mut self, id: u32) -> Option<&mut ColliderEntry> {
+    pub fn collider_mut(&mut self, id: u32) -> Option<&mut ColliderState> {
         self.colliders.get_mut(&id)
     }
 
     /// Gives the entity `id`, which stands in `level`, this collider.
-    pub fn insert_collider(&mut self, id: u32, level: Dim, entry: ColliderEntry) {
+    pub fn insert_collider(&mut self, id: u32, level: Dim, entry: ColliderState) {
         if self.colliders.insert(id, entry).is_some() {
             self.unindex(id);
         }
@@ -106,7 +101,7 @@ impl EntityMaps {
     pub(super) fn write_collider(&self, root: &mut Compound, id: u32) {
         match self.colliders.get(&id) {
             Some(entry) => {
-                root.insert(SAVE_KEY.into(), Tag::Compound(entry.saved.clone()));
+                root.insert(SAVE_KEY.into(), Tag::Compound(entry.to_nbt()));
             }
             None => {
                 root.remove(&SAVE_KEY.into());
@@ -167,7 +162,16 @@ pub(in crate::game) struct Placements(HashMap<Dim, Placement>);
 /// What the server sends about one entity's collider this tick.
 pub(in crate::game) struct ColliderChange {
     entity: u32,
-    messages: Vec<Message>,
+    update: ColliderUpdate,
+}
+
+enum ColliderUpdate {
+    Set {
+        previous: Option<ColliderState>,
+        state: ColliderState,
+    },
+    Pose(ColliderPose),
+    Clear,
 }
 
 impl Game<'_> {
@@ -187,7 +191,7 @@ impl Game<'_> {
         let id = self.collider_holder(entity).ok()?;
         self.entity_attachments
             .collider(id)
-            .map(|entry| entry.state.to_api())
+            .map(ColliderState::to_api)
     }
 
     pub(super) fn entity_set_collider(
@@ -200,61 +204,40 @@ impl Game<'_> {
             if self.entity_attachments.remove_collider(id) {
                 self.collider_changes.push(ColliderChange {
                     entity: id,
-                    messages: vec![Message::Clear { entity: id }],
+                    update: ColliderUpdate::Clear,
                 });
             }
             return Ok(());
         };
         let state = ColliderState::from_api(&collider)?;
-        let messages = match self.entity_attachments.collider(id) {
-            Some(old) => {
-                let mut messages = collider_sync::changes(id, old.state.wire(), state.wire());
-                if old.state.rotation() != state.rotation() {
-                    messages.push(Message::Rotation {
-                        entity: id,
-                        rotation: state.rotation(),
-                    });
-                }
-                messages
-            }
-            None => state.messages(id),
-        };
-        let saved = state.to_nbt();
+        let previous = self.entity_attachments.collider(id).cloned();
         let level = self.dim;
         self.entity_attachments
-            .insert_collider(id, level, ColliderEntry { state, saved });
-        if !messages.is_empty() {
-            self.collider_changes.push(ColliderChange {
-                entity: id,
-                messages,
-            });
-        }
+            .insert_collider(id, level, state.clone());
+        self.collider_changes.push(ColliderChange {
+            entity: id,
+            update: ColliderUpdate::Set { previous, state },
+        });
         Ok(())
     }
 
-    pub(super) fn entity_set_collider_transform(
+    pub(super) fn entity_set_collider_pose(
         &mut self,
         entity: EntityRef,
-        rotation: [f32; 4],
+        pose: ColliderPose,
     ) -> Result<(), ColliderError> {
         let id = self.collider_holder(entity)?;
-        if !valid_rotation(rotation) {
-            return Err(ColliderError::NonFinite { index: None });
-        }
+        let pose = normalize_pose(pose)?;
         let Some(entry) = self.entity_attachments.collider_mut(id) else {
             return Err(ColliderError::NoCollider);
         };
-        if entry.state.rotation() == rotation {
+        if entry.pose() == pose {
             return Ok(());
         }
-        entry.state.set_rotation(rotation);
-        entry.saved = entry.state.to_nbt();
+        entry.set_pose(pose);
         self.collider_changes.push(ColliderChange {
             entity: id,
-            messages: vec![Message::Rotation {
-                entity: id,
-                rotation,
-            }],
+            update: ColliderUpdate::Pose(pose),
         });
         Ok(())
     }
@@ -264,19 +247,10 @@ impl Game<'_> {
         let Some(saved) = tag.get(SAVE_KEY) else {
             return;
         };
-        match (saved, ColliderState::from_nbt(saved)) {
-            (Tag::Compound(saved), Some(state)) => {
-                let level = self.dim;
-                self.entity_attachments.insert_collider(
-                    id,
-                    level,
-                    ColliderEntry {
-                        state,
-                        saved: saved.clone(),
-                    },
-                );
-            }
-            _ => log::warn!("Sunrise: dropped a malformed saved collider of entity {id}"),
+        if let Some(state) = ColliderState::from_nbt(saved) {
+            self.entity_attachments.insert_collider(id, self.dim, state);
+        } else {
+            log::warn!("Sunrise: dropped a malformed saved collider of entity {id}");
         }
     }
 
@@ -303,12 +277,10 @@ impl Game<'_> {
             let entity = EntityRef::new(epoch, id);
             let root = self.entity_root_vehicle(entity).unwrap_or(entity);
             let mut stack = vec![root.id()];
-            stack.extend(
-                self.entity_indirect_passengers(root)
-                    .unwrap_or_default()
-                    .iter()
-                    .map(|rider| rider.id()),
-            );
+            let _ = self.entity_visit_indirect_passengers(root, &mut |rider| {
+                stack.push(rider.id());
+                ControlFlow::Continue(())
+            });
             if !stack.contains(&id) {
                 stack.push(id);
             }
@@ -326,7 +298,7 @@ impl Game<'_> {
         id: u32,
     ) -> Option<sunrise_core::geometry::oriented::Frame> {
         let state = if self.is_logical_server() {
-            self.entity_attachments.collider(id).map(|e| &e.state)?
+            self.entity_attachments.collider(id)?
         } else {
             self.remote.as_ref()?.colliders.get(&id)?
         };
@@ -340,7 +312,7 @@ impl Game<'_> {
         if self.is_logical_server() {
             for id in self.entity_attachments.colliders_in(self.dim) {
                 if let Some(entry) = self.entity_attachments.collider(id)
-                    && !f(id, &entry.state)
+                    && !f(id, entry)
                 {
                     return false;
                 }
@@ -538,8 +510,43 @@ impl Game<'_> {
                     .map(|g| g.sender.clone())
                     .collect()
             });
-            for message in &change.messages {
-                self.send_collider_sync(&senders, message);
+            if senders.is_empty() {
+                continue;
+            }
+            let entity = change.entity;
+            match change.update {
+                ColliderUpdate::Set { previous, state } => {
+                    let messages = match &previous {
+                        Some(old) => collider_sync::changes(entity, old.wire(), state.wire()),
+                        None => state.messages(entity),
+                    };
+                    for message in &messages {
+                        self.send_collider_sync(&senders, message);
+                    }
+                    if previous.is_some_and(|old| old.pose() != state.pose()) {
+                        self.send_collider_sync(
+                            &senders,
+                            &Message::Pose {
+                                entity,
+                                rotation: state.rotation(),
+                                pivot: state.pivot(),
+                            },
+                        );
+                    }
+                }
+                ColliderUpdate::Pose(pose) => {
+                    self.send_collider_sync(
+                        &senders,
+                        &Message::Pose {
+                            entity,
+                            rotation: pose.rotation,
+                            pivot: pose.pivot,
+                        },
+                    );
+                }
+                ColliderUpdate::Clear => {
+                    self.send_collider_sync(&senders, &Message::Clear { entity })
+                }
             }
         }
     }
@@ -553,7 +560,7 @@ impl Game<'_> {
         let Some(entry) = self.entity_attachments.collider(id) else {
             return;
         };
-        let messages = entry.state.messages(id);
+        let messages = entry.messages(id);
         for message in &messages {
             self.send_collider_sync(std::slice::from_ref(sender), message);
         }
@@ -602,7 +609,7 @@ impl Game<'_> {
         let entity = match message {
             Message::Boxes { entity, .. }
             | Message::Patch { entity, .. }
-            | Message::Rotation { entity, .. }
+            | Message::Pose { entity, .. }
             | Message::Clear { entity } => entity,
         };
         let mut held = remote.colliders.remove(&entity);

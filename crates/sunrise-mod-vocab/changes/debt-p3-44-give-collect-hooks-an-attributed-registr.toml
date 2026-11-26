@@ -1,0 +1,31 @@
+ids = [
+    "hook:mod_mismatch",
+    "hook:mod_mismatch.resolved",
+    "type:ModMismatchEvent.resolved",
+    "handle:ModMismatchEvent::mark_resolved",
+    "handle:ModMismatchEvent::was_resolved",
+    "handle:ModMismatchEvent::resolver",
+    "handle:ModMismatchEvent::resolved",
+    "type:ModMismatchResolution",
+    "hook:recipe_property_sets",
+    "hook:recipe_property_sets.additions",
+    "type:RecipePropertySetsEvent.additions",
+    "handle:RecipePropertySetsEvent::register",
+    "hook:register_render_pipelines",
+]
+why = """
+NeoForge's `ModMismatchEvent.markResolved`, `wasResolved`, and `getResolver` anchor scoped mismatch resolution: a listener records its own marker without editing earlier resolutions. `ModMismatchResolution` therefore no longer implements `From<String>` for unattributed markers.
+
+NeoForge's `RegisterRecipePropertiesEvent.register` anchors the scoped recipe registration operation, not Sunrise's timing or duplicate policy. NeoForge posts the event from `RecipePropertySetManager.init` at startup to register extractors and rejects duplicate keys; vanilla `RecipeManager.finalizeRecipeLoading` consumes an existing extractor table. Sunrise still unions item contributions per recipe load, including extensions to vanilla and previously declared custom sets. Each contribution is attributed at insertion so validation names its submitting mod and a custom set keeps its first declarer's identity. The first contribution of a key decides its attribution, and a valid code key is accepted whether or not the namespace has a manifest owner; manifest ownership and `served_by` govern only file delegation.
+
+For render pipelines (NeoForge's `RegisterRenderPipelinesEvent`), attribution moves into the already-public `event.register` method. The part-2 freeze policy still accepts any valid identifier and rejects duplicate mod pipeline IDs or collisions in the corresponding vanilla registry at startup.
+"""
+migrate = """
+In `Hooks::mod_mismatch`, replace `event.resolved.push("my_mod".to_owned().into())` with `event.mark_resolved("my_mod")`. Read recorded resolutions with `event.was_resolved(id)`, `event.resolver(id)` or `event.resolved()`.
+
+Replace `use mod_api::game::mismatch_resolution::ModMismatchResolution;` with `use mod_api::ModMismatchResolution;`. For standalone records, replace `ModMismatchResolution::from(mod_id)` or `mod_id.into()` with `ModMismatchResolution { mod_id, resolver }`, providing both the migrated ID and the resolving mod's ID as `String`s. In the hook, use `event.mark_resolved(&mod_id)` instead of constructing a record.
+
+In `Hooks::recipe_property_sets`, replace `event.additions.push(addition)` with `event.register(addition)`.
+
+`Hooks::register_render_pipelines` and `RegisterRenderPipelinesEvent::register` keep `event.register(entry)` with the same signature. For a duplicate pipeline ID, change the ID passed to `RenderPipeline::new` and the corresponding `render_pipeline(&id)` lookups; the registrar still hands collisions to the startup freeze check.
+"""

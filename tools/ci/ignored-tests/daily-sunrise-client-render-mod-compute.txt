@@ -1,0 +1,1 @@
+sunrise-client-render gfx::mod_compute::tests::a_dispatch_writes_its_storage_buffer_and_a_subgroup_shader_follows_the_adapter lib daily gpu

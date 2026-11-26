@@ -1,0 +1,19 @@
+[package]
+name = "sunrise-attestation"
+version = "0.1.0"
+edition = "2024"
+license = "PolyForm-Shield-1.0.0"
+rust-version = "1.95"
+description = "Offline verification of GitHub Actions artifact attestations"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sigstore-trust-root = { version = "0.17", default-features = false }
+sigstore-types = "0.17"
+sigstore-verify = { version = "0.17", default-features = false, features = ["aws-lc-rs"] }
+thiserror = "2"
+
+[target.'cfg(all(windows, target_arch = "x86_64"))'.dependencies]
+# Use the upstream crate's NASM objects if the Windows builder has no NASM.
+aws-lc-rs = { version = "1.18", default-features = false, features = ["prebuilt-nasm"] }

@@ -104,3 +104,143 @@ fn client_epochs_follow_level_replacement_and_logout() {
         assert!(game.native_lifecycle.epoch().is_none());
     });
 }
+
+#[test]
+#[ignore = "daily"]
+fn a_dimension_change_replaces_a_signed_world_border() {
+    use crate::game::native_client_session::tests::logged_client;
+    use crate::game::native_entity_refs::tests::with_client_game;
+    use sunrise_client::worldborder::WorldBorder;
+    use sunrise_protocol::packets::play::{self, Clientbound as C};
+
+    crate::game::in_own_process(
+        "game::remote::tests::client_epochs_tests::a_dimension_change_replaces_a_signed_world_border",
+        || {
+            with_client_game(|client| {
+                let _transport = logged_client(client);
+                let mut spawn = super::spawn_menu_test(client);
+                let initialize = |center, size, clip| {
+                    C::InitializeBorder(play::InitializeBorder {
+                        center_x: center,
+                        center_z: center,
+                        old_size: size,
+                        new_size: size,
+                        lerp_time: 0,
+                        absolute_max_size: clip,
+                        warning_blocks: 7,
+                        warning_time: 50,
+                    })
+                };
+                client.handle_packet(initialize(0.0, -1.5, 100)).unwrap();
+                assert_eq!(client.border.size(), -1.5);
+                client
+                    .handle_packet(C::Respawn(play::Respawn {
+                        spawn: spawn.clone(),
+                        keep: 0,
+                    }))
+                    .unwrap();
+                assert_eq!(client.border.size(), -1.5);
+
+                spawn.dimension = "test:other_overworld".into();
+                client
+                    .handle_packet(C::Respawn(play::Respawn { spawn, keep: 3 }))
+                    .unwrap();
+                assert_eq!(client.border, WorldBorder::default());
+                client.handle_packet(initialize(0.5, 20.0, 5)).unwrap();
+                assert_eq!(client.border.center(), [0.5, 0.5]);
+                assert_eq!(client.border.size(), 20.0);
+                assert_eq!(client.border.bounds(), [-5.0, -5.0, 5.0, 5.0]);
+                assert_eq!(
+                    (client.border.warning_distance, client.border.warning_time),
+                    (7, 50)
+                );
+
+                // This extent is valid only with the clip limit supplied by the packet.
+                client.handle_packet(initialize(0.5, -2.0, 0)).unwrap();
+                assert_eq!(client.border.size(), -2.0);
+                assert_eq!(client.border.bounds(), [0.0; 4]);
+                client.handle_packet(initialize(0.0, -2.0, 100)).unwrap();
+                assert_eq!(client.border.center(), [0.5, 0.5]);
+                assert_eq!(client.border.absolute_max_size(), 0);
+            });
+        },
+    );
+}
+
+#[test]
+#[ignore = "daily"]
+fn a_dimension_change_uses_the_destination_weather_strengths() {
+    use crate::game::{
+        Game, native_client_session::tests::logged_client,
+        native_entity_refs::tests::with_client_game, native_guest_turn_tests::with_guests,
+    };
+    use sunrise_client::lan::{Out, PlayerSender, hub::Hub};
+    use sunrise_protocol::{
+        buf::Reader,
+        packets::play::{self, Clientbound as C},
+    };
+
+    const WET: &str = "test:wet_overworld";
+    crate::game::in_own_process(
+        "game::remote::tests::client_epochs_tests::a_dimension_change_uses_the_destination_weather_strengths",
+        || {
+            with_guests(|server| {
+                let mut host = server.lan.take().unwrap();
+                let (tx, rx) = std::sync::mpsc::channel();
+                host.hub.guests.update(0, |guest| {
+                    guest.sender = PlayerSender::new(tx, std::sync::Arc::default());
+                });
+                // Both levels use the Overworld dimension type and the same clear WeatherData.
+                let dry = server.world.weather;
+                assert!(!dry.raining && !dry.thundering);
+                with_client_game(|client| {
+                    let _transport = logged_client(client);
+                    let mut spawn = super::spawn_menu_test(client);
+                    let transfer = |client: &mut Game<'_>,
+                                    hub: &mut Hub,
+                                    server: &mut Game<'_>,
+                                    dimension: &str| {
+                        hub.set_dimension(dimension);
+                        let ctx = server.server_ctx();
+                        let change =
+                            hub.begin_level_change(0, [0.5, 64.0, 0.5], 0.0, None, 0, &ctx);
+                        hub.finish_level_change(0, change, false, &ctx);
+                        for out in rx.try_iter() {
+                            let bodies = match out {
+                                Out::Packet(body) => vec![body],
+                                Out::Packets(bodies) => bodies,
+                                Out::Disconnect(_) => panic!("player disconnected during travel"),
+                            };
+                            for body in bodies {
+                                let mut reader = Reader::new(&body);
+                                let id = reader.varint().unwrap();
+                                let packet = C::decode(id, reader.rest()).unwrap();
+                                if matches!(packet, C::Respawn(_) | C::GameEvent(_)) {
+                                    client.handle_packet(packet).unwrap();
+                                }
+                            }
+                        }
+                        assert_eq!(client.remote.as_ref().unwrap().level, dimension);
+                        assert!(client.can_have_weather());
+                    };
+                    // The 0.2f32 strength exceeds the double threshold in Level.isRaining.
+                    server.world.weather.set_levels(0.2, 0.5);
+                    transfer(client, &mut host.hub, server, WET);
+                    assert_eq!(client.world.weather.rain_level, (0.2, 0.2));
+                    // PlayerList.sendLevelInfo uses Level.getThunderLevel(1), which scales by rain.
+                    assert_eq!(client.world.weather.thunder_level, (0.1, 0.1));
+
+                    spawn.dimension = WET.into();
+                    client
+                        .handle_packet(C::Respawn(play::Respawn { spawn, keep: 0 }))
+                        .unwrap();
+                    assert_eq!(client.world.weather.rain_level, (0.2, 0.2));
+
+                    server.world.weather = dry;
+                    transfer(client, &mut host.hub, server, "minecraft:overworld");
+                    assert_eq!(client.weather_levels(1.0), (0.0, 0.0));
+                });
+            });
+        },
+    );
+}

@@ -9,6 +9,12 @@ use sunrise_core::vanilla_bytes::write_varint;
 pub const MAX_FRAME: usize = (1 << 21) - 1;
 /// CompressionDecoder.MAXIMUM_UNCOMPRESSED_LENGTH.
 pub const MAX_UNCOMPRESSED: usize = 8_388_608;
+/// A whole packet body this small fits the VarInt21 frame even when zlib
+/// expands it. Reserve the CompressionEncoder's length VarInt (up to three
+/// bytes for a body below MAX_FRAME) and the encoder's worst-case expansion.
+/// The actual framing check still runs in `contents` for each connection.
+pub const MAX_GUARANTEED_PACKET_BODY: usize =
+    MAX_FRAME - 3 - (zlib_rs::compress_bound(MAX_FRAME) - MAX_FRAME);
 
 /// Which whole-packet boundary refused an outgoing packet.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

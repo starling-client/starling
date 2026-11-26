@@ -189,6 +189,7 @@ mod tests {
     fn item_at(x: f64, y: f64, z: f64) -> ItemEntity {
         let p = Vec3::new(x, y, z);
         ItemEntity {
+            size_answer: None,
             attachment_lifetime: Default::default(),
             fall_distance: 0.0,
             random: sunrise_core::random::LegacyRandom::new(0),
@@ -208,6 +209,8 @@ mod tests {
                 ..Default::default()
             },
             age: 0,
+            stack_revision: 0,
+            lifespan: ItemEntity::LIFETIME,
             pickup_delay: 0,
             bob_offset: 0.0,
             ticks: 0,

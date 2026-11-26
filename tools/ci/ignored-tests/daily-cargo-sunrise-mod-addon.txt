@@ -1,0 +1,1 @@
+cargo-sunrise-mod builds_and_checks_a_native_addon_with_local_libraries test:addon daily own-sdk

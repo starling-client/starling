@@ -1,0 +1,2 @@
+# Streaming::meshed_columns behind ClientRenderClientHost::visit_rendered_chunk_columns (#5911), over the test resources.
+sunrise-client-render streaming::section_visibility::tests::a_meshed_column_is_listed_until_it_unloads lib daily resources

@@ -6,8 +6,10 @@ use crate::*;
 pub trait NetworkClientHost {
     /// Side: client.
     /// Opens the chat screen with `text` typed in for the player to finish and
-    /// send, as T and / open it; nothing is sent. Returns an error with no
-    /// player in a world or while another screen is open.
+    /// send; nothing is sent. It can replace an open screen, including another
+    /// chat screen or foreground prompt. A new chat instance fires normal opening,
+    /// closing and initialization hooks; a veto leaves the old screen untouched.
+    /// Returns an error when there is no local player.
     fn open_chat(&mut self, text: &str) -> Result<(), String>;
     /// Side: client.
     /// Adds `line` to this client's chat HUD and history (vanilla's
@@ -20,13 +22,34 @@ pub trait NetworkClientHost {
     /// nesting limits; rejected text is not added.
     fn chat_line(&mut self, line: Text) -> Result<(), TextFormError>;
     /// Side: client.
-    /// A mod's chat line or command (`/` first), sent as `send_chat` sends
-    /// it (ClientPacketListener.sendChat / sendCommand), to any server: no
-    /// chat history, and no client chat event (vanilla's `ClientChatEvent`
-    /// comes only from ChatScreen). An error when the player isn't in a
-    /// server's play state or the Chat option blocks the message. API
-    /// 404.
+    /// How many messages, wrapped lines and sent lines (`recentChat`) the chat keeps
+    /// (`ChatComponent.MAX_CHAT_HISTORY`): vanilla's 100 unless a mod set another cap.
+    fn chat_history_limit(&self) -> u32;
+    /// Side: client.
+    /// Sets the chat history cap for this session, as chat-history mods raise
+    /// `ChatComponent.MAX_CHAT_HISTORY`, clamped to 1 to 16384. A lower cap trims the oldest
+    /// messages, wrapped lines and sent lines now; a higher one lets later ones gather up to it.
+    /// The saved command history (`command_history.txt`, 50 commands) keeps its own cap.
+    fn set_chat_history_limit(&mut self, limit: u32);
+    /// Side: client.
+    /// Sends directly through `ClientPacketListener.sendChat` or `sendCommand`
+    /// (a leading `/` selects the command path). Chat passes through `client_chat`
+    /// before signing; commands run the local dispatcher before being sent to the server.
+    /// This does not normalize input, check the client's Chat setting or add history.
+    /// `Ok(())` means queued, handled locally or intentionally canceled; `Err` means
+    /// the play listener was unavailable or local encoding or publication failed.
+    /// The server still checks signatures, permissions and chat policy. API 404.
     fn send_chat(&mut self, message: &str) -> Result<(), String>;
+    /// Side: client.
+    /// Encodes a typed serverbound play packet with the client's vanilla protocol encoder.
+    /// Available in client host contexts including setup, without reading a connection or
+    /// changing local state. Validates vanilla wire field bounds and applies no gameplay or
+    /// local effects; submit the result with `send_packet`.
+    #[static_call]
+    fn build_play_packet(
+        &self,
+        request: &PlayPacketRequest,
+    ) -> Result<ServerboundPlayPacket, PacketBuildError>;
     /// Side: client.
     /// Builds a vanilla container click; it needs the host because the packet carries hashed stacks.
     /// Uses this connection's registries and component codecs, refusing components that
@@ -39,25 +62,28 @@ pub trait NetworkClientHost {
     /// Side: client.
     /// Submits a vanilla play packet to any server, including unrelated plugin
     /// payloads. The body is validated once and outgoing credit is reserved before
-    /// acceptance. Publication waits for the current root transaction to commit;
-    /// rollback, disconnect, or a protocol incarnation change cancels it.
+    /// acceptance. At root commit the packet joins any active play holds without
+    /// releasing its credit, otherwise it publishes. Rollback, disconnect or a
+    /// protocol incarnation change cancels it.
     /// Registered and engine-reserved channels are refused: use their payload or
     /// service API. Unrelated plugin bodies retain vanilla's discard-codec limit.
     /// No effects are applied locally. Typed packet builders validate wire fields;
     /// sequence numbers and required client state remain the mod's responsibility.
     /// Chat and commands use `send_chat`, which owns signing. API 409.
     fn send_packet(&mut self, packet: ServerboundPlayPacket) -> Result<(), SendPacketError>;
-    /// Side: client. Starts an ordered hold of uncancelled outgoing play packets.
-    /// A second hold is refused with Limit while one is active. The limits are 256 packets
-    /// and 1,048,576 encoded bytes. Overflow ends and flushes the hold oldest first;
-    /// its next release or drop returns Limit. Network-thread replies (keep-alives, chunk batch
-    /// acknowledgements, cookies) bypass holds.
+    /// Side: client. Starts a hold owned by the calling mod on the current joined
+    /// physical play connection. It covers subsequent uncancelled engine play sends
+    /// and mod packets committed while it is active. Holds can overlap. A pending
+    /// packet retains its ordinary writer credit; pressure never releases a hold.
+    /// Control replies (including keep-alives, chunk batch acknowledgements and cookies)
+    /// bypass holds. Disconnect, protocol changes and aborted travel invalidate the id.
     fn hold_packets(&mut self) -> Result<HoldId, HoldError>;
-    /// Side: client. Sends the queue oldest first and ends the hold. On failure,
-    /// Send reports the number published and the remaining packets are dropped.
-    /// Disconnect, protocol changes and aborted travel invalidate the id.
+    /// Side: client. Ends only this mod's hold. Publishes the newly unblocked prefix
+    /// in original send order and returns its count, which can be zero. Other holds
+    /// still block their packets. `Send` reports a published prefix on transport failure.
     fn release_held(&mut self, hold: HoldId) -> Result<usize, HoldError>;
-    /// Side: client. Ends the hold and discards its packets without publication.
+    /// Side: client. Ends only this mod's hold and discards packets it covered,
+    /// including overlapping packets. It publishes nothing and keeps the other holds active.
     fn drop_held(&mut self, hold: HoldId) -> Result<(), HoldError>;
     /// Side: client.
     /// Leaves the server or the single-player world (NeoForge's

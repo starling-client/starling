@@ -5,13 +5,17 @@
 use crate::engine;
 use std::{
     io::{BufRead, IsTerminal, Write},
-    path::Path,
+    path::{Path, PathBuf},
+    process::Stdio,
+    time::Instant,
 };
 use sunrise_platform::java_properties::now_millis;
 use sunrise_platform::server_files::{
     eula,
     user_lists::{OpEntry, OpList, WhiteEntry, WhiteList},
 };
+use sunrise_server_launch::prepared_profile::Profile;
+use sunrise_server_launch::resources::{self, Selection};
 use sunrise_server_launch::{
     self as launch,
     config::{self, Config},
@@ -21,6 +25,8 @@ use sunrise_server_launch::{
 #[derive(Default)]
 pub struct Answers {
     pub eula: bool,
+    pub server_jar: Option<PathBuf>,
+    pub resources: Option<String>,
     pub world: Option<String>,
     pub seed: Option<String>,
     pub port: Option<u16>,
@@ -42,6 +48,8 @@ impl Answers {
         let flag = |name: &str| var(name).map(|v| v.eq_ignore_ascii_case("true"));
         Ok(Self {
             eula: flag("SUNRISE_EULA").unwrap_or(false),
+            server_jar: None,
+            resources: None,
             world: var("SUNRISE_WORLD"),
             seed: var("SUNRISE_SEED"),
             port: var("SUNRISE_PORT")
@@ -216,25 +224,33 @@ pub fn run(dir: &Path, answers: Answers) -> Result<(), String> {
         op_level,
     )?;
 
-    // 5. The game and its files.
-    match launch::program(&cfg, dir) {
+    // 5. The game and its files. Do not prepare anything before the EULA is accepted.
+    let program = match launch::program(&cfg, dir) {
         Ok(program) => {
             println!("Game: {}", program.display());
             if let Err(e) = engine::check_starts(&program) {
                 println!("Warning: {e}");
             }
-            match launch::resources(&cfg, dir, Some(&program)) {
-                Ok(resources) => {
-                    println!("Game files: {}", resources.display());
-                    if let Err(e) = engine::check_prepared(&resources) {
-                        println!("Warning: {e}");
-                    }
-                }
-                Err(e) => println!("{e}"),
-            }
+            Some(program)
         }
-        Err(e) => println!("{e}"),
+        Err(e) => {
+            println!("Warning: {e}");
+            None
+        }
+    };
+    if let Some(resources) = answers.resources {
+        cfg.engine.resources = resources;
     }
+    let resources = ensure_resources(&cfg, dir, program.as_deref(), answers.server_jar.as_deref())?;
+    // An explicit jar may have selected the server slot over an already-current full folder.
+    if answers.server_jar.is_some() && cfg.engine.resources.is_empty() {
+        cfg.engine.resources = std::path::absolute(&resources)
+            .map_err(|e| e.to_string())?
+            .to_str()
+            .ok_or("The prepared folder's path is not UTF-8")?
+            .to_owned();
+    }
+    println!("Game files: {}", resources.display());
 
     std::fs::write(&toml_path, config::render(&cfg)).map_err(|e| e.to_string())?;
     println!(
@@ -248,6 +264,113 @@ pub fn run(dir: &Path, answers: Answers) -> Result<(), String> {
              LAN or a tailnet."
         );
     }
+    Ok(())
+}
+
+/// `init --yes` on an existing server prepares its game files without rerunning setup.
+pub(crate) fn prepare_existing(dir: &Path) -> Result<(), String> {
+    let cfg = Config::load(dir)?;
+    let program = launch::program(&cfg, dir)?;
+    let resources = ensure_resources(&cfg, dir, Some(&program), None)?;
+    println!("Game files: {}", resources.display());
+    Ok(())
+}
+
+/// A configured path stays configured; otherwise repair the managed dedicated slot.
+/// Both setup and server restarts use this path (no need to rerun init on an existing server).
+pub(crate) fn ensure_resources(
+    cfg: &Config,
+    dir: &Path,
+    program: Option<&Path>,
+    jar: Option<&Path>,
+) -> Result<PathBuf, String> {
+    let install = launch::Install::find();
+    ensure_resources_with(
+        cfg,
+        dir,
+        program,
+        jar,
+        install.as_ref().map(|i| i.root.as_path()),
+        |output, jar| {
+            if !eula::agreed(&dir.join("eula.txt")).unwrap_or(false) {
+                return Err(
+                    "Accept Minecraft's EULA in eula.txt before preparing the server files".into(),
+                );
+            }
+            prepare_server_files(program, output, jar)
+        },
+    )
+}
+
+fn ensure_resources_with(
+    cfg: &Config,
+    dir: &Path,
+    program: Option<&Path>,
+    jar: Option<&Path>,
+    install: Option<&Path>,
+    prepare: impl FnOnce(&Path, Option<&Path>) -> Result<(), String>,
+) -> Result<PathBuf, String> {
+    match resources::select(cfg, dir, program, install, jar.is_some())? {
+        Selection::Ready(path) => Ok(path),
+        Selection::NeedsPreparation(path) => {
+            prepare(&path, jar)?;
+            resources::check_prepared(&path)?;
+            Ok(path)
+        }
+    }
+}
+
+fn prepare_server_files(
+    engine: Option<&Path>,
+    output: &Path,
+    jar: Option<&Path>,
+) -> Result<(), String> {
+    let current = std::env::current_exe().map_err(|e| format!("Locating sunrise-prepare: {e}"))?;
+    let name = format!("sunrise-prepare{}", std::env::consts::EXE_SUFFIX);
+    let program = engine
+        .into_iter()
+        .chain([current.as_path()])
+        .map(|binary| binary.with_file_name(&name))
+        .find(|candidate| candidate.is_file())
+        .unwrap_or_else(|| PathBuf::from(&name));
+    let version = launch::GAME_VERSION;
+    let output = std::path::absolute(output).map_err(|e| format!("Locating game-files: {e}"))?;
+    let started = Instant::now();
+    println!("Game files: preparing Minecraft {version}'s dedicated server profile…");
+    let mut command = crate::process::command(&program);
+    command.arg("--server").arg("--output").arg(&output);
+    // A checkout binary may be under target/, and the server directory outside that checkout.
+    if let Some(root) = program
+        .ancestors()
+        .chain(current.ancestors())
+        .find(|path| path.join("research-lock.json").is_file())
+    {
+        command.arg("--root").arg(root);
+    }
+    if let Some(jar) = jar {
+        command.arg("--server-jar").arg(jar);
+    }
+    let status = command.stdin(Stdio::null()).stdout(Stdio::inherit()).stderr(Stdio::piped())
+        .output().map_err(|e| format!("Couldn't start {}: {e}. Install sunrise-prepare beside sunrise-server, or pass --resources DIR.", program.display()))?;
+    if !status.status.success() {
+        let stderr = String::from_utf8_lossy(&status.stderr);
+        let message = stderr
+            .trim()
+            .strip_prefix("error: ")
+            .unwrap_or(stderr.trim());
+        return Err(if message.is_empty() {
+            format!("sunrise-prepare failed ({})", status.status)
+        } else {
+            message.replace(
+                "sunrise-prepare --server --server-jar /path/to/server.jar",
+                &format!(
+                    "{} --server-jar /path/to/server.jar",
+                    Profile::Server.repair(&output)
+                ),
+            )
+        });
+    }
+    println!("Game files: prepared in {}s", started.elapsed().as_secs());
     Ok(())
 }
 
@@ -291,6 +414,7 @@ fn add_players(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sunrise_server_launch::prepared_profile::MANIFEST;
 
     #[test]
     fn a_whitelist_init_cannot_read_is_left_alone() {
@@ -306,6 +430,126 @@ mod tests {
             theirs
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn fixture_resources(resources: &Path) {
+        use sunrise_server_launch::prepared_profile::{SCHEMA, STAMP};
+        std::fs::create_dir_all(resources).unwrap();
+        std::fs::write(resources.join(MANIFEST), serde_json::json!({
+            "profile":"server", "schema":SCHEMA, "minecraft":launch::GAME_VERSION,
+            "server_files":["facts.json", "block-tags.json", "registries.json", "commands.json"],
+        }).to_string()).unwrap();
+        std::fs::write(
+            resources.join(STAMP),
+            serde_json::json!({
+                "output_version":Profile::Server.output_version(),
+            })
+            .to_string(),
+        )
+        .unwrap();
+        for name in [
+            "facts.json",
+            "block-tags.json",
+            "registries.json",
+            "commands.json",
+        ] {
+            std::fs::write(resources.join(name), "{}").unwrap();
+        }
+    }
+
+    #[test]
+    fn an_explicit_jar_is_passed_to_preparation_despite_an_existing_profile() {
+        let dir =
+            std::env::temp_dir().join(format!("sunrise-init-explicit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let resources = dir.join("resources");
+        fixture_resources(&resources);
+        let jar = dir.join("operator-selected.jar");
+        let error = ensure_resources_with(
+            &Config::default(),
+            &dir,
+            None,
+            Some(&jar),
+            None,
+            |output, selected| {
+                assert_eq!(output, resources);
+                assert_eq!(selected, Some(jar.as_path()));
+                Err("supplied jar did not match SHA-1".into())
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error, "supplied jar did not match SHA-1");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_existing_install_repairs_its_managed_profile_without_rewriting_settings() {
+        use sunrise_server_launch::prepared_profile::{SCHEMA, STAMP};
+        let dir = std::env::temp_dir().join(format!("sunrise-init-repair-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let stale = dir.join("resources");
+        std::fs::create_dir_all(&stale).unwrap();
+        let manifest =
+            serde_json::json!({"schema":SCHEMA, "minecraft":launch::GAME_VERSION}).to_string();
+        std::fs::write(stale.join(MANIFEST), &manifest).unwrap();
+        std::fs::write(stale.join(STAMP), r#"{"output_version":7}"#).unwrap();
+        let config = Config::default();
+        let toml = config::render(&config);
+        std::fs::write(dir.join(config::FILE), &toml).unwrap();
+        let managed = dir
+            .join("game-files/sunrise-client")
+            .join(format!("{}-server", launch::GAME_VERSION));
+        let repair = |output: &Path, supplied: Option<&Path>| {
+            assert_eq!(output, managed);
+            assert!(supplied.is_none());
+            fixture_resources(output);
+            Ok(())
+        };
+        assert_eq!(
+            ensure_resources_with(&config, &dir, None, None, None, repair),
+            Ok(managed.clone())
+        );
+        assert_eq!(
+            ensure_resources_with(&config, &dir, None, None, None, |_, _| panic!(
+                "already prepared"
+            )),
+            Ok(managed)
+        );
+        assert_eq!(
+            std::fs::read_to_string(stale.join(MANIFEST)).unwrap(),
+            manifest
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join(config::FILE)).unwrap(),
+            toml
+        );
+        let mut explicit = config;
+        explicit.engine.resources = "resources".into();
+        let error = ensure_resources_with(&explicit, &dir, None, None, None, |_, _| {
+            panic!("owner prepares explicit folders")
+        })
+        .unwrap_err();
+        assert!(error.contains(&Profile::Full.repair(&stale)), "{error}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_damaged_managed_manifest_is_left_alone() {
+        let dir = std::env::temp_dir().join(format!("sunrise-init-damaged-{}", std::process::id()));
+        let managed = dir
+            .join("game-files/sunrise-client")
+            .join(format!("{}-server", launch::GAME_VERSION));
+        std::fs::create_dir_all(&managed).unwrap();
+        let manifest = managed.join(MANIFEST);
+        std::fs::write(&manifest, "{").unwrap();
+        let error = ensure_resources_with(&Config::default(), &dir, None, None, None, |_, _| {
+            panic!("a damaged profile must not be prepared in place")
+        })
+        .unwrap_err();
+        assert!(error.contains("--output NEW_FOLDER"), "{error}");
+        assert!(error.contains("engine.resources"), "{error}");
+        assert_eq!(std::fs::read_to_string(&manifest).unwrap(), "{");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -324,7 +568,9 @@ mod tests {
             // Offline: no account lookups in a test.
             online: Some(false),
             yes: true,
+            ..Answers::default()
         };
+        fixture_resources(&dir.join("resources"));
         run(&dir, answers).unwrap();
         let cfg = Config::load(&dir).unwrap();
         assert_eq!(
@@ -423,6 +669,7 @@ mod tests {
             yes: true,
             ..Default::default()
         };
+        fixture_resources(&dir.join("resources"));
         run(&dir, answers).unwrap();
         let ops = std::fs::read_to_string(dir.join("ops.json")).unwrap();
         assert!(ops.contains("\"level\": 2,"), "{ops}");

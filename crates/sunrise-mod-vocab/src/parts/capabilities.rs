@@ -1,15 +1,13 @@
 use super::*;
+use std::any::TypeId;
 
 pub(crate) type Capabilities<P> = HashMap<&'static str, HashMap<Box<str>, Vec<CapabilityPart<P>>>>;
 
-/// A capability provider a mod registered: a [`BlockProviderOf`], [`ItemProviderOf`] or
-/// [`EntityProviderOf`].
+/// A capability provider a mod registered, with its dispatch metadata.
 #[derive(Clone)]
 pub(crate) struct CapabilityPart<P> {
     pub(crate) mod_id: &'static str,
     pub(crate) mod_index: usize,
-    /// The handler type it gives, for refusing a capability name answered with two.
-    pub(crate) type_name: Arc<str>,
     /// Asked ahead of the game's own provider.
     pub(crate) before_game: bool,
     /// Its place among every mod's registrations, which orders a block's providers and those of
@@ -20,61 +18,103 @@ pub(crate) struct CapabilityPart<P> {
     pub(crate) provider: P,
 }
 
-/// A capability provider whose handler type is a mod's own (a key a library's `[api]` crate
-/// publishes), erased: only mods linked with that crate know its handler type.
-// hidden: the registrar's erased provider, not part of the mod surface
+/// Opaque native provider bound by the typed capability methods on `dyn Registrar`.
+// hidden: the registrar's erased provider, not a mod construction surface
 // exhaustive: its fields are private, so mods cannot build or destructure it
-// no wire: transfers the handler name and a retained provider resource id, reporting unsupported handlers rather than serializing the native Any object.
+// no wire: it retains an in-process typed callback.
 #[doc(hidden)]
 #[derive(Clone)]
-pub struct OwnProvider {
-    /// The `Arc` of the provider trait object, which a lookup of that handler type downcasts.
-    pub(crate) provider: Arc<dyn Any + Send + Sync>,
-    pub(crate) handler: Arc<str>,
+pub struct NativeCapabilityProvider {
+    provider: Arc<dyn Any + Send + Sync>,
+    handler: &'static str,
+}
+
+impl NativeCapabilityProvider {
+    pub(crate) fn of<T: ?Sized + 'static, P: Send + Sync + 'static>(provider: P) -> Self {
+        Self {
+            provider: Arc::new(provider),
+            handler: type_name::<T>(),
+        }
+    }
+
+    pub(crate) fn binding(&self) -> (TypeId, &'static str) {
+        (self.provider.as_ref().type_id(), self.handler)
+    }
+
+    pub(crate) fn get<P: 'static>(&self) -> Option<&P> {
+        self.provider.downcast_ref::<P>()
+    }
+}
+
+impl<T: ?Sized + 'static> CapabilityKey<T> {
+    pub(crate) fn binding(&self) -> (TypeId, &'static str) {
+        (TypeId::of::<Arc<BlockProvider<T>>>(), type_name::<T>())
+    }
+}
+
+impl<T: ?Sized + 'static> ItemCapabilityKey<T> {
+    pub(crate) fn binding(&self) -> (TypeId, &'static str) {
+        (TypeId::of::<Arc<ItemProvider<T>>>(), type_name::<T>())
+    }
+}
+
+impl<T: ?Sized + 'static, C: 'static> EntityCapabilityKey<T, C> {
+    pub(crate) fn binding(&self) -> (TypeId, &'static str) {
+        (TypeId::of::<Arc<EntityProvider<T, C>>>(), type_name::<T>())
+    }
+}
+
+/// The canonical binding for a name, independent of whether it has any mod providers.
+// no wire: native type identities are process-local.
+#[derive(Clone)]
+pub(crate) struct CapabilityMetadata {
+    pub(crate) binding: (std::any::TypeId, &'static str),
+    pub(crate) owner: &'static str,
+    pub(crate) proxyable: Option<bool>,
 }
 
 /// The registrar's table, as the game reads it.
 pub(crate) struct InstalledProviders;
 
-pub(crate) fn next<P: Clone>(
-    table: &Capabilities<P>,
-    name: &str,
-    id: &str,
-    index: &mut u32,
-) -> Option<(P, &'static str, bool)> {
-    next_provider(table.get(name)?.get(id)?, index)
+/// Visits two sorted provider slices (a block entity type's and a block's) as one sequence in
+/// dispatch order: those asked ahead of the game, then the others, each group in registration
+/// order across both slices.
+pub(crate) struct MergedProviders<'a, P> {
+    first: &'a [CapabilityPart<P>],
+    second: &'a [CapabilityPart<P>],
 }
 
-/// Merge the block and block-entity lists without copying provider owners. Each list is
-/// already ordered with `before_game` first, then by registration order.
-pub(crate) fn next_merged<'a>(
-    [first, second]: &mut [&'a [CapabilityPart<BlockProviderOf>]; 2],
-) -> Option<(&'a CapabilityPart<BlockProviderOf>, &'static str, bool)> {
-    let rank = |part: &CapabilityPart<BlockProviderOf>| (!part.before_game, part.order);
-    let take_second = match (first.first(), second.first()) {
-        (Some(a), Some(b)) => rank(b) < rank(a),
-        (None, _) => true,
-        _ => false,
-    };
-    let source = if take_second { second } else { first };
-    let (part, rest) = source.split_first()?;
-    *source = rest;
-    Some((part, part.mod_id, part.before_game))
+impl<'a, P> MergedProviders<'a, P> {
+    pub(crate) fn new(first: &'a [CapabilityPart<P>], second: &'a [CapabilityPart<P>]) -> Self {
+        Self { first, second }
+    }
 }
 
-/// A provider by its handler type: one case for each handler type `mod_api`'s keys name
-/// (generated from them), and [`OwnProvider`] for a mod's own.
-#[allow(missing_docs)]
-pub(crate) mod providers_of {
-    use super::*;
-    // The keys' handler types and contexts, as the generated cases name them.
-    #[allow(unused_imports)]
-    use crate::*;
-    include!(concat!(
-        env!("OUT_DIR"),
-        "/capability_providers_generated.rs"
-    ));
+impl<'a, P> Iterator for MergedProviders<'a, P> {
+    type Item = &'a CapabilityPart<P>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // Each slice is already in this order: those ahead of the game first, by registration.
+        let rank = |part: &CapabilityPart<P>| (!part.before_game, part.order);
+        match (self.first.split_first(), self.second.split_first()) {
+            (Some((a, _)), Some((b, rest))) if rank(b) < rank(a) => {
+                self.second = rest;
+                Some(b)
+            }
+            (Some((a, rest)), _) => {
+                self.first = rest;
+                Some(a)
+            }
+            (None, Some((b, rest))) => {
+                self.second = rest;
+                Some(b)
+            }
+            (None, None) => None,
+        }
+    }
 }
+
+include!(concat!(env!("OUT_DIR"), "/builtin_capability_keys.rs"));
 
 /// Who answers a capability: a mod's provider, the game's own, or nobody.
 pub(crate) enum Answer<T> {
@@ -101,27 +141,36 @@ pub(crate) fn answered<T: ?Sized>(
     }
 }
 
-/// Asks the providers `next` gives (advancing a registration cursor in dispatch order: those
-/// registered `before_game`, then the others), and the game's own (`game`: whether it answers) between the
-/// two, in the fork's chosen order (NeoForge's javadoc doesn't state one between mods'
-/// providers and the game's); the first to answer wins. `call` also resolves the
-/// provider's handler type; a type the asker isn't linked with is passed over.
-pub(crate) fn ask_providers<C: ?Sized, O, T>(
+/// Ask borrowed registrations in dispatch order: those registered `before_game`, the game,
+/// then the others. The first answer wins. Each mod callback uses the shared panic boundary;
+/// the game's own provider runs outside it.
+pub(crate) fn ask_providers<'a, C: ?Sized, T>(
     context: &mut C,
-    mut next: impl FnMut() -> Option<(O, &'static str, bool)>,
-    mut call: impl FnMut(O, &mut C) -> Option<T>,
+    providers: impl Iterator<Item = &'a CapabilityPart<NativeCapabilityProvider>>,
+    (kind, operation): (&'static str, &'static str),
+    mut call: impl FnMut(&NativeCapabilityProvider, &mut C) -> Option<T>,
     game: impl FnOnce(&mut C) -> bool,
 ) -> Answer<T> {
     let mut game = Some(game);
-    while let Some((provider, owner, before_game)) = next() {
-        if !before_game
+    for part in providers {
+        if !crate::callback_owner::enabled(part.mod_index, &part.poisoned) {
+            continue;
+        }
+        if !part.before_game
             && let Some(game) = game.take()
             && game(context)
         {
             return Answer::Game;
         }
-        if let Some(handler) = call(provider, context) {
-            return Answer::Mod(handler, owner);
+        if let Some(Some(handler)) = crate::callback_owner::call_for_lookup(
+            part.mod_id,
+            part.mod_index,
+            &part.poisoned,
+            kind,
+            operation,
+            || call(&part.provider, context),
+        ) {
+            return Answer::Mod(handler, part.mod_id);
         }
     }
     match game.is_some_and(|game| game(context)) {
@@ -130,17 +179,15 @@ pub(crate) fn ask_providers<C: ?Sized, O, T>(
     }
 }
 
-/// CapabilityProviders operations for capabilities.
-// hidden: per-kind lookup implementation, exposed for generated provider bindings
+/// Published capability metadata and switch generation for lookups and caches.
+// hidden: capability metadata read by lookups and game helpers
 #[doc(hidden)]
 pub trait CapabilitiesCapabilityProviders {
-    /// Whether any mod registered capability `name` for the things `by` names. This presence
-    /// check includes disabled mods; enumeration skips their providers.
-    fn provided(&self, by: ProvidedBy, name: &str) -> bool;
     /// Known block capability names in declaration/discovery order.
     fn block_capability_names(&self) -> Vec<String>;
-    /// Whether this capability was explicitly marked safe to forward.
-    fn block_capability_proxyable(&self, name: &str) -> bool;
+    /// Whether this capability was explicitly marked safe to forward. Typed callers supply their
+    /// binding identity; name-only discovery passes `None`.
+    fn block_capability_proxyable(&self, name: &str, binding: Option<TypeId>) -> bool;
     /// Known block capability names explicitly marked safe to forward, in discovery order.
     fn block_capability_proxyable_names(&self) -> Vec<String>;
     /// How many times a mod was switched on or off, as the game counts it: a kept capability
@@ -149,14 +196,6 @@ pub trait CapabilitiesCapabilityProviders {
 }
 
 impl CapabilitiesCapabilityProviders for InstalledProviders {
-    fn provided(&self, by: ProvidedBy, name: &str) -> bool {
-        installed().is_some_and(|installed| match by {
-            ProvidedBy::BlockEntity => installed.keys.capabilities.contains_key(name),
-            ProvidedBy::Block => installed.keys.block_capabilities.contains_key(name),
-            ProvidedBy::Item => installed.keys.item_capabilities.contains_key(name),
-            ProvidedBy::Entity => installed.keys.entity_capabilities.contains_key(name),
-        })
-    }
     fn block_capability_names(&self) -> Vec<String> {
         match installed() {
             Some(installed) => installed
@@ -165,16 +204,18 @@ impl CapabilitiesCapabilityProviders for InstalledProviders {
                 .iter()
                 .map(|name| (*name).to_owned())
                 .collect(),
-            None => providers_of::builtin_block_capabilities()
-                .into_iter()
-                .map(|(name, _)| name.to_owned())
+            None => builtin_capabilities()
+                .filter(|(by, _, _)| matches!(by, ProvidedBy::Block))
+                .map(|(_, name, _)| name.to_owned())
                 .collect(),
         }
     }
-    fn block_capability_proxyable(&self, name: &str) -> bool {
+    fn block_capability_proxyable(&self, name: &str, binding: Option<TypeId>) -> bool {
         installed()
             .and_then(|installed| installed.keys.block_capability_metadata.get(name))
-            .is_some_and(|(_, proxyable)| *proxyable == Some(true))
+            .is_some_and(|known| {
+                known.proxyable == Some(true) && binding.is_none_or(|ty| ty == known.binding.0)
+            })
     }
     fn block_capability_proxyable_names(&self) -> Vec<String> {
         let Some(installed) = installed() else {
@@ -184,7 +225,7 @@ impl CapabilitiesCapabilityProviders for InstalledProviders {
             .keys
             .block_capability_order
             .iter()
-            .filter(|name| self.block_capability_proxyable(name))
+            .filter(|name| self.block_capability_proxyable(name, None))
             .map(|name| (*name).to_owned())
             .collect()
     }

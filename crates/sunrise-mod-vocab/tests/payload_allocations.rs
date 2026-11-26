@@ -72,7 +72,7 @@ fn typed_numeric_lists_reserve_once_after_checking_the_bounds() {
     assert_eq!(&bytes[..6], &[255, 0, 0, 0, 2, 1]);
     assert_eq!(decode_payload(&bytes), Ok(value.clone()));
 
-    for (value, limit) in [(&value, limit - 1), (&vec![0; 4097], PAYLOAD_DECODE_BUDGET)] {
+    for (value, limit) in [(&value, limit - 1), (&vec![0u16; 4097], limit)] {
         ALLOCATIONS.set(0);
         let result = black_box(encode_payload(black_box(value), limit));
         let count = ALLOCATIONS.get();

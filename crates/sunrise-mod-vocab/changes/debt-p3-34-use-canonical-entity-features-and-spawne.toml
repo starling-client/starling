@@ -1,0 +1,44 @@
+ids = [
+    "method:GeneralTypesRegistrar::declare_general_entity",
+    "type:GeneralEntityRegistrationError",
+    "type:GeneralEntityRegistrationError.UnknownDependency",
+    "type:FeatureFlag",
+    "type:FeatureFlag.Vanilla",
+    "type:FeatureFlag.TradeRebalance",
+    "type:FeatureFlag.RedstoneExperiments",
+    "type:FeatureFlag.MinecartImprovements",
+    "handle:FeatureFlag::ALL",
+    "handle:FeatureFlag::id",
+    "handle:FeatureFlag::from_id",
+    "handle:FeatureFlags::contains_flag",
+    "handle:FeatureFlags::contains_all",
+    "type:SpawnSource",
+    "type:SpawnSource.Block",
+    "type:Spawner",
+    "type:Spawner.Minecart",
+    "hook:finalize_spawn.spawner",
+    "type:FinalizeSpawnEvent.spawner",
+    "hook:mob_spawn_placement_check",
+    "hook:mob_spawn_placement_check.spawner",
+    "type:MobSpawnPlacementCheckEvent.spawner",
+    "hook:spawn_cluster_size",
+    "hook:spawn_cluster_size.mob",
+    "hook:spawn_cluster_size.vanilla",
+    "method:EntityPart::spawn_cluster_size",
+    "type:SpawnClusterSizeEvent",
+    "type:SpawnClusterSizeEvent.mob",
+    "type:SpawnClusterSizeEvent.vanilla",
+]
+why = """
+Removed the synthetic 256-byte general entity type key limit (`MAX_GENERAL_ENTITY_KEY`) from registration and kept string bounds strictly at the protocol boundary, using vanilla's `Identifier.STREAM_CODEC` / `ByteBufCodecs.STRING_UTF8` limit (32,767 UTF-16 code units, `FriendlyByteBuf.DEFAULT_MAX_STRING_LENGTH`) and `ClientboundCustomPayloadPacket.MAX_PAYLOAD_SIZE` (1,048,576 bytes). \
+`GeneralTypesRegistrar::declare_general_entity` now returns the canonical registered `EntityTypeKey` and takes typed Minecraft feature flags (`FeatureFlag`, matching vanilla `net.minecraft.world.flag.FeatureFlags.REGISTRY` and `EntityType.Builder.requiredFeatures`) instead of checking mod IDs against `loaded_mods()`, removing `GeneralEntityRegistrationError::UnknownDependency`. \
+General entity spawn and load read the same effective flags as the Host. Vanilla `FeatureFlagRegistry.codec` (used by both `WorldDataConfiguration.MAP_CODEC` and `FeatureFlagsMetadataSection.CODEC`) resolves ids through `Identifier.CODEC`, so bare ids in both `level.dat` and selected pack `pack.mcmeta` files are canonicalized to Minecraft ids on first open. `EntityType.create` warns for disabled saved rows, and `EntityType.loadEntityRecursive` removes their subtrees before `SummonCommand.createEntity` checks live UUIDs. \
+Removed `SpawnSource` and unified spawner identity on `Spawner::{Block, Trial, Minecart}` across applicable hooks while preserving each hook's NeoForge 26.3 source domain: `finalize_spawn` (`FinalizeSpawnEvent.getSpawner()` -> `Either<BlockEntity, Entity>`) now preserves `Spawner::Block`, `Spawner::Trial`, and `Spawner::Minecart`; `mob_spawn_position_check` (version 2, `MobSpawnEvent.PositionCheck.getSpawner()` -> `@Nullable BaseSpawner`) now delivers `Spawner::Block` and `Spawner::Minecart` and no longer fires on `TrialSpawner` (matching NeoForge's `TrialSpawner.java.patch`); `mob_spawn_placement_check` (`MobSpawnEvent.SpawnPlacementCheck`) removes its non-NeoForge `spawner` field; and `EntityPart::spawn_cluster_size` remains a generated entity-scoped hook and its `SpawnClusterSizeEvent` carries only the mob and vanilla size (`NaturalSpawner.spawnCategoryForPosition` via `EventHooks.getMaxSpawnClusterSize`). NeoForge's `BaseSpawner` and `TrialSpawner` patches call `EventHooks.finalizeMobSpawnSpawner` for both configured and unconfigured mobs, keeping `isCanceled()` (skip vanilla `Mob.finalizeSpawn`) separate from `isSpawnCancelled()` (enforced at admission by `NeoForgeEventHandler.builtinMobSpawnBlocker` after unconfigured finalization, trial persistence, and `nextSpawnData.getEquipment().ifPresent(mob::equip)`). `finalize_spawn` version 2 matches that order and lends the configured mob without vanilla finalization. `MinecartSpawner.getOwner` exposes the live cart, so both hooks can read the cart's current state."""
+migrate = """
+Update `r.declare_general_entity(...)` calls to pass `&[FeatureFlag]` (e.g. `&[]` or `&[FeatureFlag::RedstoneExperiments]`) for `required_features` instead of `&[&str]`, and bind or discard the returned `Result<EntityTypeKey, GeneralEntityRegistrationError>`. Move any mod dependency requirements to `sunrise-mod.toml` and remove match arms on `GeneralEntityRegistrationError::UnknownDependency`. \
+For authored feature strings, replace a string such as `"redstone_experiments"` with `FeatureFlag::RedstoneExperiments`, or resolve it with `FeatureFlag::from_id(id)` and handle `None` for unknown ids. Use `FeatureFlag::ALL` to enumerate, `flag.id()` to print a namespaced id, and `level.enabled_features(host).is_some_and(|flags| flags.contains_flag(FeatureFlag::RedstoneExperiments))` to test a world's flag. For several requirements, use `flags.contains_all(&[FeatureFlag::Vanilla, FeatureFlag::RedstoneExperiments])`. \
+Keep `LevelRef::spawn_entity(host, kind, pos, &spawn)`; for `SpawnBody::General`, declare the type's required flags at registration and handle `None` when the level does not enable them. \
+Replace `Some(SpawnSource::Block(pos))` matches in `finalize_spawn` with `Some(Spawner::Block { pos } | Spawner::Trial { pos })`, and match `Some(Spawner::Minecart { entity })` for a cart (`entity.position(host)` reads the cart). Rebuild for version 2: configured spawns now reach the same listener; use `event.spawn_cancelled = true` to stop one. Returning `Flow::Cancel` still only skips vanilla finalization and does not stop a configured mob. \
+Rebuild `mob_spawn_placement_check` listeners for version 3 (pin `hook:mob_spawn_placement_check` at 3): the `spawner` field of version 2 is gone, so remove reads of `event.spawner` and inspect `event.reason` instead. \
+Rebuild `mob_spawn_position_check` listeners for version 2: spawner minecarts now deliver `Some(Spawner::Minecart { entity })` and trial spawners no longer fire `mob_spawn_position_check`. \
+`EntityPart::spawn_cluster_size` is a new subscription (there is nothing on main to migrate): implement `fn spawn_cluster_size(&self, host: &dyn Host, event: &mut SpawnClusterSizeEvent) -> Option<u32>`, read `event.mob` and `event.vanilla`, and answer `Some(limit)` to replace the group size. It only runs during natural spawning; use `finalize_spawn` or `mob_spawn_position_check` where their spawner identities apply."""

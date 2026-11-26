@@ -48,10 +48,10 @@ class FormatScanTest(unittest.TestCase):
             # The first rustfmt chunk fails; the second still runs, and the scan fails.
             with mock.patch.object(format_scan, "ROOT", root), \
                     mock.patch.object(format_scan.subprocess, "run",
-                                      side_effect=lambda command, cwd: ran.append(command) or mock.Mock(
-                                          returncode=1 if command == commands[1] else 0)):
+                                      side_effect=lambda command, cwd, capture_output=True, text=True: ran.append(command) or mock.Mock(
+                                          returncode=1 if command == commands[1] else 0, stdout="", stderr="")):
                 self.assertEqual(format_scan.main(), 1)
-            self.assertEqual(ran, commands)
+            self.assertEqual(sorted(ran), sorted(commands))
 
 
 if __name__ == "__main__":

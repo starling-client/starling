@@ -1,0 +1,3 @@
+ids = ["type:CreativeGiveError", "type:CreativeGiveError.FeatureDisabled"]
+why = "give_stack refuses an item whose required feature flags the connected server does not enable, as vanilla's creative menu leaves such items out (#4786). The refusal is CreativeGiveError::FeatureDisabled, so the enum's wire layout changes."
+migrate = "CreativeGiveError is non_exhaustive: a match with a wildcard arm keeps working. A mod that decodes the error's Wire form rebuilds against this build."

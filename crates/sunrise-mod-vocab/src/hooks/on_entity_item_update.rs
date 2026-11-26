@@ -27,7 +27,7 @@ pub trait Hooks {
         scope = "item",
         key = "subject",
         neoforge = "IItemExtension.onEntityItemUpdate",
-        version = 3
+        version = 4
     )]
     fn on_entity_item_update(subject: mod_api::ItemEntityServerScope<'_>, canceled: &mut bool);
 }

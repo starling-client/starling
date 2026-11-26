@@ -41,7 +41,7 @@ impl Game<'_> {
         pipe: sunrise_protocol::connection::Pipe,
         name: &str,
     ) -> Result<()> {
-        self.join_server("local", name, Some(pipe), None, false, false)
+        self.join_server("local", name, Some(pipe), None, false, false, None)
     }
     pub(super) fn join_server(
         &mut self,
@@ -51,12 +51,13 @@ impl Game<'_> {
         cookies: Option<sunrise_client::net::Cookies>,
         lan: bool,
         realm: bool,
+        list_name: Option<&str>,
     ) -> Result<()> {
         if local.is_none() && self.options.developer_single_player {
             return Err(
                 sunrise_client::lang::get("sunrise.developer_offline.single_player").into(),
             );
         }
-        self.connect_remote_session(address, name, local, cookies, lan, realm)
+        self.connect_remote_session(address, name, local, cookies, lan, realm, list_name)
     }
 }

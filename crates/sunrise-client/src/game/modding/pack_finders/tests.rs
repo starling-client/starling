@@ -2,7 +2,7 @@ use super::*;
 use mod_api::{AddPackFindersEvent, Hooks, Identifier, ModEntry};
 use mod_platform::testing::with_mods;
 use std::{fs, io::Write, path::PathBuf};
-use sunrise_client::datapack::{DataStore, FunctionLine};
+use sunrise_client::datapack::{DataPacks, DataStore, FunctionLine};
 use sunrise_client::text::Text;
 
 const ASSET_PACK: &str = "assets/packmod/resourcepacks/optional";
@@ -222,8 +222,10 @@ fn both_startup_repositories_lend_only_available_text_services() {
 #[test]
 #[ignore = "daily"]
 fn live_pack_rediscovery_can_read_a_registered_client_setting() {
-    use crate::game::native_entity_refs::tests::{run_fresh_cases, with_client_game};
-    use mod_api::{HostSide, Registrar, RegistrationContext, SettingSpec};
+    use crate::game::native_entity_refs::tests::{record_key, run_fresh_cases, with_client_game};
+    use mod_api::{
+        HostSide, Registrar, RegistrationContext, SettingKey, SettingSpec, SettingValue,
+    };
 
     if run_fresh_cases(
         "game::pack_finders::tests::live_pack_rediscovery_can_read_a_registered_client_setting",
@@ -233,13 +235,16 @@ fn live_pack_rediscovery_can_read_a_registered_client_setting() {
         return;
     }
 
-    struct SettingFinder;
+    struct SettingFinder(std::sync::OnceLock<SettingKey>);
     #[mod_api::__subscriptions]
     impl Hooks for SettingFinder {
         fn register(&self, registrar: &mut dyn Registrar, _: &RegistrationContext) {
-            registrar
-                .register_setting(SettingSpec::toggle("offer", "packmod.offer", false))
-                .unwrap();
+            record_key(
+                &self.0,
+                registrar
+                    .register_setting(SettingSpec::toggle("offer", "packmod.offer", false))
+                    .unwrap(),
+            );
         }
 
         fn add_pack_finders(
@@ -248,7 +253,7 @@ fn live_pack_rediscovery_can_read_a_registered_client_setting() {
             event: &mut AddPackFindersEvent<'_>,
         ) {
             if let Some(HostSide::Client(host)) = context.live_host()
-                && host.setting("packmod", "offer").as_deref() == Some("true")
+                && host.setting_bool(*self.0.get().unwrap()) == Ok(true)
             {
                 event
                     .packs
@@ -264,13 +269,18 @@ fn live_pack_rediscovery_can_read_a_registered_client_setting() {
 
     let fixture = Fixture::new(false);
     with_mods(
-        vec![ModEntry::new("packmod", Box::new(SettingFinder))].into(),
+        vec![ModEntry::new(
+            "packmod",
+            Box::new(SettingFinder(Default::default())),
+        )]
+        .into(),
         || {
             with_client_game(|game| {
                 game.mods = fixture.sources();
                 let ty = PackType::ClientResources;
                 assert!(game.discover_mod_packs(ty).is_empty());
-                game.set_setting("packmod", "offer", "true");
+                let key = mod_api::__private::setting_key_by_name("packmod", "offer").unwrap();
+                assert_eq!(game.set_setting(key, SettingValue::Toggle(true)), Ok(true));
                 let packs = game.discover_mod_packs(ty);
                 assert_eq!(packs.len(), 1);
                 assert_eq!(packs[0].id, fixture.asset_id());
@@ -356,7 +366,7 @@ fn contributed_packs_are_discoverable_and_only_selected_resources_apply() {
                 &data,
             );
             let enabled = stack.enabled_packs().collect::<Vec<_>>();
-            let store = DataStore::load(&enabled);
+            let store = DataStore::load(&DataPacks::new(&enabled));
             assert_eq!(
                 store.functions["packmod:probe"].lines,
                 [FunctionLine::Command("say from-optional".into())]
@@ -626,7 +636,11 @@ fn a_mods_pack_is_on_the_screen_and_applies_through_client_reload() {
                 &[],
                 &[],
                 &game.mods,
-                game.register_client_reload_listeners(),
+                game.register_client_reload_listeners(
+                    &game
+                        .capture_candidate_settings(&game.options.resources)
+                        .unwrap(),
+                ),
                 &[],
                 &game.pack.assets,
                 &game.res,
@@ -655,7 +669,11 @@ fn a_mods_pack_is_on_the_screen_and_applies_through_client_reload() {
             );
             game.settings.resource_packs = vec![fixture.asset_id()];
             for expected in ["first", "second"] {
-                let listeners = game.register_client_reload_listeners();
+                let listeners = game.register_client_reload_listeners(
+                    &game
+                        .capture_candidate_settings(&game.options.resources)
+                        .unwrap(),
+                );
                 let staged = crate::game::packs::stage_pack(
                     &game.vanilla_root(),
                     &game.settings.resource_packs,
@@ -763,7 +781,7 @@ fn hidden_optional_data_pack_is_command_selectable_and_loads_its_function() {
             &data,
         );
         let enabled = stack.enabled_packs().collect::<Vec<_>>();
-        let store = DataStore::load(&enabled);
+        let store = DataStore::load(&DataPacks::new(&enabled));
         assert_eq!(
             store.functions["packmod:probe"].lines,
             [FunctionLine::Command("say from-optional".into())]

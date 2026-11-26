@@ -28,11 +28,12 @@ import subprocess
 import sys
 import tempfile
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import lab  # noqa: E402
-from agent_control_e2e import Failed  # noqa: E402
-from lan_e2e import Game  # noqa: E402
-from server_bench import DONE, Server  # noqa: E402
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab
+from tools.agent_control_e2e import Failed
+from tools.lan_e2e import Game
+from tools.server_bench import DONE, Server  # noqa: E402
 
 EXE = '.exe' if os.name == 'nt' else ''
 PLAYER = 'Opal'

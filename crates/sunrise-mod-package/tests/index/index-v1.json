@@ -31,7 +31,7 @@
           "game": "26.3",
           "file": {
             "name": "coords_hud-0.1.0.smod",
-            "url": "https://github.com/horizon-rust/horizon-mods/releases/download/coords_hud-0.1.0/coords_hud-0.1.0.smod",
+            "url": "https://github.com/sunrise-org/sunrise-mods/releases/download/coords_hud-0.1.0/coords_hud-0.1.0.smod",
             "size": 447,
             "sha256": "cb6e658445269b2a4d2eb104e83e4b993586bc2e56814fd56454244139f08364",
             "signature": "untrusted comment: test fixture signature\nRUTVDqAKF4nm3wlb5rk/J+aVkHYWB89CbNN1J0/kP00Pu6mqxQCMROQhWQPHW90Yx1hvMFqzAzE3LYVITHnRtGKZ3OKC6VSHIws=\ntrusted comment: coords_hud 0.1.0 content fixture\noMt+4NMkeWeXKJW0SPKl5hXT7De8JZ27X+aoCQ4ng/l+hffy/AZa/sBeBB4feIibyYBUo4L1t6TbmF4xBnJHBA==\n"
@@ -69,44 +69,13 @@
           ],
           "file": {
             "name": "cozy-1.0.0.spack",
-            "url": "https://github.com/horizon-rust/horizon-mods/releases/download/cozy-1.0.0/cozy-1.0.0.spack",
+            "url": "https://github.com/sunrise-org/sunrise-mods/releases/download/cozy-1.0.0/cozy-1.0.0.spack",
             "size": 470,
             "sha256": "ca9a0207d5a9df142962a2dd7563a639eea6774e7f144b6ef239eb6eaf753f58"
           }
         }
       ],
       "description": "Coordinates HUD with a calm render distance, played together as one profile."
-    },
-    {
-      "id": "glow",
-      "kind": "shader",
-      "name": "Soft Glow",
-      "summary": "A post-processing pass over the world.",
-      "authors": [
-        "Sunrise"
-      ],
-      "owners": [
-        "ludovic111"
-      ],
-      "license": "MIT",
-      "source": "https://github.com/horizon-rust/horizon-mods",
-      "icon": "https://horizon-rust.github.io/horizon-mods/icons/glow.png?v=565b7c33f72f",
-      "categories": ["bloom"],
-      "versions": [
-        {
-          "version": "1.0.0",
-          "published": "2026-10-26",
-          "api": "0.1",
-          "game": "26.3",
-          "file": {
-            "name": "glow-1.0.0.sshader",
-            "url": "https://github.com/horizon-rust/horizon-mods/releases/download/glow-1.0.0/glow-1.0.0.sshader",
-            "size": 693,
-            "sha256": "a23c5fe9fd173243704dd51160f20f35927c6e0060c5541ce1823f25db8c7961"
-          }
-        }
-      ],
-      "description": "A soft bloom drawn over the world after it renders, in Sunrise's own shader format."
     },
     {
       "id": "skyblock_start",

@@ -1,5 +1,4 @@
 //! The `hanging_place` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0245
 
 pub trait Hooks {
     /// A server player places a hanging entity: an item frame

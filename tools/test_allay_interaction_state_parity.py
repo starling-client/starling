@@ -4,12 +4,11 @@ import os
 from pathlib import Path
 import tempfile
 
-try:
-    from . import lab, oracle_harness as h, integration_env
-except ImportError:
-    import lab
-    import oracle_harness as h
-    import integration_env
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, oracle_harness as h, integration_env
 
 
 def main():

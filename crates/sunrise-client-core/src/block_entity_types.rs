@@ -1,4 +1,5 @@
 //! Accepted native block entity membership, frozen before resources or worlds load.
+use mod_vocab::BlockEntityTypeKey;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     sync::{Arc, OnceLock},
@@ -17,8 +18,9 @@ struct BlockMembership {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RegisteredBlockEntityType {
     pub numeric_id: u32,
-    /// A Part is registered for this type's server tick.
-    pub has_tick_part: bool,
+    /// The typed binding for each side, present only when a Part ticks on that side.
+    pub server_ticker: Option<BlockEntityTypeKey>,
+    pub client_ticker: Option<BlockEntityTypeKey>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -27,13 +29,18 @@ pub struct BlockEntityTypes {
     /// Names in protocol order: a reload may not change numeric wire IDs either.
     wire: Vec<Arc<str>>,
     keys: BTreeSet<Arc<str>>,
+    native: BTreeSet<String>,
     /// Each registered name's numeric wire ID and tick subscription.
     registered: HashMap<Arc<str>, RegisteredBlockEntityType>,
 }
 
 impl BlockEntityTypes {
     /// Membership has already been checked by the content plan.
-    pub fn new(blocks: BTreeMap<String, String>, wire: Vec<String>) -> Self {
+    pub fn new(
+        blocks: BTreeMap<String, String>,
+        wire: Vec<String>,
+        native: impl IntoIterator<Item = String>,
+    ) -> Self {
         let wire: Vec<Arc<str>> = wire.into_iter().map(Into::into).collect();
         let keys = wire.iter().filter(|id| !id.is_empty()).cloned().collect();
         let registered = (0..)
@@ -44,7 +51,8 @@ impl BlockEntityTypes {
                     id.clone(),
                     RegisteredBlockEntityType {
                         numeric_id,
-                        has_tick_part: false,
+                        server_ticker: None,
+                        client_ticker: None,
                     },
                 )
             })
@@ -67,14 +75,18 @@ impl BlockEntityTypes {
             blocks,
             wire,
             keys,
+            native: native.into_iter().collect(),
             registered,
         }
     }
 
-    /// Bind server tick subscriptions before this process's type table is installed.
-    pub fn bind_tick_parts(&mut self, mut listens: impl FnMut(&str) -> bool) {
+    /// Bind both tick sides before this process's type table is installed.
+    pub fn bind_tick_parts(
+        &mut self,
+        mut bind: impl FnMut(&str) -> (Option<BlockEntityTypeKey>, Option<BlockEntityTypeKey>),
+    ) {
         for (id, kind) in &mut self.registered {
-            kind.has_tick_part = listens(id);
+            (kind.server_ticker, kind.client_ticker) = bind(id);
         }
     }
 
@@ -158,7 +170,8 @@ impl BlockEntityTypes {
                 .valid
                 .iter()
                 .filter(move |kind| {
-                    !block.starts_with("minecraft:") || entry.factory_kind.as_ref() != Some(*kind)
+                    entry.template.as_ref() != Some(block)
+                        || entry.factory_kind.as_ref() != Some(*kind)
                 })
                 .map(move |kind| (block.as_str(), kind.as_str()))
         })
@@ -183,7 +196,7 @@ impl BlockEntityTypes {
         self.registered(id).map(|kind| kind.numeric_id)
     }
 
-    fn registered(&self, id: &str) -> Option<RegisteredBlockEntityType> {
+    pub fn registered(&self, id: &str) -> Option<RegisteredBlockEntityType> {
         self.registered.get(id).copied()
     }
 
@@ -192,11 +205,9 @@ impl BlockEntityTypes {
         self.wire.len()
     }
 
-    /// Whether a mod declared the block entity type `id`.
-    /// Wire keys include vanilla types; `mod_content::Plan::new` refuses native
-    /// declarations in `minecraft:`.
+    /// Whether the block entity type `id` came from an admitted native declaration.
     pub fn declares(&self, id: &str) -> bool {
-        !id.starts_with("minecraft:") && self.keys.contains(id)
+        self.native.contains(id)
     }
 }
 
@@ -270,6 +281,7 @@ mod tests {
                 "mod:own".into(),
                 "mod:other".into(),
             ],
+            ["mod:own".into(), "mod:other".into()],
         );
         types.template(
             "mod:vault".into(),
@@ -298,7 +310,13 @@ mod tests {
         assert_eq!(types.memberships().count(), 4);
         let slot = OnceLock::new();
         freeze(&slot, types).unwrap();
-        assert!(freeze(&slot, BlockEntityTypes::new(BTreeMap::new(), Vec::new())).is_err());
+        assert!(
+            freeze(
+                &slot,
+                BlockEntityTypes::new(BTreeMap::new(), Vec::new(), [])
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -312,6 +330,11 @@ mod tests {
             .into(),
             vec![
                 "minecraft:chest".into(),
+                "test:machine".into(),
+                "test:single".into(),
+                "test:empty".into(),
+            ],
+            [
                 "test:machine".into(),
                 "test:single".into(),
                 "test:empty".into(),
@@ -347,6 +370,7 @@ mod tests {
                 ]
                 .into(),
                 vec!["minecraft:sign".into(), "test:machine".into()],
+                ["test:machine".into()],
             )
         };
         freeze(&slot, types()).unwrap();

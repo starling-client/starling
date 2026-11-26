@@ -25,10 +25,6 @@ thread_local! {
         const { std::cell::Cell::new(None) };
     /// How many times this thread asked the installed `collision_shape`.
     pub(crate) static COLLISION_ASKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-    /// The states whose answers the installed `collision_shape_refused` heard on this thread, in
-    /// order. A state in it is not asked again, as the game's adapter switches its block off.
-    pub(crate) static COLLISION_REFUSED: std::cell::RefCell<Vec<u32>> =
-        const { std::cell::RefCell::new(Vec::new()) };
     /// The answer the installed `collision_shape` gives this thread; none leaves the shape be.
     pub(crate) static COLLISION_ANSWER: std::cell::RefCell<Option<CollisionAnswer>> =
         const { std::cell::RefCell::new(None) };
@@ -165,13 +161,14 @@ pub(crate) fn install() {
                     JUMPS.set(JUMPS.get() + 1);
                 }
             },
-            living_jump_power: |context, _, _, power| {
+            living_model_posed: |_, _, _, _| {},
+            living_jump_power: |context, _, power| {
                 *power += context.setting("rules_mod", "stack").map_or(0.0, |_| 1.0);
             },
-            living_speed: |context, _, _, speed| {
+            living_speed: |context, _, speed| {
                 *speed += context.setting("rules_mod", "stack").map_or(0.0, |_| 2.0);
             },
-            living_flying_speed: |context, _, _, speed| {
+            living_flying_speed: |context, _, speed| {
                 *speed += context.setting("rules_mod", "stack").map_or(0.0, |_| 3.0);
             },
             block_jump_factor: |context, _, factor| {
@@ -182,6 +179,11 @@ pub(crate) fn install() {
             },
             is_ladder: |context, _, _, _, ladder| {
                 *ladder |= context.setting("rules_mod", "stack").is_some();
+            },
+            // Keeps the game's reach: the menu tests read vanilla's `stillValid` distance.
+            block_interaction_range: |_, _, _, _, _| {},
+            is_scaffolding: |context, _, _, _, scaffolding| {
+                *scaffolding |= context.setting("rules_mod", "stack").is_some();
             },
             makes_open_trapdoor_above_climbable: |context, _, _, _, climbable| {
                 *climbable |= context.setting("rules_mod", "stack").is_some();
@@ -196,19 +198,18 @@ pub(crate) fn install() {
                 }
                 true
             },
-            collision_shape: |_, _, state, query, shape| {
-                if COLLISION_REFUSED.with_borrow(|refused| refused.contains(&state.0)) {
-                    return;
-                }
+            collision_shape: |_, _, _, query, shape| {
                 COLLISION_ASKS.with(|asks| asks.set(asks.get() + 1));
                 COLLISION_ANSWER.with_borrow(|answer| {
-                    if let Some(answer) = answer {
-                        *shape = answer(query);
-                    }
+                    *shape = answer
+                        .as_ref()
+                        .and_then(|answer| answer(query))
+                        .map(|boxes| {
+                            mod_api::__private::voxel_shape_into_core(
+                                mod_api::VoxelShape::try_from_boxes(&boxes).unwrap(),
+                            )
+                        });
                 });
-            },
-            collision_shape_refused: |state, _| {
-                COLLISION_REFUSED.with_borrow_mut(|refused| refused.push(state.0));
             },
             player_stays_on_ground_surface: |context, _, staying| {
                 *staying |= context.setting("rules_mod", "stack").is_some();
@@ -222,14 +223,15 @@ pub(crate) fn install() {
             fluid_flow: |context, _, _, flow| {
                 flow[0] += context.setting("rules_mod", "stack").map_or(0.0, |_| 1.0);
             },
-            sound_type: |context, _, _, entity, cause, sound| {
-                if context.setting("rules_mod", "stack").is_some()
+            sound_type: |level, _, _, entity, cause, own| {
+                (level.context.setting("rules_mod", "stack").is_some()
                     && entity.is_some_and(|(_, kind)| kind == "minecraft:player")
-                    && cause == mod_api::BlockSoundCause::Step
-                {
-                    sound.step = "rules_mod:block.rules.step".into();
-                    sound.volume = 2.0;
-                }
+                    && cause == mod_api::BlockSoundCause::Step)
+                    .then(|| mod_api::BlockSoundType {
+                        step: mod_api::SoundEventKey::parse("rules_mod:block.rules.step").unwrap(),
+                        volume: 2.0,
+                        ..own.clone()
+                    })
             },
             can_grindstone_repair: |context, stack, can_repair| {
                 item_part(context, "can_grindstone_repair", stack, can_repair);

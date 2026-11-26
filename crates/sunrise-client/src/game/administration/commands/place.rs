@@ -93,7 +93,10 @@ impl Game<'_> {
     }
     /// `PlaceCommand.checkLoaded`: every chunk of the inclusive range.
     fn place_check_loaded(&self, min: [i32; 2], max: [i32; 2]) -> R<()> {
-        let dimension = self.command_source.map_or(self.dim, |s| s.dimension);
+        let dimension = self
+            .command_source
+            .as_ref()
+            .map_or(self.dim, |s| s.dimension);
         for cx in min[0]..=max[0] {
             for cz in min[1]..=max[1] {
                 if dimension != self.dim || !self.world.chunks.contains_key(&(cx, cz)) {

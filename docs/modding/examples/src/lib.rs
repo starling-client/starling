@@ -2,36 +2,43 @@
 //! `ANCHOR` comments, so a change to the mod API that breaks it fails the build instead of
 //! leaving a stale page.
 
-use mod_api::{AttachmentError, AttachmentType, Holder, Hooks, ServerHost, ServerTickEvent};
-
-#[derive(Default)]
-struct Mod;
+use mod_api::{
+    AttachmentDescriptor, AttachmentError, AttachmentKey, Holder, Hooks, Registrar,
+    RegistrationContext, ServerHost, ServerTickEvent,
+};
+use std::sync::RwLock;
 
 // ANCHOR: counter
-/// A counter on the level, saved with the world.
-static COUNTER: AttachmentType<i32> = AttachmentType {
-    namespace: "example",
-    name: "counter",
-    default: || 0,
-    codec: None,
-    copy_on_death: false,
-    sync: false,
-};
+/// A counter on the level, registered once and held by its issued key.
+#[derive(Default)]
+struct Mod {
+    counter: RwLock<Option<AttachmentKey<i32>>>,
+}
 // ANCHOR_END: counter
 
 // ANCHOR: tick_hook
 #[mod_api::sunrise_mod]
 impl Hooks for Mod {
+    fn register(&self, registrar: &mut dyn Registrar, _: &RegistrationContext) {
+        if let Ok(key) =
+            registrar.register_attachment_type(AttachmentDescriptor::new("example:counter", || 0))
+        {
+            *self.counter.write().unwrap() = Some(key);
+        }
+    }
+
     fn server_tick(&self, host: &mut dyn ServerHost, _: &mut ServerTickEvent<'_>) {
-        let _ = count(host);
+        if let Some(counter) = self.counter.read().unwrap().clone() {
+            let _ = count(host, &counter);
+        }
     }
 }
 // ANCHOR_END: tick_hook
 
 // ANCHOR: count
-fn count(host: &mut dyn ServerHost) -> Result<(), AttachmentError> {
-    let old = COUNTER.get(&mut *host, Holder::Level)?;
-    COUNTER.set(host, Holder::Level, old + 1)
+fn count(host: &mut dyn ServerHost, counter: &AttachmentKey<i32>) -> Result<(), AttachmentError> {
+    let old = counter.get(host, Holder::Level, |n| *n)?;
+    counter.set(host, Holder::Level, old + 1)
 }
 // ANCHOR_END: count
 

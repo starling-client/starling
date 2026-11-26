@@ -90,37 +90,3 @@ fn the_cutoffs_ranges_are_in_hertz_whatever_the_output_rate() {
     assert!(!with(|e| e.lowpass = 19.999).valid());
     assert!(!with(|e| e.reverb_lowpass = 24_000.0).valid());
 }
-
-#[test]
-fn it_crosses_the_wire_as_eight_f32s_bit_for_bit() {
-    use crate::wire::{Reader, Writer};
-    let mut effects = SoundEffects::NONE;
-    effects.gain = f32::NAN;
-    effects.lowpass = f32::INFINITY;
-    effects.highpass = 125.5;
-    effects.cavern = 0.25;
-    let fields = |e: &SoundEffects| {
-        [
-            e.gain,
-            e.direct,
-            e.lowpass,
-            e.highpass,
-            e.room,
-            e.hall,
-            e.cavern,
-            e.reverb_lowpass,
-        ]
-        .map(f32::to_bits)
-    };
-    let mut out = Writer::new();
-    out.put(&effects);
-    let golden: Vec<u8> = fields(&effects)
-        .iter()
-        .flat_map(|bits| bits.to_le_bytes())
-        .collect();
-    assert_eq!(out.bytes(), golden.as_slice());
-    // Refused values cross unchanged, so the game's `valid` sees what the mod sent.
-    let back = Reader::decode::<SoundEffects>(&golden).unwrap();
-    assert_eq!(fields(&back), fields(&effects));
-    assert!(!back.valid());
-}

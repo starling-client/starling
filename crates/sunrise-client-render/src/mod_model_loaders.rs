@@ -25,7 +25,7 @@ fn freeze(loaders: Vec<Answered<ModelLoaderRegistration>>) -> (ModelLoaderTable,
         let key = answer.id.to_string();
         let owner = if matches!(
             key.as_str(),
-            "neoforge:composite" | "neoforge:obj" | "fusion:model"
+            "neoforge:composite" | "neoforge:obj" | "neoforge:empty" | "fusion:model"
         ) {
             log::error!("Mod {mod_id}: model loader {key} collides with a built-in model loader");
             None
@@ -78,7 +78,7 @@ fn freeze(loaders: Vec<Answered<ModelLoaderRegistration>>) -> (ModelLoaderTable,
 
 /// Binds the model loaders native mods registered once at start, before resources load. Any valid
 /// `Identifier` (including `minecraft:` and empty-path ids) is accepted; built-in loader
-/// collisions (`neoforge:composite`, `neoforge:obj`, `fusion:model`) and duplicates are logged as errors and left
+/// collisions (`neoforge:composite`, `neoforge:obj`, `neoforge:empty`, `fusion:model`) and duplicates are logged as errors and left
 /// out. Returns the ids kept, in registration order.
 pub fn register(loaders: Vec<Answered<ModelLoaderRegistration>>) -> Vec<String> {
     let (bound, kept) = freeze(loaders);
@@ -327,6 +327,11 @@ mod tests {
                 );
                 event.register(
                     Identifier::parse("neoforge:obj").unwrap(),
+                    ModelLoaderSchema::ModelProperties,
+                    |_| Ok(vec![quad("side", 1.0)]),
+                );
+                event.register(
+                    Identifier::parse("neoforge:empty").unwrap(),
                     ModelLoaderSchema::ModelProperties,
                     |_| Ok(vec![quad("side", 1.0)]),
                 );

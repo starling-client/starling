@@ -122,7 +122,7 @@ fn a_hit_that_deals_no_damage_has_no_knockback_anger_or_exhaustion() {
     assert_eq!(pig.invulnerable, 0, "the hit started a hurt cooldown");
     assert_eq!(pig.ai.last_hurt_by_player, 0, "the pig was angered");
     assert!(
-        game.combat.last_hurt_mob.is_none(),
+        game.player.as_ref().unwrap().health.last_hurt_mob.is_none(),
         "setLastHurtMob ran for a hit that dealt no damage"
     );
     let player = game.player.as_ref().unwrap();

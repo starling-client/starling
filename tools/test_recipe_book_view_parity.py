@@ -22,16 +22,18 @@ import os
 import random
 import subprocess
 import sys
-try:
-    from . import interaction_lab as lib, lab, test_place_recipe_parity as place, test_model_baking_parity as baking
-    from . import test_crafter_parity as crafter, test_rust_parity as base
-except ImportError:
-    import interaction_lab as lib
-    import lab
-    import test_place_recipe_parity as place
-    import test_model_baking_parity as baking
-    import test_crafter_parity as crafter
-    import test_rust_parity as base
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import (
+    interaction_lab as lib,
+    lab,
+    test_place_recipe_parity as place,
+    test_model_baking_parity as baking,
+    test_crafter_parity as crafter,
+    test_rust_parity as base,
+)
 
 
 def queries(rng, items):

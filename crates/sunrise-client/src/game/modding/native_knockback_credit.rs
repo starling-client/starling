@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use sunrise_client::{
     health::{Attack, Hurting, KnockbackCredit},
     items::ItemStack,
-    mobs::{Mob, Species, Who},
+    mobs::{Damage, Mob, Species, Who},
 };
 
 #[derive(Default)]
@@ -24,6 +24,14 @@ pub(super) struct CreditPlan {
     responsibility: Option<Option<(PlayerCredit, CreditEntity)>>,
     responsibility_live: bool,
     fixed: CreditEntity,
+    /// Canonical UUIDs of the causing entity for a villager's hurt gossip.
+    hurt_by: Option<HurtBy>,
+}
+
+struct HurtBy {
+    player: Option<[i32; 4]>,
+    attacker: Option<(u32, [i32; 4])>,
+    trade_feedback: bool,
 }
 
 pub(super) struct CreditLoan<'a> {
@@ -43,6 +51,22 @@ impl CreditPlan {
 impl KnockbackCredit for CreditLoan<'_> {
     fn accepted_mob_hit(&mut self, mob: &mut Mob) {
         assert_eq!(mob.id as i32, self.plan.victim);
+        let interval = mob.ambient_interval();
+        if let Some(hurt) = &mut self.plan.hurt_by
+            && std::mem::take(&mut hurt.trade_feedback)
+            && let Some(pending) = mob
+                .extra
+                .villager
+                .as_mut()
+                .and_then(|ext| ext.pending_hurt_player.as_mut())
+        {
+            // notifyTradeUpdated draws before the victim's own hurt sound or effects.
+            pending.trade_pitch = sunrise_client::merchant::trade_update_pitch(
+                &mut mob.ambient_timer,
+                interval,
+                &mut mob.random,
+            );
+        }
         if let Some(responsibility) = self.plan.responsibility.take() {
             mob.ai.last_hurt_by_player = if responsibility.is_some() { 100 } else { 0 };
             match &responsibility {
@@ -54,6 +78,17 @@ impl KnockbackCredit for CreditLoan<'_> {
                 }
             }
             self.plan.player = responsibility;
+        }
+    }
+
+    fn hurt_by_uuid(&self, source: &Damage) -> Option<[i32; 4]> {
+        let hurt_by = self.plan.hurt_by.as_ref()?;
+        match source.attacker? {
+            Who::Player => hurt_by.player,
+            Who::Mob(id) => hurt_by
+                .attacker
+                .filter(|&(attacker, _)| attacker == id)
+                .map(|(_, uuid)| uuid),
         }
     }
 
@@ -94,6 +129,11 @@ impl KnockbackCredit for CreditLoan<'_> {
 }
 
 impl Game<'_> {
+    /// The attacking entity's canonical UUID, already assigned on creation or admission.
+    pub(super) fn known_attacker_uuid(&self, id: u32) -> Option<[i32; 4]> {
+        self.known_resident_entity_uuid_at(self.dim.key(), id)
+            .or_else(|| self.persist.uuids.get(&id).copied())
+    }
     /// The credited entity and its main hand: in the level in place, or a mob
     /// a kill credit found in another loaded level.
     fn knockback_credit_entity(&self, id: i32) -> CreditEntity {
@@ -181,6 +221,22 @@ impl Game<'_> {
                 let credited = self.credited_entity(id).map_or(0, |e| e.id() as i32);
                 (id, entity(credited))
             });
+        let hurt_by = self
+            .mobs
+            .iter()
+            .any(|m| m.id as i32 == victim && m.species() == Species::Villager)
+            .then(|| HurtBy {
+                // The hit's own player (a guest's cloud's owner), not whoever acts now.
+                player: attack.player_uuid,
+                attacker: match attacker {
+                    Some(Who::Mob(id)) => self.known_attacker_uuid(id).map(|uuid| (id, uuid)),
+                    _ => None,
+                },
+                trade_feedback: attacker == Some(Who::Player)
+                    && attack
+                        .player_uuid
+                        .is_some_and(|uuid| self.villager_trade_will_notify(victim as u32, uuid)),
+            });
         let fixed = if observed && mob.is_none() {
             self.entity(victim as u32)
                 .and_then(|entity| self.living(entity))
@@ -202,6 +258,7 @@ impl Game<'_> {
             responsibility: responsibility.map(|credit| credit.map(credited_player)),
             responsibility_live,
             fixed,
+            hurt_by,
         }
     }
 }

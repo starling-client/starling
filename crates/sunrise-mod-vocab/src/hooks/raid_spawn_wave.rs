@@ -1,5 +1,4 @@
 //! The `raid_spawn_wave` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0328
 
 pub trait Hooks {
     /// A raid wave has been spawned at `pos`; `wave` is its one-based wave

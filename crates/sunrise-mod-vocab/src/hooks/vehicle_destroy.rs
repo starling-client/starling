@@ -1,5 +1,4 @@
 //! The `vehicle_destroy` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0271
 
 pub trait Hooks {
     /// A boat or minecart is about to be destroyed at `pos`. TNT minecarts

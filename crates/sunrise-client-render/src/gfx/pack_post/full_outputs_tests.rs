@@ -6,7 +6,7 @@ use super::*;
 use std::io::{Cursor, Write};
 use sunrise_shaders::Post;
 
-fn pack(outputs: u32) -> Post {
+fn pack(outputs: u32, limits: naga::front::glsl::InterfaceLimits) -> Post {
     let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
     let mut add = |name: &str, source: &str| {
         zip.start_file(
@@ -65,6 +65,7 @@ fn pack(outputs: u32) -> Post {
             after: String::new(),
             alpha_test: None,
         }),
+        interface_limits: limits,
         ..Default::default()
     };
     sunrise_shaders::load_post(&pack, "", &properties, &macros, &inputs)
@@ -90,11 +91,18 @@ fn a_shadow_program_with_every_output_drops_the_boats_patches_not_its_water() {
             atlas: None,
             ids: None,
             cull: true,
+<<<<<<< HEAD
             prepass: false,
+||||||| 46c00106def
+=======
+            pages: false,
+>>>>>>> ed6772e2118
         })
     };
     let outputs = gpu.device.limits().max_inter_stage_shader_variables;
-    let post = gpu.build_with_terrain(pack(outputs), geometry());
+    // Translated for this device, as the game translates a pack (`Renderer::pack_inputs`).
+    let limits = crate::core_shader::interface_limits(&gpu.device.limits());
+    let post = gpu.build_with_terrain(pack(outputs, limits), geometry());
     assert!(post.has_shadow(), "{:?}", post.notes);
     assert!(post.shadow_water.is_some(), "{:?}", post.notes);
     assert!(
@@ -105,7 +113,7 @@ fn a_shadow_program_with_every_output_drops_the_boats_patches_not_its_water() {
         post.notes
     );
     // With room for them, the patches stay and nothing is said.
-    let post = gpu.build_with_terrain(pack(outputs - 1), geometry());
+    let post = gpu.build_with_terrain(pack(outputs - 1, limits), geometry());
     assert!(post.shadow_water.is_some(), "{:?}", post.notes);
     assert!(
         !post.notes.iter().any(|n| n.contains("water patches")),

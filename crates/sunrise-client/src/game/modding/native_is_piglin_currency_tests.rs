@@ -4,7 +4,9 @@
 //! admiring whole, as vanilla's `holdInOffhand(stack.split(1))` keeps it. A gold ingot is refused
 //! as currency: no longer taken from the hand, and once picked up from the ground (it stays
 //! `#piglin_loved`) admired and kept instead of bartered. Expected values follow vanilla's
-//! `PiglinAi` flow by hand; the world is ticked for real, `ADMIRE_DURATION` (119) ticks.
+//! `PiglinAi` flow by hand; the world is ticked for real. `admireGoldItem` sets `ADMIRING_ITEM`
+//! for `ADMIRE_DURATION` (119) ticks: `MemorySlot.tick` counts it down in the next 119 brain
+//! ticks, and clears it in the 120th, whose `StopHoldingItemIfNoLongerAdmiring` barters.
 use super::native_entity_refs::tests::{prepare_entity_ticking_neighborhood, with_game};
 use mod_api::{Hooks, Host, IsPiglinCurrencyEvent, ItemPart, Registrar, RegistrationContext};
 use std::sync::Arc;
@@ -196,14 +198,15 @@ fn a_part_makes_a_coin_currency_and_refuses_the_gold_ingot_isolated() {
             assert_eq!(off_hand(game, p), None);
 
             // Hand-over of a coin: the click is taken, one coin, data and all, leaves the hand for
-            // the off hand. It is admired for 119 ticks, then bartered: gone, barter thrown.
+            // the off hand. It is admired for 119 ticks, then bartered in the 120th: gone,
+            // barter thrown.
             assert!(click(game, p, coins(3)));
             let held = game.inventory[game.selected].as_ref().unwrap();
             assert_eq!((&*held.item, held.count), (EMERALD, 2));
             let admired = off_hand(game, p).unwrap();
             assert_eq!((&*admired.item, admired.count), (EMERALD, 1));
             assert_eq!(admired.custom_data(), Some(&coin_data()));
-            step(game, 118);
+            step(game, 119);
             assert_eq!(
                 off_hand(game, p).map(|s| s.custom_data().cloned()),
                 Some(Some(coin_data()))
@@ -213,7 +216,7 @@ fn a_part_makes_a_coin_currency_and_refuses_the_gold_ingot_isolated() {
             assert_eq!(off_hand(game, p), None);
             assert_eq!(mob(game, p).extra.main_hand_id(), None);
             assert_eq!(stored(mob(game, p), EMERALD), 0);
-            assert!(thrown(game) > 0, "the barter is thrown at the 119th tick");
+            assert!(thrown(game) > 0, "the barter is thrown at the 120th tick");
             game.dropped.clear();
 
             // A hit: an adult admiring a coin loses it, nothing thrown or stored. Were the coin
@@ -245,7 +248,7 @@ fn a_part_makes_a_coin_currency_and_refuses_the_gold_ingot_isolated() {
             // sword stays in the main hand, the ingot goes to the inventory, nothing bartered.
             drop_beside(game, p, ItemStack::new(GOLD_INGOT, 1));
             assert_eq!(off_hand(game, p).map(|s| s.item), Some(GOLD_INGOT.into()));
-            step(game, 119);
+            step(game, 120);
             assert_eq!(off_hand(game, p), None);
             assert_eq!(mob(game, p).extra.main_hand_id(), Some(GOLDEN_SWORD));
             assert_eq!(stored(mob(game, p), GOLD_INGOT), 1);
@@ -384,14 +387,14 @@ fn a_loved_coin_from_the_ground_is_admired_and_bartered_isolated() {
         super::native_entity_refs::tests::with_game_at(root, |game| {
             field(game);
             // With the emerald `#piglin_loved` through the content mod's tag file, a coin from
-            // the ground is admired, data and all, and bartered after 119 ticks; the wanted
+            // the ground is admired, data and all, for 119 ticks and bartered in the 120th; the wanted
             // sword stays in the main hand.
             let p = add_piglin(game, 0.5, 0.5, Some(GOLDEN_SWORD), false);
             drop_beside(game, p, coins(1));
             let admired = off_hand(game, p).unwrap();
             assert_eq!((&*admired.item, admired.count), (EMERALD, 1));
             assert_eq!(admired.custom_data(), Some(&coin_data()));
-            step(game, 118);
+            step(game, 119);
             assert!(off_hand(game, p).is_some());
             step(game, 1);
             assert_eq!(off_hand(game, p), None);

@@ -17,14 +17,13 @@ POLICIES = {
     "Tag": "iterative Tag codec; vanilla 512; wire/depth_tests.rs",
     "Ingredient": "generic 32; wire/depth_tests.rs",
     "ItemPlace": "no Wire; process-local item address",
-    "LootEntity": "generic 32; wire/depth_tests.rs",
     "RecipeSlotDisplay": "generic 32; wire/depth_tests.rs",
     "Text": "iterative TextForm; vanilla 512; wire/depth_tests.rs",
     "TextContent": "cycle broken by TextForm; generic envelope; wire/depth_tests.rs",
     "TextHover": "cycle broken by TextForm; generic envelope; wire/depth_tests.rs",
     "TextObject": "cycle broken by TextForm; generic envelope; wire/depth_tests.rs",
     "TextStyle": "cycle broken by TextForm; generic envelope; wire/depth_tests.rs",
-    "ModelPart": "JSON preflight before serde; wire/depth_tests.rs",
+    "ModelPart": "no Wire; local client model tree",
     "serde_json::Value": "iterative preflight before serde; wire/depth_tests.rs",
     "serde_json::Map": "iterative preflight before serde; wire/depth_tests.rs",
     "WalkedIngredient": "no Wire; private parser work tree",
@@ -49,8 +48,10 @@ class RecursiveWire(unittest.TestCase):
                 pub enum B { Other(Box<C>), A }
                 pub struct C { pub value: B }
                 pub struct Leaf { pub b: u8 }
+                pub struct Wrapped { children: PrivateChildren }
+                struct PrivateChildren(Vec<Wrapped>);
                 pub struct Generic<T: Fn()> { children: Vec<Generic<T>>, marker: T }
                 // pub struct Fake { self: Fake }
                 #[cfg(test)] mod tests { pub struct Fake { x: Fake } }
             ''')
-            self.assertEqual(recursive_types(Path(directory)), ["A", "B", "C", "Generic"])
+            self.assertEqual(recursive_types(Path(directory)), ["A", "B", "C", "Generic", "Wrapped"])

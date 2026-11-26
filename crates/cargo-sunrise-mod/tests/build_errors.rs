@@ -1,3 +1,4 @@
+use object::{Object, ObjectSymbol};
 use std::{path::Path, process::Command};
 
 /// A starter native mod in a folder whose name has an `=`, with `extra` added to its manifest
@@ -104,4 +105,81 @@ fn a_failed_registry_build_names_the_authors_file_and_a_good_one_still_builds() 
     );
     let built = project.build(type_error);
     project.assert_names_the_authors_file(&built);
+}
+
+/// A native mod whose build script compiles one C file with `cc` and whose Rust calls it, built by
+/// the tool: the C compiler must match the target the SDK builds for (on Windows MinGW's GCC for
+/// `x86_64-pc-windows-gnu`, where `cc` would look for MSVC on an `-msvc` target). The tool's own
+/// build runs the script, on the registry route.
+#[test]
+#[ignore = "daily"]
+fn a_native_mod_compiles_its_c_source_with_cc_from_its_build_script() {
+    let project = Mod::new("\n[build-dependencies]\ncc = \"1\"\n");
+    std::fs::write(
+        project.project.join("build.rs"),
+        "fn main() {\n    cc::Build::new().file(\"c/answer.c\").compile(\"answer\");\n}\n",
+    )
+    .unwrap();
+    std::fs::create_dir(project.project.join("c")).unwrap();
+    std::fs::write(
+        project.project.join("c/answer.c"),
+        "unsigned int sunrise_c_answer(void) { return 42; }\n",
+    )
+    .unwrap();
+    let built = project.build(|source| {
+        let source = source.replace(
+            "fn greeting(player: &str) -> String {",
+            "fn greeting(player: &str) -> String {\n    let _ = unsafe { sunrise_c_answer() };",
+        );
+        format!("{source}\nunsafe extern \"C\" {{\n    fn sunrise_c_answer() -> u32;\n}}\n")
+    });
+    assert!(
+        built.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&built.stdout),
+        String::from_utf8_lossy(&built.stderr)
+    );
+    assert!(
+        project
+            .project
+            .join("target/sunrise-mod/greeter.smod")
+            .is_file()
+    );
+    // On Linux a dylib may leave an undefined symbol to be resolved at load, so a green build
+    // does not show the C function was linked: the library the build left in its cache must
+    // define it.
+    let name = format!(
+        "{}mod_greeter{}",
+        std::env::consts::DLL_PREFIX,
+        std::env::consts::DLL_SUFFIX
+    );
+    let (mut pending, mut libraries) = (vec![project.cache.clone()], Vec::new());
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_type().unwrap().is_dir() {
+                pending.push(entry.path());
+            } else if entry.file_name().to_str() == Some(name.as_str()) {
+                libraries.push(entry.path());
+            }
+        }
+    }
+    assert!(!libraries.is_empty(), "no {name} under the cache");
+    let defines_the_c_function = |library: &Path| {
+        let bytes = std::fs::read(library).unwrap();
+        let file = object::File::parse(&*bytes).unwrap();
+        file.symbols().chain(file.dynamic_symbols()).any(|symbol| {
+            // Mach-O prefixes C names with an underscore.
+            symbol.is_definition()
+                && symbol
+                    .name()
+                    .is_ok_and(|name| name.trim_start_matches('_') == "sunrise_c_answer")
+        })
+    };
+    assert!(
+        libraries
+            .iter()
+            .any(|library| defines_the_c_function(library)),
+        "no {name} under the cache defines sunrise_c_answer: {libraries:?}"
+    );
 }

@@ -1,5 +1,4 @@
 //! The `player_start_tracking` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0147
 
 pub trait Hooks {
     /// A client started tracking an entity (NeoForge's

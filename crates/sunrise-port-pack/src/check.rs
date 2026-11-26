@@ -232,8 +232,8 @@ pub fn check(jar_path: &Path, out: &Path) -> Result<Check, String> {
     if dropped > 0 {
         skipped.push(plural(
             dropped,
-            "structure processor written in Java",
-            "structure processors written in Java",
+            "structure processor needing a library mod that registers its type",
+            "structure processors needing a library mod that registers their types",
         ));
     }
     let unsupported = wg.unsupported.values().sum::<usize>();

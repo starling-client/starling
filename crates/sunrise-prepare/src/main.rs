@@ -18,7 +18,8 @@ sunrise-prepare: prepare Sunrise's resources from your own Minecraft Java Editio
 Usage: sunrise-prepare [--prepare] [--server-jar PATH] [--minecraft-dir PATH] [--prism-dir PATH] [--root PATH] [--output PATH]
                        [--version-json PATH] [--client-jar PATH] [--libraries-dir PATH] [--assets-dir PATH]
                        [--java-home PATH] [--complete] [--progress json]
-       sunrise-prepare --check [--root PATH] [--output PATH]
+       sunrise-prepare --server [--server-jar PATH] [--java-home PATH] [--root PATH] [--output PATH]
+       sunrise-prepare --check [--server] [--root PATH] [--output PATH]
        sunrise-prepare --launch-api [--root PATH]
        sunrise-prepare compile-exporters [--root PATH] [--prepare --minecraft-dir PATH --server-jar PATH]
        sunrise-prepare sounds [--minecraft-dir PATH] [--version-json PATH] [--assets-dir PATH] [--root PATH] [--output PATH]
@@ -30,6 +31,10 @@ Usage: sunrise-prepare [--prepare] [--server-jar PATH] [--minecraft-dir PATH] [-
        sunrise-prepare missing-extras [--root PATH] [--output PATH] [--json]
        sunrise-prepare extras [--only KIND,...] [--minecraft-dir PATH]... [--assets-dir PATH] [--root PATH] [--output PATH] [--json]
 
+  --server              Prepare only a dedicated server's game files. Downloads the pinned
+                        server.jar from Mojang unless --server-jar is given. If a release has
+                        no suitable Java installed, it downloads Mojang's Java runtime.
+                        Default output: <root>/game-files/sunrise-client/<version>-server.
   --prepare             Import the pinned game files from your own copy first
   --server-jar PATH     The pinned server jar you downloaded yourself
                         (default: SUNRISE_SERVER_JAR, or the copy imported before)
@@ -45,11 +50,13 @@ Usage: sunrise-prepare [--prepare] [--server-jar PATH] [--minecraft-dir PATH] [-
                         (each of these four replaces what --minecraft-dir would give; an earlier
                         import beside --root that is still verified is reused instead)
   --java-home PATH      A Java runtime of the pinned version that your launcher manages, tried
-                        after JAVA_HOME and the PATH, before the official launcher's runtimes
+                        after JAVA_HOME and the PATH, before the official launcher's runtimes.
+                        With --server, this overrides discovery.
   --root PATH           The Sunrise folder to prepare (default: the folder this program is
                         in, else the nearest folder above the current one with research-lock.json)
-  --output PATH         Where the resources go (default: <root>/.local/sunrise-client/<version>);
-                        the exporters' scratch files stay in <root>/.local
+  --output PATH         Where the resources go. Full: <root>/.local/sunrise-client/<version>;
+                        --server: <root>/game-files/sunrise-client/<version>-server.
+                        Exporters' scratch files stay in <root>/.local.
   --check               Exit 0 when the resources are complete and current for this preparer,
                         else 1: each gap on stdout with what it needs, or an error: line on
                         stderr when it can't check. Runs no Java and reads no game files; it tests
@@ -62,6 +69,7 @@ Usage: sunrise-prepare [--prepare] [--server-jar PATH] [--minecraft-dir PATH] [-
   --launch-api          Print what this preparer supports as JSON (the Launch API's version, the
                         pinned Minecraft and Java, the resources' layout, the options) and exit 0
 
+<<<<<<< HEAD
 Needs Minecraft played once from the official launcher, and Java of the version
 research-lock.json pins. Releases use a runtime; development or changed exporters need a JDK.
 compile-exporters builds and validates a release bundle from the imported pinned jars;
@@ -69,6 +77,21 @@ compile-exporters builds and validates a release bundle from the imported pinned
 The resources go to <root>/.local/sunrise-client/<version>, or --output; pass that to
 sunrise-client --resources. Exit codes: 0 done, 1 failed (or --check found gaps), 2 a refused
 command line (docs/api/launch.md).
+||||||| 46c00106def
+Needs Minecraft played once from the official launcher, and Java of the version
+research-lock.json pins. Releases use a runtime; development or changed exporters need a JDK.
+compile-exporters builds and validates a release bundle from the already imported pinned jars.
+The resources go to <root>/.local/sunrise-client/<version>, or --output; pass that to
+sunrise-client --resources. Exit codes: 0 done, 1 failed (or --check found gaps), 2 a refused
+command line (docs/api/launch.md).
+=======
+Full preparation needs the player's installed Minecraft client files. The separate --server
+profile needs only the pinned server.jar, downloaded from Mojang or supplied with --server-jar.
+Releases can use the pinned Java runtime; development or changed exporters need a JDK.
+compile-exporters builds and validates a release bundle from the already imported pinned jars.
+Pass the corresponding output folder to sunrise-client --resources. Exit codes: 0 done,
+1 failed (or --check found gaps), 2 a refused command line (docs/api/launch.md).
+>>>>>>> ed6772e2118
 
 sunrise-prepare panorama repairs the classic menu background in existing resources without Java.
 sunrise-prepare fonts adds the GNU Unifont glyphs (characters the bitmap fonts lack) the same way.
@@ -115,6 +138,7 @@ fn main() -> ExitCode {
     };
     let mut root = None;
     let mut check = false;
+    let mut server = false;
     let mut complete = false;
     let mut json = false;
     let mut launch_api = false;
@@ -162,15 +186,25 @@ fn main() -> ExitCode {
             }
         };
         let parsed = match flag.as_str() {
+<<<<<<< HEAD
             "--prepare" | "--server-jar" | "--check"
                 if assets
                     .as_deref()
                     .is_some_and(|kind| kind != "compile-exporters" || flag == "--check") =>
             {
+||||||| 46c00106def
+            "--prepare" | "--server-jar" | "--check" if assets.is_some() => {
+=======
+            "--prepare" | "--server" | "--server-jar" | "--check" if assets.is_some() => {
+>>>>>>> ed6772e2118
                 Err(format!("{flag} is for preparing, not for asset copying"))
             }
             "--progress" | "--launch-api" if query.is_some() => {
                 Err(format!("{flag} doesn't apply here; --json gives JSON"))
+            }
+            "--server" if inline.is_none() => {
+                server = true;
+                Ok(())
             }
             "--prepare" if inline.is_none() => {
                 options.import = true;
@@ -246,6 +280,20 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     }
+    if server
+        && (options.import
+            || complete
+            || launch_api
+            || options.minecraft_dir.is_some()
+            || options.inputs.version_json.is_some()
+            || options.inputs.client_jar.is_some()
+            || options.inputs.libraries_dir.is_some()
+            || options.inputs.assets_dir.is_some()
+            || options.inputs.prism_dir.is_some())
+    {
+        eprintln!("sunrise-prepare: error: --server does not take client preparation options");
+        return ExitCode::from(2);
+    }
     let Some(root) = root.or_else(default_root) else {
         eprintln!(
             "sunrise-prepare: error: no research-lock.json beside this program or above the current folder; pass --root"
@@ -281,7 +329,7 @@ fn main() -> ExitCode {
             );
             return ExitCode::from(2);
         }
-        return check_resources(&options);
+        return check_resources(&options, server);
     }
     let print = |line: &str| {
         let mut out = std::io::stdout().lock();
@@ -312,6 +360,7 @@ fn main() -> ExitCode {
                 &log,
             )
         }
+        _ if server => sunrise_prepare::prepare_server_with_progress(&options, &log, &progress),
         _ => sunrise_prepare::prepare_with_progress(&options, &log, &progress).and_then(
             |resources| match complete {
                 true => complete_resources(&options, resources, &log),
@@ -481,11 +530,19 @@ fn fraction_line(fraction: f32) -> String {
 }
 
 /// `--check`: each gap on its own line on stdout, exit 1 when there is one.
-fn check_resources(options: &sunrise_prepare::Options) -> ExitCode {
-    let resources = sunrise_prepare::artifacts::Lock::read(&options.root).map(|lock| {
-        sunrise_prepare::resources_dir(&options.root, &lock.version, options.output.as_deref())
+fn check_resources(options: &sunrise_prepare::Options, server: bool) -> ExitCode {
+    let result = sunrise_prepare::artifacts::Lock::read(&options.root).and_then(|lock| {
+        let output = options.output.as_deref();
+        if server {
+            let folder =
+                sunrise_prepare::server_resources_dir(&options.root, &lock.version, output);
+            sunrise_prepare::check_server(&options.root, &folder)
+        } else {
+            let folder = sunrise_prepare::resources_dir(&options.root, &lock.version, output);
+            sunrise_prepare::check(&options.root, &folder)
+        }
     });
-    match resources.and_then(|resources| sunrise_prepare::check(&options.root, &resources)) {
+    match result {
         Ok(lacking) if lacking.is_empty() => ExitCode::SUCCESS,
         Ok(lacking) => {
             for line in lacking {

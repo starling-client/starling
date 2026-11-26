@@ -57,7 +57,16 @@ drops the remaining tasks and finishes cleanup.
 failed open drops all its pending tasks. If a deadline needs to outlive a restart, save the deadline
 in your mod's own storage and schedule a new closure when the world opens.
 
-## Spare time in a tick
+## Server tick listeners
+
+`server_tick` runs on the server thread, including in single player and when hosting over LAN.
+The `LifecycleContext` in the event reports `Authority::IntegratedServer` for those worlds or
+`Authority::DedicatedServer` for a dedicated server. The client window does not receive this hook.
+
+For block reads, use `host.level(dimension)` and `level.block_state(host, pos)` on the returned
+`LevelRef`. Neither call opens a dimension or loads a chunk.
+
+### Spare time in a tick
 
 `host.server_has_time()` says whether time remains before the next server tick is due (NeoForge's `ServerTickEvent.hasTime` and `LevelTickEvent.hasTime`, vanilla's `MinecraftServer.haveTime`).
 A listener of `server_tick` or of a level tick (`level_tick_pre`, `level_tick_post`) that has optional work, such

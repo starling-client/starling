@@ -1,0 +1,56 @@
+ids = [
+    "hook:entity_inside",
+    "hook:entity_inside.effects",
+    "hook:entity_inside.writes",
+    "type:EntityInsideEvent.effects",
+    "type:EntityInsideEvent.writes",
+    "type:InsideEffects",
+    "type:InsideEntityView",
+    "handle:InsideEntityView::hurt_with_source",
+    "type:InsideWrite",
+    "type:PlannedInside",
+    "handle:EntityInsideEvent::run_before",
+    "handle:EntityInsideEvent::run_after",
+    "handle:EntityInsideEvent::request",
+    "handle:InsideEffects::run_before",
+    "handle:InsideEffects::run_after",
+    "handle:InsideEffects::take_planned",
+    "handle:InsideEffects::absorb_step",
+    "handle:InsideEntityView::id",
+    "handle:InsideEntityView::kind",
+    "handle:InsideEntityView::is_alive",
+    "handle:InsideEntityView::position",
+    "handle:InsideEntityView::velocity",
+    "handle:InsideEntityView::fire_ticks",
+    "handle:InsideEntityView::is_on_fire",
+    "handle:InsideEntityView::fall_distance",
+    "handle:InsideEntityView::block_state",
+    "handle:InsideEntityView::push",
+    "handle:InsideEntityView::set_velocity",
+    "handle:InsideEntityView::make_stuck_in_block",
+    "handle:InsideEntityView::reset_fall_distance",
+    "handle:InsideEntityView::set_remaining_fire_ticks",
+    "handle:InsideEntityView::add_effect",
+    "handle:InsideEntityView::hurt",
+    "handle:InsideEntityView::set_block",
+    "handle:InsideEntityView::destroy_block",
+]
+why = "Vanilla 26.3 orders contacts in Entity.checkInsideBlocks and InsideBlockEffectApplier.StepBasedCollector.applyAndClear. PowderSnowBlock and LayeredCauldronBlock put their block changes before Extinguish; BaseFireBlock hurts after FireIgnite. There is no matching NeoForge event for Block.entityInside; NeoForge's LivingEntity.addEffect patch asks effect applicability at the point of the add. Replacing encoded writes with owned callbacks that receive InsideEntityView keeps the order and lets a mod use the actual return of Level.setBlock, Level.destroyBlock, LivingEntity.addEffect or Entity.hurtServer. Damage uses the supplied live entities and damage type (including ItemEntity.hurtServer and Projectile.hurtServer), not raw ids or a simulated copy of the level. A panic in the part call discards its staged work. The part call, deferred callbacks and disposal of unexecuted captures use the shared panic boundary: a panic disables only that mod's entity_inside listener for the session, logs the mod's ID, and queues an error toast. As in the vanilla collector and NeoForge's live addEffect path, no new transaction wraps deferred writes; a panic does not undo completed writes outside an existing journal."
+migrate = '''
+Replace encoded writes in `BlockPart::entity_inside` with owned closures on `event.run_before` / `event.run_after` that act on `&mut InsideEntityView<'_>`:
+- `event.run_before(InsideEffect::Freeze, EntityWrite::Push(delta))` -> `event.run_before(InsideEffect::Freeze, move |view| { view.push(delta); })`
+- `event.run_after(InsideEffect::Freeze, EntityWrite::SetMovement(vel))` -> `event.run_after(InsideEffect::Freeze, move |view| { view.set_velocity(vel); })`
+- `event.run_after(InsideEffect::Freeze, EntityWrite::StuckIn(mul))` -> `event.run_after(InsideEffect::Freeze, move |view| { view.make_stuck_in_block(mul); })`
+- `event.run_after(InsideEffect::Freeze, EntityWrite::ResetFallDistance)` -> `event.run_after(InsideEffect::Freeze, |view| { view.reset_fall_distance(); })`
+- `event.run_after(InsideEffect::FireIgnite, EntityWrite::SetFireTicks(ticks))` -> `event.run_after(InsideEffect::FireIgnite, move |view| { view.set_remaining_fire_ticks(ticks); })`
+- `event.run_after(InsideEffect::Freeze, EntityWrite::AddEffect { effect, duration, amplifier })` -> `event.run_after(InsideEffect::Freeze, move |view| { view.add_effect(effect, duration, amplifier); })`
+- `event.run_after(InsideEffect::Freeze, EntityWrite::Hurt { damage_type, amount })` -> use the same damage-type ID you passed to `r.damage_type_key` in v2. For example, if you registered `"minecraft:hot_floor"`, use `event.run_after(InsideEffect::Freeze, move |view| { view.hurt("minecraft:hot_floor", amount); })`. An absent type still does not apply damage; it never becomes generic damage.
+- Optional source attribution is new. Capture typed `EntityRef`s from a server callback and pass them to `view.hurt_with_source(damage_id, amount, direct, causing)`. For an indirect hit the projectile can be `direct` and its shooter `causing`. If a supplied handle no longer resolves in the swept entity's level, that hurt returns `false` without undoing other calls. A projectile can be marked hurt while its hurt method returns `false`.
+- `event.request(InsideWrite::SetBlock(state))` -> pick the `InsideEffect` ordering slot explicitly (for example `InsideEffect::Extinguish` for vanilla powder-snow/cauldron timing, or `InsideEffect::Freeze`) and capture the block coordinates: `let pos = [event.pos.x, event.pos.y, event.pos.z]; event.run_before(InsideEffect::Extinguish, move |view| { view.set_block(pos, state); })`
+- `event.request(InsideWrite::DestroyBlock { drop })` -> `let pos = [event.pos.x, event.pos.y, event.pos.z]; event.run_before(InsideEffect::Extinguish, move |view| { view.destroy_block(pos, drop); })`
+
+Collector inspection and removed traits:
+- `InsideEffects::take_planned` and `PlannedInside` are gone; `absorb_step` is gone. Don't inspect or merge step plans. Use `event.apply`, `event.run_before` and `event.run_after` on the event you receive; test by observing the entity and block changes in the world instead of inspecting queued commands.
+- `InsideEffects` now owns deferred closures and therefore no longer implements `Wire`, `Clone`, or `PartialEq`. Do not serialize, clone, or compare collectors; keep any data your mod wants to serialize or compare in your own value types and move owned data into each callback closure. `EntityWrite` remains exported for `BlockPart::step_on`. Rebuild for `entity_inside` version 4. An item sweeps once after its step-on contact, and the callbacks share the built-in effect slots.
+- Level writes apply directly to the live level without a touched-block state-unchanged gate or whole-batch rollback; check the `bool` return of `set_block` / `destroy_block` / `hurt` / `hurt_with_source` / `push` / `set_velocity` / `make_stuck_in_block` / `add_effect` directly inside the callback when needed. `event.apply(InsideEffect::...)` is unchanged.
+'''

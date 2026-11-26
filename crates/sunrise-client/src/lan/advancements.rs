@@ -498,23 +498,22 @@ impl ServerAdvancements {
         book_add(entries, true)
     }
 
-    /// The recipe's display for ClientboundPlaceGhostRecipePacket (the
-    /// recipes the book lists).
+    /// The clicked display for `ClientboundPlaceGhostRecipePacket`
+    /// (`RecipeManager.getRecipeFromDisplay`).
     pub fn ghost_display(
         &self,
-        id: &str,
+        display: i32,
         sync: &SyncData,
     ) -> Option<sunrise_protocol::packets::recipes::RecipeDisplay> {
-        // A recipe with several displays has no ghost here (PlaceRecipe is
-        // not this change's): only a single-display recipe's entry is used.
-        if self.displays.display_ids(id).len() != 1 {
-            return None;
-        }
-        let bytes = self.book_entries(id, sync, 0).into_iter().next()?;
+        let id = self.displays.recipe_of_display(display)?;
+        let ids = self.displays.display_ids(id);
+        let index = usize::try_from(display.checked_sub(ids.start)?).ok()?;
+        let bytes = self.book_entries(id, sync, 0).into_iter().nth(index)?;
         let mut r = sunrise_protocol::buf::Reader::new(&bytes);
         sunrise_protocol::packets::recipes::RecipeBookEntry::read(&mut r)
             .ok()
-            .map(|e| e.display)
+            .filter(|entry| entry.id == display)
+            .map(|entry| entry.display)
     }
 
     /// ClientboundRecipeBookAddPacket.Entry for each display of a recipe:
@@ -920,6 +919,7 @@ impl ServerAdvancements {
                 name: "tick".into(),
                 trigger: "minecraft:tick".into(),
                 conditions: serde_json::Value::Null.into(),
+                player: None,
             }],
             requirements: vec![vec!["tick".into()]],
             rewards: Rewards {
@@ -1163,6 +1163,7 @@ mod tests {
                     name: name.into(),
                     trigger: "minecraft:tick".into(),
                     conditions: Value::Null.into(),
+                    player: None,
                 })
                 .collect(),
             requirements: vec![vec!["first".into()], vec!["second".into()]],
@@ -1713,7 +1714,7 @@ mod tests {
             let sync = SyncData::load(&root, &PackOverlay::NONE, &defaults, &sources).unwrap();
             let recipes =
                 Recipes::from_resolved(&root, &items, &PackOverlay::NONE, &sources).unwrap();
-            let stations = StationRecipes::from_sources(&root, &items, &sources);
+            let stations = StationRecipes::from_sources(&items, &sources);
             let env = Env {
                 crafting_remainder: None,
                 player: None,
@@ -2107,6 +2108,7 @@ mod tests {
             &PacketNames {
                 item: &item,
                 category: &category,
+                component: &|_| None,
                 tag: &tag,
             },
         );

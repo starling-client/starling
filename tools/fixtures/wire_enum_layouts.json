@@ -51,12 +51,6 @@
       "canonical_path": "crate::world::dimension::BiomeSourceKind"
     },
     {
-      "name": "Blend",
-      "path": "crate::client::hud_layout::Blend",
-      "hash": "5027edf2d2f16269",
-      "canonical_path": "crate::client::hud_layout::Blend"
-    },
-    {
       "name": "BlockEntityError",
       "path": "crate::block::types::BlockEntityError",
       "hash": "b775b139eb9c224e",
@@ -147,22 +141,10 @@
       "canonical_path": "crate::command::command_argument::CommandArgumentKind"
     },
     {
-      "name": "ConfigEntryKind",
-      "path": "crate::content::config_files::ConfigEntryKind",
-      "hash": "f41f6f46c3f24fc5",
-      "canonical_path": "crate::content::config_files::ConfigEntryKind"
-    },
-    {
       "name": "ConfigKind",
       "path": "crate::game::ConfigKind",
       "hash": "b9dbdb5c73adc78d",
       "canonical_path": "crate::game::ConfigKind"
-    },
-    {
-      "name": "Corner",
-      "path": "crate::client::extras::Corner",
-      "hash": "35279684102ee89d",
-      "canonical_path": "crate::client::extras::Corner"
     },
     {
       "name": "CriterionTestError",
@@ -306,12 +288,6 @@
       "path": "crate::runtime::Flow",
       "hash": "95a92f30ef3b92f0",
       "canonical_path": "crate::runtime::Flow"
-    },
-    {
-      "name": "FluidBoxError",
-      "path": "crate::client::fluid_draw::FluidBoxError",
-      "hash": "d9936318eaa8eaba",
-      "canonical_path": "crate::client::fluid_draw::FluidBoxError"
     },
     {
       "name": "FogType",
@@ -556,12 +532,6 @@
       "canonical_path": "crate::client::render_pipeline::PipelineBlend"
     },
     {
-      "name": "PipelineVertexFormat",
-      "path": "crate::client::render_pipeline::PipelineVertexFormat",
-      "hash": "9fd68d6fbfedbcfb",
-      "canonical_path": "crate::client::render_pipeline::PipelineVertexFormat"
-    },
-    {
       "name": "Pose",
       "path": "crate::entity::mobs::Pose",
       "hash": "a59146be4f337358",
@@ -702,12 +672,6 @@
       "canonical_path": "crate::world::types::SpawnReason"
     },
     {
-      "name": "SpawnerKind",
-      "path": "crate::world::custom_spawners::SpawnerKind",
-      "hash": "d2ddf2a44e7883db",
-      "canonical_path": "crate::world::custom_spawners::SpawnerKind"
-    },
-    {
       "name": "StatType",
       "path": "crate::item::types::StatType",
       "hash": "24743f4b7e1c51fd",
@@ -802,12 +766,6 @@
       "path": "crate::client::world_draw::WorldDepth",
       "hash": "4409bd351ad1b1df",
       "canonical_path": "crate::client::world_draw::WorldDepth"
-    },
-    {
-      "name": "WorldPhase",
-      "path": "crate::world::types::WorldPhase",
-      "hash": "1322c39e2b688618",
-      "canonical_path": "crate::world::types::WorldPhase"
     }
   ],
   "retired_identities": [

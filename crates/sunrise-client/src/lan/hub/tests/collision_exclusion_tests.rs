@@ -165,12 +165,16 @@ fn a_change_of_level_and_a_respawn_clear_a_guests_exclusions() {
         .update(0, |g| g.collision_exclusions.set(&OPENING))
         .unwrap();
     assert_eq!(boxes(&hub), 1);
-    hub.change_level(0, [100.5, 49.0, 0.5], 0.0, None, false, 0, &ctx);
+    let change = hub.begin_level_change(0, [100.5, 49.0, 0.5], 0.0, None, 0, &ctx);
+    hub.send_commands(0, hub.commands_packet(hub.guests[0].permission));
+    hub.finish_level_change(0, change, false, &ctx);
     assert_eq!(boxes(&hub), 0, "a change of level");
     hub.guests
         .update(0, |g| g.collision_exclusions.set(&OPENING))
         .unwrap();
     hub.remove_player_for_respawn(0);
-    hub.respawn(0, [0.5, 64.0, 0.5], None, false, &ctx);
+    hub.begin_respawn(0, [0.5, 64.0, 0.5], None, false, &ctx);
+    hub.send_commands(0, hub.commands_packet(hub.guests[0].permission));
+    hub.finish_respawn(0);
     assert_eq!(boxes(&hub), 0, "a respawn");
 }

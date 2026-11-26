@@ -1,0 +1,3 @@
+ids = ["hook:fluid_passage", "type:HookId"]
+why = "Hooks::fluid_passage adds a server-side, close-only answer to whether a flowing fluid may step from one cell toward a side, asked where FlowingFluid.canMaybePassThrough is checked: the downward step of spread, getSpread's side choice and every step of the slope search. Closing a side changes which sides the fluid picks, which block_spread (asked after the side was chosen) cannot do."
+migrate = "No existing hook version changes. A mod that matches HookId exhaustively adds the FluidPassage arm; one with a wildcard arm compiles unchanged. A mod that cancelled block_spread to keep a fluid out of one cell implements fluid_passage to close the side before the fluid chooses it."

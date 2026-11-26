@@ -286,6 +286,7 @@ impl Form {
         match pages::engine::take_connect() {
             Some(address) => Outcome::Connect {
                 address,
+                name: None,
                 lan: false,
             },
             None => Outcome::None,
@@ -428,7 +429,7 @@ mod tests {
         form.focused_text().unwrap().1.push_str("CD");
         assert!(form.buttons(427.0, 240.0)[0].4);
         match form.click(Some(FIRST), 0.0, 0.0) {
-            Outcome::Connect { address, lan } => {
+            Outcome::Connect { address, lan, .. } => {
                 assert_eq!((address.as_str(), lan), ("friend:ABCD", false))
             }
             _ => panic!("Join did not connect"),

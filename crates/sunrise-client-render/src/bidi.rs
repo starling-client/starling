@@ -294,7 +294,7 @@ pub fn visual(text: &Text) -> Cow<'_, Text> {
 /// The same for a plain string.
 pub fn visual_str(s: &str) -> Cow<'_, str> {
     let default_rtl = crate::lang::bidirectional();
-    if unchanged(s.chars(), default_rtl) {
+    if unchanged(s.chars(), default_rtl) || s.bytes().all(|b| b.is_ascii_digit()) {
         return Cow::Borrowed(s);
     }
     let chars: Vec<char> = s.chars().collect();

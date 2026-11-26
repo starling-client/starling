@@ -180,26 +180,26 @@ impl Game<'_> {
             &mut self.world.random,
             LevelRandom::for_level(LegacyRandom::new(0)),
         );
-        let mut sequences = std::mem::take(&mut self.rand_sequences);
+        let sequences = std::cell::RefCell::new(std::mem::take(&mut self.rand_sequences));
         let mut events = Vec::new();
         let mut planned: Vec<Planned> = Vec::new();
-        let source = Some(mod_api::SpawnSource::Block(mod_api::BlockPos::new(
-            key.0, key.1, key.2,
-        )));
+        let source = Some(mod_api::Spawner::Trial {
+            pos: mod_api::BlockPos::new(key.0, key.1, key.2),
+        });
         let mut uuids: Vec<(u32, Uuid)> = Vec::new();
         let mut ejected: Vec<(ItemStack, [f64; 3])> = Vec::new();
         let extras: (Vec<Mob>, Vec<(u32, u32)>);
         let next = {
-            let mut level = self.natural_level();
-            level.spawner = Some(mod_api::Spawner::Trial {
-                pos: mod_api::BlockPos::new(key.0, key.1, key.2),
-            });
+            let level = self.natural_level();
             let loot = self.server_loot.get();
             let seed = self.level.seed;
             let mut spawn = |l: &GameLevel, rng: &mut LevelRandom, r: &SpawnerSpawn| {
-                let added = l.game.plan_spawner_mob(l, r, source, &mut planned, rng)?;
+                let mut sequences = sequences.borrow_mut();
+                let added =
+                    l.game
+                        .plan_spawner_mob(l, r, source, &mut planned, rng, &mut sequences)?;
                 let uuid = match planned.last() {
-                    Some(Planned::Loaded(tree, _, _)) => tree.root_uuid(),
+                    Some(Planned::Loaded(tree, _)) => tree.root_uuid(),
                     _ => sunrise_client::save::random_uuid(),
                 };
                 uuids.push((added.id, uuid));
@@ -212,7 +212,10 @@ impl Game<'_> {
                     return false;
                 };
                 let drops = match loot.random_sequence(table) {
-                    Some(s) => loot.roll_split(table, sequences.get(s, seed)),
+                    Some(s) => {
+                        let mut sequences = sequences.borrow_mut();
+                        loot.roll_split(table, sequences.get(s, seed))
+                    }
                     None => loot.roll_split(table, random),
                 };
                 for stack in &drops {
@@ -248,7 +251,7 @@ impl Game<'_> {
             state
         };
         self.world.random = random;
-        self.rand_sequences = sequences;
+        self.rand_sequences = sequences.into_inner();
         let (created, rides) = extras;
         let ids = self.add_planned(planned, created, rides);
         let mut by_uuid = HashMap::new();
@@ -272,8 +275,7 @@ impl Game<'_> {
                 TrialEvent::BlockUpdated => self.mark_block_entity_updated(key),
                 TrialEvent::LevelEvent(id, at, data) => self.level_event_at(id, at, data),
                 TrialEvent::Sound(name) => {
-                    self.audio
-                        .play(&format!("minecraft:{name}"), Some(center), 1.0, 1.0)
+                    self.play_audio(&format!("minecraft:{name}"), Some(center), 1.0, 1.0)
                 }
                 // Written with the state above.
                 TrialEvent::OminousSet(_) => {}
@@ -294,7 +296,7 @@ impl Game<'_> {
                         self.remove_mob_now(id, false);
                     }
                 }
-                TrialEvent::SoundAt(name, at, pitch) => self.audio.play(
+                TrialEvent::SoundAt(name, at, pitch) => self.play_audio(
                     &format!("minecraft:{name}"),
                     Some(at.map(|v| f64::from(v) + 0.5)),
                     1.0,
@@ -333,31 +335,37 @@ impl Game<'_> {
     /// minutes per level, with Trial Omen's sound when it is new. `uuid` is
     /// the player found: the one in the game's frame, else a guest.
     fn bad_omen_to_trial_omen(&mut self, uuid: Uuid) {
-        // MobEffect.onEffectAdded plays at the player's feet.
-        let feet = if self.acting_uuid() == uuid {
-            let added = transform_bad_omen(&mut self.potions.effects);
-            self.player
-                .as_ref()
-                .filter(|_| added)
-                .map(|p| [p.position.x, p.position.y, p.position.z])
-        } else {
-            let acting = self.lan_acting;
-            let Some(host) = self.lan.as_mut() else {
-                return;
-            };
-            let Some(index) = host.hub.guests.iter().position(|g| {
-                sunrise_client::lan::playerdata::uuid_ints(g.uuid) == uuid && Some(g.conn) != acting
-            }) else {
-                return;
-            };
-            host.hub.guests.update(index, |guest| {
-                transform_bad_omen(&mut guest.effects).then_some(guest.position)
-            })
-        };
-        if let Some(at) = feet {
-            self.audio
-                .play("minecraft:event.mob_effect.trial_omen", Some(at), 1.0, 1.0);
+        if self.acting_uuid() == uuid {
+            self.transform_player_bad_omen();
+            return;
         }
+        let acting = self.lan_acting;
+        let conn = self.lan.as_ref().and_then(|host| {
+            host.hub.guests.iter().find_map(|g| {
+                (sunrise_client::lan::playerdata::uuid_ints(g.uuid) == uuid
+                    && Some(g.conn) != acting)
+                    .then_some(g.conn)
+            })
+        });
+        if let Some(conn) = conn {
+            self.as_guest(conn, |g| g.transform_player_bad_omen());
+        }
+    }
+    /// `TrialSpawnerStateData.transformBadOmenIntoTrialOmen` for the acting
+    /// player: `removeEffect(BAD_OMEN)` then `addEffect(TRIAL_OMEN)` through
+    /// the standard effect hooks and added-sound path.
+    fn transform_player_bad_omen(&mut self) {
+        let Some(amplifier) = self.potions.effects.amplifier("bad_omen") else {
+            return;
+        };
+        if let Some(def) = sunrise_client::brewing::effect("bad_omen") {
+            self.remove_player_effects(Some(def.index));
+        }
+        self.add_player_effect(sunrise_client::effects::EffectInstance::new(
+            "trial_omen",
+            TRIAL_OMEN_TICKS_PER_LEVEL * (amplifier + 1),
+            0,
+        ));
     }
     /// `sendBlockUpdated` of a block entity: the clients load its new update tag.
     pub(super) fn mark_block_entity_updated(&mut self, key: Pos) {
@@ -371,6 +379,7 @@ impl Game<'_> {
 }
 
 /// Swap Bad Omen for Trial Omen on `effects`; true when Trial Omen is new.
+#[cfg(test)]
 fn transform_bad_omen(effects: &mut sunrise_client::effects::PlayerEffects) -> bool {
     let Some(amplifier) = effects.amplifier("bad_omen") else {
         return false;

@@ -11,6 +11,7 @@ use crate::{
     registry::{BlockRegistry, BlockStateId, BlockTableFile},
     worldgen::tags::TagDefinitions,
 };
+use mod_api::{BlockSoundCause, BlockSoundType, SoundEventKey};
 use serde_json::Value;
 use std::{collections::HashMap, fs, io, path::Path, sync::Arc};
 use sunrise_core::geometry::{Aabb, Direction, ShapeOp, Vec3, VoxelShape};
@@ -63,6 +64,7 @@ pub struct StateFacts {
     pub emission: u8,
     pub dampening: u8,
     pub hardness: f32,
+    pub placement_sound: BlockSound,
     /// Original properties reaction, retained when a reload removes an override.
     pub push: PushReaction,
     pub(crate) resolved_push: super::piston_reactions::CachedReaction,
@@ -100,13 +102,38 @@ pub struct SetType {
     pub button_off: Arc<str>,
 }
 
-#[derive(Clone, Debug)]
-pub struct Sounds {
+/// A block sound type's selected event and base levels for one action.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BlockSound {
+    pub event: SoundEventKey,
     pub volume: f32,
     pub pitch: f32,
-    pub place: Arc<str>,
-    pub break_: Arc<str>,
-    pub fall: Arc<str>,
+}
+
+impl BlockSound {
+    pub fn from_type(sound: &BlockSoundType, cause: BlockSoundCause) -> Self {
+        Self {
+            event: sound.event(cause).clone(),
+            volume: sound.volume,
+            pitch: sound.pitch,
+        }
+    }
+
+    /// `BlockItem.place`: use the placing item's event override, but retain the
+    /// contextual sound type's levels for the placement volume and pitch.
+    pub fn for_placement(mut self, item: &str) -> Self {
+        use std::sync::LazyLock;
+        // `SolidBucketItem.getPlaceSound`: powder snow is vanilla's solid bucket.
+        static EMPTY_POWDER_SNOW: LazyLock<SoundEventKey> = LazyLock::new(|| {
+            SoundEventKey::parse("minecraft:item.bucket.empty_powder_snow").unwrap()
+        });
+        if item == "minecraft:powder_snow_bucket" {
+            self.event = EMPTY_POWDER_SNOW.clone();
+        }
+        self.volume = (self.volume + 1.0) / 2.0;
+        self.pitch *= 0.8;
+        self
+    }
 }
 
 /// Precomputed queries over one cached collision shape.
@@ -233,7 +260,6 @@ pub struct BlockData {
     pub weather: u8,
     pub ignite_odds: i32,
     pub burn_odds: i32,
-    pub sounds: Arc<Sounds>,
     pub item: Arc<str>,
     pub dynamic_shape: bool,
     /// A content block opts into base VegetationBlock survival instead of its
@@ -861,6 +887,16 @@ fn build_with_gameplay<G: GameplayStateSource>(
 
     // Per-state facts.
     let mut facts = Vec::with_capacity(table.state_count());
+    let mut sound_keys: HashMap<String, SoundEventKey> = HashMap::new();
+    let mut resolve_sound = |name: &str| {
+        if let Some(key) = sound_keys.get(name) {
+            return Ok(key.clone());
+        }
+        let key = SoundEventKey::parse(name)
+            .ok_or_else(|| invalid(format!("invalid block sound event identifier: {name:?}")))?;
+        sound_keys.insert(name.to_owned(), key.clone());
+        Ok(key)
+    };
     for (id, (exported, game)) in states_json.iter().zip(gameplay_states).enumerate() {
         let row = exported
             .as_array()
@@ -917,6 +953,7 @@ fn build_with_gameplay<G: GameplayStateSource>(
             emission: game.unsigned("emission") as u8,
             dampening: game.unsigned("dampening") as u8,
             hardness: game.number("hardness") as f32,
+            placement_sound: game.placement_sound(&mut resolve_sound)?,
             push,
             instrument: instrument_index(row.get(8).and_then(Value::as_str).unwrap_or("HARP")),
             shape: shape_ids[id],
@@ -1035,15 +1072,6 @@ fn build_with_gameplay<G: GameplayStateSource>(
             Some("DOWN") => Direction::Down,
             _ => Direction::Up,
         };
-        let default = table.default_state(block);
-        let sound = &gameplay_states[default.0 as usize];
-        let sounds = Arc::new(Sounds {
-            volume: sound.sound_number("volume") as f32,
-            pitch: sound.sound_number("pitch") as f32,
-            place: interned(&mut strings, sound.sound_id("place")),
-            break_: interned(&mut strings, sound.sound_id("break")),
-            fall: interned(&mut strings, sound.sound_id("fall")),
-        });
         blocks.push(BlockData {
             class,
             chain,
@@ -1088,7 +1116,6 @@ fn build_with_gameplay<G: GameplayStateSource>(
             },
             ignite_odds: odds("igniteOdds", name),
             burn_odds: odds("burnOdds", name),
-            sounds,
             item: interned(
                 &mut strings,
                 json["item"].as_str().unwrap_or("minecraft:air"),
@@ -1316,19 +1343,13 @@ pub(super) fn inert_support_fixture() -> Behaviours {
                 weather: 0,
                 ignite_odds: 0,
                 burn_odds: 0,
-                sounds: Arc::new(Sounds {
-                    volume: 0.0,
-                    pitch: 0.0,
-                    place: "".into(),
-                    break_: "".into(),
-                    fall: "".into(),
-                }),
                 item: "".into(),
                 dynamic_shape: false,
                 declared_vegetation: false,
             }
         })
         .collect();
+    let silent = SoundEventKey::parse("").unwrap();
     let facts = (0..table.state_count())
         .map(|index| StateFacts {
             flags: if table.block(BlockStateId(index as u32)) == named.air {
@@ -1343,6 +1364,11 @@ pub(super) fn inert_support_fixture() -> Behaviours {
             emission: 0,
             dampening: 0,
             hardness: 0.0,
+            placement_sound: BlockSound {
+                event: silent.clone(),
+                volume: 0.0,
+                pitch: 0.0,
+            },
             push: PushReaction::PushPull,
             resolved_push: super::piston_reactions::CachedReaction::new(PushReaction::PushPull),
             instrument: 0,
@@ -1386,17 +1412,15 @@ impl GameplayStateSource for Value {
     fn text(&self, name: &str) -> &str {
         self.get(name).and_then(Value::as_str).unwrap_or("")
     }
-    fn sound_number(&self, name: &str) -> f64 {
-        self.get("sound")
-            .and_then(|s| s.get(name))
-            .and_then(Value::as_f64)
-            .unwrap_or(1.0)
-    }
-    fn sound_id(&self, name: &str) -> &str {
-        self.get("sound")
-            .and_then(|s| s.get(name))
-            .and_then(|s| s.get("id"))
-            .and_then(Value::as_str)
-            .unwrap_or("")
+    fn placement_sound(
+        &self,
+        resolve: &mut dyn FnMut(&str) -> io::Result<SoundEventKey>,
+    ) -> io::Result<BlockSound> {
+        let sound = &self["sound"];
+        Ok(BlockSound {
+            event: resolve(sound["place"]["id"].as_str().unwrap_or(""))?,
+            volume: sound["volume"].as_f64().unwrap_or(1.0) as f32,
+            pitch: sound["pitch"].as_f64().unwrap_or(1.0) as f32,
+        })
     }
 }

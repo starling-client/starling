@@ -1,5 +1,4 @@
 //! The `block_changed` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0012
 
 pub trait Hooks {
     /// An authoritative server committed a changed state through `Level.setBlock`.

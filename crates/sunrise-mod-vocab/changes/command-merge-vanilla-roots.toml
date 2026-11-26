@@ -1,0 +1,3 @@
+ids = ["hook:register_commands"]
+why = "A usage under a root vanilla owns is merged into vanilla's node, as `RegisterCommandsEvent` registers into vanilla's dispatcher (Brigadier's `CommandNode.addChild`), where it was left out before; an executor at a vanilla node replaces vanilla's there. A listener sees its usages under vanilla roots reach players and functions, so the hook's version rises."
+migrate = "Rebuild listeners against hook version 5; nothing else changes. A mod that avoided vanilla's root names to stay out of the left-out rule can now add its words under them."

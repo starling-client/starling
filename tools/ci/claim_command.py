@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 """Anyone claims an issue before working on it (CONTRIBUTING.md "Claim before you start").
 
-    claim_command.py command               one comment (claim-command.yml): assigns or unassigns, answers in the thread
+    claim_command.py detect                whether a comment holds a command, as `command=true|false` in $GITHUB_OUTPUT
+    claim_command.py command               one comment (fork-claim.yml): assigns or unassigns, answers in the thread
     claim_command.py release [--dry-run]   the daily run: releases the claims older than 5 days with no open pull request
 
-A comment on an issue, on its first line:
+A comment on an issue, on any line (alone, or after `🤖 Agent:`):
 
     /claim             assigns the commenter (GitHub lets an issue's commenters be assigned, no role needed)
     /unclaim           unassigns the commenter
     /unclaim @login    the repository owner, the council and trusted reviewers release someone else's claim
 
 Trailing command punctuation is allowed. `/claim` ignores explanatory text; `/unclaim` targets the commenter
-unless the entire remainder of that first line is a login.
+unless the entire remainder of that line is a login.
 
 An assigned issue is taken, and so is one claimed on Discord (Kira's `in progress` label). Trackers and proposals
 (labels `tracker`, `proposal`, `not claimable`, set by maintainers) are never claimed whole. Refused with a one-line
@@ -19,8 +20,8 @@ answer: a pull request (claim the issue it fixes), a closed or locked issue, an 
 open pull request by someone else already closes (`Fixes`, `Closes` or `Resolves #N`, or the sidebar's link).
 A success answers with a 👍 on the comment; the assignment shows in the thread, and the issue's `help wanted` label
 becomes `claimed` (and back when its last holder unclaims).
-A contributor holds at most 5 claimed issues without an open pull request of theirs that links one: a `/claim`
-past that is refused with the count (owner, 2026-11-10). Claims already over the limit stay. The repository's owner,
+A contributor holds at most 10 claimed issues without an open pull request of theirs that links one: a `/claim`
+past that is refused with the count (owner, 2026-11-10; 10 since 2026-11-22). Claims already over the limit stay. The repository's owner,
 members and collaborators (the comment's author association), the trusted reviewers and the logins in the repository
 variable `CLAIM_LIMIT_EXEMPT` (comma-separated) are not limited.
 A claim made here is released after 5 days unless an open pull request links the issue (`Fixes #N`, a mention, or the
@@ -39,8 +40,9 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import nightly_set as ns  # noqa: E402  (the same trusted reviewers and owner)
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+from tools.ci import nightly_set as ns  # noqa: E402  (the same trusted reviewers and owner)
 
 PREFIX = "🤖 Agent: "
 STALE = timedelta(days=5)
@@ -52,7 +54,7 @@ KIRA_LABEL = "in progress"
 # Issues nobody claims whole (ari, 2026-11-02): a tracker lists other issues, a proposal waits for a decision.
 UNCLAIMABLE = ("tracker", "proposal", "not claimable")
 # Claimed issues a contributor may hold with no open pull request of theirs linking them (owner, 2026-11-10).
-LIMIT = 5
+LIMIT = 10
 # Author associations GitHub gives the repository's own people: they are not limited.
 STAFF = ("OWNER", "MEMBER", "COLLABORATOR")
 
@@ -356,6 +358,14 @@ def run(api, cmd: Command, actor: ns.Actor, number: int, reviewers: ns.Reviewers
     return f"{PREFIX}released @{real}'s claim, on behalf of @{login}. `/claim` takes it."
 
 
+def detect() -> int:
+    """fork-claim's first job: only a comment holding a command reaches the job that joins the issue's concurrency
+    group, where a newer pending run would cancel an older one."""
+    with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+        out.write(f"command={'true' if parse(os.environ['BODY']) else 'false'}\n")
+    return 0
+
+
 def command() -> int:
     body, login = os.environ["BODY"], os.environ["AUTHOR"]
     number, repo, comment_id = int(os.environ["ISSUE"]), os.environ["REPO"], int(os.environ["COMMENT_ID"])
@@ -428,6 +438,8 @@ def release(api, now: datetime, dry_run: bool) -> list[tuple[int, str]]:
 
 
 if __name__ == "__main__":
+    if sys.argv[1:] == ["detect"]:
+        sys.exit(detect())
     if sys.argv[1:] == ["command"]:
         sys.exit(command())
     if sys.argv[1:2] == ["release"] and sys.argv[2:] in ([], ["--dry-run"]):

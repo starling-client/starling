@@ -38,6 +38,11 @@ impl Game<'_> {
             // What the blocks spawned (a dispensed minecart, a lit TNT, a
             // placed boat) joins before the entities tick.
             span("mods_joins_flush", || self.native_joins_flush(false, 0));
+            if self.dimension_type().has_ender_dragon_fight {
+                // ServerLevel.tick runs the fight before visiting the entity tick list.
+                span("tick_dragon_fight", || self.tick_fight());
+                span("mods_joins_flush", || self.native_joins_flush(false, 0));
+            }
             span("lan_mark_synced", || self.lan_mark_synced());
             // `EntityTickList.forEach`: what joined before the entity pass
             // (function summons, dropped or dispensed items) ticks in it;
@@ -57,7 +62,7 @@ impl Game<'_> {
             self.tick_explicit_knots();
             self.tick_summoned_eyes();
             self.ordered_before(ordered_tick::Batch::ArmorStands)?;
-            sunrise_client::spans::time("tick_armor_stands", || self.tick_armor_stands())?;
+            sunrise_client::spans::time("tick_armor_stands", || self.begin_armor_stand_ticks())?;
             sunrise_client::spans::time("tick_cushions", || self.tick_cushions());
             // ServerLevel.tick: the arrivals of this server tick are in the level
             // (`addDuringTeleport`), and each vehicle handles its portal as its
@@ -76,6 +81,7 @@ impl Game<'_> {
             sunrise_client::spans::time("tick_maps", || self.tick_maps());
             self.tick_lodestone_compasses();
             sunrise_client::spans::time("tick_bolts", || self.tick_bolts());
+            self.ordered_before(ordered_tick::Batch::Fishing)?;
             sunrise_client::spans::time("tick_fishing", || self.tick_fishing());
             self.ordered_before(ordered_tick::Batch::Tridents)?;
             sunrise_client::spans::time("tick_tridents", || self.tick_tridents());
@@ -115,10 +121,8 @@ impl Game<'_> {
             // general rows (#792), then the mobile kinds' remainder.
             self.ordered_before(ordered_tick::Batch::General)?;
             sunrise_client::spans::time("tick_general", || self.tick_general())?;
-            // Orbs, primed TNT and falling blocks still to tick, in join order.
+            // Orbs, primed TNT, falling blocks and observed unsimulated entities still to tick.
             self.run_ordered_ticks(sunrise_client::join_seq::JoinSeq::MAX, false)?;
-            // Unsimulated entities no mod named are told once for the family.
-            self.native_others_tick_family(self.ordered.told, self.ordered.born);
             sunrise_client::spans::time("tick_experience", || self.tick_experience());
             // Merged, despawned or picked up.
             span("mods_leaves_flush", || self.native_leaves_flush());
@@ -200,20 +204,18 @@ impl Game<'_> {
     }
 
     pub(in crate::game) fn tick_mobs(&mut self) -> Result<()> {
-        self.sync_mob_death_protection();
         self.tick_creatures()?;
         if !self.entity_attachments.is_empty() {
             self.prune_entity_attachments();
         }
-        self.native_mobs_equipment();
-        self.tick_equipment_attributes();
+        self.refresh_stand_and_dragon_equipment_attributes();
         self.position_rider();
         self.tick_player_stat_counters();
         self.tick_scoreboard();
         self.load_bossbars();
-        self.tick_worldborder();
+        self.player_border();
+        self.border_damage();
         self.tick_subtitles();
-        self.spawn_phantoms();
         self.tick_advancements();
         self.tick_player_model();
         Ok(())

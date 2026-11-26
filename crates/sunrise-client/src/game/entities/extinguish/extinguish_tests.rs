@@ -85,8 +85,8 @@ fn burn_in(game: &mut Game<'_>, pos: [i32; 3]) {
 /// Outside the world border, as `/worldborder center 1000 1000` and
 /// `/worldborder set 100` put the origin.
 fn outside_the_border(game: &mut Game<'_>) {
-    game.border.set_center([1000.0, 1000.0]);
-    game.border.set_size(100.0);
+    game.border.set_center([1000.0, 1000.0]).unwrap();
+    game.border.set_size(100.0).unwrap();
 }
 
 /// `PowderSnowBlock.entityInside`: the powder snow is destroyed and the

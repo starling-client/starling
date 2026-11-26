@@ -21,7 +21,7 @@ pub enum RegionError {
     Version(u32),
     /// A cell width outside `1..=2^30` quarts.
     Cell(u32),
-    /// A mod weight is outside 1..=1000, or the weights sum outside 1..=i32::MAX.
+    /// A mod weight is outside `1..=i32::MAX`, or the weights sum outside `1..=i32::MAX`.
     Weight,
 }
 impl std::fmt::Display for RegionError {
@@ -29,9 +29,9 @@ impl std::fmt::Display for RegionError {
         match self {
             Self::Version(version) => write!(f, "unknown region selector version {version}"),
             Self::Cell(cell) => write!(f, "region cell width {cell} is outside 1..={MAX_CELL}"),
-            Self::Weight => {
-                f.write_str("mod region weights must be 1..=1000 and total weight 1..=2147483647")
-            }
+            Self::Weight => f.write_str(
+                "mod region weights must be 1..=2147483647 and total weight 1..=2147483647",
+            ),
         }
     }
 }
@@ -72,7 +72,7 @@ impl RegionSelector {
         if layout
             .regions
             .iter()
-            .any(|region| !(1..=1000).contains(&region.weight))
+            .any(|region| !(1..=i32::MAX as u32).contains(&region.weight))
         {
             return Err(RegionError::Weight);
         }

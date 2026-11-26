@@ -39,6 +39,7 @@ pub fn contact_part(
         kind: DamageKind::MobAttack,
         attacker: Some(Who::Mob(f.dragon_id)),
         from: Some([f.origin.x, f.origin.y, f.origin.z]),
+        direct: None,
         attacker_species: None,
     };
     if part < 2 {

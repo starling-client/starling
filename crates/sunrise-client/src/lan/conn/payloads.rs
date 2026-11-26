@@ -9,14 +9,14 @@ impl PlayConn {
             .as_ref()
             .is_some_and(|connection| connection.payloads_pending())
         {
-            let endpoint = crate::raw_payloads::Endpoint::server(self.payload_sender.clone());
-            crate::raw_payloads::dispatch_pending(
+            let endpoint = self.payload_endpoint.clone();
+            crate::raw_payloads::dispatch_pending_server(
                 &endpoint,
-                &crate::raw_payloads::MainQueue::Server {
-                    events: self.shared.events.clone(),
-                    endpoint: endpoint.clone(),
-                    conn: Some(self.conn),
-                },
+                &crate::raw_payloads::ServerQueue::new(
+                    self.shared.events.clone(),
+                    endpoint.clone(),
+                    Some(self.conn),
+                ),
             );
         }
         if self.payload_transport.closed() || self.sent_at.is_some() || now < self.next_keep_alive {

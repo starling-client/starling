@@ -142,6 +142,7 @@ pub(super) mod picker;
 use picker::Picker;
 #[path = "place/custom.rs"]
 mod custom;
+pub use custom::SlotCap;
 #[path = "place/custom_access.rs"]
 mod custom_access;
 #[path = "place/custom_plan.rs"]
@@ -333,7 +334,7 @@ impl Menu {
         if placement.impossible() {
             return PostPlace::Nothing;
         }
-        if !allow_drop && !self.test_clear_grid(env, &grid) {
+        if !allow_drop && !self.test_clear_slots(env, &grid.inputs) {
             return PostPlace::Nothing;
         }
         let mut stacked = self.stacked_contents(env);
@@ -645,28 +646,25 @@ impl Menu {
         requested - taken_count
     }
 
+    /// Return every occupied slot in `slots` to the player's inventory (or drop
+    /// overflow), emptying each slot first (`ServerPlaceRecipe.clearGrid`).
+    pub(super) fn clear_slots(&mut self, env: &Env, slots: &[usize]) {
+        self.touch();
+        for &s in slots {
+            let slot = self.state.slots[s];
+            if let Some(mut stack) = self.state.containers[slot.container][slot.index].take() {
+                self.place_back(env, &mut stack);
+            }
+        }
+    }
+
     /// `clearGrid`: the slots to clear go back to the inventory (or drop),
     /// then the grid empties (`clearCraftingContent`).
     fn clear_grid(&mut self, env: &Env, grid: &Grid) {
-        self.touch();
-        for &s in &grid.clear {
-            let slot = self.state.slots[s];
-            if let Some(stack) = self.state.containers[slot.container][slot.index].clone() {
-                let mut copy = stack;
-                self.place_back(env, &mut copy);
-            }
-        }
-        match self.state.kind {
-            Kind::Furnace(_) => {
-                for &s in &grid.clear {
-                    let slot = self.state.slots[s];
-                    self.state.containers[slot.container][slot.index] = None;
-                }
-            }
-            _ => {
-                self.state.containers[GRID].fill(None);
-                self.state.containers[RESULT][0] = None;
-            }
+        self.clear_slots(env, &grid.clear);
+        if !matches!(self.state.kind, Kind::Furnace(_)) {
+            self.state.containers[GRID].fill(None);
+            self.state.containers[RESULT][0] = None;
         }
     }
 
@@ -676,7 +674,7 @@ impl Menu {
         while stack.count > 0 {
             let slot = self
                 .slot_with_space(env, stack)
-                .or_else(|| (0..36).find(|&i| self.state.containers[PLAYER][i].is_none()));
+                .or_else(|| super::free_slot(&self.state.containers[PLAYER][..36]));
             let Some(slot) = slot else {
                 let dropped = std::mem::replace(
                     stack,
@@ -729,14 +727,15 @@ impl Menu {
         }
     }
 
-    /// `testClearGrid`: whether the inventory can take the grid back.
-    fn test_clear_grid(&self, env: &Env, grid: &Grid) -> bool {
+    /// `ServerPlaceRecipe.testClearGrid`: whether the player inventory can take
+    /// `slots` back without dropping anything.
+    pub(super) fn test_clear_slots(&self, env: &Env, slots: &[usize]) -> bool {
         let mut free_slots: Vec<ItemStack> = Vec::new();
         let free_in_inventory = self.state.containers[PLAYER][..36]
             .iter()
             .filter(|s| s.is_none())
             .count();
-        for &s in &grid.inputs {
+        for &s in slots {
             let Some(mut stack) = self.slot(s).cloned() else {
                 continue;
             };

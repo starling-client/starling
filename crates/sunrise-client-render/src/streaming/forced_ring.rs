@@ -90,6 +90,7 @@ mod tests {
             cover: None,
             forced_cover: None,
             band: None,
+            async_requests: None,
         };
         let forced: HashSet<(i32, i32)> = [(256, 256)].into();
         let r = ranges(&forced);
@@ -109,12 +110,17 @@ mod tests {
         assert_eq!(ranges(&many).priority(276, 258), 4);
         // The generation plan fetches the 3x3 the chunk ticks with first.
         let world = World::new(sunrise_world::registry::BlockStateId(0), 0);
-        let (generating, finishing) = (FxHashSet::default(), FxHashSet::default());
+        let (generating, failed, finishing) = (
+            FxHashSet::default(),
+            FxHashSet::default(),
+            FxHashSet::default(),
+        );
         let protos = FxHashMap::default();
         let input = GenerationInputs {
             ranges: ranges(&forced),
             world: &world,
             generating: &generating,
+            failed: &failed,
             protos: &protos,
             finishing: &finishing,
             decorates: true,
@@ -168,6 +174,7 @@ mod tests {
                 cover: None,
                 forced_cover: None,
                 band: None,
+                async_requests: None,
             };
             // (255, 254) lies nearer the origin than (258, 256), the
             // forced chunk's neighbour two chunks east.

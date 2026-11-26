@@ -29,7 +29,7 @@ DragonTakeoffPhase.navigateToNextPathNode	port	crates/sunrise-client/src/game/mo
 EnderDragonPhase.create	skip:data		phase registry; the ids are fixed in Phase::id
 EnderDragonPhase.createInstance	port	crates/sunrise-client/src/game/mobs/dragon.rs::Phase::from_id	builds the default instance for an id
 EnderDragonPhase.getById	port	crates/sunrise-client/src/game/mobs/dragon.rs::Phase::from_id	id to phase, unknown ids fall back to Holding
-Mannequin.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::Base::mob_to_nbt	ticked in #3514; `Mannequin.addAdditionalSaveData` is cited at crates/sunrise-client/src/entity_nbt.rs:376 (in a comment, so `where` names the enclosing fn)
+Mannequin.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_write.rs::mob_to_nbt	ticked in #3514; `Mannequin.addAdditionalSaveData` is cited at crates/sunrise-client/src/entity_nbt.rs:376 (in a comment, so `where` names the enclosing fn)
 Mannequin.applyImplicitComponent	missing		minor: the profile from a spawning item is not applied; Sunrise has no mannequin item, only summon with a profile tag
 Mannequin.defineSynchedData	inline	crates/sunrise-client/src/game/network/remote_mob_data.rs::apply	slots 17 to 19: the profile, DATA_IMMOVABLE and DATA_DESCRIPTION are all read now
 Mannequin.get	skip:other		data-component getter for the PROFILE component; the profile is Mob.profile, read directly
@@ -49,7 +49,7 @@ Pillager.pickUpItem	inline	crates/sunrise-client/src/game/mobs/raids/mod.rs::Gam
 Pillager.registerGoals	port	crates/sunrise-client/src/mobs/illager.rs::register_pillager
 Pillager.wantsItem	skip:other		dead code: only a white banner passes, and Pillager.pickUpItem sends every BannerItem to Raider.pickUpItem before consulting it; the ominous banner pickup is in game/mobs/raids/mod.rs
 PiglinBrute.createAttributes	skip:data		attributes come from entity-types.json
-PiglinBrute.customServerAiStep	inline	crates/sunrise-client/src/mobs/piglin.rs::ai_step	after the goals that pick the target: update_activity, then maybe_play_brute_sound; the goals set in register_brute stand in for vanilla's brain tick
+PiglinBrute.customServerAiStep	inline	crates/sunrise-client/src/mobs/piglin.rs::brain_tick	inside server_ai_step: forget_outdated_memories, the goals that pick the target, update_activity and maybe_play_brute_sound, then zombification_tick (AbstractPiglin.customServerAiStep), before travel; the goals set in register_brute stand in for vanilla's brain tick
 PiglinBrute.finalizeSpawn	inline	crates/sunrise-client/src/mobs/finalize.rs::Ctx::mob	golden axe in the main hand via populate; initMemories is missing
 PiglinBrute.hurtServer	inline	crates/sunrise-client/src/mobs/piglin.rs::register_brute	gap: minor: retaliation is the HurtByTarget goal; no PiglinAi.maybeRetaliate for non-piglin attackers
 PiglinBrute.wantsToPickUp	port	crates/sunrise-client/src/mobs/equip.rs::wants_to_pick_up
@@ -79,11 +79,11 @@ Abilities.pack	skip:java		record copy for the abilities packet; the flags are re
 PlayerSkin.with	missing		minor: skin patches (body, cape, elytra and model overrides) are not applied on top of a profile skin
 PlayerSkin.Patch.create	skip:java		record factory for the patch; the patch itself is missing (see PlayerSkin.with)
 SpectralArrow.doPostHurtEffects	port	crates/sunrise-client/src/game/items/potions.rs::Game::arrow_post_hurt_effects	200-tick Glowing on any target a spectral arrow lands on (creatures.rs:3589); a bow, a crossbow and a dispenser also store the effect on the arrow
-SpectralArrow.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::arrow_to_nbt	Saved integer Duration from modeled spectral state, including constructor default 200; no hit-effect duration claim
-SpectralArrow.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::arrow_from_nbt	Adopts signed integer Duration with default 200 into spectral saved state; no setter or hit-effect change
+SpectralArrow.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/projectiles.rs::arrow_to_nbt	Saved integer Duration from modeled spectral state, including constructor default 200; no hit-effect duration claim
+SpectralArrow.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/projectiles.rs::arrow_from_nbt	Adopts signed integer Duration with default 200 into spectral saved state; no setter or hit-effect change
 SpectralArrow.tick	port	crates/sunrise-client/src/game/network/remote_projectiles.rs::Game::arrow_effect_particles	client tick: an effect sparkle at the arrow's position while it is not stuck; the tipped arrow's colour swirls share the fn
 Fireball.getSlot	missing		minor: entity slot access (`/loot insert` on an entity) is not modelled, so nothing here can set the slot the fireball's item sits in
-Fireball.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::fireball_from_nbt	the `Item` it is drawn as goes through `setItem`, which refuses an empty stack and keeps a single one
+Fireball.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/projectiles.rs::fireball_from_nbt	the `Item` it is drawn as goes through `setItem`, which refuses an empty stack and keeps a single one
 Fireball.setItem	port	crates/sunrise-client/src/projectiles.rs::Projectile::set_item	an empty stack puts the default fire charge back, anything else is kept as one (`copyWithCount(1)`); a kind that is no `Fireball` has no item
 Fireball.shouldRenderAtSqrDistance	skip:ui		render distance rule for the first two ticks; Sunrise draws the projectile as its own pass
 LargeFireball.onHit	port	crates/sunrise-client/src/game/mobs/creatures/mod.rs::Game::projectile_hit	LargeFireball arm: explosion power and fire flag (mob_griefing), MOB block interaction, then projectile removal. Bounded fire-presence fixture includes disabled-rule and TNT controls; exact motion/counts/geometry and UUID-view serialization are separate.
@@ -96,14 +96,14 @@ AbstractThrownPotion.onHitBlock	port	crates/sunrise-client/src/game/blocks/splas
 Snowball.getParticle	port	crates/sunrise-client/src/game/mobs/creatures/mod.rs::Game::item_burst	snowball item burst on break
 Snowball.handleEntityEvent	port	crates/sunrise-client/src/game/mobs/creatures/mod.rs::Game::thrown_break_event	break event 3 for thrown items
 Snowball.onHit	inline	crates/sunrise-client/src/game/mobs/creatures/mod.rs::Game::projectile_hit	Snowball arm: 3 damage to blazes, then the break burst
-ThrowableItemProjectile.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::throwable_from_nbt	the `Item` it flies as is read back with the rest (a potion keeps its effects); a tag without one keeps `getItem`'s default
+ThrowableItemProjectile.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/projectiles.rs::throwable_from_nbt	the `Item` it flies as is read back with the rest (a potion keeps its effects); a tag without one keeps `getItem`'s default
 Activity.equals	skip:java		value equality of a named activity; no Sunrise counterpart needed
 ModelAndTexture.codec	skip:data		codec for the variant model and texture asset; Sunrise reads variant data from files
-MoonBrightnessCheck.test	inline	crates/sunrise-client/src/mobs/finalize.rs::VariantRegistry::select	Condition::Moon arm: moon brightness of the phase against the range
-PriorityProvider.select	port	crates/sunrise-client/src/mobs/finalize.rs::VariantRegistry::select	highest priority entries whose conditions hold, one picked at random
+MoonBrightnessCheck.test	inline	crates/sunrise-client/src/mobs/variants.rs::VariantTable::select	SpawnCondition::MoonBrightness arm: moon brightness of the phase against the range
+PriorityProvider.select	port	crates/sunrise-client/src/mobs/variants.rs::VariantTable::select	highest priority entries whose conditions hold, one picked at random
 SpawnConditions.bootstrap	skip:data		registry bootstrap of spawn condition codecs; Sunrise reads variant conditions from files
-SpawnContext.create	inline	crates/sunrise-client/src/mobs/finalize.rs::VariantRegistry::select	the level and position passed to select; no separate context object
-variant/StructureCheck.test	inline	crates/sunrise-client/src/mobs/finalize.rs::VariantRegistry::select	Condition::Structure arm: structures with a piece at the position
+SpawnContext.create	inline	crates/sunrise-client/src/mobs/variants.rs::VariantTable::select	the level and position passed to select; no separate context object
+variant/StructureCheck.test	inline	crates/sunrise-client/src/mobs/variants.rs::VariantTable::select	SpawnCondition::Structure arm: structures with a piece at the position
 AbstractMinecartContainer.applyNaturalSlowdown	inline	crates/sunrise-client/src/game/entities/minecarts.rs::Game::natural_slowdown	gap: minor: plain cart friction 0.96; the container's 0.98 plus 0.001 per empty redstone level is missing
 AbstractMinecartContainer.createMenu	inline	crates/sunrise-client/src/game/entities/minecarts.rs::Game::interact_cart	gap: minor: opens the chest for anyone; no refusal of a loot-table cart for spectators
 AbstractMinecartContainer.remove	port	crates/sunrise-client/src/game/entities/minecarts.rs::Game::drop_vehicle_contents	Containers.dropContents on every destroying removal, whatever entity_drops says: the damage path's kill or a creative player's discard, and /kill after the open menu writes its slots back; a loot table still held drops the roll made on load
@@ -226,5 +226,5 @@ LingeringPotionItem.createPotion	port	crates/sunrise-client/src/game/items/potio
 LingeringPotionItem.use	inline	crates/sunrise-client/src/game/items/potions.rs::Game::use_potion_item	lingering potion throw
 NameTagItem.interactLivingEntity	port	crates/sunrise-client/src/game/interface/names.rs::Game::name_mob	a tag with a custom name names the mob under the crosshair, makes it persistent and is used up, in creative too
 PlaceOnWaterBlockItem.use	inline	crates/sunrise-client/src/game/blocks/block_items.rs::Game::apply_placed_item	placed by generic block placement; the water rule is not checked here
-Pillager.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt.rs::mob_to_nbt	modeled occupied Inventory list, including empty; inherited Raider fields separate
+Pillager.addAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_write.rs::mob_to_nbt	modeled occupied Inventory list, including empty; inherited Raider fields separate
 Pillager.readAdditionalSaveData	port	crates/sunrise-client/src/entity_nbt/mob_load.rs::mob_from_nbt	Inventory adoption into five-slot occupied-stack model; gap: aggregation and existing pickup-flag load remain separate

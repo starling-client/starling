@@ -15,12 +15,12 @@ import subprocess
 import tarfile
 from pathlib import Path
 
-try:
-    from . import lab
-except ImportError:
-    import lab
+import sys
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+from tools import lab
+
 LOCAL = ROOT / '.local'
 # Inputs of the exporters, not read by the game at runtime.
 SKIP = {'classes', 'client-classes', 'export.log', 'model-state-export.log'}

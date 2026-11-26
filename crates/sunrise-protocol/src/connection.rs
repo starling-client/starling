@@ -8,7 +8,7 @@
 //! (vanilla's `LocalChannel`, which an integrated server's player uses).
 use crate::{Error, Result, buf::Reader, crypto::Cfb8, frame};
 use std::{
-    io::{Read, Write},
+    io::{ErrorKind, Read, Write},
     net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs},
     sync::{
         Arc,
@@ -153,7 +153,7 @@ fn configure_stream(stream: &TcpStream) -> Result<()> {
     let _ = sock.set_tcp_keepalive(&keepalive);
     #[cfg(target_os = "linux")]
     {
-        let _ = sock.set_quickack(true);
+        let _ = sock.set_tcp_quickack(true);
     }
     Ok(())
 }
@@ -487,6 +487,29 @@ impl ConnReader {
         self.end += n;
         Ok(n)
     }
+    /// Whether the peer has closed its side, as far as can be seen without consuming input: a
+    /// memory pipe's close, or a TCP socket at its end with no unread byte before it.
+    pub fn peer_closed(&self) -> bool {
+        match &self.stream {
+            Stream::Tcp(tcp) => {
+                if tcp.set_nonblocking(true).is_err() {
+                    return true;
+                }
+                let peeked = tcp.peek(&mut [0]);
+                let restored = tcp.set_nonblocking(false);
+                match peeked {
+                    Ok(0) => true,
+                    Ok(_) => restored.is_err(),
+                    Err(err) => {
+                        !matches!(err.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted)
+                    }
+                }
+            }
+            Stream::Memory(pipe) => pipe.is_closed(),
+            Stream::Detached => true,
+        }
+    }
+
     /// A [`Closer`] for this connection.
     pub fn closer(&self) -> Result<Closer> {
         Ok(Closer(self.stream.try_clone()?))
@@ -953,6 +976,25 @@ mod tests {
         drop(b);
         assert!(c.recv().is_err());
         assert!(c.send(&[1]).is_err());
+    }
+
+    #[test]
+    fn a_peer_that_closes_behind_its_hello_is_closed() {
+        use crate::packets::login::{ServerHello, Serverbound};
+
+        let hello = Serverbound::Hello(ServerHello {
+            name: "Peer".into(),
+            uuid: 1,
+        });
+        let (server, client) = Pipe::pair();
+        let mut server = Connection::local(server);
+        let mut client = Connection::local(client);
+        client.send(&hello.encode()).unwrap();
+        assert!(!server.reader.peer_closed());
+        drop(client);
+        let (id, payload) = server.recv().unwrap();
+        assert_eq!(Serverbound::decode(id, &payload).unwrap(), hello);
+        assert!(server.reader.peer_closed());
     }
 
     #[test]

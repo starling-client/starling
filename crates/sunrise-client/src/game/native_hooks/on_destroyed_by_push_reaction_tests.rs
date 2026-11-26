@@ -1,4 +1,3 @@
-#![cfg(test)]
 //! `on_destroyed_by_push_reaction` heard by a block Part: a piston's move destroying a torch
 //! tells the torch's part before its cell becomes air, and the move overwrites what the part
 //! writes into the move's cells but keeps what it writes elsewhere.

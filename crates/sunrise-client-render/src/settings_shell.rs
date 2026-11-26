@@ -7,8 +7,9 @@
 //! buttons, keys and each row's description (`extras_ui` is the smallest; `graphics_ui` has
 //! pages, sliders, costs and Undo; `controller_ui` has bindings, [`Value::Binding`], whose wait
 //! for a button or a key the shell runs; `shader_ui` has pages read from a shader pack, rows that
-//! link to pages out of the page list, and Apply). A page list with more pages than the column
-//! has room for collapses into one `‹ Name ›` row (`hud_kit::tabs`), leaving none out.
+//! link to pages out of the page list, and Apply; `sunrise_ui` hosts other screens' rows). A page
+//! list with more pages than the column has room for scrolls, or, when it has section lines,
+//! collapses its last section into one `‹ Name ›` row (`hud_kit::tabs`), leaving none out.
 use crate::{
     graphics_style as style,
     hud::{HudAtlas, HudBatch},
@@ -171,6 +172,8 @@ impl<P, S> Line<P, S> {
     pub(crate) fn h(&self) -> f32 {
         match (&self.setting, self.group) {
             (Some(_), _) => style::ROW,
+            // An untitled group (`Lines::group` with no name) takes no room over its rows.
+            (None, Some(("", _))) => 0.0,
             (None, Some(_)) => style::GROUP_ROW,
             (None, None) => style::PAGE_ROW,
         }
@@ -202,15 +205,16 @@ impl<P: Copy, S: Copy> Lines<P, S> {
         });
         self.y += style::PAGE_ROW;
     }
-    /// A named group of rows.
+    /// A named group of rows; an empty name draws none, and takes no room over the rows.
     pub(crate) fn group(&mut self, page: P, name: &'static str, rows: Vec<S>) {
-        self.lines.push(Line {
+        let line = Line {
             y: self.y,
             page,
             group: Some((name, rows.len() as f32 * style::ROW)),
             setting: None,
-        });
-        self.y += style::GROUP_ROW;
+        };
+        self.y += line.h();
+        self.lines.push(line);
         for setting in rows {
             self.lines.push(Line {
                 y: self.y,
@@ -369,6 +373,7 @@ pub(crate) fn list<P: Copy, S: Copy>(
         }
         let Some(setting) = line.setting else {
             let (name, color, dy) = match line.group {
+                Some(("", _)) => continue,
                 Some((name, _)) => (lang::get(name), style::muted(), 3.0),
                 None => (page_name(line.page), style::accent(), 4.0),
             };
@@ -836,6 +841,33 @@ pub(crate) enum Part {
     Next,
 }
 
+/// A page list that scrolls: the first page in view, how many pages it lists, and how many
+/// fit, one a place.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PageWindow {
+    pub(crate) first: usize,
+    pub(crate) count: usize,
+    pub(crate) room: usize,
+}
+impl PageWindow {
+    /// The first page in view that keeps `wanted` in view, from `first` now.
+    fn keeping(self, wanted: usize) -> usize {
+        if wanted < self.first {
+            wanted
+        } else if wanted >= self.first + self.room {
+            wanted + 1 - self.room
+        } else {
+            self.first
+        }
+    }
+    /// The track of its scroller, at the column's right edge beside the places in view.
+    fn track(self, cols: &Columns) -> [f32; 4] {
+        let [x, y, w, _] = cols.page(0);
+        let h = self.room as f32 * PAGE_STEP - (PAGE_STEP - cols.page(0)[3]);
+        [x + w - style::SCROLLER_W, y, style::SCROLLER_W, h]
+    }
+}
+
 /// The page list as laid out (`Shell::page_list`).
 #[derive(Clone, Debug)]
 pub(crate) struct PageList<P> {
@@ -849,6 +881,9 @@ pub(crate) struct PageList<P> {
     lit: Option<P>,
     /// How many places it takes down the column.
     used: usize,
+    /// A list of pages with no section lines that doesn't fit scrolls instead (`PageWindow`):
+    /// `places` then holds only the pages in view.
+    window: Option<PageWindow>,
 }
 impl<P> Default for PageList<P> {
     fn default() -> Self {
@@ -858,6 +893,7 @@ impl<P> Default for PageList<P> {
             strip: None,
             lit: None,
             used: 0,
+            window: None,
         }
     }
 }
@@ -1110,6 +1146,8 @@ pub(crate) enum Capture {
     /// A controller button for a gameplay action (`OptionsUi::selected_pad_action`): the game binds
     /// the next button pressed, Start cancels, and the keyboard's Escape unbinds, as on Key Binds.
     Pad(&'static str),
+    /// A registered page's key row by page and row index, bound as `Key` is, into `Act::Bind`.
+    Page(usize, usize),
 }
 
 /// What a binding row is bound to now.
@@ -1153,8 +1191,15 @@ impl Reset {
 impl Binding {
     /// A key's binding, as Key Binds lists it: no reset of its own.
     pub(crate) fn key(name: &'static str, shown: String) -> Self {
+        Self::waiting_for(Capture::Key(name), shown)
+    }
+    /// Row `row` of registered page `page`, a key row ([`Capture::Page`]).
+    pub(crate) fn page_key(page: usize, row: usize, shown: String) -> Self {
+        Self::waiting_for(Capture::Page(page, row), shown)
+    }
+    fn waiting_for(capture: Capture, shown: String) -> Self {
         Self {
-            capture: Capture::Key(name),
+            capture,
             shown: Shown::Key(shown),
             shared: Vec::new(),
             reset: Reset::None,
@@ -1255,6 +1300,19 @@ impl<R> Row<R> {
         self.cost = Some(cost);
         self
     }
+    /// The same row under another screen's id (a screen that hosts another's rows).
+    pub(crate) fn map_id<T>(self, id: impl FnOnce(R) -> T) -> Row<T> {
+        Row {
+            id: id(self.id),
+            name: self.name,
+            value: self.value,
+            about: self.about,
+            chosen: self.chosen,
+            live: self.live,
+            why: self.why,
+            cost: self.cost,
+        }
+    }
     /// Its whole caption ("Name: value"), for the narrator and the widget tree.
     fn label(&self, value: Option<&str>) -> String {
         match value {
@@ -1298,6 +1356,16 @@ impl<R> Row<R> {
 pub(crate) struct Group<R> {
     pub(crate) name: &'static str,
     pub(crate) rows: Vec<Row<R>>,
+}
+impl<R> Group<R> {
+    /// The same group under another screen's row ids ([`Row::map_id`]).
+    pub(crate) fn map_id<T>(self, id: impl Fn(R) -> T) -> Group<T> {
+        let rows = self.rows.into_iter().map(|row| row.map_id(&id)).collect();
+        Group {
+            name: self.name,
+            rows,
+        }
+    }
 }
 
 /// A page of a screen. A screen of one page shows no page list.
@@ -1359,6 +1427,11 @@ pub(crate) trait Screen {
     fn note_lines(&self) -> usize {
         NOTE_LINES
     }
+    /// The lines of description the strip should hold while `page` is open, for a screen whose
+    /// pages need different room.
+    fn note_lines_on(&self, _page: Self::Page) -> usize {
+        self.note_lines()
+    }
     fn sheets(&self, s: &Settings) -> Vec<Sheet<Self::Page, Self::Row>>;
     /// A fingerprint ([`stamp_of`]) of what `sheets` reads that can change while the screen is
     /// open, besides through `press`, `slide` and `wheel_step` (the shell builds again after
@@ -1374,8 +1447,8 @@ pub(crate) trait Screen {
     }
     /// A slider row moved to `position`.
     fn slide(&mut self, _s: &mut Settings, _row: Self::Row, _position: f64) {}
-    /// A slider let go of, or stepped by a key: what its change does now that it is done (a
-    /// Sunrise shader pack saves its options once a drag, not on every move).
+    /// A slider let go of, or stepped by a key: what its change does now that it is done (not
+    /// on every move of a drag).
     fn slider_released(&mut self) -> Vec<Output> {
         Vec::new()
     }
@@ -1469,6 +1542,15 @@ pub(crate) trait Hosted {
     /// to land there too.
     fn opened_focus(&self) -> Option<[f32; 4]>;
     fn clear_opened_focus(&mut self);
+    /// A controller's bumper on a page list that scrolls: the next page (`next`) or the one
+    /// before, in list order and wrapping, is opened and scrolled into view; where it is now.
+    /// `None` for a page list that doesn't scroll, whose pages are all targets on the screen.
+    fn step_page(&mut self, s: &Settings, size: (f32, f32), next: bool) -> Option<[f32; 4]>;
+    /// The name of the page the plate shows (the open one or, while searching, the one picked or
+    /// the topmost line's), read from the view the shell last built (a draw or an input builds
+    /// it); `None` before it built one.
+    #[cfg(any(test, feature = "test-support"))]
+    fn open_page_name(&self) -> Option<String>;
     /// The clicks until it is set back are a controller's Left or Right: on a choice they step
     /// it, as the arrow keys do, rather than press it.
     fn clicks_step(&mut self, on: bool);
@@ -1528,6 +1610,8 @@ pub(crate) trait Hosted {
         right: bool,
         shift: bool,
     ) -> (Vec<Output>, bool);
+    /// Drags an active slider or scrollbar; returns whether the shell took the drag and its outputs.
+    fn drag(&mut self, s: &mut Settings, at: (f32, f32), size: (f32, f32)) -> (bool, Vec<Output>);
     /// Events a release produced, for widget tests.
     #[cfg(test)]
     fn release(&mut self) -> Option<Vec<Output>> {
@@ -1546,7 +1630,7 @@ pub(crate) trait Hosted {
         size: (f32, f32),
         at: (f32, f32),
         amount: f32,
-    ) -> Vec<Output>;
+    ) -> (bool, Vec<Output>);
     /// The one way a list scrolls: the wheel, a right stick and a D-pad past the view's edge.
     fn scroll(&mut self, s: &Settings, size: (f32, f32), amount: f32);
     /// Typing in the search field, Tab and the arrows between controls, Left and Right on a
@@ -1659,6 +1743,10 @@ pub(crate) struct Shell<S: Screen> {
     /// The page list as last drawn: what a press or a key picks is what is on the screen (the
     /// collapsed row's arrows sit either side of a name as wide as the font draws it).
     drawn: Option<PageList<S::Page>>,
+    /// The first page in view of a page list that scrolls (`PageWindow`).
+    page_first: usize,
+    /// The open page is to be scrolled into the page list's view at the next draw.
+    reveal_page: bool,
 }
 impl<S: Screen + Default> Default for Shell<S> {
     fn default() -> Self {
@@ -1687,6 +1775,8 @@ impl<S: Screen + Default> Default for Shell<S> {
             path: Vec::new(),
             pending: false,
             drawn: None,
+            page_first: 0,
+            reveal_page: true,
         }
     }
 }
@@ -1783,8 +1873,9 @@ impl<S: Screen> Shell<S> {
     pub(crate) fn changed_elsewhere(&mut self) {
         self.did(&[Output::Event(crate::options_ui::Event::Changed)]);
     }
-    /// Open at `page`.
+    /// Open at `page`, in the page list's view.
     pub(crate) fn show(&mut self, page: S::Page) {
+        self.reveal_page = true;
         self.page = Some(page);
         self.path.clear();
     }
@@ -1812,13 +1903,17 @@ impl<S: Screen> Shell<S> {
     /// description has the search in it, under their pages' names. The row being changed stays
     /// whatever it reads now.
     fn build(&self, s: &Settings, (w, h): (f32, f32)) -> View<S::Page, S::Row> {
-        let cols = Columns::of(w, h).with_note_lines(self.screen.note_lines());
         let query = self.query();
         let sheets = self.screen.sheets(s);
         let open = self
             .page
             .filter(|&page| sheets.iter().any(|sheet| sheet.id == page));
         let open = open.or(sheets.first().map(|sheet| sheet.id));
+        let note_lines = open.map_or_else(
+            || self.screen.note_lines(),
+            |page| self.screen.note_lines_on(page),
+        );
+        let cols = Columns::of(w, h).with_note_lines(note_lines);
         let mut pages = Vec::new();
         let mut rows = Vec::new();
         let mut lines = Lines::new();
@@ -1884,9 +1979,10 @@ impl<S: Screen> Shell<S> {
         self.path.iter().rev().copied().find(|&page| listed(page))
     }
     /// The page list laid out: its pages one under another while they fit, each section under
-    /// its line; past that, the last section collapses into one row, `‹ Name ›` with a pip per
-    /// page, rather than leaving some out. Without the atlas, the font that lays the row out, it
-    /// doesn't collapse.
+    /// its line. Past that, a list with no section lines scrolls (`PageWindow`: the pages in view
+    /// only), and in one with them the last section collapses into one row, `‹ Name ›` with a pip
+    /// per page, rather than leaving some out. Without the atlas, the font that lays the row out,
+    /// it doesn't collapse.
     fn page_list(
         &self,
         view: &View<S::Page, S::Row>,
@@ -1902,11 +1998,24 @@ impl<S: Screen> Shell<S> {
             .iter()
             .rposition(|p| p.heading.is_some())
             .unwrap_or(0);
-        let collapse = atlas.filter(|_| listed.len() + headings > cols.page_room());
         let mut list = PageList {
             lit: self.lit(view),
             ..PageList::default()
         };
+        if let Some(window) = self.page_window(view) {
+            // Each page in view, one a place, narrowed for the scroller beside them.
+            let first = window.first;
+            let shown = listed.iter().enumerate().skip(first).take(window.room);
+            for (i, page) in shown {
+                let [x, y, w, h] = cols.page(i - first);
+                let rect = [x, y, w - style::SCROLLER_W - 2.0, h];
+                list.places.push((page.id, rect, Part::Tab));
+            }
+            list.used = window.room;
+            list.window = Some(window);
+            return list;
+        }
+        let collapse = atlas.filter(|_| listed.len() + headings > cols.page_room());
         for (i, page) in listed.iter().enumerate() {
             if let Some(text) = &page.heading {
                 list.headings.push((text.clone(), cols.page(list.used)));
@@ -1947,6 +2056,71 @@ impl<S: Screen> Shell<S> {
         list.strip = Some((strip, pages[shown]));
         list
     }
+    /// A page list with no section lines that has more pages than room: it scrolls, rather than
+    /// collapse into one row as a list with sections does.
+    fn page_window(&self, view: &View<S::Page, S::Row>) -> Option<PageWindow> {
+        if !Self::has_list(view) {
+            return None;
+        }
+        let listed = view.pages.iter().filter(|p| p.listed);
+        let (mut count, mut headings) = (0, false);
+        for page in listed {
+            count += 1;
+            headings |= page.heading.is_some();
+        }
+        let room = view.cols.page_room().max(1);
+        (!headings && count > room).then(|| PageWindow {
+            first: self.page_first.min(count - room),
+            count,
+            room,
+        })
+    }
+    /// Scroll a page list that scrolls so `page` is in its view.
+    fn reveal_page(&mut self, page: S::Page, view: &View<S::Page, S::Row>) {
+        let Some(window) = self.page_window(view) else {
+            return;
+        };
+        let mut listed = view.pages.iter().filter(|p| p.listed);
+        if let Some(i) = listed.position(|p| p.id == page) {
+            self.page_first = window.keeping(i);
+            self.drawn = None;
+        }
+    }
+    /// The page a key steps to from `page`, at the edge of a page list that scrolls, in list
+    /// order: Down (or Tab) from the last page in view, Up (or Shift Tab) from the first, to the
+    /// next one out of view with something to show. Pages out of view have no place on the
+    /// screen, so the spatial steps never land on one.
+    fn page_past_edge(
+        &self,
+        view: &View<S::Page, S::Row>,
+        page: S::Page,
+        down: bool,
+    ) -> Option<S::Page> {
+        let window = self.page_window(view)?;
+        let listed: Vec<S::Page> = view
+            .pages
+            .iter()
+            .filter(|p| p.listed)
+            .map(|p| p.id)
+            .collect();
+        let i = listed.iter().position(|&p| p == page)?;
+        let at_edge = if down {
+            i + 1 == window.first + window.room
+        } else {
+            i == window.first
+        };
+        if !at_edge {
+            return None;
+        }
+        let mut j = i;
+        loop {
+            j = if down { j + 1 } else { j.checked_sub(1)? };
+            let page = *listed.get(j)?;
+            if self.has(page, view) {
+                return Some(page);
+            }
+        }
+    }
     /// The page list as drawn, else laid out without collapsing (nothing drawn yet).
     fn places(&self, view: &View<S::Page, S::Row>) -> PageList<S::Page> {
         (self.drawn.clone()).unwrap_or_else(|| self.page_list(view, None))
@@ -1962,6 +2136,14 @@ impl<S: Screen> Shell<S> {
     ) {
         for (text, rect) in &list.headings {
             heading(batch, atlas, text, *rect);
+        }
+        if let Some(window) = list.window {
+            let track @ [x, top, w, h] = window.track(&view.cols);
+            let content = window.count as f32 * PAGE_STEP;
+            let scroll = window.first as f32 * PAGE_STEP;
+            if let Some((y, bar)) = ui::scrollbar_thumb(top, top + h, content, scroll) {
+                style::scroller(batch, atlas, track, [x, y, w, bar]);
+            }
         }
         if let Some((strip, shown)) = &list.strip {
             // The row's page is open: lit as the list's open page is.
@@ -2174,6 +2356,9 @@ impl<S: Screen> Shell<S> {
             scroll_into_view(&mut self.scroll, rect, &view.cols, view.content);
             self.picked = None;
         }
+        if let Target::Page(page) = target {
+            self.reveal_page(page, view);
+        }
     }
     /// A binding row's reset: the binding goes back to its default and, as the reset goes away
     /// with it, the focus to its row.
@@ -2374,6 +2559,12 @@ impl<S: Screen + Default> Hosted for Shell<S> {
         self.waiting = waiting;
         self.keep(s);
         let size = (batch.width, batch.height);
+        if std::mem::take(&mut self.reveal_page) {
+            let view = self.view(s, size);
+            if let Some(page) = self.lit(&view) {
+                self.reveal_page(page, &view);
+            }
+        }
         let opened = self.focus_next.take();
         if let Some(row) = opened {
             let view = self.view(s, size);
@@ -2489,33 +2680,17 @@ impl<S: Screen + Default> Hosted for Shell<S> {
         right: bool,
         shift: bool,
     ) -> (Vec<Output>, bool) {
+        if drag {
+            let (handled, outputs) = self.drag(s, (x, y), size);
+            return (outputs, handled);
+        }
         self.keep(s);
         // A click of its own: the focus a page opened on is the mouse's now.
-        if !drag {
-            self.focus_opened = None;
-        }
+        self.focus_opened = None;
         let view = self.view(s, size);
         let cols = view.cols;
         let at = |[rx, ry, rw, rh]: [f32; 4]| ui::hovered((x, y), rx, ry, rw, rh);
-        if !drag {
-            self.keyed = false;
-        }
-        if drag {
-            if self.scroll.held() && !cols.scrolls() {
-                self.scroll.release();
-            }
-            if self.scroll.held() {
-                self.picked = None;
-                self.scroll.drag(y, cols.top, cols.bottom, view.content);
-                return (Vec::new(), false);
-            }
-            if let Some(row) = self.dragging {
-                self.screen.slide(s, row, cols.slider_at(x));
-                self.did(&[DRAGGED]);
-                return (vec![DRAGGED], true);
-            }
-            return (Vec::new(), false);
-        }
+        self.keyed = false;
         // The right button presses nothing, as on vanilla's `CycleButton`.
         if right {
             return (Vec::new(), false);
@@ -2581,11 +2756,79 @@ impl<S: Screen + Default> Hosted for Shell<S> {
         let track = (x >= cols.track().0).then(|| cols.slider_at(x));
         (self.activate(s, row, shift, track, self.clicks_step), true)
     }
+    fn drag(
+        &mut self,
+        s: &mut Settings,
+        (x, y): (f32, f32),
+        size: (f32, f32),
+    ) -> (bool, Vec<Output>) {
+        self.keep(s);
+        let view = self.view(s, size);
+        let cols = view.cols;
+        if self.scroll.held() && !cols.scrolls() {
+            self.scroll.release();
+        }
+        if self.scroll.held() {
+            self.picked = None;
+            self.scroll.drag(y, cols.top, cols.bottom, view.content);
+            return (true, Vec::new());
+        }
+        if let Some(row) = self.dragging {
+            self.screen.slide(s, row, cols.slider_at(x));
+            self.did(&[DRAGGED]);
+            return (true, vec![DRAGGED]);
+        }
+        (false, Vec::new())
+    }
     fn opened_focus(&self) -> Option<[f32; 4]> {
         self.focus_opened.map(|(_, rect)| rect)
     }
     fn clear_opened_focus(&mut self) {
         self.focus_opened = None;
+    }
+    #[cfg(any(test, feature = "test-support"))]
+    fn open_page_name(&self) -> Option<String> {
+        let (_, view) = self.built.as_ref()?;
+        let page = self.current(view)?;
+        let page = view.pages.iter().find(|p| p.id == page)?;
+        Some(page.name.clone())
+    }
+    fn step_page(&mut self, s: &Settings, size: (f32, f32), next: bool) -> Option<[f32; 4]> {
+        let view = self.view(s, size);
+        let window = self.page_window(&view)?;
+        let listed: Vec<S::Page> = view
+            .pages
+            .iter()
+            .filter(|p| p.listed)
+            .map(|p| p.id)
+            .collect();
+        let at = self
+            .lit(&view)
+            .and_then(|lit| listed.iter().position(|&p| p == lit));
+        let at = at.unwrap_or(0);
+        let count = listed.len();
+        // The next page with something to show, wrapping; while searching, pages without
+        // matches are passed over.
+        let mut i = at;
+        let page = loop {
+            i = if next {
+                (i + 1) % count
+            } else {
+                (i + count - 1) % count
+            };
+            if i == at || self.has(listed[i], &view) {
+                break listed[i];
+            }
+        };
+        self.pick(page, &view);
+        self.reveal_page(page, &view);
+        self.focus = Some(Target::Page(page));
+        self.keyed = false;
+        // As a click on a tab does, it leaves no opened row for the focus to land on.
+        self.focus_opened = None;
+        let first = window.keeping(i);
+        let [x, y, w, h] = view.cols.page(i - first);
+        Some([x, y, w - style::SCROLLER_W - 2.0, h])
     }
     fn clicks_step(&mut self, on: bool) {
         self.clicks_step = on;
@@ -2603,6 +2846,26 @@ impl<S: Screen + Default> Hosted for Shell<S> {
         let view = self.view(s, size);
         let cols = &view.cols;
         let middle = (x + w / 2.0, y + h / 2.0);
+        // A page at either end of a page list that scrolls: the next one out of view scrolls in,
+        // so a controller's focus can step on to it.
+        if let Some(window) = self.page_window(&view) {
+            let places = self.places(&view).places;
+            let at =
+                |&(_, [px, py, pw, ph], _): &(_, [f32; 4], _)| ui::hovered(middle, px, py, pw, ph);
+            if let Some(slot) = places.iter().position(at) {
+                let shown = window.first + slot;
+                let next = if slot == 0 && window.first > 0 {
+                    shown - 1
+                } else if slot + 1 == window.room && shown + 1 < window.count {
+                    shown + 1
+                } else {
+                    return None;
+                };
+                self.page_first = window.keeping(next);
+                self.drawn = None;
+                return Some((window.first as f32 - self.page_first as f32) * PAGE_STEP);
+            }
+        }
         let (_, row_y) = self.placed(&view).find(|&(_, ry)| {
             let [rx, ry, rw, rh] = cols.row(ry);
             ui::hovered(middle, rx, ry, rw, rh)
@@ -2621,18 +2884,66 @@ impl<S: Screen + Default> Hosted for Shell<S> {
         size: (f32, f32),
         at: (f32, f32),
         amount: f32,
-    ) -> Vec<Output> {
+    ) -> (bool, Vec<Output>) {
         if amount != 0.0 && s.extras.wheel_cycles_settings {
             let view = self.view(s, size);
             if let Some((row, _)) = self.row_at(&view, at).filter(|(row, _)| row.live)
                 && let Some(outputs) = self.screen.wheel_step(s, row.id, amount > 0.0)
             {
                 self.did(&outputs);
-                return outputs;
+                return (true, outputs);
             }
         }
-        self.scroll(s, size, amount);
-        Vec::new()
+        let view = self.view(s, size);
+        let cols = &view.cols;
+        if let Some(window) = self.page_window(&view) {
+            let [x, y, w, _] = cols.page(0);
+            let h = window.room as f32 * PAGE_STEP;
+            if amount != 0.0 && ui::hovered(at, x, y, w, h) {
+                let first = if amount > 0.0 {
+                    window.first.saturating_sub(1)
+                } else {
+                    (window.first + 1).min(window.count - window.room)
+                };
+                self.page_first = first;
+                self.drawn = None;
+                // A focused page the wheel took out of view: the focus goes to the nearest one in
+                // it with something to show (while searching, one with matches), so the next key
+                // goes on from there; with none, it goes.
+                if let Some(Target::Page(page)) = self.focus {
+                    let listed: Vec<S::Page> = view
+                        .pages
+                        .iter()
+                        .filter(|p| p.listed)
+                        .map(|p| p.id)
+                        .collect();
+                    if let Some(i) = listed.iter().position(|&p| p == page)
+                        && !(first..first + window.room).contains(&i)
+                    {
+                        let shown = &listed[first..first + window.room];
+                        let mut nearest: Vec<(usize, S::Page)> = (first..)
+                            .zip(shown.iter().copied())
+                            .filter(|&(_, p)| self.has(p, &view))
+                            .collect();
+                        nearest.sort_by_key(|&(j, _)| j.abs_diff(i));
+                        self.focus = nearest.first().map(|&(_, p)| Target::Page(p));
+                    }
+                }
+                return (true, Vec::new());
+            }
+        }
+        if ui::hovered(
+            at,
+            cols.list_x,
+            cols.top,
+            cols.list_w,
+            cols.bottom - cols.top,
+        ) {
+            self.scroll(s, size, amount);
+            (true, Vec::new())
+        } else {
+            (false, Vec::new())
+        }
     }
     fn scroll(&mut self, s: &Settings, size: (f32, f32), amount: f32) {
         let view = self.view(s, size);
@@ -2676,6 +2987,22 @@ impl<S: Screen + Default> Hosted for Shell<S> {
             return Vec::new();
         }
         let view = self.view(s, size);
+        // At the edge of a page list that scrolls, the keys go on to the page out of view.
+        let down = match key {
+            K::Tab => Some(!shift),
+            K::ArrowDown => Some(true),
+            K::ArrowUp => Some(false),
+            _ => None,
+        };
+        if let (Some(Target::Page(page)), Some(down)) = (self.focus, down)
+            && let Some(next) = self.page_past_edge(&view, page, down)
+        {
+            self.keyed = true;
+            self.focus = Some(Target::Page(next));
+            self.can_change_value = false;
+            self.reveal_page(next, &view);
+            return Vec::new();
+        }
         let focusables = self.focusables(&view, key != K::Tab);
         let current = self
             .focus
@@ -2841,14 +3168,18 @@ impl<S: Screen> Shell<S> {
     pub(crate) fn scroller_held(&self) -> bool {
         self.scroll.held()
     }
+    /// The page shown while nothing is searched, as opened or picked.
+    pub(crate) fn open_page(&self) -> Option<S::Page> {
+        self.page
+    }
+    /// The screen's parts as laid out now (the strip grown for the open page's description).
+    pub(crate) fn columns_at(&mut self, s: &Settings, size: (f32, f32)) -> Columns {
+        self.view(s, size).cols
+    }
     /// What the search field holds now, set as typing would.
     pub(crate) fn set_search(&mut self, text: &str) {
         self.search.set_value(text);
         self.searched();
-    }
-    /// The page shown while nothing is searched, as opened or picked.
-    pub(crate) fn open_page(&self) -> Option<S::Page> {
-        self.page
     }
     /// The list's lines, in order, and its content's height.
     pub(crate) fn lines_at(

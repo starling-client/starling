@@ -12,19 +12,25 @@ pub const TEMPLATE: &str = "native_mod_entry.rs.template";
 /// The folder of the runtime slice holding the fixed executable.
 const BIN: &str = "bin";
 
+pub(super) struct Options<'a> {
+    pub on_mod: &'a dyn Fn(&str, usize, usize),
+    pub check_only: bool,
+}
+
 /// Compile the mods in dependency order against API metadata and the runtime's dynamic
 /// closure. Return the unchanged executable and its runtime libraries, followed by mod dylibs.
-pub fn compile(
+#[allow(clippy::too_many_arguments)]
+pub(super) fn compile(
     rust: &dyn Toolchain,
     package: &prebuilt::Package,
+    sdk: &prebuilt::Identity,
     out: &Path,
     projects: &[api::Project<'_>],
     declared: &[Vec<dependencies::Dependency>],
     resolution: &dependencies::Resolution,
-    on_mod: &dyn Fn(&str, usize, usize),
-) -> Result<(PathBuf, Vec<PathBuf>), String> {
+    options: Options<'_>,
+) -> Result<Option<(PathBuf, Vec<PathBuf>)>, String> {
     let (runtime, api) = (package.runtime.as_path(), package.api.as_path());
-    let sdk = prebuilt::identity(runtime)?;
     fs::create_dir_all(out).map_err(|e| e.to_string())?;
     let deps = api.join("deps");
     let host = api.join("host");
@@ -39,9 +45,22 @@ pub fn compile(
     }
     libraries.insert("mod_vocab", prebuilt::library(&runtime_deps, "mod_vocab")?);
     let mut rlibs: HashMap<&str, PathBuf> = HashMap::new();
+    let mut identities = crate::library_record::Identities::default();
     for (n, &index) in resolution.order.iter().enumerate() {
         let project = &projects[index];
-        on_mod(&project.bundle.manifest.id, n + 1, resolution.order.len());
+        let manifest = &project.bundle.manifest;
+        (options.on_mod)(&manifest.id, n + 1, resolution.order.len());
+        let source = crate::source_digest(project.bundle)
+            .ok_or(crate::host::tr("Could not hash native mod inputs"))?;
+        let identity = identities.next(
+            sdk.commit(),
+            &manifest.id,
+            &manifest.version.to_string(),
+            &source,
+            declared[index]
+                .iter()
+                .map(|dependency| dependency.id.as_str()),
+        );
         let (rlib, _) = prebuilt::compile_mod(
             project,
             &declared[index],
@@ -51,19 +70,22 @@ pub fn compile(
             &rlibs,
             &prebuilt::library_entry(
                 &api::template(&api.join(TEMPLATE))?,
-                &[&project.bundle.manifest],
-                sdk.commit(),
-                &project.bundle.manifest.id,
-                &project.bundle.manifest.version.to_string(),
+                &[manifest],
+                &identity,
                 &[],
             ),
-            sdk.commit(),
+            &identities,
+            &source,
+            options.check_only,
         )?;
         rlibs.insert(project.bundle.manifest.id.as_str(), rlib);
     }
-    let mut installed = prebuilt::runtime_libraries(rust, &sdk, runtime)?;
+    if options.check_only {
+        return Ok(None);
+    }
+    let mut installed = prebuilt::runtime_libraries(rust, sdk, runtime)?;
     for &index in &resolution.order {
         installed.push(rlibs[projects[index].bundle.manifest.id.as_str()].clone());
     }
-    Ok((runtime.join(BIN).join(crate::CLIENT), installed))
+    Ok(Some((runtime.join(BIN).join(crate::CLIENT), installed)))
 }

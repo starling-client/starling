@@ -65,39 +65,14 @@ pub trait RecipesHost {
     /// Rebuilt when the recipe table changes. Does not unlock any recipes.
     fn recipe_book_category(&mut self, kind: &str) -> Option<RecipeBookCategory>;
 }
-/// The server host's methods of the `recipes` area, implemented by the game and reached through [`ServerHost`].
-#[sunrise_mod_api_macros::host_area]
-pub trait RecipesServerHost {
-    /// Side: server.
-    /// Only inside `recipe_book_place`, once per click: places `recipe`, the recipe that hook was asked about, into a
-    /// grid of the open mod menu as vanilla's `ServerPlaceRecipe.placeRecipe` does. `grid_width` and
-    /// `grid_height` give the grid's cells, row by row; `grid_slots` the menu slot of each cell (a
-    /// recipe never fills a cell past the last slot given); `clear_slots` the slots emptied first, their
-    /// items going back to the player's inventory (the grid's slots are cleared too). `use_max_items`
-    /// places as many sets as the items allow (Shift), else one more than the grid holds when it
-    /// already matches. Items are taken from the player's inventory and from what the menu's sources
-    /// lend. Candidate IDs and client displays do not replace the server's recheck of live stacks,
-    /// including custom predicates. Returns whether items were missing: the grid was cleared and the answer for
-    /// `ghost`. Refused (and nothing changes) outside that hook, on a second call, for another recipe, a slot the menu
-    /// lacks or hides, a repeated slot, an empty grid, a recipe larger than the slots given, a slot
-    /// whose pickup a part refuses, or a player with no room for the cleared items outside creative mode.
-    fn place_recipe_in_grid(
-        &mut self,
-        recipe: &str,
-        grid_width: u16,
-        grid_height: u16,
-        grid_slots: Vec<u16>,
-        clear_slots: Vec<u16>,
-        use_max_items: bool,
-    ) -> Result<bool, String>;
-}
 /// The client host's methods of the `recipes` area, implemented by the game and reached through [`crate::ClientHost`].
 #[sunrise_mod_api_macros::host_area]
 pub trait RecipesClientHost {
     /// Side: client.
     /// Shows the panel beside container screens with these items (at most
     /// 8192), as the game's own slots in pages, with a search box; the
-    /// player's clicks, searches and keys over items come back as
+    /// player's clicks, searches and keys over items, and items dragged off
+    /// the panel onto the screen (`PanelEvent::Dropped`), come back as
     /// `panel_event`. The panel is the last mod's to show one; empty
     /// items and no recipe page take yours away.
     fn panel_items(&mut self, mod_id: &str, items: Vec<Stack>);
@@ -170,12 +145,14 @@ pub trait RecipesClientHost {
     /// container a mod lends the grid's recipes (a crafting station's chests,
     /// which the client can't see) counted. Any recipe the server knows,
     /// whether or not the player's recipe book holds it. For a viewer's "+",
-    /// to mark the inputs it lacks. The first call for a recipe asks and
-    /// returns None; the answer comes a moment later and is kept for that
-    /// recipe while the menu, the inventory and the grid stay as they were.
-    /// On a remote server, while the answer is wanted, the client asks again
-    /// once the cached answer is one second old. None outside a screen that
-    /// takes `transfer_recipe_id` and on a server that doesn't answer it.
+    /// to mark the inputs it lacks (`missing_cells`) and, for a mod menu whose
+    /// part names them, the ones it could craft (`craftable_cells`). The first
+    /// call for a recipe asks and returns None; the answer comes a moment later
+    /// and is kept for that recipe while the menu, the inventory and the grid
+    /// stay as they were. On a remote server, while the answer is wanted, the
+    /// client asks again once the cached answer is one second old. None outside
+    /// a screen that takes `transfer_recipe_id` and on a server that doesn't
+    /// answer it.
     fn transfer_recipe_check(&mut self, recipe: &str) -> Option<RecipeTransferCheck>;
     /// Side: client.
     /// The `book_id`s of the recipe `recipe_id` (`minecraft:stick`), the ids

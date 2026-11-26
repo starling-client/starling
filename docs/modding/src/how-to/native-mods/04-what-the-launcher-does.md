@@ -29,12 +29,13 @@ that commit's SDK.
    used again on later builds after a quick check of its file names and sizes. Install the
    launcher's pinned Rust toolchain and required linker tools if needed; the player's Rust is not used.
 5. Compile the mods against the SDK's game libraries. Registry dependencies use the mod's supplied
-   lockfile and the same immutable SDK. The launcher asks for permission before executing dependency
+   lockfile and the same immutable SDK. The launcher asks for permission before executing the mods' own and dependency
    build scripts or procedural macros.
 6. For `[[native.mixin]]` rows, download the pinned game source, copy the targeted functions into one patch
    library, apply the rows with horizon-mixins, and compile that library against the SDK. The game
    crates are not compiled. Each checked replacement is installed through its typed installer.
-7. Link the native executable, install it as `native-<commit>-<key>`, and select it for the instance.
+7. Install the SDK's unchanged game executable and its companion libraries (including the compiled
+   mod libraries) as `native-<commit>-<key>`, and select that build for the instance.
    `native-mods.json` records the base, pins, mods and build tools. Client builds share their base's
    prepared resources; server exports include their resources.
    On Windows x64 the launcher also places the two GNU runtime libraries of its managed toolchain
@@ -49,7 +50,6 @@ and lets you cancel it.
 
 | Error | What to do |
 |---|---|
-| `E_NATIVE_BUILD_SCRIPT` | Remove the mod's build script and ship its generated Rust source. `build = false` disables an incidental `build.rs`. Registry dependency build scripts are handled by the separate dependency permission prompt. |
 | `E_NATIVE_FEATURES` | Use the pinned SDK's feature set; remove mod feature declarations and custom SDK feature requests. |
 | `E_NATIVE_HOST` | Build on a host supported by the prebuilt SDK. |
 | `E_MIXIN_STATE_LAYOUT` | Store per-object mod data in attachments instead of declaring `[[native.state]]`. |
@@ -89,3 +89,76 @@ against the release signature. Offline, a build whose SDK files are already kept
 files are missing says so, with the size to download. What a release holds and how it is checked:
 [The mod SDK](../../reference/sdk/01-release.md); the fit rule in full:
 [Fitting another build](../../reference/sdk/04-fit.md).
+
+## Rebuilds, updates and toolchain isolation
+
+A native build uses the instance's pinned Sunrise commit. Editing or disabling a mod rebuilds
+the mods against that same prebuilt SDK; building never repins a mod.
+
+`native-build --update` selects a newer installed release or Nightly and checks every mod against
+it. A build without a published SDK says it has no mod tools yet; use a build that has them.
+
+The launcher uses its pinned Rust toolchain, not the player's Rust installation. It isolates
+compiler flags, Cargo configuration and target settings from the player's environment. Build
+inputs and outputs stay in managed launcher storage. On Windows the build tools require paths
+the linker can open; the launcher chooses a managed ASCII path when necessary.
+
+## Build log
+
+The full log of a build is `native/build.log`, beside the build's own folders under the launcher's data
+folder. Each new attempt replaces it. Compiler output and the final result
+stay in the log, including failures before compilation or while selecting or exporting the built game.
+
+Choose **Build log** at the top right to open the latest build's log. The action is available
+whenever a log exists, including after restarting the launcher. Each build replaces that log. The
+panel shows a bounded preview of the end of the log and says when it truncated; **Copy log** copies the
+whole file, **Open full log** opens it outside the launcher, **Show in folder** reveals it, and
+**Refresh** reads it again (also after a build finishes). The panel is a snapshot read on open and
+refresh, not a live stream: a running build's later output appears only on the next refresh. Nothing is
+uploaded; the log stays on the player's computer.
+
+`cargo sunrise-mod build` keeps its own log and prints that log's path when it ends, built or failed.
+
+The launcher's `native-build` command writes build progress to stderr. A terminal keeps
+detailed download updates; redirected stderr reports only the first and completed updates for each
+Rust toolchain or mod-tools download. Build phases, compiler progress and failures are still
+reported in order, and the full build log is unchanged.
+
+### When a build fails on Linux
+
+- **A linker error naming `-ludev` or `-lasound`.** The game links udev and ALSA, so their development files must be
+  installed: `libudev-dev` and `libasound2-dev` on Debian and Ubuntu, `systemd-devel` and `alsa-lib-devel` on Fedora,
+  `udev` and `alsa-lib` in the shell's packages on NixOS. The build's error leads with this when it happens.
+- **A C or C++ dependency that cannot find its own headers under Nix.** Nix's compiler wrapper, when
+  `NIX_ENFORCE_PURITY` is `1`, drops every include folder outside the Nix store, and a dependency's sources are in the
+  build's own Cargo folder. The builds the tool starts set `NIX_ENFORCE_PURITY=0`, so this affects only a `cargo`
+  you run yourself in such a shell.
+
+## Cache and disk
+
+The native build key includes the pinned game and horizon-mixins commits, Rust version, target,
+compilation settings and mod files. A matching installed build is reused. Editing a mod creates
+a new build; the launcher compiles mods and their patch library, not the game.
+
+The launcher keeps these managed caches under its data folder:
+
+- `native/prebuilt/`: the SDK slices of each build and target (`<build id>-<target>`, holding
+  `runtime/`, `api/` and `engine/` as fetched), evicted as a unit with whatever an interrupted
+  download left in it.
+- `native/sdk/`: each build's small SDK files (`sdk.json`, `surface.json`, `build-data/`) and the
+  build id of each release seen; kept, so a mod's fit is told offline. What the published releases keep is in
+  [Retention](../../reference/sdk/01-release.md#retention).
+- `native/source/`: pinned source used to copy functions for mixins.
+- `native/tools/`: pinned horizon-mixins executables.
+- `native/prebuilt-build/`: mod, registry dependency, patch-library and linking outputs.
+- `native/internals-sync/`: separate metadata-only discovery source and check outputs.
+- `rust/` and `cargo/`: the pinned compiler and Cargo downloads.
+
+`native/build.log` records build diagnostics. `native-mods.json` in an installed build records its
+inputs and embedded mod inventory. Client builds share their base version's prepared resources,
+so retain that base while its native builds are installed. Dedicated server exports are standalone.
+
+Run `sunrise-launcher storage` to inspect disk use and cleanup eligibility. Storage keeps
+in-use versions and shared caches protected through runtime leases and publication locks. A busy
+or unverifiable unit is retained with a reason; it is not counted as freed. Cargo lock files also
+prevent unsafe cleanup. Do not delete managed cache directories while a build or game is running.

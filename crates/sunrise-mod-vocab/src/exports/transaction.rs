@@ -1,9 +1,8 @@
 pub use item::transaction::{
-    HostTransaction, Transaction, TransactionLifecycle, TransactionSeal, run_transaction,
+    HostTransaction, ScratchError, ScratchScopeError, TransactionContext, TransactionError,
+    TransactionLifecycle, TransactionScopeError, TransactionUnavailable,
 };
 mod __private {
-    /// A transaction's write and close tokens, built and read by the game's raw helpers.
-    pub use crate::item::transaction::{
-        seal_tokens, transaction_of, transaction_seal, transaction_token,
-    };
+    /// A journal frame's process-local identity, built and matched by the game's journal.
+    pub use crate::item::transaction::TransactionFrame;
 }

@@ -23,8 +23,9 @@ pub trait ItemEntitiesBackend {
         read: &mut dyn for<'a> FnMut(ItemStackView<'a>),
     ) -> Option<()>;
     /// Side: server.
-    /// The signed pickup delay; the legacy infinite sentinel reads as vanilla's
-    /// 32767. None also covers a stored value outside i32.
+    /// The signed pickup delay (`ItemEntity.pickupDelay`). `32767` is vanilla's
+    /// infinite-delay sentinel (`set_never_pickup`). `None` when the handle is
+    /// unavailable or outside a server.
     fn item_entity_pickup_delay(&self, item: ItemEntityRef) -> Option<i32>;
     /// Side: server.
     /// `ItemEntity.getAge`, including negative lifetime sentinels.
@@ -45,9 +46,9 @@ pub trait ItemEntitiesBackend {
 #[sunrise_mod_api_macros::host_area]
 pub trait ItemEntitiesBackendMut {
     /// Side: server.
-    /// Writes a nonempty complete stack using `ItemEntity.setItem`. Empty
-    /// stacks are refused: vanilla discards the item on its next tick. To
-    /// remove an item entity, use the removal handle. False also for an
+    /// Writes a stack using `ItemEntity.setItem`. Passing `None` or an air stack
+    /// stores an empty stack, which normal `ItemEntity.tick` discards on its next
+    /// tick (use the removal handle to discard immediately). `Ok(false)` for an
     /// unavailable item or outside a server.
     ///
     /// The new stack is visible immediately. This write joins the item's level's
@@ -58,7 +59,7 @@ pub trait ItemEntitiesBackendMut {
     fn item_entity_set_stack(
         &mut self,
         item: ItemEntityRef,
-        stack: ItemStack,
+        stack: Option<ItemStack>,
     ) -> Result<bool, StackWriteError>;
     /// Side: server.
     /// `ItemEntity.setPickUpDelay`. An open transaction restores the previous delay on abort.

@@ -23,13 +23,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-try:
-    from . import lab, oracle_harness, test_rust_parity as base, test_model_baking_parity as baking
-except ImportError:
-    import lab
-    import oracle_harness
-    import test_rust_parity as base
-    import test_model_baking_parity as baking
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, oracle_harness, test_rust_parity as base, test_model_baking_parity as baking
 
 FLOOR = -60  # top of the flat preset's grass layer + 1
 
@@ -667,10 +663,7 @@ ORACLE = 'dev.sunriselab.parity.VanillaMobAiOracle'
 
 def writer_filter():
     """A JFR method-trace filter: the trace keys' setters and the oracle's tick mark."""
-    try:
-        from . import port_ledger
-    except ImportError:
-        import port_ledger
+    from tools import port_ledger
     setters = {name for _, names in port_ledger.TRACE_FIELDS.values() for name in names}
     methods = sorted(f"{PACKAGES[c]}.{c}::{m}" for c, _, m in (n.partition('.') for n in setters) if c in PACKAGES)
     return ';'.join(methods + [f'{ORACLE}::tickMark'])
@@ -710,10 +703,7 @@ def ledger_blame(scenario_lines, writers=None):
     Rust ports (tools/port_ledger.py blame), when a ledger has been built (`port_ledger.py build`); else nothing.
     With `writers` (--writers), those vanilla actually ran that tick come first."""
     try:
-        try:
-            from . import port_ledger
-        except ImportError:
-            import port_ledger
+        from tools import port_ledger
         led = port_ledger.load() if port_ledger.LEDGER.exists() else None
     except (OSError, ValueError, SystemExit):
         led = None

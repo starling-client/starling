@@ -211,8 +211,8 @@ as its pages turn round, lights both arrows of a collapsed strip.
 
 ### Where it is used
 
-The settings shell's page list ([The page list](#the-page-list)) collapses into it when its pages
-don't fit: Shaders' pack screens in a short view (four fit at 427x240 GUI px: an 854x480 window at
+The settings shell's page list ([The page list](#the-page-list)) collapses into it when a list with
+section lines doesn't fit: Shaders' pack screens in a short view (four fit at 427x240 GUI px: an 854x480 window at
 GUI scale 2, or 720p at its automatic scale; packs such as BSL have about ten).
 
 Tests: `hud_kit::tabs` (centring, cutting, dimmed ends, the pip window; a row's order, fades,
@@ -419,6 +419,14 @@ Polytone config entries, a page per section, with Undo from a snapshot taken whe
    not `options_ui.rs`.
 7. **Delete** the screen's own drawing, scrolling, focus, search and click code.
 
+A screen can host other screens' rows rather than describe them again, as Sunrise Settings
+(`sunrise_ui.rs`) hosts the graphics screen's, the extras' and the pack list's: it keeps those screens
+as fields, takes their `sheets` and re-tags each `Group` and `Row` with its own row id (`Group::map_id`,
+`Row::map_id`), and hands each press, slide and wheel step back to the screen the row came from.
+`Screen::note_lines_on(page)` gives a page more description lines than the others (Gameplay keeps the
+extras' page's, `extras_ui::NOTE_LINES`). A `Group` with an empty name draws no title and takes no
+room: a page of one group shows its rows alone.
+
 What the old screen's tests checked moves to tests on the `Shell` of the new one: press a row with
 `click` at `point_at`, walk with `key`, and read `listed`, `row_labels`, `focused` and `changed`.
 
@@ -489,9 +497,19 @@ radial menu's editor does for a slot's action:
 A screen of two pages or more has a page list down the left, a page under the last. A `Sheet` with
 `listed: false` isn't in it (it opens from a link, and the list lights the page the link was on), and
 one with a `heading` has a line over it that starts a section, as Shaders names the picked pack over its
-screens. When the pages and lines don't fit above the foot (`Columns::page_room`), the last section
-collapses into one `hud_kit::tabs::collapsed` row ([Tabs](#tabs)); pages that fit look as they always
-did. In the row:
+screens. When the pages don't fit above the foot (`Columns::page_room`):
+
+- A list with no section lines (Sunrise Settings) scrolls: the pages in view stay tabs one under another,
+  a scroller beside them shows there is more, the wheel over them moves them a page at a time, and a
+  page out of view has no place on the screen (no click, no target). The keys go on past either end of
+  the view in list order (Down or Tab from the last page in view, Up or Shift Tab from the first),
+  scrolling the next page in; a controller's focus reaching either end scrolls the next one in
+  (`Hosted::reveal`), and its bumpers walk every page in list order, wrapping (`Hosted::step_page`);
+  a page opened out of view is scrolled in. The wheel taking the focused page out of view hands the
+  focus to the nearest page in view (while searching, one with matches). Every step passes over
+  pages with no matches while searching.
+- A list with section lines collapses its last section into one `hud_kit::tabs::collapsed` row
+  ([Tabs](#tabs)); pages that fit look as they always did. In the row:
 
 - Left of the name picks the page before, the name the one shown, right of it the page after. While
   searching, before and after are the nearest pages with matches; an arrow with none is dimmed and picks

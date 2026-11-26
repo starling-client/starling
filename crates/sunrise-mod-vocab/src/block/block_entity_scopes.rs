@@ -11,7 +11,7 @@ use crate::{
 pub struct BlockEntityReadView<'a> {
     subject: BlockEntityRef,
     state: BlockState,
-    data: &'a dyn ResidentBlockEntityReadOnly,
+    data: BlockEntityDataView<'a>,
 }
 
 impl<'a> BlockEntityReadView<'a> {
@@ -25,7 +25,7 @@ impl<'a> BlockEntityReadView<'a> {
         Self {
             subject,
             state,
-            data,
+            data: BlockEntityDataView::new(data),
         }
     }
 
@@ -47,7 +47,7 @@ impl<'a> BlockEntityReadView<'a> {
     }
     /// The entity's resolved block-entity type key, if registered.
     pub fn kind(&self) -> Option<BlockEntityTypeKey> {
-        crate::content::registry_keys::block_entity_type_key(self.data.id())
+        self.data.kind()
     }
     /// A generation-bound handle to keep after this call.
     pub fn handle(&self) -> BlockEntityRef {
@@ -70,18 +70,112 @@ impl<'a> BlockEntityReadView<'a> {
     }
     /// Borrow a modeled stack. `None` for an empty, opaque or undeclared slot.
     pub fn item_slot(&self, slot: u32) -> Option<BlockEntityReadStackView<'_>> {
-        let (item, count) = self.data.item_slot(slot)?;
-        Some(BlockEntityReadStackView {
-            data: self.data,
-            slot,
-            item,
-            count,
-        })
+        self.data.item_slot(slot)
     }
     /// Materialize one modeled stack, including components. `None` for an empty,
     /// opaque or undeclared slot, or one that cannot be represented in the mod API.
     pub fn copy_item_slot(&self, slot: u32) -> Option<ItemStack> {
         self.data.copy_item_slot(slot)
+    }
+}
+
+/// Borrowed data of the actual mod block entity used by a render, sync or lifecycle callback.
+/// It may be detached (for example, supplied by a screen scene or evicted with a chunk),
+/// so the view does not imply that there is a live world handle to it. A mod lends its own
+/// saved data as a view through [`DetachedBlockEntityData::view`].
+// exhaustive: the engine or a DetachedBlockEntityData constructs a view.
+// no wire: borrowed subject data is local to the callback.
+#[derive(Clone, Copy)]
+pub struct BlockEntityDataView<'a>(&'a dyn ResidentBlockEntityReadOnly);
+
+/// A block entity's saved data that a mod holds itself, not in any level: the type id and the
+/// compound, as a structure template or a moving contraption carries them (vanilla builds such a
+/// block entity with `EntityBlock.newBlockEntity` and `BlockEntity.loadWithComponents` to draw
+/// it). [`view`](Self::view) lends it to code that takes a [`BlockEntityDataView`], the type
+/// the engine's block-entity callbacks receive.
+///
+/// The compound is read as it is: [`BlockEntityDataView::nbt`] is it, `Items` included, and
+/// the view models no item slots or menu data slots (`item_slots` is 0, `data_slots` empty).
+// exhaustive: its fields are private, so mods build it with new.
+// no wire: a borrowed view of the mod's own data, not a payload.
+#[derive(Clone, Copy)]
+pub struct DetachedBlockEntityData<'a> {
+    id: &'a str,
+    nbt: &'a Compound,
+}
+
+impl<'a> DetachedBlockEntityData<'a> {
+    /// Lend `nbt` as the saved data of a block entity of type `id` (`mymod:press`).
+    pub fn new(id: &'a str, nbt: &'a Compound) -> Self {
+        Self { id, nbt }
+    }
+    /// This data as a [`BlockEntityDataView`].
+    pub fn view(&self) -> BlockEntityDataView<'_> {
+        BlockEntityDataView(self)
+    }
+}
+
+impl ResidentBlockEntityReadOnly for DetachedBlockEntityData<'_> {
+    fn id(&self) -> &str {
+        self.id
+    }
+    fn data_slots(&self) -> &[i32] {
+        &[]
+    }
+    fn nbt(&self) -> &Compound {
+        self.nbt
+    }
+    fn item_slots(&self) -> usize {
+        0
+    }
+    fn item_slot(&self, _: u32) -> Option<(&str, u32)> {
+        None
+    }
+    fn copy_item_slot(&self, _: u32) -> Option<ItemStack> {
+        None
+    }
+}
+
+impl<'a> BlockEntityDataView<'a> {
+    // hidden: the engine lends the resident row or the actual detached data.
+    #[doc(hidden)]
+    pub fn new(data: &'a dyn ResidentBlockEntityReadOnly) -> Self {
+        Self(data)
+    }
+
+    /// The entity's immutable type id.
+    pub fn id(&self) -> &str {
+        self.0.id()
+    }
+    /// The entity's resolved block-entity type key, if registered.
+    pub fn kind(&self) -> Option<BlockEntityTypeKey> {
+        crate::content::registry_keys::block_entity_type_key(self.id())
+    }
+    /// The transient integer slots written for menus.
+    pub fn data_slots(&self) -> &[i32] {
+        self.0.data_slots()
+    }
+    /// The saved or synchronized compound. Modeled item slots are separate.
+    pub fn nbt(&self) -> &Compound {
+        self.0.nbt()
+    }
+    /// The number of item slots exposed by this view, including empty slots.
+    pub fn item_slots(&self) -> usize {
+        self.0.item_slots()
+    }
+    /// Borrow one modeled stack without projecting its components.
+    pub fn item_slot(&self, slot: u32) -> Option<BlockEntityReadStackView<'_>> {
+        let (item, count) = self.0.item_slot(slot)?;
+        Some(BlockEntityReadStackView {
+            data: self.0,
+            slot,
+            item,
+            count,
+        })
+    }
+    /// Project one slot into a complete owned stack. A failure affects only this slot.
+    pub fn copy_item_slot(&self, slot: u32) -> Option<ItemStack> {
+        self.0.copy_item_slot(slot)
     }
 }
 
@@ -262,8 +356,8 @@ impl BlockEntitySideScope<'_> {
     }
 }
 
-/// Engine backing for a read-only resident mod block entity view.
-// hidden: the engine owns row reads; listeners use BlockEntityReadView.
+/// Engine backing for a read-only mod block entity view.
+// hidden: the engine owns row reads; listeners use BlockEntityReadView or BlockEntityDataView.
 #[doc(hidden)]
 pub trait ResidentBlockEntityReadOnly {
     fn id(&self) -> &str;
@@ -298,4 +392,28 @@ pub trait BlockEntityClientReadAccess {
 pub trait BlockEntityLevelReadAccess {
     fn with_view(&self, f: &mut dyn FnMut(BlockEntityReadView<'_>));
     fn host(&self) -> &dyn LevelHost;
+}
+
+#[cfg(test)]
+mod detached_data_tests {
+    use super::*;
+    use sunrise_core::nbt::Tag;
+
+    /// A mod's own saved data lent as a view reads back its id and compound, `Items` and all,
+    /// with no modeled item or data slots.
+    #[test]
+    fn a_detached_compound_reads_as_a_block_entity_data_view() {
+        let mut nbt = Compound::new();
+        nbt.insert("Progress".into(), Tag::Int(7));
+        nbt.insert("Items".into(), Tag::List(Vec::new()));
+        let data = DetachedBlockEntityData::new("mymod:press", &nbt);
+        let view = data.view();
+        assert_eq!(view.id(), "mymod:press");
+        assert!(std::ptr::eq(view.nbt(), &nbt));
+        assert_eq!(view.nbt().get(&"Progress".into()), Some(&Tag::Int(7)));
+        assert!(view.nbt().contains_key(&"Items".into()));
+        assert_eq!(view.item_slots(), 0);
+        assert!(view.item_slot(0).is_none() && view.copy_item_slot(0).is_none());
+        assert!(view.data_slots().is_empty());
+    }
 }

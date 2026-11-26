@@ -4,8 +4,8 @@ use super::creatures::SpawnSite;
 use super::native_entity_refs::tests::with_game;
 use super::native_guest_turn_tests::with_guests;
 use mod_api::{
-    self, Flow, Hooks, HostSide, HurtEnemyEvent, ItemPart, OnEntitySwingEvent,
-    OnLeftClickEntityEvent, Registrar, RegistrationContext, ServerHost,
+    self, Flow, Hooks, HostSide, HostTransaction, HurtEnemyEvent, InventoryTickEvent, ItemPart,
+    OnEntitySwingEvent, OnLeftClickEntityEvent, Registrar, RegistrationContext, ServerHost,
 };
 use std::sync::{Arc, Mutex};
 use sunrise_client::{
@@ -31,7 +31,7 @@ struct Heard {
 #[derive(Clone, Default)]
 struct Probe(Arc<Mutex<Heard>>);
 
-fn item(stack: &mod_api::ItemStack) -> String {
+fn item(stack: &mod_api::ItemStackView<'_>) -> String {
     mod_api::__private::item_key_id(stack.item())
         .unwrap()
         .to_owned()
@@ -58,7 +58,7 @@ impl ItemPart for Probe {
             event.player,
             event.entity,
             event.kind.to_owned(),
-            item(event.stack),
+            item(&event.stack),
         ));
         if heard.cancel_attack {
             Flow::Cancel
@@ -73,11 +73,31 @@ impl ItemPart for Probe {
             .hits
             .push((event.entity, event.kind.to_owned()));
     }
+    fn inventory_tick(&self, host: &mut dyn ServerHost, event: &mut InventoryTickEvent<'_>) {
+        if event.selected
+            && mod_api::__private::item_key_id(event.item) == Some("minecraft:iron_sword")
+        {
+            let before = event
+                .place
+                .with_stack(host, |stack| stack.damage())
+                .unwrap();
+            host.transaction(|host, tx| {
+                event
+                    .place
+                    .edit(host, tx, |stack| stack.set_damage(before + 1))
+            })
+            .unwrap();
+            assert_eq!(
+                event.place.with_stack(host, |stack| stack.damage()),
+                Some(before + 1)
+            );
+        }
+    }
     fn on_entity_swing(&self, _: HostSide<'_>, event: &mut OnEntitySwingEvent<'_>) -> Flow {
         let mut heard = self.0.lock().unwrap();
         heard
             .swings
-            .push((event.entity, event.hand, item(event.stack)));
+            .push((event.entity, event.hand, item(&event.stack)));
         if heard.cancel_swing {
             Flow::Cancel
         } else {
@@ -92,8 +112,10 @@ fn with_probe(probe: &Probe, test: impl FnOnce()) {
         Box::new(probe.clone()),
     )]
     .into();
-    crate::game::api_values::install_parts(&mods).unwrap();
-    mod_platform::testing::with_mods(mods, test);
+    mod_platform::testing::with_mods(mods.clone(), || {
+        crate::game::api_values::install_parts(&mods).unwrap();
+        test();
+    });
 }
 
 /// Guest 12's held stack.
@@ -165,13 +187,31 @@ fn a_part_cancels_the_blow_before_it_lands() {
             // The Part lets the blow through: the hit lands, `hurt_enemy` hears it
             // and the sword wears.
             probe.0.lock().unwrap().cancel_attack = false;
+            let mob = game.mobs.iter_mut().find(|mob| mob.id == zombie).unwrap();
+            Arc::make_mut(&mut mob.kind).id = "attack_probe:sparring_mob".into();
             hold(game, "minecraft:iron_sword");
             assert!(game.guest_attack(12, gi, zombie as i32).unwrap());
             assert!(health(game, zombie) < full);
             assert_eq!(held(game).damage, 1);
             let heard = probe.0.lock().unwrap();
             assert_eq!(heard.attacks.len(), 2);
-            assert_eq!(heard.hits, [(zombie, "minecraft:zombie".to_owned())]);
+            assert_eq!(
+                heard.hits,
+                [(zombie, "attack_probe:sparring_mob".to_owned())]
+            );
+        });
+    });
+}
+
+#[test]
+#[ignore = "daily"]
+fn inventory_tick_edits_the_acting_guests_live_slot() {
+    with_probe(&Probe::default(), || {
+        with_guests(|game| {
+            hold(game, "minecraft:iron_sword");
+            game.as_guest(12, |game| game.native_inventory_ticks())
+                .unwrap();
+            assert_eq!(held(game).damage, 1);
         });
     });
 }

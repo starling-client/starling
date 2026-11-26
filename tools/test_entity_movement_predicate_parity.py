@@ -2,10 +2,9 @@
 import argparse,hashlib,json,sys
 from pathlib import Path
 PARITY_MANUAL = "a proof run by hand: --work-dir DIR --reference-only for the Java side, then --work-dir DIR2 --reference-dir DIR for the native one"  # not a harness: tools/parity.py leaves it out
-try:
- from . import test_command_exec_parity as driver
-except ImportError:
- import test_command_exec_parity as driver
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_command_exec_parity as driver
 ACTOR='000002a1-0000-0000-0000-000000000001'
 def predicates():
  def entity(p):return {'type':'minecraft:entity_properties','entity':'this','predicate':p}

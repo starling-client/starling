@@ -1,5 +1,4 @@
 //! The `biome_colors` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0111
 
 pub trait Hooks {
     /// Change the colours of `biome` (`minecraft:plains`) on this client: the

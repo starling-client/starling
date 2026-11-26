@@ -1,5 +1,4 @@
 //! The `difficulty_changed` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0193
 
 pub trait Hooks {
     /// The server's difficulty changed, from `from` to `to` (`peaceful`,

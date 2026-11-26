@@ -23,13 +23,13 @@ ChatAbilities.Builder.build	inline	crates/sunrise-client-render/src/chat.rs::Cha
 ChatListener.tick	port	crates/sunrise-client/src/game/network/remote/chat_queue.rs::Game::tick_chat_queue	the queue runs down with the ticks and pauses with the game
 ChatListener.setMessageDelay	port	crates/sunrise-client/src/game/network/remote/chat_queue.rs::Game::chat_delay_ms	Chat Delay in milliseconds, as Java truncates it, read when a chat line arrives
 ChatListener.flushQueue	port	crates/sunrise-client/src/game/network/remote/chat_queue.rs::Game::flush_chat_queue	each message through accept_chat, so it counts as processed
-ChatListener.acceptNextDelayedMessage	port	crates/sunrise-client/src/game/network/remote/chat_queue.rs::Game::accept_next_delayed_message	the chat.queue row's click shows one held message, without moving the delay timer
-ChatListener.removeFromDelayedMessageQueue	inline	crates/sunrise-client/src/game/network/remote/chat.rs::Game::handle_delete_chat
-ChatListener.handleMessage	port	crates/sunrise-client/src/game/network/remote/mod.rs::handle_player_chat	a line with a delay goes into remote.chat_queue instead of the chat
-ChatListener.handlePlayerChatMessage	port	crates/sunrise-client/src/game/network/remote/packets_player.rs::Game::apply_player_chat_packet	gap: player: no Only Show Secure Chat filter, no server filter-mask text, no block or friend-only hiding of chat lines
-ChatListener.handleChatMessageError	port	crates/sunrise-client/src/game/network/remote/chat.rs::Game::handle_chat_message_error	the red italic chat.validation_error in the message's chat type, tagged chatError; gap: minor: a blocked or friends-only sender is not skipped (no social list), no narration, no markMessageAsProcessed
-ChatListener.handleDisguisedChatMessage	port	crates/sunrise-client/src/game/network/remote/packets_player.rs::Game::apply_disguised_chat_packet	gap: minor: no narration and no chat log entry
-ChatListener.showMessageToPlayer	port	crates/sunrise-client/src/game/network/remote/mod.rs::Game::chat_line	gap: player: trust, block, friend-only and secure-only checks are not run before showing
+ChatListener.acceptNextDelayedMessage	port	crates/sunrise-client/src/game/network/remote/chat_queue.rs::Game::accept_next_delayed_message	the chat.queue row's click accepts one held message before the delay elapses
+ChatListener.removeFromDelayedMessageQueue	port	crates/sunrise-client/src/game/network/remote/chat_queue.rs::Remote::remove_queued_chat	a valid queued signature is removed before presentation or acknowledgement
+ChatListener.handleMessage	port	crates/sunrise-client/src/game/network/remote/chat_queue.rs::Game::enqueue_chat	a line with a delay goes into remote.chat_queue instead of the chat
+ChatListener.handlePlayerChatMessage	port	crates/sunrise-client/src/game/network/remote/packets_player.rs::Game::apply_player_chat_packet	the queue keeps the receipt-time decoration, trust and Only Show Secure Chat setting
+ChatListener.handleChatMessageError	port	crates/sunrise-client/src/game/network/remote/chat.rs::Game::handle_chat_message_error	validation errors acknowledge the invalid signature at acceptance, then skip hidden senders or show and narrate chat.validation_error with chatError; gap: minor: no friends-only restriction
+ChatListener.handleDisguisedChatMessage	port	crates/sunrise-client/src/game/network/remote/packets_player.rs::Game::apply_disguised_chat_packet	disguised chat shows and narrates as player-channel chat, with the system tag; gap: minor: no reporting log
+ChatListener.showMessageToPlayer	port	crates/sunrise-client/src/game/network/remote/chat.rs::Game::show_queued_chat	trust and secure-only decision from receipt, hiding and filter-mask checks at acceptance; gap: minor: no friends-only restriction
 ChatListener.evaluateTrustLevel	port	crates/sunrise-client/src/game/network/remote/chat.rs::Game::chat_trust
 ChatListener.logPlayerMessage	skip:service		feeds the chat log that chat reports read
 ChatListener.logSystemMessage	skip:service		feeds the chat log that chat reports read
@@ -43,8 +43,9 @@ ChatLog.lookup	skip:service		chat log for chat reports
 ChatTrustLevel.evaluate	port	crates/sunrise-client/src/game/network/remote/chat.rs::Game::chat_trust	secure, modified (signed content gone or the font changed) or not secure (unsigned or expired)
 ChatTrustLevel.isModified	inline	crates/sunrise-client/src/game/network/remote/chat.rs::Game::chat_trust	the signed content is not in the line, or the replacement uses another font
 ChatTrustLevel.containsModifiedStyle	inline	crates/sunrise-client/src/game/network/remote/chat.rs::Game::chat_trust	the font check over the replacement component
-ChatTrustLevel.createTag	port	crates/sunrise-client/src/game/network/remote/chat.rs::ChatTrust::tag	secure has no tag; modified keeps the signed content, not secure and error have theirs
+ChatTrustLevel.createTag	port	crates/sunrise-client/src/game/network/remote/chat.rs::ChatTrust::tag	secure has no tag; modified keeps the signed content; not secure has its own tag
 GuiMessage.splitLines	port	crates/sunrise-client-render/src/chat.rs::Chat::add_lines	gap: minor: no width reserved for a tag icon; Sunrise draws no icon tags
+GuiMessageTag.system	port	crates/sunrise-client-render/src/chat.rs::Tag::system	the system tooltip for disguised chat and deleted markers
 GuiMessageTag.chatModified	port	crates/sunrise-client-render/src/chat.rs::Tag::modified	the modified tooltip with the original content in grey
 GuiMessageTag.Icon.extractRenderState	port	crates/sunrise-client-render/src/chat.rs::Chat::focused_tags	the chat_modified icon is drawn at the end of a message while chat is focused
 LoggedChatMessage.Player.toContentComponent	skip:service		chat report view of a logged line

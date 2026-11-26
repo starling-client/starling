@@ -3,6 +3,7 @@
 //!
 //! ```toml
 //! version = 1
+//! handle = "handle:SomeRef::action" # optional: include this version in the handle's contract hash
 //! doc = "What the engine promises, stated so that a test could check it."
 //! tests = ["crates/sunrise-client/src/some_tests.rs::the_test_that_pins_it"]
 //! ```
@@ -11,7 +12,8 @@
 //! mistyped key, a file name that is not an id, or missing or malformed test references, each
 //! with a typed [`BehaviourError`] that names the declaration. A separate test validates the
 //! references against the source tree; export does not open the proof files.
-use mod_surface::{Behaviour, BehaviourContract};
+use mod_surface::{Behaviour, BehaviourContract, Function, contract_hash};
+use std::collections::BTreeMap;
 use std::path::{Component, Path};
 
 const DIRECTORY: &str = "crates/sunrise-mod-vocab/behaviours";
@@ -21,6 +23,7 @@ struct Declaration {
     name: String,
     doc: String,
     contract: BehaviourContract,
+    handle: Option<String>,
     tests: Vec<Proof>,
 }
 
@@ -52,6 +55,8 @@ pub enum BehaviourError {
     NoTests { file: String },
     /// A test that is not `<repo-relative path>::<Rust function name>`.
     BadTest { file: String, test: String },
+    /// `handle` does not name an exported inherent item.
+    UnknownHandle { file: String, handle: String },
 }
 
 impl std::fmt::Display for BehaviourError {
@@ -61,7 +66,7 @@ impl std::fmt::Display for BehaviourError {
             Self::Toml { file, error } => write!(f, "behaviour {file} is not TOML: {error}"),
             Self::UnknownKey { file, key } => write!(
                 f,
-                "behaviour {file} has the unknown key `{key}` (a behaviour has `version`, `doc` and `tests`)"
+                "behaviour {file} has the unknown key `{key}` (a behaviour has `version`, `doc`, `tests` and optional `handle`)"
             ),
             Self::Missing { file, key } => write!(f, "behaviour {file} has no `{key}`"),
             Self::WrongType {
@@ -78,6 +83,12 @@ impl std::fmt::Display for BehaviourError {
                 f,
                 "behaviour {file}: test `{test}` must be `<repo-relative path>::<Rust function name>`"
             ),
+            Self::UnknownHandle { file, handle } => {
+                write!(
+                    f,
+                    "behaviour {file}: `{handle}` is not an exported handle id"
+                )
+            }
         }
     }
 }
@@ -102,7 +113,7 @@ fn parse(file: &str, text: &str) -> Result<Declaration, BehaviourError> {
         })?;
     if let Some(key) = table
         .keys()
-        .find(|k| !["version", "doc", "tests"].contains(&k.as_str()))
+        .find(|k| !["version", "doc", "tests", "handle"].contains(&k.as_str()))
     {
         return Err(BehaviourError::UnknownKey {
             file: file.into(),
@@ -129,6 +140,15 @@ fn parse(file: &str, text: &str) -> Result<Declaration, BehaviourError> {
         .as_str()
         .ok_or_else(|| wrong("doc", "text"))?
         .to_owned();
+    let handle = table
+        .get("handle")
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_owned)
+                .ok_or_else(|| wrong("handle", "an exported handle id"))
+        })
+        .transpose()?;
     let references = get("tests")?
         .as_array()
         .ok_or_else(|| wrong("tests", "a list of tests"))?;
@@ -163,26 +183,44 @@ fn parse(file: &str, text: &str) -> Result<Declaration, BehaviourError> {
         name: name.into(),
         doc,
         contract: BehaviourContract { version },
+        handle,
         tests,
     })
 }
 
 /// Every behaviour of the vocabulary by file name; none when the folder is absent.
-pub fn read(root: &Path) -> Result<Vec<Behaviour>, BehaviourError> {
-    Ok(declarations(&root.join(DIRECTORY))?
-        .into_iter()
-        .map(|decl| {
-            Behaviour::new(
-                format!("behaviour:{}", decl.name),
-                decl.doc,
-                decl.tests
-                    .into_iter()
-                    .map(|proof| format!("{}::{}", proof.path, proof.function))
-                    .collect(),
-                decl.contract,
-            )
-        })
-        .collect())
+/// A behaviour tied to a handle also seals its version into that handle's contract.
+pub(crate) fn read(
+    root: &Path,
+    handles: &mut BTreeMap<String, Function>,
+) -> Result<Vec<Behaviour>, BehaviourError> {
+    let mut behaviours = Vec::new();
+    for decl in declarations(&root.join(DIRECTORY))? {
+        let id = format!("behaviour:{}", decl.name);
+        if let Some(handle) = decl.handle {
+            let record = handles
+                .get_mut(&handle)
+                .ok_or_else(|| BehaviourError::UnknownHandle {
+                    file: format!("{}.toml", decl.name),
+                    handle,
+                })?;
+            record
+                .contract
+                .behaviour_versions
+                .insert(id.clone(), decl.contract.version);
+            record.hash = contract_hash(&record.contract);
+        }
+        behaviours.push(Behaviour::new(
+            id,
+            decl.doc,
+            decl.tests
+                .into_iter()
+                .map(|proof| format!("{}::{}", proof.path, proof.function))
+                .collect(),
+            decl.contract,
+        ));
+    }
+    Ok(behaviours)
 }
 
 fn declarations(dir: &Path) -> Result<Vec<Declaration>, BehaviourError> {
@@ -417,14 +455,15 @@ mod tests {
     fn export_keeps_the_proof_links_without_reading_the_tree() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        assert!(read(root).unwrap().is_empty());
+        let mut handles = BTreeMap::new();
+        assert!(read(root, &mut handles).unwrap().is_empty());
 
         let folder = root.join(DIRECTORY);
         std::fs::create_dir_all(&folder).unwrap();
         std::fs::write(folder.join("zeta.toml"), GOOD).unwrap();
         std::fs::write(folder.join("alpha.toml"), GOOD).unwrap();
         std::fs::write(folder.join("README.md"), "not a behaviour").unwrap();
-        let behaviours = read(root).unwrap();
+        let behaviours = read(root, &mut handles).unwrap();
         let ids: Vec<_> = behaviours.iter().map(|b| b.id.as_str()).collect();
         assert_eq!(ids, ["behaviour:alpha", "behaviour:zeta"]);
         assert_eq!(behaviours[0].contract.version, 2);

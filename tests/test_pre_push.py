@@ -24,6 +24,7 @@ class PrePushTests(unittest.TestCase):
         (self.repo / "tools/ci").mkdir()
         shutil.copyfile(ROOT / "tools/ci/check_repository_hygiene.py",
                         self.repo / "tools/ci/check_repository_hygiene.py")
+        shutil.copyfile(ROOT / "tools/ci/vendored_yaml.py", self.repo / "tools/ci/vendored_yaml.py")
         shutil.copytree(ROOT / "tools/ci/vendor", self.repo / "tools/ci/vendor")
         (self.repo / ".gitignore").write_text("/.local/\n")
         (self.repo / "README.md").write_text("Public fixture\n")

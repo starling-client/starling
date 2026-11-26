@@ -1,19 +1,75 @@
-//! Add an exact, original Java jar as a passive asset/data source.
+//! Add an exact, original Java jar as a passive asset/data source, from a local file or from
+//! Modrinth by version URL or `<project> <version>`.
 use std::{
     collections::HashSet,
     fs,
-    io::{self, Write},
+    io::{self, Read, Write},
     path::{Path, PathBuf},
 };
+use sunrise_jar_fetch::{Http, Modrinth, VersionRef, hash_reader};
 use sunrise_mod_package::{
     Manifest,
     manifest::{JarRef, MANIFEST, collect_jar_requirements},
     selection::{LaunchArguments, data_dir_with},
 };
-use sunrise_port_pack::fetch::hash_reader;
+
+const USER_AGENT: &str = "cargo-sunrise-mod";
+
+/// Modrinth endpoints from `sunrise-addresses`.
+pub(crate) const MODRINTH: Modrinth<'static> = Modrinth {
+    api: sunrise_addresses::MODRINTH_API,
+    cdn_host: sunrise_addresses::MODRINTH_CDN_HOST,
+};
+
+/// `sunrise-jar-fetch` HTTP transport backed by `sunrise-proxy`.
+pub(crate) struct ProxyHttp;
+
+impl Http for ProxyHttp {
+    fn get(&self, url: &str) -> Result<Option<Box<dyn Read>>, String> {
+        let requested = url::Url::parse(url).map_err(|e| format!("{url}: {e}"))?;
+        let host = requested
+            .host_str()
+            .ok_or_else(|| format!("{url}: missing host"))?;
+        let check = |hop: &url::Url| {
+            if hop.scheme() != "https"
+                || !hop.host_str().is_some_and(|h| h.eq_ignore_ascii_case(host))
+                || hop.port().is_some()
+                || !hop.username().is_empty()
+                || hop.password().is_some()
+            {
+                return Err(format!("refused redirect outside https://{host}"));
+            }
+            Ok(())
+        };
+        match sunrise_proxy::get(url, &[("User-Agent", USER_AGENT)], Some(&check)) {
+            Ok(response) => {
+                if response.status() >= 300 {
+                    return Err(format!("{url}: HTTP {}", response.status()));
+                }
+                Ok(Some(response.into_reader()))
+            }
+            Err(e) if e.status() == Some(404) => Ok(None),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    fn post_json(&self, url: &str, body: &str) -> Result<Box<dyn Read>, String> {
+        let response = sunrise_proxy::agent("jar-fetch-post", url, |builder| builder.redirects(0))
+            .map_err(|e| format!("{url}: {e}"))?
+            .post(url)
+            .set("User-Agent", USER_AGENT)
+            .set("Content-Type", "application/json")
+            .send_string(body)
+            .map_err(|e| format!("{url}: {e}"))?;
+        if response.status() >= 300 {
+            return Err(format!("{url}: HTTP {}", response.status()));
+        }
+        Ok(response.into_reader())
+    }
+}
 
 /// The store the game would use with neither the tool nor a `--home` argument.
-fn default_store() -> PathBuf {
+pub(crate) fn default_store() -> PathBuf {
     std::env::var_os("SUNRISE_HOME")
         .filter(|home| !home.is_empty())
         .map(PathBuf::from)
@@ -56,33 +112,89 @@ fn stage_dir(project: &Path, relative: &Path) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-/// Stage independent snapshots of the project's exact originals. Return the home for the game.
-pub(crate) fn stage_for_run(
-    manifest: &Manifest,
+pub(crate) fn launch_arguments(project: &Path, args: &[String]) -> Result<LaunchArguments, String> {
+    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+    let home = project.join(crate::RUN_DIR).join("home");
+    LaunchArguments::parse(args.iter().cloned(), &cwd, &home, None).map_err(|e| e.to_string())
+}
+
+/// Stage independent snapshots of every selected package's exact originals.
+/// Checks, before a build, that every original jar `manifests` list is in the store with its
+/// SHA-512, so `run` fails at once, with the message staging gives, rather than after the native
+/// compile. Staging still checks every jar, those of libraries the build adds included.
+pub(crate) fn check_for_run<'a>(
+    manifests: impl IntoIterator<Item = &'a Manifest>,
+    source: Option<&Path>,
+) -> Result<(), String> {
+    let requirements = collect_jar_requirements(
+        manifests
+            .into_iter()
+            .map(|manifest| (manifest.id.as_str(), manifest.jar.as_slice())),
+    )
+    .map_err(|e| e.to_string())?;
+    let source = source.map_or_else(default_store, Path::to_path_buf);
+    for requirement in &requirements {
+        let path = requirement.jar.cache_path(&source);
+        let unavailable =
+            |why: &str| jar_unavailable(&requirement.owners, &requirement.jar, &path, why);
+        let original = dunce::canonicalize(&path).map_err(|e| unavailable(&e.to_string()))?;
+        if !fs::metadata(&original)
+            .map_err(|e| unavailable(&e.to_string()))?
+            .is_file()
+        {
+            return Err(unavailable("not a file"));
+        }
+        let file = fs::File::open(&original).map_err(|e| unavailable(&e.to_string()))?;
+        let hash = hash_reader::<sha2::Sha512>(file, io::sink())
+            .map_err(|e| unavailable(&e.to_string()))?;
+        if format!("{hash:x}") != requirement.jar.sha512() {
+            return Err(unavailable("the file does not match the listed SHA-512"));
+        }
+    }
+    Ok(())
+}
+
+/// Why `owners` cannot have their original `jar` at `path`, and how to add it.
+fn jar_unavailable(owners: &[String], jar: &JarRef, path: &Path, why: &str) -> String {
+    format!(
+        "{} needs Java jar {} {} (SHA-512 {}): {}: {why}\n\
+         Add the exact original with `cargo sunrise-mod use-jar <path>` and run without --jars, or use `cargo sunrise-mod run --jars <dir>` with `<sha512>.jar` files",
+        owners.join(", "),
+        jar.id(),
+        jar.version(),
+        jar.sha512(),
+        path.display()
+    )
+}
+
+pub(crate) fn stage_for_run<'a>(
+    manifests: impl IntoIterator<Item = &'a Manifest>,
     project: &Path,
     source: Option<&Path>,
-    game_args: &[String],
+    launch: &LaunchArguments,
 ) -> Result<Option<PathBuf>, String> {
-    if manifest.jar.is_empty() {
+    let requirements = collect_jar_requirements(
+        manifests
+            .into_iter()
+            .map(|manifest| (manifest.id.as_str(), manifest.jar.as_slice())),
+    )
+    .map_err(|e| e.to_string())?;
+    if requirements.is_empty() {
         return Ok(None);
     }
     let relative_home = Path::new(crate::RUN_DIR).join("home");
     let home = project.join(&relative_home);
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-    let launch = LaunchArguments::parse(game_args.iter().cloned(), &cwd, &home, None)
-        .map_err(|e| e.to_string())?;
     if launch.context.home != cwd.join(&home) {
         return Err(format!(
             "{} needs jars in its development home ({}); omit the game's --home and use `cargo sunrise-mod run --jars <dir>` to choose where to read originals",
-            manifest.id,
+            requirements[0].owners.join(", "),
             home.display()
         ));
     }
     let source = source.map_or_else(default_store, Path::to_path_buf);
     let dest = stage_dir(project, &relative_home.join("jars"))?;
     let source_in_stage = dunce::canonicalize(&source).is_ok_and(|dir| dir.starts_with(&dest));
-    let requirements = collect_jar_requirements([(manifest.id.as_str(), manifest.jar.as_slice())])
-        .map_err(|e| e.to_string())?;
     let wanted: HashSet<_> = requirements
         .iter()
         .map(|r| r.jar.cache_path(&dest))
@@ -117,17 +229,7 @@ pub(crate) fn stage_for_run(
     for requirement in requirements {
         let jar = requirement.jar;
         let path = jar.cache_path(&source);
-        let unavailable = |why: &str| {
-            format!(
-                "{} needs Java jar {} {} (SHA-512 {}): {}: {why}\n\
-                 Add the exact original with `cargo sunrise-mod use-jar <path>` and run without --jars, or use `cargo sunrise-mod run --jars <dir>` with `<sha512>.jar` files",
-                manifest.id,
-                jar.id(),
-                jar.version(),
-                jar.sha512(),
-                path.display()
-            )
-        };
+        let unavailable = |why: &str| jar_unavailable(&requirement.owners, &jar, &path, why);
         let original = dunce::canonicalize(&path).map_err(|e| unavailable(&e.to_string()))?;
         if source_in_stage || original.starts_with(&dest) {
             return Err(unavailable(
@@ -178,17 +280,53 @@ pub(crate) fn stage_for_run(
     Ok(Some(home))
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum UseJarSource<'a> {
+    Local(&'a Path),
+    ModrinthUrl(&'a str),
+    ModrinthVersion { project: &'a str, version: &'a str },
+}
+
+fn parse_use_jar_args(args: &[String]) -> Result<UseJarSource<'_>, String> {
+    match args {
+        [arg] if arg.starts_with("https://") => Ok(UseJarSource::ModrinthUrl(arg)),
+        [path] => Ok(UseJarSource::Local(Path::new(path))),
+        [project, version] => Ok(UseJarSource::ModrinthVersion { project, version }),
+        _ => Err(
+            "usage: cargo sunrise-mod use-jar <path | modrinth-url | <project> <version>>".into(),
+        ),
+    }
+}
+
+/// Adds an exact original Java jar to `sunrise-mod.toml` from a local file, a Modrinth version
+/// page URL, or a Modrinth `<project> <version>` pair, caching it in the local jar store.
 pub fn run(args: &[String]) -> Result<(), String> {
-    let [path] = args else {
-        return Err("usage: cargo sunrise-mod use-jar <path>".into());
-    };
+    let source = parse_use_jar_args(args)?;
     let manifest_path = Path::new(MANIFEST);
     let text = fs::read_to_string(manifest_path).map_err(|e| format!("{MANIFEST}: {e}"))?;
     let manifest = Manifest::parse(&text)?;
-    let path = Path::new(path);
-    let file = fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let store = default_store();
     fs::create_dir_all(&store).map_err(|e| format!("{}: {e}", store.display()))?;
+    let path = match source {
+        UseJarSource::Local(path) => path.to_path_buf(),
+        UseJarSource::ModrinthUrl(url) => {
+            let file = sunrise_jar_fetch::version_file(&ProxyHttp, MODRINTH, VersionRef::Url(url))?;
+            let cached = store.join(format!("{}.jar", file.sha512));
+            sunrise_jar_fetch::download(&ProxyHttp, MODRINTH, &file.url, &file.sha512, &cached)?;
+            cached
+        }
+        UseJarSource::ModrinthVersion { project, version } => {
+            let file = sunrise_jar_fetch::version_file(
+                &ProxyHttp,
+                MODRINTH,
+                VersionRef::ProjectVersion { project, version },
+            )?;
+            let cached = store.join(format!("{}.jar", file.sha512));
+            sunrise_jar_fetch::download(&ProxyHttp, MODRINTH, &file.url, &file.sha512, &cached)?;
+            cached
+        }
+    };
+    let file = fs::File::open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     let mut original =
         tempfile::NamedTempFile::new_in(&store).map_err(|e| format!("{}: {e}", store.display()))?;
     let hash = hash_reader::<sha2::Sha512>(file, &mut original)
@@ -274,6 +412,36 @@ mod tests {
         (manifest, source, original)
     }
 
+    fn stage(manifest: &Manifest, root: &Path, source: &Path) -> Result<Option<PathBuf>, String> {
+        stage_for_run(
+            [manifest],
+            root,
+            Some(source),
+            &launch_arguments(root, &[]).unwrap(),
+        )
+    }
+
+    #[test]
+    fn run_stages_originals_needed_only_by_a_library() {
+        let root = tempfile::tempdir().unwrap();
+        let (library, source, _) = fixture(root.path());
+        let mut project = library.clone();
+        project.id = "addon".into();
+        project.jar.clear();
+        let home = stage_for_run(
+            [&project, &library],
+            root.path(),
+            Some(&source),
+            &launch_arguments(root.path(), &[]).unwrap(),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            fs::read(library.jar[0].cache_path(&home.join("jars"))).unwrap(),
+            b"abc"
+        );
+    }
+
     #[test]
     fn run_stages_only_declared_originals_and_keeps_the_previous_stage_on_refusal() {
         let root = tempfile::tempdir().unwrap();
@@ -287,10 +455,7 @@ mod tests {
         let sentinel = jars.join("notes.jar");
         fs::write(&sentinel, b"keep me").unwrap();
 
-        assert_eq!(
-            stage_for_run(&manifest, root.path(), Some(&source), &[]).unwrap(),
-            Some(home)
-        );
+        assert_eq!(stage(&manifest, root.path(), &source).unwrap(), Some(home));
         let staged = manifest.jar[0].cache_path(&jars);
         assert_eq!(fs::read(&staged).unwrap(), b"abc");
         assert!(!stale.exists());
@@ -300,7 +465,7 @@ mod tests {
         assert_eq!(fs::read_dir(&source).unwrap().count(), 2);
 
         fs::remove_file(&original).unwrap();
-        let error = stage_for_run(&manifest, root.path(), Some(&source), &[]).unwrap_err();
+        let error = stage(&manifest, root.path(), &source).unwrap_err();
         for expected in [
             "garden",
             "original",
@@ -318,7 +483,7 @@ mod tests {
     fn run_reuses_verified_copies_and_an_original_cannot_change_them() {
         let root = tempfile::tempdir().unwrap();
         let (manifest, source, original) = fixture(root.path());
-        let stage = || stage_for_run(&manifest, root.path(), Some(&source), &[]);
+        let stage = || stage(&manifest, root.path(), &source);
         fs::write(&original, b"wrong").unwrap();
         assert!(stage().is_err());
         let jars = root.path().join(crate::RUN_DIR).join("home/jars");
@@ -368,10 +533,37 @@ mod tests {
             fs::create_dir_all(redirected.parent().unwrap()).unwrap();
             std::os::unix::fs::symlink(outside.path(), &redirected).unwrap();
 
-            assert!(stage_for_run(&manifest, project.path(), Some(&source), &[]).is_err());
+            assert!(stage(&manifest, project.path(), &source).is_err());
             assert_eq!(fs::read_link(&redirected).unwrap(), outside.path());
             assert_eq!(fs::read(&sentinel).unwrap(), b"player jar");
             assert_eq!(fs::read_dir(outside_jars).unwrap().count(), 1);
         }
+    }
+
+    #[test]
+    fn use_jar_parses_local_path_modrinth_url_and_project_version() {
+        let local = vec!["mods/bridges.jar".to_owned()];
+        assert_eq!(
+            parse_use_jar_args(&local).unwrap(),
+            UseJarSource::Local(Path::new("mods/bridges.jar"))
+        );
+
+        let url = vec!["https://modrinth.com/mod/macaws-bridges/version/3.0.0".to_owned()];
+        assert_eq!(
+            parse_use_jar_args(&url).unwrap(),
+            UseJarSource::ModrinthUrl("https://modrinth.com/mod/macaws-bridges/version/3.0.0")
+        );
+
+        let pair = vec!["macaws-bridges".to_owned(), "3.0.0".to_owned()];
+        assert_eq!(
+            parse_use_jar_args(&pair).unwrap(),
+            UseJarSource::ModrinthVersion {
+                project: "macaws-bridges",
+                version: "3.0.0",
+            }
+        );
+
+        assert!(parse_use_jar_args(&[]).is_err());
+        assert!(parse_use_jar_args(&["a".into(), "b".into(), "c".into()]).is_err());
     }
 }

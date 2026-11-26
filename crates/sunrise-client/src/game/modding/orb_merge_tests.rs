@@ -1,13 +1,16 @@
-//! The experience orb's saved form (docs: `entity_nbt::orb_to_nbt`) and the exact-total
-//! write boundary that keeps a merge's result reloadable.
-use crate::game::native_entity_refs::tests::with_game;
+//! The experience orb's saved form (docs: `entity_nbt::orb_to_nbt`) and live
+//! `ExperienceOrbRef` reads and writes.
+use crate::game::native_entity_refs::tests::{fixture_resident_column, with_game};
+use mod_api::ExperienceOrbWriteError;
 use sunrise_client::entities::ExperienceOrb;
 use sunrise_client::entity_nbt::{orb_to_nbt, orbs_from_nbt};
 use sunrise_core::geometry::Vec3;
+use sunrise_core::nbt::Tag;
 
 fn orb(id: u32, value: i32, count: u32) -> ExperienceOrb {
     let at = Vec3::new(0.5, 70.0, 0.5);
     ExperienceOrb {
+        size_answer: None,
         attachment_lifetime: Default::default(),
         fall_distance: 0.0,
         rotation: [0.0, 0.0],
@@ -29,8 +32,8 @@ fn orb(id: u32, value: i32, count: u32) -> ExperienceOrb {
     }
 }
 
-/// Every pair `set_experience_orb` accepts reloads unchanged: `Value` is a short and
-/// `Count` an int in the save.
+/// Values within `i16::MIN..=i16::MAX` and valid counts survive save and reload unchanged:
+/// `Value` is saved as a short and `Count` as an int.
 #[test]
 fn every_accepted_orb_value_and_count_survives_save_and_reload() {
     for (value, count) in [(11, 1), (32767, i32::MAX as u32), (-32768, 1)] {
@@ -39,21 +42,48 @@ fn every_accepted_orb_value_and_count_survives_save_and_reload() {
     }
 }
 
-/// A write outside the save's range is refused whole: no value changed, no count changed.
+/// Live `ExperienceOrbRef` writes accept full `i32` `value` and `age` (truncating to `(short)`
+/// only at NBT serialization, as vanilla's `ExperienceOrb.addAdditionalSaveData` does), while
+/// invalid counts (`0` or above `i32::MAX`) return `Err(ExperienceOrbWriteError::InvalidCount)`
+/// without mutating the orb.
 #[test]
 #[ignore = "daily"]
-fn set_experience_orb_refuses_a_write_a_save_cannot_hold() {
+fn experience_orb_ref_writes_live_ints_and_refuses_invalid_count() {
     with_game(|game| {
+        fixture_resident_column(&mut game.world, (0, 0));
         game.options.dedicated = Some(Vec::new());
         game.orbs.push(orb(7, 3, 2));
-        let dimension = game.dim.id().to_owned();
-        assert!(!game.set_experience_orb(&dimension, 7, Some(40_000), None, None));
-        assert!(!game.set_experience_orb(&dimension, 7, None, Some(i32::MAX as u32 + 1), None));
-        assert!(!game.set_experience_orb(&dimension, 7, None, Some(0), None));
-        // ExperienceOrb.age is an int.
-        assert!(!game.set_experience_orb(&dimension, 7, Some(11), None, Some(i32::MAX as u32 + 1)));
-        assert_eq!((game.orbs[0].value, game.orbs[0].count), (3, 2));
-        assert!(game.set_experience_orb(&dimension, 7, Some(11), Some(1), None));
+        let entity = game.entity(7).expect("live orb entity");
+        let orb_ref = game
+            .experience_orb(entity)
+            .expect("server orb lookup")
+            .expect("experience orb handle");
+
+        assert_eq!(orb_ref.set_value(game, 40_000), Ok(()));
+        assert_eq!(orb_ref.set_age(game, 100_000), Ok(()));
+        assert_eq!(orb_ref.value(&*game), Ok(40_000));
+        assert_eq!(orb_ref.age(&*game), Ok(100_000));
+        assert_eq!((game.orbs[0].value, game.orbs[0].age), (40_000, 100_000));
+
+        // Serialization (`ExperienceOrb.addAdditionalSaveData`) truncates Value and Age to (short).
+        let saved = orb_to_nbt(&game.orbs[0], [0; 4]);
+        assert_eq!(saved.get("Value"), Some(&Tag::Short(40_000_i32 as i16)));
+        assert_eq!(saved.get("Age"), Some(&Tag::Short(100_000_i32 as i16)));
+
+        // Count validation (`ExtraCodecs.POSITIVE_INT`: 1..=i32::MAX) leaves the orb untouched.
+        assert_eq!(
+            orb_ref.set_count(game, 0),
+            Err(ExperienceOrbWriteError::InvalidCount)
+        );
+        assert_eq!(
+            orb_ref.set_count(game, i32::MAX as u32 + 1),
+            Err(ExperienceOrbWriteError::InvalidCount)
+        );
+        assert_eq!(orb_ref.count(&*game), Ok(2));
+        assert_eq!(game.orbs[0].count, 2);
+
+        assert_eq!(orb_ref.set_value(game, 11), Ok(()));
+        assert_eq!(orb_ref.set_count(game, 1), Ok(()));
         assert_eq!((game.orbs[0].value, game.orbs[0].count), (11, 1));
     });
 }

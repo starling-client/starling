@@ -8,12 +8,11 @@ from pathlib import Path
 import random
 import subprocess
 
-try:
-    from . import lab, oracle_harness as h, test_rust_parity as base
-except ImportError:
-    import lab
-    import oracle_harness as h
-    import test_rust_parity as base
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, oracle_harness as h, test_rust_parity as base
 
 
 def fixtures():

@@ -50,14 +50,14 @@ impl BoundItemTags {
         Some(Self(tags))
     }
 
-    pub(super) fn contains(&self, tag: TagKey, item: ItemKey) -> Option<bool> {
+    pub(super) fn contains(&self, tag: TagKey<ItemKey>, item: ItemKey) -> Option<bool> {
         Some(
             self.members(tag)?
                 .is_some_and(|members| members.membership.contains(&item)),
         )
     }
 
-    pub(super) fn items(&self, tag: TagKey) -> Option<&[ItemKey]> {
+    pub(super) fn items(&self, tag: TagKey<ItemKey>) -> Option<&[ItemKey]> {
         Some(
             self.members(tag)?
                 .map_or(&[], |members| members.ordered.as_ref()),
@@ -65,7 +65,7 @@ impl BoundItemTags {
     }
 
     // The outer option refuses an invalid key or an unbound tag; the inner one marks absence.
-    fn members(&self, tag: TagKey) -> Option<Option<&Members>> {
+    fn members(&self, tag: TagKey<ItemKey>) -> Option<Option<&Members>> {
         crate::world::tags::with_tag_name(tag, |name| match self.0.get(name?) {
             Some(bound) => bound.as_ref().map(Some),
             None => Some(None),

@@ -1,5 +1,10 @@
 """Item-aware empty decoration patches; no backing MapData or namespace dependency."""
-from command_exec_corpus import cmd
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools.command_exec_corpus import cmd
 
 
 # Existing item-command bridge diagnostic, retained by the strict full147 mode.

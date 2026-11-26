@@ -1,11 +1,10 @@
 //! Prepared-resource regressions through real projectile collision, mob AI and server death.
-#![cfg(test)]
 use crate::game::Game;
 use crate::game::api_values::TryIntoApi;
 use crate::game::native_entity_refs::tests::{bind_local_player, with_game};
 use mod_api::{
-    ArmorHurtEvent, Flow, HitHost, Hooks, HurtSource, LivingDeathEvent, LivingIncomingDamageEvent,
-    ModEntry, ServerHost,
+    ArmorHurtEvent, Flow, HitHost, Hooks, HurtSource, LivingDeathEvent, LivingDropsEvent,
+    LivingIncomingDamageEvent, ModEntry, ServerHost,
 };
 use std::sync::{Arc, Mutex};
 use sunrise_client::{
@@ -52,6 +51,7 @@ struct Seen {
     deaths: Vec<Hit>,
     armor: Vec<Hit>,
     kinds: Vec<(String, String)>,
+    drops: Vec<(Hit, Vec<String>)>,
 }
 struct Probe {
     seen: Arc<Mutex<Seen>>,
@@ -69,7 +69,10 @@ impl Hooks for Probe {
             event.entity as u32,
             event.kind,
             event.source,
-            event.weapon,
+            event
+                .weapon
+                .and_then(mod_api::ItemStackView::project)
+                .as_ref(),
         ));
         Flow::Continue
     }
@@ -106,6 +109,22 @@ impl Hooks for Probe {
         } else {
             Flow::Continue
         }
+    }
+    fn living_drops(&self, _: &mut dyn ServerHost, event: &mut LivingDropsEvent<'_>) -> Flow {
+        let items = event
+            .drops
+            .iter()
+            .map(|drop| {
+                mod_api::__private::item_key_id(drop.stack.item())
+                    .unwrap()
+                    .to_string()
+            })
+            .collect();
+        self.seen.lock().unwrap().drops.push((
+            Hit::new(event.entity, event.kind, event.source, None),
+            items,
+        ));
+        Flow::Continue
     }
     fn armor_hurt(&self, _: &mut dyn ServerHost, event: &mut ArmorHurtEvent<'_>) -> Flow {
         assert!(!event.entries.is_empty());
@@ -596,10 +615,11 @@ fn later_cancelled_mob_revival_is_transactional_and_a_second_kill_drops_loot() {
                     let host: &mut dyn ServerHost = game;
                     host.living(host.entity(44).unwrap()).unwrap()
                 };
-                let abort = game.transaction_open();
-                assert!(living.set_health(game, 5.0));
-                assert_eq!(game.mob_object(44).unwrap().death_time, 0);
-                game.transaction_close(&abort, false);
+                game.storage_scope(|game, _| {
+                    assert!(living.set_health(game, 5.0));
+                    assert_eq!(game.mob_object(44).unwrap().death_time, 0);
+                    ((), false)
+                });
                 let body = game.mob_object(44).unwrap();
                 assert_eq!(
                     (body.health, body.death_time, body.death_canceled),
@@ -701,14 +721,15 @@ fn later_cancelled_player_revival_is_transactional_and_a_second_kill_drops_inven
                     let host: &mut dyn ServerHost = game;
                     host.living(host.entity(id).unwrap()).unwrap()
                 };
-                let abort = game.transaction_open();
-                assert!(living.set_health(game, 5.0));
-                let guest = &game.lan.as_ref().unwrap().hub.guests[0];
-                assert_eq!(
-                    (guest.health, guest.death_time, guest.death_canceled),
-                    (5.0, 0, false)
-                );
-                game.transaction_close(&abort, false);
+                game.storage_scope(|game, _| {
+                    assert!(living.set_health(game, 5.0));
+                    let guest = &game.lan.as_ref().unwrap().hub.guests[0];
+                    assert_eq!(
+                        (guest.health, guest.death_time, guest.death_canceled),
+                        (5.0, 0, false)
+                    );
+                    ((), false)
+                });
                 let guest = &game.lan.as_ref().unwrap().hub.guests[0];
                 assert_eq!(
                     (guest.health, guest.death_time, guest.death_canceled),
@@ -761,6 +782,141 @@ fn later_cancelled_player_revival_is_transactional_and_a_second_kill_drops_inven
     );
 }
 
+/// `/kill` records no combat entry, yet the player's drops still reach
+/// `living_drops`, with the `generic_kill` source `living_death` heard.
+#[test]
+#[ignore = "daily"]
+fn a_killed_guest_with_no_combat_entry_reports_its_drops() {
+    crate::game::in_own_process(
+        "game::native_hooks::death_source_tests::a_killed_guest_with_no_combat_entry_reports_its_drops",
+        || {
+            observed(false, false, |game, seen| {
+                crate::game::native_player_death::tests::add_guest(game);
+                game.lan.as_mut().unwrap().hub.guests.update(0, |guest| {
+                    guest.loaded = true;
+                    guest.load_timeout = 0;
+                    guest.inventory[0] = Some(ItemStack::new("minecraft:diamond", 3));
+                });
+                assert!(game.run_command("kill @a"));
+                game.guest_die(0, 1);
+                let id = game.lan.as_ref().unwrap().hub.guests[0].entity_id as u32;
+                let kill = Hit {
+                    entity: id,
+                    kind: "minecraft:player".into(),
+                    damage_type: "minecraft:generic_kill".into(),
+                    causing: 0,
+                    direct: 0,
+                    position: None,
+                    weapon: None,
+                };
+                let seen = seen.lock().unwrap();
+                assert_eq!(seen.deaths, vec![kill.clone()]);
+                assert_eq!(seen.drops, vec![(kill, vec!["minecraft:diamond".into()])]);
+            })
+        },
+    );
+}
+
+/// A loaded guest at `position` with `health` and a diamond to drop.
+fn standing_guest(game: &mut Game<'_>, position: [f64; 3], health: f32) -> u32 {
+    crate::game::native_player_death::tests::add_guest(game);
+    game.lan.as_mut().unwrap().hub.guests.update(0, |guest| {
+        guest.loaded = true;
+        guest.load_timeout = 0;
+        guest.position = position;
+        guest.health = health;
+        guest.inventory[0] = Some(ItemStack::new("minecraft:diamond", 3));
+    });
+    game.lan.as_ref().unwrap().hub.guests[0].entity_id as u32
+}
+
+/// A skeleton (42) at x 2.5 and its arrow from x 4.5 flying east along z 4.5, through a
+/// guest standing at x 6.
+fn skeleton_shot_at_guest(game: &mut Game<'_>) -> u32 {
+    mob(game, 42, "minecraft:skeleton", Vec3::new(2.5, 80.0, 4.5));
+    let mut shot = Projectile::new(
+        ProjectileKind::Arrow {
+            base_damage: 2.0,
+            critical: false,
+            effect: None,
+        },
+        Vec3::new(4.5, 81.0, 4.5),
+        Some(Who::Mob(42)),
+    );
+    shot.left_owner = true;
+    shot.velocity = Vec3::new(4.0, 0.0, 0.0);
+    game.add_projectile(shot);
+    game.creatures.projectiles[0].id
+}
+
+/// An arrow kills a guest: `living_drops` hears the source `living_death` heard (#4843): an
+/// arrow's damage, the skeleton causing it, and the hit's position. (A projectile's id is
+/// not kept on a player's hit, so `direct` is whatever both hooks were given; the hook's
+/// notes say so.)
+#[test]
+#[ignore = "daily"]
+fn an_arrow_killed_guest_reports_the_arrow_to_living_drops() {
+    crate::game::in_own_process(
+        "game::native_hooks::death_source_tests::an_arrow_killed_guest_reports_the_arrow_to_living_drops",
+        || {
+            observed(false, false, |game, seen| {
+                let id = standing_guest(game, [6.0, 80.0, 4.5], 1.0);
+                skeleton_shot_at_guest(game);
+                game.tick_projectiles().unwrap();
+                assert!(game.lan.as_ref().unwrap().hub.guests[0].health <= 0.0);
+                game.guest_die(0, 1);
+                let seen = seen.lock().unwrap();
+                assert_eq!(seen.deaths.len(), 1, "one death");
+                let death = &seen.deaths[0];
+                assert_eq!(death.entity, id);
+                assert_eq!(death.damage_type, "minecraft:arrow");
+                assert_eq!(death.causing, 42, "the skeleton caused it");
+                assert!(death.position.is_some(), "the hit's position is set");
+                let mut heard = death.clone();
+                heard.weapon = None;
+                assert_eq!(seen.drops, vec![(heard, vec!["minecraft:diamond".into()])]);
+            })
+        },
+    );
+}
+
+/// `/kill` after an earlier hit still dies of `generic_kill`, with no causing or direct
+/// entity: the hit's record is not the fatal source.
+#[test]
+#[ignore = "daily"]
+fn a_guest_killed_after_a_hit_reports_generic_kill() {
+    crate::game::in_own_process(
+        "game::native_hooks::death_source_tests::a_guest_killed_after_a_hit_reports_generic_kill",
+        || {
+            observed(false, false, |game, seen| {
+                let id = standing_guest(game, [6.0, 80.0, 4.5], 20.0);
+                skeleton_shot_at_guest(game);
+                game.tick_projectiles().unwrap();
+                let health = game.lan.as_ref().unwrap().hub.guests[0].health;
+                assert!(
+                    health > 0.0 && health < 20.0,
+                    "the arrow hurt the guest: {health}"
+                );
+                assert_eq!(seen.lock().unwrap().deaths.len(), 0);
+                assert!(game.run_command("kill @a"));
+                game.guest_die(0, 1);
+                let kill = Hit {
+                    entity: id,
+                    kind: "minecraft:player".into(),
+                    damage_type: "minecraft:generic_kill".into(),
+                    causing: 0,
+                    direct: 0,
+                    position: None,
+                    weapon: None,
+                };
+                let seen = seen.lock().unwrap();
+                assert_eq!(seen.deaths, vec![kill.clone()]);
+                assert_eq!(seen.drops, vec![(kill, vec!["minecraft:diamond".into()])]);
+            })
+        },
+    );
+}
+
 /// Hook payloads and entity handles preserve mod namespaces and qualify bare vanilla ids.
 #[test]
 #[ignore = "daily"]
@@ -791,6 +947,9 @@ fn mob_death_and_handle_preserve_namespaced_types() {
                 {
                     let mut kind = (*sheep).clone();
                     kind.id = id.to_owned();
+                    // A type row keeps the key of its own name, as accepting the type table
+                    // gives it (world_rest.rs); this fixture builds its rows after that.
+                    kind.type_key = mod_api::__private::resolved_entity_type_key(id);
                     let mut mob = Mob::new(
                         201 + index as u32,
                         Arc::new(kind),

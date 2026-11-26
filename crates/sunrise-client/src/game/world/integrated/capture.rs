@@ -369,7 +369,7 @@ impl Game<'_> {
             .collect();
         self.profile.server = Some(side);
         self.perf_captures_done(done);
-        result
+        result.map(|_| ())
     }
 
     /// The server is closing: ends the capture, and waits for the file when it is this side's.

@@ -76,7 +76,7 @@ fn datapack_damage_initial_snapshot_uses_the_prepared_worlds_features() {
             .iter()
             .filter_map(|id| packs.iter().find(|p| &p.id == id))
             .collect();
-        let store = crate::datapack::DataStore::load(&selected);
+        let store = crate::datapack::DataStore::load(&crate::datapack::DataPacks::new(&selected));
         let files: Vec<_> = store.files.into_iter().collect();
         sunrise_world::damage_source::Catalog::load(
             &root,

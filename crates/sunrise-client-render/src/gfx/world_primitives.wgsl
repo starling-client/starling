@@ -11,6 +11,14 @@ struct Globals {
 @group(0) @binding(1) var atlas: texture_2d<f32>;
 @group(0) @binding(2) var atlas_sampler: sampler;
 
+override pack_coordinates: bool = false;
+
+fn world_clip(clip: vec4<f32>) -> vec4<f32> {
+    // Classic pack buffers keep GL rows and forward window depth, like the world import.
+    if pack_coordinates { return vec4(clip.x, -clip.y, clip.w - clip.z, clip.w); }
+    return clip;
+}
+
 struct QuadOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) uv: vec2<f32>,
@@ -23,7 +31,7 @@ struct QuadOut {
 @vertex fn vs_quad(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>,
     @location(2) layer: u32, @location(3) color: vec4<f32>, @location(4) light: u32) -> QuadOut {
     var out: QuadOut;
-    out.clip = globals.view_proj * vec4(pos, 1.0);
+    out.clip = world_clip(globals.view_proj * vec4(pos, 1.0));
     out.uv = uv;
     out.color = color;
     // Layer 6 is a beacon beam's: its v repeats inside the sprite, whose range rides in the
@@ -36,10 +44,14 @@ struct QuadOut {
     return out;
 }
 
-@fragment fn fs_quad(in: QuadOut) -> @location(0) vec4<f32> {
+fn quad_color(in: QuadOut) -> vec4<f32> {
     var uv = in.uv;
     if in.wrap.y > 0.0 { uv.y = in.wrap.x + fract(in.uv.y) * in.wrap.y; }
-    let color = textureSample(atlas, atlas_sampler, uv) * in.color;
+    return textureSample(atlas, atlas_sampler, uv) * in.color;
+}
+
+@fragment fn fs_quad(in: QuadOut) -> @location(0) vec4<f32> {
+    let color = quad_color(in);
     if color.a <= 0.0 { discard; }
     return frame_stored(color);
 }
@@ -66,7 +78,7 @@ struct LineOut {
     if offset.x < 0.0 { offset = -offset; }
     if vertex % 2u != 0u { offset = -offset; }
     var out: LineOut;
-    out.clip = vec4((ndc1 + vec3(offset, 0.0)) * line_start.w, line_start.w);
+    out.clip = world_clip(vec4((ndc1 + vec3(offset, 0.0)) * line_start.w, line_start.w));
     // ARGB in a little-endian u32 reads as B, G, R, A.
     out.color = argb.zyxw;
     return out;

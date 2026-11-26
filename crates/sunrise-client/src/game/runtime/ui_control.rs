@@ -97,9 +97,7 @@ impl Game<'_> {
                         self.craft_result()
                     } else if slot >= Creative::DISPLAY {
                         // An item tab's display slot shows the tab's list.
-                        let first = self.creative_screen.first_row(&self.pack.names);
-                        self.creative_screen
-                            .shown(&self.pack.names, first * 9 + slot - Creative::DISPLAY)
+                        self.creative_display_stack(slot)
                     } else {
                         self.slot_mut(slot).clone()
                     };

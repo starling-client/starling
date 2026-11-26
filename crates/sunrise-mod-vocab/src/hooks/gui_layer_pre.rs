@@ -1,5 +1,4 @@
 //! The `gui_layer_pre` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0144
 
 pub trait Hooks {
     /// Before a vanilla or mod HUD layer (`RenderGuiLayerEvent.Pre`). Draw below the

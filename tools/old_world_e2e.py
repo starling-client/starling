@@ -17,9 +17,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import lab  # noqa: E402
-import lan_e2e as lan  # noqa: E402
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, lan_e2e as lan  # noqa: E402
 
 SOURCE_SEED, TARGET_SEED = 111, 4242
 # The old chunks: west of x = 0, the new ones generate to the east.

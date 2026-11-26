@@ -2,8 +2,9 @@
 """Strict actual Game/Java dry-air Husk glide travel proof (H169)."""
 import sys,json,hashlib
 from pathlib import Path
-ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT/'tools'))
-import test_command_exec_parity as d
+ROOT=Path(__file__).resolve().parents[1]
+sys.path.insert(0,str(ROOT))
+from tools import test_command_exec_parity as d
 ops=[]
 def cmd(s,label,expected=None,admission=True,trace=False):
  o=dict(op='cmd',cmd=s,label=label,admission=admission)

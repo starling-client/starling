@@ -1,0 +1,16 @@
+ids = [
+    "hook:frame_graph_setup",
+    "trait:FrameGraphContext",
+    "trait:OffscreenDrawContext",
+    "type:FrameTarget",
+    "type:TransientTargetId",
+    "type:FramePassId",
+    "type:FramePassRef",
+    "type:FramePassDescriptor",
+    "type:FrameGraphError",
+    "type:TextureSource.TransientTargetColor",
+    "type:TextureSource.TransientTargetDepth",
+    "type:HookId",
+]
+why = "Add Hooks::frame_graph_setup (NeoForge 26.3 FrameGraphSetupEvent, vanilla FrameGraphBuilder / LevelTargetBundle) for data-driven mod offscreen passes reading/writing named built-in LevelTargetBundle targets, imported mod RenderTargetRef targets (never culled), and pooled transient per-frame targets, with deterministic topological ordering, dead-pass culling, and explicit cycle rejection (#963)."
+migrate = "Additive API. Subscribe to Hooks::frame_graph_setup to allocate transient targets with event.graph.create_transient(&desc) and add offscreen passes with event.graph.add_pass(desc, &mut |ctx| { ... }), ordering relative to RenderLevelStage anchors and other passes."

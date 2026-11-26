@@ -8,10 +8,10 @@ import os
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
-import glyphlib as G
-from glyphlib import bowl, clip, minus, rect, rrect, seg, union
-from pngio import write_png
+sys.path.insert(0, os.path.dirname(os.path.dirname(HERE)))
+from tools.pad_glyphs import glyphlib as G
+from tools.pad_glyphs.glyphlib import bowl, clip, minus, rect, rrect, seg, union
+from tools.pad_glyphs.pngio import write_png
 
 TEXTURES = os.path.join(HERE, '..', '..', 'crates', 'sunrise-client', 'assets', 'sunrise',
                         'textures', 'gui', 'controller')

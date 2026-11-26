@@ -42,6 +42,19 @@ pub(super) enum InvalidBundle {
     TooManyPackets,
 }
 
+impl std::fmt::Display for InvalidBundle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Terminal => {
+                "io.netty.handler.codec.DecoderException: Terminal message received in bundle"
+            }
+            Self::TooManyPackets => {
+                "io.netty.handler.codec.DecoderException: java.lang.IllegalStateException: Too many packets in a bundle"
+            }
+        })
+    }
+}
+
 impl PlayBundle {
     pub(super) fn assembling(&self) -> bool {
         self.0.is_some()
@@ -113,11 +126,12 @@ impl PlayIo {
 
     /// `ClientCommonPacketListenerImpl.onPacketError`, after a main-thread handler fails.
     pub fn packet_error(&self) -> Event {
-        Reason::keyed("disconnect.packetError", &self.lang).ended(false)
+        Reason::keyed("disconnect.packetError", &self.lang).ended(false, true)
     }
 
     pub fn incompatible_payload(&self, detail: &str) -> Event {
-        Reason::keyed_arg("multiplayer.disconnect.incompatible", &self.lang, detail).ended(false)
+        Reason::keyed_arg("multiplayer.disconnect.incompatible", &self.lang, detail)
+            .ended(false, true)
     }
 
     pub fn bundle_member(&self, member: BundleMember) -> BundleStep {
@@ -157,7 +171,7 @@ impl PlayIo {
                 return BundleStep::Transfer(p);
             }
             C::Disconnect(p) => {
-                return BundleStep::Close(Reason::tag(&p.reason, &self.lang).ended(true));
+                return BundleStep::Close(Reason::tag(&p.reason, &self.lang).ended(true, true));
             }
             C::CustomPayload(p) if p.channel == "minecraft:brand" => {
                 return brand_event(&p).map_or(BundleStep::Continue, BundleStep::Event);

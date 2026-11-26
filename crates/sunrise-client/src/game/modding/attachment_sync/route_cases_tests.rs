@@ -2,7 +2,7 @@
 //! negotiated peer that does not see the holder is sent nothing, and a message keeps its
 //! place among the player's held gameplay packets.
 use super::transport_tests::{
-    Route, VALUE, peer, set_level, store, sync_packets_within, values_until, wait_server_ticks,
+    Route, peer, set_level, sync_packets_within, value_key, values_until, wait_server_ticks,
 };
 use std::time::{Duration, Instant};
 use sunrise_core::nbt::Tag;
@@ -147,10 +147,11 @@ fn a_dedicated_server_sends_only_trackers_in_packet_order() {
             // What the move itself sends it (its new chunks) is drained first.
             sync_packets_within(&mut far, Duration::from_secs(1));
             let holder = Holder::Chunk([chunk.0, chunk.1]);
+            let key = value_key();
             game.integrated
                 .as_ref()
                 .unwrap()
-                .call(move |server| VALUE.set(store(server), holder, 21).unwrap())
+                .call(move |server| key.set(server, holder, 21).unwrap())
                 .unwrap();
             assert_eq!(values_until(&mut near, holder, 21), [21]);
             // Negotiated, but tracking no holder that changed: 0 updates.

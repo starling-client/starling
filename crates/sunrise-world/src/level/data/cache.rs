@@ -23,8 +23,8 @@ use std::{
 
 // Bump a version, and its file name, with any change to how its snapshot is resolved, stored or restored.
 const MAGIC: &[u8; 8] = b"HZBEHAV\0";
-const VERSION: u32 = 7;
-const FILE_NAME: &str = "behaviours-v7.bin";
+const VERSION: u32 = 8;
+const FILE_NAME: &str = "behaviours-v8.bin";
 const REGISTRY_MAGIC: &[u8; 8] = b"HZREGIS\0";
 const REGISTRY_VERSION: u32 = 1;
 const REGISTRY_FILE_NAME: &str = "registry-v1.bin";
@@ -44,6 +44,7 @@ pub(in crate::level) fn set_dir(dir: PathBuf) {
 struct Snapshot {
     tags: HashMap<String, Vec<u64>>,
     facts: Vec<Fact>,
+    placement_events: Vec<String>,
     shapes: Vec<Shape>,
     shape_info: Vec<[u8; 3]>,
     fluid_tags: [u8; 6],
@@ -64,6 +65,7 @@ struct Fact {
     emission: u8,
     dampening: u8,
     hardness: f32,
+    placement_sound: (usize, f32, f32),
     push: u8,
     instrument: u8,
     shape: i32,
@@ -100,15 +102,6 @@ struct SetTypeSnapshot {
 }
 
 #[derive(Serialize, Deserialize)]
-struct SoundsSnapshot {
-    volume: f32,
-    pitch: f32,
-    place: String,
-    break_: String,
-    fall: String,
-}
-
-#[derive(Serialize, Deserialize)]
 struct Block {
     chain: Vec<u16>,
     interfaces: u16,
@@ -131,7 +124,6 @@ struct Block {
     weather: u8,
     ignite_odds: i32,
     burn_odds: i32,
-    sounds: SoundsSnapshot,
     item: String,
     dynamic_shape: bool,
     declared_vegetation: bool,
@@ -391,29 +383,6 @@ impl From<SetTypeSnapshot> for SetType {
         }
     }
 }
-impl From<&Sounds> for SoundsSnapshot {
-    fn from(value: &Sounds) -> Self {
-        Self {
-            volume: value.volume,
-            pitch: value.pitch,
-            place: value.place.to_string(),
-            break_: value.break_.to_string(),
-            fall: value.fall.to_string(),
-        }
-    }
-}
-impl From<SoundsSnapshot> for Sounds {
-    fn from(value: SoundsSnapshot) -> Self {
-        Self {
-            volume: value.volume,
-            pitch: value.pitch,
-            place: Arc::from(value.place),
-            break_: Arc::from(value.break_),
-            fall: Arc::from(value.fall),
-        }
-    }
-}
-
 impl Snapshot {
     fn capture(behaviours: &Behaviours) -> Self {
         let tags = behaviours
@@ -421,6 +390,8 @@ impl Snapshot {
             .iter()
             .map(|(key, value)| (key.clone(), value.0.clone()))
             .collect();
+        let mut events = HashMap::new();
+        let mut placement_events = Vec::new();
         let facts = behaviours
             .facts
             .iter()
@@ -436,6 +407,16 @@ impl Snapshot {
                 emission: fact.emission,
                 dampening: fact.dampening,
                 hardness: fact.hardness,
+                placement_sound: {
+                    let sound = &fact.placement_sound;
+                    let name = sound.event.as_str();
+                    let index = *events.entry(name).or_insert_with(|| {
+                        let index = placement_events.len();
+                        placement_events.push(name.to_owned());
+                        index
+                    });
+                    (index, sound.volume, sound.pitch)
+                },
                 push: push_index(fact.push),
                 instrument: fact.instrument,
                 shape: fact.shape,
@@ -529,7 +510,6 @@ impl Snapshot {
                 weather: block.weather,
                 ignite_odds: block.ignite_odds,
                 burn_odds: block.burn_odds,
-                sounds: SoundsSnapshot::from(block.sounds.as_ref()),
                 item: block.item.to_string(),
                 dynamic_shape: block.dynamic_shape,
                 declared_vegetation: block.declared_vegetation,
@@ -554,6 +534,7 @@ impl Snapshot {
         Self {
             tags,
             facts,
+            placement_events,
             shapes,
             shape_info,
             fluid_tags,
@@ -618,6 +599,13 @@ impl Snapshot {
                 wall_cover: row[2],
             })
             .collect();
+        let placement_events = self
+            .placement_events
+            .iter()
+            .map(|name| {
+                SoundEventKey::parse(name).ok_or_else(|| invalid("invalid cached placement event"))
+            })
+            .collect::<io::Result<Vec<_>>>()?;
         let facts = self
             .facts
             .into_iter()
@@ -642,6 +630,11 @@ impl Snapshot {
                     .unwrap_or_else(|| {
                         FluidState::new(fluid_kind, wire.fluid_amount, wire.fluid_falling)
                     });
+                let (event, volume, pitch) = wire.placement_sound;
+                let event = placement_events
+                    .get(event)
+                    .ok_or_else(|| invalid("cached placement event index out of range"))?
+                    .clone();
                 Ok(StateFacts {
                     flags: wire.flags,
                     sturdy: wire.sturdy,
@@ -651,6 +644,11 @@ impl Snapshot {
                     emission: wire.emission,
                     dampening: wire.dampening,
                     hardness: wire.hardness,
+                    placement_sound: BlockSound {
+                        event,
+                        volume,
+                        pitch,
+                    },
                     push: push(wire.push)?,
                     resolved_push: super::super::piston_reactions::CachedReaction::new(push(
                         wire.push,
@@ -713,7 +711,6 @@ impl Snapshot {
                     weather: wire.weather,
                     ignite_odds: wire.ignite_odds,
                     burn_odds: wire.burn_odds,
-                    sounds: Arc::new(Sounds::from(wire.sounds)),
                     item: Arc::from(wire.item),
                     dynamic_shape: wire.dynamic_shape,
                     declared_vegetation: wire.declared_vegetation,

@@ -7,10 +7,12 @@ unrelated slot, and leave an equipped stand idle after thawing its disk.
 """
 import json
 
-try:
-    from . import test_locator_bar_parity as net
-except ImportError:
-    import test_locator_bar_parity as net
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_locator_bar_parity as net
 
 STAND = '@e[type=minecraft:armor_stand,limit=1]'
 # Suppress neighbor updates while counting, so removing one edge does not

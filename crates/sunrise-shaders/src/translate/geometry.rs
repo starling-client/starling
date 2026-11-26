@@ -36,6 +36,7 @@ pub fn translate_geometry(
     geometry: &Preprocessed,
     fragment: &Preprocessed,
     inputs: &GeometryInputs,
+    limits: naga::front::glsl::InterfaceLimits,
 ) -> Result<(Program, u32), Vec<Error>> {
     let (combined, triangles) = combine(vertex, geometry, inputs)?;
     let mut gbuffers = inputs.inputs.clone();
@@ -52,7 +53,14 @@ pub fn translate_geometry(
     // The vertex's place isn't the fragment's through a geometry stage.
     gbuffers.water_patches = false;
     gbuffers.attributes = Vec::new();
-    let program = super::translate(&combined, fragment, Target::Buffers, Some(&gbuffers), true)?;
+    let program = super::translate(
+        &combined,
+        fragment,
+        Target::Buffers,
+        Some(&gbuffers),
+        true,
+        limits,
+    )?;
     Ok((program, triangles))
 }
 
@@ -256,21 +264,15 @@ fn combine(
     geometry: &Preprocessed,
     inputs: &GeometryInputs,
 ) -> Result<(Preprocessed, u32), Vec<Error>> {
-    let error = |message: String| {
-        vec![Error {
-            file: geometry.files.first().cloned().unwrap_or_default(),
-            line: 0,
-            message,
-        }]
-    };
+    let error = |message: String| vec![Error::new(geometry.file(), 0, message)];
     // Interface blocks first become plain varyings (`interface_blocks`), the vertex stage's
     // `out` block and the geometry stage's `in` array alike: what follows reads declarations
     // of one type each. The geometry stage's input blocks read as `hz_in_<block>_<member>`,
     // apart from its output blocks, which may have the same names.
-    let gs_code = super::interface_blocks::flatten_as(&geometry.code, "in_");
-    let vs_code = super::interface_blocks::flatten(&vertex.code);
-    let gs_tokens = lex(gs_code.as_deref().unwrap_or(&geometry.code));
-    let vs_tokens = lex(vs_code.as_deref().unwrap_or(&vertex.code));
+    let gs_code = super::interface_blocks::flatten_as(geometry.code(), "in_");
+    let vs_code = super::interface_blocks::flatten(vertex.code());
+    let gs_tokens = lex(gs_code.as_deref().unwrap_or(geometry.code()));
+    let vs_tokens = lex(vs_code.as_deref().unwrap_or(vertex.code()));
     let gs = statements(&gs_tokens);
     let vs = statements(&vs_tokens);
 
@@ -481,14 +483,10 @@ fn combine(
     main.push_str("}\n");
 
     // The source, lines mapped: ours (no file), the geometry stage, ours, the vertex stage, ours.
-    let mut out = Preprocessed {
-        version: geometry.version.clone().or(vertex.version.clone()),
-        files: geometry.files.clone(),
-        ..Default::default()
-    };
-    let offset = out.files.len() as u16;
-    out.files.extend(vertex.files.iter().cloned());
-    let mut code = String::new();
+    let mut files = geometry.files().to_vec();
+    let offset = files.len() as u16;
+    files.extend(vertex.files().iter().cloned());
+    let (mut code, mut lines) = (String::new(), Vec::new());
     let ours = |code: &mut String, lines: &mut Vec<crate::Origin>, text: &str| {
         for l in text.lines() {
             code.push_str(l);
@@ -496,20 +494,22 @@ fn combine(
             lines.push(crate::Origin::default());
         }
     };
-    ours(&mut code, &mut out.lines, &head);
+    ours(&mut code, &mut lines, &head);
     code.push_str(&gs_text.concat());
     code.push('\n');
-    out.lines.extend(geometry.lines.iter().copied());
-    ours(&mut code, &mut out.lines, &emit);
+    lines.extend(geometry.lines().iter().copied());
+    ours(&mut code, &mut lines, &emit);
     code.push_str(&vs_text.concat());
     code.push('\n');
-    out.lines.extend(vertex.lines.iter().map(|o| crate::Origin {
+    lines.extend(vertex.lines().iter().map(|o| crate::Origin {
         file: o.file + offset,
         line: o.line,
     }));
-    ours(&mut code, &mut out.lines, &main);
-    out.code = code.trim_end_matches('\n').to_owned();
-    out.lines.truncate(out.code.split('\n').count());
+    ours(&mut code, &mut lines, &main);
+    let code = code.trim_end_matches('\n').to_owned();
+    lines.resize(code.split('\n').count(), crate::Origin::default());
+    let mut out = Preprocessed::new(code, lines, files).map_err(error)?;
+    out.version = geometry.version.clone().or(vertex.version.clone());
     // A strip of n vertices is n - 2 triangles: at most `max_vertices - 2`, whichever of the
     // stage's paths runs.
     let triangles = max_vertices.saturating_sub(2).max(1);
@@ -677,6 +677,7 @@ mod tests {
             &pp("shadow.gsh"),
             &pp("shadow.fsh"),
             &inputs,
+            naga::front::glsl::InterfaceLimits::WGPU_DEFAULT,
         )
     }
 

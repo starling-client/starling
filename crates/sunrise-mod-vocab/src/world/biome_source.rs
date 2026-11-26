@@ -9,17 +9,18 @@
 //!
 //! There is no `Host` here: biomes are placed on the worldgen worker threads,
 //! two workers can ask at once, and a source keeps no mutable state.
+use crate::BiomeKey;
 use std::sync::Arc;
 
 /// A mod's biome source: vanilla's `BiomeSource`, whose code answers for a
 /// level stem with `"biome_source": {"type": "modid:chaos"}`. Implemented once,
 /// kept by the game; deterministic and stateless.
 pub trait BiomeSource: Send + Sync + 'static {
-    /// `BiomeSource.possibleBiomes`: the biome ids (`minecraft:desert`, a data
-    /// pack's or the mod's own) the source places, at least one. Asked once, at
+    /// `BiomeSource.possibleBiomes`: the registered biome keys (`minecraft:desert`,
+    /// a data pack's or the mod's own) the source places, at least one. Asked once, at
     /// startup; a level whose world lacks one of them refuses to open, naming it.
     /// Structures and decoration read this list, as vanilla's do.
-    fn possible_biomes(&self) -> Vec<String>;
+    fn possible_biomes(&self) -> Vec<BiomeKey>;
     /// `BiomeResolver.getNoiseBiome`: the biome at quart cell `quart` (a block
     /// position >> 2, as `[x, y, z]`) of a world with `seed`, as an index into
     /// [`possible_biomes`](Self::possible_biomes); an index past the list wraps
@@ -31,15 +32,22 @@ pub trait BiomeSource: Send + Sync + 'static {
 /// A registered biome source, its possible biomes listed once at registration.
 pub(crate) struct BiomeSourceInfo {
     pub(crate) id: Box<str>,
-    pub(crate) biomes: Vec<String>,
+    pub(crate) biomes: Vec<BiomeKey>,
     pub(crate) source: Arc<dyn BiomeSource>,
+    /// The registering mod's callback owner: sampling the source runs under it.
+    pub(crate) owner: crate::callback_owner::CallbackOwner,
 }
 
 /// Registered biome sources for the hidden game integration boundary: each id,
 /// its possible biomes and the source.
 // hidden: the game's startup adapter reads the registered sources; mods declare them through the registrar.
 #[doc(hidden)]
-pub fn biome_source_declarations() -> Vec<(String, Vec<String>, Arc<dyn BiomeSource>)> {
+pub fn biome_source_declarations() -> Vec<(
+    String,
+    Vec<BiomeKey>,
+    Arc<dyn BiomeSource>,
+    crate::callback_owner::CallbackOwner,
+)> {
     crate::parts::installed_biome_source_list()
         .iter()
         .map(|info| {
@@ -47,6 +55,7 @@ pub fn biome_source_declarations() -> Vec<(String, Vec<String>, Arc<dyn BiomeSou
                 info.id.to_string(),
                 info.biomes.clone(),
                 info.source.clone(),
+                info.owner.clone(),
             )
         })
         .collect()

@@ -20,10 +20,12 @@ placed from a renamed item, and double chests named on either half.
 """
 import argparse
 import json
-try:
-    from . import interaction_lab as lib
-except ImportError:
-    import interaction_lab as lib
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import interaction_lab as lib
 
 POS = 'x:0,y:64,z:0'
 

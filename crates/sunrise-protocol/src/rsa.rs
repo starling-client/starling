@@ -6,7 +6,8 @@
 //! (Crypt.decryptUsingKey); and the PKCS#1 v1.5 signature checks of secure
 //! chat (SHA256withRSA for messages, SHA1withRSA for the services' profile
 //! key signatures). Modular exponentiation uses Montgomery multiplication on
-//! 32-bit limbs; RSA moduli are always odd.
+//! 32-bit limbs; RSA moduli are always odd, and each key keeps its own
+//! Montgomery context.
 use crate::{Error, Result};
 
 /// A non-negative integer, little-endian 32-bit limbs.
@@ -117,6 +118,7 @@ impl Big {
 }
 
 /// Montgomery arithmetic modulo an odd `n`.
+#[derive(Clone, PartialEq, Eq)]
 struct Mont {
     n: Big,
     /// -n⁻¹ mod 2³².
@@ -244,11 +246,24 @@ fn der(input: &[u8]) -> Result<(u8, &[u8], &[u8])> {
 /// The DER of OID 1.2.840.113549.1.1.1 (rsaEncryption).
 const RSA_ENCRYPTION: &[u8] = &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01];
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct RsaPublicKey {
     /// Modulus and exponent, big-endian without leading zeros.
-    pub modulus: Vec<u8>,
-    pub exponent: Vec<u8>,
+    modulus: Vec<u8>,
+    exponent: Vec<u8>,
+    /// `modulus`'s Montgomery context. Making one is 64 · limbs doubling steps over every
+    /// limb, more than the exponentiation it serves: a key keeps its own rather than making
+    /// one for every [`RsaPublicKey::verify`].
+    mont: Mont,
+}
+
+impl std::fmt::Debug for RsaPublicKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RsaPublicKey")
+            .field("modulus", &self.modulus)
+            .field("exponent", &self.exponent)
+            .finish()
+    }
 }
 
 fn strip(int: &[u8]) -> Vec<u8> {
@@ -298,23 +313,30 @@ impl RsaPublicKey {
         if n_tag != 0x02 || e_tag != 0x02 {
             return Err(bad());
         }
-        let key = Self {
-            modulus: strip(n),
-            exponent: strip(e),
-        };
+        let (modulus, exponent) = (strip(n), strip(e));
         // RSAKeyFactory.checkKeyLengths, as vanilla's KeyFactory applies it: a modulus of at most
         // 16384 bits and, past 3072 bits, an exponent of at most 64. The cost of an encryption
         // grows with the modulus squared times the exponent's bits, and the server sends the key
         // before anything is encrypted: unbounded, one key in a Hello held a login for hours.
-        let (n_bits, e_bits) = (bit_len(&key.modulus), bit_len(&key.exponent));
-        if key.modulus.len() < 64
+        let (n_bits, e_bits) = (bit_len(&modulus), bit_len(&exponent));
+        if modulus.len() < 64
             || n_bits > MAX_MODULUS_BITS
             || n_bits > RESTRICT_EXPONENT_ABOVE && e_bits > MAX_RESTRICTED_EXPONENT_BITS
-            || key.modulus.last().is_none_or(|b| b & 1 == 0)
+            || modulus.last().is_none_or(|b| b & 1 == 0)
         {
             return Err(bad());
         }
-        Ok(key)
+        Ok(Self::new(modulus, exponent))
+    }
+
+    /// A key from its modulus (odd) and exponent, big-endian without leading zeros.
+    fn new(modulus: Vec<u8>, exponent: Vec<u8>) -> Self {
+        let mont = Mont::new(Big::from_be_bytes(&modulus, modulus.len().div_ceil(4)));
+        Self {
+            modulus,
+            exponent,
+            mont,
+        }
     }
     /// Length of the modulus in bytes (and of every ciphertext).
     pub fn size(&self) -> usize {
@@ -323,26 +345,26 @@ impl RsaPublicKey {
     /// The raw RSA operation m^e mod n on a `size()`-byte block.
     fn apply(&self, block: &[u8], exponent: &[u8]) -> Vec<u8> {
         let limbs = self.size().div_ceil(4);
-        let mont = Mont::new(Big::from_be_bytes(&self.modulus, limbs));
         let m = Big::from_be_bytes(block, limbs);
-        mont.pow(
-            &m,
-            &Big::from_be_bytes(exponent, limbs.max(exponent.len().div_ceil(4))),
-        )
-        .to_be_bytes(self.size())
+        self.mont
+            .pow(
+                &m,
+                &Big::from_be_bytes(exponent, limbs.max(exponent.len().div_ceil(4))),
+            )
+            .to_be_bytes(self.size())
     }
     /// [`RsaPublicKey::apply`] with a private exponent: [`Mont::pow_secret`], whose time doesn't
     /// depend on the exponent. Vanilla's JCE blinds this operation; this at least takes the same
     /// steps for every input.
     fn apply_secret(&self, block: &[u8], exponent: &[u8]) -> Vec<u8> {
         let limbs = self.size().div_ceil(4);
-        let mont = Mont::new(Big::from_be_bytes(&self.modulus, limbs));
         let m = Big::from_be_bytes(block, limbs);
-        mont.pow_secret(
-            &m,
-            &Big::from_be_bytes(exponent, limbs.max(exponent.len().div_ceil(4))),
-        )
-        .to_be_bytes(self.size())
+        self.mont
+            .pow_secret(
+                &m,
+                &Big::from_be_bytes(exponent, limbs.max(exponent.len().div_ceil(4))),
+            )
+            .to_be_bytes(self.size())
     }
     /// RSAES-PKCS1-v1_5 (RFC 8017 7.2.1) with random non-zero padding.
     pub fn encrypt(&self, message: &[u8]) -> Result<Vec<u8>> {
@@ -577,10 +599,7 @@ impl RsaPrivateKey {
         }
         let size = bits / 8;
         Ok(Self {
-            public: RsaPublicKey {
-                modulus: strip(&n.to_be_bytes(size)),
-                exponent: strip(&E.to_be_bytes()),
-            },
+            public: RsaPublicKey::new(strip(&n.to_be_bytes(size)), strip(&E.to_be_bytes())),
             exponent: d.to_be_bytes(size),
         })
     }
@@ -662,21 +681,21 @@ impl RsaPrivateKey {
         if n_tag != 0x02 || e_tag != 0x02 || d_tag != 0x02 {
             return Err(bad());
         }
-        let public = RsaPublicKey {
-            modulus: strip(n),
-            exponent: strip(e),
-        };
-        if public.modulus.len() < 64 || public.modulus.last().is_none_or(|b| b & 1 == 0) {
+        let (modulus, public_exponent) = (strip(n), strip(e));
+        if modulus.len() < 64 || modulus.last().is_none_or(|b| b & 1 == 0) {
             return Err(bad());
         }
-        let size = public.size();
+        let size = modulus.len();
         let d = strip(d);
         if d.is_empty() || d.len() > size {
             return Err(bad());
         }
         let mut exponent = vec![0u8; size - d.len()];
         exponent.extend_from_slice(&d);
-        Ok(Self { public, exponent })
+        Ok(Self {
+            public: RsaPublicKey::new(modulus, public_exponent),
+            exponent,
+        })
     }
 
     /// `Signature.sign` for RSASSA-PKCS1-v1_5 (RFC 8017 8.2.1), checked with
@@ -995,6 +1014,65 @@ pub(crate) mod tests {
         assert_eq!(key.public, RsaPublicKey::from_der(&hex(TEST_SPKI)).unwrap());
         let signature = key.sign(SignatureHash::Sha256, b"hello").unwrap();
         assert_eq!(signature, hex(TEST_SIG_HELLO));
+    }
+
+    /// A key verifies through the context it keeps as it did through one made for every call:
+    /// the client's offline services-key fixture (4096-bit keys), for a property signature, a
+    /// tampered value and the signature another of its keys made.
+    #[test]
+    fn a_key_verifies_through_its_own_context() {
+        use base64::Engine as _;
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../sunrise-client/src/game/network/remote/fixtures/signed_textures.json"
+        ))
+        .unwrap();
+        let decode = |text: &str| {
+            base64::engine::general_purpose::STANDARD
+                .decode(text)
+                .unwrap()
+        };
+        let keys: Vec<RsaPublicKey> = fixture["public_keys"]["profilePropertyKeys"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| {
+                RsaPublicKey::from_der(&decode(entry["publicKey"].as_str().unwrap())).unwrap()
+            })
+            .collect();
+        assert_eq!(keys.len(), 1);
+        let (value, altered) = (
+            fixture["value"].as_str().unwrap(),
+            fixture["altered_value"].as_str().unwrap(),
+        );
+        let (good, other) = (
+            decode(fixture["profile_property_signature"].as_str().unwrap()),
+            decode(fixture["player_certificate_signature"].as_str().unwrap()),
+        );
+        let mut signers = 0;
+        for key in &keys {
+            let limbs = key.size().div_ceil(4);
+            let exponent = Big::from_be_bytes(&key.exponent, limbs);
+            // The context a call made for itself before keys kept theirs.
+            let fresh = Mont::new(Big::from_be_bytes(&key.modulus, limbs));
+            let check = |message: &[u8], signature: &[u8]| {
+                let cached = key.verify(SignatureHash::Sha1, message, signature);
+                let opened = fresh.pow(&Big::from_be_bytes(signature, limbs), &exponent);
+                let expected = emsa_pkcs1(SignatureHash::Sha1, message, key.size()).unwrap();
+                assert_eq!(
+                    cached,
+                    opened == Big::from_be_bytes(&expected, limbs),
+                    "the context kept with the key opens as one made for the call"
+                );
+                cached
+            };
+            signers += usize::from(check(value.as_bytes(), &good));
+            assert!(!check(altered.as_bytes(), &good));
+            assert!(!check(value.as_bytes(), &other));
+        }
+        assert_eq!(
+            signers, 1,
+            "the fixture's profile property key made the signature"
+        );
     }
 
     #[test]

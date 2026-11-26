@@ -1,0 +1,3 @@
+# SERVER_OUTPUT_VERSION, SHA-256 of the server-only prepared output (tools/prepare_output.py).
+1 d11fd52b6bd3d290e9b3287ebe6edcb726c27fa8305fb5726cdad8b61189f3c1
+2 cdeb0f0c0262eb674341c530fc9a9af24c371d39982a244c11dbb9110e5cd388

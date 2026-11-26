@@ -176,7 +176,7 @@ fn camel_signed_state_and_mutations_override_contradictory_raw() {
 }
 
 #[test]
-fn camel_saved_carry_leaves_the_seven_equine_paths_unchanged() {
+fn camel_saved_carry_loads_and_saves_the_seven_equines_fields() {
     for (species, id) in [
         (Species::Horse, "minecraft:horse"),
         (Species::Donkey, "minecraft:donkey"),
@@ -190,7 +190,8 @@ fn camel_saved_carry_leaves_the_seven_equine_paths_unchanged() {
         put(&mut raw, "Tame", Tag::Byte(1));
         let mob = mob_from_nbt(&raw, &types(species, id), 92, None).unwrap();
         assert_eq!(mob.extra.equine_temper, 12);
-        assert!(!mob.extra.flag, "the other species' load path is unchanged");
+        // AbstractHorse.readAdditionalSaveData loads EatingHaystack for every equine.
+        assert!(mob.extra.flag);
         for source in [None, Some(&raw)] {
             let saved = mob_to_nbt(
                 &mob,
@@ -203,12 +204,7 @@ fn camel_saved_carry_leaves_the_seven_equine_paths_unchanged() {
             assert_eq!(saved.get("Temper"), Some(&Tag::Int(12)));
             assert_eq!(saved.get("Tame"), Some(&Tag::Byte(1)));
             assert_eq!(saved.get("Bred"), Some(&Tag::Byte(1)));
-            // Preserve the existing raw/default behavior outside Camel;
-            // this control does not claim the other species' eating codec.
-            assert_eq!(
-                saved.get("EatingHaystack"),
-                Some(&Tag::Byte(i8::from(source.is_some())))
-            );
+            assert_eq!(saved.get("EatingHaystack"), Some(&Tag::Byte(1)));
         }
     }
 }

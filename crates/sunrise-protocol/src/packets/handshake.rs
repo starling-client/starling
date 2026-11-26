@@ -53,10 +53,23 @@ mod tests {
             })
             .encode()
         };
-        let body = encode("a".repeat(255));
-        assert!(Serverbound::decode(i32::from(body[0]), &body[1..]).is_ok());
-        let body = encode("a".repeat(256));
-        assert!(Serverbound::decode(i32::from(body[0]), &body[1..]).is_err());
+        for host in [
+            "a".repeat(255),
+            format!("{}🚀", "a".repeat(253)),
+            "entry.test\0suffix".into(),
+        ] {
+            let body = encode(host.clone());
+            let Serverbound::Intention(decoded) =
+                Serverbound::decode(i32::from(body[0]), &body[1..]).unwrap()
+            else {
+                panic!("expected intention");
+            };
+            assert_eq!(decoded.host, host);
+        }
+        for host in ["a".repeat(256), format!("{}🚀", "a".repeat(254))] {
+            let body = encode(host);
+            assert!(Serverbound::decode(i32::from(body[0]), &body[1..]).is_err());
+        }
         let mut body = encode("localhost".into());
         body.push(0);
         assert!(Serverbound::decode(i32::from(body[0]), &body[1..]).is_err());

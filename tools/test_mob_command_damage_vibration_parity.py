@@ -10,8 +10,10 @@ from pathlib import Path
 import shutil
 import sys
 
-import test_command_exec_parity as runner
-from mob_command_damage_vibration_corpus import cases
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_command_exec_parity as runner
+from tools.mob_command_damage_vibration_corpus import cases
 
 
 def callback(record):

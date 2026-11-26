@@ -1,0 +1,3 @@
+ids = ["handle:LevelRef::generator_type"]
+why = "#6032: LevelRef::generator_type names the chunk generator a server level was made with, as BuiltInRegistries.CHUNK_GENERATOR names its codec (minecraft:noise, minecraft:flat, minecraft:debug, or a mod's registered generator), as the server built the level. A mod can tell a superflat world from a normal one, as Java mods test getGenerator() instanceof FlatLevelSource. New method only."
+migrate = "Nothing to change."

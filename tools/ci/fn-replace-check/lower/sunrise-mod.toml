@@ -1,7 +1,7 @@
 id = "fnr_lower"
 name = "Function replacement check: a function below the game crate"
 version = "0.1.0"
-description = "fn-replace: rows on listed functions below the game crate (sunrise-client-lib, sunrise-mod-render), each copied into its own patch crate"
+description = "fn-replace: rows on listed functions below the game crate (sunrise-client-lib, sunrise-client-render, sunrise-mod-render, sunrise-world), each copied into its own patch crate"
 authors = []
 api = "0.2"
 side = "both"
@@ -14,7 +14,7 @@ mixins = "MIXINS"
 
 [[native.mixin]]
 id = "commands"
-target = "sunrise_client_lib::lan::hub::Hub::set_mod_commands"
+target = "sunrise_client_lib::lan::hub::Hub::send_permission_level"
 kind = "HEAD"
 helper = "src/mixins/commands.rs"
 
@@ -34,7 +34,10 @@ helper = "src/mixins/render.rs"
 
 # A RETURN on a function whose module declares a `thread_local!` and whose body uses a bare
 # `matches!`, and an expression in a module that brings `Mth` into scope for its method calls
-# (sunrise-org/sunrise#3800). The dedicated server never draws a mob: the build is the check.
+# (sunrise-org/sunrise#3800). It stores the bend the `bend` row below draws on the part's
+# `Poses` (sunrise-org/sunrise#3951). The dedicated server never draws a mob: the build is the
+# check here; `mobs::render::compile_part_tests` runs this helper, `bend` and `takes` from a pose
+# write to the emitted quads.
 [[native.mixin]]
 id = "pose"
 target = "sunrise_client_lib::mobs::anim::setup"
@@ -72,4 +75,203 @@ bindings = [
     { name = "value", ty = "Option<glam::Mat4>", value = "$value" },
     { name = "m", ty = "&Mob", value = "m" },
     { name = "left", ty = "bool", value = "left" },
+]
+
+# A HEAD on a player's own move (`LocalPlayer.move`), where every travel branch hands the
+# movement before collision. The dedicated server moves no player here: the build is the check.
+[[native.mixin]]
+id = "self_move"
+target = "sunrise_client_lib::motion::MotionWorld<'_, '_, '_>::move_self"
+kind = "HEAD"
+helper = "src/mixins/self_move.rs"
+
+# A cancellable HEAD on the particle engine's ordinary queue (`ParticleEngine.add`), in
+# sunrise-client-render. The dedicated server adds no particle: the build is the check.
+[[native.mixin]]
+id = "particle_push"
+target = "sunrise_client_render::particles::ParticleEngine::push"
+kind = "HEAD"
+cancellable = true
+helper = "src/mixins/particle_push.rs"
+
+# A cancellable HEAD that draws `right_arm` of the player layer in two segments, bent at the elbow
+# by the angle the `pose` row stored on the part's `Poses`; any other part goes on to the game's own
+# polygons (sunrise-org/sunrise#3951).
+[[native.mixin]]
+id = "bend"
+target = "sunrise_client_lib::mobs::render::compile_part"
+kind = "HEAD"
+cancellable = true
+helper = "src/mixins/bend.rs"
+bindings = [
+    { name = "layer", ty = "Option<&str>", value = "layer" },
+    { name = "part", ty = "&Part", value = "part" },
+    { name = "matrix", ty = "glam::Mat4", value = "matrix" },
+    { name = "normals", ty = "ModelNormals", value = "normals" },
+    { name = "paint", ty = "Paint", value = "paint" },
+    { name = "poses", ty = "&Poses", value = "poses" },
+    { name = "quads", ty = "&mut Quads<'_>", value = "&mut *quads" },
+]
+
+# A RETURN that takes `right_arm` of the player layer, so the player model is drawn on the CPU,
+# where the `bend` row above runs; every other model stays on the GPU (sunrise-org/sunrise#3951).
+[[native.mixin]]
+id = "takes"
+target = "sunrise_client_lib::mobs::render::takes_part"
+kind = "RETURN"
+helper = "src/mixins/takes.rs"
+bindings = [
+    { name = "value", ty = "bool", value = "$value" },
+    { name = "layer", ty = "&str", value = "layer" },
+    { name = "part", ty = "&str", value = "part" },
+]
+
+# Cancellable HEADs where a Java mod's mixin cancels a vanilla mob's attack at its start, to play a
+# wind-up and call the same method again later: `MeleeAttackGoal.checkAndPerformAttack`,
+# `AbstractSkeleton`, `Drowned`, `Witch` and `Pillager.performRangedAttack`; skips
+# `Mob.serverAiStep` for a stunned mob; or answers `Mob.isSunBurnTick` for a mob spared from the sun
+# (sunrise-org/sunrise#4678). Each lets the function run, and the build is the check, except
+# `server_ai` for the piglin the check summons as `fnr_cancel`: the row cancels its step, and the
+# helper notes that 40 cancelled steps left its brain and zombification alone, while the piglin
+# `fnr_control` beside it converts (sunrise-org/sunrise#4824).
+[[native.mixin]]
+id = "melee"
+target = "sunrise_client_lib::mobs::goals::MeleeAttack::check_and_perform_attack"
+kind = "HEAD"
+cancellable = true
+helper = "src/mixins/melee.rs"
+bindings = [
+    { name = "goal", ty = "&MeleeAttack", value = "&*self" },
+    { name = "m", ty = "&Mob", value = "&*m" },
+]
+
+[[native.mixin]]
+id = "skeleton_shot"
+target = "sunrise_client_lib::mobs::undead::perform_ranged_attack"
+kind = "HEAD"
+cancellable = true
+helper = "src/mixins/skeleton_shot.rs"
+bindings = [
+    { name = "m", ty = "&Mob", value = "&*m" },
+    { name = "power", ty = "f32", value = "power" },
+]
+
+[[native.mixin]]
+id = "drowned_throw"
+target = "sunrise_client_lib::mobs::undead::drowned_throw"
+kind = "HEAD"
+cancellable = true
+helper = "src/mixins/drowned_throw.rs"
+bindings = [{ name = "m", ty = "&Mob", value = "&*m" }]
+
+[[native.mixin]]
+id = "witch_throw"
+target = "sunrise_client_lib::mobs::witch::witch_attack"
+kind = "HEAD"
+cancellable = true
+helper = "src/mixins/witch_throw.rs"
+bindings = [{ name = "m", ty = "&Mob", value = "&*m" }]
+
+[[native.mixin]]
+id = "crossbow_shot"
+target = "sunrise_client_lib::mobs::illager::shoot_crossbow"
+kind = "HEAD"
+cancellable = true
+helper = "src/mixins/crossbow_shot.rs"
+bindings = [{ name = "m", ty = "&Mob", value = "&*m" }]
+
+[[native.mixin]]
+id = "server_ai"
+target = "sunrise_client_lib::mobs::ai::server_ai_step"
+kind = "HEAD"
+cancellable = true
+helper = "src/mixins/server_ai.rs"
+bindings = [{ name = "m", ty = "&Mob", value = "&*m" }]
+
+[[native.mixin]]
+id = "sun_burn"
+target = "sunrise_client_lib::mobs::ai::sun_burn_tick"
+kind = "HEAD"
+cancellable = true
+helper = "src/mixins/sun_burn.rs"
+bindings = [{ name = "m", ty = "&Mob", value = "&*m" }]
+
+# RETURNs at the weather's boundaries, where a Java mod keeps a level dry with mixins on
+# `Level.precipitationAt` (answering `NONE`) and `ServerLevel.tickPrecipitation` (sunrise-org/sunrise#4985).
+# Each keeps the function's answer: the build is the check.
+[[native.mixin]]
+id = "precipitation"
+target = "sunrise_world::level::weather::precipitation_at"
+kind = "RETURN"
+helper = "src/mixins/precipitation.rs"
+bindings = [
+    { name = "value", ty = "PrecipitationKind", value = "$value" },
+    { name = "pos", ty = "BlockPos", value = "pos" },
+]
+
+[[native.mixin]]
+id = "tick_precipitation"
+target = "sunrise_world::level::Behaviours::tick_precipitation"
+kind = "RETURN"
+helper = "src/mixins/tick_precipitation.rs"
+bindings = [
+    { name = "value", ty = "()", value = "$value" },
+    { name = "pos", ty = "BlockPos", value = "pos" },
+]
+
+# RETURNs on the player rules a Java mod's mixin answers (sunrise-org/sunrise#4854):
+# `ServerPlayer.canHarmPlayer`, `Player.getDesiredPose`, and `Inventory.getFreeSlot`,
+# `getSlotWithRemainingSpace` and `getSuitableHotbarSlot`. Each returns vanilla's answer: the build
+# is the check.
+[[native.mixin]]
+id = "harm"
+target = "sunrise_client_lib::health::can_harm_player"
+kind = "RETURN"
+helper = "src/mixins/harm.rs"
+bindings = [
+    { name = "value", ty = "bool", value = "$value" },
+    { name = "attacker", ty = "i32", value = "attacker" },
+    { name = "victim", ty = "i32", value = "victim" },
+]
+
+[[native.mixin]]
+id = "desired_pose"
+target = "sunrise_client_lib::pose::desired_pose"
+kind = "RETURN"
+helper = "src/mixins/desired_pose.rs"
+bindings = [
+    { name = "value", ty = "Pose", value = "$value" },
+    { name = "player", ty = "i32", value = "player" },
+    { name = "flags", ty = "PoseFlags", value = "flags" },
+]
+
+[[native.mixin]]
+id = "free_slot"
+target = "sunrise_client_lib::menu::free_slot"
+kind = "RETURN"
+helper = "src/mixins/free_slot.rs"
+bindings = [
+    { name = "value", ty = "Option<usize>", value = "$value" },
+    { name = "items", ty = "&[Option<ItemStack>]", value = "items" },
+]
+
+[[native.mixin]]
+id = "remaining_space"
+target = "sunrise_client_lib::menu::slot_with_remaining_space"
+kind = "RETURN"
+helper = "src/mixins/remaining_space.rs"
+bindings = [
+    { name = "value", ty = "Option<usize>", value = "$value" },
+    { name = "stack", ty = "&ItemStack", value = "stack" },
+    { name = "max", ty = "u32", value = "max" },
+]
+
+[[native.mixin]]
+id = "hotbar_slot"
+target = "sunrise_client_lib::pick_item::suitable_hotbar_slot"
+kind = "RETURN"
+helper = "src/mixins/hotbar_slot.rs"
+bindings = [
+    { name = "value", ty = "usize", value = "$value" },
+    { name = "selected", ty = "usize", value = "selected" },
 ]

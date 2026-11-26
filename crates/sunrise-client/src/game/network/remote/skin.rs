@@ -21,10 +21,11 @@ impl Game<'_> {
             let Some(p) = r.tab_players.get(uuid) else {
                 continue;
             };
-            let skin = r.skins.get(uuid).map_or_else(
-                || sunrise_client::tab_list::default_skin(*uuid),
-                String::as_str,
-            );
+            let skin = r
+                .skins
+                .get(uuid)
+                .map(|skin| skin.body(*uuid).0)
+                .unwrap_or_else(|| sunrise_client::tab_list::default_skin(*uuid));
             for key in [
                 format!("id:{uuid:032x}"),
                 format!("name:{}", p.name.to_ascii_lowercase()),
@@ -146,6 +147,7 @@ impl Game<'_> {
     /// Whether a downloaded skin or cape is in the atlas to draw, marking it
     /// drawn; if not (new, or its slot taken), its image is queued for upload
     /// again and it is drawn from the next frame.
+<<<<<<< HEAD
     pub(in crate::game) fn again_skin(&mut self, location: &str) -> bool {
         if self.show_skin(location) {
             return true;
@@ -156,32 +158,117 @@ impl Game<'_> {
     /// Starling: whether a downloaded skin or cape is in the atlas to draw, marking it drawn
     /// (`again_skin` without queueing it again: `own_skin_sprite` stores its own).
     pub(in crate::game) fn show_skin(&mut self, location: &str) -> bool {
+||||||| 46c00106def
+    pub(super) fn again_skin(&mut self, location: &str) -> bool {
+        let mut downloads = self.skin_downloads.borrow_mut();
+=======
+    pub(super) fn again_skin(&self, location: &str) -> bool {
+        self.again_skin_with_journal(location, None)
+    }
+    fn again_skin_with_journal(
+        &self,
+        location: &str,
+        journal: Option<&sunrise_client::skins::HeadSkinJournal>,
+    ) -> bool {
+>>>>>>> ed6772e2118
         // A slot without its sprite (the atlas was rebuilt, or the upload
         // never happened) counts as missing, so the skin is stored again.
+<<<<<<< HEAD
         let shown =
             self.skin_slots.contains(location) && self.gui.atlas.sprites.contains_key(location);
         if shown {
             self.skin_downloads.borrow_mut().drawn(location);
+||||||| 46c00106def
+        if self.skin_slots.contains(location) && self.gui.atlas.sprites.contains_key(location) {
+            downloads.drawn(location);
+            true
+        } else {
+            downloads.again(location);
+            false
+=======
+        let present =
+            self.skin_slots.contains(location) && self.gui.atlas.sprites.contains_key(location);
+        if let Some(journal) = journal {
+            if present {
+                journal.record_drawn(location);
+            } else {
+                journal.record_again(location);
+            }
+        } else {
+            let mut downloads = self.skin_downloads.borrow_mut();
+            if present {
+                downloads.drawn(location);
+            } else {
+                downloads.again(location);
+            }
+>>>>>>> ed6772e2118
         }
+<<<<<<< HEAD
         shown
+||||||| 46c00106def
+=======
+        present
+>>>>>>> ed6772e2118
     }
-    /// A player's skin and model as drawn: the downloaded skin once it is in
-    /// the atlas, until then the profile's default (`DefaultPlayerSkin.get`),
-    /// as `PlayerInfo.getSkin` gives before the texture has loaded.
-    pub(super) fn drawn_skin(
-        &mut self,
+    /// Whether `skin` is a downloaded skin not yet in the atlas ([`Self::again_skin`]).
+    fn skin_pending_with_journal(
+        &self,
+        skin: &str,
+        journal: Option<&sunrise_client::skins::HeadSkinJournal>,
+    ) -> bool {
+        (skin.starts_with("skins/") || skin == "sunrise/offline_skin")
+            && !self.again_skin_with_journal(skin, journal)
+    }
+    /// A face in the player list or spectator menu as drawn, borrowed: `skin`, or the
+    /// UUID's default (`DefaultPlayerSkin.get`) while the downloaded skin is not yet in the
+    /// atlas, as `PlayerInfo.getSkin` gives before the texture has loaded.
+    fn shown_face<'s>(&self, uuid: u128, skin: &'s str) -> &'s str {
+        self.shown_face_with_journal(uuid, skin, None)
+    }
+    fn shown_face_with_journal<'s>(
+        &self,
         uuid: u128,
-        (skin, slim): (String, bool),
-    ) -> (String, bool) {
-        if (skin.starts_with("skins/") || skin == "sunrise/offline_skin") && !self.again_skin(&skin)
-        {
-            let skin = sunrise_client::tab_list::default_skin(uuid);
-            return (skin.to_owned(), skin.contains("/slim/"));
+        skin: &'s str,
+        journal: Option<&sunrise_client::skins::HeadSkinJournal>,
+    ) -> &'s str {
+        match self.skin_pending_with_journal(skin, journal) {
+            true => sunrise_client::tab_list::default_skin(uuid),
+            false => skin,
         }
-        (skin, slim)
     }
-    /// `drawn_skin` for a face in the player list or spectator menu.
-    pub(in crate::game) fn face_skin(&mut self, uuid: u128, skin: &str) -> String {
-        self.drawn_skin(uuid, (skin.to_owned(), false)).0
+    /// [`Self::shown_face`], owned.
+    pub(in crate::game) fn face_skin(&self, uuid: u128, skin: &str) -> String {
+        self.shown_face(uuid, skin).to_owned()
+    }
+    /// A mod's `GuiCanvas::player_face` skin (`skins::face_skin`): a player with a `PlayerInfo`
+    /// on this connection draws its skin as the player list does; any other UUID its profile,
+    /// looked up by id as a head's is. Until uploaded, the UUID's default. It borrows the name: a
+    /// looked-up skin's is copied into `name`, reused from face to face.
+    pub(in crate::game) fn player_face_skin_with_journal<'a>(
+        &'a self,
+        uuid: u128,
+        journal: Option<&sunrise_client::skins::HeadSkinJournal>,
+        name: &'a mut String,
+    ) -> &'a str {
+        let listed = self
+            .remote
+            .as_ref()
+            .filter(|r| r.tab_players.contains_key(&uuid))
+            .map(|r| {
+                let skin = r.skins.get(&uuid).map_or_else(
+                    || sunrise_client::tab_list::default_skin(uuid),
+                    |skin| skin.body(uuid).0,
+                );
+                self.shown_face_with_journal(uuid, skin, journal)
+            });
+        sunrise_client::skins::face_skin_with_journal(
+            uuid,
+            listed,
+            &mut self.skin_profiles.borrow_mut(),
+            &mut self.skin_downloads.borrow_mut(),
+            |location| self.gui.atlas.sprites.contains_key(location),
+            journal,
+            name,
+        )
     }
 }

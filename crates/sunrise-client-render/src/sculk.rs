@@ -106,36 +106,30 @@ pub fn intern(event: &str) -> Option<&'static str> {
         .find(|e| **e == event)
         .copied()
 }
-/// `GameEventTags.VIBRATIONS`: every event with a frequency, resonance and flap.
-pub fn is_vibration(event: &str) -> bool {
-    frequency(event) != 0
+/// The bound `game_event` tags, by tag id (`GameEventTags`): what the world's packs make of them.
+pub type EventTags = std::collections::HashMap<String, std::collections::HashSet<String>>;
+fn tagged(tags: &EventTags, tag: &str, event: &str) -> bool {
+    tags.get(tag).is_some_and(|events| events.contains(event))
+}
+/// `GameEventTags.VIBRATIONS`.
+pub fn is_vibration(tags: &EventTags, event: &str) -> bool {
+    tagged(tags, "minecraft:vibrations", event)
 }
 /// `GameEventTags.SHRIEKER_CAN_LISTEN`.
-pub fn shrieker_can_listen(event: &str) -> bool {
-    event == TENDRILS_CLICKING
+pub fn shrieker_can_listen(tags: &EventTags, event: &str) -> bool {
+    tagged(tags, "minecraft:shrieker_can_listen", event)
 }
-/// `GameEventTags.WARDEN_CAN_LISTEN`: vibrations except flap, plus shrieks and
-/// tendril clicks.
-pub fn warden_can_listen(event: &str) -> bool {
-    (is_vibration(event) && event != "minecraft:flap")
-        || event == SHRIEK
-        || shrieker_can_listen(event)
+/// `GameEventTags.WARDEN_CAN_LISTEN`.
+pub fn warden_can_listen(tags: &EventTags, event: &str) -> bool {
+    tagged(tags, "minecraft:warden_can_listen", event)
 }
-/// `GameEventTags.ALLAY_CAN_LISTEN`: note block notes.
-pub fn allay_can_listen(event: &str) -> bool {
-    event == "minecraft:note_block_play"
+/// `GameEventTags.ALLAY_CAN_LISTEN`.
+pub fn allay_can_listen(tags: &EventTags, event: &str) -> bool {
+    tagged(tags, "minecraft:allay_can_listen", event)
 }
 /// `GameEventTags.IGNORE_VIBRATIONS_SNEAKING`.
-pub fn ignored_when_sneaking(event: &str) -> bool {
-    matches!(
-        event,
-        "minecraft:hit_ground"
-            | "minecraft:projectile_shoot"
-            | "minecraft:step"
-            | "minecraft:swim"
-            | "minecraft:item_interact_start"
-            | "minecraft:item_interact_finish"
-    )
+pub fn ignored_when_sneaking(tags: &EventTags, event: &str) -> bool {
+    tagged(tags, "minecraft:ignore_vibrations_sneaking", event)
 }
 /// `VibrationSystem.getRedstoneStrengthForDistance`.
 pub fn redstone_strength(distance: f32, listener_radius: i32) -> i32 {
@@ -179,7 +173,7 @@ pub struct Context {
     pub player: bool,
 }
 /// `VibrationSystem.User.isValidVibration` without the tag test.
-pub fn valid_vibration(listens: bool, event: &str, ctx: &Context) -> bool {
+pub fn valid_vibration(tags: &EventTags, listens: bool, event: &str, ctx: &Context) -> bool {
     if !listens {
         return false;
     }
@@ -187,7 +181,7 @@ pub fn valid_vibration(listens: bool, event: &str, ctx: &Context) -> bool {
         if ctx.spectator {
             return false;
         }
-        if ctx.stepping_carefully && ignored_when_sneaking(event) {
+        if ctx.stepping_carefully && ignored_when_sneaking(tags, event) {
             return false;
         }
     }
@@ -680,19 +674,122 @@ mod tests {
         assert_eq!(frequency("minecraft:made_up"), 0);
     }
 
+    /// `GameEventTagsProvider`'s tags that listeners read, written out independently of the loader.
+    fn vanilla_tags() -> EventTags {
+        let vibrations = EVENTS
+            .iter()
+            .filter(|(_, frequency)| *frequency != 0)
+            .map(|(name, _)| *name)
+            .chain(RESONANCE);
+        let warden = vibrations
+            .clone()
+            .filter(|name| *name != "minecraft:flap")
+            .chain([SHRIEK, TENDRILS_CLICKING]);
+        let set = |names: &mut dyn Iterator<Item = &'static str>| {
+            names
+                .map(str::to_owned)
+                .collect::<std::collections::HashSet<_>>()
+        };
+        EventTags::from([
+            (
+                "minecraft:vibrations".to_owned(),
+                set(&mut vibrations.clone()),
+            ),
+            (
+                "minecraft:warden_can_listen".to_owned(),
+                set(&mut warden.clone()),
+            ),
+            (
+                "minecraft:shrieker_can_listen".to_owned(),
+                set(&mut [TENDRILS_CLICKING].into_iter()),
+            ),
+            (
+                "minecraft:allay_can_listen".to_owned(),
+                set(&mut ["minecraft:note_block_play"].into_iter()),
+            ),
+            (
+                "minecraft:ignore_vibrations_sneaking".to_owned(),
+                set(&mut [
+                    "minecraft:hit_ground",
+                    "minecraft:projectile_shoot",
+                    "minecraft:step",
+                    "minecraft:swim",
+                    "minecraft:item_interact_start",
+                    "minecraft:item_interact_finish",
+                ]
+                .into_iter()),
+            ),
+        ])
+    }
+
+    /// A pack that lists `block_place` in `ignore_vibrations_sneaking` and removes `step` from it
+    /// (`TagLoader.load`): a sneaking player's placement goes unheard and the step is heard.
+    #[test]
+    fn a_pack_rebinds_the_sneaking_tag_the_listeners_read() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("data/minecraft/tags/game_event");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("ignore_vibrations_sneaking.json"),
+            r#"{"values":["minecraft:step"]}"#,
+        )
+        .unwrap();
+        let files = [(
+            "tags/minecraft:game_event/ignore_vibrations_sneaking".to_owned(),
+            vec![br#"{"values":["minecraft:block_place"],"remove":["minecraft:step"]}"#.to_vec()],
+        )];
+        let vanilla = sunrise_items::items::load_tags(
+            root.path(),
+            "game_event",
+            &sunrise_world::loot::PackOverlay::NONE,
+        )
+        .unwrap();
+        let packed = sunrise_items::items::load_tags(
+            root.path(),
+            "game_event",
+            &sunrise_world::loot::PackOverlay::new(&files),
+        )
+        .unwrap();
+        let sneaking = Context {
+            source: Some(Who::Player.into()),
+            stepping_carefully: true,
+            ..Context::default()
+        };
+        assert!(valid_vibration(
+            &vanilla,
+            true,
+            "minecraft:block_place",
+            &sneaking
+        ));
+        assert!(!valid_vibration(
+            &vanilla,
+            true,
+            "minecraft:step",
+            &sneaking
+        ));
+        assert!(!valid_vibration(
+            &packed,
+            true,
+            "minecraft:block_place",
+            &sneaking
+        ));
+        assert!(valid_vibration(&packed, true, "minecraft:step", &sneaking));
+    }
+
     #[test]
     fn event_tables_cover_resonance() {
+        let tags = vanilla_tags();
         for (i, name) in RESONANCE.iter().enumerate() {
             assert_eq!(frequency(name), i as i32 + 1, "{name}");
-            assert!(is_vibration(name));
-            assert!(warden_can_listen(name));
+            assert!(is_vibration(&tags, name));
+            assert!(warden_can_listen(&tags, name));
         }
-        assert!(warden_can_listen(SHRIEK));
-        assert!(warden_can_listen(TENDRILS_CLICKING));
-        assert!(!warden_can_listen("minecraft:flap"));
-        assert!(is_vibration("minecraft:flap"));
-        assert!(shrieker_can_listen(TENDRILS_CLICKING));
-        assert!(!shrieker_can_listen("minecraft:step"));
+        assert!(warden_can_listen(&tags, SHRIEK));
+        assert!(warden_can_listen(&tags, TENDRILS_CLICKING));
+        assert!(!warden_can_listen(&tags, "minecraft:flap"));
+        assert!(is_vibration(&tags, "minecraft:flap"));
+        assert!(shrieker_can_listen(&tags, TENDRILS_CLICKING));
+        assert!(!shrieker_can_listen(&tags, "minecraft:step"));
         assert_eq!(notification_radius(SHRIEK), 32);
         assert_eq!(notification_radius("minecraft:jukebox_play"), 10);
         assert_eq!(notification_radius("minecraft:step"), 16);
@@ -902,20 +999,32 @@ mod tests {
 
     #[test]
     fn sneaking_ignores_footsteps_but_not_damage() {
+        let tags = vanilla_tags();
         let sneaking = Context {
             source: Some(Who::Player.into()),
             stepping_carefully: true,
             ..Context::default()
         };
-        assert!(!valid_vibration(true, "minecraft:step", &sneaking));
-        assert!(!valid_vibration(true, "minecraft:hit_ground", &sneaking));
-        assert!(valid_vibration(true, "minecraft:entity_damage", &sneaking));
+        assert!(!valid_vibration(&tags, true, "minecraft:step", &sneaking));
+        assert!(!valid_vibration(
+            &tags,
+            true,
+            "minecraft:hit_ground",
+            &sneaking
+        ));
+        assert!(valid_vibration(
+            &tags,
+            true,
+            "minecraft:entity_damage",
+            &sneaking
+        ));
         let wardenish = Context {
             source: Some(Who::Mob(1).into()),
             dampens: true,
             ..Context::default()
         };
         assert!(!valid_vibration(
+            &tags,
             true,
             "minecraft:entity_damage",
             &wardenish
@@ -924,8 +1033,14 @@ mod tests {
             dampening_state: true,
             ..Context::default()
         };
-        assert!(!valid_vibration(true, "minecraft:block_place", &on_wool));
         assert!(!valid_vibration(
+            &tags,
+            true,
+            "minecraft:block_place",
+            &on_wool
+        ));
+        assert!(!valid_vibration(
+            &tags,
             false,
             "minecraft:step",
             &Context::default()

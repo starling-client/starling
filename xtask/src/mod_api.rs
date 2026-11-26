@@ -24,6 +24,17 @@ pub fn notes() -> Result<(), String> {
     Ok(())
 }
 
+/// Prints the generated API reference chapter for the book preprocessor, without writing a source
+/// file.
+pub fn reference() -> Result<(), String> {
+    sunrise_mod_api_gen::generated_on_stdout();
+    print!(
+        "{}",
+        sunrise_mod_api_gen::generate_api_reference(&checkout()?)?
+    );
+    Ok(())
+}
+
 /// Prints the NeoForge counterparts chapter for the book preprocessor, without writing a source
 /// file.
 pub fn counterparts() -> Result<(), String> {

@@ -4,19 +4,20 @@
 // is the classic fragment's, so the shaders cannot drift apart.
 
 // Items, particles, text, breaking cracks (`RenderPipelines.OIT_ENTITY` and
-// the others on entity.fsh).
+// the others on entity.fsh). `OIT_ALPHA_ONLY` (bounds and transmittance) leaves
+// `GLINT` off, matching `OIT_ITEM_GLINT` / `OIT_ITEM_GLINT_SPECIAL`.
 @fragment fn fs_oit_entity_bounds(in: Out, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
-    return oit_bounds_fragment(entity_color(in, front).a, in.clip);
+    return oit_bounds_fragment(entity_color(in, front, false).a, in.clip);
 }
 @fragment fn fs_oit_entity_transmittance(in: Out, @builtin(front_facing) front: bool) -> OitCoefficients {
-    return oit_transmittance_fragment(entity_color(in, front).a, in.clip);
+    return oit_transmittance_fragment(entity_color(in, front, false).a, in.clip);
 }
 @fragment fn fs_oit_entity_accumulate(in: Out, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
-    return oit_accumulate_fragment(entity_written_color(in, entity_color(in, front)), in.clip);
+    return oit_accumulate_fragment(entity_written_color(in, entity_color(in, front, true)), in.clip);
 }
 // Text keeps its source gain, as fs_entity_unmarked does in the forward pass.
 @fragment fn fs_oit_text_accumulate(in: Out, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
-    return oit_accumulate_fragment(entity_color(in, front), in.clip);
+    return oit_accumulate_fragment(entity_color(in, front, true), in.clip);
 }
 // `OIT_ENTITY_SHADOW`.
 @fragment fn fs_oit_shadow_bounds(in: Out) -> @location(0) vec4<f32> {

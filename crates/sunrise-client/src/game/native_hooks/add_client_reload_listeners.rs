@@ -14,9 +14,11 @@ impl Game<'_> {
     /// aborts the reload and keeps every listener's previous assets.
     /// Client-side.
     pub(in crate::game) fn native_add_client_reload_listeners(
-        &self,
+        context: &dyn mod_api::ClientReloadListenerContext,
         listeners: &mut mod_api::ClientListenerRegistry,
     ) {
-        Self::fire_add_client_reload_listeners(self, |listen| listeners.register_listener(listen));
+        Self::fire_add_client_reload_listeners(context, |listen| {
+            listeners.register_listener(listen)
+        });
     }
 }

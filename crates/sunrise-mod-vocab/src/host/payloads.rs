@@ -49,4 +49,12 @@ pub trait PayloadsClientHost {
         id: &PayloadId,
         bytes: PayloadBytes,
     ) -> Result<PayloadAccepted, PayloadSendError>;
+    /// Side: client.
+    /// Whether the connected server has channel `id` for the connection's current phase
+    /// (NeoForge's `ICommonPacketListener.hasChannel`): the test `send_payload_to_server`
+    /// makes before it queues anything, so true means that send won't return
+    /// `UnsupportedPeer` (it may still refuse the bytes, for their size or under backpressure).
+    /// False with no connection, for a channel declared for the other phase or direction, and
+    /// for an optional channel the server did not negotiate.
+    fn has_channel(&self, id: &PayloadId) -> bool;
 }

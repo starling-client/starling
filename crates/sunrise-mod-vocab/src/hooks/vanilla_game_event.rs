@@ -10,14 +10,16 @@ pub trait Hooks {
     /// block a player broke or placed, the block a mob stepped on; None where
     /// vanilla passes none (`Context.of(entity)`).
     /// Canceling keeps the sculk sensors, wardens and allays from hearing it.
-    /// Server-side.
+    /// A dispenser fluid transfer with no open transaction in its level publishes before
+    /// overflow insertion or preparation. With a caller-owned transaction in that level,
+    /// publication waits for the outermost commit. Server-side.
     #[hook(
         dispatch = "flat",
         side = "server",
         contract = "cancel",
         out = "cancel",
         neoforge = "VanillaGameEvent",
-        version = 2,
+        version = 3,
         cancellable = true
     )]
     fn vanilla_game_event(

@@ -533,6 +533,35 @@ impl Game<'_> {
         self.native_mob_set_flag(mob, MobFlag::Aggressive, value)
     }
 
+    /// `TamableAnimal.isInSittingPose`: the synced pose, which only a sit goal
+    /// or this write changes. None for a horse, another mob kind, the dragon,
+    /// a stale or removed handle, or a client.
+    pub(super) fn mob_is_in_sitting_pose(&self, mob: MobRef) -> Option<bool> {
+        let Target::Mob(id) = self.native_entity_target(mob.entity())? else {
+            return None;
+        };
+        let mob = self.mobs.iter().find(|m| m.id == id && !m.removed)?;
+        mob.is_tamable_animal().then_some(mob.extra.sitting_pose)
+    }
+
+    /// `TamableAnimal.setInSittingPose`: writes the synced pose and marks the
+    /// mob for sync, leaving the saved order alone. False for a horse,
+    /// another mob kind, the dragon, a stale or removed handle, or a client.
+    pub(super) fn mob_set_in_sitting_pose(&mut self, mob: MobRef, sitting: bool) -> bool {
+        let Some(Target::Mob(id)) = self.native_entity_target(mob.entity()) else {
+            return false;
+        };
+        let Some(mob) = self.mobs.iter_mut().find(|m| m.id == id && !m.removed) else {
+            return false;
+        };
+        if !mob.is_tamable_animal() {
+            return false;
+        }
+        mob.extra.sitting_pose = sitting;
+        mob.needs_sync = true;
+        true
+    }
+
     /// `Mob.isPersistenceRequired`. The dragon never despawns
     /// (`EnderDragon.checkDespawn` is empty), but keeps and saves the flag
     /// (`PersistenceRequired`).
@@ -568,7 +597,7 @@ impl Game<'_> {
         let Target::Mob(id) = self.native_entity_target(mob.entity())? else {
             return None;
         };
-        Some(self.mobs.iter().find(|m| m.id == id && !m.removed)?.no_ai)
+        super::native_living_body::body_no_ai(self.native_living_body(Target::Mob(id))?)
     }
 
     /// `Mob.setNoAi`: whether the mob's own AI runs. With no AI the mob
@@ -892,6 +921,36 @@ mod tests {
 
     #[test]
     #[ignore = "daily"]
+    fn sitting_pose_reads_and_writes_a_tamable_animal_only() {
+        with_game(|game| {
+            let wolf = add_mob(game, 12, "minecraft:wolf");
+            let horse = add_mob(game, 13, "minecraft:horse");
+            assert_eq!(wolf.is_in_sitting_pose(game), Some(false));
+            assert!(wolf.set_in_sitting_pose(game, true));
+            assert!(game.mobs[0].extra.sitting_pose);
+            assert!(game.mobs[0].needs_sync);
+            assert_eq!(wolf.is_in_sitting_pose(game), Some(true));
+            assert!(wolf.set_in_sitting_pose(game, false));
+            assert!(!game.mobs[0].extra.sitting_pose);
+            assert_eq!(wolf.is_in_sitting_pose(game), Some(false));
+            // A horse is tamed another way and has no TamableAnimal pose.
+            assert_eq!(horse.is_in_sitting_pose(game), None);
+            assert!(!horse.set_in_sitting_pose(game, true));
+            assert!(!game.mobs[1].extra.sitting_pose);
+            // A cat is tamable too.
+            let cat = add_mob(game, 14, "minecraft:cat");
+            assert_eq!(cat.is_in_sitting_pose(game), Some(false));
+            assert!(cat.set_in_sitting_pose(game, true));
+            assert!(game.mobs[2].extra.sitting_pose);
+            // A removed handle is stale: it reads nothing and writes nothing.
+            game.mobs[0].removed = true;
+            assert_eq!(wolf.is_in_sitting_pose(game), None);
+            assert!(!wolf.set_in_sitting_pose(game, true));
+        })
+    }
+
+    #[test]
+    #[ignore = "daily"]
     fn leash_holder_reads_live_state() {
         use super::super::{boats::Boat, lan::LanSettings};
         use mobs::leash::{Holder, Pending};
@@ -929,7 +988,7 @@ mod tests {
                 seed: 0,
                 max_players: 2,
                 integrated: true,
-                levels: game.level_shapes,
+                levels: game.level_shapes.clone(),
                 level_seeds: game.levels.runtime.seeds(),
             };
             game.lan_host(settings, net, config).unwrap();

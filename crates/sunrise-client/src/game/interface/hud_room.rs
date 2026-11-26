@@ -2,8 +2,16 @@
 //! overlays keep clear of. `hud` empties it each frame and `hud_layers` fills it in before the
 //! world's HUD draws, into `ui.room`; the controller notice and radial menu read it. With it, the frame's `motion::Clock` (`hud_clock`), and whether an
 //! overlay holds the view (`overlay_holds_view`), which what vanilla draws there gives way to.
+<<<<<<< HEAD
 use super::{Game, Screen};
 use sunrise_client::hud::{HudBatch, HudVertex};
+||||||| 46c00106def
+use super::Game;
+use sunrise_client::hud::{HudBatch, HudVertex};
+=======
+use super::Game;
+use sunrise_client::hud::HudVertex;
+>>>>>>> ed6772e2118
 use sunrise_client::hud_kit::motion::Clock;
 use sunrise_client::hud_kit::room::{Keep, Room};
 use sunrise_client::{boss_overlay, hud_layout, hud_overlays};
@@ -107,23 +115,6 @@ impl Game<'_> {
     /// the toasts and the first-person hands give way to it.
     pub(super) fn overlay_holds_view(&self) -> bool {
         self.pad_radial_shown()
-    }
-
-    /// ToastManager.extractRenderState: F1 and overlays hide ordinary toasts without pausing them.
-    /// A mod's HUD veto hides ordinary toasts, not mandatory diagnostics.
-    pub(super) fn draw_every_toast(
-        &mut self,
-        batch: &mut HudBatch,
-        replay_playing: bool,
-        gui_canceled: bool,
-    ) {
-        let overlay_or_replay = replay_playing || self.overlay_holds_view();
-        let diagnostic_hidden = overlay_or_replay;
-        let hidden = overlay_or_replay || self.ui.hide_gui || gui_canceled;
-        self.draw_toasts(batch, hidden);
-        self.draw_tutorial_toasts(batch, hidden);
-        self.draw_pack_toasts(batch, hidden, diagnostic_hidden);
-        self.draw_music_toast(batch, hidden);
     }
 
     /// The hands drawn in first person this frame: none while an overlay holds the view, as the

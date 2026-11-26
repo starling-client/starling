@@ -1,8 +1,8 @@
 import json,hashlib,sys,uuid
 from pathlib import Path
-sys.path.insert(0,str(Path.cwd()/'tools'))
-import test_command_exec_parity as driver
-import harness_args
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_command_exec_parity as driver, harness_args
 CASES=[('honey-husk','husk',4,202.0,4,1),('no-push','husk',4,202.0,12,1),('honey-stand','armor_stand',12,202.0,4,1),('vertical-husk','husk',12,202.0,12,0)]
 PISTONS=[('honey-husk',3,201,4,'east',5,201,4),('honey-stand',11,201,4,'east',13,201,4),('vertical-husk',12,200,12,'up',12,202,12)]
 def program():

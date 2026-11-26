@@ -110,10 +110,11 @@ class SessionCheckTests(unittest.TestCase):
         encode(self.dir / name, 4, 4, 8, rows or self.rows, 0)
 
     def loaded(self, *sessions):
-        """Each session's log with its pack's load line, as the game prints it."""
+        """Each session's log with its pack's load line and the LabPBR maps' line, as the game prints them."""
         for name in sessions:
             pack = identity.SESSIONS[name][1]['SUNRISE_SHADER_PACK']
-            (self.dir / f'{name}.log').write_text(f'INFO shader pack {pack} 1.0.0: Warm sunrise in 12 ms\n')
+            (self.dir / f'{name}.log').write_text(
+                f'INFO Sunrise: LabPBR maps at 16 px, 900 layers\nINFO shader pack {pack}: 2 programs (a b) in 12 ms\n')
 
     def test_a_missing_scene_cannot_pass_when_other_screenshots_exist(self):
         scenes = identity.SESSIONS['vanilla'][2]
@@ -123,24 +124,25 @@ class SessionCheckTests(unittest.TestCase):
                          [f'vanilla.{scenes[0]}: screenshot missing'])
 
     def test_a_pack_that_changes_nothing_and_hdr_that_stays_off_are_reported(self):
-        scenes = identity.SESSIONS['golden_hour'][2]
+        # 🤖 Agent: the scenes the pack's sessions share with the sessions without it.
+        scenes = [s for s in identity.SESSIONS['terrain_pack'][2] if s in identity.SESSIONS['vanilla'][2]]
+        hdr_scenes = [s for s in identity.SESSIONS['terrain_pack_hdr'][2] if s in identity.SESSIONS['hdr_toggle'][2]]
         for scene in identity.SESSIONS['vanilla'][2]:
             self.shot(f'vanilla.{scene}.png')
-        for scene in scenes:
-            self.shot(f'golden_hour.{scene}.png')
+        for scene in identity.SESSIONS['terrain_pack'][2]:
+            self.shot(f'terrain_pack.{scene}.png', None if scene in scenes else [bytes(4)] * 4)
         for scene in identity.SESSIONS['hdr_toggle'][2]:
             self.shot(f'hdr_toggle.{scene}.png')
             self.shot(f'hdr_toggle.off.{scene}.png')
             self.shot(f'hdr_toggle.off.{scene}-hdr.png')
-        hdr_scenes = identity.SESSIONS['golden_hour_hdr'][2]
-        for scene in hdr_scenes:
-            self.shot(f'golden_hour_hdr.{scene}.png')
-            self.shot(f'golden_hour_hdr.{scene}-hdr.png')
-        self.loaded('golden_hour', 'golden_hour_hdr')
-        problems = identity.session_checks(self.dir, ['vanilla', 'golden_hour', 'golden_hour_hdr', 'hdr_toggle'])
+        for scene in identity.SESSIONS['terrain_pack_hdr'][2]:
+            self.shot(f'terrain_pack_hdr.{scene}.png')
+            self.shot(f'terrain_pack_hdr.{scene}-hdr.png')
+        self.loaded('terrain_pack', 'terrain_pack_hdr')
+        problems = identity.session_checks(self.dir, ['vanilla', 'terrain_pack', 'terrain_pack_hdr', 'hdr_toggle'])
         self.assertEqual(sorted(problems), sorted(
-            [f'golden_hour.{s}: the same as without the pack: it didn\'t run' for s in scenes]
-            + [f'golden_hour_hdr.{s}: the same as without the pack: it didn\'t run' for s in hdr_scenes]
+            [f'terrain_pack.{s}: the same as without the pack: it didn\'t run' for s in scenes]
+            + [f'terrain_pack_hdr.{s}: the same as without the pack: it didn\'t run' for s in hdr_scenes]
             + [f'hdr_toggle.{s}: HDR output was off' for s in identity.SESSIONS['hdr_toggle'][2]]
             + [f'hdr_toggle.off.{s}: HDR output was on' for s in identity.SESSIONS['hdr_toggle'][2]]))
 
@@ -148,50 +150,44 @@ class SessionCheckTests(unittest.TestCase):
         other = [bytes(255 - v for v in r) for r in self.rows]
         for scene in identity.SESSIONS['vanilla'][2]:
             self.shot(f'vanilla.{scene}.png')
-        for scene in identity.SESSIONS['golden_hour'][2]:
-            self.shot(f'golden_hour.{scene}.png', other)
-        for scene in identity.SESSIONS['golden_hour_hdr'][2]:
-            self.shot(f'golden_hour_hdr.{scene}.png', other)
-            self.shot(f'golden_hour_hdr.{scene}-hdr.png', other)
+        for scene in identity.SESSIONS['terrain_pack'][2]:
+            self.shot(f'terrain_pack.{scene}.png', other)
+        for scene in identity.SESSIONS['terrain_pack_hdr'][2]:
+            self.shot(f'terrain_pack_hdr.{scene}.png', other)
+            self.shot(f'terrain_pack_hdr.{scene}-hdr.png', other)
         for scene in identity.SESSIONS['hdr_toggle'][2]:
             self.shot(f'hdr_toggle.{scene}.png')
             self.shot(f'hdr_toggle.{scene}-hdr.png')
             self.shot(f'hdr_toggle.off.{scene}.png')
-        self.loaded('golden_hour', 'golden_hour_hdr')
+        self.loaded('terrain_pack', 'terrain_pack_hdr')
         self.assertEqual(identity.session_checks(
-            self.dir, ['vanilla', 'golden_hour', 'golden_hour_hdr', 'hdr_toggle']), [])
+            self.dir, ['vanilla', 'terrain_pack', 'terrain_pack_hdr', 'hdr_toggle']), [])
 
     def test_a_terrain_pack_session_needs_its_pack_and_labpbr_maps_in_the_log(self):
         # 🤖 Agent: relief is shot only with the pack, so no picture without it shows whether the pack ran.
         for scene in identity.SESSIONS['terrain_pack'][2]:
             self.shot(f'terrain_pack.{scene}.png')
         log = self.dir / 'terrain_pack.log'
-        log.write_text('INFO shader pack golden_hour_0_2 1.0.0: Warm sunrise in 12 ms\n')
+        log.write_text('INFO shader pack another_pack: 2 programs (a b) in 12 ms\n')
         self.assertEqual(identity.session_checks(self.dir, ['terrain_pack']), [
             'terrain_pack: the log has no load line of shader pack frame_identity_terrain',
             'terrain_pack: no LabPBR maps were loaded'])
         log.write_text('INFO Sunrise: LabPBR maps at 16 px, 900 layers\n'
-                       'INFO shader pack frame_identity_terrain 1.0.0: Terrain, Colour in 40 ms\n')
+                       'INFO shader pack frame_identity_terrain: 1 programs (gbuffers_terrain) in 40 ms\n')
         self.assertEqual(identity.session_checks(self.dir, ['terrain_pack']), [])
 
-    def test_a_world_pack_is_held_to_the_plain_float_frame_and_its_timed_session_to_timed_passes(self):
+    def test_a_world_pack_is_held_to_the_plain_float_frame(self):
         # 🤖 Agent: vanilla shoots none of world_plain's scenes, so those are what shows the pack ran.
         other = [bytes(255 - v for v in r) for r in self.rows]
-        plain = identity.SESSIONS['world_plain'][2]
-        for scene in plain:
+        for scene in identity.SESSIONS['world_plain'][2]:
             self.shot(f'world_plain.{scene}.png')
-        for name in ('world_pack', 'world_pack_timed'):
-            for scene in identity.SESSIONS[name][2]:
-                self.shot(f'{name}.{scene}.png', self.rows if scene == 'night_sky' else other)
-        self.loaded('world_pack', 'world_pack_timed')
-        sessions = ['world_plain', 'world_pack', 'world_pack_timed']
-        self.assertEqual(sorted(identity.session_checks(self.dir, sessions)), [
-            "world_pack.night_sky: the same as without the pack: it didn't run",
-            "world_pack_timed.night_sky: the same as without the pack: it didn't run",
-            'world_pack_timed: no GPU pass was timed'])
+        for scene in identity.SESSIONS['world_pack'][2]:
+            self.shot(f'world_pack.{scene}.png', self.rows if scene == 'night_sky' else other)
+        (self.dir / 'world_pack.log').write_text('INFO shader pack frame_identity_world: 5 programs (a) in 12 ms\n')
+        sessions = ['world_plain', 'world_pack']
+        self.assertEqual(identity.session_checks(self.dir, sessions),
+                         ["world_pack.night_sky: the same as without the pack: it didn't run"])
         self.shot('world_pack.night_sky.png', other)
-        self.shot('world_pack_timed.night_sky.png', other)
-        (self.dir / 'world_pack_timed.stats.json').write_text(json.dumps({'gpu_passes': {'World': 0.1}}))
         self.assertEqual(identity.session_checks(self.dir, sessions), [])
 
     def test_float_oit_must_change_the_float_picture(self):

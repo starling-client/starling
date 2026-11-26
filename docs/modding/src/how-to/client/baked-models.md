@@ -4,8 +4,7 @@ Every successful resource load bakes each block state's models and the standalon
 into one store for that load. That store belongs to the game and never changes while it is
 published: the mesher, block entity drawing and a mod all read the same baked results. A mod
 holds keys into it and borrows the geometry and metadata it needs, never the renderer's model
-types. The [design](https://github.com/sunrise-org/sunrise/blob/main/docs/design/mod-api/baked-models.md)
-covers it; block-entity model data and editing a baking result are separate changes.
+types. Block-entity model data and editing a baking result are separate topics.
 
 [Register standalone files and bakers](model-drawing.md#standalone-model-bakers) once at
 client startup. During a resource load a baker appends its declared model files through a
@@ -44,7 +43,7 @@ fn model_baking_completed(&self, host: &mut dyn ClientHost, _: &mut ModelBakingC
 | Call | Answers |
 | --- | --- |
 | `block_state_models(state: BlockState)` | A borrowed `BakedModelKeys<'_>` view of every model the state can select, in bake order without repeats. Read `len()` or `is_empty()` without scanning, or iterate over the view directly or with `iter()` to get keys by value without picking a position's seeded variant. Equality compares the generation and the ordered keys. Empty for a valid state with no baked binding. `UnknownModel` if the live state index lacks the state. |
-| `block_state_model(state: BlockState)` | The state as one drawable `ModelRef` (see [Model drawing](model-drawing.md)). `UnknownModel` for air, a state no blockstate file binds, or a state the live state index lacks. |
+| `block_state_model(state: BlockState)` | The state as one drawable `ModelRef` (see [Model drawing](model-drawing.md)). A block vanilla also draws with a special renderer (a chest, a banner) includes that renderer's default geometry. `UnknownModel` for air, a state that draws nothing, or a state the live state index lacks. |
 | `baked_model(key)` | A `BakedModelView<'_>` borrowing the geometry and `particle` sprite name, and giving the model's `ambient_occlusion` flag. `StaleModel` once a reload superseded the key; `UnknownModel` for a slot the store lacks. |
 
 The model borrows from `render_assets()`. `view.quads()` iterates in bake order without copying the
@@ -66,3 +65,13 @@ server bakes no models: its store is empty.
 
 All three calls are available through `ClientHost::render_assets()` in Setup, Reloading and World.
 A state the live index lacks gives `UnknownModel` on both.
+
+## Sprite pixels
+
+`render_assets().atlas_sprite_pixels(sprite)` reads one blocks-atlas sprite on the CPU. Pass the
+`SpriteRef` that `texture_sprites` or `block_sprites` returned for it. It answers the sprite's
+first frame (an animated sprite's strip is not returned whole), untinted, as RGBA8 with rows from
+the top, at the sprite's own size, with no GPU readback. `NoSuchSprite` means the reference has
+no sprite in the published atlas (ask `texture_sprites` again after a reload); `NotReady` means no
+resources are published yet. Call it in `client_setup` or `client_resources_reloaded` to bake a
+lookup texture or a colour table, not each frame.

@@ -1286,12 +1286,17 @@ mod tests {
             // The dark fills (the vignette's rim) may run past the view's edge, where nothing draws;
             // the tiles, the text, the header and the hint may not.
             let dark = |c: u32| c & 0x00FF_FFFF == colour(dark(), 0);
-            for v in batch.vertices.iter().filter(|v| !dark(v.color)) {
-                let [x, y] = v.pos;
+            let quads = batch.vertices.as_chunks::<6>().0.iter();
+            let lit = quads
+                .zip(batch.visible_quads())
+                .filter(|(q, _)| !dark(q[0].color));
+            for [x0, y0, x1, y1] in lit.filter_map(|(_, visible)| visible) {
                 assert!(
-                    (-0.01..=batch.width + 0.01).contains(&x)
-                        && (-0.01..=batch.height + 0.01).contains(&y),
-                    "{size:?}: a vertex at {x} {y}"
+                    -0.01 <= x0
+                        && x1 <= batch.width + 0.01
+                        && -0.01 <= y0
+                        && y1 <= batch.height + 0.01,
+                    "{size:?}: a quad at {x0} {y0} {x1} {y1}"
                 );
             }
         }

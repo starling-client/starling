@@ -1,0 +1,12 @@
+ids = [
+    "type:ReadbackTicket",
+    "type:StorageBufferDescriptor.copy_src",
+    "type:BufferError.NotInFrame",
+    "type:BufferError.NotReadable",
+    "handle:StorageBufferDescriptor::copy_src",
+    "handle:StorageBufferRef::request_readback",
+    "handle:ReadbackTicket::poll_readback",
+    "handle:ReadbackTicket::release",
+]
+why = """Add non-blocking GPU-to-CPU readback of retained storage buffers, following vanilla 26.3's CommandEncoder.copyToBuffer(source, target) into a USAGE_MAP_READ buffer and GpuBuffer.map(read) once the fence has signalled. StorageBufferDescriptor::copy_src() (vanilla's USAGE_COPY_SRC) opts a buffer in. StorageBufferRef::request_readback(host, offset, len) records the copy at its place among a frame-graph compute node's dispatches and returns a ReadbackTicket; ReadbackTicket::poll_readback(host) is Ok(None) while in flight and Ok(Some(bytes)) once; ReadbackTicket::release(host) drops an unwanted ticket, and unpolled tickets are freed when the mod unloads. Nothing waits on the device. BufferError gains NotReadable and NotInFrame."""
+migrate = """Additive API. Create the buffer with `StorageBufferDescriptor::new(size).copy_src()`, call `buffer.request_readback(host, offset, len)` inside the `record` callback of `add_compute_pass`, and poll the ticket each frame with `ticket.poll_readback(host)`. Code that matches `BufferError` exhaustively already has a wildcard arm, as the enum is non-exhaustive."""

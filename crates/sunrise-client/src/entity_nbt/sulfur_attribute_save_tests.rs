@@ -4,7 +4,7 @@ use sunrise_world::attributes::{Modifier, Operation};
 #[test]
 fn the_save_writes_base_and_permanent_modifiers_and_replaces_stale_entries() {
     let mut m = crate::mobs::sulfur_cube::adopt_body_tests::cube(None);
-    let map = m.extra.armor_attributes.as_deref_mut().unwrap();
+    let map = m.extra.generic_attributes.as_deref_mut().unwrap();
     let kr = map.catalog().id("minecraft:knockback_resistance").unwrap();
     let friction = map.catalog().id("minecraft:friction_modifier").unwrap();
     map.edit(kr, |i, o| {
@@ -93,7 +93,7 @@ fn the_save_writes_base_and_permanent_modifiers_and_replaces_stale_entries() {
 fn another_species_map_is_not_saved_by_the_bridge() {
     let mut m = crate::mobs::sulfur_cube::adopt_body_tests::cube(None);
     std::sync::Arc::make_mut(&mut m.kind).species = crate::mobs::Species::Slime;
-    let map = m.extra.armor_attributes.as_deref_mut().unwrap();
+    let map = m.extra.generic_attributes.as_deref_mut().unwrap();
     let kr = map.catalog().id("minecraft:knockback_resistance").unwrap();
     map.edit(kr, |i, o| i.set_base_value(0.5, o).unwrap());
     let mut nbt = EntityTagWriter::new(None);

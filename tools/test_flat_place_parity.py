@@ -15,15 +15,13 @@ import shutil
 import subprocess
 import time
 
-try:
-    from . import lab, test_rust_parity as base
-    from .test_dedicated_server_parity import Server, free_port
-    from .test_server_world_gen_parity import escape, structure_chunks
-except ImportError:
-    import lab
-    import test_rust_parity as base
-    from test_dedicated_server_parity import Server, free_port
-    from test_server_world_gen_parity import escape, structure_chunks
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_rust_parity as base
+from tools.test_dedicated_server_parity import Server, free_port
+from tools.test_server_world_gen_parity import escape, structure_chunks
 
 SEED = -9147835479224470908
 LOADED = [f'execute if loaded {x} 200 {z}' for x, z in ((0, 0), (16, 0), (0, 16), (16, 16))]

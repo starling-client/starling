@@ -1,5 +1,5 @@
 //! What a client mod draws in the world each frame through `native_world_primitives`
-//! (docs/native-mods.md): lines, box outlines, filled boxes, beacon-style beams and text facing
+//! (docs/modding/src/how-to/native-mods.md): lines, box outlines, filled boxes, beacon-style beams and text facing
 //! the camera, in world coordinates with ARGB colours. The game tessellates them
 //! (`game/world_primitives.rs`) and the renderer draws them with its own pipelines
 //! (`gfx::world_primitives`), so a mod never touches wgpu for them.

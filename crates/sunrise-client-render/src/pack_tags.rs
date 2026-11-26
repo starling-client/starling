@@ -15,19 +15,32 @@ pub(super) fn bind(
 ) -> HashMap<String, Vec<String>> {
     let kind = format!("tags/{registry}");
     let separator = format!("/{kind}/");
-    let raw = root
-        .list_under("data", &[&kind])
-        .into_iter()
-        .filter_map(|file| {
-            let (namespace, name) = file.strip_prefix("data/")?.split_once(&separator)?;
-            let name = name.strip_suffix(".json")?;
-            let json = serde_json::from_slice::<Json>(&root.read(&file).ok()?).ok()?;
-            let layer = TagLayers::from_file(json)
-                .inspect_err(|err| log::warn!("Sunrise: couldn't read tag file {file}: {err}"))
-                .ok()?;
-            Some((format!("{namespace}:{name}"), layer))
-        })
-        .collect();
+    let mut raw = sunrise_world::tag_layers::convention::layers(registry);
+    for file in root.list_under("data", &[&kind]) {
+        let Some((namespace, name)) = file
+            .strip_prefix("data/")
+            .and_then(|s| s.split_once(&separator))
+        else {
+            continue;
+        };
+        let Some(name) = name.strip_suffix(".json") else {
+            continue;
+        };
+        let Some(json) = root
+            .read(&file)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Json>(&bytes).ok())
+        else {
+            continue;
+        };
+        if let Err(err) = raw
+            .entry(format!("{namespace}:{name}"))
+            .or_default()
+            .push_file(json)
+        {
+            log::warn!("Sunrise: couldn't read tag file {file}: {err}");
+        }
+    }
     TagLayers::bind(registry, &raw, contains)
 }
 

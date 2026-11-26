@@ -14,11 +14,9 @@ before it.
 import json
 import sys
 from pathlib import Path
-try:
-    from . import lab, oracle_harness as harness
-except ImportError:
-    import lab
-    import oracle_harness as harness
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, oracle_harness as harness
 
 KINDS = ['furnace', 'blast_furnace', 'smoker']
 KIND_RECIPE = {'furnace': 'minecraft:smelting', 'blast_furnace': 'minecraft:blasting',

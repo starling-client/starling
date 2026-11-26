@@ -11,6 +11,7 @@ use crate::game::general::general_type_catalog;
 use indexmap::IndexMap;
 use std::collections::HashMap;
 use sunrise_client::join_seq::JoinSeq;
+use sunrise_client::text::Text;
 use sunrise_core::geometry::{Aabb, Vec3};
 use sunrise_mod_runtime::attachments::{Attachments, Holder};
 use sunrise_protocol::general_entity::{self, Message};
@@ -29,8 +30,15 @@ pub(in crate::game) struct RemoteGeneral {
     /// Yaw, then pitch, in degrees.
     pub rotation: [f32; 2],
     pub previous_rotation: [f32; 2],
-    /// Client ticks since the spawn.
+    /// Client ticks since the spawn: `Entity.tickCount`, which wraps as Java's `int` does
+    /// (read as `i32`).
     pub age: u32,
+    /// `Entity.DATA_CUSTOM_NAME`, as `SetEntityData` entry 2 last set it.
+    pub custom_name: Option<Text>,
+    /// `Entity.DATA_CUSTOM_NAME_VISIBLE`, as `SetEntityData` entry 3 last set it.
+    pub custom_name_visible: bool,
+    /// `Entity.DATA_NO_GRAVITY`, as `SetEntityData` entry 5 last set it.
+    pub no_gravity: bool,
     /// Frozen synced fields, initialized on spawn and rebuilt at each attachment sync boundary.
     pub render_attachments: mod_api::EntityRenderAttachments,
 }
@@ -52,6 +60,9 @@ impl RemoteGeneral {
             rotation,
             previous_rotation: rotation,
             age: 0,
+            custom_name: None,
+            custom_name_visible: false,
+            no_gravity: false,
             render_attachments,
         }
     }
@@ -168,11 +179,11 @@ impl Game<'_> {
             }
         };
         let row = RemoteGeneral::new(type_slot, uuid, position, rotation, render_attachments);
-        r.general.rows.insert(id, row);
         self.persist
             .uuids
             .insert(id as u32, sunrise_client::lan::playerdata::uuid_ints(uuid));
         // Tracked: the id-keyed move, position sync, teleport and removal handlers apply.
+        // Snapshot any old emitter body before publishing this new row.
         self.spawn_entity(
             id,
             &type_key,
@@ -180,8 +191,10 @@ impl Game<'_> {
             [rotation[0], rotation[1], rotation[0]],
         );
         if let Some(r) = self.remote.as_mut() {
+            r.general.rows.insert(id, row);
             r.lerps.remove(&id);
         }
+        self.pick_section_sync_id(id as u32);
     }
 
     /// `ClientLevel.tickPassenger` for the general rows in an applied passenger
@@ -220,7 +233,7 @@ impl Game<'_> {
     }
 
     /// The server removed general row `id` from the window.
-    pub(super) fn forget_remote_general(r: &mut Remote, id: i32) {
+    pub(in crate::game) fn forget_remote_general(r: &mut Remote, id: i32) {
         r.general.rows.shift_remove(&id);
     }
 }
@@ -234,7 +247,7 @@ pub(super) fn tick_remote_general(
     for (id, row) in rows.iter_mut() {
         row.previous = row.position;
         row.previous_rotation = row.rotation;
-        row.age = row.age.saturating_add(1);
+        row.age = row.age.wrapping_add(1);
         let Some(l) = lerps.get_mut(id).filter(|l| l.steps > 0) else {
             continue;
         };
@@ -257,19 +270,12 @@ mod tests {
     use sunrise_mod_runtime::attachments::Holder;
     use sunrise_protocol::packets::play::{self, Clientbound as C};
 
-    static FUEL: mod_api::AttachmentType<i32> = mod_api::AttachmentType {
-        namespace: "mymod",
-        name: "fuel",
-        default: || 0,
-        codec: Some(mod_api::AttachmentCodec {
-            encode: |n| Ok([("n".into(), sunrise_core::nbt::Tag::Int(*n))].into()),
-            decode: |c| match c.get(&"n".into()) {
-                Some(sunrise_core::nbt::Tag::Int(n)) => Ok(*n),
-                _ => Err(mod_api::AttachmentError::Decode),
-            },
-        }),
-        copy_on_death: false,
-        sync: true,
+    const FUEL_CODEC: mod_api::AttachmentCodec<i32> = mod_api::AttachmentCodec {
+        encode: |n| Ok([("n".into(), sunrise_core::nbt::Tag::Int(*n))].into()),
+        decode: |c| match c.get(&"n".into()) {
+            Some(sunrise_core::nbt::Tag::Int(n)) => Ok(*n),
+            _ => Err(mod_api::AttachmentError::Decode),
+        },
     };
 
     #[test]
@@ -306,6 +312,10 @@ mod tests {
     #[mod_api::__subscriptions]
     impl mod_api::Hooks for Declare {
         fn register(&self, r: &mut dyn mod_api::Registrar, _: &mod_api::RegistrationContext) {
+            r.register_attachment_type(
+                mod_api::AttachmentDescriptor::new("mymod:fuel", || 0i32).sync(FUEL_CODEC),
+            )
+            .unwrap();
             let types = [
                 ("missile", 0.5, Some([1.0, 1.25, 0.0]), false),
                 ("package", 2.0, None, true),
@@ -320,6 +330,7 @@ mod tests {
                     mod_api::GeneralSavePolicy::Save,
                     true,
                     pickable,
+                    false,
                     (!pickable).then_some(mod_api::PushReaction::IgnoreEntity),
                     8,
                     1,
@@ -472,6 +483,11 @@ mod tests {
                     velocity: [0.0; 3],
                     rotation: [0.0; 2],
                     owner: None,
+                    custom_name: None,
+                    custom_name_visible: false,
+                    base: Default::default(),
+                    on_ground: false,
+                    fall_distance: 0.0,
                     uuid: [1, 0, 0, 4],
                     envelope: GeneralTypeEnvelope {
                         type_key: PACKAGE.into(),
@@ -566,8 +582,9 @@ mod tests {
     #[test]
     #[ignore = "daily"]
     fn riding_reads_follow_the_server_passenger_lists() {
-        use crate::game::native_entity_refs::tests::run_fresh_cases;
-        use mod_api::{ClientHost, EntityRef, WorldEpoch};
+        use crate::game::native_entity_refs::tests::{collect_entity_visit, run_fresh_cases};
+        use mod_api::{ClientHost, EntityReadError, EntityRef, WorldEpoch};
+        use std::ops::ControlFlow;
 
         if run_fresh_cases(
             "game::remote::general::tests::riding_reads_follow_the_server_passenger_lists",
@@ -649,7 +666,10 @@ mod tests {
                 );
                 game.handle_packet(set(9, vec![99])).unwrap();
                 let host: &dyn ClientHost = game;
-                assert_eq!(vehicle.passengers(host), Some(vec![]));
+                assert_eq!(
+                    vehicle.visit_passengers(host, &mut |_| panic!("empty seat list visited")),
+                    Ok(ControlFlow::Continue(()))
+                );
                 assert_eq!(vehicle.is_vehicle(host), Some(false));
 
                 game.handle_packet(set(9, vec![12, 99, 7])).unwrap();
@@ -657,15 +677,38 @@ mod tests {
                 game.position_riders();
                 assert_eq!(row.position(game), Some([2.5, 71.25, 1.5]));
                 let host: &dyn ClientHost = game;
-                assert_eq!(vehicle.passengers(host), Some(vec![row, me]));
+                assert_eq!(
+                    collect_entity_visit(|visit| vehicle.visit_passengers(host, visit)),
+                    Ok(vec![row, me])
+                );
+                let mut visited = None;
+                assert_eq!(
+                    vehicle.visit_passengers(host, &mut |rider| {
+                        assert!(visited.replace(rider).is_none());
+                        ControlFlow::Break(())
+                    }),
+                    Ok(ControlFlow::Break(()))
+                );
+                assert_eq!(visited, Some(row));
+                assert_eq!(
+                    vehicle
+                        .visit_indirect_passengers(host, &mut |_| panic!("client walked the tree")),
+                    Err(EntityReadError::Unavailable)
+                );
                 assert_eq!(vehicle.is_vehicle(host), Some(true));
                 assert_eq!(row.vehicle(host), Some(vehicle));
                 assert_eq!(me.vehicle(host), Some(vehicle));
                 assert_eq!(cloud.is_passenger(host), Some(true));
                 assert_eq!(cloud.root_vehicle(host), Some(vehicle));
                 assert_eq!(unknown.vehicle(host), None);
-                assert_eq!(unknown.passengers(host), None);
-                assert_eq!(stale.passengers(host), None);
+                assert_eq!(
+                    unknown.visit_passengers(host, &mut |_| panic!("untracked vehicle visited")),
+                    Err(EntityReadError::Stale)
+                );
+                assert_eq!(
+                    stale.visit_passengers(host, &mut |_| panic!("stale vehicle visited")),
+                    Err(EntityReadError::Stale)
+                );
                 assert_eq!(stale.is_vehicle(host), None);
 
                 // An unknown vehicle can't displace a real relationship. Later tracking
@@ -676,7 +719,10 @@ mod tests {
                 let late = game.entity(99).unwrap();
                 assert_eq!(late.is_passenger(game), Some(false));
                 assert_eq!(late.is_vehicle(game), Some(false));
-                assert_eq!(vehicle.passengers(game), Some(vec![row, me]));
+                assert_eq!(
+                    collect_entity_visit(|visit| vehicle.visit_passengers(game, visit)),
+                    Ok(vec![row, me])
+                );
 
                 game.handle_packet(set(4, vec![9])).unwrap();
                 assert_eq!(vehicle.vehicle(game), None);
@@ -688,7 +734,10 @@ mod tests {
                 for refused in [5, 6] {
                     let cannot_carry = game.entity(refused).unwrap();
                     game.handle_packet(set(refused as i32, vec![12])).unwrap();
-                    assert_eq!(cannot_carry.passengers(game), Some(vec![]));
+                    assert_eq!(
+                        collect_entity_visit(|visit| cannot_carry.visit_passengers(game, visit)),
+                        Ok(vec![])
+                    );
                     assert_eq!(row.vehicle(game), Some(vehicle));
                 }
 
@@ -723,13 +772,22 @@ mod tests {
                 );
                 let host: &dyn ClientHost = game;
                 assert_eq!(me.is_passenger(host), Some(false));
-                assert_eq!(me.passengers(host), Some(vec![]));
+                assert_eq!(
+                    collect_entity_visit(|visit| me.visit_passengers(host, visit)),
+                    Ok(vec![])
+                );
                 assert_eq!(late.is_passenger(host), Some(false));
-                assert_eq!(vehicle.passengers(host), Some(vec![row]));
+                assert_eq!(
+                    collect_entity_visit(|visit| vehicle.visit_passengers(host, visit)),
+                    Ok(vec![row])
+                );
                 assert_eq!(cloud.root_vehicle(host), Some(vehicle));
 
                 game.handle_packet(set(9, vec![])).unwrap();
-                assert_eq!(vehicle.passengers(game), Some(vec![]));
+                assert_eq!(
+                    collect_entity_visit(|visit| vehicle.visit_passengers(game, visit)),
+                    Ok(vec![])
+                );
                 assert_eq!(cloud.root_vehicle(game), Some(row));
             })
         });
@@ -750,6 +808,7 @@ mod tests {
         mod_platform::testing::with_mods(declare().into(), || {
             mod_platform::__private::part_tests::install_parts_fixture(&declare()).unwrap();
             crate::game::item_entities::thrown_items_tests::with_remote_game(|game| {
+                let fuel_key = mod_api::testing::attachment_key::<i32>("mymod", "fuel");
                 // An attachment sync for an unknown entity is ignored without storing anything.
                 game.remote_attachment_sync(attachment_message(5, false, Some(99)));
                 assert!(
@@ -766,36 +825,41 @@ mod tests {
                     .unwrap();
                 game.handle_packet(spawn(5, "mymod:missile", [9.5, 70.0, 0.5]))
                     .unwrap();
+                let empty_capture = mod_api::__private::game::capture_entity_render_attachments(
+                    &Attachments::default(),
+                );
                 let held = rows(game);
                 assert_eq!(held.keys().collect::<Vec<_>>(), [&5]);
                 assert_eq!(held[&5].position, [0.5, 70.0, 0.5]);
                 assert_eq!(held[&5].uuid, 0x77);
                 // Immediately visible with empty render attachments even without attachment_sync.
-                assert_eq!(
-                    held[&5].render_attachments,
-                    mod_api::EntityRenderAttachments::default()
-                );
-                assert_eq!(held[&5].render_attachments.get(&FUEL), Ok(None));
+                assert_eq!(held[&5].render_attachments, empty_capture);
+                assert_eq!(held[&5].render_attachments.get(&fuel_key), Ok(None));
                 // Both deltas and whole snapshots publish to render_attachments for a known row.
                 game.remote_attachment_sync(attachment_message(5, false, Some(12)));
-                assert_eq!(rows(game)[&5].render_attachments.get(&FUEL), Ok(Some(&12)));
+                assert_eq!(
+                    rows(game)[&5].render_attachments.get(&fuel_key),
+                    Ok(Some(&12))
+                );
                 game.remote_attachment_sync(attachment_message(5, true, Some(9)));
                 assert_eq!(row_ids(game), [5]);
-                assert_eq!(rows(game)[&5].render_attachments.get(&FUEL), Ok(Some(&9)));
+                assert_eq!(
+                    rows(game)[&5].render_attachments.get(&fuel_key),
+                    Ok(Some(&9))
+                );
                 let fuel = |game: &Game<'_>, id: u32| {
                     let held = game.remote.as_ref().unwrap();
                     let map = held.attachments.get(&Holder::Entity(id))?;
                     let value = map
-                        .synced()
+                        .synced(sunrise_client::lan::entity::project_attachment_sync(
+                            Holder::Entity(id),
+                        ))
                         .into_iter()
                         .find(|entry| {
                             entry.namespace == "mymod".into() && entry.name == "fuel".into()
                         })?
                         .value?;
-                    match value.get(&"n".into()) {
-                        Some(sunrise_core::nbt::Tag::Int(n)) => Some(*n),
-                        _ => None,
-                    }
+                    (FUEL_CODEC.decode)(&value).ok()
                 };
                 assert_eq!(fuel(game, 5), Some(9));
                 // A second row spawned with no attachment_sync at all is immediately visible with
@@ -803,10 +867,7 @@ mod tests {
                 game.handle_packet(spawn(8, "mymod:missile", [0.5, 70.0, 0.5]))
                     .unwrap();
                 assert_eq!(row_ids(game), [5, 8]);
-                assert_eq!(
-                    rows(game)[&8].render_attachments,
-                    mod_api::EntityRenderAttachments::default()
-                );
+                assert_eq!(rows(game)[&8].render_attachments, empty_capture);
                 game.handle_packet(C::EntityPositionSync(play::EntityPositionSync {
                     id: 5,
                     path: play::PositionPath::Linear([3.5, 70.0, 0.5]),
@@ -863,6 +924,7 @@ mod tests {
         mod_platform::testing::with_mods(declare().into(), || {
             mod_platform::__private::part_tests::install_parts_fixture(&declare()).unwrap();
             crate::game::native_entity_refs::tests::with_client_game(|game| {
+                let fuel_key = mod_api::testing::attachment_key::<i32>("mymod", "fuel");
                 let local = raw_payloads::Local::capture(raw_payloads::Side::Server).unwrap();
                 let (_reader, mut writer) = connect_play_test(game, |reader, writer| {
                     offer_test_payloads(reader, writer, &local.manifest);
@@ -886,7 +948,170 @@ mod tests {
                 let held = rows(game);
                 assert_eq!(held.keys().collect::<Vec<_>>(), [&15]);
                 assert_eq!(held[&15].position, [1.5, 70.0, 2.5]);
-                assert_eq!(held[&15].render_attachments.get(&FUEL), Ok(Some(&42)));
+                assert_eq!(held[&15].render_attachments.get(&fuel_key), Ok(Some(&42)));
+            })
+        });
+    }
+
+    /// `Entity.DATA_CUSTOM_NAME` (2) and `DATA_CUSTOM_NAME_VISIBLE` (3) reach a general row
+    /// through vanilla's `SetEntityData`, after its spawn and again when they change, and the
+    /// client's `EntityRef` reads them (`name`, the styled `custom_name` and
+    /// `custom_name_visible`); a name taken away reads as none and false.
+    #[test]
+    #[ignore = "daily"]
+    fn a_general_rows_synced_name_and_visibility_read_through_its_handle() {
+        use sunrise_core::nbt::Tag;
+        use sunrise_protocol::entity_data::{Value, serializer};
+
+        mod_platform::__private::initialize().unwrap();
+        let _phase = mod_platform::__private::RegistrationGuard::open();
+        let declare = || vec![mod_api::ModEntry::new("mymod", Box::new(Declare))];
+        mod_platform::testing::with_mods(declare().into(), || {
+            mod_platform::__private::part_tests::install_parts_fixture(&declare()).unwrap();
+            crate::game::item_entities::thrown_items_tests::with_remote_game(|game| {
+                game.handle_packet(C::Login(play::Login {
+                    player_id: 7,
+                    hardcore: false,
+                    levels: vec!["minecraft:overworld".into()],
+                    max_players: 20,
+                    chunk_radius: 8,
+                    simulation_distance: 8,
+                    reduced_debug_info: false,
+                    show_death_screen: true,
+                    limited_crafting: false,
+                    spawn: play::SpawnInfo {
+                        dimension_type: 0,
+                        dimension: "minecraft:overworld".into(),
+                        seed: 1,
+                        game_type: 0,
+                        previous_game_type: None,
+                        debug: false,
+                        flat: false,
+                        last_death: None,
+                        portal_cooldown: 0,
+                        sea_level: 63,
+                    },
+                    online_mode: false,
+                    enforces_secure_chat: false,
+                }))
+                .unwrap();
+                game.handle_packet(C::PlayerPosition(play::PlayerPosition {
+                    teleport: 1,
+                    position: [0.5, 70.0, 0.5],
+                    delta: [0.0; 3],
+                    yaw: 0.0,
+                    pitch: 0.0,
+                    relatives: 0,
+                }))
+                .unwrap();
+                game.handle_packet(spawn(12, "mymod:missile", [0.5, 70.0, 0.5]))
+                    .unwrap();
+                let row = game.entity(12).unwrap();
+                let data = |values: Vec<(u8, i32, Value)>| {
+                    C::SetEntityData(play::SetEntityData { id: 12, values })
+                };
+                let named = |name: Option<&str>, visible: bool| {
+                    data(vec![
+                        (
+                            2,
+                            serializer::OPTIONAL_COMPONENT,
+                            Value::OptText(name.map(|n| Tag::String(n.into()))),
+                        ),
+                        (3, serializer::BOOLEAN, Value::Bool(visible)),
+                    ])
+                };
+
+                // Before any data: no name, not visible.
+                assert_eq!(row.custom_name(game).unwrap(), None);
+                assert_eq!(row.custom_name_visible(game), Some(false));
+                assert_ne!(row.name(game).as_deref(), Some("Grumbles"));
+
+                game.handle_packet(named(Some("Grumbles"), true)).unwrap();
+                assert_eq!(row.name(game).as_deref(), Some("Grumbles"));
+                assert_eq!(
+                    row.custom_name(game).unwrap(),
+                    Some(mod_api::Text::literal("Grumbles"))
+                );
+                assert_eq!(row.custom_name_visible(game), Some(true));
+
+                game.handle_packet(named(Some("Rumbles"), false)).unwrap();
+                assert_eq!(row.name(game).as_deref(), Some("Rumbles"));
+                assert_eq!(
+                    row.custom_name(game).unwrap(),
+                    Some(mod_api::Text::literal("Rumbles"))
+                );
+                assert_eq!(row.custom_name_visible(game), Some(false));
+
+                game.handle_packet(named(None, false)).unwrap();
+                assert_ne!(row.name(game).as_deref(), Some("Rumbles"));
+                assert_eq!(rows(game)[&12].custom_name, None);
+                assert_eq!(row.custom_name(game).unwrap(), None);
+                assert_eq!(row.custom_name_visible(game), Some(false));
+            })
+        });
+    }
+
+    /// `Entity.DATA_NO_GRAVITY` (5) reaches a general row through vanilla's `SetEntityData`
+    /// after its spawn and again when it changes: the client's row holds what was last set.
+    #[test]
+    #[ignore = "daily"]
+    fn a_general_rows_synced_no_gravity_reaches_its_client_row() {
+        use sunrise_protocol::entity_data::{Value, serializer};
+
+        mod_platform::__private::initialize().unwrap();
+        let _phase = mod_platform::__private::RegistrationGuard::open();
+        let declare = || vec![mod_api::ModEntry::new("mymod", Box::new(Declare))];
+        mod_platform::testing::with_mods(declare().into(), || {
+            mod_platform::__private::part_tests::install_parts_fixture(&declare()).unwrap();
+            crate::game::item_entities::thrown_items_tests::with_remote_game(|game| {
+                game.handle_packet(C::Login(play::Login {
+                    player_id: 7,
+                    hardcore: false,
+                    levels: vec!["minecraft:overworld".into()],
+                    max_players: 20,
+                    chunk_radius: 8,
+                    simulation_distance: 8,
+                    reduced_debug_info: false,
+                    show_death_screen: true,
+                    limited_crafting: false,
+                    spawn: play::SpawnInfo {
+                        dimension_type: 0,
+                        dimension: "minecraft:overworld".into(),
+                        seed: 1,
+                        game_type: 0,
+                        previous_game_type: None,
+                        debug: false,
+                        flat: false,
+                        last_death: None,
+                        portal_cooldown: 0,
+                        sea_level: 63,
+                    },
+                    online_mode: false,
+                    enforces_secure_chat: false,
+                }))
+                .unwrap();
+                game.handle_packet(C::PlayerPosition(play::PlayerPosition {
+                    teleport: 1,
+                    position: [0.5, 70.0, 0.5],
+                    delta: [0.0; 3],
+                    yaw: 0.0,
+                    pitch: 0.0,
+                    relatives: 0,
+                }))
+                .unwrap();
+                game.handle_packet(spawn(12, "mymod:missile", [0.5, 70.0, 0.5]))
+                    .unwrap();
+                let set = |no_gravity: bool| {
+                    C::SetEntityData(play::SetEntityData {
+                        id: 12,
+                        values: vec![(5, serializer::BOOLEAN, Value::Bool(no_gravity))],
+                    })
+                };
+                assert!(!rows(game)[&12].no_gravity);
+                game.handle_packet(set(true)).unwrap();
+                assert!(rows(game)[&12].no_gravity);
+                game.handle_packet(set(false)).unwrap();
+                assert!(!rows(game)[&12].no_gravity);
             })
         });
     }
@@ -900,10 +1125,11 @@ mod tests {
         mod_platform::testing::with_mods(declare().into(), || {
             mod_platform::__private::part_tests::install_parts_fixture(&declare()).unwrap();
             crate::game::item_entities::thrown_items_tests::with_remote_game(|game| {
+                let fuel_key = mod_api::testing::attachment_key::<i32>("mymod", "fuel");
                 // Path 1: no prior Holder::Entity entry -> empty initial snapshot.
                 game.handle_packet(spawn(21, "mymod:missile", [0.0, 70.0, 0.0]))
                     .unwrap();
-                assert_eq!(rows(game)[&21].render_attachments.get(&FUEL), Ok(None));
+                assert_eq!(rows(game)[&21].render_attachments.get(&fuel_key), Ok(None));
 
                 // Path 2: existing Holder::Entity map present before spawn -> captured on spawn.
                 let mut existing = sunrise_mod_runtime::attachments::ResidentAttachments::default();
@@ -919,7 +1145,10 @@ mod tests {
                     .insert(Holder::Entity(22), existing);
                 game.handle_packet(spawn(22, "mymod:missile", [1.0, 70.0, 0.0]))
                     .unwrap();
-                assert_eq!(rows(game)[&22].render_attachments.get(&FUEL), Ok(Some(&77)));
+                assert_eq!(
+                    rows(game)[&22].render_attachments.get(&fuel_key),
+                    Ok(Some(&77))
+                );
             })
         });
     }

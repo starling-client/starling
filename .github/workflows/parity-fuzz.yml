@@ -1,0 +1,114 @@
+name: parity fuzz (report-only)
+on:
+  workflow_call:
+    inputs:
+      commit:
+        type: string
+        required: true
+      dry_run:
+        type: string
+        required: true
+defaults:
+  run:
+    shell: bash
+permissions:
+  contents: read
+  issues: write
+jobs:
+  fuzz:
+    runs-on: dyna-large
+    timeout-minutes: 45
+    env:
+      SUNRISE_TELEMETRY_URL: 'off'
+    steps:
+      - name: Start this attempt's private directory
+        id: private
+        run: |
+          umask 077
+          root="${DYNA_CI_KEEP:-${DYNA_CI_BUILD:?}/keep}/fuzz"
+          dir="$root/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          mkdir -p "$root"
+          # Earlier attempts' private reports are kept for two weeks.
+          find "$root" -mindepth 1 -maxdepth 1 -type d -mtime +14 -exec rm -rf -- {} +
+          mkdir "$dir"
+          echo "FUZZ_DIR=$dir" >> "$GITHUB_ENV"
+          # Reserve time for the issue filer even if the harness needs to be stopped.
+          echo "FUZZ_DEADLINE=$(($(date +%s) + 42*60))" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v4
+        id: checkout
+        with:
+          ref: ${{ inputs.commit }}
+          persist-credentials: false
+      - name: Read this workflow's open fuzz cases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/ci/daily_fuzz.py open --work-dir "$FUZZ_DIR" > "$FUZZ_DIR/open.log" 2>&1
+      - name: Check Dyna dependencies (install fallback without root)
+        run: bash tools/ci/dyna_ci_deps.sh
+      - name: Install Rust toolchain
+        run: |
+          if [ ! -x "$CARGO_HOME/bin/rustup" ]; then
+            curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile minimal
+          fi
+          bash tools/ci/rustup_install.sh --profile minimal
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+      - name: Restore unchanged source timestamps
+        run: python3 tools/ci/source_mtimes.py "${CARGO_TARGET_DIR:-target}/ci-source-mtimes-v2.json"
+      - name: Cap build parallelism to the runner
+        run: python3 tools/ci/cargo_jobs.py --job-mib 3072 --cap
+      - name: Set up disk-backed scratch and prepared vanilla data
+        run: |
+          rm -rf -- "$DYNA_CI_BUILD/fuzz-out" "$DYNA_CI_BUILD/fuzz-tmp"
+          mkdir -p "$DYNA_CI_BUILD/fuzz-out" "$DYNA_CI_BUILD/fuzz-tmp" "$CARGO_TARGET_DIR/parity"
+          ln -s "$DYNA_CI_BUILD/fuzz-out" .local
+          ln -s "$CARGO_TARGET_DIR/parity" .local/parity-target
+          export TMPDIR="$DYNA_CI_BUILD/fuzz-tmp"
+          echo "TMPDIR=$TMPDIR" >> "$GITHUB_ENV"
+          SUNRISE_DYNA_CACHE=true SUNRISE_PREPARED_CACHE="$DYNA_CI_BUILD/vanilla" SUNRISE_SHARED_SOURCE=/cache/sunrise-local \
+            bash tools/ci/vanilla-data.sh > "$FUZZ_DIR/setup.log" 2>&1
+      - name: Virtual display
+        run: |
+          Xvfb -displayfd 3 -screen 0 1280x1024x24 -nolisten tcp 3> "$RUNNER_TEMP/xvfb-display" > /dev/null 2>&1 &
+          for _ in $(seq 60); do [ -s "$RUNNER_TEMP/xvfb-display" ] && break; sleep 0.5; done
+          [ -s "$RUNNER_TEMP/xvfb-display" ] || { echo '::error::Xvfb did not report a display'; exit 1; }
+          echo "DISPLAY=:$(tr -d '[:space:]' < "$RUNNER_TEMP/xvfb-display")" >> "$GITHUB_ENV"
+          echo 'WAYLAND_DISPLAY=' >> "$GITHUB_ENV"
+      - name: Build the game
+        env:
+          CARGO_PROFILE_RELEASE_LTO: 'false'
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: '16'
+          CARGO_PROFILE_RELEASE_INCREMENTAL: 'true'
+          CARGO_PROFILE_DEV_OPT_LEVEL: '3'
+        run: |
+          export CARGO_TARGET_DIR="$PWD/.local/parity-target"
+          left=$((FUZZ_DEADLINE - $(date +%s)))
+          ((left > 0)) || exit 1
+          timeout --kill-after=10s "${left}s" cargo build --profile fast -p sunrise-game --bin sunrise-client \
+            > "$FUZZ_DIR/build.log" 2>&1
+      - name: Run smoke, corpus, issue replays and the day's fuzz batch
+        run: |
+          export GITHUB_STEP_SUMMARY="$FUZZ_DIR/private-summary.md"
+          left=$((FUZZ_DEADLINE - $(date +%s)))
+          if ((left > 0)); then
+            # Its own process group, which timeout signals as a whole, so the game and JVM children stop with the driver.
+            setsid --wait timeout --kill-after=10s "${left}s" python3 tools/ci/daily_fuzz.py run --work-dir "$FUZZ_DIR" \
+              --binary "$PWD/.local/parity-target/fast/sunrise-client" --scenarios "$RUNNER_TEMP/fuzz-scenarios.json" \
+              > "$FUZZ_DIR/run.log" 2>&1 || echo 'The fuzz batch did not complete; see the issue report.'
+          fi
+      - name: Report outcomes and file or close fuzz issues
+        if: ${{ !cancelled() && steps.private.outcome == 'success' && steps.checkout.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT: ${{ inputs.commit }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: python3 tools/ci/daily_fuzz.py file --work-dir "$FUZZ_DIR"
+      - name: Upload scenario inputs only
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-scenarios-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/fuzz-scenarios.json
+          if-no-files-found: ignore
+          retention-days: 7

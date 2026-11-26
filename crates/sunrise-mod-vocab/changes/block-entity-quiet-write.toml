@@ -1,0 +1,3 @@
+ids = ["handle:BlockEntityRef::merge_data_quiet", "handle:BlockEntityRef::replace_data_quiet"]
+why = "A block entity whose state changes every tick needs a write that only calls BlockEntity.setChanged (the chunk is unsaved, comparators re-read it) and leaves Level.sendBlockUpdated to the mod, as vanilla and NeoForge block entities do. merge_data and replace_data always sent the update."
+migrate = "Nothing to change. To write without sending, call merge_data_quiet or replace_data_quiet with the same data, and call host.block_entity_sync(pos) when clients should see it."

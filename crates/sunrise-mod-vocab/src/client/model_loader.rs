@@ -83,7 +83,7 @@ impl RegisterModelLoadersEvent<'_> {
     /// Register a model loader under `id` (NeoForge's `ModelEvent.RegisterLoaders`).
     ///
     /// Any valid `<namespace>:<path>` identifier is accepted; duplicates and collisions with the
-    /// built-in loaders (`neoforge:composite`, `neoforge:obj`, `fusion:model`) are rejected as
+    /// built-in loaders (`neoforge:composite`, `neoforge:obj`, `neoforge:empty`, `fusion:model`) are rejected as
     /// registration errors. `schema` explicitly selects which fields use the cuboid decoder.
     /// The callback runs once per model and resolved slot set per resource load, never per frame.
     pub fn register<F>(&mut self, id: Identifier, schema: ModelLoaderSchema, loader: F)

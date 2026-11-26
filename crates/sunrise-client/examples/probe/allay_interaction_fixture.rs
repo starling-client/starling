@@ -12,6 +12,7 @@ use sunrise_core::geometry::Vec3;
 
 fn kind() -> Arc<MobType> {
     Arc::new(MobType {
+        type_key: Default::default(),
         shadow: None,
         id: "minecraft:allay".into(),
         species: Species::Allay,
@@ -50,6 +51,7 @@ fn kind() -> Arc<MobType> {
             pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
             polygons: Vec::new(),
             children: Vec::new(),
+            layer: None,
         }),
         layers: Default::default(),
         texture: String::new(),

@@ -8,9 +8,13 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from tests.test_ci_concurrency import yaml, ROOT
+from tests.os_support import needs_runner_shell, needs_symlinks
+from tests.test_ci_concurrency import ROOT
 from tests.test_ignored_test_completion import IgnoredTests, target, summary
 from tools.ci import ignored_tests
+from tools.ci import vendored_yaml
+
+yaml = vendored_yaml.load()
 
 
 class Visibility(unittest.TestCase):
@@ -82,6 +86,7 @@ class Visibility(unittest.TestCase):
             self.assertNotIn('len=3', log)
             self.assertNotIn('index=4', log)
 
+    @needs_symlinks
     def test_source_comes_from_head_not_private_worktree(self):
         with tempfile.TemporaryDirectory() as folder:
             old = os.getcwd()
@@ -155,3 +160,128 @@ class Visibility(unittest.TestCase):
         self.assertIn("no recognized compiler diagnostic", log.getvalue())
         self.assertLess(len(log.getvalue()), 7500)
         self.assertNotIn("private unexpected payload", log.getvalue())
+<<<<<<< HEAD
+||||||| 46c00106def
+
+    def test_data_end_memory_telemetry_is_bounded_best_effort(self):
+        steps = yaml.safe_load((ROOT / '.github/workflows/ignored-tests.yml').read_text())["jobs"]["ignored-tests-shards"]["steps"]
+        step = next(s for s in steps if s.get("name") == "Record data-leg end and compiler cache")
+        self.assertEqual(step["if"], "always()")
+        script = step["run"]
+        self.assertIn("/sys/fs/cgroup/$metric", script)
+        self.assertIn("memory.peak memory.max memory.swap.peak memory.swap.max", script)
+        self.assertNotIn("cargo", script)
+        with tempfile.TemporaryDirectory() as folder:
+            Path(folder, "memory.peak").write_text("123456\n")
+            Path(folder, "memory.max").write_text("max\n")
+            Path(folder, "memory.swap.max").write_text("PRIVATE_PAYLOAD\n")
+            # Exercise the actual shell under errexit; absent/invalid files cannot fail it.
+            script = script.replace("/sys/fs/cgroup/", folder + "/")
+            script = script.replace("sccache --show-stats", "false")
+            result = subprocess.run(["bash", "-e", "-c", script], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("memory_peak_bytes=123456", result.stdout)
+        self.assertIn("memory_max_bytes=max", result.stdout)
+        self.assertIn("memory_swap_peak_bytes=unavailable", result.stdout)
+        self.assertIn("memory_swap_max_bytes=unavailable", result.stdout)
+        self.assertIn("whole_job_cgroup_including_compilation_tests_file_cache", result.stdout)
+        self.assertNotIn("PRIVATE_PAYLOAD", result.stdout)
+        self.assertEqual(result.stderr, "")
+
+    def test_formatting_failure_does_not_skip_later_builds_but_is_propagated(self):
+        steps = yaml.safe_load((ROOT / '.github/workflows/dyna-ci.yml').read_text())["jobs"]["lint"]["steps"]
+        fmt = next(s for s in steps if s.get("id") == "formatting")
+        native = next(s for s in steps if s.get("id") == "native-lint")
+        final = next(s for s in steps if s.get("name") == "Summarize failed gate steps")
+        self.assertNotIn("continue-on-error", fmt)
+        self.assertNotIn("clippy", fmt["run"])
+        self.assertIn("clippy", native["run"])
+        self.assertNotIn("continue-on-error", native)
+        for name in ("Lint native targets", "Lint the server build without sound or controllers"):
+            step = next(s for s in steps if s.get("name") == name)
+            self.assertLess(steps.index(fmt), steps.index(step))
+            self.assertLess(steps.index(step), steps.index(final))
+            self.assertNotIn("formatting", step.get("if", ""))
+        self.assertIn("failure()", final["if"])
+        self.assertIn("!cancelled()", final["if"])
+        for name in ("native-lint", "server-lint"):
+            step = next(s for s in steps if s.get("id") == name)
+            self.assertIn("!cancelled()", step["if"])
+            self.assertNotIn("success()", step["if"])
+=======
+
+    @needs_runner_shell
+    def test_data_end_memory_telemetry_is_bounded_best_effort(self):
+        steps = yaml.safe_load((ROOT / '.github/workflows/ignored-tests.yml').read_text())["jobs"]["ignored-tests-shards"]["steps"]
+        step = next(s for s in steps if s.get("name") == "Record data-leg end and compiler cache")
+        self.assertEqual(step["if"], "always()")
+        script = step["run"]
+        self.assertIn("/sys/fs/cgroup/$metric", script)
+        self.assertIn("memory.peak memory.max memory.swap.peak memory.swap.max", script)
+        self.assertNotIn("cargo", script)
+        with tempfile.TemporaryDirectory() as folder:
+            Path(folder, "memory.peak").write_text("123456\n")
+            Path(folder, "memory.max").write_text("max\n")
+            Path(folder, "memory.swap.max").write_text("PRIVATE_PAYLOAD\n")
+            # Exercise the actual shell under errexit; absent/invalid files cannot fail it.
+            script = script.replace("/sys/fs/cgroup/", folder + "/")
+            script = script.replace("sccache --show-stats", "false")
+            result = subprocess.run(["bash", "-e", "-c", script], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("memory_peak_bytes=123456", result.stdout)
+        self.assertIn("memory_max_bytes=max", result.stdout)
+        self.assertIn("memory_swap_peak_bytes=unavailable", result.stdout)
+        self.assertIn("memory_swap_max_bytes=unavailable", result.stdout)
+        self.assertIn("whole_job_cgroup_including_compilation_tests_file_cache", result.stdout)
+        self.assertNotIn("PRIVATE_PAYLOAD", result.stdout)
+        self.assertEqual(result.stderr, "")
+
+    def test_formatting_failure_does_not_skip_later_builds_but_is_propagated(self):
+        steps = yaml.safe_load((ROOT / '.github/workflows/dyna-ci.yml').read_text())["jobs"]["lint"]["steps"]
+        fmt = next(s for s in steps if s.get("id") == "formatting")
+        native = next(s for s in steps if s.get("id") == "native-lint")
+        final = next(s for s in steps if s.get("name") == "Summarize failed gate steps")
+        self.assertNotIn("continue-on-error", fmt)
+        self.assertNotIn("clippy", fmt["run"])
+        self.assertIn("clippy", native["run"])
+        self.assertNotIn("continue-on-error", native)
+        self.assertLess(steps.index(fmt), steps.index(native))
+        self.assertLess(steps.index(native), steps.index(final))
+        self.assertNotIn("formatting", native.get("if", ""))
+        self.assertIn("failure()", final["if"])
+        self.assertIn("!cancelled()", final["if"])
+        self.assertIn("!cancelled()", native["if"])
+        self.assertNotIn("success()", native["if"])
+
+    @needs_runner_shell
+    def test_server_lint_failure_fails_the_step(self):
+        # A failing server lint must propagate non-zero exit and print its output unfolded.
+        steps = yaml.safe_load((ROOT / '.github/workflows/dyna-ci.yml').read_text())["jobs"]["lint"]["steps"]
+        native = next(s for s in steps if s.get("id") == "native-lint")
+        script = native["run"]
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            runner_temp = tmp_path / "runner_temp"
+            runner_temp.mkdir()
+            fake_ci = tmp_path / "tools" / "ci"
+            fake_ci.mkdir(parents=True)
+            # Stub check_warnings.py: fail if --target-dir is present (server lint), succeed otherwise
+            (fake_ci / "check_warnings.py").write_text(
+                "import sys\n"
+                "if '--target-dir' in sys.argv:\n"
+                "    print('Simulated server clippy failure')\n"
+                "    sys.exit(1)\n"
+                "sys.exit(0)\n"
+            )
+            env = {
+                **os.environ,
+                "RUNNER_TEMP": str(runner_temp),
+                "GITHUB_OUTPUT": str(tmp_path / "github_output"),
+                "JOBS": "-j4",
+            }
+            res = subprocess.run(["bash", "-c", script], cwd=tmp_path, env=env, capture_output=True, text=True)
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn("Server lint failed:", res.stdout)
+            self.assertIn("Simulated server clippy failure", res.stdout)
+            self.assertIn("workspace_lint=success", (tmp_path / "github_output").read_text())
+>>>>>>> ed6772e2118

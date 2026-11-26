@@ -222,6 +222,18 @@ impl Catalog {
     pub fn default_base(&self, entity: &str, id: AttributeId) -> Option<f64> {
         self.defaults.get(entity).and_then(|b| b[id.0])
     }
+    /// The names supported by the entity type's supplier, in catalog order.
+    pub fn attribute_names_for(&self, entity: &str) -> impl Iterator<Item = &str> {
+        self.defaults
+            .get(entity)
+            .into_iter()
+            .flat_map(move |bases| {
+                self.attributes
+                    .iter()
+                    .zip(bases.iter())
+                    .filter_map(|(attribute, base)| base.map(|_| attribute.name.as_str()))
+            })
+    }
     /// The entity type's whole supplier row, attribute name to base — the
     /// shape of an `entity-types.json` row. None if the type has no row.
     pub fn entity_row(&self, entity: &str) -> Option<std::collections::HashMap<String, f64>> {

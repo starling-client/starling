@@ -40,7 +40,7 @@ Util.describeError	skip:debug		error text for game test reports and FreeType err
 Util.executeInSequence	missing		minor: the steps of a file move are not retried as a unit; a failed move is reported once
 Util.runWithRetries	missing		minor: no retry loop (10 attempts) around file moves for Windows file locks; Sunrise's save and datafix moves do not retry
 Util.safeMoveFile	port	crates/sunrise-world/src/datafix/files.rs::move_file	gap: minor: one attempt, no 10-try retry; still refuses to overwrite an existing target
-Util.safeReplaceOrMoveFile	port	crates/sunrise-client/src/save.rs::write_dat	gap: minor: no retries and no rollback to the backup when the new file cannot be renamed in; the old file is moved to a *_old name
+Util.safeReplaceOrMoveFile	port	crates/sunrise-client/src/save/level_dat.rs::write_dat	gap: minor: no retries and no rollback to the backup when the new file cannot be renamed in; the old file is moved to a *_old name
 Util.offsetByCodepoints	inline	crates/sunrise-client-render/src/screen_draw.rs::TextField::key	gap: minor: arrow keys move one character only (no count argument, no surrogate pairs); ctrl-arrows use ui word_position
 Util.startTimerHackThread	skip:other		JVM Windows timer-resolution thread; Rust timers do not need it
 Util.copyBetweenDirs	inline	crates/sunrise-client-render/src/datapack.rs::install	Create World's picks are copied into <world>/datapacks one by one, each pack's folder or zip (datapack.rs::copy)
@@ -64,11 +64,12 @@ ContextMap.Builder	skip:java		builder for a loot context map
 DebugBeeInfo.hasHive	skip:debug		F3 bee debug renderer data
 DebugBrainDump	skip:debug		brain dump for the F3 debug renderer
 DebugHiveInfo.pack	skip:debug		F3 beehive debug renderer data
-DebugSubscription.Event	skip:java		packet codec for debug subscription values; Sunrise has no debug subscriptions
-DebugSubscription.Update	skip:java		packet codec for debug subscription updates; Sunrise has no debug subscriptions
-DebugSubscriptions.registerTemporaryValue	skip:debug		registers a debug subscription; Sunrise has only the request packet id
-LevelDebugSynchronizers	skip:debug		server push of F3 debug renderer data; Sunrise has no debug subscriptions
-ServerDebugSubscribers	skip:debug		tracks which players opted into debug renderers; Sunrise has none
+DebugSubscription.Event	skip:java		packet codec for debug renderer subscription values; not ported
+DebugSubscription.Update	skip:java		packet codec for debug renderer subscription updates; not ported
+DebugSubscriptions.registerTemporaryValue	skip:debug		registers a temporary debug renderer subscription; not ported
+LevelDebugSynchronizers	skip:debug		server push of F3 debug renderer data; renderer subscriptions are not ported
+ServerDebugSubscribers.hasRequiredPermissions	port	crates/sunrise-client/src/lan/containers.rs::Hub::tick_time_subscribers	operators only (any level); the IDE and singleplayer-owner clause is false on a dedicated server
+ServerDebugSubscribers	skip:debug		tracks which players opted into debug renderers; only the tick-time subscription is served, by Hub::tick_time_subscribers
 TrackingDebugSynchronizer	skip:debug		F3 debug renderer data sync; Sunrise has none
 TrackingDebugSynchronizer.PoiSynchronizer	skip:debug		F3 POI debug renderer data sync; Sunrise has none
 TrackingDebugSynchronizer.SourceSynchronizer	skip:debug		F3 debug value sync; Sunrise has none
@@ -78,4 +79,4 @@ AbstractSampleLogger.logFullSample	port	crates/sunrise-client/src/debug_chart.rs
 AbstractSampleLogger.logPartialSample	inline	crates/sunrise-client/src/debug_chart.rs::log_tick	one tick sample's four slots are filled at once and pushed by log_full: full tick, tick method, scheduled tasks, idle
 AbstractSampleLogger.resetSample	skip:other		resets the working sample buffer; Sunrise passes each full sample, nothing to reset
 LocalSampleLogger.useSample	port	crates/sunrise-client/src/debug_chart.rs::SampleLogger::log_full	copies the working sample into the 240-entry ring
-RemoteSampleLogger.useSample	skip:debug		sends chart samples to debug subscribers; Sunrise has no debug subscriptions
+RemoteSampleLogger.useSample	port	crates/sunrise-client/src/game/interface/dedicated/mod.rs::Game::run_dedicated_inner	the dedicated loop sends full, method, scheduled-task and idle durations to the snapshotted tick-time subscribers

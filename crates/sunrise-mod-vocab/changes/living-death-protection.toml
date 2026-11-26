@@ -1,0 +1,3 @@
+ids = ["hook:living_death_protection", "type:LivingDeathProtectionEvent", "type:HookId"]
+why = "Adds the server hook living_death_protection (vanilla LivingEntity.checkTotemDeathProtection): once neither hand protects a dying entity, a mod may answer with a death_protection stack it keeps elsewhere, such as a totem in an accessory slot, and the entity survives as a hand's totem would make it. living_use_totem only refuses a hand's stack. New hook: no existing hook version changes."
+migrate = "Additive. A mod that matches HookId exhaustively adds the LivingDeathProtection arm. A mod that answers takes the item out of its own slot itself."

@@ -4,7 +4,7 @@
 //! A Sunrise crate (docs/layers.md), which `sunrise-official` registers: it hears each rendered
 //! frame's times through the platform's hooks ([`HOOKS`]: `frame_timed`), draws over everything
 //! as a HUD layer ([`LAYER`]), keeps its setting as the `overlay` line of `sunrise-graphics.txt`
-//! ([`SETTING`]) and shows it on Sunrise Settings' Extras page ([`SECTION`]). Each `Game` has its
+//! ([`SETTING`]) and shows it on Sunrise Settings' Gameplay page ([`SECTION`]). Each `Game` has its
 //! own setting and frames, by its seat (`hooks::seat`).
 #![forbid(unsafe_code)]
 
@@ -245,7 +245,7 @@ impl Store for Setting {
     }
 }
 
-/// The setting's row, in a group of its own on Sunrise Settings' Extras page, for
+/// The setting's row, in a group of its own on Sunrise Settings' Gameplay page, for
 /// `sunrise_platform::pages::register`.
 pub static SECTION: Section = Section;
 

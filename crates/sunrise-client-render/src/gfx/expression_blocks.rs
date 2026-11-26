@@ -4,20 +4,20 @@
 //! (`shader_modifiers`, wiki "Expression Uniforms on Any Shader"), resolved when the shader
 //! loaded (`polytone_post::ShaderModifiers::resolve`), each a block of one float holding its
 //! program's value this frame. The lightmap, sky, stars and block outline pipelines lay theirs out
-//! with this, and the GUI's, the world's and the see-through text pipelines too, through
+//! with this, and the text pipelines too, through
 //! [`bindings`] and [`sampler_bindings`]; any other pack core shader pipeline can.
 
-use crate::core_shader::CoreProgram;
 use crate::polytone_post::ExpressionUniform;
+use sunrise_glsl::Translated;
 
 /// The block outline's shader, as a pack's `shader_modifiers` names it.
 pub const LINES: [&str; 1] = ["minecraft:core/rendertype_lines"];
 /// The sky disc's and the stars' shaders.
 pub const SKY: [&str; 1] = ["minecraft:core/sky"];
 pub const STARS: [&str; 1] = ["minecraft:core/stars"];
-/// The text's shader, one for the GUI's, the world's and the see-through text
-/// (`polytone/shader_modifiers/core/text.json`). Each of those three pipelines binds its blocks
-/// with [`bindings`] and its samplers with [`sampler_bindings`].
+/// The text's shader, one for the GUI's, the world's, the see-through text and Improved
+/// Transparency's stages (`polytone/shader_modifiers/core/text.json`). Each of those pipelines
+/// binds its blocks with [`bindings`] and its samplers with [`sampler_bindings`].
 pub(crate) const TEXT: [&str; 1] = ["minecraft:core/text"];
 
 /// An expression uniform's block: one float, as std140 rounds a block.
@@ -61,7 +61,7 @@ pub(crate) fn bindings<'a>(
 /// `textures` that a stage of `program` reads, bound only to the stages that read either: their
 /// layout entries and their bind group entries.
 pub(crate) fn sampler_bindings<'a>(
-    program: &CoreProgram,
+    program: &Translated,
     textures: &[(u32, &'a wgpu::TextureView, &'a wgpu::Sampler)],
 ) -> (
     Vec<wgpu::BindGroupLayoutEntry>,
@@ -101,15 +101,72 @@ pub(crate) fn sampler_bindings<'a>(
     (layout, group)
 }
 
-/// Vanilla's blocks a stage of `program` reads: binding, offset, size and the stages reading it.
-pub(crate) fn vanilla_blocks(program: &CoreProgram) -> Vec<(u32, u64, u64, wgpu::ShaderStages)> {
+/// The bytes each vanilla block has in a pipeline's buffer: from its [`VANILLA_OFFSETS`] to the
+/// next.
+pub(crate) const VANILLA_SLOT: u64 = 256;
+
+/// Vanilla's block `index` (`core_shader::BLOCKS`' order) as `program` binds it: vanilla's size,
+/// or the size its stages declare when larger (an older vanilla's block with more members, which
+/// vanilla's builder takes: it checks a descriptor's name, type and dimension, not a block's
+/// size). The bytes past vanilla's members read zero; [`oversized_block`] tells one that doesn't
+/// fit its slot.
+pub(crate) fn vanilla_block_size(program: &Translated, index: usize) -> u64 {
+    block_size(program, index as u32, VANILLA_SIZES[index])
+}
+
+/// The block at `binding` as `program` binds it: `size` (what the pass writes), or the size its
+/// stages declare when larger, the bytes past the pass's reading zero ([`vanilla_block_size`]).
+pub(crate) fn block_size(program: &Translated, binding: u32, size: u64) -> u64 {
+    size.max(program.declared_size(binding))
+}
+
+/// A vanilla block a program declares larger than its slot ([`VANILLA_SLOT`]): binding it would
+/// reach the next block, so the program draws natively and the pack stays, as before such a
+/// block failed the load (a whole buffer laid out from the program's sizes would fit it).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct OversizedBlock {
+    pub block: &'static str,
+    pub size: u64,
+}
+
+impl std::fmt::Display for OversizedBlock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "its {} block is {} bytes, past the {VANILLA_SLOT} Sunrise binds it in",
+            self.block, self.size
+        )
+    }
+}
+
+/// The first of vanilla's blocks, then of the pass's `own` (`LightmapInfo`, `CloudInfo`, each in
+/// a slot as wide), that `program` declares larger than its slot.
+pub(crate) fn oversized_block(
+    program: &Translated,
+    own: &[&'static str],
+) -> Option<OversizedBlock> {
+    let own = own.iter().filter_map(|&block| {
+        let i = program.other.iter().position(|n| n == block)?;
+        Some((block, program.other_binding(i)))
+    });
+    (crate::core_shader::BLOCKS.iter().copied())
+        .chain(own)
+        .find_map(|(block, binding)| {
+            let size = program.declared_size(binding);
+            (size > VANILLA_SLOT).then_some(OversizedBlock { block, size })
+        })
+}
+
+/// Vanilla's blocks a stage of `program` reads: binding, offset, size ([`vanilla_block_size`])
+/// and the stages reading it.
+pub(crate) fn vanilla_blocks(program: &Translated) -> Vec<(u32, u64, u64, wgpu::ShaderStages)> {
     (0..4u32)
         .map(|b| {
             let i = b as usize;
             (
                 b,
                 VANILLA_OFFSETS[i],
-                VANILLA_SIZES[i],
+                vanilla_block_size(program, i),
                 program.stages_reading(b),
             )
         })
@@ -240,10 +297,10 @@ pub(crate) struct ExpressionBlocks {
 impl ExpressionBlocks {
     /// The Polytone blocks `program`'s stages read: `PolyGlobals`, when a stage reads it, and
     /// `uniforms` (resolved when it loaded), from `base` in the pipeline's buffer.
-    pub(crate) fn new(program: &CoreProgram, uniforms: &[ExpressionUniform], base: u64) -> Self {
+    pub(crate) fn new(program: &Translated, uniforms: &[ExpressionUniform], base: u64) -> Self {
         let globals = (program.other.iter())
             .position(|name| name == sunrise_polytone::globals::BLOCK)
-            .map(crate::core_shader::other_binding)
+            .map(|i| program.other_binding(i))
             .map(|binding| {
                 (
                     binding,
@@ -448,7 +505,7 @@ mod tests {
 
     /// A program whose fragment stage reads `Tint`, and `PolyGlobals` when `globals` (which it
     /// otherwise imports without reading).
-    fn program(globals: bool) -> CoreProgram {
+    fn program(globals: bool) -> Translated {
         let include = |id: &str| {
             sunrise_polytone::globals::is_include(id)
                 .then(|| sunrise_polytone::globals::GLSL.to_owned())
@@ -504,7 +561,7 @@ mod tests {
         assert_eq!(values, [0.25, 1.5]);
         // `PolyGlobals` read: its 176 bytes at `base`, the uniforms after it.
         let reading = program(true);
-        let globals = crate::core_shader::other_binding(
+        let globals = reading.other_binding(
             reading
                 .other
                 .iter()
@@ -524,7 +581,7 @@ mod tests {
 
     /// A program whose fragment stage declares `PolyGlobals` with `members` (GLSL lines) and
     /// reads `read`, with `include` answering its imports.
-    fn declaring(members: &str, read: &str) -> CoreProgram {
+    fn declaring(members: &str, read: &str) -> Translated {
         let fsh = format!(
             "#version 330\nlayout(std140) uniform PolyGlobals {{\n{members}}};\n\
              layout(location = 0) out vec4 fragColor;\n\
@@ -547,7 +604,7 @@ mod tests {
     /// is refused by name.
     #[test]
     fn poly_globals_must_be_declared_as_the_game_lays_it_out() {
-        let check = |program: &CoreProgram| {
+        let check = |program: &Translated| {
             let i = program
                 .other
                 .iter()
@@ -555,7 +612,7 @@ mod tests {
                 .unwrap();
             check_poly_globals(
                 [&program.vertex, &program.fragment],
-                crate::core_shader::other_binding(i),
+                program.other_binding(i),
             )
         };
         assert_eq!(check(&program(true)), Ok(()));
@@ -595,7 +652,7 @@ mod tests {
                 .iter()
                 .position(|n| n == "PolyGlobals")
                 .unwrap();
-            let binding = crate::core_shader::other_binding(i);
+            let binding = program.other_binding(i);
             let mut fragment = program.fragment;
             let (handle, ty) = (fragment.global_variables.iter())
                 .find(|(_, g)| g.binding.as_ref().is_some_and(|b| b.binding == binding))
@@ -645,7 +702,7 @@ mod tests {
             ShaderModifiers::read(&pack, Default::default())
         };
         let own = [sunrise_polytone::globals::BLOCK];
-        let resolve = |file: &str, program: &CoreProgram| {
+        let resolve = |file: &str, program: &Translated| {
             modifiers(file)
                 .resolve((SKY[0], SKY[0]), program, &own)
                 .map(|u| u.len())
@@ -681,10 +738,13 @@ mod tests {
         let wrong = declaring("    float PolySunAngle;\n", "PolySunAngle");
         assert!(matches!(
             resolve("{}", &wrong),
-            Err(ExpressionRefusal::Globals(GlobalsRefusal::Member {
+            Err(ExpressionRefusal::Globals(at, GlobalsRefusal::Member {
                 index: 0,
                 ..
-            }))
+            })) if at == sunrise_glsl::Location {
+                file: "minecraft:shaders/core/core.fsh".into(),
+                line: 2,
+            }
         ));
     }
 }

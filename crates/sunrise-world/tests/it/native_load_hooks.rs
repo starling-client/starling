@@ -23,7 +23,7 @@ fn load_hooks_are_noops_before_install_and_use_first_callbacks_after() {
 
     let hooks = || NativeLoadHooks {
         item_ability_default: |_, _, _| false,
-        loot_ability: |_, _, _| {},
+        loot_ability: |_, _, _, _| {},
         loot_table_load: |context, id, table| {
             assert_eq!(context.origin(), DataLoadOrigin::ServerDataLoad);
             if id == "minecraft:malformed" {
@@ -46,7 +46,7 @@ fn load_hooks_are_noops_before_install_and_use_first_callbacks_after() {
     assert!(
         native_load_hooks::install(NativeLoadHooks {
             item_ability_default: |_, _, _| false,
-            loot_ability: |_, _, _| {},
+            loot_ability: |_, _, _, _| {},
             loot_table_load: |_, _, table| *table = json!("second"),
             modify_default_components: |_, _, components| components.clear(),
         })
@@ -71,10 +71,19 @@ fn load_hooks_are_noops_before_install_and_use_first_callbacks_after() {
     );
     let raw = loot::shared_tables(&root, &loot::PackOverlay::NONE).unwrap();
     assert_eq!(raw["minecraft:test"], json!({"markers":[]}));
+    let damage = sunrise_world::damage_source::Catalog::default();
+    let load_server = || {
+        loot::LootData::load_with_damage(
+            &root,
+            &loot::PackOverlay::NONE,
+            item_data.defaults(),
+            &damage,
+            &[],
+            Some(&server_context),
+        )
+    };
     for _ in 0..2 {
-        let mut server =
-            loot::LootData::load(&root, &loot::PackOverlay::NONE, item_data.defaults()).unwrap();
-        server.apply_native_table_loads(&server_context).unwrap();
+        let server = load_server().unwrap();
         assert_eq!(
             server.tables()["minecraft:test"],
             json!({"markers":["minecraft:test"]})
@@ -84,20 +93,15 @@ fn load_hooks_are_noops_before_install_and_use_first_callbacks_after() {
     // A malformed native replacement refuses the whole candidate, not just
     // the bad field, and leaves the previously usable table snapshot intact.
     std::fs::write(dir.join("malformed.json"), r#"{"markers":["original"]}"#).unwrap();
-    let mut server =
+    let server =
         loot::LootData::load(&root, &loot::PackOverlay::NONE, item_data.defaults()).unwrap();
-    let previous = server.tables().clone();
-    let error = server
-        .apply_native_table_loads(&server_context)
-        .unwrap_err()
-        .to_string();
+    let error = load_server().err().unwrap().to_string();
     assert!(
         error.contains("native loot_table minecraft:malformed")
             && error.contains("pools[0].entries[0].items")
             && error.contains("no values"),
         "{error}"
     );
-    assert!(std::sync::Arc::ptr_eq(server.tables(), &previous));
     assert_eq!(
         server.tables()["minecraft:malformed"],
         json!({"markers":["original"]})
@@ -106,13 +110,9 @@ fn load_hooks_are_noops_before_install_and_use_first_callbacks_after() {
     assert_eq!(raw["minecraft:test"], json!({"markers":[]}));
     std::fs::remove_file(dir.join("malformed.json")).unwrap();
     std::fs::write(dir.join("bad_codec.json"), r#"{"markers":[]}"#).unwrap();
-    let mut server =
+    let server =
         loot::LootData::load(&root, &loot::PackOverlay::NONE, item_data.defaults()).unwrap();
-    let previous = server.tables().clone();
-    let error = server
-        .apply_native_table_loads(&server_context)
-        .unwrap_err()
-        .to_string();
+    let error = load_server().err().unwrap().to_string();
     assert!(
         error.contains("loot_table minecraft:bad_codec")
             && error.contains("[data/minecraft/loot_table/bad_codec.json]")
@@ -120,7 +120,6 @@ fn load_hooks_are_noops_before_install_and_use_first_callbacks_after() {
             && error.contains("missing:codec"),
         "{error}"
     );
-    assert!(std::sync::Arc::ptr_eq(server.tables(), &previous));
     assert_eq!(
         server.tables()["minecraft:bad_codec"],
         json!({"markers":[]})

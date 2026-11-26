@@ -1,2 +1,7 @@
-cargo-sunrise-mod fits_judges_declared_game_code_by_each_builds_data test:fits daily child-process
-cargo-sunrise-mod update_names_the_declared_game_code_the_new_build_changed test:fits daily child-process
+cargo-sunrise-mod a_changed_build_data_cache_cannot_turn_a_misfit_into_a_fit test:fits daily child-process
+cargo-sunrise-mod check_answers_a_made_for_build_before_reading_its_surface test:fits daily child-process
+cargo-sunrise-mod check_with_a_file_and_build_reads_the_packages_uses_list test:fits daily child-process
+cargo-sunrise-mod check_with_builds_judges_declared_game_code_by_each_builds_data test:fits daily child-process
+cargo-sunrise-mod pin_moves_a_mod_off_a_build_whose_surface_schema_the_tool_does_not_read test:fits daily child-process
+cargo-sunrise-mod pin_names_the_declared_game_code_the_new_build_changed test:fits daily child-process
+cargo-sunrise-mod pin_without_a_build_moves_to_the_current_nightly test:fits daily child-process

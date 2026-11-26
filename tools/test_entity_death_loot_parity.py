@@ -18,11 +18,11 @@ from pathlib import Path
 import platform
 import random
 import subprocess
-try:
-    from . import lab, test_rust_parity as base
-except ImportError:
-    import lab
-    import test_rust_parity as base
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_rust_parity as base
 
 # Living entity types with an entity loot table that the corpus skips: players
 # and stands are not mobs, the dragon dies over 200 ticks, and the giant is

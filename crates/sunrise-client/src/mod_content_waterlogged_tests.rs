@@ -156,7 +156,12 @@ fn declared_waterlogged_blocks_keep_their_class_and_gain_liquid_defaults() {
     assert_eq!(block_flags[dry_plant.0 as usize], (false, false));
 
     let facts = BlockFacts::load(&root, &registry).unwrap();
-    let mobs = MobData::load(&ResourceRoot::directory(root.clone()), &facts);
+    let mobs = MobData::load(
+        &ResourceRoot::directory(root.clone()),
+        facts.states.len(),
+        false,
+    )
+    .unwrap();
     assert_eq!(mobs.path_type(plant), PathType::Water);
     assert_eq!(mobs.path_type(dry_plant), PathType::Open);
     assert!(mobs.pathfindable(plant, PathComputationType::Water));
@@ -198,9 +203,11 @@ fn declared_waterlogged_blocks_keep_their_class_and_gain_liquid_defaults() {
         face: Direction::Up,
         hit: Vec3::new(4.5, 64.0, 4.5),
         inside: false,
-        yaw: 0.0,
-        pitch: 0.0,
-        sneaking: false,
+        source: sunrise_world::level::PlacementSource::Player {
+            yaw: 0.0,
+            pitch: 0.0,
+            sneaking: false,
+        },
         item: item.into(),
         can_use_game_master_blocks: false,
     };
@@ -224,6 +231,7 @@ fn declared_waterlogged_blocks_keep_their_class_and_gain_liquid_defaults() {
                 b.block(stone),
                 &context("wet:stone"),
             )
+            .unwrap()
             .unwrap();
         assert!(is_waterlogged(wet));
         assert_eq!(b.fluid(wet), FluidState::WATER);
@@ -237,6 +245,7 @@ fn declared_waterlogged_blocks_keep_their_class_and_gain_liquid_defaults() {
                 b.block(stone),
                 &context("wet:stone"),
             )
+            .unwrap()
             .unwrap();
         assert!(
             !is_waterlogged(flowing),
@@ -250,6 +259,7 @@ fn declared_waterlogged_blocks_keep_their_class_and_gain_liquid_defaults() {
                 b.block(stone),
                 &context("wet:stone"),
             )
+            .unwrap()
             .unwrap();
         assert!(!is_waterlogged(dry));
         assert_eq!(b.fluid(dry).kind(), FluidKind::Empty);
@@ -262,7 +272,7 @@ fn declared_waterlogged_blocks_keep_their_class_and_gain_liquid_defaults() {
                 b.block(stone),
                 &context("wet:stone")
             ),
-            Some(dry),
+            Ok(Some(dry)),
             "Part answer overrides the water default"
         );
         level.placement_answer = None;

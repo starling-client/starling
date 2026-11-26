@@ -48,7 +48,7 @@ fn a_special_dropped_item_outlines_only_its_committed_world_vertices() {
                     },
                 );
                 game.glint_frame = GlintFrame {
-                    millis: 0.0,
+                    millis: 0,
                     speed: 0.5,
                     alpha: 0.75,
                     sprite: true,
@@ -139,7 +139,11 @@ impl SpecialModelRenderer for Stick {
         collector: &mut SpecialModelCollector<'_>,
     ) -> Result<(), String> {
         ASKED.lock().unwrap().push(*count);
-        collector.submit_geometry(&self.0, SpecialModelTints::Untinted)
+        collector.submit_model(
+            &self.0,
+            SpecialModelTints::Untinted,
+            mod_api::SpecialModelSubmitOptions::default(),
+        )
     }
 }
 

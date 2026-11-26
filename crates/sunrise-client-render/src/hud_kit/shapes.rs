@@ -10,28 +10,6 @@
 //! Angles are radians from straight up, clockwise, as a stick and the dial's slots go: 0 is up,
 //! `FRAC_PI_2` right. Positions and radii are GUI px. Radii are snapped to whole GUI px, so a
 //! ring's edge lands on the same pixels at every GUI scale.
-//!
-//! ```
-//! use sunrise_client_render::hud::{HudAtlas, HudBatch, rgba};
-//! use sunrise_client_render::hud_kit::shapes::{self, Stop};
-//! use std::f32::consts::{FRAC_PI_8, TAU};
-//!
-//! let source = sunrise_client_render::resource_source::ResourceSource::directory("/nonexistent".into());
-//! let atlas = HudAtlas::build(&source).unwrap();
-//! let mut batch = HudBatch::scratch([854, 480]);
-//! let centre = [213.0, 120.0];
-//! // A dark disc fading out, a faint ring, then the top 45 degree sector lit.
-//! let dark = rgba(13, 14, 19, 180);
-//! batch.fill_disc_gradient(&atlas, centre, 90.0, &[Stop(0.0, dark), Stop(1.0, dark & 0x00FF_FFFF)]);
-//! batch.fill_arc(&atlas, centre, [40.0, 70.0], [0.0, TAU], rgba(13, 14, 19, 115));
-//! let start = batch.vertices.len();
-//! batch.fill_arc(&atlas, centre, [40.0, 70.0], [-FRAC_PI_8, FRAC_PI_8], rgba(118, 86, 250, 140));
-//! // Fade the sector in and slide it: only what was drawn since `start` changes.
-//! batch.alpha_since(start, 0.5);
-//! batch.translate_since(start, 0.0, 2.0);
-//! assert_eq!(batch.vertices.len() % 6, 0);
-//! assert_eq!(shapes::arc_segments(TAU, 70.0), 110);
-//! ```
 use crate::hud::{HudAtlas, HudBatch, HudVertex};
 
 /// How long, in GUI px along its outer edge, one segment of an arc is at most: short enough that
@@ -47,7 +25,7 @@ pub struct Stop(pub f32, pub u32);
 
 /// How many segments an arc spanning `span` radians at `radius` GUI px is cut into: one per
 /// `ARC_STEP` of its outer edge, at least 1 and at most `MAX_SEGMENTS`.
-pub fn arc_segments(span: f32, radius: f32) -> usize {
+pub(crate) fn arc_segments(span: f32, radius: f32) -> usize {
     let length = span.abs() * radius.max(0.0);
     ((length / ARC_STEP).ceil() as usize).clamp(1, MAX_SEGMENTS)
 }
@@ -58,7 +36,7 @@ pub fn snap(radius: f32) -> f32 {
 }
 
 /// The point `radius` GUI px from `centre` at `angle` (radians from up, clockwise).
-pub fn on_circle([cx, cy]: [f32; 2], radius: f32, angle: f32) -> [f32; 2] {
+pub(crate) fn on_circle([cx, cy]: [f32; 2], radius: f32, angle: f32) -> [f32; 2] {
     [cx + radius * angle.sin(), cy - radius * angle.cos()]
 }
 
@@ -66,18 +44,6 @@ pub fn on_circle([cx, cy]: [f32; 2], radius: f32, angle: f32) -> [f32; 2] {
 pub fn faded(colour: u32, factor: f32) -> u32 {
     let alpha = (colour >> 24) as f32 * factor.clamp(0.0, 1.0);
     (colour & 0x00FF_FFFF) | ((alpha.round() as u32) << 24)
-}
-
-/// `a` to `b` at `t` (0 to 1), each 8-bit channel of the batch's colour on its own.
-pub(crate) fn mix_colour(a: u32, b: u32, t: f32) -> u32 {
-    if a == b {
-        return a;
-    }
-    let channel = |shift: u32| {
-        let (p, q) = (((a >> shift) & 0xFF) as f32, ((b >> shift) & 0xFF) as f32);
-        ((p + (q - p) * t).round().clamp(0.0, 255.0) as u32) << shift
-    };
-    channel(0) | channel(8) | channel(16) | channel(24)
 }
 
 /// The UV of the atlas's white texel, which every flat shape samples.
@@ -95,6 +61,7 @@ impl HudBatch {
             color,
             depth: 0.0,
             glint_uv: [0.0, 0.0],
+            light: 0,
             text: 0,
         });
     }
@@ -118,10 +85,20 @@ impl HudBatch {
         self.triangle_shaded(white(atlas), corners, [color; 3]);
     }
 
+    /// A triangle, each corner its own colour blended across it (GUI px corners, any winding).
+    pub fn fill_triangle_shaded(
+        &mut self,
+        atlas: &HudAtlas,
+        corners: [[f32; 2]; 3],
+        colors: [u32; 3],
+    ) {
+        self.triangle_shaded(white(atlas), corners, colors);
+    }
+
     /// An annular sector in one colour: between radii `r0` and `r1` (GUI px, snapped to whole
     /// px) from `angles[0]` to `angles[1]` (radians from up, clockwise), cut into
     /// [`arc_segments`]. With `r0` 0 it is a pie slice; a span of `TAU` is a whole ring.
-    pub fn fill_arc(
+    pub(crate) fn fill_arc(
         &mut self,
         atlas: &HudAtlas,
         centre: [f32; 2],
@@ -166,7 +143,13 @@ impl HudBatch {
     }
 
     /// A disc of radius `radius` GUI px (snapped) in one colour.
-    pub fn fill_disc(&mut self, atlas: &HudAtlas, centre: [f32; 2], radius: f32, color: u32) {
+    pub(crate) fn fill_disc(
+        &mut self,
+        atlas: &HudAtlas,
+        centre: [f32; 2],
+        radius: f32,
+        color: u32,
+    ) {
         self.fill_arc(
             atlas,
             centre,
@@ -180,7 +163,7 @@ impl HudBatch {
     /// centre out, blending linearly between them: a dark disc fading to nothing at its rim is
     /// `[Stop(0.0, dark), Stop(1.0, dark with alpha 0)]`. Stops are in order of their fraction;
     /// before the first and after the last the colour holds.
-    pub fn fill_disc_gradient(
+    pub(crate) fn fill_disc_gradient(
         &mut self,
         atlas: &HudAtlas,
         centre: [f32; 2],
@@ -213,7 +196,7 @@ impl HudBatch {
 
     /// Multiplies the alpha of every vertex added since `start` by `factor` (0 to 1): a fade over
     /// what one piece drew, its text included.
-    pub fn alpha_since(&mut self, start: usize, factor: f32) {
+    pub(crate) fn alpha_since(&mut self, start: usize, factor: f32) {
         if factor >= 1.0 {
             return;
         }
@@ -223,7 +206,7 @@ impl HudBatch {
     }
 
     /// Moves every vertex added since `start` by `(dx, dy)` GUI px.
-    pub fn translate_since(&mut self, start: usize, dx: f32, dy: f32) {
+    pub(crate) fn translate_since(&mut self, start: usize, dx: f32, dy: f32) {
         if dx == 0.0 && dy == 0.0 {
             return;
         }
@@ -282,9 +265,13 @@ mod tests {
             ]
         );
         assert_eq!(area(&b, 0), 50.0);
-        // A clip keeps the part inside, as a triangle, not the box around it.
+        // The clip applies to the original triangle, not a replacement rectangle.
         b.clip_since(0, 0.0, 0.0, 5.0, 10.0);
-        assert!((area(&b, 0) - 37.5).abs() < 1e-3, "{}", area(&b, 0));
+        assert_eq!(area(&b, 0), 50.0);
+        assert_eq!(
+            b.scissors_in(0..6).collect::<Vec<_>>(),
+            [(0..6, Some([0.0, 0.0, 5.0, 10.0]))]
+        );
     }
 
     #[test]
@@ -355,12 +342,15 @@ mod tests {
         let centre = [100.0, 100.0];
         b.fill_disc(&atlas, centre, 20.0, u32::MAX);
         b.blend_since(start, Blend::Additive);
+        let full = area(&b, start);
+        let end = b.vertices.len() as u32;
         b.clip_since(start, 100.0, 0.0, 400.0, 400.0);
-        assert!(b.vertices[start..].iter().all(|v| v.pos[0] >= 100.0 - 1e-3));
-        let half = area(&b, start);
-        let expected = PI * 400.0 / 2.0;
-        assert!((half - expected).abs() < expected * 0.02, "{half}");
-        // The additive run moved with the clipped vertices and is still whole units.
+        assert_eq!(area(&b, start), full);
+        assert_eq!(
+            b.scissors_in(0..end).collect::<Vec<_>>(),
+            [(0..6, None), (6..end, Some([100.0, 0.0, 400.0, 400.0])),]
+        );
+        // The additive run is still in order and still uses its original triangles.
         let runs = b.runs();
         let (run, blend) = runs.last().unwrap();
         assert_eq!(*blend, Blend::Additive);
@@ -415,24 +405,17 @@ mod tests {
             40.0,
             &[Stop(0.0, dark), Stop(1.0, dark & 0x00FF_FFFF)],
         );
-        // Cut through the middle of the radius: each new vertex on the cut has the alpha the
-        // gradient has that far out, not the colour of a corner it was cut from.
+        let original = b.vertices.clone();
         b.clip_since(0, 0.0, 0.0, 120.0, 400.0);
-        let on_cut: Vec<_> = b
-            .vertices
-            .iter()
-            .filter(|v| (v.pos[0] - 120.0).abs() < 1e-3)
-            .collect();
-        assert!(on_cut.len() > 4, "nothing on the cut");
-        for v in on_cut {
-            let expected = 200.0 * (1.0 - distance(v.pos, centre) / 40.0);
-            let alpha = (v.color >> 24) as f32;
-            assert!(
-                (alpha - expected).abs() <= 1.5,
-                "{alpha} at {:?}, not {expected}",
-                v.pos
-            );
-        }
+        assert_eq!(
+            bytemuck::cast_slice::<_, u8>(&b.vertices),
+            bytemuck::cast_slice::<_, u8>(&original)
+        );
+        let end = b.vertices.len() as u32;
+        assert_eq!(
+            b.scissors_in(0..end).collect::<Vec<_>>(),
+            [(0..end, Some([0.0, 0.0, 120.0, 400.0]))]
+        );
     }
 
     #[test]
@@ -456,22 +439,14 @@ mod tests {
         let mut cut = batch();
         cut.fill_gradient(&atlas, (10.0, 10.0, 20.0, 8.0), top, bottom);
         cut.clip_since(0, 0.0, 12.0, 100.0, 16.0);
-        let top_cut = rgba(191, 0, 64, 255);
-        let bottom_cut = rgba(64, 0, 191, 255);
-        assert!(
-            cut.vertices
-                .iter()
-                .all(|v| v.pos[1] == 12.0 || v.pos[1] == 16.0)
+        assert_eq!(
+            cut.vertices.iter().map(|v| v.color).collect::<Vec<_>>(),
+            [top, top, bottom, top, bottom, bottom]
         );
-        let top_vertices: Vec<_> = cut.vertices.iter().filter(|v| v.pos[1] == 12.0).collect();
-        let bottom_vertices: Vec<_> = cut.vertices.iter().filter(|v| v.pos[1] == 16.0).collect();
-        assert!(!top_vertices.is_empty(), "clip has no top edge vertices");
-        assert!(
-            !bottom_vertices.is_empty(),
-            "clip has no bottom edge vertices"
+        assert_eq!(
+            cut.scissors_in(0..6).collect::<Vec<_>>(),
+            [(0..6, Some([0.0, 12.0, 100.0, 16.0]))]
         );
-        assert!(top_vertices.iter().all(|v| v.color == top_cut));
-        assert!(bottom_vertices.iter().all(|v| v.color == bottom_cut));
     }
 
     #[test]
@@ -493,5 +468,40 @@ mod tests {
         assert_eq!(b.vertices[start].pos, [13.0, 8.0]);
         // The colour itself stays.
         assert_eq!(b.vertices[start].color & 0x00FF_FFFF, 0x00FF_FFFF);
+    }
+
+    #[test]
+    fn the_dial_layers_draw_whole_units() {
+        let atlas = atlas();
+        let mut batch = batch();
+        let centre = [213.0, 120.0];
+        // A dark disc fading out, a faint ring, then the top 45 degree sector lit.
+        let dark = rgba(13, 14, 19, 180);
+        batch.fill_disc_gradient(
+            &atlas,
+            centre,
+            90.0,
+            &[Stop(0.0, dark), Stop(1.0, dark & 0x00FF_FFFF)],
+        );
+        batch.fill_arc(
+            &atlas,
+            centre,
+            [40.0, 70.0],
+            [0.0, TAU],
+            rgba(13, 14, 19, 115),
+        );
+        let start = batch.vertices.len();
+        batch.fill_arc(
+            &atlas,
+            centre,
+            [40.0, 70.0],
+            [-std::f32::consts::FRAC_PI_8, std::f32::consts::FRAC_PI_8],
+            rgba(118, 86, 250, 140),
+        );
+        // Fade the sector in and slide it: only what was drawn since `start` changes.
+        batch.alpha_since(start, 0.5);
+        batch.translate_since(start, 0.0, 2.0);
+        assert_eq!(batch.vertices.len() % 6, 0);
+        assert_eq!(arc_segments(TAU, 70.0), 110);
     }
 }

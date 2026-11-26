@@ -2,25 +2,14 @@
 use naga::valid::{Capabilities, ValidationFlags, Validator};
 use naga::{BinaryOperator, Expression, Scalar, TypeInner};
 use sunrise_shaders::{
-    GbuffersInputs, GeometryInputs, Origin, Preprocessed, Program, Target, translate_composite,
+    GbuffersInputs, GeometryInputs, Preprocessed, Program, Target, translate_composite,
     translate_gbuffers, translate_geometry, translate_shadow,
 };
 
 fn source(code: &str) -> Preprocessed {
-    Preprocessed {
-        code: code.into(),
-        lines: code
-            .lines()
-            .enumerate()
-            .map(|(line, _)| Origin {
-                file: 0,
-                line: line as u32 + 1,
-            })
-            .collect(),
-        files: vec!["original.glsl".into()],
-        version: Some((450, None)),
-        ..Default::default()
-    }
+    let mut pp = Preprocessed::from_source("original.glsl", code);
+    pp.version = Some((450, None));
+    pp
 }
 
 fn translate(code: &str, path: &str) -> Program {
@@ -28,9 +17,25 @@ fn translate(code: &str, path: &str) -> Program {
     let fragment = source("void main() { gl_FragColor = vec4(1.0); }");
     let inputs = GbuffersInputs::default();
     let result = match path {
-        "composite" => translate_composite(&vertex, &fragment, Target::Buffers),
-        "gbuffers" => translate_gbuffers(&vertex, &fragment, Target::Buffers, &inputs),
-        "shadow" => translate_shadow(&vertex, &fragment, &inputs),
+        "composite" => translate_composite(
+            &vertex,
+            &fragment,
+            Target::Buffers,
+            naga::front::glsl::InterfaceLimits::WGPU_DEFAULT,
+        ),
+        "gbuffers" => translate_gbuffers(
+            &vertex,
+            &fragment,
+            Target::Buffers,
+            &inputs,
+            naga::front::glsl::InterfaceLimits::WGPU_DEFAULT,
+        ),
+        "shadow" => translate_shadow(
+            &vertex,
+            &fragment,
+            &inputs,
+            naga::front::glsl::InterfaceLimits::WGPU_DEFAULT,
+        ),
         _ => unreachable!(),
     };
     result.unwrap_or_else(|errors| panic!("{path}: {errors:?}\n{code}"))
@@ -140,6 +145,7 @@ fn folded_geometry_keeps_source_vertex_ids_signed() {
             index: "uint(@)".into(),
             ..Default::default()
         },
+        naga::front::glsl::InterfaceLimits::WGPU_DEFAULT,
     )
     .unwrap_or_else(|errors| panic!("{errors:?}"));
     assert_eq!(triangles, 1);

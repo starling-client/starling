@@ -1,0 +1,3 @@
+ids = ["hook:item_bar"]
+why = "Bar endpoints use the same signed integer addition as vanilla’s GuiGraphicsExtractor.itemBar, including for widths supplied by a mod. An extreme width no longer panics while the canvas paints it."
+migrate = "Rebuild against item_bar version 2. The Part signature and usual widths are unchanged. Overrides are signed pixel widths; the foreground endpoint wraps as a Java int before fill sorts the corners."

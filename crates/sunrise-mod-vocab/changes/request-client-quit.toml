@@ -1,0 +1,3 @@
+ids = ["method:prelude::ServicesClientHost::request_client_quit"]
+why = "Adds request_client_quit: a client mod asks for the ordinary Quit Game path (Minecraft.stop), carried out after the calling hook. True means the request was accepted, not that the game has exited; false when the host has no live client or a quit is already pending or underway."
+migrate = "Nothing to migrate."

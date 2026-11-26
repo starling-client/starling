@@ -2,10 +2,9 @@
 //! opened with the client, closed with it, and kept in step with the options
 //! it reads (`Options.narrator`, `getFinalSoundSourceVolume(VOICE)`); and its
 //! `NARRATOR_TOGGLE` toast.
-use super::{Game, Screen};
+use super::{Game, Screen, toast_manager::SystemToastId};
 use sunrise_client::{
     clipboard,
-    hud::{HudAtlas, HudBatch},
     screen_narrator::{InputType, ScreenNarrator},
     settings::Settings,
     text::Text,
@@ -49,9 +48,8 @@ pub(super) fn sync(settings: &Settings) {
 /// up, or the one still up takes the new text (`SystemToast.addOrUpdate`).
 pub(super) fn update_status(
     status: Status,
-    toast: &mut Option<SystemToast>,
-    admit: impl FnOnce(SystemToast) -> Option<SystemToast>,
-) {
+    toast: Option<&mut SystemToast>,
+) -> Option<SystemToast> {
     let announcement = Text::translate("options.narrator", &[])
         .append(Text::literal(" : "))
         .append(Text::translate(status.key(), &[]))
@@ -60,34 +58,12 @@ pub(super) fn update_status(
     let (title, message) = sunrise_narrator::toast(status, sunrise_narrator::is_active());
     let tr = |key: &str| Text::translate(key, &[]);
     let (title, message) = (tr(title), message.map(tr));
-    match toast {
-        Some(toast) => toast.reset(title, message),
-        None => *toast = admit(SystemToast::new(title, message)),
+    if let Some(toast) = toast {
+        toast.reset(title, message);
+        None
+    } else {
+        Some(SystemToast::new(title, message))
     }
-}
-
-/// `ToastManager.update` and `extractRenderState` for the narrator toast: it
-/// takes the first slot `used` leaves free, slides, and is drawn there unless
-/// `hidden` (F1). The visibility it switched to, for its sound.
-pub(super) fn draw_toast(
-    toast: &mut Option<SystemToast>,
-    used: u32,
-    multiplier: f64,
-    atlas: &HudAtlas,
-    batch: &mut HudBatch,
-    hidden: bool,
-) -> Option<bool> {
-    let shown = toast.as_mut()?;
-    if shown.slot.is_none() {
-        shown.slot = Some((0..Game::TOAST_SLOTS).find(|s| used & (1 << s) == 0)?);
-    }
-    let (sound, finished) = shown.update(multiplier);
-    if finished {
-        *toast = None;
-    } else if let (false, Some(slot)) = (hidden, shown.slot) {
-        shown.draw(atlas, batch, 32.0 * slot as f32);
-    }
-    sound
 }
 
 /// `KeyboardHandler.keyPress`'s narrator hotkey: a press or repeat of B
@@ -204,11 +180,12 @@ impl Game<'_> {
     }
     /// The narrator option changed, on the options screen or by its hotkey.
     pub(super) fn narrator_status_changed(&mut self) {
-        let mut toast = self.narrator_toast.take();
-        update_status(self.settings.narrator(), &mut toast, |toast| {
-            self.add_system_toast(toast)
-        });
-        self.narrator_toast = toast;
+        let id = SystemToastId::Narrator;
+        if let Some(toast) =
+            update_status(self.settings.narrator(), self.toast_manager.system_mut(id))
+        {
+            self.add_system_toast(Some(id), toast);
+        }
     }
     /// The narrator hotkey on a key press or repeat, before the screen or
     /// the game takes the key (it doesn't consume it): the next status,
@@ -262,6 +239,9 @@ impl Game<'_> {
     /// the creative search (focused as a widget, not as the screen's focus)
     /// do not.
     pub(super) fn edit_box_focused(&mut self) -> bool {
+        if self.mounted_widget_captures_input() {
+            return true;
+        }
         if self.dialog_open() {
             return self.dialog_typing();
         }
@@ -278,26 +258,6 @@ impl Game<'_> {
                         .as_mut()
                         .is_some_and(|t| t.has_caret_field() || t.focused_field().is_some())
             }
-        }
-    }
-    /// The narrator toast over whatever is on screen, the title's own toast
-    /// keeping the first slot.
-    pub(super) fn draw_narrator_toast(&mut self, batch: &mut HudBatch) {
-        let title = self.title.as_ref().is_some_and(|t| t.has_toast());
-        let used = self.toast_slots_used() | u32::from(title);
-        let multiplier = self.settings.notification_display_time;
-        let sound = draw_toast(
-            &mut self.narrator_toast,
-            used,
-            multiplier,
-            &self.gui.atlas,
-            batch,
-            self.ui.hide_gui,
-        );
-        if let Some(show) = sound {
-            let event = if show { "ui.toast.in" } else { "ui.toast.out" };
-            self.audio
-                .play(&format!("minecraft:{event}"), None, 1.0, 1.0);
         }
     }
 }
@@ -343,10 +303,10 @@ mod tests {
     /// `SystemToast.addOrUpdate`: one narrator toast, reset where it is.
     #[test]
     fn a_second_change_updates_the_toast_still_up() {
-        let mut toast = None;
-        update_status(Status::All, &mut toast, Some);
-        toast.as_mut().expect("the first change shows a toast").slot = Some(2);
-        update_status(Status::Off, &mut toast, Some);
-        assert_eq!(toast.expect("still the one toast").slot, Some(2));
+        let mut toast = update_status(Status::All, None).unwrap();
+        let origin = std::time::Instant::now();
+        toast.slide.origin = Some(origin);
+        assert!(update_status(Status::Off, Some(&mut toast)).is_none());
+        assert_eq!(toast.slide.origin, Some(origin));
     }
 }

@@ -65,7 +65,7 @@ MutableComponent.getVisualOrderText	skip:ui		bidi reordering for drawing; Sunris
 MutableComponent.equals	skip:java		value equality
 MutableComponent.hashCode	skip:java		hashing
 MutableComponent.toString	skip:debug		debug text
-OutgoingChatMessage.create	port	crates/sunrise-client/src/lan/hub/chat.rs::Hub::broadcast_command_chat	a message without signing context goes out as a disguised chat; a signed one as player chat
+OutgoingChatMessage.create	port	crates/sunrise-client/src/game/network/lan_chat.rs::Game::lan_broadcast_command_chat	a message without signing context goes out as a disguised chat; a signed one as player chat
 OutgoingChatMessage.Player.sendToPlayer	port	crates/sunrise-client/src/lan/hub/chat.rs::Hub::send_chat	gap: minor: the filter is always pass-through; the message goes to players who show chat
 PlayerChatMessage.withUnsignedContent	missing		minor: the hub never sets unsigned content (there is no chat decorator), so decorated text is not sent
 PlayerChatMessage.removeUnsignedContent	missing		minor: unsigned content is never set, so there is nothing to remove
@@ -110,7 +110,7 @@ TextColor.named	skip:data		named colour table (COLORS)
 TextColor.formatValue	port	crates/sunrise-client-core/src/text.rs::style_json	a colour is written as its name or #RRGGBB
 TextColor.equals	skip:java		value equality
 TextColor.hashCode	skip:java		hashing
-TextColor.fromLegacyFormat	port	crates/sunrise-client-core/src/text.rs::named_color	looked up by name: formatting names are the colour names
+TextColor.fromLegacyFormat	port	crates/sunrise-core/src/text.rs::named_color	looked up by name: formatting names are the colour names
 TextColor.parseColor	port	crates/sunrise-client-core/src/component.rs::object_style	gap: minor: no range check on #hex; vanilla rejects values above #FFFFFF
 KeybindContents.getNestedComponent	port	crates/sunrise-client-core/src/key_display.rs::display_name	the key's display text
 KeybindContents.visit	port	crates/sunrise-client-core/src/key_display.rs::display_name	visits the nested key text

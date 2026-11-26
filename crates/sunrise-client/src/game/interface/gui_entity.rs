@@ -10,7 +10,12 @@
 //! the entities made for `GuiEntity::Kind` are kept per thread and reused, so a
 //! screen drawing the same entity every frame makes it once and allocates
 //! nothing once the buffers have grown.
-use super::{Game, commands::Target};
+use super::stock_layer_mask::StockLayerMask;
+use super::{
+    Game,
+    commands::Target,
+    dragon::{DragonPreview, GuiDragonLook},
+};
 use glam::{DVec3, Mat4, Vec3};
 use mod_api::{GuiEntity, GuiEntityError, GuiEntityLook, GuiEntityView};
 use std::{cell::RefCell, sync::Arc};
@@ -28,6 +33,12 @@ use sunrise_core::{
 /// few at once, and a learner's four models.
 const KEPT: usize = 8;
 
+/// The ender dragon's type. The client keeps it outside its mob list (`mobs/dragon.rs`), so a
+/// screen draws it through its own renderer (`EnderDragonRenderer`).
+const DRAGON: &str = "minecraft:ender_dragon";
+/// `EntityTypes.ENDER_DRAGON`'s height, by which the box centres it.
+const DRAGON_HEIGHT: f32 = 8.0;
+
 /// An entity made for the screen from a type and its data.
 struct Made {
     kind: String,
@@ -42,7 +53,9 @@ type SeenQuad = (f32, [[f32; 3]; 4], [[f32; 2]; 4], u32, usize);
 struct Scratch {
     made: Vec<Made>,
     verts: Vec<Vertex>,
+    eyes: Vec<Vertex>,
     quads: Vec<SeenQuad>,
+    eye_quads: Vec<SeenQuad>,
 }
 
 thread_local! {
@@ -82,6 +95,26 @@ fn pose(mob: &mut Mob, (body, head, pitch, _): (f32, f32, f32, f32)) {
     mob.extra.model_scale = 0.0;
 }
 
+/// `EnderDragonRenderer` turns by `-yRot` where a living renderer turns by `180 - yBodyRot`.
+fn dragon_look((body, head, pitch, _): (f32, f32, f32, f32)) -> GuiDragonLook {
+    GuiDragonLook {
+        body_yaw: body - 180.0,
+        head_yaw: head - body,
+        head_pitch: pitch,
+    }
+}
+
+fn dragon_preview_from_data(data: &Compound) -> Result<DragonPreview, GuiEntityError> {
+    let named = JavaString::from(DRAGON);
+    if data
+        .get(&JavaString::from("id"))
+        .is_some_and(|id| !matches!(id, Tag::String(s) if *s == named))
+    {
+        return Err(GuiEntityError::BadData);
+    }
+    Ok(DragonPreview::from_nbt(data))
+}
+
 impl Game<'_> {
     /// `DrawContext::entity` on a screen's `batch`.
     pub(in crate::game) fn native_draw_entity(
@@ -117,23 +150,52 @@ impl Game<'_> {
             return Err(GuiEntityError::BadView);
         }
         let turned = turn(view.look, centre);
-        let mut existing;
-        let mob: &mut Mob = match entity {
+        scratch.verts.clear();
+        scratch.eyes.clear();
+        let height = match entity {
+            GuiEntity::Kind { kind, data } if kind.as_str() == DRAGON => {
+                let preview = dragon_preview_from_data(data)?;
+                self.gui_dragon_geometry(
+                    preview,
+                    dragon_look(turned),
+                    &mut scratch.verts,
+                    &mut scratch.eyes,
+                );
+                DRAGON_HEIGHT
+            }
             GuiEntity::Kind { kind, data } => {
                 let at = self.made_entity(&mut scratch.made, kind, data)?;
-                &mut scratch.made[at].mob
+                let mob = &mut scratch.made[at].mob;
+                pose(mob, turned);
+                self.gui_entity_geometry(mob, &mut scratch.verts);
+                mob.height()
             }
-            GuiEntity::Existing(handle) => {
-                existing = self.existing_gui_entity(*handle)?;
-                &mut existing
-            }
+            GuiEntity::Existing(handle) => match self.native_entity_read_target(*handle) {
+                Some(Target::Dragon(id)) => {
+                    let dragon = self
+                        .dragon
+                        .as_ref()
+                        .filter(|d| d.id == id)
+                        .ok_or(GuiEntityError::NoEntity)?;
+                    self.gui_dragon_geometry(
+                        DragonPreview::from_dragon(dragon),
+                        dragon_look(turned),
+                        &mut scratch.verts,
+                        &mut scratch.eyes,
+                    );
+                    DRAGON_HEIGHT
+                }
+                Some(target) => {
+                    let mut existing = self.existing_gui_mob(target)?;
+                    pose(&mut existing, turned);
+                    self.gui_entity_geometry(&existing, &mut scratch.verts);
+                    existing.height()
+                }
+                None => return Err(GuiEntityError::NoEntity),
+            },
             // An entity a later API adds is one this game can't name.
             _ => return Err(GuiEntityError::UnknownType),
         };
-        pose(mob, turned);
-        scratch.verts.clear();
-        self.gui_entity_geometry(mob, &mut scratch.verts);
-        let height = mob.height();
         // PictureInPictureRenderer: the box centre, (size, size, -size); then
         // the translation and Rz(pi) * Rx(the look's pitch).
         let gui = Mat4::from_translation(Vec3::new(centre[0], centre[1], 0.0))
@@ -144,17 +206,21 @@ impl Game<'_> {
         if !gui.is_finite() {
             return Err(GuiEntityError::BadView);
         }
-        seen_quads(&scratch.verts, gui, &mut scratch.quads);
+        seen_quads::<true>(&scratch.verts, gui, &mut scratch.quads);
+        seen_quads::<false>(&scratch.eyes, gui, &mut scratch.eye_quads);
         let placed = |q: &SeenQuad| q.0.is_finite() && q.1.iter().flatten().all(|v| v.is_finite());
-        if !scratch.quads.iter().all(placed) {
+        if !scratch.quads.iter().all(placed) || !scratch.eye_quads.iter().all(placed) {
             return Err(GuiEntityError::BadView);
         }
         let start = batch.vertices.len();
         for &(_, p, uv, color, _) in &scratch.quads {
             batch.quad_3d(p, uv, color);
         }
-        let end = batch.vertices.len();
-        batch.depth_glint_since(start, end, rect);
+        let additive = batch.vertices.len();
+        for &(_, p, uv, color, _) in &scratch.eye_quads {
+            batch.quad_3d(p, uv, color);
+        }
+        batch.depth_glint_since(start, additive, rect);
         Ok(())
     }
 
@@ -202,9 +268,17 @@ impl Game<'_> {
     /// One copy of the client's entity `handle`, as vanilla's `createRenderState` makes one a
     /// frame.
     fn existing_gui_entity(&self, handle: mod_api::EntityRef) -> Result<Mob, GuiEntityError> {
-        let found = match self.native_entity_read_target(handle) {
-            Some(Target::Mob(id)) => self.mobs.iter().find(|m| m.id == id && !m.removed),
-            Some(Target::Player) => self.player_model.as_ref(),
+        let target = self
+            .native_entity_read_target(handle)
+            .ok_or(GuiEntityError::NoEntity)?;
+        self.existing_gui_mob(target)
+    }
+
+    #[inline(always)]
+    fn existing_gui_mob(&self, target: Target) -> Result<Mob, GuiEntityError> {
+        let found = match target {
+            Target::Mob(id) => self.mobs.iter().find(|m| m.id == id && !m.removed),
+            Target::Player => self.player_model.as_ref(),
             _ => None,
         };
         Ok(found.ok_or(GuiEntityError::NoEntity)?.clone())
@@ -245,7 +319,31 @@ impl Game<'_> {
     /// mods' layers. Full bright, seen from its own position.
     pub(in crate::game) fn gui_entity_geometry(&self, mob: &Mob, out: &mut Vec<Vertex>) {
         let p = mob.position;
-        self.gui_entity_geometry_at(mob, 1.0, DVec3::new(p.x, p.y, p.z), out);
+        let origin = DVec3::new(p.x, p.y, p.z);
+        let camera = mod_api::Camera {
+            position: origin.to_array(),
+            eye_height: 0.0,
+            partial_tick: 1.0,
+            yaw: 0.0,
+            pitch: 0.0,
+            roll: 0.0,
+            fov_degrees: 0.0,
+            near: 0.0,
+            far: 0.0,
+            view: Mat4::IDENTITY.to_cols_array(),
+            projection: Mat4::IDENTITY.to_cols_array(),
+            dimension: String::new(),
+        };
+        let view = mod_api::WorldRenderView::new(
+            &camera,
+            None,
+            1.0,
+            self.world.game_time,
+            self.animation_time(),
+            false,
+            &[],
+        );
+        self.gui_entity_geometry_at(mob, 1.0, origin, Some(&view), out);
     }
 
     /// `gui_entity_geometry` at `partial` into the tick, around `camera`: what a screen
@@ -255,16 +353,35 @@ impl Game<'_> {
         mob: &Mob,
         partial: f32,
         camera: DVec3,
+        explicit_view: Option<&mod_api::WorldRenderView<'_>>,
         out: &mut Vec<Vertex>,
     ) {
-        let added = self.mod_layers(mob);
+        let is_player = &*mob.kind.id == "minecraft:player";
+        let resolved = self.entity_layers(mob);
+        let added = resolved.layers;
         // A mod's renderer for the type draws in place of the model only: the mods' layers
         // still follow, as in the world.
-        let modded =
-            self.mod_living_renderer_geometry(mob, partial, camera, FULL_BRIGHT, false, out);
+        let modded = self.mod_living_renderer_geometry_with_view(
+            mob,
+            partial,
+            camera,
+            explicit_view,
+            FULL_BRIGHT,
+            false,
+            out,
+        );
+        let hidden = if modded {
+            StockLayerMask::EMPTY
+        } else {
+            resolved.hidden
+        };
         let mut frame_draw = FrameDraw::new(!modded && added.is_some());
         let atlas = &self.gui.atlas;
         let lookup = |name: &str| atlas.sprites.get(name).map(|r| [r.u0, r.v0, r.u1, r.v1]);
+        let data = super::humanoid_setup_anim::HiddenLayersData {
+            game: self,
+            hidden_layers: hidden,
+        };
         // A screen's entity: custom entity model animations see is_in_gui = 1.
         sunrise_client::mobs::cem_anim::in_gui(|| {
             if modded {
@@ -276,19 +393,37 @@ impl Game<'_> {
                 camera,
                 &lookup,
                 FULL_BRIGHT,
-                self,
+                &data,
                 &[],
                 &mut frame_draw,
                 out,
             );
         });
-        self.mod_layer_geometry(
+        let stock_ctx = super::native_entity_layers::StockLayerContext {
+            is_player,
+            local_player: false,
+            invisible: mob.is_invisible(),
+            in_world: false,
+            player_name: None,
+            alpha: f64::from(partial),
+            camera,
+            light: FULL_BRIGHT,
+            supported: if modded {
+                StockLayerMask::EMPTY
+            } else {
+                resolved.supported
+            },
+            hidden,
+        };
+        self.mod_layer_geometry_with_view(
             mob,
             None,
             frame_draw.model(),
             added,
+            &stock_ctx,
             partial,
             camera,
+            explicit_view,
             FULL_BRIGHT,
             out,
         );
@@ -301,9 +436,12 @@ impl Game<'_> {
 /// models draw as `entityCutoutNoCull`, as in the world, and their art can sit
 /// on such a face (a chicken's legs are painted on their back and bottom
 /// faces, seen through the transparent front ones).
-fn seen_quads(verts: &[Vertex], gui: Mat4, quads: &mut Vec<SeenQuad>) {
+fn seen_quads<const SHADE: bool>(verts: &[Vertex], gui: Mat4, quads: &mut Vec<SeenQuad>) {
     quads.clear();
     for q in verts.as_chunks::<4>().0 {
+        if (q[0].layer & 0xffff) == sunrise_client_render::gfx::ARMOR_GLINT_ONLY_OVERLAY {
+            continue;
+        }
         let p: [Vec3; 4] =
             std::array::from_fn(|i| gui.transform_point3(Vec3::from_array(q[i].pos)));
         let n = (p[1] - p[0]).cross(p[2] - p[0]);
@@ -312,11 +450,15 @@ fn seen_quads(verts: &[Vertex], gui: Mat4, quads: &mut Vec<SeenQuad>) {
         if back && sunrise_client_render::mesher::culls_back_faces(q[0].normal[3]) {
             continue;
         }
-        // Lit by its outward normal, whichever way it faces, as vanilla's vertex normals.
-        let shade = super::perspective::entity_in_ui_shade(-n.normalize_or_zero());
-        let c = q[0].color;
-        let ch = |s: u32| ((((c >> s) & 255) as f32 * shade) as u32) << s;
-        let color = (c & 0xFF00_0000) | ch(0) | ch(8) | ch(16);
+        let color = if SHADE {
+            // Lit by its outward normal, whichever way it faces, as vanilla's vertex normals.
+            let shade = super::perspective::entity_in_ui_shade(-n.normalize_or_zero());
+            let c = q[0].color;
+            let ch = |s: u32| ((((c >> s) & 255) as f32 * shade) as u32) << s;
+            (c & 0xFF00_0000) | ch(0) | ch(8) | ch(16)
+        } else {
+            q[0].color
+        };
         let depth = p.iter().map(|v| v.z).sum::<f32>() / 4.0;
         let (mut corners, mut uv) = (p.map(|v| v.to_array()), std::array::from_fn(|i| q[i].uv));
         if back {
@@ -402,7 +544,7 @@ mod tests {
         verts.extend(face(1.0, cull, 0.0, false));
         verts.extend(face(0.0, cull, 0.0, true));
         let mut quads = Vec::new();
-        seen_quads(&verts, Mat4::IDENTITY, &mut quads);
+        seen_quads::<true>(&verts, Mat4::IDENTITY, &mut quads);
         let depths: Vec<f32> = quads.iter().map(|q| q.0).collect();
         assert_eq!(depths.len(), 2, "{depths:?}");
         assert!(depths[0] < depths[1]);
@@ -414,7 +556,7 @@ mod tests {
     #[test]
     fn no_cull_faces_looking_away_are_kept_and_turned_to_the_viewer() {
         let mut quads = Vec::new();
-        seen_quads(&face(0.0, -127, 0.5, true), Mat4::IDENTITY, &mut quads);
+        seen_quads::<true>(&face(0.0, -127, 0.5, true), Mat4::IDENTITY, &mut quads);
         assert_eq!(quads.len(), 1);
         let p = quads[0].1.map(Vec3::from_array);
         assert!(
@@ -423,7 +565,7 @@ mod tests {
         );
         // A face the model culls still goes.
         let cull = sunrise_client_render::mesher::SHADED_CULL_W;
-        seen_quads(&face(0.0, cull, 0.5, true), Mat4::IDENTITY, &mut quads);
+        seen_quads::<true>(&face(0.0, cull, 0.5, true), Mat4::IDENTITY, &mut quads);
         assert!(quads.is_empty());
     }
 
@@ -437,9 +579,21 @@ mod tests {
             verts.extend(face(1.0, -127, layer as f32, false));
         }
         let mut quads = Vec::new();
-        seen_quads(&verts, Mat4::IDENTITY, &mut quads);
+        seen_quads::<true>(&verts, Mat4::IDENTITY, &mut quads);
         let order: Vec<f32> = quads.iter().map(|q| q.2[0][0]).collect();
         assert_eq!(order, (0..48).map(|l| l as f32).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn unshaded_seen_quads_retain_vertex_color() {
+        let mut shaded = Vec::new();
+        let mut unshaded = Vec::new();
+        let quad = face(0.0, -127, 0.5, false);
+        seen_quads::<true>(&quad, Mat4::IDENTITY, &mut shaded);
+        seen_quads::<false>(&quad, Mat4::IDENTITY, &mut unshaded);
+        assert_eq!(unshaded.len(), 1);
+        assert_eq!(unshaded[0].3, 0xFFFF_FFFF);
+        assert_ne!(shaded[0].3, 0xFFFF_FFFF);
     }
 
     #[test]
@@ -522,6 +676,242 @@ mod tests {
                 );
             }
             assert_eq!(batch.vertices.len(), before);
+        });
+    }
+
+    fn part_vertex_range(root: &sunrise_client::mobs::Part, name: &str) -> std::ops::Range<usize> {
+        fn walk(
+            part: &sunrise_client::mobs::Part,
+            name: &str,
+            cursor: &mut usize,
+        ) -> Option<std::ops::Range<usize>> {
+            let start = *cursor;
+            *cursor += part.polygons.len() * 4;
+            let mut found = None;
+            for child in &part.children {
+                if let Some(range) = walk(child, name, cursor) {
+                    found = Some(range);
+                }
+            }
+            if part.name == name {
+                return Some(start..*cursor);
+            }
+            found
+        }
+        walk(root, name, &mut 0).expect("dragon model part")
+    }
+
+    /// #6050: the ender dragon isn't in the client's mob list, and was refused as
+    /// `UnknownType`. It draws through its own renderer with additive full-bright eyes,
+    /// loads its phase from NBT without consuming entity seeds, applies head pitch/yaw,
+    /// and accepts only a live dragon handle (never a part or removed dragon).
+    #[test]
+    #[ignore = "daily"]
+    fn a_screen_draws_the_ender_dragon_by_type() {
+        use sunrise_client::hud::Blend;
+        use sunrise_client::random_source::{record_seeds, replay_seeds};
+        crate::game::native_entity_refs::tests::with_client_game(|game| {
+            let look = GuiEntityLook::At([50.0, 40.0]);
+            let view = GuiEntityView::new([26.0, 8.0, 75.0, 78.0], 4.0, 0.0, look);
+            let mut batch = HudBatch::scratch([320, 240]);
+            let dragon = GuiEntity::kind(DRAGON);
+            assert_eq!(game.native_draw_entity(&mut batch, &dragon, view), Ok(()));
+            // Body draws in the depth pass; eyes follow in the depth-tested additive run unshaded.
+            let runs = batch.runs();
+            assert_eq!(
+                runs.len(),
+                2,
+                "expected body depth + additive eyes runs: {runs:?}"
+            );
+            let (body_range, Blend::Depth(body_clip)) = runs[0].clone() else {
+                panic!("expected Depth body run, got {:?}", runs[0]);
+            };
+            let (eyes_range, Blend::DepthGlint(eyes_clip)) = runs[1].clone() else {
+                panic!("expected DepthGlint additive eyes run, got {:?}", runs[1]);
+            };
+            assert_eq!(body_clip, eyes_clip);
+            assert!(!body_range.is_empty());
+            assert!(!eyes_range.is_empty());
+            assert_eq!(body_range.end, eyes_range.start);
+            let body_verts = &batch.vertices[body_range.start as usize..body_range.end as usize];
+            let eye_verts = &batch.vertices[eyes_range.start as usize..eyes_range.end as usize];
+            assert!(
+                eye_verts
+                    .iter()
+                    .all(|v| v.color == 0xFFFF_FFFF && v.uv[0] < 2.0),
+                "eyes keep unshaded full-bright color and normal atlas UVs"
+            );
+            assert!(
+                body_verts.iter().any(|v| v.color != 0xFFFF_FFFF),
+                "body keeps ENTITY_IN_UI directional shading"
+            );
+
+            // Repeated by-type draws consume no process-wide entity seeds.
+            let ((), seeds) = record_seeds(|| {
+                for _ in 0..3 {
+                    assert_eq!(game.native_draw_entity(&mut batch, &dragon, view), Ok(()));
+                }
+            });
+            replay_seeds(seeds.clone(), || {});
+            assert!(
+                seeds.complete(),
+                "by-type dragon draws must not allocate entity seeds"
+            );
+
+            let mut other = Compound::new();
+            other.insert("id".into(), Tag::String("minecraft:zombie".into()));
+            let mut refused = HudBatch::scratch([320, 240]);
+            assert_eq!(
+                game.native_draw_entity(&mut refused, &GuiEntity::with_data(DRAGON, other), view),
+                Err(GuiEntityError::BadData)
+            );
+            assert!(refused.vertices.is_empty());
+
+            // Loaded DragonPhase changes neck geometry (DragonPhase:0 flying vs DragonPhase:5 sitting);
+            // vanilla's default Hover (phase 10) is sitting, and saved Pos is discarded.
+            let model = game.dragon_model.as_ref().expect("dragon model");
+            let head_range = part_vertex_range(model, "head");
+            let neck_range = part_vertex_range(model, "neck2");
+            let body_part_range = part_vertex_range(model, "body");
+            let mut flying_nbt = Compound::new();
+            flying_nbt.insert("DragonPhase".into(), Tag::Int(0));
+            let mut sitting_nbt = Compound::new();
+            sitting_nbt.insert("DragonPhase".into(), Tag::Int(5));
+            let mut sitting_pos_nbt = sitting_nbt.clone();
+            sitting_pos_nbt.insert(
+                "Pos".into(),
+                Tag::List(vec![
+                    Tag::Double(100.0_f64.to_bits()),
+                    Tag::Double(200.0_f64.to_bits()),
+                    Tag::Double(300.0_f64.to_bits()),
+                ]),
+            );
+            let straight = GuiDragonLook::default();
+            let (mut fly_verts, mut fly_eyes) = (Vec::new(), Vec::new());
+            let (mut sit_verts, mut sit_eyes) = (Vec::new(), Vec::new());
+            game.gui_dragon_geometry(
+                DragonPreview::from_nbt(&flying_nbt),
+                straight,
+                &mut fly_verts,
+                &mut fly_eyes,
+            );
+            game.gui_dragon_geometry(
+                DragonPreview::from_nbt(&sitting_nbt),
+                straight,
+                &mut sit_verts,
+                &mut sit_eyes,
+            );
+            let pos_slice = |v: &[Vertex], r: &std::ops::Range<usize>| -> Vec<[u32; 3]> {
+                v[r.clone()]
+                    .iter()
+                    .map(|v| v.pos.map(f32::to_bits))
+                    .collect()
+            };
+            assert_ne!(
+                pos_slice(&fly_verts, &neck_range),
+                pos_slice(&sit_verts, &neck_range),
+                "sitting DragonPhase:5 changes neck geometry relative to flying DragonPhase:0"
+            );
+            assert_eq!(
+                pos_slice(&fly_verts, &body_part_range),
+                pos_slice(&sit_verts, &body_part_range),
+                "sitting phase leaves body vertices unchanged"
+            );
+            let flat_view = GuiEntityView::new(
+                view.rect,
+                4.0,
+                0.0,
+                GuiEntityLook::Turned {
+                    yaw: 0.0,
+                    pitch: 0.0,
+                },
+            );
+            let batch_positions = |entity: &GuiEntity, v: GuiEntityView| -> Vec<[u32; 2]> {
+                let mut b = HudBatch::scratch([320, 240]);
+                assert_eq!(game.native_draw_entity(&mut b, entity, v), Ok(()));
+                b.vertices
+                    .iter()
+                    .map(|vt| vt.pos.map(f32::to_bits))
+                    .collect()
+            };
+            let fly_batch = batch_positions(&GuiEntity::with_data(DRAGON, flying_nbt), flat_view);
+            let sit_batch = batch_positions(&GuiEntity::with_data(DRAGON, sitting_nbt), flat_view);
+            let sit_pos_batch =
+                batch_positions(&GuiEntity::with_data(DRAGON, sitting_pos_nbt), flat_view);
+            let hover_batch = batch_positions(&dragon, flat_view);
+            assert_ne!(fly_batch, sit_batch);
+            assert_eq!(sit_batch, sit_pos_batch, "saved Pos is discarded");
+            assert_eq!(
+                hover_batch, sit_batch,
+                "default Hover phase is sitting in vanilla DragonHoverPhase"
+            );
+
+            // Changing only Turned.pitch moves the head vertices and leaves body vertices in place.
+            let pitched_view = GuiEntityView::new(
+                view.rect,
+                4.0,
+                0.0,
+                GuiEntityLook::Turned {
+                    yaw: 0.0,
+                    pitch: 30.0,
+                },
+            );
+            let (mut pitched_verts, mut pitched_eyes) = (Vec::new(), Vec::new());
+            game.gui_dragon_geometry(
+                DragonPreview::from_nbt(&Compound::new()),
+                GuiDragonLook {
+                    body_yaw: 0.0,
+                    head_yaw: 0.0,
+                    head_pitch: 30.0,
+                },
+                &mut pitched_verts,
+                &mut pitched_eyes,
+            );
+            assert_ne!(
+                pos_slice(&sit_verts, &head_range),
+                pos_slice(&pitched_verts, &head_range),
+                "head pitch moves head vertices"
+            );
+            assert_eq!(
+                pos_slice(&sit_verts, &body_part_range),
+                pos_slice(&pitched_verts, &body_part_range),
+                "head pitch leaves body vertices in place"
+            );
+            let pitched_batch = batch_positions(&dragon, pitched_view);
+            assert_ne!(hover_batch, pitched_batch);
+
+            // Logged-in client fixture: parent dragon draws, part returns NoEntity, removed parent returns NoEntity.
+            let (client, _server) = sunrise_protocol::connection::Pipe::pair();
+            game.connect_local(client, "GuiDragonTest").unwrap();
+            let remote = game.remote.as_mut().unwrap();
+            remote.logged_in = true;
+            remote.entity_id = 7;
+            remote.profile = 42;
+            game.player = Some(
+                sunrise_client::motion::PlayerMotion::new(game.motion, Position::ZERO).unwrap(),
+            );
+            game.spawn_entity(15, DRAGON, [0.0; 3], [0.0; 3]);
+            let tracked = game.entity(15).expect("tracked dragon handle");
+            let part = game.entity(16).expect("dragon part handle");
+            let mut existing_batch = HudBatch::scratch([320, 240]);
+            assert_eq!(
+                game.native_draw_entity(&mut existing_batch, &GuiEntity::existing(tracked), view),
+                Ok(())
+            );
+            assert!(!existing_batch.vertices.is_empty());
+            let mut refused_part = HudBatch::scratch([320, 240]);
+            assert_eq!(
+                game.native_draw_entity(&mut refused_part, &GuiEntity::existing(part), view),
+                Err(GuiEntityError::NoEntity)
+            );
+            assert!(refused_part.vertices.is_empty());
+            game.remove_entity(15);
+            let mut refused_gone = HudBatch::scratch([320, 240]);
+            assert_eq!(
+                game.native_draw_entity(&mut refused_gone, &GuiEntity::existing(tracked), view),
+                Err(GuiEntityError::NoEntity)
+            );
+            assert!(refused_gone.vertices.is_empty());
         });
     }
 }

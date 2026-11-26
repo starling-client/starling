@@ -8,6 +8,7 @@ description = "Port a Java modpack to Sunrise: import, inventory, classification
 
 [dependencies]
 # Content path rules only (no runtime): what the game's content loader accepts.
+sunrise-jar-fetch = { path = "../sunrise-jar-fetch" }
 sunrise-mod-package = { path = "../sunrise-mod-package", default-features = false }
 sunrise-proxy = { path = "../sunrise-proxy" }
 serde = { version = "1", features = ["derive"] }
@@ -19,7 +20,7 @@ sha2 = "0.10"
 toml = "1.1.6"
 ureq = { version = "2", default-features = false, features = ["tls"] }
 url = "2"
-zip = { version = "9.1.3", default-features = false, features = ["deflate"] }
+zip = { version = "9.1.3", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [dev-dependencies]
 mod_api = { package = "sunrise-mod-api", path = "../sunrise-mod-api" }

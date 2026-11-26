@@ -516,7 +516,35 @@ fn saved_selector_identity_climate_and_counts_are_bounded() {
         ),
         (
             vec!["dimensions", "minecraft:overworld", "regions", "0", "owner"],
-            string("other"),
+            string(""),
+        ),
+        (
+            vec!["dimensions", "minecraft:overworld", "regions", "0", "id"],
+            string("marsh"),
+        ),
+        (
+            vec!["dimensions", "minecraft:overworld", "regions", "0", "id"],
+            string("Alpha:Marsh"),
+        ),
+        (
+            vec![
+                "dimensions",
+                "minecraft:overworld",
+                "regions",
+                "0",
+                "weight",
+            ],
+            Tag::Int((i32::MAX as u32 + 1) as i32),
+        ),
+        (
+            vec![
+                "dimensions",
+                "minecraft:overworld",
+                "regions",
+                "0",
+                "weight",
+            ],
+            Tag::Int(i32::MAX),
         ),
         (
             vec![
@@ -663,4 +691,69 @@ fn literal_version_one_file_decodes_without_the_record_encoder() {
     assert_eq!(layout.regions[0].points[0].offset, 0.375);
     assert!(record.reported.is_empty());
     assert_eq!(fs::read(path(dir.path())).unwrap(), bytes);
+}
+
+#[test]
+fn cross_namespace_regions_and_large_weights_round_trip() {
+    let dir = tempfile::tempdir().unwrap();
+    let declared = vec![
+        declaration("alpha", "foreign:marsh", "minecraft:overworld", 1001),
+        declaration(
+            "beta",
+            "minecraft:canyon",
+            "minecraft:overworld",
+            i32::MAX as u32 - 1011,
+        ),
+    ];
+    let record = BiomeRegions::from_declarations(&declared);
+    record.write(dir.path()).unwrap();
+    let loaded = BiomeRegions::read(dir.path()).unwrap().unwrap();
+    assert_eq!(loaded, record);
+    let layout = loaded.layout("minecraft:overworld").unwrap();
+    assert_eq!(layout.regions[0].owner, "alpha");
+    assert_eq!(layout.regions[0].id, "foreign:marsh");
+    assert_eq!(layout.regions[0].weight, 1001);
+    assert_eq!(layout.regions[1].owner, "beta");
+    assert_eq!(layout.regions[1].id, "minecraft:canyon");
+    assert_eq!(layout.regions[1].weight, i32::MAX as u32 - 1011);
+
+    // Missing-mod checks and substitution follow the stored owner, not the region's namespace.
+    let why = open_with(dir.path(), &mods(&["alpha"]), &declared[..1]).unwrap_err();
+    assert!(
+        why.contains("minecraft:canyon") && why.contains("mod beta"),
+        "{why}"
+    );
+    choose_with(dir.path(), &mods(&["alpha"]), &declared[..1], true, false).unwrap();
+    let substituted = open_with(dir.path(), &mods(&["alpha"]), &declared[..1])
+        .unwrap()
+        .unwrap();
+    let sub_layout = substituted.layout("minecraft:overworld").unwrap();
+    assert_eq!(sub_layout.regions[1].owner, "beta");
+    assert_eq!(sub_layout.regions[1].id, "minecraft:canyon");
+    assert!(sub_layout.regions[1].substituted);
+
+    // Individual region decoding accepts weights up to i32::MAX and refuses 0 or > i32::MAX.
+    let mut region_tag = encode_region(&layout.regions[1]);
+    put(&mut region_tag, "weight", Tag::Int(i32::MAX));
+    let decoded_max = decode_region(&region_tag, "minecraft:overworld").unwrap();
+    assert_eq!(decoded_max.owner, "beta");
+    assert_eq!(decoded_max.id, "minecraft:canyon");
+    assert_eq!(decoded_max.weight, i32::MAX as u32);
+    put(&mut region_tag, "weight", Tag::Int(0));
+    assert!(decode_region(&region_tag, "minecraft:overworld").is_err());
+    put(
+        &mut region_tag,
+        "weight",
+        Tag::Int((i32::MAX as u32 + 1) as i32),
+    );
+    assert!(decode_region(&region_tag, "minecraft:overworld").is_err());
+
+    // Total weight across vanilla and regions still refuses overflow above i32::MAX.
+    let mut overflow = record.encode();
+    put(
+        &mut regions(&mut overflow)[1],
+        "weight",
+        Tag::Int(i32::MAX - 1010),
+    );
+    assert!(decode(&overflow).unwrap_err().contains("overflows"));
 }

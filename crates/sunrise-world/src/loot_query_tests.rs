@@ -2,20 +2,37 @@ use super::*;
 use serde_json::json;
 use std::rc::Rc;
 fn data(tables: Vec<(&str, Value)>) -> LootData {
+    let types = types::Types::capture();
+    let tables: Arc<LootTables> =
+        Arc::new(tables.into_iter().map(|(k, v)| (k.into(), v)).collect());
+    let predicates = Arc::default();
+    let modifiers = Arc::default();
+    let bindings = types
+        .bind_generation(
+            tables.clone(),
+            Arc::clone(&predicates),
+            Arc::clone(&modifiers),
+            Vec::new(),
+            Default::default(),
+        )
+        .unwrap();
     LootData {
         holder_sets: Default::default(),
         component_defaults: Arc::default(),
         copies_entity_nbt: false,
-        types: types::Types::capture(),
-        tables: Arc::new(tables.into_iter().map(|(k, v)| (k.into(), v)).collect()),
+        bindings,
+        tables,
         global_modifiers: Arc::default(),
-        modifiers: HashMap::new(),
-        predicates: Arc::default(),
+        modifiers,
+        predicates,
+        slot_sources: HashMap::new(),
         items: HashMap::new(),
         enchantments: vec![],
         primary_answers: Default::default(),
         support_answers: Default::default(),
-        tags: HashMap::new(),
+        tags: Default::default(),
+        item_tag_names: None,
+        damage_types: vec![],
         smelting: vec![],
     }
 }
@@ -71,7 +88,7 @@ fn root_adapters_preserve_output_and_random_without_modifiers() {
             "adapter {adapter}"
         );
         assert_eq!(
-            query.id().as_deref(),
+            query.id(),
             Some(if adapter == 1 {
                 "neoforge:unknown_loot_table"
             } else {
@@ -267,12 +284,11 @@ fn modifiers_run_once_after_split_and_raw_subrolls_share_random_and_guards() {
         fn apply(
             &self,
             roll: &mut dyn ModifierRoll,
-            generated: &[LootStack],
-        ) -> Result<Vec<LootStack>, String> {
+            generated: &mut dyn LootListAccess,
+        ) -> Result<(), String> {
             assert_eq!(
-                generated
-                    .iter()
-                    .map(|stack| stack.count)
+                (0..generated.len())
+                    .map(|index| generated.get(index).unwrap().count())
                     .collect::<Vec<_>>(),
                 [64, 64, 2]
             );
@@ -281,15 +297,16 @@ fn modifiers_run_once_after_split_and_raw_subrolls_share_random_and_guards() {
                 "test:root" | "neoforge:unknown_loot_table"
             ));
             assert_eq!(roll.next_long(), LegacyRandom::new(31).next_long());
-            let raw = roll.roll_raw("test:raw")?;
-            assert_eq!(raw.len(), 1);
-            assert_eq!(raw[0].count, 200); // raw never runs this pass or the splitter
-            let mut empty = generated[0].clone();
-            empty.count = -3;
-            empty
-                .components
-                .push(("minecraft:custom_data".into(), Some(Tag::Int(42))));
-            Ok(vec![raw[0].clone(), empty])
+            let mut inspected = Vec::new();
+            roll.roll_raw("test:raw", &mut |stack| inspected.push(stack.count()))?;
+            assert_eq!(inspected, [200]); // raw never runs this pass or the splitter
+            let first = generated.get_mut(0).unwrap();
+            first.set_count(-3);
+            first.push_component("minecraft:custom_data".into(), Some(Tag::Int(42)));
+            generated.truncate(1);
+            roll.append_raw("test:raw", generated)?;
+            assert!(generated.swap(0, 1));
+            Ok(())
         }
     }
     struct Refuse;
@@ -297,10 +314,35 @@ fn modifiers_run_once_after_split_and_raw_subrolls_share_random_and_guards() {
         fn apply(
             &self,
             roll: &mut dyn ModifierRoll,
-            _: &[LootStack],
-        ) -> Result<Vec<LootStack>, String> {
+            generated: &mut dyn LootListAccess,
+        ) -> Result<(), String> {
+            generated.get_mut(0).unwrap().set_count(205);
             roll.next_long();
-            roll.roll_raw("test:missing")
+            roll.append_raw("test:missing", generated)
+        }
+    }
+    struct After;
+    impl ModifierApply for After {
+        fn apply(
+            &self,
+            roll: &mut dyn ModifierRoll,
+            generated: &mut dyn LootListAccess,
+        ) -> Result<(), String> {
+            assert_eq!(
+                (0..generated.len())
+                    .map(|index| generated.get(index).unwrap().count())
+                    .collect::<Vec<_>>(),
+                [205, -3]
+            );
+            assert_eq!(
+                generated.get(1).unwrap().components(),
+                [("minecraft:custom_data".into(), Some(Tag::Int(42)))]
+            );
+            let mut expected = LegacyRandom::new(31);
+            expected.next_long();
+            expected.next_long();
+            assert_eq!(roll.next_long(), expected.next_long());
+            Ok(())
         }
     }
     struct Skipped;
@@ -308,8 +350,8 @@ fn modifiers_run_once_after_split_and_raw_subrolls_share_random_and_guards() {
         fn apply(
             &self,
             _: &mut dyn ModifierRoll,
-            _: &[LootStack],
-        ) -> Result<Vec<LootStack>, String> {
+            _: &mut dyn LootListAccess,
+        ) -> Result<(), String> {
             panic!("a false base condition must skip application")
         }
     }
@@ -321,7 +363,7 @@ fn modifiers_run_once_after_split_and_raw_subrolls_share_random_and_guards() {
     ]});
     let mut data = data(vec![("test:root", root.clone()), ("test:raw", raw)]);
     data.set_global_modifiers(Arc::new(GlobalLootModifiers::load(
-        ["test:observe", "test:refuse", "test:skip"]
+        ["test:observe", "test:refuse", "test:after", "test:skip"]
             .into_iter()
             .map(|id| ModifierFile {
                 id: id.into(),
@@ -334,9 +376,17 @@ fn modifiers_run_once_after_split_and_raw_subrolls_share_random_and_guards() {
             let (priority, condition, apply): (_, _, Arc<dyn ModifierApply>) = match id {
                 "test:observe" => (1001, None, Arc::new(Observe)),
                 "test:refuse" => (1000, None, Arc::new(Refuse)),
+                "test:after" => (999, None, Arc::new(After)),
                 _ => (
-                    999,
-                    Some(json!({"type":"neoforge:loot_table_id","loot_table_id":"test:never"})),
+                    998,
+                    Some(
+                        data.bindings()
+                            .prepare_condition(
+                                json!({"type":"neoforge:loot_table_id","loot_table_id":"test:never"}),
+                                "test:skip $.condition",
+                            )
+                            .unwrap(),
+                    ),
                     Arc::new(Skipped),
                 ),
             };
@@ -349,6 +399,7 @@ fn modifiers_run_once_after_split_and_raw_subrolls_share_random_and_guards() {
         |error| panic!("{error}"),
     )));
     let mut expected_random = LegacyRandom::new(31);
+    expected_random.next_long();
     expected_random.next_long();
     expected_random.next_long();
     for adapter in 0..6 {
@@ -368,7 +419,7 @@ fn modifiers_run_once_after_split_and_raw_subrolls_share_random_and_guards() {
         };
         assert_eq!(
             output.iter().map(|stack| stack.count).collect::<Vec<_>>(),
-            [200, -3],
+            [205, -3],
             "adapter {adapter}"
         );
         assert_eq!(
@@ -397,20 +448,19 @@ fn watched(table: Value, raw: Option<Value>) -> (LootData, Arc<std::sync::Mutex<
         fn apply(
             &self,
             roll: &mut dyn ModifierRoll,
-            generated: &[LootStack],
-        ) -> Result<Vec<LootStack>, String> {
+            generated: &mut dyn LootListAccess,
+        ) -> Result<(), String> {
             let facts = roll.facts();
             *self.0.lock().unwrap() = Some((
                 facts.entity.map(|e| e.kind.clone()),
-                facts.tool.as_ref().map(|t| t.item.clone()),
+                facts.tool.map(|t| t.item_id().to_owned()),
                 facts.place.as_ref().and_then(|p| p.origin),
                 facts.luck,
             ));
-            let mut out = generated.to_vec();
             if self.1 {
-                out.extend(roll.roll_raw("test:raw")?);
+                roll.append_raw("test:raw", generated)?;
             }
-            Ok(out)
+            Ok(())
         }
     }
     let seen = Arc::new(std::sync::Mutex::new(None));
@@ -523,6 +573,7 @@ fn a_fishing_roll_names_the_hook_its_owner_the_rod_and_the_position() {
             data.roll_as(
                 "test:caller",
                 &mut LegacyRandom::new(3),
+                None,
                 None,
                 Some(open),
                 &params(owner),

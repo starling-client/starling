@@ -1,8 +1,8 @@
-//! Captured worker job and its once-only, recoverable completion.
+//! Captured disk job and its once-only, recoverable completion.
 use super::*;
 use std::sync::OnceLock;
 
-// no wire: engine-owned recovery snapshot and once-only worker completion.
+// no wire: engine-owned recovery snapshot and once-only owner dispatch.
 /// One captured disk record. The dirty mark was consumed before capture; the
 /// persistence owner retains this while the save attempt is pending.
 // hidden: engine-owned save job, built and retained by the persistence owner
@@ -11,46 +11,40 @@ use std::sync::OnceLock;
 pub struct ChunkDiskJob {
     context: ChunkDiskContext,
     captured: Compound,
-    completed: OnceLock<Result<Compound, ChunkDiskFailure>>,
-    #[cfg(any(test, feature = "testing"))]
-    installed: Option<&'static crate::runtime::Installed>,
-    #[cfg(any(test, feature = "testing"))]
-    parts: Option<&'static crate::parts::Installed>,
+    completed: OnceLock<Compound>,
 }
 
 impl ChunkDiskJob {
     /// Capture encoded state only when the phase has a subscriber. The empty
     /// route does not clone the identity or store, allocate, or invoke a codec.
-    pub fn capture(context: &ChunkDiskContext, store: &Attachments) -> Option<Self> {
+    pub fn capture(
+        context: &ChunkDiskContext,
+        store: &Attachments,
+    ) -> Result<Option<Self>, AttachmentEncodeError> {
         let hook = match context.phase {
             ChunkDiskPhase::Load => HookId::ChunkDataLoad,
             ChunkDiskPhase::Save => HookId::ChunkDataSave,
         };
         if !crate::listened(hook) {
-            return None;
+            return Ok(None);
         }
-        Some(Self {
+        Ok(Some(Self {
             context: context.clone(),
-            captured: store.to_nbt(),
+            captured: store.try_to_nbt()?,
             completed: OnceLock::new(),
-            #[cfg(any(test, feature = "testing"))]
-            installed: crate::runtime::installed(),
-            #[cfg(any(test, feature = "testing"))]
-            parts: crate::parts::installed(),
-        })
+        }))
     }
 
-    /// Run once on the owning chunk worker. Repeated encoding or recovery
+    /// Run on the owning server thread. Repeated inspection or recovery
     /// reads borrow the cached outcome and cannot invoke listeners again.
-    pub fn run(&self, resources: &dyn WorldgenHost) -> &Result<Compound, ChunkDiskFailure> {
+    pub fn run(
+        &self,
+        resources: &dyn WorldgenHost,
+        upgrade_nbt: fn(NbtDataType, i32, Compound) -> Result<Compound, NbtUpgradeError>,
+    ) -> &Compound {
         self.completed.get_or_init(|| {
-            #[cfg(any(test, feature = "testing"))]
-            let _scope = TestScope(
-                crate::TEST_MODS.replace(self.installed),
-                crate::parts::TEST_PARTS.replace(self.parts),
-            );
-            let mut data = ChunkDiskData::from_nbt(self.captured.clone())?;
-            let context = OwningChunkDisk::new(&self.context, resources);
+            let mut data = ChunkDiskData::from_nbt(self.captured.clone());
+            let context = OwningChunkDisk::new(&self.context, resources, upgrade_nbt);
             match self.context.phase {
                 ChunkDiskPhase::Load => native_chunk_data_load(&context, &mut data),
                 ChunkDiskPhase::Save => native_chunk_data_save(&context, &mut data),
@@ -59,27 +53,13 @@ impl ChunkDiskJob {
         })
     }
 
-    /// Original encoded envelopes for explicit recovery after callback or IO
-    /// failure. Reading these bytes never runs mod code or repeats callbacks.
+    /// The captured envelopes, before any listener ran.
     pub fn captured(&self) -> &Compound {
         &self.captured
     }
 
-    /// Inspect completion without starting work on a reader or server thread.
-    pub fn completed(&self) -> Option<&Result<Compound, ChunkDiskFailure>> {
+    /// Inspect completion without invoking a listener.
+    pub fn completed(&self) -> Option<&Compound> {
         self.completed.get()
-    }
-}
-
-#[cfg(any(test, feature = "testing"))]
-struct TestScope(
-    Option<&'static crate::runtime::Installed>,
-    Option<&'static crate::parts::Installed>,
-);
-#[cfg(any(test, feature = "testing"))]
-impl Drop for TestScope {
-    fn drop(&mut self) {
-        crate::TEST_MODS.set(self.0);
-        crate::parts::TEST_PARTS.set(self.1);
     }
 }

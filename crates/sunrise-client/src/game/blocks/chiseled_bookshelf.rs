@@ -82,7 +82,7 @@ impl Game<'_> {
             });
             self.consume_held();
             self.chiseled_bookshelf_update_state(pos, slot);
-            self.audio.play(sound, Some(centre), 1.0, 1.0);
+            self.play_audio(sound, Some(centre), 1.0, 1.0);
             return Some(Answer::Success);
         }
         if !occupied {
@@ -103,7 +103,7 @@ impl Game<'_> {
         } else {
             "minecraft:block.chiseled_bookshelf.pickup"
         };
-        self.audio.play(sound, Some(centre), 1.0, 1.0);
+        self.play_audio(sound, Some(centre), 1.0, 1.0);
         if let Some(book) = retrieved {
             self.give_or_drop(book);
         }

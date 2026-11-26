@@ -5,7 +5,7 @@ import subprocess
 import tempfile
 import unittest
 
-from rust_items import rust_fn
+from tests.rust_items import rust_fn
 
 FIXTURE = r"""
 #[derive(Clone, Copy)] struct Vec3 { x: f64, y: f64, z: f64 }

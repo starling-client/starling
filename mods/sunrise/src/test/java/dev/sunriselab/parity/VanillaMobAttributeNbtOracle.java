@@ -9,11 +9,7 @@ import net.minecraft.world.entity.ai.attributes.*;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.item.ItemStack;
 
-/**
- * Original oracle: for each case line (entity id, saved NBT, equipment), loads the entity on a
- * detached ServerLevel, equips it and runs LivingEntity.collectEquipmentChanges, then prints the
- * attribute values and bases asked for and the saved `attributes` list, as exact double bits.
- */
+// Original 26.3 oracle: loads an entity, runs equipment passes, prints reads/saved attributes as exact double bits (plus optional reload).
 public final class VanillaMobAttributeNbtOracle {
     static final class Level extends ServerLevel {
         Level() { super(null, null, null, null, null, null, false, 0L, java.util.List.of(), false); }
@@ -30,6 +26,38 @@ public final class VanillaMobAttributeNbtOracle {
 
     static String bits(double v) { return Long.toHexString(Double.doubleToRawLongBits(v)); }
     static String fbits(float v) { return String.format("%08x", Float.floatToRawIntBits(v)); }
+
+    static void appendReads(StringBuilder sb, String prefix, LivingEntity living, com.google.gson.JsonArray names, net.minecraft.core.Registry<Attribute> attrs) {
+        var map = living.getAttributes();
+        for (var name : names) {
+            var holder = attrs.get(net.minecraft.resources.Identifier.parse(name.getAsString())).get();
+            if (!map.hasAttribute(holder)) {
+                sb.append('\t').append(prefix).append(' ').append(name.getAsString()).append(" none");
+                continue;
+            }
+            sb.append('\t').append(prefix).append(' ').append(name.getAsString())
+                .append(' ').append(bits(map.getValue(holder)))
+                .append(' ').append(bits(map.getBaseValue(holder)));
+        }
+    }
+
+    static void appendSaved(StringBuilder sb, String prefix, net.minecraft.nbt.CompoundTag compound) {
+        var list = compound.getListOrEmpty("attributes");
+        var rows = new java.util.TreeMap<String, String>();
+        for (int i = 0; i < list.size(); i++) {
+            var a = list.getCompoundOrEmpty(i);
+            var row = new StringBuilder("base ").append(bits(a.getDoubleOr("base", 0.0)));
+            var mods = a.getListOrEmpty("modifiers");
+            for (int j = 0; j < mods.size(); j++) {
+                var m = mods.getCompoundOrEmpty(j);
+                row.append(" mod ").append(m.getStringOr("id", "?"))
+                    .append(' ').append(bits(m.getDoubleOr("amount", 0.0)))
+                    .append(' ').append(m.getStringOr("operation", "?"));
+            }
+            rows.put(a.getStringOr("id", "?"), row.toString());
+        }
+        rows.forEach((id, row) -> sb.append('\t').append(prefix).append(' ').append(id).append(' ').append(row));
+    }
 
     public static void main(String[] args) throws Exception {
         net.minecraft.SharedConstants.tryDetectVersion();
@@ -93,12 +121,8 @@ public final class VanillaMobAttributeNbtOracle {
                     }
                     if (changed != null) for (var en : changed.entrySet()) last.put(en.getKey(), en.getValue().copy());
                     if (!c.getAsJsonObject("then").isEmpty()) collect.invoke(living, last);
-                    var map = living.getAttributes();
-                    for (var name : c.getAsJsonArray("read")) {
-                        var holder = attrs.get(net.minecraft.resources.Identifier.parse(name.getAsString())).get();
-                        if (!map.hasAttribute(holder)) { sb.append("\tread ").append(name.getAsString()).append(" none"); continue; }
-                        sb.append("\tread ").append(name.getAsString()).append(' ').append(bits(map.getValue(holder))).append(' ').append(bits(map.getBaseValue(holder)));
-                    }
+                    var readNames = c.getAsJsonArray("read");
+                    appendReads(sb, "read", living, readNames, attrs);
                     var output = net.minecraft.world.level.storage.TagValueOutput.createWithContext(net.minecraft.util.ProblemReporter.DISCARDING, level.registryAccess());
                     e.saveWithoutId(output);
                     var saved = output.buildResult();
@@ -115,19 +139,15 @@ public final class VanillaMobAttributeNbtOracle {
                             .append(' ')
                             .append(bits(defaultMax));
                     }
-                    var list = saved.getListOrEmpty("attributes");
-                    var rows = new java.util.TreeMap<String, String>();
-                    for (int i = 0; i < list.size(); i++) {
-                        var a = list.getCompoundOrEmpty(i);
-                        var row = new StringBuilder("base ").append(bits(a.getDoubleOr("base", 0.0)));
-                        var mods = a.getListOrEmpty("modifiers");
-                        for (int j = 0; j < mods.size(); j++) {
-                            var m = mods.getCompoundOrEmpty(j);
-                            row.append(" mod ").append(m.getStringOr("id", "?")).append(' ').append(bits(m.getDoubleOr("amount", 0.0))).append(' ').append(m.getStringOr("operation", "?"));
-                        }
-                        rows.put(a.getStringOr("id", "?"), row.toString());
+                    appendSaved(sb, "saved", saved);
+                    if (c.has("reload") && c.get("reload").getAsBoolean()) {
+                        Entity reloaded = type.create(level, EntitySpawnReason.LOAD);
+                        reloaded.load(net.minecraft.world.level.storage.TagValueInput.create(net.minecraft.util.ProblemReporter.DISCARDING, level.registryAccess(), saved));
+                        appendReads(sb, "reload_read", (LivingEntity) reloaded, readNames, attrs);
+                        var reloadedOutput = net.minecraft.world.level.storage.TagValueOutput.createWithContext(net.minecraft.util.ProblemReporter.DISCARDING, level.registryAccess());
+                        reloaded.saveWithoutId(reloadedOutput);
+                        appendSaved(sb, "reload_saved", reloadedOutput.buildResult());
                     }
-                    rows.forEach((id, row) -> sb.append("\tsaved ").append(id).append(' ').append(row));
                 } catch (Throwable t) {
                     var cause = t instanceof java.lang.reflect.InvocationTargetException ? t.getCause() : t;
                     sb.append("\tFAIL ").append(cause);

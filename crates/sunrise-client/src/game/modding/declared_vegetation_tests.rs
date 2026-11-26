@@ -1,4 +1,5 @@
 //! Explicit vegetation behaves the same on different templates and is not inferred from Parts.
+use super::api_values::TryIntoApi;
 use mod_api::{BlockPart, Hooks, LevelSide, MayPlaceOnEvent, Registrar};
 use std::sync::{
     Arc,
@@ -118,14 +119,33 @@ fn declared_vegetation_places_and_breaks_independently_of_its_template() {
                     game.world
                         .set(5, 64, 5, registry.default_state(soil).unwrap())
                         .unwrap();
+                    let candidate = registry
+                        .default_state(plant)
+                        .unwrap()
+                        .try_into_api()
+                        .unwrap();
+                    let level = game.level(game.dim.id()).unwrap();
+                    let before = heard.load(Ordering::Relaxed);
+                    assert_eq!(
+                        level.can_survive(game, [pos.x, pos.y, pos.z], candidate),
+                        Ok(allowed),
+                        "candidate {plant} on {soil}"
+                    );
+                    assert_eq!(
+                        heard.load(Ordering::Relaxed) > before,
+                        asks_plant,
+                        "soil Part decides before the plant Part"
+                    );
                     let context = PlaceContext {
                         clicked_pos: BlockPos::new(5, 64, 5),
                         face: Direction::Up,
                         hit: Vec3::new(5.5, 65.0, 5.5),
                         inside: false,
-                        yaw: 0.0,
-                        pitch: 0.0,
-                        sneaking: false,
+                        source: sunrise_world::level::PlacementSource::Player {
+                            yaw: 0.0,
+                            pitch: 0.0,
+                            sneaking: false,
+                        },
                         item: plant.into(),
                         can_use_game_master_blocks: false,
                     };
@@ -185,13 +205,32 @@ fn declared_vegetation_places_and_breaks_independently_of_its_template() {
                     .chunks
                     .insert((0, 0), Arc::new(sunrise_client::chunk::Chunk::empty(0, 0)));
                 game.sync_tick_chunks();
-                game.set_mode_id(0);
+                game.set_local_mode(sunrise_client::command::args::GameMode::Survival);
                 let hit = crate::game::Hit {
                     pos: [5, 64, 5],
                     face: [0, 1, 0],
                     point: [5.5, 65.0, 5.5],
                     inside: false,
                 };
+                game.remote.as_mut().unwrap().logged_in = true;
+                let level = game.native_client_level().unwrap();
+                let plant = game
+                    .pack
+                    .assets
+                    .registry
+                    .default_state("garden:glass")
+                    .unwrap()
+                    .try_into_api()
+                    .unwrap();
+                for (soil, allowed) in [("minecraft:stone", false), ("minecraft:dirt", true)] {
+                    let support = game.pack.assets.registry.default_state(soil).unwrap();
+                    game.world.set(5, 64, 5, support).unwrap();
+                    assert_eq!(
+                        level.can_survive(game, [5, 65, 5], plant),
+                        Ok(allowed),
+                        "client's loaded replica: {soil}"
+                    );
+                }
                 for (soil, allowed) in [("minecraft:stone", false), ("minecraft:dirt", true)] {
                     let ground = game.pack.assets.registry.default_state(soil).unwrap();
                     game.world.set(5, 64, 5, ground).unwrap();

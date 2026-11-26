@@ -23,7 +23,8 @@ pub enum CollisionEntityKind {
 /// The reads are vanilla's: [`Self::entity`] (`getEntity`, as the entity's id: `None` for the
 /// empty, position and cache contexts), [`Self::is_descending`], [`Self::is_placement`],
 /// [`Self::always_collide_with_fluid`], [`Self::is_above`], [`Self::is_holding_item`] and
-/// [`Self::can_stand_on_fluid`]. They are the entity's state from before the move that asks:
+/// [`Self::can_stand_on_fluid`], with [`Self::dimension`] for the level the query is in (the
+/// `level` vanilla's `getCollisionShape` is given). They are the entity's state from before the move that asks:
 /// the query holds no `Host`, so nothing about the entity can be read while the move runs. A rule
 /// that needs more (a belt's set of carried entities, say) keeps its own state keyed by
 /// [`Self::entity`] and syncs it to the client, which asks the same question for its own
@@ -44,6 +45,8 @@ pub struct CollisionQuery {
     held_item: Option<Arc<str>>,
     /// The fluids the entity can stand on, when it is a living one (`Entity.canStandOnFluid`).
     standable_fluids: Arc<[Arc<str>]>,
+    /// The dimension id of the level the query is in.
+    dimension: Option<Arc<str>>,
 }
 
 impl CollisionQuery {
@@ -92,6 +95,23 @@ impl CollisionQuery {
     pub fn with_standable_fluids(mut self, fluids: Arc<[Arc<str>]>) -> Self {
         self.standable_fluids = fluids;
         self
+    }
+
+    /// The same query, made in the level whose dimension id is `dimension`. The game shares the
+    /// id between queries rather than copying it.
+    #[must_use]
+    pub fn with_dimension(mut self, dimension: Arc<str>) -> Self {
+        self.dimension = Some(dimension);
+        self
+    }
+
+    /// The dimension id of the level the query is in (`minecraft:overworld`, a mod's own): the
+    /// `level` vanilla's `getCollisionShape(state, level, pos, context)` is given. One position
+    /// exists in every dimension, so a part that keeps its own state by position keys it by this
+    /// too. Every query the game makes names its level; `None` only for a query built without
+    /// [`Self::with_dimension`].
+    pub fn dimension(&self) -> Option<&str> {
+        self.dimension.as_deref()
     }
 
     /// `EntityCollisionContext.getEntity`: the id of the entity the query is for, `None` for a

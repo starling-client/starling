@@ -44,16 +44,34 @@ pub trait RaidsBackend {
     /// The boss bar's progress, 0 to 1 (`Raid.raidEvent.getProgress`).
     fn raid_bar_progress(&self, raid: RaidRef) -> Option<f32>;
     /// Side: server.
-    /// `Raid.getAllRaiders`: the living raiders that joined, in mob-list
-    /// order, as entity handles.
-    fn raid_raiders(&self, raid: RaidRef) -> Option<Vec<EntityRef>>;
+    /// `Raid.getAllRaiders`: visits the living raiders that joined, in mob-list order,
+    /// as entity handles. A stopped raid remains readable until the raid map removes it.
+    /// Return `ControlFlow::Break(())` to stop. An empty raid completes with
+    /// `Ok(Continue(()))`; a refusal does not call the visitor.
+    fn raid_visit_raiders(
+        &self,
+        raid: RaidRef,
+        visit: &mut dyn FnMut(EntityRef) -> core::ops::ControlFlow<()>,
+    ) -> Result<core::ops::ControlFlow<()>, RaidReadError>;
     /// Side: server.
-    /// The living raiders of one wave (`groupRaiderMap.get(wave)`).
-    fn raid_wave_raiders(&self, raid: RaidRef, wave: i32) -> Option<Vec<EntityRef>>;
+    /// Visits the living raiders of one wave (`groupRaiderMap.get(wave)`), in mob-list order.
+    /// Return `ControlFlow::Break(())` to stop. A wave with no living raiders completes
+    /// with `Ok(Continue(()))`; a refusal does not call the visitor.
+    fn raid_visit_wave_raiders(
+        &self,
+        raid: RaidRef,
+        wave: i32,
+        visit: &mut dyn FnMut(EntityRef) -> core::ops::ControlFlow<()>,
+    ) -> Result<core::ops::ControlFlow<()>, RaidReadError>;
     /// Side: server.
-    /// `Raid.heroesOfTheVillage`: the UUIDs of the players who got Hero of
-    /// the Village, online or not, in the order vanilla's set iterates them.
-    fn raid_heroes(&self, raid: RaidRef) -> Option<Vec<u128>>;
+    /// `Raid.heroesOfTheVillage`: visits the UUIDs of the players who got Hero of the Village,
+    /// online or not, in the order vanilla's set iterates them. Return `ControlFlow::Break(())`
+    /// to stop. An empty set completes with `Ok(Continue(()))`; a refusal does not call the visitor.
+    fn raid_visit_heroes(
+        &self,
+        raid: RaidRef,
+        visit: &mut dyn FnMut(u128) -> core::ops::ControlFlow<()>,
+    ) -> Result<core::ops::ControlFlow<()>, RaidReadError>;
 }
 /// The handles' writes of the `raids` area, implemented by the game and reached through [`BackendMut`].
 // hidden: a handle's backend, reached through `Backend`; mods call the handle, never this trait

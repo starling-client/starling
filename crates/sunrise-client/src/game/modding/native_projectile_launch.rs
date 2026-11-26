@@ -60,29 +60,21 @@ impl Game<'_> {
         self.projectile(self.entity(id)?)
     }
 
-    /// `Projectile.spawnProjectile` for a shot whose owner is `owner`: it takes
-    /// the next id and joins with `stack`'s spawn effects. The owner may be an
-    /// inactive guest, so launch listeners see that player's identity, not the
-    /// player currently swapped into Game. The shot's id; None when the guest
-    /// can't be swapped in.
+    /// `Projectile.spawnProjectile` for a shot whose owner is `owner`. A player
+    /// owner may be an inactive guest; resolve that body before inserting the shot
+    /// so join listeners see its real owner in the right level.
     pub(super) fn spawn_owned_projectile(
         &mut self,
         owner: Option<Target>,
-        mut shot: Projectile,
+        shot: Projectile,
         stack: &ItemStack,
     ) -> Option<u32> {
-        self.next_entity += 1;
-        shot.id = self.next_entity;
-        let id = shot.id;
-        // Projectile.spawnProjectile: the spawn effects read the supplied
-        // stack, whatever its count, and never change it.
         match owner {
             Some(t @ (Target::Player | Target::Guest(_))) => {
                 self.for_player(t, |game| game.spawn_projectile(shot, stack))?
             }
             _ => self.spawn_projectile(shot, stack),
-        };
-        Some(id)
+        }
     }
 }
 

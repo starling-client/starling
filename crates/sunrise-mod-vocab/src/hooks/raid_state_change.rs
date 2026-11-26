@@ -1,5 +1,4 @@
 //! The `raid_state_change` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0329
 
 pub trait Hooks {
     /// A server raid at `pos` changed to `state` (`triggered`, `victory`,

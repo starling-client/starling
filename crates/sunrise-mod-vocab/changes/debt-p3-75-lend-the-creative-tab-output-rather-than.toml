@@ -1,0 +1,26 @@
+ids = [
+    "hook:build_creative_mode_tab_contents",
+    "hook:build_creative_mode_tab_contents.edit",
+    "hook:build_creative_mode_tab_contents.features",
+    "hook:build_creative_mode_tab_contents.output",
+    "type:BuildCreativeModeTabContentsEvent.features",
+    "type:BuildCreativeModeTabContentsEvent.edit",
+    "type:BuildCreativeModeTabContentsEvent.output",
+    "type:CreativeTabEdit",
+    "handle:CreativeTabEdit::entries",
+    "handle:CreativeTabEdit::insert",
+    "handle:CreativeTabEdit::remove",
+    "handle:CreativeTabEdit::remove_if",
+    "type:CreativeTabEditError",
+    "type:CreativeTabEditError.Stale",
+    "type:CreativeTabList",
+    "type:CreativeTabPlacement",
+    "type:CreativeTabVisibility",
+    "trait:CreativeTabOutput",
+    "method:CreativeTabOutput::entries",
+    "method:CreativeTabOutput::insert",
+    "method:CreativeTabOutput::remove",
+    "method:CreativeTabOutput::remove_if",
+]
+why = "Vanilla CreativeModeTab.buildContents builds one tab at a time. NeoForge EventHooks.onCreativeModeTabBuildContents lends the ordered parent and search entries through BuildCreativeModeTabContentsEvent before feature filtering. Sunrise now lends those lists directly in hook version 4 instead of resolving an editor token through the Host. Reads lend entries without projecting whole lists. Removal visits each selected list once, in order. The count-one rule is from CreativeModeTab.ItemDisplayBuilder.accept and NeoForge's event insertions; matching uses item and components, and damage follows the signed integer codec of DataComponents.DAMAGE. Ordinary refusals are reported without disabling the listener. A panic logs and queues an error toast naming that mod, disables only its creative-build callback for the session, and leaves completed edits visible to later listeners without aborting the action that requested the catalog."
+migrate = "Keep the Hooks::build_creative_mode_tab_contents signature. If your manifest pins this hook, request hook_version = 4. Replace event.edit.entries(host, list) with event.output.entries(list, &mut |entry| { /* use the ItemStackView */ }). Call entry.project() to obtain an owned ItemStack on demand. Replace event.edit.insert(host, placement, stack, visibility) with event.output.insert(placement, stack, visibility), and event.edit.remove(host, &stack, visibility) with event.output.remove(&stack, visibility). For Before and After, if the anchor is missing and the new stack is a duplicate, handle MissingAnchor first, as in NeoForge. Replace event.edit.remove_if(host, visibility, predicate) with event.output.remove_if(visibility, &mut |entry| predicate_on_view(entry)); use entry.item(), count() and damage() directly, or call entry.project() for components. Use the borrowed event.features slice directly or call .to_vec() to retain an owned copy. Do not save the editor, entries or a callback token: neither the token nor CreativeTabEditError::Stale exists. If you used the backend edit requests or Wire encodings of the list, placement, visibility or refusal, use the typed output methods inside the callback instead."

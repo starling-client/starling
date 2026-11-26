@@ -6,31 +6,53 @@ use sunrise_client::{blocks::StateFacts, items::ItemStack};
 use sunrise_core::position::BlockPos;
 use sunrise_world::registry::BlockStateId;
 
+/// What a player's removal of a block left for the break around it.
+pub(in crate::game) struct PlayerRemoval {
+    /// Whether the block was removed.
+    pub removed: bool,
+    /// The state the removal saw (vanilla's `adjustedState`: a cracked pot).
+    pub state: BlockStateId,
+    /// The one harvest answer, asked before the tool wore and the block went.
+    pub harvest: bool,
+    /// The main-hand stack as it was before the tool wore: what removal and loot see, whatever a
+    /// listener does to the selected slot afterwards.
+    pub tool: Option<ItemStack>,
+    /// The stack the wear used up, if it broke.
+    pub broken_tool: Option<ItemStack>,
+}
+
 impl Game<'_> {
-    /// Remove the block `state` at `pos` for the player breaking it with `held`, and say whether
-    /// it was removed, the state the removal saw (vanilla's `adjustedState`: a cracked pot) and
-    /// whether the break harvests (drops loot). `filled_hive` is a beehive with bees or honey.
+    /// Remove the block `state` at `pos` for the player breaking it: `ServerPlayerGameMode.destroyBlock`
+    /// from `playerWillDestroy` on (NeoForge's patch of it). `filled_hive` is a beehive with bees or
+    /// honey.
     ///
-    /// The order is vanilla's: `playerWillDestroy` (pot cracking, piglin anger, a creaking
-    /// heart's protector, tripwire disarming, a creative shulker box's or beehive's drop), then
-    /// `Level.removeBlock`, then the harvest answer (`hasCorrectToolForDrops`, with
-    /// `can_harvest_block` and `player_harvest_check`, asked once) of the adjusted state and the
-    /// held stack as it is then. A part that answers replaces all of `playerWillDestroy` as well
-    /// as the removal. It is told `will_harvest` first, so that one is only the tool's own answer
-    /// before the removal; the mods' harvest listeners decide after it. A door's break also asks
-    /// them before its removal, as it always has.
+    /// The order is NeoForge's: `playerWillDestroy` (pot cracking, piglin anger, a creaking heart's
+    /// protector, tripwire disarming, a creative shulker box's or beehive's drop), then the main-hand
+    /// stack is copied, the harvest answer is asked once (`hasCorrectToolForDrops`, with
+    /// `can_harvest_block` and `player_harvest_check`) of the adjusted state, the tool wears
+    /// (`ItemStack.mineBlock`), and the removal (`on_destroyed_by_player`, which may take it over, or
+    /// `Level.removeBlock`) runs with that answer and that copy. Only a survival player's break asks
+    /// and wears; a creative break harvests nothing.
     pub(in crate::game) fn player_destroy_block_removal(
         &mut self,
         pos: [i32; 3],
         state: BlockStateId,
         facts: &StateFacts,
-        held: Option<&ItemStack>,
         filled_hive: bool,
-    ) -> (bool, BlockStateId, bool) {
+    ) -> PlayerRemoval {
         let creative = self.creative;
-        let mut correct_tool =
-            !facts.requires_tool || self.res.items().correct_for_drops(held, &facts.name);
         let block_entity = self.removed_block_entity_data(pos, state);
+        let state = self.player_will_destroy(pos, state, facts, filled_hive);
+        let tool = self.held().cloned();
+        let (harvest, broken_tool) = if creative {
+            (false, None)
+        } else {
+            let harvest = self.acting_can_harvest(pos, state);
+            (
+                harvest,
+                self.mine_block_with_held(&facts.name, facts.hardness),
+            )
+        };
         let mut destroyed = None;
         if crate::game::api_values::block_state::block_listens(
             mod_api::HookId::OnDestroyedByPlayer,
@@ -41,39 +63,28 @@ impl Game<'_> {
                 player,
                 pos,
                 state,
-                held,
-                !creative && correct_tool,
+                tool.as_ref(),
+                harvest,
                 &mut destroyed,
             );
         }
-        if let Some(removed) = destroyed {
-            if removed {
-                self.native_player_destroyed_block(pos, state, block_entity);
+        let removed = match destroyed {
+            Some(removed) => {
+                if removed {
+                    self.invalidate_active_player_breaks(pos);
+                    self.native_player_destroyed_block(pos, state, block_entity);
+                }
+                removed
             }
-            return (removed, state, self.harvest_after_removal(pos, state));
+            None => self.remove_block_as_player(pos, creative, harvest),
+        };
+        PlayerRemoval {
+            removed,
+            state,
+            harvest,
+            tool,
+            broken_tool,
         }
-        let state = self.player_will_destroy(pos, state, facts, filled_hive);
-        if !creative
-            && self
-                .res
-                .behaviours()
-                .data(state)
-                .is(sunrise_world::level::classes::Class::Door)
-        {
-            correct_tool = self.acting_can_harvest(pos, state);
-        }
-        let removed = self.remove_block_as_player(pos, creative, correct_tool);
-        (removed, state, self.harvest_after_removal(pos, state))
-    }
-
-    /// Whether the break that has just removed `state` harvests: the tool's answer for the selected
-    /// hotbar stack as it is now, then the mods' (`can_harvest_block`, `player_harvest_check`). Only a
-    /// survival player's break asks.
-    fn harvest_after_removal(&mut self, pos: [i32; 3], state: BlockStateId) -> bool {
-        if self.creative {
-            return false;
-        }
-        self.acting_can_harvest(pos, state)
     }
 
     /// The block side effects of `Block.playerWillDestroy` that run before the vanilla
@@ -96,7 +107,7 @@ impl Game<'_> {
         // TripWireBlock.playerWillDestroy: shears disarm the string first (flags
         // 260), so taking it down does not trip the hook.
         if &*facts.name == "minecraft:tripwire"
-            && self.held().is_some_and(|s| &*s.item == "minecraft:shears")
+            && self.held_shears(super::item_abilities::ability::SHEARS_DISARM)
             && let Some(disarmed) = self.with_props(state, &[("disarmed", "true")])
         {
             let at = BlockPos::new(pos[0], pos[1], pos[2]);

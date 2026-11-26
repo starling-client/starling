@@ -84,6 +84,13 @@ pub struct BoundBlockProperty {
     mask: u8,
 }
 impl BoundBlockProperty {
+    pub(crate) fn from_flags(states: Arc<[u8]>, property: BlockProperty) -> Self {
+        Self {
+            states,
+            mask: property.mask(),
+        }
+    }
+
     pub fn contains(&self, id: BlockStateId) -> bool {
         self.states
             .get(id.0 as usize)

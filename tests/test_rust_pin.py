@@ -16,6 +16,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from tests.os_support import needs_runner_shell
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github/workflows"
@@ -85,6 +86,7 @@ class RustPinTests(unittest.TestCase):
 
 
 class RustupInstallTests(unittest.TestCase):
+    @needs_runner_shell
     def test_a_missing_rustup_fails_at_once_without_retrying(self):
         with tempfile.TemporaryDirectory() as directory:
             # Only what the script needs besides rustup.

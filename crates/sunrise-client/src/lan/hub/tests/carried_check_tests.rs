@@ -1333,17 +1333,25 @@ fn a_carried_guests_settle_asks_a_part_about_the_guest() {
     let looped = Arc::new(crate::native_client_hooks::test_hooks::loop_context());
     let parts = Rc::new(crate::collision_parts::ModParts::new(looped.clone()));
     let _parts = sunrise_world::part_collision::InParts::enter(parts.clone());
+    // A part is asked for every query that meets the wall (#5459), a step-up retry's included,
+    // so each settle asks at least once rather than once.
+    let mut first = 0;
     rig.within(|| {
         side.hub
             .settle(0, [20.5, 9.0, 12.5], [22.0, 9.0, 12.5], &ctx);
-        parts.begin_tick(&looped);
+        first = asked.borrow().len();
+        parts.begin_tick(&looped, "minecraft:overworld");
         sunrise_client_render::moving_colliders::as_mover(DECK, || {
             side.hub
                 .settle(0, [20.5, 9.0, 12.5], [22.0, 9.0, 12.5], &ctx)
         });
     });
     let asked = asked.borrow();
-    assert_eq!(asked.len(), 2, "the wall's part was asked: {asked:?}");
+    assert!(first > 0, "the guest's own settle asked the wall's part");
+    assert!(
+        asked.len() > first,
+        "the carried settle asked the wall's part: {asked:?}"
+    );
     assert!(
         asked.iter().all(|entity| *entity == Some(id as u32)),
         "asked about {asked:?}, not the guest {id}"

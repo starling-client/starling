@@ -51,6 +51,7 @@ Content {
             category: Neutral,
             color: 0,
             sort_order: None,
+            attribute_modifiers: [],
         },
     ],
     creative_tabs: [],

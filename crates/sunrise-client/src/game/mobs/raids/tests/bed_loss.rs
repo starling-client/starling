@@ -1,5 +1,6 @@
 //! Real Game raid creation/wave dispatch with a loaded claimed-bed precondition.
 use super::super::{Audio, Game, Options, Progress, Settings, load_resources};
+use mod_api::{Authority, LevelReadError, LevelRef, WorldEpoch};
 use std::sync::Arc;
 use sunrise_client::{chunk::Chunk, mobs::Mob, raid::Status};
 use sunrise_core::{geometry::Vec3, position::ChunkPos};
@@ -63,6 +64,15 @@ fn admitted_raid_loses_removed_loaded_bed_without_erasing_memory() {
     let head = registry.id(&head_state).unwrap();
     game.world.set(2, 200, 2, foot).unwrap();
     game.world.set(2, 200, 1, head).unwrap();
+    game.native_lifecycle
+        .begin_open(Some(Authority::IntegratedServer));
+    let level = game.level_ref(game.native_lifecycle.epoch().unwrap(), game.dim.key());
+    let bed = [2, 200, 1];
+    assert_eq!(level.is_village(&game, bed), Ok(false));
+    assert_eq!(
+        LevelRef::new(WorldEpoch::new(0), game.dim.key()).is_village(&game, bed),
+        Err(LevelReadError::Stale)
+    );
     let kind = game
         .res
         .mob_types()
@@ -75,6 +85,9 @@ fn admitted_raid_loses_removed_loaded_bed_without_erasing_memory() {
     // from that claimed-bed state and exercises production raid/wave dispatch.
     villager.extra.bed = Some([2, 200, 1]);
     game.mobs.push(villager);
+    assert_eq!(level.is_village(&game, bed), Ok(true));
+    assert_eq!(level.is_village(&game, [18, 200, 1]), Ok(true));
+    assert_eq!(level.is_village(&game, [34, 200, 1]), Ok(false));
     assert!(game.raid_command_create([8, 200, 8], 1));
     let id = game.raiding.raids.ids()[0];
     for _ in 0..400 {
@@ -98,12 +111,18 @@ fn admitted_raid_loses_removed_loaded_bed_without_erasing_memory() {
     // Unavailable claims remain unknown rather than becoming known air.
     let chunk = game.world.chunks.remove(&(0, 0)).unwrap();
     assert!(Game::is_village(&game.village_centers(), [2, 200, 1]));
+    assert_eq!(
+        level.is_village(&game, bed),
+        Err(LevelReadError::Unavailable)
+    );
+    assert!(!game.world.chunks.contains_key(&(0, 0)));
     game.world.chunks.insert((0, 0), chunk);
     game.level_set([2, 200, 1], air).unwrap();
     game.level_set([2, 200, 2], air).unwrap();
     assert_eq!(game.world.block(2, 200, 1), air);
     assert_eq!(game.world.block(2, 200, 2), air);
     game.tick_raids();
+    assert_eq!(level.is_village(&game, bed), Ok(false));
     assert_eq!(game.raiding.raids.get(id).unwrap().status, Status::Loss);
     assert_eq!(
         game.mobs.iter().find(|m| m.id == 162).unwrap().extra.bed,

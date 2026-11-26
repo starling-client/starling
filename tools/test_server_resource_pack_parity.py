@@ -24,15 +24,11 @@ import shutil
 import subprocess
 import sys
 
-try:
-    from . import lab, test_rust_parity as base
-    from .test_dedicated_server_parity import Server, free_port
-    from .test_locator_bar_parity import generate_world
-except ImportError:
-    import lab
-    import test_rust_parity as base
-    from test_dedicated_server_parity import Server, free_port
-    from test_locator_bar_parity import generate_world
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_rust_parity as base
+from tools.test_dedicated_server_parity import Server, free_port
+from tools.test_locator_bar_parity import generate_world
 
 NAME = 'server-resource-pack-parity'
 PROPERTIES = {

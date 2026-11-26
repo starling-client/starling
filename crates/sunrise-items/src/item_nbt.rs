@@ -2,12 +2,19 @@
 //! slot lists.
 use std::sync::Arc;
 use sunrise_client_core::nbt_value::{number, string, text};
+<<<<<<< HEAD
 use sunrise_core::nbt::Tag;
 use sunrise_world::datafix::dynamic::{Number, as_number};
 #[path = "item_nbt/starling.rs"]
 mod starling;
 #[allow(unused_imports)]
 pub use self::starling::*;
+||||||| 46c00106def
+use sunrise_core::nbt::Tag;
+use sunrise_world::datafix::dynamic::{Number, as_number};
+=======
+use sunrise_core::nbt::{Tag, parse_snbt, snbt_whitespace};
+>>>>>>> ed6772e2118
 
 /// The two measured saved forms of `BlockPredicate.CODEC`, and the `Identifier`s
 /// of `attribute_modifiers` written whole. Operate only on
@@ -90,6 +97,7 @@ pub fn encode_item(
 pub fn item_to_nbt(stack: &crate::items::ItemStack, items: &crate::items::Items) -> Tag {
     Tag::compound(encode_item(stack, items))
 }
+<<<<<<< HEAD
 
 /// A stack from a command or data file, without legacy save handling. `ItemStack.CODEC`
 /// ignores unknown fields (including `Count`); `count` defaults to 1. A present count
@@ -101,13 +109,159 @@ pub fn item_from_persistent_nbt(tag: &Tag) -> Option<crate::items::ItemStack> {
             .map(Number::int_value)
             .filter(|n| (1..=99).contains(n))? as u32,
         None => 1,
+||||||| 46c00106def
+/// A stack from a command or data file, without legacy save handling. `ItemStack.CODEC`
+/// ignores unknown fields (including `Count`); `count` defaults to 1. A present count
+/// must be numeric and in 1 to 99 after Java's `Number.intValue`. A `components` patch
+/// naming a transient component makes no stack.
+pub fn item_from_persistent_nbt(tag: &Tag) -> Option<crate::items::ItemStack> {
+    let count = match tag.get("count") {
+        Some(value) => as_number(value)
+            .map(Number::int_value)
+            .filter(|n| (1..=99).contains(n))? as u32,
+        None => 1,
+=======
+/// Encode an optional item stack as `ItemStack.OPTIONAL_CODEC` over `JsonOps`:
+/// `None` encodes as `{}`, and `Some(stack)` encodes as `{"id", "count", "components": ...}`
+/// against the loaded item prototypes.
+pub fn item_to_json(
+    stack: Option<&crate::items::ItemStack>,
+    items: &crate::items::Items,
+) -> Result<serde_json::Value, sunrise_world::component_value::json::JsonError> {
+    item_to_json_with(stack, items, |_| false, |_| true)
+}
+/// Encode an optional item stack as `ItemStack.OPTIONAL_CODEC` over `JsonOps`,
+/// resolving registered native component types via `is_native` and items via `has_item`.
+pub fn item_to_json_with(
+    stack: Option<&crate::items::ItemStack>,
+    items: &crate::items::Items,
+    is_native: impl Fn(&str) -> bool,
+    has_item: impl Fn(&str) -> bool,
+) -> Result<serde_json::Value, sunrise_world::component_value::json::JsonError> {
+    use sunrise_world::component_value::json::JsonError;
+
+    let Some(stack) = stack else {
+        return Ok(serde_json::Value::Object(Default::default()));
+>>>>>>> ed6772e2118
     };
-    let components = tag.get("components");
-    if let Some(components) = components {
-        sunrise_world::item_defaults::validate_component_map_tag(components).ok()?;
+    if stack.item.as_ref() == "minecraft:air" {
+        return Err(JsonError::field("id", "air is not a valid item"));
     }
-    let stack = decode_stack(tag, count, components, None)?;
-    (!stack.has_refused_consume_effects()).then_some(stack)
+    if !has_item(&stack.item) {
+        return Err(JsonError::field(
+            "id",
+            format!("unknown item {}", stack.item),
+        ));
+    }
+    if !(1..=99).contains(&stack.count) {
+        return Err(JsonError::field("count", "count outside 1..99"));
+    }
+    let nbt = item_to_nbt(stack, items);
+    let template = sunrise_world::component_value::source::item_stack_from_tag_with(
+        &nbt, is_native, &has_item,
+    )
+    .map_err(JsonError::from_codec_error);
+    sunrise_core::nbt::discard_tag(nbt);
+    template?.to_item_stack_json()
+}
+/// Decode one complete JSON value as `ItemStack.OPTIONAL_CODEC` over `JsonOps`:
+/// `{}` decodes as `Ok(None)`, and a stack object decodes via `ItemStack.CODEC`.
+pub fn item_from_json(
+    json: &str,
+) -> Result<Option<crate::items::ItemStack>, sunrise_world::component_value::json::JsonError> {
+    item_from_json_with(json, |_| false, |_| true)
+}
+/// Decode one complete JSON value as `ItemStack.OPTIONAL_CODEC` over `JsonOps`,
+/// resolving registered native component types via `is_native` and every item, nested ones
+/// included, via `has_item`.
+pub fn item_from_json_with(
+    json: &str,
+    is_native: impl Fn(&str) -> bool,
+    has_item: impl Fn(&str) -> bool,
+) -> Result<Option<crate::items::ItemStack>, sunrise_world::component_value::json::JsonError> {
+    use sunrise_world::component_value::json::{JsonError, optional_item_stack_from_json_with};
+
+    let value: serde_json::Value =
+        serde_json::from_str(json).map_err(|error| JsonError::Syntax(error.to_string()))?;
+    let Some(template) = optional_item_stack_from_json_with(&value, is_native, &has_item)? else {
+        return Ok(None);
+    };
+    let components = template
+        .patch_to_tag()
+        .map_err(JsonError::from_codec_error)?;
+    let stack = decode_item_fields(
+        &template.item,
+        template.count as u32,
+        components.as_ref(),
+        None,
+    );
+    if stack.has_refused_consume_effects() {
+        return Err(JsonError::field(
+            "components",
+            "invalid registered consume effect payload",
+        ));
+    }
+    Ok(Some(stack))
+}
+/// Read one `TagParser.parseCompoundFully` compound as an `ItemStack.CODEC` item.
+/// The SNBT grammar and saved-item decoder report their own errors; binary NBT quotas
+/// are not part of this text boundary.
+pub fn item_from_snbt(snbt: &str) -> Result<crate::items::ItemStack, String> {
+    item_from_snbt_with(snbt, |_| false, |_| true)
+}
+
+/// Read one `TagParser.parseCompoundFully` compound as an `ItemStack.CODEC` item,
+/// resolving registered native component types via `is_native` and every item, nested ones
+/// included, via `has_item`.
+pub fn item_from_snbt_with(
+    snbt: &str,
+    is_native: impl Fn(&str) -> bool,
+    has_item: impl Fn(&str) -> bool,
+) -> Result<crate::items::ItemStack, String> {
+    let (tag, end) = parse_snbt(snbt)?;
+    if let Some((pos, _)) = snbt[end..]
+        .char_indices()
+        .find(|&(_, ch)| !snbt_whitespace(ch.into()))
+    {
+        return Err(format!("argument.nbt.trailing at {}", end + pos));
+    }
+    item_from_persistent_nbt_with(&tag, is_native, has_item)
+}
+
+/// Decode an `ItemStack.CODEC` compound at a strict input boundary. Unlike the save
+/// reader, refuse an invalid count or component patch and preserve the diagnostic.
+pub fn item_from_persistent_nbt(tag: &Tag) -> Result<crate::items::ItemStack, String> {
+    item_from_persistent_nbt_with(tag, |_| false, |_| true)
+}
+
+/// Decode an `ItemStack.CODEC` compound at a strict input boundary, resolving registered
+/// native component types via `is_native` and items via `has_item`.
+pub fn item_from_persistent_nbt_with(
+    tag: &Tag,
+    is_native: impl Fn(&str) -> bool,
+    has_item: impl Fn(&str) -> bool,
+) -> Result<crate::items::ItemStack, String> {
+    let template = sunrise_world::component_value::source::item_stack_from_tag_with(
+        tag, is_native, &has_item,
+    )?;
+    let components = template.patch_to_tag()?;
+    let stack = decode_item_fields(
+        &template.item,
+        template.count as u32,
+        components.as_ref(),
+        None,
+    );
+    if stack.has_refused_consume_effects() {
+        // The registered codec reports its own refusal. Do not admit a partial stack.
+        return Err("invalid registered consume effect payload".into());
+    }
+    Ok(stack)
+}
+
+fn saved_item_id(tag: &Tag) -> Option<String> {
+    let (namespace, path) = sunrise_world::datafix::identifier(&text(tag.get("id"))?)?;
+    let id = format!("{namespace}:{path}");
+    (id != "minecraft:air").then_some(id)
 }
 /// A stack read from a save. Earlier Sunrise saves can hold transient components
 /// (`creative_slot_lock`, `additional_trade_cost`, `map_post_processing`), so only
@@ -129,6 +283,7 @@ pub(crate) fn item_from_nbt_with_effects(
     tag: &Tag,
     effects: Option<&Arc<[sunrise_world::component_value::consume_effects::Admitted]>>,
 ) -> Option<crate::items::ItemStack> {
+    let id = saved_item_id(tag)?;
     let count = number(tag.get("count"))
         .or_else(|| number(tag.get("Count")))
         .filter(|count| (1..=99).contains(count))
@@ -144,30 +299,25 @@ pub(crate) fn item_from_nbt_with_effects(
         }
         components => components,
     };
-    decode_stack(tag, count, components, effects)
+    Some(decode_item_fields(&id, count, components, effects))
 }
 
-fn decode_stack(
-    tag: &Tag,
+fn decode_item_fields(
+    id: &str,
     count: u32,
     components: Option<&Tag>,
     effects: Option<&Arc<[sunrise_world::component_value::consume_effects::Admitted]>>,
-) -> Option<crate::items::ItemStack> {
-    let (namespace, path) = sunrise_world::datafix::identifier(&text(tag.get("id"))?)?;
-    let id = format!("{namespace}:{path}");
-    if id == "minecraft:air" {
-        return None;
-    }
+) -> crate::items::ItemStack {
     let (damage, extra) = match effects {
         Some(effects) => crate::item_data::decode_network_components(components, effects),
         None => crate::item_data::decode_components(components),
     };
-    Some(crate::items::ItemStack {
-        item: Arc::from(id.as_str()),
+    crate::items::ItemStack {
+        item: Arc::from(id),
         count,
         damage,
         extra,
-    })
+    }
 }
 pub fn encode_items(slots: &[Option<crate::items::ItemStack>], items: &crate::items::Items) -> Tag {
     Tag::List(encode_items_using(slots, |stack| item_to_nbt(stack, items)))
@@ -247,10 +397,89 @@ mod tests {
     use super::*;
 
     #[test]
+    fn item_snbt_reports_the_trailing_data_cursor() {
+        assert_eq!(
+            item_from_snbt("{id:stone} x").unwrap_err(),
+            "argument.nbt.trailing at 11"
+        );
+    }
+
+    #[test]
+    fn item_snbt_validates_component_codecs_registry_membership_and_narrowed_count() {
+        let narrowed = item_from_snbt(r#"{id:"minecraft:stone",count:4294967297L}"#).unwrap();
+        assert_eq!(narrowed.count, 1);
+        let narrowed_max = item_from_snbt(r#"{id:"minecraft:stone",count:4294967395L}"#).unwrap();
+        assert_eq!(narrowed_max.count, 99);
+        assert!(item_from_snbt(r#"{id:"minecraft:stone",count:4294967296L}"#).is_err());
+        assert!(item_from_snbt(r#"{id:"minecraft:stone",count:4294967396L}"#).is_err());
+
+        let negative_damage =
+            item_from_snbt(r#"{id:"minecraft:diamond_sword",components:{"minecraft:damage":-1}}"#)
+                .unwrap_err();
+        assert!(
+            negative_damage.contains("minecraft:damage"),
+            "{negative_damage}"
+        );
+
+        let unknown =
+            item_from_snbt(r#"{id:"minecraft:stone",components:{"nomod:unknown":1}}"#).unwrap_err();
+        assert!(unknown.contains("nomod:unknown"), "{unknown}");
+
+        let unknown_removal =
+            item_from_snbt(r#"{id:"minecraft:stone",components:{"!nomod:unknown":{}}}"#)
+                .unwrap_err();
+        assert!(
+            unknown_removal.contains("nomod:unknown"),
+            "{unknown_removal}"
+        );
+
+        let registered = item_from_snbt_with(
+            r#"{id:"diamond_sword",components:{"damage":5,"!repair_cost":{ignored:1},"sample:charge":{value:5}}}"#,
+            |id| id == "sample:charge",
+            |_| true,
+        )
+        .unwrap();
+        assert_eq!(&*registered.item, "minecraft:diamond_sword");
+        assert_eq!(registered.damage, 5);
+        let data = registered.data().unwrap();
+        assert_eq!(
+            data.other("!minecraft:repair_cost"),
+            Some(&Tag::Compound(Default::default()))
+        );
+        assert_eq!(
+            data.other("sample:charge"),
+            Some(&Tag::compound([("value", Tag::Int(5))]))
+        );
+    }
+
+    #[test]
     fn persistent_count_checks_the_java_int_not_the_long() {
         let (tag, _) = sunrise_core::nbt::parse_snbt(r#"{id:"stone",count:4294967301L}"#).unwrap();
         assert_eq!(item_from_persistent_nbt(&tag).unwrap().count, 5);
         assert_eq!(item_from_nbt(&tag).unwrap().count, 1);
+    }
+
+    /// `ItemStackTemplate.CODEC`'s `components` is `DataComponentPatch.CODEC.optionalFieldOf`:
+    /// absent is the empty patch, a present non-map value fails the stack.
+    #[test]
+    fn persistent_components_must_be_a_compound() {
+        let with = |components: Option<Tag>| {
+            let mut tag = Tag::compound([("id", string("minecraft:stone"))]);
+            if let (Tag::Compound(map), Some(components)) = (&mut tag, components) {
+                map.insert("components".into(), components);
+            }
+            item_from_persistent_nbt(&tag)
+        };
+        assert!(with(None).is_ok());
+        assert!(
+            with(Some(Tag::compound([(
+                "minecraft:repair_cost",
+                Tag::Int(2)
+            )])))
+            .is_ok()
+        );
+        assert!(with(Some(string("not-a-compound"))).is_err());
+        assert!(with(Some(Tag::Int(1))).is_err());
     }
 
     #[test]
@@ -333,8 +562,12 @@ mod tests {
             let live = crate::item_data::components_tag(stack.damage, stack.data()).unwrap();
             assert_eq!(live.get(transient), None);
             assert_eq!(live.get("minecraft:repair_cost"), Some(&Tag::Int(2)));
-            // Commands and data files keep the strict refusal.
-            assert!(item_from_persistent_nbt(&saved).is_none());
+            // Strict input refuses the component, naming it, instead of stripping it.
+            assert!(
+                item_from_persistent_nbt(&saved)
+                    .unwrap_err()
+                    .contains(transient)
+            );
         }
     }
 }
@@ -674,5 +907,85 @@ mod h285_saved_adventure_tests {
                 entry("minecraft:armor", "mod:x"),
             ]))
         );
+    }
+}
+
+#[cfg(test)]
+mod item_json_tests {
+    use super::*;
+    use crate::items::ItemStack;
+    use serde_json::json;
+    use sunrise_world::component_value::json::JsonError;
+
+    #[test]
+    fn item_json_roundtrips_plain_empty_multi_component_and_removal_against_prototypes() {
+        let mut items = crate::items::Items::for_tests(Default::default());
+        let mut sword_defaults = sunrise_core::nbt::Compound::new();
+        sword_defaults.insert("minecraft:damage".into(), Tag::Int(0));
+        sword_defaults.insert("minecraft:max_damage".into(), Tag::Int(1561));
+        let mut defaults = std::collections::HashMap::new();
+        defaults.insert("minecraft:diamond_sword".to_owned(), sword_defaults);
+        items.component_defaults = Arc::new(defaults);
+
+        // Empty stack <-> {}
+        assert_eq!(item_to_json(None, &items).unwrap(), json!({}));
+        assert_eq!(item_from_json("{}").unwrap(), None);
+
+        // Plain stack <-> {"id", "count"}
+        let stone = ItemStack::new("minecraft:stone", 64);
+        let stone_json = json!({"id": "minecraft:stone", "count": 64});
+        assert_eq!(item_to_json(Some(&stone), &items).unwrap(), stone_json);
+        assert_eq!(
+            item_from_json(&stone_json.to_string()).unwrap(),
+            Some(stone)
+        );
+
+        // Multi-component stack: styled text component (real JSON bool), enchantments,
+        // int damage, and float attack charge.
+        let sword_json = json!({
+            "id": "minecraft:diamond_sword",
+            "count": 1,
+            "components": {
+                "minecraft:custom_name": {"text": "Blade", "color": "gold", "bold": true},
+                "minecraft:enchantments": {"minecraft:sharpness": 3},
+                "minecraft:damage": 5,
+                "minecraft:minimum_attack_charge": 0.5
+            }
+        });
+        let sword = item_from_json(&sword_json.to_string()).unwrap().unwrap();
+        assert_eq!(sword.damage, 5);
+        assert_eq!(item_to_json(Some(&sword), &items).unwrap(), sword_json);
+
+        // Explicit removal against a prototype that defines minecraft:damage.
+        let removed_json = json!({
+            "id": "minecraft:diamond_sword",
+            "count": 1,
+            "components": {
+                "!minecraft:damage": {}
+            }
+        });
+        let removed = item_from_json(&removed_json.to_string()).unwrap().unwrap();
+        assert_eq!(item_to_json(Some(&removed), &items).unwrap(), removed_json);
+
+        // Prototype-equal damage (0) is elided on encode.
+        let fresh_sword = ItemStack::new("minecraft:diamond_sword", 1);
+        assert_eq!(
+            item_to_json(Some(&fresh_sword), &items).unwrap(),
+            json!({"id": "minecraft:diamond_sword", "count": 1})
+        );
+
+        // Decode errors name the failing field.
+        assert!(matches!(
+            item_from_json(r#"{"id":"minecraft:diamond_sword","components":{"minecraft:damage":-1}}"#),
+            Err(JsonError::Field { field, .. }) if field == "minecraft:damage"
+        ));
+        assert!(matches!(
+            item_from_json(r#"{"id":"minecraft:stone","count":100}"#),
+            Err(JsonError::Field { field, .. }) if field == "count"
+        ));
+        assert!(matches!(
+            item_from_json("{not valid json"),
+            Err(JsonError::Syntax(_))
+        ));
     }
 }

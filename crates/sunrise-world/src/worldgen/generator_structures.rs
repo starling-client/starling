@@ -739,7 +739,10 @@ impl StructureState {
         let rings = self.rings(context).clone();
         let wanted = |s: usize| names.iter().any(|n| *n == self.registry.structures[s].name);
         let dist = |p: [i32; 3]| {
-            let (dx, dz) = (f64::from(p[0] - from[0]), f64::from(p[2] - from[2]));
+            let (dx, dz) = (
+                f64::from(p[0]) - f64::from(from[0]),
+                f64::from(p[2]) - f64::from(from[2]),
+            );
             dx * dx + dz * dz
         };
         let mut best: Option<(f64, String, [i32; 3])> = None;
@@ -786,7 +789,11 @@ impl StructureState {
                     };
                     let mut nearest: Option<(f64, ChunkPos, String)> = None;
                     for &c in chunks {
-                        let d = dist([c.x * 16 + 8, 32, c.z * 16 + 8]);
+                        let d = dist([
+                            c.x.wrapping_mul(16).wrapping_add(8),
+                            32,
+                            c.z.wrapping_mul(16).wrapping_add(8),
+                        ]);
                         if nearest.as_ref().is_none_or(|(n, ..)| d < *n)
                             && self
                                 .registry
@@ -824,7 +831,10 @@ impl StructureState {
                             if !(x_edge || dz == -r || dz == r) {
                                 continue;
                             }
-                            let (sx, sz) = (cx + spacing * dx, cz + spacing * dz);
+                            let (sx, sz) = (
+                                cx.wrapping_add(spacing.wrapping_mul(dx)),
+                                cz.wrapping_add(spacing.wrapping_mul(dz)),
+                            );
                             let Some(c) = StructureRegistry::potential_chunk(set, seed, sx, sz)
                             else {
                                 continue;

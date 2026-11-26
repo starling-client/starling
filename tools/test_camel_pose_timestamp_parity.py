@@ -7,7 +7,9 @@ alignment, full bodies/motion, exact command feedback and comparison residuals.
 """
 import hashlib,json,sys,tempfile
 from pathlib import Path
-import test_command_exec_parity as driver
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_command_exec_parity as driver
 CASES=[('absent',None,0),('zero',0,0),('past',1000,1000),('sitting',-1000,-1000),('future',1044,1044)]
 def program():
  ops=[]

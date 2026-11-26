@@ -101,9 +101,11 @@ fn a_soils_answer_comes_before_the_plants_may_place_on() {
             face: Direction::Up,
             hit: sunrise_core::geometry::Vec3::new(1.5, 2.0, 1.5),
             inside: false,
-            yaw: 0.0,
-            pitch: 0.0,
-            sneaking: false,
+            source: PlacementSource::Player {
+                yaw: 0.0,
+                pitch: 0.0,
+                sneaking: false,
+            },
             item: "minecraft:dandelion".into(),
             can_use_game_master_blocks: false,
         };

@@ -18,9 +18,6 @@ mod tests {
     use mod_platform::testing::with_mods;
     use sunrise_world::{chunk::BlockState, poi::PoiExtension, registry::BlockRegistry};
 
-    struct Tags;
-    impl mod_api::Tags for Tags {}
-
     struct TestMod {
         fails: bool,
     }
@@ -28,9 +25,8 @@ mod tests {
     impl Hooks for TestMod {
         fn extend_poi_types(&self, _: &RegistrationContext, event: &mut ExtendPoiTypesEvent<'_>) {
             let key = |id: &str| mod_api::__private::block_key(id).unwrap();
-            let metadata = event.extensions.metadata();
             if self.fails {
-                let states = StatePredicate::block(metadata, key("minecraft:stone"), &[]).unwrap();
+                let states = StatePredicate::block(key("minecraft:stone"), &[]).unwrap();
                 event
                     .extensions
                     .extend(Identifier::parse("minecraft:home").unwrap(), states);
@@ -39,16 +35,15 @@ mod tests {
             let additions = [
                 (
                     "minecraft:home",
-                    StatePredicate::block(metadata, key("minecraft:hay_block"), &[]).unwrap(),
+                    StatePredicate::block(key("minecraft:hay_block"), &[]).unwrap(),
                 ),
                 (
                     "minecraft:home",
-                    StatePredicate::block(metadata, key("minecraft:bell"), &[]).unwrap(),
+                    StatePredicate::block(key("minecraft:bell"), &[]).unwrap(),
                 ),
                 (
                     "minecraft:meeting",
                     StatePredicate::block(
-                        metadata,
                         key("minecraft:red_bed"),
                         &[StateConstraint::new("part", "foot")],
                     )
@@ -56,15 +51,13 @@ mod tests {
                 ),
                 (
                     "minecraft:nowhere",
-                    StatePredicate::block(metadata, key("minecraft:stone"), &[]).unwrap(),
+                    StatePredicate::block(key("minecraft:stone"), &[]).unwrap(),
                 ),
                 (
                     "minecraft:armorer",
+                    // POI registration refuses the tag selector itself, without looking up a name.
                     StatePredicate::tag(
-                        metadata,
-                        &Tags,
-                        mod_api::__private::tag_key(&Identifier::parse("minecraft:beds").unwrap())
-                            .unwrap(),
+                        mod_api::__private::parts_installation::invalid_tag_key(),
                         &[],
                     )
                     .unwrap(),

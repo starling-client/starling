@@ -1,6 +1,5 @@
 //! A world's biome regions: `data/sunrise/biome_regions.dat`, the region layout of each
 //! dimension fixed when the world was created and changed only by its owner's recorded choice.
-//! Design: `docs/design/mod-api/mod-biome-regions.md`.
 use super::{DatIssue, Result, Tag, write_dat_durable};
 use mod_api::__private::BiomeRegionDeclaration;
 use std::io::Read;
@@ -603,9 +602,9 @@ fn decode_region(tag: &Tag, dimension: &str) -> Decoded<LayoutRegion> {
         return Err(format!("{at}: points is not a list"));
     };
     count(points.len(), MAX_POINTS, &at)?;
-    if Identifier::parse_namespaced(&id).is_none_or(|id| id.namespace() != owner) {
+    if owner.is_empty() || Identifier::parse_namespaced(&id).is_none() {
         return Err(format!(
-            "{at}: region id must be namespaced to its owner {owner}"
+            "{at}: owner must be nonempty and region id must be a valid namespaced identifier"
         ));
     }
     let points = points
@@ -624,8 +623,11 @@ fn decode_region(tag: &Tag, dimension: &str) -> Decoded<LayoutRegion> {
         }
     };
     // Version 1 validates its own saved contract, independently of future registration rules.
-    if !(1..=1000).contains(&weight) || points.is_empty() {
-        return Err(format!("{at}: weight must be 1..=1000 and points nonempty"));
+    if !(1..=i32::MAX as u32).contains(&weight) || points.is_empty() {
+        return Err(format!(
+            "{at}: weight must be 1..={} and points nonempty",
+            i32::MAX
+        ));
     }
     Ok(LayoutRegion {
         owner,

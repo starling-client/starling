@@ -23,12 +23,16 @@ pub(in crate::game) enum Mover<'a> {
     Boat { id: u32, area: Aabb },
 }
 
-fn boat(b: &Boat) -> Candidate {
-    Candidate::fixed(SolidKind::Boat, b.id, b.bounds())
+/// A boat as a solid, in the box a client's copy takes from its `entity_size` answer.
+fn boat(game: &Game<'_>, b: &Boat) -> Candidate {
+    let bounds = game.client_copy_box(b.id, b.position, b.bounds());
+    Candidate::fixed(SolidKind::Boat, b.id, bounds)
 }
 
-fn cart(c: &Minecart) -> Candidate {
-    Candidate::fixed(SolidKind::Cart, c.id, c.bounds())
+/// [`boat`] for a minecart.
+fn cart(game: &Game<'_>, c: &Minecart) -> Candidate {
+    let bounds = game.client_copy_box(c.id, c.position, c.bounds());
+    Candidate::fixed(SolidKind::Cart, c.id, bounds)
 }
 
 /// A player the rule may offer; the rule never reads its id.
@@ -72,7 +76,7 @@ impl Game<'_> {
                 .filter(|m| rule.takes(m.solid_kind()))
                 .map(|m| m.solid_candidate()),
         );
-        out.extend(self.boats.iter().map(boat));
+        out.extend(self.boats.iter().map(|b| boat(self, b)));
     }
 
     /// [`Self::entity_collisions`] for an armor stand, which mobs can ride (`/ride`): each mob's
@@ -140,7 +144,7 @@ impl Game<'_> {
                         }
                     }
                 }
-                for b in self.boats.iter().map(boat) {
+                for b in self.boats.iter().map(|b| boat(self, b)) {
                     if solids.accepts(&b, || None) {
                         each(&b, None);
                     }
@@ -151,8 +155,8 @@ impl Game<'_> {
                     .carts
                     .iter()
                     .filter(|o| o.id != c.id)
-                    .map(cart)
-                    .chain(self.boats.iter().map(boat))
+                    .map(|c| cart(self, c))
+                    .chain(self.boats.iter().map(|b| boat(self, b)))
                 {
                     if solids.accepts(&o, || None) {
                         each(&o, None);
@@ -201,8 +205,12 @@ impl Game<'_> {
                 for (c, target) in self
                     .boats
                     .iter()
-                    .map(|b| (boat(b), Target::Boat(b.id)))
-                    .chain(self.carts.iter().map(|c| (cart(c), Target::Cart(c.id))))
+                    .map(|b| (boat(self, b), Target::Boat(b.id)))
+                    .chain(
+                        self.carts
+                            .iter()
+                            .map(|c| (cart(self, c), Target::Cart(c.id))),
+                    )
                     .chain(
                         self.players_outside(id)
                             .into_iter()

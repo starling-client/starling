@@ -10,6 +10,13 @@ Every entry is (minimum DataVersion, command template). `{x} {y} {z}` are filled
 with a free position; entities get a fixed UUID so outputs can be matched.
 """
 
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import datafix_scene_old
+
 A, B, C = 'A', 'B', 'C'
 
 
@@ -139,7 +146,6 @@ def items(e, version=None):
     """The sample stacks of an era, in the exact component formats `version` accepts."""
     stacks = ITEMS_A if e == A else ITEMS_B if e == B else ITEMS_C
     if version is not None and version < 2586:  # 1.13.2 to 1.15
-        import datafix_scene_old
         stacks = stacks + datafix_scene_old.items(version)
     if version is None:
         return stacks
@@ -241,7 +247,6 @@ def block_entities(e, version):
                        'SpawnPotentials:[{Weight:1,Entity:{id:"minecraft:skeleton"}}]}') if b == 'spawner' else (b, nbt)
                    for b, nbt in out]
         if version < 2586:
-            import datafix_scene_old
             out += datafix_scene_old.block_entities(version)
         if version >= 3682:
             out.append(('crafter', '{Items:[{Slot:0b,id:"minecraft:stone",Count:1b}],triggered:1,crafting_ticks_remaining:2}'))
@@ -319,7 +324,6 @@ def entities(e, version):
         since = {'allay': 3105, 'chest_boat': 3105, 'text_display': 3325, 'item_display': 3325, 'goat': 2700}
         out = [(k, x) for k, x in out if version >= since.get(k, 0)]
         if version < 2514:  # 1.13.2 to 1.15: entities in the formats those versions write
-            import datafix_scene_old
             out += datafix_scene_old.entities(version)
         if version < 3086:  # cats before 1.19 have a numeric CatType
             out = [(k, 'CatType:1' if k == 'cat' else x) for k, x in out]
@@ -395,7 +399,6 @@ def world_commands(version):
 def blocks(version):
     """Plain blocks whose states changed over the versions."""
     if version < 2586:
-        import datafix_scene_old
         return datafix_scene_old.blocks(version)
     return []
 

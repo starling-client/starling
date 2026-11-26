@@ -10,7 +10,9 @@ from pathlib import Path
 import sys
 import tempfile
 import uuid
-import test_command_exec_parity as driver
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_command_exec_parity as driver
 
 
 def program():

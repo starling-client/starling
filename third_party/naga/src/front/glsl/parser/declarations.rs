@@ -638,6 +638,7 @@ impl ParsingContext<'_> {
     ) -> Result<u32> {
         let mut span = 0;
         let mut align = Alignment::ONE;
+        let mut last_member;
 
         loop {
             // TODO: type_qualifier
@@ -657,7 +658,7 @@ impl ParsingContext<'_> {
                     layout,
                     &mut ctx.module.types,
                     &mut frontend.errors,
-                );
+                )?;
 
                 let member_alignment = info.align;
                 span = member_alignment.round_up(span);
@@ -670,7 +671,11 @@ impl ParsingContext<'_> {
                     offset: span,
                 });
 
-                span += info.span;
+                span = offset::member_end(span, info.span).ok_or(Error {
+                    kind: ErrorKind::TypeTooLarge,
+                    meta,
+                })?;
+                last_member = meta;
 
                 if self.bump_if(frontend, TokenValue::Comma).is_none() {
                     break;
@@ -684,8 +689,9 @@ impl ParsingContext<'_> {
             }
         }
 
-        span = align.round_up(span);
-
-        Ok(span)
+        offset::struct_span(span, align).ok_or(Error {
+            kind: ErrorKind::TypeTooLarge,
+            meta: last_member,
+        })
     }
 }

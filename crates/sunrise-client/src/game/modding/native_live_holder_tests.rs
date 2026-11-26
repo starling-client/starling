@@ -2,8 +2,8 @@
 use std::{sync::Arc, time::Instant};
 
 use mod_api::{
-    BlockEntityPart, BlockEntityTickEvent, BlockEntityTicksEvent, BlockPart, BlocksEvent, Hooks,
-    Host, HostTransaction, Registrar, ServerHost,
+    BlockEntityPart, BlockEntityTickEvent, BlockPart, BlocksEvent, Hooks, HostTransaction,
+    Registrar, ServerHost, TransactionError,
 };
 use sunrise_client::{
     chunk::Chunk,
@@ -21,7 +21,7 @@ impl BlockEntityPart for Ticker {
             let level = host.level("minecraft:overworld").unwrap();
             let sink = host.block_entity(level, [0, 63, 0]).unwrap();
             let value = sink.data_slots(host).unwrap()[0];
-            let result: Result<(), ()> = host.transaction(|host, _| {
+            let result: Result<(), TransactionError<()>> = host.transaction(|host, _| {
                 assert!(sink.set_data_slot(host, 0, value + 1).unwrap());
                 Ok(())
             });
@@ -204,15 +204,17 @@ fn data_slot_sizing_after_creation_and_load_joins_the_existing_journal() {
                 "no-op sends no Changed notice"
             );
             assert_eq!(entity.data_slots(game), Some(vec![0]));
-            let aborted: Result<(), ()> = (game as &mut dyn ServerHost).transaction(|host, _| {
-                assert_eq!(entity.set_data_slots(host, vec![30, 40]), Ok(true));
-                host.transaction(|host, _| {
-                    assert!(entity.set_data_slot(host, 0, 50).unwrap());
-                    Ok(())
-                })?;
-                Err(())
-            });
-            assert_eq!(aborted, Err(()));
+            let aborted: Result<(), TransactionError<()>> = (game as &mut dyn ServerHost)
+                .transaction(|host, _| {
+                    assert_eq!(entity.set_data_slots(host, vec![30, 40]), Ok(true));
+                    host.transaction(|host, _| {
+                        assert!(entity.set_data_slot(host, 0, 50).unwrap());
+                        Ok::<_, ()>(())
+                    })
+                    .unwrap();
+                    Err(())
+                });
+            assert_eq!(aborted, Err(TransactionError::Aborted(())));
             assert_eq!(entity.data_slots(game), Some(vec![0]));
             assert!(game.transactions.is_empty());
             assert_eq!(entity.set_data_slots(game, vec![0; 256]), Ok(true));
@@ -264,16 +266,27 @@ struct TickPaths;
 #[mod_api::__subscriptions]
 impl Hooks for TickPaths {
     fn register(&self, r: &mut dyn Registrar, _: &mod_api::RegistrationContext) {
-        let both = r.block_entity_type("both").blocks(&[BOTH_BLOCK]).build();
+        let both = r
+            .block_entity_type("both")
+            .blocks(&[BOTH_BLOCK])
+            .ticker_when(|blocks, state, side| {
+                side == mod_api::LogicalSide::Server
+                    && state.property(blocks, "enabled") == Ok(Some("true"))
+            })
+            .build();
         r.block_entity_part(&both, BothPaths).unwrap();
         r.block_entity_type("bare").blocks(&[BARE_BLOCK]).build();
     }
     fn blocks(&self, _: &mod_api::RegistrationContext, event: &mut BlocksEvent<'_>) {
-        for id in [BOTH_BLOCK, BARE_BLOCK] {
-            event
-                .register(mod_api::Block::new(id, "minecraft:stone"))
-                .unwrap();
-        }
+        let mut press = mod_api::Block::new(BOTH_BLOCK, "minecraft:stone");
+        press
+            .state_properties
+            .insert("enabled".into(), mod_api::BlockStateProperty::Boolean);
+        press.default_state.insert("enabled".into(), "true".into());
+        event.register(press).unwrap();
+        event
+            .register(mod_api::Block::new(BARE_BLOCK, "minecraft:stone"))
+            .unwrap();
     }
 }
 /// Carries `tick_paths:both`'s ticker: its block ticks, and each tick adds
@@ -283,11 +296,6 @@ struct BothPaths;
 impl BlockPart for BothPaths {}
 #[mod_api::sunrise_part]
 impl BlockEntityPart for BothPaths {
-    fn block_entity_ticks(&self, _: &dyn Host, event: &mut BlockEntityTicksEvent<'_>) {
-        if event.block == BOTH_BLOCK {
-            event.ticks = true;
-        }
-    }
     fn block_entity_tick(&self, event: &mut BlockEntityTickEvent<'_>) {
         event.subject.with_view(|mut entity| {
             let mut data = entity.data_slots().to_vec();
@@ -344,13 +352,8 @@ fn a_declared_type_ticks_once_whichever_path_named_it() {
                     ))),
                 );
             }
-            // The type's own ticker is the one decision: the part's answer
-            // for the press block, nothing for the bare declaration.
-            assert!(game.native_ticks(BOTH_BLOCK));
-            assert!(!game.native_ticks(BARE_BLOCK));
-            // The level's ticking list carries exactly the ticker's answer:
-            // one slot for the press, none for the bare declaration.
-            game.world.block_entities.set_states(game.ticking_states());
+            // The level binds by the actual type and state; the bare type has no ticker.
+            game.bind_server_ticking_states();
             let tickers = game.world.block_entity_tickers();
             assert_eq!(
                 tickers.iter().filter(|(pos, _)| *pos == (1, 64, 1)).count(),
@@ -370,6 +373,29 @@ fn a_declared_type_ticks_once_whichever_path_named_it() {
                 };
                 assert_eq!(entity.data, vec![1; expected]);
             }
+            let inactive = game.with_props(press, &[("enabled", "false")]).unwrap();
+            game.world.set(1, 64, 1, inactive).unwrap();
+            assert!(
+                !game
+                    .world
+                    .block_entity_tickers()
+                    .iter()
+                    .any(|(pos, _)| *pos == (1, 64, 1))
+            );
+            assert!(!game.tick_mod_block_entity((1, 64, 1)));
+            game.world.set(1, 64, 1, press).unwrap();
+            assert!(
+                game.world
+                    .block_entity_tickers()
+                    .iter()
+                    .any(|(pos, _)| *pos == (1, 64, 1))
+            );
+            assert!(game.tick_mod_block_entity((1, 64, 1)));
+            let Some(BlockEntity::Mod(press_row)) = game.world.block_entities.get(&(1, 64, 1))
+            else {
+                panic!("press entity missing after rebind");
+            };
+            assert_eq!(press_row.data, [1, 1, 1, 1]);
             // A declared type with no listener stays inert through its tick
             // call: no data, no write.
             game.tick_mod_block_entity((2, 64, 1));

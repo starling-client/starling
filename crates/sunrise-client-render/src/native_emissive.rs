@@ -1,30 +1,20 @@
 //! Optional, texture-matched overlays drawn full bright over their base texture in the same
-//! terrain fragment: native mods' (`<ns>:emissive/...`) and OptiFine's emissive block textures
-//! (`block/stone_e.png` beside `block/stone.png`). No extra draw calls or world light changes.
+//! terrain fragment: mod-registered emissive sprites (`Hooks::emissive`) and OptiFine's emissive
+//! block textures (`block/stone_e.png` beside `block/stone.png`). Resolved once during resource
+//! bake/reload and bound to the published [`crate::assets::RenderAssets`] generation. No extra
+//! draw calls or world light changes.
 use crate::resource_source::ResourceSource;
 use crate::sprites::Sprites;
-use std::collections::BTreeMap;
+use mod_api::{Answered, EmissiveSpriteRegistration};
+use std::collections::{BTreeMap, BTreeSet};
 
-/// Overlay pairs the terrain shader reads (`Globals.emissive_layers`, terrain.wgsl).
+/// Overlay pairs the terrain shader reads (`Globals.emissive_layers`, `terrain.wgsl`).
+/// Shared between mod-registered overlays and OptiFine block overlays without a private split.
 pub const MAX: usize = 128;
-/// Native mods' own `emissive/` textures, as their API documents.
-const NATIVE: usize = 32;
 
-/// Load only bounded, explicitly named emissive textures from the active pack.
-pub fn load(root: &ResourceSource, sprites: &mut Sprites) {
-    let mut names: Vec<_> = crate::atlas_sources::list_textures(root)
-        .into_iter()
-        .filter(|name| {
-            name.split_once(':')
-                .is_some_and(|(_, p)| p.starts_with("emissive/"))
-        })
-        .take(NATIVE)
-        .collect();
-    names.sort();
-    for name in names {
-        let _ = sprites.insert_limited(&name, 1 << 20);
-    }
-}
+/// The overlay layer's flag (its high bit) for an OptiFine overlay, which draws cutout: opaque
+/// where its alpha is at least 0.1 (OptiFine renders SOLID textures' overlays as CUTOUT).
+pub const CUTOUT: u32 = 1 << 31;
 
 /// A connected-texture tile's sprite name without `.png`: tiles outside `textures/` are named by
 /// their resource path (`Sprites::insert_file`, which only they use), block sprites by an id.
@@ -33,13 +23,99 @@ fn tile_file(name: &str) -> Option<&str> {
     name.strip_suffix(".png")
 }
 
+/// Resolve mod-registered emissive sprite pairs against the sprites already loaded in this
+/// resource generation.
+///
+/// Missing base sprites and missing or corrupt overlay textures are logged per registration and
+/// skipped without discarding other entries. When two registrations target the same base layer,
+/// the later valid registration replaces the earlier one (matching `TextureManager.register` and
+/// `SpriteSourceList`) with a warning naming both mods; a later one whose overlay cannot be
+/// read leaves the earlier answer standing. Only the overlays of the admitted rows (at most
+/// [`MAX`]) are loaded into texture layers.
+pub fn resolve_registered(
+    registrations: &[Answered<EmissiveSpriteRegistration>],
+    sprites: &mut Sprites,
+) -> BTreeMap<u32, u32> {
+    let mut by_base: BTreeMap<u32, (&'static str, String, String)> = BTreeMap::new();
+    for entry in registrations {
+        let base_id = entry.answer.base.to_string();
+        let overlay_id = entry.answer.overlay.to_string();
+        let Some(&base_layer) = sprites.layers.get(&base_id) else {
+            log::warn!(
+                "Sunrise: mod '{}' registered emissive overlay '{}' for unknown base sprite '{}'; skipping",
+                entry.mod_id,
+                overlay_id,
+                base_id
+            );
+            continue;
+        };
+        if let Err(error) = sprites.texture_file_readable(&overlay_id) {
+            log::warn!(
+                "Sunrise: mod '{}' emissive overlay '{}' for '{}' skipped: {error}",
+                entry.mod_id,
+                overlay_id,
+                base_id
+            );
+            continue;
+        }
+        if let Some((prev_mod, prev_base, prev_overlay)) = by_base.insert(
+            base_layer,
+            (entry.mod_id, base_id.clone(), overlay_id.clone()),
+        ) {
+            log::warn!(
+                "Sunrise: mod '{}' emissive overlay '{}' for '{}' replaces '{}' registered by mod '{}' for '{}' (layer {})",
+                entry.mod_id,
+                overlay_id,
+                base_id,
+                prev_overlay,
+                prev_mod,
+                prev_base,
+                base_layer
+            );
+        }
+    }
+    if by_base.len() > MAX {
+        let dropped = by_base.len() - MAX;
+        log::warn!(
+            "Sunrise: {} mod emissive overlays exceed GPU uniform capacity {} (Globals.emissive_layers); skipping {} extra layer(s)",
+            by_base.len(),
+            MAX,
+            dropped
+        );
+    }
+    // Only the overlays the admitted uniform rows reference get a texture layer.
+    by_base
+        .into_iter()
+        .take(MAX)
+        .filter_map(|(base, (mod_id, base_id, overlay_id))| {
+            match sprites.try_insert_texture_file(&overlay_id) {
+                Ok(overlay) => Some((base, overlay)),
+                Err(error) => {
+                    log::warn!(
+                        "Sunrise: mod '{mod_id}' emissive overlay '{overlay_id}' for '{base_id}' skipped: {error}"
+                    );
+                    None
+                }
+            }
+        })
+        .collect()
+}
+
 /// OptiFine's emissive overlays of the block sprites already loaded (what the terrain draws;
-/// items draw from the HUD atlas): for each
-/// `<ns>:block/<name>`, or connected-texture tile `assets/<ns>/.../<name>.png`, whose
-/// `<name><suffix>.png` sits beside it, the overlay is loaded too and paired with it, blocks
-/// first, then tiles, each by name, at most [`MAX`] - [`NATIVE`] (native mods keep their share of
-/// the table). A pack without such files adds nothing.
-pub fn load_optifine(root: &ResourceSource, sprites: &mut Sprites) -> Vec<(String, String)> {
+/// items draw from the HUD atlas): for each `<ns>:block/<name>`, or connected-texture tile
+/// `assets/<ns>/.../<name>.png`, whose `<name><suffix>.png` sits beside it, the overlay is loaded
+/// too and paired with it, blocks first, then tiles, each by name, skipping base layers already
+/// claimed in `claimed_bases` and sharing the GPU uniform table capacity ([`MAX`]). A pack
+/// without such files adds nothing.
+pub fn load_optifine(
+    root: &ResourceSource,
+    sprites: &mut Sprites,
+    claimed_bases: &BTreeSet<u32>,
+) -> Vec<(String, String)> {
+    let remaining = MAX.saturating_sub(claimed_bases.len());
+    if remaining == 0 {
+        return Vec::new();
+    }
     let suffix = sunrise_optifine::emissive::suffix(root);
     // Blocks with identical pixels share a layer (and the shader pairs by layer): a shared
     // base would glow on every block that shares it, so it gets no overlay.
@@ -52,6 +128,7 @@ pub fn load_optifine(root: &ResourceSource, sprites: &mut Sprites) -> Vec<(Strin
         .iter()
         .filter(|(name, layer)| {
             sharing[layer] == 1
+                && !claimed_bases.contains(layer)
                 && (name
                     .split_once(':')
                     .is_some_and(|(_, p)| p.starts_with("block/") && !p.ends_with(&suffix))
@@ -78,16 +155,13 @@ pub fn load_optifine(root: &ResourceSource, sprites: &mut Sprites) -> Vec<(Strin
         if !root.contains(&file) {
             continue;
         }
-        if pairs.len() == MAX - NATIVE {
+        if pairs.len() == remaining {
             log::warn!(
-                "Sunrise: more than {} emissive block overlays: {overlay} and later skipped",
-                MAX - NATIVE
+                "Sunrise: emissive block overlays reached GPU uniform capacity {MAX} (Globals.emissive_layers): {overlay} and later skipped"
             );
             break;
         }
-        // Bound the actual PNG bytes even when an archive lies about their size.
-        let loaded = sprites.try_insert_limited(&overlay, 1 << 20);
-        match loaded {
+        match sprites.try_insert_texture_file(&overlay) {
             Ok(_) => pairs.push((base, overlay)),
             Err(e) => log::warn!("Sunrise: emissive overlay {overlay} skipped: {e}"),
         }
@@ -95,61 +169,101 @@ pub fn load_optifine(root: &ResourceSource, sprites: &mut Sprites) -> Vec<(Strin
     pairs
 }
 
-/// The overlay layer's flag (its high bit) for an OptiFine overlay, which draws cutout: opaque
-/// where its alpha is at least 0.1 (OptiFine renders SOLID textures' overlays as CUTOUT).
-pub const CUTOUT: u32 = 1 << 31;
+/// Resolve both mod-registered and OptiFine emissive overlays during bake/reload into the sorted
+/// GPU uniform table (`Globals.emissive_layers`). Mod overlays take precedence over OptiFine
+/// overlays for the same base layer; OptiFine overlays use the remaining GPU uniform slots and
+/// carry [`CUTOUT`].
+pub fn load_layers(
+    root: &ResourceSource,
+    registrations: &[Answered<EmissiveSpriteRegistration>],
+    sprites: &mut Sprites,
+) -> Vec<[u32; 4]> {
+    let mod_pairs = resolve_registered(registrations, sprites);
+    let claimed: BTreeSet<u32> = mod_pairs.keys().copied().collect();
+    let optifine = load_optifine(root, sprites, &claimed);
+    assemble_table(&sprites.layers, &sprites.files, mod_pairs, &optifine)
+}
 
-/// The frame's overlay table: native mods' pairs (at most [`NATIVE`] requested), then the packs'
-/// OptiFine pairs flagged [`CUTOUT`] (at most [`MAX`] - [`NATIVE`], as [`load_optifine`] loads),
-/// one per base layer with native mods' first, sorted by base layer for the shader's early exit.
-pub fn table<'a>(
+/// Assemble the sorted GPU overlay table from resolved mod pairs and loaded OptiFine pairs.
+fn assemble_table(
     layers: &BTreeMap<String, u32>,
     files: &BTreeMap<String, u32>,
-    native: impl IntoIterator<Item = (&'a str, &'a str)>,
-    optifine: &'a [(String, String)],
+    mod_pairs: BTreeMap<u32, u32>,
+    optifine: &[(String, String)],
 ) -> Vec<[u32; 4]> {
-    let mut by_base: BTreeMap<u32, [u32; 4]> = BTreeMap::new();
-    for pair in mappings(layers, files, native.into_iter().take(NATIVE)) {
-        by_base.insert(pair[0], pair);
-    }
-    let optifine = optifine.iter().map(|(b, o)| (b.as_str(), o.as_str()));
-    for [b, o, z, w] in mappings(layers, files, optifine) {
-        by_base.entry(b).or_insert([b, o | CUTOUT, z, w]);
+    let mut by_base: BTreeMap<u32, [u32; 4]> = mod_pairs
+        .into_iter()
+        .take(MAX)
+        .map(|(b, o)| (b, [b, o, 0, 0]))
+        .collect();
+    for (base, overlay) in optifine {
+        if by_base.len() >= MAX {
+            break;
+        }
+        if let (Some(&b), Some(&o)) = (layers.get(base), files.get(overlay)) {
+            by_base.entry(b).or_insert([b, o | CUTOUT, 0, 0]);
+        }
     }
     by_base.into_values().collect()
 }
 
-/// Only loaded base/overlay pairs are sent to the GPU; sorted for vertex lookup.
-pub fn mappings<'a>(
-    layers: &BTreeMap<String, u32>,
-    files: &BTreeMap<String, u32>,
-    requests: impl IntoIterator<Item = (&'a str, &'a str)>,
-) -> Vec<[u32; 4]> {
-    let mut pairs = BTreeMap::new();
-    for (base, overlay) in requests.into_iter().take(MAX) {
-        if let (Some(&b), Some(&o)) = (layers.get(base), files.get(overlay)) {
-            pairs.entry(b).or_insert(o);
+#[cfg(test)]
+pub(crate) fn test_registrations(
+    entries: impl IntoIterator<Item = (&'static str, Vec<EmissiveSpriteRegistration>)>,
+) -> Vec<Answered<EmissiveSpriteRegistration>> {
+    use mod_api::{
+        __private::game::RegistrationContextNew, EmissiveEvent, Hooks, ModEntry,
+        RegistrationContext,
+    };
+
+    struct Register(Vec<EmissiveSpriteRegistration>);
+
+    #[mod_api::__subscriptions]
+    impl Hooks for Register {
+        fn emissive(&self, _: &RegistrationContext, event: &mut EmissiveEvent<'_>) {
+            for pair in &self.0 {
+                event.register(pair.clone());
+            }
         }
     }
-    pairs.into_iter().map(|(b, o)| [b, o, 0, 0]).collect()
+
+    let mods = entries
+        .into_iter()
+        .map(|(id, pairs)| ModEntry::new(id, Box::new(Register(pairs))))
+        .collect::<Vec<_>>();
+    mod_platform::testing::with_mods(mods.into(), || {
+        let mut layers = Vec::new();
+        mod_api::dispatch_emissive(&RegistrationContext::new(), &mut layers);
+        layers
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mod_api::Identifier;
     use std::path::Path;
 
-    /// A 16x16 image of one colour, `shade` its red (images of different shades never share a
-    /// sprite layer).
-    fn png(path: &Path, shade: u8) {
+    /// A 16x16 image of one colour, `shade` its red/green (images of different shades never share
+    /// a sprite layer).
+    fn png(path: &Path, shade: u16) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let file = std::io::BufWriter::new(std::fs::File::create(path).unwrap());
         let mut encoder = png::Encoder::new(file, 16, 16);
         encoder.set_color(png::ColorType::Rgba);
         encoder.set_depth(png::BitDepth::Eight);
         let mut writer = encoder.write_header().unwrap();
-        let pixels: Vec<u8> = (0..16 * 16).flat_map(|_| [shade, 9, 9, 255]).collect();
+        let r = (shade & 0xff) as u8;
+        let g = ((shade >> 8) & 0xff) as u8;
+        let pixels: Vec<u8> = (0..16 * 16).flat_map(|_| [r, g, 9, 255]).collect();
         writer.write_image_data(&pixels).unwrap();
+    }
+
+    fn registration(base: &str, overlay: &str) -> EmissiveSpriteRegistration {
+        EmissiveSpriteRegistration::new(
+            Identifier::parse(base).unwrap(),
+            Identifier::parse(overlay).unwrap(),
+        )
     }
 
     #[test]
@@ -169,7 +283,7 @@ mod tests {
             "granite",
         ];
         for (i, name) in names.iter().enumerate() {
-            png(&block.join(format!("{name}.png")), i as u8 * 20);
+            png(&block.join(format!("{name}.png")), (i as u16) * 20);
         }
         // Same pixels as andesite: the two share a layer, so neither gets an overlay.
         png(&block.join("diorite.png"), 6 * 20);
@@ -197,7 +311,11 @@ mod tests {
         // Items draw from the HUD atlas, not the terrain: no pair.
         sprites.insert("minecraft:item/stick").unwrap();
         // glowstone isn't loaded: its overlay pairs with nothing.
-        let pairs = load_optifine(&ResourceSource::directory(root.clone()), &mut sprites);
+        let pairs = load_optifine(
+            &ResourceSource::directory(root.clone()),
+            &mut sprites,
+            &BTreeSet::new(),
+        );
         assert_eq!(
             pairs,
             [(
@@ -227,7 +345,11 @@ mod tests {
                 .insert_file(&format!("assets/minecraft/optifine/{tile}.png"))
                 .unwrap();
         }
-        let pairs = load_optifine(&ResourceSource::directory(root.clone()), &mut sprites);
+        let pairs = load_optifine(
+            &ResourceSource::directory(root.clone()),
+            &mut sprites,
+            &BTreeSet::new(),
+        );
         assert_eq!(
             pairs,
             // Blocks first, then tiles.
@@ -250,51 +372,152 @@ mod tests {
     }
 
     #[test]
-    fn the_table_keeps_native_pairs_first_and_flags_optifine_cutout() {
-        let layers: BTreeMap<String, u32> =
-            [("a", 5), ("b", 2)].map(|(n, l)| (n.to_owned(), l)).into();
-        let files: BTreeMap<String, u32> = [("a_e", 6), ("b_e", 3), ("native", 9)]
-            .map(|(n, l)| (n.to_owned(), l))
-            .into();
-        let optifine = [
-            ("a".to_owned(), "a_e".to_owned()),
-            ("b".to_owned(), "b_e".to_owned()),
-        ];
-        // A native mod pairs `a` too: its pair wins; `b` stays the pack's, flagged.
-        let t = table(&layers, &files, [("a", "native")], &optifine);
-        assert_eq!(
-            t,
-            [[2, 3 | CUTOUT, 0, 0], [5, 9, 0, 0]],
-            "sorted by base layer"
+    fn registered_overlays_support_more_than_32_any_path_and_isolate_failures() {
+        let root =
+            std::env::temp_dir().join(format!("sunrise-mod-emissive-many-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let mut sprites = Sprites::new(ResourceSource::directory(root.clone()));
+        let mut registrations = Vec::new();
+        // Register 40 overlays (past the old NATIVE = 32 cap) under non-emissive/ paths,
+        // including minecraft: and mod namespaces, plus broken and missing entries.
+        for i in 0..40u16 {
+            let base_path = root.join(format!("assets/demo/textures/block/lamp_{i}.png"));
+            let overlay_path = root.join(format!("assets/demo/textures/glow/lamp_{i}.png"));
+            png(&base_path, 10 + i * 2);
+            png(&overlay_path, 11 + i * 2);
+            let base = format!("demo:block/lamp_{i}");
+            let overlay = format!("demo:glow/lamp_{i}");
+            sprites.insert(&base).unwrap();
+            registrations.push(registration(&base, &overlay));
+        }
+        // Broken overlay texture and missing base must not break the valid 40 entries.
+        png(
+            &root.join("assets/demo/textures/block/broken_base.png"),
+            500,
         );
-        // Native mods keep their 32: of 40 requests on 40 bases, the first 32.
-        let layers: BTreeMap<String, u32> =
-            (1..41u32).map(|i| (format!("s{i}"), 100 + i)).collect();
-        let files: BTreeMap<String, u32> = [("s0".to_owned(), 100)].into();
-        let names: Vec<String> = (1..41).map(|i| format!("s{i}")).collect();
-        let many = names.iter().map(|n| (n.as_str(), "s0"));
-        let t = table(&layers, &files, many, &[]);
-        assert_eq!(t.len(), 32);
-        assert_eq!(
-            t.last(),
-            Some(&[132, 100, 0, 0]),
-            "s32 last; s33 to s40 cut"
-        );
-    }
-    #[test]
-    fn only_existing_pairs_are_mapped() {
-        let layers = [("minecraft:block/ore".into(), 3)].into();
-        let files = [("mine:emissive/ore".into(), 7)].into();
-        assert_eq!(
-            mappings(
-                &layers,
-                &files,
-                [
-                    ("minecraft:block/ore", "mine:emissive/ore"),
-                    ("missing", "mine:emissive/ore")
-                ]
+        std::fs::write(
+            root.join("assets/demo/textures/glow/corrupt.png"),
+            b"not a png",
+        )
+        .unwrap();
+        sprites.insert("demo:block/broken_base").unwrap();
+        let registrations = test_registrations([
+            ("demo", registrations),
+            (
+                "broken",
+                vec![registration("demo:block/broken_base", "demo:glow/corrupt")],
             ),
-            vec![[3, 7, 0, 0]]
+            (
+                "missing",
+                vec![registration("demo:block/no_such_block", "demo:glow/lamp_0")],
+            ),
+        ]);
+
+        let table = load_layers(
+            &ResourceSource::directory(root.clone()),
+            &registrations,
+            &mut sprites,
         );
+        assert_eq!(table.len(), 40);
+        assert!(table.windows(2).all(|w| w[0][0] < w[1][0]));
+        assert!(table.iter().all(|row| row[1] & CUTOUT == 0));
+        assert!(!sprites.files.contains_key("demo:glow/corrupt"));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn duplicate_mod_base_replaces_earlier_and_beats_optifine() {
+        let root =
+            std::env::temp_dir().join(format!("sunrise-mod-emissive-dup-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        png(&root.join("assets/minecraft/textures/block/a.png"), 1);
+        png(&root.join("assets/minecraft/textures/block/a_e.png"), 2);
+        png(&root.join("assets/minecraft/textures/block/b.png"), 3);
+        png(&root.join("assets/minecraft/textures/block/b_e.png"), 4);
+        png(&root.join("assets/mod_a/textures/overlay/first.png"), 5);
+        png(&root.join("assets/mod_b/textures/overlay/second.png"), 6);
+
+        let mut sprites = Sprites::new(ResourceSource::directory(root.clone()));
+        let layer_a = sprites.insert("minecraft:block/a").unwrap();
+        let layer_b = sprites.insert("minecraft:block/b").unwrap();
+
+        let regs = test_registrations([
+            (
+                "mod_a",
+                vec![registration("minecraft:block/a", "mod_a:overlay/first")],
+            ),
+            (
+                "mod_b",
+                vec![registration("minecraft:block/a", "mod_b:overlay/second")],
+            ),
+        ]);
+        let table = load_layers(
+            &ResourceSource::directory(root.clone()),
+            &regs,
+            &mut sprites,
+        );
+        assert!(
+            !sprites.files.contains_key("mod_a:overlay/first"),
+            "a superseded overlay takes no texture layer"
+        );
+        let second = sprites.files["mod_b:overlay/second"];
+        let optifine_b = sprites.files["minecraft:block/b_e"];
+        assert_eq!(
+            table,
+            vec![
+                [layer_a, second, 0, 0],
+                [layer_b, optifine_b | CUTOUT, 0, 0]
+            ]
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_later_invalid_replacement_keeps_the_earlier_valid_overlay() {
+        let root =
+            std::env::temp_dir().join(format!("sunrise-mod-emissive-bad-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        png(&root.join("assets/minecraft/textures/block/a.png"), 1);
+        png(&root.join("assets/mod_a/textures/overlay/first.png"), 5);
+        let mut sprites = Sprites::new(ResourceSource::directory(root.clone()));
+        let layer_a = sprites.insert("minecraft:block/a").unwrap();
+        let regs = test_registrations([
+            (
+                "mod_a",
+                vec![registration("minecraft:block/a", "mod_a:overlay/first")],
+            ),
+            (
+                "mod_b",
+                vec![registration("minecraft:block/a", "mod_b:overlay/missing")],
+            ),
+        ]);
+        let resolved = resolve_registered(&regs, &mut sprites);
+        let first = sprites.files["mod_a:overlay/first"];
+        assert_eq!(resolved, BTreeMap::from([(layer_a, first)]));
+        assert!(!sprites.files.contains_key("mod_b:overlay/missing"));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn optifine_can_use_full_gpu_capacity_when_no_mods_register() {
+        let root = std::env::temp_dir().join(format!(
+            "sunrise-optifine-emissive-full-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let block = root.join("assets/minecraft/textures/block");
+        let mut sprites = Sprites::new(ResourceSource::directory(root.clone()));
+        // 105 OptiFine overlays exceed the old MAX - NATIVE = 96 split and all fit in MAX = 128.
+        for i in 0..105u16 {
+            png(&block.join(format!("b_{i:03}.png")), 1000 + i * 2);
+            png(&block.join(format!("b_{i:03}_e.png")), 1001 + i * 2);
+            sprites
+                .insert(&format!("minecraft:block/b_{i:03}"))
+                .unwrap();
+        }
+        let table = load_layers(&ResourceSource::directory(root.clone()), &[], &mut sprites);
+        assert_eq!(table.len(), 105);
+        assert!(table.iter().all(|row| row[1] & CUTOUT != 0));
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

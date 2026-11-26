@@ -48,7 +48,7 @@ impl Game<'_> {
     /// in turn with the particles' (`Particles::level_random`).
     fn local_sound(&mut self, name: &str, pos: [i32; 3], volume: f32, pitch: f32) {
         let seed = self.particles.level_random().next_long();
-        self.audio.play_seeded(
+        self.play_audio_seeded(
             &format!("minecraft:{name}"),
             Some(center(pos)),
             volume,

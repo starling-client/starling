@@ -4,7 +4,7 @@
 //! `/op`, `/deop`, `/ban`, `/ban-ip`, `/banlist`, `/pardon`, `/pardon-ip`,
 //! `/setidletimeout`, `/transfer` and `/whitelist`.
 use super::{
-    Dispatcher, Suggests,
+    Dispatcher, RegistryId, Suggests,
     args::ArgType,
     vanilla::{ENTITY, GAMEMASTERS, PLAYER, PLAYERS},
 };
@@ -18,7 +18,11 @@ pub fn register(d: &mut Dispatcher, root: usize) {
     d.requires(dialog, GAMEMASTERS);
     let show = d.literal(dialog, "show");
     let t = d.argument(show, "targets", PLAYERS);
-    let dl = d.argument(t, "dialog", ArgType::ResourceOrId("minecraft:dialog"));
+    let dl = d.argument(
+        t,
+        "dialog",
+        ArgType::ResourceOrId(RegistryId::from_static("minecraft:dialog")),
+    );
     d.executes(dl, "dialog.show");
     let clear = d.literal(dialog, "clear");
     let t = d.argument(clear, "targets", PLAYERS);
@@ -130,7 +134,7 @@ pub fn register(d: &mut Dispatcher, root: usize) {
     // TestCommand (release build: no export subcommands)
     let test = d.literal(root, "test");
     d.requires(test, GAMEMASTERS);
-    let tests = ArgType::ResourceSelector("minecraft:test_instance");
+    let tests = ArgType::ResourceSelector(RegistryId::from_static("minecraft:test_instance"));
     let int0 = ArgType::Integer {
         min: 0,
         max: i32::MAX,

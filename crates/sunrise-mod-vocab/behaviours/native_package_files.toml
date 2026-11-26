@@ -1,0 +1,14 @@
+version = 1
+doc = "A native package may carry any source file `cargo package` would put in the crate, C sources and headers included, but not the root `page.toml` and `page/`, which `build` writes to `<id>.page.tar` and the tools leave out of an older package unread; and a mod's own build script runs when the package is built. A prebuilt binary (ELF, Mach-O, PE or an `ar` archive) among the source is refused by its content, whatever its name, when the package is packed. The game checks no file list when it loads a package: it reads the manifest, the icon, the assets and data files and the listed runtime files, skips every other entry unread and without error, and refuses only an entry whose path is absolute, has a `..` part, repeats another or is a symbolic link."
+tests = [
+    "crates/sunrise-mod-source/src/package.rs::a_source_file_is_any_path_but_the_packages_own_and_not_packaged_folders",
+    "crates/sunrise-mod-source/src/package.rs::binary_kind_reads_the_first_bytes_whatever_the_name",
+    "crates/sunrise-mod-package/src/index/native.rs::an_already_built_package_with_root_page_entries_reads_without_them",
+    "crates/sunrise-mod-package/src/index/native.rs::nested_page_paths_are_not_touched_by_the_page_tolerance",
+    "crates/sunrise-mod-package/src/index/native.rs::another_unexpected_root_path_is_still_refused_beside_page_entries",
+    "crates/sunrise-native-build/src/package.rs::an_extracted_package_with_root_page_entries_stages_without_them",
+    "crates/sunrise-mod-package/src/manifest.rs::a_prebuilt_binary_named_as_source_is_refused_when_packed_and_skipped_when_read",
+    "crates/sunrise-mod-package/src/manifest.rs::a_native_archive_with_any_other_entry_loads",
+    "crates/sunrise-mod-package/src/manifest.rs::an_archive_entry_that_escapes_or_links_is_refused_by_name",
+    "crates/sunrise-mod-package/src/native_route.rs::cargo_runs_a_build_script_when_the_manifest_or_the_folder_says_so",
+]

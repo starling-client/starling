@@ -1,0 +1,2 @@
+ids = ["handle:MenuRef::state_id"]
+why = "A mod reads a menu's synchronized state id (AbstractContainerMenu.getStateId) on either side, so a client can tell when the server pushed a fresh snapshot of a container even when its stacks look the same (#5323)."

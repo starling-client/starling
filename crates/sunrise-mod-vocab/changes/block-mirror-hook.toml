@@ -1,0 +1,3 @@
+ids = ["hook:mirror", "method:BlockPart::mirror", "type:MirrorEvent", "type:HookId"]
+why = "Adds the server hook mirror (vanilla BlockBehaviour.mirror(BlockState, Mirror)), a BlockPart method beside rotate: as a structure template places a block mirrored (world generation's structures, /place template, the structure block, LevelRef::visit_structure_template), the parts of its block may answer another state of that block, starting from the game's mirrored state; rotate then turns that answer. Workstations a mirrored structure places keep the facing their block flips to (#4979). New hook: no existing hook version changes."
+migrate = "Additive. A mod that matches HookId exhaustively adds the Mirror arm."

@@ -8,7 +8,6 @@ use sunrise_world::collision_exclusions::Refused;
 
 fn refused(why: Refused) -> CollisionExclusionsError {
     match why {
-        Refused::TooMany => CollisionExclusionsError::TooMany,
         Refused::NotFinite => CollisionExclusionsError::NotFinite,
         Refused::Inverted => CollisionExclusionsError::Inverted,
     }
@@ -70,10 +69,17 @@ impl Game<'_> {
 mod tests {
     use crate::game::Game;
     use mod_api::CollisionExclusionsError as Refusal;
+    use sunrise_core::position::BlockPos;
 
     /// A portal's opening, 1 wide and 2 tall.
     const OPENING: [[f64; 6]; 1] = [[2.0, 64.0, 5.0, 3.0, 66.0, 6.0]];
-    const TOO_MANY: [[f64; 6]; 65] = [[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]; 65];
+
+    /// 65 boxes with a distinct opening at the 65th slot.
+    fn sixty_five_with_opening() -> [[f64; 6]; 65] {
+        let mut boxes = [[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]; 65];
+        boxes[64] = OPENING[0];
+        boxes
+    }
 
     fn guest_boxes(game: &Game<'_>, conn: u32) -> usize {
         let host = game.lan.as_ref().unwrap();
@@ -96,13 +102,27 @@ mod tests {
             let nan = [[0.0, 64.0, 0.0, 1.0, f64::NAN, 1.0]];
             let inverted = [[3.0, 64.0, 5.0, 2.0, 66.0, 6.0]];
             for (boxes, why) in [
-                (&TOO_MANY[..], Refusal::TooMany),
                 (&nan[..], Refusal::NotFinite),
                 (&inverted[..], Refusal::Inverted),
             ] {
                 assert_eq!(entity.set_collision_exclusions(game, boxes), Err(why));
                 assert_eq!(guest_boxes(game, 12), 1, "{why:?} keeps the opening");
             }
+            let sixty_five = sixty_five_with_opening();
+            assert_eq!(entity.set_collision_exclusions(game, &sixty_five), Ok(()));
+            assert_eq!(guest_boxes(game, 12), 65);
+            let guest = game.lan.as_ref().unwrap().hub.guest(12).unwrap();
+            assert!(guest.collision_exclusions.spares(BlockPos::new(2, 64, 5)));
+            assert!(!guest.collision_exclusions.spares(BlockPos::new(2, 66, 5)));
+            assert_eq!(
+                entity.set_collision_exclusions(game, &nan),
+                Err(Refusal::NotFinite)
+            );
+            assert_eq!(
+                guest_boxes(game, 12),
+                65,
+                "malformed write keeps the 65 boxes"
+            );
             // The guest's body takes them for its turn, and a set made during the turn is the
             // body's at once.
             let in_turn = game.as_guest(12, |game| {
@@ -123,7 +143,7 @@ mod tests {
                     .len();
                 (before, after)
             });
-            assert_eq!(in_turn, Some((1, 0)));
+            assert_eq!(in_turn, Some((65, 0)));
             assert_eq!(guest_boxes(game, 12), 0);
             // A guest that left is gone with its boxes: its handle names nothing.
             assert_eq!(entity.set_collision_exclusions(game, &OPENING), Ok(()));
@@ -188,11 +208,22 @@ mod tests {
             player.collision_exclusions.boxes().len()
         };
         assert_eq!(game.set_collision_exclusions(&OPENING), Ok(()));
+        let nan = [[0.0, 64.0, 0.0, 1.0, f64::NAN, 1.0]];
+        let inverted = [[3.0, 64.0, 5.0, 2.0, 66.0, 6.0]];
+        assert_eq!(game.set_collision_exclusions(&nan), Err(Refusal::NotFinite));
         assert_eq!(
-            game.set_collision_exclusions(&TOO_MANY),
-            Err(Refusal::TooMany)
+            game.set_collision_exclusions(&inverted),
+            Err(Refusal::Inverted)
         );
         assert_eq!(held(&game), 1, "the refused set keeps the opening");
+        let sixty_five = sixty_five_with_opening();
+        assert_eq!(game.set_collision_exclusions(&sixty_five), Ok(()));
+        assert_eq!(held(&game), 65);
+        let player = game.player.as_ref().unwrap();
+        assert!(player.collision_exclusions.spares(BlockPos::new(2, 64, 5)));
+        assert!(!player.collision_exclusions.spares(BlockPos::new(2, 66, 5)));
+        assert_eq!(game.set_collision_exclusions(&nan), Err(Refusal::NotFinite));
+        assert_eq!(held(&game), 65, "malformed write keeps the 65 boxes");
         // A death's Respawn, in the same level.
         game.handle_packet(C::Respawn(play::Respawn {
             spawn: spawn("minecraft:overworld"),

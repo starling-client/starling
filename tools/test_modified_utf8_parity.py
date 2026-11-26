@@ -18,10 +18,11 @@ from pathlib import Path
 import subprocess
 import time
 
-try:
-    from . import lab
-except ImportError:
-    import lab
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab
 
 ORACLE = "dev.sunriselab.parity.VanillaModifiedUtf8Oracle"
 SOURCE = lab.ROOT / "mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaModifiedUtf8Oracle.java"

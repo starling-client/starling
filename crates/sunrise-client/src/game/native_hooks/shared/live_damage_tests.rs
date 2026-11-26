@@ -28,6 +28,7 @@ impl Target<'_> {
                 causing: 7,
                 direct: 7,
                 position: Some([1.0, 2.0, 3.0]),
+                direct_type: None,
             },
         )
     }

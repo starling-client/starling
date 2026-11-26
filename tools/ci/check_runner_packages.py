@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Fail when the Dyna CI runner image's apt packages differ from tools/ci/runner-packages.txt, in either direction.
+"""Fail when the Dyna CI runner image lacks an apt package listed in tools/ci/runner-packages.txt.
 
-The image is built outside this repository, so whoever changes it runs this against its Containerfile:
+The image also serves the room's other repositories, so packages beyond the list are fine. It is built outside this
+repository, so whoever changes it runs this against its Containerfile:
     python3 tools/ci/check_runner_packages.py path/to/Containerfile
 """
 import re
@@ -26,11 +27,10 @@ def main(listing=LIST):
     if not image:
         sys.exit("no apt-get install found in the Containerfile")
     listed = [line for line in listing.read_text().splitlines() if line and not line.startswith("#")]
-    missing = [package for package in image if package not in listed]
-    extra = [package for package in listed if package not in image]
-    if missing or extra:
-        sys.exit(f"runner-packages.txt lacks: {' '.join(missing) or '-'}; has beyond the image: {' '.join(extra) or '-'}")
-    print(f"runner-packages.txt matches the image's {len(image)} apt packages")
+    missing = [package for package in listed if package not in image]
+    if missing:
+        sys.exit(f"the image lacks runner-packages.txt's: {' '.join(missing)}")
+    print(f"the image installs all {len(listed)} packages of runner-packages.txt")
 
 
 if __name__ == "__main__":

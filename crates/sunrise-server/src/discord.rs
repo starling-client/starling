@@ -12,6 +12,7 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+use sunrise_platform::proxy;
 use sunrise_server_launch::config::Discord;
 
 /// Lines wait this long for others to join their picture.
@@ -95,8 +96,8 @@ fn forward(shared: &Shared, settings: &Discord) {
     }
 }
 
-fn webhook_agent(webhook: &str) -> Result<ureq::Agent, sunrise_proxy::ProxyError> {
-    sunrise_proxy::agent("sunrise-server-discord", webhook, |builder| {
+fn webhook_agent(webhook: &str) -> Result<ureq::Agent, proxy::ProxyError> {
+    proxy::agent("sunrise-server-discord", webhook, |builder| {
         builder
             .redirects(0)
             .timeout(Duration::from_secs(20))

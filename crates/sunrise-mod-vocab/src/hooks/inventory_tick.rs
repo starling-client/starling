@@ -1,25 +1,28 @@
 //! The `inventory_tick` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0052
 
 pub trait Hooks {
-    /// A server tick of `stack`, the stack a player carries in `slot`: where
-    /// `Inventory.tick` calls `Item.inventoryTick`, for every stack, each tick,
-    /// `/tick freeze` included (it stops the world, not the player). `slot` is
-    /// as `Inventory` saves it (0 to 35; the armour 100 feet to 103 head; -106
-    /// the off hand), and `selected` says it is the held slot.
-    /// `ItemPlace::PlayerSlot { player, slot }` reads and changes the stack,
-    /// which stays in its slot: an emptied one empties the slot, and the
-    /// player's client gets the change. Only the `ItemPart`s attached to
-    /// `stack`'s item hear it. Server-side, for every living player of the world (the helpers
-    /// read the acting one).
+    /// A server tick of the stack a player carries in `slot`, where `Inventory.tick`
+    /// calls `Item.inventoryTick`. `slot` uses the saved inventory numbers (0 to 35;
+    /// armor 100 feet to 103 head; -106 off hand), and `selected` marks the held slot.
+    /// `place` addresses that live slot: `ItemPlace::with_stack` lends its current
+    /// stack, `ItemPlace::edit` edits its components within a transaction, and the
+    /// ordinary slot operations can empty it. Later reads see earlier writes, but
+    /// only Parts of the original `item` are called for this tick. Server-side,
+    /// including player ticks while the world is frozen.
     #[hook(
         target = "sunrise_client::game::native_hooks::base::Game<'_>::native_inventory_tick",
         dispatch = "flat",
         side = "server",
         contract = "listen",
         scope = "item",
-        key = "stack",
+        key = "item",
+        version = 2,
         neoforge = "none (vanilla Item.inventoryTick; NeoForge adds no event or extension for it); PlayerTickEvent ticks the player, not each stack"
     )]
-    fn inventory_tick(stack: &ItemStack, slot: i32, selected: bool);
+    fn inventory_tick(
+        item: mod_api::ItemKey,
+        place: &mod_api::ItemPlace,
+        slot: i32,
+        selected: bool,
+    );
 }

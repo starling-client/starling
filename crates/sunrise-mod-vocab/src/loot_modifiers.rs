@@ -3,7 +3,10 @@
 //! Register a serializer once; data files under `loot_modifiers/` select its
 //! prepared instances. A top-level roll runs them after its table functions and
 //! stack splitter. Nested tables and raw sub-rolls never invoke this pass.
-use crate::{DataLoadContext, Identifier, LootContext, LootStack, RandomSource};
+use crate::{
+    DataLoadContext, Identifier, LootList, LootParamsView, LootStackEditError, LootStackView,
+    RandomSource,
+};
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -22,7 +25,8 @@ pub fn global_loot_modifier_serializer_declarations()
 }
 
 /// A serializer or application failure, reported with its instance and type ids.
-#[derive(Clone, Debug, PartialEq, Eq, sunrise_mod_api_macros::Wire)]
+// no wire: in-process load and modifier-apply diagnostic, not a wire payload.
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct LootModifierError {
     /// JSON field path at decode time, or the failed operation at apply time.
@@ -50,9 +54,15 @@ impl From<(Identifier, String)> for LootModifierError {
         Self::new("$", format!("{source}: {reason}"))
     }
 }
+impl From<LootStackEditError> for LootModifierError {
+    fn from(error: LootStackEditError) -> Self {
+        Self::new("generated", error.to_string())
+    }
+}
 
 /// The optional base fields shared by modifier codecs (`LootModifier.codecStart`).
-#[derive(Clone, Debug, sunrise_mod_api_macros::Wire)]
+// no wire: in-process decoded datapack settings, not a wire payload.
+#[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct LootModifierSettings {
     /// Higher priorities run first. Ties have no contractual order.
@@ -132,35 +142,48 @@ pub trait GlobalLootModifier: Send + Sync + 'static {
     fn condition(&self) -> Result<Option<Value>, LootModifierError> {
         Ok(None)
     }
-    /// Replace the preceding modifier's list using roll facts and scoped roll
+    /// Edit the active generated loot list in place using roll facts and scoped roll
     /// capabilities only. This is a data-only callback, like loot functions and
     /// conditions, not a world hook: it receives no Host or world-write access.
-    /// Signed/empty and over-max stacks
-    /// remain intact between modifiers; the boundary does not split, clamp or
-    /// filter the result again. An error rejects this candidate and later
-    /// modifiers continue with the preceding list. RNG draws are not rolled back.
+    /// Signed/empty and over-max stacks remain intact between modifiers; the
+    /// boundary does not split, clamp or filter the result again. Earlier valid
+    /// edits and RNG draws are kept if a later write or the callback fails.
     fn apply(
         &self,
         context: &mut dyn LootModifierContext,
-        generated: Vec<LootStack>,
-    ) -> Result<Vec<LootStack>, LootModifierError>;
+        generated: &mut LootList<'_>,
+    ) -> Result<(), LootModifierError>;
 }
 
 /// A roll-scoped resource. It lends the
 /// selected roll random, not a level random or an independently seeded stream.
 /// A mod cannot retain this context beyond the callback.
 pub trait LootModifierContext {
-    /// Current optional facts and the set-once queried root id. The snapshot's
-    /// legacy `seed` field is zero: reading facts never draws a replacement seed.
-    /// Use [`Self::random`] for all modifier randomness.
-    fn snapshot(&self) -> LootContext;
+    /// Borrow the current optional parameters and the set-once queried root id.
+    /// Reading parameters consumes no random; use [`Self::random`] for all draws.
+    fn params(&self) -> LootParamsView<'_>;
     /// Borrow the selected roll's actual random through the shared draw capability.
     /// Draws advance that source in order, including draws made by raw sub-rolls.
     fn random(&mut self) -> &mut dyn RandomSource;
-    /// Appendable raw output, with the same parameters, random, visited guards
+    /// Inspect raw output from `table` through borrowed stack views without converting
+    /// to owned API stacks, using the same parameters, tags, random, visited guards
     /// and data generation. This does not run modifiers or another stack splitter.
-    /// A missing table refuses by id; a visited table terminates as an empty roll.
-    fn roll_raw(&mut self, table: &Identifier) -> Result<Vec<LootStack>, LootModifierError>;
+    /// A missing table refuses by id; a visited table visits nothing.
+    fn roll_raw(
+        &mut self,
+        table: &Identifier,
+        visit: &mut dyn FnMut(LootStackView<'_>),
+    ) -> Result<(), LootModifierError>;
+    /// Roll `table` raw with the same parameters, tags, random, visited guards and
+    /// data generation, moving unmodified raw output directly into `generated`
+    /// without an API stack round-trip, modifier pass or second stack splitter.
+    /// Use only the active `generated` list passed to this modifier. A missing
+    /// table or a different list is refused; a visited table appends nothing.
+    fn append_raw(
+        &mut self,
+        table: &Identifier,
+        generated: &mut LootList<'_>,
+    ) -> Result<(), LootModifierError>;
 }
 
 #[cfg(test)]
@@ -173,8 +196,7 @@ mod tests;
 /// Read it through `ServerHost::reload_resources` using `Self::key()`.
 ///
 /// The manager is a retained, process-local reload listener and does not
-/// cross Wire. The serializer, the prepared modifier and the roll context do cross,
-/// through resource dispatch.
+/// cross Wire.
 #[derive(Default)]
 #[non_exhaustive]
 pub struct GlobalLootModifierManager {

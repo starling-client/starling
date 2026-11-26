@@ -67,7 +67,7 @@ impl BuildingPlayers {
         }
     }
 
-    pub(super) fn boxes(&self, dimension: Dim) -> Vec<([f64; 3], [f64; 3])> {
+    pub(super) fn iter(&self, dimension: Dim) -> impl Iterator<Item = Aabb> + '_ {
         // Hub conns are unique, so only the ancestors can already hold one.
         let hub =
             self.hub.iter().map(Cell::get).filter(|p| {
@@ -77,8 +77,12 @@ impl BuildingPlayers {
             .iter()
             .copied()
             .chain(hub)
-            .filter(|p| p.dimension == dimension)
+            .filter(move |p| p.dimension == dimension)
             .filter_map(|p| p.bounds)
+    }
+
+    pub(super) fn boxes(&self, dimension: Dim) -> Vec<([f64; 3], [f64; 3])> {
+        self.iter(dimension)
             .map(|bounds| {
                 (
                     bounds.min_position().components(),

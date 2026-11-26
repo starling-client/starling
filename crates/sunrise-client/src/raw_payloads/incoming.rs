@@ -4,8 +4,8 @@ use super::{
     connection::{Epoch, IngressLease, MainTask},
 };
 use mod_api::{
-    __private::game::PayloadReceiver, PayloadBytes, PayloadContextError, PayloadId,
-    PayloadSendError, PayloadWork,
+    __private::game::{CallbackFailure, PayloadReceiver},
+    PayloadBytes, PayloadContextError, PayloadId, PayloadSendError, PayloadWork,
 };
 use std::sync::Arc;
 use std::time::Instant;
@@ -202,21 +202,39 @@ impl Incoming {
         }
         Ok(Classified::Raw(deliveries))
     }
-    /// Reserve before cloning the channel or retaining the guest's work resource.
-    pub fn work(
+    /// Take the body without releasing its receiving turn or ingress credit.
+    pub fn take_body(&mut self) -> Body {
+        std::mem::replace(&mut self.body, Body::Payload(PayloadBytes(Vec::new())))
+    }
+    /// Dispose of any call-owned work under its owning mod's panic policy.
+    pub(super) fn dispose_body(&mut self) -> Result<(), CallbackFailure> {
+        match self.take_body() {
+            Body::Work(work) => self.receiver.dispose_work(work),
+            Body::Payload(_) => Ok(()),
+        }
+    }
+    /// Reserve before cloning the channel or retaining the mod's work resource.
+    pub(super) fn work(
         &self,
         transport: &Transport,
         work: Arc<dyn PayloadWork>,
-    ) -> Result<Self, PayloadContextError> {
+    ) -> Result<Self, (PayloadContextError, Option<CallbackFailure>)> {
         if !self.epoch.active() {
-            return Err(PayloadContextError::Disconnected);
+            return Err((
+                PayloadContextError::Disconnected,
+                self.receiver.dispose_work(work).err(),
+            ));
         }
-        let lease = transport
-            .reserve_ingress(self.id.0.len())
-            .map_err(|error| match error {
-                PayloadSendError::Backpressure => PayloadContextError::Backpressure,
-                _ => PayloadContextError::Disconnected,
-            })?;
+        let lease = match transport.reserve_ingress(self.id.0.len()) {
+            Ok(lease) => lease,
+            Err(error) => {
+                let error = match error {
+                    PayloadSendError::Backpressure => PayloadContextError::Backpressure,
+                    _ => PayloadContextError::Disconnected,
+                };
+                return Err((error, self.receiver.dispose_work(work).err()));
+            }
+        };
         Ok(Self {
             epoch: self.epoch.clone(),
             id: self.id.clone(),
@@ -228,5 +246,10 @@ impl Incoming {
             raw: self.raw,
             turn: None,
         })
+    }
+}
+impl Drop for Incoming {
+    fn drop(&mut self) {
+        let _ = self.dispose_body();
     }
 }

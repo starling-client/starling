@@ -51,7 +51,9 @@ Usage: sunrise-server [--dir DIR] <command>
 
   init        Set up a server here: the EULA, the world, the port, who may join (asks, or takes flags:
               --eula --world NAME --seed SEED --port N --whitelist/--no-whitelist --player NAME... --op NAME
-              --offline --yes)
+              --offline --yes); prepares game files when none are found, or takes --server-jar PATH
+              for an offline prepare or --resources DIR to use an existing preparation.
+              On an existing server, `init --yes` only prepares its managed game files.
   run         Run the server in the foreground; type console commands, Ctrl-C stops it cleanly. It
               restarts the game if it crashes.
   start       Run the server in the background, or resume a stopped supervisor (output goes to logs/supervisor.log)
@@ -137,7 +139,12 @@ pub fn main() -> ExitCode {
             println!("sunrise-server {VERSION}");
             Ok(())
         }
-        Some("init") => init_answers(&args[1..]).and_then(|a| init::run(&dir, a)),
+        Some("init") => match &args[1..] {
+            [yes] if matches!(yes.as_str(), "--yes" | "-y") && dir.join(config::FILE).exists() => {
+                init::prepare_existing(&dir)
+            }
+            flags => init_answers(flags).and_then(|a| init::run(&dir, a)),
+        },
         Some("run") => {
             let done = supervisor::run(&dir);
             signals::stopped();
@@ -173,7 +180,9 @@ pub fn main() -> ExitCode {
             }
             None => Err("restore needs a backup (`sunrise-server backups` lists them)".into()),
         },
-        Some("import-resources") => import_resources::command(&dir, &args[1..]),
+        Some("import-resources") => {
+            import_resources::command(&dir, &args[1..], &mut std::io::stdout().lock())
+        }
         Some("import") => import(&dir, &args[1..]),
         Some("config") => settings::command(&dir, &args[1..]),
         Some("update") => update::command(&dir, &args[1..]),
@@ -241,10 +250,29 @@ fn init_answers(args: &[String]) -> Result<init::Answers, String> {
             "--player" => answers.players.push(value(arg)?),
             "--op" => answers.op = Some(value(arg)?),
             "--offline" => answers.online = Some(false),
+            "--server-jar" => answers.server_jar = Some(PathBuf::from(value(arg)?)),
+            "--resources" => {
+                let path = value(arg)?;
+                if path.is_empty() {
+                    return Err("--resources needs a nonempty path".into());
+                }
+                answers.resources = Some(path);
+            }
             other => return Err(format!("init: unknown option {other}")),
         }
     }
+    if answers.resources.is_some() && answers.server_jar.is_some() {
+        return Err("--resources uses prepared game files; leave out --server-jar".into());
+    }
     Ok(answers)
+}
+
+#[cfg(test)]
+#[test]
+fn init_cannot_use_prepared_resources_and_prepare_a_server_jar() {
+    let args = ["--resources", "prepared", "--server-jar", "server.jar"].map(str::to_owned);
+    let refused = init_answers(&args).err().unwrap();
+    assert!(refused.contains("leave out --server-jar"));
 }
 
 fn import(dir: &std::path::Path, args: &[String]) -> Result<(), String> {

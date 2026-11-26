@@ -2,12 +2,8 @@ use super::*;
 use serde_json::json;
 struct Identity;
 impl ModifierApply for Identity {
-    fn apply(
-        &self,
-        _: &mut dyn ModifierRoll,
-        generated: &[LootStack],
-    ) -> Result<Vec<LootStack>, String> {
-        Ok(generated.to_vec())
+    fn apply(&self, _: &mut dyn ModifierRoll, _: &mut dyn LootListAccess) -> Result<(), String> {
+        Ok(())
     }
 }
 fn file(id: &str, pack: &str, data: Value) -> ModifierFile {
@@ -54,6 +50,11 @@ fn winning_files_mask_lower_readers_and_fail_independently() {
     ));
     files.push(file("test:missing_type", "high", json!({})));
     files.push(file(
+        "test:bad_loot_condition",
+        "high",
+        json!({"type":"test:identity","condition":{"type":"test:unknown"}}),
+    ));
+    files.push(file(
         "test:decode_failure",
         "high",
         json!({"type":"test:unknown"}),
@@ -75,10 +76,11 @@ fn winning_files_mask_lower_readers_and_fail_independently() {
     ));
     let conditions = LoadConditions::vanilla();
     let mut diagnostics = Vec::new();
+    let bindings = crate::loot::types::Bindings::default();
     let generation = GlobalLootModifiers::load(
         files,
         &conditions,
-        |_, kind, value| {
+        |id, kind, value| {
             if kind != "test:identity" {
                 return Err("type: unknown serializer".into());
             }
@@ -86,7 +88,15 @@ fn winning_files_mask_lower_readers_and_fail_independently() {
                 priority: value
                     .get("priority")
                     .map_or(1000, |value| value.as_i64().unwrap() as i32),
-                condition: None,
+                condition: value
+                    .get("condition")
+                    .cloned()
+                    .map(|node| {
+                        bindings
+                            .prepare_condition(node, &format!("loot_modifier {id} $.condition"))
+                            .map_err(|e| e.to_string())
+                    })
+                    .transpose()?,
                 apply: Arc::new(Identity),
             })
         },
@@ -96,7 +106,12 @@ fn winning_files_mask_lower_readers_and_fail_independently() {
         generation.ids().collect::<Vec<_>>(),
         ["test:high", "test:default", "test:low"]
     );
-    assert_eq!(diagnostics.len(), 5);
+    assert_eq!(diagnostics.len(), 6);
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.id == "test:bad_loot_condition"
+            && diagnostic.reason.contains("$.condition")
+            && diagnostic.reason.contains("test:unknown")
+    }));
     for diagnostic in diagnostics {
         assert_eq!(diagnostic.pack, "high");
         assert!(!diagnostic.path.is_empty());

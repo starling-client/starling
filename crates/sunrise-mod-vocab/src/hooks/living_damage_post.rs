@@ -36,7 +36,7 @@ pub trait Hooks {
         contract = "listen",
         host = "hit",
         neoforge = "LivingDamageEvent.Post",
-        version = 3,
+        version = 5,
         target = "sunrise_client::game::native_hooks::living_damage_post::HitLevel<'_>::native_living_damage_post"
     )]
     fn living_damage_post(

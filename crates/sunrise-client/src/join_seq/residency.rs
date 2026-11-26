@@ -39,6 +39,7 @@ pub enum Kind {
     Trident,
     Spawner,
     Cloud,
+    Bolt,
     Cushion,
     Knot,
     Player,
@@ -372,9 +373,7 @@ impl<T> Binding<T> {
             ));
             if let Some((kind, count, uuid)) = self.children {
                 for offset in 0..count {
-                    let Some(child) = id
-                        .checked_add(u32::from(offset) + 1)
-                        .and_then(|id| Identity::new(id, join))
+                    let Some(child) = Identity::new(id.wrapping_add(u32::from(offset) + 1), join)
                     else {
                         continue;
                     };

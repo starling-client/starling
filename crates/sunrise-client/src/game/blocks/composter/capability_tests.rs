@@ -1,6 +1,6 @@
 use super::Game;
 use crate::game::{api_values::TryIntoApi, native_entity_refs::tests::with_game};
-use mod_api::{BlockUpdateFlags, Flow, Hooks, ItemResource, ServerHost, run_transaction};
+use mod_api::{BlockUpdateFlags, Flow, Hooks, ItemResource, ServerHost};
 use std::sync::{Arc, Mutex};
 use sunrise_client::{chunk::Chunk, items::ItemStack};
 use sunrise_core::{
@@ -152,17 +152,17 @@ fn sided_composter_transactions_preserve_literal_chance_and_defer_all_effects() 
                 assert_eq!(output.amount(game, 0), 0);
                 assert!(input.resource(game, 0).is_none());
                 quiet(game, &heard);
-                run_transaction(game, |game, tx| {
-                    assert_eq!(input.insert_at(game, tx, 0, &stone, 64), 0);
-                    assert_eq!(input.insert_at(game, tx, 1, &seeds, 64), 0);
-                    assert_eq!(input.insert_at(game, tx, 0, &seeds, 0), 0);
-                    assert_eq!(output.insert_at(game, tx, 0, &seeds, 64), 0);
-                    assert_eq!(input.extract_at(game, tx, 0, &seeds, 64), 0);
-                    assert!(!input.set_max_stack_size(game, tx, 64));
-                    assert_eq!(storage_input.insert(game, tx, &stone, 64), 0);
-                    assert_eq!(storage_input.insert(game, tx, &seeds, 0), 0);
-                    assert_eq!(storage_output.insert(game, tx, &seeds, 64), 0);
-                    assert_eq!(storage_input.extract(game, tx, &seeds, 64), 0);
+                game.storage_transaction(|game, tx| {
+                    assert_eq!(input.insert_at(game, tx, 0, &stone, 64), Ok(0));
+                    assert_eq!(input.insert_at(game, tx, 1, &seeds, 64), Ok(0));
+                    assert_eq!(input.insert_at(game, tx, 0, &seeds, 0), Ok(0));
+                    assert_eq!(output.insert_at(game, tx, 0, &seeds, 64), Ok(0));
+                    assert_eq!(input.extract_at(game, tx, 0, &seeds, 64), Ok(0));
+                    assert_eq!(input.set_max_stack_size(game, tx, 64), Ok(false));
+                    assert_eq!(storage_input.insert(game, tx, &stone, 64), Ok(0));
+                    assert_eq!(storage_input.insert(game, tx, &seeds, 0), Ok(0));
+                    assert_eq!(storage_output.insert(game, tx, &seeds, 64), Ok(0));
+                    assert_eq!(storage_input.extract(game, tx, &seeds, 64), Ok(0));
                     Ok::<_, ()>(())
                 })
                 .unwrap();
@@ -182,8 +182,8 @@ fn sided_composter_transactions_preserve_literal_chance_and_defer_all_effects() 
                 let source = level
                     .capability(game, &mod_api::ITEMS, source_pos, None)
                     .unwrap();
-                run_transaction(game, |game, tx| {
-                    assert_eq!(source.insert_at(game, tx, 0, &pie, 64), 64);
+                game.storage_transaction(|game, tx| {
+                    assert_eq!(source.insert_at(game, tx, 0, &pie, 64), Ok(64));
                     Ok::<_, ()>(())
                 })
                 .unwrap();
@@ -194,10 +194,10 @@ fn sided_composter_transactions_preserve_literal_chance_and_defer_all_effects() 
                 let state = game.world.block(POS[0], POS[1], POS[2]);
                 let block = game.res.behaviours().block(state);
                 let at = BlockPos::new(POS[0], POS[1], POS[2]);
-                let aborted = run_transaction(game, |game, tx| {
-                    assert_eq!(source.extract_at(game, tx, 0, &pie, 1), 1);
-                    run_transaction(game, |game, tx| {
-                        assert_eq!(storage_input.insert(game, tx, &pie, 64), 1);
+                let aborted = game.storage_transaction(|game, tx| {
+                    assert_eq!(source.extract_at(game, tx, 0, &pie, 1), Ok(1));
+                    game.storage_transaction(|game, tx| {
+                        assert_eq!(storage_input.insert(game, tx, &pie, 64), Ok(1));
                         Ok::<_, ()>(())
                     })?;
                     assert_eq!(game.composter_level(POS), Some(7));
@@ -216,10 +216,10 @@ fn sided_composter_transactions_preserve_literal_chance_and_defer_all_effects() 
                 // that insert's feedback.
                 composter(game, 0);
                 quiet(game, &heard);
-                run_transaction(game, |game, tx| {
-                    assert_eq!(input.insert_at(game, tx, 0, &pie, 64), 1);
-                    let aborted = run_transaction(game, |game, tx| {
-                        assert_eq!(input.insert_at(game, tx, 0, &pie, 64), 1);
+                game.storage_transaction(|game, tx| {
+                    assert_eq!(input.insert_at(game, tx, 0, &pie, 64), Ok(1));
+                    let aborted = game.storage_transaction(|game, tx| {
+                        assert_eq!(input.insert_at(game, tx, 0, &pie, 64), Ok(1));
                         assert_eq!(game.composter_level(POS), Some(2));
                         Err::<(), ()>(())
                     });
@@ -237,16 +237,16 @@ fn sided_composter_transactions_preserve_literal_chance_and_defer_all_effects() 
                 // Stock compostable/low: level zero adds one WITHOUT a draw. Then Java
                 // Random(3448).nextInt(100): 4,36,35,20,2,56,93,4,7,54,55,18 (success <30).
                 // Literal expectations, not a second run through Sunrise's layer algorithm.
-                run_transaction(game, |game, tx| {
+                game.storage_transaction(|game, tx| {
                     for expected in [1, 2, 2, 2, 3, 4, 4, 4, 5, 6, 6, 6, 7] {
-                        assert_eq!(input.insert_at(game, tx, 0, &seeds, 64), 1);
+                        assert_eq!(input.insert_at(game, tx, 0, &seeds, 64), Ok(1));
                         assert_eq!(game.composter_level(POS), Some(expected));
                         assert_eq!(input.amount(game, 0), 0);
                         assert_eq!(output.amount(game, 0), 0);
                         assert!(!game.block_ticks.has_block_tick(at, block));
                         assert_quiet(game, &heard);
                     }
-                    assert_eq!(input.insert_at(game, tx, 0, &seeds, 64), 0);
+                    assert_eq!(input.insert_at(game, tx, 0, &seeds, 64), Ok(0));
                     Ok::<_, ()>(())
                 })
                 .unwrap();
@@ -281,11 +281,11 @@ fn sided_composter_transactions_preserve_literal_chance_and_defer_all_effects() 
                 assert_eq!(storage_output.space_for(game, &bone), Ok(0));
 
                 quiet(game, &heard);
-                let aborted = run_transaction(game, |game, tx| {
-                    assert_eq!(output.extract_at(game, tx, 0, &pie, 1), 0);
-                    assert_eq!(output.extract_at(game, tx, 0, &bone, 0), 0);
-                    assert_eq!(storage_output.extract(game, tx, &bone, 64), 1);
-                    assert_eq!(output.extract_at(game, tx, 0, &bone, 64), 0);
+                let aborted = game.storage_transaction(|game, tx| {
+                    assert_eq!(output.extract_at(game, tx, 0, &pie, 1), Ok(0));
+                    assert_eq!(output.extract_at(game, tx, 0, &bone, 0), Ok(0));
+                    assert_eq!(storage_output.extract(game, tx, &bone, 64), Ok(1));
+                    assert_eq!(output.extract_at(game, tx, 0, &bone, 64), Ok(0));
                     assert_eq!(game.composter_level(POS), Some(0));
                     assert_quiet(game, &heard);
                     Err::<(), ()>(())
@@ -294,8 +294,8 @@ fn sided_composter_transactions_preserve_literal_chance_and_defer_all_effects() 
                 assert_eq!(game.composter_level(POS), Some(8));
                 assert_eq!(output.amount(game, 0), 1);
                 assert_quiet(game, &heard);
-                run_transaction(game, |game, tx| {
-                    assert_eq!(output.extract_at(game, tx, 0, &bone, 64), 1);
+                game.storage_transaction(|game, tx| {
+                    assert_eq!(output.extract_at(game, tx, 0, &bone, 64), Ok(1));
                     Ok::<_, ()>(())
                 })
                 .unwrap();
@@ -304,12 +304,41 @@ fn sided_composter_transactions_preserve_literal_chance_and_defer_all_effects() 
                 assert!(game.audio.capture.as_ref().unwrap().is_empty());
                 assert!(game.dropped.is_empty());
 
-                // A real bulk consumer offers all 64, not a pre-trimmed single item.
-                // It must preserve the literal sequence above across its nested partial
-                // attempts, rather than drawing a second chance on each accepted retry.
-                run_transaction(game, |game, tx| {
-                    assert_eq!(source.extract_at(game, tx, 0, &pie, 64), 64);
-                    assert_eq!(source.insert_at(game, tx, 0, &seeds, 64), 64);
+                // A real bulk consumer offers all remaining items up to 64, not a pre-trimmed
+                // single item. Because `move_resources` visits each source index once per call
+                // (NeoForge 26.3 `ResourceHandlerUtil.moveInternal`), repeatedly moving from this
+                // single-slot source still offers all remaining items on each step and must
+                // preserve the literal sequence above across its nested partial attempts, rather
+                // than drawing a second chance on each accepted retry.
+                let move_all = |game: &mut Game<'_>,
+                                source: &mod_api::Capability<
+                    dyn mod_api::ResourceHandler<mod_api::ItemResource>,
+                >,
+                                bulk: &mod_api::Capability<
+                    dyn mod_api::ResourceHandler<mod_api::ItemResource>,
+                >,
+                                tx: &mod_api::TransactionContext| {
+                    let mut total = 0u32;
+                    while total < 64 {
+                        let moved = mod_api::resource_util::move_resources(
+                            game,
+                            source,
+                            bulk,
+                            |_| true,
+                            64 - total,
+                            Some(tx),
+                        )?;
+                        if moved == 0 {
+                            break;
+                        }
+                        assert_eq!(moved, 1);
+                        total += moved;
+                    }
+                    Ok::<_, mod_api::TransactionError<mod_api::Overanswered>>(total)
+                };
+                game.storage_transaction(|game, tx| {
+                    assert_eq!(source.extract_at(game, tx, 0, &pie, 64), Ok(64));
+                    assert_eq!(source.insert_at(game, tx, 0, &seeds, 64), Ok(64));
                     Ok::<_, ()>(())
                 })
                 .unwrap();
@@ -330,18 +359,8 @@ fn sided_composter_transactions_preserve_literal_chance_and_defer_all_effects() 
                 quiet(game, &heard);
                 game.world.random.set_seed(3448);
                 let mut unrelated_world = game.world.random.clone();
-                let aborted = run_transaction(game, |game, tx| {
-                    assert_eq!(
-                        mod_api::resource_util::move_resources(
-                            game,
-                            &source,
-                            &bulk,
-                            |_| true,
-                            64,
-                            Some(tx)
-                        ),
-                        Ok(13),
-                    );
+                let aborted = game.storage_transaction(|game, tx| {
+                    assert_eq!(move_all(game, &source, &bulk, tx), Ok(13));
                     assert_eq!(game.composter_level(bulk_pos), Some(7));
                     assert_eq!(source.amount(game, 0), 51);
                     assert!(!game.block_ticks.has_block_tick(bulk_at, block));
@@ -365,17 +384,17 @@ fn sided_composter_transactions_preserve_literal_chance_and_defer_all_effects() 
 
                 // A nested abort rewinds only this composter's chance owner. An unrelated
                 // level draw between the aborted attempt and its retry must survive.
-                let aborted = run_transaction(game, |game, tx| {
-                    assert_eq!(bulk.insert_at(game, tx, 0, &seeds, 1), 1);
-                    let nested = run_transaction(game, |game, tx| {
-                        assert_eq!(bulk.insert_at(game, tx, 0, &seeds, 1), 1);
+                let aborted = game.storage_transaction(|game, tx| {
+                    assert_eq!(bulk.insert_at(game, tx, 0, &seeds, 1), Ok(1));
+                    let nested = game.storage_transaction(|game, tx| {
+                        assert_eq!(bulk.insert_at(game, tx, 0, &seeds, 1), Ok(1));
                         assert_eq!(game.composter_level(bulk_pos), Some(2));
                         Err::<(), ()>(())
                     });
                     assert_eq!(nested, Err(()));
                     assert_eq!(game.composter_level(bulk_pos), Some(1));
                     assert_eq!(game.world.random.next_long(), unrelated_world.next_long());
-                    assert_eq!(bulk.insert_at(game, tx, 0, &seeds, 1), 1);
+                    assert_eq!(bulk.insert_at(game, tx, 0, &seeds, 1), Ok(1));
                     assert_eq!(game.composter_level(bulk_pos), Some(2));
                     assert_quiet(game, &heard);
                     Err::<(), ()>(())
@@ -383,18 +402,8 @@ fn sided_composter_transactions_preserve_literal_chance_and_defer_all_effects() 
                 assert_eq!(aborted, Err(()));
                 assert_eq!(game.composter_level(bulk_pos), Some(0));
                 assert_eq!(game.world.random.next_long(), unrelated_world.next_long());
-                run_transaction(game, |game, tx| {
-                    assert_eq!(
-                        mod_api::resource_util::move_resources(
-                            game,
-                            &source,
-                            &bulk,
-                            |_| true,
-                            64,
-                            Some(tx)
-                        ),
-                        Ok(13),
-                    );
+                game.storage_transaction(|game, tx| {
+                    assert_eq!(move_all(game, &source, &bulk, tx), Ok(13));
                     assert_eq!(game.composter_level(bulk_pos), Some(7));
                     assert_eq!(source.amount(game, 0), 51);
                     assert!(!game.block_ticks.has_block_tick(bulk_at, block));
@@ -414,11 +423,11 @@ fn sided_composter_transactions_preserve_literal_chance_and_defer_all_effects() 
                 game.native_chunk_unload("minecraft:overworld", [0, 0]);
                 // A pending outer savepoint must retire too: aborting after unload cannot
                 // resurrect the previous owner's consumed chance sequence.
-                let aborted = run_transaction(game, |game, tx| {
+                let aborted = game.storage_transaction(|game, tx| {
                     game.world
                         .set(bulk_pos[0], bulk_pos[1], bulk_pos[2], empty)
                         .unwrap();
-                    assert_eq!(bulk.insert_at(game, tx, 0, &seeds, 1), 1);
+                    assert_eq!(bulk.insert_at(game, tx, 0, &seeds, 1), Ok(1));
                     game.native_chunk_unload("minecraft:overworld", [0, 0]);
                     Err::<(), ()>(())
                 });
@@ -428,18 +437,8 @@ fn sided_composter_transactions_preserve_literal_chance_and_defer_all_effects() 
                     .unwrap();
                 game.world.random.set_seed(3448);
                 quiet(game, &heard);
-                run_transaction(game, |game, tx| {
-                    assert_eq!(
-                        mod_api::resource_util::move_resources(
-                            game,
-                            &source,
-                            &bulk,
-                            |_| true,
-                            64,
-                            Some(tx)
-                        ),
-                        Ok(13),
-                    );
+                game.storage_transaction(|game, tx| {
+                    assert_eq!(move_all(game, &source, &bulk, tx), Ok(13));
                     Ok::<_, ()>(())
                 })
                 .unwrap();
@@ -449,8 +448,8 @@ fn sided_composter_transactions_preserve_literal_chance_and_defer_all_effects() 
                 // A later write in the same transaction wins: deferred fill feedback must not
                 // resurrect the composter, even when insertion reached maturation level seven.
                 composter(game, 6);
-                run_transaction(game, |game, tx| {
-                    assert_eq!(input.insert_at(game, tx, 0, &pie, 64), 1);
+                game.storage_transaction(|game, tx| {
+                    assert_eq!(input.insert_at(game, tx, 0, &pie, 64), Ok(1));
                     let stone = game
                         .pack
                         .assets
@@ -480,19 +479,9 @@ fn sided_composter_transactions_preserve_literal_chance_and_defer_all_effects() 
                     .set(bulk_pos[0], bulk_pos[1], bulk_pos[2], empty)
                     .unwrap();
                 game.world.random.set_seed(3448);
-                run_transaction(game, |game, tx| {
-                    assert_eq!(source.insert_at(game, tx, 0, &seeds, 26), 26);
-                    assert_eq!(
-                        mod_api::resource_util::move_resources(
-                            game,
-                            &source,
-                            &bulk,
-                            |_| true,
-                            64,
-                            Some(tx)
-                        ),
-                        Ok(13),
-                    );
+                game.storage_transaction(|game, tx| {
+                    assert_eq!(source.insert_at(game, tx, 0, &seeds, 26), Ok(26));
+                    assert_eq!(move_all(game, &source, &bulk, tx), Ok(13));
                     Ok::<_, ()>(())
                 })
                 .unwrap();

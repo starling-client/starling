@@ -267,3 +267,246 @@ fn name_tags_draw_bold_text_and_tall_glyphs_like_any_text() {
     assert_eq!(behind, 6);
     assert_eq!(boxes[0], [x - 1.0, -1.0, x + 15.0, 9.0]);
 }
+
+#[test]
+#[ignore = "run by tools/test_displays_parity.py"]
+fn missing_glyph_quads_match_vanilla_26_3_witness() {
+    let witness_path = std::env::var("SUNRISE_DISPLAY_PARITY_WITNESS").expect(
+        "SUNRISE_DISPLAY_PARITY_WITNESS must be set (run via tools/test_displays_parity.py)",
+    );
+    let witness_text = std::fs::read_to_string(&witness_path)
+        .unwrap_or_else(|e| panic!("failed to read {witness_path}: {e}"));
+    let w: serde_json::Value = serde_json::from_str(&witness_text).unwrap();
+    let mg = &w["missing_glyph_quads"];
+    let bitmap = &mg["bitmap"];
+    let hex_f32 = |v: &serde_json::Value| {
+        f32::from_bits(u32::from_str_radix(v.as_str().unwrap(), 16).unwrap())
+    };
+    let hex_argb_to_abgr = |v: &serde_json::Value| {
+        let argb = u32::from_str_radix(v.as_str().unwrap(), 16).unwrap();
+        rgba(
+            (argb >> 16) as u8,
+            (argb >> 8) as u8,
+            argb as u8,
+            (argb >> 24) as u8,
+        )
+    };
+
+    let empty_root =
+        std::env::temp_dir().join(format!("sunrise-missing-glyph-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&empty_root);
+    fs::create_dir_all(&empty_root).unwrap();
+    let packed_atlas = HudAtlas::build(&ResourceSource::directory(empty_root.clone())).unwrap();
+    let _ = fs::remove_dir_all(&empty_root);
+
+    for (atlas_name, atlas) in [("boot", HudAtlas::boot()), ("packed", packed_atlas)] {
+        // Glyph metrics match SpecialGlyphs.MISSING.
+        let g = atlas.font.glyph('\u{2196}');
+        assert_eq!(g.left.to_bits(), hex_f32(&bitmap["left_bits"]).to_bits());
+        assert_eq!(g.right.to_bits(), hex_f32(&bitmap["right_bits"]).to_bits());
+        assert_eq!(g.top.to_bits(), hex_f32(&bitmap["top_bits"]).to_bits());
+        assert_eq!(
+            g.bottom.to_bits(),
+            hex_f32(&bitmap["bottom_bits"]).to_bits()
+        );
+        assert_eq!(
+            g.advance.to_bits(),
+            hex_f32(&bitmap["advance_bits"]).to_bits()
+        );
+        assert_eq!(
+            g.offset.to_bits(),
+            hex_f32(&bitmap["bold_offset_bits"]).to_bits()
+        );
+        let bold_style = crate::text::Style {
+            bold: Some(true),
+            ..Default::default()
+        };
+        assert_eq!(
+            atlas.font.advance('\u{2196}', &bold_style).to_bits(),
+            hex_f32(&bitmap["bold_advance_bits"]).to_bits()
+        );
+
+        // The 5x8 SpecialGlyphs.MISSING bitmap is present in the atlas with the exact mask.
+        let sprite = atlas
+            .sprites
+            .get("sunrise/missing_glyph")
+            .unwrap_or_else(|| panic!("{atlas_name}: missing sunrise/missing_glyph sprite"));
+        assert_eq!(
+            sprite.texels((atlas.width, atlas.height)),
+            (
+                bitmap["pixel_width"].as_u64().unwrap() as u32,
+                bitmap["pixel_height"].as_u64().unwrap() as u32,
+            )
+        );
+        let mask: Vec<String> = (0..8u32)
+            .map(|y| {
+                (0..5u32)
+                    .map(|x| {
+                        let px = texel_at(&atlas, *sprite, x, y);
+                        if px == [255, 255, 255, 255] {
+                            '#'
+                        } else {
+                            assert_eq!(px, [0, 0, 0, 0]);
+                            '.'
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+        let want_mask: Vec<&str> = bitmap["mask"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(mask, want_mask, "{atlas_name}: missing glyph pixel mask");
+
+        let cases = [
+            (
+                "plain_flat",
+                0.0f32,
+                0.0,
+                0xFFFF_FFFFu32,
+                false,
+                false,
+                false,
+                true,
+            ),
+            ("bold_flat", 0.0, 0.0, 0xFFFF_FFFF, true, false, false, true),
+            (
+                "bold_world",
+                0.0,
+                0.0,
+                0xFFFF_FFFF,
+                true,
+                false,
+                false,
+                false,
+            ),
+            (
+                "bold_shadow_world",
+                0.0,
+                0.0,
+                0xFFFF_FFFF,
+                true,
+                false,
+                true,
+                false,
+            ),
+            (
+                "italic_flat",
+                0.0,
+                0.0,
+                0xFFFF_FFFF,
+                false,
+                true,
+                false,
+                true,
+            ),
+            (
+                "bold_italic_shadow_world",
+                2.0,
+                3.0,
+                0xFFFF_AA00,
+                true,
+                true,
+                true,
+                false,
+            ),
+        ];
+        for (name, x, y, argb, bold, italic, shadow, flat) in cases {
+            let want = &mg["cases"][name];
+            let mut text = crate::text::Text::literal("\u{2196}");
+            if bold {
+                text = text.bold();
+            }
+            if italic {
+                text = text.italic();
+            }
+            let color = rgba(
+                (argb >> 16) as u8,
+                (argb >> 8) as u8,
+                argb as u8,
+                (argb >> 24) as u8,
+            );
+            let mut batch = HudBatch::scratch([320, 240]);
+            if flat {
+                batch.text_styled(&atlas, &text, x, y, color, shadow);
+            } else {
+                batch.text_styled_world(&atlas, &text, x, y, color, shadow);
+            }
+            let quads = batch.vertices.as_chunks::<6>().0;
+            let want_quads = want["quads"].as_array().unwrap();
+            assert_eq!(
+                quads.len(),
+                want_quads.len(),
+                "{atlas_name}/{name}: quad count"
+            );
+            // BakedSheetGlyph emits corners [tl, bl, br, tr]; HudBatch::quad stores [tl, tr, br, tl, br, bl].
+            let corner_idx = [0usize, 5, 2, 1];
+            for (qi, (got_q, want_q)) in quads.iter().zip(want_quads).enumerate() {
+                let want_vs = want_q.as_array().unwrap();
+                for (ci, (&bi, want_v)) in corner_idx.iter().zip(want_vs).enumerate() {
+                    let gv = got_q[bi];
+                    let wp = want_v["pos_bits"].as_array().unwrap();
+                    assert_eq!(
+                        [gv.pos[0].to_bits(), gv.pos[1].to_bits(), gv.depth.to_bits()],
+                        [
+                            hex_f32(&wp[0]).to_bits(),
+                            hex_f32(&wp[1]).to_bits(),
+                            hex_f32(&wp[2]).to_bits(),
+                        ],
+                        "{atlas_name}/{name} quad {qi} corner {ci} pos"
+                    );
+                    assert_eq!(
+                        gv.color,
+                        hex_argb_to_abgr(&want_v["color_argb"]),
+                        "{atlas_name}/{name} quad {qi} corner {ci} color"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn world_glyph_copies_emit_per_glyph_before_decorations() {
+    let root = two_glyph_font("world-glyph-order");
+    let atlas = HudAtlas::build(&sunrise_assets::resource_source::ResourceSource::directory(
+        root.to_path_buf(),
+    ))
+    .unwrap();
+    let _ = fs::remove_dir_all(&root);
+    let mut batch = HudBatch::scratch([320, 240]);
+    let text = crate::text::Text::styled(
+        "ab",
+        crate::text::Style {
+            bold: Some(true),
+            underlined: Some(true),
+            strikethrough: Some(true),
+            color: Some(0xFFAA00),
+            ..Default::default()
+        },
+    );
+    batch.text_styled_world(&atlas, &text, 0.0, 0.0, u32::MAX, true);
+    let quads = batch.vertices.as_chunks::<6>().0;
+    // 2 glyphs * (2 shadow + 2 fg) = 8 glyph quads, then 2 glyphs * 2 decorations * (shadow + fg) = 8 effect quads.
+    assert_eq!(quads.len(), 16);
+    let fg = rgba(0xFF, 0xAA, 0x00, 0xFF);
+    // Glyph 0: shadow, bold shadow, fg, bold fg.
+    assert_ne!(quads[0][0].color, fg);
+    assert_ne!(quads[1][0].color, fg);
+    assert_eq!(quads[2][0].color, fg);
+    assert_eq!(quads[3][0].color, fg);
+    assert!(quads[2][0].pos[0] < quads[4][0].pos[0]);
+    // Glyph 1: shadow, bold shadow, fg, bold fg.
+    assert_ne!(quads[4][0].color, fg);
+    assert_ne!(quads[5][0].color, fg);
+    assert_eq!(quads[6][0].color, fg);
+    assert_eq!(quads[7][0].color, fg);
+    // Decorations follow all glyphs, with world depths 0.01 (shadow) and 0.04 (foreground).
+    for pair in quads[8..].as_chunks::<2>().0 {
+        assert_eq!(pair[0][0].depth, 0.01_f32);
+        assert_eq!(pair[1][0].depth, 0.01_f32 + 0.03_f32);
+    }
+}

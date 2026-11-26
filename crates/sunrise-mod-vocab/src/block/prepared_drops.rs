@@ -19,7 +19,7 @@ pub trait PreparedBlockDropsAccess {
     ) -> Option<ItemStack>;
     fn position(&self, index: usize) -> Option<[f64; 3]>;
     fn velocity(&self, index: usize) -> Option<[f64; 3]>;
-    fn pickup_delay(&self, index: usize) -> Option<u32>;
+    fn pickup_delay(&self, index: usize) -> Option<i32>;
     fn thrower(&self, index: usize) -> Option<Option<u128>>;
     fn target(&self, index: usize) -> Option<Option<u128>>;
     fn no_gravity(&self, index: usize) -> Option<bool>;
@@ -27,7 +27,7 @@ pub trait PreparedBlockDropsAccess {
     fn set_stack(&mut self, index: usize, stack: ItemStack) -> Result<bool, StackWriteError>;
     fn set_position(&mut self, index: usize, position: [f64; 3]) -> bool;
     fn set_velocity(&mut self, index: usize, velocity: [f64; 3]) -> bool;
-    fn set_pickup_delay(&mut self, index: usize, pickup_delay: u32) -> bool;
+    fn set_pickup_delay(&mut self, index: usize, pickup_delay: i32) -> bool;
     fn set_thrower(&mut self, index: usize, thrower: Option<u128>) -> bool;
     fn set_target(&mut self, index: usize, target: Option<u128>) -> bool;
     fn set_no_gravity(&mut self, index: usize, no_gravity: bool) -> bool;
@@ -205,8 +205,9 @@ impl<'a> PreparedDropView<'a> {
         self.access.velocity(self.index).unwrap_or([0.0; 3])
     }
 
-    /// Ticks before a player may pick up the item entity.
-    pub fn pickup_delay(&self) -> u32 {
+    /// Signed ticks before a player may pick up the item entity
+    /// (`ItemEntity.pickupDelay`; 32767 is vanilla's infinite-delay sentinel).
+    pub fn pickup_delay(&self) -> i32 {
         self.access.pickup_delay(self.index).unwrap_or(0)
     }
 
@@ -282,8 +283,9 @@ impl PreparedDropMut<'_> {
         self.as_view().velocity()
     }
 
-    /// Ticks before a player may pick up the item entity.
-    pub fn pickup_delay(&self) -> u32 {
+    /// Signed ticks before a player may pick up the item entity
+    /// (`ItemEntity.pickupDelay`; 32767 is vanilla's infinite-delay sentinel).
+    pub fn pickup_delay(&self) -> i32 {
         self.as_view().pickup_delay()
     }
 
@@ -334,8 +336,9 @@ impl PreparedDropMut<'_> {
         self.access.set_velocity(self.index, velocity);
     }
 
-    /// Set ticks before a player may pick up the item entity.
-    pub fn set_pickup_delay(&mut self, pickup_delay: u32) {
+    /// Set signed ticks before a player may pick up the item entity
+    /// (`ItemEntity.setPickUpDelay`; 32767 is vanilla's infinite-delay sentinel).
+    pub fn set_pickup_delay(&mut self, pickup_delay: i32) {
         self.access.set_pickup_delay(self.index, pickup_delay);
     }
 
@@ -375,7 +378,7 @@ mod tests {
         stack: ItemStack,
         position: [f64; 3],
         velocity: [f64; 3],
-        pickup_delay: u32,
+        pickup_delay: i32,
         thrower: Option<u128>,
         target: Option<u128>,
         no_gravity: bool,
@@ -471,7 +474,7 @@ mod tests {
             self.entries.get(index).map(|entry| entry.velocity)
         }
 
-        fn pickup_delay(&self, index: usize) -> Option<u32> {
+        fn pickup_delay(&self, index: usize) -> Option<i32> {
             self.entries.get(index).map(|entry| entry.pickup_delay)
         }
 
@@ -516,7 +519,7 @@ mod tests {
             true
         }
 
-        fn set_pickup_delay(&mut self, index: usize, pickup_delay: u32) -> bool {
+        fn set_pickup_delay(&mut self, index: usize, pickup_delay: i32) -> bool {
             let Some(entry) = self.entries.get_mut(index) else {
                 return false;
             };
@@ -740,6 +743,10 @@ mod tests {
 
             entry.set_position([3.0, 71.0, -4.0]);
             entry.set_velocity([0.2, 0.3, 0.4]);
+            entry.set_pickup_delay(-5);
+            assert_eq!(entry.pickup_delay(), -5);
+            entry.set_pickup_delay(40_000);
+            assert_eq!(entry.pickup_delay(), 40_000);
             entry.set_pickup_delay(40);
             entry.set_thrower(Some(101));
             entry.set_target(Some(202));

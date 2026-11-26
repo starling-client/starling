@@ -18,7 +18,10 @@ impl Hooks for Synced {
         .unwrap();
     }
 }
-fn apply_packets(rx: &std::sync::mpsc::Receiver<Out>) -> usize {
+fn apply_packets(
+    rx: &std::sync::mpsc::Receiver<Out>,
+    datapacks: &mut datapack_net::Receiver,
+) -> usize {
     rx.try_iter()
         .flat_map(|out| match out {
             Out::Packet(body) => vec![body],
@@ -30,7 +33,7 @@ fn apply_packets(rx: &std::sync::mpsc::Receiver<Out>) -> usize {
             let id = r.varint().unwrap();
             match Clientbound::decode(id, r.rest()).unwrap() {
                 Clientbound::CustomPayload(p) if p.channel == datapack_net::CHANNEL => {
-                    datapack_net::accept_chunk(&p.data).unwrap();
+                    datapacks.accept_chunk(&p.data).unwrap();
                     Some(())
                 }
                 _ => None,
@@ -68,14 +71,18 @@ fn datapack_game_reload_delivers_only_successful_generations_and_disconnects_ref
         || {
             with_game(|game| {
                 game.load_world(request(root)).unwrap();
-                let offer = datapack_net::offer().unwrap();
-                datapack_net::clear_received();
+                let offer = datapack_net::offer()
+                    .unwrap()
+                    .expect("synchronized registry offer required");
+                let mut datapacks = datapack_net::Receiver::default();
                 let datapack_net::Step::Send(bytes) = datapack_net::server_step(true, Some(&offer))
                 else {
                     panic!("initial snapshot required");
                 };
-                datapack_net::accept(&bytes).unwrap();
-                let first = datapack_net::received().unwrap();
+                for chunk in datapack_net::chunks(&bytes).unwrap() {
+                    datapacks.accept_chunk(&chunk).unwrap();
+                }
+                let first = datapacks.received().unwrap();
                 assert_eq!(
                     first
                         .get("registry_test:spell", "registry_test:fire")
@@ -91,10 +98,10 @@ fn datapack_game_reload_delivers_only_successful_generations_and_disconnects_ref
                 write(&entry, r#"{"power":9}"#);
                 assert!(game.run_command("reload"));
                 assert!(
-                    apply_packets(&rx) > 0,
+                    apply_packets(&rx, &mut datapacks) > 0,
                     "the coordinator must send its committed set"
                 );
-                let received = datapack_net::received().unwrap();
+                let received = datapacks.received().unwrap();
                 assert_eq!(
                     received
                         .get("registry_test:spell", "registry_test:fire")
@@ -105,12 +112,13 @@ fn datapack_game_reload_delivers_only_successful_generations_and_disconnects_ref
                 write(&entry, "{broken");
                 assert!(!game.run_command("reload"));
                 assert_eq!(
-                    apply_packets(&rx),
+                    apply_packets(&rx, &mut datapacks),
                     0,
                     "failed preparation must send no replacement"
                 );
                 assert_eq!(
-                    datapack_net::received()
+                    datapacks
+                        .received()
                         .unwrap()
                         .get("registry_test:spell", "registry_test:fire")
                         .unwrap()
@@ -126,7 +134,6 @@ fn datapack_game_reload_delivers_only_successful_generations_and_disconnects_ref
                 write(&entry, r#"{"power":11}"#);
                 assert!(game.run_command("reload"));
                 assert!(rx.try_iter().any(|out| matches!(out, Out::Disconnect(sunrise_core::nbt::Tag::String(reason)) if String::from_utf16_lossy(&reason.0).contains("registries are unreadable"))));
-                datapack_net::clear_received();
             });
         },
     );

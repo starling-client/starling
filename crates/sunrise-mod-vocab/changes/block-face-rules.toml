@@ -1,0 +1,14 @@
+ids = [
+    "type:Block",
+    "type:BlockProperties",
+    "type:BlockProperties.skip_same_block_faces",
+    "type:BlockProperties.skip_rendering",
+    "type:BlockProperties.hides_neighbor_face",
+    "type:BlockProperties.supports_external_face_hiding",
+    "type:FaceRule",
+    "type:FaceNeighbor",
+    "type:FaceDirections",
+    "type:FaceFacts",
+]
+why = "BlockProperties replaces skip_same_block_faces with data-driven neighbor face rules (skip_rendering, hides_neighbor_face and supports_external_face_hiding), matching vanilla BlockBehaviour.skipRendering and NeoForge IBlockExtension.hidesNeighborFace / supportsExternalFaceHiding without running mod code on meshing workers."
+migrate = "Replace skip_same_block_faces: true with skip_rendering: [{\"neighbor\": \"self\"}] (in Rust: Some(vec![FaceRule { neighbor: FaceNeighbor::SameBlock { state: BTreeMap::new() }, ..FaceRule::default() }])) and skip_same_block_faces: false with skip_rendering: [] (Some(vec![]))."

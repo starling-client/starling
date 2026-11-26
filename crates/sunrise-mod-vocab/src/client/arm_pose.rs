@@ -78,6 +78,7 @@ pub struct CustomArmPose {
 
 pub(crate) struct PoseInfo {
     pub(crate) id: String,
+    pub(crate) owner: &'static str,
     pub(crate) both: bool,
     pub(crate) offhand: bool,
 }

@@ -10,7 +10,7 @@
 //! keeps no mutable state because two workers can fill neighbouring chunks at
 //! once. The level gets the generator's terrain, then the
 //! [`VanillaStages`] it asks for.
-use crate::{BlockKey, BlockMetadata, BlockState, ChunkPos};
+use crate::{BiomeKey, BlockKey, BlockMetadata, BlockState, ChunkPos, Compound, Identifier};
 use std::sync::Arc;
 
 /// The chunk a generator fills: vanilla's `ChunkAccess`, as far as terrain needs it. Positions
@@ -41,6 +41,42 @@ pub trait ChunkAccess {
     /// outside the chunk or the range [`min_y`](Self::min_y) and [`height`](Self::height) give is
     /// skipped.
     fn set_block(&mut self, pos: [i32; 3], state: BlockState) -> bool;
+    /// `ChunkAccess.setBlockEntityNbt`: keep `nbt` as the chunk's pending block-entity data, at
+    /// the block its `x`, `y` and `z` name (`BlockEntity.getPosFromTag`: 0 for a missing one, and
+    /// a position in another chunk moved into this one at the same place in its section),
+    /// replacing what was pending there. Its `id` names the block entity type, as in a saved
+    /// chunk: data without one, or with one that is not an identifier, is dropped, as
+    /// `BlockEntity.loadStatic` skips it. When the chunk becomes a full chunk, before it first
+    /// loads, the data becomes the block entity of the block there, as `LevelChunk` promotes
+    /// `pendingBlockEntities`; if that block has no block entity then, the data is dropped. The
+    /// tag holds what the block entity saves: a chest's `LootTable` and `LootTableSeed` wait to
+    /// be rolled on first access, as a structure's chest does. Data for a block outside the
+    /// level's height is dropped at once. With [`VanillaStages`], the stages after the terrain
+    /// may change the block (a carver's cave, a structure piece), and a structure piece's own
+    /// data at the same block replaces this. NeoForge mods call the same vanilla method.
+    fn set_block_entity_nbt(&mut self, nbt: Compound);
+}
+
+/// The biome cells of the chunk a generator fills at the biome step: vanilla's `ChunkAccess` as
+/// `ChunkGenerator.createBiomes` sees it, before the terrain. Positions are quarts, a block
+/// position `>> 2`.
+pub trait ChunkBiomes {
+    /// `ChunkAccess.getPos`.
+    fn pos(&self) -> ChunkPos;
+    /// The id of the level this chunk belongs to, as [`ChunkAccess::level`].
+    fn level(&self) -> &str;
+    /// The level's seed: the world's seed.
+    fn seed(&self) -> i64;
+    /// The level's lowest block Y (`getMinY`): the cells start at quart `min_y >> 2`.
+    fn min_y(&self) -> i32;
+    /// The level's build height (`getHeight`), which the cells cover.
+    fn height(&self) -> i32;
+    /// `ChunkAccess.fillBiomesFromNoise`: every 4×4×4 cell of the chunk takes the biome `resolver`
+    /// names for its quart position (`BiomeResolver.getNoiseBiome`), asked once per cell,
+    /// sections bottom to top and within each x, then y, then z, as
+    /// `LevelChunkSection.fillBiomesFromNoise` asks. A biome the world does not have fails the
+    /// chunk's biome step, as a biome source's failure does.
+    fn fill_biomes_from_noise(&mut self, resolver: &mut dyn FnMut([i32; 3]) -> BiomeKey);
 }
 
 /// The vanilla stages a level runs around a mod's terrain, in vanilla's chunk
@@ -82,11 +118,22 @@ pub trait ChunkGenerator: Send + Sync + 'static {
     fn vanilla_stages(&self) -> VanillaStages {
         VanillaStages::default()
     }
+    /// `ChunkGenerator.createBiomes`: the biome cells of `chunk`, at the biome step, before
+    /// [`build_terrain`](Self::build_terrain) and every vanilla stage. The level's biome source
+    /// has filled them; a generator that answers fills them again through
+    /// [`ChunkBiomes::fill_biomes_from_noise`], as a NeoForge generator overriding `createBiomes`
+    /// does. The chunk keeps these biomes: its features, its surface and what a player sees read
+    /// them. Structure placement and carvers still ask the level's biome source, as vanilla's
+    /// `ChunkGenerator` does. Deterministic and stateless, as `build_terrain`: a neighbour's biomes
+    /// are read from its own cells. By default the source's biomes stay.
+    fn create_biomes(&self, chunk: &mut dyn ChunkBiomes) {
+        let _ = chunk;
+    }
 }
 
 /// A registered API generator, before the game builds its worker adapter.
 pub(crate) struct ChunkGeneratorInfo {
-    pub(crate) id: Box<str>,
+    pub(crate) id: Identifier,
     /// Its [`ChunkGenerator::vanilla_stages`], asked once at registration.
     pub(crate) stages: VanillaStages,
     pub(crate) generator: Arc<dyn ChunkGenerator>,
@@ -96,9 +143,9 @@ pub(crate) struct ChunkGeneratorInfo {
 /// vanilla stages and the generator.
 // hidden: the game's startup adapter reads the registered generators; mods declare them through the registrar.
 #[doc(hidden)]
-pub fn chunk_generator_declarations() -> Vec<(String, VanillaStages, Arc<dyn ChunkGenerator>)> {
+pub fn chunk_generator_declarations() -> Vec<(Identifier, VanillaStages, Arc<dyn ChunkGenerator>)> {
     crate::parts::installed_chunk_generator_list()
         .iter()
-        .map(|info| (info.id.to_string(), info.stages, info.generator.clone()))
+        .map(|info| (info.id.clone(), info.stages, info.generator.clone()))
         .collect()
 }

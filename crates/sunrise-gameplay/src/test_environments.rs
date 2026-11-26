@@ -3,7 +3,8 @@
 //! all of them), set up when the batch starts and torn down after it. The
 //! definitions are the data pack's `test_environment` entries, or inline.
 use serde_json::Value as Json;
-use sunrise_client_core::gamerules::{GameRules, Value};
+use sunrise_client_core::gamerules::{GameRules, Value, rule_registry};
+use sunrise_core::identifier::Identifier;
 
 /// `Weather.Type`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -83,11 +84,14 @@ pub fn parse(
         return None;
     }
     if let Some(id) = json.as_str() {
-        return parse(&load(id)?, load, depth + 1, rules);
+        let id = Identifier::parse(id).ok()?.to_string();
+        return parse(&load(&id)?, load, depth + 1, rules);
     }
-    let kind = json.get("type")?.as_str()?;
-    let kind = kind.strip_prefix("minecraft:").unwrap_or(kind);
-    Some(match kind {
+    let kind = Identifier::parse(json.get("type")?.as_str()?).ok()?;
+    if kind.namespace() != "minecraft" {
+        return None;
+    }
+    Some(match kind.path() {
         "all_of" => Environment::AllOf(
             json.get("definitions")?
                 .as_array()?
@@ -96,8 +100,15 @@ pub fn parse(
                 .collect::<Option<_>>()?,
         ),
         "clock_time" => Environment::ClockTime {
-            clock: json.get("clock")?.as_str()?.to_owned(),
-            time: json.get("time")?.as_i64().filter(|t| *t >= 0)?,
+            clock: Identifier::parse(json.get("clock")?.as_str()?)
+                .ok()?
+                .to_string(),
+            time: i64::from(
+                json.get("time")?
+                    .as_i64()
+                    .and_then(|t| i32::try_from(t).ok())
+                    .filter(|&t| t >= 0)?,
+            ),
         },
         "difficulty" => Environment::Difficulty(
             ["peaceful", "easy", "normal", "hard"]
@@ -105,29 +116,50 @@ pub fn parse(
                 .position(|d| Some(*d) == json.get("difficulty").and_then(Json::as_str))?
                 as u8,
         ),
-        "function" => Environment::Functions {
-            setup: json.get("setup").and_then(Json::as_str).map(str::to_owned),
-            teardown: json
-                .get("teardown")
-                .and_then(Json::as_str)
-                .map(str::to_owned),
-        },
-        "game_rules" => Environment::GameRules(
-            json.get("rules")?
-                .as_object()?
-                .iter()
-                .map(|(name, v)| {
-                    let rule = rules.rule(name)?;
-                    let value = match (v.as_bool(), v.as_i64()) {
-                        (Some(b), _) => Value::Bool(b),
-                        (_, Some(i)) => Value::Int(i32::try_from(i).ok()?),
-                        _ => return None,
-                    };
-                    Some((rule.name.to_owned(), value))
-                })
-                .collect::<Option<_>>()?,
-        ),
-        "timeline_attributes" => Environment::Timelines,
+        "function" => {
+            let opt_id = |field: &str| -> Option<Option<String>> {
+                match json.get(field) {
+                    None => Some(None),
+                    Some(v) => Some(Some(Identifier::parse(v.as_str()?).ok()?.to_string())),
+                }
+            };
+            Environment::Functions {
+                setup: opt_id("setup")?,
+                teardown: opt_id("teardown")?,
+            }
+        }
+        "game_rules" => {
+            let registry = rule_registry();
+            Environment::GameRules(
+                json.get("rules")?
+                    .as_object()?
+                    .iter()
+                    .map(|(name, v)| {
+                        let canonical = Identifier::parse(name).ok()?.to_string();
+                        let rule = rules
+                            .rule(&canonical)
+                            .or_else(|| registry.rule(&canonical))?;
+                        let value = match rule.default {
+                            Value::Bool(_) => Value::Bool(v.as_bool()?),
+                            Value::Int(_) => {
+                                let i = v.as_i64().and_then(|n| i32::try_from(n).ok())?;
+                                (rule.min..=rule.max)
+                                    .contains(&i)
+                                    .then_some(Value::Int(i))?
+                            }
+                        };
+                        Some((rule.name.to_owned(), value))
+                    })
+                    .collect::<Option<_>>()?,
+            )
+        }
+        "timeline_attributes" => {
+            let timelines = json.get("timelines")?.as_array()?;
+            for entry in timelines {
+                Identifier::parse(entry.as_str()?).ok()?;
+            }
+            Environment::Timelines
+        }
         "weather" => Environment::Weather(WeatherType::from_name(json.get("weather")?.as_str()?)?),
         _ => return None,
     })

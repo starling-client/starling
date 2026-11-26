@@ -5,10 +5,9 @@ sunrise-client-render block_edit::tests::tracked_states_are_reported lib daily s
 sunrise-client-render chunk::tests::cloning_during_a_height_refresh_keeps_the_new_height lib daily slow
 sunrise-client-render chunk::tests::motion_blocking_follows_writes lib daily slow
 sunrise-client-render chunk::tests::world_surface_follows_writes lib daily slow
-sunrise-client-render core_shader::glsl_fixups::tests::thousands_of_calls_are_left_as_they_were lib daily slow
 sunrise-client-render gfx::inter_stage_tests::no_pipeline_exceeds_the_weakest_gpus_inter_stage_limit lib daily slow
 sunrise-client-render gfx::occlusion::tests::same_sections_as_vanilla lib daily slow
-sunrise-client-render gfx::occlusion::tests::vertical_clamping_only_adds_overdraw lib daily slow
+sunrise-client-render gfx::occlusion::tests::vertical_clamping_matches_vanilla_without_overdraw lib daily slow
 sunrise-client-render gfx::panorama::tests::original_resolution_texels_and_vanilla_cube_orientation_are_preserved lib daily slow
 sunrise-client-render gfx::readback::tests::a_16_bit_unorm_frame_reaches_an_8_bit_swapchain lib daily slow
 sunrise-client-render gfx::readback::tests::a_float_frame_finishes_on_8_bits_before_the_overlays lib daily slow

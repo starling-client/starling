@@ -1,5 +1,4 @@
 //! The `hanging_break` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0244
 
 pub trait Hooks {
     /// An item frame (`minecraft:item_frame`, `minecraft:glow_item_frame`) or

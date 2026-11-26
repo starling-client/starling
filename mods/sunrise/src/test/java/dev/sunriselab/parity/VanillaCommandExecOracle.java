@@ -81,6 +81,7 @@ import net.minecraft.world.level.storage.PrimaryLevelData;
  */
 public final class VanillaCommandExecOracle {
     static final List<JsonArray> messages = new ArrayList<>();
+    static final List<Component> rawMessages = new ArrayList<>();
 
     static final class Resolver implements ProfileResolver, UserNameToIdResolver {
         @Override public Optional<GameProfile> fetchByName(String name) { return Optional.empty(); }
@@ -560,10 +561,13 @@ public final class VanillaCommandExecOracle {
                 @Override public void sendSystemMessage(Component message, boolean overlay) {
                     if (!overlay) {
                         messages.add(spans(message));
+                        rawMessages.add(message);
                     }
                 }
                 @Override public void sendChatMessage(OutgoingChatMessage message, boolean filtered, ChatType.Bound chatType) {
-                    messages.add(spans(chatType.decorate(message.content())));
+                    Component decorated = chatType.decorate(message.content());
+                    messages.add(spans(decorated));
+                    rawMessages.add(decorated);
                 }
             };
             if(Boolean.getBoolean("sunrise.merchantFixture")||Boolean.getBoolean("sunrise.merchantCraftedFixture")) this.tickRateManager().setFrozen(true);
@@ -625,6 +629,7 @@ public final class VanillaCommandExecOracle {
                     case "cmd" -> {
                         String command = op.get("cmd").getAsString();
                         messages.clear();
+                        rawMessages.clear();
                         List<JsonArray> results = new ArrayList<>();
                         // Reuse the existing feedback receiver while retaining the actual
                         // server stack's null entity, names, position and permissions.
@@ -644,6 +649,14 @@ public final class VanillaCommandExecOracle {
                             JsonArray m = new JsonArray();
                             messages.forEach(m::add);
                             record.add("messages", m);
+                            if (op.has("components") && op.get("components").getAsBoolean()) {
+                                var ops = this.registryAccess().createSerializationContext(com.mojang.serialization.JsonOps.INSTANCE);
+                                JsonArray comps = new JsonArray();
+                                for (Component raw : rawMessages) {
+                                    comps.add(net.minecraft.network.chat.ComponentSerialization.CODEC.encodeStart(ops, raw).getOrThrow());
+                                }
+                                record.add("components", comps);
+                            }
                             JsonArray r = new JsonArray();
                             results.forEach(r::add);
                             record.add("results", r);
@@ -660,6 +673,34 @@ public final class VanillaCommandExecOracle {
                             if (op.has("trace") && op.get("trace").getAsBoolean()) System.err.println("command trace: " + gson.toJson(record));
                             if (!op.has("record") || op.get("record").getAsBoolean()) out.append(gson.toJson(record)).append('\n');
                         }
+                    }
+                    case "mob_damage_state" -> {
+                        if (op.has("level_seed")) level.getRandom().setSeed(op.get("level_seed").getAsLong());
+                        var mob = (net.minecraft.world.entity.Mob) level.getEntity(UUID.fromString(op.get("uuid").getAsString()));
+                        if (op.has("start_sleeping")) {
+                            var p = op.getAsJsonArray("start_sleeping");
+                            if (!mob.startSleeping(new BlockPos(p.get(0).getAsInt(), p.get(1).getAsInt(), p.get(2).getAsInt())))
+                                throw new IllegalStateException("sleep fixture: villager did not start sleeping");
+                        }
+                        if (op.has("no_action_time")) mob.setNoActionTime(op.get("no_action_time").getAsInt());
+                        var state = new JsonObject();
+                        state.addProperty("no_action_time", mob.getNoActionTime());
+                        state.addProperty("cooldown", mob.damageCooldownTime);
+                        state.addProperty("hurt_time", mob.hurtTime);
+                        state.addProperty("health", String.format("%08x", Float.floatToRawIntBits(mob.getHealth())));
+                        state.addProperty("sleeping", mob.isSleeping());
+                        var position = new JsonArray();
+                        for (double v : new double[] {mob.getX(), mob.getY(), mob.getZ()})
+                            position.add(String.format("%016x", Double.doubleToRawLongBits(v)));
+                        state.add("position", position);
+                        var rotation = new JsonArray();
+                        for (float v : new float[] {mob.getYRot(), mob.getXRot()})
+                            rotation.add(String.format("%08x", Float.floatToRawIntBits(v)));
+                        state.add("rotation", rotation);
+                        var row = new JsonObject();
+                        row.add("cmd", op.get("label"));
+                        row.add("state", state);
+                        out.append(gson.toJson(row)).append('\n');
                     }
                     case "projectile_saved_type" -> {
                         var entity=level.getEntity(UUID.fromString(op.get("uuid").getAsString()));

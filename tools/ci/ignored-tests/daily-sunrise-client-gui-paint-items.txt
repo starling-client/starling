@@ -1,2 +1,0 @@
-# A mod's gui_paint items, blits and refusals (#4527) through the game's dispatch.
-sunrise-client game::gui_paint_items_tests::a_mods_paint_draws_hotbar_items_and_blits_and_refuses_what_it_cannot_draw lib daily resources

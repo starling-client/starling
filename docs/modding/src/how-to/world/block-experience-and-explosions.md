@@ -49,7 +49,9 @@ items or experience spawn after the event.
 block. The server host permits writes. `event.block_entity` is a live handle,
 and `entity.data(host)` can read it while the block remains. The event borrows
 the same `ExplosionStart` description as the global start event: dimension,
-center, radius, fire, interaction, damage type, source and owner.
+center, radius, fire, interaction, damage type, source and owner. `dimension` is a
+`DimensionKey`; use `dimension.id(host)` when you need the name. `source` and `owner`
+are optional `EntityRef`s for the direct and indirect source, respectively.
 
 The engine writes air after the callback, including when the callback
 replaced the block. Vanilla's separate `wasExploded` behavior follows removal.
@@ -67,11 +69,13 @@ adds an award before removal; it does not replace the block's vanilla XP.
 `explosion_resistance(level, event)` answers `Some(resistance)` to replace the
 block's own explosion resistance against `event.explosion`, as a ray of the
 blast enters the block. The ray's next steps in the same block reuse the
-answer, so keep it a pure function of the event. A fluid in the cell still
-raises the value to 100, and the overrides vanilla applies afterwards keep
-winning: a respawn anchor's water cell, a TNT minecart's rails and the blocks
-under them (never asked) and a dangerous wither skull's 0.8 cap. A negative or
-non-finite answer is refused with a warning and the block's own value is used.
+answer, so keep it a pure function of the event. Vanilla combines the block's
+answer with the cell's fluid via `max` (`0.0` for empty fluid, `100.0` for
+water or lava), and the overrides vanilla applies afterwards keep winning: a
+respawn anchor's water cell, a TNT minecart's rails and the blocks under them
+(never asked) and a dangerous wither skull's 0.8 cap. Any finite answer is
+accepted; a non-finite answer is refused with a warning and the block's own
+value is used.
 
 `can_drop_from_explosion(level, event)` answers whether a destroyed block drops.
 `Some(false)` skips its loot and its `spawnAfterBreak` (an infested block's
@@ -192,12 +196,15 @@ total, past 2,147,483,647 is refused.
 
 | `ExplodeError` | When |
 | --- | --- |
-| `Unavailable` | A client, a parked level or a stale handle, a `source` that is stale, names no entity or is a player in another level, a centre in a chunk that isn't loaded |
-| `InvalidBlast` | A centre outside the world or not finite, a radius or knockback multiplier that isn't finite |
+| `Unavailable` | A client, a parked level or a stale handle, or a `source` that is stale, names no entity or is a player in another level |
+| `InvalidBlast` | A centre, radius or knockback multiplier that isn't finite |
 | `UnknownDamageType` | A damage type that isn't registered |
 | `UnknownBlockTag` | An `immune_blocks` that names no block tag |
 | `InvalidParticle` | A particle that isn't a particle type taking no options, a block particle with a weight of 0 or a scaling or speed that isn't finite, or a weight or total of weights past 2,147,483,647 |
-| `UnknownSound` | A sound that isn't a sound event id, or a `minecraft:` one the server doesn't have |
+| `UnknownSound` | A malformed namespaced sound event key |
+
+A valid sound key need not be registered on the server, in any namespace. It
+is sent by name when not registered; a client without that sound does not play it.
 
 ## Reading explosion resistance
 
@@ -245,22 +252,14 @@ interaction)` reads many cells in one call, one answer a cell in the order
 | `Box { min, max }` | Every cell, both corners included: x fastest, then z, then y |
 | `Columns { columns, min_y, max_y }` | Each column in the order given, from `min_y` up to `max_y` |
 
-A read of more than `ResistanceCells::MAX` (262,144) cells, or of an inverted
-area, is refused with `ResistanceCellsError` and reads nothing. It runs on the
-server tick, so read a big area in pieces. A block's parts are asked once a
-cell, unless every part on the block that answers `explosion_resistance`
-declares its answer pure:
+A read of an inverted area, or of an area whose cell count overflows what one
+allocation can hold, is refused with `ResistanceCellsError` and reads nothing.
+It runs on the server tick, so read a big area in pieces. A block's parts are
+asked once a cell, unless every part on the block that answers
+`explosion_resistance` declares its answer pure:
 
 ```rust
-#[mod_api::sunrise_part]
-impl BlockPart for Reinforced {
-    fn explosion_resistance(&self, _: &dyn LevelHost, _: &mut ExplosionResistanceEvent<'_>) -> Option<f32> {
-        Some(5000.0)
-    }
-    fn explosion_resistance_is_pure(&self) -> bool {
-        true
-    }
-}
+{{#include ../../../examples/src/world_helpers.rs:explosion_resistance}}
 ```
 
 Then a batched read asks them once a state per call; one part that doesn't
@@ -284,9 +283,10 @@ call that does this.
 Each call is one explosion to the hooks. `explosion_start` hears it first and
 may cancel it: then nothing breaks and the answer is 0. For a radius of at
 least 0.00001, `explosion_detonate` hears the positions as its block list, in
-the order given, a repeated one once. A listener may
-only take positions out (spare them): one it adds is ignored. Then the block
-step runs as a blast's does, in vanilla's order:
+the order given, a repeated one once. Listeners may remove, add or reorder
+positions (`ExplosionEvent.Detonate`), and the resulting list is kept in order
+with multiplicity intact, filtered only to loaded chunks within the level's
+height. Then the block step runs as a blast's does, in vanilla's order:
 
 1. The positions are shuffled with the level's random.
 2. Each block is hit: air is skipped; `can_drop_from_explosion` decides the
@@ -308,9 +308,7 @@ Unlike vanilla's rays, a position in a chunk that isn't loaded is skipped,
 never loaded and not counted, and so is one outside the level's height. The
 answer is the number of blocks destroyed: those that were not air when their
 turn came. `Err(ExplosionDestroyError)`, with nothing changed and no hook told,
-for more than 65,536 positions (`ExplosionDestroyError::MAX_POSITIONS`), a
-stale level or `source`, or a centre or radius that isn't finite or a negative
-radius.
+for a stale level or `source`, or a centre or radius that isn't finite.
 
 ## Entities that destroy blocks
 
@@ -330,16 +328,3 @@ allowed (the turtle-egg choice fires none). For the dragon,
 the griefing event. The host is read-only. The dragon asks every
 tick for each block in its head, neck and body, so answer fast. A panic is
 contained and vanilla's rule is used.
-
-## Pistons
-
-`on_destroyed_by_push_reaction(level, event)` hears a piston's move destroy the
-block (a `Destroy` push reaction, such as a torch's), after the block dropped
-its resources and while it is still in its cell. `event.direction` is the way
-the blocks move and `event.fluid` is the fluid state the cell holds. The removal still happens: the cell becomes air afterwards.
-The level host writes and schedules ticks, but a write to any cell of the move
-is lost. The destroyed cells turn to air, and the pushed blocks were read
-before, so each moves as it was and the cells they leave and enter end as air
-or a moving block, as does the arm. Writes outside the move stay. A move that
-`piston_pre` cancels and a client's replay of a move are not heard. A panic is
-contained and the move goes on.

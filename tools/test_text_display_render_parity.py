@@ -18,13 +18,12 @@ import json
 import os
 import random
 
-try:
-    from . import lab, test_rust_parity as base, oracle_harness as harness, test_model_baking_parity as baking
-except ImportError:
-    import lab
-    import test_rust_parity as base
-    import oracle_harness as harness
-    import test_model_baking_parity as baking
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_rust_parity as base, oracle_harness as harness, test_model_baking_parity as baking
 
 PARITY = lab.ROOT / 'mods/sunrise/src/test/java/dev/sunriselab/parity'
 # Glyphs of the `default` include (ascii, accented, nonlatin_european); no Unihex.

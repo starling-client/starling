@@ -2,6 +2,39 @@
 use super::*;
 
 impl Game<'_> {
+    /// Deliver the breed event either at the mob's breeding goal or behaviour or in the normal batch.
+    pub(super) fn deliver_breed(&mut self, event: MobEvent, at_tick_boundary: bool) {
+        let MobEvent::Breed {
+            parent,
+            partner,
+            equine,
+            parent_variant,
+            wolf_voice,
+            experience,
+        } = event
+        else {
+            unreachable!("only the breed event is delivered here");
+        };
+        let child = self.breed(
+            parent,
+            partner,
+            equine,
+            parent_variant,
+            wolf_voice,
+            experience,
+            at_tick_boundary,
+        );
+        if at_tick_boundary {
+            // AnimalMakeLove clears the memories after spawning (even when there is no child).
+            for (id, other) in [(parent, partner), (partner, parent)] {
+                if let Some(mob) = self.mobs.iter_mut().find(|m| m.id == id) {
+                    sunrise_client::mobs::animal_brain::forget_breed_target(mob, other);
+                }
+            }
+        }
+        self.native_entity_breed(parent, partner, child);
+    }
+
     /// `Animal.finalizeSpawnChildFromBreeding` before the experience orb.
     pub(super) fn finalize_breeding(
         &mut self,
@@ -9,6 +42,7 @@ impl Game<'_> {
         partner: u32,
         child: Option<&Mob>,
         order: OrbOrder,
+        reset_parent: bool,
     ) {
         if let Some(cause) = breeding_credit(&mut self.love_cause, parent.id, partner) {
             let parent_view = self.mob_entity(parent);
@@ -28,8 +62,12 @@ impl Game<'_> {
                 g.trigger_bred(&parent_view, &partner_view, child_view.as_ref());
             });
         }
+        if reset_parent && let Some(p) = self.mobs.iter_mut().find(|m| m.id == parent.id) {
+            sunrise_client::mobs::finalize::set_age(p, 6000, None);
+            p.extra.in_love = 0;
+        }
         if let Some(q) = self.mobs.iter_mut().find(|m| m.id == partner) {
-            q.extra.age = 6000;
+            sunrise_client::mobs::finalize::set_age(q, 6000, None);
             q.extra.in_love = 0;
         }
         // TurtleBreedGoal overrides Animal's finalization and never broadcasts hearts.

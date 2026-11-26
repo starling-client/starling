@@ -16,8 +16,13 @@ pub mod item {
         pub struct GrindstoneTakeInputs<'a>(std::marker::PhantomData<&'a ()>);
         #[derive(Clone)]
         pub struct GrindstoneTakeEdits;
-        pub struct StackedOnOther;
-        pub struct StackedOnOtherResult;
+        pub struct StackedOnOther<'a>(pub std::marker::PhantomData<&'a mut ()>);
+        impl StackedOnOther<'_> {
+            pub fn checkpoint(&self) -> usize {
+                0
+            }
+            pub fn rollback(&mut self, _: usize) {}
+        }
     }
     pub mod stations {
         pub struct EnchantmentRow<'a>(std::marker::PhantomData<&'a ()>);

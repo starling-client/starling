@@ -9,12 +9,11 @@ import subprocess
 import random
 import struct
 import math
-try:
-    from . import lab, test_rust_parity as base, test_player_hurt_parity as hurt
-except ImportError:
-    import lab
-    import test_rust_parity as base
-    import test_player_hurt_parity as hurt
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_rust_parity as base, test_player_hurt_parity as hurt
 
 
 def storage_corpus(catalog):

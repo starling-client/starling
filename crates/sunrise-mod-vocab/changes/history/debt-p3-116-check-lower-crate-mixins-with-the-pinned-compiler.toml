@@ -1,0 +1,4 @@
+# Tooling-only: `cargo sunrise-mod check` is not a catalog item.
+ids = []
+why = "A retained SDK whose build predates the lower crates' cfg records builds a lower-crate mixin through its own signed tool. `cargo sunrise-mod check` types the same mod in process and now takes each lower crate's cfg from the SDK's pinned compiler (`rustc --print cfg` for the SDK's target under the game's features), so it accepts the target `build` accepts instead of refusing it with E_MIXIN_SOURCE. Check-only; the build route and the tool contract are unchanged."
+migrate = "No mod source or manifest changes."

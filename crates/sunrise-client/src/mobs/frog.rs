@@ -183,9 +183,16 @@ pub(super) fn travel(
     pause: bool,
 ) -> ControlFlow<super::living::TravelPause> {
     m.move_relative(m.ai.speed, input);
-    m.travel_move(w, level, events, pause, |m, _, _, _| {
-        m.velocity = m.velocity.scale(0.9);
-    })
+    m.travel_move(
+        w,
+        level,
+        events,
+        pause,
+        sunrise_world::travel::TravelMode::Water,
+        |m, _, _, _| {
+            m.set_velocity(m.velocity.scale(0.9));
+        },
+    )
 }
 
 /// `Frog.canEat`: a slime or magma cube of size 1.
@@ -235,9 +242,11 @@ pub fn server_ai_step(m: &mut Mob, w: &MobWorld) {
 struct Croak;
 impl Goal for Croak {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, _cx: &mut Cx) -> bool {
         // checkExtraStartConditions (standing), no walk target, and not in
         // a liquid (start does nothing there).
@@ -248,19 +257,24 @@ impl Goal for Croak {
             && m.ai.nav.is_done()
             && m.random.next_int_bound(4).unwrap_or(0) != 0
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, _cx: &mut Cx) -> bool {
         m.extra.frog.croak < CROAK_TICKS
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, _cx: &mut Cx) {
         m.extra.frog.croak = 0;
         set_pose(m, sync::CROAKING);
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, _cx: &mut Cx) {
         set_pose(m, sync::STANDING);
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, _cx: &mut Cx) {
         m.extra.frog.croak += 1;
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         true
     }
@@ -299,30 +313,39 @@ impl<G: Debug> Debug for Unless<G> {
 }
 impl<G: Goal + Clone + 'static> Goal for Unless<G> {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         self.1.flags()
     }
+    #[inline]
     fn name(&self) -> &'static str {
         self.1.name()
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         !(self.0)(m) && self.1.can_use(m, cx)
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         !(self.0)(m) && self.1.can_continue(m, cx)
     }
+    #[inline]
     fn interruptable(&self) -> bool {
         self.1.interruptable()
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         self.1.every_tick()
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.1.start(m, cx)
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.1.stop(m, cx)
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.1.tick(m, cx)
     }
@@ -458,15 +481,19 @@ impl LaySpawn {
 }
 impl Goal for LaySpawn {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         0
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         self.step(m, cx)
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         self.step(m, cx)
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, _cx: &mut Cx) {
         m.extra.frog.lay_target = None;
     }
@@ -501,9 +528,11 @@ fn manhattan_box(o: [i32; 3], range: i32) -> Vec<[i32; 3]> {
 struct ShootTongue;
 impl Goal for ShootTongue {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE | LOOK
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         let Some(id) = m.extra.frog.nearest else {
             return false;
@@ -560,6 +589,7 @@ impl Goal for ShootTongue {
         m.extra.frog.target = Some(id);
         true
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         let f = &m.extra.frog;
         f.phase != Phase::Done
@@ -568,6 +598,7 @@ impl Goal for ShootTongue {
             && f.target
                 .is_some_and(|id| cx.w.seen(id).is_some_and(|t| t.alive))
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         let Some(t) = m.extra.frog.target.and_then(|id| cx.w.seen(id)) else {
             return;
@@ -582,6 +613,7 @@ impl Goal for ShootTongue {
         f.time = 0;
         f.phase = Phase::MoveToTarget;
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, _cx: &mut Cx) {
         let f = &mut m.extra.frog;
         // `ShootTongue.stop` erases brain memory directly, independently
@@ -591,9 +623,11 @@ impl Goal for ShootTongue {
         f.phase = Phase::Done;
         set_pose(m, sync::STANDING);
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         true
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         let Some(id) = m.extra.frog.target else {
             return;
@@ -916,15 +950,19 @@ fn optimal_jump_vector(m: &Mob, w: &MobWorld, target: Vec3) -> Option<Vec3> {
 }
 impl Goal for LongJump {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE | LOOK
     }
+    #[inline]
     fn interruptable(&self) -> bool {
         !self.mid_jump
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         true
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         // The activity: no cooldown, and for a frog out of water (a frog in
         // water is in its swim activity; a goat has none, so its check below
@@ -959,6 +997,7 @@ impl Goal for LongJump {
         }
         can
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, _cx: &mut Cx) {
         // LongJumpToRandomPos.start.
         let (x, y, z) = (
@@ -983,6 +1022,7 @@ impl Goal for LongJump {
             self.wanting_preferred = m.random.next_float() < PREFERRED_BLOCKS_CHANCE;
         }
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if self.mid_jump {
             // LongJumpMidJump starts the tick after the leap and runs until
@@ -1010,9 +1050,11 @@ impl Goal for LongJump {
         }
         valid
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.end(m, cx);
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         if self.mid_jump {
             return;

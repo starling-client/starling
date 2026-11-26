@@ -1,6 +1,7 @@
 """The public-tree check scans HEAD's history, not every branch's."""
 from pathlib import Path
 import subprocess
+import sys
 from tempfile import TemporaryDirectory
 import unittest
 
@@ -13,7 +14,7 @@ def git(repo, *args):
 
 
 def check(repo, *args):
-    return subprocess.run(["python3", str(SCRIPT), *args], cwd=repo, capture_output=True, text=True)
+    return subprocess.run([sys.executable, str(SCRIPT), *args], cwd=repo, capture_output=True, text=True)
 
 
 class HistoryScopeTests(unittest.TestCase):

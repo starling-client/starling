@@ -1,0 +1,2 @@
+ids = ["method:prelude::ClientOptionsClientHost::window_size"]
+why = "Adds ClientOptionsClientHost::window_size (#4677): the window's framebuffer width and height (Window.getWidth and getHeight), readable at any time, None without a window. window_resize reports this same size, so the two agree."

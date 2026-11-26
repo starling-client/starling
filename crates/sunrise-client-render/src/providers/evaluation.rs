@@ -3,7 +3,7 @@ use super::{Providers, Value};
 use smallvec::{IntoIter, SmallVec};
 use std::{
     borrow::Cow,
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashSet},
 };
 use sunrise_core::{
     java_number::float_to_string,
@@ -56,7 +56,7 @@ impl<F: FnMut(&Value) -> bool> ConditionContext<'_> for F {
     }
 }
 
-fn lookup<'a>(table: &'a HashMap<String, Value>, id: &str) -> Option<&'a Value> {
+fn lookup<'a>(table: &'a BTreeMap<String, Value>, id: &str) -> Option<&'a Value> {
     if let Some(path) = id.strip_prefix(':') {
         table.get(&format!("minecraft:{path}"))
     } else if id.contains(':') {

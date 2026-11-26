@@ -93,7 +93,7 @@ impl SpecialModelRenderer for Pan {
                 |tint| SpecialModelTints::Uniform(tint as u32),
             );
             collector.with_pose(translated(f32::from(self.handle) / 8.0), |pose| {
-                pose.submit_geometry(model, tints)
+                pose.submit_model(model, tints, mod_api::SpecialModelSubmitOptions::default())
             })
         };
         match count {
@@ -108,11 +108,16 @@ impl SpecialModelRenderer for Pan {
                 Err("the test renderer refuses this stack".into())
             }
             5 => collector.with_pose(DOUBLED, |pose| {
-                pose.submit_geometry(&self.a, SpecialModelTints::Untinted)
+                pose.submit_model(
+                    &self.a,
+                    SpecialModelTints::Untinted,
+                    mod_api::SpecialModelSubmitOptions::default(),
+                )
             }),
-            6 | 7 => collector.submit_geometry(
+            6 | 7 => collector.submit_model(
                 &self.a,
                 SpecialModelTints::Uniform([WHITE, GREY][count as usize - 6] as u32),
+                mod_api::SpecialModelSubmitOptions::default(),
             ),
             // A tinted, foiled cube beside B; then the pan itself, a cycle.
             8 => {
@@ -172,11 +177,23 @@ impl SpecialModelRenderer for Pan {
             25 => {
                 collector.with_pose(translated(0.25), |pose| {
                     pose.with_pose(DOUBLED, |pose| {
-                        pose.submit_geometry(&self.a, SpecialModelTints::Untinted)
+                        pose.submit_model(
+                            &self.a,
+                            SpecialModelTints::Untinted,
+                            mod_api::SpecialModelSubmitOptions::default(),
+                        )
                     })?;
-                    pose.submit_geometry(&self.a, SpecialModelTints::Untinted)
+                    pose.submit_model(
+                        &self.a,
+                        SpecialModelTints::Untinted,
+                        mod_api::SpecialModelSubmitOptions::default(),
+                    )
                 })?;
-                collector.submit_geometry(&self.a, SpecialModelTints::Untinted)
+                collector.submit_model(
+                    &self.a,
+                    SpecialModelTints::Untinted,
+                    mod_api::SpecialModelSubmitOptions::default(),
+                )
             }
             26 => {
                 if context.display == ItemDisplayContext::Fixed {
@@ -199,7 +216,7 @@ impl SpecialModelRenderer for Pan {
                 let tints = tint.map_or(SpecialModelTints::Untinted, |tint| {
                     SpecialModelTints::Uniform(tint as u32)
                 });
-                collector.submit_geometry(lease, tints)
+                collector.submit_model(lease, tints, mod_api::SpecialModelSubmitOptions::default())
             }
             1000.. => {
                 geometry(collector, &self.a)?;
@@ -220,7 +237,7 @@ impl ItemDrawEnv for PanEnv {
         context: &Context<'_>,
     ) -> Option<SpecialModelInput<'_>> {
         let item = match stack.item.as_str() {
-            "spt:pan" => 0,
+            "spt:pan" | "spt:lit" | "spt:sheets" => 0,
             "spt:composite" => 3,
             "spt:fault" | "spt:alias" | "spt:bare" | "spt:empty_path" => 4,
             "spt:bundle" => 5,
@@ -345,7 +362,7 @@ fn renderer(
     write(
         root,
         "assets/minecraft/atlases/items.json",
-        r#"{"sources":[{"type":"single","resource":"spt:item/grey"},{"type":"single","resource":"spt:item/flour"}]}"#,
+        r#"{"sources":[{"type":"single","resource":"spt:item/grey"},{"type":"single","resource":"spt:item/flour"},{"type":"single","resource":"spt:item/glass"}]}"#,
     );
     super::glint_tests::png(
         &root.join("assets/spt/textures/item/grey.png"),
@@ -358,6 +375,13 @@ fn renderer(
         16,
         16,
         [250, 250, 250, 255],
+    );
+    // Alpha 128: the sprite classifier marks it translucent.
+    super::glint_tests::png(
+        &root.join("assets/spt/textures/item/glass.png"),
+        16,
+        16,
+        [255, 255, 255, 128],
     );
     write(
         root,
@@ -681,6 +705,7 @@ fn an_invalid_winning_registered_model_does_not_load_a_lower_pack() {
     let pack = ResourceSource::indexed_with_layers(
         files,
         BTreeMap::from([(item_path, vec![lower, winner])]),
+        None,
     );
     let temp = tempfile::tempdir().unwrap();
     let directory = temp.path();
@@ -1144,8 +1169,8 @@ fn a_registered_special_model_draws_its_renderers_resource_models() {
     fs::remove_dir_all(root).unwrap();
 }
 
-/// Row 5 of the matrix (`docs/design/mod-api/resource-renderers.md`), an old state across a
-/// reload. A part's quads are CPU vertices submitted every frame, not prepared GPU models, so the
+/// An old special item renderer state across a reload. A part's quads are CPU vertices submitted
+/// every frame, not prepared GPU models, so the
 /// state's own `Arc<BakedItemModel>` is the only lease and there is no retirement step: a state
 /// resolved before a reload still draws its 12 quads after it, the old baked model is released
 /// exactly once, when the last state holding it drops, and a new resolve draws the reload's 18.
@@ -1247,4 +1272,229 @@ fn special_model_lookup_accepts_bare_path_and_empty_path() {
         let state = renderer.resolve(&stack(item, 1), DisplayContext::Gui, None, None, 0, &env);
         assert_eq!(quads(&renderer, &state).len(), 6, "{item}");
     }
+}
+
+/// Gap 33: reusing one baked lease with distinct per-submission packed light (including a smooth
+/// byte) and `LightmapOnly`, followed by an inherited neighbour with baked `light_emission`,
+/// emits exact vertex light coordinates across frame times.
+#[test]
+fn special_model_per_submission_packed_light_and_lightmap_only_reach_world_sink_exactly() {
+    use mod_api::{SpecialModelLighting, SpecialModelQuad, SpecialModelSubmitOptions};
+
+    struct LitParts(SpecialModelGeometry);
+    impl SpecialModelRenderer for LitParts {
+        type Argument = ();
+
+        fn extract_argument(&self, _: &dyn ClientHost, _: &SpecialModelStack<'_>) {}
+
+        fn submit(
+            &self,
+            _: &(),
+            context: &SpecialModelContext,
+            collector: &mut SpecialModelCollector<'_>,
+        ) -> Result<(), String> {
+            let smooth_block: u32 = if context.game_time == Some(20) {
+                0x45
+            } else {
+                0x37
+            };
+            let packed_a = (0xA0u32 << 16) | smooth_block;
+            let packed_b = (0xF0u32 << 16) | 0x10u32;
+            collector.submit_model(
+                &self.0,
+                SpecialModelTints::Untinted,
+                SpecialModelSubmitOptions::default()
+                    .with_packed_light(packed_a)
+                    .with_lighting(SpecialModelLighting::LightmapOnly),
+            )?;
+            collector.submit_model(
+                &self.0,
+                SpecialModelTints::Untinted,
+                SpecialModelSubmitOptions::default()
+                    .with_packed_light(packed_b)
+                    .with_lighting(SpecialModelLighting::Diffuse),
+            )?;
+            collector.submit_model(
+                &self.0,
+                SpecialModelTints::Untinted,
+                SpecialModelSubmitOptions::default(),
+            )
+        }
+    }
+
+    let root = tempfile::tempdir().unwrap();
+    write(
+        root.path(),
+        "assets/spt/items/lit.json",
+        r#"{"model":{"type":"minecraft:special","base":"spt:item/base","model":{"type":"spt:lit"}}}"#,
+    );
+    let factory = owned_factory(
+        |_| Ok(()),
+        |(), bake| {
+            let mut quad = SpecialModelQuad::new(
+                [
+                    [0.0, 0.0, 0.5],
+                    [0.0, 1.0, 0.5],
+                    [1.0, 1.0, 0.5],
+                    [1.0, 0.0, 0.5],
+                ],
+                [[0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]],
+                "spt:item/grey",
+            );
+            quad.light_emission = 12;
+            Ok(LitParts(bake.bake_geometry(&[quad])?))
+        },
+    );
+    let factories = BTreeMap::from([(mod_api::Identifier::parse("spt:lit").unwrap(), factory)]);
+    let renderer = renderer(root.path(), 2, 2, &factories);
+    let sprites = HashMap::from([(
+        "spt:item/grey".to_owned(),
+        crate::hud::Rect {
+            u0: 0.0,
+            v0: 0.0,
+            u1: 1.0,
+            v1: 1.0,
+            w: 16,
+            h: 16,
+        },
+    )]);
+    let draw_light = 0x50u32 | (0x20u32 << 8);
+    let lights = Some((
+        Vec3::new(0.2, 1.0, -0.7).normalize(),
+        Vec3::new(-0.2, 1.0, 0.7).normalize(),
+    ));
+    let env = PanEnv(FakeHost::new());
+
+    for (game_time, smooth_block) in [(10i64, 0x37u32), (20i64, 0x45u32)] {
+        let level = LevelState {
+            game_time,
+            ..Default::default()
+        };
+        let state = renderer.resolve(
+            &stack("spt:lit", 1),
+            DisplayContext::ThirdPersonRightHand,
+            None,
+            Some(&level),
+            0,
+            &env,
+        );
+        let mut verts = Vec::new();
+        let mut sink = WorldSink {
+            out: &mut verts,
+            light: draw_light,
+            lights,
+            glint: None,
+            tier: 0,
+        };
+        state.submit(&renderer, &sprites, &NoHost, Mat4::IDENTITY, &mut sink);
+        assert_eq!(verts.len(), 12, "3 quads * 4 vertices");
+        // Quad 0: explicit smooth packed light (no baked emission floor) + LightmapOnly (unshaded).
+        assert_eq!(verts[0].light, 0xA0 | (smooth_block << 8) | (1 << 16));
+        assert_eq!(verts[0].color, u32::MAX);
+        // Quad 1: explicit packed light (no baked emission floor) + Diffuse.
+        assert_eq!(verts[4].light, 0xF0 | (0x10 << 8) | (1 << 16));
+        // Quad 2: inherited draw sky (0x50) + baked emission floor (12 * 16 = 0xC0).
+        assert_eq!(verts[8].light, 0x50 | (0xC0 << 8));
+    }
+}
+
+/// Gap 33: submitting `ItemTranslucent` then `ItemCutout` (reverse phase order) on the same
+/// baked lease with a partially transparent sprite routes each submission to its explicit
+/// material in `WorldSink`, independent of the sprite translucency classifier.
+#[test]
+fn special_model_explicit_render_type_overrides_sprite_translucency() {
+    use mod_api::{SpecialModelQuad, SpecialModelRenderType, SpecialModelSubmitOptions};
+
+    struct TwoSheets(SpecialModelGeometry);
+    impl SpecialModelRenderer for TwoSheets {
+        type Argument = ();
+
+        fn extract_argument(&self, _: &dyn ClientHost, _: &SpecialModelStack<'_>) {}
+
+        fn submit(
+            &self,
+            _: &(),
+            _: &SpecialModelContext,
+            collector: &mut SpecialModelCollector<'_>,
+        ) -> Result<(), String> {
+            // Submit translucent first, then cutout (reverse phase order).
+            collector.submit_model(
+                &self.0,
+                SpecialModelTints::Untinted,
+                SpecialModelSubmitOptions::default()
+                    .with_render_type(SpecialModelRenderType::ItemTranslucent),
+            )?;
+            collector.submit_model(
+                &self.0,
+                SpecialModelTints::Untinted,
+                SpecialModelSubmitOptions::default()
+                    .with_render_type(SpecialModelRenderType::ItemCutout),
+            )
+        }
+    }
+
+    let root = tempfile::tempdir().unwrap();
+    write(
+        root.path(),
+        "assets/spt/items/sheets.json",
+        r#"{"model":{"type":"minecraft:special","base":"spt:item/base","model":{"type":"spt:sheets"}}}"#,
+    );
+    let factory = owned_factory(
+        |_| Ok(()),
+        |(), bake| {
+            let quad = SpecialModelQuad::new(
+                [
+                    [0.0, 0.0, 0.5],
+                    [0.0, 1.0, 0.5],
+                    [1.0, 1.0, 0.5],
+                    [1.0, 0.0, 0.5],
+                ],
+                [[0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]],
+                "spt:item/glass",
+            );
+            Ok(TwoSheets(bake.bake_geometry(&[quad])?))
+        },
+    );
+    let factories = BTreeMap::from([(mod_api::Identifier::parse("spt:sheets").unwrap(), factory)]);
+    let renderer = renderer(root.path(), 2, 2, &factories);
+    let sprites = HashMap::from([(
+        "spt:item/glass".to_owned(),
+        crate::hud::Rect {
+            u0: 0.0,
+            v0: 0.0,
+            u1: 1.0,
+            v1: 1.0,
+            w: 16,
+            h: 16,
+        },
+    )]);
+    let env = PanEnv(FakeHost::new());
+    let state = renderer.resolve(
+        &stack("spt:sheets", 1),
+        DisplayContext::Ground,
+        None,
+        None,
+        0,
+        &env,
+    );
+    let mut verts = Vec::new();
+    let mut sink = WorldSink {
+        out: &mut verts,
+        light: 0xF0 | (0xF0 << 8),
+        lights: None,
+        glint: None,
+        tier: 0,
+    };
+    state.submit(&renderer, &sprites, &NoHost, Mat4::IDENTITY, &mut sink);
+    assert_eq!(verts.len(), 8);
+    assert_eq!(
+        verts[0].layer & 0xFFFF,
+        crate::gfx::TRANSLUCENT_ITEM_OVERLAY,
+        "explicit ItemTranslucent must route to translucent item batch"
+    );
+    assert_eq!(
+        verts[4].layer & 0xFFFF,
+        0,
+        "explicit ItemCutout must route to solid/cutout item batch even on a translucent sprite"
+    );
 }

@@ -140,7 +140,10 @@ fn advancement_icons_reach_local_and_remote_ui_surfaces() {
                 }
             }
             game.remote_advancements(packet);
-            assert!(game.adv.toasts.is_empty(), "initial reset is quiet");
+            assert!(
+                game.toast_manager.queued.is_empty(),
+                "initial reset is quiet"
+            );
             let changed: BTreeSet<_> = (0..tree.list.len()).collect();
             let bytes = sync
                 .advancements
@@ -159,7 +162,7 @@ fn advancement_icons_reach_local_and_remote_ui_surfaces() {
             2,
             "refused icons keep both advancements"
         );
-        assert_eq!(game.adv.toasts.len(), 2);
+        assert_eq!(game.toast_manager.queued.len(), 2);
         for (id, foil) in [
             ("sunrise_test:glint", !refused),
             ("sunrise_test:plain", false),
@@ -185,7 +188,11 @@ fn advancement_icons_reach_local_and_remote_ui_surfaces() {
                 );
             }
         }
-        let toast = &mut game.adv.toasts[0];
+        let crate::game::toast_manager::Toast::Advancement(toast) =
+            &mut game.toast_manager.queued[0]
+        else {
+            panic!("expected advancement toast")
+        };
         assert_eq!(
             (&*toast.icon.item, toast.icon.count, toast.icon.damage),
             ("minecraft:wooden_pickaxe", 3, if refused { 0 } else { 7 })
@@ -193,13 +200,17 @@ fn advancement_icons_reach_local_and_remote_ui_surfaces() {
         assert_eq!(toast.icon.has_foil(None), !refused);
         toast.slide.portion = 1.0;
         game.glint_frame = sunrise_client::item_render::GlintFrame {
-            millis: 1000.0,
+            millis: 1_000,
             speed: 0.5,
             alpha: 0.75,
             sprite: true,
         };
         let mut toast_batch = batch();
-        game.draw_toast(&mut toast_batch, 0, 0.0, 1.0);
+        let crate::game::toast_manager::Toast::Advancement(toast) = &game.toast_manager.queued[0]
+        else {
+            unreachable!()
+        };
+        game.draw_advancement_toast(&mut toast_batch, toast, 0.0, 1.0);
         assert_icon(&toast_batch, 488.0, 8.0, !refused, !refused);
 
         game.open_advancements(false);

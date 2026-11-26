@@ -2,20 +2,22 @@
 //! break the blocks around the one its player broke as that player breaks them, taking their
 //! drops and experience in `block_drops`.
 use super::Game;
-use mod_api::PlayerRef;
+use super::native_entity_refs::block_face_direction;
+use mod_api::{BlockFace, Placement, PlayerRef};
 use std::cell::Cell;
+use sunrise_client::first_person::Hand;
+use sunrise_core::position::BlockPos;
+use sunrise_world::registry::BlockStateId;
 
-/// How many player breaks may be inside one another on the server thread. A `break_block` or
-/// `block_drops` listener may break again as the player, which runs the hooks again, and the
-/// block it started from is still there: a listener with no guard of its own would recurse until
-/// the stack overflows. At the limit the call is refused (false). A guarded miner nests one
-/// level deep, so this is far beyond any use, and each level costs only a few frames of the
-/// thread's stack. A Sunrise safeguard: NeoForge has none, and there the same listener crashes
-/// the server.
+/// How many veto asks may be inside one another on the server thread. A `break_block` or
+/// `entity_place` listener may ask again as the player without changing the world: a listener
+/// with no guard of its own would recurse until the stack overflows. At the limit the call is
+/// refused. A Sunrise safeguard: NeoForge has none, and there the same listener crashes the
+/// server.
 const MAX_NESTED_BREAKS: u32 = 8;
 
 thread_local! {
-    /// The player breaks now inside one another on this thread.
+    /// The veto asks now inside one another on this thread.
     static NESTED_BREAKS: Cell<u32> = const { Cell::new(0) };
 }
 
@@ -44,61 +46,99 @@ impl Game<'_> {
     /// `ServerPlayerGameMode.destroyBlock` at `pos` as `player` breaks it, as FTB Ultimine does
     /// (`PlayerInteractionBackendMut::player_destroy_block` says what holds and what is refused). With
     /// `into_inventory`, the drops `block_drops` leaves go to the player's inventory, and what
-    /// doesn't fit drops from them as `Inventory.placeItemBackInInventory` drops it. Refused
-    /// (false) once [`MAX_NESTED_BREAKS`] breaks are inside one another.
+    /// doesn't fit drops from them as `Inventory.placeItemBackInInventory` drops it.
     pub(super) fn player_destroy_block(
         &mut self,
         player: PlayerRef,
         pos: [i32; 3],
         into_inventory: bool,
     ) -> bool {
-        if !self.native_authoritative() || !self.native_player_current(player) {
+        if !self.native_authoritative() {
             return false;
         }
-        let Some(_nested) = NestedBreak::enter() else {
-            return false;
-        };
         let mut broke = false;
         self.native_as_player_handle(player, |game| {
-            // The break is in the player's level: for a player in another level than the one
-            // in place, nothing is broken.
-            if game.acting_in_level_in_place() {
-                broke = game.break_as_acting_player(pos, into_inventory);
+            if !game.acting_in_level_in_place() {
+                return;
             }
+            // Only this break owns these drops. Other breaks, including ones made by
+            // callbacks, cannot inherit this destination, even if this call unwinds.
+            let mut drops = into_inventory.then(Vec::new);
+            let result = game.with_hand(Hand::Main, |game| {
+                game.player_break_block(pos, drops.as_mut())
+            });
+            for stack in drops.into_iter().flatten() {
+                game.give_or_drop(stack);
+            }
+            broke = result.unwrap_or_else(|e| {
+                log::warn!("a mod's break at {pos:?} failed: {e}");
+                false
+            });
         });
         broke
     }
-
-    fn break_as_acting_player(&mut self, pos: [i32; 3], into_inventory: bool) -> bool {
-        if !self.world.loaded(pos[0], pos[2]) {
-            return false;
+    /// `CommonHooks.fireBlockBreak` for `player` at `pos`, breaking nothing
+    /// (`PlayerInteractionBackendMut::player_break_canceled` says what is refused).
+    pub(super) fn player_break_canceled(
+        &mut self,
+        player: PlayerRef,
+        pos: [i32; 3],
+    ) -> Option<bool> {
+        if !self.native_authoritative() || !self.native_player_current(player) {
+            return None;
         }
-        let state = self.world.block(pos[0], pos[1], pos[2]);
-        // A survival player never finishes mining a block with no hardness:
-        // their client never sends the break.
-        if self.res.behaviours().is_air(state)
-            || (!self.creative && self.res.facts().get(state).hardness < 0.0)
-        {
-            return false;
-        }
-        // ServerPlayerGameMode.handleBlockBreakAction's `mayInteract`.
-        if self
-            .lan_acting_spawn_protection
-            .is_some_and(|radius| self.spawn_protects(radius, self.dim.id(), pos))
-        {
-            return false;
-        }
-        // A break inside another's hook keeps where the outer one's drops go.
-        let outer = std::mem::replace(&mut self.break_collect, into_inventory.then(Vec::new));
-        let broke = self.player_break_block(pos).unwrap_or_else(|e| {
-            log::warn!("a mod's break at {pos:?} failed: {e}");
-            false
+        let _nested = NestedBreak::enter()?;
+        let mut canceled = None;
+        self.native_as_player_handle(player, |game| {
+            if game.acting_in_level_in_place() && game.world.loaded(pos[0], pos[2]) {
+                canceled = game
+                    .break_block_allowed(pos)
+                    .inspect_err(|e| log::warn!("a mod's break ask at {pos:?} failed: {e}"))
+                    .ok()
+                    .map(|allowed| allowed.is_none());
+            }
         });
-        let drops = std::mem::replace(&mut self.break_collect, outer).unwrap_or_default();
-        for stack in drops {
-            self.give_or_drop(stack);
+        canceled
+    }
+
+    /// `EventHooks.onBlockPlace` for `player` placing `state` at `pos` against its clicked
+    /// `face`, placing nothing (`PlayerInteractionBackendMut::player_place_canceled` says what is
+    /// refused).
+    pub(super) fn player_place_canceled(
+        &mut self,
+        player: PlayerRef,
+        pos: [i32; 3],
+        face: BlockFace,
+        state: BlockStateId,
+    ) -> Option<bool> {
+        self.pack.assets.registry.state(state)?;
+        if !self.native_authoritative() || !self.native_player_current(player) {
+            return None;
         }
-        broke
+        let _nested = NestedBreak::enter()?;
+        // The clicked block, `pos.relative(face.getOpposite())`.
+        let normal = block_face_direction(face).normal();
+        let against = [0, 1, 2].map(|axis| pos[axis].wrapping_sub(normal[axis]));
+        let mut canceled = None;
+        self.native_as_player_handle(player, |game| {
+            if game.acting_in_level_in_place()
+                && game.world.loaded(pos[0], pos[2])
+                && game.world.loaded(against[0], against[2])
+            {
+                let placed_against = game.world.block(against[0], against[1], against[2]);
+                let mut placing = false;
+                game.native_entity_place(
+                    Some(player.entity()),
+                    BlockPos::new(pos[0], pos[1], pos[2]),
+                    state,
+                    placed_against,
+                    Placement::Single,
+                    &mut placing,
+                );
+                canceled = Some(placing);
+            }
+        });
+        canceled
     }
 }
 
@@ -130,6 +170,7 @@ impl Game<'_> {
             )
         });
         if removed {
+            self.invalidate_active_player_breaks(pos);
             self.native_player_destroyed_block(pos, state, block_entity);
         }
         removed
@@ -140,6 +181,10 @@ impl Game<'_> {
 mod tests {
     use super::super::native_entity_refs::tests::with_game;
     use super::*;
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
     use sunrise_client::{command::args::GameMode, items::ItemStack, motion::PlayerMotion};
     use sunrise_core::geometry::Vec3;
 
@@ -191,10 +236,14 @@ mod tests {
             let player = with_player(game, ItemStack::new("minecraft:diamond_pickaxe", 1));
             let pos = [6, 64, 4];
             place(game, pos, "minecraft:stone");
+            // A break requested from an offhand interaction still uses the main hand.
+            game.offhand = Some(ItemStack::new("minecraft:debug_stick", 1));
+            game.hand = Hand::Off;
             assert!(game.player_destroy_block(player, pos, false));
+            assert!(matches!(game.hand, Hand::Off));
             assert_eq!(block(game, pos), "minecraft:air");
             assert!(popped(game, "minecraft:cobblestone"));
-            assert_eq!(game.held().unwrap().damage, 1);
+            assert_eq!(game.inventory[game.selected].as_ref().unwrap().damage, 1);
             assert_eq!(game.stats.get("mined", "minecraft:stone"), 1);
         });
     }
@@ -311,9 +360,8 @@ mod tests {
         });
     }
 
-    /// The player's own checks hold: an adventure player whose tool has no
-    /// `can_break`, a survival player at bedrock, air, and someone who isn't
-    /// playing break nothing.
+    /// The direct call still refuses invalid players and absent blocks, and uses
+    /// the game mode, main-hand item and game-master permissions.
     #[test]
     #[ignore = "daily"]
     fn the_players_checks_hold() {
@@ -323,20 +371,46 @@ mod tests {
                 std::sync::Arc::new(sunrise_client::chunk::Chunk::empty(0, 0)),
             );
             let player = with_player(game, ItemStack::new("minecraft:diamond_pickaxe", 1));
-            let (stone, bedrock, air) = ([6, 64, 4], [7, 64, 4], [8, 64, 4]);
+            let (stone, command, air) = ([6, 64, 4], [7, 64, 4], [8, 64, 4]);
             place(game, stone, "minecraft:stone");
-            place(game, bedrock, "minecraft:bedrock");
-            assert!(!game.player_destroy_block(player, bedrock, false));
-            assert_eq!(block(game, bedrock), "minecraft:bedrock");
+            place(game, command, "minecraft:command_block");
             assert!(!game.player_destroy_block(player, air, false));
+            assert!(!game.player_destroy_block(player, [16, 64, 4], false));
             let epoch = game.native_lifecycle.epoch().unwrap();
             let stranger =
                 mod_api::__private::game::player_ref(mod_api::EntityRef::new(epoch, 21), 124);
             assert!(!game.player_destroy_block(stranger, stone, false));
             game.set_mode(GameMode::Adventure);
             assert!(!game.player_destroy_block(player, stone, false));
-            assert_eq!(block(game, stone), "minecraft:stone");
+            game.set_mode(GameMode::Spectator);
+            assert!(!game.player_destroy_block(player, stone, false));
             assert_eq!(game.held().unwrap().damage, 0, "nothing wore the pickaxe");
+            game.set_mode(GameMode::Creative);
+            assert!(!game.player_destroy_block(player, command, false));
+            assert_eq!(block(game, command), "minecraft:command_block");
+            game.inventory[game.selected] = Some(ItemStack::new("minecraft:diamond_sword", 1));
+            assert!(!game.player_destroy_block(player, stone, false));
+            assert_eq!(block(game, stone), "minecraft:stone");
+            assert!(game.dropped.is_empty());
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn a_direct_break_ignores_spawn_protection_range_and_mining_progress() {
+        with_game(|game| {
+            game.world.chunks.insert(
+                (0, 0),
+                std::sync::Arc::new(sunrise_client::chunk::Chunk::empty(0, 0)),
+            );
+            let player = with_player(game, ItemStack::new("minecraft:diamond_pickaxe", 1));
+            let pos = [13, 64, 13];
+            place(game, pos, "minecraft:bedrock");
+            game.level.world_spawn = Some(pos);
+            game.lan_acting_spawn_protection = Some(1);
+            assert!(game.spawn_protects(1, game.dim.id(), pos));
+            assert!(game.player_destroy_block(player, pos, false));
+            assert_eq!(block(game, pos), "minecraft:air");
         });
     }
 
@@ -452,7 +526,7 @@ mod tests {
                 }
                 let origin = vein[0];
                 // The player's own break of the origin: the mod broke it, and the vein.
-                assert!(!game.player_break_block(origin).unwrap());
+                assert!(!game.player_break_block(origin, None).unwrap());
                 assert!(vein.iter().all(|&pos| block(game, pos) == "minecraft:air"));
                 assert_eq!(game.held().unwrap().damage, vein.len() as u32);
                 assert_eq!(game.stats.get("mined", "minecraft:stone"), 66);
@@ -489,33 +563,118 @@ mod tests {
         });
     }
 
-    /// A listener that breaks the block it hears about as the player, with no guard: the block
-    /// is still there, so each break hears the next. The engine refuses the break past its limit
-    /// instead of overflowing the stack, and the listener ran once per allowed level.
-    struct Unguarded;
-
-    /// How many times `Unguarded` heard a break.
-    static UNGUARDED_HEARD: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    struct ChainedBreaks {
+        last: i32,
+        vetoed: [i32; 3],
+    }
 
     #[mod_api::__subscriptions]
-    impl mod_api::Hooks for Unguarded {
+    impl mod_api::Hooks for ChainedBreaks {
         fn break_block(
             &self,
             host: &mut dyn mod_api::ServerHost,
             event: &mut mod_api::BreakBlockEvent<'_>,
         ) -> mod_api::Flow {
-            UNGUARDED_HEARD.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if event.pos == self.vetoed {
+                return mod_api::Flow::Cancel;
+            }
+            let [x, y, z] = event.pos;
+            let (next, collect) = if x < self.last {
+                ([x + 1, y, z], false)
+            } else {
+                (self.vetoed, true)
+            };
             let player = host.players().acting_player().expect("the breaker acts");
-            player.destroy_block(host, event.pos, false);
-            mod_api::Flow::Cancel
+            assert_eq!(player.destroy_block(host, next, collect), !collect);
+            mod_api::Flow::Continue
         }
     }
 
     #[test]
     #[ignore = "daily"]
-    fn an_unguarded_listener_is_cut_off_at_the_nesting_limit() {
-        let mods: mod_api::Mods =
-            vec![mod_api::ModEntry::new("unguarded", Box::new(Unguarded))].into();
+    fn chained_breaks_keep_their_own_drops_without_a_depth_limit() {
+        let (first, last, vetoed) = (2, 11, [12, 64, 4]);
+        let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
+            "chain",
+            Box::new(ChainedBreaks { last, vetoed }),
+        )]
+        .into();
+        mod_platform::testing::with_mods(mods, || {
+            with_game(|game| {
+                game.world.chunks.insert(
+                    (0, 0),
+                    std::sync::Arc::new(sunrise_client::chunk::Chunk::empty(0, 0)),
+                );
+                let player = with_player(game, ItemStack::new("minecraft:diamond_pickaxe", 1));
+                for x in first..=last {
+                    place(game, [x, 64, 4], "minecraft:stone");
+                }
+                place(game, vetoed, "minecraft:stone");
+                assert!(game.player_destroy_block(player, [first, 64, 4], true));
+                assert!((first..=last).all(|x| block(game, [x, 64, 4]) == "minecraft:air"));
+                assert_eq!(block(game, vetoed), "minecraft:stone");
+                assert_eq!(game.held().unwrap().damage, 10);
+                assert_eq!(carried(game, "minecraft:cobblestone"), 1);
+                assert_eq!(
+                    game.dropped
+                        .iter()
+                        .filter(|item| &*item.stack.item == "minecraft:cobblestone")
+                        .map(|item| item.stack.count)
+                        .sum::<u32>(),
+                    9
+                );
+            });
+        });
+    }
+
+    struct Reenter(AtomicUsize);
+
+    #[mod_api::__subscriptions]
+    impl mod_api::Hooks for Reenter {
+        fn break_block(
+            &self,
+            host: &mut dyn mod_api::ServerHost,
+            event: &mut mod_api::BreakBlockEvent<'_>,
+        ) -> mod_api::Flow {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            // No guard: the break of the subject this callback is outstanding on.
+            let player = host.players().acting_player().expect("the breaker acts");
+            player.destroy_block(host, event.pos, false);
+            mod_api::Flow::Continue
+        }
+    }
+
+    /// A listener that breaks the block it is told about, with no guard, would call itself without
+    /// end. The nested break dispatches nothing again, removes the block, and the outer break then
+    /// does nothing more: the callback ran once and the tool wore once. A fresh process, as an
+    /// unbounded reentry would end it.
+    #[test]
+    #[ignore = "daily"]
+    fn a_listener_breaking_its_own_subject_is_not_called_again() {
+        if crate::game::native_entity_refs::tests::run_fresh_cases(
+            "game::native_player_break::tests::a_listener_breaking_its_own_subject_is_not_called_again",
+            "SUNRISE_REENTRANT_BREAK_CHILD",
+            &["reentry"],
+        ) {
+            return;
+        }
+        let calls = Arc::new(Reenter(AtomicUsize::new(0)));
+        struct Shared(Arc<Reenter>);
+        #[mod_api::__subscriptions]
+        impl mod_api::Hooks for Shared {
+            fn break_block(
+                &self,
+                host: &mut dyn mod_api::ServerHost,
+                event: &mut mod_api::BreakBlockEvent<'_>,
+            ) -> mod_api::Flow {
+                mod_api::Hooks::break_block(&*self.0, host, event)
+            }
+        }
+        let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
+            "reenter",
+            Box::new(Shared(calls.clone())),
+        )]
+        .into();
         mod_platform::testing::with_mods(mods, || {
             with_game(|game| {
                 game.world.chunks.insert(
@@ -526,11 +685,400 @@ mod tests {
                 let pos = [6, 64, 4];
                 place(game, pos, "minecraft:stone");
                 assert!(!game.player_destroy_block(player, pos, false));
-                assert_eq!(
-                    UNGUARDED_HEARD.load(std::sync::atomic::Ordering::Relaxed),
-                    8
+                assert_eq!(block(game, pos), "minecraft:air");
+                assert_eq!(game.held().unwrap().damage, 1);
+            });
+        });
+        assert_eq!(calls.0.load(Ordering::Relaxed), 1);
+    }
+
+    struct Counts(Arc<AtomicUsize>);
+
+    #[mod_api::__subscriptions]
+    impl mod_api::Hooks for Counts {
+        fn break_block(
+            &self,
+            _: &mut dyn mod_api::ServerHost,
+            event: &mut mod_api::BreakBlockEvent<'_>,
+        ) -> mod_api::Flow {
+            assert_eq!(event.pos, [8, 64, 4]);
+            self.0.fetch_add(1, Ordering::Relaxed);
+            mod_api::Flow::Continue
+        }
+    }
+
+    /// `ServerPlayerGameMode.destroyBlock` has no air filter: `break_block` fires for air, and the
+    /// break removes nothing.
+    #[test]
+    #[ignore = "daily"]
+    fn a_break_of_air_still_dispatches_break_block() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
+            "counts",
+            Box::new(Counts(calls.clone())),
+        )]
+        .into();
+        mod_platform::testing::with_mods(mods, || {
+            with_game(|game| {
+                game.world.chunks.insert(
+                    (0, 0),
+                    std::sync::Arc::new(sunrise_client::chunk::Chunk::empty(0, 0)),
                 );
-                assert_eq!(block(game, pos), "minecraft:stone");
+                let player = with_player(game, ItemStack::new("minecraft:diamond_pickaxe", 1));
+                assert!(!game.player_destroy_block(player, [8, 64, 4], false));
+                assert_eq!(game.held().unwrap().damage, 0);
+            });
+        });
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+    }
+
+    struct RefuseHarvest;
+
+    #[mod_api::__subscriptions]
+    impl mod_api::Hooks for RefuseHarvest {
+        fn player_harvest_check(
+            &self,
+            _: mod_api::HostSide<'_>,
+            event: &mut mod_api::PlayerHarvestCheckEvent,
+        ) {
+            event.can_harvest = false;
+        }
+    }
+
+    /// The tool wears as `ItemStack.mineBlock` before the removal, whatever the harvest answer: a
+    /// mod's refusal costs the drops and the statistic, not the wear.
+    #[test]
+    #[ignore = "daily"]
+    fn a_refused_harvest_still_wears_the_tool_and_drops_nothing() {
+        let mods: mod_api::Mods =
+            vec![mod_api::ModEntry::new("refuse", Box::new(RefuseHarvest))].into();
+        mod_platform::testing::with_mods(mods, || {
+            with_game(|game| {
+                game.world.chunks.insert(
+                    (0, 0),
+                    std::sync::Arc::new(sunrise_client::chunk::Chunk::empty(0, 0)),
+                );
+                let player = with_player(game, ItemStack::new("minecraft:diamond_pickaxe", 1));
+                let pos = [6, 64, 4];
+                place(game, pos, "minecraft:stone");
+                assert!(game.player_destroy_block(player, pos, false));
+                assert_eq!(block(game, pos), "minecraft:air");
+                assert_eq!(game.held().unwrap().damage, 1);
+                assert!(!popped(game, "minecraft:cobblestone"));
+                assert_eq!(game.stats.get("mined", "minecraft:stone"), 0);
+            });
+        });
+    }
+
+    struct FinishFirst(AtomicBool);
+
+    #[mod_api::__subscriptions]
+    impl mod_api::Hooks for FinishFirst {
+        fn break_block(
+            &self,
+            host: &mut dyn mod_api::ServerHost,
+            event: &mut mod_api::BreakBlockEvent<'_>,
+        ) -> mod_api::Flow {
+            if !self.0.swap(true, Ordering::Relaxed) {
+                let player = host.players().acting_player().expect("the breaker acts");
+                assert!(player.destroy_block(host, event.pos, false));
+            }
+            mod_api::Flow::Continue
+        }
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn a_break_does_not_disarm_tripwire_already_removed_by_its_listener() {
+        let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
+            "finish-first",
+            Box::new(FinishFirst(false.into())),
+        )]
+        .into();
+        mod_platform::testing::with_mods(mods, || {
+            with_game(|game| {
+                game.world.chunks.insert(
+                    (0, 0),
+                    std::sync::Arc::new(sunrise_client::chunk::Chunk::empty(0, 0)),
+                );
+                let player = with_player(game, ItemStack::new("minecraft:shears", 1));
+                let pos = [6, 64, 4];
+                place(game, pos, "minecraft:tripwire");
+                // Disarming the original state in the outer break would write the wire back.
+                assert!(!game.player_destroy_block(player, pos, false));
+                assert_eq!(block(game, pos), "minecraft:air");
+                assert_eq!(game.held().unwrap().damage, 1);
+            });
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn a_nested_turtle_egg_break_does_not_repeat_removal_effects() {
+        let done = Arc::new(AtomicBool::new(false));
+        struct FinishOnce(Arc<AtomicBool>);
+        #[mod_api::__subscriptions]
+        impl mod_api::Hooks for FinishOnce {
+            fn break_block(
+                &self,
+                host: &mut dyn mod_api::ServerHost,
+                event: &mut mod_api::BreakBlockEvent<'_>,
+            ) -> mod_api::Flow {
+                if !self.0.swap(true, Ordering::Relaxed) {
+                    let player = host.players().acting_player().expect("the breaker acts");
+                    assert!(player.destroy_block(host, event.pos, false));
+                }
+                mod_api::Flow::Continue
+            }
+        }
+        let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
+            "finish-once",
+            Box::new(FinishOnce(done.clone())),
+        )]
+        .into();
+        mod_platform::testing::with_mods(mods, || {
+            with_game(|game| {
+                game.world.chunks.insert(
+                    (0, 0),
+                    std::sync::Arc::new(sunrise_client::chunk::Chunk::empty(0, 0)),
+                );
+                let player = with_player(game, ItemStack::new("minecraft:diamond_pickaxe", 1));
+                let registry = game.pack.assets.registry;
+                let egg = |eggs: u32| {
+                    let base = registry.default_state("minecraft:turtle_egg").unwrap();
+                    let mut state = registry.state(base).unwrap().clone();
+                    state.properties.insert("eggs".into(), eggs.to_string());
+                    registry.resolve(&state).unwrap()
+                };
+                let nest = [6, 64, 4];
+                game.world.set(nest[0], nest[1], nest[2], egg(3)).unwrap();
+                assert!(!game.player_destroy_block(player, nest, false));
+                assert_eq!(game.world.block(nest[0], nest[1], nest[2]), egg(2));
+                assert_eq!(game.held().unwrap().damage, 1);
+                assert_eq!(game.stats.get("mined", "minecraft:turtle_egg"), 1);
+
+                // A nested survival break of ice over stone leaves water, not air;
+                // the outer break must still skip removal, wear, and statistics.
+                done.store(false, Ordering::Relaxed);
+                let ice = [7, 64, 4];
+                place(game, [7, 63, 4], "minecraft:stone");
+                place(game, ice, "minecraft:ice");
+                assert!(!game.player_destroy_block(player, ice, false));
+                assert_eq!(block(game, ice), "minecraft:water");
+                assert_eq!(game.held().unwrap().damage, 2);
+                assert_eq!(game.stats.get("mined", "minecraft:ice"), 1);
+            });
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn restricted_break_attempts_fire_pre_canceled_and_keep_hard_restrictions() {
+        let normal_seen = Arc::new(AtomicUsize::new(0));
+        let canceled_seen: Arc<Mutex<Vec<([i32; 3], bool)>>> = Arc::new(Mutex::new(Vec::new()));
+        let clear_cancel = Arc::new(AtomicBool::new(true));
+
+        struct NormalObserver(Arc<AtomicUsize>);
+        #[mod_api::__subscriptions]
+        impl mod_api::Hooks for NormalObserver {
+            fn break_block(
+                &self,
+                _: &mut dyn mod_api::ServerHost,
+                _: &mut mod_api::BreakBlockEvent<'_>,
+            ) -> mod_api::Flow {
+                self.0.fetch_add(1, Ordering::Relaxed);
+                mod_api::Flow::Continue
+            }
+        }
+
+        struct CancelledObserver {
+            seen: Arc<Mutex<Vec<([i32; 3], bool)>>>,
+            clear_cancel: Arc<AtomicBool>,
+        }
+        #[mod_api::__subscriptions]
+        impl mod_api::Hooks for CancelledObserver {
+            #[listener(receive_cancelled)]
+            fn break_block(
+                &self,
+                _: &mut dyn mod_api::ServerHost,
+                event: &mut mod_api::BreakBlockEvent<'_>,
+            ) -> mod_api::Flow {
+                self.seen.lock().unwrap().push((event.pos, event.cancelled));
+                if self.clear_cancel.load(Ordering::Relaxed) {
+                    event.cancelled = false;
+                }
+                mod_api::Flow::Continue
+            }
+        }
+
+        let mods: mod_api::Mods = vec![
+            mod_api::ModEntry::new("normal", Box::new(NormalObserver(normal_seen.clone()))),
+            mod_api::ModEntry::new(
+                "cancelled",
+                Box::new(CancelledObserver {
+                    seen: canceled_seen.clone(),
+                    clear_cancel: clear_cancel.clone(),
+                }),
+            ),
+        ]
+        .into();
+        mod_platform::testing::with_mods(mods, || {
+            with_game(|game| {
+                game.world.chunks.insert(
+                    (0, 0),
+                    std::sync::Arc::new(sunrise_client::chunk::Chunk::empty(0, 0)),
+                );
+                let player = with_player(game, ItemStack::new("minecraft:diamond_pickaxe", 1));
+                let (stone, command, air) = ([6, 64, 4], [7, 64, 4], [8, 64, 4]);
+                place(game, stone, "minecraft:stone");
+                place(game, command, "minecraft:command_block");
+
+                // Loaded air posts break_block uncanceled (ServerPlayerGameMode.destroyBlock has
+                // no air filter) and returns false; an unloaded column with no generator refuses
+                // without posting.
+                assert!(!game.player_destroy_block(player, air, false));
+                assert!(!game.player_destroy_block(player, [16, 64, 4], false));
+                assert_eq!(normal_seen.swap(0, Ordering::Relaxed), 1);
+                assert_eq!(
+                    std::mem::take(&mut *canceled_seen.lock().unwrap()),
+                    vec![(air, false)]
+                );
+
+                // Adventure, spectator, and unauthorized game-master attempts post
+                // pre-canceled; clearing the cancel still leaves the block intact.
+                game.set_mode(GameMode::Adventure);
+                assert!(!game.player_destroy_block(player, stone, false));
+                assert_eq!(block(game, stone), "minecraft:stone");
+
+                game.set_mode(GameMode::Spectator);
+                assert!(!game.player_destroy_block(player, stone, false));
+                assert_eq!(block(game, stone), "minecraft:stone");
+
+                game.set_mode(GameMode::Creative);
+                assert!(!game.player_destroy_block(player, command, false));
+                assert_eq!(block(game, command), "minecraft:command_block");
+
+                // Creative sword: pre-canceled by the item check; staying canceled
+                // keeps the block, while un-canceling lets the break proceed as in
+                // NeoForge BreakBlockEvent.
+                game.inventory[game.selected] = Some(ItemStack::new("minecraft:diamond_sword", 1));
+                clear_cancel.store(false, Ordering::Relaxed);
+                assert!(!game.player_destroy_block(player, stone, false));
+                assert_eq!(block(game, stone), "minecraft:stone");
+
+                clear_cancel.store(true, Ordering::Relaxed);
+                assert!(game.player_destroy_block(player, stone, false));
+                assert_eq!(block(game, stone), "minecraft:air");
+
+                assert_eq!(normal_seen.load(Ordering::Relaxed), 0);
+                assert_eq!(
+                    *canceled_seen.lock().unwrap(),
+                    vec![
+                        (stone, true),
+                        (stone, true),
+                        (command, true),
+                        (stone, true),
+                        (stone, true),
+                    ]
+                );
+            });
+        });
+    }
+
+    /// Cancels the break at [`GUARDED`] and the placement of glass, and records what each
+    /// placement was told: its position, its placer and whether it went against stone.
+    struct Warden;
+
+    /// What `Warden` heard of each placement.
+    static WARDEN_HEARD: std::sync::Mutex<
+        Vec<(mod_api::BlockPos, Option<mod_api::EntityRef>, bool)>,
+    > = std::sync::Mutex::new(Vec::new());
+
+    /// The block `Warden` keeps.
+    const GUARDED: [i32; 3] = [7, 64, 4];
+
+    #[mod_api::__subscriptions]
+    impl mod_api::Hooks for Warden {
+        fn break_block(
+            &self,
+            _: &mut dyn mod_api::ServerHost,
+            event: &mut mod_api::BreakBlockEvent<'_>,
+        ) -> mod_api::Flow {
+            if event.pos == GUARDED {
+                mod_api::Flow::Cancel
+            } else {
+                mod_api::Flow::Continue
+            }
+        }
+        fn entity_place(
+            &self,
+            host: &mut dyn mod_api::ServerHost,
+            event: &mut mod_api::EntityPlaceEvent,
+        ) -> mod_api::Flow {
+            let stone = host.block_state_id("minecraft:stone");
+            let on_stone = stone == Some(event.placed_against);
+            WARDEN_HEARD
+                .lock()
+                .unwrap()
+                .push((event.pos, event.placer, on_stone));
+            if host.block_state_id("minecraft:glass") == Some(event.state) {
+                mod_api::Flow::Cancel
+            } else {
+                mod_api::Flow::Continue
+            }
+        }
+    }
+
+    /// The veto asks answer as the player's own break and placement would be decided, and
+    /// change nothing: a listener's cancel and the player's checks say true, an allowed break
+    /// leaves the block and the pickaxe as they were, an allowed placement writes nothing, and
+    /// an unloaded block or someone who isn't playing has no answer.
+    #[test]
+    #[ignore = "daily"]
+    fn the_veto_asks_answer_without_changing_the_level() {
+        let mods: mod_api::Mods = vec![mod_api::ModEntry::new("warden", Box::new(Warden))].into();
+        mod_platform::testing::with_mods(mods, || {
+            with_game(|game| {
+                game.world.chunks.insert(
+                    (0, 0),
+                    std::sync::Arc::new(sunrise_client::chunk::Chunk::empty(0, 0)),
+                );
+                let player = with_player(game, ItemStack::new("minecraft:diamond_pickaxe", 1));
+                let stone = [6, 64, 4];
+                place(game, stone, "minecraft:stone");
+                place(game, GUARDED, "minecraft:stone");
+                assert_eq!(game.player_break_canceled(player, stone), Some(false));
+                assert_eq!(game.player_break_canceled(player, GUARDED), Some(true));
+                assert_eq!(block(game, stone), "minecraft:stone");
+                assert_eq!(game.held().unwrap().damage, 0, "nothing wore the pickaxe");
+                assert_eq!(game.player_break_canceled(player, [100, 64, 100]), None);
+                let epoch = game.native_lifecycle.epoch().unwrap();
+                let stranger =
+                    mod_api::__private::game::player_ref(mod_api::EntityRef::new(epoch, 21), 124);
+                assert_eq!(game.player_break_canceled(stranger, stone), None);
+
+                let registry = game.pack.assets.registry;
+                let glass = registry.default_state("minecraft:glass").unwrap();
+                let dirt = registry.default_state("minecraft:dirt").unwrap();
+                let above = [6, 65, 4];
+                let up = mod_api::BlockFace::Up;
+                assert_eq!(
+                    game.player_place_canceled(player, above, up, glass),
+                    Some(true)
+                );
+                assert_eq!(
+                    game.player_place_canceled(player, above, up, dirt),
+                    Some(false)
+                );
+                assert_eq!(block(game, above), "minecraft:air");
+                let heard = WARDEN_HEARD.lock().unwrap().clone();
+                let at = mod_api::BlockPos::new(6, 65, 4);
+                assert_eq!(heard, [(at, Some(player.entity()), true); 2]);
+                assert_eq!(game.player_place_canceled(stranger, above, up, dirt), None);
+
+                game.set_mode(GameMode::Adventure);
+                assert_eq!(game.player_break_canceled(player, stone), Some(true));
+                assert_eq!(block(game, stone), "minecraft:stone");
             });
         });
     }

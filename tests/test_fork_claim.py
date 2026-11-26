@@ -40,7 +40,7 @@ class ForkClaimReviewersTest(unittest.TestCase):
 
     def test_every_job_checks_the_reviewers_file_out(self):
         workflow = (ROOT / ".github/workflows/fork-claim.yml").read_text()
-        jobs = workflow.count("sparse-checkout: |")
+        jobs = workflow.count("run: python3 tools/fork/claim.py ")
         self.assertEqual(jobs, 2)
         self.assertEqual(workflow.count(f"            {self.reviewers_path()}\n"), jobs)
 

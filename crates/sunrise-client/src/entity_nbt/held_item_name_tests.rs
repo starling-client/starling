@@ -77,6 +77,7 @@ fn horse_head_and_body_survive_save_load_and_drop_independently() {
         vehicle: None,
         mob_drops: true,
         world_seed: 0,
+        variants: None,
     };
     let (items, _) = drops::die(
         &mut horse,

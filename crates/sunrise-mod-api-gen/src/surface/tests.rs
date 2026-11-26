@@ -2117,6 +2117,57 @@ fn the_real_tree_exports() {
     }) {
         assert!(!event.contract.constructible, "{}", event.id);
     }
+    check_direct_break_fit(&root, &read);
+}
+
+fn check_direct_break_fit(root: &Path, surface: &Surface) {
+    use mod_surface::diff::ChangeKind;
+    use mod_surface::uses::{Change, Fit, Misfit, UsesTable};
+
+    const HANDLE: &str = "handle:PlayerRef::destroy_block";
+    const BEHAVIOUR: &str = "behaviour:player_destroy_block_direct";
+    let mut uses = UsesTable::read(include_bytes!(
+        "../../../sunrise-mod-surface/tests/fixtures/occultism-0.9.0-alpha.1/uses.json"
+    ))
+    .unwrap();
+    uses.entries.retain(|entry| entry.id == HANDLE);
+    assert_eq!(uses.entries.len(), 1);
+
+    // Reconstruct the old surface: the handle signature was identical, but it did not pin
+    // the new behaviour; break_block was still version 1.
+    let mut before = surface.clone();
+    let old_handle = before.handles.iter_mut().find(|h| h.id == HANDLE).unwrap();
+    old_handle.contract.behaviour_versions.remove(BEHAVIOUR);
+    old_handle.hash = mod_surface::contract_hash(&old_handle.contract);
+    before.behaviours.retain(|b| b.id != BEHAVIOUR);
+    before
+        .hooks
+        .iter_mut()
+        .find(|h| h.id == "hook:break_block")
+        .unwrap()
+        .contract
+        .version = 1;
+    before.hash = before.document_hash();
+
+    assert_eq!(uses.fits(&uses.entries, &before).verdict, Fit::Fits);
+    assert_eq!(
+        uses.fits(&uses.entries, surface).verdict,
+        Fit::DoesNotFit(vec![Misfit {
+            id: HANDLE.into(),
+            change: Change::Changed,
+        }])
+    );
+
+    let file = "debt-p3-87-use-the-direct-player-destroy-block-path.toml";
+    let text =
+        std::fs::read_to_string(root.join("crates/sunrise-mod-vocab/changes").join(file)).unwrap();
+    let notes::NoteFile { note, ids, .. } = notes::parse(file, &text).unwrap();
+    let mut report = mod_surface::diff(&before, surface);
+    assert!(report.attach(&note, &ids).is_empty());
+    let change = report.changes.iter().find(|c| c.id == HANDLE).unwrap();
+    assert_eq!(change.kind, ChangeKind::Changed);
+    assert!(note.migrate.is_some());
+    assert_eq!(change.notes, [note]);
 }
 
 #[test]

@@ -11,10 +11,12 @@ the eggs stay.
 """
 import json
 
-try:
-    from . import test_locator_bar_parity as net
-except ImportError:
-    import test_locator_bar_parity as net
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_locator_bar_parity as net
 
 STEP_SECONDS = 5.0
 WAIT_STEPS = 15  # 15 x 100 ticks

@@ -2,8 +2,8 @@
 //! entity on the side that makes it. Sunrise has no one constructor, so the hook is told where
 //! each kind of entity starts: a spawned mob (`spawn_mob`), an entity read from disk or a
 //! summon's NBT (`remember_uuid`, before its saved attachments are read), every other new
-//! entity in the join pass just before `entity_join_level`, a LAN guest's player as it is
-//! loaded or respawned, and on a client of a server the entities and players the server adds.
+//! entity in the join pass just before `entity_join_level`, a server player before its
+//! saved or respawn data is applied, and on a client the entities and players the server adds.
 //! The first attachment access of an entity not yet told tells it first, so no mod reads an
 //! attachment before the listeners have set it.
 
@@ -20,30 +20,70 @@ pub(super) struct EntityInitialization {
     /// The object holders already told (entity IDs and separate player UUIDs). An entity is forgotten when it leaves the world (`forget_entity`:
     /// death, a chunk unloading), so the next one made from its data is
     /// told again, as vanilla constructs a new entity for each of those.
-    initialized: HashSet<Holder>,
+    pub(super) initialized: HashSet<Holder>,
     /// Each LAN guest's connection when its player was last told: a new connection is a new
     /// `ServerPlayer`.
     players: HashMap<u128, u32>,
-    /// The holder being told now: its attachments are reachable before it is in the level.
-    pub(super) active: Option<Holder>,
+    /// The object being told now: its attachments are reachable before it is in the level.
+    pub(super) active: Option<Construction>,
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum Construction {
+    Holder(Holder),
+    ServerPlayer { uuid: u128, conn: u32 },
+}
+
+impl Construction {
+    fn holder(self) -> Holder {
+        match self {
+            Self::Holder(holder) => holder,
+            Self::ServerPlayer { uuid, .. } => Holder::Player(uuid),
+        }
+    }
+}
+
+impl EntityInitialization {
+    pub(super) fn is_constructing(&self, holder: Holder) -> bool {
+        self.active.is_some_and(|object| object.holder() == holder)
+    }
+
+    pub(super) fn constructing_player_connection(&self, uuid: u128) -> Option<u32> {
+        match self.active {
+            Some(Construction::ServerPlayer { uuid: player, conn }) if player == uuid => Some(conn),
+            _ => None,
+        }
+    }
 }
 
 impl Game<'_> {
-    /// Tell the listeners about a new entity of type `kind`, unless it was already told. Marked
-    /// before the dispatch, so a listener's own attachment access doesn't tell it again.
     pub(super) fn initialize_entity(&mut self, holder: Holder, kind: &str) {
-        if !mod_api::__private::listened(mod_api::HookId::EntityConstructing) {
+        if matches!(holder, Holder::Entity(_) | Holder::Player(_)) {
+            self.initialize_construction(Construction::Holder(holder), kind);
+        }
+    }
+
+    /// Mark before dispatch so a listener's attachment access doesn't tell the same object again.
+    fn initialize_construction(&mut self, object: Construction, kind: &str) {
+        let holder = object.holder();
+        if !mod_api::__private::listened(mod_api::HookId::EntityConstructing)
+            || !self.entity_initialization.initialized.insert(holder)
+        {
             return;
         }
-        if !matches!(holder, Holder::Entity(_) | Holder::Player(_)) {
-            return;
-        }
-        if !self.entity_initialization.initialized.insert(holder) {
-            return;
-        }
-        let previous = self.entity_initialization.active.replace(holder);
-        self.native_entity_constructing(holder, kind);
+        let previous = self.entity_initialization.active.replace(object);
+        let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.native_entity_constructing(holder, kind);
+            #[cfg(test)]
+            if let Holder::Entity(id) = holder {
+                use super::pending_births::escaping_fault::{self, At};
+                escaping_fault::reach(At::Constructed, id);
+            }
+        }));
         self.entity_initialization.active = previous;
+        if let Err(panic) = run {
+            std::panic::resume_unwind(panic);
+        }
         // Listener stores skip binding while their holder is being constructed.
         // A resident part has no separate join callback, so finish its binding
         // here even when construction was triggered by an inspection.
@@ -102,44 +142,25 @@ impl Game<'_> {
             });
     }
 
-    /// A LAN guest's player, its file just read for connection `conn`: told once per
-    /// connection (`PlayerList.placeNewPlayer` constructs the `ServerPlayer`, then
-    /// `loadPlayerData` reads its file).
+    /// `PrepareSpawnTask.Ready.spawn` constructs once per connection, before `Entity.load`.
     pub(super) fn initialize_server_player(&mut self, uuid: u128, conn: u32) {
         if self.entity_initialization.players.insert(uuid, conn) != Some(conn) {
             self.forget_entity_initialization(Holder::Player(uuid));
         }
-        self.initialize_guest_player_under_data(uuid, conn);
+        self.initialize_construction(
+            Construction::ServerPlayer { uuid, conn },
+            "minecraft:player",
+        );
     }
 
-    /// `PlayerList.respawn`: the guest gets a new `ServerPlayer`, told again, and the data it
-    /// keeps (`copy_on_death`, already in place) is restored over it.
+    /// `PlayerList.respawn` constructs another `ServerPlayer` before `restoreFrom`,
+    /// even though the replacement uses the same connection and UUID.
     pub(super) fn reinitialize_server_player(&mut self, uuid: u128, conn: u32) {
         self.forget_entity_initialization(Holder::Player(uuid));
-        self.initialize_guest_player_under_data(uuid, conn);
-    }
-
-    /// Tell a guest's player whose attachments already hold its data, then read that data
-    /// back over what the listeners set: the end state of vanilla's order, where the player is
-    /// constructed before its data is read (`Entity.load`, `restoreFrom`).
-    fn initialize_guest_player_under_data(&mut self, uuid: u128, conn: u32) {
-        if !mod_api::__private::listened(mod_api::HookId::EntityConstructing) {
-            return;
-        }
-        let data = self
-            .lan
-            .as_mut()
-            .and_then(|host| host.hub.guests.attachments_mut(conn))
-            .map(|attachments| attachments.to_nbt());
-        self.initialize_entity(Holder::Player(uuid), "minecraft:player");
-        if let Some(data) = data
-            && let Some(attachments) = self
-                .lan
-                .as_mut()
-                .and_then(|host| host.hub.guests.attachments_mut(conn))
-        {
-            attachments.read_saved_over(data);
-        }
+        self.initialize_construction(
+            Construction::ServerPlayer { uuid, conn },
+            "minecraft:player",
+        );
     }
 }
 

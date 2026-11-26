@@ -1,7 +1,8 @@
 //! Owner enablement, attribution and panic containment for retained resources.
 use std::{
-    any::Any,
+    any::{Any, TypeId},
     cell::{Cell, RefCell},
+    collections::HashMap,
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{
         Arc,
@@ -102,6 +103,26 @@ pub fn panic_payload_text(payload: &(dyn Any + Send)) -> String {
         .unwrap_or_else(|| "Box<dyn Any>".into())
 }
 
+/// `error` and its source chain as text, for a log line. The chain is walked by identity: it
+/// ends at the first source already seen, so a cyclic chain terminates without any depth cap.
+/// Call it inside the retained callback that produced the error, where a `Display` that panics
+/// is contained; the error displays its immediate cause, so that cause is not printed twice.
+pub fn error_chain(error: &(dyn std::error::Error + 'static)) -> String {
+    use std::fmt::Write;
+    let mut text = error.to_string();
+    let mut seen: Vec<&(dyn std::error::Error + 'static)> = vec![error];
+    let mut remaining = error.source().and_then(std::error::Error::source);
+    while let Some(cause) = remaining {
+        if seen.iter().any(|earlier| std::ptr::eq(*earlier, cause)) {
+            break;
+        }
+        seen.push(cause);
+        let _ = write!(text, ": {cause}");
+        remaining = cause.source();
+    }
+    text
+}
+
 /// Whether the current panic will be reported and contained by the retained callback owner.
 pub fn retained_callback_active() -> bool {
     RETAINED_CALLBACK.try_with(Cell::get).unwrap_or(false)
@@ -200,7 +221,25 @@ impl OwnerBinding {
     }
 }
 
+pub(crate) type TypedCallbackOwners = HashMap<(&'static str, &'static str, TypeId), CallbackOwner>;
+
 impl CallbackOwner {
+    /// Reuse session-wide quarantine for native callback implementations rebuilt on demand.
+    pub(crate) fn for_installed_type(
+        installed: &'static crate::runtime::Installed,
+        mod_id: &'static str,
+        kind: &'static str,
+        callback: TypeId,
+    ) -> Self {
+        installed
+            .typed_callback_owners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry((mod_id, kind, callback))
+            .or_insert_with(|| Self::for_mod(mod_id))
+            .clone()
+    }
+
     /// Bind a dispatch-attributed registration to its installed mod slot once, at freeze time.
     pub fn new(id: &'static str) -> Option<Self> {
         let index = crate::__private::mod_index(id)?;
@@ -211,7 +250,8 @@ impl CallbackOwner {
         })
     }
 
-    pub(crate) fn for_index(id: &'static str, index: usize) -> Self {
+    /// Bind a retained registration to its exact mod slot during registration.
+    pub fn for_index(id: &'static str, index: usize) -> Self {
         Self {
             id,
             binding: OwnerBinding {
@@ -230,19 +270,26 @@ impl CallbackOwner {
 
     /// Run a delayed task using its installed owner's shared state. A panic returns a diagnostic
     /// for the server to relay after rolling back the task's transaction.
-    pub fn call_scheduled_task<H: crate::ServerHost>(
+    pub fn call_scheduled_task(
         id: &'static str,
-        host: &mut H,
-        invoke: impl FnOnce(&mut H),
+        host: &mut dyn crate::ServerHost,
+        invoke: impl FnOnce(&mut dyn crate::ServerHost),
     ) -> Result<(), String> {
         let state = Self::scheduled(id).map(|owner| (owner.binding.index, owner.poisoned.as_ref()));
         match run_scheduled(id, state, "schedule_task", || {
-            crate::run_transaction(host, |host, _| {
+            crate::HostTransaction::transaction(host, |host, _| {
                 invoke(host);
-                Ok::<(), ()>(())
+                Ok::<(), core::convert::Infallible>(())
             })
-            .ok();
         }) {
+            Ok(Err(
+                error @ (crate::TransactionError::Unavailable
+                | crate::TransactionError::CommitRefused),
+            )) => {
+                log::warn!("mod {id}: scheduled task refused: {error}");
+                Ok(())
+            }
+            Ok(Err(crate::TransactionError::Aborted(never))) => match never {},
             Err(ScheduledFailure::Panicked(diagnostic)) => Err(diagnostic),
             _ => Ok(()),
         }
@@ -283,6 +330,11 @@ impl CallbackOwner {
     /// Whether this callback is still enabled for this session.
     pub fn is_enabled(&self) -> bool {
         self.binding.enabled(&self.poisoned)
+    }
+
+    /// Whether this callback panicked, independently of mod enablement.
+    pub fn is_poisoned(&self) -> bool {
+        self.poisoned.load(Ordering::Acquire)
     }
 
     /// Invoke retained code with its owner's enablement, attribution and panic policy.
@@ -350,19 +402,45 @@ impl CallbackOwner {
 
     /// Execute the engine body delegated by a retained wrapper, outside all mod scopes.
     pub fn call_engine<T>(invoke: impl FnOnce() -> T) -> T {
+        Self::call_delegated(true, false, invoke)
+    }
+
+    /// Execute a host or service method called from a retained callback outside that
+    /// callback's panic scope while preserving the caller's mod mark
+    /// for APIs that attribute work to the calling mod.
+    pub fn call_host<T>(invoke: impl FnOnce() -> T) -> T {
+        Self::call_delegated(false, false, invoke)
+    }
+
+    /// Let the existing journal close on exit even if the callback caught a delegated
+    /// engine-panic relay. That frame must abort, and the original fault stays pending.
+    pub fn close_host_transaction<R>(commit: bool, close: impl FnOnce(bool) -> R) -> R {
+        let commit = commit && !engine_panic_pending();
+        Self::call_delegated(false, true, || close(commit))
+    }
+
+    fn call_delegated<T>(
+        clear_mod_mark: bool,
+        closing_transaction: bool,
+        invoke: impl FnOnce() -> T,
+    ) -> T {
         if !retained_callback_active() {
             return invoke();
         }
-        if engine_panic_pending() {
+        if !closing_transaction && engine_panic_pending() && !std::thread::panicking() {
             unwind_through_wrapper();
         }
         let _contained = RetainedCallbackScope(RETAINED_CALLBACK.replace(false));
         let _suspended = SuspendedPanicScope::enter();
-        let _guard = crate::dispatch_scope::ModGuard::unattributed();
+        let _guard = clear_mod_mark.then(crate::dispatch_scope::ModGuard::unattributed);
         let result =
             crate::runtime::without_callback_scope(|| catch_unwind(AssertUnwindSafe(invoke)));
         result.unwrap_or_else(|payload| {
-            DELEGATED_ENGINE_PANIC.set(Some(payload));
+            if engine_panic_pending() {
+                drop_contained(payload);
+            } else {
+                DELEGATED_ENGINE_PANIC.set(Some(payload));
+            }
             unwind_through_wrapper();
         })
     }
@@ -402,6 +480,11 @@ impl<T> CallbackValue<T> {
     /// Borrow the value, which is present until this wrapper is dropped.
     pub fn value(&self) -> &T {
         self.value.as_ref().expect("live callback value")
+    }
+
+    /// Mutably borrow the retained value for a callback on its owning thread.
+    pub fn value_mut(&mut self) -> &mut T {
+        self.value.as_mut().expect("live callback value")
     }
 }
 
@@ -509,6 +592,26 @@ pub(crate) fn call_typed<T>(
         CallFailure::Disabled(_) => CallbackFailure::Refused(failure.into_message()),
         CallFailure::Panicked(..) => CallbackFailure::Panicked,
     })
+}
+
+pub(crate) fn dispose_typed<T>(
+    owner: &'static str,
+    index: usize,
+    poisoned: &AtomicBool,
+    kind: &'static str,
+    operation: &'static str,
+    value: T,
+) -> Result<(), CallbackFailure> {
+    call_opt(
+        owner,
+        OwnerBinding::current(Some(index)),
+        poisoned,
+        kind,
+        operation,
+        Invocation::Dispose,
+        || drop(value),
+    )
+    .map_err(|_| CallbackFailure::Panicked)
 }
 
 enum ScheduledFailure {
@@ -626,10 +729,17 @@ mod tests {
 
         const ORIGINAL: &str = "original opaque callback panic";
         const DESTRUCTOR: &str = "panic in the payload destructor";
-        struct PanicOnDrop(Arc<AtomicBool>);
+        struct PanicOnDrop {
+            owner: CallbackOwner,
+            dropped: Arc<AtomicBool>,
+            reentered: Arc<AtomicBool>,
+        }
         impl Drop for PanicOnDrop {
             fn drop(&mut self) {
-                self.0.store(true, Ordering::Relaxed);
+                self.dropped.store(true, Ordering::Relaxed);
+                let _ = self.owner.call("test", "destructor_reentry", || {
+                    self.reentered.store(true, Ordering::Relaxed);
+                });
                 std::panic::panic_any(DESTRUCTOR);
             }
         }
@@ -649,20 +759,54 @@ mod tests {
         }));
 
         let dropped = Arc::new(AtomicBool::new(false));
-        let poisoned = AtomicBool::new(false);
-        let result: Result<(), _> = call("owner", 0, &poisoned, "test", "test", || {
-            std::panic::panic_any(PanicOnDrop(dropped.clone()));
+        let reentered = Arc::new(AtomicBool::new(false));
+        let owner = CallbackOwner::for_mod("owner");
+        let result: Result<(), _> = owner.call("test", "test", || {
+            std::panic::panic_any(PanicOnDrop {
+                owner: owner.clone(),
+                dropped: dropped.clone(),
+                reentered: reentered.clone(),
+            });
         });
         drop(std::panic::take_hook());
         assert!(dropped.load(Ordering::Relaxed));
+        assert!(!reentered.load(Ordering::Relaxed));
         assert_eq!(
             recorded.lock().unwrap().as_slice(),
             [(ORIGINAL, true), (DESTRUCTOR, true)]
         );
         assert_eq!(
             result.unwrap_err(),
-            "test callback panicked; it is disabled: original opaque callback panic"
+            "mod owner: test callback panicked; it is disabled: original opaque callback panic"
         );
-        assert!(poisoned.load(Ordering::Acquire));
+        assert!(!owner.is_enabled());
+    }
+
+    #[derive(Debug)]
+    struct Cycle(&'static str, &'static std::sync::OnceLock<Cycle>);
+    impl std::fmt::Display for Cycle {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(self.0)
+        }
+    }
+    impl std::error::Error for Cycle {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            self.1
+                .get()
+                .map(|next| next as &(dyn std::error::Error + 'static))
+        }
+    }
+
+    #[test]
+    fn a_cyclic_error_chain_ends_at_the_first_repeat() {
+        static A: std::sync::OnceLock<Cycle> = std::sync::OnceLock::new();
+        static B: std::sync::OnceLock<Cycle> = std::sync::OnceLock::new();
+        static C: std::sync::OnceLock<Cycle> = std::sync::OnceLock::new();
+        let a = A.get_or_init(|| Cycle("a", &B));
+        B.get_or_init(|| Cycle("b", &C));
+        C.get_or_init(|| Cycle("c", &B));
+        // The immediate cause (b) is left to the error's own text; the walk goes c, b, then
+        // meets c again and stops.
+        assert_eq!(super::error_chain(a), "a: c: b");
     }
 }

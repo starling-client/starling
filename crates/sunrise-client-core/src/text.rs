@@ -5,25 +5,8 @@ use crate::lang;
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 
-/// ChatFormatting colours by legacy code index 0..=15.
-pub const COLORS: [(char, &str, u32); 16] = [
-    ('0', "black", 0x000000),
-    ('1', "dark_blue", 0x0000AA),
-    ('2', "dark_green", 0x00AA00),
-    ('3', "dark_aqua", 0x00AAAA),
-    ('4', "dark_red", 0xAA0000),
-    ('5', "dark_purple", 0xAA00AA),
-    ('6', "gold", 0xFFAA00),
-    ('7', "gray", 0xAAAAAA),
-    ('8', "dark_gray", 0x555555),
-    ('9', "blue", 0x5555FF),
-    ('a', "green", 0x55FF55),
-    ('b', "aqua", 0x55FFFF),
-    ('c', "red", 0xFF5555),
-    ('d', "light_purple", 0xFF55FF),
-    ('e', "yellow", 0xFFFF55),
-    ('f', "white", 0xFFFFFF),
-];
+pub use sunrise_core::text::{CHAT_COLORS as COLORS, named_color};
+
 pub const BLACK: u32 = 0x000000;
 pub const GRAY: u32 = 0xAAAAAA;
 pub const DARK_GRAY: u32 = 0x555555;
@@ -35,10 +18,6 @@ pub const GOLD: u32 = 0xFFAA00;
 pub const WHITE: u32 = 0xFFFFFF;
 pub const LIGHT_PURPLE: u32 = 0xFF55FF;
 pub const DARK_PURPLE: u32 = 0xAA00AA;
-
-pub fn named_color(name: &str) -> Option<u32> {
-    COLORS.iter().find(|c| c.1 == name).map(|c| c.2)
-}
 
 /// Click actions carried by text components.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -81,11 +60,22 @@ pub enum InlineObject {
         sprite: String,
         fallback: String,
     },
+    /// A client mod's dynamic texture, one GPU texture of its own: the id a mod's
+    /// `substitute_inline_images` named, and the texture's `handle` and `size` when it was
+    /// substituted. Only the game's own substitution makes one; a component never decodes to it.
+    Dynamic {
+        id: String,
+        handle: u64,
+        size: [u32; 2],
+        fallback: String,
+    },
 }
 impl InlineObject {
     pub fn fallback(&self) -> &str {
         match self {
-            Self::Player { fallback, .. } | Self::Atlas { fallback, .. } => fallback,
+            Self::Player { fallback, .. }
+            | Self::Atlas { fallback, .. }
+            | Self::Dynamic { fallback, .. } => fallback,
         }
     }
 }
@@ -287,6 +277,90 @@ impl Span {
 #[derive(Clone, Debug, Default)]
 pub struct RenderedText {
     pub spans: Vec<Span>,
+}
+
+/// Reusable temporary text for laying out borrowed ranges of a styled component.
+/// Neither the borrowed source nor the canonical `Text` tree needs to be shortened at a break.
+#[derive(Default)]
+pub struct TextSpanScratch {
+    spans: Vec<Span>,
+    strings: Vec<String>,
+}
+
+impl TextSpanScratch {
+    pub const fn new() -> Self {
+        Self {
+            spans: Vec::new(),
+            strings: Vec::new(),
+        }
+    }
+
+    /// Resolve legacy codes in each borrowed range with its effective starting style. Temporarily
+    /// lend the result as flattened text, then reuse the same span and string storage.
+    pub fn with_resolved<'a, T>(
+        &mut self,
+        ranges: impl IntoIterator<Item = (&'a Span, &'a str, &'a Style)>,
+        visit: impl FnOnce(&Text) -> T,
+    ) -> T {
+        for (part, text, style) in ranges {
+            self.push_resolved(part.origin, text, style);
+        }
+        let text = Text::from_spans(std::mem::take(&mut self.spans));
+        let result = visit(&text);
+        self.spans = text.rendered.spans;
+        for mut span in self.spans.drain(..).rev() {
+            span.text.clear();
+            self.strings.push(span.text);
+        }
+        result
+    }
+
+    fn push_resolved(&mut self, origin: Origin, raw: &str, initial: &Style) {
+        let mut current = self.strings.pop().unwrap_or_default();
+        if !raw.contains('§') {
+            if !raw.is_empty() {
+                current.push_str(raw);
+                self.spans.push(Span {
+                    origin,
+                    text: current,
+                    style: initial.clone(),
+                });
+            } else if current.capacity() != 0 {
+                self.strings.push(current);
+            }
+            return;
+        }
+        let mut style = std::borrow::Cow::Borrowed(initial);
+        let mut chars = raw.chars();
+        while let Some(c) = chars.next() {
+            if c != '§' {
+                current.push(c);
+                continue;
+            }
+            let Some(code) = chars.next() else { break };
+            let next = legacy_format(&style, code, initial);
+            if next != *style {
+                if !current.is_empty() {
+                    self.spans.push(Span {
+                        origin,
+                        text: current,
+                        style: style.into_owned(),
+                    });
+                    current = self.strings.pop().unwrap_or_default();
+                }
+                style = std::borrow::Cow::Owned(next);
+            }
+        }
+        if !current.is_empty() {
+            self.spans.push(Span {
+                origin,
+                text: current,
+                style: style.into_owned(),
+            });
+        } else if current.capacity() != 0 {
+            self.strings.push(current);
+        }
+    }
 }
 
 /// An immutable component tree with per-node provenance and its rendered cache.
@@ -692,6 +766,31 @@ impl Text {
         self.refresh();
         self
     }
+    /// Replace raw component fields (wrapping a plain literal if needed) and
+    /// regenerate the rendered cache, as `MutableComponent.withStyle(UnaryOperator)`
+    /// does for `Entity.getDisplayName`. Nested components supplied as JSON are always remote.
+    pub fn set_component_fields(mut self, fields: Vec<(String, Value)>) -> Self {
+        let mut c = self.component();
+        if let Value::String(s) = c {
+            c = json!({ "text": s });
+        }
+        if let Value::Object(o) = &mut c {
+            for (k, v) in fields {
+                if k == "hover_event" {
+                    o.remove("hoverEvent");
+                }
+                if k == "click_event" {
+                    o.remove("clickEvent");
+                }
+                o.insert(k, v);
+            }
+        }
+        // Raw JSON fields are decoded input, even when attached to a local root.
+        std::sync::Arc::make_mut(&mut self.origins).remove("");
+        self.replace_component(c);
+        self.refresh();
+        self
+    }
     /// Replace the canonical component with decoded input. Every node is remote;
     /// serialized fields cannot grant provenance.
     pub fn with_component(self, component: Value) -> Self {
@@ -870,14 +969,18 @@ impl Text {
     }
     /// Component.getString: the plain characters.
     pub fn plain(&self) -> String {
-        self.rendered
-            .spans
-            .iter()
-            .map(|s| match &s.style.inline_object {
+        let mut out = String::new();
+        self.write_plain(&mut out);
+        out
+    }
+    /// [`Text::plain`] appended to `out`, so a caller reusing one buffer allocates nothing.
+    pub fn write_plain(&self, out: &mut String) {
+        for s in &self.rendered.spans {
+            out.push_str(match &s.style.inline_object {
                 Some(object) if s.text == "\u{fffc}" => object.fallback(),
                 _ => s.text.as_str(),
-            })
-            .collect()
+            });
+        }
     }
     pub fn is_empty(&self) -> bool {
         self.rendered.spans.iter().all(|s| s.text.is_empty())
@@ -934,38 +1037,11 @@ impl Text {
         if !self.rendered.spans.iter().any(|s| s.text.contains('§')) {
             return self.clone();
         }
-        let mut out = Text::default();
+        let mut scratch = TextSpanScratch::default();
         for span in &self.rendered.spans {
-            let mut style = span.style.clone();
-            let mut current = String::new();
-            let mut chars = span.text.chars();
-            while let Some(c) = chars.next() {
-                if c != '§' {
-                    current.push(c);
-                    continue;
-                }
-                let Some(code) = chars.next() else { break };
-                let next = legacy_format(&style, code, &span.style);
-                if next != style {
-                    if !current.is_empty() {
-                        out.rendered.spans.push(Span {
-                            origin: span.origin,
-                            text: std::mem::take(&mut current),
-                            style: style.clone(),
-                        });
-                    }
-                    style = next;
-                }
-            }
-            if !current.is_empty() {
-                out.rendered.spans.push(Span {
-                    origin: span.origin,
-                    text: current,
-                    style,
-                });
-            }
+            scratch.push_resolved(span.origin, &span.text, &span.style);
         }
-        Self::from_spans(out.rendered.spans)
+        Self::from_spans(scratch.spans)
     }
     /// `resolve_legacy` borrowing `self` when no span holds a `§` code (the
     /// common case).
@@ -1114,6 +1190,12 @@ fn style_json_with(
                 ("object".into(), "atlas".into()),
                 ("atlas".into(), atlas.clone().into()),
                 ("sprite".into(), sprite.clone().into()),
+                ("fallback".into(), fallback.clone().into()),
+            ]),
+            InlineObject::Dynamic { id, fallback, .. } => out.extend([
+                ("object".into(), "atlas".into()),
+                ("atlas".into(), "minecraft:gui".into()),
+                ("sprite".into(), id.clone().into()),
                 ("fallback".into(), fallback.clone().into()),
             ]),
         }

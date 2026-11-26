@@ -69,7 +69,6 @@ impl Game<'_> {
         if self.remote.is_some() || self.spectator() {
             return;
         }
-        self.native_on_equip(slot, new);
         // The equip sound plays at the player: none for one in another level than this one.
         let Some(at) = self
             .player
@@ -96,7 +95,7 @@ impl Game<'_> {
                 .iter()
                 .position(|s| *s == "player")
                 .unwrap_or(0);
-            self.audio.play_on(players, sound, Some(at), 1.0, 1.0);
+            self.play_audio_on(players, sound, Some(at), 1.0, 1.0);
         }
         if ARMOR.contains(&slot) {
             let event = if equippable.is_some() {

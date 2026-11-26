@@ -9,12 +9,10 @@ from pathlib import Path
 import subprocess
 import sys
 
-try:
-    from . import lab, test_rust_parity as base, test_model_baking_parity as baking
-    from .integration_env import run_game
-except ImportError:
-    import lab, test_rust_parity as base, test_model_baking_parity as baking
-    from integration_env import run_game
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_rust_parity as base, test_model_baking_parity as baking
+from tools.integration_env import run_game
 
 
 def run_logged(command, build, name, timeout=900, **kwargs):

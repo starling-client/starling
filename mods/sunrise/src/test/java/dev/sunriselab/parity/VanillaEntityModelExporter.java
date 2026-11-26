@@ -63,11 +63,7 @@ public final class VanillaEntityModelExporter {
         children.setAccessible(true);
         var out = new JsonObject();
         for (var entry : LayerDefinitions.createRoots().entrySet()) {
-            try {
-                out.add(entry.getKey().toString(), part(entry.getValue().bakeRoot()));
-            } catch (RuntimeException error) {
-                System.err.println("skipped " + entry.getKey() + ": " + error);
-            }
+            out.add(entry.getKey().toString(), part(entry.getValue().bakeRoot()));
         }
         Files.writeString(Path.of(args[0]), new Gson().toJson(out), StandardCharsets.UTF_8);
     }

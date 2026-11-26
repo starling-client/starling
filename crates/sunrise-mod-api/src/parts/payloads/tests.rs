@@ -98,8 +98,23 @@ fn client_event_supplies_both_common_handlers_and_refuses_replacement() {
 }
 
 #[test]
-fn invalid_ownership_versions_and_receiving_handlers_refuse_load() {
-    for id in ["bare", "other:stolen", "minecraft:reserved"] {
+fn invalid_reserved_ids_versions_and_receiving_handlers_refuse_load() {
+    let mut accepted = PartRegistrar::new("test");
+    (&mut accepted as &mut dyn Registrar)
+        .payload_handlers()
+        .registrar("1")
+        .play_to_server(PayloadId("other:channel".into()), handler())
+        .play_to_server(PayloadId("sunrise:custom".into()), handler());
+    assert!(accepted.refused.is_empty(), "{:?}", accepted.refused);
+    assert_eq!(frozen(&accepted).declarations().count(), 2);
+
+    for id in [
+        "bare",
+        "test:Bad Name",
+        "minecraft:reserved",
+        "sunrise:payloads",
+        "sunrise:levels",
+    ] {
         let mut registrar = PartRegistrar::new("test");
         (&mut registrar as &mut dyn Registrar)
             .payload_handlers()
@@ -218,13 +233,13 @@ fn raw_channels_take_several_mods_in_load_order_outside_the_offer() {
 }
 
 #[test]
-fn raw_channels_refuse_engine_namespaces_bare_ids_and_typed_collisions() {
+fn raw_channels_refuse_reserved_channels_bare_ids_and_typed_collisions() {
     for id in [
         "minecraft:register",
         "minecraft:brand",
         "sunrise:payloads",
         "sunrise:selector_tokens",
-        "sunrise:anything",
+        "sunrise:levels",
         "bare",
     ] {
         let mut registrar = PartRegistrar::new("test");
@@ -233,6 +248,17 @@ fn raw_channels_refuse_engine_namespaces_bare_ids_and_typed_collisions() {
         assert!(registrar.refused[0].contains(id), "{id}");
         assert!(registrar.parts.payloads.is_none(), "{id}");
     }
+    let mut custom_sunrise = PartRegistrar::new("test");
+    declare_raw(&mut custom_sunrise, "test", 0, "sunrise:custom");
+    assert!(
+        custom_sunrise.refused.is_empty(),
+        "{:?}",
+        custom_sunrise.refused
+    );
+    assert_eq!(
+        frozen(&custom_sunrise).raw_channels().collect::<Vec<_>>(),
+        ["sunrise:custom"]
+    );
     // Typed first, raw second: refused naming both mods.
     let mut registrar = PartRegistrar::new("typed");
     (&mut registrar as &mut dyn Registrar)

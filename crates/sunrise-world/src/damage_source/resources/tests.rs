@@ -124,10 +124,20 @@ fn reload_retains_tags_only_when_no_damage_tag_binds() {
     let tag = "minecraft:bypasses_armor";
     assert!(opened.in_tag(fall, tag));
 
-    let rejected = [file(
-        "tags/minecraft:damage_type/bypasses_armor",
-        json!({"replace":true,"values":["demo:missing"]}),
-    )];
+    let rejected = [
+        file(
+            "tags/minecraft:damage_type/bypasses_armor",
+            json!({"replace":true,"values":["demo:missing"]}),
+        ),
+        file(
+            "tags/neoforge:damage_type/is_poison",
+            json!({"replace":true,"values":["demo:missing"]}),
+        ),
+        file(
+            "tags/neoforge:damage_type/no_flinch",
+            json!({"replace":true,"values":["demo:missing"]}),
+        ),
+    ];
     let overlay = PackOverlay::new(&rejected);
     let reloaded = opened.reload_tags(&fixture.0, &overlay).unwrap();
     assert!(reloaded.in_tag(fall, tag));

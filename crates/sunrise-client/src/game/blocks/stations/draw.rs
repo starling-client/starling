@@ -41,9 +41,7 @@ impl Game<'_> {
         let local = (self.cursor.0 - ox, self.cursor.1 - oy);
         let mut tooltip: Option<Vec<(sunrise_client::text::Text, u32)>> = None;
         let mut anvil_name = false;
-        // Keep item tooltips as stacks until drawing: text alone loses the
-        // bundle contents component (including in the player's inventory).
-        let mut tooltip_stack: Option<ItemStack> = None;
+        let mut recipe_tooltip: Option<ItemStack> = None;
         {
             self.render_transparent_background("station", batch);
         }
@@ -559,7 +557,7 @@ impl Game<'_> {
                             );
                             self.draw_item(batch, &result, ox + x, oy + y);
                             if hover {
-                                tooltip_stack = Some(result);
+                                recipe_tooltip = Some(result);
                             }
                         }
                     }
@@ -579,24 +577,27 @@ impl Game<'_> {
             self.draw_slot_item(batch, drag.as_ref(), i, &stack, ox + sx, oy + sy);
         }
         self.draw_hovered_slot_highlight(batch, true, ox, oy);
-        if let Some(slot) = self.slot_at(batch, self.cursor.0, self.cursor.1)
-            && tooltip.is_none()
-            && tooltip_stack.is_none()
-            && let Some(stack) = self.slot_mut(slot).clone()
-            && self.tooltip_with_carried(&stack)
-        {
-            tooltip_stack = Some(stack);
-        }
+        let slot_tooltip = if tooltip.is_none() {
+            self.slot_at(batch, self.cursor.0, self.cursor.1)
+                .and_then(|slot| self.slot_mut(slot).clone())
+        } else {
+            None
+        };
         let browser_tip = self.draw_mod_browser(batch);
         self.draw_screen_phase(batch, sunrise_client::screen_draw::RenderPhase::Foreground);
         if self.carried.is_some() {
             self.draw_carried(batch);
-            if let Some(stack) = tooltip_stack.filter(|s| self.tooltip_with_carried(s)) {
-                self.draw_stack_tooltip(batch, &stack, self.cursor.0, self.cursor.1);
-            }
-        } else if let Some(stack) = tooltip_stack {
+        }
+        // StonecutterScreen.extractTooltip offers the recipe after the inherited slot tooltip.
+        // Only the slot is subject to AbstractContainerScreen's carried-item check.
+        if let Some(stack) = slot_tooltip
+            .filter(|s| self.tooltip_with_carried(s))
+            .or(recipe_tooltip)
+        {
             self.draw_stack_tooltip(batch, &stack, self.cursor.0, self.cursor.1);
-        } else if let Some(lines) = tooltip {
+        } else if self.carried.is_none()
+            && let Some(lines) = tooltip
+        {
             self.draw_tooltip_lines(batch, &lines, self.cursor.0, self.cursor.1);
         }
         if let Some(tooltip) = browser_tip {

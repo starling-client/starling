@@ -1,0 +1,10 @@
+ids = [
+    "type:PackProgramMode",
+    "type:PackBinding.program_mode",
+    "type:PackDepthTarget",
+    "type:PackDepthTarget.depth_samplers",
+    "type:PackDepthTarget.id",
+    "type:PackDepthTarget.opaque_depth_samplers",
+]
+why = "Adds PackProgramMode::ModVertexPackFragment, which keeps a pipeline's own vertex stage (with its vertex format and set-1 bindings) and links it to the fragment stage of the pack's matched program by GLSL varying name, falling back to the mod's own shaders when a varying is missing or mistyped or the program has a geometry stage; and PackDepthTarget::Main, which draws a pipeline into the pack's main depth with depth writes on, the depth coming from its vertex stage (#5700). PackDepthTarget becomes an enum: the auxiliary plane is PackDepthTarget::Aux, still built with PackDepthTarget::new(id)."
+migrate = "PackDepthTarget is now an #[non_exhaustive] enum; code that read its id or sampler fields matches PackDepthTarget::Aux instead. PackBinding::new() and PackDepthTarget::new(id) are unchanged."

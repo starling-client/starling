@@ -653,11 +653,11 @@ fn retained_effects_rebind_on_reconfiguration_and_refusals_do_not_block_clicks()
                 Slot::read(&mut Reader::new(&wire.data).with_names(mapping)).unwrap()
             };
             let old = configure(false);
-            game.set_registries(old.clone());
+            game.set_registries(old.clone()).unwrap();
             let retained = game.to_stack(&receive(protection(2, vec![1, 5, 7]), &old));
             assert!(retained.as_ref().unwrap().wire_patch().is_some());
             let new = configure(true);
-            game.set_registries(new.clone());
+            game.set_registries(new.clone()).unwrap();
             let sent = game.to_network(&retained).unwrap();
             assert_eq!(
                 sent.component(component::DEATH_PROTECTION),
@@ -710,5 +710,133 @@ fn retained_effects_rebind_on_reconfiguration_and_refusals_do_not_block_clicks()
                 vec![(36, Some(expected_hash(protection(2, vec![1, 2]), game)))]
             );
         });
+    });
+}
+
+#[test]
+#[ignore = "daily"]
+fn client_menu_kind_names_the_server_menu_type() {
+    crate::game::in_own_process(
+        "game::remote::tests::client_menu_tests::client_menu_kind_names_the_server_menu_type",
+        || {
+            use crate::game::native_entity_refs::tests::with_game;
+            use sunrise_core::nbt::Tag;
+            use sunrise_protocol::packets::play::{self, Clientbound as C};
+
+            with_game(|game| {
+                let (_reader, _writer) = connect_menu_test(game);
+                spawn_menu_test(game);
+                let live = |game: &super::Game<'_>| {
+                    game.local_player()
+                        .and_then(|player| game.player_container_menu(player))
+                        .unwrap()
+                };
+                // InventoryMenu has no MenuType.
+                let mut old = live(game);
+                assert_eq!(old.kind(game), Some(None));
+                for (window, id) in [
+                    (1, "minecraft:furnace"),
+                    (2, "minecraft:blast_furnace"),
+                    (3, "minecraft:smoker"),
+                    (4, "minecraft:brewing_stand"),
+                    (5, "minecraft:stonecutter"),
+                    (6, "minecraft:smithing"),
+                    (7, "minecraft:generic_9x3"),
+                ] {
+                    let menu = game
+                        .remote
+                        .as_ref()
+                        .unwrap()
+                        .builtin
+                        .get("minecraft:menu")
+                        .unwrap()
+                        .id(id)
+                        .unwrap();
+                    game.handle_packet(C::OpenScreen(play::OpenScreen {
+                        container: window,
+                        menu,
+                        title: Tag::String(id.into()),
+                    }))
+                    .unwrap();
+                    let open = live(game);
+                    assert_eq!(open.kind(game), Some(Some(id.to_owned())), "{id}");
+                    // ScreenView.menu reads the same open menu name.
+                    assert_eq!(game.remote_menu_type(), Some(id));
+                    assert_eq!(old.kind(game), None, "the replaced menu's handle is stale");
+                    old = open;
+                }
+                game.handle_packet(C::ContainerClose(play::ContainerClose { container: 7 }))
+                    .unwrap();
+                assert_eq!(old.kind(game), None, "a closed menu's handle is stale");
+                // HorseInventoryMenu is opened by MountScreenOpen, which names no MenuType.
+                game.remote_set_menu(
+                    Some((8, format!("{}3", crate::game::remote::MOUNT_MENU))),
+                    None,
+                );
+                assert_eq!(live(game).kind(game), Some(None));
+            });
+        },
+    );
+}
+
+/// `AbstractContainerMenu.getStateId` on a client (#5323): the open menu's handle reads the state
+/// of the last content or slot packet for its window, not the inventory's, and the inventory's
+/// handle reads its own once the menu closes.
+#[test]
+#[ignore = "daily"]
+fn client_menu_state_id_follows_its_windows_packets() {
+    use crate::game::native_entity_refs::tests::with_game;
+    use sunrise_core::nbt::Tag;
+    use sunrise_protocol::packets::play::{self, Clientbound as C};
+
+    with_game(|game| {
+        let (_reader, _writer) = connect_menu_test(game);
+        spawn_menu_test(game);
+        let table = game
+            .remote
+            .as_ref()
+            .unwrap()
+            .builtin
+            .get("minecraft:menu")
+            .unwrap()
+            .id("minecraft:crafting")
+            .unwrap();
+        game.handle_packet(C::OpenScreen(play::OpenScreen {
+            container: 7,
+            menu: table,
+            title: Tag::String("Crafting".into()),
+        }))
+        .unwrap();
+        let content = |container, state| {
+            C::ContainerSetContent(play::ContainerSetContent {
+                container,
+                state,
+                items: vec![None; 46],
+                carried: None,
+            })
+        };
+        game.handle_packet(content(7, 12)).unwrap();
+        let menu = game
+            .player_container_menu(game.local_player().unwrap())
+            .unwrap();
+        assert_eq!(menu.state_id(game), Some(12));
+        game.handle_packet(C::ContainerSetSlot(play::ContainerSetSlot {
+            container: 7,
+            state: 13,
+            slot: 1,
+            item: None,
+        }))
+        .unwrap();
+        assert_eq!(menu.state_id(game), Some(13));
+        // The inventory menu's sync while the table is open is not the table's.
+        game.handle_packet(content(0, 45)).unwrap();
+        assert_eq!(menu.state_id(game), Some(13));
+        game.handle_packet(C::ContainerClose(play::ContainerClose { container: 7 }))
+            .unwrap();
+        assert_eq!(menu.state_id(game), None);
+        let inventory = game
+            .player_container_menu(game.local_player().unwrap())
+            .unwrap();
+        assert_eq!(inventory.state_id(game), Some(45));
     });
 }

@@ -1022,6 +1022,7 @@ fn stock_menu_data_sync_round_trips_above_255_and_enforces_signed_short_boundary
                         window: 1,
                         generation,
                         name: MENU.into(),
+                        title: None,
                         block: None,
                         pos: None,
                         mod_type: None,
@@ -1030,6 +1031,7 @@ fn stock_menu_data_sync_round_trips_above_255_and_enforces_signed_short_boundary
                     slot_moves: Default::default(),
                     layout_revision: 0,
                     shown: false,
+                    detached: false,
                     screen: mod_api::__private::OwnedMenuScreen::new(
                         "test",
                         0,
@@ -1117,6 +1119,9 @@ fn stock_menu_data_sync_round_trips_above_255_and_enforces_signed_short_boundary
                     links: Vec::new(),
                     opening_item: None,
                     asks_still_valid: false,
+                    opener_block: None,
+                    removed: false,
+                    slot_changed_seen: None,
                 });
                 hub.guests.push(guest);
 
@@ -1184,4 +1189,150 @@ fn stock_menu_data_sync_round_trips_above_255_and_enforces_signed_short_boundary
             },
         );
     });
+}
+
+/// A mod screen's player slots take the same hides and moves as its container slots, in
+/// menu order after them (the main inventory's rows, then the hotbar), and a screen opened
+/// again starts from the declared places.
+#[test]
+fn player_slots_follow_the_container_slots_in_menu_order() {
+    use mod_api::ScreenSlotRefusal::{BadPosition, NoSuchSlot};
+    fn open(player_inventory: bool) -> OpenNativeScreen {
+        let kind: &'static sunrise_client::containers::ModMenuType =
+            Box::leak(Box::new(sunrise_client::containers::ModMenuType {
+                id: "test:player_slots",
+                owner: "test",
+                slots: 2,
+                player_inventory,
+                data_slots: 0,
+                owned_slots: None,
+                results: vec![],
+                inputs: Vec::new(),
+                links: None,
+                crafting: None,
+            }));
+        OpenNativeScreen {
+            menu: OpenNativeMenu {
+                key: (0, 0, 0),
+                window: 1,
+                generation: 1,
+                name: "test:player_slots".into(),
+                title: None,
+                block: None,
+                pos: None,
+                mod_type: Some(kind),
+                data: Vec::new(),
+            },
+            slot_moves: Default::default(),
+            layout_revision: 0,
+            shown: true,
+            detached: false,
+            screen: mod_api::__private::OwnedMenuScreen::new(
+                "test",
+                0,
+                mod_api::MenuScreen::new(mod_api::MenuScreenLayout {
+                    width: 176.0,
+                    height: 166.0,
+                    slots: vec![
+                        Some(mod_api::ScreenSlot {
+                            position: [8.0, 18.0],
+                            ..Default::default()
+                        }),
+                        None,
+                    ],
+                    inventory_x: 8.0,
+                    inventory_y: 84.0,
+                    ..Default::default()
+                }),
+            ),
+        }
+    }
+    fn latest(s: &OpenNativeScreen, slot: usize) -> Option<[f32; 2]> {
+        s.slot_moves.latest(slot, s.declared_slot(slot))
+    }
+    fn set(
+        s: &OpenNativeScreen,
+        slot: usize,
+        pos: Option<[f32; 2]>,
+    ) -> Result<(), mod_api::ScreenSlotRefusal> {
+        s.slot_moves.set(slot, s.declared_slot(slot), pos)
+    }
+    // Two container slots, so the player's slots are menu slots 2..38: the main
+    // inventory's 27 (inventory slots 9..36), then the hotbar's 9 (inventory slots 0..9).
+    let s = open(true);
+    let base = s.container_slot_base();
+    assert_eq!(latest(&s, 2), Some([8.0, 84.0]));
+    assert_eq!(latest(&s, 2 + 8), Some([152.0, 84.0]));
+    assert_eq!(latest(&s, 2 + 9), Some([8.0, 102.0]));
+    assert_eq!(latest(&s, 2 + 26), Some([152.0, 120.0]));
+    assert_eq!(latest(&s, 2 + 27), Some([8.0, 142.0]));
+    assert_eq!(latest(&s, 2 + 35), Some([152.0, 142.0]));
+    assert_eq!(latest(&s, 38), None);
+    assert_eq!(set(&s, 38, None), Err(NoSuchSlot));
+    assert_eq!(set(&s, usize::MAX, Some([0.0, 0.0])), Err(NoSuchSlot));
+    assert_eq!(s.player_menu_slot(9), Some(2));
+    assert_eq!(s.player_menu_slot(35), Some(28));
+    assert_eq!(s.player_menu_slot(0), Some(29));
+    assert_eq!(s.player_menu_slot(8), Some(37));
+    assert_eq!(s.player_menu_slot(36), None);
+    let all: Vec<usize> = (0..36).chain([base]).collect();
+    assert_eq!(s.visible_slots().collect::<Vec<_>>(), all);
+
+    // A hide, pending until the build commits it, counts once and only once.
+    assert_eq!(set(&s, 2, None), Ok(()));
+    assert_eq!(s.slot_move_count(), 1);
+    assert_eq!(latest(&s, 2), None);
+    assert_eq!(s.visible_slots().collect::<Vec<_>>(), all);
+    assert_eq!(set(&s, 2, None), Ok(()));
+    assert_eq!(s.slot_move_count(), 1);
+    // The hotbar's first slot, then a move of the main inventory's second.
+    assert_eq!(set(&s, 29, None), Ok(()));
+    assert_eq!(set(&s, 3, Some([30.0, 40.0])), Ok(()));
+    assert_eq!(s.slot_move_count(), 3);
+    assert_eq!(set(&s, 3, Some([30.0, 40.0])), Ok(()));
+    assert_eq!(set(&s, 4, Some([26.0, 84.0])), Ok(()));
+    assert_eq!(s.slot_move_count(), 4);
+    // Refusals change nothing.
+    assert_eq!(set(&s, 5, Some([f32::NAN, 0.0])), Err(BadPosition));
+    assert_eq!(set(&s, 5, Some([0.0, f32::INFINITY])), Err(BadPosition));
+    assert_eq!(s.slot_move_count(), 4);
+    s.commit_slot_moves();
+    let shown: Vec<usize> = (1..36).filter(|&slot| slot != 9).chain([base]).collect();
+    assert_eq!(s.visible_slots().collect::<Vec<_>>(), shown);
+    assert_eq!(s.player_slot_position(9), None);
+    assert_eq!(s.player_slot_position(0), None);
+    assert_eq!(s.player_slot_position(10), Some([30.0, 40.0]));
+    assert_eq!(s.player_slot_position(11), Some([26.0, 84.0]));
+    assert_eq!(s.player_slot_position(12), Some([8.0 + 3.0 * 18.0, 84.0]));
+    assert_eq!(s.player_slot_position(1), Some([26.0, 142.0]));
+    // The container slots keep their own places.
+    assert_eq!(latest(&s, 0), Some([8.0, 18.0]));
+    assert_eq!(latest(&s, 1), None);
+
+    // Shown again where the mod puts it, or where it was.
+    assert_eq!(set(&s, 2, Some([8.0, 84.0])), Ok(()));
+    assert_eq!(set(&s, 29, Some([100.0, 100.0])), Ok(()));
+    assert_eq!(s.slot_move_count(), 6);
+    s.commit_slot_moves();
+    assert_eq!(s.player_slot_position(9), Some([8.0, 84.0]));
+    assert_eq!(s.player_slot_position(0), Some([100.0, 100.0]));
+    let mut again: Vec<usize> = (0..36).collect();
+    again.push(base);
+    assert_eq!(s.visible_slots().collect::<Vec<_>>(), again);
+
+    // Closing and opening again is a new screen: every slot is back where it was declared.
+    let reopened = open(true);
+    assert_eq!(reopened.slot_move_count(), 0);
+    assert_eq!(reopened.visible_slots().collect::<Vec<_>>(), all);
+    assert_eq!(reopened.player_slot_position(10), Some([26.0, 84.0]));
+    assert_eq!(reopened.player_slot_position(0), Some([8.0, 142.0]));
+
+    // A menu with no player inventory has no player slots to address.
+    let bare = open(false);
+    assert_eq!(latest(&bare, 2), None);
+    assert_eq!(set(&bare, 2, None), Err(NoSuchSlot));
+    assert_eq!(set(&bare, 2, Some([f32::NAN, 0.0])), Err(NoSuchSlot));
+    assert_eq!(bare.slot_move_count(), 0);
+    assert_eq!(bare.visible_slots().collect::<Vec<_>>(), [base]);
+    assert_eq!(set(&bare, 1, Some([26.0, 18.0])), Ok(()));
 }

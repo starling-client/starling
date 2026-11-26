@@ -79,6 +79,14 @@ impl Game<'_> {
     /// mods, as when it goes (`forget_all_remote_columns`); a placeholder stands until
     /// `enter_remote_dimension` makes the new level's world.
     fn keep_as_viewed(&mut self, slot: i32, cap: u32, seed: i64) {
+        // Hidden ring slots are not part of the view the server is replacing this level with.
+        let mut hidden = self
+            .world
+            .chunks
+            .resident_keys()
+            .filter(|key| !self.world.chunks.contains_key(key))
+            .collect();
+        self.forget_remote_columns(&mut hidden, false);
         let mut columns: Vec<(i32, i32)> = self.world.chunks.keys().copied().collect();
         columns.sort_unstable();
         for (x, z) in columns {
@@ -138,6 +146,7 @@ impl Game<'_> {
             self.client_chunk_load(key.0, key.1);
         }
         if let Some(r) = self.remote.as_mut() {
+            r.awaiting_viewed_chunk_center = true;
             r.level_load.finish();
         }
         self.send(S::PlayerLoaded(Empty));

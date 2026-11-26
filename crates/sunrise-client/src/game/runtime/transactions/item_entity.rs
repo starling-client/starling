@@ -1,8 +1,8 @@
 /// First writes to each field, independently: moving an item need not clone its stack.
 #[derive(Default)]
 pub(super) struct KeptItemEntity {
-    stack: Option<ItemStack>,
-    pickup_delay: Option<i64>,
+    stack: Option<(ItemStack, u64)>,
+    pickup_delay: Option<i32>,
     target: Option<Option<[i32; 4]>>,
     pub(super) velocity: Option<Vec3>,
 }
@@ -16,8 +16,9 @@ impl KeptItemEntity {
     }
 
     fn restore(self, item: &mut sunrise_client::entities::ItemEntity) {
-        if let Some(stack) = self.stack {
+        if let Some((stack, revision)) = self.stack {
             item.stack = stack;
+            item.stack_revision = revision;
         }
         if let Some(delay) = self.pickup_delay {
             item.pickup_delay = delay;
@@ -32,32 +33,38 @@ impl KeptItemEntity {
 }
 
 impl Game<'_> {
-    /// Sets the stack of `id` for an item place. A caller that already has a
-    /// validated resident slot uses `journal_set_item_entity_at` instead.
+    /// Sets an item place's stack. A drained place discards the item on commit.
     pub(super) fn journal_set_item_entity(&mut self, id: u32, stack: ItemStack) -> bool {
-        self.dropped
-            .iter()
-            .position(|item| item.id == id)
-            .is_some_and(|index| self.journal_set_item_entity_at(index, stack))
-    }
-
-    /// An item emptied in a transaction stays, empty, until root commit removes it.
-    pub(super) fn journal_set_item_entity_at(&mut self, index: usize, stack: ItemStack) -> bool {
+        let Some(index) = self.dropped.iter().position(|item| item.id == id) else {
+            return false;
+        };
         let Some(level) = self.transactions.level_frame(self.dim) else {
             return self.native_set_item_entity(index, stack);
         };
-        let item = &mut self.dropped[index];
-        level
-            .item_entities
-            .entry(item.join)
-            .or_default()
-            .stack
-            .get_or_insert_with(|| item.stack.clone());
         if stack.count == 0 {
-            level.after.push(After::Emptied(item.id));
+            level.after.push(After::Emptied(id));
+        }
+        self.journal_replace_item_stack(index, stack);
+        true
+    }
+
+    /// `ItemEntity.setItem`: set the validated resident slot without the item-place
+    /// removal action. An empty stack is discarded by `ItemEntity.tick` instead.
+    pub(super) fn journal_set_item_entity_at(&mut self, index: usize, stack: Option<ItemStack>) {
+        let stack = stack
+            .filter(|stack| &*stack.item != "minecraft:air")
+            .unwrap_or_else(|| ItemStack::new("minecraft:air", 0));
+        self.journal_replace_item_stack(index, stack);
+    }
+
+    fn journal_replace_item_stack(&mut self, index: usize, stack: ItemStack) {
+        let (item, kept) = self.journal_item_fields(index);
+        if let Some(kept) = kept {
+            kept.stack
+                .get_or_insert_with(|| (item.stack.clone(), item.stack_revision));
         }
         item.stack = stack;
-        true
+        item.stack_revision = item.stack_revision.wrapping_add(1);
     }
 
     /// Lend an item in the active level and the first-write journal of its innermost open frame.
@@ -81,7 +88,7 @@ impl Game<'_> {
         if let Some(kept) = kept {
             kept.pickup_delay.get_or_insert(item.pickup_delay);
         }
-        item.pickup_delay = i64::from(ticks);
+        item.pickup_delay = ticks;
     }
 
     pub(super) fn journal_set_item_target(&mut self, index: usize, target: Option<[i32; 4]>) {

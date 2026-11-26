@@ -13,7 +13,12 @@ Resistance, partial Resistance (amplifier 0), armor 10, and the cooldown
 expiry after exactly 9 and 10 ticks. Each hit records its result and success
 stores, and each state read records Health and the raw HurtTime.
 """
-from command_exec_corpus import cmd, setup
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools.command_exec_corpus import cmd, setup
 
 
 def hurt_cooldown_incoming():

@@ -74,22 +74,16 @@ impl QuickCraftDrag {
     }
 }
 
-/// Clicked-slot edit carried by [`StackedOutcome`].
+/// One edit the mods made to a pickup click's cursor or clicked slot, applied in order.
 #[derive(Clone, Debug, PartialEq)]
-pub enum StackedClickedEdit {
+pub enum StackedEdit {
+    /// Write the cursor (`SlotAccess.set`).
+    Carried(Option<ItemStack>),
     /// Directly write the clicked slot (`Slot.set` / `setByPlayer`): `None` clears the slot
     /// without running `Slot.onTake` side effects.
-    Set(Option<ItemStack>),
-    /// Take `u32` items from the clicked slot via `Slot.safeTake` / `Slot.onTake`.
+    Clicked(Option<ItemStack>),
+    /// Take this many items from the clicked slot via `Slot.safeTake` / `Slot.onTake`.
     Take(u32),
-    /// Two successive Parts each take from the slot, with a separate `Slot.onTake` per phase.
-    TakeThenTake { first: u32, second: u32 },
-    /// Take `take` items via `Slot.onTake`, then directly write `then` to the slot (when a
-    /// declining carried Part took items and the clicked Part replaced the remainder).
-    TakeThenSet { take: u32, then: Option<ItemStack> },
-    /// Directly write `set` to the slot, then take `take` items via `Slot.safeTake` / `Slot.onTake`
-    /// (when a declining carried Part wrote a stack and the clicked Part took from it).
-    SetThenTake { set: ItemStack, take: u32 },
 }
 
 /// What the mods decided about a pickup click (`item_stacked_on_other`), validated by the game
@@ -100,15 +94,8 @@ pub struct StackedOutcome {
     pub handled: bool,
     pub policy: StackedEditPolicy,
     pub resume: StackedResume,
-    /// The global listener's or clicked Part's cursor replacement (if `Some`).
-    pub carried: Option<Option<ItemStack>>,
-    /// The carried Part's own cursor replacement, before the clicked phase.
-    pub carried_part_cursor: Option<Option<ItemStack>>,
-    /// Whether the carried Part took from the clicked slot. This also identifies the phase
-    /// of a single `Take`, when the other Part left the clicked slot alone.
-    pub carried_part_took: bool,
-    /// The clicked slot edit to apply before resuming (if `Some`).
-    pub clicked: Option<StackedClickedEdit>,
+    /// The listeners' edits to the cursor and the clicked slot, in the order they made them.
+    pub edits: Vec<StackedEdit>,
     /// Set when the slot rules refuse an edit or a suspended edit's inputs changed.
     /// The click and its listener writes are then undone.
     pub refused: std::cell::Cell<bool>,
@@ -164,6 +151,8 @@ pub struct SlotContext<'a> {
     pub pos: Option<[i32; 3]>,
     pub container: MenuContainer,
     pub(crate) slots: &'a [Option<ItemStack>],
+    pub(crate) slots_second: &'a [Option<ItemStack>],
+    pub(crate) linked: Option<super::LinkedSlots<'a>>,
     /// A flattened LAN container stores grid/result values in Main's unused positions.
     /// These positions are empty in the prediction's separate Main container.
     pub(crate) main_crafting: Option<crate::containers::ModCrafting>,
@@ -174,6 +163,16 @@ pub struct SlotContext<'a> {
     pub(crate) player_offhand: Option<&'a Option<ItemStack>>,
     /// A hosted rule sees the tentative slot as well as the stack being checked.
     pub(crate) staged_slot: Option<(MenuContainer, usize, Option<&'a ItemStack>)>,
+}
+
+/// What a blockless menu reads of a guest's live slots when it asks the slot
+/// rules: the identity the parts see and the containers the menu shows.
+pub trait MenuGuest {
+    fn uuid(&self) -> u128;
+    fn native_menu(&self) -> &[Option<ItemStack>];
+    fn inventory(&self) -> &[Option<ItemStack>];
+    fn armor(&self) -> &[Option<ItemStack>; 4];
+    fn offhand(&self) -> &Option<ItemStack>;
 }
 
 /// `menu_slot_rules` inside a menu click, which cannot reach the game: the game lends the menu
@@ -194,6 +193,24 @@ pub trait SlotRules {
         may_pickup: &mut bool,
         max_stack: &mut u32,
     );
+    /// Whether a part answers `menu_pick_all` for the menu type `menu`.
+    fn pick_all_listens(&self, menu: &str) -> bool {
+        let _ = menu;
+        false
+    }
+    /// `canTakeItemForPickAll(carried, slot)` of a mod menu type: `allowed` arrives true, and the
+    /// parts may refuse the gather the slot's `stack`.
+    fn pick_all(
+        &self,
+        menu: &str,
+        slot: usize,
+        carried: &ItemStack,
+        stack: &ItemStack,
+        context: SlotContext<'_>,
+        allowed: &mut bool,
+    ) {
+        let _ = (menu, slot, carried, stack, context, allowed);
+    }
 }
 
 /// The anvil's inputs while asking about the result vanilla just calculated.

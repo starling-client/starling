@@ -2,9 +2,9 @@
 //! and `secondaryBlockOutline` under a high contrast one): an outline its fragment shader colours
 //! or animates. Without one the outline draws natively (`vs_line` in terrain.wgsl).
 
-use crate::core_shader::{CoreProgram, Glue};
 use crate::polytone_post::ExpressionUniform;
 use glam::Mat4;
+use sunrise_glsl::{Glue, Translated};
 
 /// The outline's edges (`pack_lines::layout`: start, end, ARGB colour and width per instance) as
 /// vanilla's lines: four vertices an edge, the start twice and the end twice, the side
@@ -26,6 +26,8 @@ pub(crate) const GLUE: Glue = Glue {
     // 26.3's ProjMat already has wgpu's reversed 0 to 1 depth (Projection: zZeroToOne).
     finish: "",
     vertex_id: "int(gl_VertexIndex)",
+    fragment_finish: None,
+    interface: sunrise_shaders::DEVICELESS_INTERFACE_LIMITS,
 };
 
 pub(crate) struct CoreLines {
@@ -40,29 +42,58 @@ pub(crate) struct CoreLines {
 /// The packs' block outline on the renderer.
 impl super::Renderer {
     /// The resource packs' `core/rendertype_lines` (`HudAtlas::lines_shader`, with the
-    /// expression uniforms resolved for it) for the block outline, or the built-in one.
-    pub fn set_lines_shader(&mut self, program: Option<(&CoreProgram, &[ExpressionUniform])>) {
-        let format = self.output.frame.format;
-        // A pack's GLSL writes vanilla's gamma: a frame of linear light keeps the built-in one.
-        let program = program.filter(|_| !self.output.frame.linear_light);
-        self.core_lines = program.and_then(|(program, expressions)| {
-            CoreLines::new(&self.device, format, program, expressions)
-        });
+    /// expression uniforms resolved for it) for the block outline, or the built-in one; or the
+    /// device's refusal of a pipeline vanilla requires, which fails the pack reload.
+    pub fn set_lines_shader(
+        &mut self,
+        program: Option<(&Translated, &[ExpressionUniform])>,
+    ) -> Result<(), String> {
+        self.core_lines = lines_for_frame(&self.device, self.output.frame, program)?;
+        Ok(())
     }
+}
+
+/// The pack's outline pipelines, made whatever the frame draws so the device's refusal fails
+/// the load in every mode, then kept only where the frame draws them: a pack's GLSL writes
+/// vanilla's gamma, so a frame of linear light keeps the built-in outline. A program past the
+/// device's limits draws natively (`sunrise_glsl::PastDeviceLimit`).
+pub(super) fn lines_for_frame(
+    device: &wgpu::Device,
+    frame: super::FrameConfiguration,
+    program: Option<(&Translated, &[ExpressionUniform])>,
+) -> Result<Option<CoreLines>, String> {
+    let Some((program, expressions)) = program else {
+        return Ok(None);
+    };
+    let pipeline = crate::hud::pack_text::LINES[0].pipeline;
+    if !crate::core_shader::within_device_limits(device, program, pipeline, &[frame.format]) {
+        return Ok(None);
+    }
+    let lines = CoreLines::new(device, frame.format, program, expressions)?;
+    Ok((!frame.linear_light).then_some(lines))
 }
 
 impl CoreLines {
     /// The pipelines for `program` with `expressions` (resolved when it loaded: the expression
-    /// blocks its stages read).
+    /// blocks its stages read), or the device's refusal, named by vanilla's `LINES`.
     pub(super) fn new(
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
-        program: &CoreProgram,
+        program: &Translated,
         expressions: &[ExpressionUniform],
-    ) -> Option<Self> {
-        // A pack's shader is untrusted: the backend failing to compile it is an internal error.
-        let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
+    ) -> Result<Self, String> {
+        let pipeline = crate::hud::pack_text::LINES[0].pipeline;
+        crate::core_shader::scoped(device, pipeline, || {
+            Self::made(device, format, program, expressions)
+        })
+    }
+
+    fn made(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        program: &Translated,
+        expressions: &[ExpressionUniform],
+    ) -> Self {
         let module = |label, module: &naga::Module| {
             device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some(label),
@@ -71,9 +102,9 @@ impl CoreLines {
         };
         let vertex = module("Resource pack lines (vertex)", &program.vertex);
         let fragment = module("Resource pack lines (fragment)", &program.fragment);
-        // Vanilla's LINES pipeline has no samplers: a pack that reads one is not used. The
-        // blocks' sizes are checked here too, not at the draw: a pack's own larger block fails
-        // in this scope.
+        // Vanilla's LINES pipeline has no samplers: the device refuses a pack's that reads one.
+        // The blocks' sizes are checked here too, not at the draw: a pack's own larger block
+        // fails in this scope.
         // Each block a stage reads is bound to the stages reading it: vanilla's four, then the
         // expression uniforms.
         let extra = super::expression_blocks::ExpressionBlocks::new(program, expressions, 1024);
@@ -138,18 +169,13 @@ impl CoreLines {
         };
         let lines = pipeline("Resource pack block outline", true);
         let secondary = pipeline("Resource pack block outline secondary", false);
-        let internal = pollster::block_on(internal.pop());
-        if let Some(e) = internal.or(pollster::block_on(validation.pop())) {
-            log::warn!("the resource pack's rendertype_lines shader is not used: {e}");
-            return None;
-        }
-        Some(Self {
+        Self {
             lines,
             secondary,
             group,
             uniform,
             extra,
-        })
+        }
     }
 
     /// Uploads the frame's blocks: `data` (the pipeline's own, [`uniforms`]), then its Polytone
@@ -301,7 +327,7 @@ mod tests {
 
     /// One edge across the middle of a 64 by 64 target, 4 pixels wide, blue (ARGB `ff0000ff`),
     /// at `GameTime` 0.25, drawn with `program`: the RGBA rows read back.
-    fn draw_edge(device: &wgpu::Device, queue: &wgpu::Queue, program: &CoreProgram) -> Vec<u8> {
+    fn draw_edge(device: &wgpu::Device, queue: &wgpu::Queue, program: &Translated) -> Vec<u8> {
         draw_edge_with(device, queue, program, &[], None)
     }
 
@@ -310,7 +336,7 @@ mod tests {
     fn draw_edge_with(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        program: &CoreProgram,
+        program: &Translated,
         expressions: &[ExpressionUniform],
         poly_globals: Option<&super::super::expression_blocks::PolyGlobalsBytes>,
     ) -> Vec<u8> {
@@ -566,13 +592,16 @@ mod tests {
         assert_pack_coloured(&draw_edge(&device, &queue, &program));
     }
 
-    /// A pack's own include with a bigger block than vanilla's (an older `DynamicTransforms`)
-    /// is not used, and the outline draws natively, rather than failing at the draw.
+    /// A pack's own include with a bigger block than vanilla's (an older `DynamicTransforms`,
+    /// a member past 26.3's): vanilla's builder takes it (it checks a descriptor's name, type and
+    /// dimension, not a block's size), and the outline draws with the pack's shader, the block
+    /// bound at the shader's size.
     #[test]
     #[ignore = "daily"]
-    fn a_pack_block_bigger_than_vanillas_falls_back() {
+    fn a_pack_block_bigger_than_vanillas_draws() {
         let _gpu = crate::gfx::test_gpu::lock();
-        let Some((device, _)) = device() else {
+        let Some((device, queue)) = device() else {
+            eprintln!("skipped: no adapter");
             return;
         };
         let bigger = |id: &str| {
@@ -581,7 +610,54 @@ mod tests {
         };
         let program = crate::core_shader::translate_core(LINES_VSH, RGB_FSH, &[], &bigger, &GLUE)
             .expect("the shaders translate");
-        assert!(CoreLines::new(&device, wgpu::TextureFormat::Rgba8Unorm, &program, &[]).is_none());
+        assert_eq!(program.declared_size(2), 176);
+        assert_pack_coloured(&draw_edge(&device, &queue, &program));
+    }
+
+    /// A frame of linear light keeps the built-in outline, but makes the pack's pipelines
+    /// first: the device refusing one fails the load there too, and one it takes is drawn only off
+    /// linear light. The refusal is one vanilla's builder makes too (`PipelineBuilder`: a
+    /// descriptor missing from the pipeline's layout): `Sampler0`, which `LINES` doesn't bind.
+    #[test]
+    #[ignore = "daily"]
+    fn linear_light_makes_the_outline_pipelines_before_keeping_the_built_in_one() {
+        let _gpu = crate::gfx::test_gpu::lock();
+        let Some((device, _)) = device() else {
+            eprintln!("skipped: no adapter");
+            return;
+        };
+        let frame = |linear_light| super::super::FrameConfiguration {
+            format: wgpu::TextureFormat::Rgba16Float,
+            linear_light,
+            ..super::super::EffectiveOutput::NONE.frame
+        };
+        let program = crate::core_shader::translate_core(LINES_VSH, RGB_FSH, &[], &include, &GLUE)
+            .expect("the shaders translate");
+        let made = |linear| lines_for_frame(&device, frame(linear), Some((&program, &[])));
+        assert!(made(true).unwrap().is_none(), "the built-in outline");
+        assert!(made(false).unwrap().is_some(), "the pack's outline");
+        let sampling = RGB_FSH
+            .replace(
+                "layout(location = 2) in vec4 vertexColor;",
+                "uniform sampler2D Sampler0;\nlayout(location = 2) in vec4 vertexColor;",
+            )
+            .replace(
+                "vertexColor.b, 1.0)",
+                "texture(Sampler0, vec2(0.5)).b, 1.0)",
+            );
+        let refused =
+            crate::core_shader::translate_core(LINES_VSH, &sampling, &[], &include, &GLUE)
+                .expect("the shaders translate");
+        for linear in [true, false] {
+            let error = lines_for_frame(&device, frame(linear), Some((&refused, &[])))
+                .err()
+                .expect("the device refuses Sampler0");
+            assert_eq!(
+                error.split_once(": ").map(|(pipeline, _)| pipeline),
+                Some("minecraft:pipeline/lines"),
+                "linear light {linear}"
+            );
+        }
     }
 
     /// Vanilla's own `rendertype_lines.vsh` (from the prepared resources) under a pack's
@@ -616,6 +692,6 @@ mod tests {
             return;
         };
         assert_pack_coloured(&draw_edge(&device, &queue, &program));
-        assert!(CoreLines::new(&device, wgpu::TextureFormat::Rgba8Unorm, &vanilla, &[]).is_some());
+        assert!(CoreLines::new(&device, wgpu::TextureFormat::Rgba8Unorm, &vanilla, &[]).is_ok());
     }
 }

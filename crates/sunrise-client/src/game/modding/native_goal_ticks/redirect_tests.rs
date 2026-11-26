@@ -79,7 +79,7 @@ fn redirect_to_another_guest_switches_view_and_tags_subsequent_events() {
             world.goal_host = Some(game);
             world.player_selection = Some(&selection);
 
-            let before = world.route_player_event(MobEvent::AttackPlayer(1.0, [0.0; 3]));
+            let before = world.route_player_event(MobEvent::AttackPlayer(1.0, [0.0; 3], None));
             assert!(matches!(before, MobEvent::AttackPlayer(..)));
             *redirect.lock().unwrap() = Some(second);
             assert_eq!(
@@ -92,7 +92,7 @@ fn redirect_to_another_guest_switches_view_and_tags_subsequent_events() {
                 mobs::part_goals::GoalHost::mob_target(game, &other, &actor, &world),
                 Some(LivingRef::new(game.entity(first_id).unwrap()))
             );
-            let after = world.route_player_event(MobEvent::AttackPlayer(1.0, [0.0; 3]));
+            let after = world.route_player_event(MobEvent::AttackPlayer(1.0, [0.0; 3], None));
             assert!(
                 matches!(after, MobEvent::ForPlayer { conn: Some(13), event }
                 if matches!(*event, MobEvent::AttackPlayer(..)))

@@ -7,10 +7,12 @@
 against a wall, the world is saved and reloaded (tools/entity_save_reload.py), and each one's
 `Rotation`, `facing` and `variant` are read with `/data get` on vanilla's server and Sunrise's.
 """
-try:
-    from . import entity_save_reload as harness
-except ImportError:
-    import entity_save_reload as harness
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import entity_save_reload as harness
 
 # (tag, saved Rotation or None for the field absent)
 CASES = [('absent', None), ('zero', '[0.0f,0.0f]'), ('pitched', '[45.0f,10.0f]'), ('fraction', '[0.0f,-33.5f]'),

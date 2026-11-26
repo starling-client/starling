@@ -9,8 +9,9 @@ import json
 from pathlib import Path
 import sys
 
-import harness_args
-import test_command_exec_parity as driver
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import harness_args, test_command_exec_parity as driver
 
 
 def table(item=None, kind='minecraft:fishing'):

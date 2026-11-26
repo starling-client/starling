@@ -338,20 +338,20 @@ pub struct AnimationHolder {
 
 impl AnimationHolder {
     /// `AnimationDefinition.bake(root)`: each bone resolved once through the model's part lookup
-    /// (`ModelPart.createPartLookup`). The name `root` always selects the actual root; other names
-    /// select the first match, visiting each part's immediate children before their descendants.
+    /// ([`ModelPart::part_lookup`], vanilla's `ModelPart.createPartLookup`), in its order.
     /// Bake once, as a renderer does in its constructor, and keep the result: a bone the model
     /// lacks is logged here and left out. Custom targets and interpolations bound on the channels
     /// and keyframes play directly with no lookup per sample.
     pub fn bake(&self, root: &ModelPart) -> KeyframeAnimation {
+        let parts = root.part_lookup();
         let mut entries = Vec::new();
         for (bone, channels) in &self.bones {
-            let Some(path) = root.descendant_path(bone) else {
+            let Some(path) = parts.path(bone) else {
                 log::warn!("keyframe animation: the model has no part {bone:?}; skipped");
                 continue;
             };
             for channel in channels {
-                entries.push((path.clone(), channel.clone()));
+                entries.push((path.to_vec(), channel.clone()));
             }
         }
         KeyframeAnimation {

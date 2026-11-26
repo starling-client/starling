@@ -1,0 +1,3 @@
+ids = ["handle:LevelRef::fire_odds"]
+why = "#5492: LevelRef::fire_odds reads the (ignite, burn) odds fire itself uses for a block state at a position from one face (FireBlock.getIgniteOdds and getBurnOdds; NeoForge's IBlockExtension.getFlammability and getFireSpreadSpeed): the mods' fire_odds answers, then the world's neoforge:flammable data map, then vanilla's table. New method only."
+migrate = "Nothing to change."

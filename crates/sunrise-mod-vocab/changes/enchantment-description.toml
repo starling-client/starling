@@ -1,0 +1,3 @@
+ids = ["type:EnchantmentInfo", "handle:EnchantmentInfo::new"]
+why = "EnchantmentInfo carries the enchantment's description component (Enchantment.description) as its definition writes it, a translatable key with its arguments or a literal, so a mod can tell which enchantment a tooltip line names and render the name (#5639)."
+migrate = "EnchantmentInfo::new takes the description Text as a sixth argument, and EnchantmentInfo is PartialEq but no longer Eq (Text is not Eq)."

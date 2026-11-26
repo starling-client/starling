@@ -1,0 +1,17 @@
+ids = [
+    "hook:texture_atlas_stitched",
+]
+why = """
+The sprites of a registered atlas are stitched into their own texture. The `AtlasRegion` a GUI
+stitch listener reads through `gui_sprite` for one of them holds UVs normalised to that texture,
+not to the shared GUI atlas, so the same region read under the old pin could be combined with the
+wrong texture. Vanilla 26.3 `TextureAtlas` pages hold their own sprites' UVs, and a sprite's
+`TextureAtlasSprite` is drawn through the atlas that owns it.
+"""
+migrate = """
+Pin `texture_atlas_stitched` at `hook_version = 4` instead of `3`. When the listener reads a
+sprite of an atlas registered through `register_texture_atlases` (`event.register(atlas)`), treat the
+`AtlasRegion.uv` as local to that atlas's texture. Draw the sprite by the name
+`TextureAtlasRegistration::sprite_name` returns, which selects the owning texture, instead of
+combining its UVs with a sprite of the shared GUI atlas.
+"""

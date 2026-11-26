@@ -8,7 +8,9 @@
 //! stacks through a [`SpecialModelCollector`]. The game owns the surrounding draw state.
 use crate::generated::HookId;
 use crate::runtime::discard_registration;
-use crate::{ClientHost, Component, Identifier, ItemDisplayContext, ItemKey, ItemStack};
+use crate::{
+    ClientHost, Component, Identifier, ItemDisplayContext, ItemKey, ItemStack, RenderTypeRef,
+};
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 use std::{any::Any, collections::BTreeMap, num::NonZeroU32, sync::Arc};
@@ -255,6 +257,80 @@ impl SpecialModelContext {
     }
 }
 
+// no wire: per-submission material routing choice for `SpecialModelCollector::submit_model`.
+/// Render sheet / material choice for one [`SpecialModelCollector::submit_model`] call.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum SpecialModelRenderType {
+    /// Follow the baked geometry's sprite transparency and `force_translucent` flag (default).
+    #[default]
+    Baked,
+    /// Force the solid/cutout item sheet (`RenderPipelines.ITEM_CUTOUT`, alpha cutoff `0.1`,
+    /// no blending) regardless of sprite alpha or `force_translucent`.
+    ItemCutout,
+    /// Force the translucent item sheet (`RenderPipelines.ITEM_TRANSLUCENT`, alpha cutoff `0.1`,
+    /// sorted/OIT blended) regardless of sprite alpha or `force_translucent`.
+    ItemTranslucent,
+    /// Route through a resolved built-in or custom [`RenderTypeRef`] from
+    /// [`RenderAssets::render_type`](crate::RenderAssets::render_type).
+    Custom(RenderTypeRef),
+}
+
+// no wire: per-submission shading choice for `SpecialModelCollector::submit_model`.
+/// Directional shading mode for one [`SpecialModelCollector::submit_model`] call.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum SpecialModelLighting {
+    /// Apply normal directional diffuse lighting (world or GUI lights) before lightmap sampling
+    /// (default).
+    #[default]
+    Diffuse,
+    /// Skip directional diffuse face shading while still sampling both lightmap channels
+    /// (not an unlit/full-bright mode).
+    LightmapOnly,
+}
+
+// no wire: per-submission options for `SpecialModelCollector::submit_model`.
+/// Per-submission packed light, render type, and lighting mode for
+/// [`SpecialModelCollector::submit_model`].
+///
+/// All three controls are independent; [`Self::default()`] inherits draw light, follows the
+/// baked geometry's render type, and uses directional diffuse shading.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub struct SpecialModelSubmitOptions {
+    /// Explicit packed light coordinates in vanilla `LightCoordsUtil` representation: block light
+    /// byte in bits `0..8` (`LightCoordsUtil.block` / `smoothBlock`) and sky light byte in bits
+    /// `16..24` (`LightCoordsUtil.sky` / `smoothSky`). `None` inherits the draw's light and
+    /// baked `light_emission` floor. When `Some`, both channels are used verbatim with no baked
+    /// emission floor or per-entity dynamic light boost.
+    pub packed_light: Option<u32>,
+    /// Explicit render type override (`Baked` by default).
+    pub render_type: SpecialModelRenderType,
+    /// Directional shading mode (`Diffuse` by default).
+    pub lighting: SpecialModelLighting,
+}
+
+impl SpecialModelSubmitOptions {
+    /// Override the submission's packed light (`LightCoordsUtil` bit layout).
+    pub const fn with_packed_light(mut self, packed_light: u32) -> Self {
+        self.packed_light = Some(packed_light);
+        self
+    }
+
+    /// Override the submission's render type.
+    pub const fn with_render_type(mut self, render_type: SpecialModelRenderType) -> Self {
+        self.render_type = render_type;
+        self
+    }
+
+    /// Override the submission's directional lighting mode.
+    pub const fn with_lighting(mut self, lighting: SpecialModelLighting) -> Self {
+        self.lighting = lighting;
+        self
+    }
+}
+
 // no wire: a scoped borrow of the current item layer's submission destination.
 /// Submits a special model layer in order. A refusal discards everything submitted through this
 /// collector, including geometry submitted by nested stacks.
@@ -284,16 +360,19 @@ impl<'a> SpecialModelCollector<'a> {
         })
     }
 
-    /// Submit a geometry lease from this resource load under the current pose and tints.
+    /// Submit a geometry lease from this resource load under the current pose, tints, and
+    /// per-submission [`SpecialModelSubmitOptions`] (vanilla `OrderedSubmitNodeCollector.submitModel`).
+    ///
     /// The `base` model supplies display transforms, particle and GUI light; the item's layer
-    /// supplies its foil. The engine applies the draw's packed light, overlay and outline as
-    /// it does for ordinary item geometry.
-    pub fn submit_geometry(
+    /// supplies its foil. Pass [`SpecialModelSubmitOptions::default()`] to inherit the draw's
+    /// packed light, baked render sheet, and diffuse lighting.
+    pub fn submit_model(
         &mut self,
         geometry: &SpecialModelGeometry,
         tints: SpecialModelTints,
+        options: SpecialModelSubmitOptions,
     ) -> Result<(), String> {
-        self.0.submit_geometry(geometry, tints)
+        self.0.submit_model(geometry, tints, options)
     }
 
     /// Draw another stack under the current pose, which places its centre. The nested item
@@ -320,11 +399,12 @@ pub trait SpecialModelSubmission {
         draw: &mut dyn FnMut(&mut SpecialModelCollector<'_>) -> Result<(), String>,
     ) -> Result<(), String>;
 
-    /// Append baked item geometry.
-    fn submit_geometry(
+    /// Append baked item geometry with per-submission light, render type, and lighting options.
+    fn submit_model(
         &mut self,
         geometry: &SpecialModelGeometry,
         tints: SpecialModelTints,
+        options: SpecialModelSubmitOptions,
     ) -> Result<(), String>;
 
     /// Expand another item stack in the same draw.

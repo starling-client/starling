@@ -1,0 +1,5 @@
+# The daily GPU tests of normalized image qualifiers on float buffers (#548).
+sunrise-client-render gfx::pack_post::normalized_image_tests::an_rgba16_image_of_a_float_buffer_keeps_the_floats_stored lib daily gpu
+sunrise-client-render gfx::pack_post::normalized_image_tests::an_rgba16_snorm_image_of_a_float_buffer_keeps_the_floats_a_quad_program_stores lib daily gpu
+sunrise-client-render gfx::pack_post::normalized_image_tests::an_rgba16f_image_of_a_float_buffer_binds_without_a_note lib daily gpu
+sunrise-client-render gfx::pack_post::normalized_image_tests::an_rgba8_image_of_a_float_buffer_still_refuses_its_program lib daily gpu

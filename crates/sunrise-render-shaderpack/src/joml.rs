@@ -386,8 +386,9 @@ impl Mat4 {
 /// `setRotation`'s quaternion, and its JOML `invert()`. `view_matrix` turns the same quaternion
 /// into a matrix by glam's formula, which differs in the last bits (1.0 for 0.99999994, 6e-8 for
 /// 0).
-pub fn view_rotation_matrix(yaw: f32, pitch: f32) -> (glam::Mat4, glam::Mat4) {
-    let q = Quat::rotation_yxz(PI - yaw * DEG_TO_RAD, -pitch * DEG_TO_RAD, 0.0);
+pub fn view_rotation_matrix(yaw: f32, pitch: f32, roll: f32) -> (glam::Mat4, glam::Mat4) {
+    let roll = if roll == 0.0 { 0.0 } else { -roll * DEG_TO_RAD };
+    let q = Quat::rotation_yxz(PI - yaw * DEG_TO_RAD, -pitch * DEG_TO_RAD, roll);
     let mut m = Mat4::IDENTITY;
     m.rotation(Quat {
         x: -q.x,

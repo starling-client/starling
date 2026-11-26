@@ -320,8 +320,8 @@ impl List {
         ((self.height * self.height) as f32 / self.content_height() as f32) as i32
     }
     /// `AbstractScrollArea.mouseDragged` while the scrollbar is held.
-    fn drag(&mut self, y: f64) {
-        let Some(last) = self.held else { return };
+    fn drag(&mut self, y: f64) -> bool {
+        let Some(last) = self.held else { return false };
         if y < self.y as f64 {
             self.set_scroll(0.0);
         } else if y > self.bottom() as f64 {
@@ -333,6 +333,7 @@ impl List {
             self.set_scroll(self.scroll + (y - last) * scale);
         }
         self.held = Some(y);
+        true
     }
 }
 
@@ -997,10 +998,8 @@ impl PackScreen {
     }
     /// The mouse wheel (`AbstractScrollArea.mouseScrolled`).
     /// The pointer moved with the button held: a held scrollbar follows it.
-    pub fn drag(&mut self, y: f64) {
-        for l in &mut self.lists {
-            l.drag(y);
-        }
+    pub fn drag(&mut self, y: f64) -> bool {
+        self.lists.iter_mut().any(|l| l.drag(y))
     }
     /// `onRelease`.
     pub fn release(&mut self) -> bool {
@@ -1010,16 +1009,17 @@ impl PackScreen {
         }
         handled
     }
-    pub fn scroll(&mut self, x: f64, y: f64, amount: f64) {
+    pub fn scroll(&mut self, x: f64, y: f64, amount: f64) -> bool {
         if self.confirm.is_some() || self.search.contains(x, y) {
-            return;
+            return false;
         }
         for l in &mut self.lists {
             if l.is_over(x, y) {
                 l.set_scroll(l.scroll - amount * 18.0);
-                return;
+                return true;
             }
         }
+        false
     }
     /// Typed text, when the search box has the focus.
     pub fn type_text(&mut self, m: &Measure, s: &str) {

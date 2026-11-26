@@ -17,6 +17,15 @@ impl LevelView<'_> {
         sustains: &mut Option<bool>,
         inert: &mut bool,
     ) {
+        let pos = BlockPos::new(ground_pos.x, ground_pos.y.saturating_add(1), ground_pos.z);
+        let Some(_active) = super::survival_query_guard::enter_part(
+            self.world,
+            pos,
+            state,
+            super::survival_query_guard::PartHook::CanSustainPlant,
+        ) else {
+            return;
+        };
         self.fire_can_sustain_plant(dimension, state, ground, ground_pos, sustains, inert);
     }
 }

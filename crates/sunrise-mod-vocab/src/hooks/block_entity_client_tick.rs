@@ -3,7 +3,7 @@
 pub trait Hooks {
     /// A client tick of this client's copy of the mod block entity
     /// (`ClientLevel.tickBlockEntities`), when its type is yours and its
-    /// block's state ticks on the client (`block_entity_client_ticks`):
+    /// registered type's ticker accepts this state on the client:
     /// once per client tick while the level runs, in vanilla's ticker order
     /// among the others, whether or not the copy is drawn. `event.subject`
     /// is a [`BlockEntityClientScope`](mod_api::BlockEntityClientScope): borrow a
@@ -17,13 +17,14 @@ pub trait Hooks {
 
 `block_entity_client_tick` is vanilla's client `BlockEntityTicker` (`EntityBlock.getTicker` asked with the
 client level): what a machine does on the client alone, a looping hum, smoke from its chimney, a part eased
-between two server updates. A block entity type opts in with `block_entity_client_ticks` (its client side of
-`block_entity_ticks`), asked once for each mod block; with no part answering, nothing is asked and nothing runs.
+between two server updates. Implement the method on a `BlockEntityPart` attached to the type. It binds the
+client ticker for that type's accepted states. Use `BlockEntityTypeBuilder::ticker_when` to select only some
+states or sides; with no interested Part, nothing is bound.
 
 It runs on each client (the window's own in single player included) once per client tick while its level runs
-(not paused or frozen), for each loaded copy of the type, in the order vanilla's client ticker list gives
-(`Level.blockEntityTickers`): the order the copies arrived, a chunk's own in its map's order. A loaded copy
-ticks whether or not it is drawn (`block_entity_submit` runs only for those in view). `event.subject` is a
+(not paused or frozen), for each loaded copy of the type, in vanilla's `Level.blockEntityTickers` order.
+A chunk's initial tickers join in packet order; a state change that adds a ticker joins it when enabled.
+A loaded copy ticks whether or not it is drawn (`block_entity_submit` runs only for those in view). `event.subject` is a
 `BlockEntityClientScope`: call `event.subject.with_view(|view| ...)` to read the resident copy's handle,
 position, level, block state, data slots, item slots and merged NBT directly with no per-tick snapshot copy,
 then call `event.subject.host()` for the `ClientHost` to play a sound with `play_local_sound` (keeping its
@@ -42,7 +43,7 @@ what you keep for it then. It never runs on a server."##]
         scope = "block_entity",
         key = "subject",
         neoforge = "none (vanilla BlockEntityTicker from EntityBlock.getTicker with the client level; NeoForge adds no event)",
-        version = 2
+        version = 3
     )]
     fn block_entity_client_tick(subject: mod_api::BlockEntityClientScope<'_>);
 }

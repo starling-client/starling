@@ -39,7 +39,7 @@ impl Hub {
                     .unwrap_or(self.config.seed),
             ),
             game_type: g.game_mode,
-            previous_game_type: None,
+            previous_game_type: g.previous_game_mode,
             debug: self.debug_world,
             flat: self.flat_world,
             // Player.getLastDeathLocation.

@@ -1,0 +1,3 @@
+ids = ["hook:collision_shape"]
+why = "BlockPart::collision_shape is asked for every collision query that meets an opted-in state, as vanilla's BlockBehaviour.getCollisionShape is asked for every block of every sweep (BlockCollisions). The game no longer remembers an answer for the rest of the tick, so a step-up retry or a second sweep asks again and a change to the mod's own state inside a tick is seen by the next query. Version 3."
+migrate = "A part that relied on one call per question per tick answers from its inputs and its own state on every call; nothing else changes. A part that wanted its state change to apply mid-tick needs no invalidation call."

@@ -18,7 +18,8 @@ there is no shared range. Only an accepted ID reaches `menu_button`."#]
         scope = "menu",
         key = "menu",
         host = "read",
-        neoforge = "none (vanilla menu button ids are handled by their menu implementation)"
+        neoforge = "none (vanilla menu button ids are handled by their menu implementation)",
+        version = 2
     )]
     fn menu_button_valid(menu: &str, block: Option<&str>, id: i32, accepted: &mut bool);
 }

@@ -1,8 +1,8 @@
 import hashlib,json,sys,uuid
 from pathlib import Path
-sys.path.insert(0,str(Path.cwd()/'tools'))
-import test_command_exec_parity as driver
-import harness_args
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_command_exec_parity as driver, harness_args
 CASES=[('arrow','arrow','chorus_flower',True,True,False,True,1),('snowball','snowball','chorus_flower',True,True,False,True,1),('pearl','ender_pearl','chorus_flower',True,True,False,False,0),('rule','arrow','chorus_flower',False,True,False,False,0),('owner','arrow','chorus_flower',True,True,True,False,0),('stone','arrow','stone',True,True,False,False,0),('nodrops','snowball','chorus_flower',True,False,False,True,0),('direct-chorus',None,'chorus_flower',True,True,False,True,0),('direct-dirt',None,'dirt',True,True,False,True,1)]
 def program():
  ops=[]

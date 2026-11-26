@@ -6,7 +6,7 @@ use sunrise_client::{
 use sunrise_world::damage_source::Catalog;
 
 #[path = "registered_damage_tests/creaking_borrowed.rs"]
-mod creaking_borrowed;
+pub(in crate::game) mod creaking_borrowed;
 
 #[test]
 fn formerly_aliased_types_keep_their_id_and_registry_tags() {
@@ -194,16 +194,17 @@ fn projectile_and_command_targets_classify_actual_direct_entity_families() {
         attacker: 7,
         ..Default::default()
     };
-    Game::set_projectile_attack(&mut large_attack, &large);
+    Game::set_projectile_source(&mut large_attack, &large);
     let mut small_attack = Attack {
         attacker: 7,
         ..Default::default()
     };
-    Game::set_projectile_attack(&mut small_attack, &small);
+    Game::set_projectile_source(&mut small_attack, &small);
     let fireball = Damage {
         kind: DamageKind::Fireball,
         attacker: Some(Who::Player),
         from: None,
+        direct: None,
         attacker_species: None,
     };
     assert_eq!(large_attack.projectile_kind, DirectEntity::LargeFireball);
@@ -532,13 +533,15 @@ fn live_damage_and_blast_warden_reactions_follow_source_entities_and_cooldown() 
         guest_server(game, true, false);
         let (first, _first_out) = guest(game, 22);
         let (second, _second_out) = guest(game, 23);
+        // `/damage` defaults the causing entity to the direct one
+        // (`DamageCommand.damage`'s `cause.or(by)`); attribution reads the cause.
         let hurt = |game: &mut Game<'_>, amount, direct| {
             game.hurt_target(
                 Target::Mob(warden_id),
                 amount,
                 "minecraft:generic",
                 direct,
-                None,
+                direct,
                 None,
             )
         };
@@ -619,6 +622,10 @@ fn live_damage_and_blast_warden_reactions_follow_source_entities_and_cooldown() 
 #[test]
 #[ignore = "daily"]
 fn live_damage_and_blast_creaking_reactions_and_timed_player_credit() {
+    run_live_damage_and_blast_creaking_reactions_and_timed_player_credit();
+}
+
+pub(in crate::game) fn run_live_damage_and_blast_creaking_reactions_and_timed_player_credit() {
     use crate::game::{
         combat::PlayerCredit,
         commands::Target,

@@ -10,8 +10,10 @@ from pathlib import Path
 import shutil
 import sys
 
-import test_command_exec_parity as runner
-from loot_mine_pot_components_corpus import cases
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_command_exec_parity as runner
+from tools.loot_mine_pot_components_corpus import cases
 
 def callback(row):
     values = row.get("results")

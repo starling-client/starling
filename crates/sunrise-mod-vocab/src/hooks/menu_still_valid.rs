@@ -3,7 +3,8 @@
 pub trait Hooks {
     /// Whether a player's mod menu stays open (`AbstractContainerMenu.stillValid`).
     /// Asked on the server each tick the menu is open and before processing a
-    /// matching non-spectator container click.
+    /// matching non-spectator container click. If `menu_clicked` listeners run and leave the
+    /// menu open and the default unhandled, this check runs again before the default action.
     /// `pos` is the backing block's position, or `None` for a blockless menu
     /// even if its opener supplied a position for the client's screen. `opening_item` is
     /// present when the opener supplied a hand; its `stack_matches` says whether that hand
@@ -18,9 +19,10 @@ pub trait Hooks {
 
 `menu_still_valid` is vanilla's `AbstractContainerMenu.stillValid(Player)`, the method a Java menu overrides to
 say whether a player may keep it open. The server asks the scoped `MenuPart` of the open mod menu's type each
-tick the menu is open and before processing a matching non-spectator container click. A click for a different
-window is dropped; a matching spectator click resends the menu without asking the part. Vanilla menu types
-keep their own check and never ask a part. A false answer closes the menu as walking away does: what the
+tick the menu is open and before processing a matching non-spectator container click. A surviving menu is
+checked again after `menu_clicked` listeners if the default click will run. A click for a different window is
+dropped; a matching spectator click resends the menu without asking the part. Vanilla menu types keep
+their own check and never ask a part. A false answer closes the menu as walking away does: what the
 cursor held goes back to the inventory and the client's window closes.
 
 `event.player` is the player's UUID and `event.menu` is the menu type. `event.pos` is the backing block's
@@ -44,7 +46,7 @@ when the menu opens: a menu with none does no work for this hook."##]
         scope = "menu",
         key = "menu",
         context = "loop",
-        version = 3,
+        version = 4,
         target = "sunrise_client_lib::lan::menu::native_menu_still_valid",
         neoforge = "none (vanilla AbstractContainerMenu.stillValid, which each menu overrides)"
     )]

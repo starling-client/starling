@@ -1,8 +1,13 @@
 //! Owned drawing data for a screen scene, separate from live world entities.
 
-use crate::{BlockState, Identifier, item::containers::ModBlockEntityFields};
+use crate::{
+    BlockState, Compound, Identifier, ItemStack, ResidentBlockEntityReadOnly,
+    item::containers::ModBlockEntityFields,
+};
 
-/// A mod block entity's type and public fields supplied to a screen's drawing Part.
+/// A block entity's type, block state and public fields supplied to a screen's drawing Part, or
+/// to [`BlockEntityDrawContext::block_entity`](crate::BlockEntityDrawContext::block_entity) to
+/// draw it where a block entity is carried (a moving structure's chest, sign or machine).
 /// This is not a live entity: internal cache and revision identities never cross the API.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
@@ -10,14 +15,55 @@ use crate::{BlockState, Identifier, item::containers::ModBlockEntityFields};
 pub struct SceneBlockEntity {
     /// The immutable type id of the temporary drawing entity.
     pub id: Identifier,
+    /// The state of the block the entity belongs to (`BlockEntity.getBlockState`): a vanilla
+    /// renderer reads its facing, colour and variant from it, and a mod's Part gets it as the
+    /// `state` of its submit.
+    pub state: BlockState,
     /// Saved fields, item slots and menu data, in their existing public form.
     pub fields: ModBlockEntityFields,
 }
 
 impl SceneBlockEntity {
     /// Describe an entity to draw without retaining a world entity or its cache identity.
-    pub fn new(id: Identifier, fields: ModBlockEntityFields) -> Self {
-        Self { id, fields }
+    pub fn new(id: Identifier, state: BlockState, fields: ModBlockEntityFields) -> Self {
+        Self { id, state, fields }
+    }
+}
+
+/// Why [`BlockEntityDrawContext::block_entity`](crate::BlockEntityDrawContext::block_entity)
+/// drew nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+#[derive(sunrise_mod_api_macros::Wire)]
+pub enum BlockEntityDrawRefusal {
+    /// The call came from inside another `block_entity` draw. One level is allowed: input a mod
+    /// controls must never recurse without end, and a carried block entity is drawn from an
+    /// entity renderer, not from inside another block entity's draw.
+    Nested,
+}
+
+impl ResidentBlockEntityReadOnly for SceneBlockEntity {
+    fn id(&self) -> &str {
+        self.id.as_str()
+    }
+    fn data_slots(&self) -> &[i32] {
+        &self.fields.data
+    }
+    fn nbt(&self) -> &Compound {
+        &self.fields.nbt
+    }
+    fn item_slots(&self) -> usize {
+        self.fields.items.len()
+    }
+    fn item_slot(&self, slot: u32) -> Option<(&str, u32)> {
+        let stack = self.fields.items.get(slot as usize)?.as_ref()?;
+        Some((
+            crate::content::registry_keys::item_id(stack.item())?,
+            stack.count(),
+        ))
+    }
+    fn copy_item_slot(&self, slot: u32) -> Option<ItemStack> {
+        self.fields.items.get(slot as usize)?.clone()
     }
 }
 

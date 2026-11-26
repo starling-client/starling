@@ -1,3 +1,4 @@
 pub use world::advancement_progress::{
-    AdvancementDisplay, AdvancementFrame, AdvancementInfo, AdvancementProgress, CriterionProgress,
+    AdvancementDisplay, AdvancementError, AdvancementFrame, AdvancementInfo, AdvancementProgress,
+    CriterionProgress,
 };

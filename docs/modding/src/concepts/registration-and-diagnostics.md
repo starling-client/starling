@@ -36,7 +36,7 @@ These reports are separate from the native block and item declaration errors des
 
 ## Loading warnings
 
-For log locations and filtering, see [Find your mod's diagnostics](../how-to/read-the-game-log.md).
+For log locations and filtering, see [Finding your mod's logs](#finding-your-mods-logs).
 
 A problem that should not stop your mod, such as a missing optional integration or a setting it
 corrected, is a warning: `r.warn("mymod.warn.no_jei", &["jei"])` on the `Registrar` inside
@@ -83,14 +83,19 @@ Register callbacks inside `Hooks::register` (the counterpart to NeoForge's `Cras
 | `r.crash_header(Arc::new(Banner))` | `<mod id>: <value>` under the report title |
 
 Both callbacks implement `CrashSection`. The report calls `value()` once when it is written,
-not during registration. Return `None` to omit a line.
+not during registration. Return `None` to omit an entry. The report includes the full label and
+value, including line breaks, without clipping or flattening them, and marks every continuation
+line with the registering mod's ID (`\t<mod id> | ` for headers, `\t\t<mod id> | ` for system
+details, including error text). That includes entries from the mod named in the crash itself.
 
-- Lines follow registration order on clients and dedicated servers.
-- Callbacks run on a separate thread. The report waits at most two seconds for headers and
-  another two seconds for system-detail sections.
-- A callback that panics or times out produces `~~ERROR~~`; the report is written.
-- Callbacks belonging to the mod blamed for the crash are not called.
-- Control characters become spaces, and each value is limited to 4096 bytes on one line.
+Callbacks run and appear in registration order on clients and dedicated servers. A report is
+built after the panicking thread has unwound, as vanilla builds it outside the throw, and the
+callbacks run then, on the thread that builds it: the locks the panicking code held are released.
+Read your own diagnostic state, and keep a callback cheap.
+
+A failed callback's entry begins with `~~ERROR~~`. A panic logs the mod's ID, queues an error
+toast, and disables only that callback for the session. Other failures are reported on each
+occurrence and do not disable the callback.
 
 ## Converted-package attribution
 
@@ -118,3 +123,57 @@ The scope adds `in converted package <id>, export <export>, call site <site>` be
 - A nested native frame hides the outer frame's package until it returns.
 - Worker threads need their own native call and package scope.
 - Entering a package clones its stored ID on each call; borrowed static IDs do not allocate.
+
+## Finding your mod's logs
+
+Start with `logs/latest.log` in the game's **home**, not the world or mod project folder.
+For a default `cargo sunrise-mod run`, that's
+`target/sunrise-mod/run/home/logs/latest.log` inside your project. Otherwise check the
+home set by `--home` or `SUNRISE_HOME`; without either, the client uses the `sunrise`
+directory in the platform's data folder. A dedicated server logs under its game directory.
+On the client, `--player-dir` overrides the log location.
+
+The default filter writes `INFO`, `WARN` and `ERROR` records, except that
+`calloop` and its submodules log only `ERROR`. Repeated `WARN` and `ERROR` records
+are rate-limited by source location: after 100 in a minute, further records
+from that location are counted instead of written. For targets that don't start
+with `sunrise`, the logger prefixes the message with the record's target in
+brackets: the Rust module path by default, not the mod ID from the manifest.
+For example:
+
+```text
+[14:03:12] [Server thread/INFO]: [mymod::machine] Loaded machine recipes
+```
+
+Look in the file rather than the terminal: the game logger echoes only targets that
+start with `sunrise` to stderr, without the target prefix. It drops `DEBUG` and
+`TRACE`; no setting or environment variable (including `RUST_LOG`) enables them.
+Native `log` records reach the game logger only when the pinned SDK declares native
+log forwarding (`native_log`).
+
+## Measuring a mod's calls
+
+The server's `/modprofile` command measures how long native mods spend in their hooks and Parts. It needs
+permission level 3 and is off until you start it.
+
+1. `/modprofile start` starts a measurement. Starting twice reports an error.
+2. Play through what you want to measure.
+3. `/modprofile stop` ends it and saves `profiles/modprofile-<timestamp>-<counter>.json` in the game folder.
+   Stopping with no measurement running reports an error.
+4. `/modprofile report` prints the last finished summary, without saving a file or stopping a running measurement.
+
+Replies go only to the player who ran the command. The same controls work through
+`sunrise-ctl command modprofile start` (and `stop` or `report`).
+
+### The profile file
+
+Open the file in [Firefox Profiler](https://profiler.firefox.com) and look at its Marker Table. Sunrise never uploads
+it.
+
+- The file is written atomically and is at most 8 MiB. If saving fails, the command says so and the summary stays
+  available to `report`.
+- Each marker names a mod, a hook or Part and holds call counts, exact timings in nanoseconds and log2 histograms. It
+  never holds arguments, player data or world data.
+- Timings are inclusive (an outer call includes the calls inside it) and add up over the whole process: they are
+  totals, not a trace of each call or a sampling profile.
+- Only native mods' calls are measured.

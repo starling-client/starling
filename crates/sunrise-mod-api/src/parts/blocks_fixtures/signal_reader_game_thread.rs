@@ -6,7 +6,7 @@ pub fn signal_reader_game_thread() {
     impl BlockPart for Reader {
         fn neighbor_changed(
             &self,
-            level: &mut dyn crate::LevelTicksHost,
+            level: &mut dyn crate::LevelWriteHost,
             event: &mut crate::NeighborChangedEvent,
         ) {
             let pos = [event.pos.x, event.pos.y, event.pos.z];

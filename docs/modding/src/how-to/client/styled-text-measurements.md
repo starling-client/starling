@@ -8,18 +8,23 @@ in client setup.
 | --- | --- |
 | `text_width(&Text)` | `i32`: styled width in GUI pixels. |
 | `text_split(&Text, i32)` | `Vec<Text>`: wrapped, styled lines. |
-| `text_visual_order(&Text)` | `Vec<VisualTextCharacter>`: styled characters in display order. |
+| `visit_text_visual_order(&Text, visit)` | Lends a styled character on each call, in display order; returns whether the visitor finished. |
+| `visit_text_lines(&Text, spec, visit)` | Lends logical-order wrapped lines and returns the layout dimensions. |
+| `language_right_to_left()` | `bool`: whether the active language reads right to left (`Language.isDefaultRightToLeft` / `Font.isBidirectional`), for laying out a row of GUI or tooltip pieces in reading order. |
 
-Inside a drawing hook, `DrawContext::text_lines(&Text, max_width, TextAlign, scale)` wraps and
-places the same way and adds what a label needs: each line's `Text`, its `at` position inside the
-width and its width, plus the block's `width` and `height` — all answered in scaled GUI pixels, the
-text wrapping at `max_width / scale`. It refuses invalid widths and scales and oversized layouts
-with a `TextLinesRefusal`. See [Screens](screens.md#labels-wrapped-text-without-a-widget).
+`ClientHost::visit_text_lines` takes a `TextLayoutSpec` with `max_width`, `align` and `scale`.
+The font wraps at `max_width / scale`. The visitor receives a borrowed `Text` with applied styles
+and inline objects, and the line's `at` and `width` in scaled GUI pixels. Clone `line.text` to
+keep a line after the call. The result gives the label's width and height even when the visitor
+only reads those dimensions. Invalid width, scale or non-finite scaled geometry returns
+`TextLayoutError` without visiting any lines. To paint a label, use [the canvas's wrapped draw](screens.md#labels-wrapped-text-without-a-widget)
+rather than retaining and redrawing the lines.
 
-Build an owned `Text` directly with `Text::literal`, `Text::translate` or
+Build an owned `Text` directly with `Text::literal`, `Text::translate`,
+`Text::translate_with_fallback` (a template a language without the key formats instead) or
 `Text::new(TextContent::…)`. Use `with_style` to set the style and `append` to
 add an ordered child, then pass `&text` to the host read. In-process text reads
-(`text_string`, `text_width`, `text_split`, `text_visual_order`, and
+(`text_string`, `text_width`, `text_split`, `visit_text_visual_order`, and
 `BlockEntityDrawContext::text_width`) are infallible and do not enforce the
 512-node serialization depth cap or `ExtraCodecs` profile/property bounds;
 those checks apply at serialization boundaries (Wire, JSON/SNBT codecs such as
@@ -74,8 +79,9 @@ string.
 
 During pack discovery and initial reload registration, before language
 resources have loaded, `text_string` still resolves literals, fallbacks and
-translation keys directly without language overrides (`text_from_json` and
-`text_from_legacy` still return `TextFormError::Unavailable` there).
+translation keys directly without language overrides. During startup pack discovery,
+the other [text conversions](../entities/server-services-and-players.md#text-conversions)
+return `TextFormError::Unavailable` instead.
 
 A missing key uses its component fallback, or the key itself without a
 fallback. On a dedicated server, a pack language file may also supply an
@@ -89,12 +95,13 @@ language. Do not cache resolved strings across language changes.
 ## Visual order
 
 For vanilla `Component.getVisualOrderText()` behavior, use
-`ClientHost::text_visual_order(&Text) -> Vec<VisualTextCharacter>`.
-Each API-owned Wire record contains a Unicode scalar (`scalar`), its full
-resolved `TextStyle`, and the sink's `source_index`. Characters are already in
-visual order, including Arabic shaping and mirrored punctuation; do not apply
-bidi a second time. This read uses the engine's existing language and bidi
-pipeline, is available outside drawing, including client setup.
+`ClientHost::visit_text_visual_order(&Text, &mut |character| { … })`. It lends each character's
+Unicode scalar (`scalar`), effective `TextStyle` and sink `source_index` for that call. Return
+`true` to continue or `false` to stop; the host returns `false` if stopped. Call
+`character.to_owned()` only for characters you need to retain. The owned character keeps its
+full style and releases deep opaque style data iteratively. Characters already include Arabic
+shaping, bidi reordering and mirrored punctuation. This read is available outside drawing,
+including client setup.
 
 Sink indices are UTF-16 offsets local to a constant-style substring within a
 directional run, not global component positions. For example, `A😀B` yields
@@ -104,7 +111,7 @@ in the same run. For example, custom click IDs `example` and `minecraft:example`
 match for run grouping, but each character retains its original click event.
 A resolved color is returned as uppercase `#RRGGBB`, even
 if the input used a named color. Shaping can shorten the string, so these
-indices are not guaranteed to identify original input scalars. Use the records to re-layout existing tooltip
+indices are not guaranteed to identify original input scalars. Use the visitor to inspect existing tooltip
 lines without losing click, hover, font or other style information.
 
 Action keybind IDs such as `key.jump` resolve through the client's current key

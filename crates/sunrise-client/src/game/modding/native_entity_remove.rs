@@ -11,8 +11,8 @@
 //! lists the game is walking. A container vehicle spills before its logical removal;
 //! only taking the row out of its list waits for the sweep.
 use super::{Game, commands::Target};
-use mod_api::{EntityRef, RemovalReason};
-use sunrise_client::items::ItemStack;
+use mod_api::{EntityRef, LevelWriteError, RemovalReason};
+use sunrise_client::{entities::ItemEntity, items::ItemStack};
 use sunrise_core::geometry::Vec3;
 
 impl Game<'_> {
@@ -43,6 +43,44 @@ impl Game<'_> {
                 self.remove_target_now(entity, t);
                 true
             }
+        }
+    }
+    /// Kills the entity as `/kill` does (`Entity.kill(ServerLevel)` and
+    /// `LivingEntity.kill(ServerLevel)` -> `hurtServer(level, damageSources().genericKill(), Float.MAX_VALUE)`):
+    /// a living entity falls and drops its loot, and any other entity is removed
+    /// and posts `minecraft:entity_die`. Reaches entities in parked dimensions.
+    /// An open transaction stages the kill in its level; its effects wait for
+    /// the root commit. A live target that refuses the kill returns `Ok(false)`.
+    pub(super) fn entity_kill(&mut self, entity: EntityRef) -> Result<bool, LevelWriteError> {
+        if !self.is_logical_server() {
+            return Err(LevelWriteError::Unavailable);
+        }
+        if self.native_lifecycle.epoch() != Some(entity.epoch())
+            || self.held_out.contains(&entity.id())
+        {
+            return Err(LevelWriteError::Stale);
+        }
+        let sunrise_client::join_seq::residency::table::EntityLookup::Found { location, value } =
+            self.server_resident_entity(entity.id())
+        else {
+            return Err(LevelWriteError::Stale);
+        };
+        if matches!(value, Target::DragonPart(_)) {
+            return Ok(false);
+        }
+        if location.owner.dimension != self.dim.key() && !self.transactions.is_empty() {
+            return Err(LevelWriteError::InTransaction);
+        }
+        if self.transactions.is_empty() {
+            return Ok(self.kill_target(value));
+        }
+        if !self.can_kill_target_in_level(value) {
+            return Ok(false);
+        }
+        if self.journal_kill(entity) {
+            Ok(true)
+        } else {
+            Ok(self.kill_target(value))
         }
     }
     /// `Entity.setRemoved` of `t`, which `entity` names and is no mob, player or dragon part.
@@ -203,8 +241,24 @@ impl Game<'_> {
             }
         }
     }
+    /// Retires the item rows for removals already announced by `remove_target_now`. The item pass
+    /// also sweeps these while its rows are resident, before it can tick, merge or pick them up.
+    pub(super) fn native_item_removals_flush(&mut self, mut retired: impl FnMut(&ItemEntity)) {
+        let dropped = &mut self.dropped;
+        self.persist.removals.retain(|target| {
+            let Target::Item(id) = *target else {
+                return true;
+            };
+            if let Some(i) = dropped.iter().position(|item| item.id == id) {
+                retired(&dropped.remove(i));
+            }
+            false
+        });
+    }
+
     /// Takes out the entities mods removed since the last sweep.
     pub(super) fn native_removals_flush(&mut self) {
+        self.native_item_removals_flush(|_| {});
         if self.persist.removals.is_empty() {
             return;
         }
@@ -264,7 +318,9 @@ impl Game<'_> {
                     }
                 }
                 // The remaining kinds `/kill` already removes with no death.
-                t => self.kill_target_in_level(t),
+                t => {
+                    self.kill_target_in_level(t);
+                }
             }
         }
     }
@@ -312,16 +368,21 @@ mod tests {
     #[test]
     #[ignore = "daily"]
     fn selectors_stop_matching_a_discarded_entity_before_the_sweep() {
-        use super::super::{commands::OtherEntity, native_entity_refs::tests::with_game};
+        use super::super::{
+            commands::OtherEntity,
+            native_entity_refs::tests::{fixture_resident_column, with_game},
+        };
         use sunrise_core::geometry::Vec3;
 
         with_game(|game| {
+            fixture_resident_column(&mut game.world, (0, 0));
             game.others.push(OtherEntity {
+                size_answer: None,
                 attachment_lifetime: Default::default(),
                 knot_check: None,
                 eye: None,
                 join: Default::default(),
-                item_transformation: None,
+                display: None,
                 interaction: None,
                 id: 12,
                 kind: "minecraft:marker".into(),
@@ -427,11 +488,12 @@ mod tests {
                 .chunks
                 .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
             game.others.push(OtherEntity {
+                size_answer: None,
                 attachment_lifetime: Default::default(),
                 knot_check: None,
                 eye: None,
                 join: Default::default(),
-                item_transformation: None,
+                display: None,
                 interaction: None,
                 id: 12,
                 kind: "minecraft:text_display".into(),
@@ -581,6 +643,7 @@ mod tests {
                 pos: [0, 64, 0],
                 facing: 2,
                 variant: "minecraft:kebab".into(),
+                asset: None,
                 width: 1,
                 height: 1,
                 check_interval: 0,
@@ -619,11 +682,12 @@ mod tests {
 
         with_game(|game| {
             game.others.push(OtherEntity {
+                size_answer: None,
                 attachment_lifetime: Default::default(),
                 knot_check: None,
                 eye: None,
                 join: Default::default(),
-                item_transformation: None,
+                display: None,
                 interaction: None,
                 id: 12,
                 kind: "minecraft:marker".into(),
@@ -636,6 +700,95 @@ mod tests {
             assert!(game.run_command("kill @e[type=minecraft:marker]"));
             assert!(game.others.is_empty());
             assert!(!game.persist.raw.contains_key(&12));
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn entity_kill_kills_mobs_non_mobs_parked_entities_and_refuses_stale() {
+        use super::super::native_entity_refs::tests::{fixture_resident_column, with_game};
+        use super::*;
+        use sunrise_client::{entities::ExperienceOrb, mobs::Mob};
+
+        with_game(|game| {
+            fixture_resident_column(&mut game.world, (0, 0));
+            // Killing a living mob in the current level kills it; a second kill
+            // while already dead returns Ok(false).
+            let zombie_kind = game
+                .res
+                .mob_types()
+                .get("minecraft:zombie")
+                .unwrap()
+                .clone();
+            let zombie_id = game.take_entity_id();
+            game.mobs
+                .push(Mob::new(zombie_id, zombie_kind, Vec3::ZERO, 0.0));
+            let zombie = game.entity(zombie_id).unwrap();
+            assert_eq!(zombie.kill(game), Ok(true));
+            assert!(
+                !game
+                    .mobs
+                    .iter()
+                    .find(|m| m.id == zombie_id)
+                    .unwrap()
+                    .alive()
+            );
+            assert_eq!(zombie.kill(game), Ok(false));
+
+            // Killing a non-mob entity (experience orb) removes it and makes
+            // the handle stale afterwards.
+            let orb_id = game.take_entity_id();
+            game.orbs.push(ExperienceOrb::new(
+                orb_id,
+                Vec3::new(1.0, 70.0, 1.0),
+                Vec3::ZERO,
+                5,
+            ));
+            let orb = game.entity(orb_id).unwrap();
+            assert_eq!(orb.kill(game), Ok(true));
+            assert!(game.orbs.iter().all(|o| o.id != orb_id));
+            assert_eq!(orb.kill(game), Err(LevelWriteError::Stale));
+
+            // Stale handle from another epoch is refused with Stale.
+            let stale_epoch = mod_api::WorldEpoch::new(
+                game.native_lifecycle.epoch().unwrap().get().wrapping_add(1),
+            );
+            let stale = EntityRef::new(stale_epoch, zombie_id);
+            assert_eq!(stale.kill(game), Err(LevelWriteError::Stale));
+
+            // Killing an entity in a parked level routes there outside a
+            // transaction and refuses with InTransaction inside one.
+            let cow_kind = game.res.mob_types().get("minecraft:cow").unwrap().clone();
+            let cow_id = game.take_entity_id();
+            game.mobs.push(Mob::new(cow_id, cow_kind, Vec3::ZERO, 0.0));
+            let cow = game.entity(cow_id).unwrap();
+            let nether = super::super::Dim::Nether;
+            game.enter_command_level(nether).unwrap();
+
+            game.storage_scope(|game, _| {
+                assert_eq!(cow.kill(game), Err(LevelWriteError::InTransaction));
+                ((), false)
+            });
+
+            assert_eq!(cow.kill(game), Ok(true));
+            assert_eq!(game.dim, nether);
+            assert!(
+                !game
+                    .levels
+                    .parked_mobs(super::super::Dim::Overworld)
+                    .unwrap()
+                    .iter()
+                    .find(|m| m.id == cow_id)
+                    .unwrap()
+                    .alive()
+            );
+            assert_eq!(cow.kill(game), Ok(false));
+
+            // Client side is refused with Unavailable.
+            let role = game.options.execution_role;
+            game.options.execution_role = super::super::execution_role::ExecutionRole::Client;
+            assert_eq!(cow.kill(game), Err(LevelWriteError::Unavailable));
+            game.options.execution_role = role;
         });
     }
 }

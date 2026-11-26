@@ -16,7 +16,8 @@ guest included, once for each `LevelChunkWithLight` packet the client adopts
 (vanilla's `ClientChunkCache.replaceWithPacketData`). It runs after the column
 and its block entities are in the client level, so a listener can read the
 column's blocks through `ClientHost` (`host.level(dimension)`, then
-`level.block_state(host, pos)`). A column the server sends again while it is
+`level.block_state(host, pos)` or `level.chunk_ref(host, chunk)` -> `ChunkRef::snapshot(host)`
+for an immutable off-thread snapshot). A column the server sends again while it is
 resident is told again, without an unload between. A biome packet
 (`ChunksBiomes`) tells nothing. `dimension` is the client level's dimension, as
 the server named it. An integrated world's own chunks have the server's

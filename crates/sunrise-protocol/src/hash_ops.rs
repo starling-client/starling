@@ -8,6 +8,7 @@
 use sunrise_core::nbt::Tag;
 
 /// Guava `Hashing.crc32c()`: the CRC-32C (Castagnoli) of the bytes.
+#[cfg(test)]
 pub fn crc32c(bytes: &[u8]) -> u32 {
     Hasher::default().bytes(bytes).hash().0
 }
@@ -78,6 +79,7 @@ impl HashOps {
     pub fn empty_map() -> HashCode {
         Hasher::default().byte(2).byte(3).hash()
     }
+    #[cfg(test)]
     pub fn empty_list() -> HashCode {
         Hasher::default().byte(4).byte(5).hash()
     }
@@ -100,6 +102,7 @@ impl HashOps {
     pub fn create_double(bits: u64) -> HashCode {
         Hasher::default().byte(11).bytes(&bits.to_le_bytes()).hash()
     }
+    #[cfg(test)]
     pub fn create_f32(v: f32) -> HashCode {
         Self::create_float(v.to_bits())
     }
@@ -213,12 +216,6 @@ impl RecordHash {
     pub fn field(mut self, name: &str, value: HashCode) -> Self {
         self.0.push((HashOps::create_string(name), value));
         self
-    }
-    pub fn optional(self, name: &str, value: Option<HashCode>) -> Self {
-        match value {
-            Some(v) => self.field(name, v),
-            None => self,
-        }
     }
     pub fn build(self) -> HashCode {
         HashOps::create_map(self.0)

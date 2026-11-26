@@ -1,5 +1,5 @@
 //! The files of the resources the game loaded, resource packs' over vanilla's, for a client mod reading textures and
-//! other resources on any thread (`native_client_resources`; docs/native-mods.md).
+//! other resources on any thread (`native_client_resources`; docs/modding/src/how-to/native-mods.md).
 use std::path::PathBuf;
 use sunrise_core::prepared_files;
 

@@ -3,18 +3,19 @@ use super::*;
 
 /// Registration operations for the two unsynced loot map-codec registries.
 pub trait LootTypesRegistrar {
-    /// Register one function codec in the calling manifest's namespace.
-    /// Duplicate ids and minecraft/neoforge namespaces refuse mod loading by name.
+    /// Register one function codec by its validated identifier.
+    /// Built-in loot function types and duplicate ids refuse mod loading by name.
     fn add_loot_function_type(
         &mut self,
         id: &crate::Identifier,
-        codec: Arc<dyn crate::ModLootFunction>,
+        codec: Arc<dyn crate::ModLootFunctionCodec>,
     );
-    /// Register one condition codec in the calling manifest's namespace.
+    /// Register one condition codec by its validated identifier.
+    /// Built-in loot condition types and duplicate ids refuse mod loading by name.
     fn add_loot_condition_type(
         &mut self,
         id: &crate::Identifier,
-        codec: Arc<dyn crate::ModLootCondition>,
+        codec: Arc<dyn crate::ModLootConditionCodec>,
     );
 }
 impl dyn Registrar + '_ {
@@ -23,16 +24,16 @@ impl dyn Registrar + '_ {
     pub fn register_loot_function_type(
         &mut self,
         id: &crate::Identifier,
-        codec: impl crate::ModLootFunction,
+        codec: impl crate::ModLootFunctionCodec,
     ) {
         self.add_loot_function_type(id, Arc::new(codec));
     }
     /// Register a map codec in `Registries.LOOT_CONDITION_TYPE` before data loads.
-    /// Validation errors refuse the candidate reload; previous loot data stays active.
+    /// Decode errors refuse the candidate reload; previous loot data stays active.
     pub fn register_loot_condition_type(
         &mut self,
         id: &crate::Identifier,
-        codec: impl crate::ModLootCondition,
+        codec: impl crate::ModLootConditionCodec,
     ) {
         self.add_loot_condition_type(id, Arc::new(codec));
     }
@@ -42,23 +43,23 @@ impl dyn Registrar + '_ {
 pub(crate) struct LootFunctionTypeInfo {
     pub(crate) id: String,
     pub(crate) owner: &'static str,
-    pub(crate) owner_index: usize,
-    pub(crate) codec: Arc<dyn crate::ModLootFunction>,
+    pub(crate) callback_owner: crate::__private::game::CallbackOwner,
+    pub(crate) codec: Arc<dyn crate::ModLootFunctionCodec>,
 }
 #[derive(Clone)]
 pub(crate) struct LootConditionTypeInfo {
     pub(crate) id: String,
     pub(crate) owner: &'static str,
-    pub(crate) owner_index: usize,
-    pub(crate) codec: Arc<dyn crate::ModLootCondition>,
+    pub(crate) callback_owner: crate::__private::game::CallbackOwner,
+    pub(crate) codec: Arc<dyn crate::ModLootConditionCodec>,
 }
 
-/// Frozen declarations, with callbacks executed in the declaring mod's scope.
+/// Frozen declarations, with callbacks executed in each registration's shared `CallbackOwner`.
 // hidden: game integration captures these once, never scans mods while rolling.
 #[doc(hidden)]
 pub fn loot_type_declarations() -> (
-    Vec<(String, Arc<dyn crate::ModLootFunction>)>,
-    Vec<(String, Arc<dyn crate::ModLootCondition>)>,
+    Vec<(String, Arc<dyn crate::ModLootFunctionCodec>)>,
+    Vec<(String, Arc<dyn crate::ModLootConditionCodec>)>,
 ) {
     installed().map_or_else(Default::default, |installed| {
         (
@@ -68,9 +69,8 @@ pub fn loot_type_declarations() -> (
                 .map(|info| {
                     (
                         info.id.clone(),
-                        crate::loot_types::owned::function(
-                            info.owner,
-                            info.owner_index,
+                        crate::loot_types::owned::function_codec(
+                            info.callback_owner.clone(),
                             info.codec.clone(),
                         ),
                     )
@@ -82,9 +82,8 @@ pub fn loot_type_declarations() -> (
                 .map(|info| {
                     (
                         info.id.clone(),
-                        crate::loot_types::owned::condition(
-                            info.owner,
-                            info.owner_index,
+                        crate::loot_types::owned::condition_codec(
+                            info.callback_owner.clone(),
                             info.codec.clone(),
                         ),
                     )

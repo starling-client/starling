@@ -1,0 +1,3 @@
+ids = ["hook:sleep_status_announce", "type:HookId"]
+why = "Hooks::sleep_status_announce adds a server-side hook where ServerLevel.announceSleepStatus sends the action-bar sleeping line, after its own checks pass: a listener may cancel the line for everyone or replace it. NeoForge has no such event."
+migrate = "No existing hook version changes. A mod that matches HookId exhaustively adds the new sleep_status_announce arm; one with a wildcard arm compiles unchanged."

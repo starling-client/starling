@@ -4,18 +4,19 @@
 //! stamp out of the output's digest, so it never asks for a new `OUTPUT_VERSION`.
 
 use crate::pyjson::Value;
-use crate::{artifacts::Lock, read_json, write_json, OUTPUT_VERSION, SCHEMA};
+use crate::{artifacts::Lock, write_json};
 use std::path::Path;
+use sunrise_core::prepared_profile::{Manifest, Profile, MANIFEST};
 
 /// The file beside `sunrise-resources.json` naming the preparer's `OUTPUT_VERSION`.
-pub const STAMP: &str = "sunrise-prepare.json";
+pub use sunrise_core::prepared_profile::STAMP;
 
-pub(crate) fn write_stamp(resources: &Path) -> Result<(), String> {
+pub(crate) fn write_stamp_for(resources: &Path, version: u32) -> Result<(), String> {
     write_json(
         &resources.join(STAMP),
         &Value::Object(vec![(
             "output_version".into(),
-            Value::Int(OUTPUT_VERSION.to_string()),
+            Value::Int(version.to_string()),
         )]),
     )
 }
@@ -33,43 +34,95 @@ pub(crate) fn remove_stamp(resources: &Path) -> Result<(), String> {
 /// What the resources at `resources` lack for `root`'s pinned version, each with what to run;
 /// empty when they are complete and current. Err when `root` has no readable research-lock.json.
 pub fn check(root: &Path, resources: &Path) -> Result<Vec<String>, String> {
+    check_profile(root, resources, Profile::Full)
+}
+
+/// Check the dedicated profile, without requiring any client extras.
+pub fn check_server(root: &Path, resources: &Path) -> Result<Vec<String>, String> {
+    check_profile(root, resources, Profile::Server)
+}
+
+fn check_profile(root: &Path, resources: &Path, profile: Profile) -> Result<Vec<String>, String> {
     let lock = Lock::read(root)?;
-    let manifest_path = resources.join("sunrise-resources.json");
-    if !manifest_path.is_file() {
+    let command = if profile == Profile::Server {
+        "sunrise-prepare --server"
+    } else {
+        "sunrise-prepare --prepare"
+    };
+    if !resources.join(MANIFEST).is_file() {
         return Ok(vec![format!(
-            "{} is not prepared: sunrise-prepare --prepare",
+            "{} is not prepared: {command}",
             resources.display()
         )]);
     }
-    let mut lacking = Vec::new();
-    let manifest = read_json(&manifest_path)?;
-    let int = |value: Option<&Value>| value.and_then(Value::as_i64);
-    if int(manifest.get("schema")) != Some(SCHEMA) {
-        lacking.push(format!(
-            "an older layout (schema {}, this preparer writes {SCHEMA}): sunrise-prepare --prepare",
-            int(manifest.get("schema")).map_or("none".into(), |s| s.to_string())
-        ));
+    let manifest = Manifest::read(resources)?;
+    if manifest.profile() != profile {
+        return Ok(vec![format!(
+            "{} has the wrong preparation profile: {command}",
+            resources.display()
+        )]);
     }
-    let minecraft = manifest.get("minecraft").and_then(Value::as_str);
-    if minecraft != Some(lock.version.as_str()) {
-        lacking.push(format!(
-            "prepared for Minecraft {}, this preparer pins {}: sunrise-prepare --prepare",
-            minecraft.unwrap_or("unknown"),
-            lock.version
-        ));
-    }
-    let stamp = read_json(&resources.join(STAMP)).ok();
-    let made_by = int(stamp.as_ref().and_then(|s| s.get("output_version")));
-    if made_by != Some(i64::from(OUTPUT_VERSION)) {
-        lacking.push(format!(
-            "made by output version {}, this preparer makes {OUTPUT_VERSION}: sunrise-prepare --prepare",
-            made_by.map_or("unknown".into(), |v| v.to_string())
-        ));
-    }
-    for (command, what) in missing_extras(resources) {
-        lacking.push(format!("{what} missing: sunrise-prepare {command}"));
+    let mut lacking: Vec<_> = manifest
+        .version_problems(resources, &lock.version)
+        .into_iter()
+        .map(|problem| format!("{problem}: {command}"))
+        .collect();
+    if profile == Profile::Server {
+        if manifest.server_sha1.as_deref() != Some(lock.pin("server_sha1")?) {
+            lacking.push(format!("server.jar is not the pinned one: {command}"));
+        }
+        lacking.extend(
+            manifest
+                .server_inventory_problems(resources)
+                .into_iter()
+                .map(|problem| format!("{problem}: {command}")),
+        );
+    } else {
+        for (command, what) in missing_extras(resources) {
+            lacking.push(format!("{what} missing: sunrise-prepare {command}"));
+        }
     }
     Ok(lacking)
+}
+
+/// The files the server preparation just wrote, independent of caches and client extras.
+pub(crate) fn server_files(root: &Path) -> Result<Value, String> {
+    fn collect(
+        root: &Path,
+        dir: &Path,
+        recursive: bool,
+        names: &mut Vec<String>,
+    ) -> Result<(), String> {
+        let error = |e: std::io::Error| format!("{}: {e}", dir.display());
+        for entry in std::fs::read_dir(dir).map_err(error)? {
+            let entry = entry.map_err(error)?;
+            let path = entry.path();
+            let kind = entry.file_type().map_err(error)?;
+            if kind.is_dir() && recursive {
+                collect(root, &path, true, names)?;
+            } else if kind.is_file() {
+                let name = crate::relative_display(&path, root)?.replace('\\', "/");
+                if sunrise_core::prepared_files::server_resource(&name)
+                    && !matches!(name.as_str(), STAMP | "sunrise-resources.json")
+                {
+                    names.push(name);
+                }
+            }
+        }
+        Ok(())
+    }
+    let mut names = Vec::new();
+    collect(root, root, false, &mut names)?;
+    for dir in [
+        "data",
+        "worldgen",
+        "biome-parameters",
+        "assets/minecraft/lang",
+    ] {
+        collect(root, &root.join(dir), true, &mut names)?;
+    }
+    names.sort();
+    Ok(Value::Array(names.into_iter().map(Value::Str).collect()))
 }
 
 /// What the resources at `resources` lack of what a preparation may leave out when the player's
@@ -149,6 +202,7 @@ fn lacks_sounds(resources: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{OUTPUT_VERSION, SCHEMA, SERVER_OUTPUT_VERSION};
     use std::fs;
 
     fn folder(name: &str) -> std::path::PathBuf {
@@ -166,6 +220,28 @@ mod tests {
     fn file(path: &Path, data: &[u8]) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, data).unwrap();
+    }
+
+    #[test]
+    fn server_check_requires_inventory_without_client_assets() {
+        let dir = folder("server-profile");
+        fs::write(
+            dir.join("research-lock.json"),
+            r#"{"minecraft":{"version":"9.9","java_major":25,"server_sha1":"test-pin"}}"#,
+        )
+        .unwrap();
+        let out = dir.join("output");
+        let path = out.join("data/minecraft/loot_table/example.json");
+        file(&path, b"{}");
+        file(&out.join("sunrise-resources.json"), format!(r#"{{"schema":{SCHEMA},"profile":"server","minecraft":"9.9","server_sha1":"test-pin","server_files":["data/minecraft/loot_table/example.json"]}}"#).as_bytes());
+        write_stamp_for(&out, SERVER_OUTPUT_VERSION).unwrap();
+        assert!(check_server(&dir, &out).unwrap().is_empty());
+        assert!(check(&dir, &out).unwrap()[0].contains("wrong preparation profile"));
+        fs::remove_file(path).unwrap();
+        assert!(
+            check_server(&dir, &out).unwrap()[0].contains("data/minecraft/loot_table/example.json")
+        );
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     /// A PNG's signature and IHDR size, all `lacks_panorama` reads.
@@ -217,7 +293,7 @@ mod tests {
             &out.join("sunrise-resources.json"),
             format!(r#"{{"schema": {SCHEMA}, "minecraft": "9.9"}}"#).as_bytes(),
         );
-        write_stamp(&out).unwrap();
+        write_stamp_for(&out, OUTPUT_VERSION).unwrap();
         let assets = out.join("assets");
         for pack in crate::BUILT_IN_PACKS {
             file(&assets.join(pack), b"zip");
@@ -247,7 +323,7 @@ mod tests {
     fn a_preparation_removes_the_stamp_before_writing() {
         let root = folder("restamp");
         let out = root.join("out");
-        write_stamp(&out).unwrap();
+        write_stamp_for(&out, OUTPUT_VERSION).unwrap();
         remove_stamp(&out).unwrap();
         assert!(!out.join(STAMP).exists());
         // Nothing to remove is not an error.

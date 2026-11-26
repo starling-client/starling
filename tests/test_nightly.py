@@ -8,7 +8,6 @@ import os
 import shutil
 import string
 import subprocess
-import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -16,6 +15,9 @@ from pathlib import Path
 
 from tools.ci import nightly
 from tools.ci import nightly_set as ns
+from tools.ci import vendored_yaml
+
+yaml = vendored_yaml.load()
 
 NOW = "2026-10-28T12:00:00+00:00"
 PATTERNS = ns.guarded_patterns((Path(__file__).resolve().parents[1] / ".github/CODEOWNERS").read_text())
@@ -51,7 +53,7 @@ def notes(chosen=None, picked=(), left_out=(), merged=(), issues=()):
 class NightlyTests(unittest.TestCase):
     def test_release_keys_and_publishers_stay_on_github_hosted_runners(self):
         import re
-        from tests.test_ci_concurrency import ROOT, yaml
+        from tests.test_ci_concurrency import ROOT
 
         workflows = ROOT / ".github/workflows"
         for path in sorted(workflows.iterdir()):
@@ -135,9 +137,6 @@ class NightlyTests(unittest.TestCase):
         text = notes(chosen=nightly.Ref("main", sha, None))
         self.assertIn(f"Source: commit {sha}, kept for good as the tag `nightly-source/2026-10-28-0c02067`", text)
 
-    def test_notes_tell_manual_downloaders_the_musl_archive_follows(self):
-        self.assertIn("The optional musl Linux archive follows separately", notes())
-
     def test_the_source_tag_outlives_every_prune(self):
         tag = nightly.source_tag("2026-10-20", "a" * 40)
         self.assertEqual(nightly.stale([{"tagName": tag, "isPrerelease": True}], dt.date(2026, 11, 28), 7), [])
@@ -179,6 +178,7 @@ class ScheduledTests(unittest.TestCase):
 WORKFLOWS = Path(__file__).resolve().parents[1] / ".github" / "workflows"
 
 
+<<<<<<< HEAD
 WORKFLOWS = Path(__file__).resolve().parents[1] / ".github" / "workflows"
 # Starling's repository drops Sunrise's nightly and release workflows (it builds its own APK).
 SUNRISE_RELEASES = unittest.skipUnless(
@@ -421,6 +421,245 @@ class AttachTests(unittest.TestCase):
 
 
 @SUNRISE_RELEASES
+||||||| 46c00106def
+class MuslAttachmentTests(unittest.TestCase):
+    def setUp(self):
+        from tests.test_ci_concurrency import yaml
+
+        self.jobs = yaml.safe_load((WORKFLOWS / "nightly-build.yml").read_text())["jobs"]
+        self.game = yaml.safe_load((WORKFLOWS / "game-build.yml").read_text())["jobs"]
+        self.attach = self.jobs["musl-attach"]
+
+    def test_musl_is_not_a_transitive_dependency_of_sign_or_publish(self):
+        pending = ["sign", "publish"]
+        seen = set()
+        while pending:
+            name = pending.pop()
+            if name not in seen:
+                seen.add(name)
+                needs = self.jobs[name].get("needs", [])
+                pending.extend([needs] if isinstance(needs, str) else needs)
+        self.assertEqual(seen, {"pick", "break-glass-umceko", "break-glass-aria", "break-glass", "exporters", "build",
+                                "complete", "sign", "publish"})
+        self.assertEqual(self.jobs["build"]["needs"], ["pick", "exporters"])
+        self.assertEqual(self.jobs["musl-build"]["needs"], ["pick", "exporters"])
+        for call, part in (("exporters", "exporters"), ("build", "game"), ("musl-build", "musl")):
+            self.assertEqual(self.jobs[call]["uses"], "./.github/workflows/game-build.yml")
+            self.assertEqual(self.jobs[call]["with"]["part"], part)
+            self.assertEqual(self.game[part if part != "game" else "build"]["if"], f"inputs.part == '{part}'")
+        self.assertTrue(all(not row.get("musl") for row in self.game["build"]["strategy"]["matrix"]["include"]))
+        self.assertEqual([row["name"] for row in self.game["musl"]["strategy"]["matrix"]["include"]], ["linux-musl"])
+
+    def test_the_release_environment_attaches_only_after_successful_publication(self):
+        self.assertEqual(set(self.attach["needs"]), {"pick", "publish", "musl-build"})
+        self.assertIn("needs.publish.result == 'success'", self.attach["if"])
+        self.assertEqual(self.attach["environment"], self.jobs["sign"]["environment"])
+        self.assertIn("'release'", self.attach["environment"])
+        self.assertEqual(self.attach["env"]["TAG"], "${{ needs.pick.outputs.tag }}")
+        self.assertEqual(self.attach["steps"][1]["with"], {"name": "musl-archive", "path": "musl"})
+
+    @unittest.skipUnless(os.name == "posix" and shutil.which("openssl") and shutil.which("sha256sum"),
+                         "the hosted signing steps use Bash, OpenSSL and sha256sum")
+    def test_musl_signs_and_uploads_only_its_own_checksums_and_archive(self):
+        sign, verify, upload = (step["run"] for step in self.attach["steps"][2:])
+        script_root = WORKFLOWS.parents[1]
+        archive = "sunrise-linux-musl-x86_64.tar.gz"
+        for kind, tag in (("nightly", "nightly"), ("dev", "dev-2026-11-04-0123456")):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                (root / "musl").mkdir()
+                (root / "musl" / archive).write_bytes(b"musl archive")
+                (root / "tools").symlink_to(script_root / "tools", target_is_directory=True)
+                env = dict(os.environ, KIND=kind, SIGN_FOR=kind, ALSO_FOR=f"{kind}-2026-11-04-0123456", TAG=tag, ARCHIVE=archive,
+                           DRY_RUN="true", EPHEMERAL="yes", GITHUB_REPOSITORY="sunrise-org/sunrise",
+                           SHA="0123456789abcdef", RELEASE_ID="123")
+
+                def shell(script, **overrides):
+                    return subprocess.run(["bash", "-e", "-o", "pipefail", "-c", script], cwd=root,
+                                          env=dict(env, **overrides), text=True, capture_output=True)
+
+                result = shell(sign)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                # Both signatures checked for real, with OpenSSL and the run's throwaway key, no code of the checkout.
+                result = shell(verify)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stderr.splitlines(), [f"{kind}: 1 files match SHA256SUMS",
+                                                              f"{env['ALSO_FOR']}: 1 files match SHA256SUMS"])
+                self.assertNotIn("cargo", verify)
+                self.assertTrue((root / "musl/SHA256SUMS-musl.sig").stat().st_size)
+                self.assertTrue((root / "musl/SHA256SUMS-musl.v2.sig").stat().st_size)
+                self.assertFalse((root / "musl/SHA256SUMS").exists())
+                # The attachment itself (nightly.attach) is tested below; here, what the step hands it.
+                stub = 'python3() { printf "%s\\n" "$@" >> uploaded; }\n'
+                dry = shell(stub + upload)
+                self.assertEqual(dry.returncode, 0, dry.stderr)
+                self.assertIn(f"Would append to {tag}", dry.stdout)
+                unknown = shell(stub + upload, DRY_RUN="false", RELEASE_ID="")
+                self.assertNotEqual(unknown.returncode, 0, unknown.stdout)
+                self.assertFalse((root / "uploaded").exists())
+                result = shell(stub + upload, DRY_RUN="false")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual((root / "uploaded").read_text().splitlines(), [
+                    "tools/ci/nightly.py", "attach", "123", tag, env["SHA"], "musl/SHA256SUMS-musl",
+                    "musl/SHA256SUMS-musl.sig", "musl/SHA256SUMS-musl.v2.sig", f"musl/{archive}",
+                ])
+
+    def test_musl_failures_file_one_bug_per_step_without_release_writes(self):
+        job = self.jobs["musl-failure"]
+        self.assertEqual(job["permissions"], {"contents": "read", "issues": "write"})
+        for name in ("musl-build", "musl-attach"):
+            self.assertIn(name, job["needs"])
+            for result in ("failure", "cancelled"):
+                self.assertIn(f"needs.{name}.result == '{result}'", job["if"])
+        env = dict(DRY_RUN="false", GITHUB_REF="refs/heads/main", GITHUB_SERVER_URL="https://github.com",
+                   GITHUB_REPOSITORY="sunrise-org/sunrise", GITHUB_RUN_ID="12345", GITHUB_RUN_ATTEMPT="2")
+        with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(nightly.train, "gh_json") as query, \
+                mock.patch.object(nightly, "gh") as gh:
+            query.return_value = [[]]
+            for step in ("build", "sign", "attach"):
+                nightly.report_musl_failure("nightly", step)
+            self.assertEqual(gh.call_count, 3)
+            for step, call in zip(("build", "sign", "attach"), gh.call_args_list):
+                *args, body = call.args
+                self.assertEqual(args, ["issue", "create", "--repo", "sunrise-org/sunrise", "--label", "bug",
+                                        "--title", f"Nightly: musl {step} failed", "--body"])
+                self.assertTrue(body.startswith("> 🤖 Filed by Aria's agent swarm, Dyna, not by Aria.\n\n"))
+                self.assertIn(f"`{step}` step failed", body)
+                self.assertIn("/actions/runs/12345/attempts/2", body)
+            query.return_value = [[], [{"title": "Nightly: musl build failed"}]]
+            nightly.report_musl_failure("nightly", "build")
+            self.assertEqual(gh.call_count, 3)
+            query.reset_mock()
+            with mock.patch.dict(os.environ, DRY_RUN="true"):
+                nightly.report_musl_failure("nightly", "attach")
+            query.assert_not_called()
+            self.assertEqual(gh.call_count, 3)
+
+
+class FakeRelease:
+    """Release 7 of the GitHub API, as `gh api` and the upload address see it."""
+
+    def __init__(self, tag="nightly", commit="c" * 40, assets=()):
+        self.tag, self.commit, self.assets, self.calls, self.fail_after = tag, commit, list(assets), [], None
+
+    def gh(self, *args, check=True):
+        self.calls.append(args)
+        if args[:2] == ("api", "repos/o/r/releases/7") or args[:2] == ("api", "repos/o/r/releases/tags/nightly"):
+            return json.dumps({"id": 7, "tag_name": self.tag, "assets": self.assets,
+                               "upload_url": "https://uploads.github.com/repos/o/r/releases/7/assets{?name,label}"})
+        if args[1].startswith("repos/o/r/git/ref/tags/"):
+            return self.commit
+        if args[:3] == ("api", "--method", "DELETE"):
+            self.assets = [a for a in self.assets if f"/assets/{a['id']}" not in args[3]]
+            return ""
+        raise AssertionError(args)
+
+    def upload(self, url, path):
+        self.upload_url = url
+        if self.fail_after is not None and len(self.uploads()) >= self.fail_after:
+            raise OSError("connection reset")
+        self.calls.append(("upload", path.name))
+        asset = {"id": 100 + len(self.assets), "name": path.name, "state": "uploaded", "size": path.stat().st_size,
+                 "digest": "sha256:" + nightly.file_sha256(path)}
+        self.assets.append(asset)
+        return asset
+
+    def uploads(self):
+        return [call[1] for call in self.calls if call[0] == "upload"]
+
+
+class AttachTests(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.files = []
+        for name in ("SHA256SUMS-musl", "SHA256SUMS-musl.sig", "sunrise-linux-musl-x86_64.tar.gz"):
+            (Path(folder.name) / name).write_bytes(name.encode())
+            self.files.append(Path(folder.name) / name)
+        env = mock.patch.dict(os.environ, GITHUB_REPOSITORY="o/r", GH_TOKEN="t")
+        env.start()
+        self.addCleanup(env.stop)
+
+    def attach(self, release):
+        with mock.patch.object(nightly, "gh", release.gh), mock.patch.object(nightly, "upload_asset", release.upload):
+            nightly.attach("7", "nightly", "c" * 40, self.files)
+
+    def asset(self, path, data=None, state="uploaded"):
+        data = path.read_bytes() if data is None else data
+        return {"id": 50, "name": path.name, "state": state, "size": len(data),
+                "digest": "sha256:" + nightly.hashlib.sha256(data).hexdigest()}
+
+    def test_uploads_in_order_to_the_release_by_id(self):
+        release = FakeRelease()
+        self.attach(release)
+        self.assertEqual(release.uploads(), [path.name for path in self.files])
+        self.assertEqual(release.upload_url, "https://uploads.github.com/repos/o/r/releases/7/assets")
+
+    def test_a_release_whose_tag_moved_gets_nothing(self):
+        for release in (FakeRelease(commit="d" * 40), FakeRelease(tag="nightly-2026-11-19")):
+            with self.subTest(tag=release.tag), self.assertRaises(SystemExit):
+                self.attach(release)
+            self.assertEqual(release.uploads(), [])
+
+    def test_a_rerun_after_a_failed_upload_resumes_with_the_rest(self):
+        release = FakeRelease()
+        release.fail_after = 1
+        with self.assertRaises(OSError):
+            self.attach(release)
+        self.assertEqual(release.uploads(), ["SHA256SUMS-musl"])
+        release.fail_after = None
+        self.attach(release)
+        self.assertEqual(release.uploads(), [path.name for path in self.files])
+
+    def test_a_file_already_there_with_other_bytes_stops_it_and_stays(self):
+        conflicting = self.asset(self.files[1], b"other")
+        release = FakeRelease(assets=[self.asset(self.files[0]), conflicting])
+        with self.assertRaises(SystemExit) as stopped:
+            self.attach(release)
+        self.assertIn("SHA256SUMS-musl.sig is already on release 7 with other bytes", str(stopped.exception))
+        self.assertEqual(release.uploads(), [])
+        self.assertIn(conflicting, release.assets)
+        self.assertFalse([call for call in release.calls if "DELETE" in call])
+
+    def test_only_an_empty_starter_placeholder_is_replaced(self):
+        release = FakeRelease(assets=[self.asset(self.files[0], b"", state="starter")])
+        self.attach(release)
+        self.assertIn(("api", "--method", "DELETE", "repos/o/r/releases/assets/50"), release.calls)
+        self.assertEqual(release.uploads(), [path.name for path in self.files])
+        for data, state in ((b"part", "starter"), (b"", "open")):
+            with self.subTest(state=state, size=len(data)):
+                kept = self.asset(self.files[0], data, state=state)
+                release = FakeRelease(assets=[kept])
+                with self.assertRaises(SystemExit):
+                    self.attach(release)
+                self.assertEqual(release.uploads(), [])
+                self.assertEqual(release.assets, [kept])
+
+    def test_an_asset_without_a_digest_is_compared_by_its_bytes(self):
+        same = dict(self.asset(self.files[0]), digest=None)
+        release = FakeRelease(assets=[same])
+        with mock.patch.object(nightly, "download_asset", return_value=self.files[0].read_bytes()) as download:
+            self.attach(release)
+        download.assert_called_with("o/r", 50)
+        self.assertEqual(release.uploads(), [path.name for path in self.files[1:]])
+
+    def test_the_identity_is_the_release_holding_this_runs_sums(self):
+        sums = self.files[0].with_name("SHA256SUMS")
+        sums.write_bytes(b"sums")
+        for data, found in ((b"sums", True), (b"older sums", False)):
+            release = FakeRelease(assets=[self.asset(sums, data)])
+            with self.subTest(found=found), mock.patch.object(nightly, "gh", release.gh), \
+                    mock.patch.object(nightly, "output") as output:
+                if found:
+                    nightly.release_identity("nightly", "c" * 40, sums)
+                    output.assert_called_once_with(id="7")
+                else:
+                    self.assertRaises(SystemExit, nightly.release_identity, "nightly", "c" * 40, sums)
+                    output.assert_not_called()
+
+
+=======
+>>>>>>> ed6772e2118
 class FirstNightlyTests(unittest.TestCase):
     def test_fetch_succeeds_with_or_without_an_existing_nightly_tag(self):
         class ReachedGreenBase(Exception):
@@ -449,6 +688,7 @@ class UntrustedBuildTests(unittest.TestCase):
 
     def setUp(self):
         self.game = (WORKFLOWS / "game-build.yml").read_text()
+        self.exporters = (WORKFLOWS / "exporters.yml").read_text()
 
     def test_no_nightly_build_is_trusted(self):
         # The train only starts `nightly build` (Nightly only since 2026-10-28); it builds nothing itself.
@@ -470,12 +710,14 @@ class UntrustedBuildTests(unittest.TestCase):
         # run on Dyna's runner for an untrusted build only, never sharing a trusted build with pull requests' jobs.
         self.assertNotIn("MAC_RUNNER", self.game)
         self.assertNotIn('"macOS"', self.game)
-        exporters = next(line for line in self.game.splitlines() if "runs-on:" in line and "NIGHTLY_EXPORTERS_RUNNER" in line)
+        self.assertNotIn('"macOS"', self.exporters)
+        exporters = next(line for line in self.exporters.splitlines() if "runs-on:" in line and "NIGHTLY_EXPORTERS_RUNNER" in line)
         self.assertIn("!inputs.trusted && vars.DYNA_CI_SELF_HOSTED == 'true' && vars.NIGHTLY_EXPORTERS_RUNNER", exporters)
 
     def test_a_trusted_build_never_reads_the_shared_sccache(self):
-        calls = self.game.count("bash tools/ci/runner-env.sh")
-        self.assertEqual(self.game.count("SUNRISE_NO_SCCACHE: ${{ inputs.trusted && '1' || '' }}"), calls)
+        both = self.game + self.exporters
+        calls = both.count("bash tools/ci/runner-env.sh")
+        self.assertEqual(both.count("SUNRISE_NO_SCCACHE: ${{ inputs.trusted && '1' || '' }}"), calls)
         env = (Path(__file__).resolve().parents[1] / "tools/ci/runner-env.sh").read_text()
         self.assertEqual(env.count('-z "${SUNRISE_NO_SCCACHE:-}"'), 2)
 
@@ -912,3 +1154,49 @@ class VerifySumsTests(unittest.TestCase):
                 else:
                     with self.assertRaisesRegex(SystemExit, "is no Ed25519 public key"):
                         nightly.release_keys()
+
+
+class SdkBodyTests(unittest.TestCase):
+    def index(self, previous="p" * 40, changes=(), notes=(), source="breaking"):
+        surface = {"hash": "h"}
+        if previous:
+            surface.update(previous=previous, source=source, changes=list(changes), notes=list(notes))
+        return {"build": {"commit": "c" * 40}, "surface": surface}
+
+    def test_notes_naming_the_earliest_change_come_first(self):
+        notes = [{"ids": ["item:b"], "why": "WHY-LATE"},
+                 {"ids": ["item:z", "hook:a"], "why": "WHY-BREAKING", "migrate": "use the new hook"}]
+        body = nightly.sdk_body(self.index(changes=["hook:a", "item:b", "item:z"], notes=notes))
+        self.assertLess(body.index("WHY-BREAKING"), body.index("WHY-LATE"))
+        self.assertIn("Migrate: use the new hook", body)
+        self.assertIn("`hook:a`", body)
+        self.assertIn("Changes since sdk-" + "p" * 40, body)
+        self.assertIn("breaking", body)
+
+    def test_no_previous_says_there_is_no_comparison(self):
+        body = nightly.sdk_body(self.index(previous=None))
+        self.assertIn("c" * 40, body)
+        self.assertIn("no comparison", body)
+        self.assertNotIn("Changes since", body)
+
+    def test_the_body_stops_at_a_whole_note_under_the_cap(self):
+        notes = [{"ids": [f"item:{n}"], "why": f"NOTE-{n} " + "x" * 100} for n in range(10)]
+        changes = [f"item:{n}" for n in range(10)]
+        with mock.patch.object(nightly, "GITHUB_RELEASE_BODY_LIMIT", 800):
+            body = nightly.sdk_body(self.index(changes=changes, notes=notes))
+        self.assertLessEqual(len(body), 800)
+        self.assertIn("NOTE-0 ", body)
+        self.assertNotIn("NOTE-9 ", body)
+        shown = body.count("NOTE-")
+        self.assertIn(f"The remaining notes ({10 - shown}) are in sdk.json's `surface.notes`", body)
+        for n in range(shown):
+            self.assertIn("x" * 100, body.split(f"NOTE-{n} ")[1].split("\n")[0])
+
+    def test_changes_no_note_names_are_counted_not_listed(self):
+        changes = [f"item:{n}" for n in range(300)]
+        notes = [{"ids": ["item:0"], "why": "WHY"}]
+        body = nightly.sdk_body(self.index(changes=changes, notes=notes))
+        self.assertIn("299 changed records", body)
+        self.assertIn("cargo sunrise-mod sdk diff", body)
+        self.assertNotIn("item:1`", body)
+        self.assertNotIn("item:299", body)

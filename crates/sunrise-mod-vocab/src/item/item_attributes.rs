@@ -1,5 +1,5 @@
 //! The target of `item_attribute_modifier` (`ItemAttributeModifierEvent`).
-use crate::item::item_stack::ItemStack;
+use crate::item::item_stack::ItemStackView;
 #[allow(unused_imports)]
 use crate::*;
 /// `ItemAttributeModifierEvent`: the attribute modifiers `stack` grants
@@ -12,6 +12,9 @@ use crate::*;
 /// changes (`ItemStack.matches`), so the answer must be the same for the same
 /// stack. Asked on the server and on a client (its tooltips).
 #[inline(never)]
-pub fn native_item_attribute_modifier(stack: &ItemStack, modifiers: &mut ItemAttributeModifiers) {
+pub fn native_item_attribute_modifier(
+    stack: ItemStackView<'_>,
+    modifiers: &mut ItemAttributeModifiers,
+) {
     crate::dispatch_item_attribute_modifier(stack, modifiers);
 }

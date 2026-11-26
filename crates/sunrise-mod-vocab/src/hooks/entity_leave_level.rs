@@ -1,5 +1,4 @@
 //! The `entity_leave_level` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0060
 
 pub trait Hooks {
     /// An entity leaves the server level `dimension` (NeoForge's

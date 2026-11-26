@@ -175,6 +175,15 @@ pub struct OpEntry {
     pub level: i32,
     pub bypasses_player_limit: bool,
 }
+impl UserList<OpEntry> {
+    /// The permission level of the operator with this UUID, if present.
+    pub fn permission_level(&self, id: u128) -> Option<i32> {
+        self.map
+            .get(&JKey(uuid_string(id)))
+            .map(|entry| entry.level)
+    }
+}
+
 impl Entry for OpEntry {
     type User = NameAndId;
     fn user(&self) -> &NameAndId {

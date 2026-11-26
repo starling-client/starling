@@ -213,21 +213,75 @@ impl Game<'_> {
         if let Some(g) = self.native_target_guest(t) {
             return Some(g.head_yaw);
         }
-        if let Target::Mob(id) = t {
-            return Some(self.mobs.iter().find(|m| m.id == id)?.head_yaw);
+        match t {
+            Target::Mob(id) => Some(self.mobs.iter().find(|m| m.id == id)?.head_yaw),
+            Target::Stand(id) => Some(self.armor_stands.iter().find(|a| a.id == id)?.head_yaw),
+            _ => Some(0.0),
         }
-        Some(0.0)
     }
-    /// The yaw of the entity's body (`LivingEntity.yBodyRot`) in degrees as
-    /// vanilla keeps it, not normalized: mobs only, None for players and every
-    /// other kind, and for a stale handle.
+    /// `LivingEntity.yBodyRot`: the local player's render model on a client,
+    /// the living entity's authoritative body on a server.
     pub(super) fn entity_body_yaw(&self, entity: EntityRef) -> Option<f32> {
+        if !self.is_logical_server() {
+            self.native_client_level()?;
+            if self.local_player()?.entity() == entity {
+                return Some(self.player_model.as_ref()?.body_yaw);
+            }
+            return None;
+        }
         match self.native_entity_target(entity)? {
             Target::Mob(id) => Some(self.mobs.iter().find(|m| m.id == id)?.body_yaw),
-            // The dragon's flight yaw also drives its body and part poses.
-            Target::Dragon(_) => Some(self.native_dragon(entity)?.yaw),
+            Target::Stand(id) => Some(self.armor_stands.iter().find(|a| a.id == id)?.body_yaw),
+            Target::Dragon(_) => Some(self.dragon.as_ref()?.body_yaw),
+            t @ (Target::Player | Target::Guest(_)) => Some(self.native_player_body(t)?.body_yaw),
             _ => None,
         }
+    }
+
+    /// `LivingEntity.setYBodyRot`, including the vanilla subclass overrides.
+    pub(super) fn entity_set_body_yaw(
+        &mut self,
+        entity: EntityRef,
+        yaw: f32,
+    ) -> Result<bool, mod_api::LevelWriteError> {
+        Ok(match self.native_entity_target(entity) {
+            Some(Target::Mob(id)) => {
+                let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) else {
+                    return Ok(false);
+                };
+                use sunrise_client::mobs::Species;
+                // Silverfish and endermites call Entity.setYRot too. Only that
+                // side effect rejects non-finite values, not the body assignment.
+                if matches!(m.species(), Species::Silverfish | Species::Endermite)
+                    && yaw.is_finite()
+                {
+                    m.yaw = yaw;
+                }
+                m.body_yaw = yaw;
+                true
+            }
+            Some(Target::Stand(id)) => {
+                let Some(a) = self.armor_stands.iter_mut().find(|a| a.id == id) else {
+                    return Ok(false);
+                };
+                a.previous_yaw = yaw;
+                a.previous_body_yaw = yaw;
+                a.head_yaw = yaw;
+                a.previous_head_yaw = yaw;
+                true
+            }
+            Some(Target::Dragon(_)) => self.dragon.as_mut().is_some_and(|d| {
+                d.body_yaw = yaw;
+                true
+            }),
+            Some(t @ (Target::Player | Target::Guest(_))) => {
+                self.native_player_body_mut(t).is_some_and(|p| {
+                    p.body_yaw = yaw;
+                    true
+                })
+            }
+            _ => false,
+        })
     }
     /// Turns a mob's head to `yaw` (`Entity.setYHeadRot`); its body follows
     /// as its AI turns it. Players' heads can turn too; false for other kinds
@@ -285,42 +339,11 @@ impl Game<'_> {
             return false;
         };
         if matches!(target, Target::Player | Target::Guest(_)) {
-            let conn = match target {
-                Target::Player => self.lan_acting,
-                Target::Guest(conn) => Some(conn),
-                _ => None,
-            };
-            let Some(conn) = conn else {
-                return false;
-            };
-            let Some(host) = self.lan.as_mut() else {
-                return false;
-            };
-            return host
-                .hub
-                .update_guest(conn, |g| {
-                    let motion = if matches!(target, Target::Player) {
-                        self.player.as_mut()
-                    } else {
-                        g.motion.as_deref_mut()
-                    };
-                    let Some(motion) = motion else {
-                        return false;
-                    };
-                    let v = motion.velocity;
-                    motion.velocity = Vec3::new(v.x + delta[0], v.y + delta[1], v.z + delta[2]);
-                    let v = motion.velocity;
-                    g.send(
-                        &sunrise_protocol::packets::play::Clientbound::SetEntityMotion(
-                            sunrise_protocol::packets::play::SetEntityMotion {
-                                id: g.entity_id,
-                                velocity: [v.x, v.y, v.z],
-                            },
-                        ),
-                    );
-                    true
-                })
-                .unwrap_or(false);
+            let [x, y, z] = delta;
+            return self.write_player_velocity(target, |before| {
+                let velocity = before.add_vector(Vec3::new(x, y, z));
+                velocity.is_finite().then_some(velocity)
+            });
         }
         let Some(h) = self.native_walk_entity(entity.id()) else {
             return false;
@@ -335,6 +358,54 @@ impl Game<'_> {
         }
         true
     }
+    /// Update the resolved player's body, in place for its own turn or in its guest record.
+    /// The resolver already excludes displaced outer players. Send to the owning client only.
+    pub(super) fn write_player_velocity(
+        &mut self,
+        target: Target,
+        change: impl FnOnce(Vec3) -> Option<Vec3>,
+    ) -> bool {
+        let Some((conn, motion)) = self.player_motion_mut(target) else {
+            return false;
+        };
+        let Some(velocity) = change(motion.velocity) else {
+            return false;
+        };
+        motion.velocity = velocity;
+        self.send_guest_motion(conn, Some(velocity));
+        true
+    }
+
+    /// Put back a player's own random after a copy of it drew for them.
+    pub(super) fn write_player_random(
+        &mut self,
+        target: Target,
+        random: sunrise_core::random::EntityRandom,
+    ) {
+        if let Some((_, motion)) = self.player_motion_mut(target) {
+            motion.random = random;
+        }
+    }
+
+    /// The body of the acting player or a guest, with its connection, during or outside a turn.
+    fn player_motion_mut(
+        &mut self,
+        target: Target,
+    ) -> Option<(u32, &mut sunrise_client::motion::PlayerMotion)> {
+        let conn = match target {
+            Target::Player => self.lan_acting,
+            Target::Guest(conn) => Some(conn),
+            _ => None,
+        }?;
+        let host = self.lan.as_mut()?;
+        let motion = if target == Target::Player {
+            host.hub.guest(conn).and(self.player.as_mut())
+        } else {
+            host.hub.guests.motion_mut(conn)
+        }?;
+        Some((conn, motion))
+    }
+
     /// Moves a player by `delta` through the level (`Entity.move`) after the `entity_move` hook
     /// has heard it, and tells its client with a relative teleport (`Hub::displace`). The
     /// displacement made, or `None` (see the host trait for what is refused).
@@ -410,11 +481,11 @@ impl Game<'_> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(in crate::game) mod tests {
     #[test]
     #[ignore = "daily"]
     fn moves_and_pushes_a_live_mob() {
-        use super::super::native_entity_refs::tests::with_game;
+        use super::super::native_entity_refs::tests::{fixture_resident_column, with_game};
         use sunrise_client::mobs::Mob;
         use sunrise_core::geometry::Vec3;
 
@@ -437,8 +508,10 @@ mod tests {
             mob.extra.passenger = true;
             mob.fall_distance = 5.0;
             mob.velocity.y = -2.0;
+            fixture_resident_column(&mut game.world, (0, 0));
             game.mobs.push(mob);
             let entity = game.entity(12).unwrap();
+            fixture_resident_column(&mut game.world, (0, -1));
             assert!(entity.teleport_to(game, [5.0, 70.0, -3.0], Some([90.0, 120.0])));
             let mob = &game.mobs[0];
             assert!(mob.ai.nav.path.is_none());
@@ -473,11 +546,12 @@ mod tests {
             let stand = game.entity(13).unwrap();
             assert!(!stand.set_rotation(game, 30.0, 10.0));
             game.others.push(super::super::commands::OtherEntity {
+                size_answer: None,
                 attachment_lifetime: Default::default(),
                 knot_check: None,
                 eye: None,
                 join: Default::default(),
-                item_transformation: None,
+                display: None,
                 interaction: None,
                 id: 14,
                 kind: "minecraft:marker".into(),
@@ -495,6 +569,7 @@ mod tests {
                 pos: [0, 64, 0],
                 facing: 0,
                 variant: "minecraft:kebab".into(),
+                asset: None,
                 width: 1,
                 height: 1,
                 check_interval: 0,
@@ -532,6 +607,10 @@ mod tests {
     /// Independent vanilla outcomes for spawn bounds and the yaw-to-direction conversion.
     #[test]
     fn move_boundaries_match_vanilla() {
+        run_move_boundaries_match_vanilla();
+    }
+
+    pub(in crate::game) fn run_move_boundaries_match_vanilla() {
         use serde_json::Value;
         let cases = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),

@@ -1,9 +1,11 @@
-//! `text_from_json`: a text component read as `/tellraw` takes it.
+//! The host's persistent text forms, read as `ComponentSerialization.CODEC` takes them.
 use super::Game;
 use mod_api::text::TextFormError;
 use sunrise_client::command::Registries;
 use sunrise_client::text::Text;
 use sunrise_client::text_grammar::build;
+use sunrise_core::json_nbt::{JsonNbtError, tag_to_json};
+use sunrise_core::nbt::{self, Tag};
 
 impl Game<'_> {
     /// A component read as `/tellraw` takes it; None when it isn't one (an object with no
@@ -13,15 +15,14 @@ impl Game<'_> {
     }
 }
 
-/// What `text_from_json` read: the component, none, or the nesting refusal, crossing to the
-/// API as one `Result`.
+/// A component, none, or a refusal, crossing to the API as one `Result`.
 pub(super) struct Read(Result<Option<Text>, TextFormError>);
 
 impl crate::game::api_values::TryIntoApi for Read {
     type Api = Option<mod_api::Text>;
     type Error = TextFormError;
     fn try_into_api(&self) -> Result<Self::Api, Self::Error> {
-        self.0.clone().and_then(|text| text.try_into_api())
+        self.0.as_ref().map_err(Clone::clone)?.try_into_api()
     }
 }
 
@@ -30,25 +31,36 @@ impl crate::game::api_values::TryIntoApi for Read {
 fn component_from_json(json: &str, registries: &Registries) -> Result<Option<Text>, TextFormError> {
     // JSON first: it decodes escapes and has a real `null`. SNBT is the fallback (and takes
     // the nesting beyond serde_json's own limit to the parser's 512).
-    let (value, snbt) = match serde_json::from_str::<serde_json::Value>(json) {
-        Ok(value) => (value, false),
-        Err(_) => {
-            let (value, used) = match sunrise_client::component::parse_snbt(json) {
-                Ok(parsed) => parsed,
-                // NBT's own limit of 512: the named refusal, not "not a component".
-                Err(error) if error.starts_with("arguments.nbtpath.too_deep at ") => {
-                    return Err(TextFormError::TooDeep);
-                }
-                Err(_) => return Ok(None),
-            };
-            if !json.as_bytes()[used..].iter().all(u8::is_ascii_whitespace) {
-                return Ok(None);
-            }
-            (value, true)
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(json) {
+        return Ok(build(&value, registries, false).map(Text::from));
+    }
+    let (tag, used) = match nbt::parse_snbt(json) {
+        Ok(parsed) => parsed,
+        // NBT's own limit of 512: the named refusal, not "not a component".
+        Err(error) if error.starts_with("arguments.nbtpath.too_deep at ") => {
+            return Err(TextFormError::TooDeep);
         }
+        Err(_) => return Ok(None),
+    };
+    let read = if json.as_bytes()[used..].iter().all(u8::is_ascii_whitespace) {
+        component_from_snbt(&tag, registries)
+    } else {
+        Ok(None)
+    };
+    nbt::discard_tag(tag);
+    read
+}
+
+fn component_from_snbt(tag: &Tag, registries: &Registries) -> Result<Option<Text>, TextFormError> {
+    let value = match tag_to_json(tag) {
+        Ok(value) => value,
+        Err(JsonNbtError::TooDeep) => return Err(TextFormError::TooDeep),
+        Err(_) => return Ok(None),
     };
     // Only the rebuilt value reaches the capture, so a failure anywhere leaves no partial text.
-    Ok(build(&value, registries, snbt).map(Text::from))
+    let text = build(&value, registries, true).map(Text::from);
+    sunrise_client::component::discard_component(value);
+    Ok(text)
 }
 
 #[cfg(test)]
@@ -368,6 +380,257 @@ mod tests {
         ] {
             assert!(component_from_json(accepted).is_some(), "{accepted}");
         }
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn host_nbt_and_owned_stack_text_follow_component_semantics() {
+        use super::super::native_entity_refs::tests::{run_fresh_cases, with_game};
+        use mod_api::{Host, Identifier, ItemStack, Tag, Text, TextHover};
+        use serde_json::json;
+        use std::sync::Arc;
+
+        let name = "game::native_text_json::tests::host_nbt_and_owned_stack_text_follow_component_semantics";
+        if run_fresh_cases(name, "SUNRISE_ITEM_STACK_TEXT_CHILD", &["components"]) {
+            return;
+        }
+        with_game(|game| {
+            let renderer = Arc::get_mut(&mut game.pack.item_renderer).unwrap();
+            let prototypes = Arc::make_mut(&mut renderer.models.prototypes);
+            prototypes.insert(
+                "minecraft:stone".into(),
+                [
+                    (
+                        "minecraft:custom_name".into(),
+                        json!({"text": "Default custom", "color": "red"}),
+                    ),
+                    ("minecraft:item_name".into(), json!("Default item")),
+                    ("minecraft:lore".into(), json!([["Default lore"]])),
+                ]
+                .into(),
+            );
+            prototypes.insert("minecraft:stick".into(), Default::default());
+            let host: &dyn Host = game;
+
+            let mut label = Text::new(TextContent::Translatable {
+                key: "fixture.label".into(),
+                fallback: Some("Hello %s".into()),
+                arguments: vec![Text::literal("Ada")],
+            })
+            .append(Text::literal("!"));
+            label.style.bold = Some(true);
+            label.style.italic = Some(false);
+            label.style.hover = Some(TextHover::Text(Box::new(Text::literal("Hint"))));
+            // Synthetic expected form checked with 26.3 ComponentSerialization.CODEC and NbtOps.
+            let (expected, _) = sunrise_core::nbt::parse_snbt(concat!(
+                "{translate:'fixture.label',fallback:'Hello %s',with:['Ada'],",
+                "italic:0b,bold:1b,hover_event:{action:'show_text',value:'Hint'},extra:['!']}"
+            ))
+            .unwrap();
+            assert_eq!(host.text_to_nbt(&label), Ok(expected.clone()));
+            assert_eq!(host.text_from_nbt(&expected), Ok(Some(label.clone())));
+            let literal = Text::literal("§cLiteral");
+            let literal_tag = Tag::String("§cLiteral".into());
+            assert_eq!(host.text_to_nbt(&literal), Ok(literal_tag.clone()));
+            assert_eq!(host.text_from_nbt(&literal_tag), Ok(Some(literal.clone())));
+            assert_eq!(host.text_from_nbt(&Tag::Int(4)), Ok(None));
+            let deep_tag = (0..513).fold(Tag::String("leaf".into()), |tag, _| Tag::List(vec![tag]));
+            assert_eq!(host.text_from_nbt(&deep_tag), Err(TextFormError::TooDeep));
+            sunrise_core::nbt::discard_tag(deep_tag);
+
+            // A separator uses one container per parent; extra uses a compound
+            // and a list. A string leaf adds none; a styled literal adds one.
+            let selector = |child| {
+                Text::new(TextContent::Selector {
+                    pattern: "@s".into(),
+                    separator: Some(Box::new(child)),
+                })
+            };
+            let separators = (0..512).fold(Text::literal("leaf"), |child, _| selector(child));
+            let encoded = host.text_to_nbt(&separators).unwrap();
+            let mut at = &encoded;
+            for _ in 0..512 {
+                assert_eq!(at.get("selector"), Some(&Tag::String("@s".into())));
+                at = at.get("separator").unwrap();
+            }
+            assert_eq!(at, &Tag::String("leaf".into()));
+            assert!(host.text_from_nbt(&encoded).unwrap().is_some());
+            assert_eq!(
+                host.text_to_nbt(&selector(separators)),
+                Err(TextFormError::TooDeep)
+            );
+            let over = Tag::compound([
+                ("selector", Tag::String("@s".into())),
+                ("separator", encoded),
+            ]);
+            assert_eq!(host.text_from_nbt(&over), Err(TextFormError::TooDeep));
+            sunrise_core::nbt::discard_tag(over);
+
+            let extras =
+                |leaf| (0..256).fold(leaf, |child, _| Text::literal("parent").append(child));
+            let mut encoded = host.text_to_nbt(&extras(Text::literal("leaf"))).unwrap();
+            assert!(host.text_from_nbt(&encoded).unwrap().is_some());
+            let mut at = &mut encoded;
+            for _ in 0..256 {
+                let Some(Tag::List(children)) = at.get_mut("extra") else {
+                    panic!("extra list missing");
+                };
+                at = &mut children[0];
+            }
+            assert_eq!(at, &Tag::String("leaf".into()));
+            *at = Tag::compound([("text", Tag::String("leaf".into())), ("bold", Tag::Byte(1))]);
+            assert_eq!(host.text_from_nbt(&encoded), Err(TextFormError::TooDeep));
+            sunrise_core::nbt::discard_tag(encoded);
+            let mut leaf = Text::literal("leaf");
+            leaf.style.bold = Some(true);
+            let too_deep = extras(leaf);
+            assert_eq!(host.text_to_nbt(&too_deep), Err(TextFormError::TooDeep));
+
+            let mut default_custom_name = Text::literal("Default custom");
+            default_custom_name.style.color = Some("red".into());
+            for (id, defaults) in [("minecraft:stone", true), ("minecraft:stick", false)] {
+                let key = host.item_key(&Identifier::parse(id).unwrap()).unwrap();
+                let mut stack = ItemStack::of(key);
+                assert_eq!(
+                    stack.custom_name(host),
+                    Ok(defaults.then(|| default_custom_name.clone()))
+                );
+                assert_eq!(
+                    stack.item_name(host),
+                    Ok(defaults.then(|| Text::literal("Default item")))
+                );
+                let mut lore = stack.lore(host).unwrap();
+                assert_eq!(
+                    lore,
+                    if defaults {
+                        vec![Text::literal("Default lore")]
+                    } else {
+                        vec![]
+                    }
+                );
+                lore.push(literal.clone());
+                stack.set_lore(host, &lore).unwrap();
+                stack.set_custom_name(host, Some(&label)).unwrap();
+                stack.set_item_name(host, Some(&literal)).unwrap();
+                assert_eq!(stack.custom_name(host), Ok(Some(label.clone())));
+                assert_eq!(stack.item_name(host), Ok(Some(literal.clone())));
+                assert_eq!(stack.lore(host), Ok(lore));
+
+                let mut opaque = Text::literal("With a payload");
+                let payload = Tag::ByteArray(vec![1, 2]);
+                opaque.style.click = Some(TextClick::Custom {
+                    id: "fixture:event".into(),
+                    payload: Some(payload.clone()),
+                });
+                stack.set_lore(host, &[opaque]).unwrap();
+                let mut lines = stack.lore(host).unwrap();
+                lines.push(literal.clone());
+                stack.set_lore(host, &lines).unwrap();
+                let patch = stack.components().unwrap().as_nbt();
+                let Some(Tag::List(lines)) = patch.get(&"minecraft:lore".into()) else {
+                    panic!("lore list missing");
+                };
+                assert_eq!(
+                    lines[0]
+                        .get("click_event")
+                        .and_then(|event| event.get("payload")),
+                    Some(&payload)
+                );
+
+                let before = stack.clone();
+                let components = Tag::compound([(
+                    "minecraft:custom_name",
+                    Tag::compound([("selector", Tag::String("@".into()))]),
+                )]);
+                let mut malformed_hover = Text::literal("Malformed hover item");
+                malformed_hover.style.hover = Some(TextHover::Item {
+                    id: "minecraft:stone".into(),
+                    count: 1,
+                    components: Some(components),
+                });
+                assert_eq!(
+                    stack.set_custom_name(host, Some(&malformed_hover)),
+                    Err(TextFormError::Malformed)
+                );
+                assert_eq!(stack, before);
+
+                let mut malformed = Text::literal("Malformed");
+                malformed.style.color = Some("not_a_color".into());
+                assert_eq!(
+                    stack.set_custom_name(host, Some(&malformed)),
+                    Err(TextFormError::Malformed)
+                );
+                assert_eq!(
+                    stack.set_item_name(host, Some(&malformed)),
+                    Err(TextFormError::Malformed)
+                );
+                assert_eq!(
+                    stack.set_lore(host, &[literal.clone(), malformed]),
+                    Err(TextFormError::Malformed)
+                );
+                let invalid = [label.clone(), too_deep.clone()];
+                assert_eq!(stack.set_lore(host, &invalid), Err(TextFormError::TooDeep));
+                assert_eq!(
+                    stack.set_custom_name(host, Some(&too_deep)),
+                    Err(TextFormError::TooDeep)
+                );
+                assert_eq!(
+                    stack.set_item_name(host, Some(&too_deep)),
+                    Err(TextFormError::TooDeep)
+                );
+                assert_eq!(
+                    stack.set_lore(host, &vec![literal.clone(); 257]),
+                    Err(TextFormError::Malformed)
+                );
+                assert_eq!(stack, before);
+                let full = vec![literal.clone(); 256];
+                stack.set_lore(host, &full).unwrap();
+                assert_eq!(stack.lore(host), Ok(full));
+
+                let restore_defaults = |stack: &mut ItemStack| {
+                    let mut equivalent = Text::literal("Default custom");
+                    equivalent.style.color = Some("#FF5555".into());
+                    stack.set_custom_name(host, Some(&equivalent)).unwrap();
+                    assert_eq!(
+                        stack.custom_name(host),
+                        Ok(Some(default_custom_name.clone()))
+                    );
+                    stack
+                        .set_item_name(host, Some(&Text::literal("Default item")))
+                        .unwrap();
+                    stack
+                        .set_lore(host, &[Text::literal("Default lore")])
+                        .unwrap();
+                    assert!(stack.components().is_none());
+                };
+                if defaults {
+                    restore_defaults(&mut stack);
+                }
+                stack.set_custom_name(host, None).unwrap();
+                stack.set_item_name(host, None).unwrap();
+                stack.set_lore(host, &[]).unwrap();
+                assert_eq!(stack.custom_name(host), Ok(None));
+                assert_eq!(stack.item_name(host), Ok(None));
+                assert_eq!(stack.lore(host), Ok(vec![]));
+                if defaults {
+                    let patch = stack.components().unwrap().as_nbt();
+                    assert_eq!(patch.len(), 3);
+                    for id in [
+                        "!minecraft:custom_name",
+                        "!minecraft:item_name",
+                        "!minecraft:lore",
+                    ] {
+                        assert_eq!(
+                            patch.get(&id.into()),
+                            Some(&Tag::Compound(Default::default()))
+                        );
+                    }
+                    restore_defaults(&mut stack);
+                } else {
+                    assert!(stack.components().is_none());
+                }
+            }
+        });
     }
 
     /// Through the public host: literal valid components read, literal invalid ones are

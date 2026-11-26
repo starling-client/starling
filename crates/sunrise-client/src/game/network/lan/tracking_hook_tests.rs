@@ -120,7 +120,11 @@ fn with_two_items(
     .into();
     mod_platform::testing::with_mods(mods, || {
         with_game(|game| {
-            let transport = Transport::capture(Side::Server).unwrap();
+            let transport = Transport::capture(
+                Side::Server,
+                crate::raw_payloads::connection::record_overhead(&[]),
+            )
+            .unwrap();
             transport.accept(&[]).unwrap();
             transport.finish_configuration().unwrap();
             open_to_lan(game);

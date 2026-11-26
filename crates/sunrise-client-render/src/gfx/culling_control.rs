@@ -4,6 +4,11 @@ mod starling;
 #[allow(unused_imports)]
 pub use self::starling::*;
 
+/// Section occlusion graph radius in chunks for `distance` in blocks (`ViewArea.getViewDistance`).
+pub(super) fn occlusion_radius(distance: f32) -> i32 {
+    (distance / 16.0) as i32
+}
+
 impl Renderer {
     /// Whether sections are drawn as one index list per frame (`flat`).
     pub fn flat_draws(&self) -> bool {
@@ -16,11 +21,6 @@ impl Renderer {
         }
         self.flat_on = on;
         Ok(())
-    }
-    /// Whether one of Sunrise's own packs reads the water mirror, which needs the frame's
-    /// `water_plane`.
-    pub fn wants_water_plane(&self) -> bool {
-        self.native.as_ref().is_some_and(|n| n.frame.reflects)
     }
     /// Whether solid quads facing away from the eye are left out.
     pub fn section_sides(&self) -> bool {
@@ -87,6 +87,7 @@ impl Renderer {
         if !on {
             if self.gpu_culling.take().is_some() {
                 forget_records(&mut self.sections, self.layout.sections());
+                self.sourced.clear();
             }
             self.gpu_frame = false;
             return Ok(());
@@ -114,11 +115,124 @@ impl Renderer {
             }
         }
         self.gpu_culling = Some(gpu);
+        let mut lods = std::mem::take(&mut self.lods);
+        let oom = self
+            .sourced
+            .record_all(&mut lods, self.gpu_culling.as_ref(), &self.device);
+        self.lods = lods;
+        if oom {
+            self.sourced_oom();
+            return Err(crate::graphics::GpuCullingOffer::OutOfMemory
+                .reason()
+                .expect("out-of-memory offer has a refusal reason")
+                .into());
+        }
         #[cfg(debug_assertions)]
         {
             self.gpu_checks = 0;
         }
         Ok(())
+    }
+    /// GPU culling's pass for a frame it can draw (`gpu_frame`), the camera at `camera`, then
+    /// sourced geometry's (`prepare_sourced`). Returns the two answers that returns: a frame
+    /// whose planes leave the test's integers (the camera millions of blocks above or below the
+    /// level), or whose eye is not a number, is the CPU's.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn prepare_gpu_culling(
+        &mut self,
+        mut gpu_frame: bool,
+        camera: DVec3,
+        view: &Frustum,
+        radius: i32,
+        eye: Option<Vec3>,
+        view_proj: Mat4,
+        bounded: bool,
+        encoder: &mut wgpu::CommandEncoder,
+    ) -> (bool, bool) {
+        if gpu_frame && let Some(gpu) = &mut self.gpu_culling {
+            let input = gpu_culling::FrameInputs::new(
+                camera,
+                self.sections.min_y(),
+                self.layout.sections() as i32,
+                radius,
+                view,
+            )
+            .with_reach(self.occlusion.reach().filter(|_| bounded))
+            .with_eye(eye)
+            .with_view_proj(view_proj)
+            .with_occlude(self.cull_on);
+            let prepared = crate::spans::time("gpu culling", || {
+                gpu.prepare(
+                    &self.device,
+                    &self.queue,
+                    &mut self.uploads,
+                    encoder,
+                    &input,
+                    self.own_timing.as_mut(),
+                )
+            });
+            gpu_frame = prepared == gpu_culling::Prepared::Gpu;
+            if prepared == gpu_culling::Prepared::OutOfMemory {
+                log::warn!(
+                    "Sunrise renderer: GPU culling off until the next start: its buffers do not fit in video memory"
+                );
+                self.offer_gpu_culling(crate::graphics::GpuCullingOffer::OutOfMemory);
+                let _ = self.set_gpu_culling(false);
+            }
+        }
+        self.prepare_sourced(gpu_frame, camera, view, eye, Instant::now(), encoder)
+    }
+    /// Sourced geometry's pass for a frame, after GPU culling's: the tiles whose fade-in is due
+    /// to end by `now` handed to it first. Returns whether the frame is still one GPU culling
+    /// draws (not once its buffers no longer fit: GPU culling is then off) and whether the
+    /// pass draws sourced geometry in it: only where `gpu_frame`, with a table made and the
+    /// frame prepared for it. Every other frame draws sourced geometry on the CPU.
+    pub(super) fn prepare_sourced(
+        &mut self,
+        gpu_frame: bool,
+        camera: DVec3,
+        view: &Frustum,
+        eye: Option<Vec3>,
+        now: Instant,
+        encoder: &mut wgpu::CommandEncoder,
+    ) -> (bool, bool) {
+        if !gpu_frame || self.sourced.off() {
+            return (gpu_frame, false);
+        }
+        self.sourced.take_due(&self.lods, now);
+        #[cfg(debug_assertions)]
+        if self.gpu_checks.wrapping_sub(1).is_multiple_of(64) {
+            self.sourced.check(&self.lods, now, true);
+        }
+        let min_y = self.sections.min_y();
+        let prepared = crate::spans::time("gpu sourced geometry", || {
+            let timing = self.own_timing.as_mut();
+            self.sourced.prepare(
+                &self.device,
+                &self.queue,
+                &mut self.uploads,
+                encoder,
+                camera,
+                min_y,
+                view,
+                eye,
+                timing,
+            )
+        });
+        if prepared == gpu_culling::Prepared::OutOfMemory {
+            self.sourced_oom();
+            return (false, false);
+        }
+        (gpu_frame, prepared == gpu_culling::Prepared::Gpu)
+    }
+    /// Sourced geometry's buffers do not fit in video memory: GPU culling off until the
+    /// next start, as when its own buffers do not (`set_gpu_culling`, `prepare_sourced`).
+    pub(super) fn sourced_oom(&mut self) {
+        log::warn!(
+            "Sunrise renderer: GPU culling off until the next start: the sourced geometry's buffers do not fit in video memory"
+        );
+        self.offer_gpu_culling(crate::graphics::GpuCullingOffer::OutOfMemory);
+        let _ = self.set_gpu_culling(false);
     }
     /// GPU culling offered or not from now on, here and in the settings' switch.
     pub(super) fn offer_gpu_culling(&mut self, offer: crate::graphics::GpuCullingOffer) {
@@ -193,26 +307,6 @@ impl Renderer {
     pub fn section_count(&self) -> usize {
         self.sections.len()
     }
-    /// Whether the running native pack gives any block a `[[lights]]` colour.
-    pub fn has_light_colors(&self) -> bool {
-        self.native
-            .as_ref()
-            .is_some_and(|native| !native.light_colors.is_empty())
-    }
-    /// The running native pack's `[[lights]]` colour of the block `name`.
-    pub fn light_color(&self, name: &str) -> Option<[f32; 3]> {
-        let native = self.native.as_ref()?;
-        sunrise_shader_api::manifest::light_color(&native.light_colors, name)
-    }
-    /// The running native pack's `[[particle_lights]]`.
-    pub fn particle_lights(&self) -> Option<&[sunrise_shader_api::manifest::ParticleLight]> {
-        self.native.as_ref().map(|n| n.particle_lights.as_slice())
-    }
-    /// Whether one of Sunrise's own packs with `[shadow]` draws, whose shadow pass takes the
-    /// frame's `shadow_only` quads.
-    pub fn native_shadow(&self) -> bool {
-        self.native.as_ref().is_some_and(|n| n.shadow.is_some())
-    }
     /// What a shader pack's shadow pass draws of the entities this frame: (entities or block
     /// entities other than the player, so those Sunrise's culling hides from the camera are
     /// kept for it; the local player, so its model is built in first person too). (false,
@@ -240,11 +334,20 @@ impl Renderer {
     pub fn has_section(&self, key: SectionKey) -> bool {
         self.sections.contains(key)
     }
-    /// Bring the cave culling graph up to date for `camera` without waiting:
+    /// Bring the section occlusion graph up to date for `camera` without waiting:
     /// a search this starts runs on its worker while the frame is prepared,
     /// and `render` takes it if it has finished.
-    pub fn start_occlusion(&mut self, camera: DVec3, distance: f32) {
-        self.occlusion.update(camera, (distance / 16.0) as i32 + 2);
+    pub fn start_occlusion(&mut self, camera: DVec3, distance: f32, smart_cull: bool) {
+        self.occlusion
+            .update(camera, occlusion_radius(distance), smart_cull);
+    }
+    /// Marks chunk column `(x, z)` loaded in the section occlusion graph.
+    pub fn load_column(&mut self, x: i32, z: i32) {
+        self.occlusion.load_column(x, z);
+    }
+    /// Synchronizes loaded chunk columns in the section occlusion graph with `chunks`.
+    pub fn sync_loaded_columns(&mut self, chunks: &crate::chunk_map::ChunkMap) {
+        self.occlusion.sync_loaded_columns(chunks);
     }
     /// Whether the camera's current section graph knows this section is
     /// reachable. `None` means the graph cannot safely answer for this camera
@@ -255,5 +358,17 @@ impl Renderer {
         camera_section: SectionKey,
     ) -> Option<bool> {
         self.occlusion.visible_for_camera(key, camera_section)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn occlusion_radius_equals_view_distance_chunks() {
+        for rd in [2, 6, 7, 8, 12, 32] {
+            assert_eq!(occlusion_radius((rd * 16) as f32), rd);
+        }
     }
 }

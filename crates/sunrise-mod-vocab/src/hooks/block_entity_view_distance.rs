@@ -16,7 +16,8 @@ pub trait Hooks {
         out = "distance",
         scope = "block_entity",
         key = "block",
-        neoforge = "none (vanilla BlockEntityRenderer.getViewDistance; NeoForge adds no event or extension for it)"
+        neoforge = "none (vanilla BlockEntityRenderer.getViewDistance; NeoForge adds no event or extension for it)",
+        version = 2
     )]
     fn block_entity_view_distance(block: &str, distance: &mut f64);
 }

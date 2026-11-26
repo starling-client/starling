@@ -9,21 +9,23 @@ record = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(record)
 
 COMMIT = "a" * 40
+MAIN = "refs/heads/main"
+PATCH_LINE = "refs/heads/release/launcher-1.3"
 FILES = {"sunrise-launcher-linux-x86_64.tar.gz": "1" * 64, "sunrise-launcher-setup.exe": "2" * 64}
 
 
-def attested(tag="v1.1.0", files=FILES, commit=COMMIT, trigger="workflow_dispatch"):
+def attested(tag="v1.1.0", files=FILES, commit=COMMIT, trigger="workflow_dispatch", ref=MAIN):
     return {"verificationResult": {
         "statement": {"predicateType": record.PREDICATE, "predicate": {"tag": tag, "version": tag[1:], "commit": commit},
                       "subject": [{"name": name, "digest": {"sha256": digest}} for name, digest in files.items()]},
-        "signature": {"certificate": {"buildTrigger": trigger, "buildSignerURI": record.SIGNER, "sourceRepositoryRef": "refs/heads/main",
+        "signature": {"certificate": {"buildTrigger": trigger, "buildSignerURI": f"{record.SIGNER}@{ref}", "sourceRepositoryRef": ref,
                                       "sourceRepositoryDigest": commit, "runnerEnvironment": "github-hosted"}}}}
 
 
 class LauncherReleaseRecord(unittest.TestCase):
-    def passes(self, results, files=FILES, sums=FILES, tag="v1.1.0"):
+    def passes(self, results, files=FILES, sums=FILES, tag="v1.1.0", ref=MAIN):
         try:
-            record.check(results, tag, COMMIT, files, sums)
+            record.check(results, tag, COMMIT, ref, files, sums)
             return True
         except SystemExit:
             return False
@@ -44,8 +46,13 @@ class LauncherReleaseRecord(unittest.TestCase):
         self.assertFalse(self.passes([attested(commit="b" * 40)]))
         self.assertFalse(self.passes([attested(trigger="push")]))
         foreign = copy.deepcopy(attested())
-        foreign["verificationResult"]["signature"]["certificate"]["buildSignerURI"] = record.SIGNER.replace("main", "other")
+        foreign["verificationResult"]["signature"]["certificate"]["buildSignerURI"] = f"{record.SIGNER.replace('release.yml', 'other.yml')}@{MAIN}"
         self.assertFalse(self.passes([foreign]))
+
+    def test_a_patch_line_release_passes_only_for_the_branch_it_was_built_on(self):
+        self.assertTrue(self.passes([attested(ref=PATCH_LINE)], ref=PATCH_LINE))
+        self.assertFalse(self.passes([attested(ref=PATCH_LINE)], ref=MAIN))
+        self.assertFalse(self.passes([attested()], ref=PATCH_LINE))
 
     def test_sha256sums_must_list_the_same_files(self):
         self.assertFalse(self.passes([attested()], sums={**FILES, "sunrise-launcher-extra.zip": "3" * 64}))

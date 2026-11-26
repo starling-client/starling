@@ -4,8 +4,8 @@
 use crate::{
     Result,
     health::{
-        Attributes, DamageLevel, Environment, HealthEvent, HealthResources, HealthRules, State,
-        Updates,
+        Attributes, DamageLevel, Environment, HealthEvent, HealthResources, HealthRules, HitReads,
+        LivingLend, State, Updates,
     },
     motion::{MotionEvent, PlayerMotion},
 };
@@ -17,11 +17,16 @@ use sunrise_world::{
     synced_floats::SyncedFloats,
 };
 
-/// A living entity is about to heal. Mods may change the amount or cancel.
-/// `entity` identifies the affected entity.
+/// A living entity is about to heal (`LivingHealEvent` at `LivingEntity.heal`). Mods may change
+/// the amount or cancel. `healed` lends the entity's body for their reads.
 #[inline(never)]
-pub fn native_living_heal(context: &LoopContext, entity: u32, amount: &mut f32, cancel: &mut bool) {
-    crate::native_client_hooks::living_heal(context, entity, amount, cancel);
+pub fn native_living_heal(
+    context: &LoopContext,
+    healed: LivingLend<'_>,
+    amount: &mut f32,
+    cancel: &mut bool,
+) {
+    crate::native_client_hooks::living_heal(context, healed, amount, cancel);
 }
 
 impl PlayerMotion {
@@ -36,9 +41,12 @@ impl PlayerMotion {
     /// ServerPlayer.tickRegeneration, dispatched from Player.aiStep before
     /// inventory and living movement. The separately invoked food tick follows
     /// movement in ServerPlayer.doTick.
-    pub fn peaceful_regeneration(
+    /// `reads` is what the heal hook's view of the player needs beyond its body (see
+    /// [`LivingLend`]).
+    pub fn peaceful_regeneration<'r>(
         &mut self,
         context: &LoopContext,
+        reads: &dyn Fn() -> Option<HitReads<'r>>,
         rules: HealthRules,
     ) -> Result<()> {
         if rules.difficulty != Difficulty::Peaceful || !rules.natural_regeneration {
@@ -50,7 +58,15 @@ impl PlayerMotion {
             if health < maximum {
                 let mut amount = 1.0;
                 let mut cancel = false;
-                native_living_heal(context, self.entity_id as u32, &mut amount, &mut cancel);
+                let lent = || reads();
+                let healed = LivingLend::player(
+                    self.entity_id,
+                    &self.attributes,
+                    &self.health.data,
+                    self.health.ids,
+                    &lent,
+                );
+                native_living_heal(context, healed, &mut amount, &mut cancel);
                 if !cancel {
                     let h = &mut self.health;
                     let mut observer = Updates(&mut self.events);
@@ -92,6 +108,7 @@ impl PlayerMotion {
             level: level.reborrow(),
             entity: self.entity_id,
             victim,
+            victim_motion: (self.fall_distance, self.fall_flying || self.flying),
             resources,
             rules,
             invulnerable: self.invulnerable || self.spectator,
@@ -118,6 +135,7 @@ struct TickWorld<'a> {
     level: DamageLevel<'a>,
     entity: i32,
     victim: crate::health::Victim,
+    victim_motion: (f64, bool),
     resources: &'a HealthResources,
     rules: HealthRules,
     invulnerable: bool,
@@ -164,7 +182,10 @@ impl FoodWorld for TickWorld<'_> {
     }
     fn heal(&mut self, _: &mut FoodData, mut amount: f32) -> Result<()> {
         let mut cancel = false;
-        native_living_heal(self.context, self.entity as u32, &mut amount, &mut cancel);
+        let level = &self.level;
+        let reads = || level.reads();
+        let healed = LivingLend::player(self.entity, self.attributes, self.data, self.ids, &reads);
+        native_living_heal(self.context, healed, &mut amount, &mut cancel);
         if cancel {
             return Ok(());
         }
@@ -196,6 +217,7 @@ impl FoodWorld for TickWorld<'_> {
             can_harm_player: true,
             entity: self.entity,
             victim: self.victim,
+            victim_motion: self.victim_motion,
             causing: 0,
             invulnerable: self.invulnerable,
             permanently_invulnerable: false,
@@ -226,9 +248,7 @@ impl FoodWorld for TickWorld<'_> {
             fully_blocked: false,
             block_sound: false,
             knocked: false,
-            totem: false,
-            totem_off_hand: false,
-            totem_fired: false,
+            protection: None,
             canceled: false,
             dealt: 0.0,
         };

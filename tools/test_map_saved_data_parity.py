@@ -12,11 +12,11 @@ import os
 from pathlib import Path
 import subprocess
 
-try:
-    from . import lab, test_rust_parity as base
-except ImportError:
-    import lab
-    import test_rust_parity as base
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import lab, test_rust_parity as base
 
 
 def corpus():
@@ -74,8 +74,8 @@ def main():
     rust = out / "rust.txt"
     rust.unlink(missing_ok=True)
     env = dict(os.environ, SUNRISE_MAP_SAVE_CASES=str(inputs), SUNRISE_MAP_SAVE_OUTPUT=str(rust))
-    run(["cargo", "test", "-p", "sunrise-client", "--lib",
-         "game::maps::save_tests::saved_map_codec_fixture", "--", "--ignored", "--exact"],
+    run([lab.parity_fixtures(),
+         "game::maps::save_tests::saved_map_codec_fixture", "--ignored", "--exact"],
         "rust", env)
     actual = rust.read_text(encoding="utf-8").splitlines()
     assert len(actual) == len(reference), (len(actual), len(reference))

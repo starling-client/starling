@@ -232,8 +232,9 @@ impl<K: CraftingRecipeKind> RecipeDispatch for TypedRecipe<K> {
 }
 
 impl dyn Registrar + '_ {
-    /// Register a crafting kind once at startup. Duplicate names and foreign namespaces
-    /// refuse startup, naming the kind.
+    /// Register a crafting kind once at startup. Bare names use the declaring mod's
+    /// namespace; explicit valid `namespace:path` keys keep their namespace. Duplicate
+    /// names, built-in serializers and malformed ids refuse startup, naming the kind.
     pub fn register_crafting_recipe_serializer<K: CraftingRecipeKind>(
         &mut self,
         name: &str,

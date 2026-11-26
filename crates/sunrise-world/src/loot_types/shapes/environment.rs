@@ -268,12 +268,7 @@ pub(super) const ROWS: &[Row] = &[
     ),
 ];
 
-pub(super) fn value(id: &str) -> Option<Kind> {
-    let id = sunrise_core::identifier::Identifier::parse(id).ok()?;
-    if id.namespace() != "minecraft" {
-        return None;
-    }
-    let attribute = attributes::attribute(id.path())?;
+pub(super) fn value(attribute: &attributes::Attribute) -> Option<Kind> {
     Some(match attribute.kind {
         AttributeKind::Boolean => Bool,
         AttributeKind::Float | AttributeKind::AngleDegrees => match attribute.range {
@@ -282,6 +277,8 @@ pub(super) fn value(id: &str) -> Option<Kind> {
         },
         AttributeKind::RgbColor => Named("rgb_string"),
         AttributeKind::ArgbColor => Named("argb_string"),
-        AttributeKind::Other => OTHER.iter().find(|row| row.name == attribute.id)?.kind,
+        AttributeKind::AmbientParticles | AttributeKind::Other => {
+            OTHER.iter().find(|row| row.name == attribute.id)?.kind
+        }
     })
 }

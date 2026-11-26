@@ -1,0 +1,8 @@
+version = 1
+doc = "ClientHost::play_local_sound, play_sound edits at start and live refresh, and SoundRef::set_pitch use finite base volume or pitch rather than refusing a value for its sign. The sound engine calculates final values after sound-file scaling. SoundRef::fade accepts any finite target; zero or less stops the sound when the fade ends, immediately when ticks is zero."
+tests = [
+    "crates/sunrise-client-render/src/sound_engine/hooks.rs::finite_negative_play_sound_edits_reach_the_local_sound_mixer",
+    "crates/sunrise-client-render/src/audio.rs::a_mod_sound_moves_and_changes_pitch_without_restarting",
+    "crates/sunrise-client-render/src/audio.rs::a_mod_sound_fades_to_its_volume_and_a_fade_to_zero_stops_it",
+    "crates/sunrise-client-render/src/audio.rs::a_fade_between_extreme_finite_volumes_stays_finite",
+]

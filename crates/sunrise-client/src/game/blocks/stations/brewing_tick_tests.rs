@@ -111,3 +111,96 @@ fn a_fuel_item_with_no_uses_marks_the_chunk() {
         "the taken fuel left the chunk unmarked"
     );
 }
+
+/// `BrewingStandBlockEntity.serverTick` reads the fuel's `speed_multiplier`
+/// provider from the server's reloadable registries: a world's data pack that
+/// defines it decides the brew time (`ceil(400 / speed)`), as the stand's own
+/// ticks count it down.
+#[test]
+#[ignore = "daily"]
+fn a_world_pack_provider_sets_the_brew_time() {
+    let mut resources = None;
+    let mut game = server_game(&mut resources);
+    let dir = std::env::temp_dir().join(format!(
+        "sunrise-brewing-world-providers-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    let pack = dir.join("datapacks/bp/data/parity");
+    for (registry, name, value) in [
+        ("context_int_provider", "uses", "5"),
+        ("context_float_provider", "speed", "8.0"),
+    ] {
+        std::fs::create_dir_all(pack.join(registry)).unwrap();
+        std::fs::write(pack.join(registry).join(format!("{name}.json")), value).unwrap();
+    }
+    std::fs::write(
+        dir.join("datapacks/bp/pack.mcmeta"),
+        r#"{"pack":{"description":"fixture"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("datapacks.json"),
+        r#"{"enabled":["file/bp"],"disabled":[]}"#,
+    )
+    .unwrap();
+    game.world_root = dir.clone();
+    let root = game.options.resources.clone();
+    let stack = crate::game::functions::pack_stack(
+        &game.world_root,
+        &root,
+        &sunrise_assets::resource_source::ResourceSource::directory(root.clone()),
+        &Default::default(),
+        false,
+        &[],
+        &[],
+    );
+    game.world_tables = game
+        .stage_world_tables(&stack, false, &root)
+        .unwrap()
+        .tables;
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let mut fuel = ItemStack::new("minecraft:blaze_powder", 1);
+    fuel.data_mut().set_loot_component(
+        "minecraft:brewing_fuel",
+        &Some(sunrise_client::scoreboard::json_to_tag(
+            &serde_json::json!({"uses": "parity:uses", "speed_multiplier": "parity:speed"}),
+        )),
+    );
+    let pos = (8, 64, 8);
+    place(
+        &mut game,
+        pos,
+        stand(
+            [
+                Some(ItemStack::new("minecraft:potion", 1).with_potion("minecraft:awkward")),
+                None,
+                None,
+                Some(ItemStack::new("minecraft:golden_carrot", 1)),
+                Some(fuel),
+            ],
+            0,
+            0,
+        ),
+    );
+
+    // The tick that takes the fuel starts the brew: ceil(400 / 8) ticks.
+    game.tick_brewing_stand(pos).expect("the stand ticks");
+    let ticks = 400 / 8;
+    for _ in 0..ticks - 1 {
+        game.tick_brewing_stand(pos).expect("the stand ticks");
+        let Some(BlockEntity::Brewing(b)) = game.world.block_entities.get(&pos) else {
+            panic!("no brewing stand");
+        };
+        assert_eq!(&*b.items[0].as_ref().unwrap().item, "minecraft:potion");
+    }
+    game.tick_brewing_stand(pos).expect("the stand ticks");
+    let Some(BlockEntity::Brewing(b)) = game.world.block_entities.get(&pos) else {
+        panic!("no brewing stand");
+    };
+    assert_eq!(
+        b.items[0].as_ref().unwrap().potion(),
+        Some("minecraft:night_vision")
+    );
+}

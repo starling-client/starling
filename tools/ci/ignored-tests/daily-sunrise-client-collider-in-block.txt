@@ -1,1 +1,0 @@
-sunrise-client game::closest_space::tests::a_player_nudges_out_of_a_rotated_collider_as_from_stone lib daily child-process

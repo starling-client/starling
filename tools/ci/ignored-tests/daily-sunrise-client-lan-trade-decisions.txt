@@ -1,5 +1,5 @@
+sunrise-client game::lan_trade_decisions_tests::a_committed_take_publishes_success_packets lib daily resources
 sunrise-client game::lan_trade_decisions_tests::a_non_finite_collect_answer_refuses_the_whole_take lib daily resources
-sunrise-client game::lan_trade_decisions_tests::a_panicking_completion_listener_cannot_drop_success_packets lib daily resources
 sunrise-client game::lan_trade_decisions_tests::a_panicking_trade_listener_undoes_the_take_and_the_next_trade_works lib daily resources
 sunrise-client game::lan_trade_decisions_tests::a_refused_trade_restores_a_replaced_transient_in_place lib daily resources
 sunrise-client game::lan_trade_decisions_tests::a_refused_trade_restores_modifier_order_after_a_nested_effect_clear lib daily resources

@@ -19,7 +19,7 @@ use crate::blocks::Fluid;
 use crate::health::DamageLevel;
 use std::ops::ControlFlow;
 use sunrise_core::{
-    geometry::{Vec3, trig},
+    geometry::{Axis, Vec3, trig},
     random::RandomSource,
 };
 
@@ -165,12 +165,19 @@ pub(super) fn travel(
     pause: bool,
 ) -> ControlFlow<super::living::TravelPause> {
     m.move_relative(0.1, input);
-    m.travel_move(w, level, events, pause, |m, _, _, _| {
-        m.velocity = m.velocity.scale(0.9);
-        if m.ai.target.is_none() && (!going_home(m) || !close_to_home(m, 20.0)) {
-            m.velocity.y -= 0.005;
-        }
-    })
+    m.travel_move(
+        w,
+        level,
+        events,
+        pause,
+        sunrise_world::travel::TravelMode::Water,
+        |m, _, _, _| {
+            m.set_velocity(m.velocity.scale(0.9));
+            if m.ai.target.is_none() && (!going_home(m) || !close_to_home(m, 20.0)) {
+                m.set_velocity(m.velocity.with_component(Axis::Y, m.velocity.y - 0.005));
+            }
+        },
+    )
 }
 /// `Turtle.aiStep`: while digging, sand crumbs fly every fifth tick.
 pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
@@ -205,15 +212,19 @@ impl LayEgg {
 }
 impl Goal for LayEgg {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE | JUMP
     }
+    #[inline]
     fn name(&self) -> &'static str {
         "TurtleLayEggGoal"
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         true
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if !(has_egg(m) && close_to_home(m, 9.0)) {
             return false;
@@ -226,12 +237,15 @@ impl Goal for LayEgg {
         self.0.next_start = reduced(200 + m.random.next_int_bound(200).unwrap_or(0));
         self.0.find_nearest(m, cx.w, Self::valid)
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         self.0.can_continue(cx.w, Self::valid) && has_egg(m) && close_to_home(m, 9.0)
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.start(m, cx.w);
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.tick(m, cx.w);
         if m.fluids.in_water || !self.0.reached {
@@ -290,12 +304,15 @@ struct GoHome {
 }
 impl Goal for GoHome {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         0
     }
+    #[inline]
     fn name(&self) -> &'static str {
         "TurtleGoHomeGoal"
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, _cx: &mut Cx) -> bool {
         if m.is_baby() {
             false
@@ -305,17 +322,21 @@ impl Goal for GoHome {
             m.random.next_int_bound(reduced(700)).unwrap_or(1) == 0 && !close_to_home(m, 64.0)
         }
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, _cx: &mut Cx) {
         set_going_home(m, true);
         self.stuck = false;
         self.close_to_home_try_ticks = 0;
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, _cx: &mut Cx) {
         set_going_home(m, false);
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, _cx: &mut Cx) -> bool {
         !close_to_home(m, 7.0) && !self.stuck && self.close_to_home_try_ticks <= reduced(600)
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         let home = m.extra.home.unwrap_or(block_of(m));
         let close = close_to_home(m, 16.0);
@@ -363,15 +384,19 @@ impl GoToWater {
 }
 impl Goal for GoToWater {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE | JUMP
     }
+    #[inline]
     fn name(&self) -> &'static str {
         "TurtleGoToWaterGoal"
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         true
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         let wanted = if m.is_baby() && !m.fluids.in_water {
             true
@@ -389,12 +414,15 @@ impl Goal for GoToWater {
         self.0.next_start = reduced(200 + m.random.next_int_bound(200).unwrap_or(0));
         self.0.find_nearest(m, cx.w, Self::valid)
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         !m.fluids.in_water && self.0.try_ticks <= 1200 && Self::valid(cx.w, self.0.block)
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.start(m, cx.w);
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         // MoveToBlockGoal.tick, with shouldRecalculatePath every 160 ticks.
         let b = self.0.block;
@@ -429,15 +457,19 @@ struct Travel {
 }
 impl Goal for Travel {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         0
     }
+    #[inline]
     fn name(&self) -> &'static str {
         "TurtleTravelGoal"
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, _cx: &mut Cx) -> bool {
         !going_home(m) && !has_egg(m) && m.fluids.in_water
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         let xt = m.random.next_int_bound(1025).unwrap_or(0) - 512;
         let mut yt = m.random.next_int_bound(9).unwrap_or(0) - 4;
@@ -452,12 +484,15 @@ impl Goal for Travel {
         ]);
         self.stuck = false;
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, _cx: &mut Cx) -> bool {
         !m.ai.nav.is_done() && !self.stuck && !going_home(m) && m.extra.in_love <= 0 && !has_egg(m)
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, _cx: &mut Cx) {
         m.extra.point = None;
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         let Some(travel) = m.extra.point else {
             self.stuck = true;
@@ -499,21 +534,27 @@ impl Goal for Travel {
 struct RandomStroll(Stroll);
 impl Goal for RandomStroll {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         self.0.flags()
     }
+    #[inline]
     fn name(&self) -> &'static str {
         "TurtleRandomStrollGoal"
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         !m.fluids.in_water && !going_home(m) && !has_egg(m) && self.0.can_use(m, cx)
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         self.0.can_continue(m, cx)
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.start(m, cx);
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.stop(m, cx);
     }

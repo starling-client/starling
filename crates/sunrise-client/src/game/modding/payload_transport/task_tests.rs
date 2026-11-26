@@ -63,12 +63,10 @@ impl IPayloadHandler for Reply {
                 // Main-thread completion takes effect directly in the session without
                 // waiting for handler return or transaction close, so it is neither
                 // deferred nor rolled back when an inner child transaction aborts.
-                let child = context.server_host().unwrap().transaction_open();
-                context.finish_configuration_task(&kind("first")).unwrap();
-                context
-                    .server_host()
-                    .unwrap()
-                    .transaction_close(&child, false);
+                let _: Result<(), _> = context.transaction(|context, _| {
+                    context.finish_configuration_task(&kind("first")).unwrap();
+                    Err(())
+                });
                 assert_eq!(
                     context.finish_configuration_task(&kind("first")),
                     Err(ConfigurationTaskError::NotRunning)
@@ -318,11 +316,10 @@ impl ConfigurationTask for Task {
             _ => context.finish(),
         }
     }
-    fn tick(&mut self, host: &mut dyn ServerHost, context: &mut ConfigurationTaskContext<'_>) {
+    fn tick(&mut self, _host: &mut dyn ServerHost, context: &mut ConfigurationTaskContext<'_>) {
         assert_eq!(std::thread::current().name(), Some("Server thread"));
         if self.waiting {
             self.waiting = false;
-            let _abandoned = host.transaction_open();
             context.finish();
             context.finish();
         }
@@ -976,15 +973,16 @@ fn retained_configuration_host_send_refuses_play_while_session_is_registered() {
                                 .can_send(Phase::Play, &channel),
                             Ok(())
                         );
-                        let seal = server.transaction_open();
-                        let host: &mut dyn ServerHost = server;
-                        let result = host.configuration_send_payload(
-                            connection,
-                            &channel,
-                            PayloadBytes(vec![1]),
-                        );
-                        let queued = server.pending_transaction_payloads();
-                        server.transaction_close(&seal, false);
+                        let (result, queued) = server.storage_scope(|server, _| {
+                            let host: &mut dyn ServerHost = server;
+                            let result = host.configuration_send_payload(
+                                connection,
+                                &channel,
+                                PayloadBytes(vec![1]),
+                            );
+                            let queued = server.pending_transaction_payloads();
+                            ((result, queued), false)
+                        });
                         assert_eq!(result, Err(ConfigurationTaskError::Disconnected));
                         assert_eq!(queued, 0);
                     })

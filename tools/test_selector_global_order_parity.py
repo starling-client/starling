@@ -5,10 +5,9 @@ import json
 from pathlib import Path
 import shutil
 import sys
-try:
-    from . import test_command_exec_parity as driver
-except ImportError:
-    import test_command_exec_parity as driver
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_command_exec_parity as driver
 
 ACTORS = [('a', 'pig', [17.5, 200, 16.25]), ('b', 'armor_stand', [15.75, 200, 15.5]),
           ('c', 'item', [15.5, 200, 17]), ('d', 'pig', [17, 200, 15.75]),

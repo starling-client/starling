@@ -5,11 +5,12 @@
 //! also indexes the block parts by state, so the state-keyed hooks look theirs up without the
 //! block's name.
 use crate::BlockEntityTypeDecl;
-use crate::world::ticket_controller::ControllerInfo;
+use crate::world::ticket_controller::{ControllerInfo, RegisteredTicketValidator};
 use crate::{
     BlockEntityPart, BlockPart, BlockSide, Capability, CapabilityKey, EntityCapabilityKey,
     EntityPart, EntityRef, FluidPart, HOOK_COUNT, HookId, Host, ItemCapabilityKey, ItemPart,
-    ItemPlace, MenuPart, MobEffectPart, ModEntry, PlaceProvider, ServerHost, TicketController,
+    ItemPlace, LoadingValidationCallback, MenuPart, MobEffectPart, ModEntry, PlaceProvider,
+    ServerHost, TicketController,
 };
 use std::{
     any::{Any, type_name},

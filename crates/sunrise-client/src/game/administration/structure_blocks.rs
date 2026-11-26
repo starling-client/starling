@@ -176,7 +176,7 @@ impl Game<'_> {
                         let name = &*self.res.facts().get(state).name;
                         let mut tag =
                             self.encode_live_block_entity(at, entity, name, self.res.items());
-                        Self::write_pending_loot(&self.world, at, &mut tag);
+                        Self::write_pending_loot(&self.world, at, name, &mut tag);
                         let Tag::Compound(mut c) = tag else {
                             return Compound::new();
                         };
@@ -221,8 +221,9 @@ impl Game<'_> {
             })
             .collect();
         let mut out = Vec::new();
-        for (_, tags) in
-            self.snapshot_entity_chunks(&chunks, super::persist::EntitySnapshot::Structure)
+        for (_, tags) in self
+            .snapshot_entity_chunks(&chunks, super::persist::EntitySnapshot::Structure)
+            .0
         {
             for tag in tags {
                 let Some(Tag::List(pos)) = tag.get("Pos") else {

@@ -1,0 +1,13 @@
+{
+  "template": "minecraft:zombie",
+  "sounds": {
+    "step": {
+      "sound": "keys_entity_sounds:walker.step",
+      "volume": 1.0,
+      "pitch": 0.9
+    },
+    "volume": 0.6,
+    "voice_pitch": 0.8,
+    "ambient_interval": 120
+  }
+}

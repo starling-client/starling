@@ -1,0 +1,142 @@
+ids = [
+    "hook:client_packet",
+    "hook:client_packet.packet",
+    "type:ClientPacketEvent.packet",
+    "hook:client_packet_send",
+    "hook:client_packet_send.packet",
+    "type:ClientPacketSendEvent.packet",
+    "type:ClientPacket",
+    "type:ClientPacket.id",
+    "type:ClientPacket.custom_payload",
+    "handle:ClientPacket::new",
+    "type:ClientPayload",
+    "type:ClientPayload.channel",
+    "type:ClientPayload.data",
+    "handle:ClientPayload::new",
+    "handle:ServerboundPlayPacket::use_item",
+    "handle:ServerboundPlayPacket::use_item_on",
+    "handle:ServerboundPlayPacket::player_action",
+    "handle:ServerboundPlayPacket::interact",
+    "handle:ServerboundPlayPacket::attack",
+    "handle:ServerboundPlayPacket::pick_item_from_block",
+    "handle:ServerboundPlayPacket::pick_item_from_entity",
+    "handle:ServerboundPlayPacket::sign_update",
+    "handle:ServerboundPlayPacket::move_player_pos",
+    "handle:ServerboundPlayPacket::move_player_pos_rot",
+    "handle:ServerboundPlayPacket::move_player_rot",
+    "handle:ServerboundPlayPacket::move_player_status_only",
+    "method:prelude::NetworkClientHost::build_play_packet",
+    "type:PlayPacketRequest",
+    "type:PlayPacketRequest.UseItem",
+    "type:PlayPacketRequest.UseItemOn",
+    "type:PlayPacketRequest.PlayerAction",
+    "type:PlayPacketRequest.Interact",
+    "type:PlayPacketRequest.Attack",
+    "type:PlayPacketRequest.PickItemFromBlock",
+    "type:PlayPacketRequest.PickItemFromEntity",
+    "type:PlayPacketRequest.SignUpdate",
+    "type:PlayPacketRequest.MovePlayerPos",
+    "type:PlayPacketRequest.MovePlayerPosRot",
+    "type:PlayPacketRequest.MovePlayerRot",
+    "type:PlayPacketRequest.MovePlayerStatusOnly",
+]
+why = """
+Borrow decoded play packets synchronously instead of cloning packet IDs, plugin channel names,
+and payload bytes per invocation, and replace the duplicated portable play-packet encoders
+(and their non-vanilla 8 KiB builder cap) with the client host's real protocol encoder.
+
+Follows vanilla Minecraft 26.3 and NeoForge 26.3:
+- Vanilla `Connection.channelRead0` / `Connection.genericsFtw` hand each decoded packet directly
+  to the packet listener and `Connection.send` hands the outgoing packet directly to the
+  connection without cloning. NeoForge's `Connection` patch has no raw play-packet observer
+  counterpart (`ClientCommonPacketListenerImpl.handleCustomPayload` routes registered payloads
+  only). Sunrise's `client_packet` and `client_packet_send` (version 3) now borrow immutable
+  callback-lifetime `ClientPacket<'a>` and `ClientPayload<'a>` views (`ClientPayload` loses
+  `Wire`) while keeping the existing filters, ordering, and no-subscriber fast path, and contain
+  listener panics per callback (log + error toast naming the mod, disabling only that callback
+  for the session while later eligible listeners still run and failed send listeners leave the
+  last accepted cancellation unchanged).
+- Typed serverbound play packets now go through `NetworkClientHost::build_play_packet` using
+  `sunrise-protocol`'s real play packet `STREAM_CODEC`s: `ServerboundUseItemPacket`,
+  `ServerboundUseItemOnPacket`, `ServerboundPlayerActionPacket`, `ServerboundInteractPacket`
+  with `Vec3.LP_STREAM_CODEC` (`LpVec3`, which maps `NaN` to `0.0` and clamps large/infinite
+  values to `±1.717_986_918_3e10`), `ServerboundAttackPacket`,
+  `ServerboundPickItemFromBlockPacket`, `ServerboundPickItemFromEntityPacket`,
+  `ServerboundSignUpdatePacket` (`MAX_STRING_LENGTH = 384` UTF-16 code units, enforced in
+  `sunrise-protocol`'s `SignLines` `Codec::validate` / `Serverbound::try_encode` /
+  `Serverbound::try_encode_payload` as well as `build_play_packet`),
+  `ServerboundMovePlayerPacket` (`packFlags`), and `BlockPos.asLong`. Field validation matches
+  vanilla's codecs and server handlers (`ServerGamePacketListenerImpl.handleMovePlayer` /
+  `containsInvalidValues`, which refuses `NaN` positions and non-finite movement angles while
+  writing infinite positions unchanged, `ServerGamePacketListenerImpl.handleUseItem` /
+  `Entity.absSnapRotationTo`, which wraps packet angles with `Mth.wrapDegrees`, clamps pitch
+  to `[-90, 90]`, and ignores non-finite axes in `setYRot` / `setXRot`, and
+  `ServerGamePacketListenerImpl.handleUseItemOn`, which checks finite hit cursor coordinates).
+- Removes the arbitrary 8 KiB builder body cap; whole-packet framing limits are enforced at
+  publication preparation in `send_packet` using vanilla `Varint21LengthFieldPrepender`
+  (`MAX_VARINT21_BYTES = 3`, 2,097,151-byte encoded limit) and `CompressionDecoder`
+  (`MAXIMUM_UNCOMPRESSED_LENGTH = 8388608`, 8 MiB uncompressed limit). Both the game
+  and the live section `ClientHost` call the same encoder. Reload and pack discovery
+  keep their scoped registration contexts, which are not client hosts.
+"""
+migrate = """
+Rebuild native mods against version 3 of `Hooks::client_packet` and `Hooks::client_packet_send`
+and migrate borrowed packet views and play-packet builders as follows:
+
+1. `client_packet` and `client_packet_send` listeners (version 3):
+   - Keep the existing `ClientPacketEvent<'_>` and `ClientPacketSendEvent<'_>` callback
+     signatures; `event.packet` now borrows an immutable `&'a ClientPacket<'a>` whose fields are
+     `id: &'a Identifier` and `custom_payload: Option<ClientPayload<'a>>` (`channel: &'a str`,
+     `data: &'a [u8]`).
+   - Copy only the values you need to retain after the callback returns: `event.packet.id.clone()`,
+     `payload.channel.to_owned()`, and `payload.data.to_vec()`. `ClientPayload` no longer
+     implements `Wire`.
+   - Update any direct view construction (for example in tests) from owned values to borrows:
+     `ClientPacket::new(&id, custom_payload)` and
+     `ClientPayload::new(channel.as_str(), data.as_slice())`.
+   - Finish a send listener normally for its answer to count: return `Flow::Cancel` to drop the
+     packet, or use `#[listener(receive_cancelled)]`, set `event.cancelled = false`, and return
+     `Flow::Continue` to clear a prior cancellation. Setting `event.cancelled` before
+     panicking does not alter accepted cancellation, and reassigning `event.packet` never
+     changes what later listeners or the game observe.
+
+2. Typed play packet builders (`ServerboundPlayPacket::<name>` -> `host.build_play_packet(&PlayPacketRequest::...)`):
+   Replace every portable constructor call with a named-field `PlayPacketRequest` passed to
+   `host.build_play_packet(&...)` (available on `&dyn ClientHost`, including `client_setup`;
+   not on the scoped reload or pack discovery registration contexts):
+   - `ServerboundPlayPacket::use_item(hand, sequence, yaw, pitch)`
+     -> `host.build_play_packet(&PlayPacketRequest::UseItem { hand, sequence, yaw, pitch })`
+   - `ServerboundPlayPacket::use_item_on(hand, pos, face, cursor, inside, world_border, sequence)`
+     -> `host.build_play_packet(&PlayPacketRequest::UseItemOn { hand, pos, face, cursor, inside, world_border, sequence })`
+   - `ServerboundPlayPacket::player_action(action, pos, direction, sequence)`
+     -> `host.build_play_packet(&PlayPacketRequest::PlayerAction { action, pos, direction, sequence })`
+   - `ServerboundPlayPacket::interact(entity, hand, location, sneaking)`
+     -> `host.build_play_packet(&PlayPacketRequest::Interact { entity, hand, location, sneaking })`
+   - `ServerboundPlayPacket::attack(entity)`
+     -> `host.build_play_packet(&PlayPacketRequest::Attack { entity })`
+   - `ServerboundPlayPacket::pick_item_from_block(pos, include_data)`
+     -> `host.build_play_packet(&PlayPacketRequest::PickItemFromBlock { pos, include_data })`
+   - `ServerboundPlayPacket::pick_item_from_entity(entity, include_data)`
+     -> `host.build_play_packet(&PlayPacketRequest::PickItemFromEntity { entity, include_data })`
+   - `ServerboundPlayPacket::sign_update(pos, front, lines)`
+     -> `host.build_play_packet(&PlayPacketRequest::SignUpdate { pos, front, lines })`
+   - `ServerboundPlayPacket::move_player_pos(pos, on_ground, horizontal_collision)`
+     -> `host.build_play_packet(&PlayPacketRequest::MovePlayerPos { pos, on_ground, horizontal_collision })`
+   - `ServerboundPlayPacket::move_player_pos_rot(pos, yaw, pitch, on_ground, horizontal_collision)`
+     -> `host.build_play_packet(&PlayPacketRequest::MovePlayerPosRot { pos, yaw, pitch, on_ground, horizontal_collision })`
+   - `ServerboundPlayPacket::move_player_rot(yaw, pitch, on_ground, horizontal_collision)`
+     -> `host.build_play_packet(&PlayPacketRequest::MovePlayerRot { yaw, pitch, on_ground, horizontal_collision })`
+   - `ServerboundPlayPacket::move_player_status_only(on_ground, horizontal_collision)`
+     -> `host.build_play_packet(&PlayPacketRequest::MovePlayerStatusOnly { on_ground, horizontal_collision })`
+
+   Note the vanilla-aligned validation changes: `UseItem` no longer rejects non-finite yaw/pitch;
+   `Interact.location` uses vanilla `Vec3.LP_STREAM_CODEC` (`NaN -> 0.0`, clamping to
+   `±1.717_986_918_3e10`) instead of returning `NonFinite`; `MovePlayerPos` / `MovePlayerPosRot`
+   refuse `NaN` positions while allowing infinite positions; and framing bounds are enforced at
+   `send_packet` (`SendPacketError::FrameTooLarge`) rather than an 8 KiB builder cap.
+
+3. `PacketBuildError`: keep matching its existing variants; `NonFinite` also names the
+   `"position"` field for NaN movement coordinates. `ClientHost::container_click` keeps the `container_click` error
+   label: its registry context is missing at `field: "connection"` for the game host without a
+   joined client connection, or at `field: "host"` for a restricted entity-section host.
+"""

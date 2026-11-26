@@ -1,5 +1,4 @@
 //! The `portal_create` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0321
 
 pub trait Hooks {
     /// A Nether portal was built for a dimension travel, or an End platform

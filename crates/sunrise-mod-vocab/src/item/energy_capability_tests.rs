@@ -23,15 +23,25 @@ impl EnergyHandler for Buffer {
     fn capacity(&self, _: &mut dyn ServerHost) -> u32 {
         self.1
     }
-    fn insert(&self, _: &mut dyn ServerHost, _: &Transaction, amount: u32) -> u32 {
+    fn insert(
+        &self,
+        _: &mut dyn ServerHost,
+        _: &TransactionContext,
+        amount: u32,
+    ) -> Result<u32, TransactionError<Overanswered>> {
         let went = amount.min(self.1 - self.held());
         self.0.fetch_add(went, Ordering::Relaxed);
-        went
+        Ok(went)
     }
-    fn extract(&self, _: &mut dyn ServerHost, _: &Transaction, amount: u32) -> u32 {
+    fn extract(
+        &self,
+        _: &mut dyn ServerHost,
+        _: &TransactionContext,
+        amount: u32,
+    ) -> Result<u32, TransactionError<Overanswered>> {
         let came = amount.min(self.held());
         self.0.fetch_sub(came, Ordering::Relaxed);
-        came
+        Ok(came)
     }
 }
 
@@ -48,10 +58,10 @@ fn a_limiting_handler_passes_at_most_its_limit_per_call() {
     let limited = LimitingEnergyHandler::new(Box::new(buffer.clone()), 10, 0);
     let mut fake = FakeHost::new();
     let host: &mut dyn ServerHost = &mut fake;
-    let went = host.transaction(|host, tx| Ok::<_, ()>(limited.insert(host, tx, 50)));
+    let went = host.transaction(|host, tx| limited.insert(host, tx, 50));
     assert_eq!(went, Ok(10));
     assert_eq!(buffer.held(), 10);
-    let came = host.transaction(|host, tx| Ok::<_, ()>(limited.extract(host, tx, 5)));
+    let came = host.transaction(|host, tx| limited.extract(host, tx, 5));
     assert_eq!(came, Ok(0));
 }
 
@@ -83,4 +93,35 @@ fn the_comparator_reads_0_empty_15_full_and_vanillas_steps_between() {
     // 1 + floor(14 * 50 / 100).
     assert_eq!(signal(&mut *host, 50), 8);
     assert_eq!(signal(&mut *host, 1), 1);
+}
+
+#[test]
+fn an_ancestor_context_does_not_reach_energy_providers() {
+    let source = capability(InfiniteEnergyHandler);
+    let buffer = Buffer::new(0, 64);
+    let target = capability(buffer.clone());
+    let mut fake = FakeHost::new();
+    fake.transaction(|host, outer| {
+        host.transaction(|host, inner| {
+            assert_eq!(
+                move_energy(host, &source, &target, 16, outer),
+                Err(TransactionError::InvalidContext)
+            );
+            assert_eq!(
+                target.insert(host, outer, 32),
+                Err(TransactionError::InvalidContext)
+            );
+            assert_eq!(
+                target.extract(host, outer, 32),
+                Err(TransactionError::InvalidContext)
+            );
+            assert_eq!(buffer.held(), 0);
+            assert_eq!(target.insert(host, inner, 16), Ok(16));
+            Ok::<_, ()>(())
+        })
+        .unwrap();
+        Ok::<_, ()>(())
+    })
+    .unwrap();
+    assert_eq!(buffer.held(), 16);
 }

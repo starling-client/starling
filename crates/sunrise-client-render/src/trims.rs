@@ -11,6 +11,8 @@ use std::collections::HashMap;
 #[cfg(test)]
 use std::path::Path;
 use sunrise_assets::palette::apply_palette;
+use sunrise_core::{identifier::Identifier, nbt::Tag};
+use sunrise_protocol::registry::Dynamic;
 
 /// Runtime trim slots and the completed ordered requests for their current atlas.
 /// A frame with more requests than slots keeps the same final residents as the
@@ -163,13 +165,121 @@ impl TrimOverride {
     }
 }
 
+/// One synced registry keyed by entry name, as `MappedRegistry`'s id map is: the asset or
+/// palette id the server sent, none for an entry of a known pack, whose data is the client's own
+/// files.
+type SyncedEntries = HashMap<String, Option<String>>;
+
 /// The `trim_pattern` (asset id) and `trim_material` (palette id) registries.
 #[derive(Clone, Debug, Default)]
 pub struct TrimRegistry {
+    /// The resources' entries.
     patterns: HashMap<String, String>,
     materials: HashMap<String, String>,
+    /// The connected server's registries (patterns, materials): when set, only their entries
+    /// resolve, as `ClientPacketListener`'s registry access holds only what the server sent.
+    synced: Option<(SyncedEntries, SyncedEntries)>,
 }
+
+/// `id` in `local`, or in `synced` when the connection has one.
+fn lookup<'a>(
+    local: &'a HashMap<String, String>,
+    synced: Option<&'a SyncedEntries>,
+    id: &str,
+) -> Option<&'a str> {
+    match synced {
+        None => local.get(id),
+        Some(entries) => match entries.get(id)? {
+            Some(sent) => Some(sent),
+            None => local.get(id),
+        },
+    }
+    .map(String::as_str)
+}
+
+/// Decode one synced trim entry (`TrimPattern.DIRECT_CODEC`, `TrimMaterial.DIRECT_CODEC`,
+/// `NetworkRegistryLoadTask.loadFromNetwork`). A known-pack entry has no data and resolves
+/// from the client's own files; supplied data must decode cleanly and never falls back.
+fn decode_synced_entry(
+    registry: &str,
+    key: &str,
+    has_decal: bool,
+    name: &str,
+    data: Option<&Tag>,
+) -> Result<(String, Option<String>), String> {
+    let id = Identifier::parse(name)
+        .map_err(|error| format!("{registry}/{name}: {error}"))?
+        .as_str()
+        .to_owned();
+    let Some(data) = data else {
+        return Ok((id, None));
+    };
+    if !matches!(data, Tag::Compound(_)) {
+        return Err(format!("{registry}/{id}: not a compound"));
+    }
+    let target = match data.get(key) {
+        Some(Tag::String(raw)) => {
+            let raw = raw
+                .to_string()
+                .map_err(|_| format!("{registry}/{id}: {key}: invalid UTF-8"))?;
+            Identifier::parse(&raw)
+                .map_err(|error| format!("{registry}/{id}: {key}: {error}"))?
+                .as_str()
+                .to_owned()
+        }
+        Some(_) => return Err(format!("{registry}/{id}: {key}: a string is required")),
+        None => return Err(format!("{registry}/{id}: {key}: an identifier is required")),
+    };
+    match data.get("description") {
+        Some(Tag::String(_) | Tag::Compound(_) | Tag::List(_)) => {}
+        Some(_) => {
+            return Err(format!(
+                "{registry}/{id}: description: a text component is required"
+            ));
+        }
+        None => return Err(format!("{registry}/{id}: description is required")),
+    }
+    if has_decal
+        && let Some(decal) = data.get("decal")
+        && !matches!(decal, Tag::Byte(_))
+    {
+        return Err(format!("{registry}/{id}: decal: a boolean is required"));
+    }
+    Ok((id, Some(target)))
+}
+
 impl TrimRegistry {
+    /// Take the registries a server sent as the ones that resolve.
+    /// A malformed entry refuses the whole load (`RegistryDataLoader.load`), leaving the
+    /// previous registries unchanged.
+    pub fn set_synced(&mut self, registries: &Dynamic) -> Result<(), String> {
+        let read = |registry: &str, key: &str, has_decal: bool| -> Result<SyncedEntries, String> {
+            registries
+                .registries
+                .get(registry)
+                .into_iter()
+                .flatten()
+                .map(|(name, data)| {
+                    decode_synced_entry(registry, key, has_decal, name, data.as_ref())
+                })
+                .collect()
+        };
+        let patterns = read("minecraft:trim_pattern", "asset_id", true)?;
+        let materials = read("minecraft:trim_material", "palette_id", false)?;
+        self.synced = Some((patterns, materials));
+        Ok(())
+    }
+    /// A resource reload's entries, keeping this connection's synced registries.
+    pub fn reloaded(&mut self, mut fresh: Self) {
+        fresh.synced = self.synced.take();
+        *self = fresh;
+    }
+    fn pattern(&self, id: &str) -> Option<&str> {
+        lookup(&self.patterns, self.synced.as_ref().map(|s| &s.0), id)
+    }
+    fn material(&self, id: &str) -> Option<&str> {
+        lookup(&self.materials, self.synced.as_ref().map(|s| &s.1), id)
+    }
     /// Every `data/<namespace>/trim_pattern` and `trim_material` entry.
     pub fn load(root: &ResourceSource) -> Self {
         let mut out = Self::default();
@@ -211,6 +321,7 @@ impl TrimRegistry {
         Self {
             patterns: map(patterns),
             materials: map(materials),
+            synced: None,
         }
     }
 }
@@ -236,8 +347,8 @@ impl TrimTexture {
         layer: &str,
     ) -> Option<Self> {
         let (material, pattern) = (qualified(material), qualified(pattern));
-        let mut texture = registry.patterns.get(&pattern)?.clone();
-        let mut palette = Some(registry.materials.get(&material)?.clone());
+        let mut texture = registry.pattern(&pattern)?.to_owned();
+        let mut palette = Some(registry.material(&material)?.to_owned());
         if let Some(o) = overrides.iter().find(|o| o.matches(&material, &pattern)) {
             if let Some(t) = &o.texture {
                 texture.clone_from(t);
@@ -441,5 +552,125 @@ mod tests {
             slot_size(&ResourceSource::directory(root.clone())),
             (64, 32)
         );
+    }
+
+    /// A server's pack trims render with the asset and palette ids it synced, and only the
+    /// synced entries resolve; a known pack's entry (no data sent) reads the client's own files.
+    #[test]
+    fn a_synced_pack_trim_resolves_from_its_asset_ids() {
+        let entry = |name: &str, field: &str, id: &str| {
+            (
+                name.to_owned(),
+                Some(Tag::compound([
+                    (field, Tag::String(id.into())),
+                    ("description", Tag::String(name.into())),
+                ])),
+            )
+        };
+        let synced = Dynamic {
+            registries: [
+                (
+                    "minecraft:trim_pattern".to_owned(),
+                    vec![
+                        ("minecraft:coast".to_owned(), None),
+                        entry("test:zigzag", "asset_id", "test:zig"),
+                    ],
+                ),
+                (
+                    "minecraft:trim_material".to_owned(),
+                    vec![entry("test:jade", "palette_id", "test:trim/jade")],
+                ),
+            ]
+            .into(),
+            ..Default::default()
+        };
+        let mut registry = registry();
+        registry.set_synced(&synced).unwrap();
+        let t =
+            TrimTexture::resolve(&registry, &[], "test:jade", "test:zigzag", "humanoid").unwrap();
+        assert_eq!(t.texture, "test:trims/entity/humanoid/zig");
+        assert_eq!(t.palette.as_deref(), Some("test:trim/jade"));
+        // Not in the server's registry: nothing, though the client's files hold it.
+        assert!(
+            TrimTexture::resolve(&registry, &[], "minecraft:gold", "test:zigzag", "humanoid")
+                .is_none()
+        );
+        // A known pack's pattern has no data in the packet: the client's own entry.
+        let known =
+            TrimTexture::resolve(&registry, &[], "test:jade", "minecraft:coast", "humanoid")
+                .unwrap();
+        assert_eq!(known.texture, "minecraft:trims/entity/humanoid/coast");
+    }
+
+    /// A malformed synced trim entry refuses the whole load instead of falling back to the
+    /// client's own files (`RegistryDataLoader.load`).
+    #[test]
+    fn malformed_synced_trim_refuses_load_without_fallback() {
+        let cases = [
+            (
+                "minecraft:trim_material",
+                "minecraft:gold",
+                Tag::compound([("description", Tag::String("Gold".into()))]),
+            ),
+            (
+                "minecraft:trim_material",
+                "minecraft:gold",
+                Tag::compound([
+                    ("palette_id", Tag::Int(1)),
+                    ("description", Tag::String("Gold".into())),
+                ]),
+            ),
+            (
+                "minecraft:trim_material",
+                "minecraft:gold",
+                Tag::compound([
+                    ("palette_id", Tag::String("..:bad".into())),
+                    ("description", Tag::String("Gold".into())),
+                ]),
+            ),
+            (
+                "minecraft:trim_material",
+                "minecraft:gold",
+                Tag::compound([("palette_id", Tag::String("minecraft:trim/gold".into()))]),
+            ),
+            ("minecraft:trim_material", "minecraft:gold", Tag::Int(0)),
+            (
+                "minecraft:trim_pattern",
+                "minecraft:coast",
+                Tag::compound([("description", Tag::String("Coast".into()))]),
+            ),
+            (
+                "minecraft:trim_pattern",
+                "minecraft:coast",
+                Tag::compound([
+                    ("asset_id", Tag::String("minecraft:coast".into())),
+                    ("description", Tag::String("Coast".into())),
+                    ("decal", Tag::String("yes".into())),
+                ]),
+            ),
+            (
+                "minecraft:trim_pattern",
+                "..:bad",
+                Tag::compound([
+                    ("asset_id", Tag::String("minecraft:coast".into())),
+                    ("description", Tag::String("Coast".into())),
+                ]),
+            ),
+        ];
+        let mut registry = registry();
+        for (kind, name, data) in cases {
+            let bad = Dynamic {
+                registries: [(kind.to_owned(), vec![(name.to_owned(), Some(data))])].into(),
+                ..Default::default()
+            };
+            assert!(
+                registry.set_synced(&bad).is_err(),
+                "expected refusal for {kind}/{name}"
+            );
+            assert!(
+                registry.synced.is_none(),
+                "failed load must leave synced state unchanged"
+            );
+        }
     }
 }

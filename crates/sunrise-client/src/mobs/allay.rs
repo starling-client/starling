@@ -342,12 +342,15 @@ fn deposit(m: &mut Mob, cx: &Cx) -> Option<[f64; 3]> {
 struct Fetch;
 impl Goal for Fetch {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, _cx: &mut Cx) -> bool {
         m.extra.point.is_some() && pickup_cooldown(m).is_none()
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         if let Some(p) = m.extra.point
             && (m.ai.nav.is_done() || m.age.is_multiple_of(10))
@@ -361,12 +364,15 @@ impl Goal for Fetch {
 struct Deliver;
 impl Goal for Deliver {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         inventory(m).is_some() && m.extra.point.is_none() && deposit(m, cx).is_some()
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         if let Some(p) = deposit(m, cx)
             && (m.ai.nav.is_done() || m.age.is_multiple_of(10))
@@ -381,9 +387,11 @@ impl Goal for Deliver {
 struct StayClose;
 impl Goal for StayClose {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         m.extra.point.is_none()
             && deposit(m, cx).is_some_and(|p| {
@@ -395,6 +403,7 @@ impl Goal for StayClose {
     }
     /// `MoveToTargetSink.reachedTarget`: the walk target it set is reached
     /// within a Manhattan block distance of 4 (`closeEnough`).
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         m.extra.point.is_none()
             && deposit(m, cx).is_some_and(|p| {
@@ -405,6 +414,7 @@ impl Goal for StayClose {
                     > 4
             })
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         if let Some(p) = deposit(m, cx)
             && (m.ai.nav.is_done() || m.age.is_multiple_of(10))
@@ -423,6 +433,7 @@ pub fn listen(
     event: &'static str,
     pos: [f64; 3],
     ctx: &Context,
+    tags: &sculk::EventTags,
     dimension: &str,
     occluded: impl Fn([f64; 3], [f64; 3]) -> bool,
 ) {
@@ -439,7 +450,7 @@ pub fn listen(
     if d[0] * d[0] + d[1] * d[1] + d[2] * d[2] > LISTENER_RADIUS * LISTENER_RADIUS {
         return;
     }
-    if !sculk::valid_vibration(sculk::allay_can_listen(event), event, ctx)
+    if !sculk::valid_vibration(tags, sculk::allay_can_listen(tags, event), event, ctx)
         || !can_receive_vibration(m, dimension, block(pos).map(|v| v as i32))
         || occluded(pos, eye)
     {
@@ -523,7 +534,7 @@ pub fn ai_step(m: &mut Mob, w: &MobWorld) {
         // value reaches zero for one tick before that stop.
         set_pickup_cooldown(m, pickup_cooldown(m).filter(|t| *t > 0).map(|t| t - 1));
     }
-    passive_heal(m, w.loop_context);
+    passive_heal(m, w.loop_context, w.side);
     stop_dancing_away(m, w);
     update_duplication_cooldown(m);
     animate(m);
@@ -565,9 +576,13 @@ pub fn forget_liked_player(m: &mut Mob) {
     }
 }
 /// `Allay.aiStep`: server-side healing runs independently of the AI gate.
-pub fn passive_heal(m: &mut Mob, context: &sunrise_world::native_load_context::LoopContext) {
+pub fn passive_heal(
+    m: &mut Mob,
+    context: &sunrise_world::native_load_context::LoopContext,
+    side: &dyn crate::motion::SideLevel,
+) {
     if m.alive() && m.age.is_multiple_of(10) {
-        m.heal(context, 1.0);
+        m.heal(context, &|| side.hit_reads(), 1.0);
     }
 }
 /// `Allay.updateDuplicationCooldown`: the server decrements positive counters,

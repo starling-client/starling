@@ -58,3 +58,81 @@ event's level hears it from the event's direction, and a player in another level
 With the `global_sound_events` game rule off, `global_level_event` is a plain `level_event`, as in
 vanilla: only the players of that level within 64 blocks of `pos` get it, and 1023, 1028 and 1038 play
 nothing.
+
+## Emitting game events with context
+
+Use `LevelRef::game_event(host, event, at, context)` to emit a vanilla game event
+at an explicit position. For example, `event` can be `"minecraft:block_change"`
+and `at` is an `[f64; 3]` position. This is a server operation; vibration listeners
+such as sculk sensors and wardens hear the event through the normal game path.
+
+`GameEventContext` mirrors vanilla's `GameEvent.Context`:
+
+- `source_entity: Option<EntityRef>` identifies the responsible entity. Its current
+  spectator, sneaking, vibration-dampening and other listener facts are captured
+  when the event is emitted.
+- `affected_state: Option<BlockState>` identifies the state affected by the action,
+  not necessarily the state currently at the position. Wool, for example, dampens
+  the vibration when supplied as the affected state.
+
+Use `GameEventContext::default()` when neither field applies. An unknown event, invalid position,
+stale or foreign source, invalid state or inactive level returns `false` without
+emitting an event. A source must belong to the level in place.
+
+`EntityRef::game_event(host, event)` is the convenience operation for an event at
+the entity's position with that entity as source and no affected state. It calls
+the same level operation; use the level form when the position or state differs.
+
+## Notify clients and show breaking cracks
+
+### Notify clients
+
+`level.send_block_updated(host, pos)` tells clients to read the current block again.
+It does not change that block or mark the chunk unsaved. Repeated notifications of
+one position are coalesced until the update log is consumed. The request is recorded immediately,
+including inside a transaction; aborting storage does not retract it. A stale,
+parked, unloaded or out-of-height write returns `false` and queues nothing.
+
+### Show breaking cracks
+
+`level.set_break_progress(host, breaker, pos, stage)` broadcasts a server crack.
+Use a stable negative breaker ID for a machine. Stages `0..=9` draw a crack;
+any other stage clears it. Inside a transaction the packet waits for the outermost
+commit and aborting sends nothing. This is distinct from
+`level.set_client_break_progress(client_host, breaker, pos, stage)`, which draws
+only in the local client's view and requires `&mut dyn ClientHost`, not a server
+host. Local cracks expire after 400 ticks without an update and clear when the
+client changes levels or disconnects.
+
+### Hear breaking cracks on a client
+
+`client_break_progress(dimension, breaker, pos, progress)` tells a client mod each crack its
+client level is told of (`ClientLevel.destroyBlockProgress`): the server's crack packets, and
+the local player's own dig, whose `breaker` is the player's entity id. `progress` `0..=9` is the
+stage; any other value means that breaker's crack went. A server that runs mining itself shows the
+player's own crack only through its packets, so this is how a client mod follows how far the block
+it mines has cracked:
+
+```rust
+{{#include ../../../examples/src/client_misc.rs:client_break_progress}}
+```
+
+A dig tells its stage every tick, so keep the listener cheap. A mod's own
+`set_client_break_progress` is not told back to it.
+
+### Read tool speed
+
+`level.block_break_speed(host, pos, tool)` reads the tool's destroy speed on that
+block, including its `minecraft:tool` component rules and default speed. It does
+not include Efficiency, player attributes, effects, fluid/airborne penalties or
+block hardness. Bare hands return `1.0`; an unavailable position returns `None`.
+This read takes an immutable host and does not modify blocks or tools.
+
+## Hearing and cancelling the server's level events
+
+`server_level_event` is asked for every level event the server sends, the game's and the mods' alike,
+before it goes out: the level, the event id, its position and data, and whether it is a global event
+(`global_level_event` while the `global_sound_events` rule is on). Return `Flow::Cancel` and nobody
+gets it: no packet is sent, and the world's own player neither hears nor sees it. To narrow an event,
+for example a wither's spawn heard only nearby, cancel it and play your own sound for the players you
+choose with `PlayerRef::play_sound`. Check the id first: the hook is asked for every event.

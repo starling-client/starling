@@ -1,0 +1,3 @@
+ids = ["method:GuiCanvas::player_face"]
+why = "GuiCanvas::player_face draws a player's skin head by UUID (#4634): player_face(uuid, at, size, hat, flip, argb), PlayerFaceExtractor.extractRenderState through the player list's face drawing, the face then the hat layer under the same pose, scissor and tint, upside down only when flip is set. A player with a PlayerInfo on the connection draws its player-list skin; any other UUID its profile's, looked up by id as a player head's is, never waited on; the UUID's DefaultPlayerSkin until the real skin is uploaded."
+migrate = "Call canvas.player_face(uuid, at, size, hat, flip, argb) inside DrawContext::draw_gui (or an ItemDecorationsEvent's GuiCanvas)."

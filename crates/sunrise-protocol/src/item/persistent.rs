@@ -138,8 +138,24 @@ pub(crate) fn special_value(
     } else if let Component::Raw(bytes) = value {
         // Typed components may also arrive from a caller as pinned raw values.
         // Interpret them through the existing typed stream codec, not another parser.
-        if matches!(kind, 0..=4 | 6 | 9..=13 | 17..=19 | 21 | 30 | 45 | 47 | 48 | 51..=53 | 55..=57 | 65 | 69..=72 | 75)
-            || super::custom::contains(kind)
+        if matches!(
+            kind,
+            0..=4
+                | 6
+                | 9..=13
+                | 17..=19
+                | 21
+                | 30
+                | 35
+                | 45
+                | 47
+                | 48
+                | 51..=53
+                | 55..=57
+                | 65
+                | 69..=72
+                | 75
+        ) || super::custom::contains(kind)
         {
             Some((|| {
                 let mut reader = Reader::new(bytes).with_names(names);

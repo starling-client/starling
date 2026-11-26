@@ -5,8 +5,10 @@ import json
 from pathlib import Path
 import sys
 
-import test_command_exec_parity as driver
-from last_hurt_by_mob_corpus import last_hurt_by_mob
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools import test_command_exec_parity as driver
+from tools.last_hurt_by_mob_corpus import last_hurt_by_mob
 
 if __name__ == '__main__':
     full = '--full-diagnostic' in sys.argv

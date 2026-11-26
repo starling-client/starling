@@ -1,5 +1,4 @@
 //! The `block_form` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0177
 
 pub trait Hooks {
     /// Precipitation is about to form ice or place or thicken snow at `pos`.

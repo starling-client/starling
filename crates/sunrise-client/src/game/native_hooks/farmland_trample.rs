@@ -52,18 +52,26 @@ impl Game<'_> {
             let Some(living) = self.entity(entity).and_then(|e| self.living(e)) else {
                 return;
             };
-            mod_api::run_transaction(self, |game, _| {
+            self.storage_transaction_settled(|game, _| {
                 let mut cancel = false;
                 game.native_farmland_trample(living, pos, state, distance, &mut cancel);
+                if cancel {
+                    return Ok::<bool, ()>(false);
+                }
                 let valid =
                     |game: &Self| game.entity(entity) == Some(living.entity()) && still(game);
-                (!cancel && game.apply_farmland_trample(player, trample, valid, true))
-                    .then_some(())
-                    .ok_or(())
+                let applied = game
+                    .storage_transaction(|game, _| {
+                        game.apply_farmland_trample(trample, valid, true)
+                            .then_some(())
+                            .ok_or(())
+                    })
+                    .is_ok();
+                Ok(applied)
             })
-            .is_ok()
+            .unwrap_or(false)
         } else {
-            self.apply_farmland_trample(player, trample, still, false)
+            self.apply_farmland_trample(trample, still, false)
         };
         if applied {
             let who = if player {
@@ -74,7 +82,7 @@ impl Game<'_> {
             self.after_commit(crate::game::transactions::After::BlockGameEvent(
                 "minecraft:block_change",
                 at,
-                who,
+                Some(who),
                 base,
             ));
         }
@@ -82,7 +90,6 @@ impl Game<'_> {
 
     fn apply_farmland_trample(
         &mut self,
-        player: bool,
         trample: FarmlandTrample,
         still: impl Fn(&Self) -> bool,
         journalled: bool,
@@ -93,16 +100,6 @@ impl Game<'_> {
             base,
             ..
         } = trample;
-        if !still(self) {
-            return false;
-        }
-        // The player's write asks `entity_change_block_pre` first; a mob's never did.
-        if player {
-            let acting = self.native_acting_id();
-            if self.landing_change_cancelled(Some(acting), pos, state, base) {
-                return false;
-            }
-        }
         if !still(self) {
             return false;
         }
@@ -146,6 +143,7 @@ mod tests {
         Allow,
         Trap,
         Cancel,
+        CancelAndBreakCrop,
         AvoidSneak,
         Replace,
         ReplaceDuringLift,
@@ -166,6 +164,7 @@ mod tests {
         Lift(u32, f64, Option<mod_api::BlockState>),
         Write(mod_api::BlockState),
         GameEvent([f64; 3], Option<u32>, Option<mod_api::BlockState>),
+        DestroyGameEvent([f64; 3], Option<u32>, Option<mod_api::BlockState>),
         Fall(f32, f64, mod_api::BlockState),
     }
 
@@ -236,6 +235,14 @@ mod tests {
                     event.cause,
                     event.affected_state,
                 ));
+            } else if event.event == "minecraft:block_destroy"
+                && self.1 == Choice::CancelAndBreakCrop
+            {
+                self.0.lock().unwrap().push(Moment::DestroyGameEvent(
+                    event.pos,
+                    event.cause,
+                    event.affected_state,
+                ));
             }
             Flow::Continue
         }
@@ -272,7 +279,10 @@ mod tests {
                 y: entity.position(host).unwrap()[1],
                 health: event.entity.health(host).unwrap(),
             });
-            if matches!(self.0, Choice::Cancel | Choice::Trap | Choice::Replace) {
+            if matches!(
+                self.0,
+                Choice::CancelAndBreakCrop | Choice::Trap | Choice::Replace
+            ) {
                 let key = host.block_key("minecraft:stone").unwrap();
                 let stone = mod_api::BlockState::of(&host.block_states(), key, &[]).unwrap();
                 assert_eq!(
@@ -282,13 +292,13 @@ mod tests {
                 assert_eq!(level.block_state(host, LISTENER_WRITE), Some(stone));
             }
             match self.0 {
-                Choice::Cancel => {
+                Choice::Cancel => Flow::Cancel,
+                Choice::CancelAndBreakCrop => {
                     let crop = [FIELD[0], FIELD[1] + 1, FIELD[2]];
-                    assert!(matches!(
-                        level.destroy_block(host, crop, true, None, false),
-                        Ok(None)
-                    ));
-                    assert!(level.remove_block(host, crop, false));
+                    assert_eq!(
+                        level.destroy_block(host, crop, true, None, Some(entity), false),
+                        Ok(Some(Vec::new()))
+                    );
                     let state = level.block_state(host, crop).unwrap();
                     // The outer trace assertion distinguishes cancellation from a trapped assertion.
                     self.1.lock().unwrap().push(Moment::CropRemoved(state));
@@ -350,7 +360,7 @@ mod tests {
 
     fn land_with_later_packet(body: Body, choice: Choice, later: Option<S>) -> Vec<Moment> {
         let player = matches!(body, Body::Guest { .. });
-        let cancelled = choice == Choice::Cancel
+        let cancelled = matches!(choice, Choice::Cancel | Choice::CancelAndBreakCrop)
             || (choice == Choice::AvoidSneak
                 && matches!(
                     body,
@@ -504,6 +514,16 @@ mod tests {
                 }
                 if choice == Choice::Cancel {
                     assert_eq!(game.dropped.len(), drops);
+                } else if choice == Choice::CancelAndBreakCrop {
+                    assert!(
+                        game.dropped.len() > drops,
+                        "destroying the crop in a cancelling trample listener spawns its drops"
+                    );
+                    assert!(
+                        game.dropped[drops..]
+                            .iter()
+                            .any(|item| item.stack.item.as_ref() == "minecraft:wheat_seeds")
+                    );
                 }
                 let (landing_y, health) = if player {
                     let g = game.lan.as_ref().unwrap().hub.guest(1).unwrap();
@@ -512,23 +532,38 @@ mod tests {
                     let m = game.mob_object(LANDING).unwrap();
                     (m.position.y, m.health)
                 };
-                let floor = if converted { dirt } else { farmland };
+                let stone = reg.default_state("minecraft:stone").unwrap();
+                let floor = if converted {
+                    dirt
+                } else if choice == Choice::Replace {
+                    stone
+                } else {
+                    farmland
+                };
                 let y_after = if converted { 64.0 } else { LANDING_Y };
                 assert_eq!(game.world.block(x, y, z), floor);
-                if !converted {
+                if choice == Choice::CancelAndBreakCrop {
+                    assert_eq!(game.world.block(x, y + 1, z), air);
+                } else if !converted {
                     assert_eq!(game.world.block(x, y + 1, z), wheat);
                 }
                 let [wx, wy, wz] = LISTENER_WRITE;
+                let expected_write =
+                    if matches!(choice, Choice::CancelAndBreakCrop | Choice::Replace) {
+                        stone
+                    } else {
+                        air
+                    };
                 assert_eq!(
                     game.world.block(wx, wy, wz),
-                    air,
-                    "listener writes rolled back"
+                    expected_write,
+                    "completed listener writes stay; trapped writes roll back"
                 );
                 if choice == Choice::Trap {
                     let [wx, wy, wz] = HEALTHY_WRITE;
                     assert_eq!(
                         game.world.block(wx, wy, wz),
-                        reg.default_state("minecraft:stone").unwrap(),
+                        stone,
                         "the later listener's successful write still commits"
                     );
                 }
@@ -557,12 +592,17 @@ mod tests {
                         health: initial_health,
                     });
                 }
-                if choice == Choice::Cancel {
+                if choice == Choice::CancelAndBreakCrop {
                     expected.push(Moment::CropRemoved(api_state(air)));
+                    expected.push(Moment::DestroyGameEvent(
+                        [1.5, 64.5, 1.5],
+                        Some(LANDING),
+                        Some(api_state(wheat)),
+                    ));
                 }
                 if converted || choice == Choice::ReplaceDuringLift {
                     let following = if choice == Choice::ReplaceDuringLift {
-                        reg.default_state("minecraft:stone").unwrap()
+                        stone
                     } else {
                         farmland
                     };
@@ -571,8 +611,10 @@ mod tests {
                         Moment::Lift(OTHER, 64.0, Some(api_state(following))),
                     ]);
                 }
-                if converted {
+                if converted || choice == Choice::Replace {
                     expected.push(Moment::Write(api_state(floor)));
+                }
+                if converted {
                     expected.push(Moment::GameEvent(
                         [1.5, 63.5, 1.5],
                         Some(LANDING),
@@ -648,6 +690,19 @@ mod tests {
             || {
                 for body in [WALKING, Body::Pig] {
                     land(body, Choice::Cancel);
+                }
+            },
+        );
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn cancelling_listener_keeps_writes_and_destroys_crop() {
+        crate::game::in_own_process(
+            "game::native_hooks::farmland_trample::tests::cancelling_listener_keeps_writes_and_destroys_crop",
+            || {
+                for body in [WALKING, Body::Pig] {
+                    land(body, Choice::CancelAndBreakCrop);
                 }
             },
         );
@@ -833,6 +888,171 @@ mod tests {
                     land(body, Choice::Replace);
                     land(body, Choice::ReplaceDuringLift);
                 }
+            },
+        );
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn a_panicking_creative_listener_during_trample_does_not_abort_the_trample() {
+        use mod_api::prelude::ItemsHost;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        struct PanickingCreative(Arc<AtomicUsize>);
+        #[mod_api::__subscriptions]
+        impl Hooks for PanickingCreative {
+            fn build_creative_mode_tab_contents(
+                &self,
+                _host: HostSide<'_>,
+                _event: &mut BuildCreativeModeTabContentsEvent<'_>,
+            ) {
+                self.0.fetch_add(1, Ordering::Relaxed);
+                panic!("creative listener boom");
+            }
+        }
+
+        struct HealthyCreative(Arc<Mutex<Vec<String>>>);
+        #[mod_api::__subscriptions]
+        impl Hooks for HealthyCreative {
+            fn build_creative_mode_tab_contents(
+                &self,
+                _host: HostSide<'_>,
+                event: &mut BuildCreativeModeTabContentsEvent<'_>,
+            ) {
+                self.0.lock().unwrap().push(event.tab.to_owned());
+                if event.tab == "test:first" {
+                    let torch = mod_api::ItemStack::new(
+                        mod_api::__private::item_key("minecraft:torch").unwrap(),
+                        1,
+                    )
+                    .unwrap();
+                    event
+                        .output
+                        .insert(
+                            CreativeTabPlacement::Last,
+                            torch,
+                            CreativeTabVisibility::Both,
+                        )
+                        .unwrap();
+                }
+            }
+        }
+
+        struct LazyCreativeGardener(Arc<AtomicBool>);
+        #[mod_api::__subscriptions]
+        impl Hooks for LazyCreativeGardener {
+            fn farmland_trample(
+                &self,
+                host: &mut dyn ServerHost,
+                event: &mut FarmlandTrampleEvent,
+            ) -> Flow {
+                let level = event.entity.entity().level(host).unwrap();
+                let key = host.block_key("minecraft:stone").unwrap();
+                let stone = mod_api::BlockState::of(&host.block_states(), key, &[]).unwrap();
+                assert_eq!(
+                    level.set_block(host, LISTENER_WRITE, stone, BlockUpdateFlags::KNOWN_SHAPE),
+                    Ok(true)
+                );
+                let tabs = ItemsHost::creative_tabs(host, CreativeTabPermissions::Normal).unwrap();
+                let torch = mod_api::ItemStack::new(
+                    mod_api::__private::item_key("minecraft:torch").unwrap(),
+                    1,
+                )
+                .unwrap();
+                assert_eq!(tabs.tab("test:first").unwrap().display_items, [torch]);
+                assert!(tabs.tab("test:second").is_some());
+                self.0.store(true, Ordering::Relaxed);
+                Flow::Continue
+            }
+        }
+
+        let catalog = serde_json::json!({
+            "schema": 4,
+            "item_features": {},
+            "potion_features": {},
+            "tabs": [
+                {"id": "test:first", "title": "test:first", "type": "CATEGORY", "build": []},
+                {"id": "test:second", "title": "test:second", "type": "CATEGORY", "build": []},
+            ]
+        });
+        let broken_calls = Arc::new(AtomicUsize::new(0));
+        let healthy_tabs = Arc::new(Mutex::new(Vec::new()));
+        let built = Arc::new(AtomicBool::new(false));
+        let mods = vec![
+            ModEntry::new(
+                "broken-creative",
+                Box::new(PanickingCreative(broken_calls.clone())),
+            ),
+            ModEntry::new(
+                "healthy-creative",
+                Box::new(HealthyCreative(healthy_tabs.clone())),
+            ),
+            ModEntry::new("gardener", Box::new(LazyCreativeGardener(built.clone()))),
+        ];
+        crate::game::in_own_process(
+            "game::native_hooks::farmland_trample::tests::a_panicking_creative_listener_during_trample_does_not_abort_the_trample",
+            || {
+                mod_platform::testing::with_mods(mods.into(), || {
+                    with_game(|game| {
+                        game.options.dedicated = Some(Vec::new());
+                        game.creative_screen =
+                            sunrise_client::creative::Creative::from_json(&catalog).unwrap();
+                        assert_eq!(game.built_creative_tabs(), Ok(None));
+
+                        game.streaming
+                            .insert_remote(&mut game.world, Chunk::empty(0, 0));
+                        let reg = game.pack.assets.registry;
+                        let [farmland, dirt, stone, wheat] = [
+                            "minecraft:farmland",
+                            "minecraft:dirt",
+                            "minecraft:stone",
+                            "minecraft:wheat",
+                        ]
+                        .map(|name| reg.default_state(name).unwrap());
+                        let [x, y, z] = FIELD;
+                        game.world.set(x, y, z, farmland).unwrap();
+                        game.world.set(x, y + 1, z, wheat).unwrap();
+                        let kind = game.res.mob_types().get("minecraft:pig").unwrap().clone();
+                        let mut mob = sunrise_client::mobs::Mob::new(
+                            LANDING,
+                            kind,
+                            Vec3::new(1.5, 64.125, 1.5),
+                            0.0,
+                        );
+                        mob.ai.goals = Default::default();
+                        mob.ai.targets = Default::default();
+                        mob.fall_distance = 6.0;
+                        mob.velocity.y = -0.5;
+                        let initial_health = mob.health;
+                        game.mobs.push(mob);
+                        game.entity_section_joined(LANDING, [1.5, 64.125, 1.5]);
+
+                        game.tick_creature_entities().unwrap();
+
+                        assert!(built.load(Ordering::Relaxed));
+                        assert_eq!(broken_calls.load(Ordering::Relaxed), 1);
+                        assert_eq!(*healthy_tabs.lock().unwrap(), ["test:first", "test:second"]);
+                        assert_eq!(
+                            mod_api::__private::poisoned_listeners(
+                                mod_api::HookId::BuildCreativeModeTabContents
+                            ),
+                            1
+                        );
+                        assert_eq!(
+                            mod_api::__private::poisoned_listeners(
+                                mod_api::HookId::FarmlandTrample
+                            ),
+                            0
+                        );
+                        assert!(game.built_creative_tabs().unwrap().is_some());
+                        assert_eq!(game.world.block(x, y, z), dirt);
+                        let [wx, wy, wz] = LISTENER_WRITE;
+                        assert_eq!(game.world.block(wx, wy, wz), stone);
+                        let landed = game.mob_object(LANDING).unwrap();
+                        assert_eq!(landed.position.y, 64.0);
+                        assert_eq!(landed.health, initial_health - 3.0);
+                    })
+                })
             },
         );
     }

@@ -1,13 +1,7 @@
 //! Configuration tasks and capabilities valid before the player joins.
 use crate::callback_owner::CallbackOwner;
 use crate::{Identifier, PayloadBytes, PayloadId, RegisterConfigurationTasksEvent, ServerHost};
-use std::{
-    any::{Any, TypeId},
-    collections::HashMap,
-};
-
-// The number of concrete native task types is fixed by the installed code, not by peers.
-pub(crate) type TaskOwners = HashMap<(&'static str, TypeId), CallbackOwner>;
+use std::any::Any;
 
 // no wire: tasks are owned objects with server-thread callbacks and local state.
 /// One task instance owned by a configuring connection. Register the instance with
@@ -47,13 +41,12 @@ impl RegisterConfigurationTasksEvent<'_> {
                 .get_or_insert_with(|| "Configuration task registration has no owning mod".into());
             return;
         };
-        let owner = installed
-            .configuration_task_owners
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .entry((mod_id, (&task as &dyn Any).type_id()))
-            .or_insert_with(|| CallbackOwner::for_mod(mod_id))
-            .clone();
+        let owner = CallbackOwner::for_installed_type(
+            installed,
+            mod_id,
+            "configuration task",
+            (&task as &dyn Any).type_id(),
+        );
         if !owner.is_enabled() {
             dispose_task(&owner, task);
             return;
